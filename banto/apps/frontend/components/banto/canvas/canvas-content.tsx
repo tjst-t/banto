@@ -186,6 +186,11 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
       return <WorkerReportView />;
     case "hermes.test:result":
       return <TestResultView />;
+    // **本物はこちらではない**（注記・2026-09-12）。VaultUI は実 Module として
+    // 実装済みで、その画面は Module 自身が描く素の HTML Canvas
+    // （`packages/modules/vault-directory/src/manage-app.ts`）——入口から開くと
+    // `ModuleCanvas` がそれを埋める。ここに残っているのは形を決めたときの
+    // モック（`mockCanvasSurfaces` が false なので出口は塞がっている）
     case "banto.vault-ui:manage":
       return <VaultManageView />;
     case "banto.shell:terminal":

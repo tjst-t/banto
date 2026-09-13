@@ -50,7 +50,8 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
     data: {
       server: "vault",
       tool: "createAlias",
-      arguments: { name: ALIAS, kind: "secret", scope: "project", value: SECRET },
+      // scope は instance——この試験が見たいのは中継の承認で、対象の割り当てではない
+      arguments: { name: ALIAS, kind: "secret", scope: "instance", value: SECRET },
     },
   });
   expect(created.ok()).toBe(true);
@@ -87,37 +88,84 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   await composer.press("Enter");
 
   // 1. 中継の手前で止まる（bypassPermissions でも出る）
-  const card = page.locator('[data-role="judgment-card"]').first();
-  await expect(card.getByText(/shell が vault の resolveAlias を呼ぼうとしています/)).toBeVisible({
-    timeout: 120_000,
-  });
+  //
+  // **秘密1つに中継が4本**（改訂・2026-09-12）。Shell は宛先の Vault を
+  // 決め打ちしないので、経路がこうなる：
+  //
+  // ```
+  // shell → vault-directory    lookupAlias    「その名前はどこ？」
+  //   vault-directory → vault           listAliases   （窓口が横断して探す）
+  //   vault-directory → vault-infisical listAliases
+  // shell → vault              resolveAlias   「値をください」
+  // ```
+  //
+  // **承認は（呼び出し元・宛先・tool）ごとに初回1回**なので、初回のターンでは
+  // これが全部カードになる。**入れ子の中継も同じターンの仕事として扱われる**
+  // ——さもないと窓口の問い合わせは「どのターンか分からない」で止まる。
+  const firstCard = page.locator('[data-role="judgment-card"]').first();
+  await expect(
+    firstCard.getByText(/shell が vault-directory の lookupAlias を呼ぼうとしています/),
+    "最初に聞かれるのは「在りかを聞いてよいか」のはず",
+  ).toBeVisible({ timeout: 120_000 });
   // **何を承認するのかが、答える前に見えている**（§6.0）
-  await expect(card.getByText(/"呼び出し元": "shell"/)).toBeVisible();
-  await expect(card.getByText(/"宛先": "vault"/)).toBeVisible();
-  // **値は出さない**（§2.5——記録に残るのは宛名まで）
-  await expect(card.getByText(SECRET)).toHaveCount(0);
+  await expect(firstCard.getByText(/"呼び出し元": "shell"/)).toBeVisible();
+  await expect(firstCard.getByText(/"宛先": "vault-directory"/)).toBeVisible();
+  // **値は出さない**（§2.5——記録に残るのは宛名まで）。在りかを聞く段では、
+  // そもそもまだ値に触れていない
+  await expect(firstCard.getByText(SECRET)).toHaveCount(0);
 
   // まだ中継されていない＝コマンドは走っていない
   await expect(page.getByText(`got=${SECRET}`)).toHaveCount(0);
 
-  await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
+  /** 出ているカードに1枚答える。**答えるたびに次が出る**（入れ子なので）。 */
+  const approveOnePending = async (): Promise<boolean> => {
+    const allow = page.getByRole("button", { name: "許可する" });
+    if ((await allow.count()) === 0) return false;
+    await allow.last().click();
+    // **カードは同時に何枚も出る**（窓口が2つの金庫を並列に聞くため）。
+    // 押した札の送信ボタンだけを押す——名前だけで引くと2つに当たる
+    await page.getByRole("button", { name: "この内容で送る" }).last().click();
+    return true;
+  };
 
-  // 2. 許可すると中継が通り、**秘密の値が実際にコマンドへ届く**
-  await expect(page.getByText(`got=${SECRET}`).first()).toBeVisible({ timeout: 180_000 });
+  // 2. 許可していくと中継が通り、**秘密の値が実際にコマンドへ届く**
+  await expect(async () => {
+    await approveOnePending();
+    await expect(page.getByText(`got=${SECRET}`).first()).toBeVisible({ timeout: 20_000 });
+  }).toPass({ timeout: 300_000 });
+
+  // **聞かれた中身が、経路のとおりであること**（規則14——押せたで終わらせない）
+  const asked = await page.locator('[data-role="judgment-card"]').allInnerTexts();
+  for (const expected of ["shell が vault-directory の lookupAlias", "shell が vault の resolveAlias"]) {
+    expect(asked.join("\n"), `「${expected}」を人に聞いていない`).toContain(expected);
+  }
+  // **値を返さない口は聞かない**（決定・2026-09-12、v4-security.md）。窓口が
+  // 金庫を横断して一覧を組むところは値が通らないので、人を止めない
+  expect(
+    asked.join("\n"),
+    "値を返さない口（listAliases）で人を止めている",
+  ).not.toContain("listAliases");
+  // **値は、どのカードにも出ていない**
+  expect(asked.join("\n"), "承認カードに秘密の値が出ている").not.toContain(SECRET);
+  const askedCount = asked.length;
 
   // 3. 2回目は聞かれない（同じ Project 内で自動許可）
   await expect.poll(finishedTurns, { timeout: 120_000, message: "1ターン目が終わるまで" }).toBe(1);
   await composer.fill(PROMPT);
   await composer.press("Enter");
+  // **待つのは「2回目の経路が通ったこと」**（規則14）。件数の合計で待つと、
+  // 1ターン目だけで既に4件あるので**待たずに通り抜ける**——実際そうなった
   await expect
     .poll(
-      () => relayEvents().filter((e) => e.type === "relay.call_recorded").length,
-      { timeout: 180_000, message: "2回目の中継が記録されるまで" },
+      () =>
+        relayEvents().filter(
+          (e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAlias",
+        ).length,
+      { timeout: 180_000, message: "2回目のターンで値が取られるまで" },
     )
     .toBeGreaterThanOrEqual(2);
-  // 判断待ちのカードは最初の1枚だけのまま
-  await expect(page.locator('[data-role="judgment-card"]')).toHaveCount(1);
+  // 判断待ちのカードは1枚も増えない（同じ Project 内は自動許可）
+  await expect(page.locator('[data-role="judgment-card"]')).toHaveCount(askedCount);
   const openJudgments = await (
     await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
       headers: { authorization: `Bearer ${AUTH_TOKEN}` },
@@ -130,15 +178,31 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // 4. 記録（監査）——許可は1回、呼び出しは毎回、値は残っていない
   const events = relayEvents();
   const grants = events.filter((e) => e.type === "relay.grant_created");
-  expect(grants).toHaveLength(1);
-  expect(grants[0]!.payload).toMatchObject({
-    callerModule: "shell",
-    targetModule: "vault",
-    kind: "tool",
-    name: "resolveAlias",
-  });
+  // **許可は（呼び出し元・宛先・tool）ごとに1回**——2回目のターンでは増えない。
+  // 窓口が横断する先の数は環境で変わる（`vault-infisical` が設定されていない
+  // ホストもある）ので、**順序と件数ではなく、要る組み合わせが在ることを見る**
+  const pairs = grants.map((g) => `${g.payload.callerModule}→${g.payload.targetModule}:${g.payload.name}`);
+  expect(pairs).toContain("shell→vault-directory:lookupAlias");
+  expect(pairs).toContain("shell→vault:resolveAlias");
+  // 聞かなかったものに許可は生えない
+  expect(pairs.join(","), "聞いていない呼び出しに許可が記録されている").not.toContain("listAliases");
+  expect(new Set(pairs).size, "同じ組み合わせを2回聞いている").toBe(pairs.length);
+
+  // **聞かなくても、通したことは記録に残る**（規則2——黙って通らない）
+  const listCalls = events.filter(
+    (e) => e.type === "relay.call_recorded" && e.payload.name === "listAliases",
+  );
+  expect(listCalls.length, "窓口の横断が1度も記録されていない").toBeGreaterThan(0);
+  for (const c of listCalls) {
+    expect(c.payload.allowed).toBe(true);
+    expect(c.payload.reason, "なぜ聞かずに通したかが記録に無い").toBe("値を返さない口");
+  }
   const calls = events.filter((e) => e.type === "relay.call_recorded");
-  expect(calls.length).toBeGreaterThanOrEqual(2);
+  // **2ターンとも、経路を全部通っていること**（件数の合計ではなく中身で見る
+  // ——窓口が横断する先の数は環境で変わる）
+  const named = (n: string) => calls.filter((c) => c.payload.name === n).length;
+  expect(named("lookupAlias"), `在りかの問い合わせが2回記録されていない: ${JSON.stringify(calls.map((c) => c.payload.name))}`).toBeGreaterThanOrEqual(2);
+  expect(named("resolveAlias"), "値の取得が2回記録されていない").toBeGreaterThanOrEqual(2);
   for (const call of calls) {
     expect(call.payload.allowed).toBe(true);
     expect(call.payload.ok).toBe(true);

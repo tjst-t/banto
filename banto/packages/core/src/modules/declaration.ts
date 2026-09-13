@@ -173,6 +173,58 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
   },
   {
+    // **vault 役割の2本目**（Infisical、2026-09-12）。役割は同じ `vault` で、
+    // 違うのは「秘密をどこに置くか」と「メタデータをどこに置くか」だけ
+    // ——A/B/C の配線は `@banto/vault-kit` が共有する。
+    //
+    // **資格情報は Infisical には入れられない**（金庫を開ける鍵は金庫に入らない）
+    // ——組み込み Vault の `identity.txt` と同じ category。設定として渡す。
+    // **繋がらなければ立たない**（黙って空の一覧を見せない、規則2）ので、
+    // 設定していない環境ではこの Module は繋がらず、理由が受信箱に出る。
+    name: "vault-infisical",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/vault-infisical/dist/server.js"],
+      // **資格情報はここに書かない。** `BANTO_INFISICAL_*` は host の環境変数を
+      // 子がそのまま継ぐ（cli.ts が `...process.env` を渡す）——宣言は
+      // Event Store に残るので、**秘密を宣言に書くと記録に残ってしまう**。
+      // 置き場は運用側（banto を起動する環境）。
+      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${dataDir}/vault-infisical" },
+    },
+    meta: {
+      satisfies: ["vault"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      handlesSecrets: true,
+    },
+  },
+  {
+    // **名前から在りかを引く窓口**（`vault-directory`、v4-modules.md §2.1）。
+    // 自分では秘密を保管しない——`vault` を名乗る実装を横断して、**AI・人・
+    // 他 Module に1つの窓口**を見せる。**値は通さない**（`resolveAlias` は
+    // 呼び出し元 → host → backend の直行のまま）。
+    // ただし**人が画面で打った登録の値は通る**ので `handlesSecrets: true`＝subprocess
+    // （要件 C8c、`docs/notes/2026-09-12-vault-directory.md`）。
+    // Landlock は掛けない（Vault と同じく、秘密に触るものは閉じ込めの外）。
+    name: "vault-directory",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/vault-directory/dist/server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["vault-directory"],
+      dependsOn: [{ role: "vault", required: true }],
+      isolation: "subprocess",
+      scope: "instance",
+      handlesSecrets: true,
+    },
+  },
+  {
     // Shell/FileSystem は Project ごと——Landlock は一度掛けたら緩められないので、
     // Project の根が決まった時点で別プロセスとして立てる（v4-security.md）。
     name: "shell",
@@ -187,7 +239,12 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
     meta: {
       satisfies: ["shell"],
-      dependsOn: [{ role: "vault", required: true }],
+      // **在りかは窓口に、値は金庫に**（改訂・2026-09-12）。どちらが欠けても
+      // 秘密は渡せないので両方 required（v4-modules.md §2.1 B節）
+      dependsOn: [
+        { role: "vault-directory", required: true },
+        { role: "vault", required: true },
+      ],
       isolation: "subprocess",
       scope: "project",
       confinement: { kind: "landlock", root: "project" },

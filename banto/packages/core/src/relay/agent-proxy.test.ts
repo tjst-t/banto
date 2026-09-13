@@ -140,3 +140,42 @@ test("resource visibility allows an exact-listed agent-visible resource", async 
   const result = await runnerClient.readResource({ uri: "vault://aliases" });
   assert.equal((result.contents as { text: string }[])[0]?.text, "github-token");
 });
+
+// **resource の読み取りも、どのターンの仕事かを台帳に置く**（追加・2026-09-12）。
+// tool 呼び出しには前からあったが、読み取りには無かった——**中で他 Module を
+// 呼ぶ resource**（横断した一覧を作る窓口など）は、承認ゲートが
+// 「どのターンからの呼び出しか特定できません」で構造的に必ず拒否されていた。
+test("resource を読んでいる間も、その Module はそのターンの仕事をしている", async () => {
+  const { ModuleCallTracker } = await import("./module-calls.js");
+  const moduleCalls = new ModuleCallTracker();
+  let seen: unknown;
+
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { resources: {} } });
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [{ uri: "vault://aliases", name: "一覧", _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(ReadResourceRequestSchema, async () => {
+    // **読んでいる最中**に外から覗く——中継の承認はここで起きる
+    seen = moduleCalls.threadFor("fake-module");
+    return { contents: [{ uri: "vault://aliases", mimeType: "application/json", text: "[]" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+
+  const proxy = buildAgentProxy(
+    { name: "fake-module", client: moduleClient, meta: parseModuleMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "fake") },
+    { threadId: "thread-1", moduleCalls },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+
+  await runner.readResource({ uri: "vault://aliases" });
+  assert.deepEqual(seen, { kind: "thread", threadId: "thread-1" }, "読み取り中に台帳へ載っていない");
+  // **読み終わったら消える**（置きっぱなしにしない）
+  assert.deepEqual(moduleCalls.threadFor("fake-module"), { kind: "none" });
+
+  await runner.close();
+  await moduleClient.close();
+});

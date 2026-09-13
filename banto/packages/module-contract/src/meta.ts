@@ -17,6 +17,25 @@ export const VISIBILITY_META_KEY = `${VENDOR_PREFIX}/visibility`;
  */
 export const CANVAS_META_KEY = `${VENDOR_PREFIX}/canvas`;
 
+/**
+ * その tool が**秘密の値を返さない**ことの申告（決定・2026-09-12）。
+ *
+ * Module 間中継の承認ゲートが守っているのは**値**であって、名前ではない
+ * ——`relayListTargets` を承認も監査も通さないのは、返すのが名前と role
+ * だけだから（アーキ仕様 §2.5）。同じ理由で、**一覧・検索のような
+ * 「値を返さない口」は初回の承認を要らないことにする**。
+ *
+ * **無指定は「返す」扱い**（fail closed）。第三者の Module はこのキーを
+ * 持たないので、既定を「返さない」にすると、名乗らないだけで承認を
+ * すり抜けられることになる。**名乗った Module だけが緩む。**
+ */
+export const VALUE_FREE_META_KEY = `${VENDOR_PREFIX}/valueFree`;
+
+/** その tool が「値を返さない」と名乗っているか。**`true` 以外は全部「返す」。** */
+export function isValueFree(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[VALUE_FREE_META_KEY] === true;
+}
+
 export type Visibility = "agent" | "module" | "admin";
 export const DEFAULT_VISIBILITY: Visibility = "agent";
 

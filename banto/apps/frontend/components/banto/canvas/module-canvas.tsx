@@ -28,6 +28,8 @@ import {
 } from "@/lib/backend/client";
 import { getRealJudgments, refreshRealInbox } from "@/lib/backend/real-inbox";
 import { beginCanvasToolCall, endCanvasToolCall } from "@/lib/backend/adapter";
+import { getProject } from "@/lib/mock/projects";
+import { getThread } from "@/lib/mock/threads";
 
 export interface ModuleCanvasProps {
   /** 誰の画面か。会話の中なら Thread、設定画面なら Project。 */
@@ -70,6 +72,20 @@ function toCallToolResult(value: unknown): CallToolResult | undefined {
 /** 依存配列に入れるための、相手を一意に表す文字列。 */
 function ownerKey(owner: RealCanvasOwner): string {
   return owner.kind === "instance" ? "instance" : owner.id;
+}
+
+/**
+ * その Canvas が**どの Project の上で開かれているか**。
+ *
+ * banto 全体の設定（`instance`）から開かれた画面には Project が無い
+ * ——**無いものを作らない**（画面は「Project が渡ってこない＝全体の面だ」と
+ * 分かる）。Thread から開かれた面は、その Thread の Project。
+ */
+function bantoProjectContext(owner: RealCanvasOwner): { id: string; name: string } | undefined {
+  if (owner.kind === "instance") return undefined;
+  const projectId = owner.kind === "project" ? owner.id : getThread(owner.id)?.projectId;
+  if (!projectId) return undefined;
+  return { id: projectId, name: getProject(projectId).name };
 }
 
 type LoadState =
@@ -166,6 +182,17 @@ function SandboxFrame({
         displayMode,
         availableDisplayModes: ["inline", "fullscreen"],
         theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
+        // **いまどこで開かれているか**（追加・2026-09-12）。Project のものを
+        // 扱う画面（Vault の alias の割り当て先など）は、これが無いと
+        // 「この Project」を指せない——人に UUID を選ばせることになる。
+        //
+        // `hostContext` は仕様が**追加の項目を認めている**（`McpUiHostContext`
+        // の index signature、"for forward compatibility"）ので、新しい
+        // 受け渡しの道を作らずに済む（規則12）。名前空間は他の banto 拡張と同じ。
+        //
+        // **渡すのは開かれた場所だけ**——Project の一覧を全部渡さない。
+        // どの Canvas にも人の Project 名が全部見えることになる
+        ...(bantoProjectContext(owner) ? { "dev.banto/project": bantoProjectContext(owner) } : {}),
         // tool 起点のときだけ入れる。**無いものを作らない**——画面はこれが
         // 無いことで「人が直接開いた」と分かり、自分で必要なものを取りに行く
         ...(toolName ? { toolInfo: { tool: { name: toolName, inputSchema: { type: "object" } } } } : {}),

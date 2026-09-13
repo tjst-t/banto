@@ -146,8 +146,19 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     if (!allowed) {
       throw new Error(`resource "${request.params.uri}" は読めません（visibility=${visibility}）`);
     }
-    const result = await conn.client.readResource({ uri: request.params.uri });
-    return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
+    // **読み取りの最中も、この Module はこのターンの仕事をしている**
+    // （追加・2026-09-12）。tool 呼び出しには前からこれが有ったが、resource の
+    // 読み取りには無かった——**中で他 Module を呼ぶ resource**（横断した一覧を
+    // 作る窓口など）は、承認ゲートが「どのターンからの呼び出しか特定できません」
+    // で**構造的に必ず拒否される**状態だった。
+    const endCall =
+      opts.threadId && opts.moduleCalls ? opts.moduleCalls.begin(conn.name, opts.threadId) : undefined;
+    try {
+      const result = await conn.client.readResource({ uri: request.params.uri });
+      return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
+    } finally {
+      endCall?.();
+    }
   });
 
   return {

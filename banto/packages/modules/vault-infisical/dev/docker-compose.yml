@@ -1,0 +1,65 @@
+# **開発と試験のためだけの** Infisical（自前ホスト）。
+#
+# **行き先は Infisical Cloud**（確認・2026-09-12、ユーザー）。ここで立てるのは
+# 開発と試験の相手であって、運用先ではない。したがって backend の実装は
+# **自前ホスト固有の前提を1つも持ってはいけない**——自前ホストと Cloud の違いは
+# `INFISICAL_SITE_URL`（と資格情報）だけに閉じ込め、**コードは同じものが両方で動く**。
+# Cloud だけの機能・有料段にしか無い機能には依存しない。
+#
+# **なぜ試験を自前ホストにするか**（決定・2026-09-12、ユーザー選択）：試験が
+# 本物を相手にできる（組み込み Vault の試験が実 sops/age を叩いているのと同じ形、
+# 規則1）。外のネットワークとアカウントに依存しないので、間欠の原因が増えず
+# （規則6）、試験で作った秘密が人の本番に残らない。
+#
+# 公式の `docker-compose.prod.yml` を元に、この機械で他と衝突しない形へ直した：
+#   - 公開ポートを 80 → 8088（80 は他が使う）
+#   - コンテナ名に banto- を付けて、他の実験と混ざらないようにした
+services:
+  backend:
+    container_name: banto-infisical
+    # **版は固定する**（公式の compose も "PIN THIS TO A SPECIFIC TAG" と言っている）
+    # ——`latest` だと、ある日勝手に変わって試験が落ちた理由が分からなくなる
+    image: infisical/infisical:v0.165.10
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file: .env
+    ports:
+      - "127.0.0.1:8088:8080"   # **localhost だけに出す**（外から触らせない）
+    environment:
+      - NODE_ENV=production
+    networks: [infisical]
+
+  redis:
+    container_name: banto-infisical-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    networks: [infisical]
+    volumes:
+      - redis_data:/data
+
+  db:
+    container_name: banto-infisical-db
+    image: postgres:14-alpine
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [infisical]
+    healthcheck:
+      test: "pg_isready --username=$${POSTGRES_USER} && psql --username=$${POSTGRES_USER} --list"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+volumes:
+  pg_data:
+  redis_data:
+
+networks:
+  infisical:

@@ -1,4 +1,2 @@
-export * from "./backend.js";
-export * from "./sops-backend.js";
-export * from "./alias-registry.js";
-export * from "./server.js";
+export { createVaultServer } from "./server.js";
+export { SopsBackend } from "./sops-backend.js";

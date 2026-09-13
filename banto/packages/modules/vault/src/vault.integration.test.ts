@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { SopsBackend } from "./sops-backend.js";
-import { AliasRegistry } from "./alias-registry.js";
+import { LocalFileAliasStore } from "@banto/vault-kit";
 
 async function withDir(fn: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "banto-vault-it-"));
@@ -77,17 +77,17 @@ test("SSH keypair generation and loading into a real ssh-agent", async () => {
   });
 });
 
-test("AliasRegistry: metadata is readable without touching the encrypted value", async () => {
+test("alias の台帳：暗号化された値に触れずにメタデータを読める", async () => {
   await withDir(async (dir) => {
-    const registry = new AliasRegistry(dir);
+    const registry = new LocalFileAliasStore(dir);
     await registry.load();
     await registry.create({ name: "github-token", kind: "secret", scope: "project", backendPath: "g1/github-token" });
-    const meta = registry.get("github-token");
+    const meta = await registry.get("github-token");
     assert.equal(meta?.kind, "secret");
     assert.equal(meta?.lastUsedAt, undefined);
 
     await registry.markUsed("github-token");
-    assert.ok(registry.get("github-token")?.lastUsedAt);
+    assert.ok((await registry.get("github-token"))?.lastUsedAt);
   });
 });
 

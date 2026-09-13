@@ -22,11 +22,14 @@ import { InboxStore } from "../inbox/store.js";
 import { HostRelayEndpoint, RelayRegistry } from "../relay/host-relay-endpoint.js";
 import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
+import { ModuleCallTracker, type ModuleCallThread } from "../relay/module-calls.js";
 import { createApp, type ModuleClientLike } from "./app.js";
 
 /** 実際に呼ばれたかを数える偽 Module。**呼ばれていないこと**も見たいので数える。 */
 class FakeModule implements ModuleClientLike {
   calls: Array<{ name: string; arguments?: Record<string, unknown> }> = [];
+  /** tool を実行している**最中**に外から覗くための穴（中継の承認はここで起きる）。 */
+  onCall?: () => void;
 
   async listTools() {
     return {
@@ -73,6 +76,7 @@ class FakeModule implements ModuleClientLike {
 
   async callTool(params: { name: string; arguments?: Record<string, unknown> }) {
     this.calls.push(params);
+    this.onCall?.();
     return { content: [{ type: "text", text: "呼ばれた" }] };
   }
 }
@@ -85,6 +89,7 @@ interface Ctx {
   module: FakeModule;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
+  moduleCalls: ModuleCallTracker;
 }
 
 async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
@@ -101,6 +106,7 @@ async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const token = "test-token";
     const pendingApprovals = new PendingApprovalRegistry();
     const module = new FakeModule();
+    const moduleCalls = new ModuleCallTracker();
 
     const server = createApp({
       projectThread,
@@ -112,7 +118,13 @@ async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       authToken: token,
       resolveModulesForThread: async () => [],
       resolveModuleClientsForThread: async () => [{ name: "filesystem", client: module }],
-      resolveModuleClientsForProject: async () => [{ name: "filesystem", client: module }],
+      resolveModuleClientsForProject: async () => [
+        { name: "filesystem", client: module, connName: "filesystem-p1" },
+      ],
+      resolveInstanceModuleClients: async () => [
+        { name: "filesystem", client: module, connName: "filesystem-instance" },
+      ],
+      moduleCalls,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
@@ -136,6 +148,7 @@ async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
         module,
         inbox,
         pendingApprovals,
+        moduleCalls,
       });
     } finally {
       server.close();
@@ -299,5 +312,63 @@ test("**人が直接開ける入口**は、名乗った資源だけが出る（l
         description: "この Project の直下を見る",
       },
     ]);
+  });
+});
+
+// **Project の Canvas も、中継の承認の宛先を持つ**（追加・2026-09-12）。
+//
+// Thread の Canvas は前から台帳に置いていたが、Project の Canvas は置いて
+// いなかった。Module 間中継の承認は「どのターンからの呼び出しか」を台帳で引く
+// ので、**Project の Canvas 発の中継は必ず「特定できません」で拒否されていた**
+// ——人が画面で操作しているのに、その先が構造的に通らない
+// （VaultUI のような「依存先の Module を操作する画面」が成り立たない）。
+test("Project の Canvas からの呼び出しは、Base Thread を宛先として台帳に載る", async () => {
+  await withApp(async ({ base, headers, projectId, threadId, module, moduleCalls }) => {
+    let seen: ModuleCallThread | undefined;
+    module.onCall = () => {
+      seen = moduleCalls.threadFor("filesystem-p1");
+    };
+
+    const res = await fetch(`${base}/api/projects/${projectId}/ui-tool-call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ server: "filesystem", tool: "createAlias", arguments: { name: "x" } }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(
+      seen,
+      { kind: "thread", threadId },
+      "Project の Canvas 発の呼び出しに、承認を出す会話が決まっていない",
+    );
+
+    // **呼び出しが終われば台帳から消える**（置きっぱなしにすると、後から
+    // 走る別の呼び出しの宛先まで決めてしまう）
+    assert.deepEqual(moduleCalls.threadFor("filesystem-p1"), { kind: "none" });
+  });
+});
+
+// **banto 全体の設定画面からの呼び出しも、出所は記録する**（追加・2026-09-12、
+// 実機で発覚）。ここには載せるべき Thread が無いので「どの会話か」は分からない
+// ——それでも「人の画面から来た」ことは分かる。分からないまま緩めない（規則2）。
+test("instance の Canvas からの呼び出しは、会話は決まらないが出所は人の画面と分かる", async () => {
+  await withApp(async ({ base, headers, module, moduleCalls }) => {
+    let seenThread: ModuleCallThread | undefined;
+    let seenOrigin: "turn" | "canvas" | undefined;
+    module.onCall = () => {
+      seenThread = moduleCalls.threadFor("filesystem-instance");
+      seenOrigin = moduleCalls.originFor("filesystem-instance");
+    };
+
+    const res = await fetch(`${base}/api/ui-tool-call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ server: "filesystem", tool: "createAlias", arguments: { name: "x" } }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(seenOrigin, "canvas", "instance の画面からの呼び出しが台帳に載っていない");
+    // **会話は決まらない**——admin なら承認を聞かずに通り、module なら
+    // 「決められないから通さない」で止まる、という正直な状態
+    assert.deepEqual(seenThread, { kind: "none" });
+    assert.equal(moduleCalls.originFor("filesystem-instance"), undefined, "呼び出しの後も台帳に残っている");
   });
 });

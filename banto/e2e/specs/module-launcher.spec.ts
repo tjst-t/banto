@@ -38,8 +38,11 @@ test("Command Palette の「Module の入口」から、AI を介さずに画面
   await expect(entry).toBeVisible({ timeout: 15_000 });
   await expect(entry).toContainText("この Project の直下を見る");
 
-  // 名乗っていない Module（shell・vault）の入口は出ない
-  await expect(page.getByRole("option", { name: /shell|vault/i })).toHaveCount(0);
+  // 名乗っていない Module（shell・vault backend 自身）の入口は出ない。
+  // **VaultUI は名乗っている**ので出る（2026-09-12）——ここで数えるのは
+  // 「入口だと言っていないものが出ていないこと」なので、名前で分ける
+  await expect(page.getByRole("option", { name: /^shell/i })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: /Vault を管理/ })).toHaveCount(1);
 
   // ---- 2. 開くと会話の隣。会話は消えない -------------------------------
   await entry.click();

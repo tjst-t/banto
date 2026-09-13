@@ -30,7 +30,13 @@ export function createShellServer(deps: { projectRoot: string; relayClient: Host
           [VISIBILITY_META_KEY]: "admin",
           [MODULE_META_KEY]: {
             satisfies: ["shell"],
-            dependsOn: [{ role: "vault", required: true }],
+            // **窓口と金庫の両方に繋ぐ**（改訂・2026-09-12）。在りかは
+            // `vault-directory` に聞き、値はその金庫から直接受け取る
+            // ——どちらが欠けても秘密は渡せないので、両方 required
+            dependsOn: [
+              { role: "vault-directory", required: true },
+              { role: "vault", required: true },
+            ],
             isolation: "subprocess",
             scope: "project",
             confinement: { kind: "landlock", root: "project" },
@@ -44,16 +50,44 @@ export function createShellServer(deps: { projectRoot: string; relayClient: Host
     tools: [
       {
         name: "runCommand",
-        description: "コマンドを実行する。Project rootの外には出られない（Landlock）",
+        // **引数の説明は、AI がこの Module を使えるかどうかそのもの**
+        // （追加・2026-09-12、ユーザー指摘「AI が Vault の使い方を分かっていない」）。
+        // 以前は `envSecrets: { type: "object" }` としか書いていなかったので、
+        // 「何を鍵にして何を値にするのか」も「値を書いてはいけない」ことも
+        // 伝わりようがなかった。**秘密の使い方の説明はここにある**
+        // ——system prompt は個々の tool を語らない（決定・2026-09-05、規則3）。
+        description:
+          "コマンドを実行する。Project root の外には出られない（Landlock で強制）。" +
+          "**秘密（トークン・鍵）が要るときは、値を command に書かず、Vault の alias 名を " +
+          "envSecrets / secretFiles / sshIdentity に渡す**——値は Vault から直接この子プロセスへ渡り、" +
+          "あなたの文脈には出ない。使える alias の一覧は resource `vault://aliases`。" +
+          "必要な alias が無ければ requestAlias で人に登録を頼む。",
         inputSchema: {
           type: "object",
           properties: {
-            command: { type: "string" },
-            cwd: { type: "string" },
-            timeout: { type: "number" },
-            envSecrets: { type: "object" },
-            secretFiles: { type: "object" },
-            sshIdentity: { type: "string" },
+            command: { type: "string", description: "/bin/sh -c に渡す文字列" },
+            cwd: { type: "string", description: "Project root からの相対パス。省略時は root そのもの" },
+            timeout: { type: "number", description: "秒。省略時は 120。超えると SIGTERM で止める" },
+            envSecrets: {
+              type: "object",
+              description:
+                '環境変数名 → Vault の alias 名。例：{"GITHUB_TOKEN": "github-token"}。' +
+                "**値ではなく alias 名を書く。** その環境変数だけがこのコマンドに渡り、結果には現れない",
+              additionalProperties: { type: "string" },
+            },
+            secretFiles: {
+              type: "object",
+              description:
+                'Project root からの相対パス → Vault の alias 名。例：{".npmrc": "npm-token"}。' +
+                "その alias の中身をファイル（0600）として書き出し、**コマンドが終わったら消す**",
+              additionalProperties: { type: "string" },
+            },
+            sshIdentity: {
+              type: "string",
+              description:
+                "kind が ssh-identity の alias 名。ssh-agent を立てて SSH_AUTH_SOCK を渡す" +
+                "（git push 等に使う）。**秘密鍵はファイルにもあなたの文脈にも出ない**",
+            },
           },
           required: ["command"],
         },

@@ -22,10 +22,10 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
 /** AI（Runner）に見えている vault の道具の一覧を、同じ経路で取る。 */
-async function toolsVisibleToAgent(): Promise<string[]> {
+async function toolsVisibleToAgent(server = "vault"): Promise<string[]> {
   const client = new Client({ name: "e2e-visibility", version: "0.0.0" }, { capabilities: {} });
   await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/vault`), {
+    new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/${server}`), {
       requestInit: { headers: { authorization: `Bearer ${AUTH_TOKEN}` } },
     }),
   );
@@ -62,15 +62,39 @@ test("AI に見える vault の道具は申請系だけ——値を取る道具�
   await ensureModulesConnected();
   const names = await toolsVisibleToAgent();
 
-  // 申請する道具は見えている（Vault が動いていることの確認。
-  // 片側だけでは「そもそも繋がっていない」と区別できない）
-  expect(names, `AI に見えた道具: ${names.join(", ")}`).toContain("requestAlias");
+  // **申請の入口は窓口（`vault-directory`）が1本だけ持つ**（改訂・2026-09-12）。
+  // backend が2本になったとき、`requestAlias` が AI に2つ並んで**選ぶ材料が無い**
+  // ——実際、走らせるたびに選ぶ先が変わった。なので backend 側の `requestAlias` は
+  // `module` へ降格し、AI に見えるのは窓口の1本だけにした。
+  // 片側だけでは「そもそも繋がっていない」と区別できないので、**ここで動いている
+  // ことを確かめる**——`mcp__vault-directory__requestAlias` が見えていること。
+  expect(names, `backend 側に AI 向けの入口が残っている: ${names.join(", ")}`).not.toContain(
+    "requestAlias",
+  );
+  // 片側だけでは「そもそも繋がっていない」と区別できないので、**窓口には
+  // 出ていること**をここで確かめる（消えたのではなく、移った）
+  expect(
+    await toolsVisibleToAgent("vault-directory"),
+    "backend からも窓口からも申請の入口が消えている（ただ繋がっていないだけかもしれない）",
+  ).toContain("requestAlias");
 
   // **実際の値を取る道具・管理操作は、AI からは見えない**
-  for (const hidden of ["resolveAlias", "startSshAgent", "generateKeypair", "verify"]) {
+  for (const hidden of ["resolveAlias", "startSshAgent", "verify"]) {
     expect(names, `${hidden} が AI から見えている（module 限定のはず）`).not.toContain(hidden);
   }
-  for (const hidden of ["createAlias", "deleteAlias", "listAliases", "migrateTo"]) {
+  for (const hidden of [
+    "createAlias",
+    "updateAlias",
+    "deleteAlias",
+    "listAliases",
+    "listGroups",
+    "createGroup",
+    "listGroupBindings",
+    "setGroupBinding",
+    "generateSecret",
+    "generateKeypair",
+    "migrateTo",
+  ]) {
     expect(names, `${hidden} が AI から見えている（admin 限定のはず）`).not.toContain(hidden);
   }
 
@@ -94,7 +118,9 @@ test("画面 API からも、値を取る道具は呼べない——人の管理
     data: {
       server: "vault",
       tool: "createAlias",
-      arguments: { name: alias, kind: "secret", scope: "project", value: secret },
+      // scope は instance——この試験が見たいのは可視性の境界で、対象の割り当て
+      // ではない（`scope: "project"` は projectId とセットでないと作れない）
+      arguments: { name: alias, kind: "secret", scope: "instance", value: secret },
     },
   });
   expect(created.status(), "人の管理操作まで塞いでしまっている").toBe(200);
@@ -108,4 +134,62 @@ test("画面 API からも、値を取る道具は呼べない——人の管理
   const body = await resolved.text();
   expect(body, "拒否したのに値が返っている").not.toContain(secret);
   expect(body).toContain("Module 間専用");
+});
+
+// **AI が実際に Vault を読めるか**（追加・2026-09-12、ユーザー指摘）。
+//
+// 仕様は「Runner は resource を組み込み tool 経由で読む」と決めているのに、
+// Runner の `tools` 指定が基底集合を置き換えるため `ListMcpResourcesTool` 等が
+// 落ちていて、**AI は Module の resource を1つも読めなかった**。
+// 一覧に載せる・説明を書く、だけでは足りない——**本物のターンで読めること**を見る。
+//
+// **AI に見えている `vault://aliases` は窓口のもの**（改訂・2026-09-12）
+// ——backend 側の同名の資源は `module` へ降ろしたので、AI が読めるのは
+// `vault-directory` が横断してまとめた1本だけ。ここで値を置くのは backend
+// （`vault`）なので、**窓口が横断できていなければこの試験は落ちる**。
+test("AI は vault://aliases を実際に読める——名前は見え、値は見えない", async ({ request }) => {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
+  const alias = `e2e-agent-reads-${Date.now()}`;
+  const secret = `AI-MUST-NOT-SEE-${Date.now()}`;
+
+  await ensureModulesConnected();
+  const created = await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      server: "vault",
+      tool: "createAlias",
+      arguments: { name: alias, kind: "secret", scope: "instance", value: secret, note: "E2E が置いた" },
+    }),
+  });
+  expect(created.status).toBe(200);
+
+  const project = await (
+    await fetch(`${CORE_BASE_URL}/api/projects`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "E2E Agent Reads Vault", root: mkdtempSync(join(tmpdir(), "banto-e2e-reads-")) }),
+    })
+  ).json();
+  const thread = await (
+    await fetch(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { method: "POST", headers })
+  ).json();
+
+  const res = await fetch(`${CORE_BASE_URL}/api/threads/${thread.id}/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      prompt:
+        "resource `vault://aliases` を読んで、登録されている alias の名前を" +
+        "そのまま箇条書きで挙げてください。説明は要りません。",
+    }),
+  });
+  const transcript = await res.text();
+
+  expect(
+    transcript,
+    "AI が vault://aliases を読めていない（組み込みの resource 読み取り tool が落ちている可能性）",
+  ).toContain(alias);
+  // **名前は見えても、値は見えない**——A節の原則がターン越しでも保たれている
+  expect(transcript, "AI の文脈に秘密の値が流れている").not.toContain(secret);
 });

@@ -548,18 +548,24 @@ async function main(): Promise<void> {
           const connName = await connectDeclaredModule(declaration);
           return {
             name: declaration.name,
+            // プロセスの名前も返す——画面からの呼び出しの出所を台帳に置くのに要る
+            // （app.ts の instance 版 ui-tool-call、追加・2026-09-12）
+            connName: connName ?? undefined,
             client: connName ? connectedModules.get(connName) : undefined,
             scope: "instance" as const,
           };
         }),
     );
     return spawned.filter(
-      (c): c is { name: string; client: Client; scope: "instance" } => c.client !== undefined,
+      (c): c is { name: string; connName: string; client: Client; scope: "instance" } =>
+        c.client !== undefined,
     );
   }
 
   const relayEndpoint = new HostRelayEndpoint({
     registry,
+    // 出所（人の画面か、AI のターンか）を引くための台帳。承認の要否がここで分かれる
+    moduleCalls,
     gate: createRelayApprovalGate({
       grants: relayGrants,
       inbox,

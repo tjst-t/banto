@@ -57,8 +57,10 @@ function ArchiveTabButton({
       data-state={selected ? "active" : "inactive"}
       onClick={() => onSelect(id)}
       className={cn(
-        "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors",
-        selected ? "bg-accent text-foreground" : "text-ink-3 hover:bg-accent/60 hover:text-ink-2",
+        // 選んでいる側は**薄く色を敷く**（枠も下線も無い）。塗りは surface-2 ——
+        // 会話の吹き出しや概要の箱と同じ濃さなので、面から浮かない
+        "flex items-center justify-center gap-1.5 px-2 py-2 text-xs transition-colors",
+        selected ? "bg-surface-2 text-foreground" : "text-ink-3 hover:bg-surface-2/60 hover:text-ink-2",
       )}
     >
       {label}
@@ -239,7 +241,7 @@ export function ArchiveDialog({
             履歴
           </DialogTitle>
         </DialogHeader>
-        <div className="border-b border-border p-3">
+        <div className={cn("p-3", hasTabs ? "pb-2" : "border-b border-border")}>
           <div className="relative">
             <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-ink-3" />
             <Input
@@ -252,8 +254,15 @@ export function ArchiveDialog({
           </div>
         </div>
         {hasTabs ? (
-          <div className="border-b border-border px-3 pb-2" data-testid="archive-tabs">
-            <div role="tablist" aria-label="履歴の種類" className="flex items-center gap-1">
+          <>
+            {/* **ダイアログの全幅**を2つで分ける。下線だけの平らな作り——枠や塗りを
+                足さないので、検索欄と一覧の間に線が1本増えるだけに見える */}
+            <div
+              role="tablist"
+              aria-label="履歴の種類"
+              data-testid="archive-tabs"
+              className="grid grid-cols-2 border-b border-border"
+            >
               <ArchiveTabButton
                 id="forks"
                 label="Fork Thread"
@@ -268,11 +277,13 @@ export function ArchiveDialog({
                 selected={shownTab === "projects"}
                 onSelect={selectTab}
               />
-              {searching ? (
-                <span className="ml-auto text-xs text-ink-3">検索は両方から</span>
-              ) : null}
             </div>
-          </div>
+            {searching ? (
+              <p className="border-b border-border px-3 py-1.5 text-xs text-ink-3">
+                検索は Fork Thread と Project の両方から
+              </p>
+            ) : null}
+          </>
         ) : null}
         <div
           ref={containerRef}

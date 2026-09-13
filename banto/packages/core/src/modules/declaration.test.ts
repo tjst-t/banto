@@ -45,12 +45,16 @@ const CONTEXT = {
   projectRoot: "/home/me/work",
 };
 
-test("同梱の既定は3本（vault/shell/filesystem）で、そのまま読める", () => {
+test("同梱の既定は5本（vault/vault-infisical/vault-directory/shell/filesystem）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "vault"],
+    ["filesystem", "shell", "vault", "vault-directory", "vault-infisical"],
   );
+  // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
+  assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
+    { role: "vault", required: true },
+  ]);
   // vault は instance に1本、shell/filesystem は Project ごと
   assert.equal(parsed.find((d) => d.name === "vault")?.meta.scope, "instance");
   assert.equal(parsed.find((d) => d.name === "shell")?.meta.scope, "project");
@@ -125,7 +129,7 @@ test("差し込み語は起動時に実際の値へ置き換わる", () => {
   assert.equal(launched.env?.BANTO_HOST_MCP_TOKEN, "tok");
 });
 
-test("**コードを変えずに、宣言を1本足すだけで4本目が Project の一覧に出る**", async () => {
+test("**コードを変えずに、宣言を1本足すだけで次の1本が Project の一覧に出る**", async () => {
   const dir = await mkdtemp(join(tmpdir(), "banto-decl-"));
   try {
     const log = new EventLog(dir);
@@ -134,7 +138,7 @@ test("**コードを変えずに、宣言を1本足すだけで4本目が Projec
     await config.load();
 
     const before = loadModuleDeclarations(config, "project-1");
-    assert.equal(before.length, 3, "既定は3本");
+    assert.equal(before.length, 5, "既定は5本");
 
     await setModuleDeclarations(config, [
       ...DEFAULT_MODULE_DECLARATIONS,
@@ -149,7 +153,7 @@ test("**コードを変えずに、宣言を1本足すだけで4本目が Projec
     ]);
 
     const after = loadModuleDeclarations(config, "project-1");
-    assert.equal(after.length, 4);
+    assert.equal(after.length, 6);
     assert.ok(after.some((d) => d.name === "python-demo"));
 
     // 読み直しても残る（Event Store に載っている）
@@ -157,7 +161,7 @@ test("**コードを変えずに、宣言を1本足すだけで4本目が Projec
     await log2.init();
     const config2 = new RuntimeConfigStore(dir, log2);
     await config2.load();
-    assert.equal(loadModuleDeclarations(config2, "project-1").length, 4);
+    assert.equal(loadModuleDeclarations(config2, "project-1").length, 6);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -182,7 +186,7 @@ test("Project ごとに、繋ぐ Module を上書きできる", async () => {
       ["vault"],
     );
     // 別の Project は既定のまま
-    assert.equal(loadModuleDeclarations(config, "other").length, 3);
+    assert.equal(loadModuleDeclarations(config, "other").length, 5);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -119,6 +119,18 @@ export type RunTurnEvent =
  * 最後の`return`で`{sessionId, contextUsage, compactionCount}`を返す
  * （記録＝Event Store化は呼び出し側の責任、アーキ仕様§2.3の原則）。
  */
+/**
+ * Runner に生やす組み込み tool。**ここが唯一の一覧**（規則3）——
+ * 試験も実物もこれを見る。理由は下の `tools:` のコメント。
+ */
+export const RUNNER_BUILTIN_TOOLS: string[] = [
+  "WebSearch",
+  "WebFetch",
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
+  "ReadMcpResourceDirTool",
+];
+
 export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnEvent, RunnerTurnResult> {
   const queue = new PushQueue<RunTurnEvent>();
   let sessionId: string | undefined;
@@ -162,7 +174,20 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       // 置き換え指定（追加ではない）なので、Bash等は自動的に無効のまま。
       // WebSearch/WebFetchはネットワークアクセスであってファイルシステム・
       // シェル実行の迂回路にはならないため許可する（決定・2026-09-04）。
-      tools: ["WebSearch", "WebFetch"],
+      //
+      // **resource を読む口も要る**（追加・2026-09-12、実測で発覚）。
+      // アーキ仕様 §2.5・v4-modules §2.1 は「Runner は resource を直接読まず、
+      // 組み込み tool（ListMcpResourcesTool/ReadMcpResourceTool）経由で
+      // `resources/list`/`read` を呼ぶ——banto が同種の tool を自作する必要は
+      // ない」と決めている。ところが `tools: [...]` は**基底集合の置き換え**
+      // なので、この3つも一緒に落ちていた——**AI は Module の resource を
+      // 1つも読めなかった**（`vault://aliases` も FileSystem の資源も、
+      // 存在しないのと同じ）。仕様の前提が実装で成立していない状態だった（規則8）。
+      //
+      // **迂回路にはならない**：resource は Runner が実 Module に直接繋がず、
+      // host の代理サーバ越しにしか読めない。代理サーバは `resources/read` の
+      // ハンドラの中でも可視性を見て fail closed で拒む（`relay/visibility.ts`）。
+      tools: RUNNER_BUILTIN_TOOLS,
       permissionMode: opts.permissionMode ?? "auto",
       cwd: opts.cwd,
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,

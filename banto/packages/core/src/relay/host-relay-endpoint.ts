@@ -13,7 +13,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { BantoModuleMeta } from "@banto/module-contract";
+import { isValueFree, visibilityOf, type BantoModuleMeta, type Visibility } from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
 
 export interface CallerIdentity {
@@ -97,6 +97,23 @@ export class RelayRegistry {
       return target !== undefined && target.meta.satisfies.includes(d.role);
     });
   }
+
+  /**
+   * **role → 実装の一覧**（アーキ仕様 §2.5「role 依存の解決は Module の仕事だが、
+   * 一覧は host が渡す」の実体。追加・2026-09-12）。
+   *
+   * これが無いと、依存する Module は宛先の名前を**決め打ちする**しかない
+   * ——実際 Shell は `vaultModuleName ?? "vault"` と書いていた。同じ role を
+   * 複数の実装が名乗れる（§2.5）以上、決め打ちでは2本目に届かない。
+   *
+   * **判定は `isAllowed` と同じ根拠から導く**（規則3）——別の許可表を作らない。
+   */
+  allowedTargets(caller: CallerIdentity): Array<{ name: string; roles: string[] }> {
+    const roles = new Set(caller.meta.dependsOn.map((d) => d.role));
+    return Array.from(this.modules.values())
+      .filter((m) => m.meta.satisfies.some((role) => roles.has(role)))
+      .map((m) => ({ name: m.name, roles: m.meta.satisfies.filter((role) => roles.has(role)) }));
+  }
 }
 
 /**
@@ -115,10 +132,38 @@ export interface HostRelayServerOptions {
    * 実運用で同じ経路を通す）。host は必ず渡す（cli.ts）。
    */
   gate?: RelayApprovalGate;
+  /**
+   * いま走っている呼び出しの台帳（出所と Thread）。
+   *
+   * **中継は入れ子になる**（追加・2026-09-12、Shell → vault-directory → vault）。
+   * host が宛先を呼ぶ間、**宛先にも在籍を立てる**——立てないと、宛先が
+   * さらに中継を呼んだとき「どのターンの仕事か」が分からず、承認カードの
+   * 出し先が無くて fail closed で止まる。文脈は推測せず、**外側から継ぐ**。
+   */
+  moduleCalls?: {
+    originFor(connName: string): "turn" | "canvas" | undefined;
+    threadFor(connName: string): { kind: "thread"; threadId: string } | { kind: string };
+    begin(connName: string, threadId: string | undefined, origin: "turn" | "canvas"): () => void;
+  };
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
   /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
   approvalProgressIntervalMs?: number;
+}
+
+/**
+ * 宛先の tool が名乗っている可視性。**その Module が名乗っていない名前は
+ * `undefined`**——知らないものを `admin` 扱いしない（fail closed）。
+ */
+async function targetTool(
+  client: Client,
+  toolName: string,
+): Promise<{ visibility: Visibility; valueFree: boolean } | undefined> {
+  const { tools } = await client.listTools().catch(() => ({ tools: [] as unknown[] }));
+  const tool = tools.find((t) => (t as { name?: string }).name === toolName);
+  if (!tool) return undefined;
+  const x = tool as { _meta?: Record<string, unknown> };
+  return { visibility: visibilityOf(x), valueFree: isValueFree(x) };
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -152,11 +197,29 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
           required: ["targetModule", "uri"],
         },
       },
+      {
+        // **宛先の名前を決め打ちさせない**（追加・2026-09-12、アーキ仕様 §2.5）。
+        // 同じ role を複数の実装が名乗れるので、「vault という名前の Module」を
+        // 当てにすると2本目の実装に届かない。ここで返すのは
+        // **その呼び出し元が呼んでよい相手だけ**（isAllowed と同じ根拠）
+        name: "relayListTargets",
+        description: "自分が呼んでよい Module の一覧（role つき）",
+        inputSchema: { type: "object", properties: {} },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+    // **誰にも届けない問い合わせ**——宛先を選ぶ前の相談なので、承認ゲートも
+    // 監査も通さない（まだ何も呼んでいない）。返すのは名前と role だけで、
+    // 相手の中身（tool 一覧・値）は一切含まない
+    if (request.params.name === "relayListTargets") {
+      const targets = opts.registry.allowedTargets(identity);
+      return { content: [{ type: "text", text: JSON.stringify(targets) }] };
+    }
+
     const targetModule = String(args.targetModule ?? "");
     const kind: RelayAuditRecord["kind"] = request.params.name === "relayReadResource" ? "resource" : "tool";
     const name = String(args.name ?? args.uri ?? "");
@@ -191,9 +254,38 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // MCP の既定60秒で呼び出し元が先に諦め、「承認したのに、その回の操作は
     // 失敗している」になる。呼び出し元が progressToken を付けてこないときは
     // 送りようがない（その場合は60秒で切れる、という今までの挙動のまま）
+    // **人が管理画面で押した「管理操作」は、聞き直さない**（決定・2026-09-12。
+    // docs/specs/v4-modules.md §2.1 C節が「未決」としていた承認ゲートの循環）。
+    //
+    // 実測で分かったこと：VaultUI のような「依存先を操作するための画面」は、
+    // **開いた瞬間の読み取りから**ゲートに掛かる。人は管理画面を開いたのに、
+    // 画面は無言で止まり、答えは別の会話に出る——聞いている内容は
+    // 「あなたがいま開いた画面が、その画面の目的どおり動いてよいか」でしかない。
+    //
+    // **ただし緩めるのは `admin`（人の管理操作）だけ。** `module` 可視性
+    // ——Vault の `resolveAlias` のような**値を返す部品間専用の口**——は、
+    // 出所が画面でも今までどおり聞く。さもないと、悪意ある Module が自分の
+    // 画面から admin tool を1つ生やし、その中で他 Module の秘密を引いて
+    // ブラウザへ返す道が、人に一度も見られずに開く（2026-09-10 の
+    // `docs/specs/v4-security.md` で塞いだ穴と同じ形）。
+    //
+    // **もうひとつ緩めるのは「値を返さない口」だけ**（決定・2026-09-12）。
+    // ゲートが守っているのは**値**であって名前ではない——`relayListTargets` を
+    // 承認も監査も通さないのと同じ理由（返すのが名前と role だけだから）。
+    // 窓口（vault-directory）が金庫を横断して**一覧を組み立てる**のは、
+    // その Module のただ1つの仕事であり、値は1バイトも通らない。ここを聞くと、
+    // **AI が目録を読むたびに人が止められる**——しかも resource の読み取りは
+    // 進捗を送れないので、60秒で切れて「alias が1つも無い」に化けていた。
+    //
+    // **名乗った Module だけが緩む**（`dev.banto/valueFree`、無指定は「返す」）。
+    const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName);
+    const targetInfo = kind === "tool" ? await targetTool(target.client, name) : undefined;
+    const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
+    const valueFreeCall = targetInfo?.valueFree === true;
+
     const progressToken = extra._meta?.progressToken;
     const heartbeat =
-      opts.gate && progressToken !== undefined
+      opts.gate && !humanAdminAction && !valueFreeCall && progressToken !== undefined
         ? setInterval(() => {
             void extra.sendNotification({
               method: "notifications/progress",
@@ -202,17 +294,32 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
           }, opts.approvalProgressIntervalMs ?? APPROVAL_PROGRESS_INTERVAL_MS)
         : undefined;
     heartbeat?.unref();
-    const decision = await (opts.gate
-      ? opts.gate
-          .requestApproval({ ...call, callerConnName: identity.connName ?? identity.moduleName })
-          .finally(() => clearInterval(heartbeat))
-      : Promise.resolve({ allowed: true, reason: "ゲート無し" }));
+    const decision = await (humanAdminAction
+      ? // 記録には**なぜ通したか**を残す（黙って通らない、規則2）
+        Promise.resolve({ allowed: true, reason: "人が画面で行った管理操作" })
+      : valueFreeCall
+      ? Promise.resolve({ allowed: true, reason: "値を返さない口" })
+      : opts.gate
+        ? opts.gate
+            .requestApproval({ ...call, callerConnName: identity.connName ?? identity.moduleName })
+            .finally(() => clearInterval(heartbeat))
+        : Promise.resolve({ allowed: true, reason: "ゲート無し" }));
     if (!decision.allowed) {
       await audit(false, decision.reason);
       throw new Error(
         `${identity.moduleName} から ${targetModule} の ${name} への中継は許可されていません：${decision.reason}`,
       );
     }
+
+    // **宛先にも在籍を立てる**——この呼び出しが終わるまで、宛先が出す中継は
+    // 同じターン（同じ会話・同じ出所）の仕事として扱われる
+    const callerConn = identity.connName ?? identity.moduleName;
+    const callerThread = opts.moduleCalls?.threadFor(callerConn);
+    const endTargetCall = opts.moduleCalls?.begin(
+      targetModule,
+      callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined,
+      origin ?? "turn",
+    );
 
     try {
       if (request.params.name === "relayCallTool") {
@@ -235,6 +342,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       // **失敗も記録する**——監査で見たいのはむしろこちら（規則2）
       await audit(true, err instanceof Error ? err.message : String(err), false);
       throw err;
+    } finally {
+      endTargetCall?.();
     }
 
     throw new Error(`unknown relay tool: ${request.params.name}`);

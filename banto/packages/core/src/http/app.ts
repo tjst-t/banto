@@ -48,8 +48,24 @@ export interface ModuleClientLike {
   listTools(): Promise<{ tools: unknown[] }>;
   listResources(): Promise<{ resources: unknown[] }>;
   readResource(params: { uri: string }): Promise<{ contents: unknown[] }>;
-  callTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<unknown>;
+  callTool(
+    params: { name: string; arguments?: Record<string, unknown> },
+    resultSchema?: undefined,
+    options?: { timeout?: number; resetTimeoutOnProgress?: boolean },
+  ): Promise<unknown>;
 }
+
+/**
+ * **画面からの呼び出しは、人を待つことがある**（追加・2026-09-12）。
+ *
+ * その tool が内部で他 Module を呼べば、host は**人に承認を聞く**——
+ * MCP の既定タイムアウト（60秒）のままだと、人が答える前にこの呼び出しが
+ * 切れる。中継側は「後から許可されたことは記録に残す」作りなので、結果は
+ * **画面にだけ失敗が出て、次に押すと通る**という分かりにくい形になる
+ * （規則2——静かに別の経路へ落ちない）。人の返事を待てる長さにする。
+ */
+const UI_CALL_TIMEOUT_MS = 10 * 60 * 1000;
+const UI_CALL_OPTIONS = { timeout: UI_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true } as const;
 
 export interface AppDeps {
   projectThread: ProjectThreadStore;
@@ -81,10 +97,14 @@ export interface AppDeps {
    *  `scope` は**設定をどちらの画面に出すか**を決めるのに使う。 */
   resolveModuleClientsForProject?(
     projectId: string,
-  ): Promise<Array<{ name: string; client: ModuleClientLike; scope?: "instance" | "project" }>>;
+  ): Promise<
+    Array<{ name: string; client: ModuleClientLike; connName?: string; scope?: "instance" | "project" }>
+  >;
   /** banto 全体（instance）で1本の Module（決定・2026-09-07、ユーザー指摘）。
    *  その設定は Project ごとではなく、全体の設定画面に出す。 */
-  resolveInstanceModuleClients?(): Promise<Array<{ name: string; client: ModuleClientLike }>>;
+  resolveInstanceModuleClients?(): Promise<
+    Array<{ name: string; client: ModuleClientLike; connName?: string }>
+  >;
   /** Project を畳んだときに、その Project のために立てたもの（Module の
    *  プロセス・合言葉・セッション）を落とす（決定・2026-09-10）。 */
   releaseProjectModules?(projectId: string): Promise<string[]>;
@@ -306,6 +326,18 @@ async function listLauncherCanvases(
     }
   }
   return result;
+}
+
+/**
+ * その Project の**主の会話**（Base Thread）。
+ *
+ * Project の Canvas 発の呼び出しが中継の承認を要するとき、**どの会話で聞くか**
+ * がこれ（決定・2026-09-07「承認はその Project の Base Thread に載せる」）。
+ * **別の索引を持たない**（規則3）——並び順は store が既に決めている
+ * （Base が先頭、`listThreadsForProject`）。
+ */
+function baseThreadIdOf(deps: { projectThread: ProjectThreadStore }, projectId: string): string | undefined {
+  return deps.projectThread.listThreadsForProject(projectId).find((t) => t.kind !== "fork")?.id;
 }
 
 /** 画面から渡された引数を、そのまま渡してよい形にする。 */
@@ -966,10 +998,18 @@ export function createApp(deps: AppDeps) {
         // 要る（§「Module 間中継の承認」）。**どの会話に出すか**をここで台帳に置く
         const endCall =
           deps.moduleCalls && found.connName
-            ? deps.moduleCalls.begin(found.connName, uiCallMatch[1]!)
+            ? deps.moduleCalls.begin(found.connName, uiCallMatch[1]!, "canvas")
             : undefined;
         try {
-          json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+          json(
+            res,
+            200,
+            await found.client.callTool(
+              { name: body.tool, arguments: toolArguments(body.arguments) },
+              undefined,
+              UI_CALL_OPTIONS,
+            ),
+          );
         } finally {
           endCall?.();
         }
@@ -1028,8 +1068,31 @@ export function createApp(deps: AppDeps) {
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
         const refusal = await checkUiCallable(found.client, body.tool);
         if (refusal) return json(res, refusal.status, refusal.body);
-        // 自分の Module を呼ぶのに承認は求めない（上の Thread 版と同じ理由）
-        json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        // 自分の Module を呼ぶのに承認は求めない（上の Thread 版と同じ理由）。
+        // **ここも台帳に載せる**（追加・2026-09-12、実機で発覚）——Thread 版・
+        // Project 版だけ載せていたので、banto 全体の設定画面から Module を呼び、
+        // その Module が依存先を呼ぶと「どのターンからの呼び出しか特定できません」で
+        // 必ず拒否されていた。**この口には載せるべき Thread が無い**ので出所だけ記録する
+        const instanceModule = modules.find((m) => m.name === body.server) as
+          | { connName?: string }
+          | undefined;
+        const endInstanceCall =
+          deps.moduleCalls && instanceModule?.connName
+            ? deps.moduleCalls.begin(instanceModule.connName, undefined, "canvas")
+            : undefined;
+        try {
+          json(
+            res,
+            200,
+            await found.client.callTool(
+              { name: body.tool, arguments: toolArguments(body.arguments) },
+              undefined,
+              UI_CALL_OPTIONS,
+            ),
+          );
+        } finally {
+          endInstanceCall?.();
+        }
         return;
       }
 
@@ -1057,7 +1120,34 @@ export function createApp(deps: AppDeps) {
         if (refusal) return json(res, refusal.status, refusal.body);
         // 設定画面も同じ——**自分の Module を呼ぶのに承認は求めない**
         // （改訂・2026-09-07、上の Thread 版と同じ理由）
-        json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        //
+        // **ただし、その tool が内部で他 Module を呼ぶなら中継の承認は要る**
+        // （追加・2026-09-12）。Thread 版は既に台帳へ置いていたが、Project 版は
+        // 置いていなかったので、**Project の Canvas 発の中継は必ず
+        // 「どのターンからの呼び出しか特定できません」で拒否されていた**
+        // ——人が画面で操作しているのに、その先が構造的に通らない。
+        // 出す先は**その Project の Base Thread**（決定・2026-09-07 と同じ
+        // 場所。答える場所を増やさない）
+        // 会話がまだ1本も無いなら台帳に置かない——**空の宛先を置くくらいなら
+        // 置かない**（中継は「決められない」として拒否され、理由が人に出る）
+        const baseThreadId = baseThreadIdOf(deps, projectUiCallMatch[1]!);
+        const endCall =
+          deps.moduleCalls && found.connName && baseThreadId
+            ? deps.moduleCalls.begin(found.connName, baseThreadId, "canvas")
+            : undefined;
+        try {
+          json(
+            res,
+            200,
+            await found.client.callTool(
+              { name: body.tool, arguments: toolArguments(body.arguments) },
+              undefined,
+              UI_CALL_OPTIONS,
+            ),
+          );
+        } finally {
+          endCall?.();
+        }
         return;
       }
 

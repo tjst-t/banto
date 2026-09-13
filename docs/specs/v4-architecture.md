@@ -499,11 +499,22 @@ Claude Agent SDK に触れる**唯一のインターフェース**。ベンダ�
 **`claude_code` プリセットを使わない。** core が全文を組み立てて `systemPrompt` に
 渡す。プリセット＋追記（`append`）では次の3つが解けない：
 
-- **無い tool の使い方が書いてある。** banto は組み込み tool を `WebSearch` /
-  `WebFetch` だけに絞っている（Shell への経路は Landlock で絞った Shell Module
-  経由だけ、`docs/specs/v4-security.md`）のに、プリセットは Bash / Read / Edit /
+- **無い tool の使い方が書いてある。** banto は組み込み tool を絞っている
+  （Shell への経路は Landlock で絞った Shell Module 経由だけ、
+  `docs/specs/v4-security.md`）のに、プリセットは Bash / Read / Edit /
   TodoWrite / Task 等の使い方を語り続ける。**仕様と実態の食い違い**（規則8）で、
   追記では打ち消せない——本文が勝つ
+
+  > **絞るときに一緒に落としてはいけないものがある**（追記・2026-09-12、実測）。
+  > SDK の `tools` 指定は**基底集合の置き換え**なので、書いたもの以外は全部消える。
+  > `WebSearch`/`WebFetch` だけを書いていた結果、**`ListMcpResourcesTool` /
+  > `ReadMcpResourceTool` / `ReadMcpResourceDirTool` も落ちていて、AI は Module の
+  > resource を1つも読めなかった**——§2.5 と `docs/specs/v4-modules.md` §2.1 が
+  > 「Runner は組み込み tool 経由で `resources/list`/`read` を呼ぶ」と決めている
+  > 前提が、実装で成立していなかった。**resource を読む口は迂回路にならない**
+  > （Runner は実 Module に直接繋がらず、代理サーバが `resources/read` の中でも
+  > 可視性を fail closed で見る）ので、閉じ込めの話とは別に必ず生やす。
+  > 一覧は Runner の設定（`runner/adapter.ts` の `RUNNER_BUILTIN_TOOLS`）が唯一の真実
 - **SDK 側の記憶が文脈に入る。** 実 daemon で `Memory files: 155 tokens` を観測
   （2026-09-05）。banto の Memory（§2.2）と**真実が二箇所**になる（規則3）
 - **人格が「CLI のコーディングエージェント」になる。** banto 中核は領域の意味を
@@ -946,6 +957,63 @@ host のコードに無い」ことと「誰も選んでいない接続が黙っ
   ロジックに banto core が口を出すのは、境界を越えている
 
 **banto がやることは1つだけ：role → 実装の一覧を、依存している Module に渡す。**
+
+**渡し方は host 中継の `relayListTargets`**（実装・2026-09-12）。引数は無く、
+返るのは**その呼び出し元が呼んでよい相手だけ**（`{name, roles}[]`）——許可の
+根拠は中継の `isAllowed` と同じ依存宣言で、別の許可表を作らない（規則3）。
+相手の中身（tool 一覧・値）は返さないので、宛先を選ぶ前の相談として
+承認ゲートも監査も通さない。
+**これが無いと Module は宛先の名前を決め打ちするしかない**——同じ role を
+複数の実装が名乗れる以上、決め打ちでは2本目に届かない。
+**決め打ちは残っていない**（2026-09-12）。`vault-directory` は `relayListTargets`
+で金庫を見つけ、Shell は**名前から在りかを引いてから**その金庫を直接呼ぶ
+（`lookupAlias` → `resolveAlias`）。**在りかが引けないときに既定の金庫へ
+落とさない**——別の金庫の同名を開けてしまう（規則2）。
+
+#### 中継は入れ子になる——文脈は外側から継ぐ（決定・2026-09-12）
+
+宛先を決め打ちしなくなった結果、**中継が2段になった**：
+
+```
+AI のターン → shell.runCommand → [中継] → vault-directory.lookupAlias
+                                            → [中継] → vault.listAliases
+```
+
+承認ゲートは「いま、どのターン（どの会話）のための呼び出しか」を要る
+——人に聞く場所が会話だから。ところが Module→host の中継接続は**プロセス単位**で
+Thread を知らないので、台帳（`ModuleCallTracker`）から引く。
+
+**host は、宛先を呼んでいる間、宛先にも在籍を立てる**——外側の呼び出しの
+Thread と出所（`turn`／`canvas`）を**そのまま継ぐ**。立てないと、2段目は
+「走行中の呼び出しがありません」となり、**承認カードの出し先が無くて
+fail closed で止まる**（実際にそうなった。詳細は
+`docs/notes/2026-09-12-vault-directory.md`）。
+
+- **推測しない**（規則3）——継ぐのは外側にある文脈だけ。無ければ無いまま
+- **呼び終わったら消す**——跨いで残すと、後の呼び出しが別のターンに紐づく
+- **承認の粒度は変わらない**（呼び出し元・宛先・tool ごとに初回1回）
+
+#### ゲートが守るのは値であって、名前ではない（決定・2026-09-12）
+
+**`_meta["dev.banto/valueFree"]: true` を名乗った tool は、初回の承認を聞かない。**
+`relayListTargets` を承認も監査も通さないのと同じ根拠——返るのが名前だけで、
+値が1バイトも通らないから。監査（`relay.call_recorded`）には
+`reason: "値を返さない口"` として残る（黙って通らない、規則2）。
+
+- **無指定は「値を返す」扱い**（fail closed）。第三者の Module はこのキーを
+  持たないので、既定を逆にすると**名乗らないだけで承認をすり抜けられる**。
+  **名乗った Module だけが緩む**
+- **緩むのは tool 単位**。`vault` の `listAliases` が緩んでも
+  `resolveAlias` は今までどおり毎回聞く
+- 組み込みで名乗っているのは、いまのところ Vault の一覧3本
+  （`listAliases`・`listGroups`・`listGroupBindings`）
+
+**なぜ要ったか**：窓口（`vault-directory`）が AI に目録を出すには、金庫を
+横断して一覧を組む。これは窓口のただ1つの仕事で、値は通らない。ここを聞くと
+**AI が目録を読むたびに人が止められる**——しかも resource の読み取りは進捗を
+送れないので、60秒で切れる。実際、**「alias が1つも無い」に化けていた**
+（`docs/notes/2026-09-12-vault-directory.md`）。
+
 選び方（固定で決めておくか、AI が呼び出しごとに動的に選ぶか、その中間か）は
 **その Module 自身の設定 Canvas（`ui://<id>/config`、`docs/specs/v4-frontend.md` §6.2）の仕事**——banto の
 Configuration（§2.6）は「その役割を instance 全体として有効にするか」までしか

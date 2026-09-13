@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
-  "bin": { "banto-module-shell": "./dist/server.js" },
+  "bin": {
+    "banto-module-shell": "./dist/server.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -17,6 +19,7 @@
   },
   "devDependencies": {
     "@banto/core": "*",
-    "@banto/module-vault": "*"
+    "@banto/module-vault": "*",
+    "@banto/module-vault-directory": "*"
   }
 }

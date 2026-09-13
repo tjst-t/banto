@@ -8,6 +8,7 @@ import { runCommand } from "./run-command.js";
 
 function unusedRelayClient() {
   return {
+    lookupAlias: async () => ({ implementation: "vault" }),
     resolveAlias: async () => {
       throw new Error("relay should not be called for this test");
     },
@@ -65,6 +66,7 @@ test("secretFiles are written before exec and always deleted after, even on fail
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {
     const relayClient = {
+      lookupAlias: async () => ({ implementation: "vault" }),
       resolveAlias: async () => "TOP-SECRET-VALUE",
       startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
       close: async () => undefined,
@@ -116,6 +118,7 @@ test("BANTO_* が envSecrets で復活させられない（黙って無視せず
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {
     const relayClient = {
+      lookupAlias: async () => ({ implementation: "vault" }),
       resolveAlias: async () => "whatever",
       startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
       close: async () => undefined,
@@ -196,6 +199,7 @@ test("envSecrets values reach the child process env, never the command string", 
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {
     const relayClient = {
+      lookupAlias: async () => ({ implementation: "vault" }),
       resolveAlias: async (_target: string, alias: string) => `resolved-${alias}`,
       startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
       close: async () => undefined,
@@ -209,4 +213,108 @@ test("envSecrets values reach the child process env, never the command string", 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// **引数の説明は、AI がこの Module を使えるかどうかそのもの**
+// （追加・2026-09-12、ユーザー指摘「AI が Vault の使い方を分かっていない」）。
+// 以前は `envSecrets: { type: "object" }` としか書いておらず、
+// 「何を鍵にして何を値にするのか」も「値を書いてはいけない」ことも伝わらなかった。
+test("runCommand の説明が、秘密の渡し方を AI に伝えている", async () => {
+  const { createShellServer } = await import("./server.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+
+  // 中継は使わない試験（tool の説明だけを見る）——繋がる先は要らない
+  const relayClient = {
+    lookupAlias: async () => ({ implementation: "vault" }),
+    resolveAlias: async () => "",
+    startSshAgent: async () => ({ socketPath: "" }),
+  };
+  const server = createShellServer({
+    projectRoot: process.cwd(),
+    relayClient: relayClient as never,
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  try {
+    const { tools } = await client.listTools();
+    const run = tools.find((t) => t.name === "runCommand")!;
+    assert.match(run.description ?? "", /alias/, "秘密を alias 名で渡すことが書かれていない");
+    assert.match(run.description ?? "", /vault:\/\/aliases/, "一覧の在りかが書かれていない");
+
+    const props = (run.inputSchema as { properties: Record<string, { description?: string }> }).properties;
+    assert.match(props.envSecrets?.description ?? "", /alias 名/, "envSecrets の説明が無い");
+    assert.match(props.secretFiles?.description ?? "", /alias 名/, "secretFiles の説明が無い");
+    assert.match(props.sshIdentity?.description ?? "", /ssh-identity/, "sshIdentity の説明が無い");
+    assert.match(props.timeout?.description ?? "", /120/, "既定のタイムアウトが書かれていない");
+  } finally {
+    await client.close();
+  }
+});
+
+// **決め打ちをやめた**（追加・2026-09-12）。以前は `"vault"` を直に呼んでいたので、
+// 2本目の backend に預けた秘密には構造的に届かなかった。ここで見るのは2つ：
+//   1. **在りかを窓口に聞いてから**、その金庫を呼ぶ（`vault` 以外にも届く）
+//   2. **値は窓口を通らない**——窓口に渡すのは名前だけ
+test("秘密の在りかは窓口に聞く——決め打ちした金庫を呼ばない", async () => {
+  const calls: Array<[string, string]> = [];
+  const relayClient = {
+    lookupAlias: async (target: string, name: string) => {
+      calls.push([`lookup:${target}`, name]);
+      return { implementation: "vault-infisical" }; // 既定ではない金庫
+    },
+    resolveAlias: async (target: string, name: string) => {
+      calls.push([`resolve:${target}`, name]);
+      return "VALUE-FROM-SECOND-VAULT";
+    },
+    startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
+  } as unknown as import("./host-relay-client.js").HostRelayClient;
+
+  const dir = await mkdtemp(join(tmpdir(), "shell-lookup-"));
+  const result = await runCommand(
+    { command: "printf %s \"$TOKEN\"", envSecrets: { TOKEN: "far-away" } },
+    { projectRoot: dir, relayClient },
+  );
+
+  assert.equal(result.stdout, "VALUE-FROM-SECOND-VAULT");
+  assert.deepEqual(calls, [
+    ["lookup:vault-directory", "far-away"],
+    ["resolve:vault-infisical", "far-away"], // **窓口ではなく、引いた金庫を直接**
+  ]);
+});
+
+test("在りかが分からない alias は、既定の金庫へ落とさず止まる", async () => {
+  const relayClient = {
+    lookupAlias: async () => {
+      throw new Error('alias "unknown" はどの Vault にもありません');
+    },
+    resolveAlias: async () => assert.fail("在りかが分からないのに金庫を呼んだ"),
+    startSshAgent: async () => ({ socketPath: "" }),
+  } as unknown as import("./host-relay-client.js").HostRelayClient;
+
+  const dir = await mkdtemp(join(tmpdir(), "shell-lookup-miss-"));
+  await assert.rejects(
+    () => runCommand({ command: "true", envSecrets: { TOKEN: "unknown" } }, { projectRoot: dir, relayClient }),
+    /どの Vault にもありません/,
+  );
+});
+
+test("同じ alias を2箇所で使っても、在りかは1度しか引かない", async () => {
+  let lookups = 0;
+  const relayClient = {
+    lookupAlias: async () => {
+      lookups += 1;
+      return { implementation: "vault" };
+    },
+    resolveAlias: async () => "same",
+    startSshAgent: async () => ({ socketPath: "" }),
+  } as unknown as import("./host-relay-client.js").HostRelayClient;
+
+  const dir = await mkdtemp(join(tmpdir(), "shell-lookup-once-"));
+  await runCommand(
+    { command: "true", envSecrets: { A: "dup" }, secretFiles: { "f.txt": "dup" } },
+    { projectRoot: dir, relayClient },
+  );
+  assert.equal(lookups, 1);
 });

@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm, rename, chmod } from "node:fs/
 import { createWriteStream, existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { VaultBackend } from "./backend.js";
+import type { VaultBackend } from "@banto/vault-kit";
 
 const execFileP = promisify(execFile);
 

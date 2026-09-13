@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-10",
+  "updatedAt": "2026-09-12",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1393,6 +1393,124 @@
       "refs": [
         "docs/notes/2026-09-11-phase-reordering.md"
       ]
+    },
+    {
+      "id": "vault-tool-surface-to-spec",
+      "phase": "2",
+      "title": "Vault の Tool 層を仕様（§2.1 A/B/C）まで揃える",
+      "status": "done",
+      "dependencies": [],
+      "why": "バックエンド（SopsBackend）は §2.1 D の8メソッドが揃っていたのに、その上の Tool 層に穴が残っていた。`vault://aliases`（A節の一覧 resource）が **resources/list に載っておらず**、読み取りハンドラだけ通るので「動いている」ように見えていた——AI は URI を知らないと辿り着けず、A節の入口が実質存在しない。`requestAlias` は Elicitation の答えを `.catch()` で捨てて常に受理を返す。`createAlias` はグループが `\"user-secrets\"` 決め打ちで、仕様で決めてある「Project ↔ backend グループの紐付け」が丸ごと無い。`scope: \"project\"` を受けるのに projectId を持たない。`updateAlias` が無く、`AliasRegistry.update()` は呼び出し元ゼロの死にコード。`verify` の比較が `===`（タイミング安全でない）。`generateKeypair` は kind 引数を黙って無視。",
+      "doneWhen": "A/B/C の口が仕様どおり存在し、実 sops/age を相手にした試験で通る。語彙の外の値・どの Project のものか決まらない alias を拒否する。",
+      "refs": [
+        "banto/packages/modules/vault/src/server.ts",
+        "banto/packages/modules/vault/src/alias-registry.ts",
+        "banto/packages/modules/vault/src/group-bindings.ts",
+        "banto/packages/modules/vault/src/server.test.ts",
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-12-vault-ui.md"
+      ],
+      "result": "`vault://aliases` を一覧に載せた。`requestAlias` は**人の答えを持ち帰る**（断られたら「見送られました」、受理でも「まだ存在しません」と言う——「頼めた」を「使える」と取り違えさせない）。`updateAlias`（note・対象。**値は変えない**）を足し、差分は「触らない＝undefined／消す＝null」で区別する（素の spread だと触るつもりのない項目が飛ぶ）。`createAlias` は `projectId` と `group` を受け、**`scope: \"project\"` なら projectId 必須**。**Project ↔ グループの紐付け**を `listGroupBindings`／`setGroupBinding` として実装し、置き場は Vault Module 自身（`group-bindings.json`）——既定は projectId をそのままグループ名にし、**使った時点で台帳に書き留める**。`verify` は `timingSafeEqual`（長さ違い・非16進は false、投げない）。`generateKeypair` は gpg を**黙って ssh にすり替えず**拒否。`kind`／`scope` の語彙外も拒否。`aliases.json` の書き込みを tmp→rename＋直列化（途中で落ちると、値は backend にあるのに名前を丸ごと失う）。**バイナリの alias は今回やらない**——通す道がそもそも無く（createAlias は文字列のみ）、中途半端に通すと base64 が書かれたファイルが後から出てくる。",
+      "verifiedBy": "vault の単体・統合 21件（うち新規12件、実 sops/age/ssh-agent）。既存の呼び出し元（shell の full-stack 統合・e2e 2本）を projectId 必須に合わせて更新。**新しい規則が効くことは、既存テストが落ちたことで確認**（`scope が \"project\" のときは projectId が要ります`）。ワークスペース全体 249件 通過。",
+      "completedAt": "2026-09-12"
+    },
+    {
+      "id": "vault-ui-module",
+      "phase": "2",
+      "title": "VaultUI——Vault の管理だけをまとめて行う Module を作る",
+      "status": "done",
+      "dependencies": [
+        "vault-tool-surface-to-spec"
+      ],
+      "why": "モックで画面は決まっていた（`mock/.../vault-manage-view.tsx`、684行）のに、実 Module が無く、実 frontend にコピーされた同じファイルが mock データを読んでいた（規則13 で隠してある状態）。**さらに仕様と実装が食い違っていた**（規則8）：仕様は「VaultUI の Canvas から直接 vault の admin tool を呼ぶ」と書いていたが、banto の Canvas は**呼び先を選べない**（決定・2026-09-07）。素直な迂回（VaultUI のバックエンドが中継する）は、承認ゲートが「どのターンからの呼び出しか」を要求するため**画面起点の中継が構造的に必ず拒否される**——仕様が「未決」としていた承認ゲートの循環は、UX の冗長さではなくハードブロックだった。",
+      "doneWhen": "入口から人が開け、実 Vault を横断して読み書きでき、値が画面に一度も出ないことを実ブラウザで確認する。",
+      "refs": [
+        "banto/packages/modules/vault-ui/src/server.ts",
+        "banto/packages/modules/vault-ui/src/manage-app.ts",
+        "banto/packages/modules/vault-ui/src/relay-client.ts",
+        "banto/packages/core/src/relay/host-relay-endpoint.ts",
+        "banto/packages/core/src/relay/module-calls.ts",
+        "banto/packages/core/src/http/app.ts",
+        "banto/apps/frontend/components/banto/canvas/module-canvas.tsx",
+        "banto/e2e/specs/vault-ui.spec.ts",
+        "docs/specs/v4-modules.md",
+        "docs/specs/v4-frontend.md",
+        "docs/specs/v4-security.md",
+        "docs/notes/2026-09-12-vault-ui.md"
+      ],
+      "result": "`packages/modules/vault-ui/` を新設。経路は **Canvas → 自分の Module → host 中継 → vault**（既にある機構だけを使う）。値が VaultUI のプロセスを通るので、仕様の記述を訂正して `handlesSecrets: true`・`isolation: \"subprocess\"`。画面は素の HTML Canvas（依存を足さない）で、モックの形（横断検索・種別/対象/backend の絞り込み・新規登録・用途の書き直し・削除・グループの紐付け）をそのまま移した。**承認ゲートの循環を決着**：出所が人の画面 かつ 宛先が `admin` 可視性なら聞かない。**緩めるのは admin だけ**——`module`（値を返す部品間専用の口）は画面起点でも聞く（悪意ある Module が自分の画面から秘密を持ち出す道を塞ぐ）。聞かなくても監査には残す。**ついでに足したもの**：`relayListTargets`（アーキ仕様 §2.5 の「role→実装の一覧」の実体。無かったので Shell は宛先を `\"vault\"` と決め打ちしていた）、Project の Canvas も呼び出し台帳に載せる（載っていなかった）、画面からの tool 呼び出しの上限を10分に（中で人に聞くのに MCP 既定の60秒では切れる）、`hostContext` に「いまどこで開かれているか」（Project の id と名前）。",
+      "verifiedBy": "vault-ui 単体7件（実 Vault を2本ぶら下げた横断・読めない backend を黙って消さない・名乗っていない実装は宛先にできない・全 tool/resource が admin）。core に承認規則の3件（admin は聞かずに通る／module は画面からでも聞く／AI のターンからは今までどおり聞く）と Project Canvas の台帳1件（**app.ts の配線を外すと落ちることを確認**）。**実ブラウザ E2E 2件**：入口→画面→登録→一覧の中身（種別・対象・backend・用途）→検索→実 Vault への到達→用途の書き直し→削除まで、規則14 のとおり画面が出す値を1つずつ見る。値が画面にもページ全体にも出ないこと、承認カードが出ないこと、AI から VaultUI の道具が1つも見えないことも見る。**E2E 全60件・単体/統合 249件 通過**。",
+      "completedAt": "2026-09-12"
+    },
+    {
+      "id": "ai-facing-surface-and-secret-generation",
+      "phase": "2",
+      "title": "AI に届いている面を実測して塞ぐ／Vault の使い方を伝える／秘密を Vault の中で作る／requestAlias を会話の中の入力欄にする",
+      "status": "done",
+      "dependencies": [
+        "vault-tool-surface-to-spec"
+      ],
+      "why": "ユーザー指摘「AI からの Tool があまりに手薄すぎないか」。実測すると banto が AI に渡している組み込み tool は **2つだけ**（WebFetch/WebSearch）で、SDK の `tools` が基底集合の**置き換え**であるため `ListMcpResourcesTool`/`ReadMcpResourceTool`/`ReadMcpResourceDirTool` も一緒に落ちていた——**AI は Module の resource を1つも読めない**。仕様（アーキ §2.5・modules §2.1）は「Runner は組み込み tool 経由で resources/list・read を呼ぶ」と決めているので、前提が実装で成立していなかった（規則8）。同じ日に「`vault://aliases` を resources/list に載せた」と報告したが、**一覧を呼ぶ手段が無いのでそれだけでは届かない**——訂正。あわせて、道具はあるのに使い方がどこにも書かれていなかった（`envSecrets: {type:\"object\"}` だけ）。",
+      "doneWhen": "本物のターンで AI が vault://aliases を読めること、値は読めないことを実測する。",
+      "refs": [
+        "banto/packages/core/src/runner/adapter.ts",
+        "banto/packages/core/src/runner/builtin-tools.test.ts",
+        "banto/packages/modules/vault/src/server.ts",
+        "banto/packages/modules/shell/src/server.ts",
+        "banto/packages/modules/vault-ui/src/manage-app.ts",
+        "banto/e2e/specs/vault-visibility.spec.ts",
+        "docs/specs/v4-architecture.md",
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-12-ai-facing-surface.md",
+        "banto/packages/modules/vault/src/request-app.ts",
+        "banto/e2e/specs/vault-request-inline.spec.ts"
+      ],
+      "result": "**(1) resource を読む口を戻した**——`RUNNER_BUILTIN_TOOLS` に3つ追加。閉じ込めの迂回路にはならない（Runner は実 Module に直接繋がらず、代理サーバが resources/read の中でも可視性を fail closed で見る）。Bash/Read/Write/Edit は今までどおり落としたまま。 **(2) 使い方を description に書いた**——system prompt は個々の tool を語らない決まり（規則3）なので、伝わる場所はそこしかない。`vault://aliases`→`requestAlias`→Shell の `envSecrets`/`secretFiles`/`sshIdentity` という道筋を3箇所に書き、`runCommand` の各引数にも例（`{\"GITHUB_TOKEN\": \"github-token\"}`）・既定 120 秒・`secretFiles` は終わったら消えることを書いた。 **(3) `generateSecret` を足した**（admin 可視性）——暗号論的乱数で作り**値を返さない**。既定は base64url 32 バイト（シェル・URL・環境変数のどこでも壊れない）、16〜256 の範囲外と語彙外は拒否。VaultUI の新規登録に「自分で入力する／Vault の中でランダムに作る」を足し、作らせるときは種別を選べなくした（選べるふりをしない）。**A（AI 向け）は広げていない**——admin は他 Module からは中継経由で呼べるので、将来の道は開いている。 **(4) `requestAlias` を会話の中の入力欄にした**（ユーザー提案）——実物では「設定画面の Vault から登録してください」と言ったうえに「この問いはまだ banto に繋がっていません」と出ていた。banto は Elicitation の応答を解決しない設計（§2.4.1 の帰結1）なので**人が答えても Module に届かず**、60秒待つだけだった。`_meta.ui.resourceUri` を付けて inline の MCP App を出す形に変えた（新機構は作っていない——§6.2 の「会話の中」は既に動いていて FileSystem が同じ形を使う）。値は iframe → 画面 API → Vault 自身の admin tool と渡り、**Runner は経路に登場しない**。tool はすぐ返るので60秒の壁も消えた。この「答えても届かない」は **Elicitation を使う全 Module に掛かる**知見なので仕様に書いた。 **(5) 「作る」の入口を1本にした**（ユーザー指摘「generateKeypair はどこで使われるの？」）——数えたら `generateKeypair` と `verify` は**呼び出し元ゼロ**だった（Repo が未実装のため）。`generateKeypair` は `generateSecret` の `kind: \"ssh-identity\"` に統合し、tool を削除。**欠けていたものが見えた**：公開鍵を取り出す道が無く、作れても GitHub に登録できなかった——画面2枚に公開鍵の表示とコピーを足した。backend の抽象（D節 `VaultBackend.generateKeypair`）は残す（秘密鍵が外に出ない実装を壊さないため）。`format`/`bytes` を SSH に渡したら拒否、`kind: \"file\"` は作らせない。`verify` は畳む先が無いので残置（誤解のリスクを記録）。",
+      "verifiedBy": "**SDK の init を直接測って前後を比較**（preset との差分で3つが落ちていることを確認→追加後に出ることを確認）。単体：core 2件（resource の3つが在る／閉じ込めを素通りする口が無い、両方向）・vault 5件（generateSecret は値を返さない／毎回ちがう値／形式と強さの範囲外は拒否／可視性は admin／AI に見える面に使い方が書いてある）・shell 1件（runCommand の引数の説明）。**E2E 1件を追加——本物のターンで AI に `vault://aliases` を読ませ**、alias 名が返り値に出て秘密の値は出ないことを見る（host のログにも `{\"direction\":\"read\",\"name\":\"vault://aliases\",\"allowed\":true}` が出る）。**組み込みを元に戻すとこの E2E が落ちることを確認**（規則1）。単体260件・E2E 通過。 **inline の E2E 1件を追加**——実ブラウザで、AI が `requestAlias` を呼ぶ→会話に入力欄が出る→人が打つ→**実 Vault に入る**→値はページのどこにも出ない→AI は `vault://aliases` で名前だけ見つける、まで見る（規則14）。 統合後の単体4件（SSH も generateSecret で作れて公開鍵だけ返る／作った alias がそのまま startSshAgent に積める／SSH に format・bytes を渡したら拒否／file は作らせない）＋ VaultUI 1件。",
+      "completedAt": "2026-09-12"
+    },
+    {
+      "id": "second-vault-backend-infisical",
+      "phase": "2",
+      "title": "2本目の Vault（Infisical）を作り、@banto/vault-kit を切り出す",
+      "status": "done",
+      "dependencies": [
+        "ai-facing-surface-and-secret-generation"
+      ],
+      "why": "Vault のアーキテクチャ検討（Fable）が「窓口の移動は2本目の backend が実在してから」と結論した直後に、ユーザーから「もう Infisical で2本目を作ってほしい」と来た。**推測する理由が消えた**——CLAUDE.md の「契約は先に決め、中身は後」と「1本しか無い状態で共通化すると境界を推測することになる」は、決めることと抽出することを分けろ、という同じ指示。2本目の実物が、どこが同じでどこが違うかを教えてくれる。",
+      "doneWhen": "2本の vault 実装が同時に立ち、VaultUI の横断一覧に両方が出ることを実機で確認する。",
+      "refs": [
+        "banto/packages/vault-kit/",
+        "banto/packages/modules/vault-infisical/",
+        "banto/packages/modules/vault-infisical/dev/README.md",
+        "banto/packages/core/src/modules/declaration.ts",
+        "banto/e2e/start-core.ts",
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-12-second-vault-backend.md"
+      ],
+      "result": "**`@banto/vault-kit` を切り出した**——A/B/C の配線・alias 台帳の契約・会話の中の入力欄・グループ紐付けを共有し、各 backend は `VaultBackend` と `AliasStore` だけを書く。`vault` は SopsBackend ＋ ローカルファイルの台帳、`vault-infisical` は InfisicalBackend ＋ **Infisical の中に置く台帳**。**実物を作って2つの差分が出た**：(1) `createGroup` が冪等でない（SOPS は mkdir -p、Infisical は 400）——契約に書いていなかったので SOPS の都合が暗黙の前提になっていた。(2) **メタデータの置き場は backend が選ぶべきだった**——仕様は Infisical を名指しで「複数台のホストが同じ backend を共有する」と決めているのに、メタデータがローカルだと2台目からは値はあるのに名前も用途も分からない。Infisical の `secretComment` に置く形にし、`AliasStore` を差し替え可能・非同期にした。資格情報は**宣言に書かず**（Event Store に残るため）host の環境変数を継承する。開発用の Infisical は docker compose（版は固定）＋ bootstrap 手順を `dev/README.md` に。**行き先は Cloud**なので backend のコードは自前ホスト固有の前提を持たない。",
+      "verifiedBy": "**本物の Infisical を相手にした統合試験8件**（置いて・読んで・消す／createGroup の冪等／グループ名で外に出られない／SSH 鍵を実 ssh-agent に積む／**別接続から見てメタデータが共有されている**／banto の注記が無い秘密は alias に数えない／Module 越しの往復／画面 URI が Module ごとに分かれる）。既定に入れて**実機で3本（vault・vault-infisical・vault-ui）が同時に立ち**、VaultUI の横断一覧に `implementation` つきで両方が出ることを確認。**E2E で4件落ち、3つの性質に分かれた**：(a) 私のリグレッション（設定 Canvas の表示名を moduleName で上書きしていた）→ 直した。(b) 資格情報の無い環境で毎回お知らせが出る → e2e に開発用の資格情報を渡す（無ければ警告して繋がない）。(c) **本物の割れ目**——`vault` を外しても `vault-infisical` が同じ役割を満たすので依存の警告が出ない。**これが正しい新挙動**なので試験のほうを直した（役割を満たすものが全部消えて初めて警告）。",
+      "completedAt": "2026-09-12"
+    },
+    {
+      "id": "vault-directory-facade",
+      "title": "vault-directory を窓口にする——AI に金庫を選ばせない／Shell の決め打ちを外す",
+      "status": "done",
+      "why": "backend が2本になった途端、AI に requestAlias が2つ・vault://aliases が2つ並び、AI はどちらを選ぶ材料を持たない（実際 E2E で毎回選び先が変わった）。Shell は \"vault\" を決め打ちしていて、2本目に預けた秘密には構造的に届かなかった。",
+      "done": [
+        "vault-ui → vault-directory に改名（仕事と名前を合わせる、規則11）",
+        "vault-kit に agentFacing を足し、backend 側の requestAlias / vault://aliases を module へ降格",
+        "窓口が requestAlias（agent）と横断した vault://aliases（implementation は落とす）を持つ",
+        "lookupAlias（module）——名前から在りかだけを返す。値は窓口を通らない",
+        "Shell が lookupAlias → resolveAlias の2段になった。引けなければ止まる（既定へ落とさない）",
+        "フルスタック試験の金庫名を vault-keychain にして、決め打ちに戻ったら落ちる形にした",
+        "同名を2つの金庫に置けない（createAlias が断る／lookupAlias は0件でも2件でも通さない）",
+        "入れ子の中継が外側のターンを継ぐようにした（core）——2段目が「どのターンか分からない」で止まっていた",
+        "ゲートが守るのは値であって名前ではない——dev.banto/valueFree を名乗った口は初回承認を聞かない（無指定は fail closed）",
+        "「無い」と「読めていない」を混ぜない——lookupAlias と vault://aliases が失敗を落として空を返していたのを直した"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.1・§2.3、docs/specs/v4-architecture.md §2.5、docs/specs/v4-security.md",
+      "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
     }
   ],
   "phase1": {

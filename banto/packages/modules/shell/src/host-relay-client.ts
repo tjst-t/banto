@@ -53,6 +53,27 @@ export class HostRelayClient {
     return (result.content as { type: string; text: string }[])[0]?.text;
   }
 
+  /**
+   * 名前から**在りか**を引く（`vault-directory` の窓口）。**値は通らない**
+   * ——返るのは「どの Vault にあるか」だけで、値は引いたあと backend を
+   * 直接呼んで受け取る（アーキ仕様 §2.5、DNS と同じ形）。
+   */
+  async lookupAlias(
+    directoryModule: string,
+    name: string,
+    onProgress?: RelayProgressListener,
+  ): Promise<{ implementation: string }> {
+    const text = await this.callRelay(
+      { targetModule: directoryModule, name: "lookupAlias", arguments: { name } },
+      onProgress,
+    );
+    const found = JSON.parse(text ?? "{}") as { implementation?: string };
+    // 在りかが分からないまま既定の Vault へ落とすと、**別の金庫の同名を
+    // 開けてしまう**。黙って別の経路へ行かない（規則2）
+    if (!found.implementation) throw new Error(`alias "${name}" の在りかが分かりません`);
+    return { implementation: found.implementation };
+  }
+
   async resolveAlias(
     targetModule: string,
     name: string,
