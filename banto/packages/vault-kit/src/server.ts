@@ -575,6 +575,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const name = requiredString(args.name, "name");
         const kind = oneOf(args.kind, ALIAS_KINDS, "kind");
         const value = requiredString(args.value, "value");
+        // **既にある名前を黙って上書きしない**（追加・2026-09-13、実測で踏んだ）。
+        // `generateSecret` にはこの検査があったのに、こちらには無かった。
+        // backend に既にある秘密も alias として数えるようになったので、
+        // **人が別の用途で置いた秘密を上書きする**経路がここだった
+        if (await registry.get(name)) throw new Error(`alias "${name}" は既にあります`);
         // **置き場を直接受ける**（改訂・2026-09-13）。`scope` は保存せず
         // 置き場から導くので、入口でも「どこに置くか」だけを聞く
         const group = await groupForNewAlias({

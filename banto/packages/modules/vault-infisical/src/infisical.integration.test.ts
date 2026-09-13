@@ -143,20 +143,24 @@ test("メタデータは Infisical の中にある——別のホストからで
   assert.equal(await otherHost.get(name), undefined, "消しても残っている");
 });
 
-test("banto が付けた注記の無い秘密は、alias として数えない", { skip }, async () => {
-  // Infisical は banto 以外からも書ける。**注記が無いものを「たぶん secret」と
-  // 見なすと、人が別の用途で置いた秘密まで一覧に混ざる**（規則2）
+// **決め直した**（訂正・2026-09-13、ユーザー指摘）。以前ここは
+// 「banto が付けた注記の無い秘密は alias として数えない」を押さえていた
+// ——理由は「人が別の用途で置いた秘密まで一覧に混ざる」。**前提が逆だった**：
+// 既に Infisical をフォルダで分けて使っている人にとって、そこに在る秘密は
+// 混ざりものではなく**本体**である。数える側に変えた。
+test("banto 以外が置いた秘密も、alias として数える", { skip }, async () => {
   const conn = await connected();
   const backend = new InfisicalBackend(conn);
   const store = new InfisicalAliasStore(conn);
   const g = uniqueGroup("foreign");
   await backend.putSecret(`${g}/not-a-banto-alias`, "v");
-  const all = await store.list();
-  assert.equal(
-    all.some((a) => a.name === "not-a-banto-alias"),
-    false,
-    "banto が管理していない秘密が alias として出ている",
-  );
+  // **置き場で特定する**——同じ名前は過去の実行の残骸にもあるので、
+  // 名前だけで引くと別のものを掴む（実際に掴んだ）
+  const found = (await store.list()).find((a) => a.backendPath === `${g}/not-a-banto-alias`);
+  assert.ok(found, "backend に既にある秘密が alias として出てこない");
+  // **中身を見て推測しない**——種別は secret 扱い、置き場はそのまま
+  assert.equal(found.kind, "secret");
+  assert.equal(found.backendPath, `${g}/not-a-banto-alias`);
   await backend.deleteSecret(`${g}/not-a-banto-alias`);
 });
 
@@ -278,6 +282,76 @@ test("鍵ペアを作っても、alias は付けた名前のまま（公開鍵�
     await client.callTool({ name: "deleteAlias", arguments: { name }, _meta: ADMIN });
     await client.close();
   } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+// **backend に既にある秘密も alias として読む**（訂正・2026-09-13、ユーザー指摘）。
+// 当初は「banto の注記が無い秘密は数えない」としていたが、**前提が逆だった**
+// ——既に Infisical をフォルダで分けて使っている人にとって、そこに在る秘密は
+// 混ざりものではなく本体。あわせて「黙って上書き」も塞がる（実測で踏んだ）。
+test("banto 以外が置いた秘密も読める——そして同じ名前で上書きしない", { skip }, async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-read-"));
+  const group = `human-${Date.now().toString(36)}`;
+  const key = "DATABASE_URL";
+  const conn = await connected();
+  try {
+    // 人が先に置いた秘密（banto の注記は無い。Infisical 自身の注記はある）
+    await conn.folders().create({ ...conn.scope, name: group, path: "/" });
+    await conn
+      .secrets()
+      .createSecret(key, { ...conn.scope, secretPath: `/${group}`, secretValue: "HUMAN", secretComment: "本番のDB" });
+
+    await new InfisicalSettingsStore(dataDir).save(config!);
+    const server = createInfisicalVaultServer(dataDir);
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([server.connect(s), client.connect(c)]);
+    await client.callTool({ name: "setGroupBinding", arguments: { projectId: "p-read", group }, _meta: ADMIN });
+
+    const list = JSON.parse(
+      (
+        (await client.callTool({ name: "listAliases", arguments: {}, _meta: ADMIN })).content as {
+          text: string;
+        }[]
+      )[0]!.text,
+    ) as Array<{ name: string; kind: string; note?: string; group: string }>;
+    const mine = list.find((a) => a.name === key);
+    assert.ok(mine, "人が置いた秘密が alias として見えない");
+    // **中身を見て推測しない**——種別は secret 扱い
+    assert.equal(mine.kind, "secret");
+    // 用途は Infisical 側の注記をそのまま出す
+    assert.equal(mine.note, "本番のDB");
+    assert.equal(mine.group, group);
+
+    // 値も読める（その Project から）
+    const got = await client.callTool({
+      name: "resolveAlias",
+      arguments: { name: key },
+      _meta: { "dev.banto/caller": { project: "p-read" } },
+    });
+    assert.equal((got.content as { text: string }[])[0]?.text, "HUMAN");
+
+    // **同じ名前では登録させない**——以前はここで人の値を黙って上書きしていた
+    await assert.rejects(
+      () =>
+        client.callTool({
+          name: "createAlias",
+          arguments: { name: key, kind: "secret", value: "BANTO", forProject: "p-read" },
+          _meta: ADMIN,
+        }),
+      /既にあります/,
+    );
+    const after = await conn.secrets().getSecret({ ...conn.scope, secretName: key, secretPath: `/${group}` });
+    assert.equal(after.secretValue, "HUMAN", "人が置いた値が上書きされた");
+
+    await client.close();
+  } finally {
+    try {
+      await conn.secrets().deleteSecret(key, { ...conn.scope, secretPath: `/${group}` });
+    } catch {
+      // 片づけの失敗は本題ではない
+    }
     await rm(dataDir, { recursive: true, force: true });
   }
 });

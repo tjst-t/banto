@@ -11,6 +11,12 @@
 // 取れる**（実測・2026-09-12）。仕様 D節の「メタデータは値と分離して持つ。
 // 値を復号・解錠せずに読める必要がある」をそのまま満たす。
 //
+// **banto の注記が無い秘密も読む**（訂正・2026-09-13）。Infisical を既に
+// フォルダで分けて使っている人にとって、そこに在る秘密は「混ざりもの」ではなく
+// **本体**である。注記があればそれを使い、無ければ置き場の名前を alias 名に、
+// 種別は `secret` として扱う（**中身を見て推測しない**）。
+// **banto は注記を書き足さない**——読むだけ。
+//
 // **持ち方**：メタデータは「その秘密の注記」として、秘密と同じところに住む。
 //   秘密 `/{group}/{key}`  ← 値
 //     secretComment        ← {"kind":…,"scope":…,"projectId":…,"note":…,"lastUsedAt":…}
@@ -54,15 +60,23 @@ export class InfisicalAliasStore implements AliasStore {
         .listSecrets({ ...this.conn.scope, secretPath: `/${folder.name}` });
       for (const s of listed.secrets ?? []) {
         const meta = parseComment(s.secretComment);
-        // **注記が無い／壊れている秘密は alias として数えない**（規則2——
-        // 「たぶん secret だろう」で見せると、banto が管理していない秘密まで
-        // 一覧に混ざる。Infisical は banto 以外からも書ける）
-        if (!meta) continue;
         out.push({
-          ...meta,
-          // 注記に名前が無いのは、この訂正より前に書かれたもの——置き場から
-          // 読んでいた頃の形。**推測で直さず、そのまま見せる**（規則2）
-          name: meta.name ?? s.secretKey,
+          // **banto の注記が無い秘密も alias として数える**（訂正・2026-09-13、
+          // ユーザー指摘）。当初は「人が別の用途で置いた秘密が混ざる」として
+          // 飛ばしていたが、**その前提が逆だった**——既に Infisical をフォルダで
+          // 分けて使っている人にとって、そこに在る秘密は混ざりものではなく本体。
+          //
+          // **中身を見て推測しない**（規則2）：種別は `secret` として扱う
+          // （鍵かどうかは読まないと分からない）。用途は Infisical 側の注記を
+          // そのまま出す。**banto は注記を書き足さない**——読むだけで、
+          // 人の秘密に勝手に印を付けない
+          kind: meta?.kind ?? "secret",
+          note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
+          lastUsedAt: meta?.lastUsedAt,
+          expiresAt: meta?.expiresAt,
+          // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形
+          // ——どちらも**置き場の名前をそのまま使う**（推測で直さない）
+          name: meta?.name ?? s.secretKey,
           backendPath: `${folder.name}/${s.secretKey}`,
         });
       }
