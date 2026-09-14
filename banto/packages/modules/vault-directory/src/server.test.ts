@@ -12,6 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createVaultServer } from "@banto/module-vault-local";
 import { createVaultDirectoryServer } from "./server.js";
 import { MANAGE_APP_HTML } from "./manage-app.js";
+import { CONFIG_APP_HTML } from "./config-app.js";
 import { MANAGE_APP_URI } from "./manage-app.js";
 import type { RelayLike } from "./relay-client.js";
 
@@ -635,4 +636,45 @@ test("同じ Project を2つの Vault に紐付けさせない", async () => {
     },
     { vaultNames: ["vault-local", "vault-keychain"] },
   );
+});
+
+// **同じ失敗を2度した**（2026-09-14）。置換の範囲を広く取りすぎて、
+// **絞り込みのイベント購読を丸ごと消した**——2回とも E2E でしか気づけなかった。
+// 画面の JS は型検査が効かないので、**在ることを機械で押さえる**。
+test("管理画面の配線が、消えていないこと", () => {
+  // 絞り込みが打つそばから効く（2度消している）
+  assert.ok(
+    MANAGE_APP_HTML.includes('addEventListener("input", renderRows)'),
+    "絞り込みのイベント購読が消えている（検索しても絞られない）",
+  );
+  // **置き場の設定はこの画面に無い**（設定画面と、保存時に決まる形へ移した）
+  assert.equal(MANAGE_APP_HTML.includes('id="dlg-groups"'), false, "置き場のダイアログが残っている");
+  assert.equal(MANAGE_APP_HTML.includes('id="new-impl"'), false, "登録画面がまだ backend を聞いている");
+  // **聞くのは置き場、出すのは範囲**
+  assert.ok(MANAGE_APP_HTML.includes('<span>保存先</span>'), "登録画面が保存先を聞いていない");
+  assert.ok(MANAGE_APP_HTML.includes('id="new-scope-effect"'), "選んだ結果を出していない");
+});
+
+test("窓口が設定画面を名乗る——共通の置き場はそこで決める", async () => {
+  await withUi(async ({ ui }) => {
+    const { resources } = await ui.listResources();
+    const config = resources.find((r) => r.uri === "ui://banto-vault-directory/config");
+    assert.ok(config, "設定画面を名乗っていない");
+    assert.equal((config._meta as Record<string, unknown>)["dev.banto/canvas"], "config");
+    const read = await ui.readResource({ uri: "ui://banto-vault-directory/config" });
+    const html = (read.contents as { text: string }[])[0]!.text;
+    assert.ok(html.includes("共通の秘密の置き場"), "設定画面の中身が違う");
+    // **Project の置き場はここで決めない**——保存したときに決まる
+    assert.ok(html.includes("Project ごとの秘密は、ここでは決めません"), "その旨が書かれていない");
+  });
+});
+
+// 同じ罠を窓口の2枚にも掛ける（`vault-kit` の app-html.test.ts と対）。
+test("窓口の画面も、バッククォート混入と capabilities の取り違えをしない", () => {
+  for (const [name, html] of [["manage", MANAGE_APP_HTML], ["config", CONFIG_APP_HTML]] as const) {
+    assert.equal(html.includes("`"), false, `${name}: バッククォートが混ざっている`);
+    if (html.includes("ui/initialize")) {
+      assert.ok(html.includes("appCapabilities:"), `${name}: appCapabilities を送っていない`);
+    }
+  }
 });

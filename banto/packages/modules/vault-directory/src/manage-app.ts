@@ -111,7 +111,6 @@ export const MANAGE_APP_HTML = `<!doctype html>
 <div class="section">
   <div class="spread" style="margin-bottom:8px">
     <p class="label" style="margin:0" id="count">alias 一覧</p>
-    <button id="open-placement">秘密の置き場…</button>
     <button id="new-alias">＋ alias を新規登録</button>
   </div>
 
@@ -146,10 +145,16 @@ export const MANAGE_APP_HTML = `<!doctype html>
       値はこの画面から backend へ渡るだけで、banto のどのストアにも残らない。
       登録したあとは、名前でしか参照できない
     </p>
-    <label class="field"><span>backend</span><select id="new-impl"></select></label>
+    <!-- **backend は聞かない**（改訂・2026-09-14、ユーザー指摘）。保存先を
+         選べば Vault は決まるので、**同じことを2回聞いていた** -->
     <label class="field"><span>名前</span><input id="new-name" placeholder="github-token" required /></label>
     <label class="field"><span>種別</span><select id="new-kind"></select></label>
-    <label class="field"><span>どこから使えるようにするか</span><select id="new-scope"></select></label>
+    <!-- **聞くのは置き場、出すのは範囲**（改訂・2026-09-14、ユーザー指摘）。
+         設計は「グループが唯一の真実で、使える範囲は導出値」なのに、以前は
+         **導出値のほうを人に入力させていた**（「どこから使えるようにするか」）
+         ——順序が逆だった -->
+    <label class="field"><span>保存先</span><select id="new-scope"></select></label>
+    <p class="dialog-desc" id="new-scope-effect"></p>
     <label class="field"><span>値の決め方</span><select id="new-source">
       <option value="typed">自分で入力する</option>
       <option value="generated">Vault の中でランダムに作る（値は誰も見ない）</option>
@@ -228,54 +233,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
   </form>
 </dialog>
 
-<dialog id="dlg-groups">
-  <form method="dialog" class="dialog-body">
-    <!-- **置き場は「Vault とグループの組」で1つ**（改訂・2026-09-14、ユーザー指摘
-         「まだバックエンドごとに選ぶ仕様になっている」）。以前はこの画面を
-         backend の chip から開いていたので、**同じ問いを backend の数だけ
-         聞いていた**——「この Project の秘密は結局どこに行くのか」が読めない。
-         1つの問いには1つの答えを出す -->
-    <p class="dialog-title">秘密の置き場</p>
-    <p class="dialog-desc">
-      新しく作る秘密がどこに入るかを決めます。<strong>Vault とグループを一緒に選ぶ</strong>
-      ——「この Project の秘密は結局どこに行くのか」が1つに決まるように
-    </p>
 
-    <div class="field"><span>この Project の置き場</span>
-      <div class="row">
-        <select id="place-project-vault" style="flex:1 1 12em"></select>
-        <select id="place-project-group" style="flex:1 1 12em"></select>
-      </div>
-    </div>
-    <p class="dialog-desc" id="place-project-note"></p>
-
-    <div class="field"><span>共通の置き場（どの Project からでも使う）</span>
-      <div class="row">
-        <select id="place-shared-vault" style="flex:1 1 12em"></select>
-        <select id="place-shared-group" style="flex:1 1 12em"></select>
-      </div>
-    </div>
-    <p class="dialog-desc">
-      <strong>ここが「既定」です。</strong>共通の秘密のうち、ここに居るものは素の名前で引けます
-      ——別の Vault に置いた共通の秘密は <code>vault-local:名前</code> のような修飾名で引きます
-    </p>
-
-    <div class="row">
-      <select id="group-new-vault" style="width:auto"></select>
-      <input id="group-new" placeholder="新しいグループの名前" style="flex:1" />
-      <button id="group-create" type="button">作る</button>
-    </div>
-    <p class="dialog-desc">
-      backend によっては、グループの作成自体に事前の API 呼び出しが要る（例：Infisical の Folder）。
-      事前作成が不要な backend では、ここでの「作る」は一覧に加わるだけで実質なにもしない
-    </p>
-    <div class="problem" id="groups-error" hidden></div>
-    <div class="dialog-footer">
-      <button value="cancel">閉じる</button>
-      <button id="groups-submit" value="ok">置き場を保存する</button>
-    </div>
-  </form>
-</dialog>
 
 <script>
 ${ALIAS_KIND_RULES_JS}
@@ -524,13 +482,8 @@ ${ALIAS_KIND_RULES_JS}
   // 新規登録
   $("new-alias").addEventListener("click", () => {
     $("new-error").hidden = true;
-    $("new-impl").replaceChildren(...implementations.map((i) => option(i, i)));
     $("new-kind").replaceChildren(...Object.keys(KIND_LABEL).map((k) => option(k, KIND_LABEL[k])));
-    const scopes = [option("instance", "どの Project からでも")];
-    // **この Project を指せるのは、host がどこで開かれたか渡してくれたときだけ**
-    // ——人に UUID を打たせない
-    if (project) scopes.unshift(option("project", "この Project（" + project.name + "）だけ"));
-    $("new-scope").replaceChildren(...scopes);
+    void fillPlacementChoices();
     $("new-name").value = "";
     $("new-value").value = "";
     $("new-note").value = "";
@@ -538,6 +491,56 @@ ${ALIAS_KIND_RULES_JS}
     applySource();
     $("dlg-new").showModal();
   });
+  /**
+   * **保存先の選択肢**（改訂・2026-09-14）。Vault とグループの組を1つ選ぶ
+   * ——backend を別に聞かない。選んだ結果の「どこから使えるか」はその場に出す。
+   */
+  async function fillPlacementChoices() {
+    let places;
+    try {
+      places = await callTool("getPlacements", project ? { projectId: project.id } : {});
+    } catch {
+      // 置き場が読めなくても登録の道は塞がない——既定に入る
+      places = null;
+    }
+    const opts = [];
+    // **この Project を指せるのは、host がどこで開かれたか渡してくれたときだけ**
+    // ——人に UUID を打たせない
+    if (project) {
+      const where = places && places.project;
+      opts.push(
+        option(
+          "project",
+          "この Project（" + project.name + "）" + (where ? "——" + where.implementation + " / " + where.group : ""),
+        ),
+      );
+    }
+    const shared = places && places.shared;
+    opts.push(option("shared", "共通" + (shared ? "——" + shared.implementation + " / " + shared.group : "")));
+    // 既定の外に置きたい人向け（**修飾名でしか引けなくなる**ので、そう言う）
+    for (const v of (places && places.vaults) || []) {
+      for (const g of v.groups) {
+        opts.push(option("at:" + v.implementation + ":" + g, v.implementation + " / " + g));
+      }
+    }
+    $("new-scope").replaceChildren(...opts);
+    applyPlacementEffect();
+  }
+
+  /** **選んだ結果がどうなるか**を、その場に出す（導出値は見せるもの）。 */
+  function applyPlacementEffect() {
+    const v = $("new-scope").value;
+    const note = $("new-scope-effect");
+    if (v === "project") note.textContent = "→ この Project からだけ使えます（素の名前で引けます）";
+    else if (v === "shared") note.textContent = "→ どの Project からでも使えます（素の名前で引けます）";
+    else {
+      const impl = v.slice(3, v.indexOf(":", 3));
+      note.textContent =
+        "→ 既定の置き場ではないので、" + impl + ":名前 のように " + impl + " を頭に付けて引きます";
+    }
+  }
+  $("new-scope").addEventListener("change", applyPlacementEffect);
+
   /**
    * 「自分で入力する」か「作らせる」か、そして種別で、出す欄を入れ替える。
    *
@@ -600,12 +603,14 @@ ${ALIAS_KIND_RULES_JS}
   });
 
   onSubmit($("dlg-new"), $("new-submit"), $("new-error"), async () => {
+    // **保存先が置き場を決める**——backend は別に聞かない（改訂・2026-09-14）
     const placement = $("new-scope").value;
+    const at = placement.startsWith("at:") ? placement.slice(3) : null;
     const common = {
-      implementation: $("new-impl").value,
       name: $("new-name").value.trim(),
-      forProject: placement === "project" && project ? project.id : undefined,
       note: $("new-note").value.trim() || undefined,
+      ...(placement === "project" && project ? { forProject: project.id } : {}),
+      ...(at ? { implementation: at.slice(0, at.indexOf(":")), group: at.slice(at.indexOf(":") + 1) } : {}),
     };
     if ($("new-source").value === "generated") {
       const kind = $("new-kind").value;
@@ -663,96 +668,15 @@ ${ALIAS_KIND_RULES_JS}
     await callTool("deleteAlias", { implementation: deleteTarget.implementation, name: deleteTarget.name });
   });
 
-  // **置き場**（Vault とグループの組）。backend ごとに聞かない
-  let placements = null;
-
-  async function openGroups() {
-    $("groups-error").hidden = true;
-    $("dlg-groups").showModal();
-    await refreshPlacements();
-  }
-
-  function fillGroupChoices(vaultSelect, groupSelect, chosenVault, chosenGroup) {
-    const vaults = (placements && placements.vaults) || [];
-    vaultSelect.replaceChildren(...vaults.map((v) => option(v.implementation, v.implementation)));
-    if (chosenVault) vaultSelect.value = chosenVault;
-    const groups = (vaults.find((v) => v.implementation === vaultSelect.value) || {}).groups || [];
-    groupSelect.replaceChildren(...groups.map((g) => option(g, g)));
-    if (chosenGroup && groups.includes(chosenGroup)) groupSelect.value = chosenGroup;
-    groupSelect.disabled = groups.length === 0;
-  }
-
-  async function refreshPlacements() {
-    try {
-      placements = await callTool("getPlacements", project ? { projectId: project.id } : {});
-      fillGroupChoices(
-        $("place-project-vault"),
-        $("place-project-group"),
-        placements.project ? placements.project.implementation : placements.shared.implementation,
-        placements.project ? placements.project.group : undefined,
-      );
-      fillGroupChoices(
-        $("place-shared-vault"),
-        $("place-shared-group"),
-        placements.shared.implementation,
-        placements.shared.group,
-      );
-      $("group-new-vault").replaceChildren(
-        ...((placements.vaults || []).map((v) => option(v.implementation, v.implementation))),
-      );
-      // **この画面がどの Project で開かれたか**を言う——人に UUID を選ばせない
-      $("place-project-note").textContent = project
-        ? (placements.project ? "" : "まだ決まっていません（保存すると、この Project 用のグループに紐付きます）")
-        : "この画面は Project の上で開かれていないので、Project の置き場は決められません";
-      for (const id of ["place-project-vault", "place-project-group"]) $(id).disabled = !project;
-    } catch (err) {
-      showError($("groups-error"), err);
-    }
-  }
-  $("place-project-vault").addEventListener("change", () =>
-    fillGroupChoices($("place-project-vault"), $("place-project-group")),
-  );
-  $("place-shared-vault").addEventListener("change", () =>
-    fillGroupChoices($("place-shared-vault"), $("place-shared-group")),
-  );
-
-  // **絞り込みは打つそばから効く**（消してしまっていた・2026-09-14）
+  // **絞り込みは打つそばから効く**（2度消してしまっている・2026-09-14）
   for (const id of ["query", "kind-filter", "target-filter", "backend-filter"]) {
     $(id).addEventListener("input", renderRows);
   }
 
-  $("open-placement").addEventListener("click", () => void openGroups());
-
-  $("group-create").addEventListener("click", async () => {
-    $("groups-error").hidden = true;
-    try {
-      await callTool("createGroup", {
-        implementation: $("group-new-vault").value,
-        name: $("group-new").value.trim(),
-      });
-      $("group-new").value = "";
-      await refreshPlacements();
-    } catch (err) {
-      showError($("groups-error"), err);
-    }
-  });
-
-  onSubmit($("dlg-groups"), $("groups-submit"), $("groups-error"), async () => {
-    // **共通が先**——Project の置き場は「既定と同じでよい」ことが多いので、
-    // 先に既定を決めてから Project を決めるほうが、画面の流れと合う
-    await callTool("setSharedPlacement", {
-      implementation: $("place-shared-vault").value,
-      group: $("place-shared-group").value,
-    });
-    if (project && $("place-project-group").value) {
-      await callTool("setProjectPlacement", {
-        projectId: project.id,
-        implementation: $("place-project-vault").value,
-        group: $("place-project-group").value,
-      });
-    }
-    await refresh();
-  });
+  // **置き場の設定はこの画面に無い**（改訂・2026-09-14、ユーザー指摘）。
+  // 共通の置き場は**設定画面**（ui://banto-vault-directory/config）、
+  // Project の置き場は**最初に保存したときに決まる**——ここは alias を
+  // 見る・作る・消すための面なので、設定を混ぜない（仕様 §2.1）。
 
   // --- 立ち上がり ------------------------------------------------------------
   request("ui/initialize", {

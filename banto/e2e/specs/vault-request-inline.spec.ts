@@ -59,9 +59,10 @@ test("AI が秘密を求めると、会話の中の入力欄から人が登録�
 
   // ---- 2. 打った値が実 Vault に届く -----------------------------------------
   await frame.locator("#value").fill(SECRET);
-  // **「対象」ではなく「どこから使えるようにするか」**（改訂・2026-09-13）。
-  // "instance" は内部語なので画面に出さない（規則11）
-  await frame.locator("#scope").selectOption({ label: `この Project（${PROJECT_NAME}）だけ` });
+  // **聞くのは置き場**（改訂・2026-09-14）——「どこから使えるか」は結果なので
+  // 入力させない。選んだ結果はその場に出る
+  await frame.locator("#scope").selectOption({ label: `この Project（${PROJECT_NAME}）` });
+  await expect(frame.locator("#scope-effect")).toContainText("この Project からだけ使えます");
   // 秘密（`kind: "secret"`）では、鍵専用の案内を出さない——種類で画面が変わる
   await expect(frame.locator("#ssh-note")).toBeHidden();
   await frame.getByRole("button", { name: "登録する" }).click();

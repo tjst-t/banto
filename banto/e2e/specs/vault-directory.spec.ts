@@ -63,9 +63,12 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   await canvas.locator("#new-name").fill(ALIAS);
   await canvas.locator("#new-value").fill(SECRET);
   await canvas.locator("#new-note").fill("E2E が置いた");
-  // **対象に「この Project」が名前で出ている**（人に UUID を選ばせない）
+  // **保存先に「この Project」が名前で出ている**（人に UUID を選ばせない）。
+  // **backend は聞かない**——保存先を選べば Vault は決まる（改訂・2026-09-14）
+  await expect(canvas.locator("#new-impl"), "backend をまだ聞いている").toHaveCount(0);
   await expect(canvas.locator("#new-scope")).toContainText(PROJECT_NAME);
-  await canvas.locator("#new-scope").selectOption({ label: `この Project（${PROJECT_NAME}）だけ` });
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await expect(canvas.locator("#new-scope-effect")).toContainText("この Project からだけ");
   await canvas.getByRole("button", { name: "登録する" }).click();
 
   // ---- 4. 画面が出している中身を、1つずつ見る（規則14）-------------------
@@ -267,7 +270,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
 
   // 作る → 公開鍵が出る
   await canvas.locator("#new-source").selectOption("generated");
-  await canvas.locator("#new-scope").selectOption({ label: "どの Project からでも" });
+  await canvas.locator("#new-scope").selectOption({ index: 1 });
   await canvas.getByRole("button", { name: "登録する" }).click();
   const pubkey = canvas.locator("#pubkey-text");
   await expect(pubkey, "公開鍵の画面が出ない").toBeVisible({ timeout: 120_000 });
@@ -304,36 +307,19 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
 // 「まだバックエンドごとに選ぶ仕様になっている」）。以前は backend の chip から
 // 開いていたので、**同じ問いを backend の数だけ聞いていた**——「この Project の
 // 秘密は結局どこに行くのか」が画面から読めなかった。
-test("置き場は1箇所で決める——Vault とグループを一緒に選ぶ", async ({ page }) => {
-  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-place-"));
+// **置き場の設定は Canvas に無い**（改訂・2026-09-14、ユーザー指摘
+// 「こういうのは Canvas よりも設定画面でやったほうがいい」）。
+// 共通の置き場は設定画面、Project の置き場は最初に保存したときに決まる。
+test("管理 Canvas に置き場の設定を置かない——見る・作る・消すための面", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-noplace-"));
   await openApp(page);
-  await createProject(page, "E2E 置き場", projectRoot);
+  await createProject(page, "E2E 置き場なし", projectRoot);
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
   await page.getByRole("option", { name: /Vault を管理/ }).click();
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
 
-  // **backend の chip から「グループ」を開く道は無い**——同じ問いを2度聞かない
-  await expect(
-    canvas.getByRole("button", { name: "グループ" }),
-    "backend ごとにグループを聞く入口が残っている",
-  ).toHaveCount(0);
-
-  await canvas.getByRole("button", { name: "秘密の置き場…" }).click();
-  await expect(canvas.locator(".dialog-title").filter({ hasText: "秘密の置き場" })).toBeVisible();
-
-  // **Vault とグループを一緒に選ぶ**（Project の置き場・共通の置き場とも）
-  for (const id of ["#place-project-vault", "#place-project-group", "#place-shared-vault", "#place-shared-group"]) {
-    await expect(canvas.locator(id), `${id} が出ていない`).toBeVisible();
-  }
-  // 繋がっている Vault が両方とも選べる
-  await expect(canvas.locator("#place-shared-vault")).toContainText("vault-local");
-  await expect(canvas.locator("#place-shared-vault")).toContainText("vault-infisical");
-
-  // 共通の置き場を保存できる（**ここが「既定」**——素の名前で引ける側）
-  await canvas.locator("#place-shared-vault").selectOption("vault-local");
-  await canvas.locator("#place-shared-group").selectOption("instance");
-  await canvas.getByRole("button", { name: "置き場を保存する" }).click();
-  await expect(canvas.locator("#groups-error"), "保存でエラーが出た").toBeHidden();
+  await expect(canvas.getByRole("button", { name: "秘密の置き場…" }), "設定が Canvas に残っている").toHaveCount(0);
+  await expect(canvas.getByRole("button", { name: "グループ" }), "backend ごとの入口が残っている").toHaveCount(0);
 });

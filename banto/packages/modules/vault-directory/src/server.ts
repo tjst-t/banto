@@ -36,6 +36,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { callerOf, VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
 import { MANAGE_APP_HTML, MANAGE_APP_URI, UI_APP_MIME } from "./manage-app.js";
+import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { REQUEST_APP_HTML, requestAppUri } from "@banto/vault-kit";
 
 /** 会話の中の入力欄。**窓口が1枚だけ持つ**——backend ごとに同じ画面を持たない */
@@ -737,6 +738,16 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
       },
       {
+        // **共通の置き場は設定画面で決める**（決定・2026-09-14、ユーザー指摘
+        // 「こういうのは Canvas よりも設定画面でやったほうがいい」）。
+        // 窓口は `scope: "instance"` なので、banto 全体の設定にちょうど出る
+        uri: CONFIG_APP_URI,
+        name: "Vault の置き場",
+        description: "共通の秘密を新しく作るときの保存先（Vault とグループ）を決める",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config" },
+      },
+      {
         // **AI に見せる目録は、これ1つだけ**（横断済み）。実装名は**載せない**
         // ——AI に「どの金庫か」を選ぶ材料を与えない（選ぶのは人か、窓口）
         uri: "vault://aliases",
@@ -809,6 +820,9 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     }
     if (request.params.uri === REQUEST_APP_URI) {
       return { contents: [{ uri: REQUEST_APP_URI, mimeType: UI_APP_MIME, text: REQUEST_APP_HTML }] };
+    }
+    if (request.params.uri === CONFIG_APP_URI) {
+      return { contents: [{ uri: CONFIG_APP_URI, mimeType: UI_APP_MIME, text: CONFIG_APP_HTML }] };
     }
     if (request.params.uri === MANAGE_APP_URI) {
       return { contents: [{ uri: MANAGE_APP_URI, mimeType: UI_APP_MIME, text: MANAGE_APP_HTML }] };

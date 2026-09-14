@@ -226,3 +226,38 @@ test("設定画面を切り替えると、中身も入れ替わる", async ({ pa
     "戻したのに Infisical の画面が残っている",
   ).toBeVisible({ timeout: 60_000 });
 });
+
+// **共通の置き場は設定画面で決める**（決定・2026-09-14、ユーザー指摘
+// 「こういうのは Canvas よりも設定画面でやったほうがいい」）。
+test("Vault の置き場を、全体の設定画面から決められる", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+
+  const nav = page.getByRole("button", { name: "Vault の置き場", exact: true });
+  await expect(nav, "全体の設定に置き場の面が出ていない").toBeVisible({ timeout: 30_000 });
+  await nav.click();
+
+  const inner = page
+    .locator('[data-testid="module-settings-canvas"][data-module="vault-directory"] iframe')
+    .contentFrame()
+    .frameLocator("iframe");
+  await expect(inner.getByText("共通の秘密の置き場")).toBeVisible({ timeout: 60_000 });
+
+  // **Vault とグループを一緒に選ぶ**（backend ごとに聞かない）
+  await expect(inner.locator("#vault")).toContainText("vault-local");
+  await expect(inner.locator("#vault")).toContainText("vault-infisical");
+  await expect(inner.locator("#group"), "グループの選択肢が空").not.toBeDisabled();
+
+  // **いまどこかを言っている**（推測ではなく Module に聞いた値）
+  await expect(inner.locator("#state")).toContainText("いまは");
+
+  // **Project の置き場はここで決めない**と書いてある（事前設定をやめた）
+  await expect(inner.getByText(/Project ごとの秘密は、ここでは決めません/)).toBeVisible();
+
+  // 保存できる
+  await inner.locator("#vault").selectOption("vault-local");
+  await inner.locator("#group").selectOption("instance");
+  await inner.getByRole("button", { name: "置き場を保存する" }).click();
+  await expect(inner.locator("#error"), "保存でエラーが出た").toBeHidden();
+  await expect(inner.locator("#state")).toContainText("vault-local / instance");
+});

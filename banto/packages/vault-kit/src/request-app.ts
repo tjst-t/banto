@@ -111,10 +111,12 @@ export const REQUEST_APP_HTML = `<!doctype html>
     <select id="impl"></select>
   </label>
 
-  <!-- **「対象」では何を聞かれているか分からない**（訂正・2026-09-13、ユーザー
-       指摘）。聞いているのは「どこから使えるようにするか」で、instance は
-       banto の内部語（規則11）。既定はいま開いている Project -->
-  <label class="field"><span>どこから使えるようにするか</span><select id="scope"></select></label>
+  <!-- **聞くのは置き場、出すのは範囲**（改訂・2026-09-14、ユーザー指摘）。
+       設計は「グループが唯一の真実で、使える範囲は導出値」なのに、以前は
+       **導出値のほうを人に入力させていた**（「どこから使えるようにするか」）
+       ——順序が逆だった。既定はいま開いている Project -->
+  <label class="field"><span>保存先</span><select id="scope"></select></label>
+  <p class="muted" id="scope-effect"></p>
 
   <div class="row">
     <button id="submit">登録する</button>
@@ -191,6 +193,15 @@ ${ALIAS_KIND_RULES_JS}
     applySource();
   }
 
+  /** **選んだ結果がどうなるか**を、その場に出す（導出値は見せるもの）。 */
+  function applyScopeEffect() {
+    $("scope-effect").textContent =
+      $("scope").value === "project"
+        ? "→ この Project からだけ使えます"
+        : "→ どの Project からでも使えます";
+    reportHeight();
+  }
+
   function applySource() {
     const k = spec();
     const generated = $("source").value === "generated";
@@ -202,6 +213,7 @@ ${ALIAS_KIND_RULES_JS}
     reportHeight();
   }
   $("source").addEventListener("change", applySource);
+  $("scope").addEventListener("change", applyScopeEffect);
 
   /** いま使っている入力欄（種類で1行か複数行かが変わる）。 */
   const valueInput = () => (spec().multiline ? $("value-multiline") : $("value"));
@@ -317,9 +329,10 @@ ${ALIAS_KIND_RULES_JS}
     project = ctx && typeof ctx.id === "string" ? { id: ctx.id, name: String(ctx.name || ctx.id) } : null;
     // **人の言葉で書く**（訂正・2026-09-13）。"instance" は banto の内部語で、
     // 画面に出す語ではない（規則11）。既定はいま開いている Project
-    const scopes = [new Option("どの Project からでも", "instance")];
-    if (project) scopes.unshift(new Option("この Project（" + project.name + "）だけ", "project"));
+    const scopes = [new Option("共通（どの Project からでも使う）", "instance")];
+    if (project) scopes.unshift(new Option("この Project（" + project.name + "）", "project"));
     $("scope").replaceChildren(...scopes);
+    applyScopeEffect();
 
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
     applyAsked();
