@@ -433,8 +433,14 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       ),
       tool(
         "migrateAlias",
-        "alias を別の置き場へ移す（Vault をまたいでもよい）",
-        { name: { type: "string" }, toImplementation: { type: "string" }, toGroup: { type: "string" } },
+        "alias を別の置き場へ移す（Vault をまたいでもよい）。移す元は implementation / group で指定する——省くと既定の解決（Project ＞ 共通の既定）で引く",
+        {
+          name: { type: "string" },
+          implementation: { type: "string", description: "移す元の Vault（省略可）" },
+          group: { type: "string", description: "移す元のグループ（省略可）" },
+          toImplementation: { type: "string" },
+          toGroup: { type: "string" },
+        },
         ["name", "toGroup"],
       ),
       tool(
@@ -778,12 +784,39 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       case "migrateAlias": {
         const name = requiredString(args.name, "name");
         const toGroup = requiredString(args.toGroup, "toGroup");
+        const fromImpl = optionalString(args.implementation, "implementation");
+        const fromGroup = optionalString(args.group, "group");
         const { aliases } = await crossAliases();
-        const found = resolveName(name, aliases, callerOf(callMeta), await defaultVault());
-        if (!found) throw new Error(`alias "${name}" はどの Vault にもありません`);
+        // **移す元を指定したら、そこだけを見る**（既定解決に落とさない）。
+        // 同じ名前が複数の置き場に在るのは普通のこと——落としてしまうと、
+        // 一覧で選んだ行とは**別の秘密**を動かす（実測で踏んだ・2026-09-14）
+        const found =
+          fromImpl || fromGroup
+            ? aliases.find(
+                (a) =>
+                  a.name === name &&
+                  (fromImpl === undefined || a.implementation === fromImpl) &&
+                  (fromGroup === undefined || a.group === fromGroup),
+              )
+            : resolveName(name, aliases, callerOf(callMeta), await defaultVault());
+        if (!found) {
+          const where = [fromImpl, fromGroup].filter(Boolean).join(" / ");
+          throw new Error(
+            where ? `alias "${name}" は ${where} にありません` : `alias "${name}" はどの Vault にもありません`,
+          );
+        }
         const toImpl = optionalString(args.toImplementation, "toImplementation") ?? found.implementation;
+        // **動かないなら、動いたと言わない**（規則1）——同じ置き場を指した場合
+        if (toImpl === found.implementation && toGroup === found.group) {
+          return text({ ok: true, moved: false, reason: "もう その置き場に在ります" });
+        }
         await migrateOne(String(found.name), found.implementation, String(found.group), toImpl, toGroup);
-        return text({ ok: true, from: { implementation: found.implementation, group: found.group }, to: { implementation: toImpl, group: toGroup } });
+        return text({
+          ok: true,
+          moved: true,
+          from: { implementation: found.implementation, group: found.group },
+          to: { implementation: toImpl, group: toGroup },
+        });
       }
 
       case "setSharedPlacement": {

@@ -736,6 +736,66 @@ test("Vault をまたいで移せる——値は保たれる", async () => {
   );
 });
 
+// 同じ名前が複数の置き場に在るのは普通のこと（Project ごとの TOKEN など）。
+// **指定を無視して既定解決に落ちると、一覧で選んだ行とは別の秘密が動く**
+// ——実機で踏んだ（2026-09-14）。指定がそのまま効くことを測る
+test("移す元を指定したら、その置き場のものだけが動く（同名の別物を動かさない）", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "dest" } });
+    // 素の名前では p1 のものが引かれる（Project ＞ 共通）
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "in-project", forProject: "p1" },
+    });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "in-shared", group: "instance" },
+    });
+
+    // **共通のほうを**移す
+    await ui.callTool({
+      name: "migrateAlias",
+      arguments: { name: "TOKEN", group: "instance", toGroup: "dest" },
+    });
+
+    // 動いたのは共通のほう。Project のものは元の場所に、元の値のまま
+    assert.equal(await valueOf(vaults, "vault-local", "TOKEN", "dest"), "in-shared");
+    assert.equal(await valueOf(vaults, "vault-local", "TOKEN", "p1"), "in-project");
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const groups = aliases
+      .filter((a: { name: string }) => a.name === "TOKEN")
+      .map((a: { group: string }) => a.group)
+      .sort();
+    assert.deepEqual(groups, ["dest", "p1"], `置き場が想定と違う: ${JSON.stringify(aliases)}`);
+  });
+});
+
+test("もう その置き場に在るなら、動いたと言わない", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "stay", kind: "secret", value: "v", group: "instance" },
+    });
+    const r = parse(
+      await ui.callTool({ name: "migrateAlias", arguments: { name: "stay", group: "instance", toGroup: "instance" } }),
+    );
+    assert.equal(r.moved, false, `動いていないのに moved=${r.moved}: ${JSON.stringify(r)}`);
+  });
+});
+
+test("移す元に無ければ、どこを見たかを言って止まる", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "here", kind: "secret", value: "v", group: "instance" },
+    });
+    await assert.rejects(
+      () => ui.callTool({ name: "migrateAlias", arguments: { name: "here", group: "nowhere", toGroup: "dest" } }),
+      /nowhere にありません/,
+    );
+  });
+});
+
 test("移す先に同じ名前があったら、何もしない（黙って上書きしない）", async () => {
   await withUi(async ({ ui, vaults }) => {
     await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "dest" } });
