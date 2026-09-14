@@ -59,15 +59,22 @@ export function toPublic(meta: AliasMeta): PublicAliasMeta {
  * alias のメタデータの置き場。**backend ごとに実装が変わる**（上記）。
  * 値そのものは扱わない——ここが持つのは「どんな名前の何が、どこにあるか」まで。
  */
+/**
+ * alias の**鍵は置き場**（`backendPath`）（改訂・2026-09-13）。
+ *
+ * 以前は名前を鍵にしていたが、**名前だけでは一意にならなくなった**
+ * ——同じ名前が「共通」と「その Project」の両方に在るのは正しい状態で、
+ * 素の名前と修飾名で引き分ける（§2.1）。名前から1つに決めるのは kit の仕事
+ * （呼び出し元の Project が要る）で、置き場の管理はここの仕事。
+ */
 export interface AliasStore {
   /** 立ち上がりの読み込み。 */
   load(): Promise<void>;
   list(): Promise<AliasMeta[]>;
-  get(name: string): Promise<AliasMeta | undefined>;
   create(meta: AliasMeta): Promise<void>;
-  update(name: string, patch: AliasPatch): Promise<void>;
-  delete(name: string): Promise<void>;
-  markUsed(name: string): Promise<void>;
+  update(backendPath: string, patch: AliasPatch): Promise<void>;
+  delete(backendPath: string): Promise<void>;
+  markUsed(backendPath: string): Promise<void>;
 }
 
 /**
@@ -86,7 +93,7 @@ export class LocalFileAliasStore implements AliasStore {
   async load(): Promise<void> {
     if (!existsSync(this.filePath)) return;
     const raw = JSON.parse(await readFile(this.filePath, "utf8")) as AliasMeta[];
-    this.aliases = new Map(raw.map((a) => [a.name, a]));
+    this.aliases = new Map(raw.map((a) => [a.backendPath, a]));
   }
 
   /**
@@ -121,13 +128,11 @@ export class LocalFileAliasStore implements AliasStore {
     return Array.from(this.aliases.values());
   }
 
-  async get(name: string): Promise<AliasMeta | undefined> {
-    return this.aliases.get(name);
-  }
-
   async create(meta: AliasMeta): Promise<void> {
-    if (this.aliases.has(meta.name)) throw new Error(`alias "${meta.name}" already exists`);
-    this.aliases.set(meta.name, meta);
+    if (this.aliases.has(meta.backendPath)) {
+      throw new Error(`"${meta.backendPath}" には既に別の秘密があります`);
+    }
+    this.aliases.set(meta.backendPath, meta);
     await this.save();
   }
 
@@ -139,9 +144,9 @@ export class LocalFileAliasStore implements AliasStore {
    * **消したいときは `null`**——「触らない」と「空にする」は別の意思なので、
    * 同じ `undefined` で表さない（規則2）。
    */
-  async update(name: string, patch: AliasPatch): Promise<void> {
-    const existing = this.aliases.get(name);
-    if (!existing) throw new Error(`alias "${name}" not found`);
+  async update(backendPath: string, patch: AliasPatch): Promise<void> {
+    const existing = this.aliases.get(backendPath);
+    if (!existing) throw new Error(`alias "${backendPath}" not found`);
     const next: AliasMeta = { ...existing };
     // 差し替え可能な項目は AliasPatch が絞っているので、必須の項目は消えない
     const fields = next as unknown as Record<string, unknown>;
@@ -150,17 +155,17 @@ export class LocalFileAliasStore implements AliasStore {
       if (value === null) delete fields[key];
       else fields[key] = value;
     }
-    this.aliases.set(name, next);
+    this.aliases.set(backendPath, next);
     await this.save();
   }
 
-  async delete(name: string): Promise<void> {
-    this.aliases.delete(name);
+  async delete(backendPath: string): Promise<void> {
+    this.aliases.delete(backendPath);
     await this.save();
   }
 
-  async markUsed(name: string): Promise<void> {
-    const existing = this.aliases.get(name);
+  async markUsed(backendPath: string): Promise<void> {
+    const existing = this.aliases.get(backendPath);
     if (existing) {
       existing.lastUsedAt = new Date().toISOString();
       await this.save();

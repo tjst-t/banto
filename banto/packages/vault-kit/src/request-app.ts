@@ -103,6 +103,10 @@ export const REQUEST_APP_HTML = `<!doctype html>
     作ったあとに出る公開鍵を、GitHub などに登録してください
   </p>
 
+  <!-- **既定があるので、ふだんは聞かない**（改訂・2026-09-13）。以前は
+       backend が2本以上あると必ず選ばせていたが、それは**決めていないことを
+       人に押し付けていた**。いまは窓口が既定を持つので、ここは常に隠す
+       ——変えたいときは管理画面から（そこは「置き場を選ぶ」のが主題の面） -->
   <label class="field" id="impl-field" hidden><span>どの Vault に入れるか</span>
     <select id="impl"></select>
   </label>
@@ -292,30 +296,10 @@ ${ALIAS_KIND_RULES_JS}
     }
   });
 
-  /**
-   * **入れ先の候補**（追加・2026-09-12、窓口の導入）。
-   *
-   * vault は役割で、実装は複数ありうる。窓口（vault-directory）に繋がって
-   * いるときは listVaults が答えるので、**2本以上あるときだけ選ばせる**
-   * ——1本しか無いのに選択肢を出さない（規則13）。
-   *
-   * backend 単体で他の MCP ホストに繋いだときは listVaults が無いので、
-   * その場合は**何も出さない**（自分が唯一の入れ先）。
-   *
-   * （※ここはテンプレート文字列の中——コメントにバッククォートを書くと
-   *   そこで文字列が切れる。実際に一度やった）
-   */
-  async function loadImplementations() {
-    let impls;
-    try {
-      impls = await callTool("listVaults", {});
-    } catch {
-      return; // 窓口ではない（backend 単体）——入れ先は自分しか無い
-    }
-    if (!Array.isArray(impls) || impls.length < 2) return;
-    $("impl").replaceChildren(...impls.map((i) => new Option(i, i)));
-    $("impl-field").hidden = false;
-  }
+  // **どの Vault に入れるかは聞かない**（改訂・2026-09-13）。窓口が既定を
+  // 持つので、置き場を添えなければ既定へ入る。ここで毎回選ばせるのは
+  // 「決めていないこと」を人に押し付ける形だった。
+
 
   request("ui/initialize", {
     protocolVersion: "2026-01-26",
@@ -339,7 +323,6 @@ ${ALIAS_KIND_RULES_JS}
 
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
     applyAsked();
-    await loadImplementations();
     reportHeight();
   }).catch((err) => {
     // **出せなかったことを、出せたように見せない**（規則2・規則13）

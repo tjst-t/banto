@@ -1545,6 +1545,23 @@
       ],
       "spec": "docs/specs/v4-modules.md §2.1",
       "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
+    },
+    {
+      "id": "vault-placement-and-resolution",
+      "title": "置き場と解決を設計し直す——既定は1つ、例外は明示、既定の外は修飾名",
+      "status": "done",
+      "why": "「Infisical の接続先を変えたら？」から始まり、黙って空になる／黙って上書きする／毎回どの Vault か聞かれる、が同じ根だと分かった。「どこに置くか」と「どう引くか」が混ざっていた。",
+      "done": [
+        "既定の置き場（Project に1つ・共通に1つ）。既定の既定は vault-local——黙って外へ出さない",
+        "解決：素の名前は Project ＞ 共通の既定、既定の外は修飾名（vault-local:name）。エラー状態が消えた",
+        "一覧に出る名前が、そのまま使える名前（AI は見たとおりに書けば引ける）",
+        "Project の秘密は1つの Vault に——窓口が不変条件として守る（紐付けは各 Vault のまま）",
+        "alias の同一性を (Vault, グループ, 名前) にした。AliasStore の鍵を名前から置き場へ",
+        "画面から「どの Vault に入れるか」を消した（既定があるので、変えたいときだけ）",
+        "dev の Infisical に溜まった試験のゴミ173フォルダを掃除（一覧 1134ms → 582ms）"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.1",
+      "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
     }
   ],
   "phase1": {

@@ -28,7 +28,7 @@ import {
   CANVAS_META_KEY,
 } from "@banto/module-contract";
 import { REQUEST_APP_HTML, requestAppUri } from "./request-app.js";
-import { toPublic, type AliasStore } from "./alias-store.js";
+import { toPublic, type AliasMeta, type AliasStore } from "./alias-store.js";
 import { GroupBindings } from "./group-bindings.js";
 import type { VaultBackend } from "./backend.js";
 
@@ -452,6 +452,51 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     return callerOf(meta);
   }
 
+  /**
+   * その置き場が空いているか。**同じ (グループ, 名前) だけを見る**
+   * （改訂・2026-09-13）——同じ名前が別のグループに在るのは正しい状態で、
+   * 素の名前と修飾名で引き分けられる（§2.1）。
+   */
+  /** その置き場のグループ名。 */
+  function groupOf(meta: { backendPath: string }): string {
+    return meta.backendPath.slice(0, meta.backendPath.indexOf("/"));
+  }
+
+  /**
+   * **名前から alias を1つに決める**（追加・2026-09-13）。
+   *
+   * 同じ名前が「共通」と「その Project」の両方に在りうるので、名前だけでは
+   * 決まらない。**呼び出し元の Project が分かれば決まる**——候補は最大2つで、
+   * **Project が共通に勝つ**（狭い文脈が広い文脈を上書きする、§2.1）。
+   *
+   * 窓口が置き場まで分かっているときは `group` を渡してくる。そのときはそれが正。
+   */
+  async function findAlias(
+    name: string,
+    group: string | undefined,
+    rawMeta: Record<string, unknown> | undefined,
+  ): Promise<AliasMeta | undefined> {
+    const all = await registry.list();
+    const named = all.filter((m) => m.name === name);
+    if (group) return named.find((m) => groupOf(m) === group);
+    const caller = callerOf(rawMeta);
+    const shared = bindings.sharedGroup();
+    if (caller && "project" in caller) {
+      const mine = bindings.get(caller.project);
+      const own = mine && named.find((m) => groupOf(m) === mine);
+      if (own) return own;
+    }
+    const inShared = named.find((m) => groupOf(m) === shared);
+    if (inShared) return inShared;
+    // 人の管理面（admin）は置き場を指定せずに引くことがある——1つなら通す
+    return named.length === 1 ? named[0] : undefined;
+  }
+
+  async function assertPlaceIsFree(backendPath: string): Promise<void> {
+    const taken = (await registry.list()).find((m) => m.backendPath === backendPath);
+    if (taken) throw new Error(`"${backendPath}" には既に別の秘密があります`);
+  }
+
   /** 値を渡してよいか。**人の管理面（admin）は通す**、Project は紐付け次第。 */
   function assertUsable(meta: { backendPath: string }, name: string, rawMeta: Record<string, unknown> | undefined) {
     const caller = callerFrom(rawMeta);
@@ -490,7 +535,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     switch (request.params.name) {
       case "requestAlias": {
         const name = requiredString(args.name, "name");
-        if (await registry.get(name)) {
+        if (await findAlias(name, optionalString(args.group, "group"), callMeta)) {
           return { content: [{ type: "text", text: `alias "${name}" は既に登録されています` }] };
         }
         // **会話の中に入力欄を出して、その場で人に入れてもらう**
@@ -519,16 +564,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "resolveAlias": {
         const name = requiredString(args.name, "name");
-        const meta = await registry.get(name);
+        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         assertUsable(meta, name, callMeta);
         const value = await backend.getSecret(meta.backendPath);
-        await registry.markUsed(name);
+        await registry.markUsed(meta.backendPath);
         return { content: [{ type: "text", text: String(value) }] };
       }
       case "getPublicKey": {
         const name = requiredString(args.name, "name");
-        const meta = await registry.get(name);
+        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         if (meta.kind !== "ssh-identity") {
           throw new Error(`alias "${name}" は ssh-identity ではありません（${meta.kind}）`);
@@ -540,7 +585,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");
-        const meta = await registry.get(identity);
+        const meta = await findAlias(identity, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`identity "${identity}" not found`);
         if (meta.kind !== "ssh-identity") {
           throw new Error(`alias "${identity}" は ssh-identity ではありません（${meta.kind}）`);
@@ -551,7 +596,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "verify": {
         const alias = requiredString(args.alias, "alias");
-        const meta = await registry.get(alias);
+        const meta = await findAlias(alias, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${alias}" not found`);
         assertUsable(meta, alias, callMeta);
         const key = await backend.getSecret(meta.backendPath);
@@ -575,11 +620,6 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const name = requiredString(args.name, "name");
         const kind = oneOf(args.kind, ALIAS_KINDS, "kind");
         const value = requiredString(args.value, "value");
-        // **既にある名前を黙って上書きしない**（追加・2026-09-13、実測で踏んだ）。
-        // `generateSecret` にはこの検査があったのに、こちらには無かった。
-        // backend に既にある秘密も alias として数えるようになったので、
-        // **人が別の用途で置いた秘密を上書きする**経路がここだった
-        if (await registry.get(name)) throw new Error(`alias "${name}" は既にあります`);
         // **置き場を直接受ける**（改訂・2026-09-13）。`scope` は保存せず
         // 置き場から導くので、入口でも「どこに置くか」だけを聞く
         const group = await groupForNewAlias({
@@ -587,6 +627,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           forProject: optionalString(args.forProject, "forProject"),
         });
         const backendPath = `${group}/${name}`;
+        // **既にあるものを黙って上書きしない**（追加・2026-09-13、実測で踏んだ）。
+        // backend に既にある秘密も alias として数えるようになったので、
+        // **人が別の用途で置いた秘密を上書きする**経路がここだった。
+        // 見るのは**置き場ごと**——同じ名前が別のグループに在るのは正しい状態
+        // （共通と Project、素の名前と修飾名で引き分けられる）
+        await assertPlaceIsFree(backendPath);
         await backend.putSecret(backendPath, value);
         await registry.create({
           name,
@@ -599,13 +645,13 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       case "generateSecret": {
         const name = requiredString(args.name, "name");
         const kind = args.kind === undefined ? "secret" : oneOf(args.kind, GENERATABLE_KINDS, "kind");
-        if (await registry.get(name)) throw new Error(`alias "${name}" は既にあります`);
         const note = optionalString(args.note, "note");
         const group = await groupForNewAlias({
           explicitGroup: optionalString(args.group, "group"),
           forProject: optionalString(args.forProject, "forProject"),
         });
         const common = { name, note };
+        await assertPlaceIsFree(`${group}/${name}`);
 
         if (kind === "ssh-identity") {
           // **秘密鍵の作り方は backend の仕事**（仕様 §2.1 D）——返るのは公開鍵と
@@ -655,7 +701,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         // ものかだけ。値の差し替えは作り直し（消して作る）にする：中途半端に
         // 上書きできると、「いつ何に変わったか」が alias の外から分からなくなる
         const name = requiredString(args.name, "name");
-        const existing = await registry.get(name);
+        const existing = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!existing) throw new Error(`alias "${name}" not found`);
         // **置き場は動かせない**（改訂・2026-09-13）。以前は `scope` を
         // 付け替えられたが、**値は元のグループに残ったまま**だったので、
@@ -666,14 +712,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             "使える範囲は alias では変えられません（グループの紐付けを変えるか、作り直してください）",
           );
         }
-        await registry.update(name, { note: optionalString(args.note, "note") });
+        await registry.update(existing.backendPath, { note: optionalString(args.note, "note") });
         return { content: [{ type: "text", text: `updated ${name}` }] };
       }
       case "deleteAlias": {
         const name = requiredString(args.name, "name");
-        const meta = await registry.get(name);
-        if (meta) await backend.deleteSecret(meta.backendPath);
-        await registry.delete(name);
+        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
+        if (meta) {
+          await backend.deleteSecret(meta.backendPath);
+          await registry.delete(meta.backendPath);
+        }
         return { content: [{ type: "text", text: `deleted ${name}` }] };
       }
       case "listAliases": {
@@ -824,7 +872,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     }
     const match = request.params.uri.match(/^vault:\/\/aliases\/(.+)$/);
     if (match) {
-      const meta = await registry.get(match[1]!);
+      const meta = await findAlias(match[1]!, undefined, request.params._meta as Record<string, unknown> | undefined);
       if (!meta) throw new Error("not found");
       assertUsable(meta, match[1]!, request.params._meta as Record<string, unknown> | undefined);
       return {

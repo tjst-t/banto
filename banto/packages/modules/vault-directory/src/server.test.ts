@@ -45,7 +45,7 @@ interface Ctx {
 
 async function withUi(
   fn: (ctx: Ctx) => Promise<void>,
-  opts: { vaultNames?: string[]; broken?: Map<string, string> } = {},
+  opts: { vaultNames?: string[]; broken?: Map<string, string>; dataDir?: string } = {},
 ): Promise<void> {
   const dirs: string[] = [];
   const vaults = new Map<string, Client>();
@@ -64,7 +64,10 @@ async function withUi(
       vaults.set(name, client);
     }
 
-    const uiServer = createVaultDirectoryServer({ relay: relayTo(vaults, opts.broken) });
+    const uiServer = createVaultDirectoryServer({
+      relay: relayTo(vaults, opts.broken),
+      dataDir: opts.dataDir,
+    });
     const [us, uc] = InMemoryTransport.createLinkedPair();
     const ui = new Client({ name: "canvas", version: "0.0.0" });
     await Promise.all([uiServer.connect(us), ui.connect(uc)]);
@@ -149,47 +152,125 @@ test("横断した目録には、どの Vault のものかを載せない（AI �
   );
 });
 
-test("lookupAlias は在りかを返す——値は返さない。同名が2つなら通さない", async () => {
+test("lookupAlias は在りかを返す——値は返さない", async () => {
   await withUi(
     async ({ ui }) => {
       await ui.callTool({
         name: "createAlias",
         arguments: { implementation: "vault-keychain", name: "where", kind: "secret", value: "v" },
       });
-      const found = parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "where" } }));
+      const found = parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "vault-keychain:where" } }));
       assert.equal(found.implementation, "vault-keychain");
       assert.equal(found.kind, "secret");
-      assert.equal(JSON.stringify(found).includes("\"v\""), false, "値が返っている");
+      assert.equal(JSON.stringify(found).includes('"v"'), false, "値が返っている");
 
       await assert.rejects(
         () => ui.callTool({ name: "lookupAlias", arguments: { name: "無い名前" } }),
         /どの Vault にもありません/,
       );
     },
-    { vaultNames: ["vault", "vault-keychain"] },
+    { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
 
-test("同じ名前は2つ作らせない——名前で引く以上、一意でなければ決められない", async () => {
+// **同じ名前が2つあっても止まらない**（改訂・2026-09-13、設計し直し）。
+// 素の名前で引けるのは「この Project のもの」と「共通の**既定の**もの」だけ。
+// それ以外は修飾名でだけ引ける——**候補が複数になる状態が構造的に消えた**。
+test("同じ名前が2つあっても決まる——既定が素の名前、もう一方は修飾名", async () => {
+  await withUi(
+    async ({ ui }) => {
+      // 既定（vault-local）の共通グループと、もう一方の共通グループに同じ名前
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-local", name: "TOKEN", kind: "secret", value: "from-default" },
+      });
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-keychain", name: "TOKEN", kind: "secret", value: "from-other" },
+      });
+
+      // 素の名前 → 既定のほう
+      assert.equal(
+        parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "TOKEN" }, _meta: forProject("p") }))
+          .implementation,
+        "vault-local",
+      );
+      // 修飾名 → そちらを直に指す
+      assert.equal(
+        parse(
+          await ui.callTool({ name: "lookupAlias", arguments: { name: "vault-keychain:TOKEN" }, _meta: forProject("p") }),
+        ).implementation,
+        "vault-keychain",
+      );
+
+      // **一覧に出る名前が、そのまま使える名前**
+      const seen = (
+        JSON.parse(
+          ((await ui.readResource({ uri: "vault://aliases", _meta: forProject("p") })).contents as { text: string }[])[0]!
+            .text,
+        ) as Array<{ name: string }>
+      ).map((a) => a.name);
+      assert.deepEqual(seen.sort(), ["TOKEN", "vault-keychain:TOKEN"]);
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
+});
+
+test("Project のものが、共通の既定に勝つ", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "shared" },
+    });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", forProject: "p", group: "p-group", value: "project" },
+    });
+    await ui.callTool({ name: "setGroupBinding", arguments: { projectId: "p", group: "p-group" } });
+
+    const found = parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "TOKEN" }, _meta: forProject("p") }));
+    assert.equal(found.group, "p-group", "共通のほうが勝っている（狭い文脈が負けている）");
+    // 別の Project からは共通のほうが見える
+    const other = parse(
+      await ui.callTool({ name: "lookupAlias", arguments: { name: "TOKEN" }, _meta: forProject("q") }),
+    );
+    assert.equal(other.group, "instance");
+  });
+});
+
+test("同じ置き場に同じ名前は作らせない——別のグループなら作れる", async () => {
+  // **名前は全体で一意ではなくなった**（改訂・2026-09-13）。素の名前と修飾名で
+  // 引き分けられるので、同じ名前が別のグループに在るのは正しい状態。
+  // 作れないのは**同じ置き場**だけ——そこは backend のキーがぶつかる
   await withUi(
     async ({ ui }) => {
       await ui.callTool({
         name: "createAlias",
-        arguments: { implementation: "vault", name: "dup", kind: "secret", value: "v1" },
+        arguments: { implementation: "vault-local", name: "dup", kind: "secret", value: "v1" },
       });
+      // 別の Vault なら作れる（修飾名で引き分く）
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-keychain", name: "dup", kind: "secret", value: "v2" },
+      });
+      // 同じ Vault でも、別のグループなら作れる
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-local", name: "dup", kind: "secret", group: "other", value: "v3" },
+      });
+      // **同じ置き場は作れない**
       await assert.rejects(
         () =>
           ui.callTool({
             name: "createAlias",
-            arguments: { implementation: "vault-keychain", name: "dup", kind: "secret", value: "v2" },
+            arguments: { implementation: "vault-local", name: "dup", kind: "secret", value: "v4" },
           }),
-        /既に vault にあります/,
+        /には既に別の秘密があります/,
       );
     },
-    { vaultNames: ["vault", "vault-keychain"] },
+    { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
-
 test("実装が1本しか無いときは、どこに入れるか聞かない", async () => {
   await withUi(async ({ ui }) => {
     // `implementation` を渡さなくても通る（選択肢が1つのときに選ばせない）
@@ -391,8 +472,10 @@ test("横断した目録は、その Project から使えるものだけ（backe
           ) as Array<{ name: string }>
         ).map((a) => a.name);
 
-      assert.deepEqual((await seenBy("proj-a")).sort(), ["a-only", "for-all"]);
-      assert.deepEqual(await seenBy("proj-b"), ["for-all"]);
+      // **既定（vault-local）の外に居る共通のものは、修飾名で出る**
+      // （決定・2026-09-13）——一覧に出る名前が、そのまま使える名前
+      assert.deepEqual((await seenBy("proj-a")).sort(), ["a-only", "vault-keychain:for-all"]);
+      assert.deepEqual(await seenBy("proj-b"), ["vault-keychain:for-all"]);
     },
     { vaultNames: ["vault", "vault-keychain"] },
   );
@@ -478,4 +561,78 @@ test("公開鍵は AI からも読める——秘密鍵は通らない、使え�
       /どの Vault にもありません/,
     );
   });
+});
+
+// **既定の置き場**（決定・2026-09-13、ユーザーとの設計）。
+// これがあるので、画面は毎回「どの Vault に入れるか」を聞かない
+// ——決めていないことを人に押し付けない。
+test("既定の Vault が、置き場と素の名前の両方を決める", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-vd-default-"));
+  try {
+    await withUi(
+      async ({ ui }) => {
+        // **既定の既定は vault-local**——黙って外（クラウド）へ出さない
+        assert.equal(parse(await ui.callTool({ name: "getDefaultVault", arguments: {} })).vault, "vault-local");
+
+        // 置き場を言わなければ既定へ入る
+        await ui.callTool({ name: "createAlias", arguments: { name: "A", kind: "secret", value: "v" } });
+        const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+        assert.equal(aliases.find((a: { name: string }) => a.name === "A").implementation, "vault-local");
+
+        // 既定を変えると、置き場も素の名前も変わる
+        await ui.callTool({ name: "setDefaultVault", arguments: { vault: "vault-keychain" } });
+        await ui.callTool({ name: "createAlias", arguments: { name: "B", kind: "secret", value: "v" } });
+        const after = parse(await ui.callTool({ name: "listAliases", arguments: {} })).aliases;
+        assert.equal(after.find((a: { name: string }) => a.name === "B").implementation, "vault-keychain");
+
+        // **既定を変えると名前が変わる**（仕様に書いた性質）——A は修飾名になる
+        const seen = (
+          JSON.parse(
+            ((await ui.readResource({ uri: "vault://aliases", _meta: forProject("p") })).contents as {
+              text: string;
+            }[])[0]!.text,
+          ) as Array<{ name: string }>
+        ).map((a) => a.name);
+        assert.ok(seen.includes("B"), "新しい既定のものが素の名前で出ていない");
+        assert.ok(seen.includes("vault-local:A"), "既定の外のものが修飾名で出ていない");
+
+        // 繋がっていない Vault は既定にできない（居ないものを既定と言い張らない）
+        await assert.rejects(
+          () => ui.callTool({ name: "setDefaultVault", arguments: { vault: "vault-nowhere" } }),
+          /繋がっていません/,
+        );
+      },
+      { vaultNames: ["vault-local", "vault-keychain"], dataDir: dir },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// **Project の秘密は1つの Vault にまとめる**（決定・2026-09-13、ユーザー指摘）。
+// 1つの Project の秘密を2つの秘密管理に分ける理由が無い。**構造的にそうする**
+// ので、Project 層では名前の衝突が起こりえない。
+test("同じ Project を2つの Vault に紐付けさせない", async () => {
+  await withUi(
+    async ({ ui }) => {
+      await ui.callTool({
+        name: "setGroupBinding",
+        arguments: { implementation: "vault-local", projectId: "p1", group: "g1" },
+      });
+      await assert.rejects(
+        () =>
+          ui.callTool({
+            name: "setGroupBinding",
+            arguments: { implementation: "vault-keychain", projectId: "p1", group: "g2" },
+          }),
+        /既に vault-local に紐付いています/,
+      );
+      // 別の Project なら、別の Vault に紐付けてよい
+      await ui.callTool({
+        name: "setGroupBinding",
+        arguments: { implementation: "vault-keychain", projectId: "p2", group: "g2" },
+      });
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
 });

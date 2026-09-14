@@ -82,12 +82,12 @@ test("alias の台帳：暗号化された値に触れずにメタデータを�
     const registry = new LocalFileAliasStore(dir);
     await registry.load();
     await registry.create({ name: "github-token", kind: "secret", backendPath: "g1/github-token" });
-    const meta = await registry.get("github-token");
+    const meta = (await registry.list()).find((a) => a.name === "github-token");
     assert.equal(meta?.kind, "secret");
     assert.equal(meta?.lastUsedAt, undefined);
 
-    await registry.markUsed("github-token");
-    assert.ok((await registry.get("github-token"))?.lastUsedAt);
+    await registry.markUsed("g1/github-token");
+    assert.ok((await registry.list()).find((a) => a.name === "github-token")?.lastUsedAt);
   });
 });
 

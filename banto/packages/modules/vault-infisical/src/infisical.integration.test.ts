@@ -129,18 +129,18 @@ test("メタデータは Infisical の中にある——別のホストからで
 
   // **別のホストのつもりで、新しい接続から読む**（手元の写しを一切使わない）
   const otherHost = new InfisicalAliasStore(await connected());
-  const seen = await otherHost.get(name);
+  const seen = (await otherHost.list()).find((a) => a.name === name);
   assert.ok(seen, "別のホストから alias が見えない（メタデータが手元にしか無い）");
   assert.equal(seen.kind, "secret");
   assert.equal(seen.name, name, "alias 名が置き場から作り直されている");
   assert.equal(seen.note, "CI 用");
   assert.equal(seen.backendPath, `${g}/${name}`);
 
-  await store.markUsed(name);
-  assert.ok((await otherHost.get(name))?.lastUsedAt, "使った印も共有されていない");
+  await store.markUsed(`${g}/${name}`);
+  assert.ok(((await otherHost.list()).find((a) => a.name === name))?.lastUsedAt, "使った印も共有されていない");
 
   await backend.deleteSecret(`${g}/${name}`);
-  assert.equal(await otherHost.get(name), undefined, "消しても残っている");
+  assert.equal((await otherHost.list()).find((a) => a.name === name), undefined, "消しても残っている");
 });
 
 // **決め直した**（訂正・2026-09-13、ユーザー指摘）。以前ここは
@@ -340,7 +340,7 @@ test("banto 以外が置いた秘密も読める——そして同じ名前で�
           arguments: { name: key, kind: "secret", value: "BANTO", forProject: "p-read" },
           _meta: ADMIN,
         }),
-      /既にあります/,
+      /には既に別の秘密があります/,
     );
     const after = await conn.secrets().getSecret({ ...conn.scope, secretName: key, secretPath: `/${group}` });
     assert.equal(after.secretValue, "HUMAN", "人が置いた値が上書きされた");

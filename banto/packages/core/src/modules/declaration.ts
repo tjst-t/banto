@@ -225,6 +225,9 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       env: {
         BANTO_HOST_MCP_URL: "${hostRelayUrl}",
         BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+        // 「新しい秘密をどこに置くか」の既定を覚えておく置き場
+        // （追加・2026-09-13）。**秘密は1つも置かない**——既定の Vault 名だけ
+        BANTO_VAULT_DIRECTORY_DATA_DIR: "${dataDir}/vault-directory",
       },
     },
     meta: {

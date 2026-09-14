@@ -244,7 +244,7 @@ test("SSH 鍵も generateSecret で作れる——公開鍵だけが返り、秘
           name: "generateSecret",
           arguments: { name: "github-id", kind: "ssh-identity" },
         }),
-      /既にあります/,
+      /には既に別の秘密があります/,
     );
   });
 });

@@ -84,10 +84,6 @@ export class InfisicalAliasStore implements AliasStore {
     return out;
   }
 
-  async get(name: string): Promise<AliasMeta | undefined> {
-    return (await this.list()).find((a) => a.name === name);
-  }
-
   /**
    * **値は先に置かれている前提**（`putSecret` のあとに呼ばれる）。ここは
    * その秘密に注記を付けるだけ——値には触らない。
@@ -96,9 +92,9 @@ export class InfisicalAliasStore implements AliasStore {
     await this.writeComment(meta.backendPath, stored(meta));
   }
 
-  async update(name: string, patch: AliasPatch): Promise<void> {
-    const existing = await this.get(name);
-    if (!existing) throw new Error(`alias "${name}" not found`);
+  async update(backendPath: string, patch: AliasPatch): Promise<void> {
+    const existing = (await this.list()).find((a) => a.backendPath === backendPath);
+    if (!existing) throw new Error(`alias "${backendPath}" not found`);
     const next: Record<string, unknown> = { ...stored(existing) };
     for (const [key, value] of Object.entries(patch)) {
       if (value === undefined) continue;
@@ -109,10 +105,10 @@ export class InfisicalAliasStore implements AliasStore {
   }
 
   /** 値ごと消える（`deleteSecret` が呼ばれる）ので、**ここでやることは無い**。 */
-  async delete(_name: string): Promise<void> {}
+  async delete(_backendPath: string): Promise<void> {}
 
-  async markUsed(name: string): Promise<void> {
-    const existing = await this.get(name);
+  async markUsed(backendPath: string): Promise<void> {
+    const existing = (await this.list()).find((a) => a.backendPath === backendPath);
     if (!existing) return;
     await this.writeComment(existing.backendPath, { ...stored(existing), lastUsedAt: new Date().toISOString() });
   }

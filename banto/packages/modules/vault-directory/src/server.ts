@@ -40,6 +40,9 @@ import { REQUEST_APP_HTML, requestAppUri } from "@banto/vault-kit";
 
 /** 会話の中の入力欄。**窓口が1枚だけ持つ**——backend ごとに同じ画面を持たない */
 const REQUEST_APP_URI = requestAppUri("vault-directory");
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RelayLike } from "./relay-client.js";
 
 /** 横断のために使う role。**1つ選ばない**——名乗っている実装は全部相手にする。 */
@@ -47,7 +50,17 @@ const VAULT_ROLE = "vault";
 
 export interface VaultDirectoryDeps {
   relay: RelayLike;
+  /** 「既定の Vault」を覚えておく置き場（窓口のデータ置き場）。 */
+  dataDir?: string;
 }
+
+/**
+ * **人が何も決めていないときの置き場**（決定・2026-09-13）。
+ *
+ * 秘密が**黙って外（クラウド）へ出ない**ほうを既定にする。外に置くのは、
+ * 人が「既定は Infisical」と決めたときだけ。
+ */
+const FALLBACK_DEFAULT_VAULT = "vault-local";
 
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`${label} が要ります`);
@@ -70,6 +83,42 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     { name: "banto-module-vault-directory", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
   );
+
+  /**
+   * **新しい秘密をどこに置くか**の既定。人が決める（`setDefaultVault`）。
+   *
+   * これがあるので、画面は**毎回「どの Vault に入れるか」を聞かない**
+   * ——決めていないことを人に押し付けない。変えたいときだけ選ばせる。
+   */
+  const defaultVaultFile = deps.dataDir ? join(deps.dataDir, "default-vault.json") : undefined;
+  let defaultVaultCache: string | undefined;
+
+  async function defaultVault(): Promise<string> {
+    if (defaultVaultCache) return defaultVaultCache;
+    if (defaultVaultFile && existsSync(defaultVaultFile)) {
+      try {
+        const raw = JSON.parse(await readFile(defaultVaultFile, "utf8")) as { vault?: string };
+        if (raw.vault) return (defaultVaultCache = raw.vault);
+      } catch {
+        // 壊れていたら既定に戻る（推測で直さない、規則2）
+      }
+    }
+    // **繋がっている中に既定が居なければ、繋がっているものから選ぶ**
+    // ——居ないものを既定と言い張らない
+    const impls = await vaultImplementations();
+    return impls.includes(FALLBACK_DEFAULT_VAULT) ? FALLBACK_DEFAULT_VAULT : (impls[0] ?? FALLBACK_DEFAULT_VAULT);
+  }
+
+  async function setDefaultVault(vault: string): Promise<void> {
+    const impls = await vaultImplementations();
+    if (!impls.includes(vault)) {
+      throw new Error(`"${vault}" は vault を名乗っていないか、繋がっていません`);
+    }
+    if (!defaultVaultFile) throw new Error("この窓口はデータ置き場を持っていません");
+    await mkdir(join(defaultVaultFile, ".."), { recursive: true, mode: 0o700 });
+    await writeFile(defaultVaultFile, JSON.stringify({ vault }), { mode: 0o600 });
+    defaultVaultCache = vault;
+  }
 
   /** `vault` を名乗っている Module の名前。**host に聞く**（決め打ちしない）。 */
   async function vaultImplementations(): Promise<string[]> {
@@ -141,10 +190,58 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     return Array.isArray(alias.projects) && (alias.projects as string[]).includes(caller.project);
   }
 
+  /**
+   * **見える名前を決める**（決定・2026-09-13、設計し直し）。
+   *
+   * 素の名前で引けるのは **Project のグループ**と**共通の「既定の」グループ**に
+   * 居るものだけ。それ以外は **`<vault>:<name>` の修飾名**でだけ引ける。
+   *
+   * こうすると**曖昧さが構造的に消える**：素の名前の候補は最大2つで、
+   * そこには「狭い文脈が広い文脈を上書きする」という本当の包含関係があるので
+   * 優先順位が正当化できる。共通どうしには包含関係が無いので、順序を持ち込まない。
+   *
+   * **一覧に出る名前が、そのまま使える名前**——AI は `vault://aliases` で
+   * 見た名前しか知らないので、見たとおりに書けば必ず引ける（余計な機構が要らない）。
+   */
+  function visibleNameOf(alias: Record<string, unknown>, bare: boolean): string {
+    return bare ? String(alias.name) : `${alias.implementation}:${alias.name}`;
+  }
+
+  /**
+   * 素の名前で引けるか。**Project のもの**か、**共通の既定**に居るものだけ。
+   *
+   * 「共通の既定」は **既定の Vault の共通グループ**——共通グループは Vault ごとに
+   * あるので、どれが「既定」かは `defaultVault` が決める。
+   */
+  function isBare(alias: Record<string, unknown>, caller: ReturnType<typeof callerOf>, defaultVault: string): boolean {
+    if (alias.scope === "project") return true;
+    return alias.scope === "shared" && alias.implementation === defaultVault;
+  }
+
   /** AI に見せる形。**金庫の名前も置き場も見せない**——選ばせる材料にしない。 */
-  function forAgent(alias: Record<string, unknown>): Record<string, unknown> {
-    const { implementation: _i, group: _g, projects: _p, scope: _s, ...rest } = alias;
-    return rest;
+  function forAgent(alias: Record<string, unknown>, name: string): Record<string, unknown> {
+    const { implementation: _i, group: _g, projects: _p, scope: _s, name: _n, ...rest } = alias;
+    return { name, ...rest };
+  }
+
+  /**
+   * 名前（素でも修飾でも）から、その alias を引く。**見つからなければ止まる**。
+   *
+   * 素の名前は **Project ＞ 共通の既定**。この順序に根拠があるのは、
+   * Project が「狭い文脈」だから（§2.1）。
+   */
+  function resolveName(
+    name: string,
+    aliases: TaggedAlias[],
+    caller: ReturnType<typeof callerOf>,
+    defaultVault: string,
+  ): TaggedAlias | undefined {
+    const usable = aliases.filter((a) => usableBy(a, caller));
+    const qualified = usable.find((a) => `${a.implementation}:${a.name}` === name);
+    if (qualified) return qualified;
+    const bare = usable.filter((a) => a.name === name && isBare(a, caller, defaultVault));
+    // **Project が共通に勝つ**——候補は最大2つで、必ずどちらかに決まる
+    return bare.find((a) => a.scope === "project") ?? bare.find((a) => a.scope === "shared");
   }
 
   function tool(name: string, description: string, properties: Record<string, unknown>, required: string[] = []) {
@@ -267,6 +364,19 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         ["implementation", "projectId", "group"],
       ),
       tool(
+        "getDefaultVault",
+        // **新しい秘密をどこに置くか**の既定。これがあるので、画面は毎回
+        // 「どの Vault に入れるか」を聞かない（決めていないことを人に押し付けない）
+        "新しい秘密を置く既定の Vault を読む",
+        {},
+      ),
+      tool(
+        "setDefaultVault",
+        "新しい秘密を置く既定の Vault を決める（既定は vault-local——黙って外へ出さない）",
+        { vault: { type: "string" } },
+        ["vault"],
+      ),
+      tool(
         "setSharedGroup",
         // **共通グループも選べる**（追加・2026-09-13）。以前は決め打ちで、
         // そこだけ紐付けが無かった——2台目の banto が同じ backend を指すと、
@@ -291,13 +401,22 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
      * ——選択肢が1つのときに選ばせない（規則13）。人の画面もそのときは
      * 「どの Vault に入れるか」を出さない。
      */
+    /**
+     * 宛先の Vault。**省略されたら既定へ**（改訂・2026-09-13）。
+     *
+     * 以前は2本以上あると「決まりません」と断っていたので、画面は毎回
+     * 人に選ばせるしかなかった——**決めていないことを人に押し付けていた**。
+     * 既定を1つ持てば、**変えたいときだけ選べばよい**。
+     */
     async function target(): Promise<string> {
       const known = await vaultImplementations();
       const implementation = optionalString(args.implementation, "implementation");
       if (!implementation) {
         if (known.length === 1) return known[0]!;
+        const dv = await defaultVault();
+        if (known.includes(dv)) return dv;
         throw new Error(
-          `どの Vault に入れるか決まりません（繋がっているもの: ${known.join(", ") || "無し"}）`,
+          `どの Vault に入れるか決まりません（既定 "${dv}" が繋がっていません。繋がっているもの: ${known.join(", ") || "無し"}）`,
         );
       }
       if (!known.includes(implementation)) {
@@ -313,12 +432,6 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
      * 2つあると**どちらの秘密か決められない**。登録の入口は窓口1本なので、
      * ここで止められる。**データに掛かる制約は、後から入れるほど高い。**
      */
-    async function assertNameIsFree(name: string): Promise<void> {
-      const taken = (await crossAliases()).aliases.find((a) => a.name === name);
-      if (taken) {
-        throw new Error(`alias "${name}" は既に ${taken.implementation} にあります（名前は全体で一意）`);
-      }
-    }
 
     switch (request.params.name) {
       case "requestAlias": {
@@ -347,13 +460,10 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       case "getPublicKey": {
         const name = requiredString(args.name, "name");
         const { aliases } = await crossAliases();
-        const caller = callerOf(callMeta);
-        const found = aliases.filter((a) => a.name === name && usableBy(a, caller));
-        if (found.length === 0) throw new Error(`alias "${name}" はどの Vault にもありません`);
-        if (found.length > 1) {
-          throw new Error(`alias "${name}" が複数の Vault にあります（名前は instance 全体で一意にしてください）`);
-        }
-        const body = await deps.relay.callTool(found[0]!.implementation, "getPublicKey", { name });
+        const found = resolveName(name, aliases, callerOf(callMeta), await defaultVault());
+        if (!found) throw new Error(`alias "${name}" はどの Vault にもありません`);
+        // **backend には素の名前で聞く**——修飾名は窓口の中だけの表現
+        const body = await deps.relay.callTool(found.implementation, "getPublicKey", { name: String(found.name) });
         return { content: [{ type: "text", text: body }] };
       }
 
@@ -361,10 +471,11 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const name = requiredString(args.name, "name");
         const { aliases, failures } = await crossAliases();
         // **呼び出し元から使えるものだけ**——使えない alias の在りかを
-        // 教えても、その先で backend に断られるだけ（先に、理由の分かる形で止める）
-        const caller = callerOf(callMeta);
-        const found = aliases.filter((a) => a.name === name && usableBy(a, caller));
-        if (found.length === 0) {
+        // 教えても、その先で backend に断られるだけ（先に、理由の分かる形で止める）。
+        // **素の名前は Project ＞ 共通の既定、既定の外は修飾名**（決定・2026-09-13）
+        // ——候補が複数になって止まる、という状態がここで無くなった
+        const found = resolveName(name, aliases, callerOf(callMeta), await defaultVault());
+        if (!found) {
           // **読めなかった backend があるなら、それを言う**（規則2）。
           // 「どこにもありません」と「片方が読めていません」は別の事実で、
           // 混ぜると**設定の壊れが「そんな名前は無い」に化ける**
@@ -376,16 +487,10 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           }
           throw new Error(`alias "${name}" はどの Vault にもありません`);
         }
-        if (found.length > 1) {
-          // **どちらか分からないなら通さない**（規則2）——人が名前を直すか、
-          // 紐付けで解くべきところ
-          throw new Error(
-            `alias "${name}" が複数の Vault にあります（${found.map((f) => f.implementation).join(", ")}）。` +
-              "名前は instance 全体で一意にしてください",
-          );
-        }
-        const { implementation, ...meta } = found[0]!;
-        // **値は返さない**——在りかと、値を使わずに分かることまで
+        const { implementation, ...meta } = found;
+        // **値は返さない**——在りかと、値を使わずに分かることまで。
+        // **`name` は backend での本当の名前**（修飾名で引かれても、その先の
+        // `resolveAlias` は素の名前で呼ぶ必要がある）
         return text({ implementation, ...meta });
       }
 
@@ -397,7 +502,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
       case "createAlias": {
         const implementation = await target();
-        await assertNameIsFree(requiredString(args.name, "name"));
+
         // **値はここを通過するだけ**——変数として受け取るので、この Module は
         // `handlesSecrets: true`／`isolation: "subprocess"` を名乗っている
         // （要件 C8c。仕様は当初 in-process でよいとしていたが、画面が呼び先を
@@ -415,7 +520,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
       case "generateSecret": {
         const implementation = await target();
-        await assertNameIsFree(requiredString(args.name, "name"));
+
         // **ここには値が一度も来ない**——作るのも持つのも Vault の中だけ
         const body = await deps.relay.callTool(implementation, "generateSecret", {
           name: requiredString(args.name, "name"),
@@ -466,6 +571,14 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         return text({ ok: true });
       }
 
+      case "getDefaultVault":
+        return text({ vault: await defaultVault(), fallback: FALLBACK_DEFAULT_VAULT });
+
+      case "setDefaultVault": {
+        await setDefaultVault(requiredString(args.vault, "vault"));
+        return text({ ok: true, vault: await defaultVault() });
+      }
+
       case "setSharedGroup": {
         const implementation = await target();
         const body = await deps.relay.callTool(implementation, "setSharedGroup", {
@@ -476,8 +589,35 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
       case "setGroupBinding": {
         const implementation = await target();
+        const projectId = requiredString(args.projectId, "projectId");
+        // **Project の秘密は1つの Vault にだけ置く**（決定・2026-09-13、
+        // ユーザー指摘）。1つの Project の秘密を2つの秘密管理に分ける理由が
+        // 無い。**構造的にそうする**ので、Project 層では名前の衝突が起こりえない。
+        //
+        // 紐付けそのものは各 Vault が持ったまま（backend が自分でアクセス制限を
+        // 判定できる必要がある）。**不変条件だけを窓口が守る**——写しは持たず、
+        // 必要なときに全 Vault へ聞いて確かめる（規則3）
+        const elsewhere = (
+          await acrossVaults(async (impl) =>
+            impl === implementation
+              ? []
+              : (
+                  JSON.parse(await deps.relay.callTool(impl, "listGroupBindings", {})) as {
+                    projects?: Array<{ projectId: string; group: string }>;
+                  }
+                ).projects ?? [],
+          )
+        )
+          .filter((r): r is { implementation: string; ok: true; value: Array<{ projectId: string; group: string }> } => r.ok)
+          .find((r) => r.value.some((b) => b.projectId === projectId));
+        if (elsewhere) {
+          throw new Error(
+            `この Project は既に ${elsewhere.implementation} に紐付いています。` +
+              "1つの Project の秘密は1つの Vault にまとめてください（移すなら、先にそちらの紐付けを外す）",
+          );
+        }
         const body = await deps.relay.callTool(implementation, "setGroupBinding", {
-          projectId: requiredString(args.projectId, "projectId"),
+          projectId,
           group: requiredString(args.group, "group"),
         });
         return text({ ok: true, binding: JSON.parse(body) });
@@ -554,13 +694,18 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       // **使えないものは名前も見せない**（決定・2026-09-13）。backend の
       // `listAliases` は人の管理面なので全部返す——**絞るのは横断した側の仕事**
       const caller = callerOf(request.params._meta as Record<string, unknown> | undefined);
-      const visible = aliases.filter((a) => usableBy(a, caller));
+      const dv = await defaultVault();
+      // **一覧に出る名前が、そのまま使える名前**（決定・2026-09-13）。素の名前で
+      // 引けるものは素の名前、既定の外に居るものは修飾名（`<vault>:<name>`）
+      const visible = aliases
+        .filter((a) => usableBy(a, caller))
+        .map((a) => forAgent(a, visibleNameOf(a, isBare(a, caller, dv))));
       return {
         contents: [
           {
             uri: request.params.uri,
             mimeType: "application/json",
-            text: JSON.stringify(visible.map(forAgent)),
+            text: JSON.stringify(visible),
           },
         ],
       };
@@ -586,6 +731,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     throw new Error("vault-directory には BANTO_HOST_MCP_URL と BANTO_HOST_MCP_TOKEN が要ります");
   }
   const { HostRelayClient } = await import("./relay-client.js");
-  const server = createVaultDirectoryServer({ relay: new HostRelayClient(url, token) });
+  const server = createVaultDirectoryServer({
+    relay: new HostRelayClient(url, token),
+    dataDir: process.env.BANTO_VAULT_DIRECTORY_DATA_DIR,
+  });
   await server.connect(new StdioServerTransport());
 }
