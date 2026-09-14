@@ -51,7 +51,7 @@ async function withUi(
   const dirs: string[] = [];
   const vaults = new Map<string, Client>();
   try {
-    for (const name of opts.vaultNames ?? ["vault"]) {
+    for (const name of opts.vaultNames ?? ["vault-local"]) {
       const dir = await mkdtemp(join(tmpdir(), "banto-vault-directory-test-"));
       dirs.push(dir);
       const server = createVaultServer(dir);
@@ -141,7 +141,7 @@ test("横断した目録には、どの Vault のものかを載せない（AI �
     async ({ ui }) => {
       await ui.callTool({
         name: "createAlias",
-        arguments: { implementation: "vault", name: "a1", kind: "secret", value: "v" },
+        arguments: { implementation: "vault-local", name: "a1", kind: "secret", value: "v" },
       });
       const read = await ui.readResource({ uri: "vault://aliases" });
       const list = JSON.parse((read.contents as { text: string }[])[0]!.text) as Array<Record<string, unknown>>;
@@ -149,7 +149,7 @@ test("横断した目録には、どの Vault のものかを載せない（AI �
       assert.equal(list[0]!.name, "a1");
       assert.equal(list[0]!.implementation, undefined, "AI に金庫を選ぶ材料を渡している");
     },
-    { vaultNames: ["vault", "vault-keychain"] },
+    { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
 
@@ -304,13 +304,13 @@ test("横断：2本の Vault の alias が、どちらの backend のものか�
   await withUi(
     async ({ ui }) => {
       assert.deepEqual(parse(await ui.callTool({ name: "listVaults", arguments: {} })), [
-        "vault",
+        "vault-local",
         "vault-keychain",
       ]);
 
       await ui.callTool({
         name: "createAlias",
-        arguments: { implementation: "vault", name: "a-in-sops", kind: "secret", value: "v1" },
+        arguments: { implementation: "vault-local", name: "a-in-sops", kind: "secret", value: "v1" },
       });
       await ui.callTool({
         name: "createAlias",
@@ -329,8 +329,8 @@ test("横断：2本の Vault の alias が、どちらの backend のものか�
       assert.deepEqual(
         aliases.map((a: any) => [a.implementation, a.name]).sort(),
         [
-          ["vault", "a-in-sops"],
           ["vault-keychain", "b-in-keychain"],
+          ["vault-local", "a-in-sops"],
         ],
       );
       // **値は一度も出てこない**（§2.1 A/C——画面に出るのは存在と用途まで）
@@ -340,7 +340,7 @@ test("横断：2本の Vault の alias が、どちらの backend のものか�
       // backend 内のパスも漏れない
       assert.equal(aliases.some((a: any) => a.backendPath !== undefined), false);
     },
-    { vaultNames: ["vault", "vault-keychain"] },
+    { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
 
@@ -349,7 +349,7 @@ test("読めない backend があっても、読めたぶんは出す——た�
     async ({ ui }) => {
       await ui.callTool({
         name: "createAlias",
-        arguments: { implementation: "vault", name: "alive", kind: "secret", value: "v" },
+        arguments: { implementation: "vault-local", name: "alive", kind: "secret", value: "v" },
       });
       const { aliases, failures } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
       assert.deepEqual(
@@ -360,7 +360,7 @@ test("読めない backend があっても、読めたぶんは出す——た�
       assert.equal(failures[0].implementation, "vault-dead");
       assert.match(failures[0].error, /繋がっていない/);
     },
-    { vaultNames: ["vault"], broken: new Map([["vault-dead", "プロセスが繋がっていない"]]) },
+    { vaultNames: ["vault-local"], broken: new Map([["vault-dead", "プロセスが繋がっていない"]]) },
   );
 });
 
@@ -381,14 +381,14 @@ test("用途の書き直しと削除が、実 Vault まで届く", async () => {
   await withUi(async ({ ui }) => {
     await ui.callTool({
       name: "createAlias",
-      arguments: { implementation: "vault", name: "t", kind: "secret", value: "v", note: "最初" },
+      arguments: { implementation: "vault-local", name: "t", kind: "secret", value: "v", note: "最初" },
     });
 
-    await ui.callTool({ name: "updateAlias", arguments: { implementation: "vault", name: "t", note: "書き直した" } });
+    await ui.callTool({ name: "updateAlias", arguments: { implementation: "vault-local", name: "t", note: "書き直した" } });
     let { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
     assert.equal(aliases[0].note, "書き直した");
 
-    await ui.callTool({ name: "deleteAlias", arguments: { implementation: "vault", name: "t" } });
+    await ui.callTool({ name: "deleteAlias", arguments: { implementation: "vault-local", name: "t" } });
     ({ aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} })));
     assert.deepEqual(aliases, []);
   });
@@ -396,8 +396,8 @@ test("用途の書き直しと削除が、実 Vault まで届く", async () => {
 
 test("Project ↔ グループの紐付けを、画面から読んで変えられる", async () => {
   await withUi(async ({ ui }) => {
-    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault", name: "shared-team" } });
-    let { groups, bindings } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault" } }));
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "shared-team" } });
+    let { groups, bindings } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault-local" } }));
     assert.ok(groups.includes("shared-team"));
     assert.deepEqual(bindings.projects, []);
     // **共通グループも紐付けとして見える**（追加・2026-09-13）
@@ -405,23 +405,23 @@ test("Project ↔ グループの紐付けを、画面から読んで変えら�
 
     await ui.callTool({
       name: "setGroupBinding",
-      arguments: { implementation: "vault", projectId: "proj-9", group: "shared-team" },
+      arguments: { implementation: "vault-local", projectId: "proj-9", group: "shared-team" },
     });
-    ({ groups, bindings } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault" } })));
+    ({ groups, bindings } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault-local" } })));
     assert.deepEqual(bindings.projects, [{ projectId: "proj-9", group: "shared-team" }]);
 
     // 紐付けたグループに、その Project の alias が入る（実 Vault 側で確かめる）
     await ui.callTool({
       name: "createAlias",
       arguments: {
-        implementation: "vault",
+        implementation: "vault-local",
         name: "for-proj-9",
         kind: "secret",
         forProject: "proj-9",
         value: "v",
       },
     });
-    ({ groups } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault" } })));
+    ({ groups } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault-local" } })));
     assert.ok(!groups.includes("proj-9"), "紐付けを無視して、既定のグループを作っている");
   });
 });
@@ -433,7 +433,7 @@ test("vault-directory からも SSH 鍵を作れる——公開鍵だけが返�
     const made = parse(
       await ui.callTool({
         name: "generateSecret",
-        arguments: { implementation: "vault", name: "gh-id", kind: "ssh-identity" },
+        arguments: { implementation: "vault-local", name: "gh-id", kind: "ssh-identity" },
       }),
     );
     assert.match(made.publicKey, /^ssh-ed25519 /);
@@ -456,7 +456,7 @@ test("横断した目録は、その Project から使えるものだけ（backe
     async ({ ui }) => {
       await ui.callTool({
         name: "createAlias",
-        arguments: { implementation: "vault", name: "a-only", kind: "secret", forProject: "proj-a", value: "v" },
+        arguments: { implementation: "vault-local", name: "a-only", kind: "secret", forProject: "proj-a", value: "v" },
       });
       await ui.callTool({
         name: "createAlias",
@@ -478,7 +478,7 @@ test("横断した目録は、その Project から使えるものだけ（backe
       assert.deepEqual((await seenBy("proj-a")).sort(), ["a-only", "vault-keychain:for-all"]);
       assert.deepEqual(await seenBy("proj-b"), ["vault-keychain:for-all"]);
     },
-    { vaultNames: ["vault", "vault-keychain"] },
+    { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
 
@@ -486,10 +486,10 @@ test("在りかも、使えない Project には教えない", async () => {
   await withUi(async ({ ui }) => {
     await ui.callTool({
       name: "createAlias",
-      arguments: { implementation: "vault", name: "a-only", kind: "secret", forProject: "proj-a", value: "v" },
+      arguments: { implementation: "vault-local", name: "a-only", kind: "secret", forProject: "proj-a", value: "v" },
     });
     const found = parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "a-only" }, _meta: forProject("proj-a") }));
-    assert.equal(found.implementation, "vault");
+    assert.equal(found.implementation, "vault-local");
     await assert.rejects(
       () => ui.callTool({ name: "lookupAlias", arguments: { name: "a-only" }, _meta: forProject("proj-b") }),
       /どの Vault にもありません/,
@@ -500,23 +500,23 @@ test("在りかも、使えない Project には教えない", async () => {
 test("共通グループは窓口から選べる——backend ごとに決まる", async () => {
   await withUi(
     async ({ ui }) => {
-      await ui.callTool({ name: "setSharedGroup", arguments: { implementation: "vault", group: "team-shared" } });
+      await ui.callTool({ name: "setSharedGroup", arguments: { implementation: "vault-local", group: "team-shared" } });
       await ui.callTool({
         name: "createAlias",
-        arguments: { implementation: "vault", name: "s1", kind: "secret", value: "v" },
+        arguments: { implementation: "vault-local", name: "s1", kind: "secret", value: "v" },
       });
       const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
       const mine = aliases.find((a: { name: string }) => a.name === "s1");
       assert.equal(mine.group, "team-shared");
       assert.equal(mine.scope, "shared");
 
-      const { bindings } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault" } }));
+      const { bindings } = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault-local" } }));
       assert.equal(bindings.shared, "team-shared");
       // **もう片方の backend は影響を受けない**——共通グループは backend ごと
       const other = parse(await ui.callTool({ name: "listGroups", arguments: { implementation: "vault-keychain" } }));
       assert.equal(other.bindings.shared, "instance");
     },
-    { vaultNames: ["vault", "vault-keychain"] },
+    { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
 
@@ -542,7 +542,7 @@ test("公開鍵は AI からも読める——秘密鍵は通らない、使え�
   await withUi(async ({ ui }) => {
     await ui.callTool({
       name: "generateSecret",
-      arguments: { implementation: "vault", name: "deploy-key", kind: "ssh-identity", forProject: "proj-a" },
+      arguments: { implementation: "vault-local", name: "deploy-key", kind: "ssh-identity", forProject: "proj-a" },
     });
 
     const pub = textOf(
@@ -677,4 +677,158 @@ test("窓口の画面も、バッククォート混入と capabilities の取り
       assert.ok(html.includes("appCapabilities:"), `${name}: appCapabilities を送っていない`);
     }
   }
+});
+
+// ---- 移す（決定・2026-09-14、ユーザー指示）----------------------------------
+//
+// 置き場を変えるのは**設定ではなく操作**——値が動く。見るのは3つ：
+//   1. **値が失われない**（写す → 確かめる → 消す）
+//   2. **黙って上書きしない**（1つでもぶつかったら何もしない）
+//   3. **移さない選択もできる**——ただし古いものは使えなくなる（unbound）
+
+/** backend に直接聞いて値を確かめる（**窓口は値を返さない**ので）。 */
+async function valueOf(vaults: Map<string, Client>, impl: string, name: string, group: string): Promise<string> {
+  const r = await vaults.get(impl)!.callTool({
+    name: "resolveAlias",
+    arguments: { name, group },
+    _meta: ADMIN,
+  });
+  return (r.content as { text: string }[])[0]!.text;
+}
+
+test("同じ Vault の中で移す——値は保たれ、置き場だけ変わる", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "movable", kind: "secret", value: "keep-me", forProject: "p1" },
+    });
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "elsewhere" } });
+    await ui.callTool({ name: "migrateAlias", arguments: { name: "movable", toGroup: "elsewhere" } });
+
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const moved = aliases.find((a: { name: string }) => a.name === "movable");
+    assert.equal(moved.group, "elsewhere", "置き場が変わっていない");
+    // **値は生きている**
+    // **値は窓口を通らない**ので、確かめるのは backend に直接聞く
+    assert.equal(await valueOf(vaults, "vault-local", "movable", "elsewhere"), "keep-me");
+    // **元には残っていない**（1つだけ）
+    assert.equal(aliases.filter((a: { name: string }) => a.name === "movable").length, 1);
+  });
+});
+
+test("Vault をまたいで移せる——値は保たれる", async () => {
+  await withUi(
+    async ({ ui, vaults }) => {
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-local", name: "cross", kind: "secret", value: "carried" },
+      });
+      await ui.callTool({
+        name: "migrateAlias",
+        arguments: { name: "cross", toImplementation: "vault-keychain", toGroup: "instance" },
+      });
+      const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+      const moved = aliases.find((a: { name: string }) => a.name === "cross");
+      assert.equal(moved.implementation, "vault-keychain");
+      assert.equal(await valueOf(vaults, "vault-keychain", "cross", "instance"), "carried");
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
+});
+
+test("移す先に同じ名前があったら、何もしない（黙って上書きしない）", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "dest" } });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "mine", forProject: "p1" },
+    });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "theirs", group: "dest" },
+    });
+
+    await assert.rejects(
+      () => ui.callTool({ name: "migrateAlias", arguments: { name: "TOKEN", group: "p1", toGroup: "dest" } }),
+      /には既に別の秘密があります/,
+    );
+    // **どちらも無傷**
+    assert.equal(await valueOf(vaults, "vault-local", "TOKEN", "dest"), "theirs");
+    assert.equal(await valueOf(vaults, "vault-local", "TOKEN", "p1"), "mine");
+  });
+});
+
+test("置き場を変える前に、何が起きるか分かる（移す対象・衝突・使えなくなるもの）", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "a", kind: "secret", value: "v", forProject: "p1" },
+    });
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "next" } });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "a", kind: "secret", value: "other", group: "next" },
+    });
+
+    const plan = parse(
+      await ui.callTool({
+        name: "planProjectPlacement",
+        arguments: { projectId: "p1", implementation: "vault-local", group: "next" },
+      }),
+    );
+    assert.deepEqual(plan.current, { implementation: "vault-local", group: "p1" });
+    assert.deepEqual(plan.moving, ["a"]);
+    // **ぶつかることが、変える前に分かる**
+    assert.deepEqual(plan.conflicts, ["a"]);
+    // **移さないなら、これが使えなくなる**（黙って使えなくしない）
+    assert.deepEqual(plan.strandedIfNotMigrated, ["a"]);
+  });
+});
+
+test("移行なしで置き場を変えると、古いものは使えなくなる（そう出る）", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "left-behind", kind: "secret", value: "v", forProject: "p1" },
+    });
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "fresh" } });
+    await ui.callTool({
+      name: "setProjectPlacement",
+      arguments: { projectId: "p1", implementation: "vault-local", group: "fresh" },
+    });
+
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const left = aliases.find((a: { name: string }) => a.name === "left-behind");
+    // **値は消えていない。ただしどこにも紐付いていない**——人の画面には出る
+    assert.equal(left.scope, "unbound");
+    // その Project からは引けない
+    await assert.rejects(
+      () => ui.callTool({ name: "lookupAlias", arguments: { name: "left-behind" }, _meta: forProject("p1") }),
+      /どの Vault にもありません/,
+    );
+  });
+});
+
+test("移行ありで置き場を変えると、秘密も一緒に動く", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "comes-along", kind: "secret", value: "v", forProject: "p1" },
+    });
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "fresh" } });
+    await ui.callTool({
+      name: "setProjectPlacement",
+      arguments: { projectId: "p1", implementation: "vault-local", group: "fresh", migrate: true },
+    });
+
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const moved = aliases.find((a: { name: string }) => a.name === "comes-along");
+    assert.equal(moved.group, "fresh");
+    assert.equal(moved.scope, "project");
+    // その Project から、素の名前で引ける
+    assert.equal(
+      parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "comes-along" }, _meta: forProject("p1") })).group,
+      "fresh",
+    );
+  });
 });

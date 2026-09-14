@@ -323,3 +323,61 @@ test("管理 Canvas に置き場の設定を置かない——見る・作る・
   await expect(canvas.getByRole("button", { name: "秘密の置き場…" }), "設定が Canvas に残っている").toHaveCount(0);
   await expect(canvas.getByRole("button", { name: "グループ" }), "backend ごとの入口が残っている").toHaveCount(0);
 });
+
+// **置き場を変えるのは操作**（決定・2026-09-14、ユーザー指示）。値が動くので、
+// 設定画面ではなくここ（管理 Canvas）に置く。見るのは2つ：
+//   1. **変える前に、何が起きるか出る**（移さないと使えなくなるもの）
+//   2. **移行ありなら、秘密も一緒に動く**——値は失われない
+test("この Project の置き場を変えられる——移行の有無を選べて、結果が先に分かる", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-move-"));
+  const alias = `e2e-move-${Date.now()}`;
+  await openApp(page);
+  await createProject(page, "E2E 置き場を変える", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  // この Project に1つ置く（保存先＝この Project）
+  await canvas.getByRole("button", { name: "＋ alias を新規登録" }).click();
+  await canvas.locator("#new-name").fill(alias);
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.locator("#new-value").fill("move-me");
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  await expect(canvas.locator("tbody tr").filter({ hasText: alias })).toBeVisible({ timeout: 60_000 });
+
+  // 移し先のグループを先に用意する（**移す先が同じなら「移すものはありません」**）
+  const dest = `e2e-moved-${Date.now()}`;
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-directory", tool: "createGroup", arguments: { implementation: "vault-local", name: dest } },
+  });
+
+  // 置き場を変える画面を開く
+  await canvas.getByRole("button", { name: "この Project の置き場…" }).click();
+  await expect(canvas.getByText("この Project の秘密の置き場を変える")).toBeVisible();
+  await expect(canvas.locator("#place-now"), "いまどこかを言っていない").toContainText("いまは");
+  await canvas.locator("#place-group").selectOption(dest);
+
+  // **移さないと、どうなるかが先に分かる**
+  await canvas.locator("#place-migrate").selectOption("no");
+  await expect(canvas.locator("#place-effect")).toContainText("使えなくなります");
+
+  // **移すなら、そう言う**
+  await canvas.locator("#place-migrate").selectOption("yes");
+  await expect(canvas.locator("#place-effect")).toContainText("一緒に移します");
+
+  await canvas.getByRole("button", { name: "変える" }).click();
+  await expect(canvas.locator("#place-error"), "変えるときにエラーが出た").toBeHidden();
+
+  // **秘密も一緒に動いた**（使える範囲は Project のまま）
+  const row = canvas.locator("tbody tr").filter({ hasText: alias });
+  await expect(row, "移したのに一覧から消えた").toBeVisible({ timeout: 60_000 });
+  await expect(row, "移したのに使えなくなっている").toContainText("E2E 置き場を変える");
+
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-directory", tool: "deleteAlias", arguments: { implementation: "vault-local", name: alias } },
+  });
+});

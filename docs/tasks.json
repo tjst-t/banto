@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-13",
+  "updatedAt": "2026-09-14",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1561,6 +1561,22 @@
         "dev の Infisical に溜まった試験のゴミ173フォルダを掃除（一覧 1134ms → 582ms）"
       ],
       "spec": "docs/specs/v4-modules.md §2.1",
+      "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
+    },
+    {
+      "id": "vault-migrate-alias",
+      "title": "秘密を別の置き場へ移せるようにする（置き場の変更を可能に）",
+      "status": "done",
+      "why": "置き場を消したとき Project 側の変更口ごと消してしまい、どこからも変えられなくなっていた。単に戻すと、変えた瞬間に既存の秘密が使えなくなる（unbound）ので、移行とセットで入れる必要があった。",
+      "done": [
+        "migrateAlias——写す → 確かめる → 消す。途中で落ちても値は失われない",
+        "名前の衝突は事前に全部調べて all-or-nothing（上書きしない・勝手に名前を変えない）",
+        "移行の有無を人が選べる。移さない場合に使えなくなるものを、変える前に画面へ出す（planProjectPlacement）",
+        "古いグループが他の Project にも紐付いていたら移さない",
+        "Vault をまたぐときだけ値が窓口を通る（同じ Vault なら backend の中だけ）",
+        "置き場の変更は『操作』なので管理 Canvas に置いた（共通の置き場は値が動かないので設定画面のまま）"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.1「移す」",
       "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
     }
   ],

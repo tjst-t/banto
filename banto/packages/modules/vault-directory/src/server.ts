@@ -245,6 +245,46 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     return bare.find((a) => a.scope === "project") ?? bare.find((a) => a.scope === "shared");
   }
 
+  /**
+   * 1つの alias を移す。**同じ Vault の中なら backend に任せる**（値が外に出ない）。
+   *
+   * **Vault をまたぐときだけ、値が窓口を通る**（決定・2026-09-14）。窓口は既に
+   * `handlesSecrets: true`（人が画面で打った登録の値が通る）なので新しい
+   * category ではないが、**値が流れる場所が1つ増える**ことは意識して扱う。
+   *
+   * どちらの経路も **写す → 確かめる → 消す**——途中で落ちても「両方にある」
+   * で済み、値は失われない。
+   */
+  async function migrateOne(
+    name: string,
+    fromImpl: string,
+    fromGroup: string,
+    toImpl: string,
+    toGroup: string,
+  ): Promise<void> {
+    if (fromImpl === toImpl) {
+      await deps.relay.callTool(fromImpl, "migrateAlias", { name, group: fromGroup, toGroup });
+      return;
+    }
+    // 別の Vault へ：窓口が値を運ぶ
+    const meta = (await crossAliases()).aliases.find(
+      (a) => a.implementation === fromImpl && a.group === fromGroup && a.name === name,
+    );
+    if (!meta) throw new Error(`alias "${name}" が ${fromImpl} の ${fromGroup} に見つかりません`);
+    const value = await deps.relay.callTool(fromImpl, "resolveAlias", { name, group: fromGroup });
+    await deps.relay.callTool(toImpl, "createAlias", {
+      name,
+      kind: String(meta.kind ?? "secret"),
+      value,
+      note: meta.note ? String(meta.note) : undefined,
+      group: toGroup,
+    });
+    // **確かめてから消す**——写せていないのに消したら秘密が消える
+    const copied = await deps.relay.callTool(toImpl, "resolveAlias", { name, group: toGroup });
+    if (copied !== value) throw new Error(`"${name}" を写せませんでした（${fromImpl} → ${toImpl}）。元は残っています`);
+    await deps.relay.callTool(fromImpl, "deleteAlias", { name, group: fromGroup });
+  }
+
   function tool(name: string, description: string, properties: Record<string, unknown>, required: string[] = []) {
     return {
       name,
@@ -374,9 +414,28 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       ),
       tool(
         "setProjectPlacement",
-        "この Project の秘密の置き場を決める（Vault とグループを一緒に）",
+        "この Project の秘密の置き場を決める（Vault とグループを一緒に）。" +
+          "**migrate: true なら、いまの置き場にある秘密も一緒に移す**",
+        {
+          projectId: { type: "string" },
+          implementation: { type: "string" },
+          group: { type: "string" },
+          migrate: { type: "boolean", description: "いまの秘密も移すか（既定 false＝紐付けだけ変える）" },
+        },
+        ["projectId", "implementation", "group"],
+      ),
+      tool(
+        "planProjectPlacement",
+        // **変える前に、何が起きるかを見せる**（規則2——黙って使えなくしない）
+        "置き場を変えたら何が起きるかを調べる（移す対象・名前の衝突・移さない場合に使えなくなるもの）",
         { projectId: { type: "string" }, implementation: { type: "string" }, group: { type: "string" } },
         ["projectId", "implementation", "group"],
+      ),
+      tool(
+        "migrateAlias",
+        "alias を別の置き場へ移す（Vault をまたいでもよい）",
+        { name: { type: "string" }, toImplementation: { type: "string" }, toGroup: { type: "string" } },
+        ["name", "toGroup"],
       ),
       tool(
         "setSharedPlacement",
@@ -637,27 +696,94 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         });
       }
 
+      case "planProjectPlacement":
       case "setProjectPlacement": {
         const projectId = requiredString(args.projectId, "projectId");
         const implementation = requiredString(args.implementation, "implementation");
         const group = requiredString(args.group, "group");
-        // **他の Vault に紐付いていたら、先に外す**——1つの Project の秘密は
-        // 1つの Vault にまとめる（人に2手かけさせない：ここで外して付け替える）
-        for (const r of await acrossVaults(async (impl) => ({
-          impl,
-          projects: (
-            JSON.parse(await deps.relay.callTool(impl, "listGroupBindings", {})) as {
-              projects?: Array<{ projectId: string; group: string }>;
-            }
-          ).projects ?? [],
-        }))) {
-          if (!r.ok || r.value.impl === implementation) continue;
+        const migrate = args.migrate === true;
+        const planOnly = request.params.name === "planProjectPlacement";
+
+        // いまの置き場と、そこに在るもの
+        const { aliases } = await crossAliases();
+        const bindings = (
+          await acrossVaults(async (impl) => ({
+            impl,
+            projects:
+              (
+                JSON.parse(await deps.relay.callTool(impl, "listGroupBindings", {})) as {
+                  projects?: Array<{ projectId: string; group: string }>;
+                }
+              ).projects ?? [],
+          }))
+        ).filter((r): r is { implementation: string; ok: true; value: { impl: string; projects: Array<{ projectId: string; group: string }> } } => r.ok);
+        const current = bindings
+          .map((r) => ({ implementation: r.value.impl, group: r.value.projects.find((b) => b.projectId === projectId)?.group }))
+          .find((x) => x.group) as { implementation: string; group: string } | undefined;
+
+        const moving =
+          current && !(current.implementation === implementation && current.group === group)
+            ? aliases.filter((a) => a.implementation === current.implementation && a.group === current.group)
+            : [];
+        // **古いグループが他の Project にも紐付いているなら、移さない**
+        // ——他人のものまで動かすことになる
+        const sharedWith = current
+          ? bindings
+              .find((r) => r.value.impl === current.implementation)!
+              .value.projects.filter((b) => b.group === current.group && b.projectId !== projectId)
+              .map((b) => b.projectId)
+          : [];
+        // **名前の衝突は事前に全部調べる**（all-or-nothing、規則2）
+        const conflicts = moving
+          .filter((a) => aliases.some((x) => x.implementation === implementation && x.group === group && x.name === a.name))
+          .map((a) => String(a.name));
+
+        const plan = {
+          current: current ?? null,
+          to: { implementation, group },
+          moving: moving.map((a) => String(a.name)),
+          conflicts,
+          sharedWith,
+          /** 移さない場合、ここに挙がるものは**どこにも紐付かなくなる**（unbound）。 */
+          strandedIfNotMigrated: moving.map((a) => String(a.name)),
+        };
+        if (planOnly) return text(plan);
+
+        if (migrate) {
+          if (sharedWith.length > 0) {
+            throw new Error(
+              `いまの置き場は他の Project（${sharedWith.length} 件）も使っています。移すと他人のものまで動くので、移行なしで進めてください`,
+            );
+          }
+          if (conflicts.length > 0) {
+            // **1つでもぶつかったら何もしない**——途中まで進めない（規則2）
+            throw new Error(`移す先に同じ名前があります：${conflicts.join(", ")}。名前を直してからやり直してください`);
+          }
+          for (const a of moving) {
+            await migrateOne(String(a.name), current!.implementation, String(a.group), implementation, group);
+          }
+        }
+
+        // 紐付けを付け替える（他の Vault に在れば先に外す——1つの Project は1つの Vault）
+        for (const r of bindings) {
+          if (r.value.impl === implementation) continue;
           if (r.value.projects.some((b) => b.projectId === projectId)) {
             await deps.relay.callTool(r.value.impl, "clearGroupBinding", { projectId });
           }
         }
         await deps.relay.callTool(implementation, "setGroupBinding", { projectId, group });
-        return text({ ok: true, placement: { implementation, group } });
+        return text({ ok: true, placement: { implementation, group }, migrated: migrate ? plan.moving : [] });
+      }
+
+      case "migrateAlias": {
+        const name = requiredString(args.name, "name");
+        const toGroup = requiredString(args.toGroup, "toGroup");
+        const { aliases } = await crossAliases();
+        const found = resolveName(name, aliases, callerOf(callMeta), await defaultVault());
+        if (!found) throw new Error(`alias "${name}" はどの Vault にもありません`);
+        const toImpl = optionalString(args.toImplementation, "toImplementation") ?? found.implementation;
+        await migrateOne(String(found.name), found.implementation, String(found.group), toImpl, toGroup);
+        return text({ ok: true, from: { implementation: found.implementation, group: found.group }, to: { implementation: toImpl, group: toGroup } });
       }
 
       case "setSharedPlacement": {

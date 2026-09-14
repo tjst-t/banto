@@ -111,6 +111,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
 <div class="section">
   <div class="spread" style="margin-bottom:8px">
     <p class="label" style="margin:0" id="count">alias 一覧</p>
+    <button id="open-place">この Project の置き場…</button>
     <button id="new-alias">＋ alias を新規登録</button>
   </div>
 
@@ -185,6 +186,33 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <div class="dialog-footer">
       <button value="cancel">やめる</button>
       <button id="new-submit" value="ok">登録する</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-place">
+  <form method="dialog" class="dialog-body">
+    <!-- **置き場を変えるのは設定ではなく操作**（決定・2026-09-14、ユーザー指示）
+         ——値が動くので、設定画面ではなくここ（操作の面）に置く -->
+    <p class="dialog-title">この Project の秘密の置き場を変える</p>
+    <p class="dialog-desc" id="place-now"></p>
+    <div class="field"><span>新しい置き場</span>
+      <div class="row">
+        <select id="place-vault" style="flex:1 1 12em"></select>
+        <select id="place-group" style="flex:1 1 12em"></select>
+      </div>
+    </div>
+    <label class="field"><span>いまある秘密をどうするか</span>
+      <select id="place-migrate">
+        <option value="yes">一緒に移す</option>
+        <option value="no">移さない（古い置き場に残す）</option>
+      </select>
+    </label>
+    <p class="dialog-desc" id="place-effect"></p>
+    <div class="problem" id="place-error" hidden></div>
+    <div class="dialog-footer">
+      <button value="cancel">やめる</button>
+      <button id="place-submit" value="ok">変える</button>
     </div>
   </form>
 </dialog>
@@ -666,6 +694,77 @@ ${ALIAS_KIND_RULES_JS}
   }
   onSubmit($("dlg-delete"), $("delete-submit"), $("delete-error"), async () => {
     await callTool("deleteAlias", { implementation: deleteTarget.implementation, name: deleteTarget.name });
+  });
+
+  // 置き場を変える（**移行あり／なしを選ぶ**）
+  async function openPlace() {
+    $("place-error").hidden = true;
+    if (!project) {
+      showError($("place-error"), new Error("この画面は Project の上で開かれていないので、置き場を決められません"));
+      $("dlg-place").showModal();
+      return;
+    }
+    const places = await callTool("getPlacements", { projectId: project.id });
+    $("place-now").textContent = places.project
+      ? "いまは " + places.project.implementation + " / " + places.project.group
+      : "まだ決まっていません（最初に保存したときに決まります）";
+    const fill = () => {
+      const v = (places.vaults || []).find((x) => x.implementation === $("place-vault").value);
+      const groups = (v && v.groups) || [];
+      $("place-group").replaceChildren(...groups.map((g) => option(g, g)));
+      $("place-group").disabled = groups.length === 0;
+    };
+    $("place-vault").replaceChildren(...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
+    if (places.project) $("place-vault").value = places.project.implementation;
+    fill();
+    $("place-vault").onchange = () => { fill(); void preview(); };
+    $("place-group").onchange = () => void preview();
+    $("place-migrate").onchange = () => void preview();
+    await preview();
+    $("dlg-place").showModal();
+  }
+
+  /** **変える前に、何が起きるかを出す**（規則2——黙って使えなくしない）。 */
+  async function preview() {
+    if (!project) return;
+    try {
+      const plan = await callTool("planProjectPlacement", {
+        projectId: project.id,
+        implementation: $("place-vault").value,
+        group: $("place-group").value,
+      });
+      const migrate = $("place-migrate").value === "yes";
+      const parts = [];
+      if (plan.moving.length === 0) parts.push("移すものはありません");
+      else if (migrate) {
+        parts.push(plan.moving.length + " 件を一緒に移します");
+        if (plan.conflicts.length) {
+          parts.push("ただし移す先に同じ名前があります（" + plan.conflicts.join(", ") + "）——このままでは変えられません");
+        }
+        if (plan.sharedWith.length) {
+          parts.push("いまの置き場は他の Project も使っているので、一緒には移せません");
+        }
+      } else {
+        parts.push(
+          plan.strandedIfNotMigrated.length + " 件（" + plan.strandedIfNotMigrated.join(", ") +
+            "）は、どこにも紐付かなくなり、この Project から使えなくなります",
+        );
+      }
+      $("place-effect").textContent = parts.join("。");
+    } catch (err) {
+      showError($("place-error"), err);
+    }
+  }
+  $("open-place").addEventListener("click", () => void openPlace());
+  onSubmit($("dlg-place"), $("place-submit"), $("place-error"), async () => {
+    if (!project) throw new Error("この画面は Project の上で開かれていません");
+    await callTool("setProjectPlacement", {
+      projectId: project.id,
+      implementation: $("place-vault").value,
+      group: $("place-group").value,
+      migrate: $("place-migrate").value === "yes",
+    });
+    await refresh();
   });
 
   // **絞り込みは打つそばから効く**（2度消してしまっている・2026-09-14）

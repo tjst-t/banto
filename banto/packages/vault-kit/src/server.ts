@@ -428,6 +428,22 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         ),
         ...(opts.extraTools ?? []).map((t) => t.definition),
         tool(
+          "migrateAlias",
+          // **置き場を変えるのは設定ではなく操作**（追加・2026-09-14）。
+          // 値が動くので、**写す → 確かめる → 消す**の順を守る
+          "alias を別のグループへ移す（同じ Vault の中。値は外に出ない）",
+          {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              group: { type: "string", description: "いまの置き場（同じ名前が複数あるとき）" },
+              toGroup: { type: "string", description: "移す先のグループ" },
+            },
+            required: ["name", "toGroup"],
+          },
+          "admin",
+        ),
+        tool(
           "clearGroupBinding",
           // **付け替えのために要る**（追加・2026-09-13）。1つの Project の秘密は
           // 1つの Vault にまとめるので、別の Vault へ移すときはこちらを外す
@@ -753,6 +769,32 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             { type: "text", text: JSON.stringify({ shared: bindings.sharedGroup(), projects: bindings.list() }) },
           ],
         };
+      case "migrateAlias": {
+        const name = requiredString(args.name, "name");
+        const toGroup = requiredString(args.toGroup, "toGroup");
+        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
+        if (!meta) throw new Error(`alias "${name}" not found`);
+        const from = meta.backendPath;
+        const to = `${toGroup}/${name}`;
+        if (from === to) return { content: [{ type: "text", text: JSON.stringify({ ok: true, moved: false }) }] };
+        // **先に衝突を見る**（規則2——黙って上書きしない）
+        await assertPlaceIsFree(to);
+        await backend.createGroup(toGroup);
+
+        // **写す → 確かめる → 消す**。途中で落ちても「両方にある」で済み、
+        // **値は失われない**（先に消すと、写す前に落ちたら秘密が消える）
+        const value = await backend.getSecret(from);
+        await backend.putSecret(to, value);
+        const copied = await backend.getSecret(to);
+        if (String(copied) !== String(value)) {
+          // 写せていないのに消したら秘密が消える。**確かめてから消す**
+          throw new Error(`"${name}" を写せませんでした（${from} → ${to}）。元は残っています`);
+        }
+        await registry.create({ ...meta, backendPath: to });
+        await backend.deleteSecret(from);
+        await registry.delete(from);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, moved: true, from, to }) }] };
+      }
       case "clearGroupBinding": {
         await bindings.clear(requiredString(args.projectId, "projectId"));
         return { content: [{ type: "text", text: "ok" }] };
