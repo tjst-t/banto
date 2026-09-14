@@ -21,7 +21,7 @@ export function createVaultServer(dataDir: string) {
     backend,
     aliasStore: new LocalFileAliasStore(dataDir),
     dataDir,
-    configApp: { uri: CONFIG_APP_URI, html: CONFIG_APP_HTML, name: "Vault" },
+    configApp: { uri: CONFIG_APP_URI, html: CONFIG_APP_HTML, name: "Vault（ローカル）" },
     init: () => backend.init(),
   });
 }

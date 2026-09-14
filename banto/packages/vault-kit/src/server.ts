@@ -428,6 +428,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         ),
         ...(opts.extraTools ?? []).map((t) => t.definition),
         tool(
+          "clearGroupBinding",
+          // **付け替えのために要る**（追加・2026-09-13）。1つの Project の秘密は
+          // 1つの Vault にまとめるので、別の Vault へ移すときはこちらを外す
+          "この Project の紐付けを外す（人専用）",
+          { type: "object", properties: { projectId: { type: "string" } }, required: ["projectId"] },
+          "admin",
+        ),
+        tool(
           "setSharedGroup",
           // **共通グループも選べる**（追加・2026-09-13、ユーザー指摘）。以前は
           // リテラルの決め打ちで、**そこだけ紐付けが無かった**——同じ backend を
@@ -745,6 +753,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             { type: "text", text: JSON.stringify({ shared: bindings.sharedGroup(), projects: bindings.list() }) },
           ],
         };
+      case "clearGroupBinding": {
+        await bindings.clear(requiredString(args.projectId, "projectId"));
+        return { content: [{ type: "text", text: "ok" }] };
+      }
       case "setSharedGroup": {
         const group = requiredString(args.group, "group");
         await backend.createGroup(group); // 名前の検査は backend が持つ（規則3）

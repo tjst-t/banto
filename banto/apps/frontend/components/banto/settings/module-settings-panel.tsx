@@ -85,7 +85,20 @@ export function ModuleSettingsPanel({
         data-testid="module-settings-canvas"
         data-module={canvas.server}
       >
+        {/**
+         * **別の Module を選んだら、画面を作り直す**（訂正・2026-09-14、
+         * ユーザー報告「先に開いたほうの中身が残る」）。
+         *
+         * Module の HTML は、**サンドボックスの iframe が立ち上がったと
+         * 言ってきたとき（`sandboxready`）にだけ**流し込まれる。React は
+         * 位置で照合するので、`server` が変わっても iframe は同じものが残り、
+         * **`sandboxready` はもう来ない**——だから中身が前のままだった。
+         *
+         * 見出しだけ新しい Module の名前になるので、**違う Module の設定を
+         * 見ていることに気づけない**（規則13——見えているものは繋がっている）。
+         */}
         <ModuleCanvas
+          key={`${canvas.server}:${canvas.resourceUri}`}
           owner={owner}
           server={canvas.server}
           resourceUri={canvas.resourceUri}

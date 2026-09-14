@@ -77,6 +77,12 @@ export class GroupBindings {
     return Array.from(this.bindings, ([projectId, group]) => ({ projectId, group }));
   }
 
+  /** 紐付けを外す。**付け替えのときに要る**（1つの Project は1つの Vault）。 */
+  async clear(projectId: string): Promise<void> {
+    if (!this.bindings.delete(projectId)) return;
+    await this.save();
+  }
+
   async set(projectId: string, group: string): Promise<void> {
     this.bindings.set(projectId, group);
     await this.save();

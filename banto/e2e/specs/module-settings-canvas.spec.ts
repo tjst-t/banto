@@ -119,7 +119,7 @@ test("設定の置き場は Module の scope が決める——Vault は全体�
   // banto 全体の設定には Vault が出て、FileSystem は出ない
   await page.goto("/settings");
   // 左メニューには Vault が並び、Project ごとの Module（FileSystem）は並ばない
-  const vaultNav = page.getByRole("button", { name: "Vault", exact: true });
+  const vaultNav = page.getByRole("button", { name: "Vault（ローカル）", exact: true });
   await expect(vaultNav, "全体の設定の左メニューに Vault が出ていない").toBeVisible({ timeout: 30_000 });
   await expect(
     page.getByRole("button", { name: "FileSystem", exact: true }),
@@ -182,4 +182,47 @@ test("Infisical の繋ぎ方を、全体の設定画面から入れられる", a
   await inner.locator("#projectId").fill("nope");
   await inner.getByRole("button", { name: "繋いで保存する" }).click();
   await expect(inner.locator("#error"), "繋がらないのに黙って保存している").toBeVisible({ timeout: 60_000 });
+});
+
+// **別の Module を選んだら、中身も切り替わる**（回帰・2026-09-14、ユーザー報告
+// 「先に vault-local を開いたら、Infisical を開いても中の表示が変わらない」）。
+//
+// Module の HTML は**サンドボックスの iframe が立ち上がったと言ってきたときに
+// だけ**流し込まれる。React は位置で照合するので `server` が変わっても iframe は
+// 同じものが残り、**その合図はもう来ない**——見出しだけ新しい名前になるので、
+// **違う Module の設定を見ていることに気づけない**（規則13）。
+test("設定画面を切り替えると、中身も入れ替わる", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+
+  const inner = (module: string) =>
+    page
+      .locator(`[data-testid="module-settings-canvas"][data-module="${module}"] iframe`)
+      .contentFrame()
+      .frameLocator("iframe");
+
+  // **狭い配置ではメニューが隠れる**（選ぶと詳細だけになる）。戻ってから選ぶ
+  const pick = async (name: string) => {
+    const back = page.getByRole("button", { name: "設定メニューに戻る" });
+    if (await back.isVisible().catch(() => false)) await back.click();
+    await page.getByRole("button", { name, exact: true }).click();
+  };
+
+  // 先に組み込みの Vault を開く
+  await pick("Vault（ローカル）");
+  await expect(inner("vault-local").getByText(/alias|件/)).toBeVisible({ timeout: 60_000 });
+
+  // そのまま Infisical へ切り替える
+  await pick("Vault（Infisical）");
+  await expect(
+    inner("vault-infisical").getByText("Infisical への繋ぎ方"),
+    "切り替えたのに中身が前のまま",
+  ).toBeVisible({ timeout: 60_000 });
+
+  // **戻しても入れ替わる**（片道だけ直っていないこと）
+  await pick("Vault（ローカル）");
+  await expect(
+    inner("vault-local").getByText(/alias|件/),
+    "戻したのに Infisical の画面が残っている",
+  ).toBeVisible({ timeout: 60_000 });
 });

@@ -364,6 +364,26 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         ["implementation", "projectId", "group"],
       ),
       tool(
+        "getPlacements",
+        // **置き場は「Vault とグループの組」で1つ**（決定・2026-09-13）。
+        // backend ごとに別々に選ばせると、「この Project の秘密は結局どこに
+        // 行くのか」が画面から読めない——1つの問いには1つの答えを出す
+        "置き場を読む——共通の既定（Vault・グループ）と、この Project の置き場",
+        { projectId: { type: "string" } },
+      ),
+      tool(
+        "setProjectPlacement",
+        "この Project の秘密の置き場を決める（Vault とグループを一緒に）",
+        { projectId: { type: "string" }, implementation: { type: "string" }, group: { type: "string" } },
+        ["projectId", "implementation", "group"],
+      ),
+      tool(
+        "setSharedPlacement",
+        "共通の秘密の置き場（既定）を決める（Vault とグループを一緒に）",
+        { implementation: { type: "string" }, group: { type: "string" } },
+        ["implementation", "group"],
+      ),
+      tool(
         "getDefaultVault",
         // **新しい秘密をどこに置くか**の既定。これがあるので、画面は毎回
         // 「どの Vault に入れるか」を聞かない（決めていないことを人に押し付けない）
@@ -569,6 +589,83 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const implementation = await target();
         await deps.relay.callTool(implementation, "createGroup", { name: requiredString(args.name, "name") });
         return text({ ok: true });
+      }
+
+      case "getPlacements": {
+        const projectId = optionalString(args.projectId, "projectId");
+        const dv = await defaultVault();
+        // 各 Vault に「自分のところの紐付け」を聞いて、1つの答えに畳む
+        const perVault = (await acrossVaults(async (impl) => ({
+          impl,
+          bindings: JSON.parse(await deps.relay.callTool(impl, "listGroupBindings", {})) as {
+            shared: string;
+            projects: Array<{ projectId: string; group: string }>;
+          },
+          groups: JSON.parse(await deps.relay.callTool(impl, "listGroups", {})) as string[],
+          // 紐付けが指している名前も候補に入れる（**まだ作られていないことがある**
+          // ——SOPS は使うときに作るので、`listGroups` に出てこない）
+        }))).filter((r): r is { implementation: string; ok: true; value: { impl: string; bindings: { shared: string; projects: Array<{ projectId: string; group: string }> }; groups: string[] } } => r.ok);
+
+        const mine = projectId
+          ? perVault
+              .map((r) => ({
+                implementation: r.value.impl,
+                group: r.value.bindings.projects.find((b) => b.projectId === projectId)?.group,
+              }))
+              .find((x) => x.group)
+          : undefined;
+        return text({
+          // **共通の置き場は「既定の Vault のその共通グループ」**——どの Vault
+          // にも共通グループはあるが、素の名前で引けるのは既定のものだけ
+          shared: { implementation: dv, group: perVault.find((r) => r.value.impl === dv)?.value.bindings.shared },
+          project: mine ?? null,
+          // 画面が選べるように、Vault ごとのグループ一覧も添える。
+          // **紐付けが指している名前も足す**（改訂・2026-09-14、実測で空だった）
+          // ——backend によってはグループを「使うときに作る」ので、まだ
+          // `listGroups` に出てこない。**出ていないものを「無い」と見せない**（規則2）
+          vaults: perVault.map((r) => ({
+            implementation: r.value.impl,
+            groups: [
+              ...new Set([
+                ...r.value.groups,
+                r.value.bindings.shared,
+                ...r.value.bindings.projects.map((b) => b.group),
+              ]),
+            ].filter(Boolean),
+          })),
+        });
+      }
+
+      case "setProjectPlacement": {
+        const projectId = requiredString(args.projectId, "projectId");
+        const implementation = requiredString(args.implementation, "implementation");
+        const group = requiredString(args.group, "group");
+        // **他の Vault に紐付いていたら、先に外す**——1つの Project の秘密は
+        // 1つの Vault にまとめる（人に2手かけさせない：ここで外して付け替える）
+        for (const r of await acrossVaults(async (impl) => ({
+          impl,
+          projects: (
+            JSON.parse(await deps.relay.callTool(impl, "listGroupBindings", {})) as {
+              projects?: Array<{ projectId: string; group: string }>;
+            }
+          ).projects ?? [],
+        }))) {
+          if (!r.ok || r.value.impl === implementation) continue;
+          if (r.value.projects.some((b) => b.projectId === projectId)) {
+            await deps.relay.callTool(r.value.impl, "clearGroupBinding", { projectId });
+          }
+        }
+        await deps.relay.callTool(implementation, "setGroupBinding", { projectId, group });
+        return text({ ok: true, placement: { implementation, group } });
+      }
+
+      case "setSharedPlacement": {
+        const implementation = requiredString(args.implementation, "implementation");
+        const group = requiredString(args.group, "group");
+        // **既定の Vault と、その中の共通グループ**——2つで1つの置き場
+        await deps.relay.callTool(implementation, "setSharedGroup", { group });
+        await setDefaultVault(implementation);
+        return text({ ok: true, placement: { implementation, group } });
       }
 
       case "getDefaultVault":
