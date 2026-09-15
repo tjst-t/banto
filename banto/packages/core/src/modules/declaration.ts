@@ -200,7 +200,12 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       // 子がそのまま継ぐ（cli.ts が `...process.env` を渡す）——宣言は
       // Event Store に残るので、**秘密を宣言に書くと記録に残ってしまう**。
       // 置き場は運用側（banto を起動する環境）。
-      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${dataDir}/vault-infisical" },
+      // **置き場は接続名ごとに分かれる場所**（訂正・2026-09-15）。以前は
+      // `${dataDir}/vault-infisical` という**固定のパス**だったので、同じ実装を
+      // 2本立てると（自前ホストと Infisical Cloud を並べるなど）**2本目が
+      // 1本目の資格情報を上書きする**。`${moduleDataDir}` は banto が
+      // 接続名ごとに用意するので、コピーしてもぶつからない。
+      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" },
     },
     meta: {
       satisfies: ["vault"],

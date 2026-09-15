@@ -315,6 +315,12 @@ async function main(): Promise<void> {
     const client = await connectStdioModule(command, args, {
       ...process.env,
       BANTO_MODULE_DATA_DIR: context.moduleDataDir,
+      // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てる
+      // ことがある（Vault を自前ホストと Cloud で並べるなど）——そのとき
+      // Module 自身が「自分はどの1本か」を知らないと、**画面に同じ名前が並び**、
+      // **環境変数の既定が全部の写しに効いてしまう**。host が必ず渡す
+      // （`BANTO_MODULE_DATA_DIR` と同じ理由——宣言の写しに持たせない）
+      BANTO_MODULE_NAME: declaration.name,
       ...launch.env,
     });
 

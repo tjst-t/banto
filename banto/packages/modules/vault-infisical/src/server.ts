@@ -41,7 +41,11 @@ class LazyConnection {
   private source: "saved" | "env" | "none" = "none";
   private lastError?: string;
 
-  constructor(private readonly settings: InfisicalSettingsStore) {}
+  constructor(
+    private readonly settings: InfisicalSettingsStore,
+    /** 環境変数からの既定を使ってよいか（正規の1本だけ）。 */
+    private readonly mayUseEnv: boolean,
+  ) {}
 
   /** 立ち上がり。**繋がらなくても投げない**（投げると Module ごと落ちる）。 */
   async start(): Promise<void> {
@@ -51,6 +55,10 @@ class LazyConnection {
       return;
     }
     // 環境変数は開発・E2E の経路。**無ければ未設定のまま立つ**
+    if (!this.mayUseEnv) {
+      this.lastError = "接続先と資格情報が設定されていません（設定画面から入れてください）";
+      return;
+    }
     try {
       await this.use(readConfigFromEnv(), "env");
     } catch (err) {
@@ -85,9 +93,20 @@ class LazyConnection {
   }
 }
 
-export function createInfisicalVaultServer(dataDir: string) {
+/**
+ * **この実装の正規の名前**。同じ実装を2本以上立てられる（自前ホストと
+ * Infisical Cloud を並べるなど）ので、**「自分がどの1本か」で振る舞いが変わる**
+ * ところが2つある——画面に出す名前と、環境変数からの既定（下記）。
+ */
+const CANONICAL_NAME = "vault-infisical";
+
+export function createInfisicalVaultServer(dataDir: string, moduleName = CANONICAL_NAME) {
   const settings = new InfisicalSettingsStore(dataDir);
-  const lazy = new LazyConnection(settings);
+  // **環境変数の既定は、正規の1本にだけ効かせる**（決定・2026-09-15）。
+  // `BANTO_INFISICAL_*` は**1つの接続先**を指す値なので、写しにも効かせると
+  // **2本目が黙って1本目と同じサーバに繋がる**——同じ秘密が2つの名前で
+  // 一覧に並び、人には理由が分からない（規則2——黙って別の経路へ行かない）
+  const lazy = new LazyConnection(settings, moduleName === CANONICAL_NAME);
   // backend と台帳には「いま繋がっている接続」を毎回引かせる——繋ぎ直しても
   // 古い接続を掴まない（規則3——写しを持たない）
   const proxy = new Proxy({} as InfisicalConnection, {
@@ -96,11 +115,17 @@ export function createInfisicalVaultServer(dataDir: string) {
   const backend = new InfisicalBackend(proxy);
 
   return createVaultModuleServer({
-    moduleName: "vault-infisical",
+    moduleName,
     backend,
     aliasStore: new InfisicalAliasStore(proxy),
     dataDir,
-    configApp: { uri: CONFIG_APP_URI, html: CONFIG_APP_HTML, name: "Vault（Infisical）" },
+    configApp: {
+      uri: CONFIG_APP_URI,
+      html: CONFIG_APP_HTML,
+      // **2本以上立てたら、どれか分かる名前にする**（追加・2026-09-15）。
+      // 設定画面の見出しはこの名前なので、固定にすると同じ見出しが並ぶ
+      name: moduleName === CANONICAL_NAME ? "Vault（Infisical）" : `Vault（Infisical：${moduleName}）`,
+    },
     // **未設定でも立つ**。繋がらない理由は readiness で返す
     init: () => lazy.start(),
     readiness: async () => lazy.readiness(),
@@ -154,6 +179,6 @@ export function createInfisicalVaultServer(dataDir: string) {
 if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const dataDir =
     process.env.BANTO_VAULT_INFISICAL_DATA_DIR ?? `${process.env.HOME}/.local/share/banto/vault-infisical`;
-  const server = createInfisicalVaultServer(dataDir);
+  const server = createInfisicalVaultServer(dataDir, process.env.BANTO_MODULE_NAME ?? CANONICAL_NAME);
   await server.connect(new StdioServerTransport());
 }

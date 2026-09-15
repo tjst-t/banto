@@ -870,6 +870,15 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     }
   });
 
+  /**
+   * 1件ずつの資源を並べるための alias 一覧。**金庫が読めないなら空**
+   * ——理由は資源の一覧ではなく、読みに行ったときに言う（上記）。
+   */
+  async function listableAliases(): Promise<Array<{ name: string }>> {
+    if (opts.readiness && !(await opts.readiness()).ready) return [];
+    return registry.list();
+  }
+
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     await initPromise;
     return {
@@ -934,7 +943,19 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           mimeType: "application/json",
           _meta: { [VISIBILITY_META_KEY]: agentVisibility },
         },
-      ...(await registry.list()).map((a: { name: string }) => ({
+      // **1件ずつの資源は、金庫が読めるときだけ**（訂正・2026-09-15）。
+      // 以前は無条件に `registry.list()` を呼んでいたので、**未設定の Module は
+      // 資源の一覧そのものが例外になった**——「未設定でも立つ」（2026-09-13）が
+      // 半分しか成立しておらず、**自分が何者かを名乗る資源まで出せない**ので、
+      // host から見ると繋がらない Module と区別が付かなかった。
+      // 自前ホストと Cloud を並べるなら、2本目は**設定するまで未設定**が
+      // 普通の状態になるので、ここが通らないと成り立たない。
+      //
+      // 読めないときに**短い一覧を黙って返さない**（規則2）——静的な資源は
+      // 「この Module が何者で、どこから設定するか」であり、これは金庫が
+      // 読めなくても変わらない事実。中身が要る `vault://aliases` のほうは
+      // 読んだ時点で理由つきに断る（`assertReady`）
+      ...(await listableAliases()).map((a: { name: string }) => ({
         uri: `${ALIASES_URI}/${a.name}`,
         name: a.name,
         mimeType: "application/json",

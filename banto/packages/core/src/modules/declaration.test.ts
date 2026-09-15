@@ -336,3 +336,23 @@ test("その Project 固有の直しは、選び直しても残る", async () =>
     );
   });
 });
+
+// **同じ実装を2本以上立てられるようにしておく**（追加・2026-09-15）。
+// Vault を自前ホストと Infisical Cloud で並べたい、という要望から。
+// 宣言をコピーすれば足りる形にしておくには、**置き場が固定パスであってはいけない**
+// ——固定だと2本目が1本目の資格情報を上書きする。
+test("秘密を扱う Module の置き場は、接続名ごとに分かれる場所を指す", () => {
+  for (const d of DEFAULT_MODULE_DECLARATIONS) {
+    for (const [key, value] of Object.entries(d.launch.env ?? {})) {
+      if (!/DATA_DIR$/.test(key)) continue;
+      // `${dataDir}/...` は banto 全体で1つの場所——コピーするとぶつかる。
+      // **ぶつかってよいものだけ、理由つきでここに挙げる**
+      const sharedOnPurpose = new Set(["vault-local", "vault-directory"]);
+      if (sharedOnPurpose.has(d.name)) continue;
+      assert.ok(
+        value.includes("${moduleDataDir}"),
+        `${d.name} の ${key} が固定パス（${value}）——この実装を2本立てると置き場がぶつかる`,
+      );
+    }
+  }
+});
