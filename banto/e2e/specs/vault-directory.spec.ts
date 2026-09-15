@@ -307,10 +307,10 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
 // 「まだバックエンドごとに選ぶ仕様になっている」）。以前は backend の chip から
 // 開いていたので、**同じ問いを backend の数だけ聞いていた**——「この Project の
 // 秘密は結局どこに行くのか」が画面から読めなかった。
-// **置き場の設定は Canvas に無い**（改訂・2026-09-14、ユーザー指摘
-// 「こういうのは Canvas よりも設定画面でやったほうがいい」）。
-// 共通の置き場は設定画面、Project の置き場は最初に保存したときに決まる。
-test("管理 Canvas に置き場の設定を置かない——見る・作る・消すための面", async ({ page }) => {
+// **共通の置き場の設定は Canvas に無い**（改訂・2026-09-14、ユーザー指摘
+// 「こういうのは Canvas よりも設定画面でやったほうがいい」）——値が動かないので設定。
+// Project の置き場だけは、変えると秘密が実際に移るのでここに在る（下の試験）。
+test("管理 Canvas に共通の置き場の設定を置かない——見る・作る・消すための面", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-noplace-"));
   await openApp(page);
   await createProject(page, "E2E 置き場なし", projectRoot);
@@ -354,8 +354,15 @@ test("この Project の置き場を変えられる——移行の有無を選�
     data: { server: "vault-directory", tool: "createGroup", arguments: { implementation: "vault-local", name: dest } },
   });
 
+  // **いまどこに保存しているかが、開かなくても読める**（改訂・2026-09-14、
+  // ユーザー指摘「一覧の見出しの真ん中にあるのは変」——「接続している実装」の
+  // 段に移し、ボタンだけでなく**いまの置き場を出す**ようにした）
+  await expect(canvas.locator("#place-summary"), "いまの置き場が画面に出ていない").toContainText(
+    "この Project の秘密は vault-local /",
+  );
+
   // 置き場を変える画面を開く
-  await canvas.getByRole("button", { name: "この Project の置き場…" }).click();
+  await canvas.getByRole("button", { name: "変更…" }).click();
   await expect(canvas.getByText("この Project の秘密の置き場を変える")).toBeVisible();
   await expect(canvas.locator("#place-now"), "いまどこかを言っていない").toContainText("いまは");
   await canvas.locator("#place-group").selectOption(dest);
@@ -369,12 +376,20 @@ test("この Project の置き場を変えられる——移行の有無を選�
   await expect(canvas.locator("#place-effect")).toContainText("一緒に移します");
 
   await canvas.getByRole("button", { name: "変える" }).click();
+  // **「エラーが出ていない」を押した直後に見ない**（訂正・2026-09-14）。
+  // 押した瞬間にエラー欄は一度消されるので、その後に失敗しても、先に見た
+  // 「消えている」で通ってしまう——実際 `refresh()`（存在しない関数）で
+  // 落ちていたのに、この試験は通り続けていた。
+  // **成功したときにしか起きないこと＝ダイアログが閉じること**を待つ（規則14）
+  await expect(canvas.locator("#dlg-place"), "変えられずにダイアログが開いたまま").toBeHidden();
   await expect(canvas.locator("#place-error"), "変えるときにエラーが出た").toBeHidden();
 
   // **秘密も一緒に動いた**（使える範囲は Project のまま）
   const row = canvas.locator("tbody tr").filter({ hasText: alias });
   await expect(row, "移したのに一覧から消えた").toBeVisible({ timeout: 60_000 });
   await expect(row, "移したのに使えなくなっている").toContainText("E2E 置き場を変える");
+  // **変えたことが、そのまま画面に映る**（古い置き場を出したままにしない・規則3）
+  await expect(canvas.locator("#place-summary"), "置き場の表示が古いまま").toContainText(dest);
 
   await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },

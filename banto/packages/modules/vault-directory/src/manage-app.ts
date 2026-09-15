@@ -53,6 +53,8 @@ export const MANAGE_APP_HTML = `<!doctype html>
   button.icon { padding: 2px 6px; border-color: transparent; opacity: .6; }
   button.icon:hover { opacity: 1; }
   button.danger { color: var(--mcp-ui-color-danger, #c0392b); }
+  /* 添え物のボタン。主役（新規登録）と競らせない */
+  button.quiet { padding: 2px 8px; font-size: 11px; }
   input, select, textarea {
     font: inherit; font-size: 12px; padding: 5px 8px; width: 100%;
     border-radius: 6px; background: transparent; color: inherit;
@@ -102,6 +104,15 @@ export const MANAGE_APP_HTML = `<!doctype html>
 <div class="section">
   <p class="label">接続している実装</p>
   <div class="row" id="impls"></div>
+  <!-- **置き場は「どこに在るか」の段に置く**（改訂・2026-09-14、ユーザー指摘
+       「一覧の見出しの真ん中にあるのは変」）。一覧の見出しに混ぜると、
+       list の操作に見えるうえ、3つ並びの真ん中が中央寄せになって浮く。
+       ここなら **いまどこに保存しているかを先に出せる**——ボタンだけ置くより、
+       画面が答えられる問いが1つ増える -->
+  <div class="row" id="place-line" style="margin-top:8px" hidden>
+    <span class="muted" id="place-summary"></span>
+    <button id="open-place" class="quiet">変更…</button>
+  </div>
 </div>
 
 <div class="section" id="problems-section" hidden>
@@ -111,7 +122,6 @@ export const MANAGE_APP_HTML = `<!doctype html>
 <div class="section">
   <div class="spread" style="margin-bottom:8px">
     <p class="label" style="margin:0" id="count">alias 一覧</p>
-    <button id="open-place">この Project の置き場…</button>
     <button id="new-alias">＋ alias を新規登録</button>
   </div>
 
@@ -479,7 +489,31 @@ ${ALIAS_KIND_RULES_JS}
     const result = await callTool("listAliases");
     aliases = result.aliases || [];
     failures = result.failures || [];
+    await reloadPlacement();
     render();
+  }
+
+  /**
+   * この Project の秘密がどこに保存されるか。**Project の上で開かれたときだけ出す**
+   * ——instance 全体の面には Project の置き場が無いので、押せないボタンを置かない
+   * （規則13——繋がっていないものを画面に残さない）。
+   */
+  async function reloadPlacement() {
+    if (!project) {
+      $("place-line").hidden = true;
+      return;
+    }
+    try {
+      const places = await callTool("getPlacements", { projectId: project.id });
+      $("place-summary").textContent = places.project
+        ? "この Project の秘密は " + places.project.implementation + " / " + places.project.group + " に保存します"
+        : "この Project の置き場はまだ決まっていません（最初に保存したときに決まります）";
+      $("place-line").hidden = false;
+    } catch (err) {
+      // **読めなかったことを、無いことにしない**（規則2）
+      $("place-summary").textContent = "置き場を読めませんでした：" + (err && err.message ? err.message : String(err));
+      $("place-line").hidden = false;
+    }
   }
 
   // --- 人の操作 --------------------------------------------------------------
@@ -764,7 +798,7 @@ ${ALIAS_KIND_RULES_JS}
       group: $("place-group").value,
       migrate: $("place-migrate").value === "yes",
     });
-    await refresh();
+    await reload();
   });
 
   // **絞り込みは打つそばから効く**（2度消してしまっている・2026-09-14）
@@ -772,10 +806,12 @@ ${ALIAS_KIND_RULES_JS}
     $(id).addEventListener("input", renderRows);
   }
 
-  // **置き場の設定はこの画面に無い**（改訂・2026-09-14、ユーザー指摘）。
-  // 共通の置き場は**設定画面**（ui://banto-vault-directory/config）、
-  // Project の置き場は**最初に保存したときに決まる**——ここは alias を
-  // 見る・作る・消すための面なので、設定を混ぜない（仕様 §2.1）。
+  // **共通の置き場はこの画面に無い**（改訂・2026-09-14、ユーザー指摘）
+  // ——設定画面（ui://banto-vault-directory/config）。値が動かないので「設定」。
+  //
+  // **Project の置き場だけはここに在る**。変えると秘密が実際に移るので、
+  // これは設定ではなく**操作**（仕様 §2.1「画面はどこで何を聞くか」）。
+  // 置き場所は「接続している実装」の段——いまどこに在るかと並べて出す。
 
   // --- 立ち上がり ------------------------------------------------------------
   request("ui/initialize", {
