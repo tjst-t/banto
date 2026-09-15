@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { HostRelayClient } from "./host-relay-client.js";
+import type { AliasPlace, HostRelayClient } from "./host-relay-client.js";
 
 export interface RunCommandInput {
   command: string;
@@ -74,13 +74,16 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
   // 1回の runCommand の中では同じ名前を2度引かない（`envSecrets` と
   // `secretFiles` に同じ alias が出ることがある）。**跨いでは持たない**
   // ——別のホストが預け先を変えたとき、古い在りかを見せることになる（規則3）。
-  const whereCache = new Map<string, Promise<string>>();
-  const vaultOf = (alias: string, note: (n: string) => string): Promise<string> => {
+  //
+  // **引くのは「在りか」＝(Vault, グループ, 名前) の三つ組**（訂正・2026-09-15）。
+  // 以前は実装名だけを覚えて、`resolveAlias` には AI が書いた文字列を渡していた
+  // ——**修飾名（`vault-infisical:npm-token`）では backend にその名前が無い**ので、
+  // 一覧に出た名前をそのまま書いても使えなかった
+  const whereCache = new Map<string, Promise<AliasPlace>>();
+  const vaultOf = (alias: string, note: (n: string) => string): Promise<AliasPlace> => {
     let found = whereCache.get(alias);
     if (!found) {
-      found = deps.relayClient
-        .lookupAlias(directoryModule, alias, (n) => deps.onProgress?.(note(n)))
-        .then((r) => r.implementation);
+      found = deps.relayClient.lookupAlias(directoryModule, alias, (n) => deps.onProgress?.(note(n)));
       whereCache.set(alias, found);
     }
     return found;
@@ -99,27 +102,25 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
     for (const [envName, alias] of Object.entries(input.envSecrets ?? {})) {
       // 中継の初回は host が人に承認を聞く——待っている間の合図をそのまま
       // 上（AI のターン）へ流し、外側の tool 呼び出しが先に切れないようにする
-      const vaultModule = await vaultOf(alias, (n) => `envSecrets: ${envName}——${n}`);
-      env[envName] = await deps.relayClient.resolveAlias(vaultModule, alias, (note) =>
+      const place = await vaultOf(alias, (n) => `envSecrets: ${envName}——${n}`);
+      env[envName] = await deps.relayClient.resolveAlias(place, (note) =>
         deps.onProgress?.(`envSecrets: ${envName}——${note}`),
       );
       deps.onProgress?.(`envSecrets: ${envName} を解決しました`);
     }
 
     if (input.sshIdentity) {
-      const vaultModule = await vaultOf(input.sshIdentity, (n) => `sshIdentity——${n}`);
-      const { socketPath } = await deps.relayClient.startSshAgent(
-        vaultModule,
-        input.sshIdentity,
-        (note) => deps.onProgress?.(`sshIdentity——${note}`),
+      const place = await vaultOf(input.sshIdentity, (n) => `sshIdentity——${n}`);
+      const { socketPath } = await deps.relayClient.startSshAgent(place, (note) =>
+        deps.onProgress?.(`sshIdentity——${note}`),
       );
       env.SSH_AUTH_SOCK = socketPath;
       deps.onProgress?.(`sshIdentity: ${input.sshIdentity} をssh-agentに読み込みました`);
     }
 
     for (const [relPath, alias] of Object.entries(input.secretFiles ?? {})) {
-      const vaultModule = await vaultOf(alias, (n) => `secretFiles: ${relPath}——${n}`);
-      const value = await deps.relayClient.resolveAlias(vaultModule, alias, (note) =>
+      const place = await vaultOf(alias, (n) => `secretFiles: ${relPath}——${n}`);
+      const value = await deps.relayClient.resolveAlias(place, (note) =>
         deps.onProgress?.(`secretFiles: ${relPath}——${note}`),
       );
       const absPath = resolve(deps.projectRoot, relPath);

@@ -119,7 +119,8 @@ export function createInfisicalVaultServer(dataDir: string) {
         definition: {
           name: "setConnectionSettings",
           description:
-            "Infisical への繋ぎ方を保存する。**実際に繋いでみて、繋がったときだけ保存する**",
+            "Infisical への繋ぎ方を保存する。**実際に繋いでみて、繋がったときだけ保存する**。" +
+            "clientSecret を省くと、いま保存されているものを使う",
           inputSchema: {
             type: "object",
             properties: {
@@ -130,12 +131,15 @@ export function createInfisicalVaultServer(dataDir: string) {
               projectId: { type: "string" },
               environment: { type: "string", description: "dev / staging / prod など（既定 dev）" },
             },
-            required: ["target", "clientId", "clientSecret", "projectId"],
+            // **Client Secret は、既に保存されているなら省ける**（改訂・2026-09-15）
+            required: ["target", "clientId", "projectId"],
           },
           _meta: { [VISIBILITY_META_KEY]: "admin" },
         },
         handle: async (args) => {
-          const config = toConfig(args as unknown as InfisicalSettingsInput);
+          // 空で来たら、いま保存されているものを使う（接続先や環境だけ直す場合）
+          const saved = await settings.load();
+          const config = toConfig(args as unknown as InfisicalSettingsInput, saved?.clientSecret);
           // **繋がってから保存する**（規則1——自己申告を信頼しない）。
           // 保存してから繋ぐと、間違った設定が残って毎回失敗する
           await lazy.use(config, "saved");

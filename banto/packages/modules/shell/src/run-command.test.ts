@@ -8,7 +8,7 @@ import { runCommand } from "./run-command.js";
 
 function unusedRelayClient() {
   return {
-    lookupAlias: async () => ({ implementation: "vault" }),
+    lookupAlias: async (_t: string, name: string) => ({ implementation: "vault", name, group: "instance" }),
     resolveAlias: async () => {
       throw new Error("relay should not be called for this test");
     },
@@ -66,7 +66,7 @@ test("secretFiles are written before exec and always deleted after, even on fail
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {
     const relayClient = {
-      lookupAlias: async () => ({ implementation: "vault" }),
+      lookupAlias: async (_t: string, name: string) => ({ implementation: "vault", name, group: "instance" }),
       resolveAlias: async () => "TOP-SECRET-VALUE",
       startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
       close: async () => undefined,
@@ -118,7 +118,7 @@ test("BANTO_* が envSecrets で復活させられない（黙って無視せず
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {
     const relayClient = {
-      lookupAlias: async () => ({ implementation: "vault" }),
+      lookupAlias: async (_t: string, name: string) => ({ implementation: "vault", name, group: "instance" }),
       resolveAlias: async () => "whatever",
       startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
       close: async () => undefined,
@@ -199,8 +199,8 @@ test("envSecrets values reach the child process env, never the command string", 
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {
     const relayClient = {
-      lookupAlias: async () => ({ implementation: "vault" }),
-      resolveAlias: async (_target: string, alias: string) => `resolved-${alias}`,
+      lookupAlias: async (_t: string, name: string) => ({ implementation: "vault", name, group: "instance" }),
+      resolveAlias: async (place: { name: string }) => `resolved-${place.name}`,
       startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
       close: async () => undefined,
     } as unknown as import("./host-relay-client.js").HostRelayClient;
@@ -226,7 +226,7 @@ test("runCommand の説明が、秘密の渡し方を AI に伝えている", as
 
   // 中継は使わない試験（tool の説明だけを見る）——繋がる先は要らない
   const relayClient = {
-    lookupAlias: async () => ({ implementation: "vault" }),
+    lookupAlias: async (_t: string, name: string) => ({ implementation: "vault", name, group: "instance" }),
     resolveAlias: async () => "",
     startSshAgent: async () => ({ socketPath: "" }),
   };
@@ -262,10 +262,11 @@ test("秘密の在りかは窓口に聞く——決め打ちした金庫を呼�
   const relayClient = {
     lookupAlias: async (target: string, name: string) => {
       calls.push([`lookup:${target}`, name]);
-      return { implementation: "vault-infisical" }; // 既定ではない金庫
+      // **修飾名で頼まれても、backend での本当の名前と置き場を返す**
+      return { implementation: "vault-infisical", name: "npm-token", group: "team" };
     },
-    resolveAlias: async (target: string, name: string) => {
-      calls.push([`resolve:${target}`, name]);
+    resolveAlias: async (place: { implementation: string; name: string; group?: string }) => {
+      calls.push([`resolve:${place.implementation}`, place.name + "@" + place.group]);
       return "VALUE-FROM-SECOND-VAULT";
     },
     startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
@@ -273,14 +274,16 @@ test("秘密の在りかは窓口に聞く——決め打ちした金庫を呼�
 
   const dir = await mkdtemp(join(tmpdir(), "shell-lookup-"));
   const result = await runCommand(
-    { command: "printf %s \"$TOKEN\"", envSecrets: { TOKEN: "far-away" } },
+    { command: "printf %s \"$TOKEN\"", envSecrets: { TOKEN: "vault-infisical:npm-token" } },
     { projectRoot: dir, relayClient },
   );
 
   assert.equal(result.stdout, "VALUE-FROM-SECOND-VAULT");
   assert.deepEqual(calls, [
-    ["lookup:vault-directory", "far-away"],
-    ["resolve:vault-infisical", "far-away"], // **窓口ではなく、引いた金庫を直接**
+    ["lookup:vault-directory", "vault-infisical:npm-token"],
+    // **窓口ではなく、引いた金庫を直接**。しかも**窓口が返した名前と置き場**で
+    // ——AI が書いた修飾名をそのまま渡すと、backend にその名前は無い
+    ["resolve:vault-infisical", "npm-token@team"],
   ]);
 });
 
@@ -305,7 +308,7 @@ test("同じ alias を2箇所で使っても、在りかは1度しか引かな�
   const relayClient = {
     lookupAlias: async () => {
       lookups += 1;
-      return { implementation: "vault" };
+      return { implementation: "vault", name: "same", group: "instance" };
     },
     resolveAlias: async () => "same",
     startSshAgent: async () => ({ socketPath: "" }),

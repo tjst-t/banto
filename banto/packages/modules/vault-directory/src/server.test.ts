@@ -144,7 +144,11 @@ test("横断した目録には、どの Vault のものかを載せない（AI �
         arguments: { implementation: "vault-local", name: "a1", kind: "secret", value: "v" },
       });
       const read = await ui.readResource({ uri: "vault://aliases" });
-      const list = JSON.parse((read.contents as { text: string }[])[0]!.text) as Array<Record<string, unknown>>;
+      // **形は { aliases, warning? }**（改訂・2026-09-15）——読めない金庫が
+      // あっても読める分は返す
+      const list = (JSON.parse((read.contents as { text: string }[])[0]!.text) as {
+        aliases: Array<Record<string, unknown>>;
+      }).aliases;
       assert.equal(list.length, 1);
       assert.equal(list[0]!.name, "a1");
       assert.equal(list[0]!.implementation, undefined, "AI に金庫を選ぶ材料を渡している");
@@ -209,8 +213,8 @@ test("同じ名前が2つあっても決まる——既定が素の名前、も�
         JSON.parse(
           ((await ui.readResource({ uri: "vault://aliases", _meta: forProject("p") })).contents as { text: string }[])[0]!
             .text,
-        ) as Array<{ name: string }>
-      ).map((a) => a.name);
+        ) as { aliases: Array<{ name: string }> }
+      ).aliases.map((a) => a.name);
       assert.deepEqual(seen.sort(), ["TOKEN", "vault-keychain:TOKEN"]);
     },
     { vaultNames: ["vault-local", "vault-keychain"] },
@@ -470,8 +474,8 @@ test("横断した目録は、その Project から使えるものだけ（backe
               (await ui.readResource({ uri: "vault://aliases", _meta: forProject(project) }))
                 .contents as { text: string }[]
             )[0]!.text,
-          ) as Array<{ name: string }>
-        ).map((a) => a.name);
+          ) as { aliases: Array<{ name: string }> }
+        ).aliases.map((a) => a.name);
 
       // **既定（vault-local）の外に居る共通のものは、修飾名で出る**
       // （決定・2026-09-13）——一覧に出る名前が、そのまま使える名前
@@ -592,8 +596,8 @@ test("既定の Vault が、置き場と素の名前の両方を決める", asyn
             ((await ui.readResource({ uri: "vault://aliases", _meta: forProject("p") })).contents as {
               text: string;
             }[])[0]!.text,
-          ) as Array<{ name: string }>
-        ).map((a) => a.name);
+          ) as { aliases: Array<{ name: string }> }
+        ).aliases.map((a) => a.name);
         assert.ok(seen.includes("B"), "新しい既定のものが素の名前で出ていない");
         assert.ok(seen.includes("vault-local:A"), "既定の外のものが修飾名で出ていない");
 
@@ -890,5 +894,165 @@ test("移行ありで置き場を変えると、秘密も一緒に動く", async
       parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "comes-along" }, _meta: forProject("p1") })).group,
       "fresh",
     );
+  });
+});
+
+// ---- 2026-09-15 のレビューで見つかった穴 ------------------------------------
+
+// **読めない金庫が1本あるだけで、AI が目録を読めなくなっていた**（訂正・2026-09-15）。
+// `vault-infisical` は既定で宣言され、未設定でも立つ——つまり素のインストールでは
+// AI は毎回失敗していた。しかも直せるのは人だけで、AI には手が無い。
+test("読めない金庫があっても、読める分は AI に返る（事実は落とさない）", async () => {
+  await withUi(
+    async ({ ui }) => {
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-local", name: "usable", kind: "secret", value: "v" },
+      });
+      const body = JSON.parse(
+        ((await ui.readResource({ uri: "vault://aliases" })).contents as { text: string }[])[0]!.text,
+      );
+      assert.deepEqual(
+        body.aliases.map((a: { name: string }) => a.name),
+        ["usable"],
+        `読める分が返っていない: ${JSON.stringify(body)}`,
+      );
+      // **「読めていない」も同じ答えの中で言う**（空に化けさせない・規則2）
+      assert.equal(body.unreadable[0].implementation, "vault-dead");
+      assert.match(body.warning, /全部ではありません/);
+      assert.match(body.warning, /人に伝えて/);
+    },
+    { vaultNames: ["vault-local"], broken: new Map([["vault-dead", "設定されていません"]]) },
+  );
+});
+
+// **backend の listAliases は誰にでも全部返していた**（訂正・2026-09-15）。
+// この口は valueFree なので初回承認すら出ない——`dependsOn: [{role:"vault"}]` を
+// 宣言した Module は、承認ゼロで全 Project の目録を読めていた。
+test("backend の目録は、刻印で絞る——刻印が無ければ断る", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    const vault = vaults.get("vault-local")!;
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "mine", kind: "secret", value: "v", forProject: "p1" },
+    });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "theirs", kind: "secret", value: "v", forProject: "p2" },
+    });
+
+    const namesFor = async (meta: Record<string, unknown>) =>
+      (
+        JSON.parse(
+          ((await vault.callTool({ name: "listAliases", arguments: {}, _meta: meta })).content as {
+            text: string;
+          }[])[0]!.text,
+        ) as Array<{ name: string }>
+      )
+        .map((a) => a.name)
+        .sort();
+
+    // 人の管理面は全部（「どこにも紐付いていない」も——隠すと直せない）
+    assert.deepEqual(await namesFor(ADMIN), ["mine", "theirs"]);
+    // Project は自分の分だけ
+    assert.deepEqual(await namesFor(forProject("p1")), ["mine"]);
+    // **刻印が無ければ、空ではなく断る**（「無い」と「決められない」を混ぜない）
+    await assert.rejects(
+      () => vault.callTool({ name: "listAliases", arguments: {} }),
+      /誰のために読むのかが分かりません/,
+    );
+  });
+});
+
+// **制限を守る側が、制限を書き換えられてはならない**（追加・2026-09-15）。
+// `admin` 可視性は「Module から呼べない」を意味していなかった——host の中継は
+// 可視性で拒否しないので、承認1回で setGroupBinding を呼べば usableBy の判定
+// そのものを書き換えられた。
+test("紐付けと台帳を変える口は、人の刻印が無ければ通さない", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    const vault = vaults.get("vault-local")!;
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "guarded", kind: "secret", value: "v", forProject: "owner" },
+    });
+
+    // Project の刻印では変えられない
+    for (const [name, args] of [
+      ["setGroupBinding", { projectId: "intruder", group: "owner" }],
+      ["clearGroupBinding", { projectId: "owner" }],
+      ["setSharedGroup", { group: "owner" }],
+      ["deleteAlias", { name: "guarded" }],
+    ] as const) {
+      await assert.rejects(
+        () => vault.callTool({ name, arguments: args, _meta: forProject("intruder") }),
+        /人の管理画面からしか行えません/,
+        `${name} が Module から通ってしまう`,
+      );
+    }
+
+    // **書き換わっていない**——侵入側からはまだ使えない
+    await assert.rejects(
+      () => vault.callTool({ name: "resolveAlias", arguments: { name: "guarded" }, _meta: forProject("intruder") }),
+      /この Project からは使えません/,
+    );
+  });
+});
+
+// **無いものを「消した」と言わない**（訂正・2026-09-15、規則1）
+test("置き場を指した削除は、その置き場のものだけを消す", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "dest" } });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "DUP", kind: "secret", value: "in-project", forProject: "p1" },
+    });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "DUP", kind: "secret", value: "in-dest", group: "dest" },
+    });
+
+    await ui.callTool({ name: "deleteAlias", arguments: { implementation: "vault-local", name: "DUP", group: "dest" } });
+
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const left = aliases.filter((a: { name: string }) => a.name === "DUP");
+    assert.equal(left.length, 1, `消しすぎ／消せていない: ${JSON.stringify(aliases)}`);
+    assert.equal(left[0].group, "p1", "指定した置き場ではないほうが消えた");
+    // 残ったほうの値は無事
+    assert.equal(await valueOf(vaults, "vault-local", "DUP", "p1"), "in-project");
+
+    // **無い置き場を指したら、消したと言わない**
+    await assert.rejects(
+      () =>
+        ui.callTool({ name: "deleteAlias", arguments: { implementation: "vault-local", name: "DUP", group: "dest" } }),
+      /dest にありません/,
+    );
+  });
+});
+
+// **使えない同名があるだけで、頼むことすらできなくなっていた**（訂正・2026-09-15）
+test("requestAlias は、使えない同名があっても入力欄を開く", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "someone-elses", forProject: "other" },
+    });
+    const said = textOf(
+      await ui.callTool({ name: "requestAlias", arguments: { name: "TOKEN" }, _meta: forProject("mine") }),
+    );
+    assert.match(said, /入力欄/, `袋小路になっている: ${said}`);
+    // **金庫の名前は返さない**——AI に選ばせる材料にしない
+    assert.equal(said.includes("vault-local"), false, `実装名を AI に見せている: ${said}`);
+    // **待ち方まで書く**——ターンの途中で人を待つ手段は AI に無い
+    assert.match(said, /ターンを終えて/);
+
+    // 使えるものが既に在るなら、そう言う
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "TOKEN", kind: "secret", value: "mine", forProject: "mine" },
+    });
+    const again = textOf(
+      await ui.callTool({ name: "requestAlias", arguments: { name: "TOKEN" }, _meta: forProject("mine") }),
+    );
+    assert.match(again, /既に登録されていて、いま使えます/);
   });
 });

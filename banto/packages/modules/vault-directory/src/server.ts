@@ -392,7 +392,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         { ...IMPL, name: { type: "string" }, note: { type: "string" } },
         ["implementation", "name"],
       ),
-      tool("deleteAlias", "alias を削除する", { ...IMPL, name: { type: "string" } }, ["implementation", "name"]),
+      tool(
+        "deleteAlias",
+        "alias を削除する。**置き場（group）まで指す**——同じ名前が複数の置き場に在るのは普通のこと",
+        { ...IMPL, name: { type: "string" }, group: { type: "string", description: "置き場（省略すると既定の解決に落ちる）" } },
+        ["implementation", "name"],
+      ),
       tool("listGroups", "その実装のグループ一覧と、Project との紐付け", IMPL, ["implementation"]),
       tool("createGroup", "その実装に新しいグループを作る", { ...IMPL, name: { type: "string" } }, [
         "implementation",
@@ -524,10 +529,28 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const name = requiredString(args.name, "name");
         // **すぐ返す**（人を待って呼び出しを止めない）。戻り値そのものが
         // 会話の中の入力欄を開く（`_meta.ui.resourceUri`）
-        const existing = (await crossAliases()).aliases.find((a) => a.name === name);
+        //
+        // **「既に在る」は、呼び出し元から使えるときだけ**（訂正・2026-09-15）。
+        // 以前は名前が一致するだけで断っていたので、**他の Project の同名が
+        // あるだけで入力欄が開かず**、AI は「使えないのに頼めない」袋小路に
+        // 入っていた（一覧にも出ないので、人に届く導線も無かった）。
+        // 置き場が違えば衝突しないので、断る理由も無い。
+        // **実装名も返さない**——金庫の名前を AI に見せないと決めたのに、
+        // ここだけ自分で破っていた。
+        const { aliases, failures } = await crossAliases();
+        const caller = callerOf(callMeta);
+        const usable = aliases.filter((a) => usableBy(a, caller));
+        const existing = usable.find(
+          (a) => a.name === name || `${a.implementation}:${a.name}` === name,
+        );
         if (existing) {
           return {
-            content: [{ type: "text", text: `alias "${name}" は既に登録されています（${existing.implementation}）` }],
+            content: [
+              {
+                type: "text",
+                text: `"${name}" は既に登録されていて、いま使えます。vault://aliases で確かめてください`,
+              },
+            ],
           };
         }
         return {
@@ -535,9 +558,18 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
             {
               type: "text",
               text:
-                `"${name}" を登録するための入力欄を、この会話に出しました。人が入れるまで待ってください。` +
-                `**値はあなたには渡りません。** 登録されたかどうかは vault://aliases で確かめられます` +
-                `（この時点ではまだ存在しません）。`,
+                `"${name}" を登録するための入力欄を、この会話に出しました。` +
+                `**値はあなたには渡りません。**\n` +
+                // **待ち方まで書く**（追加・2026-09-15）。ターンの途中で人を待つ
+                // 手段は AI に無いので、「待ってください」だけだと目録を
+                // ポーリングし始める。正解（ターンを終えて人に知らせる）を書く
+                `このターンではこれ以上進めません。**ターンを終えて人に知らせてください。**\n` +
+                `人が入れたあと、次のターンの初めに vault://aliases を読めば使えるようになっています` +
+                (failures.length > 0
+                  ? `\n（なお、読めていない Vault があります：` +
+                    failures.map((f) => f.implementation).join("、") +
+                    `。同じ名前が既にそちらに在るかもしれません——人に伝えてください）`
+                  : ""),
             },
           ],
         };
@@ -636,10 +668,15 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
       case "deleteAlias": {
         const implementation = await target();
+        // **置き場まで指して消す**（訂正・2026-09-15）。同じ名前が同一 Vault の
+        // 2つの置き場に在るのは**正しい状態**と決めたのに、名前だけで渡すと
+        // backend の既定解決に落ちて**一覧で選んだ行と別の秘密が消える**
+        // ——`migrateAlias` で直したのと同じ穴が、ここに残っていた
         const body = await deps.relay.callTool(implementation, "deleteAlias", {
           name: requiredString(args.name, "name"),
+          group: optionalString(args.group, "group"),
         });
-        return text({ ok: true, message: body });
+        return text({ ok: true, ...JSON.parse(body) });
       }
 
       case "listGroups": {
@@ -912,8 +949,10 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         uri: "vault://aliases",
         name: "使える秘密の一覧（alias）",
         description:
-          "この banto が預かっている秘密の**名前だけ**の一覧（値は含まない）。" +
+          "この banto が預かっている秘密の一覧。**値は含まない**（名前・種別・用途・最終使用まで）。" +
           "繋がっている Vault を横断した1つの一覧。" +
+          "形は { aliases: [...] }。読めていない Vault があるときは warning も入る" +
+          "——その場合この一覧は全部ではないので、人に伝えること。" +
           "秘密を使うときは、この name を Shell の envSecrets / secretFiles / sshIdentity に渡す。" +
           "欲しいものが無ければ requestAlias で人に頼む。",
         mimeType: "application/json",
@@ -948,16 +987,6 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     if (request.params.uri === "vault://aliases") {
       // **実装名は落とす**（上記）。人向けの画面は `listAliases` を使う
       const { aliases, failures } = await crossAliases();
-      // **読めなかった金庫があるなら、空の一覧を返さない**（規則2。追加・2026-09-12
-      // ——横断が承認ゲートで止まったとき、AI には「alias が1つも無い」に
-      // 見えていた。「無い」と「読めていない」は別の事実で、混ぜると
-      // **配線の壊れが「まだ何も登録されていません」に化ける**）
-      if (failures.length > 0) {
-        throw new Error(
-          "一覧を横断できませんでした：" +
-            failures.map((f) => `${f.implementation}（${f.error}）`).join("、"),
-        );
-      }
       // **使えないものは名前も見せない**（決定・2026-09-13）。backend の
       // `listAliases` は人の管理面なので全部返す——**絞るのは横断した側の仕事**
       const caller = callerOf(request.params._meta as Record<string, unknown> | undefined);
@@ -967,12 +996,31 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       const visible = aliases
         .filter((a) => usableBy(a, caller))
         .map((a) => forAgent(a, visibleNameOf(a, isBare(a, caller, dv))));
+      // **読めなかった金庫を、読めた分ごと巻き添えにしない**
+      // （訂正・2026-09-15、レビューで発覚）。
+      //
+      // 「無い」と「読めていない」を混ぜない（規則2）は正しいが、
+      // **throw にすると読める側まで封鎖される**。`vault-infisical` は既定で
+      // 宣言されており未設定でも立つので、**素のインストールでは AI が
+      // 一覧を読むたびに必ず失敗していた**——vault-local に使える秘密が
+      // 在っても。しかも直せるのは人だけで、AI には手が無い。
+      //
+      // **事実は落とさず、仕事は止めない**：使える分を返し、読めていない金庫が
+      // あることを同じ答えの中で明示する（AI が人に伝えられる形で）。
+      const body: Record<string, unknown> = { aliases: visible };
+      if (failures.length > 0) {
+        body.unreadable = failures.map((f) => ({ implementation: f.implementation, error: f.error }));
+        body.warning =
+          "読めていない Vault があります。この一覧は全部ではありません——" +
+          "人に伝えてください（直せるのは人だけです）：" +
+          failures.map((f) => `${f.implementation}（${f.error}）`).join("、");
+      }
       return {
         contents: [
           {
             uri: request.params.uri,
             mimeType: "application/json",
-            text: JSON.stringify(visible),
+            text: JSON.stringify(body),
           },
         ],
       };

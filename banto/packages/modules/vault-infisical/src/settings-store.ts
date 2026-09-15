@@ -34,7 +34,8 @@ export interface InfisicalSettingsInput {
   target: CloudRegion | "self";
   siteUrl?: string;
   clientId: string;
-  clientSecret: string;
+  /** **省ける**（改訂・2026-09-15）——空なら、いま保存されているものを使う。 */
+  clientSecret?: string;
   projectId: string;
   environment?: string;
 }
@@ -44,8 +45,15 @@ function requiredText(value: unknown, label: string): string {
   return value.trim();
 }
 
-/** 入力を接続設定に直す。**足りないものを既定で埋めない**（規則2）。 */
-export function toConfig(input: InfisicalSettingsInput): InfisicalConfig {
+/**
+ * 入力を接続設定に直す。**足りないものを既定で埋めない**（規則2）。
+ *
+ * @param keptSecret **いま保存されている Client Secret**（追加・2026-09-15）。
+ * 画面は「保存済み（変えるときだけ入れ直す）」と言うのに、空だと必ず弾いていた
+ * ——**画面の約束と挙動が食い違っていた**（規則13）。環境だけ直したい人が、
+ * 画面の言うとおりにして怒られる。空なら、いま入っているものを使う。
+ */
+export function toConfig(input: InfisicalSettingsInput, keptSecret?: string): InfisicalConfig {
   const siteUrl =
     input.target === "self"
       ? requiredText(input.siteUrl, "接続先の URL")
@@ -57,7 +65,10 @@ export function toConfig(input: InfisicalSettingsInput): InfisicalConfig {
   return {
     siteUrl,
     clientId: requiredText(input.clientId, "Client ID"),
-    clientSecret: requiredText(input.clientSecret, "Client Secret"),
+    clientSecret:
+      typeof input.clientSecret === "string" && input.clientSecret.trim() !== ""
+        ? input.clientSecret
+        : requiredText(keptSecret, "Client Secret（まだ保存されていないので、今回は入れてください）"),
     projectId: requiredText(input.projectId, "Project ID"),
     environment: (input.environment ?? "dev").trim() || "dev",
   };

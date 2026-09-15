@@ -72,19 +72,19 @@ export const CONFIG_APP_HTML = `<!doctype html>
   <input id="siteUrl" placeholder="http://127.0.0.1:8088" autocomplete="off" />
 </label>
 
-<label class="field"><span>Client ID（Machine Identity）</span>
+<label class="field"><span>Infisical の Client ID（Machine Identity）</span>
   <input id="clientId" autocomplete="off" spellcheck="false" />
 </label>
 
-<label class="field"><span>Client Secret</span>
+<label class="field"><span>Infisical の Client Secret</span>
   <input id="clientSecret" type="password" autocomplete="off" placeholder="ここに貼り付ける" />
 </label>
 
-<label class="field"><span>Project ID</span>
+<label class="field"><span>Infisical の Project ID（banto の Project とは別のものです）</span>
   <input id="projectId" autocomplete="off" spellcheck="false" />
 </label>
 
-<label class="field"><span>環境</span>
+<label class="field"><span>Infisical の環境（environment）</span>
   <input id="environment" placeholder="dev" autocomplete="off" spellcheck="false" />
 </label>
 
@@ -147,7 +147,9 @@ export const CONFIG_APP_HTML = `<!doctype html>
       state.className = "state ok";
       state.textContent =
         "繋がっています（" + view.siteUrl + " / Project " + view.projectId + " / " + view.environment + "）" +
-        (view.source === "env" ? "——いまは環境変数から読んでいます。ここで保存すると、そちらが優先されます" : "");
+        (view.source === "env"
+          ? "——いまは環境変数から読んでいます。ここで保存すると、保存した値のほうが優先されます"
+          : "");
     } else {
       state.className = "state todo";
       state.textContent = "まだ繋がっていません" + (view.lastError ? "：" + view.lastError : "");
@@ -168,14 +170,15 @@ export const CONFIG_APP_HTML = `<!doctype html>
     $("error").hidden = true;
     $("save").disabled = true;
     try {
+      // **空なら「変えない」**（訂正・2026-09-15）。placeholder が
+      // 「変えるときだけ入れ直す」と言っているのに、空だと必ず弾いていた
       const secret = $("clientSecret").value;
-      if (!secret) throw new Error("Client Secret を入れてください");
       show(
         await callTool("setConnectionSettings", {
           target: $("target").value,
           siteUrl: $("siteUrl").value.trim(),
           clientId: $("clientId").value.trim(),
-          clientSecret: secret,
+          ...(secret ? { clientSecret: secret } : {}),
           projectId: $("projectId").value.trim(),
           environment: $("environment").value.trim() || "dev",
         }),

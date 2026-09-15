@@ -59,7 +59,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   ).toHaveCount(0);
 
   // ---- 3. 画面から登録する → 中継の承認 → 実 Vault に届く -----------------
-  await canvas.getByRole("button", { name: "＋ alias を新規登録" }).click();
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
   await canvas.locator("#new-name").fill(ALIAS);
   await canvas.locator("#new-value").fill(SECRET);
   await canvas.locator("#new-note").fill("E2E が置いた");
@@ -200,8 +200,13 @@ test("窓口が AI に見せるのは2本だけ——管理操作は1つも見�
     try {
       // **誰のためか分からない接続には、名前も見せない**（決定・2026-09-13、
       // fail closed）。host が Project を刻まない接続はここで止まる
-      const blind = (await client.readResource({ uri: "vault://aliases" })).contents as { text: string }[];
-      expect(blind[0]!.text, "誰のためか分からないのに一覧が出ている").toBe("[]");
+      const blind = JSON.parse(
+        ((await client.readResource({ uri: "vault://aliases" })).contents as { text: string }[])[0]!.text,
+      );
+      expect(blind.aliases, "誰のためか分からないのに一覧が出ている").toEqual([]);
+      // **「無い」ではなく「決められない」と言う**（改訂・2026-09-15）。
+      // 空だけ返すと、配線の壊れが「まだ何も登録されていません」に化ける
+      expect(blind.warning, "読めていない理由を言っていない").toContain("読めていない");
 
       // **Project が分かれば、共通グループのものは見える**
       const withProject = await connect("e2e-some-project");
@@ -246,7 +251,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
 
-  await canvas.getByRole("button", { name: "＋ alias を新規登録" }).click();
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
   await canvas.locator("#new-name").fill(name);
 
   // 汎用シークレットのうちは、1行の欄で「作る強さ」を聞く
@@ -282,7 +287,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   const row = canvas.locator("tbody tr").filter({ hasText: name });
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 60_000 });
   await expect(row).toContainText("SSH 身元");
-  await expect(row, "使える範囲が出ていない").toContainText("どこからでも");
+  await expect(row, "使える範囲が出ていない").toContainText("共通（どの Project からでも）");
 
   // **あとからでも公開鍵を見られる**（追加・2026-09-13、ユーザー要望）。
   // 以前は作った直後の1回きりで、閉じたら二度と見られなかった
@@ -340,7 +345,7 @@ test("この Project の置き場を変えられる——移行の有無を選�
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
 
   // この Project に1つ置く（保存先＝この Project）
-  await canvas.getByRole("button", { name: "＋ alias を新規登録" }).click();
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
   await canvas.locator("#new-name").fill(alias);
   await canvas.locator("#new-scope").selectOption({ index: 0 });
   await canvas.locator("#new-value").fill("move-me");
@@ -394,5 +399,131 @@ test("この Project の置き場を変えられる——移行の有無を選�
   await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },
     data: { server: "vault-directory", tool: "deleteAlias", arguments: { implementation: "vault-local", name: alias } },
+  });
+});
+
+// ---- 2026-09-15 のレビューで直したもの ---------------------------------------
+
+// **コピーは一度も動いていなかった**（訂正・2026-09-15）。sandbox iframe に
+// Permissions Policy でクリップボードが渡っておらず、`void` で投げっぱなし
+// だったので**失敗も成功も画面が何も言わなかった**——人は押して、何も起きず、
+// コピーされたと思い込む。押した結果が出ることまで見る（規則14——押せた、では
+// 見たことにならない）。
+test("公開鍵のコピーは、押した結果を人に言う", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-copy-"));
+  const keyAlias = `e2e-copy-key-${Date.now()}`;
+  await openApp(page);
+  await createProject(page, "E2E コピー", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(keyAlias);
+  await canvas.locator("#new-kind").selectOption("ssh-identity");
+  await canvas.locator("#new-source").selectOption("generated");
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  // 作った直後は公開鍵のダイアログが自動で開く——いったん閉じて、
+  // **行の「公開鍵」から開き直したものでコピーを試す**（後から見られること込み）
+  await expect(canvas.locator("#pubkey-text"), "作った直後に公開鍵が出ない").toHaveValue(/^ssh-/, {
+    timeout: 120_000,
+  });
+  await canvas.getByRole("button", { name: "閉じる" }).click();
+  const row = canvas.locator("tbody tr").filter({ hasText: keyAlias });
+  await expect(row, "鍵ペアが一覧に出ない").toBeVisible({ timeout: 120_000 });
+
+  await row.getByRole("button", { name: "公開鍵" }).click();
+  await expect(canvas.locator("#pubkey-text"), "公開鍵が出ていない").toHaveValue(/^ssh-/, { timeout: 60_000 });
+  await canvas.getByRole("button", { name: "コピーする" }).click();
+  // **黙って失敗しない**——成功なら「コピーしました」、駄目なら次の手を言う
+  await expect(canvas.locator("#pubkey-copied"), "コピーの結果を何も言っていない").toContainText(
+    "コピーしました",
+    { timeout: 10_000 },
+  );
+
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-directory", tool: "deleteAlias", arguments: { implementation: "vault-local", name: keyAlias } },
+  });
+});
+
+// **キャンセルした秘密鍵が DOM に残っていた**（訂正・2026-09-15）。
+// このファイルの冒頭は「値はこの画面のどこにも残らない」と宣言している。
+test("秘密鍵を貼ってやめたら、次に開いたときに残っていない", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-leftover-"));
+  const leaked = `LEFTOVER-PRIVATE-KEY-${Date.now()}`;
+  await openApp(page);
+  await createProject(page, "E2E 貼ってやめる", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-kind").selectOption("ssh-identity");
+  await canvas.locator("#new-value-multiline").fill(leaked);
+  // **同じ名前のボタンが複数のダイアログにある**——閉じたい相手を名指しする
+  await canvas.locator("#dlg-new").getByRole("button", { name: "やめる" }).click();
+  await expect(canvas.locator("#dlg-new"), "やめるを押しても閉じない").toBeHidden();
+
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await expect(canvas.locator("#new-value-multiline"), "やめたのに前回の秘密鍵が残っている").toHaveValue("");
+  expect(await page.content(), "ページの DOM に秘密鍵が残っている").not.toContain(leaked);
+});
+
+// **どこにも紐付いていない秘密の、削除以外の出口**（追加・2026-09-15）
+test("一覧の行から、別の置き場へ移せる", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-rowmove-"));
+  const alias = `e2e-rowmove-${Date.now()}`;
+  const dest = `e2e-rowdest-${Date.now()}`;
+  await openApp(page);
+  await createProject(page, "E2E 行から移す", projectRoot);
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-directory", tool: "createGroup", arguments: { implementation: "vault-local", name: dest } },
+  });
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(alias);
+  await canvas.locator("#new-value").fill("row-move-me");
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  const row = canvas.locator("tbody tr").filter({ hasText: alias });
+  await expect(row).toBeVisible({ timeout: 120_000 });
+
+  await row.getByRole("button", { name: "移す" }).click();
+  await expect(canvas.locator("#move-now"), "いまの置き場を言っていない").toContainText("いまは vault-local");
+  await canvas.locator("#move-group").selectOption(dest);
+  // **移した先からどう引けるようになるかを、押す前に出す**
+  await expect(canvas.locator("#move-effect")).toContainText("頭に付けて引きます");
+  await canvas.locator("#move-submit").click();
+  await expect(canvas.locator("#dlg-move"), "移せずにダイアログが開いたまま").toBeHidden({ timeout: 60_000 });
+
+  // **移った先が一覧に出る**（値が生きていることは backend に直接聞く）
+  const listed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-local", tool: "listAliases", arguments: {} },
+  });
+  const outer = JSON.parse(await listed.text()) as { content: { text: string }[] };
+  const found = (JSON.parse(outer.content[0]!.text) as Array<{ name: string; group: string }>).find(
+    (a) => a.name === alias,
+  );
+  expect(found?.group, `移した先が違う: ${JSON.stringify(found)}`).toBe(dest);
+
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: {
+      server: "vault-directory",
+      tool: "deleteAlias",
+      arguments: { implementation: "vault-local", name: alias, group: dest },
+    },
   });
 });

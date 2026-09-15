@@ -68,10 +68,7 @@ export const CONFIG_APP_HTML = `<!doctype html>
   <input id="new-group" placeholder="新しいグループの名前" style="flex:1" />
   <button id="create" type="button">作る</button>
 </div>
-<p class="muted">
-  backend によっては、グループの作成自体に事前の呼び出しが要ります（例：Infisical の Folder）。
-  要らない backend では、ここでの「作る」は選択肢に加わるだけです
-</p>
+<p class="muted">作ると、上の選択肢に加わります</p>
 
 <div class="row">
   <button id="save">置き場を保存する</button>
@@ -150,9 +147,13 @@ export const CONFIG_APP_HTML = `<!doctype html>
   $("create").addEventListener("click", async () => {
     $("error").hidden = true;
     try {
-      await callTool("createGroup", { implementation: $("vault").value, name: $("new-group").value.trim() });
+      const made = $("new-group").value.trim();
+      await callTool("createGroup", { implementation: $("vault").value, name: made });
       $("new-group").value = "";
       await refresh();
+      // **作った直後に選ぶのは、明らかな意図**（追加・2026-09-15）。
+      // 作ってから自分でもう一度選び直させない
+      if (Array.from($("group").options).some((o) => o.value === made)) $("group").value = made;
     } catch (err) {
       $("error").hidden = false;
       $("error").textContent = err && err.message ? err.message : String(err);

@@ -272,6 +272,13 @@ function SandboxFrame({
       // オリジン**であって banto ではない——内側へ HTML を流し込むのに要る。
       // 別オリジンで配っていることが、この属性が安全である前提（§6.2）
         sandbox="allow-scripts allow-same-origin allow-forms"
+        // **クリップボードへの書き込みだけ通す**（追加・2026-09-15）。
+        // Permissions Policy は**経路上の全ての iframe が渡して初めて届く**ので、
+        // ここで渡さないと中の `navigator.clipboard.writeText` は必ず
+        // `NotAllowedError` になる——実測で確かめた（公開鍵の「コピーする」は
+        // 一度も動いていなかった）。**読み取り（clipboard-read）は渡さない**
+        // ——人が別の用事でコピーしたものを Module に読ませる理由が無い
+        allow="clipboard-write"
       />
     </>
   );

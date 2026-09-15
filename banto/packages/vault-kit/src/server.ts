@@ -540,6 +540,27 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     );
   }
 
+  /**
+   * **人の管理操作であることを確かめる**（追加・2026-09-15、レビューで発覚）。
+   *
+   * `admin` という可視性は、**「Module から呼べない」を意味していなかった**
+   * ——host の中継が可視性で拒否していないため（効くのは「AI に見せない」と
+   * 「人の画面からならゲートを飛ばす」の2つだけ）。つまり
+   * `dependsOn: [{role:"vault"}]` を宣言した Module は、承認1回で
+   * `setGroupBinding` を呼べ、**`resolveAlias` の制限判定そのものを書き換えられた**。
+   *
+   * 制限を守る側が、制限を書き換えられてはならない。
+   * **台帳と紐付けを変える口は、人の刻印があるときだけ通す。**
+   */
+  function assertHuman(action: string, rawMeta: Record<string, unknown> | undefined) {
+    const caller = callerFrom(rawMeta);
+    if (caller && "admin" in caller) return;
+    throw new Error(
+      `${action} は人の管理画面からしか行えません` +
+        (caller ? "（Module からの呼び出しでは変えられません）" : "（呼び出し元が分かりません）"),
+    );
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     await initPromise;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
@@ -721,6 +742,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         return { content: [{ type: "text", text: JSON.stringify({ ...common, kind, format, bytes }) }] };
       }
       case "updateAlias": {
+        assertHuman("alias の書き換え", callMeta);
         // **値は変えない**——ここで変えられるのは人が付けた覚え書きと、どこの
         // ものかだけ。値の差し替えは作り直し（消して作る）にする：中途半端に
         // 上書きできると、「いつ何に変わったか」が alias の外から分からなくなる
@@ -740,22 +762,47 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         return { content: [{ type: "text", text: `updated ${name}` }] };
       }
       case "deleteAlias": {
+        assertHuman("alias の削除", callMeta);
         const name = requiredString(args.name, "name");
-        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
-        if (meta) {
-          await backend.deleteSecret(meta.backendPath);
-          await registry.delete(meta.backendPath);
+        const group = optionalString(args.group, "group");
+        const meta = await findAlias(name, group, callMeta);
+        // **無いものを「消した」と言わない**（訂正・2026-09-15、規則1）。
+        // 以前は見つからなくても `deleted <name>` を返していたので、
+        // **置き場を間違えた削除が成功に見えていた**——`moved: false` で
+        // 直したのと同じ形
+        if (!meta) {
+          throw new Error(
+            group ? `alias "${name}" は ${group} にありません` : `alias "${name}" はありません`,
+          );
         }
-        return { content: [{ type: "text", text: `deleted ${name}` }] };
+        await backend.deleteSecret(meta.backendPath);
+        await registry.delete(meta.backendPath);
+        return {
+          content: [{ type: "text", text: JSON.stringify({ deleted: true, name, group: groupOf(meta) }) }],
+        };
       }
       case "listAliases": {
         // **値は返さない**（§2.1——人が見るのは「どれが登録されているか」まで）。
-        // **使える範囲は保存せず導く**（規則3）——人の画面には「どこにも
-        // 紐付いていない」も含めて全部出す（隠すと直せない）
+        // **使える範囲は保存せず導く**（規則3）。
+        //
+        // **絞るのは、ここ**（訂正・2026-09-15、レビューで発覚）。以前は無条件に
+        // 全部返し、「絞るのは横断した側の仕事」としていた。しかしこの口は
+        // `valueFree` なので**初回承認すら出ない**——`dependsOn: [{role:"vault"}]`
+        // を宣言した任意の Module が、**承認ゼロで全 Project の目録**
+        // （名前・用途・グループ・紐付き）を読めていた。窓口で絞っても、
+        // 窓口以外の呼び出し元には効かない。**判定は、材料が在る場所で行う。**
+        const caller = callerFrom(callMeta);
+        if (!caller) {
+          // 刻印が無い＝誰のためか決められない。**空ではなく、断る**
+          // （「無い」と「決められない」を混ぜない・規則2）
+          throw new Error("一覧を誰のために読むのかが分かりません（host が呼び出し元を刻んでいない）");
+        }
+        // 人の管理面は全部（「どこにも紐付いていない」も——隠すと直せない）。
+        // Project は、その Project から使えるものだけ
+        const stored = await registry.list();
+        const visible = "admin" in caller ? stored : stored.filter((m) => usableBy(m, caller.project));
         return {
-          content: [
-            { type: "text", text: JSON.stringify((await registry.list()).map((m) => ({ ...toPublic(m), ...scopeOf(m) }))) },
-          ],
+          content: [{ type: "text", text: JSON.stringify(visible.map((m) => ({ ...toPublic(m), ...scopeOf(m) }))) }],
         };
       }
       case "listGroups":
@@ -770,6 +817,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           ],
         };
       case "migrateAlias": {
+        assertHuman("置き場の変更", callMeta);
         const name = requiredString(args.name, "name");
         const toGroup = requiredString(args.toGroup, "toGroup");
         const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
@@ -796,16 +844,19 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, moved: true, from, to }) }] };
       }
       case "clearGroupBinding": {
+        assertHuman("紐付けの解除", callMeta);
         await bindings.clear(requiredString(args.projectId, "projectId"));
         return { content: [{ type: "text", text: "ok" }] };
       }
       case "setSharedGroup": {
+        assertHuman("共通の置き場の変更", callMeta);
         const group = requiredString(args.group, "group");
         await backend.createGroup(group); // 名前の検査は backend が持つ（規則3）
         await bindings.setSharedGroup(group);
         return { content: [{ type: "text", text: JSON.stringify({ shared: group }) }] };
       }
       case "setGroupBinding": {
+        assertHuman("置き場の紐付け", callMeta);
         const projectId = requiredString(args.projectId, "projectId");
         const group = requiredString(args.group, "group");
         // 名前の検査は backend が持つ（規則3——同じ検査を2箇所に書かない）。

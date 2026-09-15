@@ -105,9 +105,14 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // **このハンドラが動いている間だけ**、この Module はこのターンの仕事をしている
     // ——中継の承認をどの会話に出すかは、これで決まる（relay/module-calls.ts）
     const endCall =
-      opts.threadId && opts.moduleCalls
-        ? opts.moduleCalls.begin(conn.name, opts.threadId, "turn", opts.projectId)
-        : undefined;
+      // **Thread が無くても在籍は立てる**（訂正・2026-09-15）。`begin` は
+      // 元から `threadId: undefined` を受ける設計（「どの会話か分からないが、
+      // 誰の意思で始まったかは分かる」）なのに、ここが Thread を必須にしていた
+      // ——**Project は分かっているのに刻印が付かない**ので、中で他 Module を
+      // 呼ぶ resource（横断した一覧）が「誰のためか分からない」で止まっていた。
+      // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
+      // fail closed のまま
+      opts.moduleCalls?.begin(conn.name, opts.threadId, "turn", opts.projectId);
     try {
       const result = await conn.client.callTool(
         {
@@ -170,9 +175,14 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // 作る窓口など）は、承認ゲートが「どのターンからの呼び出しか特定できません」
     // で**構造的に必ず拒否される**状態だった。
     const endCall =
-      opts.threadId && opts.moduleCalls
-        ? opts.moduleCalls.begin(conn.name, opts.threadId, "turn", opts.projectId)
-        : undefined;
+      // **Thread が無くても在籍は立てる**（訂正・2026-09-15）。`begin` は
+      // 元から `threadId: undefined` を受ける設計（「どの会話か分からないが、
+      // 誰の意思で始まったかは分かる」）なのに、ここが Thread を必須にしていた
+      // ——**Project は分かっているのに刻印が付かない**ので、中で他 Module を
+      // 呼ぶ resource（横断した一覧）が「誰のためか分からない」で止まっていた。
+      // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
+      // fail closed のまま
+      opts.moduleCalls?.begin(conn.name, opts.threadId, "turn", opts.projectId);
     try {
       const result = await conn.client.readResource({
         uri: request.params.uri,

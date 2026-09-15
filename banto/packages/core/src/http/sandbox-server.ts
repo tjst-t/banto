@@ -126,6 +126,10 @@ try {
 const inner = document.createElement("iframe");
 // 既定は参照実装と同じ。host が指定してきたらそれを使う（下の resource-ready）
 inner.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+// **クリップボードへの書き込みは通す**（追加・2026-09-15）。Permissions Policy は
+// **経路上の全ての iframe が渡して初めて届く**ので、外側（banto の画面）が
+// 渡していても、ここで渡さないと中には届かない。**読み取りは渡さない**
+inner.setAttribute("allow", "clipboard-write");
 inner.style.cssText = "width:100%;height:100%;border:none;";
 document.body.appendChild(inner);
 

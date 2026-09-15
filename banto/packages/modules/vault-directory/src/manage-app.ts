@@ -95,9 +95,12 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
 <div class="section">
   <h1>Vault を管理</h1>
+  <!-- **初見の人に向けて書く**（改訂・2026-09-15）。以前は仕様書の文
+       （「複数の Vault 実装を横断して確認・編集する」）がそのまま出ていた -->
   <p class="lead">
-    複数の Vault 実装を横断して確認・編集する。ここに出るのは alias の存在・種別・
-    用途・使用状況だけ——値はどの実装にも表示せず、banto にも残らない
+    API トークンや SSH 鍵を預けておく場所。<strong>AI には名前しか見えません</strong>
+    ——値を見せないまま、コマンドの中で使わせられます。
+    この画面に出るのも名前・種別・用途・使用状況だけで、値はどこにも出ません
   </p>
 </div>
 
@@ -113,6 +116,11 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <span class="muted" id="place-summary"></span>
     <button id="open-place" class="quiet">変更…</button>
   </div>
+  <!-- **道標は両方向に要る**（追加・2026-09-15）。設定画面には「Project ごとは
+       管理画面から」と書いてあるのに、こちらには共通の変え方が書いていなかった。
+       「共通＝設定、Project＝ここ」は**値が動くかどうか**という作り手の軸で、
+       人の軸（「保存先を変えたい」）では同じ問い -->
+  <p class="muted" id="shared-hint" style="margin:6px 0 0; font-size:11px"></p>
 </div>
 
 <div class="section" id="problems-section" hidden>
@@ -121,12 +129,12 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
 <div class="section">
   <div class="spread" style="margin-bottom:8px">
-    <p class="label" style="margin:0" id="count">alias 一覧</p>
-    <button id="new-alias">＋ alias を新規登録</button>
+    <p class="label" style="margin:0" id="count">預けている秘密</p>
+    <button id="new-alias">＋ 秘密を登録</button>
   </div>
 
   <div class="row" style="margin-bottom:8px">
-    <input id="query" placeholder="名前・種別・範囲・backend・note を横断して検索" style="flex:1 1 14em; min-width:12em" />
+    <input id="query" placeholder="名前・種別・使える範囲・Vault・用途を横断して検索" style="flex:1 1 14em; min-width:12em" />
     <select id="kind-filter" style="width:auto"></select>
     <select id="target-filter" style="width:auto"></select>
     <select id="backend-filter" style="width:auto"></select>
@@ -138,8 +146,8 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <th style="width:8em">種別</th>
         <th>名前</th>
         <th style="width:12em">使える範囲</th>
-        <th style="width:9em">backend</th>
-        <th>用途（note）</th>
+        <th style="width:9em" data-vault-col>Vault</th>
+        <th>用途</th>
         <th style="width:9em">最終使用</th>
         <th style="width:6em"></th>
       </tr>
@@ -151,9 +159,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
 <dialog id="dlg-new">
   <form method="dialog" class="dialog-body">
-    <p class="dialog-title">alias を新規登録</p>
+    <p class="dialog-title">秘密を登録</p>
     <p class="dialog-desc">
-      値はこの画面から backend へ渡るだけで、banto のどのストアにも残らない。
+      値はこの画面から Vault へ渡るだけで、banto のどのストアにも残らない。
       登録したあとは、名前でしか参照できない
     </p>
     <!-- **backend は聞かない**（改訂・2026-09-14、ユーザー指摘）。保存先を
@@ -194,7 +202,11 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <label class="field"><span>用途（任意）</span><textarea id="new-note" rows="2"></textarea></label>
     <div class="problem" id="new-error" hidden></div>
     <div class="dialog-footer">
-      <button value="cancel">やめる</button>
+      <!-- **やめるは、検証を通さない**（訂正・2026-09-15、試験を書いていて発覚）。
+           method="dialog" の送信でも required の検証は走るので、名前が空のまま
+           「やめる」を押すと**ダイアログが閉じない**（検証の吹き出しが出るだけ）
+           ——入力をやめたい人ほど、やめられなかった -->
+      <button value="cancel" formnovalidate>やめる</button>
       <button id="new-submit" value="ok">登録する</button>
     </div>
   </form>
@@ -221,8 +233,38 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <p class="dialog-desc" id="place-effect"></p>
     <div class="problem" id="place-error" hidden></div>
     <div class="dialog-footer">
-      <button value="cancel">やめる</button>
+      <!-- **やめるは、検証を通さない**（訂正・2026-09-15、試験を書いていて発覚）。
+           method="dialog" の送信でも required の検証は走るので、名前が空のまま
+           「やめる」を押すと**ダイアログが閉じない**（検証の吹き出しが出るだけ）
+           ——入力をやめたい人ほど、やめられなかった -->
+      <button value="cancel" formnovalidate>やめる</button>
       <button id="place-submit" value="ok">変える</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-move">
+  <form method="dialog" class="dialog-body">
+    <!-- **1件だけ移す**（追加・2026-09-15）。置き場の変更（dlg-place）は
+         Project 全体の話で、こちらは行単位。どこにも紐付いていない秘密を
+         直す道がここしか無いので、削除以外の出口として要る -->
+    <p class="dialog-title">この秘密を別の置き場へ移す</p>
+    <p class="dialog-desc" id="move-now"></p>
+    <div class="field"><span>移す先</span>
+      <div class="row">
+        <select id="move-vault" style="flex:1 1 12em"></select>
+        <select id="move-group" style="flex:1 1 12em"></select>
+      </div>
+    </div>
+    <p class="dialog-desc" id="move-effect"></p>
+    <div class="problem" id="move-error" hidden></div>
+    <div class="dialog-footer">
+      <!-- **やめるは、検証を通さない**（訂正・2026-09-15、試験を書いていて発覚）。
+           method="dialog" の送信でも required の検証は走るので、名前が空のまま
+           「やめる」を押すと**ダイアログが閉じない**（検証の吹き出しが出るだけ）
+           ——入力をやめたい人ほど、やめられなかった -->
+      <button value="cancel" formnovalidate>やめる</button>
+      <button id="move-submit" value="ok">移す</button>
     </div>
   </form>
 </dialog>
@@ -237,6 +279,8 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <textarea id="pubkey-text" rows="3" readonly></textarea>
     <p class="problem" id="pubkey-error" hidden></p>
     <div class="dialog-footer">
+      <!-- **押した結果を必ず言う**（追加・2026-09-15）——黙って失敗しない -->
+      <span class="muted" id="pubkey-copied" style="margin-right:auto"></span>
       <button id="pubkey-copy" type="button">コピーする</button>
       <button value="ok">閉じる</button>
     </div>
@@ -247,10 +291,14 @@ export const MANAGE_APP_HTML = `<!doctype html>
   <form method="dialog" class="dialog-body">
     <p class="dialog-title">用途を書き直す</p>
     <p class="dialog-desc" id="note-target"></p>
-    <label class="field"><span>用途（note）</span><textarea id="note-text" rows="3"></textarea></label>
+    <label class="field"><span>用途（この秘密が何のためのものか）</span><textarea id="note-text" rows="3"></textarea></label>
     <div class="problem" id="note-error" hidden></div>
     <div class="dialog-footer">
-      <button value="cancel">やめる</button>
+      <!-- **やめるは、検証を通さない**（訂正・2026-09-15、試験を書いていて発覚）。
+           method="dialog" の送信でも required の検証は走るので、名前が空のまま
+           「やめる」を押すと**ダイアログが閉じない**（検証の吹き出しが出るだけ）
+           ——入力をやめたい人ほど、やめられなかった -->
+      <button value="cancel" formnovalidate>やめる</button>
       <button id="note-submit" value="ok">保存する</button>
     </div>
   </form>
@@ -258,14 +306,18 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
 <dialog id="dlg-delete">
   <form method="dialog" class="dialog-body">
-    <p class="dialog-title">この alias を削除する</p>
+    <p class="dialog-title">この秘密を削除する</p>
     <p class="dialog-desc" id="delete-target"></p>
     <p class="dialog-desc">
-      値も一緒に消える。これを使っている Module は、次の呼び出しから解決できなくなる
+      値も一緒に消える。これを使っているコマンドは、次から動かなくなる
     </p>
     <div class="problem" id="delete-error" hidden></div>
     <div class="dialog-footer">
-      <button value="cancel">やめる</button>
+      <!-- **やめるは、検証を通さない**（訂正・2026-09-15、試験を書いていて発覚）。
+           method="dialog" の送信でも required の検証は走るので、名前が空のまま
+           「やめる」を押すと**ダイアログが閉じない**（検証の吹き出しが出るだけ）
+           ——入力をやめたい人ほど、やめられなかった -->
+      <button value="cancel" formnovalidate>やめる</button>
       <button class="danger" id="delete-submit" value="ok">削除する</button>
     </div>
   </form>
@@ -321,12 +373,16 @@ ${ALIAS_KIND_RULES_JS}
   let project = null;          // いまこの画面が開かれている Project（host が渡す）
   let implementations = [];    // vault を名乗っている Module の名前
   let aliases = [];            // 横断した alias（implementation つき）
-  let failures = [];           // 読めなかった backend
+  let failures = [];           // 読めなかった Vault
+  let placements = null;       // 置き場（共通・この Project）と Vault ごとのグループ
+  let movePlaces = null;       // 「移す」ダイアログが見ている置き場
 
   function targetOf(a) {
     // **使える範囲は backend が置き場から導いて返す**（改訂・2026-09-13）
     // ——画面で計算し直さない（規則3）
-    if (a.scope === "shared") return { key: "shared", label: "どこからでも" };
+    // **保存先の言葉とそろえる**（改訂・2026-09-15）。保存先で「共通」を選んだ
+    // ものが一覧で「どこからでも」と出ると、人が対応を暗記することになる
+    if (a.scope === "shared") return { key: "shared", label: "共通（どの Project からでも）" };
     if (a.scope === "unbound") return { key: "unbound", label: "どこにも紐付いていない" };
     const ids = a.projects || [];
     if (project && ids.indexOf(project.id) >= 0) {
@@ -346,6 +402,41 @@ ${ALIAS_KIND_RULES_JS}
       .join(" ").toLowerCase().includes(q);
   }
 
+  /**
+   * **グループの見える名前**（追加・2026-09-15、レビューで発覚）。
+   *
+   * Project の既定グループ名は projectId（UUID）そのもの——衝突しない値を
+   * 選んだ結果だが、**人は UUID からどの Project のものか判別できない**。
+   * 「1つのグループに複数の Project を向けるのが共有の意思表示」という設計が、
+   * 画面の上では実質できない状態になっていた。
+   *
+   * **識別子は変えず、見せ方だけ変える**——既に在る秘密の置き場を動かさずに済む。
+   */
+  function groupLabel(impl, group) {
+    const p = placements && placements.project;
+    const sh = placements && placements.shared;
+    if (p && p.implementation === impl && p.group === group) {
+      return project ? "この Project 専用（" + project.name + "）" : "この Project 専用";
+    }
+    if (sh && sh.implementation === impl && sh.group === group) return "共通";
+    // UUID そのままの名前は、人にとって意味が無い——せめて何であるかを言う
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(group)) return "別の Project 専用（" + group.slice(0, 8) + "…）";
+    return group;
+  }
+
+  /** **その置き場に入れると、どう引けるようになるか**（1箇所で決める・規則3）。 */
+  function placementEffect(impl, group) {
+    const p = placements && placements.project;
+    const sh = placements && placements.shared;
+    if (p && p.implementation === impl && p.group === group) {
+      return "→ この Project からだけ使えます（素の名前で引けます）";
+    }
+    if (sh && sh.implementation === impl && sh.group === group) {
+      return "→ どの Project からでも使えます（素の名前で引けます）";
+    }
+    return "→ 既定の置き場ではないので、" + impl + ":名前 のように " + impl + " を頭に付けて引きます";
+  }
+
   function option(value, label) {
     const o = document.createElement("option");
     o.value = value;
@@ -359,14 +450,22 @@ ${ALIAS_KIND_RULES_JS}
     const kind = $("kind-filter"), target = $("target-filter"), backend = $("backend-filter");
     const kindWas = keep(kind), targetWas = keep(target), backendWas = keep(backend);
 
-    kind.replaceChildren(option("all", "種別：すべて"),
-      ...Object.keys(KIND_LABEL).map((k) => option(k, KIND_LABEL[k])));
+    // **種別も、いま実際にあるものだけ**（訂正・2026-09-15）。この関数の
+    // 見出しは「いま実際にあるものから導く」なのに、種別だけ全部出していた
+    // ——選んでも必ず0件になる絞り込みが並ぶ
+    const kinds = Object.keys(KIND_LABEL).filter((k) => aliases.some((a) => a.kind === k));
+    kind.replaceChildren(option("all", "種別：すべて"), ...kinds.map((k) => option(k, KIND_LABEL[k])));
     const targets = new Map();
     for (const a of aliases) { const t = targetOf(a); targets.set(t.key, t.label); }
     target.replaceChildren(option("all", "使える範囲：すべて"),
       ...Array.from(targets, ([k, l]) => option(k, l)));
-    backend.replaceChildren(option("all", "backend：すべて"),
-      ...implementations.map((i) => option(i, i)));
+    backend.replaceChildren(option("all", "Vault：すべて"), ...implementations.map((i) => option(i, i)));
+    // **Vault が1本なら、選ばせない**（追加・2026-09-15）。選択肢が1つしかない
+    // 絞り込みは、画面の情報量を増やすだけで何も決められない。
+    // 同じ理由で表の Vault 列も畳む（どれも同じ値しか出ない）
+    const manyVaults = implementations.length > 1;
+    backend.hidden = !manyVaults;
+    for (const el of document.querySelectorAll("[data-vault-col]")) el.hidden = !manyVaults;
 
     for (const [sel, was] of [[kind, kindWas], [target, targetWas], [backend, backendWas]]) {
       if (was && Array.from(sel.options).some((o) => o.value === was)) sel.value = was;
@@ -381,7 +480,7 @@ ${ALIAS_KIND_RULES_JS}
       label.textContent = name;
       const count = document.createElement("span");
       count.className = "muted";
-      count.textContent = aliases.filter((a) => a.implementation === name).length + " alias";
+      count.textContent = aliases.filter((a) => a.implementation === name).length + " 件";
       // **置き場は backend ごとに聞かない**（改訂・2026-09-14）。ここに
       // 「グループ」を置くと、同じ問いを backend の数だけ聞くことになる
       chip.append(label, count);
@@ -399,21 +498,22 @@ ${ALIAS_KIND_RULES_JS}
     // **読めなかった backend を黙って消さない**——一覧が短く見えた理由を出す
     $("problems-section").hidden = failures.length === 0;
     $("problems").textContent = failures
-      .map((f) => f.implementation + " の alias を読めませんでした：" + f.error)
+      .map((f) => f.implementation + " の秘密を読めませんでした：" + f.error)
       .join(" / ");
   }
 
   function renderRows() {
     const shown = aliases.filter(matchesFilters);
     $("count").textContent = shown.length === aliases.length
-      ? "alias 一覧（" + aliases.length + "）"
-      : "alias 一覧（" + shown.length + " / " + aliases.length + "）";
+      ? "預けている秘密（" + aliases.length + "）"
+      : "預けている秘密（" + shown.length + " / " + aliases.length + "）";
 
     $("rows").replaceChildren(...shown.map((a) => {
       const tr = document.createElement("tr");
-      const cell = (text, cls) => {
+      const cell = (text, cls, attr) => {
         const td = document.createElement("td");
         if (cls) td.className = cls;
+        if (attr) td.setAttribute(attr, "");
         td.textContent = text;
         return td;
       };
@@ -445,6 +545,16 @@ ${ALIAS_KIND_RULES_JS}
       // **公開鍵はいつでも見られる**（追加・2026-09-13、ユーザー指摘）。
       // 作った直後の1回しか出していなかったので、画面を閉じたら二度と
       // 見られなかった——相手方に登録するためのものなのに
+      // **どこにも紐付いていないものを、行き止まりにしない**（追加・2026-09-15）。
+      // 置き場の変更で「移さない」を選ぶと秘密は unbound になり、画面は
+      // そう出すのに**直す操作がどこにも無かった**——できるのは削除だけ。
+      // 「使えなくなります」と警告した先が行き止まりでは、警告の意味が半分になる
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "icon";
+      move.textContent = "移す";
+      move.title = "この秘密を別の置き場へ移す";
+      move.addEventListener("click", () => openMove(a));
       if (a.kind === "ssh-identity") {
         const pub = document.createElement("button");
         pub.type = "button";
@@ -452,16 +562,17 @@ ${ALIAS_KIND_RULES_JS}
         pub.textContent = "公開鍵";
         pub.title = "公開鍵を表示してコピーする（秘密鍵は出ません）";
         pub.addEventListener("click", () => openPublicKey(a));
-        actions.append(edit, pub, del);
+        actions.append(edit, pub, move, del);
       } else {
-        actions.append(edit, del);
+        actions.append(edit, move, del);
       }
 
       tr.append(
         kindTd,
         cell(a.name, "name"),
         targetTd,
-        cell(a.implementation),
+        // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
+        cell(a.implementation, undefined, "data-vault-col"),
         cell(a.note || "", "note-cell"),
         cell(a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleDateString("ja-JP") : "—", "muted"),
         actions,
@@ -471,8 +582,11 @@ ${ALIAS_KIND_RULES_JS}
 
     $("empty").hidden = shown.length > 0;
     $("empty").textContent = aliases.length === 0
-      ? "登録されている alias はまだありません。"
-      : "絞り込みに合う alias がありません。";
+      // **この場所が何のためにあるかを言う**（追加・2026-09-15）。
+      // 「まだありません」だけだと、初見の人は何をする場所か分からない
+      ? "まだ何も預けていません。API トークンや SSH 鍵をここに預けると、"
+        + "AI に値を見せないまま、コマンドの中で使えるようになります。"
+      : "絞り込みに合う秘密がありません。";
   }
 
   function render() {
@@ -499,21 +613,39 @@ ${ALIAS_KIND_RULES_JS}
    * （規則13——繋がっていないものを画面に残さない）。
    */
   async function reloadPlacement() {
+    // **置き場は Project が無くても読む**——グループの見える名前（groupLabel）と
+    // 保存先の重複排除が、共通の置き場を知っている必要があるため
+    try {
+      placements = await callTool("getPlacements", project ? { projectId: project.id } : {});
+    } catch (err) {
+      placements = null;
+      if (project) {
+        // **読めなかったことを、無いことにしない**（規則2）
+        $("place-summary").textContent =
+          "置き場を読めませんでした：" + (err && err.message ? err.message : String(err));
+        $("place-line").hidden = false;
+      }
+      return;
+    }
     if (!project) {
+      // Project の上で開かれていないなら、Project の置き場の行は出さない（規則13）
       $("place-line").hidden = true;
       return;
     }
-    try {
-      const places = await callTool("getPlacements", { projectId: project.id });
-      $("place-summary").textContent = places.project
-        ? "この Project の秘密は " + places.project.implementation + " / " + places.project.group + " に保存します"
-        : "この Project の置き場はまだ決まっていません（最初に保存したときに決まります）";
-      $("place-line").hidden = false;
-    } catch (err) {
-      // **読めなかったことを、無いことにしない**（規則2）
-      $("place-summary").textContent = "置き場を読めませんでした：" + (err && err.message ? err.message : String(err));
-      $("place-line").hidden = false;
-    }
+    $("shared-hint").textContent =
+      "共通の秘密（どの Project からでも使うもの）の置き場は、banto の設定画面 →" +
+      " Vault の窓口 で変えられます" +
+      (placements.shared
+        ? "——いまは " + placements.shared.implementation + " / " + placements.shared.group
+        : "");
+    $("place-summary").textContent = placements.project
+      ? "この Project の秘密は " +
+        placements.project.implementation +
+        " / " +
+        placements.project.group +
+        " に保存します"
+      : "この Project の置き場はまだ決まっていません（最初に保存したときに決まります）";
+    $("place-line").hidden = false;
   }
 
   // --- 人の操作 --------------------------------------------------------------
@@ -548,6 +680,11 @@ ${ALIAS_KIND_RULES_JS}
     void fillPlacementChoices();
     $("new-name").value = "";
     $("new-value").value = "";
+    // **複数行の欄も消す**（訂正・2026-09-15）。消していなかったので、
+    // 秘密鍵を貼って「やめる」を押すと DOM に残り、**次に開くと前回の
+    // 秘密鍵が見えていた**——このファイルの冒頭の宣言（値はどこにも残らない）と
+    // 食い違っていた
+    $("new-value-multiline").value = "";
     $("new-note").value = "";
     $("new-source").value = "typed";
     applySource();
@@ -558,18 +695,18 @@ ${ALIAS_KIND_RULES_JS}
    * ——backend を別に聞かない。選んだ結果の「どこから使えるか」はその場に出す。
    */
   async function fillPlacementChoices() {
-    let places;
+    let places = placements;
     try {
-      places = await callTool("getPlacements", project ? { projectId: project.id } : {});
+      places = placements = await callTool("getPlacements", project ? { projectId: project.id } : {});
     } catch {
       // 置き場が読めなくても登録の道は塞がない——既定に入る
-      places = null;
+      places = placements;
     }
     const opts = [];
     // **この Project を指せるのは、host がどこで開かれたか渡してくれたときだけ**
     // ——人に UUID を打たせない
+    const where = places && places.project;
     if (project) {
-      const where = places && places.project;
       opts.push(
         option(
           "project",
@@ -579,10 +716,19 @@ ${ALIAS_KIND_RULES_JS}
     }
     const shared = places && places.shared;
     opts.push(option("shared", "共通" + (shared ? "——" + shared.implementation + " / " + shared.group : "")));
-    // 既定の外に置きたい人向け（**修飾名でしか引けなくなる**ので、そう言う）
+    // 既定の外に置きたい人向け（**修飾名でしか引けなくなる**ので、そう言う）。
+    // **既定と同じ置き場は出さない**（訂正・2026-09-15、レビューで発覚）
+    // ——同じ場所が2回並ぶうえ、下の重複を選ぶと「既定ではないので修飾名で」と
+    // **画面が嘘をつく**（実際は素の名前で引ける）
+    const isDefault = (impl, g) =>
+      (!!where && where.implementation === impl && where.group === g) ||
+      (!!shared && shared.implementation === impl && shared.group === g);
     for (const v of (places && places.vaults) || []) {
       for (const g of v.groups) {
-        opts.push(option("at:" + v.implementation + ":" + g, v.implementation + " / " + g));
+        if (isDefault(v.implementation, g)) continue;
+        opts.push(
+          option("at:" + v.implementation + ":" + g, v.implementation + " / " + groupLabel(v.implementation, g)),
+        );
       }
     }
     $("new-scope").replaceChildren(...opts);
@@ -596,9 +742,9 @@ ${ALIAS_KIND_RULES_JS}
     if (v === "project") note.textContent = "→ この Project からだけ使えます（素の名前で引けます）";
     else if (v === "shared") note.textContent = "→ どの Project からでも使えます（素の名前で引けます）";
     else {
-      const impl = v.slice(3, v.indexOf(":", 3));
-      note.textContent =
-        "→ 既定の置き場ではないので、" + impl + ":名前 のように " + impl + " を頭に付けて引きます";
+      const at = v.slice(3);
+      const impl = at.slice(0, at.indexOf(":"));
+      note.textContent = placementEffect(impl, at.slice(at.indexOf(":") + 1));
     }
   }
   $("new-scope").addEventListener("change", applyPlacementEffect);
@@ -659,9 +805,40 @@ ${ALIAS_KIND_RULES_JS}
       showError($("pubkey-error"), err);
     }
   }
+  /**
+   * **コピーの結果を、人に必ず言う**（訂正・2026-09-15、実測で発覚）。
+   *
+   * 以前は navigator.clipboard.writeText を投げっぱなし で投げっぱなしだった。
+   * sandbox iframe には Permissions Policy でクリップボードが渡っていなかったので
+   * **常に NotAllowedError で失敗し、しかも画面は何も言わなかった**
+   * ——人は押して、何も起きず、コピーされたと思い込む（規則2・規則13）。
+   *
+   * 権限は通るようにしたが、**通らない環境でも人の手が残るようにする**：
+   * 選択して execCommand("copy") に落とし、それも駄目なら
+   * 「選んであるので Ctrl+C」と言う。**黙って失敗しない。**
+   */
+  async function copyFrom(field, say) {
+    field.select();
+    try {
+      await navigator.clipboard.writeText(field.value);
+      say("コピーしました");
+      return;
+    } catch {
+      // 権限が通っていない環境——古い経路に落ちる（選択済みなので実際に効く）
+    }
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    say(ok ? "コピーしました" : "コピーできませんでした——選んであるので Ctrl+C（Mac は Cmd+C）で");
+  }
+
   $("pubkey-copy").addEventListener("click", () => {
-    $("pubkey-text").select();
-    void navigator.clipboard?.writeText($("pubkey-text").value);
+    void copyFrom($("pubkey-text"), (note) => {
+      $("pubkey-copied").textContent = note;
+    });
   });
 
   onSubmit($("dlg-new"), $("new-submit"), $("new-error"), async () => {
@@ -723,11 +900,64 @@ ${ALIAS_KIND_RULES_JS}
   function openDelete(a) {
     deleteTarget = a;
     $("delete-error").hidden = true;
-    $("delete-target").textContent = a.implementation + " / " + a.name;
+    // **どの置き場のものを消すのかまで見せる**——同じ名前が複数の置き場に
+    // 在るのは普通のことなので、名前だけでは「どれを消すか」が決まらない
+    $("delete-target").textContent = a.implementation + " / " + a.group + " / " + a.name;
     $("dlg-delete").showModal();
   }
   onSubmit($("dlg-delete"), $("delete-submit"), $("delete-error"), async () => {
-    await callTool("deleteAlias", { implementation: deleteTarget.implementation, name: deleteTarget.name });
+    // **置き場まで渡す**（訂正・2026-09-15）——渡さないと backend の既定解決に
+    // 落ちて、一覧で選んだ行と別の秘密が消える
+    await callTool("deleteAlias", {
+      implementation: deleteTarget.implementation,
+      name: deleteTarget.name,
+      group: deleteTarget.group,
+    });
+  });
+
+  // 1件だけ移す（**どこにも紐付いていない秘密の、削除以外の出口**）
+  let moveTarget = null;
+  async function openMove(a) {
+    moveTarget = a;
+    $("move-error").hidden = true;
+    $("move-now").textContent = "いまは " + a.implementation + " / " + groupLabel(a.implementation, a.group);
+    const places = await callTool("getPlacements", project ? { projectId: project.id } : {});
+    movePlaces = places;
+    const fill = () => {
+      const v = (places.vaults || []).find((x) => x.implementation === $("move-vault").value);
+      const groups = (v && v.groups) || [];
+      $("move-group").replaceChildren(
+        ...groups.map((g) => option(g, groupLabel($("move-vault").value, g))),
+      );
+      $("move-group").disabled = groups.length === 0;
+      applyMoveEffect();
+    };
+    $("move-vault").replaceChildren(...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
+    $("move-vault").value = a.implementation;
+    fill();
+    $("move-vault").onchange = fill;
+    $("move-group").onchange = applyMoveEffect;
+    $("dlg-move").showModal();
+  }
+
+  /** **移した先からどう引けるようになるか**を、押す前に出す。 */
+  function applyMoveEffect() {
+    const impl = $("move-vault").value, group = $("move-group").value;
+    const same = moveTarget && impl === moveTarget.implementation && group === moveTarget.group;
+    $("move-submit").disabled = !!same || !group;
+    $("move-effect").textContent = same
+      ? "もう その置き場に在ります"
+      : placementEffect(impl, group);
+  }
+
+  onSubmit($("dlg-move"), $("move-submit"), $("move-error"), async () => {
+    await callTool("migrateAlias", {
+      name: moveTarget.name,
+      implementation: moveTarget.implementation,
+      group: moveTarget.group,
+      toImplementation: $("move-vault").value,
+      toGroup: $("move-group").value,
+    });
   });
 
   // 置き場を変える（**移行あり／なしを選ぶ**）
@@ -769,21 +999,36 @@ ${ALIAS_KIND_RULES_JS}
       });
       const migrate = $("place-migrate").value === "yes";
       const parts = [];
+      // **できないと分かっているなら、押させない**（追加・2026-09-15）。
+      // 以前は「このままでは変えられません」と出しながらボタンは有効で、
+      // 押してからエラーになっていた
+      let blocked = false;
       if (plan.moving.length === 0) parts.push("移すものはありません");
       else if (migrate) {
         parts.push(plan.moving.length + " 件を一緒に移します");
         if (plan.conflicts.length) {
-          parts.push("ただし移す先に同じ名前があります（" + plan.conflicts.join(", ") + "）——このままでは変えられません");
+          parts.push(
+            "ただし移す先に同じ名前があります（" + plan.conflicts.join(", ") +
+              "）——1つでもぶつかると何も移しません。先に名前を変えるか、移す先を変えてください",
+          );
+          blocked = true;
         }
         if (plan.sharedWith.length) {
-          parts.push("いまの置き場は他の Project も使っているので、一緒には移せません");
+          // **押すとどうなるかまで書く**——「移せません」で止めない
+          parts.push(
+            "いまの置き場は他の Project も使っているので、一緒には移せません" +
+              "（他所のものまで動かすことになるため）。移さずに変えるなら「移さない」を選んでください",
+          );
+          blocked = true;
         }
       } else {
         parts.push(
           plan.strandedIfNotMigrated.length + " 件（" + plan.strandedIfNotMigrated.join(", ") +
-            "）は、どこにも紐付かなくなり、この Project から使えなくなります",
+            "）は、どこにも紐付かなくなり、この Project から使えなくなります" +
+            "（あとで一覧の「移す」から戻せます）",
         );
       }
+      $("place-submit").disabled = blocked;
       $("place-effect").textContent = parts.join("。");
     } catch (err) {
       showError($("place-error"), err);

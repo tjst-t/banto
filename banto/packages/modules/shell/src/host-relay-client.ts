@@ -20,6 +20,21 @@ export interface HostRelayClientOptions {
 /** 待っている間の合図（host から届いた進捗を、そのまま上へ流すため）。 */
 export type RelayProgressListener = (note: string) => void;
 
+/**
+ * **秘密の在りか**。alias の同一性は (Vault, グループ, 名前) の三つ組
+ * （`v4-modules.md` §2.1）なので、**運ぶときも三つ組のまま運ぶ**。
+ *
+ * 平たくして名前だけにすると、受け取った側が自分の既定解決で復元することになり、
+ * **別の秘密を開ける／見つからない**が起きる（実際に起きていた・2026-09-15）。
+ */
+export interface AliasPlace {
+  implementation: string;
+  /** backend での本当の名前（修飾名ではない） */
+  name: string;
+  /** 置き場。省くと backend の既定解決に落ちるので、**引けたなら必ず入れる** */
+  group?: string;
+}
+
 export class HostRelayClient {
   private client?: Client;
 
@@ -62,38 +77,44 @@ export class HostRelayClient {
     directoryModule: string,
     name: string,
     onProgress?: RelayProgressListener,
-  ): Promise<{ implementation: string }> {
+  ): Promise<AliasPlace> {
     const text = await this.callRelay(
       { targetModule: directoryModule, name: "lookupAlias", arguments: { name } },
       onProgress,
     );
-    const found = JSON.parse(text ?? "{}") as { implementation?: string };
+    const found = JSON.parse(text ?? "{}") as { implementation?: string; name?: string; group?: string };
     // 在りかが分からないまま既定の Vault へ落とすと、**別の金庫の同名を
     // 開けてしまう**。黙って別の経路へ行かない（規則2）
     if (!found.implementation) throw new Error(`alias "${name}" の在りかが分かりません`);
-    return { implementation: found.implementation };
+    // **窓口が返した名前と置き場をそのまま運ぶ**（訂正・2026-09-15）。
+    // 以前は implementation だけを読み、`resolveAlias` には AI が書いた文字列を
+    // そのまま渡していた——**修飾名（`vault-infisical:npm-token`）だと backend に
+    // その名前は無く、一覧に出た名前が使えない**という形で壊れていた。
+    // 窓口自身が「name は backend での本当の名前」と言っているのに、捨てていた。
+    if (!found.name) throw new Error(`alias "${name}" の本当の名前が分かりません`);
+    return { implementation: found.implementation, name: found.name, group: found.group };
   }
 
-  async resolveAlias(
-    targetModule: string,
-    name: string,
-    onProgress?: RelayProgressListener,
-  ): Promise<string> {
+  async resolveAlias(place: AliasPlace, onProgress?: RelayProgressListener): Promise<string> {
     const text = await this.callRelay(
-      { targetModule, name: "resolveAlias", arguments: { name } },
+      {
+        targetModule: place.implementation,
+        name: "resolveAlias",
+        arguments: { name: place.name, group: place.group },
+      },
       onProgress,
     );
-    if (typeof text !== "string") throw new Error(`alias "${name}" の解決に失敗しました`);
+    if (typeof text !== "string") throw new Error(`alias "${place.name}" の解決に失敗しました`);
     return text;
   }
 
-  async startSshAgent(
-    targetModule: string,
-    identity: string,
-    onProgress?: RelayProgressListener,
-  ): Promise<{ socketPath: string }> {
+  async startSshAgent(place: AliasPlace, onProgress?: RelayProgressListener): Promise<{ socketPath: string }> {
     const text = await this.callRelay(
-      { targetModule, name: "startSshAgent", arguments: { identity } },
+      {
+        targetModule: place.implementation,
+        name: "startSshAgent",
+        arguments: { identity: place.name, group: place.group },
+      },
       onProgress,
     );
     return JSON.parse(text ?? "{}") as { socketPath: string };

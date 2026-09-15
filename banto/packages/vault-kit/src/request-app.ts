@@ -120,6 +120,10 @@ export const REQUEST_APP_HTML = `<!doctype html>
 
   <div class="row">
     <button id="submit">登録する</button>
+    <!-- **断る口が要る**（追加・2026-09-15）。「登録する」しか無いと、AI の
+         要求を拒む意思表示ができず、答の出ないフォームが会話に残り続ける
+         ——人は無視するしかなかった -->
+    <button id="decline" type="button">今回は渡さない</button>
     <span class="muted" id="hint-value">打った値は AI には渡りません</span>
   </div>
   <p class="problem" id="error" hidden></p>
@@ -130,7 +134,11 @@ export const REQUEST_APP_HTML = `<!doctype html>
   <div class="field" id="pubkey-field" hidden>
     <span>公開鍵（これは秘密ではありません。相手方に登録してください）</span>
     <textarea id="pubkey" rows="3" readonly></textarea>
-    <div class="row"><button id="pubkey-copy" type="button">コピーする</button></div>
+    <div class="row">
+      <button id="pubkey-copy" type="button">コピーする</button>
+      <!-- **押した結果を必ず言う**（追加・2026-09-15）——黙って失敗しない -->
+      <span class="muted" id="pubkey-copied"></span>
+    </div>
   </div>
   <p class="problem" id="pubkey-missing" hidden>
     鍵は登録できましたが、<strong>公開鍵が返ってきませんでした。</strong>
@@ -239,9 +247,49 @@ ${ALIAS_KIND_RULES_JS}
     }
   });
 
+  /**
+   * **コピーの結果を、人に必ず言う**（訂正・2026-09-15、実測で発覚）。
+   *
+   * 以前は navigator.clipboard.writeText を投げっぱなし で投げっぱなしだった。
+   * sandbox iframe には Permissions Policy でクリップボードが渡っていなかったので
+   * **常に NotAllowedError で失敗し、しかも画面は何も言わなかった**
+   * ——人は押して、何も起きず、コピーされたと思い込む（規則2・規則13）。
+   *
+   * 権限は通るようにしたが、**通らない環境でも人の手が残るようにする**：
+   * 選択して execCommand("copy") に落とし、それも駄目なら
+   * 「選んであるので Ctrl+C」と言う。**黙って失敗しない。**
+   */
+  async function copyFrom(field, say) {
+    field.select();
+    try {
+      await navigator.clipboard.writeText(field.value);
+      say("コピーしました");
+      return;
+    } catch {
+      // 権限が通っていない環境——古い経路に落ちる（選択済みなので実際に効く）
+    }
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    say(ok ? "コピーしました" : "コピーできませんでした——選んであるので Ctrl+C（Mac は Cmd+C）で");
+  }
+
+  $("decline").addEventListener("click", () => {
+    // **断ったことを、その場に残す**——無視して消えるのとは違う
+    $("form-view").hidden = true;
+    $("done-view").hidden = false;
+    $("done-text").textContent =
+      "「" + asked.name + "」は登録しませんでした。AI には値も名前も渡っていません。" +
+      "続けるなら、別のやり方を AI に伝えてください";
+  });
+
   $("pubkey-copy").addEventListener("click", () => {
-    $("pubkey").select();
-    void navigator.clipboard?.writeText($("pubkey").value);
+    void copyFrom($("pubkey"), (note) => {
+      $("pubkey-copied").textContent = note;
+    });
   });
 
   $("submit").addEventListener("click", async () => {
@@ -287,7 +335,10 @@ ${ALIAS_KIND_RULES_JS}
       $("form-view").hidden = true;
       $("done-view").hidden = false;
       $("done-text").textContent =
-        "「" + asked.name + "」を登録しました。AI からは名前だけが見えます（値は見えません）。";
+        "「" + asked.name + "」を登録しました。AI からは名前だけが見えます（値は見えません）。" +
+        // **次の一手を書く**（追加・2026-09-15）。requestAlias は即返る作りなので、
+        // **人が登録した事実を AI がいつ知るのかが、人には見えない**
+        "AI はまだ知りません——続けてよければ、そのまま話しかけてください";
       // **公開鍵は秘密ではない**——出さないと相手方に登録できない。
       // 返ってこなかったときに**空の箱を見せない**（規則2——「出たが空」は
       // 「作れたのか壊れたのか」が分からない。実際そう見えていた）

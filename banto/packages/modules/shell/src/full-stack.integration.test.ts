@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { HostRelayEndpoint, RelayRegistry } from "@banto/core";
+import { HostRelayEndpoint, ModuleCallTracker, RelayRegistry } from "@banto/core";
 import { parseModuleMeta } from "@banto/module-contract";
 import { createVaultServer } from "@banto/module-vault-local";
 import { createVaultDirectoryServer, HostRelayClient as DirectoryRelayClient } from "@banto/module-vault-directory";
@@ -83,7 +83,12 @@ test("Shell resolves an envSecret from the real (SOPS-backed) Vault through the 
     const token = registry.issueToken({ moduleName: "shell", projectId: PROJECT_ID, meta: shellMeta });
 
     // 3. 実HTTPサーバーで中継エンドポイントを立てる。
-    const endpoint = new HostRelayEndpoint({ registry });
+    // **本番と同じ形で繋ぐ**（訂正・2026-09-15）。`moduleCalls` は入れ子の中継で
+    // 「誰のための呼び出しか」を運ぶ台帳で、本番（cli.ts）は必ず渡している。
+    // 省くと**刻印が付かない状態**で試験することになり、fail closed の判定が
+    // 効いているかを確かめられない——実際、backend の目録を刻印で絞るように
+    // した時点で、ここだけが落ちた
+    const endpoint = new HostRelayEndpoint({ registry, moduleCalls: new ModuleCallTracker() });
     httpServer = createServer((req, res) => void endpoint.handleRequest(req, res));
     await new Promise<void>((resolve) => httpServer!.listen(0, "127.0.0.1", resolve));
     const port = (httpServer.address() as AddressInfo).port;
