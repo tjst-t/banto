@@ -917,10 +917,16 @@ test("読めない金庫があっても、読める分は AI に返る（事実�
         ["usable"],
         `読める分が返っていない: ${JSON.stringify(body)}`,
       );
-      // **「読めていない」も同じ答えの中で言う**（空に化けさせない・規則2）
-      assert.equal(body.unreadable[0].implementation, "vault-dead");
+      // **「読めていない」も同じ答えの中で言う**（空に化けさせない・規則2）。
+      // ただし**金庫の名前は言わない**——AI に選ぶ材料を渡さない（訂正・2026-09-15）
+      assert.equal(body.unreadable, 1);
       assert.match(body.warning, /全部ではありません/);
       assert.match(body.warning, /人に伝えて/);
+      assert.equal(
+        JSON.stringify(body).includes("vault-dead"),
+        false,
+        "読めていない金庫の名前を AI に見せている",
+      );
     },
     { vaultNames: ["vault-local"], broken: new Map([["vault-dead", "設定されていません"]]) },
   );

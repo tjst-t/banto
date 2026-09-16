@@ -25,7 +25,8 @@ test("Global Memoryに人が足す→出る→取り消す→取り消し線に�
 
   // 繋がっているセクションだけがnavに出る
   await expect(page.getByRole("button", { name: "Global Memory" })).toBeVisible({ timeout: 15_000 });
-  for (const mockSection of ["役割と Module", "既定値", "資格情報", "通知"]) {
+  // 「役割と Module」は 2026-09-15 に host へ繋がったので、ここには出る
+  for (const mockSection of ["既定値", "資格情報", "通知"]) {
     await expect(page.getByRole("button", { name: mockSection })).toHaveCount(0);
   }
 

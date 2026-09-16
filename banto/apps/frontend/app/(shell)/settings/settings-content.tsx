@@ -8,6 +8,7 @@ import { GlobalMemoryPanel } from "@/components/banto/settings/global-memory-pan
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
 import { NotificationSettingsPanel } from "@/components/banto/settings/notification-settings-panel";
 import { RoleList } from "@/components/banto/settings/role-list";
+import { InstanceModulesPanel } from "@/components/banto/settings/instance-modules-panel";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -58,8 +59,19 @@ const GLOBAL_MEMORY_CATEGORY: SettingsNavItem = {
   icon: Globe,
 };
 
+/** 実 banto に繋がった「役割と Module」（2026-09-15）。 */
+const INSTANCE_MODULES_CATEGORY: SettingsNavItem = {
+  section: "roles",
+  label: "役割と Module",
+  icon: Puzzle,
+};
+
 const CATEGORIES: readonly SettingsNavItem[] = [
-  ...(CONNECTED_FEATURES.settings ? MOCK_CATEGORIES : []),
+  ...(CONNECTED_FEATURES.settings
+    ? MOCK_CATEGORIES
+    : CONNECTED_FEATURES.instanceModules
+      ? [INSTANCE_MODULES_CATEGORY]
+      : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
 ];
 
@@ -147,9 +159,11 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
       <div>
         <SectionHeading
           title="役割と Module"
-          description="役割ごとに、満たす実装・プロセス境界・無ければ何が断るかを表示する。同じ役割を複数の実装が名乗ってよい。"
+          description="役割ごとに、満たす実装・プロセス境界・止めたら何が断るかを表示する。同じ役割を複数の実装が名乗ってよい。"
         />
-        <RoleList />
+        {/* **繋がっているほうを出す**（2026-09-15）。モックの `RoleList` は
+            `lib/mock/settings.ts` の固定データなので、繋がった今は出さない（規則13） */}
+        {CONNECTED_FEATURES.settings ? <RoleList /> : <InstanceModulesPanel />}
       </div>
     );
   }

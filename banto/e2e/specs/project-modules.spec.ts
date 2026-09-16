@@ -114,10 +114,13 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   ).toHaveCount(0);
 
   // **役割を満たすものが全部消えて初めて**、動かないと言う
-  await page
-    .locator('[data-testid="module-row"][data-module="vault-infisical"]')
-    .getByRole("button", { name: /外す/ })
-    .click();
+  // （`vault` を名乗る実装は3本ある——自前 Infisical と Cloud 用も、2026-09-15）
+  for (const impl of ["vault-infisical", "vault-infisical-cloud"]) {
+    await page
+      .locator(`[data-testid="module-row"][data-module="${impl}"]`)
+      .getByRole("button", { name: /外す/ })
+      .click();
+  }
   await expect(
     shellRow.getByText(/このままでは動きません/),
     "要るものを外したのに、その場で何も言わない",
@@ -127,7 +130,7 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   await expect(page.getByTestId("module-save-dialog")).toContainText("「shell」");
   await page.getByTestId("module-save-dialog").getByRole("button", { name: "やめる" }).click();
   // やめたのだから、何も変わっていない
-  await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 2 件");
+  await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 3 件");
 });
 
 test("一般：名前と Root を直せて、危険な操作（Close）はその下にある", async ({ page }) => {

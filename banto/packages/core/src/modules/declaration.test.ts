@@ -45,11 +45,11 @@ const CONTEXT = {
   projectRoot: "/home/me/work",
 };
 
-test("同梱の既定は5本（vault/vault-infisical/vault-directory/shell/filesystem）で、そのまま読める", () => {
+test("同梱の既定は6本（vault-local/infisical×2/vault-directory/shell/filesystem）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "vault-directory", "vault-infisical", "vault-local"],
+    ["filesystem", "shell", "vault-directory", "vault-infisical", "vault-infisical-cloud", "vault-local"],
   );
   // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
   assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
@@ -138,7 +138,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     await config.load();
 
     const before = loadModuleDeclarations(config, "project-1");
-    assert.equal(before.length, 5, "既定は5本");
+    assert.equal(before.length, 6, "既定は6本");
 
     await setModuleDeclarations(config, [
       ...DEFAULT_MODULE_DECLARATIONS,
@@ -153,7 +153,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     ]);
 
     const after = loadModuleDeclarations(config, "project-1");
-    assert.equal(after.length, 6);
+    assert.equal(after.length, 7);
     assert.ok(after.some((d) => d.name === "python-demo"));
 
     // 読み直しても残る（Event Store に載っている）
@@ -161,7 +161,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     await log2.init();
     const config2 = new RuntimeConfigStore(dir, log2);
     await config2.load();
-    assert.equal(loadModuleDeclarations(config2, "project-1").length, 6);
+    assert.equal(loadModuleDeclarations(config2, "project-1").length, 7);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -186,7 +186,7 @@ test("Project ごとに、繋ぐ Module を上書きできる", async () => {
       ["vault-local"],
     );
     // 別の Project は既定のまま
-    assert.equal(loadModuleDeclarations(config, "other").length, 5);
+    assert.equal(loadModuleDeclarations(config, "other").length, 6);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

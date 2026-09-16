@@ -740,3 +740,51 @@ export async function callRealUiTool(
     body: JSON.stringify({ server, tool, arguments: args }),
   });
 }
+
+/**
+ * **banto 全体の Module**（追加・2026-09-15、§10 item 14 (a)）。
+ *
+ * Project ごとの選択（`RealProjectModule`）は「この Project の AI に見せるか」。
+ * こちらは **banto 全体の層**——宣言そのものを足す・止める・消す。
+ */
+export interface RealInstanceModule {
+  name: string;
+  /** banto 全体で動かすか（止めても一覧には残る——消えたのか止めたのか分かるように） */
+  enabled: boolean;
+  /** banto 同梱か、外から繋いだか。**許してよいことが違う** */
+  origin: "bundled" | "external";
+  satisfies: string[];
+  dependsOn: { role: string; required: boolean }[];
+  scope: "instance" | "project";
+  confinement?: { kind: string; root: string; profile: string };
+  launch: { command: string; args: string[]; env?: Record<string, string> };
+  /** 止めると断るようになる Module（`dependsOn` から導いた値） */
+  breaksIfDisabled: string[];
+  /** いま立っているか */
+  connected: boolean;
+  /** 立たなかった理由 */
+  error?: string;
+}
+
+export async function listRealInstanceModules(): Promise<RealInstanceModule[]> {
+  return request<RealInstanceModule[]>("/api/modules");
+}
+
+export async function setRealInstanceModuleEnabled(name: string, enabled: boolean): Promise<void> {
+  await request(`/api/modules/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function addRealInstanceModule(declaration: {
+  name: string;
+  launch: { command: string; args: string[]; env?: Record<string, string> };
+  meta: unknown;
+}): Promise<void> {
+  await request("/api/modules", { method: "POST", body: JSON.stringify(declaration) });
+}
+
+export async function removeRealInstanceModule(name: string): Promise<void> {
+  await request(`/api/modules/${encodeURIComponent(name)}`, { method: "DELETE" });
+}

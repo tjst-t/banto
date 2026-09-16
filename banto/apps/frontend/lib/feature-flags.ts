@@ -15,7 +15,11 @@ export const CONNECTED_FEATURES = {
   // **この Project で使う Module を選ぶ**（`phase1-project-modules-ui`、2026-09-11）。
   // host の宣言（instance 既定＋Project 差分）に繋がっている——Phase 2 の入口
   projectModules: true,
-  settings: false, // instance設定（/settings）：Module/Vault/Role/Credential/Runtime既定、mock/settings.ts丸ごと
+  settings: false, // instance設定（/settings）：Vault/Credential/Runtime既定、mock/settings.ts丸ごと
+  // **banto 全体の Module**（`instance-modules`、2026-09-15、§10 item 14 (a)）。
+  // 宣言を足す・止める・消す口が host に繋がった——**この1節だけ**を出す
+  // （同じ画面の他の節はまだモックのままなので、nav から外したまま・規則13）
+  instanceModules: true,
   // Global Memory（§2.2、決定・2026-09-05）。/settings の中で**これだけ**が
   // 実bantoホストに繋がっている——projectSettingsで入口を分離したのと同じ手で、
   // 繋がっているセクションだけ見せ、mockのままの他セクションはnavから外す（規則13）
@@ -47,4 +51,5 @@ export const CONNECTED_FEATURES = {
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す
  *  ——この判断を各所に書き写さない（規則3）。 */
-export const SHOW_INSTANCE_SETTINGS = CONNECTED_FEATURES.settings || CONNECTED_FEATURES.globalMemory;
+export const SHOW_INSTANCE_SETTINGS =
+  CONNECTED_FEATURES.settings || CONNECTED_FEATURES.globalMemory || CONNECTED_FEATURES.instanceModules;

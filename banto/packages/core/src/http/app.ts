@@ -228,7 +228,10 @@ function withCors(res: ServerResponse): void {
   // PATCH（名前を変える）・PUT（並び順）を足した（2026-09-11）——**画面から
   // 呼べない口を足しても、何も起きない**。実測：preflight で弾かれ、画面には
   // 「Failed to fetch」だけが出ていた
-  res.setHeader("access-control-allow-methods", "GET, POST, PATCH, PUT, OPTIONS");
+  // **DELETE も通す**（追加・2026-09-15）。Module を消す口を足したときに
+  // 抜けていて、ブラウザが preflight で弾いていた——画面には
+  // 「Failed to fetch」としか出ず、原因が読めなかった
+  res.setHeader("access-control-allow-methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
   res.setHeader("access-control-allow-headers", "authorization, content-type, mcp-session-id");
 }
 

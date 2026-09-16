@@ -1018,11 +1018,15 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       // あることを同じ答えの中で明示する（AI が人に伝えられる形で）。
       const body: Record<string, unknown> = { aliases: visible };
       if (failures.length > 0) {
-        body.unreadable = failures.map((f) => ({ implementation: f.implementation, error: f.error }));
+        // **金庫の名前は AI に見せない**（訂正・2026-09-15、E2E が捕まえた）。
+        // 読めていないことは伝えるが、**どの金庫かは言わない**——AI に
+        // 選ぶ材料を渡さない、という窓口の存在理由がここで崩れる。
+        // 名前と理由が要るのは人なので、**人の画面（`listAliases`）には
+        // 今までどおり全部出る**
+        body.unreadable = failures.length;
         body.warning =
-          "読めていない Vault があります。この一覧は全部ではありません——" +
-          "人に伝えてください（直せるのは人だけです）：" +
-          failures.map((f) => `${f.implementation}（${f.error}）`).join("、");
+          `読めていない金庫が ${failures.length} 件あります。この一覧は全部ではありません` +
+          "——人に伝えてください（設定できるのは人だけです）";
       }
       return {
         contents: [

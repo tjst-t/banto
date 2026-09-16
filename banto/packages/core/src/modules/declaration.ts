@@ -289,6 +289,30 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
   },
   {
+    // **Infisical Cloud 用の2本目**（追加・2026-09-15、最初の要望）。
+    //
+    // 同じ実装（`vault-infisical`）をもう1本立てる。**コピーしても壊れない**
+    // ことを先に直してある（2026-09-15）：置き場は `${moduleDataDir}` なので
+    // 接続名ごとに分かれ、設定画面の見出しには名前が入り、環境変数の既定は
+    // 正規の1本にしか効かない——**この2本目は、人が設定画面から接続先を
+    // 入れるまで未設定のまま立つ**（受信箱も汚さない）。
+    //
+    // **未設定でも資源の一覧は出る**ので、設定画面に辿り着ける（2026-09-15）。
+    name: "vault-infisical-cloud",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/vault-infisical/dist/server.js"],
+      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" },
+    },
+    meta: {
+      satisfies: ["vault"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      handlesSecrets: true,
+    },
+  },
+  {
     // **名前から在りかを引く窓口**（`vault-directory`、v4-modules.md §2.1）。
     // 自分では秘密を保管しない——`vault` を名乗る実装を横断して、**AI・人・
     // 他 Module に1つの窓口**を見せる。**値は通さない**（`resolveAlias` は
