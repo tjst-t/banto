@@ -34,7 +34,13 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { callerOf, VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
+import {
+  AUDIT_ARGS_META_KEY,
+  callerOf,
+  VISIBILITY_META_KEY,
+  MODULE_META_KEY,
+  CANVAS_META_KEY,
+} from "@banto/module-contract";
 import { MANAGE_APP_HTML, MANAGE_APP_URI, UI_APP_MIME } from "./manage-app.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { REQUEST_APP_HTML, requestAppUri } from "@banto/vault-kit";
@@ -285,13 +291,16 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     await deps.relay.callTool(fromImpl, "deleteAlias", { name, group: fromGroup });
   }
 
+  /** **監査に残してよい引数**（識別子だけ。値は決して含めない）。 */
+  const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "implementation", "projectId"];
+
   function tool(name: string, description: string, properties: Record<string, unknown>, required: string[] = []) {
     return {
       name,
       description,
       inputSchema: { type: "object", properties, required },
       // 人専用——AI には1つも見せない
-      _meta: { [VISIBILITY_META_KEY]: "admin" },
+      _meta: { [VISIBILITY_META_KEY]: "admin", [AUDIT_ARGS_META_KEY]: AUDIT_IDENTIFIERS },
     };
   }
 

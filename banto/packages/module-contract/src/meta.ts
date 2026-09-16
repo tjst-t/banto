@@ -55,6 +55,27 @@ export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp
   return undefined;
 }
 
+/**
+ * **監査に残してよい引数の名前**（追加・2026-09-15、規則8 で上がった穴の決着）。
+ *
+ * 仕様（`v4-architecture.md`）は「引数のうち、**値そのものではなく
+ * 『何を指しているかの識別子』（例：Vault の alias 名）は記録してよい**」と
+ * 決めているのに、実装は引数を1つも記録していなかった。その結果
+ * **「誰がどの秘密を消したか」が後から追えない**——監査として肝心のところが空。
+ *
+ * **どの引数が識別子かは、その tool を持つ Module しか知らない。**
+ * banto が推測すると、いつか秘密の入った引数を記録する（`createAlias` の
+ * `value` など）。**名乗っていない引数は1つも記録しない**（fail closed）。
+ */
+export const AUDIT_ARGS_META_KEY = "dev.banto/auditArgs";
+
+/** その tool が「この引数は識別子だから記録してよい」と名乗ったもの。 */
+export function auditArgsOf(x: { _meta?: Record<string, unknown> }): string[] {
+  const raw = x._meta?.[AUDIT_ARGS_META_KEY];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((k): k is string => typeof k === "string");
+}
+
 /** その tool が「値を返さない」と名乗っているか。**`true` 以外は全部「返す」。** */
 export function isValueFree(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[VALUE_FREE_META_KEY] === true;
@@ -109,7 +130,17 @@ export interface RoleDependency {
 
 export interface Confinement {
   kind: "landlock";
-  root: "project";
+  /**
+   * 閉じ込めの根（追加・2026-09-15）。
+   *
+   * `project` は Project の根まで読み書きできる。**`none` は根を持たない**
+   * ——banto 全体に1本の Module 用。許すのは node・動的リンカ・`/dev`・`/etc`・
+   * その Module 自身の置き場だけで、**`~/.claude` も `~/.config/banto` も読めない**。
+   *
+   * これが無かったので、**instance の Module は閉じ込めようが無かった**
+   * ——結果、外から繋いだ instance の Module を起動できなかった。
+   */
+  root: "project" | "none";
   /**
    * 許す広さ（追加・2026-09-15、レビューで発覚）。
    *
@@ -188,7 +219,7 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
   let confinement: Confinement | undefined;
   if (obj.confinement !== undefined) {
     const c = obj.confinement as Record<string, unknown>;
-    if (c.kind !== "landlock" || c.root !== "project") {
+    if (c.kind !== "landlock" || (c.root !== "project" && c.root !== "none")) {
       throw new ModuleMetaError(`${source}: confinement の形が不正です`);
     }
     // **広さは書いていなければ狭いほう**（追加・2026-09-15）。
@@ -198,7 +229,11 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
         `${source}: confinement.profile は exec か files-only（${JSON.stringify(c.profile)} が来ました）`,
       );
     }
-    confinement = { kind: "landlock", root: "project", profile: c.profile === "exec" ? "exec" : "files-only" };
+    confinement = {
+      kind: "landlock",
+      root: c.root,
+      profile: c.profile === "exec" ? "exec" : "files-only",
+    };
   }
 
   // **`bundled` は host だけが付けられる**（上記 ModuleOrigin）。
@@ -232,9 +267,15 @@ function assertConsistent(meta: BantoModuleMeta, source: string): void {
     );
   }
 
-  if (meta.confinement && (meta.scope !== "project" || meta.isolation !== "subprocess")) {
+  if (meta.confinement && meta.isolation !== "subprocess") {
+    throw new ModuleMetaError(`${source}: confinement を持つには isolation:"subprocess" が必要です`);
+  }
+  // **根が Project なら、Project ごとに立つ Module でなければならない**
+  // （instance に1本の Module には渡す根が無い）。逆に `root: "none"` は
+  // どちらでもよい——根を持たない閉じ込めは Project の有無と関係しない
+  if (meta.confinement?.root === "project" && meta.scope !== "project") {
     throw new ModuleMetaError(
-      `${source}: confinement を持つには scope:"project" かつ isolation:"subprocess" が必要です`,
+      `${source}: confinement の根が "project" なら scope:"project" が必要です`,
     );
   }
 }

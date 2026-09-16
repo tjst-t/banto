@@ -578,3 +578,112 @@ export function listProjectModules(
     ...(d.meta.confinement ? { confinement: d.meta.confinement } : {}),
   }));
 }
+
+// ---- instance 層の管理（追加・2026-09-15）-----------------------------------
+//
+// **Project ごとの選択は前からある**（`setProjectModuleSelection`）。
+// 無かったのは **banto 全体の層**——宣言を足す・消す・止める口。
+// §10 item 14 (a) が未着手のまま残っていた部分。
+
+/** instance 全体の一覧（無効にしたものも含む）。**隠すと直せない**（規則2）。 */
+export function listInstanceModules(config: RuntimeConfigStore): Array<{
+  name: string;
+  enabled: boolean;
+  origin: BantoModuleMeta["origin"];
+  satisfies: string[];
+  dependsOn: BantoModuleMeta["dependsOn"];
+  scope: BantoModuleMeta["scope"];
+  confinement?: BantoModuleMeta["confinement"];
+  launch: ModuleLaunch;
+  /** 止めると断るようになるもの（`dependsOn` から導く。写しを持たない・規則3）。 */
+  breaksIfDisabled: string[];
+}> {
+  const enabled = loadModuleDeclarations(config, "");
+  const overlays = (config.layerValue(MODULE_OVERLAYS_KEY, undefined) as ModuleOverlay[] | undefined) ?? [];
+  const disabled = overlays.filter((o) => o.enabled === false).map((o) => o.name);
+
+  // 無効にした既定も一覧に出す——「消えた」ではなく「止めた」と分かるように
+  const all = [...enabled];
+  for (const name of disabled) {
+    if (all.some((d) => d.name === name)) continue;
+    const def = DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === name);
+    if (def) all.push(parseModuleDeclaration(def, "default"));
+  }
+
+  return all.map((d) => ({
+    name: d.name,
+    enabled: !disabled.includes(d.name),
+    origin: d.meta.origin,
+    satisfies: d.meta.satisfies,
+    dependsOn: d.meta.dependsOn,
+    scope: d.meta.scope,
+    ...(d.meta.confinement ? { confinement: d.meta.confinement } : {}),
+    launch: d.launch,
+    // **止めたら何が断るか**は、他の Module の依存から導く
+    breaksIfDisabled: all
+      .filter((other) => other.name !== d.name)
+      .filter((other) => other.meta.dependsOn.some((dep) => d.meta.satisfies.includes(dep.role)))
+      .map((other) => other.name),
+  }));
+}
+
+/** その宣言を banto 全体で止める／動かす。 */
+export async function setModuleEnabled(
+  config: RuntimeConfigStore,
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  const known = listInstanceModules(config).some((m) => m.name === name);
+  if (!known) throw new ModuleDeclarationError(`知らない Module です: ${name}`);
+  await updateInstanceOverlays(config, (overlays) => {
+    const rest = overlays.filter((o) => o.name !== name);
+    const existing = overlays.find((o) => o.name === name);
+    if (enabled) {
+      // 印だけの差分は残さない（空の印を記録に残さない）
+      const { enabled: _drop, ...keep } = existing ?? { name };
+      return keep.launch || keep.meta ? [...rest, keep as ModuleOverlay] : rest;
+    }
+    return [...rest, { ...(existing ?? { name }), enabled: false }];
+  });
+}
+
+/** 宣言を1本足す。**同梱と同じ名前は使えない**（どちらを起動するか決まらない）。 */
+export async function addModuleDeclaration(
+  config: RuntimeConfigStore,
+  declaration: ModuleDeclaration,
+): Promise<void> {
+  const parsed = parseModuleDeclaration(declaration, "addModuleDeclaration");
+  if (listInstanceModules(config).some((m) => m.name === parsed.name)) {
+    throw new ModuleDeclarationError(`その名前はもう使われています: ${parsed.name}`);
+  }
+  await updateInstanceOverlays(config, (overlays) => [
+    ...overlays,
+    { name: parsed.name, launch: parsed.launch, meta: declaration.meta },
+  ]);
+}
+
+/**
+ * 宣言を1本消す。**同梱は消せない**（既定に戻せる形で止めるだけ）。
+ *
+ * **データは消さない**——その Module のデータ置き場も、Vault に置いた秘密も。
+ * まとめて消すのは別の操作にする（取り返しがつかないので、別の確認を挟む）。
+ */
+export async function removeModuleDeclaration(config: RuntimeConfigStore, name: string): Promise<void> {
+  const found = listInstanceModules(config).find((m) => m.name === name);
+  if (!found) throw new ModuleDeclarationError(`知らない Module です: ${name}`);
+  if (found.origin === "bundled") {
+    throw new ModuleDeclarationError(`${name} は banto 同梱なので消せません（止めることはできます）`);
+  }
+  await updateInstanceOverlays(config, (overlays) => overlays.filter((o) => o.name !== name));
+}
+
+async function updateInstanceOverlays(
+  config: RuntimeConfigStore,
+  fn: (overlays: ModuleOverlay[]) => ModuleOverlay[],
+): Promise<void> {
+  const current = (config.layerValue(MODULE_OVERLAYS_KEY, undefined) as ModuleOverlay[] | undefined) ?? [];
+  await config.setInstanceDefault(
+    MODULE_OVERLAYS_KEY,
+    fn([...current]) as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1],
+  );
+}

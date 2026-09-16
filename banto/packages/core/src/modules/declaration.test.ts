@@ -474,3 +474,46 @@ test("閉じ込めの広さは宣言が持ち、書かなければ狭いほう",
   );
   assert.equal(noProfile.meta.confinement?.profile, "files-only", "書いていないのに広いほうになった");
 });
+
+// **banto 全体に1本の Module も閉じ込められる**（追加・2026-09-15）。
+// 以前は閉じ込めが `scope:"project"` 必須だったので、instance の Module は
+// **閉じ込めようが無かった**——その帰結として、外から繋いだ instance の
+// Module を起動できなかった（起動を断っていた）。
+test("根を持たない閉じ込めは、banto 全体に1本の Module でも宣言できる", () => {
+  const d = parseModuleDeclaration(
+    {
+      name: "weather",
+      launch: { command: "/bin/sh", args: ["-c", "true"] },
+      meta: {
+        satisfies: ["weather"],
+        dependsOn: [],
+        isolation: "subprocess",
+        confinement: { kind: "landlock", root: "none" },
+      },
+    },
+    "test",
+  );
+  assert.equal(d.meta.scope, "instance");
+  assert.equal(d.meta.confinement?.root, "none");
+  assert.equal(d.meta.confinement?.profile, "files-only", "書いていないのに広いほうになった");
+});
+
+test("根が Project の閉じ込めは、Project ごとの Module でしか宣言できない", () => {
+  assert.throws(
+    () =>
+      parseModuleDeclaration(
+        {
+          name: "bad",
+          launch: { command: "/bin/sh", args: ["-c", "true"] },
+          meta: {
+            satisfies: ["weather"],
+            dependsOn: [],
+            isolation: "subprocess",
+            confinement: { kind: "landlock", root: "project" },
+          },
+        },
+        "test",
+      ),
+    /scope:"project" が必要/,
+  );
+});

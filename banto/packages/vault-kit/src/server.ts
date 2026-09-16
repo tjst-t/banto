@@ -21,6 +21,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+  AUDIT_ARGS_META_KEY,
   callerOf,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
@@ -235,6 +236,13 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   /** A 面の可視性。窓口だけが `agent`、backend は `module`（上記）。 */
   const agentVisibility: "agent" | "module" = opts.agentFacing ? "agent" : "module";
 
+  /**
+   * **どの引数が「識別子」か**（追加・2026-09-15）。監査に残してよいのはこれだけ
+   * ——値そのもの（`value`）は決して含めない。banto 側は名乗ったものしか拾わない
+   * （`dev.banto/auditArgs`）ので、**ここに書かなければ記録は空のまま**。
+   */
+  const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "implementation", "projectId"];
+
   function tool(
     name: string,
     description: string,
@@ -242,7 +250,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     visibility: "agent" | "module" | "admin",
     meta: Record<string, unknown> = {},
   ) {
-    return { name, description, inputSchema, _meta: { [VISIBILITY_META_KEY]: visibility, ...meta } };
+    return {
+      name,
+      description,
+      inputSchema,
+      _meta: { [VISIBILITY_META_KEY]: visibility, [AUDIT_ARGS_META_KEY]: AUDIT_IDENTIFIERS, ...meta },
+    };
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {

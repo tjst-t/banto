@@ -29,9 +29,14 @@ import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
 import {
   ModuleDeclarationError,
+  addModuleDeclaration,
+  listInstanceModules,
   listProjectModules,
+  removeModuleDeclaration,
+  setModuleEnabled,
   setProjectModuleSelection,
 } from "../modules/declaration.js";
+import { ModuleMetaError } from "@banto/module-contract";
 import { describeRootScope } from "../modules/root-scope.js";
 import { listDirectories } from "./directories.js";
 import type { TurnEventBus } from "./turn-events.js";
@@ -116,6 +121,10 @@ export interface AppDeps {
    * （閉じ込めが成立しない根など）——**立っていないことと理由を画面に出す**（規則13）。
    * **ここで起こさない**（見ただけで副作用を作らない）。
    */
+  /** banto 全体の Module が立っているか（追加・2026-09-15）。 */
+  instanceModuleStatus?(): Array<{ name: string; connected: boolean; error?: string }>;
+  /** その Module のプロセスを落とす（止めた・消したとき）。 */
+  releaseModule?(name: string): Promise<void>;
   moduleStatusForProject?(projectId: string): Array<{ name: string; connected: boolean; error?: string }>;
   /** banto 自身の置き場（根の広さを判断するのに使う、`/api/config/root-scope`）。 */
   dataDir?: string;
@@ -479,6 +488,68 @@ export function createApp(deps: AppDeps) {
         const body = (await readJsonBody(req)) as { name: string; root: string };
         const project = await deps.projectThread.createProject(body.name, body.root);
         json(res, 201, project);
+        return;
+      }
+
+      // **banto 全体の Module**（追加・2026-09-15、§10 item 14 (a)）。
+      // Project ごとの選択は前からあったが、**宣言そのものを足す・消す・止める
+      // 口が無かった**——コードか Event Store の直書きしかなかった。
+      if (url.pathname === "/api/modules" && req.method === "GET") {
+        if (!deps.runtimeConfig) return json(res, 200, []);
+        const status = new Map((deps.instanceModuleStatus?.() ?? []).map((s) => [s.name, s]));
+        json(
+          res,
+          200,
+          listInstanceModules(deps.runtimeConfig).map((m) => ({
+            ...m,
+            // 使うと言っていても立つとは限らない——立っているか、理由は何か
+            connected: status.get(m.name)?.connected ?? false,
+            ...(status.get(m.name)?.error ? { error: status.get(m.name)!.error } : {}),
+          })),
+        );
+        return;
+      }
+      if (url.pathname === "/api/modules" && req.method === "POST") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const body = (await readJsonBody(req)) as Record<string, unknown>;
+        try {
+          await addModuleDeclaration(deps.runtimeConfig, body as never);
+        } catch (err) {
+          if (err instanceof ModuleDeclarationError || err instanceof ModuleMetaError) {
+            return json(res, 400, { error: err.message });
+          }
+          throw err;
+        }
+        json(res, 200, { ok: true });
+        return;
+      }
+      const instanceModuleMatch = url.pathname.match(/^\/api\/modules\/([^/]+)$/);
+      if (instanceModuleMatch && req.method === "PUT") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const body = (await readJsonBody(req)) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled must be a boolean" });
+        try {
+          await setModuleEnabled(deps.runtimeConfig, decodeURIComponent(instanceModuleMatch[1]!), body.enabled);
+        } catch (err) {
+          if (err instanceof ModuleDeclarationError) return json(res, 400, { error: err.message });
+          throw err;
+        }
+        // 止めたものは落とす——次のターンを待たずにプロセスを止める
+        if (!body.enabled) await deps.releaseModule?.(decodeURIComponent(instanceModuleMatch[1]!));
+        json(res, 200, { ok: true });
+        return;
+      }
+      if (instanceModuleMatch && req.method === "DELETE") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const name = decodeURIComponent(instanceModuleMatch[1]!);
+        try {
+          await removeModuleDeclaration(deps.runtimeConfig, name);
+        } catch (err) {
+          if (err instanceof ModuleDeclarationError) return json(res, 400, { error: err.message });
+          throw err;
+        }
+        await deps.releaseModule?.(name);
+        json(res, 200, { ok: true });
         return;
       }
 

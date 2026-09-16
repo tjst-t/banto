@@ -3,7 +3,7 @@
 // ホストで」と同じ原則、BANTO_CONFIG_PATHはbootstrap.tsの上書き機構）。
 // 毎回まっさらな状態から始める——前回の実行が残っているとテストが
 // 「たまたま前回のデータが残っていたから通った」になりかねない。
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   CONFIG_PATH,
@@ -13,14 +13,19 @@ import {
   SANDBOX_PORT,
   SANDBOX_BASE_URL,
   FRONTEND_BASE_URL,
+  CLAUDE_CONFIG_DIR,
+  CLAUDE_CREDENTIALS_DIR,
 } from "./config.ts";
 
 export default function globalSetup(): void {
   removeStaleRuns();
   rmSync(DATA_DIR, { recursive: true, force: true });
   rmSync(dirname(CONFIG_PATH), { recursive: true, force: true });
+  rmSync(CLAUDE_CONFIG_DIR, { recursive: true, force: true });
   mkdirSync(DATA_DIR, { recursive: true });
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+  mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
+  assertCredentialsReadable();
   writeFileSync(
     CONFIG_PATH,
     JSON.stringify(
@@ -36,6 +41,25 @@ export default function globalSetup(): void {
       null,
       2,
     ),
+  );
+}
+
+/**
+ * **認証がどこから来るかを、走る前に確かめる**（2026-09-16）。
+ *
+ * `CLAUDE_CONFIG_DIR` を実行ごとの置き場に移すと、claude CLI は認証も
+ * そちらから読もうとする。`CLAUDE_SECURESTORAGE_CONFIG_DIR` で本物を
+ * 指しそこねると、**全 spec が「AI が何も返さない」という形で落ちる**
+ * ——原因が認証だと画面からは分からない。ここで止めて理由を出す（規則2）。
+ */
+function assertCredentialsReadable(): void {
+  const credentials = join(CLAUDE_CREDENTIALS_DIR, ".credentials.json");
+  if (existsSync(credentials)) return;
+  throw new Error(
+    `[e2e] claude CLI の資格情報が見つかりません: ${credentials}\n` +
+      `E2E は記録を ${CLAUDE_CONFIG_DIR} に隔離し、認証だけ ` +
+      `CLAUDE_SECURESTORAGE_CONFIG_DIR（既定は ~/.claude）から読みます。` +
+      `置き場が違うなら CLAUDE_SECURESTORAGE_CONFIG_DIR を指定してください。`,
   );
 }
 

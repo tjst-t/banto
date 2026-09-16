@@ -22,8 +22,15 @@ import { listLdSoConfPaths } from "./ldso.js";
 export type ConfinementProfile = "exec" | "files-only";
 
 export interface DeriveProjectRulesetInput {
-  /** Project の根。realpath 解決済みであることを呼び出し側が保証する。 */
-  projectRoot: string;
+  /**
+   * Project の根。realpath 解決済みであることを呼び出し側が保証する。
+   *
+   * **省ける**（追加・2026-09-15）。banto 全体に1本の Module には Project の根が
+   * 無い——それでも**閉じ込めないよりはずっとよい**。根が無いと、許すのは
+   * node・動的リンカ・`/dev`・`/etc`・その Module 自身の置き場だけになる
+   * （`~/.claude` も `~/.config/banto` も読めない）。
+   */
+  projectRoot?: string;
   /** host が起動時に凍結した PATH（Module の実行時 env から読み直さない）。 */
   pathEntries: string[];
   profile: ConfinementProfile;
@@ -168,8 +175,10 @@ export function deriveProjectRuleset(input: DeriveProjectRulesetInput): DerivePr
     pushIfExists(rules, omitted, dir, READ_ONLY, "Module install dirが存在しない");
   }
 
-  // Project の根——ここは書き込み可。
-  pushIfExists(rules, omitted, input.projectRoot, READ_WRITE, "Project根が存在しない");
+  // Project の根——ここは書き込み可。**banto 全体に1本の Module には無い**
+  if (input.projectRoot) {
+    pushIfExists(rules, omitted, input.projectRoot, READ_WRITE, "Project根が存在しない");
+  }
 
   // その Module 自身の状態の置き場（決定・2026-09-07）。**その Module の分だけ**
   // ——banto のデータ置き場全体を開けない

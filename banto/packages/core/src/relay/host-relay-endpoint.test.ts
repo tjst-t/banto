@@ -561,3 +561,94 @@ test("外から繋いだ Module の valueFree は効かない——承認を飛�
     await evilClient.close();
   }
 });
+
+// **「どの秘密を触ったか」が記録に残る**（追加・2026-09-15、規則8 で上がった穴）。
+//
+// 仕様は「引数のうち、値そのものではなく『何を指しているかの識別子』は記録して
+// よい」と決めているのに、記録していなかった——**誰がどの秘密を消したかが
+// 後から追えない**状態だった。**名乗った引数だけ**を拾う（banto が推測すると、
+// いつか秘密の入った引数を記録する）。
+test("監査に、何を指していたかが残る——値は残らない", async () => {
+  const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "deleteAlias",
+        inputSchema: { type: "object" },
+        _meta: {
+          "dev.banto/visibility": "admin",
+          // **識別子だけ名乗る**——`value` は名乗らない
+          "dev.banto/auditArgs": ["name", "group"],
+        },
+      },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ok" }] }));
+  const [vs, vc] = InMemoryTransport.createLinkedPair();
+  const vaultClient = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(vs), vaultClient.connect(vc)]);
+
+  const registry = new RelayRegistry();
+  registry.registerModule({
+    name: "vault",
+    client: vaultClient,
+    meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
+  });
+  const token = registry.issueToken({
+    moduleName: "vault-directory",
+    meta: bundledMeta(
+      { satisfies: ["vault-directory"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" },
+      "vault-directory",
+    ),
+  });
+
+  const records: { name: string; identifiers?: Record<string, string> }[] = [];
+  const endpoint = new HostRelayEndpoint({
+    registry,
+    moduleCalls: {
+      originFor: () => "canvas",
+      threadFor: () => ({ kind: "none" }),
+      projectFor: () => undefined,
+      begin: () => () => undefined,
+    },
+    onAudit: async (r) => {
+      records.push({ name: r.name, identifiers: (r as { identifiers?: Record<string, string> }).identifiers });
+    },
+  });
+  const httpServer = createServer((req, res) => void endpoint.handleRequest(req, res));
+  await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+  const port = (httpServer.address() as AddressInfo).port;
+  try {
+    const client = new Client({ name: "vault-directory", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/relay`), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }),
+    );
+    await client.callTool({
+      name: "relayCallTool",
+      arguments: {
+        targetModule: "vault",
+        name: "deleteAlias",
+        // `value` は名乗っていないので記録されないこと
+        arguments: { name: "github-ssh", group: "ssh-identities", value: "MUST-NOT-BE-RECORDED" },
+      },
+    });
+    const rec = records.find((r) => r.name === "deleteAlias");
+    assert.deepEqual(
+      rec?.identifiers,
+      { name: "github-ssh", group: "ssh-identities" },
+      `どの秘密を触ったかが記録に残っていない: ${JSON.stringify(records)}`,
+    );
+    assert.equal(
+      JSON.stringify(records).includes("MUST-NOT-BE-RECORDED"),
+      false,
+      "名乗っていない引数まで記録している（値が記録に流れ込む）",
+    );
+    await client.close();
+  } finally {
+    httpServer.closeAllConnections();
+    httpServer.close();
+    await vaultClient.close();
+  }
+});

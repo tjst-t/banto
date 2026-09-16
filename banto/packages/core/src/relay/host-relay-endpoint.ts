@@ -13,7 +13,14 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { CALLER_META_KEY, isValueFree, visibilityOf, type BantoModuleMeta, type Visibility } from "@banto/module-contract";
+import {
+  auditArgsOf,
+  CALLER_META_KEY,
+  isValueFree,
+  visibilityOf,
+  type BantoModuleMeta,
+  type Visibility,
+} from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
 
 export interface CallerIdentity {
@@ -33,6 +40,13 @@ export interface RelayAuditRecord {
   name: string;
   allowed: boolean;
   reason?: string;
+  /**
+   * **何を指していたか**（追加・2026-09-15）。値そのものではなく識別子だけ
+   * （例：Vault の alias 名・置き場）。**宛先の tool が名乗った引数だけ**を拾う
+   * （`dev.banto/auditArgs`）——banto が推測すると、いつか秘密の入った引数を
+   * 記録する。名乗っていなければ付かない。
+   */
+  identifiers?: Record<string, string>;
   /** 実際に中継した結果。拒否されたときは付かない。 */
   ok?: boolean;
   ts: string;
@@ -175,12 +189,12 @@ export interface HostRelayServerOptions {
 async function targetTool(
   client: Client,
   toolName: string,
-): Promise<{ visibility: Visibility; valueFree: boolean } | undefined> {
+): Promise<{ visibility: Visibility; valueFree: boolean; auditArgs: string[] } | undefined> {
   const { tools } = await client.listTools().catch(() => ({ tools: [] as unknown[] }));
   const tool = tools.find((t) => (t as { name?: string }).name === toolName);
   if (!tool) return undefined;
   const x = tool as { _meta?: Record<string, unknown> };
-  return { visibility: visibilityOf(x), valueFree: isValueFree(x) };
+  return { visibility: visibilityOf(x), valueFree: isValueFree(x), auditArgs: auditArgsOf(x) };
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -252,8 +266,17 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       ...(target?.meta.origin !== "bundled" && target?.codeId ? { targetCodeId: target.codeId } : {}),
     };
 
+    // **何を指していたか**は、宛先の tool を読むまで分からない（下で埋まる）
+    let identifiers: Record<string, string> | undefined;
     const audit = async (allowed: boolean, reason?: string, ok?: boolean) => {
-      await opts.onAudit?.({ ...call, allowed, reason, ok, ts: new Date().toISOString() });
+      await opts.onAudit?.({
+        ...call,
+        ...(identifiers ? { identifiers } : {}),
+        allowed,
+        reason,
+        ok,
+        ts: new Date().toISOString(),
+      });
     };
 
     if (!opts.registry.isAllowed(identity, targetModule)) {
@@ -300,6 +323,17 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **名乗った Module だけが緩む**（`dev.banto/valueFree`、無指定は「返す」）。
     const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName);
     const targetInfo = kind === "tool" ? await targetTool(target.client, name) : undefined;
+    // **名乗った引数だけを拾う**（値そのものは拾わない）。長すぎるものも拾わない
+    // ——識別子のつもりの欄に値が入っていたときに、記録へ流し込まないため
+    if (targetInfo?.auditArgs.length) {
+      const callArgs = (args.arguments ?? {}) as Record<string, unknown>;
+      const picked: Record<string, string> = {};
+      for (const key of targetInfo.auditArgs) {
+        const v = callArgs[key];
+        if (typeof v === "string" && v.length > 0 && v.length <= 200) picked[key] = v;
+      }
+      if (Object.keys(picked).length > 0) identifiers = picked;
+    }
     const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
     // **`valueFree` を信じるのは、同梱の Module だけ**（訂正・2026-09-15、
     // レビューで発覚。`docs/specs/v4-security.md` が「外から Module を

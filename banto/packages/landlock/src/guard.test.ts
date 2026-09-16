@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import { assertRulesetIsSafe, UnsafeRulesetError } from "./guard.js";
+import { deriveProjectRuleset } from "./derive.js";
 import type { LandlockRulesetFile } from "./ruleset.js";
 
 const opts = { dataDir: "/home/x/.local/share/banto", configDir: "/home/x/.config/banto" };
@@ -92,4 +94,23 @@ test("derive は /proc を許可しない", async () => {
     assert.ok(paths.includes("/etc"), `${profile}: /etc まで落ちている`);
     assert.ok(paths.some((p) => p === root), `${profile}: Project の根が入っていない`);
   }
+});
+
+// **根の無い閉じ込め**（追加・2026-09-15）。banto 全体に1本の Module 用
+// ——Project の根が無くても、`~/.claude` や banto の置き場は読ませない。
+test("根が無くても組める——そして home も dataDir も許さない", () => {
+  const { ruleset } = deriveProjectRuleset({
+    pathEntries: [],
+    profile: "files-only",
+    nodeExecPath: process.execPath,
+  });
+  const paths = ruleset.rules.map((r) => r.path);
+  assert.ok(paths.length > 0, "何も許していない（node すら動かない）");
+  const home = homedir();
+  assert.equal(paths.includes(home), false, "home を許している");
+  assert.equal(
+    paths.some((p) => p.startsWith(`${home}/.claude`)),
+    false,
+    "資格情報の置き場を許している",
+  );
 });

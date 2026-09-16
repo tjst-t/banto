@@ -35,6 +35,7 @@ import { createSandboxServer } from "./http/sandbox-server.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
   expandLaunch,
+  listInstanceModules,
   loadModuleDeclarations,
   repairDeclarationMeta,
   type LaunchContext,
@@ -301,8 +302,11 @@ async function main(): Promise<void> {
     let command = launch.command;
     let args = launch.args;
     if (declaration.meta.confinement) {
-      if (!project) {
-        throw new Error(`${connName}: 閉じ込めを宣言した Module は Project 単位でしか起動できません`);
+      // **根が Project のときだけ、Project が要る**（改訂・2026-09-15）。
+      // 根を持たない閉じ込め（`root: "none"`）は banto 全体に1本の Module 用
+      // ——許すのは node・動的リンカ・`/dev`・`/etc`・自分の置き場だけ
+      if (declaration.meta.confinement.root === "project" && !project) {
+        throw new Error(`${connName}: 根が Project の閉じ込めは、Project ごとの Module でしか使えません`);
       }
       assertLauncherAvailable();
       // **広さは宣言が持つ**（訂正・2026-09-15、レビューで発覚）。以前は
@@ -311,7 +315,7 @@ async function main(): Promise<void> {
       // 決めてしまっていた
       const profile: ConfinementProfile = declaration.meta.confinement?.profile ?? "files-only";
       const { ruleset, omitted } = deriveProjectRuleset({
-        projectRoot: project.root,
+        projectRoot: declaration.meta.confinement.root === "project" ? project?.root : undefined,
         pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
         profile,
         nodeExecPath: process.execPath,
@@ -328,7 +332,7 @@ async function main(): Promise<void> {
         configDir: dirname(resolveBootstrapConfigPath()),
         // **人が選んだ根は通す**（改訂・2026-09-11、ユーザー決定）——広い根を
         // 選べば閉じ込めは効かないが、それは選ぶ前に画面で伝える
-        projectRoot: project.root,
+        projectRoot: declaration.meta.confinement.root === "project" ? project?.root : undefined,
       });
       const rulesetFile = writeRulesetFile(join(bootstrap.dataDir, "run"), connName, ruleset);
       const wrapped = wrapCommand(rulesetFile, { command, args });
@@ -492,6 +496,42 @@ async function main(): Promise<void> {
    * **ここでは起こさない**——一覧を見ただけで全部を起動しない（規則2の裏返しで、
    * 「見ただけで副作用」を作らない）。分かるのは、いま持っている事実だけ。
    */
+  /** banto 全体の Module が立っているか（追加・2026-09-15、instance 層の画面用）。 */
+  function instanceModuleStatus(): Array<{ name: string; connected: boolean; error?: string }> {
+    return listInstanceModules(runtimeConfig).map((m) => {
+      const failure = moduleFailures.get(m.name);
+      return {
+        name: m.name,
+        // Project ごとに立つものは、この名前では繋がらない——どこかの Project で
+        // 立っていれば「立っている」と言う（画面は内訳を別に出す）
+        connected:
+          m.scope === "instance"
+            ? connectedModules.has(m.name)
+            : [...connectedModules.keys()].some((c) => c.startsWith(`${m.name}-`)),
+        ...(failure ? { error: failure.reason } : {}),
+      };
+    });
+  }
+
+  /** その Module のプロセスを落とす（止めた・消したとき）。名前で始まる接続を全部。 */
+  async function releaseModule(name: string): Promise<void> {
+    const targets = [...connectedModules.keys()].filter((c) => c === name || c.startsWith(`${name}-`));
+    for (const connName of targets) {
+      const client = connectedModules.get(connName);
+      connectedModules.delete(connName);
+      moduleFailures.delete(connName);
+      retriedAfterSelfReport.delete(connName);
+      registry.unregisterModule(connName);
+      moduleTokens.delete(connName);
+      await agentRelayEndpoint.unregisterModule(connName);
+      await client?.close().catch((err: unknown) => {
+        console.warn(`[host] ${connName} を畳むときに例外:`, err);
+      });
+    }
+    for (const set of projectConnections.values()) for (const t of targets) set.delete(t);
+    if (targets.length > 0) console.log(`[host] ${name} を畳んだ: ${targets.join(", ")}`);
+  }
+
   function moduleStatusForProject(projectId: string): Array<{
     name: string;
     connected: boolean;
@@ -658,6 +698,8 @@ async function main(): Promise<void> {
     releaseProjectModules,
     resolveModulesForThread,
     moduleStatusForProject,
+    instanceModuleStatus,
+    releaseModule,
     dataDir: bootstrap.dataDir,
     configDir: dirname(resolveBootstrapConfigPath()),
     resolveModuleClientsForThread,

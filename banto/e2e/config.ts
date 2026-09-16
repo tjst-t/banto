@@ -1,6 +1,6 @@
 // E2E専用のポート・パス定数。テストとglobal-setupの両方から参照する
 // ——真実は一箇所（規則3）、同じ値をあちこちに書き写さない。
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -70,6 +70,37 @@ export const FRONTEND_DIST_DIR = ".next-e2e";
 const E2E_TMP = join(tmpdir(), "banto-e2e", RUN_ID);
 export const DATA_DIR = join(E2E_TMP, "data");
 export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
+
+/**
+ * **claude CLI 自身の置き場**。E2E は**人の `~/.claude` を一切書き換えない**
+ * （決定・2026-09-16、ユーザー指摘）。
+ *
+ * Runner は claude CLI を子プロセスとして起こす。CLI は**cwd ごとに
+ * 「プロジェクト」を作り**、会話の記録を `<config>/projects/<cwd を潰した名前>/`
+ * に書く。spec は毎回 `mkdtemp` で違う作業ディレクトリを作るので、
+ * **1回の E2E で spec の本数だけプロジェクトが増える**——11日で 4198 件溜まり、
+ * 人が使っている CloudCLI のプロジェクト一覧がそれで埋まった（2026-09-16 に実測）。
+ *
+ * 溜まったものを定期的に消す形にはしない——**人の環境に書いてから片づける**
+ * かぎり、片づけ漏れも、走っている最中の一覧汚染も残る。**そもそも書かない**。
+ *
+ * ここは実行ごと（`E2E_TMP` の下）なので、`removeStaleRuns()` が1日で回収する。
+ */
+export const CLAUDE_CONFIG_DIR = join(E2E_TMP, "claude");
+
+/**
+ * **資格情報だけは本物の場所を見せる**（`CLAUDE_SECURESTORAGE_CONFIG_DIR`）。
+ *
+ * `CLAUDE_CONFIG_DIR` を移すと CLI は認証も移った先から読み、`Not logged in` で
+ * 止まる（実測）。**コピーは作らない**——CLI はトークンを更新するときに書き戻すので、
+ * 写しを持たせると**人の側のトークンが取り残されて壊れる**（規則3——写しを持つと、
+ * いつか食い違う）。この env は資格情報の置き場だけを別に指せるので、
+ * 記録は実行ごとの置き場・認証は本物、という分け方ができる（実測で確認）。
+ *
+ * 既に指定があればそれに従う（自分で設定した値を読み直しても同じ値になる）。
+ */
+export const CLAUDE_CREDENTIALS_DIR =
+  process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? join(homedir(), ".claude");
 export const AUTH_TOKEN = "e2e-fixed-token";
 export const PORT = CORE_PORT;
 

@@ -825,3 +825,116 @@ test("フォルダの一覧を返す——フォルダだけ、1つ上も分か�
     assert.equal(missing.status, 400);
   });
 });
+
+// **banto 全体の Module**（追加・2026-09-15、§10 item 14 (a)）。
+// Project ごとの選択は前からあったが、**宣言そのものを足す・消す・止める口が
+// 無かった**——コードか Event Store の直書きしかなかった。
+
+test("banto 全体の Module を一覧できる——同梱かどうかと、止めたら何が断るかが分かる", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      enabled: boolean;
+      origin: string;
+      breaksIfDisabled: string[];
+    }>;
+    assert.ok(list.length >= 5, `既定が返っていない: ${JSON.stringify(list)}`);
+    assert.equal(list.every((m) => m.enabled), true, "はじめは全部動く");
+    assert.equal(list.every((m) => m.origin === "bundled"), true, "同梱が同梱と出ていない");
+    // **止めたら何が断るか**は、他の Module の依存から導く（写しを持たない）
+    const directory = list.find((m) => m.name === "vault-directory")!;
+    assert.ok(directory.breaksIfDisabled.includes("shell"), "止めたときに断るものが出ていない");
+  });
+});
+
+test("banto 全体で Module を止められる——止めても一覧に残る（消えたと区別が付く）", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const put = await fetch(`${base}/api/modules/filesystem`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(put.status, 200);
+
+    const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      enabled: boolean;
+    }>;
+    const fs = list.find((m) => m.name === "filesystem");
+    assert.ok(fs, "止めたら一覧から消えた（止めたのか消えたのか分からない）");
+    assert.equal(fs!.enabled, false);
+
+    // 戻せる
+    await fetch(`${base}/api/modules/filesystem`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    });
+    const back = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      enabled: boolean;
+    }>;
+    assert.equal(back.find((m) => m.name === "filesystem")!.enabled, true);
+  });
+});
+
+test("外から Module を足せる／消せる——同梱は消せない", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const add = await fetch(`${base}/api/modules`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "weather",
+        launch: { command: "/bin/sh", args: ["-c", "true"] },
+        meta: {
+          satisfies: ["weather"],
+          dependsOn: [],
+          isolation: "subprocess",
+          confinement: { kind: "landlock", root: "none" },
+        },
+      }),
+    });
+    assert.equal(add.status, 200, await add.text());
+
+    const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      origin: string;
+    }>;
+    assert.equal(list.find((m) => m.name === "weather")?.origin, "external", "外から足したのに同梱扱い");
+
+    // **同梱は消せない**（止めることはできる）
+    const cannot = await fetch(`${base}/api/modules/vault-local`, { method: "DELETE", headers });
+    assert.equal(cannot.status, 400);
+    assert.match((await cannot.json()).error, /同梱なので消せません/);
+
+    const gone = await fetch(`${base}/api/modules/weather`, { method: "DELETE", headers });
+    assert.equal(gone.status, 200);
+    const after = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{ name: string }>;
+    assert.equal(after.some((m) => m.name === "weather"), false, "消したのに残っている");
+  });
+});
+
+test("骨格の役割を名乗る Module は、外からは足せない", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const add = await fetch(`${base}/api/modules`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "evil",
+        launch: { command: "/bin/sh", args: ["-c", "true"] },
+        meta: {
+          satisfies: ["vault-directory"],
+          dependsOn: [],
+          isolation: "subprocess",
+          confinement: { kind: "landlock", root: "none" },
+        },
+      }),
+    });
+    assert.equal(add.status, 400, "第三者が窓口を名乗れてしまう");
+    assert.match((await add.json()).error, /同梱の実装だけが名乗れる役割/);
+  });
+});
