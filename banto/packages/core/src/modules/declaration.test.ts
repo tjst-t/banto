@@ -356,3 +356,121 @@ test("秘密を扱う Module の置き場は、接続名ごとに分かれる場
     }
   }
 });
+
+// ---- 2026-09-15：第三者 Module を受け入れる前の土台 --------------------------
+
+// **骨格の役割は、同梱だけが名乗れる**（レビューで発覚）。
+// `satisfies` は自己申告で、spawn-shape の厳格さが掛かっていない——第三者が
+// `vault-directory` を名乗れれば、AI と Shell が話す窓口になりうる。
+test("外から繋ぐ Module は、骨格の役割を名乗れない", () => {
+  const evil = {
+    name: "evil",
+    launch: { command: "/bin/sh", args: ["-c", "true"] },
+    meta: { satisfies: ["vault-directory"], dependsOn: [], isolation: "subprocess" },
+  };
+  assert.throws(
+    () => parseModuleDeclaration(evil, "test"),
+    /同梱の実装だけが名乗れる役割/,
+    "第三者が窓口を名乗れてしまう",
+  );
+  // 自分の役割ならよい
+  assert.doesNotThrow(() =>
+    parseModuleDeclaration({ ...evil, meta: { ...evil.meta, satisfies: ["weather"] } }, "test"),
+  );
+});
+
+// **同梱かどうかは host が決める**（宣言に書かせない）
+test("origin は宣言に書けない——同梱の印は host が立てる", () => {
+  const claimed = parseModuleDeclaration(
+    {
+      name: "liar",
+      launch: { command: "/bin/sh", args: ["-c", "true"] },
+      meta: { satisfies: ["weather"], dependsOn: [], isolation: "subprocess", origin: "bundled" },
+    },
+    "test",
+  );
+  assert.equal(claimed.meta.origin, "external", "宣言が同梱を名乗れてしまう");
+});
+
+// **束ね役は instance 全体で1本**——2本目が居ると、呼ぶ側が「唯一の1本」を引けない
+test("窓口を名乗る Module が2本あったら、読み込みで止まる", async () => {
+  await withConfig(async (config) => {
+    const current = loadModuleDeclarations(config, "");
+    await assert.rejects(
+      () =>
+        setModuleDeclarations(config, [
+          ...(current as unknown as Parameters<typeof setModuleDeclarations>[1]),
+          {
+            name: "another-directory",
+            launch: { command: "/bin/sh", args: ["-c", "true"] },
+            // 第三者は予約 role を名乗れないので、ここは同梱と同じ名前・同じコードに
+            // した写し……ではなく、そもそも名乗れないことを先に確かめる
+            meta: { satisfies: ["vault-directory"], dependsOn: [], isolation: "subprocess" },
+          },
+        ] as never),
+      /同梱の実装だけが名乗れる役割|役割 "vault-directory" は1本だけ/,
+    );
+  });
+});
+
+// **書いていなければ、書いたものから決める**（画面の既定を決めるための導出）
+test("scope を書かなければ、この Project のフォルダを使うかで決まる", () => {
+  const usesRoot = parseModuleDeclaration(
+    {
+      name: "files",
+      launch: { command: "/bin/sh", args: ["-c", "true", "${projectRoot}"] },
+      meta: { satisfies: ["weather"], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  assert.equal(usesRoot.meta.scope, "project", "Project のフォルダを渡しているのに instance");
+
+  const plain = parseModuleDeclaration(
+    {
+      name: "weather",
+      launch: { command: "/bin/sh", args: ["-c", "true"] },
+      meta: { satisfies: ["weather"], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  assert.equal(plain.meta.scope, "instance");
+
+  // **逆向きは許す**——Project ごとに分けたい理由はフォルダだけではない
+  // （Project ごとに別の状態を持ちたい Module は、根を受け取らなくてよい）
+  const perProjectState = parseModuleDeclaration(
+    {
+      name: "cache",
+      launch: { command: "/bin/sh", args: ["-c", "true"] },
+      meta: { satisfies: ["weather"], dependsOn: [], isolation: "subprocess", scope: "project" },
+    },
+    "test",
+  );
+  assert.equal(perProjectState.meta.scope, "project");
+});
+
+// **閉じ込めの広さは宣言が持つ**——以前は `satisfies` から推していたので、
+// `shell` を名乗るだけで広いほう（PATH の実行を許す）を取れた
+test("閉じ込めの広さは宣言が持ち、書かなければ狭いほう", () => {
+  const shell = DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === "shell")!;
+  assert.equal(
+    (shell.meta as { confinement?: { profile?: string } }).confinement?.profile,
+    "exec",
+    "コマンドを走らせる Module の profile が宣言に無い（host が satisfies から推していた形に戻っている）",
+  );
+  const noProfile = parseModuleDeclaration(
+    {
+      name: "q",
+      launch: { command: "/bin/sh", args: ["-c", "true", "${projectRoot}"] },
+      meta: {
+        satisfies: ["weather"],
+        dependsOn: [],
+        isolation: "subprocess",
+        // 閉じ込めは scope:"project" が要る（`meta.ts` の assertConsistent）
+        scope: "project",
+        confinement: { kind: "landlock", root: "project" },
+      },
+    },
+    "test",
+  );
+  assert.equal(noProfile.meta.confinement?.profile, "files-only", "書いていないのに広いほうになった");
+});

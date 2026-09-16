@@ -66,8 +66,14 @@ async function listVisibilityEntries(
   ];
 }
 
-async function connectStdioModule(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<Client> {
-  const transport = new StdioClientTransport({ command, args, env: env as Record<string, string> });
+async function connectStdioModule(
+  command: string,
+  args: string[],
+  /** Project ごとの Module のときだけ渡る。**渡さないと banto の起動場所を見る**。 */
+  cwd: string | undefined,
+  env: NodeJS.ProcessEnv,
+): Promise<Client> {
+  const transport = new StdioClientTransport({ command, args, cwd, env: env as Record<string, string> });
   // elicitation を宣言しないと、Module側の server.elicitInput() が
   // 「Client does not support form elicitation」で即エラーになる
   // （agent-proxy.ts のelicitation転送の前提）。
@@ -269,6 +275,27 @@ async function main(): Promise<void> {
     mkdirSync(context.moduleDataDir, { recursive: true, mode: 0o700 });
     const launch = expandLaunch(declaration.launch, context);
 
+    // **外から繋いだコードを、閉じ込め無しで立てない**（追加・2026-09-15、
+    // レビューで発覚。`docs/specs/v4-security.md`）。
+    //
+    // 閉じ込めは `scope: "project"` でしか宣言できない（Landlock の根が
+    // Project の根だから）。つまり **`scope: "instance"` の第三者 Module は
+    // 構造上まったく閉じ込められない**——`~/.claude/.credentials.json`・
+    // banto の中継の合言葉・全 Project の会話を素で読める。
+    //
+    // そして「`${projectRoot}` を書かない」という**いちばん楽な道**が、
+    // ちょうどそこへ落ちる。**楽な道が危ない結果に落ちてはいけない**ので、
+    // ここで止める（規則2——黙って通さない。受信箱に理由が1件出る）。
+    //
+    // **同梱は対象外**——banto 自身のコードで、閉じ込めの外に置くと決めてある
+    // （Vault は秘密の置き場を持つので Project の根に閉じ込められない）。
+    if (declaration.meta.origin !== "bundled" && !declaration.meta.confinement) {
+      throw new Error(
+        `${connName}: 外から繋いだ Module を閉じ込め無しでは起動できません` +
+          "（Project ごとに立てて閉じ込めるか、同梱の実装を使ってください）",
+      );
+    }
+
     // 閉じ込めが宣言されていれば Landlock で包む——**どの profile を使うかも宣言から**
     // （以前は「shell なら exec、それ以外は files-only」とコードで場合分けしていた）。
     let command = launch.command;
@@ -278,9 +305,11 @@ async function main(): Promise<void> {
         throw new Error(`${connName}: 閉じ込めを宣言した Module は Project 単位でしか起動できません`);
       }
       assertLauncherAvailable();
-      const profile: ConfinementProfile = declaration.meta.satisfies.includes("shell")
-        ? "exec"
-        : "files-only";
+      // **広さは宣言が持つ**（訂正・2026-09-15、レビューで発覚）。以前は
+      // `satisfies.includes("shell")` から決めていたので、**`shell` を名乗るだけで
+      // 広いほう（PATH の実行を許す）を取れた**——自己申告が閉じ込めの強さを
+      // 決めてしまっていた
+      const profile: ConfinementProfile = declaration.meta.confinement?.profile ?? "files-only";
       const { ruleset, omitted } = deriveProjectRuleset({
         projectRoot: project.root,
         pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
@@ -312,7 +341,11 @@ async function main(): Promise<void> {
     // ——なのに env として渡すのを宣言まかせにしていたため、**宣言の写しを
     // Config に持っている Project だけが古いまま**になり、設定を保存できなかった
     // （規則3——写しはいつか食い違う）。host が常に渡す。
-    const client = await connectStdioModule(command, args, {
+    // **Project ごとの Module には、その Project の根を作業ディレクトリとして渡す**
+    // （追加・2026-09-15、レビューで発覚）。以前は `cwd` を渡していなかったので、
+    // **cwd 基準で動くサーバは banto の起動場所を見ていた**——閉じ込めが効いて
+    // いれば読めはしないが、「どこを見ているか」が人の意図とずれる
+    const client = await connectStdioModule(command, args, project?.root, {
       ...process.env,
       BANTO_MODULE_DATA_DIR: context.moduleDataDir,
       // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てる
@@ -394,7 +427,16 @@ async function main(): Promise<void> {
     assertVisibilityValues(declared, connName);
     if (declaration.meta.handlesSecrets) assertAllVisibilityExplicit(declared, connName);
 
-    const conn = { name: connName, client, meta: declaration.meta };
+    // **いま何のコードが動いているかを台帳に載せる**（追加・2026-09-15）。
+    // 外から繋いだ Module への承認は、この印に縛られる（`grantKey`）
+    // **いま何のコードが動いているかを台帳に載せる**（追加・2026-09-15）。
+    // 外から繋いだ Module への承認は、この印に縛られる（`grantKey`）
+    const conn = {
+      name: connName,
+      client,
+      meta: declaration.meta,
+      codeId: declarationFingerprint(declaration),
+    };
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
     connectedModules.set(connName, client);

@@ -17,6 +17,14 @@ export interface RelayCallDescriptor {
   targetModule: string;
   kind: "tool" | "resource" | "prompt";
   name: string;
+  /**
+   * **外から繋いだ宛先のコードの印**（追加・2026-09-15）。同梱には付かない。
+   *
+   * 承認を名前だけで引くと、**登録を消して別のサーバを同じ名前で繋いだとき
+   * 前の承認がそのまま効く**。改名は安全側（聞き直し）に倒れるのに、
+   * 削除→再利用が危険側に倒れていた。
+   */
+  targetCodeId?: string;
 }
 
 export interface RelayCallOutcome {

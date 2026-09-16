@@ -42,6 +42,17 @@ export interface RegisteredModule {
   name: string;
   client: Client;
   meta: BantoModuleMeta;
+  /**
+   * **いま何のコードが動いているか**（追加・2026-09-15、レビューで発覚）。
+   *
+   * 中継の承認は**名前**で引く（`grantKey`）。つまり登録を消して、後日
+   * **別のサーバを同じ名前で繋ぐと、前の承認がそのまま効く**——改名は安全側
+   * （聞き直し）に倒れるのに、削除→再利用は危険側に倒れていた。
+   *
+   * 同梱は**コードが既定と一致していることが `bundled` の条件**なので
+   * 入れ替わらない。**外から繋いだものだけ**、承認をこの印に縛る。
+   */
+  codeId?: string;
 }
 
 /**
@@ -229,12 +240,16 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const targetModule = String(args.targetModule ?? "");
     const kind: RelayAuditRecord["kind"] = request.params.name === "relayReadResource" ? "resource" : "tool";
     const name = String(args.name ?? args.uri ?? "");
+    // **宛先は先に引く**——承認の鍵に「いま何のコードが動いているか」を入れるため
+    const target = opts.registry.getModule(targetModule);
     const call = {
       projectId: identity.projectId,
       callerModule: identity.moduleName,
       targetModule,
       kind,
       name,
+      // **外から繋いだ Module への承認は、そのコードに縛る**（上記 codeId）
+      ...(target?.meta.origin !== "bundled" && target?.codeId ? { targetCodeId: target.codeId } : {}),
     };
 
     const audit = async (allowed: boolean, reason?: string, ok?: boolean) => {
@@ -246,7 +261,6 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       throw new Error(`${identity.moduleName} は ${targetModule} を呼ぶ権限がありません`);
     }
 
-    const target = opts.registry.getModule(targetModule);
     if (!target) {
       await audit(false, "宛先の Module が繋がっていない");
       throw new Error(`target module "${targetModule}" is not connected`);
@@ -287,7 +301,18 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName);
     const targetInfo = kind === "tool" ? await targetTool(target.client, name) : undefined;
     const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
-    const valueFreeCall = targetInfo?.valueFree === true;
+    // **`valueFree` を信じるのは、同梱の Module だけ**（訂正・2026-09-15、
+    // レビューで発覚。`docs/specs/v4-security.md` が「外から Module を
+    // 入れられるようにする前に決める」と課していた行の決着）。
+    //
+    // `valueFree` は**戻り値**が無いことの宣言だが、呼び出しには**引数**があり、
+    // 引数は宛先へ流れる。第三者 Module が `valueFree` を名乗る tool を1本持てば、
+    // **そこへの中継は承認ゲートを飛ぶ**——承認済みの `resolveAlias` で得た値を
+    // 引数に積めば、承認ゼロの持ち出し口になる。
+    //
+    // 呼び出し側の「無指定は値を返す扱い」は fail closed だが、
+    // **宛先の申告を信じる方向は fail open** だった。
+    const valueFreeCall = targetInfo?.valueFree === true && target.meta.origin === "bundled";
 
     const progressToken = extra._meta?.progressToken;
     const heartbeat =

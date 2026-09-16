@@ -15,7 +15,13 @@
 // 置き場は Configuration（Event Store）——Module 集合は Project 単位（§2.2）で、
 // instance 既定＋Project 上書きの仕組みが既にある。新しい置き場を発明しない（規則12）。
 
-import { parseModuleMeta, type BantoModuleMeta } from "@banto/module-contract";
+import {
+  assertRolesAllowed,
+  markBundled,
+  parseModuleMeta,
+  SINGLETON_ROLES,
+  type BantoModuleMeta,
+} from "@banto/module-contract";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import { applyModuleOverlay, diffFromDefaults, type ModuleOverlay } from "./overlay.js";
 
@@ -86,6 +92,12 @@ function checkPlaceholders(text: string, scope: "instance" | "project", source: 
   }
 }
 
+/** その起動の指定に `${projectRoot}` が出てくるか。 */
+function usesProjectRoot(launch: ModuleLaunch): boolean {
+  const texts = [launch.command, ...launch.args, ...Object.values(launch.env ?? {})];
+  return texts.some((t) => /\$\{projectRoot\}/.test(t));
+}
+
 export function parseModuleDeclaration(raw: unknown, source: string): ParsedModuleDeclaration {
   if (typeof raw !== "object" || raw === null) {
     throw new ModuleDeclarationError(`${source}: Module の宣言はオブジェクトである必要があります`);
@@ -110,11 +122,72 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
     throw new ModuleDeclarationError(`${source}(${name}): launch.env の値は文字列である必要があります`);
   }
 
+  const parsedLaunch: ModuleLaunch = { command, args, env: env ?? undefined };
+
+  // **どこに立つかは、書いたものから導く**（決定・2026-09-15、レビューで発覚）。
+  //
+  // 以前は `scope` を meta の自己申告だけで決め、`${projectRoot}` との整合は
+  // **片方向しか見ていなかった**（instance が書いたら落とす、だけ）。つまり
+  // **「Project のフォルダを触るのに instance と名乗る」が素通り**していた
+  // ——instance には閉じ込めを構造上かけられないので、これは
+  // **閉じ込め無しの任意コードを選ぶ道**になっていた（`v4-security.md`）。
+  //
+  // `scope` を書いていなければ **`${projectRoot}` の有無から決める**。
+  // 書いてあれば**整合を検査して、食い違ったら起動しない**（規則8——
+  // 黙ってどちらかに寄せない）。
+  // **書いていなければ、書いたものから決める。** 書いてあればそれに従う
+  // ——`${projectRoot}` を使いながら instance と名乗る形は `checkPlaceholders`
+  // が従来どおり弾く（下）。
+  //
+  // **逆向き（project と名乗って `${projectRoot}` を使わない）は許す**
+  // （訂正・2026-09-15、試験が教えた）。**Project ごとに分けたい理由は
+  // フォルダだけではない**——Project ごとに別の状態を持ちたい Module は、
+  // 根を受け取らなくても分かれていてよい。
+  //
+  // したがって**この導出は画面の既定を決めるためのもので、安全のための柵ではない**。
+  // 「Project のフォルダを歩くのに instance と名乗る」は導出では防げない
+  // ——そこを守るのは閉じ込め（`cli.ts` の `assertConfinable`）。
+  const declaredScope = (meta as { scope?: unknown } | undefined)?.scope;
+  const metaWithScope =
+    declaredScope === undefined && usesProjectRoot(parsedLaunch)
+      ? { ...parsedMeta, scope: "project" as const }
+      : parsedMeta;
+
   for (const text of [command, ...args, ...envEntries.map(([, v]) => v)]) {
-    checkPlaceholders(text, parsedMeta.scope, `${source}(${name})`);
+    checkPlaceholders(text, metaWithScope.scope, `${source}(${name})`);
   }
 
-  return { name, launch: { command, args, env: env ?? undefined }, meta: parsedMeta };
+  // **同梱かどうかは、ここで決まる**（parse の中に置く・2026-09-15）。
+  // 読み込みのときだけ判定すると、**保存のときは素通りする**——壊れた宣言を
+  // Event Store に残さない（規則2）ためには、入口が1つでなければならない
+  return { name, launch: parsedLaunch, meta: withOrigin(name, parsedLaunch, metaWithScope, source) };
+}
+
+/**
+ * **同梱かどうかを host が決める**（追加・2026-09-15）。
+ *
+ * 同梱と認めるのは、**名前が既定に在り、かつ起動するプログラムと引数が既定のまま**
+ * のときだけ。`env` の差分は設定なので同梱のまま——**走るコードが banto のものか**
+ * が境界。command や args を書き換えたら、それはもう別のプログラム。
+ */
+function withOrigin(
+  name: string,
+  launch: ModuleLaunch,
+  meta: BantoModuleMeta,
+  source: string,
+): BantoModuleMeta {
+  const def = DEFAULT_MODULE_DECLARATIONS.find((x) => x.name === name);
+  const sameCode =
+    def !== undefined &&
+    def.launch.command === launch.command &&
+    def.launch.args.length === launch.args.length &&
+    def.launch.args.every((a, i) => a === launch.args[i]);
+  if (!sameCode) {
+    // 第三者のコード——骨格の役割は名乗れない
+    assertRolesAllowed(meta, `${source}(${name})`);
+    return meta;
+  }
+  return markBundled(meta, `${source}(${name})`);
 }
 
 function expand(text: string, context: LaunchContext, source: string): string {
@@ -266,7 +339,9 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       ],
       isolation: "subprocess",
       scope: "project",
-      confinement: { kind: "landlock", root: "project" },
+      // **コマンドを走らせる Module だけが exec**（明示・2026-09-15）。
+      // 以前は host が `satisfies` から推していた
+      confinement: { kind: "landlock", root: "project", profile: "exec" },
     },
   },
   {
@@ -337,7 +412,26 @@ export function loadModuleDeclarations(
     }
     names.add(d.name);
   }
+  assertSingletonRoles(parsed, source);
   return parsed;
+}
+
+/**
+ * **束ね役は instance 全体で1本**（追加・2026-09-15、レビューで発覚）。
+ *
+ * 窓口は「複数を1つに見せる」ためのものなので、**それ自体が複数あると意味が消える**
+ * ——呼ぶ側（Shell）が「唯一の1本」を引けなくなる。
+ * **A 面の有無からは導出できない**ので明示で持つ（`SINGLETON_ROLES`）。
+ */
+function assertSingletonRoles(declarations: ParsedModuleDeclaration[], source: string): void {
+  for (const role of SINGLETON_ROLES) {
+    const claimants = declarations.filter((d) => d.meta.satisfies.includes(role));
+    if (claimants.length > 1) {
+      throw new ModuleDeclarationError(
+        `${source}: 役割 "${role}" は1本だけです（${claimants.map((d) => d.name).join("・")} が名乗っています）`,
+      );
+    }
+  }
 }
 
 /**
@@ -352,8 +446,13 @@ export async function setModuleDeclarations(
   declarations: ModuleDeclaration[],
   projectId?: string,
 ): Promise<void> {
-  // 入れる前に検める——壊れた宣言を Event Store に残さない（規則2）
-  for (const d of declarations) parseModuleDeclaration(d, "setModuleDeclarations");
+  // 入れる前に検める——壊れた宣言を Event Store に残さない（規則2）。
+  // **parse を通した形で比べる**——渡ってくるのは `loadModuleDeclarations` の
+  // 結果（host が `origin` を立てた形）なので、生のまま比べると
+  // **host が付けた印が「人の上書き」として保存される**（規則3——写しの汚染）
+  const normalized = declarations.map(
+    (d) => parseModuleDeclaration(d, "setModuleDeclarations") as unknown as ModuleDeclaration,
+  );
   // **同じ形どうしで比べる**（改訂・2026-09-10）。渡ってくるのはたいてい
   // `loadModuleDeclarations` の結果＝**parse で既定が埋まった形**（`handlesSecrets:
   // false` 等）。生の既定と比べると、**既定と同じ値が「上書き」として保存され**、
@@ -362,7 +461,7 @@ export async function setModuleDeclarations(
   const parsedDefaults = DEFAULT_MODULE_DECLARATIONS.map(
     (d) => parseModuleDeclaration(d, "default") as unknown as ModuleDeclaration,
   );
-  const overlays = diffFromDefaults(parsedDefaults, declarations);
+  const overlays = diffFromDefaults(parsedDefaults, normalized);
   const value = overlays as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1];
   if (projectId) await config.setProjectOverride(projectId, MODULE_OVERLAYS_KEY, value);
   else await config.setInstanceDefault(MODULE_OVERLAYS_KEY, value);

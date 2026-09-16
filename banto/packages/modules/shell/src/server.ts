@@ -39,7 +39,7 @@ export function createShellServer(deps: { projectRoot: string; relayClient: Host
             ],
             isolation: "subprocess",
             scope: "project",
-            confinement: { kind: "landlock", root: "project" },
+            confinement: { kind: "landlock", root: "project", profile: "exec" },
           },
         },
       },
