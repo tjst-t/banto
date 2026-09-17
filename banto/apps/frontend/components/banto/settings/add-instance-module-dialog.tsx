@@ -34,10 +34,26 @@ const SAMPLE = `{
     "github": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "..." }
+      "env": { "GITHUB_TOKEN": "\${secret:github-token}" }
     }
   }
 }`;
+
+/** 貼られた設定に、API キーらしき平文が入っていないか（記録に残ると伝えるため）。 */
+function looksLikePlainSecret(json: string): boolean {
+  try {
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    const servers = (parsed.mcpServers ?? parsed) as Record<string, { env?: Record<string, string> }>;
+    return Object.values(servers).some((s) =>
+      Object.entries(s?.env ?? {}).some(
+        ([k, v]) =>
+          /KEY|TOKEN|SECRET|PASSWORD/i.test(k) && typeof v === "string" && !v.includes("${secret:"),
+      ),
+    );
+  } catch {
+    return false;
+  }
+}
 
 export interface AddInstanceModuleDialogProps {
   open: boolean;
@@ -63,6 +79,10 @@ export function AddInstanceModuleDialog({
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
+  const [envName, setEnvName] = useState("");
+  const [envValue, setEnvValue] = useState("");
+  // **既定は金庫から**——直書きは消せないので、楽な道を安全なほうに置く
+  const [fromVault, setFromVault] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,6 +95,9 @@ export function AddInstanceModuleDialog({
     setName("");
     setCommand("");
     setArgsText("");
+    setEnvName("");
+    setEnvValue("");
+    setFromVault(true);
     setError(null);
     setMode("paste");
   }
@@ -134,6 +157,18 @@ export function AddInstanceModuleDialog({
             <p className="text-xs text-ink-3">
               <code>mcpServers</code> の中身だけでも受けます。複数まとめて貼ってもかまいません
             </p>
+            {/* **秘密は金庫から引ける**（追加・2026-09-16）。直書きも通すが、
+                **記録に残ることは隠さない**（規則2） */}
+            <p className="text-xs text-ink-3">
+              API キーは <code>{"${secret:名前}"}</code> と書くと、
+              <strong>金庫から引いて起動時に渡します</strong>（記録には名前だけ残ります）
+            </p>
+            {looksLikePlainSecret(pasted) ? (
+              <p className="text-xs text-danger" data-testid="add-module-plain-secret">
+                値が直接書かれています。<strong>この値は banto の記録に残り続けます（後から消せません）。</strong>
+                金庫に入れて <code>{"${secret:名前}"}</code> で参照することをすすめます
+              </p>
+            ) : null}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -174,6 +209,58 @@ export function AddInstanceModuleDialog({
                 </Button>
               </div>
             </div>
+
+            {/* **API キーを入れる場所**（追加・2026-09-16）。ここが無いと、
+                手で書く道では鍵の要る MCP サーバを繋げない。
+                **既定は「金庫から」**——直書きは記録に残り続けるので、
+                楽な道を安全なほうに置く */}
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="add-module-env-name">API キー（要るときだけ）</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="add-module-env-name"
+                  className="flex-1"
+                  value={envName}
+                  onChange={(e) => setEnvName(e.target.value)}
+                  placeholder="ACCUWEATHER_API_KEY"
+                />
+                <Input
+                  aria-label={fromVault ? "金庫に入れた名前" : "値"}
+                  className="flex-1"
+                  value={envValue}
+                  onChange={(e) => setEnvValue(e.target.value)}
+                  placeholder={fromVault ? "accuweather" : "sk-…"}
+                />
+              </div>
+              <div className="flex gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  role="tab"
+                  variant={fromVault ? "default" : "ghost"}
+                  onClick={() => setFromVault(true)}
+                >
+                  金庫から
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  role="tab"
+                  variant={fromVault ? "ghost" : "default"}
+                  onClick={() => setFromVault(false)}
+                >
+                  直接入力
+                </Button>
+              </div>
+              <p
+                className={fromVault ? "text-xs text-ink-3" : "text-xs text-danger"}
+                data-testid="add-module-secret-note"
+              >
+                {fromVault
+                  ? "金庫に預けた名前を書きます。起動のたびに引いて渡すので、記録には名前だけが残ります"
+                  : "この値は banto の記録に残り続けます（後から消せません）"}
+              </p>
+            </div>
           </div>
         )}
 
@@ -205,9 +292,13 @@ export function AddInstanceModuleDialog({
                 if (mode === "paste") {
                   await onPaste(pasted);
                 } else {
+                  const key = envName.trim();
+                  const val = envValue.trim();
+                  const env =
+                    key && val ? { [key]: fromVault ? `\${secret:${val}}` : val } : undefined;
                   await onSubmit({
                     name: name.trim(),
-                    launch: { command: command.trim(), args },
+                    launch: { command: command.trim(), args, ...(env ? { env } : {}) },
                     meta: {
                       satisfies: [],
                       dependsOn: [],

@@ -359,7 +359,7 @@ test("Project の Canvas からの呼び出しは、Base Thread を宛先とし�
 test("instance の Canvas からの呼び出しは、会話は決まらないが出所は人の画面と分かる", async () => {
   await withApp(async ({ base, headers, module, moduleCalls }) => {
     let seenThread: ModuleCallThread | undefined;
-    let seenOrigin: "turn" | "canvas" | undefined;
+    let seenOrigin: "turn" | "canvas" | "host" | undefined;
     module.onCall = () => {
       seenThread = moduleCalls.threadFor("filesystem-instance");
       seenOrigin = moduleCalls.originFor("filesystem-instance");

@@ -36,7 +36,11 @@ import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
   expandLaunch,
   listInstanceModules,
+  fillSecrets,
   loadModuleDeclarations,
+  secretPlaceholders,
+  secretsAllowedFor,
+  type ModuleLaunch,
   repairDeclarationMeta,
   type LaunchContext,
   type ParsedModuleDeclaration,
@@ -47,6 +51,7 @@ import {
   assertAllVisibilityExplicit,
   assertVisibilityValues,
   classifyMetaDifference,
+  CALLER_META_KEY,
 } from "@banto/module-contract";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -248,6 +253,118 @@ async function main(): Promise<void> {
     return moduleSpawns.run(connName, () => spawnDeclaredModuleOnce(declaration, forProject, connName, project));
   }
 
+  /**
+   * **`${secret:名前}` を、起動の直前に金庫から引く**（決定・2026-09-16）。
+   *
+   * `mcpServers` の慣習は `env` に API キーを直に書くことだが、**banto の宣言は
+   * Event Store に残る**ので、書いた瞬間に記録へ永久に残る。名前だけ書かせて、
+   * 値はここで引く——**記録に残るのは名前だけ**。
+   *
+   * **relay と同じ規律を通す**（レビューで指摘・2026-09-15）。2026-09-13 に
+   * 固めた秘密の制限は**すべて relay 経由の呼び出しに掛かる仕組み**なので、
+   * ここで素通りさせると**刻印も group 絞りも監査も掛からない第2のドア**になる：
+   *
+   * - **刻印**：Project ごとの Module は `{project}`、banto 全体に1本の Module は
+   *   `{instance: true}`（＝**共通の秘密だけ**。Project が決まらないので広げない）
+   * - **監査**：`relay.call_recorded` に残す（何を引いたかの名前まで）
+   * - **閉じ込め無しには渡さない**：外から繋いだコードに秘密を手渡す形になるので、
+   *   閉じ込めが掛かっていない Module では断る
+   */
+  async function resolveSecretPlaceholders(
+    declaration: ParsedModuleDeclaration,
+    projectId: string | undefined,
+  ): Promise<ModuleLaunch> {
+    const wanted = secretPlaceholders(declaration.launch);
+    if (wanted.length === 0) return declaration.launch;
+
+    // **渡してよい相手か**（判断は declaration.ts に出してある——試験できる場所へ）
+    const allowed = secretsAllowedFor(declaration.meta);
+    if (!allowed.ok) throw new Error(`${declaration.name}: ${allowed.reason}`);
+
+    const caller = projectId ? { project: projectId } : { instance: true as const };
+    const values = new Map<string, string>();
+    for (const { alias } of wanted) {
+      if (values.has(alias)) continue;
+      const call = {
+        projectId,
+        callerModule: "banto",
+        targetModule: "vault-directory",
+        kind: "tool" as const,
+        name: "resolveAlias",
+        identifiers: { name: alias },
+      };
+      try {
+        const value = await resolveSecretThroughVault(alias, caller);
+        values.set(alias, value);
+        await relayGrants.recordCall(call, { allowed: true, reason: "Module の起動に差し込む秘密" });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await relayGrants.recordCall(call, { allowed: true, reason, ok: false });
+        // **引けなかったら起動しない**（空文字で埋めて静かに壊さない・規則2）
+        throw new Error(`${declaration.name}: 秘密 "${alias}" を引けませんでした：${reason}`);
+      }
+    }
+    return fillSecrets(declaration.launch, values);
+  }
+
+  /** 秘密を引くのに要る窓口を、必要になった時点で1本だけ起こす。 */
+  async function ensureVaultDirectory(): Promise<Client | undefined> {
+    const existing = connectedModules.get("vault-directory");
+    if (existing) return existing;
+    const declaration = loadModuleDeclarations(runtimeConfig, "").find((d) =>
+      d.meta.satisfies.includes("vault-directory"),
+    );
+    if (!declaration) return undefined;
+    const connName = await connectDeclaredModule(declaration);
+    return connName ? connectedModules.get(connName) : undefined;
+  }
+
+  /** 窓口で在りかを引いてから、その金庫に値を聞く（relay と同じ2段）。 */
+  async function resolveSecretThroughVault(
+    alias: string,
+    caller: { project: string } | { instance: true },
+  ): Promise<string> {
+    // **窓口を先に起こす**（追加・2026-09-16）。Module は同時に起こしているので、
+    // 「窓口より先に、秘密を使う Module が立つ」順序が起きうる——そのとき
+    // たまたま落ちる形にしない（規則6——間欠で落ちる形を残さない）
+    const directory = await ensureVaultDirectory();
+    if (!directory) throw new Error("Vault の窓口が繋がっていません");
+    const meta = { [CALLER_META_KEY]: caller };
+    // **窓口は金庫へ中継する**——その2段目にも同じ刻印が要る。中継が刻むのは
+    // 台帳を見てなので、ここで台帳に載せる（Module に自己申告させない・規則3）
+    const endDirectoryCall = moduleCalls.begin(
+      "vault-directory",
+      undefined,
+      "host",
+      "project" in caller ? caller.project : undefined,
+      !("project" in caller),
+    );
+    let found: { implementation?: string; name?: string; group?: string };
+    try {
+      found = JSON.parse(
+        ((
+          await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: meta })
+        ).content as { text: string }[])[0]!.text,
+      ) as { implementation?: string; name?: string; group?: string };
+    } finally {
+      endDirectoryCall();
+    }
+    if (!found.implementation || !found.name) throw new Error(`"${alias}" の在りかが分かりません`);
+    const backend = connectedModules.get(found.implementation);
+    if (!backend) throw new Error(`${found.implementation} が繋がっていません`);
+    const text = (
+      (
+        await backend.callTool({
+          name: "resolveAlias",
+          arguments: { name: found.name, group: found.group },
+          _meta: meta,
+        })
+      ).content as { text: string }[]
+    )[0]?.text;
+    if (typeof text !== "string") throw new Error(`"${alias}" の値を受け取れませんでした`);
+    return text;
+  }
+
   async function spawnDeclaredModuleOnce(
     declaration: ParsedModuleDeclaration,
     forProject: { id: string; root: string } | undefined,
@@ -274,7 +391,10 @@ async function main(): Promise<void> {
       moduleDataDir: join(bootstrap.dataDir, "modules", connName),
     };
     mkdirSync(context.moduleDataDir, { recursive: true, mode: 0o700 });
-    const launch = expandLaunch(declaration.launch, context);
+    // **金庫の語を先に解く**（追加・2026-09-16）。値はここで初めて現れ、
+    // env として子プロセスへ渡るだけ——**記録に残るのは名前だけ**
+    const withSecrets = await resolveSecretPlaceholders(declaration, project?.id);
+    const launch = expandLaunch(withSecrets, context);
 
     // **外から繋いだコードを、閉じ込め無しで立てない**（追加・2026-09-15、
     // レビューで発覚。`docs/specs/v4-security.md`）。

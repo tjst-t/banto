@@ -28,12 +28,12 @@ const PROMPT =
   "1回だけ実行してください。返ってきた stdout をそのまま書いてください。";
 
 /** Event Store に積まれた中継の記録（監査の本体）。 */
-function relayEvents(): Array<{ type: string; payload: Record<string, unknown> }> {
+function relayEvents(): Array<{ seq: number; type: string; payload: Record<string, unknown> }> {
   const raw = readFileSync(join(DATA_DIR, "events.jsonl"), "utf8");
   return raw
     .split("\n")
     .filter((line) => line.includes('"relay.'))
-    .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> })
+    .map((line) => JSON.parse(line) as { seq: number; type: string; payload: Record<string, unknown> })
     .filter((e) => e.type.startsWith("relay."));
 }
 
@@ -66,6 +66,18 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
     await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })
   ).json();
   const threadId: string = threads[0].id;
+  /**
+   * **この試験がこれから積む記録だけ**（訂正・2026-09-16）。
+   *
+   * ここは `events.jsonl` を直に読むが、**core は spec をまたいで1つ**なので、
+   * 絞らないと他の spec が積んだ記録まで数えてしまう。実際、`${secret:…}` の
+   * spec が `resolveAlias` を積むようになった時点で、下の「2回目のターンを待つ」
+   * が**待たずに通り抜けた**（規則6——待ち条件が見ているものが、見たいものと
+   * ずれていた）。**Project では絞れない**——窓口（instance に1本）が金庫へ
+   * 中継する記録には Project が付かない。**連番で切る**（E2E は1 worker）。
+   */
+  const sinceSeq = Math.max(0, ...relayEvents().map((e) => e.seq));
+  const mine = () => relayEvents().filter((e) => e.seq > sinceSeq);
   /** ターンが**終わった**数（assistant の発言は終わってから記録される）。
    *  走行中に次を送っても composer は受け取らないので、ここで区切る。 */
   const finishedTurns = async () => {
@@ -157,10 +169,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // 1ターン目だけで既に4件あるので**待たずに通り抜ける**——実際そうなった
   await expect
     .poll(
-      () =>
-        relayEvents().filter(
-          (e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAlias",
-        ).length,
+      () => mine().filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAlias").length,
       { timeout: 180_000, message: "2回目のターンで値が取られるまで" },
     )
     .toBeGreaterThanOrEqual(2);
@@ -176,7 +185,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   ).toHaveLength(0);
 
   // 4. 記録（監査）——許可は1回、呼び出しは毎回、値は残っていない
-  const events = relayEvents();
+  const events = mine();
   const grants = events.filter((e) => e.type === "relay.grant_created");
   // **許可は（呼び出し元・宛先・tool）ごとに1回**——2回目のターンでは増えない。
   // 窓口が横断する先の数は環境で変わる（`vault-infisical` が設定されていない

@@ -166,14 +166,19 @@ export interface HostRelayServerOptions {
    * 出し先が無くて fail closed で止まる。文脈は推測せず、**外側から継ぐ**。
    */
   moduleCalls?: {
-    originFor(connName: string): "turn" | "canvas" | undefined;
+    originFor(connName: string): "turn" | "canvas" | "host" | undefined;
+    /** いま走っている呼び出しは誰のためか（Project／banto 全体／決められない）。 */
+    callerFor?(connName: string): { project: string } | { instance: true } | undefined;
+    /** banto 全体のための呼び出しか——宛先へ継ぐ。 */
+    instanceFor?(connName: string): boolean;
     threadFor(connName: string): { kind: "thread"; threadId: string } | { kind: string };
     projectFor(connName: string): string | undefined;
     begin(
       connName: string,
       threadId: string | undefined,
-      origin: "turn" | "canvas",
+      origin: "turn" | "canvas" | "host",
       projectId?: string,
+      forInstance?: boolean,
     ): () => void;
   };
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
@@ -389,6 +394,9 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined,
       origin ?? "turn",
       callerProject,
+      // **banto 全体のための呼び出しも継ぐ**（追加・2026-09-16）——継がないと
+      // 窓口→金庫の2段目で「誰のためか分からない」に落ちる
+      opts.moduleCalls?.instanceFor?.(callerConn) ?? false,
     );
 
     /**
@@ -396,11 +404,17 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
      * 人が管理画面から触っているとき（canvas 由来）は `admin`——Project では
      * ないが、**「決められない」でもない**。刻まないと受け手が止まる。
      */
+    //
+    // **`{instance:true}`（banto 全体のため）も刻む**（追加・2026-09-16）。
+    // `${secret:…}` の解決は窓口→金庫の2段で、2段目は中継を通る。
+    const ambient = opts.moduleCalls?.callerFor?.(callerConn);
     const callerMeta: Record<string, unknown> = callerProject
       ? { [CALLER_META_KEY]: { project: callerProject } }
-      : origin === "canvas"
-        ? { [CALLER_META_KEY]: { admin: true } }
-        : {};
+      : ambient
+        ? { [CALLER_META_KEY]: ambient }
+        : origin === "canvas"
+          ? { [CALLER_META_KEY]: { admin: true } }
+          : {};
 
     try {
       if (request.params.name === "relayCallTool") {

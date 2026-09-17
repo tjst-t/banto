@@ -22,14 +22,19 @@ export type ModuleCallThread =
  * `turn` は AI のターンの中から。`canvas` は**人が画面で押したところ**から
  * （`/api/.../ui-tool-call`）。承認の要否がここで分かれる——判断の材料は
  * 台帳が持っていて、推測しない（規則3）。
+ *
+ * **`host` は banto 自身が Module を起こすために呼ぶとき**（追加・2026-09-16、
+ * `${secret:…}` の解決）。人でも AI でもないので、**`canvas` の緩め
+ * （admin 可視の宛先は聞かない）は掛けない**——人が押していないものを
+ * 「人が押した」に混ぜない。
  */
-export type CallOrigin = "turn" | "canvas";
+export type CallOrigin = "turn" | "canvas" | "host";
 
 export class ModuleCallTracker {
   /** Module の接続名 → 走行中の呼び出し（連番 → Thread・Project・出所）。 */
   private readonly inFlight = new Map<
     string,
-    Map<number, { threadId?: string; projectId?: string; origin: CallOrigin }>
+    Map<number, { threadId?: string; projectId?: string; origin: CallOrigin; forInstance?: boolean }>
   >();
   private nextCallId = 1;
 
@@ -47,6 +52,8 @@ export class ModuleCallTracker {
     threadId: string | undefined,
     origin: CallOrigin = "turn",
     projectId?: string,
+    /** **banto 全体のための呼び出し**（Project が決まらない、が決められないのでもない）。 */
+    forInstance = false,
   ): () => void {
     const callId = this.nextCallId++;
     let calls = this.inFlight.get(connName);
@@ -54,7 +61,7 @@ export class ModuleCallTracker {
       calls = new Map();
       this.inFlight.set(connName, calls);
     }
-    calls.set(callId, { threadId, projectId, origin });
+    calls.set(callId, { threadId, projectId, origin, forInstance });
     return () => {
       const current = this.inFlight.get(connName);
       if (!current) return;
@@ -80,7 +87,12 @@ export class ModuleCallTracker {
   originFor(connName: string): CallOrigin | undefined {
     const calls = this.inFlight.get(connName);
     if (!calls || calls.size === 0) return undefined;
-    return [...calls.values()].some((c) => c.origin === "turn") ? "turn" : "canvas";
+    const origins = [...calls.values()].map((c) => c.origin);
+    // **緩いほうへ倒さない**（規則2）。`canvas` だけが承認を飛ばしうるので、
+    // 他が1つでも混ざっていたら `canvas` とは言わない
+    if (origins.includes("turn")) return "turn";
+    if (origins.includes("host")) return "host";
+    return "canvas";
   }
 
   /**
@@ -95,5 +107,30 @@ export class ModuleCallTracker {
     if (!calls || calls.size === 0) return undefined;
     const ids = [...new Set([...calls.values()].map((c) => c.projectId).filter((p): p is string => !!p))];
     return ids.length === 1 ? ids[0] : undefined;
+  }
+
+  /**
+   * **いま走っている呼び出しは、誰のためか**（追加・2026-09-16）。
+   *
+   * `projectFor` の上位版。Project が決まればそれ、**banto 全体のためだけ**が
+   * 走っていれば `{instance:true}`、混ざっていたら **`undefined`（決められない）**
+   * ——`{instance:true}` の呼び出しが、たまたま同時に走っている Project の
+   * 刻印を借りて広がることを防ぐ。
+   */
+  callerFor(connName: string): { project: string } | { instance: true } | undefined {
+    const calls = this.inFlight.get(connName);
+    if (!calls || calls.size === 0) return undefined;
+    const values = [...calls.values()];
+    const ids = [...new Set(values.map((c) => c.projectId).filter((p): p is string => !!p))];
+    const anyInstance = values.some((c) => c.forInstance);
+    if (ids.length === 1 && !anyInstance) return { project: ids[0]! };
+    if (ids.length === 0 && anyInstance) return { instance: true };
+    return undefined;
+  }
+
+  /** **banto 全体のための呼び出しか**——宛先へ継ぐときに使う。 */
+  instanceFor(connName: string): boolean {
+    const caller = this.callerFor(connName);
+    return caller !== undefined && "instance" in caller;
   }
 }

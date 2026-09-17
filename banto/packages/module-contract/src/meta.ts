@@ -43,7 +43,16 @@ export const VALUE_FREE_META_KEY = `${VENDOR_PREFIX}/valueFree`;
  */
 export const CALLER_META_KEY = `${VENDOR_PREFIX}/caller`;
 
-export type CallerStamp = { project: string } | { admin: true };
+/**
+ * **誰のための呼び出しか**。host だけが刻む（Module の自己申告ではない）。
+ *
+ * - `{project}`——その Project のための呼び出し。Project のグループ＋共通が使える
+ * - `{admin: true}`——人が管理画面から触っている。全部見える
+ * - `{instance: true}`——**banto 全体のための呼び出し**（追加・2026-09-16）。
+ *   `${secret:…}` を banto 全体に1本の Module へ差し込むときに使う。
+ *   **Project が決まらないので、共通の秘密だけ**（規則2——曖昧なら広げない）
+ */
+export type CallerStamp = { project: string } | { admin: true } | { instance: true };
 
 /** 刻印を読む。**形が違えば `undefined`**——「たぶんこう」で通さない。 */
 export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp | undefined {
@@ -51,6 +60,7 @@ export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
   if (obj.admin === true) return { admin: true };
+  if (obj.instance === true) return { instance: true };
   if (typeof obj.project === "string" && obj.project !== "") return { project: obj.project };
   return undefined;
 }

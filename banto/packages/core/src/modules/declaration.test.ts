@@ -14,7 +14,10 @@ import {
   MODULE_DECLARATIONS_KEY,
   ModuleDeclarationError,
   expandLaunch,
+  fillSecrets,
   loadModuleDeclarations,
+  secretPlaceholders,
+  secretsAllowedFor,
   parseModuleDeclaration,
   setModuleDeclarations,
   listProjectModules,
@@ -516,4 +519,129 @@ test("根が Project の閉じ込めは、Project ごとの Module でしか宣�
       ),
     /scope:"project" が必要/,
   );
+});
+
+// ---- 2026-09-16：秘密を宣言に書かせない（`${secret:名前}`）------------------
+
+// **`mcpServers` の慣習は env に API キーを直に書くこと**。ところが banto の
+// 宣言は Event Store に残るので、書いた瞬間に記録へ永久に残る。名前だけ書かせる。
+test("秘密は env の値にだけ書ける——コマンドと引数には書かせない", () => {
+  const ok = parseModuleDeclaration(
+    {
+      name: "weather",
+      launch: { command: "/bin/sh", args: ["-c", "true"], env: { API_KEY: "${secret:weather-key}" } },
+      meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  assert.deepEqual(secretPlaceholders(ok.launch), [{ envName: "API_KEY", alias: "weather-key" }]);
+
+  // **argv に載ると ps に平文が出る**——envSecrets が避けているのと同じ理由
+  assert.throws(
+    () =>
+      parseModuleDeclaration(
+        {
+          name: "leaky",
+          launch: { command: "/bin/sh", args: ["-c", "echo ${secret:weather-key}"] },
+          meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+        },
+        "test",
+      ),
+    /環境変数の値にしか書けません/,
+  );
+});
+
+test("名前の無い ${secret:} は弾く", () => {
+  assert.throws(
+    () =>
+      parseModuleDeclaration(
+        {
+          name: "x",
+          launch: { command: "/bin/sh", args: [], env: { K: "${secret:}" } },
+          meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+        },
+        "test",
+      ),
+    /名前がありません/,
+  );
+});
+
+// **解かれないまま起動しない**（規則2——空文字で埋めて静かに壊さない）
+test("金庫の語が解かれないまま起動しようとしたら止まる", () => {
+  const d = parseModuleDeclaration(
+    {
+      name: "weather",
+      launch: { command: "/bin/sh", args: [], env: { API_KEY: "${secret:weather-key}" } },
+      meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  assert.throws(
+    () =>
+      expandLaunch(d.launch, {
+        nodeExec: "/usr/bin/node",
+        monorepoRoot: "/x",
+        dataDir: "/d",
+        hostRelayUrl: "http://x",
+        hostRelayToken: "t",
+        moduleDataDir: "/m",
+      }),
+    /解かれないまま/,
+  );
+});
+
+test("引いた値は env にだけ入る——引けなかったものは空で埋めない", () => {
+  const d = parseModuleDeclaration(
+    {
+      name: "weather",
+      launch: {
+        command: "/bin/sh",
+        args: [],
+        env: { API_KEY: "${secret:weather-key}", OTHER: "plain" },
+      },
+      meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  const filled = fillSecrets(d.launch, new Map([["weather-key", "sk-REAL"]]));
+  assert.equal(filled.env?.API_KEY, "sk-REAL");
+  assert.equal(filled.env?.OTHER, "plain");
+  // **argv には何も起きていない**
+  assert.deepEqual(filled.args, []);
+  assert.throws(() => fillSecrets(d.launch, new Map()), /引けませんでした/);
+});
+
+// **秘密を渡してよい相手の定義**（追加・2026-09-16）。host の起動処理の中に
+// 埋めずに出してあるのは、ここが安全の柵そのものだから（規則1——試験できる形に）。
+const metaFor = (over: Record<string, unknown> = {}) =>
+  ({
+    satisfies: [],
+    dependsOn: [],
+    isolation: "subprocess",
+    scope: "instance",
+    origin: "external",
+    ...over,
+  }) as never;
+
+test("金庫そのものは ${secret:…} を使えない——窓口も同じ", () => {
+  for (const role of ["vault", "vault-directory"]) {
+    const verdict = secretsAllowedFor(metaFor({ satisfies: [role], origin: "bundled" }));
+    assert.equal(verdict.ok, false, `${role} に秘密を渡してしまう`);
+    assert.match((verdict as { reason: string }).reason, /金庫そのもの/);
+  }
+});
+
+test("閉じ込めの無い外部 Module には渡さない——同梱は自分のコードなので渡す", () => {
+  // 外から繋いだコードで、閉じ込めが無い＝断る
+  const external = secretsAllowedFor(metaFor({}));
+  assert.equal(external.ok, false);
+  assert.match((external as { reason: string }).reason, /閉じ込めの無い/);
+
+  // 閉じ込めがあれば通る
+  assert.equal(
+    secretsAllowedFor(metaFor({ confinement: { kind: "landlock", root: "none" } })).ok,
+    true,
+  );
+  // 同梱は閉じ込めが無くても通る（banto 自身のコード）
+  assert.equal(secretsAllowedFor(metaFor({ origin: "bundled" })).ok, true);
 });

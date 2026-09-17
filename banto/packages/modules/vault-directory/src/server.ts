@@ -194,6 +194,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     if (!caller) return false; // 誰のためか分からないなら見せない（規則2）
     if ("admin" in caller) return true;
     if (alias.scope === "shared") return true;
+    // **banto 全体のための呼び出しは、共通だけ**（追加・2026-09-16）
+    if ("instance" in caller) return false;
     return Array.isArray(alias.projects) && (alias.projects as string[]).includes(caller.project);
   }
 

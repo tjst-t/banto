@@ -76,11 +76,50 @@ const INSTANCE_PLACEHOLDERS = [
 ] as const;
 const PROJECT_ONLY_PLACEHOLDERS = ["projectRoot"] as const;
 
+/**
+ * **金庫から引く差し込み語**（決定・2026-09-16、ユーザー指示）。
+ *
+ * `mcpServers` の慣習は `env: { "API_KEY": "sk-…" }` だが、**banto の宣言は
+ * Event Store に残る**ので、書いた瞬間に記録へ永久に残る。名前だけ書かせて、
+ * **起動の直前に host が金庫から引いて差し込む**。
+ *
+ * **`env` の値でしか使えない。** `command` と `args` に書けてしまうと、
+ * 展開後の値が argv に載って **`ps` に平文の秘密が出る**——`envSecrets` が
+ * argv を避けるために設けた分離が崩れる（レビューで指摘・2026-09-15）。
+ *
+ * **2026-09-02 の決定（`"$my-alias"` の形）を置き換える**（規則8）。
+ * 理由：`${secret:…}` は既にある差し込み語の検査（「知らない語は起動前に落とす」）
+ * にそのまま乗るが、`$my-alias` はその検査を素通りする——書き間違いが
+ * 「そういう値」として静かに渡ってしまう。
+ * **「直書きも許す」はそのまま**（使い捨てトークンを直接書きたい場面は実在する）
+ * ——ただし記録に残ることを画面で言う。
+ */
+const SECRET_PREFIX = "secret:";
+
 const PLACEHOLDER_PATTERN = /\$\{([^}]*)\}/g;
 
-function checkPlaceholders(text: string, scope: "instance" | "project", source: string): void {
+function checkPlaceholders(
+  text: string,
+  scope: "instance" | "project",
+  source: string,
+  where: "env" | "command" = "env",
+): void {
   for (const match of text.matchAll(PLACEHOLDER_PATTERN)) {
     const key = match[1] ?? "";
+    if (key.startsWith(SECRET_PREFIX)) {
+      // **env の値でしか使えない**——argv に載ると `ps` に平文が出る
+      if (where !== "env") {
+        // 宣言の読み取りで落とす——他の弾き方と同じ型にする（拾う側が1つで済む）
+        throw new ModuleDeclarationError(
+          `${source}: \${${key}} は環境変数の値にしか書けません` +
+            "（コマンドや引数に書くと、動いている間 ps に秘密が見えてしまいます）",
+        );
+      }
+      if (key.slice(SECRET_PREFIX.length).trim() === "") {
+        throw new ModuleDeclarationError(`${source}: \${secret:…} に名前がありません`);
+      }
+      continue;
+    }
     if ((INSTANCE_PLACEHOLDERS as readonly string[]).includes(key)) continue;
     if ((PROJECT_ONLY_PLACEHOLDERS as readonly string[]).includes(key)) {
       if (scope === "project") continue;
@@ -153,8 +192,11 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
       ? { ...parsedMeta, scope: "project" as const }
       : parsedMeta;
 
-  for (const text of [command, ...args, ...envEntries.map(([, v]) => v)]) {
-    checkPlaceholders(text, metaWithScope.scope, `${source}(${name})`);
+  for (const text of [command, ...args]) {
+    checkPlaceholders(text, metaWithScope.scope, `${source}(${name})`, "command");
+  }
+  for (const [, v] of envEntries) {
+    checkPlaceholders(v, metaWithScope.scope, `${source}(${name})`, "env");
   }
 
   // **同梱かどうかは、ここで決まる**（parse の中に置く・2026-09-15）。
@@ -192,6 +234,12 @@ function withOrigin(
 
 function expand(text: string, context: LaunchContext, source: string): string {
   return text.replace(PLACEHOLDER_PATTERN, (_all, key: string) => {
+    // **金庫の語は、ここでは解かない**——host が起動の直前に、刻印と監査を
+    // 通して引いてから `expandLaunch` を呼ぶ（`resolveSecretPlaceholders`）。
+    // ここまで残っていたら**解かれていない**ということなので、止める（規則2）
+    if (key.startsWith(SECRET_PREFIX)) {
+      throw new ModuleDeclarationError(`${source}: \${${key}} が解かれないまま起動しようとしています`);
+    }
     const value = (context as unknown as Record<string, string | undefined>)[key];
     if (value === undefined) {
       // parse で弾いているはずのものがここへ来たら、黙って空文字にしない（規則2）
@@ -199,6 +247,63 @@ function expand(text: string, context: LaunchContext, source: string): string {
     }
     return value;
   });
+}
+
+/**
+ * **その Module に `${secret:…}` を許してよいか**（追加・2026-09-16）。
+ *
+ * 判断を host の起動処理の中に埋めずに出してある——**ここが秘密を渡してよい
+ * 相手の定義**なので、試験できる場所に置く（規則1）。
+ */
+export function secretsAllowedFor(meta: BantoModuleMeta): { ok: true } | { ok: false; reason: string } {
+  // **金庫を開ける鍵は金庫に入らない。** 窓口（vault-directory）も同じ
+  // ——窓口は解決の経路そのものなので、自分を解決するのに自分が要る
+  const vaultRole = meta.satisfies.find((r: string) => r === "vault" || r === "vault-directory");
+  if (vaultRole) {
+    return {
+      ok: false,
+      reason: "金庫そのものは ${secret:…} を使えません（自分を開ける鍵は自分の中に置けません）",
+    };
+  }
+  // **閉じ込め無しのコードに秘密を渡さない**（同梱は自分のコードなので対象外）
+  if (meta.origin !== "bundled" && !meta.confinement) {
+    return { ok: false, reason: "閉じ込めの無い Module に秘密は渡せません" };
+  }
+  return { ok: true };
+}
+
+/** `secret:名前` から名前を取り出す（前後の空白は落とす）。 */
+const aliasOf = (key: string): string => key.slice(SECRET_PREFIX.length).trim();
+
+/** その起動の指定が金庫から引く秘密（`${secret:名前}`）を、環境変数名つきで並べる。 */
+export function secretPlaceholders(launch: ModuleLaunch): Array<{ envName: string; alias: string }> {
+  const found: Array<{ envName: string; alias: string }> = [];
+  for (const [envName, value] of Object.entries(launch.env ?? {})) {
+    for (const m of value.matchAll(PLACEHOLDER_PATTERN)) {
+      const key = m[1] ?? "";
+      // **前後の空白は落とす**。並べる側と差し込む側で揃えないと、
+      // 「引けたのに埋まらない」が起きる（規則3——同じ規則を2か所に書かない）
+      if (key.startsWith(SECRET_PREFIX)) found.push({ envName, alias: aliasOf(key) });
+    }
+  }
+  return found;
+}
+
+/** 引いた値を差し込んだ起動の指定を返す。**値はここで初めて現れる**。 */
+export function fillSecrets(launch: ModuleLaunch, values: ReadonlyMap<string, string>): ModuleLaunch {
+  if (!launch.env) return launch;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(launch.env)) {
+    env[k] = v.replace(PLACEHOLDER_PATTERN, (all, key: string) => {
+      if (!key.startsWith(SECRET_PREFIX)) return all;
+      const alias = aliasOf(key);
+      const value = values.get(alias);
+      // 引けなかったものを空文字で埋めない（規則2）
+      if (value === undefined) throw new ModuleDeclarationError(`秘密 "${alias}" を引けませんでした`);
+      return value;
+    });
+  }
+  return { ...launch, env };
 }
 
 export function expandLaunch(launch: ModuleLaunch, context: LaunchContext): ModuleLaunch {

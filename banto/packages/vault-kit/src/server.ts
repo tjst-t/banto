@@ -543,6 +543,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       );
     }
     if ("admin" in caller) return; // 人が管理画面から直接触っている
+    // **banto 全体のための呼び出しは、共通の秘密だけ**（追加・2026-09-16）
+    // ——Project が決まらないので広げない（規則2）
+    if ("instance" in caller) {
+      if (scopeOf(meta).scope === "shared") return;
+      throw new Error(
+        `alias "${name}" は banto 全体からは使えません（共通の置き場にあるものだけ使えます）`,
+      );
+    }
     if (usableBy(meta, caller.project)) return;
     const where = scopeOf(meta);
     throw new Error(
@@ -813,7 +821,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         // 人の管理面は全部（「どこにも紐付いていない」も——隠すと直せない）。
         // Project は、その Project から使えるものだけ
         const stored = await registry.list();
-        const visible = "admin" in caller ? stored : stored.filter((m) => usableBy(m, caller.project));
+        const visible =
+          "admin" in caller
+            ? stored
+            : "instance" in caller
+              ? stored.filter((m) => scopeOf(m).scope === "shared")
+              : stored.filter((m) => usableBy(m, caller.project));
         return {
           content: [{ type: "text", text: JSON.stringify(visible.map((m) => ({ ...toPublic(m), ...scopeOf(m) }))) }],
         };
@@ -1002,7 +1015,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         ? []
         : "admin" in caller
           ? all
-          : all.filter((m) => usableBy(m, caller.project));
+          : "instance" in caller
+            ? all.filter((m) => scopeOf(m).scope === "shared")
+            : all.filter((m) => usableBy(m, caller.project));
       return {
         contents: [
           { uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(visible.map(toPublic)) },

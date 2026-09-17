@@ -1578,6 +1578,37 @@
       ],
       "spec": "docs/specs/v4-modules.md §2.1「移す」",
       "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
+    },
+    {
+      "id": "module-secret-placeholder",
+      "title": "`${secret:名前}` ——Module の宣言に秘密を書かずに済ませる",
+      "status": "done",
+      "why": "宣言は Event Store に残り続けるので、env に書いた API キーは後から消せない。外から MCP サーバを繋げるようにした直後に当たった（人が持ってくる mcpServers には、たいてい生のキーが入っている）。",
+      "done": [
+        "`${secret:名前}` を env の値にだけ許す。command/args に書いたら起動前に断る（展開後の値が argv に載り ps から読める）",
+        "解決は窓口 lookupAlias → 金庫 resolveAlias の2段。relay と同じ刻印・同じグループ絞り・同じ監査（秘密の第二の口を作らない）",
+        "刻印は立つ場所で決まる。Project ごとは {project}、banto 全体は {instance:true}＝共通の秘密だけ",
+        "金庫自身（vault / vault-directory）と、閉じ込めていない外部 Module には渡さない",
+        "引けなかったら起動しない（空文字で埋めない）。監査に残るのは名前だけ",
+        "台帳に forInstance と出所 host を足し、窓口→金庫の2段目にも刻印が継がれるようにした（ここが本命の不具合）",
+        "画面：`${secret:名前}` の案内と、平文らしき値を貼ったときの「この値は記録に残り続けます」"
+      ],
+      "spec": "docs/specs/v4-architecture.md「秘密は `${secret:名前}` で書く」／v4-security.md 脅威表",
+      "notes": "docs/notes/2026-09-16-secret-placeholder.md"
+    },
+    {
+      "id": "module-remote-mcp",
+      "title": "リモート MCP（`type:\"http\"`）を受け入れるか決めて、入れるなら実装する",
+      "status": "backlog",
+      "why": "AccuWeather のような外部サービスは、素直に繋ぐならリモート。いまは理由を言って断っている。閉じ込めが効かず、呼ぶたびに引数が相手へ出ていくので、他の Module と同じ扱いにはできない。",
+      "open": [
+        "『これは machine の外へデータを送ります』の明示承認を、繋ぐときに人へ出す",
+        "リモートは骨格の役割（shell/filesystem/vault/vault-directory）を名乗れない",
+        "リモートの tool を agent 可視の既定に自動で載せない",
+        "headers にも `${secret:名前}` を通す（秘密が毎回外へ出ることは、そう言う）",
+        "脅威表の『Module が machine の外へデータを出す』行を未決から決定へ"
+      ],
+      "spec": "docs/specs/v4-security.md 脅威表の該当行（未決）"
     }
   ],
   "phase1": {

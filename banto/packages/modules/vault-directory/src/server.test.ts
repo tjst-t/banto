@@ -1062,3 +1062,45 @@ test("requestAlias は、使えない同名があっても入力欄を開く", a
     assert.match(again, /既に登録されていて、いま使えます/);
   });
 });
+
+// **banto 全体のための呼び出しは、共通の秘密だけ**（追加・2026-09-16）。
+// `${secret:…}` を banto 全体に1本の Module へ差し込むときに使う刻印。
+// Project が決まらないので**広げない**（規則2——曖昧なら狭いほうに倒す）。
+const forInstance = { "dev.banto/caller": { instance: true } };
+
+test("banto 全体の刻印では、共通の秘密だけが使える", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "shared-key", kind: "secret", value: "v-shared", group: "instance" },
+    });
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "project-key", kind: "secret", value: "v-project", forProject: "p1" },
+    });
+
+    // 共通のものは引ける
+    const found = parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "shared-key" }, _meta: forInstance }));
+    assert.equal(found.name, "shared-key");
+
+    // **Project のものは引けない**
+    await assert.rejects(
+      () => ui.callTool({ name: "lookupAlias", arguments: { name: "project-key" }, _meta: forInstance }),
+      /どの Vault にもありません/,
+      "Project の秘密が banto 全体から引けてしまう",
+    );
+
+    // backend も同じ規律——値の口で断る
+    const vault = vaults.get("vault-local")!;
+    await assert.rejects(
+      () => vault.callTool({ name: "resolveAlias", arguments: { name: "project-key" }, _meta: forInstance }),
+      /banto 全体からは使えません/,
+    );
+    // 共通のものは値が返る
+    const value = (
+      (await vault.callTool({ name: "resolveAlias", arguments: { name: "shared-key" }, _meta: forInstance }))
+        .content as { text: string }[]
+    )[0]!.text;
+    assert.equal(value, "v-shared");
+  });
+});

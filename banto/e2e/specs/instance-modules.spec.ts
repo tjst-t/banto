@@ -142,6 +142,48 @@ test("自分で書く道もあり、Project のフォルダを渡すと表示が
   await expect(page.getByTestId("add-module-effect")).toContainText("必ず閉じ込めます");
 });
 
+// **手で書く道でも API キーを入れられる**（追加・2026-09-16）。既定は「金庫から」
+// ——直書きは記録に残り続けるので、楽な道を安全なほうに置く
+test("API キーは既定で金庫から引く——直接入力を選ぶと、記録に残ると言う", async ({ page }) => {
+  const name = `e2e-secret-ui-${Date.now()}`;
+  await openModuleSettings(page);
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByRole("tab", { name: "自分で書く" }).click();
+
+  // 既定は金庫から
+  await expect(page.getByTestId("add-module-secret-note")).toContainText("記録には名前だけ");
+  // 直接入力に切り替えると、消せないことを言う
+  await page.getByRole("tab", { name: "直接入力" }).click();
+  await expect(page.getByTestId("add-module-secret-note")).toContainText("後から消せません");
+  await page.getByRole("tab", { name: "金庫から" }).click();
+
+  await page.getByLabel("名前", { exact: true }).fill(name);
+  await page.getByLabel("コマンド").fill("/bin/sh");
+  await page.getByLabel("引数（空白区切り）").fill("-c true");
+  await page.getByLabel("API キー（要るときだけ）").fill("WEATHER_API_KEY");
+  await page.getByLabel("金庫に入れた名前").fill("weather-key");
+  await page.getByRole("button", { name: "追加する" }).click();
+
+  await expect(page.locator(`[data-module="${name}"]`), "足したのに一覧に出ない").toBeVisible({
+    timeout: 30_000,
+  });
+
+  // **画面の言い分ではなく、保存された宣言を見る**（規則1）
+  const exported = (await (
+    await page.request.get(`${CORE_BASE_URL}/api/modules/export`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })
+  ).json()) as { mcpServers: Record<string, { env?: Record<string, string> }> };
+  expect(exported.mcpServers[name]?.env?.WEATHER_API_KEY, "金庫からの参照になっていない").toBe(
+    "${secret:weather-key}",
+  );
+
+  // 片づける
+  await page.request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(name)}`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+  });
+});
+
 // **URL に繋ぐ形は、まだ受けられないとはっきり言う**（黙って無視しない・規則2）
 test("URL に繋ぐ設定を貼ったら、理由を言って断る", async ({ page }) => {
   await openModuleSettings(page);
