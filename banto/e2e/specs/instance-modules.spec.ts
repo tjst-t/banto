@@ -88,15 +88,14 @@ test("外から Module を足せる——どこに立つかは書いたもので
   await openModuleSettings(page);
 
   await page.getByRole("button", { name: "Module を追加" }).click();
-  await page.getByLabel("名前").fill(ADDED);
-  await page.getByLabel("コマンド").fill("/bin/sh");
-  await page.getByLabel("引数（空白区切り）").fill("-c true");
-  // **聞かずに、書いたものから決まる**
-  await expect(page.getByTestId("add-module-effect")).toContainText("banto 全体で1本");
-  await page.getByRole("button", { name: "＋ この Project のフォルダを渡す" }).click();
-  await expect(page.getByTestId("add-module-effect")).toContainText("Project ごとに1本");
-  // この試験では全体で1本のほうを足す（Project を作らずに確かめられる）
-  await page.getByLabel("引数（空白区切り）").fill("-c true");
+
+  // **既定は「貼り付ける」**（改訂・2026-09-16、ユーザー指摘「普通の人には
+  // 使いづらい」）。人は README や Claude Code の設定から持ってくる
+  await page.getByLabel("設定（JSON）").fill(
+    JSON.stringify({
+      mcpServers: { [ADDED]: { command: "/bin/sh", args: ["-c", "true"] } },
+    }),
+  );
   await expect(page.getByTestId("add-module-effect")).toContainText("banto 全体で1本");
   await page.getByRole("button", { name: "追加する" }).click();
 
@@ -125,4 +124,50 @@ test("外から Module を足せる——どこに立つかは書いたもので
     .waitFor({ state: "visible", timeout: 30_000 })
     .then(async () => `消せませんでした：${await page.getByTestId("instance-modules-error").innerText()}`);
   expect(await Promise.race([gone, failed])).toBe("消えた");
+});
+
+
+// **手で書く道も残っている**（二番手）。「この Project のフォルダ」を渡したかで
+// どこに立つかが変わることは、押す前に出る——聞かない（決定・2026-09-15）
+test("自分で書く道もあり、Project のフォルダを渡すと表示が変わる", async ({ page }) => {
+  await openModuleSettings(page);
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByRole("tab", { name: "自分で書く" }).click();
+  await page.getByLabel("コマンド").fill("npx");
+  await page.getByLabel("引数（空白区切り）").fill("-y @modelcontextprotocol/server-weather");
+  await expect(page.getByTestId("add-module-effect")).toContainText("banto 全体で1本");
+  await page.getByRole("button", { name: "＋ この Project のフォルダを渡す" }).click();
+  await expect(page.getByTestId("add-module-effect")).toContainText("Project ごとに1本");
+  // **閉じ込めは外せない**と、どちらの場合も言う
+  await expect(page.getByTestId("add-module-effect")).toContainText("必ず閉じ込めます");
+});
+
+// **URL に繋ぐ形は、まだ受けられないとはっきり言う**（黙って無視しない・規則2）
+test("URL に繋ぐ設定を貼ったら、理由を言って断る", async ({ page }) => {
+  await openModuleSettings(page);
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByLabel("設定（JSON）").fill(
+    JSON.stringify({ mcpServers: { remote: { type: "http", url: "https://example.com/mcp" } } }),
+  );
+  await page.getByRole("button", { name: "追加する" }).click();
+  await expect(page.getByTestId("add-module-error"), "断った理由が出ていない").toContainText(
+    "URL に繋ぐ形",
+  );
+});
+
+// **いまの設定を mcpServers の形で取り出せる**（他のクライアントへ持っていける）
+test("設定を mcpServers の形で取り出せる", async ({ page }) => {
+  await openApp(page);
+  const res = await page.request.get(`${CORE_BASE_URL}/api/modules/export`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { mcpServers: Record<string, Record<string, unknown>> };
+  const vault = body.mcpServers["vault-local"];
+  expect(vault, "同梱が出ていない").toBeTruthy();
+  // **他のクライアントが読める形**——中身はトップレベル
+  expect(vault!.type).toBe("stdio");
+  expect(typeof vault!.command).toBe("string");
+  // **banto の追加は _meta に入る**（知らないクライアントは無視する）
+  expect((vault!._meta as Record<string, unknown>)["dev.banto/module"]).toBeTruthy();
 });

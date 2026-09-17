@@ -37,6 +37,7 @@ import {
   setProjectModuleSelection,
 } from "../modules/declaration.js";
 import { ModuleMetaError } from "@banto/module-contract";
+import { McpServersError, fromMcpServers, toMcpServers } from "../modules/mcp-servers.js";
 import { describeRootScope } from "../modules/root-scope.js";
 import { listDirectories } from "./directories.js";
 import type { TurnEventBus } from "./turn-events.js";
@@ -512,18 +513,49 @@ export function createApp(deps: AppDeps) {
         );
         return;
       }
+      // **`mcpServers` の形で出す**（決定・2026-09-16）。そのまま他の
+      // クライアントに貼れる——banto の追加は `_meta` に入っていて無視される
+      if (url.pathname === "/api/modules/export" && req.method === "GET") {
+        if (!deps.runtimeConfig) return json(res, 200, { mcpServers: {} });
+        json(
+          res,
+          200,
+          toMcpServers(
+            listInstanceModules(deps.runtimeConfig).map((m) => ({
+              name: m.name,
+              launch: m.launch,
+              enabled: m.enabled,
+              meta: {
+                satisfies: m.satisfies,
+                dependsOn: m.dependsOn,
+                isolation: "subprocess",
+                scope: m.scope,
+                ...(m.confinement ? { confinement: m.confinement } : {}),
+              },
+            })),
+          ),
+        );
+        return;
+      }
       if (url.pathname === "/api/modules" && req.method === "POST") {
         if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
         const body = (await readJsonBody(req)) as Record<string, unknown>;
         try {
-          await addModuleDeclaration(deps.runtimeConfig, body as never);
+          // **`mcpServers` を貼っても、1本ずつの形でも受ける**
+          // ——人は Claude Code の設定や README から持ってくる
+          const declarations = body.mcpServers ? fromMcpServers(body) : [body as never];
+          for (const d of declarations) await addModuleDeclaration(deps.runtimeConfig, d as never);
+          json(res, 200, { ok: true, added: declarations.map((d) => (d as { name: string }).name) });
         } catch (err) {
-          if (err instanceof ModuleDeclarationError || err instanceof ModuleMetaError) {
+          if (
+            err instanceof ModuleDeclarationError ||
+            err instanceof ModuleMetaError ||
+            err instanceof McpServersError
+          ) {
             return json(res, 400, { error: err.message });
           }
           throw err;
         }
-        json(res, 200, { ok: true });
         return;
       }
       const instanceModuleMatch = url.pathname.match(/^\/api\/modules\/([^/]+)$/);

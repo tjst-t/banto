@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   addRealInstanceModule,
+  addRealInstanceModulesFromMcpServers,
   listRealInstanceModules,
   removeRealInstanceModule,
   setRealInstanceModuleEnabled,
@@ -257,6 +258,11 @@ export function InstanceModulesPanel() {
         onSubmit={async (declaration) => {
           await addRealInstanceModule(declaration);
           await reload();
+        }}
+        onPaste={async (json) => {
+          const added = await addRealInstanceModulesFromMcpServers(json);
+          await reload();
+          return added;
         }}
       />
     </div>

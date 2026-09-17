@@ -788,3 +788,32 @@ export async function addRealInstanceModule(declaration: {
 export async function removeRealInstanceModule(name: string): Promise<void> {
   await request(`/api/modules/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
+
+/**
+ * **`mcpServers` の形で足す**（2026-09-16）。人は Claude Code の設定や
+ * README から**貼ってくる**——打たせない。
+ */
+export async function addRealInstanceModulesFromMcpServers(json: string): Promise<string[]> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    throw new Error(`JSON として読めません：${err instanceof Error ? err.message : String(err)}`);
+  }
+  // `{"mcpServers": {...}}` でも、その中身だけでも受ける
+  // ——README には中身だけ載っていることがある
+  const body =
+    typeof parsed === "object" && parsed !== null && "mcpServers" in parsed
+      ? (parsed as Record<string, unknown>)
+      : { mcpServers: parsed };
+  const res = await request<{ added: string[] }>("/api/modules", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return res.added ?? [];
+}
+
+/** いまの設定を `mcpServers` の形で取り出す（他のクライアントへ持っていける）。 */
+export async function exportRealInstanceModules(): Promise<unknown> {
+  return request<unknown>("/api/modules/export");
+}

@@ -1858,6 +1858,45 @@ tool 呼び出しとして承認ゲート（`docs/specs/v4-frontend.md` §6.0）
 見てから許可する。** イベント型の具体的な中身は item 4（Event Store の
 read model）が決まってから詰める。
 
+#### 受け渡しの形は `mcpServers`（決定・2026-09-16、ユーザー指示）
+
+§5.1 は 2026-08-29 に「**`mcpServers` 形に寄せる。独自形式を作らない**」と
+決めていたのに、実装は banto 独自の形（`{name, launch:{…}, meta:{…}}`）のままだった
+——**仕様と実態の食い違い**（規則8）。寄せた。
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "…" },
+      "_meta": { "dev.banto/module": { "satisfies": [], "dependsOn": [], … } }
+    }
+  }
+}
+```
+
+- **中身は元から同じ**（`command` / `args` / `env`）。違っていたのは入れ物だけ
+- **banto の追加は `_meta`**——MCP 自身の作法（`server.json` が逆 DNS 名前空間の
+  `_meta` を定めている）。**知らないクライアントは無視する**ので、この1枚が
+  そのまま他のクライアントでも動く
+- **`${…}` の差し込み語は banto の拡張**で、他では展開されない。平文を書けば
+  普通に動くので、互換は壊れない
+- 口は `POST /api/modules`（貼る）と `GET /api/modules/export`（取り出す）。
+  **1本ずつの形も受ける**（既存の呼び出しを壊さない）
+
+**`_meta` が無いときの既定は、狭いほうに倒す**——貼り付けたものは第三者の
+コードなので**必ず閉じ込め**、根は `${projectRoot}` を使ったかで決まる。
+
+**`type: "http"`（URL に繋ぐ形）は、まだ受けられないと言って断る**（規則2
+——黙って無視しない）。
+
+> 参考：`mcp.json` の提案（modelcontextprotocol#2218）は `type` / `cwd` /
+> `enabled` を足そうとしている。**まだ提案中**なので追いかけない。`type` と
+> `enabled` は既に受けている——「固まったら合わせる」の範囲。
+
 #### 人が Module を足す・止める・消す（決定・2026-09-15、§10 item 14 (a) の決着）
 
 **Project ごとの選択は前からあった**（`setProjectModuleSelection`）。無かったのは
