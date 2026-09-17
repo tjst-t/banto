@@ -17,6 +17,9 @@ import {
   fillSecrets,
   loadModuleDeclarations,
   secretPlaceholders,
+  isRemoteLaunch,
+  type ModuleLaunch,
+  type StdioLaunch,
   secretsAllowedFor,
   parseModuleDeclaration,
   setModuleDeclarations,
@@ -48,6 +51,17 @@ const CONTEXT = {
   projectRoot: "/home/me/work",
 };
 
+
+/**
+ * **起動する形として読む。** `ModuleLaunch` は2つの形の union になった
+ * （2026-09-17、URL に繋ぐ形が入った）ので、stdio の中身を見る試験はここを通す
+ * ——URL に繋ぐ形が紛れ込んだら、その場で落ちてよい（規則2）。
+ */
+function stdio(launch: ModuleLaunch): StdioLaunch {
+  assert.ok(!isRemoteLaunch(launch), "起動する形ではありません");
+  return launch as StdioLaunch;
+}
+
 test("同梱の既定は6本（vault-local/infisical×2/vault-directory/shell/filesystem）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
@@ -75,7 +89,7 @@ test("node 以外で起動する Module も宣言できる（TypeScript でな�
     },
     "test",
   );
-  const launched = expandLaunch(python.launch, CONTEXT);
+  const launched = stdio(expandLaunch(python.launch, CONTEXT));
   assert.equal(launched.command, "/repo/packages/modules/python-demo/.venv/bin/python");
   assert.deepEqual(launched.args, ["/repo/packages/modules/python-demo/server.py"]);
 });
@@ -126,7 +140,7 @@ test("差し込み語は起動時に実際の値へ置き換わる", () => {
     DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === "shell")!,
     "default",
   );
-  const launched = expandLaunch(shell.launch, CONTEXT);
+  const launched = stdio(expandLaunch(shell.launch, CONTEXT));
   assert.ok(launched.command.length > 0);
   assert.equal(launched.env?.BANTO_PROJECT_ROOT, "/home/me/work");
   assert.equal(launched.env?.BANTO_HOST_MCP_TOKEN, "tok");
@@ -209,18 +223,18 @@ test("**既定を改良すると、差分を持つ Project にも届く**（今�
     // この Project は filesystem の env をひとつだけ足している
     const tweaked = DEFAULT_MODULE_DECLARATIONS.map((d) =>
       d.name === "filesystem"
-        ? { ...d, launch: { ...d.launch, env: { ...d.launch.env, MY_OWN: "1" } } }
+        ? { ...d, launch: { ...stdio(d.launch), env: { ...stdio(d.launch).env, MY_OWN: "1" } } }
         : d,
     );
     await setModuleDeclarations(config, tweaked, "project-overlay");
 
     const loaded = loadModuleDeclarations(config, "project-overlay").find((d) => d.name === "filesystem")!;
     // 足した分は効いている
-    assert.equal(loaded.launch.env?.MY_OWN, "1");
+    assert.equal(stdio(loaded.launch).env?.MY_OWN, "1");
     // **既定にあるキーは全部そのまま届いている**（丸ごと写していたら、
     // あとから既定に足したキーはここで欠ける）
-    for (const key of Object.keys(DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === "filesystem")!.launch.env!)) {
-      assert.ok(loaded.launch.env?.[key], `既定の ${key} が届いていない`);
+    for (const key of Object.keys(stdio(DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === "filesystem")!.launch).env!)) {
+      assert.ok(stdio(loaded.launch).env?.[key], `既定の ${key} が届いていない`);
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -255,9 +269,9 @@ test("**古い形（丸ごとの写し）が Config に残っていても、既�
     );
 
     const loaded = loadModuleDeclarations(config, "project-legacy").find((d) => d.name === "filesystem")!;
-    assert.equal(loaded.launch.env?.MY_OWN, "1", "その Project の設定が失われた");
+    assert.equal(stdio(loaded.launch).env?.MY_OWN, "1", "その Project の設定が失われた");
     assert.ok(
-      loaded.launch.env?.BANTO_HOST_MCP_URL,
+      stdio(loaded.launch).env?.BANTO_HOST_MCP_URL,
       "**古い写しのせいで、既定にあるキーが届いていない**（今回の事故そのもの）",
     );
   } finally {
@@ -318,12 +332,12 @@ test("その Project 固有の直しは、選び直しても残る", async () =>
     // Project だけ env を足す（`setModuleDeclarations` が差分として残す）
     const declarations = loadModuleDeclarations(config, "p1").map((d) =>
       d.name === "shell"
-        ? { ...d, launch: { ...d.launch, env: { ...d.launch.env, EXTRA: "1" } } }
+        ? { ...d, launch: { ...stdio(d.launch), env: { ...stdio(d.launch).env, EXTRA: "1" } } }
         : d,
     );
     await setModuleDeclarations(config, declarations as never, "p1");
     assert.equal(
-      loadModuleDeclarations(config, "p1").find((d) => d.name === "shell")?.launch.env?.EXTRA,
+      stdio(loadModuleDeclarations(config, "p1").find((d) => d.name === "shell")!.launch).env?.EXTRA,
       "1",
     );
 
@@ -333,7 +347,7 @@ test("その Project 固有の直しは、選び直しても残る", async () =>
       .map((m) => m.name);
     await setProjectModuleSelection(config, "p1", keep);
     assert.equal(
-      loadModuleDeclarations(config, "p1").find((d) => d.name === "shell")?.launch.env?.EXTRA,
+      stdio(loadModuleDeclarations(config, "p1").find((d) => d.name === "shell")!.launch).env?.EXTRA,
       "1",
       "選び直したら、その Project 固有の直しが消えた",
     );
@@ -346,7 +360,7 @@ test("その Project 固有の直しは、選び直しても残る", async () =>
 // ——固定だと2本目が1本目の資格情報を上書きする。
 test("秘密を扱う Module の置き場は、接続名ごとに分かれる場所を指す", () => {
   for (const d of DEFAULT_MODULE_DECLARATIONS) {
-    for (const [key, value] of Object.entries(d.launch.env ?? {})) {
+    for (const [key, value] of Object.entries(stdio(d.launch).env ?? {})) {
       if (!/DATA_DIR$/.test(key)) continue;
       // `${dataDir}/...` は banto 全体で1つの場所——コピーするとぶつかる。
       // **ぶつかってよいものだけ、理由つきでここに挙げる**
@@ -603,7 +617,7 @@ test("引いた値は env にだけ入る——引けなかったものは空で
     },
     "test",
   );
-  const filled = fillSecrets(d.launch, new Map([["weather-key", "sk-REAL"]]));
+  const filled = stdio(fillSecrets(d.launch, new Map([["weather-key", "sk-REAL"]])));
   assert.equal(filled.env?.API_KEY, "sk-REAL");
   assert.equal(filled.env?.OTHER, "plain");
   // **argv には何も起きていない**
@@ -644,4 +658,120 @@ test("閉じ込めの無い外部 Module には渡さない——同梱は自分
   );
   // 同梱は閉じ込めが無くても通る（banto 自身のコード）
   assert.equal(secretsAllowedFor(metaFor({ origin: "bundled" })).ok, true);
+});
+
+// **URL に繋ぐ形**（追加・2026-09-17、ユーザー指示）。
+// 見たいのは「受け取れる」ではなく、**受け取ってはいけないものを断ること**。
+test("URL に繋ぐ形は、金庫の語だけを headers に差し込める", () => {
+  const d = parseModuleDeclaration(
+    {
+      name: "weather",
+      launch: {
+        type: "http",
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer ${secret:weather-key}", "X-Plain": "ok" },
+      },
+      meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  assert.deepEqual(secretPlaceholders(d.launch), [
+    { envName: "Authorization", alias: "weather-key" },
+  ]);
+  const filled = fillSecrets(d.launch, new Map([["weather-key", "sk-REAL"]]));
+  assert.ok(isRemoteLaunch(filled));
+  assert.equal(filled.headers?.Authorization, "Bearer sk-REAL");
+  assert.equal(filled.headers?.["X-Plain"], "ok");
+  // **URL は変わっていない**（差し込み語は置けない）
+  assert.equal(filled.url, "https://example.com/mcp");
+});
+
+test("URL に繋ぐ形に、banto の内部の値を差し込ませない", () => {
+  const make = (launch: unknown) =>
+    parseModuleDeclaration(
+      { name: "r", launch, meta: { satisfies: [], dependsOn: [], isolation: "subprocess" } },
+      "test",
+    );
+  // 中継の合言葉を外へ送る道を作らない
+  assert.throws(
+    () => make({ type: "http", url: "https://e.com/mcp", headers: { A: "${hostRelayToken}" } }),
+    /URL に繋ぐ形では書けません/,
+  );
+  // **URL には金庫の語も置けない**——経路上の記録に秘密が残る
+  assert.throws(
+    () => make({ type: "http", url: "https://e.com/${secret:k}" }),
+    /URL に差し込むと/,
+  );
+  assert.throws(() => make({ type: "http", url: "ftp://e.com/mcp" }), /http か https/);
+  assert.throws(() => make({ type: "http", url: "これはURLではない" }), /URL として読めません/);
+});
+
+test("URL に繋ぐ形は、閉じ込めも dependsOn も名乗れない——できないことを書かせない", () => {
+  const base = { type: "http", url: "https://e.com/mcp" };
+  assert.throws(
+    () =>
+      parseModuleDeclaration(
+        {
+          name: "r",
+          launch: base,
+          meta: {
+            satisfies: [],
+            dependsOn: [],
+            isolation: "subprocess",
+            confinement: { kind: "landlock", root: "none" },
+          },
+        },
+        "test",
+      ),
+    /閉じ込めを掛けられません/,
+  );
+  assert.throws(
+    () =>
+      parseModuleDeclaration(
+        {
+          name: "r",
+          launch: base,
+          meta: { satisfies: [], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" },
+        },
+        "test",
+      ),
+    /他の Module を呼べません/,
+  );
+});
+
+test("URL に繋ぐ形は、同梱にならず、骨格の役割も名乗れない", () => {
+  // 同梱と同じ名前でも、URL に繋ぐ形なら外から扱い
+  const d = parseModuleDeclaration(
+    {
+      name: "vault-local",
+      launch: { type: "http", url: "https://e.com/mcp" },
+      meta: { satisfies: [], dependsOn: [], isolation: "subprocess" },
+    },
+    "test",
+  );
+  assert.equal(d.meta.origin, "external", "URL に繋ぐ形が同梱になっている");
+  // 骨格の役割は名乗れない（外から扱いなので）
+  assert.throws(
+    () =>
+      parseModuleDeclaration(
+        {
+          name: "r",
+          launch: { type: "http", url: "https://e.com/mcp" },
+          meta: { satisfies: ["vault"], dependsOn: [], isolation: "subprocess" },
+        },
+        "test",
+      ),
+    /vault/,
+  );
+});
+
+test("URL に繋ぐ形には、閉じ込めが無くても秘密を渡す——守るのは人の承知のほう", () => {
+  // 閉じ込めは掛けられない（プロセスがこちらに無い）。それでも断ると、
+  // **リモートに API キーを渡す道が無くなる**——それは機能そのものが無いのと同じ
+  const remote = { type: "http" as const, url: "https://e.com/mcp" };
+  assert.equal(secretsAllowedFor(metaFor({}), remote).ok, true);
+  // **起動する形では今までどおり**——閉じ込めが無ければ断る
+  assert.equal(secretsAllowedFor(metaFor({}), { command: "x", args: [] }).ok, false);
+  // 金庫そのものは、形によらず断る
+  assert.equal(secretsAllowedFor(metaFor({ satisfies: ["vault"], origin: "bundled" }), remote).ok, false);
 });

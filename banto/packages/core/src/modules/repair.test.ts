@@ -18,6 +18,9 @@ import {
   loadModuleDeclarations,
   repairDeclarationMeta,
   setModuleDeclarations,
+  isRemoteLaunch,
+  type ModuleLaunch,
+  type StdioLaunch,
 } from "./declaration.js";
 
 const PROJECT = "project-1";
@@ -43,11 +46,18 @@ async function givenProjectOverride(config: RuntimeConfigStore): Promise<void> {
     config,
     current.map((d) =>
       d.name === "filesystem"
-        ? { ...d, launch: { ...d.launch, env: { ...d.launch.env, ONLY_HERE: "1" } } }
+        ? { ...d, launch: { ...stdio(d.launch), env: { ...stdio(d.launch).env, ONLY_HERE: "1" } } }
         : d,
     ),
     PROJECT,
   );
+}
+
+
+/** **起動する形として読む**（`ModuleLaunch` は2つの形の union・2026-09-17）。 */
+function stdio(launch: ModuleLaunch): StdioLaunch {
+  assert.ok(!isRemoteLaunch(launch), "起動する形ではありません");
+  return launch as StdioLaunch;
 }
 
 test("Module 固有の直しは instance 既定へ——Project の上書きを巻き込まない", async () => {
@@ -66,13 +76,13 @@ test("Module 固有の直しは instance 既定へ——Project の上書きを�
 
     // **その Project の事情は既定に漏れていない**
     const defaultFs = loadModuleDeclarations(config, "").find((d) => d.name === "filesystem")!;
-    assert.equal(defaultFs.launch.env?.ONLY_HERE, undefined, "Project の上書きが既定に漏れた");
+    assert.equal(stdio(defaultFs.launch).env?.ONLY_HERE, undefined, "Project の上書きが既定に漏れた");
     const otherFs = loadModuleDeclarations(config, OTHER).find((d) => d.name === "filesystem")!;
-    assert.equal(otherFs.launch.env?.ONLY_HERE, undefined, "別の Project にまで漏れた");
+    assert.equal(stdio(otherFs.launch).env?.ONLY_HERE, undefined, "別の Project にまで漏れた");
 
     // 当の Project の上書きはそのまま残っている（消してもいない）
     const mineFs = loadModuleDeclarations(config, PROJECT).find((d) => d.name === "filesystem")!;
-    assert.equal(mineFs.launch.env?.ONLY_HERE, "1", "その Project の上書きを消してしまった");
+    assert.equal(stdio(mineFs.launch).env?.ONLY_HERE, "1", "その Project の上書きを消してしまった");
   });
 });
 
@@ -120,6 +130,6 @@ test("直した内容は、Project 上書きのあるモジュールにもその
 
     const mine = loadModuleDeclarations(config, PROJECT).find((d) => d.name === "filesystem")!;
     assert.equal(mine.meta.handlesSecrets, true, "直しがこの Project に届いていない");
-    assert.equal(mine.launch.env?.ONLY_HERE, "1", "この Project の上書きが消えた");
+    assert.equal(stdio(mine.launch).env?.ONLY_HERE, "1", "この Project の上書きが消えた");
   });
 });

@@ -757,7 +757,9 @@ export interface RealInstanceModule {
   dependsOn: { role: string; required: boolean }[];
   scope: "instance" | "project";
   confinement?: { kind: string; root: string; profile: string };
-  launch: { command: string; args: string[]; env?: Record<string, string> };
+  launch:
+    | { command: string; args: string[]; env?: Record<string, string> }
+    | { type: "http"; url: string; headers?: Record<string, string> };
   /** 止めると断るようになる Module（`dependsOn` から導いた値） */
   breaksIfDisabled: string[];
   /** いま立っているか */
@@ -777,12 +779,21 @@ export async function setRealInstanceModuleEnabled(name: string, enabled: boolea
   });
 }
 
-export async function addRealInstanceModule(declaration: {
-  name: string;
-  launch: { command: string; args: string[]; env?: Record<string, string> };
-  meta: unknown;
-}): Promise<void> {
-  await request("/api/modules", { method: "POST", body: JSON.stringify(declaration) });
+export async function addRealInstanceModule(
+  declaration: {
+    name: string;
+    launch:
+      | { command: string; args: string[]; env?: Record<string, string> }
+      | { type: "http"; url: string; headers?: Record<string, string> };
+    meta: unknown;
+  },
+  /** **URL に繋ぐ形のときだけ要る**——「machine の外へ出す」と人が承知した印。 */
+  acknowledgeEgress = false,
+): Promise<void> {
+  await request("/api/modules", {
+    method: "POST",
+    body: JSON.stringify(acknowledgeEgress ? { ...declaration, acknowledgeEgress: true } : declaration),
+  });
 }
 
 export async function removeRealInstanceModule(name: string): Promise<void> {
@@ -793,7 +804,11 @@ export async function removeRealInstanceModule(name: string): Promise<void> {
  * **`mcpServers` の形で足す**（2026-09-16）。人は Claude Code の設定や
  * README から**貼ってくる**——打たせない。
  */
-export async function addRealInstanceModulesFromMcpServers(json: string): Promise<string[]> {
+export async function addRealInstanceModulesFromMcpServers(
+  json: string,
+  /** **URL に繋ぐ形が混じっているときだけ要る**（`docs/specs/v4-security.md`）。 */
+  acknowledgeEgress = false,
+): Promise<string[]> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -808,7 +823,7 @@ export async function addRealInstanceModulesFromMcpServers(json: string): Promis
       : { mcpServers: parsed };
   const res = await request<{ added: string[] }>("/api/modules", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(acknowledgeEgress ? { ...body, acknowledgeEgress: true } : body),
   });
   return res.added ?? [];
 }

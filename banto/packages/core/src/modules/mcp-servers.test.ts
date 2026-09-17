@@ -3,8 +3,19 @@
 // 決めていたのに、実装は banto 独自の形のままだった（規則8）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_MODULE_DECLARATIONS, parseModuleDeclaration } from "./declaration.js";
+import { DEFAULT_MODULE_DECLARATIONS, parseModuleDeclaration,
+  isRemoteLaunch,
+  type ModuleLaunch,
+  type StdioLaunch,
+} from "./declaration.js";
 import { McpServersError, fromMcpServers, toMcpServers } from "./mcp-servers.js";
+
+
+/** **起動する形として読む**（`ModuleLaunch` は2つの形の union・2026-09-17）。 */
+function stdio(launch: ModuleLaunch): StdioLaunch {
+  assert.ok(!isRemoteLaunch(launch), "起動する形ではありません");
+  return launch as StdioLaunch;
+}
 
 test("Claude Code の設定をそのまま貼れる", () => {
   const [d] = fromMcpServers({
@@ -17,8 +28,8 @@ test("Claude Code の設定をそのまま貼れる", () => {
     },
   });
   assert.equal(d!.name, "github");
-  assert.equal(d!.launch.command, "npx");
-  assert.deepEqual(d!.launch.args, ["-y", "@modelcontextprotocol/server-github"]);
+  assert.equal(stdio(d!.launch).command, "npx");
+  assert.deepEqual(stdio(d!.launch).args, ["-y", "@modelcontextprotocol/server-github"]);
   // **貼り付けたものは必ず閉じ込める**（外から繋ぐコードなので）
   const parsed = parseModuleDeclaration(d!, "test");
   assert.equal(parsed.meta.confinement?.root, "none", "閉じ込めが掛かっていない");
@@ -37,13 +48,36 @@ test("この Project のフォルダを渡していれば、Project ごとにな
   assert.equal(parsed.meta.confinement?.root, "project");
 });
 
-test("URL に繋ぐ形は、まだ受けられないとはっきり言う（黙って無視しない）", () => {
+// **URL に繋ぐ形を受ける**（改訂・2026-09-17、ユーザー指示）。以前は断っていた。
+test("URL に繋ぐ形を受ける——閉じ込めは付けない（掛からないものを付けたふりをしない）", () => {
+  const [d] = fromMcpServers({
+    mcpServers: { remote: { type: "http", url: "https://example.com/mcp", headers: { A: "1" } } },
+  });
+  assert.equal(d!.name, "remote");
+  assert.deepEqual(d!.launch, { type: "http", url: "https://example.com/mcp", headers: { A: "1" } });
+  // **閉じ込めは書かない**——プロセスがこちらに無いので掛からない。
+  // 書くと「閉じ込めてある」と読まれる（規則13）
+  assert.equal((d!.meta as { confinement?: unknown }).confinement, undefined);
+  assert.equal((d!.meta as { scope?: string }).scope, "instance");
+
+  // type を書いていなくても、url があれば同じ（`mcpServers` の慣習）
+  const [inferred] = fromMcpServers({ mcpServers: { r: { url: "https://example.com/mcp" } } });
+  assert.equal((inferred!.launch as { type?: string }).type, "http");
+
+  // 知らない繋ぎ方は、理由を言って断る（規則2）
   assert.throws(
-    () => fromMcpServers({ mcpServers: { remote: { type: "http", url: "https://example.com/mcp" } } }),
-    /URL に繋ぐ形/,
+    () => fromMcpServers({ mcpServers: { x: { type: "sse", url: "https://example.com" } } }),
+    /知らない繋ぎ方/,
   );
-  // type を書いていなくても、url があれば同じ
-  assert.throws(() => fromMcpServers({ mcpServers: { r: { url: "https://example.com/mcp" } } }), McpServersError);
+  assert.throws(() => fromMcpServers({ mcpServers: { x: { type: "http" } } }), /url が要ります/);
+});
+
+test("URL に繋ぐ形も、そのまま取り出せる（往復）", () => {
+  const before = fromMcpServers({
+    mcpServers: { remote: { type: "http", url: "https://example.com/mcp", headers: { A: "1" } } },
+  });
+  const after = fromMcpServers(toMcpServers(before));
+  assert.deepEqual(after, before);
 });
 
 test("形が違えば、理由を言って止まる", () => {

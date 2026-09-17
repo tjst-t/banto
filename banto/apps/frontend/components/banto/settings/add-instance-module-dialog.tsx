@@ -39,6 +39,35 @@ const SAMPLE = `{
   }
 }`;
 
+/**
+ * **貼られた設定のうち、URL に繋ぐものの相手**（追加・2026-09-17）。
+ *
+ * 「呼ぶたびに、会話から来た内容がここへ出ていく」——**押す前に、相手の名前で
+ * 言う**（`docs/specs/v4-security.md`）。読めない JSON のときは空（まだ言えない）。
+ */
+function remoteHostsIn(json: string): string[] {
+  try {
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    const servers = (parsed.mcpServers ?? parsed) as Record<string, { type?: string; url?: string }>;
+    return [
+      ...new Set(
+        Object.values(servers)
+          .filter((s) => s && (s.type === "http" || typeof s.url === "string"))
+          .map((s) => {
+            try {
+              return new URL(s.url ?? "").host;
+            } catch {
+              return "";
+            }
+          })
+          .filter(Boolean),
+      ),
+    ];
+  } catch {
+    return [];
+  }
+}
+
 /** 貼られた設定に、API キーらしき平文が入っていないか（記録に残ると伝えるため）。 */
 function looksLikePlainSecret(json: string): boolean {
   try {
@@ -58,14 +87,19 @@ function looksLikePlainSecret(json: string): boolean {
 export interface AddInstanceModuleDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
-  /** 手で書いた1本を足す。 */
-  onSubmit(declaration: {
-    name: string;
-    launch: { command: string; args: string[]; env?: Record<string, string> };
-    meta: unknown;
-  }): Promise<void>;
+  /** 手で書いた1本を足す。**URL に繋ぐ形のときは承知の印も渡す**。 */
+  onSubmit(
+    declaration: {
+      name: string;
+      launch:
+        | { command: string; args: string[]; env?: Record<string, string> }
+        | { type: "http"; url: string; headers?: Record<string, string> };
+      meta: unknown;
+    },
+    acknowledgeEgress?: boolean,
+  ): Promise<void>;
   /** 貼り付けた `mcpServers` を足す。足した名前を返す。 */
-  onPaste(json: string): Promise<string[]>;
+  onPaste(json: string, acknowledgeEgress?: boolean): Promise<string[]>;
 }
 
 export function AddInstanceModuleDialog({
@@ -79,6 +113,11 @@ export function AddInstanceModuleDialog({
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
+  // **URL に繋ぐ形**（追加・2026-09-17）。手で書く道でも選べる
+  const [connect, setConnect] = useState<"stdio" | "remote">("stdio");
+  const [url, setUrl] = useState("");
+  /** 「machine の外へ出す」ことを人が承知したか。**既定は未承知**（規則2）。 */
+  const [egressOk, setEgressOk] = useState(false);
   const [envName, setEnvName] = useState("");
   const [envValue, setEnvValue] = useState("");
   // **既定は金庫から**——直書きは消せないので、楽な道を安全なほうに置く
@@ -87,8 +126,27 @@ export function AddInstanceModuleDialog({
   const [error, setError] = useState<string | null>(null);
 
   const args = argsText.split(/\s+/).filter(Boolean);
+  const manualRemote = mode === "manual" && connect === "remote";
   // **どこに立つかは、書いたものから決まる**（聞かない）
-  const perProject = mode === "manual" ? args.includes(PROJECT_ROOT) || command.includes(PROJECT_ROOT) : pasted.includes(PROJECT_ROOT);
+  const perProject = manualRemote
+    ? false
+    : mode === "manual"
+      ? args.includes(PROJECT_ROOT) || command.includes(PROJECT_ROOT)
+      : pasted.includes(PROJECT_ROOT);
+
+  // **相手の名前**——押す前に、どこへ出ていくかを言うために
+  const remoteHosts = manualRemote
+    ? (() => {
+        try {
+          return url.trim() ? [new URL(url.trim()).host] : [];
+        } catch {
+          return [];
+        }
+      })()
+    : mode === "paste"
+      ? remoteHostsIn(pasted)
+      : [];
+  const isRemote = manualRemote || remoteHosts.length > 0;
 
   function reset() {
     setPasted("");
@@ -98,12 +156,21 @@ export function AddInstanceModuleDialog({
     setEnvName("");
     setEnvValue("");
     setFromVault(true);
+    setConnect("stdio");
+    setUrl("");
+    setEgressOk(false);
     setError(null);
     setMode("paste");
   }
 
   const canSubmit =
-    mode === "paste" ? pasted.trim().length > 0 : name.trim().length > 0 && command.trim().length > 0;
+    (mode === "paste"
+      ? pasted.trim().length > 0
+      : manualRemote
+        ? name.trim().length > 0 && url.trim().length > 0
+        : name.trim().length > 0 && command.trim().length > 0) &&
+    // **外へ出すものは、承知していなければ押せない**（規則2——既定は止める側）
+    (!isRemote || egressOk);
 
   return (
     <Dialog
@@ -172,6 +239,27 @@ export function AddInstanceModuleDialog({
           </div>
         ) : (
           <div className="flex flex-col gap-3">
+            {/* **形は2つ**（追加・2026-09-17）——こちらで起こすか、URL に繋ぐか */}
+            <div className="flex gap-1">
+              <Button
+                type="button"
+                size="sm"
+                role="tab"
+                variant={connect === "stdio" ? "default" : "ghost"}
+                onClick={() => setConnect("stdio")}
+              >
+                このサーバで起動する
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                role="tab"
+                variant={connect === "remote" ? "default" : "ghost"}
+                onClick={() => setConnect("remote")}
+              >
+                URL に繋ぐ
+              </Button>
+            </div>
             <div className="flex flex-col gap-1">
               <Label htmlFor="add-module-name">名前</Label>
               <Input
@@ -181,6 +269,18 @@ export function AddInstanceModuleDialog({
                 placeholder="weather"
               />
             </div>
+            {manualRemote ? (
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="add-module-url">URL</Label>
+                <Input
+                  id="add-module-url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://example.com/mcp"
+                />
+              </div>
+            ) : (
+              <>
             <div className="flex flex-col gap-1">
               <Label htmlFor="add-module-command">コマンド</Label>
               <Input
@@ -209,20 +309,24 @@ export function AddInstanceModuleDialog({
                 </Button>
               </div>
             </div>
+              </>
+            )}
 
             {/* **API キーを入れる場所**（追加・2026-09-16）。ここが無いと、
                 手で書く道では鍵の要る MCP サーバを繋げない。
                 **既定は「金庫から」**——直書きは記録に残り続けるので、
                 楽な道を安全なほうに置く */}
             <div className="flex flex-col gap-1">
-              <Label htmlFor="add-module-env-name">API キー（要るときだけ）</Label>
+              <Label htmlFor="add-module-env-name">
+                {manualRemote ? "API キー（ヘッダ名／要るときだけ）" : "API キー（要るときだけ）"}
+              </Label>
               <div className="flex gap-2">
                 <Input
                   id="add-module-env-name"
                   className="flex-1"
                   value={envName}
                   onChange={(e) => setEnvName(e.target.value)}
-                  placeholder="ACCUWEATHER_API_KEY"
+                  placeholder={manualRemote ? "Authorization" : "ACCUWEATHER_API_KEY"}
                 />
                 <Input
                   aria-label={fromVault ? "金庫に入れた名前" : "値"}
@@ -266,11 +370,41 @@ export function AddInstanceModuleDialog({
 
         {/* **押す前に、何が決まるかを出す**（導出は隠さない） */}
         <p className="text-xs text-ink-3" data-testid="add-module-effect">
-          {perProject
-            ? "Project ごとに1本立ち、その Project のフォルダだけを渡します"
-            : "banto 全体で1本立ちます（Project のフォルダは渡りません）"}
-          。<strong>外から繋ぐコードは必ず閉じ込めます</strong>
+          {isRemote
+            ? "banto 全体から使えます。プロセスは立てません（相手のサーバで動いています）"
+            : perProject
+              ? "Project ごとに1本立ち、その Project のフォルダだけを渡します"
+              : "banto 全体で1本立ちます（Project のフォルダは渡りません）"}
+          。
+          <strong>
+            {isRemote
+              ? "相手のコードは閉じ込められません（こちらで動いていないため）"
+              : "外から繋ぐコードは必ず閉じ込めます"}
+          </strong>
         </p>
+
+        {/* **外へ出すことは、押す前に、相手の名前で言う**（決定・2026-09-17、
+            `docs/specs/v4-security.md`「Module が machine の外へデータを出す」）。
+            閉じ込めが効かない代わりに要るのが、この承知 */}
+        {isRemote ? (
+          <label
+            className="flex items-start gap-2 rounded-lg border border-danger/40 p-2 text-xs text-danger"
+            data-testid="add-module-egress-notice"
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={egressOk}
+              onChange={(e) => setEgressOk(e.target.checked)}
+              data-testid="add-module-egress-ack"
+            />
+            <span>
+              この Module を呼ぶたびに、<strong>会話から来た内容が
+              {remoteHosts.length > 0 ? `「${remoteHosts.join("・")}」` : "この URL の相手"}へ送られます</strong>
+              （banto の外に出ます）。承知しました
+            </span>
+          </label>
+        ) : null}
 
         {error ? (
           <p className="text-xs text-danger" data-testid="add-module-error">
@@ -290,7 +424,21 @@ export function AddInstanceModuleDialog({
               setError(null);
               try {
                 if (mode === "paste") {
-                  await onPaste(pasted);
+                  await onPaste(pasted, isRemote);
+                } else if (manualRemote) {
+                  const key = envName.trim();
+                  const val = envValue.trim();
+                  const headers =
+                    key && val ? { [key]: fromVault ? `\${secret:${val}}` : val } : undefined;
+                  await onSubmit(
+                    {
+                      name: name.trim(),
+                      launch: { type: "http", url: url.trim(), ...(headers ? { headers } : {}) },
+                      // **閉じ込めは書かない**——掛からないものを付けたふりをしない
+                      meta: { satisfies: [], dependsOn: [], isolation: "subprocess", scope: "instance" },
+                    },
+                    true,
+                  );
                 } else {
                   const key = envName.trim();
                   const val = envValue.trim();

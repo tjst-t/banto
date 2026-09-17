@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   checkAbi,
   deriveProjectRuleset,
@@ -40,6 +41,10 @@ import {
   loadModuleDeclarations,
   secretPlaceholders,
   secretsAllowedFor,
+  isRemoteLaunch,
+  isEgressAcknowledged,
+  type RemoteLaunch,
+  type StdioLaunch,
   type ModuleLaunch,
   repairDeclarationMeta,
   type LaunchContext,
@@ -83,6 +88,27 @@ async function connectStdioModule(
   // elicitation を宣言しないと、Module側の server.elicitInput() が
   // 「Client does not support form elicitation」で即エラーになる
   // （agent-proxy.ts のelicitation転送の前提）。
+  const client = new Client({ name: "banto-host", version: "0.1.0" }, { capabilities: { elicitation: {} } });
+  await client.connect(transport);
+  return client;
+}
+
+/**
+ * **URL に繋ぐ**（追加・2026-09-17、ユーザー指示）。
+ *
+ * プロセスを起こさないので、閉じ込めも `cwd` も `env` も無い。渡せるのは
+ * **ヘッダだけ**——そしてそこに入れてよい banto 由来の値は**金庫の秘密だけ**
+ * （`declaration.ts` の `checkRemoteHeader`）。**中継の合言葉は渡さない**
+ * ——第三者のサーバに banto の身元を持たせない。
+ */
+async function connectRemoteModule(
+  url: string,
+  headers: Record<string, string> | undefined,
+): Promise<Client> {
+  const transport = new StreamableHTTPClientTransport(
+    new URL(url),
+    headers ? { requestInit: { headers } } : undefined,
+  );
   const client = new Client({ name: "banto-host", version: "0.1.0" }, { capabilities: { elicitation: {} } });
   await client.connect(transport);
   return client;
@@ -278,7 +304,7 @@ async function main(): Promise<void> {
     if (wanted.length === 0) return declaration.launch;
 
     // **渡してよい相手か**（判断は declaration.ts に出してある——試験できる場所へ）
-    const allowed = secretsAllowedFor(declaration.meta);
+    const allowed = secretsAllowedFor(declaration.meta, declaration.launch);
     if (!allowed.ok) throw new Error(`${declaration.name}: ${allowed.reason}`);
 
     const caller = projectId ? { project: projectId } : { instance: true as const };
@@ -365,6 +391,42 @@ async function main(): Promise<void> {
     return text;
   }
 
+  /**
+   * **URL に繋ぐ Module を立てる**（追加・2026-09-17）。
+   *
+   * stdio とここが決定的に違う：
+   *
+   * - **閉じ込めが効かない。** プロセスがこちらに無い——Landlock は自分が
+   *   起こしたものにしか掛からない。だから閉じ込めの代わりに
+   *   **「machine の外へ出す」ことへの人の明示の承認**を要る形にする
+   * - **中継の合言葉を渡さない。** 第三者のサーバに banto の身元を持たせない
+   *   ——つまりリモートは**他の Module を呼べない**（`dependsOn` は parse が断る）
+   * - **同梱にならない**（`withOrigin`）。骨格の役割も名乗れない
+   */
+  async function connectRemoteDeclaredModule(
+    declaration: ParsedModuleDeclaration,
+    connName: string,
+    project: { id: string; root: string } | undefined,
+  ): Promise<string> {
+    const launch = declaration.launch as RemoteLaunch;
+    // **人が「外へ出す」と承知したか。** 承知していなければ繋がない（規則2
+    // ——黙って外へ出さない）。承認は URL ごと——URL が変われば聞き直す
+    if (!isEgressAcknowledged(runtimeConfig, declaration.name, launch.url)) {
+      throw new Error(
+        `${connName}: この Module は ${new URL(launch.url).host} へデータを送ります。` +
+          "画面から承知のうえで追加し直してください（承認が記録にありません）",
+      );
+    }
+    const withSecrets = await resolveSecretPlaceholders(declaration, project?.id);
+    const filled = expandLaunch(withSecrets, {
+      ...launchContextBase,
+      hostRelayToken: "",
+      moduleDataDir: "",
+    }) as RemoteLaunch;
+    const client = await connectRemoteModule(filled.url, filled.headers);
+    return finishModuleConnection(declaration, connName, project, client, undefined, undefined);
+  }
+
   async function spawnDeclaredModuleOnce(
     declaration: ParsedModuleDeclaration,
     forProject: { id: string; root: string } | undefined,
@@ -373,6 +435,12 @@ async function main(): Promise<void> {
   ): Promise<string> {
     // 束ねている間に先の1本が終わっていることがある
     if (connectedModules.has(connName)) return connName;
+
+    // **URL に繋ぐ形は、まったく別の道を通る**（追加・2026-09-17）。
+    // 起こすプロセスが無いので、閉じ込めも `cwd` も `env` も合言葉も無い
+    if (isRemoteLaunch(declaration.launch)) {
+      return connectRemoteDeclaredModule(declaration, connName, project);
+    }
 
     // 中継の合言葉は「宣言に書けない値」なので、ここで発行して差し込む
     // **承認の粒度は宣言の名前と Project**（アーキ仕様 §2.5）。プロセスの名前
@@ -394,7 +462,8 @@ async function main(): Promise<void> {
     // **金庫の語を先に解く**（追加・2026-09-16）。値はここで初めて現れ、
     // env として子プロセスへ渡るだけ——**記録に残るのは名前だけ**
     const withSecrets = await resolveSecretPlaceholders(declaration, project?.id);
-    const launch = expandLaunch(withSecrets, context);
+    // ここへ来るのは起動する形だけ（URL に繋ぐ形は上で分かれている）
+    const launch = expandLaunch(withSecrets, context) as StdioLaunch;
 
     // **外から繋いだコードを、閉じ込め無しで立てない**（追加・2026-09-15、
     // レビューで発覚。`docs/specs/v4-security.md`）。
@@ -481,6 +550,24 @@ async function main(): Promise<void> {
       ...launch.env,
     });
 
+    return finishModuleConnection(declaration, connName, project, client, token, forProject);
+  }
+
+
+  /**
+   * **繋いだ後にやることは、起動する形でも URL に繋ぐ形でも同じ**
+   * （切り出し・2026-09-17）。申告の突き合わせ・可視性の検査・台帳への登録。
+   *
+   * `token` は中継の合言葉——**URL に繋ぐ形には無い**（渡さないと決めた）。
+   */
+  async function finishModuleConnection(
+    declaration: ParsedModuleDeclaration,
+    connName: string,
+    project: { id: string; root: string } | undefined,
+    client: Client,
+    token: string | undefined,
+    forProject: { id: string; root: string } | undefined,
+  ): Promise<string> {
     // **Module 自身の申告と、宣言（Config）を突き合わせる**（決定・2026-09-06）。
     // 起動の形（Project ごとか・別プロセスか・秘密を扱うか・閉じ込めが要るか）は
     // 起動する瞬間に決まってしまうので、宣言が先。申告は**より厳しくする方向にだけ**
@@ -564,7 +651,7 @@ async function main(): Promise<void> {
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
     connectedModules.set(connName, client);
-    moduleTokens.set(connName, token);
+    if (token !== undefined) moduleTokens.set(connName, token);
     if (project) {
       const forThisProject = projectConnections.get(project.id) ?? new Set<string>();
       forThisProject.add(connName);

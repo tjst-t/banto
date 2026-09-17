@@ -1599,16 +1599,21 @@
     {
       "id": "module-remote-mcp",
       "title": "リモート MCP（`type:\"http\"`）を受け入れるか決めて、入れるなら実装する",
-      "status": "backlog",
+      "status": "done",
       "why": "AccuWeather のような外部サービスは、素直に繋ぐならリモート。いまは理由を言って断っている。閉じ込めが効かず、呼ぶたびに引数が相手へ出ていくので、他の Module と同じ扱いにはできない。",
-      "open": [
-        "『これは machine の外へデータを送ります』の明示承認を、繋ぐときに人へ出す",
-        "リモートは骨格の役割（shell/filesystem/vault/vault-directory）を名乗れない",
-        "リモートの tool を agent 可視の既定に自動で載せない",
-        "headers にも `${secret:名前}` を通す（秘密が毎回外へ出ることは、そう言う）",
-        "脅威表の『Module が machine の外へデータを出す』行を未決から決定へ"
+      "spec": "docs/specs/v4-architecture.md「URL に繋ぐ Module（リモート MCP）」／v4-security.md 脅威表／v4-frontend.md §6.22",
+      "done": [
+        "`type:\"http\"` を受ける（Streamable HTTP）。`sse` は名前を挙げて断る",
+        "閉じ込めの代わりに人の明示の承知（acknowledgeEgress）。断り文句にも画面にも**相手の host 名**を出す",
+        "承知は (名前, URL) で Event Store に残す。URL が変われば聞き直し、消したら忘れる",
+        "中継の合言葉を渡さない＝リモートは他の Module を呼べない（dependsOn は宣言時に断る）",
+        "同梱にならず、骨格の役割も名乗れない（構造でそうなる）",
+        "`${secret:名前}` は headers の値だけ。URL には何も差し込めない（経路の記録に残るため）",
+        "閉じ込めは宣言できない（掛からないものを付けたふりをしない）",
+        "資源を名乗らないサーバで設定画面が 500 になっていたのを直した（capability negotiation を見る）",
+        "採らなかった：リモートだけ可視性／Project 選択の既定を変える——閉じ込めた stdio もネットワークは素通しなので、守れる範囲は広がらず規則だけ増える"
       ],
-      "spec": "docs/specs/v4-security.md 脅威表の該当行（未決）"
+      "notes": "docs/notes/2026-09-17-remote-mcp.md"
     }
   ],
   "phase1": {

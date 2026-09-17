@@ -18,11 +18,11 @@
 // 受ける——**固まったら合わせる**の約束の範囲。
 
 import { MODULE_META_KEY } from "@banto/module-contract";
-import type { ModuleDeclaration } from "./declaration.js";
+import { isRemoteLaunch, type ModuleDeclaration } from "./declaration.js";
 
-/** `mcpServers` の1件。**stdio と remote の両方の形を受ける**（remote はまだ起動しない）。 */
+/** `mcpServers` の1件。**stdio と remote の両方の形を受ける**。 */
 export interface McpServerEntry {
-  /** `stdio`（起動する）か `http`（繋ぐだけ）。省略時は形から推す。 */
+  /** `stdio`（起動する）か `http`（URL に繋ぐ）。省略時は形から推す。 */
   type?: string;
   command?: string;
   args?: string[];
@@ -50,6 +50,17 @@ function usesProjectRoot(entry: McpServerEntry): boolean {
 }
 
 /**
+ * **URL に繋ぐ形の既定**（追加・2026-09-17）。
+ *
+ * 閉じ込めは付けない——**プロセスがこちらに無いので掛からない**。付けたふりを
+ * すると「閉じ込めてある」と読まれる（規則13——見えているものは繋がっている）。
+ * 代わりに効くのは egress の承認で、それは口（`POST /api/modules`）が見る。
+ */
+function remoteDefaultMeta() {
+  return { satisfies: [], dependsOn: [], isolation: "subprocess", scope: "instance" as const };
+}
+
+/**
  * `mcpServers` を banto の宣言に直す。
  *
  * **`_meta` が無いときの既定は、狭いほうに倒す**（`docs/specs/v4-security.md`）
@@ -69,11 +80,19 @@ export function fromMcpServers(raw: unknown): ModuleDeclaration[] {
       throw new McpServersError(`${name}: 中身がオブジェクトではありません`);
     }
     const kind = entry.type ?? (entry.url ? "http" : "stdio");
+    if (kind === "http") {
+      if (typeof entry.url !== "string" || entry.url.trim() === "") {
+        throw new McpServersError(`${name}: url が要ります`);
+      }
+      return {
+        name,
+        launch: { type: "http" as const, url: entry.url, ...(entry.headers ? { headers: entry.headers } : {}) },
+        meta: entry._meta?.[MODULE_META_KEY] ?? remoteDefaultMeta(),
+      };
+    }
     if (kind !== "stdio") {
       // **黙って無視しない**（規則2）。受けられないものは、受けられないと言う
-      throw new McpServersError(
-        `${name}: banto はまだ URL に繋ぐ形（${kind}）を受けられません（起動する形だけです）`,
-      );
+      throw new McpServersError(`${name}: 知らない繋ぎ方です（${kind}）`);
     }
     if (typeof entry.command !== "string" || entry.command.trim() === "") {
       throw new McpServersError(`${name}: command が要ります`);
@@ -114,14 +133,24 @@ export function toMcpServers(
 ): McpServersFile {
   const mcpServers: Record<string, McpServerEntry> = {};
   for (const d of declarations) {
-    mcpServers[d.name] = {
-      type: "stdio",
-      command: d.launch.command,
-      args: d.launch.args,
-      ...(d.launch.env ? { env: d.launch.env } : {}),
+    const common = {
       ...(d.enabled === false ? { enabled: false } : {}),
       _meta: { [MODULE_META_KEY]: d.meta },
     };
+    mcpServers[d.name] = isRemoteLaunch(d.launch)
+      ? {
+          type: "http",
+          url: d.launch.url,
+          ...(d.launch.headers ? { headers: d.launch.headers } : {}),
+          ...common,
+        }
+      : {
+          type: "stdio",
+          command: d.launch.command,
+          args: d.launch.args,
+          ...(d.launch.env ? { env: d.launch.env } : {}),
+          ...common,
+        };
   }
   return { mcpServers };
 }

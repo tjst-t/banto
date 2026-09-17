@@ -30,6 +30,9 @@ import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./t
 import {
   ModuleDeclarationError,
   addModuleDeclaration,
+  acknowledgeEgress,
+  forgetEgress,
+  isRemoteLaunch,
   listInstanceModules,
   listProjectModules,
   removeModuleDeclaration,
@@ -53,6 +56,8 @@ import { CALLER_META_KEY, visibilityOf } from "@banto/module-contract";
 export interface ModuleClientLike {
   listTools(): Promise<{ tools: unknown[] }>;
   listResources(): Promise<{ resources: unknown[] }>;
+  /** その Module が何を持っていると名乗ったか（MCP の capability negotiation）。 */
+  getServerCapabilities?(): { resources?: unknown } | undefined;
   readResource(params: { uri: string; _meta?: Record<string, unknown> }): Promise<{ contents: unknown[] }>;
   callTool(
     params: { name: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> },
@@ -310,13 +315,29 @@ async function listUiToolsForThread(
   return result;
 }
 
+/**
+ * **資源を持たない Module がある**（追加・2026-09-17、URL に繋ぐ形で発覚）。
+ *
+ * 実際の公開サーバは `tools` だけを名乗ることが多く、`resources/list` を投げると
+ * `Method not found` を返す。**MCP は capability negotiation を持っている**ので、
+ * 名乗っていない相手には投げない（規則12——既にある仕組みを使う）。
+ *
+ * **握りつぶしはしない**：資源を持つと名乗った相手が失敗したら、そのまま投げる
+ * （規則2——1本の故障が「資源ゼロ」に化けると、画面から何も見えなくなる）。
+ */
+async function listResourcesIfAny(client: ModuleClientLike): Promise<unknown[]> {
+  if (client.getServerCapabilities && !client.getServerCapabilities()?.resources) return [];
+  const { resources } = await client.listResources();
+  return resources;
+}
+
 /** その Module 群が名乗っている**設定 Canvas**を集める（instance/Project で共通）。 */
 async function listSettingsCanvases(
   modules: Array<{ name: string; client: ModuleClientLike }>,
 ): Promise<Array<{ server: string; resourceUri: string; name?: string }>> {
   const result: Array<{ server: string; resourceUri: string; name?: string }> = [];
   for (const { name, client } of modules) {
-    const { resources } = await client.listResources();
+    const resources = await listResourcesIfAny(client);
     for (const r of resources) {
       // **Module が名乗ったものだけ**——投機的に探しにいかない（§6.2）
       if (!isSettingsCanvas(r)) continue;
@@ -339,7 +360,7 @@ async function listLauncherCanvases(
 ): Promise<Array<{ server: string; resourceUri: string; name?: string; description?: string }>> {
   const result: Array<{ server: string; resourceUri: string; name?: string; description?: string }> = [];
   for (const { name, client } of modules) {
-    const { resources } = await client.listResources();
+    const resources = await listResourcesIfAny(client);
     for (const r of resources) {
       if (canvasKindOf(r) !== "launcher") continue;
       const uri = (r as { uri?: unknown }).uri;
@@ -383,7 +404,7 @@ async function readUiResource(
   const found = modules.find((m) => m.name === serverName);
   if (!found) return { status: 404, body: { error: "unknown module", server: serverName } };
 
-  const { resources } = await found.client.listResources();
+  const resources = await listResourcesIfAny(found.client);
   const declared = resources.find((r) => (r as { uri?: unknown }).uri === uri) as
     | { mimeType?: unknown; _meta?: { ui?: Record<string, unknown> } }
     | undefined;
@@ -544,7 +565,27 @@ export function createApp(deps: AppDeps) {
           // **`mcpServers` を貼っても、1本ずつの形でも受ける**
           // ——人は Claude Code の設定や README から持ってくる
           const declarations = body.mcpServers ? fromMcpServers(body) : [body as never];
+
+          // **URL に繋ぐ形は、人が「外へ出す」と承知していなければ足さない**
+          // （決定・2026-09-17、`docs/specs/v4-security.md`）。閉じ込めは効かない
+          // ——プロセスがこちらに無い。代わりに要るのが、この承知
+          const remotes = declarations
+            .map((d) => (d as { name: string; launch: unknown }))
+            .filter((d) => isRemoteLaunch(d.launch as never))
+            .map((d) => ({ name: d.name, url: (d.launch as { url: string }).url }));
+          if (remotes.length > 0 && body.acknowledgeEgress !== true) {
+            const hosts = [...new Set(remotes.map((r) => new URL(r.url).host))].join("・");
+            return json(res, 400, {
+              error:
+                `この Module は ${hosts} へデータを送ります（呼ぶたびに、会話から来た内容が相手に渡ります）。` +
+                "承知のうえで追加してください",
+              needsEgressAcknowledgement: remotes,
+            });
+          }
+
           for (const d of declarations) await addModuleDeclaration(deps.runtimeConfig, d as never);
+          // **承知の記録は、宣言が通ってから**——足せなかったものに承認だけ残さない
+          for (const r of remotes) await acknowledgeEgress(deps.runtimeConfig, r.name, r.url);
           json(res, 200, { ok: true, added: declarations.map((d) => (d as { name: string }).name) });
         } catch (err) {
           if (
@@ -579,6 +620,9 @@ export function createApp(deps: AppDeps) {
         const name = decodeURIComponent(instanceModuleMatch[1]!);
         try {
           await removeModuleDeclaration(deps.runtimeConfig, name);
+          // **消したら承認も忘れる**（規則2）——同じ名前で別の相手へ繋ぎ直したとき、
+          // 前の承認がそのまま効いてはいけない（`codeId` と同じ理由・2026-09-15）
+          await forgetEgress(deps.runtimeConfig, name);
         } catch (err) {
           if (err instanceof ModuleDeclarationError) return json(res, 400, { error: err.message });
           throw err;

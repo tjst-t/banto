@@ -27,11 +27,36 @@ import { applyModuleOverlay, diffFromDefaults, type ModuleOverlay } from "./over
 
 export class ModuleDeclarationError extends Error {}
 
-/** 起動の仕方。**これが受け入れる唯一の形**（決定・2026-09-06）。 */
-export interface ModuleLaunch {
+/** **プロセスをこちらで立てる形**（決定・2026-09-06）。 */
+export interface StdioLaunch {
+  type?: "stdio";
   command: string;
   args: string[];
   env?: Record<string, string>;
+}
+
+/**
+ * **URL に繋ぐ形**（決定・2026-09-17、ユーザー指示）。
+ *
+ * プロセスがこちらに無いので、**閉じ込めは効かない**——Landlock は自分が起こした
+ * プロセスにしか掛からない。代わりに効くのは「**呼ぶたびに引数が相手へ出ていく**」
+ * という別の性質で、そこは人の明示の承認と監査で守る
+ * （`docs/specs/v4-security.md`「Module が machine の外へデータを出す」）。
+ *
+ * **差し込めるのは `${secret:…}` だけ**（`headers` の値のみ）。banto の内部の値
+ * （中継の合言葉・置き場のパス）を外へ送る道を作らない。
+ */
+export interface RemoteLaunch {
+  type: "http";
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type ModuleLaunch = StdioLaunch | RemoteLaunch;
+
+/** URL に繋ぐ形か。**判定は1箇所**（規則3——`type` の文字列を散らさない）。 */
+export function isRemoteLaunch(launch: ModuleLaunch): launch is RemoteLaunch {
+  return launch.type === "http";
 }
 
 export interface ModuleDeclaration {
@@ -131,10 +156,87 @@ function checkPlaceholders(
   }
 }
 
-/** その起動の指定に `${projectRoot}` が出てくるか。 */
+/** その起動の指定に `${projectRoot}` が出てくるか。**URL に繋ぐ形には無い**。 */
 function usesProjectRoot(launch: ModuleLaunch): boolean {
+  if (isRemoteLaunch(launch)) return false;
   const texts = [launch.command, ...launch.args, ...Object.values(launch.env ?? {})];
   return texts.some((t) => /\$\{projectRoot\}/.test(t));
+}
+
+/** 起動の指定を読む。**形は2つ**——プロセスを立てるか、URL に繋ぐか。 */
+function parseLaunch(launch: unknown, source: string): ModuleLaunch {
+  const raw = launch as {
+    type?: string;
+    command?: unknown;
+    args?: unknown;
+    env?: Record<string, unknown>;
+    url?: unknown;
+    headers?: Record<string, unknown>;
+  };
+  // **`type` が無くても `url` があれば URL に繋ぐ形**（`mcpServers` の慣習と同じ）
+  const kind = raw.type ?? (typeof raw.url === "string" ? "http" : "stdio");
+  if (kind === "http") {
+    if (typeof raw.url !== "string" || raw.url.trim() === "") {
+      throw new ModuleDeclarationError(`${source}: launch.url が空です`);
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(raw.url);
+    } catch {
+      throw new ModuleDeclarationError(`${source}: launch.url が URL として読めません（${raw.url}）`);
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new ModuleDeclarationError(`${source}: launch.url は http か https です（${parsed.protocol}）`);
+    }
+    const headers = raw.headers ?? undefined;
+    if (headers !== undefined && (typeof headers !== "object" || headers === null)) {
+      throw new ModuleDeclarationError(`${source}: launch.headers はオブジェクトです`);
+    }
+    if (Object.values(headers ?? {}).some((v) => typeof v !== "string")) {
+      throw new ModuleDeclarationError(`${source}: launch.headers の値は文字列である必要があります`);
+    }
+    return { type: "http", url: raw.url, ...(headers ? { headers: headers as Record<string, string> } : {}) };
+  }
+  if (kind !== "stdio") {
+    throw new ModuleDeclarationError(`${source}: 知らない繋ぎ方です（${String(kind)}）`);
+  }
+  const { command, args, env } = raw;
+  if (typeof command !== "string" || command.trim().length === 0) {
+    throw new ModuleDeclarationError(`${source}: launch.command が空です`);
+  }
+  if (!Array.isArray(args) || args.some((a) => typeof a !== "string")) {
+    throw new ModuleDeclarationError(`${source}: launch.args は文字列の配列である必要があります`);
+  }
+  if (Object.values(env ?? {}).some((v) => typeof v !== "string")) {
+    throw new ModuleDeclarationError(`${source}: launch.env の値は文字列である必要があります`);
+  }
+  return { command, args: args as string[], env: (env ?? undefined) as Record<string, string> | undefined };
+}
+
+/** 差し込み語を1つも許さない場所（URL）。 */
+function assertNoPlaceholder(text: string, source: string): void {
+  const found = [...text.matchAll(PLACEHOLDER_PATTERN)][0];
+  if (found) {
+    throw new ModuleDeclarationError(
+      `${source}: \${${found[1] ?? ""}} は書けません（URL に差し込むと、秘密が経路上の記録に残ります）`,
+    );
+  }
+}
+
+/** ヘッダの値。**`${secret:…}` だけ**——banto の内部の値を外へ送らせない。 */
+function checkRemoteHeader(text: string, source: string): void {
+  for (const match of text.matchAll(PLACEHOLDER_PATTERN)) {
+    const key = match[1] ?? "";
+    if (!key.startsWith(SECRET_PREFIX)) {
+      throw new ModuleDeclarationError(
+        `${source}: \${${key}} は URL に繋ぐ形では書けません` +
+          "（banto の内部の値を外へ送らないため）。使えるのは ${secret:名前} だけです",
+      );
+    }
+    if (key.slice(SECRET_PREFIX.length).trim() === "") {
+      throw new ModuleDeclarationError(`${source}: \${secret:…} に名前がありません`);
+    }
+  }
 }
 
 export function parseModuleDeclaration(raw: unknown, source: string): ParsedModuleDeclaration {
@@ -149,19 +251,7 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
   if (typeof launch !== "object" || launch === null) {
     throw new ModuleDeclarationError(`${source}(${name}): launch が要ります`);
   }
-  const { command, args, env } = launch as Partial<ModuleLaunch>;
-  if (typeof command !== "string" || command.trim().length === 0) {
-    throw new ModuleDeclarationError(`${source}(${name}): launch.command が空です`);
-  }
-  if (!Array.isArray(args) || args.some((a) => typeof a !== "string")) {
-    throw new ModuleDeclarationError(`${source}(${name}): launch.args は文字列の配列である必要があります`);
-  }
-  const envEntries = Object.entries(env ?? {});
-  if (envEntries.some(([, v]) => typeof v !== "string")) {
-    throw new ModuleDeclarationError(`${source}(${name}): launch.env の値は文字列である必要があります`);
-  }
-
-  const parsedLaunch: ModuleLaunch = { command, args, env: env ?? undefined };
+  const parsedLaunch = parseLaunch(launch, `${source}(${name})`);
 
   // **どこに立つかは、書いたものから導く**（決定・2026-09-15、レビューで発覚）。
   //
@@ -192,11 +282,37 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
       ? { ...parsedMeta, scope: "project" as const }
       : parsedMeta;
 
-  for (const text of [command, ...args]) {
-    checkPlaceholders(text, metaWithScope.scope, `${source}(${name})`, "command");
-  }
-  for (const [, v] of envEntries) {
-    checkPlaceholders(v, metaWithScope.scope, `${source}(${name})`, "env");
+  if (isRemoteLaunch(parsedLaunch)) {
+    // **URL に繋ぐ形に、banto の内部の値を差し込ませない。** 使えるのは
+    // `${secret:…}` だけで、置けるのは `headers` の値だけ——URL に置くと、
+    // 秘密が経路上のログや代理サーバに残る
+    assertNoPlaceholder(parsedLaunch.url, `${source}(${name}): url`);
+    for (const [key, value] of Object.entries(parsedLaunch.headers ?? {})) {
+      checkRemoteHeader(value, `${source}(${name}): headers.${key}`);
+    }
+    // **リモートは他の Module を呼べない**（決定・2026-09-17）。中継を呼ぶには
+    // banto の合言葉が要るが、それを第三者のサーバに持たせない。**できない
+    // ことを、宣言できてしまう形にしない**（規則13 の裏——書けるのに効かない）
+    if (metaWithScope.dependsOn.length > 0) {
+      throw new ModuleDeclarationError(
+        `${source}(${name}): URL に繋ぐ形は他の Module を呼べません` +
+          "（中継の合言葉を外へ渡さないため）。dependsOn は書けません",
+      );
+    }
+    // **閉じ込めは効かない。** 書いてあったら黙って無視せず、そう言う（規則2）
+    if (metaWithScope.confinement) {
+      throw new ModuleDeclarationError(
+        `${source}(${name}): URL に繋ぐ形には閉じ込めを掛けられません` +
+          "（プロセスがこちらに無いため）。書かないでください",
+      );
+    }
+  } else {
+    for (const text of [parsedLaunch.command, ...parsedLaunch.args]) {
+      checkPlaceholders(text, metaWithScope.scope, `${source}(${name})`, "command");
+    }
+    for (const value of Object.values(parsedLaunch.env ?? {})) {
+      checkPlaceholders(value, metaWithScope.scope, `${source}(${name})`, "env");
+    }
   }
 
   // **同梱かどうかは、ここで決まる**（parse の中に置く・2026-09-15）。
@@ -219,8 +335,13 @@ function withOrigin(
   source: string,
 ): BantoModuleMeta {
   const def = DEFAULT_MODULE_DECLARATIONS.find((x) => x.name === name);
+  // **URL に繋ぐ形は、決して同梱にならない**（同梱はすべて banto が起こす
+  // プロセス）。ここを構造で閉じておく——将来 `url` を持つ既定を足しても、
+  // 「同梱の名前を借りて外へ繋ぐ」が生えない
   const sameCode =
+    !isRemoteLaunch(launch) &&
     def !== undefined &&
+    !isRemoteLaunch(def.launch) &&
     def.launch.command === launch.command &&
     def.launch.args.length === launch.args.length &&
     def.launch.args.every((a, i) => a === launch.args[i]);
@@ -255,7 +376,10 @@ function expand(text: string, context: LaunchContext, source: string): string {
  * 判断を host の起動処理の中に埋めずに出してある——**ここが秘密を渡してよい
  * 相手の定義**なので、試験できる場所に置く（規則1）。
  */
-export function secretsAllowedFor(meta: BantoModuleMeta): { ok: true } | { ok: false; reason: string } {
+export function secretsAllowedFor(
+  meta: BantoModuleMeta,
+  launch?: ModuleLaunch,
+): { ok: true } | { ok: false; reason: string } {
   // **金庫を開ける鍵は金庫に入らない。** 窓口（vault-directory）も同じ
   // ——窓口は解決の経路そのものなので、自分を解決するのに自分が要る
   const vaultRole = meta.satisfies.find((r: string) => r === "vault" || r === "vault-directory");
@@ -265,6 +389,14 @@ export function secretsAllowedFor(meta: BantoModuleMeta): { ok: true } | { ok: f
       reason: "金庫そのものは ${secret:…} を使えません（自分を開ける鍵は自分の中に置けません）",
     };
   }
+  // **URL に繋ぐ形は、閉じ込めの代わりに人の承知で守る**（追加・2026-09-17）。
+  //
+  // 閉じ込めを求めていたのは「**こちらで動く**第三者のコードに鍵を渡すと、
+  // その鍵でこちらの何を触られるか分からない」から。URL に繋ぐ形ではコードが
+  // こちらに無いので、その心配は無い——**代わりに要るのが「外へ出す」ことへの
+  // 人の明示の承知**で、そこは `connectRemoteDeclaredModule` が秘密を引く前に見る。
+  // 置ける場所がヘッダだけなのも効いている（URL に置けば経路の記録に残る）。
+  if (launch && isRemoteLaunch(launch)) return { ok: true };
   // **閉じ込め無しのコードに秘密を渡さない**（同梱は自分のコードなので対象外）
   if (meta.origin !== "bundled" && !meta.confinement) {
     return { ok: false, reason: "閉じ込めの無い Module に秘密は渡せません" };
@@ -278,7 +410,9 @@ const aliasOf = (key: string): string => key.slice(SECRET_PREFIX.length).trim();
 /** その起動の指定が金庫から引く秘密（`${secret:名前}`）を、環境変数名つきで並べる。 */
 export function secretPlaceholders(launch: ModuleLaunch): Array<{ envName: string; alias: string }> {
   const found: Array<{ envName: string; alias: string }> = [];
-  for (const [envName, value] of Object.entries(launch.env ?? {})) {
+  // **置き場は形によって違うが、規則は同じ**——argv に載らないところだけ
+  const carriers = isRemoteLaunch(launch) ? (launch.headers ?? {}) : (launch.env ?? {});
+  for (const [envName, value] of Object.entries(carriers)) {
     for (const m of value.matchAll(PLACEHOLDER_PATTERN)) {
       const key = m[1] ?? "";
       // **前後の空白は落とす**。並べる側と差し込む側で揃えないと、
@@ -291,10 +425,8 @@ export function secretPlaceholders(launch: ModuleLaunch): Array<{ envName: strin
 
 /** 引いた値を差し込んだ起動の指定を返す。**値はここで初めて現れる**。 */
 export function fillSecrets(launch: ModuleLaunch, values: ReadonlyMap<string, string>): ModuleLaunch {
-  if (!launch.env) return launch;
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(launch.env)) {
-    env[k] = v.replace(PLACEHOLDER_PATTERN, (all, key: string) => {
+  const fill = (text: string): string =>
+    text.replace(PLACEHOLDER_PATTERN, (all, key: string) => {
       if (!key.startsWith(SECRET_PREFIX)) return all;
       const alias = aliasOf(key);
       const value = values.get(alias);
@@ -302,12 +434,30 @@ export function fillSecrets(launch: ModuleLaunch, values: ReadonlyMap<string, st
       if (value === undefined) throw new ModuleDeclarationError(`秘密 "${alias}" を引けませんでした`);
       return value;
     });
+
+  if (isRemoteLaunch(launch)) {
+    if (!launch.headers) return launch;
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(launch.headers)) headers[k] = fill(v);
+    return { ...launch, headers };
   }
+  if (!launch.env) return launch;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(launch.env)) env[k] = fill(v);
   return { ...launch, env };
 }
 
 export function expandLaunch(launch: ModuleLaunch, context: LaunchContext): ModuleLaunch {
   const source = "launch";
+  // **URL に繋ぐ形には、解く語が無い**（parse が `${secret:…}` 以外を断っていて、
+  // その1つは既に解かれている）。ここを通すのは「解かれ残りが無い」の確認のため
+  if (isRemoteLaunch(launch)) {
+    assertNoPlaceholder(launch.url, `${source}: url`);
+    for (const [key, value] of Object.entries(launch.headers ?? {})) {
+      assertNoPlaceholder(value, `${source}: headers.${key}`);
+    }
+    return launch;
+  }
   return {
     command: expand(launch.command, context, source),
     args: launch.args.map((a) => expand(a, context, source)),
@@ -327,6 +477,58 @@ export const MODULE_DECLARATIONS_KEY = "modules";
 
 /** **いま書く鍵**。中身は既定との差分だけ（決定・2026-09-07）。 */
 export const MODULE_OVERLAYS_KEY = "moduleOverlays";
+
+/**
+ * **「この Module は machine の外へデータを送る」と人が承知した記録**
+ * （追加・2026-09-17、`docs/specs/v4-security.md`）。
+ *
+ * **URL ごとに覚える。** URL が変われば別の相手なので、聞き直す。
+ * 消したら忘れる——**名前を再利用して別の相手へ繋ぎ直す**ときに、前の承認が
+ * そのまま効いてはいけない（2026-09-15 の `codeId` と同じ理由）。
+ *
+ * 置き場は RuntimeConfig（＝Event Store に残る）。プロセスメモリに置くと
+ * host を再起動するたびに人が承知し直すことになる。
+ */
+export const REMOTE_EGRESS_KEY = "remoteEgressAcknowledged";
+
+interface EgressAcknowledgement {
+  name: string;
+  url: string;
+}
+
+function egressList(config: RuntimeConfigStore): EgressAcknowledgement[] {
+  const raw = config.layerValue(REMOTE_EGRESS_KEY, "") as unknown;
+  return Array.isArray(raw) ? (raw as EgressAcknowledgement[]) : [];
+}
+
+/** その名前・その URL について、人が承知しているか。 */
+export function isEgressAcknowledged(config: RuntimeConfigStore, name: string, url: string): boolean {
+  return egressList(config).some((a) => a.name === name && a.url === url);
+}
+
+/** 人が承知した、と記録する。 */
+export async function acknowledgeEgress(
+  config: RuntimeConfigStore,
+  name: string,
+  url: string,
+): Promise<void> {
+  if (isEgressAcknowledged(config, name, url)) return;
+  const next = [...egressList(config).filter((a) => a.name !== name), { name, url }];
+  await config.setInstanceDefault(
+    REMOTE_EGRESS_KEY,
+    next as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1],
+  );
+}
+
+/** 消した Module の承認を忘れる。 */
+export async function forgetEgress(config: RuntimeConfigStore, name: string): Promise<void> {
+  const next = egressList(config).filter((a) => a.name !== name);
+  if (next.length === egressList(config).length) return;
+  await config.setInstanceDefault(
+    REMOTE_EGRESS_KEY,
+    next as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1],
+  );
+}
 
 /**
  * 同梱の既定。**ここが「コードに書いてある唯一の Module 情報」**で、

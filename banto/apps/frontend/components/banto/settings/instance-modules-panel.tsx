@@ -37,6 +37,17 @@ import {
 } from "@/lib/backend/client";
 import { AddInstanceModuleDialog } from "./add-instance-module-dialog";
 
+/** **URL に繋ぐ形なら相手の host**（追加・2026-09-17）。起動する形なら空。 */
+function remoteHostOf(m: RealInstanceModule): string {
+  const launch = m.launch as { type?: string; url?: string };
+  if (launch.type !== "http" || !launch.url) return "";
+  try {
+    return new URL(launch.url).host;
+  } catch {
+    return launch.url;
+  }
+}
+
 /** 役割ごとにまとめる。役割を名乗らない Module は「役割なし」に落とす。 */
 function byRole(modules: readonly RealInstanceModule[]): Array<{ role: string; members: RealInstanceModule[] }> {
   const groups = new Map<string, RealInstanceModule[]>();
@@ -149,6 +160,14 @@ export function InstanceModulesPanel() {
                       <Badge variant="outline" className="text-xs">
                         {m.scope === "instance" ? "全体で1本" : "Project ごと"}
                       </Badge>
+                      {/* **外へ出るものは、一覧で分かる**（追加・2026-09-17）
+                          ——相手の名前まで出す。閉じ込めは効かないので、
+                          代わりに「どこへ出るか」が人の判断材料になる */}
+                      {remoteHostOf(m) ? (
+                        <Badge variant="outline" className="border-danger/50 text-xs text-danger">
+                          外へ送ります：{remoteHostOf(m)}
+                        </Badge>
+                      ) : null}
                       {m.confinement ? (
                         <Badge variant="outline" className="text-xs">
                           閉じ込め：{m.confinement.root === "project" ? "Project の根" : "根なし"}
@@ -255,12 +274,12 @@ export function InstanceModulesPanel() {
       <AddInstanceModuleDialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        onSubmit={async (declaration) => {
-          await addRealInstanceModule(declaration);
+        onSubmit={async (declaration, acknowledgeEgress) => {
+          await addRealInstanceModule(declaration, acknowledgeEgress);
           await reload();
         }}
-        onPaste={async (json) => {
-          const added = await addRealInstanceModulesFromMcpServers(json);
+        onPaste={async (json, acknowledgeEgress) => {
+          const added = await addRealInstanceModulesFromMcpServers(json, acknowledgeEgress);
           await reload();
           return added;
         }}

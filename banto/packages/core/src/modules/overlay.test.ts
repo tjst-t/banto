@@ -12,11 +12,22 @@
 // banto では command（文字列）と args（配列）は置換、env と meta はキー単位でマージ。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_MODULE_DECLARATIONS } from "./declaration.js";
+import { DEFAULT_MODULE_DECLARATIONS,
+  isRemoteLaunch,
+  type ModuleLaunch,
+  type StdioLaunch,
+} from "./declaration.js";
 import { applyModuleOverlay, diffFromDefaults } from "./overlay.js";
 
 /** 既定の filesystem（比較の基準として何度も使う）。 */
 const defaultFilesystem = DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === "filesystem")!;
+
+
+/** **起動する形として読む**（`ModuleLaunch` は2つの形の union・2026-09-17）。 */
+function stdio(launch: ModuleLaunch): StdioLaunch {
+  assert.ok(!isRemoteLaunch(launch), "起動する形ではありません");
+  return launch as StdioLaunch;
+}
 
 test("差分が無ければ、既定そのまま", () => {
   assert.deepEqual(applyModuleOverlay(DEFAULT_MODULE_DECLARATIONS, []), DEFAULT_MODULE_DECLARATIONS);
@@ -31,10 +42,10 @@ test("**env はキー単位でマージ**——差分に無いキーは既定の
   ]);
   const fs = merged.find((d) => d.name === "filesystem")!;
 
-  assert.equal(fs.launch.env?.EXTRA, "1", "足したキーが入っていない");
+  assert.equal(stdio(fs.launch).env?.EXTRA, "1", "足したキーが入っていない");
   assert.equal(
-    fs.launch.env?.BANTO_PROJECT_ROOT,
-    defaultFilesystem.launch.env?.BANTO_PROJECT_ROOT,
+    stdio(fs.launch).env?.BANTO_PROJECT_ROOT,
+    stdio(defaultFilesystem.launch).env?.BANTO_PROJECT_ROOT,
     "**既定のキーが消えた**（丸ごと置き換えてしまっている）",
   );
 });
@@ -44,10 +55,10 @@ test("command（文字列）と args（配列）は置換", () => {
     { name: "filesystem", launch: { command: "/usr/bin/other", args: ["a"] } },
   ]);
   const fs = merged.find((d) => d.name === "filesystem")!;
-  assert.equal(fs.launch.command, "/usr/bin/other");
-  assert.deepEqual(fs.launch.args, ["a"]);
+  assert.equal(stdio(fs.launch).command, "/usr/bin/other");
+  assert.deepEqual(stdio(fs.launch).args, ["a"]);
   // 触っていない env はそのまま
-  assert.deepEqual(fs.launch.env, defaultFilesystem.launch.env);
+  assert.deepEqual(stdio(fs.launch).env, stdio(defaultFilesystem.launch).env);
 });
 
 test("meta もキー単位でマージ——書いていない項目は既定のまま", () => {
@@ -77,7 +88,7 @@ test("**丸ごとの写しは、差分に圧縮できる**（いま Config に�
   // 既定と同じ値は落ち、変えたところだけが残る
   const wholeCopy = DEFAULT_MODULE_DECLARATIONS.map((d) =>
     d.name === "filesystem"
-      ? { ...d, launch: { ...d.launch, env: { ...d.launch.env, EXTRA: "1" } } }
+      ? { ...d, launch: { ...stdio(d.launch), env: { ...stdio(d.launch).env, EXTRA: "1" } } }
       : d,
   );
   const diff = diffFromDefaults(DEFAULT_MODULE_DECLARATIONS, wholeCopy);

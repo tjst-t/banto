@@ -24,7 +24,7 @@
 // | 既定に無い name | まるごと新しい Module として足す |
 // | `enabled: false` | その Module を**外す**（VS Code に無い、banto が足す） |
 
-import type { ModuleDeclaration } from "./declaration.js";
+import { isRemoteLaunch, type ModuleDeclaration, type RemoteLaunch, type StdioLaunch } from "./declaration.js";
 
 /**
  * Project が持つ**差分**。既定と同じ項目は書かない。
@@ -32,7 +32,8 @@ import type { ModuleDeclaration } from "./declaration.js";
  */
 export interface ModuleOverlay {
   name: string;
-  launch?: Partial<ModuleDeclaration["launch"]>;
+  /** **形が違えば丸ごと置き換え**（stdio と URL は混ざらない・2026-09-17）。 */
+  launch?: Partial<StdioLaunch> | RemoteLaunch;
   meta?: unknown;
   /** false なら既定の Module を外す（省略＝外さない）。 */
   enabled?: boolean;
@@ -76,11 +77,7 @@ export function applyModuleOverlay(
     }
     result.push({
       name: base.name,
-      launch: {
-        command: over.launch?.command ?? base.launch.command,
-        args: over.launch?.args ?? base.launch.args,
-        env: mergeValue(base.launch.env, over.launch?.env) as ModuleDeclaration["launch"]["env"],
-      },
+      launch: mergeLaunch(base.launch, over.launch),
       meta: mergeValue(base.meta, over.meta),
     });
   }
@@ -88,14 +85,48 @@ export function applyModuleOverlay(
   // 既定に無い Module は、そのまま足す（外す指定だけのものは足さない）
   for (const over of byName.values()) {
     if (over.enabled === false) continue;
-    if (!over.launch?.command || !over.launch.args) continue;
+    const launch = over.launch;
+    if (!launch) continue;
+    if (looksRemote(launch)) {
+      result.push({ name: over.name, launch: launch as RemoteLaunch, meta: over.meta });
+      continue;
+    }
+    const stdio = launch as Partial<StdioLaunch>;
+    if (!stdio.command || !stdio.args) continue;
     result.push({
       name: over.name,
-      launch: { command: over.launch.command, args: over.launch.args, env: over.launch.env },
+      launch: { command: stdio.command, args: stdio.args, env: stdio.env },
       meta: over.meta,
     });
   }
   return result;
+}
+
+/** 差分が URL に繋ぐ形か（`type` でも `url` でも見分ける——貼られた形に合わせる）。 */
+function looksRemote(launch: Partial<StdioLaunch> | RemoteLaunch): boolean {
+  const l = launch as Partial<RemoteLaunch>;
+  return l.type === "http" || typeof l.url === "string";
+}
+
+/**
+ * 起動の指定を重ねる。**形が違えば丸ごと置き換える**（2026-09-17）。
+ *
+ * `env` のキー単位マージは「同じ形どうし」でしか意味が無い。stdio に URL の
+ * 差分を重ねて `command` だけ残る、のような**半分の宣言**を作らない（規則2）。
+ */
+function mergeLaunch(
+  base: ModuleDeclaration["launch"],
+  over: ModuleOverlay["launch"],
+): ModuleDeclaration["launch"] {
+  if (!over) return base;
+  if (looksRemote(over)) return over as RemoteLaunch;
+  if (isRemoteLaunch(base)) return over as ModuleDeclaration["launch"]; // 形が変わる＝丸ごと
+  const o = over as Partial<StdioLaunch>;
+  return {
+    command: o.command ?? base.command,
+    args: o.args ?? base.args,
+    env: mergeValue(base.env, o.env) as StdioLaunch["env"],
+  };
 }
 
 /** 深く同じ値か（差分を取るときに「変わっていない」を判定する）。 */
@@ -144,11 +175,18 @@ export function diffFromDefaults(
       overlays.push({ name: d.name, launch: d.launch, meta: d.meta });
       continue;
     }
-    const launch: Partial<ModuleDeclaration["launch"]> = {};
-    if (base.launch.command !== d.launch.command) launch.command = d.launch.command;
-    if (!sameValue(base.launch.args, d.launch.args)) launch.args = d.launch.args;
-    const envDiff = objectDiff(base.launch.env, d.launch.env);
-    if (envDiff) launch.env = envDiff as ModuleDeclaration["launch"]["env"];
+    // **形が違えば丸ごと**——差分に圧縮できるのは同じ形どうしだけ
+    let launch: Partial<StdioLaunch> | RemoteLaunch = {};
+    if (isRemoteLaunch(d.launch) || isRemoteLaunch(base.launch)) {
+      if (!sameValue(base.launch, d.launch)) launch = d.launch as RemoteLaunch;
+    } else {
+      const stdio: Partial<StdioLaunch> = {};
+      if (base.launch.command !== d.launch.command) stdio.command = d.launch.command;
+      if (!sameValue(base.launch.args, d.launch.args)) stdio.args = d.launch.args;
+      const envDiff = objectDiff(base.launch.env, d.launch.env);
+      if (envDiff) stdio.env = envDiff as StdioLaunch["env"];
+      launch = stdio;
+    }
     const metaDiff = objectDiff(base.meta, d.meta);
 
     if (Object.keys(launch).length === 0 && !metaDiff) continue; // 既定のまま

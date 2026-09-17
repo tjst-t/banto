@@ -184,17 +184,45 @@ test("API キーは既定で金庫から引く——直接入力を選ぶと、�
   });
 });
 
-// **URL に繋ぐ形は、まだ受けられないとはっきり言う**（黙って無視しない・規則2）
-test("URL に繋ぐ設定を貼ったら、理由を言って断る", async ({ page }) => {
+// **URL に繋ぐ形は、押す前に「外へ出る」と言い、承知するまで押せない**
+// （改訂・2026-09-17。以前はここで断っていた）
+test("URL に繋ぐ設定を貼ったら、相手の名前を出し、承知するまで追加させない", async ({ page }) => {
   await openModuleSettings(page);
   await page.getByRole("button", { name: "Module を追加" }).click();
   await page.getByLabel("設定（JSON）").fill(
     JSON.stringify({ mcpServers: { remote: { type: "http", url: "https://example.com/mcp" } } }),
   );
-  await page.getByRole("button", { name: "追加する" }).click();
-  await expect(page.getByTestId("add-module-error"), "断った理由が出ていない").toContainText(
-    "URL に繋ぐ形",
+
+  // **どこへ出るのかが、相手の名前で出ている**（規則14——中身まで見る）
+  const ack = page.getByTestId("add-module-egress-ack");
+  await expect(ack, "外へ出ることを言っていない").toBeVisible();
+  await expect(page.getByTestId("add-module-egress-notice"), "相手の名前が出ていない").toContainText(
+    "example.com",
   );
+  // **閉じ込められないことも、隠さずに言う**
+  await expect(page.getByTestId("add-module-effect")).toContainText("閉じ込められません");
+  // 承知するまで押せない（既定は止める側・規則2）
+  await expect(page.getByRole("button", { name: "追加する" }), "承知していないのに押せる").toBeDisabled();
+
+  await ack.check();
+  await expect(page.getByRole("button", { name: "追加する" })).toBeEnabled();
+});
+
+// **手で書く道でも URL に繋げる**（追加・2026-09-17）
+test("自分で書く道で URL に繋ぐと、立つ場所と閉じ込めの説明が変わる", async ({ page }) => {
+  await openModuleSettings(page);
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByRole("tab", { name: "自分で書く" }).click();
+  await expect(page.getByTestId("add-module-effect")).toContainText("必ず閉じ込めます");
+
+  await page.getByRole("tab", { name: "URL に繋ぐ" }).click();
+  // コマンド欄は消え、URL 欄になる（繋がっていない欄を残さない・規則13）
+  await expect(page.getByLabel("コマンド")).toHaveCount(0);
+  await page.getByLabel("URL", { exact: true }).fill("https://weather.example.org/mcp");
+  await expect(page.getByTestId("add-module-effect")).toContainText("プロセスは立てません");
+  await expect(page.getByTestId("add-module-egress-notice")).toContainText("weather.example.org");
+  // API キーは**ヘッダ**になる
+  await expect(page.getByLabel("API キー（ヘッダ名／要るときだけ）")).toBeVisible();
 });
 
 // **いまの設定を mcpServers の形で取り出せる**（他のクライアントへ持っていける）
