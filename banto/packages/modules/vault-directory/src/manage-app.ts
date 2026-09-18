@@ -367,7 +367,14 @@ ${ALIAS_KIND_RULES_JS}
   }
 
   const $ = (id) => document.getElementById(id);
-  const KIND_LABEL = { secret: "汎用シークレット", "ssh-identity": "SSH 身元", file: "ファイル" };
+  // **一覧の見出し。作れる種別とは別**（oauth-token は banto が置くもので、
+  // 人は作らないが**見えて消せる**べき——規則13）
+  const KIND_LABEL = {
+    secret: "汎用シークレット",
+    "ssh-identity": "SSH 身元",
+    file: "ファイル",
+    "oauth-token": "ログイン情報（OAuth）",
+  };
 
   // --- 状態（導出できるものは持たない、規則3）-------------------------------
   let project = null;          // いまこの画面が開かれている Project（host が渡す）
@@ -759,7 +766,8 @@ ${ALIAS_KIND_RULES_JS}
   function applySource() {
     const generated = $("new-source").value === "generated";
     // 作れる種別だけに絞る（選べない道を選択肢に残さない——規則13）
-    const kinds = generated ? generatableKinds() : Object.keys(KIND_LABEL);
+    // **人が作れる種別だけ**（選べない道を選択肢に残さない——規則13）
+    const kinds = generated ? generatableKinds() : humanCreatableKinds();
     const was = $("new-kind").value;
     $("new-kind").replaceChildren(...kinds.map((k) => option(k, KIND_LABEL[k])));
     $("new-kind").value = kinds.includes(was) ? was : kinds[0];

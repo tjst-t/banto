@@ -33,6 +33,7 @@ import {
   listRealInstanceModules,
   removeRealInstanceModule,
   setRealInstanceModuleEnabled,
+  startRealModuleOAuth,
   type RealInstanceModule,
 } from "@/lib/backend/client";
 import { AddInstanceModuleDialog } from "./add-instance-module-dialog";
@@ -63,8 +64,19 @@ function byRole(modules: readonly RealInstanceModule[]): Array<{ role: string; m
  * 「立っていない」と「止めてある」を混ぜない——混ぜると、直すべきかどうかが
  * 分からなくなる（規則2）。
  */
+/**
+ * **ログインが要るだけなのか、本当に壊れているのか**（追加・2026-09-18）。
+ *
+ * 一緒くたに「繋がりません」と出すと、**押すべきボタンがあることに気付けない**
+ * ——host は、そうと分かる形で理由を返している（規則2）。
+ */
+function needsLogin(m: RealInstanceModule): boolean {
+  return !!m.error && m.error.includes("ログインが要ります");
+}
+
 function stateOf(m: RealInstanceModule): { label: string; tone: "ok" | "warn" | "off" } {
   if (!m.enabled) return { label: "止めてあります", tone: "off" };
+  if (needsLogin(m)) return { label: "ログインが要ります", tone: "warn" };
   if (m.error) return { label: "繋がりません", tone: "warn" };
   if (m.connected) return { label: "動いています", tone: "ok" };
   // Project ごとに立つものは、使う Project が開かれるまで立たない
@@ -184,6 +196,26 @@ export function InstanceModulesPanel() {
                       {m.error ? `：${m.error}` : ""}
                     </p>
                   </div>
+                  {/* **ログインは、押せる場所をその行に置く**（追加・2026-09-18）
+                      ——banto はサーバなので自分でブラウザを開けない。
+                      押したら新しいタブが開き、戻ってくると繋がる */}
+                  {needsLogin(m) ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      data-testid={`module-login-${m.name}`}
+                      onClick={() =>
+                        void run(async () => {
+                          const { url } = await startRealModuleOAuth(m.name);
+                          window.open(url, "_blank", "noopener,noreferrer");
+                        })
+                      }
+                    >
+                      ログインする
+                    </Button>
+                  ) : null}
                   {/* **同梱は消せない**（止めることはできる） */}
                   {m.origin === "external" ? (
                     <Button

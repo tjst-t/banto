@@ -368,6 +368,19 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       },
       tool("listVaults", "繋がっている vault 実装の一覧", {}),
       tool("listAliases", "全実装を横断した alias の一覧（値は含まない）", {}),
+      // **banto 自身が置く秘密**（追加・2026-09-18、OAuth）。窓口は既定の金庫へ
+      // 中継するだけ——どの金庫かを host に選ばせない（規則3、他の口と同じ）
+      tool(
+        "putSecret",
+        "banto 自身が保管する秘密（OAuth のログイン情報）を置く。既にあれば置き換える",
+        {
+          name: { type: "string" },
+          value: { type: "string" },
+          note: { type: "string" },
+          forProject: { type: "string" },
+        },
+        ["name", "value"],
+      ),
       tool(
         "createAlias",
         "alias を新規登録する",
@@ -643,6 +656,17 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           forProject: optionalString(args.forProject, "forProject"),
           value: requiredString(args.value, "value"),
           note: optionalString(args.note, "note"),
+        });
+        return text({ ok: true, message: body });
+      }
+
+      case "putSecret": {
+        const implementation = await target();
+        const body = await deps.relay.callTool(implementation, "putSecret", {
+          name: requiredString(args.name, "name"),
+          value: requiredString(args.value, "value"),
+          note: optionalString(args.note, "note"),
+          forProject: optionalString(args.forProject, "forProject"),
         });
         return text({ ok: true, message: body });
       }

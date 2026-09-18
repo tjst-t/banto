@@ -18,6 +18,15 @@ export interface RelayCallDescriptor {
   kind: "tool" | "resource" | "prompt";
   name: string;
   /**
+   * **何を指していたか**（識別子だけ。値は決して含めない）。
+   *
+   * 中継は宛先が名乗った引数（`dev.banto/auditArgs`）から拾い、host 自身の
+   * 呼び出し（`${secret:…}` の解決・ログイン情報の保管）はここに直に入れる。
+   * 承認の鍵（`grantKey`）には**入らない**——同じ組み合わせを alias ごとに
+   * 聞き直すことになる。
+   */
+  identifiers?: Record<string, string>;
+  /**
    * **外から繋いだ宛先のコードの印**（追加・2026-09-15）。同梱には付かない。
    *
    * 承認を名前だけで引くと、**登録を消して別のサーバを同じ名前で繋いだとき

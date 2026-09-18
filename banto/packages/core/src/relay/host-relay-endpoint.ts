@@ -340,6 +340,23 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       if (Object.keys(picked).length > 0) identifiers = picked;
     }
     const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
+    /**
+     * **banto 自身が始めた、同梱どうしの呼び出し**（追加・2026-09-18）。
+     *
+     * 中継のゲートが人に聞いているのは「**Module A に Module B を呼ばせて
+     * よいか**」。ところが `${secret:…}` の解決やログイン情報の保管は、
+     * **banto 自身が、自分の同梱 Module に対して**始める——聞く相手も、
+     * 聞く会話も無い（背景の接続中に起きるので、出せるターンが無い）。
+     *
+     * **`canvas` の緩めとは別に置く**。あちらは「人が押した」ことを根拠に
+     * するが、これは「banto が自分の部品を使った」ことを根拠にする。
+     *
+     * **両側が同梱のときだけ。** 第三者が絡んだら今までどおり聞く
+     * ——`host` を名乗れるのは banto 自身だけだが、**宛先が第三者なら
+     * 話は別**（そこへ引数が流れる）。
+     */
+    const ownHousekeeping =
+      origin === "host" && target.meta.origin === "bundled" && identity.meta?.origin === "bundled";
     // **`valueFree` を信じるのは、同梱の Module だけ**（訂正・2026-09-15、
     // レビューで発覚。`docs/specs/v4-security.md` が「外から Module を
     // 入れられるようにする前に決める」と課していた行の決着）。
@@ -355,7 +372,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
 
     const progressToken = extra._meta?.progressToken;
     const heartbeat =
-      opts.gate && !humanAdminAction && !valueFreeCall && progressToken !== undefined
+      opts.gate && !humanAdminAction && !ownHousekeeping && !valueFreeCall && progressToken !== undefined
         ? setInterval(() => {
             void extra.sendNotification({
               method: "notifications/progress",
@@ -364,7 +381,9 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
           }, opts.approvalProgressIntervalMs ?? APPROVAL_PROGRESS_INTERVAL_MS)
         : undefined;
     heartbeat?.unref();
-    const decision = await (humanAdminAction
+    const decision = await (ownHousekeeping
+      ? Promise.resolve({ allowed: true, reason: "banto 自身の同梱 Module どうしの呼び出し" })
+      : humanAdminAction
       ? // 記録には**なぜ通したか**を残す（黙って通らない、規則2）
         Promise.resolve({ allowed: true, reason: "人が画面で行った管理操作" })
       : valueFreeCall

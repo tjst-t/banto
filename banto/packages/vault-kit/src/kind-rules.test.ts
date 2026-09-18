@@ -9,7 +9,11 @@ import assert from "node:assert/strict";
 import { ALIAS_KIND_RULES, ALIAS_KIND_RULES_JS, REQUEST_APP_HTML } from "./index.js";
 
 test("種別ごとの規則は、種別の語彙と過不足なく一致する", () => {
-  assert.deepEqual(Object.keys(ALIAS_KIND_RULES).sort(), ["file", "secret", "ssh-identity"]);
+  assert.deepEqual(Object.keys(ALIAS_KIND_RULES).sort(), ["file", "oauth-token", "secret", "ssh-identity"]);
+  // **banto が自分で置くものは、人の登録画面に出さない**（追加・2026-09-18）
+  assert.equal(ALIAS_KIND_RULES["oauth-token"]!.humanCreatable, false);
+  assert.equal(ALIAS_KIND_RULES.secret!.humanCreatable, true);
+  assert.ok(ALIAS_KIND_RULES_JS.includes("humanCreatableKinds"), "画面側の絞り込みが無い");
   // **鍵の強さは鍵の種類が決める**——SSH で「作る強さ」を聞かない
   assert.equal(ALIAS_KIND_RULES["ssh-identity"]!.strength, false);
   assert.equal(ALIAS_KIND_RULES.secret!.strength, true);

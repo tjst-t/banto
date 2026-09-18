@@ -131,6 +131,10 @@ export interface AppDeps {
   instanceModuleStatus?(): Array<{ name: string; connected: boolean; error?: string }>;
   /** その Module のプロセスを落とす（止めた・消したとき）。 */
   releaseModule?(name: string): Promise<void>;
+  /** **ログインを始める**（URL に繋ぐ Module で OAuth が要るとき）。 */
+  startOAuth?(moduleName: string): Promise<{ url: string }>;
+  /** 相手から戻ってきた。印（state）で引き当てて、鍵を金庫へ置く。 */
+  finishOAuth?(state: string, code: string): Promise<{ moduleName: string }>;
   moduleStatusForProject?(projectId: string): Array<{ name: string; connected: boolean; error?: string }>;
   /** banto 自身の置き場（根の広さを判断するのに使う、`/api/config/root-scope`）。 */
   dataDir?: string;
@@ -220,6 +224,23 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text) });
   res.end(text);
+}
+
+/**
+ * **人のブラウザが見る1枚**（OAuth の戻り先）。
+ *
+ * ここに来るのは banto の画面ではなく**新しいタブ**なので、素の HTML を返す。
+ * 中身は結果の1行だけ——**トークンも code も出さない**。
+ */
+function oauthPage(res: ServerResponse, status: number, message: string): void {
+  const safe = message.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  const html =
+    `<!doctype html><html lang="ja"><head><meta charset="utf-8" />` +
+    `<title>banto</title><style>body{font:16px/1.7 system-ui;margin:0;display:grid;` +
+    `place-items:center;min-height:100vh;color-scheme:light dark}p{max-width:34rem;padding:1.5rem}</style>` +
+    `</head><body><p>${safe}</p></body></html>`;
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
+  res.end(html);
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -500,6 +521,34 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      /**
+       * **OAuth の戻り先だけは、banto の合言葉を求めない**（決定・2026-09-18）。
+       *
+       * ここに来るのは**相手の認可サーバからのブラウザ遷移**で、banto の画面
+       * ではない——`Authorization` ヘッダを持ちようがない（持たせようとすると、
+       * 合言葉を第三者のリダイレクトに載せることになる。そちらのほうが危ない）。
+       *
+       * **代わりの鍵は `state`**。banto が作った推測できない印で、
+       * **1回で使い切る**——これは OAuth がこのために持っている仕組みそのもの
+       * （規則12）。合わなければ何もせずに断る。
+       *
+       * 返すのは結果の1行だけ。**code もトークンも出さない**。
+       */
+      if (url.pathname === "/api/oauth/callback" && req.method === "GET") {
+        const state = url.searchParams.get("state") ?? "";
+        const code = url.searchParams.get("code") ?? "";
+        const denied = url.searchParams.get("error");
+        if (denied) return oauthPage(res, 400, `ログインは完了しませんでした（${denied}）`);
+        if (!state || !code) return oauthPage(res, 400, "ログインの戻りに必要な値がありません");
+        if (!deps.finishOAuth) return oauthPage(res, 503, "この banto はログインを受け付けていません");
+        try {
+          const { moduleName } = await deps.finishOAuth(state, code);
+          return oauthPage(res, 200, `${moduleName} にログインしました。このタブは閉じてかまいません`);
+        } catch (err) {
+          return oauthPage(res, 400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
       if (!isAuthorized(req, deps.authToken)) {
         json(res, 401, { error: "unauthorized" });
         return;
@@ -599,6 +648,20 @@ export function createApp(deps: AppDeps) {
         }
         return;
       }
+      // **ログインを始める**（追加・2026-09-18、OAuth）。**押したときだけ**
+      // URL を作る——背景の接続が、人の途中のやり取りを上書きしないため
+      const oauthStartMatch = url.pathname.match(/^\/api\/modules\/([^/]+)\/oauth\/start$/);
+      if (oauthStartMatch && req.method === "POST") {
+        if (!deps.startOAuth) return json(res, 503, { error: "oauth is not available" });
+        try {
+          json(res, 200, await deps.startOAuth(decodeURIComponent(oauthStartMatch[1]!)));
+        } catch (err) {
+          // **理由をそのまま出す**（規則2）——押した人が次に何をすればよいか分かる
+          return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
       const instanceModuleMatch = url.pathname.match(/^\/api\/modules\/([^/]+)$/);
       if (instanceModuleMatch && req.method === "PUT") {
         if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });

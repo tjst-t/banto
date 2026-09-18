@@ -796,6 +796,18 @@ export async function addRealInstanceModule(
   });
 }
 
+/**
+ * **ログインを始める**（URL に繋ぐ Module が OAuth を要るとき）。
+ *
+ * banto はサーバなので**自分でブラウザを開けない**——押し先の URL を返し、
+ * 画面が新しいタブで開く（`docs/specs/v4-frontend.md` §6.23）。
+ */
+export async function startRealModuleOAuth(name: string): Promise<{ url: string }> {
+  return request<{ url: string }>(`/api/modules/${encodeURIComponent(name)}/oauth/start`, {
+    method: "POST",
+  });
+}
+
 export async function removeRealInstanceModule(name: string): Promise<void> {
   await request(`/api/modules/${encodeURIComponent(name)}`, { method: "DELETE" });
 }

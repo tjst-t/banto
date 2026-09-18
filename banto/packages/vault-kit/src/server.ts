@@ -39,7 +39,9 @@ const ALIASES_URI = "vault://aliases";
 /** instance 全体の alias を置く既定のグループ。 */
 const INSTANCE_GROUP = "instance";
 
-const ALIAS_KINDS = ["secret", "ssh-identity", "file"] as const;
+const ALIAS_KINDS = ["secret", "ssh-identity", "file", "oauth-token"] as const;
+/** **banto 自身が置くもの**（人は手で作らない）。`putSecret` はこれしか扱わない。 */
+const BANTO_OWNED_KIND = "oauth-token";
 const ALIAS_SCOPES = ["instance", "project"] as const;
 
 /**
@@ -380,6 +382,34 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           },
           "admin",
         ),
+        // **banto 自身が置く秘密**（追加・2026-09-18、OAuth のため）。
+        //
+        // 金庫には値を書き換える口が無い（`updateAlias` は注記だけ）。これは
+        // 「人が預けたものを黙って書き換えない」という設計で、**正しい**。
+        // ところが OAuth の refresh token は**回る**ので、置き換えが要る。
+        //
+        // そこで**置き換えてよい範囲を種別で区切る**：`oauth-token` だけ。
+        // 既にその置き場に在るものが `oauth-token` でなければ**断る**
+        // ——人が預けた秘密を、この口から上書きすることは構造的にできない。
+        //
+        // 可視性は `module`（AI には見せない）。刻印は要る（createAlias と同じ
+        // ——**預ける行為は制限を広げない**ので、人専用にはしない）。
+        tool(
+          "putSecret",
+          "banto 自身が保管する秘密（OAuth のログイン情報）を置く。既にあれば置き換える",
+          {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              value: { type: "string" },
+              note: { type: "string" },
+              group: { type: "string", description: "置き場（グループ）を直に指定する" },
+              forProject: { type: "string", description: "この Project のものにする。省略すると共通" },
+            },
+            required: ["name", "value"],
+          },
+          "module",
+        ),
         tool(
           "updateAlias",
           "aliasのメタデータ（note・対象）を変える（人専用）。値は変えない",
@@ -707,6 +737,32 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           backendPath,
         });
         return { content: [{ type: "text", text: `created ${name}` }] };
+      }
+      case "putSecret": {
+        const name = requiredString(args.name, "name");
+        const value = requiredString(args.value, "value");
+        const group = await groupForNewAlias({
+          explicitGroup: optionalString(args.group, "group"),
+          forProject: optionalString(args.forProject, "forProject"),
+        });
+        const backendPath = `${group}/${name}`;
+        // **人が預けたものは、この口からは触れない**（種別で区切る）
+        const existing = (await registry.list()).find((a) => a.backendPath === backendPath);
+        if (existing && existing.kind !== BANTO_OWNED_KIND) {
+          throw new Error(
+            `"${name}" は人が預けた秘密です（${existing.kind}）。この口からは置き換えられません`,
+          );
+        }
+        await backend.putSecret(backendPath, value);
+        if (!existing) {
+          await registry.create({
+            name,
+            kind: BANTO_OWNED_KIND,
+            note: optionalString(args.note, "note"),
+            backendPath,
+          });
+        }
+        return { content: [{ type: "text", text: `stored ${name}` }] };
       }
       case "generateSecret": {
         const name = requiredString(args.name, "name");

@@ -1104,3 +1104,44 @@ test("banto 全体の刻印では、共通の秘密だけが使える", async ()
     assert.equal(value, "v-shared");
   });
 });
+
+// **banto 自身が置く秘密**（追加・2026-09-18、OAuth のため）。
+// 金庫には値を書き換える口が無い——それは「人が預けたものを黙って書き換えない」
+// という正しい設計。OAuth の refresh token は回るので置き換えが要るが、
+// **置き換えてよい範囲は種別で区切る**。
+test("putSecret は置き換えられる——ただし人が預けた秘密には届かない", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    const vault = vaults.get("vault-local")!;
+
+    // 1回目＝作る、2回目＝置き換える
+    await ui.callTool({ name: "putSecret", arguments: { name: "oauth-weather", value: "tok-1" } });
+    await ui.callTool({ name: "putSecret", arguments: { name: "oauth-weather", value: "tok-2" } });
+    const value = (
+      (await vault.callTool({ name: "resolveAlias", arguments: { name: "oauth-weather" }, _meta: ADMIN }))
+        .content as { text: string }[]
+    )[0]!.text;
+    assert.equal(value, "tok-2", "置き換えられていない");
+
+    // **種別は banto のもの**——人の登録画面には出ない側
+    const listed = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const found = listed.aliases.find((a: { name: string }) => a.name === "oauth-weather");
+    assert.equal(found.kind, "oauth-token");
+
+    // **人が預けた秘密は、この口からは触れない**（ここが柵）
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "my-own", kind: "secret", value: "人のもの" },
+    });
+    await assert.rejects(
+      () => ui.callTool({ name: "putSecret", arguments: { name: "my-own", value: "乗っ取り" } }),
+      /人が預けた秘密です/,
+      "人の秘密が putSecret で上書きできてしまう",
+    );
+    // 元の値は無事
+    const still = (
+      (await vault.callTool({ name: "resolveAlias", arguments: { name: "my-own" }, _meta: ADMIN }))
+        .content as { text: string }[]
+    )[0]!.text;
+    assert.equal(still, "人のもの");
+  });
+});

@@ -24,6 +24,15 @@ export interface AliasKindRule {
   typedHint: string;
   /** 作ったあとに公開鍵が返るか。 */
   returnsPublicKey: boolean;
+  /**
+   * **人が登録画面から作れる種別か**（追加・2026-09-18）。
+   *
+   * `false` は「banto が自分で置くもの」——人は**一覧で見て消せる**が、
+   * 手で作る対象ではない（OAuth のログイン情報がこれ）。登録画面の選択肢から
+   * 外すためだけの印で、**一覧からは隠さない**（何にログインしているかは
+   * 見えているべき・規則13）。
+   */
+  humanCreatable: boolean;
 }
 
 export const ALIAS_KIND_RULES: Record<string, AliasKindRule> = {
@@ -35,6 +44,7 @@ export const ALIAS_KIND_RULES: Record<string, AliasKindRule> = {
     note: null,
     typedHint: "打った値は AI には渡りません",
     returnsPublicKey: false,
+    humanCreatable: true,
   },
   "ssh-identity": {
     canGenerate: true,
@@ -46,6 +56,7 @@ export const ALIAS_KIND_RULES: Record<string, AliasKindRule> = {
       "作ったあとに出る公開鍵を、GitHub などに登録してください",
     typedHint: "持っている秘密鍵を貼るか、新しく作らせます（AI には渡りません）",
     returnsPublicKey: true,
+    humanCreatable: true,
   },
   file: {
     canGenerate: false,
@@ -55,6 +66,20 @@ export const ALIAS_KIND_RULES: Record<string, AliasKindRule> = {
     note: null,
     typedHint: "貼った中身は AI には渡りません",
     returnsPublicKey: false,
+    humanCreatable: true,
+  },
+  // **banto が自分で置くもの**（追加・2026-09-18、OAuth）。人は手で作らない
+  // ——`putSecret` でしか入らない。一覧には出す（どこにログインしているかは
+  // 人が見て、消せる＝ログアウトできるべき）
+  "oauth-token": {
+    canGenerate: false,
+    valueLabel: "（banto が保管します）",
+    multiline: true,
+    strength: false,
+    note: null,
+    typedHint: "banto がログインのときに受け取って置いたものです",
+    returnsPublicKey: false,
+    humanCreatable: false,
   },
 };
 
@@ -73,4 +98,8 @@ function kindRule(kind) { return ALIAS_KIND_RULES[kind] || ALIAS_KIND_RULES.secr
 /** 作れる種別だけ（選べない道を選択肢に残さない——規則13）。 */
 function generatableKinds() {
   return Object.keys(ALIAS_KIND_RULES).filter(function (k) { return ALIAS_KIND_RULES[k].canGenerate; });
+}
+/** 人が登録画面から作れる種別だけ（banto が自分で置くものは外す）。 */
+function humanCreatableKinds() {
+  return Object.keys(ALIAS_KIND_RULES).filter(function (k) { return ALIAS_KIND_RULES[k].humanCreatable; });
 }`;

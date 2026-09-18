@@ -5,9 +5,12 @@
 import { mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { UnauthorizedError, auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { BantoOAuthProvider, oauthAliasFor } from "./oauth/provider.js";
 import {
   checkAbi,
   deriveProjectRuleset,
@@ -104,14 +107,26 @@ async function connectStdioModule(
 async function connectRemoteModule(
   url: string,
   headers: Record<string, string> | undefined,
+  /** OAuth が要る相手のとき。**要らない相手には渡さない**（探索の往復を増やさない）。 */
+  authProvider: BantoOAuthProvider | undefined,
 ): Promise<Client> {
-  const transport = new StreamableHTTPClientTransport(
-    new URL(url),
-    headers ? { requestInit: { headers } } : undefined,
-  );
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    ...(headers ? { requestInit: { headers } } : {}),
+    ...(authProvider ? { authProvider: authProvider as never } : {}),
+  });
   const client = new Client({ name: "banto-host", version: "0.1.0" }, { capabilities: { elicitation: {} } });
   await client.connect(transport);
   return client;
+}
+
+/**
+ * **ログインが要るのか、本当に壊れているのか**を見分ける（規則2）。
+ *
+ * SDK は認可が要るとき `UnauthorizedError` を投げる。これを「繋がりません」と
+ * 一緒くたにすると、**人は押すべきボタンがあることに気付けない**。
+ */
+function needsLogin(err: unknown): boolean {
+  return err instanceof UnauthorizedError || /unauthorized/i.test(String((err as Error)?.message ?? ""));
 }
 
 async function main(): Promise<void> {
@@ -333,6 +348,69 @@ async function main(): Promise<void> {
     return fillSecrets(declaration.launch, values);
   }
 
+  /**
+   * **金庫へ置く**（追加・2026-09-18、OAuth のため）。読みと同じ道・同じ刻印。
+   *
+   * 置けるのは `oauth-token` 種別だけ（金庫側が種別で区切っている）——
+   * **人が預けた秘密には、この口から届かない**。
+   */
+  async function putSecretThroughVault(
+    alias: string,
+    value: string,
+    caller: { project: string } | { instance: true },
+  ): Promise<void> {
+    const directory = await ensureVaultDirectory();
+    if (!directory) throw new Error("Vault の窓口が繋がっていません");
+    const endCall = moduleCalls.begin(
+      "vault-directory",
+      undefined,
+      "host",
+      "project" in caller ? caller.project : undefined,
+      !("project" in caller),
+    );
+    try {
+      await directory.callTool({
+        name: "putSecret",
+        arguments: {
+          name: alias,
+          value,
+          note: "banto がログインのときに受け取ったもの",
+          ...("project" in caller ? { forProject: caller.project } : {}),
+        },
+        _meta: { [CALLER_META_KEY]: caller },
+      });
+    } finally {
+      endCall();
+    }
+    await relayGrants.recordCall(
+      {
+        projectId: "project" in caller ? caller.project : undefined,
+        callerModule: "banto",
+        targetModule: "vault-directory",
+        kind: "tool",
+        name: "putSecret",
+        identifiers: { name: alias },
+      },
+      { allowed: true, reason: "ログイン情報の保管", ok: true },
+    );
+  }
+
+  /** その Module の OAuth 用に、金庫の読み書きを1組作る。 */
+  function oauthVaultFor(caller: { project: string } | { instance: true }) {
+    return {
+      read: async (alias: string): Promise<string | undefined> => {
+        try {
+          return await resolveSecretThroughVault(alias, caller);
+        } catch {
+          // **「まだ無い」と「読めない」は分けたい**が、金庫は同じ形で断る。
+          // ここは「無い」として扱う——初回のログイン前は必ずこの道を通る
+          return undefined;
+        }
+      },
+      write: (alias: string, value: string) => putSecretThroughVault(alias, value, caller),
+    };
+  }
+
   /** 秘密を引くのに要る窓口を、必要になった時点で1本だけ起こす。 */
   async function ensureVaultDirectory(): Promise<Client | undefined> {
     const existing = connectedModules.get("vault-directory");
@@ -423,8 +501,105 @@ async function main(): Promise<void> {
       hostRelayToken: "",
       moduleDataDir: "",
     }) as RemoteLaunch;
-    const client = await connectRemoteModule(filled.url, filled.headers);
+
+    // **ログインが要る相手には、金庫に預けたトークンで繋ぐ**（追加・2026-09-18）。
+    // 要らない相手には何も起きない（401 が返ってきて初めて認可が始まる）。
+    // ここでは**新しいログインを始めない**——URL を作るのは人が押したときだけ
+    // （`/api/modules/:name/oauth/start`）。背景の接続が、人の途中のやり取りを
+    // 上書きしてはいけない
+    const provider = new BantoOAuthProvider({
+      moduleName: declaration.name,
+      redirectUrl: oauthRedirectUrl(),
+      vault: oauthVaultFor(callerFor(project?.id)),
+      onAuthorizationUrl: () => {},
+    });
+    let client: Client;
+    try {
+      client = await connectRemoteModule(filled.url, filled.headers, provider);
+    } catch (err) {
+      if (needsLogin(err)) {
+        // **「壊れている」と一緒くたにしない**（規則2）——画面が
+        // 「ログインする」を出せるように、そうと分かる形で断る
+        throw new Error(
+          `${connName}: ${new URL(filled.url).host} へのログインが要ります（設定画面の「ログインする」を押してください）`,
+        );
+      }
+      throw err;
+    }
     return finishModuleConnection(declaration, connName, project, client, undefined, undefined);
+  }
+
+  /** Project ごとなら `{project}`、banto 全体なら共通だけ（`${secret:…}` と同じ規律）。 */
+  function callerFor(projectId: string | undefined): { project: string } | { instance: true } {
+    return projectId ? { project: projectId } : { instance: true };
+  }
+
+  /** **戻り先は1つだけ**（相手に登録する値なので、導出して写しを持たない・規則3）。 */
+  function oauthRedirectUrl(): string {
+    return `${bootstrap.publicUrl ?? `http://127.0.0.1:${bootstrap.port}`}/api/oauth/callback`;
+  }
+
+  /**
+   * **人が「ログインする」を押してから戻ってくるまでの1回分**。
+   *
+   * PKCE の途中の値（`code_verifier`）はここにしか無い——金庫に書くと、
+   * 数分で消える値のために共有の置き場へ書き込みが増える。**host が落ちたら
+   * もう一度押してもらう**（規則2——推測で埋めない）。
+   */
+  const oauthFlows = new Map<
+    string,
+    { provider: BantoOAuthProvider; moduleName: string; serverUrl: string }
+  >();
+
+  /** ログインを始める。押してもらう URL を返す。 */
+  async function startOAuth(moduleName: string): Promise<{ url: string }> {
+    const declaration = loadModuleDeclarations(runtimeConfig, "").find((d) => d.name === moduleName);
+    if (!declaration) throw new Error(`知らない Module です: ${moduleName}`);
+    if (!isRemoteLaunch(declaration.launch)) {
+      throw new Error(`${moduleName} は URL に繋ぐ形ではありません（ログインの相手がいません）`);
+    }
+    if (declaration.meta.scope === "project") {
+      // **どの Project のログインか決められない**（押した場所が画面の設定面）。
+      // 黙って共通に置くと、全 Project が同じアカウントを共有してしまう
+      throw new Error(
+        `${moduleName} は Project ごとに立つ Module です。ログインはまだ banto 全体のものにしか対応していません`,
+      );
+    }
+    const serverUrl = declaration.launch.url;
+    const state = randomUUID();
+    let authorizationUrl: URL | undefined;
+    const provider = new BantoOAuthProvider({
+      moduleName,
+      redirectUrl: oauthRedirectUrl(),
+      vault: oauthVaultFor({ instance: true }),
+      onAuthorizationUrl: (u) => void (authorizationUrl = u),
+      state,
+    });
+    const result = await auth(provider as never, { serverUrl });
+    if (result === "AUTHORIZED") {
+      // 既に通っている——押す先は無い
+      throw new Error(`${moduleName} は既にログイン済みです`);
+    }
+    if (!authorizationUrl) throw new Error(`${moduleName}: 相手がログインの窓口を示しませんでした`);
+    oauthFlows.set(state, { provider, moduleName, serverUrl });
+    return { url: authorizationUrl.toString() };
+  }
+
+  /** 戻ってきた。**印（state）で引き当てる**——どのログインか推測しない。 */
+  async function finishOAuth(state: string, code: string): Promise<{ moduleName: string }> {
+    const flow = oauthFlows.get(state);
+    if (!flow) {
+      throw new Error("このログインの途中の記録がありません（時間が経ったか、banto が再起動しました）");
+    }
+    await auth(flow.provider as never, { serverUrl: flow.serverUrl, authorizationCode: code });
+    oauthFlows.delete(state);
+    // **繋ぎ直す**——次のターンを待たずに、押した人がその場で結果を見られる
+    await releaseModule(flow.moduleName);
+    // **「もう一度試す」条件は宣言が変わったときだけ**（`connectDeclaredModule`）
+    // ——ログインは宣言を変えないので、ここで明示的に忘れる。忘れないと
+    // **直したのに直らない**（実測・2026-09-18、この試験が3回とも教えた）
+    moduleFailures.delete(flow.moduleName);
+    return { moduleName: flow.moduleName };
   }
 
   async function spawnDeclaredModuleOnce(
@@ -907,6 +1082,8 @@ async function main(): Promise<void> {
     moduleStatusForProject,
     instanceModuleStatus,
     releaseModule,
+    startOAuth,
+    finishOAuth,
     dataDir: bootstrap.dataDir,
     configDir: dirname(resolveBootstrapConfigPath()),
     resolveModuleClientsForThread,

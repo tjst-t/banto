@@ -20,6 +20,14 @@ export interface BootstrapConfig {
   /** 画面から見たサンドボックスの住所。**画面に推測させない**（規則3）
    *  ——Caddy 経由なら別サブドメイン、開発なら別ポートで、値が違う。 */
   sandboxPublicUrl: string;
+  /**
+   * **外から見た banto の住所**（追加・2026-09-18、OAuth の戻り先）。
+   *
+   * OAuth 2.1 は戻り先が https であることを要求する。その値は**相手のサーバに
+   * 登録される**ので、banto が推測してはいけない——設定に置く（規則3）。
+   * 省略時は loopback（OAuth は使えないが、他は動く）。
+   */
+  publicUrl?: string;
 }
 
 export class ConfigOverlapError extends Error {}
@@ -83,6 +91,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       sandboxPort: raw.sandboxPort ?? 4176,
       allowedEmbedderOrigins: raw.allowedEmbedderOrigins ?? DEFAULT_EMBEDDER_ORIGINS,
       sandboxPublicUrl: raw.sandboxPublicUrl ?? `http://127.0.0.1:${raw.sandboxPort ?? 4176}`,
+      ...(raw.publicUrl ? { publicUrl: raw.publicUrl } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;

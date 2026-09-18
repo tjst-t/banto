@@ -1614,6 +1614,29 @@
         "採らなかった：リモートだけ可視性／Project 選択の既定を変える——閉じ込めた stdio もネットワークは素通しなので、守れる範囲は広がらず規則だけ増える"
       ],
       "notes": "docs/notes/2026-09-17-remote-mcp.md"
+    },
+    {
+      "id": "module-remote-oauth",
+      "title": "ログインが要るリモート MCP（OAuth）に繋ぐ",
+      "status": "done",
+      "why": "外部サービスの MCP は API キーではなく OAuth でしか繋げないものが多い（claude.ai のコネクタ系）。プロトコルは SDK が持っているので、banto が書くのは「どこに預けるか」と「人にどう見せるか」の2つだけ。",
+      "done": [
+        "置き場は Vault（`oauth-<名前>`、種別 `oauth-token`）。人は一覧で見え、消せばログアウト",
+        "金庫に置き換える口（putSecret）を足した。**置き換えてよいのは oauth-token だけ**——人が預けた秘密には構造的に届かない",
+        "口は2本：POST /api/modules/:name/oauth/start（押されたときだけ URL を作る）と GET /api/oauth/callback",
+        "**戻り先は合言葉を求めない**——相手からのブラウザ遷移なので持ちようがない。代わりの鍵は state（推測できず1回で使い切る）",
+        "背景の接続は新しいログインを始めず、印（state）も持たない——人の途中のやり取りを上書きしない",
+        "「ログインが要る」と「壊れている」を分け、画面の行に「ログインする」を置いた",
+        "ログインできたら記録した失敗を忘れる——忘れないと「直したのに直らない」（実測）",
+        "banto 自身が始めた同梱どうしの中継はゲートを通さない（聞く相手も出せる会話も無い）",
+        "前提として banto を https にした（OAuth 2.1 の要求）——docs/notes/2026-09-18-https-for-oauth.md"
+      ],
+      "open": [
+        "Project ごとのログイン（どの Project か決められないので、いまは断る）",
+        "ログアウトの口（いまは金庫から alias を消す）"
+      ],
+      "spec": "docs/specs/v4-architecture.md「ログインが要る相手（OAuth）」／v4-security.md 脅威表／v4-frontend.md §6.23",
+      "notes": "docs/notes/2026-09-18-remote-mcp-oauth.md"
     }
   ],
   "phase1": {

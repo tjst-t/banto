@@ -2,7 +2,11 @@
 // 各backend実装（今回はSOPS）はこれだけを書けばよい——alias管理・Elicitation
 // 文言・Event Store記録・A/B/Cのtool/resource配線は共有ロジック（vault-kit.ts）が持つ。
 
-export type AliasKind = "secret" | "ssh-identity" | "file";
+/**
+ * 秘密の種別。**`oauth-token` だけは banto 自身が置くもの**（追加・2026-09-18）
+ * ——人は登録画面から作らないが、一覧では見えて消せる（規則13）。
+ */
+export type AliasKind = "secret" | "ssh-identity" | "file" | "oauth-token";
 
 export interface VaultBackend {
   getSecret(path: string): Promise<string | Buffer>;
