@@ -167,11 +167,19 @@ const defaultComponents: NonNullable<Parameters<typeof memoizeMarkdownComponents
       />
     ),
     a: ({ className, ...props }) => (
+      // **本文のリンクは別タブで開く**（決定・2026-09-18、ユーザー要望）。
+      // 同じタブで出ていくと**会話から離れてしまう**——走行中のターンがあれば、
+      // そこへ戻る道も分からなくなる。
+      //
+      // `rel` は `target="_blank"` と対で必ず付ける（`noopener` が無いと、
+      // 開いた先から `window.opener` でこちらのタブを触れる）。
       <a
         className={cn(
           "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
           className,
         )}
+        target="_blank"
+        rel="noopener noreferrer"
         {...props}
       />
     ),

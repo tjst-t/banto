@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AppShell } from "@/components/banto/shell/app-shell";
+import { ConnectGate } from "@/components/banto/shell/connect-gate";
 
 /**
  * **外枠は1つ**（`app-shell-shared-layout`、決定・2026-09-10）。
@@ -15,5 +16,12 @@ import { AppShell } from "@/components/banto/shell/app-shell";
  * クロムを一切持たない面なので、束ねてはいけない。
  */
 export default function ShellLayout({ children }: { children: ReactNode }) {
-  return <AppShell>{children}</AppShell>;
+  // **繋がっていないなら、外枠より先にそう言う**（追加・2026-09-18）。
+  // 中に入れてしまうと「Project が無い」「読み込み中…」のまま止まって見える
+  // ——聞いてもいないのに「無い」と言い切ることになる（規則2・規則13）
+  return (
+    <ConnectGate>
+      <AppShell>{children}</AppShell>
+    </ConnectGate>
+  );
 }
