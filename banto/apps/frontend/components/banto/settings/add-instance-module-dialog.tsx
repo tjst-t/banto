@@ -8,12 +8,18 @@
 //
 // 手で書く欄も残すが、**二番手**にする。
 //
+// **いちばん上は「banto 同梱」**（追加・2026-09-20、ユーザー決定）。`vault-infisical`
+// のように **banto のコードだが誰もが使うわけではない**ものは、既定に入れずここに
+// 置く。要る人が、好きな名前で何本でも入れる（接続先ごとに1本）。
+// **宣言を組み立てるのは host**——画面は目録の id と名前しか送らない。役割を
+// 画面に組み立てさせると、貼り付けた JSON が金庫の窓口を名乗る経路が復活する。
+//
 // **聞かないことは変えていない**：
 // - 「Project のフォルダを触りますか」は聞かない（誤答の被害が釣り合わない）
 //   ——`${projectRoot}` を書いたかで決まる
 // - 閉じ込めは外せない。外から繋ぐコードは必ず閉じ込める
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +32,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { PillTabs, SegmentedTabs } from "@/components/banto/shell/segmented-tabs";
+import {
+  installRealModuleFromCatalog,
+  listRealModuleCatalog,
+  type RealCatalogEntry,
+} from "@/lib/backend/client";
 
 const PROJECT_ROOT = "${projectRoot}";
 
@@ -87,6 +99,10 @@ function looksLikePlainSecret(json: string): boolean {
 export interface AddInstanceModuleDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
+  /** いま在る Module の名前。**同じ名前を既定に出さない**ために使う */
+  existingNames: readonly string[];
+  /** 目録から入れたあと、一覧を読み直す */
+  onInstalled(): Promise<void>;
   /** 手で書いた1本を足す。**URL に繋ぐ形のときは承知の印も渡す**。 */
   onSubmit(
     declaration: {
@@ -107,8 +123,16 @@ export function AddInstanceModuleDialog({
   onOpenChange,
   onSubmit,
   onPaste,
+  existingNames,
+  onInstalled,
 }: AddInstanceModuleDialogProps) {
-  const [mode, setMode] = useState<"paste" | "manual">("paste");
+  // **外のタブは2つ**（改訂・2026-09-20、ユーザー指摘）。「貼り付ける」「自分で書く」は
+  // 並べる粒度が違ううえ、名前が何を指すのか分からなかった——**公式か、自分で足すか**で
+  // 分け、入れ方（JSON か、項目を手で入れるか）は中のサブタブにする。
+  // 語は既存ソフトの慣習に合わせる：設定ファイルを取り込む（Import）と、
+  // 項目を手で入れる（Add manually）——VS Code・Postman・1Password などが同じ分け方
+  const [mode, setMode] = useState<"bundled" | "custom">("bundled");
+  const [customMode, setCustomMode] = useState<"json" | "manual">("json");
   const [pasted, setPasted] = useState("");
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
@@ -124,13 +148,34 @@ export function AddInstanceModuleDialog({
   const [fromVault, setFromVault] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // **同梱の目録**（既定には入れていないが banto が持っている実装）
+  const [catalog, setCatalog] = useState<RealCatalogEntry[] | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [catalogName, setCatalogName] = useState("");
+
+  // **開いたときに読む**（閉じている間は聞かない）
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    listRealModuleCatalog()
+      .then((list) => !cancelled && setCatalog(list))
+      // **読めなかったことを「無い」と混同しない**（規則2）
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setCatalog([]);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const args = argsText.split(/\s+/).filter(Boolean);
-  const manualRemote = mode === "manual" && connect === "remote";
+  const manualRemote = mode === "custom" && customMode === "manual" && connect === "remote";
   // **どこに立つかは、書いたものから決まる**（聞かない）
   const perProject = manualRemote
     ? false
-    : mode === "manual"
+    : mode === "custom" && customMode === "manual"
       ? args.includes(PROJECT_ROOT) || command.includes(PROJECT_ROOT)
       : pasted.includes(PROJECT_ROOT);
 
@@ -143,7 +188,7 @@ export function AddInstanceModuleDialog({
           return [];
         }
       })()
-    : mode === "paste"
+    : mode === "custom" && customMode === "json"
       ? remoteHostsIn(pasted)
       : [];
   const isRemote = manualRemote || remoteHosts.length > 0;
@@ -160,11 +205,16 @@ export function AddInstanceModuleDialog({
     setUrl("");
     setEgressOk(false);
     setError(null);
-    setMode("paste");
+    setMode("bundled");
+    setCustomMode("json");
+    setPicked(null);
+    setCatalogName("");
   }
 
   const canSubmit =
-    (mode === "paste"
+    (mode === "bundled"
+      ? picked !== null && catalogName.trim().length > 0
+      : customMode === "json"
       ? pasted.trim().length > 0
       : manualRemote
         ? name.trim().length > 0 && url.trim().length > 0
@@ -183,35 +233,98 @@ export function AddInstanceModuleDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Module を追加</DialogTitle>
-          <DialogDescription>
-            <strong>設定をそのまま貼り付けてください。</strong>
-            Claude Code などと同じ形（<code>mcpServers</code>）で受けます
-          </DialogDescription>
+          {/* **説明文は置かない**（改訂・2026-09-20、ユーザー指摘）
+              ——タブを見れば分かることを、上でもう一度言わない */}
         </DialogHeader>
 
-        <div className="flex gap-1" role="tablist">
-          <Button
-            type="button"
-            size="sm"
-            role="tab"
-            variant={mode === "paste" ? "default" : "ghost"}
-            onClick={() => setMode("paste")}
-          >
-            貼り付ける
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            role="tab"
-            variant={mode === "manual" ? "default" : "ghost"}
-            onClick={() => setMode("manual")}
-          >
-            自分で書く
-          </Button>
-        </div>
+        {/* **履歴のタブと同じ作り**（`SegmentedTabs`・決定・2026-09-20、ユーザー） */}
+        <SegmentedTabs
+          label="Module の入れ方"
+          testId="add-module-tabs"
+          value={mode}
+          onChange={(id) => setMode(id as typeof mode)}
+          tabs={[
+            { id: "bundled", label: "公式モジュール", count: catalog?.length },
+            { id: "custom", label: "カスタム" },
+          ]}
+        />
 
-        {mode === "paste" ? (
-          <div className="flex flex-col gap-1">
+        {mode === "bundled" ? (
+          <div className="flex flex-col gap-3" data-testid="add-module-bundled">
+            <p className="text-xs text-ink-3">
+              banto が公式に提供している Module のうち、<strong>最初から入っていないもの</strong>。
+              接続先ごとに1本入れます——同じものを何本入れても構いません。
+            </p>
+            {catalog === null ? (
+              <p className="text-xs text-ink-3">読み込み中…</p>
+            ) : catalog.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border p-4 text-center text-xs text-ink-3">
+                入れられる同梱 Module はありません
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {catalog.map((e) => (
+                  <button
+                    key={e.id}
+                    type="button"
+                    data-testid={`add-module-bundled-${e.id}`}
+                    data-state={picked === e.id ? "active" : "inactive"}
+                    onClick={() => {
+                      setPicked(e.id);
+                      // **同じ名前が在れば、番号を足して出す**（人が考えなくてよい）
+                      const taken = new Set(existingNames);
+                      let next = e.suggestedName;
+                      for (let i = 2; taken.has(next); i += 1) next = `${e.suggestedName}-${i}`;
+                      setCatalogName(next);
+                    }}
+                    className={
+                      "flex flex-col items-start gap-0.5 rounded-md border p-2.5 text-left " +
+                      (picked === e.id ? "border-accent bg-accent-soft/40" : "border-border")
+                    }
+                  >
+                    <span className="text-sm font-medium text-foreground">{e.name}</span>
+                    <span className="text-xs text-ink-3">{e.description}</span>
+                    <span className="text-xs text-ink-3">
+                      役割：{e.satisfies.join("・") || "—"}・
+                      {e.scope === "instance" ? "banto 全体で1本" : "Project ごとに1本"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {picked ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="add-module-bundled-name">名前</Label>
+                <Input
+                  id="add-module-bundled-name"
+                  value={catalogName}
+                  onChange={(e) => setCatalogName(e.target.value)}
+                />
+                <p className="text-xs text-ink-3">
+                  設定画面と置き場は、この名前ごとに分かれます
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {mode === "custom" ? (
+          // **入れ方は2つ**——設定ファイルを取り込むか、項目を手で入れるか。
+          // 既存ソフトと同じ分け方（Import / Add manually）
+          <PillTabs
+            label="カスタム Module の入れ方"
+            testId="add-module-custom-tabs"
+            value={customMode}
+            onChange={(id) => setCustomMode(id as typeof customMode)}
+            tabs={[
+              { id: "json", label: "JSON を貼り付け" },
+              { id: "manual", label: "手動で入力" },
+            ]}
+          />
+        ) : null}
+
+        {mode === "custom" && customMode === "json" ? (
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="add-module-paste">設定（JSON）</Label>
             <Textarea
               id="add-module-paste"
@@ -224,43 +337,37 @@ export function AddInstanceModuleDialog({
             <p className="text-xs text-ink-3">
               <code>mcpServers</code> の中身だけでも受けます。複数まとめて貼ってもかまいません
             </p>
-            {/* **秘密は金庫から引ける**（追加・2026-09-16）。直書きも通すが、
+            {/* **秘密は Vault から引ける**（追加・2026-09-16）。直書きも通すが、
                 **記録に残ることは隠さない**（規則2） */}
             <p className="text-xs text-ink-3">
               API キーは <code>{"${secret:名前}"}</code> と書くと、
-              <strong>金庫から引いて起動時に渡します</strong>（記録には名前だけ残ります）
+              <strong>Vault から引いて起動時に渡します</strong>（記録には名前だけ残ります）
             </p>
             {looksLikePlainSecret(pasted) ? (
               <p className="text-xs text-danger" data-testid="add-module-plain-secret">
                 値が直接書かれています。<strong>この値は banto の記録に残り続けます（後から消せません）。</strong>
-                金庫に入れて <code>{"${secret:名前}"}</code> で参照することをすすめます
+                Vault に入れて <code>{"${secret:名前}"}</code> で参照することをすすめます
               </p>
             ) : null}
           </div>
-        ) : (
+        ) : mode === "custom" ? (
           <div className="flex flex-col gap-3">
-            {/* **形は2つ**（追加・2026-09-17）——こちらで起こすか、URL に繋ぐか */}
-            <div className="flex gap-1">
-              <Button
-                type="button"
-                size="sm"
-                role="tab"
-                variant={connect === "stdio" ? "default" : "ghost"}
-                onClick={() => setConnect("stdio")}
-              >
-                このサーバで起動する
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                role="tab"
-                variant={connect === "remote" ? "default" : "ghost"}
-                onClick={() => setConnect("remote")}
-              >
-                URL に繋ぐ
-              </Button>
+            {/* **3段目のタブは作らない**（改訂・2026-09-20）——これは「どこに居るか」
+                ではなく**入力の1項目**なので、ラベルを付けてフォームに降ろす */}
+            <div className="flex flex-col gap-1.5">
+              <Label>接続方法</Label>
+              <PillTabs
+                label="接続方法"
+                testId="add-module-connect"
+                value={connect}
+                onChange={(id) => setConnect(id as typeof connect)}
+                tabs={[
+                  { id: "stdio", label: "このサーバで起動" },
+                  { id: "remote", label: "URL に接続" },
+                ]}
+              />
             </div>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="add-module-name">名前</Label>
               <Input
                 id="add-module-name"
@@ -270,7 +377,7 @@ export function AddInstanceModuleDialog({
               />
             </div>
             {manualRemote ? (
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="add-module-url">URL</Label>
                 <Input
                   id="add-module-url"
@@ -281,7 +388,7 @@ export function AddInstanceModuleDialog({
               </div>
             ) : (
               <>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="add-module-command">コマンド</Label>
               <Input
                 id="add-module-command"
@@ -290,7 +397,7 @@ export function AddInstanceModuleDialog({
                 placeholder="npx"
               />
             </div>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="add-module-args">引数（空白区切り）</Label>
               <Input
                 id="add-module-args"
@@ -298,25 +405,24 @@ export function AddInstanceModuleDialog({
                 onChange={(e) => setArgsText(e.target.value)}
                 placeholder="-y @modelcontextprotocol/server-weather"
               />
-              <div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setArgsText((prev) => `${prev} ${PROJECT_ROOT}`.trim())}
-                >
-                  ＋ この Project のフォルダを渡す
-                </Button>
-              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 w-fit self-start px-1.5 text-xs text-ink-2"
+                onClick={() => setArgsText((prev) => `${prev} ${PROJECT_ROOT}`.trim())}
+              >
+                ＋ この Project のフォルダを渡す
+              </Button>
             </div>
               </>
             )}
 
             {/* **API キーを入れる場所**（追加・2026-09-16）。ここが無いと、
                 手で書く道では鍵の要る MCP サーバを繋げない。
-                **既定は「金庫から」**——直書きは記録に残り続けるので、
+                **既定は「Vault から」**——直書きは記録に残り続けるので、
                 楽な道を安全なほうに置く */}
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="add-module-env-name">
                 {manualRemote ? "API キー（ヘッダ名／要るときだけ）" : "API キー（要るときだけ）"}
               </Label>
@@ -329,66 +435,65 @@ export function AddInstanceModuleDialog({
                   placeholder={manualRemote ? "Authorization" : "ACCUWEATHER_API_KEY"}
                 />
                 <Input
-                  aria-label={fromVault ? "金庫に入れた名前" : "値"}
+                  aria-label={fromVault ? "Vault に入れた名前" : "値"}
                   className="flex-1"
                   value={envValue}
                   onChange={(e) => setEnvValue(e.target.value)}
                   placeholder={fromVault ? "accuweather" : "sk-…"}
                 />
               </div>
-              <div className="flex gap-1">
-                <Button
-                  type="button"
-                  size="sm"
-                  role="tab"
-                  variant={fromVault ? "default" : "ghost"}
-                  onClick={() => setFromVault(true)}
-                >
-                  金庫から
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  role="tab"
-                  variant={fromVault ? "ghost" : "default"}
-                  onClick={() => setFromVault(false)}
-                >
-                  直接入力
-                </Button>
-              </div>
+              <PillTabs
+                label="API キーの渡し方"
+                testId="add-module-secret-source"
+                size="xs"
+                value={fromVault ? "vault" : "plain"}
+                onChange={(id) => setFromVault(id === "vault")}
+                tabs={[
+                  { id: "vault", label: "Vault から" },
+                  { id: "plain", label: "直接入力" },
+                ]}
+              />
               <p
                 className={fromVault ? "text-xs text-ink-3" : "text-xs text-danger"}
                 data-testid="add-module-secret-note"
               >
                 {fromVault
-                  ? "金庫に預けた名前を書きます。起動のたびに引いて渡すので、記録には名前だけが残ります"
+                  ? "Vault に預けた名前を書きます。起動のたびに引いて渡すので、記録には名前だけが残ります"
                   : "この値は banto の記録に残り続けます（後から消せません）"}
               </p>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {/* **押す前に、何が決まるかを出す**（導出は隠さない） */}
-        <p className="text-xs text-ink-3" data-testid="add-module-effect">
-          {isRemote
-            ? "banto 全体から使えます。プロセスは立てません（相手のサーバで動いています）"
-            : perProject
-              ? "Project ごとに1本立ち、その Project のフォルダだけを渡します"
-              : "banto 全体で1本立ちます（Project のフォルダは渡りません）"}
-          。
-          <strong>
+        {/* **押す前に、何が決まるかを出す**（導出は隠さない）。
+            同梱タブでは出さない——そこは目録の行が役割と立つ場所を言っている */}
+        {mode === "bundled" ? null : (
+          // **押す前に、何が決まるかを1行で**（導出は隠さない）。
+          // 以前は説明の段落を3つ積んでいて、どれが大事か分からなかった
+          <p
+            className="rounded-md bg-surface-2 px-3 py-2 text-xs text-ink-2"
+            data-testid="add-module-effect"
+          >
             {isRemote
-              ? "相手のコードは閉じ込められません（こちらで動いていないため）"
-              : "外から繋ぐコードは必ず閉じ込めます"}
-          </strong>
-        </p>
+              ? "banto 全体から使えます。プロセスは立てません（相手のサーバで動いています）"
+              : perProject
+                ? "Project ごとに1本立ち、その Project のフォルダだけを渡します"
+                : "banto 全体で1本立ちます（Project のフォルダは渡りません）"}
+            。
+            <strong className="text-foreground">
+              {isRemote
+                ? "相手のコードは閉じ込められません（こちらで動いていないため）"
+                : "外から繋ぐコードは必ず閉じ込めます"}
+            </strong>
+          </p>
+        )}
 
         {/* **外へ出すことは、押す前に、相手の名前で言う**（決定・2026-09-17、
             `docs/specs/v4-security.md`「Module が machine の外へデータを出す」）。
             閉じ込めが効かない代わりに要るのが、この承知 */}
         {isRemote ? (
           <label
-            className="flex items-start gap-2 rounded-lg border border-danger/40 p-2 text-xs text-danger"
+            className="flex items-start gap-2 rounded-lg bg-turn-soft px-3 py-2 text-xs text-foreground"
             data-testid="add-module-egress-notice"
           >
             <input
@@ -399,9 +504,11 @@ export function AddInstanceModuleDialog({
               data-testid="add-module-egress-ack"
             />
             <span>
-              この Module を呼ぶたびに、<strong>会話から来た内容が
-              {remoteHosts.length > 0 ? `「${remoteHosts.join("・")}」` : "この URL の相手"}へ送られます</strong>
-              （banto の外に出ます）。承知しました
+              この Module を呼ぶたびに、会話から来た内容が
+              <strong className="text-danger">
+                {remoteHosts.length > 0 ? remoteHosts.join("・") : "この URL の相手"}
+              </strong>
+              へ送られます（banto の外に出ます）。承知しました
             </span>
           </label>
         ) : null}
@@ -414,7 +521,7 @@ export function AddInstanceModuleDialog({
 
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-            やめる
+            キャンセル
           </Button>
           <Button
             type="button"
@@ -423,7 +530,10 @@ export function AddInstanceModuleDialog({
               setBusy(true);
               setError(null);
               try {
-                if (mode === "paste") {
+                if (mode === "bundled") {
+                  await installRealModuleFromCatalog(picked!, catalogName.trim());
+                  await onInstalled();
+                } else if (customMode === "json") {
                   await onPaste(pasted, isRemote);
                 } else if (manualRemote) {
                   const key = envName.trim();
@@ -465,7 +575,7 @@ export function AddInstanceModuleDialog({
               }
             }}
           >
-            追加する
+            追加
           </Button>
         </DialogFooter>
       </DialogContent>

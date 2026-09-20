@@ -803,6 +803,36 @@ export async function addRealInstanceModule(
  * banto はサーバなので**自分でブラウザを開けない**——押し先の URL を返し、
  * 画面が新しいタブで開く（`docs/specs/v4-frontend.md` §6.23）。
  */
+/**
+ * **同梱の目録**（追加・2026-09-20、ユーザー決定）。既定には入れていないが
+ * banto が同梱している実装——要る人が「Module を追加」から入れる。
+ */
+export interface RealCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  suggestedName: string;
+  satisfies: string[];
+  scope: "instance" | "project";
+}
+
+export async function listRealModuleCatalog(): Promise<RealCatalogEntry[]> {
+  return request<RealCatalogEntry[]>("/api/modules/catalog");
+}
+
+/**
+ * 目録から1本入れる。**画面が送るのは目録の id と名前だけ**
+ * ——役割も起動の指定も画面が組み立てない（組み立てさせると「役割を自由に
+ * 入力できる欄」ができ、貼り付けた JSON が金庫の窓口を名乗る経路が復活する。
+ * `docs/specs/v4-security.md`「役割のなりすまし」）。
+ */
+export async function installRealModuleFromCatalog(id: string, name: string): Promise<void> {
+  await request<{ ok: true }>(`/api/modules/catalog/${encodeURIComponent(id)}`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
 export async function startRealModuleOAuth(name: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/api/modules/${encodeURIComponent(name)}/oauth/start`, {
     method: "POST",

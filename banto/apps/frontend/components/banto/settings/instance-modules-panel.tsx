@@ -13,7 +13,16 @@
 // 「この Project の AI に見せるか」は Project の設定にある別の面。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, Minus, Plus, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
+import {
+  KeyRound,
+  Loader2,
+  Minus,
+  MoreHorizontal,
+  Plus,
+  RotateCcw,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +37,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   addRealInstanceModule,
   addRealInstanceModulesFromMcpServers,
   listRealInstanceModules,
@@ -37,6 +53,7 @@ import {
   type RealInstanceModule,
 } from "@/lib/backend/client";
 import { AddInstanceModuleDialog } from "./add-instance-module-dialog";
+import { notifyModuleSetChanged } from "./module-settings-panel";
 
 /** **URL に繋ぐ形なら相手の host**（追加・2026-09-17）。起動する形なら空。 */
 function remoteHostOf(m: RealInstanceModule): string {
@@ -121,6 +138,8 @@ export function InstanceModulesPanel() {
       setModules(list);
       setDraft(new Set(list.filter((m) => m.enabled).map((m) => m.name)));
       setError(null);
+      // **増えた／減った Module の設定画面も、左の一覧に追わせる**（規則13）
+      notifyModuleSetChanged();
     } catch (err) {
       // **読めなかったことを、空の一覧として見せない**（規則2・規則13）
       setError(err instanceof Error ? err.message : String(err));
@@ -338,6 +357,8 @@ export function InstanceModulesPanel() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-1">
+                      {/* **ログインだけは行に出す**（改訂・2026-09-20）
+                          ——押すべきものが隠れていると、繋がらない理由に気付けない */}
                       {needsLogin(m) ? (
                         <Button
                           type="button"
@@ -353,19 +374,6 @@ export function InstanceModulesPanel() {
                           }
                         >
                           ログイン
-                        </Button>
-                      ) : null}
-                      {/* **既定には消すものが無い**（無効にはできる） */}
-                      {m.removable ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => setRemoveTarget(m)}
-                          aria-label={`${m.name} を削除`}
-                        >
-                          <Trash2 className="size-3.5" />
                         </Button>
                       ) : null}
                       {/* **押すたびに確認を出さない**（改訂・2026-09-19）
@@ -384,6 +392,51 @@ export function InstanceModulesPanel() {
                           })
                         }
                       />
+                      {/* **その行への操作は1箇所にまとめる**（決定・2026-09-20、
+                          ユーザー要望）。行ごとにボタンが増えると表が散らかるし、
+                          「この行に何ができるか」が場所によって変わってしまう
+                          ——サイドバーの「…」と同じ形（規則3・規則10） */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="size-7 p-0"
+                            disabled={busy || saving}
+                            aria-label={`${m.name} の操作`}
+                            data-testid={`module-menu-${m.name}`}
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {needsLogin(m) ? (
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void run(async () => {
+                                  const { url } = await startRealModuleOAuth(m.name);
+                                  window.open(url, "_blank", "noopener,noreferrer");
+                                })
+                              }
+                            >
+                              <KeyRound className="size-3.5" /> ログイン
+                            </DropdownMenuItem>
+                          ) : null}
+                          {/* **既定には消すものが無い**（無効にはできる） */}
+                          {m.removable ? (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={() => setRemoveTarget(m)}
+                              >
+                                <Trash2 className="size-3.5" /> 削除
+                              </DropdownMenuItem>
+                            </>
+                          ) : null}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </td>
                 </tr>
@@ -521,6 +574,8 @@ export function InstanceModulesPanel() {
       <AddInstanceModuleDialog
         open={addOpen}
         onOpenChange={setAddOpen}
+        existingNames={modules.map((m) => m.name)}
+        onInstalled={reload}
         onSubmit={async (declaration, acknowledgeEgress) => {
           await addRealInstanceModule(declaration, acknowledgeEgress);
           await reload();

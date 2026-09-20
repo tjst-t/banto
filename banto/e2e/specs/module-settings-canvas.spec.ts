@@ -14,7 +14,14 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, expectProjectOpen, openApp, openNav, openProjectSettings } from "../helpers.js";
+import {
+  createProject,
+  expectProjectOpen,
+  installInfisical,
+  openApp,
+  openNav,
+  openProjectSettings,
+} from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -152,6 +159,8 @@ test("設定の置き場は Module の scope が決める——Vault は全体�
 //   2. 接続先を選ぶと、聞くことが変わる（自前なら URL を聞く）
 test("Infisical の繋ぎ方を、全体の設定画面から入れられる", async ({ page }) => {
   await openApp(page);
+  // **既定には入っていない**（2026-09-20）——要る人が目録から入れる
+  await installInfisical(page);
   await page.goto("/settings");
 
   const nav = page.getByRole("button", { name: "Vault（Infisical）", exact: true });

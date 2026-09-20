@@ -30,45 +30,12 @@ import { getAllThreadsForProject, getClosedForksForProject, getThreadOverview, r
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
+import { SegmentedTabs } from "@/components/banto/shell/segmented-tabs";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 
 type ArchiveTab = "forks" | "projects";
 
 /** 検索の直下のタブ。**検索中はどちらも選ばれていない**（結果が横断なので）。 */
-function ArchiveTabButton({
-  id,
-  label,
-  count,
-  selected,
-  onSelect,
-}: {
-  id: ArchiveTab;
-  label: string;
-  count: number;
-  selected: boolean;
-  onSelect: (id: ArchiveTab) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={selected}
-      data-testid={`archive-tab-${id}`}
-      data-state={selected ? "active" : "inactive"}
-      onClick={() => onSelect(id)}
-      className={cn(
-        // 選んでいる側は**薄く色を敷く**（枠も下線も無い）。塗りは surface-2 ——
-        // 会話の吹き出しや概要の箱と同じ濃さなので、面から浮かない
-        "flex items-center justify-center gap-1.5 px-2 py-2 text-xs transition-colors",
-        selected ? "bg-surface-2 text-foreground" : "text-ink-3 hover:bg-surface-2/60 hover:text-ink-2",
-      )}
-    >
-      {label}
-      <span className="text-ink-3 tabular-nums">{count}</span>
-    </button>
-  );
-}
-
 function ArchiveRow({
   icon: Icon,
   title,
@@ -257,27 +224,17 @@ export function ArchiveDialog({
           <>
             {/* **ダイアログの全幅**を2つで分ける。下線だけの平らな作り——枠や塗りを
                 足さないので、検索欄と一覧の間に線が1本増えるだけに見える */}
-            <div
-              role="tablist"
-              aria-label="履歴の種類"
-              data-testid="archive-tabs"
-              className="grid grid-cols-2 border-b border-border"
-            >
-              <ArchiveTabButton
-                id="forks"
-                label="Fork Thread"
-                count={closedForks.length}
-                selected={shownTab === "forks"}
-                onSelect={selectTab}
-              />
-              <ArchiveTabButton
-                id="projects"
-                label="Project"
-                count={closedProjects.length}
-                selected={shownTab === "projects"}
-                onSelect={selectTab}
-              />
-            </div>
+            <SegmentedTabs
+              label="履歴の種類"
+              testId="archive-tabs"
+              itemTestId="archive-tab"
+              value={shownTab}
+              onChange={(id) => selectTab(id as ArchiveTab)}
+              tabs={[
+                { id: "forks", label: "Fork Thread", count: closedForks.length },
+                { id: "projects", label: "Project", count: closedProjects.length },
+              ]}
+            />
             {searching ? (
               <p className="border-b border-border px-3 py-1.5 text-xs text-ink-3">
                 検索は Fork Thread と Project の両方から

@@ -25,6 +25,21 @@ type State =
  * その相手の Module が名乗っている設定 Canvas の一覧を取る。
  * **左メニューに並べるのにも、右側を描くのにも同じものを使う**（規則3）。
  */
+/**
+ * **Module が増えたり減ったりしたら、設定画面の一覧も追う**（追加・2026-09-20）。
+ *
+ * 実際に踏んだ：目録から1本入れても、**左の一覧にその Module の設定画面が出ない**
+ * ——開き直すまで気付けない。入れた目的は「そこに接続先を入れる」ことなので、
+ * 出ていないと次の一歩が踏めない（規則13——見えているものは繋がっている、の裏返し）。
+ *
+ * 一覧を持っているのは設定画面の枠、入れるのは Module の表——別の部品なので、
+ * **変わったことだけを知らせる**細い口を1つ置く。
+ */
+const listeners = new Set<() => void>();
+export function notifyModuleSetChanged(): void {
+  for (const listener of listeners) listener();
+}
+
 export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
   canvases: SettingsCanvas[];
   error: string | null;
@@ -40,6 +55,15 @@ export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
   // `/api/projects//ui-settings` を叩いて 404 を貰っていた——**通らないと
   // 分かっている要求を出さない**（規則2——本物の失敗と見分けが付かなくなる）。
   const ready = owner.kind === "instance" || owner.id !== "";
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setVersion((v) => v + 1);
+    listeners.add(bump);
+    return () => {
+      listeners.delete(bump);
+    };
+  }, []);
 
   useEffect(() => {
     if (!ready) {
@@ -62,7 +86,7 @@ export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner.kind, key, ready]);
+  }, [owner.kind, key, ready, version]);
 
   return state;
 }

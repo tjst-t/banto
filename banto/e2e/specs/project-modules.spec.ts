@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, openNav, openProjectSettings } from "../helpers.js";
+import { createProject, installInfisical, openApp, openNav, openProjectSettings } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -98,6 +98,8 @@ test("Module をその場で外して保存すると、その Project では立�
 
 test("要るものを外すと、その場で警告が出る（保存の差分にも出る）", async ({ page }) => {
   await openApp(page);
+  // **`vault` の実装が2本ある状態**を作る（Infisical は既定に入っていない・2026-09-20）
+  await installInfisical(page);
   await createProject(page, "依存の警告", mkdtempSync(join(tmpdir(), "banto-e2e-moddep-")));
   await openProjectSettings(page, "この Project の Module");
 
@@ -117,13 +119,12 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   ).toHaveCount(0);
 
   // **役割を満たすものが全部消えて初めて**、動かないと言う
-  // （`vault` を名乗る実装は3本ある——自前 Infisical と Cloud 用も、2026-09-15）
-  for (const impl of ["vault-infisical", "vault-infisical-cloud"]) {
-    await page
-      .locator(`[data-testid="module-row"][data-module="${impl}"]`)
-      .getByRole("switch")
-      .click();
-  }
+  // （`vault` を名乗る実装は2本ある——`vault-local` と Infisical。
+  // 接続先を増やしたいときは画面から複製する、2026-09-20）
+  await page
+    .locator('[data-testid="module-row"][data-module="vault-infisical"]')
+    .getByRole("switch")
+    .click();
   await expect(
     shellRow.getByText(/が無効です/),
     "要るものを外したのに、その場で何も言わない",
@@ -133,7 +134,7 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   await expect(page.getByTestId("module-save-dialog")).toContainText("shell");
   await page.getByTestId("module-save-dialog").getByRole("button", { name: "キャンセル" }).click();
   // やめたのだから、何も変わっていない
-  await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 3 件");
+  await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 2 件");
 });
 
 test("一般：名前と Root を直せて、危険な操作（Close）はその下にある", async ({ page }) => {

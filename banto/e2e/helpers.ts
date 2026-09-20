@@ -17,6 +17,29 @@ import { CORE_BASE_URL, AUTH_TOKEN } from "./config.js";
  * 待ち条件は「何秒か待つ」ではなく**実際に決着した印**で書く（規則6）：
  * Projectが有れば `/p/...` へ移り終わっていること、0件なら空状態が出ること。
  */
+/**
+ * **同梱の目録から Infisical を1本入れる**（追加・2026-09-20）。
+ *
+ * `vault-infisical` は 2026-09-20 に**既定から外した**——banto のコードだが
+ * 誰もが使うものではないので、要る人が「Module を追加」から入れる形にした。
+ * `vault` の実装が2本ある状態を見たい試験は、まずこれを呼ぶ。
+ *
+ * **画面ではなく口から入れる**——ここは前提を作るところで、試験の対象ではない
+ * （目録の面そのものは `instance-modules.spec.ts` が画面から見る）。
+ */
+export async function installInfisical(page: Page, name = "vault-infisical"): Promise<void> {
+  const res = await page.request.post(`${CORE_BASE_URL}/api/modules/catalog/vault-infisical`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+    data: { name },
+  });
+  if (res.ok()) return;
+  // **もう在るなら、それでよい**——core は全 spec で1つなので、別の spec が先に
+  // 入れていることがある。ここは前提を整えるところで、試験の対象ではない
+  const body = await res.text();
+  if (body.includes("その名前はもう使われています")) return;
+  throw new Error(`Infisical を入れられませんでした: ${body}`);
+}
+
 export async function openApp(page: Page): Promise<void> {
   await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
   await Promise.race([

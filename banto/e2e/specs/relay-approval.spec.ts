@@ -219,7 +219,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   for (const call of calls) {
     expect(call.payload.allowed).toBe(true);
     // **宛先で失敗したものも記録に残る**（規則2——監査で見たいのはむしろそちら）。
-    // 未設定の金庫（`vault-infisical-cloud`）は横断のたびに理由つきで断る
+    // 未設定の金庫（`vault-infisical`）は横断のたびに理由つきで断る
     if (call.payload.ok === false) {
       expect(String(call.payload.reason), "失敗したのに理由が残っていない").not.toBe("");
     }
