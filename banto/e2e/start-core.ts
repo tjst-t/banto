@@ -16,9 +16,16 @@ globalSetup();
 process.env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
 process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = CLAUDE_CREDENTIALS_DIR;
 
-// **2本目の Vault（Infisical）にも繋ぐ**（2026-09-12）。同梱の既定に入って
-// いるので、資格情報が無いと「繋げませんでした」が受信箱に毎回1件出る
-// ——試験がそれを数えてしまうし、何より**2本ある状態を試験できない**。
+// **2本目の Vault（Infisical）にも繋ぐ**（2026-09-12）。資格情報が無いと
+// 「繋げませんでした」が受信箱に毎回1件出る——試験がそれを数えてしまう。
+//
+// **訂正・2026-09-20**：vault-infisical は**既定から外れて目録（catalog）へ
+// 移った**ので、ここで環境変数を渡しても、**足さない限り立たない**。
+// つまりこの実行に Vault は既定で1本しか無い——**「Vault をまたぐ」経路を
+// 試したい spec は、自分で2本目を足すこと**（`vault-directory.spec.ts` の
+// 「別の Vault へ移せる」が、同じ vault-local を別の置き場でもう1本立てている）。
+// **Module を既定から外すと、それが居る前提の試験は落ちずに中身だけ減る**
+// ——実際、Vault をまたぐ移動の不具合がこの穴から素通りした。
 //
 // 資格情報は開発用の Infisical（`packages/modules/vault-infisical/dev/`）から取る。
 // **無ければ渡さない**——そのときは vault-infisical が繋がらず、受信箱に理由が

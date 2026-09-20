@@ -317,6 +317,15 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // ブラウザへ返す道が、人に一度も見られずに開く（2026-09-10 の
     // `docs/specs/v4-security.md` で塞いだ穴と同じ形）。
     //
+    // **改訂・2026-09-20（ユーザー決定）：同梱どうしなら `module` も通す。**
+    // 上の但し書きが成り立つのは**第三者 Module が絡むとき**だけだった。
+    // 実際に詰まったのは Vault をまたぐ移動——窓口が移す元で `resolveAlias` を
+    // 呼ぶので、**人が「移す」を押した瞬間にゲートで止まり、画面は無言のまま**
+    // 受信箱に承認のお願いだけが積まれていた（2026-09-20、ユーザー報告）。
+    // 上の「画面は無言で止まり、答えは別の会話に出る」が、`module` 可視性でも
+    // そのまま起きていた。**両側が同梱のときだけ**緩める——悪意ある Module の
+    // 画面という筋書きは、そこに第三者が居ることが前提なので、その形は塞がれたまま。
+    //
     // **もうひとつ緩めるのは「値を返さない口」だけ**（決定・2026-09-12）。
     // ゲートが守っているのは**値**であって名前ではない——`relayListTargets` を
     // 承認も監査も通さないのと同じ理由（返すのが名前と role だけだから）。
@@ -340,6 +349,18 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       if (Object.keys(picked).length > 0) identifiers = picked;
     }
     const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
+    /**
+     * **人が画面で押した、同梱どうしの操作**（決定・2026-09-20、ユーザー）。
+     *
+     * `humanAdminAction` と根拠は同じ（人が押した）だが、**可視性を問わない**
+     * ——`module` 可視性の口（値を返す口）も通す。Vault をまたぐ移動のように、
+     * 人が押した1つの操作が内部で値を運ぶ経路がある。
+     *
+     * **第三者が絡んだら今までどおり聞く。** ここを両側同梱に限っているのが、
+     * 「悪意ある Module が自分の画面から他 Module の秘密を引く」を塞ぐ線。
+     */
+    const humanBundledCanvasCall =
+      origin === "canvas" && target.meta.origin === "bundled" && identity.meta?.origin === "bundled";
     /**
      * **banto 自身が始めた、同梱どうしの呼び出し**（追加・2026-09-18）。
      *
@@ -372,7 +393,12 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
 
     const progressToken = extra._meta?.progressToken;
     const heartbeat =
-      opts.gate && !humanAdminAction && !ownHousekeeping && !valueFreeCall && progressToken !== undefined
+      opts.gate &&
+      !humanAdminAction &&
+      !humanBundledCanvasCall &&
+      !ownHousekeeping &&
+      !valueFreeCall &&
+      progressToken !== undefined
         ? setInterval(() => {
             void extra.sendNotification({
               method: "notifications/progress",
@@ -386,6 +412,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       : humanAdminAction
       ? // 記録には**なぜ通したか**を残す（黙って通らない、規則2）
         Promise.resolve({ allowed: true, reason: "人が画面で行った管理操作" })
+      : humanBundledCanvasCall
+      ? Promise.resolve({ allowed: true, reason: "人が画面で行った、同梱 Module どうしの操作" })
       : valueFreeCall
       ? Promise.resolve({ allowed: true, reason: "値を返さない口" })
       : opts.gate

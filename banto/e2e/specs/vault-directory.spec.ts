@@ -21,6 +21,8 @@ const PROJECT_NAME = "E2E VaultUI Project";
 const ALIAS = `e2e-vault-directory-${Date.now()}`;
 /** 「画面に出てしまったら分かる」一意な値。**出ないことを確かめるため**に使う。 */
 const SECRET = `MUST-NOT-APPEAR-${Date.now()}`;
+/** Vault を「またぐ」ことを試すための2本目（同じ vault-local を別の置き場で）。 */
+const SECOND_VAULT = "vault-local-2";
 
 test("VaultUI の入口から開いた画面が、実 Vault を横断して読み書きする", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-vault-directory-"));
@@ -552,5 +554,93 @@ test("一覧の行から、別の置き場へ移せる", async ({ page }) => {
       tool: "deleteAlias",
       arguments: { implementation: "vault-local", name: alias, group: dest },
     },
+  });
+});
+
+// **Vault をまたいで移す**（追加・2026-09-20、ユーザー報告「移すを押しても反応しない」）。
+//
+// 既存の「一覧の行から、別の置き場へ移せる」は **同じ Vault の中**で移していて、
+// `#move-vault` を**一度も触っていなかった**——人が実際にやるのは
+// 「vault-local に置いたものを Infisical へ移す」なので、そこが抜けていた。
+test("一覧の行から、別の Vault へ移せる（Vault の選択を切り替える）", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-crossmove-"));
+  const alias = `e2e-crossmove-${Date.now()}`;
+  // **2本目の Vault を用意する**（追加・2026-09-20）。2026-09-20 に
+  // vault-infisical を既定から外したので、**この実行には Vault が1本しか無い**
+  // ——「またぐ」経路が一度も走らない状態だった。docker に依存しないよう、
+  // 同じ vault-local をもう1本（別の置き場で）立てる。**同梱のコードなので
+  // `bundled` として扱われる**（`sameCode` の判定は command と args）
+  await page.request.post(`${CORE_BASE_URL}/api/modules`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: {
+      name: SECOND_VAULT,
+      launch: {
+        command: "${nodeExec}",
+        args: ["${monorepoRoot}/packages/modules/vault-local/dist/server.js"],
+        env: { BANTO_VAULT_DATA_DIR: "${dataDir}/vault-2" },
+      },
+      meta: { satisfies: ["vault"], dependsOn: [], isolation: "subprocess", scope: "instance", handlesSecrets: true },
+    },
+  });
+  await openApp(page);
+  await createProject(page, "E2E Vault をまたぐ", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(alias);
+  await canvas.locator("#new-value").fill("cross-move-me");
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  const row = canvas.locator("tbody tr").filter({ hasText: alias });
+  await expect(row).toBeVisible({ timeout: 120_000 });
+
+  await row.getByRole("button", { name: "移す" }).click();
+  await expect(canvas.locator("#dlg-move")).toBeVisible();
+
+  // **移す先の Vault を切り替える**——ここが今まで一度も通っていなかった
+  const vaults = await canvas.locator("#move-vault option").evaluateAll((os) => os.map((o) => o.value));
+  expect(vaults, `移せる先の Vault が1本しかない: ${JSON.stringify(vaults)}`).toContain(SECOND_VAULT);
+  await canvas.locator("#move-vault").selectOption(SECOND_VAULT);
+
+  // **押せる状態になっていること**——押しても何も起きない、を先に captured する
+  await expect(canvas.locator("#move-group"), "移す先のグループが選べない").toBeEnabled();
+  await expect(canvas.locator("#move-submit"), "「移す」が押せない（押しても反応しない）").toBeEnabled();
+  const toGroup = await canvas.locator("#move-group").inputValue();
+  expect(toGroup, "移す先のグループが空のまま").not.toBe("");
+
+  await canvas.locator("#move-submit").click();
+  // **成功したときにしか起きないこと＝ダイアログが閉じること**（規則14）
+  await expect(canvas.locator("#move-error"), "移すときにエラーが出た").toBeHidden();
+  await expect(canvas.locator("#dlg-move"), "移せずにダイアログが開いたまま").toBeHidden({ timeout: 60_000 });
+
+  // **本当に移った**（値が生きていることは backend に直接聞く）
+  const listed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: SECOND_VAULT, tool: "listAliases", arguments: {} },
+  });
+  const outer = JSON.parse(await listed.text()) as { content: { text: string }[] };
+  const found = (JSON.parse(outer.content[0]!.text) as Array<{ name: string; group: string }>).find(
+    (a) => a.name === alias,
+  );
+  expect(found, `移した先（${SECOND_VAULT}）に無い`).toBeTruthy();
+  expect(found!.group).toBe(toGroup);
+
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: {
+      server: "vault-directory",
+      tool: "deleteAlias",
+      arguments: { implementation: SECOND_VAULT, name: alias, group: toGroup },
+    },
+  });
+  // **足した Module を片づける**（規則7 の裏——置いていくと後続の spec の前提が変わる）。
+  // 実際に踏んだ：2本目を残したまま走らせたら、**後の spec（会話の中の入力欄）が
+  // 落ちた**。宣言は instance 全体のもので、core は実行を通して1つ
+  await page.request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(SECOND_VAULT)}`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
   });
 });

@@ -215,6 +215,9 @@ async function vaultWithVisibleTools(): Promise<Client> {
 async function withCanvasOrigin(
   origin: "turn" | "canvas",
   fn: (client: Client, asked: string[]) => Promise<void>,
+  // **第三者が絡む形も試せるようにする**（追加・2026-09-20）——画面からの緩めが
+  // 同梱どうしに閉じていることを、機械で押さえるため
+  opts: { callerExternal?: boolean } = {},
 ): Promise<void> {
   const registry = new RelayRegistry();
   registry.registerModule({
@@ -222,11 +225,19 @@ async function withCanvasOrigin(
     client: await vaultWithVisibleTools(),
     meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
   });
-  const uiMeta = bundledMeta(
-    { satisfies: ["vault-directory"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" },
-    "vault-directory",
-  );
-  const token = registry.issueToken({ moduleName: "vault-directory", meta: uiMeta });
+  const rawUiMeta = {
+    satisfies: [opts.callerExternal ? "third-party-panel" : "vault-directory"],
+    dependsOn: [{ role: "vault", required: true }],
+    isolation: "subprocess",
+  };
+  // `parseModuleMeta` は必ず `external` を返す——**同梱の印は host だけが立てる**
+  const uiMeta = opts.callerExternal
+    ? parseModuleMeta(rawUiMeta, "third-party-panel")
+    : bundledMeta(rawUiMeta, "vault-directory");
+  const token = registry.issueToken({
+    moduleName: opts.callerExternal ? "third-party-panel" : "vault-directory",
+    meta: uiMeta,
+  });
 
   const asked: string[] = [];
   const endpoint = new HostRelayEndpoint({
@@ -275,19 +286,42 @@ test("画面からの管理操作（admin）は、承認を聞かずに通る", 
   });
 });
 
-test("画面からでも、値を返す部品間専用の口（module）は今までどおり聞く", async () => {
+// **改訂・2026-09-20（ユーザー決定）。** 以前はここが
+// 「画面からでも module 可視性は今までどおり聞く」だった。実際に詰まったのは
+// Vault をまたぐ移動——窓口が移す元で `resolveAlias` を呼ぶので、人が「移す」を
+// 押した瞬間にゲートで止まり、**画面は無言のまま**受信箱に承認のお願いだけが
+// 積まれていた。緩めるのは**両側が同梱のとき**だけ。
+test("画面からの操作は、同梱どうしなら値を返す口（module）も聞かずに通る", async () => {
   await withCanvasOrigin("canvas", async (client, asked) => {
-    await assert.rejects(
-      () =>
-        client.callTool({
-          name: "relayCallTool",
-          arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
-        }),
-      /許可されていません/,
-      "画面経由で resolveAlias が素通りした（秘密がブラウザへ返る道が開いている）",
-    );
-    assert.deepEqual(asked, ["resolveAlias"], "聞かずに判断している");
+    const result = await client.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+    });
+    assert.ok(result.content, "人が画面で押した操作が、値を運ぶところで止まっている");
+    assert.deepEqual(asked, [], "同梱どうしなのに人に聞き直している");
   });
+});
+
+// **緩みが同梱に閉じていること**——ここが開くと、悪意ある Module が自分の画面から
+// 他 Module の秘密を引いてブラウザへ返す道が、人に一度も見られずに開く
+// （2026-09-10 の `docs/specs/v4-security.md` で塞いだ穴と同じ形）。
+test("第三者 Module の画面からは、値を返す口（module）を今までどおり聞く", async () => {
+  await withCanvasOrigin(
+    "canvas",
+    async (client, asked) => {
+      await assert.rejects(
+        () =>
+          client.callTool({
+            name: "relayCallTool",
+            arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+          }),
+        /許可されていません/,
+        "第三者の画面から resolveAlias が素通りした（秘密がブラウザへ返る道が開いている）",
+      );
+      assert.deepEqual(asked, ["resolveAlias"], "聞かずに判断している");
+    },
+    { callerExternal: true },
+  );
 });
 
 test("AI のターンからの管理操作は、今までどおり聞く", async () => {
