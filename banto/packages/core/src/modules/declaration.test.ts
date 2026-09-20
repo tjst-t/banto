@@ -62,11 +62,16 @@ function stdio(launch: ModuleLaunch): StdioLaunch {
   return launch as StdioLaunch;
 }
 
-test("同梱の既定は6本（vault-local/infisical×2/vault-directory/shell/filesystem）で、そのまま読める", () => {
+// **既定は「誰もが使うものだけ」**（改訂・2026-09-20、ユーザー決定）。
+// `vault-infisical` は banto のコードだが Infisical を立てている人しか要らないので、
+// 既定から外して**目録**（`BUNDLED_CATALOG`）へ移した——要る人が
+// 「Module を追加」から、接続先ごとに好きな名前で入れる。
+// **コードに写した行は、消したくても消せない**（既定は `removable: false`）。
+test("同梱の既定は4本（vault-local/vault-directory/shell/filesystem）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "vault-directory", "vault-infisical", "vault-infisical-cloud", "vault-local"],
+    ["filesystem", "shell", "vault-directory", "vault-local"],
   );
   // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
   assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
@@ -155,7 +160,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     await config.load();
 
     const before = loadModuleDeclarations(config, "project-1");
-    assert.equal(before.length, 6, "既定は6本");
+    assert.equal(before.length, 4, "既定は4本");
 
     await setModuleDeclarations(config, [
       ...DEFAULT_MODULE_DECLARATIONS,
@@ -170,7 +175,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     ]);
 
     const after = loadModuleDeclarations(config, "project-1");
-    assert.equal(after.length, 7);
+    assert.equal(after.length, 5);
     assert.ok(after.some((d) => d.name === "python-demo"));
 
     // 読み直しても残る（Event Store に載っている）
@@ -178,7 +183,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     await log2.init();
     const config2 = new RuntimeConfigStore(dir, log2);
     await config2.load();
-    assert.equal(loadModuleDeclarations(config2, "project-1").length, 7);
+    assert.equal(loadModuleDeclarations(config2, "project-1").length, 5);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -203,7 +208,7 @@ test("Project ごとに、繋ぐ Module を上書きできる", async () => {
       ["vault-local"],
     );
     // 別の Project は既定のまま
-    assert.equal(loadModuleDeclarations(config, "other").length, 6);
+    assert.equal(loadModuleDeclarations(config, "other").length, 4);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -637,11 +642,11 @@ const metaFor = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as never;
 
-test("金庫そのものは ${secret:…} を使えない——窓口も同じ", () => {
+test("Vault そのものは ${secret:…} を使えない——窓口も同じ", () => {
   for (const role of ["vault", "vault-directory"]) {
     const verdict = secretsAllowedFor(metaFor({ satisfies: [role], origin: "bundled" }));
     assert.equal(verdict.ok, false, `${role} に秘密を渡してしまう`);
-    assert.match((verdict as { reason: string }).reason, /金庫そのもの/);
+    assert.match((verdict as { reason: string }).reason, /Vault そのもの/);
   }
 });
 

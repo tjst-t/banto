@@ -322,6 +322,82 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
 }
 
 /**
+ * **同梱だが、既定では入れない実装**（追加・2026-09-20、ユーザー決定）。
+ *
+ * `vault-infisical` は banto のコードだが、**誰もが使うものではない**
+ * ——Infisical を立てている人だけが要る。既定に入れておくと、使わない人の
+ * 設定画面に未設定の行が常に1本出るし、**要る人は1本しか持てない**
+ * （接続先ごとに1本要るのに、既定はコードにあるので増やせない）。
+ *
+ * **要る人が「Module を追加」から、好きな名前で何本でも入れる。** 写すのは host
+ * なので、画面は目録の id と新しい名前しか送らない——画面に `satisfies` を
+ * 組み立てさせると「役割を自由に入力できる欄」が生まれ、貼り付けた JSON が
+ * 金庫の窓口を名乗る経路が復活する（`v4-security.md`「役割のなりすまし」）。
+ */
+export interface BundledCatalogEntry {
+  id: string;
+  /** 一覧に出す名前 */
+  name: string;
+  /** 何をするものか（1行） */
+  description: string;
+  /** 付ける名前の既定（同じ名前が在れば画面が番号を足す） */
+  suggestedName: string;
+  launch: ModuleLaunch;
+  meta: unknown;
+}
+
+export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
+  {
+    id: "vault-infisical",
+    name: "Vault（Infisical）",
+    description:
+      "Infisical に秘密を預ける Vault。接続先ごとに1本入れます（自前ホストと Cloud を並べる、など）",
+    suggestedName: "vault-infisical",
+
+    // **vault 役割の2本目**（Infisical、2026-09-12）。役割は同じ `vault` で、
+    // 違うのは「秘密をどこに置くか」と「メタデータをどこに置くか」だけ
+    // ——A/B/C の配線は `@banto/vault-kit` が共有する。
+    //
+    // **資格情報は Infisical には入れられない**（金庫を開ける鍵は金庫に入らない）
+    // ——組み込み Vault の `identity.txt` と同じ category。
+    //
+    // **繋ぎ方は人が設定画面から入れる**（改訂・2026-09-13、ユーザー要望）。
+    // 以前は環境変数だけで、**設定していないと Module が立たなかった**
+    // ——立たないので設定画面にも辿り着けず、host は毎回「繋げませんでした」を
+    // 受信箱に出していた（毎日のノイズ）。いまは**未設定でも立つ**：設定画面を
+    // 出し、値を触る口は理由つきで断る。環境変数も引き続き読む（開発・E2E）。
+    //
+    // **2本目をコードに書かない**（改訂・2026-09-20、ユーザー指摘）。2026-09-15 に
+    // Infisical Cloud 用の2本目を既定の配列へコピペしていたが、当時は
+    // **画面から増やす手段が無かった**から（名前が既定に無いと `vault` を
+    // 名乗れなかった）。いまは「Module を追加」からここを選んで何本でも入れられる
+    // ——コードに写しを持つと、**消したくても消せない行**になる（既定は設定に
+    // 無いので `removable: false`）。
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/vault-infisical/dist/server.js"],
+      // **資格情報はここに書かない。** `BANTO_INFISICAL_*` は host の環境変数を
+      // 子がそのまま継ぐ（cli.ts が `...process.env` を渡す）——宣言は
+      // Event Store に残るので、**秘密を宣言に書くと記録に残ってしまう**。
+      // 置き場は運用側（banto を起動する環境）。
+      // **置き場は接続名ごとに分かれる場所**（訂正・2026-09-15）。以前は
+      // `${dataDir}/vault-infisical` という**固定のパス**だったので、同じ実装を
+      // 2本立てると（自前ホストと Infisical Cloud を並べるなど）**2本目が
+      // 1本目の資格情報を上書きする**。`${moduleDataDir}` は banto が
+      // 接続名ごとに用意するので、コピーしてもぶつからない。
+      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" },
+    },
+    meta: {
+      satisfies: ["vault"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      handlesSecrets: true,
+    },
+  },
+];
+
+/**
  * **同梱かどうかを host が決める**（追加・2026-09-15）。
  *
  * 同梱と認めるのは、**起動するプログラムと引数が、同梱実装のどれかと一致する**
@@ -351,7 +427,9 @@ function withOrigin(
   // 「同梱のコードを借りて外へ繋ぐ」が生えない
   const sameCode =
     !isRemoteLaunch(launch) &&
-    DEFAULT_MODULE_DECLARATIONS.some((def) => {
+    // **既定に入っているものだけが banto のコードではない**（改訂・2026-09-20）
+    // ——目録から入れたものも同じコードが走る
+    [...DEFAULT_MODULE_DECLARATIONS, ...BUNDLED_CATALOG].some((def) => {
       if (isRemoteLaunch(def.launch)) return false;
       return (
         def.launch.command === launch.command &&
@@ -400,7 +478,7 @@ export function secretsAllowedFor(
   if (vaultRole) {
     return {
       ok: false,
-      reason: "金庫そのものは ${secret:…} を使えません（自分を開ける鍵は自分の中に置けません）",
+      reason: "Vault そのものは ${secret:…} を使えません（自分を開ける鍵は自分の中に置けません）",
     };
   }
   // **URL に繋ぐ形は、閉じ込めの代わりに人の承知で守る**（追加・2026-09-17）。
@@ -564,66 +642,6 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       command: "${nodeExec}",
       args: ["${monorepoRoot}/packages/modules/vault-local/dist/server.js"],
       env: { BANTO_VAULT_DATA_DIR: "${dataDir}/vault" },
-    },
-    meta: {
-      satisfies: ["vault"],
-      dependsOn: [],
-      isolation: "subprocess",
-      scope: "instance",
-      handlesSecrets: true,
-    },
-  },
-  {
-    // **vault 役割の2本目**（Infisical、2026-09-12）。役割は同じ `vault` で、
-    // 違うのは「秘密をどこに置くか」と「メタデータをどこに置くか」だけ
-    // ——A/B/C の配線は `@banto/vault-kit` が共有する。
-    //
-    // **資格情報は Infisical には入れられない**（金庫を開ける鍵は金庫に入らない）
-    // ——組み込み Vault の `identity.txt` と同じ category。
-    //
-    // **繋ぎ方は人が設定画面から入れる**（改訂・2026-09-13、ユーザー要望）。
-    // 以前は環境変数だけで、**設定していないと Module が立たなかった**
-    // ——立たないので設定画面にも辿り着けず、host は毎回「繋げませんでした」を
-    // 受信箱に出していた（毎日のノイズ）。いまは**未設定でも立つ**：設定画面を
-    // 出し、値を触る口は理由つきで断る。環境変数も引き続き読む（開発・E2E）。
-    name: "vault-infisical",
-    launch: {
-      command: "${nodeExec}",
-      args: ["${monorepoRoot}/packages/modules/vault-infisical/dist/server.js"],
-      // **資格情報はここに書かない。** `BANTO_INFISICAL_*` は host の環境変数を
-      // 子がそのまま継ぐ（cli.ts が `...process.env` を渡す）——宣言は
-      // Event Store に残るので、**秘密を宣言に書くと記録に残ってしまう**。
-      // 置き場は運用側（banto を起動する環境）。
-      // **置き場は接続名ごとに分かれる場所**（訂正・2026-09-15）。以前は
-      // `${dataDir}/vault-infisical` という**固定のパス**だったので、同じ実装を
-      // 2本立てると（自前ホストと Infisical Cloud を並べるなど）**2本目が
-      // 1本目の資格情報を上書きする**。`${moduleDataDir}` は banto が
-      // 接続名ごとに用意するので、コピーしてもぶつからない。
-      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" },
-    },
-    meta: {
-      satisfies: ["vault"],
-      dependsOn: [],
-      isolation: "subprocess",
-      scope: "instance",
-      handlesSecrets: true,
-    },
-  },
-  {
-    // **Infisical Cloud 用の2本目**（追加・2026-09-15、最初の要望）。
-    //
-    // 同じ実装（`vault-infisical`）をもう1本立てる。**コピーしても壊れない**
-    // ことを先に直してある（2026-09-15）：置き場は `${moduleDataDir}` なので
-    // 接続名ごとに分かれ、設定画面の見出しには名前が入り、環境変数の既定は
-    // 正規の1本にしか効かない——**この2本目は、人が設定画面から接続先を
-    // 入れるまで未設定のまま立つ**（受信箱も汚さない）。
-    //
-    // **未設定でも資源の一覧は出る**ので、設定画面に辿り着ける（2026-09-15）。
-    name: "vault-infisical-cloud",
-    launch: {
-      command: "${nodeExec}",
-      args: ["${monorepoRoot}/packages/modules/vault-infisical/dist/server.js"],
-      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" },
     },
     meta: {
       satisfies: ["vault"],
@@ -1036,6 +1054,28 @@ export async function addModuleDeclaration(
     ...overlays,
     { name: parsed.name, launch: parsed.launch, meta: declaration.meta },
   ]);
+}
+
+/**
+ * **同梱の目録から1本入れる**（追加・2026-09-20、ユーザー決定）。
+ *
+ * 欲しいのは「Module を増やす」ことではなく**接続先を増やす**こと
+ * （同じ Infisical の実装で、別のサーバ・別のアカウント）。置き場は
+ * `${moduleDataDir}` で名前ごとに分かれるので、何本入れても混ざらない。
+ *
+ * **宣言を組み立てるのは host の仕事にする。** 画面に `satisfies` を
+ * 組み立てさせると、**役割を自由に入力できる欄**が生まれる——貼り付けた JSON が
+ * `vault-directory`（金庫の窓口）を名乗る経路が、画面から復活してしまう。
+ * 目録からなら**banto が用意したものと同じ**しか作れない（`v4-security.md`）。
+ */
+export async function installFromCatalog(
+  config: RuntimeConfigStore,
+  id: string,
+  name: string,
+): Promise<void> {
+  const entry = BUNDLED_CATALOG.find((e) => e.id === id);
+  if (!entry) throw new ModuleDeclarationError(`知らない同梱 Module です: ${id}`);
+  await addModuleDeclaration(config, { name, launch: entry.launch, meta: entry.meta });
 }
 
 /**

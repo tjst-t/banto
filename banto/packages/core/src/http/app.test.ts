@@ -840,7 +840,7 @@ test("banto 全体の Module を一覧できる——同梱かどうかと、役
       satisfies: string[];
       dependsOn: Array<{ role: string; required: boolean }>;
     }>;
-    assert.ok(list.length >= 5, `既定が返っていない: ${JSON.stringify(list)}`);
+    assert.ok(list.length >= 4, `既定が返っていない: ${JSON.stringify(list)}`);
     assert.equal(list.every((m) => m.enabled), true, "はじめは全部動く");
     assert.equal(list.every((m) => m.origin === "bundled"), true, "同梱が同梱と出ていない");
     // **依存は役割で出す**（改訂・2026-09-19）。「止めたら何が壊れるか」は
@@ -858,37 +858,34 @@ test("banto 全体の Module を一覧できる——同梱かどうかと、役
   });
 });
 
-// **同じ実装をもう1本立てられる**（追加・2026-09-19、ユーザー指摘）。
+// **同梱だが既定には入れないものを、目録から入れる**（改訂・2026-09-20、ユーザー決定）。
 //
-// 以前は「名前が既定に在り、かつコードが既定のまま」を同梱の条件にしていたので、
-// **まったく同じコードでも名前が違えば第三者扱い**になり、`vault` を名乗った
-// 時点で弾かれていた——接続先を増やすにはコードを足して再デプロイするしか
-// なかった。守りたいのは「走るコードが banto のものか」であって、名前ではない。
-test("同梱と同じコードなら、別の名前でもう1本立てられる——そして消せる", async () => {
+// `vault-infisical` は banto のコードだが誰もが使うものではないので、既定から外して
+// 目録へ移した。要る人が**接続先ごとに好きな名前で何本でも**入れる。
+// **宣言を組み立てるのは host**——画面が送るのは目録の id と名前だけ
+// （画面に役割を組み立てさせると、貼り付けた JSON が金庫の窓口を名乗る経路が復活する）。
+test("目録から同じものを2本入れられる——役割は付き、そして消せる", async () => {
   await withApp(async (base, token) => {
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
-    const defaults = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
-      name: string;
-      launch: { command: string; args: string[] };
-    }>;
-    const infisical = defaults.find((m) => m.name === "vault-infisical")!;
 
-    const add = await fetch(`${base}/api/modules`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        name: "vault-infisical-work",
-        launch: { ...infisical.launch, env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" } },
-        meta: {
-          satisfies: ["vault"],
-          dependsOn: [],
-          isolation: "subprocess",
-          scope: "instance",
-          handlesSecrets: true,
-        },
-      }),
-    });
-    assert.equal(add.status, 200, await add.text());
+    const catalog = (await (await fetch(`${base}/api/modules/catalog`, { headers })).json()) as Array<{
+      id: string;
+      name: string;
+      satisfies: string[];
+    }>;
+    const entry = catalog.find((e) => e.id === "vault-infisical")!;
+    assert.ok(entry, "目録に Infisical が無い");
+    // **入れる前に、何が増えるのかを言えている**（規則13）
+    assert.deepEqual(entry.satisfies, ["vault"]);
+
+    for (const name of ["vault-infisical", "vault-infisical-2"]) {
+      const add = await fetch(`${base}/api/modules/catalog/vault-infisical`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name }),
+      });
+      assert.equal(add.status, 200, await add.text());
+    }
 
     const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
       name: string;
@@ -896,22 +893,33 @@ test("同梱と同じコードなら、別の名前でもう1本立てられる�
       removable: boolean;
       satisfies: string[];
     }>;
-    const copy = list.find((m) => m.name === "vault-infisical-work")!;
-    // **走るのは banto のコードなので、予約役割を名乗れる**
-    assert.equal(copy.origin, "bundled", "同じコードなのに第三者扱い");
-    assert.deepEqual(copy.satisfies, ["vault"]);
-    // **それでも自分で足した行なので消せる**（origin と消せるかは別の問い）
-    assert.equal(copy.removable, true, "自分で足したのに消せない");
-    assert.equal(
-      list.find((m) => m.name === "vault-infisical")!.removable,
-      false,
-      "既定が消せることになっている",
-    );
+    for (const name of ["vault-infisical", "vault-infisical-2"]) {
+      const m = list.find((x) => x.name === name)!;
+      // **banto のコードが走るので役割を名乗れる**が、**自分で入れた行なので消せる**
+      assert.equal(m.origin, "bundled", `${name} が第三者扱い`);
+      assert.equal(m.removable, true, `${name} が消せない`);
+      assert.deepEqual(m.satisfies, ["vault"]);
+    }
 
-    const del = await fetch(`${base}/api/modules/vault-infisical-work`, { method: "DELETE", headers });
+    const del = await fetch(`${base}/api/modules/vault-infisical-2`, { method: "DELETE", headers });
     assert.equal(del.status, 200, await del.text());
     const after = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{ name: string }>;
-    assert.equal(after.some((m) => m.name === "vault-infisical-work"), false, "消えていない");
+    assert.equal(after.some((m) => m.name === "vault-infisical-2"), false, "消えていない");
+  });
+});
+
+// **知らない id は断る**——目録に無いものを入れさせない
+test("目録に無い id は断る", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const res = await fetch(`${base}/api/modules/catalog/${encodeURIComponent("いない")}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "x" }),
+    });
+    const body = await res.text();
+    assert.equal(res.status, 400, body);
+    assert.match(JSON.parse(body).error, /知らない同梱 Module/);
   });
 });
 

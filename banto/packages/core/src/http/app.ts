@@ -30,6 +30,8 @@ import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./t
 import {
   ModuleDeclarationError,
   addModuleDeclaration,
+  BUNDLED_CATALOG,
+  installFromCatalog,
   acknowledgeEgress,
   forgetEgress,
   isRemoteLaunch,
@@ -648,6 +650,46 @@ export function createApp(deps: AppDeps) {
         }
         return;
       }
+      // **同梱の目録**（追加・2026-09-20、ユーザー決定）。既定には入れていない
+      // が banto が同梱している実装——要る人が「Module を追加」から入れる。
+      if (url.pathname === "/api/modules/catalog" && req.method === "GET") {
+        json(
+          res,
+          200,
+          BUNDLED_CATALOG.map((e) => ({
+            id: e.id,
+            name: e.name,
+            description: e.description,
+            suggestedName: e.suggestedName,
+            // 一覧の中身も出す——**何が増えるのかを、入れる前に言う**（規則13）
+            satisfies: (e.meta as { satisfies?: string[] }).satisfies ?? [],
+            scope: (e.meta as { scope?: string }).scope ?? "instance",
+          })),
+        );
+        return;
+      }
+      // 目録から1本入れる。**画面が送るのは目録の id と名前だけ**
+      // ——役割も起動の指定も画面に組み立てさせない（`v4-security.md`）
+      const catalogMatch = url.pathname.match(/^\/api\/modules\/catalog\/([^/]+)$/);
+      if (catalogMatch && req.method === "POST") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const body = (await readJsonBody(req)) as { name?: unknown };
+        if (typeof body.name !== "string" || body.name.trim() === "") {
+          return json(res, 400, { error: "name が空です" });
+        }
+        const newName = body.name.trim();
+        try {
+          await installFromCatalog(deps.runtimeConfig, decodeURIComponent(catalogMatch[1]!), newName);
+        } catch (err) {
+          if (err instanceof ModuleDeclarationError || err instanceof ModuleMetaError) {
+            return json(res, 400, { error: err.message });
+          }
+          throw err;
+        }
+        json(res, 200, { ok: true, added: [newName] });
+        return;
+      }
+
       // **ログインを始める**（追加・2026-09-18、OAuth）。**押したときだけ**
       // URL を作る——背景の接続が、人の途中のやり取りを上書きしないため
       const oauthStartMatch = url.pathname.match(/^\/api\/modules\/([^/]+)\/oauth\/start$/);
