@@ -324,9 +324,21 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
 /**
  * **同梱かどうかを host が決める**（追加・2026-09-15）。
  *
- * 同梱と認めるのは、**名前が既定に在り、かつ起動するプログラムと引数が既定のまま**
- * のときだけ。`env` の差分は設定なので同梱のまま——**走るコードが banto のものか**
+ * 同梱と認めるのは、**起動するプログラムと引数が、同梱実装のどれかと一致する**
+ * ときだけ。`env` の差分は設定なので同梱のまま——**走るコードが banto のものか**
  * が境界。command や args を書き換えたら、それはもう別のプログラム。
+ *
+ * **名前は見ない**（改訂・2026-09-19、ユーザー指摘）。以前は「名前が既定に在り、
+ * かつコードが既定のまま」を条件にしていたので、**まったく同じコードでも
+ * 名前が違うと第三者扱い**だった。結果、`vault-infisical` を別名でもう1本
+ * 立てられず（`vault` を名乗った時点で弾かれる）、**接続先を増やすにはコードを
+ * 足して再デプロイするしかなかった**。守りたいのは「走るコードが banto のものか」
+ * であって、名前ではない——名前は判断の根拠になっていなかった。
+ *
+ * これで壊れないこと：`vault-directory` は `SINGLETON_ROLES` で全体1本に固定
+ * されているので、窓口が増えることはない。`shell`・`filesystem` は複製できるが、
+ * Project ごとに同じものが2本立つだけで、得られる権限は増えない
+ * （決定・2026-09-19、ユーザー「放ってよい」）。
  */
 function withOrigin(
   name: string,
@@ -334,17 +346,19 @@ function withOrigin(
   meta: BantoModuleMeta,
   source: string,
 ): BantoModuleMeta {
-  const def = DEFAULT_MODULE_DECLARATIONS.find((x) => x.name === name);
   // **URL に繋ぐ形は、決して同梱にならない**（同梱はすべて banto が起こす
   // プロセス）。ここを構造で閉じておく——将来 `url` を持つ既定を足しても、
-  // 「同梱の名前を借りて外へ繋ぐ」が生えない
+  // 「同梱のコードを借りて外へ繋ぐ」が生えない
   const sameCode =
     !isRemoteLaunch(launch) &&
-    def !== undefined &&
-    !isRemoteLaunch(def.launch) &&
-    def.launch.command === launch.command &&
-    def.launch.args.length === launch.args.length &&
-    def.launch.args.every((a, i) => a === launch.args[i]);
+    DEFAULT_MODULE_DECLARATIONS.some((def) => {
+      if (isRemoteLaunch(def.launch)) return false;
+      return (
+        def.launch.command === launch.command &&
+        def.launch.args.length === launch.args.length &&
+        def.launch.args.every((a, i) => a === launch.args[i])
+      );
+    });
   if (!sameCode) {
     // 第三者のコード——骨格の役割は名乗れない
     assertRolesAllowed(meta, `${source}(${name})`);
@@ -916,6 +930,11 @@ export function listProjectModules(
 // 無かったのは **banto 全体の層**——宣言を足す・消す・止める口。
 // §10 item 14 (a) が未着手のまま残っていた部分。
 
+/** 設定（差分）にその Module の宣言そのものが書かれているか＝消す対象があるか。 */
+function hasStoredDeclaration(overlays: readonly ModuleOverlay[], name: string): boolean {
+  return overlays.some((o) => o.name === name && o.launch !== undefined);
+}
+
 /** instance 全体の一覧（無効にしたものも含む）。**隠すと直せない**（規則2）。 */
 export function listInstanceModules(config: RuntimeConfigStore): Array<{
   name: string;
@@ -926,19 +945,44 @@ export function listInstanceModules(config: RuntimeConfigStore): Array<{
   scope: BantoModuleMeta["scope"];
   confinement?: BantoModuleMeta["confinement"];
   launch: ModuleLaunch;
-  /** 止めると断るようになるもの（`dependsOn` から導く。写しを持たない・規則3）。 */
-  breaksIfDisabled: string[];
+  /**
+   * **一覧から消せるか**（追加・2026-09-19、ユーザー指摘）。
+   *
+   * 以前は `origin === "bundled"` で決めていたが、これは権限の話ではない
+   * ——**既定の宣言はコードの中にあって設定には無い**ので、設定から消しても
+   * 次の起動でまた出てくる。つまり「消してはいけない」のではなく**消すものが無い**。
+   * 見るべきは「設定にその宣言が書かれているか」だけ。
+   */
+  removable: boolean;
 }> {
   const enabled = loadModuleDeclarations(config, "");
   const overlays = (config.layerValue(MODULE_OVERLAYS_KEY, undefined) as ModuleOverlay[] | undefined) ?? [];
   const disabled = overlays.filter((o) => o.enabled === false).map((o) => o.name);
 
-  // 無効にした既定も一覧に出す——「消えた」ではなく「止めた」と分かるように
+  // 無効にしたものも一覧に出す——「消えた」ではなく「止めた」と分かるように。
+  //
+  // **外から足したものも戻す**（修正・2026-09-19、ユーザー報告）。以前は同梱の
+  // 既定からしか復元していなかったので、**外から足した Module は止めた瞬間に
+  // 一覧から消えていた**——止めたのに消えたように見えるし、消えて見えるので
+  // **もう動かせない**（規則2・規則13）。宣言そのものは差分に残っているので、
+  // 復元に要るものは全部そこにある。
   const all = [...enabled];
   for (const name of disabled) {
     if (all.some((d) => d.name === name)) continue;
     const def = DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === name);
-    if (def) all.push(parseModuleDeclaration(def, "default"));
+    if (def) {
+      all.push(parseModuleDeclaration(def, "default"));
+      continue;
+    }
+    const over = overlays.find((o) => o.name === name);
+    if (over?.launch && over.meta) {
+      all.push(
+        parseModuleDeclaration(
+          { name: over.name, launch: over.launch, meta: over.meta } as ModuleDeclaration,
+          "config(moduleOverlays)",
+        ),
+      );
+    }
   }
 
   return all.map((d) => ({
@@ -950,11 +994,12 @@ export function listInstanceModules(config: RuntimeConfigStore): Array<{
     scope: d.meta.scope,
     ...(d.meta.confinement ? { confinement: d.meta.confinement } : {}),
     launch: d.launch,
-    // **止めたら何が断るか**は、他の Module の依存から導く
-    breaksIfDisabled: all
-      .filter((other) => other.name !== d.name)
-      .filter((other) => other.meta.dependsOn.some((dep) => d.meta.satisfies.includes(dep.role)))
-      .map((other) => other.name),
+    removable: hasStoredDeclaration(overlays, d.name),
+    // **「止めたら何が壊れるか」は返さない**（削除・2026-09-19）。
+    // 以前は「私が名乗る役割に依存している Module」の一覧を返していたが、
+    // **同じ役割の実装が他に残っていても壊れると読めてしまう**形だったので、
+    // 画面がそのまま出して誤報になった。判断に要るのは `satisfies` と
+    // `dependsOn` で足りる——導けるものを別の形で配らない（規則3）。
   }));
 }
 
@@ -994,18 +1039,51 @@ export async function addModuleDeclaration(
 }
 
 /**
- * 宣言を1本消す。**同梱は消せない**（既定に戻せる形で止めるだけ）。
+ * 宣言を1本消す。**既定は消せない**——コードにあるので、消しても戻ってくる
+ * （無効にはできる）。
  *
  * **データは消さない**——その Module のデータ置き場も、Vault に置いた秘密も。
  * まとめて消すのは別の操作にする（取り返しがつかないので、別の確認を挟む）。
  */
 export async function removeModuleDeclaration(config: RuntimeConfigStore, name: string): Promise<void> {
-  const found = listInstanceModules(config).find((m) => m.name === name);
-  if (!found) throw new ModuleDeclarationError(`知らない Module です: ${name}`);
-  if (found.origin === "bundled") {
-    throw new ModuleDeclarationError(`${name} は banto 同梱なので消せません（止めることはできます）`);
+  // **一覧を読まずに決める**（改訂・2026-09-19）。消すのは「設定に書かれた宣言」
+  // なので、設定を直接見れば足りる——そして**一覧が読めない状態でも消せる**
+  // 必要がある（読めなくした宣言を消すのが、その状態からの唯一の出口・規則2）
+  const overlays = (config.layerValue(MODULE_OVERLAYS_KEY, undefined) as ModuleOverlay[] | undefined) ?? [];
+  if (!hasStoredDeclaration(overlays, name)) {
+    if (DEFAULT_MODULE_DECLARATIONS.some((d) => d.name === name)) {
+      // **消せないのではなく、消すものが無い**（宣言はコードの中にある）
+      throw new ModuleDeclarationError(
+        `${name} は banto に同梱されている既定なので、設定から消すものがありません（無効にはできます）`,
+      );
+    }
+    throw new ModuleDeclarationError(`知らない Module です: ${name}`);
   }
-  await updateInstanceOverlays(config, (overlays) => overlays.filter((o) => o.name !== name));
+  await updateInstanceOverlays(config, (rest) => rest.filter((o) => o.name !== name));
+}
+
+/**
+ * **保存する前に、その差分で本当に読めるかを確かめる**（追加・2026-09-19）。
+ *
+ * 実際に踏んだ：窓口（`vault-directory`）を2本にする宣言が**保存できてしまい**、
+ * その瞬間から一覧が読めなくなった——**消そうにも、消す口が一覧を読むので
+ * 動かない**。設定を壊して二度と直せない状態を作っていた（規則2）。
+ *
+ * 検査は読むときと同じ（`loadModuleDeclarations` と同じ3つ）。**通らない差分は
+ * 保存しない**ので、壊れた状態そのものが作れない。
+ */
+function assertOverlaysLoadable(overlays: readonly ModuleOverlay[]): void {
+  const parsed = applyModuleOverlay(DEFAULT_MODULE_DECLARATIONS, overlays).map((d) =>
+    parseModuleDeclaration(d, "config(moduleOverlays)"),
+  );
+  const names = new Set<string>();
+  for (const d of parsed) {
+    if (names.has(d.name)) {
+      throw new ModuleDeclarationError(`Module 名が重複しています: ${d.name}`);
+    }
+    names.add(d.name);
+  }
+  assertSingletonRoles(parsed, "config(moduleOverlays)");
 }
 
 async function updateInstanceOverlays(
@@ -1013,8 +1091,10 @@ async function updateInstanceOverlays(
   fn: (overlays: ModuleOverlay[]) => ModuleOverlay[],
 ): Promise<void> {
   const current = (config.layerValue(MODULE_OVERLAYS_KEY, undefined) as ModuleOverlay[] | undefined) ?? [];
+  const next = fn([...current]);
+  assertOverlaysLoadable(next);
   await config.setInstanceDefault(
     MODULE_OVERLAYS_KEY,
-    fn([...current]) as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1],
+    next as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1],
   );
 }

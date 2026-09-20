@@ -753,6 +753,8 @@ export interface RealInstanceModule {
   enabled: boolean;
   /** banto 同梱か、外から繋いだか。**許してよいことが違う** */
   origin: "bundled" | "external";
+  /** 一覧から消せるか（＝設定にその宣言が書かれているか）。 */
+  removable: boolean;
   satisfies: string[];
   dependsOn: { role: string; required: boolean }[];
   scope: "instance" | "project";
@@ -761,7 +763,6 @@ export interface RealInstanceModule {
     | { command: string; args: string[]; env?: Record<string, string> }
     | { type: "http"; url: string; headers?: Record<string, string> };
   /** 止めると断るようになる Module（`dependsOn` から導いた値） */
-  breaksIfDisabled: string[];
   /** いま立っているか */
   connected: boolean;
   /** 立たなかった理由 */

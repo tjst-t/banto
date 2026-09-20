@@ -830,21 +830,133 @@ test("フォルダの一覧を返す——フォルダだけ、1つ上も分か�
 // Project ごとの選択は前からあったが、**宣言そのものを足す・消す・止める口が
 // 無かった**——コードか Event Store の直書きしかなかった。
 
-test("banto 全体の Module を一覧できる——同梱かどうかと、止めたら何が断るかが分かる", async () => {
+test("banto 全体の Module を一覧できる——同梱かどうかと、役割・依存が分かる", async () => {
   await withApp(async (base, token) => {
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
       name: string;
       enabled: boolean;
       origin: string;
-      breaksIfDisabled: string[];
+      satisfies: string[];
+      dependsOn: Array<{ role: string; required: boolean }>;
     }>;
     assert.ok(list.length >= 5, `既定が返っていない: ${JSON.stringify(list)}`);
     assert.equal(list.every((m) => m.enabled), true, "はじめは全部動く");
     assert.equal(list.every((m) => m.origin === "bundled"), true, "同梱が同梱と出ていない");
-    // **止めたら何が断るか**は、他の Module の依存から導く（写しを持たない）
+    // **依存は役割で出す**（改訂・2026-09-19）。「止めたら何が壊れるか」は
+    // これと `satisfies` から導けるので、別の形では返さない（規則3）
+    const shell = list.find((m) => m.name === "shell")!;
+    assert.ok(
+      shell.dependsOn.some((d) => d.role === "vault-directory" && d.required),
+      "shell の依存が出ていない",
+    );
+    assert.deepEqual(
+      list.find((m) => m.name === "vault-directory")!.satisfies,
+      ["vault-directory"],
+      "役割が出ていない",
+    );
+  });
+});
+
+// **同じ実装をもう1本立てられる**（追加・2026-09-19、ユーザー指摘）。
+//
+// 以前は「名前が既定に在り、かつコードが既定のまま」を同梱の条件にしていたので、
+// **まったく同じコードでも名前が違えば第三者扱い**になり、`vault` を名乗った
+// 時点で弾かれていた——接続先を増やすにはコードを足して再デプロイするしか
+// なかった。守りたいのは「走るコードが banto のものか」であって、名前ではない。
+test("同梱と同じコードなら、別の名前でもう1本立てられる——そして消せる", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const defaults = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      launch: { command: string; args: string[] };
+    }>;
+    const infisical = defaults.find((m) => m.name === "vault-infisical")!;
+
+    const add = await fetch(`${base}/api/modules`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "vault-infisical-work",
+        launch: { ...infisical.launch, env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" } },
+        meta: {
+          satisfies: ["vault"],
+          dependsOn: [],
+          isolation: "subprocess",
+          scope: "instance",
+          handlesSecrets: true,
+        },
+      }),
+    });
+    assert.equal(add.status, 200, await add.text());
+
+    const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      origin: string;
+      removable: boolean;
+      satisfies: string[];
+    }>;
+    const copy = list.find((m) => m.name === "vault-infisical-work")!;
+    // **走るのは banto のコードなので、予約役割を名乗れる**
+    assert.equal(copy.origin, "bundled", "同じコードなのに第三者扱い");
+    assert.deepEqual(copy.satisfies, ["vault"]);
+    // **それでも自分で足した行なので消せる**（origin と消せるかは別の問い）
+    assert.equal(copy.removable, true, "自分で足したのに消せない");
+    assert.equal(
+      list.find((m) => m.name === "vault-infisical")!.removable,
+      false,
+      "既定が消せることになっている",
+    );
+
+    const del = await fetch(`${base}/api/modules/vault-infisical-work`, { method: "DELETE", headers });
+    assert.equal(del.status, 200, await del.text());
+    const after = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{ name: string }>;
+    assert.equal(after.some((m) => m.name === "vault-infisical-work"), false, "消えていない");
+  });
+});
+
+// **設定を壊せてしまう穴**（追加・2026-09-19、上の変更の検証中に実測）。
+//
+// 窓口（`vault-directory`）を2本にする宣言が**保存でき**、その瞬間から一覧が
+// 読めなくなった——**消そうにも、消す口が一覧を読むので動かない**。
+// 設定を壊して二度と直せない状態が作れていた（規則2）。
+test("読めなくなる差分は保存しない——窓口を2本にしようとしたら、保存の前に断る", async () => {
+  await withApp(async (base, token) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const list = (await (await fetch(`${base}/api/modules`, { headers })).json()) as Array<{
+      name: string;
+      launch: { command: string; args: string[] };
+    }>;
     const directory = list.find((m) => m.name === "vault-directory")!;
-    assert.ok(directory.breaksIfDisabled.includes("shell"), "止めたときに断るものが出ていない");
+
+    const add = await fetch(`${base}/api/modules`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "vault-directory-2",
+        launch: directory.launch,
+        meta: {
+          satisfies: ["vault-directory"],
+          dependsOn: [{ role: "vault", required: true }],
+          isolation: "subprocess",
+          scope: "instance",
+          handlesSecrets: true,
+        },
+      }),
+    });
+    // **本文は1回しか読めない**（同じ間違いを3回している——2026-09-18・19）
+    const body = await add.text();
+    assert.equal(add.status, 400, body);
+    assert.match(JSON.parse(body).error, /1本だけです/);
+
+    // **断ったあと、一覧はそのまま読める**（壊れていない）
+    const after = await fetch(`${base}/api/modules`, { headers });
+    assert.equal(after.status, 200, "断ったのに一覧が壊れている");
+    assert.equal(
+      ((await after.json()) as Array<{ name: string }>).some((m) => m.name === "vault-directory-2"),
+      false,
+      "断ったのに入っている",
+    );
   });
 });
 
@@ -905,10 +1017,11 @@ test("外から Module を足せる／消せる——同梱は消せない", asy
     }>;
     assert.equal(list.find((m) => m.name === "weather")?.origin, "external", "外から足したのに同梱扱い");
 
-    // **同梱は消せない**（止めることはできる）
+    // **既定には消すものが無い**（改訂・2026-09-19）。権限の話ではなく、
+    // 宣言がコードにあって設定に無いので、消しても戻ってくる——無効にはできる
     const cannot = await fetch(`${base}/api/modules/vault-local`, { method: "DELETE", headers });
     assert.equal(cannot.status, 400);
-    assert.match((await cannot.json()).error, /同梱なので消せません/);
+    assert.match((await cannot.json()).error, /消すものがありません/);
 
     const gone = await fetch(`${base}/api/modules/weather`, { method: "DELETE", headers });
     assert.equal(gone.status, 200);
