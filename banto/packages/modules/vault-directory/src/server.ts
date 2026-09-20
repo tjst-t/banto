@@ -1051,7 +1051,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         // 今までどおり全部出る**
         body.unreadable = failures.length;
         body.warning =
-          `読めていない金庫が ${failures.length} 件あります。この一覧は全部ではありません` +
+          `読めていない Vault が ${failures.length} 件あります。この一覧は全部ではありません` +
           "——人に伝えてください（設定できるのは人だけです）";
       }
       return {

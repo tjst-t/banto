@@ -119,7 +119,7 @@ export class BantoOAuthProvider {
     } catch {
       // **読めないものを「無い」にしない**（規則2）——直す手がかりが消える
       throw new Error(
-        `${this.opts.moduleName} のログイン情報が読めません（金庫の "${oauthAliasFor(this.opts.moduleName)}" が壊れています）。消してログインし直してください`,
+        `${this.opts.moduleName} のログイン情報が読めません（Vault の "${oauthAliasFor(this.opts.moduleName)}" が壊れています）。消してログインし直してください`,
       );
     }
     return this.cached;
