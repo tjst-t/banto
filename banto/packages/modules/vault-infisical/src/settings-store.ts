@@ -52,6 +52,14 @@ function requiredText(value: unknown, label: string): string {
  * 画面は「保存済み（変えるときだけ入れ直す）」と言うのに、空だと必ず弾いていた
  * ——**画面の約束と挙動が食い違っていた**（規則13）。環境だけ直したい人が、
  * 画面の言うとおりにして怒られる。空なら、いま入っているものを使う。
+ *
+ * **Client Secret も前後を落とす**（訂正・2026-09-20、ユーザー指摘）。他の項目は
+ * 落としているのに、ここだけ**`trim()` した値で判定して、生の値を保存して**いた
+ * ——末尾に改行が1つ紛れただけで Infisical は `401 Invalid credentials` を返し、
+ * しかもその文面は「ID が無い」「Secret が違う」と**まったく同じ**（2026-09-20 に
+ * 実測）。人からは「正しい秘密なのに繋がらない」としか見えず、画面はその改行を
+ * 一言も言わない。**落とすのは画面ではなくここ**——`setConnectionSettings` は
+ * tool としても叩けるので、画面だけ直すと口が開いたままになる。
  */
 export function toConfig(input: InfisicalSettingsInput, keptSecret?: string): InfisicalConfig {
   const siteUrl =
@@ -67,7 +75,7 @@ export function toConfig(input: InfisicalSettingsInput, keptSecret?: string): In
     clientId: requiredText(input.clientId, "Client ID"),
     clientSecret:
       typeof input.clientSecret === "string" && input.clientSecret.trim() !== ""
-        ? input.clientSecret
+        ? input.clientSecret.trim()
         : requiredText(keptSecret, "Client Secret（まだ保存されていないので、今回は入れてください）"),
     projectId: requiredText(input.projectId, "Project ID"),
     environment: (input.environment ?? "dev").trim() || "dev",

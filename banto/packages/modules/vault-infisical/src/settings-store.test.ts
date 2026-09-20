@@ -26,6 +26,24 @@ test("接続先は Cloud（US/EU）か自前——自前なら URL が要る", (
   assert.equal(toConfig({ target: "us", ...FULL }).environment, "dev");
 });
 
+// **貼り付けに紛れた改行で、繋がらなくなっていた**（訂正・2026-09-20、ユーザー指摘）。
+// Infisical は改行が1つ余っているだけで `401 Invalid credentials` を返し、その文面は
+// 「ID が無い」「Secret が違う」と区別が付かない（2026-09-20 に実測）——人からは
+// 「正しい秘密なのに繋がらない」としか見えないので、機械で押さえる。
+test("Client Secret の前後の空白・改行を落とす——他の項目と同じ扱い", () => {
+  assert.equal(toConfig({ target: "us", ...FULL, clientSecret: "shhh\n" }).clientSecret, "shhh");
+  assert.equal(toConfig({ target: "us", ...FULL, clientSecret: "  shhh  " }).clientSecret, "shhh");
+  assert.equal(toConfig({ target: "us", ...FULL, clientSecret: "shhh\r\n" }).clientSecret, "shhh");
+  // **中の空白は触らない**——落としてよいのは前後だけ
+  assert.equal(toConfig({ target: "us", ...FULL, clientSecret: " a b\n" }).clientSecret, "a b");
+  // 空白だけなら「入れていない」——いま保存されているものを使う（2026-09-15 の約束）
+  assert.equal(
+    toConfig({ target: "us", ...FULL, clientSecret: "   " }, "  kept\n").clientSecret,
+    "kept",
+    "空白だけの入力で、保存済みのものを使っていない",
+  );
+});
+
 test("画面に返す形に、Client Secret は入らない", () => {
   const view = viewOf(toConfig({ target: "eu", ...FULL }), "saved");
   assert.equal(JSON.stringify(view).includes("shhh"), false, "秘密が画面に返っている");
