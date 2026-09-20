@@ -250,7 +250,7 @@ test("Vault の置き場を、全体の設定画面から決められる", async
     .locator('[data-testid="module-settings-canvas"][data-module="vault-directory"] iframe')
     .contentFrame()
     .frameLocator("iframe");
-  await expect(inner.getByText("共通の秘密の置き場")).toBeVisible({ timeout: 60_000 });
+  await expect(inner.getByText("Global の秘密の置き場")).toBeVisible({ timeout: 60_000 });
 
   // **Vault とグループを一緒に選ぶ**（backend ごとに聞かない）
   await expect(inner.locator("#vault")).toContainText("vault-local");

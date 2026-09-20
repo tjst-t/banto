@@ -78,6 +78,15 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   await expect(row, "対象が Project の名前で出ていない").toContainText(PROJECT_NAME);
   await expect(row, "どの backend のものか出ていない").toContainText("vault-local");
   await expect(row, "用途が出ていない").toContainText("E2E が置いた");
+  // **置き場（グループ）の列**（追加・2026-09-20）。既定のグループ名は projectId
+  // （UUID）なので、そのまま出ていたら人には読めない——見える名前になっているか
+  await expect(row.locator("td").nth(4), "置き場が人の読める名前で出ていない").toHaveText(
+    `この Project 専用（${PROJECT_NAME}）`,
+  );
+
+  // **既定は「この Project から使える」**（追加・2026-09-20）。Vault は banto 全体に
+  // 1本なので、絞らないと他の Project の秘密が全部並ぶ
+  await expect(canvas.locator("#target-filter"), "既定の絞り込みが当たっていない").toHaveValue("usable");
   // 絞り込みでも出る（画面が出している中身が、検索を通しても同じであること）
   await canvas.locator("#query").fill(ALIAS);
   await expect
@@ -287,7 +296,12 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   const row = canvas.locator("tbody tr").filter({ hasText: name });
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 60_000 });
   await expect(row).toContainText("SSH 身元");
-  await expect(row, "使える範囲が出ていない").toContainText("共通（どの Project からでも）");
+  await expect(row, "使える範囲が出ていない").toContainText("Global（どの Project からでも）");
+  // **置き場そのものも出る**（追加・2026-09-20）——使える範囲は置き場からの導出値
+  // なので、元が見えないと「なぜその範囲なのか」を画面から追えない。
+  // **列を名指しで見る**（規則14）——行全体に contains を掛けると、隣の
+  // 「Global（どの Project からでも）」に引っかかって素通りする
+  await expect(row.locator("td").nth(4), "置き場（グループ）の列が出ていない").toHaveText("Global");
 
   // **あとからでも公開鍵を見られる**（追加・2026-09-13、ユーザー要望）。
   // 以前は作った直後の1回きりで、閉じたら二度と見られなかった

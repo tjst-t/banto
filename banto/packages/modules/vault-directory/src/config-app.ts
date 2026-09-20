@@ -51,7 +51,7 @@ export const CONFIG_APP_HTML = `<!doctype html>
 </head>
 <body>
 
-<h1>共通の秘密の置き場</h1>
+<h1>Global の秘密の置き場</h1>
 <p class="lead">
   どの Project からでも使う秘密を、新しく作るときの保存先です。
   <strong>ここが「既定」</strong>——ここに居る秘密は素の名前で引けます

@@ -667,7 +667,7 @@ test("窓口が設定画面を名乗る——共通の置き場はそこで決�
     assert.equal((config._meta as Record<string, unknown>)["dev.banto/canvas"], "config");
     const read = await ui.readResource({ uri: "ui://banto-vault-directory/config" });
     const html = (read.contents as { text: string }[])[0]!.text;
-    assert.ok(html.includes("共通の秘密の置き場"), "設定画面の中身が違う");
+    assert.ok(html.includes("Global の秘密の置き場"), "設定画面の中身が違う");
     // **Project の置き場はここで決めない**——保存したときに決まる
     assert.ok(html.includes("Project ごとの秘密は、ここでは決めません"), "その旨が書かれていない");
   });

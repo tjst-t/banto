@@ -134,7 +134,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
   </div>
 
   <div class="row" style="margin-bottom:8px">
-    <input id="query" placeholder="名前・種別・使える範囲・Vault・用途を横断して検索" style="flex:1 1 14em; min-width:12em" />
+    <input id="query" placeholder="名前・種別・使える範囲・置き場・Vault・用途を横断して検索" style="flex:1 1 14em; min-width:12em" />
     <select id="kind-filter" style="width:auto"></select>
     <select id="target-filter" style="width:auto"></select>
     <select id="backend-filter" style="width:auto"></select>
@@ -147,6 +147,11 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <th>名前</th>
         <th style="width:12em">使える範囲</th>
         <th style="width:9em" data-vault-col>Vault</th>
+        <!-- **置き場そのものを出す**（追加・2026-09-20、ユーザー指示）。使える範囲は
+             置き場から導いた値なので、**導出値だけ出して元を隠していた**——「どこにも
+             紐付いていない」と言われても、それがどのフォルダに在るのか画面から分からず、
+             Infisical を直に見に行くしかなかった -->
+        <th style="width:12em">置き場（グループ）</th>
         <th>用途</th>
         <th style="width:9em">最終使用</th>
         <th style="width:6em"></th>
@@ -389,7 +394,9 @@ ${ALIAS_KIND_RULES_JS}
     // ——画面で計算し直さない（規則3）
     // **保存先の言葉とそろえる**（改訂・2026-09-15）。保存先で「共通」を選んだ
     // ものが一覧で「どこからでも」と出ると、人が対応を暗記することになる
-    if (a.scope === "shared") return { key: "shared", label: "共通（どの Project からでも）" };
+    // **「共通」ではなく Global**（改訂・2026-09-20、ユーザー指示）——banto の他所
+    // （instance 全体の設定）が既に Global と呼んでいるので、そちらに寄せる
+    if (a.scope === "shared") return { key: "shared", label: "Global（どの Project からでも）" };
     if (a.scope === "unbound") return { key: "unbound", label: "どこにも紐付いていない" };
     const ids = a.projects || [];
     if (project && ids.indexOf(project.id) >= 0) {
@@ -399,13 +406,32 @@ ${ALIAS_KIND_RULES_JS}
     return { key: ids[0], label: "別の Project（" + String(ids[0]).slice(0, 8) + "）" };
   }
 
+  /**
+   * **いまこの Project から使えるか**（追加・2026-09-20、ユーザー指示）。
+   *
+   * この Project 専用のものと Global。**素の名前で引ける範囲と同じ**
+   * （窓口の解決順「Project ＞ Global の既定」）——画面の既定の絞り込みが
+   * 「いまここで名前を書けば通るもの」と一致する。判定はここだけ（規則3）。
+   */
+  function usableHere(a) {
+    if (a.scope === "shared") return true;
+    return !!project && (a.projects || []).indexOf(project.id) >= 0;
+  }
+
   function matchesFilters(a) {
     const q = $("query").value.trim().toLowerCase();
     if ($("kind-filter").value !== "all" && a.kind !== $("kind-filter").value) return false;
     if ($("backend-filter").value !== "all" && a.implementation !== $("backend-filter").value) return false;
-    if ($("target-filter").value !== "all" && targetOf(a).key !== $("target-filter").value) return false;
+    const target = $("target-filter").value;
+    if (target === "usable") {
+      if (!usableHere(a)) return false;
+    } else if (target !== "all" && targetOf(a).key !== target) {
+      return false;
+    }
     if (!q) return true;
-    return [a.name, KIND_LABEL[a.kind] || a.kind, targetOf(a).label, a.implementation, a.note || ""]
+    // **置き場も検索に入れる**——列に出したものは引けないと、見えているのに探せない
+    return [a.name, KIND_LABEL[a.kind] || a.kind, targetOf(a).label,
+            groupLabel(a.implementation, a.group), a.group || "", a.implementation, a.note || ""]
       .join(" ").toLowerCase().includes(q);
   }
 
@@ -425,7 +451,7 @@ ${ALIAS_KIND_RULES_JS}
     if (p && p.implementation === impl && p.group === group) {
       return project ? "この Project 専用（" + project.name + "）" : "この Project 専用";
     }
-    if (sh && sh.implementation === impl && sh.group === group) return "共通";
+    if (sh && sh.implementation === impl && sh.group === group) return "Global";
     // UUID そのままの名前は、人にとって意味が無い——せめて何であるかを言う
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(group)) return "別の Project 専用（" + group.slice(0, 8) + "…）";
     return group;
@@ -464,7 +490,11 @@ ${ALIAS_KIND_RULES_JS}
     kind.replaceChildren(option("all", "種別：すべて"), ...kinds.map((k) => option(k, KIND_LABEL[k])));
     const targets = new Map();
     for (const a of aliases) { const t = targetOf(a); targets.set(t.key, t.label); }
+    // **「この Project から使える」を先頭に置く**（追加・2026-09-20、ユーザー指示）。
+    // 専用のものと Global をまとめた1つの選択肢——この2つは別々の key なので、
+    // 導出した一覧（targets）からは作れない。Project の上でだけ出す（規則13）
     target.replaceChildren(option("all", "使える範囲：すべて"),
+      ...(project ? [option("usable", "この Project から使える")] : []),
       ...Array.from(targets, ([k, l]) => option(k, l)));
     backend.replaceChildren(option("all", "Vault：すべて"), ...implementations.map((i) => option(i, i)));
     // **Vault が1本なら、選ばせない**（追加・2026-09-15）。選択肢が1つしかない
@@ -477,6 +507,12 @@ ${ALIAS_KIND_RULES_JS}
     for (const [sel, was] of [[kind, kindWas], [target, targetWas], [backend, backendWas]]) {
       if (was && Array.from(sel.options).some((o) => o.value === was)) sel.value = was;
     }
+    // **既定は「この Project から使える」**（決定・2026-09-20、ユーザー指示）。
+    // Vault は banto 全体に1本なので、何も絞らないと**他の Project の秘密が
+    // 全部並ぶ**——Project の上で開いているのに、関係の無いものが大半になる。
+    // **当てるのは初回だけ**（前の選択が空のとき）——人が「すべて」に
+    // 変えたあと、再読み込みのたびに巻き戻さない
+    if (!targetWas && project) target.value = "usable";
   }
 
   function renderImplementations() {
@@ -536,6 +572,12 @@ ${ALIAS_KIND_RULES_JS}
       targetBadge.textContent = targetOf(a).label;
       targetTd.append(targetBadge);
 
+      // **見える名前を出し、本当の名前は title で読める**——Infisical ならこれが
+      // フォルダ名そのもの。既定の置き場は UUID なので、そのまま出しても読めない
+      const groupTd = document.createElement("td");
+      groupTd.textContent = groupLabel(a.implementation, a.group);
+      if (a.group) groupTd.title = a.group;
+
       const actions = document.createElement("td");
       actions.className = "actions";
       const edit = document.createElement("button");
@@ -580,6 +622,7 @@ ${ALIAS_KIND_RULES_JS}
         targetTd,
         // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
         cell(a.implementation, undefined, "data-vault-col"),
+        groupTd,
         cell(a.note || "", "note-cell"),
         cell(a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleDateString("ja-JP") : "—", "muted"),
         actions,
@@ -593,7 +636,13 @@ ${ALIAS_KIND_RULES_JS}
       // 「まだありません」だけだと、初見の人は何をする場所か分からない
       ? "まだ何も預けていません。API トークンや SSH 鍵をここに預けると、"
         + "AI に値を見せないまま、コマンドの中で使えるようになります。"
-      : "絞り込みに合う秘密がありません。";
+      // **既定で隠していることを言う**（追加・2026-09-20）。既定の絞り込みを
+      // 入れた以上、「0 件」が「預けていない」に見えてはいけない
+      : $("target-filter").value === "usable"
+        ? "この Project から使える秘密はまだありません。"
+          + "「使える範囲：すべて」にすると、他の Project のものや、"
+          + "どこにも紐付いていないものも出ます。"
+        : "絞り込みに合う秘密がありません。";
   }
 
   function render() {
@@ -640,7 +689,7 @@ ${ALIAS_KIND_RULES_JS}
       return;
     }
     $("shared-hint").textContent =
-      "共通の秘密（どの Project からでも使うもの）の置き場は、banto の設定画面 →" +
+      "Global の秘密（どの Project からでも使うもの）の置き場は、banto の設定画面 →" +
       " Vault の窓口 で変えられます" +
       (placements.shared
         ? "——いまは " + placements.shared.implementation + " / " + placements.shared.group
@@ -722,7 +771,7 @@ ${ALIAS_KIND_RULES_JS}
       );
     }
     const shared = places && places.shared;
-    opts.push(option("shared", "共通" + (shared ? "——" + shared.implementation + " / " + shared.group : "")));
+    opts.push(option("shared", "Global" + (shared ? "——" + shared.implementation + " / " + shared.group : "")));
     // 既定の外に置きたい人向け（**修飾名でしか引けなくなる**ので、そう言う）。
     // **既定と同じ置き場は出さない**（訂正・2026-09-15、レビューで発覚）
     // ——同じ場所が2回並ぶうえ、下の重複を選ぶと「既定ではないので修飾名で」と
