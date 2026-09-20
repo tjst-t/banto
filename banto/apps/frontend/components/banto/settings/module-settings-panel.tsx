@@ -34,8 +34,18 @@ export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
     error: null,
   });
   const key = owner.kind === "instance" ? "instance" : owner.id;
+  // **相手が決まっていないうちは聞かない**（修正・2026-09-20）。
+  // 設定画面は「どの Project の層を出すか」を URL で持つので、Project を選ばずに
+  // `/settings` を開くと id が空のまま渡ってくる。以前はそのまま
+  // `/api/projects//ui-settings` を叩いて 404 を貰っていた——**通らないと
+  // 分かっている要求を出さない**（規則2——本物の失敗と見分けが付かなくなる）。
+  const ready = owner.kind === "instance" || owner.id !== "";
 
   useEffect(() => {
+    if (!ready) {
+      setState({ canvases: [], error: null });
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -52,7 +62,7 @@ export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner.kind, key]);
+  }, [owner.kind, key, ready]);
 
   return state;
 }

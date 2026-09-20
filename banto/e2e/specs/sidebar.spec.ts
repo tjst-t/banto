@@ -156,6 +156,28 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   ).toEqual([320]);
 });
 
+// **Project を選ばずに設定を開いたとき、空の id で API を叩かない**
+// （追加・2026-09-20、実測で見つけた）。設定画面は「どの Project の層を出すか」を
+// URL で持つので、`?project=` が無いと id が空のまま渡っていて、
+// `/api/projects//ui-settings` が 404 を返していた——**通らないと分かっている
+// 要求を出さない**（規則2——本物の失敗と見分けが付かなくなる）。
+test("Project を選ばずに設定を開いても、空の id で API を叩かない", async ({ page }) => {
+  await openApp(page);
+  const badRequests: string[] = [];
+  page.on("request", (req) => {
+    if (/\/api\/(projects|threads)\/\//.test(req.url())) badRequests.push(req.url());
+  });
+  await page.goto("/settings");
+  // **出るものが出てから見る**（読み込み前に「叩いていない」と言っても何も見ていない）
+  await expect(page.getByRole("button", { name: "Module", exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText("Module ごとの設定"), "Module ごとの設定が出ない").toBeVisible({
+    timeout: 30_000,
+  });
+  expect(badRequests, "空の id で API を叩いている").toEqual([]);
+});
+
 test("設定は1つの面——層は線で分かれ、開いたまま Project を切り替えられる", async ({ page }) => {
   // 決定・2026-09-11（モックで確認、`docs/specs/v4-frontend.md` §6.16）：
   // 設定画面は1つ。左メニューを見出しで層に分け、層の変わり目に線を引く。
