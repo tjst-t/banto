@@ -60,12 +60,19 @@ export const MANAGE_APP_HTML = `<!doctype html>
     border-radius: 6px; background: transparent; color: inherit;
     border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
   }
-  table { width: 100%; border-collapse: collapse; }
+  /* **列幅を固定する**（改訂・2026-09-20、ユーザー指摘）。自動幅だと、名前の
+     長い秘密（CLOUDFLARE_ACCOUNT_ID など）が入った列が潰れ、word-break で
+     **1文字ずつ縦に流れて**表が読めなくなっていた */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th { text-align: left; font-weight: 500; font-size: 11px; opacity: .55; padding: 0 8px 6px 0; }
-  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.18)); vertical-align: top; }
-  td.name { font-weight: 500; word-break: break-all; }
+  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.18)); vertical-align: middle; }
+  /* **はみ出したら … で畳む。折り返さない。**
+     **JS で文字列を切らない**——切ると、選んでコピーしたときに切れたものが
+     取れてしまう。CSS の省略なら DOM には全文が在るので、コピーは全文 */
+  td.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.name { font-weight: 500; }
   td.actions { text-align: right; white-space: nowrap; }
-  .note-cell { max-width: 22em; opacity: .7; }
+  .note-cell { opacity: .7; }
   dialog {
     border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
     border-radius: 10px; padding: 0; color: inherit;
@@ -134,7 +141,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
   </div>
 
   <div class="row" style="margin-bottom:8px">
-    <input id="query" placeholder="名前・種別・使える範囲・置き場・Vault・用途を横断して検索" style="flex:1 1 14em; min-width:12em" />
+    <input id="query" placeholder="名前・種別・使える範囲・グループ・Vault・用途を横断して検索" style="flex:1 1 14em; min-width:12em" />
     <select id="kind-filter" style="width:auto"></select>
     <select id="target-filter" style="width:auto"></select>
     <select id="backend-filter" style="width:auto"></select>
@@ -142,19 +149,20 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
   <table>
     <thead>
+      <!-- **見出しも中身も端的に**（改訂・2026-09-20、ユーザー指示）。
+           名前と用途だけを伸び縮みさせ、他は固定幅で畳む -->
       <tr>
-        <th style="width:8em">種別</th>
+        <th style="width:7.5em">種別</th>
         <th>名前</th>
-        <th style="width:12em">使える範囲</th>
+        <th style="width:8em">使える範囲</th>
         <th style="width:9em" data-vault-col>Vault</th>
-        <!-- **置き場そのものを出す**（追加・2026-09-20、ユーザー指示）。使える範囲は
-             置き場から導いた値なので、**導出値だけ出して元を隠していた**——「どこにも
-             紐付いていない」と言われても、それがどのフォルダに在るのか画面から分からず、
-             Infisical を直に見に行くしかなかった -->
-        <th style="width:12em">置き場（グループ）</th>
+        <!-- **backend での本当の名前を出す**（改訂・2026-09-20、ユーザー指示）。
+             Infisical ならフォルダ名そのもの。使える範囲は置き場から導いた値なので、
+             元を隠すと「どのフォルダに在るのか」が画面から分からない -->
+        <th style="width:9em">グループ</th>
         <th>用途</th>
-        <th style="width:9em">最終使用</th>
-        <th style="width:6em"></th>
+        <th style="width:6.5em">最終使用</th>
+        <th style="width:11em"></th>
       </tr>
     </thead>
     <tbody id="rows"></tbody>
@@ -374,11 +382,14 @@ ${ALIAS_KIND_RULES_JS}
   const $ = (id) => document.getElementById(id);
   // **一覧の見出し。作れる種別とは別**（oauth-token は banto が置くもので、
   // 人は作らないが**見えて消せる**べき——規則13）
+  // **短く言う**（改訂・2026-09-20、ユーザー指示）。badge は1行に収める語で、
+  // 説明は書かない——「ログイン情報（OAuth）」のような説明つきの語は、
+  // 列を押し広げて名前の列を潰していた
   const KIND_LABEL = {
-    secret: "汎用シークレット",
-    "ssh-identity": "SSH 身元",
+    secret: "シークレット",
+    "ssh-identity": "SSH 鍵",
     file: "ファイル",
-    "oauth-token": "ログイン情報（OAuth）",
+    "oauth-token": "OAuth",
   };
 
   // --- 状態（導出できるものは持たない、規則3）-------------------------------
@@ -395,15 +406,20 @@ ${ALIAS_KIND_RULES_JS}
     // **保存先の言葉とそろえる**（改訂・2026-09-15）。保存先で「共通」を選んだ
     // ものが一覧で「どこからでも」と出ると、人が対応を暗記することになる
     // **「共通」ではなく Global**（改訂・2026-09-20、ユーザー指示）——banto の他所
-    // （instance 全体の設定）が既に Global と呼んでいるので、そちらに寄せる
-    if (a.scope === "shared") return { key: "shared", label: "Global（どの Project からでも）" };
-    if (a.scope === "unbound") return { key: "unbound", label: "どこにも紐付いていない" };
+    // （instance 全体の設定）が既に Global と呼んでいるので、そちらに寄せる。
+    // **説明は付けない**（改訂・2026-09-20）——badge は1語。意味は「使える範囲」
+    // という見出しが言っている
+    if (a.scope === "shared") return { key: "shared", label: "Global" };
+    if (a.scope === "unbound") return { key: "unbound", label: "未割当" };
     const ids = a.projects || [];
     if (project && ids.indexOf(project.id) >= 0) {
       return { key: project.id, label: ids.length > 1 ? project.name + " ほか" : project.name };
     }
-    if (ids.length === 0) return { key: "unbound", label: "どこにも紐付いていない" };
-    return { key: ids[0], label: "別の Project（" + String(ids[0]).slice(0, 8) + "）" };
+    if (ids.length === 0) return { key: "unbound", label: "未割当" };
+    // **他の Project は1つにまとめる**（改訂・2026-09-20）。以前は id の頭8桁を
+    // label に混ぜて見分けていたが、短くすると**同じ文字列の選択肢が絞り込みに
+    // 並ぶ**ことになる——key も1つにして、まとめて絞れる形にする
+    return { key: "other", label: "別の Project" };
   }
 
   /**
@@ -429,9 +445,10 @@ ${ALIAS_KIND_RULES_JS}
       return false;
     }
     if (!q) return true;
-    // **置き場も検索に入れる**——列に出したものは引けないと、見えているのに探せない
+    // **グループも検索に入れる**——列に出したものが引けないと、見えているのに探せない。
+    // 引けるのは**列に出ている文字列**（backend での本当の名前）
     return [a.name, KIND_LABEL[a.kind] || a.kind, targetOf(a).label,
-            groupLabel(a.implementation, a.group), a.group || "", a.implementation, a.note || ""]
+            a.group || "", a.implementation, a.note || ""]
       .join(" ").toLowerCase().includes(q);
   }
 
@@ -560,6 +577,18 @@ ${ALIAS_KIND_RULES_JS}
         td.textContent = text;
         return td;
       };
+      /**
+       * **はみ出す列は … で畳み、全文は指を乗せれば読める**
+       * （追加・2026-09-20、ユーザー指示）。
+       *
+       * **切るのは CSS で、文字列ではない**——textContent には全文を入れる。
+       * JS で切ってしまうと、選んでコピーしたときに**切れたものが取れる**。
+       */
+      const clipped = (text, cls) => {
+        const td = cell(text, cls ? "clip " + cls : "clip");
+        if (text) td.title = text;
+        return td;
+      };
       const kindTd = document.createElement("td");
       const kindBadge = document.createElement("span");
       kindBadge.className = "badge";
@@ -567,16 +596,19 @@ ${ALIAS_KIND_RULES_JS}
       kindTd.append(kindBadge);
 
       const targetTd = document.createElement("td");
+      targetTd.className = "clip";
       const targetBadge = document.createElement("span");
       targetBadge.className = "badge";
       targetBadge.textContent = targetOf(a).label;
+      // Project 名が長いことはある——badge は縮めずに、畳んだうえで指で読ませる
+      targetBadge.title = targetOf(a).label;
       targetTd.append(targetBadge);
 
-      // **見える名前を出し、本当の名前は title で読める**——Infisical ならこれが
-      // フォルダ名そのもの。既定の置き場は UUID なので、そのまま出しても読めない
-      const groupTd = document.createElement("td");
-      groupTd.textContent = groupLabel(a.implementation, a.group);
-      if (a.group) groupTd.title = a.group;
+      // **backend での本当の名前をそのまま出す**（改訂・2026-09-20、ユーザー指示）。
+      // Infisical ならフォルダ名。言い換え（「この Project 専用（…）」）は
+      // **長いうえに、実際に見に行く先の名前と一致しない**——人が Infisical を
+      // 開いたときに突き合わせられる名前を出す
+      const groupTd = clipped(a.group || "", "muted");
 
       const actions = document.createElement("td");
       actions.className = "actions";
@@ -616,14 +648,17 @@ ${ALIAS_KIND_RULES_JS}
         actions.append(edit, move, del);
       }
 
+      // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
+      const vaultTd = clipped(a.implementation);
+      vaultTd.setAttribute("data-vault-col", "");
+
       tr.append(
         kindTd,
-        cell(a.name, "name"),
+        clipped(a.name, "name"),
         targetTd,
-        // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
-        cell(a.implementation, undefined, "data-vault-col"),
+        vaultTd,
         groupTd,
-        cell(a.note || "", "note-cell"),
+        clipped(a.note || "", "note-cell"),
         cell(a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleDateString("ja-JP") : "—", "muted"),
         actions,
       );
@@ -640,8 +675,7 @@ ${ALIAS_KIND_RULES_JS}
       // 入れた以上、「0 件」が「預けていない」に見えてはいけない
       : $("target-filter").value === "usable"
         ? "この Project から使える秘密はまだありません。"
-          + "「使える範囲：すべて」にすると、他の Project のものや、"
-          + "どこにも紐付いていないものも出ます。"
+          + "「使える範囲：すべて」にすると、他の Project のものや未割当のものも出ます。"
         : "絞り込みに合う秘密がありません。";
   }
 
@@ -688,19 +722,20 @@ ${ALIAS_KIND_RULES_JS}
       $("place-line").hidden = true;
       return;
     }
+    // **1行に収める**（改訂・2026-09-20、ユーザー指示）。括弧の言い換えは
+    // 「使える範囲」の列がもう言っているので、ここで繰り返さない
     $("shared-hint").textContent =
-      "Global の秘密（どの Project からでも使うもの）の置き場は、banto の設定画面 →" +
-      " Vault の窓口 で変えられます" +
+      "Global の置き場" +
       (placements.shared
-        ? "——いまは " + placements.shared.implementation + " / " + placements.shared.group
-        : "");
+        ? "は " + placements.shared.implementation + " / " + placements.shared.group
+        : "") +
+      "（変えるのは 設定 → Vault の窓口）";
     $("place-summary").textContent = placements.project
-      ? "この Project の秘密は " +
+      ? "この Project の保存先は " +
         placements.project.implementation +
         " / " +
-        placements.project.group +
-        " に保存します"
-      : "この Project の置き場はまだ決まっていません（最初に保存したときに決まります）";
+        placements.project.group
+      : "この Project の保存先はまだ決まっていません（最初に保存したときに決まります）";
     $("place-line").hidden = false;
   }
 

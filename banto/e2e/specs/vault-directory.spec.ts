@@ -74,15 +74,27 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   // ---- 4. 画面が出している中身を、1つずつ見る（規則14）-------------------
   const row = canvas.locator("tbody tr").filter({ hasText: ALIAS });
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 120_000 });
-  await expect(row, "種別が出ていない").toContainText("汎用シークレット");
+  await expect(row, "種別が出ていない").toContainText("シークレット");
   await expect(row, "対象が Project の名前で出ていない").toContainText(PROJECT_NAME);
   await expect(row, "どの backend のものか出ていない").toContainText("vault-local");
   await expect(row, "用途が出ていない").toContainText("E2E が置いた");
-  // **置き場（グループ）の列**（追加・2026-09-20）。既定のグループ名は projectId
-  // （UUID）なので、そのまま出ていたら人には読めない——見える名前になっているか
-  await expect(row.locator("td").nth(4), "置き場が人の読める名前で出ていない").toHaveText(
-    `この Project 専用（${PROJECT_NAME}）`,
-  );
+  // **グループの列は、backend での本当の名前**（改訂・2026-09-20、ユーザー指示）。
+  // 言い換え（「この Project 専用（…）」）だと、人が Infisical を開いたときに
+  // 突き合わせられない。**保存先の表示と同じ文字列が出ること**で確かめる
+  const placedGroup = (await canvas.locator("#place-summary").innerText()).split(" / ").pop()!.trim();
+  expect(placedGroup, "保存先のグループが読めていない").not.toBe("");
+  await expect(row.locator("td").nth(4), "グループが backend での名前で出ていない").toHaveText(placedGroup);
+  // **長い名前でも、折り返さずに畳む**（追加・2026-09-20、ユーザー指摘——
+  // 名前が1文字ずつ縦に流れていた）。**中身は全文のまま**（切るのは CSS）
+  await expect(row.locator("td").nth(1), "名前が畳まれていない").toHaveCSS("text-overflow", "ellipsis");
+  await expect(row.locator("td").nth(1), "名前が折り返されている").toHaveCSS("white-space", "nowrap");
+  await expect(row.locator("td").nth(1), "コピーすると切れた名前が取れる").toHaveText(ALIAS);
+  // **実際に1行に収まっていること**（規則14——CSS が当たっていることと、
+  // 見た目が1行であることは別）。畳む前は名前が1文字ずつ縦に流れて、
+  // 行の高さが10行分まで伸びていた
+  const box = await row.boundingBox();
+  expect(box, "行の寸法が取れない").not.toBeNull();
+  expect(box!.height, `行が縦に伸びている: ${box!.height}px`).toBeLessThan(44);
 
   // **既定は「この Project から使える」**（追加・2026-09-20）。Vault は banto 全体に
   // 1本なので、絞らないと他の Project の秘密が全部並ぶ
@@ -295,13 +307,14 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   // 一覧に「鍵」として、付けた名前で出る（公開鍵に化けない）
   const row = canvas.locator("tbody tr").filter({ hasText: name });
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 60_000 });
-  await expect(row).toContainText("SSH 身元");
-  await expect(row, "使える範囲が出ていない").toContainText("Global（どの Project からでも）");
-  // **置き場そのものも出る**（追加・2026-09-20）——使える範囲は置き場からの導出値
-  // なので、元が見えないと「なぜその範囲なのか」を画面から追えない。
-  // **列を名指しで見る**（規則14）——行全体に contains を掛けると、隣の
-  // 「Global（どの Project からでも）」に引っかかって素通りする
-  await expect(row.locator("td").nth(4), "置き場（グループ）の列が出ていない").toHaveText("Global");
+  await expect(row).toContainText("SSH 鍵");
+  // **badge は1語**（改訂・2026-09-20、ユーザー指示）——説明を足さない
+  await expect(row.locator("td").nth(2), "使える範囲が出ていない").toHaveText("Global");
+  // **グループは backend での本当の名前**（改訂・2026-09-20）。Global の置き場は
+  // 画面の案内に出ているので、そこと突き合わせる（決め打ちにしない）
+  const sharedGroup = (await canvas.locator("#shared-hint").innerText()).split(" / ").pop()!.split("（")[0]!.trim();
+  expect(sharedGroup, "Global の置き場が読めていない").not.toBe("");
+  await expect(row.locator("td").nth(4), "グループが backend での名前で出ていない").toHaveText(sharedGroup);
 
   // **あとからでも公開鍵を見られる**（追加・2026-09-13、ユーザー要望）。
   // 以前は作った直後の1回きりで、閉じたら二度と見られなかった
@@ -377,7 +390,7 @@ test("この Project の置き場を変えられる——移行の有無を選�
   // ユーザー指摘「一覧の見出しの真ん中にあるのは変」——「接続している実装」の
   // 段に移し、ボタンだけでなく**いまの置き場を出す**ようにした）
   await expect(canvas.locator("#place-summary"), "いまの置き場が画面に出ていない").toContainText(
-    "この Project の秘密は vault-local /",
+    "この Project の保存先は vault-local /",
   );
 
   // 置き場を変える画面を開く
