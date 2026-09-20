@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-14",
+  "updatedAt": "2026-09-19",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1637,6 +1637,28 @@
       ],
       "spec": "docs/specs/v4-architecture.md「ログインが要る相手（OAuth）」／v4-security.md 脅威表／v4-frontend.md §6.23",
       "notes": "docs/notes/2026-09-18-remote-mcp-oauth.md"
+    },
+    {
+      "id": "module-settings-table-and-bundled",
+      "title": "Module の設定画面を1枚のテーブルに揃え、「同梱」の意味を分ける",
+      "status": "done",
+      "why": "設定画面が冗長で、独自の日本語（「使うとき」「断るようになる」）が並んでいて読めなかった。あわせて、同梱かどうかの判定に**名前**が入っていたせいで、同じ実装を別の設定でもう1本立てられなかった（Infisical の接続先を増やすにはコードを足して再デプロイするしかなかった）。",
+      "done": [
+        "Global と Project の両方を1枚のテーブルにし、列を揃えた（Module・役割・実行場所・サンドボックス・依存/状態）",
+        "入り切りは**トグル**に統一、反映は**まとめて保存**に統一——それぞれの面で良かったほうを採った",
+        "並び順を役割で固定（以前はトグルを押した行がその場で飛んでいた）",
+        "**バグ**：外から足した Module を無効にすると一覧から消えていた（同梱の既定からしか復元していなかった）。ユーザーの Notion が実際にこの状態だった",
+        "**バグ**：依存の警告を名前で見ていたので、同じ役割の実装が残っていても誤警告した。役割ベースに揃え、誤読の元だった breaksIfDisabled を API から削除",
+        "語彙を見直した：設定（有効/無効）と実行状態（Running/Stopped/On demand/Not running/Failed/Auth required）を言い分ける。根・閉じ込め・道具・合言葉も普通の語へ",
+        "同梱の判定から**名前を落とした**（command+args が同梱実装のどれかと一致するかだけ）。削除可否は `removable`（設定に宣言が書かれているか）へ分離",
+        "**穴**：窓口を2本にする宣言が保存でき、一覧が読めず消す口も動かない状態が作れた。保存前の検査を足し、消す口は一覧を読まないようにした"
+      ],
+      "open": [
+        "同梱の Vault をサンドボックスに入れる（測った：置き場の移行＋exec profile＋Module 側 meta の3つが要る。exec profile だと効き目が薄いので保留）",
+        "shell・filesystem はコードを複製すれば名乗れる（Project ごとに2本立つだけなので放置——ユーザー決定）"
+      ],
+      "spec": "docs/specs/v4-architecture.md（GET /api/modules・外から繋いだ Module の扱い）／v4-security.md 脅威表「役割のなりすまし」／v4-frontend.md §6.15・§6.26",
+      "notes": "docs/notes/2026-09-19-module-settings-and-bundled.md"
     }
   ],
   "phase1": {

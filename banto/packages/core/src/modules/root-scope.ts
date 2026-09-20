@@ -42,9 +42,9 @@ export function describeRootScope(
   const real = tryRealpath(root);
   const home = tryRealpath(homedir());
   const sensitive: Array<{ path: string; label: string }> = [
-    { path: tryRealpath(opts.configDir), label: "banto の設定と合言葉" },
-    { path: tryRealpath(opts.dataDir), label: "banto の記録（全 Project の会話・Memory）" },
-    { path: tryRealpath(`${home}/.claude`), label: "Claude の資格情報" },
+    { path: tryRealpath(opts.configDir), label: "banto の設定とアクセストークン" },
+    { path: tryRealpath(opts.dataDir), label: "banto のデータ（全 Project の会話・Memory）" },
+    { path: tryRealpath(`${home}/.claude`), label: "Claude の認証情報" },
   ];
   const includes = sensitive.filter((s) => isAncestorOrSelf(real, s.path)).map((s) => s.label);
   return { wide: includes.length > 0, includes };
