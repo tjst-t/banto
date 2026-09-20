@@ -21,6 +21,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createVaultModuleServer } from "@banto/vault-kit";
 import { VISIBILITY_META_KEY, VALUE_FREE_META_KEY } from "@banto/module-contract";
 import { InfisicalConnection, readConfigFromEnv, type InfisicalConfig } from "./client.js";
+import { InfisicalTokenCache } from "./token-cache.js";
 import { InfisicalBackend } from "./infisical-backend.js";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
@@ -45,6 +46,8 @@ class LazyConnection {
     private readonly settings: InfisicalSettingsStore,
     /** 環境変数からの既定を使ってよいか（正規の1本だけ）。 */
     private readonly mayUseEnv: boolean,
+    /** 前回のログインの結果。**起動のたびのログインを避けるため**（2026-09-20）。 */
+    private readonly tokens: InfisicalTokenCache,
   ) {}
 
   /** 立ち上がり。**繋がらなくても投げない**（投げると Module ごと落ちる）。 */
@@ -66,10 +69,16 @@ class LazyConnection {
     }
   }
 
-  /** その設定で実際に繋いでみる。**繋がって初めて「使える」**（規則1）。 */
-  async use(config: InfisicalConfig, source: "saved" | "env"): Promise<void> {
-    const conn = new InfisicalConnection(config);
-    await conn.connect();
+  /**
+   * その設定で実際に繋いでみる。**繋がって初めて「使える」**（規則1）。
+   *
+   * @param forceLogin **資格情報そのものを試す**（覚えているトークンで通さない）。
+   * 人が設定画面で入れ直したときはこちら——さもないと、**間違った Client Secret を
+   * 貼っても「繋がった」ことになって保存される**。
+   */
+  async use(config: InfisicalConfig, source: "saved" | "env", forceLogin = false): Promise<void> {
+    const conn = new InfisicalConnection(config, this.tokens);
+    await conn.connect({ forceLogin });
     this.conn = conn;
     this.config = config;
     this.source = source;
@@ -106,7 +115,7 @@ export function createInfisicalVaultServer(dataDir: string, moduleName = CANONIC
   // `BANTO_INFISICAL_*` は**1つの接続先**を指す値なので、写しにも効かせると
   // **2本目が黙って1本目と同じサーバに繋がる**——同じ秘密が2つの名前で
   // 一覧に並び、人には理由が分からない（規則2——黙って別の経路へ行かない）
-  const lazy = new LazyConnection(settings, moduleName === CANONICAL_NAME);
+  const lazy = new LazyConnection(settings, moduleName === CANONICAL_NAME, new InfisicalTokenCache(dataDir));
   // backend と台帳には「いま繋がっている接続」を毎回引かせる——繋ぎ直しても
   // 古い接続を掴まない（規則3——写しを持たない）
   const proxy = new Proxy({} as InfisicalConnection, {
@@ -167,7 +176,9 @@ export function createInfisicalVaultServer(dataDir: string, moduleName = CANONIC
           const config = toConfig(args as unknown as InfisicalSettingsInput, saved?.clientSecret);
           // **繋がってから保存する**（規則1——自己申告を信頼しない）。
           // 保存してから繋ぐと、間違った設定が残って毎回失敗する
-          await lazy.use(config, "saved");
+          // **ここは本物のログインで試す**——覚えているトークンで通すと、
+          // 間違った Client Secret を貼っても「繋がった」ことになる（規則1）
+          await lazy.use(config, "saved", true);
           await settings.save(config);
           return { content: [{ type: "text" as const, text: JSON.stringify(lazy.view()) }] };
         },

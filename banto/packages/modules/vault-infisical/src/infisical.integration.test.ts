@@ -22,6 +22,7 @@ import { InfisicalConnection, type InfisicalConfig } from "./client.js";
 import { InfisicalBackend } from "./infisical-backend.js";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
 import { InfisicalSettingsStore } from "./settings-store.js";
+import { InfisicalTokenCache, tokenKeyOf } from "./token-cache.js";
 import { createInfisicalVaultServer } from "./server.js";
 
 /** host が刻む「誰のための呼び出しか」。ここは人の管理面のつもり。 */
@@ -353,5 +354,65 @@ test("banto 以外が置いた秘密も読める——そして同じ名前で�
       // 片づけの失敗は本題ではない
     }
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+// ---- ログインを起動のたびに繰り返さない（追加・2026-09-20、ユーザー指示）-------
+//
+// Client Secret には**使用回数の上限**を付けられる。起動のたびに1回ログインして
+// いたので、再起動のたびに残数が減り、実際に切れた
+// （`Access denied due to client secret usage limit reached`、2026-09-20）。
+
+/**
+ * **「ログインしていない」をどう観測するか。**
+ *
+ * 回数は外から数えられないので、**Client Secret をでたらめに差し替える**。
+ * それでも繋がるなら、ログインを通っていない——これ以外に区別のしようがない。
+ */
+test("2回目からはログインしない——覚えたトークンで繋ぐ", { skip }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "infisical-token-"));
+  try {
+    const tokens = new InfisicalTokenCache(dir);
+    // 1回目：本物の資格情報でログインし、結果を覚える
+    await new InfisicalConnection(config!, tokens).connect();
+
+    // 2回目：**Client Secret を壊しても繋がる**（＝ログインしていない）
+    const broken = { ...config!, clientSecret: "definitely-not-the-secret" };
+    const second = new InfisicalConnection(broken, tokens);
+    await second.connect();
+    // 繋がっただけでなく、**実際に読める**（規則14——通った、では見たことにならない）
+    assert.ok(Array.isArray(await new InfisicalBackend(second).listGroups()));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("設定画面からの保存は、覚えたトークンで通さない——資格情報そのものを試す", { skip }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "infisical-token-force-"));
+  try {
+    const tokens = new InfisicalTokenCache(dir);
+    await new InfisicalConnection(config!, tokens).connect();
+
+    // **間違った Client Secret を貼ったら、繋がったことにしない**（規則1）
+    const broken = { ...config!, clientSecret: "definitely-not-the-secret" };
+    await assert.rejects(
+      () => new InfisicalConnection(broken, tokens).connect({ forceLogin: true }),
+      "間違った秘密でも「繋がった」ことになっている（覚えたトークンで通している）",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("接続先が変われば、覚えたトークンは使わない", { skip }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "infisical-token-key-"));
+  try {
+    const tokens = new InfisicalTokenCache(dir);
+    await new InfisicalConnection(config!, tokens).connect();
+    // 別の Project のトークンとして読もうとしても、出てこない
+    assert.equal(await tokens.load(tokenKeyOf({ ...config!, projectId: "another" })), undefined);
+    assert.ok(await tokens.load(tokenKeyOf(config!)), "同じ接続なのに覚えていない");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

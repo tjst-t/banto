@@ -352,6 +352,24 @@ Project ID は同じで `environment` だけ変える。窓口（`vault-director
 > Infisical は区別せず `401 Invalid credentials` を返す。Client ID / Client Secret は
 > **Universal Auth のパネルに出ているもの**を使う。
 
+**ログインは起動のたびにしない**（決定・2026-09-20、ユーザー指示）。
+Client Secret には**使用回数の上限**を付けられるので、起動のたびに1回ログインすると
+**再起動のたびに残数が減り、いずれ切れる**——実際に切れた
+（`Access denied due to client secret usage limit reached`）。
+
+- ログインが返す access token を、**この Module のデータ置き場に 0600 で持つ**
+  （`access-token.json`。Client Secret と同じ category——banto の記録にも画面にも出さない）
+- **期限は保存しない**（規則3）。SDK の `login()` は `expiresIn` を返さないので、
+  期限を持とうとすると**当て推量を保存する**ことになる。代わりに
+  **使ってみて駄目ならログインし直す**——確かめは「その Project のフォルダを1つ読む」
+  で、**1往復かかるがログイン回数は消費しない**
+- トークンには**どの接続のものか**（接続先・Client ID・Project・環境）を添える。
+  どれかが変われば使い回さない。**Client Secret は鍵に入れない**——秘密を作り直しただけで、
+  まだ生きているトークンを捨てることになるため
+- **設定画面の「繋いで保存する」だけは、本物のログインを強制する。**
+  覚えているトークンで通すと、**間違った Client Secret を貼っても「繋がった」ことになる**
+  （規則1——「繋がってから保存する」という約束が空になる）
+
 これを可能にするため、`@banto/vault-kit` に2つ足した：**`readiness()`**（使える
 状態かを理由つきで返す）と **`extraTools`**（その Module だけが持つ口。
 **未設定でも呼べる**——設定する口が設定を要求したら堂々巡りになる）。

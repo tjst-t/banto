@@ -11,6 +11,29 @@
 // ここでは Module 起動時の環境変数として受け取る（宣言 → host が渡す）。
 
 import { InfisicalSDK } from "@infisical/sdk";
+import { InfisicalTokenCache, tokenKeyOf } from "./token-cache.js";
+
+/**
+ * **そのトークンで、この Project を実際に読めるか。**
+ *
+ * ログインの代わりの確かめ——**1往復かかるが、ログイン回数は消費しない**。
+ * 落ちた理由（期限切れ／取り消し／到達できない）は区別しない：どれであっても
+ * 「このトークンでは進めない」で、次の手（ログイン）は同じ。ログインも駄目なら
+ * そのときの例外がそのまま上がる（規則2——ここで握りつぶすのは**判定**であって、
+ * 失敗ではない）。
+ */
+async function stillUsable(sdk: InfisicalSDK, config: InfisicalConfig): Promise<boolean> {
+  try {
+    await sdk.folders().listFolders({
+      projectId: config.projectId,
+      environment: config.environment,
+      path: "/",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface InfisicalConfig {
   /** `https://app.infisical.com`（Cloud）か、自前ホストの住所。 */
@@ -56,14 +79,49 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Infisic
 export class InfisicalConnection {
   private sdk?: InfisicalSDK;
 
-  constructor(readonly config: InfisicalConfig) {}
+  constructor(
+    readonly config: InfisicalConfig,
+    /**
+     * **前回のログインの結果**（追加・2026-09-20、ユーザー指示）。
+     * 渡さないとき（試験など）は、毎回ログインする今までの挙動。
+     */
+    private readonly tokens?: InfisicalTokenCache,
+  ) {}
 
-  async connect(): Promise<void> {
+  /**
+   * **覚えているトークンがあれば、ログインしない**（決定・2026-09-20、ユーザー指示）。
+   *
+   * Client Secret には使用回数の上限を付けられるので、**起動のたびに1回ログイン
+   * すると、再起動のたびに残数が減る**——実際に切れた（2026-09-20）。
+   *
+   * 期限は持たない。**使ってみて駄目なら、そのときログインし直す**
+   * （規則3——推測した期限を保存しない）。
+   *
+   * @param opts.forceLogin **資格情報そのものを試したいとき**に立てる。
+   * 設定画面の「繋いで保存する」がこれ——覚えているトークンで通してしまうと、
+   * **間違った Client Secret を貼っても「繋がった」ことになる**（規則1）。
+   */
+  async connect(opts: { forceLogin?: boolean } = {}): Promise<void> {
+    if (!opts.forceLogin && this.tokens) {
+      const cached = await this.tokens.load(tokenKeyOf(this.config));
+      if (cached) {
+        const sdk = new InfisicalSDK({ siteUrl: this.config.siteUrl });
+        sdk.auth().accessToken(cached);
+        if (await stillUsable(sdk, this.config)) {
+          this.sdk = sdk;
+          return;
+        }
+        // 期限切れか、取り消されたか。**残しておくと毎回ここで1往復無駄になる**
+        await this.tokens.forget();
+      }
+    }
     const sdk = new InfisicalSDK({ siteUrl: this.config.siteUrl });
     await sdk.auth().universalAuth.login({
       clientId: this.config.clientId,
       clientSecret: this.config.clientSecret,
     });
+    const token = sdk.auth().getAccessToken();
+    if (token && this.tokens) await this.tokens.save(tokenKeyOf(this.config), token);
     this.sdk = sdk;
   }
 
