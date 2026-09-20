@@ -46,7 +46,7 @@ import {
 // mockのまま（Module/Role/Credential/Runtime既定/通知）——`settings`が
 // falseの間はnavから外す。繋がっていない入口を画面に残さない（規則13）。
 const MOCK_CATEGORIES: readonly SettingsNavItem[] = [
-  { section: "roles", label: "役割と Module", icon: Puzzle },
+  { section: "roles", label: "Module", icon: Puzzle },
   { section: "defaults", label: "既定値", icon: SlidersHorizontal },
   { section: "credentials", label: "資格情報", icon: Sparkles },
   { section: "notifications", label: "通知", icon: Bell },
@@ -59,10 +59,10 @@ const GLOBAL_MEMORY_CATEGORY: SettingsNavItem = {
   icon: Globe,
 };
 
-/** 実 banto に繋がった「役割と Module」（2026-09-15）。 */
+/** 実 banto に繋がった Module の一覧（2026-09-15）。 */
 const INSTANCE_MODULES_CATEGORY: SettingsNavItem = {
   section: "roles",
-  label: "役割と Module",
+  label: "Module",
   icon: Puzzle,
 };
 
@@ -158,8 +158,8 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
     return (
       <div>
         <SectionHeading
-          title="役割と Module"
-          description="役割ごとに、満たす実装・プロセス境界・止めたら何が断るかを表示する。同じ役割を複数の実装が名乗ってよい。"
+          title="Module"
+          description="banto 全体で使う Module の一覧。同じ役割を複数の Module が提供できます。"
         />
         {/* **繋がっているほうを出す**（2026-09-15）。モックの `RoleList` は
             `lib/mock/settings.ts` の固定データなので、繋がった今は出さない（規則13） */}
@@ -279,7 +279,7 @@ export function SettingsContent() {
   const groups: SettingsNavGroup[] = [
     { label: "banto 全体", startsLayer: true, items: CATEGORIES },
     {
-      label: instanceModuleItems.length > 0 ? "全体の Module 設定" : undefined,
+      label: instanceModuleItems.length > 0 ? "Module ごとの設定" : undefined,
       items: instanceModuleItems.map((impl) => ({
         section: `module:${impl.id}`,
         label: impl.name,

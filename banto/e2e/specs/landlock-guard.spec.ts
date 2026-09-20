@@ -58,8 +58,8 @@ test("home を根にしても Module は動く。ただし画面が警告する"
   // **何が入るのかまで言う**（規則14——「警告が出た」で終わらせない）。
   // 何が挙がるかは host の置き場による（この試験の host は dataDir が /tmp なので
   // banto の設定は入らない）——**具体名が1つ以上出ていること**を見る
-  await expect(warning).toContainText("閉じ込めが効きません");
-  await expect(warning).toContainText(/資格情報|合言葉|記録/);
+  await expect(warning).toContainText("サンドボックスがほぼ機能しません");
+  await expect(warning).toContainText(/認証情報|アクセストークン|データ/);
 
   // ---- 3. 新しい Project を作るときにも、選ぶ前に出る ----------------------
   await page.goto("/");

@@ -161,12 +161,13 @@ test("ログインが要る Module は、画面でそう出て「ログインす
 
   await openApp(page);
   await page.goto("/settings");
-  await page.getByRole("button", { name: "役割と Module" }).click();
+  await page.getByRole("button", { name: "Module", exact: true }).click();
   const row = page.locator(`[data-module="${LOGIN_MODULE}"]`);
   await expect(row, "足した Module が一覧に出ない").toBeVisible({ timeout: 60_000 });
 
-  // **「繋がりません」ではなく「ログインが要ります」**（中身まで見る・規則14）
-  await expect(page.getByTestId(`module-state-${LOGIN_MODULE}`)).toContainText("ログインが要ります");
+  // **「Failed」ではなく「Auth required」**（中身まで見る・規則14）
+  // ——一緒くたに「繋がりません」と出すと、押すべきボタンがあることに気付けない
+  await expect(page.getByTestId(`module-state-${LOGIN_MODULE}`)).toContainText("Auth required");
 
   // **押すと新しいタブが開く。** この試験の相手は承認画面を出さずに戻すので、
   // タブはそのまま banto の戻り先まで進む——**人が見る結果の文字まで見る**（規則14）

@@ -26,7 +26,7 @@ async function verify(config: BackendConfig): Promise<void> {
   // そのまま `fetch` に渡すと「String contains non ISO-8859-1 code point」という
   // **何が悪いのか分からない**文言が出る（規則2——嘘ではないが、直す手がかりが無い）
   if (!/^[\x21-\x7e]+$/.test(config.token)) {
-    throw new Error("合言葉に使えない文字が入っています（記号と英数字だけです）");
+    throw new Error("アクセストークンに使えない文字が含まれています（記号と半角英数字のみ）");
   }
   let res: Response;
   try {
@@ -38,7 +38,7 @@ async function verify(config: BackendConfig): Promise<void> {
       `${config.baseUrl} に繋がりません（${err instanceof Error ? err.message : String(err)}）`,
     );
   }
-  if (res.status === 401) throw new Error("合言葉が違います");
+  if (res.status === 401) throw new Error("アクセストークンが違います");
   if (!res.ok) throw new Error(`banto が ${res.status} を返しました`);
 }
 
@@ -86,13 +86,13 @@ export function ConnectGate({ children }: { children: ReactNode }) {
           <h1 className="text-lg font-semibold text-foreground">banto に繋ぐ</h1>
           {/* **「無い」ではなく「まだ繋がっていない」**——ここが今回の本題 */}
           <p className="text-sm text-ink-3">
-            この画面はまだ banto に繋がっていません。
-            <strong>合言葉を入れると、あなたの Project が出ます。</strong>
+            この画面はまだ banto に接続していません。
+            <strong>アクセストークンを入力すると、Project が表示されます。</strong>
           </p>
         </div>
 
         <div className="flex flex-col gap-1">
-          <Label htmlFor="connect-token">合言葉</Label>
+          <Label htmlFor="connect-token">アクセストークン</Label>
           <Input
             id="connect-token"
             type="password"
@@ -100,7 +100,7 @@ export function ConnectGate({ children }: { children: ReactNode }) {
             autoComplete="off"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="banto の authToken"
+            placeholder="config.json の authToken"
           />
           <p className="text-xs text-ink-3">
             サーバの <code>~/.config/banto/config.json</code> の <code>authToken</code>
@@ -108,7 +108,7 @@ export function ConnectGate({ children }: { children: ReactNode }) {
         </div>
 
         <div className="flex flex-col gap-1">
-          <Label htmlFor="connect-host">banto の場所</Label>
+          <Label htmlFor="connect-host">接続先</Label>
           <Input
             id="connect-host"
             value={baseUrl}
@@ -125,7 +125,7 @@ export function ConnectGate({ children }: { children: ReactNode }) {
 
         <Button type="submit" disabled={busy || token.trim().length === 0}>
           {busy ? <Loader2 className="size-4 animate-spin" /> : null}
-          繋ぐ
+          接続
         </Button>
       </form>
     </div>

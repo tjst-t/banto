@@ -34,24 +34,26 @@ test("Module をその場で外して保存すると、その Project では立�
   const fsRow = page.locator('[data-testid="module-row"][data-module="filesystem"]');
   await expect(fsRow, "Module の一覧が出ていない").toBeVisible({ timeout: 20_000 });
   await expect(fsRow).toHaveAttribute("data-state", "linked");
-  // 宣言から出している中身（役割・どこに1本立つか・閉じ込め）
+  // 宣言から出している中身（役割・どこに1本立つか・閉じ込め）。
+  // **表の列で出す**（改訂・2026-09-18——1行ごとの札をやめて1枚のテーブルに）
   await expect(fsRow.getByText("filesystem", { exact: true }).first()).toBeVisible();
-  await expect(fsRow.getByText("この Project に1本")).toBeVisible();
-  await expect(fsRow.getByText("Project の外は読めない")).toBeVisible();
+  await expect(fsRow.locator("td").nth(2), "どこに立つかが出ていない").toHaveText("Project ごと");
+  await expect(fsRow.locator("td").nth(3), "閉じ込めが出ていない").toHaveText("Project");
 
   // ---- ダイアログ無しで外し、保存で差分を確かめる --------------------------
-  await fsRow.getByRole("button", { name: /外す/ }).click();
+  // **入り切りはトグル**（改訂・2026-09-19——banto 全体の面と同じ部品）
+  await fsRow.getByRole("switch", { name: /を無効にする/ }).click();
   await expect(page.locator('[role="alertdialog"]'), "外した瞬間に確認が出ている").toHaveCount(0);
   await expect(fsRow).toHaveAttribute("data-state", "removed");
   const bar = page.getByTestId("module-draft-bar");
   await expect(bar).toContainText("未保存の変更 1 件");
 
-  await bar.getByRole("button", { name: "保存する" }).click();
+  await bar.getByRole("button", { name: "保存", exact: true }).click();
   const dialog = page.getByTestId("module-save-dialog");
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   await expect(dialog).toContainText("filesystem");
-  await expect(dialog).toContainText("この Project 用の1つが落ちる");
-  await dialog.getByRole("button", { name: "保存する" }).click();
+  await expect(dialog).toContainText("この Project 専用のプロセスが停止します");
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
 
   // 保存したら帯が消え、行は「繋げる Module」側になる
   await expect(bar).toHaveCount(0, { timeout: 15_000 });
@@ -76,9 +78,9 @@ test("Module をその場で外して保存すると、その Project では立�
   await expect(fsRow).toHaveAttribute("data-state", "off", { timeout: 30_000 });
 
   // ---- 繋ぎ直すと戻る ----------------------------------------------------
-  await fsRow.getByRole("button", { name: /繋ぐ/ }).click();
-  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存する" }).click();
-  await page.getByTestId("module-save-dialog").getByRole("button", { name: "保存する" }).click();
+  await fsRow.getByRole("switch", { name: /を有効にする/ }).click();
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByTestId("module-save-dialog").getByRole("button", { name: "保存", exact: true }).click();
   await expect(fsRow).toHaveAttribute("data-state", "linked", { timeout: 15_000 });
   await expect
     .poll(
@@ -102,14 +104,15 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   // shell は vault が要る（宣言の dependsOn）——vault を外すと shell が動かない
   const shellRow = page.locator('[data-testid="module-row"][data-module="shell"]');
   await expect(shellRow).toBeVisible({ timeout: 20_000 });
-  await expect(shellRow.getByText(/vault が要る/)).toBeVisible();
+  // 「要るもの」の列に、要る役割が出ている
+  await expect(shellRow.locator("td").nth(4)).toContainText("vault");
 
   // **`vault` は役割で、実装は2本ある**（`vault` と `vault-infisical`、2026-09-12）。
   // 片方を外しても役割は満たされたままなので、**警告は出ないのが正しい**
   // ——ここで警告が出るなら、役割ではなく名前で見ていることになる
-  await page.locator('[data-testid="module-row"][data-module="vault-local"]').getByRole("button", { name: /外す/ }).click();
+  await page.locator('[data-testid="module-row"][data-module="vault-local"]').getByRole("switch").click();
   await expect(
-    shellRow.getByText(/このままでは動きません/),
+    shellRow.getByText(/が無効です/),
     "実装がもう1本あるのに「動きません」と言っている（名前で見ている）",
   ).toHaveCount(0);
 
@@ -118,17 +121,17 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   for (const impl of ["vault-infisical", "vault-infisical-cloud"]) {
     await page
       .locator(`[data-testid="module-row"][data-module="${impl}"]`)
-      .getByRole("button", { name: /外す/ })
+      .getByRole("switch")
       .click();
   }
   await expect(
-    shellRow.getByText(/このままでは動きません/),
+    shellRow.getByText(/が無効です/),
     "要るものを外したのに、その場で何も言わない",
   ).toBeVisible({ timeout: 10_000 });
 
-  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存する" }).click();
-  await expect(page.getByTestId("module-save-dialog")).toContainText("「shell」");
-  await page.getByTestId("module-save-dialog").getByRole("button", { name: "やめる" }).click();
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByTestId("module-save-dialog")).toContainText("shell");
+  await page.getByTestId("module-save-dialog").getByRole("button", { name: "キャンセル" }).click();
   // やめたのだから、何も変わっていない
   await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 3 件");
 });
@@ -167,7 +170,7 @@ test("一般：名前と Root を直せて、危険な操作（Close）はその
   // ---- 名前と Root を、まとめて直す --------------------------------------
   await panel.getByLabel("Project 名").fill("一般の spec（改）");
   await panel.getByLabel("Root パス").fill(next);
-  await page.getByTestId("project-general-bar").getByRole("button", { name: "保存する" }).click();
+  await page.getByTestId("project-general-bar").getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByTestId("project-general-bar"), "保存しても帯が残っている").toHaveCount(0, {
     timeout: 15_000,
   });

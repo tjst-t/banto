@@ -2,7 +2,8 @@
 //
 // 見るのは規則13・規則14 の意味で「繋がっていること」：
 //   1. 画面が**本物の宣言**を見ている（同梱5本が役割ごとに出る）
-//   2. **止めると、押す前に何が断るかが出る**（§6.1）
+//   2. **止めると、保存する前に何が断るかが出る**（§6.1。改訂・2026-09-19
+//      ——押した瞬間ではなく、行の中と保存の差分で出る）
 //   3. 止めた結果が**実 host に届く**（画面の自己申告を信じない・規則1）
 //   4. **外から足した Module は消せる／同梱は消せない**
 //   5. **「この Project のフォルダ」を渡したかで、どこに立つかが変わる**——聞かない
@@ -18,7 +19,7 @@ const ADDED = `e2e-weather-${Date.now()}`;
 async function openModuleSettings(page: import("@playwright/test").Page) {
   await openApp(page);
   await page.goto("/settings");
-  await page.getByRole("button", { name: "役割と Module" }).click();
+  await page.getByRole("button", { name: "Module", exact: true }).click();
   await expect(page.getByTestId("instance-modules"), "Module の一覧が出ない").toBeVisible({
     timeout: 60_000,
   });
@@ -37,50 +38,146 @@ test("画面が本物の宣言を見ている——同梱が役割ごとに出�
   for (const m of real) {
     await expect(page.locator(`[data-module="${m.name}"]`), `${m.name} が画面に出ていない`).toBeVisible();
   }
-  // 同梱と外からを見分けられる
-  await expect(page.locator('[data-module="vault-local"]')).toContainText("同梱");
-  // どこに立つかが出ている
+  // 同梱と外からを見分けられる（同梱には「外から」が付かない）
+  await expect(page.locator('[data-module="vault-local"]')).not.toContainText("ユーザー追加");
+  // どこに立つかが出ている（表の「動く場所」列・2026-09-18 から）
   await expect(page.locator('[data-module="shell"]')).toContainText("Project ごと");
-  await expect(page.locator('[data-module="vault-directory"]')).toContainText("全体で1本");
+  await expect(page.locator('[data-module="vault-directory"]')).toContainText("Global");
 });
 
-test("止めるときは、押す前に何が断るかが出る——止めた結果は実 host に届く", async ({ page }) => {
+test("止めるのはまとめて——保存の前に何が断るかが出て、保存すると実 host に届く", async ({ page }) => {
+  // **押すたびに効かない**（改訂・2026-09-19、ユーザー要望）。Project の面と
+  // 同じで、下書きを作って最後に保存する。だから見るのは3つ：
+  //   (a) 押しても host にはまだ届いていない
+  //   (b) **止めると何が断るか**が、保存の前に出る
+  //   (c) 保存して初めて host に届く
   await openModuleSettings(page);
 
+  const enabledOf = async (name: string) => {
+    const list = (await (
+      await page.request.get(`${CORE_BASE_URL}/api/modules`, {
+        headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+      })
+    ).json()) as Array<{ name: string; enabled: boolean }>;
+    return list.find((m) => m.name === name)?.enabled;
+  };
+
+  // ---- **役割で見る**（追加・2026-09-19、ユーザー報告の誤報の回帰） ---------
+  // `vault` は実装が3本ある。**1本無効にしても役割は満たされたまま**なので、
+  // 警告は出ないのが正しい——出るなら、名前で見ていることになる
+  await page.locator('[data-module="vault-local"]').getByRole("switch").click();
+  await expect(
+    page.getByTestId("module-state-vault-local"),
+    "実装がもう2本あるのに「使えなくなります」と言っている（名前で見ている）",
+  ).not.toContainText("使えなくなります");
+  // **役割を満たすものが全部消えて初めて**言う
+  for (const impl of ["vault-infisical", "vault-infisical-cloud"]) {
+    await page.locator(`[data-module="${impl}"]`).getByRole("switch").click();
+  }
+  await expect(
+    page.getByTestId("module-state-vault-local"),
+    "最後の1本まで無効にしたのに、何も言わない",
+  ).toContainText("shell");
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "取り消す" }).click();
+  await expect(page.getByTestId("module-draft-bar")).toHaveCount(0);
+
+  // ---- (b) 依存しているものの名前が、その場で行に出る -----------------------
+  // `vault-directory` は1本しか無いので、無効にすれば必ず出る
   await page.locator('[data-module="vault-directory"]').getByRole("switch").click();
-  // **依存している Module の名前が、押す前に出る**（§6.1・規則2）
-  await expect(page.getByText("vault-directory を止めますか")).toBeVisible();
-  await expect(page.getByRole("alertdialog"), "何が断るようになるか出ていない").toContainText("shell");
-  await page.getByRole("button", { name: "やめる" }).click();
+  await expect(
+    page.getByTestId("module-state-vault-directory"),
+    "止めると何が断るのか、行に出ていない",
+  ).toContainText("shell");
+  // **押した瞬間に確認は出ない**（確認は保存のとき1回）
+  await expect(page.locator('[role="alertdialog"]'), "押した瞬間に確認が出ている").toHaveCount(0);
 
-  // 依存が無いものは、そう言う
+  // ---- (a) 押しただけでは host に届いていない ------------------------------
+  expect(await enabledOf("vault-directory"), "押しただけで host に届いている").toBe(true);
+
+  // 捨てると元どおり（覚えていない）
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "取り消す" }).click();
+  await expect(page.getByTestId("module-draft-bar")).toHaveCount(0);
+
+  // ---- 依存が無いものを止めて、保存する ------------------------------------
   await page.locator('[data-module="filesystem"]').getByRole("switch").click();
-  await expect(page.getByRole("alertdialog")).toContainText("依存している Module はありません");
-  await page.getByRole("button", { name: "止める" }).click();
+  await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 1 件");
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存", exact: true }).click();
 
-  // **画面が言うだけでなく、host に届いている**
+  const dialog = page.getByTestId("module-save-dialog");
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog).toContainText("filesystem");
+  await expect(dialog, "依存が無いことを言っていない").toContainText("依存している Module はありません");
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+
+  // ---- (c) **画面が言うだけでなく、host に届いている** ----------------------
   await expect
-    .poll(
-      async () => {
-        const list = (await (
-          await page.request.get(`${CORE_BASE_URL}/api/modules`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json()) as Array<{ name: string; enabled: boolean }>;
-        return list.find((m) => m.name === "filesystem")?.enabled;
-      },
-      { timeout: 30_000, message: "止めたのに host に届いていない" },
-    )
+    .poll(async () => enabledOf("filesystem"), {
+      timeout: 30_000,
+      message: "保存したのに host に届いていない",
+    })
     .toBe(false);
 
   // **止めても一覧に残る**——消えたのか止めたのか分かる
   await expect(page.locator('[data-module="filesystem"]')).toBeVisible();
-  await expect(page.getByTestId("module-state-filesystem")).toContainText("止めてあります");
+  await expect(page.getByTestId("module-state-filesystem")).toContainText("Stopped");
 
   // 戻す（次の試験と実機を汚さない）
   await page.locator('[data-module="filesystem"]').getByRole("switch").click();
-  await expect(page.getByTestId("module-state-filesystem")).not.toContainText("止めてあります", {
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByTestId("module-save-dialog").getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByTestId("module-state-filesystem")).not.toContainText("Stopped", {
     timeout: 30_000,
+  });
+});
+
+// **止めても消えない——外から足したものも**（追加・2026-09-19、ユーザー報告）。
+// 実際に踏んだ：一覧を組み立てるとき、止めたものを**同梱の既定からしか**復元して
+// いなかったので、**外から足した Module は止めた瞬間に一覧から消えていた**
+// ——止めたのに消えたように見えるうえ、消えて見えるので**もう動かせない**。
+test("外から足した Module を止めても、消えずに一覧へ残り、また動かせる", async ({ page }) => {
+  const name = `e2e-disable-keep-${Date.now()}`;
+  await page.request.post(`${CORE_BASE_URL}/api/modules`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { mcpServers: { [name]: { command: "/bin/sh", args: ["-c", "true"] } } },
+  });
+  await openModuleSettings(page);
+
+  const row = page.locator(`[data-module="${name}"]`);
+  await expect(row, "足したのに一覧に出ない").toBeVisible({ timeout: 30_000 });
+
+  // ---- 止める ------------------------------------------------------------
+  await row.getByRole("switch").click();
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByTestId("module-save-dialog").getByRole("button", { name: "保存", exact: true }).click();
+
+  // **消えない**——止めたと分かる形で残る（規則2・規則13）
+  await expect(page.getByTestId(`module-state-${name}`), "止めたのに一覧から消えた").toContainText(
+    "Stopped",
+    { timeout: 30_000 },
+  );
+  // 開き直しても残っている（画面の覚えではなく、host が持っている）
+  await page.reload();
+  await expect(row, "開き直したら消えた").toBeVisible({ timeout: 30_000 });
+  // host の一覧にも残っている（画面の自己申告を信じない・規則1）
+  const list = (await (
+    await page.request.get(`${CORE_BASE_URL}/api/modules`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })
+  ).json()) as Array<{ name: string; enabled: boolean }>;
+  expect(list.find((m) => m.name === name), "host の一覧から消えた").toMatchObject({ enabled: false });
+
+  // ---- また動かせる ------------------------------------------------------
+  await row.getByRole("switch").click();
+  await page.getByTestId("module-draft-bar").getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByTestId("module-save-dialog").getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByTestId(`module-state-${name}`), "動かし直せない").not.toContainText(
+    "Stopped",
+    { timeout: 30_000 },
+  );
+
+  // 片づける
+  await page.request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(name)}`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
   });
 });
 
@@ -101,20 +198,20 @@ test("外から Module を足せる——どこに立つかは書いたもので
 
   const row = page.locator(`[data-module="${ADDED}"]`);
   await expect(row, "足したのに一覧に出ない").toBeVisible({ timeout: 30_000 });
-  await expect(row, "外から足したのに同梱扱い").toContainText("外から");
-  // **外から繋ぐコードは必ず閉じ込める**
-  await expect(row, "閉じ込めが掛かっていない").toContainText("閉じ込め");
+  await expect(row, "ユーザー追加なのに組み込み扱い").toContainText("ユーザー追加");
+  // **外から繋ぐコードは必ず閉じ込める**（表の「隔離」列）
+  await expect(row.locator("td").nth(3), "閉じ込めが掛かっていない").not.toHaveText("—");
 
   // **同梱には消すボタンが出ない**
   await expect(
-    page.locator('[data-module="vault-local"]').getByRole("button", { name: /を消す/ }),
+    page.locator('[data-module="vault-local"]').getByRole("button", { name: /を削除/ }),
     "同梱に消すボタンが出ている",
   ).toHaveCount(0);
 
   // 外から足したものは消せる。**データは消さないと言ってから消す**
-  await row.getByRole("button", { name: `${ADDED} を消す` }).click();
-  await expect(page.getByRole("alertdialog")).toContainText("金庫に預けた秘密は消しません");
-  await page.getByRole("button", { name: "消す" }).click();
+  await row.getByRole("button", { name: `${ADDED} を削除` }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("Vault に保存した認証情報は削除されません");
+  await page.getByRole("button", { name: "削除", exact: true }).click();
   // **成功したときにだけ起きること**を待つ（規則14——押した直後に
   // 「エラーが出ていないこと」を見ても何も見ていない）。
   // 失敗しているなら、その理由をそのまま出す

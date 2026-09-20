@@ -131,7 +131,7 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
                 disabled={saving || !name.trim() || !root.trim()}
                 onClick={() => void save()}
               >
-                {saving ? "保存しています…" : "保存する"}
+                {saving ? "保存中…" : "保存"}
               </Button>
             </div>
           </div>

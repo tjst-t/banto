@@ -39,7 +39,7 @@ export function EditModuleDialog({
           <McpServersEditor
             key={implementation.id}
             initialJson={implementation.mcpServersJson}
-            submitLabel="保存する"
+            submitLabel="保存"
             onSubmit={(json) => {
               updateImplementationMcpServersJson(implementation.id, json);
               onOpenChange(false);

@@ -27,23 +27,23 @@ test("合言葉が無いときは、ログインの面が出る——「Project 
   });
   // **聞いていないのに「無い」と言わない**（ここが今回の本題）
   await expect(page.locator("body")).not.toContainText("まだ Project がありません");
-  await expect(page.locator("body")).toContainText("まだ banto に繋がっていません");
+  await expect(page.locator("body")).toContainText("まだ banto に接続していません");
 });
 
 test("違う合言葉は覚えない——通らなかったとそう言う", async ({ page }) => {
   await page.goto(`${FRONTEND_BASE_URL}/`);
-  await page.getByLabel("合言葉").fill("wrong-token-0000");
-  await page.getByLabel("banto の場所").fill(CORE_BASE_URL);
-  await page.getByLabel("合言葉").press("Enter");
+  await page.getByLabel("アクセストークン").fill("wrong-token-0000");
+  await page.getByLabel("接続先").fill(CORE_BASE_URL);
+  await page.getByLabel("アクセストークン").press("Enter");
 
   await expect(page.getByTestId("connect-error"), "通らなかった理由が出ない").toContainText(
-    "合言葉が違います",
+    "アクセストークンが違います",
     { timeout: 30_000 },
   );
   // **覚えていない**——覚えると、次に開いたときまた同じ空を見ることになる
   expect(
     await page.evaluate(() => window.localStorage.getItem("banto.backend")),
-    "違う合言葉を覚えてしまった",
+    "違うアクセストークンを覚えてしまった",
   ).toBeNull();
   // 面はそのまま（黙って中へ入れない）
   await expect(page.getByTestId("connect-gate")).toBeVisible();
@@ -51,16 +51,16 @@ test("違う合言葉は覚えない——通らなかったとそう言う", as
   // **ヘッダに載らない文字も、そうと分かる形で断る**（追加・2026-09-18）
   // ——そのまま fetch に渡すと「non ISO-8859-1 code point」という、
   // 何を直せばよいか分からない文言が出ていた
-  await page.getByLabel("合言葉").fill("でたらめな合言葉");
-  await page.getByLabel("合言葉").press("Enter");
+  await page.getByLabel("アクセストークン").fill("でたらめな合言葉");
+  await page.getByLabel("アクセストークン").press("Enter");
   await expect(page.getByTestId("connect-error")).toContainText("使えない文字");
 });
 
 test("正しい合言葉を入れて Enter すると、中身が出る", async ({ page }) => {
   await page.goto(`${FRONTEND_BASE_URL}/`);
-  await page.getByLabel("合言葉").fill(AUTH_TOKEN);
-  await page.getByLabel("banto の場所").fill(CORE_BASE_URL);
-  await page.getByLabel("合言葉").press("Enter");
+  await page.getByLabel("アクセストークン").fill(AUTH_TOKEN);
+  await page.getByLabel("接続先").fill(CORE_BASE_URL);
+  await page.getByLabel("アクセストークン").press("Enter");
 
   // **ログインの面が消えて、本体が出る**（規則14——押せたで終わらせない）
   await expect(page.getByTestId("connect-gate"), "繋いだのに面が残っている").toHaveCount(0, {

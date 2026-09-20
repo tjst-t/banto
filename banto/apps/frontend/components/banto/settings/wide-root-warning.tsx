@@ -45,10 +45,12 @@ export function WideRootWarning({ scope }: { scope: RealRootScope | null }) {
     >
       <ShieldAlert className="mt-0.5 size-4 shrink-0" />
       <div className="flex flex-col gap-1">
-        <p className="font-medium">この根では、閉じ込めが効きません</p>
+        {/* **語は普通のものにする**（改訂・2026-09-19、ユーザー指摘）。
+            「根」「閉じ込め」は banto の中でしか通じない言い方だった（規則11） */}
+        <p className="font-medium">このフォルダでは、サンドボックスがほぼ機能しません</p>
         <p className="text-ink-2">
-          AI のシェルとファイル操作は、この根の中を全部読み書きできます。ここには
-          {scope.includes.join("・")}も入っています。
+          AI のシェルとファイル操作は、このフォルダ以下をすべて読み書きできます。
+          この中には{scope.includes.join("・")}も含まれます。
         </p>
       </div>
     </div>
