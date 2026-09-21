@@ -1679,14 +1679,18 @@
     },
     {
       "id": "fullscreen-canvas-order-fragility",
-      "title": "フルスクリーンの Canvas が、直前に別の Canvas を開いた後だと開かない",
+      "title": "Canvas が、tool の結果より先に開くと中身が入らない",
       "status": "backlog",
-      "why": "`module-canvas-inline.spec.ts` の「フルスクリーンで開いて」は、**単独なら 5.5 秒で通る**のに、同じファイルの前のテスト（会話の中に Canvas を出す）の後に走らせると「Canvas — filesystem」が出ないまま 120 秒で落ちる。2026-09-21、E2E の Runner を偽物にして**ターンが一瞬で終わるようになった**ところで表に出た——実 LLM の頃はターンに十数秒かかり、その間に画面が落ち着いていたので気づかれていなかった。",
+      "why": "`module-canvas-inline.spec.ts` の「フルスクリーンで開いて」は、**単独なら 5.5 秒で通る**のに、同じファイルの前のテスト（会話の中に Canvas を出す）の後に走らせると「Canvas — filesystem」が出ないまま 120 秒で落ちる。2026-09-21、E2E の Runner を偽物にして**ターンが一瞬で終わるようになった**ところで表に出た——実 LLM の頃はターンに十数秒かかり、その間に画面が落ち着いていたので気づかれていなかった。 **2026-09-21 にコードを読んで分かったこと**：canvas-window/page.tsx の useEffect は tool 呼び出しの記録を **一度だけ取得して state に置き、二度と取り直さない**（依存は threadId と toolCallId だけ）。この画面は「大きく開いて」と頼まれた時点＝**tool が終わる前**に開くことがあり、そのとき記録にはまだ結果が無い。実モデルは遅いので記録が先に揃っていただけで、**tool が速ければ人にも起きる**。",
       "doneWhen": "前のテストで会話の中の Canvas を開いた直後でも、フルスクリーンの Canvas が開いて中身が出ることを、**偽 Runner の間（toolDelayMs）に頼らずに**確かめる。",
       "open": [
-        "原因未特定。題名（tool-input 由来）すら出ないので、fullscreen の要求そのものが届いていない可能性がある",
-        "待ちを足して隠さない（規則6）——いまは spec を落としたまま残している",
-        "関連: judgment-answer-render-race も「モデルの遅さに隠れていた競合」で、同じ根かもしれない"
+        "**直す場所の候補（コードを読んで特定済み）**：apps/frontend/app/canvas-window/page.tsx の RealCanvasWindow。結果が入るまで取りに行くか、届いたら知らされる形にする",
+        "**同じ系統でもう1つ**：module-canvas.tsx の onInitialized は一度きりなので、立ち上がりの後に届いた結果は iframe へ送られない。両方が揃わないと中身が出ない可能性がある",
+        "**iframe 側**：filesystem の ui-app.ts は displayMode を tool-input の通知からしか読まない。通知を取り逃すと、フルスクリーンで頼まれたのに会話の中に開く。ui/initialize の hostContext で引数も渡せば取り逃さない",
+        "上の3つは 2026-09-21 に実際に書いて試したが、**症状が「開かない」と「中身が来ない」の間を移動するだけで緑にならなかった**ので戻した。3つ全部が要るのか、別の要因があるのかは未解明",
+        "**測定が汚れていた**：試験を強制終了した残骸（playwright・E2E の core・next）が次の実行のポートを掴み、**偽の失敗**を作っていた。frontend-interaction:68 を「間欠」と判断したのはこれ。追うときは必ず残プロセスを 0 にしてから測る",
+        "**待ちを足して隠さない**（規則6）——toolDelayMs を試したが直らなかった",
+        "次の一手：**banto 抜きで Canvas だけを動かす30秒の仕掛け**を先に作る（Vault の画面で効いたのと同じ手）。2分の E2E で当てにいかない"
       ],
       "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
     },

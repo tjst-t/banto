@@ -305,7 +305,12 @@ export async function* runTurn(opts: {
   let lastText = plan.say ?? "";
   for (const [index, call] of (plan.tools ?? []).entries()) {
     if (opts.signal?.aborted) break;
-    const toolUseId = `toolu_fake_${index}_${Math.abs(hash(call.name))}`;
+    // **呼び出しごとに一意**（訂正・2026-09-21）。以前は tool 名と順番だけで
+    // 作っていたので、**同じ tool を呼ぶ別のターンが同じ id を持った**。
+    // 画面は tool 呼び出しの記録を (thread, toolCallId) で引くので、id が衝突すると
+    // **別のスレッドの記録を掴んで「見つかりません」になる**——Canvas が開かない、
+    // という形で出た。本物の SDK は毎回一意な id を出す（2026-09-21、実測で判明）
+    const toolUseId = `toolu_fake_${sessionId}_${index}_${Math.abs(hash(call.name + JSON.stringify(call.args ?? {})))}`;
     // SDK は MCP の tool を `mcp__<server>__<tool>` の名前で扱う
     const qualified = `mcp__${call.server}__${call.name}`;
     const args = call.args ?? {};
@@ -371,6 +376,7 @@ export async function* runTurn(opts: {
     // （握りつぶさない・規則2——AI から見た失敗の見え方も本物と同じにする）
     try {
       const { text, isError } = await callRealTool(servers[call.server] as McpServerConfig, call.name, args);
+      console.warn(`[fake-runner] ${call.name} の結果(先頭120字): ${text.slice(0, 120).replace(/\n/g, " / ")}`);
       lastText = text;
       yield { type: "message", message: toolResultMessage(sessionId, toolUseId, text, isError) };
     } catch (err) {
