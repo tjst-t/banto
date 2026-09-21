@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createInfisicalVaultServer } from "./server.js";
+import { InfisicalSettingsStore } from "./settings-store.js";
 
 async function connect(dataDir: string, moduleName?: string) {
   const server = createInfisicalVaultServer(dataDir, moduleName);
@@ -96,6 +97,47 @@ test("未設定の Module でも、資源の一覧は出る（申告と設定画
       () => client.readResource({ uri: "vault://aliases" }),
       /まだ使えません/,
     );
+    await client.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// **資格情報が通らなくても立つ**（追加・2026-09-20、ユーザー報告）。
+//
+// 実際に踏んだ：Client Secret の使用回数が尽きてログインが 401 になったところ、
+// **Module ごと落ちて設定画面が消え、入れ直す手段が無くなった**。
+// 2026-09-13 に「設定していないと立たない→設定画面に辿り着けない」を潰したのに、
+// 「設定はあるが通らない」で同じ行き止まりに戻っていた——資格情報は期限切れ・
+// 使用回数切れ・取り消しで**普通に通らなくなる**ので、例外的な状態ではない。
+test("保存した資格情報が通らなくても立つ——設定画面に辿り着けて、入れ直せる", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "infisical-rejected-"));
+  try {
+    // **繋がらない接続先**を保存済みにしておく（ポート9＝discard、繋がらない）
+    await new InfisicalSettingsStore(dir).save({
+      siteUrl: "http://127.0.0.1:9",
+      clientId: "some-client-id",
+      clientSecret: "some-secret",
+      projectId: "some-project",
+      environment: "dev",
+    });
+    const client = await connect(dir);
+
+    // **設定画面に辿り着ける**——ここが消えると、人は直す手段を失う
+    const uris = (await client.listResources()).resources.map((r) => String(r.uri));
+    assert.ok(
+      uris.includes("ui://banto-vault-infisical/config"),
+      `設定画面が出ていない（入れ直す手段が無い）: ${JSON.stringify(uris)}`,
+    );
+
+    const view = settingsOf(await client.callTool({ name: "getConnectionSettings", arguments: {}, _meta: ADMIN }));
+    // **繋がっていないのに「繋がっています」と出さない**（規則2）
+    assert.equal(view.configured, false, "繋がっていないのに繋がったことになっている");
+    assert.ok(String(view.lastError).length > 0, "繋がらなかった理由を言っていない");
+    // **欄は埋まっている**——入れ直すのは Client Secret だけで済む
+    assert.equal(view.clientId, "some-client-id", "入れ直しのために設定が残っていない");
+    assert.equal(view.projectId, "some-project");
+    assert.equal(view.hasClientSecret, true);
     await client.close();
   } finally {
     await rm(dir, { recursive: true, force: true });

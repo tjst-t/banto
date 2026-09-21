@@ -54,7 +54,20 @@ class LazyConnection {
   async start(): Promise<void> {
     const saved = await this.settings.load();
     if (saved) {
-      await this.use(saved, "saved");
+      // **繋がらなくても立つ**（訂正・2026-09-20、ユーザー報告）。ここだけ例外を
+      // 捕まえておらず、**保存済みの資格情報が拒否されると Module ごと落ちていた**
+      // ——落ちると設定画面も消えるので、**入れ直す手段が無くなる**。
+      // 2026-09-13 に「設定していないと立たない→設定画面に辿り着けない」を潰した
+      // はずが、「設定はあるが通らない」で同じ行き止まりに戻っていた。
+      // 資格情報は期限切れ・使用回数切れ・取り消しで**普通に通らなくなる**ので、
+      // これは例外的な状態ではない
+      try {
+        await this.use(saved, "saved");
+      } catch (err) {
+        this.config = saved;
+        this.source = "saved";
+        this.lastError = err instanceof Error ? err.message : String(err);
+      }
       return;
     }
     // 環境変数は開発・E2E の経路。**無ければ未設定のまま立つ**
@@ -92,7 +105,11 @@ class LazyConnection {
   }
 
   view() {
-    return { ...viewOf(this.config, this.config ? this.source : "none"), lastError: this.lastError };
+    const base = viewOf(this.config, this.config ? this.source : "none");
+    // **繋がっていないのに「繋がっています」と出さない**（訂正・2026-09-20）。
+    // 設定が入っていることと、その設定で繋がることは別。**欄は埋めたまま**
+    // （入れ直す手間を増やさない）で、**状態だけは正直に出す**（規則2・規則13）
+    return { ...base, configured: !!this.conn, lastError: this.lastError };
   }
 
   /** backend / alias 置き場が使う。**未設定なら理由つきで断る**（黙って空を返さない）。 */
