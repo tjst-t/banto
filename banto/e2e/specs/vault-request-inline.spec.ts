@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, explainMissingAiResult, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -50,10 +50,13 @@ test("AI が秘密を求めると、会話の中の入力欄から人が登録�
 
   // ---- 1. 会話の中に本物の入力欄が出る --------------------------------------
   const frame = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
-  await expect(
-    frame.getByText(`秘密を登録：${ALIAS}`),
-    "requestAlias を呼んでも会話の中に入力欄が出ない",
-  ).toBeVisible({ timeout: 180_000 });
+  // **出ないときは、なぜ出ないかまで言う**（改訂・2026-09-20、ユーザー指示）
+  // ——「AI が呼ばなかった」と「呼んだのに出ない」は直す先が違う
+  await expect(frame.getByText(`秘密を登録：${ALIAS}`))
+    .toBeVisible({ timeout: 180_000 })
+    .catch(async (err: Error) => {
+      throw new Error(`会話の中に入力欄が出ない。${await explainMissingAiResult(page, PROJECT_NAME)}\n---\n${err.message}`);
+    });
   // **何を求められているか**が、答える前に見えている
   await expect(frame.getByText(/E2E の確認用/)).toBeVisible();
 
@@ -141,7 +144,13 @@ test("鍵ペアを頼まれた入力欄は、秘密のときと聞くことが�
   await composer.press("Enter");
 
   const frame = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
-  await expect(frame.getByText(`秘密を登録：${KEY_ALIAS}`)).toBeVisible({ timeout: 180_000 });
+  await expect(frame.getByText(`秘密を登録：${KEY_ALIAS}`))
+    .toBeVisible({ timeout: 180_000 })
+    .catch(async (err: Error) => {
+      throw new Error(
+        `会話の中に入力欄が出ない。${await explainMissingAiResult(page, "E2E Vault Request Key")}\n---\n${err.message}`,
+      );
+    });
 
   // ---- 1. 種類で聞くことが変わっている --------------------------------------
   // 貼る側：**秘密鍵は1行に入らない**ので複数行の欄が出る

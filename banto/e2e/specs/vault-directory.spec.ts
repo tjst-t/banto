@@ -602,7 +602,9 @@ test("一覧の行から、別の Vault へ移せる（Vault の選択を切り�
   await expect(canvas.locator("#dlg-move")).toBeVisible();
 
   // **移す先の Vault を切り替える**——ここが今まで一度も通っていなかった
-  const vaults = await canvas.locator("#move-vault option").evaluateAll((os) => os.map((o) => o.value));
+  const vaults = await canvas
+    .locator("#move-vault option")
+    .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
   expect(vaults, `移せる先の Vault が1本しかない: ${JSON.stringify(vaults)}`).toContain(SECOND_VAULT);
   await canvas.locator("#move-vault").selectOption(SECOND_VAULT);
 

@@ -168,3 +168,48 @@ export async function openProjectSettings(page: Page, section?: string): Promise
     await page.getByRole("button", { name: section, exact: true }).click();
   }
 }
+
+/**
+ * **AI に tool を呼ばせる試験が落ちたとき、なぜかを言う**（追加・2026-09-20、ユーザー指示）。
+ *
+ * これらの試験は「AI に頼む → その結果 UI が出る」形なので、UI が出ないときに
+ * **2つの別々の原因が同じ沈黙になる**：
+ *
+ *   1. **AI がそもそも tool を呼ばなかった**（試験の作りの問題）
+ *   2. **呼んだのに UI が出ない**（実装の問題）
+ *
+ * 待ち条件が UI だけだと、どちらでも「180 秒待って出ませんでした」としか出ず、
+ * **直す先が分からない**。ここでは host に**実際の会話の記録**を聞いて分ける
+ * ——画面ではなく host に聞く（規則1）。
+ */
+export async function explainMissingAiResult(page: Page, projectName: string): Promise<string> {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  try {
+    const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as Array<{
+      id: string;
+      name: string;
+    }>;
+    const project = projects.find((p) => p.name === projectName);
+    if (!project) return "Project が host に無い（作成に失敗している）";
+    const threads = (await (
+      await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })
+    ).json()) as Array<{ id: string; kind: string }>;
+    const thread = threads.find((t) => t.kind === "base") ?? threads[0];
+    if (!thread) return "Thread が host に無い";
+    const detail = (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${thread.id}`, { headers })).json()) as {
+      messages?: Array<{ role: string; text?: string }>;
+    };
+    const said = (detail.messages ?? [])
+      .filter((m) => m.role === "assistant" && (m.text ?? "").trim() !== "")
+      .map((m) => m.text!.trim());
+    if (said.length === 0) {
+      return "AI はまだ何も答えていない——**ターンが終わっていない**（CLI が遅いか、止まっている）";
+    }
+    return (
+      "AI は答えを返し終わっているのに UI が出ていない——**AI が tool を呼ばなかった**" +
+      `（試験の作りの問題。実装ではない）。最後の返答: ${said[said.length - 1]!.slice(0, 300)}`
+    );
+  } catch (err) {
+    return `理由を調べようとして失敗した: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
