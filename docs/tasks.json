@@ -1689,6 +1689,19 @@
         "関連: judgment-answer-render-race も「モデルの遅さに隠れていた競合」で、同じ根かもしれない"
       ],
       "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
+    },
+    {
+      "id": "memory-tool-not-reachable-from-fake-runner",
+      "title": "AI が自分でメモを取る経路（remember_decision）は、偽 Runner から呼べない",
+      "status": "backlog",
+      "why": "他の Module は HTTP の MCP サーバとして渡される（`{type:\"http\", url, headers}`）ので、偽 Runner はその url に繋いで**本物の tool を呼ぶ**。ところが `banto-memory` だけは `createSdkMcpServer` が返す `{type:\"sdk\", name, instance}` で、**url が無い**——host のプロセス内に生きているオブジェクトなので、外から繋ぐ道がそもそも存在しない（2026-09-21 に実物を叩いて確認）。これは core 自身の機能を中継の外に置くという設計の帰結であって、壊れているわけではない。",
+      "doneWhen": "「AI が remember_decision を呼んだら Project の Memory に残る」を、E2E か単体のどちらかで**決定的に**確かめられる状態。",
+      "open": [
+        "**いまは困っていない。** この tool は「AI が自分の判断でメモする」もので、`memory.spec.ts` の冒頭が「AI 側の自動記録は非決定的」と書いているとおり、元々 E2E では試験していない。Memory 関連の試験が見ているのは「人が画面から足す」「足したものが次のターンに届く」で、後者は sayContext で**banto が実際に送った文脈**を見る形にした（以前より強い）",
+        "塞ぐなら3案：(1) 偽 Runner に `{type:\"sdk\"}` の分岐を足して instance を直に叩く（SDK にその口があるか未確認）／(2) Memory も他と同じ HTTP に寄せる（core の機能を中継の外に置く設計判断を覆すので、それだけの理由が要る）／(3) 保存側（appendMemory と Event Store）だけを単体試験で見る",
+        "**推しは (3)**。AI が呼ぶかどうかは非決定なので、そこを E2E で見ても元の間欠の問題に戻るだけ"
+      ],
+      "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
     }
   ],
   "phase1": {
