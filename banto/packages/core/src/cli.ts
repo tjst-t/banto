@@ -1066,7 +1066,36 @@ async function main(): Promise<void> {
     },
   });
 
+  /**
+   * **Runner の差し替え（試験のときだけ）**（追加・2026-09-20、ユーザー決定）。
+   *
+   * E2E が見たいのは banto 自身の振る舞い（画面・Vault・Module・中継）であって、
+   * **モデルがどの tool を選ぶかではない**。実 LLM を引き金にすると、
+   * 「AI がその 180 秒のうちに呼ばなかった」だけで落ちる——実際 2026-09-20 に
+   * フル E2E 5回中2回がこれで落ちた（`vault-request-inline`）。
+   *
+   * `AppDeps.runTurn` は元から在る（単体試験が使っている）。本番の経路が
+   * 渡していないだけなので、**env で指し示されたときだけ**そこへ流し込む。
+   *
+   * **本番では効かない**ようにしている——env が無ければ何も起きず、
+   * 既定の実物が走る。**黙って偽物に落ちることは無い**（規則2）：
+   * 指していて読めなければ、理由を言って**立ち上がりを止める**。
+   */
+  const fakeRunnerPath = process.env.BANTO_FAKE_RUNNER;
+  let runTurnOverride: Parameters<typeof createApp>[0]["runTurn"] | undefined;
+  if (fakeRunnerPath) {
+    const loaded = (await import(fakeRunnerPath)) as { runTurn?: unknown };
+    if (typeof loaded.runTurn !== "function") {
+      throw new Error(
+        `BANTO_FAKE_RUNNER が指す ${fakeRunnerPath} に runTurn がありません（試験用の差し替えが効きません）`,
+      );
+    }
+    console.warn(`[host] **Runner を差し替えています**（試験用）: ${fakeRunnerPath}`);
+    runTurnOverride = loaded.runTurn as Parameters<typeof createApp>[0]["runTurn"];
+  }
+
   const app = createApp({
+    ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
     projectThread,
     globalMemory,
     inbox,
