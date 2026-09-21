@@ -45,4 +45,16 @@ if (existsSync(identity)) {
   console.warn("[e2e] 開発用の Infisical が未用意——vault-infisical は繋がりません");
 }
 
+// **E2E は実 LLM を使わない**（決定・2026-09-20、ユーザー）。見たいのは banto 自身の
+// 振る舞いで、モデルがどの tool を選ぶかではない。実 LLM を引き金にすると
+// 「AI がその 180 秒のうちに呼ばなかった」だけで落ちる——実際フル E2E 5回中2回が
+// これで落ちていた。**偽物にするのは AI だけで、tool は本物の MCP を呼ぶ**。
+//
+// **実物へ黙って落ちる道は作らない**（規則2）——指示の印が無い spec は
+// 「ひとこと返す」既定で動く。それで足りない spec は、印を書いて直す。
+process.env.BANTO_FAKE_RUNNER = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fake-runner.ts",
+);
+
 await import("../packages/core/dist/cli.js");

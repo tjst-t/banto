@@ -15,7 +15,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -62,7 +62,12 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
 
   // 履歴を溢れさせる（1ターンで十分な長さを返させる）
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("1 から 60 までの数字を、1行に1つずつ、番号だけ並べて出して。");
+  // **長い返事を決定的に出させる**（改訂・2026-09-21）——見たいのは履歴の
+  // 縦スクロールであって、モデルが 60 行きちんと並べられるかではない
+  await composer.fill(
+    "1 から 60 までの数字を並べて出して。" +
+      fakeTurn({ say: Array.from({ length: 60 }, (_, i) => String(i + 1)).join("\n") }),
+  );
   await composer.press("Enter");
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "60" })).toBeVisible({
     timeout: 120_000,

@@ -13,7 +13,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openApp, createProject } from "../helpers.js";
+import { openApp, createProject, fakeTurn } from "../helpers.js";
 
 test.setTimeout(240_000);
 
@@ -23,7 +23,7 @@ test("本文のリンクは別タブで開く（target と rel まで見る）",
 
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(
-    "次の1行を、そのままそっくり書いてください（説明は要りません）：[example](https://example.com/)",
+    "リンクを1つ書いてください。" + fakeTurn({ say: "[example](https://example.com/)" }),
   );
   await composer.press("Enter");
 

@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -33,7 +33,7 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
   await expect(page.getByRole("menu")).not.toBeVisible({ timeout: 10_000 });
 
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("filesystem の readFile で secret.txt を読んで、中身をそのまま見せてください。");
+  await composer.fill("secret.txt を読んで見せてください。" + fakeTurn({ tools: [{ server: "filesystem", name: "readFile", args: { path: "secret.txt" } }] }));
   await composer.press("Enter");
 
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 60_000 });

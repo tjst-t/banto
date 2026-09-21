@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -24,8 +24,16 @@ const SECRET = `RELAY-OK-${Date.now()}`;
 const ALIAS = `e2e-relay-${Date.now()}`;
 
 const PROMPT =
-  `shell の runCommand を、command に \`echo "got=$MY"\`、envSecrets に {"MY": "${ALIAS}"} を渡して` +
-  "1回だけ実行してください。返ってきた stdout をそのまま書いてください。";
+  "秘密を環境変数に入れて echo してください。" +
+  fakeTurn({
+    tools: [
+      {
+        server: "shell",
+        name: "runCommand",
+        args: { command: 'echo "got=$MY"', envSecrets: { MY: ALIAS } },
+      },
+    ],
+  });
 
 /** Event Store に積まれた中継の記録（監査の本体）。 */
 function relayEvents(): Array<{ seq: number; type: string; payload: Record<string, unknown> }> {

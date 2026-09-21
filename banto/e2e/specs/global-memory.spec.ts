@@ -12,7 +12,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Global Memory Mid Thread";
@@ -121,7 +121,10 @@ test("走行中の Thread に Global Memory を足すと、その次のターン
   expect(added.ok(), "Global Memory を足せなかった").toBe(true);
 
   // ---- 2ターン目：**知っているか** -----------------------------------------
-  await composer.fill("私の合言葉を、そのまま答えて。");
+  // **届いたかを直接見る**（改訂・2026-09-21）。以前は「モデルが覚えていて
+  // 答えてくれること」に賭けていたが、見たいのは**banto が送ったかどうか**。
+  // 偽 Runner は受け取った文脈をそのまま返すので、そこに入っていれば届いている
+  await composer.fill("文脈を見せて。" + fakeTurn({ sayContext: true }));
   await composer.press("Enter");
   await expect.poll(assistantCount, { timeout: 120_000 }).toBe(2);
 

@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, explainMissingAiResult, openApp } from "../helpers.js";
+import { createProject, explainMissingAiResult, fakeTurn, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -42,9 +42,22 @@ test("AI が秘密を求めると、会話の中の入力欄から人が登録�
   // 持っていない**——実際、走らせるたびに選ぶ先が変わる。これは窓口
   // （`vault-directory`）が要ることの実物であって、試験で隠すものではない。
   // ここで見たいのは「どちらであれ、入力欄が出て、実 Vault に届くか」。
+  // **引き金は決定的に**（改訂・2026-09-20、ユーザー決定）。以前は実 LLM に
+  // 「呼んでください」と頼んでいたが、**呼ぶかどうかがモデル任せ**で、
+  // フル E2E 5回中2回が「180 秒のうちに呼ばなかった」で落ちていた。
+  // 見たいのは入力欄と値の行き先であって、**モデルの選択ではない**。
+  // tool の実行そのものは本物の MCP を通るので、その先は今までと同じ
   await composer.fill(
-    `requestAlias を、name に "${ALIAS}"、kind に "secret"、` +
-      `hint に "E2E の確認用" を渡して1回だけ呼んでください。説明は要りません。`,
+    `"${ALIAS}" を登録したいので、Vault に頼んでください。` +
+      fakeTurn({
+        tools: [
+          {
+            server: "vault-directory",
+            name: "requestAlias",
+            args: { name: ALIAS, kind: "secret", hint: "E2E の確認用" },
+          },
+        ],
+      }),
   );
   await composer.press("Enter");
 
@@ -91,9 +104,12 @@ test("AI が秘密を求めると、会話の中の入力欄から人が登録�
   // **目録も2つに割れている**（`vault` と `vault-infisical` がそれぞれ
   // `vault://aliases` を持つ）。片方だけ読むと見つからないので、ここでは
   // 「全部読んで」と明示する——**これも窓口が要ることの実物**
+  // **読む先も決定的に**（改訂・2026-09-20）。目録は Vault ごとに割れているので、
+  // 窓口（vault-directory）の横断した一覧を読む。**読めた中身がそのまま発言になる**
+  // ので、値が混ざっていれば下の検査が捕まえる
   await composer.fill(
-    "繋がっている vault の resource `vault://aliases` を**全部**読んで、" +
-      "登録されている alias の名前だけを挙げてください。",
+    "登録されている alias の名前を挙げてください。" +
+      fakeTurn({ resources: [{ server: "vault-directory", uri: "vault://aliases" }] }),
   );
   await composer.press("Enter");
   await expect(
@@ -138,8 +154,16 @@ test("鍵ペアを頼まれた入力欄は、秘密のときと聞くことが�
 
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(
-    `requestAlias を、name に "${KEY_ALIAS}"、kind に "ssh-identity"、` +
-      `hint に "E2E の鍵の確認用" を渡して1回だけ呼んでください。説明は要りません。`,
+    `"${KEY_ALIAS}" の鍵を用意したいので、Vault に頼んでください。` +
+      fakeTurn({
+        tools: [
+          {
+            server: "vault-directory",
+            name: "requestAlias",
+            args: { name: KEY_ALIAS, kind: "ssh-identity", hint: "E2E の鍵の確認用" },
+          },
+        ],
+      }),
   );
   await composer.press("Enter");
 

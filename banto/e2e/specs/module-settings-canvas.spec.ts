@@ -21,6 +21,7 @@ import {
   openApp,
   openNav,
   openProjectSettings,
+  fakeTurn,
 } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -45,7 +46,7 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
 
   // 既定では隠しファイルも一覧に出る（あとで「出さない」に変える）
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("このプロジェクトの直下（.）の一覧を取ってください。");
+  await composer.fill("この Project の直下の一覧を取ってください。" + fakeTurn({ tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }] }));
   await composer.press("Enter");
   const inner = page
     .frameLocator('[data-testid="module-canvas-frame"]')
@@ -84,7 +85,7 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
   await page.getByTestId("sidebar-project-name").filter({ hasText: PROJECT_NAME }).first().click();
   await expectProjectOpen(page, PROJECT_NAME);
   const composer2 = page.getByPlaceholder(/に送る/);
-  await composer2.fill("filesystem の listDirectory をもう一度呼んで、いまの直下（.）の一覧を見せて。");
+  await composer2.fill("もう一度、いまの直下の一覧を見せて。" + fakeTurn({ tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }] }));
   await composer2.press("Enter");
   // **いちばん新しい一覧が、変えた設定どおりになるまで待つ**。
   // 数で待つと脆い（会話の組み直しで前の画面が消えることがある）ので、

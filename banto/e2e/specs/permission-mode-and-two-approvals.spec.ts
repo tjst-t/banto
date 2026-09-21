@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -53,7 +53,13 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   // --- 2. tool 呼び出しを2回起こし、**2つとも**答えられること ---
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(
-    "filesystem の readFile で one.txt を読み、そのあと同じく readFile で two.txt も読んで、それぞれの中身を教えてください。",
+    "one.txt と two.txt を読んでください。" +
+      fakeTurn({
+        tools: [
+          { server: "filesystem", name: "readFile", args: { path: "one.txt" } },
+          { server: "filesystem", name: "readFile", args: { path: "two.txt" } },
+        ],
+      }),
   );
   await composer.press("Enter");
 
@@ -100,7 +106,9 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
 
   // 読んだ中身が実際に返ってくる（規則14——「進んだ」ではなく中身で見る）
   await expect(page.getByText(/ひとつめ/)).toBeVisible({ timeout: 90_000 });
-  await expect(page.getByText(/ふたつめ/)).toBeVisible({ timeout: 90_000 });
+  // **1つ出ていればよい**（改訂・2026-09-21）。tool の結果はカードにも出るし、
+  // AI が結果を読み上げれば本文にも出る——**何回出るか**は見たいことではない
+  await expect(page.getByText(/ふたつめ/).first()).toBeVisible({ timeout: 90_000 });
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
 });

@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, SANDBOX_BASE_URL, FRONTEND_BASE_URL } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -41,7 +41,7 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   await expect(page.getByRole("menu")).not.toBeVisible({ timeout: 10_000 });
 
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("filesystem の listDirectory で、このプロジェクトの直下（.）の一覧を取ってください。");
+  await composer.fill("このプロジェクトの直下（.）の一覧を取ってください。" + fakeTurn({ tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }] }));
   await composer.press("Enter");
 
   // 1回目の承認（AI から）
@@ -259,19 +259,51 @@ test("「フルスクリーンで開いて」と頼むと、最初から会話�
 
   await openApp(page);
   await createProject(page, "E2E Canvas Fullscreen", projectRoot);
+  // **立つ前に呼ばない**——Project ごとの Module は On demand（helpers 参照）
+  await waitForProjectModule(page, "E2E Canvas Fullscreen", "filesystem");
 
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("このプロジェクトの直下（.）の一覧を、フルスクリーンで開いて。");
+  // **見せ方は tool の引数**（この spec の冒頭のコメント参照）。人の言葉を
+  // 受けて AI が `displayMode` を渡す、という筋をそのまま指示にする
+  await composer.fill(
+    "このプロジェクトの直下（.）の一覧を、フルスクリーンで開いて。" +
+      fakeTurn({
+        tools: [
+          { server: "filesystem", name: "listDirectory", args: { path: ".", displayMode: "fullscreen" } },
+        ],
+      }),
+  );
   await composer.press("Enter");
 
   // **人は「フルスクリーンで」としか言っていない**——ボタンは押さない
   await expect(page.getByText(/^Canvas — filesystem$/), "頼んでも Canvas が開かなかった").toBeVisible({
     timeout: 120_000,
   });
-  await expect(
-    page.locator('[data-testid="module-canvas-frame"]').last().contentFrame().frameLocator("iframe").getByText(marker),
-    "Canvas に中身が出ていない",
-  ).toBeVisible({ timeout: 60_000 });
+  // **中身でフレームを選ぶ**（改訂・2026-09-21）。`.last()` は「いちばん後ろの
+  // 枠」であって「この操作で開いた枠」ではない——前のテストの枠が残っていると、
+  // **中身が出ているのに出ていないと言う**（実際、単独では通るのに続けて走らせると落ちた）
+  await expect(async () => {
+    const frames = page.locator('[data-testid="module-canvas-frame"]');
+    const count = await frames.count();
+    for (let i = count - 1; i >= 0; i -= 1) {
+      const found = await frames
+        .nth(i)
+        .contentFrame()
+        .frameLocator("iframe")
+        .getByText(marker)
+        .isVisible()
+        .catch(() => false);
+      if (found) return;
+    }
+    const shown = await frames
+      .nth(count - 1)
+      .contentFrame()
+      .frameLocator("iframe")
+      .locator("body")
+      .innerText()
+      .catch(() => "(読めない)");
+    throw new Error(`Canvas に中身（${marker}）が出ていない。枠は ${count} 個。出ているもの: ${shown.slice(0, 300)}`);
+  }).toPass({ timeout: 60_000 });
 
   // **ターンが終わってから触る**（規則14・実測・2026-09-07）。画面が開くのは
   // tool の結果が届いた瞬間で、そこからAIの返事が続く——終わる前にリロードすると

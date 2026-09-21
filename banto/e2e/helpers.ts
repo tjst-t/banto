@@ -1,6 +1,7 @@
 // specから共通で使う手順。真実は一箇所（規則3）——同じ待ちを各specに写さない。
 import { expect, type Page } from "@playwright/test";
 import { CORE_BASE_URL, AUTH_TOKEN } from "./config.js";
+import { FAKE_RUNNER_MARKER, type FakePlan } from "./fake-runner.js";
 
 /**
  * アプリを開き、**行き先が決まりきるまで待つ**。
@@ -212,4 +213,53 @@ export async function explainMissingAiResult(page: Page, projectName: string): P
   } catch (err) {
     return `理由を調べようとして失敗した: ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+/**
+ * **偽 Runner への指示**（追加・2026-09-20、ユーザー決定）。
+ *
+ * E2E は実 LLM を使わない。プロンプトの末尾にこの印を付けると、
+ * `fake-runner.ts` がそのとおりに動く——**言わせる／tool を呼ばせる**。
+ *
+ * 印より前は人が読む文のまま残す。**画面に出るのはそこ**なので、
+ * 会話の見た目は今までどおりで、決まり方だけが決定的になる。
+ *
+ * **真実は一箇所**（規則3）——印の文字列は `fake-runner.ts` が持ち、ここは import する。
+ */
+export function fakeTurn(plan: FakePlan): string {
+  return `\n${FAKE_RUNNER_MARKER}${JSON.stringify(plan)}`;
+}
+
+/**
+ * **その Project の Module が立つまで待つ**（追加・2026-09-21）。
+ *
+ * Project ごとの Module（filesystem・shell）は **On demand** で、Project を
+ * 作った直後はまだ立っていない。実 LLM を使っていた頃はターンに十数秒かかり、
+ * その間に立っていたので誰も気づかなかった——**偽 Runner にしたら一瞬で
+ * tool を呼ぶようになり、立つ前に呼んで空の結果が返った**（2026-09-21、
+ * `module-canvas-inline` の Canvas が「ディレクトリ: .」だけになった）。
+ *
+ * **待ちを延ばすのではなく、待つべきものを名指しで待つ**（規則6）。
+ */
+export async function waitForProjectModule(page: Page, projectName: string, moduleName: string): Promise<void> {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  await expect
+    .poll(
+      async () => {
+        const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as Array<{
+          id: string;
+          name: string;
+        }>;
+        const project = projects.find((p) => p.name === projectName);
+        if (!project) return "Project がまだ無い";
+        const modules = (await (
+          await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/modules`, { headers })
+        ).json()) as Array<{ name: string; connected?: boolean; error?: string }>;
+        const target = modules.find((m) => m.name === moduleName);
+        if (!target) return `${moduleName} が一覧に無い`;
+        return target.connected === true ? "ok" : (target.error ?? "まだ繋がっていない");
+      },
+      { timeout: 60_000, message: `${moduleName} が立ち上がらない` },
+    )
+    .toBe("ok");
 }

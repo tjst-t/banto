@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
@@ -25,7 +25,7 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
   await expect(page.getByRole("menu")).not.toBeVisible({ timeout: 10_000 });
 
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("filesystem の listDirectory で「.」の中身を一覧してください。");
+  await composer.fill("この Project の直下を一覧してください。" + fakeTurn({ tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }] }));
   await composer.press("Enter");
 
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 60_000 });

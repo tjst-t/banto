@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 /**
  * **AI を通さずに、AI が通る経路そのもの**（代理サーバ）で runCommand を呼ぶ。
@@ -97,7 +97,12 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
 
   // --- ① Project の中は読める（Shell が動いていることの確認） ---
   await composer.fill(
-    `shell の runCommand で \`cat ${join(projectRoot, "inside.txt")}\` を実行して、出力をそのまま見せて。`,
+    "Project の中のファイルを読んでください。" +
+      fakeTurn({
+        tools: [
+          { server: "shell", name: "runCommand", args: { command: `cat ${join(projectRoot, "inside.txt")}` } },
+        ],
+      }),
   );
   await composer.press("Enter");
   try {
@@ -108,8 +113,12 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
 
   // --- ② Project の外は読めない ---
   await composer.fill(
-    `次に shell の runCommand で \`cat ${join(outsideDir, "outside.txt")}\` を実行して、` +
-      `成功しても失敗しても、その結果をそのまま報告して。`,
+    "次に Project の外のファイルを読んでください。" +
+      fakeTurn({
+        tools: [
+          { server: "shell", name: "runCommand", args: { command: `cat ${join(outsideDir, "outside.txt")}` } },
+        ],
+      }),
   );
   await composer.press("Enter");
 

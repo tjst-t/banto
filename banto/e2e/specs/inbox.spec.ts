@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 // 実AIターン＋hold-the-lineの待ち＋受信箱のポーリング（5秒間隔）が入るので、
@@ -50,7 +50,7 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
   await expect(page.getByRole("button", { name: /permissionMode（現在：default）/ })).toBeVisible();
 
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("filesystem の listDirectory で「.」の中身を一覧してください。");
+  await composer.fill("この Project の直下を一覧してください。" + fakeTurn({ tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }] }));
   await composer.press("Enter");
 
   // Thread 側に判断待ちのカードが出る（hold-the-line で止まっている）

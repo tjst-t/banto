@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -77,10 +77,18 @@ test("Canvas の橋は、親が何度再描画されても張り直さない", a
   await expect(page.getByRole("menu")).not.toBeVisible({ timeout: 10_000 });
 
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("filesystem の listDirectory で、このプロジェクトの直下（.）の一覧を取ってください。");
+  await composer.fill("この Project の直下の一覧を取ってください。" + fakeTurn({ tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }] }));
   await composer.press("Enter");
-  await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 90_000 });
-  await page.getByRole("button", { name: "許可する" }).click();
+  // **自分のカードを名指しで押す**（改訂・2026-09-21）。同じ host を他の spec と
+  // 共有していて、**答え待ちのカードが複数並ぶことがある**——名前で引くと
+  // 別のターンのカードを許可してしまい、こちらは待ち続ける（実際に、まとめて
+  // 走らせたときだけ落ちた）
+  const myCard = page
+    .locator('[data-role="judgment-card"]')
+    .filter({ hasText: "mcp__filesystem__listDirectory" })
+    .last();
+  await expect(myCard).toBeVisible({ timeout: 90_000 });
+  await myCard.getByRole("button", { name: "許可する" }).click();
   await page.getByRole("button", { name: "この内容で送る" }).click();
 
   const embed = page.locator('[data-testid="inline-module-view"]');

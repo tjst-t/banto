@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -31,7 +31,12 @@ test("走行中にリロードしても、そのターンに繋ぎ直して続�
 
   // 少し長めのターンを始める（リロードする隙を作る）
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("1 から 60 までの数字を、1行に1つずつ、番号だけ並べて出して。");
+  await composer.fill(
+    "1 から 60 までの数字を並べて出して。" +
+      // **走行中にリロードする試験**なので、ターンが続いている必要がある
+      // ——本物のモデルが1トークンずつ返す時間の幅を模す
+      fakeTurn({ say: Array.from({ length: 60 }, (_, i) => String(i + 1)).join("\n"), streamMs: 30_000 }),
+  );
   await composer.press("Enter");
 
   await page.waitForTimeout(2500);

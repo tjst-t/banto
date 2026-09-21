@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-20",
+  "updatedAt": "2026-09-21",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1664,6 +1664,31 @@
       ],
       "spec": "docs/specs/v4-architecture.md（GET /api/modules・外から繋いだ Module の扱い）／v4-security.md 脅威表「役割のなりすまし」／v4-frontend.md §6.15・§6.26",
       "notes": "docs/notes/2026-09-19-module-settings-and-bundled.md"
+    },
+    {
+      "id": "judgment-answer-render-race",
+      "title": "承認に答えた直後にターンが終わると、「回答：…」が画面に出ない",
+      "status": "backlog",
+      "why": "画面は host に答えを送る（answerRealInboxItem）のを待ってから finishTool で答えを記録に書き戻すが、**その待ちの間に host 側のターンが完走すると SSE が先に閉じ、答えが描かれないまま終わる**。実モデルは答えを受けてから続きを書くまでに数秒かかるので、いままで速さに隠れていた。2026-09-21、E2E の Runner を偽物にした（＝ターンが即座に終わるようになった）ところで表に出た——偽 Runner 側に 500ms の間を入れて回避しているが、**画面側の競合はそのまま残っている**。",
+      "doneWhen": "答えを送ってから host のターンが即座に終わっても、「回答：拒否する／許可する」が画面に残ることを、**偽 Runner の間を外した状態**で確かめる（いまは fake-runner.ts が待ちを入れているので、そこを 0 にして落ちることを先に見る）。",
+      "open": [
+        "直す場所は画面側（apps/frontend/lib/backend/adapter.ts の sendRealAnswer）。答えを先に書き戻してから host へ送るか、ターン終了後でも描き直せるようにするか",
+        "実機で起きるか未確認——モデルが拒否直後に何も言わずに終わるケースがあるかどうか"
+      ],
+      "notes": "docs/notes/2026-09-20-infisical-cloud-and-vault-list.md"
+    },
+    {
+      "id": "fullscreen-canvas-order-fragility",
+      "title": "フルスクリーンの Canvas が、直前に別の Canvas を開いた後だと開かない",
+      "status": "backlog",
+      "why": "`module-canvas-inline.spec.ts` の「フルスクリーンで開いて」は、**単独なら 5.5 秒で通る**のに、同じファイルの前のテスト（会話の中に Canvas を出す）の後に走らせると「Canvas — filesystem」が出ないまま 120 秒で落ちる。2026-09-21、E2E の Runner を偽物にして**ターンが一瞬で終わるようになった**ところで表に出た——実 LLM の頃はターンに十数秒かかり、その間に画面が落ち着いていたので気づかれていなかった。",
+      "doneWhen": "前のテストで会話の中の Canvas を開いた直後でも、フルスクリーンの Canvas が開いて中身が出ることを、**偽 Runner の間（toolDelayMs）に頼らずに**確かめる。",
+      "open": [
+        "原因未特定。題名（tool-input 由来）すら出ないので、fullscreen の要求そのものが届いていない可能性がある",
+        "待ちを足して隠さない（規則6）——いまは spec を落としたまま残している",
+        "関連: judgment-answer-render-race も「モデルの遅さに隠れていた競合」で、同じ根かもしれない"
+      ],
+      "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
     }
   ],
   "phase1": {
