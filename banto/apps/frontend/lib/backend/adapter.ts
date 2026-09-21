@@ -501,7 +501,14 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // 新規送信——現在進行中のライブなSSE接続が無ければ、実際にターンを開始する。
         const prompt = lastUserText(messages);
         const permissionMode = getThreadPermissionMode(thread.id, thread.projectId);
-        void ensureUiTools(thread.id);
+        // **聞き終わってからターンを始める**（訂正・2026-09-21）。`void` で投げっぱなし
+        // にしていたので、**問い合わせより先に tool_use が返ってくると画面が出ない**
+        // ——`rememberInlineView` はこの一覧を引けないと黙って何もしないので、
+        // Canvas は開かず、入口のカードも残らない（＝人には「頼んだのに出ない」）。
+        // 実 LLM は遅いので隠れていたが、tool が速ければ人にも起きる
+        // （`fullscreen-canvas-order-fragility`）。一覧は Thread ごとに一度だけなので、
+        // 待つのは最初のターンの一回。失敗は ensureUiTools の中で空に畳まれる
+        await ensureUiTools(thread.id);
         // 終了イベントで「この走行」を降ろすために、自分自身を指す入れ物を用意する
         // （コールバックは live を作るより先に書く必要があるため）
         const self: { turn: LiveTurn | null } = { turn: null };

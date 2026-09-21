@@ -1679,18 +1679,26 @@
     },
     {
       "id": "fullscreen-canvas-order-fragility",
-      "title": "Canvas が、tool の結果より先に開くと中身が入らない",
-      "status": "backlog",
-      "why": "`module-canvas-inline.spec.ts` の「フルスクリーンで開いて」は、**単独なら 5.5 秒で通る**のに、同じファイルの前のテスト（会話の中に Canvas を出す）の後に走らせると「Canvas — filesystem」が出ないまま 120 秒で落ちる。2026-09-21、E2E の Runner を偽物にして**ターンが一瞬で終わるようになった**ところで表に出た——実 LLM の頃はターンに十数秒かかり、その間に画面が落ち着いていたので気づかれていなかった。 **2026-09-21 にコードを読んで分かったこと**：canvas-window/page.tsx の useEffect は tool 呼び出しの記録を **一度だけ取得して state に置き、二度と取り直さない**（依存は threadId と toolCallId だけ）。この画面は「大きく開いて」と頼まれた時点＝**tool が終わる前**に開くことがあり、そのとき記録にはまだ結果が無い。実モデルは遅いので記録が先に揃っていただけで、**tool が速ければ人にも起きる**。",
+      "title": "Canvas が開かない——画面が「どの tool が画面を持つか」を聞き終わる前にターンを始めていた",
+      "status": "done",
+      "why": "`module-canvas-inline.spec.ts` の「フルスクリーンで開いて」は、**単独なら 5.5 秒で通る**のに、同じファイルの前のテスト（会話の中に Canvas を出す）の後に走らせると「Canvas — filesystem」が出ないまま 120 秒で落ちる。2026-09-21、E2E の Runner を偽物にして**ターンが一瞬で終わるようになった**ところで表に出た——実 LLM の頃はターンに十数秒かかり、その間に画面が落ち着いていたので気づかれていなかった。 **2026-09-21 にコードを読んで分かったこと**：canvas-window/page.tsx の useEffect は tool 呼び出しの記録を **一度だけ取得して state に置き、二度と取り直さない**（依存は threadId と toolCallId だけ）。この画面は「大きく開いて」と頼まれた時点＝**tool が終わる前**に開くことがあり、そのとき記録にはまだ結果が無い。実モデルは遅いので記録が先に揃っていただけで、**tool が速ければ人にも起きる**。 **原因（2026-09-21、判明）**：候補3つはどれも外れで、真因は `apps/frontend/lib/backend/adapter.ts` の ",
       "doneWhen": "前のテストで会話の中の Canvas を開いた直後でも、フルスクリーンの Canvas が開いて中身が出ることを、**偽 Runner の間（toolDelayMs）に頼らずに**確かめる。",
       "open": [
-        "**直す場所の候補（コードを読んで特定済み）**：apps/frontend/app/canvas-window/page.tsx の RealCanvasWindow。結果が入るまで取りに行くか、届いたら知らされる形にする",
-        "**同じ系統でもう1つ**：module-canvas.tsx の onInitialized は一度きりなので、立ち上がりの後に届いた結果は iframe へ送られない。両方が揃わないと中身が出ない可能性がある",
-        "**iframe 側**：filesystem の ui-app.ts は displayMode を tool-input の通知からしか読まない。通知を取り逃すと、フルスクリーンで頼まれたのに会話の中に開く。ui/initialize の hostContext で引数も渡せば取り逃さない",
-        "上の3つは 2026-09-21 に実際に書いて試したが、**症状が「開かない」と「中身が来ない」の間を移動するだけで緑にならなかった**ので戻した。3つ全部が要るのか、別の要因があるのかは未解明",
-        "**測定が汚れていた**：試験を強制終了した残骸（playwright・E2E の core・next）が次の実行のポートを掴み、**偽の失敗**を作っていた。frontend-interaction:68 を「間欠」と判断したのはこれ。追うときは必ず残プロセスを 0 にしてから測る",
-        "**待ちを足して隠さない**（規則6）——toolDelayMs を試したが直らなかった",
-        "次の一手：**banto 抜きで Canvas だけを動かす30秒の仕掛け**を先に作る（Vault の画面で効いたのと同じ手）。2分の E2E で当てにいかない"
+        "（解決済み。`canvas-window/page.tsx` の「記録を一度しか取らない」・`module-canvas.tsx` の `onInitialized` が一度きり・iframe 側の `displayMode` の取り逃がしは、**この件の原因ではなかった**——3つとも入れずに緑になった。将来それぞれが問題になるなら、別に起票する）"
+      ],
+      "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
+    },
+    {
+      "id": "human-canvas-call-blocked-by-concurrent-turn",
+      "title": "人が画面で押した管理操作が、同じ Module を AI が使っている最中だと無言で止まる",
+      "status": "backlog",
+      "why": "中継のゲートは「人が画面で押した操作」を承認なしで通すが（`humanAdminAction` / `humanBundledCanvasCall`）、**その判定は呼び出しごとではなく Module のプロセス単位**で行っている——`ModuleCallTracker.originFor` は、その接続でいま走っている呼び出しを全部見て、**1つでもターン由来が混ざっていたら `turn`** と答える（緩いほうへ倒さない・規則2、意図的な設計）。結果、**AI がその Module を使っている最中に人がボタンを押すと、人の操作が AI の呼び出しと同じ扱いになり、承認ゲートに落ちる**。判断待ちのカードはどこかの会話に立ち、押した画面は**何も言わずに最大10分待つ**（`UI_CALL_OPTIONS` は進捗が来る限り待つ）。2026-09-12 と 2026-09-20 に直した「画面は無言で止まり、答えは別の会話に出た」と**同じ症状で、原因の層が違う**（あちらは可視性の条件、こちらは出所の帰属）。2026-09-21、E2E で実測：`vault-request-inline` の後片づけ（`/api/ui-tool-call` の `deleteAlias`）が、同じターンの `vault://aliases` 横断読み取りと重なって毎回止まった。受信箱に `vault-directory が vault-local の deleteAlias を呼ぼうとしています` が立っていることを、走行中の host に直接聞いて確かめた。Vault が2本ある実行では横断の読みが1秒近くかかるので、窓は**実運用でも十分広い**。",
+      "doneWhen": "AI がその Module を使っているターンの最中に、人が設定画面・管理 Canvas のボタンを押しても、**待たされずに通る**（または、少なくとも**黙って止まらない**——理由が画面に出る）ことを確かめる。E2E は `vault-request-inline` の後片づけからターン終了待ちを外した状態で緑になること。",
+      "open": [
+        "**これは設計の決め直しが要る**（規則8——黙ってどちらかに寄せない）。`originFor` が緩いほうへ倒さないのは意図した安全側の選択で、単に `canvas` を優先させると『AI のターン中に Module が人の画面のふりをすれば中継が通る』にならないかを詰める必要がある",
+        "**呼び出しごとに帰属できれば解ける**が、いまの中継は Module → host の別接続で来るので、外側のどの呼び出しの内側かを host が対応づける手掛かりが無い（`_meta` の caller を Module に転送させるのは、Module の自己申告を信じることになるので不可）",
+        "**最低限の手当て**：出所が決められないときに人の画面の呼び出しを無言で待たせない。`/api/ui-tool-call` は承認待ちに落ちたことを呼び出し元へ返し、画面が「いま AI がこの Module を使っているので確認が要ります」と言えるようにする",
+        "再現：`npx playwright test specs/module-settings-canvas.spec.ts specs/vault-request-inline.spec.ts`（`vault-request-inline` からターン終了待ちを外した状態で、2回とも再現した）"
       ],
       "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
     },

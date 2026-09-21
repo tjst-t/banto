@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { fakeTurn } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
@@ -181,7 +182,14 @@ test("AI は vault://aliases を実際に読める——名前は見え、値は
     body: JSON.stringify({
       prompt:
         "resource `vault://aliases` を読んで、登録されている alias の名前を" +
-        "そのまま箇条書きで挙げてください。説明は要りません。",
+        "そのまま箇条書きで挙げてください。説明は要りません。" +
+        // **読めた中身をそのまま発言に載せさせる**（訂正・2026-09-21）。この spec だけ
+        // 偽 Runner への指示が入っておらず、「はい」とだけ返って落ちていた。
+        // **読むのは偽物ではない**——偽 Runner は `vault-directory` の中継の口へ
+        // 実際に繋いで `vault://aliases` を読む。つまりこの試験が見ているものは
+        // 変わらない：**名前は見え、値は見えない**が中継越しに保たれているか。
+        // むしろモデルの機嫌に依らなくなったぶん強い（notes/2026-09-21）
+        fakeTurn({ resources: [{ server: "vault-directory", uri: "vault://aliases" }] }),
     }),
   });
   const transcript = await res.text();
@@ -301,7 +309,11 @@ test("AI は公開鍵を読める——秘密鍵は返らない", async ({ reque
     method: "POST",
     headers,
     body: JSON.stringify({
-      prompt: `alias "${alias}" の公開鍵を取得して、そのまま1行で書き出してください。説明は要りません。`,
+      prompt:
+        `alias "${alias}" の公開鍵を取得して、そのまま1行で書き出してください。説明は要りません。` +
+        // 上の spec と同じ（訂正・2026-09-21）——**呼ぶ先は本物の中継**なので、
+        // 「公開鍵は返るが秘密鍵は返らない」という検査はそのまま効く
+        fakeTurn({ tools: [{ server: "vault-directory", name: "getPublicKey", args: { name: alias } }] }),
     }),
   });
   const transcript = await res.text();
