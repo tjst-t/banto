@@ -65,6 +65,22 @@ export function displayLabel(server: { name: string; title?: string }): string {
   return part;
 }
 
+/**
+ * **付ける Module 名の候補**（追加・2026-09-22、実機で発覚）。
+ *
+ * `/` の後ろをそのまま使うと、**Stripe の Module 名が `mcp` になる**
+ * （`com.stripe/mcp`）——見出しは直したのに、名前のほうが残っていた。
+ *
+ * **`title` は使わない。** 見出し（`displayLabel`）は人に読ませる文だが、こちらは
+ * **識別子**——`E2E Greeter` のような文を名前にすると、`mcp__<name>__<tool>` が
+ * 読めなくなる。どれにでも付く語のときだけ、ドメイン名に落とす。
+ */
+export function suggestedName(server: { name: string }): string {
+  const part = server.name.split("/")[1] ?? server.name;
+  const base = GENERIC_NAME_PARTS.has(part.toLowerCase()) ? brandLabel(server.name) || part : part;
+  return base.replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
 /** 検索語・サーバ名を、比べられる語に割る。 */
 function tokens(text: string): string[] {
   return text

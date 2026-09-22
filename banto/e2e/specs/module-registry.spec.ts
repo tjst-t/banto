@@ -25,7 +25,11 @@ async function openAddModule(page: import("@playwright/test").Page) {
     timeout: 60_000,
   });
   await page.getByRole("button", { name: "Module を追加" }).click();
-  await page.getByTestId("add-module-tabs-registry").click();
+  // **registry は「カスタム」の中へ降ろした**（改訂・2026-09-22、ユーザー決定
+  // 「あまりに玉石混交すぎて、そのままユーザに提示はつらい」）——主の面は
+  // banto が選んだ目録で、registry は自分で探す人の道
+  await page.getByTestId("add-module-tabs-custom").click();
+  await page.getByTestId("add-module-custom-tabs-registry").click();
 }
 
 /** 検索して、結果が出るまで待つ。**「提供元が先」は検索して初めて言える**（`rank.ts`）。 */
@@ -34,6 +38,49 @@ async function searchFor(page: import("@playwright/test").Page, q: string) {
   await page.locator("#add-module-registry-search").fill(q);
   await expect(page.locator("[data-provenance]").first()).toBeVisible({ timeout: 30_000 });
 }
+
+// **人に見せる主の面は、banto が選んだ目録**（決定・2026-09-22、ユーザー）。
+// registry をそのまま並べると、全 34,815 件のうち 67% が GitHub アカウント確認だけ、
+// 23% は中身も読めない（実測、`curated.ts`）。**そこを人に選ばせない。**
+test("おすすめの面：banto が選んだ目録が出て、なぜ載っているかが読める", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Module", exact: true }).click();
+  await expect(page.getByTestId("instance-modules")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Module を追加" }).click();
+
+  // **既定で開くのは「おすすめ」**——registry ではない
+  const curated = page.getByTestId("add-module-curated");
+  await expect(curated, "おすすめの目録が出ていない").toBeVisible({ timeout: 30_000 });
+
+  const stripe = page.getByTestId("add-module-curated-stripe");
+  await expect(stripe, "目録に Stripe が無い").toBeVisible();
+  // **なぜ載っているかを、そのまま出す**（規則2——根拠を隠さない）
+  await expect(stripe, "載っている根拠が出ていない").toContainText("stripe.com の持ち主が公開");
+  // **言えないことは言わない**——出所は確かめたが、コードは監査していない
+  await expect(curated, "監査していないことを言っていない").toContainText("監査していません");
+
+  // **registry は既定では出ていない**（奥へ降ろした）
+  await expect(
+    page.locator("#add-module-registry-search"),
+    "registry の検索欄が、おすすめの面に出ている",
+  ).toHaveCount(0);
+
+  // **目録の1件は registry から引き直される**——目録は「registry のどれか」しか
+  // 持っていない（起動の指定を写しで持つと、相手が版を上げたときに食い違う）。
+  // **付く名前は `mcp` ではない**（実機で発覚・2026-09-22——`com.stripe/mcp` の
+  // `/` の後ろをそのまま使って、Stripe の Module 名が `mcp` になっていた）
+  await stripe.click();
+  await expect(page.getByLabel("名前"), "Stripe の名前が「mcp」になっている").toHaveValue(
+    "stripe",
+    { timeout: 60_000 },
+  );
+  // URL に繋ぐ形なので、**どちらの面から選んでも承知を取る**
+  await expect(
+    page.getByTestId("add-module-egress-notice"),
+    "目録から選んだ remote で、外へ出る承知が出ていない",
+  ).toContainText("mcp.stripe.com");
+});
 
 // **検索するまで、それらしい一覧を出さない**（決定・2026-09-21、実データで測って変えた）。
 // 空の検索で先頭を並べても、それは名前順の数千件の頭でしかなく、「提供元を優先」は

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { brandLabel, displayLabel, provenanceOf, rankEntries } from "./rank.js";
+import { brandLabel, displayLabel, provenanceOf, rankEntries, suggestedName } from "./rank.js";
 import type { RegistryEntry } from "./server-json.js";
 
 function entry(name: string, status = "active", title?: string): RegistryEntry {
@@ -122,4 +122,17 @@ test("題が在れば、それをそのまま使う", () => {
 
 test("名前が中身を言っているなら、そのまま使う（作り話をしない）", () => {
   assert.equal(displayLabel({ name: "io.github.codespar/mcp-stripe" }), "mcp-stripe");
+});
+
+// **付ける Module 名**（追加・2026-09-22、実機で発覚）。見出しは直したのに、
+// **名前のほうが `/` の後ろをそのまま使っていて、Stripe が `mcp` になっていた**。
+test("名前も、どれにでも付く語ならドメイン名に落とす", () => {
+  assert.equal(suggestedName({ name: "com.stripe/mcp" }), "stripe");
+  assert.equal(suggestedName({ name: "com.notion/mcp" }), "notion");
+});
+
+test("名前には題を使わない——識別子なので、人に読ませる文を入れない", () => {
+  // 見出しは "E2E Greeter" でも、名前は `mcp__<name>__<tool>` に入る識別子
+  assert.equal(suggestedName({ name: "com.banto-e2e/greeter" }), "greeter");
+  assert.equal(suggestedName({ name: "io.github.someone/secretful" }), "secretful");
 });

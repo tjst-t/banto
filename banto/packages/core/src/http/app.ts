@@ -30,7 +30,7 @@ import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./t
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
 import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
-import { displayLabel, provenanceOf } from "../modules/registry/rank.js";
+import { displayLabel, provenanceOf, suggestedName } from "../modules/registry/rank.js";
 import { planFor, FORMAT_SUPPORT } from "../modules/registry/support.js";
 import {
   buildDeclarationFromRegistry,
@@ -38,6 +38,7 @@ import {
   type AnsweredInput,
 } from "../modules/registry/to-declaration.js";
 import { modulePackageDirOf } from "../modules/registry/install/paths.js";
+import { CURATED_REGISTRY_CATALOG } from "../modules/registry/curated.js";
 import {
   ModuleDeclarationError,
   addModuleDeclaration,
@@ -753,6 +754,14 @@ export function createApp(deps: AppDeps) {
         );
         return;
       }
+      // **banto が選んだ目録**（追加・2026-09-22、ユーザー決定）。
+      // registry をそのまま人に見せるのは伴走ではない（`curated.ts` の実測）。
+      // **持つのは「registry のどれか」だけ**——繋ぎ方は host が引き直す（規則3）
+      if (url.pathname === "/api/modules/curated" && req.method === "GET") {
+        json(res, 200, CURATED_REGISTRY_CATALOG);
+        return;
+      }
+
       // **MCP Registry を検索する**（追加・2026-09-21、ユーザー要望）。
       // **読み取りだけ**——ここでは何も入れない（入れる口は別に作る）。
       //
@@ -779,6 +788,9 @@ export function createApp(deps: AppDeps) {
                 // **一覧の見出し**。`title` が無い公式（`com.stripe/mcp`）で
                 // 「mcp」と出てしまうのを、host 側で1回だけ解く（規則3）
                 label: displayLabel(e.server),
+                // **付ける名前も host が決める**（規則3）。`/` の後ろをそのまま
+                // 使うと Stripe が `mcp` になる（実機で発覚・2026-09-22）
+                suggestedName: suggestedName(e.server),
                 description: e.server.description,
                 version: e.server.version,
                 websiteUrl: e.server.websiteUrl,

@@ -37,7 +37,9 @@ import {
   installRealModuleFromCatalog,
   listRealModuleCatalog,
   installRealModuleFromRegistry,
+  listRealCuratedModules,
   type RealCatalogEntry,
+  type RealCuratedEntry,
 } from "@/lib/backend/client";
 import {
   RegistryModulePicker,
@@ -131,18 +133,23 @@ export function AddInstanceModuleDialog({
   existingNames,
   onInstalled,
 }: AddInstanceModuleDialogProps) {
-  // **外のタブは2つ**（改訂・2026-09-20、ユーザー指摘）。「貼り付ける」「自分で書く」は
-  // 並べる粒度が違ううえ、名前が何を指すのか分からなかった——**公式か、自分で足すか**で
-  // 分け、入れ方（JSON か、項目を手で入れるか）は中のサブタブにする。
-  // 語は既存ソフトの慣習に合わせる：設定ファイルを取り込む（Import）と、
-  // 項目を手で入れる（Add manually）——VS Code・Postman・1Password などが同じ分け方
-  // **外のタブは3つ**（改訂・2026-09-21、ユーザー要望）——公式（banto 同梱）・
-  // MCP Registry（世の中の目録）・カスタム（自分で足す）。registry は
-  // 「誰かが公開したものを選ぶ」という点で同梱と同じ粒度なので、隣に並ぶ
-  const [mode, setMode] = useState<"bundled" | "registry" | "custom">("bundled");
+  // **外のタブは2つ**——「おすすめ」と「カスタム」。
+  //
+  // おすすめ ＝ **banto が出所を確かめたもの**（同梱のコード＋目録、`curated.ts`）。
+  // カスタム ＝ **自分で足す道**（JSON を貼る／手で書く／MCP Registry を探す）。
+  //
+  // **MCP Registry は「カスタム」の中に置く**（決定・2026-09-22、ユーザー
+  // 「あまりに玉石混交すぎて、そのままユーザに提示はつらい」）。一時は同じ高さに
+  // 並べていたが、実測すると全 34,815 件のうち 67% は GitHub アカウント確認だけ、
+  // 23% は中身も読めない——**人に選ばせる面ではない**。経緯は
+  // `docs/notes/2026-09-22-curated-catalog.md`。
+  //
+  // 入れ方の語は既存ソフトの慣習に合わせる：設定ファイルを取り込む（Import）と、
+  // 項目を手で入れる（Add manually）——VS Code・Postman・1Password が同じ分け方
+  const [mode, setMode] = useState<"recommended" | "custom">("recommended");
   // registry から選んだ1件（必須の欄が埋まっているかまで含む）
   const [registryPick, setRegistryPick] = useState<RegistryPick | null>(null);
-  const [customMode, setCustomMode] = useState<"json" | "manual">("json");
+  const [customMode, setCustomMode] = useState<"json" | "manual" | "registry">("json");
   const [pasted, setPasted] = useState("");
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
@@ -162,11 +169,16 @@ export function AddInstanceModuleDialog({
   const [catalog, setCatalog] = useState<RealCatalogEntry[] | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [catalogName, setCatalogName] = useState("");
+  // **banto が選んだ目録**（第三者だが、出所を確かめたもの）
+  const [curated, setCurated] = useState<RealCuratedEntry[] | null>(null);
 
   // **開いたときに読む**（閉じている間は聞かない）
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    listRealCuratedModules()
+      .then((list) => !cancelled && setCurated(list))
+      .catch(() => !cancelled && setCurated([]));
     listRealModuleCatalog()
       .then((list) => !cancelled && setCatalog(list))
       // **読めなかったことを「無い」と混同しない**（規則2）
@@ -192,10 +204,10 @@ export function AddInstanceModuleDialog({
   // **相手の名前**——押す前に、どこへ出ていくかを言うために
   // **registry から選んだものが URL に繋ぐ形なら、そこも承知を取る**
   // （追加・2026-09-21）——閉じ込めが効かない代わりに要るのがこの承知
+  // **どちらの面から選んでも同じ**——おすすめの目録も、registry を探した先も、
+  // URL に繋ぐ形なら相手の名前を出して承知を取る（規則3——判断を2箇所に分けない）
   const registryRemoteHost =
-    mode === "registry" && registryPick?.entry.connect.kind === "remote"
-      ? registryPick.entry.connect.host
-      : undefined;
+    registryPick?.entry.connect.kind === "remote" ? registryPick.entry.connect.host : undefined;
   const remoteHosts = manualRemote
     ? (() => {
         try {
@@ -221,7 +233,7 @@ export function AddInstanceModuleDialog({
     setUrl("");
     setEgressOk(false);
     setError(null);
-    setMode("bundled");
+    setMode("recommended");
     setCustomMode("json");
     setPicked(null);
     setCatalogName("");
@@ -229,10 +241,12 @@ export function AddInstanceModuleDialog({
   }
 
   const canSubmit =
-    (mode === "registry"
+    (mode === "recommended"
+      ? // 同梱を選んでいれば名前が要る。目録を選んでいれば registry と同じ判定
+        (picked !== null && catalogName.trim().length > 0) ||
+        (registryPick !== null && registryPick.ready)
+      : customMode === "registry"
       ? registryPick !== null && registryPick.ready
-      : mode === "bundled"
-      ? picked !== null && catalogName.trim().length > 0
       : customMode === "json"
       ? pasted.trim().length > 0
       : manualRemote
@@ -263,16 +277,31 @@ export function AddInstanceModuleDialog({
           value={mode}
           onChange={(id) => setMode(id as typeof mode)}
           tabs={[
-            { id: "bundled", label: "公式モジュール", count: catalog?.length },
-            { id: "registry", label: "MCP Registry" },
+            {
+              id: "recommended",
+              label: "おすすめ",
+              count: (catalog?.length ?? 0) + (curated?.length ?? 0),
+            },
             { id: "custom", label: "カスタム" },
           ]}
         />
 
-        {mode === "bundled" ? (
+        {mode === "recommended" && curated && curated.length > 0 ? (
+          <div className="flex flex-col gap-2" data-testid="add-module-curated">
+            <p className="text-xs font-medium text-foreground">よく使うサービス</p>
+            <RegistryModulePicker
+              existingNames={existingNames}
+              onChange={setRegistryPick}
+              pinned={curated}
+            />
+          </div>
+        ) : null}
+
+        {mode === "recommended" ? (
           <div className="flex flex-col gap-3" data-testid="add-module-bundled">
+            <p className="text-xs font-medium text-foreground">banto 同梱</p>
             <p className="text-xs text-ink-3">
-              banto が公式に提供している Module のうち、<strong>最初から入っていないもの</strong>。
+              banto 自身のコードのうち、<strong>最初から入っていないもの</strong>。
               接続先ごとに1本入れます——同じものを何本入れても構いません。
             </p>
             {catalog === null ? (
@@ -328,7 +357,7 @@ export function AddInstanceModuleDialog({
           </div>
         ) : null}
 
-        {mode === "registry" ? (
+        {mode === "custom" && customMode === "registry" ? (
           <RegistryModulePicker existingNames={existingNames} onChange={setRegistryPick} />
         ) : null}
 
@@ -343,6 +372,7 @@ export function AddInstanceModuleDialog({
             tabs={[
               { id: "json", label: "JSON を貼り付け" },
               { id: "manual", label: "手動で入力" },
+              { id: "registry", label: "MCP Registry を探す" },
             ]}
           />
         ) : null}
@@ -374,7 +404,10 @@ export function AddInstanceModuleDialog({
               </p>
             ) : null}
           </div>
-        ) : mode === "custom" ? (
+        ) : mode === "custom" && customMode === "manual" ? (
+          // **`customMode` を明示する**（訂正・2026-09-22）。以前は「カスタムなら」
+          // で受けていたので、**「MCP Registry を探す」を選んでも手動の入力欄が
+          // 一緒に出ていた**（同じ「名前」の欄が2つ並ぶ）。E2E が捕まえた
           <div className="flex flex-col gap-3">
             {/* **3段目のタブは作らない**（改訂・2026-09-20）——これは「どこに居るか」
                 ではなく**入力の1項目**なので、ラベルを付けてフォームに降ろす */}
@@ -491,7 +524,7 @@ export function AddInstanceModuleDialog({
 
         {/* **押す前に、何が決まるかを出す**（導出は隠さない）。
             同梱タブでは出さない——そこは目録の行が役割と立つ場所を言っている */}
-        {mode === "bundled" || mode === "registry" ? null : (
+        {mode === "recommended" || (mode === "custom" && customMode === "registry") ? null : (
           // **押す前に、何が決まるかを1行で**（導出は隠さない）。
           // 以前は説明の段落を3つ積んでいて、どれが大事か分からなかった
           <p
@@ -554,7 +587,7 @@ export function AddInstanceModuleDialog({
               setBusy(true);
               setError(null);
               try {
-                if (mode === "registry") {
+                if (registryPick && (mode === "custom" ? customMode === "registry" : picked === null)) {
                   // **画面は「どれか・名前・値」しか送らない**——起動の指定は
                   // host が `server.json` を引き直して作る（`v4-security.md`）
                   await installRealModuleFromRegistry(
@@ -563,7 +596,7 @@ export function AddInstanceModuleDialog({
                     registryPick!.answers,
                   );
                   await onInstalled();
-                } else if (mode === "bundled") {
+                } else if (mode === "recommended") {
                   await installRealModuleFromCatalog(picked!, catalogName.trim());
                   await onInstalled();
                 } else if (customMode === "json") {

@@ -869,6 +869,8 @@ export interface RealRegistryEntry {
   title?: string;
   /** 一覧に出す見出し（host が決める——`title` が無いときの代わりも含めて）。 */
   label: string;
+  /** 付ける Module 名の候補（host が決める。見出しとは別＝こちらは識別子）。 */
+  suggestedName: string;
   description: string;
   version: string;
   websiteUrl?: string;
@@ -883,6 +885,20 @@ export interface RealRegistrySearch {
   entries: RealRegistryEntry[];
   nextCursor?: string;
   formats: Array<{ registryType: string; label: string; runtime: string; supported: boolean; reason?: string }>;
+}
+
+/** banto が選んだ目録の1件（`packages/core/src/modules/registry/curated.ts`）。 */
+export interface RealCuratedEntry {
+  id: string;
+  registryName: string;
+  label: string;
+  description: string;
+  /** **なぜ載っているか**——人が確かめた根拠。画面はこれをそのまま出す。 */
+  why: string;
+}
+
+export async function listRealCuratedModules(): Promise<RealCuratedEntry[]> {
+  return request<RealCuratedEntry[]>("/api/modules/curated");
 }
 
 export async function searchRealModuleRegistry(

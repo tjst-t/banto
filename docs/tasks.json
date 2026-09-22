@@ -1727,6 +1727,19 @@
         "**「公式」は近似**：registry は verified の欄を持たないので名前空間から導いている。Google は `com.google/gmail` ではなく `com.googleapis.*` で出しているため、「gmail」で検索しても提供元は上がらない（画面は出所を札で出して、並び順だけに預けない）"
       ],
       "notes": "docs/notes/2026-09-21-mcp-registry.md"
+    },
+    {
+      "id": "curated-module-catalog",
+      "title": "banto が選んだ目録を主にし、MCP Registry は「カスタム」の中へ降ろす",
+      "status": "done",
+      "why": "ユーザー「あまりに玉石混合すぎて、MCP Registry、そのままユーザに提示はつらい」。**全 34,815 件を数えた**（2026-09-22）：67.4% が `io.github.*`（GitHub アカウント確認だけ）、23.1% は repository URL すら無い、32.5% は1名前空間からの大量公開。**「提供元だけ」に絞る自動判定も成立しない**——よく使う20サービスのうち11が0件になり、さらに `app.vercel.*`（誰でも取れるサブドメイン）や `al.square`（別会社）を提供元と誤判定する。",
+      "doneWhen": "「Module を追加」を開いたら **banto が選んだ目録**が出て、なぜ載っているかが読めること。registry は「カスタム」の中にあり、**誰でも公開できる・中身は確かめていない**と明示されること。",
+      "open": [
+        "**共有ホスティングのドメイン**（`vercel.app`・`herokuapp.com` 等）を `io.github.*` と同じ扱いにする手当ては未実施——目録を主にしたので緊急度は下がったが、registry を探す面では「提供元」の札が誤って点く",
+        "**`planFor` は remote を優先する**ので、両方持つもの（Context7 等）をローカルで動かしたくても選べない",
+        "目録は12件。増やすときは `curated.ts` の基準（その製品のドメインの持ち主／本番向け／active）に照らして**実物を引いてから**足す"
+      ],
+      "notes": "docs/notes/2026-09-22-curated-catalog.md"
     }
   ],
   "phase1": {

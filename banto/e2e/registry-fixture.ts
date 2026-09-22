@@ -62,6 +62,8 @@ const SERVERS = [
   },
   {
     server: {
+      // **目録（`curated.ts`）が指しているのもこの名前**——おすすめの面は
+      // ここから引き直す。偽物でも同じ名前にしておかないと、引き直しが試せない
       name: "com.stripe/mcp",
       description: "MCP server integrating with Stripe - tools for customers, products, payments, and more.",
       // **題は書かない**——本物の `com.stripe/mcp` にも無い（2026-09-21 に確認）。
