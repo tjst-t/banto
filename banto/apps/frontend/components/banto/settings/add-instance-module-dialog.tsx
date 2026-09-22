@@ -37,9 +37,12 @@ import {
   installRealModuleFromCatalog,
   listRealModuleCatalog,
   installRealModuleFromRegistry,
+  installRealModuleFromServerJson,
+  inspectRealServerJson,
   listRealCuratedModules,
   type RealCatalogEntry,
   type RealCuratedEntry,
+  type RealRegistryEntry,
 } from "@/lib/backend/client";
 import {
   RegistryModulePicker,
@@ -171,6 +174,13 @@ export function AddInstanceModuleDialog({
   const [catalogName, setCatalogName] = useState("");
   // **banto が選んだ目録**（第三者だが、出所を確かめたもの）
   const [curated, setCurated] = useState<RealCuratedEntry[] | null>(null);
+  /**
+   * **貼られたものが `server.json` だったとき**（追加・2026-09-22、ユーザー要望）。
+   * 読むのは host（`/api/modules/registry/inspect`）——画面は返ってきた1件を
+   * registry から選んだときと**同じ部品**で描く（規則3）。
+   */
+  const [pastedEntry, setPastedEntry] = useState<RealRegistryEntry | null>(null);
+  const [pastedError, setPastedError] = useState<string | null>(null);
 
   // **開いたときに読む**（閉じている間は聞かない）
   useEffect(() => {
@@ -191,6 +201,50 @@ export function AddInstanceModuleDialog({
       cancelled = true;
     };
   }, [open]);
+
+  /**
+   * **貼られたものが `server.json` の形か**（`mcpServers` ではないか）。
+   *
+   * ここでは**軽く見分けるだけ**——確かめるのは host（形が違えば理由を返す）。
+   * 貼る場所を2つに分けない：人は自分が持っているものを貼るだけで、
+   * **どちらの形かを人に判定させない**
+   */
+  const looksLikeServerJson = (() => {
+    const t = pasted.trim();
+    if (t === "") return false;
+    try {
+      const o = JSON.parse(t) as Record<string, unknown>;
+      if (o === null || typeof o !== "object" || "mcpServers" in o) return false;
+      const inner = ("server" in o ? o.server : o) as Record<string, unknown>;
+      return typeof inner?.name === "string";
+    } catch {
+      return false;
+    }
+  })();
+
+  // 貼られたら host に読ませる（打ち終わってから）
+  useEffect(() => {
+    if (!looksLikeServerJson) {
+      setPastedEntry(null);
+      setPastedError(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      inspectRealServerJson(pasted)
+        .then((e) => !cancelled && (setPastedEntry(e), setPastedError(null)))
+        // **読めなかったことを黙って捨てない**（規則2）——理由をそのまま出す
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setPastedEntry(null);
+          setPastedError(err instanceof Error ? err.message : String(err));
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [pasted, looksLikeServerJson]);
 
   const args = argsText.split(/\s+/).filter(Boolean);
   const manualRemote = mode === "custom" && customMode === "manual" && connect === "remote";
@@ -238,6 +292,8 @@ export function AddInstanceModuleDialog({
     setPicked(null);
     setCatalogName("");
     setRegistryPick(null);
+    setPastedEntry(null);
+    setPastedError(null);
   }
 
   const canSubmit =
@@ -248,7 +304,8 @@ export function AddInstanceModuleDialog({
       : customMode === "registry"
       ? registryPick !== null && registryPick.ready
       : customMode === "json"
-      ? pasted.trim().length > 0
+      ? // `server.json` を貼ったときは、registry から選んだときと同じ判定
+        (looksLikeServerJson ? registryPick !== null && registryPick.ready : pasted.trim().length > 0)
       : manualRemote
         ? name.trim().length > 0 && url.trim().length > 0
         : name.trim().length > 0 && command.trim().length > 0) &&
@@ -389,7 +446,9 @@ export function AddInstanceModuleDialog({
               placeholder={SAMPLE}
             />
             <p className="text-xs text-ink-3">
-              <code>mcpServers</code> の中身だけでも受けます。複数まとめて貼ってもかまいません
+              <code>mcpServers</code> の中身だけでも受けます。複数まとめて貼ってもかまいません。
+              <strong>MCP Registry の <code>server.json</code> もそのまま貼れます</strong>
+              ——どちらの形かは自動で見分けます
             </p>
             {/* **秘密は Vault から引ける**（追加・2026-09-16）。直書きも通すが、
                 **記録に残ることは隠さない**（規則2） */}
@@ -397,6 +456,27 @@ export function AddInstanceModuleDialog({
               API キーは <code>{"${secret:名前}"}</code> と書くと、
               <strong>Vault から引いて起動時に渡します</strong>（記録には名前だけ残ります）
             </p>
+            {pastedError ? (
+              // **読めなかった理由をそのまま出す**（規則2）
+              <p className="text-xs text-danger" data-testid="add-module-serverjson-error">
+                {pastedError}
+              </p>
+            ) : null}
+            {pastedEntry ? (
+              <div className="flex flex-col gap-2" data-testid="add-module-serverjson">
+                <p className="text-xs text-ink-2">
+                  <code>server.json</code> として読みました
+                  ——<strong>banto は出所を確かめていません</strong>（貼られた内容です）
+                </p>
+                {/* **registry から選んだときと同じ部品**（規則3——貼り付け専用の
+                    画面を作らない）。名前・要る設定・秘密の扱いが同じ形で出る */}
+                <RegistryModulePicker
+                  existingNames={existingNames}
+                  onChange={setRegistryPick}
+                  only={pastedEntry}
+                />
+              </div>
+            ) : null}
             {looksLikePlainSecret(pasted) ? (
               <p className="text-xs text-danger" data-testid="add-module-plain-secret">
                 値が直接書かれています。<strong>この値は banto の記録に残り続けます（後から消せません）。</strong>
@@ -524,7 +604,9 @@ export function AddInstanceModuleDialog({
 
         {/* **押す前に、何が決まるかを出す**（導出は隠さない）。
             同梱タブでは出さない——そこは目録の行が役割と立つ場所を言っている */}
-        {mode === "recommended" || (mode === "custom" && customMode === "registry") ? null : (
+        {mode === "recommended" ||
+        (mode === "custom" && customMode === "registry") ||
+        (mode === "custom" && customMode === "json" && pastedEntry) ? null : (
           // **押す前に、何が決まるかを1行で**（導出は隠さない）。
           // 以前は説明の段落を3つ積んでいて、どれが大事か分からなかった
           <p
@@ -598,6 +680,14 @@ export function AddInstanceModuleDialog({
                   await onInstalled();
                 } else if (mode === "recommended") {
                   await installRealModuleFromCatalog(picked!, catalogName.trim());
+                  await onInstalled();
+                } else if (customMode === "json" && pastedEntry) {
+                  // **貼られた `server.json`**——宣言を組み立てるのは host
+                  await installRealModuleFromServerJson(
+                    pasted,
+                    registryPick!.name,
+                    registryPick!.answers,
+                  );
                   await onInstalled();
                 } else if (customMode === "json") {
                   await onPaste(pasted, isRemote);

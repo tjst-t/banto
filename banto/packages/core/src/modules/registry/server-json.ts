@@ -115,3 +115,55 @@ export function parseEntry(raw: unknown): RegistryEntry | undefined {
     updatedAt: typeof meta?.updatedAt === "string" ? meta.updatedAt : undefined,
   };
 }
+
+export class ServerJsonParseError extends Error {}
+
+/**
+ * **人が貼った `server.json` を読む**（追加・2026-09-22、ユーザー要望
+ * 「server.json を貼り付けてインストール、というパターンもできるといいね」）。
+ *
+ * 受けるのは2つの形。**どちらで貼られても同じに扱う**——人は自分が見ている
+ * 画面からコピーするので、registry の応答ごと貼ることもあれば、
+ * リポジトリに置かれた `server.json` そのものを貼ることもある：
+ *
+ *   1. `server.json` そのもの（`{ name, version, packages, remotes, … }`）
+ *   2. registry の応答1件（`{ server: {...}, _meta: {...} }`）
+ *
+ * **読めないものは理由を言って断る**（規則2）——「たぶんこうだろう」で
+ * 形を補うと、**起動してから初めて違うと分かる**ことになる。
+ */
+export function parsePastedServerJson(text: string): RegistryEntry {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    throw new ServerJsonParseError(
+      `JSON として読めません：${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (typeof raw !== "object" || raw === null) {
+    throw new ServerJsonParseError("JSON の中身が空です");
+  }
+  // **`mcpServers` は別の形**——貼り間違いなので、どちらの口かを名指しで言う
+  if ("mcpServers" in (raw as Record<string, unknown>)) {
+    throw new ServerJsonParseError(
+      "これは `mcpServers` の設定で、`server.json` ではありません" +
+        "（そのまま貼れます——「JSON を貼り付け」がこの形を受けます）",
+    );
+  }
+  // registry の応答ごと貼られていれば、そのまま。そうでなければ包む
+  const wrapped = "server" in (raw as Record<string, unknown>) ? raw : { server: raw };
+  const entry = parseEntry(wrapped);
+  if (!entry) {
+    throw new ServerJsonParseError(
+      "`server.json` として読めません（`name` と `version` が要ります）",
+    );
+  }
+  if (!entry.server.packages?.length && !entry.server.remotes?.length) {
+    // **繋ぎようが無いものを受け取らない**（入れてから気づくのでは遅い）
+    throw new ServerJsonParseError(
+      "繋ぎ方が書かれていません（`packages` か `remotes` のどちらかが要ります）",
+    );
+  }
+  return entry;
+}

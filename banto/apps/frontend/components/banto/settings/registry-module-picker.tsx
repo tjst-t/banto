@@ -45,6 +45,11 @@ const PROVENANCE: Record<RealRegistryProvenance, { label: string; hint: string; 
     hint: "GitHub アカウントの確認だけがされています",
     tone: "border-border text-ink-3",
   },
+  pasted: {
+    label: "貼り付け",
+    hint: "あなたが貼った内容です。banto は出所を確かめていません",
+    tone: "border-border text-ink-3",
+  },
 };
 
 /**
@@ -82,12 +87,19 @@ export interface RegistryModulePickerProps {
    * 作ると、片方だけ直る）。
    */
   pinned?: readonly RealCuratedEntry[];
+  /**
+   * **その1件だけを扱う**（追加・2026-09-22、貼られた `server.json` 用）。
+   * 渡されたときは探す面を出さず、**選んだ後の画面**（名前・要る設定・承知）
+   * だけを出す——貼り付け専用の画面を別に作らない（規則3）。
+   */
+  only?: RealRegistryEntry | null;
 }
 
 export function RegistryModulePicker({
   existingNames,
   onChange,
   pinned,
+  only,
 }: RegistryModulePickerProps) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<RealRegistrySearch | null>(null);
@@ -209,6 +221,13 @@ export function RegistryModulePicker({
     report(entry, next, fresh);
   }
 
+  // **外から1件渡されたら、それを選んだことにする**（貼られた `server.json`）
+  useEffect(() => {
+    if (only) pick(only);
+    else if (only === null) setPicked(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 同じ1件を選び直さない
+  }, [only?.name, only?.version]);
+
   function setAnswer(inputName: string, patch: Partial<{ source: "vault" | "plain"; value: string }>) {
     setAnswers((prev) => {
       const next = { ...prev, [inputName]: { ...(prev[inputName] ?? { source: "plain", value: "" }), ...patch } };
@@ -219,7 +238,7 @@ export function RegistryModulePicker({
 
   return (
     <div className="flex flex-col gap-3" data-testid="add-module-registry">
-      {pinned ? (
+      {only ? null : pinned ? (
         <p className="text-xs text-ink-3">
           <strong>banto が出所を確かめたもの</strong>——そのサービスのドメインの持ち主が
           公開していることまで確認しています。
@@ -262,7 +281,7 @@ export function RegistryModulePicker({
         </p>
       ) : null}
 
-      <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+      <div className={only ? "hidden" : "flex max-h-72 flex-col gap-1 overflow-y-auto"}>
         {pinned ? (
           pinned.map((e) => (
             <button

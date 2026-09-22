@@ -31,7 +31,13 @@ export type Provenance =
   /** ドメインは確認済みだが、その製品のドメインではない（再梱包・集約など） */
   | "third-party-domain"
   /** GitHub アカウントの確認だけ */
-  | "github-account";
+  | "github-account"
+  /**
+   * **人が貼った `server.json`**（追加・2026-09-22）。registry を引いていないので、
+   * **出所を確かめようがない**——「提供元」とも「第三者」とも言わない。
+   * 名前空間の検証すら通っていない（貼った人が書いた文字列でしかない）。
+   */
+  | "pasted";
 
 /** `com.stripe/mcp` → `stripe`、`com.googleapis.bigtableadmin/mcp` → `googleapis`。 */
 export function brandLabel(serverName: string): string {
@@ -134,6 +140,8 @@ const PROVENANCE_RANK: Record<Provenance, number> = {
   vendor: 0,
   "third-party-domain": 1,
   "github-account": 2,
+  // 貼られたものは一覧に並ばない（1件だけ）ので、順位は使われない
+  pasted: 3,
 };
 
 /**

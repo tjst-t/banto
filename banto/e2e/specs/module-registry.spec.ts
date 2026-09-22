@@ -11,7 +11,7 @@
 // 並び順の検査が外の都合で落ちる（規則6）。中身は 2026-09-21 に本物から写した。
 import { test, expect } from "@playwright/test";
 import { openApp } from "../helpers.js";
-import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL, NPM_REGISTRY_BASE_URL } from "../config.js";
 
 test.describe.configure({ mode: "serial" });
 // 取得（npm）を含むので長め——**待ちを足しているのではなく、実際に取ってくる時間**
@@ -262,4 +262,126 @@ test("npm の Module を入れると、取ってきて立ち、AI から呼べ�
 
   // **後片づけ**——このホストは他の spec と共有している
   await page.request.delete(`${CORE_BASE_URL}/api/modules/greeter`, { headers });
+});
+
+// **`server.json` を貼って入れる**（追加・2026-09-22、ユーザー要望
+// 「server.json を貼り付けてインストール、というパターンもできるといいね」）。
+//
+// **貼る場所は増やさない。** 人は自分が持っているものを貼るだけで、
+// `mcpServers` か `server.json` かを**人に判定させない**——画面が見分ける。
+// 読めた1件は **registry から選んだときと同じ部品**で描く（規則3）。
+test("server.json を貼ると、そのまま取ってきて立ち、AI から呼べる", async ({ page }) => {
+  const GREETING = `e2e-pasted-${Date.now()}`;
+  await openApp(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Module", exact: true }).click();
+  await expect(page.getByTestId("instance-modules")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByTestId("add-module-tabs-custom").click();
+  await page.getByTestId("add-module-custom-tabs-json").click();
+
+  // **偽 registry が配っているのと同じものを、手で貼る**——同じ npm の配布物を
+  // 指しているので、取得から接続まで本当に通ったかが確かめられる
+  const serverJson = JSON.stringify({
+    $schema: "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    name: "com.banto-e2e/pasted-greeter",
+    description: "貼り付けで入れる、依存を持たない MCP サーバ",
+    version: "1.2.3",
+    packages: [
+      {
+        registryType: "npm",
+        registryBaseUrl: NPM_REGISTRY_BASE_URL,
+        identifier: "banto-e2e-mcp-module",
+        version: "1.2.3",
+        transport: { type: "stdio" },
+        environmentVariables: [
+          { name: "BANTO_E2E_GREETING", description: "答えに混ぜる言葉", isRequired: true },
+        ],
+      },
+    ],
+  });
+  await page.getByLabel("設定（JSON）").fill(serverJson);
+
+  // **`server.json` として読めたことを言う**（黙って別の形で処理しない・規則2）
+  const read = page.getByTestId("add-module-serverjson");
+  await expect(read, "server.json として読まれていない").toBeVisible({ timeout: 60_000 });
+  await expect(read, "出所を確かめていないことを言っていない").toContainText("確かめていません");
+
+  // **registry から選んだときと同じ部品**——名前も要る設定も同じ形で出る
+  await expect(page.getByLabel("名前")).toHaveValue("pasted-greeter", { timeout: 30_000 });
+  await expect(
+    page.getByRole("button", { name: "追加", exact: true }),
+    "必須が空でも押せてしまう",
+  ).toBeDisabled();
+  await page.locator("#add-module-registry-in-BANTO_E2E_GREETING").fill(GREETING);
+
+  const add = page.getByRole("button", { name: "追加", exact: true });
+  await expect(add).toBeEnabled();
+  await add.click();
+
+  await expect(
+    page.locator('[data-module="pasted-greeter"]'),
+    "貼って入れたのに一覧に出ない",
+  ).toBeVisible({ timeout: 180_000 });
+
+  // **立って喋り、渡した値が届いている**（受け取った側から確かめる・規則1）
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+          headers,
+          data: { server: "pasted-greeter", tool: "greet", arguments: { who: "banto" } },
+        });
+        if (!res.ok()) return `(まだ立っていない: ${res.status()})`;
+        return await res.text();
+      },
+      { timeout: 180_000, message: "貼って入れた Module が立って喋らない" },
+    )
+    .toContain(GREETING);
+
+  await page.request.delete(`${CORE_BASE_URL}/api/modules/pasted-greeter`, { headers });
+});
+
+// **貼り間違いを、黙って別の形で処理しない**（規則2）
+test("mcpServers を server.json のつもりで貼っても、今までどおり受ける", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Module", exact: true }).click();
+  await expect(page.getByTestId("instance-modules")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByTestId("add-module-tabs-custom").click();
+  await page.getByTestId("add-module-custom-tabs-json").click();
+
+  await page.getByLabel("設定（JSON）").fill(
+    JSON.stringify({ mcpServers: { "e2e-paste-plain": { command: "/bin/sh", args: ["-c", "true"] } } }),
+  );
+  // **`server.json` の面は出ない**——`mcpServers` は今までの道で処理する
+  await expect(page.getByTestId("add-module-serverjson")).toHaveCount(0);
+  await expect(page.getByTestId("add-module-serverjson-error")).toHaveCount(0);
+  await expect(page.getByTestId("add-module-effect"), "今までの説明が消えている").toBeVisible();
+  await expect(page.getByRole("button", { name: "追加", exact: true })).toBeEnabled();
+});
+
+// **読めない理由は、人が読む言葉で出す**（改訂・2026-09-22、実機で発覚——
+// `banto host /api/… が 400 を返しました: {"error":"…"}` と内部がそのまま出ていた）
+test("読めない server.json は、直せる言葉で断る", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Module", exact: true }).click();
+  await expect(page.getByTestId("instance-modules")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByTestId("add-module-tabs-custom").click();
+  await page.getByTestId("add-module-custom-tabs-json").click();
+
+  await page
+    .getByLabel("設定（JSON）")
+    .fill('{"name":"com.example/x","version":"1.0.0","description":"繋ぎ方が無い"}');
+
+  const err = page.getByTestId("add-module-serverjson-error");
+  await expect(err, "読めない理由が出ていない").toBeVisible({ timeout: 30_000 });
+  await expect(err, "何が足りないかを言っていない").toContainText("繋ぎ方が書かれていません");
+  // **口の名前と状態番号を人に見せない**——人が直せるのは JSON の中身のほう
+  await expect(err, "内部の経路が画面に出ている").not.toContainText("/api/");
+  await expect(err, "状態番号が画面に出ている").not.toContainText("400");
 });

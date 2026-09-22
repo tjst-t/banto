@@ -68,7 +68,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`banto host ${path} が ${res.status} を返しました: ${text}`);
+    // **host が理由を書いていたら、それをそのまま人に出す**（改訂・2026-09-22、
+    // 実機で発覚）。以前は `banto host /api/… が 400 を返しました: {"error":"…"}`
+    // と**内部の経路と JSON がそのまま画面に出ていた**——人が読むのは
+    // 「繋ぎ方が書かれていません」のほうで、口の名前と状態番号ではない（規則2）。
+    // 理由が無いときだけ、何が起きたかを言うために口と番号を出す
+    let reason = "";
+    try {
+      const body = JSON.parse(text) as { error?: unknown };
+      if (typeof body.error === "string" && body.error.trim() !== "") reason = body.error;
+    } catch {
+      // JSON でないなら、本文をそのまま手がかりにする
+      reason = text.trim();
+    }
+    throw new Error(reason || `banto host ${path} が ${res.status} を返しました`);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -839,7 +852,12 @@ export async function installRealModuleFromCatalog(id: string, name: string): Pr
 // 描いて、返ってきた札を出すだけ。ここで並べ直すと、順序の決まりが2箇所になる。
 
 /** その1件の出所。**registry は「公式」の欄を持たない**ので、banto の見立て。 */
-export type RealRegistryProvenance = "vendor" | "third-party-domain" | "github-account";
+export type RealRegistryProvenance =
+  | "vendor"
+  | "third-party-domain"
+  | "github-account"
+  /** 人が貼った `server.json`——registry を引いていないので出所を確かめようがない。 */
+  | "pasted";
 
 export type RealRegistryConnect =
   | { kind: "remote"; host: string; transport: string }
@@ -934,6 +952,30 @@ export async function installRealModuleFromRegistry(
   return request<{ ok: true; added: string; summary: string }>("/api/modules/registry/install", {
     method: "POST",
     body: JSON.stringify({ serverName, name, answers }),
+  });
+}
+
+/**
+ * **貼られた `server.json` を読む**（追加・2026-09-22）。**入れない、読むだけ**
+ * ——返ってくるのは検索の1件と同じ形なので、画面は同じ部品で描ける（規則3）。
+ */
+export async function inspectRealServerJson(serverJson: string): Promise<RealRegistryEntry> {
+  const res = await request<{ entry: RealRegistryEntry }>("/api/modules/registry/inspect", {
+    method: "POST",
+    body: JSON.stringify({ serverJson }),
+  });
+  return res.entry;
+}
+
+/** 貼られた `server.json` から入れる。**繋ぎ方を組み立てるのは host**。 */
+export async function installRealModuleFromServerJson(
+  serverJson: string,
+  name: string,
+  answers: readonly RealRegistryAnswer[],
+): Promise<{ summary: string }> {
+  return request<{ ok: true; added: string; summary: string }>("/api/modules/registry/install", {
+    method: "POST",
+    body: JSON.stringify({ serverJson, name, answers }),
   });
 }
 

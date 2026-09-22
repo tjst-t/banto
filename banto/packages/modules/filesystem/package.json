@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
-  "bin": { "banto-module-filesystem": "./dist/server.js" },
+  "bin": {
+    "banto-module-filesystem": "./dist/server.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@banto/module-contract": "*",

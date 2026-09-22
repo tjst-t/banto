@@ -30,8 +30,9 @@ import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./t
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
 import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
-import { displayLabel, provenanceOf, suggestedName } from "../modules/registry/rank.js";
+import { displayLabel, provenanceOf, suggestedName, type Provenance } from "../modules/registry/rank.js";
 import { planFor, FORMAT_SUPPORT } from "../modules/registry/support.js";
+import { parsePastedServerJson, ServerJsonParseError } from "../modules/registry/server-json.js";
 import {
   buildDeclarationFromRegistry,
   RegistryInstallError,
@@ -186,6 +187,45 @@ export interface AppDeps {
  * のものも直せる必要がある）。
  */
 const HUMAN_ADMIN_CALLER = { [CALLER_META_KEY]: { admin: true } };
+
+/**
+ * **registry の1件を、画面が読む形にする**（追加・2026-09-21、共有化・2026-09-22）。
+ *
+ * **検索でも、貼られた `server.json` でも、同じ形で返す**（規則3）——画面は
+ * 「どこから来たか」で描き分けない。出所（`provenance`）だけが違う。
+ */
+function describeRegistryEntry(
+  e: { server: Parameters<typeof planFor>[0]; status: string },
+  provenance: Provenance,
+) {
+  const plan = planFor(e.server);
+  return {
+    name: e.server.name,
+    title: e.server.title,
+    label: displayLabel(e.server),
+    suggestedName: suggestedName(e.server),
+    description: e.server.description,
+    version: e.server.version,
+    websiteUrl: e.server.websiteUrl,
+    repositoryUrl: e.server.repository?.url,
+    status: e.status,
+    provenance,
+    connect:
+      plan.kind === "remote"
+        ? { kind: "remote" as const, host: safeHost(plan.url), transport: plan.transport }
+        : plan.kind === "local"
+          ? {
+              kind: "local" as const,
+              registryType: plan.pkg.registryType,
+              identifier: plan.pkg.identifier,
+              packageVersion: plan.pkg.version,
+              supported: plan.support.supported,
+              reason: plan.support.reason,
+            }
+          : { kind: "none" as const, reason: plan.reason },
+    inputs: inputsOf(plan),
+  };
+}
 
 /** URL の相手の名前。**読めないものを読めたことにしない**（規則2）。 */
 function safeHost(raw: string): string {
@@ -780,44 +820,7 @@ export function createApp(deps: AppDeps) {
             baseUrl: deps.registryBaseUrl,
           });
           json(res, 200, {
-            entries: entries.map((e) => {
-              const plan = planFor(e.server);
-              return {
-                name: e.server.name,
-                title: e.server.title,
-                // **一覧の見出し**。`title` が無い公式（`com.stripe/mcp`）で
-                // 「mcp」と出てしまうのを、host 側で1回だけ解く（規則3）
-                label: displayLabel(e.server),
-                // **付ける名前も host が決める**（規則3）。`/` の後ろをそのまま
-                // 使うと Stripe が `mcp` になる（実機で発覚・2026-09-22）
-                suggestedName: suggestedName(e.server),
-                description: e.server.description,
-                version: e.server.version,
-                websiteUrl: e.server.websiteUrl,
-                repositoryUrl: e.server.repository?.url,
-                status: e.status,
-                // **どの名前空間の持ち主か**——registry は「公式」の欄を持たないので、
-                // ここは banto の見立てであることが分かる名前にしてある
-                provenance: provenanceOf(e, q),
-                // **押す前に、何が起きるかを出す**ための材料（§6.1）
-                connect:
-                  plan.kind === "remote"
-                    ? { kind: "remote" as const, host: safeHost(plan.url), transport: plan.transport }
-                    : plan.kind === "local"
-                      ? {
-                          kind: "local" as const,
-                          registryType: plan.pkg.registryType,
-                          identifier: plan.pkg.identifier,
-                          packageVersion: plan.pkg.version,
-                          supported: plan.support.supported,
-                          reason: plan.support.reason,
-                        }
-                      : { kind: "none" as const, reason: plan.reason },
-                // **人に何を聞くことになるか**（環境変数・ヘッダ）。
-                // 値そのものは registry には無い——名前と説明だけ
-                inputs: inputsOf(plan),
-              };
-            }),
+            entries: entries.map((e) => describeRegistryEntry(e, provenanceOf(e, q))),
             nextCursor,
             formats: FORMAT_SUPPORT,
           });
@@ -826,6 +829,27 @@ export function createApp(deps: AppDeps) {
           if (err instanceof RegistryUnavailableError) {
             return json(res, 502, { error: err.message });
           }
+          throw err;
+        }
+        return;
+      }
+
+      // **貼られた `server.json` を読んで、何が起きるかを返す**（追加・2026-09-22、
+      // ユーザー要望「server.json を貼り付けてインストール、というパターンも」）。
+      //
+      // **入れない。読むだけ。** 画面は返ってきた形をそのまま描く——registry から
+      // 選んだときと**同じ部品**が動く（規則3——貼り付け用の別画面を作らない）。
+      if (url.pathname === "/api/modules/registry/inspect" && req.method === "POST") {
+        const body = (await readJsonBody(req)) as { serverJson?: unknown };
+        if (typeof body.serverJson !== "string") {
+          return json(res, 400, { error: "serverJson が要ります" });
+        }
+        try {
+          const entry = parsePastedServerJson(body.serverJson);
+          // **出所は「貼られた」**——registry を引いていないので確かめようがない
+          json(res, 200, { entry: describeRegistryEntry(entry, "pasted") });
+        } catch (err) {
+          if (err instanceof ServerJsonParseError) return json(res, 400, { error: err.message });
           throw err;
         }
         return;
@@ -844,11 +868,14 @@ export function createApp(deps: AppDeps) {
         if (!deps.dataDir) return json(res, 503, { error: "data dir is not available" });
         const body = (await readJsonBody(req)) as {
           serverName?: unknown;
+          /** **貼られた `server.json`**（追加・2026-09-22）。`serverName` の代わり。 */
+          serverJson?: unknown;
           name?: unknown;
           answers?: unknown;
         };
-        if (typeof body.serverName !== "string" || typeof body.name !== "string") {
-          return json(res, 400, { error: "serverName と name が要ります" });
+        const fromPaste = typeof body.serverJson === "string";
+        if ((typeof body.serverName !== "string" && !fromPaste) || typeof body.name !== "string") {
+          return json(res, 400, { error: "serverName か serverJson と、name が要ります" });
         }
         const moduleName = body.name.trim();
         if (moduleName === "") return json(res, 400, { error: "name が空です" });
@@ -863,18 +890,27 @@ export function createApp(deps: AppDeps) {
           : [];
 
         try {
-          // **host が引き直す**——画面が渡した起動の指定は受け取らない
-          const found = await searchRegistry({
-            query: body.serverName,
-            fetchImpl: deps.registryFetch,
-            baseUrl: deps.registryBaseUrl,
-          });
-          const entry = found.entries.find((e) => e.server.name === body.serverName);
-          if (!entry) {
-            return json(res, 404, { error: `目録に見つかりません：${body.serverName}` });
+          let server;
+          if (fromPaste) {
+            // **貼られたものは、そのまま読む**（引き直す先が無い）。
+            // **起動の指定を画面が決めるわけではない**——`server.json` の形しか
+            // 受けず、宣言は host が組み立てる（役割は名乗らせない・閉じ込めは外せない）
+            server = parsePastedServerJson(body.serverJson as string).server;
+          } else {
+            // **host が引き直す**——画面が渡した起動の指定は受け取らない
+            const found = await searchRegistry({
+              query: body.serverName as string,
+              fetchImpl: deps.registryFetch,
+              baseUrl: deps.registryBaseUrl,
+            });
+            const entry = found.entries.find((e) => e.server.name === body.serverName);
+            if (!entry) {
+              return json(res, 404, { error: `目録に見つかりません：${body.serverName}` });
+            }
+            server = entry.server;
           }
           const built = await buildDeclarationFromRegistry({
-            server: entry.server,
+            server,
             name: moduleName,
             answers,
             packageDir: modulePackageDirOf(deps.dataDir, moduleName),
@@ -894,6 +930,7 @@ export function createApp(deps: AppDeps) {
           json(res, 200, { ok: true, added: moduleName, summary: built.summary });
         } catch (err) {
           if (
+            err instanceof ServerJsonParseError ||
             err instanceof RegistryInstallError ||
             err instanceof RegistryUnavailableError ||
             err instanceof ModuleDeclarationError ||
