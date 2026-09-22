@@ -385,3 +385,44 @@ test("読めない server.json は、直せる言葉で断る", async ({ page })
   await expect(err, "内部の経路が画面に出ている").not.toContainText("/api/");
   await expect(err, "状態番号が画面に出ている").not.toContainText("400");
 });
+
+// **タブは、中身より上にある**（回帰・2026-09-22、ユーザー指摘
+// 「カスタムの MCP Registry を探す、のときのトグルの位置が下に行っているのがおかしい」）。
+//
+// registry の面だけ JSX でタブより前に書いていたので、**その1つを選んだときだけ
+// タブが下に回り込んでいた**——どれを選んでいるかを示すものが、示される中身の
+// 後ろに来ていた。**3つとも見る**（1つ直して他が崩れていないことまで）。
+test("カスタムのサブタブは、どれを選んでも中身より上にある", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Module", exact: true }).click();
+  await expect(page.getByTestId("instance-modules")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await page.getByTestId("add-module-tabs-custom").click();
+
+  const tabs = page.getByTestId("add-module-custom-tabs");
+  await expect(tabs).toBeVisible({ timeout: 30_000 });
+
+  /** その面の中身。タブより下に在るべきもの。 */
+  const panelOf: Record<string, string> = {
+    json: "#add-module-paste",
+    manual: "#add-module-name",
+    registry: '[data-testid="add-module-registry"]',
+  };
+
+  for (const [id, panel] of Object.entries(panelOf)) {
+    await page.getByTestId(`add-module-custom-tabs-${id}`).click();
+    const body = page.locator(panel);
+    await expect(body, `${id} の中身が出ない`).toBeVisible({ timeout: 30_000 });
+
+    // **実際の位置で見る**（規則14——「出ている」で終わらせない）
+    const tabsBox = await tabs.boundingBox();
+    const bodyBox = await body.boundingBox();
+    expect(tabsBox, "タブの位置が取れない").not.toBeNull();
+    expect(bodyBox, "中身の位置が取れない").not.toBeNull();
+    expect(
+      tabsBox!.y,
+      `「${id}」を選ぶと、タブが中身より下に来ている（タブ ${tabsBox!.y} / 中身 ${bodyBox!.y}）`,
+    ).toBeLessThan(bodyBox!.y);
+  }
+});

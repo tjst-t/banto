@@ -320,6 +320,12 @@ export function endCanvasToolCall(threadId: string): void {
   else canvasCallsByThread.set(threadId, next);
 }
 
+/**
+ * **一覧を待つ上限**（追加・2026-09-22）。普段は 0.2 秒ほどで返る（実測）。
+ * 越えたら、その回は画面を諦めてターンを始める——**会話が始まらないほうが悪い**。
+ */
+const UI_TOOLS_WAIT_MS = 5_000;
+
 /** ターンが始まる前に一度だけ聞いておく——tool が走ってから聞くと間に合わない。 */
 async function ensureUiTools(threadId: string): Promise<RealUiTool[]> {
   const cached = uiToolsByThread.get(threadId);
@@ -501,14 +507,24 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // 新規送信——現在進行中のライブなSSE接続が無ければ、実際にターンを開始する。
         const prompt = lastUserText(messages);
         const permissionMode = getThreadPermissionMode(thread.id, thread.projectId);
-        // **聞き終わってからターンを始める**（訂正・2026-09-21）。`void` で投げっぱなし
-        // にしていたので、**問い合わせより先に tool_use が返ってくると画面が出ない**
-        // ——`rememberInlineView` はこの一覧を引けないと黙って何もしないので、
-        // Canvas は開かず、入口のカードも残らない（＝人には「頼んだのに出ない」）。
-        // 実 LLM は遅いので隠れていたが、tool が速ければ人にも起きる
-        // （`fullscreen-canvas-order-fragility`）。一覧は Thread ごとに一度だけなので、
-        // 待つのは最初のターンの一回。失敗は ensureUiTools の中で空に畳まれる
-        await ensureUiTools(thread.id);
+        // **聞き終わってからターンを始める。ただし待ち切らない**（訂正・2026-09-22）。
+        //
+        // `void` で投げっぱなしだと、**問い合わせより先に tool_use が返ってくると
+        // 画面が出ない**——`rememberInlineView` は一覧を引けないと黙って何もしない
+        // ので、Canvas は開かず入口のカードも残らない（`fullscreen-canvas-order-fragility`）。
+        // なので待つ。
+        //
+        // **が、待ち切ってはいけない。** 一度 `await` だけにしたところ、
+        // **Module が1本答えないだけで会話そのものが始まらなくなった**
+        // ——フル E2E で「ターンが一度も host に届かない」形で出た（2026-09-22）。
+        // host 側も1本ずつに上限を置いたが（`listUiToolsForThread`）、
+        // **会話が始まることのほうが、画面が1つ出ることより大事**なので、
+        // ここでも上限を置く。**待ちで隠しているのではない**——越えたときに
+        // 何が起きるか（その Module の画面が出ない）が分かっている（規則6）。
+        await Promise.race([
+          ensureUiTools(thread.id),
+          new Promise((r) => setTimeout(r, UI_TOOLS_WAIT_MS)),
+        ]);
         // 終了イベントで「この走行」を降ろすために、自分自身を指す入れ物を用意する
         // （コールバックは live を作るより先に書く必要があるため）
         const self: { turn: LiveTurn | null } = { turn: null };

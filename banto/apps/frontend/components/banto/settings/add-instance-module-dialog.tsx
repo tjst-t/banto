@@ -414,13 +414,14 @@ export function AddInstanceModuleDialog({
           </div>
         ) : null}
 
-        {mode === "custom" && customMode === "registry" ? (
-          <RegistryModulePicker existingNames={existingNames} onChange={setRegistryPick} />
-        ) : null}
-
         {mode === "custom" ? (
-          // **入れ方は2つ**——設定ファイルを取り込むか、項目を手で入れるか。
-          // 既存ソフトと同じ分け方（Import / Add manually）
+          // **入れ方は3つ**——設定ファイルを取り込む・項目を手で入れる・目録を探す。
+          // 語は既存ソフトと同じ分け方（Import / Add manually）
+          //
+          // **タブは中身より先に置く**（訂正・2026-09-22、ユーザー指摘）。
+          // registry の面だけこの上に書いていたので、**「MCP Registry を探す」を
+          // 選んだときだけタブが下に回り込んでいた**——どれを選んでいるかを示す
+          // ものが、示される中身の後ろに来ていた
           <PillTabs
             label="カスタム Module の入れ方"
             testId="add-module-custom-tabs"
@@ -432,6 +433,10 @@ export function AddInstanceModuleDialog({
               { id: "registry", label: "MCP Registry を探す" },
             ]}
           />
+        ) : null}
+
+        {mode === "custom" && customMode === "registry" ? (
+          <RegistryModulePicker existingNames={existingNames} onChange={setRegistryPick} />
         ) : null}
 
         {mode === "custom" && customMode === "json" ? (

@@ -69,7 +69,9 @@ import { CALLER_META_KEY, visibilityOf } from "@banto/module-contract";
  * ——独自の入れ物を作らない（規則12）。
  */
 export interface ModuleClientLike {
-  listTools(): Promise<{ tools: unknown[] }>;
+  /** **上限を渡せる**（追加・2026-09-22）——答えない Module でここが詰まると、
+   *  画面はターンを始める前にこれを待つので、会話そのものが止まる。 */
+  listTools(params?: undefined, options?: { timeout?: number }): Promise<{ tools: unknown[] }>;
   listResources(): Promise<{ resources: unknown[] }>;
   /** その Module が何を持っていると名乗ったか（MCP の capability negotiation）。 */
   getServerCapabilities?(): { resources?: unknown } | undefined;
@@ -452,17 +454,41 @@ async function listUiToolsForThread(
   threadId: string,
 ): Promise<Array<{ server: string; tool: string; resourceUri: string }>> {
   const modules = (await deps.resolveModuleClientsForThread?.(threadId)) ?? [];
-  const result: Array<{ server: string; tool: string; resourceUri: string }> = [];
-  for (const { name, client } of modules) {
-    const { tools } = await client.listTools();
-    for (const t of tools) {
-      const resourceUri = uiResourceUriOf(t);
-      if (!resourceUri) continue;
-      result.push({ server: name, tool: (t as { name: string }).name, resourceUri });
-    }
-  }
-  return result;
+  // **1本ずつ順番に、上限も無しに聞かない**（訂正・2026-09-22、フル E2E で発覚）。
+  //
+  // 以前はここを直列で回し、`listTools()` に上限を付けていなかった。**Module が
+  // 1本でも答えなければ、この口は永久に返らない**——そして画面はターンを始める
+  // 前にここを待つので（`adapter.ts`）、**会話そのものが始まらなくなる**。
+  // 実際、フル E2E で「ターンが一度も host に届かない」形で出た。
+  //
+  // **並べて聞き、1本ずつに上限を置く。** 答えない1本は**そこだけ落とす**
+  // ——その Module の画面が出ないだけで済む。**黙って落とさない**（規則2）：
+  // 何が答えなかったかはログに残す（規則4——観測は機構の外）。
+  const per = await Promise.all(
+    modules.map(async ({ name, client }) => {
+      try {
+        const { tools } = await client.listTools(undefined, { timeout: UI_TOOLS_TIMEOUT_MS });
+        return tools
+          .map((t) => ({ name, tool: t as { name: string }, resourceUri: uiResourceUriOf(t) }))
+          .filter((x) => x.resourceUri)
+          .map((x) => ({ server: x.name, tool: x.tool.name, resourceUri: x.resourceUri! }));
+      } catch (err) {
+        console.warn(
+          `[host] ${name} の tool 一覧が取れませんでした（この Module の画面は出ません）: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        return [];
+      }
+    }),
+  );
+  return per.flat();
 }
+
+/**
+ * **1本の Module に聞く上限**（追加・2026-09-22）。ここを越えたら、その Module の
+ * 画面は諦める——**会話が始まらないより、画面が1つ出ないほうがまし**。
+ */
+const UI_TOOLS_TIMEOUT_MS = 5_000;
 
 /**
  * **資源を持たない Module がある**（追加・2026-09-17、URL に繋ぐ形で発覚）。
