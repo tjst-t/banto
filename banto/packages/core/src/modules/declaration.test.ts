@@ -48,6 +48,7 @@ const CONTEXT = {
   hostRelayUrl: "http://127.0.0.1:4737/relay",
   hostRelayToken: "tok",
   moduleDataDir: "/tmp/banto-module-data",
+  modulePackageDir: "/tmp/banto-module-packages",
   projectRoot: "/home/me/work",
 };
 
@@ -604,6 +605,7 @@ test("金庫の語が解かれないまま起動しようとしたら止まる",
         hostRelayUrl: "http://x",
         hostRelayToken: "t",
         moduleDataDir: "/m",
+        modulePackageDir: "/p",
       }),
     /解かれないまま/,
   );

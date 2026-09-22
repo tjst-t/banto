@@ -17,9 +17,10 @@ const RUN_ID = (process.env.BANTO_E2E_RUN_ID ??= String(process.pid));
 
 /** 実行ごとに違う port を選ぶ。**衝突したら Playwright が止まる**（黙って相乗りしない）。 */
 function portForRun(offsetInRun: number): number {
-  // 4740〜4939 の 100 枠を、実行ごとに**3つずつ**使う（core・sandbox・frontend）
-  const slot = Number(RUN_ID) % 66;
-  return 4740 + slot * 3 + offsetInRun;
+  // 4740〜4939 の枠を、実行ごとに**5つずつ**使う
+  // （core・sandbox・frontend・MCP Registry の偽物・npm registry の偽物）
+  const slot = Number(RUN_ID) % 40;
+  return 4740 + slot * 5 + offsetInRun;
 }
 
 export const CORE_PORT = portForRun(0);
@@ -42,6 +43,24 @@ export const SANDBOX_PORT = portForRun(1);
 //
 // なので **port は実行ごとに分け、ビルド成果物は人のものと分ける**。
 export const FRONTEND_PORT = portForRun(2);
+
+/**
+ * **試験用の MCP Registry**（追加・2026-09-21、`registry-fixture.ts`）。
+ *
+ * **本物の registry を叩かない**（規則6）——一覧の中身は毎日変わるので、
+ * 並び順の検査が外の都合で落ちる。core と同じプロセスで立てる。
+ */
+export const REGISTRY_PORT = portForRun(3);
+export const REGISTRY_BASE_URL = `http://127.0.0.1:${REGISTRY_PORT}`;
+
+/**
+ * **試験用の npm registry**（追加・2026-09-21、`npm-registry-fixture.ts`）。
+ *
+ * registry から入れた Module を**実際に取ってきて繋ぐ**ところまで見るのに要る。
+ * 本物の npm を叩くと、外の都合で落ちる試験になる（規則6）。
+ */
+export const NPM_REGISTRY_PORT = portForRun(4);
+export const NPM_REGISTRY_BASE_URL = `http://127.0.0.1:${NPM_REGISTRY_PORT}`;
 
 /**
  * フロントのビルド成果物の置き場。**人の `.next` を書き換えない**。

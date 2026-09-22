@@ -87,6 +87,15 @@ export interface LaunchContext {
    *  用意し、閉じ込めていてもここだけは書ける——Project の中を汚さずに
    *  自分の設定を持てるようにするため。 */
   moduleDataDir: string;
+  /**
+   * **その Module のプログラムの置き場**（追加・2026-09-21、MCP Registry）。
+   *
+   * registry から取ってきた配布物はここに入る。`moduleDataDir`（状態）とは
+   * **別に持つ**——起動時に渡す権限が違うため：ここは**読み取り専用**、
+   * 状態の置き場は読み書き（`landlock/derive.ts` の作法）。同じ場所にすると、
+   * 動いている Module が自分のプログラムを書き換えられてしまう。
+   */
+  modulePackageDir: string;
   /** Project 単位の Module だけが使える。 */
   projectRoot?: string;
 }
@@ -98,6 +107,7 @@ const INSTANCE_PLACEHOLDERS = [
   "hostRelayUrl",
   "hostRelayToken",
   "moduleDataDir",
+  "modulePackageDir",
 ] as const;
 const PROJECT_ONLY_PLACEHOLDERS = ["projectRoot"] as const;
 

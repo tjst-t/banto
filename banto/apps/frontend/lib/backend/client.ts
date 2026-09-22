@@ -833,6 +833,94 @@ export async function installRealModuleFromCatalog(id: string, name: string): Pr
   });
 }
 
+// ---- MCP Registry（追加・2026-09-21、ユーザー要望）--------------------------
+//
+// **並べ替えも、繋ぎ方の見立ても host がやる**（規則3）——画面は返ってきた順に
+// 描いて、返ってきた札を出すだけ。ここで並べ直すと、順序の決まりが2箇所になる。
+
+/** その1件の出所。**registry は「公式」の欄を持たない**ので、banto の見立て。 */
+export type RealRegistryProvenance = "vendor" | "third-party-domain" | "github-account";
+
+export type RealRegistryConnect =
+  | { kind: "remote"; host: string; transport: string }
+  | {
+      kind: "local";
+      registryType: string;
+      identifier: string;
+      packageVersion?: string;
+      supported: boolean;
+      reason?: string;
+    }
+  | { kind: "none"; reason: string };
+
+export interface RealRegistryInput {
+  target: "env" | "header";
+  name: string;
+  description?: string;
+  required: boolean;
+  /** **秘密は Vault を既定にする**（直書きは記録に残り続ける）。 */
+  secret: boolean;
+  choices?: string[];
+  default?: string;
+}
+
+export interface RealRegistryEntry {
+  name: string;
+  title?: string;
+  /** 一覧に出す見出し（host が決める——`title` が無いときの代わりも含めて）。 */
+  label: string;
+  description: string;
+  version: string;
+  websiteUrl?: string;
+  repositoryUrl?: string;
+  status: string;
+  provenance: RealRegistryProvenance;
+  connect: RealRegistryConnect;
+  inputs: RealRegistryInput[];
+}
+
+export interface RealRegistrySearch {
+  entries: RealRegistryEntry[];
+  nextCursor?: string;
+  formats: Array<{ registryType: string; label: string; runtime: string; supported: boolean; reason?: string }>;
+}
+
+export async function searchRealModuleRegistry(
+  query: string,
+  cursor?: string,
+): Promise<RealRegistrySearch> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("q", query.trim());
+  if (cursor) params.set("cursor", cursor);
+  const qs = params.toString();
+  return request<RealRegistrySearch>(`/api/modules/registry${qs ? `?${qs}` : ""}`);
+}
+
+/** 人が入れた1件の答え。**秘密は Vault の名前**を渡す（値は宣言に残さない）。 */
+export interface RealRegistryAnswer {
+  name: string;
+  source: "vault" | "plain";
+  value: string;
+}
+
+/**
+ * **registry から1本入れて、繋ぐ。**
+ *
+ * **画面が送るのは「目録のどれか・付ける名前・人が入れた値」だけ**
+ * ——起動の指定も役割も画面は組み立てない。host が `server.json` を引き直して
+ * 作る（`v4-security.md`「役割のなりすまし」）。
+ */
+export async function installRealModuleFromRegistry(
+  serverName: string,
+  name: string,
+  answers: readonly RealRegistryAnswer[],
+): Promise<{ summary: string }> {
+  return request<{ ok: true; added: string; summary: string }>("/api/modules/registry/install", {
+    method: "POST",
+    body: JSON.stringify({ serverName, name, answers }),
+  });
+}
+
 export async function startRealModuleOAuth(name: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/api/modules/${encodeURIComponent(name)}/oauth/start`, {
     method: "POST",

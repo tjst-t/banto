@@ -47,6 +47,12 @@ export const CONNECTED_FEATURES = {
   // 本物の分岐は host 側（会話の切り詰めと resume-point の巻き戻し）が要る
   threadBranching: false,
   composerModelEffort: false, // 選んでもreal threadには反映されない（streamRealTurnにmodel/effort引数が無い）
+  // **MCP Registry から入れて、繋ぐ**（`module-registry-install`、2026-09-21、
+  // ユーザー要望）。検索・一覧・並び順（提供元を優先）・取得・接続まで host に
+  // 繋がっている——remote はそのまま繋ぎ、npm は host が取ってきて（閉じ込めの外）
+  // **読み取り専用**で渡して起動する（`npx -y` は閉じ込めの下で自分を
+  // 取ってこられない。`$HOME/.npm` が書けないことを実測した・2026-09-21）
+  moduleRegistryInstall: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す

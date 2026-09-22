@@ -1,0 +1,9 @@
+{
+  "name": "banto-e2e-mcp-module",
+  "version": "1.2.3",
+  "private": false,
+  "description": "E2E fixture: a dependency-free MCP server published to a fake npm registry",
+  "type": "module",
+  "bin": { "banto-e2e-mcp-module": "server.js" },
+  "files": ["server.js"]
+}

@@ -6,7 +6,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
-import { CLAUDE_CONFIG_DIR, CLAUDE_CREDENTIALS_DIR } from "./config.ts";
+import {
+  CLAUDE_CONFIG_DIR,
+  CLAUDE_CREDENTIALS_DIR,
+  NPM_REGISTRY_PORT,
+  REGISTRY_BASE_URL,
+  REGISTRY_PORT,
+} from "./config.ts";
+import { startRegistryFixture } from "./registry-fixture.ts";
+import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
 
 globalSetup();
 
@@ -56,5 +64,14 @@ process.env.BANTO_FAKE_RUNNER = join(
   dirname(fileURLToPath(import.meta.url)),
   "fake-runner.ts",
 );
+
+// **MCP Registry も偽物にする**（追加・2026-09-21）。**本物の一覧は毎日変わる**ので、
+// 「公式が先に出る」という検査が外の都合で落ちる（規則6）。中身は本物から写してある。
+// core と同じプロセスで立てるので、core が落ちれば一緒に落ちる（置き去りにならない）
+await startRegistryFixture(REGISTRY_PORT);
+process.env.BANTO_MCP_REGISTRY_URL = REGISTRY_BASE_URL;
+// **npm も偽物にする**——registry から入れた Module を実際に取ってきて繋ぐところ
+// まで見るのに要る。本物の npm を叩くと外の都合で落ちる試験になる（規則6）
+await startNpmRegistryFixture(NPM_REGISTRY_PORT);
 
 await import("../packages/core/dist/cli.js");

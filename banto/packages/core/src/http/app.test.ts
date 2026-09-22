@@ -1059,3 +1059,115 @@ test("骨格の役割を名乗る Module は、外からは足せない", async 
     assert.match((await add.json()).error, /同梱の実装だけが名乗れる役割/);
   });
 });
+
+// **MCP Registry の一覧**（追加・2026-09-21、ユーザー要望）。
+//
+// **本物の registry は叩かない**（規則6 の裏——外の都合で落ちる試験にしない）。
+// 見たいのは banto 側の仕事：**並び順（公式が先）・出所の札・繋ぎ方の見立て・
+// 対応していない形式の理由**が、画面に出せる形で出てくるか。
+// registry の応答そのものは、2026-09-21 に実データから写したものを使う。
+const REGISTRY_SAMPLE = {
+  servers: [
+    {
+      server: {
+        name: "io.github.codespar/mcp-stripe",
+        description: "third party",
+        version: "1.0.0",
+        packages: [{ registryType: "npm", identifier: "mcp-stripe", version: "1.0.0", transport: { type: "stdio" } }],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: true } },
+    },
+    {
+      server: {
+        name: "com.stripe/mcp",
+        description: "Stripe 公式",
+        version: "0.2.4",
+        repository: { url: "https://github.com/stripe/agent-toolkit" },
+        remotes: [{ type: "streamable-http", url: "https://mcp.stripe.com" }],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: true } },
+    },
+    {
+      server: {
+        name: "io.github.CSOAI-ORG/stripe-billing-mcp",
+        description: "python one",
+        version: "1.0.0",
+        packages: [{ registryType: "pypi", identifier: "stripe-billing-mcp", transport: { type: "stdio" } }],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: true } },
+    },
+  ],
+  metadata: { nextCursor: "next-page" },
+};
+
+test("Registry の一覧：公式が先に出て、出所と繋ぎ方が一緒に返る", async () => {
+  const calls: string[] = [];
+  const fakeFetch = async (input: string | URL) => {
+    calls.push(String(input));
+    return new Response(JSON.stringify(REGISTRY_SAMPLE), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  await withApp(
+    async (base, token) => {
+      const res = await fetch(`${base}/api/modules/registry?q=stripe`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+
+      // **公式が先**（決定・2026-09-21、ユーザー要望）
+      // **同点は名前順**（決定的にする）——`io.github.*` の2本は出所が同じなので、
+      // そこは名前で決まる（codespar < CSOAI-ORG：照合は大文字小文字を先に見ない）
+      assert.deepEqual(
+        body.entries.map((e: { name: string }) => e.name),
+        ["com.stripe/mcp", "io.github.codespar/mcp-stripe", "io.github.CSOAI-ORG/stripe-billing-mcp"],
+      );
+      // **並び順だけに判断を預けない**——出所は札として返る（規則13）
+      assert.equal(body.entries[0].provenance, "vendor");
+      assert.equal(body.entries[1].provenance, "github-account");
+
+      // **押す前に、何が起きるかが分かる**（§6.1）
+      assert.deepEqual(body.entries[0].connect, {
+        kind: "remote",
+        host: "mcp.stripe.com",
+        transport: "streamable-http",
+      });
+      // npm は対応している
+      assert.equal(body.entries[1].connect.kind, "local");
+      assert.equal(body.entries[1].connect.supported, true);
+      assert.equal(body.entries[1].connect.identifier, "mcp-stripe");
+      // **対応していない形式は、理由つきで返る**（黙って落とさない・規則2）
+      assert.equal(body.entries[2].connect.supported, false);
+      assert.match(body.entries[2].connect.reason, /uvx/);
+
+      // **続きが在ることを隠さない**
+      assert.equal(body.nextCursor, "next-page");
+      // **対応表もそのまま返す**（画面が「何ならいけるか」を言えるように）
+      assert.equal(body.formats.find((f: { registryType: string }) => f.registryType === "npm").supported, true);
+
+      // 同じ版だけを引く（古い版が並ぶと、人はどれを選ぶか決められない）
+      assert.match(calls[0]!, /version=latest/);
+      assert.match(calls[0]!, /search=stripe/);
+    },
+    { registryFetch: fakeFetch as unknown as typeof fetch },
+  );
+});
+
+test("Registry に繋がらないときは、0 件ではなく理由を返す", async () => {
+  const failing = async () => {
+    throw new Error("getaddrinfo ENOTFOUND");
+  };
+  await withApp(
+    async (base, token) => {
+      const res = await fetch(`${base}/api/modules/registry?q=x`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      // **「見つかりません」に化けさせない**（規則2）——直せる形で言う
+      assert.equal(res.status, 502);
+      assert.match((await res.json()).error, /MCP Registry に繋がりませんでした/);
+    },
+    { registryFetch: failing as unknown as typeof fetch },
+  );
+});

@@ -27,6 +27,17 @@ import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
+// **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
+// ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
+import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
+import { displayLabel, provenanceOf } from "../modules/registry/rank.js";
+import { planFor, FORMAT_SUPPORT } from "../modules/registry/support.js";
+import {
+  buildDeclarationFromRegistry,
+  RegistryInstallError,
+  type AnsweredInput,
+} from "../modules/registry/to-declaration.js";
+import { modulePackageDirOf } from "../modules/registry/install/paths.js";
 import {
   ModuleDeclarationError,
   addModuleDeclaration,
@@ -143,6 +154,22 @@ export interface AppDeps {
   configDir?: string;
   /** Runner の差し替え口（試験用）。`runThreadTurn` がそのまま受け取る。 */
   runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
+  /**
+   * **MCP Registry を引くときの fetch**（試験用の差し替え口、追加・2026-09-21）。
+   *
+   * 既定は global の `fetch`。試験でここを差し替えるのは、**本物の registry を
+   * 叩く試験にしないため**——外の都合（繋がらない・中身が変わる）で落ちる試験は、
+   * 落ちても何も分からない（規則6）。見たいのは banto 側の仕事
+   * （並び順・出所の札・繋ぎ方の見立て）なので、応答は実データから写して固定する。
+   */
+  registryFetch?: typeof fetch;
+  /**
+   * **どの registry を引くか**（追加・2026-09-21）。既定は公式
+   * （`DEFAULT_REGISTRY_BASE_URL`）。**自前の registry を立てる人が居る**ので
+   * 逃げ道を残す——同時に、E2E が本物の registry を叩かずに済む口にもなる
+   * （外の都合で落ちる試験にしない・規則6）。
+   */
+  registryBaseUrl?: string;
 }
 
 /**
@@ -158,6 +185,64 @@ export interface AppDeps {
  * のものも直せる必要がある）。
  */
 const HUMAN_ADMIN_CALLER = { [CALLER_META_KEY]: { admin: true } };
+
+/** URL の相手の名前。**読めないものを読めたことにしない**（規則2）。 */
+function safeHost(raw: string): string {
+  try {
+    return new URL(raw).host;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * **その1件を繋ぐのに、人に何を聞くことになるか**（追加・2026-09-21）。
+ *
+ * `server.json` は「この環境変数／ヘッダが要る」とだけ書いてあり、**値は無い**
+ * ——だから画面が人に聞く。**秘密かどうか（`isSecret`）はそのまま渡す**：
+ * 画面はそれを見て Vault からの参照を既定にする（`add-instance-module-dialog`
+ * が手書きの道でやっているのと同じ形。直書きは記録に残り続ける）。
+ */
+function inputsOf(plan: ReturnType<typeof planFor>): Array<{
+  /** `env`（起動する Module の環境変数）か `header`（URL に繋ぐときのヘッダ） */
+  target: "env" | "header";
+  name: string;
+  description?: string;
+  required: boolean;
+  secret: boolean;
+  choices?: string[];
+  default?: string;
+}> {
+  const from = (
+    target: "env" | "header",
+    list: Array<{
+      name?: string;
+      description?: string;
+      isRequired?: boolean;
+      isSecret?: boolean;
+      choices?: string[];
+      default?: string;
+      value?: string;
+    }>,
+  ) =>
+    list
+      // **値が決まっているものは聞かない**——`value` が書いてあれば、それが答え
+      .filter((i) => typeof i.name === "string" && i.name !== "" && i.value === undefined)
+      .map((i) => ({
+        target,
+        name: i.name!,
+        description: i.description,
+        required: i.isRequired === true,
+        secret: i.isSecret === true,
+        choices: i.choices,
+        default: i.default,
+      }));
+
+  if (plan.kind === "local") return from("env", plan.pkg.environmentVariables ?? []);
+  // URL に繋ぐときに要るのはヘッダ（`Authorization` など）
+  if (plan.kind === "remote") return from("header", plan.remote.headers ?? []);
+  return [];
+}
 
 /**
  * **画面から呼んでよい tool か**を host 自身が検査する（決定・2026-09-10、
@@ -668,6 +753,148 @@ export function createApp(deps: AppDeps) {
         );
         return;
       }
+      // **MCP Registry を検索する**（追加・2026-09-21、ユーザー要望）。
+      // **読み取りだけ**——ここでは何も入れない（入れる口は別に作る）。
+      //
+      // **画面に並べ替えさせない**（規則3）。「公式を優先」は host が決めて、
+      // 画面はその順に描くだけ——2箇所に順序が生まれると、どちらが正しいのかが
+      // 分からなくなる。出所（`provenance`）も一緒に返して、画面は**札を出す**
+      // ——並び順だけに判断を預けない（規則13）。
+      if (url.pathname === "/api/modules/registry" && req.method === "GET") {
+        const q = url.searchParams.get("q") ?? "";
+        const cursor = url.searchParams.get("cursor") ?? undefined;
+        try {
+          const { entries, nextCursor } = await searchRegistry({
+            query: q,
+            cursor,
+            fetchImpl: deps.registryFetch,
+            baseUrl: deps.registryBaseUrl,
+          });
+          json(res, 200, {
+            entries: entries.map((e) => {
+              const plan = planFor(e.server);
+              return {
+                name: e.server.name,
+                title: e.server.title,
+                // **一覧の見出し**。`title` が無い公式（`com.stripe/mcp`）で
+                // 「mcp」と出てしまうのを、host 側で1回だけ解く（規則3）
+                label: displayLabel(e.server),
+                description: e.server.description,
+                version: e.server.version,
+                websiteUrl: e.server.websiteUrl,
+                repositoryUrl: e.server.repository?.url,
+                status: e.status,
+                // **どの名前空間の持ち主か**——registry は「公式」の欄を持たないので、
+                // ここは banto の見立てであることが分かる名前にしてある
+                provenance: provenanceOf(e, q),
+                // **押す前に、何が起きるかを出す**ための材料（§6.1）
+                connect:
+                  plan.kind === "remote"
+                    ? { kind: "remote" as const, host: safeHost(plan.url), transport: plan.transport }
+                    : plan.kind === "local"
+                      ? {
+                          kind: "local" as const,
+                          registryType: plan.pkg.registryType,
+                          identifier: plan.pkg.identifier,
+                          packageVersion: plan.pkg.version,
+                          supported: plan.support.supported,
+                          reason: plan.support.reason,
+                        }
+                      : { kind: "none" as const, reason: plan.reason },
+                // **人に何を聞くことになるか**（環境変数・ヘッダ）。
+                // 値そのものは registry には無い——名前と説明だけ
+                inputs: inputsOf(plan),
+              };
+            }),
+            nextCursor,
+            formats: FORMAT_SUPPORT,
+          });
+        } catch (err) {
+          // **繋がらなかったことを 0 件にしない**（規則2）
+          if (err instanceof RegistryUnavailableError) {
+            return json(res, 502, { error: err.message });
+          }
+          throw err;
+        }
+        return;
+      }
+
+      // **registry から1本入れて、繋ぐ**（追加・2026-09-21、ユーザー要望
+      // 「リモートならつなぐ。ローカルならインストールして、つなぐまで、
+      // 一貫してできる手段が欲しい」）。
+      //
+      // **画面が送るのは「目録のどれか・付ける名前・人が入れた値」だけ。**
+      // 起動の指定も役割も画面に作らせない——`server.json` は**host が引き直す**
+      // （`v4-security.md`「役割のなりすまし」。貼り付けた JSON が金庫の窓口を
+      // 名乗る経路を、ここから復活させない）
+      if (url.pathname === "/api/modules/registry/install" && req.method === "POST") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        if (!deps.dataDir) return json(res, 503, { error: "data dir is not available" });
+        const body = (await readJsonBody(req)) as {
+          serverName?: unknown;
+          name?: unknown;
+          answers?: unknown;
+        };
+        if (typeof body.serverName !== "string" || typeof body.name !== "string") {
+          return json(res, 400, { error: "serverName と name が要ります" });
+        }
+        const moduleName = body.name.trim();
+        if (moduleName === "") return json(res, 400, { error: "name が空です" });
+        const answers = Array.isArray(body.answers)
+          ? (body.answers as AnsweredInput[]).filter(
+              (a) =>
+                a &&
+                typeof a.name === "string" &&
+                typeof a.value === "string" &&
+                (a.source === "vault" || a.source === "plain"),
+            )
+          : [];
+
+        try {
+          // **host が引き直す**——画面が渡した起動の指定は受け取らない
+          const found = await searchRegistry({
+            query: body.serverName,
+            fetchImpl: deps.registryFetch,
+            baseUrl: deps.registryBaseUrl,
+          });
+          const entry = found.entries.find((e) => e.server.name === body.serverName);
+          if (!entry) {
+            return json(res, 404, { error: `目録に見つかりません：${body.serverName}` });
+          }
+          const built = await buildDeclarationFromRegistry({
+            server: entry.server,
+            name: moduleName,
+            answers,
+            packageDir: modulePackageDirOf(deps.dataDir, moduleName),
+          });
+          await addModuleDeclaration(deps.runtimeConfig, {
+            name: moduleName,
+            launch: built.launch as never,
+            meta: built.meta,
+          });
+          // **URL に繋ぐ形は、承知の印まで入れて初めて立つ**（`v4-security.md`）
+          // ——画面はそこを承知させてから押している。印は**相手の URL ごと**なので、
+          // 繋ぎ先が変わったら聞き直しになる
+          const launch = built.launch as { type?: string; url?: string };
+          if (launch.type === "http" && typeof launch.url === "string") {
+            await acknowledgeEgress(deps.runtimeConfig, moduleName, launch.url);
+          }
+          json(res, 200, { ok: true, added: moduleName, summary: built.summary });
+        } catch (err) {
+          if (
+            err instanceof RegistryInstallError ||
+            err instanceof RegistryUnavailableError ||
+            err instanceof ModuleDeclarationError ||
+            err instanceof ModuleMetaError
+          ) {
+            // **人が直せる形で言う**（規則2）——「失敗しました」で終わらせない
+            return json(res, 400, { error: err.message });
+          }
+          throw err;
+        }
+        return;
+      }
+
       // 目録から1本入れる。**画面が送るのは目録の id と名前だけ**
       // ——役割も起動の指定も画面に組み立てさせない（`v4-security.md`）
       const catalogMatch = url.pathname.match(/^\/api\/modules\/catalog\/([^/]+)$/);

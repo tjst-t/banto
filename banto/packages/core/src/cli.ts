@@ -53,6 +53,7 @@ import {
   type LaunchContext,
   type ParsedModuleDeclaration,
 } from "./modules/declaration.js";
+import { modulePackageDirOf } from "./modules/registry/install/paths.js";
 import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
 import {
@@ -500,6 +501,7 @@ async function main(): Promise<void> {
       ...launchContextBase,
       hostRelayToken: "",
       moduleDataDir: "",
+      modulePackageDir: "",
     }) as RemoteLaunch;
 
     // **ログインが要る相手には、金庫に預けたトークンで繋ぐ**（追加・2026-09-18）。
@@ -632,6 +634,11 @@ async function main(): Promise<void> {
       projectRoot: project?.root,
       // Module ごとに1つ。**その Module の分だけ**書けるようにする（決定・2026-09-07）
       moduleDataDir: join(bootstrap.dataDir, "modules", connName),
+      // **プログラムの置き場は、状態の置き場と分ける**（追加・2026-09-21）。
+      // registry から取ってきたものがここに入り、起動時は**読み取り専用**で渡す
+      // **宣言の名前で引く**（プロセス名 `<名前>-<projectId>` ではない）
+      // ——入れるときも同じ名前で置いている（`install/paths.ts`、規則3）
+      modulePackageDir: modulePackageDirOf(bootstrap.dataDir, declaration.name),
     };
     mkdirSync(context.moduleDataDir, { recursive: true, mode: 0o700 });
     // **金庫の語を先に解く**（追加・2026-09-16）。値はここで初めて現れ、
@@ -684,7 +691,11 @@ async function main(): Promise<void> {
         profile,
         nodeExecPath: process.execPath,
         moduleDataDir: context.moduleDataDir,
-        moduleInstallDirs: [monorepoRoot],
+        // **取ってきた配布物も読めるようにする**（追加・2026-09-21）。ここが
+        // 無いと、registry から入れた Module は**自分のプログラムを読めずに
+        // 起動すらできない**（`derive.ts` の `moduleInstallDirs` のコメント）。
+        // **読み取り専用**——書けるのは `moduleDataDir` のほうだけ
+        moduleInstallDirs: [monorepoRoot, context.modulePackageDir],
       });
       if (omitted.length > 0) console.warn(`[host] ${connName} ruleset omitted paths:`, omitted);
       // **書き出す前の最後の防波堤**（`@banto/landlock` の guard）。人が Project の根に
@@ -1119,6 +1130,10 @@ async function main(): Promise<void> {
     resolveModuleClientsForProject,
     resolveInstanceModuleClients,
     sandboxPublicUrl: bootstrap.sandboxPublicUrl,
+    // **引く registry を差し替えられるようにしておく**（追加・2026-09-21）。
+    // 既定は公式。自前の registry を立てている人と、**本物を叩かない E2E**
+    // の両方がここを使う（規則6——外の都合で落ちる試験にしない）
+    registryBaseUrl: process.env.BANTO_MCP_REGISTRY_URL,
   });
 
   // mock/と同じ運用（決定・2026-09-03）——サンドボックスの外部公開はポートを

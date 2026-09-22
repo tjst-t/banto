@@ -36,8 +36,13 @@ import { PillTabs, SegmentedTabs } from "@/components/banto/shell/segmented-tabs
 import {
   installRealModuleFromCatalog,
   listRealModuleCatalog,
+  installRealModuleFromRegistry,
   type RealCatalogEntry,
 } from "@/lib/backend/client";
+import {
+  RegistryModulePicker,
+  type RegistryPick,
+} from "@/components/banto/settings/registry-module-picker";
 
 const PROJECT_ROOT = "${projectRoot}";
 
@@ -131,7 +136,12 @@ export function AddInstanceModuleDialog({
   // 分け、入れ方（JSON か、項目を手で入れるか）は中のサブタブにする。
   // 語は既存ソフトの慣習に合わせる：設定ファイルを取り込む（Import）と、
   // 項目を手で入れる（Add manually）——VS Code・Postman・1Password などが同じ分け方
-  const [mode, setMode] = useState<"bundled" | "custom">("bundled");
+  // **外のタブは3つ**（改訂・2026-09-21、ユーザー要望）——公式（banto 同梱）・
+  // MCP Registry（世の中の目録）・カスタム（自分で足す）。registry は
+  // 「誰かが公開したものを選ぶ」という点で同梱と同じ粒度なので、隣に並ぶ
+  const [mode, setMode] = useState<"bundled" | "registry" | "custom">("bundled");
+  // registry から選んだ1件（必須の欄が埋まっているかまで含む）
+  const [registryPick, setRegistryPick] = useState<RegistryPick | null>(null);
   const [customMode, setCustomMode] = useState<"json" | "manual">("json");
   const [pasted, setPasted] = useState("");
   const [name, setName] = useState("");
@@ -180,6 +190,12 @@ export function AddInstanceModuleDialog({
       : pasted.includes(PROJECT_ROOT);
 
   // **相手の名前**——押す前に、どこへ出ていくかを言うために
+  // **registry から選んだものが URL に繋ぐ形なら、そこも承知を取る**
+  // （追加・2026-09-21）——閉じ込めが効かない代わりに要るのがこの承知
+  const registryRemoteHost =
+    mode === "registry" && registryPick?.entry.connect.kind === "remote"
+      ? registryPick.entry.connect.host
+      : undefined;
   const remoteHosts = manualRemote
     ? (() => {
         try {
@@ -191,7 +207,7 @@ export function AddInstanceModuleDialog({
     : mode === "custom" && customMode === "json"
       ? remoteHostsIn(pasted)
       : [];
-  const isRemote = manualRemote || remoteHosts.length > 0;
+  const isRemote = manualRemote || remoteHosts.length > 0 || registryRemoteHost !== undefined;
 
   function reset() {
     setPasted("");
@@ -209,10 +225,13 @@ export function AddInstanceModuleDialog({
     setCustomMode("json");
     setPicked(null);
     setCatalogName("");
+    setRegistryPick(null);
   }
 
   const canSubmit =
-    (mode === "bundled"
+    (mode === "registry"
+      ? registryPick !== null && registryPick.ready
+      : mode === "bundled"
       ? picked !== null && catalogName.trim().length > 0
       : customMode === "json"
       ? pasted.trim().length > 0
@@ -245,6 +264,7 @@ export function AddInstanceModuleDialog({
           onChange={(id) => setMode(id as typeof mode)}
           tabs={[
             { id: "bundled", label: "公式モジュール", count: catalog?.length },
+            { id: "registry", label: "MCP Registry" },
             { id: "custom", label: "カスタム" },
           ]}
         />
@@ -306,6 +326,10 @@ export function AddInstanceModuleDialog({
               </div>
             ) : null}
           </div>
+        ) : null}
+
+        {mode === "registry" ? (
+          <RegistryModulePicker existingNames={existingNames} onChange={setRegistryPick} />
         ) : null}
 
         {mode === "custom" ? (
@@ -467,7 +491,7 @@ export function AddInstanceModuleDialog({
 
         {/* **押す前に、何が決まるかを出す**（導出は隠さない）。
             同梱タブでは出さない——そこは目録の行が役割と立つ場所を言っている */}
-        {mode === "bundled" ? null : (
+        {mode === "bundled" || mode === "registry" ? null : (
           // **押す前に、何が決まるかを1行で**（導出は隠さない）。
           // 以前は説明の段落を3つ積んでいて、どれが大事か分からなかった
           <p
@@ -506,7 +530,7 @@ export function AddInstanceModuleDialog({
             <span>
               この Module を呼ぶたびに、会話から来た内容が
               <strong className="text-danger">
-                {remoteHosts.length > 0 ? remoteHosts.join("・") : "この URL の相手"}
+                {registryRemoteHost ?? (remoteHosts.length > 0 ? remoteHosts.join("・") : "この URL の相手")}
               </strong>
               へ送られます（banto の外に出ます）。承知しました
             </span>
@@ -530,7 +554,16 @@ export function AddInstanceModuleDialog({
               setBusy(true);
               setError(null);
               try {
-                if (mode === "bundled") {
+                if (mode === "registry") {
+                  // **画面は「どれか・名前・値」しか送らない**——起動の指定は
+                  // host が `server.json` を引き直して作る（`v4-security.md`）
+                  await installRealModuleFromRegistry(
+                    registryPick!.entry.name,
+                    registryPick!.name,
+                    registryPick!.answers,
+                  );
+                  await onInstalled();
+                } else if (mode === "bundled") {
                   await installRealModuleFromCatalog(picked!, catalogName.trim());
                   await onInstalled();
                 } else if (customMode === "json") {

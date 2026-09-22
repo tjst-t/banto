@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-21",
+  "updatedAt": "2026-09-22",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1714,6 +1714,19 @@
         "**推しは (3)**。AI が呼ぶかどうかは非決定なので、そこを E2E で見ても元の間欠の問題に戻るだけ"
       ],
       "notes": "docs/notes/2026-09-21-e2e-fake-runner.md"
+    },
+    {
+      "id": "module-registry-install",
+      "title": "MCP Registry の一覧から Module を入れて繋ぐ（npm・remote）",
+      "status": "done",
+      "why": "ユーザー要望（2026-09-21）「MCP Registry の一覧からのインストールのタブを追加して欲しい。server.json を参照して、リモートならつなぐ。ローカルならインストールして、つなぐまで、一貫してできる手段が欲しい」。**`npx -y` は閉じ込めの下では動かない**（instance の Module が書けるのは `moduleDataDir` と `/dev` だけ。`touch $HOME/.npm/… → Permission denied` を実機で確認）ので、取得は閉じ込めの外＝host がやり、起動は置き場を**読み取り専用**で渡す。",
+      "doneWhen": "registry を検索して、提供元のものが先に出て、選んで必要な値を入れると**実際に取ってきて立ち、AI から呼べる**こと。",
+      "open": [
+        "**対応は npm と remote のみ**（ユーザー決定）。pypi・oci・nuget・mcpb は `FORMAT_SUPPORT` に理由つきで並べてあり、**足すのは表に1行＋`install/<形式>.ts` 1本**で済む形にしてある",
+        "**人に尋ねる形の起動引数**（`packageArguments` に値も既定も無いもの）には未対応——黙って落とさず、断って「カスタムから手で書けば足せます」と言う",
+        "**「公式」は近似**：registry は verified の欄を持たないので名前空間から導いている。Google は `com.google/gmail` ではなく `com.googleapis.*` で出しているため、「gmail」で検索しても提供元は上がらない（画面は出所を札で出して、並び順だけに預けない）"
+      ],
+      "notes": "docs/notes/2026-09-21-mcp-registry.md"
     }
   ],
   "phase1": {
