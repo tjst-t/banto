@@ -57,6 +57,9 @@ export const CONNECTED_FEATURES = {
   // Project ごとの上書きが host の設定層に繋がっていて、会話の始まりに `instructions`
   // として AI に届く
   skills: true,
+  // **Shell 専用のホームに写すもの**（決定・2026-09-23、ユーザー）。host が写し、立っている
+  // Shell にも写し直す
+  shellHome: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す

@@ -26,6 +26,7 @@ import type { ThreadState } from "../project-thread/types.js";
 import type { ThreadPermissionMode } from "../project-thread/types.js";
 import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { SessionSkillSet, SkillRef } from "../skills/types.js";
+import { DEFAULT_SHELL_HOME_FILES, shellHomeEntryProblem, type ShellHomeSync } from "../modules/shell-home.js";
 import {
   discoverSkills,
   isSkillEnabled,
@@ -124,6 +125,15 @@ export interface AppDeps {
   /** そのThreadで使えるModule（名前とRunner接続先URL）の一覧を返す（Project単位の配線）。
    *  Shell/FileSystemはProject単位で遅延spawnするため非同期。 */
   resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]>;
+  /**
+   * **Shell 専用のホームに写すもの**（決定・2026-09-23、ユーザー）。人のホームからの相対パス。
+   * `setFiles` は保存して、立っている Shell のホームにも写し直す（まだ立っていなければ `undefined`）。
+   */
+  shellHome?: {
+    files(): string[];
+    lastSync(): ShellHomeSync | undefined;
+    setFiles(files: string[]): Promise<ShellHomeSync | undefined>;
+  };
   /** 新しいセッションで効かせる Skill の集合（決定・2026-09-23、§5.7）。`turn-runner.ts` が使う。 */
   resolveSessionSkills?(threadId: string): Promise<SessionSkillSet>;
   /** そのThreadで繋がっているModuleそのもの（画面を出すために中身を読む）。
@@ -1798,6 +1808,33 @@ export function createApp(deps: AppDeps) {
 
       // **何も選ばれていないときのモード**（§6.4）。instance 既定と Project 上書きの
       // 2階層（§6.1）。**画面がまだ繋がっていない**ので、いまはこの口だけが入口
+      // **Shell 専用のホームに写すもの**（決定・2026-09-23、ユーザー）。資格情報の置き場は
+      // 断る（`shellHomeEntryProblem`）——写すと、外へ繋がる AI のコマンドから読める
+      if (url.pathname === "/api/shell-home" && req.method === "GET") {
+        if (!deps.shellHome) return json(res, 501, { error: "Shell のホームを扱えません" });
+        json(res, 200, {
+          files: deps.shellHome.files(),
+          defaults: DEFAULT_SHELL_HOME_FILES,
+          lastSync: deps.shellHome.lastSync() ?? null,
+        });
+        return;
+      }
+      if (url.pathname === "/api/shell-home" && req.method === "PUT") {
+        if (!deps.shellHome) return json(res, 501, { error: "Shell のホームを扱えません" });
+        const body = (await readJsonBody(req)) as { files?: unknown };
+        if (!Array.isArray(body.files) || body.files.some((f) => typeof f !== "string")) {
+          return json(res, 400, { error: "files は文字列の配列です" });
+        }
+        const files = [...new Set((body.files as string[]).map((f) => f.trim().replace(/^~\//, "")).filter(Boolean))];
+        for (const f of files) {
+          const problem = shellHomeEntryProblem(f);
+          if (problem) return json(res, 400, { error: problem });
+        }
+        const sync = await deps.shellHome.setFiles(files);
+        json(res, 200, { files, lastSync: sync ?? null });
+        return;
+      }
+
       // **Skill の一覧と、効かせるかどうか**（決定・2026-09-23、アーキ仕様 §5.7）。
       // `projectId` があればその Project に繋ぐ Module から、無ければ banto 全体の
       // Module から集める。**効いているかは設定から導く**（写しを返さない、規則3）。

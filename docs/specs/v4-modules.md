@@ -1005,7 +1005,11 @@ ZIP 化は launcher 側（Module の実装）の仕事であって、新しい t
 
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
-| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒、上限あり）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記） | 返り値は `stdout`／`stderr`／`exitCode`／`timedOut` |
+| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒、上限あり）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記） | 返り値は `stdout`／`stderr`／`exitCode`／`timedOut`。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23） |
+
+**コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
+host が用意し、人が選んだ設定（既定は git の設定）だけを資格情報を外して写す。人のホームは
+見せない。形と理由は `docs/specs/v4-security.md`「Shell のコマンドには、専用のホームを渡す」。
 
 **tool はこれ1本だけにする。** `listProcesses`/`killProcess` のような、プロセスを
 識別子で参照する tool は意図的に作らない——状態を持つことになり、Shell の契約

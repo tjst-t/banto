@@ -2,7 +2,7 @@
 // 順序をPlaywrightに委ねると競合しうる（実測——globalSetup前にcliが起動し、
 // config.jsonが無いまま既定値＝本番と同じport/dataDirで立ち上がりEADDRINUSEになった）
 // ので、ここで確実にconfig.jsonを書いてからcli.jsを読み込む
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
@@ -12,6 +12,7 @@ import {
   NPM_REGISTRY_PORT,
   REGISTRY_BASE_URL,
   REGISTRY_PORT,
+  SHELL_HOME_SOURCE,
 } from "./config.ts";
 import { startRegistryFixture } from "./registry-fixture.ts";
 import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
@@ -80,5 +81,24 @@ await startNpmRegistryFixture(NPM_REGISTRY_PORT);
 const github = await startGithubFixture();
 process.env.BANTO_SKILLS_GITHUB_API_URL = github.api;
 process.env.BANTO_SKILLS_GITHUB_RAW_URL = github.raw;
+
+// **Shell のホームへ写す元も偽物にする**（追加・2026-09-23）。資格情報の取り出し役と
+// include を入れておく——写したときに外れることを試験が見る
+mkdirSync(join(SHELL_HOME_SOURCE, ".config", "git"), { recursive: true });
+writeFileSync(
+  join(SHELL_HOME_SOURCE, ".gitconfig"),
+  [
+    "[user]",
+    "\tname = E2E Taro",
+    "\temail = taro@e2e.invalid",
+    '[credential "https://github.com"]',
+    "\thelper = !/usr/bin/gh auth git-credential",
+    "[include]",
+    "\tpath = ~/.gitconfig-secret",
+    "",
+  ].join("\n"),
+);
+writeFileSync(join(SHELL_HOME_SOURCE, ".config", "git", "ignore"), "*.e2e-ignored\n");
+process.env.BANTO_SHELL_HOME_SOURCE = SHELL_HOME_SOURCE;
 
 await import("../packages/core/dist/cli.js");

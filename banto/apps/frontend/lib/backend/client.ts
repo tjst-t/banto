@@ -478,6 +478,31 @@ export async function getRealThreadSkills(threadId: string): Promise<RealThreadS
   return request<RealThreadSkills>(`/api/threads/${threadId}/skills`);
 }
 
+/**
+ * **Shell 専用のホームに写すもの**（決定・2026-09-23、ユーザー）。人のホームからの相対パス。
+ * `lastSync` は最後に写したときの結果（Shell がまだ1本も立っていなければ `null`）。
+ */
+export interface RealShellHomeSync {
+  copied: string[];
+  missing: string[];
+  removedGitKeys: string[];
+  rewrittenGitKeys: string[];
+}
+
+export interface RealShellHome {
+  files: string[];
+  defaults?: string[];
+  lastSync: RealShellHomeSync | null;
+}
+
+export async function getRealShellHome(): Promise<RealShellHome> {
+  return request<RealShellHome>("/api/shell-home");
+}
+
+export async function setRealShellHomeFiles(files: string[]): Promise<RealShellHome> {
+  return request<RealShellHome>("/api/shell-home", { method: "PUT", body: JSON.stringify({ files }) });
+}
+
 /** `enabled: null` は Project の上書きを消す（全体の既定に戻す）。 */
 export async function setRealSkillEnabled(input: {
   module: string;

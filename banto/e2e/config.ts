@@ -88,6 +88,11 @@ export const FRONTEND_DIST_DIR = ".next-e2e";
 // これを実際に拒否したので、置き場のほうを本番と同じ関係（リポジトリの外）にした。
 const E2E_TMP = join(tmpdir(), "banto-e2e", RUN_ID);
 export const DATA_DIR = join(E2E_TMP, "data");
+/**
+ * **Shell のホームへ写す元**（追加・2026-09-23）。本物の人のホーム（`~/.gitconfig`）を
+ * 試験に使わない——実行ごとの置き場に偽のホームを作る（`start-core.ts`）。
+ */
+export const SHELL_HOME_SOURCE = join(E2E_TMP, "user-home");
 export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
 
 /**

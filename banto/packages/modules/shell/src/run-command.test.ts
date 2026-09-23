@@ -321,3 +321,55 @@ test("同じ alias を2箇所で使っても、在りかは1度しか引かな�
   );
   assert.equal(lookups, 1);
 });
+
+// **Shell 専用のホーム**（決定・2026-09-23、ユーザー）。人のホームは閉じ込めで読めない
+// ——継いだままだと git も npm も落ちるので、host が用意したホームを渡す。
+test("Shell のホームを渡すと、HOME と XDG の置き場がその中を指す", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  try {
+    const home = join(dir, ".shell-home");
+    const result = await runCommand(
+      { command: 'echo "$HOME|$XDG_CONFIG_HOME|$XDG_CACHE_HOME" && touch "$HOME/written"' },
+      { projectRoot: dir, homeDir: home, relayClient: unusedRelayClient() },
+    );
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout.trim(), `${home}|${home}/.config|${home}/.cache`);
+    // npm が起動元として足した、人のホームを指す設定は落ちる（HOME を替えても npm がそちらを見るため）
+    const prev = { cache: process.env.npm_config_cache, registry: process.env.npm_config_registry };
+    process.env.npm_config_cache = `${process.env.HOME}/.npm`;
+    process.env.npm_config_registry = "https://registry.example";
+    try {
+      const npm = await runCommand(
+        { command: 'echo "cache=${npm_config_cache:-none}|registry=${npm_config_registry:-none}"' },
+        { projectRoot: dir, homeDir: home, relayClient: unusedRelayClient() },
+      );
+      assert.equal(npm.stdout.trim(), "cache=none|registry=https://registry.example");
+    } finally {
+      if (prev.cache === undefined) delete process.env.npm_config_cache;
+      else process.env.npm_config_cache = prev.cache;
+      if (prev.registry === undefined) delete process.env.npm_config_registry;
+      else process.env.npm_config_registry = prev.registry;
+    }
+    assert.ok(existsSync(join(home, "written")), "ホームに書けない（用意されていない）");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// **閉じ込めで弾かれたら、そう言う**（追加・2026-09-23）。「自分の端末では動くのに」の理由を
+// 人にも AI にも見せる——Project とホームの中の失敗は閉じ込めのせいではないので言わない
+test("閉じ込めの外のパスで Permission denied になったら、理由を添える", async () => {
+  const { confinementNoteFor } = await import("./run-command.js");
+  const note = confinementNoteFor(
+    [
+      "warning: unable to access '/home/u/.gitconfig': Permission denied",
+      "cat: /proj/secret: Permission denied",
+      "cat: /home/shell/x: Permission denied",
+      "fatal: cannot exec 'remote-https': Permission denied",
+    ].join("\n"),
+    { projectRoot: "/proj", homeDir: "/home/shell" },
+  );
+  assert.match(note ?? "", /閉じ込めの外にあるため触れませんでした：\/home\/u\/\.gitconfig。/);
+  assert.match(note ?? "", /「Shell のホーム」/);
+  assert.equal(confinementNoteFor("ls: /nope: No such file or directory", { projectRoot: "/proj" }), undefined);
+});

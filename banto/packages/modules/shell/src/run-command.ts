@@ -18,6 +18,13 @@ export interface RunCommandInput {
 
 export interface RunCommandDeps {
   projectRoot: string;
+  /**
+   * **コマンドに渡すホーム**（決定・2026-09-23、ユーザー）。host が Project ごとに用意し、
+   * 人が選んだ設定（既定は git の設定）だけを写してある。人のホームは閉じ込めで読めない
+   * ——継いだままだと git も npm も致命的に落ちる（`packages/core/src/modules/shell-home.ts`）。
+   * 渡されなければ、親の HOME のまま。
+   */
+  homeDir?: string;
   relayClient: HostRelayClient;
   /** 名前から在りかを引く窓口（既定 `vault-directory`）。**試験で差し替えるための穴**。 */
   directoryModuleName?: string;
@@ -31,6 +38,35 @@ export interface RunCommandResult {
   stderr: string;
   exitCode: number | null;
   timedOut: boolean;
+  /**
+   * **閉じ込めで弾かれたらしいときの説明**（追加・2026-09-23）。人も AI も、
+   * 「自分の端末では動くのに」の理由がこれで分かる。弾かれた気配が無ければ持たない。
+   */
+  confinementNote?: string;
+}
+
+/** `Permission denied` などの行から、閉じ込めの外を指すパスを拾う。 */
+export function confinementNoteFor(
+  stderr: string,
+  allowed: { projectRoot: string; homeDir?: string },
+): string | undefined {
+  const blocked = new Set<string>();
+  for (const line of stderr.split("\n")) {
+    if (!/Permission denied|EACCES|Operation not permitted/.test(line)) continue;
+    for (const m of line.matchAll(/(\/[^\s'"`:,)]+)/g)) {
+      const path = m[1]!;
+      const within = (root?: string) => root !== undefined && (path === root || path.startsWith(`${root}/`));
+      if (within(allowed.projectRoot) || within(allowed.homeDir) || path.startsWith("/dev/")) continue;
+      blocked.add(path);
+    }
+  }
+  if (blocked.size === 0) return undefined;
+  return (
+    `閉じ込めの外にあるため触れませんでした：${[...blocked].slice(0, 5).join("、")}。` +
+    "banto の Shell が触れるのは、この Project のフォルダと Shell 専用のホームの中だけです。" +
+    "人のホームの設定を使いたいときは、人が 設定 →「Shell のホーム」で写すものに足せます。" +
+    "資格情報は写さず、Vault から渡します（envSecrets・sshIdentity）。"
+  );
 }
 
 const DEFAULT_TIMEOUT_SEC = 120;
@@ -65,6 +101,25 @@ export function buildChildEnv(parentEnv: NodeJS.ProcessEnv = process.env): NodeJ
 export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): Promise<RunCommandResult> {
   const directoryModule = deps.directoryModuleName ?? "vault-directory";
   const env = buildChildEnv();
+  if (deps.homeDir) {
+    // XDG の置き場も同じホームの中へ——親が明示していると、そちら（人のホーム）が勝つ
+    await mkdir(deps.homeDir, { recursive: true });
+    env.HOME = deps.homeDir;
+    env.XDG_CONFIG_HOME = `${deps.homeDir}/.config`;
+    env.XDG_CACHE_HOME = `${deps.homeDir}/.cache`;
+    env.XDG_DATA_HOME = `${deps.homeDir}/.local/share`;
+    env.XDG_STATE_HOME = `${deps.homeDir}/.local/state`;
+    // **npm が起動元として足した設定も、人のホームを指したまま残る**（実測・2026-09-23）。
+    // host が `npm`/`npx` の下から起こされると `npm_config_cache=~/.npm`・
+    // `npm_config_userconfig=~/.npmrc` を継ぎ、HOME を替えても npm はそちらを見る
+    // ——閉じ込めの中では読めない。人のホームを指すものだけ落とす
+    const parentHome = process.env.HOME;
+    if (parentHome) {
+      for (const name of Object.keys(env)) {
+        if (/^npm_config_/i.test(name) && env[name]?.startsWith(`${parentHome}/`)) delete env[name];
+      }
+    }
+  }
 
   // **どの Vault にあるかは、名前から引く**（改訂・2026-09-12）。以前は
   // `"vault"` を決め打ちしていたので、2本目の backend（`vault-infisical`）に
@@ -179,7 +234,11 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       });
       child.on("exit", (code, signal) => {
         if (signal === "SIGTERM" && code === null) timedOut = true;
-        settle(() => resolvePromise({ stdout, stderr, exitCode: code, timedOut }));
+        const confinementNote =
+          code === 0 ? undefined : confinementNoteFor(stderr, { projectRoot: deps.projectRoot, homeDir: deps.homeDir });
+        settle(() =>
+          resolvePromise({ stdout, stderr, exitCode: code, timedOut, ...(confinementNote ? { confinementNote } : {}) }),
+        );
       });
     });
   } finally {

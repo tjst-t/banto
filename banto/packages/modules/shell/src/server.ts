@@ -12,7 +12,7 @@ import { VISIBILITY_META_KEY, MODULE_META_KEY } from "@banto/module-contract";
 import { runCommand } from "./run-command.js";
 import { HostRelayClient } from "./host-relay-client.js";
 
-export function createShellServer(deps: { projectRoot: string; relayClient: HostRelayClient }) {
+export function createShellServer(deps: { projectRoot: string; relayClient: HostRelayClient; homeDir?: string }) {
   const server = new Server(
     { name: "banto-module-shell", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -113,6 +113,7 @@ export function createShellServer(deps: { projectRoot: string; relayClient: Host
       },
       {
         projectRoot: deps.projectRoot,
+        homeDir: deps.homeDir,
         relayClient: deps.relayClient,
         onProgress:
           progressToken !== undefined
@@ -149,6 +150,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     process.exit(1);
   }
   const relayClient = new HostRelayClient({ url: hostUrl, token: hostToken });
-  const server = createShellServer({ projectRoot, relayClient });
+  // **Shell 専用のホーム**（決定・2026-09-23）。host が用意して写してある
+  const homeDir = process.env.BANTO_SHELL_HOME || undefined;
+  const server = createShellServer({ projectRoot, relayClient, homeDir });
   await server.connect(new StdioServerTransport());
 }

@@ -1828,6 +1828,35 @@
       ],
       "notes": "docs/notes/2026-09-23-skill-via-mcp.md",
       "completedAt": "2026-09-23"
+    },
+    {
+      "id": "shell-home",
+      "title": "Shell 専用のホーム——人が選んだ設定だけを写し、資格情報は写さない",
+      "status": "done",
+      "completedAt": "2026-09-23",
+      "why": "ユーザー報告「SHELL MCP でも DNS 引けなかった」から測ったら、名前解決を直しても git と npm が落ちた。Shell は host の HOME を継ぐので、閉じ込めで読めない `~/.gitconfig`・`~/.config/git/ignore`・`~/.npm` を触って致命的に落ちる（Project の根がホームでない限り、ローカルの `git commit` すら通らない）。ユーザー決定：案A（Shell 専用のホーム）を Dev Containers の形で——人が選んだ設定だけを写し、資格情報は写さない。",
+      "doneWhen": "Shell で HOME が Shell のホームを指し、写した名前で git commit でき、npm のキャッシュが書け、資格情報の取り出し役が外れていること。設定の「Shell のホーム」で写すものを変えると、立っている Shell にも効くこと。閉じ込めで落ちたら結果に理由が出ること。",
+      "open": [
+        "HTTPS の資格情報（git push 等）はまだ渡せない——`shell-https-credential-forwarding`",
+        "git の worktree を根にした Project は、共有の `.git` が根の外にあるので git が使えない——`shell-worktree-project-git`"
+      ],
+      "notes": "docs/notes/2026-09-23-shell-home.md"
+    },
+    {
+      "id": "shell-https-credential-forwarding",
+      "title": "Shell の git が HTTPS の資格情報を Vault から取る（取り出し役の転送）",
+      "status": "backlog",
+      "why": "ユーザーと合意した3段目（2026-09-23）。Shell のホームには資格情報を写さないので、HTTPS で push するには取り出し役が要る。Dev Containers と同じく、Shell の中の git の credential helper を banto 製に差し替え、要るときに host 経由で Vault から取る（初回は人の承認）。SSH は既存の `sshIdentity`（ssh-agent）で足りるはず——実物で確かめてから。",
+      "doneWhen": "Shell で `git push https://…` が Vault の資格情報で通り、資格情報がコマンドの文字列・Shell のホーム・会話に残らないこと。",
+      "notes": "docs/notes/2026-09-23-shell-home.md"
+    },
+    {
+      "id": "shell-worktree-project-git",
+      "title": "git の worktree を根にした Project で、Shell の git が使えない",
+      "status": "undecided",
+      "why": "2026-09-23 に実測（`/home/ubuntu/worktrees/banto-v3` を根にした Project）。worktree の `.git` はファイルで、実体（`<本体>/.git/worktrees/<名前>`）が根の外にあるので `fatal: not a git repository`。直すには本体の `.git` を閉じ込めの許可に足すことになり、本体のリポジトリ全体（他の worktree を含む）に触れる——広げてよいかは人の判断。",
+      "doneWhen": "方針が決まり、決まった形で worktree の Project でも git status/commit が通ること（または通らないことが画面で分かること）。",
+      "notes": "docs/notes/2026-09-23-shell-home.md"
     }
   ],
   "phase1": {

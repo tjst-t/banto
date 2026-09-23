@@ -61,6 +61,7 @@ import {
   type ParsedModuleDeclaration,
 } from "./modules/declaration.js";
 import { modulePackageDirOf } from "./modules/registry/install/paths.js";
+import { SHELL_HOME_FILES_KEY, shellHomeFiles, syncShellHome, type ShellHomeSync } from "./modules/shell-home.js";
 import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
 import {
@@ -202,6 +203,20 @@ async function main(): Promise<void> {
 
   /** 起動済みの Module。instance のものは key が名前、Project のものは `<名前>-<projectId>`。 */
   const connectedModules = new Map<string, Client>();
+  /**
+   * **Shell 専用のホーム**（接続名 → 置き場）。写すものの一覧を人が変えたら、立っている
+   * Shell のホームにも写し直す——コマンドは毎回新しく起こすので、再起動は要らない。
+   */
+  const shellHomes = new Map<string, string>();
+  let lastShellHomeSync: ShellHomeSync | undefined;
+  // **どこから写すか**は既定で人のホーム。E2E だけが差し替える（本物のホームを試験に使わない）
+  const shellHomeSource = process.env.BANTO_SHELL_HOME_SOURCE || undefined;
+  async function resyncShellHomes(): Promise<ShellHomeSync | undefined> {
+    for (const home of shellHomes.values()) {
+      lastShellHomeSync = await syncShellHome(home, shellHomeFiles(runtimeConfig), { sourceHome: shellHomeSource });
+    }
+    return lastShellHomeSync;
+  }
   /** 回収のための台帳（決定・2026-09-10、`relay-lifecycle-and-elicitation`）
    *  ——**Project を畳んだら、その Project のために立てたものは全部落とす**。 */
   const moduleTokens = new Map<string, string>();
@@ -657,6 +672,23 @@ async function main(): Promise<void> {
       modulePackageDir: modulePackageDirOf(bootstrap.dataDir, declaration.name),
     };
     mkdirSync(context.moduleDataDir, { recursive: true, mode: 0o700 });
+    // **Shell 専用のホーム**（決定・2026-09-23、ユーザー）。人のホームは閉じ込めで
+    // 読めないので、Project ごとに書けるホームを用意し、人が選んだ設定だけを写す。
+    // `shell` は同梱だけが名乗れる役割（RESERVED_ROLES）——**第三者の Module に
+    // 人の git の設定を渡さない**
+    let shellHome: string | undefined;
+    if ((declaration.meta.satisfies as string[]).includes("shell") && declaration.meta.confinement) {
+      shellHome = join(context.moduleDataDir, "home");
+      const sync = await syncShellHome(shellHome, shellHomeFiles(runtimeConfig), { sourceHome: shellHomeSource });
+      shellHomes.set(connName, shellHome);
+      lastShellHomeSync = sync;
+      if (sync.removedGitKeys.length > 0 || sync.rewrittenGitKeys.length > 0) {
+        console.log(
+          `[host] ${connName}: Shell のホームへ写した git の設定から外したもの ${JSON.stringify(sync.removedGitKeys)}` +
+            `・向け直したもの ${JSON.stringify(sync.rewrittenGitKeys)}`,
+        );
+      }
+    }
     // **金庫の語を先に解く**（追加・2026-09-16）。値はここで初めて現れ、
     // env として子プロセスへ渡るだけ——**記録に残るのは名前だけ**
     const withSecrets = await resolveSecretPlaceholders(declaration, project?.id);
@@ -749,6 +781,7 @@ async function main(): Promise<void> {
       // **環境変数の既定が全部の写しに効いてしまう**。host が必ず渡す
       // （`BANTO_MODULE_DATA_DIR` と同じ理由——宣言の写しに持たせない）
       BANTO_MODULE_NAME: declaration.name,
+      ...(shellHome ? { BANTO_SHELL_HOME: shellHome } : {}),
       ...launch.env,
     });
 
@@ -887,6 +920,7 @@ async function main(): Promise<void> {
       retriedAfterSelfReport.delete(connName);
       registry.unregisterModule(connName); // 合言葉もここで失効する
       moduleTokens.delete(connName);
+      shellHomes.delete(connName);
       await agentRelayEndpoint.unregisterModule(connName);
       // **プロセスを落とすのは最後**（先に台帳から外しておけば、落とす途中に
       // 来た要求が死にかけの接続を掴まない）
@@ -934,6 +968,7 @@ async function main(): Promise<void> {
       retriedAfterSelfReport.delete(connName);
       registry.unregisterModule(connName);
       moduleTokens.delete(connName);
+      shellHomes.delete(connName);
       await agentRelayEndpoint.unregisterModule(connName);
       await client?.close().catch((err: unknown) => {
         console.warn(`[host] ${connName} を畳むときに例外:`, err);
@@ -1150,6 +1185,18 @@ async function main(): Promise<void> {
     releaseProjectModules,
     resolveModulesForThread,
     resolveSessionSkills,
+    // **Shell 専用のホームに写すもの**（決定・2026-09-23）。変えたら、立っている Shell にも写し直す
+    shellHome: {
+      files: () => shellHomeFiles(runtimeConfig),
+      lastSync: () => lastShellHomeSync,
+      async setFiles(files: string[]) {
+        await runtimeConfig.setInstanceDefault(
+          SHELL_HOME_FILES_KEY,
+          files as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1],
+        );
+        return resyncShellHomes();
+      },
+    },
     moduleStatusForProject,
     instanceModuleStatus,
     releaseModule,
