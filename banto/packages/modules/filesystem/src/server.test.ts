@@ -99,6 +99,38 @@ test("readFile：バイナリは MCP の embedded resource の形で返す（SDK
   });
 });
 
+// ---- showFile：人にファイルを見せる（決定・2026-09-23、ユーザー）--------------------
+
+test("showFile は中身を返さず、根からの相対パスと大きさだけを返す（画面が付いている）", async () => {
+  await withClient(async (client, root) => {
+    await mkdir(join(root, "docs"), { recursive: true });
+    await writeFile(join(root, "docs/README.md"), "# 見せる\n");
+    // 絶対パスで頼まれても、画面が開く形（相対）で返す
+    const result = await client.callTool({ name: "showFile", arguments: { path: join(root, "docs/README.md") } });
+    assert.deepEqual(JSON.parse((result.content as { text: string }[])[0]!.text), { path: "docs/README.md", size: 12 });
+
+    const { tools } = await client.listTools();
+    const show = tools.find((t) => t.name === "showFile");
+    assert.equal((show?._meta as Record<string, unknown>)?.["dev.banto/visibility"], "agent");
+    assert.equal((show?._meta as { ui?: { resourceUri?: string } })?.ui?.resourceUri, "ui://banto-filesystem/file");
+    const html = await client.readResource({ uri: "ui://banto-filesystem/file" });
+    assert.match((html.contents as { text: string }[])[0]!.text, /data-surface="file"/);
+  });
+});
+
+test("showFile はフォルダ・無いファイル・根の外を断る", async () => {
+  await withClient(async (client, root) => {
+    await mkdir(join(root, "docs"), { recursive: true });
+    const refused = async (path: string) => {
+      const r = await client.callTool({ name: "showFile", arguments: { path } }).catch((e: unknown) => e);
+      return r instanceof Error ? r.message : JSON.stringify(r);
+    };
+    assert.match(await refused("docs"), /フォルダです/);
+    assert.match(await refused("nope.md"), /ENOENT|no such file/);
+    assert.match(await refused("../x.md"), /Project の根の外/);
+  });
+});
+
 // ---- 人の操作だけの口（ファイルブラウザが使う、admin）--------------------------
 
 test("uploadFile はバイト列をそのまま置く（画像も壊れない）", async () => {

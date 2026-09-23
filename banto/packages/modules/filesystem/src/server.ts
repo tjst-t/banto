@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { basename, sep } from "node:path";
 import * as ops from "./operations.js";
-import { BROWSER_APP_URI, EDIT_DIFF_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
+import { BROWSER_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
 
@@ -78,6 +78,32 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
           required: ["path"],
         }),
         _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: BROWSER_APP_URI } },
+      },
+      // **人にファイルを見せる**（決定・2026-09-23、ユーザー）。readFile に画面を付けると、
+      // AI がファイルを読むたびに会話にカードが出る（AI の読む口は readFile だけ）ので、
+      // 「見せる」を別の tool にした。既定は会話の中のカードで、大きく開くのは頼まれたときだけ
+      // （listDirectory の displayMode と同じ形）
+      {
+        ...tool(
+          "showFile",
+          "人にファイルを見せる（画面に出す）。人が「見せて」「開いて」「表示して」と言ったときに使う。" +
+            "中身を自分で読むだけなら readFile を使う（こちらは中身を返さない）",
+          {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              displayMode: {
+                type: "string",
+                enum: ["inline", "fullscreen"],
+                description:
+                  "見せ方。fullscreen を指定すると会話の隣に大きく開く（既定は inline＝会話の中に埋め込む）。" +
+                  "人が「大きく」「フルスクリーンで」「別に開いて」と言ったら fullscreen を指定する。",
+              },
+            },
+            required: ["path"],
+          },
+        ),
+        _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: FILE_APP_URI } },
       },
       tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] }),
       tool("createDirectory", "mkdir -p 相当", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
@@ -148,6 +174,10 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
       case "editFile": {
         const diff = await ops.editFileOp(root, String(args.path), args.edits as ops.Edit[]);
         return { content: [{ type: "text", text: diff.text }] };
+      }
+      case "showFile": {
+        const shown = await ops.showFileOp(root, String(args.path));
+        return { content: [{ type: "text", text: JSON.stringify(shown) }] };
       }
       case "uploadFile": {
         const { size } = await ops.uploadFileOp(root, String(args.path), String(args.data));
@@ -233,6 +263,13 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         },
       },
       {
+        // showFile の画面（人に見せるファイル1つ）
+        uri: FILE_APP_URI,
+        name: "ファイルを見せる",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", ui: { prefersBorder: false } },
+      },
+      {
         // editFile の結果（差分）を描く画面
         uri: EDIT_DIFF_APP_URI,
         name: "ファイルの差分",
@@ -281,6 +318,9 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
     }
     if (request.params.uri === BROWSER_APP_URI) {
       return { contents: [{ uri: BROWSER_APP_URI, mimeType: UI_APP_MIME, text: appHtml("browser") }] };
+    }
+    if (request.params.uri === FILE_APP_URI) {
+      return { contents: [{ uri: FILE_APP_URI, mimeType: UI_APP_MIME, text: appHtml("file") }] };
     }
     if (request.params.uri === EDIT_DIFF_APP_URI) {
       return { contents: [{ uri: EDIT_DIFF_APP_URI, mimeType: UI_APP_MIME, text: appHtml("edit-diff") }] };

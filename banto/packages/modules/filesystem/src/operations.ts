@@ -167,6 +167,20 @@ export async function deleteFileOp(root: string, path: string): Promise<void> {
   await rm(absPath(root, path), { recursive: true, force: false });
 }
 
+/**
+ * **人にファイルを見せる**（`showFile`、決定・2026-09-23、ユーザー）。見せるのは画面の
+ * 仕事なので、ここは「根の中の、実在するファイルか」を確かめて、画面が開く相対パスを返す
+ * だけ。**中身は返さない**——読むなら `readFile`。返すと AI の文脈にもう一度載る。
+ */
+export async function showFileOp(root: string, path: string): Promise<{ path: string; size: number }> {
+  const p = absPath(root, path);
+  const s = await stat(p);
+  if (s.isDirectory()) {
+    throw new Error(`フォルダです（${path}）。フォルダを見せるなら listDirectory を displayMode つきで使います`);
+  }
+  return { path: relFromRoot(root, p), size: s.size };
+}
+
 export interface FileInfo {
   size: number;
   mtime: string;

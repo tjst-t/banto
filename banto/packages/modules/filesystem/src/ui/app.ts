@@ -1,8 +1,9 @@
 // FileSystem Module の画面の入口（MCP Apps、決定・2026-09-06）。
 //
-// **1つの JS で2つの面を描く**——どちらを描くかは HTML の `data-surface` が決める
+// **1つの JS で3つの面を描く**——どれを描くかは HTML の `data-surface` が決める
 // （`ui-app.ts`）：
 //   - `browser`   … ファイルブラウザ（listDirectory の画面・人が直接開く入口）
+//   - `file`      … showFile の画面（人に見せるファイル1つ。大きく開くとブラウザになる）
 //   - `edit-diff` … editFile の結果の差分
 //
 // banto を知らない。MCP Apps の約束（`protocol.ts`）だけで親と話す。
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   } else {
     browser = new FileBrowser(root, {
       displayMode,
+      focus: surfaceName === "file" ? "file" : "directory",
       canDownload: Boolean(init.hostCapabilities?.downloadFile),
       // **人が入口から直接開いたとき**は、起こした tool 呼び出しが無い（host は toolInfo を
       // 渡さない）。渡されるのを待たず、自分で取りに行く（§6.2）

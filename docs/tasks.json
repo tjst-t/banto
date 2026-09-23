@@ -1865,11 +1865,20 @@
       "why": "ユーザー要望（2026-09-23）：AI 向けの tool だけでなく、人が見る・開く・編集する・置く・持ち出すファイルブラウザ。モック（mock/ の FileExplorerView・FilePreview・FsEditDiffView）で UI は固まっていた。",
       "doneWhen": "入口から開いた画面で、ツリーの並び・Markdown の見出しと表・CSV のセル・画像の縦横・保存後のディスクの中身・アップロードしたバイト列・ダウンロード（1件と ZIP）の中身が E2E で一致すること。AI の editFile が差分カードとして出て、リロード後も同じ差分が出ること（e2e/specs/filesystem-browser.spec.ts）。",
       "open": [
-        "**AI が人にファイルを見せる口が未決**——モックは readFile で fullscreen のプレビューを開いていたが、AI は readFile でしかファイルを読めないので、画面を付けると読むたびにカードが出る。新しい tool（例：showFile）を足すか、C14 の resource_link を待つかは人が決める",
-        "**PDF の埋め込みビューアが未実装**——仕様（v4-modules §2.2）は「埋め込みビューア」だが、Canvas の CSP が frame/object を塞いでいる。PDF.js を同梱するか、名前と大きさ＋ダウンロードのままにするかは人が決める",
+        "~~AI が人にファイルを見せる口が未決~~ → **showFile を足した**（ユーザー決定・2026-09-23、`filesystem-show-file`）",
+        "~~PDF の埋め込みビューア~~ → **当面このまま**（名前と大きさ＋ダウンロード、ユーザー決定・2026-09-23）",
         "Command Palette から名前でファイルを探して開く（completion/complete）が無い——host 側の口がどの Module にも無い",
         "画面の中の移動（開いたファイル）が URL に残らない。リロードすると最初に戻る"
       ],
+      "notes": "docs/notes/2026-09-23-filesystem-browser.md",
+      "completedAt": "2026-09-23"
+    },
+    {
+      "id": "filesystem-show-file",
+      "title": "AI が人にファイルを見せる——showFile",
+      "status": "done",
+      "why": "ユーザー決定（2026-09-23）。モックは readFile でプレビューを開いていたが、AI の読む口は readFile だけなので、画面を付けると読むたびにカードが出る。「見せる」を別の tool にする。",
+      "doneWhen": "AI の showFile で会話の中にそのファイルの中身のカードが出て（見出し・本文まで一致）、「大きく表示」でツリーを畳んだブラウザにそのファイルが開き、ツリーを開くとその場所で選ばれていること。displayMode=fullscreen なら最初から会話の隣に開くこと（e2e/specs/filesystem-browser.spec.ts）。",
       "notes": "docs/notes/2026-09-23-filesystem-browser.md",
       "completedAt": "2026-09-23"
     },

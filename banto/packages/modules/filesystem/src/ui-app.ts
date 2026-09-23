@@ -25,7 +25,10 @@ export const BROWSER_APP_URI = "ui://banto-filesystem/directory";
 /** editFile の結果（差分）の画面。 */
 export const EDIT_DIFF_APP_URI = "ui://banto-filesystem/edit-diff";
 
-export type AppSurface = "browser" | "edit-diff";
+/** showFile の画面——人に見せるファイル1つ（大きく開くとブラウザになる）。 */
+export const FILE_APP_URI = "ui://banto-filesystem/file";
+
+export type AppSurface = "browser" | "edit-diff" | "file";
 
 let bundle: string | undefined;
 

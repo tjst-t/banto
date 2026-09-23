@@ -273,3 +273,93 @@ test("AI の editFile は、差分として会話に出る（記録から組み�
   await page.reload();
   await expectDiff();
 });
+
+// ---- AI が人にファイルを見せる（showFile、決定・2026-09-23、ユーザー）------------------
+//
+// readFile に画面を付けると AI が読むたびにカードが出るので、「見せる」は別の tool。
+// 会話の中ではそのファイルのカード、大きく開くとツリーを畳んだブラウザでそのファイルが開いている。
+
+/** 大きく開いたファイルブラウザ（会話の隣）の中身。枠がいくつあっても、ブラウザが出ている枠を選ぶ。 */
+async function fullscreenBrowser(page: Page) {
+  const frames = page.locator('[data-testid="module-canvas-frame"]');
+  let index = -1;
+  await expect(async () => {
+    const count = await frames.count();
+    for (let i = count - 1; i >= 0; i -= 1) {
+      const visible = await frames.nth(i).contentFrame().frameLocator("iframe").getByTestId("file-browser").isVisible().catch(() => false);
+      if (visible) {
+        index = i;
+        return;
+      }
+    }
+    throw new Error(`大きく開いたファイルブラウザが無い（枠は ${count} 個）`);
+  }).toPass({ timeout: 60_000 });
+  return frames.nth(index).contentFrame().frameLocator("iframe");
+}
+
+function showFileProject(prefix: string): string {
+  const projectRoot = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(projectRoot, "docs"));
+  writeFileSync(join(projectRoot, "docs/README.md"), "# 見せたいファイル\n\n本文です。\n");
+  writeFileSync(join(projectRoot, "other.txt"), "ほか\n");
+  return projectRoot;
+}
+
+test("AI の showFile は、そのファイルを会話の中に出し、大きく開くとそのファイルが開いている", async ({ page }) => {
+  const projectRoot = showFileProject("banto-e2e-fsshow-");
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  await openApp(page);
+  await createProject(page, "E2E FS Show", projectRoot);
+  await waitForProjectModule(page, "E2E FS Show", "filesystem");
+
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill(
+    "README を見せて。" + fakeTurn({ tools: [{ server: "filesystem", name: "showFile", args: { path: "docs/README.md" } }] }),
+  );
+  await composer.press("Enter");
+
+  // ---- 会話の中：そのファイルの中身のカード ------------------------------------
+  const embed = page.locator('[data-testid="inline-module-view"][data-module="filesystem"]');
+  await expect(embed).toBeVisible({ timeout: 120_000 });
+  const card = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(card.getByTestId("file-card-inline")).toBeVisible({ timeout: 60_000 });
+  await expect(card.getByTestId("open-path")).toHaveText("docs/README.md");
+  await expect(card.getByTestId("viewer-markdown").locator("h1")).toHaveText("見せたいファイル");
+  await expect(card.getByTestId("viewer-markdown").locator("p")).toHaveText("本文です。");
+
+  // ---- 大きく開く：ツリーは畳まれ、そのファイルが開いている -----------------------
+  await card.getByRole("button", { name: "大きく表示" }).click();
+  await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
+  const browser = await fullscreenBrowser(page);
+  await expect(browser.getByTestId("open-path")).toHaveText("docs/README.md");
+  await expect(browser.getByTestId("viewer-markdown").locator("h1")).toHaveText("見せたいファイル");
+  await expect(browser.getByRole("button", { name: "フォルダツリーを開く" })).toBeVisible();
+  // ツリーを開くと、そのファイルの場所まで開いて選ばれている
+  await browser.getByRole("button", { name: "フォルダツリーを開く" }).click();
+  await expect(browser.locator('.row.selected[data-path="docs/README.md"]')).toBeVisible({ timeout: 30_000 });
+  await expect(browser.locator('.row[data-path="other.txt"]')).toBeVisible();
+
+  expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
+});
+
+test("「大きく見せて」なら、showFile は最初から会話の隣に開く", async ({ page }) => {
+  const projectRoot = showFileProject("banto-e2e-fsshowfull-");
+  await openApp(page);
+  await createProject(page, "E2E FS Show Full", projectRoot);
+  await waitForProjectModule(page, "E2E FS Show Full", "filesystem");
+
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill(
+    "README を大きく見せて。" +
+      fakeTurn({ tools: [{ server: "filesystem", name: "showFile", args: { path: "docs/README.md", displayMode: "fullscreen" } }] }),
+  );
+  await composer.press("Enter");
+
+  // 人は「大きく」としか言っていない——ボタンは押さない
+  await expect(page.getByText(/^Canvas — filesystem$/), "頼んでも Canvas が開かなかった").toBeVisible({ timeout: 120_000 });
+  const browser = await fullscreenBrowser(page);
+  await expect(browser.getByTestId("open-path")).toHaveText("docs/README.md");
+  await expect(browser.getByTestId("viewer-markdown").locator("h1")).toHaveText("見せたいファイル");
+});

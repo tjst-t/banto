@@ -229,6 +229,12 @@ table.sheet .cell input:focus { box-shadow: inset 0 0 0 1px var(--accent); }
 .note { margin: 8px 0 0; font-size: 11px; color: var(--ink-3); }
 .note.error { color: var(--danger); }
 
+/* ---- 見せるファイル（showFile の inline）---- */
+.file-card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); min-width: 0; }
+.file-card-head .spacer-fill { flex: 1; }
+.file-card-body { height: 440px; display: flex; flex-direction: column; }
+.file-card .note { padding: 0 12px 10px; }
+
 /* ---- 差分（editFile）---- */
 .diff-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); min-width: 0; }
 .diff-stat { font-size: 11px; color: var(--ink-3); flex-shrink: 0; }

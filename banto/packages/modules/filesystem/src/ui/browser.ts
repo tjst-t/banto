@@ -6,6 +6,10 @@
 // （Ctrl/Cmd+クリックで複数選ぶと ZIP）。
 // **会話の中（inline）**：listDirectory の結果の一覧だけ。「大きく表示」で上に移る。
 //
+// **showFile の画面も同じもの**（`focus: "file"`、決定・2026-09-23）——会話の中では
+// そのファイルの中身のカード、大きく開くとツリーを畳んだブラウザでそのファイルが開いている
+// （モックの `banto.fs:preview:<path>` と同じ見せ方）。
+//
 // 中身はすべて自分の Module の tool で取りに行く（§6.2「自分で取りに行く Canvas」）。
 // 状態（開いたフォルダ・選んだファイル）はこの画面の中だけに持つ——人が画面を
 // 閉じれば消える。
@@ -90,6 +94,8 @@ function parseEntries(result: CallToolResult): Entry[] {
 
 export interface BrowserOptions {
   displayMode: DisplayMode;
+  /** tool の `path` が何を指すか。`file` は showFile（そのファイルを開いて見せる） */
+  focus: "directory" | "file";
   /** host が `ui/download-file` を受けるか。受けないならダウンロードの口を出さない（規則13） */
   canDownload: boolean;
   /** 人が入口から開いたか（true なら tool の結果を待たずに自分で取りに行く） */
@@ -98,6 +104,7 @@ export interface BrowserOptions {
 
 export class FileBrowser {
   private displayMode: DisplayMode;
+  private readonly focus: "directory" | "file";
   private readonly canDownload: boolean;
   private readonly root: HTMLElement;
 
@@ -127,8 +134,11 @@ export class FileBrowser {
   constructor(root: HTMLElement, options: BrowserOptions) {
     this.root = root;
     this.displayMode = options.displayMode;
+    this.focus = options.focus;
     this.canDownload = options.canDownload;
-    if (!options.openedByHuman) this.inlineNote = "一覧を待っています…";
+    // 見せるファイルが主役——ツリーは畳んで開く（開けばいつでも辿れる）
+    if (this.focus === "file") this.treeCollapsed = true;
+    if (!options.openedByHuman) this.inlineNote = this.focus === "file" ? "ファイルを待っています…" : "一覧を待っています…";
     if (options.openedByHuman) this.start();
     else this.render();
   }
@@ -138,10 +148,7 @@ export class FileBrowser {
     const path = typeof args.path === "string" && args.path ? args.path : ".";
     this.inlinePath = path;
     const key = this.keyFromToolPath(path);
-    if (key !== undefined) {
-      this.activeDir = key;
-      for (const a of [...ancestorsOf(key), key]) if (a) this.expanded.add(a);
-    }
+    if (key !== undefined) this.applyTarget(key);
     // **呼んだ人が fullscreen を頼んでいたら、開いた直後にそう頼む**
     // （仕様には「最初からこの mode」を宣言する場所が無い、決定・2026-09-07）
     if (args.displayMode === "fullscreen" && this.displayMode === "inline") void this.askFullscreen();
@@ -151,6 +158,10 @@ export class FileBrowser {
 
   /** tool の結果（inline は、これをそのまま一覧にする）。 */
   setToolResult(result: CallToolResult): void {
+    if (this.focus === "file") {
+      this.setShownFile(result);
+      return;
+    }
     if (this.displayMode !== "inline") return;
     try {
       if (result.isError) throw new Error(textOf(result) || "一覧を取れませんでした");
@@ -172,6 +183,42 @@ export class FileBrowser {
     document.body.dataset.mode = mode;
     if (mode === "fullscreen") this.start();
     else this.render();
+  }
+
+  /**
+   * showFile の結果（`{path, size}`）。**path は Module が確かめた根からの相対**なので、
+   * 入力の path（絶対パスかもしれない）よりこちらを信じる。
+   */
+  private setShownFile(result: CallToolResult): void {
+    try {
+      if (result.isError) throw new Error(textOf(result) || "ファイルを開けませんでした");
+      const shown = JSON.parse(textOf(result)) as { path?: unknown };
+      if (typeof shown.path !== "string" || !shown.path) throw new Error("見せるファイルが結果に入っていません");
+      this.applyTarget(shown.path);
+      this.inlineNote = "";
+      this.inlineError = false;
+      // 大きく開いていてツリーを読み終えていれば、そのファイルの祖先も読んでおく
+      if (this.started) for (const a of ancestorsOf(shown.path)) if (!this.dirs.has(a)) void this.loadDir(a);
+    } catch (err) {
+      this.inlineNote = errorMessage(err);
+      this.inlineError = true;
+    }
+    this.render();
+  }
+
+  /** tool が指した場所を開く。フォルダならそこを選び、ファイルならそれを開く。 */
+  private applyTarget(key: string): void {
+    if (this.focus === "file") {
+      if (!key) return;
+      this.openFile = key;
+      this.anchor = key;
+      this.multi = null;
+      this.activeDir = dirnameOf(key);
+      for (const a of ancestorsOf(key)) this.expanded.add(a);
+      return;
+    }
+    this.activeDir = key;
+    for (const a of [...ancestorsOf(key), key]) if (a) this.expanded.add(a);
   }
 
   /** tool の path（"."・"./a"・"a/"・根の中の絶対パス）を、ツリーの鍵（根は ""）にする。 */
@@ -213,12 +260,9 @@ export class FileBrowser {
       this.rootLabel = `（根を読めませんでした：${errorMessage(err)}）`;
     }
     this.render();
-    // 絶対パスで頼まれていた場所は、根が分かってから決め直す
+    // 絶対パスで頼まれていた場所は、根が分かってから決め直す（showFile は結果の相対パスで決まる）
     const key = this.keyFromToolPath(this.inlinePath);
-    if (key !== undefined && key !== this.activeDir) {
-      this.activeDir = key;
-      for (const a of [...ancestorsOf(key), key]) if (a) this.expanded.add(a);
-    }
+    if (this.focus === "directory" && key !== undefined && key !== this.activeDir) this.applyTarget(key);
     await Promise.all(["", ...this.expanded].map((k) => this.loadDir(k)));
   }
 
@@ -766,7 +810,35 @@ export class FileBrowser {
     }
   }
 
+  /** showFile の会話の中のカード——そのファイルの中身と「大きく表示」。 */
+  private renderInlineFile(): void {
+    const path = this.openFile;
+    if (path && (!this.viewer || this.viewer.path !== path)) this.viewer = new FileViewer(path);
+    replaceChildren(
+      this.root,
+      h(
+        "div",
+        { class: "file-card", data: { testid: "file-card-inline" } },
+        h(
+          "div",
+          { class: "file-card-head" },
+          icon(FILE_ICON[iconKindFor(path ?? this.inlinePath)], "icon muted"),
+          h("span", { class: "badge truncate", text: path ?? this.inlinePath, data: { testid: "open-path" } }),
+          h("span", { class: "spacer-fill" }),
+          h("button", { class: "btn", attrs: { type: "button" }, on: { click: () => void this.askFullscreen() } }, icon("Maximize2"), "大きく表示"),
+        ),
+        path && this.viewer ? h("div", { class: "file-card-body" }, this.viewer.el) : null,
+        this.inlineNote ? h("p", { class: this.inlineError ? "note error" : "note", text: this.inlineNote }) : null,
+      ),
+    );
+    reportSize();
+  }
+
   private renderInline(): void {
+    if (this.focus === "file") {
+      this.renderInlineFile();
+      return;
+    }
     const entries = this.inlineEntries;
     replaceChildren(
       this.root,
