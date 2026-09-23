@@ -736,6 +736,26 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       confinement: { kind: "landlock", root: "project" },
     },
   },
+  {
+    // **Skill を資源として配る**（決定・2026-09-23、アーキ仕様 §5.6・§5.7）。
+    // Skill は Project をまたいで使うもの（Memory との違い）なので banto 全体に1本。
+    // **効かせるかはここでは決めない**——core が会話ごとに `instructions` を組み立てる。
+    //
+    // **閉じ込める**（根は持たない）。配るのは他人が書いた文書で、読むのは自分の
+    // 置き場（`${moduleDataDir}` の下、host が必ず渡す）だけで足りる
+    name: "skills",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/skills/dist/server.js"],
+    },
+    meta: {
+      satisfies: ["skills"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      confinement: { kind: "landlock", root: "none", profile: "files-only" },
+    },
+  },
 ];
 
 /**

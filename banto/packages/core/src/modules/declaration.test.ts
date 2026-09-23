@@ -68,11 +68,13 @@ function stdio(launch: ModuleLaunch): StdioLaunch {
 // 既定から外して**目録**（`BUNDLED_CATALOG`）へ移した——要る人が
 // 「Module を追加」から、接続先ごとに好きな名前で入れる。
 // **コードに写した行は、消したくても消せない**（既定は `removable: false`）。
-test("同梱の既定は4本（vault-local/vault-directory/shell/filesystem）で、そのまま読める", () => {
+// **Skill を配る Module も既定に入る**（追加・2026-09-23、アーキ仕様 §5.7）
+// ——Skill を取り込む先で、誰もが使う。
+test("同梱の既定は5本（vault-local/vault-directory/shell/filesystem/skills）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "vault-directory", "vault-local"],
+    ["filesystem", "shell", "skills", "vault-directory", "vault-local"],
   );
   // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
   assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
@@ -160,8 +162,10 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     const config = new RuntimeConfigStore(dir, log);
     await config.load();
 
+    // 本数は既定から導く（既定が増えるたびに書き換える数字を持たない）
+    const defaults = DEFAULT_MODULE_DECLARATIONS.length;
     const before = loadModuleDeclarations(config, "project-1");
-    assert.equal(before.length, 4, "既定は4本");
+    assert.equal(before.length, defaults, "既定がそのまま出ていない");
 
     await setModuleDeclarations(config, [
       ...DEFAULT_MODULE_DECLARATIONS,
@@ -176,7 +180,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     ]);
 
     const after = loadModuleDeclarations(config, "project-1");
-    assert.equal(after.length, 5);
+    assert.equal(after.length, defaults + 1);
     assert.ok(after.some((d) => d.name === "python-demo"));
 
     // 読み直しても残る（Event Store に載っている）
@@ -184,7 +188,7 @@ test("**コードを変えずに、宣言を1本足すだけで次の1本が Pro
     await log2.init();
     const config2 = new RuntimeConfigStore(dir, log2);
     await config2.load();
-    assert.equal(loadModuleDeclarations(config2, "project-1").length, 5);
+    assert.equal(loadModuleDeclarations(config2, "project-1").length, defaults + 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -209,7 +213,7 @@ test("Project ごとに、繋ぐ Module を上書きできる", async () => {
       ["vault-local"],
     );
     // 別の Project は既定のまま
-    assert.equal(loadModuleDeclarations(config, "other").length, 4);
+    assert.equal(loadModuleDeclarations(config, "other").length, DEFAULT_MODULE_DECLARATIONS.length);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

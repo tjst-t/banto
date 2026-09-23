@@ -135,7 +135,7 @@ Factory は「他の Module より先に磨く特別なもの」ではなく**�
 | Module | 何をするか | 備考 |
 |---|---|---|
 | **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1 のとおり**薄い層**——「どの backend で走らせるか選ぶ」だけ。会話を走らせるのは core |
-| **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7） |
+| **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7）。**同梱の実装は `skills`**（2026-09-23）：banto 全体に1本、Landlock で自分の置き場だけに閉じ込める。置き場は `<Module の置き場>/skills/<Skill 名>/`（フォルダの中は原文のまま）。`SKILL.md` を `skill://<Skill 名>/SKILL.md` として印つきで、兄弟ファイルを `skill://<Skill 名>/<相対パス>` として配る——本文の相対パスが、本文の URI からの相対でそのまま引ける。一覧に載せたファイルしか読ませない（隠しファイル・シンボリックリンクは辿らない） |
 | **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Environment とは別実装**（下記） |
 | **Vault（Infisical）** | 同じ `vault` 役割の2本目（実装・2026-09-12）。**行き先は Infisical Cloud**、開発と試験は自前ホスト（`packages/modules/vault-infisical/dev/`）——**backend のコードは両方で同じ**で、違うのは接続先と資格情報だけ。資格情報は**Infisical には入れられない**（Vault を開ける鍵は Vault に入らない）ので、組み込み Vault の `identity.txt` と同じく設定として持つ。**宣言には書かない**——宣言は Event Store に残るので、秘密が記録に残ってしまう |
