@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-22",
+  "updatedAt": "2026-09-23",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1752,6 +1752,66 @@
         "境界は `mcpServers` を貼る道より**狭い**（`command`/`args` を自由に書けない）"
       ],
       "notes": "docs/notes/2026-09-22-paste-server-json.md"
+    },
+    {
+      "id": "skill-instructions-wiring",
+      "title": "効いている Skill の名前と説明を `instructions` に載せる（core）",
+      "status": "pending",
+      "why": "アーキ仕様 §5.6（決定・2026-09-23）。Skill の配達は MCP に寄せ、SDK の Skill 機構は使わない。**名前と説明を文脈に入れる唯一の口**がここ。繋ぎ先は relay/agent-proxy.ts の new Server(info, options) の第2引数——**代理サーバは core の持ち物**なので「Module が配り、core が効かせる」がそのまま成立する。",
+      "doneWhen": "Skill を配る Module を繋いだ Project で会話を始めると、効かせた Skill の名前と説明が AI の文脈に入り、AI が `SKILL.md` を資源として読めること。効かせていないものは `instructions` に出ないが、資源の一覧には出ること。",
+      "open": [
+        "`instructions` は会話の開始時に固定される（resume でも Fork でも読み直されない、実測 2026-09-23）——E2E はそれを前提に書く",
+        "効いている数とトークン量は自分で数える（SDK の getContextUsage の skills 内訳は空になる）"
+      ],
+      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
+    },
+    {
+      "id": "skill-module-bundled",
+      "title": "Skill Module（同梱）——Skill を資源として配る",
+      "status": "pending",
+      "why": "アーキ仕様 §5.7。外部 Skill の主要な経路は「git のフォルダ」で MCP サーバではないので、それを取り込んで配るローカル Module が要る。`skills` は役割なので、これはそのうちの1実装。",
+      "doneWhen": "`SKILL.md` を `_meta` 付きの資源として配り、`references/` を兄弟資源として配れること。AI が ReadMcpResourceTool で読めること。",
+      "open": [
+        "`_meta` の印の名前（既存の慣習は `dev.banto/canvas`。`dev.banto/skill` を想定）",
+        "中継は `dev.banto/` の印を AI に渡す前に剥がす——AI から見分けるのは URI か名前で"
+      ],
+      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
+    },
+    {
+      "id": "skill-import",
+      "title": "`import_skill`——git / ZIP から取り込む（画面を持つ tool）",
+      "status": "pending",
+      "why": "アーキ仕様 §5.7（決定・2026-09-23）。取り込むかは人が決め、AI は提案できる。普通の承認カードでは tool 名と引数しか出ず、**中身を見ずに他人の指示文を受け入れることになる**ので、画面を持つ tool にする。",
+      "doneWhen": "AI が提案 → 承認カードに出所・`SKILL.md` の中身・`scripts/` の有無・`Read`/`Bash` 前提の記述の有無が出る → 人が押すと取り込まれ、その Skill が資源として配られること。",
+      "open": [
+        "ref を省かれたら commit に解決して固定する（`HEAD` のまま持たない）",
+        "写しは書き換えない——届かない部分は画面で示す",
+        "画面は先週の Module 追加ダイアログと同じ型で作れるはず"
+      ],
+      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
+    },
+    {
+      "id": "skill-activation-store",
+      "title": "効かせる集合の記録——設定層＋会話に刻む",
+      "status": "pending",
+      "why": "アーキ仕様 §5.7（決定・2026-09-23）。banto 全体の既定と Project ごとの上書きは設定層。ただし**会話が始まった時点の集合をその会話にも記録する**——効かせる集合は会話の開始時に固定されるので、記録が無いと過去の会話がなぜそう振る舞ったか説明できない。",
+      "doneWhen": "設定を変えても走行中の会話には効かず、新しい会話から効くこと。過去の会話を開くと、そのとき何が効いていたかが分かること。",
+      "open": [
+        "Clear を実装するときは「resume を外す」として作る——そうすれば効かせ直せる（turn-runner.ts が thread.resumePoint を渡している）"
+      ],
+      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
+    },
+    {
+      "id": "skill-context-meter",
+      "title": "効いている Skill の数とトークン量を画面に出す",
+      "status": "pending",
+      "why": "アーキ仕様 §5.6「見えないものは際限なく増える」。1つおよそ100トークンが毎ターン常駐するので、数がそのまま費用になる。",
+      "doneWhen": "残量メーターに Skill の内訳（名前ごと）が出ること。",
+      "open": [
+        "SDK の getContextUsage の skills 内訳は使えない（SDK の Skill 機構を使わないので空）。`instructions` は core が組み立てるので長さは分かる",
+        "context-usage-meter.tsx に skills の色枠は既にある"
+      ],
+      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
     }
   ],
   "phase1": {
