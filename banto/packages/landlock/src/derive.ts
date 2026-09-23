@@ -68,6 +68,16 @@ export interface DeriveProjectRulesetResult {
 
 const SIBLING_LIB_DIRS = ["lib", "lib64", "libexec", "share"];
 
+/**
+ * **PATH の隣にある、実行が要る補助プログラムの置き場**（追加・2026-09-23、実測）。
+ * git は HTTPS の通信を `git-remote-https` という別プログラムに任せ、それを
+ * `git --exec-path`（Debian 系は `/usr/lib/git-core`、Fedora 系は `/usr/libexec/git-core`）
+ * から起動する。兄弟の `lib` は読み取りしか許していないので、`git clone/fetch/push` が
+ * HTTPS で `cannot exec 'remote-https': Permission denied` になっていた。
+ * **`/usr/lib` 全体に実行を許さない**——git が自分の下請けに使うところだけ
+ */
+const SIBLING_EXEC_DIRS = ["lib/git-core", "libexec/git-core"];
+
 /** 名前解決（getaddrinfo）が読むファイル。実体が `/etc` の外にあることがある。 */
 export const NAME_RESOLUTION_FILES = ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/host.conf", "/etc/gai.conf"];
 
@@ -148,6 +158,12 @@ export function deriveProjectRuleset(input: DeriveProjectRulesetInput): DerivePr
         const real = tryRealpath(siblingPath);
         if (real !== undefined && statSync(real).isDirectory()) {
           rules.push({ path: real, access: READ_ONLY });
+        }
+      }
+      for (const helper of SIBLING_EXEC_DIRS) {
+        const real = tryRealpath(join(dir, "..", helper));
+        if (real !== undefined && statSync(real).isDirectory()) {
+          rules.push({ path: real, access: READ_EXEC });
         }
       }
     }

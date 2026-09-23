@@ -382,3 +382,26 @@ Module も同じ。直すのは ruleset を組むところ（`@banto/landlock` �
 
 直したあと、本番でユーザーの URL そのものを「中身を見る」まで通した（commit `56f3653`、
 1ファイル）。取り込みは押さずに取りやめた。
+
+### 続き：Shell でも測った（ユーザー「SHELL MCP でも DNS 引けなかった」）
+
+名前解決の直しは Shell にも効く（同じ導出を通る）。**Shell の実物の ruleset** で、
+名前解決の1行だけを抜いたものと比べた：
+
+| | 直す前 | 直した後 |
+|---|---|---|
+| `getent hosts github.com` | FAIL | OK |
+| `curl https://github.com` | 000 | 200 |
+| `git ls-remote https://…` | `cannot exec 'remote-https'` | **同じ**（別の穴） |
+
+**別の穴**：git は HTTPS を `git-remote-https`（`git --exec-path` ＝ `/usr/lib/git-core`）に
+任せる。exec の profile は PATH の隣の `lib` を**読み取りだけ**許していたので起動できない。
+その置き場だけに実行を許した（`/usr/lib` 全体ではない）。`git ls-remote` が通るようになった。
+
+**まだ残っている穴（人に上げた・規則8）**：Shell のコマンドは host の `HOME` を継ぐので、
+git は `~/.gitconfig`・`~/.config/git/ignore` を読みに行き、閉じ込めで読めず**致命的な
+エラー**にする（`clone` は取ってきた後の checkout で落ちる、`ls-remote` は設定の読み込みで
+落ちる）。`GIT_CONFIG_GLOBAL=/dev/null` を渡すと `ls-remote` は通るので、残りはここだけ。
+直し方は「人の git 設定を AI のコマンドに見せるか」という判断になる——`~/.gitconfig` には
+GitHub の資格情報の helper（`gh`）が書かれている。banto の設計は資格情報を Vault 経由
+（`envSecrets`・`sshIdentity`）で渡す形。

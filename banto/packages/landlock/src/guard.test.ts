@@ -140,3 +140,26 @@ test("derive は名前解決のファイルの実体を、そのファイルだ�
     "/run のディレクトリごと開けている",
   );
 });
+
+// **Shell で git が HTTPS を使える**（追加・2026-09-23、実測）。git は HTTPS を
+// `git-remote-https`（git の exec-path の下）に任せるので、そこに実行が要る。
+// 許すのはその置き場だけ——`/usr/lib` 全体ではない
+test("exec の profile は git の下請けの置き場だけに実行を許す", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { realpathSync } = await import("node:fs");
+  let gitCore: string;
+  try {
+    gitCore = realpathSync(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim());
+  } catch {
+    return; // この機械に git が無い
+  }
+  const pathEntries = (process.env.PATH ?? "").split(":").filter(Boolean);
+  const exec = deriveProjectRuleset({ pathEntries, profile: "exec", nodeExecPath: process.execPath }).ruleset;
+  const rule = exec.rules.find((r) => r.path === gitCore);
+  assert.ok(rule?.access.includes("execute"), `${gitCore} に実行が無い——git の HTTPS が動かない`);
+  const lib = exec.rules.find((r) => r.path === "/usr/lib");
+  assert.equal(lib?.access.includes("execute") ?? false, false, "/usr/lib 全体に実行を許している");
+  // files-only（外のプログラムを起動しない Module）には足さない
+  const filesOnly = deriveProjectRuleset({ pathEntries, profile: "files-only", nodeExecPath: process.execPath }).ruleset;
+  assert.equal(filesOnly.rules.some((r) => r.path === gitCore), false);
+});

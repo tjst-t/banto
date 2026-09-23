@@ -108,6 +108,10 @@ node/npm/git は動いたが、**PATH がホームディレクトリ配下・`/o
   `/run/systemd/resolve/stub-resolv.conf` へのシンボリックリンクで、Landlock は辿った先で
   判定する——`/etc` だけでは**閉じ込めた Module がどこへも名前を引けない**
   （実測：`getaddrinfo EAI_AGAIN`）。`/run` のディレクトリは開けない
+- **exec の profile では、git の下請けの置き場（PATH の隣の `lib/git-core`・`libexec/git-core`）
+  に実行を許す**（追加・2026-09-23）。git は HTTPS の通信を `git-remote-https` に任せる——
+  兄弟の `lib` は読み取りだけなので `cannot exec 'remote-https'` になっていた。
+  `/usr/lib` 全体には実行を許さない
 - **`/proc` は許可しない**（決定・2026-09-10、実測）——下記
 
 **`/proc` を許可リストから外す**（決定・2026-09-10、`relay-proc-allowlist`）：
