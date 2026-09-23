@@ -18,6 +18,51 @@ export const VISIBILITY_META_KEY = `${VENDOR_PREFIX}/visibility`;
 export const CANVAS_META_KEY = `${VENDOR_PREFIX}/canvas`;
 
 /**
+ * **その資源が Skill の本体（`SKILL.md`）であること**の印（決定・2026-09-23、
+ * アーキ仕様 §5.6）。値は `true` だけ。
+ *
+ * 印の付いた資源は、**`name` に Skill の名前、`description` に Skill の説明**を
+ * そのまま載せる（Agent Skills の frontmatter の2つの必須項目）。core はこの2つを
+ * 一覧から読んで `instructions` を組み立てる——**本体を毎回読みに行かない**。
+ * 真実は `SKILL.md` の frontmatter で、一覧はそれを Module が毎回そこから
+ * 導いたもの（写しを保存しない、規則3）。
+ *
+ * `references/` などの兄弟資源には付けない——あれは Skill ではなく、
+ * Skill の本文から URI で指される資料である。
+ */
+export const SKILL_META_KEY = `${VENDOR_PREFIX}/skill`;
+
+/** その資源が Skill の本体だと名乗っているか。**`true` 以外は全部「違う」。** */
+export function isSkillResource(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[SKILL_META_KEY] === true;
+}
+
+/**
+ * Agent Skills の仕様（`agentskills.io`）が決めている名前と説明の形。
+ * **形式は発明しない**——ここに書くのは仕様の写しで、banto の独自の制約ではない。
+ *
+ * - 名前：1〜64字、英小文字・数字・`-`。`-` で始まらず終わらず、`--` を含まない
+ * - 説明：1〜1024字
+ */
+export const SKILL_NAME_MAX = 64;
+export const SKILL_DESCRIPTION_MAX = 1024;
+const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** 名前と説明が仕様の形に収まっているか。**収まっていなければ、何が違うかを返す。** */
+export function skillEntryProblem(name: unknown, description: unknown): string | undefined {
+  if (typeof name !== "string" || name.length === 0) return "名前がありません";
+  if (name.length > SKILL_NAME_MAX) return `名前が ${SKILL_NAME_MAX} 字を超えています（${name.length} 字）`;
+  if (!SKILL_NAME_PATTERN.test(name)) {
+    return `名前「${name}」が形に合いません（英小文字・数字・「-」だけ。「-」で始まらず終わらず、続けない）`;
+  }
+  if (typeof description !== "string" || description.trim().length === 0) return "説明がありません";
+  if (description.length > SKILL_DESCRIPTION_MAX) {
+    return `説明が ${SKILL_DESCRIPTION_MAX} 字を超えています（${description.length} 字）`;
+  }
+  return undefined;
+}
+
+/**
  * その tool が**秘密の値を返さない**ことの申告（決定・2026-09-12）。
  *
  * Module 間中継の承認ゲートが守っているのは**値**であって、名前ではない

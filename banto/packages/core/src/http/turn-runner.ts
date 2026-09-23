@@ -17,6 +17,7 @@ import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type { SessionSkillSet } from "../skills/types.js";
 
 /** Runnerが`/agent-relay/<name>`へ実HTTPで繋ぐための宛先1件。 */
 export interface ModuleEndpoint {
@@ -101,6 +102,12 @@ async function* runThreadTurnInner(
     turnEvents?: TurnEventBus;
     /** Runner の差し替え口（試験用）。本番は既定の `runTurn`。 */
     runTurn?: typeof runTurn;
+    /**
+     * **新しいセッションで効かせる Skill の集合を決める**（決定・2026-09-23、§5.7）。
+     * 繋がっている Module が配っている Skill を集め、設定で絞る（cli.ts）。
+     * 渡されなければ Skill は1つも効かせない。
+     */
+    resolveSessionSkills?(threadId: string): Promise<SessionSkillSet>;
   },
   input: RunThreadTurnInput,
 ): AsyncGenerator<TurnStreamEvent> {
@@ -115,6 +122,29 @@ async function* runThreadTurnInner(
     // 走らせない（規則2）。system prompt の層3が組めない。
     yield { type: "error", message: `project ${thread.projectId} not found for thread ${input.threadId}` };
     return;
+  }
+
+  // **効かせる Skill は、新しいセッションの最初のターンで決まる**（決定・2026-09-23、§5.7）。
+  // `instructions` は `resume` では読み直されない（実測）——続きのターンで決め直しても
+  // モデルには届かず、記録だけが嘘になる。**resume しないターン**（新しい会話・Clear の
+  // 後）だけがここを通り、決めたものを会話に刻む。代理サーバはその記録から
+  // `instructions` を作る（cli.ts の `instructionsFor`）ので、**刻むのは走らせる前**。
+  // Fork は親の記録を引き継いでいる（fold）——Fork も resume なので、ここは通らない。
+  // 刻むのは人の発言より前——「その発言の時点で何が効いていたか」が seq の順で引ける
+  if (thread.resumePoint === undefined && deps.resolveSessionSkills) {
+    try {
+      const set = await deps.resolveSessionSkills(input.threadId);
+      for (const p of set.problems) console.warn(`[host] Skill（${p.module}）: ${p.message}`);
+      await deps.projectThread.fixSessionSkills(input.threadId, set);
+    } catch (err) {
+      // **決められないまま走らせない**（規則2）——黙って「何も効かせない」会話を始めると、
+      // その会話のあいだずっと効かないまま、誰も気づけない
+      yield {
+        type: "error",
+        message: `効かせる Skill を決められませんでした: ${err instanceof Error ? err.message : String(err)}`,
+      };
+      return;
+    }
   }
 
   await deps.projectThread.appendMessage(input.threadId, "user", input.prompt);

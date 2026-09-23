@@ -1,6 +1,8 @@
 // docs/specs/v4-architecture.md §2.2 Project / Thread（Memoryを含む）の型。
 // Thread は「Memory ＋ それ以降のメッセージ」——Memoryはこの定義の一部。
 
+import type { SessionSkillSet } from "../skills/types.js";
+
 export type ProjectId = string;
 export type ThreadId = string;
 
@@ -181,6 +183,19 @@ export interface ThreadState {
    *  横線だけ残り、次のターンは畳む前の文脈を引き継ぐ、という気づけない嘘に
    *  なっていた。切り離したものはここに覚えておき、後から同じidが来ても入れない。 */
   abandonedSessions: string[];
+  /**
+   * **セッションごとに、効かせた Skill の集合**（決定・2026-09-23、§5.7「会話にも刻む」）。
+   *
+   * `instructions` は `resume` でも Fork でも読み直されない（実測）ので、効かせる
+   * 集合は**新しいセッションの最初のターン**で決まり、そのセッションのあいだ
+   * 変わらない。**設定は「これから」、これは「あのとき」**——後から設定を
+   * 変えても、過去の会話がなぜそう振る舞ったかはこれで説明できる。
+   *
+   * **最後の1件がいまのセッションのもの。** Fork は分けた時点のものを親から
+   * 引き継ぐ（Fork は `resume` を引き継ぐので、前置きも引き継ぐ）。
+   * 前からある snapshot には無い——無ければ空として読む。
+   */
+  skillSets?: Array<{ seq: number; set: SessionSkillSet }>;
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
   usage: UsageEntry[];

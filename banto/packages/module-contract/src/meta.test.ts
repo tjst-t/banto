@@ -198,3 +198,24 @@ test("値が正しい／無指定だけなら通る", () => {
     assertVisibilityValues([{ name: "a", meta: { "dev.banto/visibility": "module" } }, { name: "b" }], "x"),
   );
 });
+
+// **Skill の印**（決定・2026-09-23、アーキ仕様 §5.6）。`true` 以外は名乗っていない
+test("Skill の印は true のときだけ効く", async () => {
+  const { isSkillResource } = await import("./meta.js");
+  assert.equal(isSkillResource({ _meta: { "dev.banto/skill": true } }), true);
+  assert.equal(isSkillResource({ _meta: { "dev.banto/skill": "yes" } }), false);
+  assert.equal(isSkillResource({}), false);
+});
+
+// 名前と説明の形は Agent Skills の仕様の写し（banto の独自の制約ではない）
+test("Skill の名前と説明が仕様の形に収まっているかを言う", async () => {
+  const { skillEntryProblem } = await import("./meta.js");
+  assert.equal(skillEntryProblem("pdf-processing", "PDF を扱う"), undefined);
+  assert.match(skillEntryProblem("PDF", "x") ?? "", /形に合いません/);
+  assert.match(skillEntryProblem("-pdf", "x") ?? "", /形に合いません/);
+  assert.match(skillEntryProblem("pdf--x", "x") ?? "", /形に合いません/);
+  assert.match(skillEntryProblem("a".repeat(65), "x") ?? "", /64 字/);
+  assert.match(skillEntryProblem("pdf", "") ?? "", /説明がありません/);
+  assert.match(skillEntryProblem("pdf", "x".repeat(1025)) ?? "", /1024 字/);
+  assert.match(skillEntryProblem(undefined, "x") ?? "", /名前がありません/);
+});

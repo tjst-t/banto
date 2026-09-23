@@ -7,6 +7,7 @@ import type {
   ThreadPermissionMode,
   ThreadState,
 } from "./types.js";
+import type { SessionSkillSet } from "../skills/types.js";
 
 export type ProjectThreadEvent =
   | { type: "project.created"; payload: { id: string; name: string; root: string } }
@@ -61,6 +62,8 @@ export type ProjectThreadEvent =
       };
     }
   | { type: "thread.cleared"; payload: { threadId: string } }
+  // **新しいセッションで効かせた Skill の集合**（決定・2026-09-23、§5.7）
+  | { type: "thread.skills_fixed"; payload: { threadId: string; set: SessionSkillSet } }
   | {
       type: "ui-tool-call.display-mode.recorded";
       payload: { threadId: string; toolCallId: string; displayMode: "inline" | "fullscreen" };
@@ -86,7 +89,13 @@ function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
     threads: new Map(
       Array.from(m.threads, ([k, v]) => [
         k,
-        { ...v, messages: [...v.messages], markers: [...v.markers], usage: [...v.usage] },
+        {
+          ...v,
+          messages: [...v.messages],
+          markers: [...v.markers],
+          usage: [...v.usage],
+          skillSets: [...(v.skillSets ?? [])],
+        },
       ]),
     ),
   };
@@ -204,6 +213,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             t.messages = parent.messages.filter((m) => m.seq <= upTo);
             t.markers = parent.markers.filter((m) => m.seq <= upTo);
             t.usage = parent.usage.filter((u) => u.seq <= upTo);
+            // **効かせた Skill も分けた時点のものを引き継ぐ**（決定・2026-09-23）。
+            // Fork は親のセッションを `resume` して枝を分けるので、`instructions` は
+            // 読み直されない（実測）——親がその時点で効かせていたものが、そのまま効く
+            t.skillSets = (parent.skillSets ?? []).filter((s) => s.seq <= upTo);
             // 人が選んだ permissionMode も引き継ぐ（決定・2026-09-06）——
             // 引き継がないと、承認ゲートを効かせていたつもりの人が
             // fork した瞬間に既定（auto）へ戻る（規則2）
@@ -333,6 +346,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             apiUsage: event.payload.apiUsage,
           });
         }
+        return next;
+      }
+      case "thread.skills_fixed": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t) t.skillSets = [...(t.skillSets ?? []), { seq: raw.seq, set: event.payload.set }];
         return next;
       }
       case "thread.cleared": {

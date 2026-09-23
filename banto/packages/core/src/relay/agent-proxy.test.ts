@@ -179,3 +179,37 @@ test("resource を読んでいる間も、その Module はそのターンの仕
   await runner.close();
   await moduleClient.close();
 });
+
+// **効かせた Skill は代理サーバの `instructions` で届ける**（決定・2026-09-23、§5.6）。
+// Runner はこれをモデルの文脈の冒頭に入れる（実測）。組み立てるのは core で、
+// 実 Module が自分で返した `instructions` は転送しない。
+test("core が組み立てた instructions が、initialize の応答で Runner に届く", async () => {
+  const server = new Server(
+    { name: "fake", version: "0.0.0" },
+    // 実 Module が自分の instructions を返しても、それは転送しない
+    { capabilities: { resources: {} }, instructions: "MODULE-OWN-INSTRUCTIONS" },
+  );
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: [], dependsOn: [], isolation: "subprocess" }, "fake");
+
+  async function connectRunner(instructions?: string) {
+    const proxy = buildAgentProxy({ name: "skills", client: moduleClient, meta }, { instructions });
+    const [ps, pc] = InMemoryTransport.createLinkedPair();
+    const runner = new Client({ name: "runner", version: "0.0.0" });
+    await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+    return runner;
+  }
+
+  const withSkills = await connectRunner("# Skill\n\n- **pdf**");
+  assert.equal(withSkills.getInstructions(), "# Skill\n\n- **pdf**");
+
+  const without = await connectRunner(undefined);
+  assert.equal(without.getInstructions(), undefined, "Module が返した instructions が素通りした");
+
+  await withSkills.close();
+  await without.close();
+  await moduleClient.close();
+});

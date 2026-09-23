@@ -266,3 +266,74 @@ test("判断待ちを起票した後にターンが落ちても、その判断�
     assert.equal(store.getThread(threadId)!.resumePoint, undefined);
   });
 });
+
+// **効かせる Skill は、新しいセッションの最初のターンで決まる**（決定・2026-09-23、§5.7）。
+// `instructions` は resume では読み直されない（実測）——続きのターンで決め直しても
+// モデルには届かず、記録だけが嘘になる。
+test("Skill の集合は resume しないターンでだけ決めて刻み、続きのターンでは決め直さない", async () => {
+  const { currentSkillSet } = await import("../project-thread/store.js");
+  await withThread(async ({ deps, threadId, store }) => {
+    let asked = 0;
+    let names = ["pdf"];
+    const resolveSessionSkills = async () => {
+      asked += 1;
+      return {
+        active: names.map((name) => ({ module: "skills", name, description: name, uri: `skill://${name}` })),
+        othersIn: [],
+        problems: [],
+      };
+    };
+    const run = async (prompt: string) => {
+      const { fake } = fakeRunner([initMessage([]), assistantMessage("はい")]);
+      return collect(
+        runThreadTurn({ ...deps, runTurn: fake, resolveSessionSkills }, { threadId, prompt, modules: [] }),
+      );
+    };
+
+    await run("1ターン目");
+    assert.equal(asked, 1);
+    const firstSeq = store.getThread(threadId)!.skillSets![0]!.seq;
+    const firstUserMessage = store.getThread(threadId)!.messages.find((m) => m.role === "user")!;
+    assert.ok(firstSeq < firstUserMessage.seq, "人の発言より後に刻んだ（その発言の時点で何が効いていたか引けない）");
+
+    // 設定が変わっても、続きのターン（resume）では決め直さない
+    names = ["pdf", "xlsx"];
+    await run("2ターン目");
+    assert.equal(asked, 1, "resume するターンで決め直した");
+    assert.deepEqual(
+      currentSkillSet(store.getThread(threadId)!)!.active.map((s) => s.name),
+      ["pdf"],
+    );
+
+    // Clear すると resume を外すので、次のターンで決め直す
+    await store.clearThread(threadId);
+    await run("Clear の後");
+    assert.equal(asked, 2, "Clear の後に決め直していない");
+    assert.deepEqual(
+      currentSkillSet(store.getThread(threadId)!)!.active.map((s) => s.name),
+      ["pdf", "xlsx"],
+    );
+  });
+});
+
+test("効かせる Skill を決められなければ、走らせずに止める（何も効かせない会話を黙って始めない）", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake, state } = fakeRunner([initMessage([]), assistantMessage("はい")]);
+    const events = await collect(
+      runThreadTurn(
+        {
+          ...deps,
+          runTurn: fake,
+          resolveSessionSkills: async () => {
+            throw new Error("壊れた");
+          },
+        },
+        { threadId, prompt: "やあ", modules: [] },
+      ),
+    );
+    const error = events.find((e) => e.type === "error") as { message: string } | undefined;
+    assert.match(error?.message ?? "", /効かせる Skill を決められませんでした: 壊れた/);
+    assert.equal(state.yielded, 0, "決められないまま走らせた");
+    assert.equal(store.getThread(threadId)!.messages.length, 0);
+  });
+});

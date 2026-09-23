@@ -172,3 +172,63 @@ stdio MCP サーバを繋いだ。
 - 会話の途中で効かせる集合を変えたくなったとき、Fork が使えるか（未測）
 - 自己学習をどこまで自動にするか
 - Skill の探索を Command Palette に出すか
+
+---
+
+## 追記：実装に入って（2026-09-23、`skill-instructions-wiring`）
+
+### 測定5：banto の実物の代理サーバ（HTTP）でも届くか → **届く**
+
+測定1〜4 は stdio の使い捨てサーバだった。banto の Runner は `type: "http"` で
+`/agent-relay/<Module>` に繋ぐので、**banto の dist をそのまま使って**同じことを確かめた
+（`/tmp/skill-probe/http-probe.mjs`。`AgentRelayEndpoint` ＋ `renderSkillInstructions`
+＋ `runTurn`、偽の Skill Module は InMemory）。2つ配って konpeito だけ効かせた：
+
+```
+[tool_use] ReadMcpResourceTool {"server":"skills","uri":"skill://konpeito-handling/SKILL.md"}
+[tool_use] ListMcpResourcesTool {"server":"skills"}
+[tool_use] ReadMcpResourceTool {"server":"skills","uri":"skill://ramune-handling/SKILL.md"}
+[text] Q1: 17度 / Q2: 群青色 / Q3: 42度（資源一覧の説明に記載。本文には温度の記載なし）
+```
+
+- Q1（説明にだけ書いた事実）→ `instructions` から答えた
+- Q2（本文にだけ書いた事実）→ `instructions` の URI を**直接**読みに行った
+- Q3（効かせていない Skill）→ 「ここに挙げていない Skill もある」を読んで**自分で一覧を引いた**
+
+### 訂正：Clear は既にある
+
+引き継ぎと仕様に「**Clear は banto にまだ無い**（core に `clear_thread` は無い）」と
+書いたが、**誤り**。人が押す Clear は `thread.cleared` として実装済みで、
+**resume-point を捨てる**（`project-thread/fold.ts`）。無いのは AI から呼ぶ tool
+（`clear_thread`）のほうだけ。**つまり Clear の次のターンで効かせ直る**——
+仕様（§5.7）を直した。`resumePoint` を見て判断する形にしたので、Clear 側に手を入れる必要は無かった。
+
+### 実装で決めたこと（仕様 §5.6・§5.7 に反映済み）
+
+- **印は `dev.banto/skill: true`、名前と説明は資源一覧の `name`・`description`**。
+  core は一覧だけを見る
+- **既定は「効かせない」**。鍵は Skill ごとに1つ（`skillEnabled:<Module>/<Skill>`）
+- **会話への刻みは `thread.skills_fixed`**。resume しないターンの最初、人の発言より前。
+  **代理サーバはその記録から `instructions` を作る**（設定を見に行かない）
+- Fork は分けた時点の記録を親から引き継ぐ（fold）
+
+### 却下した案
+
+- **core が `SKILL.md` を読んで frontmatter を解く**。Agent Skills の真実は
+  frontmatter なので筋はよいが、core に YAML の依存が要り（規則10）、会話の開始ごとに
+  Skill の数だけ読みに行くことになる。**印を名乗る Module は banto を知っている**
+  （`dev.banto/` は banto の拡張）ので、一覧に frontmatter の2項目を載せる約束を
+  守らせるほうが安い。約束は `@banto/module-contract` の `SKILL_META_KEY` に書いた
+- **続きのターンで設定から組み立て直す**（記録を持たない）。モデルには届かない
+  （測定2）ので害は無いように見えるが、**Compaction で読み直されるなら**（未測）
+  会話の途中で黙って中身が変わる。記録から作れば、どちらでも同じになる
+- **既定で効かせる**（Claude Code の plugin は入れると効く）。§5.6 の
+  「明示的にだけ変える」と、毎ターンの費用が黙って増えることを重く見た
+
+### 見つけたが直していないもの（規則7・8）
+
+- **`npm run check:agent-sdk` が動かない。** `dist/runner/adapter.smoketest.mjs` を
+  指しているが、ファイルは `src/runner/` にしか無く、中身も `runTurn` が
+  AsyncGenerator になる前の形（`result.messages` を読む）。仕様 §6.5 は
+  「SDK との疎通確認は `npm run check:agent-sdk` の1本に集約する」と書いているので、
+  **その1本が壊れている**。tasks.json に起票した（`agent-sdk-check-broken`）

@@ -44,6 +44,13 @@ export interface AgentProxyOptions {
   moduleCalls?: ModuleCallTracker;
   /** Module からの問いを、正しいターンへ届けるための宛先表。 */
   elicitations?: ElicitationRouter;
+  /**
+   * **`initialize` の応答に載せる `instructions`**（決定・2026-09-23、§5.6）。
+   * Runner はこれをモデルの文脈の冒頭に入れる（実測）。**組み立てるのは core**
+   * （`skills/instructions.ts`）——実 Module が自分の `instructions` を返しても、
+   * それは転送しない（Module に文脈を占領させない）。
+   */
+  instructions?: string;
 }
 
 export interface AgentProxy {
@@ -52,7 +59,13 @@ export interface AgentProxy {
 }
 
 export interface ModuleConnection {
+  /** 接続の名前（Project ごとの Module は `<宣言の名前>-<projectId>`）。 */
   name: string;
+  /**
+   * 宣言の名前——**Runner から見える名前**（`mcp__<これ>__…`）。Skill はこの名前で
+   * 修飾する（§5.7）。無ければ `name` と同じ（instance に1本の Module）。
+   */
+  declaredName?: string;
   client: Client;
   meta: BantoModuleMeta;
 }
@@ -64,7 +77,10 @@ export interface ModuleConnection {
 export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions = {}): AgentProxy {
   const server = new Server(
     { name: conn.name, version: "0.0.0" },
-    { capabilities: { tools: {}, resources: {} } }, // prompts は宣言しない（poc/06実測、CLIが呼ばない）
+    {
+      capabilities: { tools: {}, resources: {} }, // prompts は宣言しない（poc/06実測、CLIが呼ばない）
+      ...(opts.instructions !== undefined ? { instructions: opts.instructions } : {}),
+    },
   );
   const visibilityResolver = makeResourceVisibilityResolver(conn.client);
 

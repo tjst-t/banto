@@ -15,6 +15,8 @@ import type {
   ThreadState,
   UiToolCallEntry,
 } from "./types.js";
+import type { SessionSkillSet } from "../skills/types.js";
+import { sameSkillSet } from "../skills/activation.js";
 
 /** Memory 1件あたりの文字数上限。超えたら追記を拒否する（item3決定）。 */
 export const MEMORY_ENTRY_MAX_CHARS = 20_000;
@@ -407,6 +409,18 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
+  /**
+   * **新しいセッションで効かせる Skill の集合を、その会話に刻む**（決定・2026-09-23、§5.7）。
+   * 直前に刻んだものと同じなら刻まない——同じ記録で埋めない。
+   */
+  async fixSessionSkills(threadId: ThreadId, set: SessionSkillSet): Promise<void> {
+    const thread = this.getThread(threadId);
+    if (!thread) throw new NotFoundError(`thread ${threadId} not found`);
+    if (sameSkillSet(currentSkillSet(thread), set)) return;
+    const event = await this.log.append("thread.skills_fixed", { threadId, set });
+    this.projection.applyOne(event);
+  }
+
   /** UIの「Clear」——会話を畳む（v4-architecture.md §2.2）。resume-pointを捨てて、
    *  次のRunner呼び出しを新規query()にする。過去のmessages/memoryは物理削除しない
    *  （規則3）——横線マーカーとして記録するだけ。 */
@@ -440,4 +454,13 @@ function sortByExplicitOrder<T extends { id: string }>(items: T[], order: readon
       return ra === rb ? a.i - b.i : ra - rb;
     })
     .map(({ item }) => item);
+}
+
+/**
+ * **いまのセッションで効いている Skill の集合**（決定・2026-09-23）。
+ * 刻まれていなければ `undefined`——この仕組みより前に始まった会話は、何も効かせていない。
+ */
+export function currentSkillSet(thread: ThreadState): SessionSkillSet | undefined {
+  const sets = thread.skillSets ?? [];
+  return sets[sets.length - 1]?.set;
 }

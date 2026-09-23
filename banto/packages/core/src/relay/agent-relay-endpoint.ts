@@ -24,7 +24,18 @@ export class AgentRelayEndpoint {
     { transport: StreamableHTTPServerTransport; moduleName: string; threadId?: string }
   >();
 
-  constructor(private readonly authToken: string, private readonly opts: AgentProxyOptions = {}) {}
+  constructor(
+    private readonly authToken: string,
+    private readonly opts: AgentProxyOptions & {
+      /**
+       * **その会話で、その Module の代理サーバに載せる `instructions`**
+       * （決定・2026-09-23、§5.6）。効かせる集合は会話に刻まれている
+       * （`thread.skills_fixed`）ので、ここは読むだけ——**セッションを張るたびに
+       * 同じ記録から同じ文字列を作る**。
+       */
+      instructionsFor?(module: string, threadId: string | undefined): string | undefined;
+    } = {},
+  ) {}
 
   registerModule(conn: ModuleConnection): void {
     this.connections.set(conn.name, conn);
@@ -80,7 +91,8 @@ export class AgentRelayEndpoint {
       // **どの Project のターンか**（追加・2026-09-13）——Vault の制限の根拠
       const projectHeader = req.headers["x-banto-project-id"];
       const projectId = typeof projectHeader === "string" ? projectHeader : undefined;
-      const proxy = buildAgentProxy(conn, { ...this.opts, threadId, projectId });
+      const instructions = this.opts.instructionsFor?.(conn.declaredName ?? conn.name, threadId);
+      const proxy = buildAgentProxy(conn, { ...this.opts, threadId, projectId, instructions });
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (newSessionId) => {

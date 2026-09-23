@@ -22,7 +22,14 @@ import {
 } from "@banto/landlock";
 import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
 import { EventLog } from "./event-store/log.js";
-import { ProjectThreadStore } from "./project-thread/store.js";
+import { ProjectThreadStore, currentSkillSet } from "./project-thread/store.js";
+import {
+  discoverSkills,
+  isSkillEnabled,
+  renderSkillInstructions,
+  selectSessionSkills,
+  type SessionSkillSet,
+} from "./skills/index.js";
 import { RuntimeConfigStore } from "./config/runtime.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
@@ -170,6 +177,15 @@ async function main(): Promise<void> {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
     moduleCalls,
     elicitations,
+    // **効かせた Skill の名前と説明を `instructions` に載せる**（決定・2026-09-23、§5.6）。
+    // 集合は会話に刻まれている（`turn-runner.ts` が新しいセッションの最初に刻む）
+    // ——ここはそれを読むだけで、設定を見に行かない。**見に行くと、続きのターンで
+    // 設定が変わっていたときに記録と違うものを載せてしまう**（モデルには届かないが、
+    // 届いたかどうかが Runner の都合で決まる形にしない）
+    instructionsFor: (module, threadId) => {
+      const thread = threadId ? projectThread.getThread(threadId) : undefined;
+      return thread ? renderSkillInstructions(currentSkillSet(thread), module) : undefined;
+    },
   });
   const agentRelayHeaders = { authorization: `Bearer ${bootstrap.authToken}` };
 
@@ -830,6 +846,8 @@ async function main(): Promise<void> {
     // 外から繋いだ Module への承認は、この印に縛られる（`grantKey`）
     const conn = {
       name: connName,
+      // Runner から見える名前（Skill はこれで修飾する、§5.7）
+      declaredName: declaration.name,
       client,
       meta: declaration.meta,
       codeId: declarationFingerprint(declaration),
@@ -980,6 +998,18 @@ async function main(): Promise<void> {
     return endpoints.filter((e): e is ModuleEndpoint => e !== undefined);
   }
 
+  /**
+   * **新しいセッションで効かせる Skill の集合**（決定・2026-09-23、§5.7）。
+   * その会話に繋ぐ Module が配っている Skill を集め、設定（Project 上書き → 全体の既定）
+   * で絞る。刻むのは `turn-runner.ts`。
+   */
+  async function resolveSessionSkills(threadId: string): Promise<SessionSkillSet> {
+    const thread = projectThread.getThread(threadId);
+    if (!thread) throw new Error(`thread ${threadId} not found`);
+    const discovery = await discoverSkills(await resolveModuleClientsForThread(threadId));
+    return selectSessionSkills(discovery, (ref) => isSkillEnabled(runtimeConfig, ref, thread.projectId));
+  }
+
   /** Module の画面（MCP Apps）を出すための経路（決定・2026-09-06、§6.2）。
    *  Runner 向けの中継 URL と違い、**host が直接 Module と話す**
    *  ——画面は人のもので、Runner は通らない。 */
@@ -1119,6 +1149,7 @@ async function main(): Promise<void> {
     authToken: bootstrap.authToken,
     releaseProjectModules,
     resolveModulesForThread,
+    resolveSessionSkills,
     moduleStatusForProject,
     instanceModuleStatus,
     releaseModule,

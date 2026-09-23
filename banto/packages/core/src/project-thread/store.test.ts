@@ -657,3 +657,73 @@ test("まだ1度も走っていない時点から分けたら、新しい会話�
     assert.equal(fork.resumePoint, undefined, "無いものを在るように扱っている");
   });
 });
+
+// **効かせた Skill の集合を会話に刻む**（決定・2026-09-23、§5.7）。
+// `instructions` は resume でも Fork でも読み直されない（実測）ので、集合は
+// 新しいセッションの最初のターンで決まり、Fork は分けた時点のものを引き継ぐ。
+function skillSet(...names: string[]) {
+  return {
+    active: names.map((name) => ({ module: "skills", name, description: name, uri: `skill://${name}` })),
+    othersIn: [],
+    problems: [],
+  };
+}
+
+test("効かせた Skill の集合を会話に刻む。同じものは刻み直さない", async () => {
+  const { currentSkillSet } = await import("./store.js");
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("demo", dir);
+    const thread = await store.createBaseThread(project.id);
+    assert.equal(currentSkillSet(store.getThread(thread.id)!), undefined, "刻んでいないのに何か効いている");
+
+    await store.fixSessionSkills(thread.id, skillSet("pdf"));
+    await store.fixSessionSkills(thread.id, skillSet("pdf"));
+    assert.equal(store.getThread(thread.id)!.skillSets!.length, 1, "同じ集合で記録を埋めた");
+
+    // Clear の後の新しいセッションで別の集合を刻む——前のセッションの記録は残る（「あのとき」）
+    await store.clearThread(thread.id);
+    await store.fixSessionSkills(thread.id, skillSet("pdf", "xlsx"));
+    const t = store.getThread(thread.id)!;
+    assert.deepEqual(
+      t.skillSets!.map((s) => s.set.active.map((a) => a.name)),
+      [["pdf"], ["pdf", "xlsx"]],
+    );
+    assert.deepEqual(
+      currentSkillSet(t)!.active.map((a) => a.name),
+      ["pdf", "xlsx"],
+    );
+  });
+});
+
+test("Fork は分けた時点で効いていた集合を引き継ぐ——過去のメッセージから分けたら、その時点のもの", async () => {
+  const { currentSkillSet } = await import("./store.js");
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("demo", dir);
+    const base = await store.createBaseThread(project.id);
+    // 実際のターンの順：刻む → 人の発言 → セッション確定 → 答え
+    await store.fixSessionSkills(base.id, skillSet("pdf"));
+    await store.appendMessage(base.id, "user", "1つ目のセッション");
+    await store.updateResumePoint(base.id, "session-1");
+    await store.appendMessage(base.id, "assistant", "1つ目のこたえ");
+    const firstSessionMessage = lastMessage(store, base.id).seq;
+
+    await store.clearThread(base.id);
+    await store.fixSessionSkills(base.id, skillSet("xlsx"));
+    await store.appendMessage(base.id, "user", "2つ目のセッション");
+
+    const now = await store.forkThread(base.id);
+    assert.deepEqual(
+      currentSkillSet(store.getThread(now.id)!)!.active.map((a) => a.name),
+      ["xlsx"],
+      "いまから分けた Fork が、いま効いている集合を持っていない",
+    );
+
+    const past = await store.forkThread(base.id, { fromSeq: firstSessionMessage });
+    assert.equal(store.getThread(past.id)!.resumePoint, "session-1");
+    assert.deepEqual(
+      currentSkillSet(store.getThread(past.id)!)!.active.map((a) => a.name),
+      ["pdf"],
+      "過去から分けた Fork が、その時点の集合を持っていない",
+    );
+  });
+});

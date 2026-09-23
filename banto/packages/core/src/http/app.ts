@@ -24,6 +24,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { ThreadState } from "../project-thread/types.js";
 import type { ThreadPermissionMode } from "../project-thread/types.js";
 import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
+import type { SessionSkillSet } from "../skills/types.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
@@ -115,6 +116,8 @@ export interface AppDeps {
   /** そのThreadで使えるModule（名前とRunner接続先URL）の一覧を返す（Project単位の配線）。
    *  Shell/FileSystemはProject単位で遅延spawnするため非同期。 */
   resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]>;
+  /** 新しいセッションで効かせる Skill の集合（決定・2026-09-23、§5.7）。`turn-runner.ts` が使う。 */
+  resolveSessionSkills?(threadId: string): Promise<SessionSkillSet>;
   /** そのThreadで繋がっているModuleそのもの（画面を出すために中身を読む）。
    *  Runner向けの中継URL（resolveModulesForThread）とは用途が別——
    *  こちらは**人の画面**のための経路で、Runnerは通らない。 */
