@@ -534,8 +534,14 @@ export class FileBrowser {
           },
           icon("PanelLeftClose"),
         ),
-        // 省略は左から——「どのフォルダにいるか」（末尾側）が大事（dir=rtl は見た目だけ）
-        h("span", { class: "root-path truncate", text: this.rootLabel, title: this.rootLabel, data: { testid: "root-path" } }),
+        // 省略は左から——「どのフォルダにいるか」（末尾側）が大事。枠は右から左（rtl）に
+        // 並べて左端を切り、**中の文字は左から右に固定する**——そうしないと先頭の `~/` が
+        // 向きを持たない文字として右端へ回り、`worktrees/banto/~` と読めてしまう（実機で発覚）
+        h(
+          "span",
+          { class: "root-path truncate", title: this.rootLabel, data: { testid: "root-path" } },
+          h("bdi", { text: this.rootLabel, attrs: { dir: "ltr" } }),
+        ),
         h(
           "div",
           { class: "tree-tools" },

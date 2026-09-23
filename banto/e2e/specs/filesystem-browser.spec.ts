@@ -109,6 +109,16 @@ test("入口から開いたファイルブラウザで、見る・編集する�
 
   // 見出しに根、ツリーに実在の並び（フォルダが先）
   await expect(inner.getByTestId("root-path")).toContainText(basename(projectRoot), { timeout: 60_000 });
+  // 見た目の並びも先頭から（`dir=rtl` で先頭の記号が末尾へ回っていた、実機で発覚）
+  const rootText = (await inner.getByTestId("root-path").textContent()) ?? "";
+  const rootBox = await inner.getByTestId("root-path").locator("bdi").evaluate((el) => {
+    const range = document.createRange();
+    range.setStart(el.firstChild!, 0);
+    range.setEnd(el.firstChild!, 1);
+    return { first: range.getBoundingClientRect().left, whole: el.getBoundingClientRect().left };
+  });
+  expect(rootText.startsWith("/") || rootText.startsWith("~"), `根の表示: ${rootText}`).toBe(true);
+  expect(rootBox.first - rootBox.whole, "根の表示の先頭の文字が左端に無い").toBeLessThan(2);
   await expect(inner.locator(".tree-body > .row")).toHaveText(["docs", "public", "notes.txt"]);
 
   // ---- Markdown：描かれた見出しと表、ソースへの切り替え -------------------
