@@ -143,10 +143,11 @@ button { font: inherit; color: inherit; }
 
 /* ---- 中身（ビューア）---- */
 .viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.viewer-bar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.viewer-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; min-height: 41px; }
+.viewer-bar .spacer-fill { flex: 1; }
+.viewer-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .viewer-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-.tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.tab-list { display: inline-flex; align-self: flex-start; gap: 2px; margin: 8px 16px 0; padding: 3px; background: var(--bg-2); border-radius: 8px; }
+.tab-list { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-2); border-radius: 8px; }
 .tab { border: 0; background: transparent; padding: 3px 10px; border-radius: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; }
 .tab[aria-selected="true"] { background: var(--bg); color: var(--ink); box-shadow: var(--b-sh-1); }
 .tab-panel { flex: 1; min-height: 0; overflow: auto; }

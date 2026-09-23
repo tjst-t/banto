@@ -10,7 +10,17 @@
 
 import { FileBrowser } from "./browser.js";
 import { EditDiffView } from "./edit-diff.js";
-import { onNotification, notify, request, reportSize, errorMessage, type CallToolResult, type HostContext, type InitializeResult } from "./protocol.js";
+import {
+  onNotification,
+  notify,
+  request,
+  reportSize,
+  errorMessage,
+  VIEW_STATE_KEY,
+  type CallToolResult,
+  type HostContext,
+  type InitializeResult,
+} from "./protocol.js";
 import { applyHostStyles, applyTheme, installStyles } from "./styles.js";
 
 interface Surface {
@@ -74,6 +84,8 @@ async function main(): Promise<void> {
       // **人が入口から直接開いたとき**は、起こした tool 呼び出しが無い（host は toolInfo を
       // 渡さない）。渡されるのを待たず、自分で取りに行く（§6.2）
       openedByHuman: !ctx.toolInfo,
+      // 開き直したとき（リロード・別タブ）に、前に見ていた場所を返してもらう
+      viewState: ctx[VIEW_STATE_KEY],
     });
     surface = browser;
   }

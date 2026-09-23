@@ -115,3 +115,21 @@ filesystem リファレンス実装と同じく unified diff を返すように�
 `displayMode` を渡したときだけで、これは 2026-09-07 に `listDirectory` で決めた形と同じ
 ——人の「大きく見せて」に AI が応えるための口。
 
+## 追記：見ている場所を預ける・切り替えと編集を1行に・「File」で引ける（2026-09-23、ユーザー要望）
+
+- **ファイルを開いたまま「別タブで開く」と、別タブでは最初の画面に戻っていた。** 画面の状態は
+  iframe の中にしか無く、banto の URL に出ていなかった（モックは URL に `fsFile` を持っていた）。
+  MCP Apps には状態を host に預ける口が無い（OpenAI Apps SDK の widget state にあたるもの）ので、
+  banto の拡張 `dev.banto/view-state` を足した——画面が通知で預け、banto は URL の `canvasView` に持ち、
+  開き直したら `hostContext` で返す。リロードで最初に戻る問題（上の表の持ち越し）も同時に解けた。
+  - **踏んだもの**：URL の書き換えに `history.replaceState(history.state, …)` を使ったら、
+    `history.state` に入っている Next の内部の印（`__NA`）を見て Next が「自分の操作」と扱い、
+    `useSearchParams` に反映しなかった。「別タブで開く」は `useSearchParams` から URL を組むので、
+    古い場所を運んだ。第1引数を `null` にして直した（Next は自分の内部の状態を写し直す）
+  - 却下：`ui/update-model-context` の `structuredContent` に載せる——それは AI の文脈に入れる
+    ためのもので、意味が違う
+- **「プレビュー／ソース」と「編集」を1行に**した。2段だと中身に使える高さが減る。
+- **Command Palette で「File」と打っても入口が引ける**ようにした。入口の名前（「ファイル」）だけで
+  絞っていた。名前・説明・Module の名前（`filesystem`）で引き、Module の名前は項目の下に出す
+  （なぜ当たったかが画面で分かる）。
+

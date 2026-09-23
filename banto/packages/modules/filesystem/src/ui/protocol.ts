@@ -17,11 +17,20 @@ export interface CallToolResult {
 
 export type DisplayMode = "inline" | "fullscreen" | "pip";
 
+/**
+ * **画面の見ている場所**（banto の拡張、`dev.banto/view-state`、2026-09-23）。MCP Apps には
+ * 「画面が自分の状態を host に預け、開き直したときに返してもらう」口が無い（OpenAI Apps SDK の
+ * widget state にあたるもの）。banto は大きく開いた画面についてこれを URL に持ち、リロードや
+ * 別タブで開き直したときに `hostContext` で返す。**banto 以外の host では来ないだけ**。
+ */
+export const VIEW_STATE_KEY = "dev.banto/view-state";
+
 export interface HostContext {
   displayMode?: DisplayMode;
   theme?: "light" | "dark";
   toolInfo?: unknown;
   styles?: { variables?: Record<string, string | undefined> };
+  [VIEW_STATE_KEY]?: unknown;
 }
 
 export interface InitializeResult {
@@ -86,6 +95,11 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   }
   for (const listener of listeners.get(msg.method) ?? []) listener(msg.params ?? {});
 });
+
+/** 見ている場所を host に預ける（受けない host では何も起きない）。 */
+export function reportViewState(state: Record<string, unknown>): void {
+  notify(VIEW_STATE_KEY, { state });
+}
 
 export function textOf(result: CallToolResult): string {
   return (result.content ?? [])

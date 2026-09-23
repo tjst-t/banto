@@ -1868,7 +1868,7 @@
         "~~AI が人にファイルを見せる口が未決~~ → **showFile を足した**（ユーザー決定・2026-09-23、`filesystem-show-file`）",
         "~~PDF の埋め込みビューア~~ → **当面このまま**（名前と大きさ＋ダウンロード、ユーザー決定・2026-09-23）",
         "Command Palette から名前でファイルを探して開く（completion/complete）が無い——host 側の口がどの Module にも無い",
-        "画面の中の移動（開いたファイル）が URL に残らない。リロードすると最初に戻る"
+        "~~画面の中の移動が URL に残らない~~ → **見ている場所を host に預けるようにした**（`filesystem-view-state`）"
       ],
       "notes": "docs/notes/2026-09-23-filesystem-browser.md",
       "completedAt": "2026-09-23"
@@ -1879,6 +1879,15 @@
       "status": "done",
       "why": "ユーザー決定（2026-09-23）。モックは readFile でプレビューを開いていたが、AI の読む口は readFile だけなので、画面を付けると読むたびにカードが出る。「見せる」を別の tool にする。",
       "doneWhen": "AI の showFile で会話の中にそのファイルの中身のカードが出て（見出し・本文まで一致）、「大きく表示」でツリーを畳んだブラウザにそのファイルが開き、ツリーを開くとその場所で選ばれていること。displayMode=fullscreen なら最初から会話の隣に開くこと（e2e/specs/filesystem-browser.spec.ts）。",
+      "notes": "docs/notes/2026-09-23-filesystem-browser.md",
+      "completedAt": "2026-09-23"
+    },
+    {
+      "id": "filesystem-view-state",
+      "title": "ファイルブラウザ：開いているファイルを別タブ・リロードでも保つ／切り替えと編集を1行に／「File」で入口が引ける",
+      "status": "done",
+      "why": "ユーザー要望（2026-09-23）。ファイルを開いたまま別タブに出すと最初の画面に戻っていた。MCP Apps に状態を host に預ける口が無いので、banto の拡張 dev.banto/view-state を足した（v4-frontend §6.2）。",
+      "doneWhen": "開いたファイルがリロード後も別タブでも開いていて、別タブの中で移った先もその別タブのリロードで残ること。AI が見せたファイルから移った先が別タブに運ばれること。「プレビュー／ソース」と「編集」が同じ行にあること（縦位置の差で見る）。Command Palette で「File」と打って入口が出ること（e2e/specs/filesystem-browser.spec.ts）。",
       "notes": "docs/notes/2026-09-23-filesystem-browser.md",
       "completedAt": "2026-09-23"
     },

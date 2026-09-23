@@ -388,6 +388,28 @@ Module が申告できるのは**スキーム付きの素直な origin だけ**�
 - 保存する名前は URI の最後の部分（区切り・制御文字は `_` に置き換える）
 
 使っている面：FileSystem のファイルブラウザ（1件はそのまま、複数は ZIP、`v4-modules.md` §2.2）。
+
+#### 画面の「見ている場所」を預かる（banto の拡張、決定・2026-09-23、ユーザー要望）
+
+**大きく開いた画面は、リロードしても別タブに出しても、見ていた場所のまま開き直す。**
+MCP Apps には「画面が自分の状態を host に預け、開き直したときに返してもらう」口が無い
+（名前はある——OpenAI Apps SDK の widget state）。無いと、ファイルを開いたまま
+「別タブで開く」と、別タブでは最初の画面に戻る。banto の拡張として足す（`dev.banto/project` と
+同じ名前空間）：
+
+| 向き | 形 |
+|---|---|
+| 画面 → banto | 通知 `dev.banto/view-state`（`params.state` に小さな JSON） |
+| banto が持つ場所 | **URL の `canvasView`**——リロードでも、URL をそのまま運ぶ別タブでも残る |
+| banto → 画面 | 開き直したとき `hostContext["dev.banto/view-state"]` |
+
+- **中身は画面のもの**で、banto は解釈しない。URL に載るので 2000 字まで（超えたら預からない）
+- **預かるのは大きく開いた面（会話の隣・別タブ）だけ。** 会話の中のカードは URL を持たない
+- **別の面を開く・閉じると捨てる**——次の面に前の面の場所を渡さない
+- **履歴には積まない**（`history.replaceState`）——画面の中の移動は banto の移動ではない
+- 受けない host では、画面は預けた場所を返してもらえないだけ（最初の画面から開く）
+- 開き直した画面では、**預けた場所のほうが tool の引数より新しい**（AI が見せたファイルから
+  人が移っていたら、移った先を開く）——どちらを優先するかは画面が決める
 - **設定の中身は Module が持つ。** banto の Configuration（アーキ仕様 §2.6）は**core 自身の
   設定**であって、Module の設定を預かる登録簿ではない。Module の設定 UI は、その
   Module 自身の tool を呼んで読み書きする。banto が持つのは「その役割を有効に
@@ -494,7 +516,7 @@ banto は「1本の窓口」を3か所で守る。**host が誰と誰を繋ぐ�
 |---|---|
 | Project / Thread | Event Store（`fold`） |
 | 受信箱（判断待ち・レビュー待ち） | Event Store（`fold`）。アーキ仕様 §2.4 と同じ源 |
-| Module の入口（launcher） | その Project の Module 集合＋マニフェスト（§6.2） |
+| Module の入口（launcher） | その Project の Module 集合＋マニフェスト（§6.2）。**名前・説明・Module の名前のどれかで引ける**（改訂・2026-09-23、ユーザー要望——入口の名前が「ファイル」でも、人は「file」と打つ。Module の名前は項目の下に出す） |
 | Module の資源（数えられるもの） | `resources/list` |
 | Module の資源（パラメータ付き） | `resources/templates/list` ＋ `completion/complete` |
 | core の操作 | Fork する・畳む・新しい Project を作る 等（アーキ仕様 §2.2） |

@@ -121,11 +121,14 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   // 一覧は host が Module 集合から導出したもの——ここは別の索引を持たない（規則3）
   if (currentProjectId) {
     const realItems: PaletteItem[] = getRealLaunchers(currentProjectId)
-      .filter((l) => q === "" || (l.name ?? l.server).toLowerCase().includes(q))
+      // **名前だけでなく、Module の名前と説明でも引ける**（改訂・2026-09-23、ユーザー要望）
+      // ——入口の名前は日本語（「ファイル」）でも、人は「file」と打つ。Module の名前
+      // （`filesystem`）は見出しの下に出しているので、なぜ当たったかも画面で分かる
+      .filter((l) => q === "" || [l.name, l.description, l.server].some((t) => t?.toLowerCase().includes(q)))
       .map((l) => ({
         id: `launcher:${l.server}:${l.resourceUri}`,
         title: l.name ?? l.server,
-        subtitle: l.description ?? l.server,
+        subtitle: l.description ? `${l.server} · ${l.description}` : l.server,
         icon: Rocket,
         // 開くと **fullscreen**（§6.2 の banto 解釈＝**会話の隣**）
         // ——tool の結果ではないので会話のカードには置かない。

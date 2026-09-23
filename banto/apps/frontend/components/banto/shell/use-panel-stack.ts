@@ -8,6 +8,7 @@
 
 import { useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 
 export type PanelRole = "primary" | "slim" | "spine";
 
@@ -126,6 +127,9 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
         else params.set("fork", next.fork);
       }
       if (next.canvas !== undefined) {
+        // **別の面を開く・閉じるなら、前の面の「見ている場所」は捨てる**
+        // （`lib/backend/canvas-view-state.ts`）——次の面に前の面の場所を渡さない
+        params.delete(VIEW_STATE_PARAM);
         if (next.canvas === null) {
           params.delete("canvas");
           params.delete("canvasTool");

@@ -13,6 +13,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useMounted } from "@/hooks/use-mounted";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
+import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
 import {
   getRealInlineView,
   hasLiveRealRun,
@@ -439,6 +440,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         // ——`ui://` を指しているかで見分ける（決定・2026-09-07、§6.2）
         const realView = stack.canvas?.toolCallId ? getRealInlineView(stack.canvas.toolCallId) : undefined;
         const launcherUri = !realView && viewId.startsWith("ui://") ? viewId : undefined;
+        // 画面が預けた「見ている場所」——URL に持つので、リロードでも別タブでも残る
+        const viewState = parseViewState(searchParams.get(VIEW_STATE_PARAM));
         return (
         <div className="flex h-full min-h-0 flex-col">
           <ClosablePanelHeader
@@ -472,6 +475,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 server={moduleId}
                 resourceUri={launcherUri}
                 displayMode="fullscreen"
+                viewState={viewState}
+                onViewStateChange={writeViewStateToUrl}
               />
             ) : realView ? (
               <ModuleCanvas
@@ -482,6 +487,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 toolArgs={realView.toolArgs}
                 toolResult={realView.toolResult}
                 displayMode="fullscreen"
+                viewState={viewState}
+                onViewStateChange={writeViewStateToUrl}
               />
             ) : (
               <CanvasContent moduleId={moduleId} viewId={viewId} />

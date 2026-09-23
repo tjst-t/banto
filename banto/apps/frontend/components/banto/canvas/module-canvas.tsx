@@ -31,6 +31,7 @@ import { beginCanvasToolCall, endCanvasToolCall } from "@/lib/backend/adapter";
 import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
+import { VIEW_STATE_KEY } from "@/lib/backend/canvas-view-state";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -59,6 +60,11 @@ export interface ModuleCanvasProps {
   /** 画面が「大きく出して」と言ってきたとき（`ui/request-display-mode`）。
    *  **決めるのは host（banto）**——仕様どおり、要求であって指示ではない（§6.2）。 */
   onRequestFullscreen?: () => void;
+  /** 前に預かった「見ている場所」（`dev.banto/view-state`、`lib/backend/canvas-view-state.ts`）。
+   *  開き直したとき（リロード・別タブ）に画面へ返す。預かる場所が無い面では渡さない */
+  viewState?: unknown;
+  /** 画面が「見ている場所」を預けてきたとき。渡さなければ預からない（会話の中のカード等） */
+  onViewStateChange?: (state: unknown) => void;
 }
 
 type CallToolResult = Parameters<AppBridge["sendToolResult"]>[0];
@@ -158,6 +164,8 @@ function SandboxFrame({
   toolResult,
   displayMode,
   onRequestFullscreen,
+  viewState,
+  onViewStateChange,
   sandboxUrl,
   resource,
 }: ModuleCanvasProps & { sandboxUrl: string; resource: RealUiResource }) {
@@ -175,9 +183,9 @@ function SandboxFrame({
   // Canvas を1つ出して Fork を開いて閉じるだけで **9回**。中身は生き延びていたが、
   // 張り直しの最中に飛んでいる呼び出しがあれば落ちる（規則2 の「黙って別の経路へ
   // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
-  const latest = useRef({ owner, toolArgs, toolResult, onRequestFullscreen });
+  const latest = useRef({ owner, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange });
   useEffect(() => {
-    latest.current = { owner, toolArgs, toolResult, onRequestFullscreen };
+    latest.current = { owner, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange };
   });
   // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
   // 回帰試験はこの数字が増えないことを見る
@@ -212,6 +220,9 @@ function SandboxFrame({
         // **渡すのは開かれた場所だけ**——Project の一覧を全部渡さない。
         // どの Canvas にも人の Project 名が全部見えることになる
         ...(bantoProjectContext(owner) ? { "dev.banto/project": bantoProjectContext(owner) } : {}),
+        // **前に見ていた場所**（banto の拡張、2026-09-23）。画面が預けていったものを、
+        // 開き直したときに返す——`dev.banto/project` と同じく仕様が認める追加の項目
+        ...(latest.current.viewState !== undefined ? { [VIEW_STATE_KEY]: latest.current.viewState } : {}),
         // tool 起点のときだけ入れる。**無いものを作らない**——画面はこれが
         // 無いことで「人が直接開いた」と分かり、自分で必要なものを取りに行く
         ...(toolName ? { toolInfo: { tool: { name: toolName, inputSchema: { type: "object" } } } } : {}),
@@ -255,6 +266,15 @@ function SandboxFrame({
       }
       for (const file of files) saveDownload(file);
       return {};
+    };
+
+    // **画面が「見ている場所」を預けてくる**（banto の拡張、2026-09-23）。仕様に無い通知
+    // なので、決まった受け口ではなく「知らない通知」の受け口で受ける。預かる場所が無い面
+    // （会話の中のカード）では捨てる——知らない通知は無視してよい（JSON-RPC の通知）
+    bridge.fallbackNotificationHandler = async (notification) => {
+      if (notification.method !== VIEW_STATE_KEY) return;
+      const state = (notification.params as { state?: unknown } | undefined)?.state;
+      latest.current.onViewStateChange?.(state);
     };
 
     // 画面からの「大きく出して」（§6.2 の交渉モデル。**決めるのは banto**）

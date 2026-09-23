@@ -130,16 +130,44 @@ export class FileViewer {
     }
   }
 
+  /** 「プレビュー／ソース」を切り替えられる種類か（描いたものと元の文字の両方に意味がある）。 */
+  private hasTabs(): boolean {
+    return this.loaded.status === "text" && (this.kind === "markdown" || this.kind === "html" || this.kind === "svg");
+  }
+
   private render(): void {
-    const bar = this.editable() ? this.renderBar() : null;
+    const tabs = this.mode === "view" && this.hasTabs() ? this.renderTabList() : null;
+    const actions = this.editable() ? this.renderActions() : null;
+    // **切り替えと編集は同じ1行に置く**（改訂・2026-09-23、ユーザー要望）——縦に2段
+    // 重ねると、中身に使える高さがその分だけ減る
+    const bar =
+      tabs || actions
+        ? h("div", { class: "viewer-bar" }, tabs, h("span", { class: "spacer-fill" }), actions)
+        : null;
     replaceChildren(this.el, bar, h("div", { class: "viewer-body" }, this.renderBody()));
   }
 
-  private renderBar(): HTMLElement {
+  private renderTabList(): HTMLElement {
+    const tabButton = (value: "preview" | "source", label: string) =>
+      h("button", {
+        class: "tab",
+        text: label,
+        attrs: { type: "button", role: "tab", "aria-selected": String(this.tab === value) },
+        on: {
+          click: () => {
+            this.tab = value;
+            this.render();
+          },
+        },
+      });
+    return h("div", { class: "tab-list", attrs: { role: "tablist" } }, tabButton("preview", "プレビュー"), tabButton("source", "ソース"));
+  }
+
+  private renderActions(): HTMLElement {
     if (this.mode === "edit") {
       return h(
         "div",
-        { class: "viewer-bar" },
+        { class: "viewer-actions" },
         h("button", {
           class: "btn",
           text: "キャンセル",
@@ -161,7 +189,7 @@ export class FileViewer {
     }
     return h(
       "div",
-      { class: "viewer-bar" },
+      { class: "viewer-actions" },
       h(
         "button",
         { class: "btn", attrs: { type: "button" }, data: { testid: "viewer-edit" }, on: { click: () => this.startEdit() } },
@@ -258,26 +286,9 @@ export class FileViewer {
     return h("pre", { class: "source", text, data: { testid: "viewer-source" } });
   }
 
-  /** 「プレビュー」と「ソース」を切り替える（モックと同じ2つのタブ）。 */
+  /** 「プレビュー」か「ソース」のどちらか（切り替えは上の1行、`renderTabList`）。 */
   private tabs(preview: Node, text: string): HTMLElement {
-    const tabButton = (value: "preview" | "source", label: string) =>
-      h("button", {
-        class: "tab",
-        text: label,
-        attrs: { type: "button", role: "tab", "aria-selected": String(this.tab === value) },
-        on: {
-          click: () => {
-            this.tab = value;
-            this.render();
-          },
-        },
-      });
-    return h(
-      "div",
-      { class: "tabs" },
-      h("div", { class: "tab-list", attrs: { role: "tablist" } }, tabButton("preview", "プレビュー"), tabButton("source", "ソース")),
-      h("div", { class: "tab-panel", attrs: { role: "tabpanel" } }, this.tab === "preview" ? preview : this.source(text)),
-    );
+    return h("div", { class: "tab-panel", attrs: { role: "tabpanel" } }, this.tab === "preview" ? preview : this.source(text));
   }
 
   private renderSheet(rows: readonly (readonly string[])[]): HTMLElement {

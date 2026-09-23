@@ -18,6 +18,7 @@ import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { parseCanvasParam } from "@/components/banto/shell/use-panel-stack";
 import { fetchRealUiToolCall, type RealUiToolCall } from "@/lib/backend/client";
+import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
 
 function CanvasWindowInner() {
   const searchParams = useSearchParams();
@@ -25,6 +26,8 @@ function CanvasWindowInner() {
   const threadId = searchParams.get("thread");
   const toolCallId = searchParams.get("canvasTool");
   const projectId = searchParams.get("project");
+  // 元のタブで画面が預けた「見ている場所」——URL ごと運ばれてくる（`canvas-view-state.ts`）
+  const viewState = parseViewState(searchParams.get(VIEW_STATE_PARAM));
 
   if (!canvas) {
     return (
@@ -36,7 +39,7 @@ function CanvasWindowInner() {
 
   // 実 Module の画面（記録から引ける）か、モックの面か
   if (threadId && toolCallId) {
-    return <RealCanvasWindow threadId={threadId} toolCallId={toolCallId} />;
+    return <RealCanvasWindow threadId={threadId} toolCallId={toolCallId} viewState={viewState} />;
   }
   // **入口（launcher）から開いた面**——tool 呼び出しが無いので記録も引かない。
   // どの Module のどの画面かは URL がそのまま持っている（決定・2026-09-07）
@@ -49,6 +52,8 @@ function CanvasWindowInner() {
             server={canvas.moduleId}
             resourceUri={canvas.viewId}
             displayMode="fullscreen"
+            viewState={viewState}
+            onViewStateChange={writeViewStateToUrl}
           />
         </div>
       </CanvasWindowFrame>
@@ -78,7 +83,15 @@ type State =
   | { phase: "error"; message: string }
   | { phase: "ready"; call: RealUiToolCall };
 
-function RealCanvasWindow({ threadId, toolCallId }: { threadId: string; toolCallId: string }) {
+function RealCanvasWindow({
+  threadId,
+  toolCallId,
+  viewState,
+}: {
+  threadId: string;
+  toolCallId: string;
+  viewState: unknown;
+}) {
   const [state, setState] = useState<State>({ phase: "loading" });
 
   useEffect(() => {
@@ -135,6 +148,8 @@ function RealCanvasWindow({ threadId, toolCallId }: { threadId: string; toolCall
           }
           toolResult={call.result}
           displayMode="fullscreen"
+          viewState={viewState}
+          onViewStateChange={writeViewStateToUrl}
         />
       </div>
     </CanvasWindowFrame>

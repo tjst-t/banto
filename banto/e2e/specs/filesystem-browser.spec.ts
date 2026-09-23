@@ -341,6 +341,17 @@ test("AI の showFile は、そのファイルを会話の中に出し、大き�
   await expect(browser.locator('.row.selected[data-path="docs/README.md"]')).toBeVisible({ timeout: 30_000 });
   await expect(browser.locator('.row[data-path="other.txt"]')).toBeVisible();
 
+  // 人が別のファイルへ移ってから別タブに出すと、**移った先**が開いている
+  // ——最初に AI が見せたファイル（tool の引数）に戻らない
+  await browser.locator('.row[data-path="other.txt"]').click();
+  await expect(browser.getByTestId("open-path")).toHaveText("other.txt");
+  await expect.poll(() => new URL(page.url()).searchParams.get("canvasView") ?? "").toContain("other.txt");
+  const [tab] = await Promise.all([page.context().waitForEvent("page"), page.getByRole("button", { name: "別タブで開く" }).click()]);
+  const tabInner = tab.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(tabInner.getByTestId("open-path"), "別タブで、移った先のファイルが開いていない").toHaveText("other.txt", { timeout: 60_000 });
+  await expect(tabInner.getByTestId("viewer-source")).toHaveText("ほか\n");
+  await tab.close();
+
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });
 
@@ -362,4 +373,58 @@ test("「大きく見せて」なら、showFile は最初から会話の隣に�
   const browser = await fullscreenBrowser(page);
   await expect(browser.getByTestId("open-path")).toHaveText("docs/README.md");
   await expect(browser.getByTestId("viewer-markdown").locator("h1")).toHaveText("見せたいファイル");
+});
+
+test("開いているファイルは、リロードしても別タブでも開いたまま／切り替えと編集は1行／「File」でも入口が引ける", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-fsview-"));
+  mkdirSync(join(projectRoot, "docs"));
+  writeFileSync(join(projectRoot, "docs/README.md"), "# 開いたまま\n\n本文。\n");
+  writeFileSync(join(projectRoot, "top.txt"), "上\n");
+
+  await openApp(page);
+  await createProject(page, "E2E FS View", projectRoot);
+  await waitForProjectModule(page, "E2E FS View", "filesystem");
+
+  // ---- 入口は「File」でも引ける（名前は「ファイル」、Module は filesystem）------
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByPlaceholder("検索、または移動先・操作を選ぶ…").fill("File");
+  const entry = page.getByRole("option", { name: /ファイル/ });
+  await expect(entry, "「File」で入口が引けない").toBeVisible({ timeout: 30_000 });
+  await expect(entry).toContainText("filesystem");
+  await entry.click();
+
+  const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await inner.locator('.row[data-path="docs"]').click();
+  await inner.locator('.row[data-path="docs/README.md"]').click();
+  await expect(inner.getByTestId("viewer-markdown").locator("h1")).toHaveText("開いたまま", { timeout: 30_000 });
+
+  // ---- 「プレビュー／ソース」と「編集」は同じ1行 ------------------------------
+  const bar = inner.getByTestId("file-viewer").locator(".viewer-bar");
+  await expect(bar).toHaveCount(1);
+  await expect(bar.getByRole("tab", { name: "ソース" })).toBeVisible();
+  await expect(bar.getByTestId("viewer-edit")).toBeVisible();
+  const tabBox = (await bar.getByRole("tab", { name: "ソース" }).boundingBox())!;
+  const editBox = (await bar.getByTestId("viewer-edit").boundingBox())!;
+  expect(Math.abs(tabBox.y + tabBox.height / 2 - (editBox.y + editBox.height / 2)), "切り替えと編集が同じ行に無い").toBeLessThan(4);
+
+  // ---- リロードしても、開いていたファイルが開いている -------------------------
+  await expect.poll(() => new URL(page.url()).searchParams.get("canvasView") ?? "").toContain("docs/README.md");
+  await page.reload();
+  await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
+  await expect(inner.getByTestId("open-path"), "リロードしたら開いていたファイルが閉じた").toHaveText("docs/README.md", { timeout: 60_000 });
+  await expect(inner.getByTestId("viewer-markdown").locator("h1")).toHaveText("開いたまま");
+
+  // ---- 別タブで開いても、同じファイルが開いている ----------------------------
+  const [tab] = await Promise.all([page.context().waitForEvent("page"), page.getByRole("button", { name: "別タブで開く" }).click()]);
+  const tabInner = tab.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(tabInner.getByTestId("open-path"), "別タブで、開いていたファイルが開いていない").toHaveText("docs/README.md", { timeout: 60_000 });
+  await expect(tabInner.getByTestId("viewer-markdown").locator("h1")).toHaveText("開いたまま");
+  await expect(tabInner.locator('.row.selected[data-path="docs/README.md"]')).toBeVisible();
+  // 別タブの中で移った先も、その別タブのリロードで残る
+  await tabInner.locator('.row[data-path="top.txt"]').click();
+  await expect(tabInner.getByTestId("open-path")).toHaveText("top.txt");
+  await expect.poll(() => new URL(tab.url()).searchParams.get("canvasView") ?? "").toContain("top.txt");
+  await tab.reload();
+  await expect(tabInner.getByTestId("open-path")).toHaveText("top.txt", { timeout: 60_000 });
+  await tab.close();
 });

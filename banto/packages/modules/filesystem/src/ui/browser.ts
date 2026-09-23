@@ -22,6 +22,7 @@ import {
   downloadViaHost,
   errorMessage,
   reportSize,
+  reportViewState,
   requestDisplayMode,
   textOf,
   type CallToolResult,
@@ -100,6 +101,25 @@ export interface BrowserOptions {
   canDownload: boolean;
   /** 人が入口から開いたか（true なら tool の結果を待たずに自分で取りに行く） */
   openedByHuman: boolean;
+  /** 前に見ていた場所（host が預かっていたもの、`dev.banto/view-state`）。無ければ undefined */
+  viewState?: unknown;
+}
+
+/** 大きく開いた画面が host に預ける「見ている場所」。小さく保つ（URL に載る）。 */
+interface ViewState {
+  file?: string;
+  dir?: string;
+  treeCollapsed?: boolean;
+}
+
+function parseViewState(value: unknown): ViewState | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const clean = (p: unknown) =>
+    typeof p === "string" && p && !p.startsWith("/") && !p.split("/").includes("..") ? p : undefined;
+  const state: ViewState = { file: clean(v.file), dir: clean(v.dir) };
+  if (typeof v.treeCollapsed === "boolean") state.treeCollapsed = v.treeCollapsed;
+  return state.file || state.dir || state.treeCollapsed !== undefined ? state : undefined;
 }
 
 export class FileBrowser {
@@ -130,6 +150,10 @@ export class FileBrowser {
   private inlineError = false;
 
   private started = false;
+  /** host から前の場所を返してもらったか。**それがあれば、tool の引数より優先する**
+   *  ——開き直したときに、人が移った先ではなく最初に呼ばれた場所へ戻ってしまう */
+  private restored = false;
+  private lastReported = "";
 
   constructor(root: HTMLElement, options: BrowserOptions) {
     this.root = root;
@@ -139,6 +163,18 @@ export class FileBrowser {
     // 見せるファイルが主役——ツリーは畳んで開く（開けばいつでも辿れる）
     if (this.focus === "file") this.treeCollapsed = true;
     if (!options.openedByHuman) this.inlineNote = this.focus === "file" ? "ファイルを待っています…" : "一覧を待っています…";
+    const restored = this.displayMode === "fullscreen" ? parseViewState(options.viewState) : undefined;
+    if (restored) {
+      this.restored = true;
+      if (restored.file) {
+        this.openFile = restored.file;
+        this.anchor = restored.file;
+      }
+      this.activeDir = restored.dir ?? (restored.file ? dirnameOf(restored.file) : "");
+      for (const a of ancestorsOf(restored.file ?? `${this.activeDir}/_`)) this.expanded.add(a);
+      if (this.activeDir) this.expanded.add(this.activeDir);
+      if (restored.treeCollapsed !== undefined) this.treeCollapsed = restored.treeCollapsed;
+    }
     if (options.openedByHuman) this.start();
     else this.render();
   }
@@ -208,6 +244,8 @@ export class FileBrowser {
 
   /** tool が指した場所を開く。フォルダならそこを選び、ファイルならそれを開く。 */
   private applyTarget(key: string): void {
+    // 開き直した画面では、前に見ていた場所のほうが新しい（会話の中のカードは別——URL を持たない）
+    if (this.restored && this.displayMode === "fullscreen") return;
     if (this.focus === "file") {
       if (!key) return;
       this.openFile = key;
@@ -502,12 +540,25 @@ export class FileBrowser {
   private treeFoot: HTMLElement | null = null;
   private refreshButton: HTMLElement | null = null;
 
+  /** 見ている場所が変わったら host に預ける（大きく開いているときだけ——URL に載るのはそちら）。 */
+  private reportPlace(): void {
+    if (this.displayMode !== "fullscreen" || !this.started) return;
+    const state: ViewState = { treeCollapsed: this.treeCollapsed };
+    if (this.openFile) state.file = this.openFile;
+    if (this.activeDir) state.dir = this.activeDir;
+    const json = JSON.stringify(state);
+    if (json === this.lastReported) return;
+    this.lastReported = json;
+    reportViewState(state as Record<string, unknown>);
+  }
+
   render(): void {
     document.body.dataset.mode = this.displayMode;
     if (this.displayMode !== "fullscreen") {
       this.renderInline();
       return;
     }
+    this.reportPlace();
     const content = h("main", { class: "content" });
     this.renderContent(content);
     replaceChildren(
@@ -607,6 +658,7 @@ export class FileBrowser {
 
   /** ツリーだけを描き直す（中身のペインは触らない——編集中の内容を失わない）。 */
   private renderTree(): void {
+    this.reportPlace();
     if (!this.treeBody || !this.treeFoot) return;
     if (this.refreshButton) {
       const button = this.toolButton("RefreshCw", "更新", () => void this.refresh(), this.refreshing);
