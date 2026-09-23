@@ -146,10 +146,17 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   await expect(page.getByText(PROJECT_NAME, { exact: true }).first()).toBeVisible({
     timeout: 15_000,
   });
+  // **見る長さを決めておく**（訂正・2026-09-23、間欠で発覚）。以前は遷移が終わった瞬間に
+  // 測り終えて「6フレーム以上」を確かめていたが、**遷移が速いと5フレームしか無く**落ちた
+  // （フル E2E 3回中1回、単独では5回とも緑）。幅は全部 320 で正しかった——測る窓が
+  // 遷移の速さ次第だったのが穴。**着いた後の30フレームまで**見る：遅れて既定に戻る
+  // 壊れ方も、これで捕まる
+  const frames = () => page.evaluate(() => (window as { __sidebarWidths?: number[] }).__sidebarWidths?.length ?? 0);
+  const arrivedAt = await frames();
+  await expect.poll(frames, { message: "見張りがフレームを測れていない", timeout: 5_000 }).toBeGreaterThan(arrivedAt + 30);
   const observed = await page.evaluate(
     () => (window as { __sidebarWidths?: number[] }).__sidebarWidths ?? [],
   );
-  expect(observed.length, "見張りが1フレームも測れていない").toBeGreaterThan(5);
   expect(
     [...new Set(observed)],
     "Project を移る途中で幅が変わった（既定に戻ってから直っている）",
