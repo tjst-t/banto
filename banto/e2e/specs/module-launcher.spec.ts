@@ -36,7 +36,7 @@ test("Command Palette の「Module の入口」から、AI を介さずに画面
   // FileSystem が名乗った名前と説明が、そのまま出ている（§6.2）
   const entry = page.getByRole("option", { name: /ファイル/ });
   await expect(entry).toBeVisible({ timeout: 15_000 });
-  await expect(entry).toContainText("この Project の直下を見る");
+  await expect(entry).toContainText("この Project のファイルを見る・開く・編集する");
 
   // 名乗っていない Module（shell・vault backend 自身）の入口は出ない。
   // **VaultUI は名乗っている**ので出る（2026-09-12）——ここで数えるのは

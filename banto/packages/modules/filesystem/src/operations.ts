@@ -18,15 +18,12 @@
 
 import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { zipSync } from "fflate";
+import { kindByContent, kindByExtension } from "./mime.js";
+import { unifiedDiff, type UnifiedDiff } from "./unified-diff.js";
 
 export class PathOutsideRootError extends Error {}
-
-const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-const TEXT_EXT = new Set([
-  ".txt", ".md", ".json", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".toml",
-  ".html", ".css", ".py", ".rs", ".sh", ".rb", ".go",
-]);
 
 /** 記号リンクを解いた実体。**まだ無いパスは、いちばん近い親で見る**（新規作成のため）。 */
 function realpathOfNearestExisting(p: string): string {
@@ -59,26 +56,34 @@ function absPath(root: string, path: string): string {
   return target;
 }
 
-export interface FileContentBlock {
-  type: "text" | "image" | "resource";
-  text?: string;
-  data?: string;
-  mimeType?: string;
+/**
+ * `readFile` の結果の1ブロック。**MCP の content block の形そのもの**
+ * （`text` / `image` / embedded `resource`）——独自の形を作らない。
+ *
+ * **バイナリは embedded resource（`resource.blob`）で返す**（訂正・2026-09-23）。
+ * 以前は `{type:"resource", data, mimeType}` という規格に無い形で返していて、
+ * 受け取る側（MCP SDK）の検査を通らなかった。
+ */
+export type FileContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string }
+  | { type: "resource"; resource: { uri: string; mimeType: string; blob: string } };
+
+/** Project の根からの相対（画面・資源の URI に使う）。 */
+function relFromRoot(root: string, p: string): string {
+  return relative(realpathSync(root), realpathOfNearestExisting(p)).split(sep).join("/");
 }
 
 export async function readFileOp(root: string, path: string): Promise<FileContentBlock> {
   const p = absPath(root, path);
-  const ext = extname(p).toLowerCase();
-  if (IMAGE_EXT.has(ext)) {
-    const buf = await fsReadFile(p);
-    return { type: "image", data: buf.toString("base64"), mimeType: `image/${ext.slice(1)}` };
-  }
-  if (TEXT_EXT.has(ext) || ext === "") {
-    const text = await fsReadFile(p, "utf8");
-    return { type: "text", text };
-  }
   const buf = await fsReadFile(p);
-  return { type: "resource", data: buf.toString("base64"), mimeType: "application/octet-stream" };
+  const kind = kindByExtension(extname(p)) ?? kindByContent(buf);
+  if (kind.kind === "image") return { type: "image", data: buf.toString("base64"), mimeType: kind.mimeType };
+  if (kind.kind === "text") return { type: "text", text: buf.toString("utf8") };
+  return {
+    type: "resource",
+    resource: { uri: `file:///${relFromRoot(root, p)}`, mimeType: kind.mimeType, blob: buf.toString("base64") },
+  };
 }
 
 export async function writeFileOp(root: string, path: string, content: string): Promise<void> {
@@ -92,7 +97,11 @@ export interface Edit {
   newText: string;
 }
 
-export async function editFileOp(root: string, path: string, edits: Edit[]): Promise<{ before: string; after: string }> {
+/**
+ * 部分編集。**返すのは unified diff**（MCP 公式の filesystem リファレンス実装と同じ、
+ * 規則12）——前後の全文を返すと、AI の文脈にファイルが2回載る。
+ */
+export async function editFileOp(root: string, path: string, edits: Edit[]): Promise<UnifiedDiff> {
   const p = absPath(root, path);
   const before = await fsReadFile(p, "utf8");
   let after = before;
@@ -103,7 +112,7 @@ export async function editFileOp(root: string, path: string, edits: Edit[]): Pro
     after = after.replace(edit.oldText, edit.newText);
   }
   await fsWriteFile(p, after, "utf8");
-  return { before, after };
+  return unifiedDiff(relFromRoot(root, p), before, after);
 }
 
 export interface DirEntry {
@@ -167,4 +176,35 @@ export interface FileInfo {
 export async function getFileInfoOp(root: string, path: string): Promise<FileInfo> {
   const s = await stat(absPath(root, path));
   return { size: s.size, mtime: s.mtime.toISOString(), type: s.isDirectory() ? "directory" : "file" };
+}
+
+/**
+ * **人が画面から置くファイル**（アップロード、v4-modules.md §2.2「launcher が開く
+ * ファイルブラウザには、人向けのダウンロード／アップロードを置く」）。
+ * 中身はバイト列（base64）——`writeFile` は文字列しか運べないので、画像や PDF を
+ * 置けない。**AI 向けの tool は増やさない**（人の操作だけの口、`admin`）。
+ */
+export async function uploadFileOp(root: string, path: string, base64: string): Promise<{ size: number }> {
+  const p = absPath(root, path);
+  const buf = Buffer.from(base64, "base64");
+  await mkdir(dirname(p), { recursive: true });
+  await fsWriteFile(p, buf);
+  return { size: buf.length };
+}
+
+/**
+ * **選んだファイルをまとめて ZIP にする**（v4-modules.md §2.2「ZIP 化は launcher 側
+ * （Module の実装）の仕事」）。ZIP の中の名前は Project の根からの相対パス。
+ * 圧縮は fflate（skills Module が既に使っている、規則10）。
+ */
+export async function zipFilesOp(root: string, paths: readonly string[]): Promise<{ name: string; data: Buffer }> {
+  if (paths.length === 0) throw new Error("ZIP にするファイルが選ばれていません");
+  const entries: Record<string, Uint8Array> = {};
+  for (const path of paths) {
+    const p = absPath(root, path);
+    const s = await stat(p);
+    if (!s.isFile()) throw new Error(`ファイルではないので ZIP に入れられません: ${path}`);
+    entries[relFromRoot(root, p)] = new Uint8Array(await fsReadFile(p));
+  }
+  return { name: `${basename(realpathSync(root))}-files.zip`, data: Buffer.from(zipSync(entries)) };
 }

@@ -936,8 +936,8 @@ MCP 公式の filesystem リファレンス実装で既に解かれているの�
 |---|---|
 | `readFile({path})` | 読み取り。**返り値の型は MIME で出し分ける**（下記） |
 | `writeFile({path, content})` | 新規作成／全体上書き |
-| `editFile({path, edits})` | 部分編集。結果は Canvas の差分ビュー（下記）と対にする |
-| `listDirectory({path})` | 直下の一覧 |
+| `editFile({path, edits})` | 部分編集（`edits` は `{oldText, newText}` の並び）。**結果は unified diff**（下記）で、Canvas の差分ビューと対にする |
+| `listDirectory({path, displayMode?})` | 直下の一覧。画面つき（ファイルブラウザ、下記） |
 | `searchFiles({path, pattern})` | 名前／中身の検索 |
 | `createDirectory({path})` | mkdir -p 相当 |
 | `moveFile({from, to})` | 移動・リネーム |
@@ -975,7 +975,12 @@ FileSystem 固有の決定ではなく、§6.3 の一般則がそのまま適用
 |---|---|---|
 | テキスト（コード等） | `text` | 見える |
 | 画像 | `image` | **見える**（モデルはそのまま画像入力として解釈できる） |
-| その他（PDF 等バイナリ） | `resource`（`blob`） | 見えない。Canvas 側でのみ使う |
+| その他（PDF 等バイナリ） | `resource`（仕様の embedded resource：`{uri: "file:///<相対パス>", mimeType, blob}`） | 見えない。Canvas 側でのみ使う |
+
+**種類は拡張子の表で決め、表に無いものは中身で決める**（決定・2026-09-23）——先頭に NUL を
+含むか UTF-8 として壊れていればバイナリ、そうでなければテキスト（git が差分を出すかどうかの
+判定と同じ考え方、規則12）。拡張子の表だけで決めていたときは、表に無い `.csv`・`.sql` 等が
+一律にバイナリ扱いされ、AI にも画面にも読めなかった。
 
 **Canvas のプレビューは拡張子／MIME→レンダラーの内部対応表を持つ**
 ——Markdown はレンダリング＋「ソースを見る」トグル、HTML は sandboxed iframe
@@ -985,17 +990,68 @@ FileSystem 固有の決定ではなく、§6.3 の一般則がそのまま適用
 恩恵で core・他 Module に影響しない。未対応の拡張子はソース表示のみに
 フォールバックする。
 
-`editFile` の結果は、Repo Module の差分ビューと同じ材料（before/after の
-行単位差分）で inline カードに埋め込む（§6.2「MCP Apps display mode」）。
+**Viewer は別 Module にしない**（決定・2026-09-23、ユーザーと確認）。MCP Apps では
+tool の画面はその tool を持つサーバの `ui://` に限られ、画面は自分のサーバの tool しか
+呼べない——別 Module の Viewer は FileSystem の tool の結果を描けず、ファイルを読むにも
+中継か二重の閉じ込めが要り、「別の Module の画面で開く」口を core に新しく作ることになる。
+**見直すのは、2つ目の Module が同じ中身を見せたくなったとき**（C14 の `resource_link`、
+Phase 2.5）。そのときの第一候補は「描画の部品をライブラリとして切り出し、各 Module が
+自分の画面に同梱する」形（経緯は `docs/notes/2026-09-23-filesystem-browser.md`）。
+
+**実装（2026-09-23）**：対応表は `packages/modules/filesystem/src/view/preview-kind.ts`。
+
+| 種類 | 描き方 | 編集 |
+|---|---|---|
+| Markdown（`.md`） | 描画＋ソースのタブ。**生の HTML は通さない**（画面は自分の Module の書き込み・削除を呼べるので、中身に紛れたスクリプトを走らせない）。リンクは遷移しない（行き先は title に出す） | テキストとして |
+| HTML（`.html`） | `sandbox=""` の iframe（スクリプトも同一オリジンも与えない）＋ソース | テキストとして |
+| SVG | `<img>` で描く（スクリプトは走らない）＋ソース | テキストとして |
+| 画像（png/jpg/gif/webp） | `<img>`、縦横・大きさ | — |
+| CSV / TSV | 表 | **表のままセルを編集**（引用符・改行つきのセルを壊さず、改行コードも元に合わせて書き戻す） |
+| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く） | — |
+| その他のテキスト | ソース | テキストとして |
+
+> **PDF の埋め込みビューアは未実装**（2026-09-23、規則8：仕様と実態の食い違いとして記録）。
+> Canvas の CSP が `frame-src`・`object-src` を塞いでいて（`docs/specs/v4-frontend.md` §6.2
+> 「受け皿の形」）、ブラウザの PDF ビューアを画面の中に出せない。PDF.js を画面に同梱するか、
+> 当面「名前と大きさ＋ダウンロード」のままにするかは**人が決める**。
+
+`editFile` の結果は、Repo Module の差分ビューと同じ材料（行単位差分）で inline カードに
+埋め込む（§6.2「MCP Apps display mode」）。**結果の形は unified diff**（決定・2026-09-23）
+——MCP 公式の filesystem リファレンス実装の `edit_file` も差分を返す（規則12）。前後の全文を
+返すと AI の文脈にファイルが2回載る。**AI が読むものと画面が描くものは同じ1つの文字列**で、
+画面（`ui://banto-filesystem/edit-diff`）は記録から組み直すときもファイルを読み直さない
+（その時点の差分が真実）。
 launcher（人が AI を介さず直接ファイルを開く、`docs/specs/v4-frontend.md` §6.2）で開いたときも
 同じプレビューを fullscreen で使う。
 
+**ファイルブラウザ**（`ui://banto-filesystem/directory`、実装・2026-09-23）は、launcher と
+`listDirectory` の画面を兼ねる。**大きく開いたとき（fullscreen）**は VSCode のエクスプローラと
+同じ2ペイン——左にフォルダツリー（新しいファイル・新しいフォルダ・更新・すべて折りたたむ、
+ツリー自体も畳める）、右に選んだファイルの中身（上の表）。Ctrl/Cmd＋クリックで複数選択、
+Shift＋クリックで範囲選択。**会話の中（inline）**は `listDirectory` の結果の一覧と
+「大きく表示」だけ。URI が `directory` のままなのは、会話の記録と開いている画面の URL が
+この名前を指しているため。
+
 **launcher が開くファイルブラウザ（fullscreen）には、人向けのダウンロード／
-アップロードを置く。** これは新しい AI 向け tool を要らない——Vault の
+アップロードを置く。** これは新しい **AI 向け** tool を要らない——Vault の
 「backend 自身の `ui://<id>/config` が自分の tool を呼ぶだけ」（§2.1 C節）と
-同じ形で、ブラウザ UI 自身が`readFile`/`writeFile`を内部的に呼ぶ（AI には
-出さない）。複数ファイルをまとめて ZIP でダウンロードする操作も同様——
-ZIP 化は launcher 側（Module の実装）の仕事であって、新しい tool の形は増やさない。
+同じ形で、ブラウザ UI 自身が自分の Module の tool を呼ぶ（AI には出さない）。
+**`writeFile` は文字列しか運べないので、人の操作だけの口（`admin`）を足した**
+（改訂・2026-09-23）：
+
+| tool（`admin` 可視性） | 内容 |
+|---|---|
+| `uploadFile({path, data})` | 置く（中身は base64 のバイト列。画像・PDF もそのまま） |
+| `downloadFiles({paths})` | 選んだファイルをまとめた ZIP（embedded resource、`application/zip`）。ZIP の中の名前は根からの相対パス |
+| `getRoot()` | 見ている根（見出し用の `~` 付きの形と、絶対パス） |
+
+保存させるのは host の仕事——画面は MCP Apps の `ui/download-file` で頼む
+（`docs/specs/v4-frontend.md` §6.2「画面からのダウンロード」）。host がそれを受けないなら、
+画面はダウンロードの口を出さない（規則13）。
+
+**画面の JS は TypeScript で書き、組み立てて1枚の HTML に埋める**（実装・2026-09-23）
+——Canvas の CSP は外の script を読ませない。組み立ては tsc と小さなスクリプト
+（`scripts/bundle-ui.mjs`）だけで、依存を足していない（規則10）。
 
 ### 2.3 Shell のインターフェース（決定・2026-09-02）
 

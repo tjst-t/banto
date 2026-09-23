@@ -30,6 +30,17 @@ import { getRealJudgments, refreshRealInbox } from "@/lib/backend/real-inbox";
 import { beginCanvasToolCall, endCanvasToolCall } from "@/lib/backend/adapter";
 import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
+import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export interface ModuleCanvasProps {
   /** 誰の画面か。会話の中なら Thread、設定画面なら Project。 */
@@ -151,6 +162,11 @@ function SandboxFrame({
   resource,
 }: ModuleCanvasProps & { sandboxUrl: string; resource: RealUiResource }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // 画面が頼んできたダウンロードのうち、**人の操作の直後でなかったもの**（下の ondownloadfile）
+  const [pendingDownload, setPendingDownload] = useState<{
+    files: PreparedDownload[];
+    resolve: (ok: boolean) => void;
+  } | null>(null);
 
   // **橋は、画面が変わったときにだけ張り直す**（`frontend-interaction-hardening`、
   // 2026-09-10）。以前は毎レンダー新しくなるもの（親が render 中に作る
@@ -177,7 +193,10 @@ function SandboxFrame({
     const transport = new PostMessageTransport(frame.contentWindow, frame.contentWindow);
     // `_client` は null——**tool 呼び出しを素通しさせない**。下の oncalltool で
     // 受けて、host の承認ゲートへ回す
-    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, {}, {
+    // **ダウンロードは受ける**（`downloadFile`、追加・2026-09-23）——画面はサンドボックスの
+    // 中にいて自分では保存させられないので、仕様が host に頼む口（`ui/download-file`）を
+    // 用意している。受けると名乗った host にだけ、画面はダウンロードの口を出す
+    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, { downloadFile: {} }, {
       hostContext: {
         displayMode,
         availableDisplayModes: ["inline", "fullscreen"],
@@ -212,6 +231,30 @@ function SandboxFrame({
         params.arguments as Record<string, unknown> | undefined,
       );
       return result as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;
+    };
+
+    // **画面からのダウンロード**（MCP Apps `ui/download-file`、追加・2026-09-23）。
+    // 仕様は「host は保存の前に確かめるべき（SHOULD）」と言う。banto は
+    // **人が画面の中を押した直後なら確かめない**——その操作がダウンロードの意思で、
+    // もう一度聞くのは二度手間になる。押した直後かどうかはブラウザの
+    // 「一時的な利用者の操作」（transient user activation）で見る。子の iframe の中の
+    // 操作は親の画面にも伝わるので、banto の側から読める。**そうでない
+    // （画面が勝手に頼んできた、または準備に時間がかかった）ときは banto の画面で確かめる**
+    bridge.ondownloadfile = async ({ contents }) => {
+      const files: PreparedDownload[] = [];
+      for (const item of contents) {
+        // resource_link（host が取りに行く形）は受けない——どこへ取りに行ってよいかを
+        // banto は決めていない。**受けられないと答える**（黙って捨てない）
+        if (item.type !== "resource") return { isError: true };
+        files.push(prepareDownload(item.resource));
+      }
+      if (files.length === 0) return { isError: true };
+      if (!navigator.userActivation?.isActive) {
+        const ok = await new Promise<boolean>((resolve) => setPendingDownload({ files, resolve }));
+        if (!ok) return { isError: true };
+      }
+      for (const file of files) saveDownload(file);
+      return {};
     };
 
     // 画面からの「大きく出して」（§6.2 の交渉モデル。**決めるのは banto**）
@@ -255,6 +298,11 @@ function SandboxFrame({
     void bridge.connect(transport);
     return () => {
       void bridge.close();
+      // 確かめている途中で画面が替わったら、頼みは断ったことにする
+      setPendingDownload((pending) => {
+        pending?.resolve(false);
+        return null;
+      });
     };
     // **画面が別物になったときだけ**組み直す（入出力とコールバックは ref から読む）
   }, [owner.kind, ownerKey(owner), server, toolName, displayMode, sandboxUrl, resource.html]);
@@ -280,6 +328,35 @@ function SandboxFrame({
         // ——人が別の用事でコピーしたものを Module に読ませる理由が無い
         allow="clipboard-write"
       />
+      <AlertDialog
+        open={pendingDownload !== null}
+        onOpenChange={(open) => {
+          if (open) return;
+          pendingDownload?.resolve(false);
+          setPendingDownload(null);
+        }}
+      >
+        <AlertDialogContent data-testid="canvas-download-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>ダウンロードしますか</AlertDialogTitle>
+            <AlertDialogDescription>
+              {server} の画面が、次のファイルを保存しようとしています：
+              {pendingDownload?.files.map((f) => f.name).join("、")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>やめる</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                pendingDownload?.resolve(true);
+                setPendingDownload(null);
+              }}
+            >
+              ダウンロードする
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

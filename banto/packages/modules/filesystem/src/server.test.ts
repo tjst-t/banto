@@ -1,12 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createFileSystemServer } from "./server.js";
-import { listDirectoryOp, readFileOp, writeFileOp } from "./operations.js";
+import { listDirectoryOp, readFileOp, writeFileOp, type FileContentBlock } from "./operations.js";
+import { unzipSync } from "fflate";
+
+function textOfBlock(block: FileContentBlock): string {
+  assert.equal(block.type, "text", `テキストとして返っていない: ${block.type}`);
+  return block.type === "text" ? block.text : "";
+}
 
 async function withClient(fn: (client: Client, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "banto-fs-test-"));
@@ -30,16 +36,105 @@ test("writeFile then readFile roundtrip", async () => {
   });
 });
 
-test("editFile replaces text and returns before/after", async () => {
-  await withClient(async (client) => {
-    await client.callTool({ name: "writeFile", arguments: { path: "a.txt", content: "foo bar" } });
+// **editFile は unified diff を返す**（MCP 公式の filesystem リファレンス実装と同じ形、
+// 2026-09-23）。前後の全文を返すと、AI の文脈にファイルが2回載る
+test("editFile は書き換えて、unified diff を返す", async () => {
+  await withClient(async (client, root) => {
+    await client.callTool({ name: "writeFile", arguments: { path: "a.txt", content: "one\ntwo\nfoo bar\nthree\n" } });
     const result = await client.callTool({
       name: "editFile",
       arguments: { path: "a.txt", edits: [{ oldText: "bar", newText: "baz" }] },
     });
-    const { before, after } = JSON.parse((result.content as { text: string }[])[0]!.text);
-    assert.equal(before, "foo bar");
-    assert.equal(after, "foo baz");
+    const diff = (result.content as { text: string }[])[0]!.text;
+    assert.equal(
+      diff,
+      ["--- a/a.txt", "+++ b/a.txt", "@@ -1,4 +1,4 @@", " one", " two", "-foo bar", "+foo baz", " three", ""].join("\n"),
+    );
+    assert.equal(await readFile(join(root, "a.txt"), "utf8"), "one\ntwo\nfoo baz\nthree\n");
+  });
+});
+
+test("editFile には差分の画面が付いている（決めるのは banto、印を付けるだけ）", async () => {
+  await withClient(async (client) => {
+    const { tools } = await client.listTools();
+    const edit = tools.find((t) => t.name === "editFile");
+    assert.equal((edit?._meta as { ui?: { resourceUri?: string } })?.ui?.resourceUri, "ui://banto-filesystem/edit-diff");
+    const html = await client.readResource({ uri: "ui://banto-filesystem/edit-diff" });
+    const text = (html.contents as { text: string }[])[0]!.text;
+    assert.match(text, /data-surface="edit-diff"/);
+    // 組み立てた JS が埋まっている（空の画面を配らない）
+    assert.match(text, /bundle-ui\.mjs/);
+    assert.doesNotMatch(text.slice(text.indexOf("<script>") + 8, text.lastIndexOf("</script>")), /<\/script/i);
+  });
+});
+
+// ---- 種類ごとの返し方（v4-modules.md §2.2「返り値の型は MIME で出し分ける」）----
+
+test("readFile：表に無い拡張子でも、中身がテキストならテキストで返す（.csv が base64 になっていた）", async () => {
+  await withClient(async (client, root) => {
+    await writeFile(join(root, "budget.csv"), "項目,予算\nVault,120000\n");
+    await writeFile(join(root, "query.sql"), "select 1;\n");
+    for (const path of ["budget.csv", "query.sql"]) {
+      const result = await client.callTool({ name: "readFile", arguments: { path } });
+      const block = (result.content as { type: string; text?: string }[])[0]!;
+      assert.equal(block.type, "text", `${path} がテキストで返っていない`);
+    }
+  });
+});
+
+test("readFile：バイナリは MCP の embedded resource の形で返す（SDK の検査を通る）", async () => {
+  await withClient(async (client, root) => {
+    const pdf = Buffer.from("%PDF-1.4\n\x00\x01binary", "latin1");
+    await writeFile(join(root, "spec.pdf"), pdf);
+    await writeFile(join(root, "blob.bin"), Buffer.from([0, 1, 2, 3]));
+    // client.callTool は結果を CallToolResultSchema で検査する——形が違えばここで落ちる
+    const result = await client.callTool({ name: "readFile", arguments: { path: "spec.pdf" } });
+    const block = (result.content as { type: string; resource?: { uri: string; mimeType: string; blob: string } }[])[0]!;
+    assert.equal(block.type, "resource");
+    assert.equal(block.resource?.mimeType, "application/pdf");
+    assert.equal(block.resource?.uri, "file:///spec.pdf");
+    assert.deepEqual(Buffer.from(block.resource!.blob, "base64"), pdf);
+    const bin = await client.callTool({ name: "readFile", arguments: { path: "blob.bin" } });
+    assert.equal((bin.content as { type: string }[])[0]!.type, "resource");
+  });
+});
+
+// ---- 人の操作だけの口（ファイルブラウザが使う、admin）--------------------------
+
+test("uploadFile はバイト列をそのまま置く（画像も壊れない）", async () => {
+  await withClient(async (client, root) => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    await client.callTool({ name: "uploadFile", arguments: { path: "img/logo.png", data: png.toString("base64") } });
+    assert.deepEqual(await readFile(join(root, "img/logo.png")), png);
+    // 根の外へは置けない
+    const outside = await client.callTool({ name: "uploadFile", arguments: { path: "../escape.bin", data: "AA==" } }).catch((e: unknown) => e);
+    assert.match(String((outside as Error).message ?? JSON.stringify(outside)), /Project の根の外/);
+  });
+});
+
+test("downloadFiles は選んだファイルを ZIP にまとめる（中の名前は根からの相対）", async () => {
+  await withClient(async (client, root) => {
+    await writeFile(join(root, "a.txt"), "A");
+    await mkdir(join(root, "docs"), { recursive: true });
+    await writeFile(join(root, "docs/b.md"), "# B");
+    const result = await client.callTool({ name: "downloadFiles", arguments: { paths: ["a.txt", "docs/b.md"] } });
+    const block = (result.content as { type: string; resource: { uri: string; mimeType: string; blob: string } }[])[0]!;
+    assert.equal(block.type, "resource");
+    assert.equal(block.resource.mimeType, "application/zip");
+    assert.match(block.resource.uri, /-files\.zip$/);
+    const files = unzipSync(new Uint8Array(Buffer.from(block.resource.blob, "base64")));
+    assert.deepEqual(Object.keys(files).sort(), ["a.txt", "docs/b.md"]);
+    assert.equal(Buffer.from(files["docs/b.md"]!).toString(), "# B");
+  });
+});
+
+test("人の操作だけの口は AI に見せない（admin）", async () => {
+  await withClient(async (client) => {
+    const { tools } = await client.listTools();
+    for (const name of ["uploadFile", "downloadFiles", "getRoot"]) {
+      const tool = tools.find((t) => t.name === name);
+      assert.equal((tool?._meta as Record<string, unknown>)?.["dev.banto/visibility"], "admin", `${name} が admin でない`);
+    }
   });
 });
 
@@ -110,7 +205,7 @@ test("根の中を指す絶対パスは受け取る（AI はこう書いてく�
   try {
     await writeFile(join(dir, "one.txt"), "ひとつめ\n");
     const block = await readFileOp(dir, join(dir, "one.txt"));
-    assert.equal(block.text?.trim(), "ひとつめ");
+    assert.equal(textOfBlock(block).trim(), "ひとつめ");
     const entries = await listDirectoryOp(dir, dir);
     assert.ok(entries.some((e) => e.name === "one.txt"));
   } finally {
@@ -130,7 +225,7 @@ test("`..` で根の外へ出られない", async () => {
     // 根の中は今までどおり読める（中も外も失敗するなら、それは壊れているだけ）
     await writeFile(join(dir, "inside.txt"), "中身\n");
     const block = await readFileOp(dir, "inside.txt");
-    assert.equal(block.text?.trim(), "中身");
+    assert.equal(textOfBlock(block).trim(), "中身");
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
@@ -155,7 +250,7 @@ test("まだ無いパスにも書ける（新規作成は根の中なら通る�
   try {
     await writeFileOp(dir, "new/dir/file.txt", "書けた");
     const block = await readFileOp(dir, "new/dir/file.txt");
-    assert.equal(block.text, "書けた");
+    assert.equal(textOfBlock(block), "書けた");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

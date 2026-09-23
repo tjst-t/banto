@@ -12,8 +12,11 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
+import { homedir } from "node:os";
+import { realpathSync } from "node:fs";
+import { basename, sep } from "node:path";
 import * as ops from "./operations.js";
-import { DIRECTORY_APP_HTML, DIRECTORY_APP_URI, UI_APP_MIME } from "./ui-app.js";
+import { BROWSER_APP_URI, EDIT_DIFF_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
 
@@ -31,7 +34,27 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
     tools: [
       tool("readFile", "読み取り", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
       tool("writeFile", "新規作成／全体上書き", { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] }),
-      tool("editFile", "部分編集", { type: "object", properties: { path: { type: "string" }, edits: { type: "array" } }, required: ["path", "edits"] }),
+      // **結果は差分として画面にも出る**（v4-modules.md §2.2「editFile の結果は
+      // 行単位差分で inline カードに埋め込む」）。返すのは unified diff で、
+      // AI が読むものと画面が描くものは同じ1つの文字列（規則3）
+      {
+        ...tool("editFile", "部分編集。結果は unified diff", {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            edits: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { oldText: { type: "string" }, newText: { type: "string" } },
+                required: ["oldText", "newText"],
+              },
+            },
+          },
+          required: ["path", "edits"],
+        }),
+        _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: EDIT_DIFF_APP_URI } },
+      },
       // **この tool には画面がある**（MCP Apps、決定・2026-09-06）。
       // 印を付けるだけ——「どこに出すか」は banto が決める（§6.2）。
       {
@@ -54,7 +77,7 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
           },
           required: ["path"],
         }),
-        _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: DIRECTORY_APP_URI } },
+        _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: BROWSER_APP_URI } },
       },
       tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] }),
       tool("createDirectory", "mkdir -p 相当", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
@@ -63,6 +86,35 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
       tool("getFileInfo", "サイズ・更新時刻・種別", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
       // **この Module 自身の設定**。設定 Canvas から呼ぶもので、AI には見せない
       // （§2.1 の3段——人の管理操作は admin）
+      // **ファイルブラウザが使う、人の操作だけの口**（v4-modules.md §2.2「launcher が
+      // 開くファイルブラウザには、人向けのダウンロード／アップロードを置く……
+      // 新しい AI 向け tool を要らない」）。AI には見せない（admin）
+      {
+        name: "uploadFile",
+        description: "人が画面から置くファイル（中身は base64）",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" }, data: { type: "string" } },
+          required: ["path", "data"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "downloadFiles",
+        description: "選んだファイルをまとめた ZIP",
+        inputSchema: {
+          type: "object",
+          properties: { paths: { type: "array", items: { type: "string" } } },
+          required: ["paths"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "getRoot",
+        description: "この Module が見ている Project の根（画面の見出しに出す）",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
       {
         name: "getSettings",
         description: "この Module のいまの設定",
@@ -94,8 +146,32 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         await ops.writeFileOp(root, String(args.path), String(args.content));
         return { content: [{ type: "text", text: "ok" }] };
       case "editFile": {
-        const result = await ops.editFileOp(root, String(args.path), args.edits as ops.Edit[]);
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        const diff = await ops.editFileOp(root, String(args.path), args.edits as ops.Edit[]);
+        return { content: [{ type: "text", text: diff.text }] };
+      }
+      case "uploadFile": {
+        const { size } = await ops.uploadFileOp(root, String(args.path), String(args.data));
+        return { content: [{ type: "text", text: JSON.stringify({ size }) }] };
+      }
+      case "downloadFiles": {
+        const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
+        const zip = await ops.zipFilesOp(root, paths);
+        return {
+          content: [
+            {
+              type: "resource",
+              resource: { uri: `file:///${zip.name}`, mimeType: "application/zip", blob: zip.data.toString("base64") },
+            },
+          ],
+        };
+      }
+      case "getRoot": {
+        const real = realpathSync(root);
+        const home = homedir();
+        // 人に見せる形——ホームの下なら `~` で縮める（見出しは狭い）
+        const display = real === home ? "~" : real.startsWith(home + sep) ? `~${real.slice(home.length)}` : real;
+        // `absolute` は、AI が絶対パスで頼んだ場所を画面がツリーの中で探すため
+        return { content: [{ type: "text", text: JSON.stringify({ path: display, name: basename(real), absolute: real }) }] };
       }
       case "getSettings":
         return { content: [{ type: "text", text: JSON.stringify(readSettings()) }] };
@@ -136,21 +212,32 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
       {
-        // listDirectory の結果を描く画面。AI に読ませるものではない（HTML）ので
-        // agent には見せない——見せると文脈を HTML で埋めるだけになる
-        uri: DIRECTORY_APP_URI,
-        // **人が直接開ける入口でもある**（launcher、§6.2、決定・2026-09-07）
-        // ——「まずファイルを見たい」は AI に頼む用事ではない（要件C3）。
+        // **ファイルブラウザ**——listDirectory の結果を描く画面であり、人が直接開ける
+        // 入口でもある（launcher、§6.2、決定・2026-09-07。「まずファイルを見たい」は
+        // AI に頼む用事ではない、要件C3）。会話の中（inline）では一覧だけ、
+        // 大きく開いたとき（fullscreen）はツリーと中身の2ペインになる。
+        // AI に読ませるものではない（HTML）ので agent には見せない
+        //
+        // URI は `directory` のまま——会話の記録と開いている画面の URL がこの名前で
+        // 指しているので、変えると過去のカードが開けなくなる
+        uri: BROWSER_APP_URI,
         // 設定 Canvas と**同じ1つの仕組み**で名乗る（増やさない）。
         // 人に見せる名前と説明は、仕様の `name` / `description` をそのまま使う
         name: "ファイル",
-        description: "この Project の直下を見る",
+        description: "この Project のファイルを見る・開く・編集する",
         mimeType: UI_APP_MIME,
         _meta: {
           [VISIBILITY_META_KEY]: "admin",
           [CANVAS_META_KEY]: "launcher",
           ui: { prefersBorder: false },
         },
+      },
+      {
+        // editFile の結果（差分）を描く画面
+        uri: EDIT_DIFF_APP_URI,
+        name: "ファイルの差分",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", ui: { prefersBorder: false } },
       },
       {
         // **設定 Canvas**（決定・2026-09-07）。banto の設定画面がこれを埋め込む。
@@ -192,22 +279,19 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
     if (request.params.uri === CONFIG_APP_URI) {
       return { contents: [{ uri: CONFIG_APP_URI, mimeType: UI_APP_MIME, text: CONFIG_APP_HTML }] };
     }
-    if (request.params.uri === DIRECTORY_APP_URI) {
-      return { contents: [{ uri: DIRECTORY_APP_URI, mimeType: UI_APP_MIME, text: DIRECTORY_APP_HTML }] };
+    if (request.params.uri === BROWSER_APP_URI) {
+      return { contents: [{ uri: BROWSER_APP_URI, mimeType: UI_APP_MIME, text: appHtml("browser") }] };
+    }
+    if (request.params.uri === EDIT_DIFF_APP_URI) {
+      return { contents: [{ uri: EDIT_DIFF_APP_URI, mimeType: UI_APP_MIME, text: appHtml("edit-diff") }] };
     }
     const match = request.params.uri.match(/^file:\/\/\/(.+)$/);
     if (!match) throw new Error(`unknown resource: ${request.params.uri}`);
+    const uri = request.params.uri;
     const block = await ops.readFileOp(deps.projectRoot, match[1]!);
-    return {
-      contents: [
-        {
-          uri: request.params.uri,
-          mimeType: block.mimeType ?? "text/plain",
-          text: block.text,
-          blob: block.data,
-        },
-      ],
-    };
+    if (block.type === "text") return { contents: [{ uri, mimeType: "text/plain", text: block.text }] };
+    if (block.type === "image") return { contents: [{ uri, mimeType: block.mimeType, blob: block.data }] };
+    return { contents: [{ uri, mimeType: block.resource.mimeType, blob: block.resource.blob }] };
   });
 
   return server;

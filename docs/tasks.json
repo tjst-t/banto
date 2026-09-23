@@ -1857,6 +1857,28 @@
       "why": "2026-09-23 に実測（`/home/ubuntu/worktrees/banto-v3` を根にした Project）。worktree の `.git` はファイルで、実体（`<本体>/.git/worktrees/<名前>`）が根の外にあるので `fatal: not a git repository`。直すには本体の `.git` を閉じ込めの許可に足すことになり、本体のリポジトリ全体（他の worktree を含む）に触れる——広げてよいかは人の判断。",
       "doneWhen": "方針が決まり、決まった形で worktree の Project でも git status/commit が通ること（または通らないことが画面で分かること）。",
       "notes": "docs/notes/2026-09-23-shell-home.md"
+    },
+    {
+      "id": "filesystem-browser",
+      "title": "FileSystem のファイルブラウザ・プレビュー・編集をモックと同じ機能まで本実装にする",
+      "status": "done",
+      "why": "ユーザー要望（2026-09-23）：AI 向けの tool だけでなく、人が見る・開く・編集する・置く・持ち出すファイルブラウザ。モック（mock/ の FileExplorerView・FilePreview・FsEditDiffView）で UI は固まっていた。",
+      "doneWhen": "入口から開いた画面で、ツリーの並び・Markdown の見出しと表・CSV のセル・画像の縦横・保存後のディスクの中身・アップロードしたバイト列・ダウンロード（1件と ZIP）の中身が E2E で一致すること。AI の editFile が差分カードとして出て、リロード後も同じ差分が出ること（e2e/specs/filesystem-browser.spec.ts）。",
+      "open": [
+        "**AI が人にファイルを見せる口が未決**——モックは readFile で fullscreen のプレビューを開いていたが、AI は readFile でしかファイルを読めないので、画面を付けると読むたびにカードが出る。新しい tool（例：showFile）を足すか、C14 の resource_link を待つかは人が決める",
+        "**PDF の埋め込みビューアが未実装**——仕様（v4-modules §2.2）は「埋め込みビューア」だが、Canvas の CSP が frame/object を塞いでいる。PDF.js を同梱するか、名前と大きさ＋ダウンロードのままにするかは人が決める",
+        "Command Palette から名前でファイルを探して開く（completion/complete）が無い——host 側の口がどの Module にも無い",
+        "画面の中の移動（開いたファイル）が URL に残らない。リロードすると最初に戻る"
+      ],
+      "notes": "docs/notes/2026-09-23-filesystem-browser.md",
+      "completedAt": "2026-09-23"
+    },
+    {
+      "id": "e2e-vault-directory-settings-infisical-missing",
+      "title": "E2E「Vault の置き場を、全体の設定画面から決められる」が HEAD で落ちている",
+      "status": "backlog",
+      "why": "module-settings-canvas.spec.ts:242 が `#vault` に vault-infisical が出ないで落ちる。2026-09-23 に測った：v4 の 65c4d8f4（変更なしの worktree）で 1/1、filesystem-browser の作業ツリーで 3/3 落ちた。直前の test（Infisical を入れる）のログに `MCP error -32603: fetch failed` が出ている。filesystem-browser の作業の範囲外なので触っていない（規則7）。",
+      "doneWhen": "module-settings-canvas.spec.ts がフルで通ること。"
     }
   ],
   "phase1": {
