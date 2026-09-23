@@ -2523,8 +2523,14 @@ Module に文脈を勝手に占領させることなく「Module が配り、cor
 その Module の `instructions` に書く（モデルからは、どのサーバの Skill かが見出しで分かる）。
 
 > **実測で確定した**（2026-09-23、`docs/notes/2026-09-23-skill-via-mcp.md`）
-> ——banto と同じオプションの形で `instructions` が文脈の冒頭に入り、
+> ——banto と同じオプションの形で `instructions` がモデルの文脈に入り、
 > **モデルは資源一覧を引かずに、そこに書かれた URI を直接読みに行った。**
+> banto の実物の代理サーバ（HTTP）越しでも同じ（測定5）。
+>
+> **入る場所は system prompt ではない**（測定6）——**会話の最初のメッセージに付く
+> 添付**（SDK の内訳では `messageBreakdown.attachmentsByType` の
+> `mcp_instructions_delta`、Messages の一部）。`instructions` の有無で system prompt の
+> 量は変わらなかった。添付は会話に残り、続きのターンの内訳にも同じ量で出る。
 
 **`scripts/` は実行しない。** Agent Skills は実行コードを同梱できるが、
 banto の Runner には `Bash` が生えていない（決定・2026-09-04）。
@@ -2729,9 +2735,15 @@ AI が提案し、**人は承認ボタンを押すだけ**で取り込める。
 - **「入っている（マウント済み）」と「効いている（文脈に入る）」は別の状態**として
   持つ。Claude Code も disable と uninstall を分けている
 - **画面は、効いている Skill の数とそれが食っているトークン量を見せる**
-  ——見えないものは際限なく増える。**この数は自分で数える**（決定・2026-09-23 で
-  SDK の Skill 機構を使わないことにしたので、`getContextUsage()` の `skills` 内訳は
-  空になる。`instructions` の文字列は core が組み立てるので長さは分かる）
+  ——見えないものは際限なく増える。SDK の Skill 機構を使わないので
+  `getContextUsage()` の `skills` 内訳は空になるが、**総量は SDK が数えている**
+  ——`instructions` の添付（`mcp_instructions_delta`）の量がそれ（測定6）。
+  banto で `instructions` を載せるのは Skill だけなので、**その量を Messages から
+  切り出して Skill の行にする**（数字は作らない。SDK の内訳を並べ替えるだけ）。
+  **Skill ごとの内訳は、core が返す「`instructions` の中でその Skill の行が占める
+  文字数」で按分する**——文字列を組み立てるのは core なので、画面に書式を写させない
+  （`GET /api/threads/:id/skills`）。**`instructions` に Skill 以外を載せるように
+  なったら、この切り出しは嘘になる**
 - **効かせる集合は会話（Thread）の開始時に決まり、途中では変えられない**
   （実測・2026-09-23）。**費用の問題ではなく、届かない**——`resume` では
   `instructions` が初回のまま使い回される

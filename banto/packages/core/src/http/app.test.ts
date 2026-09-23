@@ -1171,3 +1171,64 @@ test("Registry に繋がらないときは、0 件ではなく理由を返す", 
     { registryFetch: failing as unknown as typeof fetch },
   );
 });
+
+// **Skill の一覧と、効かせるかどうか**（決定・2026-09-23、アーキ仕様 §5.7）。
+// 層ごとに書かれた値（無ければ null）と、カスケードした結果を返す。
+test("Skill の一覧は層ごとの値と結果を返し、在る Skill だけを切り替えられる", async () => {
+  const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { ListResourcesRequestSchema } = await import("@modelcontextprotocol/sdk/types.js");
+  const server = new Server({ name: "skills", version: "0.0.0" }, { capabilities: { resources: {} } });
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      { uri: "skill://pdf/SKILL.md", name: "pdf", description: "PDF を扱う", _meta: { "dev.banto/skill": true } },
+    ],
+  }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  const modules = async () => [{ name: "skills", client: client as never }];
+
+  await withApp(
+    async (base, token, dir) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await (
+        await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: dir }) })
+      ).json();
+      const list = async (projectId?: string) =>
+        (await (await fetch(`${base}/api/skills${projectId ? `?projectId=${projectId}` : ""}`, { headers })).json()) as {
+          skills: Array<{ name: string; instance: boolean | null; project: boolean | null; enabled: boolean }>;
+        };
+      const put = (body: unknown) => fetch(`${base}/api/skills/enabled`, { method: "PUT", headers, body: JSON.stringify(body) });
+
+      assert.deepEqual(
+        (await list()).skills.map((x) => [x.name, x.instance, x.enabled]),
+        [["pdf", null, false]],
+        "書いていないのに効いている",
+      );
+
+      assert.equal((await put({ module: "skills", name: "pdf", enabled: true })).status, 200);
+      assert.deepEqual(
+        (await list(project.id)).skills.map((x) => [x.instance, x.project, x.enabled]),
+        [[true, null, true]],
+      );
+
+      assert.equal((await put({ module: "skills", name: "pdf", projectId: project.id, enabled: false })).status, 200);
+      assert.deepEqual(
+        (await list(project.id)).skills.map((x) => [x.instance, x.project, x.enabled]),
+        [[true, false, false]],
+      );
+
+      // null は Project の上書きを消す（全体の既定に戻る）。全体の既定には使えない
+      assert.equal((await put({ module: "skills", name: "pdf", projectId: project.id, enabled: null })).status, 200);
+      assert.equal((await list(project.id)).skills[0]!.enabled, true);
+      assert.equal((await put({ module: "skills", name: "pdf", enabled: null })).status, 400);
+
+      // 在らない Skill の鍵は作らない
+      assert.equal((await put({ module: "skills", name: "ghost", enabled: true })).status, 404);
+    },
+    { resolveModuleClientsForProject: modules, resolveInstanceModuleClients: modules },
+  );
+  await client.close();
+});

@@ -53,6 +53,10 @@ export const CONNECTED_FEATURES = {
   // **読み取り専用**で渡して起動する（`npx -y` は閉じ込めの下で自分を
   // 取ってこられない。`$HOME/.npm` が書けないことを実測した・2026-09-21）
   moduleRegistryInstall: true,
+  // **どの Skill を効かせるか**（決定・2026-09-23、アーキ仕様 §5.7）。banto 全体の既定と
+  // Project ごとの上書きが host の設定層に繋がっていて、会話の始まりに `instructions`
+  // として AI に届く
+  skills: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す

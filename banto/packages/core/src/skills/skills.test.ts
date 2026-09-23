@@ -197,3 +197,25 @@ test("その Module に効かせたものも他に配るものも無ければ、
   assert.match(onlyOthers, /1つも効かせていない/);
   assert.doesNotMatch(onlyOthers, /one/);
 });
+
+test("Skill ごとの文字数は instructions の中の行の長さで、合計は instructions 全体の長さ", async () => {
+  const { skillInstructionsFootprint } = await import("./instructions.js");
+  const set: SessionSkillSet = {
+    active: [
+      { module: "a", name: "one", description: "短い", uri: "s://1" },
+      { module: "b", name: "two", description: "もう少し長い説明を持つ", uri: "s://2" },
+    ],
+    othersIn: ["c"],
+    problems: [],
+  };
+  const footprint = skillInstructionsFootprint(set);
+  const whole = ["a", "b", "c"].map((m) => renderSkillInstructions(set, m)!.length).reduce((x, y) => x + y, 0);
+  assert.equal(footprint.totalChars, whole);
+  assert.deepEqual(
+    footprint.skills.map((s) => s.name),
+    ["one", "two"],
+  );
+  assert.ok(footprint.skills[1]!.chars > footprint.skills[0]!.chars);
+  assert.ok(footprint.skills.every((s) => renderSkillInstructions(set, s.module)!.length > s.chars));
+  assert.deepEqual(skillInstructionsFootprint(undefined), { totalChars: 0, skills: [] });
+});

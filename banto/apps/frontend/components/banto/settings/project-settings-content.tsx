@@ -10,7 +10,17 @@
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookMarked, Plus, Puzzle, ShieldAlert, SlidersHorizontal, Trash2, TriangleAlert, Wrench } from "lucide-react";
+import {
+  BookMarked,
+  Plus,
+  Puzzle,
+  ScrollText,
+  ShieldAlert,
+  SlidersHorizontal,
+  Trash2,
+  TriangleAlert,
+  Wrench,
+} from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,6 +45,7 @@ import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane
 import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
 import { ProjectGeneralPanel } from "@/components/banto/settings/project-general-panel";
 import { ProjectMemoryPanel } from "@/components/banto/settings/project-memory-panel";
+import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import {
   SettingsShell,
   type SearchEntry,
@@ -80,6 +91,8 @@ const MODULES_CATEGORY: SettingsNavItem = {
 /** **この Project そのもの**（名前・根・危険な操作）。層のいちばん上（2026-09-11） */
 const GENERAL_CATEGORY: SettingsNavItem = { section: "project-general", label: "一般", icon: Wrench };
 const MEMORY_CATEGORY: SettingsNavItem = { section: "project-memory", label: "Memory", icon: BookMarked };
+/** この Project で効かせる Skill（全体の既定の上書き、2026-09-23） */
+const SKILLS_CATEGORY: SettingsNavItem = { section: "project-skills", label: "この Project の Skill", icon: ScrollText };
 
 export function projectSearchEntries(projectId: string): readonly SearchEntry[] {
   const links = getProjectModuleLinks(projectId);
@@ -156,6 +169,9 @@ export function ProjectSettingsContent({
     if (section === "project-modules") {
       // 実データに繋がっている（`phase1-project-modules-ui`、2026-09-11）
       return <ProjectModulesPanel projectId={projectId} />;
+    }
+    if (section === "project-skills") {
+      return <SkillsPanel projectId={projectId} />;
     }
 
     if (section === "project-overrides") {
@@ -338,6 +354,7 @@ export function useProjectCategories(projectId: string): readonly SettingsNavIte
     ...(project?.real ? [GENERAL_CATEGORY] : []),
     // 実 Project だけ——mock Project には対応する Project が host に無い（規則13）
     ...(CONNECTED_FEATURES.projectModules && project?.real ? [MODULES_CATEGORY] : []),
+    ...(CONNECTED_FEATURES.skills && project?.real ? [SKILLS_CATEGORY] : []),
     ...(CONNECTED_FEATURES.settings ? MOCK_CATEGORIES : []),
     ...(showMemory ? [MEMORY_CATEGORY] : []),
   ];

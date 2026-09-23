@@ -232,3 +232,65 @@ stdio MCP サーバを繋いだ。
   AsyncGenerator になる前の形（`result.messages` を読む）。仕様 §6.5 は
   「SDK との疎通確認は `npm run check:agent-sdk` の1本に集約する」と書いているので、
   **その1本が壊れている**。tasks.json に起票した（`agent-sdk-check-broken`）
+
+---
+
+## 追記：残量メーターを作るときに測ったこと（2026-09-23、`skill-context-meter`）
+
+### 測定6：`instructions` は文脈のどこに入るか → **system prompt ではなく、会話の中の添付**
+
+メーターの Skill の行をどこから出すか決めるため、`getContextUsage()` を
+`instructions` あり／なしで1回ずつ取った（`/tmp/skill-probe/usage-probe.mjs`、HTTP の代理サーバ越し）：
+
+| | System prompt | 添付（`messageBreakdown.attachmentsByType`） | totalTokens |
+|---|---|---|---|
+| あり | 1,483 | `mcp_instructions_delta` 132 ＋ `total_tokens_reminder` 23 | 2,311 |
+| なし | 1,483 | `total_tokens_reminder` 23 | 1,954 |
+
+**system prompt は1トークンも変わらない。** `instructions` は **Messages の中の添付**
+（会話の最初のメッセージに付く system-reminder）として入っている。
+
+続けて **resume で2ターン**（`resume-probe.mjs`、ターン2で集合を変えた）：
+
+```
+[turn1] 不明です。案内文にあるのはコンペイトウ（17度）のみ…   attachments: mcp_instructions_delta 132
+[turn2] 不明です。案内文に記載があるのはコンペイトウ（17度）だけ… attachments: mcp_instructions_delta 132
+```
+
+- **ターン2でも差し替わらない**（測定2 を HTTP 経路で再現）
+- **添付はターン2の内訳にも同じ量で残る**——メーターは毎ターンこの値を読める
+
+### 訂正：「キャッシュ境界の問題は解決しない」の根拠
+
+上の「代償として受け入れたもの」に「`instructions` も**指示文の先頭側**に入るので」と
+書いたが、**入る場所は system prompt ではなく最初のメッセージの添付だった**（測定6）。
+効かせる集合を変えればその位置から先のキャッシュが切れる、という結論は変わらない
+（集合は会話の始まりでしか変わらないので、実害はそもそも出にくい）。
+
+### メーターの作り（仕様 §5.7・v4-frontend §6 に反映）
+
+- **総量は SDK の値**（`mcp_instructions_delta`）。banto で `instructions` を載せるのは
+  Skill だけなので、これを Messages から切り出して「Skill」の行にする
+- **Skill ごとの内訳は按分**。core が `instructions` の中で各 Skill の行が占める文字数を返す
+  （`GET /api/threads/:id/skills` の `footprint`）。割り切れない残りは「使い方の説明」
+- 同じ面に「この会話で効いている Skill」（会話に刻まれた集合）を出す
+
+**却下**：画面が `instructions` の書式を真似て文字数を数える——書式の写しが2つになる（規則3）。
+
+### E2E（`e2e/specs/skills.spec.ts`、4本）とフル
+
+偽 Runner に「繋いだ MCP サーバの `instructions` を受け取って `sayContext` に含める」
+「添付として使用量に数える」を足した（本物の SDK の振る舞いの写し）。
+
+1. 設定の一覧に名前・説明・配り手が出て、画面から効かせられる（件数も変わる）
+2. 新しい会話で、効かせた行（名前・本文の URI・説明）が届き、本文と兄弟ファイルが読める。
+   メーターに Skill の行・内訳・「この会話で効いている Skill」が出る
+3. 全体で外しても**続いている会話は変わらない**。Clear の後は外れ、「1つも効かせていない」
+   が届き、それでも本文は読める
+4. 全体では外したまま、Project でだけ効かせられる
+
+**最初は3が落ちた——試験の書き方の誤り。** 外した後の確認を「説明の文字列が無いこと」で
+見ていたが、同じターンで本文を読ませていて、**本文の frontmatter に同じ説明が入っている**。
+`instructions` の中の「効いている行」そのものを見る形に直した。
+
+フル E2E は 114 本すべて緑（3組に分けて同期で流した：34・41・39）。

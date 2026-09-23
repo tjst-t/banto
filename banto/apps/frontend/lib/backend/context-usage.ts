@@ -14,7 +14,20 @@ interface SDKContextUsageResponseShape {
   mcpTools: { name: string; serverName: string; tokens: number }[];
   memoryFiles: { path: string; type: string; tokens: number }[];
   skills?: { skillFrontmatter: { name: string; source: string; tokens: number }[] };
+  /** Messages の内訳。添付（system-reminder）の種類ごとの量もここにある。 */
+  messageBreakdown?: { attachmentsByType?: { name: string; tokens: number }[] };
 }
+
+/**
+ * **MCP サーバの `instructions` は、会話の中の添付として数えられる**（実測・2026-09-23）
+ * ——system prompt ではなく Messages の一部。banto で `instructions` を載せるのは
+ * **Skill だけ**（core が組み立て、実 Module の `instructions` は転送しない、
+ * `relay/agent-proxy.ts`）なので、この添付の量がそのまま Skill の量になる。
+ * **他のものを `instructions` に載せるようになったら、ここは嘘になる。**
+ */
+const MCP_INSTRUCTIONS_ATTACHMENT = "mcp_instructions_delta";
+/** 残量メーターの Skill の行（Messages から切り出したもの）。 */
+export const SKILL_CATEGORY_ID = "Skill";
 
 function isSDKContextUsageResponseShape(v: unknown): v is SDKContextUsageResponseShape {
   if (!v || typeof v !== "object") return false;
@@ -34,8 +47,14 @@ function isSDKContextUsageResponseShape(v: unknown): v is SDKContextUsageRespons
 export function realContextUsageToDisplay(raw: unknown): ContextUsage | null {
   if (!isSDKContextUsageResponseShape(raw)) return null;
 
+  // Skill の分は **Messages の中から切り出す**（SDK 自身の内訳を並べ替えるだけ——
+  // 数字は作らない）。切り出さずに足すと二重に数えることになる
+  const skillTokens =
+    raw.messageBreakdown?.attachmentsByType?.find((a) => a.name === MCP_INSTRUCTIONS_ATTACHMENT)?.tokens ?? 0;
   const categories: ContextCategory[] = raw.categories
     .filter((c) => !c.isDeferred && c.tokens > 0)
+    .map((c) => (skillTokens > 0 && /^messages$/i.test(c.name) ? { ...c, tokens: Math.max(0, c.tokens - skillTokens) } : c))
+    .filter((c) => c.tokens > 0)
     .map((c) => {
       const items =
         /mcp/i.test(c.name) && raw.mcpTools.length > 0
@@ -47,6 +66,11 @@ export function realContextUsageToDisplay(raw: unknown): ContextUsage | null {
               : undefined;
       return { id: c.name, label: c.name, tokens: c.tokens, kind: "content" as const, items };
     });
+
+  if (skillTokens > 0) {
+    // 内訳（Skill ごと）はここでは作れない——会話に刻まれた集合を画面が取りに行って埋める
+    categories.push({ id: SKILL_CATEGORY_ID, label: "Skill", tokens: skillTokens, kind: "content" });
+  }
 
   const freeTokens = Math.max(0, raw.rawMaxTokens - raw.totalTokens);
   if (freeTokens > 0) {

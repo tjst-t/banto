@@ -7,15 +7,33 @@
 // 対して validate_palette.js で確認済み、globals.css 参照）。Autocompact
 // buffer・Free space は「中身」ではないので中立色——カテゴリ色を使わない。
 import { useState } from "react";
-import { ChevronRight, Gauge } from "lucide-react";
+import { ChevronRight, Gauge, ScrollText } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { getContextUsage, type ContextCategory, type ContextUsage } from "@/lib/mock/context-usage";
 import { getThread } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import { realContextUsageToDisplay } from "@/lib/backend/context-usage";
+import { realContextUsageToDisplay, SKILL_CATEGORY_ID } from "@/lib/backend/context-usage";
+import { getRealThreadSkills, type RealThreadSkills } from "@/lib/backend/client";
+import { reportFailure } from "@/lib/report-failure";
 import type { ThreadId } from "@/lib/mock/types";
+
+/**
+ * **Skill の行の内訳**（決定・2026-09-23、アーキ仕様 §5.7）。SDK が数えるのは
+ * `instructions` の全体だけなので、core が返す「Skill ごとの文字数」で按分する
+ * ——数字は作らず、SDK の値を割り振るだけ。割り切れない残りは説明文のぶん。
+ */
+function withSkillItems(category: ContextCategory, skills: RealThreadSkills | null): ContextCategory {
+  if (category.id !== SKILL_CATEGORY_ID || !skills || skills.footprint.totalChars <= 0) return category;
+  const { totalChars, skills: lines } = skills.footprint;
+  const items = lines.map((s) => ({
+    name: `${s.name}（${s.module}）`,
+    tokens: Math.round((category.tokens * s.chars) / totalChars),
+  }));
+  const rest = category.tokens - items.reduce((sum, i) => sum + i.tokens, 0);
+  return { ...category, items: rest > 0 ? [...items, { name: "使い方の説明", tokens: rest }] : items };
+}
 
 const CONTENT_COLOR: Readonly<Record<string, string>> = {
   "system-tools": "bg-chart-1",
@@ -56,8 +74,22 @@ function resolveUsage(threadId: ThreadId): ContextUsage {
 
 export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
   useMockStoreVersion();
-  const usage = resolveUsage(threadId);
+  const rawUsage = resolveUsage(threadId);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  // **この会話で効いている Skill**——開いたときに host から取る（手元に写しを持たない、規則3）
+  const [threadSkills, setThreadSkills] = useState<RealThreadSkills | null>(null);
+  const isReal = getThread(threadId)?.real === true;
+  const usage = {
+    ...rawUsage,
+    categories: rawUsage.categories.map((c) => withSkillItems(c, threadSkills)),
+  };
+
+  function handleOpenChange(open: boolean) {
+    if (!open || !isReal) return;
+    getRealThreadSkills(threadId)
+      .then(setThreadSkills)
+      .catch((err: unknown) => reportFailure("この会話で効いている Skill を取得できませんでした", err));
+  }
 
   const freeTokens = usage.categories.find((c) => c.id === "free")?.tokens ?? 0;
   const usedRatio = usage.windowTokens > 0 ? (usage.windowTokens - freeTokens) / usage.windowTokens : 0;
@@ -73,7 +105,7 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
   }
 
   return (
-    <Popover>
+    <Popover onOpenChange={handleOpenChange}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -184,6 +216,38 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
             })}
           </div>
         </div>
+
+        {/* **この会話で効いている Skill**（§5.7）。会話の始まりで決まり、途中では変わらない
+            ——設定を変えても、この会話ではなく次の新しい会話から効く */}
+        {isReal && threadSkills ? (
+          <div data-testid="thread-skills" className="border-t border-border px-3 py-2.5">
+            <p className="flex items-center gap-1.5 text-xs font-medium text-ink-2">
+              <ScrollText className="size-3.5 shrink-0 text-ink-3" />
+              この会話で効いている Skill
+            </p>
+            {threadSkills.set === null ? (
+              <p className="mt-1 text-xs text-ink-3">記録がありません（Skill の仕組みより前に始まった会話）</p>
+            ) : threadSkills.set.active.length === 0 ? (
+              <p className="mt-1 text-xs text-ink-3">なし</p>
+            ) : (
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {threadSkills.set.active.map((s) => (
+                  <li
+                    key={`${s.module}/${s.name}`}
+                    data-testid="thread-skill"
+                    className="flex items-baseline gap-1.5 text-xs text-ink-3"
+                  >
+                    <span className="shrink-0 text-ink-2">{s.name}</span>
+                    <span className="min-w-0 truncate">{s.description}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-1.5 text-xs text-ink-3">
+              会話の始まりで決まります。設定を変えると、次の新しい会話（Clear の後を含む）から効きます。
+            </p>
+          </div>
+        ) : null}
 
         {usage.deferred.length > 0 ? (
           <div className="border-t border-border bg-surface-2 px-3 py-2.5">

@@ -30,7 +30,7 @@ export function renderSkillInstructions(set: SessionSkillSet | undefined, module
         "この会話では、次の Skill が効いている：",
       active.map(skillLine).join("\n"),
       "仕事が説明に合うときは、取りかかる前に本文を ReadMcpResourceTool で読み、そのやり方に従う。" +
-        "本文が別の資源を指していたら、それも同じように読める。" +
+        "本文が相対パス（`references/…` など）で別のファイルを指していたら、本文の URI を基準にした URI で同じように読める。" +
         "本文がスクリプトの実行やファイルの直接の読み込みを前提にしていても、その道具はここには無い" +
         "——見えている tool でできる範囲でやり、できないことはそう言う。",
     );
@@ -55,3 +55,23 @@ function skillLine(skill: SkillRef): string {
   return `- **${skill.name}**（本文：\`${skill.uri}\`）：${description}`;
 }
 
+
+/**
+ * `instructions` のうち、Skill ごとに何文字を占めているか（残量メーターの内訳用、§5.7
+ * 「この数は自分で数える」）。SDK は `instructions` の全体を1つの添付
+ * （`mcp_instructions_delta`）として数えるので、**その値をこの文字数で按分する**
+ * ——数字そのものは作らない。文字列を組み立てるのは core なので、画面に同じ書式を
+ * 写させない（規則3）。
+ */
+export function skillInstructionsFootprint(set: SessionSkillSet | undefined): {
+  totalChars: number;
+  skills: Array<{ module: string; name: string; chars: number }>;
+} {
+  if (!set) return { totalChars: 0, skills: [] };
+  const modules = [...new Set([...set.active.map((s) => s.module), ...set.othersIn])];
+  const totalChars = modules.reduce((sum, m) => sum + (renderSkillInstructions(set, m)?.length ?? 0), 0);
+  return {
+    totalChars,
+    skills: set.active.map((s) => ({ module: s.module, name: s.name, chars: skillLine(s).length })),
+  };
+}

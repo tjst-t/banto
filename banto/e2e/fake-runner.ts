@@ -167,10 +167,13 @@ function resultMessage(sessionId: string, text: string) {
  * 文字数 ÷ 4 を目安のトークン数とする。0 のままだと画面が
  * 「0 / 0 トークン使用中」になり、**メーターが動いたことを試験できない**。
  */
-function contextUsageOf(prompt: string, systemPrompt?: string[]) {
+function contextUsageOf(prompt: string, systemPrompt?: string[], instructions = "") {
   const approx = (s: string) => Math.max(1, Math.ceil(s.length / 4));
   const systemTokens = approx((systemPrompt ?? []).join("\n"));
-  const promptTokens = approx(prompt);
+  // **MCP の `instructions` は Messages の中の添付として数えられる**（本物の SDK の実測・
+  // 2026-09-23——`messageBreakdown.attachmentsByType` の `mcp_instructions_delta`）
+  const instructionTokens = instructions === "" ? 0 : approx(instructions);
+  const promptTokens = approx(prompt) + instructionTokens;
   const totalTokens = systemTokens + promptTokens;
   return {
     totalTokens,
@@ -181,7 +184,36 @@ function contextUsageOf(prompt: string, systemPrompt?: string[]) {
     ],
     mcpTools: [],
     memoryFiles: [],
+    messageBreakdown: {
+      attachmentsByType: instructionTokens > 0 ? [{ name: "mcp_instructions_delta", tokens: instructionTokens }] : [],
+    },
   };
+}
+
+/**
+ * **繋いだ MCP サーバの `instructions` を集める**（追加・2026-09-23）。本物の SDK は
+ * 繋いだときに受け取ってモデルの文脈に入れる（Skill の名前と説明はここで届く、
+ * アーキ仕様 §5.6）。偽物も**本物の口に繋いで**受け取る——banto が実際に何を
+ * 載せたかを、試験が直接見られるようにする。
+ */
+async function collectInstructions(servers: Record<string, unknown>): Promise<string> {
+  const blocks: string[] = [];
+  for (const [name, raw] of Object.entries(servers)) {
+    const config = raw as McpServerConfig;
+    if (!config?.url) continue;
+    const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+      requestInit: { headers: config.headers },
+    });
+    const client = new Client({ name: "fake-runner", version: "0.0.0" });
+    try {
+      await client.connect(transport);
+      const text = client.getInstructions();
+      if (text) blocks.push(`## ${name}\n${text}`);
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  }
+  return blocks.length > 0 ? `# MCP Server Instructions\n\n${blocks.join("\n\n")}` : "";
 }
 
 /** 決定的な id を作るための小さなハッシュ（`Math.random` を使わない）。 */
@@ -272,6 +304,7 @@ export async function* runTurn(opts: {
     `[fake-runner] mode=${opts.permissionMode ?? "(無し)"} plan=${JSON.stringify(plan).slice(0, 200)}`,
   );
 
+  const instructions = await collectInstructions(servers);
   yield { type: "message", message: initMessage(sessionId, servers) };
 
   if (plan.say) {
@@ -298,7 +331,7 @@ export async function* runTurn(opts: {
     // **指示の印から後ろは落とす**——偽物への指図が会話に出ても意味が無い
     const at = opts.prompt.indexOf(MARKER);
     const visiblePrompt = at === -1 ? opts.prompt : opts.prompt.slice(0, at);
-    const text = [...(opts.systemPrompt ?? []), visiblePrompt].join("\n");
+    const text = [...(opts.systemPrompt ?? []), ...(instructions ? [instructions] : []), visiblePrompt].join("\n");
     yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
   }
 
@@ -416,5 +449,5 @@ export async function* runTurn(opts: {
 
   console.warn(`[fake-runner] ターン終了 session=${sessionId}`);
   yield { type: "message", message: resultMessage(sessionId, lastText) };
-  return { sessionId, compactionCount: 0, contextUsage: contextUsageOf(opts.prompt, opts.systemPrompt) };
+  return { sessionId, compactionCount: 0, contextUsage: contextUsageOf(opts.prompt, opts.systemPrompt, instructions) };
 }

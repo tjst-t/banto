@@ -17,6 +17,7 @@ import {
   normalizeProjectRoot,
   InvalidProjectRootError,
   NotFoundError,
+  currentSkillSet,
   type ProjectThreadStore,
 } from "../project-thread/store.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
@@ -24,7 +25,14 @@ import type { InboxStore } from "../inbox/store.js";
 import type { ThreadState } from "../project-thread/types.js";
 import type { ThreadPermissionMode } from "../project-thread/types.js";
 import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
-import type { SessionSkillSet } from "../skills/types.js";
+import type { SessionSkillSet, SkillRef } from "../skills/types.js";
+import {
+  discoverSkills,
+  isSkillEnabled,
+  setSkillEnabled,
+  skillEnabledKey,
+  skillInstructionsFootprint,
+} from "../skills/index.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
@@ -485,6 +493,31 @@ async function listUiToolsForThread(
     }),
   );
   return per.flat();
+}
+
+/**
+ * その層で配られている Skill と、効かせるかどうか（決定・2026-09-23、§5.7）。
+ * **`instance`・`project` はその層に書かれた値そのもの**（書かれていなければ `null`）、
+ * `enabled` はカスケードした結果——画面は「全体の既定に従っている」を区別して出せる。
+ */
+async function listSkillsFor(deps: AppDeps, projectId: string | undefined) {
+  const modules = projectId
+    ? ((await deps.resolveModuleClientsForProject?.(projectId)) ?? [])
+    : ((await deps.resolveInstanceModuleClients?.()) ?? []);
+  const discovery = await discoverSkills(modules);
+  const layer = (ref: SkillRef, project?: string): boolean | null => {
+    const v = deps.runtimeConfig?.layerValue(skillEnabledKey(ref), project);
+    return typeof v === "boolean" ? v : null;
+  };
+  return {
+    skills: discovery.skills.map((s) => ({
+      ...s,
+      instance: layer(s),
+      project: projectId ? layer(s, projectId) : null,
+      enabled: isSkillEnabled(deps.runtimeConfig, s, projectId ?? ""),
+    })),
+    problems: discovery.problems,
+  };
 }
 
 /**
@@ -1203,6 +1236,21 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **この会話で効いている Skill**（決定・2026-09-23、§5.7）。会話の始まりで固定した
+      // 集合と、`instructions` の中でそれぞれが占める文字数（メーターの按分用）
+      const threadSkillsMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/skills$/);
+      if (threadSkillsMatch && req.method === "GET") {
+        const thread = deps.projectThread.getThread(threadSkillsMatch[1]!);
+        if (!thread) return json(res, 404, { error: "not found" });
+        const set = currentSkillSet(thread);
+        json(res, 200, {
+          set: set ?? null,
+          fixedAtSeq: thread.skillSets?.at(-1)?.seq ?? null,
+          footprint: skillInstructionsFootprint(set),
+        });
+        return;
+      }
+
       // **どの面に出したか**を記録する（決定・2026-09-07、ユーザー指摘）。
       // 決めるのは画面（`ui/request-display-mode`）なので、決まってから届く
       // ——これが記録に無いと、リロード後に「inline は埋め直す・fullscreen は
@@ -1750,6 +1798,48 @@ export function createApp(deps: AppDeps) {
 
       // **何も選ばれていないときのモード**（§6.4）。instance 既定と Project 上書きの
       // 2階層（§6.1）。**画面がまだ繋がっていない**ので、いまはこの口だけが入口
+      // **Skill の一覧と、効かせるかどうか**（決定・2026-09-23、アーキ仕様 §5.7）。
+      // `projectId` があればその Project に繋ぐ Module から、無ければ banto 全体の
+      // Module から集める。**効いているかは設定から導く**（写しを返さない、規則3）。
+      // 変えても**走っている会話には効かない**——次の新しい会話（Clear の後を含む）から
+      if (url.pathname === "/api/skills" && req.method === "GET") {
+        const projectId = url.searchParams.get("projectId") ?? undefined;
+        if (projectId && !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        json(res, 200, await listSkillsFor(deps, projectId));
+        return;
+      }
+      if (url.pathname === "/api/skills/enabled" && req.method === "PUT") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const body = (await readJsonBody(req)) as {
+          module?: unknown;
+          name?: unknown;
+          projectId?: unknown;
+          enabled?: unknown;
+        };
+        const projectId = typeof body.projectId === "string" ? body.projectId : undefined;
+        if (typeof body.module !== "string" || typeof body.name !== "string") {
+          return json(res, 400, { error: "module と name が要ります" });
+        }
+        // **null は「この Project の上書きを消す」**——全体の既定には「消す」が無い
+        if (body.enabled !== true && body.enabled !== false && !(body.enabled === null && projectId)) {
+          return json(res, 400, { error: `enabled の値が不正です: ${JSON.stringify(body.enabled)}` });
+        }
+        if (projectId && !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        // **在る Skill だけ**——一覧に無いものの鍵を作らない（幽霊を作らない）
+        const { skills } = await listSkillsFor(deps, projectId);
+        if (!skills.some((s) => s.module === body.module && s.name === body.name)) {
+          return json(res, 404, { error: `Skill「${body.module}/${body.name}」は見つかりません` });
+        }
+        await setSkillEnabled(
+          deps.runtimeConfig,
+          { module: body.module, name: body.name },
+          projectId,
+          body.enabled === null ? undefined : (body.enabled as boolean),
+        );
+        json(res, 200, { ok: true });
+        return;
+      }
+
       const permissionDefaultMatch = url.pathname.match(/^\/api\/config\/default-permission-mode$/);
       if (permissionDefaultMatch && req.method === "GET") {
         const projectId = url.searchParams.get("projectId") ?? undefined;

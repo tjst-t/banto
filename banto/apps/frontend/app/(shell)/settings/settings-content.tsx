@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Globe, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { Bell, Globe, Puzzle, ScrollText, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -10,6 +10,7 @@ import { NotificationSettingsPanel } from "@/components/banto/settings/notificat
 import { RoleList } from "@/components/banto/settings/role-list";
 import { InstanceModulesPanel } from "@/components/banto/settings/instance-modules-panel";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
+import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { getProject } from "@/lib/mock/projects";
@@ -66,12 +67,16 @@ const INSTANCE_MODULES_CATEGORY: SettingsNavItem = {
   icon: Puzzle,
 };
 
+/** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
+const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
+
 const CATEGORIES: readonly SettingsNavItem[] = [
   ...(CONNECTED_FEATURES.settings
     ? MOCK_CATEGORIES
     : CONNECTED_FEATURES.instanceModules
       ? [INSTANCE_MODULES_CATEGORY]
       : []),
+  ...(CONNECTED_FEATURES.skills ? [SKILLS_CATEGORY] : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
 ];
 
@@ -153,6 +158,9 @@ function SectionHeading({ title, description }: { title: string; description: st
 function renderSection(section: SettingsSection, canvases: readonly SettingsCanvas[]) {
   if (section === "global-memory") {
     return <GlobalMemoryPanel />;
+  }
+  if (section === "skills") {
+    return <SkillsPanel />;
   }
   if (section === "roles") {
     return (

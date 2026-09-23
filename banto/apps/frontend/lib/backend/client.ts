@@ -160,7 +160,18 @@ export interface RealThread {
   /** 人がこのThreadで明示的に選んだpermissionMode。選んでいなければ無い
    *  ——その場合はConfigurationのカスケードから導く（規則3）。 */
   permissionMode?: MockPermissionModeValue;
+  /** セッションごとに効かせた Skill（決定・2026-09-23、アーキ仕様 §5.7）。
+   *  最後の1件がいまのセッションのもの。この仕組みより前の会話には無い。 */
+  skillSets?: { seq: number; set: RealSessionSkillSet }[];
   createdAt: string;
+}
+
+/** 会話の始まりで固定した Skill の集合（host の `SessionSkillSet` と同じ形）。 */
+export interface RealSessionSkillSet {
+  active: { module: string; name: string; description: string; uri: string }[];
+  /** 効かせていない Skill **も**配っている Module */
+  othersIn: string[];
+  problems: { module: string; message: string }[];
 }
 
 /** v4-frontend.md §6.4 の6値。hostの`ThreadPermissionMode`と同じ集合。 */
@@ -426,6 +437,55 @@ export async function setRealProjectModules(projectId: string, names: string[]):
     method: "PUT",
     body: JSON.stringify({ names }),
   });
+}
+
+/**
+ * **配られている Skill と、効かせるかどうか**（決定・2026-09-23、アーキ仕様 §5.7）。
+ * `instance`・`project` はその層に書かれた値（書かれていなければ `null`）、
+ * `enabled` はカスケードした結果。
+ */
+export interface RealSkill {
+  module: string;
+  name: string;
+  description: string;
+  uri: string;
+  instance: boolean | null;
+  project: boolean | null;
+  enabled: boolean;
+}
+
+export interface RealSkillListing {
+  skills: RealSkill[];
+  problems: { module: string; message: string }[];
+}
+
+/** `projectId` を渡せばその Project の層、渡さなければ banto 全体の層。 */
+export async function listRealSkills(projectId?: string): Promise<RealSkillListing> {
+  return request<RealSkillListing>(`/api/skills${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
+}
+
+/**
+ * **この会話で効いている Skill**（決定・2026-09-23、§5.7）。会話の始まりで固定した集合と、
+ * `instructions` の中でそれぞれが占める文字数（メーターが SDK の値を按分するのに使う）。
+ */
+export interface RealThreadSkills {
+  set: RealSessionSkillSet | null;
+  fixedAtSeq: number | null;
+  footprint: { totalChars: number; skills: { module: string; name: string; chars: number }[] };
+}
+
+export async function getRealThreadSkills(threadId: string): Promise<RealThreadSkills> {
+  return request<RealThreadSkills>(`/api/threads/${threadId}/skills`);
+}
+
+/** `enabled: null` は Project の上書きを消す（全体の既定に戻す）。 */
+export async function setRealSkillEnabled(input: {
+  module: string;
+  name: string;
+  projectId?: string;
+  enabled: boolean | null;
+}): Promise<void> {
+  await request(`/api/skills/enabled`, { method: "PUT", body: JSON.stringify(input) });
 }
 
 // **名前と並び順**（決定・2026-09-11、ユーザー要望）。どちらも人の意図なので
