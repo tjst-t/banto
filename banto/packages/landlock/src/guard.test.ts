@@ -114,3 +114,29 @@ test("根が無くても組める——そして home も dataDir も許さな�
     "資格情報の置き場を許している",
   );
 });
+
+// **閉じ込めた Module も名前を引ける**（追加・2026-09-23、本番で `fetch failed`）。
+// `/etc/resolv.conf` の実体が `/etc` の外にあるとき（systemd-resolved）、その1ファイル
+// だけを読めるようにする——`/run` 全体は開けない
+test("derive は名前解決のファイルの実体を、そのファイルだけ読めるようにする", async () => {
+  const { realpathSync } = await import("node:fs");
+  const { NAME_RESOLUTION_FILES } = await import("./derive.js");
+  const { ruleset } = deriveProjectRuleset({ pathEntries: [], profile: "files-only", nodeExecPath: process.execPath });
+  for (const file of NAME_RESOLUTION_FILES) {
+    let real: string;
+    try {
+      real = realpathSync(file);
+    } catch {
+      continue; // この機械には無い
+    }
+    if (real.startsWith("/etc/")) continue; // /etc の中なら /etc の規則で読める
+    const rule = ruleset.rules.find((r) => r.path === real);
+    assert.ok(rule, `${file} の実体 ${real} が許されていない——閉じ込めた Module が名前を引けない`);
+    assert.deepEqual(rule.access, ["read_file"], "ファイル1つに読み取り以外を許している");
+  }
+  assert.equal(
+    ruleset.rules.some((r) => r.path === "/run" || r.path === "/run/systemd" || r.path === "/run/systemd/resolve"),
+    false,
+    "/run のディレクトリごと開けている",
+  );
+});

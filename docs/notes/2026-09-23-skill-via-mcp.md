@@ -346,3 +346,39 @@ stdio MCP サーバを繋いだ。
 - **「元が進んでいます」の検出**（§5.7「写しは追わない。記録した commit と元を比べ、
   人に出すまで」）はまだ無い。記録（repo・path・commit）は残してあるので、比べるだけ
 - 仮置きの上限（20件）は AI の繰り返し呼び出しへの備え。上限に当たったら理由を言って断る
+
+---
+
+## 追記：本番で「fetch failed」（2026-09-23、ユーザー報告）
+
+「Skill の置き場」に `https://github.com/anthropics/claude-code/blob/main/plugins/frontend-design/skills/frontend-design/SKILL.md`
+を貼ると、画面に `fetch failed` とだけ出た。
+
+**測った**（犯人を先に決めない）。本番と同じ ruleset（`~/.local/share/banto/run/skills.landlock.json`）で
+launcher の下から fetch させると：
+
+```
+confined:   FAIL https://api.github.com/... | fetch failed | cause: EAI_AGAIN getaddrinfo EAI_AGAIN api.github.com
+unconfined: OK 200
+```
+
+`/etc/resolv.conf` → `/run/systemd/resolve/stub-resolv.conf`（systemd-resolved）。Landlock は
+**シンボリックリンクを辿った先**で判定するので、`/etc` を許しても名前が引けない。
+ruleset にその1ファイル（`read_file`）だけを足すと 200 になった。
+
+**閉じ込めた Module 全部に掛かる穴だった**——Shell の `git fetch`・`curl`、registry から入れた
+Module も同じ。直すのは ruleset を組むところ（`@banto/landlock` の `derive.ts`）：
+名前解決のファイルの実体が `/etc` の外なら、**そのファイルだけ**読めるようにする
+（`/run` のディレクトリは開けない）。仕様（v4-security）に足した。
+
+**2つ目の穴：理由が画面に出なかった。** Node の fetch は失敗を `fetch failed` にまとめ、本当の
+理由を `cause` に隠す。skills Module はそれをそのまま返していた——画面から直す先が読めない
+（規則2）。いまは「api.github.com に繋がりません（EAI_AGAIN）」と言う。
+
+**E2E で捕まらなかった理由**：偽の GitHub は 127.0.0.1 に立っていて、名前解決が起きない。
+名前解決を E2E で起こすには外の DNS が要る（規則6 に反する）ので、ruleset の単体試験で見る
+（この機械の `/etc/resolv.conf` はシンボリックリンクなので、試験は空振りしない——導出結果に
+`/run/systemd/resolve/stub-resolv.conf` が入ることを確かめた）。
+
+直したあと、本番でユーザーの URL そのものを「中身を見る」まで通した（commit `56f3653`、
+1ファイル）。取り込みは押さずに取りやめた。

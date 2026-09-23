@@ -346,3 +346,24 @@ test("押されていない仮置きがたまったら、それ以上は仮置�
     assert.match(over.content[0]!.text, /たまっています/);
   });
 });
+
+test("繋がらないときは、繋がらない理由を言う（fetch failed の1語にしない）", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "banto-skills-import-"));
+  try {
+    const failing: FetchLike = async () => {
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("getaddrinfo EAI_AGAIN api.test"), { code: "EAI_AGAIN" }),
+      });
+    };
+    const server = createSkillsServer({ dataDir, fetch: failing, github: { api: "https://api.test", raw: "https://raw.test" } });
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "host", version: "0.0.0" });
+    await Promise.all([server.connect(s), client.connect(c)]);
+    const res = await call(client, "import_skill", { source: "acme/skills/skills/pdf" }, AI);
+    assert.equal(res.isError, true);
+    assert.equal(res.content[0]!.text, "api.test に繋がりません（EAI_AGAIN）");
+    await client.close();
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

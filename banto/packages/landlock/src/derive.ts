@@ -68,6 +68,9 @@ export interface DeriveProjectRulesetResult {
 
 const SIBLING_LIB_DIRS = ["lib", "lib64", "libexec", "share"];
 
+/** 名前解決（getaddrinfo）が読むファイル。実体が `/etc` の外にあることがある。 */
+export const NAME_RESOLUTION_FILES = ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/host.conf", "/etc/gai.conf"];
+
 function dedupeRules(rules: LandlockRule[]): LandlockRule[] {
   const byPath = new Map<string, Set<AccessFsName>>();
   for (const rule of rules) {
@@ -156,6 +159,19 @@ export function deriveProjectRuleset(input: DeriveProjectRulesetInput): DerivePr
   }
 
   pushIfExists(rules, omitted, "/etc", READ_ONLY);
+  // **名前解決に要るファイルの実体**（追加・2026-09-23、Skill の取り込みが本番で
+  // `fetch failed` になって発覚）。`/etc/resolv.conf` は systemd-resolved の下では
+  // `/run/systemd/resolve/stub-resolv.conf` へのシンボリックリンクで、Landlock は
+  // **辿った先**で判定する——`/etc` を許しても名前が引けず、閉じ込めた Module は
+  // どこへも繋げなかった（実測：`getaddrinfo EAI_AGAIN api.github.com`。この1ファイルの
+  // 読み取りを足すと 200）。Shell の `git fetch`・`curl` も同じ。
+  // **足すのはそのファイルだけ**——`/run` を開けない（他のプロセスのソケット等がある）
+  for (const file of NAME_RESOLUTION_FILES) {
+    const real = tryRealpath(file);
+    if (real !== undefined && !real.startsWith("/etc/") && statSync(real).isFile()) {
+      rules.push({ path: real, access: ["read_file"] });
+    }
+  }
   // **`/proc` は許可しない**（決定・2026-09-10、`relay-proc-allowlist`）。
   // 許すと、AI の書いたコマンドが**親（Module）の `/proc/<pid>/environ` を読める**
   // ——`BANTO_HOST_MCP_TOKEN` は「どの Module からの呼び出しか」の識別そのものなので、

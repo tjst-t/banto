@@ -36,6 +36,22 @@ interface TreeEntry {
 /** 同時に取りに行く数。 */
 const PARALLEL = 6;
 
+/**
+ * **繋がらなかった理由を言う**（追加・2026-09-23、本番で発覚）。Node の fetch は
+ * 失敗を `fetch failed` の1語にまとめ、本当の理由（名前が引けない・拒否された・
+ * 時間切れ）を `cause` に隠す。画面にはその1語しか出ず、どこを直すかが分からなかった
+ * （規則2——握りつぶしは「別の事実」に化ける）。
+ */
+async function reach(fetch: FetchLike, url: string, init?: { headers?: Record<string, string> }) {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    const why = cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err));
+    throw new Error(`${new URL(url).host} に繋がりません（${why}）`);
+  }
+}
+
 export async function fetchGithubSkill(
   loc: GithubLocation,
   deps: { fetch: FetchLike; endpoints?: GithubEndpoints },
@@ -43,7 +59,7 @@ export async function fetchGithubSkill(
   const ep = deps.endpoints ?? GITHUB;
   const repo = `${loc.owner}/${loc.repo}`;
   const api = async (path: string): Promise<unknown> => {
-    const res = await deps.fetch(`${ep.api}/repos/${repo}${path}`, {
+    const res = await reach(deps.fetch, `${ep.api}/repos/${repo}${path}`, {
       headers: { accept: "application/vnd.github+json", "user-agent": "banto-skills" },
     });
     if (res.ok) return res.json();
@@ -92,7 +108,7 @@ export async function fetchGithubSkill(
     const batch = await Promise.all(
       blobs.slice(i, i + PARALLEL).map(async (b) => {
         const url = `${base}${segments.length > 0 ? "/" : ""}${b.path.split("/").map(encodeURIComponent).join("/")}`;
-        const res = await deps.fetch(url, { headers: { "user-agent": "banto-skills" } });
+        const res = await reach(deps.fetch, url, { headers: { "user-agent": "banto-skills" } });
         if (!res.ok) throw new Error(`${b.path} を取れませんでした（${res.status}）`);
         return { path: b.path, bytes: new Uint8Array(await res.arrayBuffer()) };
       }),

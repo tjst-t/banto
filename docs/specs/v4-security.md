@@ -103,6 +103,11 @@ node/npm/git は動いたが、**PATH がホームディレクトリ配下・`/o
 - **`/dev` は書き込みも要る**——`git` が `/dev/null` を `O_RDWR` で開くため、
   読み取りだけの許可では `git` が動かない（実測で発見）
 - `/etc` は読み取りで許可し、Project の根だけ読み書きで許可する
+- **名前解決に要るファイルの実体が `/etc` の外にあれば、そのファイルだけ読み取りで許可する**
+  （追加・2026-09-23）。systemd-resolved の下では `/etc/resolv.conf` が
+  `/run/systemd/resolve/stub-resolv.conf` へのシンボリックリンクで、Landlock は辿った先で
+  判定する——`/etc` だけでは**閉じ込めた Module がどこへも名前を引けない**
+  （実測：`getaddrinfo EAI_AGAIN`）。`/run` のディレクトリは開けない
 - **`/proc` は許可しない**（決定・2026-09-10、実測）——下記
 
 **`/proc` を許可リストから外す**（決定・2026-09-10、`relay-proc-allowlist`）：
