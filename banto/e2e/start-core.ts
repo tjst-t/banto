@@ -15,6 +15,7 @@ import {
 } from "./config.ts";
 import { startRegistryFixture } from "./registry-fixture.ts";
 import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
+import { startGithubFixture } from "./github-fixture.ts";
 
 globalSetup();
 
@@ -73,5 +74,11 @@ process.env.BANTO_MCP_REGISTRY_URL = REGISTRY_BASE_URL;
 // **npm も偽物にする**——registry から入れた Module を実際に取ってきて繋ぐところ
 // まで見るのに要る。本物の npm を叩くと外の都合で落ちる試験になる（規則6）
 await startNpmRegistryFixture(NPM_REGISTRY_PORT);
+
+// **GitHub も偽物にする**（追加・2026-09-23）——Skill の取り込みが本物の GitHub を
+// 叩かないように。skills Module は host の env を引き継ぐので、ここで置けば届く
+const github = await startGithubFixture();
+process.env.BANTO_SKILLS_GITHUB_API_URL = github.api;
+process.env.BANTO_SKILLS_GITHUB_RAW_URL = github.raw;
 
 await import("../packages/core/dist/cli.js");

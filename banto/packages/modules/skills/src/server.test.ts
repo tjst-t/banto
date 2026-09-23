@@ -19,10 +19,10 @@ async function withSkills(
   const root = await mkdtemp(join(tmpdir(), "banto-skills-"));
   try {
     for (const [path, content] of Object.entries(files)) {
-      await mkdir(join(root, path, ".."), { recursive: true });
-      await writeFile(join(root, path), content);
+      await mkdir(join(root, "skills", path, ".."), { recursive: true });
+      await writeFile(join(root, "skills", path), content);
     }
-    const server = createSkillsServer({ skillsDir: root });
+    const server = createSkillsServer({ dataDir: root });
     const [s, c] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "host", version: "0.0.0" });
     await Promise.all([server.connect(s), client.connect(c)]);
@@ -79,7 +79,7 @@ test("本体も兄弟も読める。一覧に無いものは読めない（置�
   await withSkills(
     { "pdf/SKILL.md": PDF_SKILL, "pdf/references/forms.md": "# フォームの埋め方", "secret.txt": "外" },
     async (client, root) => {
-      await symlink(join(root, "secret.txt"), join(root, "pdf", "references", "link.md"));
+      await symlink(join(root, "skills", "secret.txt"), join(root, "skills", "pdf", "references", "link.md"));
       const body = await client.readResource({ uri: "skill://pdf/SKILL.md" });
       assert.match((body.contents[0] as { text: string }).text, /詳しくは \[forms\]/);
       const forms = await client.readResource({ uri: "skill://pdf/references/forms.md" });
@@ -128,14 +128,15 @@ test("frontmatter を読む——必須の2項目が無ければ理由を言う"
 });
 
 test("置き場がまだ無ければ、何も配らない（落ちない）", async () => {
-  const server = createSkillsServer({ skillsDir: join(tmpdir(), "banto-skills-does-not-exist") });
+  const server = createSkillsServer({ dataDir: join(tmpdir(), "banto-skills-does-not-exist") });
   const [s, c] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "host", version: "0.0.0" });
   await Promise.all([server.connect(s), client.connect(c)]);
   const { resources } = await client.listResources();
+  // Skill は無く、画面と申告だけ
   assert.deepEqual(
     resources.map((r) => r.uri),
-    ["skill://module"],
+    ["ui://banto-skills/import", "ui://banto-skills/manage", "skill://module"],
   );
   await client.close();
 });

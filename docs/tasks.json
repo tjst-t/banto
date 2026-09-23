@@ -1793,15 +1793,16 @@
     {
       "id": "skill-import",
       "title": "`import_skill`——git / ZIP から取り込む（画面を持つ tool）",
-      "status": "pending",
+      "status": "done",
       "why": "アーキ仕様 §5.7（決定・2026-09-23）。取り込むかは人が決め、AI は提案できる。普通の承認カードでは tool 名と引数しか出ず、**中身を見ずに他人の指示文を受け入れることになる**ので、画面を持つ tool にする。",
       "doneWhen": "AI が提案 → 承認カードに出所・`SKILL.md` の中身・`scripts/` の有無・`Read`/`Bash` 前提の記述の有無が出る → 人が押すと取り込まれ、その Skill が資源として配られること。",
       "open": [
-        "ref を省かれたら commit に解決して固定する（`HEAD` のまま持たない）",
-        "写しは書き換えない——届かない部分は画面で示す",
-        "画面は先週の Module 追加ダイアログと同じ型で作れるはず"
+        "**git は GitHub だけ**（REST API＋raw。Module は閉じ込めで git を起動できない）。GitLab 等は要るときに",
+        "**「元が進んでいます」の検出は未実装**（§5.7）——出所（repo・path・commit）は `sources/<名前>.json` に残してあるので、比べる口を足すだけ",
+        "未認証の GitHub API は1時間に60回。上限に当たったら理由と戻る時刻を言って断る（トークンを渡す口は無い）"
       ],
-      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
+      "notes": "docs/notes/2026-09-23-skill-via-mcp.md",
+      "completedAt": "2026-09-23"
     },
     {
       "id": "skill-activation-store",

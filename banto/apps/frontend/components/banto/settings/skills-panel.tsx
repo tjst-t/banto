@@ -67,9 +67,14 @@ export function SkillsPanel({ projectId }: { projectId?: string }) {
         効かせた Skill は、名前と説明が会話の始まりに AI へ渡り、その会話のあいだ毎ターンの文脈を使います。
         効かせていない Skill も、AI が探せば読めます。
       </p>
-      <p className="mb-4 text-xs text-ink-3">
+      <p className="mb-1 text-xs text-ink-3">
         <strong className="text-ink-2">変えると、新しい会話から効きます</strong>
         （続いている会話は、始まったときのまま。Clear すると新しい会話になります）。
+      </p>
+      {/* 取り込む・消すのは Skill を配る Module の仕事（アーキ仕様 §5.7）——その面は
+          Module が名乗る設定画面として、左の「Module ごとの設定」に出る */}
+      <p className="mb-4 text-xs text-ink-3">
+        Skill を取り込む・消すのは、banto 全体の「Module ごとの設定」にある「Skill の置き場」からです。
       </p>
 
       {loadError ? (
