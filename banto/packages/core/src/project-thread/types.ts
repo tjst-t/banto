@@ -125,6 +125,14 @@ export type ThreadPermissionMode =
   | "dontAsk"
   | "auto";
 
+/**
+ * reasoning effort（Claude Agent SDK の `effort`、決定・2026-09-23、ユーザー）。
+ * どの段が使えるかはモデルごとに違う——SDK の `supportedModels()` が言う（`runner/models.ts`）。
+ */
+export type ThreadEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const THREAD_EFFORTS: readonly ThreadEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
 export interface ThreadState {
   id: ThreadId;
   projectId: ProjectId;
@@ -177,6 +185,14 @@ export interface ThreadState {
    *  リロードで消え、「いまどのモードで会話しているか」を見失う（§6.4の狙いが
    *  崩れる）。 */
   permissionMode?: ThreadPermissionMode;
+  /**
+   * **人がこの Thread で選んだモデルと reasoning effort**（決定・2026-09-23、ユーザー）。
+   * 選んでいなければ無い——SDK（CLI）の既定で走る。**途中で変えてよい**が、変えた次の
+   * 1ターンはキャッシュが効かない（アーキ仕様 §3）。変えたことは画面が人に見せてから送る。
+   * permissionMode と同じく host が持つ——UI 側だけに置くとリロードで消える。
+   */
+  model?: string;
+  effort?: ThreadEffort;
   /** Clear で切り離したセッション（決定・2026-09-06、見直し起点）。
    *  走行中に Clear すると、そのターンは終了時に**開始時のセッションid**で
    *  resume-point を更新しようとして **Clear を取り消してしまう**——画面には

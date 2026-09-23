@@ -12,6 +12,7 @@ import type {
   ProjectState,
   ThreadId,
   ThreadPermissionMode,
+  ThreadEffort,
   ThreadState,
   UiToolCallEntry,
 } from "./types.js";
@@ -268,6 +269,13 @@ export class ProjectThreadStore {
   async setPermissionMode(id: ThreadId, mode: ThreadPermissionMode): Promise<void> {
     if (!this.getThread(id)) throw new NotFoundError(`thread ${id} not found`);
     const event = await this.log.append("thread.permission_mode_set", { id, mode });
+    this.projection.applyOne(event);
+  }
+
+  /** 人がこの Thread で選んだモデルと effort を残す（決定・2026-09-23）。null は既定へ戻す。 */
+  async setModel(id: ThreadId, model: string | null, effort: ThreadEffort | null): Promise<void> {
+    if (!this.getThread(id)) throw new NotFoundError(`thread ${id} not found`);
+    const event = await this.log.append("thread.model_set", { id, model, effort });
     this.projection.applyOne(event);
   }
 

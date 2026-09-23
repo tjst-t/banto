@@ -5,6 +5,7 @@ import type {
   ProjectThreadReadModel,
   ProjectState,
   ThreadPermissionMode,
+  ThreadEffort,
   ThreadState,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
@@ -45,6 +46,8 @@ export type ProjectThreadEvent =
   | { type: "thread.reopened"; payload: { id: string } }
   | { type: "thread.resume_point_updated"; payload: { id: string; resumePoint: string } }
   | { type: "thread.permission_mode_set"; payload: { id: string; mode: ThreadPermissionMode } }
+  // 人が選んだモデルと effort（決定・2026-09-23）。null は「選んでいない」（SDK の既定）
+  | { type: "thread.model_set"; payload: { id: string; model: string | null; effort: ThreadEffort | null } }
   // Memoryの持ち主はProject（決定・2026-09-05）。この決定より前に積まれた
   // イベントは`threadId`しか持たない——書き換えず、foldでThread→Projectを
   // 解決して読む（Event Storeは追記のみ、規則3）。
@@ -221,6 +224,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             // 引き継がないと、承認ゲートを効かせていたつもりの人が
             // fork した瞬間に既定（auto）へ戻る（規則2）
             if (parent.permissionMode) t.permissionMode = parent.permissionMode;
+            // モデルと effort も引き継ぐ（決定・2026-09-23）——Fork は親の続きなので、
+            // 黙って既定のモデルへ戻すと、その Fork の最初のターンでキャッシュが効かない
+            if (parent.model) t.model = parent.model;
+            if (parent.effort) t.effort = parent.effort;
           }
         }
         next.threads.set(t.id, t);
@@ -229,6 +236,18 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "thread.permission_mode_set": {
         const t = next.threads.get(event.payload.id);
         if (t) next.threads.set(t.id, { ...t, permissionMode: event.payload.mode });
+        return next;
+      }
+      case "thread.model_set": {
+        const t = next.threads.get(event.payload.id);
+        if (t) {
+          const { model: _m, effort: _e, ...rest } = t;
+          next.threads.set(t.id, {
+            ...rest,
+            ...(event.payload.model ? { model: event.payload.model } : {}),
+            ...(event.payload.effort ? { effort: event.payload.effort } : {}),
+          });
+        }
         return next;
       }
       case "thread.closed": {

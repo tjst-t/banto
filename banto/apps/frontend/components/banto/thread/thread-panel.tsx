@@ -14,7 +14,7 @@ import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import type { ForkFromMessage } from "@/components/banto/thread/fork-from-message";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
-import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
+import { ComposerModelMenu } from "@/components/banto/thread/composer-model-menu";
 import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
 import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/human-tool-card";
 import { OpenableCard } from "@/components/banto/thread/openable-card";
@@ -29,7 +29,6 @@ import {
 import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { getProject } from "@/lib/mock/projects";
-import { mockRuntimeDefaults } from "@/lib/mock/settings";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread, getThreadsForProject } from "@/lib/mock/threads";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
@@ -265,11 +264,9 @@ function ThreadRuntime({
         placeholder={placeholder}
         composerActionSlot={
           <>
-            {CONNECTED_FEATURES.composerModelEffort ? (
-              <ComposerModelEffortMenu
-                defaultModel={mockRuntimeDefaults.model}
-                defaultEffort={mockRuntimeDefaults.effort}
-              />
+            {/* 選んだ値は host が持つ——host に無い Thread（モックの固定データ）では出さない（規則13） */}
+            {CONNECTED_FEATURES.composerModelEffort && getThread(threadId)?.real ? (
+              <ComposerModelMenu threadId={threadId} />
             ) : null}
             <ComposerPermissionModeMenu threadId={threadId} projectId={projectId} />
           </>

@@ -160,6 +160,33 @@ test("Module を1つも配線していないターンは、検査に引っかか
   });
 });
 
+// **人が選んだモデルと effort でターンが走る**（決定・2026-09-23）。選んでいなければ渡さない
+// ——CLI の既定で走る。途中で変えたら、次のターンから効く。
+
+test("ターンは host が持つモデルと effort で走り、途中で変えると次のターンから効く", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const seen: Array<{ model?: string; effort?: string }> = [];
+    const fake = (async function* (opts: { model?: string; effort?: string }) {
+      seen.push({ model: opts.model, effort: opts.effort });
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      yield { type: "message" as const, message: assistantMessage("はい") } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "1", modules: [] }));
+    await store.setModel(threadId, "sonnet", "low");
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "2", modules: [] }));
+    await store.setModel(threadId, null, null);
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "3", modules: [] }));
+
+    assert.deepEqual(seen, [
+      { model: undefined, effort: undefined },
+      { model: "sonnet", effort: "low" },
+      { model: undefined, effort: undefined },
+    ]);
+  });
+});
+
 // **走行中のターンに、あとから繋ぎ直せる**（`turn-stream-reattach`、2026-09-10）。
 // ターンのイベント列は `POST …/messages` の応答の中にしか無く、リロードすると
 // **出力どころか「走っている」ことすら画面から消えていた**（実測）。

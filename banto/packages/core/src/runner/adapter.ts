@@ -10,7 +10,7 @@
 // poc/02-item13-parked-elicitation/ で「呼び出し自体を保留する」は
 // 成立しないと実測済み）。
 
-import { query, type SDKMessage, type PermissionResult, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKMessage, type PermissionResult, type Options, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 
 export interface PendingToolApproval {
   /** SDKが渡してくる**本物の** tool_use id（`options.toolUseID`）。
@@ -43,6 +43,10 @@ export interface RunnerTurnOptions {
   prompt: string;
   mcpServers?: Options["mcpServers"];
   permissionMode?: Options["permissionMode"];
+  /** 人がこの Thread で選んだモデル（決定・2026-09-23）。無ければ CLI の既定 */
+  model?: string;
+  /** 人がこの Thread で選んだ reasoning effort。無ければそのモデルの既定 */
+  effort?: Options["effort"];
   cwd?: string;
   /** coreが組み立てたsystem promptの全文（§2.3、決定・2026-09-05）。
    *  `claude_code`プリセットは使わない——省略可能にすると、渡し忘れたときに
@@ -189,6 +193,9 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       // ハンドラの中でも可視性を見て fail closed で拒む（`relay/visibility.ts`）。
       tools: RUNNER_BUILTIN_TOOLS,
       permissionMode: opts.permissionMode ?? "auto",
+      // 1ターン＝1回の query()（モデルB、§2.3）なので、ターンごとに渡すだけで切り替わる
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { effort: opts.effort } : {}),
       cwd: opts.cwd,
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,
       canUseTool: (toolName, input, options) =>
@@ -272,3 +279,32 @@ function abortSignalToController(signal: AbortSignal): AbortController {
   else signal.addEventListener("abort", () => controller.abort(), { once: true });
   return controller;
 }
+
+/**
+ * **選べるモデルの一覧を CLI に聞く**（決定・2026-09-23、`runner/models.ts`）。
+ *
+ * 発言は送らない——入力の流れを開いたまま `supportedModels()` だけを尋ね、答えを
+ * 受けたら閉じる。API は呼ばれない（実測・2026-09-23、約0.8秒）。
+ * ターンと同じく、人の設定・MCP・組み込み tool は混ぜない。
+ */
+export async function listModels(): Promise<ModelInfo[]> {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  async function* nothing(): AsyncGenerator<never> {
+    await hold;
+  }
+  const abortController = new AbortController();
+  const q = query({
+    prompt: nothing(),
+    options: { settingSources: [], strictMcpConfig: true, tools: [], abortController },
+  });
+  try {
+    return await q.supportedModels();
+  } finally {
+    release();
+    abortController.abort();
+  }
+}
+

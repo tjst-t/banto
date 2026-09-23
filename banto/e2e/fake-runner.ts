@@ -59,6 +59,35 @@ export interface FakePlan {
    * を返せる——**届いたことを直接見る**ほうが強い（モデルの機嫌に依存しない）。
    */
   sayContext?: boolean;
+  /**
+   * **このターンがどのモデル・effort で走ったかを、そのまま発言にする**（追加・2026-09-23）。
+   * 画面で選んだものが Runner まで届いたかを、発言の中身で見る（`thread-model.spec.ts`）。
+   */
+  sayRuntime?: boolean;
+}
+
+/**
+ * **選べるモデル**（追加・2026-09-23）。本物は CLI に聞く（`runner/models.ts`）。
+ * 形は本物の返り値（実測・2026-09-23）をそのまま縮めたもの——Haiku は effort を持たない。
+ */
+export async function listModels() {
+  return [
+    {
+      value: "default",
+      displayName: "Default (recommended)",
+      description: "Opus · 既定",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    },
+    {
+      value: "sonnet",
+      displayName: "Sonnet",
+      description: "Sonnet · 普段の作業に",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    },
+    { value: "haiku", displayName: "Haiku", description: "Haiku · いちばん速い" },
+  ];
 }
 
 /**
@@ -280,6 +309,9 @@ export async function* runTurn(opts: {
   systemPrompt?: string[];
   /** `auto` は承認を求めず、`default` が求める（`inbox.spec.ts` の前提）。 */
   permissionMode?: string;
+  /** 人がこの Thread で選んだモデルと effort（選んでいなければ来ない）。 */
+  model?: string;
+  effort?: string;
   onToolApprovalRequested?(pending: {
     toolCallId: string;
     toolName: string;
@@ -301,7 +333,7 @@ export async function* runTurn(opts: {
   // E2E が落ちたとき、「指示が読めていない」のか「モードが届いていない」のかを
   // ログで切り分けられる
   console.warn(
-    `[fake-runner] mode=${opts.permissionMode ?? "(無し)"} plan=${JSON.stringify(plan).slice(0, 200)}`,
+    `[fake-runner] mode=${opts.permissionMode ?? "(無し)"} model=${opts.model ?? "(既定)"} effort=${opts.effort ?? "(既定)"} plan=${JSON.stringify(plan).slice(0, 200)}`,
   );
 
   const instructions = await collectInstructions(servers);
@@ -322,6 +354,12 @@ export async function* runTurn(opts: {
     } else {
       yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: plan.say }]) };
     }
+  }
+
+  if (plan.sayRuntime) {
+    // **どのモデル・effort で走ったか**を返す——画面で選んだものが届いたかを見る
+    const text = `model=${opts.model ?? "(既定)"} effort=${opts.effort ?? "(既定)"}`;
+    yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
   }
 
   if (plan.sayContext) {

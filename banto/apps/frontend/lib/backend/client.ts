@@ -160,6 +160,10 @@ export interface RealThread {
   /** 人がこのThreadで明示的に選んだpermissionMode。選んでいなければ無い
    *  ——その場合はConfigurationのカスケードから導く（規則3）。 */
   permissionMode?: MockPermissionModeValue;
+  /** 人がこの Thread で選んだモデルと effort（決定・2026-09-23）。選んでいなければ無い
+   *  ——CLI の既定で走る */
+  model?: string;
+  effort?: RealEffort;
   /** セッションごとに効かせた Skill（決定・2026-09-23、アーキ仕様 §5.7）。
    *  最後の1件がいまのセッションのもの。この仕組みより前の会話には無い。 */
   skillSets?: { seq: number; set: RealSessionSkillSet }[];
@@ -282,6 +286,8 @@ export interface RealThreadSummary {
   forkedFromSeq?: number;
   status: "active" | "closed";
   permissionMode?: MockPermissionModeValue;
+  model?: string;
+  effort?: RealEffort;
   createdAt: string;
   /** 閉じた Thread の概要に使う（AI 要約はしない——数えられるものだけ）。 */
   messageCount: number;
@@ -327,6 +333,35 @@ export async function setRealThreadPermissionMode(
   await request(`/api/threads/${threadId}/permission-mode`, {
     method: "POST",
     body: JSON.stringify({ mode }),
+  });
+}
+
+/** reasoning effort の段（Claude Agent SDK の `effort`）。 */
+export type RealEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** 選べるモデル1件（host が CLI に聞いたもの、決定・2026-09-23）。 */
+export interface RealModelChoice {
+  /** SDK に渡す値。`default` は「選んでいない」＝ CLI の既定 */
+  value: string;
+  displayName: string;
+  description: string;
+  /** このモデルで選べる effort の段（空なら選べない） */
+  efforts: RealEffort[];
+}
+
+export async function listRealModels(): Promise<RealModelChoice[]> {
+  return (await request<{ models: RealModelChoice[] }>("/api/models")).models;
+}
+
+/** 人がこの Thread で選んだモデルと effort を host に残す。null は既定に戻す。 */
+export async function setRealThreadModel(
+  threadId: string,
+  model: string | null,
+  effort: RealEffort | null,
+): Promise<void> {
+  await request(`/api/threads/${threadId}/model`, {
+    method: "POST",
+    body: JSON.stringify({ model, effort }),
   });
 }
 

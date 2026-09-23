@@ -14,6 +14,7 @@ import { useMounted } from "@/hooks/use-mounted";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
+import { seedThreadModel } from "@/lib/backend/thread-model";
 import {
   getRealInlineView,
   hasLiveRealRun,
@@ -298,6 +299,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
     }
     try {
       const fork = await createRealFork(baseThreadId, fromSeq);
+      // Fork は親のモデルと effort を引き継いでいる（host が決める）——写しにも入れる
+      seedThreadModel(fork.id, fork.model, fork.effort);
       registerRealFork(
         fork.id,
         fork.projectId,

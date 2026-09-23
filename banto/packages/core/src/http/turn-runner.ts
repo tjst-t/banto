@@ -207,6 +207,10 @@ async function* runThreadTurnInner(
       prompt: `${turnContext}\n\n${input.prompt}`,
       mcpServers: mcpServers as Options["mcpServers"],
       permissionMode: input.permissionMode,
+      // 人がこの Thread で選んだモデルと effort（決定・2026-09-23）。host が持つ値を
+      // そのまま渡す——選んでいなければ渡さず、CLI の既定で走る
+      ...(thread.model ? { model: thread.model } : {}),
+      ...(thread.effort ? { effort: thread.effort } : {}),
       cwd: input.cwd,
       // system promptに入れるのはThread作成時に確定した分だけ（§2.3）。
       // 確定より後に増えた分は先頭を変えずにターンへ添える（Cで実装）。

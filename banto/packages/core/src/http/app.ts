@@ -23,7 +23,10 @@ import {
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { ThreadState } from "../project-thread/types.js";
-import type { ThreadPermissionMode } from "../project-thread/types.js";
+import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
+import { listModels as listModelsFromCli } from "../runner/adapter.js";
+import { DEFAULT_MODEL_VALUE, ModelCatalog } from "../runner/models.js";
+import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { SessionSkillSet, SkillRef } from "../skills/types.js";
 import { DEFAULT_SHELL_HOME_FILES, shellHomeEntryProblem, type ShellHomeSync } from "../modules/shell-home.js";
@@ -106,6 +109,8 @@ const UI_CALL_TIMEOUT_MS = 10 * 60 * 1000;
 const UI_CALL_OPTIONS = { timeout: UI_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true } as const;
 
 export interface AppDeps {
+  /** 選べるモデルを尋ねる口（決定・2026-09-23）。**試験だけが差し替える**——既定は CLI に聞く */
+  listModels?: () => Promise<ModelInfo[]>;
   projectThread: ProjectThreadStore;
   /** banto全体で覚えていること（§2.2 Global Memory、決定・2026-09-05）。 */
   globalMemory: GlobalMemoryStore;
@@ -678,6 +683,8 @@ function toThreadSummary(thread: ThreadState) {
     createdSeq: thread.createdSeq,
     status: thread.status,
     permissionMode: thread.permissionMode,
+    model: thread.model,
+    effort: thread.effort,
     createdAt: thread.createdAt,
     /** 閉じた Thread の概要（AI 要約はしない——数えられるものだけ、§2.2 と同じ姿勢） */
     messageCount: thread.messages.length,
@@ -687,6 +694,8 @@ function toThreadSummary(thread: ThreadState) {
 }
 
 export function createApp(deps: AppDeps) {
+  // 選べるモデルの一覧（少しのあいだ覚える、`runner/models.ts`）
+  const modelCatalog = new ModelCatalog(deps.listModels ?? listModelsFromCli);
   return createServer(async (req, res) => {
     withCors(res);
     if (req.method === "OPTIONS") {
@@ -1297,6 +1306,54 @@ export function createApp(deps: AppDeps) {
           return json(res, 400, { error: "unknown permissionMode", mode: body.mode });
         }
         await deps.projectThread.setPermissionMode(permissionModeMatch[1]!, body.mode);
+        json(res, 204, null);
+        return;
+      }
+
+      // **選べるモデル**（決定・2026-09-23、ユーザー要望）。一覧は持たず、SDK に聞く
+      if (url.pathname === "/api/models" && req.method === "GET") {
+        try {
+          json(res, 200, { models: await modelCatalog.list() });
+        } catch (err) {
+          // **取れなかったことを、取れたように見せない**（規則2）——画面は選べないと言う
+          json(res, 502, { error: `モデルの一覧を取れませんでした: ${err instanceof Error ? err.message : String(err)}` });
+        }
+        return;
+      }
+
+      // **人がこの Thread で選んだモデルと effort を残す**（決定・2026-09-23）。
+      // 途中で変えてよい（その次の1ターンはキャッシュが効かない——人に見せるのは画面の仕事）。
+      // **一覧に無いモデル・そのモデルに無い effort の段は受けない**——通すと、次のターンが
+      // CLI で落ちるまで分からない（規則2）
+      const modelMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/model$/);
+      if (modelMatch && req.method === "POST") {
+        const body = (await readJsonBody(req)) as { model?: unknown; effort?: unknown };
+        const model = body.model === null || body.model === undefined ? null : body.model;
+        const effort = body.effort === null || body.effort === undefined ? null : body.effort;
+        if (model !== null && typeof model !== "string") return json(res, 400, { error: "model は文字列か null です" });
+        if (effort !== null && !(THREAD_EFFORTS as readonly unknown[]).includes(effort)) {
+          return json(res, 400, { error: `effort の値が不正です: ${JSON.stringify(effort)}` });
+        }
+        if (!deps.projectThread.getThread(modelMatch[1]!)) return json(res, 404, { error: "thread not found" });
+        let choices;
+        try {
+          choices = await modelCatalog.list();
+        } catch (err) {
+          return json(res, 502, {
+            error: `モデルの一覧を取れないので、選んだものを確かめられません: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        const chosen = choices.find((c) => c.value === (model ?? DEFAULT_MODEL_VALUE));
+        if (!chosen) return json(res, 400, { error: `使えないモデルです: ${String(model)}` });
+        if (effort !== null && !chosen.efforts.includes(effort as ThreadEffort)) {
+          return json(res, 400, { error: `${chosen.displayName} では effort「${String(effort)}」を選べません` });
+        }
+        // 「既定」の行を選んだら、選んでいない状態に戻す（既定が変われば、それに付いていく）
+        await deps.projectThread.setModel(
+          modelMatch[1]!,
+          model === DEFAULT_MODEL_VALUE ? null : model,
+          effort as ThreadEffort | null,
+        );
         json(res, 204, null);
         return;
       }

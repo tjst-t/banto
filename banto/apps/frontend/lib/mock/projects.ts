@@ -2,6 +2,7 @@ import type { MockProject, MockProjectOverrides } from "./types";
 import { notifyMockStoreChange } from "./store-events";
 import { registerRealFork, registerRealThread } from "./threads";
 import { seedThreadPermissionMode } from "./permission-mode";
+import { seedThreadModel } from "../backend/thread-model";
 import { setProjectOverrides } from "./settings";
 import {
   createRealProject as createRealProjectOnHost,
@@ -225,6 +226,8 @@ async function hydrateRealProjectsUncached(): Promise<void> {
     // 人が選んだpermissionModeはhostが持っている（決定・2026-09-06）——
     // リロード後もそのモードで会話を続けられるよう、ここで写す
     seedThreadPermissionMode(base.id, base.permissionMode);
+    // 人が選んだモデルと effort も host が持っている（決定・2026-09-23）
+    seedThreadModel(base.id, base.model, base.effort);
     // Fork Threadはhydrateの度に消えて見えなくなっていた——base同様、host側の
     // 一覧をそのまま復元する（決定・2026-09-04、サイドバーに出ない不具合の修正）。
     for (const fork of realThreads.filter((t) => t.kind === "fork")) {
@@ -243,6 +246,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
         fork.title,
       );
       seedThreadPermissionMode(fork.id, fork.permissionMode);
+      seedThreadModel(fork.id, fork.model, fork.effort);
     }
     changed = true;
   }

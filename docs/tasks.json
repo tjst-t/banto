@@ -1897,6 +1897,19 @@
       "status": "backlog",
       "why": "module-settings-canvas.spec.ts:242 が `#vault` に vault-infisical が出ないで落ちる。2026-09-23 に測った：v4 の 65c4d8f4（変更なしの worktree）で 1/1、filesystem-browser の作業ツリーで 3/3 落ちた。直前の test（Infisical を入れる）のログに `MCP error -32603: fetch failed` が出ている。filesystem-browser の作業の範囲外なので触っていない（規則7）。",
       "doneWhen": "module-settings-canvas.spec.ts がフルで通ること。"
+    },
+    {
+      "id": "thread-model-effort",
+      "title": "入力欄の下でモデルと reasoning effort を選ぶ（Thread 単位・途中でも変えられる）",
+      "status": "done",
+      "why": "ユーザー要望（2026-09-23）。モックにしか無かった「モデル · effort」の選択を本物に繋ぐ。アーキ仕様 §3「モデルは Project の間固定」はユーザー決定で「黙って変えない」に改めた。",
+      "doneWhen": "選んだモデル・effort で次のターンが走ること（偽 Runner が受け取った値を発言にして見る）、リロード後も残ること、会話の途中で変えるときに確かめる画面が出て「やめる」なら変わらないこと、effort を持たないモデルへ移ると effort が外れること（e2e/specs/thread-model.spec.ts）。",
+      "open": [
+        "Project・instance の既定モデル／effort（アーキ仕様 §2.2 の表、設定画面の runtime-defaults-panel はまだモック）は無い——選んでいない Thread は CLI の既定で走る",
+        "文脈使用量のメーターはモデルの窓の大きさ（1M か 200K か）の違いを見ていない——モデルを変えた後の表示は確かめていない"
+      ],
+      "notes": "docs/notes/2026-09-23-thread-model-effort.md",
+      "completedAt": "2026-09-23"
     }
   ],
   "phase1": {

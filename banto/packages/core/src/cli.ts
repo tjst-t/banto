@@ -1159,8 +1159,9 @@ async function main(): Promise<void> {
    */
   const fakeRunnerPath = process.env.BANTO_FAKE_RUNNER;
   let runTurnOverride: Parameters<typeof createApp>[0]["runTurn"] | undefined;
+  let listModelsOverride: Parameters<typeof createApp>[0]["listModels"] | undefined;
   if (fakeRunnerPath) {
-    const loaded = (await import(fakeRunnerPath)) as { runTurn?: unknown };
+    const loaded = (await import(fakeRunnerPath)) as { runTurn?: unknown; listModels?: unknown };
     if (typeof loaded.runTurn !== "function") {
       throw new Error(
         `BANTO_FAKE_RUNNER が指す ${fakeRunnerPath} に runTurn がありません（試験用の差し替えが効きません）`,
@@ -1168,10 +1169,15 @@ async function main(): Promise<void> {
     }
     console.warn(`[host] **Runner を差し替えています**（試験用）: ${fakeRunnerPath}`);
     runTurnOverride = loaded.runTurn as Parameters<typeof createApp>[0]["runTurn"];
+    // 選べるモデルも偽物に聞く（あれば）——試験で本物の CLI を起こさない
+    if (typeof loaded.listModels === "function") {
+      listModelsOverride = loaded.listModels as Parameters<typeof createApp>[0]["listModels"];
+    }
   }
 
   const app = createApp({
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
+    ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
     projectThread,
     globalMemory,
     inbox,

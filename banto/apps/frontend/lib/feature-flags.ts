@@ -46,7 +46,9 @@ export const CONNECTED_FEATURES = {
   // 次のターンの文脈に残る——見えているものが繋がっていない（規則13）。
   // 本物の分岐は host 側（会話の切り詰めと resume-point の巻き戻し）が要る
   threadBranching: false,
-  composerModelEffort: false, // 選んでもreal threadには反映されない（streamRealTurnにmodel/effort引数が無い）
+  // **モデルと reasoning effort を入力欄の下で選ぶ**（決定・2026-09-23、ユーザー要望）。
+  // 選んだ値は host が Thread ごとに持ち、次のターンから効く。一覧は host が CLI に聞いたもの
+  composerModelEffort: true,
   // **MCP Registry から入れて、繋ぐ**（`module-registry-install`、2026-09-21、
   // ユーザー要望）。検索・一覧・並び順（提供元を優先）・取得・接続まで host に
   // 繋がっている——remote はそのまま繋ぎ、npm は host が取ってきて（閉じ込めの外）

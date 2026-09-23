@@ -416,6 +416,99 @@ test("ターンは host が持つ permissionMode で走る——ボディに無�
   });
 });
 
+// ---- モデルと effort（決定・2026-09-23、ユーザー）--------------------------------
+
+/** CLI の `supportedModels()` の形（実測・2026-09-23 の返り値を縮めたもの）。 */
+const FAKE_MODELS = [
+  { value: "default", displayName: "Default (recommended)", description: "Opus", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "sonnet", displayName: "Sonnet", description: "Sonnet", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"] },
+  { value: "haiku", displayName: "Haiku", description: "Haiku" },
+] as const;
+
+test("選べるモデルは CLI に聞いた一覧（effort の段はモデルごと）で、何度聞いても CLI は1回", async () => {
+  let asked = 0;
+  await withApp(
+    async (base, token) => {
+      const h = { authorization: `Bearer ${token}` };
+      const [a, b] = await Promise.all([
+        (await fetch(`${base}/api/models`, { headers: h })).json(),
+        (await fetch(`${base}/api/models`, { headers: h })).json(),
+      ]);
+      assert.deepEqual(a, b);
+      assert.deepEqual(
+        a.models.map((m: { value: string; efforts: string[] }) => [m.value, m.efforts.join(",")]),
+        [
+          ["default", "low,medium,high,xhigh,max"],
+          ["sonnet", "low,medium,high"],
+          ["haiku", ""],
+        ],
+      );
+      assert.equal(asked, 1, "同時に聞かれても CLI は1本しか起こさない");
+    },
+    {
+      listModels: async () => {
+        asked += 1;
+        return FAKE_MODELS as never;
+      },
+    },
+  );
+});
+
+test("モデルの一覧が取れないときは、取れないと言う（取れたように見せない）", async () => {
+  await withApp(
+    async (base, token) => {
+      const res = await fetch(`${base}/api/models`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(res.status, 502);
+      assert.match((await res.json()).error, /CLI が起きない/);
+    },
+    {
+      listModels: async () => {
+        throw new Error("CLI が起きない");
+      },
+    },
+  );
+});
+
+test("Thread のモデルと effort：一覧にあるものだけ受け、Fork が引き継ぎ、「既定」で外れる", async () => {
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await (
+        await fetch(`${base}/api/projects`, { method: "POST", headers: h, body: JSON.stringify({ name: "P", root: "/tmp" }) })
+      ).json();
+      const thread = await (await fetch(`${base}/api/projects/${project.id}/threads`, { method: "POST", headers: h })).json();
+      const set = (body: unknown) =>
+        fetch(`${base}/api/threads/${thread.id}/model`, { method: "POST", headers: h, body: JSON.stringify(body) });
+
+      assert.equal((await set({ model: "sonnet", effort: "low" })).status, 204);
+      const read = await (await fetch(`${base}/api/threads/${thread.id}`, { headers: h })).json();
+      assert.equal(read.model, "sonnet");
+      assert.equal(read.effort, "low");
+
+      // Fork は親の選択を引き継ぐ（黙って既定へ戻すと、その Fork の最初のターンでキャッシュが効かない）
+      const fork = await (await fetch(`${base}/api/threads/${thread.id}/fork`, { method: "POST", headers: h })).json();
+      assert.equal(deps.projectThread.getThread(fork.id)?.model, "sonnet");
+      assert.equal(deps.projectThread.getThread(fork.id)?.effort, "low");
+
+      // 受けないもの——次のターンが CLI で落ちるまで分からない、を作らない
+      assert.equal((await set({ model: "gpt-5", effort: null })).status, 400, "一覧に無いモデル");
+      assert.equal((await set({ model: "haiku", effort: "low" })).status, 400, "effort を持たないモデルに段");
+      assert.equal((await set({ model: "sonnet", effort: "max" })).status, 400, "そのモデルに無い段");
+      assert.equal((await set({ model: "sonnet", effort: "らくらく" })).status, 400, "段ではない値");
+      assert.equal(deps.projectThread.getThread(thread.id)?.model, "sonnet", "断ったのに変わった");
+
+      // 「既定」の行を選んだら、選んでいない状態に戻る
+      assert.equal((await set({ model: "default", effort: null })).status, 204);
+      assert.equal(deps.projectThread.getThread(thread.id)?.model, undefined);
+      assert.equal(deps.projectThread.getThread(thread.id)?.effort, undefined);
+      // 既定のモデルのまま effort だけ選べる
+      assert.equal((await set({ model: null, effort: "xhigh" })).status, 204);
+      assert.equal(deps.projectThread.getThread(thread.id)?.effort, "xhigh");
+    },
+    { listModels: async () => FAKE_MODELS as never },
+  );
+});
+
 // **何も選ばれていないときのモード**（`docs/specs/v4-frontend.md` §6.4、
 // 決定・2026-09-10）。仕様は「Configuration が defaultPermissionMode を1つ持つ。
 // 既定値は auto」と言っていたが、core に**その設定自体が無かった**。
