@@ -101,4 +101,9 @@ writeFileSync(
 writeFileSync(join(SHELL_HOME_SOURCE, ".config", "git", "ignore"), "*.e2e-ignored\n");
 process.env.BANTO_SHELL_HOME_SOURCE = SHELL_HOME_SOURCE;
 
+// **サブエージェントも偽物にする**（追加・2026-09-24）。本物の Claude Code・OpenCode は
+// 資格情報と費用が要り、返事も毎回違う。偽の ACP エージェント（`@banto/module-subagent` の
+// `testing/fake-agent`）に差し替える——**閉じ込め・資格情報の受け渡し・再開は本物の経路**を通る
+process.env.BANTO_SUBAGENT_FAKE_AGENT = "1";
+
 await import("../packages/core/dist/cli.js");

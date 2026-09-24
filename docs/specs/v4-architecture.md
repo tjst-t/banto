@@ -1789,17 +1789,20 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 
 #### Subagent Module の形（決定・2026-09-24、実測 `poc/08-subagent-acp/`）
 
-**tool は2つ**——サブエージェントの一覧（`list_subagents`：使えるエージェントと、`initialize` で
-名乗った能力）と、仕事を頼む（`run_subagent`）。`run_subagent` の入力は
-**エージェント・頼む内容・モデル（任意）・effort（任意）・続きから走らせる session id（任意）**、
-返すのは**最後の返答・session id・止まった理由（`stopReason`）・使用量**。
+**tool は2つ**——サブエージェントの一覧（`listSubagents`：使えるエージェント。エージェントを
+指定すると、起こして設定の候補を聞く）と、仕事を頼む（`runSubagent`）。`runSubagent` の入力は
+**エージェント・頼む内容・モデル（任意）・effort（任意）・続きから走らせる session id（任意）・
+資格情報（`envSecrets`、任意）**、返すのは**最後の返答・session id・止まった理由（`stopReason`）・
+使用量・呼んだ tool・断った確認・注記**（名前は既存の Module の tool——`runCommand`・`showFile`——に揃える）。
 
 - **1回の呼び出し＝エージェントのプロセス1つ**（起動→`initialize`→`session/new` か `session/load`
   →設定→`session/prompt`→終了）。§2.3 のモデルB と同じ考え方で、続きは `session/load` で拾う
   ——**別プロセスでの再開は両方とも通った**
 - **待つ形**：途中経過（`tool_call` の題など）を `notifications/progress` で送り続ける（Shell と同じ
   10秒以内）。Claude Code の MCP クライアントは**無音が続くと切る**（既定 stdio 30分／http 5分）が、
-  **進捗で延びる**。全体の上限は既定で約28時間（同梱 CLI 2.1.280 を読んだ。長時間は本実装で実測する）
+  **進捗で延びる**。全体の上限は既定で約28時間（同梱 CLI 2.1.280 を読んだ。長時間は本実装で実測する）。
+  **進捗はいまは画面に出ない**——呼び出しを生かしておくだけ（フロントは tool の進捗を描かない。
+  カードには終わってから引数と返り値が出る）
 - **依頼元が呼び出しを取り消したら、`session/cancel` を送る**（MCP の取り消し＝`extra.signal`）
 - **モデルは設定項目（`session/new` の `configOptions`）で渡す。** 候補の一覧はそれが唯一の真実で
   （規則3）、**渡した資格情報で変わる**（OpenCode：427件／鍵1つだと108件）。**エージェントの
@@ -1807,18 +1810,29 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 - **作業場所は Project の根**（Shell と同じ）。同じ根で2つを並行に走らせたときの取り合いは未決
 - **サブエージェントの会話は、エージェント自身の置き場に残る**——Subagent Module のデータ置き場の
   下に、エージェントごとの専用ホームを1つ持つ。core に渡るのは tool の返り値（転記）だけ（上の原則）
-- **人への確認（`session/request_permission`）は、MCP の Elicitation で依頼元へ上げる**
-  （選択肢はエージェントが出したものをそのまま enum に）。受信箱までの経路は既存のもの
-  （§2.4.1）——**自前の口を作らない**。エージェント自身の確認の出し方は main の Runner と揃える
-  （Claude は `auto`。OpenCode は既定のまま）——**強制できる層は Landlock**
-- **閉じ込め**：エージェントは Subagent Module が**入れ子の Landlock ドメイン**で起こす。
+- **人への確認（`session/request_permission`）は、いまは断って、断ったことを返り値に書く**
+  （訂正・2026-09-24、実装で発覚）。当初は MCP の Elicitation で依頼元へ上げると決めたが、
+  **Module からの Elicitation は答えが banto に繋がっていない**（受信箱に「まだ繋がっていません」と
+  出るだけ——§2.4.1）。答えの来ない問いで止まるより、断って理由を返す（規則2）。ACP の
+  `cancelled` は「ターンを取り消した」の意味なので使わず、断る選択肢（`reject_once`）を選ぶ。
+  **Elicitation の答えが繋がったら、そちらへ上げる**（自前の口は作らない）。
+  エージェント自身の確認の出し方は main の Runner と揃える（Claude は `auto`。OpenCode は既定のまま）
+  ——**普通の仕事では確認が来ない**（実測：Claude sonnet・OpenCode とも、ファイルを書くまで確認0件）。
+  **強制できる層は Landlock**
+- **閉じ込め**：エージェントは Subagent Module が**Landlock のドメイン**で起こす。**Module 自身は
+  閉じ込めない**（訂正・2026-09-24、実装で発覚）——閉じ込めると launcher とエージェント本体を
+  実行できない（Module に許すのはモノレポの読み取りだけ）。Module は AI の書いたコマンドを走らせず、
+  Vault と同じく同梱なので、閉じ込めの外に置く。
   許すのは Project の根（読み書き）・専用ホーム（読み書き。`HOME`・`TMPDIR`・XDG をここへ向ける）・
   エージェント本体の置き場（実行）・`PATH`（profile `exec`）・**`/proc`（読み取り）**。
   `/proc` を要る理由と、それでも Module の秘密が漏れない理由は `docs/specs/v4-security.md`
-  「サブエージェントは入れ子のドメインで起こす」
+  「サブエージェントは自分のドメインで起こす」。**エージェントに渡す環境変数は一覧で絞る**
+  （`PATH`・`LANG` など）——host が Module に渡した `BANTO_*` も、人の環境の秘密も渡さない
 - **資格情報は環境変数で渡し、ファイルに写さない**（OpenCode の `auth.json` も作らない）。
-  API キーは Vault の alias から（Shell の `envSecrets` と同じ形。Claude は `ANTHROPIC_API_KEY`、
-  OpenCode は `OPENCODE_API_KEY` ほかプロバイダごとの変数——OpenCode Go のサブスクもこれ）。
+  **AI が `envSecrets` に Vault の alias 名を書き、Module が値を受け取って env に入れる**
+  （Shell の `envSecrets` と同じ形・同じ中継。初回は中継の承認を人に聞く）。変数名は、
+  API キーなら Claude は `ANTHROPIC_API_KEY`、OpenCode は `OPENCODE_API_KEY` ほかプロバイダごとの変数
+  （OpenCode Go のサブスクもこれ）。
   **Claude のサブスクは、人が `claude setup-token` で作った長命のトークンを Vault に置き、
   API キーと同じ経路で `CLAUDE_CODE_OAUTH_TOKEN` に渡す**（決定・2026-09-24、ユーザー——
   `~/.claude` を読ませずに通ることは実測済み）。main の Runner のログイン（`~/.claude` の
@@ -1828,8 +1842,12 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 - **エージェント本体は Subagent Module の依存として持つ**（`@agentclientprotocol/claude-agent-acp`・
   `opencode-ai`。版は固定する）。Claude の選べるモデルは同梱の CLI の版で決まる
 
+- **banto の Module（FileSystem・Shell・Vault）はまだサブエージェントに渡していない**
+  （`session/new` の `mcpServers` は空）。渡すには、サブエージェント用の中継の口（URL と合言葉）を
+  host が出す必要がある——後で足す
+
 **まだ決まっていないこと**：同じ根での並行・認証の失敗が返るまでの時間（壊れた API キーで
-186秒かかった）
+186秒かかった）・Project ごとの既定の資格情報（毎回 `envSecrets` を書かずに済ませる設定）
 
 ### 4.2 Thread 間のメッセージ
 

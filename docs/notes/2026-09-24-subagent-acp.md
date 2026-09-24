@@ -98,3 +98,43 @@ host に「閉じ込めた Module にトークンを渡す口」が新しく要�
 「CLI を人の手を介さずに動かす」ために Anthropic が用意している答え（規則12）で、Vault の
 alias（§2.8 の複数資格情報）とそのまま噛み合う。代償——1年もののトークンがサブエージェントの
 シェルから読める——は、いつでも無効にできることと、main のログインを渡さずに済むことで受け入れた。
+
+## 本実装（2026-09-24、`banto/packages/modules/subagent`）
+
+### 実装で分かった食い違い（仕様を直した——規則8）
+
+- **人への確認を Elicitation で上げる、は成り立たなかった。** Module からの `elicitInput()` は、
+  Runner 側で受信箱に記録されるだけで**答えが banto に繋がっていない**（画面に「この問いはまだ banto に
+  繋がっていません」と出る。`review-elicitation-not-connected` で「答えられるように見えて届かない」を
+  塞いだまま、答えを届ける配線は無い）。答えの来ない問いで60秒止まって落ちるより、**断って、断った
+  ことを返り値に書く**ことにした。ACP の `cancelled` は「ターンを取り消した」の意味なので使わず、
+  `reject_once` を選ぶ。**実測では、main と揃えたモード（Claude は auto）で確認は1件も来なかった**
+  （sonnet・OpenCode とも、ファイルを書くところまで）
+- **Module 自身を閉じ込めて、その中にエージェントの入れ子を作る、は成り立たなかった。** host が
+  Module に許すのはモノレポの**読み取り**だけで、launcher（`banto-landlock-exec`）もエージェント本体も
+  実行できない。入れ子は親より広くなれない。**Module は Vault と同じく閉じ込めの外に置き、エージェント
+  だけを閉じ込める**——Module は AI の書いたコマンドを走らせないし、閉じ込めていないプロセスの
+  `environ` はエージェントのドメインから読めない（PoC で測った「ドメインの外」に当たる）。
+  仕様の見出しも「入れ子のドメイン」から「自分のドメイン」に直した
+- **資格情報の渡し方は、Shell の `envSecrets` と同じ口にした**（AI が alias 名を書く）。設定画面で
+  Project ごとの既定を持つ案もあったが、Canvas を1枚作ることになり、Shell と違う作法が増える。
+  既定の資格情報は後で足す（毎回書くのが面倒になったら）
+- **tool 名は `listSubagents`・`runSubagent`**——仕様には `list_subagents` と書いていたが、既存の
+  Module（`runCommand`・`showFile`）に揃えた
+- **進捗は画面に出ない**——呼び出しを切らせないためだけに送っている。フロントは tool の進捗を描かず、
+  カードには終わってから引数と返り値が出る
+- **banto の Module はまだサブエージェントに渡していない**（`mcpServers: []`）。渡すには、サブエージェント
+  向けの中継の口（URL と合言葉）を host が出す必要がある
+
+### 確かめたこと
+
+- 単体（偽の ACP エージェント）：返答・使用量・モデル／effort／モードの設定・候補に無いモデルを候補つきで
+  断る・確認の受け渡し・取り消し（0.2秒以内に `cancelled`）・別プロセスでの再開・落ちたら終了コードと
+  stderr を伝える（接続が閉じた、ではなく）
+- 結合（MCP の口から、本物の Landlock）：Project の根には書けて外は `EACCES`・`envSecrets` の値が env に
+  届き `BANTO_*` は届かない・確認は断って記録・再開・誤りは理由つきの isError
+- E2E（偽のエージェント、本物の画面と中継）：初回の中継の承認→鍵が届く→値はカードにも画面にも出ない→
+  tool カードに引数と返り値→続きから→閉じ込め→Project 設定の一覧に出る
+- **本物（`npm run check:agents -w @banto/module-subagent`）**：Claude Code（sonnet・auto）と OpenCode
+  （opencode-go/qwen3.6-plus）が Module のコードから Landlock の中で動き、Project の根に書き、別プロセスで
+  続きを覚えていた。1回あたり Claude 約 $0.05・OpenCode 約 $0.008

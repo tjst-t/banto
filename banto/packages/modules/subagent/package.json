@@ -1,0 +1,25 @@
+{
+  "name": "@banto/module-subagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "banto-module-subagent": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test 'dist/**/*.test.js'",
+    "check:agents": "node src/agents.smoketest.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.81.1",
+    "@agentclientprotocol/sdk": "1.5.0",
+    "@banto/core": "*",
+    "@banto/landlock": "*",
+    "@banto/module-contract": "*",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "opencode-ai": "1.18.32"
+  }
+}

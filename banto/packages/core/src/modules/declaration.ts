@@ -737,6 +737,37 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
   },
   {
+    // **サブエージェントに仕事を頼む**（決定・2026-09-24、アーキ仕様 §4.1）。
+    // Claude Code・OpenCode を ACP で起こす。**閉じ込めは Module ではなくエージェントに
+    // 掛ける**——Module がエージェントを Landlock のドメインで起こす
+    // （v4-security.md「サブエージェントは自分のドメインで起こす」）。Module 自身は
+    // AI の書いたコマンドを走らせないので、Vault と同じく閉じ込めの外に置く
+    // （閉じ込めると、launcher とエージェント本体を実行できない）
+    name: "subagent",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/subagent/dist/server.js"],
+      env: {
+        BANTO_PROJECT_ROOT: "${projectRoot}",
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+        // 閉じ込めの最後の防波堤（`assertRulesetIsSafe`）に、banto 全体の置き場を教える
+        // ——この Module の置き場ではない（それは host が `BANTO_MODULE_DATA_DIR` で渡す）
+        BANTO_DATA_ROOT: "${dataDir}",
+      },
+    },
+    meta: {
+      satisfies: ["subagent"],
+      // 資格情報は Vault の alias から受け取る（Shell の envSecrets と同じ経路）
+      dependsOn: [
+        { role: "vault-directory", required: true },
+        { role: "vault", required: true },
+      ],
+      isolation: "subprocess",
+      scope: "project",
+    },
+  },
+  {
     // **Skill を資源として配る**（決定・2026-09-23、アーキ仕様 §5.6・§5.7）。
     // Skill は Project をまたいで使うもの（Memory との違い）なので banto 全体に1本。
     // **効かせるかはここでは決めない**——core が会話ごとに `instructions` を組み立てる。

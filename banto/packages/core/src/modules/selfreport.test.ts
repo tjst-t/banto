@@ -25,7 +25,7 @@ async function withModule(command: string, args: string[], env: Record<string, s
   }
 }
 
-for (const name of ["vault-local", "shell", "filesystem", "skills"] as const) {
+for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent"] as const) {
   test(`${name} は自分が何者かを名乗り、同梱の宣言と食い違わない`, async () => {
     const declaration = parseModuleDeclaration(
       DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === name)!,
@@ -40,6 +40,7 @@ for (const name of ["vault-local", "shell", "filesystem", "skills"] as const) {
         BANTO_HOST_MCP_URL: "http://127.0.0.1:1/relay",
         BANTO_HOST_MCP_TOKEN: "unused",
         BANTO_MODULE_DATA_DIR: "/tmp/banto-selfreport-skills",
+        BANTO_DATA_ROOT: "/tmp/banto-selfreport-data",
       },
       async (client) => {
         const reported = await readSelfReportedMeta(client);

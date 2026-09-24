@@ -1946,13 +1946,54 @@
     {
       "id": "subagent-module-sync",
       "title": "Subagent Module（待つ形）——Claude Code と OpenCode",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "subagent-poc-acp"
       ],
       "why": "ユーザー決定（2026-09-24）。最初は待つ形（依頼した tool 呼び出しの中で終わるまで待つ）。 形は §4.1「Subagent Module の形」（PoC で決定）。",
       "doneWhen": "AI が run_subagent で Claude Code と OpenCode に仕事を頼み、結果が返ること（偽の ACP エージェントで E2E、本物で疎通確認）。エージェントは入れ子の Landlock ドメインで起き、資格情報は env だけで渡ること（Claude のサブスクは Vault に置いた setup-token、API キーも Vault の alias から）。会話の中のカードに途中経過と結果が出ること。数分かかる仕事が進捗で切れずに返ることを本物で測ること（CLI の無音の上限は http 5分）。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md",
+      "result": "2026-09-24：packages/modules/subagent（tool は listSubagents・runSubagent）。エージェントは Landlock のドメインで起こし、資格情報は envSecrets（Vault の alias）から env だけで渡す。偽の ACP エージェントで単体11・結合7・E2E 1、本物は check:agents で Claude Code・OpenCode とも通った。仕様との食い違い2点（確認は Elicitation に上げられない→断って記録／Module 自身は閉じ込められない→エージェントだけ）は §4.1・v4-security.md を直した。"
+    },
+    {
+      "id": "subagent-permission-to-human",
+      "title": "サブエージェントの確認を人に上げる",
+      "status": "backlog",
+      "dependencies": [
+        "elicitation-answers"
+      ],
+      "why": "いまは断って返り値に書いている（Module からの Elicitation の答えが banto に繋がっていないため、§4.1）。main と揃えたモードでは普通の仕事で確認は来ない（実測）が、来たときに人が答えられるようにする。",
       "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
+      "id": "elicitation-answers",
+      "title": "Module からの Elicitation に、受信箱から答えられるようにする",
+      "status": "backlog",
+      "why": "§2.4.1 の「後で答える」の答えを届ける配線が無い（受信箱に「まだ繋がっていません」と出るだけ）。Subagent の確認を人に上げる前提。"
+    },
+    {
+      "id": "subagent-banto-modules",
+      "title": "サブエージェントに banto の Module（FileSystem・Shell・Vault）を渡す",
+      "status": "backlog",
+      "dependencies": [
+        "subagent-module-sync"
+      ],
+      "why": "§4.1 の方針（エージェント自身の tool＋banto の Module を追加で渡す）の後半。いまは session/new の mcpServers が空。サブエージェント向けの中継の口（URL と合言葉）を host が出す必要がある。"
+    },
+    {
+      "id": "tool-progress-display",
+      "title": "tool の進捗（notifications/progress）を会話のカードに出す",
+      "status": "backlog",
+      "why": "Subagent・Shell は進捗を送っているが、フロントは描かない（呼び出しを切らせないためだけに効いている）。長いサブエージェントの仕事で、何をしているかが見えない。"
+    },
+    {
+      "id": "subagent-default-credentials",
+      "title": "Project ごとに、サブエージェントの既定の資格情報を持つ",
+      "status": "backlog",
+      "dependencies": [
+        "subagent-module-sync"
+      ],
+      "why": "いまは毎回 envSecrets に alias を書く（Shell と同じ口）。毎回書くのが面倒になったら、Project 設定に既定を置く。"
     },
     {
       "id": "subagent-codex",
