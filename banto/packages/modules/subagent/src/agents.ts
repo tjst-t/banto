@@ -26,6 +26,11 @@ export interface AgentDefinition {
   credentialEnv: string[];
   /** 既定で掛けるモード（main の Runner と揃える） */
   mode?: string;
+  /**
+   * **banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは渡さず、
+   * Module の中継（`claude-login-proxy.ts`）の合言葉だけを渡す
+   */
+  sharesHostClaudeLogin?: boolean;
 }
 
 function packageDir(name: string): string {
@@ -52,9 +57,10 @@ function claudeCode(): AgentDefinition {
     args: () => [join(installDir, "dist", "index.js")],
     // 会話の記録（session/load で拾う）はここに残る。人の ~/.claude には書かない
     homeEnv: (home) => ({ CLAUDE_CONFIG_DIR: join(home, ".claude") }),
-    // サブスクは `claude setup-token` の長命トークン（決定・2026-09-24、ユーザー）
+    // 既定は本体のログイン（sharesHostClaudeLogin）。これらを envSecrets で渡したときだけ、そちらを使う
     credentialEnv: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     mode: "auto",
+    sharesHostClaudeLogin: true,
   };
 }
 

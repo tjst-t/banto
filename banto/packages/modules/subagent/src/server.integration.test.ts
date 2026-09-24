@@ -12,6 +12,7 @@ import { createSubagentServer } from "./server.js";
 
 async function withServer(
   fn: (call: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError: boolean }>, dirs: { project: string; data: string }) => Promise<void>,
+  overrides: Partial<Parameters<typeof createSubagentServer>[0]> = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "subagent-it-"));
   const project = join(root, "project");
@@ -32,6 +33,7 @@ async function withServer(
     guard: { dataDir: join(root, "data"), configDir: join(root, "config") },
     pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
+    ...overrides,
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
@@ -138,4 +140,64 @@ test("頼み方の誤りは、理由ごと isError で返す", async () => {
     assert.equal(badModel.isError, true);
     assert.match(badModel.text, /"nope" はありません/);
   });
+});
+
+// **banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー）——本物のトークンは
+// エージェントに入らず、中継だけが上流に差し込む
+test("Claude は本体のログインを中継で使う：上流には本物、エージェントには合言葉だけ", async () => {
+  const { createServer } = await import("node:http");
+  const { writeFileSync } = await import("node:fs");
+  const seen: { url: string; auth: string }[] = [];
+  const upstream = createServer((req, res) => {
+    seen.push({ url: req.url ?? "", auth: req.headers.authorization ?? "" });
+    res.writeHead(200, { "content-type": "application/json" }).end('{"ok":"upstream"}');
+  });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const port = (upstream.address() as { port: number }).port;
+  const credDir = mkdtempSync(join(tmpdir(), "subagent-cred-"));
+  const REAL = `real-access-token-${Date.now()}`;
+  writeFileSync(join(credDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: REAL, refreshToken: "never-leaves" } }));
+  const fake = listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" })[0]!;
+  try {
+    await withServer(
+      async (call) => {
+        const ok = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[anthropic /v1/messages?beta=true]" })).text) as { text: string };
+        assert.match(ok.text, /anthropic: 200 \{"ok":"upstream"\}/);
+        assert.deepEqual(seen, [{ url: "/v1/messages?beta=true", auth: `Bearer ${REAL}` }]);
+        // 推論以外は通さない（本体のトークンは会話の履歴やコネクタにも触れる広さを持つ）
+        const other = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[anthropic /api/oauth/profile]" })).text) as { text: string };
+        assert.match(other.text, /anthropic: 403 .*推論/);
+        assert.equal(seen.length, 1, "推論以外が上流へ出た");
+        // エージェントの環境には、本物のトークンも refresh token も無い
+        for (const value of [REAL, "never-leaves"]) {
+          const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: `[has ${value}]` })).text) as { text: string };
+          assert.match(r.text, /環境に 含まない/, `${value} がエージェントの環境に入っている`);
+        }
+        // 自分の資格情報を渡したときは、中継を使わない
+        const own = JSON.parse(
+          (await call("runSubagent", { agent: "fake", prompt: "[env ANTHROPIC_BASE_URL]", envSecrets: { ANTHROPIC_API_KEY: "k" } })).text,
+        ) as { text: string };
+        assert.match(own.text, /ANTHROPIC_BASE_URL は渡っていない/);
+      },
+      {
+        agents: [{ ...fake, sharesHostClaudeLogin: true, credentialEnv: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] }],
+        claudeLogin: { credentialsPath: join(credDir, ".credentials.json"), upstream: `http://127.0.0.1:${port}` },
+      },
+    );
+  } finally {
+    upstream.close();
+    rmSync(credDir, { recursive: true, force: true });
+  }
+});
+
+test("本体が Claude にログインしていなければ、エージェントを起こさずに理由を返す", async () => {
+  const fake = listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" })[0]!;
+  await withServer(
+    async (call) => {
+      const r = await call("runSubagent", { agent: "fake", prompt: "x" });
+      assert.equal(r.isError, true);
+      assert.match(r.text, /banto 本体が Claude にログインしていません/);
+    },
+    { agents: [{ ...fake, sharesHostClaudeLogin: true }], claudeLogin: { credentialsPath: "/nonexistent/.credentials.json" } },
+  );
 });

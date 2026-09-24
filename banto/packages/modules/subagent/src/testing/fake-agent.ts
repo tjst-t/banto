@@ -8,6 +8,9 @@
 //   [crash]       プロセスごと落ちる
 //   [env NAME]    環境変数 NAME が渡っているかだけを答える（値は出さない）
 //   [write PATH]  作業場所に PATH を書く（閉じ込めの試験用）
+//   [anthropic PATH]  ANTHROPIC_BASE_URL＋PATH へ CLAUDE_CODE_OAUTH_TOKEN で POST し、状態と本文の頭を返す
+//                     （banto 本体のログインを共有する中継の試験用）
+//   [has VALUE]   環境変数のどれかに VALUE が含まれるかだけを答える（本物のトークンが入っていないことの試験用）
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
 // 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。
@@ -132,6 +135,17 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
         reply = `書けなかった：${(err as Error).message}`;
       }
     }
+    const anthropic = /\[anthropic ([^\]]+)\]/.exec(text);
+    if (anthropic) {
+      const res = await fetch(`${process.env.ANTHROPIC_BASE_URL}${anthropic[1]}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${process.env.CLAUDE_CODE_OAUTH_TOKEN}`, "content-type": "application/json" },
+        body: "{}",
+      });
+      reply = `anthropic: ${res.status} ${(await res.text()).slice(0, 120)}`;
+    }
+    const has = /\[has ([^\]]+)\]/.exec(text);
+    if (has) reply = `環境に ${Object.values(process.env).some((v) => v?.includes(has[1])) ? "含む" : "含まない"}`;
     if (text.includes("前に")) reply = `前に頼まれたこと：${s.turns.map((t) => t.user).join(" / ") || "（無い）"}`;
     reply += `（model=${s.model} effort=${s.effort} mode=${s.mode}）`;
     await say(cx, sessionId, reply);

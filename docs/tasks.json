@@ -1987,13 +1987,42 @@
       "why": "Subagent・Shell は進捗を送っているが、フロントは描かない（呼び出しを切らせないためだけに効いている）。長いサブエージェントの仕事で、何をしているかが見えない。"
     },
     {
+      "id": "subagent-claude-host-login",
+      "title": "Claude Code のサブエージェントに banto 本体のログインを共有する（中継）",
+      "status": "done",
+      "dependencies": [
+        "subagent-module-sync"
+      ],
+      "why": "ユーザー（2026-09-24）：Host で Claude を使っているのに別途ログインが要るのは違和感。",
+      "result": "2026-09-24：Module が 127.0.0.1 に中継を立て、エージェントには合言葉だけを渡す。通すのは /v1/messages だけ。結合試験（本物の Landlock・偽の上流）と check:agents（本物）で確かめた。代償：既定のモデルが Sonnet・sonnet の文脈20万。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
+      "id": "subagent-claude-expiry-measure",
+      "title": "本体のトークンの期限をまたいだサブエージェントの振る舞いを実測する",
+      "status": "backlog",
+      "dependencies": [
+        "subagent-claude-host-login"
+      ],
+      "why": "中継は本体の置き場を毎回読み直すだけで更新しない。期限をまたぐと落ち、続きから頼み直せば通る——はずだが、期限を待たないと測れない（2026-09-24 時点で未計測）。"
+    },
+    {
+      "id": "subagent-claude-default-model",
+      "title": "Claude Code のサブエージェントの既定のモデルを、本体と揃えるか決める",
+      "status": "undecided",
+      "dependencies": [
+        "subagent-claude-host-login"
+      ],
+      "why": "中継だと契約の種類が分からず、既定が Sonnet・sonnet の文脈が20万になる（本体は Opus 5.5・100万）。明示すれば選べる。"
+    },
+    {
       "id": "subagent-default-credentials",
-      "title": "Project ごとに、サブエージェントの既定の資格情報を持つ",
+      "title": "OpenCode でも、サブエージェントの既定の資格情報を持つ",
       "status": "backlog",
       "dependencies": [
         "subagent-module-sync"
       ],
-      "why": "いまは毎回 envSecrets に alias を書く（Shell と同じ口）。毎回書くのが面倒になったら、Project 設定に既定を置く。"
+      "why": "Claude Code は banto 本体のログインを中継で共有する（2026-09-24、ユーザー）。OpenCode はまだ毎回 envSecrets に alias を書く。この機械の OpenCode の鍵を取り込む・既定を置く、のどちらか。"
     },
     {
       "id": "subagent-codex",

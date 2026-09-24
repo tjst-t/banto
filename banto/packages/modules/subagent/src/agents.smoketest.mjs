@@ -3,10 +3,9 @@
 // 含めない。**claude-agent-acp・opencode-ai を上げたら必ず回す**——E2E は偽のエージェントなので、
 // 本物の振る舞いの変化はここでしか捕まらない。
 //
-// Module のコードそのもの（`createSubagentServer`）を MCP の口から呼ぶ。Vault の中継だけ代役で、
-// **資格情報は手元の置き場からメモリに読んで、エージェントの env に渡すだけ**（ファイルに写さない）：
-//   - Claude Code：~/.claude の access token を CLAUDE_CODE_OAUTH_TOKEN に（本番は setup-token）
-//   - OpenCode：~/.local/share/opencode/auth.json の opencode-go の鍵を OPENCODE_API_KEY に
+// Module のコードそのもの（`createSubagentServer`）を MCP の口から呼ぶ。Vault の中継だけ代役：
+//   - Claude Code：**本番と同じく banto 本体のログイン（~/.claude）を中継で共有する**——envSecrets は渡さない
+//   - OpenCode：~/.local/share/opencode/auth.json の opencode-go の鍵をメモリに読み、OPENCODE_API_KEY に
 // **人の ~/.claude・~/.config/opencode には書かない**——エージェントは Module の専用ホーム
 // （使い捨ての置き場）で動く。
 //
@@ -25,11 +24,10 @@ const { createSubagentServer } = await import("../dist/server.js");
 
 const wanted = process.argv.slice(2);
 const secrets = {
-  "claude-token": () => JSON.parse(readFileSync(join(homedir(), ".claude/.credentials.json"), "utf8")).claudeAiOauth.accessToken,
   "opencode-go": () => JSON.parse(readFileSync(join(homedir(), ".local/share/opencode/auth.json"), "utf8"))["opencode-go"].key,
 };
 const cases = [
-  { agent: "claude-code", model: "sonnet", envSecrets: { CLAUDE_CODE_OAUTH_TOKEN: "claude-token" } },
+  { agent: "claude-code", model: "sonnet", envSecrets: {} },
   { agent: "opencode", model: "opencode-go/qwen3.6-plus", envSecrets: { OPENCODE_API_KEY: "opencode-go" } },
 ].filter((c) => wanted.length === 0 || wanted.includes(c.agent));
 

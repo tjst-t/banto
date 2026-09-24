@@ -13,6 +13,7 @@ import type { GuardOptions } from "@banto/landlock";
 import { resolveBootstrapConfigPath } from "@banto/core/dist/config/bootstrap.js";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
 import { listAgents, type AgentDefinition } from "./agents.js";
+import { ClaudeLoginError, hostClaudeCredentialsPath, startClaudeLoginProxy, type ClaudeLoginProxy } from "./claude-login-proxy.js";
 import { confineAgent } from "./confine.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 
@@ -25,6 +26,8 @@ export interface SubagentServerDeps {
   /** Module が起動したときの PATH（閉じ込めの導出に使う。実行時に読み直さない） */
   pathEntries: string[];
   agents?: AgentDefinition[];
+  /** banto 本体の Claude ログインの置き場と上流（試験で差し替える）。既定は本体と同じ解決 */
+  claudeLogin?: { credentialsPath?: string; upstream?: string };
 }
 
 // host が Module に渡した変数（`BANTO_*`）と、人の環境の秘密はエージェントに渡さない。
@@ -97,8 +100,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         description:
           "サブエージェントに仕事を頼み、終わるまで待って最後の返答を返す。サブエージェントは Project root で、" +
           "自分の道具（シェル・ファイル操作）を使って働く——Project root の外には出られない（Landlock で強制）。" +
-          "**サブスクで使うときの資格情報**：Claude Code は `claude setup-token` で作ったトークンの alias を " +
-          "CLAUDE_CODE_OAUTH_TOKEN に、API キーなら ANTHROPIC_API_KEY に。OpenCode は OPENCODE_API_KEY（OpenCode Go）ほか。" +
+          "**資格情報**：Claude Code は banto 本体の Claude ログインをそのまま使う（envSecrets は要らない。" +
+          "別の API キーで走らせたいときだけ ANTHROPIC_API_KEY に alias を渡す）。" +
+          "OpenCode は envSecrets で OPENCODE_API_KEY（OpenCode Go）ほかに alias を渡す。" +
           "使える alias の一覧は resource `vault://aliases`。" +
           "続きを頼むときは、前の返り値の sessionId を渡す。" +
           "**サブエージェントが人に確認を求めても、いまは聞く口が無いので断る**（断ったものは返り値の permissions に出る）",
@@ -107,7 +111,12 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           properties: {
             agent: { type: "string", enum: agents.map((a) => a.id) },
             prompt: { type: "string", description: "頼む内容。サブエージェントはあなたの会話を知らないので、要ることは全部書く" },
-            model: { type: "string", description: "モデル。候補は listSubagents で agent を指定して聞く。省略時はエージェントの既定" },
+            model: {
+              type: "string",
+              description:
+                "モデル。候補は listSubagents で agent を指定して聞く。省略時はエージェントの既定" +
+                "（Claude Code を banto のログインで使うときは Sonnet）",
+            },
             effort: { type: "string", description: "考える深さ（エージェントの thought_level）。省略時は既定" },
             sessionId: { type: "string", description: "続きから頼むときの session id（前の runSubagent の返り値）" },
             envSecrets: ENV_SECRETS_SCHEMA,
@@ -144,8 +153,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         const launched = await launchFor(agent, args.envSecrets, onProgress);
         try {
           return text(await describeAgent(launched.launch, deps.projectRoot));
+        } catch (err) {
+          throw launched.explain(err);
         } finally {
-          launched.cleanup();
+          await launched.cleanup();
         }
       }
 
@@ -172,24 +183,28 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             },
           );
           return text(result);
+        } catch (err) {
+          throw launched.explain(err);
         } finally {
-          launched.cleanup();
+          await launched.cleanup();
         }
       }
     } catch (err) {
       // 頼み方の誤り・エージェントの失敗は、AI に理由ごと返す（黙って空を返さない）
-      if (err instanceof SubagentError) return { content: [{ type: "text", text: err.message }], isError: true };
+      if (err instanceof SubagentError || err instanceof ClaudeLoginError) {
+        return { content: [{ type: "text", text: err.message }], isError: true };
+      }
       throw err;
     }
     throw new Error(`unknown tool: ${request.params.name}`);
   });
 
-  /** 資格情報を Vault から受け取り、Landlock で包んだ起こし方を作る */
+  /** 資格情報を Vault から受け取り（Claude は本体のログインを中継で渡し）、Landlock で包んだ起こし方を作る */
   async function launchFor(
     agent: AgentDefinition,
     envSecrets: unknown,
     onProgress?: (message: string) => void,
-  ): Promise<{ launch: AgentLaunch; cleanup: () => void }> {
+  ): Promise<{ launch: AgentLaunch; cleanup: () => Promise<void>; explain: (err: unknown) => unknown }> {
     const env: NodeJS.ProcessEnv = {};
     for (const name of PASS_THROUGH_ENV) if (process.env[name] !== undefined) env[name] = process.env[name];
 
@@ -203,22 +218,51 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       env[name] = await deps.relayClient.resolveAlias(place, note);
     }
 
-    const runDir = join(deps.moduleDataDir, "run");
-    const confined = confineAgent({
-      agent,
-      projectRoot: deps.projectRoot,
-      home: join(deps.moduleDataDir, "agents", agent.id, "home"),
-      runDir,
-      pathEntries: deps.pathEntries,
-      guard: deps.guard,
-    });
-    const rulesetFile = confined.args[confined.args.indexOf("--ruleset-file") + 1];
-    return {
-      launch: { command: confined.command, args: confined.args, env: { ...env, ...confined.env } },
-      cleanup: () => {
-        if (rulesetFile) rmSync(rulesetFile, { force: true });
-      },
-    };
+    // **Claude は banto 本体のログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは
+    // 渡さず、中継の合言葉だけを渡す。自分の資格情報を envSecrets で渡されたときは、そちらを使う
+    let proxy: ClaudeLoginProxy | undefined;
+    if (agent.sharesHostClaudeLogin && !agent.credentialEnv.some((name) => name in secrets)) {
+      proxy = await startClaudeLoginProxy({
+        credentialsPath: deps.claudeLogin?.credentialsPath ?? hostClaudeCredentialsPath(),
+        ...(deps.claudeLogin?.upstream ? { upstream: deps.claudeLogin.upstream } : {}),
+      });
+      env.CLAUDE_CODE_OAUTH_TOKEN = proxy.secret;
+      env.ANTHROPIC_BASE_URL = proxy.url;
+    }
+
+    let rulesetFile: string | undefined;
+    try {
+      const confined = confineAgent({
+        agent,
+        projectRoot: deps.projectRoot,
+        home: join(deps.moduleDataDir, "agents", agent.id, "home"),
+        runDir: join(deps.moduleDataDir, "run"),
+        pathEntries: deps.pathEntries,
+        guard: deps.guard,
+      });
+      rulesetFile = confined.args[confined.args.indexOf("--ruleset-file") + 1];
+      return {
+        launch: { command: confined.command, args: confined.args, env: { ...env, ...confined.env } },
+        cleanup: async () => {
+          if (rulesetFile) rmSync(rulesetFile, { force: true });
+          await proxy?.close();
+        },
+        explain: (err) => {
+          // **期限切れを、理由つきで返す**——本体のトークンは本体の CLI が更新する。サブエージェントが
+          // 長く走ると途中で切れることがあり、そのときは続きから頼み直せば、本体が更新したものを中継が拾う
+          if (proxy && proxy.upstreamAuthFailures() > 0 && err instanceof Error) {
+            return new SubagentError(
+              `${err.message}\n（banto 本体の Claude ログインのトークンが、途中で期限切れになった可能性があります。` +
+                "sessionId を渡して続きから頼み直してください——本体が次の呼び出しで更新します）",
+            );
+          }
+          return err;
+        },
+      };
+    } catch (err) {
+      await proxy?.close();
+      throw err;
+    }
   }
 
   return server;

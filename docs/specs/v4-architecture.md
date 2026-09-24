@@ -1828,15 +1828,24 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   `/proc` を要る理由と、それでも Module の秘密が漏れない理由は `docs/specs/v4-security.md`
   「サブエージェントは自分のドメインで起こす」。**エージェントに渡す環境変数は一覧で絞る**
   （`PATH`・`LANG` など）——host が Module に渡した `BANTO_*` も、人の環境の秘密も渡さない
-- **資格情報は環境変数で渡し、ファイルに写さない**（OpenCode の `auth.json` も作らない）。
+- **Claude Code は banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー——「Host で
+  Claude を使っているのに、サブエージェントに別のログインが要るのは違和感がある」。同日の「setup-token を
+  Vault に置く」を置き換える）。**本物のトークンは渡さない**：Module が 127.0.0.1 に中継を立て、エージェントには
+  `ANTHROPIC_BASE_URL`＝中継と、`CLAUDE_CODE_OAUTH_TOKEN`＝**その1回だけの合言葉**を渡す。中継は合言葉を
+  確かめ、Authorization を本体の access token（本体の置き場から**毎回読み直す**——本体の CLI が更新した
+  ものをそのまま拾う）に差し替えて api.anthropic.com へ流す。**通すのは推論（`/v1/messages`）だけ**
+  ——本体のトークンは会話の履歴・claude.ai のコネクタ・ファイルの送り込みまで触れる広さを持つ。
+  詳しくは `docs/specs/v4-security.md`「サブエージェントは自分のドメインで起こす」。
+  **代償（実測）**：エージェントは契約の種類を確かめられない（その問い合わせは中継を通らず、合言葉では
+  通らない）ので、**既定のモデルは Sonnet になり、`sonnet` の文脈は20万**（本体では100万）。
+  `sonnet[1m]`・`opus` などを明示すれば選べる。**トークンの期限が長い仕事の途中で来ると落ちる**
+  ——本体の CLI が次の呼び出しで更新するので、`sessionId` を渡して続きから頼み直せば通る（落ちたときは
+  そう書いて返す）
+- **それ以外の資格情報は環境変数で渡し、ファイルに写さない**（OpenCode の `auth.json` も作らない）。
   **AI が `envSecrets` に Vault の alias 名を書き、Module が値を受け取って env に入れる**
   （Shell の `envSecrets` と同じ形・同じ中継。初回は中継の承認を人に聞く）。変数名は、
-  API キーなら Claude は `ANTHROPIC_API_KEY`、OpenCode は `OPENCODE_API_KEY` ほかプロバイダごとの変数
-  （OpenCode Go のサブスクもこれ）。
-  **Claude のサブスクは、人が `claude setup-token` で作った長命のトークンを Vault に置き、
-  API キーと同じ経路で `CLAUDE_CODE_OAUTH_TOKEN` に渡す**（決定・2026-09-24、ユーザー——
-  `~/.claude` を読ませずに通ることは実測済み）。main の Runner のログイン（`~/.claude` の
-  access token・refresh token）はサブエージェントに渡さない。
+  OpenCode は `OPENCODE_API_KEY` ほかプロバイダごとの変数（OpenCode Go のサブスクもこれ）。Claude Code を
+  別の API キーで走らせたいときは `ANTHROPIC_API_KEY` に渡す（渡すと中継は使わない）。
   **渡したものは、そのサブエージェントのシェルから読める**（実測。`docs/specs/v4-security.md`）
   ——**サブエージェントに読まれてよいものだけを渡す**
 - **エージェント本体は Subagent Module の依存として持つ**（`@agentclientprotocol/claude-agent-acp`・
@@ -1847,7 +1856,8 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   host が出す必要がある——後で足す
 
 **まだ決まっていないこと**：同じ根での並行・認証の失敗が返るまでの時間（壊れた API キーで
-186秒かかった）・Project ごとの既定の資格情報（毎回 `envSecrets` を書かずに済ませる設定）
+186秒かかった）・Project ごとの既定の資格情報（OpenCode でも毎回 `envSecrets` を書かずに済ませる設定）・
+Claude Code の既定のモデルを本体と揃えるか（いまは中継のため Sonnet）
 
 ### 4.2 Thread 間のメッセージ
 
