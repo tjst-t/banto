@@ -1720,8 +1720,8 @@ tool 経由で提案してよいか」は、**その変更操作を AI に露出
   ただし Thread の作成は core 側に残らない——**サブエージェントの実行は
   Subagent Module の持ち物であり、core が管理する Project 直下の Base/Fork Thread
   の並びには現れない**
-- **backend Module が担うのは、ベンダの差だけ**——「このプロンプトを投げて、
-  結果をこの形で返す」というインターフェース。**Agent SDK 自身が持つ Subagent/Task 機構を使うか、
+- **ベンダの差は ACP のエージェントが吸収する**（下記「backend の共通口は ACP」）——backend ごとの
+  Module は作らない。**Agent SDK 自身が持つ Subagent/Task 機構を使うか、
   Claude Code CLI 自身の Subagent 機構を使うかは、Subagent Module の内部実装の
   選択にすぎない。** Main/Fork Thread 側から見た呼び出し方は同じでなければならない
   ——backend の違いを外に漏らさないという原則をここでも一貫させる
@@ -1736,27 +1736,23 @@ core が Subagent の内部を知っている必要が生まれ、境界が崩�
 転記される結果だけ**。転記される型は Base Thread のものとまったく同じで、
 **サブエージェント固有の事実は1つも無い**。特権を持つ理由が無い。
 
-**backend Module のインタフェースの具体形は未決**（§10）。ただし、Claude 系
-以外の実装が core の前提とどこまで噛み合うかを実測した（`opencode-ai`、
-`poc/03-item1-backend-interface/`、2026-08-30）：
+**backend の口は ACP に決めた**（下記）。core の前提にしている7項目は、ACP の口では
+Claude Code・OpenCode のどちらでも揃った（実測・2026-09-24、`poc/08-subagent-acp/`）：
 
-| core が前提にしていること | opencode（実測） |
-|---|---|
-| 完了前の差分 streaming | 未対応と判断（プロセス実行中は出力されず、終了時にまとまって出る） |
-| ターン途中の割り込み（§2.3） | 未対応（`SIGINT` を送ると出力が空のまま終了。`interrupt()` 相当の明示的な API は CLI に無い） |
-| session id での resume（§2.3） | 対応。プロンプトキャッシュも引き継がれた |
-| ターンごとの usage（§2.8） | 対応。トークン内訳・キャッシュ・費用が揃っている |
-| tool 呼び出しの可視性 | 対応、詳細（tool名・input・output が全部載る） |
-| elicitation | **非対応、明示的エラー**（`"Client does not support form elicitation."`——沈黙ではなく、はっきり断る） |
-| 文脈の内訳（`getContextUsage()` 相当） | 未対応と判断（見当たらなかった） |
+| core が前提にしていること | ACP の口 | Claude Code | OpenCode |
+|---|---|---|---|
+| 完了前の差分 streaming | `session/update`（`agent_message_chunk` ほか） | 対応 | 対応 |
+| ターン途中の割り込み（§2.3） | `session/cancel` | 対応（`cancelled`、15ms） | 対応（`cancelled`、約0.1秒） |
+| session id での resume（§2.3） | `session/load`（`loadSession` を名乗るものだけ） | 対応（別プロセスで） | 対応（別プロセスで） |
+| ターンごとの usage（§2.8） | `PromptResponse.usage`・`usage_update` | 対応（内訳・キャッシュ・費用） | 対応（同じ） |
+| tool 呼び出しの可視性 | `tool_call`・`tool_call_update` | 対応 | 対応 |
+| 人への確認 | `session/request_permission` | 対応（`allow_once`・`allow_always`・`reject_once`） | 対応（同じ3つ） |
+| banto の Module からの Elicitation（MCP） | ——（エージェントが MCP クライアントとして受ける） | 受ける（form） | 8月の `opencode run` では**明示的に断った**（`"Client does not support form elicitation."`）。ACP 越しは未計測 |
+| 文脈の内訳（`getContextUsage()` 相当） | `usage_update` の `used`・`size` | 使用量と上限だけ（内訳は無い） | 同じ |
 
-**帰結：backend Module のインタフェースは、この7項目それぞれを
-オプショナルな能力として扱い、無いものは「無い」という明示的な値を返す形に
-する**（規則2・教訓13——「たぶん動く」で埋めない）。streaming と割り込みと
-文脈内訳は、Claude 系だけが提供できる能力として設計する。**インタフェースの
-正確な型定義（TypeScript 的な形）はここでは詰めていない**——実測で分かったのは
-「何が可能か」の材料であって、答えそのものではない。設計自体は引き続き未決
-（§10）。
+**無いものは「無い」と明示する**（規則2・教訓13——「たぶん動く」で埋めない）——ACP では
+これが `initialize` の名乗り合いとしてそのまま手に入る。以前 `opencode run`（CLI）で測ったときは
+streaming と割り込みが無かったが（`poc/03-item1-backend-interface/`）、ACP の口では両方ある。
 
 #### backend の共通口は ACP（決定・2026-09-24、ユーザー）
 
@@ -1773,9 +1769,8 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   仕方を設定に1つ足すことにする（プラガブル）。backend ごとの橋は書かない
 - 上の7項目は ACP の口にそのまま載る：途中経過＝`session/update`、割り込み＝`session/cancel`、
   resume＝`session/load`（`loadSession` を名乗るエージェントだけ）、tool の可視性＝`tool_call`、
-  人への確認＝`session/request_permission`（banto の承認ゲートへ）。**持っているかどうかは
-  `initialize` で名乗り合う**——「無いものは無いと明示する」（上の帰結）が仕様の形のまま手に入る。
-  使用量・文脈の内訳は未確認（PoC で測る）
+  人への確認＝`session/request_permission`、使用量＝`usage`・`usage_update`（上の表）。
+  **持っているかどうかは `initialize` で名乗り合う**
 - **サブエージェントの道具は、エージェント自身の tool を Landlock の中で使わせる。banto の Module
   （FileSystem・Shell・Vault）は追加で渡す**（ACP の `session/new` の `mcpServers`）。ACP には
   ファイル・端末の操作をクライアント（banto）に回させる口もあるが、どのエージェントも従うとは
@@ -1787,9 +1782,52 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   ——Shell と同じ手当て）。待たない形（終わったら依頼元の Thread に届ける）は後——core に
   「Thread にメッセージを届ける」口が要る。**MCP の非同期の仕組み（Tasks）には頼れない**：
   Claude Code 2.1.281 も名乗らない（実測・2026-09-24：クライアントの能力は `roots`・`elicitation`
-  だけ）
-- tool の形・閉じ込めの許可・資格情報の渡し方・作業場所は PoC（`poc/08-subagent-acp/`）で測ってから
-  決める。経緯と却下した案は `docs/notes/2026-09-24-subagent-acp.md`
+  だけ）。**待たない形を作る前に、CLI が長い MCP 呼び出しを背景に回す仕組み**
+  （`CLAUDE_AUTO_BACKGROUND_TASKS`・`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`。非対話＝SDK では既定で
+  切れている）**が使えるかを見る**（規則12）
+- 経緯と却下した案は `docs/notes/2026-09-24-subagent-acp.md`
+
+#### Subagent Module の形（決定・2026-09-24、実測 `poc/08-subagent-acp/`）
+
+**tool は2つ**——サブエージェントの一覧（`list_subagents`：使えるエージェントと、`initialize` で
+名乗った能力）と、仕事を頼む（`run_subagent`）。`run_subagent` の入力は
+**エージェント・頼む内容・モデル（任意）・effort（任意）・続きから走らせる session id（任意）**、
+返すのは**最後の返答・session id・止まった理由（`stopReason`）・使用量**。
+
+- **1回の呼び出し＝エージェントのプロセス1つ**（起動→`initialize`→`session/new` か `session/load`
+  →設定→`session/prompt`→終了）。§2.3 のモデルB と同じ考え方で、続きは `session/load` で拾う
+  ——**別プロセスでの再開は両方とも通った**
+- **待つ形**：途中経過（`tool_call` の題など）を `notifications/progress` で送り続ける（Shell と同じ
+  10秒以内）。Claude Code の MCP クライアントは**無音が続くと切る**（既定 stdio 30分／http 5分）が、
+  **進捗で延びる**。全体の上限は既定で約28時間（同梱 CLI 2.1.280 を読んだ。長時間は本実装で実測する）
+- **依頼元が呼び出しを取り消したら、`session/cancel` を送る**（MCP の取り消し＝`extra.signal`）
+- **モデルは設定項目（`session/new` の `configOptions`）で渡す。** 候補の一覧はそれが唯一の真実で
+  （規則3）、**渡した資格情報で変わる**（OpenCode：427件／鍵1つだと108件）。**エージェントの
+  既定に任せない**——OpenCode の既定は人の設定の `model` と一致しなかった（無料の別モデルになった）
+- **作業場所は Project の根**（Shell と同じ）。同じ根で2つを並行に走らせたときの取り合いは未決
+- **サブエージェントの会話は、エージェント自身の置き場に残る**——Subagent Module のデータ置き場の
+  下に、エージェントごとの専用ホームを1つ持つ。core に渡るのは tool の返り値（転記）だけ（上の原則）
+- **人への確認（`session/request_permission`）は、MCP の Elicitation で依頼元へ上げる**
+  （選択肢はエージェントが出したものをそのまま enum に）。受信箱までの経路は既存のもの
+  （§2.4.1）——**自前の口を作らない**。エージェント自身の確認の出し方は main の Runner と揃える
+  （Claude は `auto`。OpenCode は既定のまま）——**強制できる層は Landlock**
+- **閉じ込め**：エージェントは Subagent Module が**入れ子の Landlock ドメイン**で起こす。
+  許すのは Project の根（読み書き）・専用ホーム（読み書き。`HOME`・`TMPDIR`・XDG をここへ向ける）・
+  エージェント本体の置き場（実行）・`PATH`（profile `exec`）・**`/proc`（読み取り）**。
+  `/proc` を要る理由と、それでも Module の秘密が漏れない理由は `docs/specs/v4-security.md`
+  「サブエージェントは入れ子のドメインで起こす」
+- **資格情報は環境変数で渡し、ファイルに写さない**（OpenCode の `auth.json` も作らない）。
+  API キーは Vault の alias から（Shell の `envSecrets` と同じ形。Claude は `ANTHROPIC_API_KEY`、
+  OpenCode は `OPENCODE_API_KEY` ほかプロバイダごとの変数——OpenCode Go のサブスクもこれ）。
+  Claude のサブスクは `CLAUDE_CODE_OAUTH_TOKEN` で通る（`~/.claude` を読ませずに）。
+  **渡したものは、そのサブエージェントのシェルから読める**（実測。`docs/specs/v4-security.md`）
+  ——**サブエージェントに読まれてよいものだけを渡す**
+- **エージェント本体は Subagent Module の依存として持つ**（`@agentclientprotocol/claude-agent-acp`・
+  `opencode-ai`。版は固定する）。Claude の選べるモデルは同梱の CLI の版で決まる
+
+**まだ決まっていないこと**：Claude のサブスクで渡すトークンの種類（host がいまの access token
+だけを渡すか、人が `claude setup-token` で作った長命のトークンを Vault に置くか）・同じ根での
+並行・認証の失敗が返るまでの時間（壊れた API キーで186秒かかった）
 
 ### 4.2 Thread 間のメッセージ
 
@@ -3180,8 +3218,9 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
    何を受け取るか。決まると別ベンダ backend を足すコストが見積もれる。
    **材料は実測済み**（opencode、2026-08-30、`poc/03-item1-backend-interface/`）
    ——7項目の可否表は §4.1 にある。**→ 方向は決定（2026-09-24、§4.1「backend の共通口は
-   ACP」）。** backend の口は自分で設計せず ACP に乗る。Subagent Module の tool の形・
-   閉じ込め・資格情報の渡し方は PoC（`poc/08-subagent-acp/`）の後
+   ACP」）。** backend の口は自分で設計せず ACP に乗る。**Subagent Module の tool の形・
+   閉じ込め・資格情報の渡し方も決定（2026-09-24、§4.1「Subagent Module の形」、
+   `poc/08-subagent-acp/`）。** 残りは Claude のサブスクで渡すトークンの種類・同じ根での並行
 2. ~~host の自動役割解決の設計~~ **→ 決定（2026-09-02、§2.5・§5.1）。**
    候補の列挙は `mcpServers` の `_meta["dev.banto/module"]`（静的宣言）から
    自動、接続時に `initialize` 応答（動的自己申告）と突き合わせて食い違いを

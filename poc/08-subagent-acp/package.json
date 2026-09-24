@@ -1,0 +1,14 @@
+{
+  "name": "banto-poc-08-subagent-acp",
+  "private": true,
+  "description": "捨てる。SubAgent の backend を ACP で繋ぐときの未決（能力・cancel・resume・使用量・確認・MCP・Landlock・認証）を Claude Code と OpenCode で実測する PoC。本実装には流れ込ませない。",
+  "type": "module",
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "1.5.0",
+    "opencode-ai": "1.18.32",
+    "@agentclientprotocol/claude-agent-acp": "0.81.1"
+  },
+  "allowScripts": {
+    "opencode-ai@1.18.32": true
+  }
+}

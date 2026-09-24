@@ -134,7 +134,7 @@ Factory は「他の Module より先に磨く特別なもの」ではなく**�
 
 | Module | 何をするか | 備考 |
 |---|---|---|
-| **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1 のとおり**薄い層**——「どの backend で走らせるか選ぶ」だけ。会話を走らせるのは core |
+| **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1。**MCP サーバであり ACP クライアント**——Claude Code・OpenCode などを ACP の同じ口で起こす。**サブエージェントの会話は core ではなくこの Module（とエージェント自身の置き場）の持ち物**で、core に渡るのは結果の転記だけ（訂正・2026-09-24——以前ここに「会話を走らせるのは core」とあったのは §4.1 の 2026-08-31 の決定と食い違っていた）。tool・閉じ込め・資格情報は §4.1「Subagent Module の形」 |
 | **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7）。**同梱の実装は `skills`**（2026-09-23）：banto 全体に1本、Landlock で自分の置き場だけに閉じ込める。置き場は `<Module の置き場>/skills/<Skill 名>/`（フォルダの中は原文のまま）。`SKILL.md` を `skill://<Skill 名>/SKILL.md` として印つきで、兄弟ファイルを `skill://<Skill 名>/<相対パス>` として配る——本文の相対パスが、本文の URI からの相対でそのまま引ける。一覧に載せたファイルしか読ませない（隠しファイル・シンボリックリンクは辿らない）。**tool**：AI に見えるのは `import_skill`（GitHub から取ってきて仮置きし、取り込む前の確認を画面に出す——取り込まない）だけ。人の操作だけの口（`admin`、呼び出しの刻印も `{admin: true}` を確かめる）：`prepare_skill_import`（GitHub か ZIP）・`get_skill_import`・`confirm_skill_import`・`discard_skill_import`・`list_installed_skills`・`remove_skill`。**画面**：`ui://banto-skills/import`（`import_skill` の画面）と `ui://banto-skills/manage`（設定面「Skill の置き場」）——同じ HTML |
 | **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Environment とは別実装**（下記） |
