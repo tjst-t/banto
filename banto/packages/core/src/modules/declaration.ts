@@ -765,6 +765,8 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       ],
       isolation: "subprocess",
       scope: "project",
+      // 人が設定画面で打った鍵（OpenCode など）がこの Module を通って Vault へ行く（要件 C8c）
+      handlesSecrets: true,
     },
   },
   {

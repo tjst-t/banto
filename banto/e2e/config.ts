@@ -93,6 +93,16 @@ export const DATA_DIR = join(E2E_TMP, "data");
  * 試験に使わない——実行ごとの置き場に偽のホームを作る（`start-core.ts`）。
  */
 export const SHELL_HOME_SOURCE = join(E2E_TMP, "user-home");
+
+/**
+ * **サブエージェントの設定画面が読むものも偽物にする**（追加・2026-09-24）。
+ * 本体の Claude ログイン（契約の種類を画面に出す）と、鍵の取り込み元（OpenCode の `auth.json` に当たるもの）
+ * ——人の `~/.claude`・`~/.local/share/opencode` を試験が読まないように
+ */
+export const SUBAGENT_CLAUDE_CREDENTIALS = join(E2E_TMP, "subagent-claude-credentials.json");
+export const SUBAGENT_IMPORT_FILE = join(E2E_TMP, "subagent-import-auth.json");
+/** 取り込み元に置いてある鍵（試験がその sha256 を突き合わせる） */
+export const SUBAGENT_IMPORTED_KEY = "e2e-imported-key-7Q2";
 export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
 
 /**

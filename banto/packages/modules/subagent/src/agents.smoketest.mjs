@@ -45,6 +45,8 @@ try {
     projectRoot: project,
     moduleDataDir: join(root, "data", "modules", "subagent-check"),
     relayClient: {
+      // 設定の鍵は使わない（この確認は、渡したものだけで走る）
+      listAliases: async () => [],
       lookupAlias: async (_dir, name) => ({ implementation: "local", name }),
       resolveAlias: async (place) => secrets[place.name](),
     },

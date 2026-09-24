@@ -11,6 +11,7 @@
 //   [anthropic PATH]  ANTHROPIC_BASE_URL＋PATH へ CLAUDE_CODE_OAUTH_TOKEN で POST し、状態と本文の頭を返す
 //                     （banto 本体のログインを共有する中継の試験用）
 //   [has VALUE]   環境変数のどれかに VALUE が含まれるかだけを答える（本物のトークンが入っていないことの試験用）
+//   [sha NAME]    環境変数 NAME の sha256 を答える（値を会話に出さずに、何が届いたかを確かめる）
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
 // 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。
@@ -18,7 +19,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, type AgentContext, type SessionConfigOption } from "@agentclientprotocol/sdk";
 
@@ -143,6 +144,11 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
         body: "{}",
       });
       reply = `anthropic: ${res.status} ${(await res.text()).slice(0, 120)}`;
+    }
+    const sha = /\[sha ([A-Z0-9_]+)\]/.exec(text);
+    if (sha) {
+      const v = process.env[sha[1]];
+      reply = `${sha[1]} の sha256：${v === undefined ? "（無い）" : createHash("sha256").update(v).digest("hex")}`;
     }
     const has = /\[has ([^\]]+)\]/.exec(text);
     if (has) reply = `環境に ${Object.values(process.env).some((v) => v?.includes(has[1])) ? "含む" : "含まない"}`;

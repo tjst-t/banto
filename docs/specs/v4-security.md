@@ -282,6 +282,8 @@ refresh token がある**（`v4-modules.md` の OAuth と同じく、回るぶ�
   （refresh token に触れない。二者が同時に更新すると回る鍵の取り合いになる）
 - 実測（`poc/08-subagent-acp/proxy-probe.mjs`、結合試験）：本物の access token も refresh token も、
   エージェントの環境に入らない。契約の種類の問い合わせだけは中継を通らず直接出る（合言葉では通らない）
+  ——代わりに**契約の種類と上限の段**（`subscriptionType`・`rateLimitTier`。資格情報ファイルに並ぶが
+  **秘密ではない**）を env で渡し、既定を本体と揃える（アーキ仕様 §4.1）
 
 ### Landlock が縛らないもの（把握して設計する）
 

@@ -33,17 +33,45 @@ export function hostClaudeCredentialsPath(env: NodeJS.ProcessEnv = process.env):
   return join(dir, ".credentials.json");
 }
 
+export interface HostClaudeAccount {
+  /** 契約の種類と上限の段——**トークンではない**。エージェントに渡すと、既定のモデルと文脈の上限が
+   *  本体と揃う（env のトークンのとき CLI はここから読む。実測：既定が Opus 5.5・文脈100万になった） */
+  subscriptionType?: string;
+  rateLimitTier?: string;
+}
+
+/** 設定画面に出す、本体のログインの様子（トークンは読むが返さない） */
+export async function readHostClaudeAccount(
+  path: string,
+): Promise<({ loggedIn: true } & HostClaudeAccount) | { loggedIn: false; reason: string }> {
+  try {
+    const { account } = await readAccessToken(path);
+    return { loggedIn: true, ...account };
+  } catch (err) {
+    // 読めなかった理由をそのまま出す（壊れたファイルを「未ログイン」に丸めない）
+    return { loggedIn: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** 毎回読み直す——本体の CLI が更新したトークンを、そのまま拾う（写しを持たない・規則3） */
-async function readAccessToken(path: string): Promise<{ token: string; expiresAt?: number }> {
+async function readAccessToken(path: string): Promise<{ token: string; account: HostClaudeAccount }> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
   } catch {
     throw new ClaudeLoginError(`banto 本体が Claude にログインしていません（${path} がありません）`);
   }
-  const oauth = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; expiresAt?: number } }).claudeAiOauth;
+  const oauth = (
+    JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; subscriptionType?: string; rateLimitTier?: string } }
+  ).claudeAiOauth;
   if (!oauth?.accessToken) throw new ClaudeLoginError(`banto 本体の Claude ログインにトークンがありません（${path}）`);
-  return { token: oauth.accessToken, ...(oauth.expiresAt ? { expiresAt: oauth.expiresAt } : {}) };
+  return {
+    token: oauth.accessToken,
+    account: {
+      ...(oauth.subscriptionType ? { subscriptionType: oauth.subscriptionType } : {}),
+      ...(oauth.rateLimitTier ? { rateLimitTier: oauth.rateLimitTier } : {}),
+    },
+  };
 }
 
 export class ClaudeLoginError extends Error {
@@ -54,6 +82,8 @@ export interface ClaudeLoginProxy {
   url: string;
   /** エージェントに渡す合言葉（この中継の中でしか意味を持たない） */
   secret: string;
+  /** 本体の契約の種類（起動した時点）。エージェントの既定を本体と揃えるのに渡す */
+  account: HostClaudeAccount;
   /** 上流が 401 を返した回数——**期限切れ**を、呼び出し元が理由つきで伝えるため */
   upstreamAuthFailures: () => number;
   close: () => Promise<void>;
@@ -61,7 +91,7 @@ export interface ClaudeLoginProxy {
 
 export async function startClaudeLoginProxy(opts: { credentialsPath: string; upstream?: string }): Promise<ClaudeLoginProxy> {
   // 起こす前に確かめる——ログインしていないなら、エージェントを起こさずに理由を返す（規則2）
-  await readAccessToken(opts.credentialsPath);
+  const { account } = await readAccessToken(opts.credentialsPath);
   const upstream = opts.upstream ?? UPSTREAM;
   const secret = `banto-${randomUUID()}`;
   let authFailures = 0;
@@ -116,6 +146,7 @@ export async function startClaudeLoginProxy(opts: { credentialsPath: string; ups
   return {
     url: `http://127.0.0.1:${address.port}`,
     secret,
+    account,
     upstreamAuthFailures: () => authFailures,
     close: () =>
       new Promise<void>((resolve) => {

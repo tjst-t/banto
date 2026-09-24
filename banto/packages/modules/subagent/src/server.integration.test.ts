@@ -2,13 +2,45 @@
 // 偽の ACP エージェントを起こす。Vault の中継だけは代役。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { listAgents } from "./agents.js";
 import { createSubagentServer } from "./server.js";
+
+/** Vault の代役（名前 → 値）。窓口と同じ口だけを持つ */
+function fakeVault(initial: Record<string, string> = {}, opts: { unreadableVault?: boolean } = {}) {
+  const store = new Map(Object.entries(initial));
+  const calls: string[] = [];
+  return {
+    store,
+    calls,
+    relay: {
+      listAliases: async () => [...store.keys()].map((name) => ({ name, implementation: "vault-local" })),
+      // 窓口と同じく、既定の鍵の名前で無いものは「どの Vault にも無い」
+      lookupAlias: async (_dir: string, name: string) => {
+        calls.push(`lookup ${name}`);
+        if (name.startsWith("subagent.") && !store.has(name)) {
+          throw new Error(
+            opts.unreadableVault
+              ? `MCP error -32603: alias "${name}" は見つかりませんでしたが、読めていない Vault があります：vault-infisical（設定が足りません）`
+              : `alias "${name}" はどの Vault にもありません`,
+          );
+        }
+        return { implementation: "vault-local", name };
+      },
+      resolveAlias: async (place: { name: string }) => store.get(place.name) ?? `value-of-${place.name}`,
+      createAlias: async (_dir: string, a: { name: string; value: string }) => {
+        calls.push(`create ${a.name}`);
+        if (store.has(a.name)) throw new Error(`${a.name} は既にあります`);
+        store.set(a.name, a.value);
+      },
+    },
+  };
+}
 
 async function withServer(
   fn: (call: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError: boolean }>, dirs: { project: string; data: string }) => Promise<void>,
@@ -19,20 +51,15 @@ async function withServer(
   const data = join(root, "data", "modules", "subagent-p1");
   mkdirSync(project, { recursive: true });
   mkdirSync(data, { recursive: true });
-  const resolved: string[] = [];
   const server = createSubagentServer({
     projectRoot: project,
     moduleDataDir: data,
-    relayClient: {
-      lookupAlias: async (_dir, name) => ({ implementation: "vault-local", name }),
-      resolveAlias: async (place) => {
-        resolved.push(place.name);
-        return `value-of-${place.name}`;
-      },
-    },
+    relayClient: fakeVault().relay,
     guard: { dataDir: join(root, "data"), configDir: join(root, "config") },
     pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
+    // 試験は本物のログインを読まない
+    claudeLogin: { credentialsPath: "/nonexistent/.credentials.json" },
     ...overrides,
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -54,8 +81,11 @@ async function withServer(
 
 test("一覧：使えるエージェントと、その設定の候補", async () => {
   await withServer(async (call) => {
-    const list = JSON.parse((await call("listSubagents", {})).text) as { id: string }[];
-    assert.deepEqual(list.map((a) => a.id), ["fake"]);
+    const list = JSON.parse((await call("listSubagents", {})).text) as { id: string; credentials: string }[];
+    assert.deepEqual(list.map((a) => a.id), ["fake", "fake-host"]);
+    // 何を書かずに使えるかも返す
+    assert.match(list[0]!.credentials, /Project 設定の「サブエージェント」で入れた鍵を使う/);
+    assert.match(list[1]!.credentials, /使えない：banto 本体が Claude にログインしていません/);
     const desc = JSON.parse((await call("listSubagents", { agent: "fake" })).text) as {
       agent: { name: string };
       options: { category?: string; values: string[] }[];
@@ -146,7 +176,6 @@ test("頼み方の誤りは、理由ごと isError で返す", async () => {
 // エージェントに入らず、中継だけが上流に差し込む
 test("Claude は本体のログインを中継で使う：上流には本物、エージェントには合言葉だけ", async () => {
   const { createServer } = await import("node:http");
-  const { writeFileSync } = await import("node:fs");
   const seen: { url: string; auth: string }[] = [];
   const upstream = createServer((req, res) => {
     seen.push({ url: req.url ?? "", auth: req.headers.authorization ?? "" });
@@ -199,5 +228,153 @@ test("本体が Claude にログインしていなければ、エージェント
       assert.match(r.text, /banto 本体が Claude にログインしていません/);
     },
     { agents: [{ ...fake, sharesHostClaudeLogin: true }], claudeLogin: { credentialsPath: "/nonexistent/.credentials.json" } },
+  );
+});
+
+// ---- 設定画面から入れる既定の鍵（決定・2026-09-24、ユーザー） -------------------------------
+
+const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+
+test("設定：この機械の設定から取り込むと Vault に置かれ、envSecrets を書かなくても使われる", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "subagent-import-"));
+  const IMPORTED = `imported-${Date.now()}`;
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ fake: { type: "api", key: IMPORTED }, other: { type: "oauth", key: "x" } }));
+  const vault = fakeVault();
+  try {
+    await withServer(
+      async (call) => {
+        const before = JSON.parse((await call("getCredentials", {})).text) as {
+          agents: { id: string; importLabel?: string; keys?: { env: string; set: boolean; importable: boolean }[] }[];
+        };
+        const fake = before.agents.find((a) => a.id === "fake")!;
+        assert.equal(fake.importLabel, "試験用の設定ファイル");
+        assert.deepEqual(fake.keys, [{ env: "FAKE_AGENT_TOKEN", alias: "subagent.fake.FAKE_AGENT_TOKEN", set: false, importable: true }]);
+        // 値は getCredentials のどこにも出ない
+        assert.doesNotMatch(JSON.stringify(before), new RegExp(IMPORTED));
+
+        const imported = await call("importCredential", { agent: "fake", env: "FAKE_AGENT_TOKEN" });
+        assert.equal(imported.isError, false, imported.text);
+        assert.equal(vault.store.get("subagent.fake.FAKE_AGENT_TOKEN"), IMPORTED);
+
+        const after = JSON.parse((await call("getCredentials", {})).text) as { agents: { id: string; keys?: { set: boolean }[] }[] };
+        assert.equal(after.agents.find((a) => a.id === "fake")!.keys![0]!.set, true);
+
+        // envSecrets を書かなくても、設定の鍵が届く（値そのものが届いたかを sha で見る）
+        const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[sha FAKE_AGENT_TOKEN]" })).text) as { text: string };
+        assert.match(r.text, new RegExp(`FAKE_AGENT_TOKEN の sha256：${sha(IMPORTED)}`));
+        // envSecrets で渡したほうが勝つ
+        const explicit = JSON.parse(
+          (await call("runSubagent", { agent: "fake", prompt: "[sha FAKE_AGENT_TOKEN]", envSecrets: { FAKE_AGENT_TOKEN: "given" } })).text,
+        ) as { text: string };
+        assert.match(explicit.text, new RegExp(sha("value-of-given")));
+      },
+      {
+        relayClient: vault.relay,
+        agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1", BANTO_SUBAGENT_FAKE_IMPORT_FILE: join(dir, "auth.json") }),
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("設定：貼った鍵を置ける。設定済みは置き換えず、Vault で消すよう案内する。本体のログインを使うものには置けない", async () => {
+  const vault = fakeVault();
+  await withServer(
+    async (call) => {
+      assert.equal((await call("setCredential", { agent: "fake", env: "FAKE_AGENT_TOKEN", value: "  first  " })).isError, false);
+      assert.equal(vault.store.get("subagent.fake.FAKE_AGENT_TOKEN"), "first");
+      const status = JSON.parse((await call("getCredentials", {})).text) as { agents: { id: string; keys?: { alias: string; set: boolean }[] }[] };
+      assert.deepEqual(status.agents.find((a) => a.id === "fake")!.keys![0], {
+        env: "FAKE_AGENT_TOKEN",
+        alias: "subagent.fake.FAKE_AGENT_TOKEN",
+        set: true,
+        importable: false,
+      });
+      // 設定済みは置き換えない（Vault は書き換え・削除を人の管理画面からだけ受け付ける）
+      const again = await call("setCredential", { agent: "fake", env: "FAKE_AGENT_TOKEN", value: "second" });
+      assert.equal(again.isError, true);
+      assert.match(again.text, /設定済みです。変えるときは、banto 全体の設定の Vault で「subagent\.fake\.FAKE_AGENT_TOKEN」を消してから/);
+      assert.equal(vault.store.get("subagent.fake.FAKE_AGENT_TOKEN"), "first");
+      assert.deepEqual(vault.calls, ["create subagent.fake.FAKE_AGENT_TOKEN"]);
+
+      const empty = await call("setCredential", { agent: "fake", env: "OTHER", value: "  " });
+      assert.match(empty.text, /OTHER はありません/);
+      const host = await call("setCredential", { agent: "fake-host", env: "ANTHROPIC_API_KEY", value: "x" });
+      assert.equal(host.isError, true);
+      assert.match(host.text, /banto 本体のログインを使います/);
+      // 取り込み元が無ければ、無いと言う
+      const noSource = await call("importCredential", { agent: "fake", env: "FAKE_AGENT_TOKEN" });
+      assert.match(noSource.text, /鍵が見つかりません/);
+    },
+    { relayClient: vault.relay },
+  );
+});
+
+test("設定：空の鍵は置かない", async () => {
+  const vault = fakeVault();
+  await withServer(
+    async (call) => {
+      const empty = await call("setCredential", { agent: "fake", env: "FAKE_AGENT_TOKEN", value: "  " });
+      assert.match(empty.text, /鍵が空です/);
+      assert.equal(vault.store.size, 0);
+    },
+    { relayClient: vault.relay },
+  );
+});
+
+test("本体のログインを使うエージェントには、契約の種類を渡して既定を本体と揃える", async () => {
+  const credDir = mkdtempSync(join(tmpdir(), "subagent-cred-"));
+  writeFileSync(
+    join(credDir, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { accessToken: "t", subscriptionType: "max", rateLimitTier: "tier-x" } }),
+  );
+  try {
+    await withServer(
+      async (call) => {
+        const status = JSON.parse((await call("getCredentials", {})).text) as { agents: { id: string; hostLogin?: unknown }[] };
+        assert.deepEqual(status.agents.find((a) => a.id === "fake-host")!.hostLogin, {
+          loggedIn: true,
+          subscriptionType: "max",
+          rateLimitTier: "tier-x",
+        });
+        for (const [name, value] of [["CLAUDE_CODE_SUBSCRIPTION_TYPE", "max"], ["CLAUDE_CODE_RATE_LIMIT_TIER", "tier-x"]] as const) {
+          const r = JSON.parse((await call("runSubagent", { agent: "fake-host", prompt: `[sha ${name}]` })).text) as { text: string };
+          assert.match(r.text, new RegExp(sha(value)), `${name} が届いていない`);
+        }
+      },
+      { claudeLogin: { credentialsPath: join(credDir, ".credentials.json") } },
+    );
+  } finally {
+    rmSync(credDir, { recursive: true, force: true });
+  }
+});
+
+test("会話からは目録を引かない：既定の鍵は名前で直接引き、無ければ読み飛ばす", async () => {
+  const vault = fakeVault();
+  await withServer(
+    async (call) => {
+      const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[env FAKE_AGENT_TOKEN]" })).text) as { text: string };
+      assert.match(r.text, /FAKE_AGENT_TOKEN は渡っていない/);
+      assert.deepEqual(vault.calls, ["lookup subagent.fake.FAKE_AGENT_TOKEN"]);
+      await call("listSubagents", {});
+      assert.deepEqual(vault.calls, ["lookup subagent.fake.FAKE_AGENT_TOKEN"], "一覧で Vault を引いている");
+    },
+    { relayClient: vault.relay },
+  );
+});
+
+test("既定の鍵が在るか分からない（読めていない Vault がある）ときは、仕事は止めず、注記に書く", async () => {
+  const vault = fakeVault({}, { unreadableVault: true });
+  await withServer(
+    async (call) => {
+      const r = await call("runSubagent", { agent: "fake", prompt: "[env FAKE_AGENT_TOKEN]" });
+      assert.equal(r.isError, false, r.text);
+      const result = JSON.parse(r.text) as { text: string; notes: string[] };
+      assert.match(result.text, /FAKE_AGENT_TOKEN は渡っていない/);
+      assert.equal(result.notes.length, 1);
+      assert.match(result.notes[0]!, /FAKE_AGENT_TOKEN：設定の鍵を確かめられませんでした（alias "subagent\.fake\.FAKE_AGENT_TOKEN" は見つかりませんでしたが、読めていない Vault があります/);
+    },
+    { relayClient: vault.relay },
   );
 });

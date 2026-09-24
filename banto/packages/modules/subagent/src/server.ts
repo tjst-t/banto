@@ -2,26 +2,47 @@
 // Subagent Module（docs/specs/v4-architecture.md §4.1「Subagent Module の形」）。
 // MCP サーバであり、ACP クライアント——Claude Code・OpenCode を ACP の同じ口で起こす。
 // tool は2つ：`listSubagents`（一覧と、そのエージェントの設定の候補）と `runSubagent`（仕事を頼む）。
+// 人の設定画面（`config-app.ts`）向けに admin の tool を3つ持つ（鍵の状態・取り込む・置く）。
 
 import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import type { GuardOptions } from "@banto/landlock";
 import { resolveBootstrapConfigPath } from "@banto/core/dist/config/bootstrap.js";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
-import { listAgents, type AgentDefinition } from "./agents.js";
-import { ClaudeLoginError, hostClaudeCredentialsPath, startClaudeLoginProxy, type ClaudeLoginProxy } from "./claude-login-proxy.js";
+import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
+import {
+  ClaudeLoginError,
+  hostClaudeCredentialsPath,
+  readHostClaudeAccount,
+  startClaudeLoginProxy,
+  type ClaudeLoginProxy,
+} from "./claude-login-proxy.js";
+import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { confineAgent } from "./confine.js";
+import {
+  CredentialError,
+  importableValue,
+  resolveStoredKeys,
+  storedKeys,
+  storeKey,
+  type CredentialsRelay,
+} from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 
 export interface SubagentServerDeps {
   projectRoot: string;
   /** この Module のデータ置き場（エージェントごとの専用ホームをこの下に持つ） */
   moduleDataDir: string;
-  relayClient: Pick<HostRelayClient, "lookupAlias" | "resolveAlias">;
+  relayClient: CredentialsRelay;
   guard: GuardOptions;
   /** Module が起動したときの PATH（閉じ込めの導出に使う。実行時に読み直さない） */
   pathEntries: string[];
@@ -29,6 +50,8 @@ export interface SubagentServerDeps {
   /** banto 本体の Claude ログインの置き場と上流（試験で差し替える）。既定は本体と同じ解決 */
   claudeLogin?: { credentialsPath?: string; upstream?: string };
 }
+
+const UI_APP_MIME = "text/html;profile=mcp-app";
 
 // host が Module に渡した変数（`BANTO_*`）と、人の環境の秘密はエージェントに渡さない。
 // **渡すのはこの一覧と、専用ホーム・資格情報だけ**
@@ -50,6 +73,7 @@ function agentIdsText(agents: AgentDefinition[]): string {
 
 export function createSubagentServer(deps: SubagentServerDeps) {
   const agents = deps.agents ?? listAgents();
+  const claudeCredentialsPath = deps.claudeLogin?.credentialsPath ?? hostClaudeCredentialsPath();
   const server = new Server({ name: "banto-module-subagent", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
   // **自分が何者かを名乗る**（host は宣言と突き合わせる）。AI には見せない（admin）。
@@ -57,6 +81,13 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   // 自分のドメインで起こす」）——Module 自身は AI の書いたコマンドを走らせない
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
+      {
+        // **設定 Canvas**——Project 設定の左メニューに「サブエージェント」として出る
+        uri: CONFIG_APP_URI,
+        name: "サブエージェント",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config", ui: { prefersBorder: false } },
+      },
       {
         uri: "subagent://module",
         name: "この Module の申告",
@@ -72,11 +103,18 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             ],
             isolation: "subprocess",
             scope: "project",
+            // 人が設定画面で打った鍵がこの Module を通って Vault へ行く（要件 C8c）
+            handlesSecrets: true,
           },
         },
       },
     ],
   }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== CONFIG_APP_URI) throw new Error(`unknown resource: ${request.params.uri}`);
+    return { contents: [{ uri: CONFIG_APP_URI, mimeType: UI_APP_MIME, text: CONFIG_APP_HTML }] };
+  });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -100,10 +138,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         description:
           "サブエージェントに仕事を頼み、終わるまで待って最後の返答を返す。サブエージェントは Project root で、" +
           "自分の道具（シェル・ファイル操作）を使って働く——Project root の外には出られない（Landlock で強制）。" +
-          "**資格情報**：Claude Code は banto 本体の Claude ログインをそのまま使う（envSecrets は要らない。" +
-          "別の API キーで走らせたいときだけ ANTHROPIC_API_KEY に alias を渡す）。" +
-          "OpenCode は envSecrets で OPENCODE_API_KEY（OpenCode Go）ほかに alias を渡す。" +
-          "使える alias の一覧は resource `vault://aliases`。" +
+          "**資格情報は、ふつうは書かなくてよい**：Claude Code は banto 本体の Claude ログインをそのまま使い、" +
+          "OpenCode は人が Project 設定の「サブエージェント」で入れた鍵を使う（どれが使えるかは listSubagents）。" +
+          "それ以外の鍵で走らせたいときだけ envSecrets に alias を渡す（使える alias の一覧は resource `vault://aliases`）。" +
           "続きを頼むときは、前の返り値の sessionId を渡す。" +
           "**サブエージェントが人に確認を求めても、いまは聞く口が無いので断る**（断ったものは返り値の permissions に出る）",
         inputSchema: {
@@ -115,7 +152,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
               type: "string",
               description:
                 "モデル。候補は listSubagents で agent を指定して聞く。省略時はエージェントの既定" +
-                "（Claude Code を banto のログインで使うときは Sonnet）",
+                "（Claude Code は banto 本体と同じ既定）",
             },
             effort: { type: "string", description: "考える深さ（エージェントの thought_level）。省略時は既定" },
             sessionId: { type: "string", description: "続きから頼むときの session id（前の runSubagent の返り値）" },
@@ -124,6 +161,33 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           required: ["agent", "prompt"],
         },
         _meta: { [VISIBILITY_META_KEY]: "agent" },
+      },
+      // ---- 人の設定画面から呼ぶ（admin——AI には見せない） ----------------------------
+      {
+        name: "getCredentials",
+        description: "エージェントごとの資格情報の状態（値は返さない）",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "importCredential",
+        description: "この機械のエージェント自身の設定から鍵を取り込み、Vault に置く",
+        inputSchema: {
+          type: "object",
+          properties: { agent: { type: "string" }, env: { type: "string" } },
+          required: ["agent", "env"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "setCredential",
+        description: "人が貼った鍵を Vault に置く（在れば断る——書き換え・削除は Vault の管理画面だけ）",
+        inputSchema: {
+          type: "object",
+          properties: { agent: { type: "string" }, env: { type: "string" }, value: { type: "string" } },
+          required: ["agent", "env", "value"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
     ],
   }));
@@ -147,7 +211,20 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     try {
       if (request.params.name === "listSubagents") {
         if (args.agent === undefined) {
-          return text(agents.map((a) => ({ id: a.id, title: a.title, credentialEnv: a.credentialEnv })));
+          // **何を書かずに使えるか**も返す——AI が envSecrets を書くかどうかを、推測させない。
+          // 鍵が Vault に在るかは**ここでは引かない**（会話の中から目録を引くと、人への承認が増える）
+          return text(
+            await Promise.all(
+              agents.map(async (a) => ({
+                id: a.id,
+                title: a.title,
+                credentials: a.sharesHostClaudeLogin
+                  ? await hostLoginSummary()
+                  : "人が Project 設定の「サブエージェント」で入れた鍵を使う（入っていなければ envSecrets で渡す）",
+                credentialEnv: a.credentialEnv,
+              })),
+            ),
+          );
         }
         const agent = agentOf(args.agent);
         const launched = await launchFor(agent, args.envSecrets, onProgress);
@@ -158,6 +235,22 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         } finally {
           await launched.cleanup();
         }
+      }
+
+      if (request.params.name === "getCredentials") return text({ agents: await credentialsStatus() });
+      if (request.params.name === "importCredential") {
+        const agent = agentOf(args.agent);
+        const envName = String(args.env);
+        const value = await importableValue(agent, envName);
+        if (value === undefined) {
+          throw new CredentialError(`${agent.importFrom?.label ?? "取り込み元"}に ${envName} の鍵が見つかりません`);
+        }
+        await storeKey(agent, envName, value, deps.relayClient);
+        return text({ ok: true });
+      }
+      if (request.params.name === "setCredential") {
+        await storeKey(agentOf(args.agent), String(args.env), typeof args.value === "string" ? args.value : "", deps.relayClient);
+        return text({ ok: true });
       }
 
       if (request.params.name === "runSubagent") {
@@ -182,7 +275,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
               askPermission: refusePermission,
             },
           );
-          return text(result);
+          return text({ ...result, notes: [...launched.notes, ...result.notes] });
         } catch (err) {
           throw launched.explain(err);
         } finally {
@@ -191,7 +284,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       }
     } catch (err) {
       // 頼み方の誤り・エージェントの失敗は、AI に理由ごと返す（黙って空を返さない）
-      if (err instanceof SubagentError || err instanceof ClaudeLoginError) {
+      if (err instanceof SubagentError || err instanceof ClaudeLoginError || err instanceof CredentialError) {
         return { content: [{ type: "text", text: err.message }], isError: true };
       }
       throw err;
@@ -204,7 +297,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     agent: AgentDefinition,
     envSecrets: unknown,
     onProgress?: (message: string) => void,
-  ): Promise<{ launch: AgentLaunch; cleanup: () => Promise<void>; explain: (err: unknown) => unknown }> {
+  ): Promise<{ launch: AgentLaunch; notes: string[]; cleanup: () => Promise<void>; explain: (err: unknown) => unknown }> {
     const env: NodeJS.ProcessEnv = {};
     for (const name of PASS_THROUGH_ENV) if (process.env[name] !== undefined) env[name] = process.env[name];
 
@@ -217,17 +310,24 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       const place: AliasPlace = await deps.relayClient.lookupAlias("vault-directory", alias, note);
       env[name] = await deps.relayClient.resolveAlias(place, note);
     }
+    // 書かれなかった分は、人が設定で入れた既定の鍵（Vault）から
+    const stored = await resolveStoredKeys(agent, new Set(Object.keys(secrets)), deps.relayClient, onProgress);
+    Object.assign(env, stored.env);
 
     // **Claude は banto 本体のログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは
     // 渡さず、中継の合言葉だけを渡す。自分の資格情報を envSecrets で渡されたときは、そちらを使う
     let proxy: ClaudeLoginProxy | undefined;
     if (agent.sharesHostClaudeLogin && !agent.credentialEnv.some((name) => name in secrets)) {
       proxy = await startClaudeLoginProxy({
-        credentialsPath: deps.claudeLogin?.credentialsPath ?? hostClaudeCredentialsPath(),
+        credentialsPath: claudeCredentialsPath,
         ...(deps.claudeLogin?.upstream ? { upstream: deps.claudeLogin.upstream } : {}),
       });
       env.CLAUDE_CODE_OAUTH_TOKEN = proxy.secret;
       env.ANTHROPIC_BASE_URL = proxy.url;
+      // **既定を本体と揃える**（決定・2026-09-24、ユーザー）。env のトークンのとき、CLI は契約の種類を
+      // ここから読む（トークンではない）。無いと既定が Sonnet・文脈20万になった（実測）
+      if (proxy.account.subscriptionType) env.CLAUDE_CODE_SUBSCRIPTION_TYPE = proxy.account.subscriptionType;
+      if (proxy.account.rateLimitTier) env.CLAUDE_CODE_RATE_LIMIT_TIER = proxy.account.rateLimitTier;
     }
 
     let rulesetFile: string | undefined;
@@ -243,6 +343,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       rulesetFile = confined.args[confined.args.indexOf("--ruleset-file") + 1];
       return {
         launch: { command: confined.command, args: confined.args, env: { ...env, ...confined.env } },
+        notes: stored.notes,
         cleanup: async () => {
           if (rulesetFile) rmSync(rulesetFile, { force: true });
           await proxy?.close();
@@ -263,6 +364,39 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       await proxy?.close();
       throw err;
     }
+  }
+
+  async function hostLoginSummary(): Promise<string> {
+    const h = await readHostClaudeAccount(claudeCredentialsPath);
+    return h.loggedIn
+      ? `banto 本体の Claude ログインを使う（契約：${h.subscriptionType ?? "不明"}。何も渡さなくてよい）`
+      : `使えない：${h.reason}`;
+  }
+
+  /** 設定画面に出す状態。**値は返さない**（在るか・取り込めるかだけ）。人が開いた画面から呼ぶので目録を引いてよい */
+  async function credentialsStatus() {
+    const needsVault = agents.some(usesStoredKeys);
+    const present = needsVault ? await storedKeys(deps.relayClient) : new Map();
+    return Promise.all(
+      agents.map(async (a) => {
+        if (a.sharesHostClaudeLogin) {
+          return { id: a.id, title: a.title, hostLogin: await readHostClaudeAccount(claudeCredentialsPath) };
+        }
+        return {
+          id: a.id,
+          title: a.title,
+          ...(a.importFrom ? { importLabel: a.importFrom.label } : {}),
+          keys: await Promise.all(
+            a.credentialEnv.map(async (envName) => ({
+              env: envName,
+              alias: defaultAliasName(a.id, envName),
+              set: present.has(defaultAliasName(a.id, envName)),
+              importable: (await importableValue(a, envName).catch(() => undefined)) !== undefined,
+            })),
+          ),
+        };
+      }),
+    );
   }
 
   return server;
@@ -300,6 +434,10 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     // 閉じ込めの最後の防波堤に、banto 自身の置き場を教える（host と同じ解決——規則3）
     guard: { dataDir, configDir: dirname(resolveBootstrapConfigPath()) },
     pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
+    // 試験は本物のログインを読まない（E2E が用意した偽物を指す）。ふだんは本体と同じ解決
+    ...(process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS
+      ? { claudeLogin: { credentialsPath: process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS } }
+      : {}),
   });
   await server.connect(new StdioServerTransport());
 }

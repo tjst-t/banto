@@ -66,7 +66,10 @@ export class HostRelayClient {
         onProgress?.(progress.message ?? "host の返事を待っています");
       },
     });
-    return (result.content as { type: string; text: string }[])[0]?.text;
+    const text = (result.content as { type: string; text: string }[])[0]?.text;
+    // **相手が断ったら、断ったと言う**（規則2）——エラーの文言を値として持ち帰らない
+    if (result.isError) throw new Error(text ?? `${String(args.targetModule)} の ${String(args.name)} が失敗しました`);
+    return text;
   }
 
   /**
@@ -107,6 +110,22 @@ export class HostRelayClient {
     );
     if (typeof text !== "string") throw new Error(`alias "${place.name}" の解決に失敗しました`);
     return text;
+  }
+
+  /** Vault の目録（名前と置き場だけ——値は通らない） */
+  async listAliases(directoryModule: string): Promise<{ name: string; implementation: string; group?: string }[]> {
+    const text = await this.callRelay({ targetModule: directoryModule, name: "listAliases", arguments: {} });
+    const body = JSON.parse(text ?? "{}") as { aliases?: { name: string; implementation: string; group?: string }[] };
+    return body.aliases ?? [];
+  }
+
+  /** 人が設定画面で入れた鍵を、窓口経由で Vault にしまう（値は窓口を通って金庫へ——§2.1） */
+  async createAlias(directoryModule: string, alias: { name: string; value: string; note: string }): Promise<void> {
+    await this.callRelay({
+      targetModule: directoryModule,
+      name: "createAlias",
+      arguments: { name: alias.name, kind: "secret", value: alias.value, note: alias.note },
+    });
   }
 
   async close(): Promise<void> {

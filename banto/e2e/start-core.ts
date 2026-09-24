@@ -13,6 +13,9 @@ import {
   REGISTRY_BASE_URL,
   REGISTRY_PORT,
   SHELL_HOME_SOURCE,
+  SUBAGENT_CLAUDE_CREDENTIALS,
+  SUBAGENT_IMPORT_FILE,
+  SUBAGENT_IMPORTED_KEY,
 } from "./config.ts";
 import { startRegistryFixture } from "./registry-fixture.ts";
 import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
@@ -105,5 +108,13 @@ process.env.BANTO_SHELL_HOME_SOURCE = SHELL_HOME_SOURCE;
 // 資格情報と費用が要り、返事も毎回違う。偽の ACP エージェント（`@banto/module-subagent` の
 // `testing/fake-agent`）に差し替える——**閉じ込め・資格情報の受け渡し・再開は本物の経路**を通る
 process.env.BANTO_SUBAGENT_FAKE_AGENT = "1";
+// 設定画面が読むもの（本体の Claude ログインと、鍵の取り込み元）も偽物に向ける——人のものを読まない
+writeFileSync(
+  SUBAGENT_CLAUDE_CREDENTIALS,
+  JSON.stringify({ claudeAiOauth: { accessToken: "e2e-not-a-token", subscriptionType: "max", rateLimitTier: "e2e-tier" } }),
+);
+process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS = SUBAGENT_CLAUDE_CREDENTIALS;
+writeFileSync(SUBAGENT_IMPORT_FILE, JSON.stringify({ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }));
+process.env.BANTO_SUBAGENT_FAKE_IMPORT_FILE = SUBAGENT_IMPORT_FILE;
 
 await import("../packages/core/dist/cli.js");

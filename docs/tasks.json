@@ -2008,21 +2008,30 @@
     },
     {
       "id": "subagent-claude-default-model",
-      "title": "Claude Code のサブエージェントの既定のモデルを、本体と揃えるか決める",
-      "status": "undecided",
+      "title": "Claude Code のサブエージェントの既定のモデルを本体と揃える",
+      "status": "done",
       "dependencies": [
         "subagent-claude-host-login"
       ],
-      "why": "中継だと契約の種類が分からず、既定が Sonnet・sonnet の文脈が20万になる（本体は Opus 5.5・100万）。明示すれば選べる。"
+      "why": "中継だと契約の種類が分からず、既定が Sonnet・sonnet の文脈が20万になる（本体は Opus 5.5・100万）。明示すれば選べる。",
+      "result": "2026-09-24（ユーザー決定「揃えます」）：契約の種類と上限の段（トークンではない）を CLAUDE_CODE_SUBSCRIPTION_TYPE・CLAUDE_CODE_RATE_LIMIT_TIER で渡す。実測で既定が Opus 5.5（1M）、候補も本体と同じ並び。"
     },
     {
       "id": "subagent-default-credentials",
-      "title": "OpenCode でも、サブエージェントの既定の資格情報を持つ",
-      "status": "backlog",
+      "title": "OpenCode の鍵を設定画面から入れ、既定で使う",
+      "status": "done",
       "dependencies": [
         "subagent-module-sync"
       ],
-      "why": "Claude Code は banto 本体のログインを中継で共有する（2026-09-24、ユーザー）。OpenCode はまだ毎回 envSecrets に alias を書く。この機械の OpenCode の鍵を取り込む・既定を置く、のどちらか。"
+      "why": "Claude Code は banto 本体のログインを中継で共有する（2026-09-24、ユーザー）。OpenCode はまだ毎回 envSecrets に alias を書く。この機械の OpenCode の鍵を取り込む・既定を置く、のどちらか。",
+      "result": "2026-09-24：Project 設定に「サブエージェント」の設定 Canvas。取り込む（この機械の OpenCode の auth.json）・貼り付けて保存。置き場は Vault の subagent.<エージェント>.<変数>（banto 全体）。runSubagent で envSecrets を書かなければ名前で直接引く。設定済みの書き換え・削除は Vault の管理画面だけ（assertHuman）なので、そちらへ案内する。E2E（subagent-settings.spec.ts）。"
+    },
+    {
+      "id": "project-module-canvas-admin-stamp",
+      "title": "Project ごとの Module の設定画面から押した操作を、人の管理操作と刻むか決める",
+      "status": "undecided",
+      "why": "host は呼び出し元に Project があると {project} を刻み、{admin} は刻まない。そのため Subagent の設定画面から Vault の alias を消せない（Vault の assertHuman が断る）。いまは Vault の設定で消すよう案内している。意図どおりか（Project ごとの画面は他 Module の人向けの口を呼ばない前提だったか）を確かめる。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
     },
     {
       "id": "subagent-codex",
