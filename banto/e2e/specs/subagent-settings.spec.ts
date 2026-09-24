@@ -1,16 +1,17 @@
 // サブエージェントの設定画面（決定・2026-09-24、ユーザー——「Claude は本体のログインを共有」
-// 「OpenCode の Secret は設定から入れられるといい」）。
+// 「OpenCode の Secret は設定から入れられるといい」「鍵の設定は Project ではなく Global に」）。
 //
 // 偽物（start-core.ts）：本体の Claude ログイン＝契約 max の資格情報ファイル、取り込み元＝
 // `{ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }`。エージェントは偽の2つ
 // （fake＝鍵を使う・OpenCode と同じ形、fake-host＝本体のログインを使う・Claude Code と同じ形）。
 //
 // 見るもの（規則14——押せたで終わらせず、画面に出る中身と、その操作が効く先まで）：
-//   1. Project 設定の左メニューに「サブエージェント」が出て、本体のログインの状態（契約）が読める
-//   2. 貼り付けて保存すると「設定済み」になり、値は画面のどこにも出ない。banto 全体の Vault の一覧にも出る。
-//      設定済みのものはここでは変えず、Vault で消すよう案内する（Vault は書き換え・削除を管理画面からだけ受ける）
+//   1. **banto 全体の設定**の「Module ごとの設定」に「サブエージェント」が出て、本体のログインの状態が読める
+//   2. 貼り付けて保存すると「設定済み」になり、値は画面のどこにも出ない。banto 全体の Vault の一覧にも出る
 //   3. 会話で envSecrets を書かずに頼むと、**貼った値そのもの**がエージェントに届く（sha256 で突き合わせ）
-//   4. Vault の管理の口で消すと「未設定」に戻り、取り込むと**取り込んだ値**が次の仕事に届く
+//   4. 取り込むと置き換わり、次の仕事には**取り込んだ値**が届く（Vault の書き換えが、この画面から通る）
+//   5. 消すと「未設定」に戻る
+//   6. Project 設定には出ない（前の置き場）
 import { test, expect, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
@@ -29,14 +30,14 @@ const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 
 async function openSubagentSettings(page: Page) {
-  await openProjectSettings(page);
+  await page.goto("/settings");
   await page.getByRole("button", { name: "サブエージェント", exact: true }).click();
-  const canvas = page.locator('[data-testid="module-settings-canvas"][data-module="subagent"]');
+  const canvas = page.locator('[data-testid="module-settings-canvas"][data-module="subagent-settings"]');
   await expect(canvas, "サブエージェントの設定画面が出ていない").toBeVisible({ timeout: 30_000 });
   return canvas.locator("iframe").contentFrame().frameLocator("iframe");
 }
 
-test("サブエージェントの設定：本体のログインの状態が読め、鍵を貼る・取り込むと会話に効く", async ({ page }) => {
+test("サブエージェントの設定（banto 全体）：本体のログインの状態が読め、鍵を貼る・取り込む・消すと会話に効く", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-subagent-settings-"));
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
@@ -76,15 +77,13 @@ test("サブエージェントの設定：本体のログインの状態が読�
   await row.getByRole("button", { name: "貼り付けて保存" }).click();
   await expect(inner.getByText("FAKE_AGENT_TOKEN を保存しました")).toBeVisible({ timeout: 30_000 });
   await expect(row.locator('[data-role="state"]')).toHaveText("設定済み");
-  // 設定済みは、ここでは変えない——変え方を案内する（入力欄もボタンも消える）
-  await expect(row.locator('[data-role="how-to-change"]')).toHaveText(
-    `変える・消すときは、banto 全体の設定の Vault で「${ALIAS}」を消してから入れ直す`,
-  );
-  await expect(row.getByRole("button")).toHaveCount(0);
+  // 設定済みは、置き換えと消すができる
+  await expect(row.getByRole("button", { name: "貼り付けて置き換える" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "消す" })).toBeVisible();
+  await expect(row.getByLabel("FAKE_AGENT_TOKEN の鍵"), "保存したあとも入力欄に値が残っている").toHaveValue("");
   await expect(inner.getByText(PASTED), "設定画面に鍵の値が出ている").toHaveCount(0);
 
   // banto 全体の Vault の一覧にも出る（置き場は Vault——Module は持たない）
-  await page.goto("/settings");
   await page.getByRole("button", { name: "Vault（ローカル）", exact: true }).click();
   const vaultInner = page
     .locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe')
@@ -118,16 +117,15 @@ test("サブエージェントの設定：本体のログインの状態が読�
   expect((await lastAssistant()).text).toContain(sha(PASTED));
   await expect(page.getByText(PASTED), "会話に鍵の値が出ている").toHaveCount(0);
 
-  // ---- 4. Vault の管理の口で消すと未設定に戻り、取り込むと取り込んだ値が届く ---------------------
-  const removed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
-    headers,
-    data: { server: "vault-local", tool: "deleteAlias", arguments: { name: ALIAS, group: "instance" } },
-  });
-  expect(removed.ok(), await removed.text()).toBe(true);
+  // ---- 6. Project 設定には出ない（前の置き場）——banto 全体の側に1つだけ ---------------------------
+  await openProjectSettings(page);
+  await expect(page.getByRole("button", { name: "サブエージェント", exact: true })).toHaveCount(1);
+  await expect(page.locator('[data-testid="module-settings-canvas"][data-module="subagent"]')).toHaveCount(0);
 
+  // ---- 4. 取り込むと置き換わり、取り込んだ値が届く --------------------------------------------
   inner = await openSubagentSettings(page);
   row = inner.locator('[data-role="credential"][data-agent="fake"][data-env="FAKE_AGENT_TOKEN"]');
-  await expect(row.locator('[data-role="state"]')).toHaveText("未設定", { timeout: 30_000 });
+  await expect(row.locator('[data-role="state"]')).toHaveText("設定済み", { timeout: 30_000 });
   await row.getByRole("button", { name: "試験用の設定ファイルから取り込む" }).click();
   await expect(inner.getByText("FAKE_AGENT_TOKEN を取り込みました")).toBeVisible({ timeout: 30_000 });
   await expect(row.locator('[data-role="state"]')).toHaveText("設定済み");
@@ -140,11 +138,14 @@ test("サブエージェントの設定：本体のログインの状態が読�
   await expect.poll(async () => (await lastAssistant()).count, { timeout: 120_000 }).toBe(2);
   await expect(page.getByText(SUBAGENT_IMPORTED_KEY), "会話に鍵の値が出ている").toHaveCount(0);
 
-  // 後片づけ（banto 全体の Vault に置いたので、他の spec に残さない）
-  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
-    headers,
-    data: { server: "vault-local", tool: "deleteAlias", arguments: { name: ALIAS, group: "instance" } },
-  });
+  // ---- 5. 消すと未設定に戻る（この画面から Vault の削除が通る）-------------------------------
+  inner = await openSubagentSettings(page);
+  row = inner.locator('[data-role="credential"][data-agent="fake"][data-env="FAKE_AGENT_TOKEN"]');
+  await row.getByRole("button", { name: "消す" }).click();
+  await expect(inner.getByText("FAKE_AGENT_TOKEN を消しました")).toBeVisible({ timeout: 30_000 });
+  await expect(row.locator('[data-role="state"]')).toHaveText("未設定");
+  await expect(row.getByRole("button", { name: "消す" })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "貼り付けて保存" })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });

@@ -1,15 +1,18 @@
 // **サブエージェントの既定の鍵**（決定・2026-09-24、ユーザー「OpenCode の Secret は設定から入れられるといい」）。
 //
 // 置き場は **Vault の決まった名前**（`subagent.<エージェント>.<変数>`）——banto 全体で1つで、どの
-// Project でも使う。この Module は鍵を持たない（写しを持たない・規則3）。設定画面から入れ、
-// `runSubagent` で envSecrets を書かなければ、ここにあるものを使う。
+// Project でも使う。この Module は鍵を持たない（写しを持たない・規則3）。banto 全体の設定画面
+// （`settings-server.ts`）から入れ、`runSubagent` で envSecrets を書かなければ、ここにあるものを使う。
 
 import { readFile } from "node:fs/promises";
 import type { AgentDefinition, AuthFile } from "./agents.js";
 import { defaultAliasName, usesStoredKeys } from "./agents.js";
 import type { HostRelayClient } from "./host-relay-client.js";
 
-export type CredentialsRelay = Pick<HostRelayClient, "listAliases" | "lookupAlias" | "resolveAlias" | "createAlias">;
+/** 会話の中で使う側（Project ごとの Module）に要る口 */
+export type StoredKeysRelay = Pick<HostRelayClient, "lookupAlias" | "resolveAlias">;
+/** 設定画面の側（banto 全体の Module）に要る口 */
+export type CredentialsRelay = Pick<HostRelayClient, "listAliases" | "createAlias" | "deleteAlias">;
 
 const DIRECTORY = "vault-directory";
 
@@ -35,7 +38,7 @@ export async function storedKeys(relay: CredentialsRelay): Promise<Map<string, {
 export async function resolveStoredKeys(
   agent: AgentDefinition,
   explicit: ReadonlySet<string>,
-  relay: CredentialsRelay,
+  relay: StoredKeysRelay,
   onProgress?: (message: string) => void,
 ): Promise<{ env: Record<string, string>; notes: string[] }> {
   const env: Record<string, string> = {};
@@ -45,7 +48,7 @@ export async function resolveStoredKeys(
     if (explicit.has(name)) continue;
     const alias = defaultAliasName(agent.id, name);
     const note = (n: string) => onProgress?.(`${name}（設定の鍵）——${n}`);
-    let place: Awaited<ReturnType<CredentialsRelay["lookupAlias"]>>;
+    let place: Awaited<ReturnType<StoredKeysRelay["lookupAlias"]>>;
     try {
       place = await relay.lookupAlias(DIRECTORY, alias, note);
     } catch (err) {
@@ -91,26 +94,32 @@ export async function importableValue(agent: AgentDefinition, envName: string): 
 }
 
 /**
- * 既定の鍵を置く。**在るときは置き換えない**——Vault は alias の書き換え・削除を**人の管理画面からだけ**
- * 受け付ける（`vault-kit` の assertHuman。Module からの呼び出しでは変えられない——秘密を守る線）。
- * 変えたいときは、Vault の設定で消してから入れ直してもらう（そう言って断る）
+ * 既定の鍵を置く（在れば置き換える）。値は窓口を通って金庫へ——この Module は持たない。
+ *
+ * Vault は alias の書き換え・削除を**人の管理操作のときだけ**受け付ける（`vault-kit` の assertHuman）。
+ * banto 全体の設定画面から押した操作はそれに当たる（host が `{admin}` を刻む）ので、消してから作り直す
+ * ——Vault の値を置き換える口は種別 oauth-token にしか無い（v4-security.md）
  */
 export async function storeKey(agent: AgentDefinition, envName: string, value: string, relay: CredentialsRelay): Promise<void> {
   assertKeyOf(agent, envName);
   const trimmed = value.trim();
   if (trimmed === "") throw new CredentialError("鍵が空です");
   const alias = defaultAliasName(agent.id, envName);
-  if ((await storedKeys(relay)).has(alias)) {
-    throw new CredentialError(
-      `${envName} は設定済みです。変えるときは、banto 全体の設定の Vault で「${alias}」を消してから入れ直してください` +
-        "（Vault の鍵を書き換え・削除できるのは Vault の管理画面だけです）",
-    );
-  }
+  const existing = (await storedKeys(relay)).get(alias);
+  if (existing) await relay.deleteAlias(DIRECTORY, { name: alias, ...existing });
   await relay.createAlias(DIRECTORY, {
     name: alias,
     value: trimmed,
-    note: `サブエージェント ${agent.title} の ${envName}（Subagent の設定から。どの Project でも使う）`,
+    note: `サブエージェント ${agent.title} の ${envName}（サブエージェントの設定から。どの Project でも使う）`,
   });
+}
+
+export async function deleteKey(agent: AgentDefinition, envName: string, relay: CredentialsRelay): Promise<void> {
+  assertKeyOf(agent, envName);
+  const alias = defaultAliasName(agent.id, envName);
+  const existing = (await storedKeys(relay)).get(alias);
+  if (!existing) throw new CredentialError(`${envName} は設定されていません`);
+  await relay.deleteAlias(DIRECTORY, { name: alias, ...existing });
 }
 
 function assertKeyOf(agent: AgentDefinition, envName: string): void {

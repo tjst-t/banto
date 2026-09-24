@@ -198,3 +198,20 @@ Claude Code・CloudCLI のどれかが動けば更新される（寿命は約8�
   ある」に変わっていた。「どこにも無い」とだけ突き合わせていたので、これを本当の失敗として仕事ごと止めて
   いた。既定の鍵は AI が明示したものではないので、**止めずに読み飛ばし、返り値の notes に書く**ことにした。
   人の banto にも vault-infisical は居るので、同じことが起こりうる
+
+## 鍵の設定を banto 全体の設定へ移す（決定・2026-09-24、ユーザー「Project ではなく Global に」）
+
+鍵は最初から banto 全体の Vault に置いていたのに、設定画面だけ Project 設定に出ていた——**設定画面が
+どちらに出るかは Module の単位で決まる**（Project ごとの Module の画面は Project 設定、banto 全体に1本の
+Module の画面は banto 全体の設定）ため。走らせる Module は作業場所と閉じ込めがあるので Project ごとから
+動かせない。**設定だけを受け持つ banto 全体の Module（`subagent-settings`）を同じパッケージの別の入口として
+分けた**。core に「Project ごとの Module の画面を全体に出す」口を足す案もあったが、どの Project のプロセスが
+その画面を受け持つのかが決まらない。
+
+移したら、**Vault の書き換え・削除がこの画面から通るようになった**——banto 全体の Module には Project が
+無いので、画面から押した操作に host が `{admin}` を刻む（Project ごとの Module は `{project}` を刻まれ、
+Vault に断られていた）。置き換え（消してから作り直す）と「消す」を戻した。E2E で、取り込みによる置き換えと
+削除が通り、置き換えた値が次の仕事に届くことを確かめた。
+
+`project-module-canvas-admin-stamp`（Project ごとの Module の画面から押した操作を人の管理操作と刻むか）は、
+サブエージェントについては当面の不便が無くなった。一般の問いとしては残す。

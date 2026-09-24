@@ -70,11 +70,11 @@ function stdio(launch: ModuleLaunch): StdioLaunch {
 // **コードに写した行は、消したくても消せない**（既定は `removable: false`）。
 // **Skill を配る Module も既定に入る**（追加・2026-09-23、アーキ仕様 §5.7）
 // ——Skill を取り込む先で、誰もが使う。
-test("同梱の既定は6本（vault-local/vault-directory/shell/filesystem/subagent/skills）で、そのまま読める", () => {
+test("同梱の既定は7本（vault-local/vault-directory/shell/filesystem/subagent/subagent-settings/skills）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "skills", "subagent", "vault-directory", "vault-local"],
+    ["filesystem", "shell", "skills", "subagent", "subagent-settings", "vault-directory", "vault-local"],
   );
   // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
   assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
@@ -86,6 +86,8 @@ test("同梱の既定は6本（vault-local/vault-directory/shell/filesystem/suba
   // subagent は閉じ込めを宣言しない——閉じ込めるのは Module が起こすエージェントのほう
   // （v4-security.md「サブエージェントは自分のドメインで起こす」）
   assert.equal(parsed.find((d) => d.name === "subagent")?.meta.confinement, undefined);
+  // 鍵の設定は banto 全体に1本（設定画面を banto 全体の設定に出すため）
+  assert.equal(parsed.find((d) => d.name === "subagent-settings")?.meta.scope, "instance");
 });
 
 test("node 以外で起動する Module も宣言できる（TypeScript でない Module の前提）", () => {

@@ -1,10 +1,11 @@
-// Subagent Module の**設定 Canvas**（決定・2026-09-24、ユーザー「OpenCode の Secret は設定から入れられるといい」）。
+// サブエージェントの**設定 Canvas**（決定・2026-09-24、ユーザー「OpenCode の Secret は設定から入れられるといい」
+// 「鍵の設定は Project ではなく Global に」）。banto 全体の設定に出る（`settings-server.ts` が持つ）。
 // FileSystem の設定 Canvas と同じ形（`dev.banto/canvas: "config"`、Module 自身の admin tool を呼ぶ）。
 //
 // - **本体のログインを共有するエージェント**（Claude Code）：何も入れなくてよい。いまの状態だけを出す
-// - **鍵を受け取るエージェント**（OpenCode）：未設定の変数に「この機械の設定から取り込む」「貼り付けて保存」。
-//   設定済みのものは**ここでは変えない**——Vault は書き換え・削除を Vault の管理画面からだけ受け付ける
-//   （秘密を守る線）。変え方を案内する
+// - **鍵を受け取るエージェント**（OpenCode）：変数ごとに「この機械の設定から取り込む」「貼り付けて保存」
+//   「消す」。置き換えは、消してから作り直す（Vault は人の管理操作のときだけ書き換え・削除を受け付ける
+//   ——banto 全体の設定画面から押した操作はそれに当たる）
 //
 // **鍵は Module が持たない**——Vault（banto 全体）の決まった名前に置き、どの Project でも使う。
 // 画面は値を表示しない（入力欄は password、保存したら空にする）。
@@ -110,29 +111,32 @@ export const CONFIG_APP_HTML = `<!doctype html>
       root.appendChild(el("p", { class: "note", text: "鍵は banto 全体の Vault に置き、どの Project でも使います。サブエージェントのシェルから読めるので、渡してよいものだけを入れてください。" }));
       for (const key of agent.keys) {
         const cells = [];
+        if (key.importable) {
+          const b = el("button", { text: agent.importLabel + "から取り込む" });
+          b.addEventListener("click", () => act(
+            [key.env + " を取り込んでいます", key.env + " を取り込みました", key.env + " を取り込めませんでした"],
+            () => call("importCredential", { agent: agent.id, env: key.env }),
+          ));
+          cells.push(b);
+        }
+        const input = el("input", { type: "password", placeholder: key.set ? "新しい鍵を貼り付け" : "鍵を貼り付け", "aria-label": key.env + " の鍵", autocomplete: "off" });
+        const save = el("button", { text: key.set ? "貼り付けて置き換える" : "貼り付けて保存" });
+        save.addEventListener("click", () => {
+          const value = input.value;
+          input.value = "";
+          act(
+            [key.env + " を保存しています", key.env + " を保存しました", key.env + " を保存できませんでした"],
+            () => call("setCredential", { agent: agent.id, env: key.env, value }),
+          );
+        });
+        cells.push(input, save);
         if (key.set) {
-          // 設定済みは、ここでは変えない（Vault の管理画面だけが書き換え・削除できる）
-          cells.push(el("span", { class: "note", "data-role": "how-to-change", text: "変える・消すときは、banto 全体の設定の Vault で「" + key.alias + "」を消してから入れ直す" }));
-        } else {
-          if (key.importable) {
-            const b = el("button", { text: agent.importLabel + "から取り込む" });
-            b.addEventListener("click", () => act(
-              [key.env + " を取り込んでいます", key.env + " を取り込みました", key.env + " を取り込めませんでした"],
-              () => call("importCredential", { agent: agent.id, env: key.env }),
-            ));
-            cells.push(b);
-          }
-          const input = el("input", { type: "password", placeholder: "鍵を貼り付け", "aria-label": key.env + " の鍵", autocomplete: "off" });
-          const save = el("button", { text: "貼り付けて保存" });
-          save.addEventListener("click", () => {
-            const value = input.value;
-            input.value = "";
-            act(
-              [key.env + " を保存しています", key.env + " を保存しました", key.env + " を保存できませんでした"],
-              () => call("setCredential", { agent: agent.id, env: key.env, value }),
-            );
-          });
-          cells.push(input, save);
+          const del = el("button", { text: "消す" });
+          del.addEventListener("click", () => act(
+            [key.env + " を消しています", key.env + " を消しました", key.env + " を消せませんでした"],
+            () => call("deleteCredential", { agent: agent.id, env: key.env }),
+          ));
+          cells.push(del);
         }
         root.appendChild(el("div", { class: "row", "data-role": "credential", "data-agent": agent.id, "data-env": key.env }, [
           el("code", { text: key.env }),

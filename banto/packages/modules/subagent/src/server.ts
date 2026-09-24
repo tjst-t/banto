@@ -2,23 +2,18 @@
 // Subagent Module（docs/specs/v4-architecture.md §4.1「Subagent Module の形」）。
 // MCP サーバであり、ACP クライアント——Claude Code・OpenCode を ACP の同じ口で起こす。
 // tool は2つ：`listSubagents`（一覧と、そのエージェントの設定の候補）と `runSubagent`（仕事を頼む）。
-// 人の設定画面（`config-app.ts`）向けに admin の tool を3つ持つ（鍵の状態・取り込む・置く）。
+// 鍵の設定画面は banto 全体に1本の別 Module（`settings-server.ts`）が持つ——ここは Project ごとに立つので。
 
 import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import type { GuardOptions } from "@banto/landlock";
 import { resolveBootstrapConfigPath } from "@banto/core/dist/config/bootstrap.js";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
-import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
+import { listAgents, type AgentDefinition } from "./agents.js";
 import {
   ClaudeLoginError,
   hostClaudeCredentialsPath,
@@ -26,23 +21,15 @@ import {
   startClaudeLoginProxy,
   type ClaudeLoginProxy,
 } from "./claude-login-proxy.js";
-import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { confineAgent } from "./confine.js";
-import {
-  CredentialError,
-  importableValue,
-  resolveStoredKeys,
-  storedKeys,
-  storeKey,
-  type CredentialsRelay,
-} from "./credentials.js";
+import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 
 export interface SubagentServerDeps {
   projectRoot: string;
   /** この Module のデータ置き場（エージェントごとの専用ホームをこの下に持つ） */
   moduleDataDir: string;
-  relayClient: CredentialsRelay;
+  relayClient: StoredKeysRelay;
   guard: GuardOptions;
   /** Module が起動したときの PATH（閉じ込めの導出に使う。実行時に読み直さない） */
   pathEntries: string[];
@@ -51,7 +38,6 @@ export interface SubagentServerDeps {
   claudeLogin?: { credentialsPath?: string; upstream?: string };
 }
 
-const UI_APP_MIME = "text/html;profile=mcp-app";
 
 // host が Module に渡した変数（`BANTO_*`）と、人の環境の秘密はエージェントに渡さない。
 // **渡すのはこの一覧と、専用ホーム・資格情報だけ**
@@ -82,13 +68,6 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
       {
-        // **設定 Canvas**——Project 設定の左メニューに「サブエージェント」として出る
-        uri: CONFIG_APP_URI,
-        name: "サブエージェント",
-        mimeType: UI_APP_MIME,
-        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config", ui: { prefersBorder: false } },
-      },
-      {
         uri: "subagent://module",
         name: "この Module の申告",
         mimeType: "application/json",
@@ -103,18 +82,12 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             ],
             isolation: "subprocess",
             scope: "project",
-            // 人が設定画面で打った鍵がこの Module を通って Vault へ行く（要件 C8c）
-            handlesSecrets: true,
           },
         },
       },
     ],
   }));
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    if (request.params.uri !== CONFIG_APP_URI) throw new Error(`unknown resource: ${request.params.uri}`);
-    return { contents: [{ uri: CONFIG_APP_URI, mimeType: UI_APP_MIME, text: CONFIG_APP_HTML }] };
-  });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -139,7 +112,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           "サブエージェントに仕事を頼み、終わるまで待って最後の返答を返す。サブエージェントは Project root で、" +
           "自分の道具（シェル・ファイル操作）を使って働く——Project root の外には出られない（Landlock で強制）。" +
           "**資格情報は、ふつうは書かなくてよい**：Claude Code は banto 本体の Claude ログインをそのまま使い、" +
-          "OpenCode は人が Project 設定の「サブエージェント」で入れた鍵を使う（どれが使えるかは listSubagents）。" +
+          "OpenCode は人が banto 全体の設定の「サブエージェント」で入れた鍵を使う（どれが使えるかは listSubagents）。" +
           "それ以外の鍵で走らせたいときだけ envSecrets に alias を渡す（使える alias の一覧は resource `vault://aliases`）。" +
           "続きを頼むときは、前の返り値の sessionId を渡す。" +
           "**サブエージェントが人に確認を求めても、いまは聞く口が無いので断る**（断ったものは返り値の permissions に出る）",
@@ -161,33 +134,6 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           required: ["agent", "prompt"],
         },
         _meta: { [VISIBILITY_META_KEY]: "agent" },
-      },
-      // ---- 人の設定画面から呼ぶ（admin——AI には見せない） ----------------------------
-      {
-        name: "getCredentials",
-        description: "エージェントごとの資格情報の状態（値は返さない）",
-        inputSchema: { type: "object", properties: {} },
-        _meta: { [VISIBILITY_META_KEY]: "admin" },
-      },
-      {
-        name: "importCredential",
-        description: "この機械のエージェント自身の設定から鍵を取り込み、Vault に置く",
-        inputSchema: {
-          type: "object",
-          properties: { agent: { type: "string" }, env: { type: "string" } },
-          required: ["agent", "env"],
-        },
-        _meta: { [VISIBILITY_META_KEY]: "admin" },
-      },
-      {
-        name: "setCredential",
-        description: "人が貼った鍵を Vault に置く（在れば断る——書き換え・削除は Vault の管理画面だけ）",
-        inputSchema: {
-          type: "object",
-          properties: { agent: { type: "string" }, env: { type: "string" }, value: { type: "string" } },
-          required: ["agent", "env", "value"],
-        },
-        _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
     ],
   }));
@@ -220,7 +166,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
                 title: a.title,
                 credentials: a.sharesHostClaudeLogin
                   ? await hostLoginSummary()
-                  : "人が Project 設定の「サブエージェント」で入れた鍵を使う（入っていなければ envSecrets で渡す）",
+                  : "人が banto 全体の設定の「サブエージェント」で入れた鍵を使う（入っていなければ envSecrets で渡す）",
                 credentialEnv: a.credentialEnv,
               })),
             ),
@@ -237,21 +183,6 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         }
       }
 
-      if (request.params.name === "getCredentials") return text({ agents: await credentialsStatus() });
-      if (request.params.name === "importCredential") {
-        const agent = agentOf(args.agent);
-        const envName = String(args.env);
-        const value = await importableValue(agent, envName);
-        if (value === undefined) {
-          throw new CredentialError(`${agent.importFrom?.label ?? "取り込み元"}に ${envName} の鍵が見つかりません`);
-        }
-        await storeKey(agent, envName, value, deps.relayClient);
-        return text({ ok: true });
-      }
-      if (request.params.name === "setCredential") {
-        await storeKey(agentOf(args.agent), String(args.env), typeof args.value === "string" ? args.value : "", deps.relayClient);
-        return text({ ok: true });
-      }
 
       if (request.params.name === "runSubagent") {
         const agent = agentOf(args.agent);
@@ -284,7 +215,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       }
     } catch (err) {
       // 頼み方の誤り・エージェントの失敗は、AI に理由ごと返す（黙って空を返さない）
-      if (err instanceof SubagentError || err instanceof ClaudeLoginError || err instanceof CredentialError) {
+      if (err instanceof SubagentError || err instanceof ClaudeLoginError) {
         return { content: [{ type: "text", text: err.message }], isError: true };
       }
       throw err;
@@ -373,32 +304,6 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       : `使えない：${h.reason}`;
   }
 
-  /** 設定画面に出す状態。**値は返さない**（在るか・取り込めるかだけ）。人が開いた画面から呼ぶので目録を引いてよい */
-  async function credentialsStatus() {
-    const needsVault = agents.some(usesStoredKeys);
-    const present = needsVault ? await storedKeys(deps.relayClient) : new Map();
-    return Promise.all(
-      agents.map(async (a) => {
-        if (a.sharesHostClaudeLogin) {
-          return { id: a.id, title: a.title, hostLogin: await readHostClaudeAccount(claudeCredentialsPath) };
-        }
-        return {
-          id: a.id,
-          title: a.title,
-          ...(a.importFrom ? { importLabel: a.importFrom.label } : {}),
-          keys: await Promise.all(
-            a.credentialEnv.map(async (envName) => ({
-              env: envName,
-              alias: defaultAliasName(a.id, envName),
-              set: present.has(defaultAliasName(a.id, envName)),
-              importable: (await importableValue(a, envName).catch(() => undefined)) !== undefined,
-            })),
-          ),
-        };
-      }),
-    );
-  }
-
   return server;
 }
 
@@ -417,7 +322,8 @@ function text(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
 }
 
-if (process.argv[1] && process.argv[1].endsWith("server.js")) {
+// **入口の判定は名前まで見る**——`settings-server.js` も同じ語尾なので、語尾だけだと取り違える
+if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
   const projectRoot = process.env.BANTO_PROJECT_ROOT;
   const hostUrl = process.env.BANTO_HOST_MCP_URL;
   const hostToken = process.env.BANTO_HOST_MCP_TOKEN;

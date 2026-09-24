@@ -2027,10 +2027,21 @@
       "result": "2026-09-24：Project 設定に「サブエージェント」の設定 Canvas。取り込む（この機械の OpenCode の auth.json）・貼り付けて保存。置き場は Vault の subagent.<エージェント>.<変数>（banto 全体）。runSubagent で envSecrets を書かなければ名前で直接引く。設定済みの書き換え・削除は Vault の管理画面だけ（assertHuman）なので、そちらへ案内する。E2E（subagent-settings.spec.ts）。"
     },
     {
+      "id": "subagent-settings-global",
+      "title": "サブエージェントの鍵の設定を banto 全体の設定へ移す",
+      "status": "done",
+      "dependencies": [
+        "subagent-default-credentials"
+      ],
+      "why": "ユーザー（2026-09-24）：鍵の設定は Project ではなく Global に。",
+      "result": "2026-09-24：設定画面を banto 全体に1本の subagent-settings（同じパッケージの別の入口）へ。banto 全体の画面から押した操作は {admin} と刻まれるので、Vault の置き換え・削除もこの画面から通る。E2E（subagent-settings.spec.ts）で置き換え・削除・Project 設定に出ないことまで確かめた。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
       "id": "project-module-canvas-admin-stamp",
       "title": "Project ごとの Module の設定画面から押した操作を、人の管理操作と刻むか決める",
       "status": "undecided",
-      "why": "host は呼び出し元に Project があると {project} を刻み、{admin} は刻まない。そのため Subagent の設定画面から Vault の alias を消せない（Vault の assertHuman が断る）。いまは Vault の設定で消すよう案内している。意図どおりか（Project ごとの画面は他 Module の人向けの口を呼ばない前提だったか）を確かめる。",
+      "why": "host は呼び出し元に Project があると {project} を刻み、{admin} は刻まない。そのため Project ごとの Module の設定画面からは Vault の alias を書き換え・削除できない（Vault の assertHuman が断る）。サブエージェントは鍵の設定を banto 全体の Module（subagent-settings）へ移したので当面の不便は無い（2026-09-24）。一般の問いとして、意図どおりかを確かめる。",
       "notes": "docs/notes/2026-09-24-subagent-acp.md"
     },
     {

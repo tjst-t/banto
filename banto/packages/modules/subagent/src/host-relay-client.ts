@@ -128,6 +128,11 @@ export class HostRelayClient {
     });
   }
 
+  /** 人が設定画面で押した削除（Vault は人の管理操作のときだけ受け付ける——`vault-kit` の assertHuman） */
+  async deleteAlias(directoryModule: string, place: { name: string; group?: string }): Promise<void> {
+    await this.callRelay({ targetModule: directoryModule, name: "deleteAlias", arguments: { name: place.name, group: place.group } });
+  }
+
   async close(): Promise<void> {
     await this.client?.close();
   }

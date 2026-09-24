@@ -25,7 +25,9 @@ async function withModule(command: string, args: string[], env: Record<string, s
   }
 }
 
-for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent"] as const) {
+// 入口の置き場（既定は `<name>/dist/server.js`）。同じパッケージに入口が2つあるものだけ書く
+const ENTRY: Record<string, string> = { "subagent-settings": join("subagent", "dist", "settings-server.js") };
+for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent", "subagent-settings"] as const) {
   test(`${name} は自分が何者かを名乗り、同梱の宣言と食い違わない`, async () => {
     const declaration = parseModuleDeclaration(
       DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === name)!,
@@ -33,7 +35,7 @@ for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent"] 
     );
     await withModule(
       process.execPath,
-      [join(modulesDir, name, "dist", "server.js")],
+      [join(modulesDir, ENTRY[name] ?? join(name, "dist", "server.js"))],
       {
         BANTO_PROJECT_ROOT: "/tmp",
         BANTO_VAULT_DATA_DIR: "/tmp/banto-selfreport-vault",

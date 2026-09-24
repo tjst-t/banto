@@ -765,7 +765,33 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       ],
       isolation: "subprocess",
       scope: "project",
-      // 人が設定画面で打った鍵（OpenCode など）がこの Module を通って Vault へ行く（要件 C8c）
+    },
+  },
+  {
+    // **サブエージェントの設定**（決定・2026-09-24、ユーザー「鍵の設定は Project ではなく Global に」）。
+    // 設定画面がどちらに出るかは Module の単位が決める——走らせる Module（上）は Project ごとなので、
+    // **設定だけを受け持つ banto 全体の Module** を分けた（同じパッケージの別の入口）。
+    // 鍵は Vault の決まった名前に置き、どの Project でも使う。banto 全体の設定画面から押した操作は
+    // 人の管理操作と刻まれるので、Vault の書き換え・削除もここからできる。
+    // 閉じ込めない——本体の Claude ログインの状態と、この機械の OpenCode の設定（取り込み元）を読む
+    name: "subagent-settings",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/subagent/dist/settings-server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["subagent-settings"],
+      dependsOn: [
+        { role: "vault-directory", required: true },
+        { role: "vault", required: true },
+      ],
+      isolation: "subprocess",
+      scope: "instance",
+      // 人が設定画面で打った鍵がこの Module を通って Vault へ行く（要件 C8c）
       handlesSecrets: true,
     },
   },

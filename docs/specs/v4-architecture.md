@@ -1844,15 +1844,18 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   ——本体の CLI が次の呼び出しで更新するので、`sessionId` を渡して続きから頼み直せば通る（落ちたときは
   そう書いて返す）
 - **鍵を使うエージェント（OpenCode）は、人が設定画面で入れた鍵を既定で使う**（決定・2026-09-24、ユーザー——
-  「Secret は設定から入れられるといい」）。Project 設定の左メニューに「サブエージェント」（設定 Canvas）が出て、
-  変数ごとに「この機械の OpenCode から取り込む」（`~/.local/share/opencode/auth.json` の `type: "api"` の鍵）と
-  「貼り付けて保存」がある。**鍵は Vault の決まった名前（`subagent.<エージェント>.<変数>`）に置く**——banto 全体で
-  1つ、どの Project でも使う。Module は鍵を持たない（規則3）。`runSubagent` で envSecrets を書かなければ、
+  「Secret は設定から入れられるといい」「鍵の設定は Project ではなく Global に」）。**banto 全体の設定**の
+  「Module ごとの設定」に「サブエージェント」（設定 Canvas）が出て、変数ごとに「この機械の OpenCode から
+  取り込む」（`~/.local/share/opencode/auth.json` の `type: "api"` の鍵）・「貼り付けて保存」（設定済みなら
+  置き換え）・「消す」がある。**鍵は Vault の決まった名前（`subagent.<エージェント>.<変数>`）に置く**——banto
+  全体で1つ、どの Project でも使う。Module は鍵を持たない（規則3）。`runSubagent` で envSecrets を書かなければ、
   その名前を直接引いて使う（**目録は引かない**——会話の中から目録を引くと人への承認が1枚増えた。実測）。
-  **設定済みの鍵は、この画面では書き換え・削除しない**：Vault は alias の書き換え・削除を**人の管理画面から
-  だけ**受け付け（`vault-kit` の assertHuman）、Project ごとの Module の画面から押した操作はそれに当たらない
-  ——Vault の設定で消してから入れ直すよう案内する。取り込みは**写し**なので、元で鍵を変えたら入れ直す。
-  Claude Code（本体のログインを共有）の欄は、状態（ログイン中・契約の種類）を出すだけ
+  Claude Code（本体のログインを共有）の欄は、状態（ログイン中・契約の種類）を出すだけ。
+  **設定画面は別の Module（`subagent-settings`、banto 全体に1本）が持つ**——設定画面がどちらの設定に出るかは
+  Module の単位が決め、走らせる Module は Project ごと（作業場所と閉じ込めがある）なので分けた（同じパッケージの
+  別の入口）。banto 全体の設定画面から押した操作は、host が人の管理操作（`{admin}`）と刻むので、**Vault の
+  書き換え・削除もこの画面から通る**（Vault はそのときだけ受け付ける——`vault-kit` の assertHuman）。
+  取り込みは**写し**なので、元で鍵を変えたら取り込み直す
 - **それ以外の資格情報は環境変数で渡し、ファイルに写さない**（OpenCode の `auth.json` も作らない）。
   **AI が `envSecrets` に Vault の alias 名を書き、Module が値を受け取って env に入れる**
   （Shell の `envSecrets` と同じ形・同じ中継。初回は中継の承認を人に聞く）。変数名は、
