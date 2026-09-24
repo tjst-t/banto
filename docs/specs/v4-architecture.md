@@ -1758,6 +1758,39 @@ core が Subagent の内部を知っている必要が生まれ、境界が崩�
 「何が可能か」の材料であって、答えそのものではない。設計自体は引き続き未決
 （§10）。
 
+#### backend の共通口は ACP（決定・2026-09-24、ユーザー）
+
+**backend の口を自分で設計しない**（規則12）。「いろいろなコーディングエージェントを1つの口で
+動かす」には標準がある——**ACP（Agent Client Protocol）**。Claude（Zed のアダプタ
+`claude-agent-acp`）・Codex（`codex-acp`）・OpenCode（`opencode acp`）・Gemini CLI ほか
+40以上が対応している（2026-09-24 確認）。
+
+```
+banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-acp / opencode acp / …
+```
+
+- **Subagent Module は MCP サーバであり、ACP クライアント。** エージェントを足すのは、起動の
+  仕方を設定に1つ足すことにする（プラガブル）。backend ごとの橋は書かない
+- 上の7項目は ACP の口にそのまま載る：途中経過＝`session/update`、割り込み＝`session/cancel`、
+  resume＝`session/load`（`loadSession` を名乗るエージェントだけ）、tool の可視性＝`tool_call`、
+  人への確認＝`session/request_permission`（banto の承認ゲートへ）。**持っているかどうかは
+  `initialize` で名乗り合う**——「無いものは無いと明示する」（上の帰結）が仕様の形のまま手に入る。
+  使用量・文脈の内訳は未確認（PoC で測る）
+- **サブエージェントの道具は、エージェント自身の tool を Landlock の中で使わせる。banto の Module
+  （FileSystem・Shell・Vault）は追加で渡す**（ACP の `session/new` の `mcpServers`）。ACP には
+  ファイル・端末の操作をクライアント（banto）に回させる口もあるが、どのエージェントも従うとは
+  限らない——**強制できる層は Landlock**（§3 と同じ考え方）
+- **最初に繋ぐのは Claude Code と OpenCode**。Codex はこの2つが通ってから
+- **認証は「サブスクで使えるものはサブスク、API キーでも使える」**——どれが使えるかは
+  エージェントごとに違う。API キーは Vault の alias から環境変数で渡す（Shell の `envSecrets` と同じ形）
+- **最初は待つ形**（依頼した tool 呼び出しの中で終わるまで待ち、進捗を送って呼び出しを切らせない
+  ——Shell と同じ手当て）。待たない形（終わったら依頼元の Thread に届ける）は後——core に
+  「Thread にメッセージを届ける」口が要る。**MCP の非同期の仕組み（Tasks）には頼れない**：
+  Claude Code 2.1.281 も名乗らない（実測・2026-09-24：クライアントの能力は `roots`・`elicitation`
+  だけ）
+- tool の形・閉じ込めの許可・資格情報の渡し方・作業場所は PoC（`poc/08-subagent-acp/`）で測ってから
+  決める。経緯と却下した案は `docs/notes/2026-09-24-subagent-acp.md`
+
 ### 4.2 Thread 間のメッセージ
 
 Thread の AI が、**別の Thread の AI にメッセージを送れる**（要件：Thread 間の
@@ -3146,8 +3179,9 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
 1. **backend Module のインタフェースの具体形**（§4.1）——core が backend に何を渡し、
    何を受け取るか。決まると別ベンダ backend を足すコストが見積もれる。
    **材料は実測済み**（opencode、2026-08-30、`poc/03-item1-backend-interface/`）
-   ——7項目の可否表は §4.1 にある。**インタフェースの正確な型定義はまだ設計して
-   いない**
+   ——7項目の可否表は §4.1 にある。**→ 方向は決定（2026-09-24、§4.1「backend の共通口は
+   ACP」）。** backend の口は自分で設計せず ACP に乗る。Subagent Module の tool の形・
+   閉じ込め・資格情報の渡し方は PoC（`poc/08-subagent-acp/`）の後
 2. ~~host の自動役割解決の設計~~ **→ 決定（2026-09-02、§2.5・§5.1）。**
    候補の列挙は `mcpServers` の `_meta["dev.banto/module"]`（静的宣言）から
    自動、接続時に `initialize` 応答（動的自己申告）と突き合わせて食い違いを

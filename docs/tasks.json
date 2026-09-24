@@ -1933,6 +1933,43 @@
       ],
       "notes": "docs/notes/2026-09-24-agent-sdk-0.3.281.md",
       "completedAt": "2026-09-24"
+    },
+    {
+      "id": "subagent-poc-acp",
+      "title": "SubAgent の PoC——Claude Code と OpenCode を ACP で動かして、未決を測る",
+      "status": "in_progress",
+      "why": "ユーザー決定（2026-09-24）：backend の口は ACP。tool の形・閉じ込め・資格情報・作業場所を、実物で測ってから決める（CLAUDE.md の3段の1段目）。",
+      "doneWhen": "Claude Code（claude-agent-acp）と OpenCode（opencode acp）それぞれで、initialize の能力・1ターンの途中経過・cancel・resume・使用量・人への確認・banto の MCP を渡せるか・Landlock の中で動くか・サブスク／API キーでの認証、の可否表ができ、仕様（§4.1）に反映されていること。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
+      "id": "subagent-module-sync",
+      "title": "Subagent Module（待つ形）——Claude Code と OpenCode",
+      "status": "pending",
+      "dependencies": [
+        "subagent-poc-acp"
+      ],
+      "why": "ユーザー決定（2026-09-24）。最初は待つ形（依頼した tool 呼び出しの中で終わるまで待つ）。",
+      "doneWhen": "AI が runSubagent で Claude Code と OpenCode に仕事を頼み、結果が返ること（偽の ACP エージェントで E2E、本物で疎通確認）。会話の中のカードに途中経過と結果が出ること。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
+      "id": "subagent-codex",
+      "title": "Subagent に Codex を足す",
+      "status": "backlog",
+      "dependencies": [
+        "subagent-module-sync"
+      ],
+      "why": "ユーザー（2026-09-24）：Claude Code と OpenCode がうまくいってから。設定を1つ足すだけで済むかが、プラガブルにできたかの試金石。"
+    },
+    {
+      "id": "subagent-async",
+      "title": "Subagent の待たない形——終わったら依頼元の Thread に届ける",
+      "status": "backlog",
+      "dependencies": [
+        "subagent-module-sync"
+      ],
+      "why": "長い仕事で親の会話を止めない。core に「Thread にメッセージを届ける」口（§4.2）が要る。MCP Tasks は Claude Code 2.1.281 が名乗らない（実測・2026-09-24）ので頼れない。"
     }
   ],
   "phase1": {
