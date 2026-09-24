@@ -1756,13 +1756,14 @@
     {
       "id": "agent-sdk-check-broken",
       "title": "`npm run check:agent-sdk` が動かない（仕様が「SDK との疎通確認はこの1本」と決めている口）",
-      "status": "backlog",
-      "why": "2026-09-23、Skill の実装中に気づいた（規則8で起票）。`packages/core/package.json` の `check:agent-sdk` は `dist/runner/adapter.smoketest.mjs` を指すが、ファイルは `src/runner/` にしか無く dist に入らない。中身も `runTurn` が AsyncGenerator になる前の形（`result.messages` を読む）。仕様 §6.5 は「実 LLM を使う E2E spec は作らない。SDK との接触は疎通確認1本に集約する」と決めており、その1本が壊れている。",
+      "status": "done",
+      "why": "2026-09-23、Skill の実装中に気づいた（規則8で起票）。`packages/core/package.json` の `check:agent-sdk` は `dist/runner/adapter.smoketest.mjs` を指すが、ファイルは `src/runner/` にしか無く dist に入らない。中身も `runTurn` が AsyncGenerator になる前の形（`result.messages` を読む）。仕様 §6.5 は「実 LLM を使う E2E spec は作らない。SDK との接触は疎通確認1本に集約する」と決めており、その1本が壊れている。 → 2026-09-24、SDK を上げるのに合わせて書き直した（本物の SDK で1往復＋resume した system prompt が効くか）。",
       "doneWhen": "`npm run check:agent-sdk` が本物の SDK と1往復し、OK を返すこと。",
       "open": [
         "Skill の `instructions` が HTTP の代理サーバ越しに届くことも、ここで見るとよい（`/tmp/skill-probe/http-probe.mjs` の形——note 2026-09-23 の測定5）"
       ],
-      "notes": "docs/notes/2026-09-23-skill-via-mcp.md"
+      "notes": "docs/notes/2026-09-24-agent-sdk-0.3.281.md",
+      "completedAt": "2026-09-24"
     },
     {
       "id": "skill-instructions-wiring",
@@ -1918,6 +1919,19 @@
       "why": "ユーザー要望（2026-09-24）。Claude Code では LLM が自分のモデルを知っているが、banto はシステムプロンプトを自前で組むのでその行が無かった。モデルは書かれなければ自分の名前を知らない。",
       "doneWhen": "既定のままの会話では実際のモデル（claude-opus-5[1m] 等）が、モデルを変えた後は変えた先が、AI の受け取るシステムプロンプトに入ること（偽 Runner の sayContext で見る、e2e/specs/thread-model.spec.ts）。",
       "notes": "docs/notes/2026-09-23-thread-model-effort.md",
+      "completedAt": "2026-09-24"
+    },
+    {
+      "id": "agent-sdk-0.3.281",
+      "title": "Agent SDK を 0.3.281（Claude Code 2.1.281 同梱）に上げる——既定が Opus 5.5 になる",
+      "status": "done",
+      "why": "ユーザー「Opus 5.5 が見えない」（2026-09-24）。モデル一覧は SDK 同梱の CLI の版で決まり、0.3.237（2.1.237）は Opus 5 までしか知らなかった。",
+      "doneWhen": "npm run check:agent-sdk が OK（モデル一覧に Opus 5.5・resume したターンでそのターンの system prompt が効く）。本物の Runner で banto を通す1ターン（Module の tool・承認・モデル ID）が通ること。古い版のセッションを resume できること。フル E2E。",
+      "open": [
+        "アーキ仕様 §2.4「CLI 2.1.237 は Tasks（非同期の Elicitation）を advertise しない」を 2.1.281 で測り直していない",
+        "`cache-stability.smoketest.mjs` も古い runTurn の形のまま（手動の測定用。今回は触っていない）"
+      ],
+      "notes": "docs/notes/2026-09-24-agent-sdk-0.3.281.md",
       "completedAt": "2026-09-24"
     }
   ],

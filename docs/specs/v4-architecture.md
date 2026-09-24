@@ -534,6 +534,15 @@ Claude Agent SDK に触れる**唯一のインターフェース**。ベンダ�
 置く——**骨格と Global Memory は全 Project・全 Thread で前方一致する**
 （§3 のキャッシュ規律）。
 
+**SDK に system prompt を記録させない**（`{ type: "custom", prompt, snapshot: false }`、決定・2026-09-24）。
+Agent SDK 0.3.267 から、独自の system prompt は既定で「最初の要求で記録し、以後の要求と
+`resume` では記録をそのまま送る」になった——**後から渡した prompt は、圧縮か新しいセッションまで
+黙って無視される**（実測・2026-09-24、このアカウントでは既に有効：resume したターンに別の
+合言葉を渡しても、1ターン目の合言葉を答えた）。banto は core が毎ターン組み立てたものが唯一の真実で
+（モデルの名前・Fork で差し替える Memory）、CLI 側の記録は写しになる（規則3）。中身は §3 の規律で
+安定させているので、毎回描き直してもキャッシュの前置きは崩れない。**SDK を上げたら
+`npm run check:agent-sdk` がこれを見る**（resume したターンで、そのターンの prompt が効くか）
+
 #### ターンごとに変わるものは system prompt に入れず、そのターンに添える（決定・2026-09-05）
 
 **system prompt に入れてよいのは、その Thread の中で変わらないものだけ。** 変わる

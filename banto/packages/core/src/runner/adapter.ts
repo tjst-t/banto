@@ -164,7 +164,13 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       resume: opts.resumeSessionId,
       forkSession: opts.forkSession,
       mcpServers: opts.mcpServers,
-      systemPrompt: opts.systemPrompt,
+      // **毎ターン組み立て直したものをそのまま使わせる**（`snapshot: false`、2026-09-24）。
+      // SDK 0.3.267 から、独自の system prompt は既定で「最初の要求で記録し、以後の要求と
+      // resume では記録をそのまま送る」になった——後から渡した prompt は、圧縮か新しい
+      // セッションまで**黙って無視される**。banto は Memory・モデルの名前（§2.3）を core が
+      // 組み立てて毎ターン渡すのが唯一の真実で、CLI 側の記録は写しになる（規則3）。
+      // 中身は §3 の規律で安定させているので、毎回描き直してもキャッシュの前置きは崩れない
+      systemPrompt: { type: "custom", prompt: opts.systemPrompt, snapshot: false },
       // SDKの既定はopt-out（渡していないMCPも~/.claude.json等からマージされる）。
       // banto の Module境界はhostが渡すmcpServersだけで完結すべきなので、
       // OSユーザーの個人設定・project .mcp.json・pluginを一切混ぜない
