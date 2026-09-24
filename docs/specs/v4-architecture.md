@@ -1819,15 +1819,17 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 - **資格情報は環境変数で渡し、ファイルに写さない**（OpenCode の `auth.json` も作らない）。
   API キーは Vault の alias から（Shell の `envSecrets` と同じ形。Claude は `ANTHROPIC_API_KEY`、
   OpenCode は `OPENCODE_API_KEY` ほかプロバイダごとの変数——OpenCode Go のサブスクもこれ）。
-  Claude のサブスクは `CLAUDE_CODE_OAUTH_TOKEN` で通る（`~/.claude` を読ませずに）。
+  **Claude のサブスクは、人が `claude setup-token` で作った長命のトークンを Vault に置き、
+  API キーと同じ経路で `CLAUDE_CODE_OAUTH_TOKEN` に渡す**（決定・2026-09-24、ユーザー——
+  `~/.claude` を読ませずに通ることは実測済み）。main の Runner のログイン（`~/.claude` の
+  access token・refresh token）はサブエージェントに渡さない。
   **渡したものは、そのサブエージェントのシェルから読める**（実測。`docs/specs/v4-security.md`）
   ——**サブエージェントに読まれてよいものだけを渡す**
 - **エージェント本体は Subagent Module の依存として持つ**（`@agentclientprotocol/claude-agent-acp`・
   `opencode-ai`。版は固定する）。Claude の選べるモデルは同梱の CLI の版で決まる
 
-**まだ決まっていないこと**：Claude のサブスクで渡すトークンの種類（host がいまの access token
-だけを渡すか、人が `claude setup-token` で作った長命のトークンを Vault に置くか）・同じ根での
-並行・認証の失敗が返るまでの時間（壊れた API キーで186秒かかった）
+**まだ決まっていないこと**：同じ根での並行・認証の失敗が返るまでの時間（壊れた API キーで
+186秒かかった）
 
 ### 4.2 Thread 間のメッセージ
 
@@ -3220,7 +3222,7 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
    ——7項目の可否表は §4.1 にある。**→ 方向は決定（2026-09-24、§4.1「backend の共通口は
    ACP」）。** backend の口は自分で設計せず ACP に乗る。**Subagent Module の tool の形・
    閉じ込め・資格情報の渡し方も決定（2026-09-24、§4.1「Subagent Module の形」、
-   `poc/08-subagent-acp/`）。** 残りは Claude のサブスクで渡すトークンの種類・同じ根での並行
+   `poc/08-subagent-acp/`）。** 残りは同じ根での並行
 2. ~~host の自動役割解決の設計~~ **→ 決定（2026-09-02、§2.5・§5.1）。**
    候補の列挙は `mcpServers` の `_meta["dev.banto/module"]`（静的宣言）から
    自動、接続時に `initialize` 応答（動的自己申告）と突き合わせて食い違いを

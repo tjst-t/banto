@@ -1941,7 +1941,7 @@
       "why": "ユーザー決定（2026-09-24）：backend の口は ACP。tool の形・閉じ込め・資格情報・作業場所を、実物で測ってから決める（CLAUDE.md の3段の1段目）。",
       "doneWhen": "Claude Code（claude-agent-acp）と OpenCode（opencode acp）それぞれで、initialize の能力・1ターンの途中経過・cancel・resume・使用量・人への確認・banto の MCP を渡せるか・Landlock の中で動くか・サブスク／API キーでの認証、の可否表ができ、仕様（§4.1）に反映されていること。",
       "notes": "docs/notes/2026-09-24-subagent-acp.md",
-      "result": "2026-09-24：Claude Code（claude-agent-acp 0.81.1）と OpenCode 1.18.32 の両方で、仕事・途中停止・別プロセスでの再開・使用量・人への確認・banto の MCP の受け渡し・Landlock の中での実行・env での資格情報が通った。§4.1「Subagent Module の形」と v4-security.md「サブエージェントは入れ子のドメインで起こす」に反映。残りの未決：Claude のサブスクで渡すトークンの種類（人に上げた）・同じ根での並行・認証失敗が返るまでの186秒。"
+      "result": "2026-09-24：Claude Code（claude-agent-acp 0.81.1）と OpenCode 1.18.32 の両方で、仕事・途中停止・別プロセスでの再開・使用量・人への確認・banto の MCP の受け渡し・Landlock の中での実行・env での資格情報が通った。§4.1「Subagent Module の形」と v4-security.md「サブエージェントは入れ子のドメインで起こす」に反映。Claude のサブスクは setup-token を Vault に置いて env で渡す（ユーザー決定・2026-09-24）。残りの未決：同じ根での並行・認証失敗が返るまでの186秒。"
     },
     {
       "id": "subagent-module-sync",
@@ -1951,7 +1951,7 @@
         "subagent-poc-acp"
       ],
       "why": "ユーザー決定（2026-09-24）。最初は待つ形（依頼した tool 呼び出しの中で終わるまで待つ）。 形は §4.1「Subagent Module の形」（PoC で決定）。",
-      "doneWhen": "AI が run_subagent で Claude Code と OpenCode に仕事を頼み、結果が返ること（偽の ACP エージェントで E2E、本物で疎通確認）。エージェントは入れ子の Landlock ドメインで起き、資格情報は env だけで渡ること。会話の中のカードに途中経過と結果が出ること。数分かかる仕事が進捗で切れずに返ることを本物で測ること（CLI の無音の上限は http 5分）。",
+      "doneWhen": "AI が run_subagent で Claude Code と OpenCode に仕事を頼み、結果が返ること（偽の ACP エージェントで E2E、本物で疎通確認）。エージェントは入れ子の Landlock ドメインで起き、資格情報は env だけで渡ること（Claude のサブスクは Vault に置いた setup-token、API キーも Vault の alias から）。会話の中のカードに途中経過と結果が出ること。数分かかる仕事が進捗で切れずに返ることを本物で測ること（CLI の無音の上限は http 5分）。",
       "notes": "docs/notes/2026-09-24-subagent-acp.md"
     },
     {
