@@ -12,7 +12,20 @@
 //      ——SDK 0.3.267 から既定で「最初に記録した prompt を使い回す」になった。banto は
 //      毎ターン組み立て直したものを使わせる（`snapshot: false`、adapter.ts）。ここが崩れると、
 //      モデルを変えた後も AI が古いモデル名を名乗り、Fork の Memory の差し替えが効かない
-import { listModels, runTurn } from "../../dist/runner/adapter.js";
+//
+// **人の `~/.claude` に記録を残さない**——CLI は会話の記録を `CLAUDE_CONFIG_DIR` の下へ書き、
+// それは CloudCLI の一覧にも載る（E2E と同じ扱い、`e2e/config.ts`）。記録は使い捨ての置き場へ、
+// 認証だけ本物の置き場から読む。**adapter.js を読む前に置く**（CLI はこの env を引き継ぐ）
+import { mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+const scratch = mkdtempSync(join(tmpdir(), "banto-check-agent-sdk-"));
+process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ??= join(homedir(), ".claude");
+process.env.CLAUDE_CONFIG_DIR = join(scratch, "claude");
+process.chdir(scratch);
+process.on("exit", () => rmSync(scratch, { recursive: true, force: true }));
+
+const { listModels, runTurn } = await import("../../dist/runner/adapter.js");
 
 const MODEL = "haiku";
 let failed = false;
