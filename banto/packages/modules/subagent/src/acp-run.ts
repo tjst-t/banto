@@ -58,6 +58,8 @@ export interface RunDeps {
   mode?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  /** エージェントが tool を呼んだ（題）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う */
+  onToolCall?: (title: string) => void;
   askPermission: (question: PermissionQuestion) => Promise<PermissionAnswer>;
   /** 進捗を送る間隔（Shell と同じ10秒。テストで縮める） */
   heartbeatMs?: number;
@@ -253,6 +255,7 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
         break;
       case "tool_call":
         result.toolCalls.push(update.title);
+        deps.onToolCall?.(update.title);
         progress(`ツール：${update.title}`);
         break;
       case "usage_update":

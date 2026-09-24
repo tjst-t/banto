@@ -8,8 +8,13 @@ import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import type { GuardOptions } from "@banto/landlock";
 import { resolveBootstrapConfigPath } from "@banto/core/dist/config/bootstrap.js";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
@@ -24,6 +29,8 @@ import {
 import { confineAgent } from "./confine.js";
 import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
+import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
+import { RunLog } from "./runs.js";
 
 export interface SubagentServerDeps {
   projectRoot: string;
@@ -53,6 +60,8 @@ const ENV_SECRETS_SCHEMA = {
   additionalProperties: { type: "string" },
 } as const;
 
+const UI_APP_MIME = "text/html;profile=mcp-app";
+
 function agentIdsText(agents: AgentDefinition[]): string {
   return agents.map((a) => `${a.id}（${a.title}。資格情報の変数：${a.credentialEnv.join(" / ")}）`).join("、");
 }
@@ -60,6 +69,8 @@ function agentIdsText(agents: AgentDefinition[]): string {
 export function createSubagentServer(deps: SubagentServerDeps) {
   const agents = deps.agents ?? listAgents();
   const claudeCredentialsPath = deps.claudeLogin?.credentialsPath ?? hostClaudeCredentialsPath();
+  // **頼んだ仕事の記録**——人が launcher の画面から一覧・状態・中身を見る（`runs.ts`）
+  const runs = new RunLog(join(deps.moduleDataDir, "runs.jsonl"));
   const server = new Server({ name: "banto-module-subagent", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
   // **自分が何者かを名乗る**（host は宣言と突き合わせる）。AI には見せない（admin）。
@@ -67,6 +78,14 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   // 自分のドメインで起こす」）——Module 自身は AI の書いたコマンドを走らせない
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
+      {
+        // **入口**（launcher）——Command Palette の「Module の入口」から、AI を介さずに開く
+        uri: RUNS_APP_URI,
+        name: "サブエージェント",
+        description: "この Project でサブエージェントに頼んだ仕事と、その様子を見る",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
+      },
       {
         uri: "subagent://module",
         name: "この Module の申告",
@@ -88,6 +107,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     ],
   }));
 
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== RUNS_APP_URI) throw new Error(`unknown resource: ${request.params.uri}`);
+    return { contents: [{ uri: RUNS_APP_URI, mimeType: UI_APP_MIME, text: RUNS_APP_HTML }] };
+  });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -134,6 +157,25 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           required: ["agent", "prompt"],
         },
         _meta: { [VISIBILITY_META_KEY]: "agent" },
+      },
+      // ---- 人の入口の画面から呼ぶ（admin——AI には見せない） ----------------------------
+      {
+        name: "listRuns",
+        description: "この Project で頼んだ仕事の一覧（走っているものが先）と、エージェントの資格情報の状態",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "getRun",
+        description: "頼んだ仕事1つの中身",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "cancelRun",
+        description: "走っている仕事を止める（エージェントに session/cancel を送る）",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
     ],
   }));
@@ -184,33 +226,79 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       }
 
 
+      if (request.params.name === "listRuns") {
+        return text({
+          agents: await Promise.all(
+            agents.map(async (a) => ({
+              id: a.id,
+              title: a.title,
+              credentials: a.sharesHostClaudeLogin
+                ? await hostLoginSummary()
+                : "鍵は banto 全体の設定の「サブエージェント」で入れる",
+            })),
+          ),
+          runs: runs.list(),
+        });
+      }
+      if (request.params.name === "getRun") {
+        const record = runs.get(String(args.id));
+        if (!record) throw new SubagentError(`仕事 "${String(args.id)}" はありません`);
+        return text(record);
+      }
+      if (request.params.name === "cancelRun") {
+        if (!runs.cancel(String(args.id))) throw new SubagentError("その仕事はもう走っていません");
+        return text({ ok: true });
+      }
+
       if (request.params.name === "runSubagent") {
         const agent = agentOf(args.agent);
         if (typeof args.prompt !== "string" || args.prompt.trim() === "") throw new SubagentError("prompt が空です");
-        const launched = await launchFor(agent, args.envSecrets, onProgress);
+        // **起こす前から記録する**——資格情報で止まったものも、一覧に「失敗」として残す
+        const run = runs.start({
+          agent: agent.id,
+          agentTitle: agent.title,
+          prompt: args.prompt,
+          ...(typeof args.model === "string" ? { model: args.model } : {}),
+          ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
+          ...(typeof args.sessionId === "string" ? { resumedFrom: args.sessionId } : {}),
+        });
+        const report = (message: string) => {
+          runs.progress(run.id, message);
+          onProgress?.(message);
+        };
         try {
-          onProgress?.(`${agent.title} を起こしています`);
-          const result = await runSubagent(
-            {
-              prompt: args.prompt,
-              ...(typeof args.model === "string" ? { model: args.model } : {}),
-              ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
-              ...(typeof args.sessionId === "string" ? { sessionId: args.sessionId } : {}),
-            },
-            {
-              launch: launched.launch,
-              cwd: deps.projectRoot,
-              ...(agent.mode ? { mode: agent.mode } : {}),
-              signal: extra.signal,
-              ...(onProgress ? { onProgress } : {}),
-              askPermission: refusePermission,
-            },
-          );
-          return text({ ...result, notes: [...launched.notes, ...result.notes] });
+          const launched = await launchFor(agent, args.envSecrets, report);
+          try {
+            report(`${agent.title} を起こしています`);
+            const result = await runSubagent(
+              {
+                prompt: args.prompt,
+                ...(typeof args.model === "string" ? { model: args.model } : {}),
+                ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
+                ...(typeof args.sessionId === "string" ? { sessionId: args.sessionId } : {}),
+              },
+              {
+                launch: launched.launch,
+                cwd: deps.projectRoot,
+                ...(agent.mode ? { mode: agent.mode } : {}),
+                // 依頼元が取り消したときも、人が入口の画面で「止める」を押したときも止まる
+                signal: AbortSignal.any([extra.signal, run.signal]),
+                onProgress: report,
+                onToolCall: (title) => runs.toolCall(run.id, title),
+                askPermission: refusePermission,
+              },
+            );
+            const final = { ...result, notes: [...launched.notes, ...result.notes] };
+            runs.finish(run.id, { result: final });
+            return text(final);
+          } catch (err) {
+            throw launched.explain(err);
+          } finally {
+            await launched.cleanup();
+          }
         } catch (err) {
-          throw launched.explain(err);
-        } finally {
-          await launched.cleanup();
+          runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
+          throw err;
         }
       }
     } catch (err) {

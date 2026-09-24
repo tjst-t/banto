@@ -2038,6 +2038,17 @@
       "notes": "docs/notes/2026-09-24-subagent-acp.md"
     },
     {
+      "id": "subagent-launcher",
+      "title": "サブエージェントの入口（launcher）——頼んだ仕事の一覧・状態・中身を見る、止める",
+      "status": "done",
+      "dependencies": [
+        "subagent-module-sync"
+      ],
+      "why": "ユーザー（2026-09-24）：launcher から subagent の一覧や状態を見られる UI。モックの「中身は Module の Canvas で見る」が抜けていた。",
+      "result": "2026-09-24：Project ごとの subagent Module に launcher の Canvas と記録（runs.jsonl）。走っている仕事は経過と最後の様子、「止める」で session/cancel。E2E（subagent-runs.spec.ts）で入口・資格情報の状態・一覧・中身・止める・リロード後の記録まで確かめた。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
       "id": "project-module-canvas-admin-stamp",
       "title": "Project ごとの Module の設定画面から押した操作を、人の管理操作と刻むか決める",
       "status": "undecided",

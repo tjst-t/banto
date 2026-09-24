@@ -220,3 +220,56 @@ test("Project ごとの Module は設定画面も鍵の口も持たない（bant
     }
   });
 });
+
+// ---- 頼んだ仕事の記録（launcher の画面が読む。決定・2026-09-24、ユーザー） ------------------------
+
+interface Summary { id: string; status: string; promptHead: string; agentTitle: string; lastProgress?: string; toolCount: number }
+
+test("仕事の記録：終わった仕事は一覧と中身に出る。起こす前に止まったものも「失敗」で残る", async () => {
+  await withServer(async (call) => {
+    const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[write memo.txt] メモを書いて", model: "fake-large" })).text) as { sessionId: string };
+    const bad = await call("runSubagent", { agent: "fake", prompt: "モデル違い", model: "nope" });
+    assert.equal(bad.isError, true);
+
+    const list = JSON.parse((await call("listRuns", {})).text) as { agents: { id: string; credentials: string }[]; runs: Summary[] };
+    assert.deepEqual(list.agents.map((a) => a.id), ["fake", "fake-host"]);
+    assert.match(list.agents[0]!.credentials, /banto 全体の設定の「サブエージェント」/);
+    // 新しい順
+    assert.deepEqual(list.runs.map((x) => [x.status, x.promptHead]), [["error", "モデル違い"], ["done", "[write memo.txt] メモを書いて"]]);
+    assert.equal(list.runs[1]!.toolCount, 1);
+
+    const done = JSON.parse((await call("getRun", { id: list.runs[1]!.id })).text) as {
+      status: string; sessionId: string; text: string; toolCalls: string[]; model: string; usage: { outputTokens: number };
+    };
+    assert.equal(done.sessionId, r.sessionId);
+    assert.match(done.text, /書いた：memo\.txt/);
+    assert.deepEqual(done.toolCalls, ["write memo.txt"]);
+    assert.equal(done.model, "fake-large");
+    assert.equal(done.usage.outputTokens, 20);
+    const failed = JSON.parse((await call("getRun", { id: list.runs[0]!.id })).text) as { error: string };
+    assert.match(failed.error, /"nope" はありません/);
+    assert.match((await call("getRun", { id: "nope" })).text, /仕事 "nope" はありません/);
+  });
+});
+
+test("仕事の記録：走っている仕事は様子が見え、画面から止めると取り消しで返る", async () => {
+  await withServer(async (call) => {
+    const pending = call("runSubagent", { agent: "fake", prompt: "[slow 30] 長い仕事" });
+    let running: Summary | undefined;
+    for (let i = 0; i < 50 && !running?.lastProgress?.startsWith("ツール："); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      running = (JSON.parse((await call("listRuns", {})).text) as { runs: Summary[] }).runs.find((x) => x.status === "running");
+    }
+    assert.ok(running, "走っている仕事が一覧に出ない");
+    assert.equal(running.lastProgress, "ツール：sleep 30");
+    assert.equal(running.toolCount, 1);
+
+    assert.equal((await call("cancelRun", { id: running.id })).isError, false);
+    const result = JSON.parse((await pending).text) as { stopReason: string };
+    assert.equal(result.stopReason, "cancelled");
+    const after = (JSON.parse((await call("listRuns", {})).text) as { runs: Summary[] }).runs[0]!;
+    assert.equal(after.status, "cancelled");
+    // もう走っていないものは止められない（と言う）
+    assert.match((await call("cancelRun", { id: running.id })).text, /もう走っていません/);
+  });
+});
