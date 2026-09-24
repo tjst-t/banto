@@ -25,7 +25,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { ThreadState } from "../project-thread/types.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
-import { DEFAULT_MODEL_VALUE, ModelCatalog } from "../runner/models.js";
+import { DEFAULT_MODEL_VALUE, ModelCatalog, modelIdentityOf, type ModelIdentity } from "../runner/models.js";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { SessionSkillSet, SkillRef } from "../skills/types.js";
@@ -1422,8 +1422,19 @@ export function createApp(deps: AppDeps) {
           console.warn("[host] 画面つき tool の一覧を取れませんでした:", err);
         }
 
+        // **AI に自分のモデルを伝える**（決定・2026-09-24）。一覧が取れなくてもターンは止めない
+        // ——伝えないだけ。黙らずにログに残す（規則2）
+        let modelIdentity: ModelIdentity | undefined;
+        try {
+          modelIdentity = modelIdentityOf(await modelCatalog.list(), thread?.model);
+          if (!modelIdentity) console.warn(`[host] モデル ${thread?.model ?? DEFAULT_MODEL_VALUE} が一覧に無いので、AI に名前を伝えません`);
+        } catch (err) {
+          console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
+        }
+
         for await (const event of runThreadTurn(deps, {
           threadId: turnMatch[1]!,
+          ...(modelIdentity ? { modelIdentity } : {}),
           uiTools,
           prompt: body.prompt,
           permissionMode: resolvePermissionMode(

@@ -509,6 +509,41 @@ test("Thread のモデルと effort：一覧にあるものだけ受け、Fork �
   );
 });
 
+test("ターンのシステムプロンプトに、その Thread で動くモデルの名前と ID が入る（既定のままでも）", async () => {
+  const prompts: string[][] = [];
+  const models = [
+    { value: "default", resolvedModel: "claude-opus-5[1m]", displayName: "Default (recommended)", description: "Opus 5 with 1M context · Best" },
+    { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "Sonnet 5 · Efficient" },
+  ];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("demo", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const send = async () =>
+        (
+          await fetch(`${base}/api/threads/${thread.id}/messages`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({ prompt: "あなたは誰？" }),
+          })
+        ).text();
+      await send();
+      await deps.projectThread.setModel(thread.id, "sonnet", null);
+      await send();
+      assert.ok(prompts[0]!.some((b) => b.includes("Opus 5 with 1M context") && b.includes("claude-opus-5[1m]")), "既定のままの会話で実際のモデルを伝えていない");
+      assert.ok(prompts[1]!.some((b) => b.includes("Sonnet 5") && b.includes("claude-sonnet-5")), "選んだモデルを伝えていない");
+    },
+    {
+      listModels: async () => models as never,
+      runTurn: (async function* (opts: { systemPrompt: string[] }) {
+        prompts.push(opts.systemPrompt);
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
+});
+
 // **何も選ばれていないときのモード**（`docs/specs/v4-frontend.md` §6.4、
 // 決定・2026-09-10）。仕様は「Configuration が defaultPermissionMode を1つ持つ。
 // 既定値は auto」と言っていたが、core に**その設定自体が無かった**。

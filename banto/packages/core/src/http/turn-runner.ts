@@ -64,6 +64,8 @@ export interface RunThreadTurnInput {
   modules: ModuleEndpoint[];
   cwd?: string;
   permissionMode?: Options["permissionMode"];
+  /** AI 自身に伝える、いま動いているモデル（決定・2026-09-24）。分からなければ無い */
+  modelIdentity?: { name: string; id: string };
   /** 画面つき tool の一覧（決定・2026-09-07）。**これに載っている呼び出しだけ**を
    *  記録する——記録の目的は Module の画面をリロード後に出し直すことなので、
    *  画面を持たない tool の結果まで残す理由が無い（会話の記録を膨らませない）。 */
@@ -218,6 +220,7 @@ async function* runThreadTurnInner(
         globalMemory: global_.established.filter((m) => !m.invalidated).map((m) => m.text),
         project: { name: project.name, root: project.root },
         memory: memory.established,
+        ...(input.modelIdentity ? { model: input.modelIdentity } : {}),
       }),
     });
 

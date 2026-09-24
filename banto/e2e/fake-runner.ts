@@ -74,19 +74,21 @@ export async function listModels() {
   return [
     {
       value: "default",
+      resolvedModel: "claude-opus-5[1m]",
       displayName: "Default (recommended)",
-      description: "Opus · 既定",
+      description: "Opus 5 with 1M context · 既定",
       supportsEffort: true,
       supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
     },
     {
       value: "sonnet",
+      resolvedModel: "claude-sonnet-5",
       displayName: "Sonnet",
-      description: "Sonnet · 普段の作業に",
+      description: "Sonnet 5 · 普段の作業に",
       supportsEffort: true,
       supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
     },
-    { value: "haiku", displayName: "Haiku", description: "Haiku · いちばん速い" },
+    { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", displayName: "Haiku", description: "Haiku 4.5 · いちばん速い" },
   ];
 }
 

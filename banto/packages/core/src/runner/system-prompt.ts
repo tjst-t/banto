@@ -83,6 +83,14 @@ export interface SystemPromptInput {
   memory: readonly EstablishedMemory[];
   /** 層3：人が書く、この Project 固有の指示。 */
   projectInstruction?: string;
+  /**
+   * 層3：**いま動いているモデル**（決定・2026-09-24、ユーザー要望）。モデルは自分の名前を
+   * 知らない——書かなければ学習データから推して、古い名前を名乗る。Claude Code も
+   * システムプロンプトで教えている。**キャッシュの損は増えない**：キャッシュはモデルごと
+   * なので、この行が変わるのはモデルを変えて、どのみち全損するときだけ（§3）。
+   * 分からなければ無い（書かない）。
+   */
+  model?: { name: string; id: string };
 }
 
 /**
@@ -103,6 +111,10 @@ export function buildSystemPrompt(input: SystemPromptInput): string[] {
   blocks.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
 
   blocks.push(`# いまの Project\n\n- 名前：${input.project.name}\n- root：${input.project.root}`);
+
+  if (input.model) {
+    blocks.push(`# あなたを動かしているモデル\n\nあなたは ${input.model.name} で動いている。モデル ID は ${input.model.id}。`);
+  }
 
   // 無効化された決定も「取り消された」と分かる形で残す——消すと、なぜその
   // 判断をしないのかが読めなくなる（Event Store は追記のみ、規則3）。

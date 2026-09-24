@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-23",
+  "updatedAt": "2026-09-24",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1910,6 +1910,15 @@
       ],
       "notes": "docs/notes/2026-09-23-thread-model-effort.md",
       "completedAt": "2026-09-23"
+    },
+    {
+      "id": "model-identity-in-system-prompt",
+      "title": "AI に自分のモデル（名前と ID）をシステムプロンプトで伝える",
+      "status": "done",
+      "why": "ユーザー要望（2026-09-24）。Claude Code では LLM が自分のモデルを知っているが、banto はシステムプロンプトを自前で組むのでその行が無かった。モデルは書かれなければ自分の名前を知らない。",
+      "doneWhen": "既定のままの会話では実際のモデル（claude-opus-5[1m] 等）が、モデルを変えた後は変えた先が、AI の受け取るシステムプロンプトに入ること（偽 Runner の sayContext で見る、e2e/specs/thread-model.spec.ts）。",
+      "notes": "docs/notes/2026-09-23-thread-model-effort.md",
+      "completedAt": "2026-09-24"
     }
   ],
   "phase1": {

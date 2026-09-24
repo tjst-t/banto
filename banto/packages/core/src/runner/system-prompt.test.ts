@@ -88,3 +88,19 @@ test("the turn context is always present, even with nothing pending", () => {
   assert.ok(text.includes("Base Thread"));
   assert.ok(text.includes("このターンの開始時刻："));
 });
+
+// **いま動いているモデルを AI に伝える**（決定・2026-09-24、ユーザー要望）。モデルは自分の
+// 名前を知らない——書かなければ古い名前を名乗る。境界より後（Project の層）に置く：
+// キャッシュはモデルごとなので、この行が変わるときはどのみち全損している。
+
+test("動いているモデルの名前と ID は、境界より後に入る（無ければ書かない）", () => {
+  const withModel = buildSystemPrompt({ project, memory: [], model: { name: "Opus 5 with 1M context", id: "claude-opus-5[1m]" } });
+  const boundary = withModel.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+  const at = withModel.findIndex((b) => b.includes("claude-opus-5[1m]"));
+  assert.ok(at > boundary, "モデルの行が境界より前にある（全 Project で共有する前半を崩す）");
+  assert.match(withModel[at]!, /あなたは Opus 5 with 1M context で動いている。モデル ID は claude-opus-5\[1m\]。/);
+
+  const without = buildSystemPrompt({ project, memory: [] });
+  assert.ok(!without.some((b) => b.includes("モデル ID")), "分からないのに書いている");
+});
+

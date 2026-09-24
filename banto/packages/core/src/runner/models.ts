@@ -18,6 +18,8 @@ export interface ModelChoice {
   description: string;
   /** このモデルで選べる effort の段（空なら effort を選べない） */
   efforts: ThreadEffort[];
+  /** 実際に動くモデルの ID（`default` → `claude-opus-5[1m]` のように、別名が指す先） */
+  resolvedModel?: string;
 }
 
 /** 「選んでいない」＝ CLI の既定。SDK の一覧にもこの値で載っている。 */
@@ -31,7 +33,33 @@ export function toChoices(infos: readonly ModelInfo[]): ModelChoice[] {
     efforts: m.supportsEffort
       ? (m.supportedEffortLevels ?? []).filter((e): e is ThreadEffort => (THREAD_EFFORTS as readonly string[]).includes(e))
       : [],
+    ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
   }));
+}
+
+/** AI 自身に伝える「いま動いているモデル」（決定・2026-09-24、`runner/system-prompt.ts`）。 */
+export interface ModelIdentity {
+  /** 人の読む名前（`Opus 5 with 1M context` 等） */
+  name: string;
+  /** 実際のモデル ID（`claude-opus-5[1m]` 等） */
+  id: string;
+}
+
+/**
+ * Thread が選んだモデル（無ければ既定）を、AI に伝える名前と ID にする。
+ *
+ * **名前は説明文の「·」より前**を使う——CLI の一覧の `displayName` は「Default
+ * (recommended)」のように役割の名前で、モデルの名前ではない。説明文は
+ * 「Opus 5 with 1M context · Best for …」の形（実測・2026-09-23）。その形でなければ
+ * `displayName` を使う。**ID は別名の行き先**（`resolvedModel`）——既定のままの会話でも、
+ * 実際に動いているモデルを言える。一覧に無ければ undefined（言わない）。
+ */
+export function modelIdentityOf(choices: readonly ModelChoice[], model: string | undefined): ModelIdentity | undefined {
+  const choice = choices.find((c) => c.value === (model ?? DEFAULT_MODEL_VALUE));
+  if (!choice) return undefined;
+  const fromDescription = choice.description.split(" · ")[0]?.trim();
+  const name = fromDescription && choice.description.includes(" · ") ? fromDescription : choice.displayName;
+  return { name, id: choice.resolvedModel ?? choice.value };
 }
 
 const TTL_MS = 10 * 60 * 1000;

@@ -17,9 +17,12 @@ test.setTimeout(300_000);
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Thread Model";
 
-async function hostThread(page: Page): Promise<{ id: string; model?: string; effort?: string; messages: Array<{ role: string }> }> {
+async function hostThread(
+  page: Page,
+  projectName = PROJECT_NAME,
+): Promise<{ id: string; model?: string; effort?: string; messages: Array<{ role: string }> }> {
   const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
-  const project = projects.find((p: { name: string }) => p.name === PROJECT_NAME);
+  const project = projects.find((p: { name: string }) => p.name === projectName);
   const threads = await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers: HEADERS })).json();
   return (await page.request.get(`${CORE_BASE_URL}/api/threads/${threads[0].id}`, { headers: HEADERS })).json();
 }
@@ -105,3 +108,40 @@ test("選んだモデルと effort で次のターンが走り、リロードし
   await composer.press("Enter");
   await expect(page.getByText("model=haiku effort=(既定)"), "変えたモデルで次のターンが走っていない").toBeVisible({ timeout: 60_000 });
 });
+
+// **AI に、いま動いているモデルを伝える**（決定・2026-09-24、ユーザー要望）。モデルは自分の
+// 名前を知らない——システムプロンプトに書く。見るのは画面ではなく**AI に実際に届いたもの**
+// （偽 Runner の `sayContext` は、受け取ったシステムプロンプトをそのまま発言にする）。
+
+test("AI には、いま動いているモデルの名前と ID が届く——既定のままでも、変えたら変えた先が", async ({ page }) => {
+  const name = "E2E Model Identity";
+  await openApp(page);
+  await createProject(page, name, mkdtempSync(join(tmpdir(), "banto-e2e-modelid-")));
+  const composer = page.getByPlaceholder(/に送る/);
+
+  // 既定のまま——別名（default）ではなく、実際に動くモデルの名前と ID
+  await composer.fill("あなたは誰？" + fakeTurn({ sayContext: true }));
+  await composer.press("Enter");
+  await expect(
+    page.getByText("あなたは Opus 5 with 1M context で動いている。モデル ID は claude-opus-5[1m]。"),
+    "既定のままの会話で、実際のモデルが AI に届いていない",
+  ).toBeVisible({ timeout: 60_000 });
+  await expect.poll(async () => (await hostThread(page, name)).messages.filter((m) => m.role === "assistant").length, { timeout: 60_000 }).toBe(1);
+
+  // Sonnet に変えると、次のターンでは Sonnet と伝わる
+  const button = page.getByTestId("composer-model");
+  await expect(button).toContainText("Default (recommended)");
+  await button.click();
+  await page.getByRole("menuitemradio", { name: /^Sonnet/ }).click();
+  await page.getByTestId("composer-model-confirm").getByRole("button", { name: "変える" }).click();
+  await expect(button).toContainText("Sonnet");
+  await expect.poll(async () => (await hostThread(page, name)).model).toBe("sonnet");
+
+  await composer.fill("いまは誰？" + fakeTurn({ sayContext: true }));
+  await composer.press("Enter");
+  await expect(
+    page.getByText("あなたは Sonnet 5 で動いている。モデル ID は claude-sonnet-5。"),
+    "変えたモデルが AI に届いていない",
+  ).toBeVisible({ timeout: 60_000 });
+});
+
