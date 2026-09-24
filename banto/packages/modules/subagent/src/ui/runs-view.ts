@@ -392,7 +392,9 @@ function paint(): void {
     ]),
     state.agents.length ? renderAgents() : null,
   ]);
-  const layout = h("div", { class: `layout${wide() ? " wide" : ""}${state.detail && !wide() ? " show-detail" : ""}` }, [renderList(), renderDetail()]);
+  // 左右2枚は、選べる仕事があるときだけ——空のうちに並べると、右の欄が何も無いまま空く
+  const split = wide() && state.runs.length > 0;
+  const layout = h("div", { class: `layout${split ? " wide" : ""}${state.detail && !wide() ? " show-detail" : ""}` }, [renderList(), renderDetail()]);
   app.replaceChildren(header, layout, state.error ? h("p", { class: "error", role: "status", text: state.error }) : "");
 }
 

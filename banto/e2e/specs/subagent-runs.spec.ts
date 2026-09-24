@@ -2,7 +2,8 @@
 // 「シンプルすぎるので良い UI に」）。Command Palette の「Module の入口」から、AI を介さずに開く。
 //
 // 見るもの（規則14——押せたで終わらせず、画面に出る中身まで）：
-//   1. 入口に「サブエージェント」が名乗った名前と説明で出て、開くと会話の隣に出る
+//   1. 入口に「サブエージェント」が名乗った名前と説明で出て、開くと会話の隣に出る。まだ何も頼んでいなければ
+//      空であることと頼み方を言い、開いたまま頼むと一覧に増える
 //   2. エージェントごとの資格情報の状態が、チップの文字と色で読める
 //   3. 頼んだ仕事が一覧に出て、選ぶと中身（頼んだ文・経過・返答・session id）が読める
 //      （会話の隣は狭い形——一覧と中身を行き来する）
@@ -41,7 +42,21 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
       .filter((m) => m.role === "assistant")
       .map((m) => m.text);
 
-  // ---- 仕事を1つ頼んで終わらせておく ------------------------------------------------------
+  // ---- 1. 入口から開く（AI には頼まない）---------------------------------------------------
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  const entry = page.getByRole("option", { name: /サブエージェント/ });
+  await expect(entry).toBeVisible({ timeout: 30_000 });
+  await expect(entry).toContainText("この Project でサブエージェントに頼んだ仕事と、その様子を見る");
+  await entry.click();
+  await expect(page.getByText(/^Canvas — subagent$/), "入口から Canvas が開かなかった").toBeVisible({ timeout: 30_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  // まだ何も頼んでいない——空であることを言い、頼み方を示す（広い形でも中身の欄を空けて並べない）
+  await expect(canvas.locator('[data-role="empty"]')).toContainText("まだ頼んだ仕事はありません", { timeout: 60_000 });
+  await expect(canvas.locator('[data-role="empty"]')).toContainText("会話で「Claude Code にテストを直させて」のように頼むと、ここに並びます。");
+  await expect(canvas.locator('[data-role="run"]')).toHaveCount(0);
+  await expect(canvas.locator('[data-role="detail"]')).toHaveCount(0);
+
+  // ---- 画面を開いたまま、仕事を1つ頼んで終わらせる（一覧は取り直しで増える）-------------------
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(
     "メモを書かせて。" +
@@ -60,15 +75,8 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
   }).toPass({ timeout: 180_000 });
   await expect.poll(async () => (await assistantTexts()).length, { timeout: 120_000 }).toBe(1);
   const first = JSON.parse((await assistantTexts())[0]!) as { sessionId: string };
-
-  // ---- 1. 入口から開く（AI には頼まない）---------------------------------------------------
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  const entry = page.getByRole("option", { name: /サブエージェント/ });
-  await expect(entry).toBeVisible({ timeout: 30_000 });
-  await expect(entry).toContainText("この Project でサブエージェントに頼んだ仕事と、その様子を見る");
-  await entry.click();
-  await expect(page.getByText(/^Canvas — subagent$/), "入口から Canvas が開かなかった").toBeVisible({ timeout: 30_000 });
-  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.locator('[data-role="run"]'), "開いたままの画面に、頼んだ仕事が出てこない").toHaveCount(1, { timeout: 30_000 });
+  await expect(canvas.locator('[data-role="empty"]')).toHaveCount(0);
 
   // ---- 2. エージェントの資格情報の状態 ----------------------------------------------------
   // 会話の隣は狭い形（一覧 → 選ぶと中身）。広い形は 5. で見る

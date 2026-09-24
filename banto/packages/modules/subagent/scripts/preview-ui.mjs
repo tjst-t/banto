@@ -1,7 +1,7 @@
 // 画面の見た目を速く確かめる台（E2E より速い輪——規則15）。
 // サンプルの仕事を返す偽の親ページに画面（入口・設定）を載せ、幅と明暗を変えてスクリーンショットを撮る。
 //
-// usage: node scripts/preview-ui.mjs <出力ディレクトリ>   （先に npm run build）
+// usage: node scripts/preview-ui.mjs <出力ディレクトリ>   （先に npm run build。PREVIEW_EMPTY=1 で仕事が0件の形）
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "@playwright/test";
@@ -63,9 +63,10 @@ const credentials = {
     },
   ],
 };
+const empty = process.env.PREVIEW_EMPTY === "1";
 const tools = {
   listAgents: () => ({ agents }),
-  listRuns: () => ({ runs: summaries }),
+  listRuns: () => ({ runs: empty ? [] : summaries }),
   getRun: (a) => runs.find((r) => r.id === a.id),
   getCredentials: () => credentials,
 };
@@ -92,7 +93,7 @@ for (const [name, html] of [["runs", RUNS_APP_HTML], ["settings", CONFIG_APP_HTM
       page.on("pageerror", (e) => errors.push(e.message));
       await page.setContent(parent(html, theme, name === "runs" ? "fullscreen" : "inline"));
       await page.waitForTimeout(800);
-      if (name === "runs" && width < 720) {
+      if (name === "runs" && width < 720 && !empty) {
         const f = page.frameLocator("#f");
         await page.screenshot({ path: join(out, `${name}-${theme}-${width}-list.png`) });
         await f.locator('[data-run="r1"]').first().click();
@@ -100,7 +101,7 @@ for (const [name, html] of [["runs", RUNS_APP_HTML], ["settings", CONFIG_APP_HTM
       }
       await page.screenshot({ path: join(out, `${name}-${theme}-${width}.png`) });
       // 広いときは、終わった仕事・失敗した仕事の中身も撮る
-      if (name === "runs" && width >= 720 && theme === "light") {
+      if (name === "runs" && width >= 720 && theme === "light" && !empty) {
         for (const id of ["r2", "r3"]) {
           await page.frameLocator("#f").locator(`[data-run="${id}"]`).first().click();
           await page.waitForTimeout(300);
