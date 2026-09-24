@@ -213,7 +213,7 @@ test("本体のログインを使うエージェントには、契約の種類�
   }
 });
 
-test("Project ごとの Module は設定画面も鍵の口も持たない（banto 全体の設定の Module が持つ）", async () => {
+test("Project ごとの Module は鍵の設定の口を持たない（banto 全体の設定の Module が持つ）", async () => {
   await withServer(async (call) => {
     for (const tool of ["getCredentials", "setCredential", "importCredential", "deleteCredential"]) {
       await assert.rejects(call(tool, {}), /unknown tool/, `${tool} が Project ごとの Module に残っている`);
@@ -231,19 +231,27 @@ test("仕事の記録：終わった仕事は一覧と中身に出る。起こ�
     const bad = await call("runSubagent", { agent: "fake", prompt: "モデル違い", model: "nope" });
     assert.equal(bad.isError, true);
 
-    const list = JSON.parse((await call("listRuns", {})).text) as { agents: { id: string; credentials: string }[]; runs: Summary[] };
-    assert.deepEqual(list.agents.map((a) => a.id), ["fake", "fake-host"]);
-    assert.match(list.agents[0]!.credentials, /banto 全体の設定の「サブエージェント」/);
+    const list = JSON.parse((await call("listRuns", {})).text) as { runs: Summary[] };
+    const agents = JSON.parse((await call("listAgents", {})).text) as {
+      agents: { id: string; keys?: string[]; hostLogin?: { loggedIn: boolean } }[];
+    };
+    assert.deepEqual(agents.agents.map((a) => a.id), ["fake", "fake-host"]);
+    assert.deepEqual(agents.agents[0]!.keys, []);
+    assert.equal(agents.agents[1]!.hostLogin?.loggedIn, false);
     // 新しい順
     assert.deepEqual(list.runs.map((x) => [x.status, x.promptHead]), [["error", "モデル違い"], ["done", "[write memo.txt] メモを書いて"]]);
     assert.equal(list.runs[1]!.toolCount, 1);
 
     const done = JSON.parse((await call("getRun", { id: list.runs[1]!.id })).text) as {
       status: string; sessionId: string; text: string; toolCalls: string[]; model: string; usage: { outputTokens: number };
+      steps: { title: string; kind?: string; at: number }[]; startedAt: number;
     };
     assert.equal(done.sessionId, r.sessionId);
     assert.match(done.text, /書いた：memo\.txt/);
     assert.deepEqual(done.toolCalls, ["write memo.txt"]);
+    // 経過：呼んだ順・種類・時刻
+    assert.deepEqual(done.steps.map((st) => [st.title, st.kind]), [["write memo.txt", "other"]]);
+    assert.ok(done.steps[0]!.at >= done.startedAt);
     assert.equal(done.model, "fake-large");
     assert.equal(done.usage.outputTokens, 20);
     const failed = JSON.parse((await call("getRun", { id: list.runs[0]!.id })).text) as { error: string };
@@ -263,6 +271,7 @@ test("仕事の記録：走っている仕事は様子が見え、画面から�
     assert.ok(running, "走っている仕事が一覧に出ない");
     assert.equal(running.lastProgress, "ツール：sleep 30");
     assert.equal(running.toolCount, 1);
+    assert.equal((running as Summary & { lastStep?: { title: string } }).lastStep?.title, "sleep 30");
 
     assert.equal((await call("cancelRun", { id: running.id })).isError, false);
     const result = JSON.parse((await pending).text) as { stopReason: string };
@@ -271,5 +280,41 @@ test("仕事の記録：走っている仕事は様子が見え、画面から�
     assert.equal(after.status, "cancelled");
     // もう走っていないものは止められない（と言う）
     assert.match((await call("cancelRun", { id: running.id })).text, /もう走っていません/);
+  });
+});
+
+test("エージェントの状態：Vault に置いた既定の鍵の有無を返す（値は返さない）", async () => {
+  const vault = fakeVault({ "subagent.fake.FAKE_AGENT_TOKEN": "secret-value" });
+  await withServer(
+    async (call) => {
+      const r = await call("listAgents", {});
+      assert.doesNotMatch(r.text, /secret-value/);
+      const agents = JSON.parse(r.text) as { agents: { id: string; keys?: string[] }[] };
+      assert.deepEqual(agents.agents.find((a) => a.id === "fake")!.keys, ["FAKE_AGENT_TOKEN"]);
+    },
+    { relayClient: vault.relay },
+  );
+});
+
+test("書きかけの返答は、走っている間の中身に出る", async () => {
+  await withServer(async (call) => {
+    const pending = call("runSubagent", { agent: "fake", prompt: "[slow 3] [draft] 長い仕事" });
+    type Live = { id: string; status: string; text?: string; steps: { title: string }[] };
+    let live: Live | undefined;
+    for (let i = 0; i < 50 && !live?.text; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const running = (JSON.parse((await call("listRuns", {})).text) as { runs: { id: string; status: string }[] }).runs.find((x) => x.status === "running");
+      if (running) live = JSON.parse((await call("getRun", { id: running.id })).text) as Live;
+    }
+    assert.ok(live, "走っている仕事が一覧に出ない");
+    assert.equal(live.status, "running");
+    assert.equal(live.text, "書きかけ…");
+    assert.deepEqual(live.steps.map((st) => st.title), ["sleep 3"]);
+    await pending;
+    const done = JSON.parse((await call("getRun", { id: live.id })).text) as { status: string; text: string; model?: string };
+    assert.equal(done.status, "done");
+    // 指定しなかったモデルも、実際に使ったもの（エージェントの既定）が記録に残る
+    assert.equal(done.model, "fake-small");
+    assert.match(done.text, /^書きかけ…受け取った：\[slow 3\] \[draft\] 長い仕事/);
   });
 });

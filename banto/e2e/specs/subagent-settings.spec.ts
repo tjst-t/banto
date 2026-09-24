@@ -72,15 +72,25 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
   // 開いた瞬間の読み取りで人を止めない
   await expect(page.locator('[data-testid="canvas-approval"]')).toHaveCount(0);
 
+  // カードの見出し：鍵を使うほうは件数、本体のログインを使うほうは使えるかどうか
+  await expect(inner.locator('section.card[data-agent="fake"] .card-head .pill')).toHaveText("鍵なし");
+  await expect(inner.locator('section.card[data-agent="fake-host"] .card-head .pill')).toHaveText("使える");
+
   // ---- 2. 貼り付けて保存する ----------------------------------------------------------
+  // 入力欄は「鍵を貼る」を押してから出る（値は画面に出さない——password）
+  await expect(row.getByLabel("FAKE_AGENT_TOKEN の鍵")).toHaveCount(0);
+  await row.getByRole("button", { name: "鍵を貼る" }).click();
+  await expect(row.getByLabel("FAKE_AGENT_TOKEN の鍵")).toHaveAttribute("type", "password");
   await row.getByLabel("FAKE_AGENT_TOKEN の鍵").fill(PASTED);
   await row.getByRole("button", { name: "貼り付けて保存" }).click();
   await expect(inner.getByText("FAKE_AGENT_TOKEN を保存しました")).toBeVisible({ timeout: 30_000 });
   await expect(row.locator('[data-role="state"]')).toHaveText("設定済み");
-  // 設定済みは、置き換えと消すができる
-  await expect(row.getByRole("button", { name: "貼り付けて置き換える" })).toBeVisible();
+  await expect(inner.locator('section.card[data-agent="fake"] .card-head .pill')).toHaveText("鍵 1件");
+  // 設定済みは、取り込み直す・置き換える・消すができる。保存したら入力欄は閉じる
+  await expect(row.getByRole("button", { name: "取り込み直す" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "置き換える" })).toBeVisible();
   await expect(row.getByRole("button", { name: "消す" })).toBeVisible();
-  await expect(row.getByLabel("FAKE_AGENT_TOKEN の鍵"), "保存したあとも入力欄に値が残っている").toHaveValue("");
+  await expect(row.getByLabel("FAKE_AGENT_TOKEN の鍵"), "保存したあとも入力欄が開いている").toHaveCount(0);
   await expect(inner.getByText(PASTED), "設定画面に鍵の値が出ている").toHaveCount(0);
 
   // banto 全体の Vault の一覧にも出る（置き場は Vault——Module は持たない）
@@ -126,7 +136,7 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
   inner = await openSubagentSettings(page);
   row = inner.locator('[data-role="credential"][data-agent="fake"][data-env="FAKE_AGENT_TOKEN"]');
   await expect(row.locator('[data-role="state"]')).toHaveText("設定済み", { timeout: 30_000 });
-  await row.getByRole("button", { name: "試験用の設定ファイルから取り込む" }).click();
+  await row.getByRole("button", { name: "取り込み直す" }).click();
   await expect(inner.getByText("FAKE_AGENT_TOKEN を取り込みました")).toBeVisible({ timeout: 30_000 });
   await expect(row.locator('[data-role="state"]')).toHaveText("設定済み");
   await expect(inner.getByText(SUBAGENT_IMPORTED_KEY), "設定画面に鍵の値が出ている").toHaveCount(0);
@@ -145,7 +155,9 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
   await expect(inner.getByText("FAKE_AGENT_TOKEN を消しました")).toBeVisible({ timeout: 30_000 });
   await expect(row.locator('[data-role="state"]')).toHaveText("未設定");
   await expect(row.getByRole("button", { name: "消す" })).toHaveCount(0);
-  await expect(row.getByRole("button", { name: "貼り付けて保存" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "鍵を貼る" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "試験用の設定ファイルから取り込む" })).toBeVisible();
+  await expect(inner.locator('section.card[data-agent="fake"] .card-head .pill')).toHaveText("鍵なし");
 
   expect(pageErrors).toEqual([]);
 });

@@ -58,8 +58,10 @@ export interface RunDeps {
   mode?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
-  /** エージェントが tool を呼んだ（題）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う */
-  onToolCall?: (title: string) => void;
+  /** エージェントが tool を呼んだ（題と種類）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う */
+  onToolCall?: (title: string, kind?: string) => void;
+  /** 返答を書き進めた（ここまでの全文）。走っている間の画面に、書きかけを見せるのに使う */
+  onText?: (textSoFar: string) => void;
   askPermission: (question: PermissionQuestion) => Promise<PermissionAnswer>;
   /** 進捗を送る間隔（Shell と同じ10秒。テストで縮める） */
   heartbeatMs?: number;
@@ -77,6 +79,8 @@ export interface RunResult {
   cost?: { amount: number; currency: string };
   context?: { used: number; size: number };
   toolCalls: string[];
+  /** 実際に使ったモデル（設定項目 `model` の現在値——指定しなければエージェントの既定） */
+  model?: string;
   permissions: { title: string; answer: string }[];
   /** 黙って落とさずに伝えること（例：モードを掛けられなかった） */
   notes: string[];
@@ -251,11 +255,14 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
     if (!collecting) return;
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
-        if (update.content.type === "text") result.text += update.content.text;
+        if (update.content.type === "text") {
+          result.text += update.content.text;
+          deps.onText?.(result.text);
+        }
         break;
       case "tool_call":
         result.toolCalls.push(update.title);
-        deps.onToolCall?.(update.title);
+        deps.onToolCall?.(update.title, update.kind);
         progress(`ツール：${update.title}`);
         break;
       case "usage_update":
@@ -342,11 +349,13 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
             sessionId,
             prompt: [{ type: "text", text: input.prompt }],
           });
+          const model = findOption(options, "model");
           return {
             agent,
             sessionId,
             stopReason: res.stopReason,
             ...result,
+            ...(model?.type === "select" ? { model: model.currentValue } : {}),
             ...(res.usage ? { usage: res.usage } : {}),
           };
         } finally {

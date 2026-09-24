@@ -2049,6 +2049,25 @@
       "notes": "docs/notes/2026-09-24-subagent-acp.md"
     },
     {
+      "id": "subagent-launcher-design",
+      "title": "サブエージェントの入口と設定の画面を作り直す——経過・書きかけの返答・状態が一目で分かる形へ",
+      "status": "done",
+      "dependencies": [
+        "subagent-launcher",
+        "subagent-settings-global"
+      ],
+      "why": "ユーザー（2026-09-24）：UI があまりにシンプルすぎる。ほかの UI を参考に、良い UI に。",
+      "result": "2026-09-24：入口は「一覧 → 中身」（狭い）／左右2枚（720px〜）。中身の芯は**経過**——呼んだツールを種類（読む・書く・実行…）と頼んでからの時刻つきで縦に並べ、走っている間は伸び、書きかけの返答も見える。記録に経過（steps）・書きかけの返答・実際に使ったモデルを足した。設定はエージェントごとのカード、鍵は変数ごとの行（入力欄は「鍵を貼る」で開く）。E2E（subagent-runs・subagent-settings）で、狭い形・広い形の両方と、チップ・件数・経過・書きかけの返答の中身まで確かめた。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
+      "id": "canvas-host-style-variables",
+      "title": "Canvas に banto の色と字の段を hostContext.styles.variables で渡す（仕様にあるが実装に無い）",
+      "status": "backlog",
+      "why": "v4-frontend.md は「host が banto の色トークンを styles.variables で渡す——Module 側に banto を知らせずに見た目を揃えられる」と書いているが、module-canvas.tsx は theme しか渡していない（2026-09-24、サブエージェントの画面を作り直していて気づいた・規則8）。そのため FileSystem と Subagent は banto のトークンの**写し**を自分の中に持っている（規則3に反する——banto の色を変えると画面がずれる）。Module 側はすでに『渡されたらそちらを使う』形（MCP の標準の変数名を先に見る）にしてある。",
+      "doneWhen": "host が styles.variables を渡し、FileSystem と Subagent の写しを消しても見た目が変わらないこと（E2E で getComputedStyle を見る）。"
+    },
+    {
       "id": "project-module-canvas-admin-stamp",
       "title": "Project ごとの Module の設定画面から押した操作を、人の管理操作と刻むか決める",
       "status": "undecided",

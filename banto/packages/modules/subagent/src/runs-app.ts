@@ -1,197 +1,164 @@
-// **サブエージェントの入口**（launcher、決定・2026-09-24、ユーザー「launcher から一覧や状態を見られる UI」）。
-// Command Palette の「Module の入口」から開く。FileSystem のファイルブラウザと同じ型
-// （`dev.banto/canvas: "launcher"`、Module 自身の admin tool を呼ぶ）。
+// **サブエージェントの入口**（launcher、決定・2026-09-24、ユーザー「launcher から一覧や状態を見られる UI」
+// 「シンプルすぎるので良い UI に」）。Command Palette の「Module の入口」から開く——FileSystem の
+// ファイルブラウザと同じ型（`dev.banto/canvas: "launcher"`、Module 自身の admin tool を呼ぶ）。
 //
-// 出すもの：使えるエージェントと資格情報の状態／この Project で頼んだ仕事の一覧（走っているものは
-// 経過と最後の様子、「止める」）／選んだ仕事の中身（頼んだ文・返答・呼んだ tool・断った確認・注記・使用量）。
-// **走っている間は2秒ごとに取り直す**（通知の口は無い——一覧は Module のメモリにあり、取り直しは軽い）。
+// 振る舞いは `ui/runs-view.ts`（ブラウザで動く JS。型を検査してから埋め込む）、見た目の土台は
+// `ui/theme.ts`（banto の色と段）。ここはその2つとこの画面の見た目を1枚の HTML に組むだけ。
+
+import { readFileSync } from "node:fs";
+import { canvasHtml } from "./ui/theme.js";
 
 export const RUNS_APP_URI = "ui://banto-subagent/runs";
 
-export const RUNS_APP_HTML = `<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8" />
-<style>
-  :root { color-scheme: light dark; }
-  body {
-    margin: 0; padding: 12px;
-    font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit);
-    background: transparent;
-  }
-  h3 { font-size: 14px; margin: 14px 0 6px; }
-  h3:first-child { margin-top: 0; }
-  .note { opacity: .7; }
-  ul.agents { margin: 0; padding-left: 1.2em; }
-  .run { display: grid; grid-template-columns: 5.5em 1fr auto; gap: 2px 10px; align-items: baseline;
-         padding: 6px 8px; border-radius: 6px; cursor: pointer; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
-  .run:hover, .run[aria-selected="true"] { background: color-mix(in srgb, currentColor 8%, transparent); }
-  .status { font-weight: 600; }
-  .status[data-status="running"] { color: #2563eb; }
-  .status[data-status="error"] { color: #dc2626; }
-  .status[data-status="cancelled"] { opacity: .7; }
-  .meta { opacity: .7; font-size: 12px; }
-  .progress { grid-column: 2 / 4; opacity: .8; font-size: 12px; }
-  .prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 10px; padding: 8px;
-        border-radius: 6px; background: color-mix(in srgb, currentColor 6%, transparent); font: 12px/1.5 ui-monospace, monospace; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 8px; }
-  dt { opacity: .7; }
-  dd { margin: 0; word-break: break-all; }
-  button {
-    font: inherit; padding: 2px 10px; border-radius: 6px; cursor: pointer;
-    border: 1px solid currentColor; background: transparent; color: inherit; opacity: .85;
-  }
-</style>
-</head>
-<body>
-<h3>エージェント</h3>
-<ul class="agents" id="agents"></ul>
-<h3>頼んだ仕事</h3>
-<div id="runs"></div>
-<div id="detail"></div>
-<p class="note" id="note">読み込んでいます…</p>
-<script>
-(() => {
-  let nextId = 1;
-  const waiting = new Map();
-  let selected = null;
-  function send(m) { window.parent.postMessage(m, "*"); }
-  function request(method, params) {
-    const id = nextId++;
-    send({ jsonrpc: "2.0", id, method, params });
-    return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
-  }
-  window.addEventListener("message", (event) => {
-    const msg = event.data;
-    if (!msg || msg.jsonrpc !== "2.0") return;
-    if (msg.id !== undefined && waiting.has(msg.id)) {
-      const { resolve, reject } = waiting.get(msg.id);
-      waiting.delete(msg.id);
-      if (msg.error) reject(new Error(msg.error.message || "呼び出しに失敗しました"));
-      else resolve(msg.result);
-    }
-  });
-  const note = document.getElementById("note");
-  function reportHeight() {
-    send({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: document.documentElement.scrollHeight } });
-  }
-  async function call(name, args) {
-    const result = await request("tools/call", { name, arguments: args });
-    const text = result && result.content && result.content[0] && result.content[0].text;
-    if (result && result.isError) throw new Error(text || name + " が失敗しました");
-    return JSON.parse(text);
-  }
-  function el(tag, attrs, children) {
-    const e = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs || {})) {
-      if (k === "text") e.textContent = v; else e.setAttribute(k, v);
-    }
-    for (const c of children || []) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    return e;
-  }
-  const STATUS = { running: "実行中", done: "完了", cancelled: "取り消し", error: "失敗" };
-  const time = (ms) => new Date(ms).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const seconds = (from, to) => Math.max(0, Math.round(((to || Date.now()) - from) / 1000)) + "秒";
-  const money = (c) => (c ? c.amount.toFixed(3) + " " + c.currency : "");
+const RUNS_CSS = `
+#app { display: flex; flex-direction: column; min-height: 100vh; }
+body[data-mode="fullscreen"] #app { height: 100vh; }
 
-  function renderRuns(runs) {
-    const box = document.getElementById("runs");
-    box.textContent = "";
-    if (runs.length === 0) {
-      box.appendChild(el("p", { class: "note", "data-role": "empty", text: "この Project ではまだ頼んでいません。会話で「サブエージェントに〜を頼んで」と頼むと、ここに出ます。" }));
-      return;
-    }
-    for (const r of runs) {
-      const row = el("div", { class: "run", "data-role": "run", "data-run": r.id, "data-status": r.status, "aria-selected": String(r.id === selected) }, [
-        el("span", { class: "status", "data-status": r.status, "data-role": "status", text: STATUS[r.status] || r.status }),
-        el("span", { class: "prompt", "data-role": "prompt", text: r.promptHead }),
-        el("span", { class: "meta", text: time(r.startedAt) + "・" + seconds(r.startedAt, r.finishedAt) }),
-        el("span", { class: "meta", text: r.agentTitle }),
-        el("span", { class: "meta", text: (r.model ? r.model + "・" : "") + "ツール " + r.toolCount + "回" + (r.cost ? "・" + money(r.cost) : "") }),
-      ]);
-      if (r.status === "running") {
-        const stop = el("button", { text: "止める" });
-        stop.addEventListener("click", async (ev) => {
-          ev.stopPropagation();
-          try { await call("cancelRun", { id: r.id }); await refresh(); }
-          catch (err) { note.textContent = "止められませんでした：" + err.message; }
-        });
-        row.appendChild(el("span", { class: "progress", "data-role": "progress", text: r.lastProgress || "起こしています…" }));
-        row.appendChild(stop);
-      }
-      row.addEventListener("click", () => { selected = r.id; refresh(); });
-      box.appendChild(row);
-    }
-  }
+/* ---- 上：題とエージェント ---- */
+.top { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.top-row { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.title { margin: 0; font-size: var(--t-lg); font-weight: 600; line-height: 1.4; }
+.agents { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg);
+  font-size: var(--t-xs); color: var(--ink-2); max-width: 100%;
+}
+.agent .dot { color: var(--ok); }
+.agent[data-tone="warn"] .dot { color: var(--warn); }
+.agent[data-tone="danger"] .dot { color: var(--danger); }
+.agent-name { color: var(--ink); font-weight: 500; }
+.pill .dot[data-live] { animation: pulse 1.4s ease-in-out infinite; }
 
-  function field(label, value) {
-    return [el("dt", { text: label }), el("dd", { text: value })];
-  }
-  function renderDetail(r) {
-    const box = document.getElementById("detail");
-    box.textContent = "";
-    if (!r) return;
-    const dl = el("dl", {}, [
-      ...field("状態", STATUS[r.status] || r.status),
-      ...field("エージェント", r.agentTitle + (r.model ? "（" + r.model + "）" : "")),
-      ...field("始めた", new Date(r.startedAt).toLocaleString("ja-JP") + "（" + seconds(r.startedAt, r.finishedAt) + "）"),
-      ...(r.sessionId ? field("session id", r.sessionId) : []),
-      ...(r.resumedFrom ? field("続きの元", r.resumedFrom) : []),
-      ...(r.usage ? field("使用量", "入力 " + r.usage.inputTokens + "・出力 " + r.usage.outputTokens + "・キャッシュ読み " + (r.usage.cachedReadTokens || 0)) : []),
-      ...(r.cost ? field("費用", money(r.cost)) : []),
-    ]);
-    box.appendChild(el("h3", { text: "仕事の中身" }));
-    box.appendChild(el("div", { "data-role": "detail", "data-run": r.id }, [
-      dl,
-      el("div", { class: "note", text: "頼んだ内容" }),
-      el("pre", { "data-role": "detail-prompt", text: r.prompt }),
-      ...(r.status === "running" ? [el("div", { class: "note", "data-role": "detail-progress", text: "いま：" + (r.lastProgress || "起こしています…") })] : []),
-      ...(r.text !== undefined ? [el("div", { class: "note", text: "返答" }), el("pre", { "data-role": "detail-reply", text: r.text || "（返答なし）" })] : []),
-      ...(r.error ? [el("div", { class: "note", text: "失敗の理由" }), el("pre", { "data-role": "detail-error", text: r.error })] : []),
-      ...(r.toolCalls.length ? [el("div", { class: "note", text: "呼んだツール" }), el("pre", { "data-role": "detail-tools", text: r.toolCalls.join("\\n") })] : []),
-      ...(r.permissions && r.permissions.length ? [el("div", { class: "note", text: "断った確認（人に聞く口がまだ無いため）" }), el("pre", { text: r.permissions.map((p) => p.title + " → " + p.answer).join("\\n") })] : []),
-      ...(r.notes && r.notes.length ? [el("div", { class: "note", text: "注記" }), el("pre", { "data-role": "detail-notes", text: r.notes.join("\\n") })] : []),
-    ]));
-  }
+/* ---- 一覧と中身：狭いときは片方ずつ、広いときは左右 ---- */
+.layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.layout .detail { display: none; }
+.layout.show-detail .list { display: none; }
+.layout.show-detail .detail { display: flex; }
+.layout.wide { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
+.layout.wide .detail { display: flex; border-left: 1px solid var(--line); }
+.list { overflow: auto; padding: 4px 8px 12px; }
+.list-label {
+  display: flex; align-items: center; gap: 6px; margin: 12px 8px 4px;
+  font-size: var(--t-xs); font-weight: 500; color: var(--ink-3);
+}
+.count { font-family: var(--mono); }
 
-  let timer = null;
-  async function refresh() {
-    try {
-      const data = await call("listRuns", {});
-      const agents = document.getElementById("agents");
-      agents.textContent = "";
-      for (const a of data.agents) agents.appendChild(el("li", { "data-role": "agent", "data-agent": a.id }, [el("b", { text: a.title }), "——" + a.credentials]));
-      renderRuns(data.runs);
-      renderDetail(selected ? await call("getRun", { id: selected }) : null);
-      note.textContent = "";
-      clearTimeout(timer);
-      timer = null;
-      if (data.runs.some((r) => r.status === "running")) timer = setTimeout(refresh, 2000);
-    } catch (err) {
-      note.textContent = "読み込めませんでした：" + (err && err.message ? err.message : err);
-    }
-    reportHeight();
-  }
-  // 開いている間に会話で頼まれた仕事も拾う——走っていなくても、ときどき取り直す
-  setInterval(() => { if (!timer) refresh(); }, 5000);
+/* 「止める」は行の中（右下）に重ねる——行とは別のボタン（入れ子にできない）なので位置で合わせる */
+.run-item { position: relative; }
+.run-item .stop { position: absolute; right: 4px; bottom: 4px; height: 24px; padding: 0 8px; }
+.run-item[data-status="running"] .run { padding-bottom: 12px; }
+.run-item[data-status="running"] .run-live { padding-right: 76px; }
+.run {
+  width: 100%; min-width: 0; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 0 10px;
+  align-items: start; padding: 8px; border: 0; border-radius: var(--r-sm); background: transparent;
+  text-align: left; cursor: pointer;
+}
+.run:hover { background: var(--bg-2); }
+.run[aria-current="true"] { background: var(--accent-soft); }
+.run-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.run-prompt {
+  font-size: var(--t-md); line-height: 1.5; color: var(--ink);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+.run-meta { font-size: var(--t-xs); color: var(--ink-3); }
+.nowrap { white-space: nowrap; }
+.status-word { font-weight: 500; }
+.status-running { color: var(--accent); }
+.status-done { color: var(--ok); }
+.status-error { color: var(--danger); }
+.run-live {
+  display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 2px;
+  font: var(--t-xs)/1.6 var(--mono); color: var(--accent);
+}
+.run-when { padding-top: 2px; font-size: var(--t-xs); color: var(--ink-3); white-space: nowrap; }
 
-  request("ui/initialize", {
-    protocolVersion: "2026-01-26",
-    appInfo: { name: "banto-subagent-runs", version: "0.1.0" },
-    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
-  }).then(async (result) => {
-    const vars = ((result && result.hostContext && result.hostContext.styles) || {}).variables || {};
-    for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty("--mcp-ui-" + k, String(v));
-    send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
-    await refresh();
-  }).catch((err) => {
-    note.textContent = "開けませんでした：" + (err && err.message ? err.message : err);
-    reportHeight();
-  });
-})();
-</script>
-</body>
-</html>
+.glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-top: 2px; border-radius: 50%;
+}
+.glyph .icon { width: 10px; height: 10px; stroke-width: 3; }
+.glyph-done { background: var(--ok-soft); color: var(--ok); }
+.glyph-error { background: var(--danger-soft); color: var(--danger); }
+.glyph-cancelled { background: var(--bg-2); color: var(--ink-3); }
+.glyph-running { border: 2px solid var(--line); border-top-color: var(--accent); border-right-color: var(--accent); animation: spin 0.9s linear infinite; }
+
+/* ---- 中身 ---- */
+.detail { flex-direction: column; min-width: 0; min-height: 0; }
+.detail-head {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+}
+.detail-agent { font-size: var(--t-sm); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow { flex: 1; }
+.back { padding: 0 8px 0 4px; }
+.detail-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 20px; }
+.section-label { margin: 8px 0 0; font-size: var(--t-xs); font-weight: 500; color: var(--ink-3); }
+.section-label:first-child { margin-top: 0; }
+.prompt {
+  margin: 0; padding: 8px 12px; max-height: 16em; overflow: auto;
+  border-left: 2px solid var(--line); border-radius: 0 var(--r-sm) var(--r-sm) 0; background: var(--bg-2);
+  font-size: var(--t-md); line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+}
+
+/* 経過——縦の線に、呼んだ順で節を打つ */
+.trace { list-style: none; margin: 0; padding: 0; }
+.step {
+  position: relative; display: grid; grid-template-columns: 24px auto minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; min-height: 32px;
+}
+.step::before { content: ""; position: absolute; left: 12px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.step:first-child::before { top: 50%; }
+.step:last-child::before { bottom: 50%; }
+.node {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 50%; background: var(--bg); color: var(--ink-2);
+}
+.node .icon { width: 12px; height: 12px; }
+.step-kind { font-size: var(--t-xs); color: var(--ink-3); }
+.step-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-sm); color: var(--ink); }
+.step-title.mono { font-size: var(--t-xs); }
+.step-at { font-size: var(--t-xs); color: var(--ink-3); }
+.step-start .step-title, .step-end .step-title { grid-column: 2 / 4; }
+.step-start .step-title { color: var(--ink-2); }
+.step-start .node { color: var(--accent); }
+.step-end.step-done .node { border-color: transparent; background: var(--ok-soft); color: var(--ok); }
+.step-end.step-error .node { border-color: transparent; background: var(--danger-soft); color: var(--danger); }
+.step-end.step-cancelled .node { color: var(--ink-3); }
+.step-end.step-done .step-title { color: var(--ok); font-weight: 500; }
+.step-end.step-error .step-title { color: var(--danger); font-weight: 500; }
+.step-end.step-running .step-title { color: var(--accent); }
+.node-live { justify-self: center; width: 10px; height: 10px; border: 0; background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+
+.reply-body {
+  padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
+  font-size: var(--t-md); line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+}
+.reply-live .reply-body { border-style: dashed; color: var(--ink-2); }
+.callout { padding: 8px 12px; border-radius: var(--r-md); background: var(--bg-2); font-size: var(--t-sm); }
+.callout[data-tone="warn"] { background: var(--warn-soft); }
+.callout[data-tone="warn"] strong { color: var(--warn); }
+.callout[data-tone="danger"] { background: var(--danger-soft); }
+.callout[data-tone="danger"] strong { color: var(--danger); }
+.callout p { margin: 2px 0 0; }
+.callout ul { margin: 4px 0 0; padding-left: 16px; }
+.callout pre { margin: 4px 0 0; font: var(--t-xs)/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.facts {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(144px, 1fr)); gap: 8px 16px;
+  margin: 8px 0 0; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.fact dt { font-size: var(--t-xs); color: var(--ink-3); }
+.fact dd { margin: 0; font-size: var(--t-sm); color: var(--ink); word-break: keep-all; overflow-wrap: anywhere; }
+.fact dd.mono { font-size: var(--t-xs); word-break: break-all; }
+.selectable { user-select: all; }
+
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 40px 16px; text-align: center; color: var(--ink-3); }
+.empty p { margin: 0; }
+.empty-title { font-size: var(--t-md); font-weight: 500; color: var(--ink-2); }
+.error { flex-shrink: 0; margin: 0; padding: 8px 16px; border-top: 1px solid var(--line); font-size: var(--t-xs); color: var(--danger); }
 `;
+
+// ブラウザで動く JS は、型を検査したものを dist から読む（`src/ui/runs-view.ts` → `dist/ui/runs-view.js`）
+const SCRIPT = readFileSync(new URL("./ui/runs-view.js", import.meta.url), "utf8").replace(/^export \{\};\s*$/m, "");
+
+export const RUNS_APP_HTML = canvasHtml({ css: RUNS_CSS, script: SCRIPT });

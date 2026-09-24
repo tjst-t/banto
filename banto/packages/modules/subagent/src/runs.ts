@@ -13,6 +13,12 @@ import type { RunResult } from "./acp-run.js";
 
 export type RunStatus = "running" | "done" | "cancelled" | "error";
 
+export interface RunStep {
+  at: number;
+  title: string;
+  kind?: string;
+}
+
 export interface RunRecord {
   id: string;
   agent: string;
@@ -28,6 +34,8 @@ export interface RunRecord {
   /** 走っている間の最後の様子（`ツール：…`・`作業中（…）` など） */
   lastProgress?: string;
   toolCalls: string[];
+  /** 呼んだ tool の順と時刻と種類（ACP の `kind`：read・edit・execute…）——画面の「経過」 */
+  steps: RunStep[];
   sessionId?: string;
   stopReason?: string;
   text?: string;
@@ -43,7 +51,7 @@ export interface RunRecord {
 export type RunSummary = Pick<
   RunRecord,
   "id" | "agent" | "agentTitle" | "status" | "startedAt" | "finishedAt" | "lastProgress" | "cost" | "model"
-> & { promptHead: string; toolCount: number };
+> & { promptHead: string; toolCount: number; lastStep?: RunStep };
 
 const HEAD = 80;
 
@@ -60,7 +68,10 @@ export class RunLog {
       this.finished = readFileSync(file, "utf8")
         .split("\n")
         .filter((line) => line.trim() !== "")
-        .map((line) => JSON.parse(line) as RunRecord)
+        .map((line) => {
+          const r = JSON.parse(line) as Omit<RunRecord, "steps"> & { steps?: RunStep[] };
+          return { ...r, steps: r.steps ?? [] };
+        })
         .slice(-limit);
     }
   }
@@ -71,7 +82,7 @@ export class RunLog {
   } {
     const id = randomUUID();
     const abort = new AbortController();
-    this.running.set(id, { record: { ...input, id, status: "running", startedAt: Date.now(), toolCalls: [] }, abort });
+    this.running.set(id, { record: { ...input, id, status: "running", startedAt: Date.now(), toolCalls: [], steps: [] }, abort });
     return { id, signal: abort.signal };
   }
 
@@ -80,8 +91,17 @@ export class RunLog {
     if (r) r.record.lastProgress = message;
   }
 
-  toolCall(id: string, title: string): void {
-    this.running.get(id)?.record.toolCalls.push(title);
+  toolCall(id: string, title: string, kind?: string): void {
+    const r = this.running.get(id);
+    if (!r) return;
+    r.record.toolCalls.push(title);
+    r.record.steps.push({ at: Date.now(), title, ...(kind ? { kind } : {}) });
+  }
+
+  /** 書きかけの返答（走っている間だけ。終わったら返り値の全文で置き換わる） */
+  text(id: string, textSoFar: string): void {
+    const r = this.running.get(id);
+    if (r) r.record.text = textSoFar;
   }
 
   finish(id: string, outcome: { result: RunResult } | { error: string }): void {
@@ -99,6 +119,7 @@ export class RunLog {
             stopReason: outcome.result.stopReason,
             text: outcome.result.text,
             toolCalls: outcome.result.toolCalls,
+            ...(outcome.result.model ? { model: outcome.result.model } : {}),
             ...(outcome.result.usage ? { usage: outcome.result.usage } : {}),
             ...(outcome.result.cost ? { cost: outcome.result.cost } : {}),
             ...(outcome.result.context ? { context: outcome.result.context } : {}),
@@ -135,6 +156,7 @@ export class RunLog {
       ...(r.model ? { model: r.model } : {}),
       promptHead: r.prompt.length > HEAD ? `${r.prompt.slice(0, HEAD)}…` : r.prompt,
       toolCount: r.toolCalls.length,
+      ...(r.status === "running" && r.steps.length ? { lastStep: r.steps[r.steps.length - 1] } : {}),
     });
     const running = [...this.running.values()].map((r) => r.record).sort((a, b) => b.startedAt - a.startedAt);
     const finished = [...this.finished].sort((a, b) => b.startedAt - a.startedAt);

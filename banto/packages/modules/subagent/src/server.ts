@@ -18,7 +18,7 @@ import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/mo
 import type { GuardOptions } from "@banto/landlock";
 import { resolveBootstrapConfigPath } from "@banto/core/dist/config/bootstrap.js";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
-import { listAgents, type AgentDefinition } from "./agents.js";
+import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
 import {
   ClaudeLoginError,
   hostClaudeCredentialsPath,
@@ -160,8 +160,14 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       },
       // ---- 人の入口の画面から呼ぶ（admin——AI には見せない） ----------------------------
       {
+        name: "listAgents",
+        description: "使えるエージェントと、資格情報の状態（本体のログイン・Vault に置いた鍵の有無。値は返さない）",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
         name: "listRuns",
-        description: "この Project で頼んだ仕事の一覧（走っているものが先）と、エージェントの資格情報の状態",
+        description: "この Project で頼んだ仕事の一覧（走っているものが先）",
         inputSchema: { type: "object", properties: {} },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
@@ -226,20 +232,34 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       }
 
 
-      if (request.params.name === "listRuns") {
+      if (request.params.name === "listAgents") {
+        // **人が入口の画面を開いたときに1回だけ**呼ぶ（取り直しの輪には入れない）。画面から呼ぶので、
+        // 目録を引いても人を止めない（会話の中から引くと承認が出る——`credentials.ts`）
+        let present: Set<string> | undefined;
+        let keysError: string | undefined;
+        if (agents.some(usesStoredKeys)) {
+          try {
+            present = new Set((await deps.relayClient.listAliases("vault-directory")).map((a) => a.name));
+          } catch (err) {
+            keysError = err instanceof Error ? err.message : String(err);
+          }
+        }
         return text({
           agents: await Promise.all(
-            agents.map(async (a) => ({
-              id: a.id,
-              title: a.title,
-              credentials: a.sharesHostClaudeLogin
-                ? await hostLoginSummary()
-                : "鍵は banto 全体の設定の「サブエージェント」で入れる",
-            })),
+            agents.map(async (a) =>
+              a.sharesHostClaudeLogin
+                ? { id: a.id, title: a.title, hostLogin: await readHostClaudeAccount(claudeCredentialsPath) }
+                : {
+                    id: a.id,
+                    title: a.title,
+                    keys: a.credentialEnv.filter((e) => present?.has(defaultAliasName(a.id, e))),
+                    ...(keysError ? { keysError } : {}),
+                  },
+            ),
           ),
-          runs: runs.list(),
         });
       }
+      if (request.params.name === "listRuns") return text({ runs: runs.list() });
       if (request.params.name === "getRun") {
         const record = runs.get(String(args.id));
         if (!record) throw new SubagentError(`仕事 "${String(args.id)}" はありません`);
@@ -284,7 +304,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
                 // 依頼元が取り消したときも、人が入口の画面で「止める」を押したときも止まる
                 signal: AbortSignal.any([extra.signal, run.signal]),
                 onProgress: report,
-                onToolCall: (title) => runs.toolCall(run.id, title),
+                onToolCall: (title, kind) => runs.toolCall(run.id, title, kind),
+                onText: (textSoFar) => runs.text(run.id, textSoFar),
                 askPermission: refusePermission,
               },
             );

@@ -9,8 +9,8 @@ import type { AgentDefinition, AuthFile } from "./agents.js";
 import { defaultAliasName, usesStoredKeys } from "./agents.js";
 import type { HostRelayClient } from "./host-relay-client.js";
 
-/** 会話の中で使う側（Project ごとの Module）に要る口 */
-export type StoredKeysRelay = Pick<HostRelayClient, "lookupAlias" | "resolveAlias">;
+/** 会話の中で使う側（Project ごとの Module）に要る口。目録（listAliases）は人が開いた画面からだけ引く */
+export type StoredKeysRelay = Pick<HostRelayClient, "lookupAlias" | "resolveAlias" | "listAliases">;
 /** 設定画面の側（banto 全体の Module）に要る口 */
 export type CredentialsRelay = Pick<HostRelayClient, "listAliases" | "createAlias" | "deleteAlias">;
 

@@ -5,6 +5,7 @@
 // 振る舞いは頼まれた文の中の印で決まる：
 //   [permission]  人への確認を1回出し、選ばれた kind を返答に含める
 //   [slow N]      tool を1つ始めて N 秒待つ（取り消されたら cancelled で返る）
+//   [draft]       [slow N] で待つ前に「書きかけ…」と返答の頭を送る（走っている間の返答が見えるかの試験用）
 //   [crash]       プロセスごと落ちる
 //   [env NAME]    環境変数 NAME が渡っているかだけを答える（値は出さない）
 //   [write PATH]  作業場所に PATH を書く（閉じ込めの試験用）
@@ -103,6 +104,7 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     const slow = /\[slow (\d+)\]/.exec(text);
     if (slow) {
       await toolCall(`sleep ${slow[1]}`);
+      if (text.includes("[draft]")) await say(cx, sessionId, "書きかけ…");
       await new Promise<void>((res, rej) => {
         const t = setTimeout(res, Number(slow[1]) * 1000);
         abort.signal.addEventListener("abort", () => {
