@@ -20,6 +20,7 @@ import {
   assertRulesetIsSafe,
   type ConfinementProfile,
 } from "@banto/landlock";
+import { checkContainerPrereqs, hostPrereqDeps } from "@banto/container";
 import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
 import { EventLog } from "./event-store/log.js";
 import { ProjectThreadStore, currentSkillSet } from "./project-thread/store.js";
@@ -144,6 +145,16 @@ async function main(): Promise<void> {
 
   const abi = checkAbi();
   console.log(`[host] Landlock ABI check: ${JSON.stringify(abi)}`);
+  // コンテナの前提（`docs/specs/v4-security.md` §1——閉じ込めを Project ごとのコンテナへ移す途中）。
+  // いまは知らせるだけ。Project の Module をコンテナで起こすようになったら、欠けていれば起こさずに受信箱で言う
+  const containerPrereqs = await checkContainerPrereqs(hostPrereqDeps());
+  console.log(
+    `[host] コンテナの前提: ${
+      containerPrereqs.ok
+        ? `そろっている（Incus ${containerPrereqs.serverVersion}）`
+        : containerPrereqs.problems.map((p) => `${p.message} 直し方：${p.fix}`).join(" / ")
+    }`,
+  );
 
   const eventLog = new EventLog(bootstrap.dataDir);
   await eventLog.init();

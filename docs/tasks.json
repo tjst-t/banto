@@ -2125,12 +2125,13 @@
     {
       "id": "container-host-prereqs",
       "title": "コンテナの前提をホストで確かめ、足りなければ言う（Incus 6.0.6 以降・incus グループ・subuid・転送の許可）",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "dev-environment-container"
       ],
       "why": "前提が欠けたまま Project の Module を起こそうとすると、分かりにくい所で落ちる（PoC 09 で全部踏んだ：6.0.0 だと中の Docker が AppArmor で落ちる／subuid が無いとコンテナが起動しない／Docker の転送 DROP で外に出られない）。黙って弱い道へ落ちず、足りないものを名指しして止める（規則2）。入れる手順も書く。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25：@banto/container に checkContainerPrereqs（Incus の有無・incus グループ・6.0.6 以降・subuid/subgid の root:<uid>:1）。足りないものを名指しして直し方を添える。host は起動時に確かめて記録に出す（いまは知らせるだけ——コンテナで Module を起こすようになったら、欠けていれば起こさずに受信箱で言う：container-lifecycle）。運用の口：node packages/container/dist/doctor.js。単体 8件。"
     },
     {
       "id": "container-lifecycle",
