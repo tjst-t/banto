@@ -6,11 +6,12 @@ import { IncusMissingError, type RunIncus } from "./incus.js";
 const GROUP = "ubuntu:x:1000:\nincus:x:985:ubuntu\n";
 const OK_SUBID = "ubuntu:100000:65536\nroot:1000000:1000000000\nroot:1000:1\n";
 
-function deps(over: Partial<PrereqDeps> & { version?: string; incus?: RunIncus; files?: Record<string, string> } = {}): PrereqDeps {
+function deps(over: Partial<PrereqDeps> & { version?: string; incus?: RunIncus; files?: Record<string, string>; noPool?: boolean } = {}): PrereqDeps {
   const files = { "/etc/group": GROUP, "/etc/subuid": OK_SUBID, "/etc/subgid": OK_SUBID, ...over.files };
   const run: RunIncus =
     over.incus ??
     (async (args) => {
+      if (args[1] === "/1.0/storage-pools/banto") return over.noPool ? { code: 1, stdout: "", stderr: "Error: Storage pool not found" } : { code: 0, stdout: "{}", stderr: "" };
       assert.deepEqual(args, ["query", "/1.0"]);
       return { code: 0, stdout: JSON.stringify({ environment: { server_version: over.version ?? "6.0.6" } }), stderr: "" };
     });
@@ -83,4 +84,10 @@ test("subuid の範囲の読み方：root の範囲が uid を含むときだけ
   assert.equal(rootMayMap("root:1000000:1000000000", 1000), false);
   assert.equal(rootMayMap("ubuntu:1000:1", 1000), false);
   assert.equal(rootMayMap("", 1000), false);
+});
+
+test("banto の置き場（btrfs）が無ければ、作り方を言う", async () => {
+  const r = await checkContainerPrereqs(deps({ noPool: true }));
+  assert.deepEqual(r.problems.map((p) => p.code), ["pool-missing"]);
+  assert.match(r.problems[0]!.fix, /incus storage create banto btrfs/);
 });

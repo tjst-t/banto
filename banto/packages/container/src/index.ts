@@ -1,6 +1,7 @@
 export { runIncus, queryIncus, IncusMissingError, type RunIncus, type IncusResult } from "./incus.js";
 export {
   checkContainerPrereqs,
+  BANTO_POOL,
   hostPrereqDeps,
   versionHasNestingFix,
   rootMayMap,

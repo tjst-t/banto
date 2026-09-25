@@ -15,7 +15,13 @@ import { IncusMissingError, queryIncus, runIncus, type RunIncus } from "./incus.
 export const MIN_LTS = [6, 0, 6] as const;
 export const MIN_FEATURE = [6, 19, 0] as const;
 
-export type PrereqCode = "incus-missing" | "not-in-group" | "daemon-unreachable" | "incus-too-old" | "idmap-not-allowed";
+export type PrereqCode = "incus-missing" | "not-in-group" | "daemon-unreachable" | "incus-too-old" | "idmap-not-allowed" | "pool-missing";
+
+/**
+ * banto のコンテナの置き場（btrfs）。写しを共有するので、2台目からは 0.2 秒で作れ、容量もほぼ増えない
+ * （実測・2026-09-25：`dir` は毎回 3.4 秒・1台 602MB。E2E は Project ごとに1台作る）
+ */
+export const BANTO_POOL = "banto";
 
 export interface PrereqProblem {
   code: PrereqCode;
@@ -129,6 +135,15 @@ export async function checkContainerPrereqs(deps: PrereqDeps): Promise<PrereqRes
         fix: `echo 'root:${deps.uid}:1' | sudo tee -a ${file} のあと sudo systemctl restart incus`,
       });
     }
+  }
+
+  const pool = await deps.runIncus(["query", `/1.0/storage-pools/${BANTO_POOL}`]);
+  if (pool.code !== 0) {
+    problems.push({
+      code: "pool-missing",
+      message: `banto のコンテナの置き場（btrfs の ${BANTO_POOL}）がありません。`,
+      fix: `sudo incus storage create ${BANTO_POOL} btrfs size=50GiB`,
+    });
   }
 
   return { ok: problems.length === 0, serverVersion, problems };

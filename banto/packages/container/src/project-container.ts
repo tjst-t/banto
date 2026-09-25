@@ -12,6 +12,7 @@
 // `incus.ts`）。上限を過ぎたら黙って再試行せず、失敗として返す（規則2・6）。
 
 import type { RunIncus } from "./incus.js";
+import { BANTO_POOL } from "./prereqs.js";
 
 export interface ProjectContainerSpec {
   projectId: string;
@@ -117,7 +118,7 @@ export class ProjectContainers {
     if (!st) {
       await this.incus(
         [
-          "init", spec.image, name,
+          "init", spec.image, name, "--storage", BANTO_POOL,
           "-c", `raw.idmap=${idmapFor(spec.uid, spec.gid)}`,
           "-c", `security.nesting=${spec.nesting}`,
           "-c", `user.banto.project=${spec.projectId}`,
