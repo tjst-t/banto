@@ -427,9 +427,9 @@ Module 自身の設定 Canvas が「role 依存の解決」（アーキ仕様 §
 身元を使うか」を Project ごとに持つ）。ここで問題になるのは、**大半の Module
 のプロセスは Project に紐づいていない**（アーキ仕様 §10 未決事項の注記、
 2026-08-30——MCP 仕様が「接続＝会話ではない」と明言しているため。**ただし
-Shell・FileSystem は例外**——Landlock の制約から Project 単位でプロセスを
-分ける、`docs/specs/v4-security.md`「Project の根は Module 起動時に確定
-させる」）ということ。**つまり Module 自身は「今どの Project のために
+Shell・FileSystem は例外**——閉じ込めの制約から Project 単位でプロセスを
+分ける。2026-09-25 からは Project のコンテナの中で起きる、`docs/specs/v4-security.md` §1・
+「Project の根は Module 起動時に確定させる」）ということ。**つまり Module 自身は「今どの Project のために
 描いているか」を、渡されない限り知りようがない**（例外の Shell/FileSystem
 も、設定 Canvas はこの一般的な配線に乗るので同じ扱いでよい）。
 

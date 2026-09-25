@@ -135,7 +135,7 @@ Factory は「他の Module より先に磨く特別なもの」ではなく**�
 | Module | 何をするか | 備考 |
 |---|---|---|
 | **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1。**MCP サーバであり ACP クライアント**——Claude Code・OpenCode などを ACP の同じ口で起こす。**サブエージェントの会話は core ではなくこの Module（とエージェント自身の置き場）の持ち物**で、core に渡るのは結果の転記だけ（訂正・2026-09-24——以前ここに「会話を走らせるのは core」とあったのは §4.1 の 2026-08-31 の決定と食い違っていた）。tool・閉じ込め・資格情報は §4.1「Subagent Module の形」。**鍵の設定画面は banto 全体に1本の `subagent-settings`**（同じパッケージの別の入口——走らせる側は Project ごとなので分けた） |
-| **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7）。**同梱の実装は `skills`**（2026-09-23）：banto 全体に1本、Landlock で自分の置き場だけに閉じ込める。置き場は `<Module の置き場>/skills/<Skill 名>/`（フォルダの中は原文のまま）。`SKILL.md` を `skill://<Skill 名>/SKILL.md` として印つきで、兄弟ファイルを `skill://<Skill 名>/<相対パス>` として配る——本文の相対パスが、本文の URI からの相対でそのまま引ける。一覧に載せたファイルしか読ませない（隠しファイル・シンボリックリンクは辿らない）。**tool**：AI に見えるのは `import_skill`（GitHub から取ってきて仮置きし、取り込む前の確認を画面に出す——取り込まない）だけ。人の操作だけの口（`admin`、呼び出しの刻印も `{admin: true}` を確かめる）：`prepare_skill_import`（GitHub か ZIP）・`get_skill_import`・`confirm_skill_import`・`discard_skill_import`・`list_installed_skills`・`remove_skill`。**画面**：`ui://banto-skills/import`（`import_skill` の画面）と `ui://banto-skills/manage`（設定面「Skill の置き場」）——同じ HTML |
+| **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7）。**同梱の実装は `skills`**（2026-09-23）：banto 全体に1本、Landlock で自分の置き場だけに閉じ込める（コンテナへの移行後は banto 本体の同梱 Module になる——`v4-security.md` §1）。置き場は `<Module の置き場>/skills/<Skill 名>/`（フォルダの中は原文のまま）。`SKILL.md` を `skill://<Skill 名>/SKILL.md` として印つきで、兄弟ファイルを `skill://<Skill 名>/<相対パス>` として配る——本文の相対パスが、本文の URI からの相対でそのまま引ける。一覧に載せたファイルしか読ませない（隠しファイル・シンボリックリンクは辿らない）。**tool**：AI に見えるのは `import_skill`（GitHub から取ってきて仮置きし、取り込む前の確認を画面に出す——取り込まない）だけ。人の操作だけの口（`admin`、呼び出しの刻印も `{admin: true}` を確かめる）：`prepare_skill_import`（GitHub か ZIP）・`get_skill_import`・`confirm_skill_import`・`discard_skill_import`・`list_installed_skills`・`remove_skill`。**画面**：`ui://banto-skills/import`（`import_skill` の画面）と `ui://banto-skills/manage`（設定面「Skill の置き場」）——同じ HTML |
 | **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Environment とは別実装**（下記） |
 | **Vault（Infisical）** | 同じ `vault` 役割の2本目（実装・2026-09-12）。**行き先は Infisical Cloud**、開発と試験は自前ホスト（`packages/modules/vault-infisical/dev/`）——**backend のコードは両方で同じ**で、違うのは接続先と資格情報だけ。資格情報は**Infisical には入れられない**（Vault を開ける鍵は Vault に入らない）ので、組み込み Vault の `identity.txt` と同じく設定として持つ。**宣言には書かない**——宣言は Event Store に残るので、秘密が記録に残ってしまう |
@@ -881,7 +881,7 @@ interface VaultBackend {
 ```
 
 **バックエンド実装が守ること（OS の面、決定・2026-09-10）**——**Vault は
-Landlock の対象外**（鍵を持つので閉じ込めの外に置く、`docs/specs/v4-security.md`）。
+閉じ込めの外**（鍵を持つので banto 本体に置く、`docs/specs/v4-security.md` §1）。
 OS 側で止まってくれる保証が無いぶん、実装が自分で塞ぐ：
 
 - **グループ名は素直な名前だけ**（英数字と `.` `_` `-`、先頭は英数字）。そのまま
@@ -920,12 +920,12 @@ KV v2 の `custom_metadata` が最初からこの用途を持つ、OS キーチ�
 （アーキ仕様の調査で確認済み）。**Environment はその型に当てはまり、Shell は
 当てはまらない。** 契約の形が違うものを1つの Module に入れない。
 
-**隔離の実装は重複しない。** 閉じ込めの機構（コンテナ／Landlock 等、`docs/specs/v4-security.md`）
-は**共有ライブラリ**でよい——「共有ライブラリは第3の箱ではなく npm 依存」
-（アーキ仕様 §1）。Module を分けても、閉じ込めのコードは1つで済む。
-
-**したがって Shell は自分で閉じ込める。** Environment の中でだけ走らせる形は採らない
-——**必須 Module（Shell）が任意 Module（Environment）に依存しなくなる。**
+**閉じ込めは、host が Project ごとに用意するコンテナで行う**（改訂・2026-09-25、
+`docs/specs/v4-security.md` §1。以前は「Shell は自分で閉じ込める（Landlock）」）。Shell も
+FileSystem も Subagent も、Project の Module は**そのコンテナの中で起きる**——Shell のコマンドも中で走る。
+**このコンテナは Environment Module ではない**：host が Project の Module を起こす場所として持つもので、
+**必須 Module（Shell）が任意 Module（Environment）に依存しない**、という以前の理由はそのまま保たれる。
+Environment（§4）は「状態を持つ実行場所を識別子で渡す」Module として別に残る（設計は未決）。
 
 ### 2.2 FileSystem のインターフェース（決定・2026-09-02）
 
@@ -947,12 +947,12 @@ MCP 公式の filesystem リファレンス実装で既に解かれているの�
 
 **`path` 引数は Project の根からの相対に限る**（決定・2026-09-10、ユーザー）。
 絶対パス、および解決結果が根の外に出るパス（`..` 等）は tool の引数検査で拒否する。
-**本当の壁は引き続き Landlock**（`docs/specs/v4-security.md`）で、この検査は
-インターフェースを狭めるだけ——Landlock の許可リストは実行の都合で根より広い
+**本当の壁は閉じ込め**（Project のコンテナ。移行が終わるまでは Landlock——
+`docs/specs/v4-security.md` §1・§2）で、この検査はインターフェースを狭めるだけ——閉じ込めの範囲は実行の都合で根より広い
 （`/etc`・`/proc` 等）ため、検査が無いと `readFile("/etc/passwd")` が tool として
 成功し、「根の外へ出さない」（§3）と実態が食い違っていた
 （`docs/notes/2026-09-09-repo-review.md`）。検査を擦り抜ける未知の形があっても
-Landlock が受け止める、という二段構え。
+閉じ込めが受け止める、という二段構え。
 
 **承認ゲートは独自に設計しない。** 「毎回確認すると承認依頼ストームになる」問題
 への対処は既に Agent SDK に委ねると決定済み（`docs/specs/v4-frontend.md` §6.0、2026-08-31：
@@ -1088,14 +1088,14 @@ Environment 側で扱う（§4、下記）。
 
 **`secretFiles`**（`.npmrc`・`kubeconfig` 等、アーキ仕様 §2.5 に原則はあるが
 tool 引数の形は未設計だった部分——ここで決める）：実行直前、Shell が host 中継
-経由で alias を解決し、指定パス（Landlock された根の中に限る）へ書き出す。
+経由で alias を解決し、指定パス（Project の根の中に限る）へ書き出す。
 実行後（成功・失敗・timeout いずれでも）**必ず**削除する。承認ゲートに見せるのは
 「どのパスにどの alias が書き出されるか」まで（値は出さない）——`envSecrets`
 と同じ扱い。
 
 > **既知の限界として受け入れる（TODO、2026-09-02）**：書き出されている間、
 > および削除に失敗したときは、`readFile`（FileSystem の `agent` 可視性 tool）
-> が同じ Landlock 根を見ているため、AI が `secretFiles` の値をそのまま読める。
+> が同じ根を見ているため、AI が `secretFiles` の値をそのまま読める。
 > D3（鍵の値が AI の文脈に出ない）が、この間だけ構造ではなく「Shell が必ず
 > 消す」という運用で守られている状態になる。FileSystem の根に含まれない
 > 場所へ書き出す・Phase 1 では `secretFiles` 自体を作らない、といった代替案は
@@ -1157,7 +1157,7 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 | | 何ができるか | どこで強制できるか |
 |---|---|---|
 | **FileSystem** | 自分が開くファイルを自分で決められる | **アプリ層で強制できる**——ただし正しくやるのは難しい（`..`・シンボリックリンク・ハードリンク・検査と使用の間の競合）。**既知の脆弱性の型なので、既知の答えを使う**（規則12） |
-| **Shell** | **任意のプロセスを起こせる** | **アプリ層では強制できない。** 起こされたプロセスは banto の検査を通らない。**Landlock で縛る**（`docs/specs/v4-security.md`）——非特権で使え、子プロセスに継承され、`execve` をまたいで残り、外せない。ただし**リソースは対象外**なので cgroup が別に要る |
+| **Shell** | **任意のプロセスを起こせる** | **アプリ層では強制できない。** 起こされたプロセスは banto の検査を通らない。**Project のコンテナの中で走らせる**（`docs/specs/v4-security.md` §1。移行が終わるまでは Landlock）。資源の上限はコンテナの設定で掛けられる（未決） |
 
 **引数で根を渡すことは、強制ではない。** アーキ仕様 §2.5 は「Project ごとの違いは
 その呼び出しに何を渡すかで吸収する」と決めているが、**渡した根を Module が守る
@@ -1169,8 +1169,8 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 
 ### FileSystem の tool 引数は「根の中を指しているか」で見る（決定・2026-09-10）
 
-**Landlock は最後の砦であって、tool の契約ではない。** 許可リストは**プロセスを
-起動するための都合**で根より広い（node のバイナリ・`/etc`・`/proc`・Module の
+**閉じ込めは最後の砦であって、tool の契約ではない。** 閉じ込めの範囲は**プロセスを
+起動するための都合**で根より広い（コンテナにも Project の根の外がある。以下は Landlock の時の実測）（node のバイナリ・`/etc`・`/proc`・Module の
 インストール先——`docs/specs/v4-security.md`「許可リストの組み方」）。その結果、
 `readFile("/etc/passwd")` が**成功していた**（実測・2026-09-10）。「FileSystem は
 根の外へ出さない」という上の表と、実態が食い違っていた。
@@ -1181,9 +1181,9 @@ Shell には数えきれない資源が無いので Command Palette の `complet
   解いた**実体**（realpath）が根の外なら断る。まだ無いパスは、いちばん近い親で見る
   （新規作成のため）
 - **`~` は展開しない。** ここはシェルではない——黙って別の意味に解釈せず、断る
-- **これは Landlock を置き換えるものではない。** アプリ層の検査だけに頼らない、
+- **これは閉じ込めを置き換えるものではない。** アプリ層の検査だけに頼らない、
   という決定（上の表・`docs/specs/v4-security.md`）はそのまま——**契約を1枚上に置く**。
-  検査と使用の間の競合（TOCTOU）が残る領域は、これまでどおり Landlock が受け持つ
+  検査と使用の間の競合（TOCTOU）が残る領域は、これまでどおり閉じ込めが受け持つ
 
 > **「相対パスだけを受ける」形は、実測でやめた**（2026-09-10）。最初はそう決めて
 > 実装したが、**AI は根の中のファイルを絶対パスで指してくる**
@@ -1192,7 +1192,7 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 
 > **Shell はこの形にしない。** Shell の引数は「実行するコマンド」であって
 > パスではない——`cat /etc/passwd` を書けてしまう以上、アプリ層の検査は
-> 気休めにしかならない（上の表）。Shell の境界は Landlock ただ1つに保つ。
+> 気休めにしかならない（上の表）。Shell の境界は閉じ込めただ1つに保つ。
 
 ## 3.1 「banto が作る」と「外部をマウントする」を分ける
 
@@ -1212,7 +1212,7 @@ Module の一覧には**2種類が混ざる**：
 
 | Module | 何をするか | 状態 |
 |---|---|---|
-| **Environment** | コードを動かす場所を用意する（**状態を持ち、識別子で参照する**） | **Shell とは別実装**（§2.1）。閉じ込めの機構は共有ライブラリとして両方が使う。**人と AI が同じ永続セッションをターン制で共有する使い方も想定**（2026-09-02、下記） |
+| **Environment** | コードを動かす場所を用意する（**状態を持ち、識別子で参照する**） | **Shell とは別実装**（§2.1）。**host が Project ごとに用意するコンテナ（`v4-security.md` §1）とも別**——あちらは Project の Module を起こす場所、こちらは状態を持つ実行場所を識別子で渡す Module。**人と AI が同じ永続セッションをターン制で共有する使い方も想定**（2026-09-02、下記） |
 | **Publish** | 動いているものに届く URL を生やす | |
 | **Repo（git）** | 複数リポジトリの一覧・worktree・clone/branch/log | **要件に記録あり**——「この辺最低限ないと開発できない」 |
 | **Backlog** | 仕事の一覧を管理する | |
@@ -1319,7 +1319,8 @@ Module の一覧には**2種類が混ざる**：
 - **置き場は Configuration**（instance 既定＋Project 上書き）。Module 集合は Project 単位
   （アーキ仕様 §2.2）なので、既にある仕組みに乗せる——新しい置き場を作らない（規則12）
 - **同梱の既定（Vault・Shell・FileSystem）も同じ宣言の形**で持つ。特別扱いしない（規則3）
-- **閉じ込め（Landlock）も宣言から決まる**——以前は「shell なら実行を許す、それ以外は
+- **閉じ込め（Landlock）も宣言から決まる**（コンテナへの移行で、宣言の閉じ込めの項目は決め直す——
+  `v4-security.md` §1）——以前は「shell なら実行を許す、それ以外は
   読み書きだけ」とコードで場合分けしていた。新しい Module を足したとき、
   その閉じ込めを書く場所が無い状態だった
 - 宣言は**起動する前に検める**。知らない差し込み語・空の起動・名前の重複・
@@ -1352,7 +1353,8 @@ subprocess が厳しい、`handlesSecrets` は true が厳しい、`confinement`
 
 1. **`Memory` を core のインターフェースにするか、薄い Module にするか**（§1）——core 側が筋に
    見えるが、**確定していない**
-2. ~~FileSystem 側の強制方法~~（§3）**→ 決定（2026-09-02、`docs/specs/v4-security.md`
+2. **（改訂・2026-09-25：閉じ込めは Project のコンテナへ。以下の Landlock の決定は移行が終わるまでのもの——
+   `docs/specs/v4-security.md` §1・§2）** ~~FileSystem 側の強制方法~~（§3）**→ 決定（2026-09-02、`docs/specs/v4-security.md`
    「FileSystem も同じ Landlock で閉じ込める」）。** Shell と同じ Landlock を
    `subprocess` 化した FileSystem 自身のプロセスに直接掛ける——アプリ層検査は
    採らない。~~Shell からネットワークに出られてよいか~~ **→ 決定（2026-09-02、
@@ -1369,9 +1371,9 @@ subprocess が厳しい、`handlesSecrets` は true が厳しい、`confinement`
    起動時にどの `PATH` の値を許可リスト生成に使うか（環境変数は書き換えられ
    うるため、banto が Module 起動前に確定させた値を使う）
 3. ~~Shell を Environment の中でだけ走らせるか~~
-   **→ §2.1 で決着。別 Module にし、Shell は自分で閉じ込める。**
-   閉じ込めの機構は共有ライブラリとして両方が使うので実装は重複しない。
-   必須 Module が任意 Module に依存する問題も消えた
+   **→ §2.1 で決着。別 Module にする。** 閉じ込めは host が Project ごとに用意する
+   コンテナで行う（改訂・2026-09-25。以前は「Shell は自分で閉じ込める（Landlock）」）。
+   必須 Module が任意 Module に依存する問題は、コンテナが Module ではないので起きない
 4. 各 Module の tool の具体形（この文書に順次書く）
 5. ~~`vault` の複数バックエンドの選び方~~ **→ §2.1 で決着。** 役割として解決する
    （アーキ仕様 §2.5）だけで足り、単一 Module 方式・A〜D のインターフェースの構成まで決めた

@@ -48,7 +48,7 @@ core が持つのは「**MCP のインターフェースの向こう側に置け
 | Module の配布・接続 | `server.json` / `mcp.json` |
 | 会話の器 | assistant-ui |
 | 履歴の持ち方 | event sourcing |
-| 閉じ込め | Landlock |
+| 閉じ込め | Project ごとのシステムコンテナ（Incus）——2026-09-25 に Landlock から変更、`docs/specs/v4-security.md` §1 |
 | 返信の無限往復を防ぐ | RFC 3834 |
 
 ### この文書の読み方
@@ -501,7 +501,7 @@ Claude Agent SDK に触れる**唯一のインターフェース**。ベンダ�
 渡す。プリセット＋追記（`append`）では次の3つが解けない：
 
 - **無い tool の使い方が書いてある。** banto は組み込み tool を絞っている
-  （Shell への経路は Landlock で絞った Shell Module 経由だけ、
+  （Shell への経路は閉じ込めの中の Shell Module 経由だけ、
   `docs/specs/v4-security.md`）のに、プリセットは Bash / Read / Edit /
   TodoWrite / Task 等の使い方を語り続ける。**仕様と実態の食い違い**（規則8）で、
   追記では打ち消せない——本文が勝つ
@@ -1140,7 +1140,10 @@ Module 側が host に対する**別の client 接続**を自分で張る必要�
   「特殊ファイルシステム（ソケット等）は Landlock で明示的に制限できない」
   と明記しており、Landlock 配下の Shell/FileSystem からの到達性が未測定
   のため。TCP の localhost 接続は Landlock ABI4 で制御対象になることが
-  既に実測済み（`docs/specs/v4-security.md`）——枯れた経路を選ぶ
+  既に実測済み（`docs/specs/v4-security.md`）——枯れた経路を選ぶ。
+  **コンテナへの移行後**（`docs/specs/v4-security.md` §1）：Project の Module はコンテナの中にいて
+  host の 127.0.0.1 に届かないので、**中継の口は Project のネットワークの host 側のアドレスでも待ち受ける**
+  （合言葉は今までどおり。`docs/specs/v4-security.md` §1）
 - **トークンはプロセス起動のたびに発行し直す。** 使い回さない（規則2と
   同じ精神——黙って緩めない）
 - **畳んだら回収する**（実装・2026-09-10）。**Project を閉じたら、その Project の
@@ -1771,10 +1774,10 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   resume＝`session/load`（`loadSession` を名乗るエージェントだけ）、tool の可視性＝`tool_call`、
   人への確認＝`session/request_permission`、使用量＝`usage`・`usage_update`（上の表）。
   **持っているかどうかは `initialize` で名乗り合う**
-- **サブエージェントの道具は、エージェント自身の tool を Landlock の中で使わせる。banto の Module
+- **サブエージェントの道具は、エージェント自身の tool を閉じ込めの中（Project のコンテナ）で使わせる。banto の Module
   （FileSystem・Shell・Vault）は追加で渡す**（ACP の `session/new` の `mcpServers`）。ACP には
   ファイル・端末の操作をクライアント（banto）に回させる口もあるが、どのエージェントも従うとは
-  限らない——**強制できる層は Landlock**（§3 と同じ考え方）
+  限らない——**強制できる層は閉じ込め**（§3 と同じ考え方）
 - **最初に繋ぐのは Claude Code と OpenCode**。Codex はこの2つが通ってから
 - **認証は「サブスクで使えるものはサブスク、API キーでも使える」**——どれが使えるかは
   エージェントごとに違う。API キーは Vault の alias から環境変数で渡す（Shell の `envSecrets` と同じ形）
@@ -1825,8 +1828,10 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   **Elicitation の答えが繋がったら、そちらへ上げる**（自前の口は作らない）。
   エージェント自身の確認の出し方は main の Runner と揃える（Claude は `auto`。OpenCode は既定のまま）
   ——**普通の仕事では確認が来ない**（実測：Claude sonnet・OpenCode とも、ファイルを書くまで確認0件）。
-  **強制できる層は Landlock**
-- **閉じ込め**：エージェントは Subagent Module が**Landlock のドメイン**で起こす。**Module 自身は
+  **強制できる層は閉じ込め**
+- **閉じ込め**（改訂・2026-09-25）：**Subagent Module ごと Project のコンテナの中で起き、エージェントも中で走る**
+  （`docs/specs/v4-security.md` §1）。**Claude のログインの中継は host に残す**（本物の資格情報を中に入れない。
+  どの部品が持つかは §10 item 31）。**以下は移行が終わるまでの Landlock の形**（同 §2）：エージェントは Subagent Module が**Landlock のドメイン**で起こす。**Module 自身は
   閉じ込めない**（訂正・2026-09-24、実装で発覚）——閉じ込めると launcher とエージェント本体を
   実行できない（Module に許すのはモノレポの読み取りだけ）。Module は AI の書いたコマンドを走らせず、
   Vault と同じく同梱なので、閉じ込めの外に置く。
@@ -3491,3 +3496,8 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
     `docs/specs/v4-modules.md` 側で決め打ちできそうだが、第三者 Module 発の
     role は banto が中央集権的に持つべきではなさそう）も未定。**優先度は低い
     ——実際に契約違反で困る場面が出てから、そのときの実例で考える**（規則7）
+31. **Project のコンテナ（2026-09-25 の決定、`docs/specs/v4-security.md` §1）の残り**——一覧はあちらの
+    「まだ決まっていないこと」（写しを持たない、規則3）：Claude のログインの中継を host のどの部品が
+    持つか・外から足した banto 全体の Module をどこで動かすか・中の node と Module のコードの
+    渡し方・ホームの外の Project の根・道具の定義を再現できる形で持つか・置き場の方式・中から host へ届く範囲と
+    資源の上限。移行の段取りは `docs/tasks.json`
