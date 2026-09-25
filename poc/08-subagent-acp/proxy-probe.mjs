@@ -7,7 +7,7 @@
 // 見るもの：①仕事が通るか ②どの道（パス）を中継が通したか ③中継を通らずに外へ出ようとして
 // 失敗したものは無いか（stderr）④選べるモデルが本体と同じか
 //
-// usage: node proxy-probe.mjs
+// usage: node proxy-probe.mjs [--subscription] [--default-model]
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -76,6 +76,11 @@ const child = spawn(process.execPath, [join(BANTO, "node_modules/@agentclientpro
     CLAUDE_CONFIG_DIR: join(scratch, ".claude"),
     CLAUDE_CODE_OAUTH_TOKEN: secret,
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    // 契約の種類と上限の段（トークンではない）。env のトークンのとき CLI はここから読む
+    ...(process.argv.includes("--subscription") ? (() => {
+      const o = JSON.parse(readFileSync(join(homedir(), ".claude/.credentials.json"), "utf8")).claudeAiOauth;
+      return { CLAUDE_CODE_SUBSCRIPTION_TYPE: o.subscriptionType, CLAUDE_CODE_RATE_LIMIT_TIER: o.rateLimitTier };
+    })() : {}),
     HTTPS_PROXY: `http://127.0.0.1:${tunnel.address().port}`,
     NO_PROXY: "127.0.0.1,localhost",
   },
@@ -89,6 +94,7 @@ try {
   await client({ name: "proxy-probe" })
     .onNotification(methods.client.session.update, (ctx) => {
       const u = ctx.params.update;
+      if (u.sessionUpdate === "usage_update") result.context = { used: u.used, size: u.size };
       if (u.sessionUpdate === "agent_message_chunk" && u.content.type === "text") text += u.content.text;
     })
     .onRequest(methods.client.session.requestPermission, (ctx) => ({ outcome: { outcome: "selected", optionId: ctx.params.options[0].optionId } }))
@@ -99,7 +105,8 @@ try {
       result.models = model.options.map((o) => o.value);
       result.defaultModel = model.currentValue;
       result.defaultLabel = model.options.find((o) => o.value === "default")?.description ?? model.options.find((o) => o.value === "default")?.name;
-      await ctx.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: model.id, value: "haiku" });
+      result.options = model.options.map((o) => `${o.value}=${o.name}${o.description ? `（${o.description}）` : ""}`);
+      if (!process.argv.includes("--default-model")) await ctx.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: model.id, value: "haiku" });
       const r = await ctx.request(methods.agent.session.prompt, {
         sessionId: s.sessionId,
         prompt: [{ type: "text", text: "「はい」とだけ答えて。" }],
