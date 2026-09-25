@@ -9,3 +9,14 @@ export {
   type PrereqProblem,
   type PrereqResult,
 } from "./prereqs.js";
+export { TIMED_OUT } from "./incus.js";
+export {
+  ProjectContainers,
+  containerNameFor,
+  execInContainer,
+  idmapFor,
+  CONTAINER_NODE_PATH,
+  DEFAULT_TIMEOUTS,
+  type ProjectContainerSpec,
+  type ContainerTimeouts,
+} from "./project-container.js";

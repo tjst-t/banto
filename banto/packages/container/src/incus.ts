@@ -20,16 +20,27 @@ export class IncusMissingError extends Error {
   override name = "IncusMissingError";
 }
 
+/** 上限を過ぎて止めたときの終了コード（`timeout(1)` と同じ） */
+export const TIMED_OUT = 124;
+
 export const runIncus: RunIncus = (args, opts = {}) =>
   new Promise((resolve, reject) => {
-    execFile("incus", args, { timeout: opts.timeoutMs ?? 60_000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile("incus", args, { timeout: opts.timeoutMs ?? 60_000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err && (err as NodeJS.ErrnoException).code === "ENOENT") {
         reject(new IncusMissingError("incus のコマンドが見つかりません"));
+        return;
+      }
+      // 上限を過ぎて止めたときは、そう分かる形で返す（「失敗した」と混ぜない）
+      if (err && (err as { killed?: boolean }).killed) {
+        resolve({ code: TIMED_OUT, stdout: String(stdout), stderr: `${(opts.timeoutMs ?? 60_000) / 1000} 秒で返らなかった ${String(stderr)}`.trim() });
         return;
       }
       const code = err ? (typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : 1) : 0;
       resolve({ code, stdout: String(stdout), stderr: String(stderr) });
     });
+    // **標準入力は必ず閉じる**。`incus init` は標準入力がターミナルでないとき、そこから設定（YAML）を読む——
+    // 開いたままだと入力の終わりを待ち続けて返らない（実測・2026-09-25：開いたまま＝時間切れ、空＝4 秒）
+    child.stdin?.end();
   });
 
 /** `incus query <path>` の JSON を返す。失敗は Incus の言葉のまま投げる */
