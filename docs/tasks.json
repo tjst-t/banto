@@ -2114,7 +2114,7 @@
       "id": "dev-environment-container",
       "title": "Project ごとのシステムコンテナ（Incus）に Project のものをまとめ、Landlock をやめる",
       "status": "undecided",
-      "why": "ユーザー（2026-09-25）：閉じ込めが厳しすぎて開発できない。開発ごとに道具を入れたい。セキュリティと両立したい。実測：PATH から組む許可リストでは gcc の下請け（/usr/libexec）やヘッダ（/usr/include）に届かず cargo・cc が止まる。閉じ込めの中では root になれないので道具も入れられない。仕様で未決の Environment Module（v4-modules.md §4・§5-10）の形として、Dev Containers（devcontainer.json）を PoC で試す案。 2026-09-25 ユーザーと方向を合意：仕切りは banto 本体（会話・ログイン・Vault・設定）と Project ごとのシステムコンテナ（それ以外全部）の2つ。Incus を選んだ。PoC 09 で主要な問いは確かめた。残り：コンテナの外向き通信（Docker の FORWARD DROP との衝突、ファイアウォールの変更は人の判断待ち）、中での apt とビルド、中継の承認を alias ごとにする変更、仕様への反映。",
+      "why": "ユーザー（2026-09-25）：閉じ込めが厳しすぎて開発できない。開発ごとに道具を入れたい。セキュリティと両立したい。実測：PATH から組む許可リストでは gcc の下請け（/usr/libexec）やヘッダ（/usr/include）に届かず cargo・cc が止まる。閉じ込めの中では root になれないので道具も入れられない。仕様で未決の Environment Module（v4-modules.md §4・§5-10）の形として、Dev Containers（devcontainer.json）を PoC で試す案。 2026-09-25 ユーザーと方向を合意：仕切りは banto 本体（会話・ログイン・Vault・設定）と Project ごとのシステムコンテナ（それ以外全部）の2つ。Incus を選んだ。PoC 09 で主要な問いは確かめた。残り：外向き通信の許可の恒久化（ユーザーが一時的に足した）、中で Docker が動かない（runc と Incus 6.0.0）、中継の承認を alias ごとにする変更、仕様への反映。",
       "notes": "docs/notes/2026-09-25-dev-environment.md"
     }
   ],

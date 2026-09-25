@@ -104,3 +104,15 @@ Claude のログイン・Vault・設定。AI に渡してはいけないもの�
 揃う・Module を中で起こしてホストから MCP で話せる・中のエージェントがホストの Claude ログイン中継を使える
 （中継はブリッジ側で待ち受ける）・前回の抜け道とホストの秘密は中に存在しない。
 **残る観察**：ホストで 0.0.0.0 に待ち受けているサービス（banto の API など）にはコンテナから届く。
+
+### 試作の続き（外向きの通信が通ったあと）
+
+ユーザーが `DOCKER-USER` に `incusbr-1000` の許可を足した（再起動・Docker の再起動で消える。恒久化は未決）。
+
+- 中で root として `apt install build-essential rustc cargo python3-venv`：50 秒
+- uid 1000 で Project の中：`cargo build`（247 ms）・`cc`・venv に `pip install requests`、すべて動く。できたファイルは
+  ホスト側でも uid 1000
+- **中で Docker は動かなかった**：`docker.io` は入るが、コンテナの起動で `open sysctl … reopen fd 8: permission denied`。
+  中の runc 1.3.4 と Incus 6.0.0（Ubuntu 版）の組み合わせの問題と見られる。システムコンテナを勧めた理由の1つ
+  「中で Docker を動かせる」は、**いまのこの機械では成り立っていない**——候補は新しい Incus か、Docker が要る
+  Project だけ VM

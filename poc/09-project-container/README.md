@@ -32,14 +32,19 @@
 | ホストの秘密（`~/.claude`・`~/.ssh`・`~/.config/banto`） | **中に存在しない** |
 | ホストのプロセス | 見えない（中の 14 個だけ） |
 | ホストのサービス | **0.0.0.0 で待ち受けているものには届く**（banto の API 4737・画面 4175・SSH 22 など。LAN から届くのと同じ範囲）。127.0.0.1 だけのものには届かない |
-| 中で root として `apt install`、Rust・C・Python | **未計測**——コンテナが外に出られない（下） |
+| 中で root として `apt install`（build-essential・rustc・cargo・python3-venv） | **できる**。50 秒（ユーザーがファイアウォールの許可を足したあと） |
+| uid 1000 で Project の中で `cargo new`→`cargo build`→実行 | **できる**（ビルド 247 ms） |
+| 同じく C（`cc`）・Python（venv に `pip install requests`） | **できる** |
+| できたファイルの持ち主（ホスト側） | すべて uid 1000 |
+| 中で Docker（`security.nesting=true`、`apt install docker.io`） | **入るが、コンテナを起こせない**：`open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`。中の runc 1.3.4 と、外の Incus 6.0.0（Ubuntu 版）の組み合わせの問題と見られる。`--security-opt apparmor=unconfined` では直らない。**未解決**——候補：新しい Incus（6.0 LTS の新しい版）、Docker が要る Project は Incus の VM で動かす |
 
-## 外に出られない（未解決・ユーザーの判断待ち）
+## 外に出られない（→ 2026-09-25 ユーザーが許可を足して解決。ただし再起動で消える）
 
 Docker が入っている機械では、Docker がホストの転送（iptables の FORWARD）を既定で DROP にするため、
 **Incus のコンテナは IPv4 で外に出られない**（Incus の文書にある既知の衝突）。この機械は IPv6 の外向きの
 経路も無い。文書どおりの対処は `DOCKER-USER` に Incus のブリッジの許可を足すことだが、
-**ホストのファイアウォールを変える操作は、自動モードの安全装置に止められた**——人の判断に上げた。
+**ホストのファイアウォールを変える操作は、自動モードの安全装置に止められた**——人の判断に上げ、
+ユーザーが `incusbr-1000` の分を実行した。**iptables の規則は再起動・Docker の再起動で消える**——恒久化は未決。
 
 ## 踏んだこと（プローブの誤り）
 
