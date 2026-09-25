@@ -133,3 +133,30 @@ filesystem リファレンス実装と同じく unified diff を返すように�
   絞っていた。名前・説明・Module の名前（`filesystem`）で引き、Module の名前は項目の下に出す
   （なぜ当たったかが画面で分かる）。
 
+
+## HTML のプレビューで JS を走らせる（2026-09-25、ユーザー）
+
+ユーザー：「`~/site/llm-explained.html` をプレビューで見ると JS が動いていない。ダウンロードして開くのと表示が変わる。
+同じであってほしい」。原因は 2026-09-23 の決定そのもの——`sandbox=""`（スクリプトも同一オリジンも与えない）。
+
+**`sandbox="allow-scripts"` に変えた。** 以前 JS を止めた理由は「画面は自分の Module の書き込み・削除を呼べるので、
+中身に紛れたスクリプトを走らせない」。確かめたこと：
+
+- 同一オリジンを与えなければ、中身は不透明なオリジンで走る——画面の DOM にも JS にも触れない
+- 上へ送る postMessage は、どの層も送り手の窓を確かめて捨てる：この画面（`ui/protocol.ts`：`window.parent` だけ）・
+  中継（`sandbox-server.ts`：banto の画面か内側の iframe だけ）・banto の画面（ext-apps の `PostMessageTransport` は
+  `event.source` を確かめる）
+- srcdoc の iframe は親の CSP を継ぐ——`connect-src 'none'` で通信は止まる（E2E で `securitypolicyviolation` を確かめた。
+  CORS で落ちたのと区別するため）
+- 人がダウンロードして開けば、同じ JS がもっと強い権限（`file://`）で走る。プレビューのほうが狭い
+
+**却下した案**：`allow-same-origin` も足す——中身が画面と同じオリジンになり、画面の DOM と口（書き込み・削除）に
+そのまま届く。`allow-popups`・`allow-forms`・`allow-modals` も足していない（要ると分かってから）。
+
+**残る違い**：①外のフォント・画像・スクリプトを読む HTML は CSP で止まる（今回の HTML は1枚に閉じていて当たらない）。
+②幅——プレビューは左のツリーのぶん狭いので、ページが幅で切り替えるレイアウト（今回の HTML は 900px 以下で目次が上の
+帯になる）は、ダウンロードして広い窓で開いたときと変わる。これは JS ではなく幅の違い。
+
+E2E（`filesystem-browser.spec.ts` の最後）：JS が動いて中身が出ること・親の DOM に触れないこと・通信が CSP で止まる
+こと・プレビューの中から削除の呼び出しを3つの窓に送っても `ui-tool-call` が1本も出ずファイルが残ること。
+`sandbox=""` に戻すと「JS が動いていない」で落ちることも確かめた。

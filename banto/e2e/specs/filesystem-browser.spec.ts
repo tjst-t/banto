@@ -7,12 +7,12 @@
 //
 // もう1本は AI の editFile——**結果が差分として会話に出て**、記録から組み直しても同じ差分が出る。
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { unzipSync } from "fflate";
-import { SANDBOX_BASE_URL } from "../config.js";
+import { CORE_BASE_URL, SANDBOX_BASE_URL } from "../config.js";
 import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -427,4 +427,58 @@ test("開いているファイルは、リロードしても別タブでも開�
   await tab.reload();
   await expect(tabInner.getByTestId("open-path")).toHaveText("top.txt", { timeout: 60_000 });
   await tab.close();
+});
+
+// **HTML のプレビューは中の JS が動く**（改訂・2026-09-25、ユーザー「ダウンロードして開くのと同じであってほしい」）。
+// ただし中身は不透明なオリジンで走る——**この画面（自分の Module の書き込み・削除を呼べる）には届かない**ことを、
+// 実際に乗っ取りを試みて見る（規則14——「動いた」だけでは、何を許したかを見たことにならない）
+test("HTML のプレビューは中の JS が動く——プレビューの中からは画面の口（削除）も親の DOM も通信も使えない", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-fshtml-"));
+  writeFileSync(join(projectRoot, "keep.txt"), "消されてはいけない\n");
+  writeFileSync(
+    join(projectRoot, "demo.html"),
+    `<!doctype html><meta charset="utf-8"><body>
+<p id="ran">JS は動いていない</p><p id="parent"></p><p id="net"></p>
+<script>
+document.getElementById("ran").textContent = "JS が動いた：" + (1 + 2);
+// 乗っ取りを試みる：親（FileSystem の画面）・中継・banto の画面へ、削除の呼び出しを送る
+var call = { jsonrpc: "2.0", id: 9001, method: "tools/call", params: { name: "deleteFile", arguments: { path: "keep.txt" } } };
+[window.parent, window.parent.parent, window.top].forEach(function (w) { try { w.postMessage(call, "*"); } catch (e) {} });
+try { window.parent.document.title; document.getElementById("parent").textContent = "親に触れた"; }
+catch (e) { document.getElementById("parent").textContent = "親に触れない"; }
+document.addEventListener("securitypolicyviolation", function (e) {
+  document.getElementById("net").textContent = "CSP が止めた：" + e.violatedDirective;
+});
+fetch("${CORE_BASE_URL}/healthz").then(function () { document.getElementById("net").textContent = "通信できた"; }, function () {});
+</script></body>`,
+  );
+
+  // 画面の口を通った削除の呼び出しを数える（プレビューの中からの偽物が通れば、ここに出る）
+  const deleteCalls: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("ui-tool-call") && (r.postData() ?? "").includes("deleteFile")) deleteCalls.push(r.url());
+  });
+
+  await openApp(page);
+  await createProject(page, "E2E FS HTML Preview", projectRoot);
+  await waitForProjectModule(page, "E2E FS HTML Preview", "filesystem");
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /ファイル/ }).click();
+  const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const row = (path: string) => inner.locator(`.row[data-path="${path}"]`);
+  await row("demo.html").click({ timeout: 60_000 });
+  await expect(inner.getByTestId("open-path")).toHaveText("demo.html");
+
+  const preview = inner.getByTestId("viewer-html").contentFrame();
+  await expect(preview.locator("#ran"), "HTML のプレビューで JS が動いていない").toHaveText("JS が動いた：3", { timeout: 30_000 });
+  await expect(preview.locator("#parent"), "プレビューの中から画面の DOM に触れた").toHaveText("親に触れない");
+  // 通信は画面の CSP を継いで止まる（CORS で落ちたのではなく、CSP が止めたこと）
+  await expect(preview.locator("#net")).toHaveText("CSP が止めた：connect-src");
+
+  // 同じ道を通る正規の呼び出しを1往復させてから確かめる——偽の呼び出しが処理されるなら、その前に処理されている
+  await inner.getByRole("button", { name: "更新", exact: true }).click();
+  await expect(inner.getByTestId("toast").filter({ hasText: /最新の状態に更新しました/ })).toBeVisible({ timeout: 30_000 });
+  expect(deleteCalls, "プレビューの中から削除が呼ばれた").toEqual([]);
+  expect(existsSync(join(projectRoot, "keep.txt")), "プレビューの中から削除できてしまった").toBe(true);
+  await expect(row("keep.txt")).toBeVisible();
 });

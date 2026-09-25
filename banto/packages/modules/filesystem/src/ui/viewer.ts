@@ -261,10 +261,15 @@ export class FileViewer {
         return this.tabs(md, text);
       }
       case "html": {
-        // **scripts も同一オリジンも与えない**（sandbox=""）——中身の JS は走らない
+        // **中身の JS は走らせる。同一オリジンは与えない**（改訂・2026-09-25、ユーザー「ダウンロードして開くのと
+        // 同じであってほしい」。以前は sandbox="" で JS が走らず、作った HTML のデモが動かなかった）。
+        // 中身は不透明なオリジンで走るので、この画面（自分の Module の書き込み・削除を呼べる）の DOM にも JS にも
+        // 触れない。親へ送った postMessage はどの層でも捨てられる——この画面（protocol.ts）・中継（sandbox-server）・
+        // banto の画面（AppBridge）がそれぞれ送り手の窓を確かめている。通信はこの画面の CSP をそのまま継ぐ
+        // （srcdoc は親の CSP を継ぐ——connect-src 'none'）。フォームの送信・ポップアップ・上の窓の移動は許さない
         const frame = h("iframe", {
           class: "html-preview",
-          attrs: { sandbox: "", title: "HTML プレビュー" },
+          attrs: { sandbox: "allow-scripts", title: "HTML プレビュー" },
           data: { testid: "viewer-html" },
         });
         frame.srcdoc = text;
