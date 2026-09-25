@@ -56,3 +56,51 @@ Landlock（この機械は kernel 6.8・ABI 4）は、**名前付きの UNIX ソ
 3. **ソケットの穴だけを先に塞ぐ**（1・2 のどちらを選んでも、ホストで閉じ込めて走らせるものには要る）。
    候補：seccomp で `socket(AF_UNIX)` を断る（`socketpair` は通す）／banto を docker グループに
    いない専用ユーザーで走らせる。どちらも壊れるものを測ってから
+
+## 方向の決定と試作（2026-09-25、ユーザー「その方向で」「LXD と Incus は？」→ Incus）
+
+**方向（ユーザーと合意）**：Landlock はやめ、仕切りを2つにする——**banto 本体**（会話の本体＝Runner・
+Claude のログイン・Vault・設定。AI に渡してはいけないものだけ）と、**Project ごとのシステムコンテナ**
+（それ以外の Project のもの全部：ファイル・Shell・FileSystem・サブエージェント・Project の Module・入れた道具）。
+経緯：
+
+- 最初は「AI のコマンドとサブエージェントだけコンテナ、Module はホストで Landlock」を提案したが、
+  ユーザーが「複雑。Project 単位のものは全部コンテナにまとめたほうがシンプル。一般的に使われているものがいい。
+  システムコンテナとか」と返した。**仕切りを2つにする形**に改めた
+- 会話の本体を外に残す理由：コンテナは「AI が root で何でもできる場所」になる——中に置いたものは全部
+  AI が読めるものとして扱う。本物の Claude ログインは中に置けない。会話の本体は自分ではコマンドを
+  実行しない（組み込みの Bash 等は切ってある——`adapter.ts` の `tools: RUNNER_BUILTIN_TOOLS`）
+- **帰結**：コンテナの中では Module の名乗り（中継の合言葉）も AI が読める。中継の承認は
+  「Project・呼び出し元・宛先・種別・名前」の単位（`grantKey`、alias は入らない）なので、なりすましで
+  一度許した道具からどの鍵でも引き出せる。**コンテナから来たものは「その Project の AI」と同じに扱い、
+  鍵の値は名前ごとに人に聞く**形に変える必要がある（未実装）
+- Docker ではなくシステムコンテナ：中の root がホストで一般ユーザーになる（Docker は既定でホストの root）、
+  入れた道具が残る、systemd がそのまま使える、中で Docker を動かせる、同じ操作で VM に上げられる。
+  代償は Docker ほど一般的でないことと Linux 限定（Landlock も Linux 限定だった）
+- **Incus を選んだ**（LXD ではなく）：普通の apt パッケージ（snap の自動更新・閉じ込めが無い）、
+  Ubuntu の universe に 6.0 LTS がある、images.linuxcontainers.org の多くのディストリビューションが使える
+  （LXD は 2024 年から使えない）、コミュニティ運営・Apache 2.0。LXD 5 系からの分岐で操作はほぼ同じ
+
+**私の誤り**：システムコンテナが使えるか調べようと `lxc version` を打ったら、Ubuntu の `lxd-installer` が
+**LXD の snap を自動で入れた**。ユーザーに報告し、Incus を選んだので消した（`snap remove --purge lxd`）。
+**`lxc` は打たない**（入っていなければ入れにいく）。
+
+### ホストに加えた変更（すべてユーザーの許可のうえ）
+
+1. LXD（snap）を削除
+2. `apt install incus`（Ubuntu 公式、13 パッケージ。qemu は入れていない）
+3. `incus admin init --minimal`（置き場 `default`＝`dir`、ブリッジ `incusbr0`）。`incus-user` が
+   `incusbr-1000` を作った
+4. ユーザー `ubuntu` を `incus` グループへ（`incus-admin` ではない）
+5. `/etc/subuid`・`/etc/subgid` に `root:1000:1`（控え：`*.bak-2026-09-25`）
+6. 試作のコンテナ `poc9`（区画 `user-1000`）と `/home/ubuntu/poc9-project`
+
+**止められた変更**：`DOCKER-USER` に Incus のブリッジの許可を足す操作（ファイアウォール）は、自動モードの
+安全装置に止められた。**コンテナは外に出られない**ままで、中での `apt install` とビルドは未計測。
+
+### 試作の結果
+
+`poc/09-project-container/README.md`。要点：起動 0.19 秒・コマンド1回 50 ms・ファイルの持ち主は両方向で
+揃う・Module を中で起こしてホストから MCP で話せる・中のエージェントがホストの Claude ログイン中継を使える
+（中継はブリッジ側で待ち受ける）・前回の抜け道とホストの秘密は中に存在しない。
+**残る観察**：ホストで 0.0.0.0 に待ち受けているサービス（banto の API など）にはコンテナから届く。

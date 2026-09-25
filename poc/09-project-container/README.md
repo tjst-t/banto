@@ -1,0 +1,49 @@
+# PoC 09：Project ごとのシステムコンテナ（Incus）
+
+**捨てる前提のコード**。決めるための計測だけ（`docs/notes/2026-09-25-dev-environment.md`）。
+
+問い：Project のもの（ファイル・Shell・FileSystem・サブエージェント・入れた道具）を Project ごとの
+システムコンテナ1つに入れ、banto 本体（会話・Claude のログイン・Vault・設定）はホストに残す形が成り立つか。
+
+## 環境（2026-09-25）
+
+- Ubuntu 24.04.4・kernel 6.8。Incus 6.0.0（Ubuntu の universe、`apt install incus`）
+- `incus admin init --minimal`：置き場 `default`（`dir`）、ブリッジ `incusbr0`
+- banto を動かすユーザーは **`incus` グループ**（権限を絞った使い方）。`incus-user` が
+  `user-1000` という制限つきの区画を自動で作る：
+  - ホストのフォルダを見せられるのは `/home/ubuntu` の下だけ（`restricted.devices.disk.paths`）
+  - ホストの uid/gid 1000 をコンテナに対応させてよい（`restricted.idmap.uid/gid`）
+  - 入れ子（中で Docker 等）は許可、**proxy デバイスは禁止**、ネットワークは `incusbr-1000`
+- イメージ：`images:ubuntu/24.04`
+
+## 結果
+
+| 問い | 結果 |
+|---|---|
+| 作る（初回、イメージのダウンロード込み） | **23 秒** |
+| 停止／起動 | **0.76 秒／0.19 秒** |
+| コマンド1回の上乗せ（`incus exec … true`） | **50 ms** |
+| 置き場 | 1台 848 MB（`dir` はイメージを丸写しする。btrfs/zfs なら写しの共有で小さくなる） |
+| Project のフォルダを**同じ絶対パス**で見せる | できる（`disk` デバイス） |
+| ファイルの持ち主 | **両方向で揃う**——中の uid 1000 ＝ホストの 1000。中の root はホストでは 1000000（一般ユーザー）。ただし `raw.idmap "both 1000 1000"` と、ホストの `/etc/subuid`・`/etc/subgid` に `root:1000:1` が要る（権限を絞った区画では `shift=true` が使えない：「制限つきのパスでは shift を使えない」） |
+| banto の Module を中で起こし、ホストから MCP（標準入出力）で話す | **できる**。FileSystem を `incus exec … node server.js` で起こし、接続まで 239 ms、`listDirectory` が通る（`module-stdio.mjs`）。node はホストの実行ファイルを中に置き、banto のコードは読み取り専用でマウント |
+| 中のエージェントが、ホストの Claude ログイン中継を使う | **できる**。本物の Claude Code CLI が中継経由で答えた（5 秒、`claude-in-container.mjs`）。合言葉なしは 401。中継は 127.0.0.1 ではなく**ブリッジ側のアドレスで待ち受ける**必要がある（proxy デバイスが禁止のため） |
+| 前回の抜け道（docker.sock・`/run/user/1000/bus`） | **中に存在しない** |
+| ホストの秘密（`~/.claude`・`~/.ssh`・`~/.config/banto`） | **中に存在しない** |
+| ホストのプロセス | 見えない（中の 14 個だけ） |
+| ホストのサービス | **0.0.0.0 で待ち受けているものには届く**（banto の API 4737・画面 4175・SSH 22 など。LAN から届くのと同じ範囲）。127.0.0.1 だけのものには届かない |
+| 中で root として `apt install`、Rust・C・Python | **未計測**——コンテナが外に出られない（下） |
+
+## 外に出られない（未解決・ユーザーの判断待ち）
+
+Docker が入っている機械では、Docker がホストの転送（iptables の FORWARD）を既定で DROP にするため、
+**Incus のコンテナは IPv4 で外に出られない**（Incus の文書にある既知の衝突）。この機械は IPv6 の外向きの
+経路も無い。文書どおりの対処は `DOCKER-USER` に Incus のブリッジの許可を足すことだが、
+**ホストのファイアウォールを変える操作は、自動モードの安全装置に止められた**——人の判断に上げた。
+
+## 踏んだこと（プローブの誤り）
+
+- `apt-get update` は取得に失敗しても 0 を返す——「IPv6 なら通る」と一度誤認した。`install` で確かめる
+- 転送のポートを文字列で `net.connect` に渡すと、Node はソケットのパスとして扱う
+- **`spawnSync` で子を待つと、同じプロセスで動いている中継も止まる**——子の問い合わせが返らず時間切れに
+  見えた。非同期の `spawn` にする
