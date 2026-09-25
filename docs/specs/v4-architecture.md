@@ -1830,8 +1830,8 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   ——**普通の仕事では確認が来ない**（実測：Claude sonnet・OpenCode とも、ファイルを書くまで確認0件）。
   **強制できる層は閉じ込め**
 - **閉じ込め**（改訂・2026-09-25）：**Subagent Module ごと Project のコンテナの中で起き、エージェントも中で走る**
-  （`docs/specs/v4-security.md` §1）。**Claude のログインの中継は host に残す**（本物の資格情報を中に入れない。
-  どの部品が持つかは §10 item 31）。**以下は移行が終わるまでの Landlock の形**（同 §2）：エージェントは Subagent Module が**Landlock のドメイン**で起こす。**Module 自身は
+  （`docs/specs/v4-security.md` §1）。**Claude のログインの中継は host に残し、banto 全体の `subagent-settings`
+  が持つ**（決定・2026-09-25、ユーザー。本物の資格情報を中に入れない）。**以下は移行が終わるまでの Landlock の形**（同 §2）：エージェントは Subagent Module が**Landlock のドメイン**で起こす。**Module 自身は
   閉じ込めない**（訂正・2026-09-24、実装で発覚）——閉じ込めると launcher とエージェント本体を
   実行できない（Module に許すのはモノレポの読み取りだけ）。Module は AI の書いたコマンドを走らせず、
   Vault と同じく同梱なので、閉じ込めの外に置く。
@@ -3497,7 +3497,6 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
     role は banto が中央集権的に持つべきではなさそう）も未定。**優先度は低い
     ——実際に契約違反で困る場面が出てから、そのときの実例で考える**（規則7）
 31. **Project のコンテナ（2026-09-25 の決定、`docs/specs/v4-security.md` §1）の残り**——一覧はあちらの
-    「まだ決まっていないこと」（写しを持たない、規則3）：Claude のログインの中継を host のどの部品が
-    持つか・外から足した banto 全体の Module をどこで動かすか・中の node と Module のコードの
+    「まだ決まっていないこと」（写しを持たない、規則3）：中の node と Module のコードの
     渡し方・ホームの外の Project の根・道具の定義を再現できる形で持つか・置き場の方式・中から host へ届く範囲と
     資源の上限。移行の段取りは `docs/tasks.json`

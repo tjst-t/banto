@@ -2176,12 +2176,12 @@
     {
       "id": "container-subagent",
       "title": "サブエージェントを Project のコンテナで走らせ、Claude のログインの中継を host に残す",
-      "status": "undecided",
+      "status": "backlog",
       "dependencies": [
         "container-module-spawn",
         "container-relay-per-alias"
       ],
-      "why": "PoC 09 で本物の Claude Code CLI が中で中継経由に答えた。中継はいま Project ごとの Subagent Module の中にあり、コンテナへ移ると中に入ってしまう——host のどの部品が持つか（候補：subagent-settings）が未決。待ち受けはブリッジ側のアドレス（127.0.0.1 は届かず、proxy デバイスは禁止）。",
+      "why": "PoC 09 で本物の Claude Code CLI が中で中継経由に答えた。中継はいま Project ごとの Subagent Module の中にあり、コンテナへ移ると中に入ってしまう——banto 全体の subagent-settings へ移す（決定・2026-09-25、ユーザー）。待ち受けはブリッジ側のアドレス（127.0.0.1 は届かず、proxy デバイスは禁止）。",
       "notes": "docs/notes/2026-09-25-dev-environment.md"
     },
     {
@@ -2196,12 +2196,12 @@
     },
     {
       "id": "container-instance-third-party",
-      "title": "外から足した banto 全体の Module を、Landlock をやめたあとどこで動かすか決める",
-      "status": "undecided",
+      "title": "外から足した banto 全体の Module を、banto 全体用のコンテナ（1台）で動かす",
+      "status": "backlog",
       "dependencies": [
         "dev-environment-container"
       ],
-      "why": "いまは Landlock の none（根を持たない閉じ込め）で host に立つ。Landlock をやめるなら置き場が要る（候補：banto 全体用のコンテナ1台）。決まるまで Landlock を残す。",
+      "why": "いまは Landlock の none（根を持たない閉じ込め）で host に立つ。banto 全体用のコンテナ1台で動かす（決定・2026-09-25、ユーザー——banto 本体で動くのは banto 自身のコードだけ）。移すまで Landlock を残す。",
       "notes": "docs/notes/2026-09-25-dev-environment.md"
     },
     {
