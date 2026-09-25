@@ -144,3 +144,11 @@ Claude のログイン・Vault・設定。AI に渡してはいけないもの�
 - **中の Docker が動いた**（既定のネットワーク・中から外へ・port 公開）。入れ子を許したコンテナでだけ `/proc`・`/sys` の
   保護規則が消え、許していないコンテナには残る——**入れ子は Docker を使う Project だけに許す**
 - 上げた直後の1回だけ `incus restart` が5分以上返らなかった（再現せず）。banto は停止を待ちすぎない（上限→強制停止）
+
+### 外向き通信の許可を永続化する（2026-09-25、ユーザー「永続化する」）
+
+Docker が起動するたびに `DOCKER-USER` へ Incus のブリッジ（`incusbr+`＝incusbr で始まる全部）の許可を足す
+systemd の drop-in にした（`ExecStartPost`、何度実行しても同じ結果）。ファイルは `~/banto-host-setup/`
+（`incus-docker-forward.sh`→`/usr/local/sbin/`、`incus-forward.conf`→`/etc/systemd/system/docker.service.d/`）。
+**入れる操作は自動モードの安全装置に止められた**のでユーザーに頼んだ。Docker 本体は再起動しない（動いている
+コンテナを止めないため）——今の規則はユーザーが手で足したものが効いていて、次に Docker が起動したときから drop-in が効く。
