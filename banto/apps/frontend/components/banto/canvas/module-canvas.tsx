@@ -17,7 +17,7 @@
 // 「host が同意を求めてよい」としか言っていないが、banto は必ず通す。
 
 import { useEffect, useRef, useState } from "react";
-import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
+import { AppBridge, PostMessageTransport, type McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
   answerRealInboxItem,
   callRealUiTool,
@@ -32,6 +32,7 @@ import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
 import { VIEW_STATE_KEY } from "@/lib/backend/canvas-view-state";
+import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -199,35 +200,44 @@ function SandboxFrame({
 
     // host 側は「送る先」も「受ける元」も外側 iframe（message-transport.d.ts）
     const transport = new PostMessageTransport(frame.contentWindow, frame.contentWindow);
+    const hostContext = {
+      displayMode,
+      availableDisplayModes: ["inline", "fullscreen"],
+      // **明暗と、banto の色・段**（決定・2026-09-25、§6.27）。元は globals.css の層A——
+      // 画面は banto の値の写しを持たない。明暗が変わったら下で渡し直す
+      ...currentCanvasAppearance(),
+      // **いまどこで開かれているか**（追加・2026-09-12）。Project のものを
+      // 扱う画面（Vault の alias の割り当て先など）は、これが無いと
+      // 「この Project」を指せない——人に UUID を選ばせることになる。
+      //
+      // `hostContext` は仕様が**追加の項目を認めている**（`McpUiHostContext`
+      // の index signature、"for forward compatibility"）ので、新しい
+      // 受け渡しの道を作らずに済む（規則12）。名前空間は他の banto 拡張と同じ。
+      //
+      // **渡すのは開かれた場所だけ**——Project の一覧を全部渡さない。
+      // どの Canvas にも人の Project 名が全部見えることになる
+      ...(bantoProjectContext(owner) ? { "dev.banto/project": bantoProjectContext(owner) } : {}),
+      // **前に見ていた場所**（banto の拡張、2026-09-23）。画面が預けていったものを、
+      // 開き直したときに返す——`dev.banto/project` と同じく仕様が認める追加の項目
+      ...(latest.current.viewState !== undefined ? { [VIEW_STATE_KEY]: latest.current.viewState } : {}),
+      // tool 起点のときだけ入れる。**無いものを作らない**——画面はこれが
+      // 無いことで「人が直接開いた」と分かり、自分で必要なものを取りに行く
+      ...(toolName ? { toolInfo: { tool: { name: toolName, inputSchema: { type: "object" } } } } : {}),
+    } satisfies McpUiHostContext;
     // `_client` は null——**tool 呼び出しを素通しさせない**。下の oncalltool で
     // 受けて、host の承認ゲートへ回す
     // **ダウンロードは受ける**（`downloadFile`、追加・2026-09-23）——画面はサンドボックスの
     // 中にいて自分では保存させられないので、仕様が host に頼む口（`ui/download-file`）を
     // 用意している。受けると名乗った host にだけ、画面はダウンロードの口を出す
-    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, { downloadFile: {} }, {
-      hostContext: {
-        displayMode,
-        availableDisplayModes: ["inline", "fullscreen"],
-        theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
-        // **いまどこで開かれているか**（追加・2026-09-12）。Project のものを
-        // 扱う画面（Vault の alias の割り当て先など）は、これが無いと
-        // 「この Project」を指せない——人に UUID を選ばせることになる。
-        //
-        // `hostContext` は仕様が**追加の項目を認めている**（`McpUiHostContext`
-        // の index signature、"for forward compatibility"）ので、新しい
-        // 受け渡しの道を作らずに済む（規則12）。名前空間は他の banto 拡張と同じ。
-        //
-        // **渡すのは開かれた場所だけ**——Project の一覧を全部渡さない。
-        // どの Canvas にも人の Project 名が全部見えることになる
-        ...(bantoProjectContext(owner) ? { "dev.banto/project": bantoProjectContext(owner) } : {}),
-        // **前に見ていた場所**（banto の拡張、2026-09-23）。画面が預けていったものを、
-        // 開き直したときに返す——`dev.banto/project` と同じく仕様が認める追加の項目
-        ...(latest.current.viewState !== undefined ? { [VIEW_STATE_KEY]: latest.current.viewState } : {}),
-        // tool 起点のときだけ入れる。**無いものを作らない**——画面はこれが
-        // 無いことで「人が直接開いた」と分かり、自分で必要なものを取りに行く
-        ...(toolName ? { toolInfo: { tool: { name: toolName, inputSchema: { type: "object" } } } } : {}),
-      },
+    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, { downloadFile: {} }, { hostContext });
+
+    // **明暗が変わったら、色と一緒に渡し直す**（§6.27）——値は明暗ごとに違うので、渡し直さないと
+    // 開いたままの画面が古い色に残る。明暗は next-themes が `<html>` の class で切り替える
+    // （人の切り替えも、システムの切り替えも）。変わった項目だけが通知される（`setHostContext`）
+    const themeObserver = new MutationObserver(() => {
+      bridge.setHostContext({ ...hostContext, ...currentCanvasAppearance() });
     });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
     bridge.oncalltool = async (params) => {
       // **自分の Module を呼ぶのに承認は求めない**（改訂・2026-09-07、ユーザー指示）。
@@ -317,6 +327,7 @@ function SandboxFrame({
 
     void bridge.connect(transport);
     return () => {
+      themeObserver.disconnect();
       void bridge.close();
       // 確かめている途中で画面が替わったら、頼みは断ったことにする
       setPendingDownload((pending) => {

@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-24",
+  "updatedAt": "2026-09-25",
   "currentPhase": "2",
   "tasks": [
     {
@@ -2062,10 +2062,21 @@
     },
     {
       "id": "canvas-host-style-variables",
-      "title": "Canvas に banto の色と字の段を hostContext.styles.variables で渡す（仕様にあるが実装に無い）",
+      "title": "Canvas の色と段は banto が持ち、hostContext.styles.variables で渡す",
+      "status": "done",
+      "why": "v4-frontend.md は「host が banto の色トークンを styles.variables で渡す——Module 側に banto を知らせずに見た目を揃えられる」と書いているが、module-canvas.tsx は theme しか渡していない（2026-09-24、サブエージェントの画面を作り直していて気づいた・規則8）。そのため FileSystem と Subagent は banto のトークンの**写し**を自分の中に持っている（規則3に反する——banto の色を変えると画面がずれる）。Module 側はすでに『渡されたらそちらを使う』形（MCP の標準の変数名を先に見る）にしてある。 ユーザー（2026-09-25）：banto がマスターの色を持って、渡すように仕様。",
+      "result": "2026-09-25：host が画面を開くときに globals.css の層A から今の値を読み、MCP Apps の標準の名前で渡す。明暗が変わったら渡し直す（張り直さない）。字の段・角・書体を @theme inline から層A へ移した（実行時に読めなかったため）。FileSystem と Subagent から banto の値の写しを消した（渡されないときはシステム色）。danger は stop に対応させた。E2E（canvas-host-styles.spec.ts）で、画面に出た色・字の大きさ・角が banto の値と同じこと、開いたまま明暗を変えても付いてくることを確かめた（host が渡さない形に戻すと 9項目中8項目が食い違って落ちることも確かめた）。",
+      "notes": "docs/notes/2026-09-24-subagent-acp.md"
+    },
+    {
+      "id": "canvas-standard-style-names",
+      "title": "Skills・Vault の画面が、banto の渡す色を標準の名前で受ける",
       "status": "backlog",
-      "why": "v4-frontend.md は「host が banto の色トークンを styles.variables で渡す——Module 側に banto を知らせずに見た目を揃えられる」と書いているが、module-canvas.tsx は theme しか渡していない（2026-09-24、サブエージェントの画面を作り直していて気づいた・規則8）。そのため FileSystem と Subagent は banto のトークンの**写し**を自分の中に持っている（規則3に反する——banto の色を変えると画面がずれる）。Module 側はすでに『渡されたらそちらを使う』形（MCP の標準の変数名を先に見る）にしてある。",
-      "doneWhen": "host が styles.variables を渡し、FileSystem と Subagent の写しを消しても見た目が変わらないこと（E2E で getComputedStyle を見る）。"
+      "dependencies": [
+        "canvas-host-style-variables"
+      ],
+      "why": "2026-09-25 に banto が色を標準の名前（--color-text-primary など）で渡すようにしたが、Skills・Vault（directory・infisical）の画面は --mcp-ui-color-border のような標準でない名前を見ていて、banto の色が効かない（banto の値の写しは持っていないので規則3 には反しない）。明暗の渡し直し（host-context-changed）も受けていない。v4-frontend.md §6.27 の「Module は標準の変数を使う」と食い違う（規則8）。今回の範囲（写しを持っていた FileSystem・Subagent）の外なので触っていない（規則7）。",
+      "doneWhen": "3つの画面の字・枠・危ない色が banto の値と同じになり、開いたまま明暗を変えても付いてくること（canvas-host-styles.spec.ts と同じ見方で）。"
     },
     {
       "id": "project-module-canvas-admin-stamp",

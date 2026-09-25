@@ -37,6 +37,14 @@ function request<T>(method: string, params: Record<string, unknown>): Promise<T>
   send({ id, method, params });
   return new Promise<T>((resolve, reject) => waiting.set(id, { resolve: resolve as (v: unknown) => void, reject }));
 }
+/** host（banto）の明暗と色・段を当てる——開くときと、明暗が変わって渡し直されたとき（v4-frontend.md §6.27） */
+interface Appearance { theme?: string; styles?: { variables?: Record<string, string | undefined> } }
+function applyAppearance(ctx: Appearance): void {
+  if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+  for (const [k, v] of Object.entries(ctx.styles?.variables ?? {})) {
+    if (k.startsWith("--") && typeof v === "string") document.documentElement.style.setProperty(k, v);
+  }
+}
 window.addEventListener("message", (event: MessageEvent) => {
   const msg = event.data as { jsonrpc?: string; id?: number; method?: string; result?: unknown; error?: { message?: string }; params?: unknown };
   if (!msg || msg.jsonrpc !== "2.0") return;
@@ -47,10 +55,7 @@ window.addEventListener("message", (event: MessageEvent) => {
     else w.resolve(msg.result);
     return;
   }
-  if (msg.method === "ui/notifications/host-context-changed") {
-    const ctx = msg.params as { theme?: string };
-    if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
-  }
+  if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params as Appearance);
 });
 async function call<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
   const result = await request<ToolResult>("tools/call", { name, arguments: args });
@@ -432,14 +437,13 @@ window.addEventListener("resize", () => render());
 
 (async () => {
   try {
-    const init = await request<{ hostContext?: { theme?: string; displayMode?: string; styles?: { variables?: Record<string, string> } } }>("ui/initialize", {
+    const init = await request<{ hostContext?: { theme?: string; displayMode?: string; styles?: { variables?: Record<string, string | undefined> } } }>("ui/initialize", {
       protocolVersion: "2026-01-26",
       appInfo: { name: "banto-subagent-runs", version: "0.2.0" },
       appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
     });
     const ctx = init.hostContext ?? {};
-    if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
-    for (const [k, v] of Object.entries(ctx.styles?.variables ?? {})) if (k.startsWith("--")) document.documentElement.style.setProperty(k, v);
+    applyAppearance(ctx);
     document.body.dataset.mode = ctx.displayMode === "fullscreen" ? "fullscreen" : "inline";
     send({ method: "ui/notifications/initialized", params: {} });
   } catch (err) {

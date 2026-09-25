@@ -153,7 +153,7 @@ Module が自分の設定 Canvas を持てること（§6.2）。
   黙って呼ぶことはできる。**Module を繋ぐこと自体が信頼の線引き**で、その手前は
   閉じ込め（`v4-security.md`）と可視性で守る
 - **`hostContext.styles.variables` で host が CSS 変数を View に渡せる**。
-  banto の色トークンをここで渡す——Module 側に banto を知らせずに見た目を揃えられる
+  **banto が色と段の元を持ち、ここで渡す**（§6.27）——Module 側に banto を知らせずに見た目を揃えられる
 
 > **`inline` は tool コールの折りたたみの中に置かない**（決定・2026-09-07、
 > ユーザー指摘）。きっかけが AI の tool 呼び出しでも、Canvas は**人が見て
@@ -1586,3 +1586,32 @@ README や他のクライアントの設定から `mcpServers` の JSON をコ�
 **「ユーザー追加」は `removable` で出す**（`origin` ではない）。同梱と同じコードを
 別名でもう1本立てたものは `origin: "bundled"` だが**自分で足した行**なので、
 人が知りたいほう（消せる行か）に合わせる。
+
+### 6.27 Canvas の色と段は banto が持ち、渡す（決定・2026-09-25、ユーザー）
+
+**banto が元（マスター）の色を持ち、Canvas に渡す**。Module は banto の値の写しを持たない
+（要件E9「Canvas が独自の値を持たない」・規則3）。
+
+- **元は `apps/frontend/app/globals.css` の層A**（`--banto-*`）の1箇所。字の段・角の段・書体も
+  層A に置く——Tailwind の `@theme inline` の中だけにあると、ユーティリティに埋め込まれて
+  実行時に読めない（確認・2026-09-25、`--text-xs` も `--radius-sm` も `:root` に無かった）。
+  `@theme` は層A を参照する
+- **渡し方は MCP Apps の標準**（`hostContext.styles.variables`）。**変数の名前は標準のものだけ**
+  （`--color-background-primary` など）——banto 独自の名前を足すと、Module が banto を知ることになる。
+  SDK の型も、決まった名前の外を認めない
+- **host は画面が開くときに今の値を読み**（`getComputedStyle`）、**明暗が変わったら
+  `ui/notifications/host-context-changed` で `theme` と一緒に渡し直す**。値は明暗ごとに違うので、
+  渡し直さないと開いたままの画面が古い色に残る
+- **対応表は `apps/frontend/lib/backend/canvas-host-styles.ts` の1箇所**。判断が要ったもの：
+  - `danger` は **`stop`**（紫）——banto は失敗・エラー・差分の削除を `stop` で出している
+    （Shell の終了コード、画面のエラー、差分の削除行）。Canvas に出る「危ない」はほとんどがこれ。
+    `turn` は「会話の番・注意」の色で、標準の語彙に対応するものが無いので渡さない
+  - 字は banto の7段を小さい順に、本文 `text-xs〜lg` ＝ 11・12・13・15、見出し
+    `heading-xs〜lg` ＝ 15・17・22・28。banto に無い段（`heading-xl` 以上・`radius-xs`/`xl`/`full`・
+    太さ）は渡さない——無い値を作らない
+  - `text-inverse` は `on-color`（色の上の字）、`background-inverse` は本文の字の色
+  - 余白は標準に名前が無いので渡さない
+- **Module 側**：標準の変数を使い、**渡されないとき（banto の外の host）はシステム色**
+  （`Canvas`・`CanvasText`・`GrayText`・`LinkText`）と CSS の色の名前・大きさの語（`small` など）で最低限の
+  見た目にする。banto の値を既定値として持たない
+

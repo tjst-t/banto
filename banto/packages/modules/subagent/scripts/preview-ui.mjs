@@ -1,10 +1,26 @@
 // 画面の見た目を速く確かめる台（E2E より速い輪——規則15）。
 // サンプルの仕事を返す偽の親ページに画面（入口・設定）を載せ、幅と明暗を変えてスクリーンショットを撮る。
 //
+// 色と段は banto と同じものを渡す——`globals.css` の層A から値を読み、banto の対応表
+// （`canvas-host-styles.ts`）で標準の名前にする（v4-frontend.md §6.27）。PREVIEW_PLAIN=1 なら渡さない
+// （banto の外の host で出る形）。
+//
 // usage: node scripts/preview-ui.mjs <出力ディレクトリ>   （先に npm run build。PREVIEW_EMPTY=1 で仕事が0件の形）
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "@playwright/test";
+import { readCanvasStyles } from "../../../../apps/frontend/lib/backend/canvas-host-styles.ts";
+
+const GLOBALS = readFileSync(new URL("../../../../apps/frontend/app/globals.css", import.meta.url), "utf8");
+function tokens(selector) {
+  const start = GLOBALS.indexOf(`\n${selector} {`);
+  const body = GLOBALS.slice(start, GLOBALS.indexOf("\n}", start));
+  return Object.fromEntries([...body.matchAll(/^\s*(--banto-[\w-]+):\s*([^;]+);/gm)].map((m) => [m[1], m[2].trim()]));
+}
+const light = tokens(":root");
+const dark = { ...light, ...tokens(".dark") };
+const stylesFor = (theme) =>
+  process.env.PREVIEW_PLAIN === "1" ? undefined : readCanvasStyles((name) => (theme === "dark" ? dark : light)[name] ?? "").variables;
 
 const out = process.argv[2] ?? "/tmp/subagent-ui-preview";
 mkdirSync(out, { recursive: true });
@@ -78,7 +94,7 @@ const tools = ${JSON.stringify(Object.fromEntries(Object.keys(tools).map((k) => 
 window.addEventListener("message", (e) => {
   const m = e.data; if (!m || m.jsonrpc !== "2.0" || m.id === undefined) return;
   const reply = (result) => document.getElementById("f").contentWindow.postMessage({ jsonrpc: "2.0", id: m.id, result }, "*");
-  if (m.method === "ui/initialize") return reply({ hostContext: { theme: "${theme}", displayMode: "${mode}" } });
+  if (m.method === "ui/initialize") return reply({ hostContext: { theme: "${theme}", displayMode: "${mode}", styles: ${JSON.stringify({ variables: stylesFor(theme) })} } });
   if (m.method === "tools/call") window.__call(m.params.name, m.params.arguments).then((r) => reply({ content: [{ type: "text", text: JSON.stringify(r) }] }));
 });
 </script></body></html>`;

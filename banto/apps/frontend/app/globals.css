@@ -54,6 +54,30 @@
      ことを言う。カードの影（--sh-*）とは別軸 */
   --banto-sh-panel-fork: -14px 0 34px rgba(17, 22, 31, 0.09), -1px 0 0 var(--banto-line);
   --banto-sh-panel-canvas: -24px 0 52px rgba(17, 22, 31, 0.17), -1px 0 0 var(--banto-line);
+
+  /* 書体・字の段・角の段（要件E9）。明暗で変わらないので .dark には無い。
+     **ここに置くのは、実行時に読めるようにするため**——@theme inline（層C）の中だけにあると
+     ユーティリティに埋め込まれて :root に残らず、Canvas に渡せない（v4-frontend.md §6.27）。
+     層C はここを参照する。字は7段だけ（--text-base は定義しない） */
+  --banto-font-sans: var(--font-inter), var(--font-noto-jp), ui-sans-serif, system-ui, sans-serif;
+  --banto-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --banto-text-xs: 11px;
+  --banto-text-xs-leading: 1.6;
+  --banto-text-sm: 12px;
+  --banto-text-sm-leading: 1.7;
+  --banto-text-md: 13px;
+  --banto-text-md-leading: 1.7;
+  --banto-text-lg: 15px;
+  --banto-text-lg-leading: 1.55;
+  --banto-text-xl: 17px;
+  --banto-text-xl-leading: 1.5;
+  --banto-text-2xl: 22px;
+  --banto-text-2xl-leading: 1.4;
+  --banto-text-3xl: 28px;
+  --banto-text-3xl-leading: 1.3;
+  --banto-radius-sm: 6px;
+  --banto-radius-md: 10px;
+  --banto-radius-lg: 14px;
 }
 
 .dark {
@@ -96,8 +120,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-inter), var(--font-noto-jp), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: var(--banto-font-sans);
+  --font-mono: var(--banto-font-mono);
   --font-heading: var(--font-sans);
 
   /* 層C：banto 独自のトークンを Tailwind ユーティリティに露出する。
@@ -136,21 +160,21 @@
     }
   }
 
-  /* 字は7段だけ（要件E9：決めた段だけを使う）。--text-base は定義しない */
-  --text-xs: 11px;
-  --text-xs--line-height: 1.6;
-  --text-sm: 12px;
-  --text-sm--line-height: 1.7;
-  --text-md: 13px;
-  --text-md--line-height: 1.7;
-  --text-lg: 15px;
-  --text-lg--line-height: 1.55;
-  --text-xl: 17px;
-  --text-xl--line-height: 1.5;
-  --text-2xl: 22px;
-  --text-2xl--line-height: 1.4;
-  --text-3xl: 28px;
-  --text-3xl--line-height: 1.3;
+  /* 字は7段だけ（要件E9：決めた段だけを使う）。--text-base は定義しない。値は層A */
+  --text-xs: var(--banto-text-xs);
+  --text-xs--line-height: var(--banto-text-xs-leading);
+  --text-sm: var(--banto-text-sm);
+  --text-sm--line-height: var(--banto-text-sm-leading);
+  --text-md: var(--banto-text-md);
+  --text-md--line-height: var(--banto-text-md-leading);
+  --text-lg: var(--banto-text-lg);
+  --text-lg--line-height: var(--banto-text-lg-leading);
+  --text-xl: var(--banto-text-xl);
+  --text-xl--line-height: var(--banto-text-xl-leading);
+  --text-2xl: var(--banto-text-2xl);
+  --text-2xl--line-height: var(--banto-text-2xl-leading);
+  --text-3xl: var(--banto-text-3xl);
+  --text-3xl--line-height: var(--banto-text-3xl-leading);
 
   --ease-banto: cubic-bezier(0.22, 0.61, 0.36, 1);
   --default-transition-duration: 180ms;
@@ -186,9 +210,9 @@
   --color-card: var(--card);
   /* 角は3段だけ（要件E9）。sm/md/lg 以外は shadcn 既定のまま残すが、
      components/banto/** ではこの3段しか使わない（check-tokens.mjs で強制） */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-sm: var(--banto-radius-sm);
+  --radius-md: var(--banto-radius-md);
+  --radius-lg: var(--banto-radius-lg);
   --radius-xl: calc(var(--radius) * 1.4);
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
