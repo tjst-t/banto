@@ -2102,6 +2102,20 @@
         "subagent-module-sync"
       ],
       "why": "長い仕事で親の会話を止めない。core に「Thread にメッセージを届ける」口（§4.2）が要る。MCP Tasks は Claude Code 2.1.281 が名乗らない（実測・2026-09-24）ので頼れない。 自前で作る前に、Claude Code の「長い MCP 呼び出しを背景に回す」仕組み（CLAUDE_AUTO_BACKGROUND_TASKS・CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS、非対話では既定で切れている）が使えるかを見る。"
+    },
+    {
+      "id": "landlock-unix-socket-escape",
+      "title": "閉じ込めの中から UNIX ソケット経由で外に出られる（docker.sock・systemd --user）",
+      "status": "undecided",
+      "why": "2026-09-25 実測：Landlock（kernel 6.8・ABI 4）は名前付きの UNIX ソケットへの接続を縛らない。Shell と同じ exec の閉じ込めの中から、/var/run/docker.sock の API に届き（このユーザーは docker グループ＝root 相当）、systemd-run --user で閉じ込めの外にコマンドを走らせて ~/.claude の認証情報のファイルを開けた。v4-security.md は「ソケットは制限できない」とだけ書き、帰結を見ていなかった（規則8）。塞ぎ方（seccomp で socket(AF_UNIX) を断る／docker グループにいない専用ユーザーで走らせる／AI のコマンドをコンテナへ移す）は未決。",
+      "notes": "docs/notes/2026-09-25-dev-environment.md"
+    },
+    {
+      "id": "dev-environment-container",
+      "title": "開発の自由度：Project ごとのコンテナ（Dev Containers）で AI のコマンドを走らせるか決める",
+      "status": "undecided",
+      "why": "ユーザー（2026-09-25）：閉じ込めが厳しすぎて開発できない。開発ごとに道具を入れたい。セキュリティと両立したい。実測：PATH から組む許可リストでは gcc の下請け（/usr/libexec）やヘッダ（/usr/include）に届かず cargo・cc が止まる。閉じ込めの中では root になれないので道具も入れられない。仕様で未決の Environment Module（v4-modules.md §4・§5-10）の形として、Dev Containers（devcontainer.json）を PoC で試す案。",
+      "notes": "docs/notes/2026-09-25-dev-environment.md"
     }
   ],
   "phase1": {
