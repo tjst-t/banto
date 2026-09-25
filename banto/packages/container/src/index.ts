@@ -21,3 +21,4 @@ export {
   type ProjectContainerSpec,
   type ContainerTimeouts,
 } from "./project-container.js";
+export { ensureBaseImage, baseImageAlias, BASE_PACKAGES, UPSTREAM_IMAGE } from "./base-image.js";

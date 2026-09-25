@@ -29,6 +29,11 @@ export interface ProjectContainerSpec {
   /** 例：`images:ubuntu/24.04` */
   image: string;
   /**
+   * どの banto のコンテナか（banto のデータの置き場）。札（`user.banto.owner`）として付け、片づけで引く——
+   * E2E や検証用の banto（別の置き場）が作ったものと、人の banto のものを混ぜない
+   */
+  owner: string;
+  /**
    * ホストの uid/gid——中の同じ番号に対応させる。**gid はユーザーの登録情報（`os.userInfo().gid`）から取る**：
    * `sg incus` で起こしたプロセスは主グループが incus に変わり、`process.getgid()` はそれを返す（踏んだ）
    */
@@ -85,6 +90,18 @@ export class ProjectContainers {
   }
 
   private project: string | undefined;
+  /**
+   * コンテナごとに、設定の書き換えを1本ずつ通す。Incus は同じコンテナへの同時の書き換えを
+   * `ETag doesn't match` で断る——Project の Module は並んで起きるので、それぞれが自分の置き場を
+   * 足そうとして当たった（E2E で踏んだ・2026-09-25）
+   */
+  private readonly queues = new Map<string, Promise<unknown>>();
+  private serialize<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.queues.get(name) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.queues.set(name, next.then(() => undefined, () => undefined));
+    return next;
+  }
 
   /**
    * いまの区画（権限を絞った使い方では `user-<uid>`）。ほかのコマンドは CLI が自動で付けるが、
@@ -113,6 +130,10 @@ export class ProjectContainers {
    */
   async ensure(spec: ProjectContainerSpec): Promise<{ name: string; created: boolean }> {
     const name = containerNameFor(spec.projectId);
+    return this.serialize(name, () => this.ensureNow(name, spec));
+  }
+
+  private async ensureNow(name: string, spec: ProjectContainerSpec): Promise<{ name: string; created: boolean }> {
     let st = await this.state(name);
     const created = st === undefined;
     if (!st) {
@@ -122,6 +143,7 @@ export class ProjectContainers {
           "-c", `raw.idmap=${idmapFor(spec.uid, spec.gid)}`,
           "-c", `security.nesting=${spec.nesting}`,
           "-c", `user.banto.project=${spec.projectId}`,
+          "-c", `user.banto.owner=${spec.owner}`,
         ],
         `コンテナ ${name} を作るの`,
       );
@@ -173,6 +195,10 @@ export class ProjectContainers {
 
   /** ホストのフォルダを中の同じパスに見せる（Module の置き場など）。既にあれば何もしない */
   async ensureDisk(name: string, device: string, source: string, opts: { readonly?: boolean } = {}): Promise<void> {
+    return this.serialize(name, () => this.ensureDiskNow(name, device, source, opts));
+  }
+
+  private async ensureDiskNow(name: string, device: string, source: string, opts: { readonly?: boolean }): Promise<void> {
     const st = await this.state(name);
     if (!st) throw new Error(`コンテナ ${name} がありません`);
     const cur = st.devices[device];
@@ -180,6 +206,39 @@ export class ProjectContainers {
     if (cur && cur["source"] === source && cur["path"] === source && (cur["readonly"] ?? "false") === ro) return;
     if (cur) await this.incus(["config", "device", "remove", name, device], `${device} を外すの`);
     await this.incus(["config", "device", "add", name, device, "disk", `source=${source}`, `path=${source}`, ...(opts.readonly ? ["readonly=true"] : [])], `${source} をマウントするの`);
+  }
+
+  /**
+   * 中から host に届くアドレス（中の既定の経路の行き先＝ブリッジの host 側）。host の中継はここで待ち受けている。
+   * **起こした直後は経路がまだ無い**（DHCP が済んでいない——E2E で踏んだ）ので、できるまで待つ（上限つき）
+   */
+  async hostAddress(name: string): Promise<string> {
+    const deadline = Date.now() + this.timeouts.readyMs;
+    let out = "";
+    while (Date.now() < deadline) {
+      out = await this.incus(["exec", name, "--", "ip", "-4", "route", "show", "default"], "中から host への経路を読むの", 10_000);
+      const m = /\bvia\s+(\d+\.\d+\.\d+\.\d+)/.exec(out);
+      if (m) return m[1]!;
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    throw new Error(`コンテナ ${name} から host への経路が ${this.timeouts.readyMs / 1000} 秒でできませんでした：${out.trim() || "（既定の経路が無い）"}`);
+  }
+
+  /** banto が作ったコンテナと、その札（どの banto のものか）。札の無いもの（人が作ったもの）は入れない */
+  async listBanto(): Promise<{ name: string; owner: string }[]> {
+    const project = encodeURIComponent(await this.currentProject());
+    const r = await this.run(["query", `/1.0/instances?recursion=1&project=${project}`], { timeoutMs: this.timeouts.operationMs });
+    if (r.code !== 0) throw new Error(`コンテナの一覧を読めませんでした：${r.stderr.trim() || `終了コード ${r.code}`}`);
+    const all = JSON.parse(r.stdout) as { name: string; config?: Record<string, string> }[];
+    return all.flatMap((i) => {
+      const owner = i.config?.["user.banto.owner"];
+      return owner ? [{ name: i.name, owner }] : [];
+    });
+  }
+
+  /** その banto（`owner`）が作ったコンテナの名前 */
+  async listOwned(owner: string): Promise<string[]> {
+    return (await this.listBanto()).filter((c) => c.owner === owner).map((c) => c.name);
   }
 
   /** 穏やかに止め、上限を過ぎたら強制停止する。無い・止まっているなら何もしない */

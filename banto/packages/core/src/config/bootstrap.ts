@@ -28,6 +28,12 @@ export interface BootstrapConfig {
    * 省略時は loopback（OAuth は使えないが、他は動く）。
    */
   publicUrl?: string;
+  /**
+   * **Project の Module を Project ごとのコンテナで起こす**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。
+   * **移行が終わるまでのスイッチ**——無ければ今までどおり Landlock で起こす。移行が済んだら消す
+   * （`docs/tasks.json` container-landlock-removal）。前提が欠けていれば、黙って Landlock へ落ちず起動を断る
+   */
+  projectContainers?: boolean;
 }
 
 export class ConfigOverlapError extends Error {}
@@ -92,6 +98,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       allowedEmbedderOrigins: raw.allowedEmbedderOrigins ?? DEFAULT_EMBEDDER_ORIGINS,
       sandboxPublicUrl: raw.sandboxPublicUrl ?? `http://127.0.0.1:${raw.sandboxPort ?? 4176}`,
       ...(raw.publicUrl ? { publicUrl: raw.publicUrl } : {}),
+      ...(raw.projectContainers === true ? { projectContainers: true } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;

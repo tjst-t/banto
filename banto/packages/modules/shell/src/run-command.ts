@@ -25,6 +25,12 @@ export interface RunCommandDeps {
    * 渡されなければ、親の HOME のまま。
    */
   homeDir?: string;
+  /**
+   * **Project のコンテナの中で動いているか**（決定・2026-09-25、`docs/specs/v4-security.md` §1。host が
+   * `BANTO_IN_CONTAINER=1` で知らせる）。コンテナではホストのものは弾かれるのではなく**そもそも無い**ので、
+   * 閉じ込めの説明の拾い方と言い方が変わる
+   */
+  inContainer?: boolean;
   relayClient: HostRelayClient;
   /** 名前から在りかを引く窓口（既定 `vault-directory`）。**試験で差し替えるための穴**。 */
   directoryModuleName?: string;
@@ -45,28 +51,40 @@ export interface RunCommandResult {
   confinementNote?: string;
 }
 
-/** `Permission denied` などの行から、閉じ込めの外を指すパスを拾う。 */
+/**
+ * `Permission denied` などの行から、閉じ込めの外を指すパスを拾う。
+ *
+ * **コンテナの中では**（`inContainer`）、ホストのものは弾かれるのではなく**そもそも無い**——`No such file or
+ * directory` の行から、`/home/` の下で Project とホームの外を指すパスを拾う（人のホームのものを指したらしいとき）。
+ * コンテナの中の道具の打ち間違い（`/usr/...` 等）には添えない
+ */
 export function confinementNoteFor(
   stderr: string,
-  allowed: { projectRoot: string; homeDir?: string },
+  allowed: { projectRoot: string; homeDir?: string; inContainer?: boolean },
 ): string | undefined {
   const blocked = new Set<string>();
+  const failure = allowed.inContainer ? /No such file or directory|ENOENT/ : /Permission denied|EACCES|Operation not permitted/;
   for (const line of stderr.split("\n")) {
-    if (!/Permission denied|EACCES|Operation not permitted/.test(line)) continue;
+    if (!failure.test(line)) continue;
     for (const m of line.matchAll(/(\/[^\s'"`:,)]+)/g)) {
       const path = m[1]!;
       const within = (root?: string) => root !== undefined && (path === root || path.startsWith(`${root}/`));
       if (within(allowed.projectRoot) || within(allowed.homeDir) || path.startsWith("/dev/")) continue;
+      if (allowed.inContainer && !path.startsWith("/home/")) continue;
       blocked.add(path);
     }
   }
   if (blocked.size === 0) return undefined;
-  return (
-    `閉じ込めの外にあるため触れませんでした：${[...blocked].slice(0, 5).join("、")}。` +
-    "banto の Shell が触れるのは、この Project のフォルダと Shell 専用のホームの中だけです。" +
+  const paths = [...blocked].slice(0, 5).join("、");
+  const how =
     "人のホームの設定を使いたいときは、人が 設定 →「Shell のホーム」で写すものに足せます。" +
-    "資格情報は写さず、Vault から渡します（envSecrets・sshIdentity）。"
-  );
+    "資格情報は写さず、Vault から渡します（envSecrets・sshIdentity）。";
+  return allowed.inContainer
+    ? `Project のコンテナの中にありません：${paths}。banto の Shell は Project ごとのコンテナの中で動きます。` +
+        "見えるのはこの Project のフォルダ・Shell 専用のホーム・コンテナに入れた道具だけで、人のホーム（ホスト）のものは見えません。" +
+        how
+    : `閉じ込めの外にあるため触れませんでした：${paths}。banto の Shell が触れるのは、この Project のフォルダと Shell 専用のホームの中だけです。` +
+        how;
 }
 
 const DEFAULT_TIMEOUT_SEC = 120;
@@ -235,7 +253,9 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       child.on("exit", (code, signal) => {
         if (signal === "SIGTERM" && code === null) timedOut = true;
         const confinementNote =
-          code === 0 ? undefined : confinementNoteFor(stderr, { projectRoot: deps.projectRoot, homeDir: deps.homeDir });
+          code === 0
+            ? undefined
+            : confinementNoteFor(stderr, { projectRoot: deps.projectRoot, homeDir: deps.homeDir, inContainer: deps.inContainer });
         settle(() =>
           resolvePromise({ stdout, stderr, exitCode: code, timedOut, ...(confinementNote ? { confinementNote } : {}) }),
         );

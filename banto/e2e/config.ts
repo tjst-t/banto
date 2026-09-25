@@ -1,5 +1,6 @@
 // E2E専用のポート・パス定数。テストとglobal-setupの両方から参照する
 // ——真実は一箇所（規則3）、同じ値をあちこちに書き写さない。
+import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -86,7 +87,22 @@ export const FRONTEND_DIST_DIR = ".next-e2e";
 // banto 自身の Event Store を読める**——本番（`~/.local/share/banto`）には
 // 無い形で、試験環境だけが緩くなる。ルールセットの検査（assertRulesetIsSafe）が
 // これを実際に拒否したので、置き場のほうを本番と同じ関係（リポジトリの外）にした。
-const E2E_TMP = join(tmpdir(), "banto-e2e", RUN_ID);
+/**
+ * **Project の Module をコンテナで起こす形で回す**（`BANTO_E2E_CONTAINERS=1`、決定・2026-09-25——移行中。
+ * `docs/tasks.json` container-e2e）。incus グループが効いたプロセスで回す
+ * （`sudo -u "$USER" env BANTO_E2E_CONTAINERS=1 npx playwright test`。`sg incus` は主グループを変えるので使わない）。
+ *
+ * **置き場をホームの下へ移す**：権限を絞った Incus の区画は、ホームの下しかコンテナに見せられない。Project の根も
+ * Module の置き場もコンテナに見せるので、E2E の置き場ごと移し、**`TMPDIR` もそこへ向ける**——spec は Project の根を
+ * `tmpdir()` の下に作っている（84 か所）ので、spec を書き換えずに済む
+ */
+export const E2E_CONTAINERS = process.env.BANTO_E2E_CONTAINERS === "1";
+export const E2E_BASE = E2E_CONTAINERS ? join(homedir(), ".cache", "banto-e2e") : join(tmpdir(), "banto-e2e");
+const E2E_TMP = join(E2E_BASE, RUN_ID);
+if (E2E_CONTAINERS) {
+  process.env.TMPDIR = join(E2E_TMP, "tmp");
+  mkdirSync(process.env.TMPDIR, { recursive: true });
+}
 export const DATA_DIR = join(E2E_TMP, "data");
 /**
  * **Shell のホームへ写す元**（追加・2026-09-23）。本物の人のホーム（`~/.gitconfig`）を

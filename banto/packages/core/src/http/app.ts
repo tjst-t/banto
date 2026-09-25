@@ -161,7 +161,7 @@ export interface AppDeps {
   >;
   /** Project を畳んだときに、その Project のために立てたもの（Module の
    *  プロセス・合言葉・セッション）を落とす（決定・2026-09-10）。 */
-  releaseProjectModules?(projectId: string): Promise<string[]>;
+  releaseProjectModules?(projectId: string, opts?: { stopContainer?: boolean }): Promise<string[]>;
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
   /**
@@ -1535,7 +1535,8 @@ export function createApp(deps: AppDeps) {
           await deps.projectThread.closeProject(projectCloseMatch[1]!);
           // **畳んだら、その Project のために立てたものも落とす**（決定・2026-09-10）
           // ——記録だけ閉じてプロセスが残ると、鍵を持ったものまで生き残る
-          const released = (await deps.releaseProjectModules?.(projectCloseMatch[1]!)) ?? [];
+          // コンテナも止める（決定・2026-09-25）——中に入れた道具は残し、次に開いたら起こす
+          const released = (await deps.releaseProjectModules?.(projectCloseMatch[1]!, { stopContainer: true })) ?? [];
           json(res, 200, { ok: true, released });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });

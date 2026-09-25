@@ -103,11 +103,22 @@ export class InboxStore {
         i.kind === "notice" && i.projectId === input.projectId && i.dedupeKey === input.dedupeKey,
     );
     if (open) return open;
-    const id = randomUUID();
-    const event = await this.log.append("inbox.notice_raised", { id, ...input });
-    this.projection.applyOne(event);
-    return this.get(id) as NoticeItem;
+    // **書き込み中の同じ鍵も1件に数える**（追加・2026-09-25）。確かめてから書くまでの間に `await` があるので、
+    // ほぼ同時に来た2つが両方「まだ無い」と見て2件になっていた——同じ Module の起動を会話と画面が同時に
+    // 頼み、同じ失敗を2か所で受けたとき（Project のコンテナを用意する待ちが入って表に出た）
+    const key = `${input.projectId ?? ""}\u0000${input.dedupeKey}`;
+    const inFlight = this.raisingNotices.get(key);
+    if (inFlight) return inFlight;
+    const raising = (async () => {
+      const id = randomUUID();
+      const event = await this.log.append("inbox.notice_raised", { id, ...input });
+      this.projection.applyOne(event);
+      return this.get(id) as NoticeItem;
+    })().finally(() => this.raisingNotices.delete(key));
+    this.raisingNotices.set(key, raising);
+    return raising;
   }
+  private readonly raisingNotices = new Map<string, Promise<NoticeItem>>();
 
   async acknowledgeNotice(id: string): Promise<void> {
     const event = await this.log.append("inbox.notice_acknowledged", { id });

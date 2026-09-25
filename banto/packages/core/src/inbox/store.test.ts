@@ -142,3 +142,13 @@ test("お知らせは banto 全体のものも持てる（instance の Module）
     assert.equal(store.listOpen().length, 1);
   });
 });
+
+test("同じお知らせがほぼ同時に来ても1件（確かめてから書くまでの間に割り込まれない）", async () => {
+  await withStore(async (store) => {
+    const input = { projectId: "p1", dedupeKey: "module-connect:filesystem-p1", title: "filesystem を繋げませんでした", detail: "x" };
+    const [a, b, c] = await Promise.all([store.raiseNotice(input), store.raiseNotice(input), store.raiseNotice(input)]);
+    assert.equal(a.id, b.id);
+    assert.equal(b.id, c.id);
+    assert.equal(store.listOpen().filter((i) => i.kind === "notice").length, 1);
+  });
+});

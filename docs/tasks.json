@@ -2136,13 +2136,13 @@
     {
       "id": "container-lifecycle",
       "title": "host が Project ごとのコンテナを作り・起こし・止め・消す",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-host-prereqs"
       ],
       "why": "docs/specs/v4-security.md §1。Project の根を同じ絶対パスでマウント、uid の対応（raw.idmap）、banto の Module のコードは読み取り専用、止めるのに上限→強制停止、Project を畳んだら止める・消したら消す。道具を入れた状態は残す。",
       "notes": "docs/notes/2026-09-25-dev-environment.md",
-      "result": "2026-09-25（部品まで）：@banto/container の ProjectContainers（ensure＝無ければ作る・根と入れ子の設定を合わせる・起こして中でコマンドが通るまで待つ・node の版を揃える／ensureDisk／stop＝上限→強制停止／remove）と execInContainer。実機の結合試験で、作る→2回目は作り直さない→同じパス・持ち主が揃う→入れない作業ディレクトリは 126 で止まる→コードは読み取り専用→根の付け替え→止める→消す（8 秒）。**core への配線はまだ**（container-module-spawn で行う）。"
+      "result": "2026-09-25：@banto/container（ProjectContainers・土台イメージ・btrfs の置き場）と core への配線（設定 projectContainers で切り替え——移行中のスイッチ）。Project を開くとコンテナを用意し（無ければ土台から作る・根と設定を合わせる・起こす）、畳むと止める（止められなければ受信箱）。実機の結合試験と E2E（コンテナの形で1つ目の区切り 44/44）で確かめた。"
     },
     {
       "id": "container-e2e",
@@ -2152,7 +2152,8 @@
         "container-lifecycle"
       ],
       "why": "E2E は Project の根を /tmp に作るが、制限つきの区画はホームの下しかマウントできない。人のコンテナと混ざらない名前・片づけ・初回のイメージ取得の時間も決める。移行の最初から試験が回っていないと、どこで壊れたか分からない。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25（途中）：BANTO_E2E_CONTAINERS=1 で置き場をホームの下へ移し TMPDIR もそこへ（spec は書き換えない）、終わったらその回のコンテナを札で消し、前の回の残りは次の回が消す。incus グループが要るので sudo -u で回す。コンテナの形で 129 件中、サブエージェントの3本以外は通る見込み（module-connect-failure と project-close-release を直した）。**残り：サブエージェント（container-subagent）**。"
     },
     {
       "id": "container-module-spawn",
@@ -2163,7 +2164,8 @@
         "container-e2e"
       ],
       "why": "PoC 09 で FileSystem を incus exec の標準入出力で起こして MCP が通った（接続 239 ms）。中から host の 127.0.0.1 には届かないので、BANTO_HOST_MCP_URL は Project のネットワークの host 側のアドレスを指す。Shell のコマンドは中で走るので、専用のホームは中のホームになる（人が選んだ設定の写しは host が中へ入れる）。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25（途中）：Project の Module をコンテナの中で起こす（incus exec の標準入出力で MCP）。中継の住所はブリッジの host 側。host の環境は渡さない（決めた変数だけ）。Shell はコンテナでは「コンテナの中に無い」と添える（BANTO_IN_CONTAINER=1）。**残り：サブエージェント、鍵の名前ごとの承認（container-relay-per-alias）を先に入れてから本番で有効にする**。"
     },
     {
       "id": "container-relay-per-alias",

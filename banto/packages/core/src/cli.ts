@@ -2,10 +2,11 @@
 // banto本体の起動プロセス（host）。ここまで作った全パッケージを実際に配線する。
 // これがPhase 0/1の完了条件を実測する対象そのもの。
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -20,7 +21,15 @@ import {
   assertRulesetIsSafe,
   type ConfinementProfile,
 } from "@banto/landlock";
-import { checkContainerPrereqs, hostPrereqDeps } from "@banto/container";
+import {
+  CONTAINER_NODE_PATH,
+  ProjectContainers,
+  checkContainerPrereqs,
+  ensureBaseImage,
+  execInContainer,
+  hostPrereqDeps,
+  runIncus,
+} from "@banto/container";
 import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
 import { EventLog } from "./event-store/log.js";
 import { ProjectThreadStore, currentSkillSet } from "./project-thread/store.js";
@@ -146,8 +155,11 @@ async function main(): Promise<void> {
   const abi = checkAbi();
   console.log(`[host] Landlock ABI check: ${JSON.stringify(abi)}`);
   // コンテナの前提（`docs/specs/v4-security.md` §1——閉じ込めを Project ごとのコンテナへ移す途中）。
-  // いまは知らせるだけ。Project の Module をコンテナで起こすようになったら、欠けていれば起こさずに受信箱で言う
+  // Project の Module をコンテナで起こす設定（`projectContainers`）なら、欠けているとき Module を起こさず
+  // 受信箱で言う（黙って Landlock へ落ちない、規則2）。設定が無ければ知らせるだけ
   const containerPrereqs = await checkContainerPrereqs(hostPrereqDeps());
+  const projectContainers = bootstrap.projectContainers ? new ProjectContainers(runIncus) : undefined;
+  if (projectContainers) console.log("[host] Project の Module は Project ごとのコンテナで起こす");
   console.log(
     `[host] コンテナの前提: ${
       containerPrereqs.ok
@@ -266,6 +278,52 @@ async function main(): Promise<void> {
   // 鍵を作るため、`identity.txt: file exists` として現れた。
   // 待ちを延ばして誤魔化さない（規則6）——同時に来たものは同じ1本を待つ。
   const moduleSpawns = new SingleFlight<string>();
+
+  /**
+   * **Project のコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。Project の Module を起こす前に
+   * 用意する——無ければ作り、根と設定を合わせ、起こす。道具を入れた状態は残る。同時に来ても1回にまとめる
+   */
+  interface ReadyContainer {
+    name: string;
+    /** 中から host に届くアドレス（ブリッジの host 側）。host は 0.0.0.0 で待ち受けている */
+    hostAddress: string;
+    root: string;
+  }
+  const readyContainers = new Map<string, ReadyContainer>();
+  const containerSpawns = new SingleFlight<ReadyContainer>();
+  async function ensureProjectContainer(containers: ProjectContainers, project: { id: string; root: string }): Promise<ReadyContainer> {
+    const ready = readyContainers.get(project.id);
+    if (ready && ready.root === project.root) return ready;
+    return containerSpawns.run(project.id, async () => {
+      if (!containerPrereqs.ok) {
+        throw new Error(
+          "Project のコンテナを用意できません——前提が欠けています：" +
+            containerPrereqs.problems.map((p) => `${p.message}（直し方：${p.fix}）`).join(" ") +
+            " 直したら banto を起動し直してください",
+        );
+      }
+      // gid はユーザーの登録情報から——起動のしかたで主グループが変わっていても、中の同じ番号に揃える
+      const { uid, gid } = userInfo();
+      const { name } = await containers.ensure({
+        projectId: project.id,
+        root: project.root,
+        bantoDir: monorepoRoot,
+        nodePath: process.execPath,
+        nodeVersion: process.version,
+        nesting: false,
+        // banto の機能が頼る道具（git・ssh・curl）を入れた土台から作る——無ければ一度だけ作る
+        image: await ensureBaseImage(runIncus),
+        uid,
+        gid,
+        owner: bootstrap.dataDir,
+      });
+      const r: ReadyContainer = { name, hostAddress: await containers.hostAddress(name), root: project.root };
+      readyContainers.set(project.id, r);
+      return r;
+    });
+  }
+  /** ホストのフォルダを中に見せる口の名前（Incus の装置名。パスから決まる） */
+  const diskDeviceName = (dir: string) => `m-${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
 
   /**
    * **繋げなかったことを覚えておく**（決定・2026-09-07、ユーザー報告）。
@@ -670,8 +728,12 @@ async function main(): Promise<void> {
       projectId: project?.id,
       meta: declaration.meta,
     });
+    // **Project の Module は Project のコンテナの中で起こす**（決定・2026-09-25）。中からは host の
+    // 127.0.0.1 に届かないので、中継の住所はブリッジの host 側にする（host は 0.0.0.0 で待ち受けている）
+    const container = projectContainers && project ? await ensureProjectContainer(projectContainers, project) : undefined;
     const context: LaunchContext = {
       ...launchContextBase,
+      ...(container ? { hostRelayUrl: `http://${container.hostAddress}:${bootstrap.port}/relay` } : {}),
       hostRelayToken: token,
       projectRoot: project?.root,
       // Module ごとに1つ。**その Module の分だけ**書けるようにする（決定・2026-09-07）
@@ -705,6 +767,40 @@ async function main(): Promise<void> {
     const withSecrets = await resolveSecretPlaceholders(declaration, project?.id);
     // ここへ来るのは起動する形だけ（URL に繋ぐ形は上で分かれている）
     const launch = expandLaunch(withSecrets, context) as StdioLaunch;
+
+    // **コンテナの中で起こす**。閉じ込めはコンテナそのもの——Landlock では包まない。中に見せるのは
+    // Project の根（作るときに）・banto のコード（読み取り専用、作るときに）・この Module の置き場・取ってきた
+    // 配布物（読み取り専用）だけ。**host の環境は渡さない**（`incus exec` は引き継がない。渡すのは下の一覧だけ）
+    if (container && project && projectContainers) {
+      await projectContainers.ensureDisk(container.name, diskDeviceName(context.moduleDataDir), context.moduleDataDir);
+      if (existsSync(context.modulePackageDir)) {
+        await projectContainers.ensureDisk(container.name, diskDeviceName(context.modulePackageDir), context.modulePackageDir, { readonly: true });
+      }
+      const { uid, gid } = userInfo();
+      const inside = execInContainer(
+        container.name,
+        {
+          cwd: project.root,
+          uid,
+          gid,
+          env: {
+            HOME: context.moduleDataDir,
+            // コンテナの中で動いていることを Module に知らせる（Shell の説明の言い方が変わる）
+            BANTO_IN_CONTAINER: "1",
+            BANTO_MODULE_DATA_DIR: context.moduleDataDir,
+            BANTO_MODULE_NAME: declaration.name,
+            ...(shellHome ? { BANTO_SHELL_HOME: shellHome } : {}),
+            ...launch.env,
+          },
+        },
+        // node は中の決まった場所に置いてある（ホストの実行ファイルと同じ版）
+        launch.command === process.execPath ? CONTAINER_NODE_PATH : launch.command,
+        launch.args,
+      );
+      // `incus` 自身はホストで動く——ホストの環境（Incus の設定の置き場など）はこちらに渡す
+      const client = await connectStdioModule(inside.command, inside.args, undefined, process.env);
+      return finishModuleConnection(declaration, connName, project, client, token, forProject);
+    }
 
     // **外から繋いだコードを、閉じ込め無しで立てない**（追加・2026-09-15、
     // レビューで発覚。`docs/specs/v4-security.md`）。
@@ -921,7 +1017,7 @@ async function main(): Promise<void> {
    * **instance に1本の Module（Vault 等）は落とさない**——それは Project の
    * ものではない（他の Project がまだ使っている）。
    */
-  async function releaseProjectModules(projectId: string): Promise<string[]> {
+  async function releaseProjectModules(projectId: string, opts: { stopContainer?: boolean } = {}): Promise<string[]> {
     const names = [...(projectConnections.get(projectId) ?? [])];
     projectConnections.delete(projectId);
     for (const connName of names) {
@@ -940,6 +1036,23 @@ async function main(): Promise<void> {
       });
     }
     if (names.length > 0) console.log(`[host] project ${projectId} を畳んだ: ${names.join(", ")}`);
+    // **Project を畳んだらコンテナも止める**（決定・2026-09-25）。止めるのは待ちすぎない（上限→強制停止）。
+    // 止められなくても畳むこと自体は済んでいるので、畳む操作は失敗させない——ただし**黙らない**：
+    // 動いたまま残ったことを受信箱で言う（規則2）
+    const ready = readyContainers.get(projectId);
+    readyContainers.delete(projectId);
+    if (opts.stopContainer && ready && projectContainers) {
+      await projectContainers.stop(ready.name).catch(async (err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(`[host] project ${projectId} のコンテナ ${ready.name} を止められませんでした: ${reason}`);
+        await inbox.raiseNotice({
+          projectId,
+          dedupeKey: `container-stop:${projectId}`,
+          title: "Project のコンテナを止められませんでした",
+          detail: `${ready.name} が動いたまま残っています：${reason}`,
+        });
+      });
+    }
     return names;
   }
 

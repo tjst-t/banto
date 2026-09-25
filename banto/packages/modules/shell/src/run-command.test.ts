@@ -373,3 +373,24 @@ test("閉じ込めの外のパスで Permission denied になったら、理由�
   assert.match(note ?? "", /「Shell のホーム」/);
   assert.equal(confinementNoteFor("ls: /nope: No such file or directory", { projectRoot: "/proj" }), undefined);
 });
+
+// **コンテナの中では、ホストのものは「無い」**（追加・2026-09-25）。人のホームを指して無かったら、そう言う
+test("コンテナの中で、人のホームを指して No such file になったら、コンテナの中に無いと添える", async () => {
+  const { confinementNoteFor } = await import("./run-command.js");
+  const allowed = { projectRoot: "/home/u/proj", homeDir: "/home/u/.local/share/banto/modules/shell-p/home", inContainer: true };
+  const note = confinementNoteFor(
+    [
+      "cat: /home/u/.gitconfig: No such file or directory",
+      "cat: /home/u/proj/missing.txt: No such file or directory",
+      "sh: 1: /usr/bin/nosuch: not found",
+      "ls: cannot access '/opt/tool': No such file or directory",
+    ].join("\n"),
+    allowed,
+  );
+  assert.match(note ?? "", /Project のコンテナの中にありません：\/home\/u\/\.gitconfig。/);
+  assert.match(note ?? "", /人のホーム（ホスト）のものは見えません/);
+  // Project の中の打ち間違い・コンテナの中の道具には添えない
+  assert.doesNotMatch(note ?? "", /missing\.txt|\/opt\/tool/);
+  // コンテナでは Permission denied は閉じ込めのせいではない（中のファイルの権限）
+  assert.equal(confinementNoteFor("cat: /home/u/x: Permission denied", allowed), undefined);
+});

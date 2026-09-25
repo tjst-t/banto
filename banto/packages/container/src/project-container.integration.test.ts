@@ -37,13 +37,20 @@ test("Project のコンテナ：作る→同じ根を同じパスで・持ち主
   const containers = new ProjectContainers(runIncus);
   // gid はユーザーの登録情報から——`sg incus` で起こしたプロセスの主グループは incus に変わる
   const { uid, gid } = userInfo();
-  const spec = { projectId, root: rootA, bantoDir, nodePath: process.execPath, nodeVersion: process.version, nesting: false, image: "images:ubuntu/24.04", uid, gid };
+  const owner = join(base, `owner-${projectId}`);
+  const spec = { projectId, root: rootA, bantoDir, nodePath: process.execPath, nodeVersion: process.version, nesting: false, image: "images:ubuntu/24.04", uid, gid, owner };
   try {
     writeFileSync(join(rootA, "from-host.txt"), "host");
     const first = await containers.ensure(spec);
     assert.deepEqual(first, { name, created: true });
     const again = await containers.ensure(spec);
     assert.deepEqual(again, { name, created: false }, "2回目で作り直している");
+
+    // 札で引ける（片づけ・別の banto と混ぜない）
+    assert.deepEqual(await containers.listOwned(owner), [name]);
+    assert.deepEqual(await containers.listOwned(`${owner}-other`), []);
+    // 中から host に届くアドレス（ブリッジの host 側）
+    assert.match(await containers.hostAddress(name), /^\d+\.\d+\.\d+\.\d+$/);
 
     // 中の node はホストと同じ版
     const node = await runIncus(["exec", name, "--", CONTAINER_NODE_PATH, "--version"]);
