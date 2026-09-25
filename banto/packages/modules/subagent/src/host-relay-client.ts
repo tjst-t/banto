@@ -73,6 +73,18 @@ export class HostRelayClient {
   }
 
   /**
+   * **返信用の札で、呼び出し元の Thread に届ける**（host の口、アーキ仕様 §4.2）。宛先は札でしか指せない
+   * ——札は host がこの Module の tool 呼び出しに渡したもの
+   */
+  async deliverToThread(input: { replyTo: string; title: string; text: string; final?: boolean }): Promise<{ deliveryId: string; wake: string }> {
+    const client = await this.ensureConnected();
+    const result = await client.callTool({ name: "relayDeliverToThread", arguments: input });
+    const text = (result.content as { type: string; text: string }[])[0]?.text;
+    if (result.isError) throw new Error(text ?? "呼び出し元の Thread に届けられませんでした");
+    return JSON.parse(text ?? "{}");
+  }
+
+  /**
    * 名前から**在りか**を引く（`vault-directory` の窓口）。**値は通らない**
    * ——返るのは「どの Vault にあるか」だけで、値は引いたあと backend を
    * 直接呼んで受け取る（アーキ仕様 §2.5、DNS と同じ形）。

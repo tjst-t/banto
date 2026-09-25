@@ -14,6 +14,8 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/elements/attachment.aui";
 import { AssistantMark } from "@/components/banto/thread/assistant-mark";
+import { DeliveredMessage } from "@/components/banto/thread/delivered-message";
+import type { RealMessageOrigin } from "@/lib/backend/client";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import {
   ForkFromMessageProvider,
@@ -323,8 +325,13 @@ const ThreadMessage: FC = () => {
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
+  // **機械から届いたもの**（決定・2026-09-25）——人の吹き出しの形は使わない
+  const origin = useAuiState(
+    (s) => (s.message.metadata?.custom as { origin?: RealMessageOrigin } | undefined)?.origin,
+  );
 
   if (isEditing) return <EditComposer />;
+  if (role === "user" && origin) return <DeliveredMessage origin={origin} />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
 };

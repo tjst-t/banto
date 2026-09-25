@@ -15,6 +15,7 @@ import type {
   ThreadEffort,
   ThreadState,
   UiToolCallEntry,
+  MessageOrigin,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 import { sameSkillSet } from "../skills/activation.js";
@@ -60,6 +61,8 @@ export class ProjectThreadStore {
     // v7：UiToolCallEntry に displayMode、ThreadState に createdSeq を足した
     //     （決定・2026-09-07。古いスナップショットには無いので畳み直す）
     // v6：MessageEntry に uiToolCalls を足した（決定・2026-09-07）
+    // （上げていない：2026-09-25 に足した deliveries・awaitingReplies・MessageEntry.origin は、新しいイベントからしか
+    //  生まれない——前の snapshot に畳み直すべきものが無い）
     this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 8);
   }
 
@@ -387,6 +390,8 @@ export class ProjectThreadStore {
     /** 画面つき tool の呼び出し（決定・2026-09-07）。リロード後に Module の
      *  画面を出し直すのに要る——ここに残さないと画面だけが消える。 */
     uiToolCalls?: UiToolCallEntry[],
+    /** 機械から届いたものの印（追加・2026-09-25）。**人の発言には付けない** */
+    origin?: MessageOrigin,
   ): Promise<void> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     const event = await this.log.append("message.appended", {
@@ -394,7 +399,46 @@ export class ProjectThreadStore {
       role,
       text,
       ...(uiToolCalls && uiToolCalls.length > 0 ? { uiToolCalls } : {}),
+      ...(origin ? { origin } : {}),
     });
+    this.projection.applyOne(event);
+  }
+
+  /**
+   * **Thread に届いたものを残す**（決定・2026-09-25、アーキ仕様 §4.2）。会話にはまだ積まない——積むのは
+   * ターンを始めるとき（`appendMessage` の origin）。先に残すので、起こす前に host が落ちても消えない
+   */
+  async recordDelivery(input: {
+    threadId: ThreadId;
+    deliveryId: string;
+    from: string;
+    title: string;
+    text: string;
+    hop: number;
+  }): Promise<void> {
+    if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
+    const event = await this.log.append("delivery.received", input);
+    this.projection.applyOne(event);
+  }
+
+  /** 返事待ちの札を残す（Module が「あとで届ける」と言った）。 */
+  async recordAwaitingReply(input: {
+    threadId: ThreadId;
+    replyTo: string;
+    connName: string;
+    moduleName: string;
+    hop: number;
+  }): Promise<void> {
+    if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
+    const event = await this.log.append("reply.awaiting", input);
+    this.projection.applyOne(event);
+  }
+
+  /** 返事が済んだ（届いた・代わりに「途中で終わりました」を届けた）。 */
+  async settleReply(threadId: ThreadId, replyTo: string): Promise<void> {
+    const t = this.getThread(threadId);
+    if (!t?.awaitingReplies?.some((r) => r.replyTo === replyTo)) return;
+    const event = await this.log.append("reply.settled", { threadId, replyTo });
     this.projection.applyOne(event);
   }
 

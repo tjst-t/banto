@@ -3,6 +3,7 @@
 // 即座にSSEへも流す（アーキ仕様§2.4「人に聞くはElicitationに乗せる」・
 // §6.0 hold-the-line）——ターンが終わってからまとめて返すのではない。
 
+import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
 import type { UiToolCallEntry } from "../project-thread/types.js";
 import { runTurn } from "../runner/adapter.js";
 import { buildSystemPrompt } from "../runner/system-prompt.js";
@@ -149,7 +150,23 @@ async function* runThreadTurnInner(
     }
   }
 
-  await deps.projectThread.appendMessage(input.threadId, "user", input.prompt);
+  // **届いていたものを先に積む**（決定・2026-09-25、アーキ仕様 §4.2）。届いた順に、送り手の印つきで——人の発言
+  // ではない。上限で起こさなかったものも、人が次に送ったこのターンの頭に積まれる（黙って捨てない）
+  const delivered = [...(deps.projectThread.getThread(input.threadId)?.deliveries ?? [])];
+  if (delivered.length === 0 && input.prompt === "") {
+    yield { type: "error", message: "このターンに渡すもの（人の発言・届いたもの）がありません" };
+    return;
+  }
+  for (const d of delivered) {
+    await deps.projectThread.appendMessage(input.threadId, "user", d.text, undefined, {
+      from: d.from,
+      title: d.title,
+      hop: d.hop,
+      deliveryId: d.deliveryId,
+    });
+  }
+  if (input.prompt !== "") await deps.projectThread.appendMessage(input.threadId, "user", input.prompt);
+  const prompt = composeTurnPrompt(delivered, input.prompt);
 
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
@@ -206,7 +223,7 @@ async function* runThreadTurnInner(
       forkSession:
         thread.resumePoint !== undefined &&
         (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId)),
-      prompt: `${turnContext}\n\n${input.prompt}`,
+      prompt: `${turnContext}\n\n${prompt}`,
       mcpServers: mcpServers as Options["mcpServers"],
       permissionMode: input.permissionMode,
       // 人がこの Thread で選んだモデルと effort（決定・2026-09-23）。host が持つ値を

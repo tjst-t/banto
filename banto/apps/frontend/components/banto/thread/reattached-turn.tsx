@@ -15,12 +15,18 @@ import {
   reattachedVersion,
   subscribeReattached,
 } from "@/lib/backend/reattached-turn";
+import { isDeliveryTurn, onRealAppEvent } from "@/lib/backend/app-events";
 
 export function ReattachedTurn({ threadId }: { threadId: string }) {
   useSyncExternalStore(subscribeReattached, reattachedVersion, () => 0);
 
   useEffect(() => {
     attachIfRunning(threadId);
+    // **開いたあとに、この画面の外で始まったターンにも繋ぐ**（追加・2026-09-25）——届いたもので host が
+    // 始めたターン・別の画面で送ったターン。ポーリングはしない（host からの知らせで動く）
+    return onRealAppEvent((event) => {
+      if (event.type === "turn.started" && event.threadId === threadId) attachIfRunning(threadId);
+    });
   }, [threadId]);
 
   const running = getReattachedTurn(threadId);
@@ -33,7 +39,9 @@ export function ReattachedTurn({ threadId }: { threadId: string }) {
     >
       <p className="text-turn flex items-center gap-1.5 text-xs font-semibold">
         <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
-        このターンは走っています（別の画面で始まったものに繋ぎ直しました）
+        {isDeliveryTurn(threadId)
+          ? "届いたものに答えています（いま送ったものは、このターンが終わってから走ります）"
+          : "このターンは走っています（別の画面で始まったものに繋ぎ直しました）"}
       </p>
       {running.activity ? (
         <p className="text-ink-3 text-xs">いま動いているもの：{running.activity}</p>

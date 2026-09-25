@@ -14,7 +14,14 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import {
+  CANVAS_META_KEY,
+  DELIVERS_LATER_META_KEY,
+  MODULE_META_KEY,
+  PENDING_REPLY_META_KEY,
+  VISIBILITY_META_KEY,
+  replyToOf,
+} from "@banto/module-contract";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
 import { ClaudeLoginError } from "./claude-login-proxy.js";
@@ -36,6 +43,11 @@ export interface SubagentServerDeps {
    * （`claude-login-access.ts`）。試験は同じ中継をその場で立てる
    */
   claudeLogin: ClaudeLoginAccess;
+  /**
+   * **待たない形の仕事が終わったら、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.1・§4.2）。
+   * host の中継の `relayDeliverToThread`。無ければ待たない形は断る
+   */
+  deliver?: (input: { replyTo: string; title: string; text: string; final?: boolean }) => Promise<unknown>;
 }
 
 
@@ -131,6 +143,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           "OpenCode は人が banto 全体の設定の「サブエージェント」で入れた鍵を使う（どれが使えるかは listSubagents）。" +
           "それ以外の鍵で走らせたいときだけ envSecrets に alias を渡す（使える alias の一覧は resource `vault://aliases`）。" +
           "続きを頼むときは、前の返り値の sessionId を渡す。" +
+          "**長い仕事は runInBackground: true で待たずに頼める**——すぐ仕事の id が返り、終わったら結果がこの会話に届いて、" +
+          "あなたが起こされる（届くまで他の仕事を続けてよい。結果を待つために同じ仕事を頼み直さない）。" +
           "**サブエージェントが人に確認を求めても、いまは聞く口が無いので断る**（断ったものは返り値の permissions に出る）",
         inputSchema: {
           type: "object",
@@ -146,10 +160,15 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             effort: { type: "string", description: "考える深さ（エージェントの thought_level）。省略時は既定" },
             sessionId: { type: "string", description: "続きから頼むときの session id（前の runSubagent の返り値）" },
             envSecrets: ENV_SECRETS_SCHEMA,
+            runInBackground: {
+              type: "boolean",
+              description: "true なら待たない。すぐ仕事の id を返し、終わったら結果がこの会話に届く（既定 false：終わるまで待つ）",
+            },
           },
           required: ["agent", "prompt"],
         },
-        _meta: { [VISIBILITY_META_KEY]: "agent" },
+        // **待たない形の返事は、host が渡す返信用の札で届ける**（決定・2026-09-25、アーキ仕様 §4.2）
+        _meta: { [VISIBILITY_META_KEY]: "agent", [DELIVERS_LATER_META_KEY]: true },
       },
       // ---- 人の入口の画面から呼ぶ（admin——AI には見せない） ----------------------------
       {
@@ -266,26 +285,47 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       if (request.params.name === "runSubagent") {
         const agent = agentOf(args.agent);
         if (typeof args.prompt !== "string" || args.prompt.trim() === "") throw new SubagentError("prompt が空です");
+        const prompt = args.prompt;
+        // **待たない形**（決定・2026-09-25）：届ける先（host が渡した返信用の札）が無ければ断る——黙って待つ形に
+        // 落とさない（規則2。AI は「届く」と思って待ち続けることになる）
+        const background = args.runInBackground === true;
+        const replyTo = replyToOf(request.params._meta as Record<string, unknown> | undefined);
+        const deliver = deps.deliver;
+        if (background && (!replyTo || !deliver)) {
+          throw new SubagentError(
+            "待たない形（runInBackground）では頼めません——終わったことを届ける先がありません" +
+              "（banto がこの呼び出しに返信用の札を渡していない）。runInBackground を外して、待つ形で頼んでください",
+          );
+        }
         // **起こす前から記録する**——資格情報で止まったものも、一覧に「失敗」として残す
         const run = runs.start({
           agent: agent.id,
           agentTitle: agent.title,
-          prompt: args.prompt,
+          prompt,
           ...(typeof args.model === "string" ? { model: args.model } : {}),
           ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
           ...(typeof args.sessionId === "string" ? { resumedFrom: args.sessionId } : {}),
         });
         const report = (message: string) => {
           runs.progress(run.id, message);
-          onProgress?.(message);
+          // 待たない形では、返したあとの呼び出しに進捗は送れない（一覧には残る）
+          if (!background) onProgress?.(message);
         };
+        // **資格情報は呼び出しの中で用意する**——Vault の中継（と初回の承認）は「どの会話のための呼び出しか」が
+        // 決まっている間しか通らない。待たない形でも、ここまでは待つ（背景に回すのはエージェントを走らせる部分だけ）
+        let launched: Awaited<ReturnType<typeof launchFor>>;
         try {
-          const launched = await launchFor(agent, args.envSecrets, report);
+          launched = await launchFor(agent, args.envSecrets, report);
+        } catch (err) {
+          runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
+          throw err;
+        }
+        const work = async () => {
           try {
             report(`${agent.title} を起こしています`);
             const result = await runSubagent(
               {
-                prompt: args.prompt,
+                prompt,
                 ...(typeof args.model === "string" ? { model: args.model } : {}),
                 ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
                 ...(typeof args.sessionId === "string" ? { sessionId: args.sessionId } : {}),
@@ -294,8 +334,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
                 launch: launched.launch,
                 cwd: deps.projectRoot,
                 ...(agent.mode ? { mode: agent.mode } : {}),
-                // 依頼元が取り消したときも、人が入口の画面で「止める」を押したときも止まる
-                signal: AbortSignal.any([extra.signal, run.signal]),
+                // 人が入口の画面で「止める」を押したときも止まる。待つ形なら、依頼元が取り消したときも
+                // ——待たない形は依頼元の呼び出しがもう終わっているので、それには縛らない
+                signal: background ? run.signal : AbortSignal.any([extra.signal, run.signal]),
                 onProgress: report,
                 onToolCall: (title, kind) => runs.toolCall(run.id, title, kind),
                 onText: (textSoFar) => runs.text(run.id, textSoFar),
@@ -304,16 +345,58 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             );
             const final = { ...result, notes: [...launched.notes, ...result.notes] };
             runs.finish(run.id, { result: final });
-            return text(final);
+            return final;
           } catch (err) {
             throw await launched.explain(err);
           } finally {
             await launched.cleanup();
           }
-        } catch (err) {
-          runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
-          throw err;
+        };
+
+        if (!background) {
+          try {
+            return text(await work());
+          } catch (err) {
+            runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
+            throw err;
+          }
         }
+
+        // 待たない形：走らせたまま返す。終わったら（止められても・失敗しても）札で届ける
+        void work()
+          .then(
+            (final) =>
+              deliver!({
+                replyTo: replyTo!,
+                title:
+                  final.stopReason === "cancelled"
+                    ? `${agent.title} の仕事は止められました`
+                    : `${agent.title} の仕事が終わりました`,
+                text: JSON.stringify({ runId: run.id, ...final }),
+              }),
+            (err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              runs.finish(run.id, { error: message });
+              return deliver!({
+                replyTo: replyTo!,
+                title: `${agent.title} の仕事が失敗しました`,
+                text: JSON.stringify({ runId: run.id, error: message }),
+              });
+            },
+          )
+          .catch((err: unknown) => {
+            // 届けられなかった——host が落ちている等。札は返事待ちなので、host が起きたら「途中で終わりました」になる
+            console.error(`[subagent] 仕事 ${run.id} の結果を届けられませんでした:`, err);
+          });
+        return {
+          ...text({
+            runId: run.id,
+            status: "running",
+            note: "待たずに頼みました。終わったら結果がこの会話に届き、あなたが起こされます。それまで他の仕事を続けてよい",
+          }),
+          // **あとで届けると約束した**——host は札を返事待ちにし、この Module が止まったら代わりに知らせる
+          _meta: { [PENDING_REPLY_META_KEY]: true },
+        };
       }
     } catch (err) {
       // 頼み方の誤り・エージェントの失敗は、AI に理由ごと返す（黙って空を返さない）
@@ -431,6 +514,7 @@ if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
     relayClient,
     // 中継はコンテナから届く host 側のアドレスで開いてもらう（host が渡す。コンテナの外なら 127.0.0.1）
     claudeLogin: relayClaudeLogin(relayClient, process.env.BANTO_HOST_ADDRESS ?? "127.0.0.1"),
+    deliver: (input) => relayClient.deliverToThread(input),
   });
   await server.connect(new StdioServerTransport());
 }

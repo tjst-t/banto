@@ -102,6 +102,16 @@ export interface RealThreadMessage {
   /** 画面つき tool の呼び出し（§6.2、決定・2026-09-07）。リロードや別タブで
    *  Module の画面を出し直すのに使う。 */
   uiToolCalls?: RealUiToolCall[];
+  /** **機械から届いたもの**の印（決定・2026-09-25、アーキ仕様 §4.2）。**無ければ人の発言** */
+  origin?: RealMessageOrigin;
+}
+
+/** 届いたものの印——送り手・題・何回中継されたか */
+export interface RealMessageOrigin {
+  from: string;
+  title: string;
+  hop: number;
+  deliveryId: string;
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -711,7 +721,9 @@ export function streamRealTurn(
       body: JSON.stringify({ prompt, permissionMode }),
     });
     if (!res.ok || !res.body) {
-      push({ type: "error", message: `ターンの開始に失敗しました（${res.status}）` });
+      // **断られた理由を出す**（追加・2026-09-25）——409 は「この Thread はいま走っている」（届いたものに答えている等）
+      const reason = ((await res.json().catch(() => null)) as { error?: string } | null)?.error;
+      push({ type: "error", message: reason ?? `ターンの開始に失敗しました（${res.status}）` });
       return;
     }
     const reader = res.body.getReader();

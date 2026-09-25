@@ -68,6 +68,10 @@ import { modulePackageDirOf } from "./modules/registry/install/paths.js";
 import { SHELL_HOME_FILES_KEY, shellHomeFiles, syncShellHome, type ShellHomeSync } from "./modules/shell-home.js";
 import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
+import { ThreadTurns } from "./delivery/thread-turns.js";
+import { ReplyHandles } from "./delivery/reply-handles.js";
+import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
+import { AppEventBus } from "./http/app-events.js";
 import {
   assertAllVisibilityExplicit,
   assertVisibilityValues,
@@ -187,6 +191,60 @@ async function main(): Promise<void> {
   const moduleCalls = new ModuleCallTracker();
   // ターンの外で起きた判断待ちを、走行中の SSE へ差し込む口
   const turnEvents = new TurnEventBus();
+  // **Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2）：同じ Thread のターンは1本ずつ・返信用の札・届ける口・
+  // host から画面への出来事の流れ
+  const threadTurns = new ThreadTurns();
+  const replyHandles = new ReplyHandles();
+  const appEvents = new AppEventBus();
+  const deliveries = new ThreadDeliveries({
+    projectThread,
+    turns: threadTurns,
+    notify: async (n) => {
+      await inbox.raiseNotice(n);
+    },
+  });
+  threadTurns.onChange((change) => {
+    const projectId = projectThread.getThread(change.threadId)?.projectId;
+    // 届いたもので起こしたターンはホップ 1 以上、人が送ったターンは 0
+    if (change.type === "started") {
+      appEvents.publish({ type: "turn.started", threadId: change.threadId, ...(projectId ? { projectId } : {}), cause: change.hop > 0 ? "delivery" : "human" });
+    } else {
+      appEvents.publish({ type: "turn.ended", threadId: change.threadId, ...(projectId ? { projectId } : {}) });
+    }
+  });
+  inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
+
+  /**
+   * **返事待ちのまま Module が止まった**（決定・2026-09-25、アーキ仕様 §4.2「返事待ちの札は失くさない」）
+   * ——host が代わりに「途中で終わりました」を届ける。呼び出し元の AI が来ない返事を待ち続けない（規則2）
+   */
+  async function deliverLostReply(
+    reply: { threadId: string; replyTo: string; moduleName: string; hop: number },
+    why: string,
+  ): Promise<void> {
+    try {
+      await deliveries.deliver({
+        threadId: reply.threadId,
+        from: reply.moduleName,
+        title: `${reply.moduleName} の仕事は途中で終わりました`,
+        text: `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。結果が要るなら、頼み直してください。`,
+        hop: reply.hop,
+      });
+    } catch (err) {
+      console.warn(`[host] ${reply.threadId} に「途中で終わりました」を届けられませんでした:`, err);
+    } finally {
+      replyHandles.settle(reply.replyTo);
+      await projectThread.settleReply(reply.threadId, reply.replyTo).catch(() => {});
+    }
+  }
+  // 起動し直した：前の走行で返事待ちだったものは、その Module ごと止まっている
+  for (const p of projectThread.listProjects()) {
+    for (const t of projectThread.listThreadsForProject(p.id)) {
+      for (const r of t.awaitingReplies ?? []) {
+        await deliverLostReply({ threadId: t.id, replyTo: r.replyTo, moduleName: r.moduleName, hop: r.hop }, "banto を起動し直したため");
+      }
+    }
+  }
 
   const registry = new RelayRegistry();
   const relayUrl = `http://127.0.0.1:${bootstrap.port}/relay`;
@@ -197,6 +255,21 @@ async function main(): Promise<void> {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
     moduleCalls,
     elicitations,
+    // **返信用の札**（決定・2026-09-25）。ホップ数は、札を出したターンのもの（人が送ったターン＝0）
+    replies: {
+      issue: (input) => replyHandles.issue({ ...input, hop: threadTurns.hopOf(input.threadId) ?? 0 }),
+      markAwaiting: async (replyTo) => {
+        const h = replyHandles.markAwaiting(replyTo);
+        if (!h) return;
+        await projectThread.recordAwaitingReply({
+          threadId: h.threadId,
+          replyTo,
+          connName: h.connName,
+          moduleName: h.moduleName,
+          hop: h.hop + 1,
+        });
+      },
+    },
     // **効かせた Skill の名前と説明を `instructions` に載せる**（決定・2026-09-23、§5.6）。
     // 集合は会話に刻まれている（`turn-runner.ts` が新しいセッションの最初に刻む）
     // ——ここはそれを読むだけで、設定を見に行かない。**見に行くと、続きのターンで
@@ -947,6 +1020,15 @@ async function main(): Promise<void> {
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
     connectedModules.set(connName, client);
+    // **Module が止まったら、返事待ちの札に代わりに答える**（決定・2026-09-25）。止め方（畳む・立て直す・落ちる）
+    // によらずここを通る
+    const previousOnClose = client.onclose;
+    client.onclose = () => {
+      previousOnClose?.();
+      for (const [replyTo, h] of replyHandles.awaitingFor(connName)) {
+        void deliverLostReply({ threadId: h.threadId, replyTo, moduleName: h.moduleName, hop: h.hop + 1 }, "Module が止まったため");
+      }
+    };
     if (token !== undefined) moduleTokens.set(connName, token);
     if (project) {
       const forThisProject = projectConnections.get(project.id) ?? new Set<string>();
@@ -1192,6 +1274,23 @@ async function main(): Promise<void> {
 
   const relayEndpoint = new HostRelayEndpoint({
     registry,
+    // **札で、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2）
+    deliverToThread: async (caller, input) => {
+      const h = replyHandles.use(input.replyTo, { moduleName: caller.moduleName, ...(caller.connName ? { connName: caller.connName } : {}) });
+      if ("error" in h) return { ok: false, error: h.error };
+      const r = await deliveries.deliver({
+        threadId: h.threadId,
+        from: caller.moduleName,
+        title: input.title,
+        text: input.text,
+        hop: h.hop + 1,
+      });
+      if (input.final) {
+        replyHandles.settle(input.replyTo);
+        await projectThread.settleReply(h.threadId, input.replyTo);
+      }
+      return { ok: true, deliveryId: r.deliveryId, wake: r.wake };
+    },
     // 出所（人の画面か、AI のターンか）を引くための台帳。承認の要否がここで分かれる
     moduleCalls,
     gate: createRelayApprovalGate({
@@ -1260,6 +1359,9 @@ async function main(): Promise<void> {
     pendingApprovals,
     runtimeConfig,
     turnEvents,
+    threadTurns,
+    deliveries,
+    appEvents,
     moduleCalls,
     relayEndpoint,
     agentRelayEndpoint,
@@ -1340,6 +1442,9 @@ async function main(): Promise<void> {
   });
 
   app.listen(bootstrap.port, "0.0.0.0", () => {
+    // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
+    // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
+    deliveries.resumeAll();
     console.log(`[host] listening on http://0.0.0.0:${bootstrap.port}/ (token=${bootstrap.authToken})`);
   });
 

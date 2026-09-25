@@ -2,6 +2,7 @@
 // Step 2 時点では会話ビューに要る最小限だけ。受信箱・Module・Skill 等の型は
 // 次段（Step 3 以降）で ProjectId 以下に足していく。
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
+import type { RealMessageOrigin } from "@/lib/backend/client";
 
 export type ProjectId = string;
 export type ThreadId = string;
@@ -69,6 +70,8 @@ export interface MockThread {
     /** 画面つき tool の呼び出し（§6.2、決定・2026-09-07）。リロード後に
      *  Module の画面を出し直すのに使う——無いと画面だけが消える。 */
     uiToolCalls?: readonly RealUiToolCall[];
+    /** 機械から届いたものの印（決定・2026-09-25）。無ければ人の発言 */
+    origin?: RealMessageOrigin;
   }[];
   /** real:trueのときだけ意味を持つ。**中身をまだ取っていないときの概要**
    *  （改訂・2026-09-07）——一覧は要約だけを返すので、閉じた Thread の

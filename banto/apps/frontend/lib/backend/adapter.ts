@@ -404,7 +404,13 @@ export function realMessagesToInitial(
       });
     }
     if (m.text) content.push({ type: "text", text: m.text });
-    return { id: `real-${m.seq}`, role: m.role, content };
+    // **届いたものは人の発言として描かない**（決定・2026-09-25）——印を渡し、会話の描き手が札にする
+    return {
+      id: `real-${m.seq}`,
+      role: m.role,
+      content,
+      ...(m.origin ? { metadata: { custom: { origin: m.origin } } } : {}),
+    };
   });
 }
 
@@ -684,6 +690,21 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
  */
 export function rebuildThreadFromRecord(threadId: string): void {
   restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
+}
+
+/**
+ * **この画面の外で走ったターンが終わった**（追加・2026-09-25、host からの知らせ）。記録を1回だけ取り直す
+ * ——繋ぎ直す前に終わっていた（一瞬で終わったターン）ときも、ここで会話に出る。**このブラウザが走らせている
+ * ターンの最中は取り直さない**（流れている表示を壊す）
+ */
+export async function refreshThreadFromHost(threadId: string): Promise<void> {
+  if (hasLiveRealRun(threadId) || !getThread(threadId)) return;
+  const updated = await getRealThread(threadId);
+  if (hasLiveRealRun(threadId)) return;
+  if (updated.messages.length !== (getThread(threadId)?.realMessages?.length ?? 0)) {
+    restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
+    updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage);
+  }
 }
 
 export async function syncRestoredThread(threadId: string): Promise<void> {

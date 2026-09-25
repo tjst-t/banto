@@ -7,6 +7,7 @@
 // ようにする。何も描画しない。
 import { useEffect } from "react";
 import { hydrateRealProjects } from "@/lib/mock/projects";
+import { startRealAppEvents } from "@/lib/backend/app-events";
 import { reportFailure } from "@/lib/report-failure";
 
 export function RealProjectsBootstrap() {
@@ -16,6 +17,8 @@ export function RealProjectsBootstrap() {
     hydrateRealProjects().catch((err: unknown) => {
       reportFailure("banto に繋がりません（Project 一覧を読み込めませんでした）", err);
     });
+    // host からの知らせ（host が始めたターン・受信箱の変化）を読み始める（決定・2026-09-25）
+    startRealAppEvents();
   }, []);
   return null;
 }

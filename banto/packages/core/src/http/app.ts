@@ -39,7 +39,10 @@ import {
 } from "../skills/index.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
-import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
+import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput, type TurnStreamEvent } from "./turn-runner.js";
+import type { ThreadTurns } from "../delivery/thread-turns.js";
+import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
+import type { AppEventBus } from "./app-events.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
 import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
@@ -120,6 +123,12 @@ export interface AppDeps {
   runtimeConfig?: RuntimeConfigStore;
   /** ターンの外で起きた判断待ち（host の中継ゲート）を走行中の SSE へ流す口。 */
   turnEvents?: TurnEventBus;
+  /** 同じ Thread のターンは1本ずつ（決定・2026-09-25、アーキ仕様 §4.2）。無ければ守らない（試験用の最小構成） */
+  threadTurns?: ThreadTurns;
+  /** Thread に届ける口（決定・2026-09-25）。届いたもので起こすターンは、ここで開いて渡す */
+  deliveries?: ThreadDeliveries;
+  /** host から画面への出来事の流れ（`GET /api/events`、決定・2026-09-25） */
+  appEvents?: AppEventBus;
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
    *  内部で他 Module を呼ぶとき、承認をどの会話に出すかがこれで決まる。 */
   moduleCalls?: ModuleCallTracker;
@@ -703,6 +712,86 @@ function toThreadSummary(thread: ThreadState) {
 export function createApp(deps: AppDeps) {
   // 選べるモデルの一覧（少しのあいだ覚える、`runner/models.ts`）
   const modelCatalog = new ModelCatalog(deps.listModels ?? listModelsFromCli);
+
+  /**
+   * **ターンを1本開く**——人が送ったものも、届いたもので host が始めるものも、ここを通る（切り出し・2026-09-25、
+   * アーキ仕様 §4.2）。**鍵（`threadTurns`）は呼ぶ側が先に取る**。失敗は `error` のイベントで返す（呼ぶ側が
+   * SSE に流すか、記録に残す）
+   */
+  async function* openTurn(
+    threadId: string,
+    prompt: string,
+    permissionMode?: RunThreadTurnInput["permissionMode"],
+  ): AsyncGenerator<TurnStreamEvent> {
+    const modules = await deps.resolveModulesForThread(threadId);
+    const thread = deps.projectThread.getThread(threadId);
+    const project = thread && deps.projectThread.getProject(thread.projectId);
+    // root は作成時に正規化される（store.ts）が、その正規化より前に作られた
+    // 既存イベントは生文字列（例："~/"）のまま残りうる——ここでも防御的に
+    // 正規化する（真実は一箇所だが、コードの前後関係でデータが逸脱しうる
+    // ことが実際にあった、2026-09-05）。失敗したら error のイベントとして返す
+    let cwd: string | undefined;
+    if (project) {
+      try {
+        cwd = normalizeProjectRoot(project.root);
+      } catch (err) {
+        yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+        return;
+      }
+    }
+    // 画面つき tool は**記録にも残す**（決定・2026-09-07）——リロード後に
+    // Module の画面を出し直すため。取れなくてもターンは止めない
+    let uiTools: Array<{ toolName: string; server: string; resourceUri: string }> = [];
+    try {
+      uiTools = (await listUiToolsForThread(deps, threadId)).map((t) => ({
+        toolName: `mcp__${t.server}__${t.tool}`,
+        server: t.server,
+        resourceUri: t.resourceUri,
+      }));
+    } catch (err) {
+      console.warn("[host] 画面つき tool の一覧を取れませんでした:", err);
+    }
+
+    // **AI に自分のモデルを伝える**（決定・2026-09-24）。一覧が取れなくてもターンは止めない
+    // ——伝えないだけ。黙らずにログに残す（規則2）
+    let modelIdentity: ModelIdentity | undefined;
+    try {
+      modelIdentity = modelIdentityOf(await modelCatalog.list(), thread?.model);
+      if (!modelIdentity) console.warn(`[host] モデル ${thread?.model ?? DEFAULT_MODEL_VALUE} が一覧に無いので、AI に名前を伝えません`);
+    } catch (err) {
+      console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
+    }
+
+    yield* runThreadTurn(deps, {
+      threadId,
+      ...(modelIdentity ? { modelIdentity } : {}),
+      uiTools,
+      prompt,
+      permissionMode: resolvePermissionMode(
+        permissionMode,
+        deps.projectThread.getThread(threadId),
+        deps.runtimeConfig?.resolve(DEFAULT_PERMISSION_MODE_KEY, thread?.projectId),
+      ),
+      modules,
+      cwd,
+    });
+  }
+
+  // **届いたもので起こすターン**（決定・2026-09-25、アーキ仕様 §4.2）。画面が繋がっていなくても最後まで回す
+  // ——途中経過は `turnEvents` に残るので、開いた画面は繋ぎ直せる。permissionMode はその Thread の設定のまま
+  deps.deliveries?.setTurnRunner(async (threadId, hop) => {
+    const release = deps.threadTurns?.tryAcquire(threadId, hop);
+    if (!release) return false;
+    try {
+      for await (const event of openTurn(threadId, "")) {
+        if (event.type === "error") console.warn(`[host] 届いたもので起こした ${threadId} のターンが失敗しました: ${event.message}`);
+      }
+    } finally {
+      release();
+    }
+    return true;
+  });
+
   return createServer(async (req, res) => {
     withCors(res);
     if (req.method === "OPTIONS") {
@@ -1391,70 +1480,46 @@ export function createApp(deps: AppDeps) {
           prompt: string;
           permissionMode?: RunThreadTurnInput["permissionMode"];
         };
+        const threadId = turnMatch[1]!;
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
-        const modules = await deps.resolveModulesForThread(turnMatch[1]!);
-        const thread = deps.projectThread.getThread(turnMatch[1]!);
-        const project = thread && deps.projectThread.getProject(thread.projectId);
-        // root は作成時に正規化される（store.ts）が、その正規化より前に作られた
-        // 既存イベントは生文字列（例："~/"）のまま残りうる——ここでも防御的に
-        // 正規化する（真実は一箇所だが、コードの前後関係でデータが逸脱しうる
-        // ことが実際にあった、2026-09-05）。失敗したらSSEのerrorイベントとして
-        // 返す——ここは既にヘッダを書いた後なのでres.writeHead(500,...)は使えない。
-        let cwd: string | undefined;
-        if (project) {
-          try {
-            cwd = normalizeProjectRoot(project.root);
-          } catch (err) {
-            res.write(
-              `data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`,
-            );
-            res.end();
-            return;
+        // **同じ Thread のターンは1本ずつ**（決定・2026-09-25、アーキ仕様 §4.2）。走っていれば、終わるまで
+        // 並んで待つ——断らない（送ったつもりで消えるのを作らない。届いたもので host が始めたターンでも同じ）
+        const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0) : undefined;
+        try {
+          for await (const event of openTurn(threadId, body.prompt, body.permissionMode)) {
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
           }
-        }
-        // 画面つき tool は**記録にも残す**（決定・2026-09-07）——リロード後に
-        // Module の画面を出し直すため。取れなくてもターンは止めない
-        let uiTools: Array<{ toolName: string; server: string; resourceUri: string }> = [];
-        try {
-          uiTools = (await listUiToolsForThread(deps, turnMatch[1]!)).map((t) => ({
-            toolName: `mcp__${t.server}__${t.tool}`,
-            server: t.server,
-            resourceUri: t.resourceUri,
-          }));
-        } catch (err) {
-          console.warn("[host] 画面つき tool の一覧を取れませんでした:", err);
-        }
-
-        // **AI に自分のモデルを伝える**（決定・2026-09-24）。一覧が取れなくてもターンは止めない
-        // ——伝えないだけ。黙らずにログに残す（規則2）
-        let modelIdentity: ModelIdentity | undefined;
-        try {
-          modelIdentity = modelIdentityOf(await modelCatalog.list(), thread?.model);
-          if (!modelIdentity) console.warn(`[host] モデル ${thread?.model ?? DEFAULT_MODEL_VALUE} が一覧に無いので、AI に名前を伝えません`);
-        } catch (err) {
-          console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
-        }
-
-        for await (const event of runThreadTurn(deps, {
-          threadId: turnMatch[1]!,
-          ...(modelIdentity ? { modelIdentity } : {}),
-          uiTools,
-          prompt: body.prompt,
-          permissionMode: resolvePermissionMode(
-            body.permissionMode,
-            deps.projectThread.getThread(turnMatch[1]!),
-            deps.runtimeConfig?.resolve(DEFAULT_PERMISSION_MODE_KEY, thread?.projectId),
-          ),
-          modules,
-          cwd,
-        })) {
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        } finally {
+          release?.();
         }
         res.end();
+        return;
+      }
+
+      // **host から画面への出来事の流れ**（決定・2026-09-25、v4-frontend.md §6.8）。何が起きたかだけを流す
+      // ——中身は画面が既存の口で取りに行く。定期的に空の行を送り、途中の代理（Caddy 等）に切られないようにする
+      if (url.pathname === "/api/events" && req.method === "GET") {
+        if (!deps.appEvents) return json(res, 503, { error: "出来事の流れがありません" });
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        res.write(`data: ${JSON.stringify({ type: "hello" })}\n\n`);
+        const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
+        const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25_000);
+        await new Promise<void>((resolve) => {
+          req.on("close", () => {
+            clearInterval(keepAlive);
+            unsubscribe();
+            res.end();
+            resolve();
+          });
+        });
         return;
       }
 

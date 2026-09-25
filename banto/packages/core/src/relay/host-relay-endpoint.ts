@@ -156,6 +156,14 @@ const APPROVAL_PROGRESS_INTERVAL_MS = 10_000;
 export interface HostRelayServerOptions {
   registry: RelayRegistry;
   /**
+   * **呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2「返信用の札」）。宛先は札でしか指せない
+   * ——札の確かめ（生きているか・渡した相手と同じ Module か）は受け手（host）が行う。渡さなければこの口は断る
+   */
+  deliverToThread?(
+    caller: CallerIdentity,
+    input: { replyTo: string; title: string; text: string; final: boolean },
+  ): Promise<{ ok: true; deliveryId: string; wake: string } | { ok: false; error: string }>;
+  /**
    * 初回だけ人に聞くゲート（アーキ仕様 §2.5・docs/specs/v4-frontend.md
    * 「Module 間中継の承認」）。**渡さなければ宣言された依存だけで通す**
    * ——ゲートの有無で中継そのものの形が変わらないようにしてある（テストと
@@ -247,6 +255,22 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         description: "自分が呼んでよい Module の一覧（role つき）",
         inputSchema: { type: "object", properties: {} },
       },
+      {
+        // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
+        // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
+        name: "relayDeliverToThread",
+        description: "返信用の札で、呼び出し元の Thread に届ける（届いたらその Thread の AI が続きをやる）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            replyTo: { type: "string", description: "host が tool 呼び出しの _meta で渡した札" },
+            title: { type: "string", description: "画面に出す1行" },
+            text: { type: "string", description: "AI に渡す本文" },
+            final: { type: "boolean", description: "これで最後か（既定 true。最後なら札は使い終わる）" },
+          },
+          required: ["replyTo", "title", "text"],
+        },
+      },
     ],
   }));
 
@@ -259,6 +283,19 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     if (request.params.name === "relayListTargets") {
       const targets = opts.registry.allowedTargets(identity);
       return { content: [{ type: "text", text: JSON.stringify(targets) }] };
+    }
+
+    // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が
+    // 呼び出し元の AI から受け取ったもの（その AI が頼んだ仕事の返事）。起こしすぎはホップ数と速度で縛る
+    if (request.params.name === "relayDeliverToThread") {
+      if (!opts.deliverToThread) throw new Error("この banto は Thread に届ける口を持っていません");
+      const replyTo = typeof args.replyTo === "string" ? args.replyTo : "";
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      const text = typeof args.text === "string" ? args.text : "";
+      if (!replyTo || !title) throw new Error("replyTo と title が要ります");
+      const r = await opts.deliverToThread(identity, { replyTo, title, text, final: args.final !== false });
+      if (!r.ok) throw new Error(r.error);
+      return { content: [{ type: "text", text: JSON.stringify({ deliveryId: r.deliveryId, wake: r.wake }) }] };
     }
 
     const targetModule = String(args.targetModule ?? "");

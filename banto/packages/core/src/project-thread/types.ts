@@ -52,6 +52,42 @@ export interface MessageEntry {
    *  **Module の画面が消える**。画面を出すのに要る分だけを持つ
    *  ——記録の目的は表示の復元であって、実行の再現ではない。 */
   uiToolCalls?: UiToolCallEntry[];
+  /** **機械から届いたもの**の印（追加・2026-09-25）。**無ければ人の発言** */
+  origin?: MessageOrigin;
+}
+
+/**
+ * **機械から届いたメッセージの印**（決定・2026-09-25、アーキ仕様 §4.2「Thread に届ける」）。
+ * RFC 3834 の `Auto-Submitted` に当たる——画面はこれで人の吹き出しと分けて出し、ループ防止はホップ数を見る。
+ */
+export interface MessageOrigin {
+  /** 送り手（Module の宣言上の名前） */
+  from: string;
+  /** 画面に出す1行 */
+  title: string;
+  /** 人が送ったターンから何回中継されたか（人が送ったターン＝0 から出た札で届いたもの＝1） */
+  hop: number;
+  deliveryId: string;
+}
+
+/** 届いて、まだ会話に積んでいないもの——次のターンの頭に積む（起こさなかったものは、人が次に送ったターンに） */
+export interface PendingDelivery extends MessageOrigin {
+  text: string;
+  receivedAt: string;
+}
+
+/**
+ * **返事待ちの札**（決定・2026-09-25、アーキ仕様 §4.2「返事待ちの札は失くさない」）。Module が「あとで届ける」と
+ * 言ったもの。Module が止まった・host を起動し直したときに残っていれば、host が「途中で終わりました」を届ける
+ */
+export interface AwaitingReply {
+  replyTo: string;
+  /** 札を渡した Module の接続名（Project ごとの Module は `<名前>-<projectId>`） */
+  connName: string;
+  moduleName: string;
+  /** 届いたときのホップ（札を出したターンのホップ＋1） */
+  hop: number;
+  since: string;
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -212,6 +248,10 @@ export interface ThreadState {
    * 前からある snapshot には無い——無ければ空として読む。
    */
   skillSets?: Array<{ seq: number; set: SessionSkillSet }>;
+  /** 届いて、まだ会話に積んでいないもの（追加・2026-09-25）。前からある snapshot には無い——無ければ空 */
+  deliveries?: PendingDelivery[];
+  /** 返事待ちの札（追加・2026-09-25）。無ければ空 */
+  awaitingReplies?: AwaitingReply[];
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
   usage: UsageEntry[];

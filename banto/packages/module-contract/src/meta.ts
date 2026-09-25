@@ -131,6 +131,33 @@ export function auditArgsOf(x: { _meta?: Record<string, unknown> }): string[] {
   return raw.filter((k): k is string => typeof k === "string");
 }
 
+/**
+ * **終わったら呼び出し元の Thread に届ける tool**（追加・2026-09-25、アーキ仕様 §4.2「返信用の札」）。
+ *
+ * tool がこれを `true` で名乗ると、AI がその tool を呼んだときに host が**呼び出し元の Thread に結びついた札**を
+ * 呼び出しの `_meta[REPLY_TO_META_KEY]` で渡す。Module は Thread の id を知らない——札で届ける
+ * （host の中継の `relayDeliverToThread`）。Slack の `response_url` と同じ形（規則12）。
+ */
+export const DELIVERS_LATER_META_KEY = `${VENDOR_PREFIX}/deliversLater`;
+/** host が渡す返信用の札（推測できない印）。**host だけが刻む**——tool の引数ではない */
+export const REPLY_TO_META_KEY = `${VENDOR_PREFIX}/replyTo`;
+/**
+ * **この札で、あとで届ける**（tool の結果の `_meta` に `true`）。host は札を「返事待ち」として記録し、
+ * Module が止まったら代わりに「途中で終わりました」を届ける——呼び出し元の AI が来ない返事を待ち続けない
+ */
+export const PENDING_REPLY_META_KEY = `${VENDOR_PREFIX}/pendingReply`;
+
+/** その tool が「終わったら呼び出し元の Thread に届ける」と名乗っているか。**`true` 以外は名乗っていない** */
+export function deliversLater(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[DELIVERS_LATER_META_KEY] === true;
+}
+
+/** 呼び出しに刻まれた返信用の札を読む（無ければ `undefined`） */
+export function replyToOf(meta: Record<string, unknown> | undefined): string | undefined {
+  const raw = meta?.[REPLY_TO_META_KEY];
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
 /** その tool が「値を返さない」と名乗っているか。**`true` 以外は全部「返す」。** */
 export function isValueFree(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[VALUE_FREE_META_KEY] === true;

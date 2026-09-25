@@ -12,6 +12,7 @@ import { HostRelayEndpoint, RelayRegistry } from "../relay/host-relay-endpoint.j
 import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { RuntimeConfigStore } from "../config/runtime.js";
+import { ThreadTurns } from "../delivery/thread-turns.js";
 import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 
 interface TestDeps {
@@ -1359,4 +1360,48 @@ test("Skill の一覧は層ごとの値と結果を返し、在る Skill だけ�
     { resolveModuleClientsForProject: modules, resolveInstanceModuleClients: modules },
   );
   await client.close();
+});
+
+// **同じ Thread のターンは1本ずつ**（決定・2026-09-25、アーキ仕様 §4.2）。走っている間に人が送ったものは、断らずに
+// 並ばせる——前のターンが終わってから走る（送ったつもりで消えない）
+test("走っている Thread に送ると並んで待ち、前が終わってから走る（発言は消えない）", async () => {
+  const turns = new ThreadTurns();
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await (
+        await fetch(`${base}/api/projects`, { method: "POST", headers: h, body: JSON.stringify({ name: "P", root: "/tmp" }) })
+      ).json();
+      const thread = await (await fetch(`${base}/api/projects/${project.id}/threads`, { method: "POST", headers: h })).json();
+      const release = turns.tryAcquire(thread.id, 1)!;
+      const sent = fetch(`${base}/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers: h,
+        body: JSON.stringify({ prompt: "こんにちは" }),
+      });
+      await new Promise((res) => setTimeout(res, 200));
+      assert.equal(
+        deps.projectThread.getThread(thread.id)!.messages.length,
+        0,
+        "前のターンが走っているのに、次のターンを始めた",
+      );
+      release();
+      const res = await sent;
+      assert.equal(res.status, 200);
+      await res.text();
+      assert.deepEqual(
+        deps.projectThread.getThread(thread.id)!.messages.map((m) => [m.role, m.text]),
+        [["user", "こんにちは"]],
+        "並んでいた発言が消えた",
+      );
+      assert.equal(turns.isRunning(thread.id), false, "終わったのに鍵を返していない");
+    },
+    {
+      threadTurns: turns,
+      runTurn: (async function* () {
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
 });

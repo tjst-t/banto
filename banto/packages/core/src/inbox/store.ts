@@ -7,8 +7,27 @@ import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewItem } 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
 
+  /** 変わったら知らせる相手（host から画面への出来事の流れ、追加・2026-09-25） */
+  private readonly listeners = new Set<() => void>();
+
   constructor(dataDir: string, private readonly log: EventLog) {
     this.projection = new SnapshotProjection(dataDir, "inbox", log, inboxFold);
+  }
+
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private apply(event: Parameters<SnapshotProjection<ReturnType<typeof inboxFold.initial>>["applyOne"]>[0]): void {
+    this.projection.applyOne(event);
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.warn("[host] 受信箱の変化の聞き手が例外を投げました:", err);
+      }
+    }
   }
 
   async load(): Promise<void> {
@@ -49,13 +68,13 @@ export class InboxStore {
   }): Promise<JudgmentItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.judgment_raised", { id, ...input });
-    this.projection.applyOne(event);
+    this.apply(event);
     return this.get(id) as JudgmentItem;
   }
 
   async answerJudgment(id: string, answer: unknown): Promise<void> {
     const event = await this.log.append("inbox.judgment_answered", { id, answer });
-    this.projection.applyOne(event);
+    this.apply(event);
   }
 
   /**
@@ -77,13 +96,13 @@ export class InboxStore {
 
   async timeoutJudgment(id: string): Promise<void> {
     const event = await this.log.append("inbox.judgment_timed_out", { id });
-    this.projection.applyOne(event);
+    this.apply(event);
   }
 
   async raiseReview(input: { threadId: string; summary: string }): Promise<ReviewItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.review_raised", { id, ...input });
-    this.projection.applyOne(event);
+    this.apply(event);
     return this.get(id) as ReviewItem;
   }
 
@@ -112,7 +131,7 @@ export class InboxStore {
     const raising = (async () => {
       const id = randomUUID();
       const event = await this.log.append("inbox.notice_raised", { id, ...input });
-      this.projection.applyOne(event);
+      this.apply(event);
       return this.get(id) as NoticeItem;
     })().finally(() => this.raisingNotices.delete(key));
     this.raisingNotices.set(key, raising);
@@ -122,11 +141,11 @@ export class InboxStore {
 
   async acknowledgeNotice(id: string): Promise<void> {
     const event = await this.log.append("inbox.notice_acknowledged", { id });
-    this.projection.applyOne(event);
+    this.apply(event);
   }
 
   async acknowledgeReview(id: string): Promise<void> {
     const event = await this.log.append("inbox.review_acknowledged", { id });
-    this.projection.applyOne(event);
+    this.apply(event);
   }
 }

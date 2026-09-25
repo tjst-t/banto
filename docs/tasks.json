@@ -2097,11 +2097,12 @@
     {
       "id": "subagent-async",
       "title": "Subagent の待たない形——終わったら依頼元の Thread に届ける",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "subagent-module-sync"
       ],
-      "why": "長い仕事で親の会話を止めない。core に「Thread にメッセージを届ける」口（§4.2）が要る。MCP Tasks は Claude Code 2.1.281 が名乗らない（実測・2026-09-24）ので頼れない。 自前で作る前に、Claude Code の「長い MCP 呼び出しを背景に回す」仕組み（CLAUDE_AUTO_BACKGROUND_TASKS・CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS、非対話では既定で切れている）が使えるかを見る。"
+      "why": "長い仕事で親の会話を止めない。core に「Thread にメッセージを届ける」口（§4.2）が要る。MCP Tasks は Claude Code 2.1.281 が名乗らない（実測・2026-09-24）ので頼れない。 自前で作る前に、Claude Code の「長い MCP 呼び出しを背景に回す」仕組み（CLAUDE_AUTO_BACKGROUND_TASKS・CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS、非対話では既定で切れている）が使えるかを見る。",
+      "result": "2026-09-25：core に「Thread に届ける」共通の口を作り、その上に載せた（アーキ仕様 §4.2）。runSubagent の runInBackground: true ですぐ仕事の id を返し、終わったら host が渡した返信用の札（Slack の response_url と同じ形——呼び出し元の Thread に結びつく・24時間・5回・渡した Module 以外は使えない）で届ける。届いたら AI を自動で起こす（ユーザー決定）：空いていればすぐ、走っていれば終わってから。同じ Thread のターンは host が1本ずつに守る（走っている間に人が送ったものは並んで待つ——最初は 409 で断ったが、送った発言が消えたので改めた）。ループ防止はホップ 10・1時間 20 回（仮置き）。届いたものは Event Store に残してから起こし、会話には送り手の印（origin）つきで積む——画面は人の吹き出しではなく「〜から届きました」の札で出す。人への知らせは受信箱のお知らせ。host→画面の出来事の流れ（GET /api/events）で、開いたままの画面が host の始めたターンに繋ぐ。返事待ちのまま Module が止まったら（止め方によらず）host が「途中で終わりました」を届ける。資格情報の用意（Vault の承認）は呼び出しの中で済ませ、背景に回すのはエージェントを走らせる部分だけ。CLI の背景実行（CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS）は、CLI のプロセスの中の状態でターンをまたげないので採らない（docs/notes/2026-09-25-thread-delivery.md）。試験：core 単体 12・subagent 単体 5・E2E subagent-background 2本。"
     },
     {
       "id": "landlock-unix-socket-escape",
@@ -2249,6 +2250,16 @@
       "status": "backlog",
       "why": "2026-09-25 に気づいた（コンテナの作業の範囲の外なので触っていない——規則7）。①react-hooks/set-state-in-effect が5ファイル6件（instance-modules-panel・add-instance-module-dialog・module-settings-panel・registry-module-picker・shell/connect-gate）——HEAD の中身でも同じ件数で出る。②check-tokens が registry-module-picker の text-[...] 5件。③eslint が E2E のビルド成果物 .next-e2e を見ていて 250 件（globalIgnores に無い）。",
       "doneWhen": "apps/frontend で npm run lint が通る。"
+    },
+    {
+      "id": "thread-messaging",
+      "title": "Thread 間のメッセージ——AI が別の Thread の AI に送る（Thread に届ける口の上に）",
+      "status": "backlog",
+      "dependencies": [
+        "subagent-async"
+      ],
+      "why": "要件：Thread 間の AI 間メッセージング（アーキ仕様 §4.2）。届け方（記録してから起こす・ループ防止・画面の札）は 2026-09-25 に共通の口として作った。残るのは送る側：宛先の一覧の見せ方（id・題・状態だけ、中身は読ませない）・送るインターフェース（core の MCP か薄い Module か）・Project をまたぐ送信の許し方・宛先の粒度（Thread 単位で両方覆える）。§10 item 24。",
+      "notes": "docs/notes/2026-09-25-thread-delivery.md"
     }
   ],
   "phase1": {

@@ -19,7 +19,15 @@ import {
   ReadResourceRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CALLER_META_KEY, stripBantoMeta, visibilityOf, type BantoModuleMeta } from "@banto/module-contract";
+import {
+  CALLER_META_KEY,
+  PENDING_REPLY_META_KEY,
+  REPLY_TO_META_KEY,
+  deliversLater,
+  stripBantoMeta,
+  visibilityOf,
+  type BantoModuleMeta,
+} from "@banto/module-contract";
 import { makeResourceVisibilityResolver } from "./visibility.js";
 import type { ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
@@ -51,6 +59,15 @@ export interface AgentProxyOptions {
    * それは転送しない（Module に文脈を占領させない）。
    */
   instructions?: string;
+  /**
+   * **返信用の札**（決定・2026-09-25、アーキ仕様 §4.2）。「終わったら届ける」と名乗った tool
+   * （`dev.banto/deliversLater`）を呼ぶときに、このターンの Thread に結びついた札を出して渡す。
+   * 結果が「あとで届ける」（`dev.banto/pendingReply`）なら、札を返事待ちにする
+   */
+  replies?: {
+    issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string }): string;
+    markAwaiting(replyTo: string): Promise<void>;
+  };
 }
 
 export interface AgentProxy {
@@ -129,13 +146,24 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
       // fail closed のまま
       opts.moduleCalls?.begin(conn.name, opts.threadId, "turn", opts.projectId);
+    // **終わったら届ける tool には、呼び出し元の Thread に結びついた札を渡す**（追加・2026-09-25）。
+    // Thread が分からない接続では出さない——Module は「届ける先が無い」と断る（規則2）
+    const replyTo =
+      opts.replies && opts.threadId && deliversLater(target as { _meta?: Record<string, unknown> })
+        ? opts.replies.issue({
+            threadId: opts.threadId,
+            ...(opts.projectId ? { projectId: opts.projectId } : {}),
+            connName: conn.name,
+            moduleName: conn.declaredName ?? conn.name,
+          })
+        : undefined;
     try {
       const result = await conn.client.callTool(
         {
           name: request.params.name,
           arguments: request.params.arguments,
           // **誰のための呼び出しかを host が刻む**（追加・2026-09-13）
-          _meta: { ...callerStamp() },
+          _meta: { ...callerStamp(), ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}) },
         },
         undefined,
         {
@@ -152,6 +180,10 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
               : undefined,
         },
       );
+      // **「あとで届ける」と約束したら、札を返事待ちにする**——Module が止まったら host が代わりに知らせる
+      if (replyTo && (result as { _meta?: Record<string, unknown> })._meta?.[PENDING_REPLY_META_KEY] === true) {
+        await opts.replies!.markAwaiting(replyTo);
+      }
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {
       endCall?.();

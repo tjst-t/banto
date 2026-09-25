@@ -2,6 +2,7 @@ import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
 import type {
   MessageEntry,
+  MessageOrigin,
   ProjectThreadReadModel,
   ProjectState,
   ThreadPermissionMode,
@@ -62,8 +63,21 @@ export type ProjectThreadEvent =
         text: string;
         /** 画面つき tool の呼び出し（表示の復元用、決定・2026-09-07）。 */
         uiToolCalls?: unknown;
+        /** 機械から届いたものの印（追加・2026-09-25）。無ければ人の発言 */
+        origin?: MessageOrigin;
       };
     }
+  // **Thread に届いたもの**（追加・2026-09-25、アーキ仕様 §4.2）。会話に積むのはターンを始めるとき
+  // （`message.appended` の origin.deliveryId で消える）——まず残してから起こす（黙って捨てない）
+  | {
+      type: "delivery.received";
+      payload: { threadId: string; deliveryId: string; from: string; title: string; text: string; hop: number };
+    }
+  | {
+      type: "reply.awaiting";
+      payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number };
+    }
+  | { type: "reply.settled"; payload: { threadId: string; replyTo: string } }
   | { type: "thread.cleared"; payload: { threadId: string } }
   // **新しいセッションで効かせた Skill の集合**（決定・2026-09-23、§5.7）
   | { type: "thread.skills_fixed"; payload: { threadId: string; set: SessionSkillSet } }
@@ -323,6 +337,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             seq: raw.seq,
             role: event.payload.role,
             text: event.payload.text,
+            ...(event.payload.origin ? { origin: event.payload.origin } : {}),
             // 先に届いていた「どの面に出したか」をここで貼る（上の説明）
             uiToolCalls: Array.isArray(event.payload.uiToolCalls)
               ? (event.payload.uiToolCalls as NonNullable<MessageEntry["uiToolCalls"]>).map((c) => {
@@ -331,7 +346,31 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
                 })
               : undefined,
           });
+          // 積んだものは、届いたものの待ち行列から外す
+          const delivered = event.payload.origin?.deliveryId;
+          if (delivered && t.deliveries) t.deliveries = t.deliveries.filter((d) => d.deliveryId !== delivered);
         }
+        return next;
+      }
+      case "delivery.received": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t) {
+          const { threadId: _thread, ...rest } = event.payload;
+          t.deliveries = [...(t.deliveries ?? []), { ...rest, receivedAt: raw.ts }];
+        }
+        return next;
+      }
+      case "reply.awaiting": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t) {
+          const { threadId: _thread, ...rest } = event.payload;
+          t.awaitingReplies = [...(t.awaitingReplies ?? []).filter((r) => r.replyTo !== rest.replyTo), { ...rest, since: raw.ts }];
+        }
+        return next;
+      }
+      case "reply.settled": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t?.awaitingReplies) t.awaitingReplies = t.awaitingReplies.filter((r) => r.replyTo !== event.payload.replyTo);
         return next;
       }
       // **どの面に出したか**を、その tool 呼び出しの記録に書き足す

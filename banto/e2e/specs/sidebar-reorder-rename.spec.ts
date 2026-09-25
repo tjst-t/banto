@@ -172,7 +172,10 @@ test("子（Thread の目次）を開いた Project も、潰れずに一番上�
       .first()
       .locator('xpath=ancestor::*[@data-sortable-id][1]');
 
-  // いま開いている Project（背C）は目次が開いている＝他より背が高い
+  // いま開いている Project（背C）は目次が開いている＝他より背が高い。**目次が開くまで待ってから測る**
+  // （改訂・2026-09-25）——目次は Thread の一覧を読み込んでから開くので、作った直後に測ると背が同じに見える
+  // （フルの中で1回、32px 同士で落ちた）
+  await expect(rowOf("背C").getByText("Base Thread")).toBeVisible({ timeout: 15_000 });
   const tall = await rowOf("背C").boundingBox();
   const short = await rowOf("背A").boundingBox();
   expect(tall!.height, "この試験の前提（目次が開いて背が高い）が崩れている").toBeGreaterThan(
