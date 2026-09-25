@@ -116,3 +116,21 @@ Claude のログイン・Vault・設定。AI に渡してはいけないもの�
   中の runc 1.3.4 と Incus 6.0.0（Ubuntu 版）の組み合わせの問題と見られる。システムコンテナを勧めた理由の1つ
   「中で Docker を動かせる」は、**いまのこの機械では成り立っていない**——候補は新しい Incus か、Docker が要る
   Project だけ VM
+
+### 中で Docker が動かない原因（2026-09-25、ユーザー「単なる権限の話じゃない？」）
+
+私は測る前に「Incus の版の問題」と決めつけて、新しい Incus を入れる案を出していた（規則1）。測り直した：
+
+- ホストの AppArmor に拒否の記録は無かった。コンテナの中で同じ sysctl を手で書くと、同じ netns・新しい netns・
+  新しい proc のどれでも通る。`--network host`（Docker がこの sysctl を書かない）なら Docker は中で動く
+- Incus のプロファイルは記録しない拒否（`deny`）を使う。AppArmor を一時的に `noquiet` にして捕まえた：
+  `operation="open" name="/sys/net/ipv4/ip_unprivileged_port_start" comm="runc:[2:INIT]" requested_mask="w"`
+  ——**権限（Incus が生成する AppArmor のプロファイル）が原因**。runc は CVE-2025-52881 の修正で `/proc` を
+  付け直してから fd で開き直すので、AppArmor にはパスが `/sys/…` に見え、`deny /sys/[^fdck]*{,/**} wklx,` に当たる
+  （runc の issue #4968、Ubuntu の LP#2131008 と同じ現象）
+- **設定で許可を足すことはできない**：AppArmor の `deny` は許可の規則では上書きできない。権限を絞った区画では
+  `raw.lxc` 等の低い層の設定も禁止。残る手は (1) 上流で直った Incus（PR #2624、入れ子を許したコンテナでは
+  `/proc`・`/sys` の保護を外す——入れ子を許せば、コンテナは自分で `/proc`・`/sys` を付けられるので、その保護は
+  もともと効いていない、という理由。6.19・6.0.6 LTS）、(2) コンテナの AppArmor を丸ごと外す（上流の直し方より
+  広く弱める）、(3) 中の runc を古くする（脱出の脆弱性が戻る）。Ubuntu の incus 6.0.0-1ubuntu0.3 には (1) が
+  入っていない。LXD の snap（5.21.5 以降）は直っている

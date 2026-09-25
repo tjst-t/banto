@@ -36,7 +36,7 @@
 | uid 1000 で Project の中で `cargo new`→`cargo build`→実行 | **できる**（ビルド 247 ms） |
 | 同じく C（`cc`）・Python（venv に `pip install requests`） | **できる** |
 | できたファイルの持ち主（ホスト側） | すべて uid 1000 |
-| 中で Docker（`security.nesting=true`、`apt install docker.io`） | **入るが、コンテナを起こせない**：`open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`。中の runc 1.3.4 と、外の Incus 6.0.0（Ubuntu 版）の組み合わせの問題と見られる。`--security-opt apparmor=unconfined` では直らない。**未解決**——候補：新しい Incus（6.0 LTS の新しい版）、Docker が要る Project は Incus の VM で動かす |
+| 中で Docker（`security.nesting=true`、`apt install docker.io`） | **入るが、既定のネットワークではコンテナを起こせない**：`open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`。`--network host`（この sysctl を書かない）なら動く。**原因は権限（AppArmor）**：AppArmor の記録しない拒否を一時的に記録させて捕まえた——Incus が生成するコンテナのプロファイルの `deny /sys/[^fdck]*{,/**} wklx,` が、runc の書き込みを `/sys/net/ipv4/ip_unprivileged_port_start` として拒否（runc は CVE-2025-52881 の修正で `/proc` を付け直して fd から開き直すため、AppArmor にはパスが `/sys/…` に見える）。`deny` は許可の規則を足しても上書きできず、権限を絞った区画では低い層の設定も変えられない。**上流の Incus は直している**（PR #2624：入れ子を許したコンテナでは `/proc`・`/sys` の保護を外す。6.19・6.0.6 LTS）。Ubuntu の 6.0.0 には入っていない |
 
 ## 外に出られない（→ 2026-09-25 ユーザーが許可を足して解決。ただし再起動で消える）
 
