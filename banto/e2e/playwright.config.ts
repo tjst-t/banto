@@ -17,7 +17,7 @@ export default defineConfig({
   // 判断待ちを起こす spec 同士が互いの1件を掴んだり、件数の検査が間欠で落ちたりする
   // （規則6——待ちを延ばす類の誤魔化しをせず、構造のほうを直す）
   workers: 1,
-  // コンテナの形で回したとき、この回が作った Project のコンテナを消す（`global-teardown.ts`）
+  // この回が作ったコンテナを消す（`global-teardown.ts`）
   globalTeardown: "./global-teardown.ts",
   retries: 0,
   reporter: "list",

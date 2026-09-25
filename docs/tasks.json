@@ -2106,13 +2106,14 @@
     {
       "id": "landlock-unix-socket-escape",
       "title": "閉じ込めの中から UNIX ソケット経由で外に出られる（docker.sock・systemd --user）",
-      "status": "undecided",
+      "status": "done",
       "why": "2026-09-25 実測：Landlock（kernel 6.8・ABI 4）は名前付きの UNIX ソケットへの接続を縛らない。Shell と同じ exec の閉じ込めの中から、/var/run/docker.sock の API に届き（このユーザーは docker グループ＝root 相当）、systemd-run --user で閉じ込めの外にコマンドを走らせて ~/.claude の認証情報のファイルを開けた。v4-security.md は「ソケットは制限できない」とだけ書き、帰結を見ていなかった（規則8）。塞ぎ方（seccomp で socket(AF_UNIX) を断る／docker グループにいない専用ユーザーで走らせる／AI のコマンドをコンテナへ移す）は未決。 2026-09-25：Project のものはコンテナへ移すと決めた（v4-security.md §1）——移行が済めば Project の Module・AI のコマンド・サブエージェントについては穴そのものが無くなる（コンテナの中に docker.sock もユーザーの D-Bus も無いことを PoC 09 で確かめた）。残るのは banto 全体の第三者 Module（置き場は未決）と、移行が終わるまでの間。",
       "notes": "docs/notes/2026-09-25-dev-environment.md",
       "dependencies": [
         "container-module-spawn",
         "container-instance-third-party"
-      ]
+      ],
+      "result": "2026-09-25：Landlock をやめ、Project のもの（Module・AI のコマンド・サブエージェント）と外から足した banto 全体の Module はコンテナで動くようになった。コンテナには docker.sock も人の systemd の口も無いので、この穴は無くなった。banto 本体で動くのは同梱の banto 全体の Module（banto 自身のコードで、AI の書いたコマンドを走らせない）だけ。"
     },
     {
       "id": "dev-environment-container",
@@ -2142,83 +2143,112 @@
       ],
       "why": "docs/specs/v4-security.md §1。Project の根を同じ絶対パスでマウント、uid の対応（raw.idmap）、banto の Module のコードは読み取り専用、止めるのに上限→強制停止、Project を畳んだら止める・消したら消す。道具を入れた状態は残す。",
       "notes": "docs/notes/2026-09-25-dev-environment.md",
-      "result": "2026-09-25：@banto/container（ProjectContainers・土台イメージ・btrfs の置き場）と core への配線（設定 projectContainers で切り替え——移行中のスイッチ）。Project を開くとコンテナを用意し（無ければ土台から作る・根と設定を合わせる・起こす）、畳むと止める（止められなければ受信箱）。実機の結合試験と E2E（コンテナの形で1つ目の区切り 44/44）で確かめた。"
+      "result": "2026-09-25：@banto/container（ProjectContainers・土台イメージ・btrfs の置き場）と core への配線（設定 projectContainers で切り替え——移行中のスイッチ）。Project を開くとコンテナを用意し（無ければ土台から作る・根と設定を合わせる・起こす）、畳むと止める（止められなければ受信箱）。実機の結合試験と E2E（コンテナの形で1つ目の区切り 44/44）で確かめた。 （追記・2026-09-25：移行中のスイッチ projectContainers は外した——常にコンテナ）"
     },
     {
       "id": "container-e2e",
       "title": "E2E をコンテナの形で回せるようにする",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-lifecycle"
       ],
       "why": "E2E は Project の根を /tmp に作るが、制限つきの区画はホームの下しかマウントできない。人のコンテナと混ざらない名前・片づけ・初回のイメージ取得の時間も決める。移行の最初から試験が回っていないと、どこで壊れたか分からない。",
       "notes": "docs/notes/2026-09-25-dev-environment.md",
-      "result": "2026-09-25（途中）：BANTO_E2E_CONTAINERS=1 で置き場をホームの下へ移し TMPDIR もそこへ（spec は書き換えない）、終わったらその回のコンテナを札で消し、前の回の残りは次の回が消す。incus グループが要るので sudo -u で回す。コンテナの形で 129 件中、サブエージェントの3本以外は通る見込み（module-connect-failure と project-close-release を直した）。**残り：サブエージェント（container-subagent）**。"
+      "result": "2026-09-25：E2E は常にコンテナの形で回る（置き場と TMPDIR はホームの下・incus グループが要るので sudo -u で回す・終わったらその回のコンテナを札で消す・前の回の残りは、置き場が消えたか印の pid が生きていない回のものだけ次の回が消す）。3つに分けたフルで 43＋44＋44 件すべて通過（1件は開発用 Infisical の .identity.json が作業ツリーに無かっただけ——置いて単独で通過）。新しい spec：project-container（中で Docker を使う）。landlock-guard は wide-root に改名。"
     },
     {
       "id": "container-module-spawn",
       "title": "Project の Module をコンテナの中で起こし、host の中継をブリッジ側でも待ち受ける",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-lifecycle",
         "container-e2e"
       ],
       "why": "PoC 09 で FileSystem を incus exec の標準入出力で起こして MCP が通った（接続 239 ms）。中から host の 127.0.0.1 には届かないので、BANTO_HOST_MCP_URL は Project のネットワークの host 側のアドレスを指す。Shell のコマンドは中で走るので、専用のホームは中のホームになる（人が選んだ設定の写しは host が中へ入れる）。",
       "notes": "docs/notes/2026-09-25-dev-environment.md",
-      "result": "2026-09-25（途中）：Project の Module をコンテナの中で起こす（incus exec の標準入出力で MCP）。中継の住所はブリッジの host 側。host の環境は渡さない（決めた変数だけ）。Shell はコンテナでは「コンテナの中に無い」と添える（BANTO_IN_CONTAINER=1）。**残り：サブエージェント、鍵の名前ごとの承認（container-relay-per-alias）を先に入れてから本番で有効にする**。"
+      "result": "2026-09-25：Project の Module はその Project のコンテナで起こす（incus exec の標準入出力）。移行中のスイッチ（設定 projectContainers）は外した——常にコンテナ。どこで動くかは modulePlacement（scope と origin から host が導く）が1箇所で決め、起こす処理と画面の両方が引く。"
     },
     {
       "id": "container-relay-per-alias",
       "title": "コンテナから値を返す口を呼ぶときは、鍵の名前ごとに人に聞く",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-module-spawn"
       ],
       "why": "中では AI が root で、同じコンテナの Module の中継の合言葉を読める。承認の鍵（grantKey）は alias を含まないので、なりすましで一度許した resolveAlias からどの鍵でも引き出せる（v4-security.md §3 の表）。承認の鍵に宛先が名乗った識別子（dev.banto/auditArgs）を入れる。**Module をコンテナへ移すのと同時か先に入れる**——後だと、その間は穴が開く。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25：コンテナの中の呼び手（合言葉に inContainer の印）が宛先の値を返す口を呼ぶとき、承認の鍵に宛先が名乗った識別子（dev.banto/auditArgs）を入れる。承認カードにも「resolveAlias（name: …、group: …）」と出す。識別子を名乗らない口（lookupAlias）は Project ごとに1回のまま。banto 本体の呼び手は今までどおり。本体の頃の承認は引き継がない（鍵の形が違う）。単体試験2本・E2E（subagent）で確かめた。"
     },
     {
       "id": "container-subagent",
       "title": "サブエージェントを Project のコンテナで走らせ、Claude のログインの中継を host に残す",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-module-spawn",
         "container-relay-per-alias"
       ],
       "why": "PoC 09 で本物の Claude Code CLI が中で中継経由に答えた。中継はいま Project ごとの Subagent Module の中にあり、コンテナへ移ると中に入ってしまう——banto 全体の subagent-settings へ移す（決定・2026-09-25、ユーザー）。待ち受けはブリッジ側のアドレス（127.0.0.1 は届かず、proxy デバイスは禁止）。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25：Subagent Module はコンテナの中で起き、エージェントも中で走る。Claude のログインの中継は subagent-settings（host の同梱 Module）へ移した——openClaudeLoginProxy／closeClaudeLoginProxy（module 可視性）で1回ごとに開き、待ち受けはブリッジの host 側のアドレス（自分のものでないアドレスでは開かない・12時間で自動で閉じる）。subagent の dependsOn に subagent-settings（必須）。confine.ts（Landlock のドメイン）は消した。E2E（subagent・subagent-runs・subagent-settings）通過。"
     },
     {
       "id": "container-nesting-setting",
       "title": "Project ごとに「中で Docker を使う」（入れ子）を選べるようにする",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-lifecycle"
       ],
       "why": "ユーザー（2026-09-25）：Docker in Incus はたぶん必要。入れ子を許したコンテナだけ /proc・/sys の保護が外れる（実測）ので、要る Project だけに許す。Project 設定の区画に置く（既存の型に乗る）。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25：Project の設定「一般」に「コンテナ」の区画（状態・「中で Docker を使う」）。設定キー container.nesting（Project ごと）。GET/PUT /api/projects/:id/container。切り替えるとその Project の Module を落とし、次に使うときにコンテナの security.nesting を合わせて起こし直す。E2E（project-container）で画面・API・Incus の3箇所を往復で確かめた。"
     },
     {
       "id": "container-instance-third-party",
       "title": "外から足した banto 全体の Module を、banto 全体用のコンテナ（1台）で動かす",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "dev-environment-container"
       ],
       "why": "いまは Landlock の none（根を持たない閉じ込め）で host に立つ。banto 全体用のコンテナ1台で動かす（決定・2026-09-25、ユーザー——banto 本体で動くのは banto 自身のコードだけ）。移すまで Landlock を残す。",
-      "notes": "docs/notes/2026-09-25-dev-environment.md"
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25：外から足した banto 全体の Module は banto 全体用のコンテナ（banto-instance-<置き場の印>）で起こす。Project の根は見せない。「閉じ込め無しの外部 Module は起動を断る」「閉じ込めていない外部 Module に秘密を渡さない」は、閉じ込めていない外部 Module が無くなったので外した。"
     },
     {
       "id": "container-landlock-removal",
       "title": "Landlock を外す（banto-landlock-exec・許可リスト・v4-security.md §2・画面の文言）",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [
         "container-module-spawn",
         "container-subagent",
         "container-instance-third-party"
       ],
       "why": "移行が済んだら、仕組みを1つにする（v4-security.md §1）。§2（移行が終わるまでの Landlock）を消し、Claude の中継の性質など残すべき内容は §1 へ移す。画面の「この根では閉じ込めが効きません」などの文言も直す。",
+      "notes": "docs/notes/2026-09-25-dev-environment.md",
+      "result": "2026-09-25：packages/landlock（rust-launcher を含む）・Landlock の結合試験・各 Module の依存を消した。v4-security.md §2 をコンテナの中の細部に書き直し（Claude の中継・専用ホーム・根の扱いなど残すものは残した）、§3 の該当行を実装済みに。画面の「サンドボックス」列は置き場所（Project のコンテナ／全体のコンテナ／banto 本体）を出す。宣言の confinement は読むだけの印として残した（container-confinement-field）。"
+    },
+    {
+      "id": "relay-grant-codeid-not-bound",
+      "title": "外から繋いだ宛先への承認が、コードの印（targetCodeId）に縛られていない",
+      "status": "backlog",
+      "why": "v4-security.md §3「承認を名前で引くこと」は「外から繋いだ宛先は codeId にも縛る——決定・実装済み（2026-09-15）」としているが、grantKey は targetCodeId を含まず、grant も保存していない（2026-09-25、鍵の名前ごとの承認を入れていて気づいた）。登録を消して別のサーバを同じ名前で繋ぐと、前の承認がそのまま効く。仕様と実装の食い違い（規則8）。今回の範囲の外なので触っていない（規則7）。",
+      "doneWhen": "同じ名前で別のコード（codeId が違う）を繋いだら、聞き直すこと（試験で）。"
+    },
+    {
+      "id": "container-confinement-field",
+      "title": "宣言の confinement（kind: \"landlock\"）を片づける——いまは読むだけの印",
+      "status": "backlog",
+      "dependencies": [
+        "container-landlock-removal"
+      ],
+      "why": "Landlock をやめ、どこで動くかは scope と origin から導く（modulePlacement）ようになった。宣言の confinement はもう置き場所を決めないが、データ（kind: \"landlock\"・root・profile）はまだ書かれ、読まれている：画面の「Module を追加」（add-instance-module-dialog）・registry からの宣言（to-declaration.ts）・mcpServers の取り込み（mcp-servers.ts）・Shell のホームを用意する条件（cli.ts が satisfies に shell があり confinement があるとき）・URL に繋ぐ形で confinement を書くと断る検査。名前が実態と合わない（規則11）。消すか、置き場所の宣言に付け直すかを決める。Event Store に残っている宣言との互換も要る。",
       "notes": "docs/notes/2026-09-25-dev-environment.md"
+    },
+    {
+      "id": "frontend-lint-red",
+      "title": "フロントの npm run lint が赤い（今回の変更の前から）",
+      "status": "backlog",
+      "why": "2026-09-25 に気づいた（コンテナの作業の範囲の外なので触っていない——規則7）。①react-hooks/set-state-in-effect が5ファイル6件（instance-modules-panel・add-instance-module-dialog・module-settings-panel・registry-module-picker・shell/connect-gate）——HEAD の中身でも同じ件数で出る。②check-tokens が registry-module-picker の text-[...] 5件。③eslint が E2E のビルド成果物 .next-e2e を見ていて 250 件（globalIgnores に無い）。",
+      "doneWhen": "apps/frontend で npm run lint が通る。"
     }
   ],
   "phase1": {

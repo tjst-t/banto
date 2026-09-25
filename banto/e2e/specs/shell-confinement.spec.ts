@@ -1,7 +1,7 @@
 // Shell Module が Project の外へ出られないこと（Phase 1、`phase1-modules-verified-in-browser`）。
 //
 // **これは「やったらできた」ではなく「やってもできない」を見るテスト。**
-// 閉じ込め（Landlock）は壊れていても静かで、普通の作業は Project の中で完結するため
+// 閉じ込め（Project のコンテナ）は壊れていても静かで、普通の作業は Project の中で完結するため
 // **全部成功してしまう**。壊れているのは「外に出られてしまう」ときだけ分かる。
 //
 // 両側から見る（片側だけでは証明にならない）：
@@ -51,8 +51,8 @@ const PROJECT_NAME = "E2E Shell Confinement";
 
 test("Shell は Project の中を読めて、外は読めない", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-shell-"));
-  // **許可リストに無い場所**に置く。`/etc` や PATH の下は読み取りが許されているので
-  // そこを使うと「外に出られた」の証明にならない（v4-security.md の許可リストの組み方）
+  // **コンテナに見せていない場所**に置く。`/etc` や PATH の下はコンテナの中にも（別の中身で）あるので
+  // そこを使うと「外に出られた」の証明にならない
   const outsideDir = mkdtempSync(join(tmpdir(), "banto-e2e-outside-"));
 
   const insideMarker = `中は読める${Date.now()}`;

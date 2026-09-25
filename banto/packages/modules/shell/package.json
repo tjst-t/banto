@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@banto/module-contract": "*",
-    "@banto/landlock": "*",
     "@modelcontextprotocol/sdk": "1.30.0"
   },
   "devDependencies": {

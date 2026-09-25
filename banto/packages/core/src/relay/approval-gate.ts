@@ -59,9 +59,14 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       };
     }
 
+    // **何を指しているか**（コンテナからの呼び出しは、それごとに聞く）。名前だけで、値は入らない
+    const scopeText =
+      req.scope && Object.keys(req.scope).length > 0
+        ? `（${Object.entries(req.scope).map(([k, v]) => `${k}: ${v}`).join("、")}）`
+        : "";
     const message =
       `Module 間の呼び出しの確認：${req.callerModule} が ${req.targetModule} の ` +
-      `${req.name} を呼ぼうとしています`;
+      `${req.name}${scopeText || " "}を呼ぼうとしています`;
     // **記録に残るのは宛名だけ**（アーキ仕様 §2.5）——引数は載せない。
     // 判断待ちは Event Store に積まれるので、秘密の値が混ざる余地を作らない。
     const toolInput = {
@@ -69,7 +74,10 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       宛先: req.targetModule,
       種別: req.kind,
       名前: req.name,
-      注記: "許可すると、この Project では同じ組み合わせを次から自動で通します",
+      ...(req.scope && Object.keys(req.scope).length > 0 ? { 対象: req.scope } : {}),
+      注記: req.scope
+        ? "許可すると、この Project では同じ組み合わせ・同じ対象を次から自動で通します（対象が違えば、また聞きます）"
+        : "許可すると、この Project では同じ組み合わせを次から自動で通します",
     };
     const judgment = await deps.inbox.raiseJudgment({
       threadId: where.threadId,
@@ -106,6 +114,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       targetModule: req.targetModule,
       kind: req.kind,
       name: req.name,
+      ...(req.scope ? { scope: req.scope } : {}),
     });
     return { allowed: true, reason: "人が許可しました（初回）" };
   }

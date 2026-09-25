@@ -15,18 +15,11 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
-import type { GuardOptions } from "@banto/landlock";
-import { resolveBootstrapConfigPath } from "@banto/core/dist/config/bootstrap.js";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
-import {
-  ClaudeLoginError,
-  hostClaudeCredentialsPath,
-  readHostClaudeAccount,
-  startClaudeLoginProxy,
-  type ClaudeLoginProxy,
-} from "./claude-login-proxy.js";
-import { confineAgent } from "./confine.js";
+import { ClaudeLoginError } from "./claude-login-proxy.js";
+import { prepareAgentLaunch } from "./agent-home.js";
+import { relayClaudeLogin, type ClaudeLoginAccess, type OpenedClaudeProxy } from "./claude-login-access.js";
 import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
@@ -37,12 +30,12 @@ export interface SubagentServerDeps {
   /** この Module のデータ置き場（エージェントごとの専用ホームをこの下に持つ） */
   moduleDataDir: string;
   relayClient: StoredKeysRelay;
-  guard: GuardOptions;
-  /** Module が起動したときの PATH（閉じ込めの導出に使う。実行時に読み直さない） */
-  pathEntries: string[];
   agents?: AgentDefinition[];
-  /** banto 本体の Claude ログインの置き場と上流（試験で差し替える）。既定は本体と同じ解決 */
-  claudeLogin?: { credentialsPath?: string; upstream?: string };
+  /**
+   * **banto 本体の Claude ログインを使わせる口**（決定・2026-09-25）。中継は host の `subagent-settings` が持つ
+   * （`claude-login-access.ts`）。試験は同じ中継をその場で立てる
+   */
+  claudeLogin: ClaudeLoginAccess;
 }
 
 
@@ -68,7 +61,6 @@ function agentIdsText(agents: AgentDefinition[]): string {
 
 export function createSubagentServer(deps: SubagentServerDeps) {
   const agents = deps.agents ?? listAgents();
-  const claudeCredentialsPath = deps.claudeLogin?.credentialsPath ?? hostClaudeCredentialsPath();
   // **頼んだ仕事の記録**——人が launcher の画面から一覧・状態・中身を見る（`runs.ts`）
   const runs = new RunLog(join(deps.moduleDataDir, "runs.jsonl"));
   const server = new Server({ name: "banto-module-subagent", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
@@ -98,6 +90,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             dependsOn: [
               { role: "vault-directory", required: true },
               { role: "vault", required: true },
+              { role: "subagent-settings", required: true },
             ],
             isolation: "subprocess",
             scope: "project",
@@ -133,7 +126,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         name: "runSubagent",
         description:
           "サブエージェントに仕事を頼み、終わるまで待って最後の返答を返す。サブエージェントは Project root で、" +
-          "自分の道具（シェル・ファイル操作）を使って働く——Project root の外には出られない（Landlock で強制）。" +
+          "自分の道具（シェル・ファイル操作）を使って働く——Project のコンテナの中で走り、Project root の外（人のホームなど）は見えない。" +
           "**資格情報は、ふつうは書かなくてよい**：Claude Code は banto 本体の Claude ログインをそのまま使い、" +
           "OpenCode は人が banto 全体の設定の「サブエージェント」で入れた鍵を使う（どれが使えるかは listSubagents）。" +
           "それ以外の鍵で走らせたいときだけ envSecrets に alias を渡す（使える alias の一覧は resource `vault://aliases`）。" +
@@ -225,7 +218,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         try {
           return text(await describeAgent(launched.launch, deps.projectRoot));
         } catch (err) {
-          throw launched.explain(err);
+          throw await launched.explain(err);
         } finally {
           await launched.cleanup();
         }
@@ -248,7 +241,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           agents: await Promise.all(
             agents.map(async (a) =>
               a.sharesHostClaudeLogin
-                ? { id: a.id, title: a.title, hostLogin: await readHostClaudeAccount(claudeCredentialsPath) }
+                ? { id: a.id, title: a.title, hostLogin: await deps.claudeLogin.status() }
                 : {
                     id: a.id,
                     title: a.title,
@@ -313,7 +306,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             runs.finish(run.id, { result: final });
             return text(final);
           } catch (err) {
-            throw launched.explain(err);
+            throw await launched.explain(err);
           } finally {
             await launched.cleanup();
           }
@@ -332,12 +325,12 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     throw new Error(`unknown tool: ${request.params.name}`);
   });
 
-  /** 資格情報を Vault から受け取り（Claude は本体のログインを中継で渡し）、Landlock で包んだ起こし方を作る */
+  /** 資格情報を Vault から受け取り（Claude は本体のログインを中継で渡し）、専用ホームに向けた起こし方を作る */
   async function launchFor(
     agent: AgentDefinition,
     envSecrets: unknown,
     onProgress?: (message: string) => void,
-  ): Promise<{ launch: AgentLaunch; notes: string[]; cleanup: () => Promise<void>; explain: (err: unknown) => unknown }> {
+  ): Promise<{ launch: AgentLaunch; notes: string[]; cleanup: () => Promise<void>; explain: (err: unknown) => Promise<unknown> }> {
     const env: NodeJS.ProcessEnv = {};
     for (const name of PASS_THROUGH_ENV) if (process.env[name] !== undefined) env[name] = process.env[name];
 
@@ -355,43 +348,33 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     Object.assign(env, stored.env);
 
     // **Claude は banto 本体のログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは
-    // 渡さず、中継の合言葉だけを渡す。自分の資格情報を envSecrets で渡されたときは、そちらを使う
-    let proxy: ClaudeLoginProxy | undefined;
+    // 渡さず、中継の合言葉だけを渡す。中継は host の `subagent-settings` が開く（決定・2026-09-25——本体の
+    // ログインはコンテナの中に無い）。自分の資格情報を envSecrets で渡されたときは、そちらを使う
+    let proxy: OpenedClaudeProxy | undefined;
     if (agent.sharesHostClaudeLogin && !agent.credentialEnv.some((name) => name in secrets)) {
-      proxy = await startClaudeLoginProxy({
-        credentialsPath: claudeCredentialsPath,
-        ...(deps.claudeLogin?.upstream ? { upstream: deps.claudeLogin.upstream } : {}),
-      });
+      onProgress?.("banto 本体の Claude ログインの中継を開いています");
+      proxy = await deps.claudeLogin.open();
       env.CLAUDE_CODE_OAUTH_TOKEN = proxy.secret;
       env.ANTHROPIC_BASE_URL = proxy.url;
       // **既定を本体と揃える**（決定・2026-09-24、ユーザー）。env のトークンのとき、CLI は契約の種類を
       // ここから読む（トークンではない）。無いと既定が Sonnet・文脈20万になった（実測）
-      if (proxy.account.subscriptionType) env.CLAUDE_CODE_SUBSCRIPTION_TYPE = proxy.account.subscriptionType;
-      if (proxy.account.rateLimitTier) env.CLAUDE_CODE_RATE_LIMIT_TIER = proxy.account.rateLimitTier;
+      if (proxy.subscriptionType) env.CLAUDE_CODE_SUBSCRIPTION_TYPE = proxy.subscriptionType;
+      if (proxy.rateLimitTier) env.CLAUDE_CODE_RATE_LIMIT_TIER = proxy.rateLimitTier;
     }
 
-    let rulesetFile: string | undefined;
     try {
-      const confined = confineAgent({
-        agent,
-        projectRoot: deps.projectRoot,
-        home: join(deps.moduleDataDir, "agents", agent.id, "home"),
-        runDir: join(deps.moduleDataDir, "run"),
-        pathEntries: deps.pathEntries,
-        guard: deps.guard,
-      });
-      rulesetFile = confined.args[confined.args.indexOf("--ruleset-file") + 1];
+      const shape = prepareAgentLaunch(agent, deps.projectRoot, join(deps.moduleDataDir, "agents", agent.id, "home"));
       return {
-        launch: { command: confined.command, args: confined.args, env: { ...env, ...confined.env } },
+        launch: { command: shape.command, args: shape.args, env: { ...env, ...shape.env } },
         notes: stored.notes,
         cleanup: async () => {
-          if (rulesetFile) rmSync(rulesetFile, { force: true });
           await proxy?.close();
         },
-        explain: (err) => {
+        explain: async (err) => {
           // **期限切れを、理由つきで返す**——本体のトークンは本体の CLI が更新する。サブエージェントが
           // 長く走ると途中で切れることがあり、そのときは続きから頼み直せば、本体が更新したものを中継が拾う
-          if (proxy && proxy.upstreamAuthFailures() > 0 && err instanceof Error) {
+          const failures = proxy ? (await proxy.close()).upstreamAuthFailures : 0;
+          if (failures > 0 && err instanceof Error) {
             return new SubagentError(
               `${err.message}\n（banto 本体の Claude ログインのトークンが、途中で期限切れになった可能性があります。` +
                 "sessionId を渡して続きから頼み直してください——本体が次の呼び出しで更新します）",
@@ -407,7 +390,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   }
 
   async function hostLoginSummary(): Promise<string> {
-    const h = await readHostClaudeAccount(claudeCredentialsPath);
+    const h = await deps.claudeLogin.status();
     return h.loggedIn
       ? `banto 本体の Claude ログインを使う（契約：${h.subscriptionType ?? "不明"}。何も渡さなくてよい）`
       : `使えない：${h.reason}`;
@@ -437,22 +420,17 @@ if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
   const hostUrl = process.env.BANTO_HOST_MCP_URL;
   const hostToken = process.env.BANTO_HOST_MCP_TOKEN;
   const moduleDataDir = process.env.BANTO_MODULE_DATA_DIR;
-  const dataDir = process.env.BANTO_DATA_ROOT;
-  if (!projectRoot || !hostUrl || !hostToken || !moduleDataDir || !dataDir) {
-    console.error("BANTO_PROJECT_ROOT, BANTO_HOST_MCP_URL, BANTO_HOST_MCP_TOKEN, BANTO_MODULE_DATA_DIR, BANTO_DATA_ROOT が必要です");
+  if (!projectRoot || !hostUrl || !hostToken || !moduleDataDir) {
+    console.error("BANTO_PROJECT_ROOT, BANTO_HOST_MCP_URL, BANTO_HOST_MCP_TOKEN, BANTO_MODULE_DATA_DIR が必要です");
     process.exit(1);
   }
+  const relayClient = new HostRelayClient({ url: hostUrl, token: hostToken });
   const server = createSubagentServer({
     projectRoot,
     moduleDataDir,
-    relayClient: new HostRelayClient({ url: hostUrl, token: hostToken }),
-    // 閉じ込めの最後の防波堤に、banto 自身の置き場を教える（host と同じ解決——規則3）
-    guard: { dataDir, configDir: dirname(resolveBootstrapConfigPath()) },
-    pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
-    // 試験は本物のログインを読まない（E2E が用意した偽物を指す）。ふだんは本体と同じ解決
-    ...(process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS
-      ? { claudeLogin: { credentialsPath: process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS } }
-      : {}),
+    relayClient,
+    // 中継はコンテナから届く host 側のアドレスで開いてもらう（host が渡す。コンテナの外なら 127.0.0.1）
+    claudeLogin: relayClaudeLogin(relayClient, process.env.BANTO_HOST_ADDRESS ?? "127.0.0.1"),
   });
   await server.connect(new StdioServerTransport());
 }

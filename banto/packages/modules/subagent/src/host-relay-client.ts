@@ -77,6 +77,18 @@ export class HostRelayClient {
    * ——返るのは「どの Vault にあるか」だけで、値は引いたあと backend を
    * 直接呼んで受け取る（アーキ仕様 §2.5、DNS と同じ形）。
    */
+  /** Module の道具を1本呼び、返った JSON を読む（`subagent-settings` の Claude の中継の口など） */
+  async callModuleTool(
+    targetModule: string,
+    name: string,
+    args: Record<string, unknown>,
+    onProgress?: RelayProgressListener,
+  ): Promise<unknown> {
+    const text = await this.callRelay({ targetModule, name, arguments: args }, onProgress);
+    if (text === undefined) throw new Error(`${targetModule} の ${name} が何も返しませんでした`);
+    return JSON.parse(text);
+  }
+
   async lookupAlias(
     directoryModule: string,
     name: string,

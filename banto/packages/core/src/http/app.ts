@@ -162,6 +162,8 @@ export interface AppDeps {
   /** Project を畳んだときに、その Project のために立てたもの（Module の
    *  プロセス・合言葉・セッション）を落とす（決定・2026-09-10）。 */
   releaseProjectModules?(projectId: string, opts?: { stopContainer?: boolean }): Promise<string[]>;
+  /** Project のコンテナの今の状態（無ければ undefined——まだ一度も Module を起こしていない） */
+  projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
   /**
@@ -460,6 +462,11 @@ export function resolvePermissionMode(
 export const DEFAULT_PERMISSION_MODE: ThreadPermissionMode = "auto";
 /** Configuration の鍵。instance 既定・Project 上書きの両方に置ける。 */
 export const DEFAULT_PERMISSION_MODE_KEY = "defaultPermissionMode";
+/**
+ * **中で Docker を使うか**（Project ごとの設定、決定・2026-09-25、`docs/specs/v4-security.md` §1）。
+ * 入れ子を許したコンテナだけ `/proc`・`/sys` の保護が外れるので、要る Project だけに許す。既定は使わない
+ */
+export const CONTAINER_NESTING_KEY = "container.nesting";
 
 function isThreadPermissionMode(value: unknown): value is (typeof THREAD_PERMISSION_MODES)[number] {
   return typeof value === "string" && (THREAD_PERMISSION_MODES as readonly string[]).includes(value);
@@ -1680,7 +1687,7 @@ export function createApp(deps: AppDeps) {
       //
       // 残る risk として記録する：Module 自身の画面が、その Module の危ない tool
       // （削除など）を黙って呼ぶことはできる。**Module を繋ぐこと自体が信頼の
-      // 線引き**で、その手前は閉じ込め（Landlock）と可視性で守る。
+      // 線引き**で、その手前は閉じ込め（コンテナ）と可視性で守る。
       const uiCallMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/ui-tool-call$/);
       if (uiCallMatch && req.method === "POST") {
         const body = (await readJsonBody(req)) as {
@@ -1978,6 +1985,31 @@ export function createApp(deps: AppDeps) {
         if (projectId) await deps.runtimeConfig.setProjectOverride(projectId, DEFAULT_PERMISSION_MODE_KEY, body.mode);
         else await deps.runtimeConfig.setInstanceDefault(DEFAULT_PERMISSION_MODE_KEY, body.mode);
         json(res, 200, { ok: true });
+        return;
+      }
+
+      // **Project のコンテナ**（決定・2026-09-25）：中で Docker を使うか（入れ子）と、いまの状態
+      const containerMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container$/);
+      if (containerMatch && req.method === "GET") {
+        const projectId = containerMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        json(res, 200, {
+          nesting: deps.runtimeConfig?.resolve(CONTAINER_NESTING_KEY, projectId) === true,
+          container: (await deps.projectContainerStatus?.(projectId)) ?? null,
+        });
+        return;
+      }
+      if (containerMatch && req.method === "PUT") {
+        const projectId = containerMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+        const body = (await readJsonBody(req)) as { nesting?: unknown };
+        // **壊れた値は入れない**（規則2——黙って既定へ落とさない）
+        if (typeof body.nesting !== "boolean") return json(res, 400, { error: "nesting は true か false で渡してください" });
+        await deps.runtimeConfig.setProjectOverride(projectId, CONTAINER_NESTING_KEY, body.nesting);
+        // 入れ子の設定はコンテナを起こし直さないと効かない——Module を落とし、次に起こすときに合わせる
+        const released = (await deps.releaseProjectModules?.(projectId)) ?? [];
+        json(res, 200, { ok: true, nesting: body.nesting, released });
         return;
       }
 

@@ -16,6 +16,21 @@ test.use({ viewport: { width: 390, height: 844 } });
 
 const PROJECT_NAME = "E2E Turn Reattach Project";
 
+/** host がそのターンを走らせているか——`GET …/stream` は走っていなければ `idle`、走っていれば `attached` を最初に返す */
+async function turnIsRunning(threadId: string): Promise<boolean> {
+  const ctrl = new AbortController();
+  const res = await fetch(`${CORE_BASE_URL}/api/threads/${threadId}/stream`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    signal: ctrl.signal,
+  });
+  try {
+    const { value } = await res.body!.getReader().read();
+    return new TextDecoder().decode(value).includes('"type":"attached"');
+  } finally {
+    ctrl.abort();
+  }
+}
+
 test("走行中にリロードしても、そのターンに繋ぎ直して続きが見える", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-reattach-"));
   const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
@@ -39,7 +54,13 @@ test("走行中にリロードしても、そのターンに繋ぎ直して続�
   );
   await composer.press("Enter");
 
-  await page.waitForTimeout(2500);
+  // **host がそのターンを走らせ始めるまで待つ**（改訂・2026-09-25、規則6）。以前は Enter から 2.5 秒と
+  // 決め打ちしていたが、送る前に画面は Module の用意（画面つき tool の一覧）を待つ——Project のコンテナが
+  // 初めて起きる回はこれが 2.8 秒を越え、**送る前に開き直していた**（ターンが始まらず、帯も出ない）。
+  // 見たいのは「走行中に開き直す」なので、走っていることを host に聞いてから開き直す
+  await expect
+    .poll(() => turnIsRunning(threadId), { timeout: 30_000, message: "送ったターンが host で始まらない" })
+    .toBe(true);
 
   // **走行中に開き直す**
   await page.reload();

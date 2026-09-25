@@ -34,6 +34,16 @@ export interface RelayCallDescriptor {
    * 削除→再利用が危険側に倒れていた。
    */
   targetCodeId?: string;
+  /**
+   * **承認を、何を指していたかごとに分ける**（決定・2026-09-25、`docs/specs/v4-security.md` §1・§3）。
+   *
+   * Project のコンテナの中では AI が root で、同じコンテナの Module の中継の合言葉を読める——Module の
+   * 名乗りで信用を分けられない。承認が道具の単位だと、なりすましで**一度許した `resolveAlias` からどの鍵でも**
+   * 引き出せる。そこでコンテナから値を返す口を呼ぶときは、宛先が名乗った識別子（alias の名前など）を入れ、
+   * 承認の鍵にも入れる。**空でも付ける**——付いていること自体が「コンテナからの呼び出し」の印で、ホストで
+   * 動いていた頃の承認（付いていない）を流用させない
+   */
+  scope?: Record<string, string>;
 }
 
 export interface RelayCallOutcome {

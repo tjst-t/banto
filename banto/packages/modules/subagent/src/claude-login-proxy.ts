@@ -12,7 +12,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 
@@ -89,7 +89,19 @@ export interface ClaudeLoginProxy {
   close: () => Promise<void>;
 }
 
-export async function startClaudeLoginProxy(opts: { credentialsPath: string; upstream?: string }): Promise<ClaudeLoginProxy> {
+/**
+ * **待ち受けてよいアドレスか**——この機械の自分のアドレス（ループバックかインターフェイスのもの）だけ。
+ * Project のコンテナからは 127.0.0.1 に届かないので、コンテナのネットワークの host 側で待ち受ける
+ * （`docs/specs/v4-security.md` §1）。`0.0.0.0` や他人のアドレスは断る——外から届く口にしない
+ */
+export function isOwnAddress(host: string): boolean {
+  if (host === "127.0.0.1" || host === "::1") return true;
+  return Object.values(networkInterfaces()).some((list) => (list ?? []).some((i) => i.address === host && !i.internal));
+}
+
+export async function startClaudeLoginProxy(opts: { credentialsPath: string; upstream?: string; host?: string }): Promise<ClaudeLoginProxy> {
+  const host = opts.host ?? "127.0.0.1";
+  if (!isOwnAddress(host)) throw new ClaudeLoginError(`中継はこの機械の自分のアドレスでしか待ち受けません：${host}`);
   // 起こす前に確かめる——ログインしていないなら、エージェントを起こさずに理由を返す（規則2）
   const { account } = await readAccessToken(opts.credentialsPath);
   const upstream = opts.upstream ?? UPSTREAM;
@@ -140,11 +152,11 @@ export async function startClaudeLoginProxy(opts: { credentialsPath: string; ups
       } else res.destroy();
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("中継の待ち受けを開けませんでした");
   return {
-    url: `http://127.0.0.1:${address.port}`,
+    url: `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`,
     secret,
     account,
     upstreamAuthFailures: () => authFailures,

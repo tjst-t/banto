@@ -14,6 +14,7 @@ export { TIMED_OUT } from "./incus.js";
 export {
   ProjectContainers,
   containerNameFor,
+  instanceContainerId,
   execInContainer,
   idmapFor,
   CONTAINER_NODE_PATH,

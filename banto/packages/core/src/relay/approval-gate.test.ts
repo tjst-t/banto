@@ -26,10 +26,16 @@ import { createRelayApprovalGate } from "./approval-gate.js";
 const THREAD = "thread-1";
 const PROJECT = "project-1";
 
-async function fakeVaultClient(): Promise<Client> {
+async function fakeVaultClient(auditArgs?: string[]): Promise<Client> {
   const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [{ name: "resolveAlias", inputSchema: { type: "object", properties: {} } }],
+    tools: [
+      {
+        name: "resolveAlias",
+        inputSchema: { type: "object", properties: {} },
+        ...(auditArgs ? { _meta: { "dev.banto/auditArgs": auditArgs } } : {}),
+      },
+    ],
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === "explodes") throw new Error("宛先の Module が失敗しました");
@@ -41,7 +47,7 @@ async function fakeVaultClient(): Promise<Client> {
   return client;
 }
 
-async function setup() {
+async function setup(opts: { inContainer?: boolean; auditArgs?: string[] } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "banto-relay-gate-"));
   const log = new EventLog(dir);
   await log.init();
@@ -55,7 +61,7 @@ async function setup() {
   const registry = new RelayRegistry();
   registry.registerModule({
     name: "vault",
-    client: await fakeVaultClient(),
+    client: await fakeVaultClient(opts.auditArgs),
     meta: parseModuleMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
   });
   const shellMeta = parseModuleMeta(
@@ -67,6 +73,7 @@ async function setup() {
     connName: "shell-project-1",
     projectId: PROJECT,
     meta: shellMeta,
+    ...(opts.inContainer ? { inContainer: true } : {}),
   });
 
   const endpoint = new HostRelayEndpoint({
@@ -339,5 +346,74 @@ test("承認は host を再起動しても残る（Event Store から畳み直�
     assert.equal(grants2.isGranted({ ...call, name: "createAlias" }), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// **コンテナから値を返す口を呼ぶときは、鍵の名前ごとに聞く**（決定・2026-09-25、v4-security.md §1・§3）。
+// 中では AI が root で Module の合言葉も読めるので、道具の単位で許すと、一度許した resolveAlias から
+// どの鍵でも引き出せる
+test("コンテナからの値を返す口は、鍵の名前ごとに聞く——ホストの頃の承認は流用しない", async () => {
+  const t = await setup({ inContainer: true, auditArgs: ["alias"] });
+  const seen = new Set<string>();
+  try {
+    // ホストで動いていた頃の承認（対象を持たない）が残っていても
+    await t.grants.grant({ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias" });
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const call = (alias: string) =>
+      t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: { alias } } });
+
+    const first = call("github-token");
+    const judgment = await waitForJudgment(t.inbox, seen);
+    assert.match(judgment.message, /shell が vault の resolveAlias（alias: github-token）を呼ぼうとしています/);
+    assert.deepEqual((judgment.toolInput as Record<string, unknown>)["対象"], { alias: "github-token" });
+    t.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+    assert.equal(((await first).content as { text: string }[])[0]?.text, "SECRET-VALUE");
+
+    // 同じ鍵なら、もう聞かない
+    const before = t.inbox.listOpen().length;
+    await call("github-token");
+    assert.equal(t.inbox.listOpen().length, before, "同じ鍵で聞き直している");
+
+    // 別の鍵なら、また聞く
+    const other = call("other-token");
+    const again = await waitForJudgment(t.inbox, seen);
+    assert.match(again.message, /（alias: other-token）/);
+    t.pendingApprovals.resolve(again.id, { behavior: "deny", message: "やめておく" });
+    await t.inbox.answerJudgment(again.id, { behavior: "deny" });
+    await assert.rejects(other, /許可されていません/);
+    endCall();
+
+    const grants = (await t.events()).filter((e) => e.type === "relay.grant_created").map((e) => e.payload);
+    assert.deepEqual(grants.at(-1), {
+      projectId: PROJECT,
+      callerModule: "shell",
+      targetModule: "vault",
+      kind: "tool",
+      name: "resolveAlias",
+      scope: { alias: "github-token" },
+    });
+  } finally {
+    await t.close();
+  }
+});
+
+test("ホストで動く Module からの呼び出しは、今までどおり道具の単位で聞く", async () => {
+  const t = await setup({ auditArgs: ["alias"] });
+  const seen = new Set<string>();
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const first = t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: { alias: "a" } } });
+    const judgment = await waitForJudgment(t.inbox, seen);
+    assert.doesNotMatch(judgment.message, /alias:/);
+    t.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+    await first;
+    const before = t.inbox.listOpen().length;
+    await t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: { alias: "b" } } });
+    assert.equal(t.inbox.listOpen().length, before);
+    endCall();
+  } finally {
+    await t.close();
   }
 });

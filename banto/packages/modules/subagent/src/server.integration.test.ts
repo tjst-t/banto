@@ -1,11 +1,13 @@
-// Subagent Module を MCP の口から端まで通す——本物の Landlock（banto-landlock-exec）の中で
-// 偽の ACP エージェントを起こす。Vault の中継だけは代役。
+// Subagent Module を MCP の口から端まで通す——偽の ACP エージェントを起こす。Vault の中継だけは代役。
+// 閉じ込めは Project のコンテナ（決定・2026-09-25）なので、ここでは確かめない——E2E（subagent.spec.ts）が
+// コンテナの中で確かめる
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listAgents } from "./agents.js";
+import { localClaudeLogin } from "./claude-login-access.js";
 import { fakeVault, sha, withServer } from "./testing/harness.js";
 
 test("一覧：使えるエージェントと、その設定の候補", async () => {
@@ -24,27 +26,15 @@ test("一覧：使えるエージェントと、その設定の候補", async ()
   });
 });
 
-test("仕事を頼むと、閉じ込めの中で走って返答が返る（モードは auto が掛かる）", async () => {
+test("仕事を頼むと、返答が返る（モードは auto が掛かる）", async () => {
   await withServer(async (call, { data }) => {
     const r = await call("runSubagent", { agent: "fake", prompt: "やあ", model: "fake-large" });
     assert.equal(r.isError, false, r.text);
     const result = JSON.parse(r.text) as { text: string; stopReason: string; sessionId: string };
     assert.equal(result.stopReason, "end_turn");
     assert.match(result.text, /受け取った：やあ（model=fake-large effort=low mode=auto）/);
-    // 会話はエージェントの専用ホームに残り、ルールセットの写しは残らない
+    // 会話はエージェントの専用ホームに残る
     assert.ok(existsSync(join(data, "agents", "fake", "home", ".fake-agent", `${result.sessionId}.json`)));
-    assert.deepEqual(readdirSync(join(data, "run")), []);
-  });
-});
-
-test("閉じ込め：Project の根には書けて、外には書けない", async () => {
-  await withServer(async (call, { project }) => {
-    const inside = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[write inside.txt]" })).text) as { text: string };
-    assert.match(inside.text, /書いた：inside\.txt/);
-    assert.ok(existsSync(join(project, "inside.txt")));
-    const outside = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[write ../outside.txt]" })).text) as { text: string };
-    assert.match(outside.text, /書けなかった：.*(EACCES|permission denied)/i);
-    assert.ok(!existsSync(join(project, "..", "outside.txt")));
   });
 });
 
@@ -139,7 +129,7 @@ test("Claude は本体のログインを中継で使う：上流には本物、�
       },
       {
         agents: [{ ...fake, sharesHostClaudeLogin: true, credentialEnv: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] }],
-        claudeLogin: { credentialsPath: join(credDir, ".credentials.json"), upstream: `http://127.0.0.1:${port}` },
+        claudeLogin: localClaudeLogin({ credentialsPath: join(credDir, ".credentials.json"), upstream: `http://127.0.0.1:${port}` }),
       },
     );
   } finally {
@@ -156,7 +146,7 @@ test("本体が Claude にログインしていなければ、エージェント
       assert.equal(r.isError, true);
       assert.match(r.text, /banto 本体が Claude にログインしていません/);
     },
-    { agents: [{ ...fake, sharesHostClaudeLogin: true }], claudeLogin: { credentialsPath: "/nonexistent/.credentials.json" } },
+    { agents: [{ ...fake, sharesHostClaudeLogin: true }], claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }) },
   );
 });
 
@@ -206,7 +196,7 @@ test("本体のログインを使うエージェントには、契約の種類�
         const list = JSON.parse((await call("listSubagents", {})).text) as { id: string; credentials: string }[];
         assert.match(list.find((a) => a.id === "fake-host")!.credentials, /banto 本体の Claude ログインを使う（契約：max/);
       },
-      { claudeLogin: { credentialsPath: join(credDir, ".credentials.json") } },
+      { claudeLogin: localClaudeLogin({ credentialsPath: join(credDir, ".credentials.json") }) },
     );
   } finally {
     rmSync(credDir, { recursive: true, force: true });

@@ -38,7 +38,7 @@ test("Module をその場で外して保存すると、その Project では立�
   // **表の列で出す**（改訂・2026-09-18——1行ごとの札をやめて1枚のテーブルに）
   await expect(fsRow.getByText("filesystem", { exact: true }).first()).toBeVisible();
   await expect(fsRow.locator("td").nth(2), "どこに立つかが出ていない").toHaveText("Project ごと");
-  await expect(fsRow.locator("td").nth(3), "閉じ込めが出ていない").toHaveText("Project");
+  await expect(fsRow.locator("td").nth(3), "閉じ込めが出ていない").toHaveText("Project のコンテナ");
 
   // ---- ダイアログ無しで外し、保存で差分を確かめる --------------------------
   // **入り切りはトグル**（改訂・2026-09-19——banto 全体の面と同じ部品）

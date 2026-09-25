@@ -54,6 +54,7 @@ import {
 } from "@/lib/backend/client";
 import { AddInstanceModuleDialog } from "./add-instance-module-dialog";
 import { notifyModuleSetChanged } from "./module-settings-panel";
+import { PLACEMENT_LABEL } from "./module-placement";
 
 /** **URL に繋ぐ形なら相手の host**（追加・2026-09-17）。起動する形なら空。 */
 function remoteHostOf(m: RealInstanceModule): string {
@@ -326,12 +327,10 @@ export function InstanceModulesPanel() {
                   <td className="px-3 py-2">
                     {host ? (
                       <span className="text-danger">なし</span>
-                    ) : m.confinement ? (
-                      <span className="text-ink-3">
-                        {m.confinement.root === "project" ? "Project" : "Global"}
-                      </span>
-                    ) : (
+                    ) : m.placement === "remote" ? (
                       <span className="text-ink-3">—</span>
+                    ) : (
+                      <span className="text-ink-3">{PLACEMENT_LABEL[m.placement]}</span>
                     )}
                   </td>
                   <td

@@ -21,6 +21,7 @@ import {
   type ModuleLaunch,
   type StdioLaunch,
   secretsAllowedFor,
+  modulePlacement,
   parseModuleDeclaration,
   setModuleDeclarations,
   listProjectModules,
@@ -661,19 +662,22 @@ test("Vault そのものは ${secret:…} を使えない——窓口も同じ",
   }
 });
 
-test("閉じ込めの無い外部 Module には渡さない——同梱は自分のコードなので渡す", () => {
-  // 外から繋いだコードで、閉じ込めが無い＝断る
-  const external = secretsAllowedFor(metaFor({}));
-  assert.equal(external.ok, false);
-  assert.match((external as { reason: string }).reason, /閉じ込めの無い/);
-
-  // 閉じ込めがあれば通る
-  assert.equal(
-    secretsAllowedFor(metaFor({ confinement: { kind: "landlock", root: "none" } })).ok,
-    true,
-  );
-  // 同梱は閉じ込めが無くても通る（banto 自身のコード）
+test("外から足した起動する形にも渡す——コンテナの中で動く（閉じ込めは宣言でなく置き場所で決まる）", () => {
+  // 以前は閉じ込めを名乗らない外部 Module を断っていた。いまは外から足したものは必ずコンテナで起こす
+  assert.equal(modulePlacement(metaFor({}), { command: "x", args: [] }), "instance-container");
+  assert.equal(secretsAllowedFor(metaFor({}), { command: "x", args: [] }).ok, true);
+  assert.equal(secretsAllowedFor(metaFor({ confinement: { kind: "landlock", root: "none" } })).ok, true);
+  // 同梱は banto 自身のコード
   assert.equal(secretsAllowedFor(metaFor({ origin: "bundled" })).ok, true);
+});
+
+test("どこで動くか：Project → その Project のコンテナ、外から足した全体 → 全体用のコンテナ、同梱の全体 → banto 本体、URL → こちらに無い", () => {
+  const stdio = { command: "x", args: [] };
+  assert.equal(modulePlacement(metaFor({ scope: "project" }), stdio), "project-container");
+  assert.equal(modulePlacement(metaFor({ scope: "project", origin: "bundled" }), stdio), "project-container");
+  assert.equal(modulePlacement(metaFor({}), stdio), "instance-container");
+  assert.equal(modulePlacement(metaFor({ origin: "bundled" }), stdio), "host");
+  assert.equal(modulePlacement(metaFor({}), { type: "http", url: "https://e.com/mcp" }), "remote");
 });
 
 // **URL に繋ぐ形**（追加・2026-09-17、ユーザー指示）。
@@ -786,8 +790,6 @@ test("URL に繋ぐ形には、閉じ込めが無くても秘密を渡す——�
   // **リモートに API キーを渡す道が無くなる**——それは機能そのものが無いのと同じ
   const remote = { type: "http" as const, url: "https://e.com/mcp" };
   assert.equal(secretsAllowedFor(metaFor({}), remote).ok, true);
-  // **起動する形では今までどおり**——閉じ込めが無ければ断る
-  assert.equal(secretsAllowedFor(metaFor({}), { command: "x", args: [] }).ok, false);
   // 金庫そのものは、形によらず断る
   assert.equal(secretsAllowedFor(metaFor({ satisfies: ["vault"], origin: "bundled" }), remote).ok, false);
 });

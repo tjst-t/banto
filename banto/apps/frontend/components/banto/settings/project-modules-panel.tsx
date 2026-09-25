@@ -35,6 +35,7 @@ import {
   setRealProjectModules,
   type RealProjectModule,
 } from "@/lib/backend/client";
+import { PLACEMENT_LABEL } from "./module-placement";
 
 export function ProjectModulesPanel({ projectId }: { projectId: string }) {
   // **この Project の根が広いなら、ここでも言う**（決定・2026-09-11、ユーザー）
@@ -159,7 +160,9 @@ export function ProjectModulesPanel({ projectId }: { projectId: string }) {
         <td className="px-3 py-2 text-ink-3">
           {mod.scope === "instance" ? "Global" : "Project ごと"}
         </td>
-        <td className="px-3 py-2 text-ink-3">{mod.confinement ? "Project" : "—"}</td>
+        <td className="px-3 py-2 whitespace-nowrap text-ink-3">
+          {mod.placement === "remote" ? "—" : PLACEMENT_LABEL[mod.placement]}
+        </td>
         <td className="px-3 py-2">
           {missing.length > 0 ? (
             // **繋いだのに動かないものは、その場で言う**（保存前に気付ける）

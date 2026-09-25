@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR, SHELL_HOME_SOURCE, E2E_CONTAINERS } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR, SHELL_HOME_SOURCE } from "../config.js";
 import { createProject, openApp, waitForProjectModule } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
@@ -94,11 +94,9 @@ test("Shell のホームに git の設定が写り、名前で commit でき、�
   const outside = await run(id, `cat ${SHELL_HOME_SOURCE}/.gitconfig`);
   expect(outside.exitCode).not.toBe(0);
   expect(outside.stdout, "閉じ込めの外が読めた").not.toContain("E2E Taro");
-  // コンテナの形では、人のホームのものは弾かれるのではなく中に無い（`docs/specs/v4-security.md` §1）
+  // 人のホームのものは、弾かれるのではなくコンテナの中に無い（`docs/specs/v4-security.md` §1）
   expect(outside.confinementNote ?? "", "閉じ込めで落ちた理由が添えられていない").toContain(
-    E2E_CONTAINERS
-      ? `Project のコンテナの中にありません：${SHELL_HOME_SOURCE}/.gitconfig`
-      : `閉じ込めの外にあるため触れませんでした：${SHELL_HOME_SOURCE}/.gitconfig`,
+    `Project のコンテナの中にありません：${SHELL_HOME_SOURCE}/.gitconfig`,
   );
 });
 

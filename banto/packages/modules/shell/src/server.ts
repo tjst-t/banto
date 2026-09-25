@@ -57,7 +57,9 @@ export function createShellServer(deps: { projectRoot: string; relayClient: Host
         // 伝わりようがなかった。**秘密の使い方の説明はここにある**
         // ——system prompt は個々の tool を語らない（決定・2026-09-05、規則3）。
         description:
-          "コマンドを実行する。Project root の外には出られない（Landlock で強制）。" +
+          "コマンドを実行する。**この Project 専用のコンテナの中で動く**（Ubuntu。見えるのはこの Project のフォルダと、" +
+          "コンテナに入れた道具だけ——人の機械のほかのファイルは無い）。要る道具は sudo apt-get install などで入れてよい" +
+          "（入れたものはこの Project のコンテナに残る）。" +
           "**秘密（トークン・鍵）が要るときは、値を command に書かず、Vault の alias 名を " +
           "envSecrets / secretFiles / sshIdentity に渡す**——値は Vault から直接この子プロセスへ渡り、" +
           "あなたの文脈には出ない。使える alias の一覧は resource `vault://aliases`。" +

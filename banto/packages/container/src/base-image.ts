@@ -21,11 +21,22 @@ import { BANTO_POOL } from "./prereqs.js";
 export const UPSTREAM_IMAGE = "images:ubuntu/24.04";
 
 /** banto の機能が頼る道具だけ。それ以外は Project ごとに入れる */
-export const BASE_PACKAGES = ["git", "curl", "ca-certificates", "openssh-client", "unzip", "xz-utils"] as const;
+export const BASE_PACKAGES = ["git", "curl", "ca-certificates", "openssh-client", "unzip", "xz-utils", "sudo"] as const;
 
-/** 道具の一覧・元のイメージ・node の版から決まる名前（どれかが変われば別の名前になる） */
+/**
+ * **中では誰でもパスワード無しで sudo できる**（決定・2026-09-25）。Shell の説明が AI に「要る道具は sudo apt-get
+ * install で入れてよい」と言う——ホストの uid がいくつでも（中の同じ番号に対応させる）そう動くようにする。
+ * 中は AI が root で何でもできる場所として扱う決めごとなので、ここで開けて失うものは無い
+ * （`docs/specs/v4-security.md` §1）
+ */
+const SUDOERS_LINE = "ALL ALL=(ALL:ALL) NOPASSWD: ALL";
+
+/** 道具の一覧・元のイメージ・node の版・sudo の設定から決まる名前（どれかが変われば別の名前になる） */
 export function baseImageAlias(nodeVersion = process.version): string {
-  const h = createHash("sha256").update(`${UPSTREAM_IMAGE}\n${BASE_PACKAGES.join("\n")}\nnode ${nodeVersion}`).digest("hex").slice(0, 12);
+  const h = createHash("sha256")
+    .update(`${UPSTREAM_IMAGE}\n${BASE_PACKAGES.join("\n")}\nnode ${nodeVersion}\nsudoers ${SUDOERS_LINE}`)
+    .digest("hex")
+    .slice(0, 12);
   return `banto-base-${h}`;
 }
 
@@ -79,6 +90,11 @@ async function build(run: RunIncus, timeoutMs: number): Promise<string> {
       ["exec", tmp, "--env", "DEBIAN_FRONTEND=noninteractive", "--", "sh", "-c", `apt-get update -q && apt-get install -y -q --no-install-recommends ${BASE_PACKAGES.join(" ")} && apt-get clean`],
       "土台イメージに道具を入れる（コンテナから外へ出られるか確かめてください——Docker の転送の許可など）",
       timeoutMs,
+    );
+    await must(
+      run,
+      ["exec", tmp, "--", "sh", "-c", `echo '${SUDOERS_LINE}' > /etc/sudoers.d/banto && chmod 0440 /etc/sudoers.d/banto && visudo -c -q`],
+      "中で sudo できるようにする",
     );
     const tar = packHostNode();
     try {

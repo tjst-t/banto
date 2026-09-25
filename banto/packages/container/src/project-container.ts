@@ -15,9 +15,16 @@ import type { RunIncus } from "./incus.js";
 import { BANTO_POOL } from "./prereqs.js";
 
 export interface ProjectContainerSpec {
+  /**
+   * コンテナの名前の元（Project の id。banto 全体用のコンテナは `instanceContainerId(owner)`）。
+   * 名前は `containerNameFor(id)`
+   */
   projectId: string;
-  /** Project の根（realpath 済み）。中にも同じパスで見せる */
-  root: string;
+  /**
+   * Project の根（realpath 済み）。中にも同じパスで見せる。**banto 全体用のコンテナには無い**
+   * （外から足した banto 全体の Module を入れる。見せるのは Module の置き場だけ）
+   */
+  root?: string;
   /** banto のコードの置き場（モノレポの根）。中にも同じパスで、読み取り専用 */
   bantoDir: string;
   /** 中に置く node の実行ファイル（ホストのもの） */
@@ -61,6 +68,17 @@ export function containerNameFor(projectId: string): string {
   const name = `banto-${safe}`.slice(0, 63).replace(/-+$/, "");
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Project の id からコンテナの名前を作れません：${projectId}`);
   return name;
+}
+
+/**
+ * **banto 全体用のコンテナ**の id（決定・2026-09-25、`docs/specs/v4-security.md` §1）。外から足した banto 全体の
+ * Module をここで動かす——banto 本体で動くのは banto 自身のコードだけ。どの banto のものか（データの置き場）で
+ * 分ける：E2E や検証用の banto が、人の banto のコンテナを使わない
+ */
+export function instanceContainerId(owner: string): string {
+  let h = 0;
+  for (const ch of owner) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
+  return `instance-${h.toString(16).padStart(8, "0")}`;
 }
 
 /** 中の同じ番号に対応させる（uid と gid が同じなら `both` の1行） */
@@ -147,7 +165,6 @@ export class ProjectContainers {
         ],
         `コンテナ ${name} を作るの`,
       );
-      await this.incus(["config", "device", "add", name, "project", "disk", `source=${spec.root}`, `path=${spec.root}`], "Project の根をマウントするの");
       await this.incus(["config", "device", "add", name, "banto", "disk", `source=${spec.bantoDir}`, `path=${spec.bantoDir}`, "readonly=true"], "banto のコードをマウントするの");
       st = await this.state(name);
       if (!st) throw new Error(`コンテナ ${name} を作ったはずが見つかりません`);
@@ -156,7 +173,7 @@ export class ProjectContainers {
     // 宣言に合わせる（根が変わった・入れ子の要否が変わった）
     let needsRestart = false;
     const project = st.devices["project"];
-    if (!project || project["source"] !== spec.root || project["path"] !== spec.root) {
+    if (spec.root && (!project || project["source"] !== spec.root || project["path"] !== spec.root)) {
       if (project) await this.incus(["config", "device", "remove", name, "project"], "古い Project の根を外すの");
       await this.incus(["config", "device", "add", name, "project", "disk", `source=${spec.root}`, `path=${spec.root}`], "Project の根をマウントするの");
     }

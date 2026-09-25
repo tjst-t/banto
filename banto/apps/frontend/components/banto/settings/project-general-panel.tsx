@@ -5,7 +5,7 @@
 // Project の層のいちばん上に置く——名前と根は「この Project が何者か」なので、
 // Module の選択や上書きより先に来る。
 //
-// **根は閉じ込めの範囲そのもの**（`docs/specs/v4-security.md`）。変えると、その
+// **根は閉じ込めの範囲そのもの**（`docs/specs/v4-security.md`——Project のコンテナに見せるのはこの根）。変えると、その
 // Project の Module は立て直しになる（host が落とし、次に要るときに新しい根で
 // 立つ）。広い根なら**保存する前に**警告を出す。
 //
@@ -30,6 +30,7 @@ import { closeProject, getActiveProjects, getProject, updateRealProject } from "
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-root-warning";
 import { PathPicker } from "@/components/banto/settings/path-picker";
+import { ProjectContainerSection } from "@/components/banto/settings/project-container-section";
 
 export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
@@ -137,6 +138,8 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
           </div>
         ) : null}
       </div>
+
+      <ProjectContainerSection projectId={projectId} />
 
       {/* **危険な操作は、いちばん下**（決定・2026-09-11、ユーザー要望） */}
       <h2 className="mt-8 mb-2 text-sm font-semibold text-foreground">危険な操作</h2>

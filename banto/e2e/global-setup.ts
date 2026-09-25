@@ -10,7 +10,6 @@ import {
   CONFIG_PATH,
   DATA_DIR,
   E2E_BASE,
-  E2E_CONTAINERS,
   PORT,
   AUTH_TOKEN,
   SANDBOX_PORT,
@@ -22,7 +21,7 @@ import {
 
 export default function globalSetup(): void {
   removeStaleRuns();
-  if (E2E_CONTAINERS) removeStaleContainers();
+  removeStaleContainers();
   rmSync(DATA_DIR, { recursive: true, force: true });
   rmSync(dirname(CONFIG_PATH), { recursive: true, force: true });
   rmSync(CLAUDE_CONFIG_DIR, { recursive: true, force: true });
@@ -41,7 +40,6 @@ export default function globalSetup(): void {
         sandboxPort: SANDBOX_PORT,
         sandboxPublicUrl: SANDBOX_BASE_URL,
         allowedEmbedderOrigins: [FRONTEND_BASE_URL],
-        ...(E2E_CONTAINERS ? { projectContainers: true } : {}),
       },
       null,
       2,
@@ -94,8 +92,9 @@ function removeStaleRuns(): void {
 
 /**
  * **前の回が残したコンテナを片づける**（追加・2026-09-25）。ふつうは終わるときに消す（`global-teardown.ts`）が、
- * 途中で止めた回は残る。**別のセッションが同時に回している E2E のものは消さない**——置き場（札）がまだある
- * ものは残し、置き場ごと消えた（`removeStaleRuns` が1日で消す）回のものだけを消す
+ * 途中で止めた回や、終わる瞬間に host がまだコンテナを触っていた回（`Instance is busy`）は残る。
+ * **別のセッションが同時に回している E2E のものは消さない**——その回がもう走っていない（置き場が消えた、
+ * または印の pid が生きていない）ものだけを消す
  */
 function removeStaleContainers(): void {
   const listed = spawnSync("incus", ["query", `/1.0/instances?recursion=1&project=${incusProject()}`], { encoding: "utf8", input: "" });
@@ -103,9 +102,23 @@ function removeStaleContainers(): void {
   const all = JSON.parse(listed.stdout) as { name: string; config?: Record<string, string> }[];
   for (const c of all) {
     const owner = c.config?.["user.banto.owner"];
-    if (!owner || !owner.startsWith(`${E2E_BASE}/`) || existsSync(owner)) continue;
+    if (!owner || !owner.startsWith(`${E2E_BASE}/`) || !runIsOver(owner)) continue;
     const r = spawnSync("incus", ["delete", "--force", c.name], { encoding: "utf8", input: "" });
     console.log(`[e2e] 前の回が残したコンテナ ${c.name} を消した${r.status === 0 ? "" : `（失敗：${r.stderr.trim()}）`}`);
+  }
+}
+
+/** その置き場の回が終わっているか。回の印は Playwright の pid（`config.ts` の RUN_ID） */
+function runIsOver(owner: string): boolean {
+  if (!existsSync(owner)) return true;
+  const pid = Number(owner.slice(E2E_BASE.length + 1).split("/")[0]);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    // EPERM は「居るが他人のもの」——生きている扱いにする
+    return (err as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 

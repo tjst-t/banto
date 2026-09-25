@@ -109,7 +109,8 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
 
   const asked = (await page.locator('[data-role="judgment-card"]').allInnerTexts()).join("\n");
   expect(asked).toContain("subagent が vault-directory の lookupAlias");
-  expect(asked).toContain("subagent が vault-local の resolveAlias");
+  // **値を引く口は、どの鍵かごとに聞く**（コンテナの中の呼び手・v4-security.md §3）——鍵の名前がカードに出る
+  expect(asked).toContain(`subagent が vault-local の resolveAlias（name: ${ALIAS}`);
   // **値は、どこにも出ない**——承認カードにも、エージェントの返答にも、画面にも
   expect(asked, "承認カードに秘密の値が出ている").not.toContain(SECRET);
   await expect(page.getByText(SECRET)).toHaveCount(0);
@@ -175,8 +176,8 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
   await expect(row).toHaveAttribute("data-state", "linked");
   await expect(row.getByText("subagent", { exact: true }).first()).toBeVisible();
   await expect(row.locator("td").nth(2)).toHaveText("Project ごと");
-  // Module のプロセス自体は閉じ込めない（閉じ込めるのは、それが起こすエージェント）
-  await expect(row.locator("td").nth(3)).toHaveText("—");
+  // Module もそれが起こすエージェントも、その Project のコンテナの中で動く（v4-security.md §1）
+  await expect(row.locator("td").nth(3)).toHaveText("Project のコンテナ");
 
   expect(pageErrors).toEqual([]);
 });

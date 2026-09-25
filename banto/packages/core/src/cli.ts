@@ -13,21 +13,14 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { UnauthorizedError, auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { BantoOAuthProvider, oauthAliasFor } from "./oauth/provider.js";
 import {
-  checkAbi,
-  deriveProjectRuleset,
-  writeRulesetFile,
-  wrapCommand,
-  assertLauncherAvailable,
-  assertRulesetIsSafe,
-  type ConfinementProfile,
-} from "@banto/landlock";
-import {
   CONTAINER_NODE_PATH,
   ProjectContainers,
   checkContainerPrereqs,
   ensureBaseImage,
   execInContainer,
   hostPrereqDeps,
+  instanceContainerId,
+  containerNameFor,
   runIncus,
 } from "@banto/container";
 import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
@@ -51,7 +44,7 @@ import { ModuleCallTracker } from "./relay/module-calls.js";
 import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { TurnEventBus } from "./http/turn-events.js";
-import { createApp } from "./http/app.js";
+import { createApp, CONTAINER_NESTING_KEY } from "./http/app.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
@@ -61,6 +54,7 @@ import {
   loadModuleDeclarations,
   secretPlaceholders,
   secretsAllowedFor,
+  modulePlacement,
   isRemoteLaunch,
   isEgressAcknowledged,
   type RemoteLaunch,
@@ -152,14 +146,16 @@ async function main(): Promise<void> {
   const bootstrap = loadOrCreateBootstrapConfig();
   console.log(`[host] dataDir=${bootstrap.dataDir} port=${bootstrap.port}`);
 
-  const abi = checkAbi();
-  console.log(`[host] Landlock ABI check: ${JSON.stringify(abi)}`);
-  // コンテナの前提（`docs/specs/v4-security.md` §1——閉じ込めを Project ごとのコンテナへ移す途中）。
-  // Project の Module をコンテナで起こす設定（`projectContainers`）なら、欠けているとき Module を起こさず
-  // 受信箱で言う（黙って Landlock へ落ちない、規則2）。設定が無ければ知らせるだけ
+  // **閉じ込めはコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。前提が欠けていれば、
+  // コンテナで起こす Module（Project の Module・外から足した banto 全体の Module）は起こさず、受信箱で言う
+  // （黙って閉じ込め無しで起こさない、規則2）。banto 本体で動く同梱の Module はそのまま立つ
   const containerPrereqs = await checkContainerPrereqs(hostPrereqDeps());
-  const projectContainers = bootstrap.projectContainers ? new ProjectContainers(runIncus) : undefined;
-  if (projectContainers) console.log("[host] Project の Module は Project ごとのコンテナで起こす");
+  const containers = new ProjectContainers(runIncus);
+  /**
+   * **中に渡してよい host の環境変数**（名前をカンマで並べる）。コンテナには host の環境を渡さない——
+   * 試験の差し替え（偽のエージェントなど）を中の Module に届ける口。人の banto では使わない
+   */
+  const containerEnvPassthrough = (process.env.BANTO_CONTAINER_ENV_PASSTHROUGH ?? "").split(",").map((x) => x.trim()).filter(Boolean);
   console.log(
     `[host] コンテナの前提: ${
       containerPrereqs.ok
@@ -280,24 +276,36 @@ async function main(): Promise<void> {
   const moduleSpawns = new SingleFlight<string>();
 
   /**
-   * **Project のコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。Project の Module を起こす前に
-   * 用意する——無ければ作り、根と設定を合わせ、起こす。道具を入れた状態は残る。同時に来ても1回にまとめる
+   * **Module を起こすコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。Project ごとに1台、外から
+   * 足した banto 全体の Module 用に1台。起こす前に用意する——無ければ作り、根と設定を合わせ、起こす。
+   * 道具を入れた状態は残る。同時に来ても1回にまとめる
    */
+  interface ContainerPlacement {
+    /** Project の id、または `instanceContainerId(置き場)` */
+    id: string;
+    /** Project の根（banto 全体用のコンテナには無い） */
+    root?: string;
+    /** 中で Docker を使うか（Project ごとの設定） */
+    nesting: boolean;
+  }
   interface ReadyContainer {
     name: string;
     /** 中から host に届くアドレス（ブリッジの host 側）。host は 0.0.0.0 で待ち受けている */
     hostAddress: string;
-    root: string;
+    root?: string;
+    nesting: boolean;
   }
   const readyContainers = new Map<string, ReadyContainer>();
   const containerSpawns = new SingleFlight<ReadyContainer>();
-  async function ensureProjectContainer(containers: ProjectContainers, project: { id: string; root: string }): Promise<ReadyContainer> {
-    const ready = readyContainers.get(project.id);
-    if (ready && ready.root === project.root) return ready;
-    return containerSpawns.run(project.id, async () => {
+  /** 中で Docker を使うか（Project ごとの設定）。入れ子を許したコンテナだけ `/proc`・`/sys` の保護が外れる */
+  const projectNesting = (projectId: string) => runtimeConfig.resolve(CONTAINER_NESTING_KEY, projectId) === true;
+  async function ensureContainer(placement: ContainerPlacement): Promise<ReadyContainer> {
+    const ready = readyContainers.get(placement.id);
+    if (ready && ready.root === placement.root && ready.nesting === placement.nesting) return ready;
+    return containerSpawns.run(placement.id, async () => {
       if (!containerPrereqs.ok) {
         throw new Error(
-          "Project のコンテナを用意できません——前提が欠けています：" +
+          "コンテナを用意できません——前提が欠けています：" +
             containerPrereqs.problems.map((p) => `${p.message}（直し方：${p.fix}）`).join(" ") +
             " 直したら banto を起動し直してください",
         );
@@ -305,20 +313,25 @@ async function main(): Promise<void> {
       // gid はユーザーの登録情報から——起動のしかたで主グループが変わっていても、中の同じ番号に揃える
       const { uid, gid } = userInfo();
       const { name } = await containers.ensure({
-        projectId: project.id,
-        root: project.root,
+        projectId: placement.id,
+        ...(placement.root ? { root: placement.root } : {}),
         bantoDir: monorepoRoot,
         nodePath: process.execPath,
         nodeVersion: process.version,
-        nesting: false,
-        // banto の機能が頼る道具（git・ssh・curl）を入れた土台から作る——無ければ一度だけ作る
+        nesting: placement.nesting,
+        // banto の機能が頼る道具（git・ssh・curl・node）を入れた土台から作る——無ければ一度だけ作る
         image: await ensureBaseImage(runIncus),
         uid,
         gid,
         owner: bootstrap.dataDir,
       });
-      const r: ReadyContainer = { name, hostAddress: await containers.hostAddress(name), root: project.root };
-      readyContainers.set(project.id, r);
+      const r: ReadyContainer = {
+        name,
+        hostAddress: await containers.hostAddress(name),
+        ...(placement.root ? { root: placement.root } : {}),
+        nesting: placement.nesting,
+      };
+      readyContainers.set(placement.id, r);
       return r;
     });
   }
@@ -575,8 +588,8 @@ async function main(): Promise<void> {
    *
    * stdio とここが決定的に違う：
    *
-   * - **閉じ込めが効かない。** プロセスがこちらに無い——Landlock は自分が
-   *   起こしたものにしか掛からない。だから閉じ込めの代わりに
+   * - **閉じ込めが効かない。** プロセスがこちらに無い——コンテナに入れられるのは
+   *   自分が起こしたものだけ。だから閉じ込めの代わりに
    *   **「machine の外へ出す」ことへの人の明示の承認**を要る形にする
    * - **中継の合言葉を渡さない。** 第三者のサーバに banto の身元を持たせない
    *   ——つまりリモートは**他の Module を呼べない**（`dependsOn` は parse が断る）
@@ -722,15 +735,27 @@ async function main(): Promise<void> {
     // 中継の合言葉は「宣言に書けない値」なので、ここで発行して差し込む
     // **承認の粒度は宣言の名前と Project**（アーキ仕様 §2.5）。プロセスの名前
     // （`shell-<projectId>`）は、どのターンの仕事かを引くときにだけ使う
+    // **どこで起こすか**（決定・2026-09-25、`docs/specs/v4-security.md` §1）：
+    //   Project の Module → その Project のコンテナ
+    //   外から足した banto 全体の Module → banto 全体用のコンテナ（banto 本体で動くのは banto 自身のコードだけ）
+    //   同梱の banto 全体の Module → banto 本体
+    // 中からは host の 127.0.0.1 に届かないので、中継の住所はブリッジの host 側にする（host は 0.0.0.0 で待ち受けている）
+    const where = modulePlacement(declaration.meta, declaration.launch);
+    const placement: ContainerPlacement | undefined =
+      where === "project-container" && project
+        ? { id: project.id, root: project.root, nesting: projectNesting(project.id) }
+        : where === "instance-container"
+          ? { id: instanceContainerId(bootstrap.dataDir), nesting: false }
+          : undefined;
+    const container = placement ? await ensureContainer(placement) : undefined;
     const token = registry.issueToken({
       moduleName: declaration.name,
       connName,
       projectId: project?.id,
       meta: declaration.meta,
+      // 中では AI がこの合言葉も読める——値を返す口への承認を、何を指していたかごとに分ける
+      ...(container ? { inContainer: true } : {}),
     });
-    // **Project の Module は Project のコンテナの中で起こす**（決定・2026-09-25）。中からは host の
-    // 127.0.0.1 に届かないので、中継の住所はブリッジの host 側にする（host は 0.0.0.0 で待ち受けている）
-    const container = projectContainers && project ? await ensureProjectContainer(projectContainers, project) : undefined;
     const context: LaunchContext = {
       ...launchContextBase,
       ...(container ? { hostRelayUrl: `http://${container.hostAddress}:${bootstrap.port}/relay` } : {}),
@@ -768,32 +793,40 @@ async function main(): Promise<void> {
     // ここへ来るのは起動する形だけ（URL に繋ぐ形は上で分かれている）
     const launch = expandLaunch(withSecrets, context) as StdioLaunch;
 
-    // **コンテナの中で起こす**。閉じ込めはコンテナそのもの——Landlock では包まない。中に見せるのは
-    // Project の根（作るときに）・banto のコード（読み取り専用、作るときに）・この Module の置き場・取ってきた
-    // 配布物（読み取り専用）だけ。**host の環境は渡さない**（`incus exec` は引き継がない。渡すのは下の一覧だけ）
-    if (container && project && projectContainers) {
-      await projectContainers.ensureDisk(container.name, diskDeviceName(context.moduleDataDir), context.moduleDataDir);
+    // **コンテナの中で起こす**。閉じ込めはコンテナそのもの。中に見せるのは Project の根（作るときに）・
+    // banto のコード（読み取り専用、作るときに）・この Module の置き場・取ってきた配布物（読み取り専用）だけ。
+    // **host の環境は渡さない**（`incus exec` は引き継がない。渡すのは下の一覧だけ）
+    if (container) {
+      await containers.ensureDisk(container.name, diskDeviceName(context.moduleDataDir), context.moduleDataDir);
       if (existsSync(context.modulePackageDir)) {
-        await projectContainers.ensureDisk(container.name, diskDeviceName(context.modulePackageDir), context.modulePackageDir, { readonly: true });
+        await containers.ensureDisk(container.name, diskDeviceName(context.modulePackageDir), context.modulePackageDir, { readonly: true });
       }
       const { uid, gid } = userInfo();
+      const passthrough = Object.fromEntries(
+        containerEnvPassthrough.flatMap((name) => (process.env[name] !== undefined ? [[name, process.env[name]!]] : [])),
+      );
       const inside = execInContainer(
         container.name,
         {
-          cwd: project.root,
+          cwd: project?.root ?? context.moduleDataDir,
           uid,
           gid,
           env: {
+            ...passthrough,
             HOME: context.moduleDataDir,
             // コンテナの中で動いていることを Module に知らせる（Shell の説明の言い方が変わる）
             BANTO_IN_CONTAINER: "1",
+            // 中から届く host 側のアドレス（サブエージェントが Claude の中継をここで開いてもらう）
+            BANTO_HOST_ADDRESS: container.hostAddress,
             BANTO_MODULE_DATA_DIR: context.moduleDataDir,
+            // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てることがある——Module 自身が
+            // 「自分はどの1本か」を知らないと、画面に同じ名前が並ぶ。host が必ず渡す
             BANTO_MODULE_NAME: declaration.name,
             ...(shellHome ? { BANTO_SHELL_HOME: shellHome } : {}),
             ...launch.env,
           },
         },
-        // node は中の決まった場所に置いてある（ホストの実行ファイルと同じ版）
+        // node は中の決まった場所に置いてある（ホストと同じ版）
         launch.command === process.execPath ? CONTAINER_NODE_PATH : launch.command,
         launch.args,
       );
@@ -802,93 +835,12 @@ async function main(): Promise<void> {
       return finishModuleConnection(declaration, connName, project, client, token, forProject);
     }
 
-    // **外から繋いだコードを、閉じ込め無しで立てない**（追加・2026-09-15、
-    // レビューで発覚。`docs/specs/v4-security.md`）。
-    //
-    // 閉じ込めは `scope: "project"` でしか宣言できない（Landlock の根が
-    // Project の根だから）。つまり **`scope: "instance"` の第三者 Module は
-    // 構造上まったく閉じ込められない**——`~/.claude/.credentials.json`・
-    // banto の中継の合言葉・全 Project の会話を素で読める。
-    //
-    // そして「`${projectRoot}` を書かない」という**いちばん楽な道**が、
-    // ちょうどそこへ落ちる。**楽な道が危ない結果に落ちてはいけない**ので、
-    // ここで止める（規則2——黙って通さない。受信箱に理由が1件出る）。
-    //
-    // **同梱は対象外**——banto 自身のコードで、閉じ込めの外に置くと決めてある
-    // （Vault は秘密の置き場を持つので Project の根に閉じ込められない）。
-    if (declaration.meta.origin !== "bundled" && !declaration.meta.confinement) {
-      throw new Error(
-        `${connName}: 外から繋いだ Module を閉じ込め無しでは起動できません` +
-          "（Project ごとに立てて閉じ込めるか、同梱の実装を使ってください）",
-      );
-    }
-
-    // 閉じ込めが宣言されていれば Landlock で包む——**どの profile を使うかも宣言から**
-    // （以前は「shell なら exec、それ以外は files-only」とコードで場合分けしていた）。
-    let command = launch.command;
-    let args = launch.args;
-    if (declaration.meta.confinement) {
-      // **根が Project のときだけ、Project が要る**（改訂・2026-09-15）。
-      // 根を持たない閉じ込め（`root: "none"`）は banto 全体に1本の Module 用
-      // ——許すのは node・動的リンカ・`/dev`・`/etc`・自分の置き場だけ
-      if (declaration.meta.confinement.root === "project" && !project) {
-        throw new Error(`${connName}: 根が Project の閉じ込めは、Project ごとの Module でしか使えません`);
-      }
-      assertLauncherAvailable();
-      // **広さは宣言が持つ**（訂正・2026-09-15、レビューで発覚）。以前は
-      // `satisfies.includes("shell")` から決めていたので、**`shell` を名乗るだけで
-      // 広いほう（PATH の実行を許す）を取れた**——自己申告が閉じ込めの強さを
-      // 決めてしまっていた
-      const profile: ConfinementProfile = declaration.meta.confinement?.profile ?? "files-only";
-      const { ruleset, omitted } = deriveProjectRuleset({
-        projectRoot: declaration.meta.confinement.root === "project" ? project?.root : undefined,
-        pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
-        profile,
-        nodeExecPath: process.execPath,
-        moduleDataDir: context.moduleDataDir,
-        // **取ってきた配布物も読めるようにする**（追加・2026-09-21）。ここが
-        // 無いと、registry から入れた Module は**自分のプログラムを読めずに
-        // 起動すらできない**（`derive.ts` の `moduleInstallDirs` のコメント）。
-        // **読み取り専用**——書けるのは `moduleDataDir` のほうだけ
-        moduleInstallDirs: [monorepoRoot, context.modulePackageDir],
-      });
-      if (omitted.length > 0) console.warn(`[host] ${connName} ruleset omitted paths:`, omitted);
-      // **書き出す前の最後の防波堤**（`@banto/landlock` の guard）。人が Project の根に
-      // home を指定した、導出が静かに広がった、といったときに**起動を止める**
-      // ——弱いまま閉じ込めたことにしない（規則2）。ここで投げると、その Module は
-      // 繋がらず、受信箱に理由つきのお知らせが1件出る（§5.4-0）
-      assertRulesetIsSafe(ruleset, {
-        dataDir: bootstrap.dataDir,
-        configDir: dirname(resolveBootstrapConfigPath()),
-        // **人が選んだ根は通す**（改訂・2026-09-11、ユーザー決定）——広い根を
-        // 選べば閉じ込めは効かないが、それは選ぶ前に画面で伝える
-        projectRoot: declaration.meta.confinement.root === "project" ? project?.root : undefined,
-      });
-      const rulesetFile = writeRulesetFile(join(bootstrap.dataDir, "run"), connName, ruleset);
-      const wrapped = wrapCommand(rulesetFile, { command, args });
-      command = wrapped.command;
-      args = wrapped.args;
-    }
-
-    // **host が必ず用意する値は、宣言に書かせない**（改訂・2026-09-07、ユーザー報告）。
-    // Module ごとのデータ置き場は host が作り、閉じ込めの許可も host が出している
-    // ——なのに env として渡すのを宣言まかせにしていたため、**宣言の写しを
-    // Config に持っている Project だけが古いまま**になり、設定を保存できなかった
-    // （規則3——写しはいつか食い違う）。host が常に渡す。
-    // **Project ごとの Module には、その Project の根を作業ディレクトリとして渡す**
-    // （追加・2026-09-15、レビューで発覚）。以前は `cwd` を渡していなかったので、
-    // **cwd 基準で動くサーバは banto の起動場所を見ていた**——閉じ込めが効いて
-    // いれば読めはしないが、「どこを見ているか」が人の意図とずれる
-    const client = await connectStdioModule(command, args, project?.root, {
+    // **banto 本体で起こす**：同梱の banto 全体の Module（banto 自身のコード——Vault は秘密の置き場を持つ）。
+    // **host が必ず用意する値は、宣言に書かせない**（改訂・2026-09-07）——置き場と名前は host が常に渡す
+    const client = await connectStdioModule(launch.command, launch.args, undefined, {
       ...process.env,
       BANTO_MODULE_DATA_DIR: context.moduleDataDir,
-      // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てる
-      // ことがある（Vault を自前ホストと Cloud で並べるなど）——そのとき
-      // Module 自身が「自分はどの1本か」を知らないと、**画面に同じ名前が並び**、
-      // **環境変数の既定が全部の写しに効いてしまう**。host が必ず渡す
-      // （`BANTO_MODULE_DATA_DIR` と同じ理由——宣言の写しに持たせない）
       BANTO_MODULE_NAME: declaration.name,
-      ...(shellHome ? { BANTO_SHELL_HOME: shellHome } : {}),
       ...launch.env,
     });
 
@@ -1041,8 +993,8 @@ async function main(): Promise<void> {
     // 動いたまま残ったことを受信箱で言う（規則2）
     const ready = readyContainers.get(projectId);
     readyContainers.delete(projectId);
-    if (opts.stopContainer && ready && projectContainers) {
-      await projectContainers.stop(ready.name).catch(async (err: unknown) => {
+    if (opts.stopContainer && ready) {
+      await containers.stop(ready.name).catch(async (err: unknown) => {
         const reason = err instanceof Error ? err.message : String(err);
         console.warn(`[host] project ${projectId} のコンテナ ${ready.name} を止められませんでした: ${reason}`);
         await inbox.raiseNotice({
@@ -1313,6 +1265,11 @@ async function main(): Promise<void> {
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
     releaseProjectModules,
+    projectContainerStatus: async (projectId: string) => {
+      const name = containerNameFor(projectId);
+      const st = await containers.state(name);
+      return st ? { name, status: st.status } : undefined;
+    },
     resolveModulesForThread,
     resolveSessionSkills,
     // **Shell 専用のホームに写すもの**（決定・2026-09-23）。変えたら、立っている Shell にも写し直す

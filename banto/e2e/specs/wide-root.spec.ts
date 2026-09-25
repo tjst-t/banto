@@ -8,9 +8,8 @@
 // 選ぶとき）。閉じ込めが効かないこと、そこに何が入っているか（banto の合言葉・
 // 記録・Claude の資格情報）を、選ぶ前に見せる。
 //
-// **検査そのものは残っている**——「導出が勝手に広がった」場合（PATH の親が
-// 紛れ込む等）はいまも起動を止める。人が選んだ根だけが免除される
-// （単体試験：`packages/landlock/src/guard.test.ts`）。
+// **いまの閉じ込めは Project のコンテナ**（変更・2026-09-25、Landlock をやめた）。
+// 根を home にすると、home がまるごとコンテナに見える——警告が言うのはそのこと。
 import { test, expect } from "@playwright/test";
 import { homedir } from "node:os";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";

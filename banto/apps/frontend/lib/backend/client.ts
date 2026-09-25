@@ -460,7 +460,12 @@ export interface RealProjectModule {
   scope: "instance" | "project";
   /** Project の根に閉じ込めて起動する */
   confinement?: { kind: string; root: string };
+  /** どこで動くか（host が宣言から導いた値。`docs/specs/v4-security.md` §1） */
+  placement: ModulePlacement;
 }
+
+/** Module がどこで動くか（host の `modulePlacement` と同じ語） */
+export type ModulePlacement = "project-container" | "instance-container" | "host" | "remote";
 
 export async function listRealProjectModules(projectId: string): Promise<RealProjectModule[]> {
   return request<RealProjectModule[]>(`/api/projects/${projectId}/modules`);
@@ -560,6 +565,25 @@ export async function renameRealProject(projectId: string, name: string): Promis
  * 範囲そのものなので、変えると host がその Project の Module を落とす
  * （次に要るときに新しい根で立ち上がる）。
  */
+/**
+ * **この Project のコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。この Project の Module と
+ * AI のコマンドはここで動く。`nesting` は中で Docker を使うか
+ */
+export interface RealProjectContainer {
+  nesting: boolean;
+  /** まだ一度も Module を起こしていなければ null（最初に要るときに作る） */
+  container: { name: string; status: string } | null;
+}
+
+export async function fetchRealProjectContainer(projectId: string): Promise<RealProjectContainer> {
+  return request<RealProjectContainer>(`/api/projects/${projectId}/container`);
+}
+
+/** 中で Docker を使うかを変える。この Project の Module は立て直しになる（host が落とし、次に要るときに起こす） */
+export async function setRealProjectContainerNesting(projectId: string, nesting: boolean): Promise<void> {
+  await request(`/api/projects/${projectId}/container`, { method: "PUT", body: JSON.stringify({ nesting }) });
+}
+
 export async function updateRealProjectSettings(
   projectId: string,
   patch: { name?: string; root?: string },
@@ -892,6 +916,8 @@ export interface RealInstanceModule {
   dependsOn: { role: string; required: boolean }[];
   scope: "instance" | "project";
   confinement?: { kind: string; root: string; profile: string };
+  /** どこで動くか（host が宣言から導いた値） */
+  placement: ModulePlacement;
   launch:
     | { command: string; args: string[]; env?: Record<string, string> }
     | { type: "http"; url: string; headers?: Record<string, string> };

@@ -621,8 +621,8 @@ export function AddInstanceModuleDialog({
             {isRemote
               ? "banto 全体から使えます。プロセスは立てません（相手のサーバで動いています）"
               : perProject
-                ? "Project ごとに1本立ち、その Project のフォルダだけを渡します"
-                : "banto 全体で1本立ちます（Project のフォルダは渡りません）"}
+                ? "Project ごとに1本、その Project のコンテナの中で立ち、その Project のフォルダだけを渡します"
+                : "banto 全体で1本、banto 全体用のコンテナの中で立ちます（Project のフォルダは渡りません）"}
             。
             <strong className="text-foreground">
               {isRemote

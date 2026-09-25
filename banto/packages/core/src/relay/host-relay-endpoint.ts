@@ -30,6 +30,11 @@ export interface CallerIdentity {
   connName?: string;
   projectId?: string;
   meta: BantoModuleMeta;
+  /**
+   * **Project のコンテナの中で動いているか**（追加・2026-09-25）。中では AI が root で、この合言葉も読める
+   * ——値を返す口への承認を、何を指していたかごとに分ける（`RelayCallDescriptor.scope`）
+   */
+  inContainer?: boolean;
 }
 
 export interface RelayAuditRecord {
@@ -418,7 +423,12 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       ? Promise.resolve({ allowed: true, reason: "値を返さない口" })
       : opts.gate
         ? opts.gate
-            .requestApproval({ ...call, callerConnName: identity.connName ?? identity.moduleName })
+            .requestApproval({
+              ...call,
+              callerConnName: identity.connName ?? identity.moduleName,
+              // コンテナからは、何を指していたかごとに聞く（名乗った識別子。無ければ空——それでも印になる）
+              ...(identity.inContainer ? { scope: identifiers ?? {} } : {}),
+            })
             .finally(() => clearInterval(heartbeat))
         : Promise.resolve({ allowed: true, reason: "ゲート無し" }));
     if (!decision.allowed) {

@@ -7,11 +7,11 @@
 //
 // 規則14：「閉じられた」で終わらせず、**プロセスが実際に消えたか**を見る。
 import { test, expect } from "@playwright/test";
-import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN, E2E_CONTAINERS } from "../config.js";
+import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -21,28 +21,9 @@ test.use({ viewport: { width: 390, height: 844 } });
 const PROJECT_NAME = "E2E Close Release Project";
 
 /**
- * その Project のために立っている Module のプロセス数。
- *
- * **どの Project のものかは、コマンド行では分からない**（Landlock の launcher が
- * node を exec するので、引数にルールセットの名前が残らない）。プロセスの
- * 環境変数（`BANTO_PROJECT_ROOT`）で見分ける。
- */
-function moduleProcessesFor(projectRoot: string, projectId: string): number {
-  if (E2E_CONTAINERS) return moduleProcessesInContainer(projectId);
-  const out = execSync('pgrep -f "modules/(shell|filesystem)/dist/server.js" || true').toString();
-  const pids = out.split("\n").filter(Boolean);
-  return pids.filter((pid) => {
-    try {
-      return readFileSync(`/proc/${pid}/environ`, "utf8").includes(`BANTO_PROJECT_ROOT=${projectRoot}`);
-    } catch {
-      return false; // もう居ない
-    }
-  }).length;
-}
-
-/**
- * **コンテナの形では、コンテナの中を数える**（追加・2026-09-25）。中のプロセスはホストからも見えるが、別の
- * 名前空間なので環境変数を読めない。見るのは banto の外（Incus）から——止まっていれば 0
+ * **その Project のために立っている Module のプロセス数**——Project のコンテナの中を数える（改訂・2026-09-25）。
+ * 中のプロセスはホストからも見えるが、別の名前空間なので環境変数を読めない。見るのは banto の外（Incus）から
+ * ——止まっていれば 0
  */
 function containerState(projectId: string): string {
   return spawnSync("incus", ["list", `banto-${projectId}`, "-f", "csv", "-c", "s"], { encoding: "utf8", input: "" }).stdout.trim();
@@ -85,7 +66,7 @@ test("Project を畳むと、その Project の Module のプロセスが落ち�
       { timeout: 60_000, message: "Module が繋がるまで" },
     )
     .toEqual(expect.arrayContaining(["shell", "filesystem"]));
-  expect(moduleProcessesFor(projectRoot, project.id), "繋がったのにプロセスが居ない").toBe(2);
+  expect(moduleProcessesInContainer(project.id), "繋がったのにプロセスが居ない").toBe(2);
 
   // 畳む
   const closed = await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/close`, { headers });
@@ -97,10 +78,10 @@ test("Project を畳むと、その Project の Module のプロセスが落ち�
 
   // **本当に消えたか**を見る（記録が閉じただけでは足りない）
   await expect
-    .poll(() => moduleProcessesFor(projectRoot, project.id), { timeout: 30_000, message: "プロセスが落ちるまで" })
+    .poll(() => moduleProcessesInContainer(project.id), { timeout: 30_000, message: "プロセスが落ちるまで" })
     .toBe(0);
-  // コンテナの形では、コンテナも止まる（道具を入れた状態は残し、開き直したら起こす）
-  if (E2E_CONTAINERS) expect(containerState(project.id), "畳んだのにコンテナが動いている").toBe("STOPPED");
+  // コンテナも止まる（道具を入れた状態は残し、開き直したら起こす）
+  expect(containerState(project.id), "畳んだのにコンテナが動いている").toBe("STOPPED");
 
   // 開き直せば、また立つ（畳んだきり使えなくなっていない）
   const reopened = await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/reopen`, { headers });
@@ -116,9 +97,9 @@ test("Project を畳むと、その Project の Module のプロセスが落ち�
       { timeout: 60_000, message: "開き直したら、また繋がる" },
     )
     .toEqual(expect.arrayContaining(["shell", "filesystem"]));
-  expect(moduleProcessesFor(projectRoot, project.id)).toBe(2);
+  expect(moduleProcessesInContainer(project.id)).toBe(2);
 
   // 後始末（この spec が立てたものを残さない）
   await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/close`, { headers });
-  await expect.poll(() => moduleProcessesFor(projectRoot, project.id), { timeout: 30_000 }).toBe(0);
+  await expect.poll(() => moduleProcessesInContainer(project.id), { timeout: 30_000 }).toBe(0);
 });

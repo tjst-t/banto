@@ -191,7 +191,7 @@ function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
 
 const INITIALIZE: InitializeRequest = {
   protocolVersion: PROTOCOL_VERSION,
-  // ファイル・端末の操作は引き受けない——エージェント自身の tool を Landlock の中で使わせる（§4.1）
+  // ファイル・端末の操作は引き受けない——エージェント自身の tool を閉じ込め（Project のコンテナ）の中で使わせる（§4.1）
   clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
 };
 

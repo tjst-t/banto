@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ProjectContainers, containerNameFor, execInContainer, idmapFor } from "./project-container.js";
+import { ProjectContainers, containerNameFor, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 test("同じコンテナへの設定の書き換えは、同時に来ても1本ずつ通す（Incus は同時の書き換えを断る）", async () => {
@@ -56,4 +56,12 @@ test("中で起こす：ユーザーを切り替えてから cd し、入れな�
     "/bin/sh", "-c", 'cd -- "$1" || exit 126; shift; exec "$@"', "banto-cd", "/home/u/p", "/usr/local/bin/node", "s.js",
   ]);
   assert.ok(!r.args.includes("--cwd"));
+});
+
+test("banto 全体用のコンテナは、どの banto のものか（置き場）で名前が分かれる", () => {
+  const a = containerNameFor(instanceContainerId("/home/u/.local/share/banto"));
+  const b = containerNameFor(instanceContainerId("/home/u/.cache/banto-e2e/1/data"));
+  assert.match(a, /^banto-instance-[0-9a-f]{8}$/);
+  assert.notEqual(a, b);
+  assert.equal(a, containerNameFor(instanceContainerId("/home/u/.local/share/banto")), "同じ置き場なら同じ名前");
 });

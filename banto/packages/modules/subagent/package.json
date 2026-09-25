@@ -16,8 +16,6 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.81.1",
     "@agentclientprotocol/sdk": "1.5.0",
-    "@banto/core": "*",
-    "@banto/landlock": "*",
     "@banto/module-contract": "*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "opencode-ai": "1.18.32"

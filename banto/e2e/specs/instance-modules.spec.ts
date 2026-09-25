@@ -43,6 +43,10 @@ test("画面が本物の宣言を見ている——既定が役割ごとに出�
   // どこに立つかが出ている（表の「動く場所」列・2026-09-18 から）
   await expect(page.locator('[data-module="shell"]')).toContainText("Project ごと");
   await expect(page.locator('[data-module="vault-directory"]')).toContainText("Global");
+  // どこで動くか（「サンドボックス」列、2026-09-25 から置き場所を出す）：同梱の全体の Module は banto 本体、
+  // Project の Module はその Project のコンテナ
+  await expect(page.locator('[data-module="vault-directory"]').locator("td").nth(3)).toHaveText("banto 本体");
+  await expect(page.locator('[data-module="shell"]').locator("td").nth(3)).toHaveText("Project のコンテナ");
 });
 
 test("止めるのはまとめて——保存の前に何が断るかが出て、保存すると実 host に届く", async ({ page }) => {
@@ -291,8 +295,8 @@ test("外から Module を足せる——どこに立つかは書いたもので
   const row = page.locator(`[data-module="${ADDED}"]`);
   await expect(row, "足したのに一覧に出ない").toBeVisible({ timeout: 30_000 });
   await expect(row, "ユーザー追加なのに組み込み扱い").toContainText("ユーザー追加");
-  // **外から繋ぐコードは必ず閉じ込める**（表の「隔離」列）
-  await expect(row.locator("td").nth(3), "閉じ込めが掛かっていない").not.toHaveText("—");
+  // **外から繋ぐコードは必ず閉じ込める**（表の「サンドボックス」列）——banto 全体の Module なら全体用のコンテナ
+  await expect(row.locator("td").nth(3), "閉じ込めが掛かっていない").toHaveText("全体のコンテナ");
 
   // **同梱には消すボタンが出ない**
   // 外から足したものは消せる。**データは消さないと言ってから消す**

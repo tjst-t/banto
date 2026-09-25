@@ -67,7 +67,7 @@ export function ShellHomePanel() {
     <div data-testid="shell-home-panel">
       <h1 className="mb-0.5 text-lg font-semibold text-foreground">Shell のホーム</h1>
       <p className="mb-1 text-xs text-ink-3">
-        AI が動かすコマンド（Shell）は閉じ込めの中で走り、あなたのホームは読めません。代わりに Project ごとの
+        AI が動かすコマンド（Shell）は Project ごとのコンテナの中で走り、あなたのホームは見えません。代わりに Project ごとの
         ホームを用意し、ここで選んだ設定ファイルだけを写します。
       </p>
       <p className="mb-4 text-xs text-ink-3">

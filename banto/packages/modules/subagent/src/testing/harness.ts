@@ -1,5 +1,4 @@
-// 試験の代役と起動の手順（単体・結合試験が共有する）。本物の Landlock・偽の ACP エージェントで、
-// Vault の中継だけを代役にする。
+// 試験の代役と起動の手順（単体・結合試験が共有する）。偽の ACP エージェントで、Vault の中継だけを代役にする。
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +6,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { listAgents } from "../agents.js";
+import { localClaudeLogin } from "../claude-login-access.js";
 import { createSubagentServer } from "../server.js";
 import { createSubagentSettingsServer } from "../settings-server.js";
 
@@ -75,11 +75,9 @@ export async function withServer(
     projectRoot: project,
     moduleDataDir: data,
     relayClient: fakeVault().relay,
-    guard: { dataDir: join(root, "data"), configDir: join(root, "config") },
-    pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
     // 試験は本物のログインを読まない
-    claudeLogin: { credentialsPath: "/nonexistent/.credentials.json" },
+    claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }),
     ...overrides,
   });
   const conn = await connect(server);

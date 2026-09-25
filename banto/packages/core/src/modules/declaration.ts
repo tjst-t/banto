@@ -59,6 +59,24 @@ export function isRemoteLaunch(launch: ModuleLaunch): launch is RemoteLaunch {
   return launch.type === "http";
 }
 
+/**
+ * **その Module がどこで動くか**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。
+ *
+ * - Project の Module → その Project のコンテナ
+ * - 外から足した banto 全体の Module → banto 全体用のコンテナ
+ * - 同梱の banto 全体の Module → banto 本体（banto 本体で動くのは banto 自身のコードだけ）
+ * - URL に繋ぐ形 → こちらにプロセスが無い
+ *
+ * 起こす処理と画面の両方がここから引く（規則3——宣言の `confinement` からは導かない）。
+ */
+export type ModulePlacement = "project-container" | "instance-container" | "host" | "remote";
+
+export function modulePlacement(meta: BantoModuleMeta, launch: ModuleLaunch): ModulePlacement {
+  if (isRemoteLaunch(launch)) return "remote";
+  if (meta.scope === "project") return "project-container";
+  return meta.origin === "bundled" ? "host" : "instance-container";
+}
+
 export interface ModuleDeclaration {
   /** 一覧の中で一意。Runner から見える名前（`mcp__<name>__…`）でもある。 */
   name: string;
@@ -499,10 +517,10 @@ export function secretsAllowedFor(
   // 人の明示の承知**で、そこは `connectRemoteDeclaredModule` が秘密を引く前に見る。
   // 置ける場所がヘッダだけなのも効いている（URL に置けば経路の記録に残る）。
   if (launch && isRemoteLaunch(launch)) return { ok: true };
-  // **閉じ込め無しのコードに秘密を渡さない**（同梱は自分のコードなので対象外）
-  if (meta.origin !== "bundled" && !meta.confinement) {
-    return { ok: false, reason: "閉じ込めの無い Module に秘密は渡せません" };
-  }
+  // **外から足した起動する形は、コンテナの中で動く**（`modulePlacement`、変更・2026-09-25——Landlock をやめた）。
+  // 以前はここで「閉じ込めを名乗っていない外部 Module には渡さない」と断っていたが、閉じ込めは宣言が名乗る
+  // ものではなく置き場所で決まるようになり、**閉じ込めの無い外部 Module はもう無い**。
+  // banto 本体で動くのは同梱（banto 自身のコード）だけ
   return { ok: true };
 }
 
@@ -751,17 +769,16 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
         BANTO_PROJECT_ROOT: "${projectRoot}",
         BANTO_HOST_MCP_URL: "${hostRelayUrl}",
         BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
-        // 閉じ込めの最後の防波堤（`assertRulesetIsSafe`）に、banto 全体の置き場を教える
-        // ——この Module の置き場ではない（それは host が `BANTO_MODULE_DATA_DIR` で渡す）
-        BANTO_DATA_ROOT: "${dataDir}",
       },
     },
     meta: {
       satisfies: ["subagent"],
-      // 資格情報は Vault の alias から受け取る（Shell の envSecrets と同じ経路）
+      // 資格情報は Vault の alias から受け取る（Shell の envSecrets と同じ経路）。本体の Claude ログインの中継は
+      // banto 全体の設定の Module が開く（決定・2026-09-25——本体のログインはコンテナの中に無い）
       dependsOn: [
         { role: "vault-directory", required: true },
         { role: "vault", required: true },
+        { role: "subagent-settings", required: true },
       ],
       isolation: "subprocess",
       scope: "project",
@@ -1018,6 +1035,7 @@ export function listProjectModules(
   dependsOn: BantoModuleMeta["dependsOn"];
   scope: BantoModuleMeta["scope"];
   confinement?: BantoModuleMeta["confinement"];
+  placement: ModulePlacement;
 }> {
   const available = loadModuleDeclarations(config, "");
   const selected = new Set(loadModuleDeclarations(config, projectId).map((d) => d.name));
@@ -1028,6 +1046,7 @@ export function listProjectModules(
     dependsOn: d.meta.dependsOn,
     scope: d.meta.scope,
     ...(d.meta.confinement ? { confinement: d.meta.confinement } : {}),
+    placement: modulePlacement(d.meta, d.launch),
   }));
 }
 
@@ -1051,6 +1070,7 @@ export function listInstanceModules(config: RuntimeConfigStore): Array<{
   dependsOn: BantoModuleMeta["dependsOn"];
   scope: BantoModuleMeta["scope"];
   confinement?: BantoModuleMeta["confinement"];
+  placement: ModulePlacement;
   launch: ModuleLaunch;
   /**
    * **一覧から消せるか**（追加・2026-09-19、ユーザー指摘）。
@@ -1100,6 +1120,7 @@ export function listInstanceModules(config: RuntimeConfigStore): Array<{
     dependsOn: d.meta.dependsOn,
     scope: d.meta.scope,
     ...(d.meta.confinement ? { confinement: d.meta.confinement } : {}),
+    placement: modulePlacement(d.meta, d.launch),
     launch: d.launch,
     removable: hasStoredDeclaration(overlays, d.name),
     // **「止めたら何が壊れるか」は返さない**（削除・2026-09-19）。

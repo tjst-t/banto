@@ -11,11 +11,6 @@ const require = createRequire(import.meta.url);
 export interface AgentDefinition {
   id: string;
   title: string;
-  /**
-   * 本体と、それが読み込む依存の置き場。エージェントの Landlock ドメインで読み取りと実行を許す
-   * （node_modules の中のネイティブ実行ファイルを含む）。**資格情報を置かない場所だけ**
-   */
-  installDirs: string[];
   command: string;
   args: (cwd: string) => string[];
   /** 専用ホームの中に置き場を向ける変数（HOME・TMPDIR・XDG は共通で向ける） */
@@ -54,22 +49,11 @@ function packageDir(name: string): string {
   return dirname(require.resolve(`${name}/package.json`));
 }
 
-/**
- * その包みを解決した node_modules。**Node で書かれたエージェントは、巻き上げられた依存
- * （`@agentclientprotocol/sdk` 等）をここから読む**——包みの中だけを許すと起動しない
- */
-function nodeModulesOf(dir: string): string {
-  const at = dir.lastIndexOf("/node_modules/");
-  if (at < 0) throw new Error(`${dir} は node_modules の下にありません`);
-  return dir.slice(0, at + "/node_modules".length);
-}
-
 function claudeCode(): AgentDefinition {
   const installDir = packageDir("@agentclientprotocol/claude-agent-acp");
   return {
     id: "claude-code",
     title: "Claude Code",
-    installDirs: [nodeModulesOf(installDir)],
     command: process.execPath,
     args: () => [join(installDir, "dist", "index.js")],
     // 会話の記録（session/load で拾う）はここに残る。人の ~/.claude には書かない
@@ -86,8 +70,6 @@ function openCode(): AgentDefinition {
   return {
     id: "opencode",
     title: "OpenCode",
-    // 単体の実行ファイルなので、包みの中だけでよい
-    installDirs: [installDir],
     // postinstall が CPU に合う実行ファイルを置く（ルートの allowScripts で許している）
     command: join(installDir, "bin", "opencode.exe"),
     args: (cwd) => ["acp", "--cwd", cwd],
@@ -117,7 +99,6 @@ function openCode(): AgentDefinition {
 function fakeAgents(env: NodeJS.ProcessEnv): AgentDefinition[] {
   const here = dirname(new URL(import.meta.url).pathname);
   const base = {
-    installDirs: [here, nodeModulesOf(packageDir("@agentclientprotocol/claude-agent-acp"))],
     command: process.execPath,
     args: () => [join(here, "testing", "fake-agent.js")],
     homeEnv: () => ({}),
