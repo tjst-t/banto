@@ -61,9 +61,10 @@ export function ProjectContainerSection({ projectId }: { projectId: string }) {
   return (
     <section data-testid="project-container-section" className="mt-8">
       <h2 className="mb-0.5 text-sm font-semibold text-foreground">コンテナ</h2>
+      {/* 文を JSX の中で折り返さない——改行が空白になり、日本語の途中に隙間が出る */}
       <p className="mb-3 text-xs text-ink-3">
-        この Project の Module と AI のコマンドは、この Project 専用のコンテナ（Ubuntu）の中で動きます。要る道具は中で
-        入れられ、入れたものは残ります。
+        {"この Project の Module と AI のコマンドは、この Project 専用のコンテナ（Ubuntu）の中で動きます。" +
+          "要る道具は中で入れられ、入れたものは残ります。"}
       </p>
       {error ? (
         <p data-testid="project-container-error" className="text-xs text-stop">
@@ -80,8 +81,8 @@ export function ProjectContainerSection({ projectId }: { projectId: string }) {
             <div className="flex flex-col gap-1">
               <Label htmlFor="project-container-nesting">中で Docker を使う</Label>
               <p className="text-xs text-ink-3">
-                Docker を使う Project だけ有効にしてください。有効にすると、コンテナの一部の保護（/proc・/sys への書き込みの
-                制限）が外れます。切り替えると、この Project の Module は立て直しになります。
+                {"Docker を使う Project だけ有効にしてください。有効にすると、コンテナの一部の保護（/proc・/sys への書き込みの制限）が外れます。" +
+                  "切り替えると、この Project の Module は立て直しになります。"}
               </p>
             </div>
             <Switch
