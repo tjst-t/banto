@@ -134,3 +134,13 @@ Claude のログイン・Vault・設定。AI に渡してはいけないもの�
   もともと効いていない、という理由。6.19・6.0.6 LTS）、(2) コンテナの AppArmor を丸ごと外す（上流の直し方より
   広く弱める）、(3) 中の runc を古くする（脱出の脆弱性が戻る）。Ubuntu の incus 6.0.0-1ubuntu0.3 には (1) が
   入っていない。LXD の snap（5.21.5 以降）は直っている
+
+### Incus を 6.0.6 LTS に上げた（2026-09-25、ユーザー「1で」）
+
+- Zabbly の `lts-6.0` を足した（鍵の指紋 `4EFC590696CB15B87C73A3AD82CC8797C838DCFD` を公式の値と照合、
+  `/etc/apt/keyrings/zabbly.asc`・`/etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources`）。推奨パッケージを入れると
+  VM の画面用の音声・映像ライブラリまで 70 近く付くので、`--no-install-recommends` で入れた。6.0.0 → 6.0.6、
+  既存のコンテナはそのまま
+- **中の Docker が動いた**（既定のネットワーク・中から外へ・port 公開）。入れ子を許したコンテナでだけ `/proc`・`/sys` の
+  保護規則が消え、許していないコンテナには残る——**入れ子は Docker を使う Project だけに許す**
+- 上げた直後の1回だけ `incus restart` が5分以上返らなかった（再現せず）。banto は停止を待ちすぎない（上限→強制停止）

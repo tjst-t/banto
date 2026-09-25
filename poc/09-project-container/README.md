@@ -7,7 +7,7 @@
 
 ## 環境（2026-09-25）
 
-- Ubuntu 24.04.4・kernel 6.8。Incus 6.0.0（Ubuntu の universe、`apt install incus`）
+- Ubuntu 24.04.4・kernel 6.8。Incus 6.0.0（Ubuntu の universe）→ **6.0.6 LTS（Zabbly の `lts-6.0`、推奨パッケージなし）に上げた**（中の Docker のため、下）
 - `incus admin init --minimal`：置き場 `default`（`dir`）、ブリッジ `incusbr0`
 - banto を動かすユーザーは **`incus` グループ**（権限を絞った使い方）。`incus-user` が
   `user-1000` という制限つきの区画を自動で作る：
@@ -37,6 +37,8 @@
 | 同じく C（`cc`）・Python（venv に `pip install requests`） | **できる** |
 | できたファイルの持ち主（ホスト側） | すべて uid 1000 |
 | 中で Docker（`security.nesting=true`、`apt install docker.io`） | **入るが、既定のネットワークではコンテナを起こせない**：`open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`。`--network host`（この sysctl を書かない）なら動く。**原因は権限（AppArmor）**：AppArmor の記録しない拒否を一時的に記録させて捕まえた——Incus が生成するコンテナのプロファイルの `deny /sys/[^fdck]*{,/**} wklx,` が、runc の書き込みを `/sys/net/ipv4/ip_unprivileged_port_start` として拒否（runc は CVE-2025-52881 の修正で `/proc` を付け直して fd から開き直すため、AppArmor にはパスが `/sys/…` に見える）。`deny` は許可の規則を足しても上書きできず、権限を絞った区画では低い層の設定も変えられない。**上流の Incus は直している**（PR #2624：入れ子を許したコンテナでは `/proc`・`/sys` の保護を外す。6.19・6.0.6 LTS）。Ubuntu の 6.0.0 には入っていない |
+| 中で Docker（Incus 6.0.6 に上げたあと） | **動く**：既定のネットワークで `hello-world`、中のコンテナから外へ、port 公開。入れ子を許したコンテナのプロファイルから `deny /sys/[^fdck]…` が消え、**入れ子を許していないコンテナには残る**ことも確かめた |
+| 再起動（中で Docker のコンテナが動いている） | 11 秒（Docker が中のコンテナを止めるのを 10 秒待つ）。**Incus を上げた直後の1回だけ `incus restart` が5分以上返らなかった**（再現せず）——banto は停止に上限を付けて、超えたら強制停止する |
 
 ## 外に出られない（→ 2026-09-25 ユーザーが許可を足して解決。ただし再起動で消える）
 
