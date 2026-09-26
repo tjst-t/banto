@@ -50,7 +50,12 @@ export type TurnStreamEvent =
       /** そのターンの入出力とキャッシュの内訳（決定・2026-09-06） */
       apiUsage?: unknown;
     }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /**
+   * **判断待ちに答えがついた**（追加・2026-09-26）。どこで答えても（別の画面・受信箱）、このターンの流れに載る
+   * ——あとから繋ぎ直した画面が流し直しても、そのカードは「回答済み」として出る。`answer` は画面に出す言葉
+   */
+  | { type: "answered"; judgmentId: string; answer: string };
 
 /** 画面を持つ tool（`_meta.ui.resourceUri`）の対応表。表示の復元に使う。 */
 export interface UiToolBinding {

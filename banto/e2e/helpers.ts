@@ -41,8 +41,12 @@ export async function installInfisical(page: Page, name = "vault-infisical"): Pr
   throw new Error(`Infisical を入れられませんでした: ${body}`);
 }
 
-export async function openApp(page: Page): Promise<void> {
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+export async function openApp(
+  page: Page,
+  /** 画面が繋ぐ先。既定は E2E の core——間に中継を挟んで接続を切る試験だけが変える */
+  host: string = CORE_BASE_URL,
+): Promise<void> {
+  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${host}`);
   await Promise.race([
     page.waitForURL(/\/p\/[0-9a-f-]+/, { timeout: 30_000 }),
     page.getByText("まだ Project がありません").waitFor({ state: "visible", timeout: 30_000 }),

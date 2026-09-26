@@ -437,6 +437,19 @@ async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<un
   return text ? JSON.parse(text) : {};
 }
 
+/**
+ * **流れが生きていることを、黙っている間も伝える**（決定・2026-09-26）。ターンの流れは tool が長く走る間
+ * 何も出さないことがある——そのままだと、画面は「止まった接続」と「黙って考えている」を見分けられない。
+ * 画面はこの3倍（45秒）何も届かなければ切れたとみなし、記録から最新を取り直す（`lib/backend/client.ts`）
+ */
+const SSE_KEEPALIVE_MS = 15_000;
+
+/** SSE の応答に、空行（コメント）を定期的に書く。止めるときは返り値を呼ぶ */
+function keepSseAlive(res: ServerResponse): () => void {
+  const timer = setInterval(() => res.write(": keep-alive\n\n"), SSE_KEEPALIVE_MS);
+  return () => clearInterval(timer);
+}
+
 /** 発言を送る口の本文の上限——画像を上限いっぱい添えても収まる大きさ（base64 は 4/3 倍） */
 const TURN_BODY_MAX_BYTES = Math.ceil((MAX_IMAGES_PER_MESSAGE * MAX_IMAGE_BYTES * 4) / 3) + 1024 * 1024;
 
@@ -1566,6 +1579,8 @@ export function createApp(deps: AppDeps) {
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
+        // 前のターンが終わるのを並んで待つ間も、tool が長く走る間も、流れは生きている
+        const stopKeepAlive = keepSseAlive(res);
         // **同じ Thread のターンは1本ずつ**（決定・2026-09-25、アーキ仕様 §4.2）。走っていれば、終わるまで
         // 並んで待つ——断らない（送ったつもりで消えるのを作らない。届いたもので host が始めたターンでも同じ）
         const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0) : undefined;
@@ -1574,6 +1589,7 @@ export function createApp(deps: AppDeps) {
             res.write(`data: ${JSON.stringify(event)}\n\n`);
           }
         } finally {
+          stopKeepAlive();
           release?.();
         }
         res.end();
@@ -1591,10 +1607,10 @@ export function createApp(deps: AppDeps) {
         });
         res.write(`data: ${JSON.stringify({ type: "hello" })}\n\n`);
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
-        const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25_000);
+        const stopKeepAlive = keepSseAlive(res);
         await new Promise<void>((resolve) => {
           req.on("close", () => {
-            clearInterval(keepAlive);
+            stopKeepAlive();
             unsubscribe();
             res.end();
             resolve();
@@ -1613,13 +1629,35 @@ export function createApp(deps: AppDeps) {
       if (streamMatch && req.method === "GET") {
         const threadId = streamMatch[1]!;
         if (!deps.projectThread.getThread(threadId)) return json(res, 404, { error: "not found" });
-        const snapshot = deps.turnEvents?.snapshot(threadId);
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
+        const stopKeepAlive = keepSseAlive(res);
+        let snapshot = deps.turnEvents?.snapshot(threadId);
+        const turnEvents = deps.turnEvents;
+        const threadTurns = deps.threadTurns;
+        if (!snapshot && turnEvents && threadTurns?.isRunning(threadId)) {
+          // **順番の鍵は取られたが、まだ走り始めていない**（決定・2026-09-26、実測）。Module を起こす等で数秒
+          // かかる——ここで idle と答えると、画面は「走っていない」と受け取り、そのターンを見逃したままになる
+          // （`turn.started` の知らせは鍵を取った時点で出る）。走り始めるか、走らずに鍵が返るまで待つ
+          await new Promise<void>((resolve) => {
+            const done = (): void => {
+              stopBegin();
+              stopTurns();
+              resolve();
+            };
+            const stopBegin = turnEvents.whenBegun(threadId, done);
+            const stopTurns = threadTurns.onChange((change) => {
+              if (change.threadId === threadId && change.type === "ended") done();
+            });
+            req.on("close", done);
+          });
+          snapshot = turnEvents.snapshot(threadId);
+        }
         if (!snapshot) {
+          stopKeepAlive();
           res.write(`data: ${JSON.stringify({ type: "idle" })}\n\n`);
           res.end();
           return;
@@ -1632,7 +1670,11 @@ export function createApp(deps: AppDeps) {
             // `done`／`error` でそのターンは終わり——ここで閉じる
             if (event.type === "done" || event.type === "error") finish();
           });
+          let finished = false;
           const finish = () => {
+            if (finished) return;
+            finished = true;
+            stopKeepAlive();
             unsubscribe();
             res.end();
             resolve();
@@ -2196,6 +2238,13 @@ export function createApp(deps: AppDeps) {
           return json(res, 409, { error: "no pending call", reason: "unresolvable" });
         }
         await deps.inbox.answerJudgment(id, body.answer);
+        // **答えたことを、そのターンの流れにも載せる**（決定・2026-09-26）——別の画面で見ている人・あとから
+        // 繋ぎ直す画面にも「回答済み」が届く。走っていなければ何もしない（聞き手がいない）
+        deps.turnEvents?.publish(item.threadId, {
+          type: "answered",
+          judgmentId: id,
+          answer: body.answer.behavior === "allow" ? "許可する" : body.answer.message || "拒否する",
+        });
         json(res, 200, { ok: true });
         return;
       }

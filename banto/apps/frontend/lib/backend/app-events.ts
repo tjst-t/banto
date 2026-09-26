@@ -5,15 +5,15 @@
 // 届いたもの（待たない仕事の完了など）で host が自分でターンを始めるようになったので、開いている画面が
 // 「知らないうちに始まった」ターンに気づく道が要る。**ポーリングはしない**（受信箱で踏んだ——再描画が
 // assistant-ui のランタイムを壊した）。流れてくるのは「何が起きたか」だけで、中身は既存の口で取りに行く：
-//   turn.started → その Thread を開いていれば繋ぎ直す（`reattached-turn.ts`）
+//   turn.started / turn.ended / hello（繋ぎ直した）→ 開いている会話に最新を出す（`latest-state.ts`）
 //   inbox.changed → 受信箱を取り直す
 //
 // 合言葉をヘッダで送るので EventSource は使わない（ターンの SSE と同じく fetch で読む）。途切れたら数秒おいて
-// 繋ぎ直す——**繋がっていない間も人は止めない**（開き直せば記録から見える）。
+// 繋ぎ直す——**繋がっていない間も人は止めない**（開き直せば記録から見える）。黙って止まった接続も見切る
+// （`readSse`）——携帯で別アプリから戻ったとき、知らせが止まったままにならない。
 
-import { getBackendConfig } from "./client";
+import { getBackendConfig, readSse } from "./client";
 import { refreshRealInbox } from "./real-inbox";
-import { refreshThreadFromHost } from "./adapter";
 
 export type RealAppEvent =
   | { type: "hello" }
@@ -22,18 +22,11 @@ export type RealAppEvent =
   | { type: "inbox.changed" };
 
 const listeners = new Set<(event: RealAppEvent) => void>();
-/** host が始めたターンか（帯の言い方を変える）。ターンが終われば消す */
-const startedByDelivery = new Set<string>();
 let started = false;
 
 export function onRealAppEvent(listener: (event: RealAppEvent) => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
-}
-
-/** その Thread で走っているターンが、届いたもので host が始めたものか */
-export function isDeliveryTurn(threadId: string): boolean {
-  return startedByDelivery.has(threadId);
 }
 
 /** 流れを読み始める（何度呼んでも1本だけ）。 */
@@ -60,30 +53,10 @@ async function readOnce(): Promise<void> {
   if (!config) return; // まだ繋ぎ先が決まっていない——次の周回で見る
   const res = await fetch(`${config.baseUrl}/api/events`, { headers: { authorization: `Bearer ${config.token}` } });
   if (!res.ok || !res.body) throw new Error(`知らせの流れに繋げませんでした（${res.status}）`);
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buf += decoder.decode(value, { stream: true });
-    const parts = buf.split("\n\n");
-    buf = parts.pop() ?? "";
-    for (const part of parts) {
-      if (!part.startsWith("data: ")) continue;
-      dispatch(JSON.parse(part.slice(6)) as RealAppEvent);
-    }
-  }
+  await readSse(res, (data) => dispatch(data as RealAppEvent));
 }
 
 function dispatch(event: RealAppEvent): void {
-  if (event.type === "turn.started" && event.cause === "delivery") startedByDelivery.add(event.threadId);
-  if (event.type === "turn.ended" && startedByDelivery.delete(event.threadId)) {
-    // 届いたもので host が始めたターンが終わった——記録から取り直す（繋ぎ直す前に終わっていても会話に出る）
-    void refreshThreadFromHost(event.threadId).catch((err: unknown) =>
-      console.warn("[banto] 届いたものに答えた会話を取り直せませんでした:", err),
-    );
-  }
   if (event.type === "inbox.changed") void refreshRealInbox();
   for (const listener of listeners) {
     try {

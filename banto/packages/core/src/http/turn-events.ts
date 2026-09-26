@@ -34,6 +34,7 @@ export class TurnEventBus {
   private readonly sideListeners = new Map<string, Set<(event: TurnStreamEvent) => void>>();
   private readonly streamListeners = new Map<string, Set<(event: TurnStreamEvent) => void>>();
   private readonly live = new Map<string, LiveTurn>();
+  private readonly beginListeners = new Map<string, Set<() => void>>();
 
   private static add(
     map: Map<string, Set<(event: TurnStreamEvent) => void>>,
@@ -72,6 +73,28 @@ export class TurnEventBus {
   /** ターンが始まった。**前の途中経過は捨てる**（残すのは走行中の1本だけ）。 */
   begin(threadId: string, startedAt: string): void {
     this.live.set(threadId, { events: [], startedAt });
+    const waiting = this.beginListeners.get(threadId);
+    this.beginListeners.delete(threadId);
+    for (const listener of waiting ?? []) listener();
+  }
+
+  /**
+   * **そのターンが走り始めたら、一度だけ知らせる**（追加・2026-09-26）。順番の鍵を取ってから走り始めるまでには
+   * Module を起こす等で数秒かかる——その間に繋ぎ直しに来た画面を「走っていない」と帰さないために待つ。
+   * 返り値を呼ぶと、聞くのをやめる
+   */
+  whenBegun(threadId: string, listener: () => void): () => void {
+    let set = this.beginListeners.get(threadId);
+    if (!set) {
+      set = new Set();
+      this.beginListeners.set(threadId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = this.beginListeners.get(threadId);
+      current?.delete(listener);
+      if (current?.size === 0) this.beginListeners.delete(threadId);
+    };
   }
 
   /** そのターンが出したイベントを覚え、**あとから繋いだ画面**にも渡す。 */

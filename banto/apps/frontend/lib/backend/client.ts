@@ -659,117 +659,99 @@ export type RealTurnEvent =
       serverName?: string;
       message: string;
     }
+  /** 判断待ちに答えがついた（どこで答えても流れに載る——決定・2026-09-26）。`answer` は画面に出す言葉 */
+  | { type: "answered"; judgmentId: string; answer: string }
   | { type: "done"; sessionId?: string; contextUsage?: unknown; compactionCount: number }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /**
+   * **流れが切れた**（画面の側の出来事。host は送ってこない——決定・2026-09-26）。携帯で別アプリへ移った・
+   * 回線が変わった等。ターンが失敗したのではないので、人にエラーとしては見せず、記録から最新を取り直す
+   */
+  | { type: "disconnected"; message: string };
+
+/** 繋ぎ直しの流れだけが最初に返すもの：走っていない（`idle`）／走っている（`attached`） */
+export type RealFollowEvent = RealTurnEvent | { type: "idle" } | { type: "attached"; startedAt: string };
 
 /**
- * ターンをSSEで受け取る。fetch()のReadableStreamを手で読む——ブラウザ標準の
- * EventSourceはPOST+bodyを送れないため使わない（apps/frontend/app.js、
- * Phase 0実測時に決めた方式をそのまま踏襲）。
+ * **黙って止まった接続を見切るまでの時間**（決定・2026-09-26）。host はどの流れにも15秒ごとに空行を送る
+ * （`SSE_KEEPALIVE_MS`）ので、その3倍なにも届かなければ切れている——携帯で別アプリから戻ったとき、
+ * 回線が変わったとき、接続は「エラー」にならずに黙って止まることがある
  */
+const SSE_STALE_MS = 45_000;
+
+class SseStaleError extends Error {}
+
 /**
- * ターンのSSEを読む。
- *
- * **読むのと、描くために渡すのを分ける**（改訂・2026-09-07、ユーザー報告が起点）。
- * 以前は「ジェネレータが `read()` する→yield する」を1本でやっていたため、
- * **描く側が最後まで引き取らないと、その先が読まれない**。実測すると
- * ランタイムは最後の yield のあと次を要求しないことがあり、その結果
- * **ターンの終了イベント（`done`）が一度も処理されなかった**
- * ——ターンが「走行中」のまま残り、文脈使用量も記録されない。
- *
- * いまは受信を**独立した繰り返し**で回し、届いた端から `onEvent` に渡しつつ、
- * 描画用には順番に取り出せるようにしてある。**描く側の都合で受信が止まらない。**
+ * SSE の本文を読み、`data:` の行ごとに渡す（ターン・繋ぎ直し・host の知らせで共通）。**黙って止まった接続は
+ * 見切って投げる**——見張りは5秒ごと、画面に戻ってきた瞬間（`visibilitychange`）にも見る（隠れている間は
+ * 見張りの時計が間引かれる）。本文が終われば返る
  */
-/**
- * **走行中のターンに、あとから繋ぎ直す**（`turn-stream-reattach`、2026-09-10）。
- *
- * ターンのイベント列は `POST …/messages` の応答の中にしか無いので、リロードすると
- * **出力どころか「走っている」ことすら消える**（実測）。host が走行中のぶんを
- * 覚えているので、`GET …/stream` で最初から流し直してもらう。
- * 走っていなければ `{type:"idle"}` が1つ来て閉じる。
- */
-export async function* attachRealTurn(threadId: string): AsyncGenerator<RealTurnEvent | { type: "idle" } | { type: "attached"; startedAt: string }> {
-  const config = requireConfig();
-  const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/stream`, {
-    headers: { authorization: `Bearer ${config.token}` },
-  });
-  if (!res.ok || !res.body) throw new Error(`走行中のターンに繋げませんでした（${res.status}）`);
-  const reader = res.body.getReader();
+export async function readSse(res: Response, onData: (data: unknown) => void): Promise<void> {
+  const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buf += decoder.decode(value, { stream: true });
-    const parts = buf.split("\n\n");
-    buf = parts.pop() ?? "";
-    for (const part of parts) {
-      if (!part.startsWith("data: ")) continue;
-      yield JSON.parse(part.slice(6)) as RealTurnEvent;
+  let lastAt = Date.now();
+  let stale = false;
+  const check = (): void => {
+    if (stale || Date.now() - lastAt <= SSE_STALE_MS) return;
+    stale = true;
+    void reader.cancel().catch(() => undefined);
+  };
+  const onVisible = (): void => {
+    if (document.visibilityState === "visible") check();
+  };
+  const timer = setInterval(check, 5_000);
+  document.addEventListener("visibilitychange", onVisible);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (stale) throw new SseStaleError(`${SSE_STALE_MS / 1000} 秒間なにも届かなかったので、切れたとみなしました`);
+      if (done) return;
+      lastAt = Date.now();
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        if (!part.startsWith("data: ")) continue; // 空行（`: keep-alive`）は数えるだけ
+        onData(JSON.parse(part.slice(6)));
+      }
     }
+  } finally {
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", onVisible);
   }
 }
 
-export function streamRealTurn(
-  threadId: string,
-  prompt: string,
-  permissionMode?: string,
-  onEvent?: (event: RealTurnEvent) => void,
-  /** 人が添えた画像（決定・2026-09-26） */
-  images: readonly OutgoingImage[] = [],
-): AsyncGenerator<RealTurnEvent> {
-  const queue: RealTurnEvent[] = [];
+/**
+ * **受信と、描くために渡すのを分ける**（改訂・2026-09-07、ユーザー報告が起点）。
+ * 以前は「ジェネレータが `read()` する→yield する」を1本でやっていたため、
+ * **描く側が最後まで引き取らないと、その先が読まれない**。実測すると
+ * ランタイムは最後の yield のあと次を要求しないことがあり、その結果
+ * **ターンの終了イベント（`done`）が一度も処理されなかった**。
+ *
+ * 受信は独立した繰り返しで回し、届いた端から `onEvent` に渡しつつ、描画用には順番に取り出せるようにする。
+ * `close()` で受信も止める（読むのをやめた流れを開いたままにしない）
+ */
+function queuedStream<E>(
+  pump: (push: (event: E) => void, signal: AbortSignal) => Promise<void>,
+  onEvent?: (event: E) => void,
+): { events: AsyncGenerator<E>; close(): void } {
+  const queue: E[] = [];
   let wake: (() => void) | null = null;
   let finished = false;
-
-  const push = (event: RealTurnEvent): void => {
+  const controller = new AbortController();
+  const push = (event: E): void => {
     onEvent?.(event);
     queue.push(event);
     wake?.();
     wake = null;
   };
-
-  const pump = async (): Promise<void> => {
-    const config = requireConfig();
-    const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ prompt, permissionMode, ...(images.length > 0 ? { images } : {}) }),
-    });
-    if (!res.ok || !res.body) {
-      // **断られた理由を出す**（追加・2026-09-25）——409 は「この Thread はいま走っている」（届いたものに答えている等）
-      const reason = ((await res.json().catch(() => null)) as { error?: string } | null)?.error;
-      push({ type: "error", message: reason ?? `ターンの開始に失敗しました（${res.status}）` });
-      return;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        if (!part.startsWith("data: ")) continue;
-        push(JSON.parse(part.slice(6)) as RealTurnEvent);
-      }
-    }
-  };
-
-  void pump()
-    .catch((err: unknown) => {
-      // **黙って終わらせない**（規則2）——読めなくなったことを描く側に伝える
-      push({ type: "error", message: err instanceof Error ? err.message : String(err) });
-    })
-    .finally(() => {
-      finished = true;
-      wake?.();
-      wake = null;
-    });
-
-  async function* drain(): AsyncGenerator<RealTurnEvent> {
+  void pump(push, controller.signal).finally(() => {
+    finished = true;
+    wake?.();
+    wake = null;
+  });
+  async function* drain(): AsyncGenerator<E> {
     for (;;) {
       const next = queue.shift();
       if (next !== undefined) {
@@ -782,8 +764,76 @@ export function streamRealTurn(
       });
     }
   }
+  return { events: drain(), close: () => controller.abort() };
+}
 
-  return drain();
+/**
+ * **走行中のターンに、あとから繋いで流し直してもらう**（`turn-stream-reattach`、2026-09-10）。
+ * 走っていれば `attached` のあと、そのターンがこれまでに出したものを最初から、続きもそのまま。
+ * 走っていなければ `idle` が1つ来て閉じる。繋げなかった・途中で切れたら `disconnected`
+ */
+export function followRealTurn(
+  threadId: string,
+  onEvent?: (event: RealFollowEvent) => void,
+): { events: AsyncGenerator<RealFollowEvent>; close(): void } {
+  return queuedStream<RealFollowEvent>(async (push, signal) => {
+    try {
+      const config = requireConfig();
+      const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/stream`, {
+        headers: { authorization: `Bearer ${config.token}` },
+        signal,
+      });
+      if (!res.ok || !res.body) {
+        push({ type: "disconnected", message: `走行中のターンに繋げませんでした（${res.status}）` });
+        return;
+      }
+      await readSse(res, (data) => push(data as RealFollowEvent));
+    } catch (err) {
+      if (!signal.aborted) push({ type: "disconnected", message: err instanceof Error ? err.message : String(err) });
+    }
+  }, onEvent);
+}
+
+/**
+ * ターンを始めて、その流れを読む。`POST` の本文を送るので EventSource は使わない
+ * （fetch の ReadableStream を手で読む）。
+ */
+export function streamRealTurn(
+  threadId: string,
+  prompt: string,
+  permissionMode?: string,
+  onEvent?: (event: RealTurnEvent) => void,
+  /** 人が添えた画像（決定・2026-09-26） */
+  images: readonly OutgoingImage[] = [],
+): AsyncGenerator<RealTurnEvent> {
+  return queuedStream<RealTurnEvent>(async (push, signal) => {
+    let res: Response;
+    try {
+      const config = requireConfig();
+      res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ prompt, permissionMode, ...(images.length > 0 ? { images } : {}) }),
+        signal,
+      });
+    } catch (err) {
+      // **届いたか分からない**——ターンが始まったとは言えないので、切れたではなく失敗として出す（規則2）
+      if (!signal.aborted) push({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!res.ok || !res.body) {
+      // **断られた理由を出す**（追加・2026-09-25）——409 は「この Thread はいま走っている」（届いたものに答えている等）
+      const reason = ((await res.json().catch(() => null)) as { error?: string } | null)?.error;
+      push({ type: "error", message: reason ?? `ターンの開始に失敗しました（${res.status}）` });
+      return;
+    }
+    try {
+      await readSse(res, (data) => push(data as RealTurnEvent));
+    } catch (err) {
+      // **ターンは host で続いている**（host は画面が切れても最後まで走らせる）——切れたとだけ伝える
+      if (!signal.aborted) push({ type: "disconnected", message: err instanceof Error ? err.message : String(err) });
+    }
+  }, onEvent).events;
 }
 
 // ---- Module の画面（MCP Apps、決定・2026-09-06、§6.2）----------------------

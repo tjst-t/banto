@@ -13,6 +13,7 @@ import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { RuntimeConfigStore } from "../config/runtime.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
+import { TurnEventBus } from "./turn-events.js";
 import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 
 interface TestDeps {
@@ -344,6 +345,80 @@ test("承認の答えの形を検証する——不正な値をSDKへ流さな�
       assert.equal(res.status, 400, `不正な答えを受け入れてはいけない: ${JSON.stringify(answer)}`);
     }
   });
+});
+
+// **どこで答えても、そのターンの流れに載る**（決定・2026-09-26、ユーザー要望「戻ったら最新の状況を」）。
+// 流れはターンの外から中へ（side）入り、ターンが流すので、繋ぎ直した画面が流し直しても「回答済み」が出る
+test("判断待ちに答えると、その答えが走っているターンの流れに載る（許可も拒否も、画面に出す言葉で）", async () => {
+  const turnEvents = new TurnEventBus();
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const seen: unknown[] = [];
+      turnEvents.subscribeSide(thread.id, (event) => seen.push(event));
+
+      for (const [answer, label] of [
+        [{ behavior: "allow" }, "許可する"],
+        [{ behavior: "deny", message: "今はやめて" }, "今はやめて"],
+      ] as const) {
+        const judgment = await deps.inbox.raiseJudgment({ threadId: thread.id, source: "text", message: "承認: t" });
+        deps.pendingApprovals.register(judgment.id, () => {});
+        const res = await fetch(`${base}/api/inbox/${judgment.id}/answer`, {
+          method: "POST",
+          headers: h,
+          body: JSON.stringify({ answer }),
+        });
+        assert.equal(res.status, 200);
+        assert.deepEqual(seen.at(-1), { type: "answered", judgmentId: judgment.id, answer: label });
+      }
+    },
+    { turnEvents },
+  );
+});
+
+// **鍵を取ってから走り始めるまでの間に、繋ぎ直しに来た画面を帰さない**（決定・2026-09-26、実測）。
+// `turn.started` の知らせは鍵を取った時点で出るが、走り始めるのは Module を起こしてから（数秒）。その間に
+// idle と答えると、画面はそのターンを見逃したままになっていた
+test("走り始める前のターンに繋ぎに来たら、走り始めるまで待って流す／走らずに鍵が返れば idle", async () => {
+  const turnEvents = new TurnEventBus();
+  const threadTurns = new ThreadTurns();
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const read = () =>
+        fetch(`${base}/api/threads/${thread.id}/stream`, { headers: { authorization: `Bearer ${token}` } }).then((r) => r.text());
+
+      // 鍵は取られたが、まだ走っていない——少しして走り始め、終わる
+      const release = threadTurns.tryAcquire(thread.id, 0)!;
+      const body = read();
+      await new Promise((r) => setTimeout(r, 100));
+      turnEvents.begin(thread.id, "2026-09-26T00:00:00.000Z");
+      // 本物のターンは、走り始めてから中身を出すまでに必ず手番をまたぐ（Skill を決める・記録に書く）
+      await new Promise((r) => setTimeout(r, 50));
+      turnEvents.record(thread.id, { type: "message", message: { type: "assistant", marker: "途中" } });
+      turnEvents.record(thread.id, { type: "done", compactionCount: 0 });
+      turnEvents.end(thread.id);
+      release();
+      const text = await body;
+      assert.match(text, /"type":"attached"/, "走り始めるのを待たずに idle と答えた");
+      assert.match(text, /"marker":"途中"/);
+      assert.match(text, /"type":"done"/);
+
+      // 鍵は取られたが、走らずに返された（始める前に失敗した等）——idle で閉じる（待ち続けない）
+      const release2 = threadTurns.tryAcquire(thread.id, 0)!;
+      const body2 = read();
+      await new Promise((r) => setTimeout(r, 100));
+      release2();
+      assert.match(await body2, /"type":"idle"/);
+
+      // 鍵も取られていない——すぐ idle
+      assert.match(await read(), /"type":"idle"/);
+    },
+    { turnEvents, threadTurns },
+  );
 });
 
 test("permissionModeは6値だけ受け付ける", async () => {

@@ -6,10 +6,9 @@
 // RemoteThreadListRuntime の前提とは相性が悪い。Thread ごとに Runtime を分けることで、
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
-import { ReattachedTurn } from "@/components/banto/thread/reattached-turn";
 import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import type { ForkFromMessage } from "@/components/banto/thread/fork-from-message";
@@ -20,12 +19,16 @@ import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/hu
 import { OpenableCard } from "@/components/banto/thread/openable-card";
 import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import {
+  followVersion,
   hasLiveRealRun,
   releaseRealRun,
   realMessagesToInitial,
   restoredJudgmentMessages,
   restoredSyncVersion,
+  subscribeFollow,
+  takeFollowToStart,
 } from "@/lib/backend/adapter";
+import { registerOpenThread } from "@/lib/backend/latest-state";
 import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
 import { ImageAttachmentAdapter } from "@/lib/backend/image-attachment";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
@@ -121,6 +124,14 @@ export function ThreadPanel({
     if (!realThreadId) return;
     return () => releaseRealRun(realThreadId);
   }, [realThreadId]);
+  // **開いている間、最新の状況を出し続ける**（決定・2026-09-26、ユーザー要望）——開いたとき・他所でターンが
+  // 始まった／終わったとき・流れが切れたとき・画面に戻ってきたとき、記録から組み直し、走っていれば本文に流す
+  useEffect(() => {
+    if (!realThreadId) return;
+    return registerOpenThread(realThreadId);
+  }, [realThreadId]);
+  // 記録から組み直した（乗った流れを描き始める）——会話を作り直す合図
+  useSyncExternalStore(subscribeFollow, followVersion, () => 0);
 
   const transcriptMarkers = useMemo(() => {
     if (!thread?.real) return undefined;
@@ -252,15 +263,16 @@ function ThreadRuntime({
     unstable_humanToolNames: [HUMAN_TOOL_NAME, ...APPROVAL_TOOL_NAMES],
   });
 
-  // **走行中のターンに繋ぎ直したときの帯**（`turn-stream-reattach`、2026-09-10）。
-  // 入力欄の直上に置く——「いま何が起きているか」は、これから打つ人がいちばん
-  // 見る場所（Clear の横線と違い、**過去の場所に紐づく情報ではない**）
-  const hint: ReactNode = (
-    <>
-      <ThreadMarkers markers={markers} />
-      <ReattachedTurn threadId={threadId} />
-    </>
-  );
+  // **host が走らせているターンに乗ったら、自分で送ったときと同じく本文に流す**（決定・2026-09-26）。
+  // 乗るたびに会話は記録から作り直される（このランタイムは作り直された新しいもの）ので、作られたときに
+  // 1回だけ見る。流れを読むのは adapter の run——自分で送ったターンと同じ道（規則3）
+  useEffect(() => {
+    if (!takeFollowToStart(threadId)) return;
+    const messages = runtime.thread.getState().messages;
+    runtime.thread.startRun({ parentId: messages.at(-1)?.id ?? null });
+  }, [runtime, threadId]);
+
+  const hint: ReactNode = <ThreadMarkers markers={markers} />;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>

@@ -18,6 +18,7 @@ import type {
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
 import {
   answerRealInboxItem,
+  followRealTurn,
   getRealThread,
   listRealUiTools,
   streamRealTurn,
@@ -26,6 +27,7 @@ import {
   type RealMessageImage,
   type RealUiTool,
   type RealInboxJudgment,
+  type RealThread,
   type RealTurnEvent,
 } from "./client";
 import { refreshRealInbox } from "./real-inbox";
@@ -149,6 +151,13 @@ interface LiveTurn extends LiveTurnState {
   acc: PartsAccumulator;
   /** このターンを起こしたときの発言（表示・記録用）。 */
   prompt: string;
+  /**
+   * **あとから乗った流れ**（この画面が送ったのではないターン——決定・2026-09-26）だけが持つ。読むのをやめたら
+   * 受信も止める。自分で送った流れは止めない（host がターンを最後まで流す口でもある）
+   */
+  close?: () => void;
+  /** あとから乗った流れを、まだ会話に描き始めていない（`takeFollowToStart` で描き始める） */
+  awaitingStart?: boolean;
 }
 
 /** **このブラウザがいま読んでいるターン**だけが入る（決定・2026-09-06、見直し起点）。
@@ -159,6 +168,23 @@ interface LiveTurn extends LiveTurnState {
  *  （docs/notes/2026-09-06-tool-approval-review.md）。
  *  いまは run() の finally で必ず取り除くので、**居るか居ないか**だけで表せる（規則3）。 */
 const liveTurns = new Map<string, LiveTurn>();
+
+/**
+ * **流れがどう終わったか**を、最新を出す側（`latest-state.ts`）に知らせる（決定・2026-09-26）。
+ *  - `done`：最後まで読んだ——会話はもう最新。記録は写すだけで、組み直さない
+ *  - `disconnected`：途中で切れた——記録から組み直して、まだ走っていれば乗り直す
+ */
+export type StreamOutcome = "done" | "disconnected";
+const streamOutcomeListeners = new Set<(threadId: string, outcome: StreamOutcome) => void>();
+
+export function onStreamOutcome(listener: (threadId: string, outcome: StreamOutcome) => void): () => void {
+  streamOutcomeListeners.add(listener);
+  return () => streamOutcomeListeners.delete(listener);
+}
+
+function reportStreamOutcome(threadId: string, outcome: StreamOutcome): void {
+  for (const listener of streamOutcomeListeners) listener(threadId, outcome);
+}
 
 function countUserMessages(messages: readonly ThreadMessage[]): number {
   return messages.filter((m) => m.role === "user").length;
@@ -473,6 +499,8 @@ export function releaseRealRun(threadId: string): void {
   }
   // 読むのをやめたSSEは閉じる（開いたままにしても誰も読まない）
   void live.iterator.return(undefined as never);
+  live.close?.();
+  followsToStart.delete(threadId);
 }
 
 /** そのThreadのターンが、いまこのブラウザで生きているか。 */
@@ -536,7 +564,8 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
       // （規則2）。**見分けは文面ではなく発言の数と「誰かが読んでいるか」**
       // ——同じ文面をもう一度送ると、文面では再開と区別できない
       // （`live-turn-guard.ts`）。
-      if (live && decideRun(live, countUserMessages(messages)) === "refuse") {
+      // あとから乗った流れを描き始める前に届いた送信も、同じく重ねない
+      if (live && (live.awaitingStart || decideRun(live, countUserMessages(messages)) === "refuse")) {
         live.acc.appendText(
           live.acc.hasPendingHumanTool()
             ? "\n\n（この発言は送っていません——いま走っているターンが人の判断を待っています。答えてから送ってください）"
@@ -586,6 +615,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
               if (self.turn && liveTurns.get(thread.id) === self.turn) {
                 liveTurns.delete(thread.id);
               }
+              reportStreamOutcome(thread.id, "done");
             },
             images,
           ),
@@ -606,6 +636,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         live!.acc.hasPendingHumanTool()
           ? { type: "requires-action", reason: "tool-calls" }
           : { type: "running" };
+      let disconnected = false;
 
       try {
       for await (const event of live.iterator) {
@@ -647,6 +678,19 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           //  lib/mock/adapter.ts の同じ罠のコメントも参照）。
           // 待ちの機構はhost側の1つに保つ（規則3）。
           continue;
+        } else if (event.type === "answered") {
+          // **どこで答えても、そのカードは回答済みになる**（決定・2026-09-26）——別の画面・受信箱で答えたもの、
+          // 流し直しで届いた過去の答えも
+          const toolCallId = `judgment-${event.judgmentId}`;
+          live.acc.finishTool(toolCallId, event.answer);
+          liveByJudgmentToolCallId.delete(toolCallId);
+          yield { content: live.acc.snapshot(), status: status() };
+          continue;
+        } else if (event.type === "disconnected") {
+          // **流れが切れた**（携帯で別アプリへ移った等）。ターンは host で続いている——人にエラーとしては
+          // 見せず、ここで読むのをやめる。記録から組み直して乗り直すのは最新を出す側（`finally` で知らせる）
+          disconnected = true;
+          break;
         } else if (event.type === "error") {
           live.acc.appendText(`\n\nエラー: ${event.message}`);
           // **答え待ちが残っていれば requires-action のまま**にする——固定で
@@ -673,9 +717,107 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         for (const [toolCallId, turn] of liveByJudgmentToolCallId) {
           if (turn === current) liveByJudgmentToolCallId.delete(toolCallId);
         }
+        // あとから乗った流れは受信も止める（停止ボタン・画面を離れた・切れた）
+        current.close?.();
+        if (disconnected) reportStreamOutcome(thread.id, "disconnected");
       }
     },
   };
+}
+
+// ---- あとから乗る（決定・2026-09-26、ユーザー要望「戻ったら最新の状況をそのまま出して」）------------
+//
+// リロード・開き直し・別アプリから戻った・別の画面や host が始めたターン——**どれも、自分で送ったときと
+// 同じ描き方で会話の本文に流す**。host に最初から流し直してもらい（`GET …/stream`）、それを自分の送信と
+// 同じ `LiveTurn` として持つ。描くのは会話のランタイムに run を1本始めさせる（`takeFollowToStart`）——
+// 読む道も判断待ちの答え方も、自分で送ったターンと1つにする（規則3）。
+
+const followsToStart = new Set<string>();
+const followListeners = new Set<() => void>();
+let followVersionCounter = 0;
+
+export function subscribeFollow(listener: () => void): () => void {
+  followListeners.add(listener);
+  return () => followListeners.delete(listener);
+}
+
+export function followVersion(): number {
+  return followVersionCounter;
+}
+
+/**
+ * **その Thread で host が走らせているターンに乗る**。乗ったら true（描き始めるのはランタイムが
+ * `takeFollowToStart` を見てから）。走っていなければ false。繋げなければ投げる（呼ぶ側が後でやり直す）。
+ * すでにこの画面が読んでいるなら何もしない
+ */
+export async function followRunningTurn(threadId: string): Promise<boolean> {
+  if (liveTurns.has(threadId)) return true;
+  const self: { turn: LiveTurn | null } = { turn: null };
+  let sawContent!: () => void;
+  const contentArrived = new Promise<void>((resolve) => (sawContent = resolve));
+  const stream = followRealTurn(threadId, (event) => {
+    if (event.type === "attached" || event.type === "idle") return;
+    sawContent();
+    if (event.type !== "done") return;
+    appendRealUsage(threadId, event.contextUsage, event.compactionCount);
+    if (self.turn && liveTurns.get(threadId) === self.turn) liveTurns.delete(threadId);
+    reportStreamOutcome(threadId, "done");
+  });
+  const head = await stream.events.next();
+  const first = head.done ? undefined : head.value;
+  if (!first || first.type === "idle") {
+    stream.close();
+    return false;
+  }
+  if (first.type !== "attached") {
+    stream.close();
+    throw new Error(first.type === "disconnected" ? first.message : `走行中のターンに乗れませんでした（${first.type}）`);
+  }
+  // **最初の中身が届くまで待つ**——host はターンの入力（人の発言・届いたもの）を記録してから Runner を起こす
+  // ので、中身が1つでも来ていれば、記録にはその入力がある。開き直した場合は流し直しがすぐ届く。
+  // 起きるのが遅い回（コンテナが起きる等）でも止まり続けないよう、上限を置く——越えても描くのは同じ
+  await Promise.race([contentArrived, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+  if (liveTurns.has(threadId)) {
+    // 待っている間に、この画面が自分で送り始めた——そちらを読む
+    stream.close();
+    return true;
+  }
+  const turn: LiveTurn = {
+    iterator: stream.events as AsyncGenerator<RealTurnEvent>,
+    acc: new PartsAccumulator(),
+    prompt: "",
+    // 乗った流れには人の発言を数える起点が無い——新しい送信は `consuming` で見分ける（`live-turn-guard.ts`）
+    userMessageCount: Number.MAX_SAFE_INTEGER,
+    consuming: false,
+    close: stream.close,
+    awaitingStart: true,
+  };
+  self.turn = turn;
+  liveTurns.set(threadId, turn);
+  followsToStart.add(threadId);
+  return true;
+}
+
+/** 会話のランタイムが、乗った流れを描き始めてよいか（1回だけ true）。true なら run を1本始めること */
+export function takeFollowToStart(threadId: string): boolean {
+  if (!followsToStart.delete(threadId)) return false;
+  const live = liveTurns.get(threadId);
+  if (!live?.awaitingStart) return false;
+  live.awaitingStart = false;
+  return true;
+}
+
+/**
+ * **記録から会話を組み直す**（ランタイムを作り直す——流れていた途中の吹き出しは消え、乗った流れがあれば
+ * 新しいランタイムがそれを描き始める）。**記録の写しは、組み直すときにだけ書き換える**——会話の中の
+ * 目印（Fork の入口・Clear の横線）は、組み立てたときの記録の番号（`real-<seq>`）で置き場所を探すので、
+ * 写しだけ新しくすると、いまの会話に無い番号を探して目印が消える（実測・2026-09-26）
+ */
+export function applyThreadRecord(threadId: string, record: RealThread): void {
+  restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
+  updateRealThreadData(threadId, record.messages, record.markers, record.usage);
+  followVersionCounter += 1;
+  for (const listener of followListeners) listener();
 }
 
 /** 承認/Elicitationの答えを実hostへ送る。human-tool-card.tsxのonAnsweredから呼ぶ。
@@ -729,21 +871,6 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
  */
 export function rebuildThreadFromRecord(threadId: string): void {
   restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
-}
-
-/**
- * **この画面の外で走ったターンが終わった**（追加・2026-09-25、host からの知らせ）。記録を1回だけ取り直す
- * ——繋ぎ直す前に終わっていた（一瞬で終わったターン）ときも、ここで会話に出る。**このブラウザが走らせている
- * ターンの最中は取り直さない**（流れている表示を壊す）
- */
-export async function refreshThreadFromHost(threadId: string): Promise<void> {
-  if (hasLiveRealRun(threadId) || !getThread(threadId)) return;
-  const updated = await getRealThread(threadId);
-  if (hasLiveRealRun(threadId)) return;
-  if (updated.messages.length !== (getThread(threadId)?.realMessages?.length ?? 0)) {
-    restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
-    updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage);
-  }
 }
 
 export async function syncRestoredThread(threadId: string): Promise<void> {

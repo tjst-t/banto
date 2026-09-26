@@ -52,6 +52,11 @@ export interface FakePlan {
    */
   streamMs?: number;
   /**
+   * **`then` も少しずつ流す**（追加・2026-09-26）。合計で何ミリ秒かけるか。
+   * 判断待ちに答えた**あと**も走っているターンに開き直す試験（`turn-reattach.spec.ts`）が使う
+   */
+  thenStreamMs?: number;
+  /**
    * **banto がモデルに送った文脈を、そのまま発言にする**（追加・2026-09-21）。
    *
    * 「合言葉をそのまま答えて」のような試験は、本物では**モデルが覚えていて
@@ -355,22 +360,22 @@ export async function* runTurn(opts: {
     yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
   }
 
-  if (plan.say) {
-    if (plan.streamMs && plan.streamMs > 0) {
-      // 行ごとに分けて、合計が streamMs になるよう間を空けて流す
-      const lines = plan.say.split("\n");
-      const gap = Math.max(1, Math.floor(plan.streamMs / Math.max(1, lines.length)));
-      let sofar = "";
-      for (const line of lines) {
-        if (opts.signal?.aborted) break;
-        sofar = sofar === "" ? line : `${sofar}\n${line}`;
-        yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: line }]) };
-        await new Promise((r) => setTimeout(r, gap));
-      }
-    } else {
-      yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: plan.say }]) };
+  /** 行ごとに分けて、合計が `ms` になるよう間を空けて流す（無ければ一度に） */
+  async function* speak(text: string, ms?: number): AsyncGenerator<unknown> {
+    if (!ms || ms <= 0) {
+      yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
+      return;
+    }
+    const lines = text.split("\n");
+    const gap = Math.max(1, Math.floor(ms / Math.max(1, lines.length)));
+    for (const line of lines) {
+      if (opts.signal?.aborted) break;
+      yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: line }]) };
+      await new Promise((r) => setTimeout(r, gap));
     }
   }
+
+  if (plan.say) yield* speak(plan.say, plan.streamMs);
 
   if (plan.sayRuntime) {
     // **どのモデル・effort で走ったか**を返す——画面で選んだものが届いたかを見る
@@ -498,7 +503,7 @@ export async function* runTurn(opts: {
 
   if (plan.then) {
     lastText = plan.then;
-    yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: plan.then }]) };
+    yield* speak(plan.then, plan.thenStreamMs);
   }
 
   console.warn(`[fake-runner] ターン終了 session=${sessionId}`);

@@ -138,6 +138,23 @@
       ]
     },
     {
+      "id": "turn-latest-on-return",
+      "phase": "4",
+      "title": "戻ってきたら、最新の状況をそのまま出す（帯をやめる）",
+      "status": "done",
+      "dependencies": ["turn-stream-reattach"],
+      "why": "ユーザー指摘（2026-09-26）：AI の応答に時間がかかっている間にタブを閉じて開き直す・リロードする・別アプリへ移って戻ると、「このターンは走っています（別の画面で始まったものに繋ぎ直しました）／まだ出力はありません」という帯が出るだけで、最新の状況が出ない。**直す前に測った**：①リロード後、本文に AI の発言が出ない（帯だけ）②接続が切れると吹き出しに「エラー: network error」が出たまま止まり、host でターンが終わっても画面は変わらない ③別の画面や API で始まったターンは、開いている画面に出ない（`turn.started` は鍵を取った時点で出るが、流し直しの口は Module を起こし終えて走り始めるまで idle と答えていた）④答えた判断待ちが、流し直すと未回答に見えうる。",
+      "doneWhen": "リロード・接続断・黙って止まった接続・他所で始まったターン・答えたあとの開き直しのどれでも、走っているターンが自分で送ったときと同じ描き方で本文に流れ、最後まで出て、AI の発言は1つだけ・エラーも帯も出ない（E2E `specs/turn-reattach.spec.ts`、接続断は画面と host の間の中継で本当に切る）。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.8",
+        "docs/notes/2026-09-26-latest-on-return.md",
+        "banto/apps/frontend/lib/backend/latest-state.ts",
+        "banto/e2e/specs/turn-reattach.spec.ts"
+      ],
+      "result": "2026-09-26：帯（ReattachedTurn）をやめ、最新を出す道を1つにした——記録から会話を組み直し、host がまだ走らせていれば最初から流し直してもらって、自分で送ったターンと同じランタイムの run として本文に流す（`followRunningTurn`→`startRun`）。きっかけは開いた・`turn.started`/`turn.ended`/`hello`・流れが切れた・画面に戻った（3秒以上）・回線が戻った。流れが切れても人にエラーとしては見せない。host はどの SSE にも15秒ごとに空行を送り、画面は45秒なにも届かなければ切れたとみなす。流し直しの口は、鍵を取ってから走り始めるまでの間は待つ。判断待ちの答えもターンの流れに載せた（`answered`）。直す前の画面で接続断が「エラー: network error」のまま止まることを試験で再現してから直した。",
+      "completedAt": "2026-09-26"
+    },
+    {
       "id": "project-instruction-ui",
       "phase": "0以降",
       "title": "Project 固有の指示（system prompt の層3）を人が書く画面",
@@ -2266,6 +2283,17 @@
       "refs": [
         "banto/e2e/oauth-mcp-fixture.ts:52",
         "banto/e2e/package.json"
+      ]
+    },
+    {
+      "id": "live-text-join-differs-from-record",
+      "title": "流れている吹き出しと記録で、文のつなぎ方が違う",
+      "status": "backlog",
+      "why": "2026-09-26 に気づいた（最新の状況を出す作業の範囲の外なので触っていない——規則7）。画面の流れている吹き出しは、SDK の assistant メッセージごとの文を**改行なしで**つなぐ（`PartsAccumulator.appendText`）。記録は改行でつなぐ（turn-runner の `extractAssistantText`）。そのため同じターンが、流れているときとリロード後で見た目が変わる（偽 Runner で `[1][2]…` と `[1]⏎[2]…`）。本物の SDK で文だけの assistant メッセージが続くことはまれ（間に tool が入れば別の部分になる）なので、影響は小さい見込み——どちらに寄せるかは、本物のモデルで続く場合を測ってから決める。",
+      "doneWhen": "同じターンが、流れているときとリロード後で同じ文として出る。",
+      "refs": [
+        "banto/apps/frontend/lib/backend/adapter.ts（PartsAccumulator.appendText）",
+        "banto/packages/core/src/http/turn-runner.ts（extractAssistantText）"
       ]
     },
     {
