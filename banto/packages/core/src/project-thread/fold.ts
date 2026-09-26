@@ -2,6 +2,7 @@ import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
 import type {
   MessageEntry,
+  MessageImage,
   MessageOrigin,
   ProjectThreadReadModel,
   ProjectState,
@@ -65,6 +66,8 @@ export type ProjectThreadEvent =
         uiToolCalls?: unknown;
         /** 機械から届いたものの印（追加・2026-09-25）。無ければ人の発言 */
         origin?: MessageOrigin;
+        /** 人が添えた画像の名前（追加・2026-09-26）。中身は画像の置き場 */
+        images?: MessageImage[];
       };
     }
   // **Thread に届いたもの**（追加・2026-09-25、アーキ仕様 §4.2）。会話に積むのはターンを始めるとき
@@ -338,6 +341,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             role: event.payload.role,
             text: event.payload.text,
             ...(event.payload.origin ? { origin: event.payload.origin } : {}),
+            ...(event.payload.images && event.payload.images.length > 0 ? { images: event.payload.images } : {}),
             // 先に届いていた「どの面に出したか」をここで貼る（上の説明）
             uiToolCalls: Array.isArray(event.payload.uiToolCalls)
               ? (event.payload.uiToolCalls as NonNullable<MessageEntry["uiToolCalls"]>).map((c) => {

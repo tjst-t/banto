@@ -304,6 +304,8 @@ async function callRealTool(
  */
 export async function* runTurn(opts: {
   prompt: string;
+  /** 人が添えた画像（base64）。来ていれば、**何を受け取ったかを必ず発言にする**（下） */
+  images?: Array<{ mediaType: string; data: string }>;
   resumeSessionId?: string;
   forkSession?: boolean;
   mcpServers?: Record<string, unknown>;
@@ -340,6 +342,18 @@ export async function* runTurn(opts: {
 
   const instructions = await collectInstructions(servers);
   yield { type: "message", message: initMessage(sessionId, servers) };
+
+  if (opts.images && opts.images.length > 0) {
+    // **画像が Runner まで届いたかを、発言の中身で見る**（追加・2026-09-26、`composer-image-paste.spec.ts`）。
+    // 本物のモデルが画像を読んで答えるのと同じ位置に、受け取った形式と大きさを返す
+    // ——画面が送ったバイト列がそのまま届いたかを、spec が数で比べられる。
+    // 画像だけの発言には印を書けないので、指示ではなく既定の振る舞いにした
+    const described = opts.images
+      .map((i) => `${i.mediaType} ${Buffer.from(i.data, "base64").length} バイト`)
+      .join("、");
+    const text = `受け取った画像: ${opts.images.length} 枚（${described}）`;
+    yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
+  }
 
   if (plan.say) {
     if (plan.streamMs && plan.streamMs > 0) {

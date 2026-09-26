@@ -1405,3 +1405,128 @@ test("走っている Thread に送ると並んで待ち、前が終わってか
     },
   );
 });
+
+// **画像を添えて送る**（決定・2026-09-26、ユーザー要望）。中身は置き場へ、記録には名前だけ、AI には画像として。
+
+const TINY_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/** 渡された入力を覚えて、ひとこと返す Runner */
+function recordingRunner(seen: Array<{ prompt: string; images?: unknown }>) {
+  return (async function* (opts: { prompt: string; images?: unknown }) {
+    seen.push({ prompt: opts.prompt, images: opts.images });
+    yield {
+      type: "message" as const,
+      message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] },
+    } as never;
+    yield {
+      type: "message" as const,
+      message: { type: "assistant", message: { content: [{ type: "text", text: "見ました" }] } },
+    } as never;
+    return { sessionId: "s", compactionCount: 0 } as never;
+  }) as unknown as Parameters<typeof createApp>[0]["runTurn"];
+}
+
+test("添えた画像は置き場に置かれ、AI には画像として渡り、記録には名前だけが残る", async () => {
+  const seen: Array<{ prompt: string; images?: unknown }> = [];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("demo", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+
+      const res = await fetch(`${base}/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ prompt: "これを見て", images: [{ data: TINY_PNG_BASE64, name: "shot.png" }] }),
+      });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /"type":"done"/);
+
+      // AI には画像として（形式は中身から決めたもの）
+      assert.equal(seen.length, 1);
+      assert.match(seen[0]!.prompt, /これを見て$/);
+      assert.deepEqual(seen[0]!.images, [{ mediaType: "image/png", data: TINY_PNG_BASE64 }]);
+
+      // 記録には名前だけ（中身は Event Store に入れない）
+      const user = deps.projectThread.getThread(thread.id)!.messages.find((m) => m.role === "user")!;
+      assert.equal(user.text, "これを見て");
+      assert.equal(user.images?.length, 1);
+      assert.equal(user.images![0]!.name, "shot.png");
+      assert.match(user.images![0]!.id, /^[0-9a-f]{64}$/);
+      assert.equal(JSON.stringify(user).includes(TINY_PNG_BASE64), false, "記録に中身が入っている");
+
+      // 画面は名前で中身を取り直せる（リロード後に描き直すため）。合言葉なしでは出さない
+      const image = await fetch(`${base}/api/images/${user.images![0]!.id}`, { headers });
+      assert.equal(image.status, 200);
+      assert.equal(image.headers.get("content-type"), "image/png");
+      assert.equal(image.headers.get("x-content-type-options"), "nosniff");
+      assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from(TINY_PNG_BASE64, "base64"));
+      assert.equal((await fetch(`${base}/api/images/${user.images![0]!.id}`)).status, 401);
+      assert.equal((await fetch(`${base}/api/images/${"0".repeat(64)}`, { headers })).status, 404);
+    },
+    { runTurn: recordingRunner(seen) },
+  );
+});
+
+test("画像だけの発言も送れる（文を書かずにスクリーンショットだけ貼る）", async () => {
+  const seen: Array<{ prompt: string; images?: unknown }> = [];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("demo", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const res = await fetch(`${base}/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "", images: [{ data: TINY_PNG_BASE64 }] }),
+      });
+      const body = await res.text();
+      assert.doesNotMatch(body, /"type":"error"/, body);
+      assert.equal(seen.length, 1);
+      const user = deps.projectThread.getThread(thread.id)!.messages.find((m) => m.role === "user")!;
+      assert.equal(user.text, "");
+      assert.equal(user.images?.length, 1);
+      assert.equal(user.images![0]!.name, undefined, "貼り付けには名前が無い");
+
+      // 閉じた Thread の概要で、画像だけの発言が空に見えない
+      const list = (await (
+        await fetch(`${base}/api/projects/${project.id}/threads`, {
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as Array<{ id: string; firstMessage: string | null }>;
+      assert.equal(list.find((t) => t.id === thread.id)?.firstMessage, "（画像 1 枚）");
+    },
+    { runTurn: recordingRunner(seen) },
+  );
+});
+
+test("読めない画像・多すぎる画像は、ターンを始めずに理由を返す", async () => {
+  const seen: Array<{ prompt: string; images?: unknown }> = [];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("demo", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const send = (images: unknown) =>
+        fetch(`${base}/api/threads/${thread.id}/messages`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ prompt: "見て", images }),
+        });
+
+      const bmp = await send([{ data: Buffer.from("BM not supported").toString("base64") }]);
+      assert.equal(bmp.status, 400);
+      assert.match(((await bmp.json()) as { error: string }).error, /PNG・JPEG・GIF・WebP/);
+
+      const broken = await send([{ data: "これは base64 ではない" }]);
+      assert.equal(broken.status, 400);
+
+      const many = await send(Array.from({ length: 11 }, () => ({ data: TINY_PNG_BASE64 })));
+      assert.equal(many.status, 400);
+      assert.match(((await many.json()) as { error: string }).error, /10 枚まで/);
+
+      assert.equal(seen.length, 0, "断ったのにターンが走った");
+      assert.equal(deps.projectThread.getThread(thread.id)!.messages.length, 0, "断ったのに発言が記録された");
+    },
+    { runTurn: recordingRunner(seen) },
+  );
+});

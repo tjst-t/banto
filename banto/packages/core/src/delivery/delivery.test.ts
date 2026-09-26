@@ -195,6 +195,9 @@ test("ターンに渡す文：届いたものは人の発言ではないと分�
   assert.doesNotMatch(only, /ここから人の発言/);
   const both = composeTurnPrompt([d], "続けて");
   assert.ok(both.indexOf("banto-delivery") < both.indexOf("（ここから人の発言）\n続けて"));
+  // 画像だけの発言でも、人の発言があることを言う——画像は文より前に置かれるので、誰のものかをここで言う
+  const imageOnly = composeTurnPrompt([d], "", 2);
+  assert.match(imageOnly, /（ここから人の発言——先頭の画像 2 枚は人が添えたもの）/);
 });
 
 test("返信用の札：渡した Module だけが使え、期限と回数がある。返事待ちは期限で切らない", () => {

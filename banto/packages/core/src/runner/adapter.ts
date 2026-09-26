@@ -11,6 +11,7 @@
 // 成立しないと実測済み）。
 
 import { query, type SDKMessage, type PermissionResult, type Options, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import type { ImageMediaType } from "../images/store.js";
 
 export interface PendingToolApproval {
   /** SDKが渡してくる**本物の** tool_use id（`options.toolUseID`）。
@@ -41,6 +42,9 @@ export interface RunnerTurnOptions {
    *  同じセッションを共有し、**両方の会話が1本に混ざる**（実測・2026-09-05、§2.2）。 */
   forkSession?: boolean;
   prompt: string;
+  /** 人が添えた画像（決定・2026-09-26）。**縮めずに渡す**——大きいものは CLI が長辺 2000px の
+   *  JPEG に縮めてから API に送る（実測・2026-09-26、`docs/notes/2026-09-26-composer-images.md`） */
+  images?: Array<{ mediaType: ImageMediaType; data: string }>;
   mcpServers?: Options["mcpServers"];
   permissionMode?: Options["permissionMode"];
   /** 人がこの Thread で選んだモデル（決定・2026-09-23）。無ければ CLI の既定 */
@@ -149,10 +153,21 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
   const keepOpen = new Promise<void>((resolve) => {
     closeInput = resolve;
   });
+  // 画像は文より前に置く（Claude は画像→文の順でよく読む。Vision のドキュメント）
+  const content =
+    opts.images && opts.images.length > 0
+      ? [
+          ...opts.images.map((image) => ({
+            type: "image" as const,
+            source: { type: "base64" as const, media_type: image.mediaType, data: image.data },
+          })),
+          { type: "text" as const, text: opts.prompt },
+        ]
+      : opts.prompt;
   async function* promptStream() {
     yield {
       type: "user" as const,
-      message: { role: "user" as const, content: opts.prompt },
+      message: { role: "user" as const, content },
       parent_tool_use_id: null,
     };
     await keepOpen;

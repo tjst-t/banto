@@ -49,6 +49,9 @@ export const CONNECTED_FEATURES = {
   // **モデルと reasoning effort を入力欄の下で選ぶ**（決定・2026-09-23、ユーザー要望）。
   // 選んだ値は host が Thread ごとに持ち、次のターンから効く。一覧は host が CLI に聞いたもの
   composerModelEffort: true,
+  // **入力欄に画像を添える**（決定・2026-09-26、ユーザー要望）——貼り付け・＋ボタン・ドラッグ。
+  // host が中身を置き場に置き、AI に画像として渡し、記録から描き直せる（リロードしても残る）
+  composerImages: true,
   // **MCP Registry から入れて、繋ぐ**（`module-registry-install`、2026-09-21、
   // ユーザー要望）。検索・一覧・並び順（提供元を優先）・取得・接続まで host に
   // 繋がっている——remote はそのまま繋ぎ、npm は host が取ってきて（閉じ込めの外）

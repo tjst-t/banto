@@ -104,6 +104,20 @@ export interface RealThreadMessage {
   uiToolCalls?: RealUiToolCall[];
   /** **機械から届いたもの**の印（決定・2026-09-25、アーキ仕様 §4.2）。**無ければ人の発言** */
   origin?: RealMessageOrigin;
+  /** 人が添えた画像（決定・2026-09-26）。中身は `GET /api/images/:id` で取る */
+  images?: RealMessageImage[];
+}
+
+/** 発言に添えた画像1枚——名前は中身の SHA-256 */
+export interface RealMessageImage {
+  id: string;
+  name?: string;
+}
+
+/** 送る発言に添える画像1枚（base64）。形式は host が中身から決める */
+export interface OutgoingImage {
+  data: string;
+  name?: string;
 }
 
 /** 届いたものの印——送り手・題・何回中継されたか */
@@ -701,6 +715,8 @@ export function streamRealTurn(
   prompt: string,
   permissionMode?: string,
   onEvent?: (event: RealTurnEvent) => void,
+  /** 人が添えた画像（決定・2026-09-26） */
+  images: readonly OutgoingImage[] = [],
 ): AsyncGenerator<RealTurnEvent> {
   const queue: RealTurnEvent[] = [];
   let wake: (() => void) | null = null;
@@ -718,7 +734,7 @@ export function streamRealTurn(
     const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ prompt, permissionMode }),
+      body: JSON.stringify({ prompt, permissionMode, ...(images.length > 0 ? { images } : {}) }),
     });
     if (!res.ok || !res.body) {
       // **断られた理由を出す**（追加・2026-09-25）——409 は「この Thread はいま走っている」（届いたものに答えている等）
@@ -1178,4 +1194,33 @@ export async function addRealInstanceModulesFromMcpServers(
 /** いまの設定を `mcpServers` の形で取り出す（他のクライアントへ持っていける）。 */
 export async function exportRealInstanceModules(): Promise<unknown> {
   return request<unknown>("/api/modules/export");
+}
+
+/** 記録から戻した画像の印（`banto-image:<id>`）。`useAttachmentSrc` がこれを見て host から取ってくる */
+export const REAL_IMAGE_SRC_PREFIX = "banto-image:";
+
+/** 取りに行った画像（名前 → 画面で使える URL）。**名前は中身のハッシュなので、中身は変わらない**——一度取れば覚えてよい */
+const imageObjectUrls = new Map<string, Promise<string>>();
+
+/**
+ * **人が会話に添えた画像を、画面で出せる URL にする**（決定・2026-09-26）。
+ * `<img src>` は合言葉のヘッダを付けられないので、合言葉つきで取ってから手元の URL（blob:）にする
+ * ——URL に合言葉を載せると、履歴やログに残る。
+ */
+export function fetchRealImageUrl(id: string): Promise<string> {
+  let url = imageObjectUrls.get(id);
+  if (!url) {
+    url = (async () => {
+      const config = requireConfig();
+      const res = await fetch(`${config.baseUrl}/api/images/${encodeURIComponent(id)}`, {
+        headers: { authorization: `Bearer ${config.token}` },
+      });
+      if (!res.ok) throw new Error(`画像を取れませんでした（${res.status}）`);
+      return URL.createObjectURL(await res.blob());
+    })();
+    // 失敗は覚えない——次に描くときにもう一度取りに行く
+    url.catch(() => imageObjectUrls.delete(id));
+    imageObjectUrls.set(id, url);
+  }
+  return url;
 }

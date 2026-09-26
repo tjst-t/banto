@@ -714,7 +714,7 @@
       "id": "composer-image-attachment",
       "phase": "4",
       "title": "画像を banto に送れるようにする",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [],
       "why": "いま composer から画像を渡せない。**人が「これを見て」と言えない**のは、伴走する道具としてかなり不便（スクリーンショットを見せて相談する、が一番自然な使い方の1つ）。ユーザー要望・2026-09-06。",
       "scope": [
@@ -725,8 +725,14 @@
       ],
       "doneWhen": "実ブラウザで画像を添付して送り、AI がその画像について答えられること、リロード後も会話に画像が残っていることを確認する。",
       "refs": [
-        "banto/apps/frontend/components/assistant-ui/elements/attachment.aui.tsx"
-      ]
+        "banto/apps/frontend/components/assistant-ui/elements/attachment.aui.tsx",
+        "docs/specs/v4-frontend.md §6.4「画像を添えて送る」",
+        "docs/specs/v4-architecture.md §2.1「大きなバイト列はイベントに入れない」",
+        "docs/notes/2026-09-26-composer-images.md"
+      ],
+      "verifiedBy": "banto/e2e/specs/composer-image-paste.spec.ts（貼る→AI に同じバイト数で届く→発言に出る→リロードで host から取り直す→文字つきの貼り付けは文字→画像でないものは理由→画像だけでも送れる→Fork に引き継がれる）。本物のモデルでは別ポートの host で実ブラウザから確認（ノート）",
+      "result": "2026-09-26（ユーザー要望「入力欄にペーストで画像を貼り付けたい」）：入力欄への貼り付け・＋・ドラッグで画像を添えて送れる。**画像は Event Store に入れず**、中身の SHA-256 を名前にして `<dataDir>/images/` に置き、`message.appended` は名前だけを持つ（Claim Check）。形式は host が中身の先頭から決める（PNG・JPEG・GIF・WebP、1枚 10MB・1回 10 枚）。Runner は `[画像…, 文]` で SDK に渡す——**縮めない**（CLI が長辺 2000px の JPEG に縮めてから送ることを実測）。リロード後は `GET /api/images/:id` を合言葉つきで取って `blob:` で出す。貼り付けは**文字があれば文字**（Excel 等のコピーが画像に化けて文字が消えるのを避ける）。本物のモデルで確認：貼った画像の文字を読み、リロード後も画像が出て、次のターンでも前の画像を覚えていた。",
+      "completedAt": "2026-09-26"
     },
     {
       "id": "global-memory-mid-thread-delivery",

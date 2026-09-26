@@ -12,6 +12,7 @@
 // 要るためこの形は成立しない）。別オリジンからのfetch()を通すためCORSを返す。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { join } from "node:path";
 import {
   MemoryLimitExceededError,
   normalizeProjectRoot,
@@ -39,7 +40,14 @@ import {
 } from "../skills/index.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
-import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput, type TurnStreamEvent } from "./turn-runner.js";
+import {
+  runThreadTurn,
+  type ModuleEndpoint,
+  type RunThreadTurnInput,
+  type TurnImage,
+  type TurnStreamEvent,
+} from "./turn-runner.js";
+import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import type { AppEventBus } from "./app-events.js";
@@ -410,11 +418,53 @@ function oauthPage(res: ServerResponse, status: number, message: string): void {
   res.end(html);
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/** 本文が上限を超えた（HTTP では 413 にする）。 */
+class BodyTooLargeError extends Error {}
+
+async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let total = 0;
+  for await (const chunk of req) {
+    total += (chunk as Buffer).length;
+    // 超えても読み切ってから断る（途中で切ると、断る理由を返せない）。溜めはしない
+    if (maxBytes !== undefined && total > maxBytes) continue;
+    chunks.push(chunk as Buffer);
+  }
+  if (maxBytes !== undefined && total > maxBytes) {
+    throw new BodyTooLargeError(`送る中身が大きすぎます（${(total / 1024 / 1024).toFixed(1)}MB）`);
+  }
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : {};
+}
+
+/** 発言を送る口の本文の上限——画像を上限いっぱい添えても収まる大きさ（base64 は 4/3 倍） */
+const TURN_BODY_MAX_BYTES = Math.ceil((MAX_IMAGES_PER_MESSAGE * MAX_IMAGE_BYTES * 4) / 3) + 1024 * 1024;
+
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * 発言に添えた画像を確かめて、置き場へ置く（決定・2026-09-26）。**ターンを始める前に全部やる**
+ * ——1枚でも駄目なら何も始めず、理由を返す（黙って一部だけ送らない・規則2）。
+ */
+async function storeTurnImages(store: ImageStore | undefined, raw: unknown): Promise<TurnImage[]> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new ImageRejectedError("images は配列で送ってください");
+  if (raw.length === 0) return [];
+  if (!store) throw new ImageRejectedError("この banto には画像の置き場がありません");
+  if (raw.length > MAX_IMAGES_PER_MESSAGE) {
+    throw new ImageRejectedError(`画像は1回に ${MAX_IMAGES_PER_MESSAGE} 枚までです（${raw.length} 枚）`);
+  }
+  const images: TurnImage[] = [];
+  for (const item of raw as Array<{ data?: unknown; name?: unknown }>) {
+    const data = item?.data;
+    if (typeof data !== "string" || data.length === 0 || data.length % 4 !== 0 || !BASE64.test(data)) {
+      throw new ImageRejectedError("画像の中身が base64 として読めません");
+    }
+    const { id, mediaType } = await store.put(Buffer.from(data, "base64"));
+    const name = typeof item.name === "string" ? item.name.trim().slice(0, 200) : "";
+    images.push({ id, mediaType, data, ...(name ? { name } : {}) });
+  }
+  return images;
 }
 
 function withCors(res: ServerResponse): void {
@@ -678,7 +728,8 @@ async function readUiResource(
  *  ——閉じた Thread の概要に要る「件数・最初と最後の発言」は、ここで数えて渡す
  *  （画面が全文を持たずに済む。AI 要約はしない、§2.2 と同じ姿勢）。 */
 function toThreadSummary(thread: ThreadState) {
-  const texts = thread.messages.map((m) => m.text);
+  // 画像だけの発言は、文が無い——何も無いように見せない（決定・2026-09-26）
+  const texts = thread.messages.map((m) => (m.text === "" && m.images ? `（画像 ${m.images.length} 枚）` : m.text));
   const cut = (t: string | undefined) => (t === undefined ? null : t.length > 200 ? `${t.slice(0, 200)}…` : t);
   // **一覧に要るものだけを、名前で挙げる**（改訂・2026-09-07、実測）。
   // 「中身以外ぜんぶ」だと、走行の内部事情（resume-point・捨てたセッション・
@@ -712,6 +763,9 @@ function toThreadSummary(thread: ThreadState) {
 export function createApp(deps: AppDeps) {
   // 選べるモデルの一覧（少しのあいだ覚える、`runner/models.ts`）
   const modelCatalog = new ModelCatalog(deps.listModels ?? listModelsFromCli);
+  // 人が会話に添えた画像の置き場（決定・2026-09-26、アーキ仕様 §2.1）。データの置き場が無い
+  // 構成（一部の試験）では持たない——そこへ画像が来たら、理由を言って断る
+  const imageStore = deps.dataDir ? new ImageStore(join(deps.dataDir, "images")) : undefined;
 
   /**
    * **ターンを1本開く**——人が送ったものも、届いたもので host が始めるものも、ここを通る（切り出し・2026-09-25、
@@ -722,6 +776,8 @@ export function createApp(deps: AppDeps) {
     threadId: string,
     prompt: string,
     permissionMode?: RunThreadTurnInput["permissionMode"],
+    /** 人が添えた画像（置き場に置いたあとのもの）。届いたもので起こすターンには無い */
+    images: TurnImage[] = [],
   ): AsyncGenerator<TurnStreamEvent> {
     const modules = await deps.resolveModulesForThread(threadId);
     const thread = deps.projectThread.getThread(threadId);
@@ -767,6 +823,7 @@ export function createApp(deps: AppDeps) {
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
       prompt,
+      ...(images.length > 0 ? { images } : {}),
       permissionMode: resolvePermissionMode(
         permissionMode,
         deps.projectThread.getThread(threadId),
@@ -1474,12 +1531,35 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **人が会話に添えた画像を返す**（決定・2026-09-26）。名前は中身のハッシュなので、中身は変わらない
+      // ——いつまでも覚えてよい。画面は合言葉つきで取りに来る（`<img>` に合言葉を載せない）
+      const imageMatch = url.pathname.match(/^\/api\/images\/([^/]+)$/);
+      if (imageMatch && req.method === "GET") {
+        const image = await imageStore?.get(imageMatch[1]!);
+        if (!image) return json(res, 404, { error: "画像がありません" });
+        res.writeHead(200, {
+          "content-type": image.mediaType,
+          "content-length": image.bytes.length,
+          "cache-control": "private, max-age=31536000, immutable",
+          "x-content-type-options": "nosniff",
+        });
+        res.end(image.bytes);
+        return;
+      }
+
       const turnMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/messages$/);
       if (turnMatch && req.method === "POST") {
-        const body = (await readJsonBody(req)) as {
-          prompt: string;
-          permissionMode?: RunThreadTurnInput["permissionMode"];
-        };
+        let body: { prompt: string; images?: unknown; permissionMode?: RunThreadTurnInput["permissionMode"] };
+        let images: TurnImage[];
+        try {
+          body = (await readJsonBody(req, TURN_BODY_MAX_BYTES)) as typeof body;
+          // **添えた画像は、ターンを始める前に置く**（決定・2026-09-26）。記録に残るのは名前だけ
+          images = await storeTurnImages(imageStore, body.images);
+        } catch (err) {
+          if (err instanceof BodyTooLargeError) return json(res, 413, { error: err.message });
+          if (err instanceof ImageRejectedError) return json(res, 400, { error: err.message });
+          throw err;
+        }
         const threadId = turnMatch[1]!;
         res.writeHead(200, {
           "content-type": "text/event-stream",
@@ -1490,7 +1570,7 @@ export function createApp(deps: AppDeps) {
         // 並んで待つ——断らない（送ったつもりで消えるのを作らない。届いたもので host が始めたターンでも同じ）
         const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0) : undefined;
         try {
-          for await (const event of openTurn(threadId, body.prompt, body.permissionMode)) {
+          for await (const event of openTurn(threadId, body.prompt, body.permissionMode, images)) {
             res.write(`data: ${JSON.stringify(event)}\n\n`);
           }
         } finally {

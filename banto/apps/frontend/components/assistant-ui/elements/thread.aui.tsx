@@ -16,6 +16,7 @@ import {
 import { AssistantMark } from "@/components/banto/thread/assistant-mark";
 import { DeliveredMessage } from "@/components/banto/thread/delivered-message";
 import type { RealMessageOrigin } from "@/lib/backend/client";
+import { describeAttachmentAddError } from "@/lib/backend/image-attachment";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import {
   ForkFromMessageProvider,
@@ -62,6 +63,8 @@ import {
   type FileMessagePartComponent,
   type ImageMessagePartComponent,
   type ToolCallMessagePartComponent,
+  useAui,
+  useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
 import {
@@ -84,6 +87,7 @@ import {
   useContext,
   useEffect,
   useState,
+  type ClipboardEvent,
   type ComponentType,
   type FC,
   type PropsWithChildren,
@@ -386,11 +390,49 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
+/**
+ * **貼り付けた画像を添える**（banto、決定・2026-09-26、ユーザー要望）。assistant-ui の既定
+ * （`addAttachmentOnPaste`）は、クリップボードにファイルがあれば**文字を捨てて**添付にする。
+ * Excel や Word からのコピーは文字と一緒にその絵も載るので、既定のままだと表を貼ったつもりが
+ * 画像に化け、文字が消える。**文字があれば文字を貼る。文字が無いとき（スクリーンショット等）だけ
+ * 画像を添える。** ファイルそのものを添えたいときは ＋ かドラッグで
+ */
+const usePasteImages = () => {
+  const aui = useAui();
+  return (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!aui.thread.getState().capabilities.attachments) return;
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    if (e.clipboardData.getData("text/plain") !== "") return;
+    e.preventDefault();
+    for (const file of files) {
+      // 添えられなかった理由は assistant-ui が `composer.attachmentAddError` で知らせる
+      // ——入力欄の中に出す（`ComposerAttachmentError`）。ここで二重に扱わない
+      aui.composer.addAttachment(file).catch(() => undefined);
+    }
+  };
+};
+
+/** **添えられなかった理由を、入力欄の中に出す**（banto、決定・2026-09-26）——黙って何も起きない、を作らない */
+const ComposerAttachmentError: FC = () => {
+  const [error, setError] = useState<string>();
+  useAuiEvent("composer.attachmentAddError", (e) => setError(describeAttachmentAddError(e.reason, e.message)));
+  useAuiEvent("composer.attachmentAdd", () => setError(undefined));
+  useAuiEvent("composer.send", () => setError(undefined));
+  if (!error) return null;
+  return (
+    <p role="alert" data-testid="composer-attachment-error" className="text-destructive px-2.5 text-sm">
+      {error}
+    </p>
+  );
+};
+
 const Composer: FC<{
   autoFocus: boolean;
   placeholder?: string | undefined;
   composerActionSlot?: ReactNode;
 }> = ({ autoFocus, placeholder, composerActionSlot }) => {
+  const pasteImages = usePasteImages();
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -399,6 +441,7 @@ const Composer: FC<{
           className="border-border/60 data-[dragging=true]:border-ring focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
         >
           <ComposerAttachments />
+          <ComposerAttachmentError />
           <ComposerPrimitive.Input
             placeholder={placeholder ?? "Send a message..."}
             className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
@@ -406,6 +449,8 @@ const Composer: FC<{
             autoFocus={autoFocus}
             enterKeyHint="send"
             aria-label="Message input"
+            addAttachmentOnPaste={false}
+            onPaste={pasteImages}
           />
           <ComposerAction composerActionSlot={composerActionSlot} />
         </div>
@@ -418,7 +463,10 @@ const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerAction
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <div className="flex items-center gap-1.5">
-        <ComposerAddAttachment />
+        {/* 添えられない会話（モックの台本）では出さない——押せるのに何も起きない、を作らない（規則13） */}
+        <AuiIf condition={(s) => s.thread.capabilities.attachments}>
+          <ComposerAddAttachment />
+        </AuiIf>
         {composerActionSlot}
       </div>
       <div className="flex items-center gap-1.5">

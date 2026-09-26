@@ -27,6 +27,7 @@ import {
   restoredSyncVersion,
 } from "@/lib/backend/adapter";
 import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
+import { ImageAttachmentAdapter } from "@/lib/backend/image-attachment";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { getProject } from "@/lib/mock/projects";
 import { seedToInitialMessages } from "@/lib/mock/seed";
@@ -210,6 +211,8 @@ export function ThreadPanel({
       transcriptMarkers={transcriptMarkers}
       allowBranching={!thread.real || CONNECTED_FEATURES.threadBranching}
       onForkFrom={thread.real ? onForkFrom : undefined}
+      // 画像を添えられるのは host に届く Thread だけ（モックの台本は画像を読まない・規則13）
+      imageAttachments={!!thread.real && CONNECTED_FEATURES.composerImages}
     />
   );
 }
@@ -225,6 +228,7 @@ function ThreadRuntime({
   transcriptMarkers,
   allowBranching,
   onForkFrom,
+  imageAttachments,
 }: {
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
@@ -236,9 +240,15 @@ function ThreadRuntime({
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
   allowBranching: boolean;
   onForkFrom?: ForkFromMessage;
+  imageAttachments: boolean;
 }) {
+  const attachments = useMemo(
+    () => (imageAttachments ? new ImageAttachmentAdapter() : undefined),
+    [imageAttachments],
+  );
   const runtime = useLocalRuntime(adapter, {
     initialMessages,
+    ...(attachments ? { adapters: { attachments } } : {}),
     unstable_humanToolNames: [HUMAN_TOOL_NAME, ...APPROVAL_TOOL_NAMES],
   });
 

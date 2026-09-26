@@ -15,6 +15,7 @@ import type {
   ThreadEffort,
   ThreadState,
   UiToolCallEntry,
+  MessageImage,
   MessageOrigin,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
@@ -392,6 +393,8 @@ export class ProjectThreadStore {
     uiToolCalls?: UiToolCallEntry[],
     /** 機械から届いたものの印（追加・2026-09-25）。**人の発言には付けない** */
     origin?: MessageOrigin,
+    /** 人が添えた画像（追加・2026-09-26）。**中身は先に画像の置き場へ置いておく**——ここは名前だけを残す */
+    images?: MessageImage[],
   ): Promise<void> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     const event = await this.log.append("message.appended", {
@@ -400,6 +403,7 @@ export class ProjectThreadStore {
       text,
       ...(uiToolCalls && uiToolCalls.length > 0 ? { uiToolCalls } : {}),
       ...(origin ? { origin } : {}),
+      ...(images && images.length > 0 ? { images } : {}),
     });
     this.projection.applyOne(event);
   }

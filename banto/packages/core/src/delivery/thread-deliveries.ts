@@ -148,14 +148,20 @@ export class ThreadDeliveries {
  * **ターンに渡す文を組む**——届いたものを先に、人の発言を後に。届いたものは人の発言ではないと AI に分かる形で
  * 包む（RFC 3834 の印を、AI にも見せる）
  */
-export function composeTurnPrompt(delivered: readonly PendingDelivery[], prompt: string): string {
+export function composeTurnPrompt(
+  delivered: readonly PendingDelivery[],
+  prompt: string,
+  /** 人が添えた画像の枚数（追加・2026-09-26）。画像は文より前に置かれるので、誰のものかをここで言う */
+  imageCount = 0,
+): string {
   if (delivered.length === 0) return prompt;
   const parts = delivered.map(
     (d) => `<banto-delivery from="${d.from}" hop="${d.hop}">\n${d.title}\n\n${d.text}\n</banto-delivery>`,
   );
+  const imageNote = imageCount > 0 ? `——先頭の画像 ${imageCount} 枚は人が添えたもの` : "";
   return [
     "（以下は人の発言ではなく、banto が届けたものです——あなたが頼んだ仕事の結果など。必要なら続きをやってください）",
     ...parts,
-    ...(prompt ? [`（ここから人の発言）\n${prompt}`] : []),
+    ...(prompt || imageCount > 0 ? [`（ここから人の発言${imageNote}）\n${prompt}`] : []),
   ].join("\n\n");
 }

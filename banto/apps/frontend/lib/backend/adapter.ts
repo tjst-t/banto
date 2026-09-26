@@ -21,6 +21,9 @@ import {
   getRealThread,
   listRealUiTools,
   streamRealTurn,
+  REAL_IMAGE_SRC_PREFIX,
+  type OutgoingImage,
+  type RealMessageImage,
   type RealUiTool,
   type RealInboxJudgment,
   type RealTurnEvent,
@@ -168,6 +171,36 @@ function lastUserText(messages: readonly ThreadMessage[]): string {
     .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
     .map((p) => p.text)
     .join("\n");
+}
+
+/**
+ * **最後の人の発言に添えた画像**（決定・2026-09-26）。composer の添付は送るときに data URL になる
+ * （`image-attachment.ts`）——その base64 をそのまま host に渡す。形式は host が中身から決める。
+ * data URL でないもの（リロードで記録から戻した画像）は、新しく送る発言には来ない——来たら黙って落とさず止める
+ */
+function lastUserImages(messages: readonly ThreadMessage[]): OutgoingImage[] {
+  const last = [...messages].reverse().find((m) => m.role === "user");
+  if (!last || last.role !== "user") return [];
+  const images: OutgoingImage[] = [];
+  for (const attachment of last.attachments ?? []) {
+    for (const part of attachment.content ?? []) {
+      if (part.type !== "image") continue;
+      const data = /^data:[^;,]*;base64,(.*)$/.exec(part.image)?.[1];
+      if (!data) throw new Error(`添えた画像「${attachment.name}」を送れる形に読めませんでした`);
+      images.push({ data, ...(attachment.name ? { name: attachment.name } : {}) });
+    }
+  }
+  return images;
+}
+
+function restoredImageAttachment(image: RealMessageImage) {
+  return {
+    id: `real-image-${image.id}`,
+    type: "image" as const,
+    name: image.name ?? "画像",
+    status: { type: "complete" as const },
+    content: [{ type: "image" as const, image: `${REAL_IMAGE_SRC_PREFIX}${image.id}` }],
+  };
 }
 
 // SDKMessageの中身はbanto core（@anthropic-ai/claude-agent-sdk）の語彙——
@@ -409,6 +442,10 @@ export function realMessagesToInitial(
       id: `real-${m.seq}`,
       role: m.role,
       content,
+      // 人が添えた画像（決定・2026-09-26）——送ったときと同じ添付の形で出す
+      ...(m.role === "user" && m.images && m.images.length > 0
+        ? { attachments: m.images.map(restoredImageAttachment) }
+        : {}),
       ...(m.origin ? { metadata: { custom: { origin: m.origin } } } : {}),
     };
   });
@@ -512,6 +549,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
       if (!live) {
         // 新規送信——現在進行中のライブなSSE接続が無ければ、実際にターンを開始する。
         const prompt = lastUserText(messages);
+        const images = lastUserImages(messages);
         const permissionMode = getThreadPermissionMode(thread.id, thread.projectId);
         // **聞き終わってからターンを始める。ただし待ち切らない**（訂正・2026-09-22）。
         //
@@ -549,6 +587,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
                 liveTurns.delete(thread.id);
               }
             },
+            images,
           ),
           acc: new PartsAccumulator(),
           prompt,

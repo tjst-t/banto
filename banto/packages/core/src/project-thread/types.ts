@@ -54,6 +54,16 @@ export interface MessageEntry {
   uiToolCalls?: UiToolCallEntry[];
   /** **機械から届いたもの**の印（追加・2026-09-25）。**無ければ人の発言** */
   origin?: MessageOrigin;
+  /** 人が添えた画像（決定・2026-09-26）。中身は画像の置き場にあり、ここは名前だけ（`images/store.ts`） */
+  images?: MessageImage[];
+}
+
+/** 発言に添えた画像1枚。**形式は持たない**——中身から決まる（規則3） */
+export interface MessageImage {
+  /** 中身の SHA-256（画像の置き場での名前） */
+  id: string;
+  /** 人が付けていた名前（ファイルから添えたとき）。貼り付けでは無いこともある */
+  name?: string;
 }
 
 /**
