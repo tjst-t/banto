@@ -686,3 +686,69 @@ test("監査に、何を指していたかが残る——値は残らない", as
     await vaultClient.close();
   }
 });
+
+// **Project ごとの Module を呼べるのは、同じ Project の中だけ**（決定・2026-09-26、ユーザー、v4-security.md §3）。
+// 以前は役割しか見ておらず、別の Project のサブエージェント（`subagent-<projectId>`）を名前で指せた
+test("Project ごとの Module は同じ Project の中からしか呼べない——宛先の一覧にも出ない", async () => {
+  const registry = new RelayRegistry();
+  const subagentMeta = bundledMeta(
+    { satisfies: ["subagent"], dependsOn: [], isolation: "subprocess", scope: "project" },
+    "subagent",
+  );
+  registry.registerModule({ name: "subagent-pA", client: await fakeVaultClient(), meta: subagentMeta, projectId: "pA" });
+  registry.registerModule({ name: "subagent-pB", client: await fakeVaultClient(), meta: subagentMeta, projectId: "pB" });
+  // banto 全体に1本の Module（Project を持たない）はどこからでも呼べる（今までどおり）
+  registry.registerModule({
+    name: "vault",
+    client: await fakeVaultClient(),
+    meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
+  });
+  const callerMeta = parseModuleMeta(
+    {
+      satisfies: ["planner"],
+      dependsOn: [
+        { role: "subagent", required: true },
+        { role: "vault", required: true },
+      ],
+      isolation: "subprocess",
+      scope: "project",
+    },
+    "planner",
+  );
+  const inA = { moduleName: "planner", connName: "planner-pA", projectId: "pA", meta: callerMeta };
+  const instanceCaller = { moduleName: "planner", meta: callerMeta };
+
+  assert.equal(registry.whyNotAllowed(inA, "subagent-pA"), undefined);
+  assert.equal(registry.whyNotAllowed(inA, "subagent-pB"), "別の Project の Module は呼べない");
+  assert.equal(registry.whyNotAllowed(instanceCaller, "subagent-pA"), "banto 全体の Module から、Project ごとの Module は呼べない");
+  assert.equal(registry.whyNotAllowed(inA, "vault"), undefined, "banto 全体の Module まで止めた");
+  assert.deepEqual(
+    registry.allowedTargets(inA).map((t) => t.name).sort(),
+    ["subagent-pA", "vault"],
+    "別の Project の Module が宛先の一覧に出ている",
+  );
+
+  // 中継そのものも断る（理由つき・監査に残る）
+  const token = registry.issueToken(inA);
+  const { url, audits, close } = await startTestServer(registry);
+  const client = new Client({ name: "planner", version: "0.0.0" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }),
+    );
+    await assert.rejects(
+      () => client.callTool({ name: "relayCallTool", arguments: { targetModule: "subagent-pB", name: "resolveAlias", arguments: {} } }),
+      /別の Project の Module は呼べない/,
+      "別の Project の Module を呼べてしまった",
+    );
+    assert.ok(
+      (audits as Array<{ allowed: boolean; reason?: string; targetModule: string }>).some(
+        (a) => !a.allowed && a.targetModule === "subagent-pB" && a.reason === "別の Project の Module は呼べない",
+      ),
+      "断ったことが監査に残っていない",
+    );
+  } finally {
+    await client.close();
+    close();
+  }
+});

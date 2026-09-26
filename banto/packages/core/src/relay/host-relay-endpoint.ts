@@ -72,6 +72,11 @@ export interface RegisteredModule {
    * 入れ替わらない。**外から繋いだものだけ**、承認をこの印に縛る。
    */
   codeId?: string;
+  /**
+   * **Project ごとの Module なら、その Project**（追加・2026-09-26）。無ければ banto 全体に1本。
+   * 中継で呼べるのは同じ Project の中だけ（`whyNotAllowed`）
+   */
+  projectId?: string;
 }
 
 /**
@@ -122,10 +127,29 @@ export class RelayRegistry {
 
   /** 呼び出し元が宣言した依存に照らして許可されているか（アーキ仕様§2.5）。 */
   isAllowed(caller: CallerIdentity, targetModule: string): boolean {
-    return caller.meta.dependsOn.some((d) => {
-      const target = this.modules.get(targetModule);
-      return target !== undefined && target.meta.satisfies.includes(d.role);
-    });
+    return this.whyNotAllowed(caller, targetModule) === undefined;
+  }
+
+  /**
+   * **呼べない理由**（呼べるなら `undefined`）。見るのは2つ：
+   *
+   * - 宣言した依存（役割）に、宛先が名乗る役割があるか（アーキ仕様§2.5）
+   * - **Project ごとの Module を呼べるのは、同じ Project の Module だけ**（決定・2026-09-26、ユーザー、
+   *   `docs/specs/v4-security.md` §3）。以前は役割しか見ておらず、Project ごとの Module（`subagent-<projectId>`）を
+   *   別の Project の Module が名前で指せた——許すと、その Project のコンテナで仕事が走る。banto 全体に1本の Module は
+   *   Project を選べないので、Project ごとの Module は呼べない
+   */
+  whyNotAllowed(caller: CallerIdentity, targetModule: string): string | undefined {
+    const target = this.modules.get(targetModule);
+    if (!target || !caller.meta.dependsOn.some((d) => target.meta.satisfies.includes(d.role))) {
+      return "宣言された依存に含まれない";
+    }
+    if (target.projectId !== undefined && target.projectId !== caller.projectId) {
+      return caller.projectId === undefined
+        ? "banto 全体の Module から、Project ごとの Module は呼べない"
+        : "別の Project の Module は呼べない";
+    }
+    return undefined;
   }
 
   /**
@@ -141,7 +165,7 @@ export class RelayRegistry {
   allowedTargets(caller: CallerIdentity): Array<{ name: string; roles: string[] }> {
     const roles = new Set(caller.meta.dependsOn.map((d) => d.role));
     return Array.from(this.modules.values())
-      .filter((m) => m.meta.satisfies.some((role) => roles.has(role)))
+      .filter((m) => this.whyNotAllowed(caller, m.name) === undefined)
       .map((m) => ({ name: m.name, roles: m.meta.satisfies.filter((role) => roles.has(role)) }));
   }
 }
@@ -326,9 +350,10 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       });
     };
 
-    if (!opts.registry.isAllowed(identity, targetModule)) {
-      await audit(false, "宣言された依存に含まれない");
-      throw new Error(`${identity.moduleName} は ${targetModule} を呼ぶ権限がありません`);
+    const notAllowed = opts.registry.whyNotAllowed(identity, targetModule);
+    if (notAllowed) {
+      await audit(false, notAllowed);
+      throw new Error(`${identity.moduleName} は ${targetModule} を呼ぶ権限がありません（${notAllowed}）`);
     }
 
     if (!target) {

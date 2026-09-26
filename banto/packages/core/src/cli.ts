@@ -1016,6 +1016,8 @@ async function main(): Promise<void> {
       client,
       meta: declaration.meta,
       codeId: declarationFingerprint(declaration),
+      // 中継で呼べるのは同じ Project の中だけ（決定・2026-09-26）——Project ごとの Module はその Project を持つ
+      ...(project ? { projectId: project.id } : {}),
     };
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
