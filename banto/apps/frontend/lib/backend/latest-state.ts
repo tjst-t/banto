@@ -16,7 +16,14 @@
 
 import { getRealThread } from "./client";
 import { onRealAppEvent } from "./app-events";
-import { applyThreadRecord, followRunningTurn, hasLiveRealRun, onStreamOutcome, restoredSyncVersion } from "./adapter";
+import {
+  applyThreadRecord,
+  followRunningTurn,
+  hasLiveRealRun,
+  onRuntimeIdle,
+  onStreamOutcome,
+  restoredSyncVersion,
+} from "./adapter";
 import { getThread } from "../mock/threads";
 
 /** いま画面に開いている会話（実 Thread）と、開いている面の数 */
@@ -24,6 +31,8 @@ const openThreads = new Map<string, number>();
 const inflight = new Map<string, Promise<void>>();
 /** 取っている最中にまた頼まれた——終わったらもう1回 */
 const again = new Set<string>();
+/** この画面が流れを読んでいた・会話が走っていたので引き返した——会話が走り終えたらやり直す */
+const deferred = new Set<string>();
 /** 流れが途中で切れた——記録から組み直す（途中まで流れた吹き出しを残さない） */
 const needsRebuild = new Set<string>();
 /** 流れを最後まで読んだ——会話はもう最新なので組み直さない（下の `shownThrough` を進めるだけ） */
@@ -90,10 +99,15 @@ async function showLatestOnce(threadId: string): Promise<void> {
   if (!openThreads.has(threadId)) {
     needsRebuild.delete(threadId);
     readToEnd.delete(threadId);
+    deferred.delete(threadId);
     return;
   }
-  // この画面が流れを読んでいる——それがいちばん新しい
-  if (hasLiveRealRun(threadId)) return;
+  // この画面が流れを読んでいる・会話が走っている——それがいちばん新しい。走り終えたらやり直す
+  // （流れが切れた直後は、まだ run の後片づけの途中で「走っている」——引き返したままにしない）
+  if (hasLiveRealRun(threadId)) {
+    deferred.add(threadId);
+    return;
+  }
   // **先に乗ってから記録を取る**——乗る前に取ると、その間に終わったターンの返事を取りこぼす
   const following = await followRunningTurn(threadId);
   const record = await getRealThread(threadId);
@@ -141,6 +155,10 @@ function showLatestEverywhere(): void {
 function install(): void {
   if (installed || typeof window === "undefined") return;
   installed = true;
+
+  onRuntimeIdle((threadId) => {
+    if (deferred.delete(threadId)) void showLatest(threadId);
+  });
 
   onStreamOutcome((threadId, outcome) => {
     if (outcome === "disconnected") needsRebuild.add(threadId);

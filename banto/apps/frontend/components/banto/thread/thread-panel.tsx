@@ -20,16 +20,15 @@ import { OpenableCard } from "@/components/banto/thread/openable-card";
 import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import {
   followVersion,
-  hasLiveRealRun,
+  registerRuntimeBusy,
   releaseRealRun,
+  reportRuntimeIdle,
   realMessagesToInitial,
-  restoredJudgmentMessages,
   restoredSyncVersion,
   subscribeFollow,
   takeFollowToStart,
 } from "@/lib/backend/adapter";
 import { registerOpenThread } from "@/lib/backend/latest-state";
-import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
 import { ImageAttachmentAdapter } from "@/lib/backend/image-attachment";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { getProject } from "@/lib/mock/projects";
@@ -91,25 +90,16 @@ export function ThreadPanel({
   const thread = getThread(threadId);
 
   const adapter = useMemo(() => (thread ? createMockChatModelAdapter(thread) : null), [thread]);
-  // リロード後に生き残っている判断待ちを復元する（決定・2026-09-06）。
-  // ターンのSSEはPOSTの応答の中にしか無いので、読み直すとその走行はUIから切れる
-  // ——hostは止まったままなので、ここで描き直さないと誰も答えられない
-  // （e2e/specs/judgment-after-reload.spec.ts）。
-  // **このブラウザでターンが生きている間は復元しない**——生きたカードが既に
-  // 出ているので、二重に出さない（規則3）。
-  useRealInboxVersion();
-  const restored =
-    thread?.real && !hasLiveRealRun(thread.id)
-      ? restoredJudgmentMessages(thread.id, getRealJudgments())
-      : [];
-  const restoredKey = restored.map((m) => m.id).join(",");
+  // **判断待ちは、走っているターンの流れで出る**（改訂・2026-09-26）。以前はリロード後に受信箱から
+  // 判断待ちを拾って会話の末尾に描き足していた（2026-09-06）が、いまは開き直すと host がそのターンを
+  // 最初から流し直す（`latest-state.ts`）——判断待ちのカードもその中にある。受信箱から描き足す道は、
+  // **受信箱が変わるたびに会話を作り直し**、人が送った直後に当たると送信ごと消していた
+  // （実測・2026-09-26、`turn-lifecycle-abandoned` が10回に3回）。同じものを描く道を1つにした（規則3）
   const initialMessages = useMemo(() => {
     if (!thread) return [];
     if (!thread.real) return seedToInitialMessages(thread.script.seed);
-    return [...realMessagesToInitial(thread.realMessages, thread.id), ...restored];
-    // restoredは毎レンダー新しい配列になるので、中身（id）で見る
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thread, restoredKey]);
+    return realMessagesToInitial(thread.realMessages, thread.id);
+  }, [thread]);
   // リロード時のマーカー表示復元（決定・2026-09-04）——永続化済みのClearマーカーを、
   // 実際に起きた場所（直前のmessageのid）に紐づけて transcript 中へ差し込む。
   // messageのidは realMessagesToInitial が振る `real-${seq}` と同じ規則を使うので、
@@ -207,11 +197,11 @@ export function ThreadPanel({
 
   return (
     <ThreadRuntime
-      // useLocalRuntime は initialMessages を作るときにしか読まない——復元した
-      // 判断待ちが増減したとき、およびそれに答えた後にhostの記録を取り直した
-      // ときに作り直す。走行中は restored が空・syncも走らないので、ターンの
-      // 最中にここで作り直されることは無い（＝流れている表示を壊さない）
-      key={`${thread.id}:${restoredKey}:${restoredSyncVersion(thread.id)}`}
+      // useLocalRuntime は initialMessages を作るときにしか読まない——記録から組み直したとき
+      // （`restoredSyncVersion` が進んだとき）だけ作り直す。**会話が送っている・流している間は
+      // 組み直さない**（`registerRuntimeBusy`）ので、流れている表示も送った発言も壊さない
+      key={`${thread.id}:${restoredSyncVersion(thread.id)}`}
+      build={restoredSyncVersion(thread.id)}
       adapter={adapter}
       initialMessages={initialMessages}
       placeholder={placeholder}
@@ -240,6 +230,7 @@ function ThreadRuntime({
   allowBranching,
   onForkFrom,
   imageAttachments,
+  build,
 }: {
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
@@ -252,6 +243,8 @@ function ThreadRuntime({
   allowBranching: boolean;
   onForkFrom?: ForkFromMessage;
   imageAttachments: boolean;
+  /** この会話を記録から組み立てた版（`restoredSyncVersion`）。乗った流れを描き始めてよいかの照合に使う */
+  build: number;
 }) {
   const attachments = useMemo(
     () => (imageAttachments ? new ImageAttachmentAdapter() : undefined),
@@ -265,11 +258,28 @@ function ThreadRuntime({
 
   // **host が走らせているターンに乗ったら、自分で送ったときと同じく本文に流す**（決定・2026-09-26）。
   // 乗るたびに会話は記録から作り直される（このランタイムは作り直された新しいもの）ので、作られたときに
-  // 1回だけ見る。流れを読むのは adapter の run——自分で送ったターンと同じ道（規則3）
+  // 1回だけ見る。**描き始めるのは、乗ったあとに組み直した版の会話だけ**（`build`——組み直す前の、
+  // すぐ捨てられる会話が先に描き始めると、残る会話では誰も描かない）。流れを読むのは adapter の run
+  // ——自分で送ったターンと同じ道（規則3）
   useEffect(() => {
-    if (!takeFollowToStart(threadId)) return;
+    if (!takeFollowToStart(threadId, build)) return;
     const messages = runtime.thread.getState().messages;
     runtime.thread.startRun({ parentId: messages.at(-1)?.id ?? null });
+  }, [runtime, threadId, build]);
+  // **送っている・流している間は、会話を組み直させない**（決定・2026-09-26）——人が Enter を押してから host に
+  // 送り出すまでの間に組み直すと、送った発言ごと会話が作り直されて送信が消える
+  useEffect(
+    () => registerRuntimeBusy(threadId, () => runtime.thread.getState().isRunning),
+    [runtime, threadId],
+  );
+  // 走り終えたら知らせる——走っている間に引き返した「最新を出す」を、ここでやり直す
+  useEffect(() => {
+    let wasRunning = runtime.thread.getState().isRunning;
+    return runtime.thread.subscribe(() => {
+      const running = runtime.thread.getState().isRunning;
+      if (wasRunning && !running) reportRuntimeIdle(threadId);
+      wasRunning = running;
+    });
   }, [runtime, threadId]);
 
   const hint: ReactNode = <ThreadMarkers markers={markers} />;

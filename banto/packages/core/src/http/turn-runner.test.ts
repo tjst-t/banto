@@ -364,3 +364,21 @@ test("効かせる Skill を決められなければ、走らせずに止める�
     assert.equal(store.getThread(threadId)!.messages.length, 0);
   });
 });
+
+// **別々に届いた文は、記録でも段落を分ける**（改訂・2026-09-26、`live-text-join-differs-from-record`）。
+// 画面の流れている吹き出し（`addTextBlock`）と同じ見え方にする——改行1つだと Markdown では同じ段落に混ざる
+test("記録に残す AI の発言は、文ブロックの間で段落を分ける（tool を挟んでも、API Error の合成文でも）", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake } = fakeRunner([
+      initMessage([]),
+      assistantMessage("調べます。"),
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "WebSearch", input: {} }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "結果" }] } },
+      assistantMessage("分かりました。"),
+      assistantMessage("API Error: 529 Overloaded."),
+    ]);
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "調べて", modules: [] }));
+    const assistant = store.getThread(threadId)!.messages.find((m) => m.role === "assistant");
+    assert.equal(assistant?.text, "調べます。\n\n分かりました。\n\nAPI Error: 529 Overloaded.");
+  });
+});

@@ -27,7 +27,6 @@ import {
   type RealUiResource,
 } from "@/lib/backend/client";
 import { getRealJudgments, refreshRealInbox } from "@/lib/backend/real-inbox";
-import { beginCanvasToolCall, endCanvasToolCall } from "@/lib/backend/adapter";
 import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";

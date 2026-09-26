@@ -412,8 +412,11 @@ function relayHealthError(message: unknown, expectedServerNames: string[]): stri
 
 /** リロード時の表示復元用に、assistantのテキスト応答だけを抜き出す
  *  （決定・2026-09-04）。tool_use等SDKの内部詳細は持たない——表示に要るのは
- *  発言テキストだけ（docs/notes参照）。 */
-function extractAssistantText(messages: readonly unknown[]): string {
+ *  発言テキストだけ（docs/notes参照）。
+ *  **文ブロックの間は段落を分ける**（改訂・2026-09-26）——SDK が別々に届ける文は別々の発言（別の応答・
+ *  CLI の「API Error: …」など）。改行1つだと Markdown では同じ段落に混ざり、流れていたときの見え方
+ *  （画面の `addTextBlock`）と食い違っていた */
+export function extractAssistantText(messages: readonly unknown[]): string {
   const parts: string[] = [];
   for (const raw of messages) {
     const m = raw as { type?: string; message?: { content?: unknown } };
@@ -427,7 +430,7 @@ function extractAssistantText(messages: readonly unknown[]): string {
       }
     }
   }
-  return parts.join("\n");
+  return parts.join("\n\n");
 }
 
 

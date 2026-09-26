@@ -19,21 +19,19 @@ import type { ReadonlyJSONObject } from "assistant-stream/utils";
 import {
   answerRealInboxItem,
   followRealTurn,
-  getRealThread,
   listRealUiTools,
   streamRealTurn,
   REAL_IMAGE_SRC_PREFIX,
   type OutgoingImage,
   type RealMessageImage,
   type RealUiTool,
-  type RealInboxJudgment,
   type RealThread,
   type RealTurnEvent,
 } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 import { decideRun, type LiveTurnState } from "./live-turn-guard";
 import { getThreadPermissionMode } from "../mock/permission-mode";
-import { appendRealUsage, getThread, updateRealThreadData } from "../mock/threads";
+import { appendRealUsage, updateRealThreadData } from "../mock/threads";
 import type { MockThread } from "../mock/types";
 import { HUMAN_TOOL_NAME } from "../mock/adapter";
 
@@ -77,6 +75,22 @@ class PartsAccumulator {
       this.parts[this.parts.length - 1] = { ...last, text: last.text + chunk };
     } else {
       this.parts.push({ type: "text", text: chunk });
+    }
+  }
+
+  /**
+   * **SDK が届けた文ブロックを1つ足す**（改訂・2026-09-26）。前も文なら段落を分けてつなぐ——別々に届く文は
+   * 別々の発言（別の応答・CLI の「API Error: …」など、実データで測った）。以前は貼り合わせていて
+   * 「…です。API Error: …」がくっつき、記録（host の `extractAssistantText`、段落で区切る）から組み直した
+   * リロード後とも見え方が違った
+   */
+  addTextBlock(text: string) {
+    if (text === "") return;
+    const last = this.parts[this.parts.length - 1];
+    if (last && last.type === "text") {
+      this.parts[this.parts.length - 1] = { ...last, text: `${last.text}\n\n${text}` };
+    } else {
+      this.parts.push({ type: "text", text });
     }
   }
 
@@ -131,8 +145,6 @@ const judgmentIdByToolCallId = new Map<string, string>();
 /** 判断待ちのtoolCallId → それを出した走行中のターン。答えをpartsへ書き戻すのに使う。 */
 const liveByJudgmentToolCallId = new Map<string, LiveTurn>();
 
-/** 復元した判断待ちのtoolCallId → そのThread。答えた後に記録を取り直すのに使う。 */
-const threadIdByJudgmentToolCallId = new Map<string, string>();
 
 /** 復元した判断待ちに答えたあと、記録から取り直した回数。ThreadPanelが
  *  useLocalRuntimeを作り直す合図に使う（initialMessagesは作成時にしか読まれない）。 */
@@ -168,10 +180,41 @@ interface LiveTurn extends LiveTurnState {
  *  （docs/notes/2026-09-06-tool-approval-review.md）。
  *  いまは run() の finally で必ず取り除くので、**居るか居ないか**だけで表せる（規則3）。 */
 const liveTurns = new Map<string, LiveTurn>();
+/**
+ * **会話が送っている・流しているか**（会話のランタイムが知らせる——決定・2026-09-26）。人が Enter を押すと
+ * 発言が会話に入り、host に送り出すまでに短い間がある（画面つき tool の一覧を聞く等）。その間に会話を
+ * 組み直すと、送った発言ごと会話が作り直されて送信が消える——この間も「この画面が読んでいる」とみなす
+ */
+const runtimeBusy = new Map<string, () => boolean>();
+
+/** 会話のランタイムが、送っている・流しているかを答える口を置く。外すときは返り値を呼ぶ */
+export function registerRuntimeBusy(threadId: string, isBusy: () => boolean): () => void {
+  runtimeBusy.set(threadId, isBusy);
+  return () => {
+    if (runtimeBusy.get(threadId) === isBusy) runtimeBusy.delete(threadId);
+  };
+}
+
+/**
+ * **会話が走り終えた**（送っている・流している状態から戻った）ことを、最新を出す側に知らせる
+ * （決定・2026-09-26）。上の守りで引き返した「最新を出す」を、ここでやり直す——流れが切れたと分かった
+ * 瞬間は、まだ会話の run の後片づけの途中で「走っている」ので、そこで引き返したまま次のきっかけが
+ * 来ないと、途中の吹き出しのまま止まっていた（実測・2026-09-26、黙って止まった接続の試験で1回）
+ */
+const runtimeIdleListeners = new Set<(threadId: string) => void>();
+
+export function onRuntimeIdle(listener: (threadId: string) => void): () => void {
+  runtimeIdleListeners.add(listener);
+  return () => runtimeIdleListeners.delete(listener);
+}
+
+export function reportRuntimeIdle(threadId: string): void {
+  for (const listener of runtimeIdleListeners) listener(threadId);
+}
 
 /**
  * **流れがどう終わったか**を、最新を出す側（`latest-state.ts`）に知らせる（決定・2026-09-26）。
- *  - `done`：最後まで読んだ——会話はもう最新。記録は写すだけで、組み直さない
+ *  - `done`：最後まで読んだ——会話はもう最新。組み直さない
  *  - `disconnected`：途中で切れた——記録から組み直して、まだ走っていれば乗り直す
  */
 export type StreamOutcome = "done" | "disconnected";
@@ -255,7 +298,7 @@ function applyMessage(acc: PartsAccumulator, raw: unknown, threadId?: string): v
     const content = (message.message?.content ?? []) as AssistantContentBlock[];
     for (const block of content) {
       if (block.type === "text" && typeof block.text === "string") {
-        acc.appendText(block.text);
+        acc.addTextBlock(block.text);
       } else if (block.type === "tool_use" && block.id && block.name) {
         acc.startTool(block.id, block.name, block.input ?? {});
         // その tool が画面を持つなら、会話のカードに埋める先として覚えておく
@@ -350,33 +393,6 @@ export function markInlineViewDisplayMode(
 ): void {
   const view = inlineViewByToolCallId.get(viewKey(threadId, toolCallId));
   if (view) inlineViewByToolCallId.set(viewKey(threadId, toolCallId), { ...view, displayMode });
-}
-
-/**
- * **いま画面が tool を呼んでいて、承認を自分で出している Thread**
- * （決定・2026-09-06、改訂・2026-09-07——どちらもユーザー報告）。
- *
- * 画面からの tool 呼び出しは、承認を会話のカードとして出すと**会話が組み直され、
- * その画面自身が消える**（復元は host の記録＝テキストからしか作れないので、
- * tool のカードは残らない）。承認は**画面のその場**に出し、その間は会話に
- * 描き直さない——答える口を2つにしないため（規則3）。
- *
- * **判断待ちの id ではなく Thread で覚える。** id で覚えようとすると、
- * id を知るには受信箱を取り直す必要があり、**取り直した瞬間に会話が
- * 組み直されてしまう**（印を付ける前に再描画が走る）——実機で踏んだ
- * （ユーザー報告・2026-09-07：ボタンを押すと会話が消えて、承認すると
- * 会話は戻るが画面が消える）。**呼ぶ前に分かっている Thread で覚える。**
- */
-const canvasCallsByThread = new Map<string, number>();
-
-export function beginCanvasToolCall(threadId: string): void {
-  canvasCallsByThread.set(threadId, (canvasCallsByThread.get(threadId) ?? 0) + 1);
-}
-
-export function endCanvasToolCall(threadId: string): void {
-  const next = (canvasCallsByThread.get(threadId) ?? 1) - 1;
-  if (next <= 0) canvasCallsByThread.delete(threadId);
-  else canvasCallsByThread.set(threadId, next);
 }
 
 /**
@@ -503,51 +519,9 @@ export function releaseRealRun(threadId: string): void {
   followsToStart.delete(threadId);
 }
 
-/** そのThreadのターンが、いまこのブラウザで生きているか。 */
+/** そのThreadのターンが、いまこのブラウザで生きているか（会話が送っている・流している間も含む）。 */
 export function hasLiveRealRun(threadId: string): boolean {
-  return liveTurns.has(threadId);
-}
-
-/**
- * リロード後の判断待ちの復元（決定・2026-09-06、ユーザー報告起点）。
- *
- * ターンのSSEは `POST /api/threads/:id/messages` の応答の中にしか無いので、
- * ページを読み直すとその走行の出力はUIから切れる。**hostは hold-the-line で
- * 止まったまま**なので、判断待ちは生きて残る——このとき会話の画面には何も
- * 出ず、受信箱には答えるUIが無いので、**誰も答えられない**（実測・2026-09-06）。
- * そこで、走行中のrunが無いThreadを開いたときは、host側で生きている判断待ちを
- * カードとして描き直す。答え先は同じ `/api/inbox/:id/answer` なので、
- * これだけで止まっていたターンが動き出す。
- */
-export function restoredJudgmentMessages(
-  threadId: string,
-  judgments: readonly RealInboxJudgment[],
-): ThreadMessageLike[] {
-  return judgments
-    .filter((j) => j.threadId === threadId)
-    // 画面がその場で承認を出している間は、会話に二重に出さない
-    .filter(() => !canvasCallsByThread.has(threadId))
-    // hostは新しい順で返す（listOpen）——会話に差し込むので**古い順**に直す
-    .slice()
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map((j) => {
-      const toolCallId = `judgment-${j.id}`;
-      judgmentIdByToolCallId.set(toolCallId, j.id);
-      threadIdByJudgmentToolCallId.set(toolCallId, threadId);
-      return {
-        id: `restored-${j.id}`,
-        role: "assistant" as const,
-        // 呼び出し元の tool 名は判断待ちの本文が既に持っている
-        // （「tool呼び出しの承認: mcp__filesystem__listDirectory」）ので、
-        // 差出人は host が知っていればそれ、無ければ banto
-        content: [
-          humanToolPart(toolCallId, j.serverName ?? "banto", j.message, {
-            toolInput: j.toolInput,
-            answerable: j.source !== "elicitation",
-          }),
-        ],
-      };
-    });
+  return liveTurns.has(threadId) || (runtimeBusy.get(threadId)?.() ?? false);
 }
 
 export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter {
@@ -732,7 +706,8 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
 // 同じ `LiveTurn` として持つ。描くのは会話のランタイムに run を1本始めさせる（`takeFollowToStart`）——
 // 読む道も判断待ちの答え方も、自分で送ったターンと1つにする（規則3）。
 
-const followsToStart = new Set<string>();
+/** 乗った流れを描き始める会話の版（組み直したときの `restoredSyncVersion`）。その版の会話だけが描き始める */
+const followsToStart = new Map<string, number>();
 const followListeners = new Set<() => void>();
 let followVersionCounter = 0;
 
@@ -777,7 +752,7 @@ export async function followRunningTurn(threadId: string): Promise<boolean> {
   // ので、中身が1つでも来ていれば、記録にはその入力がある。開き直した場合は流し直しがすぐ届く。
   // 起きるのが遅い回（コンテナが起きる等）でも止まり続けないよう、上限を置く——越えても描くのは同じ
   await Promise.race([contentArrived, new Promise((resolve) => setTimeout(resolve, 10_000))]);
-  if (liveTurns.has(threadId)) {
+  if (hasLiveRealRun(threadId)) {
     // 待っている間に、この画面が自分で送り始めた——そちらを読む
     stream.close();
     return true;
@@ -794,13 +769,19 @@ export async function followRunningTurn(threadId: string): Promise<boolean> {
   };
   self.turn = turn;
   liveTurns.set(threadId, turn);
-  followsToStart.add(threadId);
+  // 描き始めるのは、このあと記録から組み直した会話（`applyThreadRecord`）——ここでは印を付けない
   return true;
 }
 
-/** 会話のランタイムが、乗った流れを描き始めてよいか（1回だけ true）。true なら run を1本始めること */
-export function takeFollowToStart(threadId: string): boolean {
-  if (!followsToStart.delete(threadId)) return false;
+/**
+ * 会話のランタイムが、乗った流れを描き始めてよいか（1回だけ true）。true なら run を1本始めること。
+ * **組み直した版の会話だけが描き始める**（`build`＝その会話を作ったときの `restoredSyncVersion`）——
+ * 組み直す前の、すぐ捨てられる会話が先に印を取ると、最後に残る会話では誰も描き始めず、判断待ちも
+ * 出ないまま止まっていた（実測・2026-09-26、フル E2E で1回）
+ */
+export function takeFollowToStart(threadId: string, build: number): boolean {
+  if (followsToStart.get(threadId) !== build) return false;
+  followsToStart.delete(threadId);
   const live = liveTurns.get(threadId);
   if (!live?.awaitingStart) return false;
   live.awaitingStart = false;
@@ -814,7 +795,10 @@ export function takeFollowToStart(threadId: string): boolean {
  * 写しだけ新しくすると、いまの会話に無い番号を探して目印が消える（実測・2026-09-26）
  */
 export function applyThreadRecord(threadId: string, record: RealThread): void {
-  restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
+  const build = restoredSyncVersion(threadId) + 1;
+  restoredSyncVersionByThread.set(threadId, build);
+  // 乗った流れがまだ描かれていなければ、この版の会話が描き始める
+  if (liveTurns.get(threadId)?.awaitingStart) followsToStart.set(threadId, build);
   updateRealThreadData(threadId, record.messages, record.markers, record.usage);
   followVersionCounter += 1;
   for (const listener of followListeners) listener();
@@ -834,33 +818,16 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
     // 答えを走っているrunのpartsに書き戻す——次にhostから何か届いたときの
     // yieldで「回答：許可する」として画面に出る。addResultの代わり。
     live.acc.finishTool(toolCallId, answer);
-  } else {
-    // リロード後に復元した判断待ち——このブラウザにはターンのSSEが無いので、
-    // 続きは流れてこない。hostの記録から取り直して画面に反映する
-    // （楽観的な写しは作らない、真実はhost・規則3）
-    const threadId = threadIdByJudgmentToolCallId.get(toolCallId);
-    if (threadId) void syncRestoredThread(threadId);
   }
+  // 流れを読んでいないカードは無い（判断待ちは走っているターンの流れでだけ出る——改訂・2026-09-26）。
+  // 読むのをやめたあとに答えても、続きは host が走らせ、終われば `turn.ended` で最新が出る
   // 決着したものは受信箱から消える（§2.4.1「解決済みは状態として持たない」）
   await refreshRealInbox();
   return true;
 }
 
 /**
- * 復元した判断待ちに答えたあと、hostが進めたターンの結果を記録から取り直す。
- *
- * **打ち切りは「返事が増えたか」では決めない**（改訂・2026-09-06、見直し起点）。
- * hostがassistantの発言を追記するのは**ターンの終わり**なので、以前の
- * 「2秒×3回変化が無ければ打ち切り（＝実質6秒）」だと、承認後の処理が
- * 6秒を超える普通のターンで**続きが永久に画面へ入らなかった**。
- * ターンが本当に終わったか＝**assistantの返事が増えたか**を待ち、
- * それまでは待ち続ける（上限は5分）。
- */
-/** host の記録から、この Thread の表示を取り直す（走行中のターンが終わった後・
- *  復元した判断待ちに答えた後）。**楽観的な写しを作らない**（規則3）。 */
-/**
- * **記録から会話を組み直す**（決定・2026-09-11）。`syncRestoredThread` はターンが
- * 終わるのを待つ輪だが、こちらは1回だけ——Clear のように「もう走っていない
+ * **記録から会話を組み直す**（決定・2026-09-11）。Clear のように「もう走っていない
  * ところで記録が変わった」ときに使う。
  *
  * 組み直すと、会話の各発言が**host の物差し（seq）を持つ**——Clear の横線が
@@ -871,29 +838,4 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
  */
 export function rebuildThreadFromRecord(threadId: string): void {
   restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
-}
-
-export async function syncRestoredThread(threadId: string): Promise<void> {
-  const deadline = Date.now() + 5 * 60_000;
-  const assistantCount = (messages: MockThread["realMessages"]): number =>
-    (messages ?? []).filter((m) => m.role === "assistant").length;
-  const before = assistantCount(getThread(threadId)?.realMessages);
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-    try {
-      const updated = await getRealThread(threadId);
-      // 続きで別の判断待ちが立つこともある——それも拾って復元できるようにする
-      await refreshRealInbox();
-      const changed =
-        updated.messages.length !== (getThread(threadId)?.realMessages?.length ?? 0);
-      if (changed) {
-        restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
-        updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage);
-      }
-      // assistantの返事が増えた＝そのターンは終わった
-      if (assistantCount(updated.messages) > before) return;
-    } catch {
-      // hostが落ちている等。**画面の中身は消さない**（規則2）。次の周回で取り直す
-    }
-  }
 }

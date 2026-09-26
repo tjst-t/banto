@@ -77,4 +77,4 @@ E2E（`turn-reattach.spec.ts`）を新しい振る舞いで先に書き、直す
 
 - 自分で送ったターンの吹き出しは、SDK のメッセージごとの文を**改行なしで**つなぐ（`[1][2]…`）。記録は
   改行でつなぐ。リロードすると見た目が変わる。今回の範囲の外——`tasks.json` の
-  `live-text-join-differs-from-record` に起票した
+  `live-text-join-differs-from-record` に起票した → **同日に直した**（`2026-09-26-text-block-join.md`）

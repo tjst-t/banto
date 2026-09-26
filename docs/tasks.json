@@ -2288,13 +2288,17 @@
     {
       "id": "live-text-join-differs-from-record",
       "title": "流れている吹き出しと記録で、文のつなぎ方が違う",
-      "status": "backlog",
+      "status": "done",
       "why": "2026-09-26 に気づいた（最新の状況を出す作業の範囲の外なので触っていない——規則7）。画面の流れている吹き出しは、SDK の assistant メッセージごとの文を**改行なしで**つなぐ（`PartsAccumulator.appendText`）。記録は改行でつなぐ（turn-runner の `extractAssistantText`）。そのため同じターンが、流れているときとリロード後で見た目が変わる（偽 Runner で `[1][2]…` と `[1]⏎[2]…`）。本物の SDK で文だけの assistant メッセージが続くことはまれ（間に tool が入れば別の部分になる）なので、影響は小さい見込み——どちらに寄せるかは、本物のモデルで続く場合を測ってから決める。",
       "doneWhen": "同じターンが、流れているときとリロード後で同じ文として出る。",
       "refs": [
         "banto/apps/frontend/lib/backend/adapter.ts（PartsAccumulator.appendText）",
-        "banto/packages/core/src/http/turn-runner.ts（extractAssistantText）"
-      ]
+        "banto/packages/core/src/http/turn-runner.ts（extractAssistantText）",
+        "docs/notes/2026-09-26-text-block-join.md"
+      ],
+      "verifiedBy": "E2E `specs/assistant-text-blocks.spec.ts`（別々に届いた2つの文が、流れているときもリロード後も同じ2段落で出る。記録は段落で区切る）——直す前は流れている吹き出しが「最初の段落です。2つ目の段落です。」と貼り合わさって落ちることを確かめた。単体（turn-runner：tool を挟んでも、API Error の合成文でも段落で区切る）",
+      "result": "2026-09-26（ユーザー指示で直す）：本物の CLI の記録（298 会話・文ブロック約 8,400）を測ったところ、道具を挟まずに文が続くのは9件だけで、どれも別の応答か CLI が出す「API Error: …」の合成文——別々に届く文は別々の発言だった。**両方を段落で区切る**に揃えた：画面は `PartsAccumulator.addTextBlock`（前も文なら `\\n\\n` でつなぐ）、記録は `extractAssistantText` を `\\n\\n` で。これまでの記録（改行1つ）は書き換えない（Event Store は追記だけ）。",
+      "completedAt": "2026-09-26"
     },
     {
       "id": "thread-messaging",

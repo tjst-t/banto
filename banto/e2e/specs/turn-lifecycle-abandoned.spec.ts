@@ -91,10 +91,23 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
     .toBe(false);
 
   // 答えたあとの続きは、戻ってきた画面の本文にそのまま流れる（改訂・2026-09-26——走っているターンに乗る）。
-  // **走っている間は、自分で送ったときと同じく送れない**（止めるボタンになる）——終わって送るボタンに戻るのを待つ。
-  // 詰まっていれば、ここでいつまでも戻らない
-  await expect(page.getByRole("button", { name: "Send message" }), "答えたあと、ターンが終わった形に戻らない").toBeVisible({
-    timeout: 60_000,
+  // **走っている間は、自分で送ったときと同じく送れない**（止めるボタンになり、Enter も効かない）。
+  // **待つのは、そのターンが終わった印**——host の記録に返事が入るまで。「送るボタンが見える」では待たない：
+  // 答えた直後の一瞬はまだ「判断待ち」の形で送るボタンが出ていて、その直後に走り出す（実測・2026-09-26、
+  // ここで Enter を押して、走っている最中の送信として無視されていた）
+  await expect
+    .poll(
+      async () => {
+        const t = await (
+          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
+        ).json();
+        return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
+      },
+      { timeout: 60_000, message: "答えたあと、ターンが終わらない" },
+    )
+    .toBe(1);
+  await expect(page.getByRole("button", { name: "Send message" }), "ターンが終わったのに、画面が終わった形に戻らない").toBeVisible({
+    timeout: 30_000,
   });
 
   // **次の発言が host に届くこと**——詰まっていると、送ったつもりで消える
