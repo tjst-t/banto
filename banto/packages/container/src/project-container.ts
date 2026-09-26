@@ -165,13 +165,22 @@ export class ProjectContainers {
         ],
         `コンテナ ${name} を作るの`,
       );
-      await this.incus(["config", "device", "add", name, "banto", "disk", `source=${spec.bantoDir}`, `path=${spec.bantoDir}`, "readonly=true"], "banto のコードをマウントするの");
       st = await this.state(name);
       if (!st) throw new Error(`コンテナ ${name} を作ったはずが見つかりません`);
     }
 
-    // 宣言に合わせる（根が変わった・入れ子の要否が変わった）
+    // 宣言に合わせる（コードの置き場・根が変わった・入れ子の要否が変わった）
     let needsRestart = false;
+    // **banto のコードの置き場も付け直す**（改訂・2026-09-26）。以前は作るときに1回付けるだけで、置き場を移すと
+    // （作業ツリーを変えた等）中の Module が古いパスを探して起きられなかった。作るときもここを通る（付ける所は1つ）
+    const code = st.devices["banto"];
+    if (!code || code["source"] !== spec.bantoDir || code["path"] !== spec.bantoDir || code["readonly"] !== "true") {
+      if (code) await this.incus(["config", "device", "remove", name, "banto"], "古い banto のコードの置き場を外すの");
+      await this.incus(
+        ["config", "device", "add", name, "banto", "disk", `source=${spec.bantoDir}`, `path=${spec.bantoDir}`, "readonly=true"],
+        "banto のコードをマウントするの",
+      );
+    }
     const project = st.devices["project"];
     if (spec.root && (!project || project["source"] !== spec.root || project["path"] !== spec.root)) {
       if (project) await this.incus(["config", "device", "remove", name, "project"], "古い Project の根を外すの");

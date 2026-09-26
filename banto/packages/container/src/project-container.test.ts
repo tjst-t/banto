@@ -65,3 +65,66 @@ test("banto 全体用のコンテナは、どの banto のものか（置き場�
   assert.notEqual(a, b);
   assert.equal(a, containerNameFor(instanceContainerId("/home/u/.local/share/banto")), "同じ置き場なら同じ名前");
 });
+
+/** 偽の Incus：コンテナの状態を持ち、device の付け外しを覚える（`ensure` の一周が通る分だけ） */
+function fakeIncus(initial?: { devices: Record<string, Record<string, string>> }) {
+  let state = initial ? { status: "Running", config: { "security.nesting": "false" }, devices: initial.devices } : undefined;
+  const calls: string[][] = [];
+  const run: RunIncus = async (args) => {
+    calls.push(args);
+    if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    if (args[0] === "query") return state ? { code: 0, stdout: JSON.stringify(state), stderr: "" } : { code: 1, stdout: "", stderr: "not found" };
+    if (args[0] === "init") state = { status: "Stopped", config: { "security.nesting": "false" }, devices: {} };
+    if (args[0] === "start" && state) state.status = "Running";
+    if (args[0] === "config" && args[1] === "device" && args[2] === "remove") delete state!.devices[args[4]!];
+    if (args[0] === "config" && args[1] === "device" && args[2] === "add") {
+      const opts = Object.fromEntries(args.slice(6).map((a) => a.split("=") as [string, string]));
+      state!.devices[args[4]!] = opts;
+    }
+    if (args[0] === "exec" && args.includes("--version")) return { code: 0, stdout: "v24.0.0\n", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  return { run, calls, devices: () => state?.devices ?? {} };
+}
+
+const SPEC = {
+  projectId: "p1",
+  root: "/home/u/proj",
+  bantoDir: "/home/u/ghq/banto",
+  nodePath: "/usr/local/bin/node",
+  nodeVersion: "v24.0.0",
+  nesting: false,
+  image: "images:ubuntu/24.04",
+  owner: "/home/u/.local/share/banto",
+  uid: 1000,
+  gid: 1000,
+};
+
+test("banto のコードの置き場が移ったら、コンテナのマウントを付け直す（読み取り専用のまま）", async () => {
+  const fake = fakeIncus({
+    devices: {
+      banto: { type: "disk", source: "/home/u/worktrees/banto-v4/banto", path: "/home/u/worktrees/banto-v4/banto", readonly: "true" },
+      project: { type: "disk", source: "/home/u/proj", path: "/home/u/proj" },
+    },
+  });
+  await new ProjectContainers(fake.run).ensure(SPEC);
+  assert.deepEqual(fake.devices()["banto"], { source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" });
+  assert.ok(fake.calls.some((a) => a.join(" ") === "config device remove banto-p1 banto"), "古い置き場を外していない");
+});
+
+test("置き場が同じなら付け直さない。作るときも同じ1か所で付ける", async () => {
+  const same = fakeIncus({
+    devices: {
+      banto: { type: "disk", source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" },
+      project: { type: "disk", source: "/home/u/proj", path: "/home/u/proj" },
+    },
+  });
+  await new ProjectContainers(same.run).ensure(SPEC);
+  assert.equal(same.calls.filter((a) => a[0] === "config" && a[1] === "device").length, 0, "変わっていないのに付け直した");
+
+  const fresh = fakeIncus();
+  const r = await new ProjectContainers(fresh.run).ensure(SPEC);
+  assert.equal(r.created, true);
+  assert.deepEqual(fresh.devices()["banto"], { source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" });
+  assert.equal(fresh.calls.filter((a) => a.join(" ").startsWith("config device add banto-p1 banto ")).length, 1);
+});
