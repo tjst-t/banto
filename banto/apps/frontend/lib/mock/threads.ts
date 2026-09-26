@@ -3,6 +3,7 @@ import { notifyMockStoreChange } from "./store-events";
 import {
   closeRealThread,
   getRealThread,
+  listRealThreads,
   renameRealThread,
   reopenRealThread,
   setRealForkOrder,
@@ -213,15 +214,59 @@ export async function closeThread(id: string): Promise<void> {
  */
 export async function foldForkThread(id: string): Promise<void> {
   const thread = getThread(id);
-  if (thread?.real) {
-    const updated = await getRealThread(id);
-    updateRealThreadData(id, updated.messages, updated.markers, updated.usage);
-  }
+  if (thread?.real) await refreshRealThreadData(id);
   await closeThread(id);
+}
+
+/**
+ * **その Project の、開いている会話の中身を取り直す**（追加・2026-09-26）。
+ *
+ * 閉じた Fork は取らない——履歴に出すのは一覧の要約で足り、全文はその会話を開いた面が
+ * 取る（`latest-state.ts`——開いた会話の最新を記録から出す）。使い込んだ Project では 12 本中 9 本が
+ * 閉じた Fork で、開くたびに誰も読まない会話を丸ごと受け取っていた
+ * （docs/notes/2026-09-25-latency-review.md §2.2）。
+ *
+ * **同じ Project を同時に2回取りに行かない**——ホームは飛ぶ先の Project の会話を
+ * 飛ぶ前から取り始め（URL が変わって画面が組み上がるのを待たない）、Project の画面は
+ * 開いたときに同じものを欲しがる。
+ */
+const projectThreadFetches = new Map<string, Promise<void>>();
+export function refreshRealProjectThreads(projectId: string): Promise<void> {
+  let pending = projectThreadFetches.get(projectId);
+  if (!pending) {
+    pending = listRealThreads(projectId)
+      .then(async (summaries) => {
+        await Promise.all(
+          summaries.filter((t) => t.status === "active").map((t) => refreshRealThreadData(t.id)),
+        );
+      })
+      .finally(() => projectThreadFetches.delete(projectId));
+    projectThreadFetches.set(projectId, pending);
+  }
+  return pending;
+}
+
+/**
+ * 実 Thread の中身を host から取り直して手元へ写す。**同じ Thread を同時に
+ * 2本取りに行かない**（追加・2026-09-26）——ホームが飛ぶ前に始めた取得と、
+ * 開いた Project の画面が同じ Thread を同時に欲しがる。
+ */
+const realThreadFetches = new Map<string, Promise<void>>();
+export function refreshRealThreadData(id: string): Promise<void> {
+  let pending = realThreadFetches.get(id);
+  if (!pending) {
+    pending = getRealThread(id)
+      .then((updated) => updateRealThreadData(id, updated.messages, updated.markers, updated.usage))
+      .finally(() => realThreadFetches.delete(id));
+    realThreadFetches.set(id, pending);
+  }
+  return pending;
 }
 
 export async function reopenThread(id: string): Promise<void> {
   const thread = getThread(id);
+  // 中身はここでは取らない——閉じた Fork は中身を持っていないことがある（Project を開いたときに
+  // 取るのは開いている Thread だけ）が、開いた面が最新を取りに行く（`latest-state.ts`）
   if (thread?.real) await reopenRealThread(id);
   mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "open", closedAt: undefined } : t));
   notifyMockStoreChange();

@@ -110,6 +110,19 @@ export async function* runThreadTurn(
   }
 }
 
+/**
+ * セッションごとの「CLI がまだ後片づけ中」（追加・2026-09-26）。鍵はセッション id
+ * ——同じ Thread の次のターンも、そこから分けた Fork の最初のターンも、同じ
+ * セッションの記録を読むので、どちらもこれを待つ。終わったら消える
+ */
+const cliExits = new Map<string, Promise<void>>();
+function rememberCliExit(sessionId: string, exited: Promise<void>): void {
+  cliExits.set(sessionId, exited);
+  void exited.finally(() => {
+    if (cliExits.get(sessionId) === exited) cliExits.delete(sessionId);
+  });
+}
+
 async function* runThreadTurnInner(
   deps: {
     projectThread: ProjectThreadStore;
@@ -240,6 +253,10 @@ async function* runThreadTurnInner(
     wakeSide?.();
   });
   try {
+    // **前のターンの CLI が終わるまで、同じセッションを続きから走らせない**
+    // （追加・2026-09-26）。ターンは答えが揃った時点で終わり、CLI の後片づけは
+    // 裏で続く（`RunnerTurnResult.exited`）。ふつうは人が次を打つより先に終わっている
+    if (thread.resumePoint !== undefined) await cliExits.get(thread.resumePoint);
     const gen = (deps.runTurn ?? runTurn)({
       signal: abortTurn.signal,
       resumeSessionId: thread.resumePoint,
@@ -371,6 +388,7 @@ async function* runThreadTurnInner(
       pending = settle(gen.next());
     }
     sessionId = result.sessionId;
+    if (sessionId && result.exited) rememberCliExit(sessionId, result.exited);
     contextUsage = result.contextUsage;
     compactionCount = result.compactionCount;
     apiUsage = result.apiUsage;

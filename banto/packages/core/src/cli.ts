@@ -820,7 +820,13 @@ async function main(): Promise<void> {
         : where === "instance-container"
           ? { id: instanceContainerId(bootstrap.dataDir), nesting: false }
           : undefined;
+    // **繋がるまでにどこで時間を使ったかを、繋がった行に添える**（追加・2026-09-26）——新しい Project を
+    // 開くのが遅いとき、手元でプローブを書かずに `~/banto-host.log` で内訳が分かるように（規則4）
+    const started = performance.now();
+    const phases: string[] = [];
+    const mark = (what: string, since: number) => phases.push(`${what} ${Math.round(performance.now() - since)}ms`);
     const container = placement ? await ensureContainer(placement) : undefined;
+    if (container) mark("コンテナ", started);
     const token = registry.issueToken({
       moduleName: declaration.name,
       connName,
@@ -843,6 +849,20 @@ async function main(): Promise<void> {
       modulePackageDir: modulePackageDirOf(bootstrap.dataDir, declaration.name),
     };
     mkdirSync(context.moduleDataDir, { recursive: true, mode: 0o700 });
+    // **中に見せる置き場は、先に頼んでおく**（改訂・2026-09-26、実測）——下の Shell のホームの用意や
+    // 金庫の語の解決を待ってから頼むと、並んで起きる他の Module のマウントの束に乗り遅れ、
+    // 自分の分だけもう1回待つことになっていた。起こす直前に揃っていればよい
+    const mounting = performance.now();
+    const mounted = container
+      ? Promise.all([
+          containers.ensureDisk(container.name, diskDeviceName(context.moduleDataDir), context.moduleDataDir),
+          ...(existsSync(context.modulePackageDir)
+            ? [containers.ensureDisk(container.name, diskDeviceName(context.modulePackageDir), context.modulePackageDir, { readonly: true })]
+            : []),
+        ])
+      : undefined;
+    // 待たずに進むあいだに失敗しても、下で待つまで「誰も読まない拒否」にしない
+    mounted?.catch(() => undefined);
     // **Shell 専用のホーム**（決定・2026-09-23、ユーザー）。人のホームは閉じ込めで
     // 読めないので、Project ごとに書けるホームを用意し、人が選んだ設定だけを写す。
     // `shell` は同梱だけが名乗れる役割（RESERVED_ROLES）——**第三者の Module に
@@ -870,10 +890,8 @@ async function main(): Promise<void> {
     // banto のコード（読み取り専用、作るときに）・この Module の置き場・取ってきた配布物（読み取り専用）だけ。
     // **host の環境は渡さない**（`incus exec` は引き継がない。渡すのは下の一覧だけ）
     if (container) {
-      await containers.ensureDisk(container.name, diskDeviceName(context.moduleDataDir), context.moduleDataDir);
-      if (existsSync(context.modulePackageDir)) {
-        await containers.ensureDisk(container.name, diskDeviceName(context.modulePackageDir), context.modulePackageDir, { readonly: true });
-      }
+      await mounted;
+      mark("マウント", mounting);
       const { uid, gid } = userInfo();
       const passthrough = Object.fromEntries(
         containerEnvPassthrough.flatMap((name) => (process.env[name] !== undefined ? [[name, process.env[name]!]] : [])),
@@ -904,8 +922,10 @@ async function main(): Promise<void> {
         launch.args,
       );
       // `incus` 自身はホストで動く——ホストの環境（Incus の設定の置き場など）はこちらに渡す
+      const connecting = performance.now();
       const client = await connectStdioModule(inside.command, inside.args, undefined, process.env);
-      return finishModuleConnection(declaration, connName, project, client, token, forProject);
+      mark("起動と接続", connecting);
+      return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases });
     }
 
     // **banto 本体で起こす**：同梱の banto 全体の Module（banto 自身のコード——Vault は秘密の置き場を持つ）。
@@ -917,7 +937,7 @@ async function main(): Promise<void> {
       ...launch.env,
     });
 
-    return finishModuleConnection(declaration, connName, project, client, token, forProject);
+    return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases });
   }
 
 
@@ -934,7 +954,9 @@ async function main(): Promise<void> {
     client: Client,
     token: string | undefined,
     forProject: { id: string; root: string } | undefined,
+    timing?: { started: number; phases: string[] },
   ): Promise<string> {
+    const checking = performance.now();
     // **Module 自身の申告と、宣言（Config）を突き合わせる**（決定・2026-09-06）。
     // 起動の形（Project ごとか・別プロセスか・秘密を扱うか・閉じ込めが要るか）は
     // 起動する瞬間に決まってしまうので、宣言が先。申告は**より厳しくする方向にだけ**
@@ -1037,8 +1059,11 @@ async function main(): Promise<void> {
       forThisProject.add(connName);
       projectConnections.set(project.id, forThisProject);
     }
+    const took = timing
+      ? `（${Math.round(performance.now() - timing.started)}ms：${[...timing.phases, `申告と可視性の確認 ${Math.round(performance.now() - checking)}ms`].join("・")}）`
+      : "";
     console.log(
-      `[host] ${declaration.name} connected${project ? ` for project ${project.id} (root ${project.root})` : ""}`,
+      `[host] ${declaration.name} connected${project ? ` for project ${project.id} (root ${project.root})` : ""}${took}`,
     );
     return connName;
   }
@@ -1353,6 +1378,7 @@ async function main(): Promise<void> {
   }
 
   const app = createApp({
+    warmModelCatalog: true,
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
     ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
     projectThread,

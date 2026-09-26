@@ -15,7 +15,9 @@ import {
   renameRealProject,
   setRealProjectOrder,
   updateRealProjectSettings,
+  prepareRealProjectModules,
 } from "../backend/client";
+import { refreshRealInbox } from "../backend/real-inbox";
 
 // デモ用の初期Projectは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
 // 実Projectはアプリ起動時にhydrateRealProjects()（real-projects-bootstrap.tsx）が
@@ -128,6 +130,26 @@ export interface NewProjectInput {
 }
 
 /**
+ * **その Project の Module を用意する**（決定・2026-09-07、ユーザー）。用意できなければ
+ * 受信箱にお知らせが出るので、終わったら受信箱を取り直す。
+ *
+ * **同じ Project を同時に2回頼まない**（追加・2026-09-26）——作った直後に頼み（画面が
+ * 切り替わるのを待たない）、開いた Project の画面も同じものを頼む。host の側でも束ねられるが、
+ * 往復を1回減らせる。
+ */
+const modulePreparations = new Map<string, Promise<void>>();
+export function prepareProjectModules(projectId: string): Promise<void> {
+  let pending = modulePreparations.get(projectId);
+  if (!pending) {
+    pending = prepareRealProjectModules(projectId)
+      .then(() => refreshRealInbox())
+      .finally(() => modulePreparations.delete(projectId));
+    modulePreparations.set(projectId, pending);
+  }
+  return pending;
+}
+
+/**
  * 実bantoホストにProjectとBase Threadを作る（決定・2026-09-03）。
  */
 export async function createRealProject(input: NewProjectInput): Promise<MockProject> {
@@ -153,6 +175,10 @@ export async function createRealProject(input: NewProjectInput): Promise<MockPro
   );
   setProjectOverrides({ projectId: project.id, securityRoot: input.basePath, ...input.overrides });
   notifyMockStoreChange();
+  // **作った時点で Module の用意を始める**（追加・2026-09-26、実測）。新しい Project は
+  // コンテナを作るところから始まるので 1.5 秒ほどかかる——画面が切り替わって Project の
+  // 画面が頼むまで待たない。失敗は開いた画面が頼み直したときに出る（受信箱にも出る）
+  prepareProjectModules(project.id).catch(() => undefined);
   return project;
 }
 

@@ -20,7 +20,6 @@ import {
   hasLiveRealRun,
   rebuildThreadFromRecord,
 } from "@/lib/backend/adapter";
-import { refreshRealInbox } from "@/lib/backend/real-inbox";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { useJudgmentCount } from "@/components/banto/shell/nav-panel";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
@@ -32,14 +31,13 @@ import {
   clearRealThread,
   createRealFork,
   getRealThread,
-  loadRealProjectThreads,
-  prepareRealProjectModules,
 } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
-import { getProject, hydrateRealProjects, renameProject } from "@/lib/mock/projects";
+import { getProject, hydrateRealProjects, prepareProjectModules, renameProject } from "@/lib/mock/projects";
 import {
   foldForkThread,
   getThread,
+  refreshRealProjectThreads,
   registerRealFork,
   renameForkThread,
   updateRealThreadData,
@@ -216,19 +214,27 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
     void hydrateRealProjects()
       .then(async () => {
         if (cancelled || !getProject(projectId)?.real) return;
-        const threads = await loadRealProjectThreads(projectId);
-        if (cancelled) return;
-        for (const t of threads) updateRealThreadData(t.id, t.messages, t.markers, t.usage);
-        // その Project の Module を用意する（決定・2026-09-07）。返事は待たない
-        // ——用意できなければ受信箱にお知らせが出る
-        await prepareRealProjectModules(projectId).then(() => refreshRealInbox());
+        // 会話の中身と Module の用意は**並べて**頼む（改訂・2026-09-26）——以前は会話を
+        // 取り終えてから Module を頼んでいたので、新しい Project ではその分だけ用意が遅れた
+        await Promise.all([
+          // **開いている Thread の中身だけ取る**（改訂・2026-09-26、実測）——閉じた Fork は
+          // その会話を開いた面が取る。ホームから来たときは、飛ぶ前に始めた取得を分け合う
+          refreshRealProjectThreads(projectId).catch((err: unknown) => {
+            // 取れなければ会話は出ない。**黙って古いものを見せない**
+            // ——開き直せば取り直す。**ただし黙りもしない**（改訂・2026-09-10）：
+            // 以前はここで握りつぶしていたので、会話は「読み込んでいます…」の
+            // ままで、なぜ出ないのかが誰にも分からなかった
+            if (!cancelled) reportFailure("この Project の会話を読み込めませんでした", err);
+          }),
+          // その Project の Module を用意する（決定・2026-09-07）。用意できなければ
+          // 受信箱にお知らせが出る。作った直後なら、作ったときに始めた用意を分け合う
+          prepareProjectModules(projectId).catch((err: unknown) => {
+            if (!cancelled) reportFailure("この Project の Module を用意できませんでした", err);
+          }),
+        ]);
       })
       .catch((err: unknown) => {
-        // 取れなければ会話は出ない。**黙って古いものを見せない**
-        // ——開き直せば取り直す。**ただし黙りもしない**（改訂・2026-09-10）：
-        // 以前はここで握りつぶしていたので、会話は「読み込んでいます…」の
-        // ままで、なぜ出ないのかが誰にも分からなかった
-        if (!cancelled) reportFailure("この Project の会話を読み込めませんでした", err);
+        if (!cancelled) reportFailure("Project の一覧を読み込めませんでした", err);
       });
     return () => {
       cancelled = true;

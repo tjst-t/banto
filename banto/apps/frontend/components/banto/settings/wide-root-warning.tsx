@@ -9,15 +9,20 @@
 // **2箇所**に出す。
 //
 // 判断は host が持つ（`/api/config/root-scope`）——画面が home の場所を推測しない。
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { fetchRealRootScope, type RealRootScope } from "@/lib/backend/client";
 
 export function useRootScope(path: string | undefined): RealRootScope | null {
   const [scope, setScope] = useState<RealRootScope | null>(null);
+  // **開いた最初の1回は待たずに聞く**（改訂・2026-09-26）——待つのは打っている途中の連打を
+  // 避けるためで、画面を開いたときに既に入っている値まで 250 ms 遅らせる理由は無い
+  const asked = useRef(false);
   useEffect(() => {
     const trimmed = path?.trim();
     let cancelled = false;
+    const delay = asked.current ? 250 : 0;
+    asked.current = true;
     const timer = setTimeout(() => {
       if (!trimmed) {
         setScope(null);
@@ -27,7 +32,7 @@ export function useRootScope(path: string | undefined): RealRootScope | null {
         .then((next) => !cancelled && setScope(next))
         // **分からなかったら、何も言わない**——「安全です」とは言わない（規則2）
         .catch(() => !cancelled && setScope(null));
-    }, 250); // 打っている途中で毎文字は聞かない
+    }, delay); // 打っている途中で毎文字は聞かない
     return () => {
       cancelled = true;
       clearTimeout(timer);

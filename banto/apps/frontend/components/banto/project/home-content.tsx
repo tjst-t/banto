@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { getActiveProjects, hydrateRealProjects } from "@/lib/mock/projects";
+import { refreshRealProjectThreads } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { describeFailure } from "@/lib/report-failure";
 
@@ -57,6 +58,10 @@ export function HomeContent() {
     const first = getActiveProjects()[0];
     if (!first) return;
     redirected.current = true;
+    // **会話の中身は、飛ぶ前から取り始める**（追加・2026-09-26、実測）。URL が変わって
+    // Project の画面が組み上がるまでに 0.4 秒ほどかかり、その間は何も取っていなかった。
+    // Project の画面は同じ取得を分け合う（二重には取らない）。失敗はそちらが言う
+    if (first.real) refreshRealProjectThreads(first.id).catch(() => undefined);
     router.replace(`/p/${first.id}`);
   }, [hydrated, router]);
 

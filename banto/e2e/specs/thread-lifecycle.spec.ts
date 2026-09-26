@@ -93,3 +93,42 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
     "再度開いた Fork に、その Fork でした会話が戻っていない",
   ).toBeVisible({ timeout: 15_000 });
 });
+
+test("閉じた Fork に URL で直接来ても、その Fork の会話が出る", async ({ page }) => {
+  // **Project を開いたときに取るのは開いている Thread だけ**（改訂・2026-09-26、実測）
+  // ——閉じた Fork の中身は、その会話を開いた面が取る（`latest-state.ts`）。受信箱や
+  // Command Palette からは `?fork=` で直接飛んでくるので、「会話を読み込んでいます…」の
+  // まま止まらないことをここで見る
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-lifecycle-direct-"));
+  await openApp(page);
+  await createProject(page, "E2E Closed Fork Direct", projectRoot);
+
+  const assistantBubble = page.locator('[data-role="assistant"]');
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill("目印として「めじるし789」と1語だけ返してください。");
+  await composer.press("Enter");
+  await expect(assistantBubble.filter({ hasText: "めじるし789" })).toBeVisible({ timeout: 60_000 });
+
+  const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
+  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
+  await page.waitForURL(/[?&]fork=[0-9a-f-]+/);
+  const forkUrl = page.url();
+
+  const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
+  await forkComposer.fill("目印として「じかにめじるし012」と1語だけ返してください。");
+  await forkComposer.press("Enter");
+  await expect(assistantBubble.filter({ hasText: "じかにめじるし012" })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
+  await expect(forkPanelBack).not.toBeVisible();
+
+  // 読み直して手元の中身を消し、閉じた Fork の URL へ直接行く
+  await page.goto(forkUrl);
+  const forkPanel = page.locator('[data-testid="panel-overlay"][data-layer="fork"]');
+  await expect(forkPanel, "閉じた Fork のパネルが開いていない").toBeVisible({ timeout: 15_000 });
+  await expect(
+    forkPanel.getByText("じかにめじるし012").first(),
+    "閉じた Fork の会話が出ない（中身を取りに行っていない）",
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(forkPanel.getByTestId("thread-loading")).toHaveCount(0);
+});

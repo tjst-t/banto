@@ -96,7 +96,7 @@ export interface ModuleClientLike {
   /** **上限を渡せる**（追加・2026-09-22）——答えない Module でここが詰まると、
    *  画面はターンを始める前にこれを待つので、会話そのものが止まる。 */
   listTools(params?: undefined, options?: { timeout?: number }): Promise<{ tools: unknown[] }>;
-  listResources(): Promise<{ resources: unknown[] }>;
+  listResources(params?: undefined, options?: { timeout?: number }): Promise<{ resources: unknown[] }>;
   /** その Module が何を持っていると名乗ったか（MCP の capability negotiation）。 */
   getServerCapabilities?(): { resources?: unknown } | undefined;
   readResource(params: { uri: string; _meta?: Record<string, unknown> }): Promise<{ contents: unknown[] }>;
@@ -122,6 +122,8 @@ const UI_CALL_OPTIONS = { timeout: UI_CALL_TIMEOUT_MS, resetTimeoutOnProgress: t
 export interface AppDeps {
   /** 選べるモデルを尋ねる口（決定・2026-09-23）。**試験だけが差し替える**——既定は CLI に聞く */
   listModels?: () => Promise<ModelInfo[]>;
+  /** 起動したらモデルの一覧を裏で取っておく（本番の起動だけ。試験では CLI を起こさない） */
+  warmModelCatalog?: boolean;
   projectThread: ProjectThreadStore;
   /** banto全体で覚えていること（§2.2 Global Memory、決定・2026-09-05）。 */
   globalMemory: GlobalMemoryStore;
@@ -632,8 +634,23 @@ const UI_TOOLS_TIMEOUT_MS = 5_000;
  */
 async function listResourcesIfAny(client: ModuleClientLike): Promise<unknown[]> {
   if (client.getServerCapabilities && !client.getServerCapabilities()?.resources) return [];
-  const { resources } = await client.listResources();
+  const { resources } = await client.listResources(undefined, { timeout: UI_TOOLS_TIMEOUT_MS });
   return resources;
+}
+
+/**
+ * Module 群の資源一覧を**並べて**取る（改訂・2026-09-26、実測）。
+ *
+ * 以前は1本ずつ順に聞いていたので、**いちばん遅い1本ではなく、全部の合計**を
+ * 人が待っていた。失敗の扱いは変えない——1本でも失敗したらそのまま投げる
+ * （`listResourcesIfAny` の規則2）。答えない1本は上限で失敗に変わる。
+ */
+async function listResourcesOfAll(
+  modules: Array<{ name: string; client: ModuleClientLike }>,
+): Promise<Array<{ name: string; resources: unknown[] }>> {
+  return Promise.all(
+    modules.map(async ({ name, client }) => ({ name, resources: await listResourcesIfAny(client) })),
+  );
 }
 
 /** その Module 群が名乗っている**設定 Canvas**を集める（instance/Project で共通）。 */
@@ -641,8 +658,7 @@ async function listSettingsCanvases(
   modules: Array<{ name: string; client: ModuleClientLike }>,
 ): Promise<Array<{ server: string; resourceUri: string; name?: string }>> {
   const result: Array<{ server: string; resourceUri: string; name?: string }> = [];
-  for (const { name, client } of modules) {
-    const resources = await listResourcesIfAny(client);
+  for (const { name, resources } of await listResourcesOfAll(modules)) {
     for (const r of resources) {
       // **Module が名乗ったものだけ**——投機的に探しにいかない（§6.2）
       if (!isSettingsCanvas(r)) continue;
@@ -664,8 +680,7 @@ async function listLauncherCanvases(
   modules: Array<{ name: string; client: ModuleClientLike }>,
 ): Promise<Array<{ server: string; resourceUri: string; name?: string; description?: string }>> {
   const result: Array<{ server: string; resourceUri: string; name?: string; description?: string }> = [];
-  for (const { name, client } of modules) {
-    const resources = await listResourcesIfAny(client);
+  for (const { name, resources } of await listResourcesOfAll(modules)) {
     for (const r of resources) {
       if (canvasKindOf(r) !== "launcher") continue;
       const uri = (r as { uri?: unknown }).uri;
@@ -737,6 +752,41 @@ async function readUiResource(
   };
 }
 
+/**
+ * **人の操作に答えるのに時間がかかった要求を、1行ログに残す**（追加・2026-09-26）。
+ *
+ * 「遅い」と言われるたびに、どの口が遅いのかを手元のプローブで測り直していた
+ * （docs/notes/2026-09-25-latency-review.md §3.8）。host 自身が書いておけば、
+ * 次は `~/banto-host.log` を grep するだけで済む——観測を、測られる画面の外に置く
+ * （規則4）。流しっぱなしの口（SSE）と、Module・Runner からの中継は数えない
+ * （人を待たせる口ではないし、長いのが普通）。
+ */
+const SLOW_REQUEST_MS = 500;
+function logIfSlow(req: IncomingMessage, res: ServerResponse): void {
+  const path = (req.url ?? "").split("?")[0] ?? "";
+  if (!path.startsWith("/api/")) return;
+  const started = performance.now();
+  res.once("finish", () => {
+    const ms = Math.round(performance.now() - started);
+    if (ms < SLOW_REQUEST_MS) return;
+    if (String(res.getHeader("content-type") ?? "").startsWith("text/event-stream")) return;
+    console.warn(`[host] 遅い要求: ${req.method} ${path} ${res.statusCode} ${ms}ms`);
+  });
+}
+
+/**
+ * 開いた会話に返す中身。**文脈使用量は最新の1件だけ**（改訂・2026-09-26、実測）。
+ *
+ * 1ターンごとに SDK の内訳（約 30 KB）が1件ずつ積もり、使い込んだ会話では
+ * **応答の 90% が使用量の履歴**になっていた（1本 1.8 MB・Project を開くと 9.6 MB、
+ * docs/notes/2026-09-25-latency-review.md §2.2）。画面が読むのは最新の1件だけ
+ * （メーター）。記録（Event Store の `usage.recorded`）は変えない——返し方だけ。
+ * 推移が要る日が来たら、そのとき別の口に分ける。
+ */
+function toThreadDetail(thread: ThreadState): ThreadState {
+  return { ...thread, usage: thread.usage.slice(-1) };
+}
+
 /** 一覧に出す分だけ（決定・2026-09-07）。**中身（messages/markers/usage）は返さない**
  *  ——閉じた Thread の概要に要る「件数・最初と最後の発言」は、ここで数えて渡す
  *  （画面が全文を持たずに済む。AI 要約はしない、§2.2 と同じ姿勢）。 */
@@ -776,6 +826,14 @@ function toThreadSummary(thread: ThreadState) {
 export function createApp(deps: AppDeps) {
   // 選べるモデルの一覧（少しのあいだ覚える、`runner/models.ts`）
   const modelCatalog = new ModelCatalog(deps.listModels ?? listModelsFromCli);
+  // **起動したら、モデルの一覧を裏で先に取っておく**（追加・2026-09-26、実測）。一覧はターンの前に
+  // AI に伝えるモデル名を引くのに使うので、取っていないと**起動後の最初のターンが CLI の起動（約 0.6 秒）を
+  // 待ってから始まる**。取れなければ、ターンのときにもう一度取りに行く（失敗は覚えない）
+  if (deps.warmModelCatalog) {
+    modelCatalog.list().catch((err: unknown) => {
+      console.warn(`[host] モデルの一覧を先に取っておけませんでした（最初のターンで取り直します）: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
   // 人が会話に添えた画像の置き場（決定・2026-09-26、アーキ仕様 §2.1）。データの置き場が無い
   // 構成（一部の試験）では持たない——そこへ画像が来たら、理由を言って断る
   const imageStore = deps.dataDir ? new ImageStore(join(deps.dataDir, "images")) : undefined;
@@ -864,6 +922,7 @@ export function createApp(deps: AppDeps) {
 
   return createServer(async (req, res) => {
     withCors(res);
+    logIfSlow(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
@@ -1417,7 +1476,7 @@ export function createApp(deps: AppDeps) {
       if (threadMatch && req.method === "GET") {
         const thread = deps.projectThread.getThread(threadMatch[1]!);
         if (!thread) return json(res, 404, { error: "not found" });
-        json(res, 200, thread);
+        json(res, 200, toThreadDetail(thread));
         return;
       }
 

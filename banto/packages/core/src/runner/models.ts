@@ -73,8 +73,29 @@ export class ModelCatalog {
     private readonly now: () => number = Date.now,
   ) {}
 
+  /**
+   * **期限が切れても、前に取ったものがあればすぐ返す**（改訂・2026-09-26、実測）。
+   * 取り直しは裏で走らせる（stale-while-revalidate）。以前は期限切れのたびに
+   * CLI の起動（約 0.6〜0.8 秒）を待ってから答えていた——**10 分あけて送った最初の
+   * ターンは、この分だけ遅れて始まった**（ターンの前に AI に伝えるモデル名を引くため）。
+   * 取り直しに失敗したら、手元のものを返し続け、次に聞かれたときにまた取りに行く
+   * （失敗は覚えない、は今までどおり）。まだ何も持っていないときだけ待つ。
+   */
   async list(): Promise<ModelChoice[]> {
     if (this.cached && this.now() - this.cached.at < TTL_MS) return this.cached.choices;
+    if (this.cached) {
+      const stale = this.cached.choices;
+      this.refresh().catch((err: unknown) => {
+        console.warn(
+          `[host] モデルの一覧を取り直せませんでした（前の一覧を使い続けます）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      return stale;
+    }
+    return this.refresh();
+  }
+
+  private refresh(): Promise<ModelChoice[]> {
     // 同時に何本来ても、CLI は1本しか起こさない
     this.inflight ??= this.load()
       .then((infos) => {

@@ -226,7 +226,7 @@ tool を AI には一切見せない**こと。AI 向けは「存在を知る」
 | 種別 | 名前 | 内容 |
 |---|---|---|
 | resource | `vault://aliases` | alias 一覧。**値は含まない**——`name` / `kind`（`secret`\|`ssh-identity`\|`file`）/ `note`（自由記述、任意）/ `lastUsedAt` / `expiresAt`（あれば）。**呼び出し元の Project から使えるものだけ**（2026-09-13）。置き場も Vault の名前も載せない——AI に選ばせる材料にしない |
-| resource | `vault://aliases/{name}` | 単一 alias のメタデータ（同上、詳細版） |
+| resource template | `vault://aliases/{name}` | 単一 alias のメタデータ（同上、詳細版）。**`resources/templates/list` に載せ、alias を1つずつ `resources/list` に並べない**（決定・2026-09-26）——並べると資源の一覧を作るたびに金庫へ問い合わせることになり、外の金庫では一覧1回が秒単位になった。host は設定画面・Skill 一覧・Command Palette のたびに全 Module の資源一覧を取る |
 | tool | `requestAlias({name, hint, kind})` | **値を渡さない。** 「この alias が要るが無い」と人に伝え、**会話の中に入力欄を出す**（下記） |
 
 **`requestAlias` は会話の中に入力欄を出す**（決定・2026-09-12、ユーザー提案）。

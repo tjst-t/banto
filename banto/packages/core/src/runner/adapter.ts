@@ -74,6 +74,17 @@ export interface RunnerTurnResult {
    *  **キャッシュが効いているかはここでしか分からない**——contextUsage は
    *  「どれだけ積んだか」であって「いくらで読めたか」ではない（決定・2026-09-06）。 */
   apiUsage?: unknown;
+  /**
+   * **CLI のプロセスが終わったら解決する**（追加・2026-09-26、実測）。
+   *
+   * ターンは `result` と文脈使用量が揃った時点で終わる——以前は CLI が終了する
+   * まで待っていて、**答えが出そろってから入力欄が戻るまで毎ターン約 0.75 秒**
+   * 余計にかかっていた（docs/notes/2026-09-25-latency-review.md §2.3）。
+   * 同じセッションを続きから走らせる（resume）ときは、**これを待ってから**起こす
+   * ——前の CLI がセッションの記録を書き終える前に、次の CLI が読まないように。
+   * 拒否はしない（終わり際の失敗はログに書く）。
+   */
+  exited?: Promise<void>;
 }
 
 /**
@@ -260,9 +271,22 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
   // してしまう（規則2違反）。catchしてqueueへ伝搬し、呼び出し側
   // （turn-runner.ts）の既存のtry/catchでSSEの`error`イベントに変換する。
   let capturedError: unknown;
+  // `result` を受け取り、文脈使用量まで揃ったか——ここから先は CLI の後片づけ
+  let answered = false;
+  let markExited!: () => void;
+  const exited = new Promise<void>((resolve) => {
+    markExited = resolve;
+  });
   void (async () => {
     try {
       for await (const message of q) {
+        if (answered) {
+          // 実測では何も来ない（2026-09-26）。来たら**黙って捨てずに**書き残す（規則2）
+          console.warn(
+            `[runner] 答えが出そろった後に CLI から ${message.type}${"subtype" in message ? `/${String(message.subtype)}` : ""} が届きました（セッション ${sessionId ?? "?"}）。ターンは終わっているので記録していません`,
+          );
+          continue;
+        }
         queue.push({ type: "message", message });
         if (message.type === "system" && message.subtype === "init") {
           sessionId = message.session_id;
@@ -280,18 +304,33 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
             contextUsage = undefined;
           }
           closeInput();
+          // **ここでターンを終える**（改訂・2026-09-26、実測）——入力を閉じてから
+          // CLI のプロセスが終わるまで約 0.75 秒かかり、その間に届くものは無い。
+          // 終わるのは裏で待つ（`exited`）
+          answered = true;
+          queue.close();
         }
       }
     } catch (err) {
-      capturedError = err;
+      if (answered) {
+        // 答えはもう記録に入る。**握りつぶさずに書き残す**（規則2）——次のターンの
+        // resume が壊れていれば、そちらが理由つきで落ちる
+        console.warn(
+          `[runner] 答えが出そろった後、CLI の終わり際に失敗しました（セッション ${sessionId ?? "?"}）: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      } else {
+        capturedError = err;
+      }
     }
     queue.close();
+    markExited();
   })();
 
   yield* queue.iterate();
 
   if (capturedError) throw capturedError;
-  return { sessionId, contextUsage, compactionCount, apiUsage };
+  return { sessionId, contextUsage, compactionCount, apiUsage, exited };
 }
 
 function abortSignalToController(signal: AbortSignal): AbortController {

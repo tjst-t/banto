@@ -2320,6 +2320,25 @@
       "why": "ユーザー（2026-09-26）：将来は banto の中の別の Module からサブエージェントを呼びたい。待たない形の返事は呼んだ Module に返す（決定）。banto の外から呼ぶことは考えない（決定）。返事の口は Thread と同じ仕組みにしたい。3つ挙げたうち、①Project の境界の縛りは入れた（2026-09-26、c839c387、RelayRegistry.whyNotAllowed）。**残りの2つは、サブエージェントを呼ぶ最初の Module を作るときに一緒にやる**（決定・2026-09-26、ユーザー——呼ぶ Module がまだ無い）：②中継の時間の上限と途中経過——host-relay-endpoint.ts の relayCallTool が宛先をオプション無しで呼んでいて、MCP の既定 60 秒で切れる（agent-proxy.ts と同じ resetTimeoutOnProgress・onprogress の中継を入れる。直す前に [slow 90] で切れることを測る）。③札の宛先に Module——中継でも札を出して呼んだ Module に結びつけ、host が呼んだ Module の受け口の tool を呼んで渡す（第一候補。受け口の形は未決）。送り手（サブエージェント）の書き方は変えない。詳細は notes の「別の Module から呼ぶための残り2つ」。",
       "notes": "docs/notes/2026-09-25-thread-delivery.md",
       "doneWhen": "サブエージェントを呼ぶ Module から、待つ形（60 秒を越える仕事）と待たない形（返事がその Module に届く）の両方が通り、E2E で確かめてある"
+    },
+    {
+      "id": "latency-human-actions-2026-09-26",
+      "title": "人の操作に対するレイテンシーを削る（設定画面・Project を開く・新しい Project・ターンの頭と尻）",
+      "status": "done",
+      "why": "ユーザー（2026-09-26）：「新しい Project を開くときとか、設定画面とかで遅いなーって思うことが多い。とにかくすべてを光の速さで表示してほしい」。2026-09-25 のレビューの改善案はどれも手つかず・未起票だった。測り直すと同じ原因が残っていた（Infisical の資源一覧 1.4 秒を設定画面・Skill・Command Palette・最初のターンが待つ／会話の記録の 90% が使用量の履歴で Project を開くと 9.6 MB／`result` の後に CLI の終了を 0.75 秒待つ）。新しい Project ではコンテナの用意に 2 秒かかっていた。",
+      "notes": "docs/notes/2026-09-26-latency-fixes.md",
+      "doneWhen": "直す前と同じ物差しで、設定画面・Project を開く・新しい Project・ターンの尻が縮んだことを数字で示せる。フル E2E が通る。",
+      "verifiedBy": "フル E2E（3回に分けて 72・35・33 件すべて通過）＋ thread-lifecycle に「閉じた Fork に URL で直接来ても会話が出る」を追加（取得を止めると落ちることを確かめた）。単体：core 310・container 20（＋実 Incus の結合1）・vault-local 36・vault-directory 40・vault-infisical 22（本物の Infisical を含む）・frontend 16。実測：本番の接続で Infisical の一覧が同じ 34 件のまま 1.4〜3.0 秒→0.4〜0.9 秒、資源一覧 1〜3 ms。本番データで HOME を開く転送 9.24 MB→0.28 MB。検証用 host（4199）で新しい Project の Module が揃うまで 1.94〜2.01 秒→1.48〜1.75 秒、本物のモデルで `result`→`done` 1.05 秒→0.30〜0.34 秒（3ターン目が前の答えを覚えていた＝resume は壊れていない）。",
+      "result": "vault の alias ごとの資源をテンプレートへ（資源一覧が金庫に触らない）／Infisical の一覧を再帰1回・値を取らない／`GET /api/threads/:id` は使用量の最新1件だけ／Project を開くと開いている Thread だけ取る・ホームは飛ぶ前から取り始める／設定 Canvas の一覧を1本にまとめ SWR／ターンは答えが揃った時点で終わり、同じセッションの次のターンは前の CLI の終了を待つ／モデル一覧を SWR＋起動時に取っておく／コンテナの経路はブリッジから読み、マウントは PATCH で束ねる／host に「遅い要求」と Module の接続の内訳のログ。**本番の host の再起動は権限の判定で止まった**——画面（4175）は新しいビルドで起こし直し済み。",
+      "completedAt": "2026-09-26"
+    },
+    {
+      "id": "project-container-prewarm",
+      "title": "新しい Project のコンテナを先回りして作り置く（残り 1.5 秒のうち約 0.9 秒）",
+      "status": "backlog",
+      "why": "2026-09-26 の実測で、新しい Project の Module が揃うまで 1.5〜1.75 秒。内訳はコンテナを起こす約 0.9 秒（init・start・中で node を確かめる）と、Module の node の起動と MCP の接続約 0.5 秒（host のログ「connected …（コンテナ・マウント・起動と接続）」で見える）。コンテナの名前は Project の id で決まり、根のマウントも Project ごとなので、作り置いたものを割り当てるには名前の付け替え（止めないとできない）か名前の決め方を変える設計が要る。",
+      "notes": "docs/notes/2026-09-26-latency-fixes.md",
+      "doneWhen": "新しい Project を作ってから Module が揃うまでが、host のログの内訳で 1 秒を切る"
     }
   ],
   "phase1": {

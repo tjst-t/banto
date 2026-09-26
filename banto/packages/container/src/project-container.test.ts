@@ -3,17 +3,28 @@ import assert from "node:assert/strict";
 import { ProjectContainers, containerNameFor, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
+/** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
+function patchedDevices(args: string[]): Record<string, Record<string, string>> | undefined {
+  if (args[0] !== "query" || args[1] !== "-X" || args[2] !== "PATCH") return undefined;
+  return (JSON.parse(args[args.indexOf("--data") + 1]!) as { devices: Record<string, Record<string, string>> }).devices;
+}
+
 test("同じコンテナへの設定の書き換えは、同時に来ても1本ずつ通す（Incus は同時の書き換えを断る）", async () => {
   let inFlight = 0;
   let maxInFlight = 0;
+  let patches = 0;
   const devices: Record<string, Record<string, string>> = {};
   const run: RunIncus = async (args) => {
     if (args[0] === "project") return { code: 0, stdout: "user-1000\n", stderr: "" };
-    if (args[0] === "query") return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices }), stderr: "" };
+    const patch = patchedDevices(args);
+    if (!patch && args[0] === "query") return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices }), stderr: "" };
     inFlight++;
     maxInFlight = Math.max(maxInFlight, inFlight);
     await new Promise((r) => setTimeout(r, 20));
-    if (args[1] === "device" && args[2] === "add") devices[args[4]!] = { source: args[6]!.slice(7), path: args[7]!.slice(5) };
+    if (patch) {
+      patches++;
+      Object.assign(devices, patch);
+    }
     inFlight--;
     return { code: 0, stdout: "", stderr: "" };
   };
@@ -21,21 +32,70 @@ test("同じコンテナへの設定の書き換えは、同時に来ても1本�
   await Promise.all(["/d/a", "/d/b", "/d/c"].map((dir, i) => c.ensureDisk("banto-x", `m-${i}`, dir)));
   assert.equal(maxInFlight, 1, "書き換えが重なった");
   assert.deepEqual(Object.keys(devices).sort(), ["m-0", "m-1", "m-2"]);
+  // **同時に来た分は1回で足す**（2026-09-26）——Module の数だけ直列に並べない
+  assert.equal(patches, 1, "同時に来たマウントを束ねていない");
+  assert.deepEqual(devices["m-1"], { type: "disk", source: "/d/b", path: "/d/b" });
 });
 
 test("前の書き換えが失敗しても、次の書き換えは止まらない", async () => {
   let calls = 0;
   const run: RunIncus = async (args) => {
     if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
-    if (args[0] === "query") return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices: {} }), stderr: "" };
+    if (!patchedDevices(args) && args[0] === "query") return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices: {} }), stderr: "" };
     calls++;
     return calls === 1 ? { code: 1, stdout: "", stderr: "Error: boom" } : { code: 0, stdout: "", stderr: "" };
   };
   const c = new ProjectContainers(run);
-  const [a, b] = await Promise.allSettled([c.ensureDisk("banto-x", "m-a", "/a"), c.ensureDisk("banto-x", "m-b", "/b")]);
-  assert.equal(a.status, "rejected");
-  assert.match(String((a as PromiseRejectedResult).reason), /boom/);
-  assert.equal(b.status, "fulfilled");
+  const a = await c.ensureDisk("banto-x", "m-a", "/a").then(() => "ok", (err: unknown) => String(err));
+  assert.match(a, /boom/);
+  await c.ensureDisk("banto-x", "m-b", "/b");
+});
+
+test("束ねたマウントが断られたら、1つずつ足し直して悪い1つだけを落とす", async () => {
+  const devices: Record<string, Record<string, string>> = {};
+  const run: RunIncus = async (args) => {
+    if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    const patch = patchedDevices(args);
+    if (!patch) return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices }), stderr: "" };
+    if (Object.values(patch).some((d) => d["source"] === "/bad")) return { code: 1, stdout: "", stderr: "Error: bad source" };
+    Object.assign(devices, patch);
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const c = new ProjectContainers(run);
+  const results = await Promise.allSettled(["/good1", "/bad", "/good2"].map((dir, i) => c.ensureDisk("banto-x", `m-${i}`, dir)));
+  assert.deepEqual(results.map((r) => r.status), ["fulfilled", "rejected", "fulfilled"]);
+  assert.deepEqual(Object.keys(devices).sort(), ["m-0", "m-2"]);
+});
+
+test("中から host に届くアドレスは、ブリッジ（ホストのインターフェース）から読む——DHCP を待たない", async () => {
+  const calls: string[][] = [];
+  const run: RunIncus = async (args) => {
+    calls.push(args);
+    if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    return {
+      code: 0,
+      stdout: JSON.stringify({ status: "Running", config: {}, devices: {}, expanded_devices: { eth0: { type: "nic", network: "incusbr-1000", name: "eth0" } } }),
+      stderr: "",
+    };
+  };
+  const c = new ProjectContainers(run, undefined, () => ({ "incusbr-1000": ["10.61.162.1"], eth0: ["192.168.1.47"] }));
+  assert.equal(await c.hostAddress("banto-x"), "10.61.162.1");
+  assert.ok(!calls.some((a) => a[0] === "exec"), "中の経路を待ちに行った");
+});
+
+test("ブリッジがホストに見えない形なら、中の経路ができるまで待って読む", async () => {
+  let routeAsked = 0;
+  const run: RunIncus = async (args) => {
+    if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    if (args[0] === "exec") {
+      routeAsked++;
+      return { code: 0, stdout: routeAsked < 2 ? "" : "default via 10.0.0.1 dev eth0\n", stderr: "" };
+    }
+    return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices: {}, expanded_devices: { eth0: { type: "nic", network: "ovn0" } } }), stderr: "" };
+  };
+  const c = new ProjectContainers(run, undefined, () => ({}));
+  assert.equal(await c.hostAddress("banto-x"), "10.0.0.1");
+  assert.equal(routeAsked, 2);
 });
 
 test("コンテナの名前は Incus の決まりに合わせる", () => {
@@ -73,6 +133,14 @@ function fakeIncus(initial?: { devices: Record<string, Record<string, string>> }
   const run: RunIncus = async (args) => {
     calls.push(args);
     if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    const patch = patchedDevices(args);
+    if (patch) {
+      for (const [k, v] of Object.entries(patch)) {
+        const { type: _type, ...rest } = v;
+        state!.devices[k] = rest;
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    }
     if (args[0] === "query") return state ? { code: 0, stdout: JSON.stringify(state), stderr: "" } : { code: 1, stdout: "", stderr: "not found" };
     if (args[0] === "init") state = { status: "Stopped", config: { "security.nesting": "false" }, devices: {} };
     if (args[0] === "start" && state) state.status = "Running";
@@ -120,11 +188,18 @@ test("置き場が同じなら付け直さない。作るときも同じ1か所�
     },
   });
   await new ProjectContainers(same.run).ensure(SPEC);
-  assert.equal(same.calls.filter((a) => a[0] === "config" && a[1] === "device").length, 0, "変わっていないのに付け直した");
+  assert.equal(
+    same.calls.filter((a) => (a[0] === "config" && a[1] === "device") || patchedDevices(a)).length,
+    0,
+    "変わっていないのに付け直した",
+  );
 
   const fresh = fakeIncus();
   const r = await new ProjectContainers(fresh.run).ensure(SPEC);
   assert.equal(r.created, true);
   assert.deepEqual(fresh.devices()["banto"], { source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" });
-  assert.equal(fresh.calls.filter((a) => a.join(" ").startsWith("config device add banto-p1 banto ")).length, 1);
+  // コードと根は**1回で**付ける（2026-09-26——1つずつ足すと、その分だけ新しい Project が遅れる）
+  const patches = fresh.calls.map(patchedDevices).filter((d) => d !== undefined);
+  assert.equal(patches.length, 1);
+  assert.deepEqual(Object.keys(patches[0]!).sort(), ["banto", "project"]);
 });

@@ -156,7 +156,9 @@ export interface RealProjectMemory {
 }
 
 /** F2/F3——ターンごとの文脈使用量。contextUsageはRunnerが返す形をそのまま
- *  受け取る（規則12「そのまま使う」）——ここで構造を解釈・加工しない。 */
+ *  受け取る（規則12「そのまま使う」）——ここで構造を解釈・加工しない。
+ *  **`GET /api/threads/:id` が返すのは最新の1件だけ**（改訂・2026-09-26）——
+ *  画面が読むのはメーターの最新値だけで、履歴が応答の 90% を占めていた。 */
 export interface RealThreadUsage {
   seq: number;
   contextUsage: unknown;
@@ -273,16 +275,6 @@ export async function listRealProjects(): Promise<RealProject[]> {
  * （決定・2026-09-07、ユーザー）。返事は待たない——用意できたかは
  * 受信箱のお知らせに出る（繋がらなかったとき）。
  */
-/**
- * **開いた Project の会話の中身を取りに行く**（改訂・2026-09-07、実測）。
- * 一覧は要約だけなので、開いた時点でその Project の Thread だけ全文を取る
- * ——起動時に全 Project 分を先取りしていたのをやめた代わりの経路。
- */
-export async function loadRealProjectThreads(projectId: string): Promise<RealThread[]> {
-  const summaries = await listRealThreads(projectId);
-  return Promise.all(summaries.map((t) => getRealThread(t.id)));
-}
-
 export async function prepareRealProjectModules(projectId: string): Promise<string[]> {
   const res = await request<{ connected: string[] }>(`/api/projects/${projectId}/modules/prepare`, {
     method: "POST",
@@ -856,8 +848,18 @@ export interface RealUiResource {
   prefersBorder?: boolean;
 }
 
-export async function fetchRealUiConfig(): Promise<{ sandboxUrl: string | null }> {
-  return request<{ sandboxUrl: string | null }>("/api/ui-config");
+/**
+ * サンドボックスの配信先。**host が起動しているあいだは変わらない**ので、ページの中で1回だけ取る
+ * （改訂・2026-09-26、実測）——会話の中の Canvas が1枚ごとに同じものを取っていた
+ * （Project を開くたびに 6 枚なら 6 回）。失敗は覚えない（次に欲しがったときに取り直す）。
+ */
+let uiConfigOnce: Promise<{ sandboxUrl: string | null }> | undefined;
+export function fetchRealUiConfig(): Promise<{ sandboxUrl: string | null }> {
+  uiConfigOnce ??= request<{ sandboxUrl: string | null }>("/api/ui-config").catch((err: unknown) => {
+    uiConfigOnce = undefined;
+    throw err;
+  });
+  return uiConfigOnce;
 }
 
 export async function listRealUiTools(threadId: string): Promise<RealUiTool[]> {
@@ -878,14 +880,20 @@ function ownerPath(owner: RealCanvasOwner): string {
   return "/api";
 }
 
-export async function fetchRealUiResource(
-  owner: RealCanvasOwner,
-  server: string,
-  uri: string,
-): Promise<RealUiResource> {
-  return request<RealUiResource>(
-    `${ownerPath(owner)}/ui-resource?server=${encodeURIComponent(server)}&uri=${encodeURIComponent(uri)}`,
-  );
+/**
+ * 画面の中身（HTML）。**同時に同じものを欲しがったら1本の要求を分け合う**（改訂・2026-09-26）
+ * ——会話の中に同じ Module の画面が何枚もあると、開くたびに同じ HTML を枚数分取っていた。
+ * 取り終えたものは覚えない（Module を入れ替えたら、次に開いたときには新しい画面が出る）。
+ */
+const uiResourceFetches = new Map<string, Promise<RealUiResource>>();
+export function fetchRealUiResource(owner: RealCanvasOwner, server: string, uri: string): Promise<RealUiResource> {
+  const path = `${ownerPath(owner)}/ui-resource?server=${encodeURIComponent(server)}&uri=${encodeURIComponent(uri)}`;
+  let pending = uiResourceFetches.get(path);
+  if (!pending) {
+    pending = request<RealUiResource>(path).finally(() => uiResourceFetches.delete(path));
+    uiResourceFetches.set(path, pending);
+  }
+  return pending;
 }
 
 /**

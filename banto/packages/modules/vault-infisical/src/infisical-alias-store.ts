@@ -50,36 +50,50 @@ export class InfisicalAliasStore implements AliasStore {
    *
    * **写しを持たない**（規則3）——手元に貯めると、別のホストが変えたときに
    * 古いものを見せることになる。共有できることが眼目なので、毎回聞く。
+   *
+   * **聞くのは1回**（改訂・2026-09-26、実測）。以前はフォルダの一覧を取ってから
+   * フォルダごとに `listSecrets` を投げていた（N+1）。Infisical Cloud への往復が
+   * フォルダの数だけ直列に並び、**1回の一覧が 1.7〜3.0 秒**かかっていた。
+   * `recursive: true` で1回にすると **0.2〜0.9 秒**（同じ 34 件）。
+   *
+   * **値は取らない**（`viewSecretValue: false`）——名前と注記しか使わないのに、
+   * 以前は一覧のたびに全部の値が手元に届いていた。
+   *
+   * 再帰で返るもののうち、alias として数えるのは**直下のフォルダの秘密だけ**
+   * （以前と同じ範囲）。根に直接置かれた秘密と、フォルダの中のフォルダは
+   * banto のグループではない。
    */
   async list(): Promise<AliasMeta[]> {
-    const folders = await this.conn.folders().listFolders({ ...this.conn.scope, path: "/" });
+    const listed = await this.conn.secrets().listSecrets({
+      ...this.conn.scope,
+      secretPath: "/",
+      recursive: true,
+      viewSecretValue: false,
+    });
     const out: AliasMeta[] = [];
-    for (const folder of folders) {
-      const listed = await this.conn
-        .secrets()
-        .listSecrets({ ...this.conn.scope, secretPath: `/${folder.name}` });
-      for (const s of listed.secrets ?? []) {
-        const meta = parseComment(s.secretComment);
-        out.push({
-          // **banto の注記が無い秘密も alias として数える**（訂正・2026-09-13、
-          // ユーザー指摘）。当初は「人が別の用途で置いた秘密が混ざる」として
-          // 飛ばしていたが、**その前提が逆だった**——既に Infisical をフォルダで
-          // 分けて使っている人にとって、そこに在る秘密は混ざりものではなく本体。
-          //
-          // **中身を見て推測しない**（規則2）：種別は `secret` として扱う
-          // （鍵かどうかは読まないと分からない）。用途は Infisical 側の注記を
-          // そのまま出す。**banto は注記を書き足さない**——読むだけで、
-          // 人の秘密に勝手に印を付けない
-          kind: meta?.kind ?? "secret",
-          note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
-          lastUsedAt: meta?.lastUsedAt,
-          expiresAt: meta?.expiresAt,
-          // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形
-          // ——どちらも**置き場の名前をそのまま使う**（推測で直さない）
-          name: meta?.name ?? s.secretKey,
-          backendPath: `${folder.name}/${s.secretKey}`,
-        });
-      }
+    for (const s of listed.secrets ?? []) {
+      const group = groupOf(s.secretPath);
+      if (group === undefined) continue;
+      const meta = parseComment(s.secretComment);
+      out.push({
+        // **banto の注記が無い秘密も alias として数える**（訂正・2026-09-13、
+        // ユーザー指摘）。当初は「人が別の用途で置いた秘密が混ざる」として
+        // 飛ばしていたが、**その前提が逆だった**——既に Infisical をフォルダで
+        // 分けて使っている人にとって、そこに在る秘密は混ざりものではなく本体。
+        //
+        // **中身を見て推測しない**（規則2）：種別は `secret` として扱う
+        // （鍵かどうかは読まないと分からない）。用途は Infisical 側の注記を
+        // そのまま出す。**banto は注記を書き足さない**——読むだけで、
+        // 人の秘密に勝手に印を付けない
+        kind: meta?.kind ?? "secret",
+        note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
+        lastUsedAt: meta?.lastUsedAt,
+        expiresAt: meta?.expiresAt,
+        // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形
+        // ——どちらも**置き場の名前をそのまま使う**（推測で直さない）
+        name: meta?.name ?? s.secretKey,
+        backendPath: `${group}/${s.secretKey}`,
+      });
     }
     return out;
   }
@@ -124,6 +138,20 @@ export class InfisicalAliasStore implements AliasStore {
       secretComment: JSON.stringify(meta),
     });
   }
+}
+
+/**
+ * 秘密の置き場（`/group`）からグループ名を取る。直下のフォルダでなければ無い。
+ *
+ * **置き場が返ってこないなら止まる**（規則2）——黙って飛ばすと、alias が
+ * 一覧から理由なく消える。SDK の型では任意だが、`recursive` の応答には必ず載る
+ */
+function groupOf(secretPath: string | undefined): string | undefined {
+  if (secretPath === undefined) {
+    throw new Error("Infisical の一覧に秘密の置き場（secretPath）が入っていません");
+  }
+  const m = /^\/([^/]+)\/?$/.exec(secretPath);
+  return m ? m[1] : undefined;
 }
 
 function stored(meta: AliasMeta): StoredMeta {

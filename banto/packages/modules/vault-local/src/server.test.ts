@@ -81,8 +81,12 @@ test("createAlias -> resolveAlias roundtrip through the actual MCP server", asyn
     const resolved = await client.callTool({ name: "resolveAlias", arguments: { name: "github-token" } });
     assert.equal(textOf(resolved), "ghp_abc123");
 
+    // **1件ずつは資源テンプレートで示す**（改訂・2026-09-26）——資源の一覧は金庫に触らない。
+    // 一覧に alias を並べると、外の金庫では一覧1回ごとにクラウドへ行っていた
     const { resources } = await client.listResources();
-    assert.ok(resources.some((r) => r.uri === "vault://aliases/github-token"));
+    assert.ok(!resources.some((r) => r.uri.startsWith("vault://aliases/")), "alias を1つずつ資源の一覧に並べている");
+    const { resourceTemplates } = await client.listResourceTemplates();
+    assert.ok(resourceTemplates.some((t) => t.uriTemplate === "vault://aliases/{name}"));
 
     const read = await client.readResource({ uri: "vault://aliases/github-token" });
     const meta = JSON.parse(resourceText(read));

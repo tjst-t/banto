@@ -11,6 +11,7 @@
 // **Incus を呼ぶときは必ず時間の上限を付ける**。`incus init` が返らなかったことがあった（原因は標準入力——
 // `incus.ts`）。上限を過ぎたら黙って再試行せず、失敗として返す（規則2・6）。
 
+import { networkInterfaces } from "node:os";
 import type { RunIncus } from "./incus.js";
 import { BANTO_POOL } from "./prereqs.js";
 
@@ -81,6 +82,14 @@ export function instanceContainerId(owner: string): string {
   return `instance-${h.toString(16).padStart(8, "0")}`;
 }
 
+interface DiskRequest {
+  device: string;
+  source: string;
+  readonly: boolean;
+  resolve(): void;
+  reject(err: unknown): void;
+}
+
 /** 中の同じ番号に対応させる（uid と gid が同じなら `both` の1行） */
 export function idmapFor(uid: number, gid: number): string {
   return uid === gid ? `both ${uid} ${uid}` : `uid ${uid} ${uid}\ngid ${gid} ${gid}`;
@@ -90,12 +99,27 @@ interface InstanceState {
   status: string;
   config: Record<string, string>;
   devices: Record<string, Record<string, string>>;
+  /** 土台（profile）から来たものも含めた装置。どのネットワークに繋がっているかはこちらにしか無い */
+  expandedDevices: Record<string, Record<string, string>>;
 }
+
+type Device = Record<string, string>;
+
+/** ホストのネットワークインターフェースの IPv4（名前 → アドレス）。試験では差し替える */
+export type HostInterfaces = () => Record<string, string[]>;
+const hostIPv4Interfaces: HostInterfaces = () =>
+  Object.fromEntries(
+    Object.entries(networkInterfaces()).map(([name, addrs]) => [
+      name,
+      (addrs ?? []).filter((a) => a.family === "IPv4" && !a.internal).map((a) => a.address),
+    ]),
+  );
 
 export class ProjectContainers {
   constructor(
     private readonly run: RunIncus,
     private readonly timeouts: ContainerTimeouts = DEFAULT_TIMEOUTS,
+    private readonly interfaces: HostInterfaces = hostIPv4Interfaces,
   ) {}
 
   private async incus(args: string[], what: string, timeoutMs = this.timeouts.operationMs): Promise<string> {
@@ -138,8 +162,27 @@ export class ProjectContainers {
       if (/not found/i.test(r.stderr)) return undefined;
       throw new Error(`コンテナ ${name} の状態を読めませんでした：${r.stderr.trim() || `終了コード ${r.code}`}`);
     }
-    const j = JSON.parse(r.stdout) as { status: string; config: Record<string, string>; devices: Record<string, Record<string, string>> };
-    return { status: j.status, config: j.config ?? {}, devices: j.devices ?? {} };
+    const j = JSON.parse(r.stdout) as {
+      status: string;
+      config: Record<string, string>;
+      devices: Record<string, Device>;
+      expanded_devices?: Record<string, Device>;
+    };
+    return { status: j.status, config: j.config ?? {}, devices: j.devices ?? {}, expandedDevices: j.expanded_devices ?? {} };
+  }
+
+  /**
+   * **装置をまとめて1回で足す**（追加・2026-09-26、実測）。`incus config device add` は1回に1つで、
+   * 1回 60〜75 ms。新しい Project では Module の置き場まで含めて5〜8回が直列に並んでいた。
+   * REST の PATCH は装置の表を**差分として混ぜる**（既にあるものは残る——実測）ので、1回（約 85 ms）で済む
+   */
+  private async addDevices(name: string, devices: Record<string, Device>, what: string): Promise<void> {
+    if (Object.keys(devices).length === 0) return;
+    const project = encodeURIComponent(await this.currentProject());
+    await this.incus(
+      ["query", "-X", "PATCH", `/1.0/instances/${name}?project=${project}`, "--data", JSON.stringify({ devices })],
+      what,
+    );
   }
 
   /**
@@ -173,19 +216,18 @@ export class ProjectContainers {
     let needsRestart = false;
     // **banto のコードの置き場も付け直す**（改訂・2026-09-26）。以前は作るときに1回付けるだけで、置き場を移すと
     // （作業ツリーを変えた等）中の Module が古いパスを探して起きられなかった。作るときもここを通る（付ける所は1つ）
+    const toAdd: Record<string, Device> = {};
     const code = st.devices["banto"];
     if (!code || code["source"] !== spec.bantoDir || code["path"] !== spec.bantoDir || code["readonly"] !== "true") {
       if (code) await this.incus(["config", "device", "remove", name, "banto"], "古い banto のコードの置き場を外すの");
-      await this.incus(
-        ["config", "device", "add", name, "banto", "disk", `source=${spec.bantoDir}`, `path=${spec.bantoDir}`, "readonly=true"],
-        "banto のコードをマウントするの",
-      );
+      toAdd["banto"] = { type: "disk", source: spec.bantoDir, path: spec.bantoDir, readonly: "true" };
     }
     const project = st.devices["project"];
     if (spec.root && (!project || project["source"] !== spec.root || project["path"] !== spec.root)) {
       if (project) await this.incus(["config", "device", "remove", name, "project"], "古い Project の根を外すの");
-      await this.incus(["config", "device", "add", name, "project", "disk", `source=${spec.root}`, `path=${spec.root}`], "Project の根をマウントするの");
+      toAdd["project"] = { type: "disk", source: spec.root, path: spec.root };
     }
+    await this.addDevices(name, toAdd, "banto のコードと Project の根をマウントするの");
     if ((st.config["security.nesting"] ?? "false") !== String(spec.nesting)) {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
       // AppArmor のプロファイルは起動のときに作られる——動いているなら起こし直さないと効かない
@@ -219,26 +261,99 @@ export class ProjectContainers {
     await this.incus(["file", "push", spec.nodePath, `${name}${CONTAINER_NODE_PATH}`, "--mode", "0755"], "node を中に置くの");
   }
 
-  /** ホストのフォルダを中の同じパスに見せる（Module の置き場など）。既にあれば何もしない */
+  /**
+   * ホストのフォルダを中の同じパスに見せる（Module の置き場など）。既にあれば何もしない。
+   *
+   * **同時に来た分はまとめて1回で足す**（改訂・2026-09-26、実測）。Project の Module は並んで起き、
+   * それぞれが自分の置き場を頼むので、以前は「読む＋足す」（約 0.1 秒）が Module の数だけ直列に並んでいた。
+   * 書き換えを1本ずつ通す決まり（`serialize`）の順番待ちのあいだに来た頼みを束ね、読む1回・足す1回で済ませる
+   */
   async ensureDisk(name: string, device: string, source: string, opts: { readonly?: boolean } = {}): Promise<void> {
-    return this.serialize(name, () => this.ensureDiskNow(name, device, source, opts));
+    return new Promise<void>((resolve, reject) => {
+      let batch = this.pendingDisks.get(name);
+      if (!batch) {
+        const fresh: DiskRequest[] = [];
+        batch = fresh;
+        this.pendingDisks.set(name, fresh);
+        void this.serialize(name, async () => {
+          // 始まったら束を閉じる——ここから先に来た頼みは次の束になる
+          if (this.pendingDisks.get(name) === fresh) this.pendingDisks.delete(name);
+          await this.applyDisks(name, fresh);
+        });
+      }
+      batch.push({ device, source, readonly: Boolean(opts.readonly), resolve, reject });
+    });
   }
 
-  private async ensureDiskNow(name: string, device: string, source: string, opts: { readonly?: boolean }): Promise<void> {
-    const st = await this.state(name);
-    if (!st) throw new Error(`コンテナ ${name} がありません`);
-    const cur = st.devices[device];
-    const ro = String(Boolean(opts.readonly));
-    if (cur && cur["source"] === source && cur["path"] === source && (cur["readonly"] ?? "false") === ro) return;
-    if (cur) await this.incus(["config", "device", "remove", name, device], `${device} を外すの`);
-    await this.incus(["config", "device", "add", name, device, "disk", `source=${source}`, `path=${source}`, ...(opts.readonly ? ["readonly=true"] : [])], `${source} をマウントするの`);
+  private readonly pendingDisks = new Map<string, DiskRequest[]>();
+
+  private async applyDisks(name: string, batch: DiskRequest[]): Promise<void> {
+    let st: InstanceState | undefined;
+    try {
+      st = await this.state(name);
+      if (!st) throw new Error(`コンテナ ${name} がありません`);
+    } catch (err) {
+      for (const r of batch) r.reject(err);
+      return;
+    }
+    const toAdd: Record<string, Device> = {};
+    const adding: DiskRequest[] = [];
+    for (const r of batch) {
+      const cur = st.devices[r.device];
+      const ro = String(r.readonly);
+      if (cur && cur["source"] === r.source && cur["path"] === r.source && (cur["readonly"] ?? "false") === ro) {
+        r.resolve();
+        continue;
+      }
+      try {
+        if (cur && !(r.device in toAdd)) await this.incus(["config", "device", "remove", name, r.device], `${r.device} を外すの`);
+      } catch (err) {
+        r.reject(err);
+        continue;
+      }
+      toAdd[r.device] = { type: "disk", source: r.source, path: r.source, ...(r.readonly ? { readonly: "true" } : {}) };
+      adding.push(r);
+    }
+    if (adding.length === 0) return;
+    try {
+      await this.addDevices(name, toAdd, `${adding.map((r) => r.source).join("・")} をマウントするの`);
+      for (const r of adding) r.resolve();
+    } catch (err) {
+      if (adding.length === 1) {
+        adding[0]!.reject(err);
+        return;
+      }
+      // **束ごと断られたら、1つずつ足し直して悪い1つだけを落とす**——PATCH は全部か無しかなので、
+      // 1つの誤りで同じ束の別の Module まで起きられなくなる（束ねる前は1つずつ失敗していた）
+      for (const r of adding) {
+        try {
+          await this.addDevices(name, { [r.device]: toAdd[r.device]! }, `${r.source} をマウントするの`);
+          r.resolve();
+        } catch (one) {
+          r.reject(one);
+        }
+      }
+    }
   }
 
   /**
    * 中から host に届くアドレス（中の既定の経路の行き先＝ブリッジの host 側）。host の中継はここで待ち受けている。
-   * **起こした直後は経路がまだ無い**（DHCP が済んでいない——E2E で踏んだ）ので、できるまで待つ（上限つき）
+   *
+   * **ブリッジはホスト自身のインターフェース**なので、まずホストの側で読む（改訂・2026-09-26、実測）。
+   * 以前は中の経路が引けるまで待っていて、起こした直後は DHCP が済むまで**約 0.4 秒**待たされていた
+   * ——新しい Project を開くたびに、その分だけ Module が起きるのが遅れた。同じ値を DHCP を待たずに
+   * 得られる。ホストに同じ名前のインターフェースが無い形（ブリッジでないネットワーク等）だけ、中の経路を待つ
    */
   async hostAddress(name: string): Promise<string> {
+    const st = await this.state(name);
+    const nic = Object.values(st?.expandedDevices ?? {}).find((d) => d["type"] === "nic" && d["network"]);
+    const bridge = nic ? this.interfaces()[nic["network"]!] : undefined;
+    if (bridge && bridge.length > 0) return bridge[0]!;
+    return this.hostAddressFromRoute(name);
+  }
+
+  /** 中の既定の経路から読む。**起こした直後は経路がまだ無い**（DHCP が済んでいない——E2E で踏んだ）ので、できるまで待つ（上限つき） */
+  private async hostAddressFromRoute(name: string): Promise<string> {
     const deadline = Date.now() + this.timeouts.readyMs;
     let out = "";
     while (Date.now() < deadline) {

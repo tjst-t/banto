@@ -19,6 +19,25 @@ test("一覧は少しのあいだ覚え、過ぎたら聞き直す。知らな�
   assert.equal(asked, 2);
 });
 
+test("期限が切れても、前の一覧をすぐ返して裏で取り直す（ターンの頭で CLI の起動を待たない）", async () => {
+  let now = 0;
+  let asked = 0;
+  let release!: () => void;
+  const catalog = new ModelCatalog(async () => {
+    asked += 1;
+    if (asked === 2) await new Promise<void>((resolve) => (release = resolve));
+    return (asked === 1 ? INFO : [{ ...INFO[0], value: "opus" }]) as never;
+  }, () => now);
+  assert.equal((await catalog.list())[0]!.value, "sonnet");
+  now += 11 * 60 * 1000;
+  // 取り直しは止まったまま——それでも待たずに前のものが返る
+  assert.equal((await catalog.list())[0]!.value, "sonnet");
+  assert.equal(asked, 2);
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await catalog.list())[0]!.value, "opus");
+});
+
 test("失敗は覚えない——直ったら、次は取れる", async () => {
   let fail = true;
   const catalog = new ModelCatalog(async () => {

@@ -10,7 +10,7 @@
 // `dev.banto/canvas: "config"` と名乗った資源だけを出す。
 // 1つも無ければ、その旨をはっきり出す——空の枠を残さない（規則13）。
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { listRealUiSettings, type RealCanvasOwner } from "@/lib/backend/client";
 
@@ -40,14 +40,59 @@ export function notifyModuleSetChanged(): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * **一覧の控えは部品の外に1つ**（改訂・2026-09-26、実測）。
+ *
+ * 以前は呼んだ部品ごとに取りに行っていたので、設定画面を開くと同じ一覧を
+ * **2回ずつ**取っていた（左メニューと中身が別々に呼ぶ）。host 側で一覧1回が
+ * 1.4 秒かかっていた頃は、2回目が1回目の後ろに詰まって 3.5 秒になった。
+ *
+ * - 同時に欲しがったら**1本の要求を分け合う**
+ * - 前に取ったものがあれば**すぐ出し、裏で取り直す**（stale-while-revalidate）
+ *   ——開くたびに空の左メニューから始まらない。Module の増減は取り直しで追う
+ *
+ * 取れなかったときは今までどおり「無い」と混同しない（規則2）——控えは捨てて理由を出す。
+ */
+type CanvasList = { canvases: SettingsCanvas[]; error: string | null };
+const EMPTY_LIST: CanvasList = { canvases: [], error: null };
+const canvasLists = new Map<string, CanvasList>();
+const canvasFetches = new Map<string, Promise<void>>();
+const storeListeners = new Set<() => void>();
+let storeVersion = 0;
+
+function refreshCanvasList(owner: RealCanvasOwner, key: string): Promise<void> {
+  let pending = canvasFetches.get(key);
+  if (!pending) {
+    pending = listRealUiSettings(owner)
+      .then(
+        (canvases) => {
+          canvasLists.set(key, { canvases, error: null });
+        },
+        (err: unknown) => {
+          canvasLists.set(key, { canvases: [], error: err instanceof Error ? err.message : String(err) });
+        },
+      )
+      .finally(() => {
+        canvasFetches.delete(key);
+        storeVersion++;
+        for (const listener of storeListeners) listener();
+      });
+    canvasFetches.set(key, pending);
+  }
+  return pending;
+}
+
+function subscribeCanvasLists(listener: () => void): () => void {
+  storeListeners.add(listener);
+  return () => {
+    storeListeners.delete(listener);
+  };
+}
+
 export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
   canvases: SettingsCanvas[];
   error: string | null;
 } {
-  const [state, setState] = useState<{ canvases: SettingsCanvas[]; error: string | null }>({
-    canvases: [],
-    error: null,
-  });
   const key = owner.kind === "instance" ? "instance" : owner.id;
   // **相手が決まっていないうちは聞かない**（修正・2026-09-20）。
   // 設定画面は「どの Project の層を出すか」を URL で持つので、Project を選ばずに
@@ -56,6 +101,7 @@ export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
   // 分かっている要求を出さない**（規則2——本物の失敗と見分けが付かなくなる）。
   const ready = owner.kind === "instance" || owner.id !== "";
   const [version, setVersion] = useState(0);
+  useSyncExternalStore(subscribeCanvasLists, () => storeVersion, () => 0);
 
   useEffect(() => {
     const bump = () => setVersion((v) => v + 1);
@@ -66,29 +112,12 @@ export function useModuleSettingsCanvases(owner: RealCanvasOwner): {
   }, []);
 
   useEffect(() => {
-    if (!ready) {
-      setState({ canvases: [], error: null });
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const canvases = await listRealUiSettings(owner);
-        if (!cancelled) setState({ canvases, error: null });
-      } catch (err) {
-        // **取れなかったことを「無い」と混同しない**（規則2）
-        if (!cancelled) {
-          setState({ canvases: [], error: err instanceof Error ? err.message : String(err) });
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    if (!ready) return;
+    void refreshCanvasList(owner, key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner.kind, key, ready, version]);
 
-  return state;
+  return (ready ? canvasLists.get(key) : undefined) ?? EMPTY_LIST;
 }
 
 /**
