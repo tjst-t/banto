@@ -2258,6 +2258,17 @@
       "doneWhen": "apps/frontend で npm run lint が通る。"
     },
     {
+      "id": "e2e-typecheck-red",
+      "title": "e2e の型検査が赤い・そもそも typecheck に入っていない",
+      "status": "backlog",
+      "why": "2026-09-26 に気づいた（画像の貼り付けの作業の範囲の外なので触っていない——規則7）。`npx tsc -p e2e/tsconfig.json --noEmit` が `oauth-mcp-fixture.ts` で11件落ちる。起点は52行目の1か所で、`send` の引数の型を `Parameters<Parameters<typeof createServer>[0]>[1]` で取っている——`createServer` は重ね定義（overload）なので、最後の定義の第1引数（`ServerOptions`）を拾って `never` になり、以降の `send(res, …)` が全部落ちる。**2026-09-18（6583d1cd）の導入以来だれも気づいていない**のは、e2e の package.json に `typecheck` が無く、ルートの `npm run typecheck`（`--workspaces --if-present`）から外れているから。Playwright は型を見ずに走らせるので、試験そのものは通る。",
+      "doneWhen": "`e2e/package.json` に `typecheck` があり、ルートの `npm run typecheck` が e2e も見て通る。型は `node:http` の `ServerResponse` をそのまま使う形に直す。",
+      "refs": [
+        "banto/e2e/oauth-mcp-fixture.ts:52",
+        "banto/e2e/package.json"
+      ]
+    },
+    {
       "id": "thread-messaging",
       "title": "Thread 間のメッセージ——AI が別の Thread の AI に送る（Thread に届ける口の上に）",
       "status": "backlog",
