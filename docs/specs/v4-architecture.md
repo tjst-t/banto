@@ -1987,9 +1987,10 @@ canceled）、認証を持つ。
   載せたい（ユーザー）。札の宛先を「Thread」か「Module」にし、送り手（サブエージェント）の側は変えない。宛先が
   Module のときに何で渡すか（その Module が名乗った受け口の tool を host が呼ぶ、が第一候補）は未決。あわせて、
   Module から Module への中継の**時間の上限と途中経過**が要る——host が宛先を呼ぶところで上限を延ばさず、途中経過も
-  呼び出し元へ中継していないので、MCP の既定（60 秒）を越える待つ形の呼び出しは切れる（`docs/tasks.json`
-  subagent-from-modules）。**Project ごとの Module を呼べるのは同じ Project の中だけ**の縛りは入れた（2026-09-26、
-  `docs/specs/v4-security.md` §3）
+  呼び出し元へ中継していないので、MCP の既定（60 秒）を越える待つ形の呼び出しは切れる。**この2つは、サブエージェントを
+  呼ぶ最初の Module を作るときに一緒にやる**（決定・2026-09-26、ユーザー——呼ぶ Module がまだ無いので、形を決める
+  材料が無い）。検討内容は `docs/notes/2026-09-25-thread-delivery.md`、タスクは `docs/tasks.json` subagent-from-modules。
+  **Project ごとの Module を呼べるのは同じ Project の中だけ**の縛りは入れた（2026-09-26、`docs/specs/v4-security.md` §3）
 - **Thread 間の送り方**（届け方は上の共通の口に乗る）：
   - **宛先の粒度**——要件の例（インフラ管理とアプリ開発）は、§1.1 の用語では
     **別々の Project** に当たる。ただし同じ Project の Fork Thread へ送りたい場面も

@@ -2263,13 +2263,14 @@
     },
     {
       "id": "subagent-from-modules",
-      "title": "banto の中の別の Module からサブエージェントを呼べるようにする（待つ形・待たない形）",
+      "title": "banto の中の別の Module からサブエージェントを呼べるようにする（残り：中継の時間の上限・札の宛先に Module）",
       "status": "backlog",
       "dependencies": [
         "subagent-async"
       ],
-      "why": "ユーザー（2026-09-26）：将来は別の MCP（banto の中の Module）からサブエージェントを呼びたい。待たない形の返事は呼んだ Module に返す（決定）。banto の外から呼ぶことは考えない（決定）。返事の口は Thread と同じ仕組みにしたい。足りないもの（2026-09-26 にコードで確かめた）：①中継（relayCallTool）は host が宛先を呼ぶところで時間の上限を延ばさず、途中経過も呼び出し元へ中継しない——MCP の既定 60 秒で切れる（サブエージェントの仕事はふつう越える）。②返信用の札は AI が Module を呼んだときにしか出ない——中継の呼び出しには札が無く、runInBackground は断られる。札の宛先を Thread か Module にし、Module 宛ては host が呼んだ Module の受け口（名乗った tool）を呼んで渡す形が第一候補（未決）。③**Project の境界**：中継の宛先は役割しか見ていない（RelayRegistry.isAllowed／allowedTargets）。Project ごとの Module（subagent-<projectId>）を別の Project の Module が名前で指せる。いまは Project ごとの役割に依存する Module が無いので届かないが、subagent に依存する Module を足した瞬間に届く——**①②より先に塞ぐ**（同じ Project の中だけ）。【③は 2026-09-26 に入れた：RelayRegistry.whyNotAllowed。宛先の一覧も同じ Project の分だけ。単体試験つき】",
-      "notes": "docs/notes/2026-09-25-thread-delivery.md"
+      "why": "ユーザー（2026-09-26）：将来は banto の中の別の Module からサブエージェントを呼びたい。待たない形の返事は呼んだ Module に返す（決定）。banto の外から呼ぶことは考えない（決定）。返事の口は Thread と同じ仕組みにしたい。3つ挙げたうち、①Project の境界の縛りは入れた（2026-09-26、c839c387、RelayRegistry.whyNotAllowed）。**残りの2つは、サブエージェントを呼ぶ最初の Module を作るときに一緒にやる**（決定・2026-09-26、ユーザー——呼ぶ Module がまだ無い）：②中継の時間の上限と途中経過——host-relay-endpoint.ts の relayCallTool が宛先をオプション無しで呼んでいて、MCP の既定 60 秒で切れる（agent-proxy.ts と同じ resetTimeoutOnProgress・onprogress の中継を入れる。直す前に [slow 90] で切れることを測る）。③札の宛先に Module——中継でも札を出して呼んだ Module に結びつけ、host が呼んだ Module の受け口の tool を呼んで渡す（第一候補。受け口の形は未決）。送り手（サブエージェント）の書き方は変えない。詳細は notes の「別の Module から呼ぶための残り2つ」。",
+      "notes": "docs/notes/2026-09-25-thread-delivery.md",
+      "doneWhen": "サブエージェントを呼ぶ Module から、待つ形（60 秒を越える仕事）と待たない形（返事がその Module に届く）の両方が通り、E2E で確かめてある"
     }
   ],
   "phase1": {

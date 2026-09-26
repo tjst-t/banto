@@ -65,3 +65,44 @@ Thread 間の通信と、できれば同じ仕組みにしたい。可能？」
 **MCP の Tasks を Module どうしで使う案**も考えた——Module どうしなら両側とも banto のコードで、MCP の標準の
 答えになる（規則12）。ただ Thread への返事（AI への道）は CLI が Tasks を名乗らないので使えず、**仕組みが2つに
 分かれる**。返信用の札の宛先を広げるほうが、送り手（サブエージェント）を1つの書き方のままにできる。
+
+## 別の Module から呼ぶための残り2つ——呼ぶ Module を作るときにやる（2026-09-26、ユーザー）
+
+3つ挙げたうち、**Project の境界の縛りだけ先に入れた**（`c839c387`、`RelayRegistry.whyNotAllowed`）。残りの2つは
+「呼び出す Module がまだいないので、検討内容とタスクをメモして、実際に呼び出す Module を作るときにやろう」（ユーザー）。
+次に拾う人のために、調べたことと候補を残す。
+
+### ② 中継の時間の上限と途中経過
+
+- **どこ**：`packages/core/src/relay/host-relay-endpoint.ts` の `relayCallTool`——host が宛先を
+  `target.client.callTool({ name, arguments, _meta })` と**オプション無しで**呼んでいる。MCP の SDK の既定の上限は
+  60 秒（`DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`、`@modelcontextprotocol/sdk/dist/esm/shared/protocol.js`）。
+  途中経過（`notifications/progress`）も呼び出し元へ中継していない
+- **AI の道は手当て済み**：`relay/agent-proxy.ts` は `resetTimeoutOnProgress: true` と `onprogress` で途中経過を
+  AI 側へ送り、上限を延ばしている。呼び出し元の Module の側（`HostRelayClient.callRelay`）も
+  `resetTimeoutOnProgress` を付けている——**抜けているのは host が宛先を呼ぶ1箇所だけ**
+- **直し方**：agent-proxy と同じく、`signal: extra.signal`・`resetTimeoutOnProgress: true`・`onprogress` で
+  呼び出し元の `progressToken` へ中継する
+- **直す前に測る**（規則1——いまはコードを読んだ結論で、実際に切れるところは見ていない）：呼ぶ Module から、
+  待つ形の `runSubagent` を偽のエージェントの `[slow 90]` で中継して、60 秒で切れることを確かめてから直し、
+  直ったら通ることを見る
+- 待たない形（`runInBackground`）はすぐ返るので、この上限には当たらない
+
+### ③ 札の宛先に Module（返事は呼んだ Module に返す——決定済み）
+
+- **いま**：返信用の札（`delivery/reply-handles.ts`）は AI が Module を呼んだときだけ出る（`agent-proxy.ts`）。
+  宛先は Thread に固定で、届け先は `ThreadDeliveries.deliver`。中継の呼び出しには札が無いので、
+  `runInBackground` は「届ける先がありません」で断られる
+- **第一候補**：
+  - 札の宛先を `{ Thread }` か `{ Module（接続名） }` にする。中継（`relayCallTool`）でも、宛先の tool が
+    `dev.banto/deliversLater` を名乗っていれば札を出し、**呼んだ Module に結びつける**
+  - **送り手（サブエージェント）の書き方は変えない**——`relayDeliverToThread` を宛先を問わない名前に広げ、
+    host が札の宛先で振り分ける
+  - Module 宛ては、呼んだ Module が名乗った**受け口の tool**（例：`_meta["dev.banto/receivesReplies"]: true`）を
+    host が呼んで渡す。**先に記録してから渡す**（Thread と同じ）——その瞬間に Module が止まっていても、次に立った
+    ときに渡す
+  - ループ防止（ホップ・速度）と返事待ちの後始末（止まったら「途中で終わりました」）は Thread と同じものを使う
+- **呼ぶ Module を作るときに決めること**：受け口の tool の名前と形・Module 宛ての返事を人にも知らせるか
+  （受信箱）・呼んだ Module の後ろにいる Thread（大元の会話）にも知らせるか・ホップ数を Module の連鎖でどう数えるか
+- **採らなかった案**：Module どうしで MCP の Tasks を使う——Module どうしなら使えるが、Thread への返事は CLI が
+  Tasks を名乗らないので使えず、仕組みが2つに分かれる（上の「Module から呼ぶとき」）
