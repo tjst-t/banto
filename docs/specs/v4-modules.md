@@ -1078,7 +1078,7 @@ host に預け、リロードしても別タブに出しても、そのまま開
 
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
-| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒、上限あり）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記）／`claudeLogin`（真偽、下記、追加・2026-09-27） | 返り値は `stdout`／`stderr`／`exitCode`／`timedOut`。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23） |
+| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒、上限あり）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記） | 返り値は `stdout`／`stderr`／`exitCode`／`timedOut`。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23） |
 
 **コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
 host が用意し、人が選んだ設定（既定は git の設定）だけを資格情報を外して写す。人のホームは
@@ -1111,23 +1111,13 @@ tool 引数の形は未設計だった部分——ここで決める）：実行
 `socketPath` を `SSH_AUTH_SOCK` として子プロセスの環境変数に注入する。ソケット
 パスは秘密ではないので `envSecrets` とは別枠にした。
 
-**`claudeLogin`**（決定・2026-09-27、ユーザー）：**banto 本体の Claude ログインを、トークンを渡さずに
-コマンドに使わせる**。サブエージェントが使っている中継（§4.1、`claude-login-proxy.ts`）をそのまま使う——
-`true` なら Shell は実行の前に host の `subagent-settings` に中継を開かせ（`openClaudeLoginProxy`、
-待ち受けは Project のネットワークの host 側のアドレス）、子プロセスに `ANTHROPIC_BASE_URL`（中継の住所）・
-`CLAUDE_CODE_OAUTH_TOKEN`（その回だけの合言葉）・契約の種類（`CLAUDE_CODE_SUBSCRIPTION_TYPE` 等、既定のモデルを
-本体と揃える）を入れる。コマンドが終わったら閉じる。
-
-- **banto 専用ではない**——どの Project でも、コンテナの中で Claude Code・Agent SDK を動かすのに使える
-  （`claude -p`・Agent SDK を使うアプリのテスト・banto の E2E）。人がトークンを取り直したり Vault に
-  登録したりする必要は無い（本体の CLI が更新し続けるものを、中継が毎回読み直す）
-- **承認画面に「Claude のログインを使う」と出す**——人の Claude の契約の枠を使うため
-- **通るのは推論（`/v1/messages`）だけ**。Anthropic 専用。長く走ると途中で本体のトークンが期限切れになる
-  ことがある（サブエージェントと同じ。頼み直せば本体が更新したものを拾う）
-- **中継の持ち主は当面 `subagent-settings` のまま**。サブエージェント専用の Module が持つのは名前と合わないが、
-  移す先は今後の課題（`docs/tasks.json` の `claude-login-relay-owner`）
-- API キーで使うもの（OpenCode 等）はこの仕組みを使わず、今までどおり `envSecrets` で渡す。値を渡さずに
-  汎用の鍵を中継する案は検討したが、登録の手間が増えるため今は作らない（`docs/notes/2026-09-27-vault-credential-proxy.md`）
+**Claude のログインは、コマンドの環境に最初から入っている**（決定・2026-09-27、ユーザー）。Project のコンテナには
+core が中継の住所とその Project 用の合言葉を入れておく（`docs/specs/v4-security.md` §2「banto 本体の Claude
+ログインは、中継で共有する」）ので、`buildChildEnv` がそのまま子に渡し、`claude -p`・Agent SDK を使うアプリの
+テスト・banto の E2E が**何も書かずに**通る。**Shell に引数は足さない**——同日に決めた `claudeLogin` 引数
+（呼び出しごとに中継を開け閉めする形）は、実装する前に取り消した（理由は
+`docs/notes/2026-09-27-claude-login-relay-alternatives.md`——寿命が必要な単位より短く、呼び出し口が増えるたびに
+同じ配線が増える。書き忘れると落ちる）。API キーで使うもの（OpenCode 等）は今までどおり `envSecrets`。
 
 **子プロセスの環境変数**：Shell 自身の環境変数を子に引き継ぐが、**host が渡した
 `BANTO_*` は落とす**（`BANTO_HOST_MCP_TOKEN`・`BANTO_HOST_MCP_URL`・
@@ -1371,6 +1361,8 @@ Shell の `grep` で足りる）。
 - **コンテナが起こし直されたら、登録済みで止めていないものを自動で起こす**
 - **`envSecrets` は Shell と同じ形で受ける。値は止めるまでプロセスの環境に残ってよい**
   （Shell は1回で消えるが、Service は長く残る——承知のうえ）
+- **Claude のログインの環境変数は、systemd の定義に写す**（決定・2026-09-27）——コンテナの環境に入っている
+  もの（§2.3）をそのまま渡すだけで、Service のために中継を開け閉めしない
 - **登録済みの名前で `startService` を呼ばれたら**：中身が登録と**まったく同じ**なら起動するだけ。
   **違えば断る**——今の登録内容を返し、「変えるなら `removeService` してから登録し直すか、別の名前に」と
   伝える。理由：同じ Project に Thread が複数あり、別の Thread の AI が同じ名前を使いうる。上書きにすると

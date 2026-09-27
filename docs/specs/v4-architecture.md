@@ -1853,16 +1853,17 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   ——**普通の仕事では確認が来ない**（実測：Claude sonnet・OpenCode とも、ファイルを書くまで確認0件）。
   **強制できる層は閉じ込め**
 - **閉じ込め**（改訂・2026-09-25）：**Subagent Module ごと Project のコンテナの中で起き、エージェントも中で走る**
-  （`docs/specs/v4-security.md` §1）。**Claude のログインの中継は host に残し、banto 全体の `subagent-settings`
-  が持つ**（決定・2026-09-25、ユーザー。本物の資格情報を中に入れない）。エージェントには専用ホーム（`HOME`・
+  （`docs/specs/v4-security.md` §1）。**Claude のログインの中継は host に残し、core が常設して Project のコンテナの
+  環境に住所と合言葉を入れておく**（改訂・2026-09-27、ユーザー。以前は `subagent-settings` が持ち、実装はまだその形。
+  本物の資格情報を中に入れないのは変わらない）。エージェントには専用ホーム（`HOME`・
   `TMPDIR`・XDG をここへ向ける）を渡す。**エージェントに渡す環境変数は一覧で絞る**
   （`PATH`・`LANG` など）——host が Module に渡した `BANTO_*` も、人の環境の秘密も渡さない。
   詳しくは `docs/specs/v4-security.md` §2「サブエージェントは Project のコンテナの中で走る」
 - **Claude Code は banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー——「Host で
   Claude を使っているのに、サブエージェントに別のログインが要るのは違和感がある」。同日の「setup-token を
-  Vault に置く」を置き換える）。**本物のトークンは渡さない**：banto 全体の `subagent-settings` が host に中継を
-  1回ごとに立て（Project のネットワークの host 側のアドレス。改訂・2026-09-25）、エージェントには
-  `ANTHROPIC_BASE_URL`＝中継と、`CLAUDE_CODE_OAUTH_TOKEN`＝**その1回だけの合言葉**を渡す。中継は合言葉を
+  Vault に置く」を置き換える）。**本物のトークンは渡さない**：core が host に常設する中継の住所と、その Project 用の
+  合言葉がコンテナの環境に入っていて（改訂・2026-09-27。以前は `subagent-settings` が1回ごとに立てていた——
+  実装はまだその形）、エージェントには `ANTHROPIC_BASE_URL`＝中継と、`CLAUDE_CODE_OAUTH_TOKEN`＝合言葉をそのまま渡す。中継は合言葉を
   確かめ、Authorization を本体の access token（本体の置き場から**毎回読み直す**——本体の CLI が更新した
   ものをそのまま拾う）に差し替えて api.anthropic.com へ流す。**通すのは推論（`/v1/messages`）だけ**
   ——本体のトークンは会話の履歴・claude.ai のコネクタ・ファイルの送り込みまで触れる広さを持つ。

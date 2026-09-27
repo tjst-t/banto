@@ -263,3 +263,11 @@ Cloudflare Sandbox・nono の形。`gh`・`git` のような住所を差し替�
 - [Connect Claude Code to an LLM gateway — Claude Code Docs](https://code.claude.com/docs/en/llm-gateway-connect)（`ANTHROPIC_AUTH_TOKEN`・`apiKeyHelper`・Agent SDK）
 - [Instance options — Incus](https://linuxcontainers.org/incus/docs/main/reference/instance_options/)（`environment.*`）
 - `docs/notes/2026-09-24-subagent-acp.md`・`docs/notes/2026-09-27-vault-credential-proxy.md`（この前の2回の検討）
+
+## 10. 決定（2026-09-27、ユーザー）
+
+**案Aを採用。§6 の細部も勧めどおり**：持ち主は core／環境の入れ方は (a) exec の env（(b) は欲しくなったら）／
+送り元のアドレスは縛る方針で、入れる前に測る／Project 設定のスイッチ・既定オンで、1回ごとの承認は出さない／
+観測は Project ごとの計数と、本体のログインが切れたときの受信箱1件。**Shell の `claudeLogin` 引数は実装しない**
+（同日の決定を取り消し）。仕様は `v4-security.md` §1・§2、`v4-modules.md` §2.3・§4.2、`v4-architecture.md` §4.1 に
+反映した。移行は `docs/tasks.json` の `claude-login-relay-owner`（pending）。
