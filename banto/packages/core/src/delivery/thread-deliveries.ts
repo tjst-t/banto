@@ -32,6 +32,11 @@ export interface DeliverInput {
   /** AI に渡す本文 */
   text: string;
   hop: number;
+  /**
+   * 受信箱に「届きました」を出すか（既定は出す）。AI が立てた Fork の最初の指示は出さない——立てたことは
+   * 親の会話に Fork として出て、終わればレビュー待ちが出る（§2.2「AI が Fork を立てる」）
+   */
+  notify?: boolean;
 }
 
 export type WakeDecision =
@@ -72,8 +77,10 @@ export class ThreadDeliveries {
     const thread = this.deps.projectThread.getThread(input.threadId);
     if (!thread) throw new Error(`宛先の Thread ${input.threadId} がありません`);
     const deliveryId = randomUUID();
-    await this.deps.projectThread.recordDelivery({ ...input, deliveryId });
+    const { notify = true, ...record } = input;
+    await this.deps.projectThread.recordDelivery({ ...record, deliveryId });
     const decision = this.kick(input.threadId);
+    if (!notify && decision.wake !== "held") return { deliveryId, ...decision };
     const project = this.deps.projectThread.getProject(thread.projectId);
     const where = `${project?.name ?? "Project"} の ${thread.title ?? (thread.kind === "base" ? "Base Thread" : "Fork Thread")}`;
     await this.deps

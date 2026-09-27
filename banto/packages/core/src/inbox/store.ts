@@ -99,7 +99,13 @@ export class InboxStore {
     this.apply(event);
   }
 
+  /**
+   * レビュー待ちを出す——**ターンが終わった**（決定・2026-09-27、ユーザー。アーキ仕様 §2.4「レビュー待ち」の
+   * 「Base/Fork Thread 自身の完了」）。**1つの Thread に未確認は1件まで**：前のものは「見た」にして、新しいもの
+   * だけを残す（同じ Thread の古い終わりを積み上げない）
+   */
   async raiseReview(input: { threadId: string; summary: string }): Promise<ReviewItem> {
+    await this.acknowledgeReviewsFor(input.threadId);
     const id = randomUUID();
     const event = await this.log.append("inbox.review_raised", { id, ...input });
     this.apply(event);
@@ -147,5 +153,12 @@ export class InboxStore {
   async acknowledgeReview(id: string): Promise<void> {
     const event = await this.log.append("inbox.review_acknowledged", { id });
     this.apply(event);
+  }
+
+  /** その Thread のレビュー待ちを全部「見た」にする（人がその Thread で送った・開いて見ている）。消した数を返す */
+  async acknowledgeReviewsFor(threadId: string): Promise<number> {
+    const open = this.listOpen().filter((i): i is ReviewItem => i.kind === "review" && i.threadId === threadId);
+    for (const r of open) await this.acknowledgeReview(r.id);
+    return open.length;
   }
 }

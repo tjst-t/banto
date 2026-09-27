@@ -35,6 +35,7 @@ import { getProject } from "@/lib/mock/projects";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread, getThreadsForProject } from "@/lib/mock/threads";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
+import { markThreadViewing } from "@/lib/backend/real-inbox";
 
 export interface ThreadMarker {
   id: string;
@@ -113,6 +114,11 @@ export function ThreadPanel({
   useEffect(() => {
     if (!realThreadId) return;
     return () => releaseRealRun(realThreadId);
+  }, [realThreadId]);
+  // **開いて見ている Thread のターンの終わりは、受信箱に積まない**（決定・2026-09-27）——見ている人に知らせは要らない
+  useEffect(() => {
+    if (!realThreadId) return;
+    return markThreadViewing(realThreadId);
   }, [realThreadId]);
   // **開いている間、最新の状況を出し続ける**（決定・2026-09-26、ユーザー要望）——開いたとき・他所でターンが
   // 始まった／終わったとき・流れが切れたとき・画面に戻ってきたとき、記録から組み直し、走っていれば本文に流す

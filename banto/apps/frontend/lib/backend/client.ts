@@ -236,7 +236,7 @@ export interface RealInboxJudgment {
   createdAt: string;
 }
 
-/** レビュー待ち。**生成元がまだ無い**——受信箱の画面では出さない（規則13）。 */
+/** レビュー待ち——**ターンが終わった**（決定・2026-09-27）。見れば消える */
 export interface RealInboxReview {
   kind: "review";
   id: string;
@@ -631,7 +631,7 @@ export async function listRealInbox(): Promise<RealInboxItem[]> {
   return request<RealInboxItem[]>("/api/inbox");
 }
 
-/** お知らせを「見た」ことにする（決定・2026-09-07）。 */
+/** お知らせ・レビュー待ちを「見た」ことにする（決定・2026-09-07、レビュー待ちは 2026-09-27）。 */
 export async function acknowledgeRealNotice(id: string): Promise<void> {
   await request(`/api/inbox/${id}/acknowledge`, { method: "POST" });
 }

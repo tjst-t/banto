@@ -218,6 +218,19 @@ async function main(): Promise<void> {
     } else {
       appEvents.publish({ type: "turn.ended", threadId: change.threadId, ...(projectId ? { projectId } : {}) });
     }
+    // **ターンが終わったら受信箱にレビュー待ち**（決定・2026-09-27、ユーザー。アーキ仕様 §2.4「レビュー待ち」）
+    // ——並行で走らせた Thread（AI が立てた Fork など）が終わったことに、見に行かなくても気づけるように。
+    // 人がその Thread で送ったら、その Thread のものは「見た」にする（人がそこにいる）。
+    // 開いて見ている画面は、自分で「見た」にする（real-inbox.ts）
+    if (change.type === "started" && change.hop === 0) {
+      void inbox
+        .acknowledgeReviewsFor(change.threadId)
+        .catch((err: unknown) => console.warn("[host] レビュー待ちを「見た」にできませんでした:", err));
+    } else if (change.type === "ended") {
+      void inbox
+        .raiseReview({ threadId: change.threadId, summary: turnEndSummary(projectThread.getThread(change.threadId)) })
+        .catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
+    }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
 
@@ -1501,3 +1514,15 @@ main().catch((err) => {
   console.error("[host] fatal:", err);
   process.exit(1);
 });
+
+/**
+ * レビュー待ちに出す1行——**そのターンの最後の返事の頭**。返事が記録されていなければ（途中で終わった）そう書く
+ */
+function turnEndSummary(thread: { messages: Array<{ role: string; text: string }> } | undefined): string {
+  const last = thread?.messages.at(-1);
+  if (!last || last.role !== "assistant" || last.text.trim() === "") {
+    return "ターンが終わりました（返事は記録されていません——途中で止まった可能性があります）";
+  }
+  const flat = last.text.trim().replace(/\s+/g, " ");
+  return flat.length > 160 ? `${flat.slice(0, 160)}…` : flat;
+}

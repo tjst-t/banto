@@ -1,6 +1,6 @@
 import type { MockProject, MockProjectOverrides } from "./types";
 import { notifyMockStoreChange } from "./store-events";
-import { registerRealFork, registerRealThread } from "./threads";
+import { getThread, registerRealFork, registerRealThread } from "./threads";
 import { seedThreadPermissionMode } from "./permission-mode";
 import { seedThreadModel } from "../backend/thread-model";
 import { setProjectOverrides } from "./settings";
@@ -277,6 +277,35 @@ async function hydrateRealProjectsUncached(): Promise<void> {
     changed = true;
   }
   if (changed) notifyMockStoreChange();
+}
+
+/**
+ * **この画面の外で作られた Fork を一覧に足す**（決定・2026-09-27、アーキ仕様 §2.2「AI が Fork を立てる」）。
+ * AI が立てた Fork は host が作るので、開いている画面は知らない——host から「その Thread のターンが始まった」が
+ * 届いたときに、知らない Thread なら呼ぶ。既に知っているものは触らない（`registerRealFork` が既存を返す）
+ */
+export async function registerNewRealForks(projectId: string): Promise<void> {
+  if (!getBackendConfig()) return;
+  const project = projects.find((p) => p.id === projectId);
+  if (!project?.real) return;
+  const realThreads = await listRealThreads(projectId);
+  for (const fork of realThreads.filter((t) => t.kind === "fork")) {
+    if (getThread(fork.id)) continue;
+    registerRealFork(
+      fork.id,
+      projectId,
+      fork.parentThreadId ?? project.baseThreadId,
+      undefined,
+      undefined,
+      fork.status === "closed" ? "closed" : "open",
+      undefined,
+      fork.forkedFromSeq ?? fork.createdSeq,
+      { messageCount: fork.messageCount, firstMessage: fork.firstMessage, lastMessage: fork.lastMessage },
+      fork.title,
+    );
+    seedThreadPermissionMode(fork.id, fork.permissionMode);
+    seedThreadModel(fork.id, fork.model, fork.effort);
+  }
 }
 
 /** Project を終了する（削除ではない——閉じたProjectの一覧から読み返し、再開できる）。

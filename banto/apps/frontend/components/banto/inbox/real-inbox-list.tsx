@@ -2,8 +2,8 @@
 
 // 受信箱の中身（実データ、§2.4）。Stage 4・決定・2026-09-05。
 //
-// **判断待ちだけを出す**——レビュー待ちは生成元がまだ無いので、空の区画を
-// 画面に残さない（規則13）。
+// 並びは止まっているものが先——判断待ち → お知らせ → **レビュー待ち**（ターンが終わった Thread、
+// 決定・2026-09-27）。
 //
 // 行き先は**その Thread を開く**だけにする。答える口は Thread 側のカード1箇所
 // （§2.4.1、決定・2026-09-06）——同じ操作口を2つ持たない（規則3）。
@@ -13,8 +13,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { FolderGit2, PlugZap } from "lucide-react";
-import { getRealJudgments, getRealNotices, refreshRealInbox, useRealInboxVersion } from "@/lib/backend/real-inbox";
+import { CircleCheck, FolderGit2, PlugZap } from "lucide-react";
+import {
+  getRealJudgments,
+  getRealNotices,
+  getRealReviews,
+  refreshRealInbox,
+  useRealInboxVersion,
+} from "@/lib/backend/real-inbox";
 import { acknowledgeRealNotice } from "@/lib/backend/client";
 import { getThread } from "@/lib/mock/threads";
 import { getProject } from "@/lib/mock/projects";
@@ -61,8 +67,10 @@ export function RealInboxList() {
   // **お知らせ**（決定・2026-09-07）——許可/拒否ではなく「知らせるだけ」。
   // Module が繋がらなかったことは会話に毎ターン出さず、ここに1件だけ出す
   const notices = getRealNotices();
+  // **ターンが終わった Thread**（決定・2026-09-27）——開けばその Thread へ。開いたら「見た」になる
+  const reviews = getRealReviews();
 
-  if (judgments.length === 0 && notices.length === 0) {
+  if (judgments.length === 0 && notices.length === 0 && reviews.length === 0) {
     return <p className="p-3 text-xs text-ink-3">待っているものはありません</p>;
   }
 
@@ -143,6 +151,44 @@ export function RealInboxList() {
             ) : (
               // Thread がまだ手元に無い（hydration 前）。**行き先を偽らない**
               // ——押せるように見せて何も起きない状態を作らない（規則13）
+              <div className="flex w-full items-start gap-2.5 py-3 text-left opacity-60">{row}</div>
+            )}
+          </div>
+        );
+      })}
+      {reviews.map((review) => {
+        const thread = getThread(review.threadId);
+        const project = thread ? getProject(thread.projectId) : null;
+        const href = thread
+          ? thread.kind === "fork"
+            ? `/p/${thread.projectId}?fork=${thread.id}`
+            : `/p/${thread.projectId}`
+          : null;
+        const row = (
+          <>
+            <CircleCheck className="mt-0.5 size-4 shrink-0 text-ok" />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1.5 text-xs text-ink-3">
+                <FolderGit2 className="size-3" />
+                {project?.name ?? "（読み込み中の Project）"}
+                <span aria-hidden>·</span>
+                {thread?.title ?? "Thread"}
+                <span aria-hidden>·</span>
+                {age(review.createdAt, now)}
+              </span>
+              <span className="mt-0.5 block text-xs text-ink-3">ターンが終わりました</span>
+              <span className="mt-0.5 line-clamp-2 block text-sm text-foreground">{review.summary}</span>
+            </span>
+          </>
+        );
+        return (
+          <div key={review.id} data-testid="inbox-review" className="border-b border-border last:border-b-0">
+            {href ? (
+              // 開けば Thread の画面が「見た」にする（real-inbox.ts の markThreadViewing）
+              <Link href={href} data-roving-item className="flex w-full items-start gap-2.5 py-3 text-left hover:bg-accent">
+                {row}
+              </Link>
+            ) : (
               <div className="flex w-full items-start gap-2.5 py-3 text-left opacity-60">{row}</div>
             )}
           </div>

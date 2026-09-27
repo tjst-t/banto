@@ -12,6 +12,7 @@ import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
+import { createForkMcpServer, type ForkRequest } from "./fork-tool.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
@@ -99,15 +100,31 @@ export async function* runThreadTurn(
   input: RunThreadTurnInput,
 ): AsyncGenerator<TurnStreamEvent> {
   deps.turnEvents?.begin(input.threadId, new Date().toISOString());
+  // **AI が予約した Fork**（決定・2026-09-27、§2.2「AI が Fork を立てる」）。ターンの終わりに立てる
+  const forks: ForkTurnState = { reserved: [], settled: false };
   try {
-    for await (const event of runThreadTurnInner(deps, input)) {
+    for await (const event of runThreadTurnInner(deps, input, forks)) {
       deps.turnEvents?.record(input.threadId, event);
       yield event;
     }
   } finally {
     // **どう終わってもここを通る**——終わったターンの途中経過は残さない
     deps.turnEvents?.end(input.threadId);
+    // 最後まで行かなかったターンで予約されていた Fork は立てない——このターンの会話が記録に
+    // 載っていないので、引き継ぐ中身が欠ける。**黙って捨てない**：人に知らせる（規則2）
+    if (!forks.settled && forks.reserved.length > 0) {
+      forks.settled = true;
+      await deps.settleForks?.(input.threadId, forks.reserved, { ok: false }).catch((err: unknown) =>
+        console.warn(`[host] ${input.threadId} で予約された Fork を片づけられませんでした:`, err),
+      );
+    }
   }
+}
+
+/** このターンで AI が予約した Fork（`fork-tool.ts`）と、立てたかどうか */
+interface ForkTurnState {
+  reserved: ForkRequest[];
+  settled: boolean;
 }
 
 /**
@@ -139,8 +156,15 @@ async function* runThreadTurnInner(
      * 渡されなければ Skill は1つも効かせない。
      */
     resolveSessionSkills?(threadId: string): Promise<SessionSkillSet>;
+    /**
+     * **AI が予約した Fork を立てる／立てずに片づける**（決定・2026-09-27、§2.2「AI が Fork を立てる」）。
+     * ターンが最後まで行ったら `ok: true`（resume-point と返事を記録したあと）、途中で終わったら `ok: false`。
+     * 渡されなければ予約は受けても何もしない（試験用）
+     */
+    settleForks?(parentThreadId: string, forks: ForkRequest[], outcome: { ok: boolean }): Promise<void>;
   },
   input: RunThreadTurnInput,
+  forks: ForkTurnState = { reserved: [], settled: false },
 ): AsyncGenerator<TurnStreamEvent> {
   const thread = deps.projectThread.getThread(input.threadId);
   if (!thread) {
@@ -211,6 +235,9 @@ async function* runThreadTurnInner(
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
   mcpServers["banto-memory"] = createMemoryMcpServer(deps.projectThread, thread.projectId, input.threadId);
+  // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
+  // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
+  mcpServers["banto-thread"] = createForkMcpServer(deps.projectThread, input.threadId, forks.reserved);
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
   // （§2.3、決定・2026-09-05）。Project MemoryもGlobal Memoryも同じ規律・
@@ -410,6 +437,16 @@ async function* runThreadTurnInner(
     await deps.projectThread.appendMessage(input.threadId, "assistant", assistantText, uiToolCalls);
   }
   await deps.projectThread.recordUsage(input.threadId, contextUsage, compactionCount, apiUsage);
+  // **予約された Fork はここで立てる**——このターンの resume-point と返事を記録したあと。Fork は
+  // このターンの会話を最後まで引き継ぐ（§2.2「AI が Fork を立てる」）
+  if (forks.reserved.length > 0 && !forks.settled) {
+    forks.settled = true;
+    try {
+      await deps.settleForks?.(input.threadId, forks.reserved, { ok: true });
+    } catch (err) {
+      console.warn(`[host] ${input.threadId} で予約された Fork を立てられませんでした:`, err);
+    }
+  }
   yield { type: "done", sessionId, contextUsage, compactionCount, apiUsage };
 }
 

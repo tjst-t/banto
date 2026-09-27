@@ -13,6 +13,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   MemoryLimitExceededError,
   normalizeProjectRoot,
@@ -51,6 +52,7 @@ import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import type { AppEventBus } from "./app-events.js";
+import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
 import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
@@ -839,6 +841,47 @@ export function createApp(deps: AppDeps) {
   const imageStore = deps.dataDir ? new ImageStore(join(deps.dataDir, "images")) : undefined;
 
   /**
+   * **AI が予約した Fork を立てる**（決定・2026-09-27、アーキ仕様 §2.2「AI が Fork を立てる」）。親のターンが
+   * 最後まで行ったら、Fork を作って名前を付け、最初の指示を「Thread に届ける」口で渡す（届いたら AI が起きる）。
+   * 途中で終わったら立てずに、人に知らせる
+   */
+  async function settleForks(parentThreadId: string, forks: ForkRequest[], outcome: { ok: boolean }): Promise<void> {
+    const parent = deps.projectThread.getThread(parentThreadId);
+    if (!parent) return;
+    const parentLabel = parent.title ?? (parent.kind === "base" ? "Base Thread" : "Fork Thread");
+    const names = forks.map((f) => `「${f.title}」`).join("");
+    if (!outcome.ok) {
+      await deps.inbox.raiseNotice({
+        projectId: parent.projectId,
+        dedupeKey: `forks-dropped:${parentThreadId}:${randomUUID()}`,
+        title: "Fork を立てませんでした",
+        detail: `${parentLabel}のターンが途中で終わったため、AI が予約した Fork ${names}は立てていません。要るなら、もう一度頼んでください`,
+      });
+      return;
+    }
+    // 親のターンから届いたもの＝ホップ 1 つ先（ループ防止の数え方は §4.2 と同じ）
+    const hop = (deps.threadTurns?.hopOf(parentThreadId) ?? 0) + 1;
+    for (const fork of forks) {
+      const thread = await deps.projectThread.forkThread(parentThreadId);
+      await deps.projectThread.renameThread(thread.id, fork.title);
+      if (!deps.deliveries) {
+        // 起こす口が無い（試験の構成）——作った Fork は残す。黙らない
+        console.warn(`[host] Fork「${fork.title}」を立てましたが、最初の指示を届ける口がありません`);
+        continue;
+      }
+      await deps.deliveries.deliver({
+        threadId: thread.id,
+        from: parentLabel,
+        title: `Fork「${fork.title}」の最初の指示`,
+        text: composeForkInstruction(fork, forks, parentLabel),
+        hop,
+        // 受信箱には出さない——立てたことは親の会話に Fork として出て、終わればレビュー待ちが出る
+        notify: false,
+      });
+    }
+  }
+
+  /**
    * **ターンを1本開く**——人が送ったものも、届いたもので host が始めるものも、ここを通る（切り出し・2026-09-25、
    * アーキ仕様 §4.2）。**鍵（`threadTurns`）は呼ぶ側が先に取る**。失敗は `error` のイベントで返す（呼ぶ側が
    * SSE に流すか、記録に残す）
@@ -889,7 +932,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn(deps, {
+    yield* runThreadTurn({ ...deps, settleForks }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -2268,8 +2311,10 @@ export function createApp(deps: AppDeps) {
       const inboxAckMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/acknowledge$/);
       if (inboxAckMatch && req.method === "POST") {
         const item = deps.inbox.get(inboxAckMatch[1]!);
-        if (!item || item.kind !== "notice") return json(res, 404, { error: "not found" });
-        await deps.inbox.acknowledgeNotice(item.id);
+        // レビュー待ち（ターンが終わった、決定・2026-09-27）も同じ口で「見た」にする
+        if (!item || (item.kind !== "notice" && item.kind !== "review")) return json(res, 404, { error: "not found" });
+        if (item.kind === "notice") await deps.inbox.acknowledgeNotice(item.id);
+        else await deps.inbox.acknowledgeReview(item.id);
         json(res, 200, { ok: true });
         return;
       }

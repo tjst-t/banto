@@ -2,8 +2,8 @@
 
 // 受信箱（アーキ仕様§2.4）を実banto hostに繋ぐ（Stage 4、決定・2026-09-05）。
 //
-// **判断待ち（judgment）だけを扱う**——レビュー待ち（review）は生成元がまだ
-// 無いので、空の区画を画面に残さない（規則13）。
+// 判断待ち・お知らせ・**レビュー待ち**を扱う。レビュー待ちは「ターンが終わった」（決定・2026-09-27、
+// ユーザー）——**開いて見ている Thread のものは、ここで自分で「見た」にする**（見ている人に知らせは要らない）。
 //
 // **定期ポーリングはしない**（決定・2026-09-05、実測に基づく）。5秒間隔で
 // 取り直すと、その再描画が tool 呼び出し待ちの Thread を壊した
@@ -24,12 +24,18 @@ import { useSyncExternalStore } from "react";
 import {
   listRealInbox,
   getBackendConfig,
+  acknowledgeRealNotice,
   type RealInboxJudgment,
   type RealInboxNotice,
+  type RealInboxReview,
 } from "./client";
 
 let items: readonly RealInboxJudgment[] = [];
 let notices: readonly RealInboxNotice[] = [];
+let reviews: readonly RealInboxReview[] = [];
+/** いま画面に開いている Thread（`useViewingThread`）。**購読しない**——Thread の画面を受信箱の変化で
+ *  描き直さない（上の「定期ポーリングはしない」と同じ理由） */
+const viewing = new Map<string, number>();
 let snapshotVersion = 0;
 const listeners = new Set<() => void>();
 function emit(): void {
@@ -49,6 +55,57 @@ export function getRealNotices(): readonly RealInboxNotice[] {
   return notices;
 }
 
+/** 出ているレビュー待ち（ターンが終わった Thread、決定・2026-09-27）。開いて見ている Thread のものは除く */
+export function getRealReviews(): readonly RealInboxReview[] {
+  return reviews;
+}
+
+function isVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+/** 見ている Thread のレビュー待ちを「見た」にする。**返り値は残すもの** */
+function acknowledgeViewed(list: readonly RealInboxReview[]): readonly RealInboxReview[] {
+  if (!isVisible()) return list;
+  const seen = list.filter((r) => viewing.has(r.threadId));
+  for (const r of seen) {
+    void acknowledgeRealNotice(r.id).catch(() => {
+      // 次に取り直したときにまた試す
+    });
+  }
+  return seen.length === 0 ? list : list.filter((r) => !viewing.has(r.threadId));
+}
+
+/**
+ * **この Thread を開いている**と知らせる（Thread の画面で呼ぶ）。開いている間に終わったターンは、
+ * 受信箱に積まずに「見た」にする
+ */
+export function markThreadViewing(threadId: string): () => void {
+  viewing.set(threadId, (viewing.get(threadId) ?? 0) + 1);
+  const next = acknowledgeViewed(reviews);
+  if (next !== reviews) {
+    reviews = next;
+    emit();
+  }
+  return () => {
+    const n = (viewing.get(threadId) ?? 1) - 1;
+    if (n <= 0) viewing.delete(threadId);
+    else viewing.set(threadId, n);
+  };
+}
+
+if (typeof document !== "undefined") {
+  // 裏のタブで終わったものは、戻ってきたときに「見た」にする
+  document.addEventListener("visibilitychange", () => {
+    if (!isVisible()) return;
+    const next = acknowledgeViewed(reviews);
+    if (next !== reviews) {
+      reviews = next;
+      emit();
+    }
+  });
+}
+
 /** hostから取り直す。ポーリングの間隔を待たずに反映したいとき（ターン中に
  *  判断待ちが発生した直後など）に呼ぶ。 */
 export async function refreshRealInbox(): Promise<void> {
@@ -61,13 +118,19 @@ export async function refreshRealInbox(): Promise<void> {
     const nextNotices = all.filter(
       (i): i is RealInboxNotice => i.kind === "notice" && !i.acknowledged,
     );
+    const nextReviews = acknowledgeViewed(
+      all.filter((i): i is RealInboxReview => i.kind === "review" && !i.acknowledged),
+    );
     // 同じ内容なら通知しない——毎5秒の再描画で入力中のフォーム等を揺らさない
     const noticesChanged =
       nextNotices.length !== notices.length ||
       nextNotices.some((n, i) => n.id !== notices[i]!.id);
-    if (sameIds(items, next) && !noticesChanged) return;
+    const reviewsChanged =
+      nextReviews.length !== reviews.length || nextReviews.some((r, i) => r.id !== reviews[i]!.id);
+    if (sameIds(items, next) && !noticesChanged && !reviewsChanged) return;
     items = next;
     notices = nextNotices;
+    reviews = nextReviews;
     emit();
   } catch {
     // hostが落ちている・トークンが違う等。**受信箱を空にしない**——直前に

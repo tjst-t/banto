@@ -20,6 +20,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 /** spec がプロンプトに埋める印。これが無ければ「ひとこと返すだけ」。 */
 export const FAKE_RUNNER_MARKER = "[[fake-runner]]";
@@ -136,6 +137,9 @@ interface McpServerConfig {
   type?: string;
   url?: string;
   headers?: Record<string, string>;
+  /** **core 自身の MCP サーバ**（`type: "sdk"`、in-process。`banto-memory`・`banto-thread`）。本物の SDK は
+   *  プロセスの中で直に繋ぐので、偽物も同じく直に繋ぐ（追加・2026-09-27） */
+  instance?: { connect(transport: unknown): Promise<void>; close(): Promise<void> };
 }
 
 /** SDK が流すメッセージの形を真似る。**banto が読んでいる欄だけ**を埋める。 */
@@ -281,12 +285,18 @@ async function callRealTool(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<{ text: string; isError: boolean }> {
-  if (!config?.url) throw new Error(`fake-runner: MCP の口が http ではありません: ${JSON.stringify(config)}`);
-  const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-    requestInit: { headers: config.headers },
-  });
   const client = new Client({ name: "fake-runner", version: "0.0.0" });
-  await client.connect(transport);
+  if (config?.type === "sdk" && config.instance) {
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await config.instance.connect(serverSide);
+    await client.connect(clientSide);
+  } else {
+    if (!config?.url) throw new Error(`fake-runner: MCP の口が http ではありません: ${JSON.stringify(config)}`);
+    const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+      requestInit: { headers: config.headers },
+    });
+    await client.connect(transport);
+  }
   try {
     const res = (await client.callTool({ name: toolName, arguments: args })) as {
       content?: Array<{ type: string; text?: string }>;
