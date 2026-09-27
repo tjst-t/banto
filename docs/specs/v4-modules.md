@@ -1430,7 +1430,7 @@ Shell の `grep` で足りる）。
   時刻つきで `log` に書く（10MB で `log.1` へ回す）。止められたら終了コード 0 で抜けて起こし直させない
 - **落ちて上限に当たった unit は `reset-failed` しないと `start` が断られる**（実測）。startService・restartService の前に挟む
 - 置き場（コンテナの中のローカル）：unit は passwd のホームの `~/.config/systemd/user/banto-<name>.service`、
-  サービスごとの置き場は `~/.local/state/banto-service/<name>/`（`command.sh`・`env`（0600）・`log`・`exit.json`・
+  サービスごとの置き場は `~/.banto-service/<name>/`（`~/.local` は Incus が root の持ち物で作るので、その下には書けない——実測）（`command.sh`・`env`（0600）・`log`・`exit.json`・
   `started.json`）。**Module の `HOME` は host のディスク（Module の置き場）を指すので使わない**
 - **systemd を用意できなくても MCP の口は開き**、道具を呼ばれたら理由つきで断る（規則2）
 - 試験：単体（systemd を偽物に差し替え）と、`BANTO_TEST_SYSTEMD=1` で本物の systemd を使う結合試験

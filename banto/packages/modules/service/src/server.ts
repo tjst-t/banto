@@ -27,8 +27,19 @@ const NAME_DESC = "サービスの名前。英小文字・数字・ハイフン�
  * `ready` は systemd の用意（linger・写しの突き合わせ）。**待たずに口を開く**——systemd が使えないときも
  * 名乗りと一覧は返し、道具を呼ばれたら理由つきで断る（規則2。立たないと設定も理由も見えない）
  */
-export function createServiceServer(manager: ServiceManager, ready: Promise<void> = Promise.resolve()) {
-  ready.catch(() => undefined);
+export function createServiceServer(manager: ServiceManager, prepare: () => Promise<void> = async () => {}) {
+  // **成功だけを覚える**——失敗したら次の呼び出しでやり直す（一度の失敗で Module を起こし直すまで使えなくならない）
+  let ready: Promise<void> | undefined;
+  const ensureReady = () => {
+    if (!ready) {
+      ready = prepare();
+      ready.catch(() => {
+        ready = undefined;
+      });
+    }
+    return ready;
+  };
+  void ensureReady();
   const server = new Server({ name: "banto-module-service", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
@@ -138,7 +149,7 @@ export function createServiceServer(manager: ServiceManager, ready: Promise<void
     const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
     try {
       try {
-        await ready;
+        await ensureReady();
       } catch (err) {
         throw new ServiceError(`Service が使えません（この Project のコンテナの systemd を用意できませんでした）: ${(err as Error).message}`);
       }
@@ -193,7 +204,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     projectRoot,
     store: new ServiceStore(dataDir),
     systemctl,
-    paths: { unitDir: join(home, ".config/systemd/user"), stateDir: join(home, ".local/state/banto-service") },
+    // **置き場はホームの直下**——`~/.local` は Incus が Module の置き場をマウントするときに root の持ち物で作る
+    // ので、その下には書けない（実測・2026-09-27：`mkdir ~/.local/state` が EACCES）
+    paths: { unitDir: join(home, ".config/systemd/user"), stateDir: join(home, ".banto-service") },
     nodePath: process.execPath,
     wrapperPath: fileURLToPath(new URL("./log-wrapper.js", import.meta.url)),
     inheritedEnv,
@@ -205,8 +218,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     },
   };
   const manager = new ServiceManager(deps);
-  const ready = noSystemd
-    ? Promise.reject(new Error("BANTO_SERVICE_NO_SYSTEMD=1 のため systemd を使いません"))
-    : systemctl.ensureUserManager().then(() => manager.prepare());
-  await createServiceServer(manager, ready).connect(new StdioServerTransport());
+  const prepare = noSystemd
+    ? () => Promise.reject(new Error("BANTO_SERVICE_NO_SYSTEMD=1 のため systemd を使いません"))
+    : () => systemctl.ensureUserManager().then(() => manager.prepare());
+  await createServiceServer(manager, prepare).connect(new StdioServerTransport());
 }

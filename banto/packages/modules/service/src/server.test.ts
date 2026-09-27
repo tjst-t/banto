@@ -9,7 +9,7 @@ import { createServiceServer } from "./server.js";
 import { ServiceManager } from "./manager.js";
 import { ServiceStore } from "./store.js";
 
-async function connect(ready: Promise<void>) {
+async function connect(prepare: () => Promise<void>) {
   const base = await mkdtemp(join(tmpdir(), "banto-service-srv-"));
   const manager = new ServiceManager({
     projectRoot: base,
@@ -26,7 +26,7 @@ async function connect(ready: Promise<void>) {
     resolveSecret: async () => "v",
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
-  const server = createServiceServer(manager, ready);
+  const server = createServiceServer(manager, prepare);
   await server.connect(a);
   const client = new Client({ name: "t", version: "0" });
   await client.connect(b);
@@ -34,7 +34,7 @@ async function connect(ready: Promise<void>) {
 }
 
 test("道具は6本で、すべて AI に見せる。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
-  const { client, cleanup } = await connect(Promise.resolve());
+  const { client, cleanup } = await connect(async () => {});
   try {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
@@ -54,21 +54,26 @@ test("道具は6本で、すべて AI に見せる。使い方（alias 名で渡
   }
 });
 
-test("systemd を用意できなくても口は開き、道具を呼ぶと理由つきで断る", async () => {
-  const failed = Promise.reject(new Error("linger を入れられない"));
-  failed.catch(() => undefined); // 試験の中で作って渡すまでの間に「受け手の無い失敗」にしない
-  const { client, cleanup } = await connect(failed);
+test("systemd を用意できなくても口は開き、道具を呼ぶと理由つきで断る。直れば次の呼び出しで使える", async () => {
+  let attempts = 0;
+  const { client, cleanup } = await connect(async () => {
+    attempts++;
+    if (attempts <= 2) throw new Error("linger を入れられない");
+  });
   try {
     const r = await client.callTool({ name: "listServices", arguments: {} });
     assert.equal(r.isError, true);
     assert.match(JSON.stringify(r.content), /Service が使えません.*linger を入れられない/);
+    // 失敗を覚え続けない——直ったら次の呼び出しで使える（Module を起こし直さなくてよい）
+    const again = await client.callTool({ name: "listServices", arguments: {} });
+    assert.notEqual(again.isError, true);
   } finally {
     await cleanup();
   }
 });
 
 test("頼み方の誤りは理由を AI に返す（例外にしない）", async () => {
-  const { client, cleanup } = await connect(Promise.resolve());
+  const { client, cleanup } = await connect(async () => {});
   try {
     const r = await client.callTool({ name: "startService", arguments: { name: "Bad Name", command: "x" } });
     assert.equal(r.isError, true);
