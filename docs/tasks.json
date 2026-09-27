@@ -2362,9 +2362,9 @@
       "id": "fork-inline-fullscreen",
       "title": "Fork の会話の中の Module 画面を「大きく表示」できない",
       "status": "backlog",
-      "why": "2026-09-27、Fork 2 で FileSystem の showFile（inline）の「大きく表示」を押すと「大きく表示できませんでした（いまは inline）」と出た（ユーザーの画面で確認）。コードを読んだ推測（未確認）：project-panels.tsx の renderFork が ThreadPanel に onOpenCanvas を渡していない（Base Thread の ThreadPanel だけが渡している）。そのため CanvasOpenerProvider が null になり、inline-module-view.tsx の onRequestFullscreen が undefined、module-canvas.tsx の onrequestdisplaymode が「inline のまま」と答えている。Fork を右に開いているとき、Canvas をどこに出すか（Fork の上に重ねるか・Base 側か）も決める必要がある。",
-      "notes": "apps/frontend/app/(shell)/p/[projectId]/project-panels.tsx（renderFork）・components/banto/thread/inline-module-view.tsx・components/banto/canvas/module-canvas.tsx・packages/modules/filesystem/src/ui/browser.ts（askFullscreen）",
-      "doneWhen": "Fork の会話の inline の画面から「大きく表示」を押すと fullscreen で開く。E2E で Fork から開けることを見る（直したコードを戻すと落ちる）"
+      "why": "2026-09-27、Fork 2 で FileSystem の showFile（inline）の「大きく表示」を押すと「大きく表示できませんでした（いまは inline）」と出た（ユーザーの画面で確認）。コードを読んだ推測（未確認）：project-panels.tsx の renderFork が ThreadPanel に onOpenCanvas を渡していない（Base Thread の ThreadPanel だけが渡している）。そのため CanvasOpenerProvider が null になり、inline-module-view.tsx の onRequestFullscreen が undefined、module-canvas.tsx の onrequestdisplaymode が「inline のまま」と答えている。**Fork を開いているときの Canvas の出し方は mock で定義済み**（ユーザー、2026-09-27）——mock/components/banto/shell/panel-stack.tsx の ThreeLayerStack：Base（左の帯）→ Fork → Canvas の3枚の紙を重ね、Canvas は Fork の上の右側に乗る。mock/components/banto/shell/use-panel-stack.ts の open({canvas}) は fork の指定を消さない（Fork を開いたまま Canvas が乗る）。本物の apps/frontend にも ThreeLayerStack は既に写してある（差分は Escape の扱いと testid だけ）ので、足りないのは Fork の ThreadPanel に onOpenCanvas を渡す配線の見込み。なお mock の renderFork も onOpenCanvas を渡していない——参考にするのは配線ではなく重ね方。",
+      "notes": "apps/frontend/app/(shell)/p/[projectId]/project-panels.tsx（renderFork）・components/banto/thread/inline-module-view.tsx・components/banto/canvas/module-canvas.tsx・packages/modules/filesystem/src/ui/browser.ts（askFullscreen）・参考：mock/components/banto/shell/panel-stack.tsx（ThreeLayerStack）・mock/components/banto/shell/use-panel-stack.ts（open）",
+      "doneWhen": "Fork の会話の inline の画面から「大きく表示」を押すと、Fork を開いたまま Canvas が mock と同じ3枚重ね（Base の帯・Fork・Canvas）で開く。Escape で Canvas だけが閉じ Fork が残る。E2E で見る（直したコードを戻すと落ちる）"
     }
   ],
   "phase1": {
