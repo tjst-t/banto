@@ -2348,7 +2348,7 @@
       "status": "pending",
       "why": "2026-09-27 に案A（docs/notes/2026-09-27-claude-login-relay-alternatives.md）を採用。いまは subagent-settings が1回ごとに開け閉めしており、寿命が必要な単位（Project）より短く、呼び出し口（サブエージェント・Shell・Service・E2E）が増えるたびに開け閉めの配線と寿命の規則が増える。常設にすると Shell には何も足さずに claude -p・Agent SDK・banto の E2E が通る。同日に決めた Shell の claudeLogin 引数と「承認画面に出す」は取り消し（Project 設定のスイッチ・既定オンに置き換え）。",
       "notes": "docs/notes/2026-09-27-claude-login-relay-alternatives.md",
-      "doneWhen": "(1) core の HTTP サーバに中継の口があり、合言葉は Project ごとに1つ（コンテナを起こすとき発行・止めるとき無効）。(2) コンテナで起きる Module の env に ANTHROPIC_BASE_URL・CLAUDE_CODE_OAUTH_TOKEN・CLAUDE_CODE_SUBSCRIPTION_TYPE・CLAUDE_CODE_RATE_LIMIT_TIER が入り、Shell の runCommand から claude -p が通る。(3) e2e/global-setup.ts が資格情報のファイルが無くても環境変数で通り、banto 開発の Project のコンテナの中で E2E が回る。(4) Project 設定に「この Project に Claude のログインを使わせる」（既定オン）と、要求の回数・最終時刻・直近の 401 が出る。(5) サブエージェントの openClaudeLoginProxy・closeClaudeLoginProxy・claude-login-access.ts・12時間の上限が消えている。送り元のアドレスの縛りは、同じブリッジの別コンテナから届くか・IP が途中で変わるかを測ってから入れる。"
+      "doneWhen": "(1) core の HTTP サーバに中継の口があり、合言葉は Project ごとに1つで固定（Project 設定のスイッチを切って入れ直したときだけ替わる）。(2) コンテナで起きる Module の env に ANTHROPIC_BASE_URL・CLAUDE_CODE_OAUTH_TOKEN・CLAUDE_CODE_SUBSCRIPTION_TYPE・CLAUDE_CODE_RATE_LIMIT_TIER が入り、Shell の runCommand から claude -p が通る。(3) e2e/global-setup.ts が資格情報のファイルが無くても環境変数で通り、banto 開発の Project のコンテナの中で E2E が回る。(4) Project 設定に「この Project に Claude のログインを使わせる」（既定オン）と、要求の回数・最終時刻・直近の 401 が出る。(5) サブエージェントの openClaudeLoginProxy・closeClaudeLoginProxy・claude-login-access.ts・12時間の上限が消えている。送り元のアドレスの縛りは、同じブリッジの別コンテナから届くか・IP が途中で変わるかを測ってから入れる。"
     },
     {
       "id": "container-mount-guard-and-restart",

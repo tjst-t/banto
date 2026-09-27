@@ -1362,7 +1362,8 @@ Shell の `grep` で足りる）。
 - **`envSecrets` は Shell と同じ形で受ける。値は止めるまでプロセスの環境に残ってよい**
   （Shell は1回で消えるが、Service は長く残る——承知のうえ）
 - **Claude のログインの環境変数は、systemd の定義に写す**（決定・2026-09-27）——コンテナの環境に入っている
-  もの（§2.3）をそのまま渡すだけで、Service のために中継を開け閉めしない
+  もの（§2.3）をそのまま渡すだけで、Service のために中継を開け閉めしない。合言葉は Project ごとに固定
+  （`v4-security.md` §2）なので、コンテナが起き直して自動で起きたサービスもそのまま使える
 - **登録済みの名前で `startService` を呼ばれたら**：中身が登録と**まったく同じ**なら起動するだけ。
   **違えば断る**——今の登録内容を返し、「変えるなら `removeService` してから登録し直すか、別の名前に」と
   伝える。理由：同じ Project に Thread が複数あり、別の Thread の AI が同じ名前を使いうる。上書きにすると
@@ -1387,6 +1388,41 @@ Shell の `grep` で足りる）。
   「外から止められた」と出す。一時的に止めたい人の邪魔をしないため
 - **ログはファイルに出す**（ユーザーはどちらでもよいとした。`grep_logs` を作らない理由が
   「Shell の `grep` で足りる」なので、それと食い違わないほうを選んだ）
+
+#### Fable のレビューを受けて決めたこと（決定・2026-09-27、ユーザー）
+
+- **systemd のユーザー単位で動かす**（`systemctl --user`、host と同じ uid のユーザー）。root を使わず、
+  サービスが Project の根に作るファイルの持ち主が host のユーザーのまま揃う（Shell と同じ）。コンテナの
+  起動で起きるように **linger を有効にする**（`loginctl enable-linger`。Module が起きたときに確かめて入れる）。
+  実測（2026-09-27、systemd 255）：linger を入れると `systemctl --user` が動き、`Restart=on-failure` で起こし直した。
+  unit の写しはコンテナの中の `~/.config/systemd/user/banto-<name>.service`
+- **envSecrets の値は host のディスクに置かない**——Module のデータ置き場は host のディスクなので、そこに
+  書くと Vault の外に秘密の第二の置き場ができる。**マスターには alias 名だけ**。値はコンテナの中のローカルの
+  場所（再起動で消えない場所）に 0600 のファイルで置き、`EnvironmentFile=` で読ませる。unit の本体には書かない。
+  中では AI が root なので読めるが、それは `v4-security.md` §1 の帰結として受け入れ済み
+- **「動かしたいか・止めておきたいか」は Module がマスターに覚える**（`desired: running | stopped`）。systemd の
+  enable/disable はその写し。`stopService` は `stopped` にして disable、`startService` は `running` にして enable。
+  人が中で `systemctl --user stop` したものは止めたまま受け入れるが、マスターは `running` のままなので、
+  **「止めたまま」はそのコンテナの寿命の中だけ**（起こし直すと起きる）
+
+**実装で守る細部**（レビューの指摘から。実装で測って違えば直す）：
+
+- **状態の語彙**：動いている／止めた／落ちた（上限に当たった）／自分で終わった（終了コード 0）／外から止められた。
+  材料は `systemctl --user show` の `ActiveState`・`SubState`・`Result`・`ExecMainStatus`・`NRestarts`・`UnitFileState`
+  とマスターの `desired`。人の stop と自分での終了が区別できるかは測る
+- **名前**は `^[a-z0-9][a-z0-9-]{0,62}$`、unit 名は `banto-<name>.service`（既存の unit とぶつからないように）
+- **`ports` は数字の配列**。登録済みと重なるポートは断る。`listServices` に「実際に待ち受けているか」も載せる
+  （書いたポートと実際がずれると Publish が空を指す）
+- **「まったく同じ」の比較**は cwd・ports・envSecrets を正規化してから。envSecrets は alias 名で比べる
+- **落ちて上限に当たった unit は `reset-failed` してから起こす**（しないと起きない）
+- **ログに時刻を付ける**。systemd の `append:` は時刻を付けないので、付け方と切り詰めは実装で決める
+- **HOME は Shell と同じ専用のホームにそろえる**（npm のキャッシュや `.npmrc` を共有するため。渡し方は実装で）。
+  **`BANTO_*` は定義に写さない**（§2.3・`v4-security.md` §3）
+- **定義を書き直しても、動いているものは次に起きるまで古いまま**。写しの差分はマスターに持つ内容の印で比べる
+- **宣言**：`scope: "project"`、`dependsOn` は Shell と同じ（vault-directory＋vault）。**目録に置き、要る Project にだけ
+  人が「Module を追加」からつける**（決定・2026-09-27、ユーザー）
+- 残る問い：`removeService` → 同名で違う中身を登録すると、断ったはずの上書きが2手で起きる（Publish を作るときに
+  「公開中なら断る」か「参照切れを検知する」かを決める）。根を変えたときに動いているサービスの扱い
 
 **まだ決めていないこと**：
 
