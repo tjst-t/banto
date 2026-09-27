@@ -132,8 +132,8 @@ export class RelayRegistry {
   }
 
   /** 呼び出し元が宣言した依存に照らして許可されているか（アーキ仕様§2.5）。 */
-  isAllowed(caller: CallerIdentity, targetModule: string): boolean {
-    return this.whyNotAllowed(caller, targetModule) === undefined;
+  isAllowed(caller: CallerIdentity, targetModule: string, onBehalfOf?: string): boolean {
+    return this.whyNotAllowed(caller, targetModule, onBehalfOf) === undefined;
   }
 
   /**
@@ -144,15 +144,21 @@ export class RelayRegistry {
    *   `docs/specs/v4-security.md` §3）。以前は役割しか見ておらず、Project ごとの Module（`subagent-<projectId>`）を
    *   別の Project の Module が名前で指せた——許すと、その Project のコンテナで仕事が走る。banto 全体に1本の Module は
    *   Project を選べないので、Project ごとの Module は呼べない
+   * - **ただし banto 全体の Module も、ある Project のための呼び出しを処理している間は、その Project の Module を
+   *   呼べる**（`onBehalfOf`、追加・2026-09-27、Publish の窓口が Service の登録を引くため——`docs/specs/v4-security.md` §3）。
+   *   どの Project のためかは **host の台帳が決める**（`ModuleCallTracker.callerFor`）——Module は選べない。
+   *   決められない（走っている呼び出しが無い・複数の Project が混ざっている）なら、今までどおり呼べない
    */
-  whyNotAllowed(caller: CallerIdentity, targetModule: string): string | undefined {
+  whyNotAllowed(caller: CallerIdentity, targetModule: string, onBehalfOf?: string): string | undefined {
     const target = this.modules.get(targetModule);
     if (!target || !caller.meta.dependsOn.some((d) => target.meta.satisfies.includes(d.role))) {
       return "宣言された依存に含まれない";
     }
-    if (target.projectId !== undefined && target.projectId !== caller.projectId) {
-      return caller.projectId === undefined
-        ? "banto 全体の Module から、Project ごとの Module は呼べない"
+    // Project ごとの呼び出し元は自分の Project に縛られる（継いだ Project では広げない）
+    const project = caller.projectId ?? onBehalfOf;
+    if (target.projectId !== undefined && target.projectId !== project) {
+      return project === undefined
+        ? "banto 全体の Module から、Project ごとの Module は呼べない（その Project のための呼び出しの中でだけ呼べる）"
         : "別の Project の Module は呼べない";
     }
     return undefined;
@@ -168,10 +174,10 @@ export class RelayRegistry {
    *
    * **判定は `isAllowed` と同じ根拠から導く**（規則3）——別の許可表を作らない。
    */
-  allowedTargets(caller: CallerIdentity): Array<{ name: string; roles: string[] }> {
+  allowedTargets(caller: CallerIdentity, onBehalfOf?: string): Array<{ name: string; roles: string[] }> {
     const roles = new Set(caller.meta.dependsOn.map((d) => d.role));
     return Array.from(this.modules.values())
-      .filter((m) => this.whyNotAllowed(caller, m.name) === undefined)
+      .filter((m) => this.whyNotAllowed(caller, m.name, onBehalfOf) === undefined)
       .map((m) => ({ name: m.name, roles: m.meta.satisfies.filter((role) => roles.has(role)) }));
   }
 }
@@ -228,7 +234,25 @@ export interface HostRelayServerOptions {
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
   /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
   approvalProgressIntervalMs?: number;
+  /**
+   * **host からその Project のコンテナに届くアドレス**（追加・2026-09-27、`docs/specs/v4-modules.md` §4.3 Publish）。
+   * コンテナのアドレスは DHCP で変わりうるので、公開の実装は覚えずに引き直す。渡さなければこの口は断る
+   */
+  projectAddress?(projectId: string): Promise<string>;
 }
+
+/**
+ * **Project のアドレスを引いてよい呼び出し元**（追加・2026-09-27）。公開の実装（`publish` 役割）で、**banto 本体で
+ * 動く banto 自身のコード**だけ。コンテナの中の Module（中の AI が合言葉を読める）と第三者のコードには引かせない
+ * ——公開の道を張れるのは host で動くものだけ、という線（`docs/specs/v4-security.md` §1）をここでも崩さない
+ */
+export function mayResolveProjectAddress(identity: CallerIdentity): string | undefined {
+  if (!identity.meta.satisfies.includes(PUBLISH_ROLE)) return `${PUBLISH_ROLE} 役割を名乗る Module だけが引ける`;
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが引ける";
+  if (identity.inContainer || identity.projectId !== undefined) return "banto 本体で動く、banto 全体の Module だけが引ける";
+  return undefined;
+}
+const PUBLISH_ROLE = "publish";
 
 /**
  * 宛先の tool が名乗っている可視性。**その Module が名乗っていない名前は
@@ -243,6 +267,17 @@ async function targetTool(
   if (!tool) return undefined;
   const x = tool as { _meta?: Record<string, unknown> };
   return { visibility: visibilityOf(x), valueFree: isValueFree(x), auditArgs: auditArgsOf(x) };
+}
+
+/**
+ * **banto 全体の Module が、いまどの Project のための呼び出しを処理しているか**（追加・2026-09-27）。
+ * `callerFor` を使う——Project が1つに決まり、banto 全体のための呼び出しが混ざっていないときだけ。
+ * Project ごとの Module は自分の Project に縛られているので継がない
+ */
+function onBehalfOfProject(identity: CallerIdentity, opts: HostRelayServerOptions): string | undefined {
+  if (identity.projectId !== undefined) return undefined;
+  const ambient = opts.moduleCalls?.callerFor?.(identity.connName ?? identity.moduleName);
+  return ambient && "project" in ambient ? ambient.project : undefined;
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -286,6 +321,17 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         inputSchema: { type: "object", properties: {} },
       },
       {
+        // **公開の実装が、Project のコンテナに届くアドレスを引く**（追加・2026-09-27、§4.3 Publish）。
+        // 引ける相手は `mayResolveProjectAddress` が決める。返すのはアドレスだけ
+        name: "relayProjectAddress",
+        description: "host からその Project のコンテナに届くアドレス（IPv4）。変わりうるので覚えずに引き直す",
+        inputSchema: {
+          type: "object",
+          properties: { projectId: { type: "string" } },
+          required: ["projectId"],
+        },
+      },
+      {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
         name: "relayDeliverToThread",
@@ -310,9 +356,24 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **誰にも届けない問い合わせ**——宛先を選ぶ前の相談なので、承認ゲートも
     // 監査も通さない（まだ何も呼んでいない）。返すのは名前と role だけで、
     // 相手の中身（tool 一覧・値）は一切含まない
+    // **どの Project のための呼び出しを処理しているか**（host の台帳。banto 全体の Module だけが継ぐ）
+    const onBehalfOf = onBehalfOfProject(identity, opts);
+
     if (request.params.name === "relayListTargets") {
-      const targets = opts.registry.allowedTargets(identity);
+      const targets = opts.registry.allowedTargets(identity, onBehalfOf);
       return { content: [{ type: "text", text: JSON.stringify(targets) }] };
+    }
+
+    // **宛先は host 自身**——アドレスは値ではない（中の AI にも自分のアドレスは見える）ので承認は通さないが、
+    // 引ける相手は絞る。コンテナを起こしはしない（動いていなければ理由つきで断る）
+    if (request.params.name === "relayProjectAddress") {
+      const why = mayResolveProjectAddress(identity);
+      if (why) throw new Error(`${identity.moduleName} は Project のアドレスを引けません（${why}）`);
+      if (!opts.projectAddress) throw new Error("この banto は Project のアドレスを引く口を持っていません");
+      const projectId = typeof args.projectId === "string" ? args.projectId : "";
+      if (!projectId) throw new Error("projectId が要ります");
+      const address = await opts.projectAddress(projectId);
+      return { content: [{ type: "text", text: JSON.stringify({ address }) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が
@@ -356,7 +417,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       });
     };
 
-    const notAllowed = opts.registry.whyNotAllowed(identity, targetModule);
+    const notAllowed = opts.registry.whyNotAllowed(identity, targetModule, onBehalfOf);
     if (notAllowed) {
       await audit(false, notAllowed);
       throw new Error(`${identity.moduleName} は ${targetModule} を呼ぶ権限がありません（${notAllowed}）`);

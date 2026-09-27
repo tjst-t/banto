@@ -15,7 +15,7 @@ import { markBundled, parseModuleMeta } from "@banto/module-contract";
  * 印が無い＝外から繋いだ扱いになり、`valueFree` は効かない（それが仕様）。
  */
 const bundledMeta = (raw: unknown, source: string) => markBundled(parseModuleMeta(raw, source), source);
-import { HostRelayEndpoint, RelayRegistry } from "./host-relay-endpoint.js";
+import { HostRelayEndpoint, RelayRegistry, type HostRelayServerOptions } from "./host-relay-endpoint.js";
 import { ModuleCallTracker } from "./module-calls.js";
 
 async function fakeVaultClient(): Promise<Client> {
@@ -32,10 +32,11 @@ async function fakeVaultClient(): Promise<Client> {
   return client;
 }
 
-async function startTestServer(registry: RelayRegistry) {
+async function startTestServer(registry: RelayRegistry, extra: Partial<HostRelayServerOptions> = {}) {
   const audits: unknown[] = [];
   const endpoint = new HostRelayEndpoint({
     registry,
+    ...extra,
     onAudit: (a) => {
       audits.push(a);
     },
@@ -720,7 +721,12 @@ test("Project ごとの Module は同じ Project の中からしか呼べない�
 
   assert.equal(registry.whyNotAllowed(inA, "subagent-pA"), undefined);
   assert.equal(registry.whyNotAllowed(inA, "subagent-pB"), "別の Project の Module は呼べない");
-  assert.equal(registry.whyNotAllowed(instanceCaller, "subagent-pA"), "banto 全体の Module から、Project ごとの Module は呼べない");
+  assert.equal(
+    registry.whyNotAllowed(instanceCaller, "subagent-pA"),
+    "banto 全体の Module から、Project ごとの Module は呼べない（その Project のための呼び出しの中でだけ呼べる）",
+  );
+  // 継いだ Project でも、Project ごとの呼び出し元は広がらない
+  assert.equal(registry.whyNotAllowed(inA, "subagent-pB", "pB"), "別の Project の Module は呼べない");
   assert.equal(registry.whyNotAllowed(inA, "vault"), undefined, "banto 全体の Module まで止めた");
   assert.deepEqual(
     registry.allowedTargets(inA).map((t) => t.name).sort(),
@@ -792,6 +798,99 @@ test("コンテナの中の呼び出し元には、鍵の窓口を立てる場�
     }
     assert.equal(seen[0]?.["dev.banto/socketDir"], "/data/modules/shell-p1/s");
     assert.equal(seen[1]?.["dev.banto/socketDir"], undefined, "host で動く呼び出し元には刻まない（偽の刻印も渡さない）");
+  } finally {
+    close();
+  }
+});
+
+/** 中継に Module として繋ぐ（合言葉を持った呼び出し元） */
+async function relayClient(url: string, token: string): Promise<Client> {
+  const client = new Client({ name: "caller", version: "0.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+  return client;
+}
+const textOf = (r: unknown) => ((r as { content: { text: string }[] }).content[0]!.text);
+
+test("banto 全体の Module は、ある Project のための呼び出しの中でだけ、その Project の Module を呼べる（host の台帳で決まる）", async () => {
+  const registry = new RelayRegistry();
+  const serviceMeta = bundledMeta({ satisfies: ["service"], dependsOn: [], isolation: "subprocess", scope: "project" }, "service");
+  registry.registerModule({ name: "service-pA", client: await fakeVaultClient(), meta: serviceMeta, projectId: "pA" });
+  registry.registerModule({ name: "service-pB", client: await fakeVaultClient(), meta: serviceMeta, projectId: "pB" });
+  const windowMeta = bundledMeta(
+    { satisfies: ["publish-directory"], dependsOn: [{ role: "service", required: false }], isolation: "subprocess" },
+    "publish-directory",
+  );
+  const token = registry.issueToken({ moduleName: "publish-directory", meta: windowMeta });
+  const moduleCalls = new ModuleCallTracker();
+  const { url, close } = await startTestServer(registry, { moduleCalls });
+  const client = await relayClient(url, token);
+  const call = (target: string) =>
+    client.callTool({ name: "relayCallTool", arguments: { targetModule: target, name: "resolveAlias", arguments: {} } });
+  const targets = async () =>
+    (JSON.parse(textOf(await client.callTool({ name: "relayListTargets", arguments: {} }))) as { name: string }[]).map((t) => t.name);
+  try {
+    // 何の呼び出しも処理していない——Project を選べないので呼べない（今までどおり）
+    await assert.rejects(() => call("service-pA"), /その Project のための呼び出しの中でだけ呼べる/);
+    assert.deepEqual(await targets(), []);
+
+    // pA の AI のターンから呼ばれている間は pA の Module だけ
+    const endA = moduleCalls.begin("publish-directory", "t1", "turn", "pA");
+    assert.equal(textOf(await call("service-pA")), "SECRET-VALUE-OF-github-token");
+    await assert.rejects(() => call("service-pB"), /別の Project の Module は呼べない/);
+    assert.deepEqual(await targets(), ["service-pA"]);
+
+    // pB からも同時に呼ばれている——どちらのためか決められないので、どちらも呼べない
+    const endB = moduleCalls.begin("publish-directory", "t2", "turn", "pB");
+    await assert.rejects(() => call("service-pA"), /その Project のための呼び出しの中でだけ呼べる/);
+    endB();
+    // banto 全体のための呼び出しが混ざっていても決められない（pA の刻印を借りて広がらない）
+    const endInstance = moduleCalls.begin("publish-directory", undefined, "host", undefined, true);
+    await assert.rejects(() => call("service-pA"), /その Project のための呼び出しの中でだけ呼べる/);
+    endInstance();
+    endA();
+    // 呼び出しが終わったら元どおり
+    await assert.rejects(() => call("service-pA"), /その Project のための呼び出しの中でだけ呼べる/);
+  } finally {
+    await client.close();
+    close();
+  }
+});
+
+test("Project のアドレスを引けるのは、banto 本体で動く同梱の publish 実装だけ", async () => {
+  const registry = new RelayRegistry();
+  const publishRaw = { satisfies: ["publish"], dependsOn: [], isolation: "subprocess" };
+  const asked: string[] = [];
+  const { url, close } = await startTestServer(registry, {
+    projectAddress: async (projectId) => {
+      asked.push(projectId);
+      if (projectId === "gone") throw new Error("コンテナ banto-gone は動いていません（Stopped）");
+      return "10.61.162.23";
+    },
+  });
+  const tokens = {
+    caddy: registry.issueToken({ moduleName: "publish-caddy", meta: bundledMeta(publishRaw, "publish-caddy") }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(publishRaw, "evil") }),
+    inContainer: registry.issueToken({ moduleName: "publish-x", meta: bundledMeta(publishRaw, "x"), inContainer: true, projectId: "pA" }),
+    notPublish: registry.issueToken({
+      moduleName: "service",
+      meta: bundledMeta({ satisfies: ["service"], dependsOn: [], isolation: "subprocess" }, "service"),
+    }),
+  };
+  const resolve = async (token: string, projectId: string) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(textOf(await c.callTool({ name: "relayProjectAddress", arguments: { projectId } }))) as { address: string };
+    } finally {
+      await c.close();
+    }
+  };
+  try {
+    assert.deepEqual(await resolve(tokens.caddy, "pA"), { address: "10.61.162.23" });
+    await assert.rejects(() => resolve(tokens.caddy, "gone"), /動いていません/, "理由が届かない");
+    await assert.rejects(() => resolve(tokens.thirdParty, "pA"), /banto 自身のコード/);
+    await assert.rejects(() => resolve(tokens.inContainer, "pA"), /banto 本体で動く/);
+    await assert.rejects(() => resolve(tokens.notPublish, "pA"), /publish 役割/);
+    assert.deepEqual(asked, ["pA", "gone"], "断るべき呼び出し元のために host が引きに行った");
   } finally {
     close();
   }

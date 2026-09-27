@@ -365,6 +365,32 @@ export class ProjectContainers {
     throw new Error(`コンテナ ${name} から host への経路が ${this.timeouts.readyMs / 1000} 秒でできませんでした：${out.trim() || "（既定の経路が無い）"}`);
   }
 
+  /**
+   * **host からコンテナに届くアドレス**（ブリッジ上の IPv4。追加・2026-09-27、`docs/specs/v4-modules.md` §4.3 Publish）。
+   * DHCP で配られるので変わりうる——**覚えずに毎回読む**（規則3）。
+   *
+   * 読むのは装置の表の NIC（ネットワークに繋がっているもの）の、中でのインターフェースの名前の global な IPv4 だけ。
+   * **推測しない**：その banto のものでない・動いていない・まだアドレスが無い、はそれぞれ理由つきで断る（規則2）
+   */
+  async containerAddress(name: string, owner: string): Promise<string> {
+    const st = await this.state(name);
+    if (!st) throw new Error(`コンテナ ${name} がありません（その Project の Module がまだ一度も起きていない）`);
+    if (st.config["user.banto.owner"] !== owner) throw new Error(`コンテナ ${name} はこの banto のものではありません`);
+    if (st.status !== "Running") throw new Error(`コンテナ ${name} は動いていません（${st.status}）`);
+    const nic = Object.entries(st.expandedDevices).find(([, d]) => d["type"] === "nic" && d["network"]);
+    if (!nic) throw new Error(`コンテナ ${name} にネットワークの NIC がありません`);
+    // 装置の `name` が中でのインターフェース名。無ければ装置の名前と同じ（Incus の既定）
+    const ifname = nic[1]["name"] ?? nic[0];
+    const project = encodeURIComponent(await this.currentProject());
+    const out = await this.incus(["query", `/1.0/instances/${name}/state?project=${project}`], `コンテナ ${name} のアドレスを読むの`);
+    const j = JSON.parse(out) as {
+      network?: Record<string, { addresses?: { family?: string; address?: string; scope?: string }[] }> | null;
+    };
+    const v4 = (j.network?.[ifname]?.addresses ?? []).find((a) => a.family === "inet" && a.scope === "global" && a.address);
+    if (!v4) throw new Error(`コンテナ ${name} の ${ifname} に IPv4 のアドレスがまだありません（DHCP が済んでいない）`);
+    return v4.address!;
+  }
+
   /** banto が作ったコンテナと、その札（どの banto のものか）。札の無いもの（人が作ったもの）は入れない */
   async listBanto(): Promise<{ name: string; owner: string }[]> {
     const project = encodeURIComponent(await this.currentProject());

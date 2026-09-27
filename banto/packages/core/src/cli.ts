@@ -1330,6 +1330,8 @@ async function main(): Promise<void> {
     },
     // 出所（人の画面か、AI のターンか）を引くための台帳。承認の要否がここで分かれる
     moduleCalls,
+    // **公開の実装が、Project のコンテナに届くアドレスを引く**（§4.3 Publish）。この banto が作ったものだけ
+    projectAddress: (projectId) => containers.containerAddress(containerNameFor(projectId), bootstrap.dataDir),
     gate: createRelayApprovalGate({
       grants: relayGrants,
       inbox,

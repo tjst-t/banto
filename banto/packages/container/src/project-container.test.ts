@@ -83,6 +83,50 @@ test("中から host に届くアドレスは、ブリッジ（ホストのイ�
   assert.ok(!calls.some((a) => a[0] === "exec"), "中の経路を待ちに行った");
 });
 
+/** コンテナのアドレスを読む偽の Incus（状態は `st`、中のネットワークは `net` を返す） */
+function addressRun(st: Record<string, unknown>, net: unknown): RunIncus {
+  return async (args) => {
+    if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    if (args[0] === "query" && /\/state\?/.test(args[1]!)) return { code: 0, stdout: JSON.stringify({ network: net }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ devices: {}, ...st }), stderr: "" };
+  };
+}
+const OWNED_RUNNING = {
+  status: "Running",
+  config: { "user.banto.owner": "/data" },
+  expanded_devices: { eth0: { type: "nic", network: "incusbr-1000", name: "eth0" } },
+};
+
+test("host からコンテナに届くアドレスは、NIC のインターフェースの global な IPv4（読むたびに引き直す）", async () => {
+  let addr = "10.61.162.23";
+  const run: RunIncus = async (args) => addressRun(OWNED_RUNNING, {
+    lo: { addresses: [{ family: "inet", address: "127.0.0.1", scope: "local" }] },
+    docker0: { addresses: [{ family: "inet", address: "172.17.0.1", scope: "global" }] },
+    eth0: { addresses: [{ family: "inet6", address: "fe80::1", scope: "link" }, { family: "inet", address: addr, scope: "global" }] },
+  })(args);
+  const c = new ProjectContainers(run);
+  assert.equal(await c.containerAddress("banto-x", "/data"), "10.61.162.23");
+  // DHCP で変わったら、次に読んだときに新しいアドレスになる（覚えていない）
+  addr = "10.61.162.99";
+  assert.equal(await c.containerAddress("banto-x", "/data"), "10.61.162.99");
+});
+
+test("コンテナのアドレス：別の banto のもの・止まっている・まだ DHCP が済んでいない、は理由つきで断る", async () => {
+  const eth0 = { eth0: { addresses: [{ family: "inet", address: "10.0.0.5", scope: "global" }] } };
+  await assert.rejects(new ProjectContainers(addressRun(OWNED_RUNNING, eth0)).containerAddress("banto-x", "/other"), /この banto のものではありません/);
+  await assert.rejects(
+    new ProjectContainers(addressRun({ ...OWNED_RUNNING, status: "Stopped" }, eth0)).containerAddress("banto-x", "/data"),
+    /動いていません/,
+  );
+  await assert.rejects(
+    new ProjectContainers(addressRun(OWNED_RUNNING, { eth0: { addresses: [] } })).containerAddress("banto-x", "/data"),
+    /IPv4 のアドレスがまだありません/,
+  );
+  const missing: RunIncus = async (args) =>
+    args[0] === "project" ? { code: 0, stdout: "p\n", stderr: "" } : { code: 1, stdout: "", stderr: "Error: Instance not found" };
+  await assert.rejects(new ProjectContainers(missing).containerAddress("banto-x", "/data"), /ありません/);
+});
+
 test("ブリッジがホストに見えない形なら、中の経路ができるまで待って読む", async () => {
   let routeAsked = 0;
   const run: RunIncus = async (args) => {
