@@ -423,6 +423,35 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       handlesSecrets: true,
     },
   },
+  {
+    // **動き続けるもの（開発サーバ・監視）を起こしておく**（v4-modules.md §4.2、2026-09-27）。
+    // 必須ではないので既定ではなく目録に置く（決定・2026-09-27、ユーザー）。Project のコンテナの中の
+    // systemd（ユーザー単位）に任せ、登録はこの Module のデータ置き場（`BANTO_MODULE_DATA_DIR`、host が渡す）
+    id: "service",
+    name: "Service",
+    description: "開発サーバなど、止めるまで動き続けるものを Project のコンテナで起こしておく（落ちたら起こし直す）",
+    suggestedName: "service",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/service/dist/server.js"],
+      env: {
+        BANTO_PROJECT_ROOT: "${projectRoot}",
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["service"],
+      // envSecrets を解決するので Shell と同じく窓口と金庫の両方
+      dependsOn: [
+        { role: "vault-directory", required: true },
+        { role: "vault", required: true },
+      ],
+      isolation: "subprocess",
+      scope: "project",
+      confinement: { kind: "landlock", root: "project", profile: "exec" },
+    },
+  },
 ];
 
 /**

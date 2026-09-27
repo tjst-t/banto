@@ -1416,11 +1416,30 @@ Shell の `grep` で足りる）。
 - **「まったく同じ」の比較**は cwd・ports・envSecrets を正規化してから。envSecrets は alias 名で比べる
 - **落ちて上限に当たった unit は `reset-failed` してから起こす**（しないと起きない）
 - **ログに時刻を付ける**。systemd の `append:` は時刻を付けないので、付け方と切り詰めは実装で決める
-- **HOME は Shell と同じ専用のホームにそろえる**（npm のキャッシュや `.npmrc` を共有するため。渡し方は実装で）。
+- **HOME は Shell と同じ専用のホームにそろえる**（npm のキャッシュや `.npmrc` を共有するため。**未実装**——下の「実装」）。
   **`BANTO_*` は定義に写さない**（§2.3・`v4-security.md` §3）
 - **定義を書き直しても、動いているものは次に起きるまで古いまま**。写しの差分はマスターに持つ内容の印で比べる
 - **宣言**：`scope: "project"`、`dependsOn` は Shell と同じ（vault-directory＋vault）。**目録に置き、要る Project にだけ
   人が「Module を追加」からつける**（決定・2026-09-27、ユーザー）
+**実装（2026-09-27）**：`banto/packages/modules/service/`。目録（`BUNDLED_CATALOG` の `service`）から入れる。
+
+- **systemd は止まった unit の終わり方を忘れる**（実測・2026-09-27、systemd 255）——人の `stop`・終了コード 0・
+  一度も起動していない、の3つが `Result=success`・`ExecMainCode=0` の同じ記録になる。なので **起動役
+  （`log-wrapper.js`）が「どう終わったか」を `exit.json` に書き**、状態はそれで見分ける。起動役は ExecStart から
+  起こされ、置き場の `command.sh` を /bin/sh で走らせ（AI のコマンドを unit に書かない）、標準出力・標準エラーを
+  時刻つきで `log` に書く（10MB で `log.1` へ回す）。止められたら終了コード 0 で抜けて起こし直させない
+- **落ちて上限に当たった unit は `reset-failed` しないと `start` が断られる**（実測）。startService・restartService の前に挟む
+- 置き場（コンテナの中のローカル）：unit は passwd のホームの `~/.config/systemd/user/banto-<name>.service`、
+  サービスごとの置き場は `~/.local/state/banto-service/<name>/`（`command.sh`・`env`（0600）・`log`・`exit.json`・
+  `started.json`）。**Module の `HOME` は host のディスク（Module の置き場）を指すので使わない**
+- **systemd を用意できなくても MCP の口は開き**、道具を呼ばれたら理由つきで断る（規則2）
+- 試験：単体（systemd を偽物に差し替え）と、`BANTO_TEST_SYSTEMD=1` で本物の systemd を使う結合試験
+  （起こす・鍵の値が崩れずに届く・落ちて上限→起こし直し・自分で終わる・外から止める・写しを消す→作り直す・
+  止めると子孫まで止まる・作ったファイルの持ち主）。起動役の「止められた」の記録を壊すと結合試験が落ちることを確かめた
+- **HOME は Shell とまだ揃えていない**（サービスの HOME はコンテナの中のホーム）。Shell の専用ホームは Shell の
+  データ置き場の中にあり、Service から使うには、そのフォルダをコンテナに見せる順番と、`service` 役割（第三者も
+  名乗れる）に人の git の設定の写しを渡してよいかの整理が要る
+
 - 残る問い：`removeService` → 同名で違う中身を登録すると、断ったはずの上書きが2手で起きる（Publish を作るときに
   「公開中なら断る」か「参照切れを検知する」かを決める）。根を変えたときに動いているサービスの扱い
 

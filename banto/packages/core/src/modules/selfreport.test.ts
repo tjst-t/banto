@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { classifyMetaDifference, parseModuleMeta } from "@banto/module-contract";
 import { readSelfReportedMeta } from "./selfreport.js";
-import { DEFAULT_MODULE_DECLARATIONS, parseModuleDeclaration } from "./declaration.js";
+import { BUNDLED_CATALOG, DEFAULT_MODULE_DECLARATIONS, parseModuleDeclaration } from "./declaration.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const modulesDir = join(__dirname, "..", "..", "..", "modules");
@@ -53,6 +53,29 @@ for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent", 
           { stricter: [], looser: [], other: [] },
           `${name}: 同梱の宣言と自己申告が食い違っている ${JSON.stringify(diff)}`,
         );
+      },
+    );
+  });
+}
+
+// **目録の Module も同じ**（追加・2026-09-27）。目録から入れると目録の宣言がそのまま設定に写る
+for (const id of ["service"] as const) {
+  test(`目録の ${id} は自分が何者かを名乗り、目録の宣言と食い違わない`, async () => {
+    const entry = BUNDLED_CATALOG.find((e) => e.id === id)!;
+    const declaration = parseModuleDeclaration({ name: id, launch: entry.launch, meta: entry.meta }, "catalog");
+    await withModule(
+      process.execPath,
+      [join(modulesDir, id, "dist", "server.js")],
+      {
+        BANTO_PROJECT_ROOT: "/tmp",
+        BANTO_HOST_MCP_URL: "http://127.0.0.1:1/relay",
+        BANTO_HOST_MCP_TOKEN: "unused",
+        BANTO_MODULE_DATA_DIR: "/tmp/banto-selfreport-service",
+      },
+      async (client) => {
+        const reported = await readSelfReportedMeta(client);
+        assert.ok(reported, `${id} が名乗っていない`);
+        assert.deepEqual(classifyMetaDifference(declaration.meta, reported), { stricter: [], looser: [], other: [] });
       },
     );
   });
