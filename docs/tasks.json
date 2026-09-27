@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-27",
+  "updatedAt": "2026-09-27T10:36:10Z",
   "currentPhase": "2",
   "tasks": [
     {
@@ -142,7 +142,9 @@
       "phase": "4",
       "title": "戻ってきたら、最新の状況をそのまま出す（帯をやめる）",
       "status": "done",
-      "dependencies": ["turn-stream-reattach"],
+      "dependencies": [
+        "turn-stream-reattach"
+      ],
       "why": "ユーザー指摘（2026-09-26）：AI の応答に時間がかかっている間にタブを閉じて開き直す・リロードする・別アプリへ移って戻ると、「このターンは走っています（別の画面で始まったものに繋ぎ直しました）／まだ出力はありません」という帯が出るだけで、最新の状況が出ない。**直す前に測った**：①リロード後、本文に AI の発言が出ない（帯だけ）②接続が切れると吹き出しに「エラー: network error」が出たまま止まり、host でターンが終わっても画面は変わらない ③別の画面や API で始まったターンは、開いている画面に出ない（`turn.started` は鍵を取った時点で出るが、流し直しの口は Module を起こし終えて走り始めるまで idle と答えていた）④答えた判断待ちが、流し直すと未回答に見えうる。",
       "doneWhen": "リロード・接続断・黙って止まった接続・他所で始まったターン・答えたあとの開き直しのどれでも、走っているターンが自分で送ったときと同じ描き方で本文に流れ、最後まで出て、AI の発言は1つだけ・エラーも帯も出ない（E2E `specs/turn-reattach.spec.ts`、接続断は画面と host の間の中継で本当に切る）。",
       "refs": [
@@ -2347,6 +2349,22 @@
       "why": "中継（claude-login-proxy.ts）はサブエージェントのために subagent-settings に置いた。2026-09-27 に Shell の runCommand からも使えるようにすると決めた（claudeLogin）ので、サブエージェント専用の Module が持つのは名前と中身が合わない。ユーザー判断：当面は今の場所のまま、持ち主は今後の課題。候補：独立した「Claude ログイン」の Module に移す／Vault の中継の仕組み（docs/notes/2026-09-27-vault-credential-proxy.md）が入るならその出どころの1つにする。",
       "notes": "docs/notes/2026-09-27-vault-credential-proxy.md",
       "doneWhen": "持ち主が決まり、Shell とサブエージェントがその持ち主の口を呼ぶ形になっている"
+    },
+    {
+      "id": "container-mount-guard-and-restart",
+      "title": "Project のコンテナのマウントを2点直す（危ない根を断る・付け直したら起こし直す）",
+      "status": "backlog",
+      "why": "banto で banto を開発する Project で、banto のコードの読み取り専用マウントが Project の根の読み書き可マウントに隠れて効いていなかった（2026-09-27 実測。起動元をリリース用の clone に移して解消済みだが、コードに防ぎが無い）。また起動元を切り替えたあと、コンテナを起こし直さないため古い ro マウントが残った。",
+      "notes": "docs/notes/2026-09-27-stale-ro-mount.md（外部 AI への依頼書。これだけで作業に入れる）",
+      "doneWhen": "①Project の根が banto のコード・データ・設定の置き場を含むとコンテナを作らず理由を受信箱に出す ②banto か project の disk デバイスを付け直したらコンテナを起こし直す——単体・統合テストが通り、直したコードを戻すと新しいテストが落ちる。v4-security.md §2 を更新"
+    },
+    {
+      "id": "fork-inline-fullscreen",
+      "title": "Fork の会話の中の Module 画面を「大きく表示」できない",
+      "status": "backlog",
+      "why": "2026-09-27、Fork 2 で FileSystem の showFile（inline）の「大きく表示」を押すと「大きく表示できませんでした（いまは inline）」と出た（ユーザーの画面で確認）。コードを読んだ推測（未確認）：project-panels.tsx の renderFork が ThreadPanel に onOpenCanvas を渡していない（Base Thread の ThreadPanel だけが渡している）。そのため CanvasOpenerProvider が null になり、inline-module-view.tsx の onRequestFullscreen が undefined、module-canvas.tsx の onrequestdisplaymode が「inline のまま」と答えている。Fork を右に開いているとき、Canvas をどこに出すか（Fork の上に重ねるか・Base 側か）も決める必要がある。",
+      "notes": "apps/frontend/app/(shell)/p/[projectId]/project-panels.tsx（renderFork）・components/banto/thread/inline-module-view.tsx・components/banto/canvas/module-canvas.tsx・packages/modules/filesystem/src/ui/browser.ts（askFullscreen）",
+      "doneWhen": "Fork の会話の inline の画面から「大きく表示」を押すと fullscreen で開く。E2E で Fork から開けることを見る（直したコードを戻すと落ちる）"
     }
   ],
   "phase1": {
