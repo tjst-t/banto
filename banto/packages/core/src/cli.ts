@@ -82,6 +82,13 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = join(__dirname, "..", "..", "..");
 
+/** Module の置き場の中の、鍵の窓口用のフォルダ（0700）。Unix ソケットのパスは短くないと作れないので名前は短く */
+function ensureSocketDir(moduleDataDir: string): string {
+  const dir = join(moduleDataDir, "s");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 /** その Module が名乗っている tool・resource（可視性の検査に渡す形）。 */
 async function listVisibilityEntries(
   client: Client,
@@ -834,6 +841,9 @@ async function main(): Promise<void> {
       meta: declaration.meta,
       // 中では AI がこの合言葉も読める——値を返す口への承認を、何を指していたかごとに分ける
       ...(container ? { inContainer: true } : {}),
+      // **鍵の窓口を立てる場所**（追加・2026-09-27）。Module の置き場はコンテナに同じパスで見せているので、
+      // その中なら host の Vault が立てた ssh-agent に中から届く（host の /tmp は中から見えない）
+      ...(container ? { socketDir: ensureSocketDir(join(bootstrap.dataDir, "modules", connName)) } : {}),
     });
     const context: LaunchContext = {
       ...launchContextBase,

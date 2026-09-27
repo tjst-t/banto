@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHmac } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -250,6 +250,30 @@ test("SSH 鍵も generateSecret で作れる——公開鍵だけが返り、秘
         }),
       /には既に別の秘密があります/,
     );
+  });
+});
+
+test("startSshAgent：host が刻んだ置き場があれば、窓口をそこに立てる（コンテナの中の Shell から届くように）", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: "generateSecret", arguments: { name: "deploy-id", kind: "ssh-identity" } });
+    const socketDir = await mkdtemp(join(tmpdir(), "banto-sockdir-"));
+    try {
+      const agent = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "startSshAgent",
+            arguments: { identity: "deploy-id" },
+            _meta: { ...ADMIN, "dev.banto/socketDir": socketDir },
+          }),
+        ),
+      );
+      assert.equal(dirname(agent.socketPath), socketDir);
+      // 刻印が無ければ今までどおり一時フォルダ
+      const plain = JSON.parse(textOf(await client.callTool({ name: "startSshAgent", arguments: { identity: "deploy-id" } })));
+      assert.match(plain.socketPath, /banto-ssh-agent/);
+    } finally {
+      await rm(socketDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -24,7 +24,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { VaultBackend } from "@banto/vault-kit";
+import { agentSocketPath, type VaultBackend } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
 
 const execFileP = promisify(execFile);
@@ -164,15 +164,17 @@ export class InfisicalBackend implements VaultBackend {
    * その鍵を持った ssh-agent の socket を返す。**同じ鍵で増やさない・
    * 置き去りにしない**——組み込み Vault と同じ規律（2026-09-10）。
    */
-  async loadIntoAgent(privateKeyRef: string): Promise<{ socketPath: string }> {
-    const running = this.agents.get(privateKeyRef);
+  async loadIntoAgent(privateKeyRef: string, opts: { socketDir?: string } = {}): Promise<{ socketPath: string }> {
+    // **置き場ごとに1つ**——同じ鍵でも、コンテナが違えば見える窓口が要る（追加・2026-09-27）
+    const agentKey = opts.socketDir ? `${privateKeyRef}\0${opts.socketDir}` : privateKeyRef;
+    const running = this.agents.get(agentKey);
     if (running && isAlive(running.pid) && existsSync(running.socketPath)) {
       return { socketPath: running.socketPath };
     }
-    if (running) this.agents.delete(privateKeyRef);
+    if (running) this.agents.delete(agentKey);
 
     const privateKey = await this.getSecret(privateKeyRef);
-    const socketPath = join(tmpdir(), `banto-ssh-agent-${process.pid}-${Date.now()}.sock`);
+    const socketPath = agentSocketPath(opts.socketDir, `banto-ssh-agent-${process.pid}-${Date.now()}.sock`);
     let agentPid = 0;
 
     await new Promise<void>((resolve, reject) => {
@@ -199,7 +201,7 @@ export class InfisicalBackend implements VaultBackend {
       await rm(dir, { recursive: true, force: true });
     }
 
-    this.agents.set(privateKeyRef, { socketPath, pid: agentPid });
+    this.agents.set(agentKey, { socketPath, pid: agentPid });
     this.registerAgentCleanup();
     return { socketPath };
   }

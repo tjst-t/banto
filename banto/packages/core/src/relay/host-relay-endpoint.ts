@@ -16,6 +16,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import {
   auditArgsOf,
   CALLER_META_KEY,
+  SOCKET_DIR_META_KEY,
   isValueFree,
   visibilityOf,
   type BantoModuleMeta,
@@ -35,6 +36,11 @@ export interface CallerIdentity {
    * ——値を返す口への承認を、何を指していたかごとに分ける（`RelayCallDescriptor.scope`）
    */
   inContainer?: boolean;
+  /**
+   * **コンテナの中からも見える、host 側の窓口用フォルダ**（追加・2026-09-27）。呼び出しに
+   * `dev.banto/socketDir` として刻む——Vault が鍵の窓口をここに立てる（`SOCKET_DIR_META_KEY`）
+   */
+  socketDir?: string;
 }
 
 export interface RelayAuditRecord {
@@ -534,6 +540,9 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         : origin === "canvas"
           ? { [CALLER_META_KEY]: { admin: true } }
           : {};
+
+    // コンテナの中の呼び出し元には、窓口を立てる場所も刻む（呼び出し元の申告は使わない）
+    if (identity.socketDir) callerMeta[SOCKET_DIR_META_KEY] = identity.socketDir;
 
     try {
       if (request.params.name === "relayCallTool") {

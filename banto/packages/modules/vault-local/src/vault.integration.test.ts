@@ -4,12 +4,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { SopsBackend } from "./sops-backend.js";
 import { LocalFileAliasStore } from "@banto/vault-kit";
+
+const execFileP = promisify(execFile);
 
 async function withDir(fn: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "banto-vault-it-"));
@@ -166,6 +170,38 @@ test("同じグループへ同時に書いても、どちらの秘密も消え�
     assert.equal(await backend.getSecret("g1/first"), "value-1");
     assert.equal(await backend.getSecret("g1/second"), "value-2");
     assert.equal(await backend.getSecret("g1/third"), "value-3");
+  });
+});
+
+test("刻まれた置き場があれば、窓口をそこに立てる。置き場ごとに別の窓口、同じ置き場なら使い回す", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    const { privateKeyRef } = await backend.generateKeypair("ssh", "ssh-identities/e2e-key");
+    const a = join(dir, "a");
+    const b = join(dir, "b");
+    await mkdir(a, { mode: 0o700 });
+    await mkdir(b, { mode: 0o700 });
+
+    const inA = await backend.loadIntoAgent(privateKeyRef, { socketDir: a });
+    const inA2 = await backend.loadIntoAgent(privateKeyRef, { socketDir: a });
+    const inB = await backend.loadIntoAgent(privateKeyRef, { socketDir: b });
+    assert.equal(dirname(inA.socketPath), a);
+    assert.equal(dirname(inB.socketPath), b);
+    assert.equal(inA2.socketPath, inA.socketPath, "同じ置き場なら使い回す");
+    // 鍵が本当に入っている（ssh-add -l が鍵を1つ返す）
+    const listed = await execFileP("ssh-add", ["-l"], { env: { ...process.env, SSH_AUTH_SOCK: inB.socketPath } });
+    assert.match(listed.stdout, /ED25519/);
+    await backend.stopAgents();
+  });
+});
+
+test("窓口のパスが長すぎたら、黙って立てずに理由を言って断る", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    const { privateKeyRef } = await backend.generateKeypair("ssh", "ssh-identities/e2e-key");
+    await assert.rejects(backend.loadIntoAgent(privateKeyRef, { socketDir: `/${"x".repeat(120)}` }), /長すぎて/);
   });
 });
 

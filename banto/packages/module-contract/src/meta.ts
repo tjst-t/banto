@@ -99,6 +99,23 @@ export const CALLER_META_KEY = `${VENDOR_PREFIX}/caller`;
  */
 export type CallerStamp = { project: string } | { admin: true } | { instance: true };
 
+/**
+ * **コンテナの中の呼び出し元にも見える、host 側のフォルダ**（追加・2026-09-27）。host だけが刻む。
+ *
+ * Vault が鍵の窓口（ssh-agent）を host の `/tmp` に立てると、Project のコンテナの中の Shell からは
+ * 見えない（2026-09-25 にコンテナへ移してから `sshIdentity` が使えなくなっていた）。host の Unix ソケットは、
+ * マウントしたフォルダ越しならコンテナの中の同じ uid から届く（実測・2026-09-27）。そこで host が
+ * 「呼び出し元の Module の置き場の中の、窓口用のフォルダ」を刻み、Vault はそこに窓口を立てる。
+ * **呼び出し元の申告ではない**——中継は呼び出し元の `_meta` を使わずに刻印を組み立てる
+ */
+export const SOCKET_DIR_META_KEY = `${VENDOR_PREFIX}/socketDir`;
+
+/** 刻印からフォルダを読む。絶対パスでなければ `undefined` */
+export function socketDirOf(meta: Record<string, unknown> | undefined): string | undefined {
+  const raw = meta?.[SOCKET_DIR_META_KEY];
+  return typeof raw === "string" && raw.startsWith("/") ? raw : undefined;
+}
+
 /** 刻印を読む。**形が違えば `undefined`**——「たぶんこう」で通さない。 */
 export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp | undefined {
   const raw = meta?.[CALLER_META_KEY];

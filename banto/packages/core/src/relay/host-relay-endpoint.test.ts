@@ -752,3 +752,47 @@ test("Project ごとの Module は同じ Project の中からしか呼べない�
     close();
   }
 });
+
+test("コンテナの中の呼び出し元には、鍵の窓口を立てる場所を刻む——呼び出し元が書いた刻印は使わない", async () => {
+  // 宛先が受け取った _meta を覚える Vault の代わり
+  const seen: Record<string, unknown>[] = [];
+  const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "startSshAgent", inputSchema: { type: "object", properties: {} } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push((req.params._meta ?? {}) as Record<string, unknown>);
+    return { content: [{ type: "text", text: "{}" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const vault = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), vault.connect(c)]);
+
+  const registry = new RelayRegistry();
+  registry.registerModule({ name: "vault", client: vault, meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault") });
+  const shellMeta = bundledMeta(
+    { satisfies: ["shell"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" },
+    "shell",
+  );
+  const inside = registry.issueToken({ moduleName: "shell", meta: shellMeta, inContainer: true, socketDir: "/data/modules/shell-p1/s" });
+  const onHost = registry.issueToken({ moduleName: "shell", connName: "shell-host", meta: shellMeta });
+
+  const { url, close } = await startTestServer(registry);
+  try {
+    for (const token of [inside, onHost]) {
+      const client = new Client({ name: "shell-module", version: "0.0.0" });
+      await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+      await client.callTool({
+        name: "relayCallTool",
+        arguments: { targetModule: "vault", name: "startSshAgent", arguments: {} },
+        // 呼び出し元が自分で刻印を書いても、中継はそれを宛先に渡さない
+        _meta: { "dev.banto/socketDir": "/etc" },
+      });
+      await client.close();
+    }
+    assert.equal(seen[0]?.["dev.banto/socketDir"], "/data/modules/shell-p1/s");
+    assert.equal(seen[1]?.["dev.banto/socketDir"], undefined, "host で動く呼び出し元には刻まない（偽の刻印も渡さない）");
+  } finally {
+    close();
+  }
+});

@@ -24,6 +24,7 @@ import {
 import {
   AUDIT_ARGS_META_KEY,
   callerOf,
+  socketDirOf,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
   MODULE_META_KEY,
@@ -688,7 +689,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           throw new Error(`alias "${identity}" は ssh-identity ではありません（${meta.kind}）`);
         }
         assertUsable(meta, identity, callMeta);
-        const { socketPath } = await backend.loadIntoAgent(meta.backendPath);
+        // 窓口を立てる場所は host の刻印だけから取る（コンテナの中の呼び出し元から見えるフォルダ）
+        const socketDir = socketDirOf(callMeta);
+        const { socketPath } = await backend.loadIntoAgent(meta.backendPath, socketDir ? { socketDir } : undefined);
         return { content: [{ type: "text", text: JSON.stringify({ socketPath }) }] };
       }
       case "verify": {
