@@ -2365,6 +2365,13 @@
       "why": "2026-09-27、Fork 2 で FileSystem の showFile（inline）の「大きく表示」を押すと「大きく表示できませんでした（いまは inline）」と出た（ユーザーの画面で確認）。コードを読んだ推測（未確認）：project-panels.tsx の renderFork が ThreadPanel に onOpenCanvas を渡していない（Base Thread の ThreadPanel だけが渡している）。そのため CanvasOpenerProvider が null になり、inline-module-view.tsx の onRequestFullscreen が undefined、module-canvas.tsx の onrequestdisplaymode が「inline のまま」と答えている。**Fork を開いているときの Canvas の出し方は mock で定義済み**（ユーザー、2026-09-27）——mock/components/banto/shell/panel-stack.tsx の ThreeLayerStack：Base（左の帯）→ Fork → Canvas の3枚の紙を重ね、Canvas は Fork の上の右側に乗る。mock/components/banto/shell/use-panel-stack.ts の open({canvas}) は fork の指定を消さない（Fork を開いたまま Canvas が乗る）。本物の apps/frontend にも ThreeLayerStack は既に写してある（差分は Escape の扱いと testid だけ）ので、足りないのは Fork の ThreadPanel に onOpenCanvas を渡す配線の見込み。なお mock の renderFork も onOpenCanvas を渡していない——参考にするのは配線ではなく重ね方。",
       "notes": "apps/frontend/app/(shell)/p/[projectId]/project-panels.tsx（renderFork）・components/banto/thread/inline-module-view.tsx・components/banto/canvas/module-canvas.tsx・packages/modules/filesystem/src/ui/browser.ts（askFullscreen）・参考：mock/components/banto/shell/panel-stack.tsx（ThreeLayerStack）・mock/components/banto/shell/use-panel-stack.ts（open）",
       "doneWhen": "Fork の会話の inline の画面から「大きく表示」を押すと、Fork を開いたまま Canvas が mock と同じ3枚重ね（Base の帯・Fork・Canvas）で開く。Escape で Canvas だけが閉じ Fork が残る。E2E で見る（直したコードを戻すと落ちる）"
+    },
+    {
+      "id": "ai-attach-module",
+      "title": "AI が banto の目録から Module を選び、人の承認でその Project につけられるようにする",
+      "status": "backlog",
+      "why": "いまは Module をつけるのは人だけ（Project 設定の「Module を追加」）。仕様では AI がつけてよい（承認ゲートを通す、v4-architecture.md item 20）と決めてあるが、道具が無い。2026-09-27 にユーザーと形を決めた：(1) AI につけられる Module の一覧（名前と何ができるか）を見せる、(2) AI が理由を添えて頼む、(3) 画面に「どの Module をどの Project につけるか」を banto が組み立てて出し、人が押す、(4) つけた Module の道具を AI が使える。AI に見せる一覧は banto の目録（同梱と、banto が中身を確かめて載せたもの）だけ——誰でも公開できる外部の Module は今までどおり人が自分で足す。",
+      "doneWhen": "AI が目録を読み、Service のような目録の Module を頼むと、受信箱の承認を経てその Project につき、その Module の道具が AI から呼べる（同じ会話ですぐ使えるか、次の発言からかも確かめて記録する）。外部の Module は AI から頼めない"
     }
   ],
   "phase1": {
