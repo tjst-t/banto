@@ -3406,8 +3406,9 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
      1つになり、状態を持つ Module（`Environment`）が2つの実行環境を
      持つ問題も、2つ目のプロセスが無いので発生しない
 10. 具体的な Module 一覧・各 Module の設計 → **`docs/specs/v4-modules.md` に分離した。**
-   そちらに残る大きな未決は、`Memory` を core のインターフェースにするか・Shell を Environment の
-   中でだけ走らせるか・Backlog と Factory の順序
+   そちらに残る大きな未決は、`Memory` を core のインターフェースにするか・Backlog と Factory の順序
+   （~~Shell を Environment の中でだけ走らせるか~~ は、Project ごとのコンテナで解消し、Environment 自体も
+   2026-09-27 に廃止——`v4-modules.md` §2.1）
 11. **セキュリティ境界の設計**——当初の列挙は**決定済み**（§10.2、2026-09-02〜03）：
    ~~強制の層をどこに置くか~~（Project ごとのコンテナ——2026-09-25 に Landlock から変更、`docs/specs/v4-security.md`）・~~Project の根を
    誰が保持するか~~（Module 起動時に確定・Project 単位でプロセスを分ける）・

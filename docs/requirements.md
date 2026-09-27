@@ -203,8 +203,9 @@ Claude Agent SDK の `createSdkMcpServer` により、**MCP の契約のまま i
 | ファイル | | **0/1** |
 | Vault | 秘匿情報を管理し、必要に応じて注入する | **0/1**（2026-09-02、格上げ） |
 | **Factory** | **依頼を耐久ワークフローとして進める**（要件 B） | **3**（2026-09-11——core ではなく Module として作る） |
-| Environment | 検証用環境を立てる | 2 |
-| 公開 | Environment を外部へ（Caddy / port / Cloudflared 等） | 2 |
+| ~~Environment~~ | ~~検証用環境を立てる~~——**廃止**（2026-09-27）。場所は Project のコンテナが担い、残りを Service と公開に分けた（`docs/specs/v4-modules.md` §4） | — |
+| Service | 動き続けるもの（開発サーバ等）を起こしておく | 2 |
+| 公開（Publish） | Service のポートを外部へ（Caddy / port / Cloudflared 等） | 2 |
 | WorkerPool | サブエージェントを起動する | 2 |
 | Browser | **AI と人が同時に使える** | 2 |
 | Backlog | 今後実装するものやバグを記憶する | 2 |
@@ -436,7 +437,7 @@ Repo を通る。Vault が生成すれば秘密鍵は Vault から一度も出�
 |---|---|---|
 | **0** | 会話・Memory / Fork・Event Store・オーバービュー・観測 | **F2 の観測が実際に走り、文脈サイズと圧縮の発火回数を数値で返す。** 判断待ちが1画面に出る |
 | **1** | Module 契約の確定と vault / shell / ファイル ＋ **MCP Apps の4要素**（inline・fullscreen・設定画面・launcher） | **契約が確定し、その契約で3つ書けた。** ツールを足してもキャッシュが落ちない（数値で確認）。**TypeScript でない Module が1本、実際に動いている**。**4要素が実ブラウザで動く** |
-| **2** | **標準 Module を揃える**（Repo・Environment・公開・Browser・Backlog・**Factory**…）。**Project ごとに、繋ぐ Module を人が選べる**ようにするのが入口 | **毎日の開発が banto の中だけで回る。** 実際に使っている Project で、外の道具に出ずに1件やり切れる。**Module を1本足すのに core を触らない**（宣言だけで繋がる——Phase 1 で実測した性質が、本数が増えても保たれている） |
+| **2** | **標準 Module を揃える**（Repo・Service・公開・Browser・Backlog・**Factory**…）。**Project ごとに、繋ぐ Module を人が選べる**ようにするのが入口 | **毎日の開発が banto の中だけで回る。** 実際に使っている Project で、外の道具に出ずに1件やり切れる。**Module を1本足すのに core を触らない**（宣言だけで繋がる——Phase 1 で実測した性質が、本数が増えても保たれている） |
 | **2.5** | **Module GUI の契約**の残り（C14 等） | **AI がファイルを更新し、その資源を指し、人がそれを画面で開ける。** 既存 Module 1つで実際に載る<br>※ C1・C3・C4（inline・fullscreen・設定画面・launcher）は **Phase 1 へ前倒した**（決定・2026-09-06） |
 | **3** | **Factory Module の作り込み**（要件 B） | 3依頼を同時に投げて3つとも main に入る。落として再起動しても続く |
 | **4** | **画面の作り込み**（E1〜E11） | 狭い画面で崩れない。判断待ち・Fork・設定・Module の Canvas が画面から扱える。**字の段が決めた数を超えない（本物のブラウザで数える）** |
