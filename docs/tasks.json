@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-27T10:36:10Z",
+  "updatedAt": "2026-09-27",
   "currentPhase": "2",
   "tasks": [
     {
