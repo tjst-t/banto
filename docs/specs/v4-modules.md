@@ -1505,14 +1505,98 @@ Incus のブリッジ上のアドレスしか持たず、host の proxy デバ�
   （Caddy なら banto の合言葉や Basic 認証、cloudflared なら Cloudflare Access）。**実装が自分の設定項目を名乗り**、
   窓口はそれを承認画面にそのまま出して実装に渡すだけ（窓口は中身を解釈しない）
 
+#### 形と承認の置き場（決定・2026-09-27、実装者が詰めた。**ユーザーの確認待ち**の印 ※ をつけた）
+
+- **窓口（`publish-directory`）も実装（`publish-caddy`）も banto 全体の Module で、banto 本体で動く**
+  （`v4-security.md` §1「AI に host を変えさせたいときの形」の②）。承認の画面を出すコードがコンテナの中にあると、
+  中で root の AI がそれを偽れる。どちらも**目録**に置き、要る人が「Module を追加」から入れる（Service と同じ）
+- **承認は `import_skill` と同じ形**（アーキ仕様 §5.7）：`publishService` は**公開しない**——Service の登録と待ち受けを
+  確かめて「承認の頼み」を置き、会話にその tool の画面（Canvas）を出すだけ。人が画面で「公開する」を押したときだけ
+  実装に届く。**新しい承認の仕組みは作っていない**。使わなかったもの：tool 呼び出しの承認（`canUseTool`）は
+  `permissionMode` で飛ばせるうえ tool 名と引数しか出せない／中継の承認は初回だけで「毎回」にならない／
+  Module からの elicitation は答えが Module に届かない（`apps/frontend/lib/backend/adapter.ts`）
+- **結果は返信用の札で届く**（アーキ仕様 §4.2）。`publishService` は `dev.banto/deliversLater` を名乗り、人が押したら
+  呼び出し元の Thread に「公開しました：URL」／「断られました」を届ける（AI が起きる）
+- **道を張る口（実装の `publishRoute`）は人の刻印（`{admin: true}`）があるときだけ通す**——画面から押した呼び出しにしか
+  付かない刻印なので、窓口がどう呼ばれても AI のターンからは道が張れない（Vault の「紐付けを変える口」と同じ線）。
+  窓口の承認の口（`get_publish_request`・`approve_publish`・`decline_publish`）も同じ刻印を確かめる
+- **やめる（`unpublishService`）に承認は要らない**——狭める向き。その Project の公開だけ触れる
+- **公開したものの一覧を窓口は持たない**（規則3）。`listPublished` は各実装に毎回聞いて組む。窓口が持つのは
+  承認待ちの頼みと、押した後の結果だけ（24時間。**設定の値は持たない**）
+- **窓口が Service を呼ぶ**：Service は Project ごとの Module なので、banto 全体の Module からは本来呼べない。
+  **その Project のための呼び出しを処理している間だけ呼べる**ようにした（`v4-security.md` §3「Project をまたぐ
+  Module の呼び出し」）※
+- **「待ち受けているか」は2段で見る**：窓口が Service の `listening`（コンテナの中の `ss`）を見て断り、実装が道を張る前に
+  **host から TCP で届くか**を確かめる。`ss` は 127.0.0.1 だけで待っているもの（Vite の既定）も数えるが、それは
+  コンテナの外（Caddy）から届かない
+
+#### 実装の口（`publish` 役割。Vault の D節に当たるもの。決定・2026-09-27）
+
+AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**実装を足すのに窓口を直さない**のはこの口が揃っているから。
+
+| tool | 引数 | 返すもの | 誰から |
+|---|---|---|---|
+| `describePublishMethod` | — | 名前・届く範囲・使えるか（使えない理由）・**公開ごとの設定項目（JSON Schema）** | 誰でも（値を返さない） |
+| `planPublish` | `projectId`・`service`・`port`・`config` | URL・届く範囲（**何も変えない**） | 人の刻印か、その Project |
+| `publishRoute` | 同上（`config` は人が画面で入れたもの） | URL・届く範囲 | **人の刻印だけ** |
+| `unpublishRoute` | `projectId`・`service`・`port` | やめたか・URL | 人の刻印か、その Project |
+| `listRoutes` | `projectId`（任意） | 公開と状態 | 人の刻印（全部）か、その Project（その分だけ） |
+
+- **設定項目は JSON Schema の平たい形**（MCP の elicitation の `requestedSchema` と同じ語彙：`enum`＋`enumNames`・
+  文字列・数・真偽）。**`writeOnly: true` の文字列は伏せ字の欄**にし、送ったら画面から消す（JSON Schema の
+  「書くだけで読み返されない」の印）。窓口は項目を解釈せず、画面に出して入れた値を**そのまま**渡す
+- **届く範囲は `machine`（この機械だけ）／`lan`／`internet`** の3値で実装が名乗る。承認の画面の一番上に出す
+- **公開の単位は（Project, サービス名, ポート）**。同じものの二重の公開は断る（変えるならやめてから）
+
+#### Caddy のサブドメイン（`publish-caddy`、決定・2026-09-27）
+
+- **host の Caddy の admin API にルートを足す**（`PUT …/routes/0`——Caddyfile の `*.<ドメイン>` のようなまとめた
+  ルートより前に差し込む）。ルートには `@id`（`banto-publish-<持ち主の印>-<対象の印>`）を付け、持ち主はこの Module の
+  置き場から決まる——同じ Caddy を別の banto が使っても互いのルートに触らない
+- **URL は `https://<サブドメイン>.<基のドメイン>`**。サブドメインの既定は `<サービス名>-<Project の id の先頭8文字>`
+  （Project の id は変わらない。名前は変わりうる）。人が承認の画面で変えられる ※
+- **マスターは実装、Caddy のルートは写し**（Service の「systemd の定義は写し」と同じ）。起きたとき・15 秒ごと・各操作の
+  前に突き合わせる：消えたルートを戻す（Caddyfile から読み込み直すと API で足したものは消えうる）・行き先の
+  アドレスが変わったら直す・**コンテナが止まって行き先が分からなければ中継をやめて 503 を返す**（前のアドレスを
+  残すと、それを DHCP で受け取った別の Project のコンテナへ届けてしまう）・自分の印の余りを消す。変わっていなければ
+  書かない（Caddy は書くたびに設定を読み直す）
+- **公開先のアドレスは host（core）が引く**：中継の `relayProjectAddress`（`projectId`→コンテナの NIC の global な IPv4、
+  毎回 Incus に聞く）。**引けるのは banto 本体で動く同梱の `publish` 実装だけ**。コンテナ自身の申告は使わない
+  （中の AI が別の Project のアドレスを名乗れる）
+- **前に置く認証**：Basic 認証（既定）か無し。Basic 認証のパスワードは bcrypt（強さ 10、`hash_cache` つき——Caddy は
+  リクエストごとに照合する）にしてから持ち、Caddy にも base64 で包んだハッシュだけを渡す。**生のパスワードは返り値・
+  記録・Caddy に送るものに出ない**（試験で確かめている）
+- **設定**（banto 全体の設定画面）：admin API の場所（既定は Caddy の既定の `http://127.0.0.1:2019`。`unix:/…` も可）・
+  基のドメイン（**決めていなければ公開しない**）・ルートを足す server（空なら 443 で待ち受けている1つ。2つ以上なら
+  推測せず断る）・届く範囲（**既定は一番広い「インターネット」**——狭く見せるほうが危ない）
+
+**実装（2026-09-27）**：`banto/packages/modules/publish-directory/`・`banto/packages/modules/publish-caddy/`。
+単体試験は admin API を HTTP で真似る偽の Caddy と偽の Service で行い、壊して落ちることを確かめた。
+**本物の Caddy・本物の Incus・実ブラウザでは、まだ一度も動かしていない**（規則13——画面を「できた」とは言わない）。
+
 **まだ決めていないこと**：
 
-- 実装が設定項目を名乗る形（JSON Schema を名乗らせるのが素直——MCP の elicitation と同じ語彙）と、既定値を人が
-  実装の設定画面で決めておけるか
-- **公開先のアドレスの解決**——コンテナのアドレスは DHCP で配られ変わりうる。実装は host で動かし、「Project と
-  ポート」を受け取って host（core）が解決する形を候補にしている
-- 公開中のサービスが `removeService`・停止されたとき（Service の「残る問い」と同じ）
-- 実装の内部インターフェース（Vault の D節に当たるもの）
+- **host の Caddy の実物**（ユーザーに確かめる）：admin API の場所と有効か／Caddyfile から読み込み直すと API で足した
+  ルートが消えるか（消えても突き合わせで戻すが、15 秒は届かない）／ワイルドカード証明書がサブドメインに使われるか
+  （Caddy が個別の証明書を取りに行かないか。版と `auto_https` の設定しだい）／`*.<ドメイン>` の DNS／Caddy の版
+  （`hash_cache` と base64 のハッシュを受けるか）／banto が書き換えてよい範囲
+- **「banto の合言葉で守る」**：banto の画面の合言葉はブラウザの localStorage にあり、Cookie ではない——サブドメインへの
+  ブラウザの遷移には載らないので、Caddy の `forward_auth` だけでは守れない。案：banto にログインの口（合言葉→
+  親ドメインの Cookie）と確かめの口を足し、`forward_auth` で見る。**設定項目に出していない**（繋がっていないものを
+  見せない、規則13）
+- **サブドメインの決め方**：`<サービス>-<id の先頭8文字>` でよいか、Project の名前を使うか（名前を使うなら、変わったときに
+  URL をどうするか）
+- 実装が名乗った設定の**既定値を人が設定画面で決めておけるか**（毎回パスワードを打つのは重い）
+- **公開中のサービスが `removeService`・停止されたとき**——いまは道は残り、状態が not-listening になるだけ。
+  `removeService` → 同名で別の中身、で別のものが同じ URL に出る（Service の「残る問い」と同じ）
+- **アドレスが変わってから直すまでの間**（最大 15 秒）は古い行き先を指しうる。host がコンテナの起動を知らせる形にするか
+- 第三者の Module が `publish-directory` を名乗れる（骨格の役割・全体で1本の役割にしていない）。`publish` の実装を呼べる
+  第三者 Module の画面から押すと人の刻印が付く——いまの柵は中継の初回承認だけ
+- 窓口の最初の `listServices` の呼び出しに、中継の初回承認が出る（Service の `listServices` が「値を返さない口」を
+  名乗っていないため）。名乗らせるかは Service 側の判断
+- 人の画面（公開の一覧・やめる）——いまは AI の `listPublished` と会話の中の承認の画面だけ
+- **承認の頼みは受信箱に出ない**——会話の中の画面だけ（`import_skill` と同じ）。`v4-security.md` §1 の②は
+  「受信箱で承認する（Publish がこの形）」と書いており、**食い違っている**（規則8——どちらに寄せるかはユーザーが決める）
 
 ## 4.9 Module の宣言（決定・2026-09-06、Phase 1）
 
