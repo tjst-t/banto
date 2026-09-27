@@ -93,10 +93,13 @@ body[data-mode="fullscreen"] #app { height: 100vh; }
 .grow { flex: 1; }
 .back { padding: 0 8px 0 4px; }
 .detail-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 20px; }
+/* 中身の各節は縮ませない——縮めると、経過が長いときに「頼んだ内容」が1行未満に潰れる（2026-09-27）。
+   はみ出た分は detail-body 自身が縦に流す */
+.detail-body > * { flex-shrink: 0; }
 .section-label { margin: 8px 0 0; font-size: var(--t-xs); font-weight: 500; color: var(--ink-3); }
 .section-label:first-child { margin-top: 0; }
 .prompt {
-  margin: 0; padding: 8px 12px; max-height: 16em; overflow: auto;
+  margin: 0; padding: 8px 12px; max-height: min(16em, 40vh); overflow: auto;
   border-left: 2px solid var(--line); border-radius: 0 var(--r-sm) var(--r-sm) 0; background: var(--bg-2);
   font-size: var(--t-md); line-height: 1.7; white-space: pre-wrap; word-break: break-word;
 }
