@@ -158,8 +158,10 @@ export class CaddyPublisher {
       try {
         await this.deps.store.setRoutes([...records, rec]);
       } catch (err) {
-        // 覚えられなかった公開を Caddy に残さない（マスターに無い道は、誰も片付けない）
-        await caddy.delete(`/id/${id}`).catch(() => undefined);
+        // 覚えられなかった公開を Caddy に残さない。消せなければ、自分の印の余りとして次の突き合わせで消える
+        await deleteRoute(caddy, id).catch((e: unknown) =>
+          console.error(`[publish-caddy] 覚えられなかった公開のルートを消せませんでした（次の突き合わせで消します）：${errText(e)}`),
+        );
         throw err;
       }
       return { url: urlOf(hostname), hostname, reach: s.reach };
@@ -272,7 +274,10 @@ export class CaddyPublisher {
     for (const r of routes) {
       const id = String(r["@id"] ?? "");
       if (id.startsWith(this.prefix) && !wanted.has(id)) {
-        await caddy.delete(`/id/${id}`).catch(() => undefined);
+        // 消せなくても一覧の他の行は返す。黙っては捨てない（次の突き合わせでもう一度消す）
+        await deleteRoute(caddy, id).catch((e: unknown) =>
+          console.error(`[publish-caddy] やめた公開のルート ${id} を消せませんでした：${errText(e)}`),
+        );
       }
     }
     return out;
