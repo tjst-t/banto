@@ -59,7 +59,7 @@ for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent", 
 }
 
 // **目録の Module も同じ**（追加・2026-09-27）。目録から入れると目録の宣言がそのまま設定に写る
-for (const id of ["service"] as const) {
+for (const id of ["service", "publish-directory", "publish-caddy"] as const) {
   test(`目録の ${id} は自分が何者かを名乗り、目録の宣言と食い違わない`, async () => {
     const entry = BUNDLED_CATALOG.find((e) => e.id === id)!;
     const declaration = parseModuleDeclaration({ name: id, launch: entry.launch, meta: entry.meta }, "catalog");
@@ -70,7 +70,8 @@ for (const id of ["service"] as const) {
         BANTO_PROJECT_ROOT: "/tmp",
         BANTO_HOST_MCP_URL: "http://127.0.0.1:1/relay",
         BANTO_HOST_MCP_TOKEN: "unused",
-        BANTO_MODULE_DATA_DIR: "/tmp/banto-selfreport-service",
+        // Module ごとに分ける（publish-caddy は設定が無ければ Caddy に触らない——置き場を共有すると他の試験の設定を読む）
+        BANTO_MODULE_DATA_DIR: `/tmp/banto-selfreport-${id}`,
         // 名乗りだけを読む——本物の systemd を触らない（触ると、その機械の写しを片付けてしまう）
         BANTO_SERVICE_NO_SYSTEMD: "1",
       },

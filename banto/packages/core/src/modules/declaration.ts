@@ -452,6 +452,59 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       confinement: { kind: "landlock", root: "project", profile: "exec" },
     },
   },
+  {
+    // **動いているものに届く URL を生やす窓口**（v4-modules.md §4.3、2026-09-27）。AI の道具（publishService・
+    // unpublishService・listPublished）と承認の画面を持ち、道を張るのは `publish` 役割の実装。**banto 本体で動く**
+    // ——承認の画面を出すコードがコンテナの中にあると、中で root の AI が偽れる（v4-security.md §1）。
+    // Service（Project ごと）は、その Project のための呼び出しの中でだけ呼べる（中継が決める）
+    id: "publish-directory",
+    name: "Publish（窓口）",
+    description: "Service で動かしているサーバに URL を生やす。公開のたびに人が承認する。出し方（Caddy など）を別に入れます",
+    suggestedName: "publish-directory",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/publish-directory/dist/server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["publish-directory"],
+      dependsOn: [
+        { role: "publish", required: true },
+        { role: "service", required: false },
+      ],
+      isolation: "subprocess",
+      scope: "instance",
+      // 人が承認の画面で打った設定（Basic 認証のパスワード等）が通る
+      handlesSecrets: true,
+    },
+  },
+  {
+    // **Caddy のサブドメインで公開する**（§4.3 の最初の実装）。host の Caddy の admin API にルートを足す。
+    // host で動く同梱のコードだけが、Project のコンテナのアドレスを引ける（中継の `relayProjectAddress`）
+    id: "publish-caddy",
+    name: "Publish（Caddy のサブドメイン）",
+    description: "host の Caddy に <サービス>-<Project>.<ドメイン> のルートを足して公開する。設定で基のドメインを決めます",
+    suggestedName: "publish-caddy",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/publish-caddy/dist/server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["publish"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      // 人が承認の画面で打った Basic 認証のパスワードが通る（持つのは bcrypt のハッシュだけ）
+      handlesSecrets: true,
+    },
+  },
 ];
 
 /**
