@@ -13,7 +13,7 @@ class FakeSystemctl implements Systemctl {
   calls: string[][] = [];
   active = new Map<string, string>();
   enabled = new Set<string>();
-  listening = new Set<number>();
+  listening: Set<number> | null = new Set<number>();
   async run(args: string[]): Promise<CommandResult> {
     this.calls.push(args);
     const [cmd, ...rest] = args;
@@ -36,7 +36,11 @@ class FakeSystemctl implements Systemctl {
         this.active.set(unit, "active");
         return ok();
       case "stop":
-        this.active.set(unit, "inactive");
+        // 落ちていたもの（failed）は stop しても failed のまま（本物の systemd と同じ）
+        if (this.active.get(unit) !== "failed") this.active.set(unit, "inactive");
+        return ok();
+      case "reset-failed":
+        if (this.active.get(unit) === "failed") this.active.set(unit, "inactive");
         return ok();
       default:
         return ok();
@@ -50,13 +54,14 @@ class FakeSystemctl implements Systemctl {
   }
 }
 
-async function setup(opts: { secrets?: Record<string, string>; failAlias?: string } = {}) {
-  const base = await mkdtemp(join(tmpdir(), "banto-service-"));
+async function setup(opts: { secrets?: Record<string, string>; failAlias?: string; moduleName?: string; base?: string } = {}) {
+  const base = opts.base ?? (await mkdtemp(join(tmpdir(), "banto-service-")));
   const sc = new FakeSystemctl();
   const resolved: string[] = [];
   const manager = new ServiceManager({
     projectRoot: join(base, "root"),
-    store: new ServiceStore(join(base, "data")),
+    store: new ServiceStore(join(base, "data", opts.moduleName ?? "service")),
+    ...(opts.moduleName ? { moduleName: opts.moduleName } : {}),
     systemctl: sc,
     paths: { unitDir: join(base, "units"), stateDir: join(base, "state") },
     nodePath: "/usr/local/bin/node",
@@ -87,7 +92,7 @@ test("初めての名前：登録して、写し（unit・コマンド・0600 �
     assert.match(await readFile(envPath, "utf8"), /ANTHROPIC_BASE_URL=/, "Claude のログインの住所も写す");
     assert.equal((await stat(envPath)).mode & 0o777, 0o600);
     // **マスターに値を置かない**・返り値にも出さない
-    assert.doesNotMatch(await readFile(join(base, "data/services.json"), "utf8"), /sk-SECRET/);
+    assert.doesNotMatch(await readFile(join(base, "data/service/services.json"), "utf8"), /sk-SECRET/);
     assert.doesNotMatch(JSON.stringify(s), /sk-SECRET/);
   } finally {
     await cleanup();
@@ -282,6 +287,106 @@ test("同時に頼まれても1本ずつ通す（同じ名前の登録が二重�
     assert.equal(results[1].status, "rejected");
     assert.equal((await manager.list()).length, 1);
     assert.deepEqual(resolved, ["k"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("落ちたものを止めたら「止めた」と見せる（systemd に落ちた印を残さない）", async () => {
+  const { sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    sc.active.set("banto-web.service", "failed");
+    assert.equal((await manager.list())[0]!.state, "crashed");
+    const s = await manager.stop("web");
+    assert.equal(s.state, "stopped");
+    assert.ok(sc.did("reset-failed", "banto-web.service"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("登録済みの名前は name だけで起こせる。止めていたものは desired を戻し、鍵を引き直して起こす", async () => {
+  const { sc, manager, resolved, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x", ports: [3000], envSecrets: { K: "k" } });
+    await manager.stop("web");
+    sc.calls = [];
+    const s = await manager.start({ name: "web" });
+    assert.equal(s.desired, "running");
+    assert.equal(s.state, "running");
+    assert.deepEqual(resolved, ["k", "k"]);
+    assert.ok(sc.did("reset-failed", "banto-web.service") && sc.did("start", "banto-web.service"));
+    // 書いた項目は登録と一致しないと断る
+    await manager.stop("web");
+    await assert.rejects(manager.start({ name: "web", ports: [4000] }), /別の中身/);
+    // 初めての名前は command が要る
+    await assert.rejects(manager.start({ name: "new" }), /command/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("鍵が要るものの unit は、鍵のファイルが無ければ起動しない形（EnvironmentFile に - を付けない）", async () => {
+  const { base, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "a", command: "x", envSecrets: { K: "k" } });
+    await manager.start({ name: "b", command: "y" });
+    assert.match(await readFile(join(base, "units/banto-a.service"), "utf8"), /^EnvironmentFile=\//m);
+    assert.match(await readFile(join(base, "units/banto-b.service"), "utf8"), /^EnvironmentFile=-\//m);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("置き場だけ消えた（unit は残る）：鍵が要るものは理由を出し、要らないものは鍵のファイルを作り直す", async () => {
+  const { base, sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "a", command: "x", envSecrets: { K: "k" } });
+    await manager.start({ name: "b", command: "y" });
+    await rm(join(base, "state"), { recursive: true });
+    sc.calls = [];
+    const list = await manager.list();
+    assert.match(list.find((s) => s.name === "a")!.note ?? "", /鍵のファイルが無い/);
+    assert.ok(await stat(join(base, "state/b/env")), "鍵の要らないものは作り直す");
+    assert.ok(!sc.did("start", "banto-a.service"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("同じ Project に2本つけても、互いの写しを片付けない（印に Module の名前を入れる）", async () => {
+  const first = await setup({ moduleName: "service" });
+  try {
+    await first.manager.start({ name: "web", command: "x" });
+    const second = await setup({ moduleName: "service-2", base: first.base });
+    await second.manager.list();
+    assert.ok(await stat(join(first.base, "units/banto-web.service")), "別の1本の写しは消さない");
+  } finally {
+    await first.cleanup();
+  }
+});
+
+test("待ち受けを調べられなければ、空と言わずに理由を出す", async () => {
+  const { sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x", ports: [3000] });
+    sc.listening = null;
+    const [s] = await manager.list();
+    assert.deepEqual(s!.notListening, []);
+    assert.match(s!.note ?? "", /待ち受けを調べられませんでした/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("消すとき、systemd の中の落ちた印も消す（not-found/failed の残骸を残さない）", async () => {
+  const { sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    sc.calls = []; // 起動のときの reset-failed と取り違えない
+    await manager.remove("web");
+    assert.ok(sc.did("reset-failed", "banto-web.service"));
   } finally {
     await cleanup();
   }

@@ -14,8 +14,8 @@ export interface CommandResult {
 export interface Systemctl {
   /** `systemctl --user <args>` */
   run(args: string[]): Promise<CommandResult>;
-  /** いま待ち受けている TCP のポート（`ss -ltnH`） */
-  listeningPorts(): Promise<Set<number>>;
+  /** いま待ち受けている TCP のポート（`ss -ltnH`）。調べられなければ null（空と区別する——規則2） */
+  listeningPorts(): Promise<Set<number> | null>;
 }
 
 function exec(file: string, args: string[], env?: NodeJS.ProcessEnv): Promise<CommandResult> {
@@ -53,9 +53,9 @@ export class RealSystemctl implements Systemctl {
     return exec("systemctl", ["--user", ...args], this.env);
   }
 
-  async listeningPorts(): Promise<Set<number>> {
+  async listeningPorts(): Promise<Set<number> | null> {
     const r = await exec("ss", ["-ltnH"]);
-    return r.code === 0 ? parseListening(r.stdout) : new Set();
+    return r.code === 0 ? parseListening(r.stdout) : null;
   }
 
   /**

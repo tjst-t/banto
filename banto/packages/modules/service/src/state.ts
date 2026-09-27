@@ -45,9 +45,10 @@ export function decideState(input: {
   const sub = input.show["SubState"] ?? "";
   if (active === "active" || active === "reloading") return "running";
   if (active === "activating") return sub === "auto-restart" ? "restarting" : "starting";
+  // 止めたものは、systemd に落ちた印が残っていても「止めた」（Fable のレビュー）
+  if (input.desired === "stopped") return "stopped";
   if (active === "failed") return "crashed";
   // inactive / deactivating：systemd は終わり方を忘れているので、起動役の記録で見分ける
-  if (input.desired === "stopped") return "stopped";
   const exit = input.lastExit;
   // 記録が今回の起動より古いなら、今回の終わり方は分からない
   if (!exit || (input.startedAt && exit.at < input.startedAt)) return "not-started";

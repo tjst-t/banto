@@ -26,6 +26,7 @@ test("Service：本物の systemd で、起こす・鍵・落ちる・終わる�
   await sc.ensureUserManager();
   const unitDir = join(userInfo().homedir, ".config/systemd/user");
   const tricky = `a "quoted" \\back $HOME 'single' %x`;
+  const multiline = "-----BEGIN-----\nline2\n-----END-----";
   const manager = new ServiceManager({
     projectRoot: root,
     store: new ServiceStore(join(base, "data")),
@@ -36,7 +37,7 @@ test("Service：本物の systemd で、起こす・鍵・落ちる・終わる�
     inheritedEnv: {},
     settleMs: 800,
     async resolveSecret(_env, alias) {
-      return alias === "tricky" ? tricky : `v-${alias}`;
+      return alias === "tricky" ? tricky : alias === "multi" ? multiline : `v-${alias}`;
     },
   });
   const n = (s: string) => `${tag}-${s}`;
@@ -57,13 +58,14 @@ test("Service：本物の systemd で、起こす・鍵・落ちる・終わる�
     // 1. 起こす・待ち受ける・鍵がそのまま届く・ログに時刻・作ったファイルの持ち主
     await manager.start({
       name: n("web"),
-      command: `node -e 'require("http").createServer((q,r)=>r.end("ok")).listen(${port},"127.0.0.1")' & printf 'K=%s\\n' "$K"; touch made-by-service; wait`,
+      command: `node -e 'require("http").createServer((q,r)=>r.end("ok")).listen(${port},"127.0.0.1")' & printf 'K=%s\\n' "$K"; printf 'M=%s\\n' "$M" | tr '\\n' '|'; echo; touch made-by-service; wait`,
       ports: [port],
-      envSecrets: { K: "tricky" },
+      envSecrets: { K: "tricky", M: "multi" },
     });
     const web = await waitFor(n("web"), (s) => s.state === "running" && s.listening.includes(port), "running＋待ち受け");
     const logs = (await manager.logs(n("web"))).lines;
     assert.ok(logs.some((l) => l.endsWith(`K=${tricky}`)), `鍵の値が崩れずに届く：${JSON.stringify(logs)}`);
+    assert.ok(logs.some((l) => l.endsWith(`M=${multiline.replace(/\n/g, "|")}|`)), `改行を含む鍵の値も崩れない：${JSON.stringify(logs)}`);
     assert.match(logs[0]!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /, "ログに時刻");
     assert.equal((await stat(join(root, "made-by-service"))).uid, userInfo().uid, "作ったファイルの持ち主は Module と同じ uid");
     assert.equal(web.desired, "running");
@@ -104,7 +106,9 @@ test("Service：本物の systemd で、起こす・鍵・落ちる・終わる�
     for (const s of await manager.list().catch(() => [])) await manager.remove(s.name).catch(() => undefined);
     await rm(base, { recursive: true, force: true });
   }
-  // 7. 消したら unit も残らない
+  // 7. 消したら unit のファイルも、systemd の中の印（落ちたものの not-found/failed）も残らない
   const left = execFileSync("sh", ["-c", `ls ${unitDir} | grep -c '^banto-${tag}-' || true`]).toString().trim();
   assert.equal(left, "0");
+  const inSystemd = (await sc.run(["list-units", "--all", "--no-legend", `banto-${tag}-*`])).stdout.trim();
+  assert.equal(inSystemd, "", `systemd に残っている：${inSystemd}`);
 });

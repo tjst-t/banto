@@ -71,6 +71,8 @@ for (const id of ["service"] as const) {
         BANTO_HOST_MCP_URL: "http://127.0.0.1:1/relay",
         BANTO_HOST_MCP_TOKEN: "unused",
         BANTO_MODULE_DATA_DIR: "/tmp/banto-selfreport-service",
+        // 名乗りだけを読む——本物の systemd を触らない（触ると、その機械の写しを片付けてしまう）
+        BANTO_SERVICE_NO_SYSTEMD: "1",
       },
       async (client) => {
         const reported = await readSelfReportedMeta(client);

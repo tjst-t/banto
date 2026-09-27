@@ -48,6 +48,8 @@ test("unit：% はエスケープし、ExecStart の各語は引用符で包む�
 
 test("鍵のファイルの1行：引用符・バックスラッシュ・$ をエスケープする", () => {
   assert.equal(envLine("A", 'x"y\\z$HOME'), 'A="x\\"y\\\\z\\$HOME"');
+  // 改行は生のまま（systemd は引用符の中の生の改行を読み、\\n は2文字として読む——実測）
+  assert.equal(envLine("A", "l1\nl2\r"), 'A="l1\nl2\r"');
 });
 
 test("状態：systemd が忘れた終わり方を、起動役の記録で見分ける", () => {

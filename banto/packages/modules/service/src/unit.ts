@@ -9,6 +9,9 @@ export interface ServicePaths {
   stateDir: string;
 }
 
+export const UNIT_HEADER = "# banto の Service Module が作った写し";
+export const unitHeaderFor = (moduleName: string) => `${UNIT_HEADER}（${moduleName}）`;
+
 export const unitName = (name: string) => `banto-${name}.service`;
 export const unitPath = (paths: ServicePaths, name: string) => join(paths.unitDir, unitName(name));
 export const serviceDir = (paths: ServicePaths, name: string) => join(paths.stateDir, name);
@@ -29,17 +32,22 @@ export function renderUnit(opts: {
   nodePath: string;
   wrapperPath: string;
   dir: string;
+  /** envSecrets があるか（鍵のファイルが無ければ起動させない） */
+  needsEnv?: boolean;
+  /** どの Module の1本が作ったか（同じ Project に2本つけたとき、互いの写しを片付けないため） */
+  moduleName?: string;
 }): string {
   return [
-    "# banto の Service Module が作った写し。手で直しても、Module が登録に合わせて作り直す",
+    `${UNIT_HEADER}（${opts.moduleName ?? "service"}）。手で直しても、Module が登録に合わせて作り直す`,
     "[Unit]",
     `Description=banto Service ${opts.name}`,
     "",
     "[Service]",
     "Type=simple",
     `WorkingDirectory=${escapePercent(opts.workingDirectory)}`,
-    // 鍵の値はここ（0600、コンテナの中）。unit の本体には書かない
-    `EnvironmentFile=-${escapePercent(join(opts.dir, "env"))}`,
+    // 鍵の値はここ（0600、コンテナの中）。unit の本体には書かない。**鍵が要るものは `-` を付けない**
+    // ——ファイルが無いまま秘密なしで黙って起きるより、起動に失敗して「落ちた」で見えるほうがよい
+    `EnvironmentFile=${opts.needsEnv ? "" : "-"}${escapePercent(join(opts.dir, "env"))}`,
     `ExecStart=${quoteWord(opts.nodePath)} ${quoteWord(opts.wrapperPath)} ${quoteWord(opts.dir)}`,
     // 起こし直すのは異常終了のときだけ。上限は systemd の既定のまま（決定・2026-09-27）
     "Restart=on-failure",
@@ -52,12 +60,9 @@ export function renderUnit(opts: {
 
 /** systemd の EnvironmentFile の1行。値は二重引用符で包み、C の書き方でエスケープする */
 export function envLine(name: string, value: string): string {
-  const escaped = value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r")
-    .replace(/\$/g, "\\$");
+  // 改行・CR は**生のまま**書く——systemd は二重引用符の中の生の改行をそのまま読み、`\\n` は
+  // 「バックスラッシュ＋n」の2文字として読む（実測・2026-09-27、Fable のレビュー）
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$");
   return `${name}="${escaped}"`;
 }
 

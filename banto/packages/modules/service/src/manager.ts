@@ -4,7 +4,7 @@
 // 写しが消されたり書き換えられたりしたら、登録に合わせて作り直す（読み戻して正にはしない）。
 // ただし「動かすか止めるか」は、人が中で止めたものは止めたまま受け入れる（決定・2026-09-27）。
 
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExitRecord } from "./log-wrapper.js";
 import {
@@ -19,7 +19,7 @@ import {
 import { decideState, parseShow, STATE_LABELS, type ServiceState } from "./state.js";
 import type { ServiceStore } from "./store.js";
 import type { Systemctl } from "./systemd.js";
-import { renderEnvFile, renderUnit, serviceDir, unitName, unitPath, type ServicePaths } from "./unit.js";
+import { renderEnvFile, renderUnit, serviceDir, unitHeaderFor, unitName, unitPath, type ServicePaths } from "./unit.js";
 
 export interface ManagerDeps {
   projectRoot: string;
@@ -32,6 +32,8 @@ export interface ManagerDeps {
   resolveSecret(envName: string, alias: string, onProgress?: (note: string) => void): Promise<string>;
   /** 定義に写す、Module の環境から継ぐもの（Claude のログインの住所と合言葉など） */
   inheritedEnv: Record<string, string>;
+  /** 自分の宣言上の名前（host が渡す `BANTO_MODULE_NAME`。既定 "service"）。写しの印に入れる */
+  moduleName?: string;
   /** 起動を頼んでから状態を見るまで待つ時間（既定 1500ms）。すぐ落ちるものを「動いている」と返さないため */
   settleMs?: number;
 }
@@ -55,8 +57,6 @@ export interface ServiceStatus {
   logFile: string;
   note?: string;
 }
-
-const UNIT_HEADER = "# banto の Service Module が作った写し";
 
 export class ServiceManager {
   private queue: Promise<unknown> = Promise.resolve();
@@ -92,7 +92,13 @@ export class ServiceManager {
       nodePath: this.deps.nodePath,
       wrapperPath: this.deps.wrapperPath,
       dir: serviceDir(this.deps.paths, name),
+      needsEnv: Object.keys(rec.envSecrets).length > 0,
+      moduleName: this.moduleName,
     });
+  }
+
+  private get moduleName(): string {
+    return this.deps.moduleName ?? "service";
   }
 
   /** unit と起動役のコマンドを登録に合わせる。unit が無かった（作り直した）なら true */
@@ -112,7 +118,11 @@ export class ServiceManager {
     for (const [envName, alias] of Object.entries(rec.envSecrets)) {
       env[envName] = await this.deps.resolveSecret(envName, alias, onProgress);
     }
-    await writeFile(join(serviceDir(this.deps.paths, name), "env"), renderEnvFile(env), { mode: 0o600 });
+    // **別名に書いてから置き換える**——起こし直しの最中に systemd が書きかけを読まないように
+    const path = join(serviceDir(this.deps.paths, name), "env");
+    const tmp = `${path}.tmp-${process.pid}`;
+    await writeFile(tmp, renderEnvFile(env), { mode: 0o600 });
+    await rename(tmp, path);
   }
 
   private async sc(args: string[], what: string): Promise<void> {
@@ -151,14 +161,17 @@ export class ServiceManager {
       const enabled = (await this.deps.systemctl.run(["is-enabled", unitName(name)])).stdout.trim() === "enabled";
       if (rec.desired === "running" && !enabled) await this.sc(["enable", unitName(name)], `${name} を自動起動に入れ`);
       if (rec.desired === "stopped" && enabled) await this.sc(["disable", unitName(name)], `${name} を自動起動から外し`);
-      if (rec.desired === "running" && recreated.includes(name)) {
-        if (!(await exists(join(serviceDir(this.deps.paths, name), "env")))) {
-          if (Object.keys(rec.envSecrets).length > 0) {
-            this.notes.set(name, "鍵のファイルが無いので起こしていません。startService か restartService で起こしてください");
-            continue;
-          }
-          await this.writeEnv(name, rec);
+      // **鍵のファイルが無い**（置き場だけ消えた・コンテナが作り直された）——鍵が要るものは Vault を勝手に
+      // 呼ばずに理由を出す（unit は `-` 無しなので起動は失敗し、秘密なしでは走らない）。鍵が要らないものは作る
+      const envMissing = !(await exists(join(serviceDir(this.deps.paths, name), "env")));
+      if (envMissing && Object.keys(rec.envSecrets).length > 0) {
+        if (rec.desired === "running") {
+          this.notes.set(name, "鍵のファイルが無いので起こせません。restartService で Vault から引き直して起こしてください");
         }
+        continue;
+      }
+      if (envMissing) await this.writeEnv(name, rec);
+      if (rec.desired === "running" && recreated.includes(name)) {
         await this.deps.systemctl.run(["reset-failed", unitName(name)]);
         await this.deps.systemctl.run(["start", unitName(name)]);
       }
@@ -177,14 +190,15 @@ export class ServiceManager {
       const m = /^banto-(.+)\.service$/.exec(f);
       if (!m || records[m[1]!]) continue;
       const text = await readFile(join(this.deps.paths.unitDir, f), "utf8").catch(() => "");
-      if (text.startsWith(UNIT_HEADER)) out.push(f);
+      // 自分（この名前の Module）が作った印のあるものだけ——同じ Project に2本つけても互いを消さない
+      if (text.startsWith(unitHeaderFor(this.moduleName))) out.push(f);
     }
     return out;
   }
 
   // ---- 状態 --------------------------------------------------------------------
 
-  private async status(name: string, rec: ServiceRecord, listening?: Set<number>): Promise<ServiceStatus> {
+  private async status(name: string, rec: ServiceRecord, listening?: Set<number> | null): Promise<ServiceStatus> {
     const dir = serviceDir(this.deps.paths, name);
     const show = parseShow(
       (await this.deps.systemctl.run(["show", unitName(name), "-p", "ActiveState,SubState,Result,NRestarts,UnitFileState"])).stdout,
@@ -192,7 +206,7 @@ export class ServiceManager {
     const lastExit = await readJson<ExitRecord>(join(dir, "exit.json"));
     const started = await readJson<{ at: string }>(join(dir, "started.json"));
     const state = decideState({ show, desired: rec.desired, lastExit, startedAt: started?.at });
-    const ports = listening ?? (await this.deps.systemctl.listeningPorts());
+    const ports = listening === undefined ? await this.deps.systemctl.listeningPorts() : listening;
     const status: ServiceStatus = {
       name,
       command: rec.command,
@@ -202,14 +216,14 @@ export class ServiceManager {
       desired: rec.desired,
       state,
       stateLabel: STATE_LABELS[state],
-      listening: rec.ports.filter((p) => ports.has(p)),
-      notListening: rec.ports.filter((p) => !ports.has(p)),
+      listening: ports ? rec.ports.filter((p) => ports.has(p)) : [],
+      notListening: ports ? rec.ports.filter((p) => !ports.has(p)) : [],
       restarts: Number(show["NRestarts"] ?? 0) || 0,
       logFile: join(dir, "log"),
     };
     if (started?.at) status.startedAt = started.at;
     if (lastExit) status.lastExit = lastExit;
-    const note = this.notes.get(name);
+    const note = this.notes.get(name) ?? (ports || rec.ports.length === 0 ? undefined : "待ち受けを調べられませんでした（ss が使えない）");
     if (note) status.note = note;
     return status;
   }
@@ -234,10 +248,22 @@ export class ServiceManager {
   start(input: Record<string, unknown>, onProgress?: (n: string) => void): Promise<ServiceStatus> {
     return this.serialize(async () => {
       const name = assertName(input.name);
-      const def = normalizeDefinition(input, this.deps.projectRoot);
       await this.reconcile();
       const all = await this.deps.store.all();
       const existing = all[name];
+      // **登録済みなら、書かなかった項目は登録の値**——`startService({name})` で止めたものを起こせる
+      // （書いた項目は登録と一致しないと断る）。初めての名前は command が要る
+      const def = normalizeDefinition(
+        existing
+          ? {
+              command: input.command ?? existing.command,
+              cwd: input.cwd ?? existing.cwd,
+              ports: input.ports ?? existing.ports,
+              envSecrets: input.envSecrets ?? existing.envSecrets,
+            }
+          : input,
+        this.deps.projectRoot,
+      );
       if (existing && !sameDefinition(existing, def)) {
         // **上書きしない**（決定・2026-09-27）——同じ Project の別の Thread が同じ名前を使いうる
         throw new ServiceError(
@@ -290,6 +316,8 @@ export class ServiceManager {
       await this.deps.store.put(name, rec);
       await this.sc(["disable", unitName(name)], `${name} を自動起動から外し`);
       await this.sc(["stop", unitName(name)], `${name} を止め`);
+      // 落ちていたもの（failed）は stop しても failed のまま残る——止めたなら「落ちた」と見せない
+      await this.deps.systemctl.run(["reset-failed", unitName(name)]);
       return this.status(name, rec);
     });
   }
@@ -355,6 +383,8 @@ export class ServiceManager {
     await rm(unitPath(this.deps.paths, name), { force: true });
     await rm(serviceDir(this.deps.paths, name), { recursive: true, force: true });
     await this.deps.systemctl.run(["daemon-reload"]);
+    // 落ちていた unit は、ファイルを消しても systemd の中に not-found/failed で残る（実測・Fable のレビュー）
+    await this.deps.systemctl.run(["reset-failed", unitName(name)]);
   }
 }
 

@@ -63,14 +63,14 @@ export function createServiceServer(manager: ServiceManager, ready: Promise<void
         description:
           "**動き続けるもの（開発サーバ・ファイルの監視など）を起こしておく。** runCommand は1回で終わるので、" +
           "後ろに起動したものは頼れない——止めるまで動かしたいものはこちらで起こす。この Project のコンテナの中で、" +
-          "落ちたら自動で起こし直し、コンテナを起こし直しても起きる。**初めての名前なら登録して起動、登録済みなら起動するだけ**" +
-          "（中身が登録と違うと断る——変えるなら removeService してから）。秘密は envSecrets に Vault の alias 名で渡す" +
+          "落ちたら自動で起こし直し、コンテナを起こし直しても起きる。**初めての名前なら登録して起動（command が要る）、登録済みなら起動するだけ**——登録済みの名前は name だけで起こせる。" +
+          "書いた項目が登録と違うと断る（変えるなら removeService してから）。秘密は envSecrets に Vault の alias 名で渡す" +
           "（値を command に書かない）。外から見られるようにするのは別の仕組み（Publish）で、ports に書いたものが候補になる",
         inputSchema: {
           type: "object",
           properties: {
             name: { type: "string", description: NAME_DESC },
-            command: { type: "string", description: "/bin/sh に渡す文字列（例 \"npm run dev -- --port 3000\"）。前に置く必要は無い——終わらずに動き続けるものを書く" },
+            command: { type: "string", description: "/bin/sh に渡す文字列（例 \"npm run dev -- --port 3000\"）。`&` や nohup で背景にしない——手前で動き続けるものをそのまま書く。登録済みの名前なら省略可" },
             cwd: { type: "string", description: "Project root からの相対パス。省略時は root" },
             ports: { type: "array", items: { type: "number" }, description: "待ち受けるポート（例 [3000]）。他のサービスと重ならないこと" },
             envSecrets: {
@@ -79,13 +79,13 @@ export function createServiceServer(manager: ServiceManager, ready: Promise<void
               description: '環境変数名 → Vault の alias 名。例：{"OPENAI_API_KEY": "openai"}。**値ではなく alias 名を書く。** 止めるまでプロセスの環境に残る',
             },
           },
-          required: ["name", "command"],
+          required: ["name"],
         },
         _meta: agent,
       },
       {
         name: "stopService",
-        description: "サービスを止める。登録は残る（startService で同じ名前を渡せばまた起きる）。コンテナを起こし直しても起きない",
+        description: "サービスを止める。登録は残る（startService に name だけ渡せばまた起きる）。コンテナを起こし直しても起きない",
         inputSchema: { type: "object", properties: { name: { type: "string", description: NAME_DESC } }, required: ["name"] },
         _meta: agent,
       },
@@ -181,6 +181,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const { HostRelayClient } = await import("@banto/module-shell/dist/host-relay-client.js");
   const relay = new HostRelayClient({ url: hostUrl, token: hostToken });
   const systemctl = new RealSystemctl();
+  // **試験で本物の systemd を触らない印**（core の申告の試験は名乗りだけを読む。触ると、その機械の本物の
+  // `~/.config/systemd/user` にある写しを片付けてしまう——Fable のレビュー）
+  const noSystemd = process.env.BANTO_SERVICE_NO_SYSTEMD === "1";
   // **置き場はコンテナの中のローカル**——`HOME` は host のディスク（Module の置き場）を指しているので使わない。
   // systemd のユーザー単位も passwd のホームを見る
   const home = userInfo().homedir;
@@ -194,6 +197,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     nodePath: process.execPath,
     wrapperPath: fileURLToPath(new URL("./log-wrapper.js", import.meta.url)),
     inheritedEnv,
+    moduleName: process.env.BANTO_MODULE_NAME || "service",
     async resolveSecret(envName, alias, onProgress) {
       const note = (n: string) => onProgress?.(`envSecrets: ${envName}——${n}`);
       const place = await relay.lookupAlias("vault-directory", alias, note);
@@ -201,6 +205,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     },
   };
   const manager = new ServiceManager(deps);
-  const ready = systemctl.ensureUserManager().then(() => manager.prepare());
+  const ready = noSystemd
+    ? Promise.reject(new Error("BANTO_SERVICE_NO_SYSTEMD=1 のため systemd を使いません"))
+    : systemctl.ensureUserManager().then(() => manager.prepare());
   await createServiceServer(manager, ready).connect(new StdioServerTransport());
 }
