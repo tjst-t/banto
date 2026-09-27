@@ -123,6 +123,8 @@ Project の根は見せない。どの Module がどこで動くかの一覧は 
   鍵の設定を持つ banto 全体の Module で、host で動く同梱のコード）。本物の資格情報を中に入れない。中には1回ごとの合言葉だけを渡す
   （§2「banto 本体の Claude ログインは、中継で共有する」）。**待ち受けはその Project のネットワークの
   host 側のアドレス**——127.0.0.1 はコンテナから届かず、proxy デバイスは制限つきの区画で使えない（実測）
+  **Shell のコマンドも同じ中継を使える**（`runCommand` の `claudeLogin`、決定・2026-09-27、`v4-modules.md` §2.3）
+  ——本物の資格情報を入れずに、中で Claude Code や banto の E2E を動かすため
 - **Module が呼ぶ host の中継**（`BANTO_HOST_MCP_URL`）も同じ理由で、Project のネットワークの host 側のアドレスで
   待ち受ける（合言葉は今までどおり）
 

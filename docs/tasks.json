@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-26",
+  "updatedAt": "2026-09-27",
   "currentPhase": "2",
   "tasks": [
     {
@@ -2339,6 +2339,14 @@
       "why": "2026-09-26 の実測で、新しい Project の Module が揃うまで 1.5〜1.75 秒。内訳はコンテナを起こす約 0.9 秒（init・start・中で node を確かめる）と、Module の node の起動と MCP の接続約 0.5 秒（host のログ「connected …（コンテナ・マウント・起動と接続）」で見える）。コンテナの名前は Project の id で決まり、根のマウントも Project ごとなので、作り置いたものを割り当てるには名前の付け替え（止めないとできない）か名前の決め方を変える設計が要る。",
       "notes": "docs/notes/2026-09-26-latency-fixes.md",
       "doneWhen": "新しい Project を作ってから Module が揃うまでが、host のログの内訳で 1 秒を切る"
+    },
+    {
+      "id": "claude-login-relay-owner",
+      "title": "Claude ログインの中継の持ち主を決める（いまはサブエージェントの設定の Module が持つ）",
+      "status": "undecided",
+      "why": "中継（claude-login-proxy.ts）はサブエージェントのために subagent-settings に置いた。2026-09-27 に Shell の runCommand からも使えるようにすると決めた（claudeLogin）ので、サブエージェント専用の Module が持つのは名前と中身が合わない。ユーザー判断：当面は今の場所のまま、持ち主は今後の課題。候補：独立した「Claude ログイン」の Module に移す／Vault の中継の仕組み（docs/notes/2026-09-27-vault-credential-proxy.md）が入るならその出どころの1つにする。",
+      "notes": "docs/notes/2026-09-27-vault-credential-proxy.md",
+      "doneWhen": "持ち主が決まり、Shell とサブエージェントがその持ち主の口を呼ぶ形になっている"
     }
   ],
   "phase1": {
