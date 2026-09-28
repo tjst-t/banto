@@ -2384,7 +2384,7 @@
       "id": "ai-start-forks",
       "title": "AI が tool から Fork を立てる（名前と最初の指示つき）＋ターンが終わったら受信箱にレビュー待ち",
       "status": "in-progress",
-      "why": "2026-09-27、ユーザー要望。人とやり取りしながら進める話が複数あるとき、AI が Fork を立てて並行に進めたい（やり取りが要らないならサブエージェント）。決定はアーキ仕様 §2.2「AI が Fork を立てる」・§2.4「レビュー待ち」。core の単体試験（fork-tool.test.ts、6本）と core 全体 322 本・画面の単体 16 本は通した。E2E（e2e/specs/ai-start-forks.spec.ts）は Project のコンテナの中からは Incus に繋がらず走らせていない",
+      "why": "2026-09-27、ユーザー要望。人とやり取りしながら進める話が複数あるとき、AI が Fork を立てて並行に進めたい（やり取りが要らないならサブエージェント）。決定はアーキ仕様 §2.2「AI が Fork を立てる」・§2.4「レビュー待ち」。core の単体試験（fork-tool.test.ts、6本）と core 全体 322 本・画面の単体 16 本は通した。E2E（e2e/specs/ai-start-forks.spec.ts）は Project のコンテナの中からは Incus に繋がらず走らせていない。2026-09-28：E2E で2つ目の Fork が「Fork 2」になる不具合を見つけて直し（2b67197e、名前を作るときに一緒に記録）、host で ai-start-forks・project-thread-fork・inbox・fork-from-message が通った（ユーザー実行）。release へ push 済み、稼働中への反映（REL の取り込み・build・再起動）は host で人が行う",
       "doneWhen": "host で e2e/specs/ai-start-forks.spec.ts と既存の project-thread-fork・inbox・fork-from-message が通る。稼働中の banto で、Base Thread から AI に Fork を2つ立てさせ、再読み込みせずに名前つきの入口が出て、それぞれ最初の指示で走り、終わったものが受信箱に出ることを実物で確かめる"
     }
   ],
