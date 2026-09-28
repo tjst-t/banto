@@ -38,6 +38,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
   button { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
     border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit; }
   button[disabled] { opacity: .45; cursor: default; }
+  .url { color: var(--color-text-info, LinkText); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; cursor: pointer; }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .problem { border: 1px solid var(--mcp-ui-color-danger, #c0392b); color: var(--mcp-ui-color-danger, #c0392b);
     border-radius: 6px; padding: 8px 10px; font-size: 12px; margin: 8px 0; }
@@ -61,6 +62,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
   <p class="problem" id="error" hidden></p>
 </div>
 <p id="result" hidden></p>
+<p class="problem" id="open-error" hidden></p>
 
 <script>
 (() => {
@@ -186,14 +188,34 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     }, 300);
   }
 
-  function finish(text) {
+  // **公開した URL は押すと別のタブで開く**（追加・2026-09-28、ユーザー要望）。画面はサンドボックスの中で自分では
+  // タブを開けないので、MCP Apps の ui/open-link で banto に頼む。開けなかったら URL を選べる形で残す
+  function finish(lead, url, tail) {
     clearSecrets();
     show("request", false);
-    $("result").textContent = text;
+    const box = $("result");
+    box.replaceChildren(document.createTextNode(lead));
+    if (url) {
+      const a = document.createElement("a");
+      a.href = url; a.textContent = url; a.className = "url"; a.rel = "noopener noreferrer"; a.target = "_blank";
+      a.addEventListener("click", async (e) => {
+        e.preventDefault();
+        try {
+          const r = await request("ui/open-link", { url: url });
+          if (r && r.isError) throw new Error("開けませんでした");
+          problem("open-error", "");
+        } catch (err) {
+          problem("open-error", "開けませんでした。URL を選んで写してください");
+        }
+      });
+      box.append(a);
+    }
+    if (tail) box.append(document.createTextNode(tail));
     show("result", true);
   }
-  function decided(req) {
-    return req.state === "published" ? "公開しました：" + req.url : "公開しませんでした（" + req.service + ":" + req.port + "）";
+  function finishDecided(req) {
+    if (req.state === "published") finish("公開しました：", req.url, "");
+    else finish("公開しませんでした（" + req.service + ":" + req.port + "）", "", "");
   }
 
   async function load(id) {
@@ -201,7 +223,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     try {
       const r = await call("get_publish_request", { requestId: id });
       show("waiting", false);
-      if (r.request.state !== "pending") { finish(decided(r.request)); return; }
+      if (r.request.state !== "pending") { finishDecided(r.request); return; }
       if (!r.method.ready) problem("error", "この出し方はまだ使えません：" + (r.method.problem || ""));
       buildForm(r.method.configSchema);
       render(r);
@@ -222,7 +244,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     busy(true, "公開しています…");
     try {
       const r = await call("approve_publish", { requestId: requestId, config: collect(true) });
-      finish("公開しました：" + r.url + "（届く範囲：" + r.reachLabel + "）");
+      finish("公開しました：", r.url, "（届く範囲：" + r.reachLabel + "）");
     } catch (err) {
       // 断られたら頼みは待ったまま——直してもう一度押せる
       busy(false);
