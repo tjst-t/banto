@@ -1,9 +1,18 @@
 // 窓口を、**本物の Caddy の実装**（偽の Caddy を相手に）と、偽の Service に繋いで試す。
-// 中継だけを差し替える——host がやること（刻印・その Project のための呼び出しの中でだけ Service が見える）を真似る。
+// 中継だけを差し替える——**host の規則をそのまま真似る**（改訂・2026-09-28、Fable のレビュー）：
+//
+// - host が窓口を呼ぶたびに呼び出しの印（`dev.banto/callId`）を振り、出所（AI のターン／人の画面）と Project を台帳に置く
+// - 窓口が中継に印を添えればその1件、添えなければ走っている全部を合わせる（ターンが混ざればターン・Project が混ざれば決められない）
+// - Service（Project ごと）は、Project が決まっているときだけ見える。人の画面でも Project が無ければ見えない
+// - 刻印：人の画面なら `{admin, forProject}`、ターンなら `{project}`
+//
+// 以前の偽物は「人の刻印なら Service が見える」と仮定し、刻印を窓口全体で1つ持っていたので、人の画面から Service が
+// 呼べない穴と、AI のターンと人の画面が混ざると人の承認が断られる穴の、どちらも隠していた。
 // 刻印の決まりそのものは core の試験（host-relay-endpoint.test.ts）が見ている。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,11 +23,15 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { CaddyPublisher, HttpCaddyAdmin, PublishStore, createPublishCaddyServer } from "@banto/module-publish-caddy";
 import { FakeCaddy, caddyfileLikeConfig } from "@banto/module-publish-caddy/dist/fake-caddy.js";
 import { createPublishDirectoryServer } from "./server.js";
-import { RequestStore } from "./requests.js";
+import { RequestStore, WithdrawalLog } from "./requests.js";
 import type { RelayLike } from "./relay-client.js";
 
 const P1 = "1a2b3c4d-0000-4000-8000-000000000001";
-const ADMIN = { "dev.banto/caller": { admin: true } };
+const P2 = "5e6f7a8b-0000-4000-8000-000000000002";
+/** 人が Project の画面（会話の中の承認・入口）から押したとき host が刻むもの */
+const ADMIN = { "dev.banto/caller": { admin: true, forProject: P1 } };
+/** banto 全体の設定画面から（Project が無い） */
+const INSTANCE_ADMIN = { "dev.banto/caller": { admin: true } };
 const REPLY = "reply-handle-abc";
 const PASSWORD = "correct-horse-battery-staple";
 const HOST = "web-1a2b3c4d.banto.example.net";
@@ -32,26 +45,47 @@ interface ServiceRow {
   note?: string;
 }
 
-/** 偽の Service（listServices だけ） */
-async function fakeService(rows: () => ServiceRow[]): Promise<Client> {
+/** 偽の Service（listServices だけ）。`hold` を渡すと、答える前にそれを待つ（呼び出しを重ねる試験のため） */
+async function fakeService(rows: () => ServiceRow[], hold: () => Promise<void> | undefined): Promise<Client> {
   const s = new Server({ name: "fake-service", version: "0" }, { capabilities: { tools: {} } });
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "listServices", inputSchema: { type: "object" } }] }));
-  s.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: JSON.stringify({ services: rows() }) }] }));
+  s.setRequestHandler(CallToolRequestSchema, async () => {
+    await hold();
+    return { content: [{ type: "text", text: JSON.stringify({ services: rows() }) }] };
+  });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const c = new Client({ name: "host", version: "0" });
   await Promise.all([s.connect(a), c.connect(b)]);
   return c;
 }
 
+/** host の台帳の1件（窓口への呼び出し1つ） */
+interface Entry {
+  origin: "turn" | "canvas";
+  project?: string;
+}
+
 interface Ctx {
-  call(name: string, args: Record<string, unknown>, meta: Record<string, unknown>): Promise<{ text: string; isError: boolean; meta?: Record<string, unknown> }>;
+  /** `ledger: false` は host が台帳に置かなかった呼び出し（中継が Project を決められない状態を作る） */
+  call(
+    name: string,
+    args: Record<string, unknown>,
+    meta: Record<string, unknown>,
+    opts?: { ledger?: boolean },
+  ): Promise<{ text: string; isError: boolean; meta?: Record<string, unknown> }>;
   asAi(name: string, args?: Record<string, unknown>): ReturnType<Ctx["call"]>;
   asHuman(name: string, args?: Record<string, unknown>): ReturnType<Ctx["call"]>;
   caddy: FakeCaddy;
   services: ServiceRow[];
   deliveries: { replyTo: string; title: string; text: string; final: boolean }[];
-  /** 窓口が実装に渡した呼び出し（名前と引数） */
-  relayed: { target: string; name: string; args: Record<string, unknown> }[];
+  /** 窓口が実装・Service に渡した呼び出し（名前・引数・host が刻んだもの） */
+  relayed: { target: string; name: string; args: Record<string, unknown>; stamp: unknown }[];
+  /** 次に Service が答えるまで止める（止めた呼び出しの間に、別の呼び出しを重ねる） */
+  holdService(): () => void;
+  /** 次のその口の呼び出しは、相手に届いて処理されたうえで返事だけ落ちる */
+  dropNextReply(name: string): void;
+  /** 会話に届けた時点で、その頼みが記録の上でどうなっていたか（届けた順） */
+  statesAtDelivery: string[];
   dirs: { directory: string; caddy: string };
 }
 
@@ -65,7 +99,7 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
-    resolveAddress: async () => "10.61.162.23",
+    resolveAddress: async () => ({ address: "10.61.162.23" }),
     probe: async () => true,
     owner: caddyDir,
   });
@@ -75,41 +109,70 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
   await Promise.all([impl.connect(ia), implClient.connect(ib)]);
 
   const services: ServiceRow[] = [{ name: "web", ports: [3000], state: "running", listening: [3000], notListening: [] }];
-  const serviceClient = await fakeService(() => services);
+  let gate: Promise<void> | undefined;
+  const serviceClient = await fakeService(() => services, () => gate);
   const deliveries: Ctx["deliveries"] = [];
   const relayed: Ctx["relayed"] = [];
+  const statesAtDelivery: string[] = [];
+  const drop = new Set<string>();
 
-  // host の刻印を真似る：AI のターンの中なら Project、人が画面で押したなら admin
-  let stamp: Record<string, unknown> = {};
+  // ---- host の台帳（窓口への呼び出しごと）----
+  const inFlight = new Map<string, Entry>();
+  /** 印があればその1件、無ければ全部を合わせる（ターンが混ざればターン、Project が混ざれば決められない） */
+  const contextOf = (callId?: string): Entry | undefined => {
+    const one = callId ? inFlight.get(callId) : undefined;
+    if (one) return one;
+    const all = [...inFlight.values()];
+    if (all.length === 0) return undefined;
+    const projects = [...new Set(all.map((e) => e.project).filter((p): p is string => !!p))];
+    return { origin: all.some((e) => e.origin === "turn") ? "turn" : "canvas", ...(projects.length === 1 ? { project: projects[0] } : {}) };
+  };
+  const stampOf = (e: Entry | undefined) =>
+    !e ? {} : e.origin === "canvas" ? { admin: true, ...(e.project ? { forProject: e.project } : {}) } : e.project ? { project: e.project } : {};
   const relay: RelayLike = {
-    async listTargets() {
-      const caller = (stamp["dev.banto/caller"] as object) ?? {};
-      // Service は Project ごとの Module——その Project のための呼び出しの中でだけ見える。人が Project の中の画面
-      // （入口）から押したときも、host はその Project の会話を台帳に置くので見える（core の ui-tool-call）
-      const inProject = "project" in caller || "admin" in caller;
-      return [...(inProject ? [{ name: "service-p1", roles: ["service"] }] : []), { name: "publish-caddy", roles: ["publish"] }];
+    async listTargets(callId) {
+      const ctx = contextOf(callId);
+      return {
+        targets: [...(ctx?.project === P1 ? [{ name: "service-p1", roles: ["service"] }] : []), { name: "publish-caddy", roles: ["publish"] }],
+        ...(ctx?.project ? { onBehalfOf: ctx.project } : {}),
+      };
     },
-    async callTool(target, name, args) {
-      relayed.push({ target, name, args });
+    async callTool(target, name, args, callId) {
+      const ctx = contextOf(callId);
+      if (target === "service-p1" && ctx?.project !== P1) throw new Error("publish-directory は service-p1 を呼ぶ権限がありません");
+      const stamp = stampOf(ctx);
+      relayed.push({ target, name, args, stamp });
       const client = target === "service-p1" ? serviceClient : target === "publish-caddy" ? implClient : undefined;
       if (!client) throw new Error(`unknown target ${target}`);
-      const r = await client.callTool({ name, arguments: args, _meta: stamp });
+      const r = await client.callTool({ name, arguments: args, _meta: { "dev.banto/caller": stamp } });
+      if (drop.delete(name)) throw new Error("中継の返事が途中で切れました");
       return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
     },
     async deliver(input) {
+      const saved = JSON.parse(await readFile(join(directoryDir, "requests.json"), "utf8")) as { requests: { replyTo?: string; state: string }[] };
+      statesAtDelivery.push(saved.requests.filter((q) => q.replyTo === input.replyTo).map((q) => q.state).join(","));
       deliveries.push(input);
     },
   };
 
-  const directory = createPublishDirectoryServer({ relay, requests: new RequestStore(directoryDir) });
+  const directory = createPublishDirectoryServer({ relay, requests: new RequestStore(directoryDir), withdrawals: new WithdrawalLog(directoryDir) });
   const [da, db] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "agent-or-canvas", version: "0" });
   await Promise.all([directory.connect(da), client.connect(db)]);
-  const call: Ctx["call"] = async (name, args, meta) => {
-    stamp = { "dev.banto/caller": (meta["dev.banto/caller"] as object) ?? undefined };
-    if (!meta["dev.banto/caller"]) stamp = {};
-    const r = await client.callTool({ name, arguments: args, _meta: meta });
-    return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true, meta: r._meta as Record<string, unknown> | undefined };
+  // host が窓口を呼ぶ：刻印から台帳の1件を作り、呼び出しの印を添える
+  const call: Ctx["call"] = async (name, args, meta, opts = {}) => {
+    const caller = meta["dev.banto/caller"] as Record<string, unknown> | undefined;
+    const callId = randomUUID();
+    if (caller && opts.ledger !== false) {
+      const project = (caller.project ?? caller.forProject) as string | undefined;
+      inFlight.set(callId, { origin: caller.admin === true ? "canvas" : "turn", ...(project ? { project } : {}) });
+    }
+    try {
+      const r = await client.callTool({ name, arguments: args, _meta: { ...meta, "dev.banto/callId": callId } });
+      return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true, meta: r._meta as Record<string, unknown> | undefined };
+    } finally {
+      inFlight.delete(callId);
+    }
   };
   try {
     await fn({
@@ -120,6 +183,16 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
       services,
       deliveries,
       relayed,
+      dropNextReply: (name) => drop.add(name),
+      statesAtDelivery,
+      holdService: () => {
+        let release!: () => void;
+        gate = new Promise<void>((r) => (release = r));
+        return () => {
+          gate = undefined;
+          release();
+        };
+      },
       dirs: { directory: directoryDir, caddy: caddyDir },
     });
   } finally {
@@ -132,15 +205,21 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
   }
 }
 
+/** 中継が何もしない窓口（名乗りと画面だけを見る試験） */
+function bareDirectory(dir: string) {
+  return createPublishDirectoryServer({
+    relay: { listTargets: async () => ({ targets: [] }), callTool: async () => ({ text: "", isError: true }), deliver: async () => {} },
+    requests: new RequestStore(dir),
+    withdrawals: new WithdrawalLog(dir),
+  });
+}
+
 const requestIdOf = (text: string) => text.match(/公開の承認の id：([0-9a-f-]{36})/)![1]!;
 
 test("AI に見せるのは3つ。publishService は承認の画面を持ち、あとで結果を届けると名乗る。人の口は admin", async () => {
   const dir = await mkdtemp(join(tmpdir(), "banto-publish-directory-tools-"));
   try {
-    const server = createPublishDirectoryServer({
-      relay: { listTargets: async () => [], callTool: async () => ({ text: "", isError: true }), deliver: async () => {} },
-      requests: new RequestStore(dir),
-    });
+    const server = bareDirectory(dir);
     const [a, b] = InMemoryTransport.createLinkedPair();
     const c = new Client({ name: "t", version: "0" });
     await Promise.all([server.connect(a), c.connect(b)]);
@@ -155,6 +234,8 @@ test("AI に見せるのは3つ。publishService は承認の画面を持ち、�
       decline_publish: "admin",
       get_publish_overview: "admin",
       unpublish_route: "admin",
+      // Service が removeService の中で呼ぶ部品の口（AI には見せない）
+      serviceRemoved: "module",
     });
     const publish = tools.find((t) => t.name === "publishService")!;
     const meta = publish._meta as Record<string, unknown>;
@@ -207,6 +288,7 @@ test("Project の会話からでなければ断る（どの Project の公開か
     assert.ok(r.isError);
     assert.match(r.text, /Project の会話からだけ/);
     assert.ok((await call("publishService", { service: "web" }, ADMIN)).isError);
+    assert.ok((await call("publishService", { service: "web" }, INSTANCE_ADMIN)).isError);
   });
 });
 
@@ -369,10 +451,7 @@ test("入口の画面：公開・承認待ち・まだ公開していないサ�
 test("入口の画面の HTML は launcher として名乗り、どの Project かを banto の文脈から読む", async () => {
   const dir = await mkdtemp(join(tmpdir(), "banto-publish-directory-launcher-"));
   try {
-    const server = createPublishDirectoryServer({
-      relay: { listTargets: async () => [], callTool: async () => ({ text: "", isError: true }), deliver: async () => {} },
-      requests: new RequestStore(dir),
-    });
+    const server = bareDirectory(dir);
     const [a, b] = InMemoryTransport.createLinkedPair();
     const c = new Client({ name: "t", version: "0" });
     await Promise.all([server.connect(a), c.connect(b)]);
@@ -399,4 +478,154 @@ test("承認の画面は banto が渡す色の名前だけを使い、明暗の�
   assert.match(APPROVAL_APP_HTML, /ui\/open-link/);
   // 届く範囲の輪の名前（この画面の芯）
   for (const name of ["この機械", "LAN", "インターネット"]) assert.ok(APPROVAL_APP_HTML.includes(`"${name}"`), name);
+});
+
+// ---- Fable のレビュー（2026-09-28）で直したもの ----
+
+// **人が Project の画面から押した呼び出しの中で、窓口はその Project の Service を読める**。読めないときは黙って空にせず、
+// 「読めなかった（理由）」を返す。理由は「その Project に Service が無い」と「どの Project か中継が決められない」を分ける
+test("入口の画面：Service の宛先が無いときは黙って空にせず理由を言う——Service が無いのか、どの Project か決められないのかを分ける", async () => {
+  await withDirectory(async ({ call, asHuman }) => {
+    // Project の画面から（host が forProject を刻む）なら読める
+    const ok = JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text);
+    assert.equal(ok.servicesProblem, undefined);
+    assert.deepEqual(ok.unpublished.map((s: { name: string }) => s.name), ["web"]);
+
+    // その Project に Service の Module が無い
+    const none = JSON.parse((await call("get_publish_overview", { projectId: P2 }, { "dev.banto/caller": { admin: true, forProject: P2 } })).text);
+    assert.match(none.servicesProblem, /この Project に Service の Module がありません/);
+    assert.deepEqual(none.unpublished, []);
+
+    // banto 全体の画面から（Project が無い）——Service を入れろとは言わない
+    const unknown = JSON.parse((await call("get_publish_overview", { projectId: P1 }, INSTANCE_ADMIN)).text);
+    assert.match(unknown.servicesProblem, /どの Project のためのものか決められませんでした/);
+    assert.doesNotMatch(unknown.servicesProblem, /Module を追加/, "決められないのに「Service を入れて」と嘘の案内を出した");
+
+    // 画面が言う Project と banto が刻んだ Project が違えば断る（別々の Project の中身を1枚に混ぜない）
+    const mixed = await asHuman("get_publish_overview", { projectId: P2 });
+    assert.ok(mixed.isError);
+    assert.match(mixed.text, /banto が渡した Project/);
+  });
+});
+
+test("publishService：Service が無いのと、どの Project か中継が決められないのを取り違えない", async () => {
+  await withDirectory(async ({ call }) => {
+    const none = await call("publishService", { service: "web" }, { "dev.banto/caller": { project: P2 } });
+    assert.match(none.text, /この Project に Service の Module がありません/);
+    const unknown = await call("publishService", { service: "web" }, { "dev.banto/caller": { project: P1 } }, { ledger: false });
+    assert.match(unknown.text, /決められませんでした/);
+    assert.doesNotMatch(unknown.text, /Module を追加/);
+  });
+});
+
+// **AI のターンと人の画面が同時に窓口を通っても、人の承認は断られない**。窓口は banto 全体で1接続なので、
+// 呼び出しの印を中継に添えないと host は両方を混ぜ、ターン扱い（`{project}`）で publishRoute を刻んでいた
+test("AI のターンが窓口で止まっている最中に人が「公開する」を押しても、人の刻印で公開できる", async () => {
+  await withDirectory(async ({ asAi, asHuman, relayed, holdService, caddy }) => {
+    const id = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    const release = holdService();
+    // 同じ Project の AI が、別の公開を頼んでいる最中（Service の答えを待っている）
+    const aiTurn = asAi("publishService", { service: "web" });
+    await new Promise((r) => setTimeout(r, 20));
+    try {
+      const r = await asHuman("approve_publish", { requestId: id, config: { auth: "none" } });
+      assert.equal(r.isError, false, r.text);
+      const passed = relayed.find((c) => c.name === "publishRoute")!;
+      assert.deepEqual(passed.stamp, { admin: true, forProject: P1 }, "人の承認が AI のターンの刻印で中継された");
+      assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)));
+    } finally {
+      release();
+    }
+    // 止まっていた AI の頼みは、公開済みなので断られる（混ざっても AI の側が人の印を借りない）
+    assert.match((await aiTurn).text, /もう公開しています/);
+    const aiCalls = relayed.filter((c) => c.name === "listRoutes" && c.target === "publish-caddy");
+    assert.deepEqual(aiCalls.at(-1)!.stamp, { project: P1 });
+  });
+});
+
+// **会話に届けるのは、決めたことを書いてから**（届けてから書くと、書けなかったとき会話と頼みが食い違う）
+test("承認・断りは、頼みの記録を書いてから会話に届ける", async () => {
+  await withDirectory(async ({ asAi, asHuman, statesAtDelivery }) => {
+    const a = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    await asHuman("approve_publish", { requestId: a, config: { auth: "none" } });
+    await asAi("unpublishService", { service: "web" });
+    const b = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    await asHuman("decline_publish", { requestId: b });
+    // 同じ札を2つの頼みが持っているので、届けた時点での状態を順に見る
+    assert.deepEqual(statesAtDelivery, ["published", "published,declined"]);
+  });
+});
+
+// **道は張れたのに返事だけ落ちたら、公開したと確定させる**——押し直すと「もう公開しています」で断られ続けていた
+test("publishRoute は通ったのに返事が落ちたら、実装の一覧にある公開を見て「公開した」と確定させる", async () => {
+  await withDirectory(async ({ asAi, asHuman, deliveries, dropNextReply }) => {
+    const id = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    dropNextReply("publishRoute");
+    const r = await asHuman("approve_publish", { requestId: id, config: { auth: "none" } });
+    assert.equal(r.isError, false, r.text);
+    assert.deepEqual(JSON.parse(r.text), { state: "published", url: `https://${HOST}`, reach: "internet", reachLabel: "インターネット（URL を知っている誰でも）" });
+    assert.equal(deliveries.length, 1);
+    assert.match((await asHuman("approve_publish", { requestId: id, config: { auth: "none" } })).text, /もう答えが出ています（公開済み）/);
+  });
+});
+
+// **公開中の Service が removeService されたら、その公開もやめる**（ユーザー決定の案A）。やめたことは一覧と入口の画面に出す。
+// 承認待ちの頼みも取り下げる——人が承認するのは前の中身で、同じ名前で登録し直した別の中身をその承認で出さない
+test("Service の登録が消されたら公開をやめ、一覧と入口の画面に出す。承認待ちの頼みも取り下げる", async () => {
+  await withDirectory(async ({ asAi, asHuman, call, caddy, services }) => {
+    const first = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    await asHuman("approve_publish", { requestId: first, config: { auth: "none" } });
+    services.push({ name: "api", ports: [4000], state: "running", listening: [4000], notListening: [] });
+    const pending = requestIdOf((await asAi("publishService", { service: "api" })).text);
+
+    // 人の刻印・別の Project からは呼べない／触れない
+    assert.match((await asHuman("serviceRemoved", { service: "web" })).text, /Project の Module（Service）からだけ/);
+    const other = JSON.parse((await call("serviceRemoved", { service: "web" }, { "dev.banto/caller": { project: P2 } })).text);
+    assert.deepEqual(other.unpublished, []);
+    assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), "別の Project から公開をやめられた");
+
+    // Service（P1）が知らせる
+    const web = await call("serviceRemoved", { service: "web" }, { "dev.banto/caller": { project: P1 } });
+    assert.equal(web.isError, false, web.text);
+    assert.deepEqual(JSON.parse(web.text).unpublished.map((u: { url: string; port: number }) => [u.url, u.port]), [[`https://${HOST}`, 3000]]);
+    assert.ok(!caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), "登録が消えたのに道が残った");
+    const list = JSON.parse((await asAi("listPublished")).text);
+    assert.deepEqual(list.published, []);
+    assert.deepEqual(list.withdrawn.map((w: { url: string; service: string; reason: string }) => [w.url, w.service]), [[`https://${HOST}`, "web"]]);
+    assert.match(list.withdrawn[0].reason, /登録「web」が消された/);
+    const ov = JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text);
+    assert.equal(ov.withdrawn.length, 1);
+
+    // 承認待ちの頼みを取り下げる——登録し直した中身をその承認で出さない
+    const api = JSON.parse((await call("serviceRemoved", { service: "api" }, { "dev.banto/caller": { project: P1 } })).text);
+    assert.deepEqual(api.withdrawnRequests.map((w: { requestId: string }) => w.requestId), [pending]);
+    assert.deepEqual(JSON.parse((await asAi("listPublished")).text).pending, []);
+    const late = await asHuman("approve_publish", { requestId: pending, config: { auth: "none" } });
+    assert.ok(late.isError);
+    assert.match(late.text, /取り下げた——Service の登録が消された/);
+  });
+});
+
+test("Service の登録が消されたのに、公開をやめられない出し方があれば断る（Service は消すのをやめる）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-publish-directory-removed-"));
+  try {
+    const server = createPublishDirectoryServer({
+      relay: {
+        listTargets: async () => ({ targets: [{ name: "publish-x", roles: ["publish"] }], onBehalfOf: P1 }),
+        callTool: async () => ({ text: "Caddy に繋がりません", isError: true }),
+        deliver: async () => {},
+      },
+      requests: new RequestStore(dir),
+      withdrawals: new WithdrawalLog(dir),
+    });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "t", version: "0" });
+    await Promise.all([server.connect(a), c.connect(b)]);
+    const r = await c.callTool({ name: "serviceRemoved", arguments: { service: "web" }, _meta: { "dev.banto/caller": { project: P1 } } });
+    assert.equal(r.isError, true);
+    assert.match((r.content as { text: string }[])[0]!.text, /やめられなかった出し方があります：publish-x：Caddy に繋がりません/);
+    await c.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

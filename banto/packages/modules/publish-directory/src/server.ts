@@ -29,14 +29,17 @@ import {
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  AUDIT_ARGS_META_KEY,
+  VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
+  callIdOf,
   callerOf,
   replyToOf,
 } from "@banto/module-contract";
 import { APPROVAL_APP_HTML, APPROVAL_APP_URI, UI_APP_MIME } from "./approval-app.js";
 import { PUBLISHED_APP_URI, publishedAppHtml } from "./published-app.js";
-import type { RelayLike, RelayTarget } from "./relay-client.js";
-import { RequestStore, type PublishRequest, type Reach } from "./requests.js";
+import type { RelayLike, RelayTargets } from "./relay-client.js";
+import { RequestStore, WithdrawalLog, type PublishRequest, type Reach, type Withdrawal } from "./requests.js";
 
 const SELF_REPORT_URI = "publish-directory://module";
 const PUBLISH_ROLE = "publish";
@@ -87,6 +90,19 @@ interface RouteStatus {
 export interface PublishDirectoryDeps {
   relay: RelayLike;
   requests: RequestStore;
+  /** 自分でやめた公開の記録（Service の登録が消されたとき）。人に見せるため */
+  withdrawals: WithdrawalLog;
+}
+
+/**
+ * **その呼び出しの印を添えて中継を呼ぶ口**（追加・2026-09-28）。host がこの窓口を呼んだときの印（`dev.banto/callId`）を、
+ * その処理の中の中継すべてに添える——host は出所（人の画面か AI のターンか）と Project を1件ずつ引く。窓口は banto 全体で
+ * 1接続なので、添えないと同時に走っている別の呼び出し（ある Project の AI のターンと人の画面）と混ざる
+ */
+interface Scoped {
+  listTargets(): Promise<RelayTargets>;
+  /** 相手の口を呼んで JSON を読む。**断りは理由ごと上げる**（黙って空にしない——規則2） */
+  callJson<T>(target: string, name: string, args: Record<string, unknown>): Promise<T>;
 }
 
 function errText(err: unknown): string {
@@ -94,24 +110,44 @@ function errText(err: unknown): string {
 }
 
 export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
-  const { relay, requests } = deps;
+  const { relay, requests, withdrawals } = deps;
   const server = new Server({ name: "banto-module-publish-directory", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
-  /** 相手の口を呼んで JSON を読む。**断りは理由ごと上げる**（黙って空にしない——規則2） */
-  async function callJson<T>(target: string, name: string, args: Record<string, unknown>): Promise<T> {
-    const r = await relay.callTool(target, name, args);
-    if (r.isError) throw new PublishDirectoryError(r.text || `${target} の ${name} が失敗しました`);
-    try {
-      return JSON.parse(r.text) as T;
-    } catch {
-      throw new PublishDirectoryError(`${target} の ${name} の返事を読めません`);
-    }
+  function scoped(callId: string | undefined): Scoped {
+    return {
+      listTargets: () => relay.listTargets(callId),
+      async callJson<T>(target: string, name: string, args: Record<string, unknown>): Promise<T> {
+        const r = await relay.callTool(target, name, args, callId);
+        if (r.isError) throw new PublishDirectoryError(r.text || `${target} の ${name} が失敗しました`);
+        try {
+          return JSON.parse(r.text) as T;
+        } catch {
+          throw new PublishDirectoryError(`${target} の ${name} の返事を読めません`);
+        }
+      },
+    };
   }
 
-  const withRole = (targets: RelayTarget[], role: string) => targets.filter((t) => t.roles.includes(role)).map((t) => t.name);
+  const withRole = (targets: RelayTargets, role: string) => targets.targets.filter((t) => t.roles.includes(role)).map((t) => t.name);
+
+  /**
+   * **Service の宛先が1本も無いときの理由**（追加・2026-09-28、Fable のレビュー）。中継は「その Project に Service が無い」と
+   * 「どの Project のための呼び出しか決められない（だから Project の Module を1本も見せない）」を同じ空の一覧で返すので、
+   * 中継が添える `onBehalfOf` で分ける——以前は後者でも「Service を入れてください」と嘘の案内を出していた
+   */
+  function noServiceReason(targets: RelayTargets, projectId: string): string {
+    if (targets.onBehalfOf === projectId) {
+      return "この Project に Service の Module がありません。公開するものは Service に登録したものから選びます（Project の設定の「Module を追加」から Service を入れてください）";
+    }
+    return (
+      "banto の中継が、この呼び出しをどの Project のためのものか決められませんでした" +
+      (targets.onBehalfOf ? `（中継は別の Project ${targets.onBehalfOf} のための呼び出しとして扱っています）` : "（同時に走っている呼び出しが混ざった等）") +
+      "。もう一度試してください"
+    );
+  }
 
   /** 出し方を選ぶ。**名前が無ければ、1つしか無いときだけそれ**（推測で選ばない） */
-  function pickMethod(targets: RelayTarget[], method: unknown): string {
+  function pickMethod(targets: RelayTargets, method: unknown): string {
     const methods = withRole(targets, PUBLISH_ROLE);
     if (methods.length === 0) throw new PublishDirectoryError("公開の出し方（publish 役割の Module）が1つも繋がっていません。banto 全体の設定の「Module を追加」から入れてください");
     if (typeof method === "string" && method !== "") {
@@ -123,14 +159,15 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
   }
 
   /** Service の登録から名前で引く（その Project の Service だけが見える——中継が絞る） */
-  async function findService(targets: RelayTarget[], name: string): Promise<ServiceStatus> {
+  async function findService(r: Scoped, targets: RelayTargets, name: string, projectId: string): Promise<ServiceStatus> {
     const services = withRole(targets, SERVICE_ROLE);
     if (services.length === 0) {
-      throw new PublishDirectoryError("この Project に Service の Module がありません。公開するものは Service に登録したものから選びます（Project の設定の「Module を追加」から Service を入れてください）");
+      const reason = noServiceReason(targets, projectId);
+      throw new PublishDirectoryError(targets.onBehalfOf === projectId ? reason : `Service の登録を読めませんでした：${reason}`);
     }
     const known: string[] = [];
     for (const target of services) {
-      const { services: list } = await callJson<{ services: ServiceStatus[] }>(target, "listServices", {});
+      const { services: list } = await r.callJson<{ services: ServiceStatus[] }>(target, "listServices", {});
       const hit = list.find((s) => s.name === name);
       if (hit) return hit;
       known.push(...list.map((s) => s.name));
@@ -144,12 +181,12 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     return stamp.project;
   }
 
-  async function publishService(args: Record<string, unknown>, meta: Record<string, unknown> | undefined) {
+  async function publishService(r: Scoped, args: Record<string, unknown>, meta: Record<string, unknown> | undefined) {
     const projectId = projectOf(meta);
     const name = typeof args.service === "string" ? args.service : "";
     if (!name) throw new PublishDirectoryError("service（Service に登録した名前）が要ります");
-    const targets = await relay.listTargets();
-    const svc = await findService(targets, name);
+    const targets = await r.listTargets();
+    const svc = await findService(r, targets, name, projectId);
 
     let port: number;
     if (args.port === undefined) {
@@ -170,12 +207,12 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     }
 
     const implementation = pickMethod(targets, args.method);
-    const info = await callJson<MethodInfo>(implementation, "describePublishMethod", {});
+    const info = await r.callJson<MethodInfo>(implementation, "describePublishMethod", {});
     if (!info.ready) throw new PublishDirectoryError(`出し方「${info.title}」はまだ使えません：${info.problem ?? "理由不明"}`);
-    const { routes } = await callJson<{ routes: RouteStatus[] }>(implementation, "listRoutes", { projectId });
+    const { routes } = await r.callJson<{ routes: RouteStatus[] }>(implementation, "listRoutes", { projectId });
     const already = routes.find((r) => r.service === name && r.port === port);
     if (already) throw new PublishDirectoryError(`${name}:${port} はもう公開しています（${already.url}）`);
-    const plan = await callJson<{ url: string; reach: Reach }>(implementation, "planPublish", { projectId, service: name, port, config: {} });
+    const plan = await r.callJson<{ url: string; reach: Reach }>(implementation, "planPublish", { projectId, service: name, port, config: {} });
 
     const replyTo = replyToOf(meta);
     const req = await requests.add({
@@ -202,36 +239,36 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     };
   }
 
-  async function unpublishService(args: Record<string, unknown>, meta: Record<string, unknown> | undefined) {
+  async function unpublishService(r: Scoped, args: Record<string, unknown>, meta: Record<string, unknown> | undefined) {
     const projectId = projectOf(meta);
     const name = typeof args.service === "string" ? args.service : "";
     if (!name) throw new PublishDirectoryError("service が要ります");
-    const targets = await relay.listTargets();
+    const targets = await r.listTargets();
     const methods = typeof args.method === "string" && args.method !== "" ? [pickMethod(targets, args.method)] : withRole(targets, PUBLISH_ROLE);
     const removed: { url: string; method: string; note?: string }[] = [];
     for (const m of methods) {
-      const { routes } = await callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
-      for (const r of routes.filter((x) => x.service === name && (args.port === undefined || x.port === args.port))) {
-        const out = await callJson<{ removed: boolean; url?: string; note?: string }>(m, "unpublishRoute", { projectId, service: r.service, port: r.port });
-        if (out.removed) removed.push({ url: out.url ?? r.url, method: m, ...(out.note ? { note: out.note } : {}) });
+      const { routes } = await r.callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
+      for (const route of routes.filter((x) => x.service === name && (args.port === undefined || x.port === args.port))) {
+        const out = await r.callJson<{ removed: boolean; url?: string; note?: string }>(m, "unpublishRoute", { projectId, service: route.service, port: route.port });
+        if (out.removed) removed.push({ url: out.url ?? route.url, method: m, ...(out.note ? { note: out.note } : {}) });
       }
     }
     if (removed.length === 0) throw new PublishDirectoryError(`${name}${args.port !== undefined ? `:${String(args.port)}` : ""} は公開していません`);
     return { removed };
   }
 
-  async function listPublished(meta: Record<string, unknown> | undefined) {
+  async function listPublished(r: Scoped, meta: Record<string, unknown> | undefined) {
     const projectId = projectOf(meta);
-    const targets = await relay.listTargets();
+    const targets = await r.listTargets();
     const methods: Array<{ name: string } & Partial<MethodInfo> & { problem?: string }> = [];
     const published: Array<RouteStatus & { method: string }> = [];
     for (const m of withRole(targets, PUBLISH_ROLE)) {
       // 1本が壊れていても他は見せる。壊れていることは隠さない（規則2）
       try {
-        const info = await callJson<MethodInfo>(m, "describePublishMethod", {});
+        const info = await r.callJson<MethodInfo>(m, "describePublishMethod", {});
         methods.push({ name: m, title: info.title, reach: info.reach, ready: info.ready, ...(info.problem ? { problem: info.problem } : {}) });
-        const { routes } = await callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
-        for (const r of routes) published.push({ ...r, method: m });
+        const { routes } = await r.callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
+        for (const route of routes) published.push({ ...route, method: m });
       } catch (err) {
         methods.push({ name: m, problem: errText(err) });
       }
@@ -248,7 +285,13 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
       published: published.map(({ projectId: _p, ...rest }) => rest),
       pending,
       methods,
+      withdrawn: withdrawnView(await withdrawals.forProject(projectId)),
     };
+  }
+
+  /** 自分でやめた公開（Service の登録が消されたので）を、画面と AI に見せる形に */
+  function withdrawnView(list: Withdrawal[]) {
+    return list.map(({ projectId: _p, ...rest }) => rest);
   }
 
   // ---- 人が画面で押す口（刻印 {admin:true} があるときだけ）----------------------------------------
@@ -260,15 +303,15 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
   }
 
   /** 画面が開いたときに引く：頼みの中身・出し方の設定項目・（入れた設定での）URL の見積もり */
-  async function getRequest(args: Record<string, unknown>) {
+  async function getRequest(r: Scoped, args: Record<string, unknown>) {
     const req = await requests.get(String(args.requestId ?? ""));
     if (!req) throw new PublishDirectoryError("その公開の頼みはありません（24時間を過ぎたか、id が違います）");
     if (req.state !== "pending") return { request: view(req) };
-    const method = await callJson<MethodInfo>(req.implementation, "describePublishMethod", {});
+    const method = await r.callJson<MethodInfo>(req.implementation, "describePublishMethod", {});
     let plan: { url: string; reach: Reach } | undefined;
     let planProblem: string | undefined;
     try {
-      plan = await callJson<{ url: string; reach: Reach }>(req.implementation, "planPublish", {
+      plan = await r.callJson<{ url: string; reach: Reach }>(req.implementation, "planPublish", {
         projectId: req.projectId,
         service: req.service,
         port: req.port,
@@ -290,18 +333,19 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
    * 人の画面なので Project は引数で受ける（画面は banto が渡す `dev.banto/project` から知る）。
    * 1つが読めなくても他は見せ、読めなかったことは隠さない（規則2）
    */
-  async function overview(args: Record<string, unknown>) {
+  async function overview(r: Scoped, args: Record<string, unknown>, stamp: ReturnType<typeof callerOf>) {
     const projectId = typeof args.projectId === "string" ? args.projectId : "";
     if (!projectId) throw new PublishDirectoryError("projectId が要ります");
-    const targets = await relay.listTargets();
+    assertSameProject(stamp, projectId);
+    const targets = await r.listTargets();
     const methods: Array<{ name: string; title?: string; reach?: Reach; reachLabel?: string; ready?: boolean; problem?: string }> = [];
     const published: Array<RouteStatus & { method: string; methodTitle?: string; reachLabel: string }> = [];
     for (const m of withRole(targets, PUBLISH_ROLE)) {
       try {
-        const info = await callJson<MethodInfo>(m, "describePublishMethod", {});
+        const info = await r.callJson<MethodInfo>(m, "describePublishMethod", {});
         methods.push({ name: m, title: info.title, reach: info.reach, reachLabel: REACH_LABEL[info.reach], ready: info.ready, ...(info.problem ? { problem: info.problem } : {}) });
-        const { routes } = await callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
-        for (const r of routes) published.push({ ...r, method: m, methodTitle: info.title, reachLabel: REACH_LABEL[r.reach] });
+        const { routes } = await r.callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
+        for (const route of routes) published.push({ ...route, method: m, methodTitle: info.title, reachLabel: REACH_LABEL[route.reach] });
       } catch (err) {
         methods.push({ name: m, problem: errText(err) });
       }
@@ -309,9 +353,12 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     // **まだ公開していないが、待ち受けているサーバ**——「何を公開できるか」を人が見て、AI に頼めるように
     const services: Array<{ name: string; port: number; listening: boolean; state: string }> = [];
     let servicesProblem: string | undefined;
+    // **Service の宛先が0本なら、読めなかったと言う**（追加・2026-09-28、Fable のレビュー）。以前は黙って空にしていたので、
+    // 中継が Project を決められなかったとき、画面は「まだ公開していないサーバ」が無いように見えた（規則2）
+    if (withRole(targets, SERVICE_ROLE).length === 0) servicesProblem = noServiceReason(targets, projectId);
     try {
       for (const t of withRole(targets, SERVICE_ROLE)) {
-        const { services: list } = await callJson<{ services: ServiceStatus[] }>(t, "listServices", {});
+        const { services: list } = await r.callJson<{ services: ServiceStatus[] }>(t, "listServices", {});
         for (const svc of list) for (const port of svc.ports) services.push({ name: svc.name, port, listening: svc.listening.includes(port), state: svc.state });
       }
     } catch (err) {
@@ -333,41 +380,103 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
       methods,
       unpublished: services.filter((s) => !published.some((p) => p.service === s.name && p.port === s.port)),
       ...(servicesProblem ? { servicesProblem } : {}),
+      withdrawn: withdrawnView(await withdrawals.forProject(projectId)),
     };
   }
 
+  /**
+   * **画面が言う Project と、banto が刻んだ Project が違えば断る**（追加・2026-09-28）。人の画面の呼び出しには banto が
+   * その画面の Project を `forProject` で刻む（`CallerStamp`）。画面が渡す引数と食い違うと、Service は刻まれた Project の
+   * ものが見え、公開は引数の Project のものが見える——別々の Project の中身を1枚に混ぜない
+   */
+  function assertSameProject(stamp: ReturnType<typeof callerOf>, projectId: string): void {
+    if (stamp && "admin" in stamp && stamp.forProject !== undefined && stamp.forProject !== projectId) {
+      throw new PublishDirectoryError(`画面の Project（${projectId}）と、banto が渡した Project（${stamp.forProject}）が違います`);
+    }
+  }
+
   /** 入口の画面から、人が公開をやめる（狭める向きなので確かめは画面の中の二度押しだけ） */
-  async function unpublishFromCanvas(args: Record<string, unknown>) {
+  async function unpublishFromCanvas(r: Scoped, args: Record<string, unknown>, stamp: ReturnType<typeof callerOf>) {
     const projectId = typeof args.projectId === "string" ? args.projectId : "";
     const method = typeof args.method === "string" ? args.method : "";
     if (!projectId || !method || typeof args.service !== "string" || typeof args.port !== "number") {
       throw new PublishDirectoryError("projectId・method・service・port が要ります");
     }
-    const targets = await relay.listTargets();
+    assertSameProject(stamp, projectId);
+    const targets = await r.listTargets();
     if (!withRole(targets, PUBLISH_ROLE).includes(method)) throw new PublishDirectoryError(`出し方「${method}」はありません`);
-    return callJson<{ removed: boolean; url?: string; note?: string }>(method, "unpublishRoute", { projectId, service: args.service, port: args.port });
+    return r.callJson<{ removed: boolean; url?: string; note?: string }>(method, "unpublishRoute", { projectId, service: args.service, port: args.port });
   }
 
-  async function approve(args: Record<string, unknown>) {
+  async function approve(r: Scoped, args: Record<string, unknown>) {
     const config = (args.config ?? {}) as Record<string, unknown>;
-    return requests.decide(String(args.requestId ?? ""), async (req) => {
-      // **設定は中身を見ずにそのまま渡す**。実装が断ったら（パスワードが短い等）頼みは待ったまま——人が直して押し直せる
-      const out = await callJson<{ url: string; reach: Reach }>(req.implementation, "publishRoute", {
-        projectId: req.projectId,
-        service: req.service,
-        port: req.port,
-        config,
-      });
-      await notify(req, `公開しました：${req.service}:${req.port}`, `人が承認し、${req.service}:${req.port} を ${out.url} で公開しました（届く範囲：${REACH_LABEL[out.reach]}）。`);
+    const { request: req, result } = await requests.decide(String(args.requestId ?? ""), async (req) => {
+      const target = { projectId: req.projectId, service: req.service, port: req.port };
+      let out: { url: string; reach: Reach };
+      try {
+        // **設定は中身を見ずにそのまま渡す**。実装が断ったら（パスワードが短い等）頼みは待ったまま——人が直して押し直せる
+        out = await r.callJson<{ url: string; reach: Reach }>(req.implementation, "publishRoute", { ...target, config });
+      } catch (err) {
+        // **道は張れたのに返事だけ落ちた**（2026-09-28、Fable のレビュー）——押し直すと「もう公開しています」で断られ、
+        // 頼みは永遠に待ったままになる。実装の一覧にその公開があれば、公開したと確定させる（実装が真実、規則3）
+        const { routes } = await r
+          .callJson<{ routes: RouteStatus[] }>(req.implementation, "listRoutes", { projectId: req.projectId })
+          .catch(() => ({ routes: [] as RouteStatus[] }));
+        const live = routes.find((x) => x.service === req.service && x.port === req.port);
+        if (!live) throw err;
+        out = { url: live.url, reach: live.reach };
+      }
       return { state: "published", url: out.url, result: { state: "published", url: out.url, reach: out.reach, reachLabel: REACH_LABEL[out.reach] } };
     });
+    // **決めたことを書いてから届ける**——届けてから書くと、書けなかったとき会話と頼みが食い違う
+    await notify(req, `公開しました：${req.service}:${req.port}`, `人が承認し、${req.service}:${req.port} を ${result.url} で公開しました（届く範囲：${result.reachLabel}）。`);
+    return result;
   }
 
   async function decline(args: Record<string, unknown>) {
-    return requests.decide(String(args.requestId ?? ""), async (req) => {
-      await notify(req, `公開を断られました：${req.service}:${req.port}`, `人が ${req.service}:${req.port} の公開を断りました。公開していません。`);
-      return { state: "declined", result: { state: "declined" } };
-    });
+    const { request: req, result } = await requests.decide(String(args.requestId ?? ""), async () => ({ state: "declined", result: { state: "declined" } }));
+    await notify(req, `公開を断られました：${req.service}:${req.port}`, `人が ${req.service}:${req.port} の公開を断りました。公開していません。`);
+    return result;
+  }
+
+  /**
+   * **Service の登録が消されたので、その公開をやめる**（追加・2026-09-28、Fable のレビュー、ユーザー決定の案A）。
+   *
+   * Service の `removeService` が中継で呼ぶ。以前は公開が残り、同じ名前で別の中身を登録し直すと、人の承認なしに
+   * 同じ URL の中身が替わった（Service が「上書きは断る」と決めた理由そのもの）。やめるのは狭める向きなので承認は要らない。
+   * **呼べるのは Project の刻印だけ**——その Project の公開だけ触れる。承認待ちの頼みも取り下げる（人が見て承認するのは
+   * 前の中身なので、登録し直した後の中身を、その承認で出さない）。
+   * **1つでもやめられなければ投げる**——Service はそれを見て登録を消すのを断る（消したのに公開が残る、を作らない）
+   */
+  async function serviceRemoved(r: Scoped, args: Record<string, unknown>, meta: Record<string, unknown> | undefined) {
+    const stamp = callerOf(meta);
+    if (!stamp || !("project" in stamp)) throw new PublishDirectoryError("serviceRemoved は Project の Module（Service）からだけ呼べます");
+    const projectId = stamp.project;
+    const name = typeof args.service === "string" ? args.service : "";
+    if (!name) throw new PublishDirectoryError("service が要ります");
+    const reason = `Service の登録「${name}」が消されたので、公開もやめました`;
+    const targets = await r.listTargets();
+    const stopped: Omit<Withdrawal, "at">[] = [];
+    const problems: string[] = [];
+    for (const m of withRole(targets, PUBLISH_ROLE)) {
+      try {
+        const { routes } = await r.callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
+        for (const route of routes.filter((x) => x.service === name)) {
+          const out = await r.callJson<{ removed: boolean; url?: string; note?: string }>(m, "unpublishRoute", { projectId, service: name, port: route.port });
+          if (out.removed) stopped.push({ projectId, service: name, port: route.port, url: out.url ?? route.url, method: m, reason, ...(out.note ? { note: out.note } : {}) });
+        }
+      } catch (err) {
+        problems.push(`${m}：${errText(err)}`);
+      }
+    }
+    const cancelled = await requests.withdraw(projectId, name);
+    // やめられた分は、やめられなかったものがあっても記録する（人に見せる）
+    await withdrawals.add(stopped);
+    if (problems.length > 0) throw new PublishDirectoryError(`「${name}」の公開をやめられなかった出し方があります：${problems.join(" / ")}`);
+    return {
+      unpublished: stopped.map(({ projectId: _p, reason: _r, ...rest }) => rest),
+      withdrawnRequests: cancelled.map((c) => ({ requestId: c.id, port: c.port, plannedUrl: c.plannedUrl })),
+    };
   }
 
   /** 結果を呼び出し元の Thread に届ける。**届かなくても公開の結果は変えない**（公開はもう済んでいる）——理由は残す */
@@ -468,7 +577,9 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
         name: "listPublished",
         description:
           "この Project の公開の一覧（URL・届く範囲・認証・状態）と、承認待ちのもの、使える出し方。" +
-          "state は active（届いている）／not-listening（サーバに届かない）／project-stopped（コンテナが止まっている）／caddy-unreachable 等",
+          "state は active（届いている）／not-listening（サーバに届かない）／project-stopped（コンテナが止まっている）／" +
+          "address-unknown（コンテナのアドレスを一時的に確かめられない。道はそのまま）／caddy-unreachable 等。" +
+          "withdrawn は Service の登録が消されたので banto が自分でやめた公開（24時間）",
         inputSchema: { type: "object", properties: {} },
         _meta: { [VISIBILITY_META_KEY]: "agent" },
       },
@@ -501,6 +612,14 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
         _meta: admin,
       },
       {
+        // **Service の登録が消されたら、その公開もやめる**（追加・2026-09-28）。Service が removeService の中で中継で呼ぶ。
+        // 値を返さない（やめた URL だけ）ので初回の承認を聞かない——登録を消すたびに人を止めない
+        name: "serviceRemoved",
+        description: "Service の登録が消された。そのサービスの公開をやめ、承認待ちの頼みを取り下げる（Project の Module からだけ）",
+        inputSchema: { type: "object", properties: { service: { type: "string" } }, required: ["service"] },
+        _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true, [AUDIT_ARGS_META_KEY]: ["service"] },
+      },
+      {
         name: "decline_publish",
         description: "人が承認の画面で「公開しない」を押した",
         inputSchema: { type: "object", properties: { requestId: { type: "string" } }, required: ["requestId"] },
@@ -514,29 +633,33 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     const meta = request.params._meta as Record<string, unknown> | undefined;
     const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
     const name = request.params.name;
+    // この呼び出しの中の中継には、host が渡した呼び出しの印を必ず添える（`Scoped`）
+    const r = scoped(callIdOf(meta));
     try {
       switch (name) {
         case "publishService":
-          return await publishService(args, meta);
+          return await publishService(r, args, meta);
         case "unpublishService":
-          return json(await unpublishService(args, meta));
+          return json(await unpublishService(r, args, meta));
         case "listPublished":
-          return json(await listPublished(meta));
+          return json(await listPublished(r, meta));
+        case "serviceRemoved":
+          return json(await serviceRemoved(r, args, meta));
       }
       // ここから下は**人の操作だけ**。可視性で AI からは見えないが、呼び出しの刻印でも確かめる
       const stamp = callerOf(meta);
       if (!stamp || !("admin" in stamp)) throw new PublishDirectoryError(`${name} は人の操作からだけ呼べます`);
       switch (name) {
         case "get_publish_request":
-          return json(await getRequest(args));
+          return json(await getRequest(r, args));
         case "approve_publish":
-          return json(await approve(args));
+          return json(await approve(r, args));
         case "decline_publish":
           return json(await decline(args));
         case "get_publish_overview":
-          return json(await overview(args));
+          return json(await overview(r, args, stamp));
         case "unpublish_route":
-          return json(await unpublishFromCanvas(args));
+          return json(await unpublishFromCanvas(r, args, stamp));
         default:
           throw new Error(`unknown tool: ${name}`);
       }
@@ -561,5 +684,6 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   await createPublishDirectoryServer({
     relay: new HostRelayClient(hostUrl, hostToken),
     requests: new RequestStore(dataDir),
+    withdrawals: new WithdrawalLog(dataDir),
   }).connect(new StdioServerTransport());
 }

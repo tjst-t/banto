@@ -24,10 +24,20 @@ export interface PublishRequest {
   /** 呼び出し元の Thread に結果を届ける札（host が渡したもの。無ければ届けない） */
   replyTo?: string;
   createdAt: string;
-  state: "pending" | "published" | "declined";
+  /**
+   * `withdrawn`——人が答える前に、公開するはずだった Service の登録が消された（追加・2026-09-28）。
+   * 同じ名前で別の中身が登録し直されても、この頼みでは公開しない（人が見て承認したのは前の中身）
+   */
+  state: "pending" | "published" | "declined" | "withdrawn";
   decidedAt?: string;
   url?: string;
 }
+
+const STATE_TEXT: Record<Exclude<PublishRequest["state"], "pending">, string> = {
+  published: "公開済み",
+  declined: "断った",
+  withdrawn: "取り下げた——Service の登録が消された",
+};
 
 /** 押されていない頼みの上限（Project ごと）。AI が繰り返し呼んでも置き場を埋めない */
 export const MAX_PENDING_PER_PROJECT = 20;
@@ -96,14 +106,21 @@ export class RequestStore {
 
   /**
    * 押されたものを決める。**待っている状態から1回だけ**——同じ頼みで2回公開しない。
-   * `fn` が投げたら待っている状態のまま（人が設定を直してもう一度押せる）
+   * `fn` が投げたら待っている状態のまま（人が設定を直してもう一度押せる）。
+   *
+   * **決めたことを書いてから返す**（改訂・2026-09-28、Fable のレビュー）。会話に届けるのは呼び出し元がこの後で行う
+   * ——以前は `fn` の中で届けてから書いていたので、書くのに失敗すると「会話には公開したと届いたのに、頼みは待ったまま」
+   * になり、人がもう一度押せてしまった
    */
-  decide<T>(id: string, fn: (req: PublishRequest) => Promise<{ state: "published" | "declined"; url?: string; result: T }>): Promise<T> {
+  decide<T>(
+    id: string,
+    fn: (req: PublishRequest) => Promise<{ state: "published" | "declined"; url?: string; result: T }>,
+  ): Promise<{ request: PublishRequest; result: T }> {
     return this.serialize(async () => {
       const all = await this.read();
       const req = all.find((r) => r.id === id);
       if (!req) throw new Error("その公開の頼みはありません（24時間を過ぎたか、id が違います）");
-      if (req.state !== "pending") throw new Error(`その頼みはもう答えが出ています（${req.state === "published" ? "公開済み" : "断った"}）`);
+      if (req.state !== "pending") throw new Error(`その頼みはもう答えが出ています（${STATE_TEXT[req.state]}）`);
       const out = await fn(req);
       const decided: PublishRequest = {
         ...req,
@@ -112,7 +129,81 @@ export class RequestStore {
         ...(out.url ? { url: out.url } : {}),
       };
       await this.write(all.map((r) => (r.id === id ? decided : r)));
-      return out.result;
+      return { request: decided, result: out.result };
     });
+  }
+
+  /** その Service の、人がまだ答えていない頼みを取り下げる（Service の登録が消されたとき）。取り下げたものを返す */
+  withdraw(projectId: string, service: string): Promise<PublishRequest[]> {
+    return this.serialize(async () => {
+      const all = await this.read();
+      const at = this.now().toISOString();
+      const hit = (r: PublishRequest) => r.projectId === projectId && r.service === service && r.state === "pending";
+      const withdrawn = all.filter(hit).map((r) => ({ ...r, state: "withdrawn" as const, decidedAt: at }));
+      if (withdrawn.length > 0) await this.write(all.map((r) => (hit(r) ? withdrawn.find((w) => w.id === r.id)! : r)));
+      return withdrawn;
+    });
+  }
+}
+
+/** 窓口が自分でやめた公開（Service の登録が消されたので）。人に分かるように、一覧に24時間出す */
+export interface Withdrawal {
+  projectId: string;
+  service: string;
+  port: number;
+  url: string;
+  /** 出し方＝実装の Module の名前 */
+  method: string;
+  reason: string;
+  at: string;
+  /** 実装の道がまだ消せていない等（消えるまでは実装の突き合わせが続ける） */
+  note?: string;
+}
+
+/**
+ * **自分でやめた公開の記録**（追加・2026-09-28、Fable のレビュー——公開中の Service が `removeService` されたら公開もやめる）。
+ * 公開の一覧は持たない（規則3）が、**「やめた」という出来事は実装に残らない**ので、人に見せるためにここに置く。24時間で片づける
+ */
+export class WithdrawalLog {
+  private readonly path: string;
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    dir: string,
+    private readonly now: () => Date = () => new Date(),
+  ) {
+    this.path = join(dir, "withdrawn.json");
+  }
+
+  private async read(): Promise<Withdrawal[]> {
+    let text: string;
+    try {
+      text = await readFile(this.path, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+    const limit = this.now().getTime() - KEEP_MS;
+    return ((JSON.parse(text) as { withdrawn: Withdrawal[] }).withdrawn ?? []).filter((w) => Date.parse(w.at) > limit);
+  }
+
+  add(entries: Omit<Withdrawal, "at">[]): Promise<Withdrawal[]> {
+    const next = this.queue.then(async () => {
+      if (entries.length === 0) return [];
+      const at = this.now().toISOString();
+      const added = entries.map((e) => ({ ...e, at }));
+      const all = [...(await this.read()), ...added];
+      await mkdir(join(this.path, ".."), { recursive: true });
+      const tmp = `${this.path}.tmp-${process.pid}`;
+      await writeFile(tmp, JSON.stringify({ withdrawn: all }, null, 2), { mode: 0o600 });
+      await rename(tmp, this.path);
+      return added;
+    });
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
+  async forProject(projectId: string): Promise<Withdrawal[]> {
+    return (await this.read()).filter((w) => w.projectId === projectId);
   }
 }

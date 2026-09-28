@@ -205,6 +205,7 @@ const SCRIPT = String.raw`
     active: { tone: "ok", text: "届いています" },
     "not-listening": { tone: "warn", text: "サーバが待ち受けていません。Service のログを確かめてください" },
     "project-stopped": { tone: "idle", text: "コンテナが止まっています。Project を開くと戻ります" },
+    "address-unknown": { tone: "warn", text: "コンテナのアドレスを確かめられません。道はそのままにしてあります（しばらくすると戻ります）" },
     "caddy-unreachable": { tone: "danger", text: "Caddy に繋がりません" },
   };
   function stateOf(p) { return STATE[p.state] || { tone: "danger", text: p.problem || p.state }; }
@@ -234,6 +235,7 @@ const SCRIPT = String.raw`
       else kids.push(h("ul", { class: "doors", "aria-label": "公開しているもの" }, pub.map(door)));
       if (data.pending.length) kids.push(pendingSection(data.pending));
       if (data.unpublished.length || data.servicesProblem) kids.push(restSection(data.unpublished, data.servicesProblem));
+      if (data.withdrawn && data.withdrawn.length) kids.push(withdrawnSection(data.withdrawn));
     }
     kids.push(h("p", { class: "flash", role: "status", "aria-live": "polite", text: flash }));
     app.replaceChildren(...kids);
@@ -297,6 +299,21 @@ const SCRIPT = String.raw`
     ]);
   }
 
+  /** banto が自分でやめた公開（Service の登録が消されたので）。黙って消えたように見せない */
+  function withdrawnSection(list) {
+    return h("section", { class: "section" }, [
+      h("h2", { class: "section-title", text: "自動でやめた公開" }),
+      h("p", { class: "section-lead", text: "Service の登録が消されたので、同じ URL に別の中身が出ないよう、banto が公開をやめました（24時間ここに出ます）。" }),
+      h("ul", { class: "rest", "aria-label": "自動でやめた公開" }, list.map((w) => h("li", {}, [
+        h("span", { class: "name", text: w.url + "（" + w.service + " の " + w.port + " 番）" }),
+        h("span", { class: "note", text: whenText(w.at) + (w.note ? "・" + w.note : "") }),
+      ]))),
+    ]);
+  }
+  function whenText(iso) {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) + " にやめました";
+  }
   function emptyState() {
     return h("div", { class: "empty" }, [
       h("p", { text: "コンテナの中で動かしたサーバは、そのままでは外から届きません。" }),
