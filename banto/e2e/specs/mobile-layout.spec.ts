@@ -287,18 +287,17 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
   ).toBeLessThanOrEqual(8);
 });
 
-test("返事の直後（最後のターンが上端に固定された位置）でキーボードを開閉しても、元の位置に戻る", async ({
+test("返事の直後（一番下に居る）でキーボードを開閉しても、元の位置に戻る", async ({
   page,
 }) => {
   // **実機で報告された不具合そのもの**（2026-09-07：閉じたときに前のターンの
   // あたりまで戻る）。これまでの試験は手でスクロールしてから測っていたため、
   // **「送って、返事が来て、そのまま」**という一番よくある状態を見ていなかった。
   //
-  // この状態では assistant-ui（turnAnchor="top"）が最後のターンを器の上端に固定し、
-  // ターンの下に reserve（余白）を置いている。reserve は器の高さに追従するが
-  // **1フレーム遅れる**ので、閉じた瞬間にブラウザが scrollTop を切り詰め、さらに
-  // 自前部品が「高さの差分」を引いて**二重に戻っていた**
-  // （実測・修正前：scrollTop 2136 → 1304、アンカーが画面の 94 → 926 に落ちた）。
+  // 当時は assistant-ui が turnAnchor="top" で最後のターンを器の上端に固定し、下に reserve（余白）を
+  // 置いていた。reserve の伸縮が1フレーム遅れるので、閉じた瞬間に二重に戻っていた
+  // （実測・修正前：scrollTop 2136 → 1304）。**2026-09-28 から turnAnchor="bottom"**（返事を追って
+  // 一番下に居る）——この状態でも、開閉で最後の返事の位置が動かないことを見る。
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-pin-"));
 
   await openApp(page);
@@ -322,7 +321,7 @@ test("返事の直後（最後のターンが上端に固定された位置）�
     timeout: 120_000,
   });
 
-  // ターン2：これが「最後のターン」になり、器の上端に固定される
+  // ターン2：これが「最後のターン」になり、返事を追って一番下に居る
   await composer.fill("今度も「はい」とだけ返して。");
   await composer.press("Enter");
   await expect(page.locator('[data-role="assistant"]')).toHaveCount(2, { timeout: 120_000 });
@@ -332,7 +331,7 @@ test("返事の直後（最後のターンが上端に固定された位置）�
   await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0, {
     timeout: 120_000,
   });
-  // 固定へのスクロール（smooth）と中身の測り直しが終わるのを待つ
+  // 一番下へのスクロール（smooth）と中身の測り直しが終わるのを待つ
   await page.waitForTimeout(2500);
   await waitForStableHeight(page);
 
@@ -340,21 +339,22 @@ test("返事の直後（最後のターンが上端に固定された位置）�
   const pinState = async () =>
     page.evaluate(() => {
       const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
-      const anchor = sc?.querySelector<HTMLElement>("[data-aui-top-anchor-user]");
       const lastAssistant = [...(sc?.querySelectorAll<HTMLElement>('[data-role="assistant"]') ?? [])].at(-1);
       const composerEl = document.querySelector("textarea");
-      if (!sc || !anchor || !lastAssistant || !composerEl) return null;
+      if (!sc || !lastAssistant || !composerEl) return null;
       return {
         scrollTop: Math.round(sc.scrollTop),
-        /** アンカー（最後のuser発言）の画面上の位置——人から見た「動いたかどうか」 */
-        anchorTop: Math.round(anchor.getBoundingClientRect().top),
+        fromBottom: Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight),
+        /** アンカー（最後の返事）の画面上の位置——人から見た「動いたかどうか」 */
+        anchorTop: Math.round(lastAssistant.getBoundingClientRect().top),
         lastAssistantTop: Math.round(lastAssistant.getBoundingClientRect().top),
         composerTop: Math.round(composerEl.getBoundingClientRect().top),
       };
     });
 
   const before = await pinState();
-  expect(before, "固定位置の測定に必要な要素が無い").not.toBeNull();
+  expect(before, "位置の測定に必要な要素が無い").not.toBeNull();
+  expect(before!.fromBottom, "返事のあと一番下に居ない").toBeLessThan(8);
 
   // キーボードが出た相当。**最後の返事は入力欄より上に見えたまま**であること
   await page.setViewportSize({ width: 412, height: 420 });

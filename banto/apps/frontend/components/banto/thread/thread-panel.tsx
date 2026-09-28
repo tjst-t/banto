@@ -6,8 +6,8 @@
 // RemoteThreadListRuntime の前提とは相性が悪い。Thread ごとに Runtime を分けることで、
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
-import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
-import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { AssistantRuntimeProvider, ExportedMessageRepository, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
@@ -204,10 +204,12 @@ export function ThreadPanel({
 
   return (
     <ThreadRuntime
-      // useLocalRuntime は initialMessages を作るときにしか読まない——記録から組み直したとき
-      // （`restoredSyncVersion` が進んだとき）だけ作り直す。**会話が送っている・流している間は
-      // 組み直さない**（`registerRuntimeBusy`）ので、流れている表示も送った発言も壊さない
-      key={`${thread.id}:${restoredSyncVersion(thread.id)}`}
+      // **ランタイムは Thread ごとに1つ、作り直さない**（改訂・2026-09-28、Fable のレビュー→ユーザー判断）。
+      // 以前は記録から組み直すたびに key を変えてランタイムごと捨てていたので、そのたびに入力欄・
+      // スクロール・カードの開閉・流れていた run の後片づけまで失っていた。いまは組み直した版
+      // （`restoredSyncVersion`）が進んだら、**同じランタイムに記録を流し込む**（ThreadRuntime の中）。
+      // **会話が送っている・流している間は組み直さない**（`registerRuntimeBusy`）のは前と同じ
+      key={thread.id}
       build={restoredSyncVersion(thread.id)}
       adapter={adapter}
       initialMessages={initialMessages}
@@ -250,7 +252,7 @@ function ThreadRuntime({
   allowBranching: boolean;
   onForkFrom?: ForkFromMessage;
   imageAttachments: boolean;
-  /** この会話を記録から組み立てた版（`restoredSyncVersion`）。乗った流れを描き始めてよいかの照合に使う */
+  /** この会話を記録から組み立てた版（`restoredSyncVersion`）。進んだら記録を流し込み直す。乗った流れを描き始めてよいかの照合にも使う */
   build: number;
 }) {
   const attachments = useMemo(
@@ -263,15 +265,28 @@ function ThreadRuntime({
     unstable_humanToolNames: [HUMAN_TOOL_NAME, ...APPROVAL_TOOL_NAMES],
   });
 
-  // **書きかけは面が作り直されても残す**（決定・2026-09-28、ユーザー要望）——ランタイムは作り直すたびに
-  // 新しくなるので、入力欄の中身は外に写しておき、作られたら戻す。描く前に戻す（空の入力欄を一瞬見せない）
+  // **書きかけは面が作り直されても残す**（決定・2026-09-28、ユーザー要望）——ランタイムは組み直しでは
+  // 作り直さなくなったが、別のページへ行く・Fork と Canvas を両方開く等で面ごと消えることはある。
+  // 入力欄の中身は外に写しておき、作られたら戻す。描く前に戻す（空の入力欄を一瞬見せない）
   useLayoutEffect(() => keepComposerDraft(threadId, runtime.thread.composer), [runtime, threadId]);
 
+  // **記録から組み直したら、同じランタイムに流し込む**（決定・2026-09-28）。作ったときの版（最初の
+  // `initialMessages` がそれ）から版が進んだら、そのときの写しで会話を入れ替える。描く前に入れ替える
+  // （古い会話を一瞬見せない）。走っている run が残っていれば先に止める——前は作り直しで捨てていたもの
+  // （呼ぶ側は走っている間は組み直さないので、ふつうは何も走っていない）
+  const importedBuild = useRef(build);
+  useLayoutEffect(() => {
+    if (importedBuild.current === build) return;
+    importedBuild.current = build;
+    runtime.thread.cancelRun();
+    runtime.thread.import(ExportedMessageRepository.fromArray(initialMessages));
+    // 流し込む版は build が進んだときの写し——initialMessages はその都度写しから作り直されている
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runtime, build]);
+
   // **host が走らせているターンに乗ったら、自分で送ったときと同じく本文に流す**（決定・2026-09-26）。
-  // 乗るたびに会話は記録から作り直される（このランタイムは作り直された新しいもの）ので、作られたときに
-  // 1回だけ見る。**描き始めるのは、乗ったあとに組み直した版の会話だけ**（`build`——組み直す前の、
-  // すぐ捨てられる会話が先に描き始めると、残る会話では誰も描かない）。流れを読むのは adapter の run
-  // ——自分で送ったターンと同じ道（規則3）
+  // 乗るたびに会話は記録から組み直される（上で流し込む）。**描き始めるのは、乗ったあとに組み直した版の
+  // 会話だけ**（`build`）。流れを読むのは adapter の run——自分で送ったターンと同じ道（規則3）
   useEffect(() => {
     if (!takeFollowToStart(threadId, build)) return;
     const messages = runtime.thread.getState().messages;

@@ -255,16 +255,20 @@ const ThreadRoot: FC<{
         ["--composer-padding" as string]: "8px",
       }}
     >
+      {/* **返事が伸びたら一番下を追いかける**（改訂・2026-09-28、ユーザー判断「案B」）。以前は
+          turnAnchor="top"——最後の人の発言を器の上端に固定し、返事が伸びても追いかけなかったので、
+          走っている Thread を開くと最新ターンの頭で止まり「上のほうに出る」と見えていた（実測：8秒で
+          一番下から 1138px 上）。人が上へスクロールしたら追うのをやめる（ライブラリの既定） */}
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
+        turnAnchor="bottom"
         scrollToBottomOnInitialize={restoreTo === undefined}
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
         {/* キーボードや URL バーで高さが変わっても、見えているものを保つ
             （決定・2026-09-09、根本見直し）。実内容が入力欄の下に続いていれば
-            入力欄との間隔を保ち、下が「最後のターンの余白」だけなら動かさない
-            ——余白の伸縮は assistant-ui（turnAnchor="top" の reserve）が行う */}
+            入力欄との間隔を保つ（turnAnchor="top" のときの「最後のターンの余白」の扱いも持っているが、
+            いまは bottom なので余白は出ない） */}
         <KeepScrollPositionOnResize />
         {/* 読んでいた場所を覚え、面が作り直されたらそこへ戻す（決定・2026-09-28、ユーザー要望） */}
         <RememberScrollPosition restoreTo={restoreTo} />

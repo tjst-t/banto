@@ -13,6 +13,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -180,4 +181,57 @@ test("設定画面の Escape は、節をいくつ移っていても一発で設
   await expect(page).toHaveURL(/section=global-memory/);
   await page.keyboard.press("Escape");
   await expect(page, "Escape で設定から抜けなかった").toHaveURL(new RegExp(`/p/${projectId}$`), { timeout: 10_000 });
+});
+
+test("外で始まったターンに乗っても、会話は作り直されず、一番下を追いかける", async ({ page }) => {
+  // **組み直しでランタイムを捨てない**（決定・2026-09-28）。以前は host が始めたターン（届いたもの・
+  // 別の画面）に乗るたびに会話を丸ごと作り直し、入力欄・スクロール・カードの開閉を失っていた。
+  // **案B**：走っている間は一番下を追いかける（以前は最新ターンの頭で止まった）
+  const name = `External ${Date.now()}`;
+  await openApp(page);
+  await createProject(page, name, mkdtempSync(join(tmpdir(), "banto-e2e-")));
+  const composer = baseComposer(page);
+  await sendTurn(page, composer, "ONE");
+
+  const H = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: H })).json()) as {
+    id: string;
+    name: string;
+  }[];
+  const pid = projects.find((p) => p.name === name)!.id;
+  const tid = ((await (await page.request.get(`${CORE_BASE_URL}/api/projects/${pid}/threads`, { headers: H })).json()) as {
+    id: string;
+  }[])[0]!.id;
+
+  // 器に印を付ける——作り直されたら印は消える
+  await composer.evaluate((el) => {
+    (el.closest('[data-slot="aui_thread-viewport"]') as HTMLElement & { __bantoMark?: boolean }).__bantoMark = true;
+  });
+  // 書きかけは、localStorage から戻したのではなく**入力欄のまま**残っていること（下で印と一緒に見る）
+  await composer.fill("外のターンの間の書きかけ");
+
+  // 画面の外でターンを始める（届いたもので host が始めた、の代わり）——4秒かけて長い返事を流す
+  const done = page.request.post(`${CORE_BASE_URL}/api/threads/${tid}/messages`, {
+    headers: { ...H, "content-type": "application/json" },
+    data: { prompt: `外から${fakeTurn({ say: longReply("EXT"), streamMs: 4000 })}` },
+  });
+  // 流れている途中も一番下に居る
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "EXT の 10 行目" }).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expectAtBottom(composer, "外のターンが流れている途中");
+  await done;
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "EXT-END" }).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0, { timeout: 30_000 });
+  // 終わったら host の知らせで最新を出し直す——それでも作り直さない
+  await page.waitForTimeout(1500);
+  await expectAtBottom(composer, "外のターンが終わったあと");
+  const kept = await composer.evaluate(
+    (el) => (el.closest('[data-slot="aui_thread-viewport"]') as HTMLElement & { __bantoMark?: boolean }).__bantoMark === true,
+  );
+  expect(kept, "外のターンに乗ったら会話が作り直された（器の印が消えた）").toBe(true);
+  await expect(composer).toHaveValue("外のターンの間の書きかけ");
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "ONE-END" }).first()).toBeVisible();
 });
