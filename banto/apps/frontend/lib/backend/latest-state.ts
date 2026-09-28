@@ -14,7 +14,7 @@
 // 途中で切れた／画面に戻ってきた・回線が戻った。**ポーリングはしない**（再描画が assistant-ui のランタイムを
 // 壊した——受信箱で踏んだ）。取れなかったら、少しずつ間をあけて取り直す。
 
-import { getRealThread } from "./client";
+import { getRealThread, type RealThread } from "./client";
 import { onRealAppEvent } from "./app-events";
 import {
   applyThreadRecord,
@@ -38,16 +38,35 @@ const needsRebuild = new Set<string>();
 /** 流れを最後まで読んだ——会話はもう最新なので組み直さない（下の `shownThrough` を進めるだけ） */
 const readToEnd = new Set<string>();
 /**
- * **組み直さずに見せている記録の長さ**。流れを最後まで読んだ会話は、組み立てたときの記録＋流れたターンを
+ * **組み直さずに見せている記録**。流れを最後まで読んだ会話は、組み立てたときの記録＋流れたターンを
  * 見せている——記録の写しは組み直すときにしか書き換えないので、どこまで見せているかをここで覚える。
- * 組み直したら（`build` が変わったら）捨てる
+ * 組み直したら（`build` が変わったら）捨てる。
+ *
+ * **長さだけでなく記録そのものを持つ**（改訂・2026-09-28、ユーザー報告「最新のメッセージが消える、リロードで
+ * 直る」）。以前は長さだけを覚えていた。そのあと面が作り直される（設定へ行って戻る・Fork と Canvas を両方
+ * 開く・Canvas を全画面にする）と、新しい面は**古い写し**から組み立てられるのに、ここは「もう最新を見せた」
+ * と答えるので取り直しもしなかった——流れたターンが画面から消えたまま戻らない（実測・
+ * `thread-view-persist.spec.ts`）。写しを揃える材料として、見せている記録を持っておく
  */
-const shownThrough = new Map<string, { build: number; length: number }>();
+const shownThrough = new Map<string, { build: number; record: RealThread }>();
 
 function shownLength(threadId: string): number {
   const shown = shownThrough.get(threadId);
-  if (shown && shown.build === restoredSyncVersion(threadId)) return shown.length;
+  if (shown && shown.build === restoredSyncVersion(threadId)) return shown.record.messages.length;
   return getThread(threadId)?.realMessages?.length ?? 0;
+}
+
+/**
+ * **写しを、見せている記録に揃える**。組み直さずに見せていた分（流れたターン）があるときだけ、写しをその
+ * 記録で書き換えて組み直す。面が作り直される前後で呼ぶ——作り直された面が古い写しを描かないように
+ */
+function settleShownRecord(threadId: string): void {
+  const shown = shownThrough.get(threadId);
+  shownThrough.delete(threadId);
+  if (!shown || shown.build !== restoredSyncVersion(threadId)) return;
+  // 走っている最中は組み直さない（流れている表示を壊す）——走り終えたら最新を出す道が別にある
+  if (hasLiveRealRun(threadId)) return;
+  applyThreadRecord(threadId, shown.record);
 }
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const retryDelays = new Map<string, number>();
@@ -59,6 +78,9 @@ export function registerOpenThread(threadId: string): () => void {
   openThreads.set(threadId, (openThreads.get(threadId) ?? 0) + 1);
   // 開いたばかりの会話は、いまの記録から作られている——「最後まで読んだ」の印は前の面のもの
   readToEnd.delete(threadId);
+  // 前の面が流れを最後まで読んで見せていたなら、新しい面は古い写しから作られている——見せていた記録に揃える
+  // （同じ描画で古い面が消えて新しい面が立つとき——Fork と Canvas を両方開いた等——はここで気づく）
+  settleShownRecord(threadId);
   void showLatest(threadId);
   return () => {
     const count = (openThreads.get(threadId) ?? 1) - 1;
@@ -68,6 +90,9 @@ export function registerOpenThread(threadId: string): () => void {
     }
     openThreads.delete(threadId);
     clearRetry(threadId);
+    // **誰も見なくなったら、写しを見せていた記録に揃える**——次に開く面（設定から戻った等）が、
+    // 最初から最新で組み立てられる（取り直しを待つ間、古い会話が一瞬出ることもない）
+    settleShownRecord(threadId);
   };
 }
 
@@ -118,7 +143,7 @@ async function showLatestOnce(threadId: string): Promise<void> {
     applyThreadRecord(threadId, record);
   } else if (readThrough) {
     // 最後まで読んだ会話は描き直さない（流れた吹き出しがそのまま最新——描き直すと tool のカードが消える）
-    shownThrough.set(threadId, { build: restoredSyncVersion(threadId), length: record.messages.length });
+    shownThrough.set(threadId, { build: restoredSyncVersion(threadId), record });
   } else if (record.messages.length !== shownLength(threadId)) {
     applyThreadRecord(threadId, record);
   }

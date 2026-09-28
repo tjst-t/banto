@@ -36,7 +36,7 @@ import {
   mockModuleConfigFields,
   getRoles,
 } from "@/lib/mock/settings";
-import { useEscapeNavigateBack } from "@/hooks/use-escape-navigate-back";
+import { useEscapeLeaveSettings } from "@/hooks/use-escape-leave-settings";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import {
@@ -237,7 +237,6 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
 }
 
 export function SettingsContent() {
-  useEscapeNavigateBack();
   // item14でModuleが増減しうるので、索引は静的定数にせずバージョンが
   // 変わるたびに組み直す（規則3——導出できる値を保存しない）
   useMockStoreVersion();
@@ -252,6 +251,8 @@ export function SettingsContent() {
   // ——画面が自分の中に覚えていると、外（サイドバー）から節を変えられない（規則3）
   const projectId = searchParams.get("project");
   const project = projectId ? getProject(projectId) : undefined;
+  // Escape は**一発で設定から抜ける**（改訂・2026-09-28、ユーザー要望）——節をいくつ移っていても
+  useEscapeLeaveSettings(projectId);
   const section = searchParams.get("section");
   const projectCategories = useProjectCategories(projectId ?? "");
   const projectModuleItems = useProjectModuleItems(projectId ?? "");

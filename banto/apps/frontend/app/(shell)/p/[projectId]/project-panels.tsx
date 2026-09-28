@@ -44,6 +44,7 @@ import {
 } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
+import { forgetThreadScrolls } from "@/lib/thread-scroll-memory";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
@@ -240,6 +241,10 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       cancelled = true;
     };
   }, [projectId]);
+
+  // **読んでいた場所は、この Project の画面に居るあいだだけ覚える**（決定・2026-09-28、ユーザー要望）
+  // ——Fork・Canvas を閉じたら元の場所へ戻すが、Project の画面を離れて戻ってきたら一番下から
+  useEffect(() => () => forgetThreadScrolls(), [projectId]);
 
   function addMarker(threadId: string, kind: ThreadMarker["kind"]) {
     setMarkersByThread((prev) => ({

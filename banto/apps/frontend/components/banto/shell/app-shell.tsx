@@ -4,7 +4,8 @@
 // ≥md: ProjectRail（サイドバー。展開 16rem ⇄ 畳んで 58px）+ PanelStack
 // <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → MobileNavDrawer）
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
-import { useParams } from "next/navigation";
+import { useParams, usePathname, useSearchParams } from "next/navigation";
+import { rememberOutsideSettings } from "@/lib/settings-return";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
@@ -52,6 +53,12 @@ function AppShellInner({ children }: { children: ReactNode }) {
     getSidebarPreference,
     getServerSidebarPreference,
   );
+
+  // **設定に入る前に居た画面を覚える**（決定・2026-09-28）——設定の Escape はそこへ戻る。
+  // 外枠はページを移っても作り直されないので、ここで覚え続ける
+  const pathname = usePathname();
+  const search = useSearchParams().toString();
+  useEffect(() => rememberOutsideSettings(pathname, search), [pathname, search]);
 
   // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。
   // ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする

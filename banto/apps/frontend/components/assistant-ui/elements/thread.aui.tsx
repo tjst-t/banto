@@ -46,6 +46,9 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { KeepScrollPositionOnResize } from "@/components/banto/thread/keep-scroll-position-on-resize";
+import { RememberScrollPosition } from "@/components/banto/thread/remember-scroll-position";
+import { useThreadId } from "@/components/banto/thread/thread-id-context";
+import { recalledThreadScroll } from "@/lib/thread-scroll-memory";
 import { KeyboardDebugOverlay } from "@/components/banto/thread/keyboard-debug-overlay";
 import {
   ActionBarMorePrimitive,
@@ -234,6 +237,13 @@ const ThreadRoot: FC<{
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
 }> = ({ isEmpty, autoFocus, placeholder, composerActionSlot, composerHint, transcriptMarkers }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
+  // **作り直された面は、読んでいた場所へ戻す**（決定・2026-09-28）。覚えた場所が「一番下」以外なら、
+  // ライブラリの「最初に一番下へ」を止めて RememberScrollPosition が戻す。決まるのは作られたとき1回だけ
+  const threadId = useThreadId();
+  const [restoreTo] = useState(() => {
+    const recalled = threadId ? recalledThreadScroll(threadId) : undefined;
+    return recalled && recalled !== "bottom" ? recalled : undefined;
+  });
 
   return (
     <ThreadPrimitive.Root
@@ -247,6 +257,7 @@ const ThreadRoot: FC<{
     >
       <ThreadPrimitive.Viewport
         turnAnchor="top"
+        scrollToBottomOnInitialize={restoreTo === undefined}
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
@@ -255,6 +266,8 @@ const ThreadRoot: FC<{
             入力欄との間隔を保ち、下が「最後のターンの余白」だけなら動かさない
             ——余白の伸縮は assistant-ui（turnAnchor="top" の reserve）が行う */}
         <KeepScrollPositionOnResize />
+        {/* 読んでいた場所を覚え、面が作り直されたらそこへ戻す（決定・2026-09-28、ユーザー要望） */}
+        <RememberScrollPosition restoreTo={restoreTo} />
         {/* `?kbdebug=1` のときだけ出る覗き窓（実機で何が起きているかを測るため。
             決定・2026-09-09——エミュレータでは実機のキーボード動作を作れない） */}
         <KeyboardDebugWhenAsked />

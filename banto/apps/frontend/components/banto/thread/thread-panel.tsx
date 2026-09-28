@@ -6,7 +6,7 @@
 // RemoteThreadListRuntime の前提とは相性が悪い。Thread ごとに Runtime を分けることで、
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
-import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
@@ -36,6 +36,7 @@ import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread, getThreadsForProject } from "@/lib/mock/threads";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
+import { keepComposerDraft } from "@/lib/composer-drafts";
 
 export interface ThreadMarker {
   id: string;
@@ -261,6 +262,10 @@ function ThreadRuntime({
     ...(attachments ? { adapters: { attachments } } : {}),
     unstable_humanToolNames: [HUMAN_TOOL_NAME, ...APPROVAL_TOOL_NAMES],
   });
+
+  // **書きかけは面が作り直されても残す**（決定・2026-09-28、ユーザー要望）——ランタイムは作り直すたびに
+  // 新しくなるので、入力欄の中身は外に写しておき、作られたら戻す。描く前に戻す（空の入力欄を一瞬見せない）
+  useLayoutEffect(() => keepComposerDraft(threadId, runtime.thread.composer), [runtime, threadId]);
 
   // **host が走らせているターンに乗ったら、自分で送ったときと同じく本文に流す**（決定・2026-09-26）。
   // 乗るたびに会話は記録から作り直される（このランタイムは作り直された新しいもの）ので、作られたときに

@@ -133,7 +133,7 @@ export function PanelStack({
   // **上に何か開いていたら、Escape はそちらのもの**（修正・2026-09-10）。
   // 実測：Fork を開いた上で Command Palette を開いて Escape を押すと、
   // **前面のパネルは開いたまま、背面の Fork が閉じた**——見ていない層が消える。
-  // `/settings` 側（`use-escape-navigate-back.ts`）は同じ検査を既にしていたので、
+  // `/settings` 側（`use-escape-leave-settings.ts`）は同じ検査を既にしていたので、
   // ここだけが非対称だった（規則3——同じ判断を2通りに書かない）。
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
