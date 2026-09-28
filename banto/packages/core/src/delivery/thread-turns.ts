@@ -15,7 +15,7 @@
 export type TurnChange = { type: "started" | "ended"; threadId: string; hop: number };
 
 export class ThreadTurns {
-  private readonly running = new Map<string, { hop: number }>();
+  private readonly running = new Map<string, { hop: number; startedAt: number }>();
   private readonly waiting = new Map<string, Array<{ hop: number; grant: (release: () => void) => void }>>();
   private readonly listeners = new Set<(change: TurnChange) => void>();
 
@@ -45,13 +45,26 @@ export class ThreadTurns {
     return this.running.get(threadId)?.hop;
   }
 
+  /**
+   * **いま走っているターンの一覧**（追加・2026-09-28、ユーザー「再起動の頃合いを計りたい」）。
+   * `queued` はその Thread で順番を待っている人の発言の数。`GET /api/admin/activity` が使う
+   */
+  list(): Array<{ threadId: string; hop: number; startedAt: number; queued: number }> {
+    return [...this.running].map(([threadId, r]) => ({
+      threadId,
+      hop: r.hop,
+      startedAt: r.startedAt,
+      queued: this.waiting.get(threadId)?.length ?? 0,
+    }));
+  }
+
   onChange(listener: (change: TurnChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
   private start(threadId: string, hop: number): () => void {
-    this.running.set(threadId, { hop });
+    this.running.set(threadId, { hop, startedAt: Date.now() });
     this.emit({ type: "started", threadId, hop });
     let released = false;
     return () => {

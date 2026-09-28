@@ -143,14 +143,27 @@ sudo systemctl restart UNIT_HOST UNIT_UI
    git merge --ff-only origin/release
    ```
 
-3. build して起こし直す
+3. build して、**動いているものが無くなってから**起こし直す
 
    ```sh
    cd "$REL/banto"
    npm ci --include=dev
    npm run build
-   sudo systemctl restart UNIT_HOST UNIT_UI
+   node scripts/restart-when-idle.mjs
    ```
+
+   `restart-when-idle.mjs` は、稼働中の host に「いま動いているもの」（`GET /api/admin/activity`）を数秒おきに聞き、
+   走っているターン・返事待ちの仕事（待たない形で頼んだサブエージェントなど）・Module の呼び出しが無くなったら
+   `sudo systemctl restart banto-host.service banto-frontend.service` する。待っている間は、何が残っているかが出る。
+
+   - 見るだけ：`node scripts/restart-when-idle.mjs --status`（空なら終了コード 0、動いていれば 1）
+   - 承認や質問の返事待ちで止まっているターンだけなら待たない：`--ignore-waiting-on-human`
+   - 待ちきれないとき：`--timeout <分>`（時間切れなら再起動せずに終わる）
+
+   空いたと見てから再起動するまでの間に新しいターンが始まることはありうる（受け付けを止める仕組みはまだ無い）。
+   Service で動かしているものはコンテナの中の systemd で動くので、数えない（host を起こし直しても切れない）。
+   **動いている host がこの口をまだ持たない版のとき**は 404 で止まる——その回だけは画面で確かめてから
+   `sudo systemctl restart banto-host.service banto-frontend.service` を手で打つ
 
 4. A-6 の 1・2 で確かめる
 

@@ -84,6 +84,7 @@ import { ModuleMetaError } from "@banto/module-contract";
 import { McpServersError, fromMcpServers, toMcpServers } from "../modules/mcp-servers.js";
 import { describeRootScope } from "../modules/root-scope.js";
 import { listDirectories } from "./directories.js";
+import { collectActivity } from "./activity.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -1034,6 +1035,22 @@ export function createApp(deps: AppDeps) {
 
       if (url.pathname === "/api/projects" && req.method === "GET") {
         json(res, 200, deps.projectThread.listProjects());
+        return;
+      }
+
+      // **いま動いているもの**（決定・2026-09-28、ユーザー「再起動の頃合いを計りたい」）。
+      // host の上の `scripts/restart-when-idle.mjs` が見る。中身は activity.ts
+      if (url.pathname === "/api/admin/activity" && req.method === "GET") {
+        json(
+          res,
+          200,
+          collectActivity({
+            projectThread: deps.projectThread,
+            inbox: deps.inbox,
+            ...(deps.threadTurns ? { threadTurns: deps.threadTurns } : {}),
+            ...(deps.moduleCalls ? { moduleCalls: deps.moduleCalls } : {}),
+          }),
+        );
         return;
       }
       if (url.pathname === "/api/projects" && req.method === "POST") {

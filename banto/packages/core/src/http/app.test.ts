@@ -14,6 +14,8 @@ import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { RuntimeConfigStore } from "../config/runtime.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
 import { TurnEventBus } from "./turn-events.js";
+import { ModuleCallTracker } from "../relay/module-calls.js";
+import type { ActivityReport } from "./activity.js";
 import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 
 interface TestDeps {
@@ -418,6 +420,67 @@ test("走り始める前のターンに繋ぎに来たら、走り始めるま�
       assert.match(await read(), /"type":"idle"/);
     },
     { turnEvents, threadTurns },
+  );
+});
+
+// **いま動いているもの**（決定・2026-09-28）——再起動の頃合いを計る口。ターン・返事待ちの札・Module の呼び出しを数え、
+// 人の返事を待って止まっているだけのターンは見分けられる
+test("GET /api/admin/activity は動いているものを数え、人の返事待ちだけかを見分ける", async () => {
+  const threadTurns = new ThreadTurns();
+  const moduleCalls = new ModuleCallTracker();
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const read = async () => {
+        const res = await fetch(`${base}/api/admin/activity`, { headers: { authorization: `Bearer ${token}` } });
+        assert.equal(res.status, 200);
+        return (await res.json()) as ActivityReport;
+      };
+      assert.equal((await fetch(`${base}/api/admin/activity`)).status, 401, "合言葉なしでは見せない");
+
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      let a = await read();
+      assert.equal(a.idle, true);
+      assert.equal(a.onlyWaitingOnHuman, false);
+
+      // ターンが走り、その中で Module を呼んでいる
+      const release = threadTurns.tryAcquire(thread.id, 0)!;
+      const endCall = moduleCalls.begin(`shell-${project.id}`, thread.id, "turn", project.id);
+      a = await read();
+      assert.equal(a.idle, false);
+      assert.equal(a.onlyWaitingOnHuman, false);
+      assert.equal(a.turns.length, 1);
+      assert.equal(a.turns[0]!.projectName, "P");
+      assert.equal(a.turns[0]!.waitingOnHuman, false);
+      assert.equal(a.moduleCalls[0]!.connName, `shell-${project.id}`);
+
+      // 承認を待って止まった
+      const judgment = await deps.inbox.raiseJudgment({ threadId: thread.id, source: "text", message: "承認" });
+      a = await read();
+      assert.equal(a.turns[0]!.waitingOnHuman, true);
+      assert.equal(a.onlyWaitingOnHuman, true);
+
+      await deps.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+      endCall();
+      release();
+      assert.equal((await read()).idle, true);
+
+      // 待たない形で頼んだ仕事の返事待ち——再起動すると「途中で終わりました」になるので数える
+      await deps.projectThread.recordAwaitingReply({
+        threadId: thread.id,
+        replyTo: "r1",
+        connName: `subagent-${project.id}`,
+        moduleName: "subagent",
+        hop: 1,
+      });
+      a = await read();
+      assert.equal(a.idle, false);
+      assert.equal(a.onlyWaitingOnHuman, false);
+      assert.equal(a.awaitingReplies[0]!.module, "subagent");
+      await deps.projectThread.settleReply(thread.id, "r1");
+      assert.equal((await read()).idle, true);
+    },
+    { threadTurns, moduleCalls },
   );
 });
 
