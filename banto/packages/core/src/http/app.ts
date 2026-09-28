@@ -88,7 +88,7 @@ import { collectActivity } from "./activity.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
-import { CALLER_META_KEY, visibilityOf } from "@banto/module-contract";
+import { CALL_ID_META_KEY, CALLER_META_KEY, visibilityOf } from "@banto/module-contract";
 
 /**
  * Module の画面（MCP Apps）のために host が Module へ問い合わせる分だけ
@@ -239,6 +239,34 @@ export interface AppDeps {
  * のものも直せる必要がある）。
  */
 const HUMAN_ADMIN_CALLER = { [CALLER_META_KEY]: { admin: true } };
+
+/**
+ * **人が画面で押した呼び出しを台帳に置き、Module に渡す `_meta` を組む**（追加・2026-09-28、Fable のレビュー）。
+ *
+ * - **Project の画面（会話の中・入口・設定）からなら、台帳に Project も置く**。以前は置いていなかったので、
+ *   banto 全体の Module（公開の窓口）が人の操作の中でその Project の Module（Service）を呼べず、入口の画面の
+ *   「まだ公開していないサーバ」が黙って空になっていた（`docs/specs/v4-security.md` §3「Project をまたぐ Module の呼び出し」）
+ * - 刻印は人の印（`admin`）のまま、Project を `forProject` に併記する（名前の理由は `CallerStamp`）
+ * - **呼び出しの印**も渡す（`CALL_ID_META_KEY`）——Module が中で中継を呼ぶとき、同時に走っている AI のターンと
+ *   混ざらずにこの1件を名指せる
+ *
+ * 台帳が無い・接続名が無いときは置かない（今までどおり）
+ */
+function beginCanvasCall(
+  deps: AppDeps,
+  connName: string | undefined,
+  threadId: string | undefined,
+  projectId: string | undefined,
+): { meta: Record<string, unknown>; end: () => void } {
+  const call = deps.moduleCalls && connName ? deps.moduleCalls.beginCall(connName, threadId, "canvas", projectId) : undefined;
+  return {
+    meta: {
+      [CALLER_META_KEY]: { admin: true, ...(projectId ? { forProject: projectId } : {}) },
+      ...(call ? { [CALL_ID_META_KEY]: call.id } : {}),
+    },
+    end: call?.end ?? (() => undefined),
+  };
+}
 
 /**
  * **registry の1件を、画面が読む形にする**（追加・2026-09-21、共有化・2026-09-22）。
@@ -2011,23 +2039,26 @@ export function createApp(deps: AppDeps) {
         const refusal = await checkUiCallable(found.client, body.tool);
         if (refusal) return json(res, refusal.status, refusal.body);
         // 画面からの呼び出しでも、その tool が内部で他 Module を呼べば中継の承認が
-        // 要る（§「Module 間中継の承認」）。**どの会話に出すか**をここで台帳に置く
-        const endCall =
-          deps.moduleCalls && found.connName
-            ? deps.moduleCalls.begin(found.connName, uiCallMatch[1]!, "canvas")
-            : undefined;
+        // 要る（§「Module 間中継の承認」）。**どの会話に出すか**をここで台帳に置く。
+        // **その会話の Project も置く**（追加・2026-09-28）——banto 全体の Module がその Project の Module を呼べるように
+        const canvasCall = beginCanvasCall(
+          deps,
+          found.connName,
+          uiCallMatch[1]!,
+          deps.projectThread.getThread(uiCallMatch[1]!)?.projectId,
+        );
         try {
           json(
             res,
             200,
             await found.client.callTool(
-              { name: body.tool, arguments: toolArguments(body.arguments), _meta: HUMAN_ADMIN_CALLER },
+              { name: body.tool, arguments: toolArguments(body.arguments), _meta: canvasCall.meta },
               undefined,
               UI_CALL_OPTIONS,
             ),
           );
         } finally {
-          endCall?.();
+          canvasCall.end();
         }
         return;
       }
@@ -2092,22 +2123,20 @@ export function createApp(deps: AppDeps) {
         const instanceModule = modules.find((m) => m.name === body.server) as
           | { connName?: string }
           | undefined;
-        const endInstanceCall =
-          deps.moduleCalls && instanceModule?.connName
-            ? deps.moduleCalls.begin(instanceModule.connName, undefined, "canvas")
-            : undefined;
+        // banto 全体の設定画面は Project を持たない——Project は置かない（Project の Module は呼べないまま）
+        const canvasCall = beginCanvasCall(deps, instanceModule?.connName, undefined, undefined);
         try {
           json(
             res,
             200,
             await found.client.callTool(
-              { name: body.tool, arguments: toolArguments(body.arguments), _meta: HUMAN_ADMIN_CALLER },
+              { name: body.tool, arguments: toolArguments(body.arguments), _meta: canvasCall.meta },
               undefined,
               UI_CALL_OPTIONS,
             ),
           );
         } finally {
-          endInstanceCall?.();
+          canvasCall.end();
         }
         return;
       }
@@ -2144,25 +2173,27 @@ export function createApp(deps: AppDeps) {
         // ——人が画面で操作しているのに、その先が構造的に通らない。
         // 出す先は**その Project の Base Thread**（決定・2026-09-07 と同じ
         // 場所。答える場所を増やさない）
-        // 会話がまだ1本も無いなら台帳に置かない——**空の宛先を置くくらいなら
-        // 置かない**（中継は「決められない」として拒否され、理由が人に出る）
-        const baseThreadId = baseThreadIdOf(deps, projectUiCallMatch[1]!);
-        const endCall =
-          deps.moduleCalls && found.connName && baseThreadId
-            ? deps.moduleCalls.begin(found.connName, baseThreadId, "canvas")
-            : undefined;
+        // 会話がまだ1本も無いなら**会話は置かない**——空の宛先を置くくらいなら置かない（承認が要る中継は
+        // 「決められない」として拒否され、理由が人に出る）。**Project は置く**（改訂・2026-09-28）：以前は会話が無いと
+        // 台帳にも載せなかったが、Project は会話と別に確かに分かっている。承認の要る中継は会話が無ければ今までどおり止まる
+        const canvasCall = beginCanvasCall(
+          deps,
+          found.connName,
+          baseThreadIdOf(deps, projectUiCallMatch[1]!),
+          projectUiCallMatch[1]!,
+        );
         try {
           json(
             res,
             200,
             await found.client.callTool(
-              { name: body.tool, arguments: toolArguments(body.arguments), _meta: HUMAN_ADMIN_CALLER },
+              { name: body.tool, arguments: toolArguments(body.arguments), _meta: canvasCall.meta },
               undefined,
               UI_CALL_OPTIONS,
             ),
           );
         } finally {
-          endCall?.();
+          canvasCall.end();
         }
         return;
       }

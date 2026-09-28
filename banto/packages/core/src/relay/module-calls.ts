@@ -11,6 +11,8 @@
 // 呼び出しが無い・複数のターンから同時に呼ばれていて決められない、のどちらも
 // **「決められない」として返す**（規則2——黙って片方に寄せない）。
 
+import { randomBytes } from "node:crypto";
+
 export type ModuleCallThread =
   | { kind: "thread"; threadId: string }
   | { kind: "none" }
@@ -31,12 +33,17 @@ export type ModuleCallThread =
 export type CallOrigin = "turn" | "canvas" | "host";
 
 export class ModuleCallTracker {
-  /** Module の接続名 → 走行中の呼び出し（連番 → Thread・Project・出所）。 */
+  /**
+   * Module の接続名 → 走行中の呼び出し（呼び出しの印 → Thread・Project・出所）。
+   *
+   * **印は推測できないものにする**（改訂・2026-09-28、以前は連番）。host が Module を呼ぶときに
+   * `_meta["dev.banto/callId"]` で渡し、Module は中継を呼ぶときにそれを返す——台帳はその1件を引く
+   * （下の `entriesOf`）。連番だと、同じ接続の別の呼び出しの印を当て推量で名乗れる
+   */
   private readonly inFlight = new Map<
     string,
-    Map<number, { threadId?: string; projectId?: string; origin: CallOrigin; forInstance?: boolean }>
+    Map<string, { threadId?: string; projectId?: string; origin: CallOrigin; forInstance?: boolean }>
   >();
-  private nextCallId = 1;
 
   /**
    * 1件の tool 呼び出しの開始。返ってきた関数を必ず finally で呼ぶ。
@@ -55,19 +62,48 @@ export class ModuleCallTracker {
     /** **banto 全体のための呼び出し**（Project が決まらない、が決められないのでもない）。 */
     forInstance = false,
   ): () => void {
-    const callId = this.nextCallId++;
+    return this.beginCall(connName, threadId, origin, projectId, forInstance).end;
+  }
+
+  /**
+   * `begin` と同じだが、**呼び出しの印**も返す（追加・2026-09-28）。host はこれを呼び出しの
+   * `_meta["dev.banto/callId"]` に入れて Module に渡す（`CALL_ID_META_KEY`）
+   */
+  beginCall(
+    connName: string,
+    threadId: string | undefined,
+    origin: CallOrigin = "turn",
+    projectId?: string,
+    forInstance = false,
+  ): { id: string; end: () => void } {
+    const callId = randomBytes(12).toString("base64url");
     let calls = this.inFlight.get(connName);
     if (!calls) {
       calls = new Map();
       this.inFlight.set(connName, calls);
     }
     calls.set(callId, { threadId, projectId, origin, forInstance });
-    return () => {
-      const current = this.inFlight.get(connName);
-      if (!current) return;
-      current.delete(callId);
-      if (current.size === 0) this.inFlight.delete(connName);
+    return {
+      id: callId,
+      end: () => {
+        const current = this.inFlight.get(connName);
+        if (!current) return;
+        current.delete(callId);
+        if (current.size === 0) this.inFlight.delete(connName);
+      },
     };
+  }
+
+  /**
+   * **どの呼び出しについて答えるか**（追加・2026-09-28）。呼び出しの印が渡され、それがいまその接続で走っていれば
+   * **その1件だけ**。印が無い・もう終わっている・別の接続の印なら、**その接続で走っている全部**（今までの形。
+   * 下の各問いは、全部が同じ答えになるときだけ答え、混ざっていれば厳しいほうに倒す）
+   */
+  private entriesOf(connName: string, callId?: string) {
+    const calls = this.inFlight.get(connName);
+    if (!calls || calls.size === 0) return [];
+    const one = callId !== undefined ? calls.get(callId) : undefined;
+    return one ? [one] : [...calls.values()];
   }
 
   /**
@@ -85,11 +121,11 @@ export class ModuleCallTracker {
     );
   }
 
-  threadFor(connName: string): ModuleCallThread {
-    const calls = this.inFlight.get(connName);
-    if (!calls || calls.size === 0) return { kind: "none" };
+  threadFor(connName: string, callId?: string): ModuleCallThread {
+    const calls = this.entriesOf(connName, callId);
+    if (calls.length === 0) return { kind: "none" };
     // 会話が決まらない呼び出し（instance の画面）は、宛先の候補に入れない
-    const threadIds = [...new Set([...calls.values()].map((c) => c.threadId).filter((t): t is string => !!t))];
+    const threadIds = [...new Set(calls.map((c) => c.threadId).filter((t): t is string => !!t))];
     if (threadIds.length === 0) return { kind: "none" };
     if (threadIds.length === 1) return { kind: "thread", threadId: threadIds[0]! };
     return { kind: "ambiguous", threadIds };
@@ -99,10 +135,10 @@ export class ModuleCallTracker {
    * いま走っている呼び出しの出所。**1つでもターン由来が混ざっていたら `turn`**
    * ——緩いほうへ倒さない（規則2）。走っていなければ `undefined`。
    */
-  originFor(connName: string): CallOrigin | undefined {
-    const calls = this.inFlight.get(connName);
-    if (!calls || calls.size === 0) return undefined;
-    const origins = [...calls.values()].map((c) => c.origin);
+  originFor(connName: string, callId?: string): CallOrigin | undefined {
+    const calls = this.entriesOf(connName, callId);
+    if (calls.length === 0) return undefined;
+    const origins = calls.map((c) => c.origin);
     // **緩いほうへ倒さない**（規則2）。`canvas` だけが承認を飛ばしうるので、
     // 他が1つでも混ざっていたら `canvas` とは言わない
     if (origins.includes("turn")) return "turn";
@@ -117,10 +153,10 @@ export class ModuleCallTracker {
    * 決めるのは host であって、Module の自己申告ではない。`threadFor` と同じ
    * 規律で、**決められないなら `undefined`**（呼び出し先が fail closed で止まる）。
    */
-  projectFor(connName: string): string | undefined {
-    const calls = this.inFlight.get(connName);
-    if (!calls || calls.size === 0) return undefined;
-    const ids = [...new Set([...calls.values()].map((c) => c.projectId).filter((p): p is string => !!p))];
+  projectFor(connName: string, callId?: string): string | undefined {
+    const calls = this.entriesOf(connName, callId);
+    if (calls.length === 0) return undefined;
+    const ids = [...new Set(calls.map((c) => c.projectId).filter((p): p is string => !!p))];
     return ids.length === 1 ? ids[0] : undefined;
   }
 
@@ -132,10 +168,9 @@ export class ModuleCallTracker {
    * ——`{instance:true}` の呼び出しが、たまたま同時に走っている Project の
    * 刻印を借りて広がることを防ぐ。
    */
-  callerFor(connName: string): { project: string } | { instance: true } | undefined {
-    const calls = this.inFlight.get(connName);
-    if (!calls || calls.size === 0) return undefined;
-    const values = [...calls.values()];
+  callerFor(connName: string, callId?: string): { project: string } | { instance: true } | undefined {
+    const values = this.entriesOf(connName, callId);
+    if (values.length === 0) return undefined;
     const ids = [...new Set(values.map((c) => c.projectId).filter((p): p is string => !!p))];
     const anyInstance = values.some((c) => c.forInstance);
     if (ids.length === 1 && !anyInstance) return { project: ids[0]! };
@@ -144,8 +179,8 @@ export class ModuleCallTracker {
   }
 
   /** **banto 全体のための呼び出しか**——宛先へ継ぐときに使う。 */
-  instanceFor(connName: string): boolean {
-    const caller = this.callerFor(connName);
+  instanceFor(connName: string, callId?: string): boolean {
+    const caller = this.callerFor(connName, callId);
     return caller !== undefined && "instance" in caller;
   }
 }

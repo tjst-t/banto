@@ -93,11 +93,16 @@ export const CALLER_META_KEY = `${VENDOR_PREFIX}/caller`;
  *
  * - `{project}`——その Project のための呼び出し。Project のグループ＋共通が使える
  * - `{admin: true}`——人が管理画面から触っている。全部見える
+ *   - **`forProject`**（追加・2026-09-28）——人が**ある Project の画面**（会話の中・入口・設定）から押したとき、
+ *     その Project の id を併記する。人の操作である印（`admin`）はそのまま。**名前を `project` にしない**：
+ *     受け手は `"project" in stamp` で Project の刻印かを見ているので、同じ名前を併記すると人の刻印が
+ *     Project の刻印に化ける受け手が出る（vault-kit の `findAlias` は `"project" in` を先に見る）。別の名前なら、今までの受け手には
+ *     今までどおりの `{admin: true}` にしか見えない
  * - `{instance: true}`——**banto 全体のための呼び出し**（追加・2026-09-16）。
  *   `${secret:…}` を banto 全体に1本の Module へ差し込むときに使う。
  *   **Project が決まらないので、共通の秘密だけ**（規則2——曖昧なら広げない）
  */
-export type CallerStamp = { project: string } | { admin: true } | { instance: true };
+export type CallerStamp = { project: string } | { admin: true; forProject?: string } | { instance: true };
 
 /**
  * **コンテナの中の呼び出し元にも見える、host 側のフォルダ**（追加・2026-09-27）。host だけが刻む。
@@ -116,12 +121,42 @@ export function socketDirOf(meta: Record<string, unknown> | undefined): string |
   return typeof raw === "string" && raw.startsWith("/") ? raw : undefined;
 }
 
+/**
+ * **host がその Module を呼んだ、1件の呼び出しの印**（追加・2026-09-28）。host だけが刻む（推測できない印）。
+ *
+ * Module は**その呼び出しを処理している間に中継を呼ぶなら、この印を中継の呼び出しの `_meta` に同じ名前で返す**。
+ * host の台帳（`ModuleCallTracker`）は出所（人の画面か AI のターンか）・Thread・Project を**呼び出し単位で**持っていて、
+ * 印があればその1件を引く。**無ければ接続単位**（その Module に走っている呼び出しを全部合わせ、混ざっていたら
+ * 厳しいほう）——banto 全体に1本の Module は、ある Project の AI のターンと人の画面を同時に処理しうるので、
+ * 接続単位だと人の承認が AI のターンの刻印で断られる（2026-09-28、Fable のレビュー）。
+ *
+ * 形は分散トレースの文脈の受け渡し（W3C Trace Context の `traceparent`）と、返信用の札（`REPLY_TO_META_KEY`）と同じ
+ * ——呼ばれた側が印を受け取り、下流へ渡すときに添える。**host が信じるのは同梱の Module が返した印だけ**
+ * （第三者は同時に走っている自分の呼び出しのうち緩いほうを選べてしまうので、今までどおり接続単位）
+ */
+export const CALL_ID_META_KEY = `${VENDOR_PREFIX}/callId`;
+
+/** 呼び出しの印を読む。文字列でなければ `undefined` */
+export function callIdOf(meta: Record<string, unknown> | undefined): string | undefined {
+  const raw = meta?.[CALL_ID_META_KEY];
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
+/**
+ * **中継が、いまどの Project のための呼び出しとして扱っているか**（追加・2026-09-28）。`relayListTargets` の返事の
+ * `_meta` に host が載せる。宛先の一覧に Project の Module が出ないとき、「その Project に無い」のか「どの Project の
+ * ための呼び出しか決められなかった」のかを、呼び出し元が取り違えないため（規則2——「無い」と「決められない」を混ぜない）
+ */
+export const ON_BEHALF_OF_META_KEY = `${VENDOR_PREFIX}/onBehalfOf`;
+
 /** 刻印を読む。**形が違えば `undefined`**——「たぶんこう」で通さない。 */
 export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp | undefined {
   const raw = meta?.[CALLER_META_KEY];
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
-  if (obj.admin === true) return { admin: true };
+  if (obj.admin === true) {
+    return typeof obj.forProject === "string" && obj.forProject !== "" ? { admin: true, forProject: obj.forProject } : { admin: true };
+  }
   if (obj.instance === true) return { instance: true };
   if (typeof obj.project === "string" && obj.project !== "") return { project: obj.project };
   return undefined;

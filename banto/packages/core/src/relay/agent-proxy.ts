@@ -20,6 +20,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+  CALL_ID_META_KEY,
   CALLER_META_KEY,
   PENDING_REPLY_META_KEY,
   REPLY_TO_META_KEY,
@@ -117,6 +118,11 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     return opts.projectId ? { [CALLER_META_KEY]: { project: opts.projectId } } : {};
   }
 
+  /** 台帳が振った呼び出しの印（`CALL_ID_META_KEY`）。台帳が無ければ渡さない */
+  function callIdStamp(id: string | undefined): Record<string, unknown> {
+    return id ? { [CALL_ID_META_KEY]: id } : {};
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const real = await conn.client.listTools();
     const visible = real.tools.filter((t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent");
@@ -145,7 +151,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       // 呼ぶ resource（横断した一覧）が「誰のためか分からない」で止まっていた。
       // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
       // fail closed のまま
-      opts.moduleCalls?.begin(conn.name, opts.threadId, "turn", opts.projectId);
+      opts.moduleCalls?.beginCall(conn.name, opts.threadId, "turn", opts.projectId);
     // **終わったら届ける tool には、呼び出し元の Thread に結びついた札を渡す**（追加・2026-09-25）。
     // Thread が分からない接続では出さない——Module は「届ける先が無い」と断る（規則2）
     const replyTo =
@@ -163,7 +169,8 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
           name: request.params.name,
           arguments: request.params.arguments,
           // **誰のための呼び出しかを host が刻む**（追加・2026-09-13）
-          _meta: { ...callerStamp(), ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}) },
+          // **この呼び出しの印も渡す**（追加・2026-09-28）——Module が中で中継を呼ぶとき、この1件を名指せる
+          _meta: { ...callerStamp(), ...callIdStamp(endCall?.id), ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}) },
         },
         undefined,
         {
@@ -186,7 +193,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       }
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {
-      endCall?.();
+      endCall?.end();
     }
   });
 
@@ -230,15 +237,15 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       // 呼ぶ resource（横断した一覧）が「誰のためか分からない」で止まっていた。
       // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
       // fail closed のまま
-      opts.moduleCalls?.begin(conn.name, opts.threadId, "turn", opts.projectId);
+      opts.moduleCalls?.beginCall(conn.name, opts.threadId, "turn", opts.projectId);
     try {
       const result = await conn.client.readResource({
         uri: request.params.uri,
-        _meta: { ...callerStamp() },
+        _meta: { ...callerStamp(), ...callIdStamp(endCall?.id) },
       });
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {
-      endCall?.();
+      endCall?.end();
     }
   });
 

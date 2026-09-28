@@ -18,6 +18,11 @@ import type { ModuleCallTracker } from "./module-calls.js";
 export interface RelayApprovalRequest extends RelayCallDescriptor {
   /** 呼び出し元の**プロセス**の名前（`<Module 名>-<projectId>`）。 */
   callerConnName: string;
+  /**
+   * 呼び出し元が中継に返した**呼び出しの印**（追加・2026-09-28、`CALL_ID_META_KEY`）。あればその1件の会話で聞く
+   * ——同じ Module を2つのターンが同時に使っていても、どちらの会話か決まる
+   */
+  callerCallId?: string;
 }
 
 export interface RelayApprovalDecision {
@@ -46,7 +51,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
   const inFlight = new Map<string, Promise<RelayApprovalDecision>>();
 
   async function ask(req: RelayApprovalRequest): Promise<RelayApprovalDecision> {
-    const where = deps.moduleCalls.threadFor(req.callerConnName);
+    const where = deps.moduleCalls.threadFor(req.callerConnName, req.callerCallId);
     if (where.kind !== "thread") {
       // **決められないなら通さない**（規則2）。どの会話で聞けばよいか分からない
       // まま許可すると、人が見ていないところで内部配線が開くことになる。

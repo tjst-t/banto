@@ -15,7 +15,10 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
   auditArgsOf,
+  CALL_ID_META_KEY,
   CALLER_META_KEY,
+  ON_BEHALF_OF_META_KEY,
+  callIdOf,
   SOCKET_DIR_META_KEY,
   isValueFree,
   visibilityOf,
@@ -214,14 +217,17 @@ export interface HostRelayServerOptions {
    * さらに中継を呼んだとき「どのターンの仕事か」が分からず、承認カードの
    * 出し先が無くて fail closed で止まる。文脈は推測せず、**外側から継ぐ**。
    */
+  //
+  // **問いはどれも、呼び出しの印（`callId`）を受ける**（追加・2026-09-28）。Module が中継に印を返したら
+  // その1件について答え、無ければ接続で走っている全部について答える（`ModuleCallTracker.entriesOf`）
   moduleCalls?: {
-    originFor(connName: string): "turn" | "canvas" | "host" | undefined;
+    originFor(connName: string, callId?: string): "turn" | "canvas" | "host" | undefined;
     /** いま走っている呼び出しは誰のためか（Project／banto 全体／決められない）。 */
-    callerFor?(connName: string): { project: string } | { instance: true } | undefined;
+    callerFor?(connName: string, callId?: string): { project: string } | { instance: true } | undefined;
     /** banto 全体のための呼び出しか——宛先へ継ぐ。 */
-    instanceFor?(connName: string): boolean;
-    threadFor(connName: string): { kind: "thread"; threadId: string } | { kind: string };
-    projectFor(connName: string): string | undefined;
+    instanceFor?(connName: string, callId?: string): boolean;
+    threadFor(connName: string, callId?: string): { kind: "thread"; threadId: string } | { kind: string };
+    projectFor(connName: string, callId?: string): string | undefined;
     begin(
       connName: string,
       threadId: string | undefined,
@@ -229,6 +235,14 @@ export interface HostRelayServerOptions {
       projectId?: string,
       forInstance?: boolean,
     ): () => void;
+    /** `begin` と同じで、宛先に渡す呼び出しの印も返す。無ければ印を渡さない（宛先は接続単位で扱われる） */
+    beginCall?(
+      connName: string,
+      threadId: string | undefined,
+      origin: "turn" | "canvas" | "host",
+      projectId?: string,
+      forInstance?: boolean,
+    ): { id: string; end: () => void };
   };
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
@@ -278,10 +292,19 @@ async function targetTool(
  * `callerFor` を使う——Project が1つに決まり、banto 全体のための呼び出しが混ざっていないときだけ。
  * Project ごとの Module は自分の Project に縛られているので継がない
  */
-function onBehalfOfProject(identity: CallerIdentity, opts: HostRelayServerOptions): string | undefined {
+function onBehalfOfProject(identity: CallerIdentity, opts: HostRelayServerOptions, callId?: string): string | undefined {
   if (identity.projectId !== undefined) return undefined;
-  const ambient = opts.moduleCalls?.callerFor?.(identity.connName ?? identity.moduleName);
+  const ambient = opts.moduleCalls?.callerFor?.(identity.connName ?? identity.moduleName, callId);
   return ambient && "project" in ambient ? ambient.project : undefined;
+}
+
+/**
+ * **呼び出し元が返した呼び出しの印を信じてよいか**（追加・2026-09-28、`CALL_ID_META_KEY`）。**同梱の Module だけ**。
+ * 印があると、同じ接続で同時に走っている呼び出しのうち1件を選べる——第三者に選ばせると、AI のターンの仕事を
+ * 人の画面の呼び出しの印で中継して承認を飛ばせる。第三者は今までどおり接続単位（混ざれば厳しいほう）
+ */
+function trustedCallId(identity: CallerIdentity, meta: Record<string, unknown> | undefined): string | undefined {
+  return identity.meta.origin === "bundled" ? callIdOf(meta) : undefined;
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -360,12 +383,20 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **誰にも届けない問い合わせ**——宛先を選ぶ前の相談なので、承認ゲートも
     // 監査も通さない（まだ何も呼んでいない）。返すのは名前と role だけで、
     // 相手の中身（tool 一覧・値）は一切含まない
+    // **どの呼び出しを処理している最中か**（呼び出し元が返した印。同梱だけ信じる）
+    const callId = trustedCallId(identity, request.params._meta as Record<string, unknown> | undefined);
     // **どの Project のための呼び出しを処理しているか**（host の台帳。banto 全体の Module だけが継ぐ）
-    const onBehalfOf = onBehalfOfProject(identity, opts);
+    const onBehalfOf = onBehalfOfProject(identity, opts, callId);
 
     if (request.params.name === "relayListTargets") {
       const targets = opts.registry.allowedTargets(identity, onBehalfOf);
-      return { content: [{ type: "text", text: JSON.stringify(targets) }] };
+      // **どの Project として一覧を作ったか**も添える——Project の Module が出ないとき、「その Project に無い」と
+      // 「どの Project のための呼び出しか決められない」を呼び出し元が取り違えないため（規則2）
+      const project = identity.projectId ?? onBehalfOf;
+      return {
+        content: [{ type: "text", text: JSON.stringify(targets) }],
+        ...(project ? { _meta: { [ON_BEHALF_OF_META_KEY]: project } } : {}),
+      };
     }
 
     // **宛先は host 自身**——アドレスは値ではない（中の AI にも自分のアドレスは見える）ので承認は通さないが、
@@ -474,7 +505,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // 進捗を送れないので、60秒で切れて「alias が1つも無い」に化けていた。
     //
     // **名乗った Module だけが緩む**（`dev.banto/valueFree`、無指定は「返す」）。
-    const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName);
+    const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName, callId);
     const targetInfo = kind === "tool" ? await targetTool(target.client, name) : undefined;
     // **名乗った引数だけを拾う**（値そのものは拾わない）。長すぎるものも拾わない
     // ——識別子のつもりの欄に値が入っていたときに、記録へ流し込まないため
@@ -560,6 +591,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
             .requestApproval({
               ...call,
               callerConnName: identity.connName ?? identity.moduleName,
+              ...(callId ? { callerCallId: callId } : {}),
               // コンテナからは、何を指していたかごとに聞く（名乗った識別子。無ければ空——それでも印になる）
               ...(identity.inContainer ? { scope: identifiers ?? {} } : {}),
             })
@@ -575,20 +607,25 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **宛先にも在籍を立てる**——この呼び出しが終わるまで、宛先が出す中継は
     // 同じターン（同じ会話・同じ出所）の仕事として扱われる
     const callerConn = identity.connName ?? identity.moduleName;
-    const callerThread = opts.moduleCalls?.threadFor(callerConn);
+    const callerThread = opts.moduleCalls?.threadFor(callerConn, callId);
     // **呼び出し元の Project**（追加・2026-09-13）。Project 単位で起きた Module
     // （Shell）は自分の身元に持っている。instance 単位の Module（窓口）は
     // 持たないので、**外側から継ぐ**——Thread と同じ形（推測しない、規則3）
-    const callerProject = identity.projectId ?? opts.moduleCalls?.projectFor(callerConn);
-    const endTargetCall = opts.moduleCalls?.begin(
+    const callerProject = identity.projectId ?? opts.moduleCalls?.projectFor(callerConn, callId);
+    const targetArgs = [
       targetModule,
       callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined,
       origin ?? "turn",
       callerProject,
       // **banto 全体のための呼び出しも継ぐ**（追加・2026-09-16）——継がないと
       // 窓口→金庫の2段目で「誰のためか分からない」に落ちる
-      opts.moduleCalls?.instanceFor?.(callerConn) ?? false,
-    );
+      opts.moduleCalls?.instanceFor?.(callerConn, callId) ?? false,
+    ] as const;
+    // **宛先にも呼び出しの印を渡す**（追加・2026-09-28）——宛先がさらに中継を呼ぶとき、この1件を名指せる
+    const targetCall = opts.moduleCalls?.beginCall
+      ? opts.moduleCalls.beginCall(...targetArgs)
+      : { id: undefined, end: opts.moduleCalls?.begin(...targetArgs) };
+    const endTargetCall = targetCall.end;
 
     /**
      * **誰のための呼び出しかを host が刻む**（決定・2026-09-13）。
@@ -598,14 +635,25 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     //
     // **`{instance:true}`（banto 全体のため）も刻む**（追加・2026-09-16）。
     // `${secret:…}` の解決は窓口→金庫の2段で、2段目は中継を通る。
-    const ambient = opts.moduleCalls?.callerFor?.(callerConn);
-    const callerMeta: Record<string, unknown> = callerProject
-      ? { [CALLER_META_KEY]: { project: callerProject } }
-      : ambient
-        ? { [CALLER_META_KEY]: ambient }
-        : origin === "canvas"
-          ? { [CALLER_META_KEY]: { admin: true } }
-          : {};
+    //
+    // **人が画面で押した呼び出しの中なら、Project が分かっても `admin` を刻む**（改訂・2026-09-28、Fable のレビュー）。
+    // Project の画面からの呼び出しは台帳に Project を置くようになった（その Project の Module を呼べるように）ので、
+    // 以前の順（Project が分かれば `{project}`）のままだと、人の操作の印が消える——publish-caddy の「人が押したときだけ」
+    // が人の承認を断る。**Project は `forProject` に併記する**（名前を `project` にしない理由は `CallerStamp`）。
+    // これを使うのは **banto 全体の Module** だけ：Project の Module の画面からの中継は今までどおり `{project}`
+    // （自分の Project に縛られている Module に、人の画面だからといって全体を見せない——今までの挙動のまま）
+    const ambient = opts.moduleCalls?.callerFor?.(callerConn, callId);
+    const humanCanvas = origin === "canvas" && identity.projectId === undefined;
+    const callerMeta: Record<string, unknown> = humanCanvas
+      ? { [CALLER_META_KEY]: { admin: true, ...(callerProject ? { forProject: callerProject } : {}) } }
+      : callerProject
+        ? { [CALLER_META_KEY]: { project: callerProject } }
+        : ambient
+          ? { [CALLER_META_KEY]: ambient }
+          : origin === "canvas"
+            ? { [CALLER_META_KEY]: { admin: true } }
+            : {};
+    if (targetCall.id) callerMeta[CALL_ID_META_KEY] = targetCall.id;
 
     // コンテナの中の呼び出し元には、窓口を立てる場所も刻む（呼び出し元の申告は使わない）
     if (identity.socketDir) callerMeta[SOCKET_DIR_META_KEY] = identity.socketDir;

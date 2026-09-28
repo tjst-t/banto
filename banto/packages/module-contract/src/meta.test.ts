@@ -9,6 +9,10 @@ import {
   reconcileModuleMeta,
   assertAllVisibilityExplicit,
   assertVisibilityValues,
+  CALL_ID_META_KEY,
+  CALLER_META_KEY,
+  callIdOf,
+  callerOf,
 } from "./meta.js";
 
 test("parses a valid module meta", () => {
@@ -218,4 +222,16 @@ test("Skill の名前と説明が仕様の形に収まっているかを言う",
   assert.match(skillEntryProblem("pdf", "") ?? "", /説明がありません/);
   assert.match(skillEntryProblem("pdf", "x".repeat(1025)) ?? "", /1024 字/);
   assert.match(skillEntryProblem(undefined, "x") ?? "", /名前がありません/);
+});
+
+// **人の刻印に Project を併記する形**（追加・2026-09-28）。名前を `forProject` にしてあるので、今までの受け手
+// （`"project" in stamp` で Project の刻印かを見る）には人の刻印のままにしか見えない
+test("callerOf：人の刻印に併記した forProject を読み、Project の刻印には化けない", () => {
+  const stamp = callerOf({ [CALLER_META_KEY]: { admin: true, forProject: "pA" } });
+  assert.deepEqual(stamp, { admin: true, forProject: "pA" });
+  assert.ok(stamp && "admin" in stamp && !("project" in stamp));
+  assert.deepEqual(callerOf({ [CALLER_META_KEY]: { admin: true, forProject: "" } }), { admin: true });
+  assert.deepEqual(callerOf({ [CALLER_META_KEY]: { admin: true } }), { admin: true });
+  assert.equal(callIdOf({ [CALL_ID_META_KEY]: "abc" }), "abc");
+  assert.equal(callIdOf({ [CALL_ID_META_KEY]: 1 }), undefined);
 });

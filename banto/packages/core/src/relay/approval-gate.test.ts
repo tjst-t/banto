@@ -13,7 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { parseModuleMeta } from "@banto/module-contract";
+import { markBundled, parseModuleMeta } from "@banto/module-contract";
 import { EventLog, type StoredEvent } from "../event-store/log.js";
 import { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
@@ -47,7 +47,7 @@ async function fakeVaultClient(auditArgs?: string[]): Promise<Client> {
   return client;
 }
 
-async function setup(opts: { inContainer?: boolean; auditArgs?: string[] } = {}) {
+async function setup(opts: { inContainer?: boolean; auditArgs?: string[]; bundled?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "banto-relay-gate-"));
   const log = new EventLog(dir);
   await log.init();
@@ -64,10 +64,12 @@ async function setup(opts: { inContainer?: boolean; auditArgs?: string[] } = {})
     client: await fakeVaultClient(opts.auditArgs),
     meta: parseModuleMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
   });
-  const shellMeta = parseModuleMeta(
+  const rawShellMeta = parseModuleMeta(
     { satisfies: ["shell"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" },
     "shell",
   );
+  // 呼び出しの印（`dev.banto/callId`）を host が信じるのは同梱の Module だけ
+  const shellMeta = opts.bundled ? markBundled(rawShellMeta, "shell") : rawShellMeta;
   const token = registry.issueToken({
     moduleName: "shell",
     connName: "shell-project-1",
@@ -312,6 +314,29 @@ test("同じ Module を2つのターンが同時に使っているときも、�
     );
     endA();
     endB();
+  } finally {
+    await t.close();
+  }
+});
+
+// **呼び出しの印があれば、その1件の会話で聞く**（追加・2026-09-28）。2つのターンが同じ Module を使っていても、
+// 中継に印を返した同梱の Module なら、どちらのターンの仕事か決まる
+test("2つのターンが同時に使っていても、同梱の Module が呼び出しの印を返せば、その会話で聞く", async () => {
+  const t = await setup({ bundled: true });
+  try {
+    const a = t.moduleCalls.beginCall("shell-project-1", THREAD);
+    const b = t.moduleCalls.beginCall("shell-project-1", "thread-2");
+    const pending = t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+      _meta: { "dev.banto/callId": b.id },
+    });
+    const judgment = await waitForJudgment(t.inbox, new Set());
+    assert.equal(judgment.threadId, "thread-2", "印で名指したターンの会話で聞いていない");
+    t.pendingApprovals.resolve(judgment.id, { behavior: "deny", message: "試験" });
+    await assert.rejects(pending);
+    a.end();
+    b.end();
   } finally {
     await t.close();
   }

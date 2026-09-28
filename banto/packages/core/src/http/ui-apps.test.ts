@@ -81,6 +81,15 @@ class FakeModule implements ModuleClientLike {
   }
 }
 
+/** 呼び出しの印（毎回違う）を除いて比べる。印が付いていること自体は下の試験が見る */
+function stripCallId<T extends { _meta?: Record<string, unknown> }>(calls: T[]): T[] {
+  return calls.map((c) => {
+    if (!c._meta) return c;
+    const { ["dev.banto/callId"]: _id, ...rest } = c._meta;
+    return { ...c, _meta: rest };
+  });
+}
+
 interface Ctx {
   base: string;
   headers: Record<string, string>;
@@ -117,7 +126,7 @@ async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       agentRelayEndpoint: new AgentRelayEndpoint(token),
       authToken: token,
       resolveModulesForThread: async () => [],
-      resolveModuleClientsForThread: async () => [{ name: "filesystem", client: module }],
+      resolveModuleClientsForThread: async () => [{ name: "filesystem", client: module, connName: "filesystem-p1" }],
       resolveModuleClientsForProject: async () => [
         { name: "filesystem", client: module, connName: "filesystem-p1" },
       ],
@@ -203,7 +212,7 @@ test("**画面が自分の Module を呼ぶときは、承認を求めない**�
   // ボタンがその画面を出している Module 自身の tool を呼ぶのは、
   // 「人の知らないうちに起きる」ではない——毎回聞くと承認の意味が薄れる。
   // **AI からの呼び出しは今までどおりゲートを通る**（性質が違う）。
-  await withApp(async ({ base, headers, threadId, module, inbox }) => {
+  await withApp(async ({ base, headers, projectId, threadId, module, inbox }) => {
     const res = await fetch(`${base}/api/threads/${threadId}/ui-tool-call`, {
       method: "POST",
       headers,
@@ -211,10 +220,10 @@ test("**画面が自分の Module を呼ぶときは、承認を求めない**�
     });
 
     assert.equal(res.status, 200);
-    assert.deepEqual(module.calls, [
+    assert.deepEqual(stripCallId(module.calls), [
       // **人が画面から触っていることを host が刻む**（追加・2026-09-13）
-      // ——刻まないと、受け手は「誰のための呼び出しか分からない」で止まる
-      { name: "listDirectory", arguments: { path: "." }, _meta: { "dev.banto/caller": { admin: true } } },
+      // ——刻まないと、受け手は「誰のための呼び出しか分からない」で止まる。会話の Project も併記する（2026-09-28）
+      { name: "listDirectory", arguments: { path: "." }, _meta: { "dev.banto/caller": { admin: true, forProject: projectId } } },
     ]);
     // **人を待たせない**——判断待ちも立たない
     assert.deepEqual(inbox.listOpen(), []);
@@ -257,15 +266,15 @@ test("`module` 可視性の tool は、画面からは呼べない（部品間�
 });
 
 test("人の管理操作（admin 可視性）は画面から呼べる——全部塞いだのでは設定画面が動かない", async () => {
-  await withApp(async ({ base, headers, threadId, module }) => {
+  await withApp(async ({ base, headers, projectId, threadId, module }) => {
     const res = await fetch(`${base}/api/threads/${threadId}/ui-tool-call`, {
       method: "POST",
       headers,
       body: JSON.stringify({ server: "filesystem", tool: "createAlias", arguments: { name: "x" } }),
     });
     assert.equal(res.status, 200);
-    assert.deepEqual(module.calls, [
-      { name: "createAlias", arguments: { name: "x" }, _meta: { "dev.banto/caller": { admin: true } } },
+    assert.deepEqual(stripCallId(module.calls), [
+      { name: "createAlias", arguments: { name: "x" }, _meta: { "dev.banto/caller": { admin: true, forProject: projectId } } },
     ]);
   });
 });
@@ -376,10 +385,42 @@ test("instance の Canvas からの呼び出しは、会話は決まらないが
     // 代理には刻んでいたのに**この経路だけ抜けていた**——host が Module と
     // 直接話すので中継を通らない。抜けたせいで、管理画面から公開鍵を読もうと
     // して「どの Vault にもありません」になった（受け手は fail closed で正しい）
-    assert.deepEqual(module.calls.at(-1)?._meta, { "dev.banto/caller": { admin: true } });
+    // Project は併記しない（banto 全体の画面は Project を持たない）。呼び出しの印も渡る（2026-09-28）
+    const meta = module.calls.at(-1)?._meta as Record<string, unknown>;
+    assert.deepEqual(meta["dev.banto/caller"], { admin: true });
+    assert.equal(typeof meta["dev.banto/callId"], "string");
     // **会話は決まらない**——admin なら承認を聞かずに通り、module なら
     // 「決められないから通さない」で止まる、という正直な状態
     assert.deepEqual(seenThread, { kind: "none" });
     assert.equal(moduleCalls.originFor("filesystem-instance"), undefined, "呼び出しの後も台帳に残っている");
   });
 });
+
+// **Project の画面（会話の中・入口・設定）から押した呼び出しは、台帳に Project も置く**（追加・2026-09-28、
+// Fable のレビュー）。置いていなかったので、公開の窓口（banto 全体）が人の操作の中で Service（その Project）を
+// 呼べなかった。Module に渡す刻印は人の印のまま、Project を `forProject` に併記し、台帳の1件を指す印も渡す
+for (const where of ["thread", "project"] as const) {
+  test(`${where === "thread" ? "会話の中" : "Project"}の画面からの呼び出しは、台帳に Project も載り、人の印に Project を併記して渡す`, async () => {
+    await withApp(async ({ base, headers, projectId, threadId, module, moduleCalls }) => {
+      let caller: unknown;
+      let callerOfThisCall: unknown;
+      module.onCall = () => {
+        caller = moduleCalls.callerFor("filesystem-p1");
+        const id = (module.calls.at(-1)?._meta as Record<string, unknown>)["dev.banto/callId"] as string;
+        callerOfThisCall = { origin: moduleCalls.originFor("filesystem-p1", id), caller: moduleCalls.callerFor("filesystem-p1", id) };
+      };
+      const url = where === "thread" ? `${base}/api/threads/${threadId}/ui-tool-call` : `${base}/api/projects/${projectId}/ui-tool-call`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ server: "filesystem", tool: "createAlias", arguments: { name: "x" } }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(caller, { project: projectId }, "画面からの呼び出しに Project が置かれていない");
+      assert.deepEqual(callerOfThisCall, { origin: "canvas", caller: { project: projectId } }, "渡した印で、この呼び出しを引けない");
+      const meta = module.calls.at(-1)?._meta as Record<string, unknown>;
+      assert.deepEqual(meta["dev.banto/caller"], { admin: true, forProject: projectId });
+      assert.equal(moduleCalls.callerFor("filesystem-p1"), undefined, "呼び出しの後も台帳に残っている");
+    });
+  });
+}

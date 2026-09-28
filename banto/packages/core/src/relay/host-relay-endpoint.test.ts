@@ -901,3 +901,164 @@ test("Project のアドレスを引けるのは、banto 本体で動く同梱の
     close();
   }
 });
+
+/** 呼ばれた口と、host が刻んだ `_meta`、その時点で台帳が宛先の呼び出しをどう見ていたかを残す偽の Module */
+async function recordingClient(
+  tools: Array<{ name: string; visibility: string }>,
+  seen: Array<{ tool: string; meta: Record<string, unknown>; origin?: string }>,
+  observe?: (meta: Record<string, unknown>) => string | undefined,
+): Promise<Client> {
+  const server = new McpServer({ name: "recording", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: tools.map((t) => ({ name: t.name, inputSchema: { type: "object" as const }, _meta: { "dev.banto/visibility": t.visibility } })),
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const meta = (request.params._meta ?? {}) as Record<string, unknown>;
+    seen.push({ tool: request.params.name, meta, ...(observe ? { origin: observe(meta) } : {}) });
+    return { content: [{ type: "text", text: "ok" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  return client;
+}
+
+/** 窓口（banto 全体）・その Project の Service・別の Project の Service・公開の実装（banto 全体）を繋いだ中継 */
+async function publishWorld() {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const seen: Array<{ tool: string; meta: Record<string, unknown>; origin?: string }> = [];
+  const serviceMeta = bundledMeta({ satisfies: ["service"], dependsOn: [], isolation: "subprocess", scope: "project" }, "service");
+  const svc = [{ name: "listServices", visibility: "agent" }];
+  registry.registerModule({ name: "service-pA", client: await recordingClient(svc, seen), meta: serviceMeta, projectId: "pA" });
+  registry.registerModule({ name: "service-pB", client: await recordingClient(svc, seen), meta: serviceMeta, projectId: "pB" });
+  registry.registerModule({
+    name: "publish-caddy",
+    // 宛先の台帳も見ておく——宛先がさらに中継を呼ぶとき、渡された印でこの1件を名指せるか
+    client: await recordingClient([{ name: "publishRoute", visibility: "module" }, { name: "setCaddySettings", visibility: "admin" }], seen, (meta) =>
+      moduleCalls.originFor("publish-caddy", meta["dev.banto/callId"] as string | undefined),
+    ),
+    meta: bundledMeta({ satisfies: ["publish"], dependsOn: [], isolation: "subprocess" }, "publish-caddy"),
+  });
+  const windowRaw = {
+    satisfies: ["publish-directory"],
+    dependsOn: [
+      { role: "publish", required: true },
+      { role: "service", required: false },
+    ],
+    isolation: "subprocess",
+  };
+  // 人の承認を待つゲート——ここに来たら「聞いた」と分かるように残す。道を張る口は、聞いたら断る
+  const asked: string[] = [];
+  const gate = {
+    requestApproval: async (req: { name: string }) => {
+      asked.push(req.name);
+      return req.name === "publishRoute" ? { allowed: false, reason: "試験では聞いたら断る" } : { allowed: true, reason: "試験では通す" };
+    },
+  };
+  const server = await startTestServer(registry, { moduleCalls, gate });
+  const bundled = await relayClient(server.url, registry.issueToken({ moduleName: "publish-directory", meta: bundledMeta(windowRaw, "publish-directory") }));
+  const thirdParty = await relayClient(server.url, registry.issueToken({ moduleName: "evil-window", meta: parseModuleMeta(windowRaw, "evil-window") }));
+  const via = (client: Client) => ({
+    call: (target: string, tool: string, callId?: string) =>
+      client.callTool({
+        name: "relayCallTool",
+        arguments: { targetModule: target, name: tool, arguments: {} },
+        ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}),
+      }),
+    targets: async (callId?: string) => {
+      const r = await client.callTool({ name: "relayListTargets", arguments: {}, ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}) });
+      return {
+        names: (JSON.parse(textOf(r)) as { name: string }[]).map((t) => t.name),
+        onBehalfOf: (r._meta as Record<string, unknown> | undefined)?.["dev.banto/onBehalfOf"],
+      };
+    },
+  });
+  return {
+    moduleCalls,
+    seen,
+    asked,
+    window: via(bundled),
+    thirdParty: via(thirdParty),
+    last: () => seen.at(-1)!,
+    close: async () => {
+      await bundled.close();
+      await thirdParty.close();
+      server.close();
+    },
+  };
+}
+
+// **人が Project の画面から押した呼び出しの中で、banto 全体の Module がその Project の Module を呼べる**（2026-09-28、
+// Fable のレビュー）。以前は画面の呼び出しに Project を置いていなかったので、公開の入口の画面から押しても窓口は
+// Service を呼べず、画面の「まだ公開していないサーバ」が黙って空だった。**人の操作の印（admin）は保つ**——
+// Project が分かったからといって `{project}` に落とすと、publish-caddy の「人が押したときだけ」が人の承認を断る
+test("Project の画面から押した呼び出しの中では、その Project の Module を呼べる——別の Project は呼べず、人の印は保たれる", async () => {
+  const w = await publishWorld();
+  try {
+    const canvas = w.moduleCalls.beginCall("publish-directory", "t1", "canvas", "pA");
+    assert.equal(textOf(await w.window.call("service-pA", "listServices", canvas.id)), "ok");
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { admin: true, forProject: "pA" }, "人の印が消えたか、Project が併記されていない");
+    await assert.rejects(() => w.window.call("service-pB", "listServices", canvas.id), /別の Project の Module は呼べない/);
+    assert.deepEqual(await w.window.targets(canvas.id), { names: ["service-pA", "publish-caddy"], onBehalfOf: "pA" });
+
+    // 公開の実装へも人の印のまま届く（admin の口なので人に聞かない）。宛先にも呼び出しの印が渡り、台帳はその1件を人の画面と見る
+    assert.equal(textOf(await w.window.call("publish-caddy", "publishRoute", canvas.id)), "ok");
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { admin: true, forProject: "pA" });
+    assert.equal(typeof w.last().meta["dev.banto/callId"], "string", "宛先に呼び出しの印が渡っていない");
+    assert.equal(w.last().origin, "canvas", "宛先の台帳が、渡した印でこの1件を引けない");
+    assert.deepEqual(w.asked, [], "人が押した同梱どうしの操作で、人に聞いた");
+    canvas.end();
+
+    // banto 全体の設定画面（Project が無い）からは、今までどおり Project の Module を呼べず、刻印は admin だけ
+    const instanceCanvas = w.moduleCalls.beginCall("publish-directory", undefined, "canvas");
+    await assert.rejects(() => w.window.call("service-pA", "listServices", instanceCanvas.id), /その Project のための呼び出しの中でだけ呼べる/);
+    assert.deepEqual(await w.window.targets(instanceCanvas.id), { names: ["publish-caddy"], onBehalfOf: undefined });
+    await w.window.call("publish-caddy", "publishRoute", instanceCanvas.id);
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { admin: true });
+    instanceCanvas.end();
+  } finally {
+    await w.close();
+  }
+});
+
+// **AI のターンと人の画面の呼び出しが同時に窓口を通っても、それぞれの出所で刻む**（2026-09-28、Fable のレビュー）。
+// 窓口は banto 全体で1接続なので、接続単位の台帳では「ターンが1つでも混ざればターン」になり、pA の AI が
+// publishService を処理している間に人が「公開する」を押すと、publishRoute が `{project}` で刻まれて断られていた
+test("AI のターンと人の画面が同時に窓口を通っても、呼び出しの印でそれぞれの出所が刻まれる（第三者の印は信じない）", async () => {
+  const w = await publishWorld();
+  try {
+    const turn = w.moduleCalls.beginCall("publish-directory", "t1", "turn", "pA");
+    const canvas = w.moduleCalls.beginCall("publish-directory", "t2", "canvas", "pA");
+
+    await w.window.call("publish-caddy", "publishRoute", canvas.id);
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { admin: true, forProject: "pA" }, "人の承認が AI のターンの刻印で刻まれた");
+    assert.equal(w.last().origin, "canvas");
+    assert.deepEqual(w.asked, [], "人が押した操作で人に聞いた");
+
+    // AI のターンの仕事は、同時に人の画面が走っていても AI のターンのまま（人の印を借りない）——module の口なので人に聞く
+    await assert.rejects(() => w.window.call("publish-caddy", "publishRoute", turn.id), /試験では聞いたら断る/);
+    assert.deepEqual(w.asked, ["publishRoute"]);
+
+    // 印を返さない Module は今までどおり接続単位——混ざっていれば厳しいほう（ターン）
+    await assert.rejects(() => w.window.call("publish-caddy", "publishRoute"), /試験では聞いたら断る/);
+    assert.equal(w.asked.length, 2);
+    await w.window.call("service-pA", "listServices");
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { project: "pA" });
+    assert.equal(w.asked.length, 3);
+    turn.end();
+    canvas.end();
+
+    // **第三者の Module が返した印は信じない**——同時に走っている自分の呼び出しのうち、緩いほうを選べてしまう。
+    // 人の画面からの admin の口は聞かずに通る（第三者でも）ので、AI のターンの仕事をその印で通されると承認が飛ぶ
+    const evilTurn = w.moduleCalls.beginCall("evil-window", "t1", "turn", "pA");
+    const evilCanvas = w.moduleCalls.beginCall("evil-window", "t2", "canvas", "pA");
+    await w.thirdParty.call("publish-caddy", "setCaddySettings", evilCanvas.id);
+    assert.equal(w.asked.length, 4, "第三者が人の画面の印を名乗って承認を飛ばした");
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { project: "pA" }, "第三者が人の画面の印で人の刻印を得た");
+    evilTurn.end();
+    evilCanvas.end();
+  } finally {
+    await w.close();
+  }
+});
