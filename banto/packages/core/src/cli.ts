@@ -14,6 +14,7 @@ import { UnauthorizedError, auth } from "@modelcontextprotocol/sdk/client/auth.j
 import { BantoOAuthProvider, oauthAliasFor } from "./oauth/provider.js";
 import {
   CONTAINER_NODE_PATH,
+  ContainerAddressUnavailable,
   ProjectContainers,
   checkContainerPrereqs,
   ensureBaseImage,
@@ -1343,8 +1344,16 @@ async function main(): Promise<void> {
     },
     // 出所（人の画面か、AI のターンか）を引くための台帳。承認の要否がここで分かれる
     moduleCalls,
-    // **公開の実装が、Project のコンテナに届くアドレスを引く**（§4.3 Publish）。この banto が作ったものだけ
-    projectAddress: (projectId) => containers.containerAddress(containerNameFor(projectId), bootstrap.dataDir),
+    // **公開の実装が、Project のコンテナに届くアドレスを引く**（§4.3 Publish）。この banto が作ったものだけ。
+    // 確かに届かない（止まっている・無い・他人のもの）は値で返し、分からない（Incus が答えない）は投げる
+    projectAddress: (projectId) =>
+      containers.containerAddress(containerNameFor(projectId), bootstrap.dataDir).then(
+        (address) => ({ address }),
+        (err: unknown) => {
+          if (err instanceof ContainerAddressUnavailable) return { unavailable: err.message };
+          throw err;
+        },
+      ),
     gate: createRelayApprovalGate({
       grants: relayGrants,
       inbox,

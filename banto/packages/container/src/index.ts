@@ -13,6 +13,7 @@ export {
 export { TIMED_OUT } from "./incus.js";
 export {
   ProjectContainers,
+  ContainerAddressUnavailable,
   containerNameFor,
   instanceContainerId,
   execInContainer,

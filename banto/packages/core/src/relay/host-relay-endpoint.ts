@@ -236,9 +236,13 @@ export interface HostRelayServerOptions {
   approvalProgressIntervalMs?: number;
   /**
    * **host からその Project のコンテナに届くアドレス**（追加・2026-09-27、`docs/specs/v4-modules.md` §4.3 Publish）。
-   * コンテナのアドレスは DHCP で変わりうるので、公開の実装は覚えずに引き直す。渡さなければこの口は断る
+   * コンテナのアドレスは DHCP で変わりうるので、公開の実装は覚えずに引き直す。渡さなければこの口は断る。
+   *
+   * **断りは2通りに分けて返す**（改訂・2026-09-28、Fable のレビュー）：`{unavailable}` は**確かに届かない**
+   * （コンテナが無い・止まっている・この banto のものでない・アドレスがまだ無い）。投げたら**分からない**
+   * （Incus が答えない等の一時の失敗）。公開の実装は、前者なら中継をやめ（503）、後者なら写しに触らない
    */
-  projectAddress?(projectId: string): Promise<string>;
+  projectAddress?(projectId: string): Promise<{ address: string } | { unavailable: string }>;
 }
 
 /**
@@ -372,8 +376,9 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       if (!opts.projectAddress) throw new Error("この banto は Project のアドレスを引く口を持っていません");
       const projectId = typeof args.projectId === "string" ? args.projectId : "";
       if (!projectId) throw new Error("projectId が要ります");
-      const address = await opts.projectAddress(projectId);
-      return { content: [{ type: "text", text: JSON.stringify({ address }) }] };
+      // 確かに届かないときは理由を値で返す（`{unavailable}`）。分からないときは投げる——呼び出し元が区別できるように
+      const found = await opts.projectAddress(projectId);
+      return { content: [{ type: "text", text: JSON.stringify(found) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が

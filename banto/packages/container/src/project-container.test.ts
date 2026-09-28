@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ProjectContainers, containerNameFor, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
+import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 /** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
@@ -125,6 +125,29 @@ test("コンテナのアドレス：別の banto のもの・止まっている�
   const missing: RunIncus = async (args) =>
     args[0] === "project" ? { code: 0, stdout: "p\n", stderr: "" } : { code: 1, stdout: "", stderr: "Error: Instance not found" };
   await assert.rejects(new ProjectContainers(missing).containerAddress("banto-x", "/data"), /ありません/);
+});
+
+// **確かに届かないと、確かめられないを分ける**（2026-09-28、Fable のレビュー）。公開の実装は前者なら中継をやめ（503）、
+// 後者なら今の道に触らない——Incus が一瞬答えないだけで全部の公開を止めないため
+test("コンテナのアドレス：無い・他人・止まっている・アドレスがまだ無いは ContainerAddressUnavailable、Incus が答えないのはそれ以外", async () => {
+  const eth0 = { eth0: { addresses: [{ family: "inet", address: "10.0.0.5", scope: "global" }] } };
+  const definite = [
+    new ProjectContainers(addressRun(OWNED_RUNNING, eth0)).containerAddress("banto-x", "/other"),
+    new ProjectContainers(addressRun({ ...OWNED_RUNNING, status: "Stopped" }, eth0)).containerAddress("banto-x", "/data"),
+    new ProjectContainers(addressRun(OWNED_RUNNING, { eth0: { addresses: [] } })).containerAddress("banto-x", "/data"),
+    new ProjectContainers(async (args) =>
+      args[0] === "project" ? { code: 0, stdout: "p\n", stderr: "" } : { code: 1, stdout: "", stderr: "Error: Instance not found" },
+    ).containerAddress("banto-x", "/data"),
+  ];
+  for (const p of definite) await assert.rejects(p, (err) => err instanceof ContainerAddressUnavailable);
+  // 状態を読めない（時間切れ）・アドレスの問い合わせが失敗——確かめられないので、確かに届かないとは言わない
+  const timedOut: RunIncus = async (args) =>
+    args[0] === "project" ? { code: 0, stdout: "p\n", stderr: "" } : { code: 124, stdout: "", stderr: "時間切れ" };
+  const stateFails: RunIncus = async (args) =>
+    /\/state\?/.test(args[1] ?? "") ? { code: 1, stdout: "", stderr: "connection refused" } : addressRun(OWNED_RUNNING, eth0)(args);
+  for (const run of [timedOut, stateFails]) {
+    await assert.rejects(new ProjectContainers(run).containerAddress("banto-x", "/data"), (err) => err instanceof Error && !(err instanceof ContainerAddressUnavailable));
+  }
 });
 
 test("ブリッジがホストに見えない形なら、中の経路ができるまで待って読む", async () => {

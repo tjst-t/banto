@@ -240,7 +240,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     publisher.reconcile().then(
       (routes) => {
         const problem = routes
-          .filter((r) => r.state === "caddy-unreachable")
+          .filter((r) => r.state === "caddy-unreachable" || r.state === "address-unknown")
           .map((r) => `${r.url}: ${r.problem}`)
           .join(" / ");
         if (problem && problem !== lastProblem) console.error(`[publish-caddy] 突き合わせで直せなかったもの：${problem}`);

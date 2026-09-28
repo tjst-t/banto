@@ -863,8 +863,10 @@ test("Project のアドレスを引けるのは、banto 本体で動く同梱の
   const { url, close } = await startTestServer(registry, {
     projectAddress: async (projectId) => {
       asked.push(projectId);
-      if (projectId === "gone") throw new Error("コンテナ banto-gone は動いていません（Stopped）");
-      return "10.61.162.23";
+      // 確かに届かない（止まっている）は値で、分からない（Incus が答えない）は投げる
+      if (projectId === "gone") return { unavailable: "コンテナ banto-gone は動いていません（Stopped）" };
+      if (projectId === "flaky") throw new Error("コンテナ banto-flaky の状態を読めませんでした：時間切れ");
+      return { address: "10.61.162.23" };
     },
   });
   const tokens = {
@@ -879,18 +881,22 @@ test("Project のアドレスを引けるのは、banto 本体で動く同梱の
   const resolve = async (token: string, projectId: string) => {
     const c = await relayClient(url, token);
     try {
-      return JSON.parse(textOf(await c.callTool({ name: "relayProjectAddress", arguments: { projectId } }))) as { address: string };
+      return JSON.parse(textOf(await c.callTool({ name: "relayProjectAddress", arguments: { projectId } }))) as
+        | { address: string }
+        | { unavailable: string };
     } finally {
       await c.close();
     }
   };
   try {
     assert.deepEqual(await resolve(tokens.caddy, "pA"), { address: "10.61.162.23" });
-    await assert.rejects(() => resolve(tokens.caddy, "gone"), /動いていません/, "理由が届かない");
+    // **確かに届かないと、分からないを分けて返す**（2026-09-28）——前者は値、後者は失敗
+    assert.deepEqual(await resolve(tokens.caddy, "gone"), { unavailable: "コンテナ banto-gone は動いていません（Stopped）" });
+    await assert.rejects(() => resolve(tokens.caddy, "flaky"), /時間切れ/, "分からないことが届かない");
     await assert.rejects(() => resolve(tokens.thirdParty, "pA"), /banto 自身のコード/);
     await assert.rejects(() => resolve(tokens.inContainer, "pA"), /banto 本体で動く/);
     await assert.rejects(() => resolve(tokens.notPublish, "pA"), /publish 役割/);
-    assert.deepEqual(asked, ["pA", "gone"], "断るべき呼び出し元のために host が引きに行った");
+    assert.deepEqual(asked, ["pA", "gone", "flaky"], "断るべき呼び出し元のために host が引きに行った");
   } finally {
     close();
   }

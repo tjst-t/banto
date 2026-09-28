@@ -27,6 +27,8 @@ interface Ctx {
   dir: string;
   /** Project → host から届くアドレス（無ければ「コンテナが止まっている」） */
   addresses: Map<string, string>;
+  /** host がアドレスを確かめられない（Incus が答えない等）Project */
+  flaky: Set<string>;
   /** host から TCP で届く「アドレス:ポート」 */
   listening: Set<string>;
   publisher: CaddyPublisher;
@@ -41,13 +43,15 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
   if (opts.configured !== false) await store.setSettings({ adminUrl, baseDomain: "banto.example.net", reach: "internet" });
   const addresses = new Map<string, string>([[P1, "10.61.162.23"], [P2, "10.61.162.40"]]);
   const listening = new Set<string>(["10.61.162.23:3000", "10.61.162.40:3000"]);
+  const flaky = new Set<string>();
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
     resolveAddress: async (projectId) => {
+      if (flaky.has(projectId)) throw new Error(`コンテナ banto-${projectId.slice(0, 8)} の状態を読めませんでした：時間切れ`);
       const a = addresses.get(projectId);
-      if (!a) throw new Error(`コンテナ banto-${projectId.slice(0, 8)} は動いていません（Stopped）`);
-      return a;
+      if (!a) return { unavailable: `コンテナ banto-${projectId.slice(0, 8)} は動いていません（Stopped）` };
+      return { address: a };
     },
     probe: async (address, port) => listening.has(`${address}:${port}`),
     owner: dir,
@@ -62,7 +66,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
     return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
   };
   try {
-    await fn({ client, caddy, dir, addresses, listening, publisher, call });
+    await fn({ client, caddy, dir, addresses, flaky, listening, publisher, call });
   } finally {
     await client.close();
     await caddy.stop();
@@ -204,6 +208,30 @@ test("コンテナのアドレスが変わったら、突き合わせで行き�
     const before = caddy.writes().length;
     await publisher.reconcile();
     assert.equal(caddy.writes().length, before, "変わっていないのに書き換えた");
+  });
+});
+
+// **アドレスを確かめられないだけなら、道に触らない**（2026-09-28、Fable のレビュー）。以前は理由を問わず 503 に
+// 書き換えていたので、Incus が一瞬答えないだけで全部の公開が止まった。止まっている（確かに届かない）ときだけ 503
+test("アドレスを確かめられない（一時の失敗）ときは、道を 503 にせずそのまま残し、状態は address-unknown。公開は断る", async () => {
+  await withCaddy(async ({ call, caddy, flaky, publisher }) => {
+    await call("publishRoute", publishArgs());
+    const host = "web-1a2b3c4d.banto.example.net";
+    const before = caddy.writes().length;
+    flaky.add(P1);
+    const [st] = await publisher.reconcile();
+    assert.equal(st!.state, "address-unknown");
+    assert.match(st!.problem ?? "", /時間切れ/);
+    assert.equal(dialOf(routeFor(caddy, host)), "10.61.162.23:3000", "確かめられないだけで中継をやめた");
+    assert.equal(caddy.writes().length, before, "確かめられないのに Caddy を書き換えた");
+    // 新しい公開は、確かめられないなら張らない（理由つき）
+    const r = await call("publishRoute", publishArgs({ service: "api", port: 3001, config: { auth: "none" } }));
+    assert.equal(r.isError, true);
+    assert.match(r.text, /確かめられません/);
+    // 確かめられるようになったら元どおり
+    flaky.delete(P1);
+    const [back] = await publisher.reconcile();
+    assert.equal(back!.state, "active");
   });
 });
 

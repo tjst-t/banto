@@ -4,7 +4,8 @@
 // 突き合わせ（`reconcile`）で写しをマスターに合わせる——
 //   - 無いルートは足す（Caddyfile から読み込み直すと、API で足したルートは消えうる）
 //   - Project のコンテナのアドレスが変わったら（DHCP）行き先を直す
-//   - 行き先が分からない（コンテナが止まっている）ときは中継をやめて 503 にする
+//   - 行き先に確かに届かない（コンテナが止まっている・無い）ときは中継をやめて 503 にする
+//   - 行き先を**確かめられない**（host が Incus から答えを得られない等の一時の失敗）ときは、その道に触らない
 //   - マスターに無いのに自分の印が付いたルートは消す（やめたのに消し損ねたもの）
 // 突き合わせるのは、起きたとき・一定の間隔・各操作の前。
 
@@ -33,8 +34,11 @@ export interface PublisherDeps {
   store: PublishStore;
   /** 設定から Caddy の口を作る（試験では偽の Caddy に向ける） */
   caddyFor(settings: CaddySettings): CaddyAdmin;
-  /** host からその Project のコンテナに届くアドレス（host の中継 `relayProjectAddress`）。引けなければ理由つきで投げる */
-  resolveAddress(projectId: string): Promise<string>;
+  /**
+   * host からその Project のコンテナに届くアドレス（host の中継 `relayProjectAddress`）。
+   * **確かに届かない**（止まっている・無い・他人のもの）なら `{unavailable}` を返し、**確かめられない**（一時の失敗）なら投げる
+   */
+  resolveAddress(projectId: string): Promise<AddressLookup>;
   /** host からそのアドレスとポートに TCP で届くか */
   probe(address: string, port: number): Promise<boolean>;
   /** この Module の置き場——ルートの印の持ち主になる */
@@ -42,13 +46,21 @@ export interface PublisherDeps {
   now?: () => Date;
 }
 
+/** アドレスを引いた結果。投げたら「確かめられない」 */
+export type AddressLookup = { address: string } | { unavailable: string };
+
 export type RouteState =
   /** 行き先に届いている */
   | "active"
   /** ルートはあるが、行き先のポートに届かない（止まっている・127.0.0.1 だけで待っている） */
   | "not-listening"
-  /** Project のコンテナが止まっている等で行き先が分からない——503 を返している */
+  /** Project のコンテナが止まっている・無い等で、行き先に確かに届かない——503 を返している */
   | "project-stopped"
+  /**
+   * 行き先を**確かめられない**（host が Incus から答えを得られない等、一時の失敗）——Caddy の道には触っていない
+   * （追加・2026-09-28、Fable のレビュー。以前は理由を問わず 503 に書き換えていたので、一時の失敗で全部の公開が止まった）
+   */
+  | "address-unknown"
   /** Caddy の admin に届かない・断られた——写しがいまどうなっているか分からない */
   | "caddy-unreachable"
   /** この Module の設定がまだ（基のドメインが無い） */
@@ -127,12 +139,14 @@ export class CaddyPublisher {
 
       // **host から実際に届くか**を確かめてから道を張る。コンテナの中の `ss` が「待ち受けている」と言っても、
       // 127.0.0.1 だけで待っているものはコンテナの外（Caddy）から届かない
-      let address: string;
+      let found: AddressLookup;
       try {
-        address = await this.deps.resolveAddress(t.projectId);
+        found = await this.deps.resolveAddress(t.projectId);
       } catch (err) {
-        throw new PublishError(`公開先のアドレスが分かりません：${errText(err)}`);
+        throw new PublishError(`公開先のアドレスを確かめられません（しばらくしてからもう一度）：${errText(err)}`);
       }
+      if (!("address" in found)) throw new PublishError(`公開先に届きません：${found.unavailable}`);
+      const address = found.address;
       if (!(await this.deps.probe(address, t.port))) {
         throw new PublishError(
           `host から ${address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
@@ -230,15 +244,12 @@ export class CaddyPublisher {
       return records.map((r) => status(r, "caddy-unreachable", errText(err)));
     }
 
-    // Project ごとに1回だけ引く（同じ Project に公開が複数あっても）
-    const addresses = new Map<string, Promise<{ address?: string; problem?: string }>>();
+    // Project ごとに1回だけ引く（同じ Project に公開が複数あっても）。確かめられなかったら `unknown`
+    const addresses = new Map<string, Promise<AddressLookup | { unknown: string }>>();
     const addressOf = (projectId: string) => {
       let p = addresses.get(projectId);
       if (!p) {
-        p = this.deps.resolveAddress(projectId).then(
-          (address) => ({ address }),
-          (err: unknown) => ({ problem: errText(err) }),
-        );
+        p = this.deps.resolveAddress(projectId).catch((err: unknown) => ({ unknown: errText(err) }));
         addresses.set(projectId, p);
       }
       return p;
@@ -249,9 +260,16 @@ export class CaddyPublisher {
     for (const rec of records) {
       const id = routeIdFor(this.prefix, rec);
       wanted.add(id);
-      const { address, problem } = await addressOf(rec.projectId);
-      const desired = buildRoute(id, rec, address);
+      const found = await addressOf(rec.projectId);
       const current = routes.find((r) => r["@id"] === id);
+      // **確かめられないときは、今の道に触らない**——一時の失敗で 503 に書き換えると、Incus が一瞬答えないだけで全部の
+      // 公開が止まる。前のアドレスのまま残すのは、確かめられるまでの間だけ（次の突き合わせで直る）
+      if ("unknown" in found) {
+        out.push(status(rec, "address-unknown", `公開先のアドレスを確かめられません（道はそのまま）：${found.unknown}`));
+        continue;
+      }
+      const address = "address" in found ? found.address : undefined;
+      const desired = buildRoute(id, rec, address);
       try {
         if (!current) await caddy.put(`${routesPath(server)}/0`, desired);
         else if (!sameJson(current, desired)) await caddy.patch(`/id/${id}`, desired);
@@ -260,7 +278,7 @@ export class CaddyPublisher {
         continue;
       }
       if (!address) {
-        out.push(status(rec, "project-stopped", problem));
+        out.push(status(rec, "project-stopped", "unavailable" in found ? found.unavailable : undefined));
         continue;
       }
       const reachable = await this.deps.probe(address, rec.port);

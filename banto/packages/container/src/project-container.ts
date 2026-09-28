@@ -115,6 +115,13 @@ const hostIPv4Interfaces: HostInterfaces = () =>
     ]),
   );
 
+/**
+ * **コンテナに確かに届かない**（無い・この banto のものでない・動いていない・アドレスがまだ無い。追加・2026-09-28）。
+ * `containerAddress` はこれと、それ以外の失敗（Incus が答えない・時間切れ＝**分からない**）を分けて投げる
+ * ——公開の実装は、前者なら中継をやめ、後者なら今の道に触らない（一時の失敗で全部の公開を 503 にしない）
+ */
+export class ContainerAddressUnavailable extends Error {}
+
 export class ProjectContainers {
   constructor(
     private readonly run: RunIncus,
@@ -374,11 +381,11 @@ export class ProjectContainers {
    */
   async containerAddress(name: string, owner: string): Promise<string> {
     const st = await this.state(name);
-    if (!st) throw new Error(`コンテナ ${name} がありません（その Project の Module がまだ一度も起きていない）`);
-    if (st.config["user.banto.owner"] !== owner) throw new Error(`コンテナ ${name} はこの banto のものではありません`);
-    if (st.status !== "Running") throw new Error(`コンテナ ${name} は動いていません（${st.status}）`);
+    if (!st) throw new ContainerAddressUnavailable(`コンテナ ${name} がありません（その Project の Module がまだ一度も起きていない）`);
+    if (st.config["user.banto.owner"] !== owner) throw new ContainerAddressUnavailable(`コンテナ ${name} はこの banto のものではありません`);
+    if (st.status !== "Running") throw new ContainerAddressUnavailable(`コンテナ ${name} は動いていません（${st.status}）`);
     const nic = Object.entries(st.expandedDevices).find(([, d]) => d["type"] === "nic" && d["network"]);
-    if (!nic) throw new Error(`コンテナ ${name} にネットワークの NIC がありません`);
+    if (!nic) throw new ContainerAddressUnavailable(`コンテナ ${name} にネットワークの NIC がありません`);
     // 装置の `name` が中でのインターフェース名。無ければ装置の名前と同じ（Incus の既定）
     const ifname = nic[1]["name"] ?? nic[0];
     const project = encodeURIComponent(await this.currentProject());
@@ -387,7 +394,8 @@ export class ProjectContainers {
       network?: Record<string, { addresses?: { family?: string; address?: string; scope?: string }[] }> | null;
     };
     const v4 = (j.network?.[ifname]?.addresses ?? []).find((a) => a.family === "inet" && a.scope === "global" && a.address);
-    if (!v4) throw new Error(`コンテナ ${name} の ${ifname} に IPv4 のアドレスがまだありません（DHCP が済んでいない）`);
+    // 動いているがアドレスがまだ無い——前のアドレスは別のコンテナに配られうるので、確かに「届かない」側に数える
+    if (!v4) throw new ContainerAddressUnavailable(`コンテナ ${name} の ${ifname} に IPv4 のアドレスがまだありません（DHCP が済んでいない）`);
     return v4.address!;
   }
 
