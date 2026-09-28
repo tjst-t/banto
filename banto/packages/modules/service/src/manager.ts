@@ -36,6 +36,12 @@ export interface ManagerDeps {
   moduleName?: string;
   /** 起動を頼んでから状態を見るまで待つ時間（既定 1500ms）。すぐ落ちるものを「動いている」と返さないため */
   settleMs?: number;
+  /**
+   * **登録を消す前に、そのサービスの公開をやめてもらう**（追加・2026-09-28、`docs/specs/v4-modules.md` §4.2・§4.3）。
+   * 公開の窓口（publish-directory）に中継で知らせる。投げたら**登録を消さない**——消したのに公開が残ると、同じ名前で
+   * 別の中身を登録し直したとき、人の承認なしに同じ URL の中身が替わる。渡さなければ知らせない（試験・公開を使わない形）
+   */
+  withdrawPublications?(name: string): Promise<{ unpublished: { url: string; port: number }[] }>;
 }
 
 export interface ServiceStatus {
@@ -340,15 +346,27 @@ export class ServiceManager {
     });
   }
 
-  remove(nameInput: unknown): Promise<{ name: string; removed: true }> {
+  remove(nameInput: unknown): Promise<{ name: string; removed: true; unpublished?: { url: string; port: number }[] }> {
     return this.serialize(async () => {
       const name = assertName(nameInput);
       await this.mustGet(name);
+      // **公開を先にやめる**——やめられなければ登録は残す（消したのに公開が残る、を作らない）
+      let unpublished: { url: string; port: number }[] = [];
+      if (this.deps.withdrawPublications) {
+        try {
+          ({ unpublished } = await this.deps.withdrawPublications(name));
+        } catch (err) {
+          throw new ServiceError(
+            `「${name}」の公開をやめられなかったので、登録は消していません：${err instanceof Error ? err.message : String(err)}。` +
+              "公開を先にやめる（unpublishService）か、しばらくしてからもう一度",
+          );
+        }
+      }
       await this.deps.systemctl.run(["disable", "--now", unitName(name)]);
       await this.cleanup(name);
       await this.deps.store.delete(name);
       this.notes.delete(name);
-      return { name, removed: true as const };
+      return { name, removed: true as const, ...(unpublished.length > 0 ? { unpublished } : {}) };
     });
   }
 

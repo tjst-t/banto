@@ -52,10 +52,12 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
           [VISIBILITY_META_KEY]: "admin",
           [MODULE_META_KEY]: {
             satisfies: ["service"],
-            // envSecrets を解決するので Shell と同じく窓口と金庫の両方に繋ぐ
+            // envSecrets を解決するので Shell と同じく窓口と金庫の両方に繋ぐ。
+            // 登録を消すときは公開の窓口に知らせる（公開が無い Project では繋がらなくてよい）
             dependsOn: [
               { role: "vault-directory", required: true },
               { role: "vault", required: true },
+              { role: "publish-directory", required: false },
             ],
             isolation: "subprocess",
             scope: "project",
@@ -108,7 +110,9 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
       },
       {
         name: "removeService",
-        description: "サービスを止めて登録を消す。ログも消える",
+        description:
+          "サービスを止めて登録を消す。ログも消える。**公開（publishService）していたら、その公開もやめる**" +
+          "（やめられなければ登録は消さずに理由を返す）。止めるだけなら stopService（公開は残る）",
         inputSchema: { type: "object", properties: { name: { type: "string", description: NAME_DESC } }, required: ["name"] },
         _meta: agent,
       },
@@ -191,6 +195,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   // Shell と同じ中継の口（index.js は Shell の起動部分を持つので、中の1ファイルだけ使う）
   const { HostRelayClient } = await import("@banto/module-shell/dist/host-relay-client.js");
   const relay = new HostRelayClient({ url: hostUrl, token: hostToken });
+  const { hostRelayCall, withdrawPublications } = await import("./publish-notice.js");
+  const relayCall = hostRelayCall(hostUrl, hostToken);
   const systemctl = new RealSystemctl();
   // **試験で本物の systemd を触らない印**（core の申告の試験は名乗りだけを読む。触ると、その機械の本物の
   // `~/.config/systemd/user` にある写しを片付けてしまう——Fable のレビュー）
@@ -216,6 +222,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
       const place = await relay.lookupAlias("vault-directory", alias, note);
       return relay.resolveAlias(place, note);
     },
+    withdrawPublications: (name) => withdrawPublications(relayCall, name),
   };
   const manager = new ServiceManager(deps);
   const prepare = noSystemd

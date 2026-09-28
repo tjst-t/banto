@@ -442,10 +442,12 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
     meta: {
       satisfies: ["service"],
-      // envSecrets を解決するので Shell と同じく窓口と金庫の両方
+      // envSecrets を解決するので Shell と同じく窓口と金庫の両方。登録を消すときは公開の窓口に知らせる
+      // （追加・2026-09-28——公開中のサービスを消したら公開もやめる。v4-modules.md §4.2）
       dependsOn: [
         { role: "vault-directory", required: true },
         { role: "vault", required: true },
+        { role: "publish-directory", required: false },
       ],
       isolation: "subprocess",
       scope: "project",

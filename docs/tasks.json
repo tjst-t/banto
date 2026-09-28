@@ -2378,7 +2378,14 @@
       "title": "Publish（窓口＋Caddy のサブドメイン）を本物の Caddy・Incus・ブラウザで確かめる",
       "status": "pending",
       "why": "2026-09-27 に publish-directory と publish-caddy を作り、単体試験（偽の Caddy・偽の Service）は通したが、host の Caddy の実物（admin API の場所・Caddyfile との関係・ワイルドカード証明書・DNS・版）と Incus の /state の実物を見ていない。承認の画面も実ブラウザで見ていない（規則13）。ユーザーに確かめることは docs/specs/v4-modules.md §4.3「まだ決めていないこと」",
-      "doneWhen": "目録から2本を入れ、基のドメインを設定し、Service で起こした 0.0.0.0 待ち受けのサーバを AI が publishService で頼む→会話の承認の画面に届く範囲・URL・設定項目が出る→Basic 認証で押す→その URL にブラウザから届き、認証を求められ、正しいパスワードで中身が出る→会話に URL が届く→unpublishService で届かなくなる、を実ブラウザの E2E で確かめる。コンテナを起こし直してアドレスが変わった場合に 15 秒以内に届き直すことも測る"
+      "doneWhen": "目録から2本を入れ、基のドメインを設定し、Service で起こした 0.0.0.0 待ち受けのサーバを AI が publishService で頼む→会話の承認の画面に届く範囲・URL・設定項目が出る→Basic 認証で押す→その URL にブラウザから届き、認証を求められ、正しいパスワードで中身が出る→会話に URL が届く→unpublishService で届かなくなる、を実ブラウザの E2E で確かめる。コンテナを起こし直してアドレスが変わった場合に 15 秒以内に届き直すことも測る。2026-09-28 の Fable のレビューで直したもの（入口の画面から Service の登録が引ける／AI のターンが窓口を使っている最中に人が「公開する」を押しても通る／removeService で公開が自動でやめられ入口の画面と listPublished に出る／Incus が一瞬答えないときに 503 にならない）も実物で見る。既存の Service は入れ直さないと removeService の知らせが届かない（宣言に publish-directory への依存が無い）"
+    },
+    {
+      "id": "vault-directory-call-id",
+      "title": "vault-directory も中継に呼び出しの印を返す（2つの Project の秘密の解決が同時に来ても断られないように）",
+      "status": "pending",
+      "why": "2026-09-28、Publish の修正で host の台帳が呼び出し単位で出所を引けるようになった（v4-architecture.md §2.5「出所は呼び出し単位で継ぐ」）。印を返していない banto 全体の Module は今までどおり接続単位で、Project が混ざると刻印が決まらない。vault-directory は2つの Project の Shell／Service から同時に lookupAlias を受けうるので、2段目（窓口→Vault）の刻印が決まらず断られる形が残る（実機では未観測、コードを読んで判明）",
+      "doneWhen": "vault-directory が受けた呼び出しの印（dev.banto/callId）を、その処理の中の中継すべてに添え、2つの Project から同時に秘密を引く試験が通る"
     },
     {
       "id": "ai-start-forks",

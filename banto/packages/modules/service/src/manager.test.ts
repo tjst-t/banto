@@ -54,7 +54,15 @@ class FakeSystemctl implements Systemctl {
   }
 }
 
-async function setup(opts: { secrets?: Record<string, string>; failAlias?: string; moduleName?: string; base?: string } = {}) {
+async function setup(
+  opts: {
+    secrets?: Record<string, string>;
+    failAlias?: string;
+    moduleName?: string;
+    base?: string;
+    withdrawPublications?: (name: string) => Promise<{ unpublished: { url: string; port: number }[] }>;
+  } = {},
+) {
   const base = opts.base ?? (await mkdtemp(join(tmpdir(), "banto-service-")));
   const sc = new FakeSystemctl();
   const resolved: string[] = [];
@@ -68,6 +76,7 @@ async function setup(opts: { secrets?: Record<string, string>; failAlias?: strin
     wrapperPath: "/banto/log-wrapper.js",
     inheritedEnv: { ANTHROPIC_BASE_URL: "http://10.0.0.1:4737/claude" },
     settleMs: 0,
+    ...(opts.withdrawPublications ? { withdrawPublications: opts.withdrawPublications } : {}),
     async resolveSecret(_env, alias) {
       if (alias === opts.failAlias) throw new Error("人が断りました");
       resolved.push(alias);
@@ -180,6 +189,39 @@ test("消す：止めて、unit と置き場（鍵のファイル・ログ）と
     await assert.rejects(stat(join(base, "state/web")));
     assert.deepEqual(await manager.list(), []);
     await assert.rejects(manager.stop("web"), /登録されていません/);
+  } finally {
+    await cleanup();
+  }
+});
+
+// **公開中のサービスを消したら、その公開もやめる**（2026-09-28、ユーザー決定の案A）。やめられなければ登録は消さない
+// ——消したのに公開が残ると、同じ名前で別の中身を登録し直したとき、人の承認なしに同じ URL の中身が替わる
+test("消す：先に公開をやめてもらい、やめた URL を返す。やめられなければ登録も unit も残して理由を返す", async () => {
+  const asked: string[] = [];
+  let refuse = true;
+  const { base, sc, manager, cleanup } = await setup({
+    withdrawPublications: async (name) => {
+      asked.push(name);
+      if (refuse) throw new Error("publish-caddy：Caddy に繋がりません");
+      return { unpublished: [{ url: "https://web-1a2b3c4d.banto.example.net", port: 3000 }] };
+    },
+  });
+  try {
+    await manager.start({ name: "web", command: "x", ports: [3000] });
+    await assert.rejects(manager.remove("web"), (e: Error) => e instanceof ServiceError && /公開をやめられなかったので、登録は消していません：publish-caddy：Caddy に繋がりません/.test(e.message));
+    assert.deepEqual((await manager.list()).map((s) => s.name), ["web"], "公開をやめられないのに登録を消した");
+    assert.ok(!sc.did("disable", "banto-web.service"), "公開をやめられないのに止めた");
+    await stat(join(base, "units/banto-web.service"));
+
+    refuse = false;
+    const out = await manager.remove("web");
+    assert.deepEqual(out, { name: "web", removed: true, unpublished: [{ url: "https://web-1a2b3c4d.banto.example.net", port: 3000 }] });
+    assert.deepEqual(asked, ["web", "web"]);
+    assert.deepEqual(await manager.list(), []);
+    // 止めるだけでは知らせない（公開は残し、not-listening と出る）
+    await manager.start({ name: "api", command: "x" });
+    await manager.stop("api");
+    assert.deepEqual(asked, ["web", "web"]);
   } finally {
     await cleanup();
   }
