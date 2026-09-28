@@ -753,9 +753,11 @@ export async function followRunningTurn(threadId: string): Promise<boolean> {
   // 起きるのが遅い回（コンテナが起きる等）でも止まり続けないよう、上限を置く——越えても描くのは同じ
   await Promise.race([contentArrived, new Promise((resolve) => setTimeout(resolve, 10_000))]);
   if (hasLiveRealRun(threadId)) {
-    // 待っている間に、この画面が自分で送り始めた——そちらを読む
+    // 待っている間に、この画面が自分で送り始めた——そちらを読む。**乗ったとは答えない**（改訂・2026-09-28、
+    // レビュー指摘）：以前は true を返し、呼ぶ側が「乗った」として記録から組み直して、送ったばかりの
+    // ターンを会話ごと捨てていた
     stream.close();
-    return true;
+    return false;
   }
   const turn: LiveTurn = {
     iterator: stream.events as AsyncGenerator<RealTurnEvent>,

@@ -136,6 +136,12 @@ async function showLatestOnce(threadId: string): Promise<void> {
   // **先に乗ってから記録を取る**——乗る前に取ると、その間に終わったターンの返事を取りこぼす
   const following = await followRunningTurn(threadId);
   const record = await getRealThread(threadId);
+  // **取り終えた時点でもう一度見る**（追加・2026-09-28、レビュー指摘）——取りに行っている間に人が送り始めて
+  // いたら、ここで組み直すと送った発言ごと会話が作り直されて消える。走り終えたらやり直す
+  if (!following && hasLiveRealRun(threadId)) {
+    deferred.add(threadId);
+    return;
+  }
   const rebuild = needsRebuild.delete(threadId);
   const readThrough = readToEnd.delete(threadId);
   if (following || rebuild) {
