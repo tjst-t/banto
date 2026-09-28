@@ -72,9 +72,10 @@ export const CONFIG_SCHEMA = {
     auth: {
       type: "string",
       title: "前に置く認証",
-      enum: ["basic", "none"],
-      enumNames: ["Basic 認証（ユーザー名とパスワード）", "無し（URL を知っていれば誰でも届く）"],
-      default: "basic",
+      // **既定は無し**（決定・2026-09-28、ユーザー——当面は LAN の中だけの想定。banto の SSO は後で考える）
+      enum: ["none", "basic"],
+      enumNames: ["無し（URL を知っていれば誰でも届く）", "Basic 認証（ユーザー名とパスワード）"],
+      default: "none",
     },
     username: { type: "string", title: "Basic 認証のユーザー名", default: "banto", minLength: 1, maxLength: 64 },
     password: {

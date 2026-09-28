@@ -25,6 +25,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+  CANVAS_META_KEY,
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
@@ -33,6 +34,7 @@ import {
   replyToOf,
 } from "@banto/module-contract";
 import { APPROVAL_APP_HTML, APPROVAL_APP_URI, UI_APP_MIME } from "./approval-app.js";
+import { PUBLISHED_APP_URI, publishedAppHtml } from "./published-app.js";
 import type { RelayLike, RelayTarget } from "./relay-client.js";
 import { RequestStore, type PublishRequest, type Reach } from "./requests.js";
 
@@ -283,6 +285,69 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     };
   }
 
+  /**
+   * **入口の画面（launcher）が引く、その Project の公開の様子**（追加・2026-09-28、ユーザー「Launcher で Publish の状況を見たい」）。
+   * 人の画面なので Project は引数で受ける（画面は banto が渡す `dev.banto/project` から知る）。
+   * 1つが読めなくても他は見せ、読めなかったことは隠さない（規則2）
+   */
+  async function overview(args: Record<string, unknown>) {
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    if (!projectId) throw new PublishDirectoryError("projectId が要ります");
+    const targets = await relay.listTargets();
+    const methods: Array<{ name: string; title?: string; reach?: Reach; reachLabel?: string; ready?: boolean; problem?: string }> = [];
+    const published: Array<RouteStatus & { method: string; methodTitle?: string; reachLabel: string }> = [];
+    for (const m of withRole(targets, PUBLISH_ROLE)) {
+      try {
+        const info = await callJson<MethodInfo>(m, "describePublishMethod", {});
+        methods.push({ name: m, title: info.title, reach: info.reach, reachLabel: REACH_LABEL[info.reach], ready: info.ready, ...(info.problem ? { problem: info.problem } : {}) });
+        const { routes } = await callJson<{ routes: RouteStatus[] }>(m, "listRoutes", { projectId });
+        for (const r of routes) published.push({ ...r, method: m, methodTitle: info.title, reachLabel: REACH_LABEL[r.reach] });
+      } catch (err) {
+        methods.push({ name: m, problem: errText(err) });
+      }
+    }
+    // **まだ公開していないが、待ち受けているサーバ**——「何を公開できるか」を人が見て、AI に頼めるように
+    const services: Array<{ name: string; port: number; listening: boolean; state: string }> = [];
+    let servicesProblem: string | undefined;
+    try {
+      for (const t of withRole(targets, SERVICE_ROLE)) {
+        const { services: list } = await callJson<{ services: ServiceStatus[] }>(t, "listServices", {});
+        for (const svc of list) for (const port of svc.ports) services.push({ name: svc.name, port, listening: svc.listening.includes(port), state: svc.state });
+      }
+    } catch (err) {
+      servicesProblem = errText(err);
+    }
+    const pending = (await requests.pending(projectId)).map((r) => ({
+      requestId: r.id,
+      service: r.service,
+      port: r.port,
+      method: r.implementation,
+      plannedUrl: r.plannedUrl,
+      reach: r.reach,
+      reachLabel: REACH_LABEL[r.reach],
+      createdAt: r.createdAt,
+    }));
+    return {
+      published: published.map(({ projectId: _p, ...rest }) => rest),
+      pending,
+      methods,
+      unpublished: services.filter((s) => !published.some((p) => p.service === s.name && p.port === s.port)),
+      ...(servicesProblem ? { servicesProblem } : {}),
+    };
+  }
+
+  /** 入口の画面から、人が公開をやめる（狭める向きなので確かめは画面の中の二度押しだけ） */
+  async function unpublishFromCanvas(args: Record<string, unknown>) {
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    const method = typeof args.method === "string" ? args.method : "";
+    if (!projectId || !method || typeof args.service !== "string" || typeof args.port !== "number") {
+      throw new PublishDirectoryError("projectId・method・service・port が要ります");
+    }
+    const targets = await relay.listTargets();
+    if (!withRole(targets, PUBLISH_ROLE).includes(method)) throw new PublishDirectoryError(`出し方「${method}」はありません`);
+    return callJson<{ removed: boolean; url?: string; note?: string }>(method, "unpublishRoute", { projectId, service: args.service, port: args.port });
+  }
+
   async function approve(args: Record<string, unknown>) {
     const config = (args.config ?? {}) as Record<string, unknown>;
     return requests.decide(String(args.requestId ?? ""), async (req) => {
@@ -325,6 +390,14 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
         _meta: { [VISIBILITY_META_KEY]: "agent", ui: { prefersBorder: true } },
       },
       {
+        // **入口**（launcher、追加・2026-09-28）——Command Palette の「Module の入口」から、AI を介さずに開く
+        uri: PUBLISHED_APP_URI,
+        name: "公開",
+        description: "この Project で外から届くようにしたもの（URL・届く範囲・届いているか）を見る",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
+      },
+      {
         uri: SELF_REPORT_URI,
         name: "この Module の申告",
         mimeType: "application/json",
@@ -351,6 +424,7 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     const uri = request.params.uri;
     if (uri === SELF_REPORT_URI) return { contents: [{ uri, mimeType: "application/json", text: "{}" }] };
     if (uri === APPROVAL_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: APPROVAL_APP_HTML }] };
+    if (uri === PUBLISHED_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: publishedAppHtml() }] };
     throw new Error(`unknown resource: ${uri}`);
   });
 
@@ -411,6 +485,22 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
         _meta: admin,
       },
       {
+        name: "get_publish_overview",
+        description: "入口の画面が引く：その Project の公開・承認待ち・まだ公開していないサーバ・出し方",
+        inputSchema: { type: "object", properties: { projectId: { type: "string" } }, required: ["projectId"] },
+        _meta: admin,
+      },
+      {
+        name: "unpublish_route",
+        description: "入口の画面で人が「やめる」を押した",
+        inputSchema: {
+          type: "object",
+          properties: { projectId: { type: "string" }, method: { type: "string" }, service: { type: "string" }, port: { type: "number" } },
+          required: ["projectId", "method", "service", "port"],
+        },
+        _meta: admin,
+      },
+      {
         name: "decline_publish",
         description: "人が承認の画面で「公開しない」を押した",
         inputSchema: { type: "object", properties: { requestId: { type: "string" } }, required: ["requestId"] },
@@ -443,6 +533,10 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
           return json(await approve(args));
         case "decline_publish":
           return json(await decline(args));
+        case "get_publish_overview":
+          return json(await overview(args));
+        case "unpublish_route":
+          return json(await unpublishFromCanvas(args));
         default:
           throw new Error(`unknown tool: ${name}`);
       }

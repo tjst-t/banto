@@ -291,13 +291,15 @@ test("認証の設定項目：Basic ならパスワードが要る・知らな�
     const describe = JSON.parse((await call("describePublishMethod", {}, forProject(P1))).text);
     assert.equal(describe.ready, true);
     assert.equal(describe.reach, "internet");
-    assert.deepEqual(describe.configSchema.properties.auth.enum, ["basic", "none"]);
+    assert.deepEqual(describe.configSchema.properties.auth.enum, ["none", "basic"]);
+    // 既定は無し（決定・2026-09-28）——何も書かずに頼むと認証を付けない
+    assert.equal(describe.configSchema.properties.auth.default, "none");
     assert.equal(describe.configSchema.properties.password.writeOnly, true);
     assert.match((await call("publishRoute", publishArgs({ config: { auth: "basic" } }))).text, /パスワードが要ります/);
     assert.match((await call("publishRoute", publishArgs({ config: { auth: "basic", password: "short" } }))).text, /12〜72/);
     assert.match((await call("publishRoute", publishArgs({ config: { auth: "none", passwrod: "typo" } }))).text, /知らない設定項目/);
     assert.deepEqual(caddy.writes(), []);
-    assert.equal((await call("publishRoute", publishArgs({ config: { auth: "none" } }))).isError, false);
+    assert.equal((await call("publishRoute", publishArgs({ config: {} }))).isError, false, "何も書かなければ認証なしで通る");
     const route = routeFor(caddy, "web-1a2b3c4d.banto.example.net");
     assert.ok(!JSON.stringify(route).includes("authentication"));
   });

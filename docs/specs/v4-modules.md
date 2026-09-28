@@ -1591,7 +1591,15 @@ AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**
   第三者 Module の画面から押すと人の刻印が付く——いまの柵は中継の初回承認だけ
 - 窓口の最初の `listServices` の呼び出しに、中継の初回承認が出る（Service の `listServices` が「値を返さない口」を
   名乗っていないため）。名乗らせるかは Service 側の判断
-- 人の画面（公開の一覧・やめる）——いまは AI の `listPublished` と会話の中の承認の画面だけ
+- ~~人の画面（公開の一覧・やめる）~~ **→ 入口（launcher）の画面「公開」を作った**（2026-09-28、ユーザー要望）。
+  `ui://banto-publish-directory/published`。その Project の公開（URL・届く範囲・認証・届いているか）・承認待ち・まだ公開して
+  いないサーバを並べ、「開く」「やめる（二度押し）」ができる。**芯は届く範囲**：公開ごとに入れ子の3つの輪（この機械／LAN／
+  インターネット）を届く範囲まで塗り、色は「いま届いているか」だけを言う。どの Project かは banto が渡す
+  `hostContext["dev.banto/project"]` から読み、人の口（`get_publish_overview`・`unpublish_route`、admin）に引数で渡す。
+  「開く」は MCP Apps の `ui/open-link` で banto に頼む——banto の画面は**http/https だけ・人が押した直後だけ**開く
+  （`module-canvas.tsx`、同日に受けるようにした）。見た目の確かめは `publish-directory/scripts/preview.mjs`（banto の色と段で
+  実ブラウザに出して撮る）。**Project の画面から押したとき、Service の登録が中継で引けるかは実機で未確認**
+- **公開の認証の既定は「無し」**（2026-09-28、上の決定を実装に反映。承認の画面で Basic 認証も選べる）
 - ~~承認の頼みは受信箱に出ない~~ **→ 会話の中の画面でよい**（決定・2026-09-28、ユーザー。`import_skill` と同じ形）
 
 ## 4.9 Module の宣言（決定・2026-09-06、Phase 1）

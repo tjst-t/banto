@@ -228,7 +228,7 @@ function SandboxFrame({
     // **ダウンロードは受ける**（`downloadFile`、追加・2026-09-23）——画面はサンドボックスの
     // 中にいて自分では保存させられないので、仕様が host に頼む口（`ui/download-file`）を
     // 用意している。受けると名乗った host にだけ、画面はダウンロードの口を出す
-    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, { downloadFile: {} }, { hostContext });
+    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, { downloadFile: {}, openLinks: {} }, { hostContext });
 
     // **明暗が変わったら、色と一緒に渡し直す**（§6.27）——値は明暗ごとに違うので、渡し直さないと
     // 開いたままの画面が古い色に残る。明暗は next-themes が `<html>` の class で切り替える
@@ -284,6 +284,25 @@ function SandboxFrame({
       if (notification.method !== VIEW_STATE_KEY) return;
       const state = (notification.params as { state?: unknown } | undefined)?.state;
       latest.current.onViewStateChange?.(state);
+    };
+
+    // **画面からのリンクを開く**（MCP Apps `ui/open-link`、追加・2026-09-28——Publish の入口の「開く」）。
+    // 画面はサンドボックスの中にいて、自分では新しいタブを開けない（`allow-popups` を付けていない）。
+    // **開くのは http/https だけ・人が画面の中を押した直後だけ**——画面が勝手に頼んできたものは開かない
+    // （ダウンロードと同じ「一時的な利用者の操作」で見る）。別のタブで、元の画面を触らせない形で開く
+    bridge.onopenlink = async ({ url }) => {
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return { isError: true };
+      }
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return { isError: true };
+      if (!navigator.userActivation?.isActive) return { isError: true };
+      const opened = window.open(parsed.href, "_blank", "noopener,noreferrer");
+      // noopener のとき window.open は null を返す（開けたかどうかは分からない）——開けなかったとは言わない
+      void opened;
+      return {};
     };
 
     // 画面からの「大きく出して」（§6.2 の交渉モデル。**決めるのは banto**）

@@ -83,8 +83,10 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
   let stamp: Record<string, unknown> = {};
   const relay: RelayLike = {
     async listTargets() {
-      const inProject = "project" in ((stamp["dev.banto/caller"] as object) ?? {});
-      // Service は Project ごとの Module——その Project のための呼び出しの中でだけ見える
+      const caller = (stamp["dev.banto/caller"] as object) ?? {};
+      // Service は Project ごとの Module——その Project のための呼び出しの中でだけ見える。人が Project の中の画面
+      // （入口）から押したときも、host はその Project の会話を台帳に置くので見える（core の ui-tool-call）
+      const inProject = "project" in caller || "admin" in caller;
       return [...(inProject ? [{ name: "service-p1", roles: ["service"] }] : []), { name: "publish-caddy", roles: ["publish"] }];
     },
     async callTool(target, name, args) {
@@ -151,6 +153,8 @@ test("AI に見せるのは3つ。publishService は承認の画面を持ち、�
       get_publish_request: "admin",
       approve_publish: "admin",
       decline_publish: "admin",
+      get_publish_overview: "admin",
+      unpublish_route: "admin",
     });
     const publish = tools.find((t) => t.name === "publishService")!;
     const meta = publish._meta as Record<string, unknown>;
@@ -326,4 +330,62 @@ test("パスワードは、窓口の返事・会話に届けるもの・覚え�
       assert.ok(!text.includes(PASSWORD) && !text.includes("short-pass"), `${f} にパスワード`);
     }
   });
+});
+
+test("入口の画面：公開・承認待ち・まだ公開していないサーバを返し、やめると消える。人の刻印が無ければ断る", async () => {
+  await withDirectory(async ({ asAi, asHuman, caddy, services }) => {
+    services.push({ name: "api", ports: [4000], state: "running", listening: [], notListening: [4000] });
+    const id = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    let ov = JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text);
+    assert.deepEqual(ov.pending.map((p: { requestId: string }) => p.requestId), [id]);
+    assert.deepEqual(ov.published, []);
+    // まだ公開していないサーバ：待ち受けているかも添える
+    assert.deepEqual(
+      ov.unpublished.map((s: { name: string; port: number; listening: boolean }) => [s.name, s.port, s.listening]),
+      [["web", 3000, true], ["api", 4000, false]],
+    );
+
+    await asHuman("approve_publish", { requestId: id, config: { auth: "none" } });
+    ov = JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text);
+    assert.equal(ov.published.length, 1);
+    assert.equal(ov.published[0].url, `https://${HOST}`);
+    assert.equal(ov.published[0].reachLabel.length > 0, true);
+    assert.equal(ov.published[0].methodTitle, "Caddy のサブドメイン");
+    assert.deepEqual(ov.unpublished.map((s: { name: string }) => s.name), ["api"], "公開したものは「まだ」に出さない");
+
+    // AI（Project の刻印）からは呼べない
+    assert.ok((await asAi("get_publish_overview", { projectId: P1 })).isError);
+    assert.ok((await asAi("unpublish_route", { projectId: P1, method: "publish-caddy", service: "web", port: 3000 })).isError);
+
+    const off = await asHuman("unpublish_route", { projectId: P1, method: "publish-caddy", service: "web", port: 3000 });
+    assert.equal(off.isError, false, off.text);
+    assert.ok(!caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), "やめたのに Caddy にルートが残った");
+    assert.deepEqual(JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text).published, []);
+    // 無い出し方は断る
+    assert.match((await asHuman("unpublish_route", { projectId: P1, method: "nope", service: "web", port: 3000 })).text, /ありません/);
+  });
+});
+
+test("入口の画面の HTML は launcher として名乗り、どの Project かを banto の文脈から読む", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-publish-directory-launcher-"));
+  try {
+    const server = createPublishDirectoryServer({
+      relay: { listTargets: async () => [], callTool: async () => ({ text: "", isError: true }), deliver: async () => {} },
+      requests: new RequestStore(dir),
+    });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "t", version: "0" });
+    await Promise.all([server.connect(a), c.connect(b)]);
+    const { resources } = await c.listResources();
+    const launcher = resources.find((r) => (r._meta as Record<string, unknown>)?.["dev.banto/canvas"] === "launcher")!;
+    assert.equal(launcher.uri, "ui://banto-publish-directory/published");
+    assert.equal((launcher._meta as Record<string, unknown>)["dev.banto/visibility"], "admin");
+    const html = ((await c.readResource({ uri: launcher.uri })).contents[0] as { text: string }).text;
+    assert.match(html, /dev\.banto\/project/);
+    assert.match(html, /get_publish_overview/);
+    assert.match(html, /ui\/open-link/);
+    await c.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
