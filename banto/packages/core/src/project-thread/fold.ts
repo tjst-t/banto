@@ -38,6 +38,9 @@ export type ProjectThreadEvent =
         /** 親の会話の**どのメッセージの時点から**分けたか（決定・2026-09-11、
          *  ユーザー要望）。いまの続きから分けたときは持たない。 */
         forkedFromSeq?: number;
+        /** **作るときに付けた名前**（追加・2026-09-28）。AI が立てる Fork は名前と一緒に作る——作ってから
+         *  名前を付けると、その間に一覧を取った画面が名前の無い Fork を覚えてしまう（E2E で発覚） */
+        title?: string;
       };
     }
   | { type: "thread.closed"; payload: { id: string } }
@@ -201,6 +204,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           kind: event.payload.kind,
           parentThreadId: event.payload.parentThreadId,
           forkedFromSeq: event.payload.forkedFromSeq,
+          ...(event.payload.title ? { title: event.payload.title } : {}),
           createdSeq: raw.seq,
           resumePoint: event.payload.resumePoint,
           resumePoints: [],

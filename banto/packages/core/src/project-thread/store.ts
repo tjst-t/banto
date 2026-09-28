@@ -221,7 +221,7 @@ export class ProjectThreadStore {
    */
   async forkThread(
     parentThreadId: ThreadId,
-    options: { resumePoint?: string; fromSeq?: number } = {},
+    options: { resumePoint?: string; fromSeq?: number; title?: string } = {},
   ): Promise<ThreadState> {
     const parent = this.getThread(parentThreadId);
     if (!parent) throw new NotFoundError(`thread ${parentThreadId} not found`);
@@ -238,6 +238,7 @@ export class ProjectThreadStore {
       parentThreadId,
       resumePoint,
       forkedFromSeq: options.fromSeq,
+      ...(options.title ? { title: options.title } : {}),
     });
     this.projection.applyOne(event);
     return this.mustGetThread(id);

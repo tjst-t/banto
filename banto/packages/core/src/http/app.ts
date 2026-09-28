@@ -862,8 +862,9 @@ export function createApp(deps: AppDeps) {
     // 親のターンから届いたもの＝ホップ 1 つ先（ループ防止の数え方は §4.2 と同じ）
     const hop = (deps.threadTurns?.hopOf(parentThreadId) ?? 0) + 1;
     for (const fork of forks) {
-      const thread = await deps.projectThread.forkThread(parentThreadId);
-      await deps.projectThread.renameThread(thread.id, fork.title);
+      // **名前は作るときに一緒に記録する**——作ってから付けると、その間に一覧を取った画面が名前の無い
+      // Fork を「Fork 2」として覚えてしまう（E2E で発覚・2026-09-28）
+      const thread = await deps.projectThread.forkThread(parentThreadId, { title: fork.title });
       if (!deps.deliveries) {
         // 起こす口が無い（試験の構成）——作った Fork は残す。黙らない
         console.warn(`[host] Fork「${fork.title}」を立てましたが、最初の指示を届ける口がありません`);

@@ -209,6 +209,26 @@ test("親のターンが終わってから Fork を立て、名前を付け、�
     },
   );
 });
+test("名前は作るときに一緒に記録する（名前の無い Fork が一覧に見える瞬間を作らない）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-fork-title-"));
+  try {
+    const log = new EventLog(dir);
+    await log.init();
+    const store = new ProjectThreadStore(dir, log);
+    await store.load();
+    const project = await store.createProject("demo", "/tmp");
+    const base = await store.createBaseThread(project.id);
+    const fork = await store.forkThread(base.id, { title: "認証の修正" });
+    assert.equal(fork.title, "認証の修正");
+    // 読み直しても残る
+    const again = new ProjectThreadStore(dir, log);
+    await again.load();
+    assert.equal(again.getThread(fork.id)?.title, "認証の修正");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Fork の中からは立てられない（tool は見えるが断る）", async () => {
   await withForkApp(
     async function* (opts) {
