@@ -389,3 +389,14 @@ test("入口の画面の HTML は launcher として名乗り、どの Project �
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("承認の画面は banto が渡す色の名前だけを使い、明暗の渡し直しに追随し、公開した URL は ui/open-link で開く", async () => {
+  const { APPROVAL_APP_HTML } = await import("./approval-app.js");
+  // 以前は渡されない名前（--mcp-ui-color-*）を使っていて、banto の色が当たっていなかった
+  assert.doesNotMatch(APPROVAL_APP_HTML, /--mcp-ui-/);
+  assert.match(APPROVAL_APP_HTML, /var\(--color-text-primary/);
+  assert.match(APPROVAL_APP_HTML, /ui\/notifications\/host-context-changed/);
+  assert.match(APPROVAL_APP_HTML, /ui\/open-link/);
+  // 届く範囲の輪の名前（この画面の芯）
+  for (const name of ["この機械", "LAN", "インターネット"]) assert.ok(APPROVAL_APP_HTML.includes(`"${name}"`), name);
+});

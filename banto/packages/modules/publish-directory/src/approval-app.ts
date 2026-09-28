@@ -1,72 +1,152 @@
 // publishService の画面（会話の中の承認）。**banto 本体で動く窓口が出す**——中の AI はこの画面を偽れない。
 //
-// 出すもの（docs/specs/v4-modules.md §4.3）：何を（サービス・ポート）・どの出し方で・どの URL に・**どこまで届くか**。
+// **この画面の芯は「どこまで届くか」**（ユーザー決定：承認の画面に届く範囲を banto が出す）。入口の画面
+// （`published-app.ts`）と同じ入れ子の3つの輪（内から：この機械・LAN・インターネット）を大きく置き、輪ごとに
+// 名前を添えて、届く範囲まで塗る——言葉より先に絵で読める。色は段階で変わる：承認前は accent（届くようになる）、
+// 公開したら ok（届いている）、断ったら塗らない。ほかは静かにする（作り直し・2026-09-28、frontend-design）。
+//
 // 設定項目は実装が名乗った JSON Schema から組む。窓口は中身を解釈しない：
-//   enum → 選ぶ欄（enumNames があれば見せ方に使う）／ writeOnly の文字列 → 伏せ字（送ったら消す）／
+//   選択肢が少ない enum → 並べて選ぶ（enumNames があれば見せ方に使う）／ writeOnly の文字列 → 伏せ字（送ったら消す）／
 //   文字列 → 文字の欄／ boolean → チェック／ number・integer → 数の欄
-// MCP Apps の約束（postMessage の JSON-RPC）だけで親と話す（skills の画面と同じ作り。依存を足さない、規則10）。
+//   **最初の enum 以外は「詳しい設定」に畳む**。enum を既定から変えたとき・実装が設定を断ったときは開く
+// 色と段は banto が MCP Apps の標準の名前で渡すものだけを使う（`THEME_CSS`、入口の画面と同じ読み替え）。
+// MCP Apps の約束（postMessage の JSON-RPC）だけで親と話す（依存を足さない、規則10）。
+
+import { THEME_CSS } from "./published-app.js";
 
 export const UI_APP_MIME = "text/html;profile=mcp-app";
 export const APPROVAL_APP_URI = "ui://banto-publish-directory/approve";
+
+const PAGE_CSS = `
+body { padding: 16px 16px 14px; }
+.title { margin: 0; font-size: var(--t-sm); font-weight: 600; color: var(--ink-2); }
+.muted { color: var(--ink-3); font-size: var(--t-sm); margin: 6px 0 0; }
+
+/* ---- 芯：どこまで届くか ---- */
+.door { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; margin: 12px 0 4px; }
+.gauge { width: 76px; height: 76px; display: block; }
+.gauge circle { fill: none; stroke-width: 2.25; transition: stroke .2s, fill .2s; }
+.gauge .off { stroke: var(--ink-3); stroke-opacity: .35; stroke-dasharray: 1.5 3.5; }
+.gauge .core.off { fill: none; }
+[data-phase="pending"] .gauge .on { stroke: var(--accent); }
+[data-phase="pending"] .gauge .core.on { fill: var(--accent); }
+[data-phase="published"] .gauge .on { stroke: var(--ok); }
+[data-phase="published"] .gauge .core.on { fill: var(--ok); }
+@media (prefers-reduced-motion: reduce) { .gauge circle { transition: none; } }
+
+.host { margin: 0; font-size: var(--t-lg); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.host .base { font-weight: 400; color: var(--ink-3); }
+a.host-link { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; cursor: pointer; }
+a.host-link:hover { text-decoration-color: currentColor; }
+.reach { margin: 4px 0 0; font-size: var(--t-md); color: var(--ink); }
+.detail { margin: 2px 0 0; font-size: var(--t-sm); color: var(--ink-2); }
+
+/* 輪の名前：塗った輪だけ濃く。塗っていない輪は「そこまでは届かない」と読める */
+.legend { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--t-xs); color: var(--ink-3); }
+.legend li { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px dotted var(--ink-3); opacity: .6; }
+.legend li[data-on] { color: var(--ink); }
+[data-phase="pending"] .legend li[data-on] i { border: 0; background: var(--accent); opacity: 1; }
+[data-phase="published"] .legend li[data-on] i { border: 0; background: var(--ok); opacity: 1; }
+.wide-warn { margin: 10px 0 0; padding: 8px 12px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--ink); font-size: var(--t-sm); }
+
+/* ---- 設定 ---- */
+.settings { margin: 16px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field > .label { font-size: var(--t-xs); color: var(--ink-2); }
+.field > small { font-size: var(--t-xs); color: var(--ink-3); line-height: 1.6; }
+.choice { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; width: fit-content; max-width: 100%; }
+.choice label { position: relative; }
+.choice input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.choice span { display: block; padding: 5px 12px; font-size: var(--t-sm); color: var(--ink-2); border-right: 1px solid var(--line); }
+.choice label:last-child span { border-right: 0; }
+.choice input:checked + span { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+input[type=text], input[type=password], input[type=number], select {
+  font: inherit; font-size: var(--t-sm); height: 30px; padding: 0 8px; width: 100%; max-width: 360px; border-radius: var(--r-sm);
+  background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+}
+input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+details.more > summary { cursor: pointer; font-size: var(--t-xs); color: var(--ink-2); width: fit-content; list-style: none; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::before { content: "＋ "; }
+details.more[open] > summary::before { content: "− "; }
+details.more > div { display: grid; gap: 12px; margin-top: 10px; }
+
+/* ---- 決める ---- */
+.acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 16px 0 0; }
+.btn { display: inline-flex; align-items: center; height: 30px; padding: 0 14px; border-radius: var(--r-sm); cursor: pointer;
+  font-size: var(--t-sm); border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.btn:hover:not(:disabled) { background: var(--bg-3); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { background: var(--accent); border-color: transparent; color: var(--color-text-inverse, Canvas); font-weight: 500; }
+.btn-primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.btn-quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.status { font-size: var(--t-xs); color: var(--ink-3); }
+.problem { margin: 12px 0 0; padding: 8px 12px; border-radius: var(--r-md); background: var(--danger-soft); color: var(--danger); font-size: var(--t-sm); overflow-wrap: anywhere; }
+.facts { margin: 14px 0 0; font-size: var(--t-xs); color: var(--ink-3); overflow-wrap: anywhere; }
+
+@media (max-width: 420px) {
+  .door { grid-template-columns: 1fr; gap: 10px; }
+  .gauge { width: 60px; height: 60px; }
+  /* 選択肢が折り返すときは縦に並べる（横の区切りが途中で切れないように） */
+  .choice { display: grid; width: 100%; }
+  .choice span { border-right: 0; border-bottom: 1px solid var(--line); }
+  .choice label:last-child span { border-bottom: 0; }
+}
+`;
 
 export const APPROVAL_APP_HTML = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  [hidden] { display: none !important; }
-  body { margin: 0; padding: 12px; font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit); background: transparent; }
-  h1 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
-  .lead { margin: 0 0 10px; opacity: .65; font-size: 12px; }
-  .muted { opacity: .6; font-size: 12px; }
-  .reach { border-radius: 6px; padding: 8px 10px; margin: 8px 0; font-size: 13px;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.45)); }
-  .reach[data-reach=internet] { border-color: var(--mcp-ui-color-danger, #c0392b); }
-  .reach strong { font-weight: 600; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 8px; font-size: 12px; }
-  dt { opacity: .6; }
-  dd { margin: 0; word-break: break-all; }
-  .field { display: grid; gap: 4px; margin-bottom: 10px; }
-  .field > span { font-size: 11px; opacity: .65; }
-  .field > small { font-size: 11px; opacity: .55; }
-  input[type=text], input[type=password], input[type=number], select {
-    font: inherit; font-size: 12px; padding: 5px 8px; width: 100%; border-radius: 6px; background: transparent; color: inherit;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35)); }
-  button { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit; }
-  button[disabled] { opacity: .45; cursor: default; }
-  .url { color: var(--color-text-info, LinkText); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; cursor: pointer; }
-  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .problem { border: 1px solid var(--mcp-ui-color-danger, #c0392b); color: var(--mcp-ui-color-danger, #c0392b);
-    border-radius: 6px; padding: 8px 10px; font-size: 12px; margin: 8px 0; }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>${THEME_CSS}${PAGE_CSS}</style>
 </head>
 <body>
-<h1>公開の承認</h1>
-<p class="lead" id="lead">AI が、Project のコンテナで動いているサーバの公開を頼んでいます。</p>
-<p class="muted" id="waiting">読み込んでいます…</p>
-<p class="problem" id="load-error" hidden></p>
+<main id="app" data-phase="loading">
+  <h1 class="title">公開の承認</h1>
+  <p class="muted" id="waiting">確かめています…</p>
+  <p class="problem" id="load-error" role="alert" hidden></p>
 
-<div id="request" hidden>
-  <div class="reach" id="reach" data-reach=""></div>
-  <dl id="facts"></dl>
-  <form id="form" autocomplete="off"></form>
-  <div class="row">
-    <button id="approve" type="button">公開する</button>
-    <button id="decline" type="button">公開しない</button>
-    <span class="muted" id="status"></span>
+  <section id="door-box" hidden>
+    <div class="door">
+      <span id="gauge"></span>
+      <div>
+        <p class="host" id="host"></p>
+        <p class="reach" id="reach"></p>
+        <p class="detail" id="detail"></p>
+      </div>
+    </div>
+    <ul class="legend" id="legend" aria-hidden="true"></ul>
+    <p class="wide-warn" id="wide-warn" hidden>URL を知っていれば、この機械の外の誰からでも届きます。前に認証を置くかを確かめてから公開してください。</p>
+  </section>
+
+  <div id="request" hidden>
+    <form class="settings" id="form" autocomplete="off"></form>
+    <div class="acts">
+      <button class="btn btn-primary" id="approve" type="button">公開する</button>
+      <button class="btn btn-quiet" id="decline" type="button">公開しない</button>
+      <span class="status" id="status" role="status" aria-live="polite"></span>
+    </div>
+    <p class="problem" id="error" role="alert" hidden></p>
   </div>
-  <p class="problem" id="error" hidden></p>
-</div>
-<p id="result" hidden></p>
-<p class="problem" id="open-error" hidden></p>
+
+  <p class="detail" id="result" role="status" hidden></p>
+  <p class="problem" id="open-error" hidden></p>
+  <p class="facts" id="facts" hidden></p>
+</main>
 
 <script>
 (() => {
   const ID_LABEL = "公開の承認の id：";
+  const LEVEL = { machine: 1, lan: 2, internet: 3 };
+  const RINGS = [["machine", "この機械"], ["lan", "LAN"], ["internet", "インターネット"]];
+  const REACH_SENTENCE = {
+    machine: "この機械の中からだけ届くようになります。",
+    lan: "LAN の中から届くようになります。",
+    internet: "インターネットから届くようになります。",
+  };
   let nextId = 1;
   const waiting = new Map();
   function send(m) { window.parent.postMessage(m, "*"); }
@@ -76,110 +156,207 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     return new Promise((resolve, reject) => waiting.set(id, { resolve: resolve, reject: reject }));
   }
   function $(id) { return document.getElementById(id); }
-  function reportHeight() { send({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: document.documentElement.scrollHeight } }); }
+  // **中身の高さを言う**——html の scrollHeight は枠の高さより小さくならないので、承認のあと中身が縮んでも
+  // 枠が広いまま残っていた。body の実際の高さを測る
+  function reportHeight() { send({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: Math.ceil(document.body.getBoundingClientRect().height) } }); }
   function show(id, on) { $(id).hidden = !on; reportHeight(); }
   function errText(err) { return String(err && err.message ? err.message : err); }
   function problem(id, text) { $(id).textContent = text; show(id, !!text); }
+  function phase(p) { $("app").dataset.phase = p; }
+  /** banto が渡す色と段（MCP Apps の標準の名前）を当てる——開くときと、明暗が変わって渡し直されたとき */
+  function applyAppearance(ctx) {
+    if (!ctx) return;
+    if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+    const vars = (ctx.styles && ctx.styles.variables) || {};
+    for (const k of Object.keys(vars)) if (k.startsWith("--") && typeof vars[k] === "string") document.documentElement.style.setProperty(k, vars[k]);
+  }
   async function call(name, args) {
     const r = await request("tools/call", { name: name, arguments: args || {} });
     const t = r && r.content && r.content[0] && r.content[0].text;
     if (!r || r.isError) throw new Error(t || "失敗しました");
     return JSON.parse(t);
   }
-  function fillDl(rows) {
-    $("facts").replaceChildren();
-    for (const r of rows) {
-      const dt = document.createElement("dt"); dt.textContent = r[0];
-      const dd = document.createElement("dd"); dd.textContent = r[1];
-      $("facts").append(dt, dd);
-    }
+
+  // --- 芯：輪と名前 ------------------------------------------------------------------------
+  const SVG = "http://www.w3.org/2000/svg";
+  function drawReach(reach, label) {
+    const level = LEVEL[reach] || 0;
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("viewBox", "0 0 40 40"); svg.setAttribute("class", "gauge"); svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "届く範囲：" + label);
+    [[18.5, 3, "ring"], [12.5, 2, "ring"], [5.5, 1, "core"]].forEach(([r, i, cls]) => {
+      const c = document.createElementNS(SVG, "circle");
+      c.setAttribute("cx", "20"); c.setAttribute("cy", "20"); c.setAttribute("r", String(r));
+      c.setAttribute("class", cls + " " + (i <= level ? "on" : "off"));
+      svg.append(c);
+    });
+    $("gauge").replaceChildren(svg);
+    $("legend").replaceChildren(...RINGS.map(([key, name]) => {
+      const li = document.createElement("li");
+      if ((LEVEL[key] || 0) <= level) li.dataset.on = "";
+      li.append(document.createElement("i"), document.createTextNode(name));
+      return li;
+    }));
+  }
+  function hostParts(url) {
+    let host = url || "";
+    try { host = new URL(url).host; } catch (e) {}
+    const i = host.indexOf(".");
+    return i < 0 ? [host, ""] : [host.slice(0, i), host.slice(i)];
+  }
+  /** 名前を置く。公開したら押すと別のタブで開く（画面は自分でタブを開けないので ui/open-link で banto に頼む） */
+  function drawHost(url, asLink) {
+    const [sub, base] = hostParts(url);
+    const baseEl = document.createElement("span"); baseEl.className = "base"; baseEl.textContent = base;
+    if (!asLink) { $("host").replaceChildren(sub, baseEl); return; }
+    const a = document.createElement("a");
+    a.className = "host-link"; a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.title = url + " を別のタブで開く";
+    a.append(sub, baseEl);
+    a.addEventListener("click", async (e) => {
+      e.preventDefault();
+      try {
+        const r = await request("ui/open-link", { url: url });
+        if (r && r.isError) throw new Error("開けませんでした");
+        problem("open-error", "");
+      } catch (err) {
+        problem("open-error", "開けませんでした。URL を選んで写してください：" + url);
+      }
+    });
+    $("host").replaceChildren(a);
   }
 
   let requestId = null;
-  let current = null;
   let schema = null;
+  let firstEnumKey = null;
+  let currentReq = null;
 
   // --- 実装が名乗った JSON Schema から入力欄を組む（中身は解釈しない）--------------------
+  function fieldFor(key, p) {
+    const wrap = document.createElement("div"); wrap.className = "field";
+    const title = document.createElement("span"); title.className = "label"; title.textContent = p.title || key;
+    let input;
+    if (Array.isArray(p.enum) && p.enum.length <= 4) {
+      wrap.setAttribute("role", "radiogroup"); wrap.setAttribute("aria-label", p.title || key);
+      input = document.createElement("div"); input.className = "choice";
+      p.enum.forEach((v, i) => {
+        const l = document.createElement("label");
+        const r = document.createElement("input"); r.type = "radio"; r.name = key; r.value = String(v); r.dataset.key = key;
+        if (p.default !== undefined ? String(p.default) === String(v) : i === 0) r.checked = true;
+        r.addEventListener("change", onChange);
+        const s = document.createElement("span"); s.textContent = (p.enumNames && p.enumNames[i]) || String(v);
+        l.append(r, s); input.append(l);
+      });
+    } else if (Array.isArray(p.enum)) {
+      input = document.createElement("select");
+      p.enum.forEach((v, i) => {
+        const o = document.createElement("option"); o.value = String(v);
+        o.textContent = (p.enumNames && p.enumNames[i]) || String(v);
+        input.append(o);
+      });
+      if (p.default !== undefined) input.value = String(p.default);
+    } else if (p.type === "boolean") {
+      input = document.createElement("input"); input.type = "checkbox"; input.checked = p.default === true;
+    } else if (p.type === "number" || p.type === "integer") {
+      input = document.createElement("input"); input.type = "number";
+      if (p.default !== undefined) input.value = String(p.default);
+    } else {
+      input = document.createElement("input");
+      input.type = p.writeOnly ? "password" : "text";
+      if (p.writeOnly) input.autocomplete = "new-password";
+      input.spellcheck = false;
+      if (p.default !== undefined && !p.writeOnly) input.value = String(p.default);
+    }
+    if (input.tagName !== "DIV") {
+      input.name = key; input.dataset.key = key;
+      input.addEventListener("input", onChange); input.addEventListener("change", onChange);
+      const label = document.createElement("label"); label.className = "field";
+      label.append(title, input);
+      if (p.description) { const d = document.createElement("small"); d.textContent = p.description; label.append(d); }
+      return label;
+    }
+    wrap.append(title, input);
+    if (p.description) { const d = document.createElement("small"); d.textContent = p.description; wrap.append(d); }
+    return wrap;
+  }
   function buildForm(s) {
     schema = s;
     const form = $("form");
     form.replaceChildren();
     const props = (s && s.properties) || {};
-    for (const key of Object.keys(props)) {
-      const p = props[key];
-      const label = document.createElement("label"); label.className = "field";
-      const title = document.createElement("span"); title.textContent = p.title || key;
-      let input;
-      if (Array.isArray(p.enum)) {
-        input = document.createElement("select");
-        p.enum.forEach((v, i) => {
-          const o = document.createElement("option"); o.value = String(v);
-          o.textContent = (p.enumNames && p.enumNames[i]) || String(v);
-          input.append(o);
-        });
-        if (p.default !== undefined) input.value = String(p.default);
-      } else if (p.type === "boolean") {
-        input = document.createElement("input"); input.type = "checkbox"; input.checked = p.default === true;
-      } else if (p.type === "number" || p.type === "integer") {
-        input = document.createElement("input"); input.type = "number";
-        if (p.default !== undefined) input.value = String(p.default);
-      } else {
-        input = document.createElement("input");
-        input.type = p.writeOnly ? "password" : "text";
-        if (p.writeOnly) input.autocomplete = "new-password";
-        input.spellcheck = false;
-        if (p.default !== undefined && !p.writeOnly) input.value = String(p.default);
-      }
-      input.name = key;
-      input.dataset.key = key;
-      input.addEventListener("input", schedulePlan);
-      input.addEventListener("change", schedulePlan);
-      label.append(title, input);
-      if (p.description) { const d = document.createElement("small"); d.textContent = p.description; label.append(d); }
-      form.append(label);
+    const keys = Object.keys(props);
+    firstEnumKey = keys.find((k) => Array.isArray(props[k].enum)) || null;
+    if (firstEnumKey) form.append(fieldFor(firstEnumKey, props[firstEnumKey]));
+    const rest = keys.filter((k) => k !== firstEnumKey);
+    if (rest.length) {
+      const more = document.createElement("details"); more.className = "more"; more.id = "more";
+      const sum = document.createElement("summary"); sum.textContent = "詳しい設定（" + rest.map((k) => props[k].title || k).join("・") + "）";
+      const box = document.createElement("div");
+      for (const k of rest) box.append(fieldFor(k, props[k]));
+      more.append(sum, box);
+      more.addEventListener("toggle", reportHeight);
+      form.append(more);
     }
+    form.hidden = keys.length === 0;
+  }
+  /** 最初の選択を既定から変えたら、畳んだ設定を開く（その選択に要る欄がそこにあるかもしれない） */
+  function openMoreIfNeeded() {
+    const more = $("more");
+    if (!more || !firstEnumKey) return;
+    const p = schema.properties[firstEnumKey];
+    const v = valueOf(firstEnumKey);
+    if (v !== undefined && p.default !== undefined && String(v) !== String(p.default)) more.open = true;
+  }
+  function valueOf(key) {
+    const els = $("form").querySelectorAll('[data-key="' + key + '"]');
+    for (const el of els) {
+      if (el.type === "radio") { if (el.checked) return el.value; continue; }
+      if (el.type === "checkbox") return el.checked;
+      return el.value;
+    }
+    return undefined;
   }
 
   /** 入れた値を集める。writeOnly は withSecrets のときだけ入れる（見積もりには送らない） */
   function collect(withSecrets) {
     const out = {};
     const props = (schema && schema.properties) || {};
-    for (const el of $("form").querySelectorAll("[data-key]")) {
-      const key = el.dataset.key; const p = props[key] || {};
+    for (const key of Object.keys(props)) {
+      const p = props[key];
       if (p.writeOnly && !withSecrets) continue;
-      if (p.type === "boolean") { out[key] = el.checked; continue; }
-      if (el.value === "") continue;
-      out[key] = (p.type === "number" || p.type === "integer") ? Number(el.value) : el.value;
+      const v = valueOf(key);
+      if (v === undefined) continue;
+      if (p.type === "boolean") { out[key] = v; continue; }
+      if (v === "") continue;
+      out[key] = (p.type === "number" || p.type === "integer") ? Number(v) : v;
     }
     return out;
   }
-
   function clearSecrets() {
     const props = (schema && schema.properties) || {};
     for (const el of $("form").querySelectorAll("[data-key]")) if ((props[el.dataset.key] || {}).writeOnly) el.value = "";
   }
 
   function render(r) {
-    current = r;
     const req = r.request;
+    currentReq = req;
     const plan = r.plan;
     const reach = plan ? plan.reach : req.reach;
     const reachLabel = plan ? plan.reachLabel : req.reachLabel;
-    $("reach").dataset.reach = reach;
-    $("reach").replaceChildren();
-    const strong = document.createElement("strong"); strong.textContent = "届く範囲：" + reachLabel;
-    $("reach").append(strong);
-    fillDl([
-      ["サービス", req.service + "（ポート " + req.port + "）"],
-      ["URL", plan ? plan.url : (r.planProblem ? "決められません：" + r.planProblem : req.plannedUrl)],
-      ["出し方", r.method ? r.method.title + "（" + req.implementation + "）" : req.implementation],
-      ["Project", req.projectId],
-      ["頼まれた時刻", new Date(req.createdAt).toLocaleString("ja-JP")],
-    ]);
-    reportHeight();
+    const url = plan ? plan.url : req.plannedUrl;
+    phase("pending");
+    drawReach(reach, reachLabel);
+    drawHost(url, false);
+    $("reach").textContent = r.planProblem ? "URL を決められません：" + r.planProblem : (REACH_SENTENCE[reach] || reachLabel);
+    $("detail").textContent = req.service + " の " + req.port + " 番を、" + (r.method ? r.method.title : req.implementation) + "で。";
+    show("wide-warn", reach === "internet");
+    $("facts").textContent = "Project " + req.projectId + "・" + new Date(req.createdAt).toLocaleString("ja-JP") + " に頼まれました";
+    show("facts", true);
+    show("door-box", true);
   }
 
   let planTimer = null;
+  function onChange() { openMoreIfNeeded(); schedulePlan(); }
   function schedulePlan() {
     if (planTimer) clearTimeout(planTimer);
     planTimer = setTimeout(async () => {
@@ -188,34 +365,26 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     }, 300);
   }
 
-  // **公開した URL は押すと別のタブで開く**（追加・2026-09-28、ユーザー要望）。画面はサンドボックスの中で自分では
-  // タブを開けないので、MCP Apps の ui/open-link で banto に頼む。開けなかったら URL を選べる形で残す
-  function finish(lead, url, tail) {
+  function finishPublished(url, reach, reachLabel) {
     clearSecrets();
     show("request", false);
-    const box = $("result");
-    box.replaceChildren(document.createTextNode(lead));
-    if (url) {
-      const a = document.createElement("a");
-      a.href = url; a.textContent = url; a.className = "url"; a.rel = "noopener noreferrer"; a.target = "_blank";
-      a.addEventListener("click", async (e) => {
-        e.preventDefault();
-        try {
-          const r = await request("ui/open-link", { url: url });
-          if (r && r.isError) throw new Error("開けませんでした");
-          problem("open-error", "");
-        } catch (err) {
-          problem("open-error", "開けませんでした。URL を選んで写してください");
-        }
-      });
-      box.append(a);
-    }
-    if (tail) box.append(document.createTextNode(tail));
-    show("result", true);
+    phase("published");
+    drawReach(reach, reachLabel);
+    drawHost(url, true);
+    $("reach").textContent = "公開しました。" + (REACH_SENTENCE[reach] || reachLabel).replace("ようになります", "ようになりました");
+    $("detail").textContent = "名前を押すと別のタブで開きます。";
+    show("wide-warn", false);
+    show("door-box", true);
   }
-  function finishDecided(req) {
-    if (req.state === "published") finish("公開しました：", req.url, "");
-    else finish("公開しませんでした（" + req.service + ":" + req.port + "）", "", "");
+  function finishDeclined(service, port) {
+    clearSecrets();
+    show("request", false);
+    phase("declined");
+    drawReach("", "無し");
+    $("reach").textContent = "公開しませんでした。外からは届きません。";
+    $("detail").textContent = service ? service + " の " + port + " 番は、コンテナの中だけで動いています。" : "";
+    show("wide-warn", false);
+    show("door-box", true);
   }
 
   async function load(id) {
@@ -223,7 +392,9 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     try {
       const r = await call("get_publish_request", { requestId: id });
       show("waiting", false);
-      if (r.request.state !== "pending") { finishDecided(r.request); return; }
+      const req = r.request;
+      if (req.state === "published") { finishPublished(req.url, req.reach, req.reachLabel); return; }
+      if (req.state !== "pending") { drawHost(req.plannedUrl, false); finishDeclined(req.service, req.port); return; }
       if (!r.method.ready) problem("error", "この出し方はまだ使えません：" + (r.method.problem || ""));
       buildForm(r.method.configSchema);
       render(r);
@@ -244,17 +415,21 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     busy(true, "公開しています…");
     try {
       const r = await call("approve_publish", { requestId: requestId, config: collect(true) });
-      finish("公開しました：", r.url, "（届く範囲：" + r.reachLabel + "）");
+      finishPublished(r.url, r.reach, r.reachLabel);
     } catch (err) {
-      // 断られたら頼みは待ったまま——直してもう一度押せる
+      // 断られたら頼みは待ったまま——直してもう一度押せる。要る欄が畳んだ中にあるかもしれないので開く
       busy(false);
+      if ($("more")) $("more").open = true;
       problem("error", errText(err));
     }
   });
   $("decline").addEventListener("click", async () => {
     problem("error", "");
     busy(true);
-    try { await call("decline_publish", { requestId: requestId }); finish("公開しませんでした。"); }
+    try {
+      await call("decline_publish", { requestId: requestId });
+      finishDeclined(currentReq ? currentReq.service : "", currentReq ? currentReq.port : "");
+    }
     catch (err) { busy(false); problem("error", errText(err)); }
   });
 
@@ -276,23 +451,23 @@ export const APPROVAL_APP_HTML = `<!doctype html>
       if (msg.error) w.reject(new Error(msg.error.message || "呼び出しに失敗しました")); else w.resolve(msg.result);
       return;
     }
+    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
     if (msg.method === "ui/notifications/tool-input") {
       const a = (msg.params && msg.params.arguments) || {};
-      if (a.service) $("waiting").textContent = "確かめています：" + a.service + (a.port ? ":" + a.port : "");
+      if (a.service) $("waiting").textContent = "確かめています：" + a.service + (a.port ? " の " + a.port + " 番" : "");
     }
     if (msg.method === "ui/notifications/tool-result") onToolResult(msg.params);
   });
 
   request("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "banto-publish-directory", version: "0.1.0" },
+    appInfo: { name: "banto-publish-directory", version: "0.2.0" },
     appCapabilities: { availableDisplayModes: ["inline"] },
   }).then((result) => {
-    const vars = (result && result.hostContext && result.hostContext.styles && result.hostContext.styles.variables) || {};
-    for (const k of Object.keys(vars)) document.documentElement.style.setProperty("--mcp-ui-" + k, String(vars[k]));
+    applyAppearance(result && result.hostContext);
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
     reportHeight();
-  }).catch((err) => { document.body.textContent = "画面を初期化できませんでした: " + errText(err); });
+  }).catch((err) => { document.body.textContent = "画面を始められませんでした：" + errText(err); });
 })();
 </script>
 </body>

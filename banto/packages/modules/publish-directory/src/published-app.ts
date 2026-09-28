@@ -13,7 +13,7 @@
 
 export const PUBLISHED_APP_URI = "ui://banto-publish-directory/published";
 
-const THEME_CSS = `
+export const THEME_CSS = `
 :root {
   color-scheme: light;
   --bg: var(--color-background-primary, Canvas);
