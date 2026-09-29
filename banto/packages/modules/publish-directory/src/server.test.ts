@@ -480,6 +480,16 @@ test("承認の画面は banto が渡す色の名前だけを使い、明暗の�
   for (const name of ["この機械", "LAN", "インターネット"]) assert.ok(APPROVAL_APP_HTML.includes(`"${name}"`), name);
 });
 
+test("承認の画面は、最初の選択を既定に戻したら自分で開いた「詳しい設定」を畳み直す（人が開けたものは畳まない）", async () => {
+  const { APPROVAL_APP_HTML } = await import("./approval-app.js");
+  // 2026-09-29、ユーザー指摘「いちど Basic 認証にすると、無しにしてもフォームが戻らない」。動きそのものは実ブラウザで確かめた
+  assert.match(APPROVAL_APP_HTML, /target\.dataset\.key !== firstEnumKey/);
+  assert.match(APPROVAL_APP_HTML, /else if \(autoOpenedMore\) \{\s*more\.open = false;/);
+  assert.match(APPROVAL_APP_HTML, /sum\.addEventListener\("click", \(\) => \{ manualMore = true;/);
+  // 実装が設定を断ったときに開く動きは残す
+  assert.match(APPROVAL_APP_HTML, /if \(\$\("more"\)\) \$\("more"\)\.open = true;/);
+});
+
 // ---- Fable のレビュー（2026-09-28）で直したもの ----
 
 // **人が Project の画面から押した呼び出しの中で、窓口はその Project の Service を読める**。読めないときは黙って空にせず、

@@ -320,6 +320,8 @@ test("認証の設定項目：Basic ならパスワードが要る・知らな�
     assert.equal(describe.ready, true);
     assert.equal(describe.reach, "internet");
     assert.deepEqual(describe.configSchema.properties.auth.enum, ["none", "basic"]);
+    // 項目名は「認証」だけ（2026-09-29、ユーザー——「前に置く認証」はわかりづらい）
+    assert.equal(describe.configSchema.properties.auth.title, "認証");
     // 既定は無し（決定・2026-09-28）——何も書かずに頼むと認証を付けない
     assert.equal(describe.configSchema.properties.auth.default, "none");
     assert.equal(describe.configSchema.properties.password.writeOnly, true);

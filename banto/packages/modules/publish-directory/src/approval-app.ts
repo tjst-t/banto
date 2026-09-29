@@ -229,6 +229,9 @@ export const APPROVAL_APP_HTML = `<!doctype html>
   let requestId = null;
   let schema = null;
   let firstEnumKey = null;
+  // 「詳しい設定」を画面が自分で開いたか（true）・人が summary を押して開け閉めしたか（manualMore）
+  let autoOpenedMore = false;
+  let manualMore = false;
   let currentReq = null;
 
   // --- 実装が名乗った JSON Schema から入力欄を組む（中身は解釈しない）--------------------
@@ -283,6 +286,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     schema = s;
     const form = $("form");
     form.replaceChildren();
+    autoOpenedMore = false; manualMore = false;
     const props = (s && s.properties) || {};
     const keys = Object.keys(props);
     firstEnumKey = keys.find((k) => Array.isArray(props[k].enum)) || null;
@@ -294,18 +298,32 @@ export const APPROVAL_APP_HTML = `<!doctype html>
       const box = document.createElement("div");
       for (const k of rest) box.append(fieldFor(k, props[k]));
       more.append(sum, box);
+      // 人が自分で開け閉めしたら、以後は画面から勝手に畳まない（キーボードでの開閉も click になる）
+      sum.addEventListener("click", () => { manualMore = true; autoOpenedMore = false; });
       more.addEventListener("toggle", reportHeight);
       form.append(more);
     }
     form.hidden = keys.length === 0;
   }
-  /** 最初の選択を既定から変えたら、畳んだ設定を開く（その選択に要る欄がそこにあるかもしれない） */
-  function openMoreIfNeeded() {
+  /**
+   * 最初の選択を既定から変えたら、畳んだ設定を開く（その選択に要る欄がそこにあるかもしれない）。
+   * 自分で開いたのなら、既定に戻したら畳み直す——開いたままだと、要らなくなった欄がフォームに残って見える
+   * （2026-09-29、ユーザー指摘「いちど Basic 認証にすると、無しにしてもフォームが戻らない」）。
+   * 人が summary を押して開け閉めしたときは触らない。判断は最初の選択の欄が変わったときだけ
+   * ——ほかの欄を打っている最中に畳まない
+   */
+  function syncMoreWithFirstChoice(target) {
     const more = $("more");
-    if (!more || !firstEnumKey) return;
+    if (!more || !firstEnumKey || manualMore) return;
+    if (!target || !target.dataset || target.dataset.key !== firstEnumKey) return;
     const p = schema.properties[firstEnumKey];
     const v = valueOf(firstEnumKey);
-    if (v !== undefined && p.default !== undefined && String(v) !== String(p.default)) more.open = true;
+    if (v === undefined || p.default === undefined) return;
+    if (String(v) !== String(p.default)) {
+      if (!more.open) { more.open = true; autoOpenedMore = true; }
+    } else if (autoOpenedMore) {
+      more.open = false; autoOpenedMore = false;
+    }
   }
   function valueOf(key) {
     const els = $("form").querySelectorAll('[data-key="' + key + '"]');
@@ -356,7 +374,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
   }
 
   let planTimer = null;
-  function onChange() { openMoreIfNeeded(); schedulePlan(); }
+  function onChange(e) { syncMoreWithFirstChoice(e && e.target); schedulePlan(); }
   function schedulePlan() {
     if (planTimer) clearTimeout(planTimer);
     planTimer = setTimeout(async () => {

@@ -71,7 +71,7 @@ export const CONFIG_SCHEMA = {
   properties: {
     auth: {
       type: "string",
-      title: "前に置く認証",
+      title: "認証",
       // **既定は無し**（決定・2026-09-28、ユーザー——当面は LAN の中だけの想定。banto の SSO は後で考える）
       enum: ["none", "basic"],
       enumNames: ["無し（URL を知っていれば誰でも届く）", "Basic 認証（ユーザー名とパスワード）"],

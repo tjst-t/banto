@@ -31,7 +31,7 @@ const ID = "79185c56-e17a-47fb-aecb-cdf3b485ed0d";
 const schema = {
   type: "object",
   properties: {
-    auth: { type: "string", title: "前に置く認証", enum: ["none", "basic"], enumNames: ["無し（URL を知っていれば誰でも届く）", "Basic 認証（ユーザー名とパスワード）"], default: "none" },
+    auth: { type: "string", title: "認証", enum: ["none", "basic"], enumNames: ["無し（URL を知っていれば誰でも届く）", "Basic 認証（ユーザー名とパスワード）"], default: "none" },
     username: { type: "string", title: "Basic 認証のユーザー名", default: "banto" },
     password: { type: "string", title: "Basic 認証のパスワード", description: "12文字以上。banto はハッシュ（bcrypt）だけを覚え、ここに書いたものは二度と表示しません", writeOnly: true },
     subdomain: { type: "string", title: "サブドメイン", description: "空なら <サービス名>-<Project の id の先頭8文字>" },
