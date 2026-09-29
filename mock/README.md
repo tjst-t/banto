@@ -689,6 +689,55 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   設定から Drawer 経由で Project に戻れる／Fork・Canvas の全画面ヘッダ／
   ダークモード／的の大きさ（36×36）／コンソールエラー無し。デスクトップ側の回帰も確認
 
+### 新しい Project の始め方を3つに・GitHub に公開（2026-09-29、Repo Module を足す相談）
+
+**発端**：Repo Module を足すにあたり、「新しい Project を作る」を GitHub と繋げたい
+（ユーザー）。画面を見て形を決めるためのモックで、実データには繋いでいない。
+
+**見せているもの**：
+
+- **始め方は3つ**（`components/banto/project/new-project-dialog.tsx`）——
+  **フォルダを選ぶ**（今ある形。打つか「選ぶ」）／**GitHub から clone**（アカウントから見える
+  リポジトリを絞って選ぶ。一覧に無いものは URL か `owner/repo` を貼る）／
+  **新しいリポジトリ**（ローカルに作る。GitHub にはまだ作らない）
+- **clone と新しいリポジトリの Root は人が打たない**——`~/ghq/github.com/<owner>/<repo>` に
+  決まるので、画面の仕事は入力欄ではなく**決まった場所と、そこに既に何があるか**を
+  押す前に見せること。これがこの画面でいちばん目立つ帯（`RepoRootPreview`、
+  Root パスを等幅の大きめの字で）。ほかは静かにした
+- **置き場の状態は5つ**（判断は `lib/mock/github.ts` の `inspectRepoFolder` の1箇所）と、
+  色は状態に1つずつ：
+  - 何も無い → clone する（塗らない）
+  - 同じリポジトリがある → **clone せずそのフォルダを使う**（ok の地。ボタンは「このフォルダで作成」）
+  - それを Root にした Project もある → **新しく作らず、その Project を開く**（地は塗らず印だけ
+    accent。ボタンが「「自宅サーバ」を開く」に変わる。閉じた Project なら「再開」）
+  - 別のリポジトリ／git でないフォルダ → **上書きせず、理由つきで断る**（turn の地。
+    origin か項目数を出し、次の手として「このフォルダをそのまま Root にする」＝フォルダを選ぶへ移る）
+- **アカウント**（`github-account-chooser.tsx`）——1つだけなら**選ばせず**1行で言う
+  （「tjst-t から見えるリポジトリを出しています」）／2つ以上は札（数個に Select は重い）／
+  0なら Repo の設定へ案内する
+- **アカウントの登録**は Repo の設定面の中（`settings/github-accounts-section.tsx`）——
+  名前・PAT・SSH 鍵。PAT と鍵は Vault に預け、alias の名前しか出さない（VaultUI と同じ作法）
+- **リポジトリから始めた Project には Repo と Vault を繋ぐ**——あとで公開する入口
+  （パレットの「GitHub に公開」）は Repo の launcher なので、繋がないと辿り着けない。
+  黙って繋がず、Project 名の下に1行で言う
+- **GitHub に公開**（`canvas/repo-publish-view.tsx`、Canvas `banto.repo:publish`）——
+  どこから・どこへ（手元のフォルダ → `github.com/<owner>/<name>`、打つたびに行き先が変わる）／
+  アカウント／名前（使用済みなら断り、`<name>-2` を出す）／公開・非公開（公開は
+  「これまでの履歴もすべて公開」と警告）／最初の push（コミットが無ければ作って origin を
+  設定するまで。ほかのブランチも送るかは選べる）。押すと手順が1行ずつ進む
+
+**状態ごとの URL**（`project/repo-demo-params.tsx`、モックの見せ方のためだけ）：
+`?new-project=folder|clone|create`・`&repo=<owner>/<repo>`・`?accounts=0|1|2`。
+公開は `/p/hermes?canvas=banto.repo:publish`（コミットあり）、
+`/p/banto?canvas=banto.repo:publish`（公開済み）。
+
+**まだ決めていない**（画面を見て決めたいこと）：
+
+- 別の名前・別のアカウントで公開したとき、手元のフォルダは ghq の置き方
+  （`github.com/<owner>/<repo>`）からずれる。移すか、そのままか
+- clone と作成は **Repo の tool**（AI も呼べる）を人が画面から呼ぶ形か、banto 自身の操作か
+- clone に失敗したとき（非公開で読めない等）、別のアカウントで試す手をその場に出すか
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：

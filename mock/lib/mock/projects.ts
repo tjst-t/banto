@@ -17,7 +17,7 @@ let projects: MockProject[] = [
     name: "自宅サーバ",
     initial: "自",
     baseThreadId: "home-base",
-    basePath: "~/srv/home-automation",
+    basePath: "~/ghq/github.com/tjst-t/home-automation",
     status: "active",
   },
   {

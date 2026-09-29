@@ -15,7 +15,7 @@ export function notifyMockStoreChange(): void {
   for (const listener of listeners) listener();
 }
 
-function subscribe(listener: Listener): () => void {
+export function subscribeMockStore(listener: Listener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
@@ -26,5 +26,5 @@ function getSnapshot(): number {
 
 /** Project/Thread の作成・終了・畳む操作を反映して再描画したいコンポーネントで呼ぶ */
 export function useMockStoreVersion(): number {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return useSyncExternalStore(subscribeMockStore, getSnapshot, getSnapshot);
 }

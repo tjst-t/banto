@@ -14,6 +14,7 @@
 import { Folders, ShieldCheck } from "lucide-react";
 import { getImplementation, getVaultAliasesForProject, mockModuleConfigFields } from "@/lib/mock/settings";
 import { getProject } from "@/lib/mock/projects";
+import { GithubAccountsSection } from "./github-accounts-section";
 
 export function ModuleConfigPane({
   implementationId,
@@ -71,6 +72,9 @@ export function ModuleConfigPane({
             </dl>
           )}
         </div>
+
+        {/* GitHub のアカウントは banto 全体で1組（Project ごとには持たない） */}
+        {impl.roleId === "repo" && projectId === undefined ? <GithubAccountsSection /> : null}
 
         {showProjectAliases ? (
           <div className="mt-3 rounded-md border border-border bg-card p-3">

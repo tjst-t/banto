@@ -1,13 +1,32 @@
 "use client";
 
-// 新規 Project の作成（§2.2）。既定で見せるのは名前・Base パスだけ、
-// Advanced に開くと Configuration の上書き——§2.2「設定のカスケード」の
-// 対象になる項目は全部出す（Project 設定画面の階層2と同じ集合・同じ
-// CascadeRow）。一部だけ出すと「他の項目はここでは上書きできない」という
-// 誤解を生む
-import { useState, type FormEvent } from "react";
+// 新規 Project の作成（§2.2）。**始め方は3つ**（決定・2026-09-29、ユーザー）：
+//
+// | 始め方 | Root | 何が起きるか |
+// |---|---|---|
+// | フォルダを選ぶ | 人が打つ／選ぶ | 今ある形（本実装と同じ：名前・Root パス・「選ぶ」） |
+// | GitHub から clone | `~/ghq/github.com/<owner>/<repo>` | リポジトリを探して選ぶ → clone → そこを Root に |
+// | 新しいリポジトリ | `~/ghq/github.com/<アカウント>/<name>` | ローカルに作る。GitHub へはあとで（Repo の「GitHub に公開」） |
+//
+// clone と新規の Root は人が打たない。代わりに **Root パスと、そこに既に何があるか**を
+// 押す前に見せる（`RepoRootPreview`）——ここがこの画面でいちばん目立つ場所。
+//
+// Advanced（Configuration の上書き）は3つの始め方で共通。§2.2「設定のカスケード」の
+// 対象は全部出す——一部だけ出すと「他はここでは上書きできない」と読まれる
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight } from "lucide-react";
+import { toast } from "sonner";
+import {
+  Check,
+  ChevronRight,
+  CloudDownload,
+  FolderOpen,
+  FolderPlus,
+  Globe,
+  Link2,
+  Lock,
+  Search,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -27,221 +46,755 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
+import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
-import { createProject } from "@/lib/mock/projects";
-import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/settings";
+import { createProject, reopenProject } from "@/lib/mock/projects";
+import {
+  getRoles,
+  linkProjectModule,
+  mockCredentials,
+  mockRuntimeDefaults,
+} from "@/lib/mock/settings";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
+import {
+  useGithubAccounts,
+  getReposForAccount,
+  ghqPath,
+  inspectRepoFolder,
+  parseRepoReference,
+  recordCreatedFolder,
+  repoExistsOnGithub,
+  setProjectRepoState,
+  type MockGithubAccount,
+} from "@/lib/mock/github";
 import type { MockProjectOverrides } from "@/lib/mock/types";
+import { moveChoiceByKey } from "./choice-pills";
+import { GithubAccountChooser, NoGithubAccount } from "./github-account-chooser";
+import { PathPicker, WideRootWarning } from "./path-picker";
+import { RepoRootPreview, type RootPreviewStatus } from "./repo-root-preview";
 
 type Overrides = Omit<MockProjectOverrides, "projectId" | "securityRoot">;
 
-const EMPTY_OVERRIDES: Overrides = {};
+export type StartMethod = "folder" | "clone" | "create";
+
+/** URL から開くときの初期状態（`RepoDemoParams`） */
+export interface NewProjectPreset {
+  method?: StartMethod;
+  /** `owner/repo`。clone なら選んだ状態、新しいリポジトリなら名前に入る */
+  repo?: string;
+}
+
+const START_METHODS = [
+  {
+    value: "folder",
+    label: "フォルダを選ぶ",
+    icon: FolderOpen,
+    lead: "手元にあるフォルダを、そのまま Root にします。",
+  },
+  {
+    value: "clone",
+    label: "GitHub から clone",
+    icon: CloudDownload,
+    lead: "リポジトリを ~/ghq に clone して、そこを Root にします。",
+  },
+  {
+    value: "create",
+    label: "新しいリポジトリ",
+    icon: FolderPlus,
+    lead: "ローカルに作って始めます。GitHub へは、あとで公開できます。",
+  },
+] as const satisfies readonly { value: StartMethod; label: string; icon: unknown; lead: string }[];
+
+const REPO_NAME = /^[A-Za-z0-9._-]+$/;
+
+/** Repo は Vault が要る（`dependsOn` の required）。上書きしなければ instance 既定の接続 */
+const DEFAULT_VAULT = "banto.vault-local";
+
+type PrimaryAction = "create-at-folder" | "clone" | "use-cloned" | "open-existing" | "create-repo";
 
 export function NewProjectDialog({
   open,
   onOpenChange,
+  preset,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  preset?: NewProjectPreset;
 }) {
-  const router = useRouter();
-  const [name, setName] = useState("");
-  const [basePath, setBasePath] = useState("~/worktrees/");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [overrides, setOverrides] = useState<Overrides>(EMPTY_OVERRIDES);
+  // 中身は DialogContent の中に置く——閉じると Radix が中身ごと外すので、
+  // 次に開いたときは初期状態から始まる（reset を手で書かない）
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl" data-testid="new-project-dialog">
+        <NewProjectForm preset={preset} onDone={() => onOpenChange(false)} />
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-  function patch(next: Partial<Overrides>) {
-    setOverrides((prev) => ({ ...prev, ...next }));
+function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone: () => void }) {
+  useMockStoreVersion();
+  const router = useRouter();
+  const accounts = useGithubAccounts();
+  const presetRepo = preset?.repo ? parseRepoReference(preset.repo) : null;
+
+  const [method, setMethod] = useState<StartMethod>(preset?.method ?? "folder");
+  const [accountChoice, setAccountChoice] = useState<string | null>(() =>
+    presetRepo ? (accounts.find((a) => a.login === presetRepo.owner)?.id ?? null) : null,
+  );
+  // 選んだものが消えていたら先頭（1つだけのときは選ばせない——これがその1つ）
+  const account: MockGithubAccount | undefined =
+    accounts.find((a) => a.id === accountChoice) ?? accounts[0];
+
+  const [basePath, setBasePath] = useState("");
+  const [picked, setPicked] = useState<{ owner: string; name: string } | null>(
+    preset?.method === "clone" ? presetRepo : null,
+  );
+  const [cloneRun, setCloneRun] = useState<Exclude<RootPreviewStatus, { kind: "folder" }> | null>(null);
+  const [repoName, setRepoName] = useState(preset?.method === "create" ? (presetRepo?.name ?? "") : "");
+  /** null＝リポジトリ名に合わせる（人が打ったら、以後はその値） */
+  const [projectName, setProjectName] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [overrides, setOverrides] = useState<Overrides>({});
+
+  const cloneTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (cloneTimer.current) clearInterval(cloneTimer.current);
+  }, []);
+
+  const repoNameInvalid = repoName !== "" && (!REPO_NAME.test(repoName) || /^\.+$/.test(repoName));
+  const target =
+    method === "clone"
+      ? picked
+      : method === "create" && account && repoName && !repoNameInvalid
+        ? { owner: account.login, name: repoName }
+        : null;
+  const folderState = target ? inspectRepoFolder(target.owner, target.name) : null;
+  const preview: RootPreviewStatus | null =
+    cloneRun ?? (folderState ? { kind: "folder", state: folderState } : null);
+  const name = projectName ?? (method === "folder" ? "" : (target?.name ?? ""));
+  const opensExisting = method === "clone" && folderState?.kind === "same-repo-project";
+  // 作れるときだけ名前を聞く（断っているときに聞いても、使い道が無い）
+  const canCreateHere =
+    cloneRun?.kind !== "clone-failed" &&
+    (folderState?.kind === "empty" || (method === "clone" && folderState?.kind === "same-repo"));
+
+  function changeMethod(next: StartMethod) {
+    if (cloneRun?.kind === "cloning") return;
+    setMethod(next);
+    setCloneRun(null);
   }
 
-  function reset() {
-    setName("");
-    setBasePath("~/worktrees/");
-    setShowAdvanced(false);
-    setOverrides(EMPTY_OVERRIDES);
+  function openAsFolder() {
+    if (!target) return;
+    setBasePath(ghqPath(target.owner, target.name));
+    setProjectName(name || target.name);
+    changeMethod("folder");
+  }
+
+  function switchToClone() {
+    if (!account || !repoName) return;
+    setPicked({ owner: account.login, name: repoName });
+    changeMethod("clone");
+  }
+
+  function finish(path: string, repo?: Parameters<typeof setProjectRepoState>[1]) {
+    const project = createProject({ name: name.trim(), basePath: path, overrides });
+    if (repo) {
+      setProjectRepoState(project.id, repo);
+      // リポジトリから始めた Project には Repo を繋いでおく——あとで公開・push する入口
+      // （パレットの「GitHub に公開」）は Repo の launcher なので、繋がないと辿り着けない
+      linkProjectModule(project.id, overrides.vaultImplementationId ?? DEFAULT_VAULT);
+      linkProjectModule(project.id, "banto.repo");
+    }
+    onDone();
+    router.push(`/p/${project.id}`);
+    return project;
+  }
+
+  function startClone(owner: string, repo: string) {
+    const total = 3410;
+    let received = 0;
+    setCloneRun({ kind: "cloning", received, total });
+    cloneTimer.current = setInterval(() => {
+      received = Math.min(total, received + 487);
+      if (received < total) {
+        setCloneRun({ kind: "cloning", received, total });
+        return;
+      }
+      if (cloneTimer.current) clearInterval(cloneTimer.current);
+      // 一覧に無いものを URL で貼られ、どのアカウントからも見えない——本物は git が 404 を返す
+      if (!repoExistsOnGithub(owner, repo)) {
+        setCloneRun({
+          kind: "clone-failed",
+          reason: `github.com/${owner}/${repo} が見つかりません（${account?.login ?? "このアカウント"} からは見えません）`,
+        });
+        return;
+      }
+      recordCreatedFolder(owner, repo, `git@github.com:${owner}/${repo}.git`);
+      finish(ghqPath(owner, repo), { kind: "github", owner, name: repo, private: true });
+      toast(`${owner}/${repo} を clone しました`);
+    }, 180);
+  }
+
+  // 押す前に言うこと（描画）と、押したときにすること（handleSubmit）を分ける
+  const primary = primaryAction();
+
+  function primaryAction(): { label: string; action: PrimaryAction | null } {
+    if (method === "folder") {
+      return { label: "作成する", action: name.trim() && basePath.trim() ? "create-at-folder" : null };
+    }
+    if (method === "clone") {
+      if (cloneRun?.kind === "cloning") return { label: "clone しています…", action: null };
+      if (!picked || !folderState || cloneRun) return { label: "clone して作成", action: null };
+      switch (folderState.kind) {
+        case "empty":
+          return { label: "clone して作成", action: name.trim() ? "clone" : null };
+        case "same-repo":
+          return { label: "このフォルダで作成", action: name.trim() ? "use-cloned" : null };
+        case "same-repo-project":
+          return {
+            label: `「${folderState.projectName}」を${folderState.closed ? "再開" : "開く"}`,
+            action: "open-existing",
+          };
+        default:
+          return { label: "clone して作成", action: null };
+      }
+    }
+    return {
+      label: "作成する",
+      action: target && folderState?.kind === "empty" && name.trim() ? "create-repo" : null,
+    };
   }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !basePath.trim()) return;
-    const project = createProject({ name: name.trim(), basePath: basePath.trim(), overrides });
-    onOpenChange(false);
-    reset();
-    router.push(`/p/${project.id}`);
+    switch (primary.action) {
+      case "create-at-folder":
+        finish(basePath.trim());
+        return;
+      case "clone":
+        if (picked) startClone(picked.owner, picked.name);
+        return;
+      case "use-cloned":
+        if (picked) {
+          finish(ghqPath(picked.owner, picked.name), {
+            kind: "github",
+            owner: picked.owner,
+            name: picked.name,
+            private: true,
+          });
+        }
+        return;
+      case "open-existing":
+        if (folderState?.kind === "same-repo-project") {
+          if (folderState.closed) reopenProject(folderState.projectId);
+          onDone();
+          router.push(`/p/${folderState.projectId}`);
+        }
+        return;
+      case "create-repo":
+        if (target) {
+          recordCreatedFolder(target.owner, target.name, "");
+          finish(ghqPath(target.owner, target.name), {
+            kind: "local",
+            branch: "main",
+            commits: 0,
+            lastCommit: "",
+            lastCommitAt: "",
+            otherBranches: [],
+          });
+        }
+        return;
+      case null:
+        return;
+    }
   }
 
+  const current = START_METHODS.find((m) => m.value === method)!;
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        onOpenChange(next);
-        if (!next) reset();
-      }}
-    >
-      <DialogContent className="sm:max-w-md">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>新しい Project</DialogTitle>
-            <DialogDescription>
-              Project は仕事の入れ物。Module 集合は後から足せる。
-            </DialogDescription>
-          </DialogHeader>
+    <form onSubmit={handleSubmit} className="flex min-w-0 flex-col gap-4">
+      <DialogHeader>
+        <DialogTitle>新しい Project</DialogTitle>
+        <DialogDescription>Project は仕事の入れ物。Module 集合は後から足せる。</DialogDescription>
+      </DialogHeader>
 
-          <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto py-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-project-name">Project 名</Label>
-              <Input
-                id="new-project-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例：決済まわりの改修"
-                autoFocus
+      <div className="flex flex-col gap-2">
+        {/* 始め方——1段目。本実装の SegmentedTabs と同じ形（全幅・下線・選んだものに地） */}
+        <div
+          role="tablist"
+          aria-label="始め方"
+          data-testid="start-method"
+          onKeyDown={(e) =>
+            moveChoiceByKey(
+              e,
+              START_METHODS.map((m) => m.value),
+              method,
+              changeMethod,
+            )
+          }
+          className="grid grid-cols-3 border-b border-border"
+        >
+          {START_METHODS.map((m) => {
+            const Icon = m.icon;
+            const active = method === m.value;
+            return (
+              <button
+                key={m.value}
+                type="button"
+                role="tab"
+                data-choice
+                id={`start-${m.value}`}
+                aria-selected={active}
+                aria-controls="start-panel"
+                tabIndex={active ? 0 : -1}
+                data-testid={`start-method-${m.value}`}
+                onClick={() => changeMethod(m.value)}
+                className={cn(
+                  "flex flex-col items-center justify-center gap-1 rounded-t-md px-1.5 py-2 text-xs transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring sm:flex-row sm:gap-1.5",
+                  active
+                    ? "bg-surface-2 font-medium text-foreground"
+                    : "text-ink-3 hover:bg-surface-2/60 hover:text-ink-2",
+                )}
+              >
+                <Icon className="size-4 shrink-0 sm:size-3.5" />
+                <span className="text-center leading-tight">{m.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-ink-2">{current.lead}</p>
+      </div>
+
+      <div
+        id="start-panel"
+        role="tabpanel"
+        aria-labelledby={`start-${method}`}
+        // 中身は縮めない——縮むと Root パスの帯の下（断る理由・次の手）が切れる（実測で踏んだ）
+        className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-y-auto [&>*]:shrink-0"
+      >
+        {method === "folder" ? (
+          <FolderFields
+            name={name}
+            onNameChange={setProjectName}
+            basePath={basePath}
+            onBasePathChange={setBasePath}
+          />
+        ) : !account ? (
+          <NoGithubAccount
+            reason={
+              method === "clone"
+                ? "登録すると、ここからリポジトリを探して clone できます。"
+                : "置き場の名前（~/ghq/github.com/<アカウント>/）と、あとで公開する先に使います。"
+            }
+          />
+        ) : (
+          <>
+            <GithubAccountChooser
+              id="new-project-account"
+              accounts={accounts}
+              value={account.id}
+              onChange={(id) => {
+                setAccountChoice(id);
+                setPicked(null);
+                setCloneRun(null);
+              }}
+              singleNote={method === "clone" ? "から見えるリポジトリを出しています" : "の置き場に作ります"}
+            />
+
+            {method === "clone" ? (
+              <RepoSearch
+                // アカウントを替えたら検索もやり直す
+                key={account.id}
+                account={account}
+                picked={picked}
+                disabled={cloneRun?.kind === "cloning"}
+                onPick={(next) => {
+                  setPicked(next);
+                  setCloneRun(null);
+                }}
               />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-project-path">Base パス</Label>
-              <Input
-                id="new-project-path"
-                value={basePath}
-                onChange={(e) => setBasePath(e.target.value)}
-                placeholder="~/worktrees/..."
-                className="font-mono text-xs"
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="new-project-repo-name">リポジトリ名</Label>
+                <Input
+                  id="new-project-repo-name"
+                  value={repoName}
+                  onChange={(e) => setRepoName(e.target.value.trim())}
+                  aria-invalid={repoNameInvalid || undefined}
+                  aria-describedby="new-project-repo-name-help"
+                  className="font-mono text-xs"
+                  autoFocus
+                />
+                <p
+                  id="new-project-repo-name-help"
+                  className={cn("text-xs", repoNameInvalid ? "text-turn" : "text-ink-3")}
+                >
+                  {repoNameInvalid
+                    ? "使えるのは英数字と - _ . だけです"
+                    : "GitHub に公開するときも、この名前を使います（そのときに変えられます）"}
+                </p>
+              </div>
+            )}
+
+            {target && preview ? (
+              <RepoRootPreview
+                mode={method}
+                owner={target.owner}
+                name={target.name}
+                status={preview}
+                takenOnGithub={method === "create" && repoExistsOnGithub(target.owner, target.name)}
+                onUseAsFolder={openAsFolder}
+                onSwitchToClone={switchToClone}
               />
-              <p className="text-xs text-ink-3">
-                Shell・FileSystem をこの根に閉じ込める
-              </p>
-            </div>
+            ) : null}
 
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((v) => !v)}
-              className="flex items-center gap-1 text-xs text-ink-3 hover:text-foreground"
-            >
-              <ChevronRight className={cn("size-3.5 transition-transform", showAdvanced && "rotate-90")} />
-              Advanced——Configuration の上書き
-            </button>
-            {showAdvanced ? (
-              <div className="rounded-md border border-border px-3">
-                <CascadeRow
-                  id="new-project-model"
-                  label="既定モデル"
-                  inheritedLabel={mockRuntimeDefaults.model}
-                  overridden={overrides.model !== undefined}
-                  onToggle={(on) => patch({ model: on ? mockRuntimeDefaults.model : undefined })}
-                >
-                  <Select value={overrides.model} onValueChange={(v) => patch({ model: v })}>
-                    <SelectTrigger className="h-8 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="claude-opus-5">claude-opus-5</SelectItem>
-                      <SelectItem value="claude-sonnet-5">claude-sonnet-5</SelectItem>
-                      <SelectItem value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </CascadeRow>
-
-                <CascadeRow
-                  id="new-project-effort"
-                  label="既定 reasoning effort"
-                  inheritedLabel={mockRuntimeDefaults.effort}
-                  overridden={overrides.effort !== undefined}
-                  onToggle={(on) => patch({ effort: on ? mockRuntimeDefaults.effort : undefined })}
-                >
-                  <Select
-                    value={overrides.effort}
-                    onValueChange={(v) => patch({ effort: v as Overrides["effort"] })}
-                  >
-                    <SelectTrigger className="h-8 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">low</SelectItem>
-                      <SelectItem value="medium">medium</SelectItem>
-                      <SelectItem value="high">high</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </CascadeRow>
-
-                <CascadeRow
-                  id="new-project-memory"
-                  label="Memory 上限文字数"
-                  inheritedLabel={`${mockRuntimeDefaults.memoryLimitChars.toLocaleString()} 文字`}
-                  overridden={overrides.memoryLimitChars !== undefined}
-                  onToggle={(on) =>
-                    patch({ memoryLimitChars: on ? mockRuntimeDefaults.memoryLimitChars : undefined })
-                  }
-                >
-                  <Input
-                    type="number"
-                    className="h-8"
-                    value={overrides.memoryLimitChars ?? mockRuntimeDefaults.memoryLimitChars}
-                    onChange={(e) => patch({ memoryLimitChars: Number(e.target.value) })}
-                  />
-                </CascadeRow>
-
-                <CascadeRow
-                  id="new-project-credential"
-                  label="使う資格情報"
-                  inheritedLabel="自動選択（使用率の低いものへ自動で移る）"
-                  overridden={overrides.credentialId !== undefined}
-                  onToggle={(on) => patch({ credentialId: on ? mockCredentials[0].id : undefined })}
-                >
-                  <Select value={overrides.credentialId} onValueChange={(v) => patch({ credentialId: v })}>
-                    <SelectTrigger className="h-8 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {mockCredentials.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.label}
-                          {c.usagePercent !== undefined ? `（${c.usagePercent}% 使用）` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </CascadeRow>
-
-                <CascadeRow
-                  id="new-project-vault"
-                  label="使う Vault 接続"
-                  inheritedLabel="instance 既定接続（組み込みローカル）"
-                  overridden={overrides.vaultImplementationId !== undefined}
-                  onToggle={(on) =>
-                    patch({ vaultImplementationId: on ? "banto.vault-local" : undefined })
-                  }
-                >
-                  <Select
-                    value={overrides.vaultImplementationId}
-                    onValueChange={(v) => patch({ vaultImplementationId: v })}
-                  >
-                    <SelectTrigger className="h-8 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {getRoles()
-                        .find((r) => r.id === "vault")
-                        ?.implementations.map((i) => (
-                          <SelectItem key={i.id} value={i.id}>
-                            {i.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </CascadeRow>
+            {target && canCreateHere ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="new-project-name">Project 名</Label>
+                <Input
+                  id="new-project-name"
+                  value={name}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  aria-describedby="new-project-modules-note"
+                />
+                <p id="new-project-modules-note" className="text-xs text-ink-3">
+                  Repo と、それが使う Vault を繋いで作ります。
+                </p>
               </div>
             ) : null}
-          </div>
+          </>
+        )}
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              やめる
-            </Button>
-            <Button type="submit" disabled={!name.trim() || !basePath.trim()}>
-              作成する
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        {!opensExisting ? (
+          <AdvancedOverrides
+            open={showAdvanced}
+            onToggle={() => setShowAdvanced((v) => !v)}
+            overrides={overrides}
+            patch={(next) => setOverrides((prev) => ({ ...prev, ...next }))}
+          />
+        ) : null}
+      </div>
+
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onDone}>
+          やめる
+        </Button>
+        <Button type="submit" disabled={primary.action === null} data-testid="new-project-submit">
+          {primary.label}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+function FolderFields({
+  name,
+  onNameChange,
+  basePath,
+  onBasePathChange,
+}: {
+  name: string;
+  onNameChange: (next: string) => void;
+  basePath: string;
+  onBasePathChange: (next: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="new-project-name">Project 名</Label>
+        <Input id="new-project-name" value={name} onChange={(e) => onNameChange(e.target.value)} autoFocus />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="new-project-path">Root パス</Label>
+        <PathPicker id="new-project-path" value={basePath} onChange={onBasePathChange} />
+        <p className="text-xs text-ink-3">
+          Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
+        </p>
+        <WideRootWarning path={basePath} />
+      </div>
+    </>
+  );
+}
+
+/**
+ * アカウントから見えるリポジトリを探して選ぶ。一覧に無いもの（ほかの人の公開リポジトリ）は
+ * URL か `owner/repo` を貼れば選べる。↓で一覧へ、↑↓で動き、Enter／Space で選ぶ
+ */
+function RepoSearch({
+  account,
+  picked,
+  disabled,
+  onPick,
+}: {
+  account: MockGithubAccount;
+  picked: { owner: string; name: string } | null;
+  disabled: boolean;
+  onPick: (next: { owner: string; name: string }) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
+  const repos = getReposForAccount(account.id);
+  const q = query.trim().toLowerCase();
+  const pasted = parseRepoReference(query);
+  const matches = pasted
+    ? repos.filter((r) => r.owner === pasted.owner && r.name === pasted.name)
+    : repos.filter(
+        (r) => !q || r.name.toLowerCase().includes(q) || r.description?.toLowerCase().includes(q),
+      );
+  const showPasted = pasted && matches.length === 0;
+  const isPicked = (owner: string, name: string) => picked?.owner === owner && picked?.name === name;
+
+  // 選んだ行が一覧の外にあれば見える位置へ（URL から選んだ状態で開いたとき等）
+  useEffect(() => {
+    containerRef.current
+      ?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [picked, containerRef]);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor="new-project-repo-search">リポジトリ</Label>
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-ink-3" />
+        <Input
+          id="new-project-repo-search"
+          value={query}
+          disabled={disabled}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowDown") return;
+            e.preventDefault();
+            containerRef.current?.querySelector<HTMLElement>("[data-roving-item]")?.focus();
+          }}
+          placeholder="名前で絞る／URL を貼る"
+          className="pl-8 text-xs"
+          autoFocus
+        />
+      </div>
+      <div
+        ref={containerRef}
+        onKeyDown={onKeyDown}
+        role="listbox"
+        aria-label={`${account.login} から見えるリポジトリ`}
+        data-testid="repo-list"
+        className="max-h-48 overflow-y-auto rounded-md border border-border"
+      >
+        {matches.map((r) => (
+          <RepoRow
+            key={`${r.owner}/${r.name}`}
+            owner={r.owner}
+            name={r.name}
+            description={r.description}
+            meta={r.pushedAt}
+            icon={r.private ? <Lock /> : <Globe />}
+            iconLabel={r.private ? "非公開" : "公開"}
+            selected={isPicked(r.owner, r.name)}
+            disabled={disabled}
+            onPick={() => onPick({ owner: r.owner, name: r.name })}
+          />
+        ))}
+        {showPasted ? (
+          <RepoRow
+            owner={pasted.owner}
+            name={pasted.name}
+            description="URL から clone"
+            icon={<Link2 />}
+            iconLabel="URL"
+            selected={isPicked(pasted.owner, pasted.name)}
+            disabled={disabled}
+            onPick={() => onPick(pasted)}
+          />
+        ) : null}
+        {matches.length === 0 && !showPasted ? (
+          <p className="px-3 py-4 text-center text-xs text-ink-3">
+            「{query.trim()}」に当たるリポジトリはありません。ほかの人のリポジトリなら、URL を貼ってください。
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function RepoRow({
+  owner,
+  name,
+  description,
+  meta,
+  icon,
+  iconLabel,
+  selected,
+  disabled,
+  onPick,
+}: {
+  owner: string;
+  name: string;
+  description?: string;
+  meta?: string;
+  icon: React.ReactNode;
+  iconLabel: string;
+  selected: boolean;
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      data-roving-item
+      data-testid="repo-row"
+      disabled={disabled}
+      onClick={onPick}
+      className={cn(
+        "flex w-full items-center gap-2.5 border-b border-border px-3 py-2 text-left last:border-b-0 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-60",
+        selected ? "bg-surface-2" : "hover:bg-accent",
+      )}
+    >
+      <span className="shrink-0 text-ink-3 [&>svg]:size-3.5" title={iconLabel} aria-label={iconLabel}>
+        {icon}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm text-ink-3">
+          {owner}/<span className="font-medium text-foreground">{name}</span>
+        </span>
+        {description ? <span className="truncate text-xs text-ink-3">{description}</span> : null}
+      </span>
+      {meta ? <span className="hidden shrink-0 text-xs text-ink-3 sm:inline">{meta}</span> : null}
+      <Check className={cn("size-3.5 shrink-0 text-primary", selected ? "visible" : "invisible")} />
+    </button>
+  );
+}
+
+function AdvancedOverrides({
+  open,
+  onToggle,
+  overrides,
+  patch,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  overrides: Overrides;
+  patch: (next: Partial<Overrides>) => void;
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-fit items-center gap-1 text-xs text-ink-3 hover:text-foreground"
+      >
+        <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+        Advanced——Configuration の上書き
+      </button>
+      {open ? (
+        <div className="rounded-md border border-border px-3">
+          <CascadeRow
+            id="new-project-model"
+            label="既定モデル"
+            inheritedLabel={mockRuntimeDefaults.model}
+            overridden={overrides.model !== undefined}
+            onToggle={(on) => patch({ model: on ? mockRuntimeDefaults.model : undefined })}
+          >
+            <Select value={overrides.model} onValueChange={(v) => patch({ model: v })}>
+              <SelectTrigger className="h-8 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="claude-opus-5">claude-opus-5</SelectItem>
+                <SelectItem value="claude-sonnet-5">claude-sonnet-5</SelectItem>
+                <SelectItem value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</SelectItem>
+              </SelectContent>
+            </Select>
+          </CascadeRow>
+
+          <CascadeRow
+            id="new-project-effort"
+            label="既定 reasoning effort"
+            inheritedLabel={mockRuntimeDefaults.effort}
+            overridden={overrides.effort !== undefined}
+            onToggle={(on) => patch({ effort: on ? mockRuntimeDefaults.effort : undefined })}
+          >
+            <Select value={overrides.effort} onValueChange={(v) => patch({ effort: v as Overrides["effort"] })}>
+              <SelectTrigger className="h-8 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="low">low</SelectItem>
+                <SelectItem value="medium">medium</SelectItem>
+                <SelectItem value="high">high</SelectItem>
+              </SelectContent>
+            </Select>
+          </CascadeRow>
+
+          <CascadeRow
+            id="new-project-memory"
+            label="Memory 上限文字数"
+            inheritedLabel={`${mockRuntimeDefaults.memoryLimitChars.toLocaleString()} 文字`}
+            overridden={overrides.memoryLimitChars !== undefined}
+            onToggle={(on) =>
+              patch({ memoryLimitChars: on ? mockRuntimeDefaults.memoryLimitChars : undefined })
+            }
+          >
+            <Input
+              type="number"
+              className="h-8"
+              value={overrides.memoryLimitChars ?? mockRuntimeDefaults.memoryLimitChars}
+              onChange={(e) => patch({ memoryLimitChars: Number(e.target.value) })}
+            />
+          </CascadeRow>
+
+          <CascadeRow
+            id="new-project-credential"
+            label="使う資格情報"
+            inheritedLabel="自動選択（使用率の低いものへ自動で移る）"
+            overridden={overrides.credentialId !== undefined}
+            onToggle={(on) => patch({ credentialId: on ? mockCredentials[0].id : undefined })}
+          >
+            <Select value={overrides.credentialId} onValueChange={(v) => patch({ credentialId: v })}>
+              <SelectTrigger className="h-8 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {mockCredentials.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.label}
+                    {c.usagePercent !== undefined ? `（${c.usagePercent}% 使用）` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </CascadeRow>
+
+          <CascadeRow
+            id="new-project-vault"
+            label="使う Vault 接続"
+            inheritedLabel="instance 既定接続（組み込みローカル）"
+            overridden={overrides.vaultImplementationId !== undefined}
+            onToggle={(on) => patch({ vaultImplementationId: on ? DEFAULT_VAULT : undefined })}
+          >
+            <Select
+              value={overrides.vaultImplementationId}
+              onValueChange={(v) => patch({ vaultImplementationId: v })}
+            >
+              <SelectTrigger className="h-8 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {getRoles()
+                  .find((r) => r.id === "vault")
+                  ?.implementations.map((i) => (
+                    <SelectItem key={i.id} value={i.id}>
+                      {i.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </CascadeRow>
+        </div>
+      ) : null}
+    </>
   );
 }

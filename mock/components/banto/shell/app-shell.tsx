@@ -8,6 +8,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
+import { RepoDemoParams } from "@/components/banto/project/repo-demo-params";
 import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
 import {
@@ -109,6 +110,8 @@ function AppShellInner({
         onOpenChange={(open) => (open ? stack.open({ overlay: "archive" }) : stack.close("overlay"))}
         onReopenFork={(threadId) => stack.open({ fork: threadId, overlay: null })}
       />
+      {/* モックの見せ方のためだけ——状態ごとの URL（`?new-project=`・`?accounts=`） */}
+      <RepoDemoParams />
     </SidebarProvider>
   );
 }

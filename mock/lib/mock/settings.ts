@@ -268,7 +268,10 @@ let implementations: MockModuleImplementation[] = [
     ],
     handlesSecrets: false,
     hasConfigSurface: true,
-    launchers: [{ id: "diff", label: "差分ビューを開く", viewId: "diff" }],
+    launchers: [
+      { id: "diff", label: "差分ビューを開く", viewId: "diff" },
+      { id: "publish", label: "GitHub に公開", viewId: "publish" },
+    ],
     mcpServersJson: sampleMcpServersJson(
       "banto-repo",
       "node",
@@ -590,7 +593,7 @@ let mockProjectOverrides: MockProjectOverrides[] = [
     effort: "low",
     credentialId: "cred.work",
     vaultImplementationId: "hashicorp.vault",
-    securityRoot: "~/srv/home-automation",
+    securityRoot: "~/ghq/github.com/tjst-t/home-automation",
   },
   {
     projectId: "hermes",
