@@ -63,7 +63,9 @@ export function createShellServer(deps: { projectRoot: string; relayClient: Host
           "**秘密（トークン・鍵）が要るときは、値を command に書かず、Vault の alias 名を " +
           "envSecrets / secretFiles / sshIdentity に渡す**——値は Vault から直接この子プロセスへ渡り、" +
           "あなたの文脈には出ない。使える alias の一覧は resource `vault://aliases`。" +
-          "必要な alias が無ければ requestAlias で人に登録を頼む。",
+          "必要な alias が無ければ requestAlias で人に登録を頼む。" +
+          "**出力が長いとき**（stdout と stderr の合計が 3万文字超）は、長いほうの頭と末尾だけを返し、" +
+          "全体は stdoutFile / stderrFile のファイルに残す——grep や sed -n で読む（同じコマンドを打ち直さない）。",
         inputSchema: {
           type: "object",
           properties: {

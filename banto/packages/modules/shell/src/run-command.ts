@@ -3,8 +3,10 @@
 
 import { spawn } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { AliasPlace, HostRelayClient } from "./host-relay-client.js";
+import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
 
 export interface RunCommandInput {
   command: string;
@@ -37,13 +39,23 @@ export interface RunCommandDeps {
   onProgress?(note: string): void;
   /** 進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**——本番では既定のまま。 */
   progressIntervalMs?: number;
+  /** 長い出力の上限（`output-capture.ts`）。**試験で小さくするための穴**——本番では既定のまま。 */
+  outputLimits?: Partial<OutputLimits>;
 }
 
 export interface RunCommandResult {
-  stdout: string;
-  stderr: string;
   exitCode: number | null;
   timedOut: boolean;
+  /** 長いときは頭と末尾だけ（間に省いた量と保存先を書く）。全体は `stdoutFile`・`stderrFile`。 */
+  stdout: string;
+  stderr: string;
+  /**
+   * **長い出力の全体の置き場**（追加・2026-09-29）。stdout と stderr の合計が 3万文字を越え、
+   * そのストリームが 4,000 文字を越えたときだけ持つ。Shell のホームの中なので、次の runCommand の
+   * grep・sed -n で読める
+   */
+  stdoutFile?: string;
+  stderrFile?: string;
   /**
    * **閉じ込めで弾かれたらしいときの説明**（追加・2026-09-23）。人も AI も、
    * 「自分の端末では動くのに」の理由がこれで分かる。弾かれた気配が無ければ持たない。
@@ -214,16 +226,18 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
         killSignal: "SIGTERM",
       });
 
-      let stdout = "";
-      let stderr = "";
+      // **全部はためない**（決定・2026-09-29）。長ければ全体はファイルへ、手元には頭と末尾だけ
+      const capture = new OutputCapture(outputDirFor(deps.homeDir, tmpdir()), {
+        ...OUTPUT_LIMITS,
+        ...deps.outputLimits,
+      });
       let timedOut = false;
 
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
-      });
+      // 文字数で数えるので、文字の途中で切らずに受け取る
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => capture.append("stdout", chunk));
+      child.stderr?.on("data", (chunk: string) => capture.append("stderr", chunk));
 
       // 走っている間、呼び出し元のタイムアウトを更新し続ける（上記）。
       // 経過と出力量も一緒に伝える——人が見たときに「止まっている」と
@@ -231,7 +245,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       const startedAt = Date.now();
       const heartbeat = setInterval(() => {
         const sec = Math.round((Date.now() - startedAt) / 1000);
-        deps.onProgress?.(`実行中（${sec}秒経過、出力 ${stdout.length + stderr.length} 文字）`);
+        deps.onProgress?.(`実行中（${sec}秒経過、出力 ${capture.totalChars} 文字）`);
       }, deps.progressIntervalMs ?? PROGRESS_INTERVAL_MS);
       // このタイマーだけで Node を生かし続けない
       heartbeat.unref();
@@ -248,17 +262,32 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       };
 
       child.on("error", (err) => {
-        settle(() => reject(err));
+        void capture.abandon().finally(() => settle(() => reject(err)));
       });
       child.on("exit", (code, signal) => {
         if (signal === "SIGTERM" && code === null) timedOut = true;
-        const confinementNote =
-          code === 0
-            ? undefined
-            : confinementNoteFor(stderr, { projectRoot: deps.projectRoot, homeDir: deps.homeDir, inContainer: deps.inContainer });
-        settle(() =>
-          resolvePromise({ stdout, stderr, exitCode: code, timedOut, ...(confinementNote ? { confinementNote } : {}) }),
-        );
+        void capture.finish().then((out) => {
+          const confinementNote =
+            code === 0
+              ? undefined
+              : confinementNoteFor(out.stderr, {
+                  projectRoot: deps.projectRoot,
+                  homeDir: deps.homeDir,
+                  inContainer: deps.inContainer,
+                });
+          // **終了コードを先頭に置く**——長い返事を呼び出し元が先頭から切っても、成否は残る
+          settle(() =>
+            resolvePromise({
+              exitCode: code,
+              timedOut,
+              stdout: out.stdout,
+              stderr: out.stderr,
+              ...(out.stdoutFile ? { stdoutFile: out.stdoutFile } : {}),
+              ...(out.stderrFile ? { stderrFile: out.stderrFile } : {}),
+              ...(confinementNote ? { confinementNote } : {}),
+            }),
+          );
+        }, (err: unknown) => settle(() => reject(err)));
       });
     });
   } finally {

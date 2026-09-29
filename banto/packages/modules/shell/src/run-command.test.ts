@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -393,4 +393,125 @@ test("コンテナの中で、人のホームを指して No such file になっ
   assert.doesNotMatch(note ?? "", /missing\.txt|\/opt\/tool/);
   // コンテナでは Permission denied は閉じ込めのせいではない（中のファイルの権限）
   assert.equal(confinementNoteFor("cat: /home/u/x: Permission denied", allowed), undefined);
+});
+
+// ---- 長い出力（決定・2026-09-29、output-capture.ts）--------------------------------------------
+// 本物の上限（3万文字）で回すと遅く読みにくいので、上限を小さくして形を見る。本物の上限と stdio の
+// 10 MiB は output-limit.integration.test.ts が押さえる
+
+test("短い出力はそのまま返し、ファイルは作らない。終了コードが先頭に来る", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  try {
+    const result = await runCommand(
+      { command: "echo hello; echo oops 1>&2; exit 2" },
+      { projectRoot: dir, homeDir: join(dir, "home"), relayClient: unusedRelayClient() },
+    );
+    assert.equal(result.stdout, "hello\n");
+    assert.equal(result.stderr, "oops\n");
+    assert.equal(result.stdoutFile, undefined);
+    assert.equal(result.stderrFile, undefined);
+    // 呼び出し元（Claude Code）は長い返事を先頭から切る——成否だけは必ず残る位置に
+    assert.deepEqual(Object.keys(result).slice(0, 2), ["exitCode", "timedOut"]);
+    assert.equal(existsSync(join(dir, "home", ".cache", "banto-shell")), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("合計が上限を越えたら、長いストリームだけ頭と末尾にし、全体を Shell のホームに残す", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  const home = join(dir, "home");
+  try {
+    // stderr に 0..499 の連番（各行 "eNNN\n"）、stdout は短い終わりの印
+    const result = await runCommand(
+      { command: "i=0; while [ $i -lt 500 ]; do printf 'e%03d\\n' $i 1>&2; i=$((i+1)); done; echo rc=done" },
+      {
+        projectRoot: dir,
+        homeDir: home,
+        relayClient: unusedRelayClient(),
+        outputLimits: { inlineChars: 100, headChars: 10, tailChars: 20 },
+      },
+    );
+    const whole = Array.from({ length: 500 }, (_, i) => `e${String(i).padStart(3, "0")}\n`).join("");
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "rc=done\n", "短いほうはそのまま");
+    assert.equal(result.stdoutFile, undefined);
+    assert.ok(result.stderrFile?.startsWith(join(home, ".cache", "banto-shell", "output") + "/"));
+    assert.equal(await readFile(result.stderrFile!, "utf8"), whole, "全体が残っている");
+    assert.ok(result.stderr.startsWith(whole.slice(0, 10)), "頭");
+    assert.ok(result.stderr.endsWith(whole.slice(-20)), "末尾");
+    assert.match(result.stderr, /2,470 文字を省きました（全体 2,500 文字）/);
+    assert.ok(result.stderr.includes(`全体は ${result.stderrFile} にあります`));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("保存の上限を越えたら書くのをやめるが、返す末尾は本当の末尾", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  try {
+    const result = await runCommand(
+      { command: "i=0; while [ $i -lt 500 ]; do printf 'o%03d\\n' $i; i=$((i+1)); done" },
+      {
+        projectRoot: dir,
+        homeDir: join(dir, "home"),
+        relayClient: unusedRelayClient(),
+        outputLimits: { inlineChars: 100, headChars: 10, tailChars: 20, saveBytes: 200 },
+      },
+    );
+    const saved = await readFile(result.stdoutFile!, "utf8");
+    assert.ok(saved.startsWith("o000\no001\n"));
+    assert.match(saved, /保存は 200 バイト までです。ここから先は保存していません/);
+    assert.ok(!saved.includes("o499"), "上限より後は書いていない");
+    assert.ok(result.stdout.endsWith("o498\no499\n"), "末尾は本当の終わり");
+    assert.match(result.stdout, /先頭の 200 バイト までを .* に保存しました/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("残すのは直近の回数分だけ", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  const home = join(dir, "home");
+  try {
+    const files: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const result = await runCommand(
+        { command: "seq 1 200" },
+        {
+          projectRoot: dir,
+          homeDir: home,
+          relayClient: unusedRelayClient(),
+          outputLimits: { inlineChars: 100, headChars: 10, tailChars: 20, keepRuns: 3 },
+        },
+      );
+      files.push(result.stdoutFile!);
+    }
+    const left = (await readdir(join(home, ".cache", "banto-shell", "output"))).sort();
+    assert.equal(left.length, 3);
+    assert.deepEqual(
+      left,
+      files.slice(-3).map((f) => f.split("/").pop()!),
+      "消えたのは古い2回分",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("文字数で数え、日本語を文字の途中で切らない", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  try {
+    // 3 バイトの文字を 12 万字——読み込みの区切り（64KiB）は文字の途中に来る
+    const result = await runCommand(
+      { command: "yes 'あいうえおかきくけこ' | head -n 12000 | tr -d '\\n'" },
+      { projectRoot: dir, homeDir: join(dir, "home"), relayClient: unusedRelayClient() },
+    );
+    const saved = await readFile(result.stdoutFile!, "utf8");
+    assert.equal(saved, "あいうえおかきくけこ".repeat(12000));
+    assert.match(result.stdout, /（全体 120,000 文字）/);
+    assert.equal(result.stdout.includes("�"), false, "壊れた文字が無い");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

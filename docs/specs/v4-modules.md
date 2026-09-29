@@ -1078,11 +1078,31 @@ host に預け、リロードしても別タブに出しても、そのまま開
 
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
-| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒、上限あり）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記） | 返り値は `stdout`／`stderr`／`exitCode`／`timedOut`。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23） |
+| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒、上限あり）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記） | 返り値は `exitCode`／`timedOut`／`stdout`／`stderr`（**この順**——下記「長い出力」）。出力が長いときは `stdoutFile`／`stderrFile`（同）。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23） |
 
 **コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
 host が用意し、人が選んだ設定（既定は git の設定）だけを資格情報を外して写す。人のホームは
 見せない。形と理由は `docs/specs/v4-security.md`「Shell のコマンドには、専用のホームを渡す」。
+
+**長い出力は、頭と末尾だけを返し、全体はファイルに残す**（決定・2026-09-29、ユーザー）：
+
+- stdout と stderr の合計が **30,000 文字**を越えたら、**4,000 文字を越えたストリーム**を Shell のホームの
+  `.cache/banto-shell/output/` にファイルとして書き出す。返り値のそのストリームは**頭 1,000 文字＋末尾 3,000 文字**で、
+  間に「省いた量・全体の文字数・保存先」を書く。保存先のパスは `stdoutFile`／`stderrFile` にも入れる。
+  越えないストリームはそのまま返す（ふだんの出力は変わらない——実測で 1,840 回中 0 回が 30,000 文字を越えた）
+- **走っている間も全部はためない**——逃がしたあとの手元は頭と末尾だけ。1ストリームの保存は **64 MiB** まで
+  （越えた分は保存しないが、返す末尾は本当の終わり）。**出力の量ではプロセスを止めない**
+- 残すのは**直近 20 回分**。Shell は同じ Project の全 Thread で共有するので、読む前に消えない数にする
+- 返り値の JSON は**終了コードを先頭に置く**——呼び出し元が長い返事を先頭から切っても、成否は残る
+- 保存したファイルは Shell の tool が受け取る識別子ではなく、**ただのファイル**（次の `runCommand` の
+  `grep`・`sed -n` で読む）。Shell は1回で終わるという契約は変わらない
+
+理由：MCP SDK の stdio は1通 **10 MiB** までしか受け取らず、越えた返事で host が接続を閉じ、Shell が黙って
+消えた（AI の `cp -al` がエラーを 12.1MB 出した）。10 MiB 未満でも、banto の AI（Claude Code）は MCP の結果を
+約10万文字で**先頭から**切る。頭と末尾だけ返して残りを捨てる形（Codex・Cline）もあるが、出力が大きくなるかは
+打つ前に分からず、捨てると**打ち直し**になる——打ち直しは高い（フル E2E）か、できない（`git push`）。
+Claude Code・Gemini CLI・Goose と同じく、全体はファイルに残す。数字と他の道具の調べは
+`docs/notes/2026-09-29-shell-output-limit.md`。
 
 **tool はこれ1本だけにする。** `listProcesses`/`killProcess` のような、プロセスを
 識別子で参照する tool は意図的に作らない——状態を持つことになり、Shell の契約
