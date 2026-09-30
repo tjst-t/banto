@@ -129,7 +129,7 @@ test("12MB の出力でも Shell は切れず、全体はコンテナの中に�
   const launchers = await page.request.get(`${CORE_BASE_URL}/api/projects/${id}/ui-launchers`, { headers: HEADERS });
   expect(launchers.status()).toBe(200);
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await expect(page.getByText("Module の入口")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Module の入口", { exact: true })).toBeVisible({ timeout: 30_000 });
   const entry = page.getByRole("option", { name: /ファイル/ });
   await expect(entry).toBeVisible({ timeout: 15_000 });
   await expect(entry).toContainText("この Project のファイルを見る・開く・編集する");
