@@ -6,7 +6,7 @@
 // 受信箱と、いまの Project に限る Module の入口・資源は範囲が違う（§6.3「範囲」）。
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { settingsOpenHref } from "@/lib/settings-link";
+import { settingsOpenHref, threadNavHref } from "@/lib/settings-link";
 import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 import {
   Command,
@@ -104,7 +104,14 @@ export function CommandPalette({
         for (const [key, value] of target.searchParams) params.set(key, value);
         router.push(`${pathname}?${params.toString()}`);
       } else {
-        router.push(item.href);
+        // 別の Project の会話へ。**設定を開いていれば、設定は開いたまま下の画面だけ切り替える**（2026-09-30、
+        // `threadNavHref`）——素の href へ飛ぶと設定が閉じていた
+        const projectMatch = /^\/p\/([^/]+)$/.exec(target.pathname);
+        router.push(
+          projectMatch
+            ? threadNavHref(projectMatch[1]!, target.searchParams.get("fork"), pathname, withoutPalette(), "project-danger")
+            : item.href,
+        );
       }
       setQuery("");
     } else if (item.kind === "operation" && item.actionId) {

@@ -90,7 +90,31 @@ export function projectNavHref(
   // ならその節を保ち（見比べられる）、そうでなければ先頭の節へ。
   // **下の画面もその Project の会話にする**（改訂・2026-09-30）。前の Project の画面の印（開いていた Fork・
   // Canvas など）は連れていかない——別の Project のものだから
+  return threadNavHref(projectId, null, pathname, params, fallbackSection);
+}
+
+/**
+ * **Thread（Base か Fork）への行き先**（追加・2026-09-30、ユーザー指摘）。設定を開いていなければその会話へ。
+ * **設定を開いていれば、設定は開いたまま、下の画面をその会話にし、設定もその Project の層にする**。
+ * 以前は Project 名だけがこの形で、サイドバーの「Base Thread」・Fork の行・レールの Fork 一覧・Command Palette
+ * は素の `/p/…` へ飛び、設定が閉じていた。設定を閉じるのは Escape・閉じるボタン・いま設定で見ている
+ * Project の名前を押す（`projectNavHref`）とき。
+ */
+export function threadNavHref(
+  projectId: string,
+  forkId: string | null,
+  pathname: string,
+  params: ReadableParams,
+  /** その Project の層が始まる節（別の Project へ移るとき、全体の節を見ていたらここへ） */
+  fallbackSection: string,
+): string {
+  const under = new URLSearchParams();
+  if (forkId) under.set("fork", forkId);
+  if (!isSettingsOpen(pathname, params)) return withQuery(`/p/${projectId}`, under);
+  // 同じ Project なら見ている節のまま。別の Project なら、Project の層の節を見ていたときだけその節を保つ
+  // （見比べられる）。前の Project の画面の印（開いていた Canvas など）は連れていかない
   const current = params.get("section");
-  const section = isProjectSection(current) ? current : fallbackSection;
-  return settingsOpenHref(`/p/${projectId}`, new URLSearchParams(), { project: projectId, section });
+  const section =
+    params.get("project") === projectId ? current : isProjectSection(current) ? current : fallbackSection;
+  return settingsOpenHref(`/p/${projectId}`, under, { project: projectId, section });
 }

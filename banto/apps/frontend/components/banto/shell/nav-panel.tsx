@@ -47,7 +47,7 @@ import {
 } from "@/lib/mock/threads";
 import { describeFailure } from "@/lib/report-failure";
 import { cn } from "@/lib/utils";
-import { isSettingsOpen, projectNavHref, settingsOpenHref } from "@/lib/settings-link";
+import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref } from "@/lib/settings-link";
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
@@ -137,7 +137,9 @@ function ProjectTreeItem({
       await foldForkThread(fork.id);
       // いま開いている Fork を Close したら、その Project の Base Thread に戻る
       // ——閉じた会話が画面に残り続けないように
-      if (isCurrent && activeForkThreadId === fork.id) router.push(`/p/${project.id}`);
+      if (isCurrent && activeForkThreadId === fork.id) {
+        router.push(threadNavHref(project.id, null, pathname, searchParams, settingsEntrySection));
+      }
     } catch (err) {
       toast(`Fork を Close できませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -218,7 +220,12 @@ function ProjectTreeItem({
             <SidebarMenuSub>
               <SidebarMenuSubItem>
                 <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>
-                  <Link href={`/p/${project.id}`} data-roving-item onClick={onNavigate}>
+                  <Link
+                    // 設定を開いていれば、設定はそのまま下の画面だけ切り替える（2026-09-30、`threadNavHref`）
+                    href={threadNavHref(project.id, null, pathname, searchParams, settingsEntrySection)}
+                    data-roving-item
+                    onClick={onNavigate}
+                  >
                     <MessageSquare />
                     <span>Base Thread</span>
                   </Link>
@@ -247,7 +254,7 @@ function ProjectTreeItem({
                             className={CONNECTED_FEATURES.threadCloseReopen ? "pr-8" : undefined}
                           >
                             <Link
-                              href={`/p/${project.id}?fork=${fork.id}`}
+                              href={threadNavHref(project.id, fork.id, pathname, searchParams, settingsEntrySection)}
                               data-roving-item
                               title={fork.title}
                               onClick={onNavigate}
