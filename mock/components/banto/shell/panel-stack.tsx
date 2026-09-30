@@ -131,6 +131,8 @@ export function PanelStack({
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
+      // 前面のメニュー・ダイアログ（Radix）が閉じるのに使った Escape は、層まで閉じない
+      if (e.defaultPrevented) return;
       if (canvas) close("canvas");
       else if (forkThreadId) close("fork");
     }

@@ -9,10 +9,14 @@
 // （無ければ、このマシンが壊れたら消える）。並べ方もこの2つで決める：
 //   - 区切りは「Project で使っている」「Project はまだ無い」の2つ（前者が今の仕事、
 //     後者は始める候補）
-//   - 各区切りの中は「このマシンにだけ」を先に（次の手が要るもの）、あとは名前順
-// 行は2列だけにして、事実のすぐ隣にその次の手を置く：
+//   - 各区切りの中は「フォルダが見つからない」→「このマシンにだけ」の順に先に（次の手が要るもの）、
+//     あとは名前順。見つからないものも Project との関係で区切る——Project の Root が消えていれば
+//     その Project は動かないので、「Project で使っている」の一番上に出るのがいちばん大事
+//     （見つからないものだけの区切りを作ると、どの Project が困っているかが離れる）
+// 行は2列（と端に操作）だけにして、事実のすぐ隣にその次の手を置く：
 //   - 左：名前・置き場所・GitHub のどこか（アカウント）。まだなら同じ行に「GitHub に公開」
 //   - 右：使っている Project（サイドバーと同じ頭文字）。無ければ「Project を始める」
+//   - 端：行の操作（「一覧から外す」——フォルダは消さない。押す前にそう言う）
 // 置き場所は行ごとに出す——フォルダ名から持ち主は分からないし、Import したものは置き場の外にある。
 //
 // 開き方は2つで、中身は同じ（Skill の置き場の画面と同じ形）：
@@ -23,18 +27,46 @@
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { CloudUpload, FolderInput, Globe, HardDrive, Link2, Lock, Plus, Search } from "lucide-react";
+import {
+  CloudDownload,
+  CloudUpload,
+  Ellipsis,
+  FolderInput,
+  FolderX,
+  Globe,
+  HardDrive,
+  History,
+  Link2,
+  ListX,
+  LoaderCircle,
+  Lock,
+  Plus,
+  Search,
+} from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { reopenProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   getProjectsUsingRepo,
+  recloneMissingRepo,
   remoteHost,
-  useKnownRepos,
+  removeFromLedger,
+  restoreLedgerEntry,
+  useLedgerRepos,
   useRepoHome,
+  type GithubLocation,
   type KnownRepo,
+  type LedgerRepo,
+  type MissingRepo,
 } from "@/lib/mock/github";
 import type { MockProject } from "@/lib/mock/types";
 import { ProjectInitial } from "@/components/banto/shell/nav-panel";
@@ -44,7 +76,7 @@ import { NewProjectDialog, type NewProjectPreset } from "@/components/banto/proj
 import { RepoPublishPanel } from "./repo-publish-view";
 import { RepoImportDialog } from "./repo-import-dialog";
 
-type Filter = "all" | "local";
+type Filter = "all" | "local" | "missing";
 
 /** `at` は同じ行をもう一度光らせるため（行を作り直す key に入れる） */
 type Highlight = { path: string; at: number };
@@ -58,7 +90,7 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
   useMockStoreVersion();
   const home = useRepoHome();
   // 台帳が空なら、Import の入口は空の案内の中の1つだけにする（同じボタンを2つ並べない）
-  const empty = useKnownRepos().length === 0;
+  const empty = useLedgerRepos().length === 0;
   // モックの見せ方のためだけ：`?import=<path>` で Import をそのフォルダから開く
   const importParam = useSearchParams().get("import");
   const [publishing, setPublishing] = useState<string | null>(null);
@@ -115,6 +147,7 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
           onPublish={setPublishing}
           onStart={(repo) => setStarting({ method: "folder", folder: repo.path, name: repo.name })}
           onImport={() => setImportAt("~")}
+          onShow={(path) => setHighlight({ path, at: Date.now() })}
         />
       </div>
       {starting ? (
@@ -139,30 +172,31 @@ function RepoListBody({
   onPublish,
   onStart,
   onImport,
+  onShow,
 }: {
   highlight: Highlight | null;
   onPublish: (path: string) => void;
   onStart: (repo: KnownRepo) => void;
   onImport: () => void;
+  onShow: (path: string) => void;
 }) {
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filterChoice, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
 
-  const facts = useKnownRepos().map((repo) => ({ repo, projects: getProjectsUsingRepo(repo) }));
-  const localCount = facts.filter((f) => f.repo.remote.kind === "none").length;
+  const facts = useLedgerRepos().map((repo) => ({ repo, projects: getProjectsUsingRepo(repo) }));
+  const localCount = facts.filter((f) => isLocalOnly(f.repo)).length;
+  const missingCount = facts.filter((f) => f.repo.missing).length;
+  // 最後の1つを外したら札ごと消えるので、選んでいた絞り込みも「すべて」へ戻す
+  const filter = filterChoice === "missing" && missingCount === 0 ? "all" : filterChoice;
   const q = query.trim().toLowerCase();
   const shown = facts
     .filter(
       (f) =>
-        (filter === "all" || f.repo.remote.kind === "none") &&
+        (filter === "all" || (filter === "local" ? isLocalOnly(f.repo) : f.repo.missing)) &&
         (q === "" || `${f.repo.name} ${f.repo.path} ${githubName(f.repo) ?? ""}`.toLowerCase().includes(q)),
     )
-    // このマシンにだけあるものを先に、あとは名前順
-    .sort(
-      (a, b) =>
-        Number(b.repo.remote.kind === "none") - Number(a.repo.remote.kind === "none") ||
-        a.repo.name.localeCompare(b.repo.name),
-    );
+    // 次の手が要る順：フォルダが見つからない → このマシンにだけ → あとは名前順
+    .sort((a, b) => rank(a.repo) - rank(b.repo) || a.repo.name.localeCompare(b.repo.name));
   const groups = [
     { id: "used", title: "Project で使っている", items: shown.filter((f) => f.projects.length > 0) },
     { id: "unused", title: "Project はまだ無い", items: shown.filter((f) => f.projects.length === 0) },
@@ -173,6 +207,10 @@ function RepoListBody({
   const choices: { value: Filter; label: ReactNode }[] = [
     { value: "all", label: <FilterLabel text="すべて" count={facts.length} /> },
     { value: "local", label: <FilterLabel text="このマシンにだけ" count={localCount} /> },
+    // 見つからないものが無ければ札を出さない（いつも0の札は、ただの飾りになる）
+    ...(missingCount > 0
+      ? [{ value: "missing" as const, label: <FilterLabel text="フォルダが見つからない" count={missingCount} /> }]
+      : []),
   ];
 
   return (
@@ -225,7 +263,9 @@ function RepoListBody({
                     projects={f.projects}
                     highlighted={highlight?.path === f.repo.path}
                     onPublish={() => onPublish(f.repo.path)}
-                    onStart={() => onStart(f.repo)}
+                    onStart={() => !f.repo.missing && onStart(f.repo)}
+                    onImport={onImport}
+                    onShow={onShow}
                   />
                 ))}
               </ul>
@@ -237,7 +277,17 @@ function RepoListBody({
   );
 }
 
-function githubName(repo: KnownRepo): string | undefined {
+function isLocalOnly(repo: LedgerRepo): boolean {
+  return !repo.missing && repo.remote.kind === "none";
+}
+
+/** 区切りの中の並び——見つからないもの（Project が動かない・戻す手が要る）を一番上に */
+function rank(repo: LedgerRepo): number {
+  return repo.missing ? 0 : isLocalOnly(repo) ? 1 : 2;
+}
+
+function githubName(repo: LedgerRepo): string | undefined {
+  if (repo.missing) return repo.github && `${repo.github.owner}/${repo.github.name}`;
   return repo.remote.kind === "github" ? `${repo.remote.owner}/${repo.remote.name}` : undefined;
 }
 
@@ -256,14 +306,17 @@ function RepoRow({
   highlighted,
   onPublish,
   onStart,
+  onImport,
+  onShow,
 }: {
-  repo: KnownRepo;
+  repo: LedgerRepo;
   projects: readonly MockProject[];
   highlighted: boolean;
   onPublish: () => void;
   onStart: () => void;
+  onImport: () => void;
+  onShow: (path: string) => void;
 }) {
-  const local = repo.remote.kind === "none";
   const [lit, setLit] = useState(highlighted);
   // 見える位置へ出して、少ししたら地を戻す（動きを減らす設定では色の移り変わりを止める）
   useEffect(() => {
@@ -275,42 +328,79 @@ function RepoRow({
     return () => clearTimeout(t);
   }, [highlighted, repo.path]);
 
+  function remove(trigger: HTMLElement | null) {
+    // 行が消えると焦点の行き先が無くなる——隣の行の操作、無ければ上の「フォルダを Import」へ
+    const li = trigger?.closest("li");
+    const nextFocus =
+      (li?.nextElementSibling ?? li?.previousElementSibling)?.querySelector<HTMLElement>(
+        '[data-testid="repo-row-menu"]',
+      ) ?? document.querySelector<HTMLElement>('[data-testid="repo-import-open"]');
+    const entry = removeFromLedger(repo.path);
+    if (!entry) return;
+    requestAnimationFrame(() => nextFocus?.focus());
+    const kept = [
+      repo.missing ? null : `フォルダは ${repo.path} のまま`,
+      projects.length > 0 ? `Project「${projects.map((p) => p.name).join("」「")}」もそのまま` : null,
+    ].filter(Boolean);
+    toast(`${repo.name} を一覧から外しました${kept.length > 0 ? `（${kept.join("・")}です）` : ""}`, {
+      action: {
+        label: "元に戻す",
+        onClick: () => {
+          restoreLedgerEntry(entry);
+          onShow(entry.path);
+        },
+      },
+    });
+  }
+
   return (
     <li
       data-testid="repo-item"
       data-repo-path={repo.path}
+      data-state={repo.missing ? "missing" : undefined}
       data-highlighted={lit || undefined}
       tabIndex={highlighted ? -1 : undefined}
       className={cn(
-        "grid grid-cols-1 gap-x-6 gap-y-2 border-b border-border py-3 transition-colors duration-700 outline-none motion-reduce:transition-none @lg:grid-cols-[minmax(0,1fr)_13rem] @lg:items-start",
+        // 狭い幅：[名前など｜操作] の下に Project。広い幅：[名前など｜Project｜操作]
+        "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 border-b border-border py-3 transition-colors duration-700 outline-none motion-reduce:transition-none @lg:grid-cols-[minmax(0,1fr)_13rem_auto] @lg:items-start @lg:gap-x-6",
         lit && "bg-surface-2",
       )}
     >
-      <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="col-start-1 row-start-1 flex min-w-0 flex-col gap-0.5">
         <p className="truncate text-md font-medium text-foreground">{repo.name}</p>
         <p data-testid="repo-path" className="font-mono text-xs break-all text-ink-3">
           {repo.path}
         </p>
-        <div data-testid="repo-remote" className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-          <RemoteLine repo={repo} />
-          {local ? (
-            <button
-              type="button"
-              onClick={onPublish}
-              data-testid="repo-publish-open"
-              className="flex items-center gap-1 rounded-sm font-medium text-foreground underline decoration-border underline-offset-2 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring"
-            >
-              <CloudUpload className="size-3.5" />
-              GitHub に公開
-            </button>
-          ) : null}
-        </div>
+        {repo.missing ? (
+          <MissingLine repo={repo} projects={projects} onRemove={remove} onImport={onImport} onShow={onShow} />
+        ) : (
+          <>
+            <div data-testid="repo-remote" className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <RemoteLine repo={repo} />
+              {isLocalOnly(repo) ? (
+                <button
+                  type="button"
+                  onClick={onPublish}
+                  data-testid="repo-publish-open"
+                  className="flex items-center gap-1 rounded-sm font-medium text-foreground underline decoration-border underline-offset-2 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  <CloudUpload className="size-3.5" />
+                  GitHub に公開
+                </button>
+              ) : null}
+            </div>
+            {repo.correctedFrom ? <CorrectedNote from={repo.correctedFrom} /> : null}
+          </>
+        )}
       </div>
 
-      <div data-testid="repo-projects" className="flex flex-col gap-1">
+      <div
+        data-testid="repo-projects"
+        className="col-span-2 row-start-2 flex flex-col gap-1 @lg:col-span-1 @lg:col-start-2 @lg:row-start-1"
+      >
         {projects.length > 0 ? (
           projects.map((p) => <ProjectLink key={p.id} project={p} viaWorktree={p.basePath !== repo.path} />)
-        ) : (
+        ) : repo.missing ? null : (
           <button
             type="button"
             onClick={onStart}
@@ -327,14 +417,215 @@ function RepoRow({
           </button>
         )}
       </div>
+
+      <div className="col-start-2 row-start-1 -mt-1 @lg:col-start-3">
+        <RowMenu repo={repo} projects={projects} onRemove={remove} />
+      </div>
     </li>
+  );
+}
+
+/**
+ * 行の操作。いまは「一覧から外す」だけ——**押す前に、フォルダは消えないことを言う**
+ * （メニューの項目の下に1行）。外すのは Repo の記録だけで、フォルダ・GitHub・Project には触らない。
+ *
+ * Project が使っているものも外せる（止めない）。Project の Root はフォルダのパスで、Repo の台帳を
+ * 通していない——外しても Project はそのまま動く。失うのは Repo の記録（どのアカウントで push するか・
+ * GitHub の場所）だけで、フォルダが残っているので Import すればすぐ戻る。だから確かめの画面は挟まず、
+ * そのことを項目の下とトーストで言い、トーストに「元に戻す」を置く
+ */
+function RowMenu({
+  repo,
+  projects,
+  onRemove,
+}: {
+  repo: LedgerRepo;
+  projects: readonly MockProject[];
+  onRemove: (trigger: HTMLElement | null) => void;
+}) {
+  const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
+  const github = githubName(repo);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          ref={setTrigger}
+          type="button"
+          data-testid="repo-row-menu"
+          aria-label={`${repo.name} の操作`}
+          className="flex size-9 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:bg-accent data-[state=open]:text-foreground @lg:size-8"
+        >
+          <Ellipsis className="size-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-72">
+        <DropdownMenuItem
+          data-testid="repo-remove"
+          onSelect={() => onRemove(trigger)}
+          className="items-start gap-2 py-2"
+        >
+          <ListX className="mt-0.5 size-4 shrink-0" />
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="font-medium">一覧から外す</span>
+            {repo.missing ? (
+              <span data-testid="repo-remove-note" className="text-xs text-ink-3">
+                Repo の記録だけを消します。{github ? <>GitHub の {github} には触りません。</> : null}
+              </span>
+            ) : (
+              // いちばん先に言うのは「フォルダは消えない」。パスは1行に分けて、途中で折れないようにする
+              <span data-testid="repo-remove-note" className="flex flex-col gap-0.5 text-xs text-ink-3">
+                <span className="text-ink-2">フォルダは消さず、そのまま残ります</span>
+                <span className="font-mono break-all">{repo.path}</span>
+                {projects.length > 0 ? (
+                  <span>Project「{projects.map((p) => p.name).join("」「")}」もそのまま使えます</span>
+                ) : null}
+              </span>
+            )}
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * 台帳にあるのに、フォルダが見つからない。この一覧で**いちばん強く塗る**のはここ（turn の地
+ * ——人の手が要る）。次の手はそのすぐ隣に1つ：GitHub の場所を覚えていれば「clone し直す」
+ * （元の場所へ。Project の Root もそこなので、そのまま動くようになる）、無ければ「一覧から外す」
+ */
+function MissingLine({
+  repo,
+  projects,
+  onRemove,
+  onImport,
+  onShow,
+}: {
+  repo: MissingRepo;
+  projects: readonly MockProject[];
+  onRemove: (trigger: HTMLElement | null) => void;
+  onImport: () => void;
+  onShow: (path: string) => void;
+}) {
+  const [run, setRun] = useState<{ kind: "cloning" } | { kind: "failed"; reason: string } | null>(null);
+  const { github } = repo;
+
+  function reclone() {
+    setRun({ kind: "cloning" });
+    // 本物は git clone を待つ。モックは少しだけ待たせて、押したことが見えるようにする
+    setTimeout(() => {
+      const result = recloneMissingRepo(repo.path);
+      if (!result.ok) {
+        setRun({ kind: "failed", reason: result.reason });
+        return;
+      }
+      toast(
+        `Repo が ${github?.owner}/${github?.name} を ${repo.path} に clone し直しました` +
+          (projects.length > 0 ? `（Project「${projects[0].name}」の Root です）` : ""),
+      );
+      onShow(repo.path);
+    }, 1200);
+  }
+
+  return (
+    <div data-testid="repo-missing" className="mt-0.5 flex flex-col gap-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="flex items-center gap-1 rounded-sm bg-turn-soft px-1.5 py-0.5 font-medium text-foreground">
+          <FolderX className="size-3.5 shrink-0 text-turn" />
+          フォルダが見つかりません
+        </span>
+        {github ? (
+          <span className="flex min-w-0 items-center gap-1 text-ink-3">
+            GitHub の
+            <AccountMark login={github.owner} />
+            <span className="font-mono break-all text-ink-2">
+              {github.owner}/{github.name}
+            </span>
+            にあります
+          </span>
+        ) : (
+          <span className="text-ink-3">GitHub にも無いので、戻す手はありません</span>
+        )}
+      </div>
+      {github ? (
+        run?.kind === "cloning" ? (
+          <p role="status" className="flex items-center gap-1.5 text-ink-2">
+            <LoaderCircle className="size-3.5 motion-safe:animate-spin" />
+            Repo が clone し直しています…
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={reclone}
+              data-testid="repo-reclone"
+              className="h-7 w-fit gap-1.5 text-xs"
+            >
+              <CloudDownload className="size-3.5" />
+              {run ? "もう一度 clone し直す" : "clone し直す"}
+            </Button>
+            <span className="text-ink-3">元の場所に戻します</span>
+          </div>
+        )
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={(e) => onRemove(e.currentTarget)}
+            data-testid="repo-remove-inline"
+            className="h-7 w-fit gap-1.5 text-xs"
+          >
+            <ListX className="size-3.5" />
+            一覧から外す
+          </Button>
+          <button
+            type="button"
+            onClick={onImport}
+            className="rounded-sm text-ink-3 underline decoration-border underline-offset-2 hover:text-foreground hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            移したなら、移した先を Import
+          </button>
+        </div>
+      )}
+      {run?.kind === "failed" ? (
+        <p data-testid="repo-reclone-failed" role="alert" className="text-ink-2">
+          clone できませんでした：{run.reason}。
+          <Link
+            href={REPO_SETTINGS_HREF}
+            className="rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            読めるアカウントを登録する
+          </Link>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** 台帳の GitHub の場所を、フォルダの origin に合わせて直した——そのことを1行で言う */
+function CorrectedNote({ from }: { from: GithubLocation }) {
+  return (
+    <p data-testid="repo-corrected" className="mt-0.5 flex items-start gap-1 text-xs text-ink-3">
+      <History className="mt-px size-3.5 shrink-0" />
+      <span>
+        フォルダの origin に合わせて、GitHub の場所を直しました（前は{" "}
+        <span className="font-mono whitespace-nowrap">
+          {from.owner}/{from.name}
+        </span>
+        ）
+      </span>
+    </p>
   );
 }
 
 function RemoteLine({ repo }: { repo: KnownRepo }) {
   const { remote } = repo;
   if (remote.kind === "none") {
-    // この一覧で塗るのはここだけ——壊れたら消えるもの、次の手が要るもの
+    // この一覧で塗るのは、ここと「フォルダが見つかりません」の2つだけ——次の手が要るもの。
+    // こちらは warn（壊れたら消える）、見つからないほうは turn（もう動かない・人の手が要る）
     return (
       <>
         <span
@@ -446,7 +737,9 @@ function EmptyLedger({ onImport }: { onImport: () => void }) {
 function EmptyResult({ filter, query, onClear }: { filter: Filter; query: string; onClear: () => void }) {
   const message = query
     ? `「${query}」に当たるリポジトリはありません。`
-    : "このマシンにだけあるものはありません。どれも GitHub かほかの場所にあります。";
+    : filter === "missing"
+      ? "フォルダが見つからないものはありません。"
+      : "このマシンにだけあるものはありません。どれも GitHub かほかの場所にあります。";
   return (
     <div data-testid="repo-list-empty" className="flex flex-col items-start gap-2 py-6 text-sm text-ink-2">
       <p>{message}</p>

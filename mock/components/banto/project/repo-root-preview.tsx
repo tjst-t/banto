@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { KnownRepo, ProjectSummary, RepoRemote, TargetFolderState } from "@/lib/mock/github";
+import type { KnownRepo, MissingRepo, ProjectSummary, RepoRemote, TargetFolderState } from "@/lib/mock/github";
 import { remoteHost } from "@/lib/mock/github";
 
 export type RootPreviewStatus =
@@ -32,6 +32,8 @@ export type RootPreviewStatus =
   | { kind: "target"; state: TargetFolderState }
   /** clone しようとしたリポジトリを、もう持っている（どこにあっても） */
   | { kind: "have"; repo: KnownRepo; project?: ProjectSummary }
+  /** clone しようとしたリポジトリを台帳が覚えているのに、フォルダが見つからない——元の場所に clone し直す */
+  | { kind: "reclone"; repo: MissingRepo; project?: ProjectSummary }
   | { kind: "cloning"; received: number; total: number }
   | { kind: "clone-failed"; reason: string };
 
@@ -92,7 +94,7 @@ export function RepoRootPreview({
         <p id="repo-root-label" className="text-xs text-ink-3">
           Root パス
         </p>
-        {status.kind === "have" ? (
+        {status.kind === "have" || status.kind === "reclone" ? (
           <p data-testid="repo-root-path" className="font-mono text-lg leading-snug break-all text-foreground">
             {status.repo.path}
           </p>
@@ -247,6 +249,19 @@ function describe({
           message: <>{what} は、もうこのマシンにあります。clone せず、このフォルダをそのまま使います。</>,
         };
   }
+  if (status.kind === "reclone") {
+    const { project } = status;
+    return {
+      tone: "plain",
+      icon: <CloudDownload />,
+      message: (
+        <>
+          Repo の一覧にありますが、フォルダが見つかりません。Repo が元の場所に clone し直します
+          {project ? <>——Project「{project.name}」はこのフォルダを Root にしたまま{project.closed ? "再開し" : "開き"}ます</> : null}。
+        </>
+      ),
+    };
+  }
 
   if (folder === "") {
     return {
@@ -318,6 +333,19 @@ function describe({
         ],
       };
     }
+    case "taken-missing":
+      // 見つからなくても、一覧のその行の場所——clone し直す先として空けておく
+      return {
+        tone: "stop",
+        icon: <Ban />,
+        message: (
+          <>
+            ここは Repo の一覧にある {state.repo.name} の場所です（フォルダは見つかりません）。一覧から外すまで、ここには
+            {verb}しません。
+          </>
+        ),
+        next: rename,
+      };
     case "taken-unknown-repo":
       return {
         tone: "stop",

@@ -33,7 +33,7 @@ let projects: MockProject[] = [
     name: "旧DBの移行検証",
     initial: "旧",
     baseThreadId: "old-migration-base",
-    basePath: "~/worktrees/old-migration",
+    basePath: "~/banto/db-migration",
     status: "closed",
     closedAt: "2026-08-15",
   },

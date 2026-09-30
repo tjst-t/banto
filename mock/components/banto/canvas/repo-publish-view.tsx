@@ -35,7 +35,7 @@ import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   useGithubAccounts,
-  findRepoForFolder,
+  readFolderRepo,
   gitInitFolder,
   repoExistsOnGithub,
   setRepoRemote,
@@ -60,7 +60,8 @@ export function RepoPublishView() {
 
 export function RepoPublishPanel({ folder, onBack }: { folder: string; onBack?: () => void }) {
   useMockStoreVersion();
-  const repo = findRepoForFolder(folder);
+  // 台帳ではなくフォルダから読む——一覧から外したフォルダでも公開できる
+  const repo = readFolderRepo(folder);
   return (
     <div className="h-full min-h-0 overflow-y-auto" data-testid="repo-publish">
       <div className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-8">

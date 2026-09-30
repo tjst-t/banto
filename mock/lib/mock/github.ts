@@ -9,6 +9,8 @@
 //   フォルダを Import できる。GitHub に公開してもフォルダは動かさない
 // - 作る先に既にフォルダがあるとき、何が起きるかは `inspectTargetFolder`、Import で
 //   何が起きるかは `inspectImport` の1箇所ずつで決める（画面は言い方だけを持つ）
+// - 台帳は GitHub の場所（owner/name）も覚える（2026-09-30、ユーザー）——フォルダが消えても
+//   clone し直せるように。フォルダの origin と食い違ったら origin を正として台帳を直す（`syncWithFolders`）
 import { useSyncExternalStore } from "react";
 import { getActiveProjects, getAllProjects } from "./projects";
 import { notifyMockStoreChange, subscribeMockStore } from "./store-events";
@@ -86,6 +88,7 @@ const REPOS_BY_ACCOUNT: Record<string, readonly MockGithubRepo[]> = {
     { owner: "work-org", name: "api-gateway", description: "社内 API の入口", private: true, pushedAt: "昨日" },
     { owner: "work-org", name: "infra", description: "Terraform と Ansible", private: true, pushedAt: "今日" },
     { owner: "work-org", name: "design-tokens", description: "色と字の段", private: true, pushedAt: "6日前" },
+    { owner: "work-org", name: "db-migration", description: "旧DBから新DBへの移行", private: true, pushedAt: "2か月前" },
   ],
 };
 
@@ -97,6 +100,13 @@ export function repoExistsOnGithub(owner: string, name: string): boolean {
   return Object.values(REPOS_BY_ACCOUNT).some((repos) =>
     repos.some((r) => r.owner === owner && r.name.toLowerCase() === name.toLowerCase()),
   );
+}
+
+/** 登録したアカウントのどれかから見えるか（非公開のものは、見えるアカウントが無いと clone できない） */
+function visibleGithubRepo(owner: string, name: string): MockGithubRepo | undefined {
+  return accounts
+    .flatMap((a) => getReposForAccount(a.id))
+    .find((r) => r.owner === owner && r.name.toLowerCase() === name.toLowerCase());
 }
 
 /** `owner/repo`・`github.com/owner/repo`・`https://…`・`git@github.com:owner/repo.git` を読む */
@@ -153,7 +163,8 @@ export function folderName(path: string): string {
 
 // ── このマシンのフォルダ（本物は host が答える）──────────────────────────────
 //
-// git かどうか・origin・ブランチは**フォルダが真実**（規則3）——台帳は写しを持たない。
+// git かどうか・origin・ブランチは**フォルダが真実**（規則3）——台帳が持つ写しは GitHub の場所だけで、
+// 食い違えばフォルダに合わせる（下の台帳の節）。
 
 /** origin がどこにあるか */
 export type RepoRemote =
@@ -278,25 +289,74 @@ function gitFoldersInside(path: string): { importable: number; known: number } {
 
 // ── Repo の台帳：知っているリポジトリ ───────────────────────────────────────
 //
-// 台帳が覚えるのは**置き場所と、どのアカウントで扱うか**だけ。GitHub のどこか・ブランチは
-// フォルダ（origin）から読む。一覧は台帳から作る——置き場の中を見て回らない。
+// 台帳が覚えるのは**置き場所・どのアカウントで扱うか・GitHub の場所（owner/name）**。
+// GitHub の場所はフォルダの origin の写しだが、**フォルダが消えたときに clone し直すため**に持つ
+// （2026-09-30、ユーザー決定。規則3 の例外——写しを持つ理由は「元が消えうる」こと）。
+// 食い違ったら **origin を正として台帳を直す**（`syncWithFolders` の1箇所）。フォルダが
+// 見つからない間は、台帳の値だけが手がかりなので直さない。
+// ブランチ・コミットはフォルダから読む。一覧は台帳から作る——置き場の中を見て回らない。
 
-interface LedgerEntry {
+export interface GithubLocation {
+  owner: string;
+  name: string;
+}
+
+export interface LedgerEntry {
   path: string;
   /** push・pull に使うアカウント。GitHub に無い／登録していない持ち主なら無し */
   accountId?: string;
+  /** GitHub の場所。フォルダが消えても clone し直せるように覚えておく。GitHub に無ければ無し */
+  github?: GithubLocation;
+  /** origin に合わせて直したとき、それまで覚えていた場所（一覧で一度だけ言うため） */
+  correctedFrom?: GithubLocation;
 }
 
-const SEED_LEDGER: readonly LedgerEntry[] = [
-  { path: "~/ghq/github.com/tjst-t/banto", accountId: "gh.tjst-t" },
-  { path: "~/banto/home-automation", accountId: "gh.tjst-t" },
-  { path: "~/banto/hermes" },
-  { path: "~/banto/recipe-box" },
-  { path: "~/banto/dotfiles", accountId: "gh.tjst-t" },
-  { path: "~/banto/tiny-cli", accountId: "gh.work-org" },
-  { path: "~/banto/infra", accountId: "gh.work-org" },
-  { path: "~/ghq/gitlab.com/tjst-t/notes" },
-];
+const sameLocation = (a?: GithubLocation, b?: GithubLocation) =>
+  a?.owner.toLowerCase() === b?.owner.toLowerCase() && a?.name.toLowerCase() === b?.name.toLowerCase();
+
+const originLocation = (remote: RepoRemote): GithubLocation | undefined =>
+  remote.kind === "github" ? { owner: remote.owner, name: remote.name } : undefined;
+
+/**
+ * 台帳の GitHub の場所を、フォルダの origin に合わせる。本物は Repo が一覧を答えるとき・
+ * フォルダに触れたとき（clone・公開・Import）に走らせる。フォルダが見つからない行は触らない
+ */
+function syncWithFolders(entries: readonly LedgerEntry[], folders: readonly HostFolder[]): LedgerEntry[] {
+  return entries.map((e) => {
+    const facts = folders.find((f) => f.path === e.path)?.git;
+    if (!facts) return e;
+    const origin = originLocation(facts.remote);
+    if (sameLocation(origin, e.github) || (!origin && !e.github)) return e;
+    return { ...e, github: origin, correctedFrom: e.github };
+  });
+}
+
+const SEED_LEDGER: readonly LedgerEntry[] = syncWithFolders(
+  [
+    { path: "~/ghq/github.com/tjst-t/banto", accountId: "gh.tjst-t", github: { owner: "tjst-t", name: "banto" } },
+    {
+      path: "~/banto/home-automation",
+      accountId: "gh.tjst-t",
+      github: { owner: "tjst-t", name: "home-automation" },
+    },
+    { path: "~/banto/hermes" },
+    { path: "~/banto/recipe-box" },
+    { path: "~/banto/dotfiles", accountId: "gh.tjst-t", github: { owner: "tjst-t", name: "dotfiles" } },
+    // GitHub の上で tjst-t から work-org へ移した——台帳は古いまま、origin は新しい（食い違いの例）
+    { path: "~/banto/tiny-cli", accountId: "gh.work-org", github: { owner: "tjst-t", name: "tiny-cli" } },
+    { path: "~/banto/infra", accountId: "gh.work-org", github: { owner: "work-org", name: "infra" } },
+    { path: "~/ghq/gitlab.com/tjst-t/notes" },
+    // フォルダが見つからない——GitHub にあるので clone し直せる（閉じた Project「旧DBの移行検証」の Root）
+    {
+      path: "~/banto/db-migration",
+      accountId: "gh.work-org",
+      github: { owner: "work-org", name: "db-migration" },
+    },
+    // フォルダが見つからない——GitHub にも無い（戻す手は無く、一覧から外すしかない）
+    { path: "~/banto/sketches" },
+  ],
+  SEED_FOLDERS,
+);
 
 let ledger: LedgerEntry[] = [...SEED_LEDGER];
 
@@ -309,33 +369,67 @@ export function setLedgerEmptyForDemo(): void {
 
 /** 台帳の1行と、そのフォルダの git の事実を合わせたもの（画面はこれを読む） */
 export interface KnownRepo extends GitFacts {
+  missing: false;
   path: string;
   /** フォルダ名 */
   name: string;
   accountId?: string;
+  correctedFrom?: GithubLocation;
 }
 
-function join(entry: LedgerEntry): KnownRepo | undefined {
-  const facts = hostFolder(entry.path)?.git;
-  return facts && { ...facts, path: entry.path, name: folderName(entry.path), accountId: entry.accountId };
+/** 台帳にあるのに、フォルダが見つからない——手がかりは台帳の値だけ */
+export interface MissingRepo {
+  missing: true;
+  path: string;
+  name: string;
+  accountId?: string;
+  github?: GithubLocation;
 }
 
+export type LedgerRepo = KnownRepo | MissingRepo;
+
+function join(entry: LedgerEntry): LedgerRepo | undefined {
+  const base = { path: entry.path, name: folderName(entry.path), accountId: entry.accountId };
+  const folder = hostFolder(entry.path);
+  if (!folder) return { ...base, missing: true, github: entry.github };
+  // フォルダはあるが git でない（.git を消した等）——この相談の外なので一覧に出さない
+  if (!folder.git) return undefined;
+  return { ...folder.git, ...base, missing: false, correctedFrom: entry.correctedFrom };
+}
+
+function ledgerRepos(entries: readonly LedgerEntry[]): LedgerRepo[] {
+  return entries.flatMap((e) => join(e) ?? []);
+}
+
+/** フォルダが見つかる台帳のリポジトリ */
 export function getKnownRepos(): readonly KnownRepo[] {
-  return ledger.flatMap((e) => join(e) ?? []);
+  return ledgerRepos(ledger).filter((r): r is KnownRepo => !r.missing);
 }
 
 /**
- * 画面の一覧から読むときはこちら。hydration の間は初期の台帳で描く——`?repos=0` が効くのは
- * hydration の後（アカウントの `useGithubAccounts` と同じ理由。後から hydrate される Canvas だけが食い違う）
+ * 画面の一覧から読むときはこちら（フォルダが見つからないものも含む）。hydration の間は初期の
+ * 台帳で描く——`?repos=0` が効くのは hydration の後（アカウントの `useGithubAccounts` と同じ理由。
+ * 後から hydrate される Canvas だけが食い違う）
  */
-export function useKnownRepos(): readonly KnownRepo[] {
+export function useLedgerRepos(): readonly LedgerRepo[] {
   const entries = useSyncExternalStore(subscribeMockStore, () => ledger, () => SEED_LEDGER);
-  return entries.flatMap((e) => join(e) ?? []);
+  return ledgerRepos(entries);
 }
 
 /** そのフォルダ（台帳のフォルダそのもの、または worktree）のリポジトリ */
 export function findRepoForFolder(path: string): KnownRepo | undefined {
   return getKnownRepos().find((r) => r.path === path || r.worktrees.includes(path));
+}
+
+/**
+ * そのフォルダの git の事実——台帳に無くても（一覧から外したものでも）フォルダから読む。
+ * 公開の画面はこちらを使う（公開できるかはフォルダが決める。台帳が決めるのではない）
+ */
+export function readFolderRepo(path: string): KnownRepo | undefined {
+  const inLedger = findRepoForFolder(path);
+  if (inLedger) return inLedger;
+  const top = hostFolders.find((f) => f.git && (f.path === path || f.git.worktrees.includes(path)));
+  return top?.git && { ...top.git, missing: false, path: top.path, name: folderName(top.path) };
 }
 
 /** GitHub の同じリポジトリを、もうどこかに持っているか */
@@ -348,12 +442,20 @@ export function findKnownGithubRepo(owner: string, name: string): KnownRepo | un
   );
 }
 
-/** そのリポジトリを Root（フォルダそのもの・worktree）にしている Project */
-export function getProjectsUsingRepo(repo: KnownRepo) {
-  return getAllProjects().filter((p) => p.basePath === repo.path || repo.worktrees.includes(p.basePath));
+/** GitHub のそのリポジトリを台帳が覚えているのに、フォルダが見つからない行 */
+function findMissingGithubRepo(owner: string, name: string): MissingRepo | undefined {
+  return ledgerRepos(ledger).find(
+    (r): r is MissingRepo => r.missing && sameLocation(r.github, { owner, name }),
+  );
 }
 
-function projectSummary(repo: KnownRepo) {
+/** そのリポジトリを Root（フォルダそのもの・worktree）にしている Project */
+export function getProjectsUsingRepo(repo: LedgerRepo) {
+  const worktrees = repo.missing ? [] : repo.worktrees;
+  return getAllProjects().filter((p) => p.basePath === repo.path || worktrees.includes(p.basePath));
+}
+
+function projectSummary(repo: LedgerRepo) {
   const p = getProjectsUsingRepo(repo)[0];
   return p && { id: p.id, name: p.name, closed: !getActiveProjects().some((a) => a.id === p.id) };
 }
@@ -371,16 +473,56 @@ function putGitFolder(path: string, facts: GitFacts): void {
     : [...hostFolders, { path, entries: 1, git: facts }];
 }
 
-/** Repo が clone した——フォルダを作って台帳に足す */
+/** Repo が clone した——フォルダを作って台帳に足す（見つからなかった行なら、その行を置き換える） */
 export function addClonedRepo(input: {
   path: string;
   accountId?: string;
   remote: Extract<RepoRemote, { kind: "github" }>;
 }): void {
   putGitFolder(input.path, git(input.remote));
-  addToLedger({ path: input.path, accountId: input.accountId });
+  addToLedger({ path: input.path, accountId: input.accountId, github: originLocation(input.remote) });
   notifyMockStoreChange();
 }
+
+/**
+ * 見つからないフォルダを、台帳が覚えている GitHub の場所から**元の場所に** clone し直す。
+ * 見えるアカウントが無い非公開のリポジトリなら、理由を返して何もしない
+ */
+export function recloneMissingRepo(path: string): { ok: true } | { ok: false; reason: string } {
+  const entry = ledger.find((e) => e.path === path);
+  if (!entry?.github || hostFolder(path)) return { ok: false, reason: "clone し直せる行ではありません" };
+  const { owner, name } = entry.github;
+  const listed = visibleGithubRepo(owner, name);
+  if (!listed) {
+    return { ok: false, reason: `${owner}/${name} は、登録したアカウントのどれからも見えません` };
+  }
+  addClonedRepo({
+    path,
+    accountId: accounts.some((a) => a.id === entry.accountId) ? entry.accountId : undefined,
+    remote: { kind: "github", owner, name, private: listed.private },
+  });
+  return { ok: true };
+}
+
+/**
+ * 一覧から外す——台帳の行だけを消す。**フォルダには触らない**（消さない・動かさない）。
+ * そのフォルダを Root にした Project もそのまま。戻すときのために外した行を返す
+ */
+export function removeFromLedger(path: string): LedgerEntry | undefined {
+  const entry = ledger.find((e) => e.path === path);
+  if (!entry) return undefined;
+  ledger = ledger.filter((e) => e.path !== path);
+  notifyMockStoreChange();
+  return entry;
+}
+
+/** 「元に戻す」——外した行を、そのまま台帳に戻す */
+export function restoreLedgerEntry(entry: LedgerEntry): void {
+  addToLedger(entry);
+  ledger = syncWithFolders(ledger, hostFolders);
+  notifyMockStoreChange();
+}
+
 
 /** Repo が新しく作った（git init）——GitHub にはまだ無い */
 export function createLocalRepo(path: string): void {
@@ -396,11 +538,15 @@ export function gitInitFolder(path: string): void {
   notifyMockStoreChange();
 }
 
-/** GitHub に公開した——origin を付け、どのアカウントで扱うかを覚える（フォルダは動かさない） */
+/**
+ * GitHub に公開した——origin を付け、どのアカウントで扱うか・GitHub の場所を覚える（フォルダは動かさない）。
+ * 一覧から外していたフォルダでも、公開したら台帳に戻す（Repo が push したものは Repo が覚える）
+ */
 export function setRepoRemote(path: string, remote: RepoRemote, accountId?: string): void {
   const facts = hostFolder(path)?.git;
   if (facts) putGitFolder(path, { ...facts, remote });
-  ledger = ledger.map((e) => (e.path === path ? { ...e, accountId } : e));
+  const rest = ledger.find((e) => e.path === path);
+  addToLedger({ ...rest, path, accountId, github: originLocation(remote), correctedFrom: undefined });
   notifyMockStoreChange();
 }
 
@@ -429,6 +575,8 @@ export type TargetFolderState =
   | { kind: "free" }
   /** 台帳にあるリポジトリがある */
   | { kind: "taken-repo"; repo: KnownRepo; project?: ProjectSummary; suggestion: string }
+  /** 台帳にあるリポジトリの場所だが、フォルダが見つからない（clone し直す先として空けておく） */
+  | { kind: "taken-missing"; repo: MissingRepo; suggestion: string }
   /** 台帳に無い git のリポジトリがある（Import できる） */
   | { kind: "taken-unknown-repo"; suggestion: string }
   /** git でないフォルダがある */
@@ -438,20 +586,29 @@ export function inspectTargetFolder(home: string, name: string): TargetFolderSta
   const path = `${home}/${name}`;
   if (!pathTaken(path)) return { kind: "free" };
   const suggestion = freeFolderName(home, name);
-  const known = getKnownRepos().find((r) => r.path === path);
-  if (known) return { kind: "taken-repo", repo: known, project: projectSummary(known), suggestion };
+  const listed = ledgerRepos(ledger).find((r) => r.path === path);
+  if (listed?.missing) return { kind: "taken-missing", repo: listed, suggestion };
+  if (listed) return { kind: "taken-repo", repo: listed, project: projectSummary(listed), suggestion };
   const folder = hostFolder(path);
   if (folder?.git) return { kind: "taken-unknown-repo", suggestion };
   return { kind: "taken-folder", entries: folder?.entries ?? listChildFolders(path).length, suggestion };
 }
 
-/** clone しようとしている GitHub のリポジトリを、もう持っているか */
+/**
+ * clone しようとしている GitHub のリポジトリを、もう持っているか。フォルダが見つからない行が
+ * そのリポジトリを覚えていれば、**その行の場所に clone し直す**（一覧の「clone し直す」と同じ）
+ */
 export function inspectCloneSource(
   owner: string,
   name: string,
-): { repo: KnownRepo; project?: ProjectSummary } | null {
+):
+  | { kind: "have"; repo: KnownRepo; project?: ProjectSummary }
+  | { kind: "reclone"; repo: MissingRepo; project?: ProjectSummary }
+  | null {
   const repo = findKnownGithubRepo(owner, name);
-  return repo ? { repo, project: projectSummary(repo) } : null;
+  if (repo) return { kind: "have", repo, project: projectSummary(repo) };
+  const missing = findMissingGithubRepo(owner, name);
+  return missing ? { kind: "reclone", repo: missing, project: projectSummary(missing) } : null;
 }
 
 // ── Import：好きな場所のフォルダを、そのまま台帳に足す ───────────────────────
@@ -497,7 +654,7 @@ export function inspectImport(path: string): ImportCheck {
 export function importFolder(path: string): KnownRepo | undefined {
   const check = inspectImport(path);
   if (check.kind !== "ready") return undefined;
-  addToLedger({ path, accountId: check.accountId });
+  addToLedger({ path, accountId: check.accountId, github: originLocation(check.facts.remote) });
   notifyMockStoreChange();
   return findRepoForFolder(path);
 }
