@@ -13,6 +13,11 @@ host のプロセスも、Project の根の外も見えないので、中の AI 
 | リリース用の clone（REL） | `~/.local/share/banto-release` |
 | 動かすブランチ | GitHub の `release` |
 | 稼働中の口 | host 4737（サンドボックス 4176 も同じプロセス）・画面 4175 |
+| systemd の unit | `banto-host.service`（host）・`banto-frontend.service`（画面）。定義は `systemctl cat` で見る。ログは従来どおり `~/banto-host.log`・`~/banto-frontend.log` に追記される |
+
+**起動・再起動は `systemctl` で行う。Claude Code のセッションから `nohup` などで起こさない**
+——そのセッションの cgroup（`cloudcli.service`）に入り、cloudcli を再起動したときに banto も一緒に止まる
+（2026-09-27 に踏んだ。これを受けて unit にした）。
 
 設定（`~/.config/banto/config.json`）とデータ（`~/.local/share/banto`）はコードの場所に依らない
 （`packages/core/src/config/bootstrap.ts`）ので、切り替えても変わらない。

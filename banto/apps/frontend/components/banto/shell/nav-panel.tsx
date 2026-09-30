@@ -47,7 +47,7 @@ import {
 } from "@/lib/mock/threads";
 import { describeFailure } from "@/lib/report-failure";
 import { cn } from "@/lib/utils";
-import { projectNavHref } from "@/lib/settings-link";
+import { isSettingsOpen, projectNavHref, settingsOpenHref } from "@/lib/settings-link";
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
@@ -182,7 +182,7 @@ function ProjectTreeItem({
                   href={projectNavHref(
                     project.id,
                     pathname,
-                    { project: searchParams.get("project"), section: searchParams.get("section") },
+                    searchParams,
                     settingsEntrySection,
                   )}
                   data-roving-item
@@ -320,6 +320,8 @@ export function NavPanel({
   headerAction?: ReactNode;
 }) {
   const judgmentCount = useJudgmentCount();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { containerRef, onKeyDown } = useRovingFocus<HTMLUListElement>();
   // 開いている Project の目次は既定で開く。人が畳んだ／開いたときだけ、その
   // 選択を覚える（導出できる既定値を保存しない、規則3）
@@ -451,9 +453,9 @@ export function NavPanel({
               外側にあるので、Project 一覧とは分けてここに置く */}
           {SHOW_INSTANCE_SETTINGS ? (
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={activeProjectId === null}>
+              <SidebarMenuButton asChild isActive={isSettingsOpen(pathname, searchParams)}>
                 <Link
-                  href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
+                  href={settingsOpenHref(pathname, searchParams, { project: activeProjectId })}
                   onClick={onNavigate}
                 >
                   <Settings />

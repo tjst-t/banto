@@ -68,7 +68,7 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   await sidebar.getByRole("link", { name: "設定" }).click();
   // 設定は1つの面で、いま開いている Project の層も一緒に出す（§6.16）
   // ——歯車は `?project=` を連れていく
-  await expect(page).toHaveURL(/\/settings(\?|$)/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/[?&]settings=1/, { timeout: 15_000 });
   await expectSidebarWidth(sidebar, 58);
 
   await sidebar.getByRole("button", { name: "サイドバーを開く（⌘B / Ctrl-B）" }).click();
@@ -194,10 +194,11 @@ test("設定は1つの面——層は線で分かれ、開いたまま Project �
   await createProject(page, "設定の層A", mkdtempSync(join(tmpdir(), "banto-e2e-layer-a-")));
   await createProject(page, "設定の層B", mkdtempSync(join(tmpdir(), "banto-e2e-layer-b-")));
 
-  // 会話のヘッダの歯車から入る——**同じ面**（ダイアログではない）
+  // サイドバーの「設定」から入る——**いまの画面の上に重ねる**（改訂・2026-09-28、ユーザー要望）。
+  // サイドバーは覆わない（設定の中で Project を切り替えるのに使う）
   await openProjectSettings(page);
-  await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
-  await expect(page.locator('[role="dialog"]'), "設定がダイアログで出ている").toHaveCount(0);
+  await page.waitForURL(/[?&]settings=1.*[?&]project=|[?&]project=.*[?&]settings=1/, { timeout: 20_000 });
+  await expect(page.locator("[data-banto-settings]"), "設定が重なって出ていない").toBeVisible();
   await expect(page.locator('[data-slot="sidebar"]'), "設定を開いたらレールが消えた").toBeVisible();
 
   // 層の見出しが並び、**Project の層の前に線が入る**（見た目は値で確かめる）
@@ -213,14 +214,19 @@ test("設定は1つの面——層は線で分かれ、開いたまま Project �
   expect(projectLayer, "この Project の層が出ていない").toBeTruthy();
   expect(projectLayer!.border, "層の変わり目に線が無い").not.toBe("0px");
 
-  // **別の Project を押す**——設定は閉じず、その Project の層になる
+  // **別の Project を押す**——設定は閉じず、その Project の層になる。**下の画面もその Project**
+  // （改訂・2026-09-30、ユーザー要望）
+  const underBefore = new URL(page.url()).pathname;
   await openNav(page);
   await page.getByTestId("sidebar-project-name").filter({ hasText: "設定の層A" }).first().click();
-  await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
+  await page.waitForURL(/[?&]settings=1/, { timeout: 20_000 });
   await expect(
     page.locator("p.tracking-wide").filter({ hasText: "設定の層A" }),
     "別の Project を押したら、その Project の層にならなかった",
   ).toBeVisible({ timeout: 15_000 });
+  const underAfter = new URL(page.url()).pathname;
+  expect(underAfter, "設定の下の画面が、切り替えた Project になっていない").toMatch(/^\/p\/[0-9a-f-]+$/);
+  expect(underAfter, "設定の下の画面が、前の Project のまま").not.toBe(underBefore);
 
   // **いま見ている Project を押す**——設定を閉じて会話へ戻る
   await openNav(page);

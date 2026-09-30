@@ -43,7 +43,7 @@ import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
-import { projectNavHref } from "@/lib/settings-link";
+import { isSettingsOpen, projectNavHref, settingsOpenHref } from "@/lib/settings-link";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
 import { SidebarItemMenu } from "./sidebar-item-menu";
@@ -187,10 +187,7 @@ function CollapsedRail({
                             href={projectNavHref(
                               project.id,
                               pathname,
-                              {
-                                project: searchParams.get("project"),
-                                section: searchParams.get("section"),
-                              },
+                              searchParams,
                               "project-danger",
                             )}
                           >
@@ -263,11 +260,11 @@ function CollapsedRail({
           <Tooltip>
             <TooltipTrigger asChild>
               <Link
-                href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
+                href={settingsOpenHref(pathname, searchParams, { project: activeProjectId })}
                 aria-label="設定"
                 className={cn(
                   "flex size-8 items-center justify-center rounded-md",
-                  activeProjectId === null
+                  isSettingsOpen(pathname, searchParams)
                     ? "bg-accent-soft text-accent-ink"
                     : "text-ink-3 hover:bg-accent hover:text-foreground",
                 )}

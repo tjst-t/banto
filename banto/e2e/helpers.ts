@@ -164,10 +164,10 @@ export async function createProject(
  * （`docs/specs/v4-frontend.md` §6.16）。`section` を渡すと、その節まで開く。
  */
 export async function openProjectSettings(page: Page, section?: string): Promise<void> {
-  if (!page.url().includes("/settings")) {
+  if (!/[?&]settings=1|\/settings/.test(page.url())) {
     await openNav(page);
     await page.getByRole("link", { name: "設定", exact: true }).first().click();
-    await page.waitForURL(/\/settings/, { timeout: 20_000 });
+    await page.waitForURL(/[?&]settings=1|\/settings/, { timeout: 20_000 });
   }
   if (section) {
     await page.getByRole("button", { name: section, exact: true }).click();

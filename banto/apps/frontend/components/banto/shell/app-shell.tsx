@@ -5,7 +5,9 @@
 // <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → MobileNavDrawer）
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { useParams, usePathname, useSearchParams } from "next/navigation";
-import { rememberOutsideSettings } from "@/lib/settings-return";
+import { isSettingsOpen } from "@/lib/settings-link";
+import { SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
+import { SettingsContent } from "@/app/(shell)/settings/settings-content";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
@@ -54,11 +56,11 @@ function AppShellInner({ children }: { children: ReactNode }) {
     getServerSidebarPreference,
   );
 
-  // **設定に入る前に居た画面を覚える**（決定・2026-09-28）——設定の Escape はそこへ戻る。
-  // 外枠はページを移っても作り直されないので、ここで覚え続ける
+  // **設定は、いまの画面の上に重ねる**（改訂・2026-09-28、ユーザー要望）。下の画面（会話・開いた Fork や
+  // Canvas・流れている返事）は捨てずにそのまま残す——覆っている間は触れない（inert）だけ
   const pathname = usePathname();
-  const search = useSearchParams().toString();
-  useEffect(() => rememberOutsideSettings(pathname, search), [pathname, search]);
+  const searchParams = useSearchParams();
+  const settingsOpen = SHOW_INSTANCE_SETTINGS && isSettingsOpen(pathname, searchParams);
 
   // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。
   // ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
@@ -102,7 +104,24 @@ function AppShellInner({ children }: { children: ReactNode }) {
       />
       {/* モバイルは専用の上部バーを持たない（決定・2026-09-09）——ナビは各パネルの
           ヘッダ左端の ≡（MobileNavDrawer）に寄せ、常時2段だったヘッダを1段にした */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col" inert={settingsOpen} aria-hidden={settingsOpen || undefined}>
+          {children}
+        </div>
+        {settingsOpen ? (
+          // 設定の面。Escape を聞く側（panel-stack.tsx）が「上に何か開いている」と分かるよう、
+          // Dialog と同じ印を付ける（`lib/overlay-open.ts`）
+          <div
+            role="dialog"
+            aria-label="設定"
+            data-state="open"
+            data-banto-settings=""
+            className="absolute inset-0 z-30 flex flex-col bg-background"
+          >
+            <SettingsContent />
+          </div>
+        ) : null}
+      </div>
       {CONNECTED_FEATURES.inbox ? (
         <InboxOverlay
           open={stack.overlay === "inbox"}

@@ -28,7 +28,7 @@ test("面をまたいでも、外枠（レール）は作り直されない", as
   // Project → 設定
   await openNav(page);
   await page.getByRole("link", { name: "設定" }).click();
-  await page.waitForURL(/\/settings/);
+  await page.waitForURL(/[?&]settings=1/);
   await expect(page.locator('[data-slot="sidebar"]').first()).toHaveAttribute(
     "data-persist-probe",
     "1",
@@ -62,8 +62,8 @@ test("開いている「新しい Project」は、面を移っても入力ごと
   // クライアント側で面を移る（ダイアログが上に居るので、押せるかは問わずに
   // click を投げる——ホームの自動リダイレクトと同じ「人が押していない移動」）
   // ダイアログが開いている間、背後は aria-hidden なので役割では引けない
-  // 設定の口は Project の文脈を連れていく（§6.16——`/settings?project=…`）
-  await page.locator('a[href^="/settings"]').first().dispatchEvent("click");
-  await page.waitForURL(/\/settings/, { timeout: 10_000 });
+  // 設定の口は Project の文脈を連れていく（§6.16——`?settings=1&project=…`、いまの画面の上に重ねる）
+  await page.locator('a[href*="settings=1"]').first().dispatchEvent("click");
+  await page.waitForURL(/[?&]settings=1/, { timeout: 10_000 });
   await expect(name).toHaveValue("入力の途中", { timeout: 10_000 });
 });

@@ -252,7 +252,7 @@ export function SettingsContent() {
   const projectId = searchParams.get("project");
   const project = projectId ? getProject(projectId) : undefined;
   // Escape は**一発で設定から抜ける**（改訂・2026-09-28、ユーザー要望）——節をいくつ移っていても
-  useEscapeLeaveSettings(projectId);
+  useEscapeLeaveSettings();
   const section = searchParams.get("section");
   const projectCategories = useProjectCategories(projectId ?? "");
   const projectModuleItems = useProjectModuleItems(projectId ?? "");

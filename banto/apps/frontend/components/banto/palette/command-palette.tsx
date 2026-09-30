@@ -5,7 +5,9 @@
 // 導出する（`lib/mock/palette.ts`）。banto 全体を検索する Project/Thread・
 // 受信箱と、いまの Project に限る Module の入口・資源は範囲が違う（§6.3「範囲」）。
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { settingsOpenHref } from "@/lib/settings-link";
+import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 import {
   Command,
   CommandDialog,
@@ -33,6 +35,8 @@ export function CommandPalette({
   stack?: UsePanelStackResult;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [query, setQuery] = useState("");
 
   // **開いたときに取り直す**（§6.2 の launcher）——背景ポーリングは足さない。
@@ -55,6 +59,13 @@ export function CommandPalette({
   // 間で再レンダーしていない）ので、1回目の変更を踏みつぶす——だから
   // 「操作を実行する」と「パレットを閉じる（overlay を消す）」は、
   // **必ず1回の open() 呼び出しにまとめる**（overlay: null を一緒に渡す）
+  /** 設定は**いまの画面の上に**開く（2026-09-28）——パレットの印だけ外して、下の画面はそのまま */
+  function withoutPalette(): URLSearchParams {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("overlay");
+    return params;
+  }
+
   function runOperation(actionId: string) {
     switch (actionId) {
       case "open-fork":
@@ -68,10 +79,10 @@ export function CommandPalette({
         break;
       case "open-project-settings":
         // 設定画面は1つ（§6.16）——この Project の層を開いた状態で行く
-        if (projectId) router.push(`/settings?project=${projectId}`);
+        if (projectId) router.push(settingsOpenHref(pathname, withoutPalette(), { project: projectId }));
         break;
       case "open-instance-settings":
-        router.push("/settings");
+        router.push(settingsOpenHref(pathname, withoutPalette()));
         break;
     }
     setQuery("");
@@ -80,8 +91,21 @@ export function CommandPalette({
   function select(item: PaletteItem) {
     if (item.href) {
       // href は常に新しい URL 全体（overlay=palette を含まない）を指すので、
-      // 遷移だけで閉じたことになる——ここで追加の open()/close() を呼ばない
-      router.push(item.href);
+      // 遷移だけで閉じたことになる——ここで追加の open()/close() を呼ばない。
+      // **いま居る画面への href（Module の入口で Canvas を開く等）は、いまの画面に足す**（2026-09-28）
+      // ——そのまま飛ぶと、開いていた Fork などの印が消えて、その面が閉じてしまう
+      const target = new URL(item.href, window.location.origin);
+      if (target.pathname === pathname) {
+        const params = withoutPalette();
+        // 別の面を開くなら、前の面の付属（どの tool 呼び出しか・全画面・見ている場所）は捨てる（use-panel-stack.ts と同じ）
+        if (target.searchParams.has("canvas")) {
+          for (const key of ["canvasTool", "fullscreen", VIEW_STATE_PARAM]) params.delete(key);
+        }
+        for (const [key, value] of target.searchParams) params.set(key, value);
+        router.push(`${pathname}?${params.toString()}`);
+      } else {
+        router.push(item.href);
+      }
       setQuery("");
     } else if (item.kind === "operation" && item.actionId) {
       runOperation(item.actionId);

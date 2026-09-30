@@ -264,7 +264,7 @@ const ThreadRoot: FC<{
         turnAnchor="bottom"
         scrollToBottomOnInitialize={restoreTo === undefined}
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
+        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll"
       >
         {/* キーボードや URL バーで高さが変わっても、見えているものを保つ
             （決定・2026-09-09、根本見直し）。実内容が入力欄の下に続いていれば

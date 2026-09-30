@@ -88,21 +88,47 @@ export function RememberScrollPosition({ restoreTo }: { restoreTo: ScrollAnchor 
       target = undefined;
       cancelAnimationFrame(raf);
     };
+    // **幅が変わったら、読んでいた場所へ戻す**（追加・2026-09-28）。Fork や Canvas を開くと会話は細くなり、
+    // 閉じると元の幅に戻る——折り返しが変わるので、ブラウザ任せ（scroll anchoring）では数十 px ずれた
+    // （実測：Fork を開いて閉じると 75px）。覚えている場所（メッセージとその中の比率）へ置き直す
+    let lastWidth = viewport.clientWidth;
+    let last: ScrollAnchor | "bottom" | null = null;
+    const widthObserver = new ResizeObserver(() => {
+      const w = viewport.clientWidth;
+      if (w === lastWidth) return;
+      lastWidth = w;
+      if (target || last === null) return;
+      if (last === "bottom") {
+        viewport.scrollTo({ top: viewport.scrollHeight, behavior: "instant" });
+        return;
+      }
+      const top = scrollTopFor(viewport, last);
+      if (top !== null) viewport.scrollTo({ top, behavior: "instant" });
+    });
+    widthObserver.observe(viewport);
+
     // scroll のたびに測ると重いので、1フレームに1回だけ覚える
     let pending = 0;
     const onScroll = () => {
       // 戻している最中の scroll は人の操作ではない——覚えている場所を書き換えない
       if (target || pending) return;
+      // 幅が変わった直後の scroll はブラウザの補正——人が動かしたのではない
+      if (viewport.clientWidth !== lastWidth) return;
       pending = requestAnimationFrame(() => {
         pending = 0;
         if (target) return;
         const fromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+        if (viewport.clientWidth !== lastWidth) return;
         if (fromBottom < BOTTOM_EPSILON) {
+          last = "bottom";
           rememberThreadScroll(threadId, "bottom");
           return;
         }
         const anchor = anchorOf(viewport);
-        if (anchor) rememberThreadScroll(threadId, anchor);
+        if (anchor) {
+          last = anchor;
+          rememberThreadScroll(threadId, anchor);
+        }
       });
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });
@@ -113,6 +139,7 @@ export function RememberScrollPosition({ restoreTo }: { restoreTo: ScrollAnchor 
     return () => {
       cancelAnimationFrame(raf);
       cancelAnimationFrame(pending);
+      widthObserver.disconnect();
       viewport.removeEventListener("scroll", onScroll);
       viewport.removeEventListener("wheel", stopRestoring);
       viewport.removeEventListener("touchstart", stopRestoring);

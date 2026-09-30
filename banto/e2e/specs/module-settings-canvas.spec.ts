@@ -70,7 +70,7 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
   // 設定を開き直しても戻らない（＝banto が覚えているのではなく Module が持っている）。
   // **リロードしても設定の面のまま**（開いているものは URL が持つ、§6.16）
   await page.reload();
-  await page.waitForURL(/\/settings/, { timeout: 30_000 });
+  await page.waitForURL(/[?&]settings=1|\/settings/, { timeout: 30_000 });
   const reopenedCanvas = await openModuleSettings(page);
   const reopened = reopenedCanvas.locator("iframe").contentFrame().frameLocator("iframe");
   await expect(reopened.getByRole("checkbox"), "開き直したら設定が戻ってしまった").not.toBeChecked({

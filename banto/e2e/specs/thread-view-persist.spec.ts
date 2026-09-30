@@ -46,11 +46,49 @@ async function scrollOf(composer: Locator): Promise<{ top: number; height: numbe
   });
 }
 
+/** 器の上端にかかっているメッセージと、上端からのずれ（px）——中身が増えても「どこを読んでいるか」で比べる */
+async function readingAt(composer: Locator): Promise<{ index: number; offset: number }> {
+  return composer.evaluate((el) => {
+    const v = el.closest<HTMLElement>('[data-slot="aui_thread-viewport"]')!;
+    const top = v.getBoundingClientRect().top;
+    const ms = [...v.querySelectorAll<HTMLElement>("[data-message-id]")];
+    for (let i = 0; i < ms.length; i++) {
+      const r = ms[i]!.getBoundingClientRect();
+      if (r.bottom > top) return { index: i, offset: Math.round(top - r.top) };
+    }
+    return { index: -1, offset: 0 };
+  });
+}
+
+/** 読んでいた場所（メッセージとその中の位置）が変わっていない */
+async function expectSameReading(composer: Locator, before: { index: number; offset: number }, what: string): Promise<void> {
+  await expect
+    .poll(async () => {
+      const now = await readingAt(composer);
+      return now.index === before.index ? Math.abs(now.offset - before.offset) : Number.POSITIVE_INFINITY;
+    }, { message: `${what}：読んでいた場所が変わった`, timeout: 5_000 })
+    .toBeLessThan(8);
+}
+
 async function scrollTo(composer: Locator, top: number): Promise<void> {
   await composer.evaluate((el, t) => {
     const v = el.closest<HTMLElement>('[data-slot="aui_thread-viewport"]')!;
     v.scrollTo({ top: t, behavior: "instant" });
   }, top);
+}
+
+/** 会話の器に印を付ける——作り直されたら印は消える */
+async function markViewport(composer: Locator): Promise<void> {
+  await composer.evaluate((el) => {
+    (el.closest('[data-slot="aui_thread-viewport"]') as HTMLElement & { __bantoMark?: boolean }).__bantoMark = true;
+  });
+}
+
+async function expectSameViewport(composer: Locator, what: string): Promise<void> {
+  const kept = await composer.evaluate(
+    (el) => (el.closest('[data-slot="aui_thread-viewport"]') as HTMLElement & { __bantoMark?: boolean }).__bantoMark === true,
+  );
+  expect(kept, `${what}：会話が作り直された（器の印が消えた）`).toBe(true);
 }
 
 /** 1ターン送って、終わるまで待つ */
@@ -90,30 +128,38 @@ test("会話の位置・最新・下書きが、面の開け閉めとページ�
   await sendTurn(page, composer, "THREE");
   const lastReply = page.locator('[data-role="assistant"]').filter({ hasText: "THREE-END" });
 
+  // **下の会話は、どの面の開け閉めでも作り直さない**（改訂・2026-09-28、ユーザー要望「全部残して」）
+  await markViewport(composer);
+
   // ── 症状2：設定へ行って戻ると、最新（流れたターン）が消える ──
   // ── 症状4：書きかけが消える ──
   await composer.fill("書きかけ-設定の往復");
   await page.getByRole("link", { name: "設定", exact: true }).click();
-  await expect(page).toHaveURL(/\/settings/);
+  await expect(page).toHaveURL(/[?&]settings=1/);
+  // 設定は会話の上に重なる——下の会話は捨てない（2026-09-28）
+  await expect(page.locator("[data-banto-settings]")).toBeVisible();
   await page.goBack();
   await expect(composer).toBeVisible({ timeout: 15_000 });
   await expect(lastReply.first(), "設定から戻ったら最新の返事が消えた").toBeVisible({ timeout: 15_000 });
   await expect(composer, "設定から戻ったら書きかけが消えた").toHaveValue("書きかけ-設定の往復");
-  // ── 症状1：開いたら一番下 ──
+  await expectSameViewport(composer, "設定を開いて閉じた");
+  // 一番下に居たので、一番下のまま
   await expectAtBottom(composer, "設定から戻った直後");
 
   // ── 症状3：Fork を開いて閉じても、Base の位置と下書きはそのまま ──
   await scrollTo(composer, 600);
-  const before = (await scrollOf(composer)).top;
+  await page.waitForTimeout(300);
+  const before = await readingAt(composer);
   await page.getByRole("button", { name: "Fork を開く" }).click();
   const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
   await expect(forkComposer).toBeVisible({ timeout: 15_000 });
   await forkComposer.fill("Fork の書きかけ");
   await page.getByRole("button", { name: `${PROJECT} の Base Thread に戻る` }).click();
   await expect(forkComposer).toHaveCount(0);
-  expect(Math.abs((await scrollOf(composer)).top - before), "Fork を閉じたら Base の位置が変わった").toBeLessThan(8);
+  await expectSameReading(composer, before, "Fork を閉じた");
   await expect(composer, "Fork を閉じたら Base の書きかけが消えた").toHaveValue("書きかけ-設定の往復");
   await expect(lastReply.first(), "Fork を閉じたら最新の返事が消えた").toBeVisible();
+  await expectSameViewport(composer, "Fork を開いて閉じた");
 
   // Fork の書きかけも、開き直したら残っている
   // 戻る＝閉じる前（Fork が開いていた）へ
@@ -126,36 +172,40 @@ test("会話の位置・最新・下書きが、面の開け閉めとページ�
 
   // ── 症状3：Canvas を開いて閉じる（Base は細くなる）→ 閉じたら Base の位置・最新・下書きはそのまま ──
   await scrollTo(composer, 600);
-  const beforeCanvas = (await scrollOf(composer)).top;
+  await page.waitForTimeout(300);
+  const beforeCanvas = await readingAt(composer);
   await openFilesCanvas(page);
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
   await expect(page.getByRole("button", { name: "Canvas を閉じる" })).toHaveCount(0);
   await expect(lastReply.first(), "Canvas を閉じたら最新の返事が消えた").toBeVisible({ timeout: 15_000 });
   await expect(composer, "Canvas を閉じたら Base の書きかけが消えた").toHaveValue("書きかけ-設定の往復");
-  await expect
-    .poll(async () => Math.abs((await scrollOf(composer)).top - beforeCanvas), {
-      message: "Canvas を閉じたら Base の位置が変わった",
-      timeout: 5_000,
-    })
-    .toBeLessThan(8);
+  await expectSameViewport(composer, "Canvas を開いて閉じた");
+  await expectSameReading(composer, beforeCanvas, "Canvas を閉じた");
 
   // ── 症状3：Canvas を開いたまま Fork を立てる（Base は帯になり、描かれなくなる）→ 全部閉じても崩れない ──
-  const beforeBoth = (await scrollOf(composer)).top;
+  const beforeBoth = await readingAt(composer);
   await openFilesCanvas(page);
   await page.getByRole("button", { name: "Fork を開く" }).click();
   await expect(page.getByRole("button", { name: `${PROJECT} の Base Thread に戻る` })).toBeVisible({ timeout: 15_000 });
-  await expect(composer).toHaveCount(0); // Base は帯だけ
+  await expect(composer).toBeHidden(); // Base は帯だけ（隠して残っている）
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
   await page.getByRole("button", { name: `${PROJECT} の Base Thread に戻る` }).click();
   await expect(composer).toBeVisible();
   await expect(lastReply.first(), "Fork＋Canvas を閉じたら最新の返事が消えた").toBeVisible({ timeout: 15_000 });
   await expect(composer, "Fork＋Canvas を閉じたら Base の書きかけが消えた").toHaveValue("書きかけ-設定の往復");
-  await expect
-    .poll(async () => Math.abs((await scrollOf(composer)).top - beforeBoth), {
-      message: "Fork＋Canvas を閉じたら Base の位置が変わった",
-      timeout: 5_000,
-    })
-    .toBeLessThan(8);
+  await expectSameViewport(composer, "Fork＋Canvas を開いて閉じた");
+  await expectSameReading(composer, beforeBoth, "Fork＋Canvas を閉じた");
+
+  // ── Canvas を全画面にして戻す ──
+  const beforeFull = await readingAt(composer);
+  await openFilesCanvas(page);
+  await page.getByRole("button", { name: "全画面で表示" }).click();
+  await expect(composer).toBeHidden();
+  await page.getByRole("button", { name: "Canvas を閉じる" }).click();
+  await expect(composer).toBeVisible();
+  await expectSameViewport(composer, "Canvas を全画面にして閉じた");
+  await expect(composer).toHaveValue("書きかけ-設定の往復");
+  await expectSameReading(composer, beforeFull, "全画面の Canvas を閉じた");
 
   // ── 症状1：リロードしたら一番下 ──
   await page.reload();
@@ -169,7 +219,7 @@ test("設定画面の Escape は、節をいくつ移っていても一発で設
   await createProject(page, `Escape ${Date.now()}`, mkdtempSync(join(tmpdir(), "banto-e2e-")));
   await expect(baseComposer(page)).toBeVisible({ timeout: 15_000 });
   await page.getByRole("link", { name: "設定", exact: true }).click();
-  await expect(page).toHaveURL(/\/settings/);
+  await expect(page).toHaveURL(/[?&]settings=1/);
   // 設定に入る前に見ていた Project（作った直後は URL がまだ前の Project を指していることがあるので、
   // 設定の側が受け取った `?project=` で決める）
   const projectId = new URL(page.url()).searchParams.get("project");
@@ -180,7 +230,7 @@ test("設定画面の Escape は、節をいくつ移っていても一発で設
   await page.getByRole("button", { name: "Global Memory", exact: true }).click();
   await expect(page).toHaveURL(/section=global-memory/);
   await page.keyboard.press("Escape");
-  await expect(page, "Escape で設定から抜けなかった").toHaveURL(new RegExp(`/p/${projectId}$`), { timeout: 10_000 });
+  await expect(page, "Escape で設定から抜けなかった").toHaveURL(/\/p\/[0-9a-f-]+$/, { timeout: 10_000 });
 });
 
 test("外で始まったターンに乗っても、会話は作り直されず、一番下を追いかける", async ({ page }) => {
@@ -234,4 +284,32 @@ test("外で始まったターンに乗っても、会話は作り直されず�
   expect(kept, "外のターンに乗ったら会話が作り直された（器の印が消えた）").toBe(true);
   await expect(composer).toHaveValue("外のターンの間の書きかけ");
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "ONE-END" }).first()).toBeVisible();
+});
+
+test.describe("携帯幅", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("Fork の上に Canvas を開いて閉じても、Fork は作り直されない", async ({ page }) => {
+    // 以前の携帯は前面の1枚だけを描いていたので、Fork の上に Canvas を開くと Fork が捨てられた（2026-09-28）
+    await openApp(page);
+    await createProject(page, `Mobile ${Date.now()}`, mkdtempSync(join(tmpdir(), "banto-e2e-")));
+    await sendTurn(page, baseComposer(page), "ONE");
+    await page.getByRole("button", { name: "Fork を開く" }).click();
+    const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
+    await expect(forkComposer).toBeVisible({ timeout: 15_000 });
+    await forkComposer.fill("携帯の Fork の書きかけ");
+    await markViewport(forkComposer);
+
+    // 携帯ではパレットの入口は目次（Drawer）の中——Ctrl-K で開く（どこからでも開ける口）
+    await page.keyboard.press("Control+k");
+    const entry = page.getByRole("option", { name: /ファイル/ });
+    await expect(entry).toBeVisible({ timeout: 30_000 });
+    await entry.click();
+    await expect(page.getByRole("button", { name: "Canvas を閉じる" })).toBeVisible({ timeout: 30_000 });
+    await expect(forkComposer).toBeHidden();
+    await page.getByRole("button", { name: "Canvas を閉じる" }).click();
+    await expect(forkComposer).toBeVisible();
+    await expectSameViewport(forkComposer, "携帯で Fork の上に Canvas を開いて閉じた");
+    await expect(forkComposer).toHaveValue("携帯の Fork の書きかけ");
+  });
 });
