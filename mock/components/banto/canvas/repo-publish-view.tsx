@@ -5,7 +5,8 @@
 // - Project の中の入口「この Project を GitHub に公開」——その Project の Root のリポジトリ
 // - リポジトリの一覧の「GitHub に公開」——一覧の中で開く（`folder`・`onBack` を渡す）
 // 対象は**フォルダ**で決まる（Project ではない）。リポジトリの状態の真実は
-// `lib/mock/github.ts` の置き場の一覧1つ（規則3）。
+// `lib/mock/github.ts` のフォルダ1つずつ（規則3）。**公開してもフォルダは動かさない**
+// （2026-09-30、ユーザー——置き場は GitHub の持ち主や名前に縛られないので、ずれという考えが無い）。
 //
 // 決めること：どのアカウント・名前・公開／非公開・最初の push。
 // いちばん上に **どこから、どこへ**（手元のフォルダ → github.com/<owner>/<name>）を
@@ -35,12 +36,10 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   useGithubAccounts,
   findRepoForFolder,
-  ghqPath,
   gitInitFolder,
-  isInGhq,
   repoExistsOnGithub,
   setRepoRemote,
-  type LocalRepo,
+  type KnownRepo,
 } from "@/lib/mock/github";
 import { ChoicePills } from "@/components/banto/project/choice-pills";
 import {
@@ -111,15 +110,12 @@ function Route({
   name,
   isPrivate,
   published,
-  drift,
 }: {
   folder: string;
   owner: string;
   name: string;
   isPrivate: boolean;
   published: boolean;
-  /** ghq の置き方からずれるとき、置き方どおりならどこか */
-  drift?: string;
 }) {
   return (
     <div data-testid="publish-route" className="overflow-hidden rounded-md border border-border">
@@ -143,30 +139,16 @@ function Route({
           {isPrivate ? "非公開" : "公開"}
         </span>
       </div>
-      {drift ? (
-        <p
-          data-testid="publish-drift"
-          className="flex items-start gap-1.5 border-t border-border px-3 py-2 text-xs text-ink-2"
-        >
-          <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" />
-          <span>
-            フォルダは今の場所のまま動かしません。ghq の置き方（
-            <span className="font-mono break-all">{drift}</span>）からは、ずれます。
-          </span>
-        </p>
-      ) : null}
     </div>
   );
 }
 
 type Step = { label: string; state: "waiting" | "running" | "done" };
 
-function PublishForm({ folder, repo }: { folder: string; repo: LocalRepo }) {
+function PublishForm({ folder, repo }: { folder: string; repo: KnownRepo }) {
   const accounts = useGithubAccounts();
-  // 置き場の owner のアカウントがあれば、それを先に選んでおく（ずれない方）
-  const [accountChoice, setAccountChoice] = useState<string | null>(
-    () => accounts.find((a) => a.login === repo.owner)?.id ?? null,
-  );
+  // 台帳がアカウントを覚えていれば、それを先に選んでおく
+  const [accountChoice, setAccountChoice] = useState<string | null>(repo.accountId ?? null);
   const account = accounts.find((a) => a.id === accountChoice) ?? accounts[0];
   const [name, setName] = useState(repo.name);
   const [visibility, setVisibility] = useState<"private" | "public">("private");
@@ -197,12 +179,11 @@ function PublishForm({ folder, repo }: { folder: string; repo: LocalRepo }) {
     const advance = () => {
       setSteps(plan.map((s, j) => ({ ...s, state: j < i ? "done" : j === i ? "running" : "waiting" })));
       if (i === plan.length) {
-        setRepoRemote(repo.path, {
-          kind: "github",
-          owner: account.login,
-          name,
-          private: visibility === "private",
-        });
+        setRepoRemote(
+          repo.path,
+          { kind: "github", owner: account.login, name, private: visibility === "private" },
+          account.id,
+        );
         toast(`github.com/${account.login}/${name} に公開しました`);
         return;
       }
@@ -226,11 +207,6 @@ function PublishForm({ folder, repo }: { folder: string; repo: LocalRepo }) {
           name={name}
           isPrivate={visibility === "private"}
           published={false}
-          drift={
-            isInGhq(repo) && name && (account.login !== repo.owner || name !== repo.name)
-              ? ghqPath(account.login, name)
-              : undefined
-          }
         />
       ) : null}
 
@@ -379,7 +355,7 @@ function Published({
   remote,
 }: {
   folder: string;
-  remote: Extract<LocalRepo["remote"], { kind: "github" }>;
+  remote: Extract<KnownRepo["remote"], { kind: "github" }>;
 }) {
   return (
     <>

@@ -6,16 +6,19 @@
 // どちらが何をするかが読めるようにする——上が「フォルダ」、下が「Project」。
 // Project に Module を自動で繋ぐことはしない（Repo は banto 全体の Module なので要らない）。
 //
-// フォルダの用意の仕方は3つ（決定・2026-09-29、ユーザー）：
+// フォルダの用意の仕方は3つ（決定・2026-09-29、置き場は改訂・2026-09-30、ユーザー）：
 //
 // | 用意の仕方 | Root | 誰が何をするか |
 // |---|---|---|
 // | 手元のフォルダ | 人が打つ／選ぶ | 何もしない（本実装と同じ：Root パス・「選ぶ」） |
-// | GitHub から clone | `~/ghq/github.com/<owner>/<repo>` | Repo が clone する |
-// | 新しいリポジトリ | `~/ghq/github.com/<アカウント>/<name>` | Repo が作って git init する。GitHub へはあとで |
+// | GitHub から clone | `<置き場>/<repo>`（既定 `~/banto`） | Repo が clone して台帳に足す |
+// | 新しいリポジトリ | `<置き場>/<名前>` | Repo が作って git init し、台帳に足す。GitHub へはあとで |
 //
-// clone と新規の Root は人が打たない。代わりに **Root パスと、そこに既に何があるか**を
-// 押す前に見せる（`RepoRootPreview`）——ここがこの画面でいちばん目立つ場所。
+// clone と新規の置き場は人が打たない（Repo の設定の「既定の置き場」）。人が決めるのは
+// フォルダ名だけで、名前がぶつかれば `<名前>-2` を先に入れておく。**Root パスと、そこに
+// 既に何があるか**を押す前に見せる（`RepoRootPreview`）——ここがこの画面でいちばん目立つ場所。
+// clone しようとしたリポジトリを台帳が**どこかに**もう持っていれば（Import した `~/ghq/…` でも）、
+// clone せずそれを使う。
 //
 // Advanced（Configuration の上書き）は3つの始め方で共通。§2.2「設定のカスケード」の
 // 対象は全部出す——一部だけ出すと「他はここでは上書きできない」と読まれる
@@ -59,10 +62,14 @@ import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/setti
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   useGithubAccounts,
-  addLocalRepo,
+  useRepoHome,
+  addClonedRepo,
+  createLocalRepo,
+  folderName,
+  freeFolderName,
   getReposForAccount,
-  ghqPath,
-  inspectRepoFolder,
+  inspectCloneSource,
+  inspectTargetFolder,
   parseRepoReference,
   repoExistsOnGithub,
   type MockGithubAccount,
@@ -80,7 +87,7 @@ export type StartMethod = "folder" | "clone" | "create";
 /** 開くときの初期状態（URL の `RepoDemoParams`・リポジトリの一覧の「Project を始める」） */
 export interface NewProjectPreset {
   method?: StartMethod;
-  /** `owner/repo`。clone なら選んだ状態、新しいリポジトリなら名前に入る */
+  /** clone なら `owner/repo` を選んだ状態、新しいリポジトリなら名前（`owner/` は付けても無視する） */
   repo?: string;
   /** 手元のフォルダの Root パス（一覧から来たとき、そのリポジトリの置き場） */
   folder?: string;
@@ -93,28 +100,28 @@ const START_METHODS = [
     value: "folder",
     label: "手元のフォルダ",
     icon: FolderOpen,
-    lead: "あるフォルダを、そのまま使います。",
+    lead: () => "あるフォルダを、そのまま使います。",
     who: null,
   },
   {
     value: "clone",
     label: "GitHub から clone",
     icon: CloudDownload,
-    lead: "~/ghq に clone します。",
+    lead: (home: string) => `${home} に clone します。`,
     who: "Repo が用意します",
   },
   {
     value: "create",
     label: "新しいリポジトリ",
     icon: FolderPlus,
-    lead: "~/ghq に作って git init します。GitHub へは、あとで公開できます。",
+    lead: (home: string) => `${home} に作って git init します。GitHub へは、あとで公開できます。`,
     who: "Repo が用意します",
   },
 ] as const satisfies readonly {
   value: StartMethod;
   label: string;
   icon: unknown;
-  lead: string;
+  lead: (home: string) => string;
   who: string | null;
 }[];
 
@@ -149,6 +156,7 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
   useMockStoreVersion();
   const router = useRouter();
   const accounts = useGithubAccounts();
+  const home = useRepoHome();
   const presetRepo = preset?.repo ? parseRepoReference(preset.repo) : null;
 
   const [method, setMethod] = useState<StartMethod>(preset?.method ?? "folder");
@@ -163,8 +171,13 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
   const [picked, setPicked] = useState<{ owner: string; name: string } | null>(
     preset?.method === "clone" ? presetRepo : null,
   );
-  const [cloneRun, setCloneRun] = useState<Exclude<RootPreviewStatus, { kind: "folder" }> | null>(null);
-  const [repoName, setRepoName] = useState(preset?.method === "create" ? (presetRepo?.name ?? "") : "");
+  const [cloneRun, setCloneRun] = useState<Extract<RootPreviewStatus, { kind: "cloning" | "clone-failed" }> | null>(
+    null,
+  );
+  /** フォルダ名。clone では null＝空いている名前に合わせる（人が打ったら、以後はその値） */
+  const [folderInput, setFolderInput] = useState<string | null>(
+    preset?.method === "create" && preset.repo ? (presetRepo?.name ?? preset.repo) : null,
+  );
   /** null＝リポジトリ名に合わせる（人が打ったら、以後はその値） */
   const [projectName, setProjectName] = useState<string | null>(preset?.name ?? null);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -175,39 +188,53 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
     if (cloneTimer.current) clearInterval(cloneTimer.current);
   }, []);
 
-  const repoNameInvalid = repoName !== "" && (!REPO_NAME.test(repoName) || /^\.+$/.test(repoName));
-  const target =
-    method === "clone"
-      ? picked
-      : method === "create" && account && repoName && !repoNameInvalid
-        ? { owner: account.login, name: repoName }
-        : null;
-  const folderState = target ? inspectRepoFolder(target.owner, target.name) : null;
-  const preview: RootPreviewStatus | null =
-    cloneRun ?? (folderState ? { kind: "folder", state: folderState } : null);
-  const name = projectName ?? (method === "folder" ? "" : (target?.name ?? ""));
+  // clone しようとしたものを、もう持っているか（置き場の外に Import したものでも）
+  const have = method === "clone" && picked ? inspectCloneSource(picked.owner, picked.name) : null;
+  const autoFolder = method === "clone" && picked ? freeFolderName(home, picked.name) : "";
+  const folder = method === "folder" ? "" : (folderInput ?? autoFolder);
+  const renamedFrom =
+    method === "clone" && picked && folderInput === null && autoFolder !== picked.name ? picked.name : undefined;
+  const folderInvalid = folder !== "" && (!REPO_NAME.test(folder) || /^\.+$/.test(folder));
+  const targetState =
+    method !== "folder" && !have && folder && !folderInvalid ? inspectTargetFolder(home, folder) : null;
+  const targetPath = have ? have.repo.path : `${home}/${folder}`;
+  const showBand = method === "create" || (method === "clone" && !!picked && !!account);
+  const preview: RootPreviewStatus | null = !showBand
+    ? null
+    : (cloneRun ??
+      (have ? { kind: "have", ...have } : { kind: "target", state: targetState ?? { kind: "free" } }));
+  const name =
+    projectName ??
+    (method === "folder" ? "" : have ? have.repo.name : method === "clone" ? (picked?.name ?? "") : folder);
   // 作れるときだけ下の段（Project）を出す（断っているときに名前を聞いても、使い道が無い）
   const canCreateHere =
     cloneRun?.kind !== "clone-failed" &&
-    (folderState?.kind === "empty" || (method === "clone" && folderState?.kind === "same-repo"));
-  const showProjectStep = method === "folder" || (!!target && canCreateHere);
+    (have ? !have.project : targetState?.kind === "free") &&
+    (method !== "clone" || !!account);
+  const showProjectStep = method === "folder" || canCreateHere;
+  // 「新しいリポジトリ」の名前が、登録したアカウントの GitHub に既にある——その持ち主
+  const takenOnGithub =
+    method === "create" && folder && !folderInvalid
+      ? accounts.find((a) => repoExistsOnGithub(a.login, folder))?.login
+      : undefined;
 
   function changeMethod(next: StartMethod) {
     if (cloneRun?.kind === "cloning") return;
     setMethod(next);
     setCloneRun(null);
+    setFolderInput(null);
   }
 
-  function openAsFolder() {
-    if (!target) return;
-    setBasePath(ghqPath(target.owner, target.name));
-    setProjectName(name || target.name);
+  function openAsFolder(path: string) {
+    setBasePath(path);
+    setProjectName(name || folderName(path));
     changeMethod("folder");
   }
 
   function switchToClone() {
-    if (!account || !repoName) return;
-    setPicked({ owner: account.login, name: repoName });
+    if (!takenOnGithub) return;
+    setAccountChoice(accounts.find((a) => a.login === takenOnGithub)?.id ?? null);
+    setPicked({ owner: takenOnGithub, name: folder });
     changeMethod("clone");
   }
 
@@ -225,7 +252,7 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
     return project;
   }
 
-  function startClone(owner: string, repo: string) {
+  function startClone(owner: string, repo: string, path: string) {
     const total = 3410;
     let received = 0;
     setCloneRun({ kind: "cloning", received, total });
@@ -247,14 +274,14 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
       const listed = accounts
         .flatMap((a) => getReposForAccount(a.id))
         .find((r) => r.owner === owner && r.name === repo);
-      addLocalRepo({
-        owner,
-        name: repo,
+      addClonedRepo({
+        path,
+        accountId: account?.id,
         // 一覧に無い（URL で貼った）ものは、読めたのだから公開のリポジトリ
         remote: { kind: "github", owner, name: repo, private: listed?.private ?? false },
       });
-      const project = finish(ghqPath(owner, repo));
-      toast(`Repo が ${owner}/${repo} を clone し、Project「${project.name}」を作りました`);
+      const project = finish(path);
+      toast(`Repo が ${owner}/${repo} を ${path} に clone し、Project「${project.name}」を作りました`);
     }, 180);
   }
 
@@ -267,24 +294,23 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
     }
     if (method === "clone") {
       if (cloneRun?.kind === "cloning") return { label: "clone しています…", action: null };
-      if (!picked || !folderState || cloneRun) return { label: "clone して Project を作る", action: null };
-      switch (folderState.kind) {
-        case "empty":
-          return { label: "clone して Project を作る", action: name.trim() ? "clone" : null };
-        case "same-repo":
-          return { label: "このフォルダで Project を作る", action: name.trim() ? "use-cloned" : null };
-        case "same-repo-project":
-          return {
-            label: `「${folderState.projectName}」を${folderState.closed ? "再開" : "開く"}`,
-            action: "open-existing",
-          };
-        default:
-          return { label: "clone して Project を作る", action: null };
+      if (!picked || cloneRun) return { label: "clone して Project を作る", action: null };
+      if (have) {
+        return have.project
+          ? {
+              label: `「${have.project.name}」を${have.project.closed ? "再開" : "開く"}`,
+              action: "open-existing",
+            }
+          : { label: "このフォルダで Project を作る", action: name.trim() ? "use-cloned" : null };
       }
+      return {
+        label: "clone して Project を作る",
+        action: targetState?.kind === "free" && name.trim() ? "clone" : null,
+      };
     }
     return {
       label: "リポジトリと Project を作る",
-      action: target && folderState?.kind === "empty" && name.trim() ? "create-repo" : null,
+      action: targetState?.kind === "free" && name.trim() ? "create-repo" : null,
     };
   }
 
@@ -295,21 +321,20 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         finish(basePath.trim());
         return;
       case "clone":
-        if (picked) startClone(picked.owner, picked.name);
+        if (picked) startClone(picked.owner, picked.name, targetPath);
         return;
       case "use-cloned":
-        if (picked) finish(ghqPath(picked.owner, picked.name));
+        finish(targetPath);
         return;
       case "open-existing":
-        if (folderState?.kind === "same-repo-project") openProject(folderState.projectId, folderState.closed);
+        if (have?.project) openProject(have.project.id, have.project.closed);
         return;
-      case "create-repo":
-        if (target) {
-          addLocalRepo({ owner: target.owner, name: target.name, remote: { kind: "none" } });
-          const project = finish(ghqPath(target.owner, target.name));
-          toast(`Repo が ${target.owner}/${target.name} を作り、Project「${project.name}」を作りました`);
-        }
+      case "create-repo": {
+        createLocalRepo(targetPath);
+        const project = finish(targetPath);
+        toast(`Repo が ${targetPath} を作り、Project「${project.name}」を作りました`);
         return;
+      }
       case null:
         return;
     }
@@ -370,7 +395,7 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
             );
           })}
         </div>
-        <p className="text-xs text-ink-2">{current.lead}</p>
+        <p className="text-xs text-ink-2">{current.lead(home)}</p>
       </div>
 
       <div
@@ -382,74 +407,64 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
       >
         {method === "folder" ? (
           <FolderField basePath={basePath} onBasePathChange={setBasePath} autoFocus={!preset?.folder} />
-        ) : !account ? (
-          <NoGithubAccount
-            reason={
-              method === "clone"
-                ? "登録すると、ここからリポジトリを探して clone できます。"
-                : "置き場の名前（~/ghq/github.com/<アカウント>/）と、あとで公開する先に使います。"
-            }
-          />
+        ) : method === "clone" && !account ? (
+          <NoGithubAccount reason="登録すると、ここからリポジトリを探して clone できます。" />
         ) : (
           <>
-            <GithubAccountChooser
-              id="new-project-account"
-              accounts={accounts}
-              value={account.id}
-              onChange={(id) => {
-                setAccountChoice(id);
-                setPicked(null);
-                setCloneRun(null);
-              }}
-              singleNote={method === "clone" ? "から見えるリポジトリを出しています" : "の置き場に作ります"}
-            />
-
-            {method === "clone" ? (
-              <RepoSearch
-                // アカウントを替えたら検索もやり直す
-                key={account.id}
-                account={account}
-                picked={picked}
-                disabled={cloneRun?.kind === "cloning"}
-                onPick={(next) => {
-                  setPicked(next);
-                  setCloneRun(null);
-                }}
-              />
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="new-project-repo-name">リポジトリ名</Label>
-                <Input
-                  id="new-project-repo-name"
-                  value={repoName}
-                  onChange={(e) => setRepoName(e.target.value.trim())}
-                  aria-invalid={repoNameInvalid || undefined}
-                  aria-describedby="new-project-repo-name-help"
-                  className="font-mono text-xs"
-                  autoFocus
+            {method === "clone" && account ? (
+              <>
+                <GithubAccountChooser
+                  id="new-project-account"
+                  accounts={accounts}
+                  value={account.id}
+                  onChange={(id) => {
+                    setAccountChoice(id);
+                    setPicked(null);
+                    setCloneRun(null);
+                    setFolderInput(null);
+                  }}
+                  singleNote="から見えるリポジトリを出しています"
                 />
-                <p
-                  id="new-project-repo-name-help"
-                  className={cn("text-xs", repoNameInvalid ? "text-turn" : "text-ink-3")}
-                >
-                  {repoNameInvalid
-                    ? "使えるのは英数字と - _ . だけです"
-                    : "GitHub に公開するときも、この名前を使います（そのときに変えられます）"}
-                </p>
-              </div>
-            )}
+                <RepoSearch
+                  // アカウントを替えたら検索もやり直す
+                  key={account.id}
+                  account={account}
+                  picked={picked}
+                  disabled={cloneRun?.kind === "cloning"}
+                  onPick={(next) => {
+                    setPicked(next);
+                    setCloneRun(null);
+                    setFolderInput(null);
+                  }}
+                />
+              </>
+            ) : null}
 
-            {target && preview ? (
-              <RepoRootPreview
-                mode={method}
-                owner={target.owner}
-                name={target.name}
-                status={preview}
-                takenOnGithub={method === "create" && repoExistsOnGithub(target.owner, target.name)}
-                onUseAsFolder={openAsFolder}
-                onSwitchToClone={switchToClone}
-                onOpenProject={openProject}
-              />
+            {preview ? (
+              <div className="flex flex-col gap-1.5">
+                <RepoRootPreview
+                  mode={method === "clone" ? "clone" : "create"}
+                  home={home}
+                  folder={folder}
+                  onFolderChange={setFolderInput}
+                  folderInvalid={folderInvalid}
+                  renamedFrom={renamedFrom}
+                  status={preview}
+                  takenOnGithub={takenOnGithub}
+                  onUseAsFolder={openAsFolder}
+                  onSwitchToClone={switchToClone}
+                  onOpenProject={openProject}
+                />
+                {/* 今あるフォルダを使うときは、置き場の話は要らない */}
+                {preview.kind !== "have" ? (
+                  <p className="text-xs text-ink-3">
+                    {[
+                      method === "create" ? "GitHub に公開するときも、この名前を使います（そのときに変えられます）。" : "",
+                      `置き場（${home}）は Repo の設定で変えられます。`,
+                    ].join("")}
+                  </p>
+                ) : null}
+              </div>
             ) : null}
           </>
         )}

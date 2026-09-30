@@ -16,6 +16,7 @@ import { getImplementation, getVaultAliasesForProject, mockModuleConfigFields } 
 import { getProject } from "@/lib/mock/projects";
 import { RepoList } from "@/components/banto/canvas/repo-list-view";
 import { GithubAccountsSection } from "./github-accounts-section";
+import { RepoHomeSection } from "./repo-home-section";
 
 export function ModuleConfigPane({
   implementationId,
@@ -82,8 +83,13 @@ export function ModuleConfigPane({
         </div>
 
 
-        {/* GitHub のアカウントは banto 全体で1組（Project ごとには持たない） */}
-        {impl.roleId === "repo" && projectId === undefined ? <GithubAccountsSection /> : null}
+        {/* 既定の置き場と GitHub のアカウントは banto 全体で1組（Project ごとには持たない） */}
+        {impl.roleId === "repo" && projectId === undefined ? (
+          <>
+            <RepoHomeSection />
+            <GithubAccountsSection />
+          </>
+        ) : null}
 
         {showProjectAliases ? (
           <div className="mt-3 rounded-md border border-border bg-card p-3">

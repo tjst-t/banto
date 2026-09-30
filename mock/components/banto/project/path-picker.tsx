@@ -2,7 +2,7 @@
 
 // Root パスは打っても選んでもよい——本実装（`banto/apps/frontend/components/banto/
 // settings/path-picker.tsx`）の形を写したもの。中身のフォルダ一覧は固定の木
-// （本物は host が `/api/fs/directories` で答える）。
+// （本物は host が `/api/fs/directories` で答える）——`lib/mock/github.ts` のフォルダの一覧から導く。
 import { useState } from "react";
 import { ChevronRight, CornerLeftUp, Folder, FolderOpen, ShieldAlert } from "lucide-react";
 import {
@@ -15,47 +15,21 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
-const TREE: Record<string, readonly string[]> = {
-  "~": ["Documents", "Downloads", "ghq", "srv", "worktrees"],
-  "~/ghq": ["github.com"],
-  "~/ghq/github.com": ["tjst-t", "work-org"],
-  "~/ghq/github.com/tjst-t": [
-    "banto",
-    "dotfiles",
-    "hermes",
-    "home-automation",
-    "notes",
-    "recipe-box",
-    "scratch",
-    "tiny-cli",
-  ],
-  "~/ghq/github.com/work-org": ["infra"],
-  "~/worktrees": ["banto-v4", "old-migration"],
-  "~/srv": ["media"],
-};
-
-function parentOf(path: string): string | undefined {
-  if (path === "~") return undefined;
-  const i = path.lastIndexOf("/");
-  return i <= 0 ? "~" : path.slice(0, i);
-}
-
-function normalize(path: string): string {
-  const trimmed = path.trim().replace(/\/+$/, "");
-  return trimmed === "" ? "~" : trimmed;
-}
+import { folderExists, listChildFolders, normalizeFolderPath, parentFolder } from "@/lib/mock/github";
 
 export function PathPicker({
   id,
   value,
   onChange,
   autoFocus,
+  pickerDescription = "いま開いている場所を、この Project の Root にします。",
 }: {
   id: string;
   value: string;
   onChange: (next: string) => void;
   autoFocus?: boolean;
+  /** 「フォルダを選ぶ」の説明文（何のために選ぶか） */
+  pickerDescription?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -79,6 +53,7 @@ export function PathPicker({
       {open ? (
         <PickerDialog
           startAt={value}
+          description={pickerDescription}
           onClose={() => setOpen(false)}
           onPick={(path) => {
             onChange(path);
@@ -92,27 +67,29 @@ export function PathPicker({
 
 function PickerDialog({
   startAt,
+  description,
   onClose,
   onPick,
 }: {
   startAt: string;
+  description: string;
   onClose: () => void;
   onPick: (path: string) => void;
 }) {
   // いま入っているパスから始める。知らない場所なら home から
   const [at, setAt] = useState(() => {
-    const start = normalize(startAt);
-    return start in TREE || parentOf(start) ? start : "~";
+    const start = normalizeFolderPath(startAt);
+    return folderExists(start) ? start : "~";
   });
-  const entries = TREE[at] ?? [];
-  const parent = parentOf(at);
+  const entries = listChildFolders(at);
+  const parent = parentFolder(at);
 
   return (
     <Dialog open onOpenChange={(next) => (next ? null : onClose())}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>フォルダを選ぶ</DialogTitle>
-          <DialogDescription>いま開いている場所を、この Project の Root にします。</DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
         <div className="flex items-center gap-1.5">

@@ -700,11 +700,12 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   **フォルダを選ぶ**（今ある形。打つか「選ぶ」）／**GitHub から clone**（アカウントから見える
   リポジトリを絞って選ぶ。一覧に無いものは URL か `owner/repo` を貼る）／
   **新しいリポジトリ**（ローカルに作る。GitHub にはまだ作らない）
-- **clone と新しいリポジトリの Root は人が打たない**——`~/ghq/github.com/<owner>/<repo>` に
-  決まるので、画面の仕事は入力欄ではなく**決まった場所と、そこに既に何があるか**を
+- **clone と新しいリポジトリの Root は人が打たない**——~~`~/ghq/github.com/<owner>/<repo>`~~
+  **既定の置き場の下**（2026-09-30 改訂、下の「ghq の置き方をやめる」節）に決まるので、画面の仕事は入力欄ではなく**決まった場所と、そこに既に何があるか**を
   押す前に見せること。これがこの画面でいちばん目立つ帯（`RepoRootPreview`、
   Root パスを等幅の大きめの字で）。ほかは静かにした
-- **置き場の状態は5つ**（判断は `lib/mock/github.ts` の `inspectRepoFolder` の1箇所）と、
+- **置き場の状態は5つ**（判断は `lib/mock/github.ts` の `inspectRepoFolder` の1箇所。2026-09-30 に
+  `inspectTargetFolder`・`inspectCloneSource` へ改めた——下の「ghq の置き方をやめる」節）と、
   色は状態に1つずつ：
   - 何も無い → clone する（塗らない）
   - 同じリポジトリがある → **clone せずそのフォルダを使う**（ok の地。ボタンは「このフォルダで作成」）
@@ -731,9 +732,8 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
 
 **まだ決めていない**（画面を見て決めたいこと）：
 
-- 別の名前・別のアカウントで公開したとき、手元のフォルダは ghq の置き方
-  （`github.com/<owner>/<repo>`）からずれる。移すか、そのままか
-  （**2026-09-30：ずれていることは一覧と公開の画面で見えるようにした。直すかは未決**）
+- ~~別の名前・別のアカウントで公開したとき、手元のフォルダは ghq の置き方からずれる。移すか、そのままか~~
+  **→ ずれという考えごと無くなった**（2026-09-30、ユーザー決定。ghq の置き方をやめ、公開してもフォルダは動かさない）
 - ~~clone と作成は Repo の tool か、banto 自身の操作か~~ **→ Repo がフォルダを用意し、
   banto が Project を作る**（2026-09-30、ユーザー決定）
 - clone に失敗したとき（非公開で読めない等）、別のアカウントで試す手をその場に出すか
@@ -752,7 +752,8 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
   のように、何が2つ起きるかを言う。完了のトーストも「Repo が〜を clone し、Project「〜」を作りました」
 - **Project に Module を自動で繋ぐのをやめた**（その1行の説明も消した）
 - **リポジトリの一覧**（`canvas/repo-list-view.tsx`、Canvas `banto.repo:repos`）——
-  ghq の置き場にあるものを **owner フォルダごと**（＝アカウントごと。置き場の形そのまま）に並べる。
+  ~~ghq の置き場にあるものを owner フォルダごとに並べる~~ **→ 台帳から作る形に改めた**（同日、下の節）。
+  以下はこの時点の形（owner ごとの並び・ずれの表示・「置き場のずれ」の絞り込みは、もう無い）。
   行は2列だけ：
   - 左：名前と **GitHub にあるか**。まだなら「このマシンにだけ」（**この一覧で塗るのはここだけ**——
     壊れたら消えるもの、次の手が要るもの）と、同じ行に「GitHub に公開」
@@ -765,10 +766,10 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
   - 「GitHub に公開」は**一覧の中で**公開の画面に替わる（Module の中の移動。「← リポジトリの一覧」で戻る）
 - **公開の画面は対象をフォルダで決める**（`RepoPublishPanel`）——Project の中の入口
   「この Project を GitHub に公開」はその Project の Root、一覧からはそのリポジトリ。
-  別の名前・別のアカウントを選ぶと、押す前に「フォルダは今の場所のまま。ghq の置き方（〜）からはずれます」と言う
+  ~~別の名前・別のアカウントを選ぶと、押す前に「ghq の置き方からはずれます」と言う~~ **→ 外した**（同日、下の節）
 - **リポジトリの状態の真実は置き場1つ**（`lib/mock/github.ts` の `getLocalRepos`）——
   Project ごとの写し（旧 `getProjectRepoState`）はやめ、Project の Root から引いて導く（規則3）。
-  「記憶の検証」の Root は `~/ghq/github.com/tjst-t/hermes`（このマシンにだけあるリポジトリの例）に移した
+  「記憶の検証」の Root は `~/banto/hermes`（このマシンにだけあるリポジトリの例）
 
 **banto 全体の Module の画面をどう開くか（決めたこと）**：
 
@@ -786,7 +787,70 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
 
 **状態ごとの URL**：一覧は `/p/<どれでも>?canvas=banto.repo:repos`、設定では
 `/settings?section=module:banto.repo`。一覧から「Project を始める」を押したのと同じ状態は
-`?new-project=folder&folder=~/ghq/github.com/tjst-t/dotfiles`。
+`?new-project=folder&folder=~/banto/dotfiles`。
+
+### ghq の置き方をやめる・Repo の台帳・フォルダを Import（2026-09-30、ユーザー決定）
+
+**発端**：ghq の置き方（`~/ghq/github.com/<owner>/<repo>`）だと、置き場のパスが GitHub の持ち主と
+名前に縛られ、別の名前・アカウントで公開すると「ずれ」が生まれる。ユーザーの決定で置き方ごとやめた：
+
+- **既定の置き場は1か所**（`lib/mock/github.ts` の `getRepoHome`）。**Repo の設定で変えられ、既定は `~/banto`**。
+  フォルダ名はリポジトリ名（`~/banto/<名前>`）。設定の Repo の面に「既定の置き場」の欄
+  （`settings/repo-home-section.tsx`。「変える」で入れる——打っている途中の値で Root パスを揺らさない。
+  `~` と `/` は断る。変えても今あるフォルダは動かさない）
+- **Root パスの帯の中で、フォルダ名だけが打てる**（`project/repo-root-preview.tsx`）——`~/banto/` は字のまま、
+  最後の段だけ入力欄。どこまでが決まっていて、どこを変えられるかを形で言う。
+  - clone：**名前がぶつかったら `<名前>-2` を先に入れておき**、「~/banto/scratch は、もう使っているので
+    scratch-2 にしました」と言う。人が打ち直してぶつかれば断り、「scratch-2 にする」を出す
+  - clone：**そのリポジトリを台帳がもう持っていれば（置き場の外に Import したものでも）clone しない**——
+    そのフォルダをそのまま使う（ok の地）か、使っている Project を開く（`tjst-t/banto` を選ぶと
+    `~/ghq/github.com/tjst-t/banto` の Project「banto」を開く）
+  - 新しいリポジトリ：**名前の欄はこの帯の1つだけ**（リポジトリ名＝フォルダ名）。**アカウントは聞かない**
+    ——GitHub に上げるのは公開のとき。GitHub のアカウントが1つも無くても作れる。登録したアカウントの
+    GitHub に同じ名前があれば「clone で始める」を添える（前と同じ）
+  - ぶつかったものが台帳のリポジトリなら、次の手に「`<名前>-2` にする」と「その Project を開く／
+    このフォルダで Project を作る」の2つ
+- **Repo は台帳を持つ**（`lib/mock/github.ts` の `ledger`）——覚えるのは**置き場所と、どのアカウントで扱うか**だけ。
+  GitHub のどこか・ブランチはフォルダ（origin）から読む（規則3。台帳に写しを持たない——下の「確かめたい」参照）。
+  このマシンのフォルダ（git かどうか・origin）は別の一覧（`hostFolders`、本物は host が答える）で、
+  パスを選ぶ画面の木もそこから導く（`path-picker.tsx` の固定の木はやめた）
+- **一覧は台帳から作る**（`canvas/repo-list-view.tsx`）——owner フォルダごとの並びはやめ、
+  **「Project で使っている」「Project はまだ無い」の2つに区切る**（前者が今の仕事、後者は始める候補）。
+  各区切りの中は**「このマシンにだけ」を先に**（次の手が要るもの）、あとは名前順。行には**置き場所**
+  （フォルダ名から持ち主は分からないし、Import したものは置き場の外にある）と、GitHub にあれば
+  **持ち主の頭文字つきで `owner/name`**（＝どのアカウントのものか）を出す。絞り込みは「すべて／このマシンにだけ」と、
+  名前・場所・`owner/name` での検索
+- **フォルダを Import**（`canvas/repo-import-dialog.tsx`、一覧の右上の「フォルダを Import」）——
+  好きな場所のリポジトリを**そのままの場所で**台帳に足す。**フォルダを1つずつ選ぶ**（まとめて取り込む入口は作らない）。
+  形は「フォルダを選ぶ」と同じたどり方（パスは打っても良い）で、下に**いま開いているフォルダを Import すると
+  何が起きるか**の帯を置く（判断は `inspectImport` の1箇所）：
+  - git のリポジトリで台帳に無い → ok の地。origin・ブランチ・どのアカウントで扱うか（origin の持ち主が
+    登録したアカウントならそれ。無ければ「読むだけ」）を出し、「Import する」
+  - もう一覧にある／そのリポジトリの worktree → 「一覧で見る」（ダイアログを閉じ、その行を少しの間だけ地で示す）
+  - リポジトリの中のフォルダ（`…/banto/mock`）→ 断り、「banto を選ぶ」
+  - git でないフォルダ → 断り、「git init して Import」（`~` では出さない）。中にまだ一覧に無いリポジトリがあれば
+    断らず「上の一覧から1つずつ選んでください」（一覧の中では git のリポジトリ・一覧にあるものに先に印を出す）
+  - 無いパス → 断り、いちばん近くにある上のフォルダへ
+  - Import したら行を地で示し、トーストで「フォルダは〜のまま」と言う
+  - 台帳が空なら、一覧の場所に「新しい Project から clone・作る／フォルダを Import」の案内（入口はその1つだけにする）
+- **GitHub に公開してもフォルダは動かさない**——一覧の「置き場がずれています」・公開の画面の「ずれる」注意・
+  「置き場のずれ」の絞り込みは**すべて外した**。公開したら台帳にアカウントを覚える
+- **見本のデータ**：`~/banto/` に clone・作ったもの（hermes・recipe-box はこのマシンにだけ、home-automation・
+  dotfiles・tiny-cli・infra は GitHub）と、置き場の外から Import したもの（`~/ghq/github.com/tjst-t/banto`・
+  `~/ghq/gitlab.com/tjst-t/notes`）。まだ Import していない `~/ghq/github.com/tjst-t/incus-lab`（git）・
+  `~/ghq/github.com/tjst-t/scratch`（git でない）もある。`~/banto/scratch` は git でないフォルダ（clone の名前がぶつかる例）
+
+**状態ごとの URL**（`https://mock-…` の後ろ）：
+
+- 一覧：`/p/banto?canvas=banto.repo:repos`。台帳が空：`&repos=0`
+- Import：`&import=~/ghq/github.com/tjst-t/incus-lab`（Import できる）・`&import=~/ghq/github.com/tjst-t`
+  （中に1つ）・`&import=~/ghq/github.com/tjst-t/scratch`（git でない）・`&import=~/worktrees/banto-v4`（worktree）・
+  `&import=~/ghq/github.com/tjst-t/banto/mock`（リポジトリの中）・`&import=~/code/foo`（無い）
+- clone：`/p/banto?new-project=clone&repo=tjst-t/incus-lab`（空き）・`…&repo=tjst-t/scratch`（-2 にした）・
+  `…&repo=tjst-t/dotfiles`（もう持っている）・`…&repo=tjst-t/banto`（Import したものを Project が使っている）
+- 新しいリポジトリ：`/p/banto?new-project=create`・`…&repo=recipe-box`（台帳のリポジトリとぶつかる）・
+  `…&repo=scratch`（git でないフォルダとぶつかる）・`…&repo=notes`（GitHub に同じ名前）
+- 既定の置き場：`/settings?section=module:banto.repo`（一覧の下）
 
 ## まだ実装していない
 

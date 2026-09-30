@@ -17,7 +17,7 @@ let projects: MockProject[] = [
     name: "自宅サーバ",
     initial: "自",
     baseThreadId: "home-base",
-    basePath: "~/ghq/github.com/tjst-t/home-automation",
+    basePath: "~/banto/home-automation",
     status: "active",
   },
   {
@@ -25,7 +25,7 @@ let projects: MockProject[] = [
     name: "記憶の検証",
     initial: "記",
     baseThreadId: "hermes-base",
-    basePath: "~/ghq/github.com/tjst-t/hermes",
+    basePath: "~/banto/hermes",
     status: "active",
   },
   {

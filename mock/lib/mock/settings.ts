@@ -597,13 +597,13 @@ let mockProjectOverrides: MockProjectOverrides[] = [
     effort: "low",
     credentialId: "cred.work",
     vaultImplementationId: "hashicorp.vault",
-    securityRoot: "~/ghq/github.com/tjst-t/home-automation",
+    securityRoot: "~/banto/home-automation",
   },
   {
     projectId: "hermes",
     memoryLimitChars: 8000,
     credentialId: "cred.personal",
-    securityRoot: "~/ghq/github.com/tjst-t/hermes",
+    securityRoot: "~/banto/hermes",
   },
 ];
 
