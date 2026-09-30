@@ -34,6 +34,7 @@ import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canv
 import { getProject } from "@/lib/mock/projects";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread, getThreadsForProject } from "@/lib/mock/threads";
+import type { MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
 import { keepComposerDraft } from "@/lib/composer-drafts";
@@ -72,6 +73,27 @@ function ThreadMarkers({ markers }: { markers: readonly ThreadMarker[] }) {
   );
 }
 
+/**
+ * **Fork の画面では、分ける前の親の会話は最後の1件だけ出す**（決定・2026-09-29、ユーザー）。
+ * host は Fork に親の記録を分けた所まで写して持たせている（`project-thread/fold.ts`、それは変えない）。
+ * 長い会話から分けると Fork も親と同じ量を描くことになり、重さの元だった。親の会話は親を開けば読める。
+ * 分けた場所は `realCreatedSeq`（過去から分けたならその発言の seq）——そこまでが親の分
+ */
+function forkOwnPart<T extends { seq: number }>(thread: MockThread, items: readonly T[]): readonly T[] {
+  const cut = thread.kind === "fork" ? thread.realCreatedSeq : undefined;
+  if (cut === undefined) return items;
+  return items.filter((m) => m.seq > cut);
+}
+
+function visibleRealMessages(thread: MockThread): MockThread["realMessages"] {
+  const all = thread.realMessages;
+  if (!all || thread.kind !== "fork" || thread.realCreatedSeq === undefined) return all;
+  const cut = thread.realCreatedSeq;
+  const lastParent = all.filter((m) => m.seq <= cut).at(-1);
+  const own = forkOwnPart(thread, all);
+  return lastParent ? [lastParent, ...own] : [...own];
+}
+
 export function ThreadPanel({
   threadId,
   onOpenCanvas,
@@ -100,7 +122,7 @@ export function ThreadPanel({
   const initialMessages = useMemo(() => {
     if (!thread) return [];
     if (!thread.real) return seedToInitialMessages(thread.script.seed);
-    return realMessagesToInitial(thread.realMessages, thread.id);
+    return realMessagesToInitial(visibleRealMessages(thread), thread.id);
   }, [thread]);
   // リロード時のマーカー表示復元（決定・2026-09-04）——永続化済みのClearマーカーを、
   // 実際に起きた場所（直前のmessageのid）に紐づけて transcript 中へ差し込む。
@@ -132,7 +154,7 @@ export function ThreadPanel({
 
   const transcriptMarkers = useMemo(() => {
     if (!thread?.real) return undefined;
-    const msgs = thread.realMessages ?? [];
+    const msgs = visibleRealMessages(thread) ?? [];
     const map = new Map<string | null, ReactNode>();
     // 起きた場所（直前の message）に紐づける。Clear の横線も Fork の入口も
     // 物差しは同じ seq——**別の仕組みを増やさない**（規則3）
@@ -148,7 +170,8 @@ export function ThreadPanel({
       const existing = map.get(anchor);
       map.set(anchor, existing ? <>{existing}{node}</> : node);
     };
-    for (const marker of thread.realMarkers ?? []) {
+    // Fork では親の分の横線（Clear 等）は出さない——その発言を描いていない
+    for (const marker of forkOwnPart(thread, thread.realMarkers ?? [])) {
       put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />);
     }
     // **分岐した場所に「この Fork を開く」を置く**（決定・2026-09-07、ユーザー要望）。
@@ -157,7 +180,8 @@ export function ThreadPanel({
     for (const fork of getThreadsForProject(thread.projectId)) {
       if (fork.kind !== "fork" || fork.parentThreadId !== thread.id) continue;
       if (fork.realCreatedSeq === undefined) continue;
-      const count = fork.realMessages?.length ?? 0;
+      // 数えるのは Fork 自身のやり取りだけ（親から写した分を数えると、分けたばかりでも「180 件」になる）
+      const count = forkOwnPart(fork, fork.realMessages ?? []).length;
       put(
         anchorOf(fork.realCreatedSeq),
         <OpenableCard

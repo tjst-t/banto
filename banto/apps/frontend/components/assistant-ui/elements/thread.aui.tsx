@@ -47,6 +47,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { KeepScrollPositionOnResize } from "@/components/banto/thread/keep-scroll-position-on-resize";
 import { RememberScrollPosition } from "@/components/banto/thread/remember-scroll-position";
+import { ShowEarlierMessages, useMessageWindow } from "@/components/banto/thread/message-window";
 import { useThreadId } from "@/components/banto/thread/thread-id-context";
 import { recalledThreadScroll } from "@/lib/thread-scroll-memory";
 import { KeyboardDebugOverlay } from "@/components/banto/thread/keyboard-debug-overlay";
@@ -292,7 +293,7 @@ const ThreadRoot: FC<{
             data-slot="aui_message-group"
             className="mb-14 flex flex-col gap-y-6 empty:hidden"
           >
-            <ThreadMessagesWithMarkers transcriptMarkers={transcriptMarkers} />
+            <ThreadMessagesWithMarkers transcriptMarkers={transcriptMarkers} mustInclude={restoreTo?.messageId} />
           </div>
 
           <ThreadPrimitive.ViewportFooter
@@ -326,12 +327,17 @@ const NO_MARKERS: ReadonlyMap<string | null, ReactNode> = new Map();
  */
 const ThreadMessagesWithMarkers: FC<{
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
-}> = ({ transcriptMarkers = NO_MARKERS }) => {
+  /** 読んでいた場所へ戻すときの発言——窓をそこまで広げておく */
+  mustInclude?: string | undefined;
+}> = ({ transcriptMarkers = NO_MARKERS, mustInclude }) => {
   const messageIds = unstable_useThreadMessageIds();
+  // **最新の 20 件だけ描く**（決定・2026-09-29、`message-window.tsx`）
+  const { visible, hiddenCount, showEarlier, anchorRef } = useMessageWindow(messageIds, mustInclude);
   return (
     <>
-      {transcriptMarkers.get(null)}
-      {messageIds.map((id) => (
+      <ShowEarlierMessages hiddenCount={hiddenCount} onShow={showEarlier} anchorRef={anchorRef} />
+      {hiddenCount === 0 ? transcriptMarkers.get(null) : null}
+      {visible.map((id) => (
         <Fragment key={id}>
           <ThreadPrimitive.Unstable_MessageById messageId={id} components={{ Message: ThreadMessage }} />
           {transcriptMarkers.get(id)}
