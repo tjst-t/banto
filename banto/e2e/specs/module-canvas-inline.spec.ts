@@ -208,8 +208,10 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
     "Canvas に中身が出ていない",
   ).toBeVisible({ timeout: 60_000 });
 
-  // **会話は消えない**（banto の fullscreen は「会話の隣」——§6.2 の解釈）
-  await expect(page.getByText(/このプロジェクトの直下/), "Canvas を開いたら会話が消えた").toBeVisible();
+  // **会話は消えない**（banto の fullscreen は「会話の隣」——§6.2 の解釈）。この試験は携帯の幅（390px）で、携帯では
+  // Canvas が前面の1枚になり、会話はその下に**隠して残す**（改訂・2026-09-28、`panel-stack.tsx`——以前は覆って
+  // いるだけで「見えている」扱いだった）。見るのは「捨てられていない」こと
+  await expect(page.getByText(/このプロジェクトの直下/), "Canvas を開いたら会話が消えた").toBeAttached();
 
   // URL に残っているので、**リロードしても同じ面が開き直る**
   // （閉じてから開き直さないこととは別——`勝手に開かない` は下の fullscreen の spec で見る）

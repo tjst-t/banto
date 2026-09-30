@@ -104,7 +104,9 @@ function AppShellInner({ children }: { children: ReactNode }) {
       />
       {/* モバイルは専用の上部バーを持たない（決定・2026-09-09）——ナビは各パネルの
           ヘッダ左端の ≡（MobileNavDrawer）に寄せ、常時2段だったヘッダを1段にした */}
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* `isolate`：設定の面（z-30）の重なり順をこの枠の中だけに閉じる——閉じないと、サイドバーの境界（線を
+          またいで右へ 4px はみ出している）の右半分にかぶさり、設定を開いたままだと幅をつかめなかった（E2E・2026-09-30） */}
+      <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-0 flex-1 flex-col" inert={settingsOpen} aria-hidden={settingsOpen || undefined}>
           {children}
         </div>
