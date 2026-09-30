@@ -401,20 +401,31 @@ export function markInlineViewDisplayMode(
  */
 const UI_TOOLS_WAIT_MS = 5_000;
 
-/** ターンが始まる前に一度だけ聞いておく——tool が走ってから聞くと間に合わない。 */
+/**
+ * **ターンが始まるたびに聞き直す**——tool が走ってから聞くと間に合わない（改訂・2026-09-29）。
+ *
+ * 以前は Thread ごとに**一度だけ**聞き、失敗したときも「無い」（`[]`）を覚えていた。しかも聞くのは
+ * **この画面で人が送ったときだけ**で、あとから乗ったターン（届いたもので host が始めた・別の画面で送った）
+ * では聞かなかった。再起動のあと、人がまだ送っていない画面で届いた結果を AI が読み、Publish の承認を
+ * 頼んだら、**承認の画面が会話に出ず、読み込み直すと出た**（実測・2026-09-29）。
+ *
+ * いまは、自分で送るときも乗るときも聞き直す（1回 0.2 秒ほど）。途中で繋いだ Module の画面も拾える。
+ * **失敗したら前に聞けた一覧を使い、失敗を覚えない**——次のターンでまた聞く
+ */
 async function ensureUiTools(threadId: string): Promise<RealUiTool[]> {
-  const cached = uiToolsByThread.get(threadId);
-  if (cached) return cached;
   try {
     const tools = await listRealUiTools(threadId);
     uiToolsByThread.set(threadId, tools);
     return tools;
   } catch {
-    // 画面が出ないだけ——会話は続ける。**黙って別経路へ落ちる**のとは違い、
-    // ここは「無い」が正常な状態でもある（画面を持つ Module が無い場合）
-    uiToolsByThread.set(threadId, []);
-    return [];
+    // 画面が出ないだけ——会話は続ける。ここは「無い」が正常な状態でもある（画面を持つ Module が無い場合）
+    return uiToolsByThread.get(threadId) ?? [];
   }
+}
+
+/** 聞き終わるまで待つ。**ただし待ち切らない**——会話が始まる（乗る）ことのほうが、画面が1つ出ることより大事 */
+function waitUiTools(threadId: string): Promise<unknown> {
+  return Promise.race([ensureUiTools(threadId), new Promise((r) => setTimeout(r, UI_TOOLS_WAIT_MS))]);
 }
 
 /** Runner から見える tool 名は `mcp__<Module名>__<tool名>`（Agent SDK の付け方）。 */
@@ -568,10 +579,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // **会話が始まることのほうが、画面が1つ出ることより大事**なので、
         // ここでも上限を置く。**待ちで隠しているのではない**——越えたときに
         // 何が起きるか（その Module の画面が出ない）が分かっている（規則6）。
-        await Promise.race([
-          ensureUiTools(thread.id),
-          new Promise((r) => setTimeout(r, UI_TOOLS_WAIT_MS)),
-        ]);
+        await waitUiTools(thread.id);
         // 終了イベントで「この走行」を降ろすために、自分自身を指す入れ物を用意する
         // （コールバックは live を作るより先に書く必要があるため）
         const self: { turn: LiveTurn | null } = { turn: null };
@@ -727,6 +735,9 @@ export function followVersion(): number {
  */
 export async function followRunningTurn(threadId: string): Promise<boolean> {
   if (liveTurns.has(threadId)) return true;
+  // **乗る前に、画面を持つ tool の一覧を聞いておく**（追加・2026-09-29）——自分で送るときと同じ。聞かずに乗ると、
+  // そのターンで呼ばれた画面つきの tool（Publish の承認など）が会話に出ない
+  const uiTools = waitUiTools(threadId);
   const self: { turn: LiveTurn | null } = { turn: null };
   let sawContent!: () => void;
   const contentArrived = new Promise<void>((resolve) => (sawContent = resolve));
@@ -752,6 +763,7 @@ export async function followRunningTurn(threadId: string): Promise<boolean> {
   // ので、中身が1つでも来ていれば、記録にはその入力がある。開き直した場合は流し直しがすぐ届く。
   // 起きるのが遅い回（コンテナが起きる等）でも止まり続けないよう、上限を置く——越えても描くのは同じ
   await Promise.race([contentArrived, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+  await uiTools;
   if (hasLiveRealRun(threadId)) {
     // 待っている間に、この画面が自分で送り始めた——そちらを読む。**乗ったとは答えない**（改訂・2026-09-28、
     // レビュー指摘）：以前は true を返し、呼ぶ側が「乗った」として記録から組み直して、送ったばかりの
