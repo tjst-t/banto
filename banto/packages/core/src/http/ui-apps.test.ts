@@ -81,6 +81,28 @@ class FakeModule implements ModuleClientLike {
   }
 }
 
+/** **答えない Module**（止まっている・黙っている）。何を聞いても上限で失敗する。 */
+class SilentModule implements ModuleClientLike {
+  private fail(): Promise<never> {
+    return Promise.reject(new Error("MCP error -32001: Request timed out"));
+  }
+  getServerCapabilities() {
+    return { resources: {} };
+  }
+  listTools() {
+    return this.fail();
+  }
+  listResources() {
+    return this.fail();
+  }
+  readResource() {
+    return this.fail();
+  }
+  callTool() {
+    return this.fail();
+  }
+}
+
 /** 呼び出しの印（毎回違う）を除いて比べる。印が付いていること自体は下の試験が見る */
 function stripCallId<T extends { _meta?: Record<string, unknown> }>(calls: T[]): T[] {
   return calls.map((c) => {
@@ -101,7 +123,11 @@ interface Ctx {
   moduleCalls: ModuleCallTracker;
 }
 
-async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
+async function withApp(
+  fn: (ctx: Ctx) => Promise<void>,
+  /** 同じ Project に、答えない Module を1本まぜる */
+  opts: { withSilentModule?: boolean } = {},
+): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "banto-ui-apps-test-"));
   try {
     const log = new EventLog(dir);
@@ -116,6 +142,7 @@ async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const pendingApprovals = new PendingApprovalRegistry();
     const module = new FakeModule();
     const moduleCalls = new ModuleCallTracker();
+    const silent = opts.withSilentModule ? [{ name: "shell", client: new SilentModule(), connName: "shell-p1" }] : [];
 
     const server = createApp({
       projectThread,
@@ -128,9 +155,11 @@ async function withApp(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       resolveModulesForThread: async () => [],
       resolveModuleClientsForThread: async () => [{ name: "filesystem", client: module, connName: "filesystem-p1" }],
       resolveModuleClientsForProject: async () => [
+        ...silent,
         { name: "filesystem", client: module, connName: "filesystem-p1" },
       ],
       resolveInstanceModuleClients: async () => [
+        ...silent,
         { name: "filesystem", client: module, connName: "filesystem-instance" },
       ],
       moduleCalls,
@@ -328,6 +357,26 @@ test("**人が直接開ける入口**は、名乗った資源だけが出る（l
       },
     ]);
   });
+});
+
+// **1本が答えなくても、ほかの入口と設定画面は出る**（改訂・2026-09-30、ユーザー報告）。
+// 以前は1本の失敗で一覧ごと 500 になり、Shell が止まっただけで Command Palette の入口が全部消えた
+test("答えない Module が混ざっても、入口と設定画面の一覧はほかの Module の分を返す", async () => {
+  await withApp(
+    async ({ base, headers, projectId }) => {
+      const launchers = await fetch(`${base}/api/projects/${projectId}/ui-launchers`, { headers });
+      assert.equal(launchers.status, 200);
+      assert.deepEqual(
+        ((await launchers.json()) as Array<{ server: string; name: string }>).map((l) => [l.server, l.name]),
+        [["filesystem", "ファイル"]],
+      );
+      for (const url of [`${base}/api/projects/${projectId}/ui-settings`, `${base}/api/ui-settings`]) {
+        const res = await fetch(url, { headers });
+        assert.equal(res.status, 200, url);
+      }
+    },
+    { withSilentModule: true },
+  );
 });
 
 // **Project の Canvas も、中継の承認の宛先を持つ**（追加・2026-09-12）。

@@ -661,7 +661,7 @@ const UI_TOOLS_TIMEOUT_MS = 5_000;
  * 名乗っていない相手には投げない（規則12——既にある仕組みを使う）。
  *
  * **握りつぶしはしない**：資源を持つと名乗った相手が失敗したら、そのまま投げる
- * （規則2——1本の故障が「資源ゼロ」に化けると、画面から何も見えなくなる）。
+ * （規則2）。一覧をまとめて取るときに、その1本だけを落とすのは呼ぶ側（`listResourcesOfAll`）。
  */
 async function listResourcesIfAny(client: ModuleClientLike): Promise<unknown[]> {
   if (client.getServerCapabilities && !client.getServerCapabilities()?.resources) return [];
@@ -673,14 +673,29 @@ async function listResourcesIfAny(client: ModuleClientLike): Promise<unknown[]> 
  * Module 群の資源一覧を**並べて**取る（改訂・2026-09-26、実測）。
  *
  * 以前は1本ずつ順に聞いていたので、**いちばん遅い1本ではなく、全部の合計**を
- * 人が待っていた。失敗の扱いは変えない——1本でも失敗したらそのまま投げる
- * （`listResourcesIfAny` の規則2）。答えない1本は上限で失敗に変わる。
+ * 人が待っていた。答えない1本は上限で失敗に変わる。
+ *
+ * **失敗した1本は、そこだけ落とす**（改訂・2026-09-30、ユーザー報告）。以前は1本でも失敗したら
+ * 全体を投げていたので、Shell が止まっただけで Command Palette の入口と設定画面が**全部**消えた
+ * ——「1本の故障で画面から何も見えなくなる」を避けるつもりが、逆にそれを起こしていた。
+ * 会話側の `listUiToolsForThread` と同じ形。**黙って落とさない**（規則2）：何が答えなかったかは
+ * ログに残す。止まった Module は host が見つけて起こし直す（cli.ts の `moduleLost`）
  */
 async function listResourcesOfAll(
   modules: Array<{ name: string; client: ModuleClientLike }>,
 ): Promise<Array<{ name: string; resources: unknown[] }>> {
   return Promise.all(
-    modules.map(async ({ name, client }) => ({ name, resources: await listResourcesIfAny(client) })),
+    modules.map(async ({ name, client }) => {
+      try {
+        return { name, resources: await listResourcesIfAny(client) };
+      } catch (err) {
+        console.warn(
+          `[host] ${name} の資源の一覧が取れませんでした（この Module の入口と設定画面は出ません）: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        return { name, resources: [] };
+      }
+    }),
   );
 }
 

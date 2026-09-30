@@ -69,6 +69,8 @@ import { modulePackageDirOf } from "./modules/registry/install/paths.js";
 import { SHELL_HOME_FILES_KEY, shellHomeFiles, syncShellHome, type ShellHomeSync } from "./modules/shell-home.js";
 import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
+import { ConnectBackoff } from "./modules/connect-backoff.js";
+import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
@@ -439,11 +441,122 @@ async function main(): Promise<void> {
    * 同じように落ち**、会話に毎ターン同じエラーが出ていた。しかも一覧を組み立てる
    * 途中で例外になるため、**1本の設定ミスでその Project の会話が丸ごと止まった**。
    *
-   * 覚える鍵は宣言の中身（指紋）。**宣言が変われば、また試す**——人が直したのに
+   * 覚える鍵は宣言の中身（指紋）。**宣言が変われば、すぐ試す**——人が直したのに
    * 「壊れている」と言い続けないため。安全側（繋がない・黙って緩めない）は
    * そのまま：失敗した Module は**繋がない**。
+   *
+   * **覚えるのは次に試すまでの間だけ**（改訂・2026-09-30）。以前は宣言が変わるまで二度と試さなかった
+   * ので、Incus の再起動中の `Error: Shutting down` のような一時的な失敗でも、host を再起動するまで
+   * 戻らなかった。間は続けて失敗するほど伸びる（`connect-backoff.ts`）
    */
-  const moduleFailures = new Map<string, { fingerprint: string; reason: string }>();
+  const connectBackoff = new ConnectBackoff();
+
+  /**
+   * **止まった Module は起こし直す**（決定・2026-09-30、`docs/specs/v4-architecture.md` §5.4-0）。
+   *
+   * 以前は、繋がった後に止まった Module をそのまま台帳に残していた。`spawnDeclaredModule` は
+   * 「もう繋がっている」と見て起こさないので、**host を再起動するまで** `Not connected`・
+   * `Request timed out` が続き、Ctrl-K の入口も AI の道具も消えた（2026-09-29：1通 10 MiB を越えた返事で
+   * Shell が切れた。2026-09-30：自動更新が incusd を再起動し、コンテナの中の Module が黙った）。
+   *
+   * 見つけ方は2つ——接続が閉じた（`onclose`）か、`ping` に続けて答えない（`liveness.ts`）。
+   * 見つけたら台帳から外し、プロセスを確実に落とし、間を置いて起こし直す（`connect-backoff.ts`）。
+   * **畳んだ・止めた Module は起こさない**（畳む側が先に台帳から外すので、ここへは来ない）
+   */
+  interface ConnectionOrigin {
+    /** 起こし直すときに引き直す宣言の名前（宣言そのものは持たない——その間に変わっていれば新しいほうで起こす） */
+    declarationName: string;
+    fingerprint: string;
+    projectId?: string;
+    /** コンテナの中で起こしたなら、その置き場の id */
+    containerId?: string;
+  }
+  let stopping = false;
+  const connectionOrigins = new Map<string, ConnectionOrigin>();
+  const pendingRestarts = new Map<string, { timer: NodeJS.Timeout; origin: ConnectionOrigin }>();
+  const liveness = new LivenessMonitor(LIVENESS, (connName, client, reason) => {
+    const origin = connectionOrigins.get(connName);
+    if (origin) void moduleLost(connName, client as Client, origin, reason);
+  });
+
+  function cancelRestart(connName: string): void {
+    const pending = pendingRestarts.get(connName);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRestarts.delete(connName);
+  }
+
+  async function moduleLost(connName: string, client: Client, origin: ConnectionOrigin, reason: string): Promise<void> {
+    // 畳んだ・起こし直した後の古い接続——もう関係ない（畳む側は先に台帳から外している）
+    if (connectedModules.get(connName) !== client) return;
+    console.warn(`[host] ${connName} が止まりました（${reason}）`);
+    connectedModules.delete(connName);
+    // **台帳から外すのと同じ瞬間に、止まったことを記録する**——下の await の間に会話や画面が起こしに来ても、
+    // 間を置かずに起こし直しを重ねない（起こすのは下で予約する1本）
+    if (!stopping) connectBackoff.recordLost(connName, origin.fingerprint, reason);
+    connectionOrigins.delete(connName);
+    liveness.unwatch(connName);
+    retriedAfterSelfReport.delete(connName);
+    registry.unregisterModule(connName); // 合言葉もここで失効する
+    moduleTokens.delete(connName);
+    shellHomes.delete(connName);
+    for (const set of projectConnections.values()) set.delete(connName);
+    await agentRelayEndpoint.unregisterModule(connName);
+    // 次に起こすときは、コンテナの状態を確かめ直す（止まっていれば起こす）
+    if (origin.containerId) readyContainers.delete(origin.containerId);
+    // **黙っているだけで、プロセスは残っていることがある**（`incus exec` が incus-user に繋がったまま等）
+    // ——確実に落とす。閉じたことでもう一度ここへ来るが、上で台帳から外してあるので素通りする
+    await client.close().catch((err: unknown) => {
+      console.warn(`[host] ${connName} を落とすときに例外:`, err);
+    });
+    if (stopping) return;
+    scheduleRestart(connName, origin);
+  }
+
+  function scheduleRestart(connName: string, origin: ConnectionOrigin): void {
+    cancelRestart(connName);
+    // 時計の粒度で「まだ早い」と断られないよう、少しだけ後ろにずらす
+    const wait = Math.max(0, connectBackoff.retryAt(connName) - Date.now()) + 50;
+    const timer = setTimeout(() => {
+      pendingRestarts.delete(connName);
+      void restartModule(connName, origin);
+    }, wait);
+    timer.unref();
+    pendingRestarts.set(connName, { timer, origin });
+    console.log(
+      `[host] ${connName} を ${Math.round(wait / 1000)} 秒後に起こし直します（続けて ${connectBackoff.streak(connName)} 回目）`,
+    );
+  }
+
+  async function restartModule(connName: string, origin: ConnectionOrigin): Promise<void> {
+    // 待っている間に、会話や画面が先に起こしていることがある
+    if (stopping || connectedModules.has(connName)) return;
+    let project: { id: string; root: string } | undefined;
+    if (origin.projectId) {
+      const found = projectThread.getProject(origin.projectId);
+      // 畳んだ Project の Module は起こさない（畳むと台帳から Project ごと消える）
+      if (!found || !projectConnections.has(origin.projectId)) {
+        connectBackoff.clear(connName);
+        return;
+      }
+      project = found;
+    }
+    // **宣言は引き直す**——止まっていた間に人が外した・変えたなら、それに従う
+    const declaration = loadModuleDeclarations(runtimeConfig, origin.projectId ?? "").find(
+      (d) => d.name === origin.declarationName,
+    );
+    if (!declaration) {
+      console.log(`[host] ${connName} は宣言から外れたので、起こし直しません`);
+      connectBackoff.clear(connName);
+      return;
+    }
+    if (await connectDeclaredModule(declaration, project)) {
+      console.log(`[host] ${connName} を起こし直しました`);
+      return;
+    }
+    // 起こせなかった——間を伸ばしてまた試す（理由は connectDeclaredModule がログとお知らせに出している）
+    if (!stopping) scheduleRestart(connName, origin);
+  }
 
   function declarationFingerprint(declaration: ParsedModuleDeclaration): string {
     return JSON.stringify({ launch: declaration.launch, meta: declaration.meta });
@@ -461,20 +574,22 @@ async function main(): Promise<void> {
       declaration.meta.scope === "project" && forProject
         ? `${declaration.name}-${forProject.id}`
         : declaration.name;
+    // 繋がっているなら、それが答え（試し直しの間の記録より先に見る）
+    if (connectedModules.has(connName)) return connName;
     const fingerprint = declarationFingerprint(declaration);
-    const failed = moduleFailures.get(connName);
-    if (failed && failed.fingerprint === fingerprint) return undefined;
-    if (failed) moduleFailures.delete(connName); // 宣言が変わった——もう一度試す
+    if (connectBackoff.blocked(connName, fingerprint) !== undefined) return undefined;
 
     try {
       return await spawnDeclaredModule(declaration, forProject);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      moduleFailures.set(connName, { fingerprint, reason });
-      console.warn(`[host] ${connName} を繋げませんでした: ${reason}`);
+      const notify = connectBackoff.recordFailure(connName, fingerprint, reason);
+      const retryIn = Math.round((connectBackoff.retryAt(connName) - Date.now()) / 1000);
+      console.warn(`[host] ${connName} を繋げませんでした（${retryIn} 秒たったら、また試します）: ${reason}`);
       // **人が気づける場所を1つ作る**（規則2——黙って機能を減らさない）。
-      // 会話には出さない（毎ターン混ざるのを止めるのがこの作業の目的）
-      void inbox
+      // 会話には出さない（毎ターン混ざるのを止めるのがこの作業の目的）。
+      // **続いた失敗の最初の1回だけ**——試し直すたびに、確認済みのお知らせを出し直さない
+      if (notify) void inbox
         .raiseNotice({
           projectId: declaration.meta.scope === "project" ? forProject?.id : undefined,
           dedupeKey: `module-connect:${connName}`,
@@ -807,7 +922,7 @@ async function main(): Promise<void> {
     // **「もう一度試す」条件は宣言が変わったときだけ**（`connectDeclaredModule`）
     // ——ログインは宣言を変えないので、ここで明示的に忘れる。忘れないと
     // **直したのに直らない**（実測・2026-09-18、この試験が3回とも教えた）
-    moduleFailures.delete(flow.moduleName);
+    connectBackoff.clear(flow.moduleName);
     return { moduleName: flow.moduleName };
   }
 
@@ -949,7 +1064,7 @@ async function main(): Promise<void> {
       const connecting = performance.now();
       const client = await connectStdioModule(inside.command, inside.args, undefined, process.env);
       mark("起動と接続", connecting);
-      return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases });
+      return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases }, placement?.id);
     }
 
     // **banto 本体で起こす**：同梱の banto 全体の Module（banto 自身のコード——Vault は秘密の置き場を持つ）。
@@ -979,6 +1094,8 @@ async function main(): Promise<void> {
     token: string | undefined,
     forProject: { id: string; root: string } | undefined,
     timing?: { started: number; phases: string[] },
+    /** コンテナの中で起こしたなら、その置き場の id（`readyContainers` の鍵） */
+    containerId?: string,
   ): Promise<string> {
     const checking = performance.now();
     // **Module 自身の申告と、宣言（Config）を突き合わせる**（決定・2026-09-06）。
@@ -1068,15 +1185,31 @@ async function main(): Promise<void> {
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
     connectedModules.set(connName, client);
+    connectBackoff.recordConnected(connName, conn.codeId);
+    const origin: ConnectionOrigin = {
+      declarationName: declaration.name,
+      fingerprint: conn.codeId,
+      ...(project ? { projectId: project.id } : {}),
+      ...(containerId ? { containerId } : {}),
+    };
+    connectionOrigins.set(connName, origin);
+    // **接続の異常を黙って捨てない**（追加・2026-09-30、規則2）。SDK は既定で握りつぶす——1通 10 MiB を
+    // 越えた返事で接続が閉じたときも、ログに何も残らなかった
+    client.onerror = (err: Error) => {
+      console.warn(`[host] ${connName} との接続で異常: ${err.message}`);
+    };
     // **Module が止まったら、返事待ちの札に代わりに答える**（決定・2026-09-25）。止め方（畳む・立て直す・落ちる）
-    // によらずここを通る
+    // によらずここを通る。**畳んだのでなければ、起こし直す**（決定・2026-09-30）
     const previousOnClose = client.onclose;
     client.onclose = () => {
       previousOnClose?.();
       for (const [replyTo, h] of replyHandles.awaitingFor(connName)) {
         void deliverLostReply({ threadId: h.threadId, replyTo, moduleName: h.moduleName, hop: h.hop + 1 }, "Module が止まったため");
       }
+      void moduleLost(connName, client, origin, "接続が閉じました");
     };
+    // **閉じずに黙ることもある**——定期的に確かめる（`liveness.ts`）
+    liveness.watch(connName, client);
     if (token !== undefined) moduleTokens.set(connName, token);
     if (project) {
       const forThisProject = projectConnections.get(project.id) ?? new Set<string>();
@@ -1105,10 +1238,16 @@ async function main(): Promise<void> {
   async function releaseProjectModules(projectId: string, opts: { stopContainer?: boolean } = {}): Promise<string[]> {
     const names = [...(projectConnections.get(projectId) ?? [])];
     projectConnections.delete(projectId);
+    // 止まって起こし直しを待っているものも、もう起こさない
+    for (const [connName, pending] of [...pendingRestarts]) {
+      if (pending.origin.projectId === projectId) cancelRestart(connName);
+    }
     for (const connName of names) {
       const client = connectedModules.get(connName);
       connectedModules.delete(connName);
-      moduleFailures.delete(connName);
+      connectionOrigins.delete(connName);
+      liveness.unwatch(connName);
+      connectBackoff.clear(connName);
       retriedAfterSelfReport.delete(connName);
       registry.unregisterModule(connName); // 合言葉もここで失効する
       moduleTokens.delete(connName);
@@ -1153,7 +1292,7 @@ async function main(): Promise<void> {
   /** banto 全体の Module が立っているか（追加・2026-09-15、instance 層の画面用）。 */
   function instanceModuleStatus(): Array<{ name: string; connected: boolean; error?: string }> {
     return listInstanceModules(runtimeConfig).map((m) => {
-      const failure = moduleFailures.get(m.name);
+      const failure = connectBackoff.failure(m.name);
       return {
         name: m.name,
         // Project ごとに立つものは、この名前では繋がらない——どこかの Project で
@@ -1170,10 +1309,15 @@ async function main(): Promise<void> {
   /** その Module のプロセスを落とす（止めた・消したとき）。名前で始まる接続を全部。 */
   async function releaseModule(name: string): Promise<void> {
     const targets = [...connectedModules.keys()].filter((c) => c === name || c.startsWith(`${name}-`));
+    for (const connName of [...pendingRestarts.keys()]) {
+      if (connName === name || connName.startsWith(`${name}-`)) cancelRestart(connName);
+    }
     for (const connName of targets) {
       const client = connectedModules.get(connName);
       connectedModules.delete(connName);
-      moduleFailures.delete(connName);
+      connectionOrigins.delete(connName);
+      liveness.unwatch(connName);
+      connectBackoff.clear(connName);
       retriedAfterSelfReport.delete(connName);
       registry.unregisterModule(connName);
       moduleTokens.delete(connName);
@@ -1197,7 +1341,7 @@ async function main(): Promise<void> {
     return loadModuleDeclarations(runtimeConfig, projectId).map((declaration) => {
       const connName =
         declaration.meta.scope === "project" ? `${declaration.name}-${projectId}` : declaration.name;
-      const failure = moduleFailures.get(connName);
+      const failure = connectBackoff.failure(connName);
       return {
         name: declaration.name,
         connected: connectedModules.has(connName),
@@ -1220,7 +1364,7 @@ async function main(): Promise<void> {
       loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
         const connName = await connectDeclaredModule(declaration, project);
         // **繋がらなかったものは黙って落とす**のではなく、繋がったものだけで進める
-        // ——落ちた事実は moduleFailures と受信箱のお知らせに残っている
+        // ——落ちた事実は connectBackoff と受信箱のお知らせに残っている
         if (!connName) return undefined;
         // Runnerに見せる名前（mcp__<name>__...）は宣言の名前のまま——
         // どのProjectか、という区別はURL側（agent-relay内部の登録名）だけに閉じる。
@@ -1487,6 +1631,10 @@ async function main(): Promise<void> {
   snapshotTimer.unref();
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {
+      // 止める途中で Module が切れても、起こし直さない
+      stopping = true;
+      liveness.stop();
+      for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
       void saveSnapshots()
         .catch((err) => console.error("[host] 終了時のスナップショット保存に失敗:", err))
         .finally(() => process.exit(0));
