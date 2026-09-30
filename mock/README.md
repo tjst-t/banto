@@ -717,9 +717,7 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   0なら Repo の設定へ案内する
 - **アカウントの登録**は Repo の設定面の中（`settings/github-accounts-section.tsx`）——
   名前・PAT・SSH 鍵。PAT と鍵は Vault に預け、alias の名前しか出さない（VaultUI と同じ作法）
-- **リポジトリから始めた Project には Repo と Vault を繋ぐ**——あとで公開する入口
-  （パレットの「GitHub に公開」）は Repo の launcher なので、繋がないと辿り着けない。
-  黙って繋がず、Project 名の下に1行で言う
+- ~~リポジトリから始めた Project には Repo と Vault を繋ぐ~~ **→ 外した**（2026-09-30、下の節）
 - **GitHub に公開**（`canvas/repo-publish-view.tsx`、Canvas `banto.repo:publish`）——
   どこから・どこへ（手元のフォルダ → `github.com/<owner>/<name>`、打つたびに行き先が変わる）／
   アカウント／名前（使用済みなら断り、`<name>-2` を出す）／公開・非公開（公開は
@@ -727,7 +725,7 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   設定するまで。ほかのブランチも送るかは選べる）。押すと手順が1行ずつ進む
 
 **状態ごとの URL**（`project/repo-demo-params.tsx`、モックの見せ方のためだけ）：
-`?new-project=folder|clone|create`・`&repo=<owner>/<repo>`・`?accounts=0|1|2`。
+`?new-project=folder|clone|create`・`&repo=<owner>/<repo>`・`&folder=<path>`・`?accounts=0|1|2`。
 公開は `/p/hermes?canvas=banto.repo:publish`（コミットあり）、
 `/p/banto?canvas=banto.repo:publish`（公開済み）。
 
@@ -735,8 +733,60 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
 
 - 別の名前・別のアカウントで公開したとき、手元のフォルダは ghq の置き方
   （`github.com/<owner>/<repo>`）からずれる。移すか、そのままか
-- clone と作成は **Repo の tool**（AI も呼べる）を人が画面から呼ぶ形か、banto 自身の操作か
+  （**2026-09-30：ずれていることは一覧と公開の画面で見えるようにした。直すかは未決**）
+- ~~clone と作成は Repo の tool か、banto 自身の操作か~~ **→ Repo がフォルダを用意し、
+  banto が Project を作る**（2026-09-30、ユーザー決定）
 - clone に失敗したとき（非公開で読めない等）、別のアカウントで試す手をその場に出すか
+
+### Repo を banto 全体に1本にする・リポジトリの一覧（2026-09-30、ユーザー決定）
+
+**発端**：前の形は Repo を **Project ごとの Module** のように扱っていた（clone・新規で作った
+Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project の Repo の launcher）。
+ユーザーの決定で改めた：
+
+- **Repo は banto 全体に1本**（`scope: "instance"`、Vault や公開の窓口と同じ置き方）。Project より先に動ける
+- **新しい Project の画面は2段**（`project/new-project-dialog.tsx`）——上が「Root にするフォルダ」
+  （見出しの右に「Repo が用意します」。clone・git init は Repo の仕事）、下が「Project」
+  （「banto が、このフォルダを Root にして作ります」）。Project の段はフォルダが決まって
+  作れるときだけ出す。ボタンも「clone して Project を作る」「リポジトリと Project を作る」
+  のように、何が2つ起きるかを言う。完了のトーストも「Repo が〜を clone し、Project「〜」を作りました」
+- **Project に Module を自動で繋ぐのをやめた**（その1行の説明も消した）
+- **リポジトリの一覧**（`canvas/repo-list-view.tsx`、Canvas `banto.repo:repos`）——
+  ghq の置き場にあるものを **owner フォルダごと**（＝アカウントごと。置き場の形そのまま）に並べる。
+  行は2列だけ：
+  - 左：名前と **GitHub にあるか**。まだなら「このマシンにだけ」（**この一覧で塗るのはここだけ**——
+    壊れたら消えるもの、次の手が要るもの）と、同じ行に「GitHub に公開」
+  - 右：**使っている Project**（サイドバーと同じ頭文字。worktree で使っていればそう言う・閉じた
+    Project は押すと再開）。無ければ同じ場所に「Project を始める」
+  - 違うアカウント・違う名前で公開したものは、その行で持ち主を言い、**「置き場がずれています——
+    ghq の置き方なら〜」**を出す（origin が GitHub の外のときも）。直す手は置かない（未決）
+  - 上に絞り込み（すべて／Project なし／このマシンにだけ／置き場のずれ、件数つき。ずれが0なら札を出さない）と名前の検索
+  - 「Project を始める」は新しい Project の画面を**手元のフォルダ・その置き場を Root に**した状態で開く
+  - 「GitHub に公開」は**一覧の中で**公開の画面に替わる（Module の中の移動。「← リポジトリの一覧」で戻る）
+- **公開の画面は対象をフォルダで決める**（`RepoPublishPanel`）——Project の中の入口
+  「この Project を GitHub に公開」はその Project の Root、一覧からはそのリポジトリ。
+  別の名前・別のアカウントを選ぶと、押す前に「フォルダは今の場所のまま。ghq の置き方（〜）からはずれます」と言う
+- **リポジトリの状態の真実は置き場1つ**（`lib/mock/github.ts` の `getLocalRepos`）——
+  Project ごとの写し（旧 `getProjectRepoState`）はやめ、Project の Root から引いて導く（規則3）。
+  「記憶の検証」の Root は `~/ghq/github.com/tjst-t/hermes`（このマシンにだけあるリポジトリの例）に移した
+
+**banto 全体の Module の画面をどう開くか（決めたこと）**：
+
+- **Project の中では Command Palette の「Module の入口」→ 会話の隣の Canvas**。banto 全体に1本の
+  Module の入口は、**その Project に繋いでいなくても出す**（`getLaunchersForProject`）——Project に
+  繋ぐかどうかが決めるのは、その Project の AI に tool を見せるかだけで、人が開く画面までは絞らない。
+  「repo」と打っても引ける（入口の名前だけでなく Module の名前でも引く）
+- **banto 全体の設定の Repo の面には、同じ一覧をその場に埋め込む**（アカウントの登録はその下）
+- 理由：①Module の画面の器は既にある2つ（launcher の Canvas と設定面）で足りる——新しいルート
+  （Project の外の Canvas の置き場）を作らない。②同じ画面を設定面にも出すのは、本物の Skill の
+  置き場（`ui://banto-skills/manage`）と同じ形。③Project の中から開けば会話を残したまま見られ、
+  「Project を始める」で新しい Project へそのまま移れる。設定から開けば Project が1つも無くても使える
+- **仕様と違う点**（規則8、ユーザー確認待ち）：`docs/specs/v4-frontend.md` §6.2 は「その Project に
+  繋がっている Module の入口だけを出す」。banto 全体の Module はこの例外にした
+
+**状態ごとの URL**：一覧は `/p/<どれでも>?canvas=banto.repo:repos`、設定では
+`/settings?section=module:banto.repo`。一覧から「Project を始める」を押したのと同じ状態は
+`?new-project=folder&folder=~/ghq/github.com/tjst-t/dotfiles`。
 
 ## まだ実装していない
 

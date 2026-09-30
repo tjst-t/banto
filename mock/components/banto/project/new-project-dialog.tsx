@@ -1,12 +1,18 @@
 "use client";
 
-// 新規 Project の作成（§2.2）。**始め方は3つ**（決定・2026-09-29、ユーザー）：
+// 新規 Project の作成（§2.2）。**分担**（改訂・2026-09-30、ユーザー）：
+// **フォルダを用意するのは Repo**（banto 全体に1本、Project より先に動く）、
+// **そのフォルダを Root にして Project を作るのは banto 本体**。画面も2段に分けて、
+// どちらが何をするかが読めるようにする——上が「フォルダ」、下が「Project」。
+// Project に Module を自動で繋ぐことはしない（Repo は banto 全体の Module なので要らない）。
 //
-// | 始め方 | Root | 何が起きるか |
+// フォルダの用意の仕方は3つ（決定・2026-09-29、ユーザー）：
+//
+// | 用意の仕方 | Root | 誰が何をするか |
 // |---|---|---|
-// | フォルダを選ぶ | 人が打つ／選ぶ | 今ある形（本実装と同じ：名前・Root パス・「選ぶ」） |
-// | GitHub から clone | `~/ghq/github.com/<owner>/<repo>` | リポジトリを探して選ぶ → clone → そこを Root に |
-// | 新しいリポジトリ | `~/ghq/github.com/<アカウント>/<name>` | ローカルに作る。GitHub へはあとで（Repo の「GitHub に公開」） |
+// | 手元のフォルダ | 人が打つ／選ぶ | 何もしない（本実装と同じ：Root パス・「選ぶ」） |
+// | GitHub から clone | `~/ghq/github.com/<owner>/<repo>` | Repo が clone する |
+// | 新しいリポジトリ | `~/ghq/github.com/<アカウント>/<name>` | Repo が作って git init する。GitHub へはあとで |
 //
 // clone と新規の Root は人が打たない。代わりに **Root パスと、そこに既に何があるか**を
 // 押す前に見せる（`RepoRootPreview`）——ここがこの画面でいちばん目立つ場所。
@@ -49,22 +55,16 @@ import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import { createProject, reopenProject } from "@/lib/mock/projects";
-import {
-  getRoles,
-  linkProjectModule,
-  mockCredentials,
-  mockRuntimeDefaults,
-} from "@/lib/mock/settings";
+import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/settings";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   useGithubAccounts,
+  addLocalRepo,
   getReposForAccount,
   ghqPath,
   inspectRepoFolder,
   parseRepoReference,
-  recordCreatedFolder,
   repoExistsOnGithub,
-  setProjectRepoState,
   type MockGithubAccount,
 } from "@/lib/mock/github";
 import type { MockProjectOverrides } from "@/lib/mock/types";
@@ -77,37 +77,50 @@ type Overrides = Omit<MockProjectOverrides, "projectId" | "securityRoot">;
 
 export type StartMethod = "folder" | "clone" | "create";
 
-/** URL から開くときの初期状態（`RepoDemoParams`） */
+/** 開くときの初期状態（URL の `RepoDemoParams`・リポジトリの一覧の「Project を始める」） */
 export interface NewProjectPreset {
   method?: StartMethod;
   /** `owner/repo`。clone なら選んだ状態、新しいリポジトリなら名前に入る */
   repo?: string;
+  /** 手元のフォルダの Root パス（一覧から来たとき、そのリポジトリの置き場） */
+  folder?: string;
+  /** Project 名の初期値 */
+  name?: string;
 }
 
 const START_METHODS = [
   {
     value: "folder",
-    label: "フォルダを選ぶ",
+    label: "手元のフォルダ",
     icon: FolderOpen,
-    lead: "手元にあるフォルダを、そのまま Root にします。",
+    lead: "あるフォルダを、そのまま使います。",
+    who: null,
   },
   {
     value: "clone",
     label: "GitHub から clone",
     icon: CloudDownload,
-    lead: "リポジトリを ~/ghq に clone して、そこを Root にします。",
+    lead: "~/ghq に clone します。",
+    who: "Repo が用意します",
   },
   {
     value: "create",
     label: "新しいリポジトリ",
     icon: FolderPlus,
-    lead: "ローカルに作って始めます。GitHub へは、あとで公開できます。",
+    lead: "~/ghq に作って git init します。GitHub へは、あとで公開できます。",
+    who: "Repo が用意します",
   },
-] as const satisfies readonly { value: StartMethod; label: string; icon: unknown; lead: string }[];
+] as const satisfies readonly {
+  value: StartMethod;
+  label: string;
+  icon: unknown;
+  lead: string;
+  who: string | null;
+}[];
 
 const REPO_NAME = /^[A-Za-z0-9._-]+$/;
 
-/** Repo は Vault が要る（`dependsOn` の required）。上書きしなければ instance 既定の接続 */
+/** Advanced の「使う Vault 接続」で上書きを始めたときの初期値 */
 const DEFAULT_VAULT = "banto.vault-local";
 
 type PrimaryAction = "create-at-folder" | "clone" | "use-cloned" | "open-existing" | "create-repo";
@@ -146,14 +159,14 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
   const account: MockGithubAccount | undefined =
     accounts.find((a) => a.id === accountChoice) ?? accounts[0];
 
-  const [basePath, setBasePath] = useState("");
+  const [basePath, setBasePath] = useState(preset?.folder ?? "");
   const [picked, setPicked] = useState<{ owner: string; name: string } | null>(
     preset?.method === "clone" ? presetRepo : null,
   );
   const [cloneRun, setCloneRun] = useState<Exclude<RootPreviewStatus, { kind: "folder" }> | null>(null);
   const [repoName, setRepoName] = useState(preset?.method === "create" ? (presetRepo?.name ?? "") : "");
   /** null＝リポジトリ名に合わせる（人が打ったら、以後はその値） */
-  const [projectName, setProjectName] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(preset?.name ?? null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [overrides, setOverrides] = useState<Overrides>({});
 
@@ -173,11 +186,11 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
   const preview: RootPreviewStatus | null =
     cloneRun ?? (folderState ? { kind: "folder", state: folderState } : null);
   const name = projectName ?? (method === "folder" ? "" : (target?.name ?? ""));
-  const opensExisting = method === "clone" && folderState?.kind === "same-repo-project";
-  // 作れるときだけ名前を聞く（断っているときに聞いても、使い道が無い）
+  // 作れるときだけ下の段（Project）を出す（断っているときに名前を聞いても、使い道が無い）
   const canCreateHere =
     cloneRun?.kind !== "clone-failed" &&
     (folderState?.kind === "empty" || (method === "clone" && folderState?.kind === "same-repo"));
+  const showProjectStep = method === "folder" || (!!target && canCreateHere);
 
   function changeMethod(next: StartMethod) {
     if (cloneRun?.kind === "cloning") return;
@@ -198,15 +211,15 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
     changeMethod("clone");
   }
 
-  function finish(path: string, repo?: Parameters<typeof setProjectRepoState>[1]) {
+  function openProject(projectId: string, closed: boolean) {
+    if (closed) reopenProject(projectId);
+    onDone();
+    router.push(`/p/${projectId}`);
+  }
+
+  /** banto 本体の仕事——用意できたフォルダを Root にして Project を作る */
+  function finish(path: string) {
     const project = createProject({ name: name.trim(), basePath: path, overrides });
-    if (repo) {
-      setProjectRepoState(project.id, repo);
-      // リポジトリから始めた Project には Repo を繋いでおく——あとで公開・push する入口
-      // （パレットの「GitHub に公開」）は Repo の launcher なので、繋がないと辿り着けない
-      linkProjectModule(project.id, overrides.vaultImplementationId ?? DEFAULT_VAULT);
-      linkProjectModule(project.id, "banto.repo");
-    }
     onDone();
     router.push(`/p/${project.id}`);
     return project;
@@ -231,9 +244,17 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         });
         return;
       }
-      recordCreatedFolder(owner, repo, `git@github.com:${owner}/${repo}.git`);
-      finish(ghqPath(owner, repo), { kind: "github", owner, name: repo, private: true });
-      toast(`${owner}/${repo} を clone しました`);
+      const listed = accounts
+        .flatMap((a) => getReposForAccount(a.id))
+        .find((r) => r.owner === owner && r.name === repo);
+      addLocalRepo({
+        owner,
+        name: repo,
+        // 一覧に無い（URL で貼った）ものは、読めたのだから公開のリポジトリ
+        remote: { kind: "github", owner, name: repo, private: listed?.private ?? false },
+      });
+      const project = finish(ghqPath(owner, repo));
+      toast(`Repo が ${owner}/${repo} を clone し、Project「${project.name}」を作りました`);
     }, 180);
   }
 
@@ -242,27 +263,27 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
 
   function primaryAction(): { label: string; action: PrimaryAction | null } {
     if (method === "folder") {
-      return { label: "作成する", action: name.trim() && basePath.trim() ? "create-at-folder" : null };
+      return { label: "Project を作る", action: name.trim() && basePath.trim() ? "create-at-folder" : null };
     }
     if (method === "clone") {
       if (cloneRun?.kind === "cloning") return { label: "clone しています…", action: null };
-      if (!picked || !folderState || cloneRun) return { label: "clone して作成", action: null };
+      if (!picked || !folderState || cloneRun) return { label: "clone して Project を作る", action: null };
       switch (folderState.kind) {
         case "empty":
-          return { label: "clone して作成", action: name.trim() ? "clone" : null };
+          return { label: "clone して Project を作る", action: name.trim() ? "clone" : null };
         case "same-repo":
-          return { label: "このフォルダで作成", action: name.trim() ? "use-cloned" : null };
+          return { label: "このフォルダで Project を作る", action: name.trim() ? "use-cloned" : null };
         case "same-repo-project":
           return {
             label: `「${folderState.projectName}」を${folderState.closed ? "再開" : "開く"}`,
             action: "open-existing",
           };
         default:
-          return { label: "clone して作成", action: null };
+          return { label: "clone して Project を作る", action: null };
       }
     }
     return {
-      label: "作成する",
+      label: "リポジトリと Project を作る",
       action: target && folderState?.kind === "empty" && name.trim() ? "create-repo" : null,
     };
   }
@@ -277,33 +298,16 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         if (picked) startClone(picked.owner, picked.name);
         return;
       case "use-cloned":
-        if (picked) {
-          finish(ghqPath(picked.owner, picked.name), {
-            kind: "github",
-            owner: picked.owner,
-            name: picked.name,
-            private: true,
-          });
-        }
+        if (picked) finish(ghqPath(picked.owner, picked.name));
         return;
       case "open-existing":
-        if (folderState?.kind === "same-repo-project") {
-          if (folderState.closed) reopenProject(folderState.projectId);
-          onDone();
-          router.push(`/p/${folderState.projectId}`);
-        }
+        if (folderState?.kind === "same-repo-project") openProject(folderState.projectId, folderState.closed);
         return;
       case "create-repo":
         if (target) {
-          recordCreatedFolder(target.owner, target.name, "");
-          finish(ghqPath(target.owner, target.name), {
-            kind: "local",
-            branch: "main",
-            commits: 0,
-            lastCommit: "",
-            lastCommitAt: "",
-            otherBranches: [],
-          });
+          addLocalRepo({ owner: target.owner, name: target.name, remote: { kind: "none" } });
+          const project = finish(ghqPath(target.owner, target.name));
+          toast(`Repo が ${target.owner}/${target.name} を作り、Project「${project.name}」を作りました`);
         }
         return;
       case null:
@@ -317,14 +321,16 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
     <form onSubmit={handleSubmit} className="flex min-w-0 flex-col gap-4">
       <DialogHeader>
         <DialogTitle>新しい Project</DialogTitle>
-        <DialogDescription>Project は仕事の入れ物。Module 集合は後から足せる。</DialogDescription>
+        <DialogDescription>Root にするフォルダを用意して、そこに Project を作ります。</DialogDescription>
       </DialogHeader>
 
       <div className="flex flex-col gap-2">
-        {/* 始め方——1段目。本実装の SegmentedTabs と同じ形（全幅・下線・選んだものに地） */}
+        {/* 上の段：フォルダ。clone・新規なら Repo の仕事 */}
+        <StepHeading id="new-project-folder-step" title="Root にするフォルダ" who={current.who} />
+        {/* 用意の仕方。本実装の SegmentedTabs と同じ形（全幅・下線・選んだものに地） */}
         <div
           role="tablist"
-          aria-label="始め方"
+          aria-labelledby="new-project-folder-step"
           data-testid="start-method"
           onKeyDown={(e) =>
             moveChoiceByKey(
@@ -375,12 +381,7 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-y-auto [&>*]:shrink-0"
       >
         {method === "folder" ? (
-          <FolderFields
-            name={name}
-            onNameChange={setProjectName}
-            basePath={basePath}
-            onBasePathChange={setBasePath}
-          />
+          <FolderField basePath={basePath} onBasePathChange={setBasePath} autoFocus={!preset?.folder} />
         ) : !account ? (
           <NoGithubAccount
             reason={
@@ -447,33 +448,40 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
                 takenOnGithub={method === "create" && repoExistsOnGithub(target.owner, target.name)}
                 onUseAsFolder={openAsFolder}
                 onSwitchToClone={switchToClone}
+                onOpenProject={openProject}
               />
-            ) : null}
-
-            {target && canCreateHere ? (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="new-project-name">Project 名</Label>
-                <Input
-                  id="new-project-name"
-                  value={name}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  aria-describedby="new-project-modules-note"
-                />
-                <p id="new-project-modules-note" className="text-xs text-ink-3">
-                  Repo と、それが使う Vault を繋いで作ります。
-                </p>
-              </div>
             ) : null}
           </>
         )}
 
-        {!opensExisting ? (
-          <AdvancedOverrides
-            open={showAdvanced}
-            onToggle={() => setShowAdvanced((v) => !v)}
-            overrides={overrides}
-            patch={(next) => setOverrides((prev) => ({ ...prev, ...next }))}
-          />
+        {/* 下の段：Project。banto 本体の仕事——用意できたフォルダを Root にして作る */}
+        {showProjectStep ? (
+          <section
+            aria-labelledby="new-project-project-step"
+            data-testid="new-project-project-step"
+            className="flex flex-col gap-4 border-t border-border pt-4"
+          >
+            <StepHeading
+              id="new-project-project-step"
+              title="Project"
+              who="banto が、このフォルダを Root にして作ります"
+            />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-project-name">Project 名</Label>
+              <Input
+                id="new-project-name"
+                value={name}
+                onChange={(e) => setProjectName(e.target.value)}
+                autoFocus={method === "folder" && !!preset?.folder}
+              />
+            </div>
+            <AdvancedOverrides
+              open={showAdvanced}
+              onToggle={() => setShowAdvanced((v) => !v)}
+              overrides={overrides}
+              patch={(next) => setOverrides((prev) => ({ ...prev, ...next }))}
+            />
+          </section>
         ) : null}
       </div>
 
@@ -489,32 +497,40 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
   );
 }
 
-function FolderFields({
-  name,
-  onNameChange,
+/** 段の見出し——左に何の段か、右に誰がそれをするか（Repo か banto か） */
+function StepHeading({ id, title, who }: { id: string; title: string; who: string | null }) {
+  return (
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+      <h3 id={id} className="text-sm font-semibold text-foreground">
+        {title}
+      </h3>
+      {who ? (
+        <p data-testid={`${id}-who`} className="text-xs text-ink-3">
+          {who}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function FolderField({
   basePath,
   onBasePathChange,
+  autoFocus,
 }: {
-  name: string;
-  onNameChange: (next: string) => void;
   basePath: string;
   onBasePathChange: (next: string) => void;
+  autoFocus: boolean;
 }) {
   return (
-    <>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="new-project-name">Project 名</Label>
-        <Input id="new-project-name" value={name} onChange={(e) => onNameChange(e.target.value)} autoFocus />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="new-project-path">Root パス</Label>
-        <PathPicker id="new-project-path" value={basePath} onChange={onBasePathChange} />
-        <p className="text-xs text-ink-3">
-          Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
-        </p>
-        <WideRootWarning path={basePath} />
-      </div>
-    </>
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor="new-project-path">Root パス</Label>
+      <PathPicker id="new-project-path" value={basePath} onChange={onBasePathChange} autoFocus={autoFocus} />
+      <p className="text-xs text-ink-3">
+        Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
+      </p>
+      <WideRootWarning path={basePath} />
+    </div>
   );
 }
 

@@ -20,9 +20,18 @@ const TREE: Record<string, readonly string[]> = {
   "~": ["Documents", "Downloads", "ghq", "srv", "worktrees"],
   "~/ghq": ["github.com"],
   "~/ghq/github.com": ["tjst-t", "work-org"],
-  "~/ghq/github.com/tjst-t": ["banto", "home-automation", "notes", "scratch"],
+  "~/ghq/github.com/tjst-t": [
+    "banto",
+    "dotfiles",
+    "hermes",
+    "home-automation",
+    "notes",
+    "recipe-box",
+    "scratch",
+    "tiny-cli",
+  ],
   "~/ghq/github.com/work-org": ["infra"],
-  "~/worktrees": ["banto-v4", "hermes", "old-migration"],
+  "~/worktrees": ["banto-v4", "old-migration"],
   "~/srv": ["media"],
 };
 
@@ -41,10 +50,12 @@ export function PathPicker({
   id,
   value,
   onChange,
+  autoFocus,
 }: {
   id: string;
   value: string;
   onChange: (next: string) => void;
+  autoFocus?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -54,6 +65,7 @@ export function PathPicker({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="font-mono text-xs"
+        autoFocus={autoFocus}
       />
       <Button
         type="button"

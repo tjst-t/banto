@@ -25,7 +25,7 @@ let projects: MockProject[] = [
     name: "記憶の検証",
     initial: "記",
     baseThreadId: "hermes-base",
-    basePath: "~/worktrees/hermes",
+    basePath: "~/ghq/github.com/tjst-t/hermes",
     status: "active",
   },
   {

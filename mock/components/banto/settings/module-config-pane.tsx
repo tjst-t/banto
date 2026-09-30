@@ -14,6 +14,7 @@
 import { Folders, ShieldCheck } from "lucide-react";
 import { getImplementation, getVaultAliasesForProject, mockModuleConfigFields } from "@/lib/mock/settings";
 import { getProject } from "@/lib/mock/projects";
+import { RepoList } from "@/components/banto/canvas/repo-list-view";
 import { GithubAccountsSection } from "./github-accounts-section";
 
 export function ModuleConfigPane({
@@ -52,6 +53,13 @@ export function ModuleConfigPane({
           <ShieldCheck className="size-3.5" />
           sandboxed iframe
         </div>
+        {/* Repo は banto 全体に1本——リポジトリの一覧（launcher の Canvas と同じ画面）を
+            いちばん上に。人がこの面に来る用事は、たいていこれ */}
+        {impl.roleId === "repo" && projectId === undefined ? (
+          <div id="anchor-repo-list" className="mb-3 rounded-md border border-border bg-card p-3">
+            <RepoList embedded />
+          </div>
+        ) : null}
         {/* この枠の中だけ、banto 自身の UI と質感を変える——背景・角丸・枠線を
             banto のカードとずらし、「ここから先は他人のコードの領域」を示す */}
         <div className="rounded-md border border-border bg-card p-3">
@@ -72,6 +80,7 @@ export function ModuleConfigPane({
             </dl>
           )}
         </div>
+
 
         {/* GitHub のアカウントは banto 全体で1組（Project ごとには持たない） */}
         {impl.roleId === "repo" && projectId === undefined ? <GithubAccountsSection /> : null}

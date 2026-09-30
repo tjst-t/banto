@@ -4,7 +4,8 @@
 //
 // clone と「新しいリポジトリ」の Root は人が打たない——`~/ghq/github.com/<owner>/<repo>`
 // に決まる。だから画面の仕事は入力欄ではなく、**決まった場所と、そこに既に何があるか**を
-// 押す前に見せること。置き場の状態は5つ（`RepoFolderState`）で、判断は
+// 押す前に見せること。フォルダを用意するのは Repo なので、文は「Repo が〜します」で言う。
+// 置き場の状態は6つ（`RepoFolderState`）で、判断は
 // `inspectRepoFolder` の1箇所が持つ（規則3）——この部品は言い方だけを持つ。
 //
 // 色は状態に1つずつ：そのまま使う＝ok の地、断る＝turn の地（人の手が要る）。
@@ -39,6 +40,7 @@ export function RepoRootPreview({
   takenOnGithub,
   onUseAsFolder,
   onSwitchToClone,
+  onOpenProject,
 }: {
   mode: "clone" | "create";
   owner: string;
@@ -49,10 +51,13 @@ export function RepoRootPreview({
   /** 断ったときの次の手——そのフォルダを「フォルダを選ぶ」でそのまま Root にする */
   onUseAsFolder: () => void;
   onSwitchToClone: () => void;
+  /** そのフォルダを Root にした Project が、もうあるとき——新しく作らずそれを開く */
+  onOpenProject: (projectId: string, closed: boolean) => void;
 }) {
   const { tone, icon, message, next } = describe(mode, owner, name, status, {
     onUseAsFolder,
     onSwitchToClone,
+    onOpenProject,
   });
 
   return (
@@ -124,7 +129,11 @@ function describe(
   owner: string,
   name: string,
   status: RootPreviewStatus,
-  actions: { onUseAsFolder: () => void; onSwitchToClone: () => void },
+  actions: {
+    onUseAsFolder: () => void;
+    onSwitchToClone: () => void;
+    onOpenProject: (projectId: string, closed: boolean) => void;
+  },
 ): { tone: Tone; icon: ReactNode; message: ReactNode; next?: ReactNode } {
   if (status.kind === "cloning") {
     return {
@@ -132,7 +141,7 @@ function describe(
       icon: <LoaderCircle className="motion-safe:animate-spin" />,
       message: (
         <>
-          clone しています…{" "}
+          Repo が clone しています…{" "}
           <span className="font-mono text-ink-3 tabular-nums">
             {status.received.toLocaleString()} / {status.total.toLocaleString()}
           </span>
@@ -160,11 +169,11 @@ function describe(
   switch (status.state.kind) {
     case "empty":
       return mode === "clone"
-        ? { tone: "plain", icon: <CloudDownload />, message: "ここに clone して、Root にします。" }
+        ? { tone: "plain", icon: <CloudDownload />, message: "Repo がここに clone します。" }
         : {
             tone: "plain",
             icon: <FolderPlus />,
-            message: "ここに空のリポジトリを作ります。GitHub には、まだ作りません。",
+            message: "Repo がここに空のリポジトリを作ります（git init）。GitHub には、まだ作りません。",
           };
     case "same-repo":
       return mode === "clone"
@@ -173,7 +182,7 @@ function describe(
             icon: <CircleCheck />,
             message: (
               <>
-                {owner}/{name} は、もうここに clone してあります。clone せず、このフォルダを使います。
+                {owner}/{name} は、もうここに clone してあります。clone せず、このフォルダをそのまま使います。
               </>
             ),
           }
@@ -210,6 +219,40 @@ function describe(
             ),
             next: <NextStep label="GitHub から clone で開く" onClick={actions.onSwitchToClone} />,
           };
+    case "local-only": {
+      const { project } = status.state;
+      const usedBy = project ? <>（Project「{project.name}」の Root）</> : null;
+      // 使っている Project があるなら、同じフォルダに2つ目を作るより、それを開く
+      const next = project ? (
+        <NextStep
+          label={`「${project.name}」を${project.closed ? "再開" : "開く"}`}
+          onClick={() => actions.onOpenProject(project.id, project.closed)}
+        />
+      ) : (
+        useAsFolder
+      );
+      return mode === "clone"
+        ? {
+            tone: "stop",
+            icon: <Ban />,
+            message: (
+              <>
+                ここには、まだ GitHub に上げていない {name} があります{usedBy}。上書きしないので、clone できません。
+              </>
+            ),
+            next,
+          }
+        : {
+            tone: "stop",
+            icon: <Ban />,
+            message: (
+              <>
+                ここには、もう {name} があります{usedBy}。新しくは作りません。
+              </>
+            ),
+            next,
+          };
+    }
     case "other-repo":
       return {
         tone: "stop",

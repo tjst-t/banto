@@ -118,7 +118,11 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   // Module の入口・資源——いまの Project の Module 集合に限る（§6.3）
   if (currentProjectId) {
     const launcherItems: PaletteItem[] = getLaunchersForProject(currentProjectId)
-      .filter((l) => q === "" || l.label.toLowerCase().includes(q))
+      // 入口の名前が「リポジトリの一覧」でも、人は「repo」と打つ——Module の名前でも引ける
+      .filter(
+        (l) =>
+          q === "" || l.label.toLowerCase().includes(q) || l.implementationName.toLowerCase().includes(q),
+      )
       .map((l) => ({
         id: `launcher:${l.implementationId}:${l.id}`,
         title: l.label,

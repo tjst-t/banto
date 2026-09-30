@@ -1,8 +1,11 @@
 "use client";
 
-// 「新しいリポジトリ」で始めた Project を、あとで GitHub に公開する（2026-09-29、
-// 流れB の後半）。Repo Module の Canvas（`banto.repo:publish`）——人が launcher から
-// 開いてもよいし、AI が「公開しましょうか」と開いてもよい。
+// まだこのマシンにだけあるリポジトリを GitHub に公開する（2026-09-29）。
+// Repo Module の Canvas（`banto.repo:publish`）。**入口は2つ**（改訂・2026-09-30）：
+// - Project の中の入口「この Project を GitHub に公開」——その Project の Root のリポジトリ
+// - リポジトリの一覧の「GitHub に公開」——一覧の中で開く（`folder`・`onBack` を渡す）
+// 対象は**フォルダ**で決まる（Project ではない）。リポジトリの状態の真実は
+// `lib/mock/github.ts` の置き場の一覧1つ（規則3）。
 //
 // 決めること：どのアカウント・名前・公開／非公開・最初の push。
 // いちばん上に **どこから、どこへ**（手元のフォルダ → github.com/<owner>/<name>）を
@@ -11,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   ArrowDown,
+  ArrowLeft,
   Ban,
   CircleAlert,
   CircleCheck,
@@ -30,10 +34,13 @@ import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   useGithubAccounts,
-  getProjectRepoState,
+  findRepoForFolder,
+  ghqPath,
+  gitInitFolder,
+  isInGhq,
   repoExistsOnGithub,
-  setProjectRepoState,
-  type ProjectRepoState,
+  setRepoRemote,
+  type LocalRepo,
 } from "@/lib/mock/github";
 import { ChoicePills } from "@/components/banto/project/choice-pills";
 import {
@@ -43,23 +50,45 @@ import {
 
 const REPO_NAME = /^[A-Za-z0-9._-]+$/;
 
+/** Project の中の入口から開いたとき——その Project の Root を対象にする */
 export function RepoPublishView() {
-  useMockStoreVersion();
   const params = useParams<{ projectId?: string }>();
   if (!params.projectId) {
-    return <p className="p-6 text-sm text-ink-3">Project の中で開いてください。</p>;
+    return <p className="p-6 text-sm text-ink-3">Project の中で開くか、リポジトリの一覧から開いてください。</p>;
   }
-  const project = getProject(params.projectId);
-  const repo = getProjectRepoState(project.id);
+  return <RepoPublishPanel folder={getProject(params.projectId).basePath} />;
+}
+
+export function RepoPublishPanel({ folder, onBack }: { folder: string; onBack?: () => void }) {
+  useMockStoreVersion();
+  const repo = findRepoForFolder(folder);
   return (
     <div className="h-full min-h-0 overflow-y-auto" data-testid="repo-publish">
       <div className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-8">
-        {repo.kind === "local" ? (
-          <PublishForm projectId={project.id} folder={project.basePath} repo={repo} />
-        ) : repo.kind === "github" ? (
-          <Published folder={project.basePath} repo={repo} />
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="-mb-3 flex w-fit items-center gap-1 rounded-sm text-xs text-ink-3 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <ArrowLeft className="size-3.5" />
+            リポジトリの一覧
+          </button>
+        ) : null}
+        {!repo ? (
+          <NotGit folder={folder} />
+        ) : repo.remote.kind === "none" ? (
+          <PublishForm folder={folder} repo={repo} />
+        ) : repo.remote.kind === "github" ? (
+          <Published folder={folder} remote={repo.remote} />
         ) : (
-          <NotGit projectId={project.id} folder={project.basePath} />
+          <>
+            <Heading
+              title="GitHub の外にあります"
+              lead="このリポジトリの origin は GitHub ではありません。ここからは公開しません。"
+            />
+            <p className="font-mono text-xs break-all text-ink-2">origin：{repo.remote.url}</p>
+          </>
         )}
       </div>
     </div>
@@ -82,12 +111,15 @@ function Route({
   name,
   isPrivate,
   published,
+  drift,
 }: {
   folder: string;
   owner: string;
   name: string;
   isPrivate: boolean;
   published: boolean;
+  /** ghq の置き方からずれるとき、置き方どおりならどこか */
+  drift?: string;
 }) {
   return (
     <div data-testid="publish-route" className="overflow-hidden rounded-md border border-border">
@@ -111,25 +143,32 @@ function Route({
           {isPrivate ? "非公開" : "公開"}
         </span>
       </div>
+      {drift ? (
+        <p
+          data-testid="publish-drift"
+          className="flex items-start gap-1.5 border-t border-border px-3 py-2 text-xs text-ink-2"
+        >
+          <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" />
+          <span>
+            フォルダは今の場所のまま動かしません。ghq の置き方（
+            <span className="font-mono break-all">{drift}</span>）からは、ずれます。
+          </span>
+        </p>
+      ) : null}
     </div>
   );
 }
 
 type Step = { label: string; state: "waiting" | "running" | "done" };
 
-function PublishForm({
-  projectId,
-  folder,
-  repo,
-}: {
-  projectId: string;
-  folder: string;
-  repo: Extract<ProjectRepoState, { kind: "local" }>;
-}) {
+function PublishForm({ folder, repo }: { folder: string; repo: LocalRepo }) {
   const accounts = useGithubAccounts();
-  const [accountChoice, setAccountChoice] = useState<string | null>(null);
+  // 置き場の owner のアカウントがあれば、それを先に選んでおく（ずれない方）
+  const [accountChoice, setAccountChoice] = useState<string | null>(
+    () => accounts.find((a) => a.login === repo.owner)?.id ?? null,
+  );
   const account = accounts.find((a) => a.id === accountChoice) ?? accounts[0];
-  const [name, setName] = useState(() => folder.split("/").pop() ?? "");
+  const [name, setName] = useState(repo.name);
   const [visibility, setVisibility] = useState<"private" | "public">("private");
   const [pushAll, setPushAll] = useState(false);
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -158,7 +197,7 @@ function PublishForm({
     const advance = () => {
       setSteps(plan.map((s, j) => ({ ...s, state: j < i ? "done" : j === i ? "running" : "waiting" })));
       if (i === plan.length) {
-        setProjectRepoState(projectId, {
+        setRepoRemote(repo.path, {
           kind: "github",
           owner: account.login,
           name,
@@ -187,6 +226,11 @@ function PublishForm({
           name={name}
           isPrivate={visibility === "private"}
           published={false}
+          drift={
+            isInGhq(repo) && name && (account.login !== repo.owner || name !== repo.name)
+              ? ghqPath(account.login, name)
+              : undefined
+          }
         />
       ) : null}
 
@@ -332,18 +376,18 @@ function PublishForm({
 
 function Published({
   folder,
-  repo,
+  remote,
 }: {
   folder: string;
-  repo: Extract<ProjectRepoState, { kind: "github" }>;
+  remote: Extract<LocalRepo["remote"], { kind: "github" }>;
 }) {
   return (
     <>
       <Heading
         title="GitHub にあります"
-        lead={`この Project のリポジトリは github.com/${repo.owner}/${repo.name} を origin にしています。`}
+        lead={`このリポジトリは github.com/${remote.owner}/${remote.name} を origin にしています。`}
       />
-      <Route folder={folder} owner={repo.owner} name={repo.name} isPrivate={repo.private} published />
+      <Route folder={folder} owner={remote.owner} name={remote.name} isPrivate={remote.private} published />
       <p data-testid="publish-done" className="flex items-center gap-1.5 text-xs text-ink-2">
         <CircleCheck className="size-3.5 text-ok" />
         公開済みです。
@@ -352,12 +396,12 @@ function Published({
   );
 }
 
-function NotGit({ projectId, folder }: { projectId: string; folder: string }) {
+function NotGit({ folder }: { folder: string }) {
   return (
     <>
       <Heading
         title="GitHub に公開"
-        lead="この Project のフォルダは、git のリポジトリではありません。"
+        lead="このフォルダは、git のリポジトリではありません。"
       />
       <p className="font-mono text-md break-all text-ink-2">{folder}</p>
       <div className="flex flex-col items-start gap-2">
@@ -366,16 +410,7 @@ function NotGit({ projectId, folder }: { projectId: string; folder: string }) {
           type="button"
           variant="outline"
           size="sm"
-          onClick={() =>
-            setProjectRepoState(projectId, {
-              kind: "local",
-              branch: "main",
-              commits: 0,
-              lastCommit: "",
-              lastCommitAt: "",
-              otherBranches: [],
-            })
-          }
+          onClick={() => gitInitFolder(folder)}
         >
           git init する
         </Button>

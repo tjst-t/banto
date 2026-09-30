@@ -3,8 +3,10 @@
 // - アカウントは Repo の設定で登録する（名前・PAT・SSH 鍵）。PAT と鍵の中身は
 //   ここに持たない——Vault の alias の名前だけを持つ（VaultUI と同じ作法）
 // - clone 先は ghq の置き方（`~/ghq/github.com/<owner>/<repo>`）
+// - **Repo は banto 全体に1本**（改訂・2026-09-30、ユーザー）——Project より先に動き、
+//   フォルダを用意する（clone・git init）だけ。Project を作るのは banto 本体
 // - 置き場に既にフォルダがあるとき、何が起きるかは `inspectRepoFolder` の1箇所で決める
-//   （新しい Project の画面の3つの始め方と、あとで公開する画面が同じ答えを使う）
+//   （新しい Project の画面と、リポジトリの一覧が同じ答えを使う）
 import { useSyncExternalStore } from "react";
 import { getActiveProjects, getAllProjects } from "./projects";
 import { notifyMockStoreChange, subscribeMockStore } from "./store-events";
@@ -113,23 +115,171 @@ export function ghqPath(owner: string, name: string): string {
   return `${GHQ_ROOT}/${owner}/${name}`;
 }
 
-/**
- * ghq の置き場に、いま何があるか（本物は host が見て答える）。
- * `tjst-t/home-automation` は「自宅サーバ」の Project の Root になっている
- */
-const LOCAL_FOLDERS: Record<string, { kind: "git"; origin: string } | { kind: "plain"; entries: number }> = {
-  "tjst-t/banto": { kind: "git", origin: "git@github.com:tjst-t/banto.git" },
-  "tjst-t/home-automation": { kind: "git", origin: "git@github.com:tjst-t/home-automation.git" },
-  "tjst-t/notes": { kind: "git", origin: "git@gitlab.com:tjst-t/notes.git" },
-  "tjst-t/scratch": { kind: "plain", entries: 14 },
-  "work-org/infra": { kind: "git", origin: "https://github.com/work-org/infra.git" },
+// ── ghq の置き場にあるリポジトリ（2026-09-30、Repo は banto 全体に1本）──────────
+//
+// **真実はフォルダ1つずつ**（規則3）。Project の側には写しを持たない——
+// 「この Project のリポジトリ」は Project の Root からここを引いて導く。
+// 本物は Repo が host のフォルダを見て答える。
+
+/** origin がどこにあるか */
+export type RepoRemote =
+  | { kind: "github"; owner: string; name: string; private: boolean }
+  /** GitHub の外（gitlab 等） */
+  | { kind: "elsewhere"; url: string }
+  /** origin が無い——このマシンにだけある */
+  | { kind: "none" };
+
+export interface LocalRepo {
+  /** `~/ghq/github.com/<owner>/<name>`——置き場のパスが owner と name を決める */
+  path: string;
+  owner: string;
+  name: string;
+  remote: RepoRemote;
+  branch: string;
+  commits: number;
+  lastCommit?: string;
+  lastCommitAt?: string;
+  otherBranches: readonly string[];
+  /** このリポジトリの worktree（Project の Root が置き場の外にあるとき） */
+  worktrees: readonly string[];
+}
+
+function repo(
+  owner: string,
+  name: string,
+  rest: Omit<LocalRepo, "path" | "owner" | "name" | "otherBranches" | "worktrees"> &
+    Partial<Pick<LocalRepo, "otherBranches" | "worktrees">>,
+): LocalRepo {
+  return { path: ghqPath(owner, name), owner, name, otherBranches: [], worktrees: [], ...rest };
+}
+
+const SEED_REPOS: readonly LocalRepo[] = [
+  repo("tjst-t", "banto", {
+    remote: { kind: "github", owner: "tjst-t", name: "banto", private: false },
+    branch: "main",
+    commits: 2140,
+    worktrees: ["~/worktrees/banto-v4"],
+  }),
+  repo("tjst-t", "home-automation", {
+    remote: { kind: "github", owner: "tjst-t", name: "home-automation", private: true },
+    branch: "main",
+    commits: 312,
+  }),
+  repo("tjst-t", "hermes", {
+    remote: { kind: "none" },
+    branch: "main",
+    commits: 7,
+    lastCommit: "検索の閾値を 0.72 に下げる",
+    lastCommitAt: "2時間前",
+    otherBranches: ["try-embedding", "bench"],
+  }),
+  repo("tjst-t", "recipe-box", {
+    remote: { kind: "none" },
+    branch: "main",
+    commits: 0,
+  }),
+  repo("tjst-t", "dotfiles", {
+    remote: { kind: "github", owner: "tjst-t", name: "dotfiles", private: false },
+    branch: "main",
+    commits: 488,
+  }),
+  // 別のアカウントで公開した——置き場は tjst-t/ のまま
+  repo("tjst-t", "tiny-cli", {
+    remote: { kind: "github", owner: "work-org", name: "tiny-cli", private: true },
+    branch: "main",
+    commits: 23,
+  }),
+  repo("tjst-t", "notes", {
+    remote: { kind: "elsewhere", url: "git@gitlab.com:tjst-t/notes.git" },
+    branch: "main",
+    commits: 96,
+  }),
+  repo("work-org", "infra", {
+    remote: { kind: "github", owner: "work-org", name: "infra", private: true },
+    branch: "main",
+    commits: 1203,
+  }),
+];
+
+let localRepos: LocalRepo[] = [...SEED_REPOS];
+
+/** git でないフォルダ（置き場にあるが、リポジトリではない） */
+const PLAIN_FOLDERS: Record<string, number> = {
+  [ghqPath("tjst-t", "scratch")]: 14,
 };
 
-/** このモックの中で clone / 作成したフォルダ（2回目に同じものを選ぶと「既にある」になる） */
-const createdFolders = new Map<string, { kind: "git"; origin: string }>();
+export function getLocalRepos(): readonly LocalRepo[] {
+  return localRepos;
+}
 
-export function recordCreatedFolder(owner: string, name: string, origin: string): void {
-  createdFolders.set(ghqPath(owner, name), { kind: "git", origin });
+/** そのフォルダ（置き場そのもの、または worktree）のリポジトリ */
+export function findRepoForFolder(path: string): LocalRepo | undefined {
+  return localRepos.find((r) => r.path === path || r.worktrees.includes(path));
+}
+
+/** Repo が clone した・git init したフォルダを置き場に足す */
+export function addLocalRepo(input: Pick<LocalRepo, "owner" | "name" | "remote">): LocalRepo {
+  const next = repo(input.owner, input.name, {
+    remote: input.remote,
+    branch: "main",
+    commits: input.remote.kind === "none" ? 0 : 1,
+  });
+  localRepos = [...localRepos.filter((r) => r.path !== next.path), next];
+  notifyMockStoreChange();
+  return next;
+}
+
+/** GitHub に公開した——origin を付ける（フォルダは動かさない） */
+export function setRepoRemote(path: string, remote: RepoRemote): void {
+  localRepos = localRepos.map((r) => (r.path === path ? { ...r, remote } : r));
+  notifyMockStoreChange();
+}
+
+/** 置き場の外のフォルダで git init した（「フォルダを選ぶ」で始めた Project） */
+export function gitInitFolder(path: string): void {
+  const name = path.split("/").pop() ?? path;
+  localRepos = [
+    ...localRepos,
+    { path, owner: "", name, remote: { kind: "none" }, branch: "main", commits: 0, otherBranches: [], worktrees: [] },
+  ];
+  notifyMockStoreChange();
+}
+
+export function isInGhq(repo: LocalRepo): boolean {
+  return repo.path === ghqPath(repo.owner, repo.name);
+}
+
+/** そのリポジトリを Root（置き場そのもの・worktree）にしている Project */
+export function getProjectsUsingRepo(repo: LocalRepo) {
+  return getAllProjects().filter((p) => p.basePath === repo.path || repo.worktrees.includes(p.basePath));
+}
+
+/**
+ * **置き場がずれているか**——ghq の置き方なら `github.com/<owner>/<name>` は origin と同じになる。
+ * 別の名前・別のアカウントで公開すると、フォルダは元の場所に残るのでずれる。
+ * 直すか（フォルダを移すか）はまだ決めていない——ここは見せるだけ
+ */
+export type Placement =
+  | { kind: "ok" }
+  | { kind: "moved"; expected: string }
+  | { kind: "not-github"; host: string };
+
+export function getPlacement(repo: LocalRepo): Placement {
+  if (!isInGhq(repo)) return { kind: "ok" };
+  if (repo.remote.kind === "elsewhere") {
+    const host = repo.remote.url.replace(/^git@/, "").replace(/^https?:\/\//, "").split(/[:/]/)[0];
+    return { kind: "not-github", host };
+  }
+  if (repo.remote.kind !== "github") return { kind: "ok" };
+  const { owner, name } = repo.remote;
+  return owner === repo.owner && name === repo.name
+    ? { kind: "ok" }
+    : { kind: "moved", expected: ghqPath(owner, name) };
+}
+
+/** どのアカウントのものか——GitHub にあれば origin の持ち主、まだなら置き場の owner */
+export function repoAccountLogin(repo: LocalRepo): string {
+  return repo.remote.kind === "github" ? repo.remote.owner : repo.owner;
 }
 
 export type RepoFolderState =
@@ -139,6 +289,8 @@ export type RepoFolderState =
   | { kind: "same-repo" }
   /** 同じリポジトリがあり、そこを Root にした Project もある——新しく作らず、その Project を開く */
   | { kind: "same-repo-project"; projectId: string; projectName: string; closed: boolean }
+  /** まだ GitHub に上げていない同じ名前のリポジトリがある（Repo が git init したもの等） */
+  | { kind: "local-only"; project?: { id: string; name: string; closed: boolean } }
   /** 別のリポジトリがある——上書きしない */
   | { kind: "other-repo"; origin: string }
   /** git でないフォルダがある——上書きしない */
@@ -146,14 +298,23 @@ export type RepoFolderState =
 
 export function inspectRepoFolder(owner: string, name: string): RepoFolderState {
   const path = ghqPath(owner, name);
-  const found = LOCAL_FOLDERS[`${owner}/${name}`] ?? createdFolders.get(path);
+  const plain = PLAIN_FOLDERS[path];
+  if (plain !== undefined) return { kind: "not-git", entries: plain };
+  const found = localRepos.find((r) => r.path === path);
   if (!found) return { kind: "empty" };
-  if (found.kind === "plain") return { kind: "not-git", entries: found.entries };
-  const origin = parseRepoReference(found.origin.replace(/^git@github\.com:/, "github.com/"));
-  const sameRepo =
-    found.origin.includes("github.com") && origin?.owner === owner && origin?.name === name;
-  if (!sameRepo) return { kind: "other-repo", origin: found.origin };
-  const project = getAllProjects().find((p) => p.basePath === path);
+  const { remote } = found;
+  if (remote.kind === "none") {
+    const p = getProjectsUsingRepo(found)[0];
+    return {
+      kind: "local-only",
+      project: p && { id: p.id, name: p.name, closed: !getActiveProjects().some((a) => a.id === p.id) },
+    };
+  }
+  if (remote.kind === "elsewhere") return { kind: "other-repo", origin: remote.url };
+  if (remote.owner !== owner || remote.name !== name) {
+    return { kind: "other-repo", origin: `github.com/${remote.owner}/${remote.name}` };
+  }
+  const project = getProjectsUsingRepo(found)[0];
   if (project) {
     return {
       kind: "same-repo-project",
@@ -163,43 +324,4 @@ export function inspectRepoFolder(owner: string, name: string): RepoFolderState 
     };
   }
   return { kind: "same-repo" };
-}
-
-// ── Project ごとのリポジトリの状態（あとで GitHub に公開する画面が読む） ──────────
-
-export type ProjectRepoState =
-  | { kind: "github"; owner: string; name: string; private: boolean }
-  | {
-      kind: "local";
-      branch: string;
-      commits: number;
-      lastCommit: string;
-      lastCommitAt: string;
-      otherBranches: readonly string[];
-    }
-  | { kind: "not-git" };
-
-const projectRepos = new Map<string, ProjectRepoState>([
-  ["banto", { kind: "github", owner: "tjst-t", name: "banto", private: false }],
-  ["home", { kind: "github", owner: "tjst-t", name: "home-automation", private: true }],
-  [
-    "hermes",
-    {
-      kind: "local",
-      branch: "main",
-      commits: 7,
-      lastCommit: "検索の閾値を 0.72 に下げる",
-      lastCommitAt: "2時間前",
-      otherBranches: ["try-embedding", "bench"],
-    },
-  ],
-]);
-
-export function getProjectRepoState(projectId: string): ProjectRepoState {
-  return projectRepos.get(projectId) ?? { kind: "not-git" };
-}
-
-export function setProjectRepoState(projectId: string, state: ProjectRepoState): void {
-  projectRepos.set(projectId, state);
-  notifyMockStoreChange();
 }

@@ -10,6 +10,7 @@ import { CheckCircle2, CircleDashed, Sparkles, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { FileExplorerView } from "./file-explorer-view";
+import { RepoListView } from "./repo-list-view";
 import { RepoPublishView } from "./repo-publish-view";
 import { ShellTerminalView } from "./shell-terminal-view";
 import { VaultManageView } from "./vault-manage-view";
@@ -179,6 +180,8 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
   switch (key) {
     case "banto.repo:diff":
       return <RepoDiffView />;
+    case "banto.repo:repos":
+      return <RepoListView />;
     case "banto.repo:publish":
       return <RepoPublishView />;
     case "banto.fs:browser":

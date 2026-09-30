@@ -253,6 +253,9 @@ let implementations: MockModuleImplementation[] = [
   {
     id: "banto.repo",
     roleId: "repo",
+    // banto 全体に1本（改訂・2026-09-30、ユーザー）——Project より先に動いて
+    // フォルダを用意する（clone・git init）。Project を作るのは banto 本体
+    scope: "instance",
     name: "Repo（banto 標準）",
     isolation: "subprocess",
     builtin: true,
@@ -269,8 +272,9 @@ let implementations: MockModuleImplementation[] = [
     handlesSecrets: false,
     hasConfigSurface: true,
     launchers: [
+      { id: "repos", label: "リポジトリの一覧", viewId: "repos" },
       { id: "diff", label: "差分ビューを開く", viewId: "diff" },
-      { id: "publish", label: "GitHub に公開", viewId: "publish" },
+      { id: "publish", label: "この Project を GitHub に公開", viewId: "publish" },
     ],
     mcpServersJson: sampleMcpServersJson(
       "banto-repo",
@@ -599,7 +603,7 @@ let mockProjectOverrides: MockProjectOverrides[] = [
     projectId: "hermes",
     memoryLimitChars: 8000,
     credentialId: "cred.personal",
-    securityRoot: "~/worktrees/hermes",
+    securityRoot: "~/ghq/github.com/tjst-t/hermes",
   },
 ];
 
@@ -730,14 +734,21 @@ export function getProjectModuleLinks(projectId: ProjectId): readonly MockModule
 }
 
 /**
- * この Project に繋がっている Module の launcher（§6.2「人が、AI を介さずに
- * 面を開く」）。Command Palette の「Module の入口」はここから出す
+ * この Project に繋がっている Module と、banto 全体に1本の Module の launcher
+ * （§6.2「人が、AI を介さずに面を開く」）。Command Palette の「Module の入口」はここから出す
  * （§6.3——パレットは自分の索引を持たず、既にある Project の Module 集合から導出）
  */
 export function getLaunchersForProject(
   projectId: ProjectId,
 ): readonly { implementationId: string; implementationName: string; id: string; label: string; viewId: string }[] {
-  return getProjectModuleLinks(projectId).flatMap((impl) =>
+  const linked = getProjectModuleLinks(projectId);
+  // **banto 全体に1本の Module の画面は、どの Project からも開ける**（2026-09-30、ユーザー
+  // ——Repo の一覧で決めた）。Project に繋ぐかどうかが決めるのは、その Project の AI に
+  // tool を見せるかだけ。人が開く画面までは絞らない
+  const bantoWide = implementations.filter(
+    (i) => i.enabled && i.scope === "instance" && !linked.includes(i),
+  );
+  return [...linked, ...bantoWide].flatMap((impl) =>
     (impl.launchers ?? []).map((l) => ({
       implementationId: impl.id,
       implementationName: impl.name,
