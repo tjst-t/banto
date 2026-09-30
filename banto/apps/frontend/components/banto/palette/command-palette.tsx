@@ -39,6 +39,13 @@ export function CommandPalette({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [query, setQuery] = useState("");
+  // **閉じたら検索語を消す**——Escape・外側クリックは下の onOpenChange で消すが、Ctrl-K で閉じる（2026-09-30）ときは
+  // URL から閉じるのでそこを通らない。前の描画の open と比べて、描いている最中に戻す（React の「前の値から導く」形）
+  const [wasOpen, setWasOpen] = useState(open);
+  if (wasOpen !== open) {
+    setWasOpen(open);
+    if (!open) setQuery("");
+  }
 
   // **開いたときに取り直す**（§6.2 の launcher）——背景ポーリングは足さない。
   // 繋がっている Module は Project ごとに変わるので、開くたびに聞き直す

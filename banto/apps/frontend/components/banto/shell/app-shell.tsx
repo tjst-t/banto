@@ -62,13 +62,14 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams();
   const settingsOpen = SHOW_INSTANCE_SETTINGS && isSettingsOpen(pathname, searchParams);
 
-  // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。
-  // ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
+  // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。**開いているときにもう一度押すと閉じる**
+  // （決定・2026-09-30、ユーザー要望）。ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        stack.open({ overlay: "palette" });
+        if (e.repeat) return; // 押しっぱなしで開閉を繰り返さない
+        stack.open({ overlay: stack.overlay === "palette" ? null : "palette" });
       }
     }
     window.addEventListener("keydown", onKeyDown);

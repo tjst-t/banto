@@ -34,6 +34,18 @@ test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き
   await expect(dialog).toHaveCount(0, { timeout: 10_000 });
   await expect(back, "Escape で背面の Fork まで閉じた").toBeVisible();
 
+  // **Ctrl-K をもう一度押すと閉じる**（決定・2026-09-30、ユーザー要望）。閉じたときの検索語は残さず、背面の Fork は閉じない
+  await page.keyboard.press("Control+k");
+  await expect(dialog.first()).toBeVisible({ timeout: 10_000 });
+  await page.keyboard.type("検索語");
+  await page.keyboard.press("Control+k");
+  await expect(dialog, "Ctrl-K をもう一度押しても閉じない").toHaveCount(0, { timeout: 10_000 });
+  await expect(back, "Ctrl-K で閉じたら背面の Fork まで閉じた").toBeVisible();
+  await page.keyboard.press("Control+k");
+  await expect(page.locator("[cmdk-input]"), "閉じたときの検索語が残っている").toHaveValue("", { timeout: 10_000 });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0, { timeout: 10_000 });
+
   // もう一度押せば、こんどは Fork が閉じる（前面がもう無いので）
   await page.keyboard.press("Escape");
   await expect(back).toBeHidden({ timeout: 10_000 });
