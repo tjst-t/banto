@@ -14,6 +14,7 @@ import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import { ShellHomePanel } from "@/components/banto/settings/shell-home-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { navigateUrl } from "@/lib/url-nav";
 import { getProject } from "@/lib/mock/projects";
 import { ProjectInitial } from "@/components/banto/shell/nav-panel";
 import {
@@ -277,7 +278,7 @@ export function SettingsContent() {
     const href = query ? `${pathname}?${query}` : pathname;
     if (next) {
       pushedSections.current += 1;
-      router.push(href, { scroll: false });
+      navigateUrl(router, href);
       return;
     }
     if (pushedSections.current > 0) {
@@ -285,7 +286,7 @@ export function SettingsContent() {
       router.back();
       return;
     }
-    router.replace(href, { scroll: false });
+    navigateUrl(router, href, { replace: true });
   }
 
   const instanceModuleItems = [

@@ -8,6 +8,7 @@
 
 import { useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { navigateUrl } from "@/lib/url-nav";
 import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 
 export type PanelRole = "primary" | "slim" | "spine";
@@ -152,7 +153,8 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
       }
 
       const qs = params.toString();
-      router.push(qs ? `${pathname}?${qs}` : pathname);
+      // サーバーに問い合わせずに URL を変える（`lib/url-nav.ts`、2026-09-30）
+      navigateUrl(router, qs ? `${pathname}?${qs}` : pathname);
     },
     [pathname, router, searchParams],
   );

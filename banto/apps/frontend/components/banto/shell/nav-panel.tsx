@@ -6,7 +6,7 @@
 //
 // 畳んだ状態（58px のレール）は `project-rail.tsx` が描く。ここは「名前が読める」側。
 import { useState, type ReactNode } from "react";
-import Link from "next/link";
+import { UrlLink as Link } from "@/components/banto/url-link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {

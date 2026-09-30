@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogDescription,
   DialogHeader,
+  DialogPortal,
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
@@ -47,7 +48,15 @@ function CommandDialog({
   showCloseButton?: boolean
 }) {
   return (
-    <Dialog {...props}>
+    // **モーダルにしない**（改訂・2026-09-30、実測）。Radix のモーダルは開くたびに、スクロール止めの <style> を
+    // <head> に差し込み、<body> に pointer-events:none を付ける——どちらもページ全体のスタイルを計算し直させ、
+    // 開くのに CPU ×4 で 0.16 秒（全体の 4 割）を使っていた。banto の画面はページ自体がスクロールしないので
+    // スクロール止めは要らない。外を押す・Escape で閉じる、開いたら入力欄に打てる、はモーダルでなくても同じ。
+    // 暗くする背景はモーダルでないと Radix が出さないので、同じ見た目のものを自分で置く（押せば「外」→閉じる）
+    <Dialog modal={false} {...props}>
+      <DialogPortal>
+        <div data-slot="command-dialog-backdrop" aria-hidden className="fixed inset-0 z-50 bg-black/10" />
+      </DialogPortal>
       <DialogHeader className="sr-only">
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>{description}</DialogDescription>

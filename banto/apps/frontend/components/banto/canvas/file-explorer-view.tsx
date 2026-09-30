@@ -8,6 +8,7 @@
 // `mock/README.md`）。
 import { useMemo, useRef, useState, type ChangeEvent, type DragEvent, type MouseEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { navigateUrl } from "@/lib/url-nav";
 import {
   ChevronDown,
   ChevronRight,
@@ -514,7 +515,7 @@ export function FileExplorerView({
       if (next.dir) params.set("fsDir", next.dir);
       else params.delete("fsDir");
     }
-    router.push(`${pathname}?${params.toString()}`);
+    navigateUrl(router, `${pathname}?${params.toString()}`);
   }
 
   function handleRowClick(node: FsNode, e: MouseEvent) {

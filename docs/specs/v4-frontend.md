@@ -1762,3 +1762,18 @@ README や他のクライアントの設定から `mcpServers` の JSON をコ�
 
 理由：画面の重さは描いている発言の数に比例していた（長い会話の Fork は親の分と合わせて 375 件を描き、
 CPU を 4 倍遅くした条件で開くのに 5〜9 秒）。実測と経緯は `docs/notes/2026-09-29-long-thread-render.md`。
+
+### 6.30 URL の「?」より後ろだけを変えるときは、サーバーに問い合わせない（決定・2026-09-30、ユーザー指摘→実測）
+
+開いている Fork・Canvas・パレット・設定などは URL の問い合わせ部分が持つ（規則3）。それを変えるのに
+`router.push`／`<Link>` を使うと、Next は同じページでもサーバーへページのデータ（RSC）を取りに行き、届いてから
+描き直す。ページはサーバーで問い合わせ部分を読まないので意味が無い。**パスが同じなら `history.pushState`／
+`replaceState` で変える**（Next のルーターに繋がっていて、`useSearchParams` はそのまま追う）。関数は
+`lib/url-nav.ts` の `navigateUrl`、リンクは `components/banto/url-link.tsx` の `UrlLink`。パスが変わるときは
+今までどおり。
+
+あわせて、**ダイアログの背景はぼかさない**（Dialog・Sheet・AlertDialog・Drawer）——ぼかしは中身が動くたびに
+下のページ全体を描き直させ、パレットのスクロールがコマ落ちしていた。**Command Palette はモーダルにしない**
+——Radix のモーダルは開くたびにスクロール止めの `<style>` を差し込み `<body>` に `pointer-events:none` を付け、
+ページ全体のスタイルを計算し直させる。banto の画面はページ自体がスクロールしないので要らない。暗くする背景は
+自分で置く（押せば閉じる）。代わりに Tab でパレットの外へ出られる。実測は `docs/notes/2026-09-30-palette-latency.md`。

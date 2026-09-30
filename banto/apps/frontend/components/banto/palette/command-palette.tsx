@@ -6,6 +6,7 @@
 // 受信箱と、いまの Project に限る Module の入口・資源は範囲が違う（§6.3「範囲」）。
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { navigateUrl } from "@/lib/url-nav";
 import { settingsOpenHref, threadNavHref } from "@/lib/settings-link";
 import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 import {
@@ -79,10 +80,10 @@ export function CommandPalette({
         break;
       case "open-project-settings":
         // 設定画面は1つ（§6.16）——この Project の層を開いた状態で行く
-        if (projectId) router.push(settingsOpenHref(pathname, withoutPalette(), { project: projectId }));
+        if (projectId) navigateUrl(router, settingsOpenHref(pathname, withoutPalette(), { project: projectId }));
         break;
       case "open-instance-settings":
-        router.push(settingsOpenHref(pathname, withoutPalette()));
+        navigateUrl(router, settingsOpenHref(pathname, withoutPalette()));
         break;
     }
     setQuery("");
@@ -102,12 +103,13 @@ export function CommandPalette({
           for (const key of ["canvasTool", "fullscreen", VIEW_STATE_PARAM]) params.delete(key);
         }
         for (const [key, value] of target.searchParams) params.set(key, value);
-        router.push(`${pathname}?${params.toString()}`);
+        navigateUrl(router, `${pathname}?${params.toString()}`);
       } else {
         // 別の Project の会話へ。**設定を開いていれば、設定は開いたまま下の画面だけ切り替える**（2026-09-30、
         // `threadNavHref`）——素の href へ飛ぶと設定が閉じていた
         const projectMatch = /^\/p\/([^/]+)$/.exec(target.pathname);
-        router.push(
+        navigateUrl(
+          router,
           projectMatch
             ? threadNavHref(projectMatch[1]!, target.searchParams.get("fork"), pathname, withoutPalette(), "project-danger")
             : item.href,

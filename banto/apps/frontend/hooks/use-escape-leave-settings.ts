@@ -9,6 +9,7 @@
 // 起きるのを避ける。
 import { useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { navigateUrl } from "@/lib/url-nav";
 import { isOverlayOpen } from "@/lib/overlay-open";
 import { settingsCloseHref } from "@/lib/settings-link";
 
@@ -21,7 +22,7 @@ export function useEscapeLeaveSettings() {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       if (isOverlayOpen({ exceptSettings: true })) return;
-      router.push(settingsCloseHref(pathname, new URLSearchParams(search)), { scroll: false });
+      navigateUrl(router, settingsCloseHref(pathname, new URLSearchParams(search)));
     }
     // capture フェーズで登録する——bubble フェーズだと、Radix 側の Escape
     // ハンドラ（同期的に閉じる）が先に走り、その時点でこの判定が手遅れになる

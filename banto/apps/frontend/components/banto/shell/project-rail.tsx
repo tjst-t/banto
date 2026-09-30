@@ -15,7 +15,7 @@
 // （Sidebar は isMobile のとき自動で Sheet オーバーレイになるが、
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import { useState } from "react";
-import Link from "next/link";
+import { UrlLink as Link } from "@/components/banto/url-link";
 import { Bell, Clock, PanelLeft, Plus, Search, Settings } from "lucide-react";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
