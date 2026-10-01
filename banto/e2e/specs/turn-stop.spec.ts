@@ -66,7 +66,8 @@ test("AI が何も出していないうちに止めると、すぐ止まり、�
   await expect(composer).toHaveValue(mistaken, { timeout: 10_000 });
   await expect(composer).toBeFocused();
   await expect(page.locator('[data-role="user"]').filter({ hasText: "まちがえた依頼" })).toHaveCount(0, { timeout: 10_000 });
-  await expect(page.getByText("NEVER-SAID")).toHaveCount(0);
+  // 入力欄に戻した文（偽の Runner への指示）にも「NEVER-SAID」は入っている——AI の発言の中だけを見る
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "NEVER-SAID" })).toHaveCount(0);
 
   // host の記録からも消えている（読み込み直しても出ない）
   await page.reload();
@@ -98,7 +99,7 @@ test("AI が書き始めてから止めると、すぐ止まり、出た分が�
   const lines = Array.from({ length: 60 }, (_, i) => `[L${i + 1}]`);
   await composer.fill(`長い話をして${fakeTurn({ say: lines.join("\n"), streamMs: 30_000 })}`);
   await composer.press("Enter");
-  await expect(page.getByText("[L3]")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "[L3]" })).toBeVisible({ timeout: 30_000 });
 
   const stoppedIn = await pressStop(page);
   expect(stoppedIn, `停止ボタンを押してから止まるまで ${stoppedIn}ms かかった`).toBeLessThan(1_500);
@@ -111,7 +112,7 @@ test("AI が書き始めてから止めると、すぐ止まり、出た分が�
     timeout: 15_000,
   });
   await page.waitForTimeout(2_000);
-  await expect(page.getByText("[L60]")).toHaveCount(0);
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "[L60]" })).toHaveCount(0);
 
   // すぐ次を送れる（前のターンを待たされない）
   await sendAndWait(page, composer, `TWO を返して${fakeTurn({ say: "TWO-REPLY" })}`, "TWO-REPLY");

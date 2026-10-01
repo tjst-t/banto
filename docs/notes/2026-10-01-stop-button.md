@@ -47,4 +47,10 @@
 - 画面：型検査・lint（触ったファイルのエラー 0）・単体試験 16 件・本番ビルド。adapter を jiti で単体に読み込み、
   host との通信を偽物にした実測で、停止ボタンで 0ms で読むのをやめる・同じターンの名前で止めに行く・取り消しの
   知らせが届く・detach では止めない・送り出す前に止めたら host に送らずに戻す、を確かめた。
-- E2E：`e2e/specs/turn-stop.spec.ts`（偽の Runner に `thinkMs`・`saySession` を足した）。結果は下に追記する。
+- E2E：`e2e/specs/turn-stop.spec.ts`（偽の Runner に `thinkMs`・`saySession` を足した）2本が通る（2026-10-01、
+  8.0 秒・9.3 秒）。押してから停止ボタンが消えるまで 1.5 秒未満・入力欄に戻って焦点が来る・読み込み直しても
+  取り消した発言が出ない・次のターンが `resumeSessionAt` 付きで走り、その次は付かない・書き始めてから止めると
+  「（ここで止めました）」が残り続きは流れない・すぐ次を送れる、を見ている。
+  Project のコンテナの Shell からは `sudo -n -u ubuntu`（incus グループを取り直す）で走らせ、偽の Runner しか
+  使わないので Claude の資格情報は空のファイルを `CLAUDE_SECURESTORAGE_CONFIG_DIR` で指した。1本目は試験の
+  誤り（入力欄に戻した文の中の印を `getByText` が拾った）で落ち、AI の発言の中だけを見るように直した。
