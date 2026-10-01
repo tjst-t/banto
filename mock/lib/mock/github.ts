@@ -516,6 +516,13 @@ export function removeFromLedger(path: string): LedgerEntry | undefined {
   return entry;
 }
 
+/** 台帳を直したお知らせを見た——一度見たら消す（覚えていた古い場所も一緒に忘れる） */
+export function dismissCorrection(path: string): void {
+  if (!ledger.some((e) => e.path === path && e.correctedFrom)) return;
+  ledger = ledger.map((e) => (e.path === path ? { ...e, correctedFrom: undefined } : e));
+  notifyMockStoreChange();
+}
+
 /** 「元に戻す」——外した行を、そのまま台帳に戻す */
 export function restoreLedgerEntry(entry: LedgerEntry): void {
   addToLedger(entry);

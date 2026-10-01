@@ -13,11 +13,20 @@
 //     あとは名前順。見つからないものも Project との関係で区切る——Project の Root が消えていれば
 //     その Project は動かないので、「Project で使っている」の一番上に出るのがいちばん大事
 //     （見つからないものだけの区切りを作ると、どの Project が困っているかが離れる）
-// 行は2列（と端に操作）だけにして、事実のすぐ隣にその次の手を置く：
-//   - 左：名前・置き場所・GitHub のどこか（アカウント）。まだなら同じ行に「GitHub に公開」
-//   - 右：使っている Project（サイドバーと同じ頭文字）。無ければ「Project を始める」
-//   - 端：行の操作（「一覧から外す」——フォルダは消さない。押す前にそう言う）
-// 置き場所は行ごとに出す——フォルダ名から持ち主は分からないし、Import したものは置き場の外にある。
+// **表にする**（2026-10-01、ユーザー）。列は手元から遠くへ、最後に行き先：
+//   リポジトリ（名前と、その下に置き場所）｜GitHub｜アカウント｜Project｜…
+//   - 置き場所は名前と同じセル——行が何かを決めるのはパス（名前はぶつかりうる）で、2つは一緒に読む。
+//     列に分けると幅の3割を取り、Canvas の幅（約 730px）で ほかの列が折れる
+//   - 「状態」の列は作らない。状態は、それが言っている事実の列に置く——フォルダが見つからないは
+//     置き場所の下（次の手「clone し直す」もそこ）、このマシンにだけは GitHub の列（次の手「GitHub に公開」も
+//     そこ）、台帳を直したお知らせも GitHub の列。状態の列は10行のうち7行が空になり、次の手が事実から離れる
+//   - アカウントは GitHub のすぐ右（push に使うもの。登録していなければ「読むだけ」）
+//   - Project は行き先（開く・始める）なので、行の操作の手前の端
+//   - 区切り（「Project で使っている」「Project はまだ無い」）は表の中の区切り行（`<tbody>` ごと）。
+//     並べ替えで表すと、区切りの意味（今の仕事／始める候補）と件数が見えなくなる
+//   - 見出しでの並べ替えは入れない——既定の並び（次の手が要る順）がこの画面の要点で、名前順などに
+//     しておくと見つからない行が埋もれる。探すのは検索でできる
+// 狭い幅（コンテナ 42rem 未満）は同じ要素を行ごとに縦に積み、列の名前を各段の頭に出す。
 //
 // 開き方は2つで、中身は同じ（Skill の置き場の画面と同じ形）：
 //   - Project の中：Command Palette の入口 → 会話の隣の Canvas（`banto.repo:repos`）
@@ -42,6 +51,7 @@ import {
   Lock,
   Plus,
   Search,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -56,17 +66,20 @@ import { cn } from "@/lib/utils";
 import { reopenProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
+  dismissCorrection,
   getProjectsUsingRepo,
   recloneMissingRepo,
   remoteHost,
   removeFromLedger,
   restoreLedgerEntry,
+  useGithubAccounts,
   useLedgerRepos,
   useRepoHome,
   type GithubLocation,
   type KnownRepo,
   type LedgerRepo,
   type MissingRepo,
+  type MockGithubAccount,
 } from "@/lib/mock/github";
 import type { MockProject } from "@/lib/mock/types";
 import { ProjectInitial } from "@/components/banto/shell/nav-panel";
@@ -105,7 +118,7 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div className={cn("@container min-h-0", !embedded && "h-full overflow-y-auto")} data-testid="repo-list-view">
-      <div className={cn("flex flex-col gap-5", !embedded && "mx-auto max-w-3xl px-5 py-8")}>
+      <div className={cn("flex flex-col gap-5", !embedded && "mx-auto max-w-4xl px-5 py-8")}>
         <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
           <div className="flex min-w-0 flex-col gap-1">
             {embedded ? (
@@ -182,6 +195,7 @@ function RepoListBody({
 }) {
   const [filterChoice, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const accounts = useGithubAccounts();
 
   const facts = useLedgerRepos().map((repo) => ({ repo, projects: getProjectsUsingRepo(repo) }));
   const localCount = facts.filter((f) => isLocalOnly(f.repo)).length;
@@ -204,12 +218,13 @@ function RepoListBody({
 
   if (facts.length === 0) return <EmptyLedger onImport={onImport} />;
 
+  // 札は短く（2026-10-01、ユーザー）。「見つからない」は行の「フォルダが見つかりません」と同じ印で結ぶ
   const choices: { value: Filter; label: ReactNode }[] = [
     { value: "all", label: <FilterLabel text="すべて" count={facts.length} /> },
     { value: "local", label: <FilterLabel text="このマシンにだけ" count={localCount} /> },
     // 見つからないものが無ければ札を出さない（いつも0の札は、ただの飾りになる）
     ...(missingCount > 0
-      ? [{ value: "missing" as const, label: <FilterLabel text="フォルダが見つからない" count={missingCount} /> }]
+      ? [{ value: "missing" as const, label: <FilterLabel text="見つからない" count={missingCount} /> }]
       : []),
   ];
 
@@ -248,30 +263,75 @@ function RepoListBody({
           }}
         />
       ) : (
-        <div className="flex flex-col gap-6">
-          {groups.map((g) => (
-            <section key={g.id} aria-labelledby={`repo-group-${g.id}`} data-testid="repo-group" data-group={g.id}>
-              <h3 id={`repo-group-${g.id}`} className="flex items-baseline gap-2 pb-1.5 text-xs font-medium text-ink-2">
-                {g.title}
-                <span className="font-normal text-ink-3 tabular-nums">{g.items.length}</span>
-              </h3>
-              <ul className="flex flex-col border-t border-border">
-                {g.items.map((f) => (
-                  <RepoRow
-                    key={highlight?.path === f.repo.path ? `${f.repo.path}:${highlight.at}` : f.repo.path}
-                    repo={f.repo}
-                    projects={f.projects}
-                    highlighted={highlight?.path === f.repo.path}
-                    onPublish={() => onPublish(f.repo.path)}
-                    onStart={() => !f.repo.missing && onStart(f.repo)}
-                    onImport={onImport}
-                    onShow={onShow}
-                  />
-                ))}
-              </ul>
-            </section>
+        // 広い幅（コンテナ 42rem 以上）は表。狭い幅は同じ要素を行ごとに縦に積む（列の名前を各段の頭に出す）
+        // ——表を2つ書かない（同じ行が2か所にあると、片方だけ直す日が来る）
+        <table data-testid="repo-table" className="block w-full text-xs @2xl:table @2xl:table-fixed">
+          <colgroup className="hidden @2xl:table-column-group">
+            <col />
+            <col className="w-52" />
+            <col className="w-20" />
+            <col className="w-44" />
+            <col className="w-10" />
+          </colgroup>
+          <thead className="hidden @2xl:table-header-group">
+            <tr className="border-b border-border text-left text-ink-3">
+              <th scope="col" className="py-2 pr-4 font-medium">
+                リポジトリ
+              </th>
+              <th scope="col" className="py-2 pr-4 font-medium">
+                GitHub
+              </th>
+              <th scope="col" className="py-2 pr-4 font-medium">
+                アカウント
+              </th>
+              <th scope="col" className="py-2 pr-2 font-medium">
+                Project
+              </th>
+              <th scope="col" className="py-2">
+                <span className="sr-only">操作</span>
+              </th>
+            </tr>
+          </thead>
+          {groups.map((g, i) => (
+            <tbody
+              key={g.id}
+              aria-labelledby={`repo-group-${g.id}`}
+              data-testid="repo-group"
+              data-group={g.id}
+              className="block @2xl:table-row-group"
+            >
+              <tr className="block @2xl:table-row">
+                <th
+                  id={`repo-group-${g.id}`}
+                  scope="rowgroup"
+                  colSpan={5}
+                  className={cn(
+                    "block border-b border-border pb-1.5 text-left font-medium text-ink-2 @2xl:table-cell",
+                    i === 0 ? "pt-1 @2xl:pt-4" : "pt-7",
+                  )}
+                >
+                  <span className="flex items-baseline gap-2">
+                    {g.title}
+                    <span className="font-normal text-ink-3 tabular-nums">{g.items.length}</span>
+                  </span>
+                </th>
+              </tr>
+              {g.items.map((f) => (
+                <RepoRow
+                  key={highlight?.path === f.repo.path ? `${f.repo.path}:${highlight.at}` : f.repo.path}
+                  repo={f.repo}
+                  projects={f.projects}
+                  account={accountLabel(f.repo, accounts)}
+                  highlighted={highlight?.path === f.repo.path}
+                  onPublish={() => onPublish(f.repo.path)}
+                  onStart={() => !f.repo.missing && onStart(f.repo)}
+                  onImport={onImport}
+                  onShow={onShow}
+                />
+              ))}
+            </tbody>
           ))}
-        </div>
+        </table>
       )}
     </>
   );
@@ -291,6 +351,16 @@ function githubName(repo: LedgerRepo): string | undefined {
   return repo.remote.kind === "github" ? `${repo.remote.owner}/${repo.remote.name}` : undefined;
 }
 
+/**
+ * push・pull に使うアカウント。登録したアカウントなら名前、GitHub にあるのに扱えるアカウントが
+ * 無ければ「読むだけ」、GitHub に無いもの（このマシンにだけ・GitHub の外）は無し
+ */
+function accountLabel(repo: LedgerRepo, accounts: readonly MockGithubAccount[]): string | null {
+  const login = accounts.find((a) => a.id === repo.accountId)?.login;
+  if (login) return login;
+  return githubName(repo) ? "読むだけ" : null;
+}
+
 function FilterLabel({ text, count }: { text: string; count: number }) {
   return (
     <>
@@ -300,9 +370,43 @@ function FilterLabel({ text, count }: { text: string; count: number }) {
   );
 }
 
+/**
+ * 表の1つのセル。狭い幅では列の名前を頭に出して1段にする（見出しの行は隠れるので）。
+ * 中身が無いセルは、狭い幅では段ごと出さない（表では「—」を置いて列をそろえる）
+ */
+function Cell({
+  label,
+  testId,
+  className,
+  children,
+}: {
+  label: string;
+  testId: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const empty = children === null;
+  return (
+    <td
+      data-testid={testId}
+      className={cn(
+        "col-span-2 min-w-0 align-top @2xl:table-cell @2xl:py-3",
+        empty ? "hidden" : "grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3",
+        className,
+      )}
+    >
+      <span aria-hidden className="pt-px text-ink-3 @2xl:hidden">
+        {label}
+      </span>
+      {empty ? <span className="text-ink-3">—</span> : <div className="min-w-0">{children}</div>}
+    </td>
+  );
+}
+
 function RepoRow({
   repo,
   projects,
+  account,
   highlighted,
   onPublish,
   onStart,
@@ -311,6 +415,7 @@ function RepoRow({
 }: {
   repo: LedgerRepo;
   projects: readonly MockProject[];
+  account: string | null;
   highlighted: boolean;
   onPublish: () => void;
   onStart: () => void;
@@ -329,12 +434,14 @@ function RepoRow({
   }, [highlighted, repo.path]);
 
   function remove(trigger: HTMLElement | null) {
-    // 行が消えると焦点の行き先が無くなる——隣の行の操作、無ければ上の「フォルダを Import」へ
-    const li = trigger?.closest("li");
+    // 行が消えると焦点の行き先が無くなる——次の行の「…」（区切りをまたぐ）、無ければ前の行、
+    // それも無ければ上の「フォルダを Import」へ
+    const menus = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="repo-row-menu"]'));
+    const own = trigger?.closest("tr")?.querySelector<HTMLElement>('[data-testid="repo-row-menu"]');
+    const at = own ? menus.indexOf(own) : -1;
     const nextFocus =
-      (li?.nextElementSibling ?? li?.previousElementSibling)?.querySelector<HTMLElement>(
-        '[data-testid="repo-row-menu"]',
-      ) ?? document.querySelector<HTMLElement>('[data-testid="repo-import-open"]');
+      (at >= 0 ? (menus[at + 1] ?? menus[at - 1]) : undefined) ??
+      document.querySelector<HTMLElement>('[data-testid="repo-import-open"]');
     const entry = removeFromLedger(repo.path);
     if (!entry) return;
     requestAnimationFrame(() => nextFocus?.focus());
@@ -354,58 +461,60 @@ function RepoRow({
   }
 
   return (
-    <li
+    <tr
       data-testid="repo-item"
       data-repo-path={repo.path}
       data-state={repo.missing ? "missing" : undefined}
       data-highlighted={lit || undefined}
       tabIndex={highlighted ? -1 : undefined}
       className={cn(
-        // 狭い幅：[名前など｜操作] の下に Project。広い幅：[名前など｜Project｜操作]
-        "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 border-b border-border py-3 transition-colors duration-700 outline-none motion-reduce:transition-none @lg:grid-cols-[minmax(0,1fr)_13rem_auto] @lg:items-start @lg:gap-x-6",
+        // 狭い幅：[名前・場所｜…] の下に GitHub・アカウント・Project を1段ずつ
+        "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1.5 border-b border-border py-3 transition-colors duration-700 outline-none motion-reduce:transition-none @2xl:table-row",
         lit && "bg-surface-2",
       )}
     >
-      <div className="col-start-1 row-start-1 flex min-w-0 flex-col gap-0.5">
+      <td className="col-start-1 row-start-1 min-w-0 align-top @2xl:table-cell @2xl:py-3 @2xl:pr-4">
         <p className="truncate text-md font-medium text-foreground">{repo.name}</p>
-        <p data-testid="repo-path" className="font-mono text-xs break-all text-ink-3">
+        <p data-testid="repo-path" className="font-mono break-all text-ink-3">
           {repo.path}
         </p>
         {repo.missing ? (
           <MissingLine repo={repo} projects={projects} onRemove={remove} onImport={onImport} onShow={onShow} />
+        ) : null}
+      </td>
+
+      <Cell label="GitHub" testId="repo-remote" className="mt-1 @2xl:mt-0 @2xl:pr-4">
+        {repo.missing ? (
+          <MissingRemote repo={repo} />
         ) : (
           <>
-            <div data-testid="repo-remote" className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              <RemoteLine repo={repo} />
-              {isLocalOnly(repo) ? (
-                <button
-                  type="button"
-                  onClick={onPublish}
-                  data-testid="repo-publish-open"
-                  className="flex items-center gap-1 rounded-sm font-medium text-foreground underline decoration-border underline-offset-2 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring"
-                >
-                  <CloudUpload className="size-3.5" />
-                  GitHub に公開
-                </button>
-              ) : null}
-            </div>
-            {repo.correctedFrom ? <CorrectedNote from={repo.correctedFrom} /> : null}
+            <RemoteLine repo={repo} onPublish={onPublish} />
+            {repo.correctedFrom ? <CorrectedNote path={repo.path} from={repo.correctedFrom} /> : null}
           </>
         )}
-      </div>
+      </Cell>
 
-      <div
-        data-testid="repo-projects"
-        className="col-span-2 row-start-2 flex flex-col gap-1 @lg:col-span-1 @lg:col-start-2 @lg:row-start-1"
-      >
+      <Cell label="アカウント" testId="repo-account" className="@2xl:pr-4">
+        {account ? (
+          <span className={cn("leading-5", account === "読むだけ" ? "text-ink-3" : "font-mono text-ink-2")}>
+            {account}
+          </span>
+        ) : null}
+      </Cell>
+
+      <Cell label="Project" testId="repo-projects" className="@2xl:pr-2">
         {projects.length > 0 ? (
-          projects.map((p) => <ProjectLink key={p.id} project={p} viaWorktree={p.basePath !== repo.path} />)
+          <div className="flex flex-col gap-1 @2xl:-mt-0.5">
+            {projects.map((p) => (
+              <ProjectLink key={p.id} project={p} viaWorktree={p.basePath !== repo.path} />
+            ))}
+          </div>
         ) : repo.missing ? null : (
           <button
             type="button"
             onClick={onStart}
             data-testid="repo-start-project"
-            className="flex w-fit items-center gap-2 rounded-md py-0.5 pr-2 text-sm text-ink-3 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            className="flex w-fit items-center gap-2 rounded-md pr-2 text-sm text-ink-3 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring @2xl:-mt-0.5"
           >
             <span
               aria-hidden
@@ -416,12 +525,14 @@ function RepoRow({
             Project を始める
           </button>
         )}
-      </div>
+      </Cell>
 
-      <div className="col-start-2 row-start-1 -mt-1 @lg:col-start-3">
-        <RowMenu repo={repo} projects={projects} onRemove={remove} />
-      </div>
-    </li>
+      <td className="col-start-2 row-start-1 -mt-1 align-top @2xl:table-cell @2xl:mt-0 @2xl:py-2">
+        <div className="flex justify-end">
+          <RowMenu repo={repo} projects={projects} onRemove={remove} />
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -490,8 +601,9 @@ function RowMenu({
 
 /**
  * 台帳にあるのに、フォルダが見つからない。この一覧で**いちばん強く塗る**のはここ（turn の地
- * ——人の手が要る）。次の手はそのすぐ隣に1つ：GitHub の場所を覚えていれば「clone し直す」
- * （元の場所へ。Project の Root もそこなので、そのまま動くようになる）、無ければ「一覧から外す」
+ * ——人の手が要る）。置き場所のすぐ下に出し、次の手はそのすぐ下に1つ：GitHub の場所を覚えていれば
+ * 「clone し直す」（元の場所へ。Project の Root もそこなので、そのまま動くようになる）、
+ * 無ければ「一覧から外す」。どこから clone し直すか（覚えている GitHub の場所）は GitHub の列が言う
  */
 function MissingLine({
   repo,
@@ -527,25 +639,11 @@ function MissingLine({
   }
 
   return (
-    <div data-testid="repo-missing" className="mt-0.5 flex flex-col gap-1.5 text-xs">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="flex items-center gap-1 rounded-sm bg-turn-soft px-1.5 py-0.5 font-medium text-foreground">
-          <FolderX className="size-3.5 shrink-0 text-turn" />
-          フォルダが見つかりません
-        </span>
-        {github ? (
-          <span className="flex min-w-0 items-center gap-1 text-ink-3">
-            GitHub の
-            <AccountMark login={github.owner} />
-            <span className="font-mono break-all text-ink-2">
-              {github.owner}/{github.name}
-            </span>
-            にあります
-          </span>
-        ) : (
-          <span className="text-ink-3">GitHub にも無いので、戻す手はありません</span>
-        )}
-      </div>
+    <div data-testid="repo-missing" className="mt-1.5 flex flex-col items-start gap-1.5">
+      <span className="flex items-center gap-1 rounded-sm bg-turn-soft px-1.5 py-0.5 font-medium text-foreground">
+        <FolderX className="size-3.5 shrink-0 text-turn" />
+        フォルダが見つかりません
+      </span>
       {github ? (
         run?.kind === "cloning" ? (
           <p role="status" className="flex items-center gap-1.5 text-ink-2">
@@ -605,29 +703,80 @@ function MissingLine({
   );
 }
 
-/** 台帳の GitHub の場所を、フォルダの origin に合わせて直した——そのことを1行で言う */
-function CorrectedNote({ from }: { from: GithubLocation }) {
-  return (
-    <p data-testid="repo-corrected" className="mt-0.5 flex items-start gap-1 text-xs text-ink-3">
-      <History className="mt-px size-3.5 shrink-0" />
-      <span>
-        フォルダの origin に合わせて、GitHub の場所を直しました（前は{" "}
-        <span className="font-mono whitespace-nowrap">
-          {from.owner}/{from.name}
-        </span>
-        ）
+/** フォルダが見つからない行の GitHub の列——台帳が覚えている場所だけが手がかり */
+function MissingRemote({ repo }: { repo: MissingRepo }) {
+  if (!repo.github) {
+    return (
+      <span className="flex flex-col text-ink-3">
+        <span className="leading-5">無い</span>
+        <span>戻す手はありません</span>
       </span>
-    </p>
+    );
+  }
+  return (
+    <span className="flex flex-col">
+      <GithubName owner={repo.github.owner} name={repo.github.name} />
+      <span className="text-ink-3">覚えている場所</span>
+    </span>
   );
 }
 
-function RemoteLine({ repo }: { repo: KnownRepo }) {
+/** どのアカウントのものか——GitHub の持ち主の頭文字と `owner/name` */
+function GithubName({ owner, name }: { owner: string; name: string }) {
+  return (
+    <span className="flex min-w-0 items-start gap-1 leading-5">
+      <span className="mt-0.5">
+        <AccountMark login={owner} />
+      </span>
+      {/* 折るなら「/」の後で（持ち主と名前を途中で切らない） */}
+      <span className="min-w-0 font-mono wrap-anywhere text-ink-2">
+        {owner}/<wbr />
+        {name}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * 台帳の GitHub の場所を、フォルダの origin に合わせて直した——そのことを1度だけ言う。
+ * 「×」で閉じたら台帳からも消す（`dismissCorrection`。同じことを何度も言わない）
+ */
+function CorrectedNote({ path, from }: { path: string; from: GithubLocation }) {
+  return (
+    <div data-testid="repo-corrected" className="mt-1.5 flex items-start gap-1 text-ink-2">
+      <History className="mt-0.5 size-3.5 shrink-0 text-ink-3" />
+      <p className="min-w-0 flex-1">
+        origin に合わせて直しました
+        <span className="block text-ink-3">
+          前は{" "}
+          <span className="font-mono wrap-anywhere">
+            {from.owner}/<wbr />
+            {from.name}
+          </span>
+        </span>
+      </p>
+      <button
+        type="button"
+        onClick={() => dismissCorrection(path)}
+        data-testid="repo-corrected-dismiss"
+        aria-label="お知らせを閉じる"
+        title="閉じる"
+        className="-mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-sm text-ink-3 hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function RemoteLine({ repo, onPublish }: { repo: KnownRepo; onPublish: () => void }) {
   const { remote } = repo;
   if (remote.kind === "none") {
     // この一覧で塗るのは、ここと「フォルダが見つかりません」の2つだけ——次の手が要るもの。
-    // こちらは warn（壊れたら消える）、見つからないほうは turn（もう動かない・人の手が要る）
+    // こちらは warn（壊れたら消える）、見つからないほうは turn（もう動かない・人の手が要る）。
+    // 次の手（GitHub に公開）はそのすぐ下に
     return (
-      <>
+      <span className="flex flex-col items-start gap-1">
         <span
           data-testid="repo-local-only"
           className="flex items-center gap-1 rounded-sm bg-warn-soft px-1.5 py-0.5 font-medium text-foreground"
@@ -635,39 +784,40 @@ function RemoteLine({ repo }: { repo: KnownRepo }) {
           <HardDrive className="size-3.5 shrink-0 text-warn" />
           このマシンにだけ
         </span>
-        <span className="text-ink-3">
-          {repo.commits > 0 ? (
-            <>
-              <span className="font-mono">{repo.branch}</span> · {repo.commits} コミット
-            </>
-          ) : (
-            "まだコミットがありません"
-          )}
+        <span className="flex flex-wrap items-center gap-x-1.5">
+          <button
+            type="button"
+            onClick={onPublish}
+            data-testid="repo-publish-open"
+            className="flex items-center gap-1 rounded-sm font-medium text-foreground underline decoration-border underline-offset-2 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <CloudUpload className="size-3.5" />
+            GitHub に公開
+          </button>
+          <span className="text-ink-3">
+            · {repo.commits > 0 ? `${repo.commits} コミット` : "コミットなし"}
+          </span>
         </span>
-      </>
+      </span>
     );
   }
   if (remote.kind === "elsewhere") {
     return (
-      <span className="flex items-center gap-1 text-ink-3">
-        <Link2 className="size-3.5 shrink-0" />
-        GitHub の外（{remoteHost(remote.url)}）
+      <span className="flex flex-col">
+        <span className="flex items-center gap-1 leading-5 text-ink-2">
+          <Link2 className="size-3.5 shrink-0 text-ink-3" />
+          GitHub の外
+        </span>
+        <span className="font-mono text-ink-3">{remoteHost(remote.url)}</span>
       </span>
     );
   }
   return (
-    <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-ink-3">
-      <span className="flex items-center gap-1">
-        {remote.private ? <Lock className="size-3.5 shrink-0" /> : <Globe className="size-3.5 shrink-0" />}
-        GitHub{remote.private ? "・非公開" : "・公開"}
-      </span>
-      <span aria-hidden>·</span>
-      {/* どのアカウントのものか——GitHub の持ち主 */}
-      <span className="flex min-w-0 items-center gap-1">
-        <AccountMark login={remote.owner} />
-        <span className="font-mono break-all text-ink-2">
-          {remote.owner}/{remote.name}
-        </span>
+    <span className="flex flex-col">
+      <GithubName owner={remote.owner} name={remote.name} />
+      <span className="flex items-center gap-1 text-ink-3">
+        {remote.private ? <Lock className="size-3 shrink-0" /> : <Globe className="size-3 shrink-0" />}
+        {remote.private ? "非公開" : "公開"}
       </span>
     </span>
   );
