@@ -22,8 +22,8 @@
 //     そこ）、台帳を直したお知らせも GitHub の列。状態の列は10行のうち7行が空になり、次の手が事実から離れる
 //   - アカウントは GitHub のすぐ右（push に使うもの。登録していなければ「読むだけ」）
 //   - Project は行き先（開く・始める）なので、行の操作の手前の端
-//   - 区切り（「Project で使っている」「Project はまだ無い」）は表の中の区切り行（`<tbody>` ごと）。
-//     並べ替えで表すと、区切りの意味（今の仕事／始める候補）と件数が見えなくなる
+//   - 「Project で使っている」「Project はまだ無い」は別々の表で、それぞれ前に節の見出し（件数つき）。
+//     列と幅は2つでそろえる。0件の節は見出しごと出さない（`RepoTable`）
 //   - 見出しでの並べ替えは入れない——既定の並び（次の手が要る順）がこの画面の要点で、名前順などに
 //     しておくと見つからない行が埋もれる。探すのは検索でできる
 // 狭い幅（コンテナ 42rem 未満）は同じ要素を行ごとに縦に積み、列の名前を各段の頭に出す。
@@ -263,79 +263,88 @@ function RepoListBody({
           }}
         />
       ) : (
-        // 広い幅（コンテナ 42rem 以上）は表。狭い幅は同じ要素を行ごとに縦に積む（列の名前を各段の頭に出す）
-        // ——表を2つ書かない（同じ行が2か所にあると、片方だけ直す日が来る）
-        <table data-testid="repo-table" className="block w-full text-xs @2xl:table @2xl:table-fixed">
-          <colgroup className="hidden @2xl:table-column-group">
-            <col />
-            <col className="w-52" />
-            <col className="w-20" />
-            <col className="w-44" />
-            <col className="w-10" />
-          </colgroup>
-          <thead className="hidden @2xl:table-header-group">
-            <tr className="border-b border-border text-left text-ink-3">
-              <th scope="col" className="py-2 pr-4 font-medium">
-                リポジトリ
-              </th>
-              <th scope="col" className="py-2 pr-4 font-medium">
-                GitHub
-              </th>
-              <th scope="col" className="py-2 pr-4 font-medium">
-                アカウント
-              </th>
-              <th scope="col" className="py-2 pr-2 font-medium">
-                Project
-              </th>
-              <th scope="col" className="py-2">
-                <span className="sr-only">操作</span>
-              </th>
-            </tr>
-          </thead>
-          {groups.map((g, i) => (
-            <tbody
+        // 「Project で使っている」「Project はまだ無い」は別々の表（2026-10-01、ユーザー——1つの表を区切り行で
+        // 割ると、区切りがデータの行に見える）。見出しは表の外の節の見出し。列と幅は2つで同じにして、上下で読み比べる。
+        // 0件の節は見出しごと出さない（空の表と見出しは飾りになる。全部が空なら下の EmptyResult が次の手を言う）
+        <div className="flex flex-col gap-8">
+          {groups.map((g) => (
+            <section
               key={g.id}
               aria-labelledby={`repo-group-${g.id}`}
               data-testid="repo-group"
               data-group={g.id}
-              className="block @2xl:table-row-group"
+              className="flex flex-col gap-2"
             >
-              <tr className="block @2xl:table-row">
-                <th
-                  id={`repo-group-${g.id}`}
-                  scope="rowgroup"
-                  colSpan={5}
-                  className={cn(
-                    // 区切りは字の太さと濃い罫線で言う（色は塗らない——塗るのは行の2つの印だけ）。
-                    // 大きさは行の名前と同じ段にとどめ、設定面に埋め込んだときの見出し（text-md）を越えない
-                    "block border-b border-ink-3 pb-2 text-left text-md font-semibold text-foreground @2xl:table-cell",
-                    i === 0 ? "pt-2 @2xl:pt-5" : "pt-9",
-                  )}
-                >
-                  <span className="flex items-baseline gap-2">
-                    {g.title}
-                    <span className="text-xs font-normal text-ink-3 tabular-nums">{g.items.length} 件</span>
-                  </span>
-                </th>
-              </tr>
-              {g.items.map((f) => (
-                <RepoRow
-                  key={highlight?.path === f.repo.path ? `${f.repo.path}:${highlight.at}` : f.repo.path}
-                  repo={f.repo}
-                  projects={f.projects}
-                  account={accountLabel(f.repo, accounts)}
-                  highlighted={highlight?.path === f.repo.path}
-                  onPublish={() => onPublish(f.repo.path)}
-                  onStart={() => !f.repo.missing && onStart(f.repo)}
-                  onImport={onImport}
-                  onShow={onShow}
-                />
-              ))}
-            </tbody>
+              {/* 字の太さで見出しと言う（色は塗らない——塗るのは行の2つの印だけ）。大きさは行の名前と同じ段にとどめ、
+                  設定面に埋め込んだときの面の見出し（text-md）を越えない */}
+              <h3 id={`repo-group-${g.id}`} className="flex items-baseline gap-2 text-md font-semibold text-foreground">
+                {g.title}
+                <span className="text-xs font-normal text-ink-3 tabular-nums">{g.items.length} 件</span>
+              </h3>
+              <RepoTable labelledBy={`repo-group-${g.id}`}>
+                {g.items.map((f) => (
+                  <RepoRow
+                    key={highlight?.path === f.repo.path ? `${f.repo.path}:${highlight.at}` : f.repo.path}
+                    repo={f.repo}
+                    projects={f.projects}
+                    account={accountLabel(f.repo, accounts)}
+                    highlighted={highlight?.path === f.repo.path}
+                    onPublish={() => onPublish(f.repo.path)}
+                    onStart={() => !f.repo.missing && onStart(f.repo)}
+                    onImport={onImport}
+                    onShow={onShow}
+                  />
+                ))}
+              </RepoTable>
+            </section>
           ))}
-        </table>
+        </div>
       )}
     </>
+  );
+}
+
+/**
+ * 1つの節の表。広い幅（コンテナ 42rem 以上）は表、狭い幅は同じ要素を行ごとに縦に積む（列の名前を各段の頭に出す）
+ * ——表を2つ書かない（同じ行が2か所にあると、片方だけ直す日が来る）。
+ * 列と幅は2つの節で同じ（`table-fixed` と同じ colgroup）。「Project はまだ無い」の表でも Project の列と見出しは
+ * そのまま——列をそろえて上下で読み比べるためで、中の「Project を始める」が、その列の次の手を言っている
+ */
+function RepoTable({ labelledBy, children }: { labelledBy: string; children: ReactNode }) {
+  return (
+    <table
+      data-testid="repo-table"
+      aria-labelledby={labelledBy}
+      className="block w-full border-t border-ink-3 text-xs @2xl:table @2xl:table-fixed @2xl:border-t-0"
+    >
+      <colgroup className="hidden @2xl:table-column-group">
+        <col />
+        <col className="w-52" />
+        <col className="w-20" />
+        <col className="w-44" />
+        <col className="w-10" />
+      </colgroup>
+      <thead className="hidden @2xl:table-header-group">
+        <tr className="border-b border-ink-3 text-left text-ink-3">
+          <th scope="col" className="py-2 pr-4 font-medium">
+            リポジトリ
+          </th>
+          <th scope="col" className="py-2 pr-4 font-medium">
+            GitHub
+          </th>
+          <th scope="col" className="py-2 pr-4 font-medium">
+            アカウント
+          </th>
+          <th scope="col" className="py-2 pr-2 font-medium">
+            Project
+          </th>
+          <th scope="col" className="py-2">
+            <span className="sr-only">操作</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody className="block @2xl:table-row-group">{children}</tbody>
+    </table>
   );
 }
 
