@@ -43,6 +43,7 @@ body[data-mode="fullscreen"] #app { height: 100vh; }
   font-size: var(--t-xs); font-weight: 500; color: var(--ink-3);
 }
 .count { font-family: var(--mono); }
+.more { display: flex; width: calc(100% - 16px); margin: 8px; justify-content: center; }
 
 /* 「止める」は行の中（右下）に重ねる——行とは別のボタン（入れ子にできない）なので位置で合わせる */
 .run-item { position: relative; }

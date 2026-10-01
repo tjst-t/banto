@@ -7,7 +7,7 @@
 // ——規則3）。残すのは banto 側から見えたこと（頼んだ文・状態・呼んだ tool の題・最後の返答・使用量）だけ。
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { RunResult } from "./acp-run.js";
 
@@ -55,6 +55,16 @@ export type RunSummary = Pick<
 
 const HEAD = 80;
 
+/** 一覧を1回で返す既定の件数（画面は「もっと見る」で増やす） */
+export const RUNS_PAGE = 30;
+
+export interface RunPage {
+  /** 走っているもの（全部）→ 終わったもの（新しい順に limit 件まで） */
+  runs: RunSummary[];
+  /** 覚えている終わった仕事の総数 */
+  finishedTotal: number;
+}
+
 export class RunLog {
   private readonly running = new Map<string, { record: RunRecord; abort: AbortController }>();
   private finished: RunRecord[] = [];
@@ -73,7 +83,24 @@ export class RunLog {
           return { ...r, steps: r.steps ?? [] };
         })
         .slice(-limit);
+      // 前の版は消さずに足し続けていた——上限を超えた分はここで詰める（下の compact）
+      this.compact();
     }
+  }
+
+  /**
+   * **覚える数（limit）を超えた古い記録はファイルからも消す**（決定・2026-10-01、ユーザー要望「増え続けると重くなる」）。
+   * 以前はメモリだけ limit 件に絞り、ファイルは足し続けていた（1件あたり十数 KB、起こすたびに全部読む）。
+   * 起こしたときと、上限を超えてから limit 件足すごとに、覚えている分だけで書き直す（一時ファイル→rename）
+   * ——ファイルは多くても limit の2倍の行。毎回は書き直さない
+   */
+  private compact(): void {
+    if (!existsSync(this.file)) return;
+    const lines = readFileSync(this.file, "utf8").split("\n").filter((l) => l.trim() !== "").length;
+    if (lines <= this.finished.length) return;
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, this.finished.map((r) => `${JSON.stringify(r)}\n`).join(""), { mode: 0o600 });
+    renameSync(tmp, this.file);
   }
 
   start(input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom">): {
@@ -130,8 +157,17 @@ export class RunLog {
     mkdirSync(dirname(this.file), { recursive: true });
     appendFileSync(this.file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
     this.finished.push(record);
-    if (this.finished.length > this.limit) this.finished = this.finished.slice(-this.limit);
+    if (this.finished.length > this.limit) {
+      this.finished = this.finished.slice(-this.limit);
+      this.appendedSinceCompact += 1;
+      if (this.appendedSinceCompact >= this.limit) {
+        this.appendedSinceCompact = 0;
+        this.compact();
+      }
+    }
   }
+
+  private appendedSinceCompact = 0;
 
   /** 人が画面から止める。走っていなければ、そう言う */
   cancel(id: string): boolean {
@@ -140,6 +176,14 @@ export class RunLog {
     r.record.lastProgress = "止めています…";
     r.abort.abort();
     return true;
+  }
+
+  /** 走っているもの（新しい順・全部）→ 終わったもの（新しい順・limit 件まで）——画面は「もっと見る」で limit を増やす */
+  page(limit = RUNS_PAGE): RunPage {
+    const all = this.list();
+    const running = all.filter((r) => r.status === "running");
+    const finished = all.filter((r) => r.status !== "running");
+    return { runs: [...running, ...finished.slice(0, Math.max(0, limit))], finishedTotal: finished.length };
   }
 
   /** 走っているもの（新しい順）→ 終わったもの（新しい順） */
@@ -159,7 +203,8 @@ export class RunLog {
       ...(r.status === "running" && r.steps.length ? { lastStep: r.steps[r.steps.length - 1] } : {}),
     });
     const running = [...this.running.values()].map((r) => r.record).sort((a, b) => b.startedAt - a.startedAt);
-    const finished = [...this.finished].sort((a, b) => b.startedAt - a.startedAt);
+    // 同じ時刻なら後から足したほうを先に（並べ替えは安定なので、逆順にしてから並べる）
+    const finished = [...this.finished].reverse().sort((a, b) => b.startedAt - a.startedAt);
     return [...running, ...finished].map(summarize);
   }
 

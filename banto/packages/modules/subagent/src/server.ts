@@ -179,8 +179,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       },
       {
         name: "listRuns",
-        description: "この Project で頼んだ仕事の一覧（走っているものが先）",
-        inputSchema: { type: "object", properties: {} },
+        description: "この Project で頼んだ仕事の一覧（走っているものは全部、終わったものは新しい順に limit 件まで。既定 30）",
+        inputSchema: { type: "object", properties: { limit: { type: "number" } } },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
       {
@@ -271,7 +271,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           ),
         });
       }
-      if (request.params.name === "listRuns") return text({ runs: runs.list() });
+      if (request.params.name === "listRuns") {
+        const limit = typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : undefined;
+        return text(runs.page(limit));
+      }
       if (request.params.name === "getRun") {
         const record = runs.get(String(args.id));
         if (!record) throw new SubagentError(`仕事 "${String(args.id)}" はありません`);

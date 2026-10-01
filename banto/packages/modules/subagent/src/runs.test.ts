@@ -51,3 +51,30 @@ test("壊れた記録は読み飛ばさず止める（黙って欠けない）",
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("覚える数を超えた古い記録はファイルからも消える（多くても上限の2倍の行）。一覧は limit 件ずつ（決定・2026-10-01）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "runlog-"));
+  try {
+    const file = join(dir, "runs.jsonl");
+    const lines = () => readFileSync(file, "utf8").trim().split("\n").length;
+    const log = new RunLog(file, 5);
+    for (let i = 0; i < 23; i++) {
+      const r = log.start({ agent: "fake", agentTitle: "Fake", prompt: `仕事${i}` });
+      log.finish(r.id, { result: result(`返事${i}`) });
+      assert.ok(lines() <= 10, `ファイルが ${lines()} 行に増えた`);
+    }
+    // 前の版が溜めたファイル（上限より多い）も、起こしたときに詰める
+    writeFileSync(file, readFileSync(file, "utf8").repeat(4));
+    const again = new RunLog(file, 5);
+    assert.equal(lines(), 5);
+    assert.deepEqual(again.list().map((r) => r.promptHead), ["仕事22", "仕事21", "仕事20", "仕事19", "仕事18"]);
+
+    const running = again.start({ agent: "fake", agentTitle: "Fake", prompt: "走っている" });
+    const page = again.page(2);
+    assert.deepEqual(page.runs.map((r) => r.promptHead), ["走っている", "仕事22", "仕事21"]);
+    assert.equal(page.finishedTotal, 5);
+    again.cancel(running.id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

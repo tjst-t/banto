@@ -157,8 +157,14 @@ const money = (c?: { amount: number; currency: string }) => (c ? `$${c.amount.to
 const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
 
 // ---- 状態 ------------------------------------------------------------------------------
-const state: { agents: Agent[]; agentsError?: string; runs: Summary[]; selected: string | null; detail: RunRecord | null; error?: string; loaded: boolean } = {
-  agents: [], runs: [], selected: null, detail: null, loaded: false,
+/** 終わった仕事を一度に見せる数。「もっと見る」で同じだけ足す（決定・2026-10-01、ユーザー要望——増え続けても重くしない） */
+const PAGE = 30;
+const state: {
+  agents: Agent[]; agentsError?: string; runs: Summary[]; selected: string | null; detail: RunRecord | null; error?: string; loaded: boolean;
+  /** いま見せている終わった仕事の数と、Module が覚えている総数 */
+  limit: number; finishedTotal: number;
+} = {
+  agents: [], runs: [], selected: null, detail: null, loaded: false, limit: PAGE, finishedTotal: 0,
 };
 const app = document.getElementById("app")!;
 const wide = () => window.innerWidth >= 720;
@@ -258,12 +264,23 @@ function renderList(): HTMLElement {
   const finished = state.runs.filter((r) => r.status !== "running");
   for (const [label, rows] of [["実行中", running], ["終わった仕事", finished]] as const) {
     if (rows.length === 0) continue;
-    list.append(h("h2", { class: "list-label" }, [label, h("span", { class: "count", text: String(rows.length) })]));
+    list.append(h("h2", { class: "list-label" }, [label, h("span", { class: "count", text: String(label === "終わった仕事" ? state.finishedTotal : rows.length) })]));
     for (const r of rows) {
       const item = h("div", { class: "run-item", "data-role": "run-item", "data-run": r.id, "data-status": r.status }, [renderRow(r)]);
       if (r.status === "running") item.append(stopButton(r.id));
       list.append(item);
     }
+  }
+  const shownFinished = finished.length;
+  if (state.finishedTotal > shownFinished) {
+    const more = h("button", { type: "button", class: "btn btn-quiet more", "data-role": "more-runs", "data-focus": "more" }, [
+      `もっと見る（残り ${state.finishedTotal - shownFinished} 件）`,
+    ]);
+    more.addEventListener("click", () => {
+      state.limit += PAGE;
+      void refresh();
+    });
+    list.append(more);
   }
   return list;
 }
@@ -416,10 +433,15 @@ async function select(id: string): Promise<void> {
 }
 
 let timer: number | undefined;
+/** 前に描いたときの中身——同じなら描き直さない（5秒ごとの取り直しで、変わっていない一覧を毎回組み直していた） */
+let painted = "";
 async function refresh(): Promise<void> {
   window.clearTimeout(timer);
   try {
-    state.runs = (await call<{ runs: Summary[] }>("listRuns")).runs;
+    const page = await call<{ runs: Summary[]; finishedTotal?: number }>("listRuns", { limit: state.limit });
+    state.runs = page.runs;
+    // 前の版の Module は総数を返さない——そのときは受け取った分が全部
+    state.finishedTotal = page.finishedTotal ?? page.runs.filter((r) => r.status !== "running").length;
     state.loaded = true;
     // 広いときは、何も選んでいなければ一番上（走っているもの→新しいもの）を開いておく
     if (!state.selected && wide() && state.runs[0]) state.selected = state.runs[0].id;
@@ -428,7 +450,12 @@ async function refresh(): Promise<void> {
   } catch (err) {
     state.error = `読み込めませんでした：${(err as Error).message}`;
   }
-  render();
+  const snapshot = JSON.stringify([state.runs, state.finishedTotal, state.detail, state.error, state.selected]);
+  // 走っているものがあれば経過の時刻が進むので、毎回描く
+  if (snapshot !== painted || state.runs.some((r) => r.status === "running")) {
+    painted = snapshot;
+    render();
+  }
   // 走っている間は細かく、そうでなければゆっくり取り直す（会話で新しく頼まれた仕事も拾う）
   timer = window.setTimeout(refresh, state.runs.some((r) => r.status === "running") ? 1500 : 5000);
 }
