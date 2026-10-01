@@ -65,7 +65,8 @@ button, input { font: inherit; color: inherit; }
 const PAGE_CSS = `
 #app { container-type: inline-size; }
 body[data-mode="fullscreen"] #app { max-width: 56rem; margin: 0 auto; padding: 32px 20px; }
-body[data-surface="config"] #app { padding: 0; }
+/* 設定の面は banto が枠を描く——枠の内側に余白を取る（Skill の置き場の面と同じ 12px） */
+body[data-surface="config"] #app { padding: 12px; }
 .stack { display: flex; flex-direction: column; gap: 20px; }
 
 /* ---- 上：題・説明・入口 ---- */
@@ -195,13 +196,18 @@ td.cell > .label { color: var(--ink-3); }
   position: sticky; bottom: 12px; display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 8px 12px;
   border-radius: var(--r-md); background: var(--ink); color: var(--bg); font-size: var(--t-sm); box-shadow: var(--shadow);
 }
+/* 設定の面は中身の高さまで伸びる——下に貼り付けると入力欄に重なるので、流れの中に置く */
+body[data-surface="config"] .status { position: static; }
 .status .btn { height: 26px; background: transparent; color: var(--bg); border-color: color-mix(in srgb, var(--bg) 40%, transparent); }
 
 /* ---- 既定の置き場（設定の面） ---- */
 .home { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
 .home label { font-size: var(--t-sm); font-weight: 500; }
 .home .line { display: flex; gap: 6px; }
-.home .line input { font-family: var(--mono); }
+.home .line input {
+  flex: 1; min-width: 0; height: 32px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-2);
+  background: var(--bg); font-family: var(--mono); font-size: var(--t-sm);
+}
 .home p { margin: 0; color: var(--ink-3); font-size: var(--t-xs); }
 .home .stopline { color: var(--danger); }
 
@@ -357,7 +363,8 @@ const SCRIPT = String.raw`
     const q = state.query.trim().toLowerCase();
     return rows().filter((r) =>
       (state.filter === "all" || (state.filter === "local" ? isLocalOnly(r) : needsHand(r))) &&
-      (q === "" || (r.name + " " + r.displayPath + " " + r.path + " " + originText(r)).toLowerCase().includes(q)));
+      // 引くのは画面に出ている字だけ（名前・場所・owner/name）——見えていない絶対パスで当たると、なぜ残ったか分からない
+      (q === "" || (r.name + " " + r.displayPath + " " + originText(r)).toLowerCase().includes(q)));
   }
 
   // ---- 描画 ----
@@ -747,6 +754,8 @@ const SCRIPT = String.raw`
   const dlg = { kind: null, at: "~", listing: null, listError: null, inspection: null, inspectError: null, draft: null, busy: false, seq: 0 };
   dialog.addEventListener("close", () => {
     dlg.kind = null;
+    // 中身も消す——開き直したときに前のフォルダの判断が一瞬見えないように
+    dialog.replaceChildren();
     delete dialog.dataset.focused;
     document.body.style.minHeight = "";
     reportSize();
