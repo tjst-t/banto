@@ -1,6 +1,10 @@
 "use client";
 
-// **Root パスと、そこで何が起きるか**を1つの帯で言う（2026-09-29、改訂・2026-09-30）。
+// **場所と、そこで何が起きるか**を1つの帯で言う（2026-09-29、改訂・2026-09-30・10-01）。
+// 帯に見出しは置かない（2026-10-01、ユーザー）——「Root パス」「手元にある場所」のような見出しは場面ごとに
+// 言い換えが要り、言い換え損ねると誤読される（Import 済みの ~/ghq/… を「Root パス」の下に見て「ghq の置き方に
+// 戻ったのか」と読まれた）。**パスと、そのすぐ下の1行**（「ここに clone します」「もう手元にあります」
+// 「ここに clone し直します」）で場面を言う。
 //
 // clone と「新しいリポジトリ」の Root は**既定の置き場の下**（`~/banto/<名前>`、置き場は
 // Repo の設定で変えられる）。人が決めるのはフォルダ名だけなので、**入力欄は帯の中の
@@ -52,7 +56,6 @@ export function RepoRootPreview({
   onSwitchToClone,
   onOpenProject,
   failedNext,
-  targetLabel = "Root パス",
   onStartHere,
 }: {
   mode: "clone" | "create";
@@ -74,11 +77,6 @@ export function RepoRootPreview({
   onOpenProject: (projectId: string, closed: boolean) => void;
   /** clone できなかったときの次の手（入口ごとに違う。無ければ「読めるアカウントを登録して、もう一度選ぶ」） */
   failedNext?: ReactNode;
-  /**
-   * これから作る・clone する場所の見出し。新しい Project の画面は「Root パス」、リポジトリの一覧からは
-   * 「置く場所」（Project を作るとは限らない）。もう手元にある場所・clone し直す場所は、この見出しを使わない
-   */
-  targetLabel?: string;
   /** もう手元にあり、Project がまだ無いときの次の手（一覧から。新しい Project の画面は下のボタンがそれ） */
   onStartHere?: (path: string) => void;
 }) {
@@ -96,22 +94,15 @@ export function RepoRootPreview({
     onStartHere,
   });
   const cloning = status.kind === "cloning";
-  // 見出しは帯が指している場所が何かで変える——もう手元にある場所を「Root パス」と書くと、新しく clone する
-  // 場所に読める（ユーザーが実際に誤読した：Import 済みの ~/ghq/… を見て「ghq の置き方に戻ったのか」と思った）
-  const heading =
-    status.kind === "have" ? "手元にある場所" : status.kind === "reclone" ? "clone し直す場所（元の場所）" : targetLabel;
 
   return (
     <section
-      aria-labelledby="repo-root-label"
+      aria-label="場所"
       data-testid="repo-root-preview"
       data-state={status.kind === "target" ? status.state.kind : status.kind}
       className="overflow-hidden rounded-md border border-border"
     >
       <div className="flex flex-col gap-1 bg-surface-2 px-3 py-2.5">
-        <p id="repo-root-label" data-testid="repo-root-label" className="text-xs text-ink-3">
-          {heading}
-        </p>
         {status.kind === "have" || status.kind === "reclone" ? (
           <p data-testid="repo-root-path" className="font-mono text-lg leading-snug break-all text-foreground">
             {status.repo.path}
@@ -252,29 +243,25 @@ function describe({
     };
   }
   if (status.kind === "have") {
-    // もう手元にある——新しくは clone しない。どこにあるかを文にも書く（見出しの下のパスと同じ。読み飛ばされても伝わるように）。
-    // 次の手は入口が決める（一覧で見る・Project を開く・このフォルダで Project を作る）
+    // もう手元にある——新しくは clone しない。上のパスがその場所（見出しは置かないので、文の頭で場面を言う）。
+    // 次の手は入口が決める（一覧で見る・Project を開く・この場所を使う）
     const { repo, project } = status;
     const what = repo.remote.kind === "github" ? `${repo.remote.owner}/${repo.remote.name}` : repo.name;
-    const where = <span className="font-mono break-all">{repo.path}</span>;
     return project
       ? {
           tone: "go",
           icon: <ArrowRight />,
           message: (
             <>
-              {what} は、もう手元にあります（{where}）。Project「{project.name}」が使っています。新しくは clone しません。
+              もう手元にあります（{what}）。Project「{project.name}」が{project.viaWorktree ? " worktree で" : ""}使っています。新しくは
+              clone しません。
             </>
           ),
         }
       : {
           tone: "ok",
           icon: <CircleCheck />,
-          message: (
-            <>
-              {what} は、もう手元にあります（{where}）。新しくは clone しません。
-            </>
-          ),
+          message: <>もう手元にあります（{what}）。新しくは clone しません。</>,
           next: onStartHere ? (
             <NextStep
               testId="repo-root-start-here"
@@ -291,8 +278,8 @@ function describe({
       icon: <CloudDownload />,
       message: (
         <>
-          Repo の一覧にありますが、フォルダが見つかりません。Repo が元の場所に clone し直します
-          {project ? <>——Project「{project.name}」はこのフォルダを Root にしたまま{project.closed ? "再開し" : "開き"}ます</> : null}。
+          ここに clone し直します——Repo の一覧にありますが、フォルダが見つかりません
+          {project ? <>（Project「{project.name}」の Root です）</> : null}。
         </>
       ),
     };
@@ -318,17 +305,17 @@ function describe({
           icon: <CloudDownload />,
           message: renamedFrom ? (
             <>
-              Repo がここに clone します。<span className="font-mono">{home}/{renamedFrom}</span>{" "}
+              ここに clone します。<span className="font-mono">{home}/{renamedFrom}</span>{" "}
               は、もう使っているので {folder} にしました。
             </>
           ) : (
-            "Repo がここに clone します。"
+            "ここに clone します。"
           ),
         }
       : {
           tone: "plain",
           icon: <FolderPlus />,
-          message: "Repo がここに空のリポジトリを作ります（git init）。GitHub には、まだ作りません。",
+          message: "ここに空のリポジトリを作ります（git init）。GitHub には、まだ作りません。",
         };
   }
 

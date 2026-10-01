@@ -1,6 +1,7 @@
 import type {
   MockCredential,
   MockEffortLevel,
+  MockFolderProvider,
   MockModuleDependency,
   MockModuleImplementation,
   MockModuleTool,
@@ -276,6 +277,23 @@ let implementations: MockModuleImplementation[] = [
       { id: "diff", label: "差分ビューを開く", viewId: "diff" },
       { id: "publish", label: "この Project を GitHub に公開", viewId: "publish" },
     ],
+    // core の新しい Project の画面に差し出す始め方（名前・説明・アイコンは Repo が決める）
+    folderProviders: [
+      {
+        id: "clone",
+        label: "clone",
+        description: "GitHub などのリポジトリを、Repo の置き場に clone します。",
+        icon: "cloud-download",
+        viewId: "prepare-clone",
+      },
+      {
+        id: "create",
+        label: "新しいリポジトリ",
+        description: "Repo の置き場に作って git init します。GitHub へは、あとで公開できます。",
+        icon: "folder-plus",
+        viewId: "prepare-create",
+      },
+    ],
     mcpServersJson: sampleMcpServersJson(
       "banto-repo",
       "node",
@@ -410,6 +428,38 @@ export function getImplementation(id: string): MockModuleImplementation | undefi
 export function getRoleForImplementation(implementationId: string): MockRole | undefined {
   const impl = getImplementation(implementationId);
   return impl ? getRole(impl.roleId) : undefined;
+}
+
+/**
+ * フォルダを用意できると名乗っている Module の始め方（有効なものだけ）。core の新しい Project の画面は
+ * ここから始め方のタブを並べる——Module の名前で分岐しない（Module を足すのに core を触らない）
+ */
+export function getFolderProviders(): readonly (MockFolderProvider & {
+  implementationId: string;
+  implementationName: string;
+  /** 役割の名前（「Repo」）。core が「Repo が〜しました」と、誰がしたかを言うのに使う */
+  roleName: string;
+})[] {
+  return implementations
+    .filter((i) => i.enabled)
+    .flatMap((impl) =>
+      (impl.folderProviders ?? []).map((p) => ({
+        ...p,
+        implementationId: impl.id,
+        implementationName: impl.name,
+        roleName: getRole(impl.roleId)?.name ?? impl.name,
+      })),
+    );
+}
+
+/**
+ * モックの見せ方のためだけ（URL の `?modules=none`）——フォルダを用意できる Module（いまは Repo だけ）を
+ * 外した banto。新しい Project の画面は「手元のフォルダ」だけになる（core は壊れない）
+ */
+export function disableFolderProvidersForDemo(): void {
+  if (!implementations.some((i) => i.enabled && i.folderProviders?.length)) return;
+  implementations = implementations.map((i) => (i.folderProviders?.length ? { ...i, enabled: false } : i));
+  notifyMockStoreChange();
 }
 
 /**

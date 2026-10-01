@@ -9,7 +9,7 @@
 //   フォルダを Import できる。GitHub に公開してもフォルダは動かさない
 // - 作る先に既にフォルダがあるとき、何が起きるかは `inspectTargetFolder`、Import で
 //   何が起きるかは `inspectImport` の1箇所ずつで決める（画面は言い方だけを持つ）
-// - 台帳は GitHub の場所（owner/name）も覚える（2026-09-30、ユーザー）——フォルダが消えても
+// - 台帳は GitHub の場所（owner/name）と、GitHub の外の origin の URL も覚える（2026-09-30・10-01、ユーザー）——フォルダが消えても
 //   clone し直せるように。フォルダの origin と食い違ったら origin を正として台帳を直す（`syncWithFolders`）
 import { useSyncExternalStore } from "react";
 import { getActiveProjects, getAllProjects } from "./projects";
@@ -161,7 +161,11 @@ function remoteKey(url: string): string {
 const PUBLIC_GITHUB_REPOS: readonly { owner: string; name: string }[] = [{ owner: "octocat", name: "hello-world" }];
 
 /** GitHub の外で、このマシンから読めるリポジトリ（本物は git ls-remote が答える） */
-const READABLE_ELSEWHERE: readonly string[] = ["gitlab.com/tjst-t/notes", "gitlab.com/tjst-t/recipes-archive"];
+const READABLE_ELSEWHERE: readonly string[] = [
+  "gitlab.com/tjst-t/notes",
+  "gitlab.com/tjst-t/recipes-archive",
+  "gitlab.com/tjst-t/zine",
+];
 
 /**
  * clone できるか（どのアカウントで読めるか）。判断はここ1箇所——新しい Project の画面と一覧の clone が使う。
@@ -380,6 +384,12 @@ export interface LedgerEntry {
   accountId?: string;
   /** GitHub の場所。フォルダが消えても clone し直せるように覚えておく。GitHub に無ければ無し */
   github?: GithubLocation;
+  /**
+   * GitHub の外（gitlab.com 等）の origin の URL——同じ理由で覚えておく（2026-10-01、ユーザー決定）。
+   * GitHub の場所と同じく origin の写しで、食い違ったら origin に合わせる（お知らせはしない——
+   * 覚えていなかったものを覚えるだけで、覚えていた場所が変わるのではない）
+   */
+  elsewhere?: string;
   /** origin に合わせて直したとき、それまで覚えていた場所（一覧で一度だけ言うため） */
   correctedFrom?: GithubLocation;
 }
@@ -390,6 +400,12 @@ const sameLocation = (a?: GithubLocation, b?: GithubLocation) =>
 const originLocation = (remote: RepoRemote): GithubLocation | undefined =>
   remote.kind === "github" ? { owner: remote.owner, name: remote.name } : undefined;
 
+/** 台帳に書く origin の場所（GitHub か、その外の URL か） */
+const originFields = (remote: RepoRemote): Pick<LedgerEntry, "github" | "elsewhere"> => ({
+  github: originLocation(remote),
+  elsewhere: remote.kind === "elsewhere" ? remote.url : undefined,
+});
+
 /**
  * 台帳の GitHub の場所を、フォルダの origin に合わせる。本物は Repo が一覧を答えるとき・
  * フォルダに触れたとき（clone・公開・Import）に走らせる。フォルダが見つからない行は触らない
@@ -399,8 +415,12 @@ function syncWithFolders(entries: readonly LedgerEntry[], folders: readonly Host
     const facts = folders.find((f) => f.path === e.path)?.git;
     if (!facts) return e;
     const origin = originLocation(facts.remote);
-    if (sameLocation(origin, e.github) || (!origin && !e.github)) return e;
-    return { ...e, github: origin, correctedFrom: e.github };
+    const url = facts.remote.kind === "elsewhere" ? facts.remote.url : undefined;
+    let next = e;
+    if (!(sameLocation(origin, e.github) || (!origin && !e.github))) {
+      next = { ...next, github: origin, correctedFrom: e.github };
+    }
+    return next.elsewhere === url ? next : { ...next, elsewhere: url };
   });
 }
 
@@ -427,6 +447,8 @@ const SEED_LEDGER: readonly LedgerEntry[] = syncWithFolders(
     },
     // フォルダが見つからない——GitHub にも無い（戻す手は無く、一覧から外すしかない）
     { path: "~/banto/sketches" },
+    // フォルダが見つからない——GitHub の外（gitlab）の場所を覚えているので clone し直せる
+    { path: "~/banto/zine", elsewhere: "git@gitlab.com:tjst-t/zine.git" },
   ],
   SEED_FOLDERS,
 );
@@ -457,6 +479,8 @@ export interface MissingRepo {
   name: string;
   accountId?: string;
   github?: GithubLocation;
+  /** GitHub の外の origin の URL（覚えていれば clone し直せる） */
+  elsewhere?: string;
 }
 
 export type LedgerRepo = KnownRepo | MissingRepo;
@@ -464,7 +488,7 @@ export type LedgerRepo = KnownRepo | MissingRepo;
 function join(entry: LedgerEntry): LedgerRepo | undefined {
   const base = { path: entry.path, name: folderName(entry.path), accountId: entry.accountId };
   const folder = hostFolder(entry.path);
-  if (!folder) return { ...base, missing: true, github: entry.github };
+  if (!folder) return { ...base, missing: true, github: entry.github, elsewhere: entry.elsewhere };
   // フォルダはあるが git でない（.git を消した等）——この相談の外なので一覧に出さない
   if (!folder.git) return undefined;
   return { ...folder.git, ...base, missing: false, correctedFrom: entry.correctedFrom };
@@ -515,11 +539,21 @@ export function findKnownGithubRepo(owner: string, name: string): KnownRepo | un
   );
 }
 
-/** GitHub のそのリポジトリを台帳が覚えているのに、フォルダが見つからない行 */
-function findMissingGithubRepo(owner: string, name: string): MissingRepo | undefined {
+/** そのリポジトリを台帳が覚えているのに、フォルダが見つからない行（GitHub は owner/name、外は URL で比べる） */
+function findMissingRepo(source: CloneSource): MissingRepo | undefined {
   return ledgerRepos(ledger).find(
-    (r): r is MissingRepo => r.missing && sameLocation(r.github, { owner, name }),
+    (r): r is MissingRepo =>
+      r.missing &&
+      (source.kind === "github"
+        ? sameLocation(r.github, source)
+        : !!r.elsewhere && remoteKey(r.elsewhere) === remoteKey(source.url)),
   );
+}
+
+/** 見つからない行が覚えている clone の元（GitHub の場所か、その外の URL）。どちらも無ければ戻す手は無い */
+export function missingRepoSource(repo: MissingRepo): CloneSource | null {
+  if (repo.github) return { kind: "github", ...repo.github };
+  return repo.elsewhere ? parseCloneSource(repo.elsewhere) : null;
 }
 
 /** そのリポジトリを Root（フォルダそのもの・worktree）にしている Project */
@@ -530,7 +564,15 @@ export function getProjectsUsingRepo(repo: LedgerRepo) {
 
 function projectSummary(repo: LedgerRepo) {
   const p = getProjectsUsingRepo(repo)[0];
-  return p && { id: p.id, name: p.name, closed: !getActiveProjects().some((a) => a.id === p.id) };
+  return (
+    p && {
+      id: p.id,
+      name: p.name,
+      closed: !getActiveProjects().some((a) => a.id === p.id),
+      /** その Project の Root はこのリポジトリの worktree（フォルダそのものではない） */
+      viaWorktree: p.basePath !== repo.path,
+    }
+  );
 }
 
 export type ProjectSummary = NonNullable<ReturnType<typeof projectSummary>>;
@@ -553,18 +595,26 @@ export function addClonedRepo(input: {
   remote: Exclude<RepoRemote, { kind: "none" }>;
 }): void {
   putGitFolder(input.path, git(input.remote));
-  addToLedger({ path: input.path, accountId: input.accountId, github: originLocation(input.remote) });
+  addToLedger({ path: input.path, accountId: input.accountId, ...originFields(input.remote) });
   notifyMockStoreChange();
 }
 
 /**
- * 見つからないフォルダを、台帳が覚えている GitHub の場所から**元の場所に** clone し直す。
- * 見えるアカウントが無い非公開のリポジトリなら、理由を返して何もしない
+ * 見つからないフォルダを、台帳が覚えている場所（GitHub か、その外の URL）から**元の場所に** clone し直す。
+ * 読めなければ（見えるアカウントが無い非公開・このマシンから読めない）理由を返して何もしない
  */
 export function recloneMissingRepo(path: string): { ok: true } | { ok: false; reason: string } {
   const entry = ledger.find((e) => e.path === path);
-  if (!entry?.github || hostFolder(path)) return { ok: false, reason: "clone し直せる行ではありません" };
-  const { owner, name } = entry.github;
+  const repo = ledgerRepos(ledger).find((r): r is MissingRepo => r.missing && r.path === path);
+  const source = repo ? missingRepoSource(repo) : null;
+  if (!entry || !source || hostFolder(path)) return { ok: false, reason: "clone し直せる行ではありません" };
+  if (source.kind === "elsewhere") {
+    const access = checkCloneAccess(source, undefined);
+    if (!access.ok) return { ok: false, reason: access.reason };
+    addClonedRepo({ path, remote: { kind: "elsewhere", url: source.url } });
+    return { ok: true };
+  }
+  const { owner, name } = source;
   const listed = visibleGithubRepo(owner, name);
   if (!listed) {
     return { ok: false, reason: `${owner}/${name} は、登録したアカウントのどれからも見えません` };
@@ -626,7 +676,7 @@ export function setRepoRemote(path: string, remote: RepoRemote, accountId?: stri
   const facts = hostFolder(path)?.git;
   if (facts) putGitFolder(path, { ...facts, remote });
   const rest = ledger.find((e) => e.path === path);
-  addToLedger({ ...rest, path, accountId, github: originLocation(remote), correctedFrom: undefined });
+  addToLedger({ ...rest, path, accountId, ...originFields(remote), correctedFrom: undefined });
   notifyMockStoreChange();
 }
 
@@ -682,7 +732,7 @@ export function inspectTargetFolder(home: string, name: string): TargetFolderSta
 /**
  * clone しようとしているリポジトリを、もう持っているか（どこにあっても）。フォルダが見つからない行が
  * そのリポジトリを覚えていれば、**その行の場所に clone し直す**（一覧の「clone し直す」と同じ）。
- * GitHub の外は origin の URL で比べる（台帳は GitHub の外の場所を覚えないので、clone し直しは無い）
+ * GitHub の外は origin の URL で比べる（台帳は GitHub の外の URL も覚えるので、見つからない行は clone し直せる）
  */
 export function inspectCloneSource(
   source: CloneSource,
@@ -690,14 +740,12 @@ export function inspectCloneSource(
   | { kind: "have"; repo: KnownRepo; project?: ProjectSummary }
   | { kind: "reclone"; repo: MissingRepo; project?: ProjectSummary }
   | null {
-  if (source.kind === "elsewhere") {
-    const key = remoteKey(source.url);
-    const repo = getKnownRepos().find((r) => r.remote.kind === "elsewhere" && remoteKey(r.remote.url) === key);
-    return repo ? { kind: "have", repo, project: projectSummary(repo) } : null;
-  }
-  const repo = findKnownGithubRepo(source.owner, source.name);
+  const repo =
+    source.kind === "elsewhere"
+      ? getKnownRepos().find((r) => r.remote.kind === "elsewhere" && remoteKey(r.remote.url) === remoteKey(source.url))
+      : findKnownGithubRepo(source.owner, source.name);
   if (repo) return { kind: "have", repo, project: projectSummary(repo) };
-  const missing = findMissingGithubRepo(source.owner, source.name);
+  const missing = findMissingRepo(source);
   return missing ? { kind: "reclone", repo: missing, project: projectSummary(missing) } : null;
 }
 
@@ -744,7 +792,7 @@ export function inspectImport(path: string): ImportCheck {
 export function importFolder(path: string): KnownRepo | undefined {
   const check = inspectImport(path);
   if (check.kind !== "ready") return undefined;
-  addToLedger({ path, accountId: check.accountId, github: originLocation(check.facts.remote) });
+  addToLedger({ path, accountId: check.accountId, ...originFields(check.facts.remote) });
   notifyMockStoreChange();
   return findRepoForFolder(path);
 }

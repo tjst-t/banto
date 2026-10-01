@@ -75,6 +75,7 @@ import {
   getProjectsUsingRepo,
   recloneMissingRepo,
   remoteHost,
+  missingRepoSource,
   removeFromLedger,
   restoreLedgerEntry,
   useGithubAccounts,
@@ -186,6 +187,7 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
             setHighlight({ path, at: Date.now() });
           }}
           onStartAt={(path) => setStarting({ method: "folder", folder: path, name: path.split("/").pop() })}
+          onStartProject={(path, name) => setStarting({ method: "folder", folder: path, name })}
           onClone={(reference) => setCloneUrl(reference)}
         />
       ) : null}
@@ -198,6 +200,7 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
             setHighlight({ path, at: Date.now() });
           }}
           onStartAt={(path) => setStarting({ method: "folder", folder: path, name: path.split("/").pop() })}
+          onStartProject={(path, name) => setStarting({ method: "folder", folder: path, name })}
         />
       ) : null}
       {importAt ? (
@@ -245,7 +248,7 @@ function RepoListBody({
     .filter(
       (f) =>
         (filter === "all" || (filter === "local" ? isLocalOnly(f.repo) : f.repo.missing)) &&
-        (q === "" || `${f.repo.name} ${f.repo.path} ${githubName(f.repo) ?? ""}`.toLowerCase().includes(q)),
+        (q === "" || `${f.repo.name} ${f.repo.path} ${originText(f.repo)}`.toLowerCase().includes(q)),
     )
     // 次の手が要る順：フォルダが見つからない → このマシンにだけ → あとは名前順
     .sort((a, b) => rank(a.repo) - rank(b.repo) || a.repo.name.localeCompare(b.repo.name));
@@ -398,6 +401,12 @@ function rank(repo: LedgerRepo): number {
 function githubName(repo: LedgerRepo): string | undefined {
   if (repo.missing) return repo.github && `${repo.github.owner}/${repo.github.name}`;
   return repo.remote.kind === "github" ? `${repo.remote.owner}/${repo.remote.name}` : undefined;
+}
+
+/** 検索に使う origin の場所（GitHub の `owner/name`、外は URL） */
+function originText(repo: LedgerRepo): string {
+  if (repo.missing) return githubName(repo) ?? repo.elsewhere ?? "";
+  return repo.remote.kind === "elsewhere" ? repo.remote.url : (githubName(repo) ?? "");
 }
 
 /**
@@ -668,7 +677,8 @@ function MissingLine({
   onShow: (path: string) => void;
 }) {
   const [run, setRun] = useState<{ kind: "cloning" } | { kind: "failed"; reason: string } | null>(null);
-  const { github } = repo;
+  // 覚えている clone の元——GitHub の場所か、その外の URL（2026-10-01、ユーザー決定）
+  const source = missingRepoSource(repo);
 
   function reclone() {
     setRun({ kind: "cloning" });
@@ -680,7 +690,7 @@ function MissingLine({
         return;
       }
       toast(
-        `Repo が ${github?.owner}/${github?.name} を ${repo.path} に clone し直しました` +
+        `Repo が ${source?.kind === "github" ? `${source.owner}/${source.name}` : `${source?.host}/${source?.path}`} を ${repo.path} に clone し直しました` +
           (projects.length > 0 ? `（Project「${projects[0].name}」の Root です）` : ""),
       );
       onShow(repo.path);
@@ -693,7 +703,7 @@ function MissingLine({
         <FolderX className="size-3.5 shrink-0 text-turn" />
         フォルダが見つかりません
       </span>
-      {github ? (
+      {source ? (
         run?.kind === "cloning" ? (
           <p role="status" className="flex items-center gap-1.5 text-ink-2">
             <LoaderCircle className="size-3.5 motion-safe:animate-spin" />
@@ -754,6 +764,22 @@ function MissingLine({
 
 /** フォルダが見つからない行の GitHub の列——台帳が覚えている場所だけが手がかり */
 function MissingRemote({ repo }: { repo: MissingRepo }) {
+  const source = missingRepoSource(repo);
+  if (source?.kind === "elsewhere") {
+    return (
+      <span className="flex flex-col">
+        <span className="flex items-center gap-1 leading-5 text-ink-2">
+          <Link2 className="size-3.5 shrink-0 text-ink-3" />
+          GitHub の外
+        </span>
+        <span className="font-mono wrap-anywhere text-ink-3">
+          {source.host}/<wbr />
+          {source.path}
+        </span>
+        <span className="text-ink-3">覚えている場所</span>
+      </span>
+    );
+  }
   if (!repo.github) {
     return (
       <span className="flex flex-col text-ink-3">

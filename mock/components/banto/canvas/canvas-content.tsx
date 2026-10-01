@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils";
 import { FileExplorerView } from "./file-explorer-view";
 import { RepoListView } from "./repo-list-view";
 import { RepoPublishView } from "./repo-publish-view";
+import { RepoPrepareCloneView, RepoPrepareCreateView } from "./repo-prepare-view";
+import type { MockFolderProviderHost } from "@/lib/mock/types";
 import { ShellTerminalView } from "./shell-terminal-view";
 import { VaultManageView } from "./vault-manage-view";
 
@@ -198,5 +200,29 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
       return <ShellTerminalView />;
     default:
       return <UnknownCanvasView moduleId={moduleId} viewId={viewId} />;
+  }
+}
+
+/**
+ * Module が「フォルダを用意できる」と名乗った画面（`folderProviders` の viewId）。core の新しい Project の画面が
+ * 始め方のタブの中に埋め込む。本物は `ui://<implementationId>/<viewId>` を iframe で埋め込み、`host` は
+ * MCP Apps の文脈と返事の口になる——core はここで Module の名前で分岐しない（この表はモックの iframe の代わり）
+ */
+export function FolderProviderContent({
+  implementationId,
+  viewId,
+  host,
+}: {
+  implementationId: string;
+  viewId: string;
+  host: MockFolderProviderHost;
+}) {
+  switch (`${implementationId}:${viewId}`) {
+    case "banto.repo:prepare-clone":
+      return <RepoPrepareCloneView host={host} />;
+    case "banto.repo:prepare-create":
+      return <RepoPrepareCreateView host={host} />;
+    default:
+      return <UnknownCanvasView moduleId={implementationId} viewId={viewId} />;
   }
 }

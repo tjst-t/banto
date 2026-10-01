@@ -696,7 +696,9 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
 
 **見せているもの**：
 
-- **始め方は3つ**（`components/banto/project/new-project-dialog.tsx`）——
+- ~~**始め方は3つ**~~ **→ core が持つのは「手元のフォルダ」だけに改めた**（2026-10-01、ユーザー決定。下の「core と Module の
+  境目」節——clone・新しいリポジトリは Repo が名乗って持ち込む始め方になった）。以下はこの時点の形
+  （`components/banto/project/new-project-dialog.tsx`）——
   **フォルダを選ぶ**（今ある形。打つか「選ぶ」）／**GitHub から clone**（アカウントから見える
   リポジトリを絞って選ぶ。一覧に無いものは URL か `owner/repo` を貼る）／
   **新しいリポジトリ**（ローカルに作る。GitHub にはまだ作らない）
@@ -798,7 +800,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
   フォルダ名はリポジトリ名（`~/banto/<名前>`）。設定の Repo の面に「既定の置き場」の欄
   （`settings/repo-home-section.tsx`。「変える」で入れる——打っている途中の値で Root パスを揺らさない。
   `~` と `/` は断る。変えても今あるフォルダは動かさない）
-- **Root パスの帯の中で、フォルダ名だけが打てる**（`project/repo-root-preview.tsx`）——`~/banto/` は字のまま、
+- **Root パスの帯の中で、フォルダ名だけが打てる**（`project/repo-root-preview.tsx`、**→ `canvas/` へ移した**——Repo の画面の部品）——`~/banto/` は字のまま、
   最後の段だけ入力欄。どこまでが決まっていて、どこを変えられるかを形で言う。
   - clone：**名前がぶつかったら `<名前>-2` を先に入れておき**、「~/banto/scratch は、もう使っているので
     scratch-2 にしました」と言う。人が打ち直してぶつかれば断り、「scratch-2 にする」を出す
@@ -957,7 +959,7 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   GitHub の外は `https://<host>/<path>`・`git@<host>:<path>.git`（読み方は `lib/mock/github.ts` の `parseCloneSource` の1箇所）
   - **GitHub の外も受ける**——台帳はもう GitHub の外の origin を扱え（Import した gitlab の notes）、断ると
     「端末で clone して Import」という回り道になる。Repo のアカウント（GitHub のもの）は使わず、このマシンの git の設定で
-    clone すると言う。アカウントの列は「—」、GitHub の列は「GitHub の外 gitlab.com」。台帳は GitHub の外の場所を覚えないので、
+    clone すると言う。アカウントの列は「—」、GitHub の列は「GitHub の外 gitlab.com」。~~台帳は GitHub の外の場所を覚えないので、~~ **→ 覚えるように改めた（下の「core と Module の境目」節）**。
     フォルダが消えても clone し直しは出ない（前と同じ）
   - 読めない形は、打っている途中は例を出すだけで断らない。Enter・押したときに初めて欄を断る（打つたびに赤くしない）
 - **押す前に言う帯は新しい Project の画面と同じ `RepoRootPreview`**——置く場所（`~/banto/<名前>`、ぶつかれば `<名前>-2` を
@@ -971,7 +973,8 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   - 別の登録アカウントなら読める →「work-org/api-gateway は非公開で、tjst-t からは読めません」と **「work-org で clone する」**
   - 見つからない（GitHub）→ 理由と「URL を確かめてください。非公開なら、読めるアカウントを登録してから、もう一度押してください」
   - 見つからない（GitHub の外）→ 理由と「非公開なら、このマシンの git（SSH の鍵など）で読めるようにしてから」
-- **「Project も作る」**（スイッチ、`canvas/repo-project-option.tsx`。**既定は切**）——ここは Repo の一覧で、用事は「このマシンに置く」こと。clone から Project を
+- **「Project も作る」**（スイッチ、`canvas/repo-project-option.tsx`。~~**既定は切**~~ **→ 既定オンに改め、オンなら core の
+  新しい Project の画面を開く形にした**——下の「core と Module の境目」節。以下は切だったときの理由）——ここは Repo の一覧で、用事は「このマシンに置く」こと。clone から Project を
   始める入口は新しい Project の画面にもうあり（そちらは作るのが既定）、両方を同じ既定にすると同じ入口が2つになる。
   切っておけば一覧に留まり、足した行が「Project はまだ無い」の表に地つきで出て、その行の「Project を始める」が次の手になる
   （設定面に埋め込んだときも設定から離れない）。人が入れた「Project も作る」は、URL を打ち直しても保つ
@@ -1001,7 +1004,7 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   （`~/ghq/github.com/tjst-t/banto`）。新しくは clone しません。」と場所を文にも書く。次の手は、Project が無ければボタン
   「一覧で見る」と帯の「この場所で Project を始める」（新しい Project の画面をその場所で開く）、Project があれば
   「「banto」を開く」と脇に「一覧で見る」
-- **帯の見出しは、指している場所が何かで変える**（`project/repo-root-preview.tsx`）——もう手元にある場所は「手元にある場所」、
+- ~~**帯の見出しは、指している場所が何かで変える**~~ **→ 帯の見出しは外した**（下の節。パスとその下の1行で場面を言う）（`project/repo-root-preview.tsx`）——もう手元にある場所は「手元にある場所」、
   見つからない行は「clone し直す場所（元の場所）」、これから作る・clone する場所は入口ごと（一覧からは「置く場所」、
   新しい Project の画面は「Root パス」のまま）。理由：見出しが「Root パス」のままだと、新しく clone する場所に読める
   （ユーザーが実際に誤読した——Import 済みの `~/ghq/github.com/tjst-t/banto` を見て「ghq の置き方に戻ったのか」と思った）
@@ -1030,6 +1033,66 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   `…&clone=https://gitlab.com/tjst-t/notes`（Project なし）／新しい Project の画面：`/p/banto?new-project=clone&repo=tjst-t/banto`・`…&repo=tjst-t/dotfiles`
 - 新しいリポジトリ：`/p/banto?canvas=banto.repo:repos&new-repo=garden`（空き）・`…&new-repo=dotfiles`（ぶつかる）・
   `…&new-repo=notes`（GitHub に同名）／設定面：`/settings?section=module:banto.repo&new-repo=garden`
+
+### core と Module の境目：新しい Project の画面を作り直す（2026-10-01、ユーザー決定）
+
+**発端**：新しい Project の画面は core（banto 本体）の機能なのに、core の画面が Repo Module を名指しで知っていた
+（「GitHub から clone」「新しいリポジトリ」のタブ、「Repo が用意します」）。banto の決まりは「core は Module を名指しで知らない／
+Module を足すのに core を触らない」。Repo を外した banto でこの画面が壊れてはいけない。
+
+**core の新しい Project の画面**（`project/new-project-dialog.tsx`）が持つのは2つだけ：
+
+- **手元のフォルダ**——core の基本の形（Root パスを打つか「選ぶ」）
+- **Module が中身を持ち込む空きの場所**——フォルダを用意できると名乗った Module の画面を、始め方のタブとして並べる。
+  **タブの名前・説明・アイコンは Module が名乗ったもの**（core は「clone」という言葉を持たない。アイコンは
+  `project/module-icon.tsx` の小さな表で名前から引くだけで、Module の名前では分岐しない）。始め方が手元のフォルダだけなら、タブを出さない
+
+**境目（モックの範囲で決めた形）**：
+
+- **名乗りの印**：`MockModuleImplementation.folderProviders`（`lib/mock/types.ts`）——本物は `_meta["dev.banto/module"].folderProviders`
+  （設定面の `ui://<id>/config`・launcher と同じ仕組み）。1つの始め方は `{ id, label, description, icon, viewId }`、画面は
+  `ui://<implementationId>/<viewId>`。core は `getFolderProviders()`（`lib/mock/settings.ts`）で、有効な Module の名乗りを集めるだけ。
+  Repo は `clone`（`prepare-clone`）と `新しいリポジトリ`（`prepare-create`）を名乗る
+- **core が渡すもの**：`MockFolderProviderHost`（返事の口 `onPrepared`。モックの見せ方のためだけに最初の値 `initialInput`）
+- **Module が返すもの**：`MockPreparedFolder` = `{ path, suggestedName?, summary }`——「このフォルダを用意した」。summary は
+  何をしたかの1行（「tjst-t/incus-lab を ~/banto/incus-lab に clone しました」）で、core はそれをそのまま添える
+- **返ったあとは core の仕事**：Module の枠を閉じ、「用意できたフォルダ」（パス・Module の1行・「別のフォルダにする」）と下の段
+  （Project 名＝suggestedName が既定・Advanced）を出し、「Project を作る」で作る。**Project を作るのは core**。そのフォルダを
+  **もう Root にしている Project があるかは core が自分で調べ**（Module に聞かない）、あれば作らずに「〜を開く」にする
+  （手元のフォルダでも同じ）。Module の画面を使っているあいだは core の作るボタンを出さない——次の手は枠の中にある
+- **見せ方**：Module の画面は core の画面の中の「よそ様の画面」——設定面（`settings/module-config-pane.tsx`）と同じ点線の枠・薄い地に、
+  出所（「Repo（banto 標準）の画面」・`ui://banto.repo/prepare-clone`・sandboxed の印）を添える。中の質感は Module のもの。
+  本物は iframe で、モックは `canvas/canvas-content.tsx` の `FolderProviderContent`（Canvas の中身の表と同じ、iframe の代わり）
+- **Repo を外した banto**：`?modules=none`——新しい Project の画面は「手元のフォルダ」だけになり、そのまま作れる
+
+**Repo の側**（中身は使い回し）：
+
+- 本体を1つずつにした——`canvas/repo-clone-form.tsx`（URL を打つ形と、アカウントから探す形）・`canvas/repo-create-form.tsx`。
+  一覧のダイアログ（`repo-clone-dialog.tsx`・`repo-create-dialog.tsx`）と、core に差し出す画面（`repo-prepare-view.tsx`）が同じ本体を使う。
+  ボタンの置き場と言い方は入口ごと（`renderActions`）：core の画面では枠の中に「clone する」「clone し直す」「この場所を使う」
+  「リポジトリを作る」。帯の部品 `repo-root-preview.tsx` は Repo の画面の部品なので `canvas/` へ移した
+- 新しいリポジトリで「GitHub に同じ名前がある——clone で始める」は、Repo の画面の中で clone の形に替わる（core のタブは替えない。「新しく作るほうに戻る」）
+- **帯の見出しは外した**——「Root パス」「手元にある場所」「置く場所」のような見出しは場面ごとに言い換えが要り、言い損ねると誤読される。
+  **パスと、その下の1行**で場面を言う：「ここに clone します」「ここに空のリポジトリを作ります」「もう手元にあります（tjst-t/banto）」
+  「ここに clone し直します——〜」。worktree で使っている Project は「Project「banto」が worktree で使っています」と言う
+  （core は Root が同じ Project だけを「もうある」とするので、言い方をそろえた——元のフォルダに別の Project は作れる）
+- **一覧の「Project も作る」は既定オン**（ユーザー決定）——オンのまま押すと、Repo がフォルダを用意したあと、**一覧が core の新しい Project の
+  画面をそのフォルダを入れた状態で開く**（手元のフォルダ・Root パス・名前の既定を入れて。人がそこで確かめて「Project を作る」）。
+  core に「Project を作る」口は足していない。ボタンは「clone して Project の作成へ」「作って Project の作成へ」、トーストは
+  「Repo が〜に clone しました。Project の作成に進みます」。オフなら一覧に足すだけ（前と同じ）。意味が無いとき（もう手元にある・
+  clone し直す場所をもう Project が使っている）は出さない
+- **GitHub の外も台帳に場所を書く**（ユーザー決定）——`LedgerEntry.elsewhere`（origin の URL）。フォルダが消えても clone し直せる
+  （一覧の行の「clone し直す」・URL から clone のどちらでも）。食い違ったら origin に合わせる（覚えていなかったものを覚えるだけなので、
+  お知らせはしない）。見本は `~/banto/zine`（gitlab.com/tjst-t/zine、フォルダが見つからない）
+
+**状態ごとの URL**（`https://mock-…` の後ろ）：
+
+- core の新しい Project の画面：`/p/banto?new-project=folder`（タブ3つ）・`?new-project=banto.repo:clone&repo=tjst-t/incus-lab`
+  （`clone`・`create` は前からの URL の読み替え。この読み替えは `project/repo-demo-params.tsx` だけにある）
+- もう手元にあり Project がある：`/p/banto?new-project=clone&repo=tjst-t/home-automation` で「この場所を使う」
+- Repo を外した banto：`/p/banto?new-project=clone&modules=none`
+- 一覧から Project の作成へ：`/p/banto?canvas=banto.repo:repos&clone=tjst-t/incus-lab`・`…&new-repo=garden`
+- gitlab の見つからない行：`/p/banto?canvas=banto.repo:repos`（zine）・`…&clone=https://gitlab.com/tjst-t/zine`
 
 ## まだ実装していない
 

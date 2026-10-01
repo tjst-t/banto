@@ -256,6 +256,14 @@ export interface MockModuleImplementation {
    */
   launchers?: readonly { id: string; label: string; viewId: string }[];
   /**
+   * 「Project の Root にするフォルダを用意できる」という名乗り（2026-10-01、ユーザー）。本物は
+   * `_meta["dev.banto/module"].folderProviders` に乗り、画面は MCP Apps の `ui://<id>/<viewId>`。
+   * core の新しい Project の画面は、名乗った Module の画面を始め方のタブとして並べるだけ——
+   * **タブの名前・説明・アイコンは Module が名乗ったものを出す**（core は「clone」という言葉を持たない）。
+   * Module は自分の画面で用意を済ませ、`MockPreparedFolder` を core に返す。Project を作るのは core
+   */
+  folderProviders?: readonly MockFolderProvider[];
+  /**
    * この実装の起動設定——mcpServers エントリ（command/args/env と、role の
    * 宣言を乗せる `_meta["dev.banto/module"]`）を JSON 文字列のまま持つ
    * （§5.1）。banto は自分の形式を発明せず、これが唯一の真実——インストール済み
@@ -264,6 +272,42 @@ export interface MockModuleImplementation {
    * 変換して持つ（決定・2026-09-02）
    */
   mcpServersJson: string;
+}
+
+/** フォルダを用意できる Module が名乗る1つの始め方（`MockModuleImplementation.folderProviders`） */
+export interface MockFolderProvider {
+  id: string;
+  /** タブの名前（Module が決める） */
+  label: string;
+  /** タブを選んだときに core が下に出す1行（Module が決める） */
+  description: string;
+  /**
+   * アイコンの名前。本物は MCP の `icons`（画像の src）で、core はそれを描くだけ。
+   * モックは lucide の名前を core の小さな表で引く（`module-icon.tsx`）
+   */
+  icon: string;
+  /** `ui://<implementationId>/<viewId>` の viewId */
+  viewId: string;
+}
+
+/**
+ * Module の画面が「このフォルダを用意した」と core に返すもの（本物は MCP Apps の
+ * `ui/message` 相当で host へ送る）。core はこれを Root の候補にし、下の段（Project 名・Advanced）を出す。
+ * そのフォルダを既に Project が使っているかは core が自分で調べる（Module に聞かない）
+ */
+export interface MockPreparedFolder {
+  path: string;
+  /** Project 名の既定（リポジトリ名など）。無ければ core はフォルダ名を使う */
+  suggestedName?: string;
+  /** Module が何をしたかの1行（「tjst-t/incus-lab を clone しました」）。core はトーストにそのまま添える */
+  summary: string;
+}
+
+/** core が Module の画面に渡すもの（本物は host が iframe に渡す文脈と、返事の口） */
+export interface MockFolderProviderHost {
+  /** モックの見せ方のためだけ（URL の `&repo=`）——最初に入れておく値 */
+  initialInput?: string;
+  onPrepared: (folder: MockPreparedFolder) => void;
 }
 
 export interface MockRole {

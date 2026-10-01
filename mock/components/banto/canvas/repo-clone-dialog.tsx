@@ -1,26 +1,17 @@
 "use client";
 
 // URL から clone（2026-10-01、ユーザー）——リポジトリの一覧から、URL を貼って Repo に clone させる。
-// 受けるのは `https://github.com/owner/repo(.git)`・`git@github.com:owner/repo.git`・`owner/repo` と、
-// GitHub の外（gitlab.com 等）の URL。GitHub の外は Repo のアカウントを使わず、このマシンの git の設定で
-// clone する（台帳はもう GitHub の外の origin を扱える——Import した gitlab の notes）。
+// 中身は `RepoCloneForm`（core の新しい Project の画面に差し出す「clone」と同じ本体。こちらは URL を打つ形）。
+// GitHub の外（gitlab.com 等）も受ける——台帳は GitHub の外の場所も覚え、フォルダが消えたら clone し直せる。
 //
-// 新しい Project の画面の「GitHub から clone」と**部品・判断・文言をそろえる**：
-//   - 置く場所と、そこで何が起きるかの帯は同じ `RepoRootPreview`（置き場は字のまま、フォルダ名だけ打てる。
-//     ぶつかれば `<名前>-2` を先に入れておく）
-//   - 判断は `parseCloneSource`・`inspectCloneSource`・`inspectTargetFolder`・`checkCloneAccess` の1箇所ずつ
-//   - アカウントは `GithubAccountChooser`（1つなら選ばせない）
-//   - 完了のトーストは「Repo が〜を clone し、Project「〜」を作りました」
-//
-// 「Project も作る」は `RepoProjectOption`（既定は切。理由はその部品に）。意味が無いときは出さない：
+// 「Project も作る」は `RepoProjectOption`（既定オン。オンなら clone のあと、一覧が core の新しい Project の画面を
+// そのフォルダで開く）。意味が無いときは出さない：
 //   - もう手元にある（clone しない）——**clone のボタンも出さない**。次の手は「一覧で見る」、Project があれば
-//     「〜を開く」、無ければ帯の「この場所で Project を始める」（2026-10-01、ユーザー）
+//     「〜を開く」、無ければ帯の「この場所で Project を始める」
 //   - 見つからない行の clone し直しで、その場所をもう Project が使っている（Root が戻るだけ）
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import Link from "next/link";
+import { useCallback, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { CircleAlert, KeyRound, Link2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -30,94 +21,30 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
-import { createProject, reopenProject } from "@/lib/mock/projects";
-import { useMockStoreVersion } from "@/lib/mock/store-events";
-import {
-  addClonedRepo,
-  checkCloneAccess,
-  freeFolderName,
-  inspectCloneSource,
-  inspectTargetFolder,
-  isValidFolderName,
-  parseCloneSource,
-  useGithubAccounts,
-  useRepoHome,
-  type CloneSource,
-  type ProjectSummary,
-} from "@/lib/mock/github";
-import { GithubAccountChooser, REPO_SETTINGS_HREF } from "@/components/banto/project/github-account-chooser";
-import { RepoRootPreview, type RootPreviewStatus } from "@/components/banto/project/repo-root-preview";
+import { reopenProject } from "@/lib/mock/projects";
+import { useRepoHome } from "@/lib/mock/github";
+import { RepoCloneForm, type ClonedFolder } from "./repo-clone-form";
 import { RepoProjectOption } from "./repo-project-option";
-
-type Run = Extract<RootPreviewStatus, { kind: "cloning" | "clone-failed" }> & { readableBy?: string };
 
 export function RepoCloneDialog({
   initialUrl,
   onClose,
   onShow,
   onStartAt,
+  onStartProject,
 }: {
   initialUrl: string;
   onClose: () => void;
-  /** 一覧のその行を見せる（clone した・もう一覧にある） */
+  /** 一覧のその行を見せる（clone した・もう一覧にある）。ダイアログも閉じる */
   onShow: (path: string) => void;
-  /** そのフォルダを Root にした新しい Project の画面を開く（帯の「このフォルダで Project を作る」） */
+  /** そのフォルダで core の新しい Project の画面を開く（帯の「このフォルダで Project を作る」など） */
   onStartAt: (path: string) => void;
+  /** 「Project も作る」がオンで clone が済んだ——そのフォルダと名前の既定で core の画面を開く */
+  onStartProject: (path: string, name: string) => void;
 }) {
-  useMockStoreVersion();
   const router = useRouter();
   const home = useRepoHome();
-  const accounts = useGithubAccounts();
-  const [text, setText] = useState(initialUrl);
-  /** Enter・押したときに読めなかった——それまでは打っている途中なので、断らずに例を出すだけ */
-  const [tried, setTried] = useState(false);
-  const [accountChoice, setAccountChoice] = useState<string | null>(null);
-  /** null＝空いている名前に合わせる（人が打ったら、以後はその値） */
-  const [folderInput, setFolderInput] = useState<string | null>(null);
-  const [withProject, setWithProject] = useState(false);
-  /** null＝リポジトリ名に合わせる */
-  const [projectName, setProjectName] = useState<string | null>(null);
-  const [run, setRun] = useState<Run | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => () => {
-    if (timer.current) clearInterval(timer.current);
-  }, []);
-
-  const source = parseCloneSource(text);
-  const github = source?.kind === "github" ? source : null;
-  // 持ち主と同じ名前のアカウントがあれば、それを先に選んでおく。無ければ先頭（1つなら選ばせない——これがその1つ）
-  const account =
-    accounts.find((a) => a.id === accountChoice) ??
-    (github ? accounts.find((a) => a.login.toLowerCase() === github.owner.toLowerCase()) : undefined) ??
-    accounts[0];
-  const inspected = source ? inspectCloneSource(source) : null;
-  const have = inspected?.kind === "have" ? inspected : null;
-  const reclone = inspected?.kind === "reclone" ? inspected : null;
-  const autoFolder = source ? freeFolderName(home, source.name) : "";
-  const folder = folderInput ?? autoFolder;
-  const renamedFrom = source && folderInput === null && autoFolder !== source.name ? source.name : undefined;
-  const folderInvalid = folder !== "" && !isValidFolderName(folder);
-  const targetState = source && !inspected && folder && !folderInvalid ? inspectTargetFolder(home, folder) : null;
-  const targetPath = inspected ? inspected.repo.path : `${home}/${folder}`;
-  const status: RootPreviewStatus | null = source
-    ? (run ?? inspected ?? { kind: "target", state: targetState ?? { kind: "free" } })
-    : null;
-  const cloning = run?.kind === "cloning";
-  /** 「Project も作る」で作る先に、もう Project があるか（あれば作らずにそれを開く） */
-  const existingProject: ProjectSummary | undefined = inspected?.project;
-  const repoName = inspected ? inspected.repo.name : (source?.name ?? "");
-  const name = projectName ?? repoName;
-  const offerProject = !!source && !have && !existingProject;
-  const makesProject = offerProject && withProject;
-
-  function reset() {
-    setRun(null);
-    setFolderInput(null);
-    setProjectName(null);
-  }
+  const [withProject, setWithProject] = useState(true);
 
   function openProject(id: string, closed: boolean) {
     if (closed) reopenProject(id);
@@ -125,290 +52,106 @@ export function RepoCloneDialog({
     router.push(`/p/${id}`);
   }
 
-  function makeProject(path: string) {
-    const project = createProject({ name: name.trim(), basePath: path });
-    onClose();
-    router.push(`/p/${project.id}`);
-    return project;
-  }
-
-  function label(s: CloneSource) {
-    return s.kind === "github" ? `${s.owner}/${s.name}` : `${s.host}/${s.path}`;
-  }
-
-  function startClone(s: CloneSource, path: string) {
-    const total = 3410;
-    let received = 0;
-    setRun({ kind: "cloning", received, total });
-    timer.current = setInterval(() => {
-      received = Math.min(total, received + 487);
-      if (received < total) {
-        setRun({ kind: "cloning", received, total });
-        return;
-      }
-      if (timer.current) clearInterval(timer.current);
-      const useAccount = s.kind === "github" ? account : undefined;
-      const access = checkCloneAccess(s, useAccount?.id);
-      if (!access.ok) {
-        setRun({ kind: "clone-failed", reason: access.reason, readableBy: access.readableBy?.id });
-        return;
-      }
-      addClonedRepo({
-        path,
-        accountId: useAccount?.id,
-        remote:
-          s.kind === "github"
-            ? { kind: "github", owner: s.owner, name: s.name, private: access.private }
-            : { kind: "elsewhere", url: s.url },
-      });
-      if (makesProject) {
-        const project = makeProject(path);
-        toast(`Repo が ${label(s)} を ${path} に ${reclone ? "clone し直し" : "clone し"}、Project「${project.name}」を作りました`);
-        return;
-      }
-      // 見つからない行の clone し直しは一覧の行の「clone し直す」と同じ言い方（一覧にはもうある）
-      toast(
-        reclone
-          ? `Repo が ${label(s)} を ${path} に clone し直しました` +
-              (existingProject ? `（Project「${existingProject.name}」の Root です）` : "")
-          : `Repo が ${label(s)} を ${path} に clone し、一覧に足しました`,
-      );
-      onShow(path);
-    }, 180);
-  }
-
-  // 押す前に言うこと（描画）と、押したときにすること（submit）を分ける
-  const primary = primaryAction();
-
-  function primaryAction(): { label: string; action: "clone" | "show" | "open" | null } {
-    const verb = makesProject ? "clone して Project を作る" : "clone する";
-    if (cloning) return { label: "clone しています…", action: null };
-    if (!source) return { label: verb, action: null };
-    // もう手元にある——clone はしない。押せるのは行き先だけ
-    if (have) {
-      return existingProject
-        ? { label: `「${existingProject.name}」を${existingProject.closed ? "再開" : "開く"}`, action: "open" }
-        : { label: "一覧で見る", action: "show" };
-    }
-    const named = !makesProject || !!name.trim();
-    if (reclone) {
-      return { label: makesProject ? "clone し直して Project を作る" : "clone し直す", action: named ? "clone" : null };
-    }
-    const ready = targetState?.kind === "free" && named;
-    return { label: run?.kind === "clone-failed" ? `もう一度 ${verb}` : verb, action: ready ? "clone" : null };
-  }
-
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!source) {
-      setTried(true);
-      return;
-    }
-    switch (primary.action) {
-      case "clone":
-        startClone(source, targetPath);
-        return;
-      case "show":
-        onShow(targetPath);
-        return;
-      case "open":
-        if (existingProject) openProject(existingProject.id, existingProject.closed);
-        return;
-      case null:
-        return;
-    }
-  }
-
-  const readableBy = run?.kind === "clone-failed" ? accounts.find((a) => a.id === run.readableBy) : undefined;
-  const failedNext: ReactNode =
-    run?.kind !== "clone-failed" ? null : readableBy ? (
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          setAccountChoice(readableBy.id);
-          setRun(null);
-        }}
-        data-testid="repo-clone-switch-account"
-        className="h-7 w-fit bg-background text-xs"
-      >
-        {readableBy.login} で clone する
-      </Button>
-    ) : source?.kind === "elsewhere" ? (
-      <p className="text-ink-2">
-        URL を確かめてください。非公開なら、このマシンの git（SSH の鍵など）で読めるようにしてから、もう一度押してください。
-      </p>
-    ) : (
-      <p className="text-ink-2">
-        URL を確かめてください。非公開なら、
-        <Link
-          href={REPO_SETTINGS_HREF}
-          className="rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          読めるアカウントを登録
-        </Link>
-        してから、もう一度押してください。
-      </p>
-    );
-
-  const showAccount = github && !inspected;
-  const unreadable = text.trim() !== "" && !source;
+  const onCloned = useCallback(
+    (f: ClonedFolder) => {
+      // clone し直した場所をもう Project が使っているなら、作る画面へは行かない（Root が戻るだけ）
+      const toProject = withProject && !f.project;
+      const head = f.recloned
+        ? `Repo が ${f.label} を ${f.path} に clone し直しました` +
+          (f.project ? `（Project「${f.project.name}」の Root です）` : "")
+        : `Repo が ${f.label} を ${f.path} に clone しました`;
+      toast(toProject ? `${head}。Project の作成に進みます` : f.recloned ? head : `${head}。一覧に足しました`);
+      onShow(f.path);
+      if (toProject) onStartProject(f.path, f.suggestedName);
+    },
+    [withProject, onShow, onStartProject],
+  );
 
   return (
-    <Dialog open onOpenChange={(open) => (open || cloning ? null : onClose())}>
+    <Dialog open onOpenChange={(open) => (open ? null : onClose())}>
       <DialogContent className="sm:max-w-lg" data-testid="repo-clone-dialog">
-        <form onSubmit={submit} className="flex min-w-0 flex-col gap-4">
+        {/* Enter は既定のボタン（下の「clone する」など）を押したことになる——押せることはボタンの onClick だけに置く */}
+        <form onSubmit={(e: FormEvent) => e.preventDefault()} className="flex min-w-0 flex-col gap-4">
           <DialogHeader>
             <DialogTitle>URL から clone</DialogTitle>
             <DialogDescription>Repo が {home} に clone して、一覧に足します。</DialogDescription>
           </DialogHeader>
-
-          <div className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-y-auto [&>*]:shrink-0">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="repo-clone-url">リポジトリの URL</Label>
-              <Input
-                id="repo-clone-url"
-                data-testid="repo-clone-url"
-                value={text}
-                disabled={cloning}
-                onChange={(e) => {
-                  setText(e.target.value);
-                  setTried(false);
-                  // アカウントは URL の持ち主で選び直す（前の URL で選んだものを持ち越さない）
-                  setAccountChoice(null);
-                  reset();
-                }}
-                placeholder="https://github.com/owner/repo"
-                aria-invalid={(tried && unreadable) || undefined}
-                aria-describedby="repo-clone-url-help"
-                autoComplete="off"
-                spellCheck={false}
-                autoFocus
-                className="font-mono text-xs"
-              />
-              <p
-                id="repo-clone-url-help"
-                data-testid="repo-clone-url-help"
-                className={cn("flex items-start gap-1 text-xs", tried && unreadable ? "text-foreground" : "text-ink-3")}
-              >
-                {unreadable ? (
+          <div className="flex max-h-[65vh] min-w-0 flex-col overflow-y-auto">
+            <RepoCloneForm
+              picker="url"
+              initialInput={initialUrl}
+              onCloned={onCloned}
+              onUseAsFolder={(path) => {
+                onClose();
+                onStartAt(path);
+              }}
+              onOpenAt={(_, id, closed) => openProject(id, closed)}
+              onStartHere={(path) => {
+                onClose();
+                onStartAt(path);
+              }}
+              renderActions={(step, markTried) => {
+                const offerProject = step.kind === "clone" ? !step.project : step.kind !== "have";
+                const toProject = withProject && offerProject;
+                const verb = toProject ? "clone して Project の作成へ" : "clone する";
+                return (
                   <>
-                    <CircleAlert className={cn("mt-0.5 size-3.5 shrink-0", tried ? "text-turn" : "text-ink-3")} />
-                    <span>
-                      URL として読めません。<span className="font-mono">https://github.com/owner/repo</span>・
-                      <span className="font-mono">git@github.com:owner/repo.git</span>・
-                      <span className="font-mono">owner/repo</span> の形で入れてください。
-                    </span>
+                    {offerProject && step.kind !== "empty" && step.kind !== "invalid" ? (
+                      <RepoProjectOption
+                        checked={withProject}
+                        onCheckedChange={setWithProject}
+                        disabled={step.kind === "busy"}
+                      />
+                    ) : null}
+                    <DialogFooter>
+                      <Button type="button" variant="outline" onClick={onClose} disabled={step.kind === "busy"}>
+                        やめる
+                      </Button>
+                      {step.kind === "have" ? (
+                        step.project ? (
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => onShow(step.repo.path)}
+                              data-testid="repo-clone-show"
+                            >
+                              一覧で見る
+                            </Button>
+                            <Button
+                              type="submit"
+                              data-testid="repo-clone-submit"
+                              onClick={() => openProject(step.project!.id, step.project!.closed)}
+                            >
+                              「{step.project.name}」を{step.project.closed ? "再開" : "開く"}
+                            </Button>
+                          </>
+                        ) : (
+                          <Button type="submit" data-testid="repo-clone-submit" onClick={() => onShow(step.repo.path)}>
+                            一覧で見る
+                          </Button>
+                        )
+                      ) : step.kind === "clone" ? (
+                        <Button type="submit" data-testid="repo-clone-submit" onClick={step.start}>
+                          {step.failed ? "もう一度 " : ""}
+                          {step.recloning ? (toProject ? "clone し直して Project の作成へ" : "clone し直す") : verb}
+                        </Button>
+                      ) : step.kind === "invalid" ? (
+                        // 読めない URL のまま押した（Enter）——欄を断る
+                        <Button type="submit" data-testid="repo-clone-submit" onClick={markTried}>
+                          {verb}
+                        </Button>
+                      ) : (
+                        <Button type="submit" data-testid="repo-clone-submit" disabled>
+                          {step.kind === "busy" ? "clone しています…" : verb}
+                        </Button>
+                      )}
+                    </DialogFooter>
                   </>
-                ) : source?.kind === "elsewhere" ? (
-                  <>
-                    <Link2 className="mt-0.5 size-3.5 shrink-0" />
-                    <span data-testid="repo-clone-elsewhere">
-                      GitHub の外（{source.host}）です。Repo のアカウントは使わず、このマシンの git の設定で clone します。
-                    </span>
-                  </>
-                ) : source ? null : (
-                  "GitHub の URL か owner/repo。GitHub の外（gitlab.com など）の URL も使えます。"
-                )}
-              </p>
-            </div>
-
-            {showAccount ? (
-              accounts.length > 0 && account ? (
-                <GithubAccountChooser
-                  id="repo-clone-account"
-                  accounts={accounts}
-                  value={account.id}
-                  onChange={(id) => {
-                    setAccountChoice(id);
-                    setRun(null);
-                  }}
-                  singleNote="で clone します"
-                />
-              ) : (
-                <p
-                  data-testid="repo-clone-no-account"
-                  className="flex items-start gap-1.5 text-xs text-ink-2"
-                >
-                  <KeyRound className="mt-0.5 size-3.5 shrink-0 text-ink-3" />
-                  <span>
-                    GitHub のアカウントがありません。公開のリポジトリだけ clone できます（
-                    <Link
-                      href={REPO_SETTINGS_HREF}
-                      className="rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"
-                    >
-                      アカウントを登録する
-                    </Link>
-                    ）。
-                  </span>
-                </p>
-              )
-            ) : null}
-
-            {status ? (
-              <div className="flex flex-col gap-1.5">
-                <RepoRootPreview
-                  mode="clone"
-                  home={home}
-                  folder={folder}
-                  onFolderChange={setFolderInput}
-                  folderInvalid={folderInvalid}
-                  renamedFrom={renamedFrom}
-                  status={status}
-                  onUseAsFolder={(path) => {
-                    onClose();
-                    onStartAt(path);
-                  }}
-                  onSwitchToClone={() => undefined}
-                  onOpenProject={openProject}
-                  failedNext={failedNext}
-                  targetLabel="置く場所"
-                  onStartHere={(path) => {
-                    onClose();
-                    onStartAt(path);
-                  }}
-                />
-                {status.kind !== "have" && status.kind !== "reclone" ? (
-                  <p className="text-xs text-ink-3">置き場（{home}）は Repo の設定で変えられます。</p>
-                ) : null}
-              </div>
-            ) : null}
-
-            {offerProject ? (
-              <RepoProjectOption
-                checked={withProject}
-                onCheckedChange={setWithProject}
-                name={name}
-                onNameChange={setProjectName}
-                disabled={cloning}
-              />
-            ) : null}
+                );
+              }}
+            />
           </div>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={cloning}>
-              やめる
-            </Button>
-            {/* Project を開くのが主のとき、一覧で見るのは脇に（もう手元にあるので、どちらも clone はしない） */}
-            {have && existingProject ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => onShow(have.repo.path)}
-                data-testid="repo-clone-show"
-              >
-                一覧で見る
-              </Button>
-            ) : null}
-            <Button
-              type="submit"
-              disabled={text.trim() === "" || (source !== null && primary.action === null)}
-              data-testid="repo-clone-submit"
-            >
-              {primary.label}
-            </Button>
-          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
