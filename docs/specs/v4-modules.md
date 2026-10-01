@@ -138,6 +138,7 @@ Factory は「他の Module より先に磨く特別なもの」ではなく**�
 | **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7）。**同梱の実装は `skills`**（2026-09-23）：banto 全体に1本、banto 本体で動く同梱 Module（改訂・2026-09-25——以前は Landlock で自分の置き場だけに閉じ込めていた。`v4-security.md` §2「どの Module がどこで動くか」）。置き場は `<Module の置き場>/skills/<Skill 名>/`（フォルダの中は原文のまま）。`SKILL.md` を `skill://<Skill 名>/SKILL.md` として印つきで、兄弟ファイルを `skill://<Skill 名>/<相対パス>` として配る——本文の相対パスが、本文の URI からの相対でそのまま引ける。一覧に載せたファイルしか読ませない（隠しファイル・シンボリックリンクは辿らない）。**tool**：AI に見えるのは `import_skill`（GitHub から取ってきて仮置きし、取り込む前の確認を画面に出す——取り込まない）だけ。人の操作だけの口（`admin`、呼び出しの刻印も `{admin: true}` を確かめる）：`prepare_skill_import`（GitHub か ZIP）・`get_skill_import`・`confirm_skill_import`・`discard_skill_import`・`list_installed_skills`・`remove_skill`。**画面**：`ui://banto-skills/import`（`import_skill` の画面）と `ui://banto-skills/manage`（設定面「Skill の置き場」）——同じ HTML |
 | **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Service とは別実装**（下記） |
+| **Repositories** | 手元のリポジトリの台帳と一覧。clone・新しく作る・Import・GitHub への公開と、GitHub のアカウントの割り当て | **既定で入っていて消せない**（決定・2026-10-01、ユーザー——Shell・FileSystem・Vault と同じ扱い）。banto 全体に1本・banto 本体で動く。§2.4 |
 | **Vault（Infisical）** | 同じ `vault` 役割の2本目（実装・2026-09-12）。**行き先は Infisical Cloud**、開発と試験は自前ホスト（`packages/modules/vault-infisical/dev/`）——**backend のコードは両方で同じ**で、違うのは接続先と資格情報だけ。資格情報は**Infisical には入れられない**（Vault を開ける鍵は Vault に入らない）ので、組み込み Vault の `identity.txt` と同じく設定として持つ。**宣言には書かない**——宣言は Event Store に残るので、秘密が記録に残ってしまう |
 | **Vault** | 鍵・トークンを預かる | **必須に格上げ**（決定・2026-09-01、アーキ仕様 §2.8）——複数資格情報の使い分けが中核機能である以上、無いインストールは成立しない。**Phase 0/1 に格上げ**（決定・2026-09-02、上記）——Shell が依存するため。**複数バックエンド可**（`vault` を役割として、複数の実装が名乗る形、アーキ仕様 §2.5）。**banto はローカルの組み込みバックエンドを同梱**し、追加インストール無しに動く。実行は他バックエンド同様 **core とは別プロセス**（`docs/requirements.md` C8b：鍵を持つものは subprocess）。他バックエンドを足したときの**移行操作は人専用**（AI には露出しない） |
 
@@ -1194,6 +1195,69 @@ Event Store を読む。
 Shell には数えきれない資源が無いので Command Palette の `completion/complete`
 統合は無く、Palette に載るのは launcher（ターミナルを開く）への入口だけ。
 
+### 2.4 Repositories——手元のリポジトリの台帳（決定・2026-09-29〜10-01、ユーザー）
+
+**「開発を始める・リポジトリを置く」を受け持つ**（gh の `repo` に近い領域）。モック：`mock/`（README の
+Repositories の節、`components/banto/canvas/repo-list-view.tsx` ほか）。経緯は本節の日付の会話（Base Thread）。
+
+**持たないもの**：
+- **git の操作**（status・commit・branch・log・diff・worktree）——AI は Shell で `git` を打つ
+- **GitHub の操作一般**（Issue・PR 等）——AI は Shell で `gh` を打つ（トークンは `envSecrets` で `GH_TOKEN` に）。
+  **GitHub 公式の MCP サーバは繋がない**——道具の説明で文脈を取られるのを避けるため（2026-09-29）
+
+**置き方**：**既定で入っていて消せない**（`DEFAULT_MODULE_DECLARATIONS`）。`scope: "instance"`・banto 本体で動く
+——Project より先に動く必要がある（Project の根を用意するのがこの Module）。名前は「Repo」から改めた
+（1つのリポジトリへの git 操作に聞こえるため、2026-10-01）。
+
+**台帳**（Module のデータ置き場）：知っているリポジトリごとに、**置き場所・扱うアカウント・リモートの場所**
+（GitHub なら owner/name。**GitHub 以外（gitlab 等）も URL を書く**）。一覧は台帳から作る。
+- **フォルダの origin と食い違ったら、origin を正として台帳を直す**（直したことは一度だけ知らせる）。
+  フォルダが見つからない間は台帳の値が唯一の手がかりなので直さない
+- **フォルダが見つからない**：そう示し、リモートの場所があれば「clone し直す」（元の場所へ）、無ければ「一覧から外す」
+- **一覧から外す**：フォルダは消さず台帳からだけ外す。Project が使っていても外せる（Project の根はパスで、
+  台帳を通らない）。外したあと「元に戻す」
+
+**置き場**：clone・新しく作るときの**既定は1か所**、**Module の設定で変えられ、既定は `~/banto`**
+（2026-09-30。ghq 形式はやめた）。フォルダ名はリポジトリ名、ぶつかれば `<名前>-2` を提案し人が変えられる。
+**GitHub に公開してもフォルダは動かさない**（どこに上がったかは台帳と origin が持つ）。
+
+**始める3つの手**（どれも一覧から。新しい Project の画面にも差し出す——下の「core との境目」）：
+- **Import**：好きな場所の既存のフォルダを、**その場所のまま**台帳に足す。人が1つずつ選ぶ（まとめて取り込む
+  入口は要れば後で）。git でない・既に台帳にある・リポジトリの中のフォルダ等は、理由と次の手つきで断る
+- **URL から clone**：`https://…`・`git@…:…`・`owner/repo`。GitHub 以外も受ける（このマシンの git の設定で）。
+  **もう手元にあるなら clone しない**（「もう手元にあります（場所）」）。失敗は理由と次の手（別のアカウントで等）
+- **新しいリポジトリ**：置き場に `git init`。GitHub に上げるのは公開のとき
+- 押す前に、置く場所とその場所に今あるものを帯で示す（「ここに clone します」等。帯に見出しは付けない）
+
+**一覧**：「Project で使っている」「Project はまだ無い」の**2つの別の表**（列はそろえる、0件の表は見出しごと
+出さない）。表の中は「フォルダが見つからない」→「このマシンにだけ（リモートが無い）」→ 名前順。並べ替えは無い
+（次の手が要るものを上に保つ。探すのは検索）。**塗る色は2つだけ**——見つからない（turn 系）・このマシンにだけ
+（warn 系）。事実のすぐ隣に次の手（公開・Project を始める・clone し直す）。一覧は Command Palette から Canvas で、
+banto 全体の設定の Repositories の面にも同じものを出す（**banto 全体の Module の入口は、どの Project にも出す**
+——v4-frontend.md §6.2 の「その Project に繋がっている Module の入口だけ」を改める。未反映）。
+
+**アカウント**：設定で登録——名前・**PAT（fine-grained、Vault の alias）**・**SSH 鍵（Vault の alias）**。始めるときに
+選ぶ（1つなら選ばせない）。どのリポジトリにどのアカウントを使ったかは台帳が覚える。origin の持ち主が未登録でも
+Import でき「読むだけ」と示す。GitHub の API（探す・作る）は **この Module が自分で呼ぶ**（2〜3本）。
+
+**GitHub に公開**：Project の画面からも一覧からも開く。アカウント・名前・公開／非公開・最初の push。
+対象は Project ではなくフォルダで決める。
+
+**core との境目**（2026-10-01）：**core は Repositories を名指しで知らない**。
+- core の新しい Project の画面が持つのは「手元のフォルダを選ぶ」と、**Module が中身を持ち込む空きの場所**だけ。
+  Module は `_meta` の印で「フォルダを用意できる」と名乗り（設定 Canvas・launcher と同じ仕組み）、画面（MCP Apps）を
+  差し出す。タブの名前・説明・アイコンは Module が名乗る（「clone」「新しいリポジトリ」）。Module の画面は
+  core の画面の中の「よそ様の画面」として枠と出所を付けて出す
+- Module の画面が `{ path, suggestedName?, summary }` を返したら、**core がそのフォルダを根に Project を作る**
+  （そのフォルダを根にした Project が既にあれば「開く」）
+- **一覧で「Project も作る」（既定オン）を選んだら**、フォルダを用意したあと、一覧が **core の新しい Project の画面を
+  そのフォルダを入れた状態で開く**——人がそこで作る。**core に「Project を作る」口は足さない**
+- Repositories を無効にすると「手元のフォルダ」だけになる
+
+**まだ決めていないこと**：`_meta` の名乗りの印の名前と形・返り値の受け渡し（MCP Apps のどの通知で返すか）／
+AI が「新しい開発を始めて」と頼む道具（承認つき）——最初は人の画面だけ／PAT 以外の GitHub ログイン（ブラウザ）／
+gitlab 等のアカウント（いまはこのマシンの git の設定で clone するだけ）／Factory が worktree を頼む口（要件）。
+
 ## 3. 境界の問題——FileSystem と Shell を同じ扱いにしない
 
 **両方「Project の根の外へ出さない」を求められるが、強制できる層が違う。**
@@ -1260,7 +1324,7 @@ Module の一覧には**2種類が混ざる**：
 | ~~**Environment**~~ | ~~コードを動かす場所を用意する~~ | **廃止**（決定・2026-09-27、ユーザー）。「どこで動かすか」は host が Project ごとに用意するコンテナ（`v4-security.md` §1）が引き受けた。残りを Service と Publish に分けた |
 | **Service** | 動き続けるものを起こしておく | **Shell とは別実装**（§2.1）。§4.2 |
 | **Publish** | 動いているものに届く URL を生やす | **窓口1本＋実装が複数**。§4.3 |
-| **Repo（git）** | 複数リポジトリの一覧・worktree・clone/branch/log | **要件に記録あり**——「この辺最低限ないと開発できない」 |
+| ~~**Repo（git）**~~ | ~~複数リポジトリの一覧・worktree・clone/branch/log~~ | **§2.4 Repositories に移した**（2026-10-01）。git の操作（branch/log 等）は持たない |
 | **Backlog** | 仕事の一覧を管理する | |
 | **Factory** | 依頼を耐久ワークフローとして進める（要件 B） | **設計はゼロから起こす。core ではなく Module として作る**（決定・2026-09-11、ユーザー）——「依頼を進める」は Module の形で書けるものであり、core に持たせると core が2つになる（要件 C8） |
 | **Browser** | 人と AI が**同じブラウザ**を触る。通信も見る | **外部をマウントする**（§3.1・§4.1） |
