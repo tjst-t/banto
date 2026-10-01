@@ -902,6 +902,56 @@ test("Project のアドレスを引けるのは、banto 本体で動く同梱の
   }
 });
 
+test("Project の一覧を引けるのは、banto 本体で動く同梱の banto 全体の Module が、人の画面からの呼び出しを処理している間だけ", async () => {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const projects = [{ id: "pA", name: "家計簿", root: "/home/u/banto/kakeibo", status: "active" as const }];
+  const { url, close } = await startTestServer(registry, { moduleCalls, listProjects: () => projects });
+  const raw = { satisfies: ["repositories"], dependsOn: [], isolation: "subprocess", scope: "instance" };
+  const tokens = {
+    bundled: registry.issueToken({ moduleName: "repositories", meta: bundledMeta(raw, "repositories") }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil") }),
+    inContainer: registry.issueToken({ moduleName: "x", meta: bundledMeta(raw, "x"), inContainer: true, projectId: "pA" }),
+  };
+  const list = async (token: string, callId?: string) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(
+        textOf(await c.callTool({ name: "relayListProjects", arguments: {}, ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}) })),
+      ) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  try {
+    // 何も処理していない——引けない
+    await assert.rejects(() => list(tokens.bundled), /人の画面からの呼び出しを処理している間だけ/);
+    // AI のターンの中——引けない（AI が別の Project の名前と場所を知る道になる）
+    const turn = moduleCalls.beginCall("repositories", "t1", "turn", "pA");
+    await assert.rejects(() => list(tokens.bundled, turn.id), /人の画面からの呼び出しを処理している間だけ/);
+    turn.end();
+    // 人の画面から——引ける
+    const canvas = moduleCalls.beginCall("repositories", undefined, "canvas", undefined);
+    assert.deepEqual(await list(tokens.bundled, canvas.id), projects);
+    // 人の画面とAI のターンが同時に走っていて、印が無い——厳しいほう（引けない）
+    const turn2 = moduleCalls.beginCall("repositories", "t1", "turn", "pA");
+    await assert.rejects(() => list(tokens.bundled), /人の画面からの呼び出しを処理している間だけ/);
+    // 印で人の画面の1件を名指せば引ける
+    assert.deepEqual(await list(tokens.bundled, canvas.id), projects);
+    turn2.end();
+    canvas.end();
+    // 第三者のコード・コンテナの中は、人の画面からでも引けない
+    const evil = moduleCalls.beginCall("evil", undefined, "canvas", undefined);
+    await assert.rejects(() => list(tokens.thirdParty, evil.id), /banto 自身のコード/);
+    evil.end();
+    const inside = moduleCalls.beginCall("x", undefined, "canvas", "pA");
+    await assert.rejects(() => list(tokens.inContainer, inside.id), /banto 本体で動く/);
+    inside.end();
+  } finally {
+    close();
+  }
+});
+
 /** 呼ばれた口と、host が刻んだ `_meta`、その時点で台帳が宛先の呼び出しをどう見ていたかを残す偽の Module */
 async function recordingClient(
   tools: Array<{ name: string; visibility: string }>,

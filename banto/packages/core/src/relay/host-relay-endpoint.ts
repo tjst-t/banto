@@ -257,6 +257,36 @@ export interface HostRelayServerOptions {
    * （Incus が答えない等の一時の失敗）。公開の実装は、前者なら中継をやめ（503）、後者なら写しに触らない
    */
   projectAddress?(projectId: string): Promise<{ address: string } | { unavailable: string }>;
+  /**
+   * **Project の一覧**（id・名前・根のパス・状態、追加・2026-10-01、`docs/specs/v4-modules.md` §2.4 Repositories）。
+   * 引ける相手と場面は `mayListProjects` が決める。渡さなければこの口は断る
+   */
+  listProjects?(): ProjectSummaryForModule[];
+}
+
+/** 中継が Module に渡す Project の姿。**根のパスまで**——Memory・会話は渡さない */
+export interface ProjectSummaryForModule {
+  id: string;
+  name: string;
+  root: string;
+  status: "active" | "closed";
+}
+
+/**
+ * **Project の一覧を引いてよいか**（追加・2026-10-01）。引けるのは、**banto 本体で動く同梱の banto 全体の Module が、
+ * 人の画面からの呼び出しを処理している間だけ**（呼べないなら理由、呼べるなら `undefined`）。
+ *
+ * - 同梱だけ——Project の名前と根のパスは人の持ち物の地図で、第三者のコードに渡さない（Canvas の `hostContext` に
+ *   一覧を載せないのと同じ理由、`docs/specs/v4-frontend.md` §6.2）
+ * - banto 本体で動くものだけ——コンテナの中では AI が合言葉を読める
+ * - 人の画面からの呼び出しの中だけ（`canvas`＝host が `{admin: true}` を刻んだ呼び出し）——AI のターンから引けると、
+ *   AI が別の Project の名前と場所を知る道になる。**どの Module かは名指ししない**（core は Repositories を知らない）
+ */
+export function mayListProjects(identity: CallerIdentity, origin: "turn" | "canvas" | "host" | undefined): string | undefined {
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが引ける";
+  if (identity.inContainer || identity.projectId !== undefined) return "banto 本体で動く、banto 全体の Module だけが引ける";
+  if (origin !== "canvas") return "人の画面からの呼び出しを処理している間だけ引ける";
+  return undefined;
 }
 
 /**
@@ -359,6 +389,13 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         },
       },
       {
+        // **Project の一覧**（追加・2026-10-01、§2.4 Repositories——どの Project がそのフォルダを根にしているか）。
+        // 引ける相手と場面は `mayListProjects` が決める
+        name: "relayListProjects",
+        description: "Project の一覧（id・名前・根のパス・状態）。人の画面からの呼び出しを処理している間だけ引ける",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
         name: "relayDeliverToThread",
@@ -410,6 +447,16 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       // 確かに届かないときは理由を値で返す（`{unavailable}`）。分からないときは投げる——呼び出し元が区別できるように
       const found = await opts.projectAddress(projectId);
       return { content: [{ type: "text", text: JSON.stringify(found) }] };
+    }
+
+    // **宛先は host 自身**。返すのは人が作った Project の名前と根のパスだけ（値・秘密は通らない）ので承認は通さず、
+    // 引ける相手と場面を絞る。出所は host の台帳が決める——Module は選べない
+    if (request.params.name === "relayListProjects") {
+      const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName, callId);
+      const why = mayListProjects(identity, origin);
+      if (why) throw new Error(`${identity.moduleName} は Project の一覧を引けません（${why}）`);
+      if (!opts.listProjects) throw new Error("この banto は Project の一覧を渡す口を持っていません");
+      return { content: [{ type: "text", text: JSON.stringify(opts.listProjects()) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が

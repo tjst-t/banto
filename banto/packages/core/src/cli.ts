@@ -1498,6 +1498,10 @@ async function main(): Promise<void> {
           throw err;
         },
       ),
+    // **Project の一覧**（§2.4 Repositories——どの Project がそのフォルダを根にしているか）。引ける相手と場面は
+    // 中継が絞る（`mayListProjects`）。根は store が正規化したもの（realpath）
+    listProjects: () =>
+      projectThread.listProjects().map((p) => ({ id: p.id, name: p.name, root: p.root, status: p.status })),
     gate: createRelayApprovalGate({
       grants: relayGrants,
       inbox,
