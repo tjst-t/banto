@@ -56,7 +56,7 @@ export type RunSummary = Pick<
 const HEAD = 80;
 
 /** 一覧を1回で返す既定の件数（画面は「もっと見る」で増やす） */
-export const RUNS_PAGE = 30;
+export const RUNS_PAGE = 10;
 
 export interface RunPage {
   /** 走っているもの（全部）→ 終わったもの（新しい順に limit 件まで） */

@@ -158,7 +158,7 @@ const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 
 
 // ---- 状態 ------------------------------------------------------------------------------
 /** 終わった仕事を一度に見せる数。「もっと見る」で同じだけ足す（決定・2026-10-01、ユーザー要望——増え続けても重くしない） */
-const PAGE = 30;
+const PAGE = 10;
 const state: {
   agents: Agent[]; agentsError?: string; runs: Summary[]; selected: string | null; detail: RunRecord | null; error?: string; loaded: boolean;
   /** いま見せている終わった仕事の数と、Module が覚えている総数 */
