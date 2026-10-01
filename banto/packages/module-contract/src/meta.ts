@@ -210,6 +210,35 @@ export function replyToOf(meta: Record<string, unknown> | undefined): string | u
   return typeof raw === "string" && raw !== "" ? raw : undefined;
 }
 
+/**
+ * **画面つきの tool を、会話には「開く」カードだけで残す**（決定・2026-10-01、ユーザー）。
+ *
+ * `_meta.ui.resourceUri` を持つ tool は、ふつうは結果が返ったところで会話の中に画面を埋める（§6.2）。
+ * この印を付けた tool は**画面を埋めず**、呼んだその時点（結果を待たずに）から会話にカードを置き、
+ * 押すと画面を Canvas に大きく開く——Fork の「この Fork を開く」と同じ形。走っている間も、終わってからも
+ * 様子を見に行ける入口が要るもの（サブエージェントに頼んだ仕事など）に使う。
+ *
+ * 値は `{ title, description }`。どちらも文で、`{引数名}` をその呼び出しの引数（文字列・数・真偽）で置き換える
+ * （例：`"{agent} に頼んだ仕事"`）。**MCP Apps の仕様には無い、banto が足した拡張。**
+ */
+export const CARD_META_KEY = `${VENDOR_PREFIX}/card`;
+
+export interface ToolCardMeta {
+  title?: string;
+  description?: string;
+}
+
+/** tool が「会話にはカードだけ」と名乗っていればその中身を、名乗っていなければ `undefined` を返す */
+export function toolCardOf(x: { _meta?: Record<string, unknown> }): ToolCardMeta | undefined {
+  const raw = x._meta?.[CARD_META_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const { title, description } = raw as Record<string, unknown>;
+  return {
+    ...(typeof title === "string" ? { title } : {}),
+    ...(typeof description === "string" ? { description } : {}),
+  };
+}
+
 /** その tool が「値を返さない」と名乗っているか。**`true` 以外は全部「返す」。** */
 export function isValueFree(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[VALUE_FREE_META_KEY] === true;

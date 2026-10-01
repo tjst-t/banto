@@ -56,6 +56,9 @@ window.addEventListener("message", (event: MessageEvent) => {
     return;
   }
   if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params as Appearance);
+  // 会話のカードから開かれた（runSubagent の呼び出しがきっかけ）——その仕事を選んだ状態にする
+  if (msg.method === "ui/notifications/tool-input") wantFromInput(msg.params);
+  if (msg.method === "ui/notifications/tool-result") wantFromResult(msg.params);
 });
 async function call<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
   const result = await request<ToolResult>("tools/call", { name, arguments: args });
@@ -168,6 +171,41 @@ const state: {
 };
 const app = document.getElementById("app")!;
 const wide = () => window.innerWidth >= 720;
+
+// ---- 会話のカードから開かれたとき（決定・2026-10-01、ユーザー） ------------------------------
+//
+// 会話に残った runSubagent のカードを押すと、この画面が Canvas に開き、その呼び出しの引数（と、返っていれば
+// 結果）が届く。結果には仕事の id があるのでそれで開く。**待つ形で走っている間は結果がまだ無い**ので、頼んだ
+// 内容（の頭）が同じ仕事を一覧から探す——走っているものが先、あとは新しい順に並んでいるので、最初に合ったもの
+const HEAD = 80; // runs.ts の promptHead と同じ切り方
+const want: { runId?: string; promptHead?: string; done: boolean } = { done: false };
+function wantFromInput(params: unknown): void {
+  const prompt = (params as { arguments?: { prompt?: unknown } } | undefined)?.arguments?.prompt;
+  if (typeof prompt !== "string" || want.runId) return;
+  want.promptHead = prompt.length > HEAD ? `${prompt.slice(0, HEAD)}…` : prompt;
+  pickWanted();
+}
+function wantFromResult(params: unknown): void {
+  const text = (params as ToolResult | undefined)?.content?.[0]?.text;
+  if (!text) return;
+  try {
+    const runId = (JSON.parse(text) as { runId?: unknown }).runId;
+    if (typeof runId !== "string") return;
+    want.runId = runId;
+    want.done = false;
+    pickWanted();
+  } catch {
+    // 結果が JSON でない（失敗の文など）——頼んだ内容で探すほうに任せる
+  }
+}
+/** 探している仕事が分かれば選ぶ。**一度選んだら、あとは人の選び方に任せる**（取り直しのたびに戻さない） */
+function pickWanted(): void {
+  if (want.done) return;
+  const id = want.runId ?? (want.promptHead ? state.runs.find((r) => r.promptHead === want.promptHead)?.id : undefined);
+  if (!id) return;
+  want.done = true;
+  if (state.selected !== id) void select(id);
+}
 
 // ---- 描く ------------------------------------------------------------------------------
 function renderAgents(): HTMLElement {
@@ -443,6 +481,8 @@ async function refresh(): Promise<void> {
     // 前の版の Module は総数を返さない——そのときは受け取った分が全部
     state.finishedTotal = page.finishedTotal ?? page.runs.filter((r) => r.status !== "running").length;
     state.loaded = true;
+    // 会話のカードから開かれていれば、その仕事を先に選ぶ（一覧が届くまで探せなかった分）
+    pickWanted();
     // 広いときは、何も選んでいなければ一番上（走っているもの→新しいもの）を開いておく
     if (!state.selected && wide() && state.runs[0]) state.selected = state.runs[0].id;
     state.detail = state.selected ? await call<RunRecord>("getRun", { id: state.selected }) : null;

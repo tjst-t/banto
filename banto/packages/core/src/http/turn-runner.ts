@@ -64,6 +64,8 @@ export interface UiToolBinding {
   toolName: string;
   server: string;
   resourceUri: string;
+  /** 会話にはカードだけを置く、と名乗った tool（`dev.banto/card`、決定・2026-10-01） */
+  card?: UiToolCallEntry["card"];
 }
 
 /** 人が添えた画像1枚。**中身は置き場に置いてから**ここへ来る（記録には名前だけが残る） */
@@ -522,6 +524,7 @@ function extractUiToolCalls(messages: unknown[], uiTools: UiToolBinding[]): UiTo
           toolName: name,
           server: binding.server,
           resourceUri: binding.resourceUri,
+          ...(binding.card ? { card: binding.card } : {}),
           args: block.input,
         });
       }

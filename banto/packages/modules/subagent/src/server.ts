@@ -16,6 +16,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   CANVAS_META_KEY,
+  CARD_META_KEY,
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
@@ -168,7 +169,15 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           required: ["agent", "prompt"],
         },
         // **待たない形の返事は、host が渡す返信用の札で届ける**（決定・2026-09-25、アーキ仕様 §4.2）
-        _meta: { [VISIBILITY_META_KEY]: "agent", [DELIVERS_LATER_META_KEY]: true },
+        //
+        // **会話にはカードを残し、押せば入口の画面でその仕事を開く**（決定・2026-10-01、ユーザー）——Fork と同じ形。
+        // 画面は会話に埋めない（カードだけ）。待つ形も待たない形も、呼んだその時点から出る
+        _meta: {
+          [VISIBILITY_META_KEY]: "agent",
+          [DELIVERS_LATER_META_KEY]: true,
+          ui: { resourceUri: RUNS_APP_URI },
+          [CARD_META_KEY]: { title: "{agent} に頼んだ仕事", description: "{prompt}" },
+        },
       },
       // ---- 人の入口の画面から呼ぶ（admin——AI には見せない） ----------------------------
       {
@@ -358,7 +367,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
 
         if (!background) {
           try {
-            return text(await work());
+            // 仕事の id も添える——会話のカードから開いた画面が、どの仕事かを引き当てる
+            return text({ runId: run.id, ...(await work()) });
           } catch (err) {
             runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
             throw err;

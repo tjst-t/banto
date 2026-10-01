@@ -24,6 +24,7 @@ import {
   REAL_IMAGE_SRC_PREFIX,
   type OutgoingImage,
   type RealMessageImage,
+  type RealToolCard,
   type RealUiTool,
   type RealThread,
   type RealTurnEvent,
@@ -353,6 +354,11 @@ export interface RealInlineView {
   resourceUri: string;
   toolName: string;
   toolArgs?: Record<string, unknown>;
+  /**
+   * **会話にはカードだけを置く**（`dev.banto/card`、決定・2026-10-01、ユーザー）。あれば画面を埋めず、
+   * 呼んだ時点から（結果を待たずに）カードを出し、押すと Canvas に開く
+   */
+  card?: RealToolCard;
   /** その呼び出しの結果。**inline も fullscreen も同じ中身を出す**ので、
    *  面と一緒に覚えておく（決定・2026-09-07）——会話の外（Canvas パネル）
    *  からは会話の parts を読めない。 */
@@ -440,6 +446,7 @@ function rememberInlineView(threadId: string, toolCallId: string, toolName: stri
     toolCallId,
     server: found.server,
     resourceUri: found.resourceUri,
+    ...(found.card ? { card: found.card } : {}),
     toolName,
     toolArgs:
       typeof input === "object" && input !== null && !Array.isArray(input)
@@ -473,6 +480,7 @@ export function realMessagesToInitial(
         displayMode: call.displayMode ?? known?.displayMode,
         server: call.server,
         resourceUri: call.resourceUri,
+        ...(call.card ? { card: call.card } : {}),
         toolName: call.toolName,
         toolArgs:
           typeof call.args === "object" && call.args !== null && !Array.isArray(call.args)

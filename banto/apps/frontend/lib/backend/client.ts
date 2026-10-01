@@ -134,6 +134,8 @@ export interface RealUiToolCall {
   toolName: string;
   server: string;
   resourceUri: string;
+  /** 会話にはカードだけを置く（決定・2026-10-01） */
+  card?: RealToolCard;
   args?: unknown;
   result?: unknown;
   /** どの面に出したか（決定・2026-09-07）。無い＝inline（記録が付く前のもの）。 */
@@ -838,6 +840,14 @@ export interface RealUiTool {
   server: string;
   tool: string;
   resourceUri: string;
+  /** 会話にはカードだけを置く、と Module が名乗った tool（`dev.banto/card`、決定・2026-10-01） */
+  card?: RealToolCard;
+}
+
+/** カードの題と説明の文。`{引数名}` はその呼び出しの引数で置き換える */
+export interface RealToolCard {
+  title?: string;
+  description?: string;
 }
 
 /** Module が申告した画面。CSP はサンドボックスの口へそのまま渡す。 */

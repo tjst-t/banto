@@ -30,6 +30,8 @@ export interface RealUiToolCall {
   toolName: string;
   server: string;
   resourceUri: string;
+  /** 会話にはカードだけを置く（決定・2026-10-01）。題と説明の文、`{引数名}` は引数で置き換える */
+  card?: { title?: string; description?: string };
   args?: unknown;
   result?: unknown;
   /** どの面に出したか（決定・2026-09-07）。無い＝inline。 */

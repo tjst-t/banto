@@ -35,6 +35,14 @@ class FakeModule implements ModuleClientLike {
     return {
       tools: [
         { name: "listDirectory", _meta: { ui: { resourceUri: "ui://filesystem/directory" } } },
+        // 会話にはカードだけを置く、と名乗る tool（決定・2026-10-01）——印はそのまま一覧に乗る
+        {
+          name: "watchJob",
+          _meta: {
+            ui: { resourceUri: "ui://filesystem/directory" },
+            "dev.banto/card": { title: "{name} の様子", description: "{note}", extra: 1 },
+          },
+        },
         { name: "readFile" }, // 画面を持たない tool は出てこない
         // **部品間専用**（Vault の resolveAlias と同じ立場）——画面からは呼べない
         { name: "resolveAlias", _meta: { "dev.banto/visibility": "module" } },
@@ -203,6 +211,13 @@ test("画面を持つ tool だけが一覧に出る", async () => {
     const tools = (await res.json()) as Array<{ server: string; tool: string; resourceUri: string }>;
     assert.deepEqual(tools, [
       { server: "filesystem", tool: "listDirectory", resourceUri: "ui://filesystem/directory" },
+      {
+        server: "filesystem",
+        tool: "watchJob",
+        resourceUri: "ui://filesystem/directory",
+        // 知らない項目（extra）は落とし、題と説明だけを渡す
+        card: { title: "{name} の様子", description: "{note}" },
+      },
     ]);
   });
 });

@@ -109,6 +109,11 @@ export interface UiToolCallEntry {
   server: string;
   /** 画面の資源（`ui://…`）。 */
   resourceUri: string;
+  /**
+   * **会話にはカードだけを置く**（`dev.banto/card`、決定・2026-10-01）。題と説明の文（`{引数名}` は画面が
+   * 引数で置き換える）。無ければ今までどおり会話の中に画面を埋める
+   */
+  card?: { title?: string; description?: string };
   args?: unknown;
   result?: unknown;
   /**

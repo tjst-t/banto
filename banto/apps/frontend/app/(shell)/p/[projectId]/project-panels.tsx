@@ -494,6 +494,10 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               />
             ) : realView ? (
               <ModuleCanvas
+                // **呼び出しが替わったら作り直す**（2026-10-01、実測）。同じ Module の同じ画面のまま別の呼び出しの
+                // カードを押すと、橋は張り直されず（画面が同じなので）、新しい呼び出しの引数と結果が画面に届かない
+                // ——前の呼び出しの中身を見せ続けていた
+                key={realView.toolCallId}
                 owner={{ kind: "thread", id: realView.threadId }}
                 server={realView.server}
                 resourceUri={realView.resourceUri}

@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  toolCardOf,
+  CARD_META_KEY,
   classifyMetaDifference,
   parseModuleMeta,
   ModuleMetaError,
@@ -234,4 +236,16 @@ test("callerOf：人の刻印に併記した forProject を読み、Project の�
   assert.deepEqual(callerOf({ [CALLER_META_KEY]: { admin: true } }), { admin: true });
   assert.equal(callIdOf({ [CALL_ID_META_KEY]: "abc" }), "abc");
   assert.equal(callIdOf({ [CALL_ID_META_KEY]: 1 }), undefined);
+});
+
+// **会話にはカードだけ、の名乗り**（決定・2026-10-01）——題と説明の文だけを読み、形が違えば名乗っていない扱い
+test("toolCardOf：題と説明の文だけを読み、形が違えば名乗っていない", () => {
+  assert.deepEqual(toolCardOf({ _meta: { [CARD_META_KEY]: { title: "{agent} に頼んだ仕事", description: "{prompt}", x: 1 } } }), {
+    title: "{agent} に頼んだ仕事",
+    description: "{prompt}",
+  });
+  assert.deepEqual(toolCardOf({ _meta: { [CARD_META_KEY]: { title: 3 } } }), {});
+  assert.equal(toolCardOf({ _meta: { [CARD_META_KEY]: true } }), undefined);
+  assert.equal(toolCardOf({ _meta: { [CARD_META_KEY]: ["x"] } }), undefined);
+  assert.equal(toolCardOf({}), undefined);
 });

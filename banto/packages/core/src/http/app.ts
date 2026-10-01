@@ -47,6 +47,7 @@ import {
   type RunThreadTurnInput,
   type TurnImage,
   type TurnStreamEvent,
+  type UiToolBinding,
 } from "./turn-runner.js";
 import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
@@ -88,7 +89,7 @@ import { collectActivity } from "./activity.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
-import { CALL_ID_META_KEY, CALLER_META_KEY, visibilityOf } from "@banto/module-contract";
+import { CALL_ID_META_KEY, CALLER_META_KEY, toolCardOf, visibilityOf, type ToolCardMeta } from "@banto/module-contract";
 
 /**
  * Module の画面（MCP Apps）のために host が Module へ問い合わせる分だけ
@@ -590,7 +591,7 @@ function isPermissionResult(value: unknown): value is Parameters<PendingApproval
 async function listUiToolsForThread(
   deps: AppDeps,
   threadId: string,
-): Promise<Array<{ server: string; tool: string; resourceUri: string }>> {
+): Promise<Array<{ server: string; tool: string; resourceUri: string; card?: ToolCardMeta }>> {
   const modules = (await deps.resolveModuleClientsForThread?.(threadId)) ?? [];
   // **1本ずつ順番に、上限も無しに聞かない**（訂正・2026-09-22、フル E2E で発覚）。
   //
@@ -609,7 +610,11 @@ async function listUiToolsForThread(
         return tools
           .map((t) => ({ name, tool: t as { name: string }, resourceUri: uiResourceUriOf(t) }))
           .filter((x) => x.resourceUri)
-          .map((x) => ({ server: x.name, tool: x.tool.name, resourceUri: x.resourceUri! }));
+          .map((x) => {
+            // 会話にはカードだけを置く、と名乗った tool（決定・2026-10-01）
+            const card = toolCardOf(x.tool as { _meta?: Record<string, unknown> });
+            return { server: x.name, tool: x.tool.name, resourceUri: x.resourceUri!, ...(card ? { card } : {}) };
+          });
       } catch (err) {
         console.warn(
           `[host] ${name} の tool 一覧が取れませんでした（この Module の画面は出ません）: ` +
@@ -956,12 +961,13 @@ export function createApp(deps: AppDeps) {
     }
     // 画面つき tool は**記録にも残す**（決定・2026-09-07）——リロード後に
     // Module の画面を出し直すため。取れなくてもターンは止めない
-    let uiTools: Array<{ toolName: string; server: string; resourceUri: string }> = [];
+    let uiTools: UiToolBinding[] = [];
     try {
       uiTools = (await listUiToolsForThread(deps, threadId)).map((t) => ({
         toolName: `mcp__${t.server}__${t.tool}`,
         server: t.server,
         resourceUri: t.resourceUri,
+        ...(t.card ? { card: t.card } : {}),
       }));
     } catch (err) {
       console.warn("[host] 画面つき tool の一覧を取れませんでした:", err);

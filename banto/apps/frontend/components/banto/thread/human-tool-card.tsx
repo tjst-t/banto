@@ -154,9 +154,12 @@ function InlineViewForPart({ index }: { index: number }) {
   const part = useAuiState((s) => s.message.parts[index]);
   // **どの Thread で描いているか**まで渡す——Fork は親と同じ toolCallId を持つ
   const threadId = useThreadId() ?? undefined;
-  if (!part || part.type !== "tool-call" || part.result === undefined) return null;
+  if (!part || part.type !== "tool-call") return null;
 
   const real = getRealInlineView(part.toolCallId, threadId);
+  // **カードだけの tool は、呼んだ時点から出す**（決定・2026-10-01、ユーザー）——走っている間の様子を
+  // 見に行く入口なので、結果を待ってから出すのでは遅い（待つ呼び出しはターンの終わりまで返らない）
+  if (part.result === undefined && !real?.card) return null;
   if (real) {
     return (
       <RealInlineModuleView
