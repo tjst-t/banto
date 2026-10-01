@@ -958,7 +958,8 @@ export interface RealUiLauncher {
 }
 
 /**
- * その Project に**繋がっている Module の入口**だけ。
+ * その Project に**繋がっている Module の入口**と、**banto 全体に1本の Module の入口**（改訂・2026-10-01、§6.2
+ * ——後者は Project の Module 集合に無くても出る。開いた画面の中身・呼び出しも同じ集合に届く）。
  * 一覧は host が Module 集合から導出する——画面は別の索引を持たない（規則3）。
  */
 export async function listRealLaunchers(projectId: string): Promise<RealUiLauncher[]> {

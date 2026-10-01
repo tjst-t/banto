@@ -111,6 +111,38 @@ class SilentModule implements ModuleClientLike {
   }
 }
 
+/**
+ * **banto 全体に1本の Module で、この Project の Module 集合には入っていないもの**（追加・2026-10-01、§6.2 の改訂）。
+ * 例：リポジトリの一覧。入口は名乗るが、Project の集合から外されている
+ */
+class InstanceOnlyModule implements ModuleClientLike {
+  calls: Array<{ name: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> }> = [];
+  async listTools() {
+    return { tools: [{ name: "list_repositories", _meta: { "dev.banto/visibility": "admin" } }] };
+  }
+  async listResources() {
+    return {
+      resources: [
+        {
+          uri: "ui://repositories/list",
+          name: "リポジトリ",
+          description: "このマシンで扱うリポジトリの一覧",
+          mimeType: "text/html;profile=mcp-app",
+          _meta: { "dev.banto/canvas": "launcher" },
+        },
+      ],
+    };
+  }
+  async readResource(params: { uri: string }) {
+    if (params.uri !== "ui://repositories/list") throw new Error(`unknown resource: ${params.uri}`);
+    return { contents: [{ uri: params.uri, mimeType: "text/html;profile=mcp-app", text: "<h1>リポジトリ</h1>" }] };
+  }
+  async callTool(params: { name: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> }) {
+    this.calls.push(params);
+    return { content: [{ type: "text", text: "[]" }] };
+  }
+}
+
 /** 呼び出しの印（毎回違う）を除いて比べる。印が付いていること自体は下の試験が見る */
 function stripCallId<T extends { _meta?: Record<string, unknown> }>(calls: T[]): T[] {
   return calls.map((c) => {
@@ -126,6 +158,7 @@ interface Ctx {
   threadId: string;
   projectId: string;
   module: FakeModule;
+  instanceOnly: InstanceOnlyModule;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
   moduleCalls: ModuleCallTracker;
@@ -134,7 +167,7 @@ interface Ctx {
 async function withApp(
   fn: (ctx: Ctx) => Promise<void>,
   /** 同じ Project に、答えない Module を1本まぜる */
-  opts: { withSilentModule?: boolean } = {},
+  opts: { withSilentModule?: boolean; withInstanceOnlyModule?: boolean } = {},
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "banto-ui-apps-test-"));
   try {
@@ -151,6 +184,10 @@ async function withApp(
     const module = new FakeModule();
     const moduleCalls = new ModuleCallTracker();
     const silent = opts.withSilentModule ? [{ name: "shell", client: new SilentModule(), connName: "shell-p1" }] : [];
+    const instanceOnly = new InstanceOnlyModule();
+    const instanceExtra = opts.withInstanceOnlyModule
+      ? [{ name: "repositories", client: instanceOnly, connName: "repositories" }]
+      : [];
 
     const server = createApp({
       projectThread,
@@ -169,6 +206,7 @@ async function withApp(
       resolveInstanceModuleClients: async () => [
         ...silent,
         { name: "filesystem", client: module, connName: "filesystem-instance" },
+        ...instanceExtra,
       ],
       moduleCalls,
     });
@@ -192,6 +230,7 @@ async function withApp(
         threadId: thread.id,
         projectId: project.id,
         module,
+        instanceOnly,
         inbox,
         pendingApprovals,
         moduleCalls,
@@ -372,6 +411,48 @@ test("**人が直接開ける入口**は、名乗った資源だけが出る（l
       },
     ]);
   });
+});
+
+// **banto 全体の Module の入口は、どの Project にも出す**（改訂・2026-10-01、ユーザー、v4-frontend.md §6.2）。
+// その Project の Module 集合から外れていても、入口が出て・開けて・中のボタンが届く（3つが同じ集合を引く）
+test("banto 全体の Module の入口は、その Project の Module 集合に無くても出て、開けて、画面から呼べる", async () => {
+  await withApp(
+    async ({ base, headers, projectId, instanceOnly, module }) => {
+      const launchers = await fetch(`${base}/api/projects/${projectId}/ui-launchers`, { headers });
+      assert.equal(launchers.status, 200);
+      assert.deepEqual(
+        ((await launchers.json()) as Array<{ server: string; resourceUri: string }>).map((l) => [l.server, l.resourceUri]),
+        [
+          ["filesystem", "ui://filesystem/directory"],
+          ["repositories", "ui://repositories/list"],
+        ],
+        "名前が重なる banto 全体の Module（filesystem）は二重に出さず、Project の集合に無いものは足す",
+      );
+
+      const resource = await fetch(
+        `${base}/api/projects/${projectId}/ui-resource?server=repositories&uri=${encodeURIComponent("ui://repositories/list")}`,
+        { headers },
+      );
+      assert.equal(resource.status, 200);
+      assert.match(((await resource.json()) as { html: string }).html, /リポジトリ/);
+
+      const call = await fetch(`${base}/api/projects/${projectId}/ui-tool-call`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ server: "repositories", tool: "list_repositories", arguments: {} }),
+      });
+      assert.equal(call.status, 200);
+      assert.deepEqual(stripCallId(instanceOnly.calls), [
+        { name: "list_repositories", arguments: {}, _meta: { "dev.banto/caller": { admin: true, forProject: projectId } } },
+      ]);
+      assert.equal(module.calls.length, 0);
+
+      // 無い Project には何も出さない（banto 全体の Module があっても）
+      const ghost = await fetch(`${base}/api/projects/no-such-project/ui-launchers`, { headers });
+      assert.deepEqual(await ghost.json(), []);
+    },
+    { withInstanceOnlyModule: true },
+  );
 });
 
 // **1本が答えなくても、ほかの入口と設定画面は出る**（改訂・2026-09-30、ユーザー報告）。

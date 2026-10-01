@@ -722,6 +722,26 @@ async function listSettingsCanvases(
 }
 
 /**
+ * **Project の画面から人が開く Canvas が届く Module**（改訂・2026-10-01、ユーザー、`docs/specs/v4-frontend.md` §6.2）。
+ *
+ * その Project の Module 集合に、**banto 全体に1本の Module を足す**——それらは特定の Project のものではなく
+ * （例：リポジトリの一覧）、Project の Module 集合から外していても、人が開く画面までは絞らない。Project に繋ぐか
+ * どうかが決めるのは、その Project の AI に tool を見せるかだけ。入口の一覧・画面の中身・画面からの呼び出しの
+ * 3つが**同じ集合**を引く（入口は出るのに開けない、を作らない）。名前が重なれば Project の側（同じプロセス）
+ */
+async function modulesForProjectCanvas(
+  deps: AppDeps,
+  projectId: string,
+): Promise<Array<{ name: string; client: ModuleClientLike; connName?: string }>> {
+  if (!deps.projectThread.getProject(projectId)) return [];
+  const [ofProject, ofInstance] = await Promise.all([
+    deps.resolveModuleClientsForProject?.(projectId) ?? [],
+    deps.resolveInstanceModuleClients?.() ?? [],
+  ]);
+  return [...ofProject, ...ofInstance.filter((m) => !ofProject.some((p) => p.name === m.name))];
+}
+
+/**
  * **人が直接開ける入口**として名乗っている Canvas を集める（§6.2）。
  *
  * 人に見せる名前と説明は、**仕様の `name` / `description` をそのまま使う**
@@ -2103,11 +2123,11 @@ export function createApp(deps: AppDeps) {
 
       // **人が直接開ける入口**（launcher、§6.2、決定・2026-09-07）。
       // 「まずファイルを見たい」は AI に頼む用事ではない（要件C3）。
-      // **その Project に繋がっている Module の入口だけ**——一覧は Module 集合から
-      // 導出する（別の一覧を持たない、規則3）。
+      // **その Project に繋がっている Module と、banto 全体の Module の入口**（改訂・2026-10-01）
+      // ——一覧は Module 集合から導出する（別の一覧を持たない、規則3）。
       const projectLaunchersMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ui-launchers$/);
       if (projectLaunchersMatch && req.method === "GET") {
-        const modules = (await deps.resolveModuleClientsForProject?.(projectLaunchersMatch[1]!)) ?? [];
+        const modules = await modulesForProjectCanvas(deps, projectLaunchersMatch[1]!);
         json(res, 200, await listLauncherCanvases(modules));
         return;
       }
@@ -2167,7 +2187,8 @@ export function createApp(deps: AppDeps) {
         const serverName = url.searchParams.get("server");
         const uri = url.searchParams.get("uri");
         if (!serverName || !uri) return json(res, 400, { error: "server と uri が要ります" });
-        const modules = (await deps.resolveModuleClientsForProject?.(projectUiResourceMatch[1]!)) ?? [];
+        // 入口の一覧と同じ集合（banto 全体の Module も、Project の画面から開ける）
+        const modules = await modulesForProjectCanvas(deps, projectUiResourceMatch[1]!);
         const { status, body } = await readUiResource(modules, serverName, uri);
         json(res, status, body);
         return;
@@ -2179,7 +2200,8 @@ export function createApp(deps: AppDeps) {
         if (typeof body.server !== "string" || typeof body.tool !== "string") {
           return json(res, 400, { error: "server と tool が要ります" });
         }
-        const modules = (await deps.resolveModuleClientsForProject?.(projectUiCallMatch[1]!)) ?? [];
+        // 入口の一覧と同じ集合（開いた画面の中のボタンが届かない、を作らない）
+        const modules = await modulesForProjectCanvas(deps, projectUiCallMatch[1]!);
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
         const refusal = await checkUiCallable(found.client, body.tool);
