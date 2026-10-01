@@ -1038,7 +1038,7 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
 
 **発端**：新しい Project の画面は core（banto 本体）の機能なのに、core の画面が Repositories Module を名指しで知っていた
 （「GitHub から clone」「新しいリポジトリ」のタブ、「Repositories が用意します」）。banto の決まりは「core は Module を名指しで知らない／
-Module を足すのに core を触らない」。Repositories を外した banto でこの画面が壊れてはいけない。
+Module を足すのに core を触らない」。Repositories を無効にした banto でこの画面が壊れてはいけない。
 
 **core の新しい Project の画面**（`project/new-project-dialog.tsx`）が持つのは2つだけ：
 
@@ -1063,7 +1063,7 @@ Module を足すのに core を触らない」。Repositories を外した banto
 - **見せ方**：Module の画面は core の画面の中の「よそ様の画面」——設定面（`settings/module-config-pane.tsx`）と同じ点線の枠・薄い地に、
   出所（「Repositories（banto 標準）の画面」・`ui://banto.repositories/prepare-clone`・sandboxed の印）を添える。中の質感は Module のもの。
   本物は iframe で、モックは `canvas/canvas-content.tsx` の `FolderProviderContent`（Canvas の中身の表と同じ、iframe の代わり）
-- **Repositories を外した banto**：`?modules=none`——新しい Project の画面は「手元のフォルダ」だけになり、そのまま作れる
+- **Repositories を無効にした banto**：`?modules=none`（組み込みなので消せないが、無効にはできる）——新しい Project の画面は「手元のフォルダ」だけになり、そのまま作れる
 
 **Repositories の側**（中身は使い回し）：
 
@@ -1090,7 +1090,7 @@ Module を足すのに core を触らない」。Repositories を外した banto
 - core の新しい Project の画面：`/p/banto?new-project=folder`（タブ3つ）・`?new-project=banto.repositories:clone&repo=tjst-t/incus-lab`
   （`clone`・`create` は前からの URL の読み替え。この読み替えは `project/repo-demo-params.tsx` だけにある）
 - もう手元にあり Project がある：`/p/banto?new-project=clone&repo=tjst-t/home-automation` で「この場所を使う」
-- Repositories を外した banto：`/p/banto?new-project=clone&modules=none`
+- Repositories を無効にした banto：`/p/banto?new-project=clone&modules=none`
 - 一覧から Project の作成へ：`/p/banto?canvas=banto.repositories:repos&clone=tjst-t/incus-lab`・`…&new-repo=garden`
 - gitlab の見つからない行：`/p/banto?canvas=banto.repositories:repos`（zine）・`…&clone=https://gitlab.com/tjst-t/zine`
 
@@ -1111,6 +1111,15 @@ Module を足すのに core を触らない」。Repositories を外した banto
 
 **URL**：一覧 `/p/banto?canvas=banto.repositories:repos`、設定 `/settings?section=module:banto.repositories`、
 公開 `/p/hermes?canvas=banto.repositories:publish`、新しい Project の始め方 `?new-project=banto.repositories:clone`（`clone`・`create` の読み替えは前のまま）。
+
+### Repositories は組み込み・GitHub MCP は繋がない（2026-10-01、ユーザー決定）
+
+- **Repositories は banto に組み込みで、削除できない**（Shell・FileSystem・Vault と同じ扱い。目録から入れるものではない）。scope は banto 全体（instance）のまま。
+  設定の「役割と Module」では「組み込み」の印が付き、編集・削除のボタンは出ない（有効・無効の切り替えは他の組み込みと同じく残る）。
+  モックは前から `builtin: true` だったので、見せ方は変えていない。役割の説明だけ、git の操作を持たない今の中身に合わせて書き直した
+  （「手元のリポジトリの台帳と一覧。clone・新しく作る・Import・GitHub への公開と、GitHub のアカウントの割り当て」）
+- **GitHub MCP は繋がない**——Module 追加画面のレジストリの見本から「GitHub MCP Server」を外した。Repositories の役割を名乗る見本は、もう無い
+- `?modules=none` は「外す」ではなく「無効にする」と言い直した（消せない Module なので）
 
 ## まだ実装していない
 

@@ -7,7 +7,7 @@
 //   `clone`・`create` は前からの URL のための読み替え（`banto.repositories:clone`・`banto.repositories:create`）——**この読み替えは
 //   モックの見せ方の層にだけ置く**。core の新しい Project の画面は Module の名前を知らない
 // - `&repo=<owner>/<repo>` —— Module の画面に最初に入れておく値（clone なら選んだ状態、新しいリポジトリなら名前）
-// - `?modules=none` —— フォルダを用意できる Module（いまは Repositories だけ）を外した banto。新しい Project の画面は
+// - `?modules=none` —— フォルダを用意できる Module（いまは Repositories だけ）を無効にした banto（組み込みなので消せないが、無効にはできる）。新しい Project の画面は
 //   「手元のフォルダ」だけになる
 // - `&folder=<path>` —— 手元のフォルダの Root パス（一覧の「Project を始める」と同じ状態）
 // - `?accounts=0|1|2` —— 登録済みの GitHub アカウントの数（どの画面でも効く）

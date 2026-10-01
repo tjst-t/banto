@@ -356,7 +356,9 @@ const roleDefs: readonly Omit<MockRole, "implementations">[] = [
   {
     id: "repositories",
     name: "Repositories",
-    description: "複数リポジトリの一覧・worktree・clone/branch/log。GitHub 身元の割り当て。",
+    // banto に組み込みで、目録から入れるものではない（Shell・FileSystem・Vault と同じ。2026-10-01、ユーザー決定）。
+    // git の操作は持たない（AI は Shell で git を打つ）
+    description: "手元のリポジトリの台帳と一覧。clone・新しく作る・Import・GitHub への公開と、GitHub のアカウントの割り当て。",
   },
   {
     id: "vault-ui",
@@ -451,7 +453,7 @@ export function getFolderProviders(): readonly (MockFolderProvider & {
 
 /**
  * モックの見せ方のためだけ（URL の `?modules=none`）——フォルダを用意できる Module（いまは Repositories だけ）を
- * 外した banto。新しい Project の画面は「手元のフォルダ」だけになる（core は壊れない）
+ * 無効にした banto（組み込みなので消せないが、無効にはできる）。新しい Project の画面は「手元のフォルダ」だけになる（core は壊れない）
  */
 export function disableFolderProvidersForDemo(): void {
   if (!implementations.some((i) => i.enabled && i.folderProviders?.length)) return;
