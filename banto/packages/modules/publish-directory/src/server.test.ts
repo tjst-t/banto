@@ -234,6 +234,7 @@ test("AI に見せるのは3つ。publishService は承認の画面を持ち、�
       decline_publish: "admin",
       get_publish_overview: "admin",
       unpublish_route: "admin",
+      publish_route: "admin",
       // Service が removeService の中で呼ぶ部品の口（AI には見せない）
       serviceRemoved: "module",
     });
@@ -638,4 +639,27 @@ test("Service の登録が消されたのに、公開をやめられない出し
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("入口の画面のワンクリック公開：人が押せば承認の頼みを作らずに公開する。待ち受けていない・登録に無いものは断る。AI からは押せない", async () => {
+  await withDirectory(async ({ asAi, asHuman, caddy, services }) => {
+    services.push({ name: "api", ports: [4000], state: "running", listening: [], notListening: [4000] });
+    // AI のターンからは呼べない
+    assert.ok((await asAi("publish_route", { projectId: P1, service: "web", port: 3000 })).isError);
+    assert.deepEqual(caddy.writes(), []);
+    // 待ち受けていない・登録に無いポートは断り、Caddy に触らない
+    assert.match((await asHuman("publish_route", { projectId: P1, service: "api", port: 4000 })).text, /待ち受けていません/);
+    assert.match((await asHuman("publish_route", { projectId: P1, service: "web", port: 9999 })).text, /登録に無い/);
+    assert.deepEqual(caddy.writes(), []);
+
+    const r = await asHuman("publish_route", { projectId: P1, service: "web", port: 3000 });
+    assert.equal(r.isError, false, r.text);
+    const out = JSON.parse(r.text);
+    assert.equal(out.url, `https://${HOST}`);
+    const ov = JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text);
+    assert.equal(ov.published.length, 1);
+    assert.equal(ov.published[0].auth, "none", "設定は出し方の既定（認証なし）");
+    assert.deepEqual(ov.pending, [], "承認の頼みは作らない");
+    assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)));
+  });
 });

@@ -109,6 +109,8 @@ const PAGE_CSS = `
 .rest li:last-child { border-bottom: 1px solid var(--line); }
 .rest .name { color: var(--ink); }
 .rest .note { color: var(--ink-3); font-size: var(--t-xs); }
+.rest li { align-items: center; }
+.rest-side { display: inline-flex; align-items: center; gap: 12px; }
 .rest .note[data-on] { color: var(--ok); }
 
 /* ---- 空・読めない・出し方の不調 ---- */
@@ -289,13 +291,28 @@ const SCRIPT = String.raw`
   }
 
   function restSection(list, problem) {
+    const ready = data && data.methods.filter((m) => m.ready);
+    const reachText = ready && ready.length === 1 ? (REACH_SHORT[ready[0].reach] || ready[0].reachLabel || "") : "";
     return h("section", { class: "section" }, [
       h("h2", { class: "section-title", text: "まだ公開していないサーバ" }),
-      h("p", { class: "section-lead", text: problem ? "Service の登録を読めませんでした：" + problem : "公開するには、会話で「" + (list[0] ? list[0].name : "web") + " を公開して」と頼んでください。" }),
-      list.length ? h("ul", { class: "rest" }, list.map((s) => h("li", {}, [
-        h("span", { class: "name", text: s.name + " の " + s.port + " 番" }),
-        h("span", { class: "note", "data-on": s.listening, text: s.listening ? "待ち受けています" : "待ち受けていません" }),
-      ]))) : null,
+      h("p", { class: "section-lead", text: problem ? "Service の登録を読めませんでした：" + problem : (reachText ? "「公開する」を押すと、" + reachText + "から認証なしで届くようになります。認証や URL を変えたいときは、会話で頼んでください。" : "公開するには、会話で「" + (list[0] ? list[0].name : "web") + " を公開して」と頼んでください。") }),
+      list.length ? h("ul", { class: "rest" }, list.map((s) => {
+        const key = s.name + " " + s.port;
+        // **ワンクリックで公開**（2026-10-01）。押したことが承認。待ち受けていないものは押せない（届かない道を張らない）
+        const btn = h("button", {
+          class: "btn", type: "button", disabled: !s.listening || busy.has(key),
+          title: s.listening ? (reachText ? reachText + "から、認証なしで届くようにします" : "") : "待ち受けていないので公開できません",
+          text: busy.has(key) ? "公開しています…" : "公開する",
+        });
+        btn.addEventListener("click", () => publish(s, key));
+        return h("li", {}, [
+          h("span", { class: "name", text: s.name + " の " + s.port + " 番" }),
+          h("span", { class: "rest-side" }, [
+            h("span", { class: "note", "data-on": s.listening, text: s.listening ? "待ち受けています" : "待ち受けていません" }),
+            btn,
+          ]),
+        ]);
+      })) : null,
     ]);
   }
 
@@ -330,6 +347,18 @@ const SCRIPT = String.raw`
       flash = "開けませんでした。URL を選んで写してください：" + url;
       render();
     }
+  }
+  const busy = new Set();
+  async function publish(s, key) {
+    busy.add(key); render();
+    try {
+      const r = await call("publish_route", { projectId, service: s.name, port: s.port });
+      flash = s.name + " の " + s.port + " 番を公開しました：" + r.url;
+    } catch (e) {
+      flash = "公開できませんでした：" + e.message;
+    }
+    busy.delete(key);
+    await refresh();
   }
   async function unpublish(p, key) {
     if (!armed.has(key)) {

@@ -408,6 +408,30 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     return r.callJson<{ removed: boolean; url?: string; note?: string }>(method, "unpublishRoute", { projectId, service: args.service, port: args.port });
   }
 
+  /**
+   * **入口の画面から、人がワンクリックで公開する**（追加・2026-10-01、ユーザー要望）。押したのが人なので、それが承認そのもの
+   * ——承認の頼みは作らない。設定は出し方の既定のまま（認証は既定の「無し」・サブドメインは既定）。変えたいときは会話で頼めば
+   * 承認の画面が出る。AI の publishService と同じく、Service の登録にあって**実際に待ち受けているものだけ**
+   */
+  async function publishFromCanvas(r: Scoped, args: Record<string, unknown>, stamp: ReturnType<typeof callerOf>) {
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    const name = typeof args.service === "string" ? args.service : "";
+    if (!projectId || !name || typeof args.port !== "number") throw new PublishDirectoryError("projectId・service・port が要ります");
+    assertSameProject(stamp, projectId);
+    const port = args.port;
+    const targets = await r.listTargets();
+    const svc = await findService(r, targets, name, projectId);
+    if (!svc.ports.includes(port)) throw new PublishDirectoryError(`${name} の登録に無いポートです：${port}`);
+    if (!svc.listening.includes(port)) {
+      throw new PublishDirectoryError(`${name} は ${port} で待ち受けていません（状態：${svc.state}）。サーバが起きてから押してください`);
+    }
+    const implementation = pickMethod(targets, args.method);
+    const info = await r.callJson<MethodInfo>(implementation, "describePublishMethod", {});
+    if (!info.ready) throw new PublishDirectoryError(`出し方「${info.title}」はまだ使えません：${info.problem ?? "理由不明"}`);
+    const out = await r.callJson<{ url: string; reach: Reach }>(implementation, "publishRoute", { projectId, service: name, port, config: {} });
+    return { ...out, reachLabel: REACH_LABEL[out.reach] };
+  }
+
   async function approve(r: Scoped, args: Record<string, unknown>) {
     const config = (args.config ?? {}) as Record<string, unknown>;
     const { request: req, result } = await requests.decide(String(args.requestId ?? ""), async (req) => {
@@ -602,6 +626,16 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
         _meta: admin,
       },
       {
+        name: "publish_route",
+        description: "入口の画面で人が「公開する」を押した（ワンクリック。押したことが承認、設定は出し方の既定）",
+        inputSchema: {
+          type: "object",
+          properties: { projectId: { type: "string" }, service: { type: "string" }, port: { type: "number" }, method: { type: "string" } },
+          required: ["projectId", "service", "port"],
+        },
+        _meta: admin,
+      },
+      {
         name: "unpublish_route",
         description: "入口の画面で人が「やめる」を押した",
         inputSchema: {
@@ -660,6 +694,8 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
           return json(await overview(r, args, stamp));
         case "unpublish_route":
           return json(await unpublishFromCanvas(r, args, stamp));
+        case "publish_route":
+          return json(await publishFromCanvas(r, args, stamp));
         default:
           throw new Error(`unknown tool: ${name}`);
       }
