@@ -2,11 +2,14 @@
 // 順序をPlaywrightに委ねると競合しうる（実測——globalSetup前にcliが起動し、
 // config.jsonが無いまま既定値＝本番と同じport/dataDirで立ち上がりEADDRINUSEになった）
 // ので、ここで確実にconfig.jsonを書いてからcli.jsを読み込む
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
 import {
+  DATA_DIR,
+  FRONTEND_PORT,
   CLAUDE_CONFIG_DIR,
   CLAUDE_CREDENTIALS_DIR,
   NPM_REGISTRY_PORT,
@@ -22,6 +25,21 @@ import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
 import { startGithubFixture } from "./github-fixture.ts";
 
 globalSetup();
+
+// **回が終わったらコンテナを必ず消す片づけ役を、別のセッションで起こしておく**（追加・2026-10-01、`run-reaper.ts`）。
+// `globalTeardown` は外から殺された回（`timeout` の打ち切り・SIGKILL）では走らない。片づけ役は setsid で
+// プロセスグループの外に出るので、回ごと殺されても残り、Playwright が居なくなったのを見て core と画面のサーバを止め、
+// コンテナを消す。
+// 回の印（BANTO_E2E_RUN_ID）は Playwright 本体の pid、このプロセスが core 自身
+{
+  const reaperLog = openSync(join(dirname(DATA_DIR), "reaper.log"), "a");
+  spawn(
+    process.execPath,
+    [fileURLToPath(new URL("./run-reaper.ts", import.meta.url)), process.env.BANTO_E2E_RUN_ID!, String(process.pid), DATA_DIR, String(FRONTEND_PORT)],
+    { detached: true, stdio: ["ignore", reaperLog, reaperLog] },
+  ).unref();
+  closeSync(reaperLog);
+}
 
 // **claude CLI に人の `~/.claude` を触らせない**（決定・2026-09-16、config.ts 参照）。
 // Runner が起こす CLI はこのプロセスの env を引き継ぐので、cli.js を読み込む前に置く。

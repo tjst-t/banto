@@ -5,11 +5,10 @@
 // 「たまたま前回のデータが残っていたから通った」になりかねない。
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { isAlive, listOwnedContainers, removeContainers, runIdOf } from "./containers.ts";
 import {
   CONFIG_PATH,
   DATA_DIR,
-  E2E_BASE,
   PORT,
   AUTH_TOKEN,
   SANDBOX_PORT,
@@ -94,36 +93,16 @@ function removeStaleRuns(): void {
  * **前の回が残したコンテナを片づける**（追加・2026-09-25）。ふつうは終わるときに消す（`global-teardown.ts`）が、
  * 途中で止めた回や、終わる瞬間に host がまだコンテナを触っていた回（`Instance is busy`）は残る。
  * **別のセッションが同時に回している E2E のものは消さない**——その回がもう走っていない（置き場が消えた、
- * または印の pid が生きていない）ものだけを消す
+ * または印の pid が生きていない）ものだけを消す。
+ *
+ * **HOME に依らず拾う**（改訂・2026-10-01）。以前は自分の `E2E_BASE`（`~/.cache/banto-e2e`）の下のものだけを
+ * 見ていたので、サブエージェント（偽のホーム）が回して残したものは、人の Shell から回した次の回が拾えなかった。
+ * ふつうは回が終われば片づけ役（`run-reaper.ts`）が消すので、ここはその片づけ役ごと殺されたときの受け皿
  */
 function removeStaleContainers(): void {
-  const listed = spawnSync("incus", ["query", `/1.0/instances?recursion=1&project=${incusProject()}`], { encoding: "utf8", input: "" });
-  if (listed.status !== 0) throw new Error(`[e2e] コンテナの一覧を読めません（incus グループが効いていない？）：${listed.stderr.trim()}`);
-  const all = JSON.parse(listed.stdout) as { name: string; config?: Record<string, string> }[];
-  for (const c of all) {
-    const owner = c.config?.["user.banto.owner"];
-    if (!owner || !owner.startsWith(`${E2E_BASE}/`) || !runIsOver(owner)) continue;
-    const r = spawnSync("incus", ["delete", "--force", c.name], { encoding: "utf8", input: "" });
-    console.log(`[e2e] 前の回が残したコンテナ ${c.name} を消した${r.status === 0 ? "" : `（失敗：${r.stderr.trim()}）`}`);
-  }
-}
-
-/** その置き場の回が終わっているか。回の印は Playwright の pid（`config.ts` の RUN_ID） */
-function runIsOver(owner: string): boolean {
-  if (!existsSync(owner)) return true;
-  const pid = Number(owner.slice(E2E_BASE.length + 1).split("/")[0]);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (err) {
-    // EPERM は「居るが他人のもの」——生きている扱いにする
-    return (err as NodeJS.ErrnoException).code === "ESRCH";
-  }
-}
-
-function incusProject(): string {
-  const r = spawnSync("incus", ["project", "get-current"], { encoding: "utf8", input: "" });
-  if (r.status !== 0) throw new Error(`[e2e] Incus に繋がりません（incus グループが効いていない？）：${r.stderr.trim()}`);
-  return encodeURIComponent(r.stdout.trim());
+  const stale = listOwnedContainers().filter((c) => {
+    const runId = runIdOf(c.owner);
+    return runId !== null && c.owner !== DATA_DIR && (!existsSync(c.owner) || !isAlive(runId));
+  });
+  removeContainers(stale.map((c) => c.name), (line) => console.log(`${line}（前の回が残したもの）`), 1);
 }
