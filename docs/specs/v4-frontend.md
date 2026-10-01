@@ -524,6 +524,9 @@ Module のあいだの通信は仕様のままになる。
 
 **その Project に繋がっている Module の入口だけを出す。** 繋がっていない Module の
 Canvas まで開けるなら、Module 集合を Project ごとに決めている意味（アーキ仕様 §2.2）が薄れる。
+**ただし banto 全体に1本の Module（`scope: "instance"`——Repositories・Vault など）の入口は、どの Project にも
+出す**（改訂・2026-10-01、ユーザー）。それらは特定の Project のものではなく（例：リポジトリの一覧）、Project を
+選ぶ意味が無い。**未実装**。
 入口の一覧は Project の Module 集合から導出する——別の一覧を持たない（規則3）。
 
 ### 6.3 Command Palette（Ctrl-K）——あらゆるものへの1つの入口

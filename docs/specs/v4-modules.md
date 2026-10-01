@@ -1234,9 +1234,15 @@ Repositories の節、`components/banto/canvas/repo-list-view.tsx` ほか）。�
 （次の手が要るものを上に保つ。探すのは検索）。**塗る色は2つだけ**——見つからない（turn 系）・このマシンにだけ
 （warn 系）。事実のすぐ隣に次の手（公開・Project を始める・clone し直す）。一覧は Command Palette から Canvas で、
 banto 全体の設定の Repositories の面にも同じものを出す（**banto 全体の Module の入口は、どの Project にも出す**
-——v4-frontend.md §6.2 の「その Project に繋がっている Module の入口だけ」を改める。未反映）。
+——決定・2026-10-01、ユーザー。v4-frontend.md §6.2）。
 
-**アカウント**：設定で登録——名前・**PAT（fine-grained、Vault の alias）**・**SSH 鍵（Vault の alias）**。始めるときに
+**アカウント**：設定で登録——名前・**API の資格情報**・**SSH 鍵（Vault の alias）**。API の資格情報は2通りから選ぶ
+（決定・2026-10-01、ユーザー）：**PAT**（fine-grained、Vault の alias）か、**ブラウザでログイン**——GitHub App の
+**デバイスフロー**（`gh auth login` と同じ方式）。画面に短いコードと `github.com/login/device` を出し、人が許可したら
+トークンを Vault に預ける（MCP の OAuth と同じ `oauth-token` の置き方）。戻り先の URL が要らないので、外から届かない
+LAN の banto でも動く。GitHub App にしたのは、権限をリポジトリと操作ごとに絞れ、トークンが8時間で切れる（自動で
+更新する）ため——OAuth App は `repo` のように大ざっぱで無期限。**人が1回だけ** GitHub App を登録してデバイスフローを
+有効にし、client ID を Repositories の設定に入れる（秘密は要らない）。始めるときに
 選ぶ（1つなら選ばせない）。どのリポジトリにどのアカウントを使ったかは台帳が覚える。origin の持ち主が未登録でも
 Import でき「読むだけ」と示す。GitHub の API（探す・作る）は **この Module が自分で呼ぶ**（2〜3本）。
 
@@ -1255,7 +1261,8 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
 - Repositories を無効にすると「手元のフォルダ」だけになる
 
 **まだ決めていないこと**：`_meta` の名乗りの印の名前と形・返り値の受け渡し（MCP Apps のどの通知で返すか）／
-AI が「新しい開発を始めて」と頼む道具（承認つき）——最初は人の画面だけ／PAT 以外の GitHub ログイン（ブラウザ）／
+AI が「新しい開発を始めて」と頼む道具（承認つき）——最初は人の画面だけ／GitHub App に求める権限の一覧と、更新に
+失敗したときの知らせ方／
 gitlab 等のアカウント（いまはこのマシンの git の設定で clone するだけ）／Factory が worktree を頼む口（要件）。
 
 ## 3. 境界の問題——FileSystem と Shell を同じ扱いにしない
