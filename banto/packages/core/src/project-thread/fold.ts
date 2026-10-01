@@ -4,6 +4,7 @@ import type {
   MessageEntry,
   MessageImage,
   MessageOrigin,
+  MessageSender,
   ProjectThreadReadModel,
   ProjectState,
   ThreadPermissionMode,
@@ -41,8 +42,13 @@ export type ProjectThreadEvent =
         /** **作るときに付けた名前**（追加・2026-09-28）。AI が立てる Fork は名前と一緒に作る——作ってから
          *  名前を付けると、その間に一覧を取った画面が名前の無い Fork を覚えてしまう（E2E で発覚） */
         title?: string;
+        /** **会話を引き継がない Fork**（追加・2026-10-01、アーキ仕様 §4.2）。Project だけを宛先にしたメッセージで立つ。
+         *  親の会話も resume-point も持たず、まっさらな会話で始まる（Base を Clear した状態） */
+        fresh?: boolean;
       };
     }
+  // **承認なしでメッセージを受け取ってよい Project の一覧**（追加・2026-10-01、アーキ仕様 §4.2）。一覧そのものを置き換える
+  | { type: "project.message_senders_set"; payload: { id: string; senders: string[] } }
   | { type: "thread.closed"; payload: { id: string } }
   // Fork の名前（決定・2026-09-11、ユーザー要望）。**付けていないものは持たない**
   // ——既定の「Fork 1」は連番から導出できる（規則3）
@@ -81,7 +87,16 @@ export type ProjectThreadEvent =
   // （`message.appended` の origin.deliveryId で消える）——まず残してから起こす（黙って捨てない）
   | {
       type: "delivery.received";
-      payload: { threadId: string; deliveryId: string; from: string; title: string; text: string; hop: number };
+      payload: {
+        threadId: string;
+        deliveryId: string;
+        from: string;
+        title: string;
+        text: string;
+        hop: number;
+        /** 別の Thread の AI が送ったものの送り元（追加・2026-10-01） */
+        sender?: MessageSender;
+      };
     }
   | {
       type: "reply.awaiting";
@@ -172,6 +187,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (p) next.projects.set(p.id, { ...p, status: "closed" });
         return next;
       }
+      case "project.message_senders_set": {
+        const p = next.projects.get(event.payload.id);
+        if (p) next.projects.set(p.id, { ...p, acceptMessagesFrom: [...event.payload.senders] });
+        return next;
+      }
       case "project.renamed": {
         const p = next.projects.get(event.payload.id);
         if (p) next.projects.set(p.id, { ...p, name: event.payload.name });
@@ -236,7 +256,13 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         // ——分けた後の親のやり取りが Fork の会話に混ざらない。
         if (t.kind === "fork" && t.parentThreadId) {
           const parent = next.threads.get(t.parentThreadId);
-          if (parent) {
+          if (parent && event.payload.fresh) {
+            // **会話を引き継がない Fork**（§4.2）——表示も Skill も写さない。走らせ方の設定だけは親にそろえる
+            // （承認ゲートを効かせている Project で、立った Fork だけ既定に戻らないように）
+            if (parent.permissionMode) t.permissionMode = parent.permissionMode;
+            if (parent.model) t.model = parent.model;
+            if (parent.effort) t.effort = parent.effort;
+          } else if (parent) {
             const upTo = event.payload.forkedFromSeq ?? Number.MAX_SAFE_INTEGER;
             t.messages = parent.messages.filter((m) => m.seq <= upTo);
             t.markers = parent.markers.filter((m) => m.seq <= upTo);
@@ -383,6 +409,8 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (t) {
           const { threadId: _thread, ...rest } = event.payload;
           t.deliveries = [...(t.deliveries ?? []), { ...rest, receivedAt: raw.ts }];
+          // 送り元への返事を承認なしで通すための記録（§4.2）。届くたびに数え直す
+          if (rest.sender) t.receivedFrom = { ...(t.receivedFrom ?? {}), [rest.sender.threadId]: raw.ts };
         }
         return next;
       }

@@ -17,6 +17,7 @@ import type {
   UiToolCallEntry,
   MessageImage,
   MessageOrigin,
+  MessageSender,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 import { sameSkillSet } from "../skills/activation.js";
@@ -126,6 +127,18 @@ export class ProjectThreadStore {
     return this.projection.current.threads.get(id);
   }
 
+  /**
+   * **承認なしでメッセージを受け取ってよい Project の一覧を置き換える**（決定・2026-10-01、アーキ仕様 §4.2）。
+   * 重なりと自分自身は落とす
+   */
+  async setMessageSenders(id: ProjectId, senders: readonly ProjectId[]): Promise<ProjectState> {
+    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    const unique = [...new Set(senders)].filter((s) => s !== id);
+    const event = await this.log.append("project.message_senders_set", { id, senders: unique });
+    this.projection.applyOne(event);
+    return this.getProject(id)!;
+  }
+
   async renameProject(id: ProjectId, name: string): Promise<ProjectState> {
     if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
     const event = await this.log.append("project.renamed", { id, name });
@@ -221,15 +234,17 @@ export class ProjectThreadStore {
    */
   async forkThread(
     parentThreadId: ThreadId,
-    options: { resumePoint?: string; fromSeq?: number; title?: string } = {},
+    /** `fresh`：会話を引き継がず、まっさらな会話で始める（追加・2026-10-01、§4.2——Project だけを宛先にしたメッセージ） */
+    options: { resumePoint?: string; fromSeq?: number; title?: string; fresh?: boolean } = {},
   ): Promise<ThreadState> {
     const parent = this.getThread(parentThreadId);
     if (!parent) throw new NotFoundError(`thread ${parentThreadId} not found`);
-    const resumePoint =
-      options.resumePoint ??
-      (options.fromSeq === undefined
-        ? parent.resumePoint
-        : this.resumePointAsOf(parent, options.fromSeq));
+    const resumePoint = options.fresh
+      ? undefined
+      : (options.resumePoint ??
+        (options.fromSeq === undefined
+          ? parent.resumePoint
+          : this.resumePointAsOf(parent, options.fromSeq)));
     const id = randomUUID();
     const event = await this.log.append("thread.created", {
       id,
@@ -239,6 +254,7 @@ export class ProjectThreadStore {
       resumePoint,
       forkedFromSeq: options.fromSeq,
       ...(options.title ? { title: options.title } : {}),
+      ...(options.fresh ? { fresh: true } : {}),
     });
     this.projection.applyOne(event);
     return this.mustGetThread(id);
@@ -436,6 +452,7 @@ export class ProjectThreadStore {
     title: string;
     text: string;
     hop: number;
+    sender?: MessageSender;
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("delivery.received", input);

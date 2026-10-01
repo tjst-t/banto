@@ -5,7 +5,7 @@ export type InboxItemId = string;
 
 /** `relay`＝Module 間中継の初回承認（host 自身が発生源、docs/specs/v4-frontend.md
  *  「Module 間中継の承認」）。**発生源が誰かであって、答え方の種類ではない。** */
-export type JudgmentSource = "elicitation" | "text" | "factory" | "alarm" | "relay";
+export type JudgmentSource = "elicitation" | "text" | "factory" | "alarm" | "relay" | "message";
 
 /** Elicitation由来の判断待ちの3状態（§2.4.1決定）。 */
 export type JudgmentLiveness = "live" | "answered" | "timed_out";
@@ -25,6 +25,11 @@ export interface JudgmentItem {
   toolInput?: unknown;
   /** どのサーバが聞いているか（§2.4.1 の MUST）。 */
   serverName?: string;
+  /**
+   * **答えの選択肢**（追加・2026-10-01）。無ければ「許可する／拒否する」。Project をまたぐメッセージの承認は
+   * 「許可し、以後この Project からは聞かない」を足す（アーキ仕様 §4.2）
+   */
+  choices?: string[];
   liveness: JudgmentLiveness;
   answer?: unknown;
   createdAt: string;

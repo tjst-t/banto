@@ -52,7 +52,11 @@ export function DeliveredMessage({ origin }: { origin: RealMessageOrigin }) {
       <div className="my-1.5 flex flex-col overflow-hidden rounded-lg border border-border">
         <div className="flex items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5">
           <Inbox className="size-3.5 shrink-0 text-ink-3" />
-          <span className="min-w-0 flex-1 truncate text-xs text-ink-3">{origin.from} から届きました</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-ink-3" data-testid="delivered-from">
+            {origin.sender
+              ? `「${origin.sender.projectName}」の「${origin.sender.threadLabel}」の AI から届きました`
+              : `${origin.from} から届きました`}
+          </span>
         </div>
         <div className="flex flex-col gap-1.5 px-3 py-2">
           <p className="text-sm font-medium text-foreground" data-testid="delivered-title">

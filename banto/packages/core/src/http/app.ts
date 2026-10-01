@@ -53,6 +53,7 @@ import { TurnStops, type TurnStopHandle } from "./turn-stops.js";
 import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
+import { MESSAGE_ALLOW_REMEMBER, ThreadMessaging } from "../delivery/thread-messages.js";
 import type { AppEventBus } from "./app-events.js";
 import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
@@ -911,6 +912,24 @@ export function createApp(deps: AppDeps) {
   const imageStore = deps.dataDir ? new ImageStore(join(deps.dataDir, "images")) : undefined;
   // 人がターンを止める口（決定・2026-10-01、v4-frontend.md §6.31）。走っている・順番を待っているターンを覚える
   const turnStops = new TurnStops();
+  // **Thread 間・Project 間のメッセージ**（決定・2026-10-01、アーキ仕様 §4.2）。AI の `send_message` から呼ばれる
+  const messaging = new ThreadMessaging({
+    projectThread: deps.projectThread,
+    inbox: deps.inbox,
+    pendingApprovals: deps.pendingApprovals,
+    ...(deps.deliveries ? { deliveries: deps.deliveries } : {}),
+    ...(deps.threadTurns ? { threadTurns: deps.threadTurns } : {}),
+    publishJudgment: (threadId, judgment) =>
+      deps.turnEvents?.publish(threadId, {
+        type: "judgment",
+        judgmentId: judgment.id,
+        kind: "approval",
+        serverName: judgment.serverName,
+        toolInput: judgment.toolInput,
+        message: judgment.message,
+        choices: judgment.choices,
+      }),
+  });
 
   /**
    * **AI が予約した Fork を立てる**（決定・2026-09-27、アーキ仕様 §2.2「AI が Fork を立てる」）。親のターンが
@@ -1057,7 +1076,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks }, {
+    yield* runThreadTurn({ ...deps, settleForks, messaging }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -1610,6 +1629,23 @@ export function createApp(deps: AppDeps) {
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
           if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
+          throw err;
+        }
+        return;
+      }
+
+      // **承認なしでメッセージを受け取ってよい Project**（決定・2026-10-01、アーキ仕様 §4.2）。人が Project の設定で
+      // 外す口。足すのは承認画面の「以後聞かない」（ThreadMessaging）——ここでも足せるが、画面は外すだけに使う
+      const sendersMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/message-senders$/);
+      if (sendersMatch && req.method === "PUT") {
+        const body = (await readJsonBody(req)) as { senders: unknown };
+        if (!Array.isArray(body.senders) || body.senders.some((id) => typeof id !== "string")) {
+          return json(res, 400, { error: "senders must be an array of project ids" });
+        }
+        try {
+          json(res, 200, await deps.projectThread.setMessageSenders(sendersMatch[1]!, body.senders as string[]));
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
           throw err;
         }
         return;
@@ -2532,7 +2568,12 @@ export function createApp(deps: AppDeps) {
         deps.turnEvents?.publish(item.threadId, {
           type: "answered",
           judgmentId: id,
-          answer: body.answer.behavior === "allow" ? "許可する" : body.answer.message || "拒否する",
+          answer:
+            body.answer.behavior === "allow"
+              ? (body.answer as { remember?: unknown }).remember === true
+                ? MESSAGE_ALLOW_REMEMBER
+                : "許可する"
+              : body.answer.message || "拒否する",
         });
         json(res, 200, { ok: true });
         return;

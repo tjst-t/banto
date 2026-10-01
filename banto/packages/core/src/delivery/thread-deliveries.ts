@@ -12,7 +12,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ProjectThreadStore } from "../project-thread/store.js";
-import type { PendingDelivery } from "../project-thread/types.js";
+import type { MessageSender, PendingDelivery } from "../project-thread/types.js";
 import type { ThreadTurns } from "./thread-turns.js";
 
 /** 仮置きの値（2026-09-25）——困ったら変える。根拠は `docs/notes/2026-09-25-thread-delivery.md` */
@@ -32,6 +32,8 @@ export interface DeliverInput {
   /** AI に渡す本文 */
   text: string;
   hop: number;
+  /** 別の Thread の AI が送ったものならその送り元（追加・2026-10-01、§4.2）。受け取った AI はここへ返せる */
+  sender?: MessageSender;
   /**
    * 受信箱に「届きました」を出すか（既定は出す）。AI が立てた Fork の最初の指示は出さない——立てたことは
    * 親の会話に Fork として出て、終わればレビュー待ちが出る（§2.2「AI が Fork を立てる」）
@@ -162,9 +164,16 @@ export function composeTurnPrompt(
   imageCount = 0,
 ): string {
   if (delivered.length === 0) return prompt;
-  const parts = delivered.map(
-    (d) => `<banto-delivery from="${d.from}" hop="${d.hop}">\n${d.title}\n\n${d.text}\n</banto-delivery>`,
-  );
+  const parts = delivered.map((d) => {
+    // 別の Thread からのメッセージは、送り元をそのまま指せる形で添える——返事はそこへ（§4.2）
+    const sender = d.sender
+      ? ` sender-project-id="${d.sender.projectId}" sender-project="${d.sender.projectName}" sender-thread-id="${d.sender.threadId}" sender-thread="${d.sender.threadLabel}"`
+      : "";
+    const replyHint = d.sender
+      ? `\n\n（これは「${d.sender.projectName}」の「${d.sender.threadLabel}」の AI からのメッセージです。返事や結果を伝えるときは send_message で projectId="${d.sender.projectId}"・threadId="${d.sender.threadId}" を指して送ってください）`
+      : "";
+    return `<banto-delivery from="${d.from}" hop="${d.hop}"${sender}>\n${d.title}\n\n${d.text}${replyHint}\n</banto-delivery>`;
+  });
   const imageNote = imageCount > 0 ? `——先頭の画像 ${imageCount} 枚は人が添えたもの` : "";
   return [
     "（以下は人の発言ではなく、banto が届けたものです——あなたが頼んだ仕事の結果など。必要なら続きをやってください）",

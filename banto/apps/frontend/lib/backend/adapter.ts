@@ -38,6 +38,9 @@ import { appendRealUsage, updateRealThreadData } from "../mock/threads";
 import type { MockThread } from "../mock/types";
 import { HUMAN_TOOL_NAME } from "../mock/adapter";
 
+/** Project をまたぐメッセージの承認で「以後聞かない」を選ぶ答え（host の `MESSAGE_ALLOW_REMEMBER` と同じ言葉） */
+export const MESSAGE_ALLOW_REMEMBER = "許可し、以後この Project からは聞かない";
+
 /** 判断待ちのカード1枚ぶんのpart。走行中（PartsAccumulator）とリロード後の
  *  復元（restoredJudgmentMessages）で同じものを使う——見た目も答え方も同じ1種類
  *  にする（規則3）。 */
@@ -51,6 +54,8 @@ function humanToolPart(
     /** false なら答えても元の呼び出しには届かない（Elicitation由来、§2.4.1）
      *  ——答える口を出さない（規則13：繋がっていないものを押せるように見せない） */
     answerable?: boolean;
+    /** 答えの選択肢（追加・2026-10-01）。無ければ「許可する／拒否する」 */
+    choices?: string[];
   } = {},
 ): Extract<ThreadAssistantMessagePart, { type: "tool-call" }> {
   return {
@@ -62,7 +67,11 @@ function humanToolPart(
       message,
       toolInput: options.toolInput,
       answerable: options.answerable !== false,
-      elicitation: { mode: "form", enumOptions: ["許可する", "拒否する"], allowFreeText: false },
+      elicitation: {
+        mode: "form",
+        enumOptions: options.choices && options.choices.length > 0 ? options.choices : ["許可する", "拒否する"],
+        allowFreeText: false,
+      },
     } as unknown as ReadonlyJSONObject,
     argsText: JSON.stringify({ serverName, message, toolInput: options.toolInput }),
   };
@@ -119,7 +128,7 @@ class PartsAccumulator {
     toolCallId: string,
     serverName: string,
     message: string,
-    options?: { toolInput?: unknown; answerable?: boolean },
+    options?: { toolInput?: unknown; answerable?: boolean; choices?: string[] },
   ) {
     this.parts.push(humanToolPart(toolCallId, serverName, message, options));
   }
@@ -803,6 +812,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
               // Elicitation由来は host に解決先が無い（§2.4.1、実測・2026-09-06）
               // ——答えても届かないので、答える口を出さない
               answerable: event.kind !== "elicitation",
+              ...(event.choices ? { choices: event.choices } : {}),
             },
           );
           yield { content: live.acc.snapshot(), status: status() };
@@ -981,8 +991,13 @@ export function applyThreadRecord(threadId: string, record: RealThread): void {
 export async function sendRealAnswer(toolCallId: string, answer: string): Promise<boolean> {
   const judgmentId = judgmentIdByToolCallId.get(toolCallId);
   if (!judgmentId) return false;
+  // 「許可し、以後この Project からは聞かない」（Project をまたぐメッセージの承認、§4.2）は、許可に「覚える」を添える
   const permissionResult =
-    answer === "許可する" ? { behavior: "allow" as const } : { behavior: "deny" as const, message: answer };
+    answer === "許可する"
+      ? { behavior: "allow" as const }
+      : answer === MESSAGE_ALLOW_REMEMBER
+        ? { behavior: "allow" as const, remember: true }
+        : { behavior: "deny" as const, message: answer };
   await answerRealInboxItem(judgmentId, permissionResult);
   const live = liveByJudgmentToolCallId.get(toolCallId);
   if (live) {

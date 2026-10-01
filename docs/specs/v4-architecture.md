@@ -2089,12 +2089,45 @@ canceled）、認証を持つ。
   呼ぶ最初の Module を作るときに一緒にやる**（決定・2026-09-26、ユーザー——呼ぶ Module がまだ無いので、形を決める
   材料が無い）。検討内容は `docs/notes/2026-09-25-thread-delivery.md`、タスクは `docs/tasks.json` subagent-from-modules。
   **Project ごとの Module を呼べるのは同じ Project の中だけ**の縛りは入れた（2026-09-26、`docs/specs/v4-security.md` §3）
-- **Thread 間の送り方**（届け方は上の共通の口に乗る）：
-  - **宛先の粒度**——要件の例（インフラ管理とアプリ開発）は、§1.1 の用語では
-    **別々の Project** に当たる。ただし同じ Project の Fork Thread へ送りたい場面も
-    ありうるので、**宛先は Thread 単位**にしておけば両方を覆える。確定は未決
-  - 送るインターフェース（core が直接持つ MCP のインターフェースか、薄い Module か）・宛先の一覧の見せ方・
-    Project をまたぐ送信の許し方
+
+#### Thread 間・Project 間の送り方（決定・2026-10-01、ユーザー。実装済み——`delivery/thread-messages.ts`）
+
+届け方は上の共通の口（「Thread に届ける」）にそのまま乗る。足すのは「AI が宛先を選んで送る口」と
+「Project をまたぐときの許し方」だけ。経緯は `docs/notes/2026-10-01-thread-messaging.md`。
+
+- **送る口は core 自身の tool**（`banto-thread`、`start_forks` と同じ in-process の MCP サーバ）。Thread・Project は
+  core の持ち物なので Module にしない。Base でも Fork でも同じ tool を見せる（§3）
+  - `list_threads`——宛先の一覧。**id・題・Project 名・Base か Fork か・状態（空き／走っている／人の返事待ち）だけ。
+    中身は読まない**。既定は同じ Project、指定で他の Project も
+  - `send_message`——宛先・題・本文を送る。届いたら宛先の AI が起きる。自分自身には送れない
+- **宛先は Project と Thread で指す**。**Thread を指さず Project だけ指したら、その Project に新しい Fork を立てて届ける**
+  （**会話は引き継がず、まっさらな会話で始める**——Base の会話を Clear した状態。Memory は Project のものなので
+  そのまま効く。決定・2026-10-01、ユーザー。Fork の名前はメッセージの題）。既にある Thread（Base を含む）に届けたいときは Thread まで指す
+- **届いたものには送り元（Project・Thread の id と名前）が付き**、受け取った AI はそこへ送り返せる——**返事は送り元の
+  Thread に戻り、新しい Fork には行かない**（例：Fork から別の Project へ送ったとき、返事がその Fork に返る）。
+  画面でも送り元の Project 名・Thread 名を出す
+- **同じ Project の中は自由に送れる**（同じ信頼の境界。その Thread の承認モードに従う）
+- **Project をまたぐ送信は人が承認する**（案C）——会話の中の承認画面（Publish と同じ形）に「どの Project の
+  どの Thread（または新しい Fork）へ、何を」を出す。承認モードが「全部許す」でも、またぐ送信だけは必ず聞く。
+  承認画面に「この組（送り元 Project → 宛先 Project）は以後聞かない」を付け、押されたら**宛先の Project の設定**の
+  「メッセージを受け取ってよい Project」の一覧に足す。一覧に載っている送り元からは承認なしで届く。一覧は人が
+  Project の設定で見て外せる
+- **返事は承認なし**（決定・2026-10-01、ユーザー）——受け取ったメッセージの送り元の Thread へ、受け取ってから
+  **24時間以内**に送るものは、Project をまたいでいても一覧に載っていなくても承認なしで届く。最初の送信を許した
+  時点で、その返事も許したとみなす。新しく届くたびに 24時間は数え直す。往復の暴走は下のループ防止で止める
+- **ループ防止はいまのまま**：ホップは送ったターンのホップ＋1、10 を超えたら起こさず溜める。速度は宛先ごとに 1時間 20 回
+- **人への知らせ**：届くたびに受信箱の「お知らせ」1件（いまと同じ）
+- **起こさずに置くだけの送り方は作らない**（届いたら起こす、で統一）
+- **Fork の結果を親に返す口**（§2.2 で後回しにしたもの）はこの上に乗る——Fork が `send_message` で親に送る
+- サブエージェントなど札で届いた完了を別の Thread に回したいときは、受け取った AI が `send_message` で回す
+  （札を別の Thread に付け替える口は作らない）
+- **実装の形**（2026-10-01）：承認は Module 間中継の承認と同じく、ターンの外から出す判断待ち（`source: "message"`）を
+  送り元の会話のカードに流し、tool の呼び出しの中で答えを待つ（ターンを止めたら断って畳む）。カードの選択肢は
+  判断待ちの `choices`（「許可する」「許可し、以後この Project からは聞かない」「拒否する」）。「以後聞かない」は
+  `{ behavior: "allow", remember: true }` で返る。一覧は `ProjectState.acceptMessagesFrom`（`project.message_senders_set`）、
+  人が外す口は `PUT /api/projects/:id/message-senders` と Project の設定の「一般」。返事の24時間は
+  `ThreadState.receivedFrom`（送り元の Thread → 最後に届いた時刻）で見る。会話を引き継がない Fork は `thread.created` の
+  `fresh`。届いたものの送り元は `MessageOrigin.sender`、AI には `<banto-delivery>` の属性と返し方の一文で渡す
 
 ## 5. Module と Skill の契約
 
@@ -3590,9 +3623,8 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
     このケースもそのままカバーする
 23. **二重 iframe の `sandbox` 属性の最終形**（`docs/specs/v4-frontend.md` §6.2）——A2UI の参照実装を読んで
     確定させる。ガイド本文に食い違いがある
-24. **Thread 間メッセージの細部**（§4.2）——宛先の粒度（Project 単位か Thread
-    単位か。Thread 単位にしておけば両方覆えるが未確定）・送るインターフェース（core の MCP のインターフェースか
-    Module か）・宛先の一覧の見せ方・Project をまたぐ送信の許し方。~~ホップ数と速度制限の具体値~~・
+24. **Thread 間メッセージの細部**（§4.2）——~~宛先の粒度・送るインターフェース・宛先の一覧の見せ方・
+    Project をまたぐ送信の許し方~~ → **決定（2026-10-01）**：§4.2「Thread 間・Project 間の送り方」。~~ホップ数と速度制限の具体値~~・
     ~~届いたメッセージの画面での見え方~~ → **決定（2026-09-25）**：届け方は共通の口（§4.2「Thread に届ける」）、
     ホップ 10・1時間 20 回（仮置き）、会話の中で人の発言と区別して出す
 25. ~~**Skill の細部**~~（§5.6・§5.7）**→ 実装に進める**（2026-09-23）。

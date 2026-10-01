@@ -78,6 +78,19 @@ export interface MessageOrigin {
   /** 人が送ったターンから何回中継されたか（人が送ったターン＝0 から出た札で届いたもの＝1） */
   hop: number;
   deliveryId: string;
+  /**
+   * **別の Thread の AI が送ったもの**なら、その送り元（追加・2026-10-01、アーキ仕様 §4.2「Thread 間・Project 間の
+   * 送り方」）。受け取った AI はここへ送り返す——返事は送り元の Thread に戻る。Module が届けたものには無い
+   */
+  sender?: MessageSender;
+}
+
+/** メッセージの送り元（Project と Thread。名前は送った時点のもの） */
+export interface MessageSender {
+  projectId: ProjectId;
+  projectName: string;
+  threadId: ThreadId;
+  threadLabel: string;
 }
 
 /** 届いて、まだ会話に積んでいないもの——次のターンの頭に積む（起こさなかったものは、人が次に送ったターンに） */
@@ -162,6 +175,11 @@ export interface ProjectState {
    *  持たず、「どこまでをsystem promptに入れるか」の境界（memoryBaselineSeq）
    *  だけを持つ——導出できる値を保存しない（規則3）。 */
   memory: MemoryEntry[];
+  /**
+   * **承認なしでメッセージを受け取ってよい Project**（決定・2026-10-01、アーキ仕様 §4.2）。Project をまたぐ送信の
+   * 承認画面で「以後聞かない」を押すと足される。人が Project の設定で外せる。無ければ空
+   */
+  acceptMessagesFrom?: ProjectId[];
   createdAt: string;
 }
 
@@ -279,6 +297,11 @@ export interface ThreadState {
   deliveries?: PendingDelivery[];
   /** 返事待ちの札（追加・2026-09-25）。無ければ空 */
   awaitingReplies?: AwaitingReply[];
+  /**
+   * **どの Thread から、最後にいつメッセージを受け取ったか**（追加・2026-10-01、アーキ仕様 §4.2）。鍵は送り元の
+   * Thread の id、値は届いた時刻。受け取ってから 24 時間以内の送り元への返事は、Project をまたいでも承認なしで届く
+   */
+  receivedFrom?: Record<ThreadId, string>;
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
   usage: UsageEntry[];

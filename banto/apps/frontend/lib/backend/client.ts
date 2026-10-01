@@ -92,6 +92,8 @@ export interface RealProject {
   name: string;
   root: string;
   status: "active" | "closed";
+  /** 承認なしでメッセージを受け取ってよい Project の id（追加・2026-10-01、アーキ仕様 §4.2）。無ければ空 */
+  acceptMessagesFrom?: string[];
   createdAt: string;
 }
 
@@ -126,6 +128,8 @@ export interface RealMessageOrigin {
   title: string;
   hop: number;
   deliveryId: string;
+  /** 別の Thread の AI が送ったものの送り元（追加・2026-10-01、アーキ仕様 §4.2）。Module が届けたものには無い */
+  sender?: { projectId: string; projectName: string; threadId: string; threadLabel: string };
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -222,7 +226,7 @@ export interface RealInboxJudgment {
   id: string;
   threadId: string;
   /** `relay`＝Module 間中継の初回承認（host 自身が発生源、§「Module 間中継の承認」）。 */
-  source: "elicitation" | "text" | "factory" | "alarm" | "relay";
+  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message";
   message: string;
   /** Elicitationのform/urlモード（§2.4「自前で作らない」）。 */
   mode?: "form" | "url";
@@ -574,6 +578,17 @@ export async function setRealSkillEnabled(input: {
 // **名前と並び順**（決定・2026-09-11、ユーザー要望）。どちらも人の意図なので
 // host が持つ——ブラウザの覚えにすると、別の端末で開いたときに元へ戻る（規則3）。
 
+/**
+ * **承認なしでメッセージを受け取ってよい Project の一覧を置き換える**（決定・2026-10-01、アーキ仕様 §4.2）。足すのは
+ * Project をまたぐ送信の承認画面の「以後聞かない」、ここは人が外すのに使う
+ */
+export async function setRealMessageSenders(projectId: string, senders: string[]): Promise<RealProject> {
+  return request<RealProject>(`/api/projects/${projectId}/message-senders`, {
+    method: "PUT",
+    body: JSON.stringify({ senders }),
+  });
+}
+
 export async function renameRealProject(projectId: string, name: string): Promise<void> {
   await request(`/api/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ name }) });
 }
@@ -652,6 +667,8 @@ export type RealTurnEvent =
       toolInput?: unknown;
       serverName?: string;
       message: string;
+      /** 答えの選択肢（追加・2026-10-01）。無ければ「許可する／拒否する」 */
+      choices?: string[];
     }
   /** 判断待ちに答えがついた（どこで答えても流れに載る——決定・2026-09-26）。`answer` は画面に出す言葉 */
   | { type: "answered"; judgmentId: string; answer: string }

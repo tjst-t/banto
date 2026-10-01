@@ -65,6 +65,7 @@ export class InboxStore {
     toolCallId?: string;
     toolInput?: unknown;
     serverName?: string;
+    choices?: string[];
   }): Promise<JudgmentItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.judgment_raised", { id, ...input });

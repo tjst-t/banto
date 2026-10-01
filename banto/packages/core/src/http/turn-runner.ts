@@ -13,6 +13,7 @@ import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
 import { createForkMcpServer, type ForkRequest } from "./fork-tool.js";
+import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
@@ -43,6 +44,8 @@ export type TurnStreamEvent =
       kind: "approval" | "elicitation";
       toolName?: string;
       message: string;
+      /** 答えの選択肢（追加・2026-10-01）。無ければ「許可する／拒否する」 */
+      choices?: string[];
     }
   | {
       type: "done";
@@ -180,6 +183,8 @@ async function* runThreadTurnInner(
      * 渡されなければ予約は受けても何もしない（試験用）
      */
     settleForks?(parentThreadId: string, forks: ForkRequest[], outcome: { ok: boolean }): Promise<void>;
+    /** **Thread 間・Project 間のメッセージ**（決定・2026-10-01、§4.2）。渡されなければ tool は断る */
+    messaging?: ThreadMessaging;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false },
@@ -252,6 +257,8 @@ async function* runThreadTurnInner(
       title: d.title,
       hop: d.hop,
       deliveryId: d.deliveryId,
+      // 別の Thread からのメッセージは送り元も残す——画面が「どこから来たか」を出す（§4.2）
+      ...(d.sender ? { sender: d.sender } : {}),
     });
   }
   let humanSeq: number | undefined;
@@ -272,7 +279,7 @@ async function* runThreadTurnInner(
   mcpServers["banto-memory"] = createMemoryMcpServer(deps.projectThread, thread.projectId, input.threadId);
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
-  mcpServers["banto-thread"] = createForkMcpServer(deps.projectThread, input.threadId, forks.reserved);
+  mcpServers["banto-thread"] = createForkMcpServer(deps.projectThread, input.threadId, forks.reserved, deps.messaging);
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
   // （§2.3、決定・2026-09-05）。Project MemoryもGlobal Memoryも同じ規律・
@@ -328,6 +335,8 @@ async function* runThreadTurnInner(
     thread.resumePoint !== undefined &&
     (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId));
   const unsubscribeSide = deps.turnEvents?.subscribeSide(input.threadId, (event) => {
+    // ターンの外で出た判断待ち（中継の承認・Project をまたぐメッセージの承認）も、止めたら畳む
+    if (event.type === "judgment") raisedJudgments.push(event.judgmentId);
     sideEvents.push(event);
     wakeSide?.();
   });

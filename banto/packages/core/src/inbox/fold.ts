@@ -16,6 +16,7 @@ export type InboxEvent =
         toolCallId?: string;
         toolInput?: unknown;
         serverName?: string;
+        choices?: string[];
       };
     }
   | { type: "inbox.judgment_answered"; payload: { id: string; answer: unknown } }
@@ -48,6 +49,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           toolCallId: event.payload.toolCallId,
           toolInput: event.payload.toolInput,
           serverName: event.payload.serverName,
+          ...(event.payload.choices ? { choices: event.payload.choices } : {}),
           liveness: "live",
           createdAt: raw.ts,
         };

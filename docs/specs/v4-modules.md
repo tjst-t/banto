@@ -88,8 +88,8 @@ cwd に落ち、試験を走らせただけで本物のリモートに `git push
 
 | tool | 何をするか | |
 |---|---|---|
-| `list_threads` | 宛先の一覧。**id・題・状態だけ。中身は読まない**（アーキ仕様 §4.2） | 決 |
-| `send_message` | 別の Thread へメッセージを送る | 決 |
+| `list_threads` | 宛先の一覧。**id・題・Project 名・Base か Fork か・状態だけ。中身は読まない**（アーキ仕様 §4.2）。core の `banto-thread` に置く | 決 |
+| `send_message` | 別の Thread へメッセージを送る。宛先は Project と Thread、Project だけなら新しい Fork に届く。Project をまたぐ送信は人が承認（アーキ仕様 §4.2「Thread 間・Project 間の送り方」） | 決 |
 | `fork_thread` | Fork Thread を立てる | 決 |
 | （会話を畳む） | 同じ Thread のまま、いまの会話をリセットする | ~~呼び名が未決~~ → **決定（モック、2026-09-02、`mock/README.md`「Project / Thread のライフサイクル操作」）。** Claude Code 自身のコマンド名に統一——**Clear**（履歴を消す）／**Compaction**（圧縮）。tool 名は仮に `clear_thread`／`compact_thread` とする、決 |
 | `list_modules` | この Project に繋がっている Module を見る | 決 |

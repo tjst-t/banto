@@ -13,6 +13,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
+import type { ThreadMessaging } from "../delivery/thread-messages.js";
 
 /** 1回に立てられる数（仮置き・2026-09-27）。3つ並行が想定の典型で、それを少し超える余裕 */
 export const MAX_FORKS_PER_CALL = 5;
@@ -24,6 +25,8 @@ export interface ForkRequest {
 
 export const FORK_SERVER_NAME = "banto-thread";
 export const FORK_TOOL_NAME = "start_forks";
+export const LIST_THREADS_TOOL_NAME = "list_threads";
+export const SEND_MESSAGE_TOOL_NAME = "send_message";
 
 /**
  * 呼ばれた内容を確かめる。**断る理由を文で返す**（AI が読んで直せるように）。通れば `undefined`
@@ -90,12 +93,61 @@ export function createForkMcpServer(
   store: ProjectThreadStore,
   threadId: string,
   reserved: ForkRequest[],
+  /**
+   * **Thread 間・Project 間のメッセージ**（決定・2026-10-01、アーキ仕様 §4.2）。渡されなければ（試験の構成）、
+   * tool は見せたまま断る——構成で tool の一覧を変えない（§3）
+   */
+  messaging?: ThreadMessaging,
 ) {
+  const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   return createSdkMcpServer({
     name: FORK_SERVER_NAME,
     // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）
     alwaysLoad: true,
     tools: [
+      tool(
+        LIST_THREADS_TOOL_NAME,
+        [
+          "メッセージの宛先になる Thread の一覧（Project・Thread の id と名前、Base か Fork か、状態）。",
+          "会話の中身は見えない。既定はこの Project だけ、allProjects でほかの Project も。",
+        ].join(""),
+        {
+          allProjects: z.boolean().optional().describe("true ならほかの Project の Thread も並べる"),
+        },
+        async ({ allProjects }) => {
+          if (!messaging) return unavailable;
+          const list = messaging.listThreads(threadId, allProjects === true);
+          return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
+        },
+      ),
+      tool(
+        SEND_MESSAGE_TOOL_NAME,
+        [
+          "別の Thread（この Project の Base・Fork、またはほかの Project）の AI にメッセージを送る。届いたら相手の AI が起きる。",
+          "宛先は threadId（と projectId）で指す。threadId を省き projectId だけ指すと、その Project に会話を引き継がない新しい Fork を立てて届ける。",
+          "相手には送り元（この Thread）が伝わり、返事はこの Thread に届く。届いたメッセージに返すときは、その送り元の projectId・threadId を指す。",
+          "ほかの Project へ送るときは、人の承認を待つことがある。",
+        ].join(""),
+        {
+          projectId: z.string().optional().describe("宛先の Project の id（list_threads で分かる）"),
+          threadId: z
+            .string()
+            .optional()
+            .describe("宛先の Thread の id。省くと projectId の Project に新しい Fork を立てて届ける"),
+          title: z.string().describe("題。相手の画面と受信箱に出る1行（新しい Fork を立てるときはその名前）"),
+          text: z.string().describe("本文。相手はこちらの会話を見られないので、要ることを全部書く"),
+        },
+        async ({ projectId, threadId: to, title, text }, extra) => {
+          if (!messaging) return unavailable;
+          const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+          const result = await messaging.send(
+            threadId,
+            { ...(projectId ? { projectId } : {}), ...(to ? { threadId: to } : {}), title, text },
+            signal,
+          );
+          return { content: [{ type: "text", text: result.text }], ...(result.ok ? {} : { isError: true }) };
+        },
+      ),
       tool(
         FORK_TOOL_NAME,
         [
