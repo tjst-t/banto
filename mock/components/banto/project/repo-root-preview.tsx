@@ -51,6 +51,7 @@ export function RepoRootPreview({
   onUseAsFolder,
   onSwitchToClone,
   onOpenProject,
+  failedNext,
 }: {
   mode: "clone" | "create";
   /** 既定の置き場（`~/banto`） */
@@ -69,6 +70,8 @@ export function RepoRootPreview({
   onSwitchToClone: () => void;
   /** そのフォルダを Root にした Project が、もうあるとき——新しく作らずそれを開く */
   onOpenProject: (projectId: string, closed: boolean) => void;
+  /** clone できなかったときの次の手（入口ごとに違う。無ければ「読めるアカウントを登録して、もう一度選ぶ」） */
+  failedNext?: ReactNode;
 }) {
   const { tone, icon, message, next } = describe({
     mode,
@@ -80,6 +83,7 @@ export function RepoRootPreview({
     onFolderChange,
     onUseAsFolder,
     onOpenProject,
+    failedNext,
   });
   const cloning = status.kind === "cloning";
 
@@ -192,6 +196,7 @@ function describe({
   onFolderChange,
   onUseAsFolder,
   onOpenProject,
+  failedNext,
 }: {
   mode: "clone" | "create";
   home: string;
@@ -202,6 +207,7 @@ function describe({
   onFolderChange: (next: string) => void;
   onUseAsFolder: (path: string) => void;
   onOpenProject: (projectId: string, closed: boolean) => void;
+  failedNext?: ReactNode;
 }): { tone: Tone; icon: ReactNode; message: ReactNode; next?: ReactNode } {
   if (status.kind === "cloning") {
     return {
@@ -222,7 +228,7 @@ function describe({
       tone: "stop",
       icon: <Ban />,
       message: <>clone できませんでした：{status.reason}</>,
-      next: (
+      next: failedNext ?? (
         <p className="text-ink-2">
           非公開のリポジトリなら、読めるアカウントを Repo の設定に登録してから、もう一度選んでください。
         </p>

@@ -64,12 +64,14 @@ import {
   useGithubAccounts,
   useRepoHome,
   addClonedRepo,
+  checkCloneAccess,
   createLocalRepo,
   folderName,
   freeFolderName,
   getReposForAccount,
   inspectCloneSource,
   inspectTargetFolder,
+  isValidFolderName,
   parseRepoReference,
   repoExistsOnGithub,
   type MockGithubAccount,
@@ -125,8 +127,6 @@ const START_METHODS = [
   lead: (home: string) => string;
   who: string | null;
 }[];
-
-const REPO_NAME = /^[A-Za-z0-9._-]+$/;
 
 /** Advanced の「使う Vault 接続」で上書きを始めたときの初期値 */
 const DEFAULT_VAULT = "banto.vault-local";
@@ -191,14 +191,14 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
 
   // clone しようとしたものを、もう持っているか（置き場の外に Import したものでも）。
   // 一覧が覚えているのにフォルダが見つからないなら、その場所に clone し直す
-  const source = method === "clone" && picked ? inspectCloneSource(picked.owner, picked.name) : null;
+  const source = method === "clone" && picked ? inspectCloneSource({ kind: "github", ...picked }) : null;
   const have = source?.kind === "have" ? source : null;
   const reclone = source?.kind === "reclone" ? source : null;
   const autoFolder = method === "clone" && picked ? freeFolderName(home, picked.name) : "";
   const folder = method === "folder" ? "" : (folderInput ?? autoFolder);
   const renamedFrom =
     method === "clone" && picked && folderInput === null && autoFolder !== picked.name ? picked.name : undefined;
-  const folderInvalid = folder !== "" && (!REPO_NAME.test(folder) || /^\.+$/.test(folder));
+  const folderInvalid = folder !== "" && !isValidFolderName(folder);
   const targetState =
     method !== "folder" && !source && folder && !folderInvalid ? inspectTargetFolder(home, folder) : null;
   const targetPath = source ? source.repo.path : `${home}/${folder}`;
@@ -268,22 +268,16 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         return;
       }
       if (cloneTimer.current) clearInterval(cloneTimer.current);
-      // 一覧に無いものを URL で貼られ、どのアカウントからも見えない——本物は git が 404 を返す
-      if (!repoExistsOnGithub(owner, repo)) {
-        setCloneRun({
-          kind: "clone-failed",
-          reason: `github.com/${owner}/${repo} が見つかりません（${account?.login ?? "このアカウント"} からは見えません）`,
-        });
+      // 読めるかの判断は `checkCloneAccess` の1箇所（リポジトリの一覧の「URL から clone」と同じ）
+      const access = checkCloneAccess({ kind: "github", owner, name: repo }, account?.id);
+      if (!access.ok) {
+        setCloneRun({ kind: "clone-failed", reason: access.reason });
         return;
       }
-      const listed = accounts
-        .flatMap((a) => getReposForAccount(a.id))
-        .find((r) => r.owner === owner && r.name === repo);
       addClonedRepo({
         path,
         accountId: account?.id,
-        // 一覧に無い（URL で貼った）ものは、読めたのだから公開のリポジトリ
-        remote: { kind: "github", owner, name: repo, private: listed?.private ?? false },
+        remote: { kind: "github", owner, name: repo, private: access.private },
       });
       if (reopen) {
         openProject(reopen.id, reopen.closed);

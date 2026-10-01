@@ -121,6 +121,79 @@ export function parseRepoReference(text: string): { owner: string; name: string 
   return m ? { owner: m[1], name: m[2] } : null;
 }
 
+/**
+ * clone の元（2026-10-01、ユーザー——リポジトリの一覧から URL で clone する）。GitHub なら `owner/name`、
+ * GitHub の外（gitlab.com 等）は URL のまま。GitHub の外も受けるのは、台帳がもう GitHub の外の origin を
+ * 扱えて（Import した gitlab の notes）、断ると「端末で clone して Import」という回り道になるから
+ */
+export type CloneSource =
+  | { kind: "github"; owner: string; name: string }
+  | { kind: "elsewhere"; url: string; host: string; path: string; name: string };
+
+/**
+ * clone の元を読む——`owner/repo`・`https://github.com/owner/repo(.git)`・`git@github.com:owner/repo.git`、
+ * GitHub の外は `https://<host>/<path>`・`git@<host>:<path>.git`（`ssh://` も）。読めなければ null
+ */
+export function parseCloneSource(text: string): CloneSource | null {
+  const t = text.trim().replace(/\/+$/, "");
+  const gh = parseRepoReference(t.replace(/^(https?:\/\/)?www\.github\.com\//, "github.com/"));
+  if (gh) return { kind: "github", ...gh };
+  const m =
+    t.match(/^https?:\/\/([^/\s]+\.[^/\s]+)\/([^\s]+?)(?:\.git)?$/) ??
+    t.match(/^(?:ssh:\/\/)?git@([^:/\s]+\.[^:/\s]+)[:/]([^\s]+?)(?:\.git)?$/);
+  if (!m || !m[2].includes("/")) return null;
+  const path = m[2];
+  return { kind: "elsewhere", url: t, host: m[1].toLowerCase(), path, name: path.split("/").pop() ?? path };
+}
+
+/** 同じリポジトリかを比べる鍵（`git@gitlab.com:a/b.git` と `https://gitlab.com/a/b` は同じ） */
+function remoteKey(url: string): string {
+  return url
+    .trim()
+    .replace(/^(ssh:\/\/)?git@/, "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\.git$/, "")
+    .replace(":", "/")
+    .toLowerCase();
+}
+
+/** 誰でも読める GitHub のリポジトリ（登録したアカウントの外。本物は GitHub に聞く） */
+const PUBLIC_GITHUB_REPOS: readonly { owner: string; name: string }[] = [{ owner: "octocat", name: "hello-world" }];
+
+/** GitHub の外で、このマシンから読めるリポジトリ（本物は git ls-remote が答える） */
+const READABLE_ELSEWHERE: readonly string[] = ["gitlab.com/tjst-t/notes", "gitlab.com/tjst-t/recipes-archive"];
+
+/**
+ * clone できるか（どのアカウントで読めるか）。判断はここ1箇所——新しい Project の画面と一覧の clone が使う。
+ * 本物は clone を走らせて初めて分かるので、画面は押したあとに言う（押す前には分からない）
+ */
+export function checkCloneAccess(
+  source: CloneSource,
+  accountId: string | undefined,
+): { ok: true; private: boolean } | { ok: false; reason: string; readableBy?: MockGithubAccount } {
+  if (source.kind === "elsewhere") {
+    return READABLE_ELSEWHERE.includes(remoteKey(source.url))
+      ? { ok: true, private: false }
+      : { ok: false, reason: `${source.host}/${source.path} が見つからないか、このマシンからは読めません` };
+  }
+  const { owner, name } = source;
+  const same = (r: { owner: string; name: string }) =>
+    r.owner.toLowerCase() === owner.toLowerCase() && r.name.toLowerCase() === name.toLowerCase();
+  const mine = accountId ? getReposForAccount(accountId).find(same) : undefined;
+  if (mine) return { ok: true, private: mine.private };
+  const listed = Object.values(REPOS_BY_ACCOUNT).flat().find(same);
+  if ((listed && !listed.private) || PUBLIC_GITHUB_REPOS.some(same)) return { ok: true, private: false };
+  const readableBy = accounts.find((a) => getReposForAccount(a.id).some(same));
+  const login = accounts.find((a) => a.id === accountId)?.login;
+  if (readableBy) {
+    return { ok: false, reason: `${owner}/${name} は非公開で、${login ?? "このアカウント"} からは読めません`, readableBy };
+  }
+  return {
+    ok: false,
+    reason: `github.com/${owner}/${name} が見つかりません（非公開なら、登録したアカウントのどれからも読めません）`,
+  };
+}
+
 // ── 置き場（2026-09-30、ユーザー決定：ghq の置き方はやめる）─────────────────────
 //
 // clone・新しく作るリポジトリの**既定の置き場は1か所**。Repo の設定で変えられ、既定は
@@ -477,7 +550,7 @@ function putGitFolder(path: string, facts: GitFacts): void {
 export function addClonedRepo(input: {
   path: string;
   accountId?: string;
-  remote: Extract<RepoRemote, { kind: "github" }>;
+  remote: Exclude<RepoRemote, { kind: "none" }>;
 }): void {
   putGitFolder(input.path, git(input.remote));
   addToLedger({ path: input.path, accountId: input.accountId, github: originLocation(input.remote) });
@@ -564,6 +637,11 @@ function pathTaken(path: string): boolean {
   return folderExists(path) || ledger.some((e) => e.path === path);
 }
 
+/** clone・新しく作るときのフォルダ名に使えるか（英数字と - _ .、ドットだけは不可） */
+export function isValidFolderName(name: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(name) && !/^\.+$/.test(name);
+}
+
 /** 置き場の中で空いている名前——`<名前>`、ぶつかったら `<名前>-2`、`-3`… */
 export function freeFolderName(home: string, name: string): string {
   if (!pathTaken(`${home}/${name}`)) return name;
@@ -602,19 +680,24 @@ export function inspectTargetFolder(home: string, name: string): TargetFolderSta
 }
 
 /**
- * clone しようとしている GitHub のリポジトリを、もう持っているか。フォルダが見つからない行が
- * そのリポジトリを覚えていれば、**その行の場所に clone し直す**（一覧の「clone し直す」と同じ）
+ * clone しようとしているリポジトリを、もう持っているか（どこにあっても）。フォルダが見つからない行が
+ * そのリポジトリを覚えていれば、**その行の場所に clone し直す**（一覧の「clone し直す」と同じ）。
+ * GitHub の外は origin の URL で比べる（台帳は GitHub の外の場所を覚えないので、clone し直しは無い）
  */
 export function inspectCloneSource(
-  owner: string,
-  name: string,
+  source: CloneSource,
 ):
   | { kind: "have"; repo: KnownRepo; project?: ProjectSummary }
   | { kind: "reclone"; repo: MissingRepo; project?: ProjectSummary }
   | null {
-  const repo = findKnownGithubRepo(owner, name);
+  if (source.kind === "elsewhere") {
+    const key = remoteKey(source.url);
+    const repo = getKnownRepos().find((r) => r.remote.kind === "elsewhere" && remoteKey(r.remote.url) === key);
+    return repo ? { kind: "have", repo, project: projectSummary(repo) } : null;
+  }
+  const repo = findKnownGithubRepo(source.owner, source.name);
   if (repo) return { kind: "have", repo, project: projectSummary(repo) };
-  const missing = findMissingGithubRepo(owner, name);
+  const missing = findMissingGithubRepo(source.owner, source.name);
   return missing ? { kind: "reclone", repo: missing, project: projectSummary(missing) } : null;
 }
 

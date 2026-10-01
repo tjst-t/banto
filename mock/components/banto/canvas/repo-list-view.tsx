@@ -33,6 +33,8 @@
 //   - banto 全体の設定の Repo の面：そこに埋め込む
 // 「GitHub に公開」はこの画面の中で公開の画面に替わる（Module の中の移動）。
 // 「フォルダを Import」はこの画面の上のダイアログ（1つずつ選ぶ。まとめて取り込む入口は作らない）。
+// 「URL から clone」も同じくダイアログ（`repo-clone-dialog.tsx`。2026-10-01、ユーザー）。並びは clone が先——
+// 手元に無いものを持ってくる・手元にあるものを足す、の順。どちらも「一覧に足す」入口なので、見出しの右に並べる。
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -88,6 +90,7 @@ import { ChoicePills } from "@/components/banto/project/choice-pills";
 import { NewProjectDialog, type NewProjectPreset } from "@/components/banto/project/new-project-dialog";
 import { RepoPublishPanel } from "./repo-publish-view";
 import { RepoImportDialog } from "./repo-import-dialog";
+import { RepoCloneDialog } from "./repo-clone-dialog";
 
 type Filter = "all" | "local" | "missing";
 
@@ -105,10 +108,14 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
   // 台帳が空なら、Import の入口は空の案内の中の1つだけにする（同じボタンを2つ並べない）
   const empty = useLedgerRepos().length === 0;
   // モックの見せ方のためだけ：`?import=<path>` で Import をそのフォルダから開く
-  const importParam = useSearchParams().get("import");
+  const params = useSearchParams();
+  const importParam = params.get("import");
+  // 同じく `?clone=<URL>` で clone をその URL を入れた状態で開く（`?clone=` だけなら空で開く）
+  const cloneParam = params.get("clone");
   const [publishing, setPublishing] = useState<string | null>(null);
   const [starting, setStarting] = useState<NewProjectPreset | null>(null);
   const [importAt, setImportAt] = useState<string | null>(importParam);
+  const [cloneUrl, setCloneUrl] = useState<string | null>(cloneParam);
   /** Import した・「一覧で見る」で来た行——少しの間だけ地を付けて、どこに入ったかを見せる */
   const [highlight, setHighlight] = useState<Highlight | null>(null);
 
@@ -142,17 +149,30 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
             </p>
           </div>
           {empty ? null : (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 shrink-0 gap-1.5 text-xs"
-              onClick={() => setImportAt("~")}
-              data-testid="repo-import-open"
-            >
-              <FolderInput className="size-3.5" />
-              フォルダを Import
-            </Button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={() => setCloneUrl("")}
+                data-testid="repo-clone-open"
+              >
+                <CloudDownload className="size-3.5" />
+                URL から clone
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={() => setImportAt("~")}
+                data-testid="repo-import-open"
+              >
+                <FolderInput className="size-3.5" />
+                フォルダを Import
+              </Button>
+            </div>
           )}
         </header>
         <RepoListBody
@@ -160,11 +180,23 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
           onPublish={setPublishing}
           onStart={(repo) => setStarting({ method: "folder", folder: repo.path, name: repo.name })}
           onImport={() => setImportAt("~")}
+          onClone={() => setCloneUrl("")}
           onShow={(path) => setHighlight({ path, at: Date.now() })}
         />
       </div>
       {starting ? (
         <NewProjectDialog open onOpenChange={(open) => !open && setStarting(null)} preset={starting} />
+      ) : null}
+      {cloneUrl !== null ? (
+        <RepoCloneDialog
+          initialUrl={cloneUrl}
+          onClose={() => setCloneUrl(null)}
+          onShow={(path) => {
+            setCloneUrl(null);
+            setHighlight({ path, at: Date.now() });
+          }}
+          onStartAt={(path) => setStarting({ method: "folder", folder: path, name: path.split("/").pop() })}
+        />
       ) : null}
       {importAt ? (
         <RepoImportDialog
@@ -185,12 +217,14 @@ function RepoListBody({
   onPublish,
   onStart,
   onImport,
+  onClone,
   onShow,
 }: {
   highlight: Highlight | null;
   onPublish: (path: string) => void;
   onStart: (repo: KnownRepo) => void;
   onImport: () => void;
+  onClone: () => void;
   onShow: (path: string) => void;
 }) {
   const [filterChoice, setFilter] = useState<Filter>("all");
@@ -216,7 +250,7 @@ function RepoListBody({
     { id: "unused", title: "Project はまだ無い", items: shown.filter((f) => f.projects.length === 0) },
   ].filter((g) => g.items.length > 0);
 
-  if (facts.length === 0) return <EmptyLedger onImport={onImport} />;
+  if (facts.length === 0) return <EmptyLedger onImport={onImport} onClone={onClone} />;
 
   // 札は短く（2026-10-01、ユーザー）。「見つからない」は行の「フォルダが見つかりません」と同じ印で結ぶ
   const choices: { value: Filter; label: ReactNode }[] = [
@@ -875,8 +909,8 @@ function ProjectLink({ project, viaWorktree }: { project: MockProject; viaWorktr
   );
 }
 
-/** 台帳が空——次の手は2つ（新しい Project から clone・作る／手元のフォルダを Import） */
-function EmptyLedger({ onImport }: { onImport: () => void }) {
+/** 台帳が空——次の手は2つ（URL から clone／手元のフォルダを Import）。入口は見出しの右と同じもの */
+function EmptyLedger({ onImport, onClone }: { onImport: () => void; onClone: () => void }) {
   return (
     <div
       data-testid="repo-list-empty"
@@ -884,13 +918,26 @@ function EmptyLedger({ onImport }: { onImport: () => void }) {
     >
       <p>まだ知っているリポジトリがありません。</p>
       <p className="text-xs text-ink-3">
-        新しい Project の画面で GitHub から clone するか新しく作ると、ここに並びます。
-        手元にあるリポジトリは、そのままの場所で足せます。
+        URL から clone するか、手元にあるリポジトリをそのままの場所で足してください。新しい Project の画面で clone・
+        新しく作ったものも、ここに並びます。
       </p>
-      <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={onImport}>
-        <FolderInput className="size-3.5" />
-        フォルダを Import
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 text-xs"
+          onClick={onClone}
+          data-testid="repo-clone-open"
+        >
+          <CloudDownload className="size-3.5" />
+          URL から clone
+        </Button>
+        <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={onImport}>
+          <FolderInput className="size-3.5" />
+          フォルダを Import
+        </Button>
+      </div>
     </div>
   );
 }
