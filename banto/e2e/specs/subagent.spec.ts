@@ -9,7 +9,7 @@
 //   3. tool のカードに、頼んだ内容（引数）と返り値が出る
 //   4. 続きから頼める（前の会話を覚えている）
 //   5. 閉じ込め：Project の根には書けて、外には書けない
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

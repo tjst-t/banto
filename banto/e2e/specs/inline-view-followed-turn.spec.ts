@@ -4,7 +4,7 @@
 // ターンに、この画面は「あとから乗る」（`followRunningTurn`）。そのターンの中で AI が画面つきの tool
 // （Publish の承認など）を呼んでも、**会話に画面が出ず、リロードすると出た**——画面は「どの tool が画面を
 // 持つか」の一覧を、自分で送るときにしか聞いていなかった（`adapter.ts` の `ensureUiTools`）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

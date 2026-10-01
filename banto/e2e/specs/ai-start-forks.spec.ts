@@ -7,7 +7,7 @@
 // - Fork は最初の指示で自動で走る（届いたものとして、人の発言ではない印つき）
 // - 受信箱に、ターンが終わった Fork が出る。**開いて見ている Base Thread のものは出ない**
 // - 受信箱から開くと、その Fork の分は消える
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

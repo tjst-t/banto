@@ -10,7 +10,7 @@
 //
 // **画面からの呼び出しに承認は求めない**（改訂・2026-09-07、ユーザー指示）
 // ——その画面を開いたのは人。AI からの呼び出しは今までどおりゲートを通る。
-import { test, expect, type Frame } from "@playwright/test";
+import { test, expect, type Frame } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

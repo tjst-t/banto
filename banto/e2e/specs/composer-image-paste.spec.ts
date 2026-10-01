@@ -9,7 +9,7 @@
 // - 文字と画像が両方載ったクリップボード（Excel 等のコピー）は、文字として貼る
 // - 画像でないものは添えず、入力欄に理由が出る
 // - 文を書かずに画像だけでも送れる
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -12,7 +12,7 @@
 //
 // 写す元は偽のホーム（`SHELL_HOME_SOURCE`）——本物の人の設定を試験に使わない。
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

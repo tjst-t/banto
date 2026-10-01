@@ -7,7 +7,7 @@
 //    そのまま使う（normalizePartStatus.js の toMessagePartStatus）ため、
 //    1つ目の判断待ちの後に来たメッセージで running へ戻すと、まだ答えていない
 //    2つ目まで巻き込んで答える口が消えていた。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

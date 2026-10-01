@@ -10,7 +10,7 @@
 //   2. そこに打った値が**実 Vault に届く**
 //   3. **値は AI の文脈にもページにも出ない**
 //   4. 登録後、AI は名前だけを `vault://aliases` で見つけられる
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

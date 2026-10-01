@@ -1,7 +1,7 @@
 // 判断待ちが立っている最中にページを再読み込みしたら、承認カードは戻るか。
 // ——ユーザー報告（2026-09-06、実インスタンスで「承認が出なかった」のに
 // host側には判断待ちが生きたまま残っていた）の再現を試みる計測用。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

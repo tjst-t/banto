@@ -10,7 +10,7 @@
 //
 // **いまの閉じ込めは Project のコンテナ**（変更・2026-09-25、Landlock をやめた）。
 // 根を home にすると、home がまるごとコンテナに見える——警告が言うのはそのこと。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { homedir } from "node:os";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { openApp } from "../helpers.js";

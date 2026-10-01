@@ -8,7 +8,7 @@
 //   - Project の中は**読める**   ……Shell そのものが動いていることの確認
 //   - Project の外は**読めない** ……閉じ込めが効いていることの確認
 // 中も外も失敗するなら、それは閉じ込めではなく Shell が壊れているだけ。
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

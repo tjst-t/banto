@@ -1,7 +1,7 @@
 // ステージ2（F2/F3）の回帰。会話を送る→メーターの数値が変わる→リロード→
 // 直前の数値が復元される、をブラウザで一通り確認する（CLAUDE.md規則14
 // ——「メーターが出る」だけでなく、表示されている実際の数値を見る）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

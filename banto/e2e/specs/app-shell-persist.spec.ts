@@ -11,7 +11,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { openApp, openNav, createProject } from "../helpers.js";
 
 test("面をまたいでも、外枠（レール）は作り直されない", async ({ page }) => {

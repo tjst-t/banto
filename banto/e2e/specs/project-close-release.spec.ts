@@ -6,7 +6,7 @@
 // 鍵を持つもの（Vault の ssh-agent 等）まで生き残るので、放置できない。
 //
 // 規則14：「閉じられた」で終わらせず、**プロセスが実際に消えたか**を見る。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

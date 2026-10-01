@@ -9,7 +9,7 @@
 // 相手は**試験が立てるローカルのサーバ**。本物の公開サーバ（Cloudflare Docs・
 // DeepWiki）で繋がることは別に実測してある（`docs/notes/2026-09-17-remote-mcp.md`）
 // ——外の都合で落ちる試験は、機構の故障と見分けが付かない（規則6）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CORE_BASE_URL, AUTH_TOKEN, CORE_PORT } from "../config.js";

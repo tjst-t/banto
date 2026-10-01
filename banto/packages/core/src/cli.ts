@@ -452,6 +452,16 @@ async function main(): Promise<void> {
   const connectBackoff = new ConnectBackoff();
 
   /**
+   * **Project を畳んだ回数**（追加・2026-10-01）。畳むのと Module の起動が重なると、畳む側がコンテナを止めて
+   * 起動を途中で切り、「繋げませんでした」が受信箱に出ていた（E2E で spec の替わり目に Project を畳むようにして
+   * 見つかった。人が作ってすぐ畳んでも起きる）。起動のほうが後で終われば、畳んだ Project に Module が繋がったまま
+   * 残る。起動の始めにこの数を控え、終わったときに増えていれば、その結果は「畳んだのでやめた」として扱う
+   * ——失敗ならお知らせも試し直しの間も記録せず、繋がったならすぐ畳む。畳む側は起動を待たない（待つと、
+   * 作ってすぐ畳んだときに画面がその分だけ止まる）
+   */
+  const projectReleases = new Map<string, number>();
+
+  /**
    * **止まった Module は起こし直す**（決定・2026-09-30、`docs/specs/v4-architecture.md` §5.4-0）。
    *
    * 以前は、繋がった後に止まった Module をそのまま台帳に残していた。`spawnDeclaredModule` は
@@ -579,10 +589,27 @@ async function main(): Promise<void> {
     const fingerprint = declarationFingerprint(declaration);
     if (connectBackoff.blocked(connName, fingerprint) !== undefined) return undefined;
 
+    const releaseProjectId = declaration.meta.scope === "project" ? forProject?.id : undefined;
+    const releasesAtStart = releaseProjectId ? (projectReleases.get(releaseProjectId) ?? 0) : 0;
+    const releasedMeanwhile = () =>
+      releaseProjectId !== undefined && (projectReleases.get(releaseProjectId) ?? 0) !== releasesAtStart;
     try {
-      return await spawnDeclaredModule(declaration, forProject);
+      const connected = await spawnDeclaredModule(declaration, forProject);
+      if (releasedMeanwhile()) {
+        // 起動している間に Project が畳まれた——いま繋がったものも畳む（閉じたままならコンテナも止める）
+        console.log(`[host] ${connName} は起動中に Project が畳まれたので、繋がったものを畳みます`);
+        const stillClosed = projectThread.getProject(releaseProjectId!)?.status === "closed";
+        await releaseProjectModules(releaseProjectId!, { stopContainer: stillClosed });
+        return undefined;
+      }
+      return connected;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      if (releasedMeanwhile()) {
+        // 畳む側が途中で切った——壊れているのではない。お知らせも試し直しの間も記録しない
+        console.log(`[host] ${connName} は起動中に Project が畳まれたのでやめました: ${reason}`);
+        return undefined;
+      }
       const notify = connectBackoff.recordFailure(connName, fingerprint, reason);
       const retryIn = Math.round((connectBackoff.retryAt(connName) - Date.now()) / 1000);
       console.warn(`[host] ${connName} を繋げませんでした（${retryIn} 秒たったら、また試します）: ${reason}`);
@@ -1236,6 +1263,8 @@ async function main(): Promise<void> {
    * ものではない（他の Project がまだ使っている）。
    */
   async function releaseProjectModules(projectId: string, opts: { stopContainer?: boolean } = {}): Promise<string[]> {
+    // 起動の途中のものに「畳まれた」と分かるようにする（上の `projectReleases`、終わった側が自分で片づける）
+    projectReleases.set(projectId, (projectReleases.get(projectId) ?? 0) + 1);
     const names = [...(projectConnections.get(projectId) ?? [])];
     projectConnections.delete(projectId);
     // 止まって起こし直しを待っているものも、もう起こさない

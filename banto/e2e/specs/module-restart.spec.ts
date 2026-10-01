@@ -12,7 +12,7 @@
 //   - 黙っている間も、Command Palette の入口（ほかの Module の分）は出ている
 //   - 次のターンで AI の道具として使える
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

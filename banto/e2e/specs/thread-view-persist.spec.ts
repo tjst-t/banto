@@ -8,7 +8,7 @@
 //   5. 設定画面で Escape を押すと、1つ前の節に戻る（一発で設定から抜けてほしい）
 //
 // デスクトップ幅で見る——Base と Fork／Canvas が並ぶのはこの幅だけで、報告もこの幅のもの。
-import { test, expect, type Locator, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

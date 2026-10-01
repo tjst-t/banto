@@ -6,7 +6,7 @@
 //
 // 以前（2026-09-10〜）は、走行中のターンを入力欄の上の帯に要約して出していた。人から見ると
 // 「いつもと違うものが出て、中身も途中の要約だけ」だった（ユーザー指摘・2026-09-26）。
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

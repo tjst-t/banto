@@ -9,7 +9,7 @@
 //
 // AIの返信内容そのものではなく、**記録されたresume-point**で見る
 // （非決定的なものに依存しない、規則1）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

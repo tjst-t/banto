@@ -7,7 +7,7 @@
 //
 // 規則14：一覧に「出た」だけで終わらせない——**Project 名・Thread の別・
 // 本文**まで見て、バッジの件数も数え、答えたら消えるところまで確認する。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

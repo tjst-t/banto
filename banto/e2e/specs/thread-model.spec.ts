@@ -4,7 +4,7 @@
 // 受け取ったモデルと effort を発言にする（`fake-runner.ts` の `sayRuntime`）。
 // 会話の途中で変えると次の1ターンはキャッシュが効かないので、**変える前に確かめる**
 // （やめたら変わらない）。選んだものはリロードしても残る（host が持つ）。
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -6,7 +6,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { createProject, openApp, openNav, openProjectSettings } from "../helpers.js";
 
 test.setTimeout(300_000);
@@ -20,7 +20,15 @@ test("履歴は、タブで Fork と Project を分け、検索は両方から�
   await createProject(page, "Fork たち", mkdtempSync(join(tmpdir(), "banto-e2e-archive-a-")));
   await openProjectSettings(page, "一般");
   await page.getByRole("button", { name: "この Project を Close する" }).click();
+  // **host が畳み終えるまで待つ**（追加・2026-10-01）。設定のボタンは押した瞬間に消えるので、それだけ見ると
+  // 畳む要求がまだ返っていないうちに次へ進む——前の Project のコンテナが冷えていて画面の準備が遅い回で、
+  // 次の「新しい Project」が畳む前の設定画面と重なって落ちた
+  const closed = page.waitForResponse(
+    (r) => /\/api\/projects\/[^/]+\/close$/.test(r.url()) && r.request().method() === "POST",
+    { timeout: 30_000 },
+  );
   await page.getByRole("button", { name: "Close する" }).click();
+  expect((await closed).ok(), "Project を畳む要求が失敗した").toBe(true);
   await expect(
     page.getByRole("button", { name: "この Project を Close する" }),
     "Close したのに設定が残っている",

@@ -10,7 +10,7 @@
 //   2. **API を1回も呼んでいない**ことを、その面が言っている
 //   3. **違う合言葉は覚えない**（間違った値を覚えると次も同じ空を見る）
 //   4. 正しい合言葉を入れて Enter すると**実際に中身が出る**
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN, FRONTEND_BASE_URL } from "../config.js";
 
 test.describe.configure({ mode: "serial" });

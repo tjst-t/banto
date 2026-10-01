@@ -10,7 +10,7 @@
 //   4. 走っている仕事は「実行中」と最後に呼んだツールが出て、中身には経過が伸びる。
 //      一覧の「止める」を押すと取り消しで返る（会話の側にも取り消しとして返る）
 //   5. リロードしても記録が残っている。広い画面では一覧と中身が左右に並び、新しい仕事が選ばれている
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

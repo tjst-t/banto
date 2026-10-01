@@ -10,7 +10,7 @@
 // **承認は求めない**（改訂・2026-09-07、ユーザー指示）——設定画面がその Module
 // 自身の設定を読み書きするのは、画面が仕事をしているだけ。ここでは
 // **承認が出ないこと**も確かめる（出ると、設定を見るたびに人を待たせる）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

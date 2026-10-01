@@ -5,7 +5,7 @@
 // （別の応答・CLI が出す「API Error: …」など——実データで測った、`docs/notes/2026-09-26-text-block-join.md`）。
 // 以前は、流れている吹き出しは改行なしで貼り合わせ（「…です。API Error: …」がくっつく）、記録は改行1つで
 // つないでいた（Markdown では同じ段落）。どちらも**段落を分ける**に揃えた。
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

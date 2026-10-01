@@ -6,7 +6,7 @@
 //
 // **試験が秘密を平文で持つ**が、それは試験が作った使い捨てで、実運用の
 // 秘密ではない。書き出す先は Module の置き場（閉じ込めが唯一許す書き先）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";

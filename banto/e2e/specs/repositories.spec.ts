@@ -8,7 +8,7 @@
 //   4. まだ作っていない手（Project を始める・GitHub に公開・clone し直す）は、押すと「まだ作っていない」と言う
 //   5. 設定の面にも同じ一覧と既定の置き場が出て、置き場を変えると一覧の説明も変わる
 //   6. 狭い幅で縦に積み、はみ出さない
-import { test, expect, type FrameLocator, type Page } from "@playwright/test";
+import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";

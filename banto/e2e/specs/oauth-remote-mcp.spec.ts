@@ -11,7 +11,7 @@
 //
 // 相手は試験が立てる**認可サーバ＋資源サーバ**。本物（claude.ai のコネクタ等）を
 // 叩かない——外の都合で落ちる試験は、機構の故障と見分けが付かない（規則6）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CORE_BASE_URL, AUTH_TOKEN, CORE_PORT } from "../config.js";

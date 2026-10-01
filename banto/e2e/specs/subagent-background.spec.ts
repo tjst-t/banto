@@ -7,7 +7,7 @@
 //   3. host の記録では、届いたものは送り手の印（origin）つきで、ホップ 1
 //   4. 受信箱に「終わりました」の知らせが出る
 //   5. リロードしても、届いたものは札で出る（人の発言は1件のまま）。中身を開ける
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

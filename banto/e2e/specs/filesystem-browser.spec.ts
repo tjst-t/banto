@@ -6,7 +6,7 @@
 // 一つずつ見る。
 //
 // もう1本は AI の editFile——**結果が差分として会話に出て**、記録から組み直しても同じ差分が出る。
-import { test, expect, type Frame, type Page } from "@playwright/test";
+import { test, expect, type Frame, type Page } from "../test-base.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";

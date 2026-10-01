@@ -3,7 +3,7 @@
 // 一通り確認する。remember_decision toolによるAI側の自動記録は非決定的
 // （project-thread-fork.spec.tsと同じ理由でAIの挙動そのものは検証しない）
 // ——ここでは人が直接操作する経路だけを固定する。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -10,7 +10,7 @@
 //   1. 会話にエラーが出ない（2ターン送っても）
 //   2. それでも会話は進む（繋がった Module だけで）
 //   3. 人が気づける場所が1つある——受信箱に**1件だけ**
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

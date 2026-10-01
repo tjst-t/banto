@@ -7,7 +7,7 @@
 //   3. 許可すると中継が通り、**秘密の値が実際にコマンドへ届く**（規則14——
 //      「カードを押せた」で終わらせず、画面に出る中身まで見る）
 //   4. 2回目は聞かれない（同じ Project 内で自動許可）。記録は Event Store に残る
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

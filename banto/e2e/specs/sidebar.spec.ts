@@ -6,7 +6,7 @@
 //   - 畳む／開くが効き、**別のルートへ移っても畳んだままである**こと
 // を見る。Base/Fork が横に並ぶ幅なので、同じ名前の要素が複数出る
 // （panel-stack.tsx）——探すときは必ずサイドバーの中に絞る。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

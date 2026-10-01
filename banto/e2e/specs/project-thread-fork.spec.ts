@@ -1,7 +1,7 @@
 // 既存機能の回帰スイート（ステージ0時点の状態を固定する）。
 // Project作成・Base Thread会話・Fork作成・履歴復元・Clearが壊れていないかだけを見る
 // ——AIの返信内容そのものは検証しない（非決定的、真実は一箇所の対象外）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -7,7 +7,7 @@
 //   3. 止めた結果が**実 host に届く**（画面の自己申告を信じない・規則1）
 //   4. **外から足した Module は消せる／同梱は消せない**
 //   5. **「この Project のフォルダ」を渡したかで、どこに立つかが変わる**——聞かない
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { installInfisical, openApp } from "../helpers.js";
 

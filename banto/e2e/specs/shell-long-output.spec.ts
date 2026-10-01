@@ -12,7 +12,7 @@
 //   - 会話のカードに、頭と末尾・保存先が出ている（12MB を描かない）
 //   - Command Palette の入口が出る
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

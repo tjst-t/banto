@@ -11,7 +11,7 @@
 // **指定が無いと何が起きるか**：Android Chrome の既定（`resizes-visual`）では
 // キーボードでレイアウトが縮まないため、入力欄はキーボードの裏に入り、
 // ブラウザが入力欄を見せようと画面を持ち上げてヘッダが上に逃げる。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

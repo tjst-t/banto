@@ -7,7 +7,7 @@
 // 失敗のさせ方は**通信を止める**（`page.route` で abort）——core を落とすと
 // 他の spec の足元まで崩れるうえ、見たいのは「画面がどう振る舞うか」なので、
 // 届かない状況を作れば足りる。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -5,7 +5,7 @@
 //   2. 「中で Docker を使う」は既定で切れていて、コンテナにも掛かっていない
 //   3. 入れると保存され（読み直しても入っている）、次に Module を使うときにコンテナに効く
 //   4. 切ると元に戻る
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

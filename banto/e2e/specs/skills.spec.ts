@@ -14,7 +14,7 @@
 // 偽 Runner は本物の MCP の口に繋いで `instructions` を受け取り、`sayContext` で
 // 「banto が実際に送ったもの」をそのまま返す（`e2e/fake-runner.ts`）。
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

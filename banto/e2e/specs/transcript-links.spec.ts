@@ -9,7 +9,7 @@
 //
 // **AI の気分に依存させない**ために、書いてもらうのは「そのまま写す1行」だけ
 // （4回続けて通ることを測ってから入れた——`docs/notes/2026-09-18-connect-gate.md`）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

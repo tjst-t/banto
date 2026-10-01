@@ -7,7 +7,7 @@
 // 1つなので、別ファイルに分けると「まだ無い」を見るテストと、足すテストの
 // **走る順で結果が変わる**（実測：worker が2本あると順が入れ替わって落ちた）。
 // 順番に意味があるものは同じファイルに置く（規則6——間欠にしない）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

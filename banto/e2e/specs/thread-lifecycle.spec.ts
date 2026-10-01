@@ -1,6 +1,6 @@
 // ステージ1（A8）の回帰。Fork Threadを畳む→履歴に出る→再度開く→
 // 会話が読み返せる、をブラウザで一通り確認する。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

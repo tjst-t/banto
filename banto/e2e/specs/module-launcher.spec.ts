@@ -7,7 +7,7 @@
 //   1. **その Project に繋がっている Module の入口だけ**が出る
 //   2. 開くと**会話の隣に**開き、**会話は消えない**（fullscreen、§6.2）
 //   3. **中身が本物**（tool の結果は無いので、Canvas が自分で取りに行く）
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -10,7 +10,7 @@
 //
 // AI の言葉づかいに頼らず、**AI がつながる経路そのもの**（host の中継）に
 // 問い合わせて一覧を取る。これが Runner に見えているものと同じ。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -12,7 +12,7 @@
 //   4. 取り込むと置き換わり、次の仕事には**取り込んだ値**が届く（Vault の書き換えが、この画面から通る）
 //   5. 消すと「未設定」に戻る
 //   6. Project 設定には出ない（前の置き場）
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

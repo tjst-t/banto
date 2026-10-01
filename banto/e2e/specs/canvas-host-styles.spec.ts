@@ -7,7 +7,7 @@
 //   4. 渡すのは標準の名前だけ（banto 独自の名前は画面に届いていない）
 //
 // 期待値は banto の画面から読む——**値をここに書かない**（写しを持つと、いつか食い違う・規則3）。
-import { test, expect, type FrameLocator, type Page } from "@playwright/test";
+import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

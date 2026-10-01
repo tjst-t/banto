@@ -10,7 +10,7 @@
 //   4. リロードしてもカードは残り、古いほうのカードを押すと（新しい仕事があっても）古いほうの仕事が開く
 //   5. **Fork の会話で頼んでも**、カードに「開く」があり、押すとその仕事が開く（2026-10-01、ユーザー報告——
 //      Fork には Canvas を開く口が渡っておらず、ボタンが出なかった）
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

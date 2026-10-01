@@ -13,7 +13,7 @@
 // 上のほうも「画面の近く」に入ってしまい、見込みのまま残る発言が作れない。
 // そこで**2つ見る**：辿る間に伸びないこと（振る舞い）と、履歴の項目に
 // `content-visibility` が付いていないこと（**原因そのもの**）。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

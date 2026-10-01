@@ -6,7 +6,7 @@
 //   - `hasLiveRealRun()` が永久に true → 生きている判断待ちが復元されない
 //   - 次の送信が「新しいターン」と見なされず、**host に届かないまま消える**
 // （見直し・2026-09-06、docs/notes/2026-09-06-tool-approval-review.md）
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

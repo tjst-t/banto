@@ -3,7 +3,7 @@
 // §2.4.1 の MUST「断る／取り消す手段を明確に出す」に対応する。
 // 規則14：「拒否できた」で終わらせず、**拒否したものが実行されていない**ことを
 // 中身で確かめる——読ませなかったファイルの中身が画面に出ないこと。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

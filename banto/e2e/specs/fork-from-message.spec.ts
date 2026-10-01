@@ -10,7 +10,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { createProject, openApp } from "../helpers.js";
 

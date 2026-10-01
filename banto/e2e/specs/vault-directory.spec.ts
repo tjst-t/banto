@@ -7,7 +7,7 @@
 //      ——ボタンが押せた・エラーが出なかった、では見たことにならない。
 //      画面に出る中身（種別・対象・backend・用途）まで1つずつ見る
 //   4. **値はどこにも出てこない**（画面にも、一覧にも）
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

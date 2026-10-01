@@ -9,7 +9,7 @@
 //
 // **registry は偽物**（`registry-fixture.ts`）。本物の一覧は毎日変わるので、
 // 並び順の検査が外の都合で落ちる（規則6）。中身は 2026-09-21 に本物から写した。
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../test-base.js";
 import { openApp } from "../helpers.js";
 import { AUTH_TOKEN, CORE_BASE_URL, NPM_REGISTRY_BASE_URL } from "../config.js";
 

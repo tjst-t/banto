@@ -11,7 +11,7 @@
 //
 // GitHub は偽物（`e2e/github-fixture.ts`）。**本物を叩かない**（規則6）。
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
