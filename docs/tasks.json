@@ -2393,6 +2393,25 @@
       "status": "in-progress",
       "why": "2026-09-27、ユーザー要望。人とやり取りしながら進める話が複数あるとき、AI が Fork を立てて並行に進めたい（やり取りが要らないならサブエージェント）。決定はアーキ仕様 §2.2「AI が Fork を立てる」・§2.4「レビュー待ち」。core の単体試験（fork-tool.test.ts、6本）と core 全体 322 本・画面の単体 16 本は通した。E2E（e2e/specs/ai-start-forks.spec.ts）は Project のコンテナの中からは Incus に繋がらず走らせていない。2026-09-28：E2E で2つ目の Fork が「Fork 2」になる不具合を見つけて直し（2b67197e、名前を作るときに一緒に記録）、host で ai-start-forks・project-thread-fork・inbox・fork-from-message が通った（ユーザー実行）。release へ push 済み、稼働中への反映（REL の取り込み・build・再起動）は host で人が行う",
       "doneWhen": "host で e2e/specs/ai-start-forks.spec.ts と既存の project-thread-fork・inbox・fork-from-message が通る。稼働中の banto で、Base Thread から AI に Fork を2つ立てさせ、再読み込みせずに名前つきの入口が出て、それぞれ最初の指示で走り、終わったものが受信箱に出ることを実物で確かめる"
+    },
+    {
+      "id": "repositories-stage1",
+      "title": "Repositories Module の段階1（台帳・Import・一覧から外す／元に戻す・既定の置き場・一覧の画面・入口をどの Project にも出す）",
+      "status": "in-progress",
+      "spec": "docs/specs/v4-modules.md §2.4・docs/specs/v4-frontend.md §6.2",
+      "why": "2026-10-01、ユーザー。core の中継に relayListProjects（同梱・banto 本体・人の画面からの呼び出しの間だけ）を足し、入口・画面の中身・画面からの呼び出しを『Project の Module 集合＋banto 全体の Module』に寄せた。単体（Module 19本・core の中継と入口）と e2e/specs/repositories.spec.ts（2本）は通した。経緯は docs/notes/2026-10-01-repositories-stage1.md",
+      "doneWhen": "稼働中の banto に反映し、Command Palette の『リポジトリ』から開いた一覧に、実際の手元のリポジトリを Import して、使っている Project の名前・GitHub の場所・このマシンにだけ・見つからないが正しく出ること、設定の Repositories の面に同じ一覧と既定の置き場が出ることを人が実物で確かめる"
+    },
+    {
+      "id": "repositories-next",
+      "title": "Repositories の続き：アカウント（PAT・デバイスフロー）・URL から clone／新しいリポジトリ／clone し直す・GitHub に公開・新しい Project の画面への持ち込み・Canvas から Project を開く口",
+      "status": "pending",
+      "dependencies": [
+        "repositories-stage1"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.4",
+      "why": "段階1では『Project を始める』『GitHub に公開』『clone し直す』は押すと『まだ作っていない』と言うだけ。『URL から clone』『新しいリポジトリ』『git init して Import』は出していない（規則13）。Project の列は名前だけ（Canvas から banto の画面遷移を頼む口が無い）。台帳のアカウントの項目はアカウントを登録できるようになるときに足す",
+      "doneWhen": "§2.4 の始める3つの手・公開・アカウントが実ブラウザの E2E で通り、段階1の『まだ作っていない』が画面から消える"
     }
   ],
   "phase1": {
