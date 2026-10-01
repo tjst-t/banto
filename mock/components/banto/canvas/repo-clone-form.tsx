@@ -1,6 +1,6 @@
 "use client";
 
-// Repo の「clone」の本体（2026-10-01、作り直し）——**Repo Module の画面の中身**。2か所で同じものを使う：
+// Repositories の「clone」の本体（2026-10-01、作り直し）——**Repositories Module の画面の中身**。2か所で同じものを使う：
 //   - リポジトリの一覧の「URL から clone」（`repo-clone-dialog.tsx`。URL を打つ形）
 //   - core の新しい Project の画面に差し出す始め方（`repo-prepare-view.tsx`。アカウントから探す形・URL も貼れる）
 // 押す前に言う帯は `RepoRootPreview`。判断は `parseCloneSource`・`inspectCloneSource`・`inspectTargetFolder`・
@@ -85,7 +85,7 @@ export function RepoCloneForm({
   picker: "url" | "search";
   initialInput?: string;
   onCloned: (folder: ClonedFolder) => void;
-  /** 帯の「このフォルダで Project を作る」（置く場所に、Repo の知らないリポジトリがある等） */
+  /** 帯の「このフォルダで Project を作る」（置く場所に、Repositories の知らないリポジトリがある等） */
   onUseAsFolder: (path: string) => void;
   /** 帯の「「〜」を開く」（置く場所を、もう Project が使っている）——その場所を渡す */
   onOpenAt: (path: string, projectId: string, closed: boolean) => void;
@@ -358,7 +358,7 @@ export function RepoCloneForm({
             onStartHere={onStartHere}
           />
           {status.kind !== "have" && status.kind !== "reclone" ? (
-            <p className="text-xs text-ink-3">置き場（{home}）は Repo の設定で変えられます。</p>
+            <p className="text-xs text-ink-3">置き場（{home}）はリポジトリの設定で変えられます。</p>
           ) : null}
         </div>
       ) : null}
@@ -373,7 +373,7 @@ function ElsewhereNote({ host }: { host: string }) {
     <>
       <Link2 className="mt-0.5 size-3.5 shrink-0" />
       <span data-testid="repo-clone-elsewhere">
-        GitHub の外（{host}）です。Repo のアカウントは使わず、このマシンの git の設定で clone します。
+        GitHub の外（{host}）です。登録した GitHub のアカウントは使わず、このマシンの git の設定で clone します。
       </span>
     </>
   );

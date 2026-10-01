@@ -1,7 +1,7 @@
 "use client";
 
 // フォルダを Import（2026-09-30、ユーザー決定）——好きな場所のリポジトリを、**今の場所のまま**
-// Repo の台帳に足す（移さない）。人が**フォルダを1つずつ**選ぶ——まとめて取り込む入口は作らない。
+// Repositories の台帳に足す（移さない）。人が**フォルダを1つずつ**選ぶ——まとめて取り込む入口は作らない。
 //
 // 形は「フォルダを選ぶ」（path-picker）と同じたどり方で、下に **いま開いているフォルダを
 // Import すると何が起きるか**の帯を置く——たどるたびに答えが変わる。押す前に言う、は
@@ -105,7 +105,7 @@ export function RepoImportDialog({
         <DialogHeader>
           <DialogTitle>フォルダを Import</DialogTitle>
           <DialogDescription>
-            手元のリポジトリを、今の場所のまま Repo の一覧に足します。フォルダは移しません。
+            手元のリポジトリを、今の場所のまま一覧に足します。フォルダは移しません。
           </DialogDescription>
         </DialogHeader>
 

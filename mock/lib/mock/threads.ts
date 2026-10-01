@@ -10,61 +10,26 @@ const bantoBaseScript: MockThread["script"] = {
   ],
   replies: [
     {
-      match: /worktree|リポジトリ|repo/i,
+      // tool 呼び出しの実演。git の操作は Shell の runCommand で打つ（2026-10-01、ユーザー決定——
+      // Repositories は git の操作を持たない）
+      match: /worktree/i,
       steps: [
         { t: "delay", ms: 300 },
         {
           t: "tool",
-          name: "banto_repo_worktree_list",
-          args: { project: "banto" },
+          name: "banto_shell_run_command",
+          args: { command: "git worktree list", cwd: "." },
           result: {
-            worktrees: [
-              { path: "/home/ubuntu/worktrees/banto-v4", branch: "v4" },
-              { path: "/home/ubuntu/worktrees/banto-v4-mock", branch: "v4-mock" },
-            ],
+            stdout:
+              "/home/ubuntu/worktrees/banto-v4       3f2a1c9 [v4]\n/home/ubuntu/worktrees/banto-v4-mock  8bbc137 [v4-mock]",
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
           },
           runMs: 500,
         },
         { t: "delay", ms: 200 },
-        { t: "text", text: "worktree を2本見つけました。詳しくは Repo Module の Canvas で確認できます（Step 3 以降）。" },
-      ],
-    },
-    {
-      // MCP Apps の display mode "inline"（§6.2）の実演。fullscreen（Canvas）とは
-      // 独立した、別の描画先——tool 呼び出しの結果を会話のカードに埋め込む
-      match: /差分|diff/i,
-      steps: [
-        { t: "delay", ms: 300 },
-        {
-          t: "tool",
-          name: "banto_repo_diff",
-          args: { path: "lib/mock/thread-panel.tsx" },
-          result: { files: 1, additions: 4, deletions: 2 },
-          runMs: 400,
-          inlineView: { moduleId: "banto.repo", viewId: "diff" },
-        },
-        { t: "delay", ms: 200 },
-        { t: "text", text: "変更点をこの場に埋め込んで表示しました（inline）。同じものを大きく見るには「Canvas を開く」を使ってください（fullscreen）。" },
-      ],
-    },
-    {
-      // MCP Apps の display mode "fullscreen"（§6.2）の実演。前の inline の例とは
-      // 逆に、tool 呼び出し自身が fullscreen を要求する——人がヘッダのボタンを
-      // 押すのではなく、結果が揃った瞬間に banto が自動で Canvas を開く
-      match: /fullscreen|全画面/i,
-      steps: [
-        { t: "delay", ms: 300 },
-        { t: "text", text: "この変更は分量が多いので、fullscreen で見せます。" },
-        {
-          t: "tool",
-          name: "banto_repo_diff",
-          args: { path: "lib/mock/thread-panel.tsx" },
-          result: { files: 1, additions: 4, deletions: 2 },
-          runMs: 400,
-          fullscreenView: { moduleId: "banto.repo", viewId: "diff" },
-        },
-        { t: "delay", ms: 200 },
-        { t: "text", text: "tool 呼び出し自身が fullscreen を要求したので、Canvas を自動で開きました。「Canvas を開く」を押す操作は不要でした。" },
+        { t: "text", text: "worktree を2本見つけました（v4 と v4-mock）。" },
       ],
     },
     {
@@ -91,7 +56,7 @@ const bantoBaseScript: MockThread["script"] = {
       ],
     },
     {
-      // FileSystem Module の editFile（v4-modules.md §2.2）——結果を Repo と
+      // FileSystem Module の editFile（v4-modules.md §2.2）——結果を Repositories と
       // 同じ材料（before/after）で inline カードに埋め込む
       match: /ファイルを編集|編集して/i,
       steps: [

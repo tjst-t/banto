@@ -252,12 +252,12 @@ let implementations: MockModuleImplementation[] = [
     ),
   },
   {
-    id: "banto.repo",
-    roleId: "repo",
+    id: "banto.repositories",
+    roleId: "repositories",
     // banto 全体に1本（改訂・2026-09-30、ユーザー）——Project より先に動いて
     // フォルダを用意する（clone・git init）。Project を作るのは banto 本体
     scope: "instance",
-    name: "Repo（banto 標準）",
+    name: "Repositories（banto 標準）",
     isolation: "subprocess",
     builtin: true,
     enabled: true,
@@ -265,40 +265,37 @@ let implementations: MockModuleImplementation[] = [
       { role: "vault", required: true },
       { role: "filesystem", required: false },
     ],
-    tools: [
-      { name: "worktreeList", visibility: "agent" },
-      { name: "diff", visibility: "agent" },
-      { name: "clone", visibility: "agent" },
-    ],
+    // git の操作（worktree・diff・log など）は持たない（2026-10-01、ユーザー決定）——AI は Shell で git を打つ。
+    // Repositories が持つのは手元のリポジトリの台帳と、clone・作る・公開・Import
+    tools: [{ name: "clone", visibility: "agent" }],
     handlesSecrets: false,
     hasConfigSurface: true,
     launchers: [
       { id: "repos", label: "リポジトリの一覧", viewId: "repos" },
-      { id: "diff", label: "差分ビューを開く", viewId: "diff" },
       { id: "publish", label: "この Project を GitHub に公開", viewId: "publish" },
     ],
-    // core の新しい Project の画面に差し出す始め方（名前・説明・アイコンは Repo が決める）
+    // core の新しい Project の画面に差し出す始め方（名前・説明・アイコンは Repositories が決める）
     folderProviders: [
       {
         id: "clone",
         label: "clone",
-        description: "GitHub などのリポジトリを、Repo の置き場に clone します。",
+        description: "GitHub などのリポジトリを、リポジトリの置き場に clone します。",
         icon: "cloud-download",
         viewId: "prepare-clone",
       },
       {
         id: "create",
         label: "新しいリポジトリ",
-        description: "Repo の置き場に作って git init します。GitHub へは、あとで公開できます。",
+        description: "リポジトリの置き場に作って git init します。GitHub へは、あとで公開できます。",
         icon: "folder-plus",
         viewId: "prepare-create",
       },
     ],
     mcpServersJson: sampleMcpServersJson(
-      "banto-repo",
+      "banto-repositories",
       "node",
-      ["./modules/repo/index.js"],
-      ["repo"],
+      ["./modules/repositories/index.js"],
+      ["repositories"],
       [
         { role: "vault", required: true },
         { role: "filesystem", required: false },
@@ -357,8 +354,8 @@ const roleDefs: readonly Omit<MockRole, "implementations">[] = [
     description: "鍵・トークンを預かる。必須 Module——複数バックエンド可、組み込みローカルを同梱。",
   },
   {
-    id: "repo",
-    name: "Repo",
+    id: "repositories",
+    name: "Repositories",
     description: "複数リポジトリの一覧・worktree・clone/branch/log。GitHub 身元の割り当て。",
   },
   {
@@ -437,7 +434,7 @@ export function getRoleForImplementation(implementationId: string): MockRole | u
 export function getFolderProviders(): readonly (MockFolderProvider & {
   implementationId: string;
   implementationName: string;
-  /** 役割の名前（「Repo」）。core が「Repo が〜しました」と、誰がしたかを言うのに使う */
+  /** 役割の名前（「Repositories」）。core が「Repositories が〜しました」と、誰がしたかを言うのに使う */
   roleName: string;
 })[] {
   return implementations
@@ -453,7 +450,7 @@ export function getFolderProviders(): readonly (MockFolderProvider & {
 }
 
 /**
- * モックの見せ方のためだけ（URL の `?modules=none`）——フォルダを用意できる Module（いまは Repo だけ）を
+ * モックの見せ方のためだけ（URL の `?modules=none`）——フォルダを用意できる Module（いまは Repositories だけ）を
  * 外した banto。新しい Project の画面は「手元のフォルダ」だけになる（core は壊れない）
  */
 export function disableFolderProvidersForDemo(): void {
@@ -621,7 +618,7 @@ export const mockModuleConfigFields: Readonly<
     { label: "名前空間", value: "banto/" },
     { label: "認証方式", value: "AppRole" },
   ],
-  "banto.repo": [
+  "banto.repositories": [
     { label: "既定の clone 方式", value: "SSH" },
     { label: "worktree の置き場", value: "~/.local/share/banto/worktrees" },
   ],
@@ -680,7 +677,7 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "banto", implementationId: "banto.skills" },
   { projectId: "banto", implementationId: "banto.subagent" },
   { projectId: "banto", implementationId: "banto.vault-local" },
-  { projectId: "banto", implementationId: "banto.repo" },
+  { projectId: "banto", implementationId: "banto.repositories" },
   { projectId: "banto", implementationId: "banto.vault-ui" },
   { projectId: "home", implementationId: "banto.fs" },
   { projectId: "home", implementationId: "banto.shell" },
@@ -691,7 +688,7 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "hermes", implementationId: "banto.skills" },
   { projectId: "hermes", implementationId: "banto.subagent" },
   { projectId: "hermes", implementationId: "banto.vault-local" },
-  { projectId: "hermes", implementationId: "banto.repo" },
+  { projectId: "hermes", implementationId: "banto.repositories" },
   { projectId: "hermes", implementationId: "banto.vault-ui" },
 ];
 
@@ -793,7 +790,7 @@ export function getLaunchersForProject(
 ): readonly { implementationId: string; implementationName: string; id: string; label: string; viewId: string }[] {
   const linked = getProjectModuleLinks(projectId);
   // **banto 全体に1本の Module の画面は、どの Project からも開ける**（2026-09-30、ユーザー
-  // ——Repo の一覧で決めた）。Project に繋ぐかどうかが決めるのは、その Project の AI に
+  // ——Repositories の一覧で決めた）。Project に繋ぐかどうかが決めるのは、その Project の AI に
   // tool を見せるかだけ。人が開く画面までは絞らない
   const bantoWide = implementations.filter(
     (i) => i.enabled && i.scope === "instance" && !linked.includes(i),
@@ -819,7 +816,7 @@ let vaultAliases: MockVaultAlias[] = [
     implementationId: "banto.vault-local",
     path: "github/identityA/token",
     note: "GitHub identityA への push 用トークン",
-    usedBy: ["Repo: identityA の push"],
+    usedBy: ["Repositories: identityA の push"],
     lastUsedAt: "12分前",
   },
   {
@@ -831,7 +828,7 @@ let vaultAliases: MockVaultAlias[] = [
     implementationId: "banto.vault-local",
     path: "github/identityA",
     note: "GitHub identityA の SSH 鍵（ssh-agent 経由、鍵そのものは出さない）",
-    usedBy: ["Repo: identityA の clone / push"],
+    usedBy: ["Repositories: identityA の clone / push"],
     lastUsedAt: "12分前",
   },
   {

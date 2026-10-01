@@ -1,9 +1,9 @@
 "use client";
 
-// Repo が core の新しい Project の画面に差し出す画面（2026-10-01、作り直し）——本物は `ui://banto.repo/prepare-clone`・
-// `ui://banto.repo/prepare-create`（MCP Apps）。core はこれを始め方のタブの中に埋め込むだけで、中身を知らない。
+// Repositories が core の新しい Project の画面に差し出す画面（2026-10-01、作り直し）——本物は `ui://banto.repositories/prepare-clone`・
+// `ui://banto.repositories/prepare-create`（MCP Apps）。core はこれを始め方のタブの中に埋め込むだけで、中身を知らない。
 //
-// **Repo の仕事はフォルダを用意するところまで**。用意できたら `host.onPrepared({ path, suggestedName, summary })` で
+// **Repositories の仕事はフォルダを用意するところまで**。用意できたら `host.onPrepared({ path, suggestedName, summary })` で
 // core に返す——Project を作るのは core（Project 名・Advanced・作るボタンは core の画面の下の段）。
 // そのフォルダをもう Project が使っているかも core が調べる（ここでは聞かない）。
 // 中身は一覧のダイアログと同じ本体（`RepoCloneForm`・`RepoCreateForm`）。ボタンは枠の中、右下に1つ。
@@ -69,7 +69,7 @@ export function RepoPrepareCloneView({ host }: { host: MockFolderProviderHost })
 }
 
 export function RepoPrepareCreateView({ host }: { host: MockFolderProviderHost }) {
-  // 「GitHub に同じ名前がある——clone で始める」は Repo の画面の中の移動（core のタブは替えない）
+  // 「GitHub に同じ名前がある——clone で始める」は Repositories の画面の中の移動（core のタブは替えない）
   const [cloneFrom, setCloneFrom] = useState<string | null>(null);
   if (cloneFrom) {
     return (

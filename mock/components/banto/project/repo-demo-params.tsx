@@ -4,14 +4,14 @@
 // 本物の入口はサイドバーの「＋」のまま（あちらはこの URL を使わない）。
 //
 // - `?new-project=folder|<implementationId>:<providerId>` —— 新しい Project をその始め方で開く。
-//   `clone`・`create` は前からの URL のための読み替え（`banto.repo:clone`・`banto.repo:create`）——**この読み替えは
+//   `clone`・`create` は前からの URL のための読み替え（`banto.repositories:clone`・`banto.repositories:create`）——**この読み替えは
 //   モックの見せ方の層にだけ置く**。core の新しい Project の画面は Module の名前を知らない
 // - `&repo=<owner>/<repo>` —— Module の画面に最初に入れておく値（clone なら選んだ状態、新しいリポジトリなら名前）
-// - `?modules=none` —— フォルダを用意できる Module（いまは Repo だけ）を外した banto。新しい Project の画面は
+// - `?modules=none` —— フォルダを用意できる Module（いまは Repositories だけ）を外した banto。新しい Project の画面は
 //   「手元のフォルダ」だけになる
 // - `&folder=<path>` —— 手元のフォルダの Root パス（一覧の「Project を始める」と同じ状態）
 // - `?accounts=0|1|2` —— 登録済みの GitHub アカウントの数（どの画面でも効く）
-// - `?repos=0` —— Repo の台帳を空にする（リポジトリの一覧の空の状態）
+// - `?repos=0` —— Repositories の台帳を空にする（リポジトリの一覧の空の状態）
 // - `?import=<path>` —— リポジトリの一覧で、Import をそのフォルダから開く（一覧の側が読む）
 import { useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -20,7 +20,7 @@ import { disableFolderProvidersForDemo } from "@/lib/mock/settings";
 import { NewProjectDialog, type StartMethod } from "./new-project-dialog";
 
 /** 前からの URL（`clone`・`create`）の読み替え——モックの見せ方のためだけ */
-const LEGACY_METHODS: Record<string, StartMethod> = { clone: "banto.repo:clone", create: "banto.repo:create" };
+const LEGACY_METHODS: Record<string, StartMethod> = { clone: "banto.repositories:clone", create: "banto.repositories:create" };
 
 export function RepoDemoParams() {
   const router = useRouter();

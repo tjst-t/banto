@@ -59,7 +59,7 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
 - 機構は`unstable_humanToolNames`+`addResult`（human toolと同じ経路）。assistant-ui独自の`approval`/`respondToApproval`は**モックでは使わない**——理由は`lib/mock/adapter.ts`のコメントと`poc/04-canusetool-hold-the-line/`を参照
 
 ### Canvas・MCP Apps display mode（§6.2）
-- Canvasの中身（Repo Moduleの差分ビュー・Worker Moduleの診断レポート・テスト結果）——実際の`ui://`iframe/postMessageハンドシェイクは実装していない（本実装の仕事）
+- Canvasの中身（Worker Moduleの診断レポート・テスト結果・FileSystem の差分とプレビュー）——実際の`ui://`iframe/postMessageハンドシェイクは実装していない（本実装の仕事）
 - inline表示（tool呼び出しカードに埋め込む）とfullscreen表示（tool呼び出し自身の要求でCanvasを自動起動）の両方を実演——「昇格」の仕組みは無い、独立した2つの描画先
 
 ### デモ導線
@@ -217,7 +217,7 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
 - **Vault接続の上書き（`vaultImplementationId`のCascadeRow）は階層2から削除**——
   §2.5の決定どおり、Vaultに依存するModule自身の設定面に委ねる。今のmockでは
   Vault自身の`ModuleConfigPane`にProjectのalias一覧を出す形だけを実装した
-  （「どのVault実装を使うか」をRepo・Shell自身の設定面で選ばせる詳細UIは未着手）
+  （「どのVault実装を使うか」をRepositories・Shell自身の設定面で選ばせる詳細UIは未着手）
 
 ### instance設定（`/settings`）もEscapeで閉じれるように（2026-09-02）
 - `/settings`はProject設定と違ってDialogではなく普通のroute（AppShellの
@@ -275,8 +275,8 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   既定表示はProject名・Baseパス、Advancedで既定モデル/effortの上書き（値は保存のみ、
   Project設定画面へは反映していない——モックの割り切り）
 - **右上「Canvasを表示」を削除**——モックのデモ用途以上の意義が無いボタンだったため。
-  Canvasを開く経路はlauncher・tool呼び出し（inline/fullscreen自動起動）・Command Paletteの
-  「Canvas を開く」操作に残る
+  Canvasを開く経路はlauncher・tool呼び出し（inline/fullscreen自動起動）に残る（Command Paletteの
+  「Canvas を開く」操作は、指していた Repositories の差分ビューごと外した——2026-10-01、下の Repositories の節）
 - **「Forkを開く」をアイコンのみに。Fork Threadヘッダーに畳むアイコン（GitMerge）を追加**——
   押すと`closeThread()`で畳み、Base Threadに戻る。削除ではない
 - **Projectを終了するUI**（Project設定画面の「危険な操作」セクション）——確認ダイアログ経由。
@@ -406,7 +406,7 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
 ### VaultUI（Vault横断管理Module、2026-09-02）
 - `docs/specs/v4-modules.md` §2.1 C節の「別Moduleから横断してaliasを管理したい」
   を、実際にModule（`banto.vault-ui`、role `vault-ui`）として追加した。launcher
-  （`manage`）からCanvas全画面で開く——FileSystemの`browser`・Repoの`diff`と同じ形
+  （`manage`）からCanvas全画面で開く——FileSystemの`browser`と同じ形
 - `MockVaultAlias`に`kind`（secret/ssh-identity/file）・`scope`
   （instance/project）・`note`・`lastUsedAt`・`expiresAt`を追加。`vaultAliases`を
   mutable化し`createVaultAlias`/`updateVaultAliasNote`/`deleteVaultAlias`を追加
@@ -689,15 +689,15 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   設定から Drawer 経由で Project に戻れる／Fork・Canvas の全画面ヘッダ／
   ダークモード／的の大きさ（36×36）／コンソールエラー無し。デスクトップ側の回帰も確認
 
-### 新しい Project の始め方を3つに・GitHub に公開（2026-09-29、Repo Module を足す相談）
+### 新しい Project の始め方を3つに・GitHub に公開（2026-09-29、Repositories Module を足す相談）
 
-**発端**：Repo Module を足すにあたり、「新しい Project を作る」を GitHub と繋げたい
+**発端**：Repositories Module を足すにあたり、「新しい Project を作る」を GitHub と繋げたい
 （ユーザー）。画面を見て形を決めるためのモックで、実データには繋いでいない。
 
 **見せているもの**：
 
 - ~~**始め方は3つ**~~ **→ core が持つのは「手元のフォルダ」だけに改めた**（2026-10-01、ユーザー決定。下の「core と Module の
-  境目」節——clone・新しいリポジトリは Repo が名乗って持ち込む始め方になった）。以下はこの時点の形
+  境目」節——clone・新しいリポジトリは Repositories が名乗って持ち込む始め方になった）。以下はこの時点の形
   （`components/banto/project/new-project-dialog.tsx`）——
   **フォルダを選ぶ**（今ある形。打つか「選ぶ」）／**GitHub から clone**（アカウントから見える
   リポジトリを絞って選ぶ。一覧に無いものは URL か `owner/repo` を貼る）／
@@ -717,11 +717,11 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
     origin か項目数を出し、次の手として「このフォルダをそのまま Root にする」＝フォルダを選ぶへ移る）
 - **アカウント**（`github-account-chooser.tsx`）——1つだけなら**選ばせず**1行で言う
   （「tjst-t から見えるリポジトリを出しています」）／2つ以上は札（数個に Select は重い）／
-  0なら Repo の設定へ案内する
-- **アカウントの登録**は Repo の設定面の中（`settings/github-accounts-section.tsx`）——
+  0なら Repositories の設定へ案内する
+- **アカウントの登録**は Repositories の設定面の中（`settings/github-accounts-section.tsx`）——
   名前・PAT・SSH 鍵。PAT と鍵は Vault に預け、alias の名前しか出さない（VaultUI と同じ作法）
-- ~~リポジトリから始めた Project には Repo と Vault を繋ぐ~~ **→ 外した**（2026-09-30、下の節）
-- **GitHub に公開**（`canvas/repo-publish-view.tsx`、Canvas `banto.repo:publish`）——
+- ~~リポジトリから始めた Project には Repositories と Vault を繋ぐ~~ **→ 外した**（2026-09-30、下の節）
+- **GitHub に公開**（`canvas/repo-publish-view.tsx`、Canvas `banto.repositories:publish`）——
   どこから・どこへ（手元のフォルダ → `github.com/<owner>/<name>`、打つたびに行き先が変わる）／
   アカウント／名前（使用済みなら断り、`<name>-2` を出す）／公開・非公開（公開は
   「これまでの履歴もすべて公開」と警告）／最初の push（コミットが無ければ作って origin を
@@ -729,31 +729,31 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
 
 **状態ごとの URL**（`project/repo-demo-params.tsx`、モックの見せ方のためだけ）：
 `?new-project=folder|clone|create`・`&repo=<owner>/<repo>`・`&folder=<path>`・`?accounts=0|1|2`。
-公開は `/p/hermes?canvas=banto.repo:publish`（コミットあり）、
-`/p/banto?canvas=banto.repo:publish`（公開済み）。
+公開は `/p/hermes?canvas=banto.repositories:publish`（コミットあり）、
+`/p/banto?canvas=banto.repositories:publish`（公開済み）。
 
 **まだ決めていない**（画面を見て決めたいこと）：
 
 - ~~別の名前・別のアカウントで公開したとき、手元のフォルダは ghq の置き方からずれる。移すか、そのままか~~
   **→ ずれという考えごと無くなった**（2026-09-30、ユーザー決定。ghq の置き方をやめ、公開してもフォルダは動かさない）
-- ~~clone と作成は Repo の tool か、banto 自身の操作か~~ **→ Repo がフォルダを用意し、
+- ~~clone と作成は Repositories の tool か、banto 自身の操作か~~ **→ Repositories がフォルダを用意し、
   banto が Project を作る**（2026-09-30、ユーザー決定）
 - clone に失敗したとき（非公開で読めない等）、別のアカウントで試す手をその場に出すか
 
-### Repo を banto 全体に1本にする・リポジトリの一覧（2026-09-30、ユーザー決定）
+### Repositories を banto 全体に1本にする・リポジトリの一覧（2026-09-30、ユーザー決定）
 
-**発端**：前の形は Repo を **Project ごとの Module** のように扱っていた（clone・新規で作った
-Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project の Repo の launcher）。
+**発端**：前の形は Repositories を **Project ごとの Module** のように扱っていた（clone・新規で作った
+Project に Repositories と Vault を自動で繋ぎ、公開の入口がその Project の Repositories の launcher）。
 ユーザーの決定で改めた：
 
-- **Repo は banto 全体に1本**（`scope: "instance"`、Vault や公開の窓口と同じ置き方）。Project より先に動ける
+- **Repositories は banto 全体に1本**（`scope: "instance"`、Vault や公開の窓口と同じ置き方）。Project より先に動ける
 - **新しい Project の画面は2段**（`project/new-project-dialog.tsx`）——上が「Root にするフォルダ」
-  （見出しの右に「Repo が用意します」。clone・git init は Repo の仕事）、下が「Project」
+  （見出しの右に「Repositories が用意します」。clone・git init は Repositories の仕事）、下が「Project」
   （「banto が、このフォルダを Root にして作ります」）。Project の段はフォルダが決まって
   作れるときだけ出す。ボタンも「clone して Project を作る」「リポジトリと Project を作る」
-  のように、何が2つ起きるかを言う。完了のトーストも「Repo が〜を clone し、Project「〜」を作りました」
+  のように、何が2つ起きるかを言う。完了のトーストも「Repositories が〜を clone し、Project「〜」を作りました」
 - **Project に Module を自動で繋ぐのをやめた**（その1行の説明も消した）
-- **リポジトリの一覧**（`canvas/repo-list-view.tsx`、Canvas `banto.repo:repos`）——
+- **リポジトリの一覧**（`canvas/repo-list-view.tsx`、Canvas `banto.repositories:repos`）——
   ~~ghq の置き場にあるものを owner フォルダごとに並べる~~ **→ 台帳から作る形に改めた**（同日、下の節）。
   以下はこの時点の形（owner ごとの並び・ずれの表示・「置き場のずれ」の絞り込みは、もう無い）。
   行は2列だけ：
@@ -779,7 +779,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
   Module の入口は、**その Project に繋いでいなくても出す**（`getLaunchersForProject`）——Project に
   繋ぐかどうかが決めるのは、その Project の AI に tool を見せるかだけで、人が開く画面までは絞らない。
   「repo」と打っても引ける（入口の名前だけでなく Module の名前でも引く）
-- **banto 全体の設定の Repo の面には、同じ一覧をその場に埋め込む**（アカウントの登録はその下）
+- **banto 全体の設定の Repositories の面には、同じ一覧をその場に埋め込む**（アカウントの登録はその下）
 - 理由：①Module の画面の器は既にある2つ（launcher の Canvas と設定面）で足りる——新しいルート
   （Project の外の Canvas の置き場）を作らない。②同じ画面を設定面にも出すのは、本物の Skill の
   置き場（`ui://banto-skills/manage`）と同じ形。③Project の中から開けば会話を残したまま見られ、
@@ -787,20 +787,20 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
 - **仕様と違う点**（規則8、ユーザー確認待ち）：`docs/specs/v4-frontend.md` §6.2 は「その Project に
   繋がっている Module の入口だけを出す」。banto 全体の Module はこの例外にした
 
-**状態ごとの URL**：一覧は `/p/<どれでも>?canvas=banto.repo:repos`、設定では
-`/settings?section=module:banto.repo`。一覧から「Project を始める」を押したのと同じ状態は
+**状態ごとの URL**：一覧は `/p/<どれでも>?canvas=banto.repositories:repos`、設定では
+`/settings?section=module:banto.repositories`。一覧から「Project を始める」を押したのと同じ状態は
 `?new-project=folder&folder=~/banto/dotfiles`。
 
-### ghq の置き方をやめる・Repo の台帳・フォルダを Import（2026-09-30、ユーザー決定）
+### ghq の置き方をやめる・Repositories の台帳・フォルダを Import（2026-09-30、ユーザー決定）
 
 **発端**：ghq の置き方（`~/ghq/github.com/<owner>/<repo>`）だと、置き場のパスが GitHub の持ち主と
 名前に縛られ、別の名前・アカウントで公開すると「ずれ」が生まれる。ユーザーの決定で置き方ごとやめた：
 
-- **既定の置き場は1か所**（`lib/mock/github.ts` の `getRepoHome`）。**Repo の設定で変えられ、既定は `~/banto`**。
-  フォルダ名はリポジトリ名（`~/banto/<名前>`）。設定の Repo の面に「既定の置き場」の欄
+- **既定の置き場は1か所**（`lib/mock/github.ts` の `getRepoHome`）。**Repositories の設定で変えられ、既定は `~/banto`**。
+  フォルダ名はリポジトリ名（`~/banto/<名前>`）。設定の Repositories の面に「既定の置き場」の欄
   （`settings/repo-home-section.tsx`。「変える」で入れる——打っている途中の値で Root パスを揺らさない。
   `~` と `/` は断る。変えても今あるフォルダは動かさない）
-- **Root パスの帯の中で、フォルダ名だけが打てる**（`project/repo-root-preview.tsx`、**→ `canvas/` へ移した**——Repo の画面の部品）——`~/banto/` は字のまま、
+- **Root パスの帯の中で、フォルダ名だけが打てる**（`project/repo-root-preview.tsx`、**→ `canvas/` へ移した**——Repositories の画面の部品）——`~/banto/` は字のまま、
   最後の段だけ入力欄。どこまでが決まっていて、どこを変えられるかを形で言う。
   - clone：**名前がぶつかったら `<名前>-2` を先に入れておき**、「~/banto/scratch は、もう使っているので
     scratch-2 にしました」と言う。人が打ち直してぶつかれば断り、「scratch-2 にする」を出す
@@ -812,7 +812,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
     GitHub に同じ名前があれば「clone で始める」を添える（前と同じ）
   - ぶつかったものが台帳のリポジトリなら、次の手に「`<名前>-2` にする」と「その Project を開く／
     このフォルダで Project を作る」の2つ
-- **Repo は台帳を持つ**（`lib/mock/github.ts` の `ledger`）——覚えるのは**置き場所と、どのアカウントで扱うか**だけ。
+- **Repositories は台帳を持つ**（`lib/mock/github.ts` の `ledger`）——覚えるのは**置き場所と、どのアカウントで扱うか**だけ。
   GitHub のどこか・ブランチはフォルダ（origin）から読む（規則3。台帳に写しを持たない）。
   **→ GitHub の場所（owner/name）も持つように改めた**（同日、下の「台帳に GitHub の場所」節）
   このマシンのフォルダ（git かどうか・origin）は別の一覧（`hostFolders`、本物は host が答える）で、
@@ -845,7 +845,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
 
 **状態ごとの URL**（`https://mock-…` の後ろ）：
 
-- 一覧：`/p/banto?canvas=banto.repo:repos`。台帳が空：`&repos=0`
+- 一覧：`/p/banto?canvas=banto.repositories:repos`。台帳が空：`&repos=0`
 - Import：`&import=~/ghq/github.com/tjst-t/incus-lab`（Import できる）・`&import=~/ghq/github.com/tjst-t`
   （中に1つ）・`&import=~/ghq/github.com/tjst-t/scratch`（git でない）・`&import=~/worktrees/banto-v4`（worktree）・
   `&import=~/ghq/github.com/tjst-t/banto/mock`（リポジトリの中）・`&import=~/code/foo`（無い）
@@ -853,7 +853,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
   `…&repo=tjst-t/dotfiles`（もう持っている）・`…&repo=tjst-t/banto`（Import したものを Project が使っている）
 - 新しいリポジトリ：`/p/banto?new-project=create`・`…&repo=recipe-box`（台帳のリポジトリとぶつかる）・
   `…&repo=scratch`（git でないフォルダとぶつかる）・`…&repo=notes`（GitHub に同じ名前）
-- 既定の置き場：`/settings?section=module:banto.repo`（一覧の下）
+- 既定の置き場：`/settings?section=module:banto.repositories`（一覧の下）
 
 ### 台帳に GitHub の場所・一覧から外す・フォルダが見つからない（2026-09-30、ユーザー決定）
 
@@ -862,7 +862,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
 
 - **台帳は GitHub の場所（owner/name）も持つ**（`LedgerEntry.github`）——フォルダが消えても clone し直せるように。
   origin の写しなので規則3 の例外で、理由は「元（フォルダ）が消えうる」こと。**食い違ったら origin を正として
-  台帳を直す**（`syncWithFolders` の1箇所。本物は Repo が一覧を答えるとき・clone・公開・Import のときに走らせる）。
+  台帳を直す**（`syncWithFolders` の1箇所。本物は Repositories が一覧を答えるとき・clone・公開・Import のときに走らせる）。
   origin が無くなっていれば台帳の場所も消す。フォルダが見つからない間は、台帳の値だけが手がかりなので直さない。
   直したときは、その行に1行だけ「フォルダの origin に合わせて、GitHub の場所を直しました（前は `tjst-t/tiny-cli`）」
   と言う（黙って書き換えると、覚えていた場所がなぜ変わったか分からない）。見本は tiny-cli（GitHub の上で
@@ -870,12 +870,12 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
 - **一覧から外す**——行の端の「…」（`RowMenu`）の中。**フォルダは消さない・GitHub にも触らない**。押す前に、
   項目の下で「フォルダは消さず、そのまま残ります／`<パス>`／Project「〜」もそのまま使えます」と言う
   （パスは1行に分けて、途中で折れないようにした）。トーストにも「フォルダは〜のまま」と「元に戻す」
-  - **Project が使っているものも外せる（止めない）**。Project の Root はフォルダのパスで、Repo の台帳を通していない
-    ——外しても Project はそのまま動く。失うのは Repo の記録（どのアカウントで push するか・GitHub の場所）だけで、
+  - **Project が使っているものも外せる（止めない）**。Project の Root はフォルダのパスで、Repositories の台帳を通していない
+    ——外しても Project はそのまま動く。失うのは Repositories の記録（どのアカウントで push するか・GitHub の場所）だけで、
     フォルダが残っているので Import すればすぐ戻る。だから確かめの画面は挟まず、項目の下とトーストで言い、
     トーストに「元に戻す」を置いた
   - 外したフォルダでも「この Project を GitHub に公開」は使える——公開の画面は台帳ではなくフォルダから読む
-    （`readFolderRepo`）。公開したら台帳に戻る（Repo が push したものは Repo が覚える）
+    （`readFolderRepo`）。公開したら台帳に戻る（Repositories が push したものは Repositories が覚える）
   - 行が消えたら、焦点は隣の行の「…」へ（無ければ「フォルダを Import」）
   - 項目を「…」に入れたのは、行の操作をいつも同じ場所に置くため。行に「外す」を裸で出すと、フォルダを消すように読める
 - **台帳にあるのにフォルダが見つからない**——行に「フォルダが見つかりません」（turn の地。この一覧で塗るのは
@@ -904,8 +904,8 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
 
 **状態ごとの URL**（`https://mock-…` の後ろ）：
 
-- 一覧（見つからない2つ・直した1つ）：`/p/banto?canvas=banto.repo:repos`。見つからないものだけ：絞り込みの「フォルダが見つからない」
-- clone し直せない（work-org を登録していない）：`/p/banto?canvas=banto.repo:repos&accounts=1` で db-migration の「clone し直す」
+- 一覧（見つからない2つ・直した1つ）：`/p/banto?canvas=banto.repositories:repos`。見つからないものだけ：絞り込みの「フォルダが見つからない」
+- clone し直せない（work-org を登録していない）：`/p/banto?canvas=banto.repositories:repos&accounts=1` で db-migration の「clone し直す」
 - 新しい Project から clone し直す：`/p/banto?new-project=clone&repo=work-org/db-migration`
 - 見つからない行の場所とぶつかる：`/p/banto?new-project=create&repo=sketches`
 
@@ -948,7 +948,7 @@ Project に Repo と Vault を自動で繋ぎ、公開の入口がその Project
   何がかは分かる）。「このマシンにだけ」は行の印と同じ名前のまま
 - `owner/name` が折れるときは「/」の後で折る（持ち主と名前を途中で切らない）
 
-**状態ごとの URL**：前の節と同じ（一覧 `/p/banto?canvas=banto.repo:repos`、設定 `/settings?section=module:banto.repo`、
+**状態ごとの URL**：前の節と同じ（一覧 `/p/banto?canvas=banto.repositories:repos`、設定 `/settings?section=module:banto.repositories`、
 clone し直せない `&accounts=1`、空 `&repos=0`）。
 
 ### リポジトリの一覧から URL で clone（2026-10-01、ユーザー要望）
@@ -958,7 +958,7 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
 - **受けるもの**：`https://github.com/owner/repo(.git)`・`git@github.com:owner/repo.git`・`owner/repo`、
   GitHub の外は `https://<host>/<path>`・`git@<host>:<path>.git`（読み方は `lib/mock/github.ts` の `parseCloneSource` の1箇所）
   - **GitHub の外も受ける**——台帳はもう GitHub の外の origin を扱え（Import した gitlab の notes）、断ると
-    「端末で clone して Import」という回り道になる。Repo のアカウント（GitHub のもの）は使わず、このマシンの git の設定で
+    「端末で clone して Import」という回り道になる。Repositories のアカウント（GitHub のもの）は使わず、このマシンの git の設定で
     clone すると言う。アカウントの列は「—」、GitHub の列は「GitHub の外 gitlab.com」。~~台帳は GitHub の外の場所を覚えないので、~~ **→ 覚えるように改めた（下の「core と Module の境目」節）**。
     フォルダが消えても clone し直しは出ない（前と同じ）
   - 読めない形は、打っている途中は例を出すだけで断らない。Enter・押したときに初めて欄を断る（打つたびに赤くしない）
@@ -974,27 +974,27 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   - 見つからない（GitHub）→ 理由と「URL を確かめてください。非公開なら、読めるアカウントを登録してから、もう一度押してください」
   - 見つからない（GitHub の外）→ 理由と「非公開なら、このマシンの git（SSH の鍵など）で読めるようにしてから」
 - **「Project も作る」**（スイッチ、`canvas/repo-project-option.tsx`。~~**既定は切**~~ **→ 既定オンに改め、オンなら core の
-  新しい Project の画面を開く形にした**——下の「core と Module の境目」節。以下は切だったときの理由）——ここは Repo の一覧で、用事は「このマシンに置く」こと。clone から Project を
+  新しい Project の画面を開く形にした**——下の「core と Module の境目」節。以下は切だったときの理由）——ここは Repositories の一覧で、用事は「このマシンに置く」こと。clone から Project を
   始める入口は新しい Project の画面にもうあり（そちらは作るのが既定）、両方を同じ既定にすると同じ入口が2つになる。
   切っておけば一覧に留まり、足した行が「Project はまだ無い」の表に地つきで出て、その行の「Project を始める」が次の手になる
   （設定面に埋め込んだときも設定から離れない）。人が入れた「Project も作る」は、URL を打ち直しても保つ
   - 入れると Project 名の欄（リポジトリ名が既定・変えられる）。ボタンは「clone する」／「clone して Project を作る」、
     見つからない行なら「clone し直す」／「clone し直して Project を作る」。~~もう持っているときの扱い~~ **→ 下の節で改めた**
-  - トーストは何が起きたかを2つ言う：「Repo が tjst-t/incus-lab を ~/banto/incus-lab に clone し、一覧に足しました」／
+  - トーストは何が起きたかを2つ言う：「Repositories が tjst-t/incus-lab を ~/banto/incus-lab に clone し、一覧に足しました」／
     「〜に clone し、Project「Hello 検証」を作りました」（新しい Project の画面と同じ言い方）。Project を作ったらその Project を開く
-- 帯の「このフォルダで Project を作る」（置く場所に Repo の知らないリポジトリがある等）は、ダイアログを閉じて新しい Project の画面を
+- 帯の「このフォルダで Project を作る」（置く場所に Repositories の知らないリポジトリがある等）は、ダイアログを閉じて新しい Project の画面を
   そのフォルダで開く（一覧の「Project を始める」と同じ）
 - **見本のデータ**：誰でも読める `octocat/hello-world`、GitHub の外で読める `gitlab.com/tjst-t/recipes-archive`（`notes` は Import 済み）
 
 **状態ごとの URL**（`https://mock-…` の後ろ。`&clone=<URL>` でその URL を入れて開く、モックの見せ方のためだけ）：
 
-- 空き：`/p/banto?canvas=banto.repo:repos&clone=https://github.com/tjst-t/incus-lab`
+- 空き：`/p/banto?canvas=banto.repositories:repos&clone=https://github.com/tjst-t/incus-lab`
 - 名前がぶつかる（-2）：`…&clone=git@github.com:tjst-t/scratch.git`／もう持っている：`…&clone=tjst-t/dotfiles`／
   Project が使っている：`…&clone=tjst-t/banto`（「Project も作る」を入れる）／clone し直す：`…&clone=work-org/db-migration`
 - GitHub の外：`…&clone=https://gitlab.com/tjst-t/recipes-archive`（読める）・`…&clone=https://gitlab.com/tjst-t/notes`（もうある）・
   `…&clone=https://gitlab.com/tjst-t/nope`（押すと失敗）
 - 失敗：`…&clone=github.com/someone/secret`（見つからない）・`…&clone=work-org/api-gateway` でアカウントを tjst-t にして押す（別のアカウントなら読める）
-- アカウント0：`…&accounts=0&clone=octocat/hello-world`／URL の形違い：`…&clone=foo%20bar` で Enter／設定面：`/settings?section=module:banto.repo&clone=tjst-t/scratch`
+- アカウント0：`…&accounts=0&clone=octocat/hello-world`／URL の形違い：`…&clone=foo%20bar` で Enter／設定面：`/settings?section=module:banto.repositories&clone=tjst-t/scratch`
 
 ### もう手元にあるときは clone させない・一覧から新しいリポジトリ（2026-10-01、ユーザー要望）
 
@@ -1024,21 +1024,21 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   帯の下で「あとで公開するときは別の名前が要ります」と「clone で始める」（押すと「URL から clone」へ `owner/名前` を入れて移る）。
   アカウントは聞かない
 - 「Project も作る」は clone と同じ部品・同じ既定（切）。ボタンは「リポジトリを作る」／「リポジトリと Project を作る」、
-  トーストは「Repo が ~/banto/garden を作り、一覧に足しました」／「〜を作り、Project「庭の記録」を作りました」
+  トーストは「Repositories が ~/banto/garden を作り、一覧に足しました」／「〜を作り、Project「庭の記録」を作りました」
 - 作らなければ「Project はまだ無い」の表に「このマシンにだけ・コミットなし」として入り、地つきで示す
 
 **状態ごとの URL**（`https://mock-…` の後ろ）：
 
-- もう手元にある：`/p/banto?canvas=banto.repo:repos&clone=https://github.com/tjst-t/banto`（Project あり）・
+- もう手元にある：`/p/banto?canvas=banto.repositories:repos&clone=https://github.com/tjst-t/banto`（Project あり）・
   `…&clone=https://gitlab.com/tjst-t/notes`（Project なし）／新しい Project の画面：`/p/banto?new-project=clone&repo=tjst-t/banto`・`…&repo=tjst-t/dotfiles`
-- 新しいリポジトリ：`/p/banto?canvas=banto.repo:repos&new-repo=garden`（空き）・`…&new-repo=dotfiles`（ぶつかる）・
-  `…&new-repo=notes`（GitHub に同名）／設定面：`/settings?section=module:banto.repo&new-repo=garden`
+- 新しいリポジトリ：`/p/banto?canvas=banto.repositories:repos&new-repo=garden`（空き）・`…&new-repo=dotfiles`（ぶつかる）・
+  `…&new-repo=notes`（GitHub に同名）／設定面：`/settings?section=module:banto.repositories&new-repo=garden`
 
 ### core と Module の境目：新しい Project の画面を作り直す（2026-10-01、ユーザー決定）
 
-**発端**：新しい Project の画面は core（banto 本体）の機能なのに、core の画面が Repo Module を名指しで知っていた
-（「GitHub から clone」「新しいリポジトリ」のタブ、「Repo が用意します」）。banto の決まりは「core は Module を名指しで知らない／
-Module を足すのに core を触らない」。Repo を外した banto でこの画面が壊れてはいけない。
+**発端**：新しい Project の画面は core（banto 本体）の機能なのに、core の画面が Repositories Module を名指しで知っていた
+（「GitHub から clone」「新しいリポジトリ」のタブ、「Repositories が用意します」）。banto の決まりは「core は Module を名指しで知らない／
+Module を足すのに core を触らない」。Repositories を外した banto でこの画面が壊れてはいけない。
 
 **core の新しい Project の画面**（`project/new-project-dialog.tsx`）が持つのは2つだけ：
 
@@ -1052,7 +1052,7 @@ Module を足すのに core を触らない」。Repo を外した banto でこ�
 - **名乗りの印**：`MockModuleImplementation.folderProviders`（`lib/mock/types.ts`）——本物は `_meta["dev.banto/module"].folderProviders`
   （設定面の `ui://<id>/config`・launcher と同じ仕組み）。1つの始め方は `{ id, label, description, icon, viewId }`、画面は
   `ui://<implementationId>/<viewId>`。core は `getFolderProviders()`（`lib/mock/settings.ts`）で、有効な Module の名乗りを集めるだけ。
-  Repo は `clone`（`prepare-clone`）と `新しいリポジトリ`（`prepare-create`）を名乗る
+  Repositories は `clone`（`prepare-clone`）と `新しいリポジトリ`（`prepare-create`）を名乗る
 - **core が渡すもの**：`MockFolderProviderHost`（返事の口 `onPrepared`。モックの見せ方のためだけに最初の値 `initialInput`）
 - **Module が返すもの**：`MockPreparedFolder` = `{ path, suggestedName?, summary }`——「このフォルダを用意した」。summary は
   何をしたかの1行（「tjst-t/incus-lab を ~/banto/incus-lab に clone しました」）で、core はそれをそのまま添える
@@ -1061,25 +1061,25 @@ Module を足すのに core を触らない」。Repo を外した banto でこ�
   **もう Root にしている Project があるかは core が自分で調べ**（Module に聞かない）、あれば作らずに「〜を開く」にする
   （手元のフォルダでも同じ）。Module の画面を使っているあいだは core の作るボタンを出さない——次の手は枠の中にある
 - **見せ方**：Module の画面は core の画面の中の「よそ様の画面」——設定面（`settings/module-config-pane.tsx`）と同じ点線の枠・薄い地に、
-  出所（「Repo（banto 標準）の画面」・`ui://banto.repo/prepare-clone`・sandboxed の印）を添える。中の質感は Module のもの。
+  出所（「Repositories（banto 標準）の画面」・`ui://banto.repositories/prepare-clone`・sandboxed の印）を添える。中の質感は Module のもの。
   本物は iframe で、モックは `canvas/canvas-content.tsx` の `FolderProviderContent`（Canvas の中身の表と同じ、iframe の代わり）
-- **Repo を外した banto**：`?modules=none`——新しい Project の画面は「手元のフォルダ」だけになり、そのまま作れる
+- **Repositories を外した banto**：`?modules=none`——新しい Project の画面は「手元のフォルダ」だけになり、そのまま作れる
 
-**Repo の側**（中身は使い回し）：
+**Repositories の側**（中身は使い回し）：
 
 - 本体を1つずつにした——`canvas/repo-clone-form.tsx`（URL を打つ形と、アカウントから探す形）・`canvas/repo-create-form.tsx`。
   一覧のダイアログ（`repo-clone-dialog.tsx`・`repo-create-dialog.tsx`）と、core に差し出す画面（`repo-prepare-view.tsx`）が同じ本体を使う。
   ボタンの置き場と言い方は入口ごと（`renderActions`）：core の画面では枠の中に「clone する」「clone し直す」「この場所を使う」
-  「リポジトリを作る」。帯の部品 `repo-root-preview.tsx` は Repo の画面の部品なので `canvas/` へ移した
-- 新しいリポジトリで「GitHub に同じ名前がある——clone で始める」は、Repo の画面の中で clone の形に替わる（core のタブは替えない。「新しく作るほうに戻る」）
+  「リポジトリを作る」。帯の部品 `repo-root-preview.tsx` は Repositories の画面の部品なので `canvas/` へ移した
+- 新しいリポジトリで「GitHub に同じ名前がある——clone で始める」は、Repositories の画面の中で clone の形に替わる（core のタブは替えない。「新しく作るほうに戻る」）
 - **帯の見出しは外した**——「Root パス」「手元にある場所」「置く場所」のような見出しは場面ごとに言い換えが要り、言い損ねると誤読される。
   **パスと、その下の1行**で場面を言う：「ここに clone します」「ここに空のリポジトリを作ります」「もう手元にあります（tjst-t/banto）」
   「ここに clone し直します——〜」。worktree で使っている Project は「Project「banto」が worktree で使っています」と言う
   （core は Root が同じ Project だけを「もうある」とするので、言い方をそろえた——元のフォルダに別の Project は作れる）
-- **一覧の「Project も作る」は既定オン**（ユーザー決定）——オンのまま押すと、Repo がフォルダを用意したあと、**一覧が core の新しい Project の
+- **一覧の「Project も作る」は既定オン**（ユーザー決定）——オンのまま押すと、Repositories がフォルダを用意したあと、**一覧が core の新しい Project の
   画面をそのフォルダを入れた状態で開く**（手元のフォルダ・Root パス・名前の既定を入れて。人がそこで確かめて「Project を作る」）。
   core に「Project を作る」口は足していない。ボタンは「clone して Project の作成へ」「作って Project の作成へ」、トーストは
-  「Repo が〜に clone しました。Project の作成に進みます」。オフなら一覧に足すだけ（前と同じ）。意味が無いとき（もう手元にある・
+  「Repositories が〜に clone しました。Project の作成に進みます」。オフなら一覧に足すだけ（前と同じ）。意味が無いとき（もう手元にある・
   clone し直す場所をもう Project が使っている）は出さない
 - **GitHub の外も台帳に場所を書く**（ユーザー決定）——`LedgerEntry.elsewhere`（origin の URL）。フォルダが消えても clone し直せる
   （一覧の行の「clone し直す」・URL から clone のどちらでも）。食い違ったら origin に合わせる（覚えていなかったものを覚えるだけなので、
@@ -1087,12 +1087,30 @@ Module を足すのに core を触らない」。Repo を外した banto でこ�
 
 **状態ごとの URL**（`https://mock-…` の後ろ）：
 
-- core の新しい Project の画面：`/p/banto?new-project=folder`（タブ3つ）・`?new-project=banto.repo:clone&repo=tjst-t/incus-lab`
+- core の新しい Project の画面：`/p/banto?new-project=folder`（タブ3つ）・`?new-project=banto.repositories:clone&repo=tjst-t/incus-lab`
   （`clone`・`create` は前からの URL の読み替え。この読み替えは `project/repo-demo-params.tsx` だけにある）
 - もう手元にあり Project がある：`/p/banto?new-project=clone&repo=tjst-t/home-automation` で「この場所を使う」
-- Repo を外した banto：`/p/banto?new-project=clone&modules=none`
-- 一覧から Project の作成へ：`/p/banto?canvas=banto.repo:repos&clone=tjst-t/incus-lab`・`…&new-repo=garden`
-- gitlab の見つからない行：`/p/banto?canvas=banto.repo:repos`（zine）・`…&clone=https://gitlab.com/tjst-t/zine`
+- Repositories を外した banto：`/p/banto?new-project=clone&modules=none`
+- 一覧から Project の作成へ：`/p/banto?canvas=banto.repositories:repos&clone=tjst-t/incus-lab`・`…&new-repo=garden`
+- gitlab の見つからない行：`/p/banto?canvas=banto.repositories:repos`（zine）・`…&clone=https://gitlab.com/tjst-t/zine`
+
+### Module の名前を Repositories に・git の操作を外す（2026-10-01、ユーザー決定）
+
+- **名前を「Repo」から「Repositories」に改めた**（画面の表示は「リポジトリ」）——「Repo」は1つのリポジトリへの git 操作に
+  聞こえるが、中身は手元のリポジトリの台帳と一覧。id は `banto.repositories`（役割は `repositories`）、画面は
+  `ui://banto.repositories/…`、設定の一覧の名前は「Repositories（banto 標準）」。文の中は自然な日本語に言い換えた
+  （「Repo の設定」→「リポジトリの設定」、「Repo が〜を clone しました」→「〜を clone しました」、「Repo が知っているもの」→
+  「このマシンで扱うリポジトリ」など）。core の枠の出所・用意できたフォルダの1行は Module の名前のまま（「Repositories（banto 標準）の画面」
+  「Repositories：〜を clone しました」）。古い URL（`banto.repo:…`）は読み替えない。この README の前の節の「Repo」も Repositories に置き換えた
+- **git の操作は Repositories に持たせない**（AI は Shell で git を打つ）——tool の `worktreeList`・`diff`、launcher の「差分ビューを開く」、
+  Canvas の差分ビューの作り物、Command Palette の「Canvas を開く／差分ビュー」を外した。会話のデモは付け替えた：
+  「tool 呼び出し」（worktree を教えて）は Shell の `git worktree list`、inline・fullscreen の実演は FileSystem の既存の2つ
+  （「ファイル編集の差分（inline 表示）」「ファイルプレビュー（fullscreen 表示）」）に寄せ、Repo の差分を使っていた2つは外した。
+  受信箱・通知のデモで出所が Repo になっていた Shell の操作（`rm -rf dist/` の確認・`git push --force` の確認・push のための GitHub ログイン）は
+  出所を `banto.shell` に直した
+
+**URL**：一覧 `/p/banto?canvas=banto.repositories:repos`、設定 `/settings?section=module:banto.repositories`、
+公開 `/p/hermes?canvas=banto.repositories:publish`、新しい Project の始め方 `?new-project=banto.repositories:clone`（`clone`・`create` の読み替えは前のまま）。
 
 ## まだ実装していない
 

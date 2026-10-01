@@ -1,7 +1,7 @@
 "use client";
 
 // Shell Module の runCommand（v4-modules.md §2.3）——会話内のインラインカード。
-// resource を持たない Shell は、FileSystem/Repo のような Canvas コンテンツへの
+// resource を持たない Shell は、FileSystem/Repositories のような Canvas コンテンツへの
 // inline 参照（InlineModuleView）を経由せず、この専用カードでその場に描く。
 //
 // **同じ tool の2段階を1つのカードで見せる**：承認ゲート（実行前）では

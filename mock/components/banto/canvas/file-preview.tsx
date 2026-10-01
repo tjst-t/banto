@@ -54,7 +54,7 @@ export const FILE_PREVIEW_SOURCES: Readonly<Record<string, string>> = {
   "docs/budget.csv": [
     "項目,予算,実績",
     "Vault,120000,98000",
-    "Repo,80000,81000",
+    "Repositories,80000,81000",
     "Shell,50000,47000",
   ].join("\n"),
   "public/index.html": [

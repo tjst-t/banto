@@ -55,7 +55,7 @@ export function getContextUsage(threadId: ThreadId): ContextUsage {
         tokens: 8_400,
         kind: "content",
         items: [
-          { name: "banto.repo", tokens: 3_000 },
+          { name: "banto.repositories", tokens: 3_000 },
           { name: "banto.fs", tokens: 2_600 },
           { name: "banto.vault-local", tokens: 2_800 },
         ],

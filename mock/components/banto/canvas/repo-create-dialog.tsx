@@ -2,7 +2,7 @@
 
 // 新しいリポジトリ（2026-10-01、ユーザー）——リポジトリの一覧から、手元に新しいリポジトリを始める。
 // 中身は `RepoCreateForm`（core の新しい Project の画面に差し出す「新しいリポジトリ」と同じ本体）。
-// Repo が既定の置き場（`~/banto/<名前>`）にフォルダを作って git init し、台帳に足す。GitHub にはまだ作らない。
+// Repositories が既定の置き場（`~/banto/<名前>`）にフォルダを作って git init し、台帳に足す。GitHub にはまだ作らない。
 // 「Project も作る」は clone と同じ部品・同じ既定（オン）——オンなら作ったあと、一覧が core の新しい Project の画面を
 // そのフォルダで開く。オフなら「Project はまだ無い」の表に「このマシンにだけ」として入る。
 import { useState, type FormEvent } from "react";
@@ -52,14 +52,14 @@ export function RepoCreateDialog({
           <DialogHeader>
             <DialogTitle>新しいリポジトリ</DialogTitle>
             <DialogDescription>
-              Repo が {home} に作って git init します。GitHub へは、あとで公開できます。
+              {home} に作って git init します。GitHub へは、あとで公開できます。
             </DialogDescription>
           </DialogHeader>
           <div className="flex max-h-[65vh] min-w-0 flex-col overflow-y-auto">
             <RepoCreateForm
               initialName={initialName}
               onCreated={({ path, name }) => {
-                toast(withProject ? `Repo が ${path} を作りました。Project の作成に進みます` : `Repo が ${path} を作り、一覧に足しました`);
+                toast(withProject ? `${path} を作りました。Project の作成に進みます` : `${path} を作り、一覧に足しました`);
                 onShow(path);
                 if (withProject) onStartProject(path, name);
               }}

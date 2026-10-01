@@ -1,6 +1,6 @@
 "use client";
 
-// URL から clone（2026-10-01、ユーザー）——リポジトリの一覧から、URL を貼って Repo に clone させる。
+// URL から clone（2026-10-01、ユーザー）——リポジトリの一覧から、URL を貼って Repositories に clone させる。
 // 中身は `RepoCloneForm`（core の新しい Project の画面に差し出す「clone」と同じ本体。こちらは URL を打つ形）。
 // GitHub の外（gitlab.com 等）も受ける——台帳は GitHub の外の場所も覚え、フォルダが消えたら clone し直せる。
 //
@@ -57,9 +57,9 @@ export function RepoCloneDialog({
       // clone し直した場所をもう Project が使っているなら、作る画面へは行かない（Root が戻るだけ）
       const toProject = withProject && !f.project;
       const head = f.recloned
-        ? `Repo が ${f.label} を ${f.path} に clone し直しました` +
+        ? `${f.label} を ${f.path} に clone し直しました` +
           (f.project ? `（Project「${f.project.name}」の Root です）` : "")
-        : `Repo が ${f.label} を ${f.path} に clone しました`;
+        : `${f.label} を ${f.path} に clone しました`;
       toast(toProject ? `${head}。Project の作成に進みます` : f.recloned ? head : `${head}。一覧に足しました`);
       onShow(f.path);
       if (toProject) onStartProject(f.path, f.suggestedName);
@@ -74,7 +74,7 @@ export function RepoCloneDialog({
         <form onSubmit={(e: FormEvent) => e.preventDefault()} className="flex min-w-0 flex-col gap-4">
           <DialogHeader>
             <DialogTitle>URL から clone</DialogTitle>
-            <DialogDescription>Repo が {home} に clone して、一覧に足します。</DialogDescription>
+            <DialogDescription>{home} に clone して、一覧に足します。</DialogDescription>
           </DialogHeader>
           <div className="flex max-h-[65vh] min-w-0 flex-col overflow-y-auto">
             <RepoCloneForm

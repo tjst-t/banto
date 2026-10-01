@@ -41,7 +41,7 @@ const MOCK_REGISTRY_RESULTS: readonly { id: string; name: string; roleId: string
   { id: "io.github.mark3labs/mcp-filesystem-server", name: "mcp-filesystem-server", roleId: "filesystem" },
   { id: "io.github.wonderwhy-er/desktop-commander", name: "Desktop Commander", roleId: "shell" },
   { id: "io.github.anthropics/skill-hub", name: "Skill Hub Registry", roleId: "skills" },
-  { id: "io.github.github/github-mcp-server", name: "GitHub MCP Server", roleId: "repo" },
+  { id: "io.github.github/github-mcp-server", name: "GitHub MCP Server", roleId: "repositories" },
   { id: "io.github.hashicorp/vault-mcp", name: "HashiCorp Vault", roleId: "vault" },
 ];
 

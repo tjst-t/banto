@@ -1,9 +1,9 @@
 "use client";
 
 // 「Project も作る」（2026-10-01、ユーザー）——リポジトリの一覧の「URL から clone」と「新しいリポジトリ」で同じ形。
-// **既定はオン**（2026-10-01、ユーザー決定）。オンのまま押すと、Repo がフォルダを用意したあと、一覧が **core の
+// **既定はオン**（2026-10-01、ユーザー決定）。オンのまま押すと、Repositories がフォルダを用意したあと、一覧が **core の
 // 新しい Project の画面を、そのフォルダを入れた状態で開く**——人がそこで Project 名を確かめて「作る」。
-// Repo は Project を作らない（core に「Project を作る」口を足さない。Project を作るのは core の画面だけ）。
+// Repositories は Project を作らない（core に「Project を作る」口を足さない。Project を作るのは core の画面だけ）。
 // オフなら一覧に足すだけ（「Project はまだ無い」の表に地つきで出る）。
 // 意味が無いとき（もう手元にある・clone し直す場所をもう Project が使っている）は出さない——それは入口の側が決める。
 import { Switch } from "@/components/ui/switch";

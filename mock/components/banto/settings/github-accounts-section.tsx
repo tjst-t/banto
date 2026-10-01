@@ -1,6 +1,6 @@
 "use client";
 
-// Repo の設定の中の「GitHub のアカウント」（決定・2026-09-29、ユーザー）——名前・PAT・SSH 鍵。
+// Repositories の設定の中の「GitHub のアカウント」（決定・2026-09-29、ユーザー）——名前・PAT・SSH 鍵。
 // PAT と鍵は Vault に預け、ここには alias の名前しか出さない（VaultUI と同じ作法）。
 // 入力された PAT の値はモックでは**どこにも保存しない**
 import { useState, type FormEvent } from "react";

@@ -47,9 +47,6 @@ export function CommandPalette({
       case "open-fork":
         stack?.open({ fork: "ui", overlay: null });
         break;
-      case "open-canvas":
-        stack?.open({ canvas: { moduleId: "banto.repo", viewId: "diff" }, overlay: null });
-        break;
       case "open-inbox":
         stack?.open({ overlay: "inbox" });
         break;

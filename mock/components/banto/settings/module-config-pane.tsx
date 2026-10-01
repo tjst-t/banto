@@ -54,9 +54,9 @@ export function ModuleConfigPane({
           <ShieldCheck className="size-3.5" />
           sandboxed iframe
         </div>
-        {/* Repo は banto 全体に1本——リポジトリの一覧（launcher の Canvas と同じ画面）を
+        {/* Repositories は banto 全体に1本——リポジトリの一覧（launcher の Canvas と同じ画面）を
             いちばん上に。人がこの面に来る用事は、たいていこれ */}
-        {impl.roleId === "repo" && projectId === undefined ? (
+        {impl.roleId === "repositories" && projectId === undefined ? (
           <div id="anchor-repo-list" className="mb-3 rounded-md border border-border bg-card p-3">
             <RepoList embedded />
           </div>
@@ -84,7 +84,7 @@ export function ModuleConfigPane({
 
 
         {/* 既定の置き場と GitHub のアカウントは banto 全体で1組（Project ごとには持たない） */}
-        {impl.roleId === "repo" && projectId === undefined ? (
+        {impl.roleId === "repositories" && projectId === undefined ? (
           <>
             <RepoHomeSection />
             <GithubAccountsSection />

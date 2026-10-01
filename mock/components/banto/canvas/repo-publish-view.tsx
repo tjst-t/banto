@@ -1,7 +1,7 @@
 "use client";
 
 // まだこのマシンにだけあるリポジトリを GitHub に公開する（2026-09-29）。
-// Repo Module の Canvas（`banto.repo:publish`）。**入口は2つ**（改訂・2026-09-30）：
+// Repositories Module の Canvas（`banto.repositories:publish`）。**入口は2つ**（改訂・2026-09-30）：
 // - Project の中の入口「この Project を GitHub に公開」——その Project の Root のリポジトリ
 // - リポジトリの一覧の「GitHub に公開」——一覧の中で開く（`folder`・`onBack` を渡す）
 // 対象は**フォルダ**で決まる（Project ではない）。リポジトリの状態の真実は

@@ -17,48 +17,6 @@ import type { MockFolderProviderHost } from "@/lib/mock/types";
 import { ShellTerminalView } from "./shell-terminal-view";
 import { VaultManageView } from "./vault-manage-view";
 
-const DIFF_LINES: readonly { kind: "context" | "add" | "remove"; text: string }[] = [
-  { kind: "context", text: "  export function ThreadPanel({ threadId }: { threadId: string }) {" },
-  { kind: "remove", text: "-   const thread = getThread(threadId);" },
-  { kind: "add", text: "+   const thread = useMemo(() => getThread(threadId), [threadId]);" },
-  { kind: "context", text: "    const adapter = useMemo(() => (thread ? createMockChatModelAdapter(thread) : null), [thread]);" },
-  { kind: "remove", text: "-   if (!thread) return null;" },
-  { kind: "add", text: "+   if (!thread || !adapter) {" },
-  { kind: "add", text: "+     return <ThreadNotFound threadId={threadId} />;" },
-  { kind: "add", text: "+   }" },
-];
-
-function RepoDiffView() {
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
-        <Badge variant="outline" className="font-mono text-xs">
-          lib/mock/thread-panel.tsx
-        </Badge>
-        <span className="text-xs text-ink-3">+4 -2</span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-xs leading-relaxed">
-        {DIFF_LINES.map((line, i) => (
-          <div
-            key={i}
-            className={cn(
-              "whitespace-pre rounded-sm px-2",
-              line.kind === "add" && "bg-ok-soft text-ok",
-              line.kind === "remove" && "bg-stop-soft text-stop",
-              line.kind === "context" && "text-ink-2",
-            )}
-          >
-            {line.text}
-          </div>
-        ))}
-      </div>
-      <div className="shrink-0 border-t border-border px-4 py-2.5 text-xs text-ink-3">
-        Repo Module が描く差分ビュー
-      </div>
-    </div>
-  );
-}
-
 const WORKER_FINDINGS: readonly { level: "info" | "warn"; text: string }[] = [
   { level: "info", text: "views.css を 3 ファイルに分割しました（layout / theme / components）" },
   { level: "info", text: "既存のクラス名は変更していません——参照側の修正は不要です" },
@@ -180,11 +138,9 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
 
   const key = `${moduleId}:${viewId}`;
   switch (key) {
-    case "banto.repo:diff":
-      return <RepoDiffView />;
-    case "banto.repo:repos":
+    case "banto.repositories:repos":
       return <RepoListView />;
-    case "banto.repo:publish":
+    case "banto.repositories:publish":
       return <RepoPublishView />;
     case "banto.fs:browser":
       return <FileExplorerView />;
@@ -218,9 +174,9 @@ export function FolderProviderContent({
   host: MockFolderProviderHost;
 }) {
   switch (`${implementationId}:${viewId}`) {
-    case "banto.repo:prepare-clone":
+    case "banto.repositories:prepare-clone":
       return <RepoPrepareCloneView host={host} />;
-    case "banto.repo:prepare-create":
+    case "banto.repositories:prepare-create":
       return <RepoPrepareCreateView host={host} />;
     default:
       return <UnknownCanvasView moduleId={implementationId} viewId={viewId} />;

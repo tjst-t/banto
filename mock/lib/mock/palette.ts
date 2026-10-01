@@ -59,7 +59,6 @@ const MOCK_FILES: Readonly<Record<string, readonly string[]>> = {
 
 const OPERATIONS: readonly { id: string; title: string; subtitle: string; icon: LucideIcon }[] = [
   { id: "open-fork", title: "Fork Thread を開く", subtitle: "この Project で新しい枝を立てる", icon: GitFork },
-  { id: "open-canvas", title: "Canvas を開く", subtitle: "Repo Module の差分ビュー", icon: Rocket },
   { id: "open-inbox", title: "受信箱を開く", subtitle: "判断待ち・レビュー待ち", icon: Inbox },
   { id: "open-project-settings", title: "この Project の設定を開く", subtitle: "階層2", icon: SlidersHorizontal },
   { id: "open-instance-settings", title: "instance 設定を開く", subtitle: "/settings・階層1", icon: Settings },
@@ -151,7 +150,7 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   }
 
   // core の操作。Project に紐づく操作は、いまその Project を見ているときだけ出す
-  const PROJECT_SCOPED_OPS = new Set(["open-fork", "open-canvas", "open-project-settings"]);
+  const PROJECT_SCOPED_OPS = new Set(["open-fork", "open-project-settings"]);
   const opItems: PaletteItem[] = OPERATIONS.filter((o) => currentProjectId || !PROJECT_SCOPED_OPS.has(o.id))
     .filter((o) => q === "" || o.title.toLowerCase().includes(q))
     .map((o) => ({

@@ -7,9 +7,9 @@
 // 「ここに clone し直します」）で場面を言う。
 //
 // clone と「新しいリポジトリ」の Root は**既定の置き場の下**（`~/banto/<名前>`、置き場は
-// Repo の設定で変えられる）。人が決めるのはフォルダ名だけなので、**入力欄は帯の中の
+// Repositories の設定で変えられる）。人が決めるのはフォルダ名だけなので、**入力欄は帯の中の
 // 最後の1段にだけ置く**——置き場は打たせない。名前がぶつかったら `<名前>-2` を先に入れておき、
-// 人が変えられる。フォルダを用意するのは Repo なので、文は「Repo が〜します」で言う。
+// 人が変えられる。フォルダを用意するのは Repositories なので、文は「Repositories が〜します」で言う。
 // 何があるかの判断は `inspectTargetFolder`・`inspectCloneSource` が持つ（規則3）——
 // この部品は言い方だけを持つ。
 //
@@ -222,7 +222,7 @@ function describe({
       icon: <LoaderCircle className="motion-safe:animate-spin" />,
       message: (
         <>
-          Repo が clone しています…{" "}
+          clone しています…{" "}
           <span className="font-mono text-ink-3 tabular-nums">
             {status.received.toLocaleString()} / {status.total.toLocaleString()}
           </span>
@@ -237,7 +237,7 @@ function describe({
       message: <>clone できませんでした：{status.reason}</>,
       next: failedNext ?? (
         <p className="text-ink-2">
-          非公開のリポジトリなら、読めるアカウントを Repo の設定に登録してから、もう一度選んでください。
+          非公開のリポジトリなら、読めるアカウントをリポジトリの設定に登録してから、もう一度選んでください。
         </p>
       ),
     };
@@ -278,7 +278,7 @@ function describe({
       icon: <CloudDownload />,
       message: (
         <>
-          ここに clone し直します——Repo の一覧にありますが、フォルダが見つかりません
+          ここに clone し直します——一覧にありますが、フォルダが見つかりません
           {project ? <>（Project「{project.name}」の Root です）</> : null}。
         </>
       ),
@@ -362,7 +362,7 @@ function describe({
         icon: <Ban />,
         message: (
           <>
-            ここは Repo の一覧にある {state.repo.name} の場所です（フォルダは見つかりません）。一覧から外すまで、ここには
+            ここは一覧にある {state.repo.name} の場所です（フォルダは見つかりません）。一覧から外すまで、ここには
             {verb}しません。
           </>
         ),
@@ -372,7 +372,7 @@ function describe({
       return {
         tone: "stop",
         icon: <Ban />,
-        message: <>ここには、Repo がまだ知らない git のリポジトリがあります。上書きしないので、{verb}できません。</>,
+        message: <>ここには、一覧にまだ無い git のリポジトリがあります。上書きしないので、{verb}できません。</>,
         next: [rename, <NextStep key="use" label="このフォルダで Project を作る" onClick={() => onUseAsFolder(path)} />],
       };
     case "taken-folder":

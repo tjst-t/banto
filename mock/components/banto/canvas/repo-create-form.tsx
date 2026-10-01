@@ -1,6 +1,6 @@
 "use client";
 
-// Repo の「新しいリポジトリ」の本体（2026-10-01、作り直し）——**Repo Module の画面の中身**。2か所で同じものを使う：
+// Repositories の「新しいリポジトリ」の本体（2026-10-01、作り直し）——**Repositories Module の画面の中身**。2か所で同じものを使う：
 //   - リポジトリの一覧の「新しいリポジトリ」（`repo-create-dialog.tsx`）
 //   - core の新しい Project の画面に差し出す始め方（`repo-prepare-view.tsx`）
 // 帯は `RepoRootPreview`（mode="create"）——名前の欄は帯の中の1つだけ（リポジトリ名＝フォルダ名）。
@@ -30,7 +30,7 @@ export function RepoCreateForm({
 }: {
   initialName?: string;
   onCreated: (folder: { path: string; name: string }) => void;
-  /** 帯の「このフォルダで Project を作る」（置く場所に、Repo の知らないリポジトリがある等） */
+  /** 帯の「このフォルダで Project を作る」（置く場所に、Repositories の知らないリポジトリがある等） */
   onUseAsFolder: (path: string) => void;
   /** 帯の「「〜」を開く」（置く場所を、もう Project が使っている） */
   onOpenAt: (path: string, projectId: string, closed: boolean) => void;
@@ -71,7 +71,7 @@ export function RepoCreateForm({
           onOpenProject={(id, closed) => onOpenAt(path, id, closed)}
         />
         <p className="text-xs text-ink-3">
-          GitHub に公開するときも、この名前を使います（そのときに変えられます）。置き場（{home}）は Repo の設定で変えられます。
+          GitHub に公開するときも、この名前を使います（そのときに変えられます）。置き場（{home}）はリポジトリの設定で変えられます。
         </p>
       </div>
       {renderActions({ ready, create })}

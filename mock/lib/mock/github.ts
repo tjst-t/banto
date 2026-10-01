@@ -1,11 +1,11 @@
-// Repo Module の GitHub まわり（2026-09-29、Repo Module を足す相談のためのモック）。
+// Repositories Module の GitHub まわり（2026-09-29、Repositories Module を足す相談のためのモック）。
 //
-// - アカウントは Repo の設定で登録する（名前・PAT・SSH 鍵）。PAT と鍵の中身は
+// - アカウントは Repositories の設定で登録する（名前・PAT・SSH 鍵）。PAT と鍵の中身は
 //   ここに持たない——Vault の alias の名前だけを持つ（VaultUI と同じ作法）
-// - **Repo は banto 全体に1本**（改訂・2026-09-30、ユーザー）——Project より先に動き、
+// - **Repositories は banto 全体に1本**（改訂・2026-09-30、ユーザー）——Project より先に動き、
 //   フォルダを用意する（clone・git init）だけ。Project を作るのは banto 本体
 // - **ghq の置き方はやめた**（2026-09-30、ユーザー）——clone・新規は既定の置き場
-//   （`~/banto/<名前>`）。Repo は**知っているリポジトリの台帳**を持ち、好きな場所の
+//   （`~/banto/<名前>`）。Repositories は**知っているリポジトリの台帳**を持ち、好きな場所の
 //   フォルダを Import できる。GitHub に公開してもフォルダは動かさない
 // - 作る先に既にフォルダがあるとき、何が起きるかは `inspectTargetFolder`、Import で
 //   何が起きるかは `inspectImport` の1箇所ずつで決める（画面は言い方だけを持つ）
@@ -200,7 +200,7 @@ export function checkCloneAccess(
 
 // ── 置き場（2026-09-30、ユーザー決定：ghq の置き方はやめる）─────────────────────
 //
-// clone・新しく作るリポジトリの**既定の置き場は1か所**。Repo の設定で変えられ、既定は
+// clone・新しく作るリポジトリの**既定の置き場は1か所**。Repositories の設定で変えられ、既定は
 // `~/banto`。フォルダ名はリポジトリ名（`<置き場>/<名前>`）で、ぶつかったら `<名前>-2` を出す。
 // 置き場を変えても、今あるフォルダは動かさない（台帳はパスで覚えている）。
 
@@ -286,7 +286,7 @@ const SEED_FOLDERS: readonly HostFolder[] = [
   { path: "~/srv/media", entries: 6 },
   { path: "~/worktrees/banto-v4", entries: 24 },
   { path: "~/worktrees/old-migration", entries: 31 },
-  // 既定の置き場——Repo が clone した・作ったもの
+  // 既定の置き場——Repositories が clone した・作ったもの
   { path: "~/banto/dotfiles", entries: 19, git: git(gh("tjst-t", "dotfiles", false), { commits: 488 }) },
   {
     path: "~/banto/hermes",
@@ -364,7 +364,7 @@ function gitFoldersInside(path: string): { importable: number; known: number } {
   return { importable: inside.length - known, known };
 }
 
-// ── Repo の台帳：知っているリポジトリ ───────────────────────────────────────
+// ── Repositories の台帳：知っているリポジトリ ───────────────────────────────────────
 //
 // 台帳が覚えるのは**置き場所・どのアカウントで扱うか・GitHub の場所（owner/name）**。
 // GitHub の場所はフォルダの origin の写しだが、**フォルダが消えたときに clone し直すため**に持つ
@@ -407,7 +407,7 @@ const originFields = (remote: RepoRemote): Pick<LedgerEntry, "github" | "elsewhe
 });
 
 /**
- * 台帳の GitHub の場所を、フォルダの origin に合わせる。本物は Repo が一覧を答えるとき・
+ * 台帳の GitHub の場所を、フォルダの origin に合わせる。本物は Repositories が一覧を答えるとき・
  * フォルダに触れたとき（clone・公開・Import）に走らせる。フォルダが見つからない行は触らない
  */
 function syncWithFolders(entries: readonly LedgerEntry[], folders: readonly HostFolder[]): LedgerEntry[] {
@@ -588,7 +588,7 @@ function putGitFolder(path: string, facts: GitFacts): void {
     : [...hostFolders, { path, entries: 1, git: facts }];
 }
 
-/** Repo が clone した——フォルダを作って台帳に足す（見つからなかった行なら、その行を置き換える） */
+/** Repositories が clone した——フォルダを作って台帳に足す（見つからなかった行なら、その行を置き換える） */
 export function addClonedRepo(input: {
   path: string;
   accountId?: string;
@@ -654,7 +654,7 @@ export function restoreLedgerEntry(entry: LedgerEntry): void {
 }
 
 
-/** Repo が新しく作った（git init）——GitHub にはまだ無い */
+/** Repositories が新しく作った（git init）——GitHub にはまだ無い */
 export function createLocalRepo(path: string): void {
   putGitFolder(path, git({ kind: "none" }, { commits: 0 }));
   addToLedger({ path });
@@ -670,7 +670,7 @@ export function gitInitFolder(path: string): void {
 
 /**
  * GitHub に公開した——origin を付け、どのアカウントで扱うか・GitHub の場所を覚える（フォルダは動かさない）。
- * 一覧から外していたフォルダでも、公開したら台帳に戻す（Repo が push したものは Repo が覚える）
+ * 一覧から外していたフォルダでも、公開したら台帳に戻す（Repositories が push したものは Repositories が覚える）
  */
 export function setRepoRemote(path: string, remote: RepoRemote, accountId?: string): void {
   const facts = hostFolder(path)?.git;

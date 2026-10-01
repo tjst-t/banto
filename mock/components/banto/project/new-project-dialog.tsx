@@ -1,7 +1,7 @@
 "use client";
 
 // 新規 Project の作成（§2.2）——**core（banto 本体）の画面**。改訂・2026-10-01（ユーザー決定）：
-// core は Module を名指しで知らない／Module を足すのに core を触らない。Repo を外した banto でもこの画面は壊れない。
+// core は Module を名指しで知らない／Module を足すのに core を触らない。Repositories を外した banto でもこの画面は壊れない。
 //
 // この画面が持つのは2つだけ：
 //   - **手元のフォルダ**——core の基本の形（Root パスを打つか「選ぶ」）

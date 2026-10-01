@@ -1,7 +1,7 @@
 "use client";
 
-// リポジトリの一覧（2026-09-30、ユーザー決定）——**Repo は banto 全体に1本**なので、
-// これは banto 全体の Module の画面。**Repo の台帳（知っているリポジトリ）から作る**——
+// リポジトリの一覧（2026-09-30、ユーザー決定）——**Repositories は banto 全体に1本**なので、
+// これは banto 全体の Module の画面。**Repositories の台帳（知っているリポジトリ）から作る**——
 // 置き場のフォルダを見て回るのではない。だから置き場の外（`~/ghq/…` など）から
 // Import したものも同じ一覧に並ぶ。
 //
@@ -29,8 +29,8 @@
 // 狭い幅（コンテナ 42rem 未満）は同じ要素を行ごとに縦に積み、列の名前を各段の頭に出す。
 //
 // 開き方は2つで、中身は同じ（Skill の置き場の画面と同じ形）：
-//   - Project の中：Command Palette の入口 → 会話の隣の Canvas（`banto.repo:repos`）
-//   - banto 全体の設定の Repo の面：そこに埋め込む
+//   - Project の中：Command Palette の入口 → 会話の隣の Canvas（`banto.repositories:repos`）
+//   - banto 全体の設定の Repositories の面：そこに埋め込む
 // 「GitHub に公開」はこの画面の中で公開の画面に替わる（Module の中の移動）。
 // 「フォルダを Import」はこの画面の上のダイアログ（1つずつ選ぶ。まとめて取り込む入口は作らない）。
 // 「URL から clone」（`repo-clone-dialog.tsx`）・「新しいリポジトリ」（`repo-create-dialog.tsx`）も同じくダイアログ
@@ -142,7 +142,7 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
               <h2 className="text-xl font-semibold text-foreground">リポジトリ</h2>
             )}
             <p data-testid="repo-list-lead" className="text-sm text-ink-2">
-              Repo が知っているもの。clone・新しく作るものは{" "}
+              このマシンで扱うリポジトリ。clone・新しく作るものは{" "}
               <span className="font-mono text-xs">{home}</span> に置きます
               <span className="text-ink-3">
                 （
@@ -596,10 +596,10 @@ function RepoRow({
 
 /**
  * 行の操作。いまは「一覧から外す」だけ——**押す前に、フォルダは消えないことを言う**
- * （メニューの項目の下に1行）。外すのは Repo の記録だけで、フォルダ・GitHub・Project には触らない。
+ * （メニューの項目の下に1行）。外すのは Repositories の記録だけで、フォルダ・GitHub・Project には触らない。
  *
- * Project が使っているものも外せる（止めない）。Project の Root はフォルダのパスで、Repo の台帳を
- * 通していない——外しても Project はそのまま動く。失うのは Repo の記録（どのアカウントで push するか・
+ * Project が使っているものも外せる（止めない）。Project の Root はフォルダのパスで、Repositories の台帳を
+ * 通していない——外しても Project はそのまま動く。失うのは Repositories の記録（どのアカウントで push するか・
  * GitHub の場所）だけで、フォルダが残っているので Import すればすぐ戻る。だから確かめの画面は挟まず、
  * そのことを項目の下とトーストで言い、トーストに「元に戻す」を置く
  */
@@ -638,7 +638,7 @@ function RowMenu({
             <span className="font-medium">一覧から外す</span>
             {repo.missing ? (
               <span data-testid="repo-remove-note" className="text-xs text-ink-3">
-                Repo の記録だけを消します。{github ? <>GitHub の {github} には触りません。</> : null}
+                一覧の記録だけを消します。{github ? <>GitHub の {github} には触りません。</> : null}
               </span>
             ) : (
               // いちばん先に言うのは「フォルダは消えない」。パスは1行に分けて、途中で折れないようにする
@@ -690,7 +690,7 @@ function MissingLine({
         return;
       }
       toast(
-        `Repo が ${source?.kind === "github" ? `${source.owner}/${source.name}` : `${source?.host}/${source?.path}`} を ${repo.path} に clone し直しました` +
+        `${source?.kind === "github" ? `${source.owner}/${source.name}` : `${source?.host}/${source?.path}`} を ${repo.path} に clone し直しました` +
           (projects.length > 0 ? `（Project「${projects[0].name}」の Root です）` : ""),
       );
       onShow(repo.path);
@@ -707,7 +707,7 @@ function MissingLine({
         run?.kind === "cloning" ? (
           <p role="status" className="flex items-center gap-1.5 text-ink-2">
             <LoaderCircle className="size-3.5 motion-safe:animate-spin" />
-            Repo が clone し直しています…
+            clone し直しています…
           </p>
         ) : (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

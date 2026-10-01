@@ -24,7 +24,7 @@ function nextDemoItem(): MockInboxJudgmentElicitation | MockInboxReviewModule {
       source: "elicitation",
       id,
       projectId: "banto",
-      serverName: "banto.repo",
+      serverName: "banto.shell",
       threadId: "banto-base",
       threadKind: "base",
       message: "`git push --force` を実行してよいですか？",

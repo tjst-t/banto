@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import type { MockGithubAccount } from "@/lib/mock/github";
 import { ChoicePills } from "./choice-pills";
 
-export const REPO_SETTINGS_HREF = "/settings?section=module:banto.repo";
+export const REPO_SETTINGS_HREF = "/settings?section=module:banto.repositories";
 
 export function AccountMark({ login }: { login: string }) {
   return (
@@ -82,10 +82,10 @@ export function NoGithubAccount({ reason }: { reason: string }) {
         GitHub のアカウントがまだありません
       </p>
       <p className="text-xs text-ink-2">
-        Repo の設定で、名前・PAT・SSH 鍵を登録してください。{reason}
+        リポジトリの設定で、名前・PAT・SSH 鍵を登録してください。{reason}
       </p>
       <Button asChild variant="outline" size="sm" className="h-7 text-xs">
-        <Link href={REPO_SETTINGS_HREF}>Repo の設定を開く</Link>
+        <Link href={REPO_SETTINGS_HREF}>リポジトリの設定を開く</Link>
       </Button>
     </div>
   );
