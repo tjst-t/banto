@@ -306,13 +306,15 @@ function RepoListBody({
                   scope="rowgroup"
                   colSpan={5}
                   className={cn(
-                    "block border-b border-border pb-1.5 text-left font-medium text-ink-2 @2xl:table-cell",
-                    i === 0 ? "pt-1 @2xl:pt-4" : "pt-7",
+                    // 区切りは字の太さと濃い罫線で言う（色は塗らない——塗るのは行の2つの印だけ）。
+                    // 大きさは行の名前と同じ段にとどめ、設定面に埋め込んだときの見出し（text-md）を越えない
+                    "block border-b border-ink-3 pb-2 text-left text-md font-semibold text-foreground @2xl:table-cell",
+                    i === 0 ? "pt-2 @2xl:pt-5" : "pt-9",
                   )}
                 >
                   <span className="flex items-baseline gap-2">
                     {g.title}
-                    <span className="font-normal text-ink-3 tabular-nums">{g.items.length}</span>
+                    <span className="text-xs font-normal text-ink-3 tabular-nums">{g.items.length} 件</span>
                   </span>
                 </th>
               </tr>
