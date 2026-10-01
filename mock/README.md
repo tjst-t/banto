@@ -951,8 +951,8 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
 
 ### リポジトリの一覧から URL で clone（2026-10-01、ユーザー要望）
 
-- **入口は一覧の見出しの右、「フォルダを Import」の左に「URL から clone」**（`canvas/repo-clone-dialog.tsx`）——
-  手元に無いものを持ってくる・手元にあるものを足す、の順。台帳が空のときは空の案内の中に同じ2つ
+- **入口は一覧の見出しの右**（`canvas/repo-clone-dialog.tsx`）。~~「フォルダを Import」の左~~ **→ 並びは下の節で改めた**。
+  台帳が空のときは空の案内の中にも同じ入口
 - **受けるもの**：`https://github.com/owner/repo(.git)`・`git@github.com:owner/repo.git`・`owner/repo`、
   GitHub の外は `https://<host>/<path>`・`git@<host>:<path>.git`（読み方は `lib/mock/github.ts` の `parseCloneSource` の1箇所）
   - **GitHub の外も受ける**——台帳はもう GitHub の外の origin を扱え（Import した gitlab の notes）、断ると
@@ -971,13 +971,12 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   - 別の登録アカウントなら読める →「work-org/api-gateway は非公開で、tjst-t からは読めません」と **「work-org で clone する」**
   - 見つからない（GitHub）→ 理由と「URL を確かめてください。非公開なら、読めるアカウントを登録してから、もう一度押してください」
   - 見つからない（GitHub の外）→ 理由と「非公開なら、このマシンの git（SSH の鍵など）で読めるようにしてから」
-- **「Project も作る」**（スイッチ。**既定は切**）——ここは Repo の一覧で、用事は「このマシンに置く」こと。clone から Project を
+- **「Project も作る」**（スイッチ、`canvas/repo-project-option.tsx`。**既定は切**）——ここは Repo の一覧で、用事は「このマシンに置く」こと。clone から Project を
   始める入口は新しい Project の画面にもうあり（そちらは作るのが既定）、両方を同じ既定にすると同じ入口が2つになる。
   切っておけば一覧に留まり、足した行が「Project はまだ無い」の表に地つきで出て、その行の「Project を始める」が次の手になる
   （設定面に埋め込んだときも設定から離れない）。人が入れた「Project も作る」は、URL を打ち直しても保つ
   - 入れると Project 名の欄（リポジトリ名が既定・変えられる）。ボタンは「clone する」／「clone して Project を作る」、
-    もう持っているなら「一覧で見る」／「このフォルダで Project を作る」、そのフォルダを Project が使っていれば「「banto」を開く」
-    （作らずに開く——スイッチの下にそう言う）、見つからない行なら「clone し直す」／「clone し直して「旧DBの移行検証」を再開」
+    見つからない行なら「clone し直す」／「clone し直して Project を作る」。~~もう持っているときの扱い~~ **→ 下の節で改めた**
   - トーストは何が起きたかを2つ言う：「Repo が tjst-t/incus-lab を ~/banto/incus-lab に clone し、一覧に足しました」／
     「〜に clone し、Project「Hello 検証」を作りました」（新しい Project の画面と同じ言い方）。Project を作ったらその Project を開く
 - 帯の「このフォルダで Project を作る」（置く場所に Repo の知らないリポジトリがある等）は、ダイアログを閉じて新しい Project の画面を
@@ -993,6 +992,44 @@ clone し直せない `&accounts=1`、空 `&repos=0`）。
   `…&clone=https://gitlab.com/tjst-t/nope`（押すと失敗）
 - 失敗：`…&clone=github.com/someone/secret`（見つからない）・`…&clone=work-org/api-gateway` でアカウントを tjst-t にして押す（別のアカウントなら読める）
 - アカウント0：`…&accounts=0&clone=octocat/hello-world`／URL の形違い：`…&clone=foo%20bar` で Enter／設定面：`/settings?section=module:banto.repo&clone=tjst-t/scratch`
+
+### もう手元にあるときは clone させない・一覧から新しいリポジトリ（2026-10-01、ユーザー要望）
+
+**もう手元にある**（台帳にある。Import した置き場の外のものも）：
+
+- **新規に clone できないようにする**——clone のボタンも名前の欄も出さない。帯の文は「tjst-t/banto は、もう手元にあります
+  （`~/ghq/github.com/tjst-t/banto`）。新しくは clone しません。」と場所を文にも書く。次の手は、Project が無ければボタン
+  「一覧で見る」と帯の「この場所で Project を始める」（新しい Project の画面をその場所で開く）、Project があれば
+  「「banto」を開く」と脇に「一覧で見る」
+- **帯の見出しは、指している場所が何かで変える**（`project/repo-root-preview.tsx`）——もう手元にある場所は「手元にある場所」、
+  見つからない行は「clone し直す場所（元の場所）」、これから作る・clone する場所は入口ごと（一覧からは「置く場所」、
+  新しい Project の画面は「Root パス」のまま）。理由：見出しが「Root パス」のままだと、新しく clone する場所に読める
+  （ユーザーが実際に誤読した——Import 済みの `~/ghq/github.com/tjst-t/banto` を見て「ghq の置き方に戻ったのか」と思った）
+- **「Project も作る」は意味が無いときは出さない**——もう手元にある（clone しない）・見つからない行の clone し直しでその場所を
+  もう Project が使っている（Root が戻るだけ。トーストは一覧の「clone し直す」と同じ「〜に clone し直しました（Project「〜」の Root です）」）
+- **新しい Project の画面の「GitHub から clone」も同じ言い方**（帯は共有の部品、判断は `inspectCloneSource` のまま）。
+  あちらは下のボタン（「このフォルダで Project を作る」「「banto」を開く」）が次の手なので、帯には次の手を重ねない
+
+**一覧から新しいリポジトリ**（`canvas/repo-create-dialog.tsx`）：
+
+- **入口は3つ、並びは新しい Project の画面の始め方と同じ順**：「フォルダを Import」「URL から clone」「新しいリポジトリ」
+  （あちらは「手元のフォルダ／GitHub から clone／新しいリポジトリ」）。フォルダを用意する3つの手はどちらの画面でも同じなので、
+  順も同じにして1つの並びで覚えられるように。台帳が空の案内にも同じ3つを同じ順で。狭い幅では折り返す
+- **新しい Project の画面の「新しいリポジトリ」とそろえる**：帯は同じ `RepoRootPreview`（mode="create"、名前の欄は帯の中の1つだけ
+  ＝リポジトリ名＝フォルダ名、見出しは「置く場所」）。ぶつかれば断って「`<名前>-2` にする」（`inspectTargetFolder`）、
+  使えない字は断る（`isValidFolderName`）。**GitHub に同名があっても止めない**——上げるのは公開のときなので、あちらと同じく
+  帯の下で「あとで公開するときは別の名前が要ります」と「clone で始める」（押すと「URL から clone」へ `owner/名前` を入れて移る）。
+  アカウントは聞かない
+- 「Project も作る」は clone と同じ部品・同じ既定（切）。ボタンは「リポジトリを作る」／「リポジトリと Project を作る」、
+  トーストは「Repo が ~/banto/garden を作り、一覧に足しました」／「〜を作り、Project「庭の記録」を作りました」
+- 作らなければ「Project はまだ無い」の表に「このマシンにだけ・コミットなし」として入り、地つきで示す
+
+**状態ごとの URL**（`https://mock-…` の後ろ）：
+
+- もう手元にある：`/p/banto?canvas=banto.repo:repos&clone=https://github.com/tjst-t/banto`（Project あり）・
+  `…&clone=https://gitlab.com/tjst-t/notes`（Project なし）／新しい Project の画面：`/p/banto?new-project=clone&repo=tjst-t/banto`・`…&repo=tjst-t/dotfiles`
+- 新しいリポジトリ：`/p/banto?canvas=banto.repo:repos&new-repo=garden`（空き）・`…&new-repo=dotfiles`（ぶつかる）・
+  `…&new-repo=notes`（GitHub に同名）／設定面：`/settings?section=module:banto.repo&new-repo=garden`
 
 ## まだ実装していない
 

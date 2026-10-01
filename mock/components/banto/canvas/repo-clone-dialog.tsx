@@ -12,10 +12,10 @@
 //   - アカウントは `GithubAccountChooser`（1つなら選ばせない）
 //   - 完了のトーストは「Repo が〜を clone し、Project「〜」を作りました」
 //
-// **「Project も作る」の既定は切っておく**——ここは Repo の一覧で、用事は「このマシンに置く」こと。
-// clone から Project を始める入口は新しい Project の画面にもうあり（そちらは Project を作るのが既定）、
-// 両方を同じ既定にすると同じ入口が2つになる。切っておけば一覧に留まり、足した行が「Project はまだ無い」の
-// 表に出て、その行の「Project を始める」が次の手になる（設定面に埋め込んだときも、設定から離れない）
+// 「Project も作る」は `RepoProjectOption`（既定は切。理由はその部品に）。意味が無いときは出さない：
+//   - もう手元にある（clone しない）——**clone のボタンも出さない**。次の手は「一覧で見る」、Project があれば
+//     「〜を開く」、無ければ帯の「この場所で Project を始める」（2026-10-01、ユーザー）
+//   - 見つからない行の clone し直しで、その場所をもう Project が使っている（Root が戻るだけ）
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -32,7 +32,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { createProject, reopenProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -51,6 +50,7 @@ import {
 } from "@/lib/mock/github";
 import { GithubAccountChooser, REPO_SETTINGS_HREF } from "@/components/banto/project/github-account-chooser";
 import { RepoRootPreview, type RootPreviewStatus } from "@/components/banto/project/repo-root-preview";
+import { RepoProjectOption } from "./repo-project-option";
 
 type Run = Extract<RootPreviewStatus, { kind: "cloning" | "clone-failed" }> & { readableBy?: string };
 
@@ -110,7 +110,8 @@ export function RepoCloneDialog({
   const existingProject: ProjectSummary | undefined = inspected?.project;
   const repoName = inspected ? inspected.repo.name : (source?.name ?? "");
   const name = projectName ?? repoName;
-  const needsName = withProject && !existingProject;
+  const offerProject = !!source && !have && !existingProject;
+  const makesProject = offerProject && withProject;
 
   function reset() {
     setRun(null);
@@ -160,47 +161,40 @@ export function RepoCloneDialog({
             ? { kind: "github", owner: s.owner, name: s.name, private: access.private }
             : { kind: "elsewhere", url: s.url },
       });
-      const again = reclone ? "clone し直し" : "clone し";
-      if (!withProject) {
-        toast(`Repo が ${label(s)} を ${path} に ${again}、一覧に足しました`);
-        onShow(path);
+      if (makesProject) {
+        const project = makeProject(path);
+        toast(`Repo が ${label(s)} を ${path} に ${reclone ? "clone し直し" : "clone し"}、Project「${project.name}」を作りました`);
         return;
       }
-      if (existingProject) {
-        openProject(existingProject.id, existingProject.closed);
-        toast(
-          `Repo が ${label(s)} を ${path} に ${again}、Project「${existingProject.name}」を${existingProject.closed ? "再開し" : "開き"}ました`,
-        );
-        return;
-      }
-      const project = makeProject(path);
-      toast(`Repo が ${label(s)} を ${path} に ${again}、Project「${project.name}」を作りました`);
+      // 見つからない行の clone し直しは一覧の行の「clone し直す」と同じ言い方（一覧にはもうある）
+      toast(
+        reclone
+          ? `Repo が ${label(s)} を ${path} に clone し直しました` +
+              (existingProject ? `（Project「${existingProject.name}」の Root です）` : "")
+          : `Repo が ${label(s)} を ${path} に clone し、一覧に足しました`,
+      );
+      onShow(path);
     }, 180);
   }
 
   // 押す前に言うこと（描画）と、押したときにすること（submit）を分ける
   const primary = primaryAction();
 
-  function primaryAction(): { label: string; action: "clone" | "show" | "open" | "create-here" | null } {
-    const verb = withProject ? "clone して Project を作る" : "clone する";
+  function primaryAction(): { label: string; action: "clone" | "show" | "open" | null } {
+    const verb = makesProject ? "clone して Project を作る" : "clone する";
     if (cloning) return { label: "clone しています…", action: null };
     if (!source) return { label: verb, action: null };
-    const openLabel = existingProject
-      ? `「${existingProject.name}」を${existingProject.closed ? "再開" : "開く"}`
-      : null;
+    // もう手元にある——clone はしない。押せるのは行き先だけ
     if (have) {
-      if (!withProject) return { label: "一覧で見る", action: "show" };
-      return openLabel
-        ? { label: openLabel, action: "open" }
-        : { label: "このフォルダで Project を作る", action: name.trim() ? "create-here" : null };
+      return existingProject
+        ? { label: `「${existingProject.name}」を${existingProject.closed ? "再開" : "開く"}`, action: "open" }
+        : { label: "一覧で見る", action: "show" };
     }
+    const named = !makesProject || !!name.trim();
     if (reclone) {
-      if (!withProject) return { label: "clone し直す", action: "clone" };
-      return openLabel
-        ? { label: `clone し直して${openLabel}`, action: "clone" }
-        : { label: "clone し直して Project を作る", action: name.trim() ? "clone" : null };
+      return { label: makesProject ? "clone し直して Project を作る" : "clone し直す", action: named ? "clone" : null };
     }
-    const ready = targetState?.kind === "free" && (!needsName || !!name.trim());
+    const ready = targetState?.kind === "free" && named;
     return { label: run?.kind === "clone-failed" ? `もう一度 ${verb}` : verb, action: ready ? "clone" : null };
   }
 
@@ -220,11 +214,6 @@ export function RepoCloneDialog({
       case "open":
         if (existingProject) openProject(existingProject.id, existingProject.closed);
         return;
-      case "create-here": {
-        const project = makeProject(targetPath);
-        toast(`Project「${project.name}」を作りました（Root は ${targetPath}）`);
-        return;
-      }
       case null:
         return;
     }
@@ -374,6 +363,11 @@ export function RepoCloneDialog({
                   onSwitchToClone={() => undefined}
                   onOpenProject={openProject}
                   failedNext={failedNext}
+                  targetLabel="置く場所"
+                  onStartHere={(path) => {
+                    onClose();
+                    onStartAt(path);
+                  }}
                 />
                 {status.kind !== "have" && status.kind !== "reclone" ? (
                   <p className="text-xs text-ink-3">置き場（{home}）は Repo の設定で変えられます。</p>
@@ -381,43 +375,14 @@ export function RepoCloneDialog({
               </div>
             ) : null}
 
-            {/* Project は banto 本体の仕事——用意できたフォルダを Root にして作る（新しい Project の画面の下の段と同じ言い方） */}
-            {source ? (
-              <section
-                aria-label="Project"
-                data-testid="repo-clone-project"
-                className="flex flex-col gap-3 border-t border-border pt-4"
-              >
-                <label className="flex items-start gap-2.5">
-                  <Switch
-                    checked={withProject}
-                    onCheckedChange={setWithProject}
-                    disabled={cloning}
-                    data-testid="repo-clone-with-project"
-                    className="mt-0.5"
-                  />
-                  <span className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium text-foreground">Project も作る</span>
-                    <span className="text-xs text-ink-3">
-                      {existingProject
-                        ? `このフォルダは Project「${existingProject.name}」が使っています。作らずに、それを${existingProject.closed ? "再開" : "開き"}ます`
-                        : "banto が、このフォルダを Root にして作り、開きます"}
-                    </span>
-                  </span>
-                </label>
-                {needsName ? (
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="repo-clone-project-name">Project 名</Label>
-                    <Input
-                      id="repo-clone-project-name"
-                      data-testid="repo-clone-project-name"
-                      value={name}
-                      disabled={cloning}
-                      onChange={(e) => setProjectName(e.target.value)}
-                    />
-                  </div>
-                ) : null}
-              </section>
+            {offerProject ? (
+              <RepoProjectOption
+                checked={withProject}
+                onCheckedChange={setWithProject}
+                name={name}
+                onNameChange={setProjectName}
+                disabled={cloning}
+              />
             ) : null}
           </div>
 
@@ -425,6 +390,17 @@ export function RepoCloneDialog({
             <Button type="button" variant="outline" onClick={onClose} disabled={cloning}>
               やめる
             </Button>
+            {/* Project を開くのが主のとき、一覧で見るのは脇に（もう手元にあるので、どちらも clone はしない） */}
+            {have && existingProject ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onShow(have.repo.path)}
+                data-testid="repo-clone-show"
+              >
+                一覧で見る
+              </Button>
+            ) : null}
             <Button
               type="submit"
               disabled={text.trim() === "" || (source !== null && primary.action === null)}

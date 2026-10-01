@@ -33,8 +33,10 @@
 //   - banto 全体の設定の Repo の面：そこに埋め込む
 // 「GitHub に公開」はこの画面の中で公開の画面に替わる（Module の中の移動）。
 // 「フォルダを Import」はこの画面の上のダイアログ（1つずつ選ぶ。まとめて取り込む入口は作らない）。
-// 「URL から clone」も同じくダイアログ（`repo-clone-dialog.tsx`。2026-10-01、ユーザー）。並びは clone が先——
-// 手元に無いものを持ってくる・手元にあるものを足す、の順。どちらも「一覧に足す」入口なので、見出しの右に並べる。
+// 「URL から clone」（`repo-clone-dialog.tsx`）・「新しいリポジトリ」（`repo-create-dialog.tsx`）も同じくダイアログ
+// （2026-10-01、ユーザー）。3つとも「一覧に足す」入口なので見出しの右に並べ、**並びは新しい Project の画面の
+// 始め方（手元のフォルダ／GitHub から clone／新しいリポジトリ）と同じ順**にする——フォルダを用意する3つの手は
+// どちらの画面でも同じなので、順も同じにして1つの並びで覚えられるように。台帳が空の案内にも同じ3つを同じ順で。
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -43,6 +45,7 @@ import {
   CloudUpload,
   Ellipsis,
   FolderInput,
+  FolderPlus,
   FolderX,
   Globe,
   HardDrive,
@@ -91,6 +94,7 @@ import { NewProjectDialog, type NewProjectPreset } from "@/components/banto/proj
 import { RepoPublishPanel } from "./repo-publish-view";
 import { RepoImportDialog } from "./repo-import-dialog";
 import { RepoCloneDialog } from "./repo-clone-dialog";
+import { RepoCreateDialog } from "./repo-create-dialog";
 
 type Filter = "all" | "local" | "missing";
 
@@ -112,10 +116,13 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
   const importParam = params.get("import");
   // 同じく `?clone=<URL>` で clone をその URL を入れた状態で開く（`?clone=` だけなら空で開く）
   const cloneParam = params.get("clone");
+  // 同じく `?new-repo=<名前>` で新しいリポジトリをその名前を入れた状態で開く
+  const createParam = params.get("new-repo");
   const [publishing, setPublishing] = useState<string | null>(null);
   const [starting, setStarting] = useState<NewProjectPreset | null>(null);
   const [importAt, setImportAt] = useState<string | null>(importParam);
   const [cloneUrl, setCloneUrl] = useState<string | null>(cloneParam);
+  const [createName, setCreateName] = useState<string | null>(createParam);
   /** Import した・「一覧で見る」で来た行——少しの間だけ地を付けて、どこに入ったかを見せる */
   const [highlight, setHighlight] = useState<Highlight | null>(null);
 
@@ -149,30 +156,12 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
             </p>
           </div>
           {empty ? null : (
-            <div className="flex shrink-0 flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs"
-                onClick={() => setCloneUrl("")}
-                data-testid="repo-clone-open"
-              >
-                <CloudDownload className="size-3.5" />
-                URL から clone
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs"
-                onClick={() => setImportAt("~")}
-                data-testid="repo-import-open"
-              >
-                <FolderInput className="size-3.5" />
-                フォルダを Import
-              </Button>
-            </div>
+            <AddButtons
+              size="h-8"
+              onImport={() => setImportAt("~")}
+              onClone={() => setCloneUrl("")}
+              onCreate={() => setCreateName("")}
+            />
           )}
         </header>
         <RepoListBody
@@ -181,11 +170,24 @@ export function RepoList({ embedded = false }: { embedded?: boolean }) {
           onStart={(repo) => setStarting({ method: "folder", folder: repo.path, name: repo.name })}
           onImport={() => setImportAt("~")}
           onClone={() => setCloneUrl("")}
+          onCreate={() => setCreateName("")}
           onShow={(path) => setHighlight({ path, at: Date.now() })}
         />
       </div>
       {starting ? (
         <NewProjectDialog open onOpenChange={(open) => !open && setStarting(null)} preset={starting} />
+      ) : null}
+      {createName !== null ? (
+        <RepoCreateDialog
+          initialName={createName}
+          onClose={() => setCreateName(null)}
+          onShow={(path) => {
+            setCreateName(null);
+            setHighlight({ path, at: Date.now() });
+          }}
+          onStartAt={(path) => setStarting({ method: "folder", folder: path, name: path.split("/").pop() })}
+          onClone={(reference) => setCloneUrl(reference)}
+        />
       ) : null}
       {cloneUrl !== null ? (
         <RepoCloneDialog
@@ -218,6 +220,7 @@ function RepoListBody({
   onStart,
   onImport,
   onClone,
+  onCreate,
   onShow,
 }: {
   highlight: Highlight | null;
@@ -225,6 +228,7 @@ function RepoListBody({
   onStart: (repo: KnownRepo) => void;
   onImport: () => void;
   onClone: () => void;
+  onCreate: () => void;
   onShow: (path: string) => void;
 }) {
   const [filterChoice, setFilter] = useState<Filter>("all");
@@ -250,7 +254,7 @@ function RepoListBody({
     { id: "unused", title: "Project はまだ無い", items: shown.filter((f) => f.projects.length === 0) },
   ].filter((g) => g.items.length > 0);
 
-  if (facts.length === 0) return <EmptyLedger onImport={onImport} onClone={onClone} />;
+  if (facts.length === 0) return <EmptyLedger onImport={onImport} onClone={onClone} onCreate={onCreate} />;
 
   // 札は短く（2026-10-01、ユーザー）。「見つからない」は行の「フォルダが見つかりません」と同じ印で結ぶ
   const choices: { value: Filter; label: ReactNode }[] = [
@@ -909,8 +913,16 @@ function ProjectLink({ project, viaWorktree }: { project: MockProject; viaWorktr
   );
 }
 
-/** 台帳が空——次の手は2つ（URL から clone／手元のフォルダを Import）。入口は見出しの右と同じもの */
-function EmptyLedger({ onImport, onClone }: { onImport: () => void; onClone: () => void }) {
+/** 台帳が空——次の手は見出しの右と同じ3つ（同じ順） */
+function EmptyLedger({
+  onImport,
+  onClone,
+  onCreate,
+}: {
+  onImport: () => void;
+  onClone: () => void;
+  onCreate: () => void;
+}) {
   return (
     <div
       data-testid="repo-list-empty"
@@ -918,26 +930,41 @@ function EmptyLedger({ onImport, onClone }: { onImport: () => void; onClone: () 
     >
       <p>まだ知っているリポジトリがありません。</p>
       <p className="text-xs text-ink-3">
-        URL から clone するか、手元にあるリポジトリをそのままの場所で足してください。新しい Project の画面で clone・
-        新しく作ったものも、ここに並びます。
+        手元にあるリポジトリをそのままの場所で足すか、URL から clone するか、新しく作ってください。新しい Project の画面で
+        clone・新しく作ったものも、ここに並びます。
       </p>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 gap-1.5 text-xs"
-          onClick={onClone}
-          data-testid="repo-clone-open"
-        >
-          <CloudDownload className="size-3.5" />
-          URL から clone
-        </Button>
-        <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={onImport}>
-          <FolderInput className="size-3.5" />
-          フォルダを Import
-        </Button>
-      </div>
+      <AddButtons size="h-7" onImport={onImport} onClone={onClone} onCreate={onCreate} />
+    </div>
+  );
+}
+
+/** 一覧に足す3つの入口。並びは新しい Project の画面の始め方と同じ（手元のフォルダ／clone／新しいリポジトリ） */
+function AddButtons({
+  size,
+  onImport,
+  onClone,
+  onCreate,
+}: {
+  size: "h-7" | "h-8";
+  onImport: () => void;
+  onClone: () => void;
+  onCreate: () => void;
+}) {
+  const className = cn(size, "gap-1.5 text-xs");
+  return (
+    <div className="flex min-w-0 flex-wrap gap-2">
+      <Button type="button" variant="outline" size="sm" className={className} onClick={onImport} data-testid="repo-import-open">
+        <FolderInput className="size-3.5" />
+        フォルダを Import
+      </Button>
+      <Button type="button" variant="outline" size="sm" className={className} onClick={onClone} data-testid="repo-clone-open">
+        <CloudDownload className="size-3.5" />
+        URL から clone
+      </Button>
+      <Button type="button" variant="outline" size="sm" className={className} onClick={onCreate} data-testid="repo-create-open">
+        <FolderPlus className="size-3.5" />
+        新しいリポジトリ
+      </Button>
     </div>
   );
 }
