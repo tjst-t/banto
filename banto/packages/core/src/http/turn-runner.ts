@@ -17,6 +17,7 @@ import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
+import type { ThreadState } from "../project-thread/types.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -53,10 +54,21 @@ export type TurnStreamEvent =
     }
   | { type: "error"; message: string }
   /**
+   * **人が止めた**（追加・2026-10-01、v4-frontend.md §6.31）。ターンの終わり。`withdrawn` があれば、AI がまだ何も
+   * 出していなかったので発言ごと取り消した（記録にも AI の文脈にも残らない）——画面はその中身を入力欄へ戻す
+   */
+  | { type: "stopped"; withdrawn?: WithdrawnMessage }
+  /**
    * **判断待ちに答えがついた**（追加・2026-09-26）。どこで答えても（別の画面・受信箱）、このターンの流れに載る
    * ——あとから繋ぎ直した画面が流し直しても、そのカードは「回答済み」として出る。`answer` は画面に出す言葉
    */
   | { type: "answered"; judgmentId: string; answer: string };
+
+/** 取り消した発言。画像は置き場の名前だけ（画面は `/api/images/:id` から取り直せる） */
+export interface WithdrawnMessage {
+  text: string;
+  images: MessageImage[];
+}
 
 /** 画面を持つ tool（`_meta.ui.resourceUri`）の対応表。表示の復元に使う。 */
 export interface UiToolBinding {
@@ -89,6 +101,10 @@ export interface RunThreadTurnInput {
    *  記録する——記録の目的は Module の画面をリロード後に出し直すことなので、
    *  画面を持たない tool の結果まで残す理由が無い（会話の記録を膨らませない）。 */
   uiTools?: UiToolBinding[];
+  /**
+   * **人が止める合図**（追加・2026-10-01、v4-frontend.md §6.31）。立ったらすぐ CLI を止め、`stopped` で終える
+   */
+  stop?: AbortSignal;
 }
 
 /**
@@ -188,6 +204,15 @@ async function* runThreadTurnInner(
   // `instructions` を作る（cli.ts の `instructionsFor`）ので、**刻むのは走らせる前**。
   // Fork は親の記録を引き継いでいる（fold）——Fork も resume なので、ここは通らない。
   // 刻むのは人の発言より前——「その発言の時点で何が効いていたか」が seq の順で引ける
+  if (input.stop?.aborted) {
+    // まだ何も刻んでいないうちに止められた（§6.31）——Skill も決めずに終える。取り消す中身は下で同じように返す
+    const imgs = (input.images ?? []).map((i) => ({ id: i.id, ...(i.name ? { name: i.name } : {}) }));
+    yield {
+      type: "stopped",
+      ...(input.prompt !== "" || imgs.length > 0 ? { withdrawn: { text: input.prompt, images: imgs } } : {}),
+    };
+    return;
+  }
   if (thread.resumePoint === undefined && deps.resolveSessionSkills) {
     try {
       const set = await deps.resolveSessionSkills(input.threadId);
@@ -214,6 +239,13 @@ async function* runThreadTurnInner(
     yield { type: "error", message: "このターンに渡すもの（人の発言・届いたもの）がありません" };
     return;
   }
+  const imageNames = images.map((i) => ({ id: i.id, ...(i.name ? { name: i.name } : {}) }));
+  // **まだ何も積んでいないうちに止められた**（§6.31）——記録にも残さず、そのまま返す。届いたものは待ち行列に
+  // 残っているので、次のターンの頭に積まれる
+  if (input.stop?.aborted) {
+    yield { type: "stopped", ...(hasHumanMessage ? { withdrawn: { text: input.prompt, images: imageNames } } : {}) };
+    return;
+  }
   for (const d of delivered) {
     await deps.projectThread.appendMessage(input.threadId, "user", d.text, undefined, {
       from: d.from,
@@ -222,14 +254,15 @@ async function* runThreadTurnInner(
       deliveryId: d.deliveryId,
     });
   }
+  let humanSeq: number | undefined;
   if (hasHumanMessage) {
-    await deps.projectThread.appendMessage(
+    humanSeq = await deps.projectThread.appendMessage(
       input.threadId,
       "user",
       input.prompt,
       undefined,
       undefined,
-      images.map((i) => ({ id: i.id, ...(i.name ? { name: i.name } : {}) })),
+      imageNames,
     );
   }
   const prompt = composeTurnPrompt(delivered, input.prompt, images.length);
@@ -277,6 +310,23 @@ async function* runThreadTurnInner(
   let wakeSide: (() => void) | undefined;
   // 健全性検査で中断するときに、走り出した query を止めるための紐
   const abortTurn = new AbortController();
+  // **人が止めた**（§6.31）。下のループは SDK の次を待たずにこれで抜ける
+  const stopRequested = new Promise<"stop">((resolve) => {
+    if (input.stop?.aborted) resolve("stop");
+    else input.stop?.addEventListener("abort", () => resolve("stop"), { once: true });
+  });
+  let stoppedByHuman = false;
+  // このターンで出した判断待ち（止めたら畳む——答えても届く先が無い）
+  const raisedJudgments: string[] = [];
+  // このターンのセッション（`system/init` で分かる。止めたターンには `result` が来ない）
+  let initSessionId: string | undefined;
+  // 親から借りたresume-pointのままなら、このターンで枝を分ける（§2.2）
+  // ——分けないと親と同じセッションを共有し、会話が1本に混ざる。
+  // 既に共有されてしまっているもの（2026-09-05以前に作られたFork）も、
+  // ここで検知して分ける——黙って壊れたまま続けない（規則2）。
+  const forkSession =
+    thread.resumePoint !== undefined &&
+    (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId));
   const unsubscribeSide = deps.turnEvents?.subscribeSide(input.threadId, (event) => {
     sideEvents.push(event);
     wakeSide?.();
@@ -289,13 +339,9 @@ async function* runThreadTurnInner(
     const gen = (deps.runTurn ?? runTurn)({
       signal: abortTurn.signal,
       resumeSessionId: thread.resumePoint,
-      // 親から借りたresume-pointのままなら、このターンで枝を分ける（§2.2）
-      // ——分けないと親と同じセッションを共有し、会話が1本に混ざる。
-      // 既に共有されてしまっているもの（2026-09-05以前に作られたFork）も、
-      // ここで検知して分ける——黙って壊れたまま続けない（規則2）。
-      forkSession:
-        thread.resumePoint !== undefined &&
-        (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId)),
+      // 前のターンで人が発言を取り消した——CLI のセッションに書かれていても、その手前で切って続ける（§6.31）
+      ...(thread.resumePoint !== undefined && thread.rewindTo ? { resumeSessionAt: thread.rewindTo } : {}),
+      forkSession,
       prompt: `${turnContext}\n\n${prompt}`,
       ...(images.length > 0 ? { images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })) } : {}),
       mcpServers: mcpServers as Options["mcpServers"],
@@ -340,10 +386,18 @@ async function* runThreadTurnInner(
           };
         });
       }
-      const winner = await Promise.race([pending, sideSignal]);
+      const winner = await Promise.race([pending, sideSignal, stopRequested]);
       if (winner === "side") {
         sideSignal = undefined;
         continue;
+      }
+      if (winner === "stop" || ("error" in winner && input.stop?.aborted)) {
+        // **人が止めた**（§6.31）。CLI を止め、止まるのを少しだけ待つ（止めたあとの書き込みと、次のターンの
+        // resume が重ならないように）。待ち切らない——止まらなくても、このターンはここで終える
+        stoppedByHuman = true;
+        abortTurn.abort();
+        await Promise.race([pending, new Promise((r) => setTimeout(r, STOP_SETTLE_MS))]);
+        break;
       }
       if ("error" in winner) throw winner.error;
       const next = winner.step;
@@ -366,10 +420,16 @@ async function* runThreadTurnInner(
           yield { type: "error", message: initError };
           return;
         }
-        // 最初のメッセージが返ってきた＝添えたブロックがモデルに届いた。
+        const m = event.message as { type?: string; subtype?: string; session_id?: string };
+        if (m.type === "system" && m.subtype === "init" && typeof m.session_id === "string") {
+          initSessionId = m.session_id;
+        }
+        // AI が返した＝添えたブロックがモデルに届いた。
         // ここで初めて「届けた」を記録する——組み立てた時点で記録すると、
         // プロセスが起動できなかったときに届いていない差分を失う（規則2）。
-        if (!deliveryRecorded && deliveredUpToSeq > 0) {
+        // **AI の返事を待つ**（改訂・2026-10-01）——以前は `system/init` で記録していた。AI が何も出さないうちに
+        // 人が止めると、その発言は AI の文脈からも切り落とす（§6.31）ので、添えた差分も届いていない
+        if (!deliveryRecorded && deliveredUpToSeq > 0 && m.type === "assistant") {
           deliveryRecorded = true;
           await deps.projectThread.markMemoryDelivered(input.threadId, deliveredUpToSeq);
         }
@@ -387,6 +447,7 @@ async function* runThreadTurnInner(
           toolInput: event.pending.input,
         });
         deps.pendingApprovals.register(judgment.id, event.pending.resolve);
+        raisedJudgments.push(judgment.id);
         yield {
           type: "judgment",
           judgmentId: judgment.id,
@@ -406,6 +467,7 @@ async function* runThreadTurnInner(
           requestedSchema: event.pending.requestedSchema,
           url: event.pending.url,
         });
+        raisedJudgments.push(judgment.id);
         yield {
           type: "judgment",
           judgmentId: judgment.id,
@@ -416,13 +478,15 @@ async function* runThreadTurnInner(
       }
       pending = settle(gen.next());
     }
-    sessionId = result.sessionId;
-    if (sessionId && result.exited) rememberCliExit(sessionId, result.exited);
-    contextUsage = result.contextUsage;
-    compactionCount = result.compactionCount;
-    apiUsage = result.apiUsage;
-    // 走行が終わった後に届いた分（人が答える前にターンが終わった等）も落とさない
-    while (sideEvents.length > 0) yield sideEvents.shift()!;
+    if (!stoppedByHuman) {
+      sessionId = result.sessionId;
+      if (sessionId && result.exited) rememberCliExit(sessionId, result.exited);
+      contextUsage = result.contextUsage;
+      compactionCount = result.compactionCount;
+      apiUsage = result.apiUsage;
+      // 走行が終わった後に届いた分（人が答える前にターンが終わった等）も落とさない
+      while (sideEvents.length > 0) yield sideEvents.shift()!;
+    }
   } catch (err) {
     yield { type: "error", message: err instanceof Error ? err.message : String(err) };
     return;
@@ -430,8 +494,25 @@ async function* runThreadTurnInner(
     unsubscribeSide?.();
   }
 
+  if (stoppedByHuman) {
+    yield await settleStoppedTurn(deps, {
+      threadId: input.threadId,
+      thread,
+      forkSession,
+      messages,
+      initSessionId,
+      humanSeq,
+      deliveredCount: delivered.length,
+      withdrawn: { text: input.prompt, images: imageNames },
+      raisedJudgments,
+      uiTools: input.uiTools ?? [],
+    });
+    return;
+  }
+
   if (sessionId) {
-    await deps.projectThread.updateResumePoint(input.threadId, sessionId);
+    // このターンの最後のやり取りも残す——次のターンで人が発言を取り消したら、ここまでで切る（§6.31）
+    await deps.projectThread.updateResumePoint(input.threadId, sessionId, lastChainUuid(messages));
   }
   const assistantText = extractAssistantText(messages);
   const uiToolCalls = extractUiToolCalls(messages, input.uiTools ?? []);
@@ -450,6 +531,103 @@ async function* runThreadTurnInner(
     }
   }
   yield { type: "done", sessionId, contextUsage, compactionCount, apiUsage };
+}
+
+/**
+ * 止めたあと、CLI が止まるのを待つ上限。ふつうはすぐ止まる（abort はプロセスを終わらせる）——越えても
+ * ターンは終える（人を待たせない）
+ */
+const STOP_SETTLE_MS = 3_000;
+
+/** 止めたとき、返事の末尾に添える一行（記録に残る——「失敗」ではなく「人が止めた」と分かるように） */
+export const STOPPED_NOTE = "（ここで止めました）";
+
+/**
+ * **人が止めたターンを片づける**（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）。
+ *
+ *  - **AI がまだ何も出していない**（文も tool の呼び出しも無い）なら、人の発言ごと取り消す——記録から外し、
+ *    CLI のセッションに書かれていても次のターンはその手前で切って続ける。tool を呼んでいないので、何も起きていない。
+ *    画面は取り消した中身を入力欄へ戻す
+ *  - 取り消せないとき（出したものがある・届いたものも積んだターン・切る位置を知らない）は、そこまでに出たものを
+ *    「ここで止めました」と一緒に記録する——SDK は止めたターンの出力を結果に載せないので、流れてきた分を
+ *    自分で残す（アーキ仕様 §2.3「止めたターンの記録」）
+ *
+ * どちらでも、このターンが出した判断待ちは畳む（答えても届く先が無い）
+ */
+async function settleStoppedTurn(
+  deps: { projectThread: ProjectThreadStore; inbox: InboxStore; pendingApprovals: PendingApprovalRegistry },
+  turn: {
+    threadId: string;
+    /** ターンを始めたときの Thread */
+    thread: ThreadState;
+    forkSession: boolean;
+    messages: readonly unknown[];
+    initSessionId: string | undefined;
+    humanSeq: number | undefined;
+    deliveredCount: number;
+    withdrawn: WithdrawnMessage;
+    raisedJudgments: readonly string[];
+    uiTools: UiToolBinding[];
+  },
+): Promise<TurnStreamEvent> {
+  for (const id of turn.raisedJudgments) {
+    const item = deps.inbox.get(id);
+    if (item?.kind !== "judgment" || item.liveness !== "live") continue;
+    const answer = { behavior: "deny" as const, message: "人がターンを止めました" };
+    deps.pendingApprovals.resolve(id, answer);
+    await deps.inbox.answerJudgment(id, answer);
+  }
+
+  const { thread } = turn;
+  // このターンが続けたセッションを、どこで切ればよいか。新しいセッション（最初のターン・Clear のあと・
+  // Fork の最初のターン）なら切る必要が無い——次のターンも同じところから始める
+  const startsFresh = thread.resumePoint === undefined || turn.forkSession;
+  const rewindTo = thread.rewindTo ?? thread.resumeAnchor;
+  const withdrawable =
+    turn.humanSeq !== undefined &&
+    turn.deliveredCount === 0 &&
+    !hasVisibleOutput(turn.messages) &&
+    (startsFresh || rewindTo !== undefined);
+  if (withdrawable) {
+    await deps.projectThread.withdrawMessage(turn.threadId, turn.humanSeq!, startsFresh ? undefined : rewindTo);
+    return { type: "stopped", withdrawn: turn.withdrawn };
+  }
+
+  // 取り消さない——CLI のセッションにはこのターンが載っているので、次はその続きから。**切る位置は残さない**
+  // （途中で止めたやり取りのどこで切れば壊れないか分からない。次に最後まで走ったターンがまた残す）
+  if (turn.initSessionId) await deps.projectThread.updateResumePoint(turn.threadId, turn.initSessionId);
+  const text = extractAssistantText(turn.messages);
+  const uiToolCalls = extractUiToolCalls(turn.messages as unknown[], turn.uiTools);
+  await deps.projectThread.appendMessage(
+    turn.threadId,
+    "assistant",
+    text ? `${text}\n\n${STOPPED_NOTE}` : STOPPED_NOTE,
+    uiToolCalls,
+  );
+  return { type: "stopped" };
+}
+
+/** AI が人に見えるもの（文・tool の呼び出し）を出したか。考えただけ（thinking）は数えない */
+function hasVisibleOutput(messages: readonly unknown[]): boolean {
+  return messages.some((raw) => {
+    const m = raw as { type?: string; message?: { content?: unknown } };
+    if (m.type !== "assistant" || !Array.isArray(m.message?.content)) return false;
+    return (m.message.content as Array<{ type?: string; text?: unknown }>).some(
+      (b) => b?.type === "tool_use" || (b?.type === "text" && typeof b.text === "string" && b.text !== ""),
+    );
+  });
+}
+
+/**
+ * **そのターンの最後のやり取り**（SDK のメッセージの uuid）。会話の鎖に載るのは assistant と user（tool の結果）
+ * だけ——`system`・`result` は載らない（SDK の `resumeSessionAt` の説明）
+ */
+export function lastChainUuid(messages: readonly unknown[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { type?: string; uuid?: unknown };
+    if ((m.type === "assistant" || m.type === "user") && typeof m.uuid === "string") return m.uuid;
+  }
+  return undefined;
 }
 
 /**

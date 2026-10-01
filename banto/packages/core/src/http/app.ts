@@ -49,6 +49,7 @@ import {
   type TurnStreamEvent,
   type UiToolBinding,
 } from "./turn-runner.js";
+import { TurnStops, type TurnStopHandle } from "./turn-stops.js";
 import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
@@ -908,6 +909,8 @@ export function createApp(deps: AppDeps) {
   // 人が会話に添えた画像の置き場（決定・2026-09-26、アーキ仕様 §2.1）。データの置き場が無い
   // 構成（一部の試験）では持たない——そこへ画像が来たら、理由を言って断る
   const imageStore = deps.dataDir ? new ImageStore(join(deps.dataDir, "images")) : undefined;
+  // 人がターンを止める口（決定・2026-10-01、v4-frontend.md §6.31）。走っている・順番を待っているターンを覚える
+  const turnStops = new TurnStops();
 
   /**
    * **AI が予約した Fork を立てる**（決定・2026-09-27、アーキ仕様 §2.2「AI が Fork を立てる」）。親のターンが
@@ -962,8 +965,49 @@ export function createApp(deps: AppDeps) {
     permissionMode?: RunThreadTurnInput["permissionMode"],
     /** 人が添えた画像（置き場に置いたあとのもの）。届いたもので起こすターンには無い */
     images: TurnImage[] = [],
+    /** 人が止める口（§6.31）。止めたら `stopped` で終わり、その結果をここへ書く */
+    stop?: TurnStopHandle,
   ): AsyncGenerator<TurnStreamEvent> {
-    const modules = await deps.resolveModulesForThread(threadId);
+    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal)) {
+      if (event.type === "stopped") stop?.markStopped(event.withdrawn);
+      yield event;
+    }
+  }
+
+  async function* openTurnInner(
+    threadId: string,
+    prompt: string,
+    permissionMode: RunThreadTurnInput["permissionMode"] | undefined,
+    images: TurnImage[],
+    stop: AbortSignal | undefined,
+  ): AsyncGenerator<TurnStreamEvent> {
+    // **下ごしらえの途中で止められたら、待たずに終える**（§6.31、実測）——Module を起こす・モデルの一覧を CLI に聞く等は
+    // 数秒かかることがあり、その間に押した停止が入力欄に戻るまで待たされていた。まだ何も記録していないので、そのまま取り消す。
+    // 打ち切った下ごしらえは裏で終わる（Module は起きたままでよい）
+    const STOPPED = Symbol("stopped");
+    const stopped = new Promise<typeof STOPPED>((resolve) => {
+      if (stop?.aborted) resolve(STOPPED);
+      else stop?.addEventListener("abort", () => resolve(STOPPED), { once: true });
+    });
+    const unlessStopped = <T,>(work: Promise<T>): Promise<T | typeof STOPPED> => {
+      if (!stop) return work;
+      // 負けた側の失敗を、誰も読まない rejection にしない
+      work.catch(() => undefined);
+      return Promise.race([work, stopped]);
+    };
+    const withdrawnNow = (): TurnStreamEvent => ({
+      type: "stopped",
+      ...(prompt !== "" || images.length > 0
+        ? { withdrawn: { text: prompt, images: images.map((i) => ({ id: i.id, ...(i.name ? { name: i.name } : {}) })) } }
+        : {}),
+    });
+
+    const modulesOrStopped = await unlessStopped(deps.resolveModulesForThread(threadId));
+    if (modulesOrStopped === STOPPED) {
+      yield withdrawnNow();
+      return;
+    }
+    const modules = modulesOrStopped;
     const thread = deps.projectThread.getThread(threadId);
     const project = thread && deps.projectThread.getProject(thread.projectId);
     // root は作成時に正規化される（store.ts）が、その正規化より前に作られた
@@ -983,7 +1027,12 @@ export function createApp(deps: AppDeps) {
     // Module の画面を出し直すため。取れなくてもターンは止めない
     let uiTools: UiToolBinding[] = [];
     try {
-      uiTools = (await listUiToolsForThread(deps, threadId)).map((t) => ({
+      const listed = await unlessStopped(listUiToolsForThread(deps, threadId));
+      if (listed === STOPPED) {
+        yield withdrawnNow();
+        return;
+      }
+      uiTools = listed.map((t) => ({
         toolName: `mcp__${t.server}__${t.tool}`,
         server: t.server,
         resourceUri: t.resourceUri,
@@ -997,7 +1046,12 @@ export function createApp(deps: AppDeps) {
     // ——伝えないだけ。黙らずにログに残す（規則2）
     let modelIdentity: ModelIdentity | undefined;
     try {
-      modelIdentity = modelIdentityOf(await modelCatalog.list(), thread?.model);
+      const models = await unlessStopped(modelCatalog.list());
+      if (models === STOPPED) {
+        yield withdrawnNow();
+        return;
+      }
+      modelIdentity = modelIdentityOf(models, thread?.model);
       if (!modelIdentity) console.warn(`[host] モデル ${thread?.model ?? DEFAULT_MODEL_VALUE} が一覧に無いので、AI に名前を伝えません`);
     } catch (err) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
@@ -1016,6 +1070,7 @@ export function createApp(deps: AppDeps) {
       ),
       modules,
       cwd,
+      ...(stop ? { stop } : {}),
     });
   }
 
@@ -1024,12 +1079,16 @@ export function createApp(deps: AppDeps) {
   deps.deliveries?.setTurnRunner(async (threadId, hop) => {
     const release = deps.threadTurns?.tryAcquire(threadId, hop);
     if (!release) return false;
+    // 届いたもので起こしたターンも、人が画面から止められる（§6.31）
+    const stop = turnStops.open(threadId);
+    stop.markRunning();
     try {
-      for await (const event of openTurn(threadId, "")) {
+      for await (const event of openTurn(threadId, "", undefined, [], stop)) {
         if (event.type === "error") console.warn(`[host] 届いたもので起こした ${threadId} のターンが失敗しました: ${event.message}`);
       }
     } finally {
       release();
+      stop.finish();
     }
     return true;
   });
@@ -1751,7 +1810,13 @@ export function createApp(deps: AppDeps) {
 
       const turnMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/messages$/);
       if (turnMatch && req.method === "POST") {
-        let body: { prompt: string; images?: unknown; permissionMode?: RunThreadTurnInput["permissionMode"] };
+        let body: {
+          prompt: string;
+          images?: unknown;
+          permissionMode?: RunThreadTurnInput["permissionMode"];
+          /** 画面が付けたこのターンの名前（§6.31）。順番待ちのうちに止めるとき、取り違えないため */
+          turnId?: unknown;
+        };
         let images: TurnImage[];
         try {
           body = (await readJsonBody(req, TURN_BODY_MAX_BYTES)) as typeof body;
@@ -1770,19 +1835,47 @@ export function createApp(deps: AppDeps) {
         });
         // 前のターンが終わるのを並んで待つ間も、tool が長く走る間も、流れは生きている
         const stopKeepAlive = keepSseAlive(res);
-        // **同じ Thread のターンは1本ずつ**（決定・2026-09-25、アーキ仕様 §4.2）。走っていれば、終わるまで
-        // 並んで待つ——断らない（送ったつもりで消えるのを作らない。届いたもので host が始めたターンでも同じ）
-        const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0) : undefined;
+        // 順番を待つ前から覚える——並んでいるうちに人が止めたら、走らせずに取り消す（§6.31）
+        const stop = turnStops.open(threadId, typeof body.turnId === "string" ? body.turnId : undefined);
         try {
-          for await (const event of openTurn(threadId, body.prompt, body.permissionMode, images)) {
-            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          // **同じ Thread のターンは1本ずつ**（決定・2026-09-25、アーキ仕様 §4.2）。走っていれば、終わるまで
+          // 並んで待つ——断らない（送ったつもりで消えるのを作らない。届いたもので host が始めたターンでも同じ）
+          const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0, stop.signal) : undefined;
+          if (stop.signal.aborted) {
+            release?.();
+            const withdrawn = {
+              text: body.prompt,
+              images: images.map((i) => ({ id: i.id, ...(i.name ? { name: i.name } : {}) })),
+            };
+            stop.markStopped(withdrawn);
+            res.write(`data: ${JSON.stringify({ type: "stopped", withdrawn } satisfies TurnStreamEvent)}\n\n`);
+          } else {
+            stop.markRunning();
+            try {
+              for await (const event of openTurn(threadId, body.prompt, body.permissionMode, images, stop)) {
+                res.write(`data: ${JSON.stringify(event)}\n\n`);
+              }
+            } finally {
+              release?.();
+            }
           }
         } finally {
           stopKeepAlive();
-          release?.();
+          stop.finish();
         }
         res.end();
         return;
+      }
+
+      // **人がターンを止める**（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）。`turnId` があればそのターン
+      // （順番待ちでもよい）、無ければいま走っているターン。片づくまで待って、取り消した発言があれば返す
+      const stopMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/stop$/);
+      if (stopMatch && req.method === "POST") {
+        const threadId = stopMatch[1]!;
+        if (!deps.projectThread.getThread(threadId)) return json(res, 404, { error: "not found" });
+        const body = (await readJsonBody(req).catch(() => ({}))) as { turnId?: unknown } | undefined;
+        const turnId = typeof body?.turnId === "string" ? body.turnId : undefined;
+        return json(res, 200, await turnStops.stop(threadId, turnId));
       }
 
       // **host から画面への出来事の流れ**（決定・2026-09-25、v4-frontend.md §6.8）。何が起きたかだけを流す
@@ -1856,8 +1949,8 @@ export function createApp(deps: AppDeps) {
         await new Promise<void>((resolve) => {
           const unsubscribe = deps.turnEvents!.subscribeStream(threadId, (event) => {
             res.write(`data: ${JSON.stringify(event)}\n\n`);
-            // `done`／`error` でそのターンは終わり——ここで閉じる
-            if (event.type === "done" || event.type === "error") finish();
+            // `done`／`error`／`stopped` でそのターンは終わり——ここで閉じる
+            if (event.type === "done" || event.type === "error" || event.type === "stopped") finish();
           });
           let finished = false;
           const finish = () => {

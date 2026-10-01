@@ -41,6 +41,12 @@ export interface RunnerTurnOptions {
    *  （SDKの`forkSession`）。Fork Threadの最初のターンで使う——渡さないと親と
    *  同じセッションを共有し、**両方の会話が1本に混ざる**（実測・2026-09-05、§2.2）。 */
   forkSession?: boolean;
+  /**
+   * **resume するとき、このやり取り（SDK のメッセージの uuid）までで切る**（SDK の `resumeSessionAt`、
+   * 決定・2026-10-01）。人が止めて取り消した発言（§6.31）が CLI のセッションに書かれていても、次のターンの
+   * AI に見せないために使う。`resumeSessionId` と一緒にだけ意味がある
+   */
+  resumeSessionAt?: string;
   prompt: string;
   /** 人が添えた画像（決定・2026-09-26）。**縮めずに渡す**——大きいものは CLI が長辺 2000px の
    *  JPEG に縮めてから API に送る（実測・2026-09-26、`docs/notes/2026-09-26-composer-images.md`） */
@@ -189,6 +195,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
     options: {
       resume: opts.resumeSessionId,
       forkSession: opts.forkSession,
+      ...(opts.resumeSessionId && opts.resumeSessionAt ? { resumeSessionAt: opts.resumeSessionAt } : {}),
       mcpServers: opts.mcpServers,
       // **毎ターン組み立て直したものをそのまま使わせる**（`snapshot: false`、2026-09-24）。
       // SDK 0.3.267 から、独自の system prompt は既定で「最初の要求で記録し、以後の要求と

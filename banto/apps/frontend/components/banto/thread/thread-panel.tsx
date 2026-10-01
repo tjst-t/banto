@@ -19,6 +19,7 @@ import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/hu
 import { OpenableCard } from "@/components/banto/thread/openable-card";
 import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import {
+  cancelRunQuietly,
   followVersion,
   registerRuntimeBusy,
   releaseRealRun,
@@ -302,7 +303,8 @@ function ThreadRuntime({
   useLayoutEffect(() => {
     if (importedBuild.current === build) return;
     importedBuild.current = build;
-    runtime.thread.cancelRun();
+    // 人の停止ではない——host のターンは止めない（§6.31）
+    cancelRunQuietly(threadId, () => runtime.thread.cancelRun());
     runtime.thread.import(ExportedMessageRepository.fromArray(initialMessages));
     // 流し込む版は build が進んだときの写し——initialMessages はその都度写しから作り直されている
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -58,6 +58,16 @@ export interface FakePlan {
    */
   thenStreamMs?: number;
   /**
+   * **何も出さずに考える時間**（追加・2026-10-01）。合計で何ミリ秒、init のあと何も流さずに待つ。止められたら
+   * そこで終わる——AI がまだ何も出していないうちに人が止める試験（`turn-stop.spec.ts`、§6.31）が使う
+   */
+  thinkMs?: number;
+  /**
+   * **どのセッションのどこから続けたかを、そのまま発言にする**（追加・2026-10-01）。止めて取り消した発言の手前で
+   * 切って続けたか（`resumeSessionAt`）を、発言の中身で見る（`turn-stop.spec.ts`）
+   */
+  saySession?: boolean;
+  /**
    * **banto がモデルに送った文脈を、そのまま発言にする**（追加・2026-09-21）。
    *
    * 「合言葉をそのまま答えて」のような試験は、本物では**モデルが覚えていて
@@ -156,9 +166,13 @@ function initMessage(sessionId: string, servers: Record<string, unknown>) {
   };
 }
 
+let assistantSeq = 0;
+
 function assistantMessage(sessionId: string, content: unknown[]) {
   return {
     type: "assistant",
+    // 本物は会話の鎖の1つとして uuid を持つ——banto は最後のものを「止めて取り消したとき切る位置」に覚える（§6.31）
+    uuid: `fake-uuid-${(assistantSeq += 1)}`,
     session_id: sessionId,
     parent_tool_use_id: null,
     message: {
@@ -322,6 +336,7 @@ export async function* runTurn(opts: {
   /** 人が添えた画像（base64）。来ていれば、**何を受け取ったかを必ず発言にする**（下） */
   images?: Array<{ mediaType: string; data: string }>;
   resumeSessionId?: string;
+  resumeSessionAt?: string;
   forkSession?: boolean;
   mcpServers?: Record<string, unknown>;
   /** banto が組み立てて送る文脈。**届いたかどうかを見るのに使う**。 */
@@ -385,7 +400,24 @@ export async function* runTurn(opts: {
     }
   }
 
+  if (plan.thinkMs) {
+    // 止められたらすぐ起きる——本物の CLI も abort で止まる
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, plan.thinkMs);
+      opts.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    if (opts.signal?.aborted) throw new Error("aborted by user");
+  }
+
   if (plan.say) yield* speak(plan.say, plan.streamMs);
+
+  if (plan.saySession) {
+    const text = `resume=${opts.resumeSessionId ?? "(無し)"} at=${opts.resumeSessionAt ?? "(無し)"}`;
+    yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
+  }
 
   if (plan.sayRuntime) {
     // **どのモデル・effort で走ったか**を返す——画面で選んだものが届いたかを見る

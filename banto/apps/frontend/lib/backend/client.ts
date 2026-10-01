@@ -658,10 +658,38 @@ export type RealTurnEvent =
   | { type: "done"; sessionId?: string; contextUsage?: unknown; compactionCount: number }
   | { type: "error"; message: string }
   /**
+   * **人が止めた**（追加・2026-10-01、v4-frontend.md §6.31）。ターンの終わり。`withdrawn` があれば、AI がまだ何も出して
+   * いなかったので host が発言ごと取り消した（記録にも残らない）
+   */
+  | { type: "stopped"; withdrawn?: RealWithdrawnMessage }
+  /**
    * **流れが切れた**（画面の側の出来事。host は送ってこない——決定・2026-09-26）。携帯で別アプリへ移った・
    * 回線が変わった等。ターンが失敗したのではないので、人にエラーとしては見せず、記録から最新を取り直す
    */
   | { type: "disconnected"; message: string };
+
+/** host が取り消した発言。画像は置き場の名前だけ（`fetchRealImageUrl` で取れる） */
+export interface RealWithdrawnMessage {
+  text: string;
+  images: RealMessageImage[];
+}
+
+/** 止めた結果。`stopped: false` はそのとき止めるターンが無かった（もう終わっていた） */
+export interface RealStopOutcome {
+  stopped: boolean;
+  withdrawn?: RealWithdrawnMessage;
+}
+
+/**
+ * **ターンを止める**（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）。`turnId` はこの画面が送ったターンの名前
+ * （順番待ちでもそれを止める）。無ければいま走っているターン。host は片づくまで待って答える
+ */
+export async function stopRealTurn(threadId: string, turnId?: string): Promise<RealStopOutcome> {
+  return request<RealStopOutcome>(`/api/threads/${threadId}/stop`, {
+    method: "POST",
+    body: JSON.stringify(turnId ? { turnId } : {}),
+  });
+}
 
 /** 繋ぎ直しの流れだけが最初に返すもの：走っていない（`idle`）／走っている（`attached`） */
 export type RealFollowEvent = RealTurnEvent | { type: "idle" } | { type: "attached"; startedAt: string };
@@ -799,6 +827,8 @@ export function streamRealTurn(
   onEvent?: (event: RealTurnEvent) => void,
   /** 人が添えた画像（決定・2026-09-26） */
   images: readonly OutgoingImage[] = [],
+  /** このターンの名前（§6.31）。止めるときに同じ名前を渡す */
+  turnId?: string,
 ): AsyncGenerator<RealTurnEvent> {
   return queuedStream<RealTurnEvent>(async (push, signal) => {
     let res: Response;
@@ -807,7 +837,12 @@ export function streamRealTurn(
       res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
         method: "POST",
         headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ prompt, permissionMode, ...(images.length > 0 ? { images } : {}) }),
+        body: JSON.stringify({
+          prompt,
+          permissionMode,
+          ...(images.length > 0 ? { images } : {}),
+          ...(turnId ? { turnId } : {}),
+        }),
         signal,
       });
     } catch (err) {

@@ -284,8 +284,23 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
-  async updateResumePoint(id: ThreadId, resumePoint: string): Promise<void> {
-    const event = await this.log.append("thread.resume_point_updated", { id, resumePoint });
+  /** `anchor`：そのターンの最後のやり取り（最後まで走ったターンだけ渡す——§6.31） */
+  async updateResumePoint(id: ThreadId, resumePoint: string, anchor?: string): Promise<void> {
+    const event = await this.log.append("thread.resume_point_updated", {
+      id,
+      resumePoint,
+      ...(anchor ? { anchor } : {}),
+    });
+    this.projection.applyOne(event);
+  }
+
+  /**
+   * **人が止めて取り消した発言を、会話から外す**（決定・2026-10-01、v4-frontend.md §6.31）。記録は追記のまま
+   * （消したことを積む）。`rewindTo` を渡すと、次のターンは CLI のセッションをそこまでで切って続ける
+   */
+  async withdrawMessage(threadId: ThreadId, seq: number, rewindTo?: string): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const event = await this.log.append("message.withdrawn", { threadId, seq, ...(rewindTo ? { rewindTo } : {}) });
     this.projection.applyOne(event);
   }
 
@@ -396,7 +411,7 @@ export class ProjectThreadStore {
     origin?: MessageOrigin,
     /** 人が添えた画像（追加・2026-09-26）。**中身は先に画像の置き場へ置いておく**——ここは名前だけを残す */
     images?: MessageImage[],
-  ): Promise<void> {
+  ): Promise<number> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     const event = await this.log.append("message.appended", {
       threadId,
@@ -407,6 +422,7 @@ export class ProjectThreadStore {
       ...(images && images.length > 0 ? { images } : {}),
     });
     this.projection.applyOne(event);
+    return event.seq;
   }
 
   /**

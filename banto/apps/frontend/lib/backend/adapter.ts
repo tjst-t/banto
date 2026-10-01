@@ -18,8 +18,10 @@ import type {
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
 import {
   answerRealInboxItem,
+  fetchRealImageUrl,
   followRealTurn,
   listRealUiTools,
+  stopRealTurn,
   streamRealTurn,
   REAL_IMAGE_SRC_PREFIX,
   type OutgoingImage,
@@ -171,6 +173,123 @@ interface LiveTurn extends LiveTurnState {
   close?: () => void;
   /** あとから乗った流れを、まだ会話に描き始めていない（`takeFollowToStart` で描き始める） */
   awaitingStart?: boolean;
+  /** この画面が送ったターンの名前（§6.31）。止めるとき host に渡す——乗った流れには無い */
+  turnId?: string;
+  /** この画面が送った発言に添えた画像（取り消したら入力欄へ戻す——§6.31） */
+  localImages?: WithdrawnImage[];
+}
+
+// ---- 止める（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）-------------------------------
+//
+// 停止ボタンは assistant-ui の `cancelRun()` を呼ぶ。ランタイムは adapter が次を渡すまで「止めた」を描かない（
+// `local-thread-runtime-core.js`）——以前は host から次のイベントが届くまで止まらず、しかも host のターンは走り
+// 続けていた。いまは止める合図ですぐ読むのをやめ、host に止めてもらう。AI がまだ何も出していなければ host が発言ごと
+// 取り消すので、その中身を入力欄へ戻す（`onTurnWithdrawn`）。
+
+/** 取り消した発言に添えていた画像1枚。中身は戻すときに取る */
+export interface WithdrawnImage {
+  name?: string;
+  load(): Promise<Blob>;
+}
+
+/** 取り消した発言——入力欄へ戻すもの */
+export interface WithdrawnTurn {
+  text: string;
+  images: WithdrawnImage[];
+}
+
+const withdrawnListeners = new Set<(threadId: string, withdrawn: WithdrawnTurn) => void>();
+
+/** その Thread で人が止めて発言が取り消されたら知らせる（会話の面が入力欄へ戻す） */
+export function onTurnWithdrawn(listener: (threadId: string, withdrawn: WithdrawnTurn) => void): () => void {
+  withdrawnListeners.add(listener);
+  return () => withdrawnListeners.delete(listener);
+}
+
+function reportWithdrawn(threadId: string, withdrawn: WithdrawnTurn): void {
+  for (const listener of withdrawnListeners) listener(threadId, withdrawn);
+}
+
+/** host に止めてもらっている最中の Thread。その間は記録から組み直さない——止まりきる前のターンに乗り直さない */
+const stoppingThreads = new Set<string>();
+
+/**
+ * いまの中断が「人が停止ボタンを押した」ものか。assistant-ui は停止ボタン（`cancelRun`）で `AbortError(detach=false)`、
+ * 面を外すとき（`detach`）で `AbortError(detach=true)`、次の run を始めるときは理由なしで止める。画面を離れただけで
+ * host のターンを止めてはいけない。こちらが会話を組み直すために止めるものは `cancelRunQuietly` を通す
+ */
+const quietCancels = new Set<string>();
+function isStopButton(signal: AbortSignal, threadId: string): boolean {
+  if (quietCancels.has(threadId)) return false;
+  const reason = signal.reason as { name?: unknown; detach?: unknown } | undefined;
+  return reason?.name === "AbortError" && reason.detach === false;
+}
+
+/** 人の停止ではない中断（会話を記録から組み直す前など）。host のターンは止めない */
+export function cancelRunQuietly(threadId: string, cancel: () => void): void {
+  quietCancels.add(threadId);
+  try {
+    cancel();
+  } finally {
+    quietCancels.delete(threadId);
+  }
+}
+
+/** 中断の合図が立ったら解ける。人の停止かどうかは、立ったその場で決める（`quietCancels` はその瞬間だけ立つ） */
+function whenAborted(signal: AbortSignal, threadId: string): Promise<{ stopButton: boolean }> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve({ stopButton: isStopButton(signal, threadId) });
+    else signal.addEventListener("abort", () => resolve({ stopButton: isStopButton(signal, threadId) }), { once: true });
+  });
+}
+
+/** この画面が送る発言に添えた画像（data URL）を、戻せる形で控える */
+function localWithdrawnImages(messages: readonly ThreadMessage[]): WithdrawnImage[] {
+  const last = [...messages].reverse().find((m) => m.role === "user");
+  if (!last || last.role !== "user") return [];
+  const images: WithdrawnImage[] = [];
+  for (const attachment of last.attachments ?? []) {
+    for (const part of attachment.content ?? []) {
+      if (part.type !== "image") continue;
+      const src = part.image;
+      images.push({ ...(attachment.name ? { name: attachment.name } : {}), load: async () => (await fetch(src)).blob() });
+    }
+  }
+  return images;
+}
+
+/** host が取り消した発言の画像（置き場の名前）を、戻せる形にする */
+function hostWithdrawnImages(images: readonly RealMessageImage[]): WithdrawnImage[] {
+  return images.map((image) => ({
+    ...(image.name ? { name: image.name } : {}),
+    load: async () => (await fetch(await fetchRealImageUrl(image.id))).blob(),
+  }));
+}
+
+/**
+ * **host に止めてもらう**。画面はもう止まっている（読むのをやめた）。片づいたら、取り消した発言を入力欄へ戻し、
+ * 記録から会話を組み直す（取り消した発言は消え、途中まで出たものは「ここで止めました」と一緒に残る）
+ */
+function stopOnHost(threadId: string, turn: LiveTurn): void {
+  stoppingThreads.add(threadId);
+  void (async () => {
+    try {
+      const outcome = await stopRealTurn(threadId, turn.turnId);
+      if (outcome.withdrawn) {
+        reportWithdrawn(threadId, {
+          text: outcome.withdrawn.text,
+          // この画面が送った画像は手元にある——取りに行かない
+          images: turn.localImages ?? hostWithdrawnImages(outcome.withdrawn.images),
+        });
+      }
+    } catch (err) {
+      // **黙らない**（規則2）——止められなかったら、ターンは host で続いている。組み直せば走っていると分かる
+      console.warn(`[banto] 会話 ${threadId} のターンを止められませんでした:`, err);
+    } finally {
+      stoppingThreads.delete(threadId);
+      reportStreamOutcome(threadId, "disconnected");
+    }
+  })();
 }
 
 /** **このブラウザがいま読んでいるターン**だけが入る（決定・2026-09-06、見直し起点）。
@@ -540,13 +659,15 @@ export function releaseRealRun(threadId: string): void {
 
 /** そのThreadのターンが、いまこのブラウザで生きているか（会話が送っている・流している間も含む）。 */
 export function hasLiveRealRun(threadId: string): boolean {
-  return liveTurns.has(threadId) || (runtimeBusy.get(threadId)?.() ?? false);
+  return liveTurns.has(threadId) || stoppingThreads.has(threadId) || (runtimeBusy.get(threadId)?.() ?? false);
 }
 
 export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter {
   return {
-    async *run({ messages }) {
+    async *run({ messages, abortSignal }) {
       let live = liveTurns.get(thread.id);
+      // 止める合図（§6.31）——host から次が届くのを待たずに、ここで読むのをやめる
+      const aborted = whenAborted(abortSignal, thread.id);
 
       // **走行中のターンがあるところへ、新しい発言を重ねない**（決定・2026-09-06、
       // 見分け方を改訂・2026-09-10）。assistant-ui の isRunning は requires-action
@@ -587,7 +708,17 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // **会話が始まることのほうが、画面が1つ出ることより大事**なので、
         // ここでも上限を置く。**待ちで隠しているのではない**——越えたときに
         // 何が起きるか（その Module の画面が出ない）が分かっている（規則6）。
-        await waitUiTools(thread.id);
+        await Promise.race([waitUiTools(thread.id), aborted]);
+        if (abortSignal.aborted) {
+          // **送り出す前に止めた**（§6.31）——host には何も届いていない。そのまま入力欄へ戻し、記録から組み直す
+          // （会話に入ったこの発言は、記録に無いので消える）
+          if ((await aborted).stopButton) {
+            reportWithdrawn(thread.id, { text: prompt, images: localWithdrawnImages(messages) });
+            reportStreamOutcome(thread.id, "disconnected");
+          }
+          return;
+        }
+        const turnId = crypto.randomUUID();
         // 終了イベントで「この走行」を降ろすために、自分自身を指す入れ物を用意する
         // （コールバックは live を作るより先に書く必要があるため）
         const self: { turn: LiveTurn | null } = { turn: null };
@@ -598,21 +729,25 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
             permissionMode === "auto" ? undefined : permissionMode,
             // **受信した時点で**終わりを片付ける（描く側の都合に依存させない）
             (event) => {
-              if (event.type !== "done") return;
-              appendRealUsage(thread.id, event.contextUsage, event.compactionCount);
+              if (event.type !== "done" && event.type !== "stopped") return;
+              if (event.type === "done") appendRealUsage(thread.id, event.contextUsage, event.compactionCount);
               // 「走行中」を降ろす。降ろさないと、ターンのあとに立った判断待ちが
               // 会話に描き直されない（ユーザー報告・2026-09-06）
               if (self.turn && liveTurns.get(thread.id) === self.turn) {
                 liveTurns.delete(thread.id);
               }
-              reportStreamOutcome(thread.id, "done");
+              // 止めたターンは記録が変わっている（取り消した・「ここで止めました」を足した）——組み直す
+              reportStreamOutcome(thread.id, event.type === "done" ? "done" : "disconnected");
             },
             images,
+            turnId,
           ),
           acc: new PartsAccumulator(),
           prompt,
           userMessageCount: countUserMessages(messages),
           consuming: false,
+          turnId,
+          localImages: localWithdrawnImages(messages),
         };
         self.turn = live;
         liveTurns.set(thread.id, live);
@@ -629,7 +764,20 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
       let disconnected = false;
 
       try {
-      for await (const event of live.iterator) {
+      for (;;) {
+        // **止める合図を待ちと競わせる**（§6.31）——待っている間に停止ボタンが押されたら、その瞬間に抜ける
+        const step = await Promise.race([live.iterator.next(), aborted]);
+        if ("stopButton" in step) {
+          if (step.stopButton) stopOnHost(thread.id, current);
+          return;
+        }
+        if (step.done) break;
+        const event = step.value;
+        if (event.type === "stopped") {
+          // 別の画面から止められた（この画面が止めたなら、もう抜けている）——記録から組み直す
+          disconnected = true;
+          break;
+        }
         if (event.type === "message") {
           applyMessage(live.acc, event.message, thread.id);
           // 答え待ちが無くなったらrunningへ戻す。**戻さないと**status が
@@ -752,10 +900,11 @@ export async function followRunningTurn(threadId: string): Promise<boolean> {
   const stream = followRealTurn(threadId, (event) => {
     if (event.type === "attached" || event.type === "idle") return;
     sawContent();
-    if (event.type !== "done") return;
-    appendRealUsage(threadId, event.contextUsage, event.compactionCount);
+    if (event.type !== "done" && event.type !== "stopped") return;
+    if (event.type === "done") appendRealUsage(threadId, event.contextUsage, event.compactionCount);
     if (self.turn && liveTurns.get(threadId) === self.turn) liveTurns.delete(threadId);
-    reportStreamOutcome(threadId, "done");
+    // 止めたターンは記録が変わっている——組み直す（§6.31）
+    reportStreamOutcome(threadId, event.type === "done" ? "done" : "disconnected");
   });
   const head = await stream.events.next();
   const first = head.done ? undefined : head.value;

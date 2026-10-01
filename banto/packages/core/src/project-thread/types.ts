@@ -212,6 +212,18 @@ export interface ThreadState {
   createdSeq: number;
   /** SDKのresume用識別子。新規Threadはundefined。 */
   resumePoint?: string;
+  /**
+   * **`resumePoint` のセッションで、最後まで走ったターンの最後のやり取り**（SDK のメッセージの uuid。
+   * 追加・2026-10-01、v4-frontend.md §6.31）。人が止めて発言を取り消したとき、次のターンをここまでで切って
+   * resume するのに使う。知らなければ（この仕組みより前の記録・止めたターンのあと）持たない——そのときは
+   * 取り消さず、止めるだけにする
+   */
+  resumeAnchor?: string;
+  /**
+   * **次のターンはこのやり取りまでで切って resume する**（追加・2026-10-01）。発言を取り消したときに立ち、
+   * 次に resume-point が進むと消える
+   */
+  rewindTo?: string;
   /** この`resumePoint`が**この Thread 自身のセッション**か（決定・2026-09-05）。
    *  Fork Thread は作られた時点では親のresume-pointを借りているだけなので false
    *  ——そのまま resume すると**親と同じセッションを共有し、会話が1本に混ざる**

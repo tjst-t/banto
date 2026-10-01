@@ -49,6 +49,7 @@ import { KeepScrollPositionOnResize } from "@/components/banto/thread/keep-scrol
 import { RememberScrollPosition } from "@/components/banto/thread/remember-scroll-position";
 import { ShowEarlierMessages, useMessageWindow } from "@/components/banto/thread/message-window";
 import { useThreadId } from "@/components/banto/thread/thread-id-context";
+import { useRestoreWithdrawn } from "@/components/banto/thread/use-restore-withdrawn";
 import { recalledThreadScroll } from "@/lib/thread-scroll-memory";
 import { KeyboardDebugOverlay } from "@/components/banto/thread/keyboard-debug-overlay";
 import {
@@ -90,6 +91,7 @@ import {
   Fragment,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ClipboardEvent,
   type ComponentType,
@@ -456,6 +458,9 @@ const Composer: FC<{
   composerActionSlot?: ReactNode;
 }> = ({ autoFocus, placeholder, composerActionSlot }) => {
   const pasteImages = usePasteImages();
+  // 止めて取り消した発言を、ここへ戻す（banto、v4-frontend.md §6.31）
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useRestoreWithdrawn(inputRef);
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -466,6 +471,7 @@ const Composer: FC<{
           <ComposerAttachments />
           <ComposerAttachmentError />
           <ComposerPrimitive.Input
+            ref={inputRef}
             placeholder={placeholder ?? "Send a message..."}
             className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
             rows={1}

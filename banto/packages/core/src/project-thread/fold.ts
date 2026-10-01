@@ -49,7 +49,11 @@ export type ProjectThreadEvent =
   | { type: "thread.renamed"; payload: { id: string; title: string } }
   | { type: "thread.order.set"; payload: { projectId: string; ids: string[] } }
   | { type: "thread.reopened"; payload: { id: string } }
-  | { type: "thread.resume_point_updated"; payload: { id: string; resumePoint: string } }
+  // `anchor`：そのターンの最後のやり取り（追加・2026-10-01）。止めたターン・それより前の記録は持たない
+  | { type: "thread.resume_point_updated"; payload: { id: string; resumePoint: string; anchor?: string } }
+  // **人が止めて取り消した発言**（追加・2026-10-01、v4-frontend.md §6.31）。AI がまだ何も出していないうちに止めた
+  // ——会話から外し、`rewindTo` があれば次のターンはそこまでで切って resume する
+  | { type: "message.withdrawn"; payload: { threadId: string; seq: number; rewindTo?: string } }
   | { type: "thread.permission_mode_set"; payload: { id: string; mode: ThreadPermissionMode } }
   // 人が選んだモデルと effort（決定・2026-09-23）。null は「選んでいない」（SDK の既定）
   | { type: "thread.model_set"; payload: { id: string; model: string | null; effort: ThreadEffort | null } }
@@ -301,7 +305,21 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           return next;
         }
         // Runnerが返したsession idを受け取った＝この Thread 自身のセッション。
-        next.threads.set(t.id, { ...t, resumePoint: event.payload.resumePoint, ownsSession: true });
+        // 切って resume する必要は、新しい resume-point で消える（そのターンが切って走った）
+        const { resumeAnchor: _a, rewindTo: _r, ...rest } = t;
+        next.threads.set(t.id, {
+          ...rest,
+          resumePoint: event.payload.resumePoint,
+          ownsSession: true,
+          ...(event.payload.anchor ? { resumeAnchor: event.payload.anchor } : {}),
+        });
+        return next;
+      }
+      case "message.withdrawn": {
+        const t = next.threads.get(event.payload.threadId);
+        if (!t) return next;
+        t.messages = t.messages.filter((m) => m.seq !== event.payload.seq);
+        if (event.payload.rewindTo) t.rewindTo = event.payload.rewindTo;
         return next;
       }
       case "memory.appended": {
@@ -428,6 +446,8 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // 走行中のターンが終了時に同じsession idで戻ってきても復活させない
           if (t.resumePoint) t.abandonedSessions = [...t.abandonedSessions, t.resumePoint];
           t.resumePoint = undefined;
+          t.resumeAnchor = undefined;
+          t.rewindTo = undefined;
           t.ownsSession = false;
           // 畳んだ時点で、system promptに入るMemoryを確定し直す
           // （決定・2026-09-05）——次のターンは新しいキャッシュ境界から始まる。

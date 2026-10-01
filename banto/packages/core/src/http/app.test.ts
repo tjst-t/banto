@@ -1668,3 +1668,70 @@ test("読めない画像・多すぎる画像は、ターンを始めずに理�
     { runTurn: recordingRunner(seen) },
   );
 });
+
+// **人がターンを止める口**（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）。停止ボタンは host のターンを
+// 止め、AI がまだ何も出していなければ送った発言を取り消して返す。順番待ちの発言も、名前で止めれば走らせない
+test("POST /api/threads/:id/stop は走っているターンを止め、何も出していなければ発言を取り消して返す", async () => {
+  const threadTurns = new ThreadTurns();
+  let runnerStarted!: () => void;
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+
+      // 1本目：AI が考えている（何も出さない）。2本目：その後ろに並ぶ
+      const started = new Promise<void>((r) => (runnerStarted = r));
+      const first = fetch(`${base}/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ prompt: "まちがえた", turnId: "turn-a" }),
+      }).then((r) => r.text());
+      await started;
+      const second = fetch(`${base}/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ prompt: "並んだ発言", turnId: "turn-b" }),
+      }).then((r) => r.text());
+      await new Promise((r) => setTimeout(r, 100));
+
+      // 並んでいるほうを名前で止める——走っているほうは止めない
+      const queued = await fetch(`${base}/api/threads/${thread.id}/stop`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ turnId: "turn-b" }),
+      });
+      assert.deepEqual(await queued.json(), { stopped: true, withdrawn: { text: "並んだ発言", images: [] } });
+      assert.match(await second, /"type":"stopped"/);
+      assert.equal(threadTurns.isRunning(thread.id), true, "並んだ発言を止めたら、走っているほうまで止まった");
+
+      // 名前なしで止める——いま走っているターン
+      const at = Date.now();
+      const stopped = await fetch(`${base}/api/threads/${thread.id}/stop`, { method: "POST", headers, body: "{}" });
+      assert.deepEqual(await stopped.json(), { stopped: true, withdrawn: { text: "まちがえた", images: [] } });
+      assert.ok(Date.now() - at < 2_000, `止めるのに ${Date.now() - at}ms かかった`);
+      assert.match(await first, /"type":"stopped"/);
+      assert.doesNotMatch(await first, /"type":"done"/);
+      assert.equal(threadTurns.isRunning(thread.id), false);
+      assert.deepEqual(deps.projectThread.getThread(thread.id)!.messages, [], "取り消した発言が記録に残っている");
+
+      // もう走っていない——止めなかったと答える
+      const again = await fetch(`${base}/api/threads/${thread.id}/stop`, { method: "POST", headers, body: "{}" });
+      assert.deepEqual(await again.json(), { stopped: false });
+    },
+    {
+      threadTurns,
+      // モデルの一覧を CLI に聞かない——下ごしらえを済ませ、AI が考えている最中に止める場面にする
+      listModels: async () => [],
+      runTurn: (async function* (opts: { signal?: AbortSignal }) {
+        runnerStarted();
+        yield {
+          type: "message" as const,
+          message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] },
+        } as never;
+        await new Promise<void>((resolve) => opts.signal?.addEventListener("abort", () => resolve()));
+        throw new Error("aborted");
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
+});

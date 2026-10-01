@@ -25,13 +25,33 @@ export class ThreadTurns {
     return this.start(threadId, hop);
   }
 
-  /** 鍵を取る。**走っていれば、終わるまで並んで待つ**（人が送ったターン）。 */
-  acquire(threadId: string, hop: number): Promise<() => void> {
+  /**
+   * 鍵を取る。**走っていれば、終わるまで並んで待つ**（人が送ったターン）。
+   * `signal` が立ったら列を抜けて `undefined` を返す（人が止めた——§6.31）
+   */
+  acquire(threadId: string, hop: number, signal?: AbortSignal): Promise<(() => void) | undefined> {
+    if (signal?.aborted) return Promise.resolve(undefined);
     const now = this.tryAcquire(threadId, hop);
     if (now) return Promise.resolve(now);
     return new Promise((resolve) => {
       const queue = this.waiting.get(threadId) ?? [];
-      queue.push({ hop, grant: resolve });
+      const ticket = {
+        hop,
+        grant: (release: () => void) => {
+          signal?.removeEventListener("abort", leave);
+          resolve(release);
+        },
+      };
+      const leave = (): void => {
+        const current = this.waiting.get(threadId);
+        const at = current?.indexOf(ticket) ?? -1;
+        if (!current || at === -1) return;
+        current.splice(at, 1);
+        if (current.length === 0) this.waiting.delete(threadId);
+        resolve(undefined);
+      };
+      signal?.addEventListener("abort", leave, { once: true });
+      queue.push(ticket);
       this.waiting.set(threadId, queue);
     });
   }
