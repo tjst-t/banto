@@ -8,6 +8,8 @@
 //   2. カードを押すと Canvas に入口の画面が開き、**その仕事が選ばれて**中身（実行中）が見える
 //   3. 待たない形でも同じカードが出る
 //   4. リロードしてもカードは残り、古いほうのカードを押すと（新しい仕事があっても）古いほうの仕事が開く
+//   5. **Fork の会話で頼んでも**、カードに「開く」があり、押すとその仕事が開く（2026-10-01、ユーザー報告——
+//      Fork には Canvas を開く口が渡っておらず、ボタンが出なかった）
 import { test, expect, type Page } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,6 +109,25 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
   await expect(canvas.locator('[data-role="detail-status"]')).toHaveText("完了");
   await cards.nth(1).getByRole("button", { name: "開く" }).click();
   await expect(detail.locator('[data-role="detail-prompt"]')).toHaveText("二つ目の仕事", { timeout: 60_000 });
+
+  // ---- 5. Fork の会話から ---------------------------------------------------------------------
+  await page.getByRole("button", { name: "Canvas を閉じる" }).click();
+  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({ timeout: 15_000 });
+  const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
+  await forkComposer.fill(
+    "Fork で頼んで。" +
+      fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "三つ目の仕事（Fork）" } }] }),
+  );
+  await forkComposer.press("Enter");
+  const forkCard = cards.filter({ hasText: "三つ目の仕事（Fork）" });
+  await expect(forkCard).toHaveCount(1, { timeout: 60_000 });
+  await forkCard.getByRole("button", { name: "開く" }).click();
+  await expect(detail.locator('[data-role="detail-prompt"]'), "Fork のカードから仕事が開かない").toHaveText("三つ目の仕事（Fork）", {
+    timeout: 60_000,
+  });
+  // Fork は閉じずに残る
+  await expect(page.getByRole("button", { name: `${PROJECT_NAME} の Base Thread に戻る` })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });

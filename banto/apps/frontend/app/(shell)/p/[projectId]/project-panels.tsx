@@ -441,6 +441,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             <div className="min-h-0 flex-1">
               <ThreadPanel
                 threadId={threadId}
+                // **Fork の会話からも Canvas を開ける**（2026-10-01、ユーザー報告）。渡していなかったので、Fork の中では
+                // 画面つき tool のカードに「開く」も「大きく開く」も出なかった。開くと Fork はそのまま細く残る
+                onOpenCanvas={(moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })}
                 onForkFrom={(seq) => void handleOpenFork(threadId, seq)}
                 markers={markersByThread[threadId]}
               />
