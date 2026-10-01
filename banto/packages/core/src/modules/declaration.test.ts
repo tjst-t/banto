@@ -71,12 +71,18 @@ function stdio(launch: ModuleLaunch): StdioLaunch {
 // **コードに写した行は、消したくても消せない**（既定は `removable: false`）。
 // **Skill を配る Module も既定に入る**（追加・2026-09-23、アーキ仕様 §5.7）
 // ——Skill を取り込む先で、誰もが使う。
-test("同梱の既定は7本（vault-local/vault-directory/shell/filesystem/subagent/subagent-settings/skills）で、そのまま読める", () => {
+// **手元のリポジトリの台帳も既定に入る**（追加・2026-10-01、v4-modules.md §2.4）——Project の根を用意する側なので、
+// Project より先に、どの banto にも居る
+test("同梱の既定は8本（vault-local/vault-directory/shell/filesystem/subagent/subagent-settings/skills/repositories）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "skills", "subagent", "subagent-settings", "vault-directory", "vault-local"],
+    ["filesystem", "repositories", "shell", "skills", "subagent", "subagent-settings", "vault-directory", "vault-local"],
   );
+  // Repositories は banto 全体に1本・banto 本体で動く（同梱の banto 全体の Module）
+  const repositories = parsed.find((d) => d.name === "repositories")!;
+  assert.equal(repositories.meta.scope, "instance");
+  assert.equal(modulePlacement(repositories.meta, repositories.launch), "host");
   // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
   assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
     { role: "vault", required: true },

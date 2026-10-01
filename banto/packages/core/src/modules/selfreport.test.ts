@@ -27,7 +27,7 @@ async function withModule(command: string, args: string[], env: Record<string, s
 
 // 入口の置き場（既定は `<name>/dist/server.js`）。同じパッケージに入口が2つあるものだけ書く
 const ENTRY: Record<string, string> = { "subagent-settings": join("subagent", "dist", "settings-server.js") };
-for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent", "subagent-settings"] as const) {
+for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent", "subagent-settings", "repositories"] as const) {
   test(`${name} は自分が何者かを名乗り、同梱の宣言と食い違わない`, async () => {
     const declaration = parseModuleDeclaration(
       DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === name)!,

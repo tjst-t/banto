@@ -1,0 +1,413 @@
+// Repositories の判断（docs/specs/v4-modules.md §2.4）。画面は言い方だけを持ち、**何が起きるかはここで決める**
+// （規則3——モックの `inspectImport`・`syncWithFolders`・一覧の並べ方の1箇所ずつと同じ分け方）。
+//
+// - 一覧：台帳から作る。フォルダの事実（git）と、どの Project が根にしているか（core の Project の一覧）を合わせる。
+//   答えるたびに origin と突き合わせて台帳を直す
+// - Import：人が選んだフォルダ1つを、その場所のまま台帳に足す。断るときは理由と次の手を言えるだけの値を返す
+// - 外す／元に戻す：台帳からだけ外す。フォルダには触らない
+
+import { readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { nearestExistingFolder, readFolder, type FolderFacts } from "./git.js";
+import {
+  DEFAULT_REPO_HOME,
+  parseLedgerEntry,
+  syncWithOrigin,
+  type LedgerEntry,
+  type LedgerStore,
+} from "./ledger.js";
+import { displayPath, resolveUserPath } from "./paths.js";
+import { remoteHost, type GithubLocation, type RemoteLocation } from "./remote.js";
+
+/** core の Project の姿（中継の `relayListProjects` が返すもの） */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  root: string;
+  status: "active" | "closed";
+}
+
+/** どの Project が使っているかを引けたか。**引けなかったことを「使っていない」と言わない**（規則2） */
+export type ProjectsLookup = { ok: true; projects: ProjectSummary[] } | { ok: false; error: string };
+
+export type RemoteView =
+  | ({ kind: "github" } & GithubLocation)
+  | { kind: "elsewhere"; url: string; host: string }
+  | { kind: "none" };
+
+export interface ProjectUse {
+  id: string;
+  name: string;
+  closed: boolean;
+  /** その Project の根はこのリポジトリの worktree（フォルダそのものではない） */
+  viaWorktree: boolean;
+}
+
+export interface RepoRow {
+  path: string;
+  displayPath: string;
+  /** フォルダ名 */
+  name: string;
+  /**
+   * - `ok`：フォルダがあり、git のリポジトリ
+   * - `missing`：フォルダが見つからない（手がかりは台帳の値だけ）
+   * - `not-repo`：フォルダはあるが、リポジトリの一番上ではなくなっている（.git を消した等）
+   * - `unreadable`：読めなかった（権限・git が断った等）。理由は `problem`
+   */
+  state: "ok" | "missing" | "not-repo" | "unreadable";
+  problem?: string;
+  /** `ok` はフォルダの origin。`missing` 等は台帳が覚えている場所（`remembered`） */
+  remote?: RemoteView;
+  remembered?: boolean;
+  branch?: string;
+  commits?: number;
+  correctedFrom?: GithubLocation;
+  /** 引けなかったら無い（`section` も `unknown`） */
+  projects?: ProjectUse[];
+  section: "used" | "unused" | "unknown";
+}
+
+export interface RepoListing {
+  rows: RepoRow[];
+  /** どの Project が使っているかを引けなかった理由（あれば、区切りは作れない） */
+  projectsError?: string;
+}
+
+function remoteView(remote: RemoteLocation): RemoteView {
+  return remote.kind === "elsewhere" ? { ...remote, host: remoteHost(remote.url) } : remote;
+}
+
+function rememberedRemote(entry: LedgerEntry): RemoteView | undefined {
+  if (entry.github) return { kind: "github", ...entry.github };
+  if (entry.elsewhere) return { kind: "elsewhere", url: entry.elsewhere, host: remoteHost(entry.elsewhere) };
+  return undefined;
+}
+
+/** フォルダを読む。**読めなかったことは値にする**——1行が読めないだけで一覧ごと出なくしない */
+async function readFacts(path: string): Promise<FolderFacts | { kind: "error"; message: string }> {
+  try {
+    return await readFolder(path);
+  } catch (err) {
+    return { kind: "error", message: (err as Error).message };
+  }
+}
+
+/** 次の手が要る順：見つからない・読めない → このマシンにだけ → あとは名前順（§2.4。並べ替えは無い） */
+function rank(row: RepoRow): number {
+  if (row.state !== "ok") return 0;
+  return row.remote?.kind === "none" ? 1 : 2;
+}
+
+export function sortRows(rows: RepoRow[]): RepoRow[] {
+  const order = { used: 0, unknown: 0, unused: 1 } as const;
+  return [...rows].sort(
+    (a, b) =>
+      order[a.section] - order[b.section] ||
+      rank(a) - rank(b) ||
+      a.name.localeCompare(b.name, "ja") ||
+      a.path.localeCompare(b.path),
+  );
+}
+
+function projectsUsing(path: string, worktrees: string[], lookup: ProjectsLookup): ProjectUse[] | undefined {
+  if (!lookup.ok) return undefined;
+  return lookup.projects
+    .filter((p) => p.root === path || worktrees.includes(p.root))
+    .map((p) => ({ id: p.id, name: p.name, closed: p.status === "closed", viaWorktree: p.root !== path }));
+}
+
+/**
+ * 一覧を作る。**答えるたびに origin と突き合わせ、食い違っていれば台帳を直す**（§2.4）。
+ * Project の一覧は呼ぶ側が引いて渡す（中継の口は人の画面からの呼び出しの中でだけ答える）
+ */
+export async function listRepositories(store: LedgerStore, lookup: ProjectsLookup, home = homedir()): Promise<RepoListing> {
+  const rows = await store.update(async (before) => {
+    const facts = await Promise.all(before.map((e) => readFacts(e.path)));
+    let changed = false;
+    const entries = before.map((e, i) => {
+      const f = facts[i]!;
+      if (f.kind === "error") return e;
+      const r = syncWithOrigin(e, f);
+      if (r.changed) changed = true;
+      return r.entry;
+    });
+    const rows = entries.map((entry, i) => toRow(entry, facts[i]!, lookup, home));
+    return { entries: changed ? entries : before, result: rows };
+  });
+  return { rows: sortRows(rows), ...(lookup.ok ? {} : { projectsError: lookup.error }) };
+}
+
+function toRow(
+  entry: LedgerEntry,
+  facts: FolderFacts | { kind: "error"; message: string },
+  lookup: ProjectsLookup,
+  home: string,
+): RepoRow {
+  const base = { path: entry.path, displayPath: displayPath(entry.path, home), name: basename(entry.path) };
+  const remembered = rememberedRemote(entry);
+  const withProjects = (row: Omit<RepoRow, "section" | "projects">, worktrees: string[]): RepoRow => {
+    const projects = projectsUsing(entry.path, worktrees, lookup);
+    return {
+      ...row,
+      ...(projects ? { projects } : {}),
+      section: projects === undefined ? "unknown" : projects.length > 0 ? "used" : "unused",
+    };
+  };
+  switch (facts.kind) {
+    case "repo":
+      return withProjects(
+        {
+          ...base,
+          state: "ok",
+          remote: remoteView(facts.remote),
+          ...(facts.branch ? { branch: facts.branch } : {}),
+          commits: facts.commits,
+          ...(entry.correctedFrom ? { correctedFrom: entry.correctedFrom } : {}),
+        },
+        facts.worktrees,
+      );
+    case "missing":
+      return withProjects({ ...base, state: "missing", ...(remembered ? { remote: remembered, remembered: true } : {}) }, []);
+    case "error":
+      return withProjects(
+        { ...base, state: "unreadable", problem: facts.message, ...(remembered ? { remote: remembered, remembered: true } : {}) },
+        [],
+      );
+    default:
+      return withProjects(
+        {
+          ...base,
+          state: "not-repo",
+          problem:
+            facts.kind === "not-git"
+              ? "フォルダはありますが、git のリポジトリではなくなっています"
+              : facts.kind === "inside"
+                ? `フォルダはありますが、${displayPath(facts.top, home)} のリポジトリの中のフォルダになっています`
+                : `フォルダはありますが、${displayPath(facts.main, home)} の worktree になっています`,
+          ...(remembered ? { remote: remembered, remembered: true } : {}),
+        },
+        [],
+      );
+  }
+}
+
+// ── Import ────────────────────────────────────────────────────────────────
+
+interface Place {
+  path: string;
+  displayPath: string;
+  name: string;
+}
+
+export type ImportCheck =
+  /** git のリポジトリで、まだ台帳に無い——Import できる */
+  | { kind: "ready"; remote: RemoteView; branch?: string; commits: number }
+  /** もう台帳にある */
+  | { kind: "known" }
+  /** worktree——本体が台帳にあれば `mainKnown` */
+  | { kind: "worktree"; main: Place; mainKnown: boolean }
+  /** リポジトリの中のフォルダ——一番上を選ぶ */
+  | { kind: "inside"; top: Place }
+  /** git でないフォルダ */
+  | { kind: "not-git" }
+  /** 無いパス——いちばん近くにある上のフォルダへ */
+  | { kind: "missing"; nearest: Place };
+
+export interface ImportInspection extends Place {
+  check: ImportCheck;
+}
+
+function place(path: string, home: string): Place {
+  return { path, displayPath: displayPath(path, home), name: path === "/" ? "/" : basename(path) };
+}
+
+/** そのフォルダを Import すると何が起きるか。**読めなかったら投げる**——「git でない」と取り違えない（規則2） */
+export async function inspectImport(store: LedgerStore, input: string, home = homedir()): Promise<ImportInspection> {
+  const resolved = resolveUserPath(input, home);
+  const facts = await readFolder(resolved);
+  const entries = await store.entries();
+  const known = (p: string) => entries.some((e) => e.path === p);
+  switch (facts.kind) {
+    case "missing":
+      return { ...place(resolved, home), check: { kind: "missing", nearest: place(await nearestExistingFolder(resolved), home) } };
+    case "not-git":
+      return { ...place(resolved, home), check: { kind: "not-git" } };
+    case "inside":
+      return { ...place(resolved, home), check: { kind: "inside", top: place(facts.top, home) } };
+    case "worktree":
+      return {
+        ...place(resolved, home),
+        check: { kind: "worktree", main: place(facts.main, home), mainKnown: known(facts.main) },
+      };
+    case "repo":
+      if (known(facts.path)) return { ...place(facts.path, home), check: { kind: "known" } };
+      return {
+        ...place(facts.path, home),
+        check: {
+          kind: "ready",
+          remote: remoteView(facts.remote),
+          ...(facts.branch ? { branch: facts.branch } : {}),
+          commits: facts.commits,
+        },
+      };
+  }
+}
+
+/** Import する。**画面の判断を信じず、ここで読み直す**——Import できるときだけ足す */
+export async function importRepository(store: LedgerStore, input: string, home = homedir()): Promise<Place> {
+  const resolved = resolveUserPath(input, home);
+  return store.update(async (entries) => {
+    const facts = await readFolder(resolved);
+    if (facts.kind !== "repo") throw new Error(`${displayPath(resolved, home)} は Import できません（${describeRefusal(facts, home)}）`);
+    if (entries.some((e) => e.path === facts.path)) {
+      throw new Error(`${displayPath(facts.path, home)} は、もう一覧にあります`);
+    }
+    const entry: LedgerEntry = {
+      path: facts.path,
+      ...(facts.remote.kind === "github" ? { github: { owner: facts.remote.owner, name: facts.remote.name } } : {}),
+      ...(facts.remote.kind === "elsewhere" ? { elsewhere: facts.remote.url } : {}),
+    };
+    return { entries: [...entries, entry], result: place(facts.path, home) };
+  });
+}
+
+function describeRefusal(facts: Exclude<FolderFacts, { kind: "repo" }>, home: string): string {
+  switch (facts.kind) {
+    case "missing":
+      return "このフォルダはありません";
+    case "not-git":
+      return "git のリポジトリではありません";
+    case "inside":
+      return `${displayPath(facts.top, home)} のリポジトリの中のフォルダです`;
+    case "worktree":
+      return `${displayPath(facts.main, home)} の worktree です`;
+  }
+}
+
+// ── 外す・元に戻す・お知らせを消す ───────────────────────────────────────────
+
+/** 一覧から外す——**台帳の行だけ**。フォルダには触らない。戻すときのために外した行を返す */
+export function removeRepository(store: LedgerStore, path: string): Promise<LedgerEntry> {
+  return store.update((entries) => {
+    const entry = entries.find((e) => e.path === path);
+    if (!entry) throw new Error(`${path} は一覧にありません`);
+    return { entries: entries.filter((e) => e !== entry), result: entry };
+  });
+}
+
+/** 「元に戻す」——外した行をそのまま戻し、フォルダがあれば origin に合わせる */
+export async function restoreRepository(store: LedgerStore, raw: unknown): Promise<LedgerEntry> {
+  const entry = parseLedgerEntry(raw, "戻す行");
+  return store.update(async (entries) => {
+    if (entries.some((e) => e.path === entry.path)) throw new Error(`${entry.path} は、もう一覧にあります`);
+    const facts = await readFacts(entry.path);
+    const synced = facts.kind === "error" ? entry : syncWithOrigin(entry, facts).entry;
+    return { entries: [...entries, synced], result: synced };
+  });
+}
+
+/** 台帳を直したお知らせを見た——一度見たら消す（覚えていた古い場所も一緒に忘れる） */
+export function dismissCorrection(store: LedgerStore, path: string): Promise<void> {
+  return store.update((entries) => {
+    if (!entries.some((e) => e.path === path && e.correctedFrom)) return { entries, result: undefined };
+    return {
+      entries: entries.map((e) => {
+        if (e.path !== path) return e;
+        const { correctedFrom: _seen, ...rest } = e;
+        return rest;
+      }),
+      result: undefined,
+    };
+  });
+}
+
+// ── フォルダをたどる（Import のダイアログ・置き場を選ぶ） ──────────────────────
+
+export interface FolderListing extends Place {
+  parent?: Place;
+  /** 中のフォルダ。**名前だけ**——中身も git の状態も読まない。台帳にあるかだけは台帳から言える */
+  entries: Array<Place & { known: boolean }>;
+}
+
+/**
+ * そのフォルダの中のフォルダ（名前だけ）。core の `/api/fs/directories` と同じ窓——**ファイル名も中身も返さない**。
+ * 開こうとした場所そのものが読めないときは投げる（規則2）
+ */
+export async function listFolders(store: LedgerStore, input: string | undefined, home = homedir()): Promise<FolderListing> {
+  const path = resolveUserPath(input, home);
+  let dirents;
+  try {
+    dirents = await readdir(path, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // 打たれたパスが無い・フォルダでないは、そう言う（node の文言をそのまま見せない）
+    if (code === "ENOENT" || code === "ENOTDIR") throw new Error(`${displayPath(path, home)} というフォルダはありません`);
+    if (code === "EACCES") throw new Error(`${displayPath(path, home)} は読む権限がありません`);
+    throw err;
+  }
+  const ledger = new Set((await store.entries()).map((e) => e.path));
+  const entries: FolderListing["entries"] = [];
+  for (const d of dirents) {
+    // git の管理用のフォルダは、選ぶものではない
+    if (d.name === ".git") continue;
+    const full = join(path, d.name);
+    let isDir = d.isDirectory();
+    if (!isDir && d.isSymbolicLink()) {
+      try {
+        isDir = (await stat(full)).isDirectory();
+      } catch {
+        // 切れたリンク——出さない
+      }
+    }
+    if (isDir) entries.push({ ...place(full, home), known: ledger.has(full) });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+  const up = dirname(path);
+  return { ...place(path, home), ...(up !== path ? { parent: place(up, home) } : {}), entries };
+}
+
+// ── 置き場の設定 ────────────────────────────────────────────────────────────
+
+export interface RepoHomeView {
+  repoHome: string;
+  isDefault: boolean;
+  defaultRepoHome: string;
+  /** いまそのフォルダがあるか（無ければ「最初に使うときに作ります」と言う） */
+  exists: boolean;
+}
+
+/** 置き場として受ける形にそろえる。ホームや `/` そのものは断る（その下のフォルダを選ばせる） */
+export function normalizeRepoHome(input: string, home = homedir()): string {
+  const trimmed = input.trim().replace(/\/+$/, "");
+  if (trimmed === "" || trimmed === "~" || trimmed === "/" || resolveUserPath(trimmed, home) === home) {
+    throw new Error("ホームや / をそのまま置き場にはできません。その下のフォルダを選んでください");
+  }
+  if (!trimmed.startsWith("~/") && !trimmed.startsWith("/")) {
+    throw new Error("置き場は ~/ か / から始まるパスで書いてください");
+  }
+  // 人が打った形（~/…）で覚える。home の下を選んだら ~/… に直す（home が変わっても同じ意味のまま）
+  return displayPath(resolveUserPath(trimmed, home), home);
+}
+
+export async function repoHomeView(store: LedgerStore, home = homedir()): Promise<RepoHomeView> {
+  const { repoHome } = await store.settings();
+  const value = repoHome ?? DEFAULT_REPO_HOME;
+  let exists = false;
+  try {
+    exists = (await stat(resolveUserPath(value, home))).isDirectory();
+  } catch {
+    exists = false;
+  }
+  return { repoHome: value, isDefault: repoHome === undefined, defaultRepoHome: DEFAULT_REPO_HOME, exists };
+}
+
+/** 置き場を変える。`null` で既定に戻す。**今あるフォルダは動かさない**（台帳はパスで覚えている） */
+export async function setRepoHome(store: LedgerStore, input: string | null, home = homedir()): Promise<RepoHomeView> {
+  if (input === null) await store.setSettings({});
+  else {
+    const value = normalizeRepoHome(input, home);
+    await store.setSettings(value === DEFAULT_REPO_HOME ? {} : { repoHome: value });
+  }
+  return repoHomeView(store, home);
+}

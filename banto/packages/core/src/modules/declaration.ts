@@ -916,6 +916,28 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       confinement: { kind: "landlock", root: "none", profile: "files-only" },
     },
   },
+  {
+    // **手元のリポジトリの台帳**（決定・2026-09-29〜10-01、ユーザー、v4-modules.md §2.4）。
+    // **既定で入っていて消せない**（無効にはできる——無効にすると新しい Project の始め方は「手元のフォルダ」だけ）。
+    // banto 全体に1本・banto 本体で動く：Project より先に動く必要がある（Project の根を用意するのがこの Module）。
+    // 読むのは人が選んだフォルダと台帳のフォルダの git の情報だけ。中継はどの Project がそのフォルダを根にしているかを
+    // 引くため（`relayListProjects`、人の画面からの呼び出しの中でだけ答える）
+    name: "repositories",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/repositories/dist/server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["repositories"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+    },
+  },
 ];
 
 /**
