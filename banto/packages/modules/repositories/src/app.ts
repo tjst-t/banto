@@ -370,6 +370,11 @@ const SCRIPT = String.raw`
     span.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[name] + "</svg>";
     return span.firstChild;
   }
+  /** コミット数は飾り——数えられなかったら、そう言う（理由は Module が添える） */
+  function commitsText(x) {
+    if (x.commits === undefined) return "コミット数を数えられませんでした" + (x.commitsProblem ? "（" + x.commitsProblem + "）" : "");
+    return x.commits > 0 ? x.commits + " コミット" : "コミットなし";
+  }
   /** owner/name を「/」の後で折れるように */
   function slashWrap(owner, name) {
     return h("span", { class: "mono wrap-slash" }, [owner + "/", h("wbr"), name]);
@@ -609,7 +614,7 @@ const SCRIPT = String.raw`
         h("span", { class: "flag warn", "data-testid": "repo-local-only" }, [icon("hardDrive"), "このマシンにだけ"]),
         h("span", { class: "row-line" }, [
           notYetButton(r, "publish", { class: "link", type: "button", "data-testid": "repo-publish-open" }, [icon("cloudUp"), " GitHub に公開"]),
-          h("span", { class: "muted", text: "· " + (r.commits > 0 ? r.commits + " コミット" : "コミットなし") }),
+          h("span", { class: "muted", "data-testid": "repo-commits", title: r.commitsProblem || null, text: "· " + commitsText(r) }),
         ]),
         notYetNote(r, "publish"),
       ]);
@@ -1149,8 +1154,9 @@ const SCRIPT = String.raw`
   const dlg = { kind: null, at: "~", listing: null, listError: null, inspection: null, inspectError: null, draft: null, busy: false, seq: 0 };
   dialog.addEventListener("close", () => {
     dlg.kind = null;
-    // 中身も消す——開き直したときに前のフォルダの判断が一瞬見えないように
+    // 中身も消す——開き直したときに前のフォルダの判断が一瞬見えないように（骨組みも作り直す）
     dialog.replaceChildren();
+    dlgParts = null;
     delete dialog.dataset.focused;
     document.body.style.minHeight = "";
     reportSize();
@@ -1198,15 +1204,35 @@ const SCRIPT = String.raw`
     renderDialog();
   }
 
+  /**
+   * **骨組みは開くときに1回だけ作る**（訂正・2026-10-02）。以前は描き直すたびに入力欄ごと作り直していたので、
+   * 開いた直後の読み込みが返ったとき、打っている途中の欄が差し替わって字の位置がずれた（打った字の後ろに「~」が
+   * 残る、E2E で 5 回に 1 回）。入力欄と「上へ」は同じものを使い続け、中身（一覧・判断・ボタン）だけを描き直す
+   */
+  let dlgParts = null;
+  function buildDialog() {
+    const path = h("input", { type: "text", spellcheck: "false", "aria-label": "フォルダのパス", "data-testid": "repo-import-path" });
+    path.addEventListener("input", () => { dlg.draft = path.value; });
+    path.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); if (dlg.draft !== null) go(dlg.draft); } });
+    path.addEventListener("blur", () => { if (dlg.draft !== null && dlg.draft !== dlg.at) go(dlg.draft); });
+    const up = h("button", { class: "btn small ghost", type: "button", onclick: () => { const p = dlg.listing && dlg.listing.parent; if (p) go(p.displayPath); } }, [icon("up"), "上へ"]);
+    const parts = { title: h("h2"), desc: h("p", { class: "desc" }), up: up, path: path, list: h("div", { class: "folders" }), preview: h("div"), foot: h("div", { class: "foot" }) };
+    parts.root = h("div", { class: "dlg" }, [h("div", {}, [parts.title, parts.desc]), h("div", { class: "nav" }, [up, path]), parts.list, parts.preview, parts.foot]);
+    dialog.replaceChildren(parts.root);
+    return parts;
+  }
   function renderDialog() {
     if (!dlg.kind) return;
+    if (!dlgParts) dlgParts = buildDialog();
+    const p = dlgParts;
     const isImport = dlg.kind === "import";
-    const pathInput = h("input", { type: "text", value: dlg.draft !== null ? dlg.draft : dlg.at, spellcheck: "false", "aria-label": "フォルダのパス", "data-testid": "repo-import-path" });
-    pathInput.addEventListener("input", () => { dlg.draft = pathInput.value; });
-    pathInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); if (dlg.draft !== null) go(dlg.draft); } });
-    pathInput.addEventListener("blur", () => { if (dlg.draft !== null && dlg.draft !== dlg.at) go(dlg.draft); });
-    const parent = dlg.listing && dlg.listing.parent;
-    const list = dlg.listError
+    p.root.setAttribute("data-testid", isImport ? "repo-import-dialog" : "repo-pick-dialog");
+    p.title.textContent = isImport ? "フォルダを Import" : "置き場を選ぶ";
+    p.desc.textContent = isImport ? "手元のリポジトリを、今の場所のまま一覧に足します。フォルダは移しません。" : "clone・新しく作るリポジトリを、このフォルダの下に置きます。";
+    p.up.disabled = !(dlg.listing && dlg.listing.parent);
+    // 人が打っている途中の字は上書きしない。同じ値なら触らない（触ると選んでいる範囲・字の位置が消える）
+    if (dlg.draft === null && p.path.value !== dlg.at) p.path.value = dlg.at;
+    p.list.replaceChildren(dlg.listError
       ? h("div", { class: "nothing" }, [dlg.inspection && dlg.inspection.check.kind === "missing" ? "このフォルダはありません" : "読めませんでした：" + dlg.listError])
       : !dlg.listing ? h("div", { class: "nothing", text: "読んでいます…" })
       : dlg.listing.entries.length === 0 ? h("div", { class: "nothing", text: "この中にフォルダはありません" })
@@ -1216,28 +1242,16 @@ const SCRIPT = String.raw`
             e.known ? h("span", { class: "mark" }, [icon("check"), " 一覧にあります"]) : null,
             icon("chevron"),
           ]),
-        ])));
-    const kids = [
-      h("div", {}, [
-        h("h2", { text: isImport ? "フォルダを Import" : "置き場を選ぶ" }),
-        h("p", { class: "desc", text: isImport ? "手元のリポジトリを、今の場所のまま一覧に足します。フォルダは移しません。" : "clone・新しく作るリポジトリを、このフォルダの下に置きます。" }),
-      ]),
-      h("div", { class: "nav" }, [
-        h("button", { class: "btn small ghost", type: "button", disabled: !parent, onclick: () => parent && go(parent.displayPath) }, [icon("up"), "上へ"]),
-        pathInput,
-      ]),
-      h("div", { class: "folders" }, [list]),
-      isImport ? importPreview() : null,
-      h("div", { class: "foot" }, [
-        h("button", { class: "btn", type: "button", text: "やめる", onclick: () => dialog.close() }),
-        isImport
-          ? h("button", { class: "btn primary", type: "button", "data-testid": "repo-import-submit", disabled: dlg.busy || !dlg.inspection || dlg.inspection.check.kind !== "ready", text: "Import する", onclick: doImport })
-          : h("button", { class: "btn primary", type: "button", "data-testid": "repo-pick-submit", disabled: dlg.busy || !dlg.listing, text: "このフォルダにする", onclick: () => { state.homeDraft = dlg.at; dialog.close(); render(); } }),
-      ]),
-    ];
-    const focusedPath = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("data-testid") === "repo-import-path";
-    dialog.replaceChildren(h("div", { class: "dlg", "data-testid": isImport ? "repo-import-dialog" : "repo-pick-dialog" }, kids));
-    if (focusedPath || !dialog.dataset.focused) { pathInput.focus(); dialog.dataset.focused = "1"; }
+        ]))));
+    p.preview.hidden = !isImport;
+    p.preview.replaceChildren(...(isImport ? [importPreview()] : []));
+    p.foot.replaceChildren(
+      h("button", { class: "btn", type: "button", text: "やめる", onclick: () => dialog.close() }),
+      isImport
+        ? h("button", { class: "btn primary", type: "button", "data-testid": "repo-import-submit", disabled: dlg.busy || !dlg.inspection || dlg.inspection.check.kind !== "ready", text: "Import する", onclick: doImport })
+        : h("button", { class: "btn primary", type: "button", "data-testid": "repo-pick-submit", disabled: dlg.busy || !dlg.listing, text: "このフォルダにする", onclick: () => { state.homeDraft = dlg.at; dialog.close(); render(); } }),
+    );
+    if (!dialog.dataset.focused) { p.path.focus(); dialog.dataset.focused = "1"; }
   }
 
   /** いま開いているフォルダを Import すると何が起きるか（判断は Module の inspectImport の1箇所） */
@@ -1261,6 +1275,8 @@ const SCRIPT = String.raw`
         tone = inside ? "plain" : "stop"; mark = inside ? "folder" : "ban";
         message = inside ? "ここは git のリポジトリではありません。中のリポジトリを足すなら、上の一覧から1つずつ選んでください。" : "git のリポジトリではありません。Import できるのは git のリポジトリだけです。";
       }
+      else if (c.kind === "bare") { tone = "stop"; mark = "ban"; message = "作業ツリーの無い（bare）リポジトリです。Import できるのは作業ツリーのあるリポジトリだけです。clone した作業ツリーを選んでください。"; }
+      else if (c.kind === "git-dir") { tone = "stop"; mark = "ban"; message = "git の管理用のフォルダです。Import できるのは作業ツリーの一番上だけです。"; }
       else if (c.kind === "missing") { tone = "stop"; mark = "ban"; message = "このフォルダはありません。"; detail = next(c.nearest.displayPath + " へ", () => go(c.nearest.displayPath), "repo-import-go-nearest"); }
     }
     return h("section", { class: "preview", "data-testid": "repo-import-preview", "data-state": state_ }, [
@@ -1277,7 +1293,7 @@ const SCRIPT = String.raw`
   function facts(c) {
     const r = c.remote;
     const origin = r.kind === "github" ? "github.com/" + r.owner + "/" + r.name : r.kind === "elsewhere" ? r.host + "（GitHub の外）" : "無し——このマシンにだけあります";
-    const rows_ = [["origin", origin], ["ブランチ", (c.branch || "（ブランチなし）") + " · " + (c.commits > 0 ? c.commits + " コミット" : "コミットなし")]];
+    const rows_ = [["origin", origin], ["ブランチ", (c.branch || "（ブランチなし）") + " · " + commitsText(c)]];
     if (r.kind === "github") rows_.push(["アカウント", c.account ? c.account + " で扱います" : r.owner + " のアカウントが登録されていないので、読むだけです（push はできません）"]);
     return h("dl", { class: "facts", "data-testid": "repo-import-facts" }, rows_.flatMap((x) => [h("dt", { text: x[0] }), h("dd", { class: x[0] === "origin" ? "mono" : "", text: x[1] })]));
   }

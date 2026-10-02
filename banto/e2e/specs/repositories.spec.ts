@@ -10,7 +10,7 @@
 //   6. 狭い幅で縦に積み、はみ出さない
 //   7. GitHub のアカウント（段階2）：PAT・ブラウザでログイン（デバイスフロー）・確かめる・更新の失敗が受信箱に出る・
 //      もう一度ログイン・外す。台帳の「扱うアカウント」が一覧に出る。GitHub は偽物（`e2e/github-login-fixture.ts`）
-import { test, expect, type FrameLocator, type Page } from "../test-base.js";
+import { test, expect, type FrameLocator, type Page, type Route } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -97,6 +97,29 @@ async function goTo(canvas: FrameLocator, path: string): Promise<void> {
   await expect(canvas.getByTestId("repo-import-preview").locator(".v")).toHaveText(shown(path), { timeout: 15_000 });
 }
 
+/**
+ * **開いた直後に打つ**——開いたときの読み込み（`~`）が、打っている途中に返る形を必ず作る（1字ずつ打つので、
+ * 打ち終わる前に返る）。以前はここで入力欄が作り直され、打った字の後ろに「~」が残った（5回に1回）
+ */
+async function typeRightAfterOpening(page: Page, canvas: FrameLocator, path: string): Promise<void> {
+  // 開いたときの読み込み（`~` をたどる）だけを遅らせる——本物の banto では速く返り、打ち始める前に済んでしまう
+  const slowHome = async (route: Route) => {
+    const body = route.request().postDataJSON() as { arguments?: { path?: string } } | null;
+    if (body?.arguments?.path === "~") await new Promise((r) => setTimeout(r, 400));
+    await route.fallback();
+  };
+  await page.route("**/ui-tool-call", slowHome);
+  await canvas.getByTestId("repo-import-open").click();
+  const input = canvas.getByTestId("repo-import-path");
+  // 人と同じに、入っている「~」を消してから打つ
+  await input.fill("");
+  await input.pressSequentially(path, { delay: 10 });
+  await input.press("Enter");
+  await expect(canvas.getByTestId("repo-import-preview").locator(".v")).toHaveText(shown(path), { timeout: 15_000 });
+  await expect(input).toHaveValue(shown(path));
+  await page.unroute("**/ui-tool-call", slowHome);
+}
+
 const row = (canvas: FrameLocator, path: string) => canvas.locator(`[data-testid="repo-item"][data-repo-path="${path}"]`);
 
 test("入口から開いた一覧で、Import の判断・足した行の中身・見つからない・外す／戻す・origin の直しまで本物の台帳で動く", async ({ page }) => {
@@ -156,9 +179,8 @@ test("入口から開いた一覧で、Import の判断・足した行の中身�
   await expect(used.getByTestId("repo-account")).toContainText("読むだけ");
   await expect(used.getByTestId("repo-project")).toHaveText(PROJECT_NAME);
 
-  // もう一覧にある——「一覧で見る」
-  await canvas.getByTestId("repo-import-open").click();
-  await goTo(canvas, usedRepo);
+  // もう一覧にある——「一覧で見る」（開いた直後に打つ）
+  await typeRightAfterOpening(page, canvas, usedRepo);
   await expect(message).toHaveText("used-repo は、もう一覧にあります。");
   await expect(submit).toBeDisabled();
   await canvas.getByTestId("repo-import-show").click();
