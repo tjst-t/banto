@@ -16,7 +16,7 @@ import {
 import { getProject } from "@/lib/mock/projects";
 import { getInboxItemHref, getInboxItems } from "@/lib/mock/inbox";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
-import { RealInboxList } from "./real-inbox-list";
+import { RealInboxAcknowledgeAll, RealInboxList } from "./real-inbox-list";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import type { MockInboxItem } from "@/lib/mock/types";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
@@ -46,8 +46,10 @@ export function InboxOverlay({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-full gap-0 p-0 sm:max-w-lg">
-        <SheetHeader className="border-b border-border">
+        {/* 右に閉じるボタン（absolute、top-3 right-3）が重なるので、その分だけ右を空ける */}
+        <SheetHeader className="flex-row items-center justify-between gap-2 border-b border-border pr-12">
           <SheetTitle>受信箱</SheetTitle>
+          {CONNECTED_FEATURES.inbox ? <RealInboxAcknowledgeAll /> : null}
         </SheetHeader>
         {CONNECTED_FEATURES.inbox ? (
           <RealInboxList />
