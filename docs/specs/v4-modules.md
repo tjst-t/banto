@@ -1402,7 +1402,7 @@ Module の一覧には**2種類が混ざる**：
 | **Service** | 動き続けるものを起こしておく | **Shell とは別実装**（§2.1）。§4.2 |
 | **Publish** | 動いているものに届く URL を生やす | **窓口1本＋実装が複数**。§4.3 |
 | ~~**Repo（git）**~~ | ~~複数リポジトリの一覧・worktree・clone/branch/log~~ | **§2.4 Repositories に移した**（2026-10-01）。git の操作（branch/log 等）は持たない |
-| **Backlog** | 仕事の一覧を管理する | |
+| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json）。§4.4 |
 | **Factory** | 依頼を耐久ワークフローとして進める（要件 B） | **設計はゼロから起こす。core ではなく Module として作る**（決定・2026-09-11、ユーザー）——「依頼を進める」は Module の形で書けるものであり、core に持たせると core が2つになる（要件 C8） |
 | **Browser** | 人と AI が**同じブラウザ**を触る。通信も見る | **外部をマウントする**（§3.1・§4.1） |
 
@@ -1792,6 +1792,95 @@ AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**
   会話で頼む（承認の画面が出る）。待ち受けていないものは押せず、窓口も断る（人の口 `publish_route`、admin）
 - **公開の認証の既定は「無し」**（2026-09-28、上の決定を実装に反映。承認の画面で Basic 認証も選べる）
 - ~~承認の頼みは受信箱に出ない~~ **→ 会話の中の画面でよい**（決定・2026-09-28、ユーザー。`import_skill` と同じ形）
+
+### 4.4 Backlog——仕事の一覧（決定・2026-10-02、ユーザー。未実装）
+
+**今後やること・バグを、ストーリー・タスク・バグの3種類と依存関係で持つ。** Jira のタスク管理のエッセンスだけを借り、
+重いもの（スプリント等）は入れない。いまの `docs/tasks.json` が最初の利用者になる。
+
+#### 項目の種類と関係
+
+- **ストーリー**：大きな機能。詳細化していないものはストーリーだけ積み、実装するときに AI（か人）がタスクへ分ける
+- **タスク**：ストーリーに親子でぶら下げられる（ぶら下げなくてもよい）
+- **バグ**：ストーリーと関係なく置ける
+- **依存**：「これが終わるまで始められない」を、種類を問わず項目どうしに張れる。リンクは依存だけで、
+  ほかの関係（関連・重複など）は `refs` か本文に書く
+- **ストーリーは自動では閉じない。** 子が全部終わっても、人か AI が閉じる
+- **エピックは入れない。** 大きなまとまりは**マイルストーン**で持つ（いまの `phase` の受け皿。GitHub の Milestone に対応）。
+  段を増やすと AI が分けるときの手間と迷いが増えるため。要るようになったら `parent` の形のままストーリーの上に足せる
+
+#### 窓口とバックエンド
+
+Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**。窓口が AI の tool と人の一覧画面を持ち、実装を足すのに
+窓口を直さない。
+
+- **最初のバックエンドは tasks.json**——リポジトリに1つ。場所の既定は `docs/tasks.json` で、Backlog の設定で変えられる
+- 将来は **GitHub Issues** など。対応：種類 → Issue の種類（Feature・Task・Bug）、親子 → sub-issue、依存 → blocked by、
+  マイルストーン → Milestone、ラベル → Label。どれも GitHub の正式な機能（2025 年に GA、`gh` でも扱える）
+- 実装が扱えない欄（GitHub の `doneWhen` 等）は実装が逃がし方（本文に書く等）を持つ。窓口の形は変えない
+- **書き込みは必ず Module の tool を通し、Module が1件ずつ順に書く**——同じリポジトリを複数の Thread が同時に触るため
+
+#### tasks.json の形（`banto-backlog/1`）
+
+```json
+{
+  "format": "banto-backlog/1",
+  "milestones": [{ "id": "phase2", "title": "標準 Module を揃える", "status": "open" }],
+  "items": [
+    {
+      "id": "repositories-next",
+      "kind": "story",
+      "title": "Repositories の続き",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": ["repositories-stage1"],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": ["repositories"],
+      "body": "なぜ・経緯などを Markdown で",
+      "doneWhen": "実ブラウザの E2E で通る",
+      "resolution": null,
+      "refs": ["docs/specs/v4-modules.md §2.4"],
+      "threads": [{ "projectId": "…", "threadId": "…" }],
+      "createdAt": "…", "updatedAt": "…", "closedAt": null,
+      "extra": {}
+    }
+  ]
+}
+```
+
+| 欄 | 中身 |
+|---|---|
+| `id` | 読める名前（slug）。GitHub 等に載せ替えたときは、実装が Issue の番号との対応を持つ |
+| `kind` | `story`・`task`・`bug` |
+| `status` | `backlog`（積んだだけ）・`ready`（着手できる）・`in-progress`・`done`・`dropped`（やめた） |
+| `parent` | 親のストーリー（タスクだけ。無くてよい） |
+| `dependsOn` | 終わるまで始められない項目 |
+| `milestone`・`labels` | まとまりと自由な分類 |
+| `priority` | `high`・`normal`・`low` の3段。**並び順はファイルの中の順番がそのまま優先順**（Jira の Rank） |
+| `body` | Markdown。なぜ・経緯・直し方・結果・確かめ方などはここに書く |
+| `doneWhen` | 完了条件。「実装した」でなく**計測で書く**（requirements.md） |
+| `resolution` | `done` と `dropped` を分けたうえで、やめた理由（重複・やらないと決めた等） |
+| `refs` | 参照（仕様の節・ファイル・ほかの項目） |
+| `threads` | 担当者の代わり。どの Thread で取り組んだか |
+| `extra` | 実装や移行で運びたい、上に無い欄 |
+
+**入れないもの**：スプリント・ストーリーポイント・作業時間・独自のワークフロー・コンポーネント・コメント・変更履歴
+（履歴は git、GitHub をバックエンドにしたら向こうのコメント）。
+
+#### いまの docs/tasks.json の移し方
+
+- ストーリー的なもの（`repositories-next` のような見出し）はストーリーに直す。既にタスクに分けてあって、まとめたほうが
+  よいものは、ストーリーを新しく作って親子を付ける
+- 読み替え：`pending` → `ready`、`undecided` → `backlog`＋「未決」ラベル、`phase` → `milestone`、
+  `why`・`notes`・`howFixed`・`result`・`verifiedBy` → `body`
+
+#### まだ決めていない
+
+- AI の tool の語彙（一覧・追加・状態を変える・ストーリーを分ける・依存を張る、の切り方）と、実装の口（`backlog` 役割）
+- 人の一覧画面の形（モックで決める）
+- scope（Project ごとにつけるか、banto 全体に1本で呼び出しの印から Project を知るか）
+- Factory との繋ぎ方（§5 の 6）
 
 ## 4.9 Module の宣言（決定・2026-09-06、Phase 1）
 
