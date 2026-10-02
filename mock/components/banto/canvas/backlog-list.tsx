@@ -1,104 +1,205 @@
 "use client";
 
-// Backlog の一覧。マイルストーンごとに区切り（その中はファイルの中の順＝優先順）、最後に「マイルストーン無し」。
-// ストーリーは開閉でき、子のタスクを下に字下げで並べる。子が絞り込みで見えていて親が見えていないときは、
-// 子を区切りの直下に出して「どのストーリーの下か」を添える（親を見せるために条件を緩めない）。
+// Backlog の一覧。1項目1行（Linear の行と同じく、左から 順番の印・題・右寄せの最小限の印）。
+// 行に出すのは「次に動くか」を決めるものだけ：待っている相手の名前・優先・ストーリーの進み。
+// ラベル・マイルストーン・完了条件などは詳細で見る（行を押す／Enter）。
 //
-// 並び順は行のメニューの「一つ上へ」「一つ下へ」（moveItem）。動かす相手は、いま見えている同じ段の隣
-// ——見えていない項目をまたいで動かすと、何と入れ替わったかが分からないため。
-import { useState } from "react";
-import { ChevronDown, ChevronRight, CirclePlay, Ellipsis, Hourglass } from "lucide-react";
+// 並べ替えはドラッグ（Jira の Rank・Linear の手動の順と同じ）と、行のメニューの「一つ上へ／一つ下へ」。
+// 動かせるのは同じ段の中だけ（区切りの直下どうし・同じストーリーの子どうし）——段をまたぐと、
+// 何と入れ替わったかが分からないため。
+import { useState, type DragEvent, type ReactNode } from "react";
+import { ChevronRight, Ellipsis, GripVertical, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
-  childrenOf,
-  isActionable,
   isClosed,
   moveItem,
+  updateItem,
   waitingOn,
-  type BacklogFile,
   type BacklogItem,
+  type BacklogStatus,
 } from "@/lib/mock/backlog";
-import { KindMark, LabelChip, PriorityMark, StatusText } from "./backlog-parts";
+import {
+  BugTag,
+  PriorityMark,
+  RankMark,
+  StoryProgress,
+  STATUS_LABEL,
+  rankState,
+} from "./backlog-parts";
+import { InlineComposer } from "./backlog-forms";
 
-export interface BacklogSection {
+export interface ListNode {
+  item: BacklogItem;
+  /** 段の中の順番（閉じたものは持たない） */
+  n?: number;
+  /** ストーリーの子（終わっていないもの） */
+  children?: ListNode[];
+  /** ストーリーの子のうち閉じたもの。「終わった n 件」で畳んでおく */
+  closedKids?: BacklogItem[];
+  /** 行の右に薄く添える文脈（「次にやる」でどのストーリーの下か、など） */
+  context?: string;
+  /** 閉じたものの一覧で、やめた理由などを添える */
+  note?: string;
+}
+
+export interface ListGroup {
   id: string;
   title: string;
-  rows: BacklogItem[];
+  /** 区切りの見出しの右に添える1行 */
+  hint?: string;
+  nodes: ListNode[];
+  /** この区切りの末尾に「足す」を出す（足すときのマイルストーン） */
+  composerMilestone?: string | null;
+  /** 並べ替えできるか（閉じたものの一覧はできない） */
+  sortable: boolean;
 }
 
-/** 見えている項目から、区切りと段（ストーリーの下か、区切りの直下か）を組む */
-export function buildSections(file: BacklogFile, shown: readonly BacklogItem[]): BacklogSection[] {
-  const shownIds = new Set(shown.map((i) => i.id));
-  const top = shown.filter((i) => i.parent === null || !shownIds.has(i.parent));
-  const sections = [
-    ...file.milestones.map((m) => ({ id: m.id, title: m.title, rows: top.filter((i) => i.milestone === m.id) })),
-    {
-      id: "none",
-      title: "マイルストーン無し",
-      rows: top.filter((i) => i.milestone === null || !file.milestones.some((m) => m.id === i.milestone)),
-    },
-  ];
-  return sections.filter((s) => s.rows.length > 0);
+/** キーボードで動くときの順（畳んだストーリーの子は飛ばす） */
+export function flattenIds(
+  groups: readonly ListGroup[],
+  collapsed: ReadonlySet<string>,
+): string[] {
+  const out: string[] = [];
+  const walk = (nodes: readonly ListNode[]) => {
+    for (const node of nodes) {
+      out.push(node.item.id);
+      if (node.children && !collapsed.has(node.item.id)) walk(node.children);
+    }
+  };
+  for (const g of groups) walk(g.nodes);
+  return out;
 }
+
+type DropAt = { id: string; where: "before" | "after" } | null;
 
 export function BacklogList({
   projectId,
-  file,
-  sections,
-  shown,
+  groups,
+  items,
   selectedId,
+  collapsed,
+  onToggle,
   onSelect,
+  onOpen,
 }: {
   projectId: string;
-  file: BacklogFile;
-  sections: readonly BacklogSection[];
-  shown: readonly BacklogItem[];
+  groups: readonly ListGroup[];
+  items: readonly BacklogItem[];
   selectedId: string | null;
+  collapsed: ReadonlySet<string>;
+  onToggle: (id: string) => void;
   onSelect: (id: string) => void;
+  onOpen: (id: string) => void;
 }) {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const shownIds = new Set(shown.map((i) => i.id));
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<DropAt>(null);
+  const [composerAt, setComposerAt] = useState<string | null>(null);
+  const [shownClosed, setShownClosed] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
 
-  function toggle(id: string) {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function renderRows(rows: readonly BacklogItem[], depth: 0 | 1) {
-    return rows.map((item, index) => {
-      const kids = item.kind === "story" ? childrenOf(item, file.items) : [];
-      const shownKids = kids.filter((k) => shownIds.has(k.id));
+  function renderNodes(
+    nodes: readonly ListNode[],
+    group: ListGroup,
+    depth: 0 | 1,
+  ): ReactNode {
+    const siblingIds = nodes.map((n) => n.item.id);
+    return nodes.map((node, index) => {
+      const { item } = node;
+      const isStory = item.kind === "story";
       const open = !collapsed.has(item.id);
+      const hasKids =
+        (node.children?.length ?? 0) > 0 || (node.closedKids?.length ?? 0) > 0;
+      const kidsAll = [
+        ...(node.children?.map((c) => c.item) ?? []),
+        ...(node.closedKids ?? []),
+      ];
       return (
         <li key={item.id} data-testid="backlog-row-item" data-item-id={item.id}>
-          <BacklogRow
+          <Row
             projectId={projectId}
-            item={item}
-            items={file.items}
+            node={node}
+            items={items}
             depth={depth}
-            orphanOf={depth === 0 && item.parent ? file.items.find((i) => i.id === item.parent) : undefined}
-            kids={kids}
-            open={open}
             selected={selectedId === item.id}
-            prev={rows[index - 1]}
-            next={rows[index + 1]}
-            onToggle={() => toggle(item.id)}
+            open={open}
+            hasKids={hasKids}
+            kids={kidsAll}
+            sortable={group.sortable}
+            prevId={siblingIds[index - 1]}
+            nextId={siblingIds[index + 1]}
+            dragging={dragId === item.id}
+            dropWhere={dropAt?.id === item.id ? dropAt.where : null}
+            onToggle={() => onToggle(item.id)}
             onSelect={() => onSelect(item.id)}
+            onOpen={() => onOpen(item.id)}
+            onAddChild={
+              isStory ? () => setComposerAt(`story:${item.id}`) : undefined
+            }
+            onDragStart={() => setDragId(item.id)}
+            onDragEnd={() => {
+              setDragId(null);
+              setDropAt(null);
+            }}
+            onDragOverRow={(where) => {
+              if (dragId && dragId !== item.id && siblingIds.includes(dragId))
+                setDropAt({ id: item.id, where });
+            }}
+            onDropRow={() => {
+              if (dragId && dropAt && siblingIds.includes(dragId))
+                moveItem(projectId, dragId, dropAt.id, dropAt.where);
+              setDragId(null);
+              setDropAt(null);
+            }}
           />
-          {item.kind === "story" && open && shownKids.length > 0 ? (
-            <ul className="ml-4 border-l border-border pl-3" aria-label={`「${item.title}」のタスク`}>
-              {renderRows(shownKids, 1)}
-            </ul>
+          {isStory && open && hasKids ? (
+            <div className="relative ml-[1.1875rem] border-l border-border pl-2.5">
+              {node.children && node.children.length > 0 ? (
+                <ul aria-label={`「${item.title}」のタスク`}>
+                  {renderNodes(node.children, group, 1)}
+                </ul>
+              ) : null}
+              {node.closedKids && node.closedKids.length > 0 ? (
+                <ClosedKids
+                  kids={node.closedKids}
+                  items={items}
+                  shown={shownClosed.has(item.id)}
+                  onShow={() =>
+                    setShownClosed((prev) => new Set(prev).add(item.id))
+                  }
+                  selectedId={selectedId}
+                  onOpen={onOpen}
+                />
+              ) : null}
+              {composerAt === `story:${item.id}` ? (
+                <InlineComposer
+                  projectId={projectId}
+                  milestone={item.milestone}
+                  parent={item}
+                  onClose={() => setComposerAt(null)}
+                />
+              ) : null}
+            </div>
+          ) : null}
+          {isStory && open && !hasKids && composerAt === `story:${item.id}` ? (
+            <div className="ml-[1.1875rem] border-l border-border pl-2.5">
+              <InlineComposer
+                projectId={projectId}
+                milestone={item.milestone}
+                parent={item}
+                onClose={() => setComposerAt(null)}
+              />
+            </div>
           ) : null}
         </li>
       );
@@ -106,149 +207,376 @@ export function BacklogList({
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      {sections.map((s) => (
-        <section key={s.id} aria-labelledby={`backlog-section-${s.id}`} data-testid="backlog-section" data-section={s.id}>
+    <div className="flex flex-col gap-7" data-testid="backlog-list">
+      {groups.map((g) => (
+        <section
+          key={g.id}
+          aria-labelledby={`backlog-group-${g.id}`}
+          data-testid="backlog-section"
+          data-section={g.id}
+        >
           <h3
-            id={`backlog-section-${s.id}`}
-            className="mb-1 flex items-baseline gap-2 border-b border-border pb-1.5 text-md font-semibold text-foreground"
+            id={`backlog-group-${g.id}`}
+            className="sticky top-0 z-10 -mx-2 mb-1 flex items-baseline gap-2 bg-card px-2 py-1.5 text-sm font-semibold whitespace-nowrap text-ink-2"
           >
-            {s.title}
-            <span className="text-xs font-normal text-ink-3 tabular-nums">{s.rows.length} 件</span>
+            {g.title}
+            <span className="font-normal text-ink-3 tabular-nums">
+              {g.nodes.length}
+            </span>
+            {g.hint ? (
+              <span className="ml-auto truncate text-xs font-normal text-ink-3">
+                {g.hint}
+              </span>
+            ) : null}
           </h3>
-          <ul className="flex flex-col">{renderRows(s.rows, 0)}</ul>
+          {g.nodes.length > 0 ? (
+            <ul className="flex flex-col">{renderNodes(g.nodes, g, 0)}</ul>
+          ) : null}
+          {g.composerMilestone !== undefined ? (
+            composerAt === `group:${g.id}` ? (
+              <InlineComposer
+                projectId={projectId}
+                milestone={g.composerMilestone}
+                onClose={() => setComposerAt(null)}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setComposerAt(`group:${g.id}`)}
+                data-testid="backlog-group-add"
+                className="mt-0.5 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-md text-ink-3 hover:bg-surface-2 hover:text-ink-2 focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                <Plus className="size-3.5" />
+                足す
+              </button>
+            )
+          ) : null}
         </section>
       ))}
     </div>
   );
 }
 
-function BacklogRow({
+function ClosedKids({
+  kids,
+  items,
+  shown,
+  onShow,
+  selectedId,
+  onOpen,
+}: {
+  kids: readonly BacklogItem[];
+  items: readonly BacklogItem[];
+  shown: boolean;
+  onShow: () => void;
+  selectedId: string | null;
+  onOpen: (id: string) => void;
+}) {
+  if (!shown) {
+    return (
+      <button
+        type="button"
+        onClick={onShow}
+        data-testid="backlog-closed-kids"
+        className="flex h-7 items-center gap-2 rounded-md px-2 text-xs text-ink-3 hover:text-ink-2 focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <RankMark state="done" small />
+        閉じたタスク {kids.length} 件を出す
+      </button>
+    );
+  }
+  return (
+    <ul aria-label="閉じたタスク">
+      {kids.map((k) => (
+        <li key={k.id} data-testid="backlog-row-item" data-item-id={k.id}>
+          <button
+            type="button"
+            onClick={() => onOpen(k.id)}
+            data-selected={selectedId === k.id || undefined}
+            className={cn(
+              "flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-left hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-ring",
+              selectedId === k.id && "bg-surface-2",
+            )}
+          >
+            <RankMark state={rankState(k, items)} small />
+            <span className="min-w-0 flex-1 truncate text-md text-ink-3">
+              {k.title}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Row({
   projectId,
-  item,
+  node,
   items,
   depth,
-  orphanOf,
-  kids,
-  open,
   selected,
-  prev,
-  next,
+  open,
+  hasKids,
+  kids,
+  sortable,
+  prevId,
+  nextId,
+  dragging,
+  dropWhere,
   onToggle,
   onSelect,
+  onOpen,
+  onAddChild,
+  onDragStart,
+  onDragEnd,
+  onDragOverRow,
+  onDropRow,
 }: {
   projectId: string;
-  item: BacklogItem;
+  node: ListNode;
   items: readonly BacklogItem[];
   depth: 0 | 1;
-  orphanOf: BacklogItem | undefined;
-  kids: readonly BacklogItem[];
-  open: boolean;
   selected: boolean;
-  prev: BacklogItem | undefined;
-  next: BacklogItem | undefined;
+  open: boolean;
+  hasKids: boolean;
+  kids: readonly BacklogItem[];
+  sortable: boolean;
+  prevId: string | undefined;
+  nextId: string | undefined;
+  dragging: boolean;
+  dropWhere: "before" | "after" | null;
   onToggle: () => void;
   onSelect: () => void;
+  onOpen: () => void;
+  onAddChild?: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDragOverRow: (where: "before" | "after") => void;
+  onDropRow: () => void;
 }) {
+  const { item } = node;
+  const state = rankState(item, items);
   const waiting = isClosed(item) ? [] : waitingOn(item, items);
-  const actionable = isActionable(item, items);
-  // 進み具合は「終わった／やめていないもの」——やめたタスクは分母からも外す（終わった数に混ぜると進んで見える）
-  const countedKids = kids.filter((k) => k.status !== "dropped");
-  const doneKids = countedKids.filter((k) => k.status === "done").length;
+  const isStory = item.kind === "story";
   const closed = isClosed(item);
+
+  function onDragOver(e: DragEvent<HTMLDivElement>) {
+    if (!sortable) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    onDragOverRow(e.clientY < rect.top + rect.height / 2 ? "before" : "after");
+  }
 
   return (
     <div
       data-testid="backlog-row"
       data-selected={selected || undefined}
+      data-state={state}
+      draggable={sortable}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", item.id);
+        onDragStart();
+      }}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDropRow();
+      }}
       className={cn(
-        "group flex items-start gap-1 rounded-md py-1.5 pr-1 pl-0.5 hover:bg-surface-2",
+        "group relative flex h-9 items-center gap-2 rounded-md pr-1 pl-0.5",
+        "hover:bg-surface-2",
         selected && "bg-surface-2",
+        dragging && "opacity-40",
       )}
     >
-      {item.kind === "story" && kids.length > 0 ? (
+      {dropWhere ? (
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute right-1 left-1 h-0.5 rounded-sm bg-ring",
+            dropWhere === "before" ? "-top-px" : "-bottom-px",
+          )}
+        />
+      ) : null}
+      {sortable ? (
+        <GripVertical
+          aria-hidden
+          className="absolute top-1/2 -left-4 size-3.5 -translate-y-1/2 cursor-grab text-ink-3 opacity-0 group-hover:opacity-100"
+        />
+      ) : null}
+      {isStory && hasKids ? (
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={open}
-          aria-label={open ? `「${item.title}」のタスクを畳む` : `「${item.title}」のタスクを開く`}
-          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-sm text-ink-3 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          aria-label={
+            open
+              ? `「${item.title}」のタスクを畳む`
+              : `「${item.title}」のタスクを開く`
+          }
+          className="flex size-4 shrink-0 items-center justify-center rounded-sm text-ink-3 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         >
-          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          <ChevronRight
+            className={cn(
+              "size-3.5 transition-transform motion-reduce:transition-none",
+              open && "rotate-90",
+            )}
+          />
         </button>
       ) : (
-        <span className="size-5 shrink-0" aria-hidden />
+        <span className="w-4 shrink-0" aria-hidden />
       )}
       <button
         type="button"
-        onClick={onSelect}
+        onClick={() => {
+          onSelect();
+          onOpen();
+        }}
         aria-current={selected || undefined}
         data-testid="backlog-row-open"
-        className="flex min-w-0 flex-1 items-start gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
+        className="flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
-        <KindMark kind={item.kind} className="mt-1" />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <RankMark state={state} n={node.n} small={depth === 1} />
+        {item.kind === "bug" ? <BugTag /> : null}
+        <span
+          data-testid="backlog-row-title"
+          className={cn(
+            "min-w-0 truncate text-md",
+            closed
+              ? "text-ink-3"
+              : state === "waiting" || state === "backlog"
+                ? "text-ink-2"
+                : "text-foreground",
+            isStory && "font-semibold text-foreground",
+          )}
+        >
+          {item.title}
+        </span>
+        {waiting.length > 0 ? (
           <span
-            data-testid="backlog-row-title"
-            className={cn(
-              "text-sm",
-              closed ? "text-ink-3" : "text-foreground",
-              item.kind === "story" && depth === 0 && "font-medium",
-            )}
+            data-testid="backlog-waiting"
+            title={waiting.map((w) => w.title).join("\n")}
+            className="max-w-40 min-w-0 shrink-[4] truncate text-xs text-ink-3"
           >
-            {item.title}
+            {waiting.length === 1
+              ? `待ち：${waiting[0].title}`
+              : `待ち：${waiting.length} 件`}
           </span>
-          <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-            <StatusText status={item.status} />
-            {item.status === "dropped" && item.resolution ? (
-              <span className="truncate text-xs text-ink-3">{item.resolution}</span>
-            ) : null}
-            {actionable ? (
-              <span data-testid="backlog-actionable" className="inline-flex items-center gap-1 text-xs font-medium text-ok">
-                <CirclePlay className="size-3" />
-                着手できる
-              </span>
-            ) : null}
-            {waiting.length > 0 ? (
-              <span data-testid="backlog-waiting" className="inline-flex items-center gap-1 text-xs text-ink-2">
-                <Hourglass className="size-3 text-warn" />
-                待ち {waiting.length} 件
-              </span>
-            ) : null}
-            {closed ? null : <PriorityMark priority={item.priority} />}
-            {countedKids.length > 0 ? (
-              <span data-testid="backlog-progress" className="text-xs text-ink-3 tabular-nums">
-                タスク {doneKids}／{countedKids.length} 終わった
-              </span>
-            ) : null}
-            {orphanOf ? <span className="truncate text-xs text-ink-3">「{orphanOf.title}」の下</span> : null}
-            {item.labels.length > 0 ? (
-              <span className="flex flex-wrap gap-1">
-                {item.labels.map((l) => (
-                  <LabelChip key={l}>{l}</LabelChip>
-                ))}
-              </span>
-            ) : null}
+        ) : null}
+        {node.note ? (
+          <span className="min-w-0 shrink truncate text-xs text-ink-3">
+            {node.note}
           </span>
+        ) : null}
+        <span className="ml-auto flex shrink-0 items-center gap-3 pl-2">
+          {closed ? null : <PriorityMark priority={item.priority} />}
+          {node.context ? (
+            <span className="hidden max-w-48 truncate text-xs text-ink-3 @lg:inline">
+              {node.context}
+            </span>
+          ) : null}
+          {isStory ? <StoryProgress kids={kids} items={items} /> : null}
         </span>
       </button>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          data-testid="backlog-row-menu"
-          aria-label={`「${item.title}」の操作`}
-          className="flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-3 opacity-60 group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:opacity-100"
-        >
-          <Ellipsis className="size-4" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem disabled={!prev} onSelect={() => prev && moveItem(projectId, item.id, prev.id, "before")}>
-            一つ上へ
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled={!next} onSelect={() => next && moveItem(projectId, item.id, next.id, "after")}>
-            一つ下へ
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <RowMenu
+        projectId={projectId}
+        item={item}
+        prevId={sortable ? prevId : undefined}
+        nextId={sortable ? nextId : undefined}
+        onAddChild={onAddChild}
+      />
     </div>
+  );
+}
+
+const MENU_STATUSES: readonly BacklogStatus[] = [
+  "backlog",
+  "ready",
+  "in-progress",
+  "done",
+];
+
+function RowMenu({
+  projectId,
+  item,
+  prevId,
+  nextId,
+  onAddChild,
+}: {
+  projectId: string;
+  item: BacklogItem;
+  prevId: string | undefined;
+  nextId: string | undefined;
+  onAddChild?: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        data-testid="backlog-row-menu"
+        aria-label={`「${item.title}」の操作`}
+        className="flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-3 opacity-0 group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:opacity-100"
+      >
+        <Ellipsis className="size-4" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger className="text-md">
+            状態を変える
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {MENU_STATUSES.map((s) => (
+              <DropdownMenuItem
+                key={s}
+                disabled={item.status === s}
+                onSelect={() => updateItem(projectId, item.id, { status: s })}
+                className="text-md"
+              >
+                {STATUS_LABEL[s]}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuItem
+          onSelect={() =>
+            updateItem(projectId, item.id, {
+              priority: item.priority === "high" ? "normal" : "high",
+            })
+          }
+          className="text-md"
+        >
+          {item.priority === "high" ? "優先を外す" : "優先にする"}
+        </DropdownMenuItem>
+        {onAddChild ? (
+          <DropdownMenuItem onSelect={onAddChild} className="text-md">
+            タスクを足す
+          </DropdownMenuItem>
+        ) : null}
+        {prevId || nextId ? <DropdownMenuSeparator /> : null}
+        {prevId || nextId ? (
+          <>
+            <DropdownMenuItem
+              disabled={!prevId}
+              onSelect={() =>
+                prevId && moveItem(projectId, item.id, prevId, "before")
+              }
+              className="text-md"
+            >
+              一つ上へ
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!nextId}
+              onSelect={() =>
+                nextId && moveItem(projectId, item.id, nextId, "after")
+              }
+              className="text-md"
+            >
+              一つ下へ
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

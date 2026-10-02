@@ -1,39 +1,60 @@
 "use client";
 
-// Backlog の入口（launcher「Backlog」、`banto.backlog:items`）の画面（v4-modules.md §4.4、2026-10-02）。
-// 人がここで知りたいのは2つ：**次に何をやるか**と、**まとまりと依存**。
-//   - 次に何をやるか：並びはファイルの中の順＝優先順。「着手できる」（準備できた かつ 待つものが全部終わった）を
-//     行に印で出し、「着手できるものだけ」で絞れる（AI の listItems の「いま着手できるもの」と同じ条件）
-//   - まとまり：マイルストーンごとに区切り、ストーリーの下に子のタスクを字下げで並べる
-//   - 依存：行には「待ち n 件」だけ。中身は詳細で「待っているもの → これ → これを待っているもの」と縦に見せる
-// 行を押すと右に詳細（コンテナ 48rem 以上）。狭い幅では一覧と入れ替わり、「一覧」で戻る。
-// Backlog は Project ごとにつける（§4.4）ので、出どころは開いている Project の根の中の tasks.json。
-import { useState, type ReactNode } from "react";
+// Backlog の入口（launcher「Backlog」、`banto.backlog:items`）の画面（v4-modules.md §4.4）。
+// よく使われる課題管理（Linear・GitHub Projects・Jira・Plane・Shortcut）を調べて決めた形
+// （docs/notes/2026-10-02-backlog-ui-survey.md）：
+//   - 上の段は1行。絞り込みの札を並べず、**見方**（次にやる／すべて／バグ／閉じたもの）を切り替える
+//     ——Linear の保存した見方・My Issues と同じ。マイルストーン・ラベルは「絞り込み」の小窓に畳む
+//   - 一覧は1項目1行。左端の順番の印が、並び順（＝優先順）と状態を同時に言う
+//   - 行を押す／Enter で右に詳細（Linear の Peek）。↑↓（j/k）で選び、Esc で閉じる、C で足す
+//   - 足すのは一覧の中でその場に打つ。ダイアログは使わない
+// Backlog は Project ごとにつける（§4.4）。出どころは開いている Project の根の中の tasks.json。
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { useParams } from "next/navigation";
-import { Plus } from "lucide-react";
+import { ListFilter, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { ChoicePills } from "@/components/banto/project/choice-pills";
 import { cn } from "@/lib/utils";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { getProjectOverrides } from "@/lib/mock/settings";
-import { getBacklog, isActionable, type BacklogFile, type BacklogItem, type BacklogKind } from "@/lib/mock/backlog";
-import { KIND_LABEL, KindMark } from "./backlog-parts";
-import { BacklogList, buildSections } from "./backlog-list";
+import {
+  childrenOf,
+  getBacklog,
+  isClosed,
+  type BacklogFile,
+  type BacklogItem,
+} from "@/lib/mock/backlog";
+import {
+  BacklogList,
+  flattenIds,
+  type ListGroup,
+  type ListNode,
+} from "./backlog-list";
 import { BacklogDetail } from "./backlog-detail";
-import { AddItemDialog, SplitStoryDialog } from "./backlog-forms";
+import { InlineComposer } from "./backlog-forms";
+import { formatDate, rankState } from "./backlog-parts";
 
-type KindFilter = "all" | BacklogKind;
-type StatusFilter = "open" | "done" | "dropped" | "all";
-const ALL = "all";
-const NO_MILESTONE = "none";
+type ViewId = "next" | "all" | "bugs" | "closed";
+
+const VIEWS: readonly { id: ViewId; label: string }[] = [
+  { id: "next", label: "次にやる" },
+  { id: "all", label: "すべて" },
+  { id: "bugs", label: "バグ" },
+  { id: "closed", label: "閉じたもの" },
+];
 
 export function BacklogView() {
   useMockStoreVersion();
@@ -44,7 +65,7 @@ export function BacklogView() {
 
   if (!file) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-ink-3">
+      <div className="flex h-full items-center justify-center p-6 text-md text-ink-3">
         この Project には Backlog の tasks.json がありません
       </div>
     );
@@ -52,224 +73,494 @@ export function BacklogView() {
   return <BacklogScreen key={projectId} projectId={projectId} file={file} />;
 }
 
-function BacklogScreen({ projectId, file }: { projectId: string; file: BacklogFile }) {
-  const [kind, setKind] = useState<KindFilter>("all");
-  const [status, setStatus] = useState<StatusFilter>("open");
-  const [milestone, setMilestone] = useState<string>(ALL);
-  const [label, setLabel] = useState<string>(ALL);
-  const [actionableOnly, setActionableOnly] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [adding, setAdding] = useState<BacklogKind | null>(null);
-  const [splitting, setSplitting] = useState<string | null>(null);
+interface Filters {
+  milestones: ReadonlySet<string>;
+  labels: ReadonlySet<string>;
+}
 
-  const root = getProjectOverrides(projectId).securityRoot;
+function matches(item: BacklogItem, f: Filters): boolean {
+  if (f.milestones.size > 0 && !f.milestones.has(item.milestone ?? "none"))
+    return false;
+  if (f.labels.size > 0 && !item.labels.some((l) => f.labels.has(l)))
+    return false;
+  return true;
+}
+
+/** 見方ごとに区切りと行を組む。数字は段の中の順番（閉じたものは持たない） */
+function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
   const items = file.items;
-  const labels = [...new Set(items.flatMap((i) => i.labels))].sort((a, b) => a.localeCompare(b, "ja"));
-  const selected = selectedId ? items.find((i) => i.id === selectedId) : undefined;
-  const splittingStory = splitting ? items.find((i) => i.id === splitting) : undefined;
+  const open = items.filter((i) => !isClosed(i) && matches(i, f));
+  const storyTitle = (i: BacklogItem) =>
+    i.parent ? items.find((p) => p.id === i.parent)?.title : undefined;
+  const number = (nodes: ListNode[]) =>
+    nodes.map((node, i) => ({ ...node, n: i + 1 }));
 
-  const shown = items.filter(
-    (i) =>
-      (kind === "all" || i.kind === kind) &&
-      (status === "all" ||
-        (status === "open" ? i.status !== "done" && i.status !== "dropped" : i.status === status)) &&
-      (milestone === ALL || (milestone === NO_MILESTONE ? i.milestone === null : i.milestone === milestone)) &&
-      (label === ALL || i.labels.includes(label)) &&
-      (!actionableOnly || isActionable(i, items)),
+  if (view === "next") {
+    // 動かせるものだけ：進めている、と、着手できる。ストーリーは子で動くので出さない
+    const work = open.filter((i) => i.kind !== "story");
+    const doing = work.filter((i) => i.status === "in-progress");
+    const actionable = work.filter((i) => rankState(i, items) === "actionable");
+    const rest =
+      open.filter((i) => i.kind !== "story").length -
+      doing.length -
+      actionable.length;
+    const toNode = (i: BacklogItem): ListNode => ({
+      item: i,
+      context: storyTitle(i),
+    });
+    return [
+      {
+        id: "doing",
+        title: "進めている",
+        nodes: number(doing.map(toNode)),
+        sortable: true,
+      },
+      {
+        id: "actionable",
+        title: "着手できる",
+        hint:
+          rest > 0
+            ? `ほかに待っているもの・積んだだけのものが ${rest} 件（「すべて」で見る）`
+            : undefined,
+        nodes: number(actionable.map(toNode)),
+        sortable: true,
+      },
+    ].filter((g) => g.nodes.length > 0 || g.id === "actionable");
+  }
+
+  if (view === "bugs") {
+    const bugs = open.filter((i) => i.kind === "bug");
+    return [
+      {
+        id: "bugs",
+        title: "バグ",
+        nodes: number(bugs.map((i) => ({ item: i }))),
+        composerMilestone: null,
+        sortable: true,
+      },
+    ];
+  }
+
+  if (view === "closed") {
+    const closed = items
+      .filter((i) => isClosed(i) && matches(i, f))
+      .sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? ""));
+    return [
+      {
+        id: "closed",
+        title: "閉じたもの",
+        hint: "閉じた日の新しい順",
+        nodes: closed.map((i) => ({
+          item: i,
+          note:
+            i.status === "dropped" && i.resolution
+              ? `やめた：${i.resolution}`
+              : undefined,
+          context: i.closedAt ? formatDate(i.closedAt) : undefined,
+        })),
+        sortable: false,
+      },
+    ];
+  }
+
+  // すべて：マイルストーンごと。ストーリーの下に子（終わっていないもの）、閉じた子は畳む
+  const top = open.filter(
+    (i) => i.parent === null || !open.some((p) => p.id === i.parent),
   );
-  const sections = buildSections(file, shown);
-  const actionableCount = items.filter((i) => isActionable(i, items)).length;
-  const filtered = kind !== "all" || status !== "open" || milestone !== ALL || label !== ALL || actionableOnly;
+  const toNode = (i: BacklogItem): ListNode => {
+    if (i.kind !== "story")
+      return { item: i, context: i.parent ? storyTitle(i) : undefined };
+    const kids = childrenOf(i, items);
+    return {
+      item: i,
+      children: number(
+        kids
+          .filter((k) => !isClosed(k) && matches(k, f))
+          .map((k) => ({ item: k })),
+      ),
+      closedKids: kids.filter(isClosed),
+    };
+  };
+  const groups: ListGroup[] = file.milestones
+    .filter((m) => m.status === "open")
+    .map((m) => ({
+      id: m.id,
+      title: m.title,
+      nodes: number(top.filter((i) => i.milestone === m.id).map(toNode)),
+      composerMilestone: m.id,
+      sortable: true,
+    }));
+  groups.push({
+    id: "none",
+    title: "マイルストーン無し",
+    nodes: number(
+      top
+        .filter(
+          (i) =>
+            i.milestone === null ||
+            !file.milestones.some(
+              (m) => m.id === i.milestone && m.status === "open",
+            ),
+        )
+        .map(toNode),
+    ),
+    composerMilestone: null,
+    sortable: true,
+  });
+  return groups.filter((g) => g.nodes.length > 0 || g.id === "none");
+}
 
-  function clearFilters() {
-    setKind("all");
-    setStatus("open");
-    setMilestone(ALL);
-    setLabel(ALL);
-    setActionableOnly(false);
+function BacklogScreen({
+  projectId,
+  file,
+}: {
+  projectId: string;
+  file: BacklogFile;
+}) {
+  const [view, setView] = useState<ViewId>("next");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [peek, setPeek] = useState(false);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [filters, setFilters] = useState<Filters>({
+    milestones: new Set(),
+    labels: new Set(),
+  });
+  const [adding, setAdding] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const items = file.items;
+  const root = getProjectOverrides(projectId).securityRoot;
+  const groups = buildGroups(view, file, filters);
+  const order = flattenIds(groups, collapsed);
+  const selected =
+    peek && selectedId ? items.find((i) => i.id === selectedId) : undefined;
+  const labels = useMemo(
+    () =>
+      [...new Set(items.flatMap((i) => i.labels))].sort((a, b) =>
+        a.localeCompare(b, "ja"),
+      ),
+    [items],
+  );
+  const filterCount = filters.milestones.size + filters.labels.size;
+
+  const counts: Record<ViewId, number> = {
+    next: items.filter(
+      (i) =>
+        i.kind !== "story" &&
+        (i.status === "in-progress" || rankState(i, items) === "actionable"),
+    ).length,
+    all: items.filter((i) => !isClosed(i)).length,
+    bugs: items.filter((i) => i.kind === "bug" && !isClosed(i)).length,
+    closed: items.filter(isClosed).length,
+  };
+
+  // 選んだ行が見えるところへ
+  useEffect(() => {
+    if (!selectedId) return;
+    rootRef.current
+      ?.querySelector(
+        `[data-item-id="${CSS.escape(selectedId)}"] > [data-testid="backlog-row"]`,
+      )
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
+
+  function step(delta: -1 | 1) {
+    if (order.length === 0) return;
+    const at = selectedId ? order.indexOf(selectedId) : -1;
+    const next =
+      at < 0
+        ? delta === 1
+          ? 0
+          : order.length - 1
+        : Math.min(order.length - 1, Math.max(0, at + delta));
+    setSelectedId(order[next]);
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const t = e.target as HTMLElement;
+    if (
+      t.closest(
+        "input, textarea, [contenteditable=true], [role=menu], [role=dialog], [cmdk-root]",
+      )
+    )
+      return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "ArrowDown" || e.key === "j") {
+      e.preventDefault();
+      step(1);
+    } else if (e.key === "ArrowUp" || e.key === "k") {
+      e.preventDefault();
+      step(-1);
+    } else if (e.key === "Enter" && selectedId && !t.closest("button, a")) {
+      e.preventDefault();
+      setPeek(true);
+    } else if (e.key === "Escape" && peek) {
+      e.preventDefault();
+      setPeek(false);
+    } else if (e.key === "c") {
+      e.preventDefault();
+      setAdding(true);
+    }
+  }
+
+  function toggle(set: ReadonlySet<string>, v: string): Set<string> {
+    const next = new Set(set);
+    if (next.has(v)) next.delete(v);
+    else next.add(v);
+    return next;
   }
 
   return (
-    <div className="@container flex h-full min-h-0" data-testid="backlog-view">
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      className="@container flex h-full min-h-0 bg-card outline-none"
+      data-testid="backlog-view"
+    >
       <div
-        className={cn("min-h-0 min-w-0 flex-1 overflow-y-auto", selected && "hidden @3xl:block")}
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col",
+          selected && "hidden @3xl:flex",
+        )}
         data-testid="backlog-list-pane"
       >
-        <div className="mx-auto flex max-w-4xl flex-col gap-5 px-4 py-5 @lg:px-5 @lg:py-8">
-          <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-            <div className="flex min-w-0 flex-col gap-1">
-              <h2 className="text-xl font-semibold text-foreground">Backlog</h2>
-              <p data-testid="backlog-source" className="text-sm break-all text-ink-2">
-                この Project の今後やることとバグ。{" "}
-                <span className="font-mono text-xs">
-                  {root}/{file.path}
-                </span>{" "}
-                を読み書きしています
-              </p>
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" className="h-8" data-testid="backlog-add-open">
-                  <Plus />
-                  追加
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {(["story", "task", "bug"] as const).map((k) => (
-                  <DropdownMenuItem key={k} onSelect={() => setAdding(k)} data-testid={`backlog-add-${k}`}>
-                    <KindMark kind={k} />
-                    {KIND_LABEL[k]}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </header>
-
-          <div className="flex flex-col gap-2" data-testid="backlog-filters">
-            <div className="flex flex-wrap items-center gap-2">
-              <ChoicePills
-                label="種類"
-                testId="backlog-filter-kind"
-                value={kind}
-                onChange={setKind}
-                choices={[
-                  { value: "all", label: "すべて" },
-                  { value: "story", label: "ストーリー" },
-                  { value: "task", label: "タスク" },
-                  { value: "bug", label: "バグ" },
-                ]}
-              />
-              <ChoicePills
-                label="状態"
-                testId="backlog-filter-status"
-                value={status}
-                onChange={setStatus}
-                choices={[
-                  { value: "open", label: "終わっていない" },
-                  { value: "done", label: "終わった" },
-                  { value: "dropped", label: "やめた" },
-                  { value: "all", label: "すべて" },
-                ]}
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {file.milestones.length > 0 ? (
-                <FilterSelect label="マイルストーン" value={milestone} onChange={setMilestone} testId="backlog-filter-milestone">
-                  <SelectItem value={ALL} className="text-xs">
-                    すべてのマイルストーン
-                  </SelectItem>
-                  {file.milestones.map((m) => (
-                    <SelectItem key={m.id} value={m.id} className="text-xs">
-                      {m.title}
-                    </SelectItem>
-                  ))}
-                  <SelectItem value={NO_MILESTONE} className="text-xs">
-                    マイルストーン無し
-                  </SelectItem>
-                </FilterSelect>
-              ) : null}
-              {labels.length > 0 ? (
-                <FilterSelect label="ラベル" value={label} onChange={setLabel} testId="backlog-filter-label">
-                  <SelectItem value={ALL} className="text-xs">
-                    すべてのラベル
-                  </SelectItem>
-                  {labels.map((l) => (
-                    <SelectItem key={l} value={l} className="text-xs">
-                      {l}
-                    </SelectItem>
-                  ))}
-                </FilterSelect>
-              ) : null}
-              <label className="flex items-center gap-2 text-xs text-ink-2">
-                <Switch
+        <header className="shrink-0 border-b border-border">
+          <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 pt-4 @lg:px-6">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-foreground">Backlog</h2>
+              <span
+                data-testid="backlog-source"
+                className="min-w-0 truncate font-mono text-xs text-ink-3"
+                title={`${root}/${file.path}`}
+              >
+                {file.path}
+              </span>
+              <div className="ml-auto flex items-center gap-1">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-testid="backlog-filter"
+                      className="text-md"
+                    >
+                      <ListFilter />
+                      絞り込み
+                      {filterCount > 0 ? (
+                        <span className="text-primary tabular-nums">
+                          {filterCount}
+                        </span>
+                      ) : null}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    {file.milestones.length > 0 ? (
+                      <>
+                        <DropdownMenuLabel className="text-xs text-ink-3">
+                          マイルストーン
+                        </DropdownMenuLabel>
+                        {[
+                          ...file.milestones,
+                          { id: "none", title: "マイルストーン無し" },
+                        ].map((m) => (
+                          <DropdownMenuCheckboxItem
+                            key={m.id}
+                            checked={filters.milestones.has(m.id)}
+                            onCheckedChange={() =>
+                              setFilters((f) => ({
+                                ...f,
+                                milestones: toggle(f.milestones, m.id),
+                              }))
+                            }
+                            onSelect={(e) => e.preventDefault()}
+                            className="text-md"
+                          >
+                            {m.title}
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                        <DropdownMenuSeparator />
+                      </>
+                    ) : null}
+                    <DropdownMenuLabel className="text-xs text-ink-3">
+                      ラベル
+                    </DropdownMenuLabel>
+                    {labels.map((l) => (
+                      <DropdownMenuCheckboxItem
+                        key={l}
+                        checked={filters.labels.has(l)}
+                        onCheckedChange={() =>
+                          setFilters((f) => ({
+                            ...f,
+                            labels: toggle(f.labels, l),
+                          }))
+                        }
+                        onSelect={(e) => e.preventDefault()}
+                        className="text-md"
+                      >
+                        {l}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
                   size="sm"
-                  checked={actionableOnly}
-                  onCheckedChange={setActionableOnly}
-                  data-testid="backlog-filter-actionable"
-                />
-                着手できるものだけ
-                <span className="text-ink-3 tabular-nums">{actionableCount}</span>
-              </label>
-            </div>
-          </div>
-
-          {sections.length === 0 ? (
-            <div className="flex flex-col items-start gap-2 rounded-md border border-dashed border-border p-5 text-sm text-ink-2">
-              条件に合う項目はありません
-              {filtered ? (
-                <Button variant="outline" size="sm" onClick={clearFilters}>
-                  絞り込みを外す
+                  onClick={() => setAdding(true)}
+                  data-testid="backlog-add-open"
+                  className="text-md"
+                >
+                  <Plus />
+                  足す
                 </Button>
-              ) : null}
+              </div>
             </div>
-          ) : (
+            <nav
+              aria-label="見方"
+              className="-mb-px flex gap-4"
+              data-testid="backlog-views"
+            >
+              {VIEWS.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  aria-current={view === v.id ? "page" : undefined}
+                  data-testid={`backlog-view-${v.id}`}
+                  onClick={() => {
+                    setView(v.id);
+                    setAdding(false);
+                  }}
+                  className={cn(
+                    "flex shrink-0 items-baseline gap-1.5 border-b-2 pb-2 text-md whitespace-nowrap focus-visible:outline-2 focus-visible:outline-ring",
+                    view === v.id
+                      ? "border-foreground font-semibold text-foreground"
+                      : "border-transparent text-ink-3 hover:text-ink-2",
+                  )}
+                >
+                  {v.label}
+                  <span className="text-xs font-normal text-ink-3 tabular-nums">
+                    {counts[v.id]}
+                  </span>
+                </button>
+              ))}
+            </nav>
+          </div>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 pt-4 pb-10 @lg:px-6">
+            {filterCount > 0 ? (
+              <p className="flex items-center gap-2 text-xs text-ink-3">
+                絞り込み中
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFilters({ milestones: new Set(), labels: new Set() })
+                  }
+                  className="rounded-sm text-ink-2 underline underline-offset-2 hover:text-foreground"
+                >
+                  外す
+                </button>
+              </p>
+            ) : null}
+            {adding ? (
+              <InlineComposer
+                projectId={projectId}
+                milestone={null}
+                initialKind={view === "bugs" ? "bug" : "task"}
+                onClose={() => {
+                  setAdding(false);
+                  rootRef.current?.focus();
+                }}
+              />
+            ) : null}
+            {groups.every((g) => g.nodes.length === 0) ? (
+              <EmptyView
+                view={view}
+                onAdd={() => setAdding(true)}
+                onAll={() => setView("all")}
+              />
+            ) : null}
             <BacklogList
               projectId={projectId}
-              file={file}
-              sections={sections}
-              shown={shown}
+              groups={groups.filter(
+                (g) => g.nodes.length > 0 || g.composerMilestone !== undefined,
+              )}
+              items={items}
               selectedId={selectedId}
+              collapsed={collapsed}
+              onToggle={(id) => setCollapsed((c) => toggle(c, id))}
               onSelect={setSelectedId}
+              onOpen={(id) => {
+                setSelectedId(id);
+                setPeek(true);
+              }}
             />
-          )}
+            <p className="hidden pt-2 text-xs text-ink-3 @lg:block">
+              ↑↓ で選ぶ　Enter で開く　Esc で閉じる　C
+              で足す　行はつかんで並べ替え（上ほど先にやる）
+            </p>
+          </div>
         </div>
       </div>
 
       {selected ? (
         <aside
           aria-label={`「${selected.title}」の詳細`}
-          className="min-h-0 w-full shrink-0 overflow-y-auto border-border @3xl:w-96 @3xl:border-l @5xl:w-md"
+          className="min-h-0 w-full shrink-0 border-border @3xl:w-[25rem] @3xl:border-l @5xl:w-[28rem]"
         >
           <BacklogDetail
-            key={selected.id}
             projectId={projectId}
             file={file}
             item={selected}
-            onOpen={setSelectedId}
-            onClose={() => setSelectedId(null)}
-            onSplit={() => setSplitting(selected.id)}
+            onOpen={(id) => setSelectedId(id)}
+            onClose={() => {
+              setPeek(false);
+              rootRef.current?.focus();
+            }}
+            onStep={step}
           />
         </aside>
-      ) : null}
-
-      {adding ? (
-        <AddItemDialog
-          projectId={projectId}
-          file={file}
-          initialKind={adding}
-          onClose={() => setAdding(null)}
-          onCreated={(item: BacklogItem) => {
-            setAdding(null);
-            setSelectedId(item.id);
-          }}
-        />
-      ) : null}
-      {splittingStory ? (
-        <SplitStoryDialog projectId={projectId} story={splittingStory} onClose={() => setSplitting(null)} />
       ) : null}
     </div>
   );
 }
 
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  testId,
-  children,
+function EmptyView({
+  view,
+  onAdd,
+  onAll,
 }: {
-  label: string;
-  value: string;
-  onChange: (next: string) => void;
-  testId: string;
-  children: ReactNode;
+  view: ViewId;
+  onAdd: () => void;
+  onAll: () => void;
 }) {
+  if (view === "next") {
+    return (
+      <div className="flex flex-col items-start gap-2 py-6 text-md text-ink-2">
+        いま着手できるものはありません。待っているものと積んだだけのものは「すべて」にあります。
+        <Button variant="outline" size="sm" onClick={onAll}>
+          すべてを見る
+        </Button>
+      </div>
+    );
+  }
+  if (view === "bugs") {
+    return (
+      <p className="py-6 text-md text-ink-2">開いているバグはありません。</p>
+    );
+  }
+  if (view === "closed") {
+    return (
+      <p className="py-6 text-md text-ink-2">まだ閉じたものはありません。</p>
+    );
+  }
   return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger size="sm" className="text-xs" aria-label={label} data-testid={testId}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>{children}</SelectContent>
-    </Select>
+    <div className="flex flex-col items-start gap-2 py-6 text-md text-ink-2">
+      まだ何も積んでいません。
+      <Button size="sm" onClick={onAdd}>
+        <Plus />
+        足す
+      </Button>
+    </div>
   );
 }

@@ -1,0 +1,35 @@
+# Backlog の画面——よく使われる課題管理のサーベイと作り直し（2026-10-02）
+
+最初のモック（bb6747ab）はユーザーに「全然 UI が洗練されていない」と差し戻された。FrontendDesign スキルの手順
+（方針を立てて見直してから作る）を飛ばし、機能の網羅だけで作っていた。よく使われる道具を調べて作り直した。
+
+## 調べたもの
+
+| 道具 | 借りたもの | 借りなかったもの |
+|---|---|---|
+| Linear | 1項目1行の行（左から 状態の印・題・右寄せの最小限）。Peek（Space で一覧を離れず中身を見る）。キーボードで全部できる（j/k・Enter・c）。性質はその場の小窓で変える。手動の並び順はドラッグ。サブ課題の表示の切り替え、閉じたものは畳む | 担当者・サイクル・見積もり。状態の丸そのもの（下） |
+| GitHub Projects | サブ課題の進み（n/m とバー）を親の行に出す。blocked by を行に印で出す | 表（スプレッドシート）の見え方 |
+| Jira | 並び順＝優先順（Rank）をドラッグで動かす。エピックの進み | スプリント・ボード・独自ワークフロー |
+| Plane | 一覧で性質をその場で直す。見方（グループ分け）を切り替える | グループ分けの軸を自由に選ばせる設定 |
+| Shortcut | ストーリーの依存を図で見る（Epic のページに Mermaid） | 図そのもの（詳細の縦の流れで足りる） |
+| Linear Triage | 入ってきたものを本当の backlog と分けて置く——「積んだだけ」と「準備できた」の分け方の裏づけ | 受け入れの手順 |
+
+参考：Linear の Display options（https://linear.app/docs/display-options）・Peek（https://linear.app/docs/peek）、
+GitHub の sub-issue progress（https://docs.github.com/en/issues/planning-and-tracking-with-projects/understanding-fields/about-parent-issue-and-sub-issue-progress-fields）、
+Plane の layouts（https://docs.plane.so/core-concepts/issues/layouts）、Shortcut の Epics（https://www.shortcut.com/help/epics/epics-overview/）。
+
+## 決めた形（モック。ユーザーの確認待ち）
+
+- **見方を切り替える**（次にやる／すべて／バグ／閉じたもの）。絞り込みの札を何段も並べない。「次にやる」は進めているものと
+  着手できるものだけを優先順で——Linear の My Issues・保存した見方に当たる
+- **順番の印**：状態の丸（Linear の形）は課題管理でいちばんありがちな形なので、そのままは借りなかった。Backlog はファイルの順＝
+  優先順という性質を持つので、段の中の順番の数字を左端に立て、囲みで状態を言う。塗りの役色は使わない（turn だけ）
+- 待っている行は「待ち n 件」ではなく相手の名前で
+- 足すのはダイアログでなくその場（Linear の素早い作成）。続けて足せる
+- 詳細は入力フォームでなく読み物。性質は1行に並べ、押すと小窓
+
+## 残っている問い
+
+- 進めているの印（青の弧）が「読み込み中」に見えないか
+- 「次にやる」の番号は段ごとに 1 から——ファイル全体の順番ではない
+- 狭い幅では題がすぐ切れる。2行にするか

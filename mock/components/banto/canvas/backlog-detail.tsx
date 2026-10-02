@@ -1,48 +1,47 @@
 "use client";
 
-// Backlog の1件の詳細。この画面でいちばん目に残したいのは依存の並び——「これが待っているもの → これ →
-// これを待っているもの」を縦に1本で見せる。ほかの欄は既存の画面と同じく静かに並べる。
-//
-// 閉じる操作は「終わった」「やめた（理由を書く）」の2つだけ。消す操作は無い（§4.4）。
-// ストーリーは子が全部終わっても自動では閉じない——案内を出し、閉じるのは人が押す。
+// Backlog の1件の詳細（一覧の右に出す「のぞき見」。Linear の Peek と同じく、一覧を離れずに中身を見る）。
+// 入力フォームにしない——読み物として上から：どこの下か／題／性質の1行／依存の流れ／完了条件／本文／子／参照・Thread。
+// 性質（状態・優先度・マイルストーン・ストーリー・ラベル）は押すとその場で小窓が開いて変わる（Linear の
+// プロパティと同じ）。閉じる操作は下に固定：「終わったにする」「やめる（理由を書く）」。消す操作は無い（§4.4）。
+// ストーリーは子が全部閉じても自動では閉じない——案内を出し、閉じるのは人が押す。
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowDown, ChevronLeft, CirclePlay, Hourglass, MessageSquare, Split, X } from "lucide-react";
+import { ChevronDown, ChevronUp, MessageSquare, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { getThread } from "@/lib/mock/threads";
 import {
   childrenOf,
   dependents,
-  isActionable,
   isClosed,
   updateItem,
-  waitingOn,
   type BacklogFile,
   type BacklogItem,
-  type BacklogKind,
-  type BacklogPatch,
   type BacklogPriority,
   type BacklogStatus,
 } from "@/lib/mock/backlog";
 import {
-  ItemChip,
   KIND_LABEL,
-  KindMark,
   LabelChip,
   MarkdownBody,
-  OPEN_STATUSES,
   PRIORITY_LABEL,
+  RANK_STATE_LABEL,
+  RankMark,
   STATUS_LABEL,
-  StatusText,
   formatDate,
+  rankState,
 } from "./backlog-parts";
-import { DependencyPicker } from "./backlog-forms";
-
-const NONE = "none";
+import { ItemPicker, SplitComposer } from "./backlog-forms";
 
 export function BacklogDetail({
   projectId,
@@ -50,544 +49,755 @@ export function BacklogDetail({
   item,
   onOpen,
   onClose,
-  onSplit,
+  onStep,
 }: {
   projectId: string;
   file: BacklogFile;
   item: BacklogItem;
   onOpen: (id: string) => void;
   onClose: () => void;
-  onSplit: () => void;
+  /** 一覧の前後の項目へ（↑↓ と同じ） */
+  onStep: (delta: -1 | 1) => void;
 }) {
   const items = file.items;
-  const update = (patch: BacklogPatch) => updateItem(projectId, item.id, patch);
+  const parent = item.parent
+    ? items.find((i) => i.id === item.parent)
+    : undefined;
+  const closed = isClosed(item);
+  const state = rankState(item, items);
   const kids = item.kind === "story" ? childrenOf(item, items) : [];
-  const parent = item.parent ? items.find((i) => i.id === item.parent) : undefined;
-  const stories = items.filter((i) => i.kind === "story" && i.id !== item.id);
+  const [dropping, setDropping] = useState(false);
+  const [splitting, setSplitting] = useState(false);
 
   return (
-    <article data-testid="backlog-detail" data-item-id={item.id} className="flex flex-col gap-5 px-4 py-4 @lg:px-5 @lg:py-5">
-      <div className="flex items-center justify-between gap-2">
-        <Button variant="ghost" size="sm" className="-ml-2 @3xl:hidden" onClick={onClose} data-testid="backlog-detail-back">
-          <ChevronLeft />
-          一覧
-        </Button>
-        <span className="truncate font-mono text-xs text-ink-3" title="tasks.json の中の名前">
-          {item.id}
-        </span>
+    <div className="flex h-full min-h-0 flex-col" data-testid="backlog-detail">
+      <div className="flex shrink-0 items-center gap-1 px-4 pt-3 pb-1">
+        <p className="min-w-0 flex-1 truncate text-xs text-ink-3">
+          {parent ? (
+            <button
+              type="button"
+              onClick={() => onOpen(parent.id)}
+              className="rounded-sm hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              data-testid="backlog-detail-parent"
+            >
+              {parent.title}
+            </button>
+          ) : (
+            KIND_LABEL[item.kind]
+          )}
+          {parent ? <span> のタスク</span> : null}
+        </p>
         <Button
           variant="ghost"
-          size="icon-sm"
-          className="hidden @3xl:inline-flex"
+          size="icon-xs"
+          onClick={() => onStep(-1)}
+          aria-label="前の項目"
+        >
+          <ChevronUp />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => onStep(1)}
+          aria-label="次の項目"
+        >
+          <ChevronDown />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={onClose}
           aria-label="詳細を閉じる"
+          data-testid="backlog-detail-close"
         >
           <X />
         </Button>
       </div>
 
-      <header className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <Select
-            value={item.kind}
-            onValueChange={(v) => update({ kind: v as BacklogKind })}
-            // 子を持つストーリーは種類を変えられない（子の親が宙に浮く）
-            disabled={kids.length > 0}
-          >
-            <SelectTrigger size="sm" className="text-xs" aria-label="種類">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(["story", "task", "bug"] as const).map((k) => (
-                <SelectItem key={k} value={k} className="text-xs">
-                  <KindMark kind={k} />
-                  {KIND_LABEL[k]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {parent ? (
-            <button
-              type="button"
-              onClick={() => onOpen(parent.id)}
-              className="truncate rounded-sm text-xs text-ink-3 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
+        <EditableTitle key={item.id} projectId={projectId} item={item} />
+
+        <Properties
+          projectId={projectId}
+          file={file}
+          item={item}
+          state={state}
+        />
+
+        <DependencyFlow
+          projectId={projectId}
+          item={item}
+          items={items}
+          onOpen={onOpen}
+        />
+
+        {item.kind === "story" ? (
+          <section className="mt-6" aria-label="タスク">
+            <SectionTitle
+              action={
+                !closed && !splitting ? (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setSplitting(true)}
+                    data-testid="backlog-split-open"
+                  >
+                    <Plus />
+                    タスクに分ける
+                  </Button>
+                ) : null
+              }
             >
-              「{parent.title}」の下
-            </button>
-          ) : null}
-        </div>
-        <TitleEditor key={item.id} title={item.title} onSave={(title) => update({ title })} />
-      </header>
-
-      <StatusControl key={`status-${item.id}`} item={item} kids={kids} update={update} />
-
-      <DependencyChain projectId={projectId} file={file} item={item} onOpen={onOpen} />
-
-      <dl className="grid grid-cols-[6rem_minmax(0,1fr)] items-center gap-x-3 gap-y-2.5 text-xs">
-        <dt className="text-ink-3">優先度</dt>
-        <dd>
-          <Select value={item.priority} onValueChange={(v) => update({ priority: v as BacklogPriority })}>
-            <SelectTrigger size="sm" className="text-xs" aria-label="優先度">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(["high", "normal", "low"] as const).map((p) => (
-                <SelectItem key={p} value={p} className="text-xs">
-                  {PRIORITY_LABEL[p]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </dd>
-        {file.milestones.length > 0 ? (
-          <>
-            <dt className="text-ink-3">マイルストーン</dt>
-            <dd>
-              <Select
-                value={item.milestone ?? NONE}
-                onValueChange={(v) => update({ milestone: v === NONE ? null : v })}
+              タスク
+            </SectionTitle>
+            {splitting ? (
+              <SplitComposer
+                projectId={projectId}
+                story={item}
+                onDone={() => setSplitting(false)}
+                onCancel={() => setSplitting(false)}
+              />
+            ) : null}
+            {kids.length === 0 && !splitting ? (
+              <p className="text-md text-ink-3">
+                まだタスクに分けていません。取りかかるときに分けます。
+              </p>
+            ) : (
+              <ul className="flex flex-col" data-testid="backlog-detail-kids">
+                {kids.map((k) => (
+                  <li key={k.id}>
+                    <ItemLine
+                      item={k}
+                      items={items}
+                      n={
+                        isClosed(k)
+                          ? undefined
+                          : kids.filter((x) => !isClosed(x)).indexOf(k) + 1
+                      }
+                      onOpen={onOpen}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {!closed && kids.length > 0 && kids.every(isClosed) ? (
+              <p
+                data-testid="backlog-story-all-done"
+                className="mt-2 text-md text-ink-2"
               >
-                <SelectTrigger size="sm" className="max-w-full text-xs" aria-label="マイルストーン">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE} className="text-xs">
-                    マイルストーン無し
-                  </SelectItem>
-                  {file.milestones.map((m) => (
-                    <SelectItem key={m.id} value={m.id} className="text-xs">
-                      {m.title}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </dd>
-          </>
+                タスクは全部閉じました。ストーリーも終わりなら、下の「終わったにする」で閉じます。
+              </p>
+            ) : null}
+          </section>
         ) : null}
-        {item.kind === "task" ? (
-          <>
-            <dt className="text-ink-3">ストーリー</dt>
-            <dd>
-              <Select value={item.parent ?? NONE} onValueChange={(v) => update({ parent: v === NONE ? null : v })}>
-                <SelectTrigger size="sm" className="max-w-full text-xs" aria-label="どのストーリーの下か">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE} className="text-xs">
-                    ストーリーに属さない
-                  </SelectItem>
-                  {stories.map((s) => (
-                    <SelectItem key={s.id} value={s.id} className="text-xs">
-                      {s.title}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </dd>
-          </>
-        ) : null}
-        <dt className="self-start pt-1 text-ink-3">ラベル</dt>
-        <dd>
-          <LabelEditor key={item.id} labels={item.labels} onChange={(labels) => update({ labels })} />
-        </dd>
-      </dl>
 
-      {item.kind === "story" ? (
-        <Block
-          title="タスク"
-          aside={
-            <Button variant="outline" size="xs" onClick={onSplit} data-testid="backlog-split-open">
-              <Split />
-              タスクに分ける
-            </Button>
-          }
-        >
-          {kids.length === 0 ? (
-            <p className="text-xs text-ink-3">まだタスクに分けていません。実装するときに分けます。</p>
-          ) : (
-            <ul className="flex flex-col gap-1.5" data-testid="backlog-detail-children">
-              {kids.map((k) => (
-                <li key={k.id}>
-                  <ItemChip item={k} onOpen={onOpen} />
+        <TextBlock
+          key={`done-${item.id}`}
+          title="完了条件"
+          value={item.doneWhen}
+          empty="何を測れたら終わりかを書きます"
+          onSave={(v) => updateItem(projectId, item.id, { doneWhen: v })}
+          testId="backlog-detail-donewhen"
+        />
+        <TextBlock
+          key={`body-${item.id}`}
+          title="本文"
+          value={item.body}
+          empty="なぜやるか・経緯・確かめ方を書きます"
+          markdown
+          onSave={(v) => updateItem(projectId, item.id, { body: v })}
+          testId="backlog-detail-body"
+        />
+
+        {item.refs.length > 0 ? (
+          <section className="mt-6">
+            <SectionTitle>参照</SectionTitle>
+            <ul className="flex flex-col gap-0.5">
+              {item.refs.map((r) => (
+                <li key={r} className="font-mono text-xs break-all text-ink-2">
+                  {r}
                 </li>
               ))}
             </ul>
-          )}
-        </Block>
-      ) : null}
-
-      <TextBlock
-        key={`done-when-${item.id}`}
-        title="完了条件"
-        value={item.doneWhen}
-        empty="まだ書いていません。「実装した」ではなく、何を測れば終わりかで書きます。"
-        rows={3}
-        onSave={(doneWhen) => update({ doneWhen })}
-      />
-      <TextBlock
-        key={`body-${item.id}`}
-        title="本文"
-        value={item.body}
-        empty="なぜ・経緯・確かめ方などを Markdown で書けます。"
-        rows={8}
-        markdown
-        onSave={(body) => update({ body })}
-      />
-
-      {item.refs.length > 0 ? (
-        <Block title="参照">
-          <ul className="flex flex-col gap-1">
-            {item.refs.map((r) => (
-              <li key={r} className="font-mono text-xs break-all text-ink-2">
-                {r}
-              </li>
-            ))}
-          </ul>
-        </Block>
-      ) : null}
-
-      <Block title="取り組んだ Thread">
-        {item.threads.length === 0 ? (
-          <p className="text-xs text-ink-3">まだどの Thread でも取り組んでいません。</p>
-        ) : (
-          <ul className="flex flex-col gap-1" data-testid="backlog-threads">
-            {item.threads.map((t) => {
-              const thread = getThread(t.threadId);
-              const href = thread?.kind === "fork" ? `/p/${t.projectId}?fork=${t.threadId}` : `/p/${t.projectId}`;
-              return (
-                <li key={`${t.projectId}:${t.threadId}`}>
-                  <Link
-                    href={href}
-                    className="inline-flex items-center gap-1.5 rounded-sm text-xs text-ink-2 underline decoration-border underline-offset-2 hover:text-foreground hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring"
-                  >
-                    <MessageSquare className="size-3 text-ink-3" />
-                    {thread?.title ?? t.threadId}
-                    {thread?.kind === "base" ? <span className="text-ink-3">（Base Thread）</span> : null}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Block>
-
-      <dl className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-border pt-3 text-xs text-ink-3">
-        <dt>作った</dt>
-        <dd className="tabular-nums">{formatDate(item.createdAt)}</dd>
-        <dt>変えた</dt>
-        <dd className="tabular-nums">{formatDate(item.updatedAt)}</dd>
-        {item.closedAt ? (
-          <>
-            <dt>閉じた</dt>
-            <dd className="tabular-nums">{formatDate(item.closedAt)}</dd>
-          </>
+          </section>
         ) : null}
-      </dl>
-    </article>
-  );
-}
 
-function Block({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-2">
-      <div className="flex items-center justify-between gap-2">
-        <h4 className="text-xs font-medium text-ink-2">{title}</h4>
-        {aside}
+        <section className="mt-6">
+          <SectionTitle>取り組んだ Thread</SectionTitle>
+          {item.threads.length === 0 ? (
+            <p className="text-md text-ink-3">
+              まだどの Thread でも取り組んでいません。
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1" data-testid="backlog-threads">
+              {item.threads.map((t) => {
+                const thread = getThread(t.threadId);
+                const href =
+                  thread?.kind === "fork"
+                    ? `/p/${t.projectId}?fork=${t.threadId}`
+                    : `/p/${t.projectId}`;
+                return (
+                  <li key={`${t.projectId}:${t.threadId}`}>
+                    <Link
+                      href={href}
+                      className="inline-flex items-center gap-1.5 rounded-sm text-md text-ink-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                    >
+                      <MessageSquare className="size-3.5 text-ink-3" />
+                      {thread?.title ?? t.threadId}
+                      {thread?.kind === "base" ? (
+                        <span className="text-ink-3">（Base Thread）</span>
+                      ) : null}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        <p className="mt-6 text-xs text-ink-3 tabular-nums">
+          {formatDate(item.createdAt)}に作成、{formatDate(item.updatedAt)}に更新
+          {item.closedAt ? `、${formatDate(item.closedAt)}に閉じた` : ""}。
+          <span className="font-mono">{item.id}</span>
+        </p>
       </div>
-      {children}
-    </section>
-  );
-}
 
-function TitleEditor({ title, onSave }: { title: string; onSave: (title: string) => void }) {
-  const [draft, setDraft] = useState(title);
-  function commit() {
-    const t = draft.trim();
-    if (t === "" || t === title) setDraft(title);
-    else onSave(t);
-  }
-  return (
-    <Textarea
-      data-testid="backlog-detail-title"
-      aria-label="題"
-      value={draft}
-      rows={1}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-          e.preventDefault();
-          e.currentTarget.blur();
-        }
-        if (e.key === "Escape") {
-          setDraft(title);
-          e.currentTarget.blur();
-        }
-      }}
-      className="field-sizing-content min-h-0 resize-none border-transparent px-1 -mx-1 py-0.5 text-lg font-semibold text-foreground shadow-none md:text-lg hover:border-border dark:bg-transparent"
-    />
-  );
-}
-
-/**
- * 状態。開いているあいだは「積んだだけ／準備できた／進めている」を選び、閉じるのは別の2つのボタン。
- * 閉じたあとは「開き直す」だけ（状態の欄は出さない）
- */
-function StatusControl({
-  item,
-  kids,
-  update,
-}: {
-  item: BacklogItem;
-  kids: readonly BacklogItem[];
-  update: (patch: BacklogPatch) => void;
-}) {
-  const [dropping, setDropping] = useState(false);
-  const [reason, setReason] = useState("");
-  const closed = isClosed(item);
-  const kidsAllClosed = kids.length > 0 && kids.every(isClosed);
-
-  if (closed) {
-    return (
-      <div
-        data-testid="backlog-closed"
-        className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-2 px-3 py-2"
+      <footer
+        className="shrink-0 border-t border-border bg-card px-4 py-3"
+        data-testid="backlog-detail-actions"
       >
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <StatusText status={item.status} />
-          {item.status === "dropped" ? (
-            <p className="text-xs text-ink-2">{item.resolution ? `理由：${item.resolution}` : "理由は書いていません"}</p>
-          ) : null}
-        </div>
-        <Button variant="ghost" size="xs" onClick={() => update({ status: "ready" })}>
-          開き直す
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Select value={item.status} onValueChange={(v) => update({ status: v as BacklogStatus })}>
-          <SelectTrigger size="sm" className="text-xs" aria-label="状態" data-testid="backlog-detail-status">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {OPEN_STATUSES.map((s) => (
-              <SelectItem key={s} value={s} className="text-xs">
-                {STATUS_LABEL[s]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <div className="ml-auto flex gap-1.5">
-          <Button variant="outline" size="xs" onClick={() => update({ status: "done" })} data-testid="backlog-close-done">
-            終わった
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => setDropping(true)}
-            disabled={dropping}
-            data-testid="backlog-close-dropped"
-          >
-            やめた
-          </Button>
-        </div>
-      </div>
-      {kidsAllClosed && !dropping ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-xs text-ink-2">
-          子のタスクは全部終わりました。このストーリーも閉じますか
-          <Button variant="outline" size="xs" onClick={() => update({ status: "done" })}>
-            終わったにする
-          </Button>
-        </div>
-      ) : null}
-      {dropping ? (
-        <form
-          className="flex flex-col gap-2 rounded-md border border-border p-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            update({ status: "dropped", resolution: reason.trim() || null });
-          }}
-        >
-          <label htmlFor="backlog-drop-reason" className="text-xs font-medium text-ink-2">
-            やめる理由
-          </label>
-          <Textarea
-            id="backlog-drop-reason"
-            data-testid="backlog-drop-reason"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            rows={2}
-            autoFocus
-            placeholder="重複・やらないと決めた、など"
-          />
-          <div className="flex justify-end gap-1.5">
-            <Button type="button" variant="ghost" size="xs" onClick={() => setDropping(false)}>
-              取り消し
+        {closed ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 text-md text-ink-2">
+              {item.status === "done" ? "終わりました" : "やめました"}
+              {item.resolution ? (
+                <span className="text-ink-3">：{item.resolution}</span>
+              ) : null}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                updateItem(projectId, item.id, { status: "ready" })
+              }
+            >
+              開き直す
             </Button>
-            <Button type="submit" size="xs" disabled={reason.trim() === ""} data-testid="backlog-drop-submit">
+          </div>
+        ) : dropping ? (
+          <DropForm
+            onCancel={() => setDropping(false)}
+            onDrop={(reason) => {
+              updateItem(projectId, item.id, {
+                status: "dropped",
+                resolution: reason,
+              });
+              setDropping(false);
+            }}
+          />
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => updateItem(projectId, item.id, { status: "done" })}
+              data-testid="backlog-close-done"
+            >
+              終わったにする
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setDropping(true)}
+              data-testid="backlog-close-drop"
+            >
               やめる
             </Button>
           </div>
-        </form>
-      ) : null}
+        )}
+      </footer>
     </div>
   );
 }
 
-/** 待っているもの → これ → これを待っているもの */
-function DependencyChain({
+function SectionTitle({
+  children,
+  action,
+}: {
+  children: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="mb-1.5 flex h-6 items-center justify-between gap-2">
+      <h4 className="text-sm font-semibold text-ink-2">{children}</h4>
+      {action}
+    </div>
+  );
+}
+
+function EditableTitle({
+  projectId,
+  item,
+}: {
+  projectId: string;
+  item: BacklogItem;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(item.title);
+  if (editing) {
+    return (
+      <Input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => {
+          if (value.trim())
+            updateItem(projectId, item.id, { title: value.trim() });
+          setEditing(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setValue(item.title);
+            setEditing(false);
+          }
+        }}
+        aria-label="題"
+        className="h-auto py-1 text-xl font-semibold"
+      />
+    );
+  }
+  return (
+    <h3
+      data-testid="backlog-detail-title"
+      className="cursor-text rounded-sm text-xl font-semibold text-foreground hover:bg-surface-2"
+      onClick={() => setEditing(true)}
+    >
+      {item.title}
+    </h3>
+  );
+}
+
+const STATUS_CHOICES: readonly BacklogStatus[] = [
+  "backlog",
+  "ready",
+  "in-progress",
+];
+
+/** 性質の1行。押すと小窓が開いてその場で変わる */
+function Properties({
   projectId,
   file,
   item,
-  onOpen,
+  state,
 }: {
   projectId: string;
   file: BacklogFile;
   item: BacklogItem;
-  onOpen: (id: string) => void;
+  state: ReturnType<typeof rankState>;
 }) {
   const items = file.items;
-  const deps = item.dependsOn.map((id) => items.find((i) => i.id === id)).filter((i): i is BacklogItem => !!i);
-  const after = dependents(item, items);
-  const waiting = waitingOn(item, items);
-  const actionable = isActionable(item, items);
-  // 張ると輪になる相手（これを直接・間接に待っているもの）は候補から外す
-  const downstream = new Set<string>();
-  const queue = [item.id];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    for (const d of items.filter((i) => i.dependsOn.includes(id))) {
-      if (!downstream.has(d.id)) {
-        downstream.add(d.id);
-        queue.push(d.id);
-      }
-    }
-  }
-  const candidates = items.filter((i) => i.id !== item.id && !downstream.has(i.id) && !isClosed(i));
-  const addDependency = ([id]: string[]) =>
-    id && updateItem(projectId, item.id, { dependsOn: [...item.dependsOn, id] });
-
-  // どちら向きにも無ければ、並びを描かずに1行で言う（空の箱と矢印は飾りになる）
-  if (deps.length === 0 && after.length === 0) {
-    return (
-      <section aria-labelledby="backlog-deps-title" data-testid="backlog-deps" className="flex flex-col gap-2">
-        <h4 id="backlog-deps-title" className="text-xs font-medium text-ink-2">
-          依存
-        </h4>
-        <p className="text-xs text-ink-3">待っているものも、これを待っているものもありません。</p>
-        <DependencyPicker candidates={candidates} value={[]} onChange={addDependency} />
-      </section>
-    );
-  }
-
-  return (
-    <section aria-labelledby="backlog-deps-title" data-testid="backlog-deps" className="flex flex-col gap-2">
-      <h4 id="backlog-deps-title" className="text-xs font-medium text-ink-2">
-        依存
-      </h4>
-      <div className="flex flex-col items-stretch gap-1 rounded-md bg-surface-2 p-3">
-        <p className="text-xs text-ink-3">これが待っているもの</p>
-        {deps.length === 0 ? (
-          <p className="text-xs text-ink-3">ありません</p>
-        ) : (
-          <ul className="flex flex-col gap-1.5" data-testid="backlog-deps-before">
-            {deps.map((d) => (
-              <li key={d.id} className="flex items-center gap-1">
-                <ItemChip item={d} onOpen={onOpen} />
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`「${d.title}」を待つのをやめる`}
-                  onClick={() => updateItem(projectId, item.id, { dependsOn: item.dependsOn.filter((x) => x !== d.id) })}
-                >
-                  <X />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="pr-7">
-          <DependencyPicker
-            candidates={candidates}
-            value={[]}
-            onChange={addDependency}
-          />
-        </div>
-
-        <ArrowDown aria-hidden className="mx-auto my-1 size-4 text-ink-3" />
-
-        <div
-          data-testid="backlog-deps-self"
-          className="flex flex-col gap-1 rounded-md border border-foreground bg-background px-3 py-2"
-        >
-          <span className="flex items-start gap-2">
-            <KindMark kind={item.kind} className="mt-1" />
-            <span className="line-clamp-2 min-w-0 flex-1 text-sm font-medium text-foreground">{item.title}</span>
-            <StatusText status={item.status} className="mt-0.5" />
-          </span>
-          {isClosed(item) ? null : actionable ? (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-ok">
-              <CirclePlay className="size-3" />
-              待つものは全部終わっています。着手できます
-            </span>
-          ) : waiting.length > 0 ? (
-            <span data-testid="backlog-deps-waiting" className="inline-flex items-center gap-1 text-xs text-ink-2">
-              <Hourglass className="size-3 text-warn" />
-              まだ {waiting.length} 件が終わっていません
-            </span>
-          ) : item.status === "backlog" ? (
-            <span className="text-xs text-ink-3">待つものはありません。準備ができたら「準備できた」に</span>
-          ) : null}
-        </div>
-
-        <ArrowDown aria-hidden className="mx-auto my-1 size-4 text-ink-3" />
-
-        <p className="text-xs text-ink-3">これを待っているもの</p>
-        {after.length === 0 ? (
-          <p className="text-xs text-ink-3">ありません</p>
-        ) : (
-          <ul className="flex flex-col gap-1.5 pr-7" data-testid="backlog-deps-after">
-            {after.map((d) => (
-              <li key={d.id}>
-                <ItemChip item={d} onOpen={onOpen} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </section>
+  const closed = isClosed(item);
+  const milestone = file.milestones.find((m) => m.id === item.milestone);
+  const stories = items.filter(
+    (i) => i.kind === "story" && !isClosed(i) && i.id !== item.id,
   );
-}
+  const allLabels = [...new Set(items.flatMap((i) => i.labels))].filter(
+    (l) => !item.labels.includes(l),
+  );
+  const [labelDraft, setLabelDraft] = useState("");
 
-function LabelEditor({ labels, onChange }: { labels: readonly string[]; onChange: (next: string[]) => void }) {
-  const [draft, setDraft] = useState("");
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {labels.map((l) => (
-        <LabelChip key={l} onRemove={() => onChange(labels.filter((x) => x !== l))}>
+    <div
+      className="mt-3 flex flex-wrap items-center gap-1.5"
+      data-testid="backlog-properties"
+    >
+      <PropertyMenu
+        testId="backlog-prop-status"
+        disabled={closed}
+        trigger={
+          <>
+            <RankMark state={state} small />
+            {state === "actionable" || state === "waiting"
+              ? RANK_STATE_LABEL[state]
+              : STATUS_LABEL[item.status]}
+          </>
+        }
+      >
+        {STATUS_CHOICES.map((s) => (
+          <DropdownMenuItem
+            key={s}
+            disabled={item.status === s}
+            onSelect={() => updateItem(projectId, item.id, { status: s })}
+            className="text-md"
+          >
+            {STATUS_LABEL[s]}
+          </DropdownMenuItem>
+        ))}
+      </PropertyMenu>
+
+      <PropertyMenu
+        testId="backlog-prop-priority"
+        trigger={<>優先度 {PRIORITY_LABEL[item.priority]}</>}
+        strong={item.priority === "high"}
+      >
+        {(
+          [
+            "high",
+            "normal",
+            "low",
+          ] as const satisfies readonly BacklogPriority[]
+        ).map((p) => (
+          <DropdownMenuItem
+            key={p}
+            disabled={item.priority === p}
+            onSelect={() => updateItem(projectId, item.id, { priority: p })}
+            className="text-md"
+          >
+            {PRIORITY_LABEL[p]}
+          </DropdownMenuItem>
+        ))}
+      </PropertyMenu>
+
+      {item.parent ? null : (
+        <PropertyMenu
+          testId="backlog-prop-milestone"
+          trigger={<>{milestone ? milestone.title : "マイルストーン無し"}</>}
+          quiet={!milestone}
+        >
+          {file.milestones.map((m) => (
+            <DropdownMenuItem
+              key={m.id}
+              disabled={item.milestone === m.id}
+              onSelect={() =>
+                updateItem(projectId, item.id, { milestone: m.id })
+              }
+              className="text-md"
+            >
+              {m.title}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => updateItem(projectId, item.id, { milestone: null })}
+            className="text-md"
+          >
+            マイルストーン無し
+          </DropdownMenuItem>
+        </PropertyMenu>
+      )}
+
+      {item.kind === "task" ? (
+        <ItemPicker
+          candidates={stories}
+          items={items}
+          onPick={(id) =>
+            updateItem(projectId, item.id, {
+              parent: id,
+              milestone: items.find((i) => i.id === id)?.milestone ?? null,
+            })
+          }
+          placeholder="ストーリーを探す"
+          testId="backlog-prop-parent"
+        >
+          <PropertyButton quiet={!item.parent}>
+            {item.parent ? "ストーリーを替える" : "ストーリーに入れる"}
+          </PropertyButton>
+        </ItemPicker>
+      ) : null}
+
+      {item.labels.map((l) => (
+        <LabelChip
+          key={l}
+          onRemove={() =>
+            updateItem(projectId, item.id, {
+              labels: item.labels.filter((x) => x !== l),
+            })
+          }
+        >
           {l}
         </LabelChip>
       ))}
-      <Input
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            const l = draft.trim();
-            if (l !== "" && !labels.includes(l)) onChange([...labels, l]);
-            setDraft("");
-          }
-        }}
-        placeholder="ラベルを足す"
-        aria-label="ラベルを足す"
-        className="h-6 w-28 px-1.5 text-xs"
-      />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <PropertyButton quiet testId="backlog-prop-label">
+            ラベル
+          </PropertyButton>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-52">
+          <div className="p-1">
+            <Input
+              value={labelDraft}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === "Enter" && labelDraft.trim()) {
+                  updateItem(projectId, item.id, {
+                    labels: [...item.labels, labelDraft.trim()],
+                  });
+                  setLabelDraft("");
+                }
+              }}
+              placeholder="新しいラベル"
+              aria-label="新しいラベル"
+              className="h-7 text-md"
+            />
+          </div>
+          {allLabels.map((l) => (
+            <DropdownMenuItem
+              key={l}
+              onSelect={() =>
+                updateItem(projectId, item.id, { labels: [...item.labels, l] })
+              }
+              className="text-md"
+            >
+              {l}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
+  );
+}
+
+function PropertyButton({
+  children,
+  quiet = false,
+  strong = false,
+  disabled = false,
+  testId,
+  ...rest
+}: {
+  children: ReactNode;
+  quiet?: boolean;
+  strong?: boolean;
+  disabled?: boolean;
+  testId?: string;
+} & React.ComponentProps<"button">) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      data-testid={testId}
+      {...rest}
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-sm border border-border px-2 text-md whitespace-nowrap",
+        "hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none",
+        quiet ? "border-dashed text-ink-3" : "text-ink-2",
+        strong && "font-semibold text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PropertyMenu({
+  trigger,
+  children,
+  quiet,
+  strong,
+  disabled,
+  testId,
+}: {
+  trigger: ReactNode;
+  children: ReactNode;
+  quiet?: boolean;
+  strong?: boolean;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <PropertyButton
+          quiet={quiet}
+          strong={strong}
+          disabled={disabled}
+          testId={testId}
+        >
+          {trigger}
+        </PropertyButton>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-48">
+        {children}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** 依存の相手の1行（順番の印・題・状態）。押すとその項目へ */
+function ItemLine({
+  item,
+  items,
+  n,
+  onOpen,
+  onRemove,
+  self = false,
+}: {
+  item: BacklogItem;
+  items: readonly BacklogItem[];
+  n?: number;
+  onOpen?: (id: string) => void;
+  onRemove?: () => void;
+  self?: boolean;
+}) {
+  const state = rankState(item, items);
+  const body = (
+    <>
+      <RankMark state={state} n={n} small />
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-md",
+          self ? "font-semibold text-foreground" : "text-ink-2",
+        )}
+      >
+        {item.title}
+      </span>
+      <span className="shrink-0 text-xs text-ink-3">
+        {RANK_STATE_LABEL[state]}
+      </span>
+    </>
+  );
+  return (
+    <div className="group/line flex items-center gap-1">
+      {onOpen && !self ? (
+        <button
+          type="button"
+          onClick={() => onOpen(item.id)}
+          className="flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 text-left hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="flex h-8 min-w-0 flex-1 items-center gap-2.5 px-1.5">
+          {body}
+        </div>
+      )}
+      {onRemove ? (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={onRemove}
+          aria-label={`「${item.title}」を待つのをやめる`}
+          className="opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
+        >
+          <X />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * 依存の流れ——この画面の芯。上から「これが待っているもの」→「この項目」→「これを待っているもの」を
+ * 1本の線で繋ぐ。待っているものが無ければ「すぐ始められます」と言い切る
+ */
+function DependencyFlow({
+  projectId,
+  item,
+  items,
+  onOpen,
+}: {
+  projectId: string;
+  item: BacklogItem;
+  items: readonly BacklogItem[];
+  onOpen: (id: string) => void;
+}) {
+  const before = item.dependsOn
+    .map((id) => items.find((i) => i.id === id))
+    .filter((i): i is BacklogItem => i !== undefined);
+  const after = dependents(item, items);
+  const excluded = new Set([
+    item.id,
+    ...item.dependsOn,
+    ...after.map((a) => a.id),
+  ]);
+  const candidates = items.filter((i) => !excluded.has(i.id) && !isClosed(i));
+  const open = before.filter((b) => b.status !== "done");
+
+  const picker = (
+    <ItemPicker
+      candidates={candidates}
+      items={items}
+      onPick={(id) =>
+        updateItem(projectId, item.id, { dependsOn: [...item.dependsOn, id] })
+      }
+      placeholder="待つ項目を探す"
+      testId="backlog-dep-add"
+    >
+      <Button variant="ghost" size="xs">
+        <Plus />
+        待つものを足す
+      </Button>
+    </ItemPicker>
+  );
+
+  return (
+    <section className="mt-6" aria-label="依存" data-testid="backlog-deps">
+      <SectionTitle action={picker}>依存</SectionTitle>
+      {before.length === 0 && after.length === 0 ? (
+        <p className="text-md text-ink-3" data-testid="backlog-dep-summary">
+          待つものも、これを待っているものもありません。
+        </p>
+      ) : (
+        <>
+          <div className="relative">
+            {/* 1本の線。行の印の中心（左 1.5 + 9px）を通す */}
+            <span
+              aria-hidden
+              className="absolute top-4 bottom-4 left-4 w-px bg-border"
+            />
+            <ol className="relative flex flex-col">
+              {before.map((b) => (
+                <li key={b.id} data-testid="backlog-dep-before">
+                  <ItemLine
+                    item={b}
+                    items={items}
+                    onOpen={onOpen}
+                    onRemove={() =>
+                      updateItem(projectId, item.id, {
+                        dependsOn: item.dependsOn.filter((x) => x !== b.id),
+                      })
+                    }
+                  />
+                </li>
+              ))}
+              <li
+                data-testid="backlog-dep-self"
+                className="rounded-md bg-surface-2"
+              >
+                <ItemLine item={item} items={items} self />
+              </li>
+              {after.map((a) => (
+                <li key={a.id} data-testid="backlog-dep-after">
+                  <ItemLine item={a} items={items} onOpen={onOpen} />
+                </li>
+              ))}
+            </ol>
+          </div>
+          <p
+            className="mt-1.5 pl-1.5 text-xs text-ink-3"
+            data-testid="backlog-dep-summary"
+          >
+            {isClosed(item)
+              ? after.length > 0
+                ? `${after.length} 件がこれを待っていました。`
+                : "閉じています。"
+              : open.length > 0
+                ? `${open.length} 件が終わるまで始められません。`
+                : before.length > 0
+                  ? "待っていたものは全部終わりました。"
+                  : "待つものはありません。"}
+            {!isClosed(item) && after.length > 0
+              ? `終われば ${after.length} 件が進めます。`
+              : ""}
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -595,59 +805,67 @@ function TextBlock({
   title,
   value,
   empty,
-  rows,
   markdown = false,
   onSave,
+  testId,
 }: {
   title: string;
   value: string;
   empty: string;
-  rows: number;
   markdown?: boolean;
-  onSave: (next: string) => void;
+  onSave: (v: string) => void;
+  testId: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   return (
-    <Block
-      title={title}
-      aside={
-        editing ? null : (
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => {
-              setDraft(value);
-              setEditing(true);
-            }}
-          >
-            {value ? "直す" : "書く"}
-          </Button>
-        )
-      }
-    >
+    <section className="mt-6" data-testid={testId}>
+      <SectionTitle
+        action={
+          !editing ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                setDraft(value);
+                setEditing(true);
+              }}
+            >
+              書き直す
+            </Button>
+          ) : null
+        }
+      >
+        {title}
+      </SectionTitle>
       {editing ? (
         <div className="flex flex-col gap-2">
           <Textarea
+            autoFocus
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            rows={rows}
-            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setEditing(false);
+              }
+            }}
+            rows={markdown ? 8 : 3}
+            className="text-md"
             aria-label={title}
-            className={cn("text-xs", markdown && "font-mono")}
           />
-          <div className="flex justify-end gap-1.5">
-            <Button variant="ghost" size="xs" onClick={() => setEditing(false)}>
-              取り消し
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
+              やめる
             </Button>
             <Button
-              size="xs"
+              size="sm"
               onClick={() => {
                 onSave(draft.trim());
                 setEditing(false);
               }}
             >
-              保存
+              残す
             </Button>
           </div>
         </div>
@@ -655,11 +873,60 @@ function TextBlock({
         markdown ? (
           <MarkdownBody source={value} />
         ) : (
-          <p className="text-sm text-ink-2">{value}</p>
+          <p className="max-w-prose text-md text-foreground">{value}</p>
         )
       ) : (
-        <p className="text-xs text-ink-3">{empty}</p>
+        <p className="text-md text-ink-3">{empty}</p>
       )}
-    </Block>
+    </section>
+  );
+}
+
+function DropForm({
+  onCancel,
+  onDrop,
+}: {
+  onCancel: () => void;
+  onDrop: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (reason.trim()) onDrop(reason.trim());
+      }}
+    >
+      <Input
+        autoFocus
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onCancel();
+          }
+        }}
+        placeholder="やめる理由（例：別の項目と重なっていた）"
+        aria-label="やめる理由"
+        data-testid="backlog-drop-reason"
+        className="text-md"
+      />
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          戻る
+        </Button>
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          disabled={!reason.trim()}
+          data-testid="backlog-drop-submit"
+        >
+          やめる
+        </Button>
+      </div>
+    </form>
   );
 }

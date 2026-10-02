@@ -1,427 +1,285 @@
 "use client";
 
-// Backlog の2つのフォーム：「追加」（createItem、1件）と「タスクに分ける」（splitStory、ストーリーの下に複数を
-// タスク間の依存つきで1回で）。モックなのでメモリ上の見本データに足すだけ。
-import { useState, type FormEvent, type ReactNode } from "react";
-import { Plus, X } from "lucide-react";
-import { toast } from "sonner";
+// Backlog の入力。ダイアログは使わない——足すのは一覧の中でその場に打つ（Linear の素早い作成と同じ）。
+//   - InlineComposer：1件足す（createItem）。Enter で足して、続けて次を打てる。Esc で閉じる
+//   - SplitComposer：ストーリーをタスクに分ける（splitStory）。1行に1件、「上から順に待つ」で前の行への依存を張る
+//   - ItemPicker：依存・親を選ぶ検索つきの小窓（Popover＋cmdk）
+// モックなのでメモリ上の見本データに足すだけ。
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ChoicePills } from "@/components/banto/project/choice-pills";
 import { cn } from "@/lib/utils";
 import {
   createItem,
-  isClosed,
   splitStory,
-  type BacklogFile,
   type BacklogItem,
   type BacklogKind,
-  type BacklogPriority,
-  type BacklogStatus,
 } from "@/lib/mock/backlog";
-import { KIND_LABEL, KindMark, LabelChip, PRIORITY_LABEL, STATUS_LABEL } from "./backlog-parts";
+import { KIND_LABEL, RankMark, rankState } from "./backlog-parts";
 
-const NONE = "none";
-
-export function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-xs font-medium text-ink-2">
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-/** 依存の相手を1つずつ選んで足す。選んだものは札で並べ、× で外す */
-export function DependencyPicker({
-  candidates,
-  value,
-  onChange,
-  triggerLabel = "待つものを足す",
-}: {
-  candidates: readonly BacklogItem[];
-  value: readonly string[];
-  onChange: (next: string[]) => void;
-  triggerLabel?: string;
-}) {
-  const left = candidates.filter((c) => !value.includes(c.id));
-  return (
-    <div className="flex flex-col gap-1.5">
-      {value.length > 0 ? (
-        <div className="flex flex-wrap gap-1">
-          {value.map((id) => {
-            const item = candidates.find((c) => c.id === id);
-            return (
-              <LabelChip key={id} onRemove={() => onChange(value.filter((v) => v !== id))}>
-                {item?.title ?? id}
-              </LabelChip>
-            );
-          })}
-        </div>
-      ) : null}
-      <Select value="" onValueChange={(id) => onChange([...value, id])} disabled={left.length === 0}>
-        <SelectTrigger size="sm" className="w-full text-xs" aria-label={triggerLabel}>
-          <SelectValue placeholder={triggerLabel} />
-        </SelectTrigger>
-        <SelectContent>
-          {left.map((c) => (
-            <SelectItem key={c.id} value={c.id} className="text-xs">
-              <KindMark kind={c.kind} />
-              <span className="truncate">{c.title}</span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
-
-export function AddItemDialog({
+/** 1件足す。`parent` があればそのストーリーのタスクだけ */
+export function InlineComposer({
   projectId,
-  file,
-  initialKind,
-  initialParent,
-  onClose,
+  milestone,
+  parent,
+  initialKind = "task",
+  autoFocus = true,
   onCreated,
+  onClose,
 }: {
   projectId: string;
-  file: BacklogFile;
-  initialKind: BacklogKind;
-  initialParent?: string;
+  milestone: string | null;
+  parent?: BacklogItem;
+  initialKind?: BacklogKind;
+  autoFocus?: boolean;
+  onCreated?: (item: BacklogItem) => void;
   onClose: () => void;
-  onCreated: (item: BacklogItem) => void;
 }) {
-  const [kind, setKind] = useState<BacklogKind>(initialKind);
+  const [kind, setKind] = useState<BacklogKind>(parent ? "task" : initialKind);
   const [title, setTitle] = useState("");
-  const [parent, setParent] = useState<string>(initialParent ?? NONE);
-  const [milestone, setMilestone] = useState<string>(NONE);
-  const [priority, setPriority] = useState<BacklogPriority>("normal");
-  const [status, setStatus] = useState<BacklogStatus>("backlog");
-  const [dependsOn, setDependsOn] = useState<string[]>([]);
-  const [doneWhen, setDoneWhen] = useState("");
-  const [body, setBody] = useState("");
+  const [count, setCount] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const stories = file.items.filter((i) => i.kind === "story" && !isClosed(i));
-  const hasParent = kind === "task" && parent !== NONE;
-  const ready = title.trim() !== "";
-
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!ready) return;
+  function submit() {
+    const t = title.trim();
+    if (!t) return;
     const item = createItem(projectId, {
       kind,
-      title: title.trim(),
-      status,
-      parent: hasParent ? parent : null,
-      milestone: milestone === NONE ? null : milestone,
-      priority,
-      dependsOn,
-      doneWhen: doneWhen.trim(),
-      body: body.trim(),
+      title: t,
+      status: parent ? "ready" : "backlog",
+      parent: parent?.id ?? null,
+      milestone: parent ? parent.milestone : milestone,
     });
-    toast(`${KIND_LABEL[kind]}「${item.title}」を足しました`);
-    onCreated(item);
+    setTitle("");
+    setCount((c) => c + 1);
+    onCreated?.(item);
+    inputRef.current?.focus();
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    }
   }
 
   return (
-    <Dialog open onOpenChange={(open) => (open ? null : onClose())}>
-      <DialogContent className="sm:max-w-lg" data-testid="backlog-add-dialog">
-        <form onSubmit={submit} className="flex min-w-0 flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>項目を足す</DialogTitle>
-            <DialogDescription>{file.path} の末尾（いちばん低い優先）に足します。並び順はあとで動かせます。</DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-4">
-            <Field label="種類">
-              <ChoicePills
-                label="種類"
-                testId="backlog-add-kind"
-                value={kind}
-                onChange={setKind}
-                choices={(["story", "task", "bug"] as const).map((k) => ({
-                  value: k,
-                  label: (
-                    <>
-                      <KindMark kind={k} />
-                      {KIND_LABEL[k]}
-                    </>
-                  ),
-                }))}
-              />
-            </Field>
-            <Field label="題" htmlFor="backlog-add-title">
-              <Input
-                id="backlog-add-title"
-                data-testid="backlog-add-title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                autoFocus
-                placeholder={kind === "bug" ? "何が起きるか" : "何をするか"}
-              />
-            </Field>
-            {kind === "task" ? (
-              <Field label="どのストーリーの下か">
-                <Select value={parent} onValueChange={setParent}>
-                  <SelectTrigger className="w-full" aria-label="どのストーリーの下か">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NONE}>ストーリーに属さない</SelectItem>
-                    {stories.map((s) => (
-                      <SelectItem key={s.id} value={s.id}>
-                        {s.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            ) : null}
-            <div className="grid gap-4 sm:grid-cols-2">
-              {hasParent || file.milestones.length === 0 ? null : (
-                <Field label="マイルストーン">
-                  <Select value={milestone} onValueChange={setMilestone}>
-                    <SelectTrigger className="w-full" aria-label="マイルストーン">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>マイルストーン無し</SelectItem>
-                      {file.milestones.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              )}
-              <Field label="状態">
-                <ChoicePills
-                  label="状態"
-                  value={status}
-                  onChange={setStatus}
-                  choices={(["backlog", "ready"] as const).map((s) => ({ value: s, label: STATUS_LABEL[s] }))}
-                />
-              </Field>
-              <Field label="優先度">
-                <ChoicePills
-                  label="優先度"
-                  value={priority}
-                  onChange={setPriority}
-                  choices={(["high", "normal", "low"] as const).map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))}
-                />
-              </Field>
-            </div>
-            <Field label="これが終わるまで始められないもの">
-              <DependencyPicker
-                candidates={file.items.filter((i) => !isClosed(i))}
-                value={dependsOn}
-                onChange={setDependsOn}
-              />
-            </Field>
-            <Field label="完了条件" htmlFor="backlog-add-done-when">
-              <Textarea
-                id="backlog-add-done-when"
-                value={doneWhen}
-                onChange={(e) => setDoneWhen(e.target.value)}
-                rows={2}
-                placeholder="何を測れば終わったと言えるか"
-              />
-            </Field>
-            <Field label="本文（Markdown）" htmlFor="backlog-add-body">
-              <Textarea
-                id="backlog-add-body"
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                rows={3}
-                placeholder="なぜ・経緯・確かめ方など"
-              />
-            </Field>
+    <div
+      data-testid="backlog-composer"
+      className="my-1 flex flex-col gap-2 rounded-md border border-border bg-card px-2.5 py-2 shadow-1"
+    >
+      <div className="flex items-center gap-2">
+        <Plus className="size-3.5 shrink-0 text-ink-3" aria-hidden />
+        <input
+          ref={inputRef}
+          autoFocus={autoFocus}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={
+            parent
+              ? `「${parent.title}」のタスクの題`
+              : `${KIND_LABEL[kind]}の題`
+          }
+          aria-label="足す項目の題"
+          data-testid="backlog-composer-title"
+          className="min-w-0 flex-1 bg-transparent text-md text-foreground outline-none placeholder:text-ink-3"
+        />
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 pl-5.5">
+        {parent ? (
+          <span className="text-xs text-ink-3">タスクとして足します</span>
+        ) : (
+          <div role="radiogroup" aria-label="種類" className="flex gap-1">
+            {(["task", "bug", "story"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={kind === k}
+                onClick={() => {
+                  setKind(k);
+                  inputRef.current?.focus();
+                }}
+                data-testid={`backlog-composer-kind-${k}`}
+                className={cn(
+                  "rounded-sm px-1.5 text-xs focus-visible:outline-2 focus-visible:outline-ring",
+                  kind === k
+                    ? "bg-surface-3 text-foreground"
+                    : "text-ink-3 hover:text-foreground",
+                )}
+              >
+                {KIND_LABEL[k]}
+              </button>
+            ))}
           </div>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
-              取り消し
-            </Button>
-            <Button type="submit" disabled={!ready} data-testid="backlog-add-submit">
-              足す
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        )}
+        <span className="text-xs text-ink-3">
+          {count > 0 ? `${count} 件足しました。` : null}Enter で足す、Esc
+          で閉じる
+        </span>
+      </div>
+    </div>
   );
 }
 
-interface Draft {
-  key: number;
-  title: string;
-  doneWhen: string;
-  waitsFor: number[];
-}
-
-/**
- * ストーリーをタスクに分ける（splitStory）。行ごとに題・完了条件と、同じ回に作る前の行のうち
- * どれを待つかを選ぶ——一番よく使う「順に積む」は、行を足すと前の行を待つ形で入れておく
- */
-export function SplitStoryDialog({
+/** ストーリーをタスクに分ける。1行に1件 */
+export function SplitComposer({
   projectId,
   story,
-  onClose,
+  onDone,
+  onCancel,
 }: {
   projectId: string;
   story: BacklogItem;
-  onClose: () => void;
+  onDone: (created: BacklogItem[]) => void;
+  onCancel: () => void;
 }) {
-  const [drafts, setDrafts] = useState<Draft[]>([
-    { key: 0, title: "", doneWhen: "", waitsFor: [] },
-    { key: 1, title: "", doneWhen: "", waitsFor: [0] },
-  ]);
-  const filled = drafts.filter((d) => d.title.trim() !== "");
+  const [text, setText] = useState("");
+  const [chain, setChain] = useState(true);
+  const titles = text
+    .split("\n")
+    .map((l) => l.replace(/^[-*・]\s*/, "").trim())
+    .filter((l) => l.length > 0);
 
-  function patch(index: number, next: Partial<Draft>) {
-    setDrafts((ds) => ds.map((d, i) => (i === index ? { ...d, ...next } : d)));
-  }
-
-  function remove(index: number) {
-    setDrafts((ds) =>
-      ds
-        .filter((_, i) => i !== index)
-        .map((d) => ({
-          ...d,
-          waitsFor: d.waitsFor.filter((w) => w !== index).map((w) => (w > index ? w - 1 : w)),
-        })),
-    );
-  }
-
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    if (filled.length === 0) return;
-    // 題が空の行は飛ばす——飛ばした行を待っていた分は、詰めた番号へ付け替える
-    const kept = drafts.map((d, i) => ({ d, i })).filter(({ d }) => d.title.trim() !== "");
-    const renumber = new Map(kept.map(({ i }, n) => [i, n]));
+  function submit() {
+    if (titles.length === 0) return;
     const created = splitStory(
       projectId,
       story.id,
-      kept.map(({ d }) => ({
-        title: d.title.trim(),
-        doneWhen: d.doneWhen.trim(),
-        waitsFor: d.waitsFor.map((w) => renumber.get(w)).filter((w): w is number => w !== undefined),
+      titles.map((title, i) => ({
+        title,
+        waitsFor: chain && i > 0 ? [i - 1] : [],
       })),
     );
-    toast(`「${story.title}」の下に ${created.length} 件のタスクを作りました`);
-    onClose();
+    onDone(created);
   }
 
   return (
-    <Dialog open onOpenChange={(open) => (open ? null : onClose())}>
-      <DialogContent className="sm:max-w-2xl" data-testid="backlog-split-dialog">
-        <form onSubmit={submit} className="flex min-w-0 flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>タスクに分ける</DialogTitle>
-            <DialogDescription>
-              「{story.title}」の下に、まとめてタスクを作ります。作ったタスクは「準備できた」で入ります。
-            </DialogDescription>
-          </DialogHeader>
-          <ol className="flex flex-col gap-3">
-            {drafts.map((d, i) => (
-              <li
-                key={d.key}
-                data-testid="backlog-split-row"
-                className="flex flex-col gap-2 rounded-md border border-border p-3"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="w-5 shrink-0 text-xs text-ink-3 tabular-nums">{i + 1}</span>
-                  <Input
-                    value={d.title}
-                    onChange={(e) => patch(i, { title: e.target.value })}
-                    placeholder="タスクの題"
-                    aria-label={`${i + 1} 番目の題`}
-                    autoFocus={i === 0}
-                    className="h-8 text-sm"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => remove(i)}
-                    disabled={drafts.length === 1}
-                    aria-label={`${i + 1} 番目を外す`}
-                  >
-                    <X />
-                  </Button>
-                </div>
-                <div className="flex flex-col gap-2 pl-7">
-                  <Input
-                    value={d.doneWhen}
-                    onChange={(e) => patch(i, { doneWhen: e.target.value })}
-                    placeholder="完了条件（なくてもよい）"
-                    aria-label={`${i + 1} 番目の完了条件`}
-                    className="h-8 text-xs"
-                  />
-                  {i > 0 ? (
-                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-                      <span>待つもの</span>
-                      {drafts.slice(0, i).map((_, j) => {
-                        const on = d.waitsFor.includes(j);
-                        return (
-                          <button
-                            key={j}
-                            type="button"
-                            aria-pressed={on}
-                            onClick={() =>
-                              patch(i, { waitsFor: on ? d.waitsFor.filter((w) => w !== j) : [...d.waitsFor, j] })
-                            }
-                            className={cn(
-                              "rounded-sm border px-1.5 tabular-nums focus-visible:outline-2 focus-visible:outline-ring",
-                              on ? "border-foreground text-foreground" : "border-border text-ink-3 hover:text-ink-2",
-                            )}
-                          >
-                            {j + 1} 番目
-                          </button>
-                        );
-                      })}
-                    </div>
+    <div
+      data-testid="backlog-split"
+      className="flex flex-col gap-2.5 rounded-md border border-border bg-card p-3"
+    >
+      <Textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onCancel();
+          }
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
+        }}
+        rows={4}
+        placeholder={"1行に1件、タスクの題を書く\n例：設定に場所の欄を足す"}
+        aria-label="分けるタスク（1行に1件）"
+        data-testid="backlog-split-input"
+        className="text-md"
+      />
+      <label className="flex items-center gap-2 text-xs text-ink-2">
+        <Switch
+          size="sm"
+          checked={chain}
+          onCheckedChange={setChain}
+          data-testid="backlog-split-chain"
+        />
+        上から順に待つ（2行目は1行目が終わるまで始めない）
+      </label>
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          やめる
+        </Button>
+        <Button
+          size="sm"
+          onClick={submit}
+          disabled={titles.length === 0}
+          data-testid="backlog-split-submit"
+        >
+          {titles.length > 0
+            ? `${titles.length} 件のタスクに分ける`
+            : "タスクに分ける"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** 項目を1つ選ぶ検索つきの小窓。依存の相手・親のストーリーに使う */
+export function ItemPicker({
+  candidates,
+  items,
+  onPick,
+  placeholder,
+  emptyText = "合う項目がありません",
+  children,
+  testId,
+}: {
+  candidates: readonly BacklogItem[];
+  items: readonly BacklogItem[];
+  onPick: (id: string) => void;
+  placeholder: string;
+  emptyText?: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild data-testid={testId}>
+        {children}
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-0">
+        <Command>
+          <CommandInput placeholder={placeholder} className="text-md" />
+          <CommandList>
+            <CommandEmpty className="py-4 text-center text-xs text-ink-3">
+              {emptyText}
+            </CommandEmpty>
+            <CommandGroup>
+              {candidates.map((c) => (
+                <CommandItem
+                  key={c.id}
+                  value={`${c.title} ${c.id}`}
+                  onSelect={() => {
+                    onPick(c.id);
+                    setOpen(false);
+                  }}
+                  className="gap-2 text-md"
+                >
+                  <RankMark state={rankState(c, items)} small />
+                  <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                  {c.kind !== "task" ? (
+                    <span className="text-xs text-ink-3">
+                      {KIND_LABEL[c.kind]}
+                    </span>
                   ) : null}
-                </div>
-              </li>
-            ))}
-          </ol>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="self-start"
-            onClick={() =>
-              setDrafts((ds) => [
-                ...ds,
-                { key: (ds.at(-1)?.key ?? 0) + 1, title: "", doneWhen: "", waitsFor: ds.length > 0 ? [ds.length - 1] : [] },
-              ])
-            }
-          >
-            <Plus />
-            行を足す
-          </Button>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
-              取り消し
-            </Button>
-            <Button type="submit" disabled={filled.length === 0} data-testid="backlog-split-submit">
-              {filled.length > 0 ? `${filled.length} 件のタスクを作る` : "タスクを作る"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
