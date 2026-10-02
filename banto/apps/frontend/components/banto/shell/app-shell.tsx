@@ -2,7 +2,7 @@
 
 // prototype の `.shell`（.rail + .rooms）に対応する外枠。
 // ≥md: ProjectRail（サイドバー。展開 16rem ⇄ 畳んで 58px）+ PanelStack
-// <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → MobileNavDrawer）
+// <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → 外枠に1つの Drawer、MobileNavProvider）
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { useParams, usePathname, useSearchParams } from "next/navigation";
 import { isSettingsOpen } from "@/lib/settings-link";
@@ -15,6 +15,7 @@ import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
+import { MobileNavProvider } from "./mobile-nav-drawer";
 import { RequestedNewProjectDialog } from "@/components/banto/project/requested-new-project-dialog";
 import {
   getServerSidebarPreference,
@@ -93,6 +94,9 @@ function AppShellInner({ children }: { children: ReactNode }) {
       // （キーボードで縮むのは上の `interactiveWidget: "resizes-content"` があってこそ）
       className="h-dvh flex-col overflow-hidden md:flex-row"
     >
+      {/* モバイルのナビ（≡ で開く Drawer）は外枠に1つだけ——Project を移っても閉じずに残る（2026-10-02） */}
+      {/* `/settings` を直に開いたときは Project を URL の `project` で持つ（settings-content.tsx と同じ読み方） */}
+      <MobileNavProvider projectId={projectId ?? (settingsOpen ? searchParams.get("project") : null)}>
       <ProjectRail
         activeProjectId={projectId}
         activeForkThreadId={stack.forkThreadId}
@@ -105,7 +109,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
         onOpenArchive={() => stack.open({ overlay: "archive" })}
       />
       {/* モバイルは専用の上部バーを持たない（決定・2026-09-09）——ナビは各パネルの
-          ヘッダ左端の ≡（MobileNavDrawer）に寄せ、常時2段だったヘッダを1段にした */}
+          ヘッダ左端の ≡（MobileNavButton）に寄せ、常時2段だったヘッダを1段にした */}
       {/* `isolate`：設定の面（z-30）の重なり順をこの枠の中だけに閉じる——閉じないと、サイドバーの境界（線を
           またいで右へ 4px はみ出している）の右半分にかぶさり、設定を開いたままだと幅をつかめなかった（E2E・2026-09-30） */}
       <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -148,6 +152,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
           onReopenFork={(threadId) => stack.open({ fork: threadId, overlay: null })}
         />
       ) : null}
+      </MobileNavProvider>
     </SidebarProvider>
   );
 }

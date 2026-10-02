@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { FolderPlus, PlugZap } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
-import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
+import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { getActiveProjects, hydrateRealProjects } from "@/lib/mock/projects";
 import { refreshRealProjectThreads } from "@/lib/mock/threads";
@@ -76,7 +76,7 @@ export function HomeContent() {
           ——Project が0件でも設定・受信箱へ行けるようにする（決定・2026-09-09） */}
       {isMobile ? (
         <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
-          <MobileNavDrawer projectId={null} />
+          <MobileNavButton />
           <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">banto</p>
         </header>
       ) : null}

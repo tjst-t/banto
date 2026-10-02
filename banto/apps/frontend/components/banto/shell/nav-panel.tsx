@@ -105,8 +105,10 @@ function ProjectTreeItem({
   activeForkThreadId,
   expanded,
   onToggleExpanded,
+  onExpand,
   onOpenArchive,
   onNavigate,
+  keepOpenOnProjectSwitch,
   onMoveUp,
   onMoveDown,
 }: {
@@ -115,8 +117,12 @@ function ProjectTreeItem({
   activeForkThreadId: string | null;
   expanded: boolean;
   onToggleExpanded: () => void;
+  /** 目次を開く（人が畳んでいても開く）。別 Project へ移って Drawer を残すとき */
+  onExpand: () => void;
   onOpenArchive: () => void;
   onNavigate?: () => void;
+  /** NavPanel の同名の引数を見よ */
+  keepOpenOnProjectSwitch?: boolean;
   /** 並びの端なら undefined（メニューの項目が押せなくなる） */
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -189,7 +195,22 @@ function ProjectTreeItem({
                   )}
                   data-roving-item
                   title={project.basePath}
-                  onClick={onNavigate}
+                  onClick={(e) => {
+                    // **別 Project へ移っても、Fork があれば Drawer を閉じない**（2026-10-02、ユーザー要望）
+                    // ——下の画面はその Project の Base Thread に替わり、Drawer はその Project の目次を
+                    // 開いて待つ。Fork へはもう1回押すだけ、Base でよければ閉じるだけ。Fork が無ければ
+                    // 選ぶものが無いので、今までどおり閉じる
+                    if (keepOpenOnProjectSwitch && !isCurrent && forks.length > 0) {
+                      onExpand();
+                      // 開いた目次が Drawer の下にはみ出していたら見える所まで送る（描き終わってから）
+                      const row = e.currentTarget.closest("li");
+                      requestAnimationFrame(() =>
+                        requestAnimationFrame(() => row?.scrollIntoView({ block: "nearest" })),
+                      );
+                      return;
+                    }
+                    onNavigate?.();
+                  }}
                 >
                   <ProjectInitial project={project} active={isCurrent} />
                   <span data-testid="sidebar-project-name" className="truncate">
@@ -310,6 +331,7 @@ export function NavPanel({
   onOpenArchive,
   onNewProject,
   onNavigate,
+  keepOpenOnProjectSwitch,
   title,
   headerAction,
 }: {
@@ -321,6 +343,11 @@ export function NavPanel({
   onNewProject: () => void;
   /** 行き先を選んだ（＝この面の役目が終わった）。モバイルの Drawer はこれで閉じる */
   onNavigate?: () => void;
+  /**
+   * 別 Project を選んだとき、その Project に Fork があれば `onNavigate` を呼ばずに目次を開いて残る
+   * （モバイルの Drawer。2026-10-02、ユーザー要望——別 Project の Fork へ1回で行けるように）
+   */
+  keepOpenOnProjectSwitch?: boolean;
   /** 見出し。既定は製品名 */
   title?: ReactNode;
   /** 見出しの右——サイドバーを畳む／Drawer を閉じる */
@@ -430,8 +457,10 @@ export function NavPanel({
                       [project.id]: !(prev[project.id] ?? project.id === activeProjectId),
                     }))
                   }
+                  onExpand={() => setExpandedOverride((prev) => ({ ...prev, [project.id]: true }))}
                   onOpenArchive={onOpenArchive}
                   onNavigate={onNavigate}
+                  keepOpenOnProjectSwitch={keepOpenOnProjectSwitch}
                 />
               ))}
               </SortableList>

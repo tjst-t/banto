@@ -20,7 +20,7 @@ import {
   hasLiveRealRun,
   rebuildThreadFromRecord,
 } from "@/lib/backend/adapter";
-import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
+import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { useJudgmentCount } from "@/components/banto/shell/nav-panel";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
@@ -90,6 +90,7 @@ function PanelHeader({
 // Fork Thread・Canvas 用。閉じる操作のアイコンを左端に置く
 // （Escape での同じ操作は panel-stack.tsx に1箇所だけ持つ——前面の層だけを閉じる）
 function ClosablePanelHeader({
+  leading,
   icon: Icon,
   onClose,
   closeLabel,
@@ -98,6 +99,8 @@ function ClosablePanelHeader({
   onRename,
   trailing,
 }: {
+  /** 閉じるボタンのさらに左（モバイルのナビの入口 ≡）。Base の面と同じ位置に揃える */
+  leading?: ReactNode;
   icon: IconComponent;
   onClose: () => void;
   closeLabel: string;
@@ -111,6 +114,7 @@ function ClosablePanelHeader({
 }) {
   return (
     <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 md:h-11">
+      {leading}
       <button
         type="button"
         onClick={onClose}
@@ -361,7 +365,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         <div className="flex h-full min-h-0 flex-col">
           <PanelHeader
             // モバイルはここが唯一のナビの入口（上部バーを廃した分、段が1つ減る）
-            leading={isMobile ? <MobileNavDrawer projectId={projectId} /> : undefined}
+            leading={isMobile ? <MobileNavButton /> : undefined}
             // **題は Project 名だけ**（改訂・2026-09-11、ユーザー要望）。
             // 「Base Thread —」の接頭辞はやめた——その面が何かは、いま開いて
             // いるもので分かる（Fork なら Fork の名前とアイコンが出る）
@@ -407,6 +411,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         return (
           <div className="flex h-full min-h-0 flex-col">
             <ClosablePanelHeader
+              // **Fork からも1回でナビを開ける**（2026-10-02、ユーザー要望）。以前は ← で Base に戻ってから
+              // ≡ を押すしかなく、別の Fork へ行くのに3手かかった。≡ はどの面でも左端の同じ位置に置く
+              leading={isMobile ? <MobileNavButton /> : undefined}
               icon={ArrowLeft}
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
@@ -462,6 +469,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         return (
         <div className="flex h-full min-h-0 flex-col">
           <ClosablePanelHeader
+            // モバイルの Canvas も画面全体を覆うので、ここにもナビの入口を置く（入ったら戻れない面を作らない）
+            leading={isMobile ? <MobileNavButton /> : undefined}
             icon={X}
             onClose={() => stack.close("canvas")}
             closeLabel="Canvas を閉じる"

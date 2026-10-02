@@ -2,7 +2,7 @@
 
 import { Bell, Box, Globe, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
+import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
 import { GlobalMemoryPanel } from "@/components/banto/settings/global-memory-panel";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
@@ -343,7 +343,7 @@ export function SettingsContent() {
           ——設定に入ったら Project へ戻れない、をなくす */}
       {isMobile ? (
         <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
-          <MobileNavDrawer projectId={projectId} />
+          <MobileNavButton />
           <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">設定</p>
         </header>
       ) : null}
