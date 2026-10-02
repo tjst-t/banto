@@ -15,7 +15,7 @@ import { httpGithub, type GithubEndpoints } from "./github.js";
 import { LedgerStore } from "./ledger.js";
 import { registerGithubHost } from "./remote.js";
 import { credentialParent } from "./credential-server.js";
-import { MemoryVault, RecordingNotices, startFakeGithub, type FakeGithub } from "./test-fakes.js";
+import { makeTlsCert, MemoryVault, RecordingNotices, startFakeGithub, type FakeGithub } from "./test-fakes.js";
 
 const GH: GithubEndpoints = { web: "https://github.com", api: "https://api.github.com", ssh: "github.com" };
 
@@ -37,6 +37,8 @@ test("clone の元を読む——GitHub は owner/name に、外は URL のま�
   assert.match(reason("~/code/x"), /手元のフォルダ/);
   assert.match(reason("file:///srv/x.git"), /file:\/\/ の URL は受けません/);
   assert.match(reason("git://github.com/a/b"), /暗号化されない/);
+  // http は行き先を替えた GitHub（試験の偽物）だけ
+  assert.match(reason("http://gitlab.example.com/a/b.git"), /http:\/\/ は暗号化されないので受けません/);
   assert.match(reason("ext::sh -c touch% /tmp/pwned"), /URL として読めません/);
   assert.match(reason("-uhttps://evil/x"), /URL として読めません/);
   assert.match(reason("https://user:ghp_secret@github.com/a/b"), /資格情報を書かないで/);
@@ -65,7 +67,7 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
   const store = new LedgerStore(join(home, ".data"));
   const github = httpGithub(gh.endpoints);
   const accounts = new GithubAccounts({ store, vault, github, notices: new RecordingNotices() });
-  const cloner = new Cloner({ store, accounts, vault, github, endpoints: gh.endpoints, home });
+  const cloner = new Cloner({ store, accounts, vault, github, endpoints: gh.endpoints, home, dataDir: join(home, ".data") });
   // git が読む人の設定は使い捨ての home に（この機械の ~/.gitconfig を試験に混ぜない）
   const saved = { HOME: GIT_ENV.HOME, XDG: GIT_ENV.XDG_CONFIG_HOME, PATH: GIT_ENV.PATH, idle: CLONE_TIMEOUTS.idle };
   GIT_ENV.HOME = join(home, "user");
@@ -232,11 +234,21 @@ test("置く場所がぶつかれば <名前>-2 を先に入れ、人が変え�
   });
 });
 
-test("GitHub の外はこのマシンの git の設定で clone する（GitHub のアカウントは使わない）", async () => {
+test("GitHub の外はこのマシンの git の設定で clone する——人の CA・credential helper が実際に使われる（GitHub のアカウントは使わない）", async () => {
   await withWorld(async (w) => {
-    const other = await startFakeGithub();
+    const tls = makeTlsCert(w.home);
+    const other = await startFakeGithub({ tls });
     try {
       other.addRepo("team", "notes");
+      other.users.set("tok-team", "teammate");
+      other.addRepo("team", "private-notes", { private: true, readers: ["teammate"] });
+      // この機械の git の設定：自己署名の CA を信じ、この相手の資格情報を返す helper（使われたら印を残す）
+      const mark = join(w.home, "machine-helper-used");
+      const helper = join(w.home, "machine-helper.sh");
+      writeFileSync(helper, `#!/bin/sh\n[ "$1" = get ] || exit 0\ntouch ${mark}\necho username=teammate\necho password=tok-team\n`);
+      chmodSync(helper, 0o755);
+      writeFileSync(join(GIT_ENV.HOME!, ".gitconfig"), `[http]\n\tsslCAInfo = ${tls.certPath}\n[credential]\n\thelper = ${helper}\n`);
+
       const url = `${other.endpoints.web}/team/notes.git`;
       const look = await w.cloner.inspect({ source: url });
       assert.equal(look.source?.kind, "elsewhere");
@@ -245,9 +257,150 @@ test("GitHub の外はこのマシンの git の設定で clone する（GitHub 
       assert.equal(done.state, "done", JSON.stringify(done.error));
       assert.deepEqual(await w.store.entries(), [{ path: join(w.repoHome, "notes"), elsewhere: url }]);
       assert.equal((await w.cloner.inspect({ source: url.replace(/\.git$/, "") })).have?.name, "notes");
+
+      const priv = await finished(w, await w.cloner.start({ source: `${other.endpoints.web}/team/private-notes.git` }, "c"));
+      assert.equal(priv.state, "done", JSON.stringify(priv.error));
+      assert.ok(existsSync(mark), "この機械の credential helper が使われていない");
     } finally {
       await other.close();
     }
+  });
+});
+
+test("GitHub へは人の git の設定を読まない——相手の .gitattributes が人の filter（git-lfs 等）を起こさず、人の insteadOf で書き換わらない", async () => {
+  await withWorld(async (w) => {
+    const mark = join(w.home, "smudge-ran");
+    const smudge = join(w.home, "smudge.sh");
+    writeFileSync(smudge, `#!/bin/sh\ntouch ${mark}\ncat\n`);
+    chmodSync(smudge, 0o755);
+    w.gh.addRepo("octo", "lfs", { files: { ".gitattributes": "README.md filter=lfs\n" } });
+    writeFileSync(
+      join(GIT_ENV.HOME!, ".gitconfig"),
+      `[filter "lfs"]\n\tsmudge = ${smudge}\n\trequired = true\n[url "ssh://nowhere.invalid/"]\n\tinsteadOf = ${w.gh.endpoints.web}/\n`,
+    );
+    const done = await finished(w, await w.cloner.start({ source: "octo/lfs" }, "c"));
+    assert.equal(done.state, "done", `人の insteadOf で書き換わった？ ${JSON.stringify(done.error)}`);
+    assert.ok(!existsSync(mark), "相手の .gitattributes から人の filter が走った");
+    // 対照：人の設定を読む git なら、どちらも効く（書き換わって失敗する）
+    const plain = await new Promise<string>((resolve) =>
+      execFile(
+        "git",
+        ["clone", "-q", `${w.gh.endpoints.web}/octo/lfs.git`, join(w.home, "plain-lfs")],
+        { env: { ...process.env, HOME: GIT_ENV.HOME, XDG_CONFIG_HOME: GIT_ENV.XDG_CONFIG_HOME, GIT_TERMINAL_PROMPT: "0" } },
+        (err, _o, se) => resolve(err ? String(se) : "ok"),
+      ),
+    );
+    assert.match(plain, /nowhere\.invalid/, `対照で insteadOf が効かない——罠の作りが違う：${plain}`);
+  });
+});
+
+test("同じ場所への同時の clone は2本目を断る——1本目のフォルダを消さない", async () => {
+  await withWorld(async (w) => {
+    w.gh.addRepo("octo", "twin");
+    w.gh.gitDelayMs = 300;
+    const results = await Promise.allSettled([w.cloner.start({ source: "octo/twin" }, "c"), w.cloner.start({ source: "octo/twin" }, "c")]);
+    w.gh.gitDelayMs = 0;
+    const ok = results.filter((r): r is PromiseFulfilledResult<CloneJobView> => r.status === "fulfilled");
+    const refused = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    assert.equal(ok.length, 1, "同じ場所に2本の clone を始めた");
+    assert.match(String(refused[0]!.reason), /いま別の clone が置こうとしています/);
+    assert.equal((await finished(w, ok[0]!.value)).state, "done");
+    assert.ok(existsSync(join(w.repoHome, "twin", ".git")), "1本目のフォルダが消えた");
+  });
+});
+
+test("判断のあと・clone の直前に誰かがその場所にフォルダを作ったら、何も消さずに断る（自分が作ったフォルダだけを消す）", async () => {
+  await withWorld(async (w) => {
+    w.gh.addRepo("octo", "raced");
+    const job = await w.cloner.start({ source: "octo/raced" }, "c");
+    // 仕事はまだ置き場のフォルダを作っていない（ファイルの操作の返事を待っている）——その間に人が作った
+    mkdirSync(join(w.repoHome, "raced"), { recursive: true });
+    writeFileSync(join(w.repoHome, "raced", "mine.txt"), "人のファイル");
+    const done = await finished(w, job);
+    assert.equal(done.state, "failed");
+    assert.match(done.error!.message, /もう何かがあります（上書きしません）/);
+    assert.equal(readFileSync(join(w.repoHome, "raced", "mine.txt"), "utf8"), "人のファイル", "人が作ったフォルダを消した");
+  });
+});
+
+test("台帳の場所に違うもの（リポジトリでない・読めない）があれば、clone し直さず・もう手元にあるとも言わない。その場所には触らない", async () => {
+  await withWorld(async (w) => {
+    w.gh.addRepo("octo", "gone");
+    w.gh.addRepo("octo", "locked");
+    const plain = join(w.home, "elsewhere", "gone");
+    mkdirSync(plain, { recursive: true });
+    writeFileSync(join(plain, "keep.txt"), "人のファイル");
+    const locked = join(w.home, "elsewhere", "locked");
+    mkdirSync(join(locked, ".git"), { recursive: true });
+    await w.store.update((e) => ({
+      entries: [...e, { path: plain, github: { owner: "octo", name: "gone" } }, { path: locked, github: { owner: "octo", name: "locked" } }],
+      result: undefined,
+    }));
+    const notRepo = await w.cloner.inspect({ source: "octo/gone" });
+    assert.equal(notRepo.have, undefined, "リポジトリでないのに「もう手元にあります」");
+    assert.equal(notRepo.reclone, undefined, "違うものがある場所に clone し直そうとした");
+    assert.match(notRepo.misplaced!.problem, /git のリポジトリでないフォルダがあります/);
+    assert.equal(notRepo.target?.displayPath, "~/banto/gone");
+
+    chmodSync(locked, 0o000);
+    try {
+      const unreadable = await w.cloner.inspect({ source: "octo/locked" });
+      assert.equal(unreadable.reclone, undefined, "読めない場所を「無い」と見て clone し直そうとした");
+      assert.match(unreadable.misplaced!.problem, /読めません/);
+      // 別の名前（置き場の下）に clone する——台帳の場所には触らない
+      const done = await finished(w, await w.cloner.start({ source: "octo/locked" }, "c"));
+      assert.equal(done.state, "done", JSON.stringify(done.error));
+      assert.equal(done.displayPath, "~/banto/locked");
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+    assert.ok(existsSync(join(locked, ".git")));
+    assert.equal(readFileSync(join(plain, "keep.txt"), "utf8"), "人のファイル");
+  });
+});
+
+test("リダイレクトの先の別の相手にはトークンを渡さない。失敗・時間切れでも資格情報の窓口は閉じる", async () => {
+  await withWorld(async (w) => {
+    const token = "ghp_redirect_token_1";
+    await addPatAccount(w, "alice", token);
+    const other = await startFakeGithub();
+    try {
+      other.users.set(token, "alice");
+      other.addRepo("alice", "moved", { private: true });
+      w.gh.addRepo("alice", "moved", { private: true, redirectTo: other.endpoints.web });
+      const before = new Set(readdirSync(credentialParent()));
+      const redirected = await finished(w, await w.cloner.start({ source: "alice/moved" }, "c"));
+      assert.equal(redirected.state, "failed");
+      assert.ok(other.gitRequests.length > 0, "リダイレクトが起きていない——試験の作りが違う");
+      assert.ok(other.gitRequests.every((r) => !r.authorization), "リダイレクトの先の相手に資格情報を渡した");
+
+      w.gh.addRepo("alice", "slow", { private: true });
+      w.gh.gitDelayMs = 3000;
+      CLONE_TIMEOUTS.idle = 300;
+      const timedOut = await finished(w, await w.cloner.start({ source: "alice/slow" }, "c"));
+      assert.equal(timedOut.error?.hint, "timeout");
+      assert.deepEqual(readdirSync(credentialParent()).filter((d) => d.startsWith("banto-git-cred-") && !before.has(d)), [], "失敗・時間切れのあとに窓口が残っている");
+    } finally {
+      w.gh.gitDelayMs = 0;
+      await other.close();
+    }
+  });
+});
+
+test("失敗の分類は git 自身の行だけで決める（相手の remote: の文言で偽れない）。改行の来ない出力でも限りなく伸びない", async () => {
+  await withWorld(async (w) => {
+    w.gh.addRepo("octo", "fake");
+    const bin = join(w.home, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\necho "remote: Repository not found." >&2\nhead -c 200000 /dev/zero | tr '\\\\0' x >&2\necho >&2\necho "fatal: unable to access 'x': Could not resolve host: x" >&2\nexit 128\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    GIT_ENV.PATH = `${bin}:${GIT_ENV.PATH ?? ""}`;
+    const failed = await finished(w, await w.cloner.start({ source: "octo/fake" }, "c"));
+    assert.equal(failed.error?.hint, "network", "相手の「Repository not found」で分類が変わった");
+    assert.ok(failed.error!.message.length < 50_000, `失敗の文言が伸びすぎている（${failed.error!.message.length} 字）`);
   });
 });
 
@@ -325,7 +478,17 @@ test("SSH 鍵を選んだアカウントは、Vault の ssh-agent の窓口だ�
     const args = readFileSync(record, "utf8");
     assert.match(args, new RegExp(`IdentityAgent=${w.vault.agentSocket.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`));
     assert.match(args, /BatchMode=yes/);
+    assert.match(args, /-F \/dev\/null/, "人の ~/.ssh/config を読んでいる");
+    assert.match(args, /StrictHostKeyChecking=yes/, "初めての相手を覚える（accept-new）のまま");
+    assert.match(args, /GlobalKnownHostsFile=\/dev\/null/);
+    const knownHosts = args.match(/UserKnownHostsFile=(\S+)/)![1]!;
+    assert.match(readFileSync(knownHosts, "utf8"), /ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl/);
     assert.match(args, /git@127\.0\.0\.1|git@/);
+    // Vault の実装が返す窓口の場所をそのままシェルに埋めない——形の違うものは断る（仕事を始めない）
+    w.vault.agentSocket = '/tmp/a"; touch /tmp/banto-pwned; "';
+    await assert.rejects(() => w.cloner.start({ source: "alice/secret" }, "c"), /ssh-agent の窓口の場所が受け付けられない形です/);
+    assert.ok(!existsSync("/tmp/banto-pwned"));
+    assert.deepEqual((await w.cloner.inspect({ source: "alice/secret" })).target?.state, { kind: "free" }, "断ったのに場所を取ったまま");
     assert.equal(failed.state, "failed");
   });
 });
@@ -334,11 +497,14 @@ test("新しいリポジトリ：git の設定のブランチ名か main で作�
   await withWorld(async (w) => {
     await addPatAccount(w, "alice", "ghp_alice_new_1");
     w.gh.addRepo("alice", "taken");
+    const reposAsked = () => w.gh.requests.filter((r) => r.path.startsWith("/repos/")).length;
     const free = await w.cloner.inspectNew({ name: "fresh" }, "c");
+    assert.equal(reposAsked(), 0, "名前を確定する前に GitHub に聞いた");
+    assert.equal((await w.cloner.inspectNew({ name: "taken" }, "c")).takenOnGithub, undefined);
     assert.deepEqual(free.state, { kind: "free" });
     assert.equal(free.displayPath, "~/banto/fresh");
     assert.equal(free.takenOnGithub, undefined);
-    assert.equal((await w.cloner.inspectNew({ name: "taken" }, "c")).takenOnGithub, "alice");
+    assert.equal((await w.cloner.inspectNew({ name: "taken", checkGithub: true }, "c")).takenOnGithub, "alice");
     assert.equal((await w.cloner.inspectNew({ name: "a/b" }, "c")).folderInvalid, true);
 
     const made = await w.cloner.create({ name: "fresh" });

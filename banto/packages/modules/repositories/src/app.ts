@@ -1328,6 +1328,10 @@ const SCRIPT = String.raw`
     if (o.home === undefined && !o.fixedPath) o.home = state.home ? state.home.repoHome : "~";
     paintBand(p.band, o);
     if (cl.error) p.band.say.append(h("p", { class: "stopline", role: "alert", text: "確かめられませんでした：" + cl.error }));
+    // 台帳はこのリポジトリを覚えているが、その場所にあるものが違う——clone し直さない（上書き・消すことになる）
+    if (ins && ins.misplaced && !(job && job.state === "running")) {
+      p.band.say.append(h("p", { class: "warnline", "data-testid": "repo-clone-misplaced", text: "一覧にある " + ins.misplaced.displayPath + " には" + ins.misplaced.problem + "。そこには clone し直さず、上の場所に別に clone します（一覧のその行は、外すか直してください）。" }));
+    }
     // 「Project も作る」：clone するときだけ（もう手元にある・読めない URL では出さない）
     const canClone = ins && !ins.invalid && !ins.have && (ins.reclone || (ins.target && !ins.target.folderInvalid && ins.target.state.kind === "free"));
     p.opt.root.hidden = !canClone && !running;
@@ -1399,17 +1403,19 @@ const SCRIPT = String.raw`
 
   // ---- 新しいリポジトリ ----
   const createDialog = document.getElementById("create-dialog");
-  const cr = { inspection: null, error: null, seq: 0, timer: 0, busy: false, withProject: true, failed: null };
+  const cr = { inspection: null, error: null, seq: 0, timer: 0, busy: false, withProject: true, failed: null, confirmedFor: null };
   let crParts = null;
   createDialog.addEventListener("close", () => { crParts = null; createDialog.replaceChildren(); document.body.style.minHeight = ""; reportSize(); });
   function openCreate(initial) {
     state.menuFor = null;
     const trigger = document.activeElement;
-    Object.assign(cr, { inspection: null, error: null, busy: false, withProject: true, failed: null });
+    Object.assign(cr, { inspection: null, error: null, busy: false, withProject: true, failed: null, confirmedFor: null });
     const name = h("input", { type: "text", spellcheck: "false", autocomplete: "off", placeholder: "名前", "aria-label": "リポジトリ名（フォルダ名）", "data-testid": "repo-create-name" });
     name.value = initial || "";
-    name.addEventListener("input", () => { cr.failed = null; window.clearTimeout(cr.timer); renderCreate(); cr.timer = window.setTimeout(inspectCreate, 300); });
+    name.addEventListener("input", () => { cr.failed = null; cr.confirmedFor = null; window.clearTimeout(cr.timer); renderCreate(); cr.timer = window.setTimeout(() => inspectCreate(false), 300); });
     name.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCreate(); } });
+    // 名前を決めたとき（欄を離れた）にだけ、GitHub に同じ名前があるかを聞く——打つたびには聞かない
+    name.addEventListener("blur", () => { if (name.value.trim()) inspectCreate(true); });
     const band = makeBand("", name, "repo-create-band");
     const note = h("div", { "data-testid": "repo-create-github" });
     const opt = projectOption(cr, "repo-create-with-project", () => renderCreate());
@@ -1425,17 +1431,17 @@ const SCRIPT = String.raw`
     if (!createDialog.open) createDialog.showModal();
     placeDialog(trigger, createDialog);
     name.focus();
-    if (initial) inspectCreate(); else renderCreate();
+    if (initial) inspectCreate(true); else renderCreate();
   }
-  async function inspectCreate() {
+  async function inspectCreate(checkGithub) {
     if (!crParts) return;
     const seq = ++cr.seq;
     const name = crParts.name.value.trim();
     if (!name) { cr.inspection = null; renderCreate(); return; }
     try {
-      const r = await call("inspect_new_repository", { name: name });
+      const r = await call("inspect_new_repository", { name: name, checkGithub: !!checkGithub });
       if (seq !== cr.seq) return;
-      cr.inspection = r; cr.error = null;
+      cr.inspection = Object.assign(r, { githubChecked: !!checkGithub }); cr.error = null;
     } catch (e) {
       if (seq !== cr.seq) return;
       cr.inspection = null; cr.error = errText(e);
@@ -1471,14 +1477,17 @@ const SCRIPT = String.raw`
     p.opt.box.disabled = cr.busy;
     p.foot.replaceChildren(
       h("button", { class: "btn", type: "button", text: "やめる", onclick: () => createDialog.close() }),
-      h("button", { class: "btn primary", type: "button", "data-testid": "repo-create-submit", disabled: !free || cr.busy, text: cr.busy ? "作っています…" : cr.withProject ? "作って Project の作成へ" : "リポジトリを作る", onclick: doCreate }),
+      h("button", { class: "btn primary", type: "button", "data-testid": "repo-create-submit", disabled: !free || cr.busy, text: cr.busy ? "作っています…" : (cr.confirmedFor === p.name.value.trim() ? "それでも" : "") + (cr.withProject ? "作って Project の作成へ" : "リポジトリを作る"), onclick: doCreate }),
     );
     reportSize();
   }
   async function doCreate() {
     if (!crParts || cr.busy) return;
     const name = crParts.name.value.trim();
+    // 作る直前に、まだなら GitHub に同じ名前があるかを1回だけ聞く。あれば言って、もう一度押されたら作る（止めはしない）
+    if (!cr.inspection || cr.inspection.folder !== name || !cr.inspection.githubChecked) await inspectCreate(true);
     if (!cr.inspection || cr.inspection.folder !== name || cr.inspection.folderInvalid || cr.inspection.state.kind !== "free") return;
+    if (cr.inspection.takenOnGithub && cr.confirmedFor !== name) { cr.confirmedFor = name; renderCreate(); return; }
     cr.busy = true; renderCreate();
     try {
       const made = await call("create_repository", { name: name });

@@ -105,6 +105,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
   });
   const cloner = new Cloner({
     store,
+    dataDir: deps.dataDir,
     accounts,
     vault: deps.vault,
     github: deps.github,
@@ -165,7 +166,10 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       }, ["source"]),
       adminTool("clone_status", "clone の進み具合と結果", { jobId: { type: "string" } }, ["jobId"]),
       adminTool("cancel_clone", "clone をやめる（途中まで作ったフォルダは消す）", { jobId: { type: "string" } }, ["jobId"]),
-      adminTool("inspect_new_repository", "その名前で新しいリポジトリを作ると何が起きるか", { name: { type: "string" } }, ["name"]),
+      adminTool("inspect_new_repository", "その名前で新しいリポジトリを作ると何が起きるか（checkGithub で GitHub に同じ名前があるかも聞く）", {
+        name: { type: "string" },
+        checkGithub: { type: "boolean" },
+      }, ["name"]),
       adminTool("create_repository", "置き場に空のリポジトリを作り（git init）、一覧に足す", { name: { type: "string" } }, ["name"]),
       adminTool("remove_github_account", "アカウントの登録を外す（ブラウザでログインしたものは Vault のログイン情報も消す）", {
         login: { type: "string" },
@@ -235,7 +239,9 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         case "cancel_clone":
           return json(cloner.cancel(str(args.jobId, "jobId")));
         case "inspect_new_repository":
-          return json(await cloner.inspectNew({ name: typeof args.name === "string" ? args.name : "" }, callIdOf(meta)));
+          return json(
+            await cloner.inspectNew({ name: typeof args.name === "string" ? args.name : "", checkGithub: args.checkGithub === true }, callIdOf(meta)),
+          );
         case "create_repository":
           return json(await cloner.create({ name: str(args.name, "name") }));
         case "list_github_accounts":

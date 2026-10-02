@@ -14,12 +14,12 @@
 //   呼び出しの中で使い終える——背景の仕事は Vault を呼ばない（人の画面の外の呼び出しにしない、段階2と同じ理由）
 
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { GithubAccounts } from "./accounts.js";
 import { openCredentialWindow, type CredentialWindow } from "./credential-server.js";
-import { configuredDefaultBranch, gitClone, gitInit, readFolder, type CloneProgress, type GitCredential } from "./git.js";
+import { configuredDefaultBranch, gitClone, gitInit, readFolder, sshCommandFor, type CloneProgress, type GitCredential } from "./git.js";
 import type { GithubApi, GithubEndpoints } from "./github.js";
 import { DEFAULT_REPO_HOME, syncWithOrigin, type LedgerEntry, type LedgerStore } from "./ledger.js";
 import { displayPath, resolveUserPath } from "./paths.js";
@@ -51,6 +51,16 @@ function githubHosts(github: GithubEndpoints): Set<string> {
   }
   if (github.ssh) hosts.add(github.ssh.toLowerCase());
   return hosts;
+}
+
+/** 行き先を替えた GitHub（`endpoints.web`）そのものか——http はこれだけ受ける */
+function isConfiguredWeb(github: GithubEndpoints, u: URL): boolean {
+  try {
+    const web = new URL(github.web);
+    return web.protocol === u.protocol && web.host.toLowerCase() === u.host.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 function ownerName(path: string): { owner: string; name: string } | undefined {
@@ -85,6 +95,10 @@ export function parseCloneSource(text: string, github: GithubEndpoints): CloneSo
     // https://user:token@host/… は clone 先の .git/config に残る（そこから AI が読める）
     if (u.password || (scheme !== "ssh" && u.username)) return invalid("URL に資格情報を書かないでください（アカウントは下で選びます）");
     const host = u.host.toLowerCase();
+    // http は暗号化されない（git:// を断るのと同じ理由）。受けるのは行き先を替えた GitHub（試験の偽物）だけ
+    if (scheme === "http" && !isConfiguredWeb(github, u)) {
+      return invalid("http:// は暗号化されないので受けません（https か ssh の URL にしてください）");
+    }
     if (hosts.has(host) || hosts.has(u.hostname.toLowerCase())) {
       const loc = ownerName(u.pathname);
       if (!loc) return invalid("GitHub の URL は github.com/owner/repo の形で入れてください");
@@ -208,6 +222,11 @@ export interface CloneInspection {
   have?: { path: string; displayPath: string; name: string; projects?: string[] };
   /** 台帳にあるのにフォルダが見つからない——その場所に clone し直す */
   reclone?: { path: string; displayPath: string; name: string };
+  /**
+   * 台帳はこのリポジトリを覚えているが、その場所にあるものが違う（リポジトリでない・読めない）——clone し直さない
+   * （上書き・消すことになる）。別の名前で置き場の下に clone するか、一覧から外す
+   */
+  misplaced?: { path: string; displayPath: string; name: string; problem: string };
   /** 置き場の下に clone する */
   target?: {
     home: string;
@@ -245,6 +264,8 @@ interface CloneJob extends CloneJobView {
 
 export interface ClonerDeps {
   store: LedgerStore;
+  /** この Module のデータ置き場（GitHub の SSH の host 鍵を置く） */
+  dataDir: string;
   accounts: GithubAccounts;
   vault: VaultAccess;
   github: GithubApi;
@@ -253,6 +274,7 @@ export interface ClonerDeps {
 }
 
 /** git の失敗の文言から、次の手の手がかりを読む */
+/** 失敗の分類——**相手の言葉（`remote:` の行）は見ない**（呼ぶ側が除いて渡す） */
 function classify(message: string): NonNullable<CloneJobView["error"]>["hint"] {
   if (/Repository not found|repository '.*' not found|not found/i.test(message)) return "not-found";
   if (/could not read Username|Authentication failed|Invalid username or token|terminal prompts disabled|401/i.test(message)) return "auth";
@@ -272,6 +294,13 @@ const EXPLAIN: Record<NonNullable<CloneJobView["error"]>["hint"], string> = {
   other: "",
 };
 
+/** GitHub の SSH の host 鍵（`githubKnownHosts` の説明を見る。確認日 2026-10-02） */
+export const GITHUB_SSH_HOST_KEYS: readonly string[] = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+  "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=",
+  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=",
+];
+
 /** 終わった仕事を覚えておく長さ（画面が結果を取りに来るまで） */
 const KEEP_FINISHED_MS = 10 * 60_000;
 
@@ -286,8 +315,14 @@ export class Cloner {
     return this.deps.home ?? homedir();
   }
 
-  /** そのリポジトリを、もう台帳が知っているか（手元にある・見つからない行） */
-  private async findKnown(source: CloneSource): Promise<{ entry: LedgerEntry; present: boolean } | undefined> {
+  /**
+   * そのリポジトリを、もう台帳が知っているか。その場所に**リポジトリがある**（手元にある）・**何も無い**（clone し直す）・
+   * **違うものがある／読めない**（clone し直さない——読めないのを「無い」にすると、既にあるフォルダに clone し直して
+   * 失敗の片づけで消しうる）
+   */
+  private async findKnown(
+    source: CloneSource,
+  ): Promise<{ entry: LedgerEntry; state: "repo" | "missing" | "other"; problem?: string } | undefined> {
     const entries = await this.deps.store.entries();
     const match = entries.find((e) =>
       source.kind === "github"
@@ -295,8 +330,16 @@ export class Cloner {
         : !!e.elsewhere && remoteKey(e.elsewhere) === remoteKey(source.url),
     );
     if (!match) return undefined;
-    const facts = await readFolder(match.path).catch(() => undefined);
-    return { entry: match, present: !!facts && facts.kind !== "missing" };
+    let facts;
+    try {
+      facts = await readFolder(match.path);
+    } catch (err) {
+      return { entry: match, state: "other", problem: `読めません（${(err as Error).message}）` };
+    }
+    if (facts.kind === "repo") return { entry: match, state: "repo" };
+    if (facts.kind === "missing") return { entry: match, state: "missing" };
+    const what = { "not-git": "git のリポジトリでないフォルダ", bare: "作業ツリーの無い（bare）リポジトリ", "git-dir": "git の管理用のフォルダ", inside: "別のリポジトリの中のフォルダ", worktree: "別のリポジトリの worktree" }[facts.kind];
+    return { entry: match, state: "other", problem: `${what}があります` };
   }
 
   async inspect(input: { source: string; folder?: string }, lookup?: ProjectsLookup): Promise<CloneInspection> {
@@ -304,7 +347,7 @@ export class Cloner {
     if (parsed.kind === "invalid") return { invalid: parsed.reason };
     const source = { ...parsed, label: sourceLabel(parsed) };
     const known = await this.findKnown(parsed);
-    if (known?.present) {
+    if (known?.state === "repo") {
       const projects = lookup?.ok ? lookup.projects.filter((p) => p.root === known.entry.path).map((p) => p.name) : undefined;
       return {
         source,
@@ -313,7 +356,11 @@ export class Cloner {
     }
     // clone し直すなら、その行が覚えているアカウントを先に選ぶ
     const accounts = parsed.kind === "github" ? await this.accountChoice(known?.entry.account ?? parsed.owner) : undefined;
-    if (known) {
+    const misplaced =
+      known?.state === "other"
+        ? { misplaced: { path: known.entry.path, displayPath: displayPath(known.entry.path, this.home), name: basename(known.entry.path), problem: known.problem ?? "" } }
+        : {};
+    if (known?.state === "missing") {
       return {
         source,
         reclone: { path: known.entry.path, displayPath: displayPath(known.entry.path, this.home), name: basename(known.entry.path) },
@@ -328,6 +375,7 @@ export class Cloner {
     const path = join(home.path, folder);
     return {
       source,
+      ...misplaced,
       target: {
         home: home.display,
         folder,
@@ -356,6 +404,28 @@ export class Cloner {
    */
   async start(input: { source: string; folder?: string; account?: string | null }, callId?: string): Promise<CloneJobView> {
     const inspection = await this.inspect(input);
+    // **判断の直後、await を挟まずに場所を取る**——同じ場所への2本目は、1本目の判断と await の間に「空き」と見てしまう
+    const reservedPath = (inspection.reclone ?? inspection.target)?.path;
+    if (reservedPath !== undefined) {
+      if (this.reserved.has(reservedPath)) throw new Error(`${displayPath(reservedPath, this.home)} には、いま別の clone が置こうとしています`);
+      this.reserved.add(reservedPath);
+    }
+    let handed = false;
+    try {
+      const job = await this.prepare(input, inspection, callId);
+      handed = true;
+      return job;
+    } finally {
+      // 仕事に渡せなかった（断った・資格情報を用意できなかった）なら、取った場所を返す
+      if (!handed && reservedPath !== undefined) this.reserved.delete(reservedPath);
+    }
+  }
+
+  private async prepare(
+    input: { source: string; folder?: string; account?: string | null },
+    inspection: CloneInspection,
+    callId?: string,
+  ): Promise<CloneJobView> {
     if (inspection.invalid || !inspection.source) throw new Error(inspection.invalid ?? "URL として読めません");
     if (inspection.have) throw new Error(`もう手元にあります（${inspection.have.displayPath}）。新しくは clone しません`);
     const target = inspection.reclone ?? inspection.target;
@@ -385,7 +455,11 @@ export class Cloner {
       if (account.ssh) {
         const sshHost = this.deps.endpoints.ssh ?? new URL(this.deps.endpoints.web).hostname;
         url = `git@${sshHost}:${source.owner}/${source.name}.git`;
-        credential = { kind: "ssh-agent", socket: (await this.deps.vault.startSshAgent(account.ssh, callId)).socketPath };
+        const socket = (await this.deps.vault.startSshAgent(account.ssh, callId)).socketPath;
+        const knownHosts = await this.githubKnownHosts();
+        // 窓口の場所を ssh のコマンドに埋められるかを、仕事を始める前に確かめる（だめなら押した画面に理由を返す）
+        sshCommandFor(socket, knownHosts);
+        credential = { kind: "ssh-agent", socket, knownHosts };
       } else {
         url = `${this.deps.endpoints.web.replace(/\/+$/, "")}/${source.owner}/${source.name}.git`;
         const token = await this.deps.accounts.tokenFor(account.login, callId);
@@ -408,14 +482,23 @@ export class Cloner {
       abort: new AbortController(),
     };
     this.jobs.set(id, job);
-    this.reserved.add(target.path);
     void this.run(job, url, credential, window);
     return this.view(job);
   }
 
   private async run(job: CloneJob, url: string, credential: GitCredential, window: CredentialWindow | undefined): Promise<void> {
+    // **自分が作ったフォルダだけを消す**——始める前に、置く場所そのものを（recursive 無しで）作る。もう在れば作れず、
+    // その場合は何も消さずに断る（ほかの誰かのフォルダ）
+    let created = false;
     try {
       await mkdir(dirname(job.path), { recursive: true });
+      try {
+        await mkdir(job.path);
+        created = true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`${job.displayPath} には、もう何かがあります（上書きしません）`);
+        throw err;
+      }
       const result = await gitClone({
         url,
         dest: job.path,
@@ -424,11 +507,11 @@ export class Cloner {
         onProgress: (p) => (job.progress = p),
       });
       if (!result.ok) {
-        // 途中まで作ったフォルダは消す（始めたときは空いていた場所——この仕事のもの）
-        await rm(job.path, { recursive: true, force: true });
+        // 途中まで作ったフォルダは消す（この仕事が作ったもの）
+        if (created) await rm(job.path, { recursive: true, force: true });
         job.state = result.kind === "cancelled" ? "cancelled" : "failed";
         if (result.kind !== "cancelled") {
-          const hint = result.kind === "timeout" ? "timeout" : classify(result.message);
+          const hint = result.kind === "timeout" ? "timeout" : classify(result.own ?? "");
           const why = EXPLAIN[hint];
           job.error = { message: why ? `${why}——${result.message}` : result.message, hint };
         }
@@ -462,6 +545,21 @@ export class Cloner {
     return { ...rest, ...(job.progress ? { progress: { ...job.progress } } : {}) };
   }
 
+  /**
+   * GitHub の SSH の host 鍵を置いた known_hosts（この Module のデータ置き場）。**GitHub が公開している値だけを信じる**——
+   * 人の `~/.ssh/known_hosts` に初めての相手を覚えさせない（accept-new はやめた）。値は GitHub の文書
+   * 「GitHub's SSH key fingerprints」と `GET https://api.github.com/meta` の `ssh_keys`（2026-10-02 に両方を突き合わせた。
+   * 指紋 Ed25519 +DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU・ECDSA p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM・
+   * RSA uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s）。GitHub が鍵を替えたら、ここを替える
+   */
+  private async githubKnownHosts(): Promise<string> {
+    const path = join(this.deps.dataDir, "github_known_hosts");
+    const host = this.deps.endpoints.ssh ?? "github.com";
+    await mkdir(this.deps.dataDir, { recursive: true });
+    await writeFile(path, GITHUB_SSH_HOST_KEYS.map((k) => `${host} ${k}`).join("\n") + "\n", { mode: 0o644 });
+    return path;
+  }
+
   status(id: string): CloneJobView {
     const job = this.jobs.get(id);
     if (!job) throw new Error("この clone はもう覚えていません。一覧を読み直してください");
@@ -481,7 +579,7 @@ export class Cloner {
    * 新しいリポジトリを作ると何が起きるか。登録したアカウントの GitHub に同じ名前があれば、その login を言う
    * （作るのは止めない——GitHub に上げるのは公開のとき）。確かめられなかったら、そう言う
    */
-  async inspectNew(input: { name: string }, callId?: string): Promise<{
+  async inspectNew(input: { name: string; checkGithub?: boolean }, callId?: string): Promise<{
     home: string;
     folder: string;
     path: string;
@@ -499,6 +597,9 @@ export class Cloner {
     if (!isValidFolderName(folder)) return { ...base, folderInvalid: true, state: { kind: "free" } };
     const state = await inspectTarget(home.path, folder, await this.deps.store.entries(), this.reserved);
     if (state.kind !== "free") return { ...base, state };
+    // GitHub に同じ名前があるかは、名前を決めたとき（入力の確定・作る直前）にだけ聞く——打つたびに全部のアカウントで
+    // トークンを引いて GitHub を叩かない
+    if (!input.checkGithub) return { ...base, state };
     const { accounts } = await this.deps.accounts.list();
     const problems: string[] = [];
     for (const a of accounts) {
