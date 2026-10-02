@@ -1253,9 +1253,41 @@ Repositories の節、`components/banto/canvas/repo-list-view.tsx` ほか）。�
     「元に戻す」の置き場所は画面が持ってきた字を信じず realpath に寄せる
   - git でないフォルダの次の手「git init して Import」は、新しいリポジトリ（`git init`）と一緒に作る。
     それまでは出さない（繋がっていないものは出さない、規則13）
-- **URL から clone**：`https://…`・`git@…:…`・`owner/repo`。GitHub 以外も受ける（このマシンの git の設定で）。
+- **URL から clone**：`https://…`・`git@…:…`・`ssh://…`・`owner/repo`。GitHub 以外も受ける（このマシンの git の設定で）。
   **もう手元にあるなら clone しない**（「もう手元にあります（場所）」）。失敗は理由と次の手（別のアカウントで等）
-- **新しいリポジトリ**：置き場に `git init`。GitHub に上げるのは公開のとき
+  （段階3で作った・2026-10-02。判断は `clone.ts`、画面は言い方だけ）
+  - **断る URL**：手元のパス・`file://`・`git://`（暗号化されない）・`ext::`・`-` で始まるもの・**URL に資格情報を
+    書いたもの**（clone 先の `.git/config` に残り、AI から読める）
+  - **台帳が覚えているのにフォルダが見つからない行**なら、その場所に clone し直す（一覧の「clone し直す」もこれ）
+  - 置き場は `<置き場>/<名前>`（置き場はまだ無ければ作る）。ぶつかれば `<名前>-2` を先に入れ、人が変えられる。
+    置く先にあるもの（台帳のリポジトリ・見つからない行の場所・一覧に無いリポジトリ・ただのフォルダ・別の clone の最中）は
+    上書きしない
+  - **アカウント**：GitHub なら URL の持ち主と同じ login を先に選ぶ（clone し直すなら台帳が覚えている login）。1つなら
+    選ばせない。clone したら**使ったアカウントを台帳に書く**（持ち主が違っても——選んだのは人）。GitHub の外は
+    アカウントを使わない
+  - **資格情報の渡し方**（決定・2026-10-02、実装者）：
+    - GitHub のアカウント（PAT・ブラウザでログイン）：`tokenFor` のトークンを、**この Module が clone の間だけ立てる
+      unix socket**（持ち主だけが入れるフォルダの中、`XDG_RUNTIME_DIR` か `/run/user/<uid>`）から git の credential
+      helper が受け取る。helper の引数は socket の場所だけ——**トークンはコマンドの引数にも環境にも置かない**
+      （`https://user:token@…` は ps に、`GIT_ASKPASS` の値・`http.extraHeader` を `GIT_CONFIG_*` は `/proc/<pid>/environ`
+      に出る）。窓口は決めた相手（protocol と host）にだけ渡す
+    - SSH 鍵を選んだアカウント：Vault の `startSshAgent` の窓口だけを使う ssh（`IdentityAgent`・`BatchMode=yes`・
+      `StrictHostKeyChecking=accept-new`——初めての相手は覚える）で `git@github.com:owner/name.git` を clone する
+    - 登録したアカウントの無い GitHub：資格情報を使わない（公開のものだけ）
+    - GitHub の外：**このマシンの git の設定のまま**（`credential.helper`・`core.sshCommand`・`core.askPass` を潰さない
+      ——人がこのマシンに置いた設定で、clone する前のリポジトリの設定はまだ無い）
+  - **clone の間も読む口と同じ潰しを効かせる**（`core.hooksPath=/dev/null`・`core.fsmonitor=false` 等。この機械の
+    テンプレートの hooks も clone の checkout で走らせない）。潰しは環境の `GIT_CONFIG_*` で渡すので、clone 先の
+    `.git/config` には書き残らない。clone の後にその `.git/config` を読むときも、読む口の潰しが効く
+  - **clone は Module の背景の仕事**——画面は進み具合（git の `--progress`）を聞きに来る。Vault の口は押した呼び出しの
+    中で使い終える（背景の仕事から Vault を呼ばない）。**全体の時間の上限は置かず、git が5分何も言ってこなければ切る**
+    （大きいリポジトリは長くかかるが、その間 git は進み具合を言い続ける）。やめられる。失敗・時間切れ・やめたときは
+    途中まで作ったフォルダを消す
+- **新しいリポジトリ**：置き場に `git init`。GitHub に上げるのは公開のとき。**ブランチ名はこのマシンの git の設定
+  （`init.defaultBranch`）に従い、無ければ `main`**（決定・2026-10-02、実装者）——人が決めた名前を上書きしない。
+  決めていなければ GitHub の既定に合わせる（公開のときに食い違わない）。ぶつかれば断って `<名前>-2` を出す。
+  登録したアカウントの GitHub に同じ名前があれば「あとで公開するときは別の名前が要ります」と言い、「clone で始める」を
+  添える（作るのは止めない）。台帳には「このマシンにだけ」として入る
 - 押す前に、置く場所とその場所に今あるものを帯で示す（「ここに clone します」等。帯に見出しは付けない）
 
 **一覧**：「Project で使っている」「Project はまだ無い」の**2つの別の表**（列はそろえる、0件の表は見出しごと
@@ -1325,14 +1357,15 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
 - Module の画面が `{ path, suggestedName?, summary }` を返したら、**core がそのフォルダを根に Project を作る**
   （そのフォルダを根にした Project が既にあれば「開く」）
 - **一覧で「Project も作る」（既定オン）を選んだら**、フォルダを用意したあと、一覧が **core の新しい Project の画面を
-  そのフォルダを入れた状態で開く**——人がそこで作る。**core に「Project を作る」口は足さない**
+  そのフォルダを入れた状態で開く**——人がそこで作る。**core に「Project を作る」口は足さない**。開く口は banto の拡張
+  `dev.banto/open-new-project`（`v4-frontend.md` §6.2、段階3で作った・2026-10-02）。一覧の「Project を始める」も同じ口
 - Repositories を無効にすると「手元のフォルダ」だけになる
 
 **まだ決めていないこと**：`_meta` の名乗りの印の名前と形・返り値の受け渡し（MCP Apps のどの通知で返すか）／
 AI が「新しい開発を始めて」と頼む道具（承認つき）——最初は人の画面だけ／GitHub App に求める権限の一覧（案は
 `docs/notes/2026-10-02-repositories-stage2.md`。更新に失敗したときの知らせ方は決まった——上の「アカウント」）／
 **Organization のリポジトリをどのアカウントで扱うか**（いまは login と origin の持ち主の一致だけで決めるので、
-Organization のものは「読むだけ」のまま。段階3で clone・公開のときに選んだアカウントを台帳に書く）／
+Organization のものは「読むだけ」のまま。clone のときに選んだアカウントは台帳に書く——段階3）／
 gitlab 等のアカウント（いまはこのマシンの git の設定で clone するだけ）／Factory が worktree を頼む口（要件）。
 
 ## 3. 境界の問題——FileSystem と Shell を同じ扱いにしない

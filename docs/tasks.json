@@ -2414,11 +2414,22 @@
       "doneWhen": "人が GitHub App を作り（Enable Device Flow）、稼働中の banto の設定の Repositories に client ID を入れ、ブラウザでログインして自分の login のアカウントが登録され、8時間後に「確かめる」で更新が通ること、PAT でも登録できること、自分のリポジトリの行にアカウントが出ることを実物で確かめる"
     },
     {
-      "id": "repositories-next",
-      "title": "Repositories の続き：URL から clone／新しいリポジトリ／clone し直す・GitHub に公開・新しい Project の画面への持ち込み・Canvas から Project を開く口（アカウントは段階2）",
-      "status": "pending",
+      "id": "repositories-stage3",
+      "title": "Repositories Module の段階3（URL から clone・新しいリポジトリ・clone し直す・「Project も作る」——Canvas から core の新しい Project の画面をフォルダ入りで開く口 dev.banto/open-new-project）",
+      "status": "in-progress",
       "dependencies": [
         "repositories-stage2"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.4「始める3つの手」「core との境目」・docs/specs/v4-frontend.md §6.2",
+      "why": "2026-10-02、ユーザー。clone は Module の背景の仕事で画面が進み具合を聞きに来る（git が5分黙ったら切る）。GitHub のアカウントのトークンは一度きりの unix socket から credential helper へ（引数・環境に置かない）、SSH 鍵は Vault の ssh-agent、GitHub の外はこのマシンの git の設定。clone の間も hooks 等の潰しは効かせる。新しいリポジトリは init.defaultBranch か main。単体（Module 61本・画面 2本・core 364本）と e2e/specs/repositories.spec.ts（4本、偽の GitHub を本物の git の smart HTTP にした）は通した。経緯は docs/notes/2026-10-02-repositories-stage3.md",
+      "doneWhen": "稼働中の banto で、本物の GitHub の公開・自分の非公開（ブラウザでログインのアカウント）・GitHub の外のリポジトリを URL から clone でき、新しいリポジトリを作れ、「Project も作る」で新しい Project の画面がフォルダ入りで開いて作れることを人が確かめる"
+    },
+    {
+      "id": "repositories-next",
+      "title": "Repositories の続き：GitHub に公開・新しい Project の画面への持ち込み（_meta の名乗り）・既にある Project を Canvas から開く口（アカウントは段階2、clone・新しいリポジトリは段階3）",
+      "status": "pending",
+      "dependencies": [
+        "repositories-stage3"
       ],
       "spec": "docs/specs/v4-modules.md §2.4",
       "why": "段階1では『Project を始める』『GitHub に公開』『clone し直す』は押すと『まだ作っていない』と言うだけ。『URL から clone』『新しいリポジトリ』『git init して Import』は出していない（規則13）。Project の列は名前だけ（Canvas から banto の画面遷移を頼む口が無い）。台帳のアカウントの項目はアカウントを登録できるようになるときに足す",
