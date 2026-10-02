@@ -38,6 +38,8 @@ export interface VaultAccess {
   putOwned(input: { name: string; value: string; note: string }, place: AliasPlace | undefined, callId?: string): Promise<AliasPlace>;
   /** 消す（人の管理操作のときだけ Vault が受け付ける） */
   remove(place: AliasPlace, callId?: string): Promise<void>;
+  /** その SSH 鍵を持った ssh-agent の窓口（Vault が立てる。鍵の値はこの Module を通らない） */
+  startSshAgent(place: AliasPlace, callId?: string): Promise<{ socketPath: string }>;
 }
 
 function placeOf(raw: unknown, name: string): AliasPlace {
@@ -90,6 +92,14 @@ export class RelayVault implements VaultAccess {
     }
     await this.relay.callTool(DIRECTORY, "putSecret", { name: input.name, value: input.value, note: input.note }, callId);
     return this.lookup(input.name, callId);
+  }
+
+  async startSshAgent(place: AliasPlace, callId?: string): Promise<{ socketPath: string }> {
+    const body = JSON.parse(
+      await this.relay.callTool(place.implementation, "startSshAgent", { identity: place.name, ...(place.group ? { group: place.group } : {}) }, callId),
+    ) as { socketPath?: unknown };
+    if (typeof body.socketPath !== "string" || body.socketPath === "") throw new Error(`SSH 鍵 ${place.name} の ssh-agent の窓口が返ってきませんでした`);
+    return { socketPath: body.socketPath };
   }
 
   async remove(place: AliasPlace, callId?: string): Promise<void> {

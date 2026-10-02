@@ -14,7 +14,7 @@
 // （`GIT_CONFIG_COUNT`——ファイルのどの段より強い）で潰し、走らせてよいサブコマンドを一覧で絞る（`GIT_COMMANDS`）。
 // 段階3（clone・fetch）で ssh や資格情報を使うときは、ここで潰したものを**この Module が明示して**上書きする。
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, sep } from "node:path";
 import { parseRemoteUrl, type RemoteLocation } from "./remote.js";
@@ -57,7 +57,17 @@ export const GIT_TIMEOUTS = { default: 10_000, count: 10_000 };
  * **走らせてよいサブコマンド**（先頭の語）。増やすときは、そのコマンドが設定から何を起こしうるかを見てから
  * （試験がこの一覧を固定している）
  */
-export const GIT_COMMANDS: readonly string[] = ["rev-parse", "worktree list", "remote get-url", "symbolic-ref", "rev-list"];
+export const GIT_COMMANDS: readonly string[] = [
+  "rev-parse",
+  "worktree list",
+  "remote get-url",
+  "symbolic-ref",
+  "rev-list",
+  // 段階3：作る・取ってくる（環境は `writeEnv`——資格情報の渡し方だけを明示して上書きする）
+  "config --get init.defaultBranch",
+  "init",
+  "clone",
+];
 
 /**
  * **コマンドを指せる設定を潰す**（呼び出しの側の設定。リポジトリ・ユーザー・システムのどの設定より強い）。
@@ -100,9 +110,14 @@ export const GIT_ENV: NodeJS.ProcessEnv = {
   ),
 };
 
-function git(cwd: string, args: string[], timeoutMs = GIT_TIMEOUTS.default): Promise<GitResult> {
-  const command = GIT_COMMANDS.find((c) => args.join(" ").startsWith(c + " ") || args.join(" ") === c);
-  // 一覧に無いものは走らせない——書き足すときに一覧を見直させる
+/** 一覧に無いサブコマンドは走らせない——書き足すときに一覧を見直させる */
+function allowedCommand(args: string[]): string | undefined {
+  const line = args.join(" ");
+  return GIT_COMMANDS.find((c) => line.startsWith(c + " ") || line === c);
+}
+
+function git(cwd: string, args: string[], timeoutMs = GIT_TIMEOUTS.default, env: NodeJS.ProcessEnv = GIT_ENV): Promise<GitResult> {
+  const command = allowedCommand(args);
   if (!command) return Promise.resolve({ ok: false, code: "refused", stderr: `git ${args[0] ?? ""} は走らせない決まりです` });
   return new Promise((resolve) => {
     execFile(
@@ -111,7 +126,7 @@ function git(cwd: string, args: string[], timeoutMs = GIT_TIMEOUTS.default): Pro
       {
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
-        env: GIT_ENV,
+        env,
       },
       (err, stdout, stderr) => {
         if (!err) return resolve({ ok: true, stdout: String(stdout) });
@@ -233,4 +248,161 @@ export async function nearestExistingFolder(path: string): Promise<string> {
     if (up === at) return at;
     at = up;
   }
+}
+
+// ── 作る・取ってくる（段階3：新しいリポジトリ・URL から clone） ─────────────────────────────
+
+/**
+ * 取ってくるときの資格情報の渡し方。**読む口で潰したもののうち、どれを誰が上書きするかをここで明示する**（§2.4）
+ * - `none`：何も使わない（登録したアカウントの無い GitHub——公開のものだけ）
+ * - `machine`：このマシンの git の設定のまま（GitHub の外）。`credential.helper`・`core.sshCommand`・`core.askPass` を潰さない
+ *   ——人がこのマシンに置いた設定（ユーザー・システムの段）で、clone する前のリポジトリの設定はまだ無い
+ * - `helper`：`credential.helper` を、この Module が立てた一度きりの helper だけにする（トークンは引数にも環境にも置かない）
+ * - `ssh-agent`：Vault が立てた ssh-agent の窓口だけを使う ssh にする
+ */
+export type GitCredential =
+  | { kind: "none" }
+  | { kind: "machine" }
+  | { kind: "helper"; command: string }
+  | { kind: "ssh-agent"; socket: string };
+
+/** ssh を使うときのコマンド（Vault の窓口だけを使う。初めての相手は覚える——accept-new） */
+export function sshCommandFor(socket: string): string {
+  return `ssh -o IdentityAgent="${socket}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new`;
+}
+
+/**
+ * 作る・取ってくる git の環境。**読む口と同じ潰しから始める**（fsmonitor・hooksPath・pager 等は clone の間も潰したまま
+ * ——clone の checkout で hooks を走らせない）。外から渡した設定は環境の `GIT_CONFIG_*` だけで、clone 先の
+ * `.git/config` には書き残らない。読む口の環境（`GIT_ENV`）からその都度作る（試験が PATH・HOME を替えられるように）
+ */
+export function writeEnv(credential: GitCredential): NodeJS.ProcessEnv {
+  const base = Object.fromEntries(Object.entries(GIT_ENV).filter(([k]) => !k.startsWith("GIT_CONFIG_")));
+  const machineOwned = new Set(["credential.helper", "core.sshCommand", "core.askPass"]);
+  let overrides: Array<readonly [string, string]> = GIT_CONFIG_OVERRIDES.filter(
+    ([k]) => credential.kind !== "machine" || !machineOwned.has(k),
+  );
+  // 取ってくる仕事では、手元のパスを相手にさせない（submodule 等で file:// を辿らない）
+  overrides.push(["protocol.file.allow", "never"]);
+  // 空にした一覧のあとに足す（同じ段の中では順に読まれる——空で消し、次で1つだけ足す）
+  if (credential.kind === "helper") overrides.push(["credential.helper", credential.command]);
+  if (credential.kind === "ssh-agent") {
+    overrides = overrides.map(([k, v]) => (k === "core.sshCommand" ? ([k, sshCommandFor(credential.socket)] as const) : ([k, v] as const)));
+  }
+  return {
+    ...base,
+    GIT_CONFIG_COUNT: String(overrides.length),
+    ...Object.fromEntries(
+      overrides.flatMap(([key, value], i) => [
+        [`GIT_CONFIG_KEY_${i}`, key],
+        [`GIT_CONFIG_VALUE_${i}`, value],
+      ]),
+    ),
+  };
+}
+
+/** このマシンの git が決めている既定のブランチ名（`init.defaultBranch`）。無ければ undefined */
+export async function configuredDefaultBranch(cwd: string): Promise<string | undefined> {
+  const r = await git(cwd, ["config", "--get", "init.defaultBranch"]);
+  if (r.ok) return r.stdout.trim() || undefined;
+  // 設定が無い——`git config --get` は 1 で終わる（git の決まり。ほかの失敗は 1 以外）
+  if (r.code === 1) return undefined;
+  return fail("git の既定のブランチ名", r);
+}
+
+/** 空のリポジトリを作る（フォルダも作る）。ブランチ名は呼ぶ側が決めて渡す */
+export async function gitInit(path: string, branch: string): Promise<void> {
+  const r = await git(dirname(path), ["init", "-q", "-b", branch, "--", path], GIT_TIMEOUTS.default, writeEnv({ kind: "none" }));
+  if (!r.ok) throw new Error(`git init できませんでした：${r.stderr.trim() || String(r.code)}`);
+}
+
+/** clone の進み具合（git が `--progress` で言うものを読んだ値） */
+export interface CloneProgress {
+  /** `Receiving objects`・`Resolving deltas` 等 */
+  phase: string;
+  percent?: number;
+}
+
+export type CloneResult =
+  | { ok: true }
+  | { ok: false; kind: "failed" | "timeout" | "cancelled"; message: string };
+
+/** 時間の決まり（ms）。**試験で縮める穴** */
+export const CLONE_TIMEOUTS = {
+  /** 何も言ってこないまま、これだけ経ったらやめる（大きなリポジトリは長くかかるので、全体の上限は置かない） */
+  idle: 5 * 60_000,
+};
+
+const PROGRESS = /^(?:remote: )?([A-Za-z][A-Za-z ]+?):\s+(\d+)%/;
+
+/**
+ * clone する。**全体の時間の上限は置かず、何も言ってこない時間で切る**——大きなリポジトリは何分もかかるが、
+ * その間 git は進み具合を言い続ける。黙ったままのもの（相手が答えない・認証で止まった）だけを切る
+ */
+export function gitClone(input: {
+  url: string;
+  dest: string;
+  credential: GitCredential;
+  onProgress?: (p: CloneProgress) => void;
+  signal?: AbortSignal;
+}): Promise<CloneResult> {
+  if (!allowedCommand(["clone"])) return Promise.resolve({ ok: false, kind: "failed", message: "git clone は走らせない決まりです" });
+  return new Promise((resolve) => {
+    // `--` の後に URL——`-` で始まる字を git に option と読ませない
+    const child = spawn("git", ["clone", "--progress", "--", input.url, input.dest], {
+      env: writeEnv(input.credential),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const tail: string[] = [];
+    let ended: "timeout" | "cancelled" | undefined;
+    let idle: NodeJS.Timeout | undefined;
+    const arm = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        ended = "timeout";
+        child.kill("SIGTERM");
+      }, CLONE_TIMEOUTS.idle);
+    };
+    arm();
+    const onAbort = () => {
+      ended = "cancelled";
+      child.kill("SIGTERM");
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    let buffer = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      arm();
+      buffer += chunk;
+      // 進み具合は \r で上書きされる——\r と \n のどちらでも区切る
+      const parts = buffer.split(/[\r\n]/);
+      buffer = parts.pop() ?? "";
+      for (const line of parts) {
+        const t = line.trim();
+        if (!t) continue;
+        const m = t.match(PROGRESS);
+        if (m) input.onProgress?.({ phase: m[1]!, percent: Number(m[2]) });
+        else {
+          tail.push(t);
+          if (tail.length > 20) tail.shift();
+        }
+      }
+    });
+    const finish = (r: CloneResult) => {
+      clearTimeout(idle);
+      input.signal?.removeEventListener("abort", onAbort);
+      resolve(r);
+    };
+    child.on("error", (err) => finish({ ok: false, kind: "failed", message: (err as NodeJS.ErrnoException).code === "ENOENT" ? "git コマンドが見つかりません" : err.message }));
+    child.on("close", (code) => {
+      if (code === 0 && !ended) return finish({ ok: true });
+      if (ended === "timeout") {
+        const mins = CLONE_TIMEOUTS.idle >= 60_000 ? `${Math.round(CLONE_TIMEOUTS.idle / 60_000)} 分` : `${CLONE_TIMEOUTS.idle} ms`;
+        return finish({ ok: false, kind: "timeout", message: `${mins}のあいだ git が何も言ってこなかったので、やめました` });
+      }
+      if (ended === "cancelled") return finish({ ok: false, kind: "cancelled", message: "やめました" });
+      const lines = tail.filter((l) => !/^Cloning into /.test(l));
+      finish({ ok: false, kind: "failed", message: lines.join("\n") || `git clone が ${String(code)} で終わりました` });
+    });
+  });
 }

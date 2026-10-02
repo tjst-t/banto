@@ -9,13 +9,15 @@
 // **秘密を文言に入れない**——失敗の理由は GitHub の `error`・`error_description`・状態番号だけで作る。
 
 export interface GithubEndpoints {
-  /** ログインの口（`https://github.com`） */
+  /** ログインの口・HTTPS の clone の口（`https://github.com`） */
   web: string;
   /** API（`https://api.github.com`） */
   api: string;
+  /** SSH で clone するときの相手（`github.com`）。無ければ web の host */
+  ssh?: string;
 }
 
-export const GITHUB_COM: GithubEndpoints = { web: "https://github.com", api: "https://api.github.com" };
+export const GITHUB_COM: GithubEndpoints = { web: "https://github.com", api: "https://api.github.com", ssh: "github.com" };
 
 export interface DeviceCode {
   deviceCode: string;
@@ -65,6 +67,8 @@ export interface GithubApi {
   pollDeviceToken(clientId: string, deviceCode: string): Promise<DevicePoll>;
   refresh(clientId: string, refreshToken: string): Promise<TokenSet>;
   currentUser(token: string): Promise<GithubUser>;
+  /** そのトークンから `owner/name` が見えるか（無い・見えないは false。それ以外の断りは投げる） */
+  repoExists(token: string, owner: string, name: string): Promise<boolean>;
 }
 
 const TIMEOUT_MS = 15_000;
@@ -215,6 +219,28 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       }
       if (typeof body?.login !== "string" || body.login === "") throw new GithubError("GitHub の返事に login がありません", "malformed");
       return { login: body.login };
+    },
+
+    async repoExists(token, owner, name) {
+      let res: Response;
+      try {
+        res = await fetch(`${api}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "x-github-api-version": "2022-11-28",
+            "user-agent": "banto",
+          },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new GithubError(`GitHub に繋がりませんでした（${(err as Error).message}）`, "network");
+      }
+      await res.body?.cancel();
+      if (res.status === 200) return true;
+      if (res.status === 404) return false;
+      if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
+      throw new GithubError(`GitHub が答えませんでした（HTTP ${res.status}）`, String(res.status));
     },
   };
 }

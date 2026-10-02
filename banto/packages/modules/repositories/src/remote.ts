@@ -17,6 +17,14 @@ export type RemoteLocation =
 
 const GITHUB_HOSTS = new Set(["github.com", "www.github.com"]);
 
+/**
+ * GitHub と見なす host を足す——**行き先を替えたときだけ**（試験・E2E の偽の GitHub。`BANTO_REPOSITORIES_GITHUB_URL`）。
+ * 足さないと、偽の GitHub から clone したものの origin が「GitHub の外」と読まれる
+ */
+export function registerGithubHost(host: string): void {
+  GITHUB_HOSTS.add(host.toLowerCase());
+}
+
 /** `owner/name(.git)` の部分を読む。形が違えば undefined */
 function ownerAndName(path: string): GithubLocation | undefined {
   const m = path.replace(/^\/+/, "").replace(/\/+$/, "").match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);
@@ -40,7 +48,7 @@ export function parseRemoteUrl(url: string): RemoteLocation {
   }
   try {
     const u = new URL(text);
-    const loc = GITHUB_HOSTS.has(u.hostname.toLowerCase()) ? ownerAndName(u.pathname) : undefined;
+    const loc = GITHUB_HOSTS.has(u.hostname.toLowerCase()) || GITHUB_HOSTS.has(u.host.toLowerCase()) ? ownerAndName(u.pathname) : undefined;
     return loc ? { kind: "github", ...loc } : { kind: "elsewhere", url: text };
   } catch {
     return { kind: "elsewhere", url: text };

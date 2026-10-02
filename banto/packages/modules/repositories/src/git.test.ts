@@ -73,7 +73,16 @@ const TRIGGERS: Array<{ mark: string; args: string[]; input?: string; edit?: boo
 ];
 
 test("走らせてよいサブコマンドは一覧のものだけ（増やすときはこの試験も直す）", () => {
-  assert.deepEqual([...GIT_COMMANDS], ["rev-parse", "worktree list", "remote get-url", "symbolic-ref", "rev-list"]);
+  assert.deepEqual([...GIT_COMMANDS], [
+    "rev-parse",
+    "worktree list",
+    "remote get-url",
+    "symbolic-ref",
+    "rev-list",
+    "config --get init.defaultBranch",
+    "init",
+    "clone",
+  ]);
 });
 
 test("フォルダの設定がコマンドを指していても、読む口からは何も走らない——潰しはどのコマンドにも効く", async () => {

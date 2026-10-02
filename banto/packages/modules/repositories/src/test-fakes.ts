@@ -3,8 +3,12 @@
 // 偽の GitHub は本物と同じ話し方をする——form で受け、`{error}` を 200 で返し、refresh token は**1回使うと無効**
 // （回る）。同時に2本が同じ鍵で更新すると、片方は `bad_refresh_token` で負ける（本物と同じ）。
 
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GithubEndpoints } from "./github.js";
 import type { NoticeSink } from "./relay-client.js";
 import type { AliasEntry, AliasPlace, VaultAccess } from "./vault.js";
@@ -32,14 +36,40 @@ export interface FakeGithub {
   /** 更新を断らせる（`bad_refresh_token` 等） */
   refreshError: string | undefined;
   refreshCalls: number;
+  /**
+   * リポジトリ（`owner/name` の小文字 → 非公開か・読める login）。中身は `gitRoot` の bare リポジトリで、
+   * **本物の git が HTTP で clone できる**（`git http-backend` を CGI で動かす）
+   */
+  repos: Map<string, { private: boolean; readers: string[] }>;
+  gitRoot: string;
+  /** git の要求（パスと Authorization の見出し）——資格情報が渡ったかを試験が見る */
+  gitRequests: Array<{ path: string; authorization?: string }>;
+  /** git の要求への返事を遅らせる（clone の最中を試験が見るため） */
+  gitDelayMs: number;
+  /** リポジトリを作る（1コミット入り） */
+  addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[] }): void;
   close(): Promise<void>;
+}
+
+/** HTTP の Basic の見出しから password を取り出す */
+function basicPassword(header: string | undefined): string | undefined {
+  const m = (header ?? "").match(/^Basic (.+)$/);
+  if (!m) return undefined;
+  const decoded = Buffer.from(m[1]!, "base64").toString("utf8");
+  return decoded.slice(decoded.indexOf(":") + 1);
 }
 
 export const FAKE_CLIENT_ID = "Iv23liFAKECLIENT";
 
-export async function startFakeGithub(): Promise<FakeGithub> {
+export async function startFakeGithub(opts: { gitRoot?: string } = {}): Promise<FakeGithub> {
   let seq = 0;
-  const state: Omit<FakeGithub, "endpoints" | "close"> = {
+  const gitRoot = opts.gitRoot ?? mkdtempSync(join(tmpdir(), "banto-fake-github-git-"));
+  const repos = new Map<string, { private: boolean; readers: string[] }>();
+  const state: Omit<FakeGithub, "endpoints" | "close" | "addRepo"> = {
+    repos,
+    gitRoot,
+    gitRequests: [],
+    gitDelayMs: 0,
     requests: [],
     script: ["pending", "authorized"],
     loginForDevice: "tjst-t",
@@ -121,7 +151,77 @@ export async function startFakeGithub(): Promise<FakeGithub> {
           if (patch.loginForDevice) state.loginForDevice = patch.loginForDevice;
           if ("accessTokenTtl" in patch) state.accessTokenTtl = patch.accessTokenTtl ?? undefined;
           if ("refreshError" in patch) state.refreshError = patch.refreshError ?? undefined;
+          const add = (patch as { addRepo?: { owner: string; name: string; private?: boolean; readers?: string[] } }).addRepo;
+          if (add) addRepo(add.owner, add.name, add);
           return send(200, { refreshCalls: state.refreshCalls });
+        }
+        // ── git（smart HTTP）。GitHub と同じく、資格情報が無ければ 401、見えなければ 404 ──
+        const gitPath = url.pathname.match(/^\/([^/]+)\/([^/]+?)\.git(\/.*)$/);
+        if (gitPath) {
+          state.gitRequests.push({ path: url.pathname, ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}) });
+          if (state.gitDelayMs > 0) await new Promise((r) => setTimeout(r, state.gitDelayMs));
+          const key = `${gitPath[1]}/${gitPath[2]}`.toLowerCase();
+          const repo = repos.get(key);
+          const password = basicPassword(req.headers.authorization);
+          const login = password ? state.users.get(password) : undefined;
+          if (!repo || repo.private) {
+            if (!password) {
+              res.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' });
+              return res.end();
+            }
+            if (!login) {
+              res.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' });
+              return res.end("Invalid username or token.");
+            }
+            if (!repo || !repo.readers.some((r) => r.toLowerCase() === login.toLowerCase())) {
+              res.writeHead(404, { "content-type": "text/plain" });
+              return res.end("Repository not found.");
+            }
+          }
+          const cgi = spawn("git", ["http-backend"], {
+            env: {
+              PATH: process.env.PATH ?? "",
+              GIT_PROJECT_ROOT: gitRoot,
+              GIT_HTTP_EXPORT_ALL: "1",
+              PATH_INFO: `/${gitPath[1]}/${gitPath[2]}.git${gitPath[3]}`,
+              QUERY_STRING: url.search.slice(1),
+              REQUEST_METHOD: req.method ?? "GET",
+              CONTENT_TYPE: req.headers["content-type"] ?? "",
+              ...(req.headers["content-encoding"] ? { HTTP_CONTENT_ENCODING: String(req.headers["content-encoding"]) } : {}),
+              ...(req.headers["git-protocol"] ? { GIT_PROTOCOL: String(req.headers["git-protocol"]) } : {}),
+              REMOTE_ADDR: "127.0.0.1",
+            },
+            stdio: ["pipe", "pipe", "ignore"],
+          });
+          cgi.stdin.end(Buffer.concat(chunks));
+          const out: Buffer[] = [];
+          cgi.stdout.on("data", (c: Buffer) => out.push(c));
+          cgi.on("close", () => {
+            const all = Buffer.concat(out);
+            const split = all.indexOf("\r\n\r\n");
+            const head = all.subarray(0, split).toString("utf8").split("\r\n");
+            const headers: Record<string, string> = {};
+            let status = 200;
+            for (const line of head) {
+              const at = line.indexOf(":");
+              const k = line.slice(0, at).trim();
+              const v = line.slice(at + 1).trim();
+              if (k.toLowerCase() === "status") status = Number.parseInt(v, 10);
+              else if (k) headers[k] = v;
+            }
+            res.writeHead(status, headers);
+            res.end(all.subarray(split + 4));
+          });
+          return;
+        }
+        if (url.pathname.startsWith("/repos/") && req.method === "GET") {
+          const [, , owner, name] = url.pathname.split("/");
+          const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+          const login = state.users.get(token);
+          if (!login) return send(401, { message: "Bad credentials" });
+          const repo = repos.get(`${owner}/${name}`.toLowerCase());
+          const visible = repo && (!repo.private || repo.readers.some((r) => r.toLowerCase() === login.toLowerCase()));
+          return visible ? send(200, { full_name: `${owner}/${name}`, private: repo.private }) : send(404, { message: "Not Found" });
         }
         if (url.pathname === "/user" && req.method === "GET") {
           const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -133,10 +233,27 @@ export async function startFakeGithub(): Promise<FakeGithub> {
       })();
     });
   });
+  function addRepo(owner: string, name: string, o: { private?: boolean; readers?: string[] } = {}): void {
+    const bare = join(gitRoot, owner, `${name}.git`);
+    const work = mkdtempSync(join(tmpdir(), "banto-fake-github-work-"));
+    const g = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=fake", "-c", "user.email=fake@example.com", "-c", "init.defaultBranch=main", ...args], {
+        cwd,
+        stdio: "ignore",
+      });
+    g(work, "init", "-q");
+    writeFileSync(join(work, "README.md"), `# ${owner}/${name}\n`);
+    g(work, "add", ".");
+    g(work, "commit", "-q", "-m", "first");
+    mkdirSync(join(gitRoot, owner), { recursive: true });
+    g(work, "clone", "-q", "--bare", work, bare);
+    repos.set(`${owner}/${name}`.toLowerCase(), { private: o.private ?? false, readers: o.readers ?? [owner] });
+  }
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return Object.assign(state, {
     endpoints: { web: base, api: base },
+    addRepo,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   });
 }
@@ -194,6 +311,15 @@ export class MemoryVault implements VaultAccess {
     if (!existing) this.aliases.push({ ...at, kind: "oauth-token", note: input.note });
     this.values.set(this.key(at), input.value);
     return at;
+  }
+  /** ssh-agent の窓口を頼まれた鍵（試験が見る） */
+  readonly agents: AliasPlace[] = [];
+  agentSocket = "/tmp/banto-fake-agent.sock";
+  async startSshAgent(place: AliasPlace, callId?: string) {
+    this.calls.push({ op: "startSshAgent", ...(callId ? { callId } : {}) });
+    if (!this.find(place)) throw new Error(`identity "${place.name}" not found`);
+    this.agents.push(place);
+    return { socketPath: this.agentSocket };
   }
   async remove(place: AliasPlace, callId?: string) {
     this.calls.push({ op: "remove", ...(callId ? { callId } : {}) });
