@@ -24,7 +24,8 @@ import {
 import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf, callerOf } from "@banto/module-contract";
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
 import { LIST_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
-import type { GithubApi } from "./github.js";
+import { Cloner } from "./clone.js";
+import { GITHUB_COM, type GithubApi, type GithubEndpoints } from "./github.js";
 import { LedgerStore } from "./ledger.js";
 import type { NoticeSink, ProjectsSource } from "./relay-client.js";
 import type { VaultAccess } from "./vault.js";
@@ -52,6 +53,8 @@ export interface RepositoriesServerDeps {
   vault: VaultAccess;
   /** GitHub（試験では偽物の HTTP に向ける） */
   github: GithubApi;
+  /** GitHub の行き先（clone の URL を作るのに使う。既定は本物） */
+  githubEndpoints?: GithubEndpoints;
   /** 受信箱（ログインの更新に失敗したとき） */
   notices: NoticeSink;
   /** home（試験で差し替える）。既定は `os.homedir()` */
@@ -100,6 +103,21 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
   });
+  const cloner = new Cloner({
+    store,
+    accounts,
+    vault: deps.vault,
+    github: deps.github,
+    endpoints: deps.githubEndpoints ?? GITHUB_COM,
+    ...(home ? { home } : {}),
+  });
+  const lookupProjects = async (meta: Record<string, unknown> | undefined): Promise<ProjectsLookup> => {
+    try {
+      return { ok: true, projects: await deps.projects.listProjects(callIdOf(meta)) };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  };
   const server = new Server(
     { name: "banto-module-repositories", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -135,6 +153,20 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       adminTool("verify_github_account", "今使えるトークンで GitHub に login を確かめる（期限が近ければ更新する）", { login: { type: "string" } }, [
         "login",
       ]),
+      // ── 始める手（段階3）：URL から clone・新しいリポジトリ。clone は背景の仕事で、画面が進み具合を聞きに来る ──
+      adminTool("inspect_clone", "その URL を clone すると何が起きるか（もう手元にある・clone し直す・置く場所とそこにあるもの）", {
+        source: { type: "string" },
+        folder: { type: "string" },
+      }, ["source"]),
+      adminTool("start_clone", "clone を始める（account は GitHub の login、null でアカウントを使わない）", {
+        source: { type: "string" },
+        folder: { type: "string" },
+        account: { type: ["string", "null"] },
+      }, ["source"]),
+      adminTool("clone_status", "clone の進み具合と結果", { jobId: { type: "string" } }, ["jobId"]),
+      adminTool("cancel_clone", "clone をやめる（途中まで作ったフォルダは消す）", { jobId: { type: "string" } }, ["jobId"]),
+      adminTool("inspect_new_repository", "その名前で新しいリポジトリを作ると何が起きるか", { name: { type: "string" } }, ["name"]),
+      adminTool("create_repository", "置き場に空のリポジトリを作り（git init）、一覧に足す", { name: { type: "string" } }, ["name"]),
       adminTool("remove_github_account", "アカウントの登録を外す（ブラウザでログインしたものは Vault のログイン情報も消す）", {
         login: { type: "string" },
       }, ["login"]),
@@ -180,6 +212,32 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
           const next = args.repoHome === null ? null : str(args.repoHome, "repoHome");
           return json(await setRepoHome(store, next, home));
         }
+        case "inspect_clone":
+          return json(
+            await cloner.inspect(
+              { source: str(args.source, "source"), ...(typeof args.folder === "string" ? { folder: args.folder } : {}) },
+              await lookupProjects(meta),
+            ),
+          );
+        case "start_clone":
+          return json(
+            await cloner.start(
+              {
+                source: str(args.source, "source"),
+                ...(typeof args.folder === "string" ? { folder: args.folder } : {}),
+                ...(args.account === null ? { account: null } : typeof args.account === "string" ? { account: args.account } : {}),
+              },
+              callIdOf(meta),
+            ),
+          );
+        case "clone_status":
+          return json(cloner.status(str(args.jobId, "jobId")));
+        case "cancel_clone":
+          return json(cloner.cancel(str(args.jobId, "jobId")));
+        case "inspect_new_repository":
+          return json(await cloner.inspectNew({ name: typeof args.name === "string" ? args.name : "" }, callIdOf(meta)));
+        case "create_repository":
+          return json(await cloner.create({ name: str(args.name, "name") }));
         case "list_github_accounts":
           return json(await accounts.list());
         case "list_credential_aliases":
@@ -281,7 +339,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   }
   const { HostRelay } = await import("./relay-client.js");
   const { RelayVault } = await import("./vault.js");
-  const { GITHUB_COM, httpGithub } = await import("./github.js");
+  const { httpGithub } = await import("./github.js");
   // **行き先を替える穴は試験のためだけ**（E2E が偽の GitHub に向ける。skills の `BANTO_SKILLS_GITHUB_API_URL` と同じ形）。
   // 片方だけ指すと、ログインは偽物・API は本物のように混ざる——両方か、どちらも無しか
   const web = process.env.BANTO_REPOSITORIES_GITHUB_URL;
@@ -294,12 +352,18 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   if (web && api && (web !== GITHUB_COM.web || api !== GITHUB_COM.api)) {
     console.error(`[repositories] GitHub の行き先を替えています：ログイン ${web}・API ${api}（BANTO_REPOSITORIES_GITHUB_URL・BANTO_REPOSITORIES_GITHUB_API_URL）`);
   }
+  if (web && api) {
+    // 偽の GitHub から clone したものも GitHub のものと読む
+    const { registerGithubHost } = await import("./remote.js");
+    registerGithubHost(new URL(web).host);
+  }
   const relay = new HostRelay(hostUrl, hostToken);
   const server = createRepositoriesServer({
     dataDir,
     projects: relay,
     vault: new RelayVault(relay),
     github: httpGithub(web && api ? { web, api } : GITHUB_COM),
+    githubEndpoints: web && api ? { web, api } : GITHUB_COM,
     notices: relay,
   });
   await server.connect(new StdioServerTransport());

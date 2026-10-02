@@ -5,3 +5,4 @@ export * from "./server.js";
 export * from "./accounts.js";
 export * from "./github.js";
 export * from "./vault.js";
+export * from "./clone.js";

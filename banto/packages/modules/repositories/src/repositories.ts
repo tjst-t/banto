@@ -241,7 +241,7 @@ function toRow(
 
 // ── Import ────────────────────────────────────────────────────────────────
 
-interface Place {
+export interface Place {
   path: string;
   displayPath: string;
   name: string;
@@ -268,7 +268,7 @@ export interface ImportInspection extends Place {
   check: ImportCheck;
 }
 
-function place(path: string, home: string): Place {
+export function place(path: string, home: string): Place {
   return { path, displayPath: displayPath(path, home), name: path === "/" ? "/" : basename(path) };
 }
 
@@ -318,7 +318,7 @@ function commitsOf(facts: Extract<FolderFacts, { kind: "repo" }>): { commits?: n
   };
 }
 
-function newEntry(facts: Extract<FolderFacts, { kind: "repo" }>): LedgerEntry {
+export function newEntry(facts: Extract<FolderFacts, { kind: "repo" }>): LedgerEntry {
   return {
     path: facts.path,
     ...(facts.remote.kind === "github" ? { github: { owner: facts.remote.owner, name: facts.remote.name } } : {}),

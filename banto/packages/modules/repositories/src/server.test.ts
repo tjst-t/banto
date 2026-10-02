@@ -219,3 +219,55 @@ test("アカウントの口：PAT とブラウザでログインが画面の口�
     await gh.close();
   }
 });
+
+test("clone と新しいリポジトリの口：画面から通り、返る値にトークンが入らない。Vault には押した呼び出しの印で行く", async () => {
+  const { startFakeGithub } = await import("./test-fakes.js");
+  const { registerGithubHost } = await import("./remote.js");
+  const gh = await startFakeGithub();
+  registerGithubHost(new URL(gh.endpoints.web).host);
+  const vault = new MemoryVault();
+  try {
+    await withServer(
+      { listProjects: async () => [] },
+      async (client) => {
+        const call = async (name: string, args: Record<string, unknown> = {}) => {
+          const r = await client.callTool({ name, arguments: args, _meta: ADMIN });
+          assert.ok(!isError(r), `${name}: ${textOf(r)}`);
+          return { text: textOf(r), body: JSON.parse(textOf(r)) };
+        };
+        const token = "ghp_server_clone_token_3";
+        const place = vault.seed({ implementation: "vault-local", name: "alice-pat", group: "instance", kind: "secret" }, token);
+        gh.users.set(token, "alice");
+        gh.addRepo("alice", "secret", { private: true });
+        await call("add_github_account_with_pat", { patAlias: place });
+        const texts: string[] = [];
+        const look = await call("inspect_clone", { source: "alice/secret" });
+        texts.push(look.text);
+        assert.equal(look.body.accounts.preselected, "alice");
+        const job = await call("start_clone", { source: "alice/secret" });
+        texts.push(job.text);
+        let status = job.body;
+        while (status.state === "running") {
+          await new Promise((r) => setTimeout(r, 30));
+          const s = await call("clone_status", { jobId: job.body.id });
+          texts.push(s.text);
+          status = s.body;
+        }
+        assert.equal(status.state, "done", JSON.stringify(status.error));
+        const made = await call("create_repository", { name: "fresh" });
+        texts.push(made.text);
+        assert.equal(made.body.displayPath, "~/banto/fresh");
+        const listing = await call("list_repositories");
+        assert.deepEqual(listing.body.rows.map((r: { name: string }) => r.name).sort(), ["fresh", "secret"]);
+        assert.ok(!texts.join("\n").includes(token), "画面に返す値にトークンが入った");
+        assert.ok(vault.calls.filter((c) => c.op === "resolve").every((c) => c.callId === "call-1"), JSON.stringify(vault.calls));
+        // AI のターンからは呼べない
+        const turn = await client.callTool({ name: "start_clone", arguments: { source: "alice/secret" }, _meta: { [CALLER_META_KEY]: { project: "p1" } } });
+        assert.ok(isError(turn));
+      },
+      { vault, github: httpGithub(gh.endpoints), githubEndpoints: gh.endpoints },
+    );
+  } finally {
+    await gh.close();
+  }
+});
