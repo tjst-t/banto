@@ -109,10 +109,19 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
   （いろんな host に入れるため。`defaultContainerLimits`）：メモリ＝host の全メモリから 2GiB を host に残した残り
   （最低 1GiB）、CPU＝コア数から1を引いた分を時間で切る上限（`limits.cpu.allowance`、最低1コア）、プロセス数＝8192。
   banto 全体用のコンテナも同じ。動いているコンテナにもそのまま効く（起こし直さない）。Subagent とその子（Claude Code 等）は
-  Project のコンテナの中で動くので、その Project の枠に入る。上限の上書き（banto 全体・Project ごと）はまだ無い。
-  **全 Project の合計の上限は未決**：1台ごとの上限では、重い Project が2つ同時に暴れると合わせて host を越える。
-  Incus の区画（`user-1000`）に合計の上限を付けるのが本筋だが、権限を絞った banto から変えられるかは未確認
-  （host で人が一度設定する形になりそう）
+  Project のコンテナの中で動くので、その Project の枠に入る。
+  **上書き**（2026-10-02）：banto 全体の設定「コンテナ」で、host に残すメモリ・残す CPU・1台あたりのプロセス数を変えられる
+  （鍵 `container.limits.hostReserveMemoryMiB`・`hostReserveCpus`・`processes`、instance 既定）。Project の設定の
+  「コンテナ」で、その Project のメモリ・CPU・プロセス数を**banto 全体の上限より下げることだけ**できる（鍵
+  `container.limits.project.*`、Project 上書き。上げた値は上限で止まる——上げられると host を守る上限が外れる）。
+  保存すると動いているコンテナにも起こし直さずに効く。
+  **全 Project の合計の上限は Incus では掛けない**（2026-10-02 に実測）：Incus の区画の `limits.memory` は各コンテナに
+  **書いた上限の合計**を数えるだけで、使っている量ではない——1台の上限が host のほぼ全部なので、区画に合計を付けると
+  2台目が作れない。しかも区画の設定は権限を絞った banto からは変えられない（`Certificate is restricted`）。
+  コンテナの cgroup は Incus がルートの直下（`/lxc.payload.<区画>_<名前>`）に作るので、systemd の枠にも入れられない。
+  代わりに **host の側を守る**：`system.slice` の CPUWeight を上げると、コンテナが CPU を取り合っても host のサービスが
+  先に回る（入れ子の環境で、競合時の取り分が約47%→約81%になるのを実測）。手順は `docs/runbooks/host-resource-protection.md`
+  （host で人が一度行う）
 - **置き場は banto 専用の btrfs（`banto`）**（決定・2026-09-25、実測）：写しを共有するので2台目からは 0.2 秒で作れ、
   3台とイメージで 627MB（`dir` は毎回 3.4 秒・1台 602MB 丸写し。E2E は Project ごとに1台作る）
 

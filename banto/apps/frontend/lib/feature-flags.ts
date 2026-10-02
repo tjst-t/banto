@@ -65,6 +65,9 @@ export const CONNECTED_FEATURES = {
   // **Shell 専用のホームに写すもの**（決定・2026-09-23、ユーザー）。host が写し、立っている
   // Shell にも写し直す
   shellHome: true,
+  // **コンテナの資源の上限**（決定・2026-10-02、ユーザー）。banto 全体は「この機械に残す分」、Project ごとは
+  // それより下げる値。host が計算し、動いているコンテナにも効かせる
+  containerLimits: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す

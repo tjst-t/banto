@@ -606,6 +606,49 @@ export interface RealProjectContainer {
   nesting: boolean;
   /** まだ一度も Module を起こしていなければ null（最初に要るときに作る） */
   container: { name: string; status: string } | null;
+  /** 資源の上限（2026-10-02）。host がコンテナを使っていなければ null */
+  limits: RealContainerLimits | null;
+}
+
+/** 資源の上限の数（メモリ MiB・CPU コア数・プロセス数） */
+export interface RealLimitNumbers {
+  memoryMiB: number;
+  cpus: number;
+  processes: number;
+}
+export interface RealContainerLimitPolicy {
+  hostReserveMemoryMiB: number;
+  hostReserveCpus: number;
+  processes: number;
+}
+/** host が計算した上限（`packages/core/src/container-limits.ts` の ContainerLimitsView） */
+export interface RealContainerLimits {
+  host: { memoryMiB: number; cpus: number };
+  policy: RealContainerLimitPolicy;
+  defaults: RealContainerLimitPolicy;
+  ceiling: RealLimitNumbers;
+  override?: Partial<RealLimitNumbers>;
+  effective?: RealLimitNumbers;
+}
+
+export async function fetchRealContainerLimits(): Promise<RealContainerLimits> {
+  return request<RealContainerLimits>("/api/container-limits");
+}
+
+/** banto 全体：host に何を残すか。動いているコンテナにも、起こし直さずに効く */
+export async function setRealContainerLimitPolicy(policy: RealContainerLimitPolicy): Promise<RealContainerLimits> {
+  return request<RealContainerLimits>("/api/container-limits", { method: "PUT", body: JSON.stringify(policy) });
+}
+
+/** Project ごとの上限（banto 全体の上限より下げることだけできる）。null は banto 全体のまま */
+export async function setRealProjectContainerLimits(
+  projectId: string,
+  limits: { memoryMiB: number | null; cpus: number | null; processes: number | null },
+): Promise<RealContainerLimits> {
+  return request<RealContainerLimits>(`/api/projects/${projectId}/container/limits`, {
+    method: "PUT",
+    body: JSON.stringify(limits),
+  });
 }
 
 export async function fetchRealProjectContainer(projectId: string): Promise<RealProjectContainer> {

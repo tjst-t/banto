@@ -75,23 +75,94 @@ export const HOST_MEMORY_RESERVE_BYTES = 2 * 1024 ** 3;
 const MIN_CONTAINER_MEMORY_BYTES = 1024 ** 3;
 export const DEFAULT_CONTAINER_PROCESSES = 8192;
 
+/** host の資源（試験では差し替える） */
+export interface HostResources {
+  memoryBytes: number;
+  cpus: number;
+}
+export function hostResources(): HostResources {
+  return { memoryBytes: totalmem(), cpus: availableParallelism() };
+}
+
 /**
- * **既定の上限を、この host の資源から計算する**（決定・2026-10-02、ユーザー）。いろんな host に入れるので
- * 固定の数値にしない：
- * - メモリ：host の全メモリから 2GiB を host に残した残り（最低 1GiB）
- * - CPU：host のコア数から1を引いた分（最低1コア）——1コアは常に host と banto 本体に残る
- * - プロセス数：8192（host による差が小さいので固定）
+ * **banto 全体の決め方**（追加・2026-10-02）。上限そのものではなく「host に何を残すか」で書く——いろんな host に
+ * 入れても同じ設定で意味が通る
+ */
+export interface ContainerLimitPolicy {
+  /** host に残すメモリ（MiB） */
+  hostReserveMemoryMiB: number;
+  /** host に残す CPU（コア数） */
+  hostReserveCpus: number;
+  /** 1台あたりのプロセス数の上限 */
+  processes: number;
+}
+export const DEFAULT_LIMIT_POLICY: ContainerLimitPolicy = {
+  hostReserveMemoryMiB: HOST_MEMORY_RESERVE_BYTES / 1024 ** 2,
+  hostReserveCpus: 1,
+  processes: DEFAULT_CONTAINER_PROCESSES,
+};
+
+/** Project ごとに絞る値。無いものは banto 全体の天井のまま */
+export interface ContainerLimitOverride {
+  memoryMiB?: number;
+  cpus?: number;
+  processes?: number;
+}
+
+/** 人に見せる数の形（メモリ MiB・CPU コア数・プロセス数） */
+export interface LimitNumbers {
+  memoryMiB: number;
+  cpus: number;
+  processes: number;
+}
+
+const MIN_CPUS = 0.1;
+const MIN_OVERRIDE_MEMORY_MIB = 256;
+const MIN_PROCESSES = 256;
+
+/**
+ * **上限を決める**（決定・2026-10-02、ユーザー）。いろんな host に入れるので固定の数値にしない：
+ * - 天井（banto 全体）：メモリ＝host の全メモリから残す分を引いた残り（最低 1GiB）、CPU＝コア数から残す分を引いた残り
+ *   （最低1コア）、プロセス数＝決めた値。既定は 2GiB・1コアを残し、8192
+ * - Project ごとの値は**天井より下げることだけ**できる——上げられると、host を守るための上限が Project の設定で外れる
  *
  * Project のコンテナの中で動く banto（E2E）から呼ぶと、中から見える資源（親の上限）で計算される
  */
-export function defaultContainerLimits(host: { memoryBytes: number; cpus: number } = { memoryBytes: totalmem(), cpus: availableParallelism() }): ContainerLimits {
-  const memory = Math.max(MIN_CONTAINER_MEMORY_BYTES, host.memoryBytes - HOST_MEMORY_RESERVE_BYTES);
-  const cores = Math.max(1, host.cpus - 1);
+export function limitCeiling(host: HostResources, policy: ContainerLimitPolicy): LimitNumbers {
+  const hostMiB = Math.floor(host.memoryBytes / 1024 ** 2);
   return {
-    memory: `${Math.floor(memory / 1024 ** 2)}MiB`,
-    cpuAllowance: `${cores * 100}ms/100ms`,
-    processes: String(DEFAULT_CONTAINER_PROCESSES),
+    memoryMiB: Math.max(MIN_CONTAINER_MEMORY_BYTES / 1024 ** 2, hostMiB - policy.hostReserveMemoryMiB),
+    // 天井は最低1コア（host が1コアならその1コア）——残す分を引いて 0 になっても、コンテナが動けるように
+    cpus: Math.max(Math.min(1, host.cpus), roundCpus(host.cpus - policy.hostReserveCpus)),
+    processes: Math.max(MIN_PROCESSES, Math.floor(policy.processes)),
   };
+}
+
+export function effectiveLimitNumbers(ceiling: LimitNumbers, override: ContainerLimitOverride = {}): LimitNumbers {
+  const pick = (v: number | undefined, max: number, min: number) => (v === undefined ? max : Math.min(max, Math.max(min, v)));
+  return {
+    memoryMiB: Math.floor(pick(override.memoryMiB, ceiling.memoryMiB, MIN_OVERRIDE_MEMORY_MIB)),
+    cpus: roundCpus(pick(override.cpus, ceiling.cpus, MIN_CPUS)),
+    processes: Math.floor(pick(override.processes, ceiling.processes, MIN_PROCESSES)),
+  };
+}
+
+function roundCpus(v: number): number {
+  return Math.round(v * 10) / 10;
+}
+
+/** 数 → Incus の設定の文字列 */
+export function toContainerLimits(n: LimitNumbers): ContainerLimits {
+  return {
+    memory: `${n.memoryMiB}MiB`,
+    cpuAllowance: `${Math.round(n.cpus * 100)}ms/100ms`,
+    processes: String(n.processes),
+  };
+}
+
+/** 既定の決め方で、この host の上限（上書きなし） */
+export function defaultContainerLimits(host: HostResources = hostResources()): ContainerLimits {
+  return toContainerLimits(limitCeiling(host, DEFAULT_LIMIT_POLICY));
 }
 
 /** 上限の Incus の設定の名前 */
@@ -474,6 +545,21 @@ export class ProjectContainers {
   /** その banto（`owner`）が作ったコンテナの名前 */
   async listOwned(owner: string): Promise<string[]> {
     return (await this.listBanto()).filter((c) => c.owner === owner).map((c) => c.name);
+  }
+
+  /**
+   * **動いているコンテナの上限だけを書き換える**（追加・2026-10-02）。設定を変えたときに、起こし直さずに効かせる。
+   * 無ければ何もしない（次に作るとき `ensure` が付ける）。書き換えたら true
+   */
+  async applyLimits(name: string, limits: ContainerLimits): Promise<boolean> {
+    return this.serialize(name, async () => {
+      const st = await this.state(name);
+      if (!st) return false;
+      const changes = Object.entries(limitsConfig(limits)).filter(([k, v]) => st.config[k] !== v);
+      if (changes.length === 0) return false;
+      await this.incus(["config", "set", name, ...changes.map(([k, v]) => `${k}=${v}`)], "資源の上限を変えるの");
+      return true;
+    });
   }
 
   /** 穏やかに止め、上限を過ぎたら強制停止する。無い・止まっているなら何もしない */

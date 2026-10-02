@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, defaultContainerLimits, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
+import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, execInContainer, limitCeiling, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 /** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
@@ -254,6 +254,16 @@ test("既定の上限は host の資源から計算する——メモリは 2GiB
     cpuAllowance: "100ms/100ms",
     processes: "8192",
   });
+});
+
+test("banto 全体で残す量を変えられ、Project ごとの値は天井より下げることだけできる", () => {
+  const ceiling = limitCeiling({ memoryBytes: 16 * 1024 ** 3, cpus: 8 }, { hostReserveMemoryMiB: 4096, hostReserveCpus: 2, processes: 4096 });
+  assert.deepEqual(ceiling, { memoryMiB: 12288, cpus: 6, processes: 4096 });
+  // 上げようとしても天井で止まる・下げたものは効く・小さすぎる値は下限まで
+  assert.deepEqual(effectiveLimitNumbers(ceiling, { memoryMiB: 99999, cpus: 1.5, processes: 10 }), { memoryMiB: 12288, cpus: 1.5, processes: 256 });
+  assert.deepEqual(effectiveLimitNumbers(ceiling, {}), ceiling);
+  // 残す量が host より大きくても、起きられないほど小さくしない
+  assert.deepEqual(limitCeiling({ memoryBytes: 2 * 1024 ** 3, cpus: 1 }, { hostReserveMemoryMiB: 4096, hostReserveCpus: 2, processes: 8192 }), { memoryMiB: 1024, cpus: 1, processes: 8192 });
 });
 
 test("上限を付ける——作るときも、前からある動いているコンテナにも。起こし直さず、同じなら書き直さない", async () => {

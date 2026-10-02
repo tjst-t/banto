@@ -22,7 +22,8 @@ import {
   hostPrereqDeps,
   instanceContainerId,
   containerNameFor,
-  defaultContainerLimits,
+  hostResources,
+  toContainerLimits,
   runIncus,
 } from "@banto/container";
 import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
@@ -47,6 +48,7 @@ import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY } from "./http/app.js";
+import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
@@ -421,8 +423,8 @@ async function main(): Promise<void> {
         uid,
         gid,
         owner: bootstrap.dataDir,
-        // 資源の上限（決定・2026-10-02）。この host の資源から計算する——固定の数値にしない
-        limits: defaultContainerLimits(),
+        // 資源の上限（決定・2026-10-02）。この host の資源と、banto 全体・Project ごとの設定から計算する
+        limits: toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), placement.id)),
       });
       const r: ReadyContainer = {
         name,
@@ -1618,6 +1620,18 @@ async function main(): Promise<void> {
       const name = containerNameFor(projectId);
       const st = await containers.state(name);
       return st ? { name, status: st.status } : undefined;
+    },
+    // **資源の上限**（決定・2026-10-02）。設定を変えたら、動いているコンテナにも起こし直さずに効かせる
+    containerLimits: {
+      describe: (projectId?: string) => describeLimits(runtimeConfig, hostResources(), projectId),
+      async apply(projectId?: string) {
+        const ids = projectId !== undefined
+          ? [projectId]
+          : [...projectThread.listProjects().map((p) => p.id), instanceContainerId(bootstrap.dataDir)];
+        for (const id of ids) {
+          await containers.applyLimits(containerNameFor(id), toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), id)));
+        }
+      },
     },
     resolveModulesForThread,
     resolveSessionSkills,

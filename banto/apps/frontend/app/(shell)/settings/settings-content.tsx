@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Globe, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
+import { Bell, Box, Globe, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -12,6 +12,7 @@ import { InstanceModulesPanel } from "@/components/banto/settings/instance-modul
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
 import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import { ShellHomePanel } from "@/components/banto/settings/shell-home-panel";
+import { ContainerLimitsPanel } from "@/components/banto/settings/container-limits";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
@@ -72,6 +73,9 @@ const INSTANCE_MODULES_CATEGORY: SettingsNavItem = {
 /** Shell 専用のホームに写すもの（2026-09-23）。 */
 const SHELL_HOME_CATEGORY: SettingsNavItem = { section: "shell-home", label: "Shell のホーム", icon: SquareTerminal };
 
+/** コンテナの資源の上限（2026-10-02）。この機械に何を残すか */
+const CONTAINER_CATEGORY: SettingsNavItem = { section: "container", label: "コンテナ", icon: Box };
+
 /** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
 
@@ -83,6 +87,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
       : []),
   ...(CONNECTED_FEATURES.skills ? [SKILLS_CATEGORY] : []),
   ...(CONNECTED_FEATURES.shellHome ? [SHELL_HOME_CATEGORY] : []),
+  ...(CONNECTED_FEATURES.containerLimits ? [CONTAINER_CATEGORY] : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
 ];
 
@@ -170,6 +175,9 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
   }
   if (section === "shell-home") {
     return <ShellHomePanel />;
+  }
+  if (section === "container") {
+    return <ContainerLimitsPanel />;
   }
   if (section === "roles") {
     return (

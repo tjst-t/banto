@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { fetchRealProjectContainer, setRealProjectContainerNesting, type RealProjectContainer } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
+import { ProjectContainerLimits } from "@/components/banto/settings/container-limits";
 
 /** Incus の状態を人の言葉に（知らないものはそのまま出す——言い換えで隠さない） */
 function statusLabel(c: RealProjectContainer["container"]): string {
@@ -93,6 +94,14 @@ export function ProjectContainerSection({ projectId }: { projectId: string }) {
               onCheckedChange={(v) => void toggle(v)}
             />
           </div>
+          {state.limits && (
+            <ProjectContainerLimits
+              key={`${projectId}:${JSON.stringify(state.limits.override ?? {})}`}
+              projectId={projectId}
+              limits={state.limits}
+              onSaved={(limits) => setLoaded({ projectId, value: { ...state, limits } })}
+            />
+          )}
         </div>
       )}
     </section>

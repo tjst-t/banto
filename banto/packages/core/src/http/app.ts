@@ -11,6 +11,7 @@
 // hostが/apps/frontendのHTML/JSを配信していたが、Next.jsは自分のサーバを
 // 要るためこの形は成立しない）。別オリジンからのfetch()を通すためCORSを返す。
 
+import { OVERRIDE_KEYS, POLICY_KEYS, parseOverrideBody, parsePolicyBody, type ContainerLimitsView } from "../container-limits.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -189,6 +190,11 @@ export interface AppDeps {
   releaseProjectModules?(projectId: string, opts?: { stopContainer?: boolean }): Promise<string[]>;
   /** Project のコンテナの今の状態（無ければ undefined——まだ一度も Module を起こしていない） */
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
+  /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
+  containerLimits?: {
+    describe(projectId?: string): ContainerLimitsView;
+    apply(projectId?: string): Promise<void>;
+  };
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
   /**
@@ -2506,7 +2512,48 @@ export function createApp(deps: AppDeps) {
         json(res, 200, {
           nesting: deps.runtimeConfig?.resolve(CONTAINER_NESTING_KEY, projectId) === true,
           container: (await deps.projectContainerStatus?.(projectId)) ?? null,
+          limits: deps.containerLimits?.describe(projectId) ?? null,
         });
+        return;
+      }
+      // **Project ごとの資源の上限**（決定・2026-10-02）。天井より下げることだけできる。null は上書きをやめる
+      const containerLimitsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container\/limits$/);
+      if (containerLimitsMatch && req.method === "PUT") {
+        const projectId = containerLimitsMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.runtimeConfig || !deps.containerLimits) return json(res, 501, { error: "設定を保存できません" });
+        let parsed: ReturnType<typeof parseOverrideBody>;
+        try {
+          parsed = parseOverrideBody(await readJsonBody(req));
+        } catch (err) {
+          return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        for (const k of Object.keys(OVERRIDE_KEYS) as (keyof typeof OVERRIDE_KEYS)[]) {
+          const v = parsed[k];
+          if (v === null) await deps.runtimeConfig.unsetProjectOverride(projectId, OVERRIDE_KEYS[k]);
+          else await deps.runtimeConfig.setProjectOverride(projectId, OVERRIDE_KEYS[k], v);
+        }
+        await deps.containerLimits.apply(projectId);
+        json(res, 200, deps.containerLimits.describe(projectId));
+        return;
+      }
+      // **banto 全体の資源の上限**（決定・2026-10-02）：host に何を残すか。変えたら全部のコンテナに効かせる
+      if (url.pathname === "/api/container-limits" && (req.method === "GET" || req.method === "PUT")) {
+        if (!deps.containerLimits) return json(res, 501, { error: "コンテナを使っていません" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          let policy: ReturnType<typeof parsePolicyBody>;
+          try {
+            policy = parsePolicyBody(await readJsonBody(req));
+          } catch (err) {
+            return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+          }
+          for (const k of Object.keys(POLICY_KEYS) as (keyof typeof POLICY_KEYS)[]) {
+            await deps.runtimeConfig.setInstanceDefault(POLICY_KEYS[k], policy[k]);
+          }
+          await deps.containerLimits.apply();
+        }
+        json(res, 200, deps.containerLimits.describe());
         return;
       }
       if (containerMatch && req.method === "PUT") {

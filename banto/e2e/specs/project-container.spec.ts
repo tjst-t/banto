@@ -95,3 +95,75 @@ test("中で Docker を使う——既定は切れていて、入れると保存
 
   expect(pageErrors).toEqual([]);
 });
+
+/** banto の外（Incus）から見た、そのコンテナの上限 */
+function containerLimit(projectId: string, key: string): string {
+  const r = spawnSync("incus", ["config", "get", `banto-${projectId}`, key], { encoding: "utf8", input: "" });
+  if (r.status !== 0) throw new Error(`incus config get が失敗しました：${r.stderr}`);
+  return r.stdout.trim();
+}
+
+// **資源の上限**（決定・2026-10-02）：既定は host の資源から計算して付く。banto 全体の「残す分」と Project ごとの値を
+// 画面で変えると、動いているコンテナに起こし直さずに効く。Project の値は banto 全体の上限より上げられない
+test("資源の上限——既定で付き、banto 全体と Project ごとに画面から変えると、動いているコンテナにそのまま効く", async ({ page }) => {
+  const project = (await (
+    await page.request.post(`${CORE_BASE_URL}/api/projects`, {
+      headers,
+      data: { name: "E2E Container Limits", root: mkdtempSync(join(tmpdir(), "banto-e2e-limits-")) },
+    })
+  ).json()) as { id: string };
+  await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers });
+  await prepareModules(page, project.id);
+
+  type Limits = { host: { memoryMiB: number; cpus: number }; ceiling: { memoryMiB: number; cpus: number; processes: number } };
+  const before = (await (await page.request.get(`${CORE_BASE_URL}/api/container-limits`, { headers })).json()) as Limits;
+  // 既定：2GiB・1コアを残す（中から見える資源で計算される）
+  expect(containerLimit(project.id, "limits.memory")).toBe(`${before.ceiling.memoryMiB}MiB`);
+  expect(before.ceiling.memoryMiB).toBe(Math.max(1024, before.host.memoryMiB - 2048));
+  expect(containerLimit(project.id, "limits.processes")).toBe("8192");
+  const startedAt = (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/container`, { headers }).then((r) => r.json())) as {
+    container: { status: string };
+  };
+  expect(startedAt.container.status).toBe("Running");
+
+  try {
+    // ---- banto 全体：残すメモリを 3GiB に ----
+    await openApp(page);
+    await page.goto(`/settings?settings=1&section=container`);
+    const panel = page.getByTestId("container-limits-panel");
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    await panel.getByTestId("container-limits-reserve-memory").fill("3");
+    await panel.getByRole("button", { name: "保存する" }).click();
+    const lowered = Math.max(1024, before.host.memoryMiB - 3072);
+    await expect.poll(() => containerLimit(project.id, "limits.memory"), { timeout: 30_000 }).toBe(`${lowered}MiB`);
+
+    // ---- Project ごと：メモリ 1.5GiB・CPU 1 コア。上げようとした値（プロセス数）は天井で止まる ----
+    await page.goto(`/settings?project=${project.id}&section=project-general`);
+    const limits = page.getByTestId("project-container-limits");
+    await expect(limits).toBeVisible({ timeout: 30_000 });
+    await limits.getByTestId("project-container-limits-memory").fill("1.5");
+    await limits.getByTestId("project-container-limits-cpus").fill("1");
+    await limits.getByTestId("project-container-limits-processes").fill("999999");
+    await limits.getByRole("button", { name: "保存する" }).click();
+    await expect(limits.getByTestId("project-container-limits-effective")).toHaveText("メモリ 1.5 GiB・CPU 1 コア分・プロセス 8192", { timeout: 30_000 });
+    expect(containerLimit(project.id, "limits.memory")).toBe("1536MiB");
+    expect(containerLimit(project.id, "limits.cpu.allowance")).toBe("100ms/100ms");
+    expect(containerLimit(project.id, "limits.processes")).toBe("8192");
+    // 中にも効いている（cgroup）、起こし直していない
+    const inside = spawnSync("incus", ["exec", `banto-${project.id}`, "--", "cat", "/sys/fs/cgroup/memory.max"], { encoding: "utf8", input: "" });
+    expect(inside.stdout.trim()).toBe(String(1536 * 1024 * 1024));
+
+    // ---- 空欄に戻すと banto 全体の上限に戻る ----
+    await limits.getByTestId("project-container-limits-memory").fill("");
+    await limits.getByTestId("project-container-limits-cpus").fill("");
+    await limits.getByTestId("project-container-limits-processes").fill("");
+    await limits.getByRole("button", { name: "保存する" }).click();
+    await expect.poll(() => containerLimit(project.id, "limits.memory"), { timeout: 30_000 }).toBe(`${lowered}MiB`);
+  } finally {
+    // 他の spec に残さない（core は全 spec で共有）
+    await page.request.put(`${CORE_BASE_URL}/api/container-limits`, {
+      headers,
+      data: { hostReserveMemoryMiB: 2048, hostReserveCpus: 1, processes: 8192 },
+    });
+  }
+});
