@@ -3,6 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   clearNewProjectRequest,
+  decideNewProjectRequest,
+  registerNewProjectHost,
   getNewProjectRequest,
   parseNewProjectParams,
   requestNewProject,
@@ -30,4 +32,21 @@ test("頼まれるたびに番号が進み（同じ中身でも開き直す）�
   assert.equal(getNewProjectRequest(), null);
   assert.equal(heard, 3);
   off();
+});
+
+test("開く場所が無い面・開いている間・会話の中の画面で押した直後でない頼みは断る。入口・設定の面からは直後でなくても受ける", () => {
+  clearNewProjectRequest();
+  assert.deepEqual(decideNewProjectRequest({ fromConversation: false, activated: false }), {
+    error: "この画面からは新しい Project の画面を開けません（banto の画面で開いてください）",
+  });
+  const off = registerNewProjectHost();
+  assert.deepEqual(decideNewProjectRequest({ fromConversation: false, activated: false }), { ok: true });
+  assert.deepEqual(decideNewProjectRequest({ fromConversation: true, activated: false }), { error: "会話の中の画面からは、人が押した直後にだけ開けます" });
+  assert.deepEqual(decideNewProjectRequest({ fromConversation: true, activated: true }), { ok: true });
+  requestNewProject({ basePath: "/a", from: "repositories" });
+  assert.equal(getNewProjectRequest()!.from, "repositories");
+  assert.deepEqual(decideNewProjectRequest({ fromConversation: false, activated: true }), { error: "新しい Project の画面は、もう開いています" });
+  clearNewProjectRequest();
+  off();
+  assert.ok("error" in decideNewProjectRequest({ fromConversation: false, activated: true }));
 });

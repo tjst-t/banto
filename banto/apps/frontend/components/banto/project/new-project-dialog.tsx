@@ -46,6 +46,7 @@ export function NewProjectDialog({
   onOpenChange,
   initialName = "",
   initialBasePath = "",
+  requestedBy,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -55,6 +56,8 @@ export function NewProjectDialog({
    */
   initialName?: string;
   initialBasePath?: string;
+  /** 頼んできた Module の名前（出所を見せる——作るのは人が確かめて押したとき） */
+  requestedBy?: string;
 }) {
   const router = useRouter();
   const [name, setName] = useState(initialName);
@@ -112,6 +115,12 @@ export function NewProjectDialog({
             <DialogDescription>
               Project は仕事の入れ物。Module 集合は後から足せる。
             </DialogDescription>
+            {requestedBy ? (
+              // 出所を見せる——Module の画面が開かせた。作るのは、確かめて押したとき
+              <p data-testid="new-project-requested-by" className="text-xs text-ink-2">
+                「{requestedBy}」の画面から頼まれて開きました。Root パスと名前を確かめて作成してください。
+              </p>
+            ) : null}
           </DialogHeader>
 
           <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto py-4">

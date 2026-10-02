@@ -31,7 +31,12 @@ import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
 import { VIEW_STATE_KEY } from "@/lib/backend/canvas-view-state";
-import { OPEN_NEW_PROJECT_METHOD, parseNewProjectParams, requestNewProject } from "@/lib/backend/canvas-new-project";
+import {
+  decideNewProjectRequest,
+  OPEN_NEW_PROJECT_METHOD,
+  parseNewProjectParams,
+  requestNewProject,
+} from "@/lib/backend/canvas-new-project";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import {
   AlertDialog,
@@ -184,9 +189,9 @@ function SandboxFrame({
   // Canvas を1つ出して Fork を開いて閉じるだけで **9回**。中身は生き延びていたが、
   // 張り直しの最中に飛んでいる呼び出しがあれば落ちる（規則2 の「黙って別の経路へ
   // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
-  const latest = useRef({ owner, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange });
+  const latest = useRef({ owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange });
   useEffect(() => {
-    latest.current = { owner, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange };
+    latest.current = { owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange };
   });
   // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
   // 回帰試験はこの数字が増えないことを見る
@@ -297,7 +302,13 @@ function SandboxFrame({
       }
       const parsed = parseNewProjectParams(request.params);
       if ("error" in parsed) throw Object.assign(new Error(parsed.error), { code: -32602 });
-      requestNewProject(parsed);
+      // 会話の中の画面（AI の tool の結果）からは、人が押した直後だけ。開いている間・開く場所が無い面では断る
+      const decision = decideNewProjectRequest({
+        fromConversation: latest.current.owner.kind === "thread",
+        activated: navigator.userActivation?.isActive === true,
+      });
+      if ("error" in decision) throw Object.assign(new Error(decision.error), { code: -32000 });
+      requestNewProject({ ...parsed, from: latest.current.server });
       return {};
     };
 

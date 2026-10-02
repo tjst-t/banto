@@ -7,8 +7,13 @@
 // - 画面 → banto：request `dev.banto/open-new-project`（`params.folder`・`params.name?`）
 // - banto：core の新しい Project の画面を、Root パスと名前を入れた状態で開くだけ。**Project は作らない**——作るのは
 //   人がその画面で「作る」を押したとき（core に「Project を作る」口を足さない、§2.4）
-// - **どの Module からでも同じ**——core は頼んできた Module を名指ししない。人の操作の直後でなくても開く
-//   （clone は何分もかかり、終わったときには押した瞬間は過ぎている）。開くのは確かめる画面なので、勝手には何も起きない
+// - **どの Module からでも同じ**——core は頼んできた Module を名指ししない。ただし**どの Module の画面から頼まれたかは
+//   開いた画面に出す**（出所を見せる——知らない Module が勝手に開いたなら、人がそれと分かる）
+// - **人の操作の直後でなくても開く**（clone は何分もかかり、終わったときには押した瞬間は過ぎている）——**入口・設定の面
+//   から**の頼みだけ。**会話の中の画面**（AI の tool の結果として出たもの）からは、人がその画面を押した直後
+//   （一時的な利用者の操作）でなければ受けない——AI のターンの画面が、人の見ていないところで開かせない
+// - **開いている間の頼みは受けない**——人が打ちかけた入力を捨てて開き直さない
+// - 開く場所（外枠）が無い面（別タブの Canvas）では断る——「開いた」と言って何も出ないことにしない
 //
 // 開くのは banto の外枠（`RequestedNewProjectDialog`）。ここは頼みを受け渡す小さな置き場だけ。
 
@@ -19,11 +24,38 @@ export interface NewProjectRequest {
   seq: number;
   basePath: string;
   name?: string;
+  /** どの Module の画面から頼まれたか（開いた画面に出す） */
+  from?: string;
 }
 
 let current: NewProjectRequest | null = null;
 let seq = 0;
+/** 開く場所（`RequestedNewProjectDialog`）がいくつ出ているか */
+let hosts = 0;
 const listeners = new Set<() => void>();
+
+/** 頼みを受けてよいか。だめなら理由（画面にそのまま返す） */
+export function decideNewProjectRequest(input: {
+  /** 会話の中の画面（AI の tool の結果として出たもの）からか */
+  fromConversation: boolean;
+  /** 人がその画面を押した直後か */
+  activated: boolean;
+}): { ok: true } | { error: string } {
+  if (hosts === 0) return { error: "この画面からは新しい Project の画面を開けません（banto の画面で開いてください）" };
+  if (current) return { error: "新しい Project の画面は、もう開いています" };
+  if (input.fromConversation && !input.activated) {
+    return { error: "会話の中の画面からは、人が押した直後にだけ開けます" };
+  }
+  return { ok: true };
+}
+
+/** 開く場所が出たこと・消えたことを知らせる（外枠の `RequestedNewProjectDialog`） */
+export function registerNewProjectHost(): () => void {
+  hosts += 1;
+  return () => {
+    hosts -= 1;
+  };
+}
 
 /** 画面から来た params を読む。読めなければ理由を返す（画面にそのまま返す） */
 export function parseNewProjectParams(params: unknown): { basePath: string; name?: string } | { error: string } {
@@ -36,7 +68,7 @@ export function parseNewProjectParams(params: unknown): { basePath: string; name
   return { basePath: folder, ...(typeof p.name === "string" && p.name.trim() ? { name: p.name.trim() } : {}) };
 }
 
-export function requestNewProject(input: { basePath: string; name?: string }): void {
+export function requestNewProject(input: { basePath: string; name?: string; from?: string }): void {
   seq += 1;
   current = { seq, ...input };
   for (const l of listeners) l();
