@@ -2403,11 +2403,22 @@
       "doneWhen": "稼働中の banto に反映し、Command Palette の『リポジトリ』から開いた一覧に、実際の手元のリポジトリを Import して、使っている Project の名前・GitHub の場所・このマシンにだけ・見つからないが正しく出ること、設定の Repositories の面に同じ一覧と既定の置き場が出ることを人が実物で確かめる"
     },
     {
-      "id": "repositories-next",
-      "title": "Repositories の続き：アカウント（PAT・デバイスフロー）・URL から clone／新しいリポジトリ／clone し直す・GitHub に公開・新しい Project の画面への持ち込み・Canvas から Project を開く口",
-      "status": "pending",
+      "id": "repositories-stage2",
+      "title": "Repositories Module の段階2（GitHub のアカウント：PAT・ブラウザでログイン（GitHub App のデバイスフロー）・自動更新・更新の失敗を受信箱へ・台帳の扱うアカウント）",
+      "status": "in-progress",
       "dependencies": [
         "repositories-stage1"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.4「アカウント」・docs/specs/v4-security.md §3（relayRaiseNotice）",
+      "why": "2026-10-02、ユーザー。設定の Repositories の面にアカウントの登録・確かめる・外す。秘密は Vault（PAT は secret、ログインは oauth-token の1つの alias に JSON）、Module は在りかだけ。デバイスフローの待ちは画面からの呼び出しの中（背景だと中継の承認に掛かる）。更新は使う直前・アカウントごとに1本ずつ、失敗はアカウントに残して受信箱へ（中継に relayRaiseNotice を足した）。単体（Module 39本・core 364本）と e2e/specs/repositories.spec.ts（3本、偽の GitHub）は通した。本物の GitHub App はまだ無い。経緯と GitHub App の作り方・権限の案は docs/notes/2026-10-02-repositories-stage2.md",
+      "doneWhen": "人が GitHub App を作り（Enable Device Flow）、稼働中の banto の設定の Repositories に client ID を入れ、ブラウザでログインして自分の login のアカウントが登録され、8時間後に「確かめる」で更新が通ること、PAT でも登録できること、自分のリポジトリの行にアカウントが出ることを実物で確かめる"
+    },
+    {
+      "id": "repositories-next",
+      "title": "Repositories の続き：URL から clone／新しいリポジトリ／clone し直す・GitHub に公開・新しい Project の画面への持ち込み・Canvas から Project を開く口（アカウントは段階2）",
+      "status": "pending",
+      "dependencies": [
+        "repositories-stage2"
       ],
       "spec": "docs/specs/v4-modules.md §2.4",
       "why": "段階1では『Project を始める』『GitHub に公開』『clone し直す』は押すと『まだ作っていない』と言うだけ。『URL から clone』『新しいリポジトリ』『git init して Import』は出していない（規則13）。Project の列は名前だけ（Canvas から banto の画面遷移を頼む口が無い）。台帳のアカウントの項目はアカウントを登録できるようになるときに足す",
