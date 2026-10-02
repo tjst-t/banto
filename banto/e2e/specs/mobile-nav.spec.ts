@@ -13,7 +13,12 @@ import { createProject, fakeTurn, openApp, confirmForkDialog } from "../helpers.
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
-test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+// `isMobile`：画面のキーボードが出る端末として振る舞わせる（`pointer: coarse`）——入力欄の焦点の試験に要る
+test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+/** 入力欄に焦点が当たっているか（当たっていれば、携帯では画面のキーボードが出る） */
+const composerFocused = (page: import("@playwright/test").Page) =>
+  page.evaluate(() => document.activeElement?.getAttribute("aria-label") === "Message input");
 
 const PLAIN = "E2E Mobile Nav 素の Project";
 const FORKED = "E2E Mobile Nav Fork のある Project";
@@ -62,6 +67,9 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
   await expect(drawer, "Fork の無い Project を選んだのに Drawer が残った").toBeHidden({ timeout: 10_000 });
   await expect(page).toHaveURL(new RegExp(`/p/(?!${forked.id})`));
   await expect(page.getByPlaceholder(`${PLAIN} の Base Thread に送る`)).toBeVisible({ timeout: 30_000 });
+  // **Thread を移っても入力欄に焦点を当てない**（2026-10-02、ユーザー要望——移るたびにキーボードが出ていた）
+  await page.waitForTimeout(1500);
+  expect(await composerFocused(page), "携帯で Thread を移ったら入力欄に焦点が当たった（キーボードが出る）").toBe(false);
 
   // ---- (1) Fork のある Project を押すと、Drawer は閉じずにその目次を開いて待つ ---------------
   await nav.click();
@@ -77,4 +85,20 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
   await expect(drawer).toBeHidden({ timeout: 10_000 });
   await expect(page).toHaveURL(/[?&]fork=/);
   await expect(back).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(1500);
+  expect(await composerFocused(page), "携帯で Fork へ移ったら入力欄に焦点が当たった（キーボードが出る）").toBe(false);
+});
+
+test.describe("パソコン", () => {
+  test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
+
+  test("パソコンでは、Thread を開くと今までどおり入力欄に焦点が当たる（すぐ打てる）", async ({ page }) => {
+    await openApp(page);
+    // 開いていない側の Project へ移る（いま開いている Project を押しても画面は替わらない）
+    const current = await page.getByPlaceholder(`${PLAIN} の Base Thread に送る`).isVisible().catch(() => false);
+    const to = current ? FORKED : PLAIN;
+    await page.getByTestId("sidebar-project-name").filter({ hasText: to }).first().click();
+    await expect(page.getByPlaceholder(`${to} の Base Thread に送る`)).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => composerFocused(page), { timeout: 10_000 }).toBe(true);
+  });
 });

@@ -39,6 +39,7 @@ import type { MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
 import { keepComposerDraft } from "@/lib/composer-drafts";
+import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
 
 export interface ThreadMarker {
   id: string;
@@ -280,6 +281,7 @@ function ThreadRuntime({
   /** この会話を記録から組み立てた版（`restoredSyncVersion`）。進んだら記録を流し込み直す。乗った流れを描き始めてよいかの照合にも使う */
   build: number;
 }) {
+  const touchKeyboard = useTouchKeyboard();
   const attachments = useMemo(
     () => (imageAttachments ? new ImageAttachmentAdapter() : undefined),
     [imageAttachments],
@@ -345,6 +347,10 @@ function ThreadRuntime({
       <ThreadIdProvider value={threadId}>
       {CONNECTED_FEATURES.mockCanvasSurfaces && onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
       <Thread
+        // **画面のキーボードが出る端末では、入力欄に勝手に焦点を当てない**（2026-10-02、ユーザー要望）。
+        // Thread を移るたび（作り直し・切り替え・一番下へ送ったとき）にキーボードが出て会話が隠れていた。
+        // パソコンでは今までどおり当てる——すぐ打てるほうがよい
+        autoFocus={!touchKeyboard}
         placeholder={placeholder}
         composerActionSlot={
           <>
