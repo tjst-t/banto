@@ -1256,38 +1256,69 @@ Repositories の節、`components/banto/canvas/repo-list-view.tsx` ほか）。�
 - **URL から clone**：`https://…`・`git@…:…`・`ssh://…`・`owner/repo`。GitHub 以外も受ける（このマシンの git の設定で）。
   **もう手元にあるなら clone しない**（「もう手元にあります（場所）」）。失敗は理由と次の手（別のアカウントで等）
   （段階3で作った・2026-10-02。判断は `clone.ts`、画面は言い方だけ）
-  - **断る URL**：手元のパス・`file://`・`git://`（暗号化されない）・`ext::`・`-` で始まるもの・**URL に資格情報を
-    書いたもの**（clone 先の `.git/config` に残り、AI から読める）
-  - **台帳が覚えているのにフォルダが見つからない行**なら、その場所に clone し直す（一覧の「clone し直す」もこれ）
+  - **断る URL**：手元のパス・`file://`・`git://`・`http://`（どちらも暗号化されない。http は行き先を替えた GitHub＝試験の
+    偽物だけ受ける）・`ext::`・`-` で始まるもの・**URL に資格情報を書いたもの**（clone 先の `.git/config` に残り、AI から
+    読める）
+  - **台帳が覚えている行の場所**：リポジトリがあれば「もう手元にあります」で clone しない。**何も無ければ**その場所に
+    clone し直す（一覧の「clone し直す」もこれ）。**リポジトリでないもの（git でないフォルダ・bare・別のリポジトリの中）が
+    ある・読めない（権限・持ち主違い）なら、clone し直さず「もう手元にある」とも言わない**——置き場の下に別に clone し、
+    一覧のその行は外すか直すよう言う（読めないのを「無い」と見ると、既にあるフォルダに clone し直して消しうる。
+    改訂・2026-10-02、レビュー）
   - 置き場は `<置き場>/<名前>`（置き場はまだ無ければ作る）。ぶつかれば `<名前>-2` を先に入れ、人が変えられる。
     置く先にあるもの（台帳のリポジトリ・見つからない行の場所・一覧に無いリポジトリ・ただのフォルダ・別の clone の最中）は
-    上書きしない
+    上書きしない。**置く場所は判断の直後（間に待ちを挟まず）に取り**、同じ場所への2本目の clone は断る。clone の前に
+    その場所を自分で作り（在れば作れず、何も消さずに断る）、**失敗の片づけで消すのは自分が作ったフォルダだけ**
   - **アカウント**：GitHub なら URL の持ち主と同じ login を先に選ぶ（clone し直すなら台帳が覚えている login）。1つなら
     選ばせない。clone したら**使ったアカウントを台帳に書く**（持ち主が違っても——選んだのは人）。GitHub の外は
     アカウントを使わない
+  - **git の設定——潰すもの・潰さないもの**（決定・2026-10-02、改訂・同日 レビュー）：
+
+    | | 人の git の設定（ユーザー・システムの段） | credential.helper | core.sshCommand | hooks・fsmonitor・pager・editor 等 |
+    |---|---|---|---|---|
+    | 読む口（台帳・Import） | 読む（コマンドを指すものは潰す） | 潰す | 潰す | 潰す |
+    | GitHub・アカウントの PAT／ログイン | **読まない** | この Module の helper だけ | 潰す | 潰す |
+    | GitHub・SSH 鍵のアカウント | **読まない** | 潰す | 下の ssh だけ | 潰す |
+    | GitHub・アカウント無し | **読まない** | 潰す（公開のものだけ） | 潰す | 潰す |
+    | GitHub の外 | **読む** | 人のもの | 人のもの | 潰す |
+
+    - **GitHub へは人の git の設定を読まない**（`GIT_CONFIG_GLOBAL`・`GIT_CONFIG_SYSTEM`＝`/dev/null`）——人の
+      `filter.lfs.smudge` 等は相手の `.gitattributes` から起動し、人の `url.*.insteadOf` は https を ssh に書き換えて嘘の
+      失敗にする（どちらも実測）。proxy は環境変数（`HTTPS_PROXY` 等）で効く。どの clone でも `GIT_LFS_SKIP_SMUDGE=1`
+    - **GitHub の外は人の設定を読む**——clone の前にリポジトリの設定はまだ無く、人がこのマシンに置いた helper・ssh・CA・
+      filter を使うのが「このマシンの git の設定で」の意味。hooks 等は潰したまま（この機械のテンプレートの hooks も
+      clone の checkout で走らせない）
+    - 外から渡された `GIT_*` の環境（`GIT_SSH_COMMAND`・`GIT_ASKPASS`・`GIT_DIR` 等）は、どれでも落とす
+    - 潰しは環境の `GIT_CONFIG_*` で渡すので、clone 先の `.git/config` には書き残らない。clone の後にその
+      `.git/config` を読むときも、読む口の潰しが効く
   - **資格情報の渡し方**（決定・2026-10-02、実装者）：
     - GitHub のアカウント（PAT・ブラウザでログイン）：`tokenFor` のトークンを、**この Module が clone の間だけ立てる
-      unix socket**（持ち主だけが入れるフォルダの中、`XDG_RUNTIME_DIR` か `/run/user/<uid>`）から git の credential
-      helper が受け取る。helper の引数は socket の場所だけ——**トークンはコマンドの引数にも環境にも置かない**
-      （`https://user:token@…` は ps に、`GIT_ASKPASS` の値・`http.extraHeader` を `GIT_CONFIG_*` は `/proc/<pid>/environ`
-      に出る）。窓口は決めた相手（protocol と host）にだけ渡す
-    - SSH 鍵を選んだアカウント：Vault の `startSshAgent` の窓口だけを使う ssh（`IdentityAgent`・`BatchMode=yes`・
-      `StrictHostKeyChecking=accept-new`——初めての相手は覚える）で `git@github.com:owner/name.git` を clone する
+      unix socket** から git の credential helper が受け取る。helper の引数は socket の場所だけ——**トークンはコマンドの
+      引数にも環境にも置かない**（`https://user:token@…` は ps に、`GIT_ASKPASS` の値・`http.extraHeader` を
+      `GIT_CONFIG_*` は `/proc/<pid>/environ` に出る）。窓口は決めた相手（protocol と host）にだけ渡す——リダイレクトの
+      先の別の相手には渡さない
+    - **窓口の置き場と境界**：持ち主だけが入れる一時フォルダ（0700）を `XDG_RUNTIME_DIR`、無ければ `/run/user/<uid>`、
+      それも無ければ `/tmp`（unix socket のパスは 108 字までなので、長くなりうる `os.tmpdir()` は最後の手）に作る。
+      **同じ uid で host 側に動くプロセスは、clone の間だけ窓口に聞けばトークンを取れる**——同じ uid はもともと
+      この Module のメモリも読めるので、境界はそこ（Project のコンテナの中の AI は別の uid・別の場所で、届かない）
+    - SSH 鍵を選んだアカウント：Vault の `startSshAgent` の窓口だけを使う ssh で `git@github.com:owner/name.git` を
+      clone する。**人の ssh の設定を読まず**（`-F /dev/null`）、**相手の鍵は GitHub が公開している値だけを信じる**
+      （Module のデータ置き場の known_hosts に GitHub の公開の host 鍵を置き `StrictHostKeyChecking=yes`。値は GitHub の
+      文書の指紋と `GET /meta` を 2026-10-02 に突き合わせたもの——改訂・2026-10-02、レビュー。以前の accept-new は
+      初めての相手を人の `~/.ssh/known_hosts` に TOFU で書いていた）。窓口の場所は Vault の実装（第三者も名乗れる）が
+      返す値なので、**絶対パスで素直な字のものだけ**をシェルの1語にして埋め、違えば断る
     - 登録したアカウントの無い GitHub：資格情報を使わない（公開のものだけ）
-    - GitHub の外：**このマシンの git の設定のまま**（`credential.helper`・`core.sshCommand`・`core.askPass` を潰さない
-      ——人がこのマシンに置いた設定で、clone する前のリポジトリの設定はまだ無い）
-  - **clone の間も読む口と同じ潰しを効かせる**（`core.hooksPath=/dev/null`・`core.fsmonitor=false` 等。この機械の
-    テンプレートの hooks も clone の checkout で走らせない）。潰しは環境の `GIT_CONFIG_*` で渡すので、clone 先の
-    `.git/config` には書き残らない。clone の後にその `.git/config` を読むときも、読む口の潰しが効く
+    - GitHub の外の ssh は人の ssh の設定・known_hosts のまま（上の表）
   - **clone は Module の背景の仕事**——画面は進み具合（git の `--progress`）を聞きに来る。Vault の口は押した呼び出しの
     中で使い終える（背景の仕事から Vault を呼ばない）。**全体の時間の上限は置かず、git が5分何も言ってこなければ切る**
-    （大きいリポジトリは長くかかるが、その間 git は進み具合を言い続ける）。やめられる。失敗・時間切れ・やめたときは
-    途中まで作ったフォルダを消す
+    （大きいリポジトリは長くかかるが、その間 git は進み具合を言い続ける）。やめられる。失敗の分類（見つからない・
+    資格情報・ネットワーク等）は**相手の言葉（`remote:` の行）を見ずに**決める（相手が分類を偽れないように）。git の
+    出力は溜めすぎない（改行の来ない出力も上限で切る）
 - **新しいリポジトリ**：置き場に `git init`。GitHub に上げるのは公開のとき。**ブランチ名はこのマシンの git の設定
   （`init.defaultBranch`）に従い、無ければ `main`**（決定・2026-10-02、実装者）——人が決めた名前を上書きしない。
   決めていなければ GitHub の既定に合わせる（公開のときに食い違わない）。ぶつかれば断って `<名前>-2` を出す。
   登録したアカウントの GitHub に同じ名前があれば「あとで公開するときは別の名前が要ります」と言い、「clone で始める」を
-  添える（作るのは止めない）。台帳には「このマシンにだけ」として入る
+  添える（作るのは止めない——言ったあと、もう一度押せば作る）。**GitHub に聞くのは名前を決めたとき（欄を離れた・作る
+  直前）の1回だけ**——打つたびに全部のアカウントでトークンを引いて GitHub を叩かない。台帳には「このマシンにだけ」として入る
 - 押す前に、置く場所とその場所に今あるものを帯で示す（「ここに clone します」等。帯に見出しは付けない）
 
 **一覧**：「Project で使っている」「Project はまだ無い」の**2つの別の表**（列はそろえる、0件の表は見出しごと
@@ -1908,11 +1939,25 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
 - 読み替え：`pending` → `ready`、`undecided` → `backlog`＋「未決」ラベル、`phase` → `milestone`、
   `why`・`notes`・`howFixed`・`result`・`verifiedBy` → `body`
 
+#### つけ方と AI の tool（決定・2026-10-02、ユーザー）
+
+**Project ごとにつける**——Shell と同じく Project の root の中の tasks.json を読み書きする。
+
+| tool | 何をするか |
+|---|---|
+| `listItems` | 一覧。種類・状態・マイルストーン・ラベル・親で絞れる。「いま着手できるもの」（依存が全部終わった `ready`）だけも出せる |
+| `getItem` | 1件の中身を全部 |
+| `createItem` | 1件足す。親・依存も一緒に付けられる |
+| `updateItem` | 欄を変える。状態を進める・閉じる（`resolution` も）・依存を張り替える |
+| `splitStory` | ストーリーの下に複数のタスクを1回で作る（タスク間の依存つき）。一番よく使う場面を1回で済ませる |
+| `moveItem` | 並び順（＝優先順）を、指定した項目の前か後ろへ動かす |
+
+**消す tool は作らない。** 要らなくなったものは `dropped` で閉じれば記録が残る。
+
 #### まだ決めていない
 
-- AI の tool の語彙（一覧・追加・状態を変える・ストーリーを分ける・依存を張る、の切り方）と、実装の口（`backlog` 役割）
+- 実装の口（`backlog` 役割。Vault の D節・Publish の実装の口に当たるもの）
 - 人の一覧画面の形（モックで決める）
-- scope（Project ごとにつけるか、banto 全体に1本で呼び出しの印から Project を知るか）
 - Factory との繋ぎ方（§5 の 6）
 
 ## 4.9 Module の宣言（決定・2026-09-06、Phase 1）
