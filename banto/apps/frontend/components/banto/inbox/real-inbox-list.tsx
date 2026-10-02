@@ -70,12 +70,41 @@ export function RealInboxList() {
   // **ターンが終わった Thread**（決定・2026-09-27）——開けばその Thread へ。開いたら「見た」になる
   const reviews = getRealReviews();
 
+  // **まとめて確認**（追加・2026-10-02、ユーザー要望）——お知らせとレビュー待ちを一度に「見た」にする。
+  // 判断待ちは対象にしない（答えないと AI が進まない。答える口は Thread 側のカード1箇所）
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const ackTargets = [...notices.map((n) => n.id), ...reviews.map((r) => r.id)];
+
   if (judgments.length === 0 && notices.length === 0 && reviews.length === 0) {
     return <p className="p-3 text-xs text-ink-3">待っているものはありません</p>;
   }
 
   return (
     <div ref={containerRef} onKeyDown={onKeyDown} className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+      {ackTargets.length > 0 ? (
+        <div className="flex items-center gap-2 border-b border-border pb-3">
+          <span className="min-w-0 flex-1 text-xs text-ink-3">
+            お知らせ・終わったターン {ackTargets.length} 件
+            {judgments.length > 0 ? `（判断待ち ${judgments.length} 件は残ります）` : ""}
+          </span>
+          <button
+            type="button"
+            data-roving-item
+            data-testid="inbox-acknowledge-all"
+            disabled={bulkBusy}
+            onClick={() => {
+              setBulkBusy(true);
+              // 1件ずつの失敗で止めない——残ったものは取り直したときにまた出る
+              void Promise.allSettled(ackTargets.map((id) => acknowledgeRealNotice(id)))
+                .then(() => refreshRealInbox())
+                .finally(() => setBulkBusy(false));
+            }}
+            className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-ink-2 hover:bg-accent disabled:opacity-60"
+          >
+            {bulkBusy ? "確認しています…" : "まとめて確認"}
+          </button>
+        </div>
+      ) : null}
       {notices.map((notice) => {
         const project = notice.projectId ? getProject(notice.projectId) : null;
         return (

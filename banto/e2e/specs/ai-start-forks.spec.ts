@@ -105,5 +105,23 @@ test("AI が Fork を2つ立てる→名前つきで出て、最初の指示で�
     )
     .not.toContain(auth!.id);
 
+  // 残った分は受信箱の頭の「まとめて確認」で一度に消せる（追加・2026-10-02、ユーザー要望）
+  await page.getByRole("button", { name: "受信箱" }).click();
+  await expect(reviews, "開いていない Fork のレビュー待ちが残っていない").toHaveCount(1, { timeout: 15_000 });
+  await inbox.getByTestId("inbox-acknowledge-all").click();
+  await expect(reviews, "まとめて確認してもレビュー待ちが消えない").toHaveCount(0, { timeout: 15_000 });
+  await expect
+    .poll(
+      async () => {
+        const items = (await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{
+          kind: string;
+          acknowledged?: boolean;
+        }>;
+        return items.filter((i) => i.kind === "review" && !i.acknowledged).length;
+      },
+      { timeout: 15_000, message: "まとめて確認が host に届くまで" },
+    )
+    .toBe(0);
+
   expect(pageErrors, "画面で例外が起きた").toEqual([]);
 });
