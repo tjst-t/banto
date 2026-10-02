@@ -44,16 +44,24 @@ const EMPTY_OVERRIDES: Overrides = {};
 export function NewProjectDialog({
   open,
   onOpenChange,
+  initialName = "",
+  initialBasePath = "",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Module の画面が「このフォルダで」と頼んできたとき（`dev.banto/open-new-project`、
+   * `lib/backend/canvas-new-project.ts`）だけ入る。人が確かめて変えられる——作るのは人が押したとき
+   */
+  initialName?: string;
+  initialBasePath?: string;
 }) {
   const router = useRouter();
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName);
   // **初期値は入れない**（改訂・2026-09-11、ユーザー指摘）——`~/worktrees/` を
   // 置いていたが、その場所を使うかどうかは人が決めること。空にしておけば、
-  // 「選ぶ」は home から始まる（host の既定、`resolveBrowsePath`）
-  const [basePath, setBasePath] = useState("");
+  // 「選ぶ」は home から始まる（host の既定、`resolveBrowsePath`）。Module の画面から頼まれたときだけ入る
+  const [basePath, setBasePath] = useState(initialBasePath);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const rootScope = useRootScope(basePath);
   const [overrides, setOverrides] = useState<Overrides>(EMPTY_OVERRIDES);

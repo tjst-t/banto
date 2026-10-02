@@ -437,6 +437,25 @@ MCP Apps には「画面が自分の状態を host に預け、開き直した�
   Module 自身の tool を呼んで読み書きする。banto が持つのは「その役割を有効に
   するか」という banto 側の判断だけ（§6.1 階層1）
 
+#### 画面から「新しい Project の画面を、このフォルダで開いて」（banto の拡張、決定・2026-10-02、Repositories 段階3）
+
+MCP Apps には、画面が host の中の別の画面を開かせる口が無い（`ui/open-link` は http/https を別タブで開くだけ）。
+Repositories の「Project も作る」（clone・新しいリポジトリのあと）と一覧の「Project を始める」に要るので、最小の形で
+足す（`dev.banto/view-state` と同じ名前空間）：
+
+| 向き | 形 |
+|---|---|
+| 画面 → banto | request `dev.banto/open-new-project`（`params.folder`＝`/` か `~/` から始まるパス、`params.name?`＝200字まで） |
+| banto | **core の新しい Project の画面を、Root パスと名前を入れた状態で開くだけ**。どの面（Project・設定・ホーム）からでも |
+| banto → 画面 | `{}`。読めない params は JSON-RPC の InvalidParams で断る |
+
+- **Project は作らない**——作るのは人がその画面で「作成する」を押したとき（`v4-modules.md` §2.4「core との境目」：
+  core に「Project を作る」口を足さない）。開くのは確かめる画面なので、勝手には何も起きない
+- **人の操作の直後でなくても開く**——clone は何分もかかり、終わったときには押した瞬間（一時的な利用者の操作、
+  約5秒）は過ぎている。ダウンロードと違って、開いた画面そのものが確かめになる
+- **どの Module からでも同じ**——core は頼んできた Module を名指ししない
+- Project を「開く」口（既にある Project へ移る）はまだ無い——要るまで足さない
+
 **iOS との違いを1つ記録**：iOS は宣言（`Settings.bundle`）を OS が描くので、アプリの
 コードは設定画面で走らない。banto は Module の HTML を iframe で走らせるので、
 表現力は高いが**設定画面に第三者のコードが載る**。上の「常に `sandboxed`」は

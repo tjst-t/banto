@@ -15,6 +15,7 @@ import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
+import { RequestedNewProjectDialog } from "@/components/banto/project/requested-new-project-dialog";
 import {
   getServerSidebarPreference,
   getSidebarPreference,
@@ -131,6 +132,8 @@ function AppShellInner({ children }: { children: ReactNode }) {
           onOpenChange={(open) => (open ? stack.open({ overlay: "inbox" }) : stack.close("overlay"))}
         />
       ) : null}
+      {/* Module の画面から頼まれた「新しい Project」（Repositories の「Project も作る」等）——どの面からでも開く */}
+      <RequestedNewProjectDialog />
       <CommandPalette
         projectId={projectId}
         stack={stack}

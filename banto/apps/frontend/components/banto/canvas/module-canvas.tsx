@@ -31,6 +31,7 @@ import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
 import { VIEW_STATE_KEY } from "@/lib/backend/canvas-view-state";
+import { OPEN_NEW_PROJECT_METHOD, parseNewProjectParams, requestNewProject } from "@/lib/backend/canvas-new-project";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import {
   AlertDialog,
@@ -284,6 +285,20 @@ function SandboxFrame({
       if (notification.method !== VIEW_STATE_KEY) return;
       const state = (notification.params as { state?: unknown } | undefined)?.state;
       latest.current.onViewStateChange?.(state);
+    };
+
+    // **画面から「新しい Project の画面を、このフォルダで開いて」**（banto の拡張、2026-10-02、
+    // `lib/backend/canvas-new-project.ts`）。仕様に無い request なので「知らない request」の受け口で受ける。
+    // 開くのは確かめる画面だけ——Project を作るのは人がそこで押したとき
+    bridge.fallbackRequestHandler = async (request) => {
+      if (request.method !== OPEN_NEW_PROJECT_METHOD) {
+        // JSON-RPC の決まった番号で断る（受け口は投げたものの `code` を返事に使う）
+        throw Object.assign(new Error(`Method not found: ${request.method}`), { code: -32601 });
+      }
+      const parsed = parseNewProjectParams(request.params);
+      if ("error" in parsed) throw Object.assign(new Error(parsed.error), { code: -32602 });
+      requestNewProject(parsed);
+      return {};
     };
 
     // **画面からのリンクを開く**（MCP Apps `ui/open-link`、追加・2026-09-28——Publish の入口の「開く」）。
