@@ -27,6 +27,34 @@ export interface NoticeSink {
   raiseNotice(input: { key: string; title: string; detail: string }): Promise<void>;
 }
 
+/**
+ * 中継が返した Project の一覧を読む。**形が違えば理由つきで投げる**——黙って空や半端な一覧にしない（規則2）。
+ * 呼ぶ側（一覧）は投げられたら「どの Project が使っているかを読めませんでした」と添えて、台帳の一覧は出す
+ */
+export function parseProjectSummaries(text: string): ProjectSummary[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("中継の Project の一覧が JSON ではありません");
+  }
+  if (!Array.isArray(raw)) throw new Error("中継の Project の一覧の形が違います（配列ではありません）");
+  return raw.map((p: unknown, i) => {
+    const r = p as Record<string, unknown> | null;
+    if (
+      typeof r !== "object" ||
+      r === null ||
+      typeof r.id !== "string" ||
+      typeof r.name !== "string" ||
+      typeof r.root !== "string" ||
+      (r.status !== "active" && r.status !== "closed")
+    ) {
+      throw new Error(`中継の Project の一覧の ${i + 1} 件目の形が違います（id・name・root・status が要ります）`);
+    }
+    return { id: r.id, name: r.name, root: r.root, status: r.status };
+  });
+}
+
 export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
   private client?: Promise<Client>;
 
@@ -79,7 +107,7 @@ export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
   }
 
   async listProjects(callId?: string): Promise<ProjectSummary[]> {
-    return JSON.parse(await this.relay("relayListProjects", {}, callId, "中継が Project の一覧を返しませんでした")) as ProjectSummary[];
+    return parseProjectSummaries(await this.relay("relayListProjects", {}, callId, "中継が Project の一覧を返しませんでした"));
   }
 
   callTool(targetModule: string, name: string, args: Record<string, unknown>, callId?: string): Promise<string> {

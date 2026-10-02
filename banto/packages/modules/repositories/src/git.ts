@@ -6,6 +6,13 @@
 // （`GIT_OPTIONAL_LOCKS=0`——status 等が index を書き直すのも止める。ここでは status も呼ばない）。
 //
 // git かどうか・origin・ブランチは**フォルダが真実**（規則3）。台帳はリモートの場所の写しだけを持つ。
+//
+// **リポジトリの設定（`.git/config`）は、そのフォルダを置いた人が書ける**——`core.fsmonitor`・`core.hooksPath`・
+// `core.sshCommand`・`core.pager`・`credential.helper` 等はコマンドを指せるので、そのまま git を走らせると
+// banto 本体の権限でよそのコードが走る（読むだけのつもりのコマンドでも、index を読むものは fsmonitor を起こす）。
+// **「使うコマンドがたまたま安全」に頼らない**：コマンドを指せる設定は、どのコマンドでも呼び出しの側の設定
+// （`GIT_CONFIG_COUNT`——ファイルのどの段より強い）で潰し、走らせてよいサブコマンドを一覧で絞る（`GIT_COMMANDS`）。
+// 段階3（clone・fetch）で ssh や資格情報を使うときは、ここで潰したものを**この Module が明示して**上書きする。
 
 import { execFile } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
@@ -18,6 +25,10 @@ export type FolderFacts =
   | { kind: "missing" }
   /** git のリポジトリではない */
   | { kind: "not-git" }
+  /** 作業ツリーの無い（bare）リポジトリ——Import できない */
+  | { kind: "bare" }
+  /** git の管理用のフォルダで、どの作業ツリーのものか決められない（`--separate-git-dir` 等） */
+  | { kind: "git-dir" }
   /** リポジトリの中のフォルダ——一番上は `top` */
   | { kind: "inside"; top: string }
   /** 別のリポジトリの worktree——本体は `main` */
@@ -29,7 +40,9 @@ export type FolderFacts =
       remote: RemoteLocation;
       /** いまのブランチ。detached なら undefined */
       branch?: string;
-      commits: number;
+      /** コミット数。数えられなかった（時間切れ等）ときは無く、理由が `commitsProblem`——飾りなので行は読めたことにする */
+      commits?: number;
+      commitsProblem?: string;
       /** このリポジトリの worktree（本体は含まない。realpath） */
       worktrees: string[];
     };
@@ -37,13 +50,39 @@ export type FolderFacts =
 /** git を走らせた結果。**失敗も値で返す**——どの失敗が「そういう状態」で、どれが本当の失敗かは呼ぶ側が決める */
 type GitResult = { ok: true; stdout: string } | { ok: false; code: number | string; stderr: string };
 
-const GIT_TIMEOUT_MS = 10_000;
+/** 待つ長さ（ms）。**試験で縮める穴**——数えるのは飾りなので、切れても行は読めたことにする */
+export const GIT_TIMEOUTS = { default: 10_000, count: 10_000 };
+
+/**
+ * **走らせてよいサブコマンド**（先頭の語）。増やすときは、そのコマンドが設定から何を起こしうるかを見てから
+ * （試験がこの一覧を固定している）
+ */
+export const GIT_COMMANDS: readonly string[] = ["rev-parse", "worktree list", "remote get-url", "symbolic-ref", "rev-list"];
+
+/**
+ * **コマンドを指せる設定を潰す**（呼び出しの側の設定。リポジトリ・ユーザー・システムのどの設定より強い）。
+ * 空の値は「無し」（`credential.helper` は空で一覧を空にする）、`false` は走らせても何もしないコマンド
+ */
+export const GIT_CONFIG_OVERRIDES: ReadonlyArray<readonly [string, string]> = [
+  ["core.fsmonitor", "false"],
+  ["core.hooksPath", "/dev/null"],
+  ["core.sshCommand", "false"],
+  ["core.pager", "cat"],
+  ["core.editor", "false"],
+  ["sequence.editor", "false"],
+  ["core.askPass", ""],
+  ["credential.helper", ""],
+  ["diff.external", ""],
+  ["gpg.program", "false"],
+  ["core.alternateRefsCommand", ""],
+  ["protocol.ext.allow", "never"],
+];
 
 /**
  * git に渡す環境。**外から渡された `GIT_*` は落とす**——`GIT_DIR` 等が残っていると、選んだフォルダではなく
- * 別のリポジトリを読む
+ * 別のリポジトリを読む（`GIT_SSH_COMMAND`・`GIT_PAGER` 等で上の潰しを外されることもない）
  */
-const GIT_ENV: NodeJS.ProcessEnv = {
+export const GIT_ENV: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))),
   // 失敗の文言で状態を見分けるので、言語をそろえる
   LC_ALL: "C",
@@ -51,20 +90,36 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   // 読むだけ——index のロックも取らない・資格情報を聞かない
   GIT_OPTIONAL_LOCKS: "0",
   GIT_TERMINAL_PROMPT: "0",
+  GIT_PAGER: "cat",
+  GIT_CONFIG_COUNT: String(GIT_CONFIG_OVERRIDES.length),
+  ...Object.fromEntries(
+    GIT_CONFIG_OVERRIDES.flatMap(([key, value], i) => [
+      [`GIT_CONFIG_KEY_${i}`, key],
+      [`GIT_CONFIG_VALUE_${i}`, value],
+    ]),
+  ),
 };
 
-function git(cwd: string, args: string[]): Promise<GitResult> {
+function git(cwd: string, args: string[], timeoutMs = GIT_TIMEOUTS.default): Promise<GitResult> {
+  const command = GIT_COMMANDS.find((c) => args.join(" ").startsWith(c + " ") || args.join(" ") === c);
+  // 一覧に無いものは走らせない——書き足すときに一覧を見直させる
+  if (!command) return Promise.resolve({ ok: false, code: "refused", stderr: `git ${args[0] ?? ""} は走らせない決まりです` });
   return new Promise((resolve) => {
     execFile(
       "git",
       ["-C", cwd, ...args],
       {
-        timeout: GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
         env: GIT_ENV,
       },
       (err, stdout, stderr) => {
         if (!err) return resolve({ ok: true, stdout: String(stdout) });
+        // 時間切れ——git の文言は空なので、何が起きたかをこちらで言う
+        if ((err as { killed?: boolean }).killed) {
+          const limit = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} 秒` : `${timeoutMs} ms`;
+          return resolve({ ok: false, code: "timeout", stderr: `git ${command} が ${limit}で答えませんでした` });
+        }
         const code = (err as NodeJS.ErrnoException).code ?? "error";
         // git が無い——状態ではなく本当の失敗（規則2：「git でない」と取り違えない）
         if (code === "ENOENT") return resolve({ ok: false, code, stderr: "git コマンドが見つかりません" });
@@ -101,15 +156,25 @@ export async function readFolder(path: string): Promise<FolderFacts> {
     throw new Error(`${path} を読めませんでした：${(err as Error).message}`);
   }
 
-  // git の管理用のフォルダ（`.git` の中）——一番上はその親
-  const gitDirAt = real.split(sep).lastIndexOf(".git");
-  if (gitDirAt > 0) return { kind: "inside", top: real.split(sep).slice(0, gitDirAt).join(sep) || sep };
+  // **どこにいるかは git に聞く**（パスの要素の名前で決めない——ただのフォルダが `.git` という名前のこともある）
+  const where = await git(real, ["rev-parse", "--is-bare-repository", "--is-inside-git-dir", "--absolute-git-dir"]);
+  if (!where.ok) {
+    if (/not a git repository/i.test(where.stderr)) return { kind: "not-git" };
+    fail(`${path} の git の情報`, where);
+  }
+  const [bare, insideGitDir, gitDirRaw] = where.stdout.trim().split("\n");
+  const gitDir = await realOrSelf(gitDirRaw ?? "");
+  if (bare === "true") return gitDir === real ? { kind: "bare" } : { kind: "inside", top: gitDir };
+  if (insideGitDir === "true") {
+    // git の管理用のフォルダ（`.git` の中）——一番上は、その `.git` の親（submodule の `.git/modules/…` も同じ）
+    const parts = gitDir.split(sep);
+    const at = parts.lastIndexOf(".git");
+    if (at > 0) return { kind: "inside", top: parts.slice(0, at).join(sep) || sep };
+    return { kind: "git-dir" };
+  }
 
   const top = await git(real, ["rev-parse", "--show-toplevel"]);
-  if (!top.ok) {
-    if (/not a git repository/i.test(top.stderr)) return { kind: "not-git" };
-    fail(`${path} の git の情報`, top);
-  }
+  if (!top.ok) fail(`${path} の git の情報`, top);
   const topPath = await realOrSelf(top.stdout.trim());
   if (topPath !== real) return { kind: "inside", top: topPath };
 
@@ -128,7 +193,7 @@ export async function readFolder(path: string): Promise<FolderFacts> {
   const [origin, branch, count] = await Promise.all([
     git(real, ["remote", "get-url", "origin"]),
     git(real, ["symbolic-ref", "--short", "-q", "HEAD"]),
-    git(real, ["rev-list", "--count", "HEAD"]),
+    git(real, ["rev-list", "--count", "HEAD"], GIT_TIMEOUTS.count),
   ]);
   let remote: RemoteLocation;
   if (origin.ok) remote = parseRemoteUrl(origin.stdout.trim());
@@ -138,17 +203,19 @@ export async function readFolder(path: string): Promise<FolderFacts> {
   // detached は code 1 で何も出さない（-q）。それ以外の失敗は本当の失敗
   if (!branch.ok && !(branch.code === 1 && branch.stderr.trim() === "")) fail(`${path} のブランチ`, branch);
 
-  let commits = 0;
-  if (count.ok) commits = Number.parseInt(count.stdout.trim(), 10) || 0;
-  // まだコミットが無い（HEAD が指す先が無い）は 0。それ以外は本当の失敗
-  else if (!/unknown revision|ambiguous argument 'HEAD'/i.test(count.stderr)) fail(`${path} のコミット`, count);
+  // コミット数は飾り——**数えられなくても行は読めたことにし、数えられなかった理由を添える**（大きな履歴・遅い
+  // ディスクで時間切れになっても、行ごと「読めない」にしない）。まだコミットが無い（HEAD の先が無い）は 0
+  let commits: { commits: number } | { commitsProblem: string };
+  if (count.ok) commits = { commits: Number.parseInt(count.stdout.trim(), 10) || 0 };
+  else if (/unknown revision|ambiguous argument 'HEAD'/i.test(count.stderr)) commits = { commits: 0 };
+  else commits = { commitsProblem: count.stderr.trim() || `git が ${String(count.code)} で終わりました` };
 
   return {
     kind: "repo",
     path: real,
     remote,
     ...(branch.ok && branch.stdout.trim() ? { branch: branch.stdout.trim() } : {}),
-    commits,
+    ...commits,
     worktrees: listed.slice(1),
   };
 }

@@ -3,10 +3,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FolderFacts } from "./git.js";
+import { readFolder, type FolderFacts } from "./git.js";
 import { LedgerStore, syncWithOrigin } from "./ledger.js";
 import {
   dismissCorrection,
@@ -416,6 +416,56 @@ test("設定は項目ごとに変わる——置き場を変えても client ID 
     writeFileSync(join(w.dataDir, "accounts.json"), JSON.stringify({ accounts: [{ login: "x" }] }));
     await assert.rejects(() => w.store.accounts(), /アカウントの 1 件目：API の資格情報が読めません/);
     await assert.rejects(() => listRepositories(w.store, noProjects, w.home), /API の資格情報が読めません/);
+  } finally {
+    w.done();
+  }
+});
+
+test("一覧の git 読みは台帳の書き込みの列の外——読んでいるフォルダが答えなくても、外す・Import は待たされない", async () => {
+  const w = world();
+  try {
+    await importRepository(w.store, "~/work/kakeibo", w.home);
+    await importRepository(w.store, "~/work/notes", w.home);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let reading!: () => void;
+    const started = new Promise<void>((r) => (reading = r));
+    // 応答しないマウントの代わり：kakeibo を読むのが止まる
+    const listing = listRepositories(w.store, noProjects, w.home, async (path) => {
+      if (path === w.kakeibo) {
+        reading();
+        await gate;
+      }
+      return readFolder(path);
+    });
+    // 一覧が読み始めてから外す（先に外すと、列の順だけで通ってしまう）
+    await started;
+    const removed = await Promise.race([
+      removeRepository(w.store, w.notes).then(() => "removed"),
+      new Promise((r) => setTimeout(() => r("blocked"), 2000)),
+    ]);
+    assert.equal(removed, "removed", "一覧が git を読んでいる間、台帳の書き込みが止まった");
+    release();
+    const rows = (await listing).rows;
+    // 読んでいる間に外した行は出さない（列の中で今の台帳を見る）
+    assert.deepEqual(rows.map((r) => r.path), [w.kakeibo]);
+  } finally {
+    w.done();
+  }
+});
+
+test("元に戻すは、画面が持ってきた置き場所の字を信じず realpath に寄せる。bare は理由つきで Import を断る", async () => {
+  const w = world();
+  try {
+    symlinkSync(join(w.home, "work"), join(w.home, "link"));
+    const restored = await restoreRepository(w.store, { path: join(w.home, "link", "kakeibo") });
+    assert.equal(restored.path, w.kakeibo, "シンボリックリンクの字のまま台帳に書いた");
+    assert.deepEqual(restored.github, { owner: "tjst-t", name: "kakeibo" });
+    await assert.rejects(() => restoreRepository(w.store, { path: w.kakeibo }), /もう一覧にあります/);
+
+    execFileSync("git", ["init", "-q", "--bare", join(w.home, "srv.git")]);
+    assert.deepEqual((await inspectImport(w.store, "~/srv.git", w.home)).check, { kind: "bare" });
+    await assert.rejects(() => importRepository(w.store, "~/srv.git", w.home), /作業ツリーの無い（bare）リポジトリです/);
   } finally {
     w.done();
   }

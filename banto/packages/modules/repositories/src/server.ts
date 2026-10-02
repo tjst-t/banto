@@ -290,6 +290,10 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     console.error("BANTO_REPOSITORIES_GITHUB_URL と BANTO_REPOSITORIES_GITHUB_API_URL は両方指してください");
     process.exit(1);
   }
+  // 行き先を替えているなら、それを起動の記録に1行残す（本番で誤って効いていても気づけるように。宛先は秘密ではない）
+  if (web && api && (web !== GITHUB_COM.web || api !== GITHUB_COM.api)) {
+    console.error(`[repositories] GitHub の行き先を替えています：ログイン ${web}・API ${api}（BANTO_REPOSITORIES_GITHUB_URL・BANTO_REPOSITORIES_GITHUB_API_URL）`);
+  }
   const relay = new HostRelay(hostUrl, hostToken);
   const server = createRepositoriesServer({
     dataDir,

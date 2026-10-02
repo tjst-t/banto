@@ -8,7 +8,7 @@
 // - 扱うアカウント：origin の持ち主と登録したアカウントの login が一致したら台帳に覚える（覚えていなければ）。
 //   一致しなければ「読むだけ」
 
-import { readdir, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { nearestExistingFolder, readFolder, type FolderFacts } from "./git.js";
@@ -65,6 +65,8 @@ export interface RepoRow {
   remembered?: boolean;
   branch?: string;
   commits?: number;
+  /** コミット数を数えられなかった理由（行は読めている） */
+  commitsProblem?: string;
   correctedFrom?: GithubLocation;
   /**
    * 扱うアカウント（GitHub のリポジトリだけ）。`registered` が false なら、覚えている login が今は登録されていない
@@ -148,23 +150,35 @@ function accountView(entry: LedgerEntry, accounts: GithubAccount[]): RepoRow["ac
  * いなければ、ここで登録したアカウントと突き合わせる。
  * Project の一覧は呼ぶ側が引いて渡す（中継の口は人の画面からの呼び出しの中でだけ答える）
  */
-export async function listRepositories(store: LedgerStore, lookup: ProjectsLookup, home = homedir()): Promise<RepoListing> {
+export async function listRepositories(
+  store: LedgerStore,
+  lookup: ProjectsLookup,
+  home = homedir(),
+  read: (path: string) => Promise<Facts> = readFacts,
+): Promise<RepoListing> {
   const accounts = await store.accounts();
-  const rows = await store.update(async (before) => {
-    const facts = await Promise.all(before.map((e) => readFacts(e.path)));
+  // **git は台帳の書き込みの列の外で読む**——応答しないマウントが1つあるだけで、Import・外す等の全部の書き込みが
+  // 止まらないように。列の中でするのは、読めた事実との突き合わせと書き戻しだけ
+  const facts = new Map<string, Facts>();
+  await Promise.all((await store.entries()).map(async (e) => void facts.set(e.path, await read(e.path))));
+  const entries = await store.update((before) => {
     let changed = false;
-    const entries = before.map((e, i) => {
-      const f = facts[i]!;
-      const synced = f.kind === "error" ? e : syncWithOrigin(e, f).entry;
-      const next = assignAccount(synced, accounts);
-      if (next !== e) changed = true;
-      return next;
+    const next = before.map((e) => {
+      const f = facts.get(e.path);
+      // 読んでいる間に足された行は、まだ突き合わせない（次の一覧で）
+      const synced = !f || f.kind === "error" ? e : syncWithOrigin(e, f).entry;
+      const assigned = assignAccount(synced, accounts);
+      if (assigned !== e) changed = true;
+      return assigned;
     });
-    const rows = entries.map((entry, i) => toRow(entry, facts[i]!, lookup, home, accounts));
-    return { entries: changed ? entries : before, result: rows };
+    return { entries: changed ? next : before, result: next };
   });
+  for (const e of entries) if (!facts.has(e.path)) facts.set(e.path, await read(e.path));
+  const rows = entries.map((entry) => toRow(entry, facts.get(entry.path)!, lookup, home, accounts));
   return { rows: sortRows(rows), ...(lookup.ok ? {} : { projectsError: lookup.error }) };
 }
+
+type Facts = FolderFacts | { kind: "error"; message: string };
 
 function toRow(
   entry: LedgerEntry,
@@ -197,7 +211,7 @@ function toRow(
           state: "ok",
           remote: remoteView(facts.remote),
           ...(facts.branch ? { branch: facts.branch } : {}),
-          commits: facts.commits,
+          ...commitsOf(facts),
           ...(entry.correctedFrom ? { correctedFrom: entry.correctedFrom } : {}),
         },
         facts.worktrees,
@@ -217,9 +231,7 @@ function toRow(
           problem:
             facts.kind === "not-git"
               ? "フォルダはありますが、git のリポジトリではなくなっています"
-              : facts.kind === "inside"
-                ? `フォルダはありますが、${displayPath(facts.top, home)} のリポジトリの中のフォルダになっています`
-                : `フォルダはありますが、${displayPath(facts.main, home)} の worktree になっています`,
+              : `フォルダはありますが、${describeRefusal(facts, home)}`,
           ...(remembered ? { remote: remembered, remembered: true } : {}),
         },
         [],
@@ -237,7 +249,7 @@ interface Place {
 
 export type ImportCheck =
   /** git のリポジトリで、まだ台帳に無い——Import できる。`account` は扱うことになるアカウント（無ければ読むだけ） */
-  | { kind: "ready"; remote: RemoteView; branch?: string; commits: number; account?: string }
+  | { kind: "ready"; remote: RemoteView; branch?: string; commits?: number; commitsProblem?: string; account?: string }
   /** もう台帳にある */
   | { kind: "known" }
   /** worktree——本体が台帳にあれば `mainKnown` */
@@ -246,6 +258,9 @@ export type ImportCheck =
   | { kind: "inside"; top: Place }
   /** git でないフォルダ */
   | { kind: "not-git" }
+  /** 作業ツリーの無い（bare）リポジトリ・どの作業ツリーのものか決められない git の管理用のフォルダ——Import できない */
+  | { kind: "bare" }
+  | { kind: "git-dir" }
   /** 無いパス——いちばん近くにある上のフォルダへ */
   | { kind: "missing"; nearest: Place };
 
@@ -268,7 +283,9 @@ export async function inspectImport(store: LedgerStore, input: string, home = ho
     case "missing":
       return { ...place(resolved, home), check: { kind: "missing", nearest: place(await nearestExistingFolder(resolved), home) } };
     case "not-git":
-      return { ...place(resolved, home), check: { kind: "not-git" } };
+    case "bare":
+    case "git-dir":
+      return { ...place(resolved, home), check: { kind: facts.kind } };
     case "inside":
       return { ...place(resolved, home), check: { kind: "inside", top: place(facts.top, home) } };
     case "worktree":
@@ -286,12 +303,19 @@ export async function inspectImport(store: LedgerStore, input: string, home = ho
             kind: "ready",
             remote: remoteView(facts.remote),
             ...(facts.branch ? { branch: facts.branch } : {}),
-            commits: facts.commits,
+            ...commitsOf(facts),
             ...(account ? { account } : {}),
           },
         };
       }
   }
+}
+
+function commitsOf(facts: Extract<FolderFacts, { kind: "repo" }>): { commits?: number; commitsProblem?: string } {
+  return {
+    ...(facts.commits !== undefined ? { commits: facts.commits } : {}),
+    ...(facts.commitsProblem ? { commitsProblem: facts.commitsProblem } : {}),
+  };
 }
 
 function newEntry(facts: Extract<FolderFacts, { kind: "repo" }>): LedgerEntry {
@@ -306,8 +330,9 @@ function newEntry(facts: Extract<FolderFacts, { kind: "repo" }>): LedgerEntry {
 export async function importRepository(store: LedgerStore, input: string, home = homedir()): Promise<Place> {
   const resolved = resolveUserPath(input, home);
   const accounts = await store.accounts();
-  return store.update(async (entries) => {
-    const facts = await readFolder(resolved);
+  // 読み直すのは列の外で（git が止まっても、ほかの書き込みを止めない）。足す直前のぶつかりは列の中で見る
+  const facts = await readFolder(resolved);
+  return store.update((entries) => {
     if (facts.kind !== "repo") throw new Error(`${displayPath(resolved, home)} は Import できません（${describeRefusal(facts, home)}）`);
     if (entries.some((e) => e.path === facts.path)) {
       throw new Error(`${displayPath(facts.path, home)} は、もう一覧にあります`);
@@ -323,6 +348,10 @@ function describeRefusal(facts: Exclude<FolderFacts, { kind: "repo" }>, home: st
       return "このフォルダはありません";
     case "not-git":
       return "git のリポジトリではありません";
+    case "bare":
+      return "作業ツリーの無い（bare）リポジトリです。clone した作業ツリーを選んでください";
+    case "git-dir":
+      return "git の管理用のフォルダです（作業ツリーではありません）";
     case "inside":
       return `${displayPath(facts.top, home)} のリポジトリの中のフォルダです`;
     case "worktree":
@@ -341,13 +370,18 @@ export function removeRepository(store: LedgerStore, path: string): Promise<Ledg
   });
 }
 
-/** 「元に戻す」——外した行をそのまま戻し、フォルダがあれば origin に合わせる */
+/**
+ * 「元に戻す」——外した行を戻し、フォルダがあれば origin に合わせる。**置き場所は画面が持ってきた字を信じない**
+ * ——リポジトリならその一番上（realpath）、フォルダがあればその realpath に寄せる（台帳は realpath で覚える決まり）
+ */
 export async function restoreRepository(store: LedgerStore, raw: unknown): Promise<LedgerEntry> {
-  const entry = parseLedgerEntry(raw, "戻す行");
-  return store.update(async (entries) => {
-    if (entries.some((e) => e.path === entry.path)) throw new Error(`${entry.path} は、もう一覧にあります`);
-    const facts = await readFacts(entry.path);
-    const synced = facts.kind === "error" ? entry : syncWithOrigin(entry, facts).entry;
+  const given = parseLedgerEntry(raw, "戻す行");
+  const facts = await readFacts(given.path);
+  const path = facts.kind === "repo" ? facts.path : await realpath(given.path).catch(() => given.path);
+  const entry = { ...given, path };
+  const synced = facts.kind === "error" ? entry : syncWithOrigin(entry, facts).entry;
+  return store.update((entries) => {
+    if (entries.some((e) => e.path === path)) throw new Error(`${path} は、もう一覧にあります`);
     return { entries: [...entries, synced], result: synced };
   });
 }
