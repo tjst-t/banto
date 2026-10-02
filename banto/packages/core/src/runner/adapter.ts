@@ -10,7 +10,7 @@
 // poc/02-item13-parked-elicitation/ で「呼び出し自体を保留する」は
 // 成立しないと実測済み）。
 
-import { query, type SDKMessage, type PermissionResult, type Options, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, query, type SDKMessage, type PermissionResult, type Options, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { ImageMediaType } from "../images/store.js";
 
 export interface PendingToolApproval {
@@ -338,6 +338,49 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
 
   if (capturedError) throw capturedError;
   return { sessionId, contextUsage, compactionCount, apiUsage, exited };
+}
+
+/**
+ * **止めて取り消す発言の、1つ手前のやり取り**（追加・2026-10-02、v4-frontend.md §6.31）。切る位置を覚えていない会話
+ * （この仕組みより前から続く会話・止めたターンが続いた会話）で、SDK の公式の口（`getSessionMessages`、会話の鎖を
+ * parentUuid でたどったもの）から引く。
+ *
+ *  - 送った発言（`sentPrompt` と文が同じ最後の user）が鎖にあれば、その1つ前。先頭なら切れない（`undefined`）
+ *  - 見つからなければ（まだ書かれていない・文の形が違う）、鎖の末尾に並ぶ人の側の文（送った発言・中断の印。tool の結果は
+ *    除く）を飛ばしたその手前——止めたのは AI がまだ何も出していないときだけなので、末尾の人の側の文はこのターンのもの。
+ *    「鎖の最後」にすると、文の形が食い違ったときに取り消した発言そのものを切る位置にしてしまう
+ *
+ * 読めなければ投げる（呼ぶ側は取り消さずに止めるだけにする）
+ */
+export async function findRewindBeforePrompt(
+  sessionId: string,
+  sentPrompt: string,
+  dir?: string,
+): Promise<string | undefined> {
+  let chain = await getSessionMessages(sessionId, dir ? { dir } : {});
+  // 置き場の名前の付け方が食い違うと空が返る——全部から探し直す
+  if (chain.length === 0 && dir) chain = await getSessionMessages(sessionId);
+  if (chain.length === 0) throw new Error(`セッション ${sessionId} の会話の記録が読めません`);
+  const textOf = (message: unknown): string => {
+    const content = (message as { content?: unknown } | undefined)?.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .filter((b): b is { type: "text"; text: string } => (b as { type?: string })?.type === "text")
+      .map((b) => b.text)
+      .join("");
+  };
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const m = chain[i]!;
+    if (m.type === "user" && textOf(m.message) === sentPrompt) return i > 0 ? chain[i - 1]!.uuid : undefined;
+  }
+  const isToolResult = (message: unknown): boolean => {
+    const content = (message as { content?: unknown } | undefined)?.content;
+    return Array.isArray(content) && content.some((b) => (b as { type?: string })?.type === "tool_result");
+  };
+  let i = chain.length - 1;
+  while (i >= 0 && chain[i]!.type === "user" && !isToolResult(chain[i]!.message)) i--;
+  return i >= 0 ? chain[i]!.uuid : undefined;
 }
 
 function abortSignalToController(signal: AbortSignal): AbortController {

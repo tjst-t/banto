@@ -179,18 +179,43 @@ test("AI が文を出したあとに止めたら、取り消さず、出た分�
   });
 });
 
-test("切る位置を知らないセッション（この仕組みより前の記録）では、取り消さずに止めるだけ", async () => {
+test("切る位置を覚えていない会話（この仕組みより前の記録）では、CLI の記録から手前を引いて取り消す", async () => {
   await withThread(async ({ deps, threadId, store }) => {
     await store.updateResumePoint(threadId, "old-session"); // anchor 無し
+    const asked: Array<{ sessionId: string; sentPrompt: string }> = [];
+    const findRewindPoint = async (sessionId: string, sentPrompt: string) => {
+      asked.push({ sessionId, sentPrompt });
+      return "uuid-before";
+    };
     const runner = scriptedRunner({ messages: [init("old-session")], hang: true });
-    const { events } = await runAndStop(deps, threadId, "まちがえた依頼", runner);
+    const { events } = await runAndStop({ ...deps, findRewindPoint }, threadId, "まちがえた依頼", runner);
 
+    assert.ok((events.at(-1) as { withdrawn?: unknown }).withdrawn, "取り消していない");
+    assert.equal(asked[0]?.sessionId, "old-session");
+    assert.ok(asked[0]?.sentPrompt.endsWith("まちがえた依頼"), "送った発言の文で探していない");
+    assert.equal(store.getThread(threadId)!.messages.length, 0);
+    assert.equal(store.getThread(threadId)!.rewindTo, "uuid-before");
+  });
+});
+
+test("CLI の記録から手前を引けなければ、取り消さずに止めるだけ（何度止めても次で引き直す）", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    await store.updateResumePoint(threadId, "old-session");
+    let calls = 0;
+    const findRewindPoint = async () => {
+      calls += 1;
+      throw new Error("読めない");
+    };
+    const runner = scriptedRunner({ messages: [init("old-session")], hang: true });
+    const { events } = await runAndStop({ ...deps, findRewindPoint }, threadId, "まちがえた依頼", runner);
     assert.deepEqual(events.at(-1), { type: "stopped" });
-    const thread = store.getThread(threadId)!;
-    assert.deepEqual(thread.messages.map((m) => [m.role, m.text]), [
+    assert.deepEqual(store.getThread(threadId)!.messages.map((m) => [m.role, m.text]), [
       ["user", "まちがえた依頼"],
       ["assistant", STOPPED_NOTE],
     ]);
+    const again = scriptedRunner({ messages: [init("old-session")], hang: true });
+    await runAndStop({ ...deps, findRewindPoint }, threadId, "もう一度", again);
+    assert.equal(calls, 2, "止めたあとの次のターンで引き直していない");
   });
 });
 
@@ -266,4 +291,27 @@ test("順番を待っている発言は、名前で止めると列を抜け、�
 test("止めるターンが無ければ、止めなかったと答える", async () => {
   const stops = new TurnStops();
   assert.deepEqual(await stops.stop("nothing"), { stopped: false });
+});
+
+test("Fork でも、最初のターン・続きのターンのどちらで止めても発言を取り消す", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    await completeTurn(deps, threadId, "りんご", "base-1", "uuid-apple");
+    const fork = await store.forkThread(threadId);
+
+    // Fork の最初のターン（親のセッションから枝を分ける）
+    const first = scriptedRunner({ messages: [init("fork-x")], hang: true });
+    const a = await runAndStop(deps, fork.id, "まちがえた1", first);
+    assert.ok((a.events.at(-1) as { withdrawn?: unknown }).withdrawn, `最初のターンで取り消していない: ${JSON.stringify(a.events.at(-1))}`);
+
+    // 最後まで走らせて、Fork 自身のセッションにする
+    await completeTurn(deps, fork.id, "ぶどう", "fork-1", "uuid-grape");
+    assert.equal(store.getThread(fork.id)!.ownsSession, true);
+    assert.equal(store.getThread(fork.id)!.resumeAnchor, "uuid-grape");
+
+    // Fork の続きのターン
+    const second = scriptedRunner({ messages: [init("fork-1")], hang: true });
+    const b = await runAndStop(deps, fork.id, "まちがえた2", second);
+    assert.ok((b.events.at(-1) as { withdrawn?: unknown }).withdrawn, `続きのターンで取り消していない: ${JSON.stringify(b.events.at(-1))}`);
+    assert.equal(store.getThread(fork.id)!.rewindTo, "uuid-grape");
+  });
 });

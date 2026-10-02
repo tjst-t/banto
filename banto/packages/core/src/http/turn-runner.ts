@@ -6,7 +6,7 @@
 import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
 import type { MessageImage, UiToolCallEntry } from "../project-thread/types.js";
 import type { ImageMediaType } from "../images/store.js";
-import { runTurn } from "../runner/adapter.js";
+import { findRewindBeforePrompt, runTurn } from "../runner/adapter.js";
 import { buildSystemPrompt } from "../runner/system-prompt.js";
 import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
@@ -171,6 +171,8 @@ async function* runThreadTurnInner(
     turnEvents?: TurnEventBus;
     /** Runner の差し替え口（試験用）。本番は既定の `runTurn`。 */
     runTurn?: typeof runTurn;
+    /** 取り消す発言の手前を CLI の記録から引く口の差し替え（試験用）。本番は `findRewindBeforePrompt` */
+    findRewindPoint?: typeof findRewindBeforePrompt;
     /**
      * **新しいセッションで効かせる Skill の集合を決める**（決定・2026-09-23、§5.7）。
      * 繋がっている Module が配っている Skill を集め、設定で絞る（cli.ts）。
@@ -515,6 +517,8 @@ async function* runThreadTurnInner(
       withdrawn: { text: input.prompt, images: imageNames },
       raisedJudgments,
       uiTools: input.uiTools ?? [],
+      sentPrompt: `${turnContext}\n\n${prompt}`,
+      cwd: input.cwd,
     });
     return;
   }
@@ -564,7 +568,12 @@ export const STOPPED_NOTE = "（ここで止めました）";
  * どちらでも、このターンが出した判断待ちは畳む（答えても届く先が無い）
  */
 async function settleStoppedTurn(
-  deps: { projectThread: ProjectThreadStore; inbox: InboxStore; pendingApprovals: PendingApprovalRegistry },
+  deps: {
+    projectThread: ProjectThreadStore;
+    inbox: InboxStore;
+    pendingApprovals: PendingApprovalRegistry;
+    findRewindPoint?: typeof findRewindBeforePrompt;
+  },
   turn: {
     threadId: string;
     /** ターンを始めたときの Thread */
@@ -577,6 +586,9 @@ async function settleStoppedTurn(
     withdrawn: WithdrawnMessage;
     raisedJudgments: readonly string[];
     uiTools: UiToolBinding[];
+    /** CLI に送った発言の文（ターンに添えたもの込み）。切る位置を CLI の記録から引くときの目印 */
+    sentPrompt: string;
+    cwd?: string;
   },
 ): Promise<TurnStreamEvent> {
   for (const id of turn.raisedJudgments) {
@@ -591,12 +603,21 @@ async function settleStoppedTurn(
   // このターンが続けたセッションを、どこで切ればよいか。新しいセッション（最初のターン・Clear のあと・
   // Fork の最初のターン）なら切る必要が無い——次のターンも同じところから始める
   const startsFresh = thread.resumePoint === undefined || turn.forkSession;
-  const rewindTo = thread.rewindTo ?? thread.resumeAnchor;
-  const withdrawable =
-    turn.humanSeq !== undefined &&
-    turn.deliveredCount === 0 &&
-    !hasVisibleOutput(turn.messages) &&
-    (startsFresh || rewindTo !== undefined);
+  const candidate = turn.humanSeq !== undefined && turn.deliveredCount === 0 && !hasVisibleOutput(turn.messages);
+  let rewindTo = thread.rewindTo ?? thread.resumeAnchor;
+  if (candidate && !startsFresh && rewindTo === undefined) {
+    // **切る位置を覚えていない**（この仕組みより前から続く会話・止めたターンが続いた会話——改訂・2026-10-02、
+    // ユーザー報告「Fork だと戻らない」）。以前は取り消さず止めるだけにしていたが、止めたターンは位置を残さないので
+    // 一度そうなると抜けられなかった。CLI の記録を SDK の公式の口で読み、送った発言の手前を引く
+    const sessionId = turn.initSessionId ?? thread.resumePoint!;
+    try {
+      rewindTo = await (deps.findRewindPoint ?? findRewindBeforePrompt)(sessionId, turn.sentPrompt, turn.cwd);
+    } catch (err) {
+      // 読めなければ取り消さない——黙らずに書き残す（規則2）
+      console.warn(`[host] ${turn.threadId} の取り消す発言の手前を引けませんでした（止めるだけにします）:`, err);
+    }
+  }
+  const withdrawable = candidate && (startsFresh || rewindTo !== undefined);
   if (withdrawable) {
     await deps.projectThread.withdrawMessage(turn.threadId, turn.humanSeq!, startsFresh ? undefined : rewindTo);
     return { type: "stopped", withdrawn: turn.withdrawn };

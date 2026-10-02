@@ -117,3 +117,39 @@ test("AI が書き始めてから止めると、すぐ止まり、出た分が�
   // すぐ次を送れる（前のターンを待たされない）
   await sendAndWait(page, composer, `TWO を返して${fakeTurn({ say: "TWO-REPLY" })}`, "TWO-REPLY");
 });
+
+test("Fork でも、AI が何も出していないうちに止めると発言が Fork の入力欄へ戻る（最初のターン・続きのターン）", async ({ page }) => {
+  await openApp(page);
+  await createProject(page, `${PROJECT} fork`, mkdtempSync(join(tmpdir(), "banto-e2e-")));
+  await sendAndWait(page, baseComposer(page), `ONE を返して${fakeTurn({ say: "ONE-REPLY" })}`, "ONE-REPLY");
+
+  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({ timeout: 15_000 });
+  // デスクトップ幅では Base と Fork が横に並ぶ——Fork の面は data-layer で指す
+  const fork = page.locator('[data-layer="fork"]');
+  const forkComposer = fork.getByPlaceholder("この Fork Thread に送る");
+  await expect(forkComposer).toBeVisible({ timeout: 15_000 });
+
+  for (const [label, before] of [["最初のターン", null], ["続きのターン", "FORK-TWO"]] as const) {
+    if (before) {
+      await forkComposer.fill(`${before} を返して${fakeTurn({ say: `${before}-REPLY` })}`);
+      await forkComposer.press("Enter");
+      await expect(fork.locator('[data-role="assistant"]').filter({ hasText: `${before}-REPLY` })).toBeVisible({ timeout: 30_000 });
+      await expect(fork.getByRole("button", { name: "Stop generating" })).toHaveCount(0, { timeout: 30_000 });
+    }
+    const mistaken = `Fork でまちがえた（${label}）${fakeTurn({ thinkMs: 60_000, say: "NEVER-SAID" })}`;
+    await forkComposer.fill(mistaken);
+    await forkComposer.press("Enter");
+    await page.waitForTimeout(1_500);
+    const stop = fork.getByRole("button", { name: "Stop generating" });
+    await expect(stop, `${label}：停止ボタンが出ない`).toBeVisible({ timeout: 10_000 });
+    await stop.click();
+    await expect(stop, `${label}：止まらない`).toHaveCount(0, { timeout: 1_500 });
+    await expect(forkComposer, `${label}：入力欄に戻らない`).toHaveValue(mistaken, { timeout: 10_000 });
+    await expect(
+      fork.locator('[data-role="user"]').filter({ hasText: `Fork でまちがえた（${label}）` }),
+      `${label}：会話に残っている`,
+    ).toHaveCount(0, { timeout: 10_000 });
+    await forkComposer.fill("");
+  }
+});
