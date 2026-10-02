@@ -921,7 +921,8 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     // **既定で入っていて消せない**（無効にはできる——無効にすると新しい Project の始め方は「手元のフォルダ」だけ）。
     // banto 全体に1本・banto 本体で動く：Project より先に動く必要がある（Project の根を用意するのがこの Module）。
     // 読むのは人が選んだフォルダと台帳のフォルダの git の情報だけ。中継はどの Project がそのフォルダを根にしているかを
-    // 引くため（`relayListProjects`、人の画面からの呼び出しの中でだけ答える）
+    // 引くため（`relayListProjects`、人の画面からの呼び出しの中でだけ答える）と、GitHub のアカウントの秘密を Vault に
+    // 置く・引くため（段階2）。ログインの更新に失敗したら受信箱に知らせる（`relayRaiseNotice`）
     name: "repositories",
     launch: {
       command: "${nodeExec}",
@@ -933,9 +934,15 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
     meta: {
       satisfies: ["repositories"],
-      dependsOn: [],
+      // 台帳だけなら Vault 無しでも動く——アカウント（PAT・ログインのトークン・SSH 鍵）だけが Vault を使う
+      dependsOn: [
+        { role: "vault-directory", required: false },
+        { role: "vault", required: false },
+      ],
       isolation: "subprocess",
       scope: "instance",
+      // 人が設定画面で貼った PAT がこの Module を通って Vault へ行く（要件 C8c）
+      handlesSecrets: true,
     },
   },
 ];

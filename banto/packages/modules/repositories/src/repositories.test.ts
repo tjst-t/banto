@@ -355,3 +355,68 @@ test("既定の置き場：既定は ~/banto・ホームや / は断る・変え
     w.done();
   }
 });
+
+test("扱うアカウント：origin の持ち主と登録した login が一致すれば台帳に覚え、一致しなければ読むだけ。登録を外しても覚えたまま", async () => {
+  const w = world();
+  try {
+    const other = join(w.home, "work/other");
+    mkdirSync(other);
+    git(other, "init", "-q");
+    git(other, "remote", "add", "origin", "https://github.com/someone-else/other.git");
+    const account = (login: string) => ({
+      login,
+      credential: { kind: "pat" as const, alias: { implementation: "vault-local", name: `github-${login.toLowerCase()}-pat` } },
+    });
+    // まだ登録が無いうちに Import したもの
+    await importRepository(w.store, "~/work/kakeibo", w.home);
+    assert.equal((await w.store.entries())[0]!.account, undefined);
+    const readOnly = await listRepositories(w.store, noProjects, w.home);
+    assert.equal(readOnly.rows[0]!.account, undefined);
+
+    // 大文字小文字違いの login を登録——一覧で突き合わせて覚える
+    await w.store.updateAccounts(() => ({ accounts: [account("TJST-T")], result: undefined }));
+    const listed = await listRepositories(w.store, noProjects, w.home);
+    assert.deepEqual(listed.rows.find((r) => r.path === w.kakeibo)!.account, { login: "TJST-T", registered: true });
+    assert.equal((await w.store.entries())[0]!.account, "TJST-T", "台帳に覚えていない");
+
+    // Import の判断にも出し、足すときに覚える。持ち主が違えば覚えない
+    assert.equal(((await inspectImport(w.store, "~/work/other", w.home)).check as { account?: string }).account, undefined);
+    await importRepository(w.store, "~/work/other", w.home);
+    const forked = join(w.home, "work/mine");
+    mkdirSync(forked);
+    git(forked, "init", "-q");
+    git(forked, "remote", "add", "origin", "git@github.com:tjst-t/mine.git");
+    assert.equal(((await inspectImport(w.store, "~/work/mine", w.home)).check as { account?: string }).account, "TJST-T");
+    await importRepository(w.store, "~/work/mine", w.home);
+    const accounts = new Map((await w.store.entries()).map((e) => [e.path, e.account]));
+    assert.deepEqual([accounts.get(realpathSync(other)), accounts.get(realpathSync(forked))], [undefined, "TJST-T"]);
+
+    // 登録を外しても台帳は覚えたまま——一覧は「登録されていない」と言う。登録し直せばまた繋がる
+    await w.store.updateAccounts(() => ({ accounts: [], result: undefined }));
+    const gone = await listRepositories(w.store, noProjects, w.home);
+    assert.deepEqual(gone.rows.find((r) => r.path === w.kakeibo)!.account, { login: "TJST-T", registered: false });
+    assert.equal(gone.rows.find((r) => r.path === realpathSync(other))!.account, undefined);
+    await w.store.updateAccounts(() => ({ accounts: [account("tjst-t")], result: undefined }));
+    const back = await listRepositories(w.store, noProjects, w.home);
+    assert.deepEqual(back.rows.find((r) => r.path === w.kakeibo)!.account, { login: "tjst-t", registered: true });
+  } finally {
+    w.done();
+  }
+});
+
+test("設定は項目ごとに変わる——置き場を変えても client ID は消えない。壊れたアカウントの一覧は空と読まない", async () => {
+  const w = world();
+  try {
+    await w.store.updateSettings({ githubAppClientId: "Iv23liABCDEFGH" });
+    await setRepoHome(w.store, "~/code", w.home);
+    assert.deepEqual(await w.store.settings(), { repoHome: "~/code", githubAppClientId: "Iv23liABCDEFGH" });
+    await setRepoHome(w.store, null, w.home);
+    assert.deepEqual(await w.store.settings(), { githubAppClientId: "Iv23liABCDEFGH" });
+
+    writeFileSync(join(w.dataDir, "accounts.json"), JSON.stringify({ accounts: [{ login: "x" }] }));
+    await assert.rejects(() => w.store.accounts(), /アカウントの 1 件目：API の資格情報が読めません/);
+    await assert.rejects(() => listRepositories(w.store, noProjects, w.home), /API の資格情報が読めません/);
+  } finally {
+    w.done();
+  }
+});

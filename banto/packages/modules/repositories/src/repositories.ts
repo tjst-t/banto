@@ -5,6 +5,8 @@
 //   答えるたびに origin と突き合わせて台帳を直す
 // - Import：人が選んだフォルダ1つを、その場所のまま台帳に足す。断るときは理由と次の手を言えるだけの値を返す
 // - 外す／元に戻す：台帳からだけ外す。フォルダには触らない
+// - 扱うアカウント：origin の持ち主と登録したアカウントの login が一致したら台帳に覚える（覚えていなければ）。
+//   一致しなければ「読むだけ」
 
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -14,6 +16,7 @@ import {
   DEFAULT_REPO_HOME,
   parseLedgerEntry,
   syncWithOrigin,
+  type GithubAccount,
   type LedgerEntry,
   type LedgerStore,
 } from "./ledger.js";
@@ -63,6 +66,11 @@ export interface RepoRow {
   branch?: string;
   commits?: number;
   correctedFrom?: GithubLocation;
+  /**
+   * 扱うアカウント（GitHub のリポジトリだけ）。`registered` が false なら、覚えている login が今は登録されていない
+   * ——読むだけ。無ければ、扱うアカウントが無い（読むだけ）
+   */
+  account?: { login: string; registered: boolean };
   /** 引けなかったら無い（`section` も `unknown`） */
   projects?: ProjectUse[];
   section: "used" | "unused" | "unknown";
@@ -118,21 +126,41 @@ function projectsUsing(path: string, worktrees: string[], lookup: ProjectsLookup
 }
 
 /**
- * 一覧を作る。**答えるたびに origin と突き合わせ、食い違っていれば台帳を直す**（§2.4）。
+ * 扱うアカウントを決める。**覚えていればそれ**（登録を外していても変えない）。覚えていなくて、GitHub の持ち主と同じ
+ * login のアカウントが登録されていれば、それを覚える（書き戻すかは呼ぶ側）
+ */
+export function assignAccount(entry: LedgerEntry, accounts: GithubAccount[]): LedgerEntry {
+  if (entry.account || !entry.github) return entry;
+  const owner = entry.github.owner.toLowerCase();
+  const match = accounts.find((a) => a.login.toLowerCase() === owner);
+  return match ? { ...entry, account: match.login } : entry;
+}
+
+function accountView(entry: LedgerEntry, accounts: GithubAccount[]): RepoRow["account"] {
+  if (!entry.account) return undefined;
+  const login = entry.account.toLowerCase();
+  const found = accounts.find((a) => a.login.toLowerCase() === login);
+  return { login: found?.login ?? entry.account, registered: found !== undefined };
+}
+
+/**
+ * 一覧を作る。**答えるたびに origin と突き合わせ、食い違っていれば台帳を直す**（§2.4）。扱うアカウントが決まって
+ * いなければ、ここで登録したアカウントと突き合わせる。
  * Project の一覧は呼ぶ側が引いて渡す（中継の口は人の画面からの呼び出しの中でだけ答える）
  */
 export async function listRepositories(store: LedgerStore, lookup: ProjectsLookup, home = homedir()): Promise<RepoListing> {
+  const accounts = await store.accounts();
   const rows = await store.update(async (before) => {
     const facts = await Promise.all(before.map((e) => readFacts(e.path)));
     let changed = false;
     const entries = before.map((e, i) => {
       const f = facts[i]!;
-      if (f.kind === "error") return e;
-      const r = syncWithOrigin(e, f);
-      if (r.changed) changed = true;
-      return r.entry;
+      const synced = f.kind === "error" ? e : syncWithOrigin(e, f).entry;
+      const next = assignAccount(synced, accounts);
+      if (next !== e) changed = true;
+      return next;
     });
-    const rows = entries.map((entry, i) => toRow(entry, facts[i]!, lookup, home));
+    const rows = entries.map((entry, i) => toRow(entry, facts[i]!, lookup, home, accounts));
     return { entries: changed ? entries : before, result: rows };
   });
   return { rows: sortRows(rows), ...(lookup.ok ? {} : { projectsError: lookup.error }) };
@@ -143,8 +171,15 @@ function toRow(
   facts: FolderFacts | { kind: "error"; message: string },
   lookup: ProjectsLookup,
   home: string,
+  accounts: GithubAccount[],
 ): RepoRow {
-  const base = { path: entry.path, displayPath: displayPath(entry.path, home), name: basename(entry.path) };
+  const account = accountView(entry, accounts);
+  const base = {
+    path: entry.path,
+    displayPath: displayPath(entry.path, home),
+    name: basename(entry.path),
+    ...(account ? { account } : {}),
+  };
   const remembered = rememberedRemote(entry);
   const withProjects = (row: Omit<RepoRow, "section" | "projects">, worktrees: string[]): RepoRow => {
     const projects = projectsUsing(entry.path, worktrees, lookup);
@@ -201,8 +236,8 @@ interface Place {
 }
 
 export type ImportCheck =
-  /** git のリポジトリで、まだ台帳に無い——Import できる */
-  | { kind: "ready"; remote: RemoteView; branch?: string; commits: number }
+  /** git のリポジトリで、まだ台帳に無い——Import できる。`account` は扱うことになるアカウント（無ければ読むだけ） */
+  | { kind: "ready"; remote: RemoteView; branch?: string; commits: number; account?: string }
   /** もう台帳にある */
   | { kind: "known" }
   /** worktree——本体が台帳にあれば `mainKnown` */
@@ -227,6 +262,7 @@ export async function inspectImport(store: LedgerStore, input: string, home = ho
   const resolved = resolveUserPath(input, home);
   const facts = await readFolder(resolved);
   const entries = await store.entries();
+  const accounts = await store.accounts();
   const known = (p: string) => entries.some((e) => e.path === p);
   switch (facts.kind) {
     case "missing":
@@ -242,32 +278,41 @@ export async function inspectImport(store: LedgerStore, input: string, home = ho
       };
     case "repo":
       if (known(facts.path)) return { ...place(facts.path, home), check: { kind: "known" } };
-      return {
-        ...place(facts.path, home),
-        check: {
-          kind: "ready",
-          remote: remoteView(facts.remote),
-          ...(facts.branch ? { branch: facts.branch } : {}),
-          commits: facts.commits,
-        },
-      };
+      {
+        const account = assignAccount(newEntry(facts), accounts).account;
+        return {
+          ...place(facts.path, home),
+          check: {
+            kind: "ready",
+            remote: remoteView(facts.remote),
+            ...(facts.branch ? { branch: facts.branch } : {}),
+            commits: facts.commits,
+            ...(account ? { account } : {}),
+          },
+        };
+      }
   }
+}
+
+function newEntry(facts: Extract<FolderFacts, { kind: "repo" }>): LedgerEntry {
+  return {
+    path: facts.path,
+    ...(facts.remote.kind === "github" ? { github: { owner: facts.remote.owner, name: facts.remote.name } } : {}),
+    ...(facts.remote.kind === "elsewhere" ? { elsewhere: facts.remote.url } : {}),
+  };
 }
 
 /** Import する。**画面の判断を信じず、ここで読み直す**——Import できるときだけ足す */
 export async function importRepository(store: LedgerStore, input: string, home = homedir()): Promise<Place> {
   const resolved = resolveUserPath(input, home);
+  const accounts = await store.accounts();
   return store.update(async (entries) => {
     const facts = await readFolder(resolved);
     if (facts.kind !== "repo") throw new Error(`${displayPath(resolved, home)} は Import できません（${describeRefusal(facts, home)}）`);
     if (entries.some((e) => e.path === facts.path)) {
       throw new Error(`${displayPath(facts.path, home)} は、もう一覧にあります`);
     }
-    const entry: LedgerEntry = {
-      path: facts.path,
-      ...(facts.remote.kind === "github" ? { github: { owner: facts.remote.owner, name: facts.remote.name } } : {}),
-      ...(facts.remote.kind === "elsewhere" ? { elsewhere: facts.remote.url } : {}),
-    };
+    const entry = assignAccount(newEntry(facts), accounts);
     return { entries: [...entries, entry], result: place(facts.path, home) };
   });
 }
@@ -404,10 +449,10 @@ export async function repoHomeView(store: LedgerStore, home = homedir()): Promis
 
 /** 置き場を変える。`null` で既定に戻す。**今あるフォルダは動かさない**（台帳はパスで覚えている） */
 export async function setRepoHome(store: LedgerStore, input: string | null, home = homedir()): Promise<RepoHomeView> {
-  if (input === null) await store.setSettings({});
+  if (input === null) await store.updateSettings({ repoHome: undefined });
   else {
     const value = normalizeRepoHome(input, home);
-    await store.setSettings(value === DEFAULT_REPO_HOME ? {} : { repoHome: value });
+    await store.updateSettings({ repoHome: value === DEFAULT_REPO_HOME ? undefined : value });
   }
   return repoHomeView(store, home);
 }

@@ -1,4 +1,4 @@
-// host の中継（docs/specs/v4-architecture.md §2.5）のうち、この Module が使う口——**Project の一覧だけ**。
+// host の中継（docs/specs/v4-architecture.md §2.5）のうち、この Module が使う口——**Project の一覧・Vault・受信箱**。
 // publish-directory・vault-directory の `relay-client.ts` と同じ形（共有にはまだしない、`module-kit-extract`）。
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -8,7 +8,7 @@ import { CALL_ID_META_KEY } from "@banto/module-contract";
 import type { ProjectSummary } from "./repositories.js";
 
 /**
- * この Module が中継に求めるのはこれだけ（試験では偽物を渡す）。
+ * この Module が中継に求める Project の一覧（試験では偽物を渡す）。
  *
  * **`callId` は host がこの Module を呼んだときの呼び出しの印**（`dev.banto/callId`）。必ず添える——host は
  * それで「人の画面からの呼び出しを処理している最中か」を1件ずつ引く（中継は人の画面の中でだけ一覧を答える）
@@ -17,7 +17,17 @@ export interface ProjectsSource {
   listProjects(callId?: string): Promise<ProjectSummary[]>;
 }
 
-export class HostRelayProjects implements ProjectsSource {
+/** 他の Module の道具を中継で1本呼ぶ（Vault）。返るのは宛先の返事の文字列。断られたら理由つきで投げる */
+export interface ModuleCaller {
+  callTool(targetModule: string, name: string, args: Record<string, unknown>, callId?: string): Promise<string>;
+}
+
+/** 受信箱に1件出す（banto 全体の知らせ）。同じ `key` が開いている間は積まない（host が見る） */
+export interface NoticeSink {
+  raiseNotice(input: { key: string; title: string; detail: string }): Promise<void>;
+}
+
+export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
   private client?: Promise<Client>;
 
   constructor(
@@ -47,17 +57,18 @@ export class HostRelayProjects implements ProjectsSource {
     void old?.then((c) => c.close()).catch(() => undefined);
   }
 
-  async listProjects(callId?: string): Promise<ProjectSummary[]> {
+  /** 中継の口を1本呼び、返った文字列を返す。**呼び出しの印を添える**（人の画面の中かを host が1件ずつ引く） */
+  private async relay(tool: string, args: Record<string, unknown>, callId: string | undefined, what: string): Promise<string> {
     try {
       const client = await this.connect();
       const result = await client.callTool({
-        name: "relayListProjects",
-        arguments: {},
+        name: tool,
+        arguments: args,
         ...(callId ? { _meta: { [CALL_ID_META_KEY]: callId } } : {}),
       });
       const text = (result.content as { type: string; text: string }[])[0]?.text ?? "";
-      if (result.isError) throw new Error(text || "中継が Project の一覧を返しませんでした");
-      return JSON.parse(text) as ProjectSummary[];
+      if (result.isError) throw new Error(text || what);
+      return text;
     } catch (err) {
       // 中継の口が理由つきで断ったもの（JSON-RPC のエラー）は繋ぎ直しても同じ。中継に届かなかったときだけ作り直す
       if (!(err instanceof McpError) || err.code === ErrorCode.ConnectionClosed || err.code === ErrorCode.RequestTimeout) {
@@ -65,5 +76,17 @@ export class HostRelayProjects implements ProjectsSource {
       }
       throw err;
     }
+  }
+
+  async listProjects(callId?: string): Promise<ProjectSummary[]> {
+    return JSON.parse(await this.relay("relayListProjects", {}, callId, "中継が Project の一覧を返しませんでした")) as ProjectSummary[];
+  }
+
+  callTool(targetModule: string, name: string, args: Record<string, unknown>, callId?: string): Promise<string> {
+    return this.relay("relayCallTool", { targetModule, name, arguments: args }, callId, `${targetModule} の ${name} が失敗しました`);
+  }
+
+  async raiseNotice(input: { key: string; title: string; detail: string }): Promise<void> {
+    await this.relay("relayRaiseNotice", input, undefined, "受信箱に出せませんでした");
   }
 }

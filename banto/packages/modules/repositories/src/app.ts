@@ -1,10 +1,12 @@
 // Repositories Module が描く画面（MCP Apps）。**1つの HTML を2か所で使う**（Skill の置き場と同じ形）：
 //
 // - **入口**（launcher）——Command Palette の「Module の入口」から、会話の隣に開く。どの Project からも開ける
-// - **banto 全体の設定の Repositories の面**——同じ一覧を埋め込み、その下に既定の置き場
+// - **banto 全体の設定の Repositories の面**——同じ一覧を埋め込み、その下に既定の置き場と GitHub のアカウント
+//   （段階2。見た目の正はモックの `settings/github-accounts-section.tsx`。秘密の値は画面に戻らない——Module が返すのは
+//   login と alias の在りかだけ。貼った PAT は入力欄から Module へ渡したら、欄を空にする）
 //
 // 見た目と振る舞いの正はモック（`mock/components/banto/canvas/repo-list-view.tsx`・`repo-import-dialog.tsx`・
-// `settings/repo-home-section.tsx`）。段階1で無いもの（clone・新しいリポジトリ・GitHub に公開・アカウント）の
+// `settings/repo-home-section.tsx`）。まだ無いもの（clone・新しいリポジトリ・GitHub に公開）の
 // うち、**事実の隣の次の手**（Project を始める・GitHub に公開・clone し直す）は出し、押したら「まだ作っていない」と
 // 言う（嘘をつかない）。見出しの右の「URL から clone」「新しいリポジトリ」は出さない（規則13——繋がっていないものは隠す）。
 //
@@ -247,6 +249,44 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0; color: var(--ink-2); }
 .facts dt { color: var(--ink-3); } .facts dd { margin: 0; word-break: break-all; }
 .foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---- GitHub のアカウント（設定の面） ---- */
+.accts { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.accts h3 { margin: 0; font-size: var(--t-sm); font-weight: 500; }
+.accts .help { margin: 0; color: var(--ink-3); font-size: var(--t-xs); }
+.accts ul.list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.accts li.acct { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.accts li.acct:last-child { border-bottom: 0; }
+.mark {
+  flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 999px; background: var(--bg-3); color: var(--ink-2);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; text-transform: uppercase;
+}
+.acct .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acct .login { font-size: var(--t-sm); font-weight: 500; }
+.acct .sub { color: var(--ink-3); font-size: var(--t-xs); overflow-wrap: anywhere; }
+.acct .acts { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.okline { margin: 0; color: var(--ok); font-size: var(--t-xs); }
+.stopline { margin: 0; color: var(--danger); font-size: var(--t-xs); }
+.form { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.form fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 6px; }
+.form legend, .form .lbl { padding: 0; margin-bottom: 4px; font-size: var(--t-sm); font-weight: 500; }
+.form .choice { display: flex; align-items: flex-start; gap: 8px; font-size: var(--t-sm); }
+.form .choice input { margin-top: 3px; }
+.form .choice[data-disabled] { color: var(--ink-3); }
+.form .choice .d { display: block; color: var(--ink-3); font-size: var(--t-xs); }
+.form input[type="password"], .form input[type="text"], .form select, .accts .client input {
+  width: 100%; height: 32px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-2);
+  background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: var(--t-xs);
+}
+.form select { font-family: var(--sans); font-size: var(--t-sm); }
+.steps { margin: 4px 0 0; padding-left: 1.4em; color: var(--ink-2); font-size: var(--t-xs); display: flex; flex-direction: column; gap: 2px; }
+.device { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--bg-2); }
+.device .code { font-family: var(--mono); font-size: 22px; font-weight: 600; letter-spacing: .12em; user-select: all; }
+.device p { margin: 0; font-size: var(--t-sm); }
+.device .muted { font-size: var(--t-xs); }
+.accts .client { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.accts .client .line { display: flex; gap: 6px; }
+.acct-cell { display: inline-flex; align-items: center; gap: 6px; }
 `;
 
 // 線の絵（lucide の形を写した。依存を足さない、規則10）
@@ -346,6 +386,20 @@ const SCRIPT = String.raw`
     /** 外したあとのお知らせと「元に戻す」 */
     flash: null,
     homeDraft: null, homeError: null, homeBusy: false,
+    /** GitHub のアカウント（設定の面だけ） */
+    acct: {
+      list: null, error: null,
+      choices: null, choicesError: null,
+      /** 登録の欄（{ method, patAlias, ssh, busy, error }）。貼った PAT は state に持たない——入力欄から直接読む */
+      form: null,
+      /** ブラウザでログインの途中（{ flowId, userCode, verificationUri, expiresAt, state, error, openError }） */
+      login: null,
+      clientDraft: null, clientError: null, clientBusy: false,
+      /** 確かめた結果（login → { busy, ok, error }） */
+      verify: {},
+      /** 「外す」を押して確かめている login */
+      removing: null, removeError: null,
+    },
   };
   let flashTimer = 0;
   let highlightTimer = 0;
@@ -383,11 +437,11 @@ const SCRIPT = String.raw`
     } else if (!state.loadError) {
       kids.push(h("p", { class: "muted", text: "読んでいます…" }));
     }
-    if (MODE === "config") kids.push(homeSection());
+    if (MODE === "config") { kids.push(homeSection()); kids.push(accountsSection()); }
     if (state.flash) kids.push(flashBar());
-    const focused = document.activeElement === searchInput;
+    const focused = document.activeElement === searchInput || (patInput && document.activeElement === patInput) ? document.activeElement : null;
     app.replaceChildren(h("div", { class: "stack", "data-testid": "repo-list-view" }, kids));
-    if (focused && searchInput) searchInput.focus();
+    if (focused && focused.isConnected) focused.focus();
     reportSize();
   }
 
@@ -571,10 +625,22 @@ const SCRIPT = String.raw`
     return h("span", { class: "proj" }, [slashWrap(remote.owner, remote.name), corrected]);
   }
 
-  /** push・pull に使うアカウント。段階1ではアカウントを登録できない——GitHub のものは「読むだけ」 */
+  /**
+   * 扱うアカウント（GitHub のリポジトリだけ）。origin の持ち主と同じ login のアカウントが登録されていれば Module が
+   * 台帳に覚える。無ければ「読むだけ」——登録は banto 全体の設定の Repositories で
+   */
   function accountCell(r) {
     if (!r.remote || r.remote.kind !== "github") return null;
-    return h("span", { class: "muted", title: "GitHub のアカウントを登録する手は、まだありません", text: "読むだけ" });
+    if (r.account && r.account.registered) {
+      return h("span", { class: "acct-cell" }, [h("span", { class: "mark", "aria-hidden": "true", text: r.account.login.slice(0, 1) }), h("span", { "data-testid": "repo-account-login", text: r.account.login })]);
+    }
+    if (r.account) {
+      return h("span", { class: "proj", "data-testid": "repo-account-readonly" }, [
+        h("span", { class: "muted", text: "読むだけ" }),
+        h("span", { class: "muted", text: r.account.login + " は登録が外れています" }),
+      ]);
+    }
+    return h("span", { class: "muted", "data-testid": "repo-account-readonly", title: r.remote.owner + " のアカウントが登録されていません（banto 全体の設定の Repositories で登録できます）", text: "読むだけ" });
   }
 
   function projectCell(r) {
@@ -749,6 +815,335 @@ const SCRIPT = String.raw`
     render();
   }
 
+  // ---- GitHub のアカウント（設定の面だけ。§2.4「アカウント」） ----
+  // 貼った PAT の欄は作り直さない——描き直しで打った値が消えないように（値は state に写さない）
+  let patInput = null;
+  function patField() {
+    if (!patInput) {
+      patInput = h("input", { id: "gh-pat", type: "password", autocomplete: "off", spellcheck: "false", "data-testid": "gh-pat-input", "aria-describedby": "gh-pat-help" });
+      patInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitAccount(); } });
+    }
+    return patInput;
+  }
+  function clearPat() { if (patInput) patInput.value = ""; }
+
+  async function loadAccounts() {
+    try { state.acct.list = await call("list_github_accounts"); state.acct.error = null; }
+    catch (e) { state.acct.error = "アカウントを読み込めませんでした：" + errText(e); }
+    render();
+  }
+  async function loadChoices() {
+    try { state.acct.choices = await call("list_credential_aliases"); state.acct.choicesError = null; }
+    catch (e) { state.acct.choices = null; state.acct.choicesError = "Vault の一覧を読めませんでした：" + errText(e); }
+    render();
+  }
+  const placeKey = (p) => p ? [p.implementation, p.group || "", p.name].join("|") : "";
+  function placeFrom(list, key) { return (list || []).find((p) => placeKey(p) === key) || null; }
+  function aliasLabel(p) { return "$" + p.name + "（" + p.implementation + (p.group ? " · " + p.group : "") + "）"; }
+
+  function accountsSection() {
+    const a = state.acct;
+    const kids = [
+      h("h3", { id: "gh-accounts-title", text: "GitHub のアカウント" }),
+      h("p", { class: "help", text: "API の資格情報と SSH 鍵は Vault に預けます（ここには alias の名前だけを出します）。origin の持ち主と同じ login のアカウントで、そのリポジトリを扱います。" }),
+    ];
+    if (a.error) kids.push(h("p", { class: "error", role: "alert", text: a.error }));
+    if (a.list) {
+      kids.push(a.list.accounts.length === 0
+        ? h("p", { class: "ink2", "data-testid": "gh-accounts-empty", style: "margin:0", text: "まだありません。登録すると、GitHub のリポジトリをそのアカウントで扱えます。" })
+        : h("ul", { class: "list", "data-testid": "gh-accounts", "aria-labelledby": "gh-accounts-title" }, a.list.accounts.map(accountRow)));
+    } else if (!a.error) kids.push(h("p", { class: "muted", style: "margin:0", text: "読んでいます…" }));
+    if (a.login) kids.push(devicePanel());
+    else if (a.form) kids.push(accountForm());
+    else if (a.list) kids.push(h("div", {}, [h("button", { class: "btn small", type: "button", "data-testid": "gh-account-add", onclick: openAccountForm }, [icon("plus"), "アカウントを登録"])]));
+    if (a.list) kids.push(clientSection());
+    return h("section", { class: "accts", "data-testid": "gh-accounts-section", "aria-labelledby": "gh-accounts-title" }, kids);
+  }
+
+  function accountRow(acc) {
+    const a = state.acct;
+    const c = acc.credential;
+    const cred = c.kind === "pat" ? ["PAT ", h("span", { class: "mono", text: aliasLabel(c.alias) })] : ["ブラウザでログイン（GitHub App）· ", h("span", { class: "mono", text: aliasLabel(c.alias) })];
+    const ssh = acc.ssh ? ["SSH 鍵 ", h("span", { class: "mono", text: aliasLabel(acc.ssh) })] : ["SSH 鍵なし（HTTPS で clone・push）"];
+    const v = a.verify[acc.login] || {};
+    const confirming = a.removing === acc.login;
+    const whoKids = [
+      h("span", { class: "login", "data-testid": "gh-account-login", text: acc.login }),
+      h("span", { class: "sub", "data-testid": "gh-account-credential" }, cred),
+      h("span", { class: "sub", "data-testid": "gh-account-ssh" }, ssh),
+    ];
+    if (acc.refreshFailure) {
+      whoKids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-account-refresh-failure", text: "ログインを更新できませんでした：" + acc.refreshFailure.message }));
+      whoKids.push(h("div", {}, [h("button", { class: "btn small", type: "button", "data-testid": "gh-account-relogin", onclick: () => startLogin(null) }, ["もう一度ブラウザでログイン"])]));
+    }
+    if (v.ok) whoKids.push(h("p", { class: "okline", role: "status", "data-testid": "gh-account-verified", text: v.ok }));
+    if (v.error) whoKids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-account-verify-error", text: v.error }));
+    if (confirming) {
+      whoKids.push(h("p", { class: "note", "data-testid": "gh-account-remove-note", text: c.kind === "app"
+        ? "登録を外し、Vault に置いたログイン情報も消します（GitHub 側の許可は github.com の Settings → Applications で取り消せます）。"
+        : "登録だけを外します。PAT は Vault に残ります（消すなら Vault の画面で）。" }));
+      if (a.removeError) whoKids.push(h("p", { class: "stopline", role: "alert", text: a.removeError }));
+    }
+    const acts = confirming
+      ? [
+          h("button", { class: "btn small primary", type: "button", "data-testid": "gh-account-remove-confirm", text: "外す", onclick: () => removeAccount(acc) }),
+          h("button", { class: "btn small ghost", type: "button", text: "やめる", onclick: () => { a.removing = null; a.removeError = null; render(); } }),
+        ]
+      : [
+          h("button", { class: "btn small", type: "button", "data-testid": "gh-account-verify", disabled: v.busy, text: v.busy ? "確かめています…" : "確かめる", onclick: () => verifyAccount(acc) }),
+          h("button", { class: "btn small ghost", type: "button", "data-testid": "gh-account-remove", "aria-label": acc.login + " を外す", text: "外す", onclick: () => { a.removing = acc.login; a.removeError = null; render(); } }),
+        ];
+    return h("li", { class: "acct", "data-testid": "gh-account", "data-login": acc.login }, [
+      h("span", { class: "mark", "aria-hidden": "true", text: acc.login.slice(0, 1) }),
+      h("div", { class: "who" }, whoKids),
+      h("div", { class: "acts" }, acts),
+    ]);
+  }
+
+  async function verifyAccount(acc) {
+    state.acct.verify[acc.login] = { busy: true };
+    render();
+    try {
+      const r = await call("verify_github_account", { login: acc.login });
+      state.acct.verify[acc.login] = { ok: "GitHub に " + r.login + " として入れました" };
+    } catch (e) {
+      state.acct.verify[acc.login] = { error: errText(e) };
+    }
+    // 更新に失敗したら、その印は一覧の側に出る（読み直す）
+    await loadAccounts();
+  }
+
+  async function removeAccount(acc) {
+    try {
+      const r = await call("remove_github_account", { login: acc.login });
+      state.acct.removing = null; state.acct.removeError = null;
+      delete state.acct.verify[acc.login];
+      setFlash(acc.login + " の登録を外しました" + (r.loginRemoved ? "（Vault のログイン情報も消しました）" : acc.credential.kind === "pat" ? "（PAT は Vault に残しています）" : ""));
+      await loadAccounts();
+      await load();
+    } catch (e) {
+      state.acct.removeError = "外せませんでした：" + errText(e);
+      render();
+    }
+  }
+
+  function openAccountForm() {
+    clearPat();
+    const hasClient = !!(state.acct.list && state.acct.list.appClientId);
+    state.acct.form = { method: hasClient ? "browser" : "paste", patAlias: "", ssh: "", busy: false, error: null };
+    render();
+    loadChoices();
+  }
+
+  function accountForm() {
+    const a = state.acct;
+    const f = a.form;
+    const hasClient = !!(a.list && a.list.appClientId);
+    const choice = (value, title, desc, disabled) => {
+      const input = h("input", { type: "radio", name: "gh-method", value: value, checked: f.method === value, disabled: disabled, "data-testid": "gh-method-" + value });
+      input.addEventListener("change", () => { f.method = value; f.error = null; render(); });
+      return h("label", { class: "choice", "data-disabled": disabled }, [input, h("span", {}, [title, h("span", { class: "d", text: desc })])]);
+    };
+    const secrets = a.choices ? a.choices.secrets : [];
+    const sshKeys = a.choices ? a.choices.sshKeys : [];
+    const kids = [
+      h("fieldset", {}, [
+        h("legend", { text: "API の資格情報" }),
+        choice("browser", "ブラウザでログイン（GitHub App）", hasClient ? "github.com で許可します。トークンは8時間で切れ、banto が自動で更新します" : "GitHub App の client ID を下で入れると選べます", !hasClient),
+        choice("paste", "PAT を貼る", "fine-grained PAT。Vault に預けます", false),
+        choice("alias", "Vault の alias を選ぶ", "Vault に前から預けてある PAT", false),
+      ]),
+    ];
+    if (f.method === "paste") {
+      kids.push(h("div", {}, [
+        h("label", { class: "lbl", for: "gh-pat", text: "PAT" }),
+        patField(),
+        h("p", { id: "gh-pat-help", class: "help", style: "margin-top:4px", text: "GitHub に聞いて誰のものかを確かめてから、Vault に github-<login>-pat として預けます。値はここに戻しません。" }),
+      ]));
+    }
+    if (f.method === "alias") {
+      const sel = h("select", { id: "gh-pat-alias", "data-testid": "gh-pat-alias" }, [
+        h("option", { value: "", text: secrets.length ? "選んでください" : "選べる alias がありません" }),
+        ...secrets.map((p) => h("option", { value: placeKey(p), selected: f.patAlias === placeKey(p), text: aliasLabel(p) })),
+      ]);
+      sel.addEventListener("change", () => { f.patAlias = sel.value; f.error = null; render(); });
+      kids.push(h("div", {}, [h("label", { class: "lbl", for: "gh-pat-alias", text: "PAT の alias" }), sel]));
+    }
+    const sshSel = h("select", { id: "gh-ssh", "data-testid": "gh-ssh" }, [
+      ...sshKeys.map((p) => h("option", { value: placeKey(p), selected: f.ssh === placeKey(p), text: aliasLabel(p) })),
+      h("option", { value: "", selected: f.ssh === "", text: "使わない（HTTPS で clone・push）" }),
+    ]);
+    sshSel.addEventListener("change", () => { f.ssh = sshSel.value; render(); });
+    kids.push(h("div", {}, [h("label", { class: "lbl", for: "gh-ssh", text: "SSH 鍵" }), sshSel]));
+    if (a.choicesError) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-choices-error", text: a.choicesError }));
+    if (f.error) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-account-error", text: f.error }));
+    const submitLabel = f.method === "browser" ? "ブラウザでログイン" : "登録する";
+    kids.push(h("div", { class: "row-line" }, [
+      h("button", { class: "btn small primary", type: "button", "data-testid": "gh-account-submit", disabled: f.busy || (f.method === "alias" && !f.patAlias), text: f.busy ? "確かめています…" : submitLabel, onclick: submitAccount }),
+      h("button", { class: "btn small ghost", type: "button", text: "やめる", onclick: () => { clearPat(); state.acct.form = null; render(); } }),
+    ]));
+    return h("div", { class: "form", "data-testid": "gh-account-form" }, kids);
+  }
+
+  async function submitAccount() {
+    const a = state.acct;
+    const f = a.form;
+    if (!f || f.busy) return;
+    const ssh = placeFrom(a.choices && a.choices.sshKeys, f.ssh);
+    if (f.method === "browser") { startLogin(ssh); return; }
+    const args = {};
+    if (f.method === "paste") {
+      const pat = patInput ? patInput.value : "";
+      if (!pat.trim()) { f.error = "PAT を貼ってください"; render(); return; }
+      args.pat = pat;
+    } else {
+      const p = placeFrom(a.choices && a.choices.secrets, f.patAlias);
+      if (!p) { f.error = "PAT の alias を選んでください"; render(); return; }
+      args.patAlias = p;
+    }
+    if (ssh) args.ssh = ssh;
+    f.busy = true; f.error = null; render();
+    try {
+      const added = await call("add_github_account_with_pat", args);
+      clearPat();
+      state.acct.form = null;
+      setFlash(added.login + " を登録しました");
+      await loadAccounts();
+      await load();
+    } catch (e) {
+      f.busy = false; f.error = errText(e); render();
+    }
+  }
+
+  // ---- ブラウザでログイン（デバイスフロー）。待つのは Module——画面は結果を聞き続けるだけ ----
+  async function startLogin(ssh) {
+    const a = state.acct;
+    if (a.form) { a.form.busy = true; a.form.error = null; }
+    render();
+    try {
+      const r = await call("start_github_login", ssh ? { ssh: ssh } : {});
+      a.login = { flowId: r.flowId, userCode: r.userCode, verificationUri: r.verificationUri, expiresAt: r.expiresAt, state: "waiting", error: null, openError: null };
+      if (a.form) a.form.busy = false;
+      render();
+      pollLogin(r.flowId);
+    } catch (e) {
+      if (a.form) { a.form.busy = false; a.form.error = "ログインを始められませんでした：" + errText(e); }
+      else setFlash("ログインを始められませんでした：" + errText(e));
+      render();
+    }
+  }
+  async function pollLogin(flowId) {
+    const a = state.acct;
+    while (a.login && a.login.flowId === flowId && a.login.state === "waiting") {
+      let r;
+      try { r = await call("poll_github_login", { flowId: flowId }); }
+      catch (e) {
+        if (a.login && a.login.flowId === flowId) { a.login.state = "error"; a.login.error = errText(e); render(); }
+        return;
+      }
+      if (!a.login || a.login.flowId !== flowId) return; // やめた
+      if (r.state === "pending") { render(); continue; }
+      if (r.state === "done") {
+        a.login = null; a.form = null; clearPat();
+        setFlash(r.relogin ? r.account.login + " のログインを新しくしました" : r.account.login + " をブラウザでログインして登録しました");
+        await loadAccounts();
+        await load();
+        return;
+      }
+      a.login.state = r.state; render();
+      return;
+    }
+  }
+  function cancelLogin() {
+    const l = state.acct.login;
+    state.acct.login = null;
+    render();
+    if (l && l.state === "waiting") call("cancel_github_login", { flowId: l.flowId }).catch(() => {});
+  }
+  async function openDevicePage() {
+    const l = state.acct.login;
+    if (!l) return;
+    try {
+      const r = await request("ui/open-link", { url: l.verificationUri });
+      if (r && r.isError) throw new Error("開けませんでした");
+      l.openError = null;
+    } catch (e) {
+      l.openError = "開けませんでした。別のタブで " + l.verificationUri + " を開いてください";
+    }
+    render();
+  }
+  function devicePanel() {
+    const l = state.acct.login;
+    const kids = [];
+    if (l.state === "waiting") {
+      const mins = Math.max(0, Math.ceil((l.expiresAt - Date.now()) / 60000));
+      kids.push(h("p", {}, [h("span", { class: "mono", text: l.verificationUri.replace(/^https?:\/\//, "") }), " を開いて、このコードを入れてください"]));
+      kids.push(h("div", { class: "code", "data-testid": "gh-login-code", text: l.userCode }));
+      kids.push(h("div", { class: "row-line" }, [
+        h("button", { class: "btn small primary", type: "button", "data-testid": "gh-login-open", onclick: openDevicePage }, [l.verificationUri.replace(/^https?:\/\//, "") + " を開く"]),
+        h("button", { class: "btn small ghost", type: "button", "data-testid": "gh-login-cancel", text: "やめる", onclick: cancelLogin }),
+      ]));
+      if (l.openError) kids.push(h("p", { class: "stopline", role: "alert", text: l.openError }));
+      kids.push(h("p", { class: "muted", role: "status", "data-testid": "gh-login-status", text: "GitHub で許可されるのを待っています（このコードはあと " + mins + " 分で切れます）" }));
+    } else {
+      const text = l.state === "expired" ? "コードの期限が切れました。" : l.state === "denied" ? "GitHub で許可されませんでした。" : "ログインできませんでした：" + l.error;
+      kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-login-ended", text: text }));
+      kids.push(h("div", { class: "row-line" }, [
+        h("button", { class: "btn small", type: "button", "data-testid": "gh-login-retry", text: "もう一度", onclick: () => { state.acct.login = null; startLogin(placeFrom(state.acct.choices && state.acct.choices.sshKeys, state.acct.form ? state.acct.form.ssh : "")); } }),
+        h("button", { class: "btn small ghost", type: "button", text: "やめる", onclick: cancelLogin }),
+      ]));
+    }
+    return h("div", { class: "device", "data-testid": "gh-login" }, kids);
+  }
+
+  // ---- GitHub App の client ID（秘密ではない。人が GitHub App を作って写す） ----
+  function clientSection() {
+    const a = state.acct;
+    const current = a.list.appClientId || "";
+    const value = a.clientDraft !== null ? a.clientDraft : current;
+    const changed = a.clientDraft !== null && a.clientDraft.trim() !== current;
+    const input = h("input", { id: "gh-client-id", type: "text", value: value, spellcheck: "false", placeholder: "Iv23li…", "data-testid": "gh-client-id" });
+    input.addEventListener("input", () => { a.clientDraft = input.value; a.clientError = null; renderKeepFocusOn(input, "gh-client-id"); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveClientId(a.clientDraft); } });
+    const kids = [
+      h("label", { class: "lbl", for: "gh-client-id", style: "font-size:var(--t-sm);font-weight:500", text: "ブラウザでログインに使う GitHub App の client ID" }),
+      h("div", { class: "line" }, [
+        input,
+        changed ? h("button", { class: "btn small primary", type: "button", "data-testid": "gh-client-id-save", disabled: a.clientBusy, text: "保存", onclick: () => saveClientId(a.clientDraft) }) : null,
+        !changed && current ? h("button", { class: "btn small ghost", type: "button", "data-testid": "gh-client-id-clear", text: "消す", onclick: () => saveClientId(null) }) : null,
+      ]),
+    ];
+    if (a.clientError) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-client-id-error", text: a.clientError }));
+    if (!current) {
+      kids.push(h("ol", { class: "steps", "data-testid": "gh-client-id-steps" }, [
+        h("li", { text: "GitHub の Settings → Developer settings → GitHub Apps → New GitHub App で App を作る（Callback URL と Webhook は要りません）" }),
+        h("li", { text: "「Enable Device Flow」に印を入れる" }),
+        h("li", { text: "作った App の Client ID（Iv で始まる）をここに写し、App を自分のアカウントに Install する" }),
+      ]));
+    }
+    return h("div", { class: "client", "data-testid": "gh-client-section" }, kids);
+  }
+  function renderKeepFocusOn(input, id) {
+    const pos = input.selectionStart;
+    render();
+    const again = document.getElementById(id);
+    if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+  }
+  async function saveClientId(next) {
+    const a = state.acct;
+    a.clientBusy = true; render();
+    try {
+      await call("set_github_app_client_id", { clientId: next === null ? null : next });
+      a.clientDraft = null; a.clientError = null;
+      setFlash(next === null ? "client ID を消しました（ブラウザでログインは選べなくなります）" : "client ID を保存しました");
+      await loadAccounts();
+    } catch (e) {
+      a.clientError = errText(e);
+    }
+    a.clientBusy = false;
+    render();
+  }
+
   // ---- フォルダをたどるダイアログ（Import・置き場を選ぶ） ----
   const dialog = document.getElementById("dialog");
   const dlg = { kind: null, at: "~", listing: null, listError: null, inspection: null, inspectError: null, draft: null, busy: false, seq: 0 };
@@ -883,7 +1278,7 @@ const SCRIPT = String.raw`
     const r = c.remote;
     const origin = r.kind === "github" ? "github.com/" + r.owner + "/" + r.name : r.kind === "elsewhere" ? r.host + "（GitHub の外）" : "無し——このマシンにだけあります";
     const rows_ = [["origin", origin], ["ブランチ", (c.branch || "（ブランチなし）") + " · " + (c.commits > 0 ? c.commits + " コミット" : "コミットなし")]];
-    if (r.kind === "github") rows_.push(["アカウント", "登録する手がまだ無いので、読むだけです（push はできません）"]);
+    if (r.kind === "github") rows_.push(["アカウント", c.account ? c.account + " で扱います" : r.owner + " のアカウントが登録されていないので、読むだけです（push はできません）"]);
     return h("dl", { class: "facts", "data-testid": "repo-import-facts" }, rows_.flatMap((x) => [h("dt", { text: x[0] }), h("dd", { class: x[0] === "origin" ? "mono" : "", text: x[1] })]));
   }
   async function doImport() {
@@ -919,7 +1314,7 @@ const SCRIPT = String.raw`
       return;
     }
     render();
-    await load();
+    await Promise.all([load(), MODE === "config" ? loadAccounts() : null]);
   })();
 })();
 `;
