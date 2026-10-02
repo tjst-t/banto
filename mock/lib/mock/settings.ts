@@ -17,6 +17,7 @@ import type {
   RoleId,
 } from "./types";
 import { notifyMockStoreChange } from "./store-events";
+import { BACKLOG_DEFAULT_PATH } from "./backlog";
 
 // 設定のモックデータ（§2.10・§6.1）。実装は捨てる前提ではないが、UI を固める
 // ことが目的——バックエンドとは繋がっていない（`mock/README.md`）。
@@ -303,6 +304,29 @@ let implementations: MockModuleImplementation[] = [
     ),
   },
   {
+    id: "banto.backlog",
+    roleId: "backlog",
+    // Project ごとにつける（§4.4、2026-10-02）——Shell と同じく Project の根の中の tasks.json を読み書きする
+    scope: "project",
+    name: "Backlog（tasks.json）",
+    isolation: "subprocess",
+    enabled: true,
+    dependsOn: [],
+    // 消す tool は作らない（要らなくなったものは「やめた」で閉じる）
+    tools: [
+      { name: "listItems", visibility: "agent" },
+      { name: "getItem", visibility: "agent" },
+      { name: "createItem", visibility: "agent" },
+      { name: "updateItem", visibility: "agent" },
+      { name: "splitStory", visibility: "agent" },
+      { name: "moveItem", visibility: "agent" },
+    ],
+    handlesSecrets: false,
+    hasConfigSurface: true,
+    launchers: [{ id: "items", label: "Backlog", viewId: "items" }],
+    mcpServersJson: sampleMcpServersJson("banto-backlog", "node", ["./modules/backlog/index.js"], ["backlog"]),
+  },
+  {
     id: "banto.vault-ui",
     roleId: "vault-ui",
     scope: "instance",
@@ -359,6 +383,11 @@ const roleDefs: readonly Omit<MockRole, "implementations">[] = [
     // banto に組み込みで、目録から入れるものではない（Shell・FileSystem・Vault と同じ。2026-10-01、ユーザー決定）。
     // git の操作は持たない（AI は Shell で git を打つ）
     description: "手元のリポジトリの台帳と一覧。clone・新しく作る・Import・GitHub への公開と、GitHub のアカウントの割り当て。",
+  },
+  {
+    id: "backlog",
+    name: "Backlog",
+    description: "今後やること・バグを、ストーリー・タスク・バグと依存関係で持つ。Project ごとに、その中の tasks.json を読み書きする。",
   },
   {
     id: "vault-ui",
@@ -624,6 +653,10 @@ export const mockModuleConfigFields: Readonly<
     { label: "既定の clone 方式", value: "SSH" },
     { label: "worktree の置き場", value: "~/.local/share/banto/worktrees" },
   ],
+  "banto.backlog": [
+    { label: "tasks.json の場所", value: BACKLOG_DEFAULT_PATH },
+    { label: "バックエンド", value: "tasks.json" },
+  ],
 };
 
 export const mockCredentials: readonly MockCredential[] = [
@@ -680,6 +713,7 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "banto", implementationId: "banto.subagent" },
   { projectId: "banto", implementationId: "banto.vault-local" },
   { projectId: "banto", implementationId: "banto.repositories" },
+  { projectId: "banto", implementationId: "banto.backlog" },
   { projectId: "banto", implementationId: "banto.vault-ui" },
   { projectId: "home", implementationId: "banto.fs" },
   { projectId: "home", implementationId: "banto.shell" },
@@ -691,6 +725,7 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "hermes", implementationId: "banto.subagent" },
   { projectId: "hermes", implementationId: "banto.vault-local" },
   { projectId: "hermes", implementationId: "banto.repositories" },
+  { projectId: "hermes", implementationId: "banto.backlog" },
   { projectId: "hermes", implementationId: "banto.vault-ui" },
 ];
 

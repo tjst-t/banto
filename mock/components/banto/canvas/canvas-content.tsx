@@ -9,6 +9,7 @@
 import { CheckCircle2, CircleDashed, Sparkles, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { BacklogView } from "./backlog-view";
 import { FileExplorerView } from "./file-explorer-view";
 import { RepoListView } from "./repo-list-view";
 import { RepoPublishView } from "./repo-publish-view";
@@ -142,6 +143,8 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
       return <RepoListView />;
     case "banto.repositories:publish":
       return <RepoPublishView />;
+    case "banto.backlog:items":
+      return <BacklogView />;
     case "banto.fs:browser":
       return <FileExplorerView />;
     case "banto.fs:diff":
