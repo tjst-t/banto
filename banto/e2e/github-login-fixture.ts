@@ -31,6 +31,8 @@ export async function setGithubLoginFixture(patch: {
   script?: string[];
   accessTokenTtl?: number | null;
   refreshError?: string | null;
+  /** リポジトリを作る（1コミット入り。非公開なら readers の login だけが読める） */
+  addRepo?: { owner: string; name: string; private?: boolean; readers?: string[] };
 }): Promise<{ refreshCalls: number }> {
   const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
   const res = await fetch(`${web}/__fake/state`, { method: "POST", body: JSON.stringify(patch) });
