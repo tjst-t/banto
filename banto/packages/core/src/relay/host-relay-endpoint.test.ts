@@ -952,6 +952,45 @@ test("Project の一覧を引けるのは、banto 本体で動く同梱の banto
   }
 });
 
+test("受信箱に知らせを出せるのは、banto 本体で動く同梱の banto 全体の Module だけ——出所は問わず、空・長すぎは断る", async () => {
+  const registry = new RelayRegistry();
+  const raised: Array<{ module: string; key: string; title: string; detail: string }> = [];
+  const { url, close } = await startTestServer(registry, {
+    raiseNotice: async (caller, input) => {
+      raised.push({ module: caller.moduleName, ...input });
+    },
+  });
+  const raw = { satisfies: ["repositories"], dependsOn: [], isolation: "subprocess", scope: "instance" };
+  const tokens = {
+    bundled: registry.issueToken({ moduleName: "repositories", meta: bundledMeta(raw, "repositories") }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil") }),
+    inContainer: registry.issueToken({ moduleName: "x", meta: bundledMeta(raw, "x"), inContainer: true, projectId: "pA" }),
+    perProject: registry.issueToken({ moduleName: "y", meta: bundledMeta(raw, "y"), projectId: "pA" }),
+  };
+  const notice = async (token: string, args: Record<string, unknown>) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(textOf(await c.callTool({ name: "relayRaiseNotice", arguments: args }))) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  const ok = { key: "github-refresh:tjst-t", title: "GitHub @tjst-t のログインを更新できませんでした", detail: "もう一度ログインしてください" };
+  try {
+    // 何も処理していない（人の画面でも AI のターンでもない）ときにも出せる——人が見ていないところの失敗を知らせる口
+    assert.deepEqual(await notice(tokens.bundled, ok), { ok: true });
+    assert.deepEqual(raised, [{ module: "repositories", ...ok }]);
+    await assert.rejects(() => notice(tokens.thirdParty, ok), /banto 自身のコード/);
+    await assert.rejects(() => notice(tokens.inContainer, ok), /banto 本体で動く/);
+    await assert.rejects(() => notice(tokens.perProject, ok), /banto 全体の Module だけ/);
+    await assert.rejects(() => notice(tokens.bundled, { ...ok, title: " " }), /title が要ります/);
+    await assert.rejects(() => notice(tokens.bundled, { ...ok, detail: "あ".repeat(2001) }), /detail が長すぎます/);
+    assert.equal(raised.length, 1, "断るべき知らせを受信箱に渡した");
+  } finally {
+    close();
+  }
+});
+
 /** 呼ばれた口と、host が刻んだ `_meta`、その時点で台帳が宛先の呼び出しをどう見ていたかを残す偽の Module */
 async function recordingClient(
   tools: Array<{ name: string; visibility: string }>,

@@ -1534,6 +1534,11 @@ async function main(): Promise<void> {
     // 中継が絞る（`mayListProjects`）。根は store が正規化したもの（realpath）
     listProjects: () =>
       projectThread.listProjects().map((p) => ({ id: p.id, name: p.name, root: p.root, status: p.status })),
+    // **受信箱に知らせる**（§2.4 Repositories——ログインの更新に失敗したとき）。出せる相手は中継が絞る
+    // （`mayRaiseNotice`）。鍵は Module ごとに分ける——別の Module の知らせを潰さない
+    raiseNotice: async (caller, input) => {
+      await inbox.raiseNotice({ dedupeKey: `module:${caller.moduleName}:${input.key}`, title: input.title, detail: input.detail });
+    },
     gate: createRelayApprovalGate({
       grants: relayGrants,
       inbox,

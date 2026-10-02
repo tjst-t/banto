@@ -262,6 +262,29 @@ export interface HostRelayServerOptions {
    * 引ける相手と場面は `mayListProjects` が決める。渡さなければこの口は断る
    */
   listProjects?(): ProjectSummaryForModule[];
+  /**
+   * **受信箱に知らせる**（追加・2026-10-02、`docs/specs/v4-modules.md` §2.4 Repositories——GitHub のログインの更新に
+   * 失敗したとき）。出せる相手は `mayRaiseNotice` が決める。渡さなければこの口は断る
+   */
+  raiseNotice?(caller: CallerIdentity, input: { key: string; title: string; detail: string }): Promise<void>;
+}
+
+/** 知らせの大きさの上限（受信箱の1行に出すもの。長すぎるものは断る——黙って切らない） */
+const NOTICE_LIMITS = { key: 200, title: 200, detail: 2000 } as const;
+
+/**
+ * **受信箱に知らせてよい呼び出し元**（追加・2026-10-02）。**banto 本体で動く、同梱の banto 全体の Module だけ**
+ * （呼べないなら理由、呼べるなら `undefined`）。
+ *
+ * - 同梱だけ——受信箱は人が banto 自身の言葉として読む場所で、第三者のコードが好きな文言を置けると、banto の
+ *   知らせを装える（「ここを開いてログインし直してください」）。第三者に開くかは、出所の見せ方と一緒に決める
+ * - banto 全体の Module だけ——知らせは Project を持たない（banto 全体）。コンテナの中では AI が合言葉を読める
+ * - 出所（人の画面か・AI のターンか）は問わない——知らせたいのは、人が見ていないところで起きた失敗でもある
+ */
+export function mayRaiseNotice(identity: CallerIdentity): string | undefined {
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが出せる";
+  if (identity.inContainer || identity.projectId !== undefined) return "banto 本体で動く、banto 全体の Module だけが出せる";
+  return undefined;
 }
 
 /** 中継が Module に渡す Project の姿。**根のパスまで**——Memory・会話は渡さない */
@@ -396,6 +419,21 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         inputSchema: { type: "object", properties: {} },
       },
       {
+        // **受信箱に知らせる**（追加・2026-10-02、§2.4 Repositories——ログインの更新に失敗したとき）。
+        // 出せる相手は `mayRaiseNotice` が決める。同じ鍵の知らせが開いている間は積まない
+        name: "relayRaiseNotice",
+        description: "受信箱にお知らせを1件出す（banto 全体の話）。同じ key のものが開いていれば積まない",
+        inputSchema: {
+          type: "object",
+          properties: {
+            key: { type: "string", description: "同じことを何度も積まないための鍵（この Module の中で一意）" },
+            title: { type: "string" },
+            detail: { type: "string" },
+          },
+          required: ["key", "title", "detail"],
+        },
+      },
+      {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
         name: "relayDeliverToThread",
@@ -457,6 +495,21 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       if (why) throw new Error(`${identity.moduleName} は Project の一覧を引けません（${why}）`);
       if (!opts.listProjects) throw new Error("この banto は Project の一覧を渡す口を持っていません");
       return { content: [{ type: "text", text: JSON.stringify(opts.listProjects()) }] };
+    }
+
+    // **宛先は host 自身**。値は通らない（文言だけ）ので承認は通さず、出せる相手を絞る
+    if (request.params.name === "relayRaiseNotice") {
+      const why = mayRaiseNotice(identity);
+      if (why) throw new Error(`${identity.moduleName} は受信箱に知らせを出せません（${why}）`);
+      if (!opts.raiseNotice) throw new Error("この banto は受信箱に知らせを出す口を持っていません");
+      const field = (name: keyof typeof NOTICE_LIMITS): string => {
+        const v = args[name];
+        if (typeof v !== "string" || v.trim() === "") throw new Error(`${name} が要ります`);
+        if (v.length > NOTICE_LIMITS[name]) throw new Error(`${name} が長すぎます（${NOTICE_LIMITS[name]} 字まで）`);
+        return v;
+      };
+      await opts.raiseNotice(identity, { key: field("key"), title: field("title"), detail: field("detail") });
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が
