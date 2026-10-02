@@ -6,7 +6,8 @@
 systemd の枠の外にできる。2026-10-02 に実測）。そこで、取り合いになったときに **host のサービス（incusd・banto）が
 先に回る**ようにする。
 
-**この手順は host で、sudo の使えるユーザーで一度だけ行う。** Project のコンテナの中からはできない。
+**この手順は host で、sudo の使えるユーザー（ubuntu）で一度だけ行う。** Project のコンテナの中からはできない。
+**直に再起動しない**——再起動は「再起動」の節の `restart-when-idle.mjs` で、動いているものが無くなってから。
 
 ## 1. CPU：host のサービスを先に回す（実測で効果を確認済み）
 
@@ -34,25 +35,44 @@ systemctl show system.slice -p CPUWeight -p MemoryLow   # CPUWeight=1000 / Memor
 （コンテナの上限の既定で host に残す量と同じ）。**これは実測していない**——効き目は、メモリが詰まったときの
 `/sys/fs/cgroup/system.slice/memory.events` の `low` の数で見られる。
 
-banto 本体が OOM で殺されないようにするには、banto の unit にだけ付ける：
+banto 本体が OOM で殺されないようにするには、banto の unit にだけ付ける。**ここでは再起動しない**——
+効くのは次に起動したときなので、再起動は下の「再起動」で、動いているものが無くなってから1回だけ行う：
 
 ```sh
-sudo systemctl edit banto-host.service    # 開いた所に下の2行を書く
-#   [Service]
-#   OOMScoreAdjust=-800
-sudo systemctl edit banto-frontend.service   # 同じ
-sudo systemctl restart banto-host.service banto-frontend.service
+sudo mkdir -p /etc/systemd/system/banto-host.service.d /etc/systemd/system/banto-frontend.service.d
+printf '[Service]\nOOMScoreAdjust=-800\n' | sudo tee /etc/systemd/system/banto-host.service.d/50-banto-oom.conf
+printf '[Service]\nOOMScoreAdjust=-800\n' | sudo tee /etc/systemd/system/banto-frontend.service.d/50-banto-oom.conf
+sudo systemctl daemon-reload
 ```
+
+`daemon-reload` は設定を読み直すだけで、サービスを止めない（`system.slice` の設定はこの時点で効く）。
 
 **incus.service には付けない**：コンテナの中のプロセスは incusd から起きるので、値を受け継いでコンテナまで
 殺されにくくなるおそれがある（確かめていない）。
 
-## 3. 戻すとき
+### 再起動（動いているものが無くなってから）
+
+**`sudo systemctl restart` を直に打たない**——走っている会話・サブエージェントの仕事・Module の呼び出しが途中で
+切れる。`restart-when-idle.mjs` が稼働中の host に「いま動いているもの」を聞き、無くなってから再起動する
+（`docs/runbooks/release.md` B-3）：
 
 ```sh
-sudo rm /etc/systemd/system/system.slice.d/50-banto-protect.conf
-sudo systemctl revert banto-host.service banto-frontend.service
-sudo systemctl daemon-reload && sudo systemctl restart banto-host.service banto-frontend.service
+node /home/ubuntu/.local/share/banto-release/banto/scripts/restart-when-idle.mjs --status   # 見るだけ
+node /home/ubuntu/.local/share/banto-release/banto/scripts/restart-when-idle.mjs            # 空いたら再起動（Ctrl-C でやめられる）
+systemctl show banto-host.service banto-frontend.service -p OOMScoreAdjust                  # OOMScoreAdjust=-800 が2つ
+```
+
+反映（release.md の B）と同じ機会に行うなら、build のあとの1回の再起動にまとめる。
+
+## 3. 戻すとき
+
+置いたファイルだけを消す。**`systemctl revert` は使わない**——その unit の上書きを全部消すので、
+起動元をリリース用の clone に向けた書き換え（release.md の A-5）まで消えてしまう。
+
+```sh
+sudo rm -f /etc/systemd/system/system.slice.d/50-banto-protect.conf /etc/systemd/system/banto-host.service.d/50-banto-oom.conf /etc/systemd/system/banto-frontend.service.d/50-banto-oom.conf
+sudo systemctl daemon-reload
+node /home/ubuntu/.local/share/banto-release/banto/scripts/restart-when-idle.mjs
 ```
 
 ## 4. 残す量 2GiB を見直すための測り方
