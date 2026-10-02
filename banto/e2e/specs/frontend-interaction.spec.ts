@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, confirmForkDialog } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -22,6 +22,7 @@ test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き
 
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   await expect(back).toBeVisible({ timeout: 15_000 });
 
   // 前面に Command Palette（Radix の dialog）を開く
@@ -134,6 +135,7 @@ test("Canvas の橋は、親が何度再描画されても張り直さない", a
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
   for (let i = 0; i < 2; i += 1) {
     await page.getByRole("button", { name: "Fork を開く" }).click();
+    await confirmForkDialog(page);
     await expect(back).toBeVisible({ timeout: 15_000 });
     await back.click();
     await expect(back).toBeHidden({ timeout: 15_000 });

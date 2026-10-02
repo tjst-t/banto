@@ -14,7 +14,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog } from "../helpers.js";
 
 test.setTimeout(180_000);
 
@@ -154,6 +154,7 @@ test("貼り付けた画像が AI に届き、送った発言に付いて出て�
   // ---- 分けた先（Fork）にも、同じ画像が出る ------------------------------------
   await page.locator('[data-role="assistant"]').last().hover();
   await page.getByTestId("fork-from-message").last().click();
+  await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ }), "Fork が開かない").toBeVisible({ timeout: 30_000 });
   // **Fork の面の中だけを数える**——広い画面では Base と Fork が横に並ぶ
   const forkPanel = page.locator(".aui-thread-root").filter({ has: page.getByPlaceholder("この Fork Thread に送る") });

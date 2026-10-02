@@ -283,6 +283,7 @@ Thread は「Memory ＋ それ以降のメッセージ」なので、**Memory �
 | やり直す | 過去の resume-point |
 | **過去の発言の時点から枝を分ける**（決定・2026-09-11、ユーザー要望） | **その時点の** resume-point（下記） |
 | Fork Thread を立てる／その中で分岐する | 引き継いだ resume-point ＋ **最初のターンで `forkSession`**（下記）。SDK の枝分かれで**キャッシュを引き継げる**——実測 §8 |
+| **まっさらな Fork を立てる**（人がヘッダの Fork で「まっさらで始める」を選んだとき・Project だけを宛先にした send_message。§4.2、v4-frontend.md §6.32） | resume-point 無し（Clear と同じ）。表示する会話・Skill も写さない。モデル・effort・承認モードだけ親にそろえる |
 | Fork Thread の Memory を親の最新版に置き換える（item 6、下記） | 変更後の Memory（マージではなく置き換え） |
 | 接続する Module 集合を変える | 変更後の Module 集合 |
 | 効かせる Skill 集合を変える（§5.6） | 変更後の Skill 集合 |

@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, openNav } from "../helpers.js";
+import { createProject, openApp, openNav, confirmForkDialog } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -37,6 +37,7 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   // 「Fork Thread —」の接頭辞は付かない（改訂・2026-09-09）
   const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
 
   // Fork Thread自身の中でも会話する——畳む直前までの会話が概要（件数）に
@@ -111,6 +112,7 @@ test("閉じた Fork に URL で直接来ても、その Fork の会話が出る
 
   const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
   await page.waitForURL(/[?&]fork=[0-9a-f-]+/);
   const forkUrl = page.url();

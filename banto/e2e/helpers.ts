@@ -267,3 +267,20 @@ export async function waitForProjectModule(page: Page, projectName: string, modu
     )
     .toBe("ok");
 }
+
+/**
+ * **Fork を押したあとの、名前を聞くダイアログに答える**（決定・2026-10-02、v4-frontend.md §6.32）。
+ * ヘッダの「Fork を開く」も発言の下の「ここから Fork」も、押すとまずダイアログが出る——
+ * 名前を空のまま「作る」を押せば、今までどおり連番の Fork になる。
+ */
+export async function confirmForkDialog(
+  page: Page,
+  options: { title?: string; start?: "continue" | "fresh" } = {},
+): Promise<void> {
+  const dialog = page.getByTestId("fork-dialog");
+  await expect(dialog, "Fork の名前を聞くダイアログが出ない").toBeVisible({ timeout: 15_000 });
+  if (options.title !== undefined) await dialog.getByLabel("名前").fill(options.title);
+  if (options.start) await dialog.getByTestId(`fork-start-${options.start}`).click();
+  await dialog.getByTestId("fork-dialog-submit").click();
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
+}

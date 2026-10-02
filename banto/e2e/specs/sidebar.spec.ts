@@ -10,7 +10,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, expectProjectOpen, openApp, openNav, openProjectSettings } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openNav, openProjectSettings, confirmForkDialog } from "../helpers.js";
 import type { Locator } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
@@ -41,6 +41,7 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
 
   // ---- Fork を作ると、目次に並ぶ ------------------------------------------
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   const forkRow = sidebar.getByRole("link", { name: "Fork 1" });
   await expect(forkRow, "目次に Fork が出ていない").toBeVisible({ timeout: 15_000 });
   // いま開いている行が選択中として出る（どこにいるかが目次で分かる）

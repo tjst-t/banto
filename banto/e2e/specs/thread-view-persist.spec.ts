@@ -12,7 +12,7 @@ import { test, expect, type Locator, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, confirmForkDialog } from "../helpers.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 
 test.describe.configure({ mode: "serial" });
@@ -151,6 +151,7 @@ test("会話の位置・最新・下書きが、面の開け閉めとページ�
   await page.waitForTimeout(300);
   const before = await readingAt(composer);
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
   await expect(forkComposer).toBeVisible({ timeout: 15_000 });
   await forkComposer.fill("Fork の書きかけ");
@@ -186,6 +187,7 @@ test("会話の位置・最新・下書きが、面の開け閉めとページ�
   const beforeBoth = await readingAt(composer);
   await openFilesCanvas(page);
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: `${PROJECT} の Base Thread に戻る` })).toBeVisible({ timeout: 15_000 });
   await expect(composer).toBeHidden(); // Base は帯だけ（隠して残っている）
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
@@ -295,6 +297,7 @@ test.describe("携帯幅", () => {
     await createProject(page, `Mobile ${Date.now()}`, mkdtempSync(join(tmpdir(), "banto-e2e-")));
     await sendTurn(page, baseComposer(page), "ONE");
     await page.getByRole("button", { name: "Fork を開く" }).click();
+    await confirmForkDialog(page);
     const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
     await expect(forkComposer).toBeVisible({ timeout: 15_000 });
     await forkComposer.fill("携帯の Fork の書きかけ");

@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, confirmForkDialog } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -113,6 +113,7 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
   // ---- 5. Fork の会話から ---------------------------------------------------------------------
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({ timeout: 15_000 });
   const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
   await forkComposer.fill(

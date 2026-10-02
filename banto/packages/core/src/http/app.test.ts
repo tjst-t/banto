@@ -135,6 +135,35 @@ test("POST /api/threads/:id/fork creates a fork thread with the parent as base",
   });
 });
 
+test("POST /api/threads/:id/fork は名前と「まっさらで始める」を作るときに受ける（v4-frontend.md §6.32）", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await (
+      await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "demo", root: dir }) })
+    ).json();
+    const thread = await (
+      await fetch(`${base}/api/projects/${project.id}/threads`, { method: "POST", headers })
+    ).json();
+    const fork = (body: unknown) =>
+      fetch(`${base}/api/threads/${thread.id}/fork`, { method: "POST", headers, body: JSON.stringify(body) });
+
+    const named = await fork({ title: "  調べる  " });
+    assert.equal(named.status, 201);
+    assert.equal((await named.json()).title, "調べる");
+
+    // 空白だけの名前は「付けていない」——連番は画面が出す
+    const blank = await fork({ title: "   ", fresh: true });
+    assert.equal(blank.status, 201);
+    const blankFork = await blank.json();
+    assert.equal(blankFork.title, undefined);
+    assert.equal(blankFork.kind, "fork");
+
+    assert.equal((await fork({ title: 3 })).status, 400);
+    assert.equal((await fork({ fresh: "yes" })).status, 400);
+    assert.equal((await fork({ fresh: true, fromSeq: 1 })).status, 400);
+  });
+});
+
 test("404 for unknown thread", async () => {
   await withApp(async (base, token) => {
     const res = await fetch(`${base}/api/threads/does-not-exist`, {

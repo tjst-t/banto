@@ -175,6 +175,8 @@ export interface RealThread {
   id: string;
   projectId: string;
   kind: "base" | "fork";
+  /** 人が付けた名前（決定・2026-09-11）。付けていなければ無い——連番は画面が出す */
+  title?: string;
   parentThreadId?: string;
   /** 親の会話の**どこで分岐したか**（決定・2026-09-07）。Fork の入口を
    *  その場所に置くのに使う——Clear の横線と同じ物差し（seq）。 */
@@ -337,11 +339,21 @@ export async function getRealThread(threadId: string): Promise<RealThread> {
  */
 export async function createRealFork(
   parentThreadId: string,
-  fromSeq?: number,
+  options: {
+    fromSeq?: number;
+    /** 人がダイアログで付けた名前（決定・2026-10-02、v4-frontend.md §6.32）。空なら連番のまま */
+    title?: string;
+    /** 「まっさらで始める」——会話を引き継がない Fork（§6.32）。fromSeq とは一緒に渡せない */
+    fresh?: boolean;
+  } = {},
 ): Promise<RealThread> {
+  const body: Record<string, unknown> = {};
+  if (options.fromSeq !== undefined) body.fromSeq = options.fromSeq;
+  if (options.title) body.title = options.title;
+  if (options.fresh) body.fresh = true;
   return request<RealThread>(`/api/threads/${parentThreadId}/fork`, {
     method: "POST",
-    body: JSON.stringify(fromSeq === undefined ? {} : { fromSeq }),
+    body: JSON.stringify(body),
   });
 }
 

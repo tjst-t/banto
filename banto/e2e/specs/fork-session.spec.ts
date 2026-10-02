@@ -14,7 +14,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
@@ -66,6 +66,7 @@ test("Fork Threadの最初のターンで、親と別のセッションへ分岐
   const baseBefore = (await threads()).find((t) => t.kind === "base")!;
 
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   // 開いた印はヘッダの「戻る」——題は Fork の名前だけ（改訂・2026-09-09）
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({
     timeout: 15_000,

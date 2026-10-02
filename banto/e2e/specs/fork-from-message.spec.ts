@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect, type Page } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -66,6 +66,7 @@ test("操作の帯は本文の左端にそろい、そこから枝を分けら�
 
   // ---- 2. その発言から分かれる --------------------------------------------
   await page.getByTestId("fork-from-message").first().click();
+  await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ }), "Fork が開かない").toBeVisible({
     timeout: 30_000,
   });
@@ -127,6 +128,7 @@ test("Clear した後でも、Clear より前の発言から枝を分けられ�
   // **畳む前の発言から分ける**——横線より上の発言の帯を使う
   await page.locator('[data-role="assistant"]').filter({ hasText: "畳む前" }).first().hover();
   await page.getByTestId("fork-from-message").first().click();
+  await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({ timeout: 30_000 });
 
   const threads = (await (

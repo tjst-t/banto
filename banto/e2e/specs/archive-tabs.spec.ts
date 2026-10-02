@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
-import { createProject, openApp, openNav, openProjectSettings } from "../helpers.js";
+import { createProject, openApp, openNav, openProjectSettings, confirmForkDialog } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -38,6 +38,7 @@ test("履歴は、タブで Fork と Project を分け、検索は両方から�
   await createProject(page, "アーカイブの spec", mkdtempSync(join(tmpdir(), "banto-e2e-archive-b-")));
   const forkBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await page.getByRole("button", { name: "Fork を開く" }).click();
+  await confirmForkDialog(page);
   await expect(forkBack, "Fork が開かない").toBeVisible({ timeout: 20_000 });
   await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
   await expect(forkBack).not.toBeVisible();

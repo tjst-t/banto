@@ -1818,13 +1818,28 @@ export function createApp(deps: AppDeps) {
       if (forkMatch && req.method === "POST") {
         // **過去のメッセージの時点からも分けられる**（決定・2026-09-11、ユーザー要望）。
         // `fromSeq` はそのメッセージの seq——無ければ「いまの続き」から分ける
-        const body = (await readJsonBody(req).catch(() => ({}))) as { fromSeq?: unknown };
+        // **名前と始め方も作るときに受ける**（決定・2026-10-02、ユーザー要望。v4-frontend.md §6.32）——
+        // `title` は人がダイアログで付けた名前（空なら連番のまま）、`fresh` は「まっさらで始める」
+        const body = (await readJsonBody(req).catch(() => ({}))) as { fromSeq?: unknown; title?: unknown; fresh?: unknown };
         if (body.fromSeq !== undefined && typeof body.fromSeq !== "number") {
           return json(res, 400, { error: "fromSeq must be a number" });
         }
+        if (body.title !== undefined && typeof body.title !== "string") {
+          return json(res, 400, { error: "title must be a string" });
+        }
+        if (body.fresh !== undefined && typeof body.fresh !== "boolean") {
+          return json(res, 400, { error: "fresh must be a boolean" });
+        }
+        // まっさらで始めるなら「どの発言から」は意味を持たない——両方来たら黙って片方を捨てず断る
+        if (body.fresh === true && body.fromSeq !== undefined) {
+          return json(res, 400, { error: "fresh と fromSeq は一緒に指定できません" });
+        }
+        const title = typeof body.title === "string" ? body.title.trim().slice(0, 120) : "";
         try {
           const thread = await deps.projectThread.forkThread(forkMatch[1]!, {
             fromSeq: body.fromSeq as number | undefined,
+            ...(title ? { title } : {}),
+            ...(body.fresh === true ? { fresh: true } : {}),
           });
           json(res, 201, thread);
         } catch (err) {

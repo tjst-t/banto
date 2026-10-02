@@ -26,6 +26,7 @@ import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
+import { ForkDialog, type ForkDialogRequest } from "@/components/banto/thread/fork-dialog";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import {
   clearRealThread,
@@ -190,6 +191,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
+  // 名前を聞いている Fork（null なら聞いていない）——v4-frontend.md §6.32
+  const [forkRequest, setForkRequest] = useState<ForkDialogRequest | null>(null);
   // 実Projectの場合、SSR側はhydrateRealProjects()未実行のためデモの初期値
   // （banto Project・"banto-base" Thread）にフォールバックしたまま描画される。
   // クライアント初回hydrateも同じ内容なら一致するが、そのあとuseMockStoreVersion
@@ -306,31 +309,39 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
    * host が決める（アーキ仕様 §2.2）。口は1つ（規則3）——ヘッダの「Fork を開く」も
    * 会話の中の「ここから Fork」も、ここを通る。
    */
-  async function handleOpenFork(baseThreadId: string, fromSeq?: number) {
-    const base = getThread(baseThreadId);
-    if (!base?.real) {
+  /**
+   * **押したらまず名前を聞く**（決定・2026-10-02、ユーザー要望。v4-frontend.md §6.32）。
+   * ヘッダの入口だけ「会話を引き継ぐ／まっさらで始める」を選ばせる（`chooseStart`）——発言の下からは
+   * その時点から分けるのが目的なので、必ず引き継ぐ。
+   */
+  function requestFork(parentThreadId: string, options: { fromSeq?: number; chooseStart: boolean }) {
+    const parent = getThread(parentThreadId);
+    if (!parent?.real) {
       toast("この Thread は実 Project ではないため、Fork を作れません");
       return;
     }
-    try {
-      const fork = await createRealFork(baseThreadId, fromSeq);
-      // Fork は親のモデルと effort を引き継いでいる（host が決める）——写しにも入れる
-      seedThreadModel(fork.id, fork.model, fork.effort);
-      registerRealFork(
-        fork.id,
-        fork.projectId,
-        baseThreadId,
-        fork.messages,
-        fork.markers,
-        "open",
-        fork.usage,
-        // **入口は「分けた場所」に置く**——過去から分けたならその位置
-        fork.forkedFromSeq ?? fork.createdSeq,
-      );
-      stack.open({ fork: fork.id });
-    } catch (err) {
-      toast(`Fork の作成に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    setForkRequest({ parentThreadId, fromSeq: options.fromSeq, chooseStart: options.chooseStart });
+  }
+
+  /** ダイアログの「作る」。失敗は投げ返す——ダイアログが開いたまま理由を出す（打ち直せる、規則2） */
+  async function handleOpenFork(baseThreadId: string, options: { fromSeq?: number; title?: string; fresh?: boolean }) {
+    const fork = await createRealFork(baseThreadId, options);
+    // Fork は親のモデルと effort を引き継いでいる（host が決める）——写しにも入れる
+    seedThreadModel(fork.id, fork.model, fork.effort);
+    registerRealFork(
+      fork.id,
+      fork.projectId,
+      baseThreadId,
+      fork.messages,
+      fork.markers,
+      "open",
+      fork.usage,
+      // **入口は「分けた場所」に置く**——過去から分けたならその位置
+      fork.forkedFromSeq ?? fork.createdSeq,
+      undefined,
+      fork.title,
+    );
+    stack.open({ fork: fork.id });
   }
 
   // 「別タブで開く」——banto のクロム（ProjectRail・ヘッダ等）を持たない
@@ -377,7 +388,11 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             }}
           >
             {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={project.baseThreadId} /> : null}
-            <IconHeaderButton icon={ForkIcon} label="Fork を開く" onClick={() => handleOpenFork(project.baseThreadId)} />
+            <IconHeaderButton
+              icon={ForkIcon}
+              label="Fork を開く"
+              onClick={() => requestFork(project.baseThreadId, { chooseStart: true })}
+            />
             {/* **左と同じものを、右上にも置かない**（改訂・2026-09-11、ユーザー指摘）
                 ——設定と履歴はサイドバーの下にある。同じ機能への入口を2つ持つと、
                 どちらかが古くなる（規則3）。判断待ちだけはモバイルに残す
@@ -400,7 +415,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }
               onOpenFork={(id) => stack.open({ fork: id })}
-              onForkFrom={(seq) => void handleOpenFork(project.baseThreadId, seq)}
+              onForkFrom={(seq) => requestFork(project.baseThreadId, { fromSeq: seq, chooseStart: false })}
               markers={markersByThread[project.baseThreadId]}
             />
           </div>
@@ -451,7 +466,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 // **Fork の会話からも Canvas を開ける**（2026-10-01、ユーザー報告）。渡していなかったので、Fork の中では
                 // 画面つき tool のカードに「開く」も「大きく開く」も出なかった。開くと Fork はそのまま細く残る
                 onOpenCanvas={(moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })}
-                onForkFrom={(seq) => void handleOpenFork(threadId, seq)}
+                onForkFrom={(seq) => requestFork(threadId, { fromSeq: seq, chooseStart: false })}
                 markers={markersByThread[threadId]}
               />
             </div>
@@ -526,6 +541,20 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           </div>
         </div>
         );
+      }}
+    />
+    <ForkDialog
+      request={forkRequest}
+      onOpenChange={(open) => {
+        if (!open) setForkRequest(null);
+      }}
+      onSubmit={async ({ title, start }) => {
+        if (!forkRequest) return;
+        await handleOpenFork(forkRequest.parentThreadId, {
+          fromSeq: forkRequest.fromSeq,
+          title: title || undefined,
+          fresh: start === "fresh",
+        });
       }}
     />
     </>
