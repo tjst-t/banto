@@ -4,8 +4,9 @@
 // （回る）。同時に2本が同じ鍵で更新すると、片方は `bad_refresh_token` で負ける（本物と同じ）。
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,15 +41,30 @@ export interface FakeGithub {
    * リポジトリ（`owner/name` の小文字 → 非公開か・読める login）。中身は `gitRoot` の bare リポジトリで、
    * **本物の git が HTTP で clone できる**（`git http-backend` を CGI で動かす）
    */
-  repos: Map<string, { private: boolean; readers: string[] }>;
+  repos: Map<string, RepoOpts>;
   gitRoot: string;
   /** git の要求（パスと Authorization の見出し）——資格情報が渡ったかを試験が見る */
   gitRequests: Array<{ path: string; authorization?: string }>;
   /** git の要求への返事を遅らせる（clone の最中を試験が見るため） */
   gitDelayMs: number;
   /** リポジトリを作る（1コミット入り） */
-  addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[] }): void;
+  addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[]; files?: Record<string, string>; redirectTo?: string }): void;
   close(): Promise<void>;
+}
+
+interface RepoOpts {
+  private: boolean;
+  readers: string[];
+  /** git の要求を、別の相手（`<base>`）の同じパスへ 302 で送る（リダイレクトの先に資格情報を渡さないかを見る） */
+  redirectTo?: string;
+}
+
+/** 試験の https の偽物のための、その場限りの自己署名の証明書（127.0.0.1・localhost） */
+export function makeTlsCert(dir: string): { key: string; cert: string; certPath: string } {
+  const key = join(dir, "key.pem");
+  const cert = join(dir, "cert.pem");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"], { stdio: "ignore" });
+  return { key: readFileSync(key, "utf8"), cert: readFileSync(cert, "utf8"), certPath: cert };
 }
 
 /** HTTP の Basic の見出しから password を取り出す */
@@ -61,10 +77,10 @@ function basicPassword(header: string | undefined): string | undefined {
 
 export const FAKE_CLIENT_ID = "Iv23liFAKECLIENT";
 
-export async function startFakeGithub(opts: { gitRoot?: string } = {}): Promise<FakeGithub> {
+export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: string; cert: string } } = {}): Promise<FakeGithub> {
   let seq = 0;
   const gitRoot = opts.gitRoot ?? mkdtempSync(join(tmpdir(), "banto-fake-github-git-"));
-  const repos = new Map<string, { private: boolean; readers: string[] }>();
+  const repos = new Map<string, RepoOpts>();
   const state: Omit<FakeGithub, "endpoints" | "close" | "addRepo"> = {
     repos,
     gitRoot,
@@ -95,7 +111,7 @@ export async function startFakeGithub(opts: { gitRoot?: string } = {}): Promise<
     return body;
   };
 
-  const server: Server = createServer((req, res) => {
+  const handler = (req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
@@ -162,6 +178,10 @@ export async function startFakeGithub(opts: { gitRoot?: string } = {}): Promise<
           if (state.gitDelayMs > 0) await new Promise((r) => setTimeout(r, state.gitDelayMs));
           const key = `${gitPath[1]}/${gitPath[2]}`.toLowerCase();
           const repo = repos.get(key);
+          if (repo?.redirectTo) {
+            res.writeHead(302, { location: `${repo.redirectTo}${url.pathname}${url.search}` });
+            return res.end();
+          }
           const password = basicPassword(req.headers.authorization);
           const login = password ? state.users.get(password) : undefined;
           if (!repo || repo.private) {
@@ -232,8 +252,9 @@ export async function startFakeGithub(opts: { gitRoot?: string } = {}): Promise<
         send(404, { message: "Not Found" });
       })();
     });
-  });
-  function addRepo(owner: string, name: string, o: { private?: boolean; readers?: string[] } = {}): void {
+  };
+  const server: Server = opts.tls ? createHttpsServer(opts.tls, handler) : createServer(handler);
+  function addRepo(owner: string, name: string, o: { private?: boolean; readers?: string[]; files?: Record<string, string>; redirectTo?: string } = {}): void {
     const bare = join(gitRoot, owner, `${name}.git`);
     const work = mkdtempSync(join(tmpdir(), "banto-fake-github-work-"));
     const g = (cwd: string, ...args: string[]) =>
@@ -243,14 +264,19 @@ export async function startFakeGithub(opts: { gitRoot?: string } = {}): Promise<
       });
     g(work, "init", "-q");
     writeFileSync(join(work, "README.md"), `# ${owner}/${name}\n`);
+    for (const [f, body] of Object.entries(o.files ?? {})) writeFileSync(join(work, f), body);
     g(work, "add", ".");
     g(work, "commit", "-q", "-m", "first");
     mkdirSync(join(gitRoot, owner), { recursive: true });
     g(work, "clone", "-q", "--bare", work, bare);
-    repos.set(`${owner}/${name}`.toLowerCase(), { private: o.private ?? false, readers: o.readers ?? [owner] });
+    repos.set(`${owner}/${name}`.toLowerCase(), {
+      private: o.private ?? false,
+      readers: o.readers ?? [owner],
+      ...(o.redirectTo ? { redirectTo: o.redirectTo } : {}),
+    });
   }
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const base = `${opts.tls ? "https" : "http"}://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return Object.assign(state, {
     endpoints: { web: base, api: base },
     addRepo,

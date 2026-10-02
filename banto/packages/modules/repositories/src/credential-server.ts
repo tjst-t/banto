@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { shellQuote } from "./git.js";
 
 const HELPER = fileURLToPath(new URL("./git-credential-helper.js", import.meta.url));
 
@@ -69,7 +70,7 @@ export async function openCredentialWindow(input: {
   });
   // 窓口がプロセスを生かし続けない（閉じ忘れても、Module の終わりを止めない）
   server.unref();
-  const quote = (s: string) => `"${s.replace(/(["\\$`])/g, "\\$1")}"`;
+  const quote = shellQuote;
   return {
     helperCommand: `!${quote(process.execPath)} ${quote(HELPER)} ${quote(socketPath)}`,
     served: () => served,

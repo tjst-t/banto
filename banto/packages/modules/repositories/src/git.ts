@@ -264,11 +264,33 @@ export type GitCredential =
   | { kind: "none" }
   | { kind: "machine" }
   | { kind: "helper"; command: string }
-  | { kind: "ssh-agent"; socket: string };
+  | { kind: "ssh-agent"; socket: string; knownHosts: string };
 
-/** ssh を使うときのコマンド（Vault の窓口だけを使う。初めての相手は覚える——accept-new） */
-export function sshCommandFor(socket: string): string {
-  return `ssh -o IdentityAgent="${socket}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new`;
+/** シェルに渡す1語（git は `!` の helper・`core.sshCommand` をシェルで読む） */
+export function shellQuote(s: string): string {
+  return `"${s.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+/** ssh のコマンドに埋めるパス。**絶対パス・素直な字だけ**——Vault の実装（第三者も名乗れる）が返す値を、そのまま埋めない */
+const SAFE_PATH = /^\/[A-Za-z0-9._\/-]+$/;
+
+/**
+ * GitHub へ ssh で取ってくるときのコマンド。**人の ssh の設定を読まない**（`-F /dev/null`）・Vault の ssh-agent の窓口
+ * だけを使う・**相手の鍵は GitHub が公開している値だけを信じる**（`knownHosts`、`StrictHostKeyChecking=yes`——初めての
+ * 相手を覚えて人の `~/.ssh/known_hosts` に書く accept-new はやめた）
+ */
+export function sshCommandFor(socket: string, knownHosts: string): string {
+  for (const [what, p] of [["ssh-agent の窓口", socket], ["known_hosts", knownHosts]] as const) {
+    if (!SAFE_PATH.test(p)) throw new Error(`${what}の場所が受け付けられない形です（絶対パスで、英数字と . _ / - だけ）：${JSON.stringify(p.slice(0, 80))}`);
+  }
+  return [
+    "ssh -F /dev/null",
+    `-o IdentityAgent=${shellQuote(socket)}`,
+    "-o BatchMode=yes",
+    "-o StrictHostKeyChecking=yes",
+    `-o UserKnownHostsFile=${shellQuote(knownHosts)}`,
+    "-o GlobalKnownHostsFile=/dev/null",
+  ].join(" ");
 }
 
 /**
@@ -278,6 +300,10 @@ export function sshCommandFor(socket: string): string {
  */
 export function writeEnv(credential: GitCredential): NodeJS.ProcessEnv {
   const base = Object.fromEntries(Object.entries(GIT_ENV).filter(([k]) => !k.startsWith("GIT_CONFIG_")));
+  // **GitHub へ取ってくるとき（machine 以外）は、人の git の設定（ユーザー・システムの段）を読まない**——
+  // `filter.lfs.smudge` 等は相手の `.gitattributes` から起動し、`url.*.insteadOf` は https を ssh に書き換えて嘘の
+  // 失敗にする。proxy は環境変数（HTTPS_PROXY 等）で効く
+  const ownConfig = credential.kind === "machine" ? {} : { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   const machineOwned = new Set(["credential.helper", "core.sshCommand", "core.askPass"]);
   let overrides: Array<readonly [string, string]> = GIT_CONFIG_OVERRIDES.filter(
     ([k]) => credential.kind !== "machine" || !machineOwned.has(k),
@@ -287,10 +313,14 @@ export function writeEnv(credential: GitCredential): NodeJS.ProcessEnv {
   // 空にした一覧のあとに足す（同じ段の中では順に読まれる——空で消し、次で1つだけ足す）
   if (credential.kind === "helper") overrides.push(["credential.helper", credential.command]);
   if (credential.kind === "ssh-agent") {
-    overrides = overrides.map(([k, v]) => (k === "core.sshCommand" ? ([k, sshCommandFor(credential.socket)] as const) : ([k, v] as const)));
+    const ssh = sshCommandFor(credential.socket, credential.knownHosts);
+    overrides = overrides.map(([k, v]) => (k === "core.sshCommand" ? ([k, ssh] as const) : ([k, v] as const)));
   }
   return {
     ...base,
+    ...ownConfig,
+    // git-lfs が入っていても、clone で大きな中身を取りに行かせない（人の設定を読む machine でも）
+    GIT_LFS_SKIP_SMUDGE: "1",
     GIT_CONFIG_COUNT: String(overrides.length),
     ...Object.fromEntries(
       overrides.flatMap(([key, value], i) => [
@@ -325,7 +355,11 @@ export interface CloneProgress {
 
 export type CloneResult =
   | { ok: true }
-  | { ok: false; kind: "failed" | "timeout" | "cancelled"; message: string };
+  /**
+   * `message` は見せる文言（git の最後の行たち）。`own` は**相手（`remote:`）の行を除いた**行——失敗の分類はこれだけで
+   * 決める（相手が「Repository not found」等を言って分類を偽れないように）
+   */
+  | { ok: false; kind: "failed" | "timeout" | "cancelled"; message: string; own?: string };
 
 /** 時間の決まり（ms）。**試験で縮める穴** */
 export const CLONE_TIMEOUTS = {
@@ -374,6 +408,12 @@ export function gitClone(input: {
     child.stderr.on("data", (chunk: string) => {
       arm();
       buffer += chunk;
+      // 改行の来ない出力で際限なく伸ばさない——長すぎたら、そこまでを1行として扱う
+      if (buffer.length > 64 * 1024) {
+        tail.push(buffer.slice(0, 2000) + "…");
+        if (tail.length > 20) tail.shift();
+        buffer = "";
+      }
       // 進み具合は \r で上書きされる——\r と \n のどちらでも区切る
       const parts = buffer.split(/[\r\n]/);
       buffer = parts.pop() ?? "";
@@ -402,7 +442,12 @@ export function gitClone(input: {
       }
       if (ended === "cancelled") return finish({ ok: false, kind: "cancelled", message: "やめました" });
       const lines = tail.filter((l) => !/^Cloning into /.test(l));
-      finish({ ok: false, kind: "failed", message: lines.join("\n") || `git clone が ${String(code)} で終わりました` });
+      finish({
+        ok: false,
+        kind: "failed",
+        message: lines.join("\n") || `git clone が ${String(code)} で終わりました`,
+        own: lines.filter((l) => !/^remote:/i.test(l)).join("\n"),
+      });
     });
   });
 }
