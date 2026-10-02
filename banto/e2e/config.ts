@@ -116,6 +116,8 @@ export const SUBAGENT_IMPORT_FILE = join(E2E_TMP, "subagent-import-auth.json");
 /** 取り込み元に置いてある鍵（試験がその sha256 を突き合わせる） */
 export const SUBAGENT_IMPORTED_KEY = "e2e-imported-key-7Q2";
 export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
+/** Repositories のアカウントのための偽の GitHub の行き先（core のプロセスが書き、spec が読む——`github-login-fixture.ts`） */
+export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.json");
 
 /**
  * **claude CLI 自身の置き場**。E2E は**人の `~/.claude` を一切書き換えない**

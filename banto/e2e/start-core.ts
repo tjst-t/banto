@@ -23,6 +23,7 @@ import {
 import { startRegistryFixture } from "./registry-fixture.ts";
 import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
 import { startGithubFixture } from "./github-fixture.ts";
+import { startGithubLoginFixture } from "./github-login-fixture.ts";
 
 globalSetup();
 
@@ -102,6 +103,11 @@ await startNpmRegistryFixture(NPM_REGISTRY_PORT);
 const github = await startGithubFixture();
 process.env.BANTO_SKILLS_GITHUB_API_URL = github.api;
 process.env.BANTO_SKILLS_GITHUB_RAW_URL = github.raw;
+// Repositories のアカウント（デバイスフロー・PAT の確かめ）も偽物へ（追加・2026-10-02）。Repositories は banto 本体で
+// 動き host の env を継ぐ
+const githubLogin = await startGithubLoginFixture();
+process.env.BANTO_REPOSITORIES_GITHUB_URL = githubLogin.web;
+process.env.BANTO_REPOSITORIES_GITHUB_API_URL = githubLogin.api;
 
 // **Shell のホームへ写す元も偽物にする**（追加・2026-09-23）。資格情報の取り出し役と
 // include を入れておく——写したときに外れることを試験が見る

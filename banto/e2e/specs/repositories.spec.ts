@@ -8,6 +8,8 @@
 //   4. まだ作っていない手（Project を始める・GitHub に公開・clone し直す）は、押すと「まだ作っていない」と言う
 //   5. 設定の面にも同じ一覧と既定の置き場が出て、置き場を変えると一覧の説明も変わる
 //   6. 狭い幅で縦に積み、はみ出さない
+//   7. GitHub のアカウント（段階2）：PAT・ブラウザでログイン（デバイスフロー）・確かめる・更新の失敗が受信箱に出る・
+//      もう一度ログイン・外す。台帳の「扱うアカウント」が一覧に出る。GitHub は偽物（`e2e/github-login-fixture.ts`）
 import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -15,6 +17,13 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
 import { createProject, expectProjectOpen, openApp } from "../helpers.js";
+import {
+  E2E_GITHUB_CLIENT_ID,
+  E2E_GITHUB_DEVICE_LOGIN,
+  E2E_GITHUB_PAT,
+  E2E_GITHUB_PAT_LOGIN,
+  setGithubLoginFixture,
+} from "../github-login-fixture.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -24,6 +33,9 @@ const base = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-repositories-"))
 const usedRepo = join(base, "used-repo");
 const localRepo = join(base, "local-only");
 const goneRepo = join(base, "gone-repo");
+/** 持ち主が PAT のアカウントと同じリポジトリ（段階2の試験で Import する）。最初の試験がたどるフォルダの外に置く */
+const ownedBase = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-repositories-owned-")));
+const ownedRepo = join(ownedBase, "owned-repo");
 const plain = join(base, "plain");
 const HOME_DIR = `/tmp/banto-e2e-repo-home-${Date.now()}`;
 
@@ -55,10 +67,12 @@ test.beforeAll(() => {
   mkdirSync(join(usedRepo, "sub"));
   makeRepo(localRepo, undefined, false);
   makeRepo(goneRepo, "https://github.com/e2e-owner/gone-repo.git");
+  makeRepo(ownedRepo, `git@github.com:${E2E_GITHUB_PAT_LOGIN}/owned-repo.git`);
   mkdirSync(plain);
 });
 test.afterAll(() => {
   rmSync(base, { recursive: true, force: true });
+  rmSync(ownedBase, { recursive: true, force: true });
 });
 
 function canvasOf(page: Page): FrameLocator {
@@ -289,4 +303,137 @@ test("設定の Repositories の面に同じ一覧と既定の置き場が出て
   await again.getByTestId("repo-home-reset").click();
   await expect(again.getByTestId("repo-home-input")).toHaveValue("~/banto");
   await expect(again.getByTestId("repo-list-lead")).toContainText("~/banto に置きます");
+});
+
+test("設定の Repositories の面で GitHub のアカウントを登録・確かめ・外せて、更新の失敗は受信箱に出て、一覧に扱うアカウントが出る", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  // 出すトークンの寿命を5分の余裕より短くして、確かめるたびに更新が走るようにする
+  await setGithubLoginFixture({ script: ["pending", "authorized"], accessTokenTtl: 60, refreshError: null });
+  const openPane = async () => {
+    await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+    await page.getByRole("button", { name: "Repositories", exact: true }).click();
+    const pane = page.locator('[data-testid="module-settings-canvas"][data-module="repositories"]');
+    await expect(pane).toBeVisible({ timeout: 30_000 });
+    return pane.locator("iframe").contentFrame().frameLocator("iframe");
+  };
+  let inner = await openPane();
+  const section = inner.getByTestId("gh-accounts-section");
+  const account = (login: string) => inner.locator(`[data-testid="gh-account"][data-login="${login}"]`);
+
+  // ---- 1. 空・client ID が無い間はブラウザでログインを選べず、手順が出る ------------------------
+  await expect(inner.getByTestId("gh-accounts-empty")).toHaveText("まだありません。登録すると、GitHub のリポジトリをそのアカウントで扱えます。", { timeout: 60_000 });
+  await expect(inner.getByTestId("gh-client-id-steps")).toContainText("「Enable Device Flow」に印を入れる");
+  await inner.getByTestId("gh-account-add").click();
+  await expect(inner.getByTestId("gh-method-browser")).toBeDisabled();
+  await expect(inner.getByTestId("gh-method-paste")).toBeChecked();
+
+  // ---- 2. PAT を貼る——GitHub で login を確かめ、Vault に預け、画面には alias の名前だけ ----------------
+  await inner.getByTestId("gh-pat-input").fill("ghp_not_valid_at_all");
+  await inner.getByTestId("gh-account-submit").click();
+  await expect(inner.getByTestId("gh-account-error")).toContainText("この PAT では GitHub に入れませんでした");
+  await expect(inner.getByTestId("gh-account-error")).toContainText("401");
+  await inner.getByTestId("gh-pat-input").fill(E2E_GITHUB_PAT);
+  await inner.getByTestId("gh-account-submit").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_PAT_LOGIN} を登録しました`);
+  const patRow = account(E2E_GITHUB_PAT_LOGIN);
+  await expect(patRow.getByTestId("gh-account-credential")).toContainText(`PAT $github-${E2E_GITHUB_PAT_LOGIN}-pat（vault-local`);
+  await expect(patRow.getByTestId("gh-account-ssh")).toHaveText("SSH 鍵なし（HTTPS で clone・push）");
+  await expect(inner.getByTestId("gh-account-form"), "登録したのに欄が残っている").toHaveCount(0);
+
+  // 台帳：持ち主が PAT の login と同じものは、そのアカウントで扱う。違うもの（e2e-org）は読むだけ
+  await inner.getByTestId("repo-import-open").click();
+  await inner.getByTestId("repo-import-path").fill(ownedRepo);
+  await inner.getByTestId("repo-import-path").press("Enter");
+  await expect(inner.getByTestId("repo-import-facts")).toContainText(`${E2E_GITHUB_PAT_LOGIN} で扱います`, { timeout: 15_000 });
+  await inner.getByTestId("repo-import-submit").click();
+  await expect(row(inner, ownedRepo).getByTestId("repo-account-login")).toHaveText(E2E_GITHUB_PAT_LOGIN, { timeout: 15_000 });
+  await expect(row(inner, usedRepo).getByTestId("repo-account-readonly")).toHaveText("読むだけ");
+
+  // ---- 3. client ID を入れると手順が消え、ブラウザでログインが選べる -------------------------------
+  await inner.getByTestId("gh-client-id").fill("123");
+  await inner.getByTestId("gh-client-id-save").click();
+  await expect(inner.getByTestId("gh-client-id-error")).toContainText("client ID の形が違います");
+  await inner.getByTestId("gh-client-id").fill(E2E_GITHUB_CLIENT_ID);
+  await inner.getByTestId("gh-client-id-save").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText("client ID を保存しました");
+  await expect(inner.getByTestId("gh-client-id-steps")).toHaveCount(0);
+
+  // ---- 4. ブラウザでログイン：コードと開く先を出し、許可されたら登録 ----------------------------------
+  await inner.getByTestId("gh-account-add").click();
+  await expect(inner.getByTestId("gh-method-browser")).toBeChecked();
+  await inner.getByTestId("gh-account-submit").click();
+  await expect(inner.getByTestId("gh-login-code")).toHaveText("WDJB-MJHT");
+  await expect(inner.getByTestId("gh-login-status")).toContainText("GitHub で許可されるのを待っています（このコードはあと 15 分で切れます）");
+  await expect(inner.getByTestId("gh-login-open")).toHaveText("github.com/login/device を開く");
+  // 押すと banto が別のタブで開く（ui/open-link）。**本物の github.com には行かせない**（規則6）——開いた先だけを見る
+  await page.context().route("https://github.com/**", (route) => route.fulfill({ contentType: "text/plain", body: "fake github" }));
+  const popup = page.waitForEvent("popup");
+  await inner.getByTestId("gh-login-open").click();
+  expect((await popup).url()).toBe("https://github.com/login/device");
+  await (await popup).close();
+  // 偽の GitHub は1回「待って」と答え、次で許可する——interval（5秒）どおりに2回聞くので10秒ほど
+  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_DEVICE_LOGIN} をブラウザでログインして登録しました`, { timeout: 30_000 });
+  const appRow = account(E2E_GITHUB_DEVICE_LOGIN);
+  await expect(appRow.getByTestId("gh-account-credential")).toContainText(`ブラウザでログイン（GitHub App）· $oauth-github-${E2E_GITHUB_DEVICE_LOGIN}（vault-local`);
+  await expect(inner.getByTestId("gh-login")).toHaveCount(0);
+  await expect(inner.getByTestId("gh-account")).toHaveCount(2);
+
+  // ---- 5. 確かめる：期限が近いので取り直し（更新が通る）、GitHub に入れる ------------------------------
+  const before = (await setGithubLoginFixture({})).refreshCalls;
+  await appRow.getByTestId("gh-account-verify").click();
+  await expect(appRow.getByTestId("gh-account-verified")).toHaveText(`GitHub に ${E2E_GITHUB_DEVICE_LOGIN} として入れました`);
+  expect((await setGithubLoginFixture({})).refreshCalls, "期限が近いのに取り直していない").toBe(before + 1);
+  await patRow.getByTestId("gh-account-verify").click();
+  await expect(patRow.getByTestId("gh-account-verified")).toHaveText(`GitHub に ${E2E_GITHUB_PAT_LOGIN} として入れました`);
+
+  // ---- 6. 更新に失敗：理由が行に出て、受信箱に1件 ----------------------------------------------------
+  await setGithubLoginFixture({ refreshError: "bad_refresh_token" });
+  await appRow.getByTestId("gh-account-verify").click();
+  await expect(appRow.getByTestId("gh-account-verify-error")).toContainText(`${E2E_GITHUB_DEVICE_LOGIN} のログインを更新できませんでした`);
+  await expect(appRow.getByTestId("gh-account-refresh-failure")).toContainText("ログインを更新できませんでした：GitHub が更新の鍵（refresh token）を受け付けませんでした");
+  // 秘密はどの画面にも出ていない
+  for (const frame of page.frames()) {
+    const html = await frame.content().catch(() => "");
+    expect(html.includes(E2E_GITHUB_PAT), "PAT が画面に出ている").toBe(false);
+    expect(/gh[ur]_fake_/.test(html), "ログインのトークンが画面に出ている").toBe(false);
+  }
+
+  await openApp(page);
+  await page.getByRole("button", { name: "受信箱" }).click();
+  const notice = page.getByTestId("inbox-notice").filter({ hasText: `GitHub @${E2E_GITHUB_DEVICE_LOGIN} のログインを更新できませんでした` });
+  await expect(notice, "更新の失敗が受信箱に出ていない").toHaveCount(1, { timeout: 30_000 });
+  await expect(notice).toContainText("もう一度「ブラウザでログイン」してください");
+  await page.keyboard.press("Escape");
+
+  // ---- 7. もう一度ログイン：置き場を置き換え、失敗の印が消える ------------------------------------------
+  await setGithubLoginFixture({ refreshError: null, script: ["authorized"] });
+  inner = await openPane();
+  await account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-relogin").click({ timeout: 60_000 });
+  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_DEVICE_LOGIN} のログインを新しくしました`, { timeout: 30_000 });
+  await expect(account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-refresh-failure")).toHaveCount(0);
+  await expect(inner.getByTestId("gh-account")).toHaveCount(2);
+  await account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-verify").click();
+  await expect(account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-verified")).toHaveText(`GitHub に ${E2E_GITHUB_DEVICE_LOGIN} として入れました`);
+
+  // ---- 8. 外す：ログインは Vault から消し、PAT は残す。台帳は覚えたまま「登録が外れている」 -------------------
+  await account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-remove").click();
+  await expect(account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-remove-note")).toContainText("Vault に置いたログイン情報も消します");
+  await account(E2E_GITHUB_DEVICE_LOGIN).getByTestId("gh-account-remove-confirm").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_DEVICE_LOGIN} の登録を外しました（Vault のログイン情報も消しました）`);
+  await account(E2E_GITHUB_PAT_LOGIN).getByTestId("gh-account-remove").click();
+  await expect(account(E2E_GITHUB_PAT_LOGIN).getByTestId("gh-account-remove-note")).toContainText("PAT は Vault に残ります");
+  await account(E2E_GITHUB_PAT_LOGIN).getByTestId("gh-account-remove-confirm").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_PAT_LOGIN} の登録を外しました（PAT は Vault に残しています）`);
+  await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();
+  await expect(row(inner, ownedRepo).getByTestId("repo-account-readonly")).toContainText(`${E2E_GITHUB_PAT_LOGIN} は登録が外れています`);
+
+  // Vault の一覧：ログインは消え、PAT は残っている（値は出ない）
+  await page.getByRole("button", { name: "Vault（ローカル）", exact: true }).click();
+  const vaultInner = page.locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe').contentFrame().frameLocator("iframe");
+  await expect(vaultInner.getByText(`github-${E2E_GITHUB_PAT_LOGIN}-pat`).first()).toBeVisible({ timeout: 60_000 });
+  await expect(vaultInner.getByText(`oauth-github-${E2E_GITHUB_DEVICE_LOGIN}`)).toHaveCount(0);
+  await expect(vaultInner.getByText(E2E_GITHUB_PAT)).toHaveCount(0);
+
+  expect(pageErrors).toEqual([]);
 });
