@@ -20,6 +20,10 @@ export {
   idmapFor,
   CONTAINER_NODE_PATH,
   DEFAULT_TIMEOUTS,
+  defaultContainerLimits,
+  HOST_MEMORY_RESERVE_BYTES,
+  DEFAULT_CONTAINER_PROCESSES,
+  type ContainerLimits,
   type ProjectContainerSpec,
   type ContainerTimeouts,
 } from "./project-container.js";

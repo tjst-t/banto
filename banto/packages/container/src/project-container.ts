@@ -11,7 +11,7 @@
 // **Incus を呼ぶときは必ず時間の上限を付ける**。`incus init` が返らなかったことがあった（原因は標準入力——
 // `incus.ts`）。上限を過ぎたら黙って再試行せず、失敗として返す（規則2・6）。
 
-import { networkInterfaces } from "node:os";
+import { availableParallelism, networkInterfaces, totalmem } from "node:os";
 import type { RunIncus } from "./incus.js";
 import { BANTO_POOL } from "./prereqs.js";
 
@@ -47,6 +47,60 @@ export interface ProjectContainerSpec {
    */
   uid: number;
   gid: number;
+  /** 資源の上限（`defaultContainerLimits()`）。動いているコンテナにもそのまま効く（起こし直さない） */
+  limits: ContainerLimits;
+}
+
+/**
+ * **コンテナの資源の上限**（決定・2026-10-02、ユーザー。再発防止）。
+ *
+ * 2026-09-30、Project のコンテナの中でフル E2E を回すと入れ子のコンテナが約 50 台立ち、host の負荷が 320 に
+ * なって incusd が詰まり、Module が全部止まった。上限が無いと、1つの Project の暴走が host と banto 本体を
+ * 巻き込む。入れ子のコンテナも親の枠に入るので、親に上限を付ければ暴走はその Project の中で止まる。
+ *
+ * 値は Incus の設定の文字列のまま持つ（比べるのも書くのもそのまま）
+ */
+export interface ContainerLimits {
+  /** `limits.memory` */
+  memory: string;
+  /** `limits.cpu.allowance`（時間で切る上限。コアを固定で割り当てない） */
+  cpuAllowance: string;
+  /** `limits.processes` */
+  processes: string;
+}
+
+/** host に必ず残すメモリ（決定・2026-10-02） */
+export const HOST_MEMORY_RESERVE_BYTES = 2 * 1024 ** 3;
+/** 上限がこれより小さくならないようにする（小さい host でもコンテナが起きられる分） */
+const MIN_CONTAINER_MEMORY_BYTES = 1024 ** 3;
+export const DEFAULT_CONTAINER_PROCESSES = 8192;
+
+/**
+ * **既定の上限を、この host の資源から計算する**（決定・2026-10-02、ユーザー）。いろんな host に入れるので
+ * 固定の数値にしない：
+ * - メモリ：host の全メモリから 2GiB を host に残した残り（最低 1GiB）
+ * - CPU：host のコア数から1を引いた分（最低1コア）——1コアは常に host と banto 本体に残る
+ * - プロセス数：8192（host による差が小さいので固定）
+ *
+ * Project のコンテナの中で動く banto（E2E）から呼ぶと、中から見える資源（親の上限）で計算される
+ */
+export function defaultContainerLimits(host: { memoryBytes: number; cpus: number } = { memoryBytes: totalmem(), cpus: availableParallelism() }): ContainerLimits {
+  const memory = Math.max(MIN_CONTAINER_MEMORY_BYTES, host.memoryBytes - HOST_MEMORY_RESERVE_BYTES);
+  const cores = Math.max(1, host.cpus - 1);
+  return {
+    memory: `${Math.floor(memory / 1024 ** 2)}MiB`,
+    cpuAllowance: `${cores * 100}ms/100ms`,
+    processes: String(DEFAULT_CONTAINER_PROCESSES),
+  };
+}
+
+/** 上限の Incus の設定の名前 */
+function limitsConfig(limits: ContainerLimits): Record<string, string> {
+  return {
+    "limits.memory": limits.memory,
+    "limits.cpu.allowance": limits.cpuAllowance,
+    "limits.processes": limits.processes,
+  };
 }
 
 export interface ContainerTimeouts {
@@ -239,6 +293,12 @@ export class ProjectContainers {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
       // AppArmor のプロファイルは起動のときに作られる——動いているなら起こし直さないと効かない
       needsRestart = st.status === "Running";
+    }
+    // **資源の上限**（2026-10-02）。作るときもここで付ける（付ける所は1つ）。Incus は動いているコンテナにも
+    // そのまま効かせるので、起こし直さない。前からあるコンテナにも、次に用意するときに付く
+    const limitChanges = Object.entries(limitsConfig(spec.limits)).filter(([k, v]) => st.config[k] !== v);
+    if (limitChanges.length > 0) {
+      await this.incus(["config", "set", name, ...limitChanges.map(([k, v]) => `${k}=${v}`)], "資源の上限を付けるの");
     }
 
     if (needsRestart) await this.stop(name);

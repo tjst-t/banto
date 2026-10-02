@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
+import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, defaultContainerLimits, execInContainer, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 /** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
@@ -211,6 +211,12 @@ function fakeIncus(initial?: { devices: Record<string, Record<string, string>> }
     if (args[0] === "query") return state ? { code: 0, stdout: JSON.stringify(state), stderr: "" } : { code: 1, stdout: "", stderr: "not found" };
     if (args[0] === "init") state = { status: "Stopped", config: { "security.nesting": "false" }, devices: {} };
     if (args[0] === "start" && state) state.status = "Running";
+    if (args[0] === "config" && args[1] === "set") {
+      for (const kv of args.slice(3)) {
+        const i = kv.indexOf("=");
+        (state!.config as Record<string, string>)[kv.slice(0, i)] = kv.slice(i + 1);
+      }
+    }
     if (args[0] === "config" && args[1] === "device" && args[2] === "remove") delete state!.devices[args[4]!];
     if (args[0] === "config" && args[1] === "device" && args[2] === "add") {
       const opts = Object.fromEntries(args.slice(6).map((a) => a.split("=") as [string, string]));
@@ -233,7 +239,42 @@ const SPEC = {
   owner: "/home/u/.local/share/banto",
   uid: 1000,
   gid: 1000,
+  limits: { memory: "13312MiB", cpuAllowance: "300ms/100ms", processes: "8192" },
 };
+
+test("既定の上限は host の資源から計算する——メモリは 2GiB を残し、CPU は1コアを残し、プロセス数は固定", () => {
+  assert.deepEqual(defaultContainerLimits({ memoryBytes: 15 * 1024 ** 3, cpus: 4 }), {
+    memory: "13312MiB",
+    cpuAllowance: "300ms/100ms",
+    processes: "8192",
+  });
+  // 小さい host でも、起きられないほど小さくしない（メモリ 1GiB・1コア）
+  assert.deepEqual(defaultContainerLimits({ memoryBytes: 2.5 * 1024 ** 3, cpus: 1 }), {
+    memory: "1024MiB",
+    cpuAllowance: "100ms/100ms",
+    processes: "8192",
+  });
+});
+
+test("上限を付ける——作るときも、前からある動いているコンテナにも。起こし直さず、同じなら書き直さない", async () => {
+  const fresh = fakeIncus();
+  await new ProjectContainers(fresh.run).ensure(SPEC);
+  const sets = (calls: string[][]) => calls.filter((a) => a[0] === "config" && a[1] === "set");
+  assert.deepEqual(sets(fresh.calls), [
+    ["config", "set", "banto-p1", "limits.memory=13312MiB", "limits.cpu.allowance=300ms/100ms", "limits.processes=8192"],
+  ]);
+
+  // 前からある（上限の無い）動いているコンテナ：付けるが、止めない
+  const old = fakeIncus({ devices: { banto: { type: "disk", source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" }, project: { type: "disk", source: "/home/u/proj", path: "/home/u/proj" } } });
+  const c = new ProjectContainers(old.run);
+  await c.ensure(SPEC);
+  assert.equal(sets(old.calls).length, 1, "上限を付けていない");
+  assert.ok(!old.calls.some((a) => a[0] === "stop" || a[0] === "start"), "上限のために起こし直した");
+  // 2回目は同じなので書き直さない
+  old.calls.length = 0;
+  await c.ensure(SPEC);
+  assert.equal(sets(old.calls).length, 0, "同じ上限を書き直した");
+});
 
 test("banto のコードの置き場が移ったら、コンテナのマウントを付け直す（読み取り専用のまま）", async () => {
   const fake = fakeIncus({

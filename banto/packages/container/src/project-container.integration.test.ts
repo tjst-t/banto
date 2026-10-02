@@ -10,7 +10,7 @@ import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { runIncus } from "./incus.js";
-import { ProjectContainers, containerNameFor, execInContainer, CONTAINER_NODE_PATH } from "./project-container.js";
+import { ProjectContainers, containerNameFor, execInContainer, CONTAINER_NODE_PATH, defaultContainerLimits } from "./project-container.js";
 
 const enabled = process.env.BANTO_TEST_INCUS === "1";
 const skip = enabled ? false : "実機の Incus が要る（BANTO_TEST_INCUS=1 のときだけ走る）";
@@ -38,7 +38,7 @@ test("Project のコンテナ：作る→同じ根を同じパスで・持ち主
   // gid はユーザーの登録情報から——`sg incus` で起こしたプロセスの主グループは incus に変わる
   const { uid, gid } = userInfo();
   const owner = join(base, `owner-${projectId}`);
-  const spec = { projectId, root: rootA, bantoDir, nodePath: process.execPath, nodeVersion: process.version, nesting: false, image: "images:ubuntu/24.04", uid, gid, owner };
+  const spec = { projectId, root: rootA, bantoDir, nodePath: process.execPath, nodeVersion: process.version, nesting: false, image: "images:ubuntu/24.04", uid, gid, owner, limits: defaultContainerLimits() };
   try {
     writeFileSync(join(rootA, "from-host.txt"), "host");
     const first = await containers.ensure(spec);

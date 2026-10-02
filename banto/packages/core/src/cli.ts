@@ -22,6 +22,7 @@ import {
   hostPrereqDeps,
   instanceContainerId,
   containerNameFor,
+  defaultContainerLimits,
   runIncus,
 } from "@banto/container";
 import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
@@ -420,6 +421,8 @@ async function main(): Promise<void> {
         uid,
         gid,
         owner: bootstrap.dataDir,
+        // 資源の上限（決定・2026-10-02）。この host の資源から計算する——固定の数値にしない
+        limits: defaultContainerLimits(),
       });
       const r: ReadyContainer = {
         name,
