@@ -27,6 +27,8 @@ export interface FakeGithub {
   refreshTokens: Map<string, string>;
   /** 更新の口を、遅らせる（同時更新の試験） */
   refreshDelayMs: number;
+  /** デバイスフローの問いへの返事を遅らせる（聞いている間にやめる試験） */
+  pollDelayMs: number;
   /** 更新を断らせる（`bad_refresh_token` 等） */
   refreshError: string | undefined;
   refreshCalls: number;
@@ -45,6 +47,7 @@ export async function startFakeGithub(): Promise<FakeGithub> {
     users: new Map(),
     refreshTokens: new Map(),
     refreshDelayMs: 0,
+    pollDelayMs: 0,
     refreshError: undefined,
     refreshCalls: 0,
   };
@@ -88,6 +91,7 @@ export async function startFakeGithub(): Promise<FakeGithub> {
         if (url.pathname === "/login/oauth/access_token" && req.method === "POST") {
           if (form.client_id !== FAKE_CLIENT_ID) return send(200, { error: "incorrect_client_credentials" });
           if (form.grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
+            if (state.pollDelayMs > 0) await new Promise((r) => setTimeout(r, state.pollDelayMs));
             const n = polls.get(form.device_code ?? "") ?? 0;
             polls.set(form.device_code ?? "", n + 1);
             const step = state.script[Math.min(n, state.script.length - 1)]!;
@@ -143,6 +147,8 @@ export class MemoryVault implements VaultAccess {
   readonly values = new Map<string, string>();
   readonly calls: Array<{ op: string; callId?: string }> = [];
   failPut: string | undefined;
+  /** 読めない Vault（目録の `failures` に出す） */
+  readonly failures: Array<{ implementation: string; error: string }> = [];
 
   private key(p: AliasPlace) {
     return `${p.implementation}|${p.group ?? ""}|${p.name}`;
@@ -160,7 +166,10 @@ export class MemoryVault implements VaultAccess {
 
   async listAliases(callId?: string) {
     this.calls.push({ op: "listAliases", ...(callId ? { callId } : {}) });
-    return { aliases: this.aliases.map(({ note: _n, ...a }) => a), failures: [] };
+    return {
+      aliases: this.aliases.filter((a) => !this.failures.some((f) => f.implementation === a.implementation)).map(({ note: _n, ...a }) => a),
+      failures: [...this.failures],
+    };
   }
   async resolve(place: AliasPlace, callId?: string) {
     this.calls.push({ op: "resolve", ...(callId ? { callId } : {}) });

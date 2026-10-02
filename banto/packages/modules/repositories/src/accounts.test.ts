@@ -381,3 +381,69 @@ test("更新したトークンは、ログインを置いた元の置き場に�
     assert.equal(JSON.parse(w.vault.values.get("vault-infisical|shared|oauth-github-tjst-t")!).accessToken, token);
   });
 });
+
+test("待っている間に「やめる」を押されたら、起きたあとで GitHub に聞かず、聞いている間なら許可されていても何も置かない", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    w.gh.script = ["authorized"];
+    const pollsAt = () => w.gh.requests.filter((r) => r.form.grant_type?.endsWith("device_code")).length;
+
+    // interval を待っている間にやめた
+    const a = await w.accounts.startLogin({}, "c");
+    const sleeping = new GithubAccounts({
+      store: w.store,
+      vault: w.vault,
+      github: httpGithub(w.gh.endpoints, () => w.clock.now),
+      notices: w.notices,
+      now: () => w.clock.now,
+      sleep: async (ms) => {
+        w.clock.now += ms;
+        sleeping.cancelLogin(flowId);
+      },
+    });
+    const s = await sleeping.startLogin({}, "c");
+    const flowId = s.flowId;
+    assert.deepEqual(await sleeping.pollLogin(flowId, "c"), { state: "cancelled" });
+    assert.equal(pollsAt(), 0, "やめたのに GitHub に聞いた");
+
+    // GitHub に聞いている間にやめた——許可が返っても、Vault にもアカウントにも何も残さない
+    w.gh.pollDelayMs = 100;
+    const asking = w.accounts.pollLogin(a.flowId, "c");
+    setTimeout(() => w.accounts.cancelLogin(a.flowId), 30);
+    assert.deepEqual(await asking, { state: "cancelled" });
+    assert.equal(pollsAt(), 1);
+    assert.deepEqual(w.vault.aliases, [], "やめたのにログイン情報を置いた");
+    assert.deepEqual((await w.accounts.list()).accounts, []);
+  });
+});
+
+test("許可されたあとで保存に失敗したら、保存していないことと GitHub での取り消し方を言う", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    w.gh.script = ["authorized"];
+    w.vault.failPut = "Vault が止まっています";
+    const s = await w.accounts.startLogin({}, "c");
+    await assert.rejects(() => w.accounts.pollLogin(s.flowId, "c"), (err: Error) => {
+      assert.match(err.message, /Vault が止まっています/);
+      assert.match(err.message, /このログインは banto に保存していません/);
+      assert.match(err.message, /Authorized GitHub Apps から取り消せます/);
+      assertNoSecrets("断りの文言", err.message, w.gh);
+      return true;
+    });
+    assert.deepEqual((await w.accounts.list()).accounts, []);
+  });
+});
+
+test("外すとき、ログイン情報の Vault が読めなければ「もう無い」と見なさず断る（登録も残す）", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    await loginWithDevice(w);
+    w.vault.failures.push({ implementation: "vault-local", error: "sops が鍵を読めません" });
+    await assert.rejects(() => w.accounts.remove("tjst-t", "c"), /Vault（vault-local）が読めないので外せません：sops が鍵を読めません/);
+    assert.equal((await w.accounts.list()).accounts.length, 1, "Vault が読めないのに登録だけ消した");
+    assert.equal(w.vault.aliases.length, 1);
+    // 別の Vault が読めないだけなら外せる
+    w.vault.failures.splice(0, 1, { implementation: "vault-infisical", error: "繋がりません" });
+    assert.equal((await w.accounts.remove("tjst-t", "c")).loginRemoved, true);
+  });
+});

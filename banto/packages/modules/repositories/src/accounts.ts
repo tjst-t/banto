@@ -49,6 +49,8 @@ export type LoginPoll =
   | { state: "pending"; expiresAt: number }
   | { state: "expired" }
   | { state: "denied" }
+  /** 待っている間に、人が「やめる」を押した——許可されていても、受け取ったものは捨てた */
+  | { state: "cancelled" }
   | { state: "done"; account: AccountView; relogin: boolean };
 
 export interface CredentialChoices {
@@ -262,6 +264,8 @@ export class GithubAccounts {
       if (!this.flows.has(flowId)) throw new Error("このログインはもう終わっています。もう一度始めてください");
       const wait = flow.nextPollAt - this.now();
       if (wait > 0) await this.sleep(wait);
+      // **待っている間にやめられた**——起きたあとで GitHub に聞かない
+      if (!this.flows.has(flowId)) return { state: "cancelled" };
       if (this.now() >= flow.expiresAt) {
         this.flows.delete(flowId);
         return { state: "expired" };
@@ -289,8 +293,18 @@ export class GithubAccounts {
           this.flows.delete(flowId);
           return { state: "denied" };
         case "authorized":
+          // **聞いている間にやめられた**——許可されていても、受け取ったトークンは Vault に置かずに捨てる
+          if (!this.flows.has(flowId)) return { state: "cancelled" };
           this.flows.delete(flowId);
-          return this.finishLogin(r.tokens, flow, callId);
+          try {
+            return await this.finishLogin(r.tokens, flow, callId);
+          } catch (err) {
+            // GitHub はもうトークンを出している——保存していないことと、取り消し方を言う（宙に浮いたままにしない）
+            throw new Error(
+              `${(err as Error).message}（このログインは banto に保存していません。GitHub が出したトークンは、github.com の ` +
+                "Settings → Applications → Authorized GitHub Apps から取り消せます）",
+            );
+          }
       }
     });
     flow.queue = run.catch(() => undefined);
@@ -334,8 +348,11 @@ export class GithubAccounts {
     if (account.credential.kind === "app") {
       const alias = account.credential.alias;
       await this.serial(account.login, async () => {
-        // 先に Vault の画面で消していれば、もう無い——無いものを消そうとして止まらない（あるかは目録で見る）
-        const { aliases } = await this.deps.vault.listAliases(callId);
+        // 先に Vault の画面で消していれば、もう無い——無いものを消そうとして止まらない（あるかは目録で見る）。
+        // **その Vault が読めていないなら「無い」と言えない**——外すのを断る（ログイン情報を残したまま登録だけ消さない）
+        const { aliases, failures } = await this.deps.vault.listAliases(callId);
+        const unreadable = failures.find((f) => f.implementation === alias.implementation);
+        if (unreadable) throw new Error(`Vault（${unreadable.implementation}）が読めないので外せません：${unreadable.error}`);
         if (!aliases.some((a) => samePlace(a, alias))) return;
         await this.deps.vault.remove(alias, callId);
         loginRemoved = true;
