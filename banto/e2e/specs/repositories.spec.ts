@@ -214,6 +214,8 @@ test("入口から開いた一覧で、Import の判断・足した行の中身�
   const newProject = page.getByRole("dialog", { name: "新しい Project" });
   await expect(newProject, "「Project を始める」で core の新しい Project の画面が開かない").toBeVisible({ timeout: 15_000 });
   await expect(newProject.getByLabel("Project 名")).toHaveValue("local-only");
+  // 出所を出す——どの Module の画面が開かせたか
+  await expect(newProject.getByTestId("new-project-requested-by")).toHaveText("「repositories」の画面から頼まれて開きました。Root パスと名前を確かめて作成してください。");
   await expect(newProject.locator("#new-project-path")).toHaveValue(localRepo);
   await page.keyboard.press("Escape");
   await expect(newProject).toHaveCount(0);
@@ -480,6 +482,8 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   const secret = `secret-${suffix}`;
   await setGithubLoginFixture({ addRepo: { owner: "e2e-octo", name: pub } });
   await setGithubLoginFixture({ addRepo: { owner: E2E_GITHUB_PAT_LOGIN, name: secret, private: true } });
+  const remoteOnly = `remote-only-${suffix}`;
+  await setGithubLoginFixture({ addRepo: { owner: E2E_GITHUB_PAT_LOGIN, name: remoteOnly } });
   const openPane = async () => {
     await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
     await page.getByRole("button", { name: "Repositories", exact: true }).click();
@@ -582,6 +586,11 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   await expect(inner.getByTestId("repo-create-name")).toHaveValue(`${pub}-2`);
   await inner.getByTestId("repo-create-name").fill(secret);
   await expect(inner.getByTestId("repo-band-message")).toContainText("上書きしないので");
+  // GitHub に同じ名前があるかは、名前を決めたとき（欄を離れた）にだけ聞く——あれば言い、それでも作れる
+  await inner.getByTestId("repo-create-name").fill(remoteOnly);
+  await expect(inner.getByTestId("repo-create-taken-on-github")).toHaveCount(0);
+  await inner.getByTestId("repo-create-name").press("Tab");
+  await expect(inner.getByTestId("repo-create-taken-on-github")).toContainText(`GitHub の ${E2E_GITHUB_PAT_LOGIN} には、もう ${remoteOnly} があります。あとで公開するときは別の名前が要ります。`);
   const fresh = `fresh-${suffix}`;
   await inner.getByTestId("repo-create-name").fill(fresh);
   await expect(inner.getByTestId("repo-band-message")).toHaveText("ここに空のリポジトリを作ります（git init）。GitHub には、まだ作りません。");
@@ -593,6 +602,7 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   const dialog = page.getByRole("dialog", { name: "新しい Project" });
   await expect(dialog, "core の新しい Project の画面が開かない").toBeVisible({ timeout: 30_000 });
   await expect(dialog.getByLabel("Project 名")).toHaveValue(fresh);
+  await expect(dialog.getByTestId("new-project-requested-by")).toContainText("「repositories」の画面から頼まれて開きました");
   await expect(dialog.locator("#new-project-path")).toHaveValue(`${repoHome}/${fresh}`);
   expect(existsSync(join(repoHome, fresh, ".git")), "作ったフォルダに .git が無い").toBe(true);
   await dialog.getByRole("button", { name: "作成する" }).click();

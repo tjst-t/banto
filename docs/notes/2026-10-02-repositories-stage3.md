@@ -128,3 +128,47 @@ MCP Apps の仕様に近いものは無い（`ui/open-link` は http/https を�
   始める」で core の新しい Project の画面が開かない」で落ちる
 - 壊す確かめを途中で止めた回が、資格情報の窓口のフォルダを `/run/user/<uid>` に残した（試験のプロセスごと止めたので
   片づけが走らなかった）。試験は「前からあるもの」を数えず、この clone の分だけを見る形にした
+
+## 追記：Fable のレビュー（段階3）の14件を直した（2026-10-02）
+
+1. **同じ置き場への同時の clone**（実測）：`start` が判断（`inspect`）と場所を取る（`reserved`）の間に await を挟み、2本目も
+   「空き」と見た。2本目の失敗の片づけが1本目のフォルダを消した。判断の直後、await を挟まずに場所を取り、仕事に渡せな
+   かったら返す。さらに clone の前に置く場所を自分で作り（recursive 無し——在れば作れずに断る）、**片づけで消すのは自分が
+   作ったフォルダだけ**にした。試験：同時に2本（2本目を断り、1本目のフォルダが残る）・判断のあとに人がフォルダを作った
+   （何も消さずに断る）
+2. **読めない台帳の場所を「無い」と見ていた**：権限・持ち主違いで git が断ると「無い」→ clone し直し → 失敗の片づけで
+   既にあるフォルダを消しうる。読めないものは「居る」と見て clone し直さない（#9 と同じ扱い）
+3. **ssh のコマンドへの窓口の場所の埋め込み**：Vault の実装（第三者も名乗れる）が返す値をそのまま `"…"` で囲んでいた。
+   シェルの1語にする（credential-server と同じ `shellQuote`）うえ、絶対パスで素直な字だけを受け、違えば仕事を始めずに断る
+4. **人の `filter.*.smudge`（git-lfs 等）が相手の `.gitattributes` から起動する**（実測）・5. **人の `url.*.insteadOf` が
+   https を ssh に書き換えて嘘の失敗になる**（実測）：GitHub への clone（アカウント無し・helper・ssh-agent）では
+   `GIT_CONFIG_GLOBAL`・`GIT_CONFIG_SYSTEM` を `/dev/null` にして人の設定を読まない。proxy は環境変数で効く。
+   どの clone でも `GIT_LFS_SKIP_SMUDGE=1`。試験は人の設定に両方を置いた home で clone し、filter が走らず書き換わらない
+   こと、潰さない git では両方が効くこと（対照）
+6. **`dev.banto/open-new-project`**：開いた画面に出所（「〈Module〉の画面から頼まれて開きました」）を出す。開いている間の
+   頼みは受けない（打ちかけた入力を捨てない）。**会話の中の画面**（owner が Thread——AI の tool の結果として出たもの）からは、
+   人が押した直後（`navigator.userActivation`）でなければ受けない。入口・設定の面は今までどおり（clone が数分かかる）。
+   開く場所（外枠の `RequestedNewProjectDialog`）の無い面（別タブの Canvas）からの頼みは断る——レビューの指摘の外だが、
+   「開いた」と返して何も出ないのは同じ穴（規則13）なので一緒に塞いだ
+7. **`StrictHostKeyChecking=accept-new` で人の `~/.ssh/known_hosts` に TOFU で書いていた**：GitHub への ssh は人の ssh の設定を
+   読まず（`-F /dev/null`）、Module のデータ置き場に GitHub の公開の host 鍵（文書の指紋と `GET https://api.github.com/meta`
+   の `ssh_keys` を 2026-10-02 に突き合わせた）を置いた known_hosts だけを信じる（`StrictHostKeyChecking=yes`・
+   `GlobalKnownHostsFile=/dev/null`）。GitHub の外の ssh は人の設定のまま。GitHub が鍵を替えたら `GITHUB_SSH_HOST_KEYS` を替える
+8. **http を受けるのに git:// を「暗号化されない」と断る食い違い**：http は行き先を替えた GitHub（`endpoints.web`、試験の偽物）
+   と同じ相手のときだけ受ける。**この変更で GitHub の外の試験（http の偽物）が断られた**——偽物に https を足し（その場の
+   自己署名の証明書）、CA は**試験の home の git の設定**（`http.sslCAInfo`）で信じさせた。これで #13 の「GitHub の外では
+   人の設定が実際に使われる」も見られる（人の credential helper が呼ばれて非公開を clone できる）
+9. **台帳の場所に git でないもの（not-git・bare・inside）があるのに「もう手元にあります」**：手元にあるのはリポジトリのとき
+   だけ。違うもの・読めないものは `misplaced` で言い（「一覧にある〜には〜があります。そこには clone し直さず…」）、置き場の
+   下に別に clone する
+10. **改行の来ない出力で buffer が伸び続ける・`remote:` の文言で失敗の分類を偽れる**：64KB で区切って1行として扱う。
+    分類は `remote:` の行を除いた行だけで決める。**指摘は「`fatal:` 行だけ」だったが、そうしなかった**——ssh の
+    「Permission denied (publickey)」「Host key verification failed」は ssh 自身が `fatal:` を付けずに言うので、`fatal:`
+    だけでは SSH の失敗の手がかりが消える。相手が偽れるのは `remote:` の行（git が相手の言葉に付ける印）なので、そこを除く
+11. 資格情報の窓口の置き場（`XDG_RUNTIME_DIR`・`/run/user/<uid>`・`/tmp`・最後に `os.tmpdir()`）と、「同じ uid で host に動く
+    プロセスは clone の間だけ取れる」境界を §2.4 に書いた
+12. **新しいリポジトリの GitHub の確認が1文字ごと**：名前を決めたとき（欄を離れた・作る直前）の1回だけにした。同じ名前が
+    あれば言い、もう一度押せば作る（「それでも作って…」）
+13. 足した試験：GitHub の外で人の helper が実際に使われる・**本物の git のリダイレクトの後、別の相手には渡さない**（偽の
+    GitHub が 302 で別の偽物へ送り、その偽物に Authorization が一度も届かない）・失敗・時間切れで窓口が閉じる
+14. §2.4 の表を「潰すもの・潰さないもの」（人の設定を読むか・helper・ssh・hooks 等）で書き直した
