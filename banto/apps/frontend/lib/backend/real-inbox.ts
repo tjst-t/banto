@@ -167,3 +167,25 @@ function getSnapshot(): number {
 export function useRealInboxVersion(): number {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
+
+/**
+ * **AI が返したあと、人がまだ開いていない Thread か**（追加・2026-10-03、ユーザー要望。v4-frontend.md §6.33）。
+ * 中身は受信箱のレビュー待ちそのもの——ターンが終わると host が1件出し、その Thread を開くと「見た」になる
+ * （アーキ仕様 §2.4）。別の置き場を作らない（規則3）。host が持つので、携帯とパソコンで揃う
+ */
+export function useThreadUnread(threadId: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => reviews.some((r) => r.threadId === threadId),
+    () => false,
+  );
+}
+
+/** 渡した Thread（その Project の開いている Thread）のどれかが、まだ開いていないものか */
+export function useAnyThreadUnread(threadIds: readonly string[]): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => reviews.some((r) => threadIds.includes(r.threadId)),
+    () => false,
+  );
+}

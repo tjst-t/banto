@@ -55,6 +55,9 @@ import { SidebarItemMenu } from "./sidebar-item-menu";
 import { SortableList, SortableRow } from "./sortable-list";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
+import { LoaderCircle } from "lucide-react";
+import { useProjectRunning } from "@/lib/backend/running-threads";
+import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
@@ -84,6 +87,31 @@ export function ProjectInitial({ project, active }: { project: MockProject; acti
       )}
     >
       {project.initial}
+    </span>
+  );
+}
+
+/**
+ * **広いサイドバーの Project の行のアイコン**（追加・2026-10-03、ユーザー要望。§6.33）。いま開いていない Project で、
+ * どれかの Thread の AI が動いていれば、頭文字の代わりに回る輪を出す（同じ大きさ・同じ場所）。いま開いている Project は
+ * Thread の目次で分かるので頭文字のまま。畳んだレールには出さない（ここだけで使う）
+ */
+function ProjectRowIcon({ project, active }: { project: MockProject; active: boolean }) {
+  const running = useProjectRunning(project.id);
+  if (active || !running) return <ProjectInitial project={project} active={active} />;
+  return (
+    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-surface-3 text-ink-2">
+      <LoaderCircle className="size-4 animate-spin" role="img" aria-label="AI が動いています" data-testid="project-running" />
+    </span>
+  );
+}
+
+/** Thread の名前。AI が返したあと人がまだ開いていなければ太字（§6.33） */
+function ThreadRowName({ threadId, children, testId }: { threadId: string; children: ReactNode; testId?: string }) {
+  const unread = useThreadUnread(threadId);
+  return (
+    <span data-testid={testId} data-unread={unread ? "" : undefined} className={cn("truncate", unread && "font-semibold text-foreground")}>
+      {children}
     </span>
   );
 }
@@ -135,6 +163,9 @@ function ProjectTreeItem({
   const settingsEntrySection = useProjectCategories(project.id)[0]?.section ?? "project-danger";
   const isCurrent = project.id === activeProjectId;
   const forks = getThreadsForProject(project.id).filter((t): t is MockThread => t.kind === "fork");
+  // **いま開いていない Project で、まだ開いていない Thread があれば名前を太字に**（2026-10-03、§6.33）
+  const anyUnread = useAnyThreadUnread([project.baseThreadId, ...forks.map((f) => f.id)]);
+  const projectUnread = !isCurrent && anyUnread;
   const closedForkCount = getClosedForksForProject(project.id).length;
 
   async function closeFork(fork: MockThread) {
@@ -213,8 +244,12 @@ function ProjectTreeItem({
                     onNavigate?.();
                   }}
                 >
-                  <ProjectInitial project={project} active={isCurrent} />
-                  <span data-testid="sidebar-project-name" className="truncate">
+                  <ProjectRowIcon project={project} active={isCurrent} />
+                  <span
+                    data-testid="sidebar-project-name"
+                    data-unread={projectUnread ? "" : undefined}
+                    className={cn("truncate", projectUnread && "font-semibold text-foreground")}
+                  >
                     {project.name}
                   </span>
                 </Link>
@@ -249,7 +284,7 @@ function ProjectTreeItem({
                     onClick={onNavigate}
                   >
                     <ThreadRowIcon threadId={project.baseThreadId} icon={MessageSquare} />
-                    <span>Base Thread</span>
+                    <ThreadRowName threadId={project.baseThreadId} testId="sidebar-base-name">Base Thread</ThreadRowName>
                   </Link>
                 </SidebarMenuSubButton>
               </SidebarMenuSubItem>
@@ -282,7 +317,7 @@ function ProjectTreeItem({
                               onClick={onNavigate}
                             >
                               <ThreadRowIcon threadId={fork.id} icon={ForkIcon} />
-                              <span data-testid="sidebar-fork-name">{fork.title}</span>
+                              <ThreadRowName threadId={fork.id} testId="sidebar-fork-name">{fork.title}</ThreadRowName>
                             </Link>
                           </SidebarMenuSubButton>
                           {/* 操作はここ1つ（「…」）——右クリックと同じものが出る。

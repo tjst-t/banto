@@ -12,11 +12,12 @@
 import { useSyncExternalStore } from "react";
 import { onRealAppEvent, startRealAppEvents } from "./app-events";
 
-let running: ReadonlySet<string> = new Set();
+/** 走っている Thread → その Project（Project の行で「どこかが動いている」を出すため。分からなければ undefined） */
+let running: ReadonlyMap<string, string | undefined> = new Map();
 const listeners = new Set<() => void>();
 let wired = false;
 
-function set(next: ReadonlySet<string>): void {
+function set(next: ReadonlyMap<string, string | undefined>): void {
   running = next;
   for (const listener of listeners) listener();
 }
@@ -34,13 +35,13 @@ function wire(): void {
   wired = true;
   onRealAppEvent((event) => {
     if (event.type === "hello") {
-      set(new Set((event.running ?? []).map((r) => r.threadId)));
+      set(new Map((event.running ?? []).map((r) => [r.threadId, r.projectId] as const)));
     } else if (event.type === "turn.started") {
       if (running.has(event.threadId)) return;
-      set(new Set([...running, event.threadId]));
+      set(new Map([...running, [event.threadId, event.projectId] as const]));
     } else if (event.type === "turn.ended") {
       if (!running.has(event.threadId)) return;
-      const next = new Set(running);
+      const next = new Map(running);
       next.delete(event.threadId);
       set(next);
     }
@@ -59,6 +60,18 @@ export function useThreadRunning(threadId: string): boolean {
   return useSyncExternalStore(
     subscribe,
     () => running.has(threadId),
+    () => false,
+  );
+}
+
+/**
+ * その Project のどれかの Thread で AI が動いているか（追加・2026-10-03、ユーザー要望。§6.33）。
+ * サイドバーを広げているとき、いま開いていない Project の行のアイコンを回すのに使う
+ */
+export function useProjectRunning(projectId: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => [...running.values()].includes(projectId),
     () => false,
   );
 }

@@ -1946,7 +1946,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
 
 
 
-### 6.33 AI が動いている Thread は、サイドバーの行のアイコンが回る（決定・2026-10-03、ユーザー要望）
+### 6.33 AI が動いている Thread は、サイドバーの行のアイコンが回る／まだ開いていない Thread は太字（決定・2026-10-03、ユーザー要望）
 
 サイドバーの Thread の目次（Base Thread・Fork の行）で、**その Thread のターンが host で走っている間は、行のアイコンを
 回る輪に替える**。終われば元のアイコン（Base は吹き出し、Fork は枝分かれ）に戻る。畳んだレールの Fork 一覧（ポップオーバー）も
@@ -1960,5 +1960,14 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
   （`lib/backend/running-threads.ts`）。繋ぎ直すたびに置き換えるので、途切れている間に終わったターンが回り続けない。
   ポーリングはしない（§6.8 と同じ理由）
 - 回る輪には「AI が動いています」という読み上げ用の名前を付ける。行の幅・文字の位置は変えない（アイコンと同じ場所）
-- Project の行（Thread の目次を畳んでいるとき）には出さない——今回の範囲は Thread の行だけ
-- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`
+- **いま開いていない Project の行も回る**（追加・2026-10-03、ユーザー要望）：広いサイドバー（と携帯の Drawer）で、その Project の
+  どれかの Thread が走っていれば、Project の行の頭文字を回る輪に替える（同じ大きさ・同じ場所）。いま開いている Project の行は
+  回さない（Thread の目次で分かる）。畳んだレールの頭文字は変えない。走っている Thread がどの Project かは hello の `projectId`・
+  `turn.started` の `projectId` で持つ（`useProjectRunning`）
+- **AI が返したあと、人がまだ開いていない Thread は名前を太字にする**（追加・2026-10-03、ユーザー要望）。「まだ開いていない」は
+  **受信箱のレビュー待ちそのもの**（アーキ仕様 §2.4：ターンが終わると host が1件出し、その Thread を開く・そこで送ると「見た」に
+  なる）——別の置き場を作らない（規則3）。host が持つので携帯とパソコンで揃う。受信箱で「見た」にしても太字は消える。
+  Base・Fork の行（広いサイドバー・Drawer）と畳んだレールの Fork 一覧が対象。**いま開いていない Project は、その Project の開いて
+  いる Thread のどれかが未読なら Project 名を太字**にする。いま開いている Project の名前は太字にしない（中の行で分かる）。
+  見分けは `data-unread`（`useThreadUnread`・`useAnyThreadUnread`、`lib/backend/real-inbox.ts`）
+- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`

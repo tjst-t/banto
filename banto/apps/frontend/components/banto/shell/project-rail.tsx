@@ -47,10 +47,17 @@ import { cn } from "@/lib/utils";
 import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref } from "@/lib/settings-link";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
+import { useThreadUnread } from "@/lib/backend/real-inbox";
 import { SidebarItemMenu } from "./sidebar-item-menu";
 import { SortableList, SortableRow } from "./sortable-list";
 import { SidebarResizeHandle } from "./sidebar-resize-handle";
 import { ThemeToggle } from "./theme-toggle";
+
+/** 畳んだレールの Fork 一覧の名前。まだ開いていなければ太字（§6.33） */
+function RailForkName({ threadId, title }: { threadId: string; title: string }) {
+  const unread = useThreadUnread(threadId);
+  return <span className={unread ? "truncate font-semibold text-foreground" : "truncate"}>{title}</span>;
+}
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
@@ -235,7 +242,7 @@ function CollapsedRail({
                             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-ink-2 hover:bg-accent hover:text-foreground"
                           >
                             <ThreadRowIcon threadId={fork.id} icon={ForkIcon} className="size-3.5 shrink-0 text-ink-3" />
-                            <span className="truncate">{fork.title}</span>
+                            <RailForkName threadId={fork.id} title={fork.title} />
                           </Link>
                         ))}
                       </div>
