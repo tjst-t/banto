@@ -1,21 +1,15 @@
 "use client";
 
-// **返事待ちの印**（モック・2026-10-03）。サイドバーの Thread の行と、いま開いていない Project の行に出す。
-// 「AI が動いている」（行のアイコンが回る）とは別のことなので、別の場所に置く——片方がもう片方を隠さない。
-// 置き場所は3案を切り替えて見比べる（`PendingDemoSwitcher`）。
-import type { ComponentType, ReactNode } from "react";
+// **バックグラウンドの印**（モック・2026-10-03、ユーザー決定）。AI が「終わったら届ける」tool で頼み、まだ
+// 届いていないもの。「AI が動いている」（行のアイコンが回る）とは別のことなので、別の場所に置く。
+// - Thread の行：名前の下に薄い1行（1件ならカードの題、2件以上なら「バックグラウンドで n 件」）
+// - いま開いていない Project の行：頭文字の右下に数
+// - 畳んだレール：出さない（レールの作りを見直すまで）
+// 文言は「〜待ち」にしない——banto では「判断待ち」「レビュー待ち」が人の番を指すので、人が返事する番に読める。
+import { useState, type ComponentType } from "react";
 import { Hourglass, LoaderCircle } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  getPendingReplies,
-  isThreadRunning,
-  PLACEMENT_LABELS,
-  setPendingDemo,
-  usePendingDemo,
-  type PendingPlacement,
-  type PendingReply,
-} from "@/lib/mock/background-work";
+import { getPendingReplies, isThreadRunning, type PendingReply } from "@/lib/mock/background-work";
 import { cn } from "@/lib/utils";
 
 /** 行のアイコン。その Thread で AI が動いている間だけ回る輪に替える（本物の §6.33 と同じ） */
@@ -45,7 +39,7 @@ function countOf(groups: readonly PendingGroup[]): number {
 function PendingList({ groups, showThread }: { groups: readonly PendingGroup[]; showThread: boolean }) {
   return (
     <div className="flex flex-col gap-1">
-      <p className="px-2 pt-1 text-xs font-medium text-ink-3">返事待ち（{countOf(groups)}）</p>
+      <p className="px-2 pt-1 text-xs font-medium text-ink-3">バックグラウンドで動いているもの（{countOf(groups)}）</p>
       {groups.map((g) => (
         <div key={g.threadTitle} className="flex flex-col">
           {showThread ? <p className="truncate px-2 pt-1 text-xs text-ink-3">{g.threadTitle}</p> : null}
@@ -68,107 +62,19 @@ function PendingList({ groups, showThread }: { groups: readonly PendingGroup[]; 
 }
 
 function label(count: number, scope: string): string {
-  return `${scope}で返事を待っているもの（${count}件）を見る`;
+  return `${scope}のバックグラウンドで動いているもの（${count}件）を見る`;
 }
 
-/**
- * 「右端」と「名前の下」の印。行の Link の**外**に置く（押せるものを入れ子にしない）。
- * `rightOffset`：行の右端にほかの押せるもの（畳む・目次の開閉）があるとき、その分だけ左へずらす
- */
-export function PendingMarker({
+/** Thread の行の名前の下の1行。行の Link の**外**に置く（押せるものを入れ子にしない） */
+export function PendingSubline({
   groups,
   scope,
-  showThread,
-  placement,
   className,
 }: {
   groups: readonly PendingGroup[];
   scope: string;
-  showThread: boolean;
-  placement: Exclude<PendingPlacement, "corner">;
   className?: string;
 }) {
-  const count = countOf(groups);
-  if (count === 0) return null;
-  const trigger =
-    placement === "right" ? (
-      <button
-        type="button"
-        aria-label={label(count, scope)}
-        data-testid="pending-marker"
-        className={cn(
-          "absolute flex h-5 items-center gap-0.5 rounded-md px-1 text-xs text-ink-2 tabular-nums hover:bg-accent hover:text-foreground",
-          className,
-        )}
-      >
-        <Hourglass className="size-3" />
-        {count}
-      </button>
-    ) : (
-      <button
-        type="button"
-        aria-label={label(count, scope)}
-        data-testid="pending-marker"
-        className={cn(
-          "flex w-full items-center gap-1 truncate rounded-md py-0.5 text-left text-xs text-ink-3 hover:bg-accent hover:text-foreground",
-          className,
-        )}
-      >
-        <Hourglass className="size-3 shrink-0" />
-        <span className="truncate">
-          {count === 1 ? groups[0]!.replies[0]!.title : `${groups[0]!.replies[0]!.title} ほか ${count - 1} 件`}
-        </span>
-      </button>
-    );
-  return (
-    <Popover>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent side="right" align="start" className="w-72 p-1.5">
-        <PendingList groups={groups} showThread={showThread} />
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-/**
- * 「アイコンの角」の印。行のアイコンに重ねる小さな数。行の中（Link の中）にあるので押せるものにはせず、
- * 一覧は指を載せたときに出す
- */
-export function PendingCorner({
-  groups,
-  scope,
-  showThread,
-  children,
-}: {
-  groups: readonly PendingGroup[];
-  scope: string;
-  showThread: boolean;
-  children: ReactNode;
-}) {
-  const count = countOf(groups);
-  if (count === 0) return <>{children}</>;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="relative inline-flex shrink-0" aria-label={label(count, scope)} data-testid="pending-marker">
-          {children}
-          <span className="absolute -right-1.5 -bottom-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink-2 px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar">
-            {count}
-          </span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="right" className="w-72 bg-popover p-1.5 text-popover-foreground shadow-md">
-        <PendingList groups={groups} showThread={showThread} />
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-/**
- * 畳んだレールの印。頭文字の右下に重ねる小さな数（右上は Fork の一覧の印が使っている）。
- * レールでは Thread の行が見えないので、いま開いている Project の分も出す
- */
-export function PendingRailBadge({ groups, scope }: { groups: readonly PendingGroup[]; scope: string }) {
   const count = countOf(groups);
   if (count === 0) return null;
   return (
@@ -178,44 +84,50 @@ export function PendingRailBadge({ groups, scope }: { groups: readonly PendingGr
           type="button"
           aria-label={label(count, scope)}
           data-testid="pending-marker"
-          className="absolute -right-0.5 -bottom-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink-2 px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar hover:brightness-110"
+          className={cn(
+            "flex w-full items-center gap-1 truncate rounded-md py-0.5 text-left text-xs text-ink-3 hover:bg-accent hover:text-foreground",
+            className,
+          )}
         >
-          {count}
+          <Hourglass className="size-3 shrink-0" />
+          <span className="truncate">{count === 1 ? groups[0]!.replies[0]!.title : `バックグラウンドで ${count} 件`}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent side="right" align="start" className="w-72 p-1.5">
-        <PendingList groups={groups} showThread />
+        <PendingList groups={groups} showThread={false} />
       </PopoverContent>
     </Popover>
   );
 }
 
-/** 見比べるための切り替え（モックだけ）。画面の右下に置く */
-export function PendingDemoSwitcher() {
-  const demo = usePendingDemo();
+/**
+ * いま開いていない Project の行の、頭文字の右下の数。行の Link の外に、頭文字に重ねて置く。
+ * 一覧は Thread ごとに分けて出す
+ */
+export function PendingProjectBadge({ groups, scope }: { groups: readonly PendingGroup[]; scope: string }) {
+  // 一覧は行の右端の外に開く——数の右に開くとサイドバーの上に重なる。開くときに行の右端までの距離を測る
+  const [offset, setOffset] = useState(8);
+  const count = countOf(groups);
+  if (count === 0) return null;
   return (
-    <div className="fixed right-3 bottom-3 z-50 flex flex-col gap-1.5 rounded-lg border border-border bg-popover p-2 text-xs text-ink-2 shadow-md">
-      <span className="font-medium text-ink-3">返事待ちの印（見本の切り替え）</span>
-      <div className="flex gap-1">
-        {(Object.keys(PLACEMENT_LABELS) as PendingPlacement[]).map((p) => (
-          <button
-            key={p}
-            type="button"
-            onClick={() => setPendingDemo({ placement: p })}
-            aria-pressed={demo.placement === p}
-            className={cn(
-              "rounded-md px-2 py-1 hover:bg-accent",
-              demo.placement === p && "bg-accent-soft text-accent-ink",
-            )}
-          >
-            {PLACEMENT_LABELS[p]}
-          </button>
-        ))}
-      </div>
-      <label className="flex items-center gap-1.5">
-        <input type="checkbox" checked={demo.inRail} onChange={(e) => setPendingDemo({ inRail: e.target.checked })} />
-        畳んだレールにも出す
-      </label>
-    </div>
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={label(count, scope)}
+          data-testid="pending-marker"
+          onPointerDown={(e) => {
+            const row = e.currentTarget.closest("li");
+            if (row) setOffset(row.getBoundingClientRect().right - e.currentTarget.getBoundingClientRect().right + 8);
+          }}
+          className="absolute top-4.5 left-6 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink-2 px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar hover:brightness-110"
+        >
+          {count}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="right" align="start" sideOffset={offset} className="w-72 p-1.5">
+        <PendingList groups={groups} showThread />
+      </PopoverContent>
+    </Popover>
   );
 }

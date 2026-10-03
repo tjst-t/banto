@@ -42,8 +42,6 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { projectNavHref } from "@/lib/settings-link";
 import { getJudgmentCount, NavPanel, ProjectInitial } from "./nav-panel";
-import { usePendingDemo } from "@/lib/mock/background-work";
-import { collectPending, PendingRailBadge } from "./pending-replies";
 import { SidebarResizeHandle } from "./sidebar-resize-handle";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -96,7 +94,6 @@ function CollapsedRail({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const judgmentCount = getJudgmentCount();
-  const { inRail } = usePendingDemo();
 
   return (
     <>
@@ -125,11 +122,6 @@ function CollapsedRail({
           {getActiveProjects().map((project) => {
             const active = project.id === activeProjectId;
             const forks = getThreadsForProject(project.id).filter((t) => t.kind === "fork");
-            const pendingGroups = inRail
-              ? collectPending(
-                  getThreadsForProject(project.id).map((t) => ({ id: t.id, title: t.kind === "base" ? "Base Thread" : t.title })),
-                )
-              : [];
             return (
               <SidebarMenuItem key={project.id} className="relative flex justify-center">
                 <Tooltip>
@@ -151,7 +143,6 @@ function CollapsedRail({
                   </TooltipTrigger>
                   <TooltipContent side="right">{project.name}</TooltipContent>
                 </Tooltip>
-                <PendingRailBadge groups={pendingGroups} scope={project.name} />
 
                 {/* 開いている Fork Thread の一覧・切替口。バッジは Link の外に置く
                     ——入れ子の押せるもの（Link の中に button）は無効な HTML になるし、

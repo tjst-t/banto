@@ -1,16 +1,14 @@
 "use client";
 
-// **Thread ごとの「AI が動いている」と「返事待ち」**（モック・2026-10-03、ユーザー「どの Thread で
+// **Thread ごとの「AI が動いている」と「バックグラウンドで動いているもの」**（モック・2026-10-03、ユーザー「どの Thread で
 // サブエージェントが動いているか UI で見たい」）。
 //
 // 本物では、どちらも host が自分で持っている事実から作る——core は Module の中身を知らない：
 // - 動いている：ターンが走っている間（今の §6.33 の回る輪と同じもの）
-// - 返事待ち：AI が「終わったら届ける」tool（`dev.banto/deliversLater`）を呼び、Module が「あとで届けます」と
+// - バックグラウンド：AI が「終わったら届ける」tool（`dev.banto/deliversLater`）を呼び、Module が「あとで届けます」と
 //   約束した札（返信用の札の awaiting）。文は tool が名乗るカード（`dev.banto/card`）の題と説明から作る
 //
-// ここはその見本の値と、見せ方の切り替え（置き場所を見比べるため）だけを持つ。
-
-import { useSyncExternalStore } from "react";
+// ここはその見本の値だけを持つ。
 
 export interface PendingReply {
   id: string;
@@ -90,40 +88,4 @@ export function isThreadRunning(threadId: string): boolean {
 
 export function getPendingReplies(threadId: string): readonly PendingReply[] {
   return pending[threadId] ?? [];
-}
-
-// ---- 見せ方の切り替え（見比べるためだけ。本物には無い） -----------------------------
-
-/** 返事待ちの印をどこに置くか */
-export type PendingPlacement = "right" | "corner" | "subline";
-
-export const PLACEMENT_LABELS: Record<PendingPlacement, string> = {
-  right: "右端",
-  corner: "アイコンの角",
-  subline: "名前の下",
-};
-
-interface DemoState {
-  placement: PendingPlacement;
-  /** 畳んだレールにも出すか */
-  inRail: boolean;
-}
-
-let state: DemoState = { placement: "right", inRail: true };
-const listeners = new Set<() => void>();
-
-export function setPendingDemo(next: Partial<DemoState>): void {
-  state = { ...state, ...next };
-  for (const l of listeners) l();
-}
-
-export function usePendingDemo(): DemoState {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => state,
-    () => state,
-  );
 }

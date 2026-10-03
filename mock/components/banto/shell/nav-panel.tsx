@@ -49,8 +49,8 @@ import { cn } from "@/lib/utils";
 import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { ThemeToggle } from "./theme-toggle";
-import { isThreadRunning, usePendingDemo } from "@/lib/mock/background-work";
-import { collectPending, PendingCorner, PendingMarker, ThreadRowIcon } from "./pending-replies";
+import { isThreadRunning } from "@/lib/mock/background-work";
+import { collectPending, PendingProjectBadge, PendingSubline, ThreadRowIcon } from "./pending-replies";
 
 /** 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
  *  急ぎだから（§2.4）。レビュー待ちは溜めてよいので件数に含めない */
@@ -127,13 +127,11 @@ function ProjectTreeItem({
   const threads = getThreadsForProject(project.id);
   const forks = threads.filter((t): t is MockThread => t.kind === "fork");
   const closedForkCount = getClosedForksForProject(project.id).length;
-  const { placement } = usePendingDemo();
   const threadTitle = (t: MockThread) => (t.kind === "base" ? "Base Thread" : t.title);
-  // 返事待ち：いま開いていない Project は行にまとめて出す（開いている Project は下の Thread の行で見える）
+  // バックグラウンド：いま開いていない Project は頭文字の右下にまとめて出す（開いている Project は下の Thread の行で見える）
   const projectPending = isCurrent ? [] : collectPending(threads.map((t) => ({ id: t.id, title: threadTitle(t) })));
   const baseThread = threads.find((t) => t.kind === "base");
   const basePending = baseThread ? collectPending([{ id: baseThread.id, title: "Base Thread" }]) : [];
-  const initial = <ProjectInitialOrRunning project={project} active={isCurrent} />;
 
   function foldFork(fork: MockThread) {
     closeThread(fork.id);
@@ -153,30 +151,12 @@ function ProjectTreeItem({
           data-roving-item
           title={project.basePath}
           onClick={onNavigate}
-          className={cn(placement === "right" && projectPending.length > 0 && (forks.length > 0 ? "pr-16" : "pr-10"))}
         >
-          {placement === "corner" ? (
-            <PendingCorner groups={projectPending} scope={project.name} showThread>
-              {initial}
-            </PendingCorner>
-          ) : (
-            initial
-          )}
+          <ProjectInitialOrRunning project={project} active={isCurrent} />
           <span className="truncate">{project.name}</span>
         </Link>
       </SidebarMenuButton>
-      {placement === "right" ? (
-        <PendingMarker
-          groups={projectPending}
-          scope={project.name}
-          showThread
-          placement="right"
-          className={cn("top-1.5", forks.length > 0 ? "right-7" : "right-1")}
-        />
-      ) : null}
-      {placement === "subline" ? (
-        <PendingMarker groups={projectPending} scope={project.name} showThread placement="subline" className="pr-2 pl-10" />
-      ) : null}
+      <PendingProjectBadge groups={projectPending} scope={project.name} />
       {forks.length > 0 ? (
         <SidebarMenuAction
           onClick={onToggleExpanded}
@@ -190,39 +170,23 @@ function ProjectTreeItem({
       {expanded ? (
         <SidebarMenuSub>
           <SidebarMenuSubItem>
-            <SidebarMenuSubButton
-              asChild
-              isActive={isCurrent && activeForkThreadId === null}
-              className={cn(placement === "right" && basePending.length > 0 && "pr-10")}
-            >
+            <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>
               <Link href={`/p/${project.id}`} data-roving-item onClick={onNavigate}>
-                {placement === "corner" ? (
-                  <PendingCorner groups={basePending} scope="Base Thread" showThread={false}>
-                    <ThreadRowIcon icon={MessageSquare} threadId={project.baseThreadId} />
-                  </PendingCorner>
-                ) : (
-                  <ThreadRowIcon icon={MessageSquare} threadId={project.baseThreadId} />
-                )}
+                <ThreadRowIcon icon={MessageSquare} threadId={project.baseThreadId} />
                 <span>Base Thread</span>
               </Link>
             </SidebarMenuSubButton>
-            {placement === "right" ? (
-              <PendingMarker groups={basePending} scope="Base Thread" showThread={false} placement="right" className="top-1 right-1" />
-            ) : null}
-            {placement === "subline" ? (
-              <PendingMarker groups={basePending} scope="Base Thread" showThread={false} placement="subline" className="pr-1 pl-8" />
-            ) : null}
+            <PendingSubline groups={basePending} scope="Base Thread" className="pr-1 pl-8" />
           </SidebarMenuSubItem>
 
           {forks.map((fork) => {
             const forkPending = collectPending([{ id: fork.id, title: fork.title }]);
-            const forkIcon = <ThreadRowIcon icon={GitFork} threadId={fork.id} />;
             return (
             <SidebarMenuSubItem key={fork.id} className="group/fork">
               <SidebarMenuSubButton
                 asChild
                 isActive={isCurrent && activeForkThreadId === fork.id}
-                className={placement === "right" && forkPending.length > 0 ? "pr-10 md:group-hover/fork:pr-16" : "pr-8"}
+                className="pr-8"
               >
                 <Link
                   href={`/p/${project.id}?fork=${fork.id}`}
@@ -230,29 +194,11 @@ function ProjectTreeItem({
                   title={fork.title}
                   onClick={onNavigate}
                 >
-                  {placement === "corner" ? (
-                    <PendingCorner groups={forkPending} scope={fork.title} showThread={false}>
-                      {forkIcon}
-                    </PendingCorner>
-                  ) : (
-                    forkIcon
-                  )}
+                  <ThreadRowIcon icon={GitFork} threadId={fork.id} />
                   <span>{fork.title}</span>
                 </Link>
               </SidebarMenuSubButton>
-              {/* 右端の印は、指を載せたときだけ出る「畳む」に場所を譲って左へずれる */}
-              {placement === "right" ? (
-                <PendingMarker
-                  groups={forkPending}
-                  scope={fork.title}
-                  showThread={false}
-                  placement="right"
-                  className="top-1 right-1 md:group-hover/fork:right-7"
-                />
-              ) : null}
-              {placement === "subline" ? (
-                <PendingMarker groups={forkPending} scope={fork.title} showThread={false} placement="subline" className="pr-1 pl-8" />
-              ) : null}
+              <PendingSubline groups={forkPending} scope={fork.title} className="pr-1 pl-8" />
               {/* 畳む口を一覧の中にも置く——Fork を開いてヘッダのアイコンを探しに
                   行かなくても、目次の上で片付けられる。削除ではない。
                   タッチでは hover が無いので、モバイルでは常に出す */}

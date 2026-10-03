@@ -3,7 +3,6 @@
 // prototype の `.shell`（.rail + .rooms）に対応する外枠。
 // ≥md: ProjectRail（サイドバー。展開 16rem ⇄ 畳んで 58px）+ PanelStack
 // <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → MobileNavDrawer）
-import { PendingDemoSwitcher } from "./pending-replies";
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
@@ -113,8 +112,6 @@ function AppShellInner({
       />
       {/* モックの見せ方のためだけ——状態ごとの URL（`?new-project=`・`?accounts=`） */}
       <RepoDemoParams />
-      {/* 返事待ちの印の置き場所を見比べる（モックだけ） */}
-      <PendingDemoSwitcher />
     </SidebarProvider>
   );
 }
