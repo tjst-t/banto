@@ -38,6 +38,8 @@ export function decideNewProjectRequest(input: {
   fromConversation: boolean;
   /** 人がその画面を押した直後か */
   activated: boolean;
+  /** 頼んできた画面の Module の名前（人が断った直後の頼みを断るのに使う） */
+  from?: string;
 }): { ok: true } | { error: string } {
   return store.decide(input);
 }
@@ -64,6 +66,11 @@ export function requestNewProject(input: { basePath: string; name?: string; from
 
 export function clearNewProjectRequest(): void {
   store.clear();
+}
+
+/** 人が作らずに閉じた——同じ画面からはしばらく受けない */
+export function declineNewProjectRequest(): void {
+  store.decline();
 }
 
 export function subscribeNewProjectRequest(listener: () => void): () => void {

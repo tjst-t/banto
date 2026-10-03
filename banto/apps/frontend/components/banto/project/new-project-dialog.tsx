@@ -58,6 +58,7 @@ export function NewProjectDialog({
   initialName = "",
   initialBasePath = "",
   requestedBy,
+  onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -69,6 +70,8 @@ export function NewProjectDialog({
   initialBasePath?: string;
   /** 頼んできた Module の名前（出所を見せる——作るのは人が確かめて押したとき） */
   requestedBy?: string;
+  /** 作った（か、既にある Project を開いた）——閉じる前に呼ぶ。頼まれて開いたとき、断ったのかを見分ける */
+  onCreated?: () => void;
 }) {
   const router = useRouter();
   /** 人が打った名前。打つまでは、用意されたフォルダの名前の既定に合わせる */
@@ -98,7 +101,6 @@ export function NewProjectDialog({
   // 「選ぶ」は home から始まる（host の既定、`resolveBrowsePath`）。Module の画面から頼まれたときだけ入る
   const [basePath, setBasePath] = useState(initialBasePath);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const rootScope = useRootScope(basePath);
   const [overrides, setOverrides] = useState<Overrides>(EMPTY_OVERRIDES);
 
   function patch(next: Partial<Overrides>) {
@@ -116,6 +118,9 @@ export function NewProjectDialog({
 
   const ready = provider && prepared?.method === method ? prepared.folder : null;
   const root = provider ? (ready?.path ?? "") : basePath.trim();
+  // **Module が用意したフォルダにも広い根の警告を出す**（2026-10-03、レビュー）——第三者の Module が `/home/u` や `/` を
+  // 返すことはありうる。手元のフォルダと同じ判断（host の `/api/config/root-scope`）で
+  const rootScope = useRootScope(root);
   const name = typedName ?? (ready ? (ready.suggestedName ?? ready.path.split("/").pop() ?? "") : "");
   // そのフォルダを、もう Project が Root にしているか——core が自分で調べる（Module に聞かない）
   const existing = root ? getAllProjects().find((p) => p.basePath === root) : undefined;
@@ -132,6 +137,7 @@ export function NewProjectDialog({
       setError(null);
       try {
         if (existing.status === "closed") await reopenProject(existing.id);
+        onCreated?.();
         onOpenChange(false);
         reset();
         router.push(`/p/${existing.id}`);
@@ -147,6 +153,7 @@ export function NewProjectDialog({
     setError(null);
     try {
       const project = await createRealProject({ name: name.trim(), basePath: root, overrides });
+      onCreated?.();
       onOpenChange(false);
       reset();
       router.push(`/p/${project.id}`);
@@ -252,6 +259,9 @@ export function NewProjectDialog({
                   別のフォルダにする
                 </Button>
               </div>
+            ) : null}
+            {provider && ready ? (
+              <WideRootWarning scope={rootScope} />
             ) : provider ? (
               // Module の画面——core の画面の中の「よそ様の画面」。点線の枠と出所（誰が描いているか・ui://…）
               <div data-testid="module-surface" data-module={provider.server} className="rounded-lg border border-dashed border-border bg-surface-2/60">

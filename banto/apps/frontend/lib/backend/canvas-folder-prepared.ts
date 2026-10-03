@@ -15,15 +15,28 @@ export interface PreparedFolder {
   summary: string;
 }
 
+/**
+ * パスを揃える——`//`・`/./` を畳み、末尾の `/` を外す（既にある Project の Root と突き合わせるので、同じ場所は同じ字に）。
+ * **`..` は断る**——畳むと、見せた字と違う場所を指す
+ */
+function normalizeFolder(path: string): string | { error: string } {
+  const parts = path.split("/");
+  if (parts.includes("..")) return { error: "path に .. は使えません（そのままの場所を渡してください）" };
+  const kept = parts.filter((x) => x !== "" && x !== ".");
+  return "/" + kept.join("/");
+}
+
 export function parseFolderPrepared(params: unknown): PreparedFolder | { error: string } {
   const p = params as { path?: unknown; suggestedName?: unknown; summary?: unknown } | undefined;
   if (typeof p?.path !== "string" || !p.path.startsWith("/") || p.path.length > 4096) return { error: "path は / から始まるパスで渡してください" };
+  const path = normalizeFolder(p.path);
+  if (typeof path !== "string") return path;
   if (typeof p.summary !== "string" || p.summary.trim() === "" || p.summary.length > 500) return { error: "summary は 500 字までの1行で渡してください" };
   if (p.suggestedName !== undefined && (typeof p.suggestedName !== "string" || p.suggestedName.length > 200)) {
     return { error: "suggestedName は 200 字までの文字列で渡してください" };
   }
   return {
-    path: p.path,
+    path,
     summary: p.summary.trim(),
     ...(typeof p.suggestedName === "string" && p.suggestedName.trim() ? { suggestedName: p.suggestedName.trim() } : {}),
   };

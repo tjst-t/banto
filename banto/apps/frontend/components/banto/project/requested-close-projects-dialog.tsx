@@ -56,7 +56,8 @@ export function RequestedCloseProjectsDialog() {
     <AlertDialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) closeProjectsRequests.clear();
+        // 閉じずに閉じた——人が断った。同じ画面からはしばらく受けない
+        if (!open && !busy) closeProjectsRequests.decline();
       }}
     >
       <AlertDialogContent data-testid="close-projects-dialog">

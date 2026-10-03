@@ -306,7 +306,7 @@ function SandboxFrame({
     bridge.fallbackRequestHandler = async (request) => {
       // JSON-RPC の決まった番号で断る（受け口は投げたものの `code` を返事に使う）
       const refuse = (code: number, message: string) => Object.assign(new Error(message), { code });
-      const decideFrom = { fromConversation: latest.current.owner.kind === "thread", activated: navigator.userActivation?.isActive === true };
+      const decideFrom = { fromConversation: latest.current.owner.kind === "thread", activated: navigator.userActivation?.isActive === true, from: latest.current.server };
       if (request.method === OPEN_NEW_PROJECT_METHOD) {
         const parsed = parseNewProjectParams(request.params);
         if ("error" in parsed) throw refuse(-32602, parsed.error);
