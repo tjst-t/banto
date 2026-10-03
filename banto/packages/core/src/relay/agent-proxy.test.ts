@@ -213,3 +213,39 @@ test("core が組み立てた instructions が、initialize の応答で Runner 
   await without.close();
   await moduleClient.close();
 });
+
+// **AI のターンからの呼び出しには、どの Thread かを刻む**（追加・2026-10-03、`dev.banto/thread`）。
+// Backlog が「取り組んだ Thread」を残すのに使う。Project か Thread のどちらかが分からない接続では刻まない
+test("AI のターンからの tool 呼び出しに、Project と Thread の刻印が付く（片方しか分からなければ付かない）", async () => {
+  const seen: Array<Record<string, unknown> | undefined> = [];
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "updateItem", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push(req.params._meta as Record<string, unknown> | undefined);
+    return { content: [{ type: "text", text: "ok" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["backlog"], dependsOn: [], isolation: "subprocess" }, "fake");
+
+  async function callWith(opts: { projectId?: string; threadId?: string }) {
+    const proxy = buildAgentProxy({ name: "backlog", client: moduleClient, meta }, opts);
+    const [ps, pc] = InMemoryTransport.createLinkedPair();
+    const runner = new Client({ name: "runner", version: "0.0.0" });
+    await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+    await runner.callTool({ name: "updateItem", arguments: {} });
+    await runner.close();
+  }
+
+  await callWith({ projectId: "p1", threadId: "t1" });
+  await callWith({ projectId: "p1" });
+  await callWith({ threadId: "t1" });
+
+  assert.deepEqual(seen[0]?.["dev.banto/thread"], { projectId: "p1", threadId: "t1" });
+  assert.equal(seen[1]?.["dev.banto/thread"], undefined, "Thread が分からないのに刻んだ");
+  assert.equal(seen[2]?.["dev.banto/thread"], undefined, "Project が分からないのに刻んだ");
+  await moduleClient.close();
+});

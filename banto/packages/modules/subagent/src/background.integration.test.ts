@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { DELIVERS_LATER_META_KEY, PENDING_REPLY_META_KEY, REPLY_TO_META_KEY } from "@banto/module-contract";
+import { DELIVERS_LATER_META_KEY, PENDING_REPLY_META_KEY, REPLY_TO_META_KEY, THREAD_META_KEY } from "@banto/module-contract";
 import { listAgents } from "./agents.js";
 import { localClaudeLogin } from "./claude-login-access.js";
 import { createSubagentServer } from "./server.js";
@@ -48,12 +48,37 @@ async function withBackground(fn: (ctx: { client: Client; delivered: Delivered[]
   }
 }
 
-const callWith = (client: Client, args: Record<string, unknown>, replyTo?: string) =>
+type ToolResult = { content: { text: string }[]; isError?: boolean; _meta?: Record<string, unknown> };
+type Stamp = { projectId: string; threadId: string };
+
+const callWith = (client: Client, args: Record<string, unknown>, replyTo?: string, thread?: Stamp) =>
   client.callTool({
     name: "runSubagent",
     arguments: args,
-    ...(replyTo ? { _meta: { [REPLY_TO_META_KEY]: replyTo } } : {}),
-  }) as Promise<{ content: { text: string }[]; isError?: boolean; _meta?: Record<string, unknown> }>;
+    ...(replyTo || thread
+      ? { _meta: { ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}), ...(thread ? { [THREAD_META_KEY]: thread } : {}) } }
+      : {}),
+  }) as Promise<ToolResult>;
+
+/** AI の止める口。thread は host が刻む印の代わり */
+const cancelAs = (client: Client, runId: string, thread?: Stamp) =>
+  client.callTool({
+    name: "cancelSubagent",
+    arguments: { runId },
+    ...(thread ? { _meta: { [THREAD_META_KEY]: thread } } : {}),
+  }) as Promise<ToolResult>;
+
+/** 走り出す（最初の tool を呼ぶ）まで待つ */
+async function waitRunning(client: Client, runId: string) {
+  for (let i = 0; i < 50; i++) {
+    const runs = JSON.parse(((await client.callTool({ name: "listRuns", arguments: {} })) as ToolResult).content[0]!.text) as {
+      runs: Array<{ id: string; lastProgress?: string }>;
+    };
+    if (runs.runs.find((x) => x.id === runId)?.lastProgress?.startsWith("ツール：")) return;
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  assert.fail("走り出さない");
+}
 
 test("runSubagent は「終わったら届ける」を名乗る（host が札を渡す印）", async () => {
   await withBackground(async ({ client }) => {
@@ -125,5 +150,74 @@ test("届ける先（札）が無ければ、待たない形は断る——黙�
     const sync = await callWith(client, { agent: "fake", prompt: "待つ仕事" }, "reply_sync");
     assert.match((JSON.parse(sync.content[0]!.text) as { text: string }).text, /受け取った/);
     assert.equal(sync._meta?.[PENDING_REPLY_META_KEY], undefined, "待つ形なのに、あとで届けると約束した");
+  });
+});
+
+// **AI が止める口は、頼んだ Thread からだけ**（追加・2026-10-03、ユーザー）。どの Thread かは host が刻む印で見る
+test("cancelSubagent は AI に見せ、runId を受ける", async () => {
+  await withBackground(async ({ client }) => {
+    const tool = (await client.listTools()).tools.find((t) => t.name === "cancelSubagent");
+    assert.ok(tool, "AI の止める口が無い");
+    assert.equal((tool._meta as Record<string, unknown>)["dev.banto/visibility"], "agent");
+    assert.deepEqual(tool.inputSchema.required, ["runId"]);
+  });
+});
+
+test("cancelSubagent：別の Thread・印の無い呼び出しからは断り、頼んだ Thread からは止まって「止められました」が届く", async () => {
+  await withBackground(async ({ client, delivered, waitDelivered }) => {
+    const mine = { projectId: "p1", threadId: "t-mine" };
+    const r = await callWith(client, { agent: "fake", prompt: "[slow 30] 止める仕事", runInBackground: true }, "reply_mine", mine);
+    const { runId } = JSON.parse(r.content[0]!.text) as { runId: string };
+    await waitRunning(client, runId);
+
+    const other = await cancelAs(client, runId, { projectId: "p1", threadId: "t-other" });
+    assert.equal(other.isError, true, "別の Thread から止められた");
+    assert.match(other.content[0]!.text, /別の会話/);
+    const otherProject = await cancelAs(client, runId, { projectId: "p2", threadId: "t-mine" });
+    assert.equal(otherProject.isError, true, "Project が違うのに止められた");
+    const unstamped = await cancelAs(client, runId);
+    assert.equal(unstamped.isError, true, "印の無い呼び出しで止められた");
+    assert.match(unstamped.content[0]!.text, /どの会話からの呼び出しか分からない/);
+
+    // 断ったあとも走り続けている（まだ何も届いていない）
+    const detail = JSON.parse(((await client.callTool({ name: "getRun", arguments: { id: runId } })) as ToolResult).content[0]!.text) as {
+      status: string;
+      requestedBy: Stamp;
+    };
+    assert.equal(detail.status, "running");
+    assert.deepEqual(detail.requestedBy, mine, "頼んだ Thread が記録に残っていない");
+    assert.equal(delivered.length, 0);
+
+    const ok = await cancelAs(client, runId, mine);
+    assert.equal(ok.isError, undefined, ok.content[0]!.text);
+    assert.equal((JSON.parse(ok.content[0]!.text) as { ok: boolean }).ok, true);
+    await waitDelivered(1);
+    assert.equal(delivered[0]!.replyTo, "reply_mine");
+    assert.match(delivered[0]!.title, /止められました/);
+
+    // もう走っていないものは止められない
+    const again = await cancelAs(client, runId, mine);
+    assert.equal(again.isError, true);
+    assert.match(again.content[0]!.text, /もう走っていません/);
+  });
+});
+
+test("cancelSubagent：頼んだ Thread の記録が無い仕事・無い仕事は、AI からは止められない", async () => {
+  await withBackground(async ({ client, waitDelivered }) => {
+    // 印の無い呼び出しで頼んだ（古い host・人の画面など）——持ち主を確かめられない
+    const r = await callWith(client, { agent: "fake", prompt: "[slow 30] 持ち主不明", runInBackground: true }, "reply_x");
+    const { runId } = JSON.parse(r.content[0]!.text) as { runId: string };
+    await waitRunning(client, runId);
+    const refused = await cancelAs(client, runId, { projectId: "p1", threadId: "t1" });
+    assert.equal(refused.isError, true, "持ち主の分からない仕事を AI が止めた");
+    assert.match(refused.content[0]!.text, /記録が無い/);
+
+    const missing = await cancelAs(client, "no-such-run", { projectId: "p1", threadId: "t1" });
+    assert.equal(missing.isError, true);
+    assert.match(missing.content[0]!.text, /ありません/);
+
+    // 人の画面からは今までどおり止められる（片づけ）
+    await client.callTool({ name: "cancelRun", arguments: { id: runId } });
+    await waitDelivered(1);
   });
 });

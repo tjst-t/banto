@@ -15,6 +15,8 @@ import {
   CALLER_META_KEY,
   callIdOf,
   callerOf,
+  threadOf,
+  THREAD_META_KEY,
 } from "./meta.js";
 
 test("parses a valid module meta", () => {
@@ -248,4 +250,12 @@ test("toolCardOf：題と説明の文だけを読み、形が違えば名乗っ�
   assert.equal(toolCardOf({ _meta: { [CARD_META_KEY]: true } }), undefined);
   assert.equal(toolCardOf({ _meta: { [CARD_META_KEY]: ["x"] } }), undefined);
   assert.equal(toolCardOf({}), undefined);
+});
+
+test("threadOf：Project と Thread が揃った刻印だけを読む（片方・空・形違いは刻印ではない）", () => {
+  assert.deepEqual(threadOf({ [THREAD_META_KEY]: { projectId: "p1", threadId: "t1" } }), { projectId: "p1", threadId: "t1" });
+  assert.equal(threadOf({ [THREAD_META_KEY]: { projectId: "p1" } }), undefined);
+  assert.equal(threadOf({ [THREAD_META_KEY]: { projectId: "", threadId: "t1" } }), undefined);
+  assert.equal(threadOf({ [THREAD_META_KEY]: "p1/t1" }), undefined);
+  assert.equal(threadOf(undefined), undefined);
 });

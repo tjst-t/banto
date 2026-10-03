@@ -28,6 +28,11 @@ export interface RunRecord {
   effort?: string;
   /** 続きから頼んだときの元の session id */
   resumedFrom?: string;
+  /**
+   * **頼んだ Thread**（追加・2026-10-03）。host が AI のターンの呼び出しに刻んだ印（`dev.banto/thread`）を写す。
+   * AI が止める口（`cancelSubagent`）は、これと同じ Thread からの呼び出しだけを通す。刻印の無い呼び出しで頼んだものは持たない
+   */
+  requestedBy?: { projectId: string; threadId: string };
   status: RunStatus;
   startedAt: number;
   finishedAt?: number;
@@ -103,7 +108,7 @@ export class RunLog {
     renameSync(tmp, this.file);
   }
 
-  start(input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom">): {
+  start(input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom" | "requestedBy">): {
     id: string;
     signal: AbortSignal;
   } {
@@ -169,7 +174,7 @@ export class RunLog {
 
   private appendedSinceCompact = 0;
 
-  /** 人が画面から止める。走っていなければ、そう言う */
+  /** 人が画面から止める（AI の口は、頼んだ Thread を確かめてから呼ぶ）。走っていなければ、そう言う */
   cancel(id: string): boolean {
     const r = this.running.get(id);
     if (!r) return false;

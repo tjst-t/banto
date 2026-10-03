@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Subagent Module（docs/specs/v4-architecture.md §4.1「Subagent Module の形」）。
 // MCP サーバであり、ACP クライアント——Claude Code・OpenCode を ACP の同じ口で起こす。
-// tool は2つ：`listSubagents`（一覧と、そのエージェントの設定の候補）と `runSubagent`（仕事を頼む）。
+// AI の tool は3つ：`listSubagents`（一覧と、そのエージェントの設定の候補）と `runSubagent`（仕事を頼む）と
+// `cancelSubagent`（頼んだ仕事を止める。頼んだ Thread からだけ）。
 // 鍵の設定画面は banto 全体に1本の別 Module（`settings-server.ts`）が持つ——ここは Project ごとに立つので。
 
 import { rmSync } from "node:fs";
@@ -22,6 +23,7 @@ import {
   PENDING_REPLY_META_KEY,
   VISIBILITY_META_KEY,
   replyToOf,
+  threadOf,
 } from "@banto/module-contract";
 import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
@@ -179,6 +181,22 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           [CARD_META_KEY]: { title: "{agent} に頼んだ仕事", description: "{prompt}" },
         },
       },
+      {
+        // **AI が自分で頼んだ仕事を止める口**（追加・2026-10-03、ユーザー）。**頼んだ Thread からだけ**止められる——
+        // 同じ Project の別の Thread（Fork）が頼んだ仕事を、id を知っただけで止められないように。どの Thread からの
+        // 呼び出しかは host が刻む印（`dev.banto/thread`）で見る（AI の申告ではない）
+        name: "cancelSubagent",
+        description:
+          "runSubagent で頼んだ仕事を止める（runInBackground で頼んだものが主な対象）。runId は runSubagent の返り値のもの。" +
+          "**止められるのは、この会話（Thread）で頼んだ仕事だけ**——別の Thread が頼んだものは断る。" +
+          "止めると、待たない形の仕事は「止められました」がこの会話に届く。走っていない（もう終わった）仕事は止められない",
+        inputSchema: {
+          type: "object",
+          properties: { runId: { type: "string", description: "止める仕事の id（runSubagent の返り値の runId）" } },
+          required: ["runId"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "agent" },
+      },
       // ---- 人の入口の画面から呼ぶ（admin——AI には見せない） ----------------------------
       {
         name: "listAgents",
@@ -294,6 +312,26 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         return text({ ok: true });
       }
 
+      if (request.params.name === "cancelSubagent") {
+        const id = String(args.runId ?? "");
+        const record = runs.get(id);
+        if (!record) throw new SubagentError(`仕事 "${id}" はありません`);
+        // **頼んだ Thread と呼び出し元の Thread が同じときだけ**。どちらかの印が無ければ確かめられないので断る（fail closed）
+        const caller = threadOf(request.params._meta as Record<string, unknown> | undefined);
+        if (!caller) {
+          throw new SubagentError("どの会話からの呼び出しか分からないため止められません（banto がこの呼び出しに Thread の印を付けていない）");
+        }
+        const owner = record.requestedBy;
+        if (!owner) {
+          throw new SubagentError("この仕事は、どの会話が頼んだかの記録が無いため、AI からは止められません。人がサブエージェントの画面から止めてください");
+        }
+        if (owner.projectId !== caller.projectId || owner.threadId !== caller.threadId) {
+          throw new SubagentError("この仕事は別の会話（Thread）が頼んだものなので、ここからは止められません。止められるのは、この会話で頼んだ仕事だけです");
+        }
+        if (!runs.cancel(id)) throw new SubagentError(`その仕事はもう走っていません（状態：${record.status}）`);
+        return text({ ok: true, runId: id, note: "止めました。待たない形で頼んだものは、止まったことがこの会話に届きます" });
+      }
+
       if (request.params.name === "runSubagent") {
         const agent = agentOf(args.agent);
         if (typeof args.prompt !== "string" || args.prompt.trim() === "") throw new SubagentError("prompt が空です");
@@ -309,8 +347,11 @@ export function createSubagentServer(deps: SubagentServerDeps) {
               "（banto がこの呼び出しに返信用の札を渡していない）。runInBackground を外して、待つ形で頼んでください",
           );
         }
-        // **起こす前から記録する**——資格情報で止まったものも、一覧に「失敗」として残す
+        // **起こす前から記録する**——資格情報で止まったものも、一覧に「失敗」として残す。
+        // 頼んだ Thread も残す（host の刻印。AI が止める口 `cancelSubagent` はこれで持ち主を確かめる）
+        const requestedBy = threadOf(request.params._meta as Record<string, unknown> | undefined);
         const run = runs.start({
+          ...(requestedBy ? { requestedBy } : {}),
           agent: agent.id,
           agentTitle: agent.title,
           prompt,

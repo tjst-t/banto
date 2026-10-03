@@ -24,6 +24,7 @@ import {
   CALLER_META_KEY,
   PENDING_REPLY_META_KEY,
   REPLY_TO_META_KEY,
+  THREAD_META_KEY,
   deliversLater,
   stripBantoMeta,
   visibilityOf,
@@ -118,6 +119,16 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     return opts.projectId ? { [CALLER_META_KEY]: { project: opts.projectId } } : {};
   }
 
+  /**
+   * **どの Thread のターンからの呼び出しか**（追加・2026-10-03、`THREAD_META_KEY`）。Project と Thread の
+   * 両方が分かるときだけ刻む——片方では「どこで取り組んだか」を言えない
+   */
+  function threadStamp(): Record<string, unknown> {
+    return opts.projectId && opts.threadId
+      ? { [THREAD_META_KEY]: { projectId: opts.projectId, threadId: opts.threadId } }
+      : {};
+  }
+
   /** 台帳が振った呼び出しの印（`CALL_ID_META_KEY`）。台帳が無ければ渡さない */
   function callIdStamp(id: string | undefined): Record<string, unknown> {
     return id ? { [CALL_ID_META_KEY]: id } : {};
@@ -170,7 +181,13 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
           arguments: request.params.arguments,
           // **誰のための呼び出しかを host が刻む**（追加・2026-09-13）
           // **この呼び出しの印も渡す**（追加・2026-09-28）——Module が中で中継を呼ぶとき、この1件を名指せる
-          _meta: { ...callerStamp(), ...callIdStamp(endCall?.id), ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}) },
+          // **どの Thread のターンかも刻む**（追加・2026-10-03）——Backlog が「取り組んだ Thread」を残す
+          _meta: {
+            ...callerStamp(),
+            ...threadStamp(),
+            ...callIdStamp(endCall?.id),
+            ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}),
+          },
         },
         undefined,
         {

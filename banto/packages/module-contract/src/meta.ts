@@ -143,6 +143,34 @@ export function callIdOf(meta: Record<string, unknown> | undefined): string | un
 }
 
 /**
+ * **その呼び出しが、どの Thread の AI のターンから来たか**（追加・2026-10-03、Backlog の「取り組んだ Thread」）。
+ * host だけが刻む——AI の代理接続（`agent-proxy`）が、ターンの Project と Thread を知っているときだけ。
+ *
+ * 値は `{ projectId, threadId }`。**人の画面からの呼び出し・Module 間の中継には刻まない**（AI のターンではないので、
+ * 「その Thread で取り組んだ」とは言えない）。受け手は**刻印が無ければ何もしない**——推測で埋めない。
+ *
+ * 返信用の札（`REPLY_TO_META_KEY`）と違い、Thread の id そのものを渡す。札は「届ける」ための推測できない印で、
+ * こちらは「どこで取り組んだかを記録に残す」ための名前（記録に残すので、札では役に立たない）
+ */
+export const THREAD_META_KEY = `${VENDOR_PREFIX}/thread`;
+
+export interface ThreadStamp {
+  projectId: string;
+  threadId: string;
+}
+
+/** Thread の刻印を読む。**形が違えば `undefined`**（片方だけ・空文字は刻印ではない） */
+export function threadOf(meta: Record<string, unknown> | undefined): ThreadStamp | undefined {
+  const raw = meta?.[THREAD_META_KEY];
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const { projectId, threadId } = raw as Record<string, unknown>;
+  if (typeof projectId !== "string" || projectId === "" || typeof threadId !== "string" || threadId === "") {
+    return undefined;
+  }
+  return { projectId, threadId };
+}
+
+/**
  * **中継が、いまどの Project のための呼び出しとして扱っているか**（追加・2026-09-28）。`relayListTargets` の返事の
  * `_meta` に host が載せる。宛先の一覧に Project の Module が出ないとき、「その Project に無い」のか「どの Project の
  * ための呼び出しか決められなかった」のかを、呼び出し元が取り違えないため（規則2——「無い」と「決められない」を混ぜない）
