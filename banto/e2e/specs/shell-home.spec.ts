@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR, SHELL_HOME_SOURCE } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR, SHELL_HOME_SOURCE, CORE_BROWSER_URL } from "../config.js";
 import { createProject, openApp, waitForProjectModule } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
@@ -59,7 +59,7 @@ async function projectId(page: Page): Promise<string> {
 }
 
 async function openShellHomeSettings(page: Page) {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Shell のホーム", exact: true }).click();
   await expect(page.getByTestId("shell-home-panel")).toBeVisible({ timeout: 20_000 });
 }

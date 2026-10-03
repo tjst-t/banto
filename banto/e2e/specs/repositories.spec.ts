@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL } from "../config.js";
 import { createProject, expectProjectOpen, openApp, openNav } from "../helpers.js";
 import {
   E2E_GITHUB_CLIENT_ID,
@@ -135,7 +135,7 @@ const row = (canvas: FrameLocator, path: string) => canvas.locator(`[data-testid
 
 /** 設定の Repositories の面を開き、中の Canvas を返す */
 async function openRepositoriesPane(page: Page): Promise<FrameLocator> {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Repositories", exact: true }).click();
   const pane = page.locator('[data-testid="module-settings-canvas"][data-module="repositories"]');
   await expect(pane).toBeVisible({ timeout: 30_000 });
@@ -355,7 +355,7 @@ test("入口から開いた一覧で、Import の判断・足した行の中身�
 });
 
 test("設定の Repositories の面に同じ一覧と既定の置き場が出て、置き場を変えると一覧の説明も変わる", async ({ page }) => {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Repositories", exact: true }).click();
   const pane = page.locator('[data-testid="module-settings-canvas"][data-module="repositories"]');
   await expect(pane).toBeVisible({ timeout: 30_000 });
@@ -532,7 +532,7 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   const remoteOnly = `remote-only-${suffix}`;
   await setGithubLoginFixture({ addRepo: { owner: E2E_GITHUB_PAT_LOGIN, name: remoteOnly } });
   const openPane = async () => {
-    await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+    await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
     await page.getByRole("button", { name: "Repositories", exact: true }).click();
     const pane = page.locator('[data-testid="module-settings-canvas"][data-module="repositories"]');
     await expect(pane).toBeVisible({ timeout: 30_000 });

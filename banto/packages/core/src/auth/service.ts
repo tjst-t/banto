@@ -445,7 +445,10 @@ export class AuthService {
         credential: {
           id: passkey.id,
           publicKey: new Uint8Array(Buffer.from(passkey.publicKey, "base64url")),
-          counter: passkey.counter,
+          // **署名回数が増えないことを複製とは見ない**（仕様。同期型のパスキーは常に 0 を返し、同じパスキーを
+          // 複数の端末で使うと回数は端末ごとに進む）。ライブラリの「前より大きいか」の検めを効かせないよう 0 を渡す。
+          // 記録には最後の値を残す（見るだけ）
+          counter: 0,
           transports: passkey.transports as never,
         },
         requireUserVerification: true,

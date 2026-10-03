@@ -39,6 +39,8 @@ export default function globalSetup(): void {
         sandboxPort: SANDBOX_PORT,
         sandboxPublicUrl: SANDBOX_BASE_URL,
         allowedEmbedderOrigins: [FRONTEND_BASE_URL],
+        // 画面のオリジン（人のログイン：Cookie の要求の Origin・パスキー・CORS・ログインのリンク）
+        uiOrigin: FRONTEND_BASE_URL,
       },
       null,
       2,

@@ -18,7 +18,7 @@ import { test, expect, type Page } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR, CORE_BROWSER_URL } from "../config.js";
 import { createProject, expectProjectOpen, fakeTurn, openApp, openProjectSettings } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
@@ -108,7 +108,7 @@ const readBoth = fakeTurn({
 });
 
 test("配られている Skill が設定の一覧に出て、画面から効かせられる", async ({ page }) => {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Skill", exact: true }).click();
 
   const row = page.locator(`[data-testid="skill-row"][data-skill="${SKILL_KEY}"]`);
@@ -176,7 +176,7 @@ test("設定を変えても続いている会話は変わらない。Clear す�
   const { projectId, threadId } = await projectAndThread(page);
 
   // 全体で外す
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Skill", exact: true }).click();
   const row = page.locator(`[data-testid="skill-row"][data-skill="${SKILL_KEY}"]`);
   await row.getByRole("switch", { name: `${SKILL} を外す` }).click();

@@ -23,18 +23,38 @@
 //
 // 「前の spec ファイル」は回の置き場のファイルに覚える——Playwright はテストが落ちると worker を作り直すので、
 // worker の中の変数だと、同じ spec の続きを別の spec と取り違える。
-import { test as base } from "@playwright/test";
+import { test as base, type BrowserContext } from "@playwright/test";
 import { containerNameFor } from "@banto/container";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "./config.ts";
+import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL, DATA_DIR, FRONTEND_BASE_URL } from "./config.ts";
+import { writeLoginLink } from "../packages/core/dist/auth/login-links.js";
 import { listOwnedContainers, removeContainers } from "./containers.ts";
 
 export * from "@playwright/test";
 
 const LAST_SPEC_FILE = join(dirname(DATA_DIR), "last-spec-file");
 
-export const test = base.extend<{ releasePreviousSpecContainers: void }>({
+/**
+ * **どのテストも、ログインした状態で始まる**（追加・2026-10-03、人のログイン）。host のコマンド
+ * （`scripts/login-link.mjs`）と同じ札をデータ置き場に置き、ブラウザの文脈から引き換える——Cookie はその文脈に
+ * 入る。ログインしていない画面を見たいテストは `test.use({ loggedIn: false })`
+ */
+export async function loginContext(context: BrowserContext): Promise<void> {
+  const { code } = await writeLoginLink(DATA_DIR);
+  const res = await context.request.post(`${CORE_BROWSER_URL}/api/auth/redeem`, {
+    headers: { "x-banto-client": "1", origin: FRONTEND_BASE_URL, "content-type": "application/json" },
+    data: { code },
+  });
+  if (!res.ok()) throw new Error(`[e2e] ログインできませんでした：${res.status()} ${await res.text()}`);
+}
+
+export const test = base.extend<{ releasePreviousSpecContainers: void; loggedIn: boolean }>({
+  loggedIn: [true, { option: true }],
+  context: async ({ context, loggedIn }, use) => {
+    if (loggedIn) await loginContext(context);
+    await use(context);
+  },
   releasePreviousSpecContainers: [
     async ({}, use, testInfo) => {
       const last = existsSync(LAST_SPEC_FILE) ? readFileSync(LAST_SPEC_FILE, "utf8") : null;

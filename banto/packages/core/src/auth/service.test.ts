@@ -305,6 +305,19 @@ test("パスキー：登録して、それで入れる。別のオリジンで�
     });
     assert.equal(evil.status, 401);
 
+    // 同じパスキーを別の端末でも使う（同期）——署名回数が前より小さくても断らない
+    const synced = Object.assign(Object.create(Object.getPrototypeOf(authenticator)), authenticator) as SoftAuthenticator;
+    (synced as unknown as { signCount: number }).signCount = 0;
+    const syncedOptions = (await (await ctx.ui("/api/auth/passkey/login/options", { method: "POST" })).json()) as {
+      challenge: string;
+      rpId: string;
+    };
+    const syncedLogin = await ctx.ui("/api/auth/passkey/login/verify", {
+      method: "POST",
+      body: { response: synced.assert(syncedOptions, UI) },
+    });
+    assert.equal(syncedLogin.status, 200, await syncedLogin.clone().text());
+
     // challenge は1回だけ
     const replay = await ctx.ui("/api/auth/passkey/login/verify", {
       method: "POST",

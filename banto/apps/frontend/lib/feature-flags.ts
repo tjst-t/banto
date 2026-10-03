@@ -68,6 +68,9 @@ export const CONNECTED_FEATURES = {
   // **コンテナの資源の上限**（決定・2026-10-02、ユーザー）。banto 全体は「この機械に残す分」、Project ごとは
   // それより下げる値。host が計算し、動いているコンテナにも効かせる
   containerLimits: true,
+  // **人のログイン**（決定・2026-10-03、v4-security.md「人のログイン」）。パスキー・端末を追加・ログイン中の端末が
+  // host の `/api/auth/*` に繋がっている
+  login: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す

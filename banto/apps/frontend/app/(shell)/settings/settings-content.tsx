@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Box, Globe, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
+import { Bell, Box, Globe, KeyRound, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -13,6 +13,7 @@ import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaul
 import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import { ShellHomePanel } from "@/components/banto/settings/shell-home-panel";
 import { ContainerLimitsPanel } from "@/components/banto/settings/container-limits";
+import { LoginPanel } from "@/components/banto/settings/login-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
@@ -76,10 +77,14 @@ const SHELL_HOME_CATEGORY: SettingsNavItem = { section: "shell-home", label: "Sh
 /** コンテナの資源の上限（2026-10-02）。この機械に何を残すか */
 const CONTAINER_CATEGORY: SettingsNavItem = { section: "container", label: "コンテナ", icon: Box };
 
+/** 人のログイン（2026-10-03）。パスキー・端末を追加・ログイン中の端末 */
+const LOGIN_CATEGORY: SettingsNavItem = { section: "login", label: "ログイン", icon: KeyRound };
+
 /** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
 
 const CATEGORIES: readonly SettingsNavItem[] = [
+  ...(CONNECTED_FEATURES.login ? [LOGIN_CATEGORY] : []),
   ...(CONNECTED_FEATURES.settings
     ? MOCK_CATEGORIES
     : CONNECTED_FEATURES.instanceModules
@@ -178,6 +183,9 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
   }
   if (section === "container") {
     return <ContainerLimitsPanel />;
+  }
+  if (section === "login") {
+    return <LoginPanel />;
   }
   if (section === "roles") {
     return (

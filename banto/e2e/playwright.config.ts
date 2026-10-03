@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 import {
   CORE_BASE_URL,
   FRONTEND_BASE_URL,
+  FRONTEND_LISTEN_URL,
   FRONTEND_PORT,
   FRONTEND_DIST_DIR,
   CONFIG_PATH,
@@ -54,7 +55,7 @@ export default defineConfig({
         `npm exec --workspace=@banto/frontend -- next start -H 127.0.0.1 -p ${FRONTEND_PORT}`,
       cwd: new URL("..", import.meta.url).pathname,
       env: { BANTO_NEXT_DIST_DIR: FRONTEND_DIST_DIR },
-      url: FRONTEND_BASE_URL,
+      url: FRONTEND_LISTEN_URL,
       // **黙って相乗りしない**（core と同じ規律）——別の実行のフロントを
       // 掴むと、どのビルドを試験したのか分からなくなる
       reuseExistingServer: false,

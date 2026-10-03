@@ -16,7 +16,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strToU8, zipSync } from "fflate";
-import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL } from "../config.js";
 import { createProject, fakeTurn, openApp } from "../helpers.js";
 import {
   GITHUB_FIXTURE_COMMIT,
@@ -126,7 +126,7 @@ test("「取り込む」を押すと入り、core の Skill の一覧に出る�
     .toEqual(expect.objectContaining({ name: GITHUB_FIXTURE_SKILL, enabled: false }));
 
   // 設定の Skill の一覧にも出る——効かせるかは人がここで選ぶ
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Skill", exact: true }).click();
   const row = page.locator(`[data-testid="skill-row"][data-skill="skills/${GITHUB_FIXTURE_SKILL}"]`);
   await expect(row).toBeVisible({ timeout: 20_000 });
@@ -135,7 +135,7 @@ test("「取り込む」を押すと入り、core の Skill の一覧に出る�
 });
 
 test("「Skill の置き場」から人が ZIP を取り込み、出所つきで見て、消せる", async ({ page }) => {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Skill の置き場", exact: true }).click();
   const pane = page.locator('[data-testid="module-settings-canvas"][data-module="skills"]');
   await expect(pane).toBeVisible({ timeout: 30_000 });

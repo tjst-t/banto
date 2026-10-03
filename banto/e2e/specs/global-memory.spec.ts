@@ -11,7 +11,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { CORE_BASE_URL, AUTH_TOKEN, CORE_BROWSER_URL } from "../config.js";
 import { createProject, openApp, fakeTurn } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
@@ -21,7 +21,7 @@ test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
 
 test("Global Memoryに人が足す→出る→取り消す→取り消し線になる", async ({ page }) => {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
 
   // 繋がっているセクションだけがnavに出る
   await expect(page.getByRole("button", { name: "Global Memory" })).toBeVisible({ timeout: 15_000 });
@@ -51,7 +51,7 @@ test("Global Memoryに人が足す→出る→取り消す→取り消し線に�
 // Memory は追記オンリー（取り消し線でしか消せない）ので、まだ書き終えていない文が
 // 入ると実害が残る。**変換中の Enter は「候補で確定する」という意味**でしかない。
 test("変換確定の Enter では足さない——確定した後の Enter でだけ足す", async ({ page }) => {
-  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
   await page.getByRole("button", { name: "Global Memory" }).click();
 
   const draft = page.getByPlaceholder("覚えておいてほしいことを足す");

@@ -3,71 +3,92 @@
 // 「実Projectを作ったときだけ」通る経路（決定・2026-09-03、モックは
 // 動画撮影用の既存資産としてそのまま動かし続ける、壊さない）。
 //
-// 接続先はブラウザのlocalStorageに保存したhost URL・tokenを使う
-// （NEXT_PUBLIC_*はビルド時固定になり、hostを後から変えられないため）。
+// **人はセッションの Cookie で入る**（決定・2026-10-03、`docs/specs/v4-security.md`「人のログイン」）。
+// 画面は合言葉（Bearer）を持たない——Cookie は HttpOnly で、画面の JavaScript からは読めない。
+// 画面が付けるのは独自のヘッダ `X-Banto-Client: 1` だけ（兄弟のサブドメインからの要求を host が見分ける印）。
+//
+// API の基点：本番は**画面と同じオリジン**（Caddy が `/api/*` を host へ回す）に固定する。URL の `bantoHost` は
+// **localhost・127.0.0.1 でだけ**読む（開発・E2E で画面と host のポートが違うとき）——本番で読むと、公開先の
+// ページが `?bantoHost=<自分>` へ飛ばして画面の接続先をすり替えられる（Fable のレビュー高2）。
 
 const STORAGE_KEY = "banto.backend";
+export const CLIENT_HEADER = "x-banto-client";
+/** 画面からの要求に必ず付けるもの */
+export const CLIENT_HEADERS: Record<string, string> = { [CLIENT_HEADER]: "1" };
 
 export interface BackendConfig {
   baseUrl: string;
-  token: string;
 }
 
-/**
- * `?bantoToken=<token>&bantoHost=<url>`で一度開けば覚える（apps/frontend
- * （旧・最小フロントエンド）と同じ方式）。bantoHostを省略した場合は今開いている
- * ページと同じホスト名・ポート4737を仮定する（開発時の既定）。
- */
+function isLoopback(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname.endsWith(".localhost");
+}
+
+/** API の基点。http（安全でない文脈）では null——画面は ConnectGate が「HTTPS で開いてください」に止める */
 export function getBackendConfig(): BackendConfig | null {
   if (typeof window === "undefined") return null;
-  // **http（安全でない文脈）では合言葉を読みも覚えもしない**（2026-10-03、ユーザー）——平文で流さない。
-  // 画面は ConnectGate が「HTTPS で開いてください」に止める。ここで止めるのは、門より先に起きる読み込み
-  // （Project の一覧など）が URL の合言葉を http の側に覚えてしまうため（E2E で実測）
   if (!window.isSecureContext) return null;
-
-  const params = new URLSearchParams(window.location.search);
-  const tokenFromUrl = params.get("bantoToken");
-  if (tokenFromUrl) {
-    const hostFromUrl = params.get("bantoHost");
-    const baseUrl = hostFromUrl ?? `${window.location.protocol}//${window.location.hostname}:4737`;
-    const config: BackendConfig = { baseUrl, token: tokenFromUrl };
-    setBackendConfig(config);
+  const { hostname, protocol, origin } = window.location;
+  if (!isLoopback(hostname)) {
+    // 前の版が覚えた合言葉（`{ baseUrl, token }`）が残っていれば消す——もう使わない
+    if (window.localStorage.getItem(STORAGE_KEY) !== null) window.localStorage.removeItem(STORAGE_KEY);
+    return { baseUrl: origin };
+  }
+  const hostFromUrl = new URLSearchParams(window.location.search).get("bantoHost");
+  if (hostFromUrl) {
+    const config: BackendConfig = { baseUrl: hostFromUrl.replace(/\/$/, "") };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
     return config;
   }
-
   const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as BackendConfig;
-  } catch {
-    return null;
+  if (raw) {
+    try {
+      const stored = JSON.parse(raw) as { baseUrl?: unknown };
+      if (typeof stored.baseUrl === "string") return { baseUrl: stored.baseUrl };
+    } catch {
+      // 読めなければ既定へ
+    }
   }
-}
-
-export function setBackendConfig(config: BackendConfig): void {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-}
-
-export function clearBackendConfig(): void {
-  window.localStorage.removeItem(STORAGE_KEY);
+  return { baseUrl: `${protocol}//${hostname}:4737` };
 }
 
 function requireConfig(): BackendConfig {
   const config = getBackendConfig();
-  if (!config) {
-    throw new Error("banto host の接続先が設定されていません（設定画面から接続してください）");
-  }
+  if (!config) throw new Error("banto の画面は HTTPS で開いてください");
   return config;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * **画面から host への fetch はすべてここを通す**——独自のヘッダと Cookie を付け、401（ログインが切れた・
+ * 締め出された）なら門に知らせる。
+ */
+export async function hostFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const config = requireConfig();
   const res = await fetch(`${config.baseUrl}${path}`, {
     ...init,
+    credentials: "include",
+    headers: { ...CLIENT_HEADERS, ...(init.headers as Record<string, string> | undefined) },
+  });
+  if (res.status === 401 && !path.startsWith("/api/auth/")) notifyUnauthorized();
+  return res;
+}
+
+const UNAUTHORIZED_EVENT = "banto:unauthorized";
+function notifyUnauthorized(): void {
+  window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+}
+/** ログインが切れたとき（401）に呼ばれる。門が自分を出し直すのに使う */
+export function onUnauthorized(listener: () => void): () => void {
+  window.addEventListener(UNAUTHORIZED_EVENT, listener);
+  return () => window.removeEventListener(UNAUTHORIZED_EVENT, listener);
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await hostFetch(path, {
+    ...init,
     headers: {
-      authorization: `Bearer ${config.token}`,
       "content-type": "application/json",
-      ...init?.headers,
+      ...(init?.headers as Record<string, string> | undefined),
     },
   });
   if (!res.ok) {
@@ -876,11 +897,7 @@ export function followRealTurn(
 ): { events: AsyncGenerator<RealFollowEvent>; close(): void } {
   return queuedStream<RealFollowEvent>(async (push, signal) => {
     try {
-      const config = requireConfig();
-      const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/stream`, {
-        headers: { authorization: `Bearer ${config.token}` },
-        signal,
-      });
+      const res = await hostFetch(`/api/threads/${threadId}/stream`, { signal });
       if (!res.ok || !res.body) {
         push({ type: "disconnected", message: `走行中のターンに繋げませんでした（${res.status}）` });
         return;
@@ -909,10 +926,9 @@ export function streamRealTurn(
   return queuedStream<RealTurnEvent>(async (push, signal) => {
     let res: Response;
     try {
-      const config = requireConfig();
-      res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
+      res = await hostFetch(`/api/threads/${threadId}/messages`, {
         method: "POST",
-        headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({
           prompt,
           permissionMode,
@@ -1048,12 +1064,11 @@ export async function recordRealUiDisplayMode(
   toolCallId: string,
   displayMode: "inline" | "fullscreen",
 ): Promise<void> {
-  const config = requireConfig();
-  const res = await fetch(
-    `${config.baseUrl}/api/threads/${threadId}/ui-tool-calls/${encodeURIComponent(toolCallId)}/display-mode`,
+  const res = await hostFetch(
+    `/api/threads/${threadId}/ui-tool-calls/${encodeURIComponent(toolCallId)}/display-mode`,
     {
       method: "POST",
-      headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ displayMode }),
     },
   );
@@ -1406,10 +1421,7 @@ export function fetchRealImageUrl(id: string): Promise<string> {
   let url = imageObjectUrls.get(id);
   if (!url) {
     url = (async () => {
-      const config = requireConfig();
-      const res = await fetch(`${config.baseUrl}/api/images/${encodeURIComponent(id)}`, {
-        headers: { authorization: `Bearer ${config.token}` },
-      });
+      const res = await hostFetch(`/api/images/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error(`画像を取れませんでした（${res.status}）`);
       return URL.createObjectURL(await res.blob());
     })();

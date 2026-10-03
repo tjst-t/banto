@@ -20,6 +20,23 @@ const nextConfig: NextConfig = {
   // ——外部公開URLのホスト名が変わったら、ここに追記する必要がある
   // （Next側の制約でワイルドカード全許可は不可、ホスト名を列挙する必要がある）。
   allowedDevOrigins: ["192.168.1.47", "*.local", "127.0.0.1", "banto.tjstkm.net"],
+  /**
+   * **画面を iframe に入れさせない**（決定・2026-10-03、`docs/specs/v4-security.md`「人のログイン」）。
+   * 公開先（`*.banto.tjstkm.net`、AI が動かすもの）は同じサイトなので、iframe の中にもログインの Cookie が付く
+   * ——ログインした画面を透明に重ねて、承認や「端末を追加」を押させられる。Canvas の sandbox は別の口なので関係しない
+   */
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

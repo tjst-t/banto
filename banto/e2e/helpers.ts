@@ -1,6 +1,6 @@
 // specから共通で使う手順。真実は一箇所（規則3）——同じ待ちを各specに写さない。
 import { expect, type Page } from "@playwright/test";
-import { CORE_BASE_URL, AUTH_TOKEN } from "./config.js";
+import { CORE_BASE_URL, CORE_BROWSER_URL, AUTH_TOKEN } from "./config.js";
 import { FAKE_RUNNER_MARKER, type FakePlan } from "./fake-runner.js";
 
 /**
@@ -44,9 +44,10 @@ export async function installInfisical(page: Page, name = "vault-infisical"): Pr
 export async function openApp(
   page: Page,
   /** 画面が繋ぐ先。既定は E2E の core——間に中継を挟んで接続を切る試験だけが変える */
-  host: string = CORE_BASE_URL,
+  host: string = CORE_BROWSER_URL,
 ): Promise<void> {
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${host}`);
+  // ログインは test-base が済ませている（Cookie）。画面には繋ぐ先だけを渡す（localhost でだけ読まれる）
+  await page.goto(`/?bantoHost=${host}`);
   await Promise.race([
     page.waitForURL(/\/p\/[0-9a-f-]+/, { timeout: 30_000 }),
     page.getByText("まだ Project がありません").waitFor({ state: "visible", timeout: 30_000 }),

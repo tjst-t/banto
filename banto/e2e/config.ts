@@ -153,5 +153,14 @@ export const AUTH_TOKEN = "e2e-fixed-token";
 export const PORT = CORE_PORT;
 
 export const SANDBOX_BASE_URL = `http://127.0.0.1:${SANDBOX_PORT}`;
+/** **node の側から** core を叩く住所（Bearer の機械の口）。ブラウザからは `CORE_BROWSER_URL` */
 export const CORE_BASE_URL = `http://127.0.0.1:${CORE_PORT}`;
-export const FRONTEND_BASE_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
+/**
+ * **ブラウザが開く住所は localhost**（改訂・2026-10-03、人のログイン）。パスキー（WebAuthn）は IP アドレスを
+ * RP ID に取れない（127.0.0.1 では「invalid domain」、実測）。画面と core を同じ名前（localhost）にそろえる
+ * ——ログインの Cookie は名前ごと（ポートを問わない）なので、画面のポートから core のポートへの要求にも付く
+ */
+export const FRONTEND_BASE_URL = `http://localhost:${FRONTEND_PORT}`;
+export const CORE_BROWSER_URL = `http://localhost:${CORE_PORT}`;
+/** 画面のサーバが待ち受ける住所（起動の確かめに使う。node の localhost は ::1 を先に引くことがある） */
+export const FRONTEND_LISTEN_URL = `http://127.0.0.1:${FRONTEND_PORT}`;

@@ -50,7 +50,8 @@ async function startProxy(): Promise<{ url: string; cut(): void; freeze(): void;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
   return {
-    url: `http://127.0.0.1:${port}`,
+    // ブラウザから見る名前は localhost（ログインの Cookie は名前ごと——127.0.0.1 では付かない）
+    url: `http://localhost:${port}`,
     cut() {
       for (const { client, upstream } of live) {
         client.destroy();

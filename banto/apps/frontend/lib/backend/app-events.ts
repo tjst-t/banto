@@ -8,11 +8,11 @@
 //   turn.started / turn.ended / hello（繋ぎ直した）→ 開いている会話に最新を出す（`latest-state.ts`）
 //   inbox.changed → 受信箱を取り直す
 //
-// 合言葉をヘッダで送るので EventSource は使わない（ターンの SSE と同じく fetch で読む）。途切れたら数秒おいて
+// 独自のヘッダを送るので EventSource は使わない（ターンの SSE と同じく fetch で読む）。途切れたら数秒おいて
 // 繋ぎ直す——**繋がっていない間も人は止めない**（開き直せば記録から見える）。黙って止まった接続も見切る
 // （`readSse`）——携帯で別アプリから戻ったとき、知らせが止まったままにならない。
 
-import { getBackendConfig, readSse } from "./client";
+import { getBackendConfig, hostFetch, readSse } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 
 export type RealAppEvent =
@@ -20,7 +20,9 @@ export type RealAppEvent =
   | { type: "hello"; running?: Array<{ threadId: string; projectId?: string }> }
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
-  | { type: "inbox.changed" };
+  | { type: "inbox.changed" }
+  /** 「端末を追加」の札が使われた（2026-10-03）。札を出した画面が「端末が入りました」と出す */
+  | { type: "auth.device_added"; codeId: string; label: string };
 
 const listeners = new Set<(event: RealAppEvent) => void>();
 let started = false;
@@ -52,7 +54,7 @@ async function loop(): Promise<void> {
 async function readOnce(): Promise<void> {
   const config = getBackendConfig();
   if (!config) return; // まだ繋ぎ先が決まっていない——次の周回で見る
-  const res = await fetch(`${config.baseUrl}/api/events`, { headers: { authorization: `Bearer ${config.token}` } });
+  const res = await hostFetch("/api/events");
   if (!res.ok || !res.body) throw new Error(`知らせの流れに繋げませんでした（${res.status}）`);
   await readSse(res, (data) => dispatch(data as RealAppEvent));
 }

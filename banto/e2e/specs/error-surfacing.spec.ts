@@ -11,7 +11,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { CORE_BROWSER_URL } from "../config.js";
 import { createProject, expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -47,7 +47,7 @@ test("permissionMode を保存できなかったら、そう言って元に戻�
 
 test("会話を読み込めなかったら、そう言う（「読み込んでいます…」のまま黙らない）", async ({ page }) => {
   await page.route("**/api/projects/*/threads", (route) => route.abort("failed"));
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.goto(`/?bantoHost=${CORE_BROWSER_URL}`);
 
   await expect(page.getByText(/読み込めませんでした|繋がりません/).first()).toBeVisible({
     timeout: 30_000,
@@ -55,16 +55,18 @@ test("会話を読み込めなかったら、そう言う（「読み込んで�
   await page.unroute("**/api/projects/*/threads");
 });
 
-test("banto に繋がらないとき、ホームは真っ白にならない——理由と、やり直す口を出す", async ({ page }) => {
-  // 何も待ち受けていない口を指す（host を落とさずに「届かない」を作る）
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=http://127.0.0.1:1`);
+test("banto に繋がらないとき、真っ白にならない——理由と、やり直す口を出す", async ({ page }) => {
+  // 何も待ち受けていない口を指す（host を落とさずに「届かない」を作る）。**改訂・2026-10-03**：ログインを
+  // 確かめる門が先に host を呼ぶので、届かないことは門が言う（ホームまで進まない）
+  await page.goto(`/?bantoHost=http://localhost:1`);
 
-  const error = page.locator('[data-testid="home-load-error"]');
-  await expect(error, "真っ白のまま止まっている").toBeVisible({ timeout: 30_000 });
-  await expect(error.getByText("banto に繋がりません")).toBeVisible();
-  await expect(error.getByRole("button", { name: "もう一度読み込む" })).toBeVisible();
+  const gate = page.getByTestId("connect-gate");
+  await expect(gate, "真っ白のまま止まっている").toBeVisible({ timeout: 30_000 });
+  await expect(gate.getByTestId("connect-error")).toContainText("banto に繋がりません");
+  await expect(gate.getByRole("button", { name: "もう一度試す" })).toBeVisible();
 
-  // 押せば取り直す（届く先に切り替えれば、ちゃんと進む）
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
-  await expect(page.locator('[data-testid="home-load-error"]')).toHaveCount(0, { timeout: 30_000 });
+  // 届く先に切り替えれば、ちゃんと進む
+  await page.goto(`/?bantoHost=${CORE_BROWSER_URL}`);
+  await expect(page.getByTestId("connect-gate")).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.locator('[data-testid="home-load-error"]')).toHaveCount(0);
 });
