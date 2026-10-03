@@ -16,7 +16,8 @@ import { getBackendConfig, readSse } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 
 export type RealAppEvent =
-  | { type: "hello" }
+  /** `running`：繋いだ時点で走っている Thread（追加・2026-10-03、v4-frontend.md §6.33）。古い host は付けない */
+  | { type: "hello"; running?: Array<{ threadId: string; projectId?: string }> }
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
   | { type: "inbox.changed" };

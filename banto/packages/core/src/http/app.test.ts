@@ -13,6 +13,7 @@ import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { RuntimeConfigStore } from "../config/runtime.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
+import { AppEventBus } from "./app-events.js";
 import { TurnEventBus } from "./turn-events.js";
 import { ModuleCallTracker } from "../relay/module-calls.js";
 import type { ActivityReport } from "./activity.js";
@@ -162,6 +163,35 @@ test("POST /api/threads/:id/fork は名前と「まっさらで始める」を�
     assert.equal((await fork({ fresh: "yes" })).status, 400);
     assert.equal((await fork({ fresh: true, fromSeq: 1 })).status, 400);
   });
+});
+
+test("GET /api/events は繋いだ時点で走っている Thread を hello に載せる（v4-frontend.md §6.33）", async () => {
+  const threadTurns = new ThreadTurns();
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const helloOf = async () => {
+        const controller = new AbortController();
+        const res = await fetch(`${base}/api/events`, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        const reader = res.body!.getReader();
+        let text = "";
+        while (!text.includes("\n\n")) text += new TextDecoder().decode((await reader.read()).value);
+        controller.abort();
+        return JSON.parse(text.slice(text.indexOf("data: ") + 6, text.indexOf("\n\n")));
+      };
+
+      assert.deepEqual(await helloOf(), { type: "hello", running: [] });
+      const release = threadTurns.tryAcquire(thread.id, 0)!;
+      assert.deepEqual(await helloOf(), { type: "hello", running: [{ threadId: thread.id, projectId: project.id }] });
+      release();
+      assert.deepEqual(await helloOf(), { type: "hello", running: [] });
+    },
+    { threadTurns, appEvents: new AppEventBus() },
+  );
 });
 
 test("404 for unknown thread", async () => {

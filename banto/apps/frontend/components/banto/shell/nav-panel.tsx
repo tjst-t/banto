@@ -54,6 +54,7 @@ import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags"
 import { SidebarItemMenu } from "./sidebar-item-menu";
 import { SortableList, SortableRow } from "./sortable-list";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
+import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { ThemeToggle } from "./theme-toggle";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
@@ -247,7 +248,7 @@ function ProjectTreeItem({
                     data-roving-item
                     onClick={onNavigate}
                   >
-                    <MessageSquare />
+                    <ThreadRowIcon threadId={project.baseThreadId} icon={MessageSquare} />
                     <span>Base Thread</span>
                   </Link>
                 </SidebarMenuSubButton>
@@ -280,7 +281,7 @@ function ProjectTreeItem({
                               title={fork.title}
                               onClick={onNavigate}
                             >
-                              <ForkIcon />
+                              <ThreadRowIcon threadId={fork.id} icon={ForkIcon} />
                               <span data-testid="sidebar-fork-name">{fork.title}</span>
                             </Link>
                           </SidebarMenuSubButton>

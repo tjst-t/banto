@@ -1944,7 +1944,14 @@ export function createApp(deps: AppDeps) {
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
-        res.write(`data: ${JSON.stringify({ type: "hello" })}\n\n`);
+        // **繋いだ時点で走っている Thread も渡す**（決定・2026-10-03、ユーザー要望。v4-frontend.md §6.33）——
+        // サイドバーはこれと turn.started / turn.ended で「AI が動いている」を出す。繋ぎ直したら丸ごと置き換えるので、
+        // 途切れている間に終わったターンが回り続けることはない
+        const running = (deps.threadTurns?.list() ?? []).map((t) => {
+          const projectId = deps.projectThread.getThread(t.threadId)?.projectId;
+          return { threadId: t.threadId, ...(projectId ? { projectId } : {}) };
+        });
+        res.write(`data: ${JSON.stringify({ type: "hello", running })}\n\n`);
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);
         await new Promise<void>((resolve) => {

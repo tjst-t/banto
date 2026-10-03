@@ -18,6 +18,7 @@ import { useState } from "react";
 import { UrlLink as Link } from "@/components/banto/url-link";
 import { Bell, Clock, PanelLeft, Plus, Search, Settings } from "lucide-react";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
+import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -233,7 +234,7 @@ function CollapsedRail({
                             href={threadNavHref(project.id, fork.id, pathname, searchParams, "project-danger")}
                             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-ink-2 hover:bg-accent hover:text-foreground"
                           >
-                            <ForkIcon className="size-3.5 shrink-0 text-ink-3" />
+                            <ThreadRowIcon threadId={fork.id} icon={ForkIcon} className="size-3.5 shrink-0 text-ink-3" />
                             <span className="truncate">{fork.title}</span>
                           </Link>
                         ))}
