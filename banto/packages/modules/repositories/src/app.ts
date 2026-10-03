@@ -769,10 +769,14 @@ const SCRIPT = String.raw`
   });
 
   // ---- 操作 ----
+  /** 置き場を書いた回数——読み直しが書く前に始まって後から返ったら、その古い置き場で上書きしない */
+  let homeWrites = 0;
   async function load() {
+    const writesAtStart = homeWrites;
     try {
       const [listing, home] = await Promise.all([call("list_repositories"), call("get_repository_settings")]);
-      state.listing = listing; state.home = home; state.loadError = null;
+      state.listing = listing; state.loadError = null;
+      if (homeWrites === writesAtStart) state.home = home;
     } catch (e) {
       state.loadError = "読み込めませんでした：" + errText(e);
     }
@@ -881,6 +885,7 @@ const SCRIPT = String.raw`
     const next = explicit === null ? null : state.homeDraft;
     if (explicit !== null && next === null) return;
     state.homeBusy = true; render();
+    homeWrites += 1;
     try {
       state.home = await call("set_repository_home", { repoHome: next });
       state.homeDraft = null; state.homeError = null;
@@ -1504,7 +1509,9 @@ const SCRIPT = String.raw`
     name.addEventListener("input", () => { cr.failed = null; cr.confirmedFor = null; window.clearTimeout(cr.timer); renderCreate(); cr.timer = window.setTimeout(() => inspectCreate(false), 300); });
     name.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doCreate(); } });
     // 名前を決めたとき（欄を離れた）にだけ、GitHub に同じ名前があるかを聞く——打つたびには聞かない
-    name.addEventListener("blur", () => { if (name.value.trim()) inspectCreate(true); });
+    // 打ったときの確かめ（300ms 後）が予約されていたら取り消す——後から走って、GitHub に聞いた結果を聞かない結果で
+    // 上書きしていた（同じ名前の注意が消える。E2E が間欠で落ちて見つけた）
+    name.addEventListener("blur", () => { window.clearTimeout(cr.timer); if (name.value.trim()) inspectCreate(true); });
     const band = makeBand("", name, "repo-create-band");
     const note = h("div", { "data-testid": "repo-create-github" });
     const opt = projectOption(cr, "repo-create-with-project", () => renderCreate());
