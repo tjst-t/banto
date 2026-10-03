@@ -658,7 +658,7 @@ test("入口の画面のワンクリック公開：人が押せば承認の頼�
     assert.equal(out.url, `https://${HOST}`);
     const ov = JSON.parse((await asHuman("get_publish_overview", { projectId: P1 })).text);
     assert.equal(ov.published.length, 1);
-    assert.equal(ov.published[0].auth, "none", "設定は出し方の既定（認証なし）");
+    assert.equal(ov.published[0].auth, "banto", "設定は出し方の既定（banto のログイン、2026-10-03）");
     assert.deepEqual(ov.pending, [], "承認の頼みは作らない");
     assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)));
   });

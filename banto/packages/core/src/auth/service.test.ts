@@ -5,6 +5,7 @@ import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { request as httpRequest } from "node:http";
 import { EventLog } from "../event-store/log.js";
 import { ProjectThreadStore } from "../project-thread/store.js";
 import { GlobalMemoryStore } from "../global-memory/store.js";
@@ -390,4 +391,140 @@ test("IP アドレスの画面ではパスキーを使えないと言う", async
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ───────────── 公開先の前の認証（oauth2-proxy と同じ形） ─────────────
+
+const SVC = "web-1a2b3c4d.localhost";
+const SVC_ORIGIN = `http://${SVC}:4175`;
+
+/** Caddy の forward_auth が host に送る問い合わせ（元の要求のヘッダが付く） */
+function check(ctx: Ctx, init: { host?: string; cookie?: string; mode?: string; site?: string; uri?: string } = {}) {
+  const headers: Record<string, string> = {
+    "x-forwarded-host": init.host ?? SVC,
+    "x-forwarded-uri": init.uri ?? "/app?x=1",
+    "sec-fetch-mode": init.mode ?? "navigate",
+  };
+  if (init.site) headers["sec-fetch-site"] = init.site;
+  if (init.cookie) headers.cookie = init.cookie;
+  // fetch は Sec-Fetch-* を書かせない（ブラウザと同じ決まり）——Caddy の役は素の HTTP で送る
+  return new Promise<{ status: number; headers: { get(name: string): string | null } }>((resolve, reject) => {
+    const req = httpRequest(`${ctx.base}/api/auth/publish-check`, { headers }, (res) => {
+      res.resume();
+      resolve({
+        status: res.statusCode ?? 0,
+        headers: { get: (name) => (res.headers[name.toLowerCase()] as string | undefined) ?? null },
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/** banto にログインした状態で publish-start を通り、公開先の戻り道で通行証を受け取る */
+async function passFor(ctx: Ctx, cookie: string, host = SVC): Promise<string> {
+  const start = await fetch(
+    `${ctx.base}/api/auth/publish-start?rd=${encodeURIComponent(`http://${host}:4175/app?x=1`)}`,
+    { headers: { cookie }, redirect: "manual" },
+  );
+  assert.equal(start.status, 302, await start.clone().text());
+  const callback = new URL(start.headers.get("location")!);
+  assert.equal(callback.origin, `http://${host}:4175`);
+  assert.equal(callback.pathname, "/.banto-auth/callback");
+  assert.equal(callback.searchParams.get("rd"), "/app?x=1");
+  const back = await fetch(`${ctx.base}${callback.pathname}${callback.search}`, {
+    headers: { "x-forwarded-host": host },
+    redirect: "manual",
+  });
+  assert.equal(back.status, 302, await back.clone().text());
+  assert.equal(back.headers.get("location"), "/app?x=1");
+  const set = back.headers.getSetCookie().find((c) => c.startsWith("__Host-banto-pass="));
+  assert.ok(set, "通行証が出ていない");
+  assert.match(set, /HttpOnly/);
+  assert.doesNotMatch(set, /Domain=/i);
+  return set.split(";")[0]!;
+}
+
+test("公開先：通行証が無ければ、画面の遷移は banto へ回し、それ以外は 401。別のサイトからの要求は断る", async () => {
+  await withAuth(async (ctx) => {
+    const nav = await check(ctx);
+    assert.equal(nav.status, 302);
+    const to = new URL(nav.headers.get("location")!);
+    assert.equal(to.origin, "http://localhost:4737");
+    assert.equal(to.pathname, "/api/auth/publish-start");
+    assert.equal(to.searchParams.get("rd"), `${SVC_ORIGIN}/app?x=1`);
+    assert.equal((await check(ctx, { mode: "cors", site: "same-origin" })).status, 401);
+    assert.equal((await check(ctx, { mode: "cors", site: "same-site" })).status, 403, "別の公開先のページから");
+  });
+});
+
+test("公開先：banto に入っていなければ、ログインの画面へ回し、入ったら戻ってくる道を付ける", async () => {
+  await withAuth(async (ctx) => {
+    const res = await fetch(`${ctx.base}/api/auth/publish-start?rd=${encodeURIComponent(`${SVC_ORIGIN}/`)}`, { redirect: "manual" });
+    assert.equal(res.status, 302);
+    const to = new URL(res.headers.get("location")!);
+    assert.equal(to.origin, UI);
+    const next = new URL(to.searchParams.get("next")!);
+    assert.equal(next.pathname, "/api/auth/publish-start");
+    assert.equal(next.searchParams.get("rd"), `${SVC_ORIGIN}/`);
+  });
+});
+
+test("公開先：ログインしていれば、その公開先だけの通行証で通る。ほかの公開先・締め出したあとは通らない", async () => {
+  await withAuth(async (ctx) => {
+    const cookie = await loginWithLink(ctx);
+    const pass = await passFor(ctx, cookie);
+    assert.equal((await check(ctx, { cookie: pass })).status, 200);
+    assert.equal((await check(ctx, { cookie: pass, mode: "cors", site: "same-origin" })).status, 200);
+    // 別の公開先の名前では効かない
+    assert.equal((await check(ctx, { cookie: pass, host: "other-1a2b3c4d.localhost" })).status, 302);
+    // host を起こし直しても効く（鍵はデータ置き場）
+    await ctx.restart();
+    assert.equal((await check(ctx, { cookie: pass })).status, 200);
+    // 締め出すと効かない
+    const sessions = (await (await ctx.ui("/api/auth/sessions", { cookie })).json()) as Array<{ id: string; current: boolean }>;
+    const mine = sessions.find((s) => s.current)!;
+    await ctx.ui(`/api/auth/sessions/${mine.id}`, { method: "DELETE", cookie });
+    assert.equal((await check(ctx, { cookie: pass })).status, 302);
+  });
+});
+
+test("公開先：戻り先は banto の名前の下だけ。札は1回だけ・その公開先の名前でだけ引き換えられ、戻るのはパスだけ", async () => {
+  await withAuth(async (ctx) => {
+    const cookie = await loginWithLink(ctx);
+    for (const rd of ["https://evil.example/", "http://localhost.evil.example:4175/", `http://localhost:4175/`, "http://x.localhost:9999/"]) {
+      const res = await fetch(`${ctx.base}/api/auth/publish-start?rd=${encodeURIComponent(rd)}`, { headers: { cookie }, redirect: "manual" });
+      assert.equal(res.status, 400, rd);
+    }
+    const start = await fetch(`${ctx.base}/api/auth/publish-start?rd=${encodeURIComponent(`${SVC_ORIGIN}/`)}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    const callback = new URL(start.headers.get("location")!);
+    const code = callback.searchParams.get("code")!;
+    // 別の名前で引き換えようとしても通らない（Caddy を通らずに X-Forwarded-Host を偽った）
+    const wrongHost = await fetch(`${ctx.base}/.banto-auth/callback?code=${code}&rd=/`, {
+      headers: { "x-forwarded-host": "other-1a2b3c4d.localhost" },
+      redirect: "manual",
+    });
+    assert.equal(wrongHost.status, 400);
+    // 1回失敗した札はもう使えない
+    const again = await fetch(`${ctx.base}/.banto-auth/callback?code=${code}&rd=/`, {
+      headers: { "x-forwarded-host": SVC },
+      redirect: "manual",
+    });
+    assert.equal(again.status, 400);
+    // よそへ飛ばす戻り先は、ただのパスに落とす
+    const start2 = await fetch(`${ctx.base}/api/auth/publish-start?rd=${encodeURIComponent(`${SVC_ORIGIN}/`)}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    const code2 = new URL(start2.headers.get("location")!).searchParams.get("code")!;
+    const evil = await fetch(`${ctx.base}/.banto-auth/callback?code=${code2}&rd=${encodeURIComponent("//evil.example/")}`, {
+      headers: { "x-forwarded-host": SVC },
+      redirect: "manual",
+    });
+    assert.equal(evil.status, 302);
+    assert.equal(evil.headers.get("location"), "/");
+  });
 });

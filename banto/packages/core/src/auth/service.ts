@@ -10,7 +10,9 @@
 //   まだ1つも無いときは求めない
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -24,6 +26,12 @@ import { consumeLoginLink, loginLinkUrl, ONE_TIME_CODE_TTL_MS } from "./login-li
 import { deviceLabel } from "./device-label.js";
 
 export const SESSION_COOKIE = "__Host-banto-session";
+/** 公開先の通行証（その公開先のホストにだけ置く） */
+export const PASS_COOKIE = "__Host-banto-pass";
+/** 公開先から banto へ戻ってくる道（Caddy がこのパスだけ host へ回す） */
+export const PUBLISH_CALLBACK_PATH = "/.banto-auth/callback";
+/** 公開先へ渡す札の寿命 */
+const PUBLISH_CODE_TTL_MS = 60 * 1000;
 export const CLIENT_HEADER = "x-banto-client";
 const COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60;
 /** step-up の効く時間（パスキーを通してから、この間だけ大事な操作ができる） */
@@ -49,6 +57,8 @@ export interface AuthServiceOptions {
   uiOrigin: string;
   /** 画面から見た API の基点。画面と同じオリジンなら同じ値 */
   apiBaseUrl: string;
+  /** Canvas の sandbox のオリジン（公開先として扱わない） */
+  sandboxOrigin?: string;
   events?: AuthEventSink;
   now?: () => number;
 }
@@ -97,6 +107,9 @@ export class AuthService {
   /** Cookie を出し直した時刻（滑走する期限をブラウザ側にも伸ばす） */
   private readonly cookieIssued = new Map<string, number>();
   private unauthWindow = { startedAt: 0, count: 0 };
+  /** 公開先へ渡す札（1回だけ・1分）。札のハッシュ → どの公開先・どのセッション */
+  private readonly publishCodes = new Map<string, { host: string; sessionId: string; expiresAt: number }>();
+  private passKeyCache: Buffer | undefined;
 
   constructor(private readonly opts: AuthServiceOptions) {
     this.uiOrigin = new URL(opts.uiOrigin).origin;
@@ -175,7 +188,7 @@ export class AuthService {
 
   /** `/api/auth/*` なら処理して true。違えば false（ほかの口へ） */
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-    if (!url.pathname.startsWith("/api/auth/")) return false;
+    if (!url.pathname.startsWith("/api/auth/") && url.pathname !== PUBLISH_CALLBACK_PATH) return false;
     try {
       await this.route(req, res, url);
     } catch (err) {
@@ -190,8 +203,13 @@ export class AuthService {
   }
 
   private async route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    const path = url.pathname.slice("/api/auth".length);
     const method = req.method ?? "GET";
+    if (url.pathname === PUBLISH_CALLBACK_PATH && method === "GET") return this.publishCallback(req, res, url);
+    const path = url.pathname.slice("/api/auth".length);
+
+    // ── 公開先の前の認証（Caddy の forward_auth と、画面の遷移） ──
+    if (path === "/publish-check" && method === "GET") return this.publishCheck(req, res);
+    if (path === "/publish-start" && method === "GET") return this.publishStart(req, res, url);
 
     // ── 入っていなくても呼べる口（ブラウザからの要求であることは求める） ──
     if (path === "/me" && method === "GET") {
@@ -372,6 +390,153 @@ export class AuthService {
     throw new AuthHttpError(404, "not found");
   }
 
+  // ───────────── 公開先の前の認証 ─────────────
+  //
+  // oauth2-proxy と同じ形（`docs/specs/v4-security.md`「公開したものの前の認証」）。banto のセッションの Cookie は
+  // 公開先へ届かない（`__Host-` で banto の名前だけ）。公開先には、その公開先の名前にだけ効く通行証を置く。
+  // 札も通行証も**公開先の名前に結びつける**——Caddy を通らずに host へ直に来た要求が `X-Forwarded-Host` を
+  // 偽っても、自分が持っている（＝自分の名前の）ものしか通らない。
+
+  /** Caddy が付ける、元の要求の名前（無ければ Host） */
+  private forwardedHost(req: IncomingMessage): string {
+    const raw = req.headers["x-forwarded-host"] ?? req.headers.host ?? "";
+    return String(Array.isArray(raw) ? raw[0] : raw).split(",")[0]!.trim().toLowerCase().replace(/:\d+$/, "");
+  }
+
+  /** 公開先として扱ってよい URL か（banto の画面の名前の下・同じ scheme とポート・sandbox ではない） */
+  private publishTarget(raw: string | null): URL | undefined {
+    if (!raw) return undefined;
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      return undefined;
+    }
+    const ui = new URL(this.uiOrigin);
+    if (url.protocol !== ui.protocol || url.port !== ui.port) return undefined;
+    if (!url.hostname.endsWith(`.${ui.hostname}`)) return undefined;
+    if (this.opts.sandboxOrigin && url.origin === new URL(this.opts.sandboxOrigin).origin) return undefined;
+    if (url.username || url.password) return undefined;
+    return url;
+  }
+
+  private passKey(): Buffer {
+    if (this.passKeyCache) return this.passKeyCache;
+    const dir = join(this.opts.dataDir, "auth");
+    const path = join(dir, "pass-key");
+    try {
+      this.passKeyCache = Buffer.from(readFileSync(path, "utf8").trim(), "base64url");
+    } catch {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const key = randomSecret();
+      writeFileSync(path, key, { mode: 0o600, flag: "wx" });
+      this.passKeyCache = Buffer.from(key, "base64url");
+    }
+    return this.passKeyCache;
+  }
+
+  private signPass(payload: { s: string; h: string; e: number }): string {
+    const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const mac = createHmac("sha256", this.passKey()).update(body).digest("base64url");
+    return `${body}.${mac}`;
+  }
+
+  /** 通行証を確かめる。その名前のもので、期限内で、もとのセッションが生きているときだけ通す */
+  private async verifyPass(value: string | undefined, host: string): Promise<boolean> {
+    if (!value) return false;
+    const [body, mac] = value.split(".");
+    if (!body || !mac) return false;
+    const expected = createHmac("sha256", this.passKey()).update(body).digest();
+    const given = Buffer.from(mac, "base64url");
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return false;
+    let payload: { s?: unknown; h?: unknown; e?: unknown };
+    try {
+      payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as typeof payload;
+    } catch {
+      return false;
+    }
+    if (payload.h !== host || typeof payload.e !== "number" || payload.e <= this.now()) return false;
+    // 締め出した端末の通行証は、次の要求から効かない
+    const session = typeof payload.s === "string" ? this.opts.store.getSession(payload.s) : undefined;
+    if (!session) return false;
+    return this.now() - Date.parse(session.lastUsedAt) <= 30 * 24 * 60 * 60 * 1000;
+  }
+
+  /** Caddy の forward_auth から呼ばれる。通れば 200、だめなら画面の遷移は banto へ、それ以外は 401 */
+  private async publishCheck(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const host = this.forwardedHost(req);
+    const mode = req.headers["sec-fetch-mode"];
+    const site = req.headers["sec-fetch-site"];
+    // **公開先どうしの横取りを断る**（Fable のレビュー中5）——別の公開先のページから要求を出すと、Lax の通行証が
+    // 付いてこの公開先を人の名義で動かせる。画面の遷移（リンクを押した）は通す
+    if (mode !== "navigate" && site !== undefined && site !== "same-origin" && site !== "none") {
+      return sendJson(res, 403, { error: "別のサイトのページからの要求は通しません" });
+    }
+    if (await this.verifyPass(parseCookies(req.headers.cookie).get(PASS_COOKIE), host)) {
+      res.writeHead(200, { "cache-control": "no-store" }).end();
+      return;
+    }
+    if (mode === "navigate") {
+      const uri = String(req.headers["x-forwarded-uri"] ?? "/");
+      const proto = new URL(this.uiOrigin).protocol;
+      const port = new URL(this.uiOrigin).port;
+      const rd = `${proto}//${host}${port ? `:${port}` : ""}${uri.startsWith("/") ? uri : "/"}`;
+      const start = `${new URL(this.opts.apiBaseUrl).origin}/api/auth/publish-start?rd=${encodeURIComponent(rd)}`;
+      res.writeHead(302, { location: start, "cache-control": "no-store" }).end();
+      return;
+    }
+    sendJson(res, 401, { error: "banto にログインしてから開いてください" });
+  }
+
+  /** 画面の遷移で来る。banto に入っていれば、その公開先だけの札を付けて戻す */
+  private async publishStart(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const target = this.publishTarget(url.searchParams.get("rd"));
+    if (!target) return sendHtml(res, 400, "戻り先が banto の公開先ではありません");
+    // 遷移なので独自のヘッダは付かない。Cookie だけを見る（ここで起きるのは「その公開先へ札を持って戻る」だけ
+    // ——札も通行証もその公開先の名前に結びつくので、よそから踏ませても、よそのものは手に入らない）
+    const token = parseCookies(req.headers.cookie).get(SESSION_COOKIE);
+    const session = token ? await this.opts.store.resolveSession(token) : undefined;
+    if (!session) {
+      const back = `${new URL(this.opts.apiBaseUrl).origin}/api/auth/publish-start?rd=${encodeURIComponent(target.href)}`;
+      res.writeHead(302, { location: `${this.uiOrigin}/?next=${encodeURIComponent(back)}`, "cache-control": "no-store" }).end();
+      return;
+    }
+    const now = this.now();
+    for (const [h, c] of this.publishCodes) if (c.expiresAt <= now) this.publishCodes.delete(h);
+    if (this.publishCodes.size >= MAX_PENDING_CHALLENGES) {
+      const oldest = this.publishCodes.keys().next().value;
+      if (oldest !== undefined) this.publishCodes.delete(oldest);
+    }
+    const code = randomSecret();
+    this.publishCodes.set(sha256(code), { host: target.hostname, sessionId: session.id, expiresAt: now + PUBLISH_CODE_TTL_MS });
+    const back = `${target.pathname}${target.search}`;
+    const callback = `${target.origin}${PUBLISH_CALLBACK_PATH}?code=${encodeURIComponent(code)}&rd=${encodeURIComponent(back)}`;
+    res.writeHead(302, { location: callback, "cache-control": "no-store" }).end();
+  }
+
+  /** 公開先の `/.banto-auth/callback`（Caddy が host へ回す）。札を引き換えて通行証を置き、元の場所へ戻す */
+  private async publishCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const host = this.forwardedHost(req);
+    const code = url.searchParams.get("code") ?? "";
+    const found = this.publishCodes.get(sha256(code));
+    if (found) this.publishCodes.delete(sha256(code));
+    if (!found || found.expiresAt <= this.now() || found.host !== host) {
+      return sendHtml(res, 400, "この戻りは使えません（使用済みか、1分を過ぎています）。もう一度開き直してください");
+    }
+    const session = this.opts.store.getSession(found.sessionId);
+    if (!session) return sendHtml(res, 400, "banto のログインが切れています。もう一度開き直してください");
+    // 戻り先はパスだけ。`//` と `/\` は別の名前へ飛ぶので断る（開いたリダイレクトにしない）
+    const rd = url.searchParams.get("rd") ?? "/";
+    const safe = rd.startsWith("/") && !rd.startsWith("//") && !rd.startsWith("/\\") ? rd : "/";
+    const pass = this.signPass({ s: session.id, h: host, e: this.now() + COOKIE_MAX_AGE_S * 1000 });
+    res.writeHead(302, {
+      location: safe,
+      "set-cookie": `${PASS_COOKIE}=${pass}; Path=/; Max-Age=${COOKIE_MAX_AGE_S}; Secure; HttpOnly; SameSite=Lax`,
+      "cache-control": "no-store",
+    });
+    res.end();
+  }
+
   // ───────────── 中身 ─────────────
 
   private requireBrowser(req: IncomingMessage): void {
@@ -476,6 +641,16 @@ function appendSetCookie(res: ServerResponse, value: string): void {
   const prev = res.getHeader("set-cookie");
   const list = prev === undefined ? [] : Array.isArray(prev) ? prev : [String(prev)];
   res.setHeader("set-cookie", [...list, value]);
+}
+
+function sendHtml(res: ServerResponse, status: number, message: string): void {
+  const safe = message.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  const html =
+    `<!doctype html><html lang="ja"><head><meta charset="utf-8" /><title>banto</title>` +
+    `<style>body{font:16px/1.7 system-ui;margin:0;display:grid;place-items:center;min-height:100vh;color-scheme:light dark}` +
+    `p{max-width:34rem;padding:1.5rem}</style></head><body><p>${safe}</p></body></html>`;
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store" });
+  res.end(html);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

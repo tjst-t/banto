@@ -16,7 +16,15 @@ export interface PublishTarget {
   port: number;
 }
 
-export type AuthRecord = { kind: "none" } | { kind: "basic"; username: string; passwordHash: string };
+export type AuthRecord = { kind: "banto" } | { kind: "none" } | { kind: "basic"; username: string; passwordHash: string };
+
+/**
+ * **banto のログイン**で守るときの決まりごと（決定・2026-10-03、`docs/specs/v4-security.md`「公開したものの前の
+ * 認証」）。banto 本体（host）に問い合わせ、その公開先だけの通行証を確かめる。通行証の Cookie は、確かめたあと
+ * サービスへ渡す要求から外し、サービスが返す同じ名前の Set-Cookie も落とす（サービスは AI が作ったもの）
+ */
+export const PASS_COOKIE = "__Host-banto-pass";
+export const BANTO_AUTH_PATH = "/.banto-auth/*";
 
 /** 覚えておく公開（**マスター**。Caddy のルートはここから作る写し） */
 export interface RouteRecord extends PublishTarget {
@@ -72,10 +80,14 @@ export const CONFIG_SCHEMA = {
     auth: {
       type: "string",
       title: "認証",
-      // **既定は無し**（決定・2026-09-28、ユーザー——当面は LAN の中だけの想定。banto の SSO は後で考える）
-      enum: ["none", "basic"],
-      enumNames: ["無し（URL を知っていれば誰でも届く）", "Basic 認証（ユーザー名とパスワード）"],
-      default: "none",
+      // **既定は banto のログイン**（改訂・2026-10-03、ユーザー。2026-09-28 の「既定は無し」を改めた）
+      enum: ["banto", "none", "basic"],
+      enumNames: [
+        "banto のログイン（banto にログインしている端末だけが開ける）",
+        "無し（URL を知っていれば誰でも届く）",
+        "Basic 認証（ユーザー名とパスワード）",
+      ],
+      default: "banto",
     },
     username: { type: "string", title: "Basic 認証のユーザー名", default: "banto", minLength: 1, maxLength: 64 },
     password: {
@@ -98,7 +110,7 @@ export const CONFIG_SCHEMA = {
 
 export interface PublishConfig {
   subdomain?: string;
-  auth: { kind: "none" } | { kind: "basic"; username: string; password?: string };
+  auth: { kind: "banto" } | { kind: "none" } | { kind: "basic"; username: string; password?: string };
 }
 
 /**
@@ -120,6 +132,7 @@ export function parseConfig(raw: unknown, opts: { forPlan?: boolean } = {}): Pub
   }
   const kind = c.auth ?? CONFIG_SCHEMA.properties.auth.default;
   if (kind === "none") return { ...(subdomain ? { subdomain } : {}), auth: { kind: "none" } };
+  if (kind === "banto") return { ...(subdomain ? { subdomain } : {}), auth: { kind: "banto" } };
   if (kind !== "basic") throw new PublishError(`認証の種類が不正です：${JSON.stringify(c.auth)}`);
   const username = c.username === undefined || c.username === "" ? CONFIG_SCHEMA.properties.username.default : c.username;
   if (typeof username !== "string" || username.length > 64 || /[:\s]/.test(username)) {
@@ -141,7 +154,7 @@ export function parseConfig(raw: unknown, opts: { forPlan?: boolean } = {}): Pub
 const BCRYPT_COST = 10;
 
 export async function authRecordOf(auth: PublishConfig["auth"]): Promise<AuthRecord> {
-  if (auth.kind === "none") return { kind: "none" };
+  if (auth.kind === "none" || auth.kind === "banto") return { kind: auth.kind };
   if (!auth.password) throw new PublishError("Basic 認証のパスワードが要ります");
   return { kind: "basic", username: auth.username, passwordHash: await bcrypt.hash(auth.password, BCRYPT_COST) };
 }
@@ -152,8 +165,47 @@ export async function authRecordOf(auth: PublishConfig["auth"]): Promise<AuthRec
  * 行き先が分からない（コンテナが止まっている等）ときは **中継せず 503 を返す**——前のアドレスを残すと、
  * そのアドレスを DHCP で受け取った**別の Project のコンテナ**へ届けてしまう
  */
-export function buildRoute(id: string, rec: RouteRecord, upstream: string | undefined): Record<string, unknown> {
+export function buildRoute(
+  id: string,
+  rec: RouteRecord,
+  upstream: string | undefined,
+  /** banto 本体（host）の口（例 `127.0.0.1:4737`）。banto のログインで守るときに Caddy が問い合わせる先 */
+  bantoUpstream?: string,
+): Record<string, unknown> {
   const handle: Record<string, unknown>[] = [];
+  const routes: Record<string, unknown>[] = [];
+  if (rec.auth.kind === "banto") {
+    if (!bantoUpstream) {
+      // 問い合わせ先が分からないなら通さない（守らずに開けない）
+      return {
+        "@id": id,
+        match: [{ host: [rec.hostname] }],
+        handle: [{ handler: "static_response", status_code: 503, body: "banto: banto 本体の住所が分からないので、ログインを確かめられません" }],
+        terminal: true,
+      };
+    }
+    const banto = { handler: "reverse_proxy", upstreams: [{ dial: bantoUpstream }] };
+    // 1. banto から戻ってくる道（札を通行証に引き換える）。サービスへは渡さない
+    routes.push({ match: [{ path: [BANTO_AUTH_PATH] }], handle: [banto] });
+    // 2. Caddyfile の forward_auth と同じ形——banto に問い合わせ、2xx なら次へ。それ以外（302・401・403）は
+    //    banto の答えをそのまま返す
+    handle.push({
+      ...banto,
+      rewrite: { method: "GET", uri: "/api/auth/publish-check" },
+      headers: {
+        request: {
+          set: { "X-Forwarded-Method": ["{http.request.method}"], "X-Forwarded-Uri": ["{http.request.uri}"] },
+        },
+      },
+      handle_response: [{ match: { status_code: [2] }, routes: [] }],
+    });
+    // 3. 通行証をサービスに見せない（要求から外す）。サービスが同じ名前の Cookie を書けないようにする
+    handle.push({
+      handler: "headers",
+      request: { replace: { Cookie: [{ search_regexp: `${PASS_COOKIE}=[^;]*(;\\s*)?`, replace: "" }] } },
+      response: { replace: { "Set-Cookie": [{ search_regexp: `^\\s*${PASS_COOKIE}=.*$`, replace: "" }] }, deferred: true },
+    });
+  }
   if (rec.auth.kind === "basic") {
     handle.push({
       handler: "authentication",
@@ -177,10 +229,11 @@ export function buildRoute(id: string, rec: RouteRecord, upstream: string | unde
           body: "banto: この公開先はいま動いていません（Project のコンテナが止まっている）",
         },
   );
+  routes.push({ handle });
   return {
     "@id": id,
     match: [{ host: [rec.hostname] }],
-    handle: [{ handler: "subroute", routes: [{ handle }] }],
+    handle: [{ handler: "subroute", routes }],
     terminal: true,
   };
 }

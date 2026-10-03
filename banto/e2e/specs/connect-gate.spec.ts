@@ -180,3 +180,25 @@ test("端末を追加の札も1回だけ：使った札で別の端末は入れ�
     }
   }
 });
+
+test("公開先から回されてきたら、入ったあとそこへ戻る。banto の publish-start 以外へは戻らない", async ({ page }) => {
+  const port = new URL(FRONTEND_BASE_URL).port;
+  const rd = `http://web-1a2b3c4d.localhost:${port}/app?x=1`;
+  const next = `${CORE_BROWSER_URL}/api/auth/publish-start?rd=${encodeURIComponent(rd)}`;
+  // ログインしていない——門に「入ると戻ります」と出る
+  await page.goto(`/?bantoHost=${encodeURIComponent(CORE_BROWSER_URL)}&next=${encodeURIComponent(next)}`);
+  await expect(page.getByTestId("connect-gate")).toContainText("開こうとしていた公開先へ戻ります", { timeout: 30_000 });
+  // host のリンクで入る（リンクを開き直すと next は消えるので、ここではリンクの札を同じ画面で引き換える）
+  await loginContext(page.context());
+  await page.reload();
+  // publish-start → 公開先の戻り道（/.banto-auth/callback）へ。E2E に Caddy は無いので、着いた URL で見る
+  await page.waitForURL(/\/\.banto-auth\/callback\?code=/, { timeout: 30_000 });
+  const reached = new URL(page.url());
+  expect(reached.host).toBe(`web-1a2b3c4d.localhost:${port}`);
+  expect(reached.searchParams.get("rd")).toBe("/app?x=1");
+
+  // よその next は無視して、そのまま banto の中へ
+  await page.goto(`/?bantoHost=${encodeURIComponent(CORE_BROWSER_URL)}&next=${encodeURIComponent("https://evil.example/")}`);
+  await expectInside(page);
+  expect(new URL(page.url()).host).toBe(new URL(FRONTEND_BASE_URL).host);
+});

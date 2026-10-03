@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { onUnauthorized } from "@/lib/backend/client";
+import { getBackendConfig, onUnauthorized } from "@/lib/backend/client";
 import { fetchAuthMe, loginWithPasskey, redeemLoginCode, type AuthMe } from "@/lib/backend/auth";
 
 const LOGIN_FRAGMENT = "banto-login=";
@@ -62,6 +62,22 @@ function InsecureNotice() {
   );
 }
 
+/**
+ * **公開先から回されてきたとき**（`?next=…/api/auth/publish-start?rd=…`）、入ったらそこへ戻る。
+ * 戻ってよいのは banto 自身の `publish-start` だけ（よそへ飛ばす道にしない）
+ */
+function publishNext(): string | null {
+  const next = new URLSearchParams(window.location.search).get("next");
+  const base = getBackendConfig()?.baseUrl;
+  if (!next || !base) return null;
+  try {
+    const url = new URL(next);
+    return url.origin === new URL(base).origin && url.pathname === "/api/auth/publish-start" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 type GateState =
   | { kind: "checking" }
   | { kind: "insecure" }
@@ -76,6 +92,11 @@ export function ConnectGate({ children }: { children: ReactNode }) {
   const check = useCallback(async (error: string | null = null) => {
     try {
       const me = await fetchAuthMe();
+      const next = me.authenticated && !error ? publishNext() : null;
+      if (next) {
+        window.location.assign(next);
+        return;
+      }
       setState(me.authenticated && !error ? { kind: "in" } : { kind: "login", me, error });
     } catch (err) {
       setState({ kind: "login", me: null, error: `banto に繋がりません（${err instanceof Error ? err.message : String(err)}）` });
@@ -138,6 +159,9 @@ export function ConnectGate({ children }: { children: ReactNode }) {
           <h1 className="text-lg font-semibold text-foreground">banto にログイン</h1>
           {/* **「無い」ではなく「まだ入っていない」** */}
           <p className="text-sm text-ink-3">この端末はまだ banto にログインしていません。</p>
+          {publishNext() ? (
+            <p className="text-sm text-ink-3">入ると、開こうとしていた公開先へ戻ります。</p>
+          ) : null}
         </div>
 
         {me?.passkeyAvailable ? (

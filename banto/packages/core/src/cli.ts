@@ -1625,6 +1625,7 @@ async function main(): Promise<void> {
       dataDir: bootstrap.dataDir,
       authToken: bootstrap.authToken,
       ...loginOrigins(bootstrap),
+      sandboxOrigin: bootstrap.sandboxPublicUrl,
       events: appEvents,
     }),
     releaseProjectModules,

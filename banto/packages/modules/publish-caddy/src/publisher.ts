@@ -43,6 +43,8 @@ export interface PublisherDeps {
   probe(address: string, port: number): Promise<boolean>;
   /** この Module の置き場——ルートの印の持ち主になる */
   owner: string;
+  /** banto 本体（host）の口（例 `127.0.0.1:4737`）。banto のログインで守るとき、Caddy がここに問い合わせる */
+  bantoUpstream?: string;
   now?: () => Date;
 }
 
@@ -69,7 +71,7 @@ export type RouteState =
 export interface RouteStatus extends PublishTarget {
   url: string;
   reach: Reach;
-  auth: "basic" | "none";
+  auth: "banto" | "basic" | "none";
   username?: string;
   state: RouteState;
   problem?: string;
@@ -168,7 +170,7 @@ export class CaddyPublisher {
       };
       const id = routeIdFor(this.prefix, t);
       // **前に差し込む**——Caddyfile の `*.<ドメイン>` のようなまとめたルートより後ろに置くと、そちらが先に当たる
-      await caddy.put(`${routesPath(server)}/0`, buildRoute(id, rec, address));
+      await caddy.put(`${routesPath(server)}/0`, buildRoute(id, rec, address, this.deps.bantoUpstream));
       try {
         await this.deps.store.setRoutes([...records, rec]);
       } catch (err) {
@@ -269,7 +271,7 @@ export class CaddyPublisher {
         continue;
       }
       const address = "address" in found ? found.address : undefined;
-      const desired = buildRoute(id, rec, address);
+      const desired = buildRoute(id, rec, address, this.deps.bantoUpstream);
       try {
         if (!current) await caddy.put(`${routesPath(server)}/0`, desired);
         else if (!sameJson(current, desired)) await caddy.patch(`/id/${id}`, desired);

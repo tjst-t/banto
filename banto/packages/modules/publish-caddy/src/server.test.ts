@@ -55,6 +55,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
     },
     probe: async (address, port) => listening.has(`${address}:${port}`),
     owner: dir,
+    bantoUpstream: "127.0.0.1:4737",
     now: () => new Date("2026-09-27T00:00:00Z"),
   });
   const server = createPublishCaddyServer(publisher, store);
@@ -86,8 +87,10 @@ const publishArgs = (over: Record<string, unknown> = {}) => ({
 function routeFor(caddy: FakeCaddy, host: string) {
   return caddy.routes().find((r) => (r.match as { host: string[] }[] | undefined)?.[0]?.host.includes(host));
 }
+/** サービスへの行き先（banto のログインで守るときは、前に banto への問い合わせの dial が並ぶ——最後のものがサービス） */
 function dialOf(route: Record<string, unknown> | undefined): string | undefined {
-  return JSON.stringify(route).match(/"dial":"([^"]+)"/)?.[1];
+  const all = [...JSON.stringify(route).matchAll(/"dial":"([^"]+)"/g)].map((m) => m[1]);
+  return all.filter((d) => d !== "127.0.0.1:4737").at(-1);
 }
 
 test("道具は AI に見せない——窓口から呼ぶ部品の口（module）と、人の設定（admin）だけ", async () => {
@@ -319,19 +322,43 @@ test("認証の設定項目：Basic ならパスワードが要る・知らな�
     const describe = JSON.parse((await call("describePublishMethod", {}, forProject(P1))).text);
     assert.equal(describe.ready, true);
     assert.equal(describe.reach, "internet");
-    assert.deepEqual(describe.configSchema.properties.auth.enum, ["none", "basic"]);
+    assert.deepEqual(describe.configSchema.properties.auth.enum, ["banto", "none", "basic"]);
     // 項目名は「認証」だけ（2026-09-29、ユーザー——「前に置く認証」はわかりづらい）
     assert.equal(describe.configSchema.properties.auth.title, "認証");
-    // 既定は無し（決定・2026-09-28）——何も書かずに頼むと認証を付けない
-    assert.equal(describe.configSchema.properties.auth.default, "none");
+    // 既定は banto のログイン（改訂・2026-10-03。2026-09-28 の「既定は無し」を改めた）
+    assert.equal(describe.configSchema.properties.auth.default, "banto");
     assert.equal(describe.configSchema.properties.password.writeOnly, true);
     assert.match((await call("publishRoute", publishArgs({ config: { auth: "basic" } }))).text, /パスワードが要ります/);
     assert.match((await call("publishRoute", publishArgs({ config: { auth: "basic", password: "short" } }))).text, /12〜72/);
     assert.match((await call("publishRoute", publishArgs({ config: { auth: "none", passwrod: "typo" } }))).text, /知らない設定項目/);
     assert.deepEqual(caddy.writes(), []);
-    assert.equal((await call("publishRoute", publishArgs({ config: {} }))).isError, false, "何も書かなければ認証なしで通る");
+    assert.equal((await call("publishRoute", publishArgs({ config: { auth: "none" } }))).isError, false, "無しも選べる");
     const route = routeFor(caddy, "web-1a2b3c4d.banto.example.net");
     assert.ok(!JSON.stringify(route).includes("authentication"));
+    assert.ok(!JSON.stringify(route).includes("publish-check"));
+  });
+});
+
+test("banto のログイン（既定）：banto に問い合わせ、2xx のときだけサービスへ。通行証はサービスに見せない", async () => {
+  await withCaddy(async ({ call, caddy }) => {
+    assert.equal((await call("publishRoute", publishArgs({ config: {} }))).isError, false, "何も書かなければ banto のログインで守る");
+    const route = routeFor(caddy, "web-1a2b3c4d.banto.example.net")!;
+    const routes = (route.handle as Array<{ routes: Array<Record<string, unknown>> }>)[0]!.routes;
+    // 1. 戻り道（/.banto-auth/*）は banto へ。サービスへは渡さない
+    assert.deepEqual(routes[0]!.match, [{ path: ["/.banto-auth/*"] }]);
+    assert.match(JSON.stringify(routes[0]), /"dial":"127.0.0.1:4737"/);
+    // 2. forward_auth の形：banto の確かめ口に GET で問い、2xx なら次へ
+    const handle = routes[1]!.handle as Array<Record<string, unknown>>;
+    assert.equal(handle[0]!.handler, "reverse_proxy");
+    assert.deepEqual(handle[0]!.rewrite, { method: "GET", uri: "/api/auth/publish-check" });
+    assert.deepEqual(handle[0]!.handle_response, [{ match: { status_code: [2] }, routes: [] }]);
+    // 3. 通行証の Cookie を外し、サービスが返す同じ名前の Set-Cookie を落とす
+    assert.equal(handle[1]!.handler, "headers");
+    assert.match(JSON.stringify(handle[1]), /__Host-banto-pass/);
+    assert.equal((handle[1]!.response as { deferred?: boolean }).deferred, true);
+    // 4. 最後にサービス
+    assert.equal(handle[2]!.handler, "reverse_proxy");
+    assert.equal(dialOf(route), "10.61.162.23:3000");
   });
 });
 

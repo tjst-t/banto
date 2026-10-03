@@ -231,6 +231,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     resolveAddress: (projectId) => relay.projectAddress(projectId),
     probe: (address, port) => tcpProbe(address, port),
     owner: dataDir,
+    // この Module は host で動き、Caddy も host にいる。banto 本体の口は中継の住所と同じ（例 127.0.0.1:4737）
+    bantoUpstream: new URL(hostUrl).host,
   });
   await createPublishCaddyServer(publisher, store).connect(new StdioServerTransport());
   // **写しを見張る**——Caddy の読み込み直しで消えたルート・コンテナのアドレスの変化を、道具が呼ばれなくても直す。

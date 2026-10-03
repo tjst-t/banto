@@ -211,7 +211,7 @@ const SCRIPT = String.raw`
     "caddy-unreachable": { tone: "danger", text: "Caddy に繋がりません" },
   };
   function stateOf(p) { return STATE[p.state] || { tone: "danger", text: p.problem || p.state }; }
-  const authText = (p) => p.auth === "basic" ? "Basic 認証（" + (p.username || "") + "）をはさんで" : "認証なしで";
+  const authText = (p) => p.auth === "basic" ? "Basic 認証（" + (p.username || "") + "）をはさんで" : p.auth === "banto" ? "banto のログインをはさんで" : "認証なしで";
   /** 文の中で使う短い言い方（承認の画面の長い言い方は、輪の説明に使う） */
   const REACH_SHORT = { machine: "この機械", lan: "LAN の中", internet: "インターネット" };
 
@@ -295,13 +295,13 @@ const SCRIPT = String.raw`
     const reachText = ready && ready.length === 1 ? (REACH_SHORT[ready[0].reach] || ready[0].reachLabel || "") : "";
     return h("section", { class: "section" }, [
       h("h2", { class: "section-title", text: "まだ公開していないサーバ" }),
-      h("p", { class: "section-lead", text: problem ? "Service の登録を読めませんでした：" + problem : (reachText ? "「公開する」を押すと、" + reachText + "から認証なしで届くようになります。認証や URL を変えたいときは、会話で頼んでください。" : "公開するには、会話で「" + (list[0] ? list[0].name : "web") + " を公開して」と頼んでください。") }),
+      h("p", { class: "section-lead", text: problem ? "Service の登録を読めませんでした：" + problem : (reachText ? "「公開する」を押すと、" + reachText + "から、banto にログインしている端末だけが開けるようになります。認証や URL を変えたいときは、会話で頼んでください。" : "公開するには、会話で「" + (list[0] ? list[0].name : "web") + " を公開して」と頼んでください。") }),
       list.length ? h("ul", { class: "rest" }, list.map((s) => {
         const key = s.name + " " + s.port;
         // **ワンクリックで公開**（2026-10-01）。押したことが承認。待ち受けていないものは押せない（届かない道を張らない）
         const btn = h("button", {
           class: "btn", type: "button", disabled: !s.listening || busy.has(key),
-          title: s.listening ? (reachText ? reachText + "から、認証なしで届くようにします" : "") : "待ち受けていないので公開できません",
+          title: s.listening ? (reachText ? reachText + "から、banto にログインしている端末だけが開けるようにします" : "") : "待ち受けていないので公開できません",
           text: busy.has(key) ? "公開しています…" : "公開する",
         });
         btn.addEventListener("click", () => publish(s, key));
