@@ -3887,13 +3887,37 @@
       "extra": {}
     },
     {
-      "id": "repositories-next",
+      "id": "repositories-stage5",
       "kind": "task",
-      "title": "Repositories の続き：GitHub に公開・既にある Project を Canvas から開く口（アカウントは段階2、clone・新しいリポジトリは段階3、新しい Project の画面への持ち込み・削除は段階4）",
-      "status": "ready",
+      "title": "Repositories Module の段階5（GitHub に公開：一覧の行・Project の画面の入口から、空のリポジトリを作り origin を足していまのブランチを push。push の失敗では作ったものを消さず push だけやり直す）",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [
         "repositories-stage4"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## なぜ\n\n2026-10-03、ユーザー。worktree（fork/repositories-publish）で作った。どの Project かは host の刻印 forProject で決める（hostContext は画面の申告）。origin がもうあれば断る（台帳は origin を正とする）。作れるアカウントは classic PAT の scope・GitHub App のインストールの Administration・Org の role と members_can_create_repositories で見分け、fine-grained PAT は「作ってみるまで分からない」。送るのはいまのブランチだけ。push の送り先・TLS を変えるリポジトリの設定があれば push しない。単体（Module 88本）と e2e/specs/repositories.spec.ts（7本）は通し、壊して落ちることも見た。段階1からの detached HEAD の不具合と、公開の画面の関数が clone の関数を上書きした不具合を直した。経緯は docs/notes/2026-10-03-repositories-stage5.md",
+      "doneWhen": "稼働中の banto で、GitHub App（Administration と Contents を Read and write）のアカウントで、このマシンにだけあるリポジトリを一覧と Project の画面の入口の両方から非公開で公開でき、GitHub に履歴が上がって一覧の行が GitHub の場所とアカウントに変わること、同じ名前があると別の名前を出すことを人が確かめる",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §2.4「GitHub に公開」・docs/specs/v4-security.md §3"
+      ],
+      "threads": [],
+      "createdAt": null,
+      "updatedAt": null,
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "repositories-next",
+      "kind": "task",
+      "title": "Repositories の続き：既にある Project を Canvas から開く口・公開のあとのほかのブランチ（アカウントは段階2、clone・新しいリポジトリは段階3、新しい Project の画面への持ち込み・削除は段階4、GitHub に公開は段階5）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [
+        "repositories-stage5"
       ],
       "milestone": null,
       "priority": "normal",
