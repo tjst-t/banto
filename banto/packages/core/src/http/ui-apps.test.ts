@@ -130,6 +130,23 @@ class InstanceOnlyModule implements ModuleClientLike {
           mimeType: "text/html;profile=mcp-app",
           _meta: { "dev.banto/canvas": "launcher" },
         },
+        // 新しい Project の画面に差し出す始め方（段階4）。アイコンは data: の画像だけが渡る
+        {
+          uri: "ui://repositories/prepare-clone",
+          name: "clone",
+          description: "リポジトリを clone します",
+          mimeType: "text/html;profile=mcp-app",
+          icons: [{ src: "data:image/svg+xml;base64,PHN2Zy8+", mimeType: "image/svg+xml" }],
+          _meta: { "dev.banto/canvas": "folder-provider" },
+        },
+        {
+          uri: "ui://repositories/prepare-create",
+          name: "新しいリポジトリ",
+          mimeType: "text/html;profile=mcp-app",
+          icons: [{ src: "https://evil.example/icon.svg" }],
+          _meta: { "dev.banto/canvas": "folder-provider" },
+        },
+        { uri: "repositories://not-ui", name: "画面でない", mimeType: "application/json", _meta: { "dev.banto/canvas": "folder-provider" } },
       ],
     };
   }
@@ -569,3 +586,28 @@ for (const where of ["thread", "project"] as const) {
     });
   });
 }
+
+test("新しい Project の画面に差し出す始め方は、banto 全体の Module が名乗った画面だけ——名前・説明・data: のアイコンをそのまま渡す", async () => {
+  await withApp(
+    async ({ base, headers }) => {
+      const res = await fetch(`${base}/api/ui-folder-providers`, { headers });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), [
+        {
+          server: "repositories",
+          resourceUri: "ui://repositories/prepare-clone",
+          name: "clone",
+          description: "リポジトリを clone します",
+          icon: "data:image/svg+xml;base64,PHN2Zy8+",
+        },
+        // 外の URL のアイコンは渡さない（画面に外へ読みに行かせない）
+        { server: "repositories", resourceUri: "ui://repositories/prepare-create", name: "新しいリポジトリ" },
+      ]);
+    },
+    { withInstanceOnlyModule: true },
+  );
+  // 名乗る Module が無ければ空（新しい Project の画面は「手元のフォルダ」だけになる）
+  await withApp(async ({ base, headers }) => {
+    assert.deepEqual(await (await fetch(`${base}/api/ui-folder-providers`, { headers })).json(), []);
+  });
+});

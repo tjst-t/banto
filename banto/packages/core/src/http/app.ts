@@ -776,6 +776,36 @@ async function listLauncherCanvases(
 }
 
 /**
+ * **core の新しい Project の画面に差し出す始め方**（追加・2026-10-03、`docs/specs/v4-modules.md` §2.4「core との境目」）。
+ * banto 全体の Module が、資源の `_meta["dev.banto/canvas"] = "folder-provider"` で「Project の Root にするフォルダを
+ * 用意できる」と名乗った画面を集める。**タブの名前・説明・アイコンは名乗ったもの**（仕様の `name`・`description`・
+ * `icons`）——core は「clone」という言葉を持たない。アイコンは画像の `data:` URI だけを渡す（外へ読みに行かせない）
+ */
+async function listFolderProviderCanvases(
+  modules: Array<{ name: string; client: ModuleClientLike }>,
+): Promise<Array<{ server: string; resourceUri: string; name?: string; description?: string; icon?: string }>> {
+  const result: Array<{ server: string; resourceUri: string; name?: string; description?: string; icon?: string }> = [];
+  for (const { name, resources } of await listResourcesOfAll(modules)) {
+    for (const r of resources) {
+      if (canvasKindOf(r) !== "folder-provider") continue;
+      const uri = (r as { uri?: unknown }).uri;
+      if (typeof uri !== "string" || !isUiResourceMime((r as { mimeType?: unknown }).mimeType)) continue;
+      const icons = (r as { icons?: unknown }).icons;
+      const src = Array.isArray(icons) ? (icons[0] as { src?: unknown } | undefined)?.src : undefined;
+      const icon = typeof src === "string" && /^data:image\/(svg\+xml|png);base64,[A-Za-z0-9+/=]+$/.test(src) && src.length < 20_000 ? src : undefined;
+      result.push({
+        server: name,
+        resourceUri: uri,
+        name: (r as { name?: string }).name,
+        description: (r as { description?: string }).description,
+        ...(icon ? { icon } : {}),
+      });
+    }
+  }
+  return result;
+}
+
+/**
  * その Project の**主の会話**（Base Thread）。
  *
  * Project の Canvas 発の呼び出しが中継の承認を要するとき、**どの会話で聞くか**
@@ -2286,6 +2316,12 @@ export function createApp(deps: AppDeps) {
       if (projectLaunchersMatch && req.method === "GET") {
         const modules = await modulesForProjectCanvas(deps, projectLaunchersMatch[1]!);
         json(res, 200, await listLauncherCanvases(modules));
+        return;
+      }
+
+      // core の新しい Project の画面に差し出す始め方（banto 全体の Module が名乗ったもの、§2.4「core との境目」）
+      if (url.pathname === "/api/ui-folder-providers" && req.method === "GET") {
+        json(res, 200, await listFolderProviderCanvases((await deps.resolveInstanceModuleClients?.()) ?? []));
         return;
       }
 
