@@ -2103,9 +2103,10 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
 `splitStory` のタスク間の依存は `waitsFor`（同じ回のタスクの番号）、すでにある項目への依存は `dependsOn`。
 `moveItem` は `before` か `after` のどちらか1つ。`updateItem` の `dependsOn` は全体の張り替え。
 
-**取り組んだ Thread（`threads`）**：AI が `updateItem`（か `createItem`）で **in-progress にした・閉じた**とき、
+**取り組んだ Thread（`threads`）**：AI が `updateItem`（か `createItem`）で **in-progress にした**とき、
 host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、アーキ仕様 §2.5）を足す。同じ Thread は2回足さない。
-**刻印が無い呼び出し（人の画面）では足さない。**
+**刻印が無い呼び出し（人の画面）では足さない。** **閉じただけでは足さない**（改訂・2026-10-03、ユーザー）——閉じるのは
+片づけ（他の Thread がやり終えたものをまとめて閉じる・要らなくなったものをやめる）でも起き、足すと取り組んでいない Thread が残る。
 
 **人の口**（`admin`。FileSystem のブラウザと同じ形——AI には見せない）：
 

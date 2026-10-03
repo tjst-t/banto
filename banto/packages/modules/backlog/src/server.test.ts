@@ -63,11 +63,15 @@ test("listItems：actionable は ready かつ依存が全部 done だけ。種�
   assert.match(r.content[0]!.text, /crash \[ready・着手できる\] Crash \(bug\)/);
 });
 
-test("updateItem：AI のターンの刻印があれば、進めた・閉じたときに Thread を足す。刻印が無ければ足さない", async () => {
+test("updateItem：AI のターンの刻印があれば、進めたときに Thread を足す。閉じただけ・刻印が無いときは足さない", async () => {
   const { call } = await connect();
   await call("createItem", { kind: "task", title: "Work", status: "ready" });
   const stamp = { [THREAD_META_KEY]: { projectId: "p1", threadId: "t1" } };
   await call("updateItem", { id: "work", status: "in-progress" }, stamp);
+  // 別の Thread が片づけで閉じる→開き直す：足さない
+  const other = { [THREAD_META_KEY]: { projectId: "p1", threadId: "t2" } };
+  await call("updateItem", { id: "work", status: "done" }, other);
+  await call("updateItem", { id: "work", status: "ready" }, other);
   // 人の画面から（刻印なし）
   await call("boardUpdateItem", { id: "work", status: "ready" });
   await call("boardUpdateItem", { id: "work", status: "in-progress" });

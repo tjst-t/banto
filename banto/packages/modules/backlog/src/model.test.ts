@@ -98,13 +98,20 @@ test("閉じると closedAt、開き直すと closedAt と理由を消す。や�
   assert.match(validateDocument(updateItem(doc(item("a")), "a", { status: "dropped" }, T1).doc).join(), /理由/);
 });
 
-test("Thread は進めた・閉じたときだけ足す（同じ Thread を2回は足さない）", () => {
+test("Thread は進めたときだけ足す（閉じただけでは足さない・同じ Thread を2回は足さない）", () => {
   const t = { projectId: "p", threadId: "t1" };
+  const other = { projectId: "p", threadId: "t2" };
+  // 片づけ：別の Thread が閉じただけなら足さない
+  let h = doc(item("h"));
+  h = updateItem(h, "h", { status: "done" }, T1, other).doc;
+  assert.deepEqual(h.items[0]!.threads, []);
+  h = updateItem(doc(item("h")), "h", { status: "dropped", resolution: "重複" }, T1, other).doc;
+  assert.deepEqual(h.items[0]!.threads, []);
   let d = doc(item("a"));
   d = updateItem(d, "a", { title: "題だけ" }, T1, t).doc;
   assert.deepEqual(d.items[0]!.threads, []);
   d = updateItem(d, "a", { status: "in-progress" }, T1, t).doc;
-  d = updateItem(d, "a", { status: "done" }, T1, t).doc;
+  d = updateItem(d, "a", { status: "done" }, T1, other).doc;
   assert.deepEqual(d.items[0]!.threads, [t]);
   // 刻印が無い（人の画面）なら足さない
   d = updateItem(d, "a", { status: "in-progress" }, T1).doc;
