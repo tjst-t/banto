@@ -106,7 +106,10 @@ test("AI が Fork を2つ立てる→名前つきで出て、最初の指示で�
     .not.toContain(auth!.id);
 
   // 残った分は受信箱の頭の「まとめて確認」で一度に消せる（追加・2026-10-02、ユーザー要望）
-  await page.getByRole("button", { name: "受信箱" }).click();
+  // **いまは Fork の面にいる**。携帯の幅では受信箱のボタンは Base の面のヘッダにしか無い（v4-frontend.md のモバイルの節）
+  // ので、どの面にもある ≡（ナビ）から開く（改訂・2026-10-03。直す前はヘッダのボタンを探して 60 秒待っていた）
+  await page.getByRole("button", { name: "Project と Thread の一覧を開く" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: /^受信箱/ }).click();
   await expect(reviews, "開いていない Fork のレビュー待ちが残っていない").toHaveCount(1, { timeout: 15_000 });
   await inbox.getByTestId("inbox-acknowledge-all").click();
   await expect(reviews, "まとめて確認してもレビュー待ちが消えない").toHaveCount(0, { timeout: 15_000 });

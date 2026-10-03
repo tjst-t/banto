@@ -46,6 +46,12 @@ test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き
   await expect(page.locator("[cmdk-input]"), "閉じたときの検索語が残っている").toHaveValue("", { timeout: 10_000 });
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0, { timeout: 10_000 });
+  // パレットは閉じても消える動き（100ms）の間は画面に残り、入力欄が焦点を持ったまま——その間の Escape は
+  // パレットの側が受け取る（実測・2026-10-03：data-state=closed の中身に焦点があり、Escape は defaultPrevented で届いた）。
+  // 人が2回目を押すのは消えたあとなので、消えるのを待ってから押す
+  await expect(page.locator('[data-slot="dialog-content"]'), "閉じたパレットが画面から消えない").toHaveCount(0, {
+    timeout: 10_000,
+  });
 
   // もう一度押せば、こんどは Fork が閉じる（前面がもう無いので）
   await page.keyboard.press("Escape");

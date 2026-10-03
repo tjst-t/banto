@@ -151,15 +151,29 @@ test("貼り付けた画像が AI に届き、送った発言に付いて出て�
   expect(users[1]!.images).toHaveLength(1);
   await expect(page.locator('[data-role="user"] .aui-attachment-tile img')).toHaveCount(2);
 
-  // ---- 分けた先（Fork）にも、同じ画像が出る ------------------------------------
+  // ---- 分けた先（Fork）にも、同じ画像が引き継がれる --------------------------------
+  // **画面では確かめない**（改訂・2026-10-03）。Fork の画面は分ける前の親の会話を最後の1件（ここでは AI の返事）しか
+  // 出さない（v4-frontend.md「Fork の画面では、分ける前の親の会話は最後の 1 件だけ出す」、99101d9c）ので、
+  // 画像の付いた人の発言は Fork の面に出ない。引き継ぎそのものは host が親の記録を Fork に写す仕組みなので、そこを見る
+  const baseUsers = (await hostMessages(page)).filter((m) => m.role === "user");
   await page.locator('[data-role="assistant"]').last().hover();
   await page.getByTestId("fork-from-message").last().click();
   await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ }), "Fork が開かない").toBeVisible({ timeout: 30_000 });
-  // **Fork の面の中だけを数える**——広い画面では Base と Fork が横に並ぶ
-  const forkPanel = page.locator(".aui-thread-root").filter({ has: page.getByPlaceholder("この Fork Thread に送る") });
-  const forkImages = forkPanel.locator('[data-role="user"] .aui-attachment-tile img');
-  await expect(forkImages, "Fork に画像が引き継がれていない").toHaveCount(2);
-  await expect.poll(() => naturalSize(forkImages.nth(0)), { timeout: 15_000 }).toBe("64x48");
-  await expect.poll(() => naturalSize(forkImages.nth(1)), { timeout: 15_000 }).toBe("32x20");
+  const forkId = new URL(page.url()).searchParams.get("fork");
+  expect(forkId, "Fork を開いた URL に Fork が無い").toBeTruthy();
+  const forkMessages = (
+    await (await page.request.get(`${CORE_BASE_URL}/api/threads/${forkId}`, { headers: HEADERS })).json()
+  ).messages as HostMessage[];
+  const forkUsers = forkMessages.filter((m) => m.role === "user");
+  expect(
+    forkUsers.map((m) => m.images?.map((i) => i.id) ?? []),
+    "Fork に画像が引き継がれていない",
+  ).toEqual(baseUsers.map((m) => m.images?.map((i) => i.id) ?? []));
+  for (const m of forkUsers) {
+    for (const image of m.images ?? []) {
+      const got = await page.request.get(`${CORE_BASE_URL}/api/images/${image.id}`, { headers: HEADERS });
+      expect(got.status(), "Fork の記録の画像が取れない").toBe(200);
+    }
+  }
 });

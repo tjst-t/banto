@@ -36,7 +36,10 @@ type State =
  * **変わったことだけを知らせる**細い口を1つ置く。
  */
 const listeners = new Set<() => void>();
+/** Module の増減が何回あったか。走っている取得がそれより前に出たものかを見分けるのに使う */
+let moduleSetChanges = 0;
 export function notifyModuleSetChanged(): void {
+  moduleSetChanges++;
   for (const listener of listeners) listener();
 }
 
@@ -60,25 +63,40 @@ const canvasFetches = new Map<string, Promise<void>>();
 const storeListeners = new Set<() => void>();
 let storeVersion = 0;
 
+/**
+ * **増減より前に出た取得に相乗りしない**（修正・2026-10-03、E2E で実測）。
+ * 同時に欲しがったら1本を分け合う、だけだと、**Module を足す前に出た取得**に足した後の頼みが相乗りし、
+ * 足した Module の無い一覧で止まっていた（その後は誰も取り直さない）。host の一覧が遅いとき
+ * （起動に手間取る Module があると 10 秒を超えた）に、足した Module の設定画面が左に出なかった。
+ * 走っている取得が最後の増減より前に出たものなら、終わったあとにもう1回だけ取る
+ * （同じときに開いた左メニューと中身は、今までどおり1本を分け合う）
+ */
+const canvasFetchStartedAt = new Map<string, number>();
+const refetchAfter = new Set<string>();
+
 function refreshCanvasList(owner: RealCanvasOwner, key: string): Promise<void> {
-  let pending = canvasFetches.get(key);
-  if (!pending) {
-    pending = listRealUiSettings(owner)
-      .then(
-        (canvases) => {
-          canvasLists.set(key, { canvases, error: null });
-        },
-        (err: unknown) => {
-          canvasLists.set(key, { canvases: [], error: err instanceof Error ? err.message : String(err) });
-        },
-      )
-      .finally(() => {
-        canvasFetches.delete(key);
-        storeVersion++;
-        for (const listener of storeListeners) listener();
-      });
-    canvasFetches.set(key, pending);
+  const inFlight = canvasFetches.get(key);
+  if (inFlight) {
+    if ((canvasFetchStartedAt.get(key) ?? 0) < moduleSetChanges) refetchAfter.add(key);
+    return inFlight;
   }
+  canvasFetchStartedAt.set(key, moduleSetChanges);
+  const pending: Promise<void> = listRealUiSettings(owner)
+    .then(
+      (canvases) => {
+        canvasLists.set(key, { canvases, error: null });
+      },
+      (err: unknown) => {
+        canvasLists.set(key, { canvases: [], error: err instanceof Error ? err.message : String(err) });
+      },
+    )
+    .finally(() => {
+      canvasFetches.delete(key);
+      storeVersion++;
+      for (const listener of storeListeners) listener();
+      if (refetchAfter.delete(key)) void refreshCanvasList(owner, key);
+    });
+  canvasFetches.set(key, pending);
   return pending;
 }
 

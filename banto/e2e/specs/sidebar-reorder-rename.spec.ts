@@ -208,7 +208,15 @@ test("子（Thread の目次）を開いた Project も、潰れずに一番上�
   expect(look.scaleX, "運んでいる間に横へ潰れている").toBeCloseTo(1, 2);
   expect(look.height, "運んでいる間だけ他の行と高さが揃っていない").toBeCloseTo(short!.height, 0);
 
+  // **並びを書き終えるのを待ってからリロードする**（2026-10-03）。並びは記録に fsync してから返る——背C の
+  // コンテナを起こしている最中はディスクが混み、実測で 2.9 秒かかった（core は止まっていない：同じ間の
+  // healthz は 19ms）。待たずにリロードすると書く頼みが打ち切られ、並びが戻って見えていた
+  const saved = page.waitForResponse(
+    (r) => r.url().endsWith("/api/projects/order") && r.request().method() === "PUT",
+    { timeout: 30_000 },
+  );
   await page.mouse.up();
+  expect((await saved).status(), "並びを書けていない").toBe(200);
 
   // **2つ上まで届く**（直す前は ["背A","背C","背B"] で止まっていた）
   await expect
