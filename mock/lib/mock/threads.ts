@@ -207,6 +207,31 @@ let mockThreads: MockThread[] = [
     script: bantoForkUiScript,
     status: "open",
   },
+  // 返事待ちの印の見本（2026-10-03）：「AI が動いているだけ」と「何も無い」の行を見せるために足した
+  {
+    id: "login",
+    projectId: "banto",
+    kind: "fork",
+    title: "ログインの実装",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [{ t: "text", text: "この Fork ではパスキーでのログインを実装しています。" }],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  },
+  {
+    id: "docs-tidy",
+    projectId: "banto",
+    kind: "fork",
+    title: "仕様書の整理",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [{ t: "text", text: "この Fork では仕様書の古い節を整理しました。" }],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  },
   {
     id: "ui-perf",
     projectId: "banto",
