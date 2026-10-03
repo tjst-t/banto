@@ -3898,7 +3898,7 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "## なぜ\n\n2026-10-03、ユーザー。worktree（fork/repositories-publish）で作った。どの Project かは host の刻印 forProject で決める（hostContext は画面の申告）。origin がもうあれば断る（台帳は origin を正とする）。作れるアカウントは classic PAT の scope・GitHub App のインストールの Administration・Org の role と members_can_create_repositories で見分け、fine-grained PAT は「作ってみるまで分からない」。送るのはいまのブランチだけ。push の送り先・TLS を変えるリポジトリの設定があれば push しない。単体（Module 88本）と e2e/specs/repositories.spec.ts（7本）は通し、壊して落ちることも見た。段階1からの detached HEAD の不具合と、公開の画面の関数が clone の関数を上書きした不具合を直した。経緯は docs/notes/2026-10-03-repositories-stage5.md",
+      "body": "## なぜ\n\n2026-10-03、ユーザー。worktree（fork/repositories-publish）で作った。どの Project かは host の刻印 forProject で決める（hostContext は画面の申告）。origin がもうあれば断る（台帳は origin を正とする）。作れるアカウントは classic PAT の scope・GitHub App のインストールの Administration・Org の role と members_can_create_repositories で見分け、fine-grained PAT は「作ってみるまで分からない」。送るのはいまのブランチだけ。push の送り先・TLS を変えるリポジトリの設定があれば push しない。単体（Module 88本）と e2e/specs/repositories.spec.ts（7本）は通し、壊して落ちることも見た。段階1からの detached HEAD の不具合と、公開の画面の関数が clone の関数を上書きした不具合を直した。レビュー（14件）で push の直前の読み直し・submodule への再帰を止める・資格情報の種類で見分ける等を直し、E2E が間欠で落ちて見つけた段階1・3の非同期の順番の不具合も直した（単体 94本・E2E 7本）。経緯は docs/notes/2026-10-03-repositories-stage5.md",
       "doneWhen": "稼働中の banto で、GitHub App（Administration と Contents を Read and write）のアカウントで、このマシンにだけあるリポジトリを一覧と Project の画面の入口の両方から非公開で公開でき、GitHub に履歴が上がって一覧の行が GitHub の場所とアカウントに変わること、同じ名前があると別の名前を出すことを人が確かめる",
       "resolution": null,
       "refs": [

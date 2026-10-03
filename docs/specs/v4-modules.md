@@ -1436,8 +1436,9 @@ Project の画面からも一覧からも開く。アカウント・名前・公
 - **入口**：一覧の「このマシンにだけ」の行の「GitHub に公開」（一覧の中のダイアログ）、GitHub の行の「…」→「GitHub への
   push」（push だけやり直す）、**Project の画面の入口「この Project を GitHub に公開」**（launcher
   `ui://banto-repositories/publish`）。**どの Project かは、押した画面の呼び出しに host が刻む `forProject` で決める**
-  ——画面の hostContext（`dev.banto/project`）は画面の申告なので使わない。その Project の Root を含む台帳の行（いちばん
-  深いもの。Root がリポジトリの下のフォルダでもよい）。無ければ「一覧で Import してから」と言う。banto 全体の設定から
+  ——画面の hostContext（`dev.banto/project`）は画面の申告なので使わない。その Project の Root の**リポジトリの一番上**を
+  git に聞き、それと一致する台帳の行（Root がリポジトリの下のフォルダでもよい。前方一致では選ばない——台帳にある外側の
+  リポジトリを、中の別のリポジトリの Project に使わない）。無ければ「一覧で Import してから」と言う。banto 全体の設定から
   開いたとき（刻印に Project が無い）は「Project の画面の中で開くか、一覧から」と言う
 - **公開できるもの**：台帳の行で、**origin がまだ無い**リポジトリの一番上。**origin がもうあるなら断る**（GitHub の外を
   指していても）——台帳は origin を正としてリモートの場所を覚えるので、別の名前の remote を足すとリモートの場所が2つに
@@ -1445,9 +1446,9 @@ Project の画面からも一覧からも開く。アカウント・名前・公
 - **決めるもの**：
   - **アカウント**：GitHub に「作れそうか」を聞き、**どの持ち主にも作れないと分かっているアカウントは選ばせない**
     （理由を出す）。1つなら選ばせない。台帳が覚えているものを先に選ぶ
-  - **持ち主**：自分と、属する Organization（`GET /user/orgs`）。作れるかの見分け：classic PAT は `X-OAuth-Scopes`
-    （`repo`、`public_repo` だけなら公開のものだけ）。GitHub App のトークンは `GET /user/installations` で、その持ち主に
-    入っていて Administration が write か。Organization は owner（`role: admin`）なら作れ、メンバーは
+  - **持ち主**：自分と、属する Organization（`GET /user/orgs`）。作れるかの見分けは**資格情報の種類で**（PAT か、
+    ブラウザでログイン＝GitHub App か）：classic PAT は `X-OAuth-Scopes`（`repo`、`public_repo` だけなら公開のものだけ）。
+    GitHub App のトークンは `GET /user/installations` で、その持ち主に入っていて Administration が write か。Organization は owner（`role: admin`）なら作れ、メンバーは
     `members_can_create_repositories` 次第。**fine-grained PAT は前もって知る口が無い**——「作ってみるまで分からない」と
     言い、選ばせる（作れないと言い切れるものだけ外す）
   - **名前**：既定はフォルダ名。英数字と - _ .、100字まで。**GitHub に同じ名前があれば断り、空いている名前（`-2`…）を
@@ -1456,20 +1457,30 @@ Project の画面からも一覧からも開く。アカウント・名前・公
   - **説明**（任意、350字まで）
   - いちばん上に**どこから・どこへ**（手元のフォルダ → `github.com/<owner>/<name>`、打つたびに行き先が変わる）
 - **する事**：GitHub に**空の**リポジトリを作る（`POST /user/repos`・`POST /orgs/{org}/repos`、README 等は作らない）→
-  **origin を足す**（URL に資格情報は入れない。SSH 鍵のアカウントなら ssh の URL）→ **いまのブランチだけを upstream
-  つきで push**（`refs/heads/<b>:refs/heads/<b>`。ほかのブランチ・タグは送らない——画面がそう言う）→ 台帳にリモートの
-  場所とアカウントを書く（origin を読み直して）。**コミットが無ければ、作って origin を足すところまで**。GitHub に作るのは
+  **origin を足す**（URL は GitHub の返事——作られた持ち主・名前——から組み、資格情報は入れない。SSH 鍵のアカウントなら
+  ssh の URL）→ 台帳にリモートの場所とアカウントを書く（origin を読み直して。書けなければ push せず「一覧に書けません
+  でした」と言う）→ **いまのブランチだけを upstream つきで push**（`refs/heads/<b>:refs/heads/<b>`。ほかのブランチ・
+  タグは送らない——画面がそう言う。**submodule へは辿らない**——`push.recurseSubmodules=no`・`submodule.recurse=false`）。
+  **頼んだ公開範囲と違う範囲で作られたら、origin も push もしない**。持ち主の名前は GitHub の形
+  （`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`）だけ受ける。**コミットが無ければ、作って origin を足すところまで**。GitHub に作るのは
   押した呼び出しの中、origin と push は背景の仕事で画面が進み具合を聞きに来る。push はやめられる
 - **資格情報と git の設定は clone と同じ**（段階3の表の「GitHub・アカウント」の行）。加えて、**リポジトリの設定に push の
   送り先や TLS を変えるもの**（`url.*`——insteadOf・pushInsteadOf、`http.*`——proxy・sslVerify・sslCAInfo 等、
   `remote.origin.pushurl`・`proxy`・`receivepack`）があれば **push しない**（公開も、push のやり直しも）。git の設定は
-  環境から「無し」にできず足すだけなので、上書きでは消せない——人に外してもらう
+  環境から「無し」にできず足すだけなので、上書きでは消せない——人に外してもらう。**push の直前にもう一度読み直し**、
+  origin の push 先（`remote get-url --push --all origin`）が組んだ URL の1つだけであることも確かめる——押したあとに
+  `.git/config` が書き換えられうる（Project の Root はコンテナに mount され、中の AI が書ける）
 - **失敗の片づけ**：**作ったのに push で失敗したら、作ったリポジトリは消さない**（人のものを勝手に消さない）。
   「GitHub にはできています（github.com/…）。push だけやり直せます」と言い、push だけやり直せる。**やり直せる状態は
   フォルダから導く**——origin が GitHub で、いまのブランチが origin にまだ無い（失敗の印は持たない）。やり直しは台帳が
-  覚えているアカウントで。名前のぶつかり・権限が無い・Organization の決まりは、GitHub の断りを理由と次の手に読み替える
+  覚えているアカウントで。**origin の方式（ssh／https）がアカウントの方式と合わなければ、理由を言って push しない**
+  （合わないまま push すると「資格情報が通らない」という嘘の失敗になる）。名前のぶつかり・権限が無い・Organization の決まりは、GitHub の断りを理由と次の手に読み替える
   （GitHub App の Administration は「App の設定の Permissions & events で Read and write にし、インストール先で承認」、
-  fine-grained PAT は「Administration を Read and write で作り直す」、Organization は「owner に頼む・Member privileges」）
+  fine-grained PAT は「Administration を Read and write で作り直す」、Organization は「owner に頼む・Member privileges」）。
+  **作る要求を送ったあとに切れた・時間切れ・5xx**のときは、作られているかもしれない——「GitHub に作れたかどうか
+  分かりません。GitHub で owner/name を確かめ、あれば `git remote add origin …`」と言い、名前の確かめ直し（`-2` の提案）は
+  しない（自分で作ったものを「使われている」と言って二重に作らせない）。「やめる」は origin を足している間に押されても
+  効く（push を始めない）
 - **GitHub App に要る権限**：作るのに Repository permissions の **Administration（Read and write）**、push に
   **Contents（Read and write）**
 - AI 向けの道具は無い（人の画面だけ）
