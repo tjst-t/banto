@@ -3,7 +3,8 @@
 // **この Module は banto 本体で動く**（閉じ込めの外）——ホストのファイルを読めてしまう。だから**読むのは、
 // 人が選んだフォルダ（と台帳にあるフォルダ）の git の情報だけ**に絞る：`git -C <path>` で
 // 一番上・worktree・origin・ブランチ・コミット数。中のファイルは読まない。**書かない**
-// （`GIT_OPTIONAL_LOCKS=0`——status 等が index を書き直すのも止める。ここでは status も呼ばない）。
+// （`GIT_OPTIONAL_LOCKS=0`——status 等が index を書き直すのも止める）。例外は「このマシンから削除」の前に
+// 失われるものを数えるときだけ（段階4、`readLosses`）——`git status` が変更を見るので、filter を空にしてから呼ぶ。
 //
 // git かどうか・origin・ブランチは**フォルダが真実**（規則3）。台帳はリモートの場所の写しだけを持つ。
 //
@@ -51,7 +52,7 @@ export type FolderFacts =
 type GitResult = { ok: true; stdout: string } | { ok: false; code: number | string; stderr: string };
 
 /** 待つ長さ（ms）。**試験で縮める穴**——数えるのは飾りなので、切れても行は読めたことにする */
-export const GIT_TIMEOUTS = { default: 10_000, count: 10_000 };
+export const GIT_TIMEOUTS = { default: 10_000, count: 10_000, losses: 60_000 };
 
 /**
  * **走らせてよいサブコマンド**（先頭の語）。増やすときは、そのコマンドが設定から何を起こしうるかを見てから
@@ -67,6 +68,11 @@ export const GIT_COMMANDS: readonly string[] = [
   "config --get init.defaultBranch",
   "init",
   "clone",
+  // 段階4：このマシンから削除する前に、失われるものを数える（`readLosses`）・worktree を片づける
+  "for-each-ref",
+  "config --name-only --get-regexp",
+  "status",
+  "worktree prune",
 ];
 
 /**
@@ -451,4 +457,140 @@ export function gitClone(input: {
       });
     });
   });
+}
+
+// ── このマシンから削除する前に、失われるものを数える（段階4） ─────────────────────────────
+
+/** 削除で失われうるもの。`problems` があれば「数えきれていない」——無いとは言わない（規則2） */
+export interface LossReport {
+  /**
+   * ブランチごとの、どのリモートにも無いコミット（最後に取ってきた時点のリモートと比べる——取り直しはしない）。
+   * ブランチどうしで重なる（枝分かれ元のコミットは両方に入る）ので、合計は `unpushedTotal`
+   */
+  unpushed: Array<{ branch: string; commits: number }>;
+  /** どのブランチの分も重ねずに数えた、どのリモートにも無いコミットの数 */
+  unpushedTotal: number;
+  /** どのブランチにもリモートにも無いコミット（detached HEAD で作ったもの） */
+  detached: number;
+  /** 上流も、どのリモートの同名も無いブランチ */
+  localOnlyBranches: string[];
+  /** コミットしていない変更（index・作業ツリー） */
+  changed: number;
+  /** 追跡していないもの（ignore 済みは数えない。中身ごと追跡していないフォルダは1件） */
+  untracked: number;
+  stashes: number;
+  /** 数えられなかったもの（時間切れ・git が断った）と、数えていないもの（submodule の中） */
+  problems: string[];
+}
+
+/** 失われるものの数（problems を除く） */
+export function lossCount(l: LossReport): number {
+  return l.unpushedTotal + l.detached + l.localOnlyBranches.length + l.changed + l.untracked + l.stashes;
+}
+
+/** 環境に呼び出しの側の設定を足す（`GIT_CONFIG_COUNT` の続きに並べる） */
+function withConfig(env: NodeJS.ProcessEnv, pairs: Array<readonly [string, string]>): NodeJS.ProcessEnv {
+  const start = Number(env.GIT_CONFIG_COUNT ?? "0");
+  const next: NodeJS.ProcessEnv = { ...env, GIT_CONFIG_COUNT: String(start + pairs.length) };
+  pairs.forEach(([k, v], i) => {
+    next[`GIT_CONFIG_KEY_${start + i}`] = k;
+    next[`GIT_CONFIG_VALUE_${start + i}`] = v;
+  });
+  return next;
+}
+
+/**
+ * そのリポジトリ（か worktree）を消すと失われるものを数える。**台帳のフォルダの git だけを読む**（読む口の潰しは
+ * そのまま）。`git status` はファイルの中身を比べるときに、リポジトリの設定の filter（`clean`・`process`）を起こす
+ * （実測）——**その設定の filter の名前を先に読み、全部を空に上書きしてから**走らせる。submodule の中は読まない
+ */
+export async function readLosses(path: string): Promise<LossReport> {
+  const report: LossReport = { unpushed: [], unpushedTotal: 0, detached: 0, localOnlyBranches: [], changed: 0, untracked: 0, stashes: 0, problems: [] };
+  const t = GIT_TIMEOUTS.losses;
+  const note = (what: string, r: Extract<GitResult, { ok: false }>) =>
+    report.problems.push(`${what}を数えられませんでした（${r.stderr.trim() || String(r.code)}）`);
+
+  // ブランチと上流、リモートにある名前
+  const heads = await git(path, ["for-each-ref", "--format=%(refname:short)%09%(upstream)", "refs/heads"], t);
+  const remotes = await git(path, ["for-each-ref", "--format=%(refname)", "refs/remotes"], t);
+  if (!heads.ok) note("ブランチ", heads);
+  if (!remotes.ok) note("リモートのブランチ", remotes);
+  if (heads.ok && remotes.ok) {
+    const remoteRefs = remotes.stdout.split("\n").filter(Boolean);
+    for (const line of heads.stdout.split("\n").filter(Boolean)) {
+      const [branch, upstream] = line.split("\t") as [string, string | undefined];
+      const count = await git(path, ["rev-list", "--count", `refs/heads/${branch}`, "--not", "--remotes"], t);
+      if (!count.ok) note(`ブランチ ${branch} のコミット`, count);
+      else {
+        const n = Number.parseInt(count.stdout.trim(), 10) || 0;
+        if (n > 0) report.unpushed.push({ branch, commits: n });
+      }
+      const sameName = remoteRefs.some((r) => r.endsWith(`/${branch}`) && r.startsWith("refs/remotes/"));
+      if (!upstream && !sameName) report.localOnlyBranches.push(branch);
+    }
+  }
+  if (heads.ok && heads.stdout.trim()) {
+    const total = await git(path, ["rev-list", "--count", "--branches", "--not", "--remotes"], t);
+    if (total.ok) report.unpushedTotal = Number.parseInt(total.stdout.trim(), 10) || 0;
+    else note("push していないコミット", total);
+  }
+  // detached HEAD で作ったコミット
+  const head = await git(path, ["symbolic-ref", "-q", "HEAD"], t);
+  if (!head.ok && head.code === 1) {
+    const loose = await git(path, ["rev-list", "--count", "HEAD", "--not", "--branches", "--remotes"], t);
+    if (loose.ok) report.detached = Number.parseInt(loose.stdout.trim(), 10) || 0;
+    else if (!/unknown revision|ambiguous argument 'HEAD'/i.test(loose.stderr)) note("どのブランチにも無いコミット", loose);
+  }
+  // コミットしていない変更・追跡していないもの——filter を空にしてから
+  const filters = await git(path, ["config", "--name-only", "--get-regexp", "^filter\\."], t);
+  const drivers = new Set<string>();
+  if (filters.ok) {
+    for (const key of filters.stdout.split("\n").filter(Boolean)) drivers.add(key.replace(/^filter\./, "").replace(/\.[^.]+$/, ""));
+  } else if (filters.code !== 1) {
+    // 1 は「filter の設定が無い」。それ以外は読めていない——status を走らせない（何が起きるか分からない）
+    note("filter の設定", filters);
+  }
+  if (filters.ok || filters.code === 1) {
+    const neutral = [...drivers].flatMap((d) => [
+      [`filter.${d}.clean`, ""] as const,
+      [`filter.${d}.smudge`, ""] as const,
+      [`filter.${d}.process`, ""] as const,
+      [`filter.${d}.required`, "false"] as const,
+    ]);
+    const env = withConfig(GIT_ENV, [...neutral, ["status.submoduleSummary", "false"]]);
+    const status = await git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all"], t, env);
+    if (!status.ok) note("コミットしていない変更", status);
+    else {
+      const parts = status.stdout.split("\0");
+      for (let i = 0; i < parts.length; i += 1) {
+        const entry = parts[i]!;
+        if (entry.length < 3) continue;
+        if (entry.startsWith("??")) report.untracked += 1;
+        else report.changed += 1;
+        // 名前の変更は、次の要素が元の名前
+        if (entry[0] === "R" || entry[0] === "C") i += 1;
+      }
+    }
+  }
+  // stash
+  const stash = await git(path, ["rev-parse", "--verify", "-q", "refs/stash"], t);
+  if (stash.ok) {
+    const n = await git(path, ["rev-list", "--walk-reflogs", "--count", "refs/stash"], t);
+    if (n.ok) report.stashes = Number.parseInt(n.stdout.trim(), 10) || 0;
+    else note("stash", n);
+  } else if (stash.code !== 1) note("stash", stash);
+  // submodule の中は数えない（読むと、その中の設定から何が起きるか分からない）——数えていないと言う
+  try {
+    await stat(`${path}/.gitmodules`);
+    report.problems.push("submodule の中の変更は数えていません");
+  } catch {
+    // submodule は無い
+  }
+  return report;
+}
+
+/** worktree を消したあと、本体の側の記録を片づける */
+export async function pruneWorktrees(main: string): Promise<void> {
+  const r = await git(main, ["worktree", "prune"]);
+  if (!r.ok) throw new Error(`本体（${main}）の worktree の記録を片づけられませんでした：${r.stderr.trim() || String(r.code)}`);
 }

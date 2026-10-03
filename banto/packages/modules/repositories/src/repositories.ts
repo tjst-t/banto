@@ -132,7 +132,8 @@ function projectsUsing(path: string, worktrees: string[], lookup: ProjectsLookup
  * login のアカウントが登録されていれば、それを覚える（書き戻すかは呼ぶ側）
  */
 export function assignAccount(entry: LedgerEntry, accounts: GithubAccount[]): LedgerEntry {
-  if (entry.account || !entry.github) return entry;
+  // 人が「読むだけに戻す」を選んだものは、自動では付け直さない
+  if (entry.account || entry.readOnly || !entry.github) return entry;
   const owner = entry.github.owner.toLowerCase();
   const match = accounts.find((a) => a.login.toLowerCase() === owner);
   return match ? { ...entry, account: match.login } : entry;

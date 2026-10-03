@@ -30,6 +30,11 @@ export interface LedgerEntry {
   correctedFrom?: GithubLocation;
   /** 扱うアカウント（GitHub の login）。登録が外れていても消さない */
   account?: string;
+  /**
+   * 人が「読むだけに戻す」を選んだ（段階4）。持ち主と同じ login のアカウントがあっても、一覧で自動では付け直さない
+   * ——人が外したものを、次に一覧を開いたときに黙って戻さない
+   */
+  readOnly?: true;
 }
 
 export interface RepositoriesSettings {
@@ -108,6 +113,7 @@ export function parseLedgerEntry(raw: unknown, where: string): LedgerEntry {
   if (r.elsewhere !== undefined && typeof r.elsewhere !== "string") throw new Error(`${where}：リモートの URL が読めません`);
   if (r.correctedFrom !== undefined && !isLocation(r.correctedFrom)) throw new Error(`${where}：直す前の場所が読めません`);
   if (r.account !== undefined && (typeof r.account !== "string" || r.account === "")) throw new Error(`${where}：アカウントが読めません`);
+  if (r.readOnly !== undefined && r.readOnly !== true) throw new Error(`${where}：「読むだけ」の印が読めません`);
   return {
     path: r.path,
     ...(r.github ? { github: { owner: (r.github as GithubLocation).owner, name: (r.github as GithubLocation).name } } : {}),
@@ -116,6 +122,7 @@ export function parseLedgerEntry(raw: unknown, where: string): LedgerEntry {
       ? { correctedFrom: { owner: (r.correctedFrom as GithubLocation).owner, name: (r.correctedFrom as GithubLocation).name } }
       : {}),
     ...(typeof r.account === "string" ? { account: r.account } : {}),
+    ...(r.readOnly === true ? { readOnly: true as const } : {}),
   };
 }
 

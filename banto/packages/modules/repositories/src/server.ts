@@ -23,7 +23,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf, callerOf } from "@banto/module-contract";
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
-import { LIST_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
+import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
+import { setRepositoryAccount } from "./assign.js";
+import { deleteRepository, inspectDelete } from "./delete.js";
 import { Cloner } from "./clone.js";
 import { GITHUB_COM, type GithubApi, type GithubEndpoints } from "./github.js";
 import { LedgerStore } from "./ledger.js";
@@ -80,6 +82,16 @@ function json(value: unknown) {
 function str(v: unknown, name: string): string {
   if (typeof v !== "string" || v === "") throw new Error(`${name} が要ります`);
   return v;
+}
+
+/** 始め方のタブのアイコン（lucide の cloud-download・folder-plus の線。core は画像として描くだけ） */
+const CLONE_ICON =
+  '<path d="M12 13v8l-4-4"/><path d="m12 21 4-4"/><path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284"/>';
+const CREATE_ICON =
+  '<path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>';
+function iconDataUri(paths: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
 function optionalPlace(v: unknown, what: string) {
@@ -171,6 +183,17 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         checkGithub: { type: "boolean" },
       }, ["name"]),
       adminTool("create_repository", "置き場に空のリポジトリを作り（git init）、一覧に足す", { name: { type: "string" } }, ["name"]),
+      // ── 段階4：アカウントを後から指定・このマシンから削除 ──
+      adminTool("set_repository_account", "その行を扱うアカウントを指定する（null で読むだけに戻す）。見えないアカウントは断る", {
+        path: { type: "string" },
+        login: { type: ["string", "null"] },
+      }, ["path", "login"]),
+      adminTool("inspect_delete", "このマシンから削除すると失われるもの（と、消せない理由）", { path: { type: "string" } }, ["path"]),
+      adminTool("delete_repository", "このマシンから削除する（フォルダごと。直前にもう一度調べ、要る確かめが無ければ断る）", {
+        path: { type: "string" },
+        confirmed: { type: "boolean" },
+        typedName: { type: "string" },
+      }, ["path", "confirmed"]),
       adminTool("remove_github_account", "アカウントの登録を外す（ブラウザでログインしたものは Vault のログイン情報も消す）", {
         login: { type: "string" },
       }, ["login"]),
@@ -244,6 +267,29 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
           );
         case "create_repository":
           return json(await cloner.create({ name: str(args.name, "name") }));
+        case "set_repository_account":
+          return json(
+            await setRepositoryAccount(
+              { store, accounts, github: deps.github },
+              { path: str(args.path, "path"), login: args.login === null ? null : str(args.login, "login") },
+              callIdOf(meta),
+            ),
+          );
+        case "inspect_delete":
+          return json(await inspectDelete(store, str(args.path, "path"), await lookupProjects(meta), home));
+        case "delete_repository":
+          return json(
+            await deleteRepository(
+              store,
+              {
+                path: str(args.path, "path"),
+                confirmed: args.confirmed === true,
+                ...(typeof args.typedName === "string" ? { typedName: args.typedName } : {}),
+              },
+              await lookupProjects(meta),
+              home,
+            ),
+          );
         case "list_github_accounts":
           return json(await accounts.list());
         case "list_credential_aliases":
@@ -300,6 +346,24 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         mimeType: UI_APP_MIME,
         _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config", ui: { prefersBorder: false } },
       },
+      // **core の新しい Project の画面に差し出す始め方**（段階4、§2.4「core との境目」）。名前・説明・アイコンは
+      // ここで名乗る——core は「clone」という言葉を持たない。用意できたら画面が `dev.banto/folder-prepared` で返す
+      {
+        uri: PREPARE_CLONE_URI,
+        name: "clone",
+        description: "GitHub などのリポジトリを、リポジトリの置き場に clone します。",
+        mimeType: UI_APP_MIME,
+        icons: [{ src: iconDataUri(CLONE_ICON), mimeType: "image/svg+xml" }],
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "folder-provider", ui: { prefersBorder: false } },
+      },
+      {
+        uri: PREPARE_CREATE_URI,
+        name: "新しいリポジトリ",
+        description: "リポジトリの置き場に作って git init します。GitHub へは、あとで公開できます。",
+        mimeType: UI_APP_MIME,
+        icons: [{ src: iconDataUri(CREATE_ICON), mimeType: "image/svg+xml" }],
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "folder-provider", ui: { prefersBorder: false } },
+      },
       {
         uri: SELF_REPORT_URI,
         name: "この Module の申告",
@@ -328,6 +392,8 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     if (uri === SELF_REPORT_URI) return { contents: [{ uri, mimeType: "application/json", text: "{}" }] };
     if (uri === LIST_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("launcher") }] };
     if (uri === SETTINGS_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("config") }] };
+    if (uri === PREPARE_CLONE_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("prepare-clone") }] };
+    if (uri === PREPARE_CREATE_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("prepare-create") }] };
     throw new Error(`unknown resource: ${uri}`);
   });
 

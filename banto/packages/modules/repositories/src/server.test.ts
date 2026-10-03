@@ -271,3 +271,21 @@ test("clone と新しいリポジトリの口：画面から通り、返る値�
     await gh.close();
   }
 });
+
+test("core の新しい Project の画面に差し出す始め方（clone・新しいリポジトリ）を folder-provider として名乗り、名前・説明・アイコンを持つ", async () => {
+  await withServer({ listProjects: async () => [] }, async (client) => {
+    const { resources } = await client.listResources();
+    const providers = resources.filter((r) => (r._meta as Record<string, unknown> | undefined)?.[CANVAS_META_KEY] === "folder-provider");
+    assert.deepEqual(providers.map((r) => [r.uri, r.name]), [
+      ["ui://banto-repositories/prepare-clone", "clone"],
+      ["ui://banto-repositories/prepare-create", "新しいリポジトリ"],
+    ]);
+    for (const r of providers) {
+      assert.ok(r.description, `${r.uri} に説明が無い`);
+      const icons = (r as { icons?: Array<{ src: string }> }).icons;
+      assert.match(icons?.[0]?.src ?? "", /^data:image\/svg\+xml;base64,/);
+      const { contents } = await client.readResource({ uri: r.uri });
+      assert.match(String((contents[0] as { text: string }).text), /dev\.banto\/folder-prepared/);
+    }
+  });
+});

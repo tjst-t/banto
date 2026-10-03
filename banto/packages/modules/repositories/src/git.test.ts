@@ -82,6 +82,10 @@ test("走らせてよいサブコマンドは一覧のものだけ（増やす�
     "config --get init.defaultBranch",
     "init",
     "clone",
+    "for-each-ref",
+    "config --name-only --get-regexp",
+    "status",
+    "worktree prune",
   ]);
 });
 

@@ -48,13 +48,15 @@ export interface FakeGithub {
   /** git の要求への返事を遅らせる（clone の最中を試験が見るため） */
   gitDelayMs: number;
   /** リポジトリを作る（1コミット入り） */
-  addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[]; files?: Record<string, string>; redirectTo?: string }): void;
+  addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[]; writers?: string[]; files?: Record<string, string>; redirectTo?: string }): void;
   close(): Promise<void>;
 }
 
 interface RepoOpts {
   private: boolean;
   readers: string[];
+  /** 持ち主のほかに書ける login */
+  writers?: string[];
   /** git の要求を、別の相手（`<base>`）の同じパスへ 302 で送る（リダイレクトの先に資格情報を渡さないかを見る） */
   redirectTo?: string;
 }
@@ -167,7 +169,7 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
           if (patch.loginForDevice) state.loginForDevice = patch.loginForDevice;
           if ("accessTokenTtl" in patch) state.accessTokenTtl = patch.accessTokenTtl ?? undefined;
           if ("refreshError" in patch) state.refreshError = patch.refreshError ?? undefined;
-          const add = (patch as { addRepo?: { owner: string; name: string; private?: boolean; readers?: string[] } }).addRepo;
+          const add = (patch as { addRepo?: { owner: string; name: string; private?: boolean; readers?: string[]; writers?: string[] } }).addRepo;
           if (add) addRepo(add.owner, add.name, add);
           return send(200, { refreshCalls: state.refreshCalls });
         }
@@ -241,7 +243,10 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
           if (!login) return send(401, { message: "Bad credentials" });
           const repo = repos.get(`${owner}/${name}`.toLowerCase());
           const visible = repo && (!repo.private || repo.readers.some((r) => r.toLowerCase() === login.toLowerCase()));
-          return visible ? send(200, { full_name: `${owner}/${name}`, private: repo.private }) : send(404, { message: "Not Found" });
+          if (!visible) return send(404, { message: "Not Found" });
+          // 書けるのは持ち主と writers（GitHub の permissions と同じ形）
+          const push = owner!.toLowerCase() === login.toLowerCase() || (repo.writers ?? []).some((w) => w.toLowerCase() === login.toLowerCase());
+          return send(200, { full_name: `${owner}/${name}`, private: repo.private, permissions: { admin: push, push, pull: true } });
         }
         if (url.pathname === "/user" && req.method === "GET") {
           const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -254,7 +259,7 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
     });
   };
   const server: Server = opts.tls ? createHttpsServer(opts.tls, handler) : createServer(handler);
-  function addRepo(owner: string, name: string, o: { private?: boolean; readers?: string[]; files?: Record<string, string>; redirectTo?: string } = {}): void {
+  function addRepo(owner: string, name: string, o: { private?: boolean; readers?: string[]; writers?: string[]; files?: Record<string, string>; redirectTo?: string } = {}): void {
     const bare = join(gitRoot, owner, `${name}.git`);
     const work = mkdtempSync(join(tmpdir(), "banto-fake-github-work-"));
     const g = (cwd: string, ...args: string[]) =>
@@ -272,6 +277,7 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
     repos.set(`${owner}/${name}`.toLowerCase(), {
       private: o.private ?? false,
       readers: o.readers ?? [owner],
+      ...(o.writers ? { writers: o.writers } : {}),
       ...(o.redirectTo ? { redirectTo: o.redirectTo } : {}),
     });
   }

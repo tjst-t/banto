@@ -69,6 +69,8 @@ export interface GithubApi {
   currentUser(token: string): Promise<GithubUser>;
   /** そのトークンから `owner/name` が見えるか（無い・見えないは false。それ以外の断りは投げる） */
   repoExists(token: string, owner: string, name: string): Promise<boolean>;
+  /** そのトークンでの `owner/name` への権限（見えなければ `visible: false`。それ以外の断りは投げる） */
+  repoAccess(token: string, owner: string, name: string): Promise<{ visible: false } | { visible: true; push: boolean; admin: boolean }>;
 }
 
 const TIMEOUT_MS = 15_000;
@@ -219,6 +221,27 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       }
       if (typeof body?.login !== "string" || body.login === "") throw new GithubError("GitHub の返事に login がありません", "malformed");
       return { login: body.login };
+    },
+
+    async repoAccess(token, owner, name) {
+      let res: Response;
+      try {
+        res = await fetch(`${api}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+          headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28", "user-agent": "banto" },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new GithubError(`GitHub に繋がりませんでした（${(err as Error).message}）`, "network");
+      }
+      if (res.status === 404) {
+        await res.body?.cancel();
+        return { visible: false };
+      }
+      if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
+      if (!res.ok) throw new GithubError(`GitHub が答えませんでした（HTTP ${res.status}）`, String(res.status));
+      const body = (await res.json().catch(() => undefined)) as { permissions?: { push?: unknown; admin?: unknown } } | undefined;
+      // permissions が無い（公開のものを、権限の無いトークンで見た）なら、書けないと読む
+      return { visible: true, push: body?.permissions?.push === true, admin: body?.permissions?.admin === true };
     },
 
     async repoExists(token, owner, name) {

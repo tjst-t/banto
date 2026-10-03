@@ -21,6 +21,9 @@ export const UI_APP_MIME = "text/html;profile=mcp-app";
 export const LIST_APP_URI = "ui://banto-repositories/list";
 /** banto 全体の設定の面——一覧と既定の置き場 */
 export const SETTINGS_APP_URI = "ui://banto-repositories/settings";
+/** core の新しい Project の画面に差し出す始め方（段階4）——clone・新しいリポジトリ */
+export const PREPARE_CLONE_URI = "ui://banto-repositories/prepare-clone";
+export const PREPARE_CREATE_URI = "ui://banto-repositories/prepare-create";
 
 const THEME_CSS = `
 :root {
@@ -249,6 +252,11 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0; color: var(--ink-2); }
 .facts dt { color: var(--ink-3); } .facts dd { margin: 0; word-break: break-all; }
 .foot { display: flex; justify-content: flex-end; gap: 8px; }
+/* ---- このマシンから削除 ---- */
+.losses ul { margin: 4px 0 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 2px; font-size: var(--t-sm); }
+.btn.primary.danger { background: var(--danger); border-color: var(--danger); color: var(--bg); }
+/* 差し出す面（core の新しい Project の画面の枠の中）——余白は枠の側が持つ */
+.prep-body { padding: 0; }
 
 /* ---- URL から clone・新しいリポジトリ（帯はモックの repo-root-preview と同じ形） ---- */
 .band .pathrow { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-family: var(--mono); font-size: var(--t-lg); }
@@ -331,6 +339,8 @@ const ICONS: Record<string, string> = {
 const SCRIPT = String.raw`
 (() => {
   const MODE = "__MODE__";
+  /** core の新しい Project の画面に差し出す始め方の面（段階4）——一覧は出さず、clone・新しいリポジトリの本体だけ */
+  const PREPARE = MODE === "prepare-clone" || MODE === "prepare-create";
   const ICONS = __ICONS__;
 
   // ---- 親との話し方（MCP Apps） ----
@@ -379,6 +389,10 @@ const SCRIPT = String.raw`
     }
     for (const c of children || []) if (c !== null && c !== undefined && c !== false) e.append(c);
     return e;
+  }
+  /** 子を入れ替える——**出さないもの（null・false）は飛ばす**（replaceChildren に渡すと「null」という字になる） */
+  function fill(el, ...kids) {
+    el.replaceChildren(...kids.filter((k) => k !== null && k !== undefined && k !== false));
   }
   function icon(name) {
     const span = document.createElement("span");
@@ -445,6 +459,8 @@ const SCRIPT = String.raw`
   // 検索の欄は作り直さない（打っている途中で焦点が外れる）——表と札だけを描き直す
   let searchInput = null;
   function render() {
+    // 差し出す面は一覧を持たない（中身は clone・新しいリポジトリの本体だけ）
+    if (PREPARE) { reportSize(); return; }
     const kids = [];
     kids.push(head());
     if (state.loadError) kids.push(h("p", { class: "error", role: "alert", text: state.loadError }));
@@ -702,7 +718,19 @@ const SCRIPT = String.raw`
     const item = h("button", { type: "button", role: "menuitem", "data-testid": "repo-remove", onclick: (e) => { e.stopPropagation(); remove(r, btn); } }, [
       icon("listX"), h("span", { style: "display:flex;flex-direction:column;gap:2px;min-width:0" }, [h("span", { class: "t", text: "一覧から外す" }), note]),
     ]);
-    const pop = h("div", { class: "popover", role: "menu" }, [item]);
+    const items = [item];
+    // 段階4：アカウントを選ぶ（GitHub のものだけ）・このマシンから削除（フォルダがあるものだけ）
+    if (r.remote && r.remote.kind === "github") {
+      items.push(h("button", { type: "button", role: "menuitem", "data-testid": "repo-account-choose", onclick: (e) => { e.stopPropagation(); openAccountChooser(r); } }, [
+        icon("link"), h("span", { style: "display:flex;flex-direction:column;gap:2px;min-width:0" }, [h("span", { class: "t", text: "アカウントを選ぶ" }), h("span", { class: "d", text: r.account && r.account.registered ? "いまは " + r.account.login + " で扱っています" : "いまは読むだけです" })]),
+      ]));
+    }
+    if (r.state !== "missing") {
+      items.push(h("button", { type: "button", role: "menuitem", "data-testid": "repo-delete-open", onclick: (e) => { e.stopPropagation(); openDelete(r); } }, [
+        icon("folderX"), h("span", { style: "display:flex;flex-direction:column;gap:2px;min-width:0" }, [h("span", { class: "t", text: "このマシンから削除" }), h("span", { class: "d", text: "フォルダごと消します。先に、失われるものを調べます" })]),
+      ]));
+    }
+    const pop = h("div", { class: "popover", role: "menu" }, items);
     queueMicrotask(() => item.focus());
     return h("div", { class: "menu-wrap" }, [btn, pop]);
   }
@@ -1223,7 +1251,28 @@ const SCRIPT = String.raw`
   }
 
   // ---- URL から clone（clone は Module の背景の仕事。画面は進み具合を聞きに行く） ----
-  const cloneDialog = document.getElementById("clone-dialog");
+  /**
+   * 差し出す面では、ダイアログの代わりに画面そのものに置く（core の新しい Project の画面の枠の中）。
+   * 開く・閉じるの口は同じ形にしておく——閉じたら、同じ面に始めから出し直す
+   */
+  const prepSurface = PREPARE ? (() => {
+    const el = h("div", { class: "prep", "data-testid": "repo-prepare-surface" });
+    el.showModal = () => {};
+    el.close = () => { el.dispatchEvent(new Event("close")); };
+    Object.defineProperty(el, "open", { get: () => el.childNodes.length > 0 });
+    app.replaceChildren(el);
+    return el;
+  })() : null;
+  /** 用意できたフォルダを core に返す（banto の拡張「dev.banto/folder-prepared」）。返ったあとは core の画面が先を出す */
+  async function prepared(folder) {
+    try {
+      await request("dev.banto/folder-prepared", folder);
+    } catch (e) {
+      prepSurface.append(h("p", { class: "stopline", role: "alert", text: "新しい Project の画面に渡せませんでした：" + errText(e) }));
+      reportSize();
+    }
+  }
+  const cloneDialog = prepSurface || document.getElementById("clone-dialog");
   const cl = { open: false, folderDraft: null, inspection: null, error: null, seq: 0, timer: 0, account: undefined, job: null, withProject: true, starting: false };
   let clParts = null;
   cloneDialog.addEventListener("cancel", (e) => { if (cl.job && cl.job.state === "running") e.preventDefault(); });
@@ -1231,7 +1280,8 @@ const SCRIPT = String.raw`
   function openClone(initial) {
     state.menuFor = null;
     const trigger = document.activeElement;
-    Object.assign(cl, { open: true, folderDraft: null, inspection: null, error: null, account: undefined, job: null, withProject: true, starting: false });
+    // 差し出す面では Project は core が作る——「Project も作る」は持たない
+    Object.assign(cl, { open: true, folderDraft: null, inspection: null, error: null, account: undefined, job: null, withProject: !PREPARE, starting: false });
     clParts = buildClone();
     clParts.url.value = initial || "";
     if (!cloneDialog.open) cloneDialog.showModal();
@@ -1251,10 +1301,15 @@ const SCRIPT = String.raw`
     const opt = projectOption(cl, "repo-clone-with-project", () => renderClone());
     const foot = h("div", { class: "foot" });
     const desc = h("p", { class: "desc" });
-    const root = h("div", { class: "dlg", "data-testid": "repo-clone-dialog" }, [
-      h("div", {}, [h("h2", { text: "URL から clone" }), desc]),
+    // 差し出す面では題を持たない（core のタブが言う）。新しいリポジトリから来たなら、戻る口を置く
+    const back = MODE === "prepare-create"
+      ? h("button", { class: "link", type: "button", "data-testid": "repo-prepare-back", text: "← 新しく作るほうに戻る", onclick: () => { cloneDialog.close(); openCreate(""); } })
+      : null;
+    const root = h("div", { class: PREPARE ? "dlg prep-body" : "dlg", "data-testid": "repo-clone-dialog" }, [
+      back,
+      PREPARE ? desc : h("div", {}, [h("h2", { text: "URL から clone" }), desc]),
       h("div", { class: "field" }, [h("label", { for: "repo-clone-url", class: "lbl", text: "リポジトリの URL" }), url, help]),
-      account, band.root, opt.root, foot,
+      account, band.root, PREPARE ? null : opt.root, foot,
     ]);
     cloneDialog.replaceChildren(root);
     return { url: url, folder: folder, band: band, help: help, account: account, opt: opt, foot: foot, desc: desc };
@@ -1321,7 +1376,10 @@ const SCRIPT = String.raw`
       const t = ins.target;
       if (document.activeElement !== p.folder && cl.folderDraft === null) p.folder.value = t.folder;
       else if (document.activeElement !== p.folder && p.folder.value !== t.folder) p.folder.value = t.folder;
-      const taken = targetSay(t, "clone", (name) => { cl.folderDraft = name; p.folder.value = name; inspectClone(); }, (path) => { cloneDialog.close(); openNewProject(path, t.folder); });
+      const taken = targetSay(t, "clone", (name) => { cl.folderDraft = name; p.folder.value = name; inspectClone(); }, (path) => {
+        if (PREPARE) { prepared({ path: path, suggestedName: t.folder, summary: path + " をそのまま使います（clone はしていません）" }); return; }
+        cloneDialog.close(); openNewProject(path, t.folder);
+      });
       o = taken ? Object.assign({ state: t.state.kind, home: t.home }, taken)
         : { state: "free", home: t.home, tone: "plain", mark: "cloudDown", message: t.renamedFrom ? "ここに clone します。" + t.home + "/" + t.renamedFrom + " は、もう使っているので " + t.folder + " にしました。" : "ここに clone します。" };
     }
@@ -1337,12 +1395,14 @@ const SCRIPT = String.raw`
     p.opt.root.hidden = !canClone && !running;
     p.opt.box.disabled = !!running;
     const verb = cl.withProject ? (ins && ins.reclone ? "clone し直して Project の作成へ" : "clone して Project の作成へ") : (ins && ins.reclone ? "clone し直す" : "clone する");
-    p.foot.replaceChildren(
+    fill(p.foot,
       running
         ? h("button", { class: "btn", type: "button", "data-testid": "repo-clone-cancel", text: "clone をやめる", onclick: cancelClone })
-        : h("button", { class: "btn", type: "button", text: "やめる", onclick: () => cloneDialog.close() }),
+        : PREPARE ? null : h("button", { class: "btn", type: "button", text: "やめる", onclick: () => cloneDialog.close() }),
       ins && ins.have
-        ? h("button", { class: "btn primary", type: "button", "data-testid": "repo-clone-show", text: "一覧で見る", onclick: () => { cloneDialog.close(); showRow(ins.have.path); } })
+        ? (PREPARE
+          ? h("button", { class: "btn primary", type: "button", "data-testid": "repo-clone-use-have", text: "この場所を使う", onclick: () => prepared({ path: ins.have.path, suggestedName: ins.have.name, summary: "もう手元にある " + ins.have.displayPath + " を使います（clone はしていません）" }) })
+          : h("button", { class: "btn primary", type: "button", "data-testid": "repo-clone-show", text: "一覧で見る", onclick: () => { cloneDialog.close(); showRow(ins.have.path); } }))
         : h("button", { class: "btn primary", type: "button", "data-testid": "repo-clone-submit", disabled: !canClone || !!running || cl.starting, text: running ? "clone しています…" : (job && job.state === "failed" ? "もう一度 " : "") + verb, onclick: startClone }),
     );
     reportSize();
@@ -1387,6 +1447,10 @@ const SCRIPT = String.raw`
     }
     const job = cl.job;
     if (!job || job.id !== id || job.state !== "done") return;
+    if (PREPARE) {
+      prepared({ path: job.path, suggestedName: job.suggestedName, summary: job.recloned ? job.label + " を " + job.displayPath + " に clone し直しました" : job.label + " を " + job.displayPath + " に clone しました" });
+      return;
+    }
     const withProject = cl.withProject;
     cloneDialog.close();
     const head = job.recloned ? job.label + " を " + job.displayPath + " に clone し直しました" : job.label + " を " + job.displayPath + " に clone しました";
@@ -1402,14 +1466,14 @@ const SCRIPT = String.raw`
   }
 
   // ---- 新しいリポジトリ ----
-  const createDialog = document.getElementById("create-dialog");
+  const createDialog = prepSurface || document.getElementById("create-dialog");
   const cr = { inspection: null, error: null, seq: 0, timer: 0, busy: false, withProject: true, failed: null, confirmedFor: null };
   let crParts = null;
   createDialog.addEventListener("close", () => { crParts = null; createDialog.replaceChildren(); document.body.style.minHeight = ""; reportSize(); });
   function openCreate(initial) {
     state.menuFor = null;
     const trigger = document.activeElement;
-    Object.assign(cr, { inspection: null, error: null, busy: false, withProject: true, failed: null, confirmedFor: null });
+    Object.assign(cr, { inspection: null, error: null, busy: false, withProject: !PREPARE, failed: null, confirmedFor: null });
     const name = h("input", { type: "text", spellcheck: "false", autocomplete: "off", placeholder: "名前", "aria-label": "リポジトリ名（フォルダ名）", "data-testid": "repo-create-name" });
     name.value = initial || "";
     name.addEventListener("input", () => { cr.failed = null; cr.confirmedFor = null; window.clearTimeout(cr.timer); renderCreate(); cr.timer = window.setTimeout(() => inspectCreate(false), 300); });
@@ -1421,11 +1485,11 @@ const SCRIPT = String.raw`
     const opt = projectOption(cr, "repo-create-with-project", () => renderCreate());
     const foot = h("div", { class: "foot" });
     const desc = h("p", { class: "desc" });
-    createDialog.replaceChildren(h("div", { class: "dlg", "data-testid": "repo-create-dialog" }, [
-      h("div", {}, [h("h2", { text: "新しいリポジトリ" }), desc]),
+    createDialog.replaceChildren(h("div", { class: PREPARE ? "dlg prep-body" : "dlg", "data-testid": "repo-create-dialog" }, [
+      PREPARE ? desc : h("div", {}, [h("h2", { text: "新しいリポジトリ" }), desc]),
       band.root, note,
       h("p", { class: "help", text: "GitHub に公開するときも、この名前を使います（そのときに変えられます）。" }),
-      opt.root, foot,
+      PREPARE ? null : opt.root, foot,
     ]));
     crParts = { name: name, band: band, note: note, opt: opt, foot: foot, desc: desc };
     if (!createDialog.open) createDialog.showModal();
@@ -1475,8 +1539,8 @@ const SCRIPT = String.raw`
       ...(free && current.githubCheckError ? [h("p", { class: "help", text: "GitHub に同じ名前があるか確かめられませんでした：" + current.githubCheckError }) ] : []),
     );
     p.opt.box.disabled = cr.busy;
-    p.foot.replaceChildren(
-      h("button", { class: "btn", type: "button", text: "やめる", onclick: () => createDialog.close() }),
+    fill(p.foot,
+      PREPARE ? null : h("button", { class: "btn", type: "button", text: "やめる", onclick: () => createDialog.close() }),
       h("button", { class: "btn primary", type: "button", "data-testid": "repo-create-submit", disabled: !free || cr.busy, text: cr.busy ? "作っています…" : (cr.confirmedFor === p.name.value.trim() ? "それでも" : "") + (cr.withProject ? "作って Project の作成へ" : "リポジトリを作る"), onclick: doCreate }),
     );
     reportSize();
@@ -1491,6 +1555,11 @@ const SCRIPT = String.raw`
     cr.busy = true; renderCreate();
     try {
       const made = await call("create_repository", { name: name });
+      if (PREPARE) {
+        cr.busy = false; renderCreate();
+        prepared({ path: made.path, suggestedName: made.name, summary: made.displayPath + " を作りました（git init、ブランチ " + made.branch + "）" });
+        return;
+      }
       const withProject = cr.withProject;
       createDialog.close();
       setFlash(withProject ? made.displayPath + " を作りました。Project の作成に進みます" : made.displayPath + " を作り、一覧に足しました（ブランチ " + made.branch + "）");
@@ -1499,6 +1568,189 @@ const SCRIPT = String.raw`
       if (withProject) openNewProject(made.path, made.name);
     } catch (e) {
       cr.busy = false; cr.failed = errText(e); renderCreate();
+    }
+  }
+
+  // ---- アカウントを選ぶ（段階4）。見えないアカウントは Module が断る。書けないなら、そう言って指定する ----
+  const accountDialog = document.getElementById("account-dialog");
+  const ac = { row: null, accounts: null, error: null, busy: false };
+  accountDialog.addEventListener("close", () => { ac.row = null; accountDialog.replaceChildren(); document.body.style.minHeight = ""; reportSize(); });
+  async function openAccountChooser(r) {
+    state.menuFor = null;
+    const trigger = document.activeElement;
+    // 行の「…」を閉じる（開いたまま後ろに残ると、閉じたあとのクリックを遮る）
+    render();
+    Object.assign(ac, { row: r, accounts: null, error: null, busy: false });
+    renderAccountChooser();
+    if (!accountDialog.open) accountDialog.showModal();
+    placeDialog(trigger, accountDialog);
+    try { ac.accounts = (await call("list_github_accounts")).accounts; } catch (e) { ac.error = "アカウントを読めませんでした：" + errText(e); }
+    renderAccountChooser();
+  }
+  function renderAccountChooser() {
+    const r = ac.row;
+    if (!r) return;
+    const current = r.account && r.account.registered ? r.account.login : null;
+    const kids = [
+      h("div", {}, [h("h2", { text: "アカウントを選ぶ" }), h("p", { class: "desc", text: r.remote.owner + "/" + r.remote.name + " を、どのアカウントで扱うか（clone し直す・公開するときに使います）" })]),
+    ];
+    if (!ac.accounts && !ac.error) kids.push(h("p", { class: "muted", text: "読んでいます…" }));
+    if (ac.accounts) {
+      if (ac.accounts.length === 0) kids.push(h("p", { class: "help", text: "GitHub のアカウントが登録されていません（banto 全体の設定の Repositories で登録できます）。" }));
+      kids.push(h("div", { class: "pills", role: "group", "aria-label": "アカウント" }, [
+        ...ac.accounts.map((a) => h("button", {
+          class: "pill", type: "button", "aria-pressed": String(current === a.login), "data-testid": "repo-account-pick", "data-login": a.login, disabled: ac.busy,
+          onclick: () => assignAccount(r, a.login),
+        }, [a.login])),
+        h("button", { class: "pill", type: "button", "aria-pressed": String(current === null), "data-testid": "repo-account-pick-none", disabled: ac.busy, onclick: () => assignAccount(r, null) }, ["使わない（読むだけ）"]),
+      ]));
+      kids.push(h("p", { class: "help", text: "選ぶと、そのアカウントで " + r.remote.owner + "/" + r.remote.name + " が見えるかを GitHub に確かめます。見えないアカウントは選べません。" }));
+    }
+    if (ac.busy) kids.push(h("p", { class: "muted", role: "status", text: "GitHub に確かめています…" }));
+    if (ac.error) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "repo-account-error", text: ac.error }));
+    kids.push(h("div", { class: "foot" }, [h("button", { class: "btn", type: "button", text: "閉じる", onclick: () => accountDialog.close() })]));
+    accountDialog.replaceChildren(h("div", { class: "dlg", "data-testid": "repo-account-dialog" }, kids));
+    reportSize();
+  }
+  async function assignAccount(r, login) {
+    ac.busy = true; ac.error = null; renderAccountChooser();
+    try {
+      const res = await call("set_repository_account", { path: r.path, login: login });
+      accountDialog.close();
+      setFlash(res.login === null
+        ? r.name + " を読むだけに戻しました（持ち主と同じアカウントがあっても、自動では付け直しません）"
+        : r.name + " を " + res.login + " で扱います" + (res.push ? "" : "（このアカウントは読めますが書けません——公開・push はできません）"));
+      await load();
+      showRow(r.path);
+    } catch (e) {
+      ac.busy = false; ac.error = errText(e); renderAccountChooser();
+    }
+  }
+
+  // ---- このマシンから削除（段階4）。確かめるのは Module——画面は言い方と、打たせる欄を持つだけ ----
+  const deleteDialog = document.getElementById("delete-dialog");
+  const dl = { row: null, inspection: null, error: null, busy: false, closeProjects: true, seq: 0 };
+  let dlTyped = null;
+  deleteDialog.addEventListener("cancel", (e) => { if (dl.busy) e.preventDefault(); });
+  deleteDialog.addEventListener("close", () => { dl.row = null; dlTyped = null; deleteDialog.replaceChildren(); document.body.style.minHeight = ""; reportSize(); });
+  async function openDelete(r) {
+    state.menuFor = null;
+    const trigger = document.activeElement;
+    // 行の「…」を閉じる（開いたまま後ろに残ると、閉じたあとのクリックを遮る）
+    render();
+    const seq = ++dl.seq;
+    Object.assign(dl, { row: r, inspection: null, error: null, busy: false, closeProjects: true });
+    dlTyped = null;
+    renderDelete();
+    if (!deleteDialog.open) deleteDialog.showModal();
+    placeDialog(trigger, deleteDialog);
+    try {
+      const ins = await call("inspect_delete", { path: r.path });
+      if (seq !== dl.seq) return;
+      dl.inspection = ins;
+    } catch (e) {
+      if (seq !== dl.seq) return;
+      dl.error = "調べられませんでした：" + errText(e);
+    }
+    renderDelete();
+  }
+  function lossLines(ins) {
+    const l = ins.losses;
+    const lines = [];
+    for (const b of l.unpushed) lines.push("ブランチ " + b.branch + "：どのリモートにも無いコミット " + b.commits + " 件");
+    if (l.detached > 0) lines.push("どのブランチにも無いコミット " + l.detached + " 件");
+    if (l.localOnlyBranches.length > 0) lines.push("リモートに無いブランチ " + l.localOnlyBranches.length + " 本（" + l.localOnlyBranches.join("・") + "）");
+    if (l.changed > 0) lines.push("コミットしていない変更 " + l.changed + " 件");
+    if (l.untracked > 0) lines.push("追跡していないもの " + l.untracked + " 件（ignore 済みは数えていません）");
+    if (l.stashes > 0) lines.push("stash " + l.stashes + " 件");
+    if (ins.worktrees && ins.worktrees.length > 0) lines.push("このリポジトリの worktree " + ins.worktrees.length + " 個が使えなくなります（" + ins.worktrees.join("・") + "）");
+    return lines;
+  }
+  function renderDelete() {
+    const r = dl.row;
+    if (!r) return;
+    const ins = dl.inspection;
+    const kids = [h("div", {}, [h("h2", { text: "このマシンから削除" }), h("p", { class: "desc", text: "フォルダごと消します。GitHub などのリモートには触りません。" })])];
+    let canDelete = false, needsName = false;
+    if (dl.error) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "repo-delete-error", text: dl.error }));
+    if (!ins && !dl.error) kids.push(h("p", { class: "muted", role: "status", "data-testid": "repo-delete-checking", text: "失われるものを調べています…（大きいリポジトリでは時間がかかります）" }));
+    if (ins && ins.refusal) {
+      kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "repo-delete-refusal", text: ins.displayPath + " は消せません：" + ins.refusal }));
+    } else if (ins) {
+      canDelete = true;
+      needsName = !!ins.needsTypedName;
+      kids.push(h("section", { class: "preview band" }, [
+        h("div", { class: "top" }, [h("p", { class: "k", text: ins.kind === "worktree" ? "消す worktree（本体 " + ins.main + " は残します）" : "消すフォルダ" }), h("p", { class: "v", "data-testid": "repo-delete-path", text: ins.displayPath })]),
+      ]));
+      const lines = lossLines(ins);
+      if (lines.length > 0) {
+        kids.push(h("div", { class: "losses", "data-testid": "repo-delete-losses" }, [
+          h("p", { class: "lbl", text: "消すと失われるもの" }),
+          h("ul", {}, lines.map((t) => h("li", { "data-testid": "repo-delete-loss", text: t }))),
+        ]));
+      } else if (ins.losses.problems.length === 0) {
+        kids.push(h("p", { "data-testid": "repo-delete-nothing", text: "push していないコミット・変更・stash などはありません。フォルダごと消えます（" + ins.displayPath + "）。" }));
+      }
+      for (const p of ins.losses.problems) kids.push(h("p", { class: "warnline", "data-testid": "repo-delete-problem", text: p + "——確かめられていないものは、失われるかもしれません" }));
+      if (ins.projectsError) kids.push(h("p", { class: "warnline", text: "どの Project が使っているかを読めませんでした：" + ins.projectsError }));
+      const active = (ins.projects || []).filter((p) => !p.closed);
+      if (ins.projects && ins.projects.length > 0) {
+        kids.push(h("p", { class: "warnline", "data-testid": "repo-delete-projects", text: "Project「" + ins.projects.map((p) => p.name).join("」「") + "」が使っています。消すと、その Project の Root が無くなります。" }));
+        if (active.length > 0) {
+          const box = h("input", { type: "checkbox", "data-testid": "repo-delete-close-projects", checked: dl.closeProjects, disabled: dl.busy });
+          box.addEventListener("change", () => { dl.closeProjects = box.checked; });
+          kids.push(h("label", { class: "projopt" }, [box, h("span", {}, [h("span", { class: "t", text: "Project も閉じる" }), h("span", { class: "d", text: "消したあと、banto の「Project を閉じる」の確かめを開きます（閉じるのはそこで押したとき）" })])]));
+        }
+      }
+      if (needsName) {
+        if (!dlTyped) {
+          dlTyped = h("input", { type: "text", spellcheck: "false", autocomplete: "off", "data-testid": "repo-delete-typed", "aria-label": "リポジトリ名" });
+          dlTyped.addEventListener("input", () => renderDeleteFoot());
+          dlTyped.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doDelete(); } });
+        }
+        kids.push(h("div", { class: "field" }, [h("label", { class: "lbl", text: "承知のうえで消すなら、リポジトリ名「" + ins.name + "」を打ってください" }), dlTyped]));
+      }
+    }
+    const foot = h("div", { class: "foot", "data-testid": "repo-delete-foot" });
+    kids.push(foot);
+    deleteDialog.replaceChildren(h("div", { class: "dlg", "data-testid": "repo-delete-dialog" }, kids));
+    dl.canDelete = canDelete; dl.needsName = needsName;
+    renderDeleteFoot();
+    if (dlTyped && dlTyped.isConnected) dlTyped.focus();
+  }
+  function renderDeleteFoot() {
+    const foot = deleteDialog.querySelector('[data-testid="repo-delete-foot"]');
+    if (!foot) return;
+    const ins = dl.inspection;
+    const typedOk = !dl.needsName || (dlTyped && ins && dlTyped.value === ins.name);
+    fill(foot,
+      h("button", { class: "btn", type: "button", text: "やめる", disabled: dl.busy, onclick: () => deleteDialog.close() }),
+      dl.canDelete ? h("button", { class: "btn primary danger", type: "button", "data-testid": "repo-delete-submit", disabled: dl.busy || !typedOk, text: dl.busy ? "消しています…" : dl.needsName ? "承知して削除" : "削除する", onclick: doDelete }) : null,
+    );
+    reportSize();
+  }
+  async function doDelete() {
+    const r = dl.row, ins = dl.inspection;
+    if (!r || !ins || !dl.canDelete || dl.busy) return;
+    if (dl.needsName && (!dlTyped || dlTyped.value !== ins.name)) return;
+    dl.busy = true; dl.error = null; renderDeleteFoot();
+    try {
+      const res = await call("delete_repository", Object.assign({ path: r.path, confirmed: true }, dl.needsName ? { typedName: dlTyped.value } : {}));
+      const closeIds = dl.closeProjects ? res.projects.filter((p) => !p.closed).map((p) => p.id) : [];
+      deleteDialog.close();
+      setFlash(res.displayPath + " をこのマシンから削除しました（GitHub などのリモートには触っていません）");
+      await load();
+      // 使っていた Project を閉じるのは core の確かめで（Module は Project に触らない）
+      if (closeIds.length > 0) {
+        try { await request("dev.banto/close-projects", { projectIds: closeIds }); }
+        catch (e) { setFlash("フォルダは消しました。Project を閉じる画面を開けませんでした：" + errText(e) + "（Project の設定から閉じられます）"); render(); }
+      }
+    } catch (e) {
+      dl.busy = false;
+      // 調べたあとに増えていた等——もう一度調べ直して見せる
+      dl.error = errText(e);
+      try { dl.inspection = await call("inspect_delete", { path: r.path }); } catch (e2) { /* 調べ直せなければ、前の結果のまま（理由は上に出ている） */ }
+      renderDelete();
     }
   }
 
@@ -1521,6 +1773,7 @@ const SCRIPT = String.raw`
    */
   function placeDialog(trigger, el) {
     const d = el || dialog;
+    if (PREPARE) return;
     if (document.body.dataset.mode === "fullscreen") return;
     const top = Math.max(8, (trigger ? trigger.getBoundingClientRect().top : 0) - 8);
     d.style.margin = "0 auto";
@@ -1684,12 +1937,18 @@ const SCRIPT = String.raw`
       return;
     }
     render();
+    if (PREPARE) {
+      // 置き場（説明の1行）だけを読み、clone・新しいリポジトリの本体を出す
+      try { state.home = await call("get_repository_settings"); } catch (e) { /* 置き場が読めなくても、本体は出す（説明が「置き場」になるだけ） */ }
+      if (MODE === "prepare-clone") openClone(""); else openCreate("");
+      return;
+    }
     await Promise.all([load(), MODE === "config" ? loadAccounts() : null]);
   })();
 })();
 `;
 
-export function repositoriesAppHtml(mode: "launcher" | "config"): string {
+export function repositoriesAppHtml(mode: "launcher" | "config" | "prepare-clone" | "prepare-create"): string {
   // 置き換えは関数で（文字列で渡すと `$&` などが特別な意味を持つ）
   const script = SCRIPT.replace("__MODE__", () => mode).replace("__ICONS__", () => JSON.stringify(ICONS));
   return `<!doctype html>
@@ -1704,6 +1963,8 @@ export function repositoriesAppHtml(mode: "launcher" | "config"): string {
 <dialog id="dialog" aria-label="フォルダを選ぶ"></dialog>
 <dialog id="clone-dialog" aria-label="URL から clone"></dialog>
 <dialog id="create-dialog" aria-label="新しいリポジトリ"></dialog>
+<dialog id="account-dialog" aria-label="アカウントを選ぶ"></dialog>
+<dialog id="delete-dialog" aria-label="このマシンから削除"></dialog>
 <script>${script}</script>
 </body>
 </html>
