@@ -33,6 +33,10 @@ export async function setGithubLoginFixture(patch: {
   refreshError?: string | null;
   /** リポジトリを作る（1コミット入り。非公開なら readers の login だけが読める） */
   addRepo?: { owner: string; name: string; private?: boolean; readers?: string[] };
+  /** Organization を作る（メンバーの login → 役割、メンバーがリポジトリを作れるか） */
+  addOrg?: { login: string; members: Record<string, "admin" | "member">; membersCanCreate: boolean };
+  /** そのリポジトリ（`owner/name`）への push を断る・断るのをやめる（push の失敗の試験） */
+  rejectPush?: { repo: string; on: boolean };
 }): Promise<{ refreshCalls: number }> {
   const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
   const res = await fetch(`${web}/__fake/state`, { method: "POST", body: JSON.stringify(patch) });

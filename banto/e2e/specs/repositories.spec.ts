@@ -5,8 +5,8 @@
 //   2. Import が本物の git を読んで判断する——断る理由と次の手、足したあとの行の中身（区切り・GitHub の場所・
 //      アカウント・使っている Project）を1つずつ見る
 //   3. フォルダが消えた・origin が変わった・一覧から外す／元に戻す——画面に出る値まで見る
-//   4. まだ作っていない手（GitHub に公開）は、押すと「まだ作っていない」と言う。Project を始める・clone し直すは段階3で
-//      繋いだ（core の新しい Project の画面・clone のダイアログが開く）
+//   4. 事実の隣の次の手：GitHub に公開（段階5——公開の画面が開く）・Project を始める・clone し直す（段階3——core の
+//      新しい Project の画面・clone のダイアログが開く）
 //   5. 設定の面にも同じ一覧と既定の置き場が出て、置き場を変えると一覧の説明も変わる
 //   6. 狭い幅で縦に積み、はみ出さない
 //   7. GitHub のアカウント（段階2）：PAT・ブラウザでログイン（デバイスフロー）・確かめる・更新の失敗が受信箱に出る・
@@ -18,6 +18,8 @@
 //      断る・使っている Project は core の「Project を閉じる」の確かめを開き、押したときだけ閉じる）
 //  10. 段階4：core の新しい Project の画面に、Repositories が名乗ったタブ（clone・新しいリポジトリ）が出て、中の画面が
 //      用意したフォルダで Project を作る・もう Project があればそれを開く
+//  11. 段階5：GitHub に公開——一覧の行から（アカウント・持ち主・名前のぶつかり・公開範囲の警告・作る→origin→push、
+//      push の失敗で作ったものは残り push だけやり直せる）と、Project の画面の入口「この Project を GitHub に公開」から
 import { test, expect, type FrameLocator, type Page, type Route } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -89,7 +91,8 @@ function canvasOf(page: Page): FrameLocator {
 
 async function openLauncher(page: Page): Promise<FrameLocator> {
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  const entry = page.getByRole("option", { name: /リポジトリ/ });
+  // 頭で引く——「この Project を GitHub に公開」（段階5）の説明にも「リポジトリ」がある
+  const entry = page.getByRole("option", { name: /^リポジトリ/ });
   await expect(entry, "Repositories の入口が Command Palette に出ていない").toBeVisible({ timeout: 60_000 });
   await expect(entry).toContainText("このマシンで扱うリポジトリの一覧");
   await entry.click();
@@ -250,9 +253,16 @@ test("入口から開いた一覧で、Import の判断・足した行の中身�
   await expect(unusedRows.nth(0)).toHaveAttribute("data-repo-path", localRepo);
   await expect(unusedRows.nth(1)).toHaveAttribute("data-repo-path", goneRepo);
 
-  // ---- 3. まだ作っていない手は、押すと「まだ作っていない」と言う。Project を始めるは core の画面をフォルダ入りで開く ----
+  // ---- 3. 「GitHub に公開」は公開の画面を開く（段階5）。アカウントが無ければそう言う。Project を始めるは core の画面 ----
   await local.getByTestId("repo-publish-open").click();
-  await expect(local.getByTestId("repo-not-yet")).toHaveText("GitHub に公開する手は、まだ作っていません。");
+  const publish = canvas.getByTestId("publish-panel");
+  await expect(publish.getByTestId("publish-title")).toHaveText("GitHub に公開");
+  await expect(publish.getByTestId("publish-facts")).toContainText("main · まだコミットがありません");
+  await expect(publish.getByTestId("publish-no-account")).toHaveText("GitHub のアカウントが登録されていません。登録したアカウントにリポジトリを作ります（banto 全体の設定の Repositories で登録できます）。", { timeout: 30_000 });
+  await expect(publish.getByTestId("publish-push-note")).toHaveText("まだコミットが無いので、リポジトリを作って origin を設定するところまでにします。最初の push は、コミットしてから。");
+  await expect(publish.getByTestId("publish-submit")).toHaveCount(0);
+  await publish.getByRole("button", { name: "閉じる" }).click();
+  await expect(publish).toHaveCount(0);
   await local.getByTestId("repo-start-project").click();
   const newProject = page.getByRole("dialog", { name: "新しい Project" });
   await expect(newProject, "「Project を始める」で core の新しい Project の画面が開かない").toBeVisible({ timeout: 15_000 });
@@ -925,6 +935,130 @@ test("段階4：core の新しい Project の画面に Repositories が名乗っ
   await expect(row(inner, `${repoHome}/${cloned}`).getByTestId("repo-project")).toHaveText(cloned, { timeout: 60_000 });
   await expect(row(inner, `${repoHome}/${created}`).getByTestId("repo-project")).toHaveText(`${created} の Project`);
 
+  await inner.getByTestId("repo-home-reset").click();
+  await expect(inner.getByTestId("repo-home-input")).toHaveValue("~/banto");
+  rmSync(repoHome, { recursive: true, force: true });
+  expect(pageErrors).toEqual([]);
+});
+
+test("段階5：GitHub に公開——一覧の行から作って push し（失敗しても作ったものは残り push だけやり直せる）、Project の画面の入口からも公開できる", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  const repoHome = `/tmp/banto-e2e-publish-home-${Date.now()}`;
+  const suffix = Date.now().toString(36);
+  const hermes = `hermes-${suffix}`;
+  const taken = `taken-${suffix}`;
+  const org = `e2e-org-${suffix}`;
+  const proj = `proj-${suffix}`;
+  const me = E2E_GITHUB_PAT_LOGIN;
+  await setGithubLoginFixture({ addRepo: { owner: me, name: taken } });
+  await setGithubLoginFixture({ addOrg: { login: org, members: { [me]: "member" }, membersCanCreate: false } });
+  const hermesPath = join(repoHome, hermes);
+  const projPath = join(repoHome, proj);
+  for (const dir of [hermesPath, projPath]) {
+    makeRepo(dir);
+    writeFileSync(join(dir, "notes.md"), "second\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-q", "-m", "second");
+  }
+  git(hermesPath, "branch", "spike");
+
+  let inner = await openRepositoriesPane(page);
+  await setRepoHome(inner, repoHome);
+  for (const path of [hermesPath, projPath]) {
+    await inner.getByTestId("repo-import-open").click();
+    await goTo(inner, path);
+    await inner.getByTestId("repo-import-submit").click();
+    await expect(row(inner, path)).toHaveCount(1, { timeout: 30_000 });
+  }
+  await registerPat(inner);
+
+  // ---- 一覧の行から開く：どこから・どこへ、アカウント・持ち主・名前・公開範囲・最初の push ----------------
+  await row(inner, hermesPath).getByTestId("repo-publish-open").click();
+  const panel = inner.getByTestId("publish-panel");
+  await expect(panel.getByTestId("publish-title")).toHaveText("GitHub に公開");
+  await expect(panel.getByTestId("publish-account-one")).toContainText(`${me} で作ります`, { timeout: 30_000 });
+  await expect(panel.getByTestId("publish-route")).toContainText(hermesPath);
+  await expect(panel.getByTestId("publish-target")).toHaveText(`github.com/${me}/${hermes}`);
+  await expect(panel.getByTestId("publish-visibility-badge")).toHaveText("非公開");
+  await expect(panel.getByTestId("publish-facts")).toContainText("main · 2 コミット");
+  await expect(panel.getByTestId("publish-facts")).toContainText("最後のコミットsecond（");
+  // fine-grained PAT は作れるかを前もって知る口が無い——そう言う。メンバーが作れない Organization は理由つきで選べない
+  await expect(panel.getByTestId("publish-owner-one")).toHaveText(`${me}（あなたのアカウント）`);
+  await expect(panel.getByTestId("publish-owner-note")).toContainText("作れるかは、作ってみるまで分かりません");
+  await expect(panel.getByTestId("publish-owner-blocked")).toContainText(`${org} には作れません：${org} はメンバーがリポジトリを作れない設定です`);
+  await expect(panel.getByTestId("publish-push-note")).toHaveText("main を push して、以後は origin/main を追います。ほかのブランチ（spike）は送りません——あとで git push で送れます。");
+  // GitHub に同じ名前がある——断り、空いている名前を出す
+  await panel.getByTestId("publish-name").fill(taken);
+  await expect(panel.getByTestId("publish-name-taken")).toContainText(`${me} には、もう ${taken} があります。`, { timeout: 15_000 });
+  await expect(panel.getByTestId("publish-submit")).toBeDisabled();
+  await panel.getByTestId("publish-name-suggest").click();
+  await expect(panel.getByTestId("publish-name")).toHaveValue(`${taken}-2`);
+  await expect(panel.getByTestId("publish-target")).toHaveText(`github.com/${me}/${taken}-2`);
+  await panel.getByTestId("publish-name").fill("a b");
+  await expect(panel.getByTestId("publish-name-invalid")).toHaveText("使えるのは英数字と - _ . だけです（100字まで）");
+  await panel.getByTestId("publish-name").fill(hermes);
+  // 公開を選ぶと、これまでの履歴もすべて公開されると言う
+  await panel.locator('[data-testid="publish-visibility"][data-value="public"]').click();
+  await expect(panel.getByTestId("publish-public-warning")).toHaveText("誰でも読めます。これまでの 2 コミットの履歴も、すべて公開されます。");
+  await expect(panel.getByTestId("publish-visibility-badge")).toHaveText("公開");
+  await panel.locator('[data-testid="publish-visibility"][data-value="private"]').click();
+  await expect(panel.getByTestId("publish-public-warning")).toHaveCount(0);
+
+  // ---- push に失敗——作ったリポジトリは残し、push だけやり直す --------------------------------------------
+  await setGithubLoginFixture({ rejectPush: { repo: `${me}/${hermes}`, on: true } });
+  await expect(panel.getByTestId("publish-submit")).toHaveText("GitHub に作って push");
+  await panel.getByTestId("publish-submit").click();
+  await expect(panel.getByTestId("publish-error")).toContainText(`GitHub にはできています（github.com/${me}/${hermes}）。push だけやり直せます`, { timeout: 60_000 });
+  await expect(panel.getByTestId("publish-error")).toContainText("push する権限がありません");
+  const steps = panel.getByTestId("publish-steps").locator("li");
+  await expect(steps).toHaveText([`GitHub に ${me}/${hermes} を作る（非公開）`, "origin に設定する", "main を push する"]);
+  await expect(steps.nth(0)).toHaveAttribute("data-state", "done");
+  await expect(steps.nth(1)).toHaveAttribute("data-state", "done");
+  await expect(steps.nth(2)).toHaveAttribute("data-state", "failed");
+  await expect(panel.getByTestId("publish-title")).toHaveText("GitHub にはできています");
+  await expect(panel.getByTestId("publish-retry-account")).toHaveText(`${me} で push します。`);
+  expect(execFileSync("git", ["remote", "get-url", "origin"], { cwd: hermesPath, encoding: "utf8" }).trim()).toMatch(new RegExp(`/${me}/${hermes}\\.git$`));
+  await setGithubLoginFixture({ rejectPush: { repo: `${me}/${hermes}`, on: false } });
+  await expect(panel.getByTestId("publish-retry")).toHaveText("push だけやり直す");
+  await panel.getByTestId("publish-retry").click();
+  await expect(panel.getByTestId("publish-done")).toContainText(`github.com/${me}/${hermes} に push しました`, { timeout: 60_000 });
+  await expect(panel.getByTestId("publish-title")).toHaveText("GitHub にあります");
+  await expect(panel.getByTestId("publish-steps").locator("li")).toHaveText(["main を push する"]);
+  expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "main@{upstream}"], { cwd: hermesPath, encoding: "utf8" }).trim()).toBe("origin/main");
+  await panel.getByRole("button", { name: "閉じる" }).click();
+  // 一覧の行：GitHub の場所と扱うアカウント。「このマシンにだけ」は消える
+  const published = row(inner, hermesPath);
+  await expect(published.getByTestId("repo-remote")).toContainText(`${me}/${hermes}`);
+  await expect(published.getByTestId("repo-account-login")).toHaveText(me);
+  await expect(published.getByTestId("repo-local-only")).toHaveCount(0);
+  // トークンは .git/config にも画面にも無い
+  expect(readFileSync(join(hermesPath, ".git", "config"), "utf8").includes(E2E_GITHUB_PAT)).toBe(false);
+  for (const frame of page.frames()) expect((await frame.content().catch(() => "")).includes(E2E_GITHUB_PAT)).toBe(false);
+
+  // ---- Project の画面の入口「この Project を GitHub に公開」——どの Project かは host の刻印で決まる --------------
+  await openApp(page);
+  await createProject(page, proj, projPath);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  const entry = page.getByRole("option", { name: /^この Project を GitHub に公開/ });
+  await expect(entry).toBeVisible({ timeout: 60_000 });
+  await entry.click();
+  const canvas = canvasOf(page);
+  const fromProject = canvas.getByTestId("publish-panel");
+  await expect(fromProject.getByTestId("publish-target")).toHaveText(`github.com/${me}/${proj}`, { timeout: 60_000 });
+  await expect(fromProject.getByTestId("publish-route")).toContainText(projPath);
+  await fromProject.getByTestId("publish-submit").click();
+  await expect(fromProject.getByTestId("publish-done")).toContainText(`github.com/${me}/${proj} に公開しました`, { timeout: 60_000 });
+  await expect(fromProject.getByTestId("publish-steps").locator("li")).toHaveText([`GitHub に ${me}/${proj} を作る（非公開）`, "origin に設定する", "main を push する"]);
+  await expect(fromProject.getByRole("button", { name: "閉じる" })).toHaveCount(0);
+  expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "main@{upstream}"], { cwd: projPath, encoding: "utf8" }).trim()).toBe("origin/main");
+
+  // 片づけ：アカウントを外し、置き場を戻す
+  inner = await openRepositoriesPane(page);
+  await expect(row(inner, projPath).getByTestId("repo-remote")).toContainText(`${me}/${proj}`, { timeout: 60_000 });
+  await inner.locator(`[data-testid="gh-account"][data-login="${me}"]`).getByTestId("gh-account-remove").click();
+  await inner.getByTestId("gh-account-remove-confirm").click();
+  await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();
   await inner.getByTestId("repo-home-reset").click();
   await expect(inner.getByTestId("repo-home-input")).toHaveValue("~/banto");
   rmSync(repoHome, { recursive: true, force: true });
