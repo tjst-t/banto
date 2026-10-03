@@ -5,7 +5,8 @@
 // （docs/notes/2026-10-02-backlog-ui-survey.md）：
 //   - 上の段は1行。絞り込みの札を並べず、**見方**（次にやる／すべて／バグ／閉じたもの）を切り替える
 //     ——Linear の保存した見方・My Issues と同じ。マイルストーン・ラベルは「絞り込み」の小窓に畳む
-//   - 一覧は1項目1行。左端の順番の印が、並び順（＝優先順）と状態を同時に言う
+//   - 一覧は1項目1行。左端の印：タスク・バグは状態の輪、ストーリーは子の進みで満ちるひし形。
+//     「次にやる」ではタスクの題の頭にストーリー名を薄く付ける
 //   - 行を押す／Enter で右に詳細（Linear の Peek）。↑↓（j/k）で選び、Esc で閉じる、C で足す
 //   - 足すのは一覧の中でその場に打つ。ダイアログは使わない
 // Backlog は Project ごとにつける（§4.4）。出どころは開いている Project の根の中の tasks.json。
@@ -92,8 +93,6 @@ function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
   const open = items.filter((i) => !isClosed(i) && matches(i, f));
   const storyTitle = (i: BacklogItem) =>
     i.parent ? items.find((p) => p.id === i.parent)?.title : undefined;
-  const number = (nodes: ListNode[]) =>
-    nodes.map((node, i) => ({ ...node, n: i + 1 }));
 
   if (view === "next") {
     // 動かせるものだけ：進めている、と、着手できる。ストーリーは子で動くので出さない
@@ -106,13 +105,13 @@ function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
       actionable.length;
     const toNode = (i: BacklogItem): ListNode => ({
       item: i,
-      context: storyTitle(i),
+      story: storyTitle(i),
     });
     return [
       {
         id: "doing",
         title: "進めている",
-        nodes: number(doing.map(toNode)),
+        nodes: doing.map(toNode),
         sortable: true,
       },
       {
@@ -122,7 +121,7 @@ function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
           rest > 0
             ? `ほかに待っているもの・積んだだけのものが ${rest} 件（「すべて」で見る）`
             : undefined,
-        nodes: number(actionable.map(toNode)),
+        nodes: actionable.map(toNode),
         sortable: true,
       },
     ].filter((g) => g.nodes.length > 0 || g.id === "actionable");
@@ -134,7 +133,7 @@ function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
       {
         id: "bugs",
         title: "バグ",
-        nodes: number(bugs.map((i) => ({ item: i }))),
+        nodes: bugs.map((i) => ({ item: i })),
         composerMilestone: null,
         sortable: true,
       },
@@ -169,15 +168,13 @@ function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
   );
   const toNode = (i: BacklogItem): ListNode => {
     if (i.kind !== "story")
-      return { item: i, context: i.parent ? storyTitle(i) : undefined };
+      return { item: i, story: i.parent ? storyTitle(i) : undefined };
     const kids = childrenOf(i, items);
     return {
       item: i,
-      children: number(
-        kids
-          .filter((k) => !isClosed(k) && matches(k, f))
-          .map((k) => ({ item: k })),
-      ),
+      children: kids
+        .filter((k) => !isClosed(k) && matches(k, f))
+        .map((k) => ({ item: k })),
       closedKids: kids.filter(isClosed),
     };
   };
@@ -186,24 +183,22 @@ function buildGroups(view: ViewId, file: BacklogFile, f: Filters): ListGroup[] {
     .map((m) => ({
       id: m.id,
       title: m.title,
-      nodes: number(top.filter((i) => i.milestone === m.id).map(toNode)),
+      nodes: top.filter((i) => i.milestone === m.id).map(toNode),
       composerMilestone: m.id,
       sortable: true,
     }));
   groups.push({
     id: "none",
     title: "マイルストーン無し",
-    nodes: number(
-      top
-        .filter(
-          (i) =>
-            i.milestone === null ||
-            !file.milestones.some(
-              (m) => m.id === i.milestone && m.status === "open",
-            ),
-        )
-        .map(toNode),
-    ),
+    nodes: top
+      .filter(
+        (i) =>
+          i.milestone === null ||
+          !file.milestones.some(
+            (m) => m.id === i.milestone && m.status === "open",
+          ),
+      )
+      .map(toNode),
     composerMilestone: null,
     sortable: true,
   });

@@ -31,8 +31,8 @@ import {
 import {
   BugTag,
   PriorityMark,
+  ItemMark,
   RankMark,
-  StoryProgress,
   STATUS_LABEL,
   rankState,
 } from "./backlog-parts";
@@ -40,12 +40,12 @@ import { InlineComposer } from "./backlog-forms";
 
 export interface ListNode {
   item: BacklogItem;
-  /** 段の中の順番（閉じたものは持たない） */
-  n?: number;
   /** ストーリーの子（終わっていないもの） */
   children?: ListNode[];
   /** ストーリーの子のうち閉じたもの。「終わった n 件」で畳んでおく */
   closedKids?: BacklogItem[];
+  /** 題の頭に薄く付けるストーリー名（「次にやる」など、ストーリーの下に並んでいないとき） */
+  story?: string;
   /** 行の右に薄く添える文脈（「次にやる」でどのストーリーの下か、など） */
   context?: string;
   /** 閉じたものの一覧で、やめた理由などを添える */
@@ -438,12 +438,27 @@ function Row({
         data-testid="backlog-row-open"
         className="flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
-        <RankMark state={state} n={node.n} small={depth === 1} />
+        <ItemMark item={item} items={items} small={depth === 1} />
         {item.kind === "bug" ? <BugTag /> : null}
+        {node.story ? (
+          <span
+            data-testid="backlog-row-story"
+            title={node.story}
+            className="max-w-1/3 shrink-0 truncate text-md text-ink-3"
+          >
+            {node.story}
+          </span>
+        ) : null}
+        {node.story ? (
+          <span aria-hidden className="-mx-1 shrink-0 text-md text-ink-3">
+            ／
+          </span>
+        ) : null}
         <span
           data-testid="backlog-row-title"
           className={cn(
-            "min-w-0 truncate text-md",
+            "min-w-0 truncate",
+            isStory && depth === 0 ? "text-lg" : "text-md",
             closed
               ? "text-ink-3"
               : state === "waiting" || state === "backlog"
@@ -477,7 +492,7 @@ function Row({
               {node.context}
             </span>
           ) : null}
-          {isStory ? <StoryProgress kids={kids} items={items} /> : null}
+          {isStory ? <StoryCount kids={kids} /> : null}
         </span>
       </button>
       <RowMenu
@@ -578,5 +593,20 @@ function RowMenu({
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** ストーリーの行の右に「終わった数/全部」。やめた子は数えない（印の円グラフと同じ数え方） */
+function StoryCount({ kids }: { kids: readonly BacklogItem[] }) {
+  const counted = kids.filter((k) => k.status !== "dropped");
+  if (counted.length === 0) return null;
+  const done = counted.filter((k) => k.status === "done").length;
+  return (
+    <span
+      data-testid="backlog-progress"
+      className="text-xs text-ink-3 tabular-nums"
+    >
+      {done}/{counted.length}
+    </span>
   );
 }

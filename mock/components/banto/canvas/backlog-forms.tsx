@@ -30,7 +30,7 @@ import {
   type BacklogItem,
   type BacklogKind,
 } from "@/lib/mock/backlog";
-import { KIND_LABEL, RankMark, rankState } from "./backlog-parts";
+import { ItemMark, KIND_LABEL } from "./backlog-parts";
 
 /** 1件足す。`parent` があればそのストーリーのタスクだけ */
 export function InlineComposer({
@@ -267,7 +267,7 @@ export function ItemPicker({
                   }}
                   className="gap-2 text-md"
                 >
-                  <RankMark state={rankState(c, items)} small />
+                  <ItemMark item={c} items={items} small />
                   <span className="min-w-0 flex-1 truncate">{c.title}</span>
                   {c.kind !== "task" ? (
                     <span className="text-xs text-ink-3">

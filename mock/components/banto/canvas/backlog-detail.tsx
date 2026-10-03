@@ -36,7 +36,7 @@ import {
   MarkdownBody,
   PRIORITY_LABEL,
   RANK_STATE_LABEL,
-  RankMark,
+  ItemMark,
   STATUS_LABEL,
   formatDate,
   rankState,
@@ -166,16 +166,7 @@ export function BacklogDetail({
               <ul className="flex flex-col" data-testid="backlog-detail-kids">
                 {kids.map((k) => (
                   <li key={k.id}>
-                    <ItemLine
-                      item={k}
-                      items={items}
-                      n={
-                        isClosed(k)
-                          ? undefined
-                          : kids.filter((x) => !isClosed(x)).indexOf(k) + 1
-                      }
-                      onOpen={onOpen}
-                    />
+                    <ItemLine item={k} items={items} onOpen={onOpen} />
                   </li>
                 ))}
               </ul>
@@ -418,7 +409,7 @@ function Properties({
         disabled={closed}
         trigger={
           <>
-            <RankMark state={state} small />
+            <ItemMark item={item} items={items} small />
             {state === "actionable" || state === "waiting"
               ? RANK_STATE_LABEL[state]
               : STATUS_LABEL[item.status]}
@@ -628,18 +619,16 @@ function PropertyMenu({
   );
 }
 
-/** 依存の相手の1行（順番の印・題・状態）。押すとその項目へ */
+/** 依存の相手の1行（印・題・状態）。押すとその項目へ */
 function ItemLine({
   item,
   items,
-  n,
   onOpen,
   onRemove,
   self = false,
 }: {
   item: BacklogItem;
   items: readonly BacklogItem[];
-  n?: number;
   onOpen?: (id: string) => void;
   onRemove?: () => void;
   self?: boolean;
@@ -647,7 +636,7 @@ function ItemLine({
   const state = rankState(item, items);
   const body = (
     <>
-      <RankMark state={state} n={n} small />
+      <ItemMark item={item} items={items} small />
       <span
         className={cn(
           "min-w-0 flex-1 truncate text-md",

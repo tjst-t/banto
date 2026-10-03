@@ -2,9 +2,8 @@
 
 // Backlog の画面の小さな部品。一覧と詳細の両方で使う。
 //
-// 芯は**順番の印**（RankMark）——並び順はそのまま優先順（v4-modules.md §4.4）なので、左端に順番の数字を立て、
-// 数字の囲みで状態を言う。課題管理でよくある「状態の丸」（Linear 等）をそのまま借りず、banto の Backlog が
-// 持つ一番の性質（順番＝優先）を印にした（docs/notes/2026-10-02-backlog-ui-survey.md）。
+// 左端の印で状態を言う。順番の数字は入れない（2026-10-03、ユーザー「数字の意味がわからない」——並び順は
+// 行の位置で分かり、区切りごとに数え直す数字は通し番号に見えた）。ストーリーは別の形（StoryMark）。
 //   着手できる（ready かつ待つものが全部終わった）＝青の輪／進めている＝青の輪に進みの弧／
 //   待っている＝点線の輪／積んだだけ＝輪なし／終わった＝緑の印／やめた＝横棒
 // 塗りの役色は使わない（「塗ってよいのは turn だけ」、scripts/check-tokens.mjs）。
@@ -73,32 +72,25 @@ export const RANK_STATE_LABEL: Record<RankState, string> = {
 };
 
 /**
- * 順番の印。`n` は区切り（またはストーリー）の中での順番。閉じたものは順番を持たないので数字を出さない。
+ * 状態の印（タスク・バグ）。
  * 大きさは一覧で 22px、子の行と札では 18px
  */
 export function RankMark({
   state,
-  n,
   small = false,
   className,
 }: {
   state: RankState;
-  n?: number;
   small?: boolean;
   className?: string;
 }) {
   const size = small ? 18 : 22;
   const r = size / 2 - 1.5;
   const c = size / 2;
-  const showNumber = n !== undefined && state !== "done" && state !== "dropped";
   return (
     <span
       role="img"
-      aria-label={
-        n !== undefined && showNumber
-          ? `${n}番目・${RANK_STATE_LABEL[state]}`
-          : RANK_STATE_LABEL[state]
-      }
+      aria-label={RANK_STATE_LABEL[state]}
       data-testid="backlog-rank"
       data-state={state}
       className={cn(
@@ -151,6 +143,16 @@ export function RankMark({
             />
           </>
         ) : null}
+        {state === "backlog" ? (
+          <circle
+            cx={c}
+            cy={c}
+            r={r}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.25}
+          />
+        ) : null}
         {state === "waiting" ? (
           <circle
             cx={c}
@@ -194,20 +196,97 @@ export function RankMark({
           />
         ) : null}
       </svg>
-      {showNumber ? (
-        <span
-          className={cn(
-            "relative leading-none font-medium tabular-nums",
-            small ? "text-xs" : "text-sm",
-            state === "backlog" || state === "waiting"
-              ? "text-ink-3"
-              : "text-primary",
-          )}
-        >
-          {n}
-        </span>
-      ) : null}
     </span>
+  );
+}
+
+/**
+ * ストーリーの印。ひし形を、子のタスクの進み具合で下から満たす——タスク・バグの「輪」と形で分ける
+ * （2026-10-03、ユーザー「ストーリーとタスクの区別がつきづらい」）。やめた子は数えない
+ */
+export function StoryMark({
+  item,
+  items,
+  small = false,
+  className,
+}: {
+  item: BacklogItem;
+  items: readonly BacklogItem[];
+  small?: boolean;
+  className?: string;
+}) {
+  const kids = items.filter(
+    (i) => i.parent === item.id && i.status !== "dropped",
+  );
+  const done = kids.filter((k) => k.status === "done").length;
+  const ratio =
+    item.status === "done" ? 1 : kids.length === 0 ? 0 : done / kids.length;
+  const size = small ? 18 : 22;
+  // ひし形（タスクの丸と形で分ける。四角はチェックボックスに見えるので避けた）。中を下から、終わった子の割合だけ満たす
+  const c = size / 2;
+  const R = c - 1;
+  const ir = R - 3;
+  const outer = `${c},${c - R} ${c + R},${c} ${c},${c + R} ${c - R},${c}`;
+  const innerPts = `${c},${c - ir} ${c + ir},${c} ${c},${c + ir} ${c - ir},${c}`;
+  const fillTop = c + ir - 2 * ir * ratio;
+  const clipId = `story-fill-${item.id}-${small ? "s" : "l"}`;
+  const tone =
+    item.status === "done"
+      ? "text-ok"
+      : item.status === "in-progress"
+        ? "text-primary"
+        : "text-ink-2";
+  return (
+    <span
+      role="img"
+      aria-label={`ストーリー・タスク ${kids.length} 件のうち ${done} 件終わった`}
+      data-testid="backlog-story-mark"
+      className={cn(
+        "inline-flex shrink-0",
+        small ? "size-4.5" : "size-5.5",
+        tone,
+        className,
+      )}
+    >
+      <svg viewBox={`0 0 ${size} ${size}`} className="size-full" aria-hidden>
+        <defs>
+          <clipPath id={clipId}>
+            <rect x={0} y={fillTop} width={size} height={size - fillTop} />
+          </clipPath>
+        </defs>
+        <polygon
+          points={outer}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+        />
+        {ratio > 0 ? (
+          <polygon
+            points={innerPts}
+            fill="currentColor"
+            clipPath={`url(#${clipId})`}
+          />
+        ) : null}
+      </svg>
+    </span>
+  );
+}
+
+/** 項目の印。ストーリーは円グラフ、タスク・バグは状態の輪 */
+export function ItemMark({
+  item,
+  items,
+  small = false,
+}: {
+  item: BacklogItem;
+  items: readonly BacklogItem[];
+  small?: boolean;
+}) {
+  return item.kind === "story" ? (
+    <StoryMark item={item} items={items} small={small} />
+  ) : (
+    <RankMark state={rankState(item, items)} small={small} />
   );
 }
 
