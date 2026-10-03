@@ -22,7 +22,16 @@ E2E が作るフォルダのグループが incus になる**。入れ子のコ�
 | module-settings-canvas:258 | この機械では構造的に通らない | 開発用の Infisical は host の 127.0.0.1:8088（docker）で、Project のコンテナからは届かない（ゲートウェイ・LAN の IP でも繋がらない、確認済み）。vault-infisical の listGroupBindings が `fetch failed` になり、Vault の置き場の選択肢に出ない | なし（host で回せば通るはずだが、この Fork では確かめていない） |
 | wide-root:38 | 回し方の誤り | 上の `sg incus` のせい。`sudo -u ubuntu` で回すと通る | なし |
 
-## 残り
+## その後：Vault の起動待ちが一覧全体を止めていた（直した、案A・ユーザー）
 
-- vault-infisical は接続先に届かないと、繋がるまで 16 秒かかる（「申告と可視性の確認」15.7 秒）。その間 banto 全体の
-  Module の一覧（/api/ui-settings）が待たされる。本番で Infisical Cloud が遅いときも同じことが起きうる——直すかは未決
+vault-kit は起動（init：Infisical への接続・鍵の用意）が終わるまで tool・資源の一覧を返さなかった。host は一覧を
+受け取るまで「繋がった」と扱わず、banto 全体の Module の一覧はそれを全部待つので、Infisical に届かないと
+設定画面などが十数秒止まった。**一覧（と画面の HTML）は起動を待たずに返し、中身を扱う呼び出しだけ待つ**
+ように直した。起動に失敗したことが分かっていれば一覧でも断る（host が「繋がらない」と出せる）。
+
+- 測った：E2E で `vault-infisical connected` が 16081ms（申告と可視性の確認 15738ms）→ 1302ms（同 15ms）。
+  `GET /api/ui-settings` は 11〜12 秒 → 0.7〜1.3 秒
+- 単体：`vault-kit/src/server-init.test.ts`（直す前は落ちることを確かめた）。vault-directory の試験は
+  「tool の一覧で起動を待つ」に頼っていたので、alias の一覧を読んで待つ形に直した
+- 16 秒の内訳（接続先に届かない fetch が 14 秒前後かかる）は調べていない。vault-infisical の単体試験のうち本物の
+  Infisical を相手にする 12 件は、この機械では同じ理由で落ちる（直す前から）

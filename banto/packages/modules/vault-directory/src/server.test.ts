@@ -60,8 +60,9 @@ async function withUi(
       await Promise.all([server.connect(s), client.connect(c)]);
       // **立ち上がりを待ってから先へ進む**。Vault は接続した時点で鍵の用意
       // （age-keygen）を始めるので、待たずに片づけると置き場を消しながら
-      // 走らせることになる——試験が本体と競走して落ちる
-      await client.listTools();
+      // 走らせることになる——試験が本体と競走して落ちる。**tool の一覧は起動を待たない**（2026-10-03、vault-kit）
+      // ので、中身を扱う口（alias の一覧）を1回呼んで待つ
+      await client.readResource({ uri: "vault://aliases" });
       vaults.set(name, client);
     }
 
