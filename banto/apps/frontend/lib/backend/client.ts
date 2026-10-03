@@ -20,6 +20,10 @@ export interface BackendConfig {
  */
 export function getBackendConfig(): BackendConfig | null {
   if (typeof window === "undefined") return null;
+  // **http（安全でない文脈）では合言葉を読みも覚えもしない**（2026-10-03、ユーザー）——平文で流さない。
+  // 画面は ConnectGate が「HTTPS で開いてください」に止める。ここで止めるのは、門より先に起きる読み込み
+  // （Project の一覧など）が URL の合言葉を http の側に覚えてしまうため（E2E で実測）
+  if (!window.isSecureContext) return null;
 
   const params = new URLSearchParams(window.location.search);
   const tokenFromUrl = params.get("bantoToken");

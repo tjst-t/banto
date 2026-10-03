@@ -42,21 +42,60 @@ async function verify(config: BackendConfig): Promise<void> {
   if (!res.ok) throw new Error(`banto が ${res.status} を返しました`);
 }
 
+/**
+ * **HTTPS でなければ使わせない**（決定・2026-10-03、ユーザー）。
+ *
+ * http で開くと、ブラウザが「安全な文脈」でしか出さない機能（`crypto.randomUUID`・クリップボード等）が無く、
+ * 携帯から送信ごと落ちていた（a029ea1a で送信は直したが、ほかにも同じ形の穴がありうる）。加えて合言葉が
+ * 平文で流れ、http と https は別のオリジンなので覚えた合言葉も別々になる。だから途中まで動かすより、
+ * 最初に止めて HTTPS の住所へ案内する。localhost（開発・E2E）は安全な文脈なので止まらない。
+ */
+function InsecureNotice() {
+  const { hostname, pathname, search, hash } = window.location;
+  // 名前で開いていれば、同じ名前の https（既定のポート＝前に置いた Caddy 等）へ。IP アドレスには証明書が無いので案内できない
+  const isAddress = /^[\d.]+$/.test(hostname) || hostname.includes(":");
+  const httpsUrl = isAddress ? null : `https://${hostname}${pathname}${search}${hash}`;
+  return (
+    <div className="grid min-h-dvh place-items-center p-6" data-testid="insecure-gate">
+      <div className="flex w-full max-w-sm flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-lg font-semibold text-foreground">HTTPS で開いてください</h1>
+          <p className="text-sm text-ink-3">
+            この画面は http で開かれています。banto は HTTPS でしか動きません——http ではブラウザが一部の機能を
+            出さず（メッセージの送信などが落ちる）、アクセストークンも暗号化されずに流れます。
+          </p>
+        </div>
+        {httpsUrl ? (
+          <Button asChild>
+            <a href={httpsUrl}>HTTPS で開き直す</a>
+          </Button>
+        ) : (
+          <p className="text-sm text-ink-3">
+            いまは IP アドレス（<code>{hostname}</code>）で開いています。HTTPS の名前（Caddy などで証明書を付けた住所）で開いてください。
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ConnectGate({ children }: { children: ReactNode }) {
-  /** `undefined` ＝まだ調べていない（**「無い」と言い切らない**）。 */
-  const [config, setConfig] = useState<BackendConfig | null | undefined>(undefined);
+  /** `undefined` ＝まだ調べていない（**「無い」と言い切らない**）。`"insecure"` ＝ http で開かれている */
+  const [config, setConfig] = useState<BackendConfig | null | undefined | "insecure">(undefined);
   const [token, setToken] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setConfig(getBackendConfig());
+    // http では合言葉を読みも覚えもしない（URL の bantoToken は HTTPS の住所へそのまま運ぶ）
+    setConfig(window.isSecureContext ? getBackendConfig() : "insecure");
     // **既定は、いま開いているところ**（Caddy が `/api/*` を host へ回している）。
     // 直に叩く開発では違うので、直せる欄として出す
     setBaseUrl(window.location.origin);
   }, []);
 
+  if (config === "insecure") return <InsecureNotice />;
   // 調べている間は何も断定しない（一瞬なので、余計なものを出さない）
   if (config === undefined) return null;
   if (config) return <>{children}</>;
