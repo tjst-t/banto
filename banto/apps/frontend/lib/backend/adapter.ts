@@ -9,6 +9,7 @@
 // 別経路で送る」——この2つを橋渡しするため、Thread単位の生きたSSE接続を
 // モジュールレベルに保持し、run()の再呼び出しではそれを読み進めるだけにする。
 
+import { randomId } from "@/lib/random-id";
 import type {
   ChatModelAdapter,
   ThreadAssistantMessagePart,
@@ -727,7 +728,8 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           }
           return;
         }
-        const turnId = crypto.randomUUID();
+        // `crypto.randomUUID` は http の LAN アドレスなどでは無い（`lib/random-id.ts`）
+        const turnId = randomId();
         // 終了イベントで「この走行」を降ろすために、自分自身を指す入れ物を用意する
         // （コールバックは live を作るより先に書く必要があるため）
         const self: { turn: LiveTurn | null } = { turn: null };

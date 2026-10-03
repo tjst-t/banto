@@ -24,6 +24,11 @@ const PLAIN = "E2E Mobile Nav 素の Project";
 const FORKED = "E2E Mobile Nav Fork のある Project";
 
 test("携帯で、別 Project の Fork へも、Fork から別の Thread へも、Drawer を開き直さずに行ける", async ({ page }) => {
+  // **http の LAN アドレスで開いた携帯と同じく、crypto.randomUUID が無い状態で走らせる**（2026-10-03、ユーザー報告：
+  // 「crypto.randomUUID is not a function」で送れなかった。安全な文脈でしか定義されない）
+  await page.addInitScript(() => {
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+  });
   await openApp(page);
   await createProject(page, PLAIN, mkdtempSync(join(tmpdir(), "banto-e2e-mobile-nav-a-")));
   await createProject(page, FORKED, mkdtempSync(join(tmpdir(), "banto-e2e-mobile-nav-b-")));
