@@ -24,7 +24,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "banto",
+  title: "banto(mock)",
   description: "banto v4 mock",
 };
 
