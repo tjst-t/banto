@@ -79,7 +79,7 @@ import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
-import { AppEventBus } from "./http/app-events.js";
+import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
 import {
   assertAllVisibilityExplicit,
   assertVisibilityValues,
@@ -244,6 +244,19 @@ async function main(): Promise<void> {
     }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
+  /**
+   * **バックグラウンドの仕事が増えた・減ったら、画面に知らせる**（追加・2026-10-03、v4-frontend.md §6.33）。
+   * 真実は Thread の返事待ちの札（Event Store）。その Thread の分を丸ごと送る
+   */
+  function publishBackground(threadId: string): void {
+    const thread = projectThread.getThread(threadId);
+    appEvents.publish({
+      type: "background.changed",
+      threadId,
+      ...(thread?.projectId ? { projectId: thread.projectId } : {}),
+      items: backgroundItemsOf(thread?.awaitingReplies),
+    });
+  }
 
   /**
    * **返事待ちのまま Module が止まった**（決定・2026-09-25、アーキ仕様 §4.2「返事待ちの札は失くさない」）
@@ -266,6 +279,7 @@ async function main(): Promise<void> {
     } finally {
       replyHandles.settle(reply.replyTo);
       await projectThread.settleReply(reply.threadId, reply.replyTo).catch(() => {});
+      publishBackground(reply.threadId);
     }
   }
   // 起動し直した：前の走行で返事待ちだったものは、その Module ごと止まっている
@@ -298,7 +312,9 @@ async function main(): Promise<void> {
           connName: h.connName,
           moduleName: h.moduleName,
           hop: h.hop + 1,
+          ...(h.work ? { work: h.work } : {}),
         });
+        publishBackground(h.threadId);
       },
     },
     // **効かせた Skill の名前と説明を `instructions` に載せる**（決定・2026-09-23、§5.6）。
@@ -1522,6 +1538,7 @@ async function main(): Promise<void> {
       if (input.final) {
         replyHandles.settle(input.replyTo);
         await projectThread.settleReply(h.threadId, input.replyTo);
+        publishBackground(h.threadId);
       }
       return { ok: true, deliveryId: r.deliveryId, wake: r.wake };
     },

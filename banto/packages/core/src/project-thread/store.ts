@@ -1,3 +1,4 @@
+import type { BackgroundWork } from "../delivery/reply-handles.js";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -466,6 +467,7 @@ export class ProjectThreadStore {
     connName: string;
     moduleName: string;
     hop: number;
+    work?: BackgroundWork;
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("reply.awaiting", input);

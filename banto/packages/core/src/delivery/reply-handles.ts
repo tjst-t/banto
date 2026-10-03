@@ -16,6 +16,23 @@ export const REPLY_LIMITS = {
   uses: 5,
 } as const;
 
+/**
+ * **バックグラウンドの仕事を人に見せるための手がかり**（追加・2026-10-03、v4-frontend.md §6.33）。札を出すときに host が
+ * 呼び出しから作る——Module には聞かない。サイドバーが「どの Thread で何が動いているか」を出し、押せば会話の
+ * カードと同じ画面（`resourceUri`、`toolCallId` の呼び出し）を開く
+ */
+export interface BackgroundWork {
+  /** 呼んだ tool の名前（Module の中の名前） */
+  toolName: string;
+  /** Runner の tool_use の id（会話の記録の toolCallId と同じ）。Runner が渡さなければ無い */
+  toolCallId?: string;
+  /** tool の画面（`_meta.ui.resourceUri`）。無ければ開く画面は無い */
+  resourceUri?: string;
+  /** カード（`dev.banto/card`）の題と説明を、その呼び出しの引数で埋めたもの */
+  title?: string;
+  description?: string;
+}
+
 export interface ReplyHandle {
   threadId: string;
   projectId?: string;
@@ -28,6 +45,7 @@ export interface ReplyHandle {
   expiresAt: number;
   usesLeft: number;
   awaiting: boolean;
+  work?: BackgroundWork;
 }
 
 export class ReplyHandles {
@@ -35,7 +53,14 @@ export class ReplyHandles {
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; hop: number }): string {
+  issue(input: {
+    threadId: string;
+    projectId?: string;
+    connName: string;
+    moduleName: string;
+    hop: number;
+    work?: BackgroundWork;
+  }): string {
     this.forgetExpired();
     const id = `reply_${randomBytes(24).toString("base64url")}`;
     this.handles.set(id, {

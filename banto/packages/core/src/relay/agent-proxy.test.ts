@@ -249,3 +249,66 @@ test("AI のターンからの tool 呼び出しに、Project と Thread の刻�
   assert.equal(seen[2]?.["dev.banto/thread"], undefined, "Project が分からないのに刻んだ");
   await moduleClient.close();
 });
+
+// **バックグラウンドの仕事の手がかり**（追加・2026-10-03、v4-frontend.md §6.33）。「終わったら届ける」tool の札を出すとき、
+// Runner の tool_use の id・カードの題と説明（引数で埋めたもの）・画面を一緒に覚える
+test("終わったら届ける tool の札に、tool_use の id・埋めたカードの文・画面が付く（Runner が id を渡さなければ id は無い）", async () => {
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "runSubagent",
+        inputSchema: { type: "object", properties: {} },
+        _meta: {
+          "dev.banto/visibility": "agent",
+          "dev.banto/deliversLater": true,
+          "dev.banto/card": { title: "{agent} に頼んだ仕事", description: "{prompt}" },
+          ui: { resourceUri: "ui://banto-subagent/runs" },
+        },
+      },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ok" }] }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["subagent"], dependsOn: [], isolation: "subprocess" }, "fake");
+
+  const issued: Array<Record<string, unknown>> = [];
+  const proxy = buildAgentProxy(
+    { name: "subagent-p1", declaredName: "subagent", client: moduleClient, meta },
+    {
+      projectId: "p1",
+      threadId: "t1",
+      replies: {
+        issue: (input) => {
+          issued.push(input as unknown as Record<string, unknown>);
+          return `reply_${issued.length}`;
+        },
+        markAwaiting: async () => {},
+      },
+    },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+
+  await runner.callTool({
+    name: "runSubagent",
+    arguments: { agent: "claude-code", prompt: "長い\n仕事" },
+    _meta: { "claudecode/toolUseId": "toolu_abc" },
+  });
+  await runner.callTool({ name: "runSubagent", arguments: { agent: "opencode", prompt: "x" } });
+
+  assert.equal(issued[0]!.moduleName, "subagent");
+  assert.deepEqual(issued[0]!.work, {
+    toolName: "runSubagent",
+    toolCallId: "toolu_abc",
+    resourceUri: "ui://banto-subagent/runs",
+    title: "claude-code に頼んだ仕事",
+    description: "長い 仕事",
+  });
+  assert.equal((issued[1]!.work as Record<string, unknown>).toolCallId, undefined, "Runner が渡していない id を作った");
+  await runner.close();
+  await moduleClient.close();
+});

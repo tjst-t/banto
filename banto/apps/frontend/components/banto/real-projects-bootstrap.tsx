@@ -10,6 +10,7 @@ import { hydrateRealProjects, registerNewRealForks } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { onRealAppEvent, startRealAppEvents } from "@/lib/backend/app-events";
 import { wireRunningThreads } from "@/lib/backend/running-threads";
+import { wireBackgroundWork } from "@/lib/backend/background-work";
 import { reportFailure } from "@/lib/report-failure";
 
 export function RealProjectsBootstrap() {
@@ -21,6 +22,8 @@ export function RealProjectsBootstrap() {
     });
     // AI が動いている Thread の写し（§6.33）。最初の hello を取り逃さないよう、読み始める前に聞き手を付ける
     wireRunningThreads();
+    // バックグラウンドで動いているものの写し（§6.33）。同じ理由で読み始める前に
+    wireBackgroundWork();
     // host からの知らせ（host が始めたターン・受信箱の変化）を読み始める（決定・2026-09-25）
     startRealAppEvents();
     // **AI が立てた Fork を一覧に出す**（決定・2026-09-27）——host が作った Fork は、その最初のターンが

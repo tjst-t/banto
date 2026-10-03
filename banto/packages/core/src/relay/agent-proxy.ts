@@ -26,10 +26,41 @@ import {
   REPLY_TO_META_KEY,
   THREAD_META_KEY,
   deliversLater,
+  fillCardText,
   stripBantoMeta,
+  toolCardOf,
+  uiResourceUriOf,
   visibilityOf,
   type BantoModuleMeta,
 } from "@banto/module-contract";
+import type { BackgroundWork } from "../delivery/reply-handles.js";
+
+/**
+ * **Claude Code が tool 呼び出しに添える tool_use の id**（Claude Code の `_meta` の名前。banto のものではない）。
+ * 会話の記録の toolCallId と同じ値なので、バックグラウンドの仕事を「会話のどのカードか」に結びつけられる
+ * （2026-10-03 に同梱 CLI で確かめた）。Runner が渡さなければ結びつけない——推測しない
+ */
+const RUNNER_TOOL_USE_ID_META_KEY = "claudecode/toolUseId";
+
+/** 札を出すとき、人に見せる手がかりを呼び出しから作る（Module には聞かない） */
+function backgroundWorkOf(
+  tool: { name: string; _meta?: Record<string, unknown> },
+  args: Record<string, unknown> | undefined,
+  requestMeta: Record<string, unknown> | undefined,
+): BackgroundWork {
+  const card = toolCardOf(tool);
+  const toolUseId = requestMeta?.[RUNNER_TOOL_USE_ID_META_KEY];
+  const resourceUri = uiResourceUriOf(tool);
+  const title = fillCardText(card?.title, args);
+  const description = fillCardText(card?.description, args);
+  return {
+    toolName: tool.name,
+    ...(typeof toolUseId === "string" && toolUseId !== "" ? { toolCallId: toolUseId } : {}),
+    ...(resourceUri ? { resourceUri } : {}),
+    ...(title ? { title } : {}),
+    ...(description ? { description } : {}),
+  };
+}
 import { makeResourceVisibilityResolver } from "./visibility.js";
 import type { ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
@@ -67,7 +98,7 @@ export interface AgentProxyOptions {
    * 結果が「あとで届ける」（`dev.banto/pendingReply`）なら、札を返事待ちにする
    */
   replies?: {
-    issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string }): string;
+    issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; work?: BackgroundWork }): string;
     markAwaiting(replyTo: string): Promise<void>;
   };
 }
@@ -172,6 +203,11 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
             ...(opts.projectId ? { projectId: opts.projectId } : {}),
             connName: conn.name,
             moduleName: conn.declaredName ?? conn.name,
+            work: backgroundWorkOf(
+              target as { name: string; _meta?: Record<string, unknown> },
+              request.params.arguments,
+              request.params._meta as Record<string, unknown> | undefined,
+            ),
           })
         : undefined;
     try {

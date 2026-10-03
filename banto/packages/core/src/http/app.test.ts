@@ -184,11 +184,36 @@ test("GET /api/events は繋いだ時点で走っている Thread を hello に�
         return JSON.parse(text.slice(text.indexOf("data: ") + 6, text.indexOf("\n\n")));
       };
 
-      assert.deepEqual(await helloOf(), { type: "hello", running: [] });
+      assert.deepEqual(await helloOf(), { type: "hello", running: [], background: [] });
       const release = threadTurns.tryAcquire(thread.id, 0)!;
-      assert.deepEqual(await helloOf(), { type: "hello", running: [{ threadId: thread.id, projectId: project.id }] });
+      assert.deepEqual(await helloOf(), {
+        type: "hello",
+        running: [{ threadId: thread.id, projectId: project.id }],
+        background: [],
+      });
       release();
-      assert.deepEqual(await helloOf(), { type: "hello", running: [] });
+      assert.deepEqual(await helloOf(), { type: "hello", running: [], background: [] });
+
+      // **バックグラウンドの仕事も載る**（追加・2026-10-03、§6.33）。札（replyTo）は画面に出さない
+      await deps.projectThread.recordAwaitingReply({
+        threadId: thread.id,
+        replyTo: "reply_secret",
+        connName: "subagent-p",
+        moduleName: "subagent",
+        hop: 1,
+        work: { toolName: "runSubagent", toolCallId: "toolu_1", resourceUri: "ui://banto-subagent/runs", title: "fake に頼んだ仕事", description: "長い仕事" },
+      });
+      const withWork = (await helloOf()) as { background: Array<{ threadId: string; projectId: string; items: Array<Record<string, unknown>> }> };
+      assert.equal(withWork.background.length, 1);
+      assert.equal(withWork.background[0]!.threadId, thread.id);
+      assert.equal(withWork.background[0]!.projectId, project.id);
+      const item = withWork.background[0]!.items[0]!;
+      assert.equal(item.module, "subagent");
+      assert.equal(item.toolCallId, "toolu_1");
+      assert.equal(item.title, "fake に頼んだ仕事");
+      assert.equal(item.resourceUri, "ui://banto-subagent/runs");
+      assert.equal(typeof item.since, "string");
+      assert.ok(!JSON.stringify(withWork).includes("reply_secret"), "札が画面に出た");
     },
     { threadTurns, appEvents: new AppEventBus() },
   );

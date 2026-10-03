@@ -1967,7 +1967,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
 
 
 
-### 6.33 AI が動いている Thread は、サイドバーの行のアイコンが回る／まだ開いていない Thread は太字（決定・2026-10-03、ユーザー要望）
+### 6.33 AI が動いている Thread は、サイドバーの行のアイコンが回る／まだ開いていない Thread は太字／バックグラウンドの仕事（決定・2026-10-03、ユーザー要望）
 
 サイドバーの Thread の目次（Base Thread・Fork の行）で、**その Thread のターンが host で走っている間は、行のアイコンを
 回る輪に替える**。終われば元のアイコン（Base は吹き出し、Fork は枝分かれ）に戻る。畳んだレールの Fork 一覧（ポップオーバー）も
@@ -1991,4 +1991,21 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
   Base・Fork の行（広いサイドバー・Drawer）と畳んだレールの Fork 一覧が対象。**いま開いていない Project は、その Project の開いて
   いる Thread のどれかが未読なら Project 名を太字**にする。いま開いている Project の名前は太字にしない（中の行で分かる）。
   見分けは `data-unread`（`useThreadUnread`・`useAnyThreadUnread`、`lib/backend/real-inbox.ts`）
-- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`
+- **バックグラウンドで動いているものを出す**（追加・2026-10-03、ユーザー。見本 `mock/components/banto/shell/pending-replies.tsx`）：
+  AI が「終わったら届ける」tool（`dev.banto/deliversLater`、`runSubagent` の `runInBackground` など）で頼み、Module が
+  「あとで届ける」と約束して、まだ届いていないもの（host の返事待ちの札、アーキ仕様 §4.2）。AI が動いている印（回る輪）とは
+  別のことなので、**別の場所に置く**——両方が同時に見える。**待つ形の呼び出しは出さない**（その間はターンが走っていて輪が回る）
+  - **Thread の行**（Base・Fork、広いサイドバーと Drawer）：名前の下に薄い1行。1件ならカードの題（tool が名乗る
+    `dev.banto/card` の題をその呼び出しの引数で埋めたもの。無ければ「<Module> に頼んだ仕事」）、2件以上なら
+    「**バックグラウンドで n 件**」。いま開いている Project の Thread の行に出る
+  - **いま開いていない Project の行**：頭文字の右下に件数の丸。いま開いている Project の行には出さない（中の行で分かる）
+  - **畳んだレールには出さない**（レールの作りを見直すまで）
+  - 押すと一覧（見出し「バックグラウンドで動いているもの（n）」、1件ごとに題・頼んだ内容の頭・Module 名・何分前に頼んだか。
+    Project の行から開いたものは Thread ごとに見出しを付ける）。1件を押すと、その Thread へ移り、**会話のカードと同じ画面**
+    （その tool の `ui.resourceUri` を、その呼び出しの toolCallId で）を Canvas に開く。画面を持たない tool なら Thread へ移るだけ
+  - **文言に「〜待ち」を使わない**——「判断待ち」「レビュー待ち」は人の番を指すので、人が返事をする番に読める。
+    Claude Code の「background tasks」、VS Code の「バックグラウンド タスク」、tool の `runInBackground` に揃えた
+  - **写しの持ち方**：`hello` に `background: [{ threadId, projectId, items }]`（札がある Thread だけ）、札が増えた・済んだら
+    `background.changed`（その Thread の分を丸ごと）。画面は置き換えるだけ（`lib/backend/background-work.ts`）。
+    1件は `{ module, since, toolName, toolCallId, resourceUri, title, description }`——**札そのもの（`replyTo`）は画面に出さない**
+- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`・`e2e/specs/background-work.spec.ts`

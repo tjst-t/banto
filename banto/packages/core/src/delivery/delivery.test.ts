@@ -186,6 +186,18 @@ test("返事待ちの札は記録に残り、済んだら消える", async () =>
   });
 });
 
+test("返事待ちの札に、人に見せる手がかり（work）が残る——読み込み直しても", async () => {
+  await setup(async ({ store, threadId, dir, log }) => {
+    const work = { toolName: "runSubagent", toolCallId: "toolu_1", title: "fake に頼んだ仕事" };
+    await store.recordAwaitingReply({ threadId, replyTo: "r1", connName: "subagent-p", moduleName: "subagent", hop: 1, work });
+    assert.deepEqual(store.getThread(threadId)!.awaitingReplies![0]!.work, work);
+    await store.save();
+    const reloaded = new ProjectThreadStore(dir, log);
+    await reloaded.load();
+    assert.deepEqual(reloaded.getThread(threadId)!.awaitingReplies![0]!.work, work);
+  });
+});
+
 test("ターンに渡す文：届いたものは人の発言ではないと分かる形で先に、人の発言は後に", () => {
   const d = { deliveryId: "d", from: "subagent", title: "仕事が終わりました", text: "結果です", hop: 1, receivedAt: "" };
   assert.equal(composeTurnPrompt([], "こんにちは"), "こんにちは");

@@ -17,6 +17,8 @@ import {
   callerOf,
   threadOf,
   THREAD_META_KEY,
+  fillCardText,
+  uiResourceUriOf,
 } from "./meta.js";
 
 test("parses a valid module meta", () => {
@@ -258,4 +260,20 @@ test("threadOf：Project と Thread が揃った刻印だけを読む（片方�
   assert.equal(threadOf({ [THREAD_META_KEY]: { projectId: "", threadId: "t1" } }), undefined);
   assert.equal(threadOf({ [THREAD_META_KEY]: "p1/t1" }), undefined);
   assert.equal(threadOf(undefined), undefined);
+});
+
+test("fillCardText：{引数名} を埋め、1行に収めて 80 字で畳む。無い名前は残す", () => {
+  assert.equal(fillCardText("{agent} に頼んだ仕事", { agent: "claude-code" }), "claude-code に頼んだ仕事");
+  assert.equal(fillCardText("{prompt}", { prompt: "一行目\n二行目" }), "一行目 二行目");
+  assert.equal(fillCardText("{prompt}", { prompt: "あ".repeat(90) }), `${"あ".repeat(80)}…`);
+  assert.equal(fillCardText("{nope} の仕事", {}), "{nope} の仕事");
+  assert.equal(fillCardText("{obj}", { obj: { a: 1 } }), "{obj}");
+  assert.equal(fillCardText(undefined, {}), undefined);
+  assert.equal(fillCardText("{x}", { x: "  " }), undefined);
+});
+
+test("uiResourceUriOf：_meta.ui.resourceUri が文字列のときだけ", () => {
+  assert.equal(uiResourceUriOf({ _meta: { ui: { resourceUri: "ui://a/b" } } }), "ui://a/b");
+  assert.equal(uiResourceUriOf({ _meta: { ui: { resourceUri: 1 } } }), undefined);
+  assert.equal(uiResourceUriOf({}), undefined);
 });

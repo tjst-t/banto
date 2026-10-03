@@ -267,6 +267,33 @@ export function toolCardOf(x: { _meta?: Record<string, unknown> }): ToolCardMeta
   };
 }
 
+/** tool が名乗る画面（MCP Apps の `_meta.ui.resourceUri`）。無ければ `undefined` */
+export function uiResourceUriOf(tool: unknown): string | undefined {
+  const meta = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta;
+  const uri = meta?.ui?.resourceUri;
+  return typeof uri === "string" ? uri : undefined;
+}
+
+/**
+ * カードの文の `{引数名}` を、その呼び出しの引数（文字列・数・真偽）で置き換える。**1行に収め**（改行は空白に）、
+ * 80 字を超えれば畳む。引数に無い名前はそのまま残す（黙って消すと、Module の書き間違いに気づけない）。
+ *
+ * host がバックグラウンドの仕事の題を作るのに使う（追加・2026-10-03）。**画面（apps/frontend）にも同じものがある**
+ * （`inline-module-view.tsx` の `fillCardText`）——画面は workspace のパッケージに依存していないため。変えるなら両方
+ */
+export function fillCardText(template: string | undefined, args?: Record<string, unknown>): string | undefined {
+  if (!template) return undefined;
+  const filled = template
+    .replace(/\{([A-Za-z0-9_]+)\}/g, (whole, name: string) => {
+      const v = args?.[name];
+      return typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : whole;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  if (filled === "") return undefined;
+  return filled.length > 80 ? `${filled.slice(0, 80)}…` : filled;
+}
+
 /** その tool が「値を返さない」と名乗っているか。**`true` 以外は全部「返す」。** */
 export function isValueFree(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[VALUE_FREE_META_KEY] === true;

@@ -56,7 +56,7 @@ import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import { MESSAGE_ALLOW_REMEMBER, ThreadMessaging } from "../delivery/thread-messages.js";
-import type { AppEventBus } from "./app-events.js";
+import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
@@ -93,7 +93,14 @@ import { collectActivity } from "./activity.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
-import { CALL_ID_META_KEY, CALLER_META_KEY, toolCardOf, visibilityOf, type ToolCardMeta } from "@banto/module-contract";
+import {
+  CALL_ID_META_KEY,
+  CALLER_META_KEY,
+  toolCardOf,
+  uiResourceUriOf,
+  visibilityOf,
+  type ToolCardMeta,
+} from "@banto/module-contract";
 
 /**
  * Module の画面（MCP Apps）のために host が Module へ問い合わせる分だけ
@@ -414,12 +421,6 @@ async function checkUiCallable(
 }
 
 /** MCP Apps が tool に付ける印（`_meta.ui.resourceUri`）を読む。 */
-function uiResourceUriOf(tool: unknown): string | undefined {
-  const meta = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta;
-  const uri = meta?.ui?.resourceUri;
-  return typeof uri === "string" ? uri : undefined;
-}
-
 /**
  * その資源が**どの面として名乗っているか**（決定・2026-09-07）。
  *
@@ -1998,7 +1999,14 @@ export function createApp(deps: AppDeps) {
           const projectId = deps.projectThread.getThread(t.threadId)?.projectId;
           return { threadId: t.threadId, ...(projectId ? { projectId } : {}) };
         });
-        res.write(`data: ${JSON.stringify({ type: "hello", running })}\n\n`);
+        // **バックグラウンドの仕事も渡す**（追加・2026-10-03、§6.33）——返事待ちの札がある Thread だけ
+        const background = deps.projectThread.listProjects().flatMap((p) =>
+          deps.projectThread
+            .listThreadsForProject(p.id)
+            .filter((t) => (t.awaitingReplies?.length ?? 0) > 0)
+            .map((t) => ({ threadId: t.id, projectId: p.id, items: backgroundItemsOf(t.awaitingReplies) })),
+        );
+        res.write(`data: ${JSON.stringify({ type: "hello", running, background })}\n\n`);
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);
         await new Promise<void>((resolve) => {

@@ -1,3 +1,4 @@
+import type { BackgroundWork } from "../delivery/reply-handles.js";
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
 import type {
@@ -100,7 +101,7 @@ export type ProjectThreadEvent =
     }
   | {
       type: "reply.awaiting";
-      payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number };
+      payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number; work?: BackgroundWork };
     }
   | { type: "reply.settled"; payload: { threadId: string; replyTo: string } }
   | { type: "thread.cleared"; payload: { threadId: string } }

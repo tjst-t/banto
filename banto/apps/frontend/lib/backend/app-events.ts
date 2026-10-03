@@ -15,9 +15,29 @@
 import { getBackendConfig, hostFetch, readSse } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 
+/** バックグラウンドで動いているもの1件（host の `BackgroundItem`、§6.33） */
+export interface RealBackgroundItem {
+  module: string;
+  since: string;
+  toolName?: string;
+  toolCallId?: string;
+  resourceUri?: string;
+  title?: string;
+  description?: string;
+}
+
 export type RealAppEvent =
-  /** `running`：繋いだ時点で走っている Thread（追加・2026-10-03、v4-frontend.md §6.33）。古い host は付けない */
-  | { type: "hello"; running?: Array<{ threadId: string; projectId?: string }> }
+  /**
+   * `running`：繋いだ時点で走っている Thread。`background`：その時点のバックグラウンドの仕事（返事待ちの札がある Thread だけ）。
+   * どちらも追加・2026-10-03（v4-frontend.md §6.33）。古い host は付けない
+   */
+  | {
+      type: "hello";
+      running?: Array<{ threadId: string; projectId?: string }>;
+      background?: Array<{ threadId: string; projectId?: string; items: RealBackgroundItem[] }>;
+    }
+  /** その Thread のバックグラウンドの仕事が増えた・減った（その Thread の分を丸ごと） */
+  | { type: "background.changed"; threadId: string; projectId?: string; items: RealBackgroundItem[] }
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
   | { type: "inbox.changed" }

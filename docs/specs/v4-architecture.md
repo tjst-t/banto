@@ -2051,6 +2051,12 @@ AI 間メッセージング）。例：インフラ管理の Project と、ア�
 - **返事待ちの札は失くさない**：tool の結果が `_meta["dev.banto/pendingReply"]: true` なら、host はその札を
   「返事待ち」として記録する。Module が止まった・host を起動し直したときに返事待ちが残っていれば、host が
   「途中で終わりました」を届ける——**AI が来ない返事を待ち続けない**（規則2）
+- **返事待ちの札は人にも見せる**（追加・2026-10-03、ユーザー。画面は v4-frontend.md §6.33）：host は札を出すとき、
+  人に見せる手がかりを呼び出しから作って札に添える——呼んだ tool の名前、Runner の tool_use の id（Claude Code が呼び出しの
+  `_meta["claudecode/toolUseId"]` に入れて渡す。会話の記録の toolCallId と同じ値）、tool の画面（`ui.resourceUri`）、
+  カード（`dev.banto/card`）の題と説明をその呼び出しの引数で埋めたもの（`fillCardText`、`module-contract`）。
+  **Module には聞かない**（申告させない）。返事待ちの記録（`reply.awaiting`）に一緒に残り、画面には出来事の流れで渡す。
+  札そのもの（`replyTo`）は画面に出さない
 
 #### ループ防止には名前がある（規則12）
 

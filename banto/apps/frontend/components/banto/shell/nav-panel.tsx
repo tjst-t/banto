@@ -59,6 +59,7 @@ import { LoaderCircle } from "lucide-react";
 import { useProjectRunning } from "@/lib/backend/running-threads";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
+import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
@@ -255,6 +256,17 @@ function ProjectTreeItem({
                 </Link>
               </SidebarMenuButton>
               {more}
+              {/* バックグラウンドの数（§6.33）。いま開いている Project は下の Thread の行で見えるので出さない */}
+              {isCurrent ? null : (
+                <ProjectBackgroundBadge
+                  projectId={project.id}
+                  projectName={project.name}
+                  threads={[
+                    { id: project.baseThreadId, title: "Base Thread", fork: false },
+                    ...forks.map((f) => ({ id: f.id, title: f.title, fork: true })),
+                  ]}
+                />
+              )}
               {forks.length > 0 ? (
                 <SidebarMenuAction
                   onClick={onToggleExpanded}
@@ -287,12 +299,14 @@ function ProjectTreeItem({
                     <ThreadRowName threadId={project.baseThreadId} testId="sidebar-base-name">Base Thread</ThreadRowName>
                   </Link>
                 </SidebarMenuSubButton>
+                <ThreadBackgroundLine projectId={project.id} thread={{ id: project.baseThreadId, title: "Base Thread", fork: false }} />
               </SidebarMenuSubItem>
 
               <SortableList ids={forks.map((f) => f.id)} onReorder={reorderForksTo}>
                 {forks.map((fork, index) => (
                   <SortableRow key={fork.id} id={fork.id} as="li" className="group/fork relative">
                     {(forkDrag) => (
+                      <>
                       <SidebarItemMenu
                         what="Fork Thread"
                         name={fork.title}
@@ -326,6 +340,8 @@ function ProjectTreeItem({
                         </div>
                         )}
                       </SidebarItemMenu>
+                      <ThreadBackgroundLine projectId={project.id} thread={{ id: fork.id, title: fork.title, fork: true }} />
+                      </>
                     )}
                   </SortableRow>
                 ))}

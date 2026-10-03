@@ -298,6 +298,8 @@ async function callRealTool(
   config: McpServerConfig,
   toolName: string,
   args: Record<string, unknown>,
+  /** 本物の Claude Code と同じく、呼び出しの `_meta["claudecode/toolUseId"]` に tool_use の id を添える（2026-10-03、同梱 CLI で確かめた形） */
+  toolUseId?: string,
 ): Promise<{ text: string; isError: boolean }> {
   const client = new Client({ name: "fake-runner", version: "0.0.0" });
   if (config?.type === "sdk" && config.instance) {
@@ -312,7 +314,11 @@ async function callRealTool(
     await client.connect(transport);
   }
   try {
-    const res = (await client.callTool({ name: toolName, arguments: args })) as {
+    const res = (await client.callTool({
+      name: toolName,
+      arguments: args,
+      ...(toolUseId ? { _meta: { "claudecode/toolUseId": toolUseId } } : {}),
+    })) as {
       content?: Array<{ type: string; text?: string }>;
       isError?: boolean;
     };
@@ -509,7 +515,7 @@ export async function* runTurn(opts: {
     // **本物を呼ぶ。** 失敗はそのまま tool_result のエラーとして流す
     // （握りつぶさない・規則2——AI から見た失敗の見え方も本物と同じにする）
     try {
-      const { text, isError } = await callRealTool(servers[call.server] as McpServerConfig, call.name, args);
+      const { text, isError } = await callRealTool(servers[call.server] as McpServerConfig, call.name, args, toolUseId);
       console.warn(`[fake-runner] ${call.name} の結果(先頭120字): ${text.slice(0, 120).replace(/\n/g, " / ")}`);
       lastText = text;
       yield { type: "message", message: toolResultMessage(sessionId, toolUseId, text, isError) };

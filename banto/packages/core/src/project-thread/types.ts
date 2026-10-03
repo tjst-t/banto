@@ -1,6 +1,7 @@
 // docs/specs/v4-architecture.md §2.2 Project / Thread（Memoryを含む）の型。
 // Thread は「Memory ＋ それ以降のメッセージ」——Memoryはこの定義の一部。
 
+import type { BackgroundWork } from "../delivery/reply-handles.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
 export type ProjectId = string;
@@ -111,6 +112,8 @@ export interface AwaitingReply {
   /** 届いたときのホップ（札を出したターンのホップ＋1） */
   hop: number;
   since: string;
+  /** 人に見せる手がかり（追加・2026-10-03）。前からある記録には無い */
+  work?: BackgroundWork;
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
