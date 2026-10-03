@@ -201,7 +201,7 @@ export function RankMark({
 }
 
 /**
- * ストーリーの印。ひし形を、子のタスクの進み具合で下から満たす——タスク・バグの「輪」と形で分ける
+ * ストーリーの印。角の丸い四角を、子のタスクの進み具合で下から満たす——タスク・バグの「輪」と形で分ける
  * （2026-10-03、ユーザー「ストーリーとタスクの区別がつきづらい」）。やめた子は数えない
  */
 export function StoryMark({
@@ -222,14 +222,12 @@ export function StoryMark({
   const ratio =
     item.status === "done" ? 1 : kids.length === 0 ? 0 : done / kids.length;
   const size = small ? 18 : 22;
-  // ひし形（タスクの丸と形で分ける。四角はチェックボックスに見えるので避けた）。中を下から、終わった子の割合だけ満たす
-  const c = size / 2;
-  const R = c - 1;
-  const ir = R - 3;
-  const outer = `${c},${c - R} ${c + R},${c} ${c},${c + R} ${c - R},${c}`;
-  const innerPts = `${c},${c - ir} ${c + ir},${c} ${c},${c + ir} ${c - ir},${c}`;
-  const fillTop = c + ir - 2 * ir * ratio;
-  const clipId = `story-fill-${item.id}-${small ? "s" : "l"}`;
+  // 角の丸い四角（タスクの丸と形で分ける。2026-10-03、ユーザーがひし形より四角を選んだ）。中を下から、終わった子の割合だけ満たす
+  const o = 2;
+  const w = size - o * 2;
+  const pad = 2.5;
+  const inner = w - pad * 2;
+  const h = inner * ratio;
   const tone =
     item.status === "done"
       ? "text-ok"
@@ -249,23 +247,24 @@ export function StoryMark({
       )}
     >
       <svg viewBox={`0 0 ${size} ${size}`} className="size-full" aria-hidden>
-        <defs>
-          <clipPath id={clipId}>
-            <rect x={0} y={fillTop} width={size} height={size - fillTop} />
-          </clipPath>
-        </defs>
-        <polygon
-          points={outer}
+        <rect
+          x={o}
+          y={o}
+          width={w}
+          height={w}
+          rx={4}
           fill="none"
           stroke="currentColor"
           strokeWidth={1.5}
-          strokeLinejoin="round"
         />
-        {ratio > 0 ? (
-          <polygon
-            points={innerPts}
+        {h > 0 ? (
+          <rect
+            x={o + pad}
+            y={o + pad + inner - h}
+            width={inner}
+            height={h}
+            rx={1.5}
             fill="currentColor"
-            clipPath={`url(#${clipId})`}
           />
         ) : null}
       </svg>
