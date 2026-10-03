@@ -26,7 +26,9 @@ import {
   toContainerLimits,
   runIncus,
 } from "@banto/container";
-import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
+import { loadOrCreateBootstrapConfig, loginOrigins, resolveBootstrapConfigPath } from "./config/bootstrap.js";
+import { AuthStore } from "./auth/store.js";
+import { AuthService } from "./auth/service.js";
 import { EventLog } from "./event-store/log.js";
 import { ProjectThreadStore, currentSkillSet } from "./project-thread/store.js";
 import {
@@ -199,6 +201,9 @@ async function main(): Promise<void> {
   // Module 間中継の許可と記録（アーキ仕様 §2.5）。**許可は Event Store に残す**
   // ——プロセスメモリに置くと、host を再起動するたびに人が承認し直すことになる
   const relayGrants = new RelayGrantStore(bootstrap.dataDir, eventLog);
+  // **人のログイン**（決定・2026-10-03、v4-security.md「人のログイン」）。セッションとパスキーは Event Store に
+  const authStore = new AuthStore(bootstrap.dataDir, eventLog);
+  await authStore.load();
   await relayGrants.load();
   // どの Module が、いま、どのターンの仕事をしているか（承認をどの会話に出すか）
   const moduleCalls = new ModuleCallTracker();
@@ -1615,6 +1620,13 @@ async function main(): Promise<void> {
     relayEndpoint,
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
+    auth: new AuthService({
+      store: authStore,
+      dataDir: bootstrap.dataDir,
+      authToken: bootstrap.authToken,
+      ...loginOrigins(bootstrap),
+      events: appEvents,
+    }),
     releaseProjectModules,
     projectContainerStatus: async (projectId: string) => {
       const name = containerNameFor(projectId);
@@ -1678,6 +1690,7 @@ async function main(): Promise<void> {
       inbox.save(),
       runtimeConfig.save(),
       relayGrants.save(),
+      authStore.save(),
     ]);
   };
   const snapshotTimer = setInterval(() => {
@@ -1710,7 +1723,8 @@ async function main(): Promise<void> {
     // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
     // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
     deliveries.resumeAll();
-    console.log(`[host] listening on http://0.0.0.0:${bootstrap.port}/ (token=${bootstrap.authToken})`);
+    // **合言葉はログに出さない**（改訂・2026-10-03、Fable のレビュー——journald に写しが残っていた）
+    console.log(`[host] listening on http://0.0.0.0:${bootstrap.port}/（画面：${loginOrigins(bootstrap).uiOrigin}）`);
   });
 
   // **banto 全体で1本の Module は、起動したときに繋ぐ**（決定・2026-09-07、ユーザー）。

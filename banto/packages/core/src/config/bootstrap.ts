@@ -28,6 +28,22 @@ export interface BootstrapConfig {
    * 省略時は loopback（OAuth は使えないが、他は動く）。
    */
   publicUrl?: string;
+  /**
+   * **画面のオリジン**（追加・2026-10-03、人のログイン）。Cookie で来た要求の Origin の検め・パスキーの origin・
+   * CORS・ログインのリンクに使う。**省略時は `publicUrl` のオリジン**（本番は画面と API が同じオリジン）。
+   * 開発・E2E は画面と host のポートが違うので書く。どちらも無ければ `http://localhost:4175`
+   */
+  uiOrigin?: string;
+}
+
+/** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
+export function loginOrigins(config: Pick<BootstrapConfig, "publicUrl" | "uiOrigin" | "port">): {
+  uiOrigin: string;
+  apiBaseUrl: string;
+} {
+  const apiBaseUrl = config.publicUrl ?? `http://localhost:${config.port}`;
+  const uiOrigin = new URL(config.uiOrigin ?? (config.publicUrl ? new URL(config.publicUrl).origin : "http://localhost:4175")).origin;
+  return { uiOrigin, apiBaseUrl };
 }
 
 export class ConfigOverlapError extends Error {}
@@ -92,6 +108,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       allowedEmbedderOrigins: raw.allowedEmbedderOrigins ?? DEFAULT_EMBEDDER_ORIGINS,
       sandboxPublicUrl: raw.sandboxPublicUrl ?? `http://127.0.0.1:${raw.sandboxPort ?? 4176}`,
       ...(raw.publicUrl ? { publicUrl: raw.publicUrl } : {}),
+      ...(raw.uiOrigin ? { uiOrigin: raw.uiOrigin } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;

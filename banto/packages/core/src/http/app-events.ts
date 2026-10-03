@@ -8,7 +8,9 @@ export type AppEvent =
   // cause：人が送ったターンか、届いたもので host が始めたターンか（画面の帯の言い方が変わる）
   | { type: "turn.started"; threadId: string; projectId?: string; cause: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
-  | { type: "inbox.changed" };
+  | { type: "inbox.changed" }
+  // 「端末を追加」の札が使われた（決定・2026-10-03）。札を出した画面が「端末が入りました」と出す
+  | { type: "auth.device_added"; codeId: string; label: string };
 
 export class AppEventBus {
   private readonly listeners = new Set<(event: AppEvent) => void>();

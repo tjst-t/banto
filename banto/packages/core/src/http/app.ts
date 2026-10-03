@@ -41,6 +41,7 @@ import {
   skillInstructionsFootprint,
 } from "../skills/index.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
+import type { AuthService } from "../auth/service.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import {
   runThreadTurn,
@@ -153,6 +154,11 @@ export interface AppDeps {
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
   authToken: string;
+  /**
+   * **人のログイン**（決定・2026-10-03、`docs/specs/v4-security.md`「人のログイン」）。あれば Cookie のセッションも
+   * 受け、CORS は画面のオリジンにだけ許す。無ければ Bearer だけ（試験の最小構成）
+   */
+  auth?: AuthService;
   /** そのThreadで使えるModule（名前とRunner接続先URL）の一覧を返す（Project単位の配線）。
    *  Shell/FileSystemはProject単位で遅延spawnするため非同期。 */
   resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]>;
@@ -520,18 +526,6 @@ async function storeTurnImages(store: ImageStore | undefined, raw: unknown): Pro
     images.push({ id, mediaType, data, ...(name ? { name } : {}) });
   }
   return images;
-}
-
-function withCors(res: ServerResponse): void {
-  res.setHeader("access-control-allow-origin", "*");
-  // PATCH（名前を変える）・PUT（並び順）を足した（2026-09-11）——**画面から
-  // 呼べない口を足しても、何も起きない**。実測：preflight で弾かれ、画面には
-  // 「Failed to fetch」だけが出ていた
-  // **DELETE も通す**（追加・2026-09-15）。Module を消す口を足したときに
-  // 抜けていて、ブラウザが preflight で弾いていた——画面には
-  // 「Failed to fetch」としか出ず、原因が読めなかった
-  res.setHeader("access-control-allow-methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
-  res.setHeader("access-control-allow-headers", "authorization, content-type, mcp-session-id");
 }
 
 function isAuthorized(req: IncomingMessage, token: string): boolean {
@@ -1162,7 +1156,9 @@ export function createApp(deps: AppDeps) {
   });
 
   return createServer(async (req, res) => {
-    withCors(res);
+    // **CORS は画面のオリジンにだけ、資格情報つきで許す**（改訂・2026-10-03、`*` をやめた——Cookie のセッションを
+    // 兄弟のサブドメインから読ませない）。本番は画面と API が同じオリジンなので、効くのは開発（ポート違い）だけ
+    deps.auth?.applyCors(req, res);
     logIfSlow(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
@@ -1224,7 +1220,15 @@ export function createApp(deps: AppDeps) {
         }
       }
 
-      if (!isAuthorized(req, deps.authToken)) {
+      // **人のログインの口**（決定・2026-10-03）。入る前の口（札の引き換え・パスキー）もここ
+      if (deps.auth && (await deps.auth.handle(req, res, url))) return;
+
+      const principal = deps.auth
+        ? await deps.auth.authenticate(req, res)
+        : isAuthorized(req, deps.authToken)
+          ? ({ kind: "machine" } as const)
+          : undefined;
+      if (!principal) {
         json(res, 401, { error: "unauthorized" });
         return;
       }
