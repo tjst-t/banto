@@ -949,10 +949,12 @@ test("段階5：GitHub に公開——一覧の行から作って push し（失
   const hermes = `hermes-${suffix}`;
   const taken = `taken-${suffix}`;
   const org = `e2e-org-${suffix}`;
+  const openOrg = `e2e-open-${suffix}`;
   const proj = `proj-${suffix}`;
   const me = E2E_GITHUB_PAT_LOGIN;
   await setGithubLoginFixture({ addRepo: { owner: me, name: taken } });
   await setGithubLoginFixture({ addOrg: { login: org, members: { [me]: "member" }, membersCanCreate: false } });
+  await setGithubLoginFixture({ addOrg: { login: openOrg, members: { [me]: "member" }, membersCanCreate: true } });
   const hermesPath = join(repoHome, hermes);
   const projPath = join(repoHome, proj);
   for (const dir of [hermesPath, projPath]) {
@@ -984,7 +986,8 @@ test("段階5：GitHub に公開——一覧の行から作って push し（失
   await expect(panel.getByTestId("publish-facts")).toContainText("main · 2 コミット");
   await expect(panel.getByTestId("publish-facts")).toContainText("最後のコミットsecond（");
   // fine-grained PAT は作れるかを前もって知る口が無い——そう言う。メンバーが作れない Organization は理由つきで選べない
-  await expect(panel.getByTestId("publish-owner-one")).toHaveText(`${me}（あなたのアカウント）`);
+  await expect(panel.getByTestId("publish-owner-pick")).toHaveText([me, `${openOrg}（Organization）`]);
+  await expect(panel.locator(`[data-testid="publish-owner-pick"][data-owner="${me}"]`)).toHaveAttribute("aria-checked", "true");
   await expect(panel.getByTestId("publish-owner-note")).toContainText("作れるかは、作ってみるまで分かりません");
   await expect(panel.getByTestId("publish-owner-blocked")).toContainText(`${org} には作れません：${org} はメンバーがリポジトリを作れない設定です`);
   await expect(panel.getByTestId("publish-push-note")).toHaveText("main を push して、以後は origin/main を追います。ほかのブランチ（spike）は送りません——あとで git push で送れます。");
@@ -1012,10 +1015,13 @@ test("段階5：GitHub に公開——一覧の行から作って push し（失
   await expect(panel.getByTestId("publish-error")).toContainText(`GitHub にはできています（github.com/${me}/${hermes}）。push だけやり直せます`, { timeout: 60_000 });
   await expect(panel.getByTestId("publish-error")).toContainText("push する権限がありません");
   const steps = panel.getByTestId("publish-steps").locator("li");
-  await expect(steps).toHaveText([`GitHub に ${me}/${hermes} を作る（非公開）`, "origin に設定する", "main を push する"]);
+  await expect(steps).toHaveText([`GitHub に ${me}/${hermes} を作る（非公開）`, "origin に設定する", "一覧に書く", "main を push する"]);
   await expect(steps.nth(0)).toHaveAttribute("data-state", "done");
   await expect(steps.nth(1)).toHaveAttribute("data-state", "done");
-  await expect(steps.nth(2)).toHaveAttribute("data-state", "failed");
+  await expect(steps.nth(2)).toHaveAttribute("data-state", "done");
+  await expect(steps.nth(3)).toHaveAttribute("data-state", "failed");
+  // 偽の GitHub が受けた中身：頼んだ持ち主・非公開で作られた
+  expect((await setGithubLoginFixture({})).created.filter((c) => c.name === hermes)).toEqual([{ owner: me, name: hermes, private: true, by: me }]);
   await expect(panel.getByTestId("publish-title")).toHaveText("GitHub にはできています");
   await expect(panel.getByTestId("publish-retry-account")).toHaveText(`${me} で push します。`);
   expect(execFileSync("git", ["remote", "get-url", "origin"], { cwd: hermesPath, encoding: "utf8" }).trim()).toMatch(new RegExp(`/${me}/${hermes}\\.git$`));
@@ -1047,15 +1053,19 @@ test("段階5：GitHub に公開——一覧の行から作って push し（失
   const fromProject = canvas.getByTestId("publish-panel");
   await expect(fromProject.getByTestId("publish-target")).toHaveText(`github.com/${me}/${proj}`, { timeout: 60_000 });
   await expect(fromProject.getByTestId("publish-route")).toContainText(projPath);
+  // Organization に作る（メンバーが作れる Org）。持ち主を替えると行き先も替わる
+  await fromProject.locator(`[data-testid="publish-owner-pick"][data-owner="${openOrg}"]`).click();
+  await expect(fromProject.getByTestId("publish-target")).toHaveText(`github.com/${openOrg}/${proj}`);
   await fromProject.getByTestId("publish-submit").click();
-  await expect(fromProject.getByTestId("publish-done")).toContainText(`github.com/${me}/${proj} に公開しました`, { timeout: 60_000 });
-  await expect(fromProject.getByTestId("publish-steps").locator("li")).toHaveText([`GitHub に ${me}/${proj} を作る（非公開）`, "origin に設定する", "main を push する"]);
+  await expect(fromProject.getByTestId("publish-done")).toContainText(`github.com/${openOrg}/${proj} に公開しました`, { timeout: 60_000 });
+  await expect(fromProject.getByTestId("publish-steps").locator("li")).toHaveText([`GitHub に ${openOrg}/${proj} を作る（非公開）`, "origin に設定する", "一覧に書く", "main を push する"]);
+  expect((await setGithubLoginFixture({})).created.filter((c) => c.name === proj)).toEqual([{ owner: openOrg, name: proj, private: true, by: me }]);
   await expect(fromProject.getByRole("button", { name: "閉じる" })).toHaveCount(0);
   expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "main@{upstream}"], { cwd: projPath, encoding: "utf8" }).trim()).toBe("origin/main");
 
   // 片づけ：アカウントを外し、置き場を戻す
   inner = await openRepositoriesPane(page);
-  await expect(row(inner, projPath).getByTestId("repo-remote")).toContainText(`${me}/${proj}`, { timeout: 60_000 });
+  await expect(row(inner, projPath).getByTestId("repo-remote")).toContainText(`${openOrg}/${proj}`, { timeout: 60_000 });
   await inner.locator(`[data-testid="gh-account"][data-login="${me}"]`).getByTestId("gh-account-remove").click();
   await inner.getByTestId("gh-account-remove-confirm").click();
   await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();

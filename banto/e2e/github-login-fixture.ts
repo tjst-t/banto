@@ -37,9 +37,9 @@ export async function setGithubLoginFixture(patch: {
   addOrg?: { login: string; members: Record<string, "admin" | "member">; membersCanCreate: boolean };
   /** そのリポジトリ（`owner/name`）への push を断る・断るのをやめる（push の失敗の試験） */
   rejectPush?: { repo: string; on: boolean };
-}): Promise<{ refreshCalls: number }> {
+}): Promise<{ refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }> }> {
   const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
   const res = await fetch(`${web}/__fake/state`, { method: "POST", body: JSON.stringify(patch) });
   if (!res.ok) throw new Error(`偽の GitHub が振る舞いの変更を断りました（${res.status}）`);
-  return (await res.json()) as { refreshCalls: number };
+  return (await res.json()) as { refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }> };
 }
