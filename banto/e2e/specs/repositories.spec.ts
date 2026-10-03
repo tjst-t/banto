@@ -13,13 +13,18 @@
 //      もう一度ログイン・外す。台帳の「扱うアカウント」が一覧に出る。GitHub は偽物（`e2e/github-login-fixture.ts`）
 //   8. URL から clone・新しいリポジトリ（段階3）：本物の git で偽の GitHub から clone（公開・アカウントの非公開・読めない）、
 //      clone し直す、新しいリポジトリ、「Project も作る」で core の新しい Project の画面がフォルダ入りで開き、作れる
+//   9. 段階4：「読むだけ」の行にアカウントを後から選ぶ（見えないアカウントは断る・読めるが書けないなら言う・読むだけに
+//      戻す）、このマシンから削除（失われるものが無ければ1回の確かめ・あれば何がいくつかと名前を打たせる・置き場の外は
+//      断る・使っている Project は core の「Project を閉じる」の確かめを開き、押したときだけ閉じる）
+//  10. 段階4：core の新しい Project の画面に、Repositories が名乗ったタブ（clone・新しいリポジトリ）が出て、中の画面が
+//      用意したフォルダで Project を作る・もう Project があればそれを開く
 import { test, expect, type FrameLocator, type Page, type Route } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, expectProjectOpen, openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openNav } from "../helpers.js";
 import {
   E2E_GITHUB_CLIENT_ID,
   E2E_GITHUB_DEVICE_LOGIN,
@@ -124,6 +129,44 @@ async function typeRightAfterOpening(page: Page, canvas: FrameLocator, path: str
 }
 
 const row = (canvas: FrameLocator, path: string) => canvas.locator(`[data-testid="repo-item"][data-repo-path="${path}"]`);
+
+/** 設定の Repositories の面を開き、中の Canvas を返す */
+async function openRepositoriesPane(page: Page): Promise<FrameLocator> {
+  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  const pane = page.locator('[data-testid="module-settings-canvas"][data-module="repositories"]');
+  await expect(pane).toBeVisible({ timeout: 30_000 });
+  return pane.locator("iframe").contentFrame().frameLocator("iframe");
+}
+
+/** PAT のアカウントを登録する。前の試験が Vault に残した alias があれば選ぶ（外しても PAT は残す決まり）、無ければ貼る */
+async function registerPat(inner: FrameLocator): Promise<void> {
+  await inner.getByTestId("gh-account-add").click();
+  await inner.getByTestId("gh-method-alias").check();
+  const aliasOption = inner.getByTestId("gh-pat-alias").locator("option", { hasText: `$github-${E2E_GITHUB_PAT_LOGIN}-pat` });
+  await expect(inner.getByTestId("gh-account-form")).toHaveAttribute("data-choices", "loaded", { timeout: 30_000 });
+  if ((await aliasOption.count()) > 0) {
+    await inner.getByTestId("gh-pat-alias").selectOption({ label: (await aliasOption.textContent())! });
+  } else {
+    await inner.getByTestId("gh-method-paste").check();
+    await inner.getByTestId("gh-pat-input").fill(E2E_GITHUB_PAT);
+  }
+  await inner.getByTestId("gh-account-submit").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_PAT_LOGIN} を登録しました`);
+}
+
+/** 置き場を試験の一時フォルダに（人の ~/banto に clone しない） */
+async function setRepoHome(inner: FrameLocator, repoHome: string): Promise<void> {
+  await inner.getByTestId("repo-home-input").fill(repoHome);
+  await inner.getByTestId("repo-home-save").click();
+  await expect(inner.getByTestId("repo-list-lead")).toContainText(`${repoHome} に置きます`);
+}
+
+/** 行の「…」から手を選ぶ */
+async function rowAction(inner: FrameLocator, path: string, testId: string): Promise<void> {
+  await row(inner, path).getByTestId("repo-row-menu").click();
+  await row(inner, path).getByTestId(testId).click();
+}
 
 test("入口から開いた一覧で、Import の判断・足した行の中身・見つからない・外す／戻す・origin の直しまで本物の台帳で動く", async ({ page }) => {
   const pageErrors: string[] = [];
@@ -345,13 +388,7 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   page.on("pageerror", (err) => pageErrors.push(err.message));
   // 出すトークンの寿命を5分の余裕より短くして、確かめるたびに更新が走るようにする
   await setGithubLoginFixture({ script: ["pending", "authorized"], accessTokenTtl: 60, refreshError: null });
-  const openPane = async () => {
-    await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
-    await page.getByRole("button", { name: "Repositories", exact: true }).click();
-    const pane = page.locator('[data-testid="module-settings-canvas"][data-module="repositories"]');
-    await expect(pane).toBeVisible({ timeout: 30_000 });
-    return pane.locator("iframe").contentFrame().frameLocator("iframe");
-  };
+  const openPane = () => openRepositoriesPane(page);
   let inner = await openPane();
   const section = inner.getByTestId("gh-accounts-section");
   const account = (login: string) => inner.locator(`[data-testid="gh-account"][data-login="${login}"]`);
@@ -493,10 +530,7 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   };
   let inner = await openPane();
 
-  // 置き場を試験の一時フォルダに（人の ~/banto に clone しない）
-  await inner.getByTestId("repo-home-input").fill(repoHome);
-  await inner.getByTestId("repo-home-save").click();
-  await expect(inner.getByTestId("repo-list-lead")).toContainText(`${repoHome} に置きます`);
+  await setRepoHome(inner, repoHome);
 
   // ---- 1. 公開のリポジトリ：アカウント無し・「Project も作る」をオフで clone --------------------
   await inner.getByTestId("repo-clone-open").first().click();
@@ -536,19 +570,7 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   expect(existsSync(join(repoHome, secret)), "失敗した clone のフォルダが残った").toBe(false);
   await inner.getByRole("button", { name: "やめる" }).click();
 
-  // PAT：前の試験が Vault に残した alias があれば選ぶ（外しても PAT は残す決まり）、無ければ貼る
-  await inner.getByTestId("gh-account-add").click();
-  await inner.getByTestId("gh-method-alias").check();
-  const aliasOption = inner.getByTestId("gh-pat-alias").locator("option", { hasText: `$github-${E2E_GITHUB_PAT_LOGIN}-pat` });
-  await expect(inner.getByTestId("gh-account-form")).toHaveAttribute("data-choices", "loaded", { timeout: 30_000 });
-  if ((await aliasOption.count()) > 0) {
-    await inner.getByTestId("gh-pat-alias").selectOption({ label: (await aliasOption.textContent())! });
-  } else {
-    await inner.getByTestId("gh-method-paste").check();
-    await inner.getByTestId("gh-pat-input").fill(E2E_GITHUB_PAT);
-  }
-  await inner.getByTestId("gh-account-submit").click();
-  await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_PAT_LOGIN} を登録しました`);
+  await registerPat(inner);
 
   await inner.getByTestId("repo-clone-open").first().click();
   await inner.getByTestId("repo-clone-url").fill(`${E2E_GITHUB_PAT_LOGIN}/${secret}`);
@@ -617,6 +639,272 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   await inner.locator(`[data-testid="gh-account"][data-login="${E2E_GITHUB_PAT_LOGIN}"]`).getByTestId("gh-account-remove").click();
   await inner.getByTestId("gh-account-remove-confirm").click();
   await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();
+  await inner.getByTestId("repo-home-reset").click();
+  await expect(inner.getByTestId("repo-home-input")).toHaveValue("~/banto");
+  rmSync(repoHome, { recursive: true, force: true });
+  expect(pageErrors).toEqual([]);
+});
+
+test("段階4：「読むだけ」の行にアカウントを後から選び・戻し、このマシンから削除は失われるものを数えて確かめ、置き場の外は断り、使っていた Project は core の確かめで閉じる", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const repoHome = `/tmp/banto-e2e-stage4-home-${Date.now()}`;
+  const suffix = Date.now().toString(36);
+  const pub = `pub4-${suffix}`;
+  const hidden = `hidden-${suffix}`;
+  const hiddenPath = join(repoHome, hidden);
+  const outsideBase = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-stage4-outside-")));
+  const outside = join(outsideBase, `outside-${suffix}`);
+  const projectName = `E2E 消す ${suffix}`;
+  await setGithubLoginFixture({ addRepo: { owner: "e2e-octo", name: pub } });
+  // 手元にだけあるリポジトリ：GitHub の場所を指すが、そこには無い（どのアカウントからも見えない）。
+  // push していないコミット・リモートに無いブランチ・stash・追跡していないファイルを持つ
+  makeRepo(hiddenPath, `https://github.com/e2e-hidden/${hidden}.git`);
+  writeFileSync(join(hiddenPath, "README.md"), "changed\n");
+  git(hiddenPath, "stash", "-q");
+  writeFileSync(join(hiddenPath, "scratch.txt"), "not yet\n");
+  makeRepo(outside, `https://github.com/e2e-octo/outside-${suffix}.git`);
+
+  // 使っている Project（消すと Root が無くなる）
+  await openApp(page);
+  await createProject(page, projectName, hiddenPath);
+
+  let inner = await openRepositoriesPane(page);
+  await setRepoHome(inner, repoHome);
+
+  // 公開のリポジトリをアカウント無しで clone（読むだけ）
+  await inner.getByTestId("repo-clone-open").first().click();
+  await inner.getByTestId("repo-clone-url").fill(`e2e-octo/${pub}`);
+  await expect(inner.getByTestId("repo-band-message")).toHaveText("ここに clone します。");
+  await inner.getByTestId("repo-clone-with-project").uncheck();
+  await inner.getByTestId("repo-clone-submit").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText(`e2e-octo/${pub} を ${repoHome}/${pub} に clone しました`, { timeout: 60_000 });
+  const pubPath = `${repoHome}/${pub}`;
+  await expect(row(inner, pubPath).getByTestId("repo-account-readonly")).toHaveText("読むだけ");
+
+  // 手元のリポジトリを2つ Import（置き場の中・置き場の外）
+  for (const path of [hiddenPath, outside]) {
+    await inner.getByTestId("repo-import-open").click();
+    await goTo(inner, path);
+    await expect(inner.getByTestId("repo-import-message")).toHaveText("git のリポジトリです。この場所のまま一覧に足します。");
+    await inner.getByTestId("repo-import-submit").click();
+    await expect(row(inner, path)).toHaveCount(1, { timeout: 30_000 });
+  }
+  await expect(row(inner, hiddenPath).getByTestId("repo-project")).toHaveText(projectName);
+
+  await registerPat(inner);
+
+  // ---- A. アカウントを後から選ぶ -----------------------------------------------------------
+  // 見えるが書けない（持ち主でも書き手でもない公開のリポジトリ）——指定はでき、書けないことを言う
+  await rowAction(inner, pubPath, "repo-account-choose");
+  const chooser = inner.getByTestId("repo-account-dialog");
+  await expect(chooser).toContainText(`e2e-octo/${pub} を、どのアカウントで扱うか`);
+  await expect(chooser.getByTestId("repo-account-pick")).toHaveText([E2E_GITHUB_PAT_LOGIN]);
+  await expect(chooser.getByTestId("repo-account-pick-none")).toHaveAttribute("aria-pressed", "true");
+  await chooser.getByTestId("repo-account-pick").click();
+  await expect(inner.getByTestId("repo-flash")).toHaveText(
+    `${pub} を ${E2E_GITHUB_PAT_LOGIN} で扱います（このアカウントは読めますが書けません——公開・push はできません）`,
+    { timeout: 30_000 },
+  );
+  await expect(chooser).toBeHidden();
+  await expect(row(inner, pubPath).getByTestId("repo-account-login")).toHaveText(E2E_GITHUB_PAT_LOGIN);
+
+  // 読むだけに戻す——持ち主と同じアカウントがあっても、自動では付け直さない
+  await rowAction(inner, pubPath, "repo-account-choose");
+  await expect(chooser.getByTestId("repo-account-pick")).toHaveAttribute("aria-pressed", "true");
+  await chooser.getByTestId("repo-account-pick-none").click();
+  await expect(inner.getByTestId("repo-flash")).toHaveText(`${pub} を読むだけに戻しました（持ち主と同じアカウントがあっても、自動では付け直しません）`);
+  await expect(row(inner, pubPath).getByTestId("repo-account-readonly")).toHaveText("読むだけ");
+
+  // 見えない——断り、理由と次の手を言う。台帳は変わらない
+  await rowAction(inner, hiddenPath, "repo-account-choose");
+  await chooser.getByTestId("repo-account-pick").click();
+  await expect(chooser.getByTestId("repo-account-error")).toHaveText(
+    `@${E2E_GITHUB_PAT_LOGIN} からは e2e-hidden/${hidden} が見えません（非公開で権限が無いか、GitHub App がそのリポジトリに入っていない）。見えるアカウントを選んでください`,
+    { timeout: 30_000 },
+  );
+  await chooser.getByRole("button", { name: "閉じる" }).click();
+  await expect(row(inner, hiddenPath).getByTestId("repo-account-readonly")).toHaveText("読むだけ");
+
+  // ---- B. このマシンから削除 ------------------------------------------------------------
+  // 置き場の外——断る。消すボタンは無く、フォルダは残る
+  await rowAction(inner, outside, "repo-delete-open");
+  const del = inner.getByTestId("repo-delete-dialog");
+  await expect(del.getByTestId("repo-delete-refusal")).toHaveText(
+    `${shown(outside)} は消せません：置き場（${repoHome}）の外のフォルダは、このマシンから削除できません——一覧から外して、ほかの道具で消してください`,
+    { timeout: 30_000 },
+  );
+  await expect(del.getByTestId("repo-delete-submit")).toHaveCount(0);
+  await del.getByRole("button", { name: "やめる" }).click();
+  expect(existsSync(join(outside, ".git")), "断ったのにフォルダが消えた").toBe(true);
+
+  // 失われるものが無い——1回の確かめで消える（名前は打たせない）
+  await rowAction(inner, pubPath, "repo-delete-open");
+  await expect(del.getByTestId("repo-delete-path")).toHaveText(pubPath, { timeout: 30_000 });
+  await expect(del.getByTestId("repo-delete-nothing")).toHaveText(`push していないコミット・変更・stash などはありません。フォルダごと消えます（${pubPath}）。`);
+  await expect(del.getByTestId("repo-delete-loss")).toHaveCount(0);
+  await expect(del.getByTestId("repo-delete-typed")).toHaveCount(0);
+  await expect(del.getByTestId("repo-delete-projects")).toHaveCount(0);
+  await expect(del.getByTestId("repo-delete-submit")).toHaveText("削除する");
+  await del.getByTestId("repo-delete-submit").click();
+  await expect(inner.getByTestId("repo-flash")).toHaveText(`${pubPath} をこのマシンから削除しました（GitHub などのリモートには触っていません）`, { timeout: 30_000 });
+  await expect(row(inner, pubPath)).toHaveCount(0);
+  expect(existsSync(pubPath), "消したはずのフォルダが残っている").toBe(false);
+
+  // 失われるものがある・Project が使っている——何がいくつかを出し、名前を打つまで消せない
+  await rowAction(inner, hiddenPath, "repo-delete-open");
+  await expect(del.getByTestId("repo-delete-path")).toHaveText(hiddenPath, { timeout: 30_000 });
+  await expect(del.getByTestId("repo-delete-loss")).toHaveText([
+    "ブランチ main：どのリモートにも無いコミット 1 件",
+    "リモートに無いブランチ 1 本（main）",
+    "追跡していないもの 1 件（ignore 済みは数えていません）",
+    "stash 1 件",
+  ]);
+  await expect(del.getByTestId("repo-delete-nothing")).toHaveCount(0);
+  await expect(del.getByTestId("repo-delete-projects")).toHaveText(`Project「${projectName}」が使っています。消すと、その Project の Root が無くなります。`);
+  await expect(del.getByTestId("repo-delete-close-projects")).toBeChecked();
+  const submit = del.getByTestId("repo-delete-submit");
+  await expect(submit).toHaveText("承知して削除");
+  await expect(submit).toBeDisabled();
+  await del.getByTestId("repo-delete-typed").fill(hidden.slice(0, -1));
+  await expect(submit).toBeDisabled();
+  await del.getByTestId("repo-delete-typed").press("Enter");
+  expect(existsSync(hiddenPath), "名前が違うのに消えた").toBe(true);
+  await del.getByTestId("repo-delete-typed").fill(hidden);
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(inner.getByTestId("repo-flash")).toHaveText(`${hiddenPath} をこのマシンから削除しました（GitHub などのリモートには触っていません）`, { timeout: 30_000 });
+  expect(existsSync(hiddenPath), "消したはずのフォルダが残っている").toBe(false);
+  await expect(row(inner, hiddenPath)).toHaveCount(0);
+
+  // 「Project も閉じる」——core の確かめが出所つきで開く。閉じるのは、そこで押したとき
+  const closeDialog = page.getByTestId("close-projects-dialog");
+  await expect(closeDialog, "core の「Project を閉じる」の確かめが開かない").toBeVisible({ timeout: 30_000 });
+  await expect(closeDialog.getByRole("heading")).toHaveText(`Project「${projectName}」を Close しますか`);
+  await expect(closeDialog.getByTestId("close-projects-requested-by")).toHaveText("「repositories」の画面から頼まれて開きました。閉じるのは、ここで押したときです。");
+  const statusOf = async () =>
+    ((await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as Array<{ name: string; status: string }>).find(
+      (p) => p.name === projectName,
+    )?.status;
+  expect(await statusOf(), "押す前に閉じた").not.toBe("closed");
+  await closeDialog.getByTestId("close-projects-confirm").click();
+  await expect(closeDialog).toBeHidden({ timeout: 30_000 });
+  await expect.poll(statusOf, { timeout: 15_000 }).toBe("closed");
+
+  // 片づけ：外のものは一覧から外し、アカウントを外し、置き場を戻す
+  inner = await openRepositoriesPane(page);
+  await rowAction(inner, outside, "repo-remove");
+  await expect(row(inner, outside)).toHaveCount(0);
+  await inner.locator(`[data-testid="gh-account"][data-login="${E2E_GITHUB_PAT_LOGIN}"]`).getByTestId("gh-account-remove").click();
+  await inner.getByTestId("gh-account-remove-confirm").click();
+  await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();
+  await inner.getByTestId("repo-home-reset").click();
+  await expect(inner.getByTestId("repo-home-input")).toHaveValue("~/banto");
+  rmSync(repoHome, { recursive: true, force: true });
+  rmSync(outsideBase, { recursive: true, force: true });
+  expect(pageErrors).toEqual([]);
+});
+
+test("段階4：core の新しい Project の画面に Repositories が名乗ったタブが出て、中の画面が用意したフォルダで Project を作り、もうあればそれを開く", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  const repoHome = `/tmp/banto-e2e-provider-home-${Date.now()}`;
+  const suffix = Date.now().toString(36);
+  const cloned = `prov-${suffix}`;
+  const created = `made-${suffix}`;
+  await setGithubLoginFixture({ addRepo: { owner: "e2e-octo", name: cloned } });
+
+  let inner = await openRepositoriesPane(page);
+  await setRepoHome(inner, repoHome);
+
+  const openDialog = async () => {
+    await openApp(page);
+    await openNav(page);
+    await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新しい Project" });
+    await expect(dialog).toBeVisible();
+    return dialog;
+  };
+  const surfaceOf = (dialog: ReturnType<Page["getByRole"]>) =>
+    dialog.getByTestId("module-surface").locator('[data-testid="module-canvas-frame"]').contentFrame().frameLocator("iframe");
+
+  // ---- タブ：core の「手元のフォルダ」と、Module が名乗った2つ（名前・説明は Module のもの） -------------
+  let dialog = await openDialog();
+  const tabs = dialog.getByTestId("start-method-tab");
+  await expect(tabs).toHaveText(["手元のフォルダ", "clone", "新しいリポジトリ"], { timeout: 30_000 });
+  await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
+  await expect(dialog.getByTestId("start-method-description")).toHaveText("あるフォルダを、そのまま使います。");
+  await expect(dialog.getByLabel("Root パス")).toBeVisible();
+  // Module のアイコンは data: の画像だけ
+  await expect(tabs.nth(1).locator("img")).toHaveAttribute("src", /^data:image\/svg\+xml;base64,/);
+
+  // ---- clone：中は Module の画面（点線の枠と出所）。返ってきたフォルダで core が作る ------------------
+  await tabs.nth(1).click();
+  await expect(dialog.getByTestId("start-method-description")).toHaveText("GitHub などのリポジトリを、リポジトリの置き場に clone します。");
+  await expect(dialog.getByTestId("module-surface-by")).toHaveText("「repositories」の画面");
+  await expect(dialog.getByTestId("module-surface")).toContainText("ui://banto-repositories/prepare-clone");
+  // 用意できるまでは、core の作る段は出さない
+  await expect(dialog.getByLabel("Project 名")).toHaveCount(0);
+  await expect(dialog.getByTestId("new-project-submit")).toHaveCount(0);
+  let surface = surfaceOf(dialog);
+  await surface.getByTestId("repo-clone-url").fill(`e2e-octo/${cloned}`);
+  await expect(surface.getByTestId("repo-band-message")).toHaveText("ここに clone します。");
+  await expect(surface.getByTestId("repo-clone-with-project")).toHaveCount(0);
+  await surface.getByTestId("repo-clone-submit").click();
+  await expect(dialog.getByTestId("new-project-prepared-path")).toHaveText(`${repoHome}/${cloned}`, { timeout: 60_000 });
+  await expect(dialog.getByTestId("new-project-prepared-summary")).toHaveText(`repositories：e2e-octo/${cloned} を ${repoHome}/${cloned} に clone しました`);
+  await expect(dialog.getByTestId("module-surface")).toHaveCount(0);
+  expect(existsSync(join(repoHome, cloned, "README.md")), "clone したフォルダに中身が無い").toBe(true);
+  await expect(dialog.getByLabel("Project 名")).toHaveValue(cloned);
+  await expect(dialog.getByTestId("new-project-submit")).toHaveText("作成する");
+  await dialog.getByTestId("new-project-submit").click();
+  await expectProjectOpen(page, cloned, "用意したフォルダで作った Project が開かない");
+
+  // ---- もう手元にあり、Project もある——clone せずその場所を使い、新しくは作らずそれを開く ----------------
+  dialog = await openDialog();
+  await dialog.getByTestId("start-method-tab").nth(1).click();
+  surface = surfaceOf(dialog);
+  await surface.getByTestId("repo-clone-url").fill(`https://github.com/e2e-octo/${cloned}`);
+  await expect(surface.getByTestId("repo-band-message")).toHaveText(
+    `もう手元にあります（e2e-octo/${cloned}）。新しくは clone しません。Project「${cloned}」が使っています。`,
+  );
+  await surface.getByTestId("repo-clone-use-have").click();
+  await expect(dialog.getByTestId("new-project-prepared-summary")).toHaveText(`repositories：もう手元にある ${repoHome}/${cloned} を使います（clone はしていません）`);
+  await expect(dialog.getByTestId("new-project-existing")).toHaveText(`このフォルダは Project「${cloned}」が Root にしています。新しくは作らず、それを開きます。`);
+  await expect(dialog.getByLabel("Project 名")).toHaveCount(0);
+  await expect(dialog.getByTestId("new-project-submit")).toHaveText(`「${cloned}」を開く`);
+  // 「別のフォルダにする」で Module の画面に戻れる
+  await dialog.getByRole("button", { name: "別のフォルダにする" }).click();
+  await expect(surfaceOf(dialog).getByTestId("repo-clone-url")).toHaveValue("");
+  await surfaceOf(dialog).getByTestId("repo-clone-url").fill(`e2e-octo/${cloned}`);
+  await surfaceOf(dialog).getByTestId("repo-clone-use-have").click();
+  await dialog.getByTestId("new-project-submit").click();
+  await expect(dialog).toBeHidden();
+  await expectProjectOpen(page, cloned);
+
+  // ---- 新しいリポジトリ ------------------------------------------------------------------
+  dialog = await openDialog();
+  await dialog.getByTestId("start-method-tab").nth(2).click();
+  await expect(dialog.getByTestId("module-surface")).toContainText("ui://banto-repositories/prepare-create");
+  surface = surfaceOf(dialog);
+  await surface.getByTestId("repo-create-name").fill(created);
+  await expect(surface.getByTestId("repo-band-message")).toHaveText("ここに空のリポジトリを作ります（git init）。GitHub には、まだ作りません。");
+  await surface.getByTestId("repo-create-submit").click();
+  await expect(dialog.getByTestId("new-project-prepared-path")).toHaveText(`${repoHome}/${created}`, { timeout: 30_000 });
+  await expect(dialog.getByTestId("new-project-prepared-summary")).toHaveText(
+    new RegExp(`^repositories：${repoHome}/${created} を作りました（git init、ブランチ [^）]+）$`),
+  );
+  expect(existsSync(join(repoHome, created, ".git")), "作ったフォルダに .git が無い").toBe(true);
+  await dialog.getByLabel("Project 名").fill(`${created} の Project`);
+  await dialog.getByTestId("new-project-submit").click();
+  await expectProjectOpen(page, `${created} の Project`);
+
+  // 台帳にも足され、Project が使っていると出る
+  inner = await openRepositoriesPane(page);
+  await expect(row(inner, `${repoHome}/${cloned}`).getByTestId("repo-project")).toHaveText(cloned, { timeout: 60_000 });
+  await expect(row(inner, `${repoHome}/${created}`).getByTestId("repo-project")).toHaveText(`${created} の Project`);
+
   await inner.getByTestId("repo-home-reset").click();
   await expect(inner.getByTestId("repo-home-input")).toHaveValue("~/banto");
   rmSync(repoHome, { recursive: true, force: true });
