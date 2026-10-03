@@ -301,6 +301,15 @@ export const GITHUB_SSH_HOST_KEYS: readonly string[] = [
   "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=",
 ];
 
+/** GitHub の host 鍵だけを置いた known_hosts を、この Module のデータ置き場に書く（clone・push で同じもの） */
+export async function writeGithubKnownHosts(dataDir: string, endpoints: GithubEndpoints): Promise<string> {
+  const path = join(dataDir, "github_known_hosts");
+  const host = endpoints.ssh ?? "github.com";
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path, GITHUB_SSH_HOST_KEYS.map((k) => `${host} ${k}`).join("\n") + "\n", { mode: 0o644 });
+  return path;
+}
+
 /** 終わった仕事を覚えておく長さ（画面が結果を取りに来るまで） */
 const KEEP_FINISHED_MS = 10 * 60_000;
 
@@ -552,12 +561,8 @@ export class Cloner {
    * 指紋 Ed25519 +DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU・ECDSA p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM・
    * RSA uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s）。GitHub が鍵を替えたら、ここを替える
    */
-  private async githubKnownHosts(): Promise<string> {
-    const path = join(this.deps.dataDir, "github_known_hosts");
-    const host = this.deps.endpoints.ssh ?? "github.com";
-    await mkdir(this.deps.dataDir, { recursive: true });
-    await writeFile(path, GITHUB_SSH_HOST_KEYS.map((k) => `${host} ${k}`).join("\n") + "\n", { mode: 0o644 });
-    return path;
+  private githubKnownHosts(): Promise<string> {
+    return writeGithubKnownHosts(this.deps.dataDir, this.deps.endpoints);
   }
 
   status(id: string): CloneJobView {

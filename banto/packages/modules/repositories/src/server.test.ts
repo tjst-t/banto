@@ -119,7 +119,8 @@ test("入口（launcher）と設定の面を名乗り、banto 全体の Module �
   await withServer({ listProjects: async () => [] }, async (client) => {
     const { resources } = await client.listResources();
     const byKind = (kind: string) => resources.filter((r) => (r._meta as Record<string, unknown> | undefined)?.[CANVAS_META_KEY] === kind);
-    assert.deepEqual(byKind("launcher").map((r) => r.uri), ["ui://banto-repositories/list"]);
+    assert.deepEqual(byKind("launcher").map((r) => r.uri), ["ui://banto-repositories/list", "ui://banto-repositories/publish"]);
+    assert.equal(resources.find((r) => r.uri === "ui://banto-repositories/publish")!.name, "この Project を GitHub に公開");
     assert.deepEqual(byKind("config").map((r) => r.uri), ["ui://banto-repositories/settings"]);
     const report = resources.find((r) => (r._meta as Record<string, unknown> | undefined)?.[MODULE_META_KEY]);
     assert.deepEqual((report!._meta as Record<string, unknown>)[MODULE_META_KEY], {
@@ -132,7 +133,7 @@ test("入口（launcher）と設定の面を名乗り、banto 全体の Module �
       scope: "instance",
       handlesSecrets: true,
     });
-    for (const uri of ["ui://banto-repositories/list", "ui://banto-repositories/settings"]) {
+    for (const uri of ["ui://banto-repositories/list", "ui://banto-repositories/settings", "ui://banto-repositories/publish"]) {
       const { contents } = await client.readResource({ uri });
       assert.equal(contents[0]!.mimeType, "text/html;profile=mcp-app");
       assert.match(String((contents[0] as { text: string }).text), /リポジトリ/);
@@ -288,4 +289,31 @@ test("core の新しい Project の画面に差し出す始め方（clone・新�
       assert.match(String((contents[0] as { text: string }).text), /dev\.banto\/folder-prepared/);
     }
   });
+});
+
+test("公開の画面の入口：どの Project かは呼び出しの刻印（forProject）で決め、その Root を含む行を返す。刻印が無ければ断る", async () => {
+  let notes = "";
+  const projects: ProjectsSource = { listProjects: async () => [{ id: "p1", name: "ノート", root: join(notes, "docs"), status: "active" }] };
+  await withServer(projects, async (client, w) => {
+    notes = join(w.home, "notes");
+    mkdirSync(join(notes, "docs"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: notes });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: notes });
+    await client.callTool({ name: "import_repository", arguments: { path: notes }, _meta: ADMIN });
+    const ins = JSON.parse(textOf(await client.callTool({ name: "inspect_publish", arguments: {}, _meta: { [CALLER_META_KEY]: { admin: true, forProject: "p1" } } })));
+    assert.equal(ins.path, notes);
+    assert.equal(ins.state, "local");
+    const none = await client.callTool({ name: "inspect_publish", arguments: {}, _meta: ADMIN });
+    assert.equal(none.isError, true);
+    assert.match(textOf(none), /Project の画面の中で開くか、リポジトリの一覧から開いてください/);
+    const ai = await client.callTool({ name: "start_publish", arguments: { path: notes, login: "x", owner: "x", name: "n", private: true }, _meta: { [CALLER_META_KEY]: { project: "p1" } } });
+    assert.equal(ai.isError, true, "AI のターンから公開できた");
+  });
+});
+
+test("画面の script に同じ名前の関数宣言を2つ置かない（後のものが前のものを黙って上書きする）", async () => {
+  const { repositoriesAppHtml } = await import("./app.js");
+  const names = [...repositoriesAppHtml("launcher").matchAll(/\bfunction ([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]!);
+  const twice = names.filter((n, i) => names.indexOf(n) !== i);
+  assert.deepEqual(twice, [], `同じ名前の関数：${twice.join("・")}`);
 });

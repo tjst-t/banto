@@ -47,9 +47,31 @@ export interface FakeGithub {
   gitRequests: Array<{ path: string; authorization?: string }>;
   /** git の要求への返事を遅らせる（clone の最中を試験が見るため） */
   gitDelayMs: number;
+  /** classic PAT の scope（`X-OAuth-Scopes` で返す）。無いトークンは fine-grained PAT か GitHub App のもの */
+  tokenScopes: Map<string, string>;
+  /**
+   * GitHub App のトークン（`ghu_` で始まる——デバイスフローで出したもの）の login → App が入っている先と Administration の権限。
+   * 無ければ、その login 自身に Administration（write）で入っている
+   */
+  installations: Map<string, Array<{ account: string; administration?: "read" | "write" }>>;
+  /** fine-grained PAT で Administration の権限が無いもの（作ると 403） */
+  noAdministration: Set<string>;
+  /** Organization（小文字 → login・メンバーの役割・メンバーが作れるか） */
+  orgs: Map<string, FakeOrg>;
+  /** push を断るリポジトリ（`owner/name` の小文字。push の失敗の試験） */
+  rejectPush: Set<string>;
+  /** 作ったリポジトリ（`owner/name`。試験が見る） */
+  created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>;
   /** リポジトリを作る（1コミット入り） */
   addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[]; writers?: string[]; files?: Record<string, string>; redirectTo?: string }): void;
   close(): Promise<void>;
+}
+
+export interface FakeOrg {
+  login: string;
+  /** login の小文字 → 役割 */
+  members: Map<string, "admin" | "member">;
+  membersCanCreate: boolean;
 }
 
 interface RepoOpts {
@@ -98,6 +120,12 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
     pollDelayMs: 0,
     refreshError: undefined,
     refreshCalls: 0,
+    tokenScopes: new Map(),
+    installations: new Map(),
+    noAdministration: new Set(),
+    orgs: new Map(),
+    rejectPush: new Set(),
+    created: [],
   };
   const polls = new Map<string, number>();
   const issue = (login: string) => {
@@ -171,6 +199,19 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
           if ("refreshError" in patch) state.refreshError = patch.refreshError ?? undefined;
           const add = (patch as { addRepo?: { owner: string; name: string; private?: boolean; readers?: string[]; writers?: string[] } }).addRepo;
           if (add) addRepo(add.owner, add.name, add);
+          const org = (patch as { addOrg?: { login: string; members: Record<string, "admin" | "member">; membersCanCreate: boolean } }).addOrg;
+          if (org) {
+            state.orgs.set(org.login.toLowerCase(), {
+              login: org.login,
+              members: new Map(Object.entries(org.members).map(([k, v]) => [k.toLowerCase(), v])),
+              membersCanCreate: org.membersCanCreate,
+            });
+          }
+          const reject = (patch as { rejectPush?: { repo: string; on: boolean } }).rejectPush;
+          if (reject) {
+            if (reject.on) state.rejectPush.add(reject.repo.toLowerCase());
+            else state.rejectPush.delete(reject.repo.toLowerCase());
+          }
           return send(200, { refreshCalls: state.refreshCalls });
         }
         // ── git（smart HTTP）。GitHub と同じく、資格情報が無ければ 401、見えなければ 404 ──
@@ -186,6 +227,19 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
           }
           const password = basicPassword(req.headers.authorization);
           const login = password ? state.users.get(password) : undefined;
+          // push（receive-pack）はいつも資格情報が要り、書ける login（持ち主・writers）だけ
+          const pushing = url.searchParams.get("service") === "git-receive-pack" || gitPath[3] === "/git-receive-pack";
+          if (pushing) {
+            if (!login) {
+              res.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' });
+              return res.end();
+            }
+            const canWrite = !!repo && (gitPath[1]!.toLowerCase() === login.toLowerCase() || (repo.writers ?? []).some((w) => w.toLowerCase() === login.toLowerCase()));
+            if (!repo || !canWrite || state.rejectPush.has(key)) {
+              res.writeHead(403, { "content-type": "text/plain" });
+              return res.end(`Permission to ${gitPath[1]}/${gitPath[2]}.git denied to ${login}.`);
+            }
+          }
           if (!repo || repo.private) {
             if (!password) {
               res.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' });
@@ -212,6 +266,8 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
               ...(req.headers["content-encoding"] ? { HTTP_CONTENT_ENCODING: String(req.headers["content-encoding"]) } : {}),
               ...(req.headers["git-protocol"] ? { GIT_PROTOCOL: String(req.headers["git-protocol"]) } : {}),
               REMOTE_ADDR: "127.0.0.1",
+              // http-backend は REMOTE_USER があるときだけ push を受ける（上で確かめた login）
+              ...(pushing && login ? { REMOTE_USER: login } : {}),
             },
             stdio: ["pipe", "pipe", "ignore"],
           });
@@ -252,7 +308,86 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
           const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
           const login = state.users.get(token);
           if (!login) return send(401, { message: "Bad credentials" });
-          return send(200, { login, id: 1 });
+          // classic PAT だけが scope の見出しを返す（本物と同じ）
+          const scopes = state.tokenScopes.get(token);
+          res.writeHead(200, { "content-type": "application/json", ...(scopes !== undefined ? { "x-oauth-scopes": scopes } : {}) });
+          return res.end(JSON.stringify({ login, id: 1 }));
+        }
+        // ── 公開（段階5）：持ち主の候補と、リポジトリを作る ──
+        const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+        const me = state.users.get(bearer);
+        const isApp = bearer.startsWith("ghu_");
+        const installationsOf = (login: string) => state.installations.get(login.toLowerCase()) ?? [{ account: login, administration: "write" as const }];
+        if (url.pathname === "/user/installations" && req.method === "GET") {
+          if (!me) return send(401, { message: "Bad credentials" });
+          if (!isApp) return send(403, { message: "Resource not accessible by personal access token" });
+          return send(200, {
+            total_count: installationsOf(me).length,
+            installations: installationsOf(me).map((i) => ({ account: { login: i.account }, permissions: i.administration ? { administration: i.administration } : {} })),
+          });
+        }
+        if (url.pathname === "/user/orgs" && req.method === "GET") {
+          if (!me) return send(401, { message: "Bad credentials" });
+          return send(200, [...state.orgs.values()].filter((o) => o.members.has(me.toLowerCase())).map((o) => ({ login: o.login })));
+        }
+        const membership = url.pathname.match(/^\/user\/memberships\/orgs\/([^/]+)$/);
+        if (membership && req.method === "GET") {
+          if (!me) return send(401, { message: "Bad credentials" });
+          const org = state.orgs.get(decodeURIComponent(membership[1]!).toLowerCase());
+          const role = org?.members.get(me.toLowerCase());
+          if (!org || !role) return send(404, { message: "Not Found" });
+          return send(200, { state: "active", role, organization: { login: org.login } });
+        }
+        const orgInfo = url.pathname.match(/^\/orgs\/([^/]+)$/);
+        if (orgInfo && req.method === "GET") {
+          if (!me) return send(401, { message: "Bad credentials" });
+          const org = state.orgs.get(decodeURIComponent(orgInfo[1]!).toLowerCase());
+          if (!org || !org.members.has(me.toLowerCase())) return send(404, { message: "Not Found" });
+          return send(200, { login: org.login, members_can_create_repositories: org.membersCanCreate });
+        }
+        const orgRepos = url.pathname.match(/^\/orgs\/([^/]+)\/repos$/);
+        if ((url.pathname === "/user/repos" || orgRepos) && req.method === "POST") {
+          if (!me) return send(401, { message: "Bad credentials" });
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { name?: string; private?: boolean; description?: string; auto_init?: boolean };
+          let owner = me;
+          if (orgRepos) {
+            const org = state.orgs.get(decodeURIComponent(orgRepos[1]!).toLowerCase());
+            const role = org?.members.get(me.toLowerCase());
+            if (!org || !role) return send(404, { message: "Not Found" });
+            owner = org.login;
+            if (role !== "admin" && !org.membersCanCreate) {
+              return send(403, { message: "You need admin access to the organization before adding a repository to it." });
+            }
+          }
+          if (isApp) {
+            const inst = installationsOf(me).find((i) => i.account.toLowerCase() === owner.toLowerCase());
+            if (!inst || inst.administration !== "write") return send(403, { message: "Resource not accessible by integration" });
+          } else if (state.tokenScopes.has(bearer)) {
+            const scopes = state.tokenScopes.get(bearer)!;
+            if (!/\brepo\b/.test(scopes) && !(scopes.includes("public_repo") && !body.private)) return send(404, { message: "Not Found" });
+          } else if (state.noAdministration.has(bearer)) {
+            return send(403, { message: "Resource not accessible by personal access token" });
+          }
+          const name = body.name ?? "";
+          const key = `${owner}/${name}`.toLowerCase();
+          if (repos.has(key)) {
+            return send(422, {
+              message: "Repository creation failed.",
+              errors: [{ resource: "Repository", code: "custom", field: "name", message: "name already exists on this account" }],
+            });
+          }
+          // 空のリポジトリ（README 等は作らない）——本物の git が push できる
+          mkdirSync(join(gitRoot, owner), { recursive: true });
+          execFileSync("git", ["init", "-q", "--bare", join(gitRoot, owner, `${name}.git`)], { stdio: "ignore" });
+          repos.set(key, { private: body.private === true, readers: [owner, me], writers: [me] });
+          state.created.push({ owner, name, private: body.private === true, ...(body.description ? { description: body.description } : {}), by: me });
+          return send(201, {
+            name,
+            full_name: `${owner}/${name}`,
+            owner: { login: owner },
+            private: body.private === true,
+            html_url: `https://github.com/${owner}/${name}`,
+          });
         }
         send(404, { message: "Not Found" });
       })();

@@ -24,6 +24,8 @@ export const SETTINGS_APP_URI = "ui://banto-repositories/settings";
 /** core の新しい Project の画面に差し出す始め方（段階4）——clone・新しいリポジトリ */
 export const PREPARE_CLONE_URI = "ui://banto-repositories/prepare-clone";
 export const PREPARE_CREATE_URI = "ui://banto-repositories/prepare-create";
+/** Project の画面の入口（段階5）——この Project の Root を GitHub に公開する */
+export const PUBLISH_APP_URI = "ui://banto-repositories/publish";
 
 const THEME_CSS = `
 :root {
@@ -267,6 +269,29 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .dlg .field input { height: 32px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: var(--t-xs); }
 .dlg .lbl { font-size: var(--t-sm); font-weight: 500; }
 .dlg .help { margin: 0; color: var(--ink-3); font-size: var(--t-xs); }
+.route { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.route .from { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; }
+.route .to { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bg-2); }
+.route .k { margin: 0; color: var(--ink-3); font-size: var(--t-xs); display: flex; align-items: center; gap: 4px; }
+.route .v { margin: 0; font-family: var(--mono); font-size: var(--t-md); word-break: break-all; color: var(--ink-2); }
+.route .v b { color: var(--ink); font-weight: 600; }
+.route .badge { flex: none; display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); padding: 2px 6px; font-size: var(--t-xs); color: var(--ink-2); }
+.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-xs); }
+.steps li { display: flex; align-items: center; gap: 8px; }
+.steps li[data-state="waiting"], .steps li[data-state="skipped"] { color: var(--ink-3); }
+.steps li[data-state="done"] .icon { color: var(--ok); }
+.steps li[data-state="failed"] .icon { color: var(--danger); }
+.steps li[data-state="running"] .icon { animation: spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .steps li[data-state="running"] .icon { animation: none; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pub { display: flex; flex-direction: column; gap: 16px; max-width: 36rem; }
+.pub h2 { margin: 0; font-size: var(--h-sm); font-weight: 600; }
+.pub .lead { margin: 4px 0 0; }
+.pub .field { display: flex; flex-direction: column; gap: 4px; }
+.pub .field input { height: 32px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: var(--t-xs); }
+.pub .lbl { margin: 0; font-size: var(--t-sm); font-weight: 500; }
+.pub .help { margin: 0; color: var(--ink-3); font-size: var(--t-xs); }
+.pub .blocked { margin: 0; color: var(--ink-3); font-size: var(--t-xs); }
 .warnline { margin: 0; color: var(--ink-2); font-size: var(--t-xs); padding: 6px 8px; border-radius: var(--r-sm); background: var(--warn-soft); }
 .projopt { display: flex; align-items: flex-start; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 .projopt input { margin-top: 3px; }
@@ -314,6 +339,12 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 
 // 線の絵（lucide の形を写した。依存を足さない、規則10）
 const ICONS: Record<string, string> = {
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  branch: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  circle: '<circle cx="12" cy="12" r="10"/>',
+  loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+  arrowDown: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
   folderX:
     '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m9.5 10.5 5 5"/><path d="m14.5 10.5-5 5"/>',
   hardDrive:
@@ -341,6 +372,8 @@ const SCRIPT = String.raw`
   const MODE = "__MODE__";
   /** core の新しい Project の画面に差し出す始め方の面（段階4）——一覧は出さず、clone・新しいリポジトリの本体だけ */
   const PREPARE = MODE === "prepare-clone" || MODE === "prepare-create";
+  /** Project の画面の入口「この Project を GitHub に公開」（段階5）——一覧は出さず、公開の画面だけ */
+  const PUBLISH = MODE === "publish";
   const ICONS = __ICONS__;
 
   // ---- 親との話し方（MCP Apps） ----
@@ -415,8 +448,6 @@ const SCRIPT = String.raw`
     listing: null, loadError: null, home: null,
     filter: "all", query: "",
     highlight: null, menuFor: null,
-    /** 押したが、まだ作っていない手（{ path, what }） */
-    notYet: null,
     /** 外したあとのお知らせと「元に戻す」 */
     flash: null,
     homeDraft: null, homeError: null, homeBusy: false,
@@ -460,7 +491,7 @@ const SCRIPT = String.raw`
   let searchInput = null;
   function render() {
     // 差し出す面は一覧を持たない（中身は clone・新しいリポジトリの本体だけ）
-    if (PREPARE) { reportSize(); return; }
+    if (PREPARE || PUBLISH) { reportSize(); return; }
     const kids = [];
     kids.push(head());
     if (state.loadError) kids.push(h("p", { class: "error", role: "alert", text: state.loadError }));
@@ -585,17 +616,6 @@ const SCRIPT = String.raw`
     ]);
   }
 
-  function notYetNote(r, what) {
-    if (!state.notYet || state.notYet.path !== r.path || state.notYet.what !== what) return null;
-    const text = {
-      publish: "GitHub に公開する手は、まだ作っていません。",
-    }[what];
-    return h("p", { class: "notyet", role: "status", "data-testid": "repo-not-yet", text: text });
-  }
-  function notYetButton(r, what, attrs, children) {
-    attrs.onclick = () => { state.notYet = { path: r.path, what: what }; render(); };
-    return h("button", attrs, children);
-  }
 
   function row(r) {
     const tr = h("tr", {
@@ -648,10 +668,9 @@ const SCRIPT = String.raw`
       return h("span", { class: "under", style: "margin-top:0" }, [
         h("span", { class: "flag warn", "data-testid": "repo-local-only" }, [icon("hardDrive"), "このマシンにだけ"]),
         h("span", { class: "row-line" }, [
-          notYetButton(r, "publish", { class: "link", type: "button", "data-testid": "repo-publish-open" }, [icon("cloudUp"), " GitHub に公開"]),
+          h("button", { class: "link", type: "button", "data-testid": "repo-publish-open", onclick: () => openPublish(r.path) }, [icon("cloudUp"), " GitHub に公開"]),
           h("span", { class: "muted", "data-testid": "repo-commits", title: r.commitsProblem || null, text: "· " + commitsText(r) }),
         ]),
-        notYetNote(r, "publish"),
       ]);
     }
     const corrected = r.correctedFrom ? h("div", { class: "corrected", "data-testid": "repo-corrected" }, [
@@ -723,6 +742,12 @@ const SCRIPT = String.raw`
     if (r.remote && r.remote.kind === "github") {
       items.push(h("button", { type: "button", role: "menuitem", "data-testid": "repo-account-choose", onclick: (e) => { e.stopPropagation(); openAccountChooser(r); } }, [
         icon("link"), h("span", { style: "display:flex;flex-direction:column;gap:2px;min-width:0" }, [h("span", { class: "t", text: "アカウントを選ぶ" }), h("span", { class: "d", text: r.account && r.account.registered ? "いまは " + r.account.login + " で扱っています" : "いまは読むだけです" })]),
+      ]));
+    }
+    if (r.state === "ok" && r.remote && r.remote.kind === "github") {
+      // 公開の続き——いまのブランチが GitHub に無ければ push だけやり直せる（どうかは開いた画面が Module に聞く）
+      items.push(h("button", { type: "button", role: "menuitem", "data-testid": "repo-publish-status", onclick: (e) => { e.stopPropagation(); state.menuFor = null; render(); openPublish(r.path); } }, [
+        icon("cloudUp"), h("span", { style: "display:flex;flex-direction:column;gap:2px;min-width:0" }, [h("span", { class: "t", text: "GitHub への push" }), h("span", { class: "d", text: "いまのブランチが GitHub に無ければ、push だけやり直せます" })]),
       ]));
     }
     if (r.state !== "missing") {
@@ -1758,6 +1783,316 @@ const SCRIPT = String.raw`
     }
   }
 
+  // ---- GitHub に公開（段階5）。判断は Module——画面は言い方と、選ぶ欄を持つだけ ----
+  // **名前は pb で始める**——この画面の関数はみな同じ scope にあり、同じ名前の関数宣言は後のものが前のものを
+  // 黙って上書きする（clone の chosenAccount を上書きして、clone がアカウント無しで走った——E2E で見つけた）
+  // 一覧からはダイアログ、Project の画面の入口（PUBLISH）からは画面そのもの
+  const publishDialog = PUBLISH ? (() => {
+    const el = h("div", { class: "prep", "data-testid": "repo-publish-surface" });
+    el.showModal = () => {};
+    el.close = () => {};
+    Object.defineProperty(el, "open", { get: () => true });
+    app.replaceChildren(el);
+    return el;
+  })() : document.getElementById("publish-dialog");
+  const pb = { path: null, inspection: null, inspectError: null, targets: null, targetsError: null, login: undefined, owner: undefined, name: "", nameCheck: null, visibility: "private", description: "", job: null, error: null, starting: false, seq: 0, nameTimer: 0 };
+  let pbParts = null;
+  if (!PUBLISH) {
+    publishDialog.addEventListener("cancel", (e) => { if (pb.job && pb.job.state === "running") e.preventDefault(); });
+    publishDialog.addEventListener("close", () => { pb.path = null; pbParts = null; publishDialog.replaceChildren(); document.body.style.minHeight = ""; reportSize(); });
+  }
+  async function openPublish(path) {
+    const trigger = document.activeElement;
+    const seq = ++pb.seq;
+    Object.assign(pb, { path: path, inspection: null, inspectError: null, targets: null, targetsError: null, login: undefined, owner: undefined, name: "", nameCheck: null, visibility: "private", description: "", job: null, error: null, starting: false });
+    pbParts = buildPublish();
+    if (!publishDialog.open) publishDialog.showModal();
+    if (!PUBLISH) placeDialog(trigger, publishDialog);
+    renderPublish();
+    try {
+      const ins = await call("inspect_publish", path ? { path: path } : {});
+      if (seq !== pb.seq) return;
+      pb.inspection = ins; pb.path = ins.path; pb.name = ins.name;
+      pbParts.name.value = ins.name;
+    } catch (e) {
+      if (seq !== pb.seq) return;
+      pb.inspectError = errText(e);
+    }
+    renderPublish();
+    if (!pb.inspection || pb.inspection.refusal || pb.inspection.state !== "local") return;
+    try {
+      const t = await call("publish_targets", { path: pb.path });
+      if (seq !== pb.seq) return;
+      pb.targets = t;
+    } catch (e) {
+      if (seq !== pb.seq) return;
+      pb.targetsError = errText(e);
+    }
+    renderPublish();
+    checkPublishName();
+  }
+  function buildPublish() {
+    const name = h("input", { type: "text", id: "repo-publish-name", spellcheck: "false", autocomplete: "off", "data-testid": "publish-name", "aria-describedby": "repo-publish-name-help" });
+    name.addEventListener("input", () => { pb.name = name.value.trim(); pb.nameCheck = null; renderPublish(); window.clearTimeout(pb.nameTimer); pb.nameTimer = window.setTimeout(checkPublishName, 400); });
+    const description = h("input", { type: "text", id: "repo-publish-description", autocomplete: "off", maxlength: "350", "data-testid": "publish-description", placeholder: "（任意）" });
+    description.addEventListener("input", () => { pb.description = description.value; });
+    const top = h("div", {});
+    const route = h("div", {});
+    const facts = h("div", {});
+    const account = h("div", {});
+    const owner = h("div", {});
+    const nameHelp = h("div", { id: "repo-publish-name-help", "aria-live": "polite" });
+    const visibility = h("div", {});
+    const pushNote = h("div", {});
+    const steps = h("div", {});
+    const say = h("div", {});
+    const foot = h("div", { class: "foot" });
+    const form = h("div", { class: "pub-form", style: "display:flex;flex-direction:column;gap:16px" }, [
+      account, owner,
+      h("div", { class: "field" }, [h("label", { for: "repo-publish-name", class: "lbl", text: "リポジトリ名" }), name, nameHelp]),
+      visibility,
+      h("div", { class: "field" }, [h("label", { for: "repo-publish-description", class: "lbl", text: "説明" }), description]),
+      pushNote,
+    ]);
+    const root = h("div", { class: PUBLISH ? "pub" : "dlg pub", "data-testid": "publish-panel" }, [top, route, facts, form, steps, say, foot]);
+    publishDialog.replaceChildren(root);
+    return { top: top, route: route, facts: facts, account: account, owner: owner, name: name, nameHelp: nameHelp, visibility: visibility, description: description, pushNote: pushNote, steps: steps, say: say, foot: foot, form: form };
+  }
+  /** 選べるアカウント（どの持ち主にも作れないと分かっているものは除く） */
+  function pbUsableAccounts() {
+    return pb.targets ? pb.targets.accounts.filter((a) => a.owners.some((o) => o.create !== "no")) : [];
+  }
+  function pbChosenLogin() {
+    const usable = pbUsableAccounts();
+    if (pb.login !== undefined && usable.some((a) => a.login === pb.login)) return pb.login;
+    return (pb.targets && pb.targets.preselected) || (usable.length > 0 ? usable[0].login : null);
+  }
+  function pbChosenAccount() {
+    const l = pbChosenLogin();
+    return l ? pbUsableAccounts().find((a) => a.login === l) : null;
+  }
+  function pbChosenOwner() {
+    const a = pbChosenAccount();
+    if (!a) return null;
+    const ok = a.owners.filter((o) => o.create !== "no");
+    return ok.find((o) => o.login === pb.owner) || ok[0] || null;
+  }
+  async function checkPublishName() {
+    const a = pbChosenAccount(), o = pbChosenOwner();
+    if (!a || !o || !pb.name) return;
+    const key = a.login + "|" + o.login + "|" + pb.name;
+    try {
+      const r = await call("check_publish_name", { login: a.login, owner: o.login, name: pb.name });
+      // 打ち替えた・選び直したあとに返ったものは捨てる
+      const now = pbChosenAccount(), nowOwner = pbChosenOwner();
+      if (!now || !nowOwner || now.login + "|" + nowOwner.login + "|" + pb.name !== key) return;
+      pb.nameCheck = Object.assign({ key: key }, r);
+    } catch (e) {
+      pb.nameCheck = { key: key, error: errText(e) };
+    }
+    renderPublish();
+  }
+  const NAME_OK = /^[A-Za-z0-9._-]{1,100}$/;
+  function stepLabel(step, job) {
+    const t = job.target;
+    if (step.key === "create") return "GitHub に " + t.owner + "/" + t.name + " を作る（" + (t.private ? "非公開" : "公開") + "）";
+    if (step.key === "origin") return "origin に設定する";
+    if (step.state === "skipped") return "push はしません（まだコミットがありません）";
+    const prog = step.state === "running" && job.progress ? "　" + job.progress.phase + (job.progress.percent !== undefined ? " " + job.progress.percent + "%" : "") : "";
+    return (job.branch || "") + " を push する" + prog;
+  }
+  function renderPublish() {
+    if (!pbParts) return;
+    const p = pbParts, ins = pb.inspection, job = pb.job;
+    const running = !!job && job.state === "running";
+    const state_ = ins && !ins.refusal ? ins.state : null;
+    // 見出し
+    const title = state_ === "needs-push" ? "GitHub にはできています" : state_ === "published" ? "GitHub にあります" : "GitHub に公開";
+    const lead = !ins ? (pb.inspectError ? "" : "読んでいます…")
+      : ins.refusal ? ""
+      : state_ === "local" ? "このリポジトリは、まだこのマシンの中にだけあります。GitHub にリポジトリを作って、push します。"
+      : state_ === "needs-push" ? "いまのブランチ " + ins.branch.branch + " は、まだ GitHub にありません。push だけやり直せます。"
+      : "このリポジトリは github.com/" + ins.github.owner + "/" + ins.github.name + " を origin にしています。";
+    fill(p.top,
+      h("h2", { text: title, "data-testid": "publish-title" }),
+      lead ? h("p", { class: "lead", text: lead }) : null,
+      pb.inspectError ? h("p", { class: "stopline", role: "alert", "data-testid": "publish-refusal", text: pb.inspectError }) : null,
+      ins && ins.refusal ? h("p", { class: "stopline", role: "alert", "data-testid": "publish-refusal", text: ins.displayPath + "：" + ins.refusal }) : null,
+    );
+    // どこから、どこへ（新しい Project の画面の Root の帯と同じ見た目。打つたびに行き先が変わる）
+    const a = pbChosenAccount(), o = pbChosenOwner();
+    const target = state_ === "local" ? (o ? { owner: o.login, name: pb.name } : null) : ins && ins.github ? ins.github : null;
+    fill(p.route, ins && !ins.refusal && target ? h("div", { class: "route", "data-testid": "publish-route" }, [
+      h("div", { class: "from" }, [h("p", { class: "k", text: "このマシンの中" }), h("p", { class: "v", text: ins.displayPath })]),
+      h("div", { class: "to" }, [
+        h("div", { style: "display:flex;flex-direction:column;gap:2px;min-width:0;flex:1" }, [
+          h("p", { class: "k" }, [icon("arrowDown"), state_ === "local" ? "GitHub に作る" : "GitHub（origin）"]),
+          h("p", { class: "v", "data-testid": "publish-target" }, ["github.com/" + target.owner + "/", h("b", { text: target.name || "…" })]),
+        ]),
+        state_ === "local" ? h("span", { class: "badge", "data-testid": "publish-visibility-badge" }, [icon(pb.visibility === "private" ? "lock" : "globe"), pb.visibility === "private" ? "非公開" : "公開"]) : null,
+      ]),
+    ]) : null);
+    // ブランチ
+    const b = ins && ins.branch;
+    fill(p.facts, ins && !ins.refusal && b ? h("dl", { class: "facts", "data-testid": "publish-facts" }, [
+      h("dt", { text: "ブランチ" }), h("dd", {}, [icon("branch"), " ", h("span", { class: "mono", text: b.branch }), b.unborn ? " · まだコミットがありません" : b.commits !== undefined ? " · " + b.commits + " コミット" : ""]),
+      b.lastCommit ? h("dt", { text: "最後のコミット" }) : null,
+      b.lastCommit ? h("dd", { text: b.lastCommit.subject + "（" + b.lastCommit.at.slice(0, 16).replace("T", " ") + "）" }) : null,
+    ]) : null);
+    // 決める欄（公開できるときだけ）
+    p.form.hidden = state_ !== "local";
+    const busy = running || pb.starting || !!(job && job.created);
+    p.name.disabled = busy; p.description.disabled = busy;
+    if (state_ === "local") {
+      // アカウント
+      if (!pb.targets && !pb.targetsError) p.account.replaceChildren(h("p", { class: "help", text: "使えるアカウントを GitHub に確かめています…" }));
+      else if (pb.targetsError) p.account.replaceChildren(h("p", { class: "stopline", role: "alert", text: "アカウントを確かめられませんでした：" + pb.targetsError }));
+      else if (pb.targets.accounts.length === 0) p.account.replaceChildren(h("p", { class: "warnline", "data-testid": "publish-no-account", text: "GitHub のアカウントが登録されていません。登録したアカウントにリポジトリを作ります（banto 全体の設定の Repositories で登録できます）。" }));
+      else {
+        const usable = pbUsableAccounts();
+        const blocked = pb.targets.accounts.filter((x) => !usable.includes(x));
+        const kids = [h("p", { class: "lbl", text: "アカウント" })];
+        if (usable.length === 1) kids.push(h("p", { class: "help", "data-testid": "publish-account-one" }, [h("span", { class: "mark", "aria-hidden": "true", text: usable[0].login.slice(0, 1) }), " " + usable[0].login + " で作ります"]));
+        else if (usable.length > 1) kids.push(h("div", { class: "pills", role: "radiogroup", "aria-label": "公開に使うアカウント" }, usable.map((x) => h("button", {
+          class: "pill", type: "button", role: "radio", "aria-checked": String(a && a.login === x.login), "aria-pressed": String(a && a.login === x.login), "data-testid": "publish-account-pick", "data-login": x.login, disabled: busy,
+          onclick: () => { pb.login = x.login; pb.owner = undefined; pb.nameCheck = null; renderPublish(); checkPublishName(); },
+        }, [x.login]))));
+        for (const x of blocked) kids.push(h("p", { class: "blocked", "data-testid": "publish-account-unusable", text: x.login + " は使えません：" + (x.error || x.owners.map((y) => y.note).filter(Boolean).join("・")) }));
+        p.account.replaceChildren(h("div", { class: "field" }, kids));
+      }
+      // 持ち主（自分・Organization）
+      if (a) {
+        const ok = a.owners.filter((y) => y.create !== "no");
+        const no = a.owners.filter((y) => y.create === "no");
+        const kids = [h("p", { class: "lbl", text: "持ち主" })];
+        if (ok.length > 1) kids.push(h("div", { class: "pills", role: "radiogroup", "aria-label": "持ち主" }, ok.map((y) => h("button", {
+          class: "pill", type: "button", role: "radio", "aria-checked": String(o && o.login === y.login), "aria-pressed": String(o && o.login === y.login), "data-testid": "publish-owner-pick", "data-owner": y.login, disabled: busy,
+          onclick: () => { pb.owner = y.login; pb.nameCheck = null; renderPublish(); checkPublishName(); },
+        }, [y.login + (y.kind === "org" ? "（Organization）" : "")]))));
+        else if (o) kids.push(h("p", { class: "help", "data-testid": "publish-owner-one", text: o.login + (o.kind === "org" ? "（Organization）" : "（あなたのアカウント）") }));
+        if (o && o.note) kids.push(h("p", { class: o.create === "unknown" ? "help" : "warnline", "data-testid": "publish-owner-note", text: o.note }));
+        for (const y of no) kids.push(h("p", { class: "blocked", "data-testid": "publish-owner-blocked", text: y.login + " には作れません：" + y.note }));
+        if (a.orgsError) kids.push(h("p", { class: "blocked", text: "Organization を読めませんでした（" + a.orgsError + "）" }));
+        p.owner.replaceChildren(h("div", { class: "field" }, kids));
+      } else p.owner.replaceChildren();
+      // 名前
+      const invalid = pb.name !== "" && (!NAME_OK.test(pb.name) || pb.name === "." || pb.name === "..");
+      const key = a && o ? a.login + "|" + o.login + "|" + pb.name : null;
+      const check = pb.nameCheck && pb.nameCheck.key === key ? pb.nameCheck : null;
+      fill(p.nameHelp,
+        invalid ? h("p", { class: "stopline", "data-testid": "publish-name-invalid", text: "使えるのは英数字と - _ . だけです（100字まで）" })
+        : check && check.taken ? h("p", { class: "warnline", "data-testid": "publish-name-taken" }, [
+            o.login + " には、もう " + pb.name + " があります。",
+            check.suggestion ? h("button", { class: "link", type: "button", "data-testid": "publish-name-suggest", text: check.suggestion + " にする", disabled: busy, onclick: () => { pb.name = check.suggestion; p.name.value = check.suggestion; pb.nameCheck = null; renderPublish(); checkPublishName(); } }) : null,
+          ])
+        : check && check.error ? h("p", { class: "help", text: "GitHub に同じ名前があるかを確かめられませんでした（押すと GitHub が断ります）：" + check.error })
+        : null,
+      );
+      // 公開範囲（public_repo だけの PAT なら公開だけ）
+      const publicOnly = !!(o && o.publicOnly);
+      if (publicOnly) pb.visibility = "public";
+      const hasCommits = b && !b.unborn;
+      p.visibility.replaceChildren(h("div", { class: "field" }, [
+        h("p", { class: "lbl", id: "repo-publish-visibility-label", text: "公開範囲" }),
+        h("div", { class: "pills", role: "radiogroup", "aria-labelledby": "repo-publish-visibility-label" }, [["private", "lock", "非公開"], ["public", "globe", "公開"]].map((v) => h("button", {
+          class: "pill", type: "button", role: "radio", "aria-checked": String(pb.visibility === v[0]), "aria-pressed": String(pb.visibility === v[0]), "data-testid": "publish-visibility", "data-value": v[0], disabled: busy || (publicOnly && v[0] === "private"),
+          onclick: () => { pb.visibility = v[0]; renderPublish(); },
+        }, [icon(v[1]), v[2]]))),
+        pb.visibility === "private"
+          ? h("p", { class: "help", text: (o ? o.login : "持ち主") + " と、招いた人だけが見られます。" })
+          : h("p", { class: "warnline", "data-testid": "publish-public-warning", text: "誰でも読めます。これまでの" + (hasCommits && b.commits ? " " + b.commits + " コミットの" : "") + "履歴も、すべて公開されます。" }),
+      ]));
+      // 最初の push
+      p.pushNote.replaceChildren(h("div", { class: "field" }, [
+        h("p", { class: "lbl", text: "最初の push" }),
+        hasCommits
+          ? h("p", { class: "help", "data-testid": "publish-push-note", text: b.branch + " を push して、以後は origin/" + b.branch + " を追います。" + (b.otherBranches.length ? "ほかのブランチ（" + b.otherBranches.join("・") + "）は送りません——あとで git push で送れます。" : "") })
+          : h("p", { class: "help", "data-testid": "publish-push-note", text: "まだコミットが無いので、リポジトリを作って origin を設定するところまでにします。最初の push は、コミットしてから。" }),
+      ]));
+    }
+    // 手順
+    fill(p.steps, job && job.steps ? h("ol", { class: "steps", "data-testid": "publish-steps", "aria-live": "polite" }, job.steps.map((st) => h("li", { "data-step": st.key, "data-state": st.state }, [
+      icon(st.state === "done" ? "circleCheck" : st.state === "failed" ? "ban" : st.state === "running" ? "loader" : "circle"),
+      h("span", { text: stepLabel(st, job) }),
+    ]))) : null);
+    // 結果・失敗・次の手
+    const sayKids = [];
+    if (pb.error) sayKids.push(h("p", { class: "stopline", role: "alert", "data-testid": "publish-error", text: pb.error }));
+    if (job && job.error) sayKids.push(h("p", { class: "stopline", role: "alert", "data-testid": "publish-error", text: job.error.message }));
+    if (job && job.state === "done") {
+      sayKids.push(h("p", { class: "help", "data-testid": "publish-done" }, [icon("circleCheck"), " github.com/" + job.target.owner + "/" + job.target.name + (job.steps.length === 1 ? " に push しました" : job.noCommits ? " を作り、origin に設定しました（まだコミットが無いので push はしていません）" : " に公開しました")]));
+    }
+    if (state_ === "needs-push" && !(job && job.state === "running")) {
+      sayKids.push(h("p", { class: "help", "data-testid": "publish-retry-account", text: ins.account ? ins.account + " で push します。" : "どのアカウントで push するかが決まっていません——一覧の行の「…」→「アカウントを選ぶ」で選んでから。" }));
+    }
+    fill(p.say, ...sayKids);
+    // 押すもの
+    const canStart = state_ === "local" && a && o && pb.name && NAME_OK.test(pb.name) && !(pb.nameCheck && pb.nameCheck.key === (a.login + "|" + o.login + "|" + pb.name) && pb.nameCheck.taken) && !busy;
+    const pushFailed = job && job.error && job.error.step === "push" && job.state !== "running";
+    const htmlUrl = job && job.target && job.target.htmlUrl;
+    fill(p.foot,
+      running && job.steps.some((st) => st.key === "push" && st.state === "running") ? h("button", { class: "btn", type: "button", "data-testid": "publish-cancel", text: "push をやめる", onclick: cancelPublish }) : null,
+      !PUBLISH && !running ? h("button", { class: "btn", type: "button", text: "閉じる", onclick: () => publishDialog.close() }) : null,
+      job && job.state === "done" && htmlUrl ? h("button", { class: "btn", type: "button", "data-testid": "publish-open", text: "GitHub で開く", onclick: () => { request("ui/open-link", { url: htmlUrl }).catch((e) => { pb.error = "開けませんでした：" + errText(e); renderPublish(); }); } }) : null,
+      pushFailed || (state_ === "needs-push" && ins.account && !job)
+        ? h("button", { class: "btn primary", type: "button", "data-testid": "publish-retry", text: "push だけやり直す", disabled: running, onclick: retryPush })
+        // 作れるアカウントが無ければ押すものは無い（登録の案内だけ）
+        : state_ === "local" && a && !(job && job.created)
+          ? h("button", { class: "btn primary", type: "button", "data-testid": "publish-submit", disabled: !canStart, text: pb.starting ? "GitHub に作っています…" : b && !b.unborn ? "GitHub に作って push" : "GitHub に作る", onclick: startPublish })
+          : null,
+    );
+    reportSize();
+  }
+  async function startPublish() {
+    const a = pbChosenAccount(), o = pbChosenOwner();
+    if (!a || !o || pb.starting) return;
+    pb.starting = true; pb.error = null; renderPublish();
+    try {
+      pb.job = await call("start_publish", { path: pb.path, login: a.login, owner: o.login, name: pb.name, private: pb.visibility === "private", description: pb.description.trim() });
+      pb.starting = false;
+      renderPublish();
+      pollPublish(pb.job.id);
+    } catch (e) {
+      pb.starting = false;
+      pb.error = "公開できませんでした：" + errText(e);
+      renderPublish();
+      // 名前がぶつかったなら、空いている名前を出す
+      pb.nameCheck = null; checkPublishName();
+    }
+  }
+  async function retryPush() {
+    pb.error = null;
+    try {
+      pb.job = await call("retry_push", { path: pb.path });
+      renderPublish();
+      pollPublish(pb.job.id);
+    } catch (e) {
+      pb.error = "push できませんでした：" + errText(e);
+      renderPublish();
+    }
+  }
+  async function pollPublish(id) {
+    while (pb.job && pb.job.id === id && pb.job.state === "running") {
+      await new Promise((r) => setTimeout(r, 500));
+      if (!pb.job || pb.job.id !== id) return;
+      try { pb.job = await call("publish_status", { jobId: id }); }
+      catch (e) { pb.job = Object.assign({}, pb.job, { state: "failed", error: { step: "push", message: errText(e) } }); }
+      renderPublish();
+    }
+    const job = pb.job;
+    if (!job || job.id !== id) return;
+    // 一覧は読み直す（GitHub の場所・アカウントが変わった）。結果は開いた画面に残す
+    if (!PUBLISH && job.created) { load().then(() => { if (job.state === "done") setFlash(job.displayPath + " を github.com/" + job.target.owner + "/" + job.target.name + " に" + (job.steps.length === 1 ? " push しました" : "公開しました")); render(); }); }
+    // 状態（push だけやり直す・公開済み）はフォルダから読み直す——画面は覚えない
+    try { pb.inspection = await call("inspect_publish", { path: job.path }); } catch (e) { /* 読み直せなくても、結果は上に出ている */ }
+    renderPublish();
+  }
+  async function cancelPublish() {
+    if (!pb.job || !pb.job.id) return;
+    try { pb.job = await call("cancel_publish", { jobId: pb.job.id }); } catch (e) { pb.error = "やめられませんでした：" + errText(e); }
+    renderPublish();
+  }
+
   // ---- フォルダをたどるダイアログ（Import・置き場を選ぶ） ----
   const dialog = document.getElementById("dialog");
   const dlg = { kind: null, at: "~", listing: null, listError: null, inspection: null, inspectError: null, draft: null, busy: false, seq: 0 };
@@ -1941,6 +2276,11 @@ const SCRIPT = String.raw`
       return;
     }
     render();
+    if (PUBLISH) {
+      // どのフォルダかは Module が決める（押した画面の Project の Root——画面からは渡さない）
+      openPublish(null);
+      return;
+    }
     if (PREPARE) {
       // 置き場（説明の1行）だけを読み、clone・新しいリポジトリの本体を出す
       try { state.home = await call("get_repository_settings"); } catch (e) { /* 置き場が読めなくても、本体は出す（説明が「置き場」になるだけ） */ }
@@ -1952,7 +2292,7 @@ const SCRIPT = String.raw`
 })();
 `;
 
-export function repositoriesAppHtml(mode: "launcher" | "config" | "prepare-clone" | "prepare-create"): string {
+export function repositoriesAppHtml(mode: "launcher" | "config" | "prepare-clone" | "prepare-create" | "publish"): string {
   // 置き換えは関数で（文字列で渡すと `$&` などが特別な意味を持つ）
   const script = SCRIPT.replace("__MODE__", () => mode).replace("__ICONS__", () => JSON.stringify(ICONS));
   return `<!doctype html>
@@ -1969,6 +2309,7 @@ export function repositoriesAppHtml(mode: "launcher" | "config" | "prepare-clone
 <dialog id="create-dialog" aria-label="新しいリポジトリ"></dialog>
 <dialog id="account-dialog" aria-label="アカウントを選ぶ"></dialog>
 <dialog id="delete-dialog" aria-label="このマシンから削除"></dialog>
+<dialog id="publish-dialog" aria-label="GitHub に公開"></dialog>
 <script>${script}</script>
 </body>
 </html>

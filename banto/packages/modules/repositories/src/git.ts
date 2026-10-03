@@ -75,6 +75,9 @@ export const GIT_COMMANDS: readonly string[] = [
   "ls-files",
   // worktree の記録を1つだけ片づける（フォルダはこちらで消したあと——git には消させない）
   "worktree remove",
+  // 段階5：GitHub に公開——origin を足し、いまのブランチを push する（環境は `writeEnv`）
+  "remote add",
+  "push",
 ];
 
 /**
@@ -386,22 +389,26 @@ export const CLONE_TIMEOUTS = {
 const PROGRESS = /^(?:remote: )?([A-Za-z][A-Za-z ]+?):\s+(\d+)%/;
 
 /**
- * clone する。**全体の時間の上限は置かず、何も言ってこない時間で切る**——大きなリポジトリは何分もかかるが、
- * その間 git は進み具合を言い続ける。黙ったままのもの（相手が答えない・認証で止まった）だけを切る
+ * 進み具合を言い続ける git（clone・push）を走らせる。**全体の時間の上限は置かず、何も言ってこない時間で切る**——
+ * 大きなリポジトリは何分もかかるが、その間 git は進み具合を言い続ける。黙ったままのもの（相手が答えない・認証で
+ * 止まった）だけを切る
  */
-export function gitClone(input: {
-  url: string;
-  dest: string;
+function streamGit(input: {
+  args: string[];
+  cwd?: string;
   credential: GitCredential;
   onProgress?: (p: CloneProgress) => void;
   signal?: AbortSignal;
+  /** 見せる文言から外す行（「Cloning into …」等） */
+  quiet?: RegExp;
 }): Promise<CloneResult> {
-  if (!allowedCommand(["clone"])) return Promise.resolve({ ok: false, kind: "failed", message: "git clone は走らせない決まりです" });
+  const command = allowedCommand(input.args);
+  if (!command) return Promise.resolve({ ok: false, kind: "failed", message: `git ${input.args[0] ?? ""} は走らせない決まりです` });
   return new Promise((resolve) => {
-    // `--` の後に URL——`-` で始まる字を git に option と読ませない
-    const child = spawn("git", ["clone", "--progress", "--", input.url, input.dest], {
+    const child = spawn("git", input.args, {
       env: writeEnv(input.credential),
       stdio: ["ignore", "ignore", "pipe"],
+      ...(input.cwd ? { cwd: input.cwd } : {}),
     });
     const tail: string[] = [];
     let ended: "timeout" | "cancelled" | undefined;
@@ -458,14 +465,119 @@ export function gitClone(input: {
         return finish({ ok: false, kind: "timeout", message: `${mins}のあいだ git が何も言ってこなかったので、やめました` });
       }
       if (ended === "cancelled") return finish({ ok: false, kind: "cancelled", message: "やめました" });
-      const lines = tail.filter((l) => !/^Cloning into /.test(l));
+      const lines = tail.filter((l) => !(input.quiet && input.quiet.test(l)));
       finish({
         ok: false,
         kind: "failed",
-        message: lines.join("\n") || `git clone が ${String(code)} で終わりました`,
+        message: lines.join("\n") || `git ${command} が ${String(code)} で終わりました`,
         own: lines.filter((l) => !/^remote:/i.test(l)).join("\n"),
       });
     });
+  });
+}
+
+/** clone する（`streamGit`）。`--` の後に URL——`-` で始まる字を git に option と読ませない */
+export function gitClone(input: {
+  url: string;
+  dest: string;
+  credential: GitCredential;
+  onProgress?: (p: CloneProgress) => void;
+  signal?: AbortSignal;
+}): Promise<CloneResult> {
+  return streamGit({
+    args: ["clone", "--progress", "--", input.url, input.dest],
+    credential: input.credential,
+    ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+    quiet: /^Cloning into /,
+  });
+}
+
+// ── GitHub に公開（段階5） ────────────────────────────────────────────────────────
+
+/** 公開するときに見る、いまのブランチの事実 */
+export interface BranchFacts {
+  /** いまのブランチ。detached なら undefined */
+  branch?: string;
+  /** まだコミットが無い（git init したばかり） */
+  unborn: boolean;
+  /** いまのブランチのコミット数（数えられなければ undefined） */
+  commits?: number;
+  /** ほかのブランチ（最初の push では送らない——人があとで送る） */
+  otherBranches: string[];
+  /** 最後のコミット（件名と、committer の時刻 ISO 8601） */
+  lastCommit?: { subject: string; at: string };
+  /** origin に同じ名前のブランチが（最後に取ってきた時点で）あるか */
+  onOrigin: boolean;
+}
+
+export async function branchFacts(path: string): Promise<BranchFacts> {
+  const head = await git(path, ["symbolic-ref", "-q", "--short", "HEAD"]);
+  if (!head.ok && head.code !== 1) fail(`${path} のいまのブランチ`, head);
+  const branch = head.ok ? head.stdout.trim() : undefined;
+  const born = await git(path, ["rev-parse", "--verify", "-q", "HEAD"]);
+  if (!born.ok && born.code !== 1) fail(`${path} のコミット`, born);
+  const unborn = !born.ok;
+  const heads = await git(path, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (!heads.ok) fail(`${path} のブランチ`, heads);
+  const otherBranches = heads.stdout.split("\n").filter((b) => b && b !== branch);
+  if (unborn) return { ...(branch ? { branch } : {}), unborn, commits: 0, otherBranches, onOrigin: false };
+  const count = await git(path, ["rev-list", "--count", "HEAD"], GIT_TIMEOUTS.count);
+  const last = branch ? await git(path, ["for-each-ref", "--format=%(subject)%09%(committerdate:iso-strict)", `refs/heads/${branch}`]) : undefined;
+  const [subject, at] = last?.ok ? (last.stdout.replace(/\n$/, "").split("\t") as [string, string]) : [];
+  const remote = branch ? await git(path, ["for-each-ref", "--format=%(refname)", `refs/remotes/origin/${branch}`]) : undefined;
+  return {
+    ...(branch ? { branch } : {}),
+    unborn,
+    ...(count.ok ? { commits: Number.parseInt(count.stdout.trim(), 10) || 0 } : {}),
+    otherBranches,
+    ...(subject !== undefined && at ? { lastCommit: { subject, at } } : {}),
+    onOrigin: !!remote?.ok && remote.stdout.trim() !== "",
+  };
+}
+
+/**
+ * **push の送り先や TLS を、そのリポジトリの設定が変えていないか**。`.git/config` はフォルダを置いた人が書ける——
+ * `url.*.insteadOf`・`pushInsteadOf`・`remote.origin.pushurl` はトークンを渡す先を同じ GitHub の別のリポジトリに
+ * 変えられ、`http.*`（proxy・sslVerify・sslCAInfo 等）は TLS を外して中身を読ませられる。あれば push しない
+ * （上書きで消せない——git の設定は環境から「無し」にできず、足すだけ）。読むのはリポジトリの段だけ（GitHub への
+ * 仕事では人の設定の段を読まない、`writeEnv`）
+ */
+export async function pushBlockers(path: string): Promise<string[]> {
+  const r = await git(
+    path,
+    ["config", "--name-only", "--get-regexp", "^(url|http)\\.|^remote\\.origin\\.(pushurl|proxy|receivepack)$"],
+    GIT_TIMEOUTS.default,
+    writeEnv({ kind: "none" }),
+  );
+  if (r.ok) return [...new Set(r.stdout.split("\n").filter(Boolean))];
+  if (r.code === 1) return [];
+  return fail(`${path} の設定`, r);
+}
+
+/** origin を足す（呼ぶ側が「origin がまだ無い」を確かめてから。URL に資格情報は入れない） */
+export async function gitRemoteAdd(path: string, url: string): Promise<void> {
+  const r = await git(path, ["remote", "add", "origin", url], GIT_TIMEOUTS.default, writeEnv({ kind: "none" }));
+  if (!r.ok) throw new Error(`origin を足せませんでした：${r.stderr.trim() || String(r.code)}`);
+}
+
+/**
+ * いまのブランチを origin に push し、以後それを追う（`--set-upstream`）。送るのはそのブランチだけ
+ * （`refs/heads/<b>:refs/heads/<b>`——ほかのブランチ・タグは送らない）
+ */
+export function gitPush(input: {
+  path: string;
+  branch: string;
+  credential: GitCredential;
+  onProgress?: (p: CloneProgress) => void;
+  signal?: AbortSignal;
+}): Promise<CloneResult> {
+  return streamGit({
+    args: ["push", "--progress", "--set-upstream", "origin", `refs/heads/${input.branch}:refs/heads/${input.branch}`],
+    cwd: input.path,
+    credential: input.credential,
+    ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
 }
 

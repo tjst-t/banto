@@ -5,6 +5,7 @@
 // - **更新**：GitHub App のユーザーのトークンは8時間で切れる。refresh token で取り直す（refresh token も回る）。
 //   デバイスフローで得たものは client secret 無しで更新できる（GitHub の文書「Refreshing user access tokens」）
 // - **`GET /user`**：資格情報が誰のものかを確かめる（PAT でも）
+// - **公開**（段階5）：行き先にできる持ち主（自分・属する Organization）とそこに作れそうか、空のリポジトリを作る
 //
 // **秘密を文言に入れない**——失敗の理由は GitHub の `error`・`error_description`・状態番号だけで作る。
 
@@ -71,7 +72,47 @@ export interface GithubApi {
   repoExists(token: string, owner: string, name: string): Promise<boolean>;
   /** そのトークンでの `owner/name` への権限（見えなければ `visible: false`。それ以外の断りは投げる） */
   repoAccess(token: string, owner: string, name: string): Promise<{ visible: false } | { visible: true; push: boolean; admin: boolean }>;
+  /** 公開の行き先にできる持ち主（自分と、属する Organization）と、そこにリポジトリを作れそうか（段階5） */
+  publishOwners(token: string, login: string): Promise<PublishOwners>;
+  /** 空のリポジトリを作る（README 等は作らない）。`org` があれば Organization に（段階5） */
+  createRepo(token: string, input: { org?: string; name: string; private: boolean; description?: string }): Promise<CreatedRepo>;
 }
+
+/**
+ * 持ち主にリポジトリを作れそうか。**`unknown` は作ってみるまで分からない**（fine-grained PAT は権限を問い合わせる口が
+ * 無い）——作れないと言い切れるものだけ `no` にして、理由と次の手を添える
+ */
+export interface PublishOwner {
+  login: string;
+  kind: "user" | "org";
+  create: "yes" | "no" | "unknown";
+  /** `no`・`unknown` の理由と次の手。`yes` でも条件があれば（公開のものだけ等） */
+  note?: string;
+  /** 公開（public）のものしか作れない（classic PAT の public_repo だけ） */
+  publicOnly?: boolean;
+}
+
+export interface PublishOwners {
+  owners: PublishOwner[];
+  /** Organization の一覧が読めなかった理由（自分の分は出す） */
+  orgsError?: string;
+}
+
+export interface CreatedRepo {
+  owner: string;
+  name: string;
+  private: boolean;
+  /** ブラウザで開く場所 */
+  htmlUrl: string;
+}
+
+/** GitHub App にリポジトリを作る権限が足りないときの次の手（App の設定で何を足すか） */
+export const APP_ADMINISTRATION_HINT =
+  "GitHub App の設定（github.com/settings/apps → この App → Permissions & events）で Repository permissions の「Administration」を「Read and write」にし、インストール先（Settings → Applications → Installed GitHub Apps）で新しい権限を承認してください";
+
+/** fine-grained PAT に足りないときの次の手 */
+export const PAT_ADMINISTRATION_HINT =
+  "fine-grained PAT なら Repository permissions の「Administration」を「Read and write」に（Resource owner を作る先にして）作り直し、classic PAT なら repo の権限を付けてください";
 
 const TIMEOUT_MS = 15_000;
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
@@ -242,6 +283,128 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       const body = (await res.json().catch(() => undefined)) as { permissions?: { push?: unknown; admin?: unknown } } | undefined;
       // permissions が無い（公開のものを、権限の無いトークンで見た）なら、書けないと読む
       return { visible: true, push: body?.permissions?.push === true, admin: body?.permissions?.admin === true };
+    },
+
+    async publishOwners(token, login) {
+      const headers = { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28", "user-agent": "banto" };
+      const get = async (path: string): Promise<{ status: number; body: unknown; scopes: string | null }> => {
+        let res: Response;
+        try {
+          res = await fetch(`${api}${path}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        } catch (err) {
+          throw new GithubError(`GitHub に繋がりませんでした（${(err as Error).message}）`, "network");
+        }
+        const body = await res.json().catch(() => undefined);
+        if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
+        return { status: res.status, body, scopes: res.headers.get("x-oauth-scopes") };
+      };
+      // classic PAT（と OAuth App）は X-OAuth-Scopes で権限が分かる。GitHub App のトークン・fine-grained PAT には無い
+      const me = await get("/user");
+      if (me.status !== 200) throw new GithubError(`GitHub がユーザーを返しませんでした（HTTP ${me.status}）`, String(me.status));
+      const scopes = me.scopes === null ? undefined : me.scopes.split(",").map((x) => x.trim()).filter(Boolean);
+      // GitHub App のトークンなら、どこに入っていて Administration を書けるかが分かる
+      let installations: Array<{ account: string; administration?: string }> | undefined;
+      if (scopes === undefined) {
+        const inst = await get("/user/installations");
+        if (inst.status === 200) {
+          const list = (inst.body as { installations?: unknown })?.installations;
+          installations = Array.isArray(list)
+            ? list.flatMap((i: { account?: { login?: unknown }; permissions?: { administration?: unknown } }) =>
+                typeof i?.account?.login === "string"
+                  ? [{ account: i.account.login, ...(typeof i.permissions?.administration === "string" ? { administration: i.permissions.administration } : {}) }]
+                  : [],
+              )
+            : [];
+        }
+      }
+      const judge = (owner: string): Pick<PublishOwner, "create" | "note" | "publicOnly"> => {
+        if (scopes !== undefined) {
+          if (scopes.includes("repo")) return { create: "yes" };
+          if (scopes.includes("public_repo")) return { create: "yes", publicOnly: true, note: "この PAT は public_repo だけなので、公開のリポジトリしか作れません" };
+          return { create: "no", note: `この PAT にはリポジトリを作る権限（repo）がありません——${PAT_ADMINISTRATION_HINT}` };
+        }
+        if (installations !== undefined) {
+          const at = installations.find((i) => i.account.toLowerCase() === owner.toLowerCase());
+          if (!at) return { create: "no", note: `GitHub App が ${owner} に入っていません——App のページの「Install」で ${owner} に入れてください` };
+          if (at.administration !== "write") return { create: "no", note: `GitHub App に Administration（Read and write）の権限がありません——${APP_ADMINISTRATION_HINT}` };
+          return { create: "yes" };
+        }
+        return { create: "unknown", note: "作れるかは、作ってみるまで分かりません（fine-grained PAT は Repository permissions の「Administration」が Read and write である必要があります）" };
+      };
+      const owners: PublishOwner[] = [{ login, kind: "user", ...judge(login) }];
+      const orgs = await get("/user/orgs");
+      if (orgs.status !== 200 || !Array.isArray(orgs.body)) {
+        return { owners, orgsError: `GitHub が Organization の一覧を返しませんでした（HTTP ${orgs.status}）` };
+      }
+      for (const o of orgs.body as Array<{ login?: unknown }>) {
+        if (typeof o?.login !== "string") continue;
+        const base = judge(o.login);
+        if (base.create === "no") {
+          owners.push({ login: o.login, kind: "org", ...base });
+          continue;
+        }
+        // Organization の中の決まり：owner（admin）は作れる。メンバーは、Org がメンバーに作らせているときだけ
+        const membership = await get(`/user/memberships/orgs/${encodeURIComponent(o.login)}`);
+        const role = (membership.body as { role?: unknown } | undefined)?.role;
+        if (membership.status === 200 && role === "admin") {
+          owners.push({ login: o.login, kind: "org", ...base });
+          continue;
+        }
+        const org = await get(`/orgs/${encodeURIComponent(o.login)}`);
+        const allowed = (org.body as { members_can_create_repositories?: unknown } | undefined)?.members_can_create_repositories;
+        if (org.status === 200 && allowed === false) {
+          owners.push({ login: o.login, kind: "org", create: "no", note: `${o.login} はメンバーがリポジトリを作れない設定です——Organization の owner に作ってもらうか、設定（Member privileges の Repository creation）を変えてもらってください` });
+        } else if (org.status === 200 && allowed === true) {
+          owners.push({ login: o.login, kind: "org", ...base });
+        } else {
+          owners.push({ login: o.login, kind: "org", create: "unknown", note: `${o.login} でメンバーが作れるかを確かめられませんでした（作ってみるまで分かりません）` });
+        }
+      }
+      return { owners };
+    },
+
+    async createRepo(token, input) {
+      let res: Response;
+      try {
+        res = await fetch(input.org ? `${api}/orgs/${encodeURIComponent(input.org)}/repos` : `${api}/user/repos`, {
+          method: "POST",
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            "x-github-api-version": "2022-11-28",
+            "user-agent": "banto",
+          },
+          // 空で作る（README・.gitignore・ライセンスは作らない——手元の履歴をそのまま push する）
+          body: JSON.stringify({ name: input.name, private: input.private, auto_init: false, ...(input.description ? { description: input.description } : {}) }),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new GithubError(`GitHub に繋がりませんでした（${(err as Error).message}）`, "network");
+      }
+      const body = (await res.json().catch(() => undefined)) as
+        | { name?: unknown; owner?: { login?: unknown }; private?: unknown; html_url?: unknown; message?: unknown; errors?: Array<{ message?: unknown; field?: unknown }> }
+        | undefined;
+      if (res.status === 201 && typeof body?.name === "string" && typeof body.owner?.login === "string") {
+        return { owner: body.owner.login, name: body.name, private: body.private === true, htmlUrl: typeof body.html_url === "string" ? body.html_url : "" };
+      }
+      const message = typeof body?.message === "string" ? body.message : "";
+      const detail = (body?.errors ?? []).map((e) => (typeof e?.message === "string" ? e.message : "")).filter(Boolean).join("・");
+      const where = input.org ?? "あなたのアカウント";
+      if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
+      if (res.status === 422 && /already exists/i.test(detail)) throw new GithubError(`${where}には、もう ${input.name} があります`, "name-taken");
+      if (res.status === 403 && /not accessible by integration/i.test(message)) {
+        throw new GithubError(`GitHub App にリポジトリを作る権限がありません——${APP_ADMINISTRATION_HINT}`, "app-permission");
+      }
+      if (res.status === 403 && /not accessible by personal access token/i.test(message)) {
+        throw new GithubError(`この PAT にはリポジトリを作る権限がありません——${PAT_ADMINISTRATION_HINT}`, "pat-permission");
+      }
+      if (res.status === 403 || res.status === 422) {
+        // Organization の決まり（メンバーは作れない・非公開は作れないプラン等）——GitHub の言葉をそのまま添える
+        throw new GithubError(`GitHub が ${where}に作るのを断りました（HTTP ${res.status}${message ? `：${message}` : ""}${detail ? `・${detail}` : ""}）`, "refused");
+      }
+      if (res.status === 404) throw new GithubError(`${where}が見つかりません（Organization に入っていないか、App が入っていません）`, "not-found");
+      throw new GithubError(`GitHub がリポジトリを作りませんでした（HTTP ${res.status}${message ? `：${message}` : ""}）`, String(res.status));
     },
 
     async repoExists(token, owner, name) {

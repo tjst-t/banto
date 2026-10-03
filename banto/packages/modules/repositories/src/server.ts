@@ -4,7 +4,8 @@
 // **既定で入っていて消せない**（`DEFAULT_MODULE_DECLARATIONS`）・banto 全体に1本・banto 本体で動く。
 // 段階1で持つもの：台帳（Import・一覧から外す・元に戻す・origin との突き合わせ）、既定の置き場の設定、
 // 一覧の画面（launcher）と設定の面。段階2：GitHub のアカウント（PAT・ブラウザでログイン）の登録・一覧・削除と、
-// 台帳の「扱うアカウント」。clone・新しいリポジトリ・GitHub に公開はまだ無い。
+// 台帳の「扱うアカウント」。段階3：clone・新しいリポジトリ。段階4：アカウントを後から選ぶ・このマシンから削除・
+// 新しい Project の画面のタブ。段階5：GitHub に公開（`publish.ts`）。
 //
 // **AI 向けの道具は持たない**（段階1、判断・2026-10-01）。台帳はこのマシンのフォルダの場所で、Project の
 // コンテナの中の AI からは届かない場所を指す——渡しても AI が次の一手に使えない。道具の説明で文脈を取られる
@@ -23,10 +24,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf, callerOf } from "@banto/module-contract";
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
-import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
+import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, PUBLISH_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
 import { setRepositoryAccount } from "./assign.js";
 import { deleteRepository, inspectDelete } from "./delete.js";
 import { Cloner } from "./clone.js";
+import { Publisher } from "./publish.js";
 import { GITHUB_COM, type GithubApi, type GithubEndpoints } from "./github.js";
 import { LedgerStore } from "./ledger.js";
 import type { NoticeSink, ProjectsSource } from "./relay-client.js";
@@ -124,6 +126,15 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     endpoints: deps.githubEndpoints ?? GITHUB_COM,
     ...(home ? { home } : {}),
   });
+  const publisher = new Publisher({
+    store,
+    dataDir: deps.dataDir,
+    accounts,
+    vault: deps.vault,
+    github: deps.github,
+    endpoints: deps.githubEndpoints ?? GITHUB_COM,
+    ...(home ? { home } : {}),
+  });
   const lookupProjects = async (meta: Record<string, unknown> | undefined): Promise<ProjectsLookup> => {
     try {
       return { ok: true, projects: await deps.projects.listProjects(callIdOf(meta)) };
@@ -194,6 +205,25 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         confirmed: { type: "boolean" },
         typedName: { type: "string" },
       }, ["path", "confirmed"]),
+      // ── 段階5：GitHub に公開。path を省くと、押した画面の Project（host の刻印）の Root を含む行 ──
+      adminTool("inspect_publish", "そのフォルダを GitHub に公開できるか（いまのブランチ・origin・断る理由）", { path: { type: "string" } }),
+      adminTool("publish_targets", "公開に使えるアカウントと、その持ち主（自分・Organization）にリポジトリを作れそうか", { path: { type: "string" } }),
+      adminTool("check_publish_name", "GitHub にその名前が空いているか（あれば空いている名前を出す）", {
+        login: { type: "string" },
+        owner: { type: "string" },
+        name: { type: "string" },
+      }, ["login", "owner", "name"]),
+      adminTool("start_publish", "GitHub に空のリポジトリを作り、origin を足して、いまのブランチを push する", {
+        path: { type: "string" },
+        login: { type: "string" },
+        owner: { type: "string" },
+        name: { type: "string" },
+        private: { type: "boolean" },
+        description: { type: "string" },
+      }, ["path", "login", "owner", "name", "private"]),
+      adminTool("publish_status", "公開の進み具合と結果", { jobId: { type: "string" } }, ["jobId"]),
+      adminTool("cancel_publish", "push をやめる（GitHub に作ったリポジトリは消さない）", { jobId: { type: "string" } }, ["jobId"]),
+      adminTool("retry_push", "push だけやり直す（GitHub の origin はあるが、いまのブランチが GitHub にまだ無い）", { path: { type: "string" } }, ["path"]),
       adminTool("remove_github_account", "アカウントの登録を外す（ブラウザでログインしたものは Vault のログイン情報も消す）", {
         login: { type: "string" },
       }, ["login"]),
@@ -290,6 +320,39 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
               home,
             ),
           );
+        case "inspect_publish":
+        case "publish_targets": {
+          // 行き先のフォルダ：画面が言ったもの、無ければ刻印の Project の Root（画面は別の Project を名乗れない）
+          const forProject = "forProject" in caller ? caller.forProject : undefined;
+          const path = await publisher.resolveFolder(
+            { ...(typeof args.path === "string" && args.path ? { path: args.path } : {}), ...(forProject ? { forProject } : {}) },
+            typeof args.path === "string" && args.path ? { ok: true, projects: [] } : await lookupProjects(meta),
+          );
+          return json(name === "inspect_publish" ? await publisher.inspect(path) : await publisher.targets(path, callIdOf(meta)));
+        }
+        case "check_publish_name":
+          return json(await publisher.checkName({ login: str(args.login, "login"), owner: str(args.owner, "owner"), name: str(args.name, "name") }, callIdOf(meta)));
+        case "start_publish":
+          if (typeof args.private !== "boolean") throw new Error("private（公開か非公開か）が要ります");
+          return json(
+            await publisher.start(
+              {
+                path: str(args.path, "path"),
+                login: str(args.login, "login"),
+                owner: str(args.owner, "owner"),
+                name: str(args.name, "name"),
+                private: args.private,
+                ...(typeof args.description === "string" ? { description: args.description } : {}),
+              },
+              callIdOf(meta),
+            ),
+          );
+        case "publish_status":
+          return json(publisher.status(str(args.jobId, "jobId")));
+        case "cancel_publish":
+          return json(publisher.cancel(str(args.jobId, "jobId")));
+        case "retry_push":
+          return json(await publisher.retryPush({ path: str(args.path, "path") }, callIdOf(meta)));
         case "list_github_accounts":
           return json(await accounts.list());
         case "list_credential_aliases":
@@ -335,6 +398,15 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         uri: LIST_APP_URI,
         name: "リポジトリ",
         description: "このマシンで扱うリポジトリの一覧。フォルダを Import する・一覧から外す",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
+      },
+      {
+        // **Project の画面の入口**（段階5）——その Project の Root を GitHub に公開する。どの Project かは、押した画面の
+        // 呼び出しに host が刻む Project で決める（画面の申告ではない）
+        uri: PUBLISH_APP_URI,
+        name: "この Project を GitHub に公開",
+        description: "この Project の Root のリポジトリを、GitHub に作って push します",
         mimeType: UI_APP_MIME,
         _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
       },
@@ -392,6 +464,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     if (uri === SELF_REPORT_URI) return { contents: [{ uri, mimeType: "application/json", text: "{}" }] };
     if (uri === LIST_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("launcher") }] };
     if (uri === SETTINGS_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("config") }] };
+    if (uri === PUBLISH_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("publish") }] };
     if (uri === PREPARE_CLONE_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("prepare-clone") }] };
     if (uri === PREPARE_CREATE_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("prepare-create") }] };
     throw new Error(`unknown resource: ${uri}`);

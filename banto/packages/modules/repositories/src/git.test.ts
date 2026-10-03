@@ -87,6 +87,8 @@ test("走らせてよいサブコマンドは一覧のものだけ（増やす�
     "status",
     "ls-files",
     "worktree remove",
+    "remote add",
+    "push",
   ]);
 });
 
