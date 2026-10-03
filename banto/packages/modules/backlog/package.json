@@ -1,0 +1,19 @@
+{
+  "name": "@banto/module-backlog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "banto-module-backlog": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json && node scripts/bundle-ui.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.ui.json --noEmit",
+    "test": "node --test 'dist/**/*.test.js' 'scripts/*.test.mjs'"
+  },
+  "dependencies": {
+    "@banto/module-contract": "*",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

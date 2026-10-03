@@ -455,6 +455,27 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
   },
   {
+    // **仕事の一覧**（v4-modules.md §4.4、2026-10-03）。Project の根の中の tasks.json を読み書きする。
+    // 必須ではないので既定ではなく目録に置く（人が「Module を追加」から入れる）。閉じ込めは FileSystem と同じ
+    // （Project の根だけ、コマンドは走らせない）。設定（tasks.json の場所）は `BANTO_MODULE_DATA_DIR`（host が渡す）
+    id: "backlog",
+    name: "Backlog",
+    description: "今後やること・バグを、ストーリー・タスク・バグと依存で持つ（Project の tasks.json）。AI が一覧を引き、タスクに分ける",
+    suggestedName: "backlog",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/backlog/dist/server.js"],
+      env: { BANTO_PROJECT_ROOT: "${projectRoot}" },
+    },
+    meta: {
+      satisfies: ["backlog"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "project",
+      confinement: { kind: "landlock", root: "project" },
+    },
+  },
+  {
     // **動いているものに届く URL を生やす窓口**（v4-modules.md §4.3、2026-09-27）。AI の道具（publishService・
     // unpublishService・listPublished）と承認の画面を持ち、道を張るのは `publish` 役割の実装。**banto 本体で動く**
     // ——承認の画面を出すコードがコンテナの中にあると、中で root の AI が偽れる（v4-security.md §1）。

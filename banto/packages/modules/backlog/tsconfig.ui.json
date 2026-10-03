@@ -1,0 +1,15 @@
+{
+  "//": "画面（ブラウザで動く側）の JS。DOM の型で検査し、CommonJS で出して scripts/bundle-ui.mjs が1本にまとめる",
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "rootDir": "src",
+    "outDir": "dist/.ui-cjs",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/ui/**/*.ts"]
+}

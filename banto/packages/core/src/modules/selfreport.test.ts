@@ -59,7 +59,7 @@ for (const name of ["vault-local", "shell", "filesystem", "skills", "subagent", 
 }
 
 // **目録の Module も同じ**（追加・2026-09-27）。目録から入れると目録の宣言がそのまま設定に写る
-for (const id of ["service", "publish-directory", "publish-caddy"] as const) {
+for (const id of ["service", "publish-directory", "publish-caddy", "backlog"] as const) {
   test(`目録の ${id} は自分が何者かを名乗り、目録の宣言と食い違わない`, async () => {
     const entry = BUNDLED_CATALOG.find((e) => e.id === id)!;
     const declaration = parseModuleDeclaration({ name: id, launch: entry.launch, meta: entry.meta }, "catalog");
