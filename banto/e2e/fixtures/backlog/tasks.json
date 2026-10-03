@@ -1,0 +1,903 @@
+{
+  "format": "banto-backlog/1",
+  "milestones": [
+    {
+      "id": "phase2",
+      "title": "標準 Module を揃える",
+      "status": "open"
+    },
+    {
+      "id": "phase3",
+      "title": "並べて任せる",
+      "status": "open"
+    },
+    {
+      "id": "phase4",
+      "title": "毎日使える画面",
+      "status": "open"
+    }
+  ],
+  "items": [
+    {
+      "id": "repositories-next",
+      "kind": "story",
+      "title": "Repositories の続き",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "repositories"
+      ],
+      "body": "手元のリポジトリの台帳と、Project を始める3つの手（手元のフォルダ・clone・新しいリポジトリ）を揃える。\n\n段階1では「Project を始める」「GitHub に公開」「clone し直す」は押すと「まだ作っていない」と言うだけだった。段階を追って中身を繋いでいる。",
+      "doneWhen": "§2.4 の始める3つの手・公開・アカウントが実ブラウザの E2E で通り、段階1の「まだ作っていない」が画面から消える",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §2.4"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-30T09:00:00+09:00",
+      "updatedAt": "2026-10-02T15:20:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "repositories-stage1",
+      "kind": "task",
+      "title": "段階1：台帳・Import・一覧から外す／元に戻す・一覧の画面",
+      "status": "done",
+      "parent": "repositories-next",
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "repositories"
+      ],
+      "body": "core の中継に `relayListProjects` を足し、入口・画面の中身・画面からの呼び出しを「Project の Module 集合＋banto 全体の Module」に寄せた。\n\n- 単体：Module 19本・core の中継と入口\n- E2E：`e2e/specs/repositories.spec.ts`（2本）",
+      "doneWhen": "Command Palette の「リポジトリ」から開いた一覧に、Import した手元のリポジトリが正しく出ることを人が実物で確かめる",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-10-01-repositories-stage1.md"
+      ],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "banto-base"
+        }
+      ],
+      "createdAt": "2026-09-30T09:10:00+09:00",
+      "updatedAt": "2026-10-01T18:40:00+09:00",
+      "closedAt": "2026-10-01T18:40:00+09:00",
+      "extra": {}
+    },
+    {
+      "id": "repositories-stage2",
+      "kind": "task",
+      "title": "段階2：GitHub のアカウント（PAT・ブラウザでログイン・自動更新）",
+      "status": "done",
+      "parent": "repositories-next",
+      "dependsOn": [
+        "repositories-stage1"
+      ],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "repositories",
+        "vault"
+      ],
+      "body": "設定の Repositories の面にアカウントの登録・確かめる・外す。秘密は Vault、Module は在りかだけを持つ。\n\n更新は使う直前・アカウントごとに1本ずつ。失敗はアカウントに残して受信箱へ（中継に `relayRaiseNotice` を足した）。",
+      "doneWhen": "ブラウザでログインして自分の login のアカウントが登録され、8時間後に「確かめる」で更新が通る",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-10-02-repositories-stage2.md",
+        "docs/specs/v4-security.md §3"
+      ],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "banto-base"
+        }
+      ],
+      "createdAt": "2026-09-30T09:10:00+09:00",
+      "updatedAt": "2026-10-02T11:05:00+09:00",
+      "closedAt": "2026-10-02T11:05:00+09:00",
+      "extra": {}
+    },
+    {
+      "id": "repositories-stage3",
+      "kind": "task",
+      "title": "段階3：URL から clone・新しいリポジトリ・「Project も作る」",
+      "status": "in-progress",
+      "parent": "repositories-next",
+      "dependsOn": [
+        "repositories-stage2"
+      ],
+      "milestone": "phase2",
+      "priority": "high",
+      "labels": [
+        "repositories"
+      ],
+      "body": "clone は Module の背景の仕事で、画面が進み具合を聞きに来る（git が5分黙ったら切る）。\n\nトークンは一度きりの unix socket から credential helper へ渡す——引数・環境には置かない。clone の間も hooks 等の潰しは効かせる。",
+      "doneWhen": "稼働中の banto で、公開・非公開・GitHub の外のリポジトリを URL から clone でき、「Project も作る」で新しい Project の画面が開く",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §2.4",
+        "docs/notes/2026-10-02-repositories-stage3.md"
+      ],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "banto-base"
+        }
+      ],
+      "createdAt": "2026-09-30T09:10:00+09:00",
+      "updatedAt": "2026-10-02T15:20:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "repositories-publish",
+      "kind": "task",
+      "title": "この Project を GitHub に公開する",
+      "status": "ready",
+      "parent": "repositories-next",
+      "dependsOn": [
+        "repositories-stage3"
+      ],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "repositories"
+      ],
+      "body": "いまは押すと「まだ作っていない」と言うだけ。リポジトリを作って push し、台帳に GitHub の場所を書く。",
+      "doneWhen": "このマシンにだけのリポジトリを公開すると、一覧の GitHub の列に場所が出る（E2E、偽の GitHub）",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-30T09:10:00+09:00",
+      "updatedAt": "2026-09-30T09:10:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "repositories-open-project",
+      "kind": "task",
+      "title": "既にある Project を Canvas から開く口",
+      "status": "backlog",
+      "parent": "repositories-next",
+      "dependsOn": [
+        "repositories-stage3"
+      ],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "repositories",
+        "未決"
+      ],
+      "body": "一覧の Project の列はいま名前だけ。Canvas から banto の画面遷移を頼む口が無い——`dev.banto/open-new-project` と同じ形で足すかは未決。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-30T09:10:00+09:00",
+      "updatedAt": "2026-09-30T09:10:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "backlog-module",
+      "kind": "story",
+      "title": "Backlog——仕事の一覧を Module にする",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "high",
+      "labels": [
+        "backlog"
+      ],
+      "body": "今後やること・バグを、ストーリー・タスク・バグの3種類と依存関係で持つ。いまの `docs/tasks.json` が最初の利用者。\n\n窓口1本＋バックエンドの実装が複数（最初は tasks.json、将来は GitHub Issues）。",
+      "doneWhen": "AI が listItems で「いま着手できるもの」を引き、splitStory でタスクに分け、人が一覧の画面で同じ中身を見られる（実ブラウザの E2E）",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §4.4"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-02T10:00:00+09:00",
+      "updatedAt": "2026-10-02T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "vault-directory-call-id",
+      "kind": "task",
+      "title": "vault-directory も中継に呼び出しの印を返す",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "high",
+      "labels": [
+        "vault",
+        "中継"
+      ],
+      "body": "印を返していない banto 全体の Module は接続単位で出所を引くので、Project が混ざると刻印が決まらない。\n\nvault-directory は2つの Project の Shell・Service から同時に `lookupAlias` を受けうる。実機では未観測、コードを読んで判明。",
+      "doneWhen": "2つの Project から同時に秘密を引く試験が通る",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.5"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-28T16:00:00+09:00",
+      "updatedAt": "2026-09-28T16:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "publish-host-verify",
+      "kind": "task",
+      "title": "Publish を本物の Caddy・Incus・ブラウザで確かめる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "publish"
+      ],
+      "body": "単体試験（偽の Caddy・偽の Service）は通したが、host の Caddy の実物と Incus の `/state` の実物を見ていない。承認の画面も実ブラウザで見ていない。",
+      "doneWhen": "Service で起こしたサーバを AI が publishService で頼み、承認を経てその URL にブラウザから届き、Basic 認証で中身が出る",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §4.3"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-27T20:00:00+09:00",
+      "updatedAt": "2026-09-27T20:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "claude-login-relay-owner",
+      "kind": "task",
+      "title": "Claude ログインの中継を core に常設する",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "subagent",
+        "コンテナ"
+      ],
+      "body": "いまは subagent-settings が1回ごとに開け閉めしており、寿命が必要な単位（Project）より短い。\n\n常設にすると Shell には何も足さずに `claude -p`・Agent SDK・banto の E2E が通る。",
+      "doneWhen": "Shell の runCommand から claude -p が通り、Project のコンテナの中で E2E が回る",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-09-27-claude-login-relay-alternatives.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-27T12:00:00+09:00",
+      "updatedAt": "2026-09-27T12:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "module-kit-extract",
+      "kind": "task",
+      "title": "Module を書く足場（kit）と契約試験を切り出す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "module"
+      ],
+      "body": "Vault・Shell・FileSystem・Repositories で同じ足場を4回書いている。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-12T10:00:00+09:00",
+      "updatedAt": "2026-09-12T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "phase0-stale-notify",
+      "kind": "task",
+      "title": "滞留通知——判断待ちが長く放っておかれたら知らせる",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "受信箱"
+      ],
+      "body": "判断待ちが出ても、人が画面を見ていなければ止まったままになる。\n\n- 閾値を過ぎた判断待ちを定期的に見て、通知の出来事を追記する\n- 本物の Web Push はやらない——タブが開いている間だけ",
+      "doneWhen": "閾値を過ぎた判断待ちで通知が実際に出ることを実ブラウザで確認する",
+      "resolution": null,
+      "refs": [
+        "docs/requirements.md A7"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-06T10:00:00+09:00",
+      "updatedAt": "2026-09-06T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "registry-search-install",
+      "kind": "task",
+      "title": "公式レジストリからの検索・インストール",
+      "status": "dropped",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase2",
+      "priority": "normal",
+      "labels": [
+        "module"
+      ],
+      "body": "",
+      "doneWhen": "",
+      "resolution": "重複——「MCP Registry の一覧から Module を入れて繋ぐ」で済んだ",
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-10T10:00:00+09:00",
+      "updatedAt": "2026-09-21T10:00:00+09:00",
+      "closedAt": "2026-09-21T10:00:00+09:00",
+      "extra": {}
+    },
+    {
+      "id": "ai-forks",
+      "kind": "story",
+      "title": "AI が Fork を立てて並行に進める",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "fork"
+      ],
+      "body": "人とやり取りしながら進める話が複数あるとき、AI が Fork を立てて並行に進める（やり取りが要らないならサブエージェント）。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.2",
+        "docs/specs/v4-architecture.md §2.4"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-27T09:00:00+09:00",
+      "updatedAt": "2026-09-27T09:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "ai-start-forks",
+      "kind": "task",
+      "title": "AI が tool から Fork を立てる（名前と最初の指示つき）",
+      "status": "in-progress",
+      "parent": "ai-forks",
+      "dependsOn": [],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "fork"
+      ],
+      "body": "core の単体試験（`fork-tool.test.ts`、6本）と画面の単体 16本は通した。\n\n2026-09-28：2つ目の Fork が「Fork 2」になる不具合を見つけて直し、host で E2E が通った（ユーザー実行）。",
+      "doneWhen": "host で ai-start-forks・project-thread-fork・inbox・fork-from-message の E2E が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "ui"
+        },
+        {
+          "projectId": "banto",
+          "threadId": "banto-base"
+        }
+      ],
+      "createdAt": "2026-09-27T09:00:00+09:00",
+      "updatedAt": "2026-09-28T19:30:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "ai-forks-review-inbox",
+      "kind": "task",
+      "title": "ターンが終わった Fork を受信箱にレビュー待ちで出す",
+      "status": "ready",
+      "parent": "ai-forks",
+      "dependsOn": [
+        "ai-start-forks"
+      ],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "fork",
+        "受信箱"
+      ],
+      "body": "",
+      "doneWhen": "AI が立てた Fork のターンが終わると、受信箱にレビュー待ちが1件出て、押すとその Fork が開く",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-27T09:00:00+09:00",
+      "updatedAt": "2026-09-27T09:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "ai-forks-live-check",
+      "kind": "task",
+      "title": "稼働中の banto で、AI に Fork を2つ立てさせて確かめる",
+      "status": "backlog",
+      "parent": "ai-forks",
+      "dependsOn": [
+        "ai-start-forks",
+        "ai-forks-review-inbox"
+      ],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "fork"
+      ],
+      "body": "",
+      "doneWhen": "再読み込みせずに名前つきの入口が2つ出て、それぞれ最初の指示で走り、終わったものが受信箱に出る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-27T09:00:00+09:00",
+      "updatedAt": "2026-09-27T09:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "subagent-human-loop",
+      "kind": "story",
+      "title": "サブエージェントと人のやり取り",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "subagent"
+      ],
+      "body": "サブエージェントの確認を人に上げ、banto の Module を渡す。いまは確認を断って返り値に書いている。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §4.1"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-24T10:00:00+09:00",
+      "updatedAt": "2026-09-24T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "elicitation-answers",
+      "kind": "task",
+      "title": "Module からの問いに、受信箱から答えられるようにする",
+      "status": "ready",
+      "parent": "subagent-human-loop",
+      "dependsOn": [],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "subagent",
+        "受信箱"
+      ],
+      "body": "「後で答える」の答えを届ける配線が無い（受信箱に「まだ繋がっていません」と出るだけ）。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.4.1"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-24T10:00:00+09:00",
+      "updatedAt": "2026-09-24T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "subagent-permission-to-human",
+      "kind": "task",
+      "title": "サブエージェントの確認を人に上げる",
+      "status": "ready",
+      "parent": "subagent-human-loop",
+      "dependsOn": [
+        "elicitation-answers"
+      ],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "subagent"
+      ],
+      "body": "main と揃えたモードでは普通の仕事で確認は来ない（実測）が、来たときに人が答えられるようにする。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-09-24-subagent-acp.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-24T10:00:00+09:00",
+      "updatedAt": "2026-09-24T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "subagent-banto-modules",
+      "kind": "task",
+      "title": "サブエージェントに banto の Module（FileSystem・Shell・Vault）を渡す",
+      "status": "backlog",
+      "parent": "subagent-human-loop",
+      "dependsOn": [
+        "subagent-module-sync"
+      ],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "subagent"
+      ],
+      "body": "いまは `session/new` の mcpServers が空。サブエージェント向けの中継の口（URL と合言葉）を host が出す必要がある。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-24T10:00:00+09:00",
+      "updatedAt": "2026-09-24T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "subagent-codex",
+      "kind": "task",
+      "title": "Subagent に Codex を足す",
+      "status": "backlog",
+      "parent": "subagent-human-loop",
+      "dependsOn": [
+        "subagent-banto-modules"
+      ],
+      "milestone": "phase3",
+      "priority": "low",
+      "labels": [
+        "subagent"
+      ],
+      "body": "設定を1つ足すだけで済むかが、差し替えられる形にできたかの試金石。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-24T10:00:00+09:00",
+      "updatedAt": "2026-09-24T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "subagent-module-sync",
+      "kind": "task",
+      "title": "Subagent Module（待つ形）——Claude Code と OpenCode",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "subagent"
+      ],
+      "body": "",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "vault-migration-poc"
+        }
+      ],
+      "createdAt": "2026-09-22T10:00:00+09:00",
+      "updatedAt": "2026-09-24T21:00:00+09:00",
+      "closedAt": "2026-09-24T21:00:00+09:00",
+      "extra": {}
+    },
+    {
+      "id": "thread-messaging",
+      "kind": "task",
+      "title": "Thread 間のメッセージ——AI が別の Thread の AI に送る",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [
+        "subagent-module-sync"
+      ],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "未決"
+      ],
+      "body": "届け方（記録してから起こす・ループ防止・画面の札）は 2026-09-25 に共通の口として作った。残るのは送る側：\n\n- 宛先の一覧の見せ方（id・題・状態だけ、中身は読ませない）\n- Project をまたぐ送信の許し方",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §4.2",
+        "docs/notes/2026-09-25-thread-delivery.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-25T10:00:00+09:00",
+      "updatedAt": "2026-09-25T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "ai-attach-module",
+      "kind": "task",
+      "title": "AI が目録から Module を選び、人の承認で Project につける",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase3",
+      "priority": "normal",
+      "labels": [
+        "module"
+      ],
+      "body": "AI に見せる一覧は banto の目録（同梱と、banto が中身を確かめて載せたもの）だけ。外部の Module は今までどおり人が自分で足す。",
+      "doneWhen": "AI が目録の Module を頼むと、受信箱の承認を経てその Project につき、その Module の道具が AI から呼べる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-27T10:00:00+09:00",
+      "updatedAt": "2026-09-27T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "project-container-prewarm",
+      "kind": "task",
+      "title": "新しい Project のコンテナを先回りして作り置く",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase4",
+      "priority": "low",
+      "labels": [
+        "速さ",
+        "コンテナ"
+      ],
+      "body": "新しい Project の Module が揃うまで 1.5〜1.75 秒。うちコンテナを起こすのが約 0.9 秒（2026-09-26 の実測）。",
+      "doneWhen": "新しい Project を作ってから Module が揃うまでが、host のログの内訳で 1 秒を切る",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-09-26-latency-fixes.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-26T10:00:00+09:00",
+      "updatedAt": "2026-09-26T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "turn-latest-on-return",
+      "kind": "task",
+      "title": "戻ってきたら、最新の状況をそのまま出す",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": "phase4",
+      "priority": "normal",
+      "labels": [
+        "画面"
+      ],
+      "body": "",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "ui-perf"
+        }
+      ],
+      "createdAt": "2026-09-15T10:00:00+09:00",
+      "updatedAt": "2026-09-18T10:00:00+09:00",
+      "closedAt": "2026-09-18T10:00:00+09:00",
+      "extra": {}
+    },
+    {
+      "id": "human-canvas-call-blocked-by-concurrent-turn",
+      "kind": "bug",
+      "title": "AI が同じ Module を使っている最中だと、人が画面で押した操作が無言で止まる",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "中継"
+      ],
+      "body": "出所の判定が呼び出しごとではなく Module のプロセス単位。1つでもターン由来が混ざっていたら、人の操作もターンの扱いになり承認ゲートに落ちる。\n\n押した画面は**何も言わずに最大10分待つ**。\n\n2026-09-21、E2E で実測：`deleteAlias` が同じターンの横断読み取りと重なって毎回止まった。",
+      "doneWhen": "AI がその Module を使っている最中に人が押しても、承認を挟まずに通る（試験で再現してから直す）",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "banto",
+          "threadId": "vault-migration-poc"
+        }
+      ],
+      "createdAt": "2026-09-21T10:00:00+09:00",
+      "updatedAt": "2026-10-01T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "judgment-answer-render-race",
+      "kind": "bug",
+      "title": "承認に答えた直後にターンが終わると、答えが画面に出ない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "承認"
+      ],
+      "body": "画面は host に答えを送るのを待ってから、答えを記録に書き戻す。**その間に host 側のターンが完走すると SSE が先に閉じ**、答えが描かれないまま終わる。\n\n偽 Runner 側に 500ms の間を入れて回避しているが、画面側の競合はそのまま残っている。",
+      "doneWhen": "偽 Runner の間を外した状態で、「回答：許可する」が画面に残る",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-09-20-infisical-cloud-and-vault-list.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-21T10:00:00+09:00",
+      "updatedAt": "2026-09-21T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "fork-inline-fullscreen",
+      "kind": "bug",
+      "title": "Fork の会話の中の Module 画面を「大きく表示」できない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "fork"
+      ],
+      "body": "Fork で showFile の「大きく表示」を押すと「大きく表示できませんでした」と出る。Fork の会話に Canvas を開く口を渡していない見込み（未確認）。",
+      "doneWhen": "Fork の会話の中の画面を大きく表示でき、Fork を開いたまま Canvas が右に乗る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-27T10:00:00+09:00",
+      "updatedAt": "2026-09-27T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "relay-grant-codeid-not-bound",
+      "kind": "bug",
+      "title": "外から繋いだ宛先への承認が、コードの印に縛られていない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "セキュリティ",
+        "中継"
+      ],
+      "body": "登録を消して別のサーバを同じ名前で繋ぐと、前の承認がそのまま効く。仕様は「縛る」と書いている——仕様と実装の食い違い。",
+      "doneWhen": "同じ名前で別のコードを繋いだら、聞き直す（試験で）",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §3"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-25T10:00:00+09:00",
+      "updatedAt": "2026-09-25T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "e2e-typecheck-red",
+      "kind": "bug",
+      "title": "e2e の型検査が赤い・そもそも型検査に入っていない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "試験"
+      ],
+      "body": "`oauth-mcp-fixture.ts` で11件落ちる。e2e の package.json に typecheck が無く、ルートの型検査から外れているので誰も気づいていなかった。",
+      "doneWhen": "ルートの npm run typecheck が e2e も見て通る",
+      "resolution": null,
+      "refs": [
+        "banto/e2e/oauth-mcp-fixture.ts:52"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-26T10:00:00+09:00",
+      "updatedAt": "2026-09-26T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "frontend-lint-red",
+      "kind": "bug",
+      "title": "フロントの npm run lint が赤い",
+      "status": "done",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "試験"
+      ],
+      "body": "react-hooks の指摘6件・トークンの検査5件・E2E のビルド成果物を見ていた250件。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-25T10:00:00+09:00",
+      "updatedAt": "2026-09-29T10:00:00+09:00",
+      "closedAt": "2026-09-29T10:00:00+09:00",
+      "extra": {}
+    },
+    {
+      "id": "shell-worktree-project-git",
+      "kind": "task",
+      "title": "git の worktree を根にした Project で、Shell の git が使えない",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "未決",
+        "shell"
+      ],
+      "body": "worktree の `.git` はファイルで、実体が根の外にある。直すには本体の `.git` を閉じ込めの許可に足すことになり、本体のリポジトリ全体に触れる——広げてよいかは人の判断。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-09-23-shell-home.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-09-23T10:00:00+09:00",
+      "updatedAt": "2026-09-23T10:00:00+09:00",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "landlock-proc-allowlist",
+      "kind": "task",
+      "title": "Landlock の許可リストから /proc を外す",
+      "status": "dropped",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "shell"
+      ],
+      "body": "",
+      "doneWhen": "",
+      "resolution": "やらないと決めた——閉じ込めを Project ごとのコンテナへ移し、Landlock そのものをやめた",
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-09-08T10:00:00+09:00",
+      "updatedAt": "2026-09-27T10:00:00+09:00",
+      "closedAt": "2026-09-27T10:00:00+09:00",
+      "extra": {}
+    }
+  ]
+}
