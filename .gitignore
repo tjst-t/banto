@@ -12,3 +12,6 @@ test-results/
 playwright-report/
 .tmp-data/
 .tmp-config/
+
+# Thread ごとの開発の作業ツリー（git worktree、2026-10-03 の運用ルール）
+/.worktrees/
