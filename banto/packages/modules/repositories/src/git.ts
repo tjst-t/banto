@@ -229,8 +229,10 @@ export async function readFolder(path: string): Promise<FolderFacts> {
   else if (/no such remote/i.test(origin.stderr)) remote = { kind: "none" };
   else fail(`${path} の origin`, origin);
 
-  // detached は code 1 で何も出さない（-q）。それ以外の失敗は本当の失敗
-  if (!branch.ok && !(branch.code === 1 && branch.stderr.trim() === "")) fail(`${path} のブランチ`, branch);
+  // detached は code 1 で何も出さない（-q）。それ以外の失敗は 128（git の決まり、実測）。**stderr が空かでは見ない**
+  // ——`git()` は stderr が空のとき失敗の文言を入れて返すので、以前の「code 1 かつ stderr が空」は成り立たず、
+  // detached HEAD のリポジトリが「読めません」になっていた（段階5で見つけた）
+  if (!branch.ok && branch.code !== 1) fail(`${path} のブランチ`, branch);
 
   // コミット数は飾り——**数えられなくても行は読めたことにし、数えられなかった理由を添える**（大きな履歴・遅い
   // ディスクで時間切れになっても、行ごと「読めない」にしない）。まだコミットが無い（HEAD の先が無い）は 0
