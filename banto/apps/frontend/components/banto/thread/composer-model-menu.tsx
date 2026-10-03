@@ -85,14 +85,15 @@ export function ComposerModelMenu({ threadId }: { threadId: string }) {
             type="button"
             aria-label={`この会話のモデル（現在：${label}${effort ? ` · ${effort}` : ""}）`}
             data-testid="composer-model"
-            className="text-ink-3 hover:text-foreground hover:bg-muted-foreground/15 flex h-7 max-w-56 items-center gap-1 rounded-full px-2 text-xs"
+            // 狭いときは permissionMode より先に縮む（shrink-[3]）——危ない設定の印のほうを読めるまま残す
+            className="text-ink-3 hover:text-foreground hover:bg-muted-foreground/15 flex h-7 min-w-0 max-w-56 shrink-[3] items-center gap-1 rounded-full px-2 text-xs"
           >
             <Cpu className="size-3.5 shrink-0" />
             <span className="truncate">{label}</span>
             {effort ? (
               <>
-                <span className="text-ink-3/70">·</span>
-                <span>{effort}</span>
+                <span className="shrink-0 text-ink-3/70">·</span>
+                <span className="shrink-0">{effort}</span>
               </>
             ) : null}
             <ChevronDownIcon className="size-3 shrink-0" />

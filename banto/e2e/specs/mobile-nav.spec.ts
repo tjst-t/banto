@@ -99,6 +99,21 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
   await expect(back).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(1500);
   expect(await composerFocused(page), "携帯で Fork へ移ったら入力欄に焦点が当たった（キーボードが出る）").toBe(false);
+
+  // **狭い幅でも送信ボタンが入力欄の枠の中に収まる**（2026-10-03、ユーザー報告：モデルと permissionMode の名前が
+  // 長いと枠の外へはみ出した）。名前のほうを「…」で切る
+  await page.setViewportSize({ width: 300, height: 844 });
+  await page.waitForTimeout(500);
+  const fit = await page.evaluate(() => {
+    const shell = [...document.querySelectorAll('[data-slot="aui_composer-shell"]')]
+      .filter((e) => e.getBoundingClientRect().width > 0)
+      .at(-1);
+    const send = shell?.querySelector(".aui-composer-send, .aui-composer-cancel");
+    if (!shell || !send) return null;
+    return { shellRight: shell.getBoundingClientRect().right, sendRight: send.getBoundingClientRect().right };
+  });
+  expect(fit, "入力欄か送信ボタンが見つからない").not.toBeNull();
+  expect(fit!.sendRight, "狭い幅で送信ボタンが入力欄の枠からはみ出した").toBeLessThanOrEqual(fit!.shellRight);
 });
 
 test.describe("パソコン", () => {

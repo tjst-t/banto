@@ -68,15 +68,15 @@ export function ComposerPermissionModeMenu({
             type="button"
             aria-label={`この会話の permissionMode（現在：${info.label}）`}
             className={cn(
-              "flex h-7 items-center gap-1 rounded-full px-2 text-xs",
+              "flex h-7 min-w-0 items-center gap-1 rounded-full px-2 text-xs",
               info.danger
                 ? "bg-warn-soft text-warn font-semibold"
                 : "text-ink-3 hover:text-foreground hover:bg-muted-foreground/15",
             )}
           >
-            {info.danger ? <ShieldAlert className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
-            <span>{info.label}</span>
-            <ChevronDownIcon className="size-3" />
+            {info.danger ? <ShieldAlert className="size-3.5 shrink-0" /> : <ShieldCheck className="size-3.5 shrink-0" />}
+            <span className="truncate">{info.label}</span>
+            <ChevronDownIcon className="size-3 shrink-0" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-80">

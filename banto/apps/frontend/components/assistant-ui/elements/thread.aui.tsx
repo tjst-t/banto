@@ -496,15 +496,17 @@ const Composer: FC<{
 
 const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerActionSlot }) => {
   return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <div className="flex items-center gap-1.5">
+    // **狭い幅でも送信ボタンを枠の外へ押し出さない**（banto、2026-10-03、ユーザー報告：携帯でモデルと permissionMode の
+    // 名前が長いと、送信ボタンがはみ出した）。左の群が縮み（中の名前を「…」で切る）、右の群（送信・停止）は縮めない
+    <div className="aui-composer-action-wrapper relative flex items-center justify-between gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
         {/* 添えられない会話（モックの台本）では出さない——押せるのに何も起きない、を作らない（規則13） */}
         <AuiIf condition={(s) => s.thread.capabilities.attachments}>
           <ComposerAddAttachment />
         </AuiIf>
         {composerActionSlot}
       </div>
-      <div className="flex items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>
