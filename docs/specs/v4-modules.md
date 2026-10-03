@@ -1526,7 +1526,7 @@ Module の一覧には**2種類が混ざる**：
 | **Service** | 動き続けるものを起こしておく | **Shell とは別実装**（§2.1）。§4.2 |
 | **Publish** | 動いているものに届く URL を生やす | **窓口1本＋実装が複数**。§4.3 |
 | ~~**Repo（git）**~~ | ~~複数リポジトリの一覧・worktree・clone/branch/log~~ | **§2.4 Repositories に移した**（2026-10-01）。git の操作（branch/log 等）は持たない |
-| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json）。§4.4 |
+| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json）。**実装・2026-10-03**（目録から入れる）。§4.4 |
 | **Factory** | 依頼を耐久ワークフローとして進める（要件 B） | **設計はゼロから起こす。core ではなく Module として作る**（決定・2026-09-11、ユーザー）——「依頼を進める」は Module の形で書けるものであり、core に持たせると core が2つになる（要件 C8） |
 | **Browser** | 人と AI が**同じブラウザ**を触る。通信も見る | **外部をマウントする**（§3.1・§4.1） |
 
@@ -1919,7 +1919,7 @@ AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**
 - **公開の認証の既定は「無し」**（2026-09-28、上の決定を実装に反映。承認の画面で Basic 認証も選べる）
 - ~~承認の頼みは受信箱に出ない~~ **→ 会話の中の画面でよい**（決定・2026-09-28、ユーザー。`import_skill` と同じ形）
 
-### 4.4 Backlog——仕事の一覧（決定・2026-10-02、ユーザー。未実装）
+### 4.4 Backlog——仕事の一覧（決定・2026-10-02、ユーザー。実装・2026-10-03）
 
 **今後やること・バグを、ストーリー・タスク・バグの3種類と依存関係で持つ。** Jira のタスク管理のエッセンスだけを借り、
 重いもの（スプリント等）は入れない。いまの `docs/tasks.json` が最初の利用者になる。
@@ -2016,11 +2016,86 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
 
 **消す tool は作らない。** 要らなくなったものは `dropped` で閉じれば記録が残る。
 
+#### 実装（2026-10-03）
+
+`packages/modules/backlog`（`@banto/module-backlog`）。**目録に置く**（`BUNDLED_CATALOG` の `backlog`、既定には入れない
+——人が「Module を追加」から入れる）。`scope: project`・`isolation: subprocess`・閉じ込めは FileSystem と同じ
+（Project の根、コマンドは走らせない）。いまは窓口とバックエンド（tasks.json）が1本の Module の中にある——
+実装の口を分けるのは2本目のバックエンドが来たとき（下の「まだ決めていない」）。
+
+**店（tasks.json の読み書き）**
+
+- **書く操作は Module のプロセスの中で1本の列に並べる**。毎回ファイルを読み直してから変え、検証してから
+  一時ファイル → rename で書く（人が手で直す・git pull で変わるので、覚えた中身を土台にしない）
+- 書く形は**2字下げ・末尾改行・項目の欄の順を固定**（上の表の順）。git の差分が読めるように
+- **検証**（違反は理由を言って断る。黙って直さない）：
+  - `id` は読める名前——英小文字・数字と `-` `.` `_`、80字まで、重複なし。作るとき省けば題から作る
+    （英数字が拾えない題は `item-n`）。AI・人が `id` を指定してもよい
+  - `parent` を持てるのはタスクだけ、親にできるのはストーリーだけ
+  - `dependsOn` は在る項目だけ・自分を含む輪は断る（輪の経路を言う）
+  - `dropped` には `resolution`（やめた理由）が要る。閉じると `closedAt`、開き直すと `closedAt` と `resolution` を消す
+  - `milestone` は `milestones` に在るものだけ
+- **手で入った前からある問題は、関係のない変更を止めない**——変える前に無かった問題が、変えた後に増えるときだけ断る。
+  前からある問題は読むたびに AI（`listItems` の返り値）と人（画面の上の注意）に知らせる
+- **ファイルが無い**：一覧は空として返し「まだ tasks.json がありません（場所）」と言う。最初の作成でフォルダごと作る
+- **読めない形**（`format` が `banto-backlog/1` でない・型が違う・知らない欄がある・壊れた JSON）：**読まず・書かず**、
+  どこが違うかを言う。古い tasks.json の形（`tasks` の配列）なら、変換のコマンドも案内する
+- 形に足したもの（`banto-backlog/1` のまま）：
+  - いちばん外側の **`extra`**——移したときの古い見出し（`phaseN`・`$comment` 等）を落とさずに運ぶ。中身は読まない
+  - `createdAt`・`updatedAt` は **`null` を許す**——古い形から移したもので日時が分からないとき（作らない）
+  - 欄が省かれた項目は既定（空の配列・`null`・`normal`）で読む。書くときは全部の欄を書く
+
+**AI の tool**（`agent`。上の表の6本）——返り値は短い文（1項目1行：`id [状態] 題 (種類) 親: 待ち:`）と、
+同じものの構造（`structuredContent`）。`listItems` は既定で閉じていないものだけ、`status` を渡すと閉じたものも絞れる。
+`splitStory` のタスク間の依存は `waitsFor`（同じ回のタスクの番号）、すでにある項目への依存は `dependsOn`。
+`moveItem` は `before` か `after` のどちらか1つ。`updateItem` の `dependsOn` は全体の張り替え。
+
+**取り組んだ Thread（`threads`）**：AI が `updateItem`（か `createItem`）で **in-progress にした・閉じた**とき、
+host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、アーキ仕様 §2.5）を足す。同じ Thread は2回足さない。
+**刻印が無い呼び出し（人の画面）では足さない。**
+
+**人の口**（`admin`。FileSystem のブラウザと同じ形——AI には見せない）：
+
+| tool | 何をするか |
+|---|---|
+| `getBoard` | 画面が描く全部（ファイルの様子・文書・問題・根）。`since` が今の版（中身のハッシュ）と同じなら `unchanged` だけ |
+| `boardCreateItem`・`boardUpdateItem`・`boardSplitStory`・`boardMoveItem` | AI の4本と同じ操作を、書いた後の一覧ごと返す |
+| `getSettings`・`setSettings` | tasks.json の場所 |
+
+**人の画面**（launcher `ui://banto-backlog/items`）：モック（`mock/components/banto/canvas/backlog-*.tsx`、経緯は
+`docs/notes/2026-10-02-backlog-ui-survey.md`）の形をそのまま素の HTML に移した——見方の切り替え（次にやる／すべて／
+バグ／閉じたもの）・1項目1行・状態の輪とストーリーの角の丸い四角（子の終わった割合だけ下から満ちる）・次にやるで
+タスクの頭にストーリー名・詳細は一覧を離れずに右に出す（Canvas が 48rem 未満なら一覧と入れ替わる）・キー操作
+（↑↓ j/k Enter Esc C）・ドラッグと行のメニューで並べ替え（同じ段の中だけ）・その場で足す・タスクに分ける・やめる＋理由。
+**AI や手で変わったものを出すため、画面が見えている間は3秒ごとに読み直す**（版が同じなら中身は送られない。
+打っている途中・小窓・ドラッグの間は当てない）。ファイルが無いときは「足す」へ誘い、読めない形のときは理由と
+変換のコマンドだけを出して、足す・見方を出さない。
+
+**設定**（設定 Canvas `ui://banto-backlog/config`）：tasks.json の場所。置き場は host が渡す `BANTO_MODULE_DATA_DIR`
+（Project ごとの Module は接続が Project ごとなので、**設定も Project ごと**）。Project の根の外（絶対パス・`..`）と
+`.json` でないものは断る。保存したら、その場所のファイルの様子（無い・読めない・n 件）を言う。
+
+**変換スクリプト**（`packages/modules/backlog/scripts/convert-tasks-json.mjs`）：古い形を**機械的に**読み替えて
+別の場所に書き出す（入力と同じ場所には書かない）。上の「移し方」に加えて：`in_progress` → `in-progress`、
+`completedAt` → `closedAt`、`dependencies` → `dependsOn`、`spec` → `refs` の末尾、`why`・`decision`・`scope`・`done`・
+`result`・`howFixed`・`verifiedBy`・`open`・`notes`・`note` → `body` の節（`## なぜ` 等）、ほかの欄（`decidedAt` 等）→ `extra`。
+`phase` は数字なら `phase-N`（`"Phase 0"` と `"0"` は同じ）、それ以外は `milestone-N`。いちばん外側の `phaseN` に
+`closedAt` があればそのマイルストーンは closed。**kind は全部 task**——ストーリーへの組み直しは人と AI が後でやる。
+知らない `status` は読み替えずに断る。
+
 #### まだ決めていない
 
-- 実装の口（`backlog` 役割。Vault の D節・Publish の実装の口に当たるもの）
-- 人の一覧画面の形（モックで決める）
+- 実装の口（`backlog` 役割。Vault の D節・Publish の実装の口に当たるもの）——2本目のバックエンドが来たときに分ける
+- ~~人の一覧画面の形（モックで決める）~~ **→ モックで決めて実装した（2026-10-03、上の「人の画面」）**
 - Factory との繋ぎ方（§5 の 6）
+- **「取り組んだ Thread」から、その Thread を開く口**——Canvas から banto の会話を開かせる口が無い
+  （`ui/open-link` は http/https を別タブで開くだけ）。押せるように見せないため、いまは Thread の id を文字で出すだけ（規則13）。
+  `dev.banto/open-new-project` と同じ形で足すかは未決（Repositories の「既にある Project を Canvas から開く口」と同じ問い）
+- **今の `docs/tasks.json` の移行そのもの**——変換スクリプトで書き出したものは確かめたが、置き換えはまだ（人が確かめてから）。
+  いまのファイルには **id `module-registry-install` が2件ある**（変換は直さずに運び、Module は「直すところ」として出す）。
+  どちらを残すか・ストーリーへの組み直しは人と AI でやる
+- 画面の読み直しの間隔（3秒）は、他の Module に揃える前例が無かったので仮に決めた。host から「変わった」を
+  知らせる口（MCP の `resources/subscribe` を Canvas に通す等）を作るかは未決
 
 ## 4.9 Module の宣言（決定・2026-09-06、Phase 1）
 
