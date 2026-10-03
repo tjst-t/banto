@@ -742,7 +742,13 @@ test("段階4：「読むだけ」の行にアカウントを後から選び・�
   // 失われるものが無い——1回の確かめで消える（名前は打たせない）
   await rowAction(inner, pubPath, "repo-delete-open");
   await expect(del.getByTestId("repo-delete-path")).toHaveText(pubPath, { timeout: 30_000 });
-  await expect(del.getByTestId("repo-delete-nothing")).toHaveText(`push していないコミット・変更・stash などはありません。フォルダごと消えます（${pubPath}）。`);
+  await expect(del.getByTestId("repo-delete-nothing")).toHaveText(
+    `数えたもの（push していないコミット・リモートに無いブランチやタグ・変更・追跡していないもの・stash）はありません。フォルダごと消えます（${pubPath}）。`,
+  );
+  // 数えていないものは「無い」と言わない
+  await expect(del.getByTestId("repo-delete-not-counted")).toHaveText(
+    "数えていないもの：reflog にだけ残っているコミット・Git LFS の push していないファイル・ignore 済みのファイル・submodule の中。要るなら、消す前にご自分で確かめてください。",
+  );
   await expect(del.getByTestId("repo-delete-loss")).toHaveCount(0);
   await expect(del.getByTestId("repo-delete-typed")).toHaveCount(0);
   await expect(del.getByTestId("repo-delete-projects")).toHaveCount(0);
@@ -847,6 +853,17 @@ test("段階4：core の新しい Project の画面に Repositories が名乗っ
   // 用意できるまでは、core の作る段は出さない
   await expect(dialog.getByLabel("Project 名")).toHaveCount(0);
   await expect(dialog.getByTestId("new-project-submit")).toHaveCount(0);
+  // 用意されたフォルダの広さも host に聞き、広ければ警告を出す（第三者の Module が / や home を返しうる）。
+  // E2E の core では置き場の下が「広い」にならないので、**用意されたフォルダについての答えだけ**を差し替える
+  // ——聞いた場所が用意されたフォルダであることも見る。広さの判断そのものは core の試験（root-scope）
+  const askedScope: string[] = [];
+  const wideForPrepared = async (route: Route) => {
+    const asked = new URL(route.request().url()).searchParams.get("path") ?? "";
+    askedScope.push(asked);
+    if (asked === `${repoHome}/${cloned}`) await route.fulfill({ json: { wide: true, includes: ["（試験の印）"] } });
+    else await route.fallback();
+  };
+  await page.route("**/api/config/root-scope**", wideForPrepared);
   let surface = surfaceOf(dialog);
   await surface.getByTestId("repo-clone-url").fill(`e2e-octo/${cloned}`);
   await expect(surface.getByTestId("repo-band-message")).toHaveText("ここに clone します。");
@@ -857,6 +874,9 @@ test("段階4：core の新しい Project の画面に Repositories が名乗っ
   await expect(dialog.getByTestId("module-surface")).toHaveCount(0);
   expect(existsSync(join(repoHome, cloned, "README.md")), "clone したフォルダに中身が無い").toBe(true);
   await expect(dialog.getByLabel("Project 名")).toHaveValue(cloned);
+  await expect(dialog.getByTestId("wide-root-warning"), "用意されたフォルダに広い根の警告が出ない").toContainText("（試験の印）");
+  expect(askedScope).toContain(`${repoHome}/${cloned}`);
+  await page.unroute("**/api/config/root-scope**", wideForPrepared);
   await expect(dialog.getByTestId("new-project-submit")).toHaveText("作成する");
   await dialog.getByTestId("new-project-submit").click();
   await expectProjectOpen(page, cloned, "用意したフォルダで作った Project が開かない");

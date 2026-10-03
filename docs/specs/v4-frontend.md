@@ -484,6 +484,9 @@ Module は Project に触らない（v4-modules.md §2.4）ので、**閉じる�
   都合（「削除したため」）を名指ししない。理由は頼む前に Module の画面が言う
 - 会話の中の画面からは人が押した直後だけ・開いている間は断る・開く場所の無い面からは断る——上と同じ
   （`lib/backend/canvas-requests.ts` が2つの頼みの決まりを1か所に持つ）
+- **人が断ったら（閉じずに・作らずに閉じたら）、同じ Module の画面からの同じ頼みは 30 秒受けない**——断った直後に
+  出し直して、押すまで繰り返す、をさせない（2026-10-03、レビュー）。済んだ（作った・閉じた）あとは縛らない。
+  `dev.banto/open-new-project` も同じ
 - id が見つからない・もう閉じているものは数だけ言い、閉じるものに入れない
 
 #### 新しい Project の画面に Module が差し出すタブ（決定・2026-10-03、Repositories 段階4）
@@ -493,9 +496,9 @@ core の新しい Project の画面は「手元のフォルダ」だけを持ち
 
 | 向き | 形 |
 |---|---|
-| Module → banto（名乗り） | 資源（`ui://`、`text/html;profile=mcp-app`）の `_meta["dev.banto/canvas"] = "folder-provider"`。タブの名前・説明・アイコンは資源の `name`・`description`・`icons[0].src`（MCP の標準の欄） |
+| Module → banto（名乗り） | 資源（`ui://`、`text/html;profile=mcp-app`）の `_meta["dev.banto/canvas"] = "folder-provider"`。タブの名前・説明・アイコンは資源の `name`・`description`・`icons[0].src`（MCP の標準の欄）。名前は 1〜40 字（外れたら出さず、ログに残す）。core の「手元のフォルダ」と同じ名前なら Module の名前を添える。説明は 200 字で切る |
 | banto が集める | `GET /api/ui-folder-providers`——banto 全体（instance）の Module のものだけ。アイコンは `data:image/svg+xml` か `data:image/png` の base64 で 2万字未満のものだけ渡す（画面に外へ読みに行かせない） |
-| 画面 → banto（返り） | request `dev.banto/folder-prepared`（`params.path`＝`/` から始まる 4096字まで、`params.summary`＝1〜500字、`params.suggestedName?`＝200字まで） |
+| 画面 → banto（返り） | request `dev.banto/folder-prepared`（`params.path`＝`/` から始まる 4096字まで——`//`・`/./` を畳み末尾の `/` を外して揃える、`..` を含めば断る。`params.summary`＝1〜500字、`params.suggestedName?`＝200字まで） |
 | banto → 画面 | `{}`。新しい Project の画面の枠の中に出した画面でなければ断る（-32000）。読めない params は InvalidParams |
 
 - 枠の中の画面は banto 全体の Module の画面（`owner: instance`）として出す。**点線の枠と出所**（「〈Module〉の画面」と
@@ -503,6 +506,8 @@ core の新しい Project の画面は「手元のフォルダ」だけを持ち
 - 返ってきたら core が下の段（Project 名・Advanced）を出して作る。**そのフォルダを Root にした Project が既にあれば、
   新しくは作らずそれを開く**（閉じていれば再開）——core が自分の Project の一覧で調べる（Module に聞かない）。
   Module が言った1行（`summary`）を出所つきで添え、「別のフォルダにする」で Module の画面に戻れる
+- **用意されたフォルダにも広い根の警告を出す**（手元のフォルダと同じ `/api/config/root-scope`）——第三者の Module が
+  `/` や home を返しうる（2026-10-03、レビュー）
 - 名乗る Module が無ければタブを出さない（「手元のフォルダ」だけ）。名乗りが読めなければ理由を出し、手元のフォルダは選べる
 - 返す口を MCP Apps の標準（`ui/message`・`ui/update-model-context` 等）にしなかったのは、どれも「会話（モデル）へ
   渡す」意味を持ち、ここは会話の外の画面だから
