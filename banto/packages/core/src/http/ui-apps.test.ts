@@ -147,6 +147,17 @@ class InstanceOnlyModule implements ModuleClientLike {
           _meta: { "dev.banto/canvas": "folder-provider" },
         },
         { uri: "repositories://not-ui", name: "画面でない", mimeType: "application/json", _meta: { "dev.banto/canvas": "folder-provider" } },
+        // 名前が core のタブと同じ・説明が長い——名前に Module を添え、説明は 200 字で切る
+        {
+          uri: "ui://repositories/same-name",
+          name: "手元のフォルダ",
+          description: "あ".repeat(250),
+          mimeType: "text/html;profile=mcp-app",
+          _meta: { "dev.banto/canvas": "folder-provider" },
+        },
+        // 名前が無い・長すぎる——出さない
+        { uri: "ui://repositories/no-name", name: "  ", mimeType: "text/html;profile=mcp-app", _meta: { "dev.banto/canvas": "folder-provider" } },
+        { uri: "ui://repositories/long-name", name: "長".repeat(41), mimeType: "text/html;profile=mcp-app", _meta: { "dev.banto/canvas": "folder-provider" } },
       ],
     };
   }
@@ -602,6 +613,12 @@ test("新しい Project の画面に差し出す始め方は、banto 全体の M
         },
         // 外の URL のアイコンは渡さない（画面に外へ読みに行かせない）
         { server: "repositories", resourceUri: "ui://repositories/prepare-create", name: "新しいリポジトリ" },
+        {
+          server: "repositories",
+          resourceUri: "ui://repositories/same-name",
+          name: "手元のフォルダ（repositories）",
+          description: `${"あ".repeat(200)}…`,
+        },
       ]);
     },
     { withInstanceOnlyModule: true },

@@ -781,23 +781,36 @@ async function listLauncherCanvases(
  * 用意できる」と名乗った画面を集める。**タブの名前・説明・アイコンは名乗ったもの**（仕様の `name`・`description`・
  * `icons`）——core は「clone」という言葉を持たない。アイコンは画像の `data:` URI だけを渡す（外へ読みに行かせない）
  */
+/** core の新しい Project の画面が自分で持つタブの名前（Module が同じ名前を名乗ったら見分けがつくようにする） */
+const CORE_FOLDER_TAB_NAME = "手元のフォルダ";
+
 async function listFolderProviderCanvases(
   modules: Array<{ name: string; client: ModuleClientLike }>,
-): Promise<Array<{ server: string; resourceUri: string; name?: string; description?: string; icon?: string }>> {
-  const result: Array<{ server: string; resourceUri: string; name?: string; description?: string; icon?: string }> = [];
+): Promise<Array<{ server: string; resourceUri: string; name: string; description?: string; icon?: string }>> {
+  const result: Array<{ server: string; resourceUri: string; name: string; description?: string; icon?: string }> = [];
   for (const { name, resources } of await listResourcesOfAll(modules)) {
     for (const r of resources) {
       if (canvasKindOf(r) !== "folder-provider") continue;
       const uri = (r as { uri?: unknown }).uri;
       if (typeof uri !== "string" || !isUiResourceMime((r as { mimeType?: unknown }).mimeType)) continue;
+      // タブの名前は 1〜40 字（無い・長すぎるものは出さない——黙らずログに残す）。core の「手元のフォルダ」と同じ
+      // 名前なら Module の名前を添える（core のタブと見分けられるように）。説明は 200 字で切る
+      const rawName = (r as { name?: unknown }).name;
+      const tabName = typeof rawName === "string" ? rawName.trim() : "";
+      if (tabName.length < 1 || tabName.length > 40) {
+        console.warn(`[host] ${name} の ${uri} はタブの名前が無いか長すぎる（1〜40 字）ので、新しい Project の画面に出しません`);
+        continue;
+      }
+      const rawDescription = (r as { description?: unknown }).description;
+      const description = typeof rawDescription === "string" && rawDescription.trim() ? rawDescription.trim() : undefined;
       const icons = (r as { icons?: unknown }).icons;
       const src = Array.isArray(icons) ? (icons[0] as { src?: unknown } | undefined)?.src : undefined;
       const icon = typeof src === "string" && /^data:image\/(svg\+xml|png);base64,[A-Za-z0-9+/=]+$/.test(src) && src.length < 20_000 ? src : undefined;
       result.push({
         server: name,
         resourceUri: uri,
-        name: (r as { name?: string }).name,
-        description: (r as { description?: string }).description,
+        name: tabName === CORE_FOLDER_TAB_NAME ? `${tabName}（${name}）` : tabName,
+        ...(description ? { description: description.length > 200 ? `${description.slice(0, 200)}…` : description } : {}),
         ...(icon ? { icon } : {}),
       });
     }
