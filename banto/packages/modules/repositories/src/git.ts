@@ -408,22 +408,23 @@ export function gitClone(input: {
     child.stderr.on("data", (chunk: string) => {
       arm();
       buffer += chunk;
-      // 改行の来ない出力で際限なく伸ばさない——長すぎたら、そこまでを1行として扱う
-      if (buffer.length > 64 * 1024) {
-        tail.push(buffer.slice(0, 2000) + "…");
-        if (tail.length > 20) tail.shift();
-        buffer = "";
-      }
       // 進み具合は \r で上書きされる——\r と \n のどちらでも区切る
       const parts = buffer.split(/[\r\n]/);
       buffer = parts.pop() ?? "";
+      // 改行の来ない出力で際限なく伸ばさない——**区切ったあとの残り**が長すぎたら、そこまでを1行として扱う
+      // （区切る前に切ると、同じ塊に入っていた git 自身の行——fatal: 等——まで捨てる。実測で10回中2回）
+      if (buffer.length > 64 * 1024) {
+        parts.push(buffer.slice(0, 2000) + "…");
+        buffer = "";
+      }
       for (const line of parts) {
         const t = line.trim();
         if (!t) continue;
         const m = t.match(PROGRESS);
         if (m) input.onProgress?.({ phase: m[1]!, percent: Number(m[2]) });
         else {
-          tail.push(t);
+          // 1行も長すぎれば切る（残りの上限の手前で改行が来ると、長い1行がそのまま来る）
+          tail.push(t.length > 2000 ? t.slice(0, 2000) + "…" : t);
           if (tail.length > 20) tail.shift();
         }
       }
