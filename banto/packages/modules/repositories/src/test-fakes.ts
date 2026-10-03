@@ -60,6 +60,10 @@ export interface FakeGithub {
   orgs: Map<string, FakeOrg>;
   /** push を断るリポジトリ（`owner/name` の小文字。push の失敗の試験） */
   rejectPush: Set<string>;
+  /** 頼まれた公開範囲を無視して公開で作る（作られた範囲の食い違いの試験） */
+  forcePublic: boolean;
+  /** 作ったあと、返事を返さずに接続を切る（作れたか分からない、の試験） */
+  dropAfterCreate: boolean;
   /** 作ったリポジトリ（`owner/name`。試験が見る） */
   created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>;
   /** リポジトリを作る（1コミット入り） */
@@ -125,6 +129,8 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
     noAdministration: new Set(),
     orgs: new Map(),
     rejectPush: new Set(),
+    forcePublic: false,
+    dropAfterCreate: false,
     created: [],
   };
   const polls = new Map<string, number>();
@@ -212,7 +218,8 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
             if (reject.on) state.rejectPush.add(reject.repo.toLowerCase());
             else state.rejectPush.delete(reject.repo.toLowerCase());
           }
-          return send(200, { refreshCalls: state.refreshCalls });
+          // 作ったリポジトリも返す（E2E が、頼んだ公開範囲・持ち主で作られたかを見る）
+          return send(200, { refreshCalls: state.refreshCalls, created: state.created });
         }
         // ── git（smart HTTP）。GitHub と同じく、資格情報が無ければ 401、見えなければ 404 ──
         const gitPath = url.pathname.match(/^\/([^/]+)\/([^/]+?)\.git(\/.*)$/);
@@ -379,13 +386,18 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
           // 空のリポジトリ（README 等は作らない）——本物の git が push できる
           mkdirSync(join(gitRoot, owner), { recursive: true });
           execFileSync("git", ["init", "-q", "--bare", join(gitRoot, owner, `${name}.git`)], { stdio: "ignore" });
-          repos.set(key, { private: body.private === true, readers: [owner, me], writers: [me] });
-          state.created.push({ owner, name, private: body.private === true, ...(body.description ? { description: body.description } : {}), by: me });
+          const isPrivate = body.private === true && !state.forcePublic;
+          repos.set(key, { private: isPrivate, readers: [owner, me], writers: [me] });
+          state.created.push({ owner, name, private: isPrivate, ...(body.description ? { description: body.description } : {}), by: me });
+          if (state.dropAfterCreate) {
+            req.socket.destroy();
+            return;
+          }
           return send(201, {
             name,
             full_name: `${owner}/${name}`,
             owner: { login: owner },
-            private: body.private === true,
+            private: isPrivate,
             html_url: `https://github.com/${owner}/${name}`,
           });
         }

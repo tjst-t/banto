@@ -329,6 +329,10 @@ export function writeEnv(credential: GitCredential): NodeJS.ProcessEnv {
   );
   // 取ってくる仕事では、手元のパスを相手にさせない（submodule 等で file:// を辿らない）
   overrides.push(["protocol.file.allow", "never"]);
+  // **submodule へ辿らない**（段階5のレビュー・実測）——リポジトリの設定の `push.recurseSubmodules=on-demand` は、push の
+  // ついでに submodule をその remote へ push し、親の検査（`pushBlockers`・push 先の確かめ）を迂回する。同じ相手（host）
+  // なら一度きりの窓口がトークンを渡してしまう。`submodule.recurse` は push・fetch・checkout の再帰の既定
+  overrides.push(["push.recurseSubmodules", "no"], ["submodule.recurse", "false"]);
   // 空にした一覧のあとに足す（同じ段の中では順に読まれる——空で消し、次で1つだけ足す）
   if (credential.kind === "helper") overrides.push(["credential.helper", credential.command]);
   if (credential.kind === "ssh-agent") {
@@ -404,6 +408,8 @@ function streamGit(input: {
 }): Promise<CloneResult> {
   const command = allowedCommand(input.args);
   if (!command) return Promise.resolve({ ok: false, kind: "failed", message: `git ${input.args[0] ?? ""} は走らせない決まりです` });
+  // 始める前にやめられていたら、走らせない（abort の知らせは、もう来ない）
+  if (input.signal?.aborted) return Promise.resolve({ ok: false, kind: "cancelled", message: "やめました" });
   return new Promise((resolve) => {
     const child = spawn("git", input.args, {
       env: writeEnv(input.credential),
@@ -553,6 +559,16 @@ export async function pushBlockers(path: string): Promise<string[]> {
   if (r.ok) return [...new Set(r.stdout.split("\n").filter(Boolean))];
   if (r.code === 1) return [];
   return fail(`${path} の設定`, r);
+}
+
+/**
+ * origin の push 先（`get-url --push --all`——pushurl があればそれ、insteadOf・pushInsteadOf の書き換えも済んだ形）。
+ * push の直前に、作った URL と1行だけ一致するかを見るのに使う。読むのは push と同じ段（リポジトリの段だけ）
+ */
+export async function pushUrls(path: string): Promise<string[]> {
+  const r = await git(path, ["remote", "get-url", "--push", "--all", "origin"], GIT_TIMEOUTS.default, writeEnv({ kind: "none" }));
+  if (!r.ok) return fail(`${path} の origin の push 先`, r);
+  return r.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 /** origin を足す（呼ぶ側が「origin がまだ無い」を確かめてから。URL に資格情報は入れない） */

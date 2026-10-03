@@ -73,7 +73,7 @@ export interface GithubApi {
   /** そのトークンでの `owner/name` への権限（見えなければ `visible: false`。それ以外の断りは投げる） */
   repoAccess(token: string, owner: string, name: string): Promise<{ visible: false } | { visible: true; push: boolean; admin: boolean }>;
   /** 公開の行き先にできる持ち主（自分と、属する Organization）と、そこにリポジトリを作れそうか（段階5） */
-  publishOwners(token: string, login: string): Promise<PublishOwners>;
+  publishOwners(token: string, login: string, kind: "app" | "pat"): Promise<PublishOwners>;
   /** 空のリポジトリを作る（README 等は作らない）。`org` があれば Organization に（段階5） */
   createRepo(token: string, input: { org?: string; name: string; private: boolean; description?: string }): Promise<CreatedRepo>;
 }
@@ -285,7 +285,7 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       return { visible: true, push: body?.permissions?.push === true, admin: body?.permissions?.admin === true };
     },
 
-    async publishOwners(token, login) {
+    async publishOwners(token, login, kind) {
       const headers = { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28", "user-agent": "banto" };
       const get = async (path: string): Promise<{ status: number; body: unknown; scopes: string | null }> => {
         let res: Response;
@@ -298,13 +298,14 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
         if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
         return { status: res.status, body, scopes: res.headers.get("x-oauth-scopes") };
       };
-      // classic PAT（と OAuth App）は X-OAuth-Scopes で権限が分かる。GitHub App のトークン・fine-grained PAT には無い
+      // **資格情報の種類で見る**（段階5のレビュー）——インストールを読めるかで App のトークンかを当てると、読めてしまう
+      // fine-grained PAT を「App が入っていない」と誤って断る。PAT は X-OAuth-Scopes（classic）で分かり、無ければ
+      // fine-grained で前もって知る口が無い。App のトークンは、どこに入っていて Administration を書けるかで見る
       const me = await get("/user");
       if (me.status !== 200) throw new GithubError(`GitHub がユーザーを返しませんでした（HTTP ${me.status}）`, String(me.status));
-      const scopes = me.scopes === null ? undefined : me.scopes.split(",").map((x) => x.trim()).filter(Boolean);
-      // GitHub App のトークンなら、どこに入っていて Administration を書けるかが分かる
+      const scopes = kind === "pat" && me.scopes !== null ? me.scopes.split(",").map((x) => x.trim()).filter(Boolean) : undefined;
       let installations: Array<{ account: string; administration?: string }> | undefined;
-      if (scopes === undefined) {
+      if (kind === "app") {
         const inst = await get("/user/installations");
         if (inst.status === 200) {
           const list = (inst.body as { installations?: unknown })?.installations;
@@ -315,6 +316,8 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
                   : [],
               )
             : [];
+        } else {
+          throw new GithubError(`GitHub App のインストールを読めませんでした（HTTP ${inst.status}）`, String(inst.status));
         }
       }
       const judge = (owner: string): Pick<PublishOwner, "create" | "note" | "publicOnly"> => {
@@ -336,30 +339,29 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       if (orgs.status !== 200 || !Array.isArray(orgs.body)) {
         return { owners, orgsError: `GitHub が Organization の一覧を返しませんでした（HTTP ${orgs.status}）` };
       }
-      for (const o of orgs.body as Array<{ login?: unknown }>) {
-        if (typeof o?.login !== "string") continue;
-        const base = judge(o.login);
-        if (base.create === "no") {
-          owners.push({ login: o.login, kind: "org", ...base });
-          continue;
-        }
-        // Organization の中の決まり：owner（admin）は作れる。メンバーは、Org がメンバーに作らせているときだけ
-        const membership = await get(`/user/memberships/orgs/${encodeURIComponent(o.login)}`);
-        const role = (membership.body as { role?: unknown } | undefined)?.role;
-        if (membership.status === 200 && role === "admin") {
-          owners.push({ login: o.login, kind: "org", ...base });
-          continue;
-        }
-        const org = await get(`/orgs/${encodeURIComponent(o.login)}`);
-        const allowed = (org.body as { members_can_create_repositories?: unknown } | undefined)?.members_can_create_repositories;
-        if (org.status === 200 && allowed === false) {
-          owners.push({ login: o.login, kind: "org", create: "no", note: `${o.login} はメンバーがリポジトリを作れない設定です——Organization の owner に作ってもらうか、設定（Member privileges の Repository creation）を変えてもらってください` });
-        } else if (org.status === 200 && allowed === true) {
-          owners.push({ login: o.login, kind: "org", ...base });
-        } else {
-          owners.push({ login: o.login, kind: "org", create: "unknown", note: `${o.login} でメンバーが作れるかを確かめられませんでした（作ってみるまで分かりません）` });
-        }
-      }
+      // Organization ごとの問い合わせは並べて（多い人を順に待たせない）。並びは GitHub の返した順のまま
+      const judged = await Promise.all(
+        (orgs.body as Array<{ login?: unknown }>)
+          .filter((o): o is { login: string } => typeof o?.login === "string")
+          .map(async (o): Promise<PublishOwner> => {
+            const base = judge(o.login);
+            if (base.create === "no") return { login: o.login, kind: "org", ...base };
+            // Organization の中の決まり：owner（admin）は作れる。メンバーは、Org がメンバーに作らせているときだけ
+            const [membership, org] = await Promise.all([
+              get(`/user/memberships/orgs/${encodeURIComponent(o.login)}`),
+              get(`/orgs/${encodeURIComponent(o.login)}`),
+            ]);
+            const role = (membership.body as { role?: unknown } | undefined)?.role;
+            if (membership.status === 200 && role === "admin") return { login: o.login, kind: "org", ...base };
+            const allowed = (org.body as { members_can_create_repositories?: unknown } | undefined)?.members_can_create_repositories;
+            if (org.status === 200 && allowed === false) {
+              return { login: o.login, kind: "org", create: "no", note: `${o.login} はメンバーがリポジトリを作れない設定です——Organization の owner に作ってもらうか、設定（Member privileges の Repository creation）を変えてもらってください` };
+            }
+            if (org.status === 200 && allowed === true) return { login: o.login, kind: "org", ...base };
+            return { login: o.login, kind: "org", create: "unknown", note: `${o.login} でメンバーが作れるかを確かめられませんでした（作ってみるまで分かりません）` };
+          }),
+      );
+      owners.push(...judged);
       return { owners };
     },
 

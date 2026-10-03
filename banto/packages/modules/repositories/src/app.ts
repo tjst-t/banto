@@ -1900,11 +1900,17 @@ const SCRIPT = String.raw`
     renderPublish();
   }
   const NAME_OK = /^[A-Za-z0-9._-]{1,100}$/;
+  /** 公開範囲：公開のものしか作れない持ち主なら公開、そうでなければ選んだもの（既定は非公開） */
+  function pbVisibility() {
+    const o = pbChosenOwner();
+    return o && o.publicOnly ? "public" : pb.visibility;
+  }
   function stepLabel(step, job) {
     const t = job.target;
     if (step.key === "create") return "GitHub に " + t.owner + "/" + t.name + " を作る（" + (t.private ? "非公開" : "公開") + "）";
-    if (step.key === "origin") return "origin に設定する";
-    if (step.state === "skipped") return "push はしません（まだコミットがありません）";
+    if (step.key === "origin") return step.state === "skipped" ? "origin には設定していません" : "origin に設定する";
+    if (step.key === "ledger") return "一覧に書く";
+    if (step.state === "skipped") return job.noCommits ? "push はしません（まだコミットがありません）" : "push はしていません";
     const prog = step.state === "running" && job.progress ? "　" + job.progress.phase + (job.progress.percent !== undefined ? " " + job.progress.percent + "%" : "") : "";
     return (job.branch || "") + " を push する" + prog;
   }
@@ -1936,7 +1942,7 @@ const SCRIPT = String.raw`
           h("p", { class: "k" }, [icon("arrowDown"), state_ === "local" ? "GitHub に作る" : "GitHub（origin）"]),
           h("p", { class: "v", "data-testid": "publish-target" }, ["github.com/" + target.owner + "/", h("b", { text: target.name || "…" })]),
         ]),
-        state_ === "local" ? h("span", { class: "badge", "data-testid": "publish-visibility-badge" }, [icon(pb.visibility === "private" ? "lock" : "globe"), pb.visibility === "private" ? "非公開" : "公開"]) : null,
+        state_ === "local" ? h("span", { class: "badge", "data-testid": "publish-visibility-badge" }, [icon(pbVisibility() === "private" ? "lock" : "globe"), pbVisibility() === "private" ? "非公開" : "公開"]) : null,
       ]),
     ]) : null);
     // ブランチ
@@ -1962,7 +1968,7 @@ const SCRIPT = String.raw`
         if (usable.length === 1) kids.push(h("p", { class: "help", "data-testid": "publish-account-one" }, [h("span", { class: "mark", "aria-hidden": "true", text: usable[0].login.slice(0, 1) }), " " + usable[0].login + " で作ります"]));
         else if (usable.length > 1) kids.push(h("div", { class: "pills", role: "radiogroup", "aria-label": "公開に使うアカウント" }, usable.map((x) => h("button", {
           class: "pill", type: "button", role: "radio", "aria-checked": String(a && a.login === x.login), "aria-pressed": String(a && a.login === x.login), "data-testid": "publish-account-pick", "data-login": x.login, disabled: busy,
-          onclick: () => { pb.login = x.login; pb.owner = undefined; pb.nameCheck = null; renderPublish(); checkPublishName(); },
+          onclick: () => { pb.login = x.login; pb.owner = undefined; pb.visibility = "private"; pb.nameCheck = null; renderPublish(); checkPublishName(); },
         }, [x.login]))));
         for (const x of blocked) kids.push(h("p", { class: "blocked", "data-testid": "publish-account-unusable", text: x.login + " は使えません：" + (x.error || x.owners.map((y) => y.note).filter(Boolean).join("・")) }));
         p.account.replaceChildren(h("div", { class: "field" }, kids));
@@ -1974,7 +1980,7 @@ const SCRIPT = String.raw`
         const kids = [h("p", { class: "lbl", text: "持ち主" })];
         if (ok.length > 1) kids.push(h("div", { class: "pills", role: "radiogroup", "aria-label": "持ち主" }, ok.map((y) => h("button", {
           class: "pill", type: "button", role: "radio", "aria-checked": String(o && o.login === y.login), "aria-pressed": String(o && o.login === y.login), "data-testid": "publish-owner-pick", "data-owner": y.login, disabled: busy,
-          onclick: () => { pb.owner = y.login; pb.nameCheck = null; renderPublish(); checkPublishName(); },
+          onclick: () => { pb.owner = y.login; pb.visibility = "private"; pb.nameCheck = null; renderPublish(); checkPublishName(); },
         }, [y.login + (y.kind === "org" ? "（Organization）" : "")]))));
         else if (o) kids.push(h("p", { class: "help", "data-testid": "publish-owner-one", text: o.login + (o.kind === "org" ? "（Organization）" : "（あなたのアカウント）") }));
         if (o && o.note) kids.push(h("p", { class: o.create === "unknown" ? "help" : "warnline", "data-testid": "publish-owner-note", text: o.note }));
@@ -1996,16 +2002,17 @@ const SCRIPT = String.raw`
         : null,
       );
       // 公開範囲（public_repo だけの PAT なら公開だけ）
+      // 描画では状態を変えない——公開のものしか作れない持ち主なら、ここで「公開」と見せるだけ（選び直したら既定に戻る）
       const publicOnly = !!(o && o.publicOnly);
-      if (publicOnly) pb.visibility = "public";
+      const visibility = pbVisibility();
       const hasCommits = b && !b.unborn;
       p.visibility.replaceChildren(h("div", { class: "field" }, [
         h("p", { class: "lbl", id: "repo-publish-visibility-label", text: "公開範囲" }),
         h("div", { class: "pills", role: "radiogroup", "aria-labelledby": "repo-publish-visibility-label" }, [["private", "lock", "非公開"], ["public", "globe", "公開"]].map((v) => h("button", {
-          class: "pill", type: "button", role: "radio", "aria-checked": String(pb.visibility === v[0]), "aria-pressed": String(pb.visibility === v[0]), "data-testid": "publish-visibility", "data-value": v[0], disabled: busy || (publicOnly && v[0] === "private"),
+          class: "pill", type: "button", role: "radio", "aria-checked": String(visibility === v[0]), "aria-pressed": String(visibility === v[0]), "data-testid": "publish-visibility", "data-value": v[0], disabled: busy || (publicOnly && v[0] === "private"),
           onclick: () => { pb.visibility = v[0]; renderPublish(); },
         }, [icon(v[1]), v[2]]))),
-        pb.visibility === "private"
+        visibility === "private"
           ? h("p", { class: "help", text: (o ? o.login : "持ち主") + " と、招いた人だけが見られます。" })
           : h("p", { class: "warnline", "data-testid": "publish-public-warning", text: "誰でも読めます。これまでの" + (hasCommits && b.commits ? " " + b.commits + " コミットの" : "") + "履歴も、すべて公開されます。" }),
       ]));
@@ -2055,7 +2062,7 @@ const SCRIPT = String.raw`
     if (!a || !o || pb.starting) return;
     pb.starting = true; pb.error = null; renderPublish();
     try {
-      pb.job = await call("start_publish", { path: pb.path, login: a.login, owner: o.login, name: pb.name, private: pb.visibility === "private", description: pb.description.trim() });
+      pb.job = await call("start_publish", { path: pb.path, login: a.login, owner: o.login, name: pb.name, private: pbVisibility() === "private", description: pb.description.trim() });
       pb.starting = false;
       renderPublish();
       pollPublish(pb.job.id);
@@ -2063,8 +2070,9 @@ const SCRIPT = String.raw`
       pb.starting = false;
       pb.error = "公開できませんでした：" + errText(e);
       renderPublish();
-      // 名前がぶつかったなら、空いている名前を出す
-      pb.nameCheck = null; checkPublishName();
+      // 名前がぶつかったときだけ、空いている名前を出す——「作れたかどうか分からない」（送ったあとに切れた）で名前を
+      // 確かめ直すと、作られていた自分のリポジトリを「使われている」と言って -2 を作らせてしまう
+      if (/には、もう .+ があります/.test(errText(e))) { pb.nameCheck = null; checkPublishName(); }
     }
   }
   async function retryPush() {

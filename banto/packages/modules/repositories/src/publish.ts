@@ -11,7 +11,9 @@
 //   リモートの場所とアカウントを書く
 // - **資格情報**は clone と同じ（段階3）：GitHub のアカウントのトークンは一度きりの窓口から credential helper へ、
 //   SSH 鍵のアカウントは Vault の ssh-agent と GitHub の host 鍵。**origin の URL に資格情報は入れない**
-// - **push の送り先・TLS を変える設定がリポジトリにあれば push しない**（`pushBlockers`）
+// - **push の送り先・TLS を変える設定がリポジトリにあれば push しない**（`pushBlockers`）。**push の直前にも読み直し**、
+//   origin の push 先が作った URL の1つだけであることを確かめる（押したあとに `.git/config` が書き換えられうる）。
+//   submodule へは辿らない（`writeEnv`）。頼んだ公開範囲で作られなければ origin も push もしない
 // - **作れたのに push で失敗したら、作ったリポジトリは消さない**（人のものを勝手に消さない）。「GitHub にはできて
 //   います」と言い、push だけやり直せる（`retryPush`）。やり直せる状態は**フォルダから導く**——origin が GitHub で、
 //   いまのブランチが origin にまだ無い（「push に失敗した」という印は持たない、規則3）
@@ -20,7 +22,8 @@
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, sep } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename } from "node:path";
 import type { GithubAccounts } from "./accounts.js";
 import { writeGithubKnownHosts } from "./clone.js";
 import { openCredentialWindow, type CredentialWindow } from "./credential-server.js";
@@ -29,13 +32,14 @@ import {
   gitPush,
   gitRemoteAdd,
   pushBlockers,
+  pushUrls,
   readFolder,
   sshCommandFor,
   type BranchFacts,
   type CloneProgress,
   type GitCredential,
 } from "./git.js";
-import type { GithubApi, GithubEndpoints, PublishOwner } from "./github.js";
+import { GithubError, type GithubApi, type GithubEndpoints, type PublishOwner } from "./github.js";
 import { syncWithOrigin, type LedgerEntry, type LedgerStore } from "./ledger.js";
 import { displayPath } from "./paths.js";
 import type { ProjectsLookup } from "./repositories.js";
@@ -48,7 +52,14 @@ export function isValidRepoName(name: string): boolean {
   return REPO_NAME.test(name) && name !== "." && name !== "..";
 }
 
-const isInside = (child: string, parent: string) => child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+/** GitHub の持ち主（ユーザー・Organization）の名前に使える形 */
+const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/**
+ * **試験で差し込む穴**——push の直前（origin と台帳のあと、読み直しの前）に呼ぶ。試験はここで `.git/config` を書き換える
+ * （Project の Root はコンテナに mount されるので、中の AI が押したあとに書き換えうる）・やめるを押す
+ */
+export const PUBLISH_HOOKS: { beforePush?: (path: string, jobId: string) => Promise<void> } = {};
 
 export interface PublishInspection {
   path: string;
@@ -76,7 +87,7 @@ export interface PublishTargets {
   preselected?: string;
 }
 
-export type PublishStepKey = "create" | "origin" | "push";
+export type PublishStepKey = "create" | "origin" | "ledger" | "push";
 
 export interface PublishJobView {
   id: string;
@@ -148,10 +159,17 @@ export class Publisher {
     if (!lookup.ok) throw new Error(`この Project の Root を引けませんでした：${lookup.error}`);
     const project = lookup.projects.find((p) => p.id === input.forProject);
     if (!project) throw new Error("この Project が見つかりません");
-    const entries = await this.deps.store.entries();
-    const match = entries
-      .filter((e) => project.root === e.path || isInside(project.root, e.path))
-      .sort((a, b) => b.path.length - a.path.length)[0];
+    // Root の**リポジトリの一番上**を git に聞き、台帳の行と一致するものだけ（パスの前方一致では、台帳にある外側の
+    // リポジトリや、名前の似た隣を拾いうる）。readFolder は realpath を取る
+    const root = project.root.length > 1 ? project.root.replace(/\/+$/, "") : project.root;
+    let top: string | undefined;
+    try {
+      const facts = await readFolder(root);
+      top = facts.kind === "repo" ? facts.path : facts.kind === "inside" ? facts.top : facts.kind === "worktree" ? await realpath(root) : undefined;
+    } catch (err) {
+      throw new Error(`この Project の Root（${displayPath(project.root, this.home)}）を読めません：${(err as Error).message}`);
+    }
+    const match = top ? (await this.deps.store.entries()).find((e) => e.path === top) : undefined;
     if (!match) {
       throw new Error(`この Project の Root（${displayPath(project.root, this.home)}）はリポジトリの一覧にありません——一覧の「フォルダを Import」で足してから公開してください`);
     }
@@ -210,7 +228,7 @@ export class Publisher {
     for (const a of accounts) {
       try {
         const token = await this.deps.accounts.tokenFor(a.login, callId);
-        const owners = await this.deps.github.publishOwners(token, a.login);
+        const owners = await this.deps.github.publishOwners(token, a.login, a.credential.kind);
         out.push({ login: a.login, owners: owners.owners, ...(owners.orgsError ? { orgsError: owners.orgsError } : {}) });
       } catch (err) {
         out.push({ login: a.login, owners: [], error: (err as Error).message });
@@ -249,22 +267,21 @@ export class Publisher {
 
   /**
    * push の資格情報を用意する（押した呼び出しの中で。Vault・GitHub の口はここで使い終える）。SSH 鍵のアカウントなら
-   * ssh の URL と ssh-agent、そうでなければ https の URL と一度きりの窓口
+   * ssh-agent、そうでなければ一度きりの窓口（相手は GitHub の host——URL は作られた持ち主・名前から後で組む）
    */
-  private async credentialFor(login: string, owner: string, name: string, callId?: string): Promise<{ url: string; credential: GitCredential; window?: CredentialWindow }> {
+  private async credentialFor(login: string, callId?: string): Promise<{ ssh: boolean; credential: GitCredential; window?: CredentialWindow }> {
     const account = (await this.deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === login.toLowerCase());
     if (!account) throw new Error(`@${login} は登録されていません`);
     if (account.ssh) {
       const socket = (await this.deps.vault.startSshAgent(account.ssh, callId)).socketPath;
       const knownHosts = await writeGithubKnownHosts(this.deps.dataDir, this.deps.endpoints);
       sshCommandFor(socket, knownHosts);
-      return { url: this.remoteUrl(true, owner, name), credential: { kind: "ssh-agent", socket, knownHosts } };
+      return { ssh: true, credential: { kind: "ssh-agent", socket, knownHosts } };
     }
-    const url = this.remoteUrl(false, owner, name);
     const token = await this.deps.accounts.tokenFor(account.login, callId);
-    const web = new URL(url);
+    const web = new URL(this.deps.endpoints.web);
     const window = await openCredentialWindow({ protocol: web.protocol.replace(/:$/, ""), host: web.host, username: account.login, password: token });
-    return { url, credential: { kind: "helper", command: window.helperCommand }, window };
+    return { ssh: false, credential: { kind: "helper", command: window.helperCommand }, window };
   }
 
   /**
@@ -283,6 +300,7 @@ export class Publisher {
       if (ins.refusal) throw new Error(ins.refusal);
       if (ins.state !== "local") throw new Error("もう GitHub にあります（origin があります）");
       if (!isValidRepoName(input.name)) throw new Error("名前に使えるのは英数字と - _ . だけです（100字まで）");
+      if (!OWNER.test(input.owner)) throw new Error("持ち主の名前として読めません");
       const description = input.description?.trim();
       if (description && description.length > 350) throw new Error("説明は 350 字までです");
       const account = (await this.deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === input.login.toLowerCase());
@@ -290,19 +308,31 @@ export class Publisher {
       const org = input.owner.toLowerCase() === account.login.toLowerCase() ? undefined : input.owner;
       const branch = ins.branch!;
       // 資格情報（push するときだけ）→ GitHub に作る。作ったあとで資格情報を用意できない、を作らない
-      let url: string;
       let credential: GitCredential | undefined;
-      if (branch.unborn) {
-        // push しない——origin に書く URL だけ（そのアカウントで後から push するときと同じ形）
-        url = this.remoteUrl(!!account.ssh, input.owner, input.name);
-      } else {
-        const c = await this.credentialFor(account.login, input.owner, input.name, callId);
-        url = c.url;
+      let ssh = !!account.ssh;
+      if (!branch.unborn) {
+        const c = await this.credentialFor(account.login, callId);
         credential = c.credential;
         window = c.window;
+        ssh = c.ssh;
       }
       const token = await this.deps.accounts.tokenFor(account.login, callId);
-      const created = await this.deps.github.createRepo(token, { ...(org ? { org } : {}), name: input.name, private: input.private, ...(description ? { description } : {}) });
+      let created;
+      try {
+        created = await this.deps.github.createRepo(token, { ...(org ? { org } : {}), name: input.name, private: input.private, ...(description ? { description } : {}) });
+      } catch (err) {
+        // 送ったあとに切れた・時間切れ——作られているかもしれない。「名前が使われている」に流して -2 を作らせない
+        if (err instanceof GithubError && (err.code === "network" || /^5\d\d$/.test(err.code))) {
+          const url = this.remoteUrl(ssh, input.owner, input.name);
+          throw new Error(
+            `GitHub に作れたかどうか分かりません（${err.message}）。GitHub で ${input.owner}/${input.name} を確かめてください——あれば ` +
+              `git remote add origin ${url} で origin に足し、一覧の「…」→「GitHub への push」から push できます。無ければ、もう一度押してください`,
+          );
+        }
+        throw err;
+      }
+      // **origin の URL は GitHub の返事から組む**（入力からではない——GitHub が名前を直したときも、作られた場所に向く）
+      const url = this.remoteUrl(ssh, created.owner, created.name);
       const job: PublishJob = {
         id: randomUUID(),
         path: input.path,
@@ -312,6 +342,7 @@ export class Publisher {
         steps: [
           { key: "create", state: "done" },
           { key: "origin", state: "running" },
+          { key: "ledger", state: "waiting" },
           { key: "push", state: branch.unborn ? "skipped" : "waiting" },
         ],
         branch: branch.branch!,
@@ -321,6 +352,19 @@ export class Publisher {
         abort: new AbortController(),
       };
       this.jobs.set(job.id, job);
+      // **頼んだ公開範囲で作られたか**——違えば origin も push もしない（非公開のつもりで公開のリポジトリに履歴を上げない）
+      if (created.private !== input.private) {
+        job.state = "failed";
+        for (const st of job.steps) if (st.key !== "create") st.state = "skipped";
+        job.error = {
+          step: "create",
+          message:
+            `GitHub は ${created.owner}/${created.name} を${created.private ? "非公開" : "公開"}で作りました（頼んだのは${input.private ? "非公開" : "公開"}）。` +
+            `origin も push もしていません——GitHub で公開範囲を直してから、git remote add origin ${url} で足し、一覧の「…」→「GitHub への push」から push してください`,
+        };
+        job.finishedAt = Date.now();
+        return this.view(job);
+      }
       handed = true;
       void this.run(job, url, credential, window, { addOrigin: true });
       return this.view(job);
@@ -343,7 +387,23 @@ export class Publisher {
       if (ins.refusal) throw new Error(ins.refusal);
       if (ins.state !== "needs-push" || !ins.github) throw new Error(ins.state === "published" ? "いまのブランチは、もう GitHub にあります" : "まだ GitHub にありません（公開から）");
       if (!ins.account) throw new Error("どのアカウントで push するかが決まっていません——一覧の行の「…」→「アカウントを選ぶ」で選んでから");
-      const c = await this.credentialFor(ins.account, ins.github.owner, ins.github.name, callId);
+      // **origin の方式（ssh／https）とアカウントの方式が合っているか**——合わないまま push すると、資格情報が渡らずに
+      // 「資格情報が通りませんでした」という嘘の失敗になる
+      const account = (await this.deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === ins.account!.toLowerCase());
+      if (!account) throw new Error(`@${ins.account} は登録が外れています——一覧の行の「…」→「アカウントを選ぶ」で選び直してから`);
+      const expected = this.remoteUrl(!!account.ssh, ins.github.owner, ins.github.name);
+      const actual = await pushUrls(input.path);
+      if (actual.length !== 1 || actual[0] !== expected) {
+        const sshOrigin = actual.length === 1 && /^(?:ssh:\/\/|[^/:]+@[^/:]+:)/.test(actual[0]!);
+        throw new Error(
+          actual.length === 1 && sshOrigin && !account.ssh
+            ? `origin は ssh の URL（${actual[0]}）ですが、@${account.login} は SSH 鍵を登録していません——SSH 鍵を足すか、origin を ${expected} にしてから`
+            : actual.length === 1 && !sshOrigin && account.ssh
+              ? `origin は https の URL（${actual[0]}）ですが、@${account.login} は SSH 鍵で push するアカウントです——origin を ${expected} にしてから`
+              : `origin の push 先（${actual.join("・") || "無し"}）が github.com/${ins.github.owner}/${ins.github.name} の ${expected} と違うので、push しません`,
+        );
+      }
+      const c = await this.credentialFor(account.login, callId);
       window = c.window;
       const job: PublishJob = {
         id: randomUUID(),
@@ -359,7 +419,7 @@ export class Publisher {
       };
       this.jobs.set(job.id, job);
       handed = true;
-      void this.run(job, c.url, c.credential, window, { addOrigin: false });
+      void this.run(job, expected, c.credential, window, { addOrigin: false });
       return this.view(job);
     } finally {
       if (!handed) {
@@ -376,31 +436,58 @@ export class Publisher {
 
   private async run(job: PublishJob, url: string, credential: GitCredential | undefined, window: CredentialWindow | undefined, opts: { addOrigin: boolean }): Promise<void> {
     const where = `github.com/${job.target.owner}/${job.target.name}`;
+    const fail = (step: PublishStepKey, message: string, state: PublishJobView["state"] = "failed") => {
+      this.step(job, step, state === "cancelled" ? "waiting" : "failed");
+      job.state = state;
+      job.error = { step, message };
+    };
     try {
       if (opts.addOrigin) {
         try {
           await gitRemoteAdd(job.path, url);
         } catch (err) {
-          this.step(job, "origin", "failed");
-          job.state = "failed";
-          job.error = { step: "origin", message: `GitHub にはできています（${where}）。${(err as Error).message}——git remote add origin ${url} で足してください` };
-          return;
+          return fail("origin", `GitHub にはできています（${where}）。${(err as Error).message}——git remote add origin ${url} で足してください`);
         }
         this.step(job, "origin", "done");
-        // 台帳にリモートの場所とアカウントを書く（origin を読み直して——台帳は origin を正とする）
-        const facts = await readFolder(job.path);
-        await this.deps.store.update((entries) => ({
-          entries: entries.map((e) => {
-            if (e.path !== job.path) return e;
-            const { readOnly: _r, ...rest }: LedgerEntry = syncWithOrigin(e, facts).entry;
-            return { ...rest, account: job.account };
-          }),
-          result: undefined,
-        }));
+        // 台帳にリモートの場所とアカウントを書く（origin を読み直して——台帳は origin を正とする）。落ちたら push の失敗と
+        // 混ぜずに「一覧に書けなかった」と言う
+        this.step(job, "ledger", "running");
+        try {
+          const facts = await readFolder(job.path);
+          await this.deps.store.update((entries) => ({
+            entries: entries.map((e) => {
+              if (e.path !== job.path) return e;
+              const { readOnly: _r, ...rest }: LedgerEntry = syncWithOrigin(e, facts).entry;
+              return { ...rest, account: job.account };
+            }),
+            result: undefined,
+          }));
+        } catch (err) {
+          return fail(
+            "ledger",
+            `GitHub にはでき、origin も足しました（${where}）が、一覧に書けませんでした：${(err as Error).message}——push はしていません。一覧を開き直すと origin から読み直します（アカウントは「…」→「アカウントを選ぶ」で）`,
+          );
+        }
+        this.step(job, "ledger", "done");
       }
       if (!credential) {
         job.state = "done";
         return;
+      }
+      await PUBLISH_HOOKS.beforePush?.(job.path, job.id);
+      // origin を足している間に「やめる」が押されていたら、push しない
+      if (job.abort.signal.aborted) return fail("push", `push をやめました。GitHub にはできています（${where}）。push だけやり直せます`, "cancelled");
+      // **push の直前に読み直す**（押した時点の確かめのあとに、`.git/config` が書き換えられうる——Project の Root は
+      // コンテナに mount され、中の AI が書ける）。送り先・TLS を変える設定が無く、push 先が作った URL の1つだけであること
+      const blockers = await pushBlockers(job.path);
+      const targets = await pushUrls(job.path);
+      if (blockers.length > 0 || targets.length !== 1 || targets[0] !== url) {
+        return fail(
+          "push",
+          `push の直前に設定を読み直したら、` +
+            (blockers.length > 0 ? `push の送り先や TLS を変える設定がありました（${blockers.join("・")}）` : `origin の push 先が ${url} の1つではありませんでした（${targets.join("・") || "無し"}）`) +
+            `——push していません。GitHub にはできています（${where}）。設定を直してから、push だけやり直せます`,
+        );
       }
       this.step(job, "push", "running");
       const result = await gitPush({ path: job.path, branch: job.branch!, credential, signal: job.abort.signal, onProgress: (p) => (job.progress = p) });
@@ -409,20 +496,16 @@ export class Publisher {
         job.state = "done";
         return;
       }
-      this.step(job, "push", result.kind === "cancelled" ? "waiting" : "failed");
-      job.state = result.kind === "cancelled" ? "cancelled" : "failed";
       const why = result.kind === "failed" ? explainPush(result.own ?? "") : "";
-      job.error = {
-        step: "push",
-        message:
-          (result.kind === "cancelled" ? `push をやめました。` : `push できませんでした：${why ? `${why}——` : ""}${result.message}。`) +
+      fail(
+        "push",
+        (result.kind === "cancelled" ? `push をやめました。` : `push できませんでした：${why ? `${why}——` : ""}${result.message}。`) +
           `GitHub にはできています（${where}）。push だけやり直せます`,
-      };
+        result.kind === "cancelled" ? "cancelled" : "failed",
+      );
     } catch (err) {
-      job.state = "failed";
       const at = job.steps.find((s) => s.state === "running")?.key ?? "push";
-      this.step(job, at, "failed");
-      job.error = { step: at, message: `${(err as Error).message}（GitHub にはできています：${where}）` };
+      fail(at, `${(err as Error).message}（GitHub にはできています：${where}）`);
     } finally {
       await window?.close().catch(() => undefined);
       this.busy.delete(job.path);
