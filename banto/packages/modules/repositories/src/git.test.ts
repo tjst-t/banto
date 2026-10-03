@@ -85,7 +85,8 @@ test("走らせてよいサブコマンドは一覧のものだけ（増やす�
     "for-each-ref",
     "config --name-only --get-regexp",
     "status",
-    "worktree prune",
+    "ls-files",
+    "worktree remove",
   ]);
 });
 

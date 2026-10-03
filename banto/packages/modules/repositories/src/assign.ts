@@ -28,15 +28,22 @@ export async function setRepositoryAccount(
   if (!entry) throw new Error(`${input.path} は一覧にありません`);
   if (!entry.github) throw new Error("GitHub のリポジトリではないので、アカウントは使いません");
   const location = entry.github;
+  // GitHub に聞いている間に一覧から外された——書いたことにしない
+  const gone = (entries: Array<{ path: string }>) => {
+    if (!entries.some((e) => e.path === input.path)) throw new Error(`${input.path} は一覧から外されたので、指定していません`);
+  };
   if (input.login === null) {
-    await deps.store.update((entries) => ({
-      entries: entries.map((e) => {
-        if (e.path !== input.path) return e;
-        const { account: _a, ...rest } = e;
-        return { ...rest, readOnly: true as const };
-      }),
-      result: undefined,
-    }));
+    await deps.store.update((entries) => {
+      gone(entries);
+      return {
+        entries: entries.map((e) => {
+          if (e.path !== input.path) return e;
+          const { account: _a, ...rest } = e;
+          return { ...rest, readOnly: true as const };
+        }),
+        result: undefined,
+      };
+    });
     return { login: null };
   }
   const account = (await deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === input.login!.toLowerCase());
@@ -53,13 +60,16 @@ export async function setRepositoryAccount(
       `@${account.login} からは ${location.owner}/${location.name} が見えません（非公開で権限が無いか、GitHub App がそのリポジトリに入っていない）。見えるアカウントを選んでください`,
     );
   }
-  await deps.store.update((entries) => ({
-    entries: entries.map((e) => {
-      if (e.path !== input.path) return e;
-      const { readOnly: _r, ...rest } = e;
-      return { ...rest, account: account.login };
-    }),
-    result: undefined,
-  }));
+  await deps.store.update((entries) => {
+    gone(entries);
+    return {
+      entries: entries.map((e) => {
+        if (e.path !== input.path) return e;
+        const { readOnly: _r, ...rest } = e;
+        return { ...rest, account: account.login };
+      }),
+      result: undefined,
+    };
+  });
   return { login: account.login, push: access.push };
 }

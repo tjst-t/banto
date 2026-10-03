@@ -72,7 +72,9 @@ export const GIT_COMMANDS: readonly string[] = [
   "for-each-ref",
   "config --name-only --get-regexp",
   "status",
-  "worktree prune",
+  "ls-files",
+  // worktree の記録を1つだけ片づける（フォルダはこちらで消したあと——git には消させない）
+  "worktree remove",
 ];
 
 /**
@@ -122,7 +124,13 @@ function allowedCommand(args: string[]): string | undefined {
   return GIT_COMMANDS.find((c) => line.startsWith(c + " ") || line === c);
 }
 
-function git(cwd: string, args: string[], timeoutMs = GIT_TIMEOUTS.default, env: NodeJS.ProcessEnv = GIT_ENV): Promise<GitResult> {
+function git(
+  cwd: string,
+  args: string[],
+  timeoutMs = GIT_TIMEOUTS.default,
+  env: NodeJS.ProcessEnv = GIT_ENV,
+  maxBuffer = 1024 * 1024,
+): Promise<GitResult> {
   const command = allowedCommand(args);
   if (!command) return Promise.resolve({ ok: false, code: "refused", stderr: `git ${args[0] ?? ""} は走らせない決まりです` });
   return new Promise((resolve) => {
@@ -131,7 +139,7 @@ function git(cwd: string, args: string[], timeoutMs = GIT_TIMEOUTS.default, env:
       ["-C", cwd, ...args],
       {
         timeout: timeoutMs,
-        maxBuffer: 1024 * 1024,
+        maxBuffer,
         env,
       },
       (err, stdout, stderr) => {
@@ -468,24 +476,26 @@ export interface LossReport {
    * ブランチどうしで重なる（枝分かれ元のコミットは両方に入る）ので、合計は `unpushedTotal`
    */
   unpushed: Array<{ branch: string; commits: number }>;
-  /** どのブランチの分も重ねずに数えた、どのリモートにも無いコミットの数 */
+  /** ブランチ・タグの分を重ねずに数えた、どのリモートにも無いコミットの数（タグだけが指すコミットも入る） */
   unpushedTotal: number;
-  /** どのブランチにもリモートにも無いコミット（detached HEAD で作ったもの） */
+  /** どのブランチ・タグ・リモートにも無いコミット（detached HEAD で作ったもの） */
   detached: number;
-  /** 上流も、どのリモートの同名も無いブランチ */
+  /** 上流（いまリモートにあるもの）も、どのリモートの同じ名前も無いブランチ */
   localOnlyBranches: string[];
+  /** どのリモートにも無いコミットを指すタグ（リモートにあるコミットを指すタグが push 済みかは、見ていない） */
+  localOnlyTags: string[];
   /** コミットしていない変更（index・作業ツリー） */
   changed: number;
   /** 追跡していないもの（ignore 済みは数えない。中身ごと追跡していないフォルダは1件） */
   untracked: number;
   stashes: number;
-  /** 数えられなかったもの（時間切れ・git が断った）と、数えていないもの（submodule の中） */
+  /** 数えられなかったもの（時間切れ・git が断った）と、あるが中を数えていないもの（notes 等の ref・submodule） */
   problems: string[];
 }
 
 /** 失われるものの数（problems を除く） */
 export function lossCount(l: LossReport): number {
-  return l.unpushedTotal + l.detached + l.localOnlyBranches.length + l.changed + l.untracked + l.stashes;
+  return l.unpushedTotal + l.detached + l.localOnlyBranches.length + l.localOnlyTags.length + l.changed + l.untracked + l.stashes;
 }
 
 /** 環境に呼び出しの側の設定を足す（`GIT_CONFIG_COUNT` の続きに並べる） */
@@ -499,50 +509,98 @@ function withConfig(env: NodeJS.ProcessEnv, pairs: Array<readonly [string, strin
   return next;
 }
 
+/** 数えるときの出力の上限（大きいリポジトリでも、ファイルの一覧・コミットの一覧が溢れないように） */
+const LOSSES_MAX_BUFFER = 256 * 1024 * 1024;
+
 /**
  * そのリポジトリ（か worktree）を消すと失われるものを数える。**台帳のフォルダの git だけを読む**（読む口の潰しは
  * そのまま）。`git status` はファイルの中身を比べるときに、リポジトリの設定の filter（`clean`・`process`）を起こす
- * （実測）——**その設定の filter の名前を先に読み、全部を空に上書きしてから**走らせる。submodule の中は読まない
+ * （実測）——**その設定の filter の名前を先に読み、全部を空に上書きしてから**走らせる。submodule の中は読まない。
+ * **数えないもの**（reflog にだけあるコミット・LFS の未 push のファイル・ignore 済みのファイル・submodule の中）は
+ * 画面と仕様が「数えていない」と言う。notes 等のほかの ref にだけあるコミット・submodule は、あれば `problems` に出す
  */
 export async function readLosses(path: string): Promise<LossReport> {
-  const report: LossReport = { unpushed: [], unpushedTotal: 0, detached: 0, localOnlyBranches: [], changed: 0, untracked: 0, stashes: 0, problems: [] };
+  const report: LossReport = { unpushed: [], unpushedTotal: 0, detached: 0, localOnlyBranches: [], localOnlyTags: [], changed: 0, untracked: 0, stashes: 0, problems: [] };
   const t = GIT_TIMEOUTS.losses;
+  const run = (args: string[], env: NodeJS.ProcessEnv = GIT_ENV) => git(path, args, t, env, LOSSES_MAX_BUFFER);
   const note = (what: string, r: Extract<GitResult, { ok: false }>) =>
     report.problems.push(`${what}を数えられませんでした（${r.stderr.trim() || String(r.code)}）`);
+  const num = (r: { stdout: string }) => Number.parseInt(r.stdout.trim(), 10) || 0;
 
-  // ブランチと上流、リモートにある名前
-  const heads = await git(path, ["for-each-ref", "--format=%(refname:short)%09%(upstream)", "refs/heads"], t);
-  const remotes = await git(path, ["for-each-ref", "--format=%(refname)", "refs/remotes"], t);
+  // ブランチと上流、リモートにある ref、リモートの名前
+  const heads = await run(["for-each-ref", "--format=%(refname:short)%09%(upstream)", "refs/heads"]);
+  const remotes = await run(["for-each-ref", "--format=%(refname)", "refs/remotes"]);
+  const remoteConf = await run(["config", "--name-only", "--get-regexp", "^remote\\..*\\.url$"]);
   if (!heads.ok) note("ブランチ", heads);
   if (!remotes.ok) note("リモートのブランチ", remotes);
-  if (heads.ok && remotes.ok) {
-    const remoteRefs = remotes.stdout.split("\n").filter(Boolean);
+  // 1 は「リモートの設定が無い」
+  if (!remoteConf.ok && remoteConf.code !== 1) note("リモートの名前", remoteConf);
+  if (heads.ok && remotes.ok && (remoteConf.ok || remoteConf.code === 1)) {
+    const remoteRefs = new Set(remotes.stdout.split("\n").filter(Boolean));
+    const remoteNames = remoteConf.ok
+      ? remoteConf.stdout.split("\n").filter(Boolean).map((k) => k.replace(/^remote\./, "").replace(/\.url$/, ""))
+      : [];
     for (const line of heads.stdout.split("\n").filter(Boolean)) {
       const [branch, upstream] = line.split("\t") as [string, string | undefined];
-      const count = await git(path, ["rev-list", "--count", `refs/heads/${branch}`, "--not", "--remotes"], t);
+      const count = await run(["rev-list", "--count", `refs/heads/${branch}`, "--not", "--remotes"]);
       if (!count.ok) note(`ブランチ ${branch} のコミット`, count);
-      else {
-        const n = Number.parseInt(count.stdout.trim(), 10) || 0;
-        if (n > 0) report.unpushed.push({ branch, commits: n });
-      }
-      const sameName = remoteRefs.some((r) => r.endsWith(`/${branch}`) && r.startsWith("refs/remotes/"));
-      if (!upstream && !sameName) report.localOnlyBranches.push(branch);
+      else if (num(count) > 0) report.unpushed.push({ branch, commits: num(count) });
+      // 上流は「いまリモートの ref としてあるもの」だけ（リモートで消えた上流・手元のブランチを上流にしたものは無い扱い）。
+      // 同じ名前は `refs/remotes/<リモート>/<ブランチ>` の完全一致で見る（`endsWith` だと別のブランチに当たる）
+      const hasUpstream = !!upstream && remoteRefs.has(upstream);
+      const sameName = remoteNames.some((r) => remoteRefs.has(`refs/remotes/${r}/${branch}`));
+      if (!hasUpstream && !sameName) report.localOnlyBranches.push(branch);
     }
   }
-  if (heads.ok && heads.stdout.trim()) {
-    const total = await git(path, ["rev-list", "--count", "--branches", "--not", "--remotes"], t);
-    if (total.ok) report.unpushedTotal = Number.parseInt(total.stdout.trim(), 10) || 0;
-    else note("push していないコミット", total);
+  // どのリモートにも無いコミット——ブランチとタグの分を重ねずに。タグだけが指すコミット（ブランチから外れた）も入る
+  const total = await run(["rev-list", "--count", "--branches", "--tags", "--not", "--remotes"]);
+  if (total.ok) report.unpushedTotal = num(total);
+  else note("push していないコミット", total);
+  // どのリモートにも無いコミットを指すタグ
+  const tags = await run(["for-each-ref", "--format=%(refname:short)%09%(objectname)%09%(*objectname)", "refs/tags"]);
+  if (!tags.ok) note("タグ", tags);
+  else if (tags.stdout.trim()) {
+    const loose = await run(["rev-list", "--tags", "--not", "--remotes"]);
+    if (!loose.ok) note("タグのコミット", loose);
+    else {
+      const unpushed = new Set(loose.stdout.split("\n").filter(Boolean));
+      for (const line of tags.stdout.split("\n").filter(Boolean)) {
+        const [name, object, peeled] = line.split("\t") as [string, string, string | undefined];
+        if (unpushed.has(peeled || object)) report.localOnlyTags.push(name);
+      }
+    }
   }
   // detached HEAD で作ったコミット
-  const head = await git(path, ["symbolic-ref", "-q", "HEAD"], t);
+  const head = await run(["symbolic-ref", "-q", "HEAD"]);
   if (!head.ok && head.code === 1) {
-    const loose = await git(path, ["rev-list", "--count", "HEAD", "--not", "--branches", "--remotes"], t);
-    if (loose.ok) report.detached = Number.parseInt(loose.stdout.trim(), 10) || 0;
+    const loose = await run(["rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"]);
+    if (loose.ok) report.detached = num(loose);
     else if (!/unknown revision|ambiguous argument 'HEAD'/i.test(loose.stderr)) note("どのブランチにも無いコミット", loose);
   }
+  // ブランチ・タグ・リモート・stash・HEAD の外の ref（notes・filter-branch の refs/original 等）にだけあるコミット
+  const others = await run(["for-each-ref", "--format=%(refname)"]);
+  if (!others.ok) note("ほかの ref", others);
+  else {
+    const names = others.stdout
+      .split("\n")
+      .filter((r) => r && !/^refs\/(heads|tags|remotes)\//.test(r) && r !== "refs/stash");
+    if (names.length > 0) {
+      // 名前を並べると ref が多いリポジトリ（refs/pull/* 等）で引数が溢れる——除いて --all で
+      const only = await run([
+        "rev-list", "--count",
+        "--exclude=refs/heads/*", "--exclude=refs/tags/*", "--exclude=refs/remotes/*", "--exclude=refs/stash", "--all",
+        "--not", "--branches", "--tags", "--remotes", "HEAD",
+      ]);
+      if (!only.ok) note(`ほかの ref（${names.slice(0, 3).join("・")}）`, only);
+      else if (num(only) > 0) {
+        report.problems.push(
+          `ブランチ・タグの外の ref（${names.slice(0, 3).join("・")}${names.length > 3 ? " ほか" : ""}）にだけあるコミットが ${num(only)} 件あります——中身は数えていません`,
+        );
+      }
+    }
+  }
   // コミットしていない変更・追跡していないもの——filter を空にしてから
-  const filters = await git(path, ["config", "--name-only", "--get-regexp", "^filter\\."], t);
+  const filters = await run(["config", "--name-only", "--get-regexp", "^filter\\."]);
   const drivers = new Set<string>();
   if (filters.ok) {
     for (const key of filters.stdout.split("\n").filter(Boolean)) drivers.add(key.replace(/^filter\./, "").replace(/\.[^.]+$/, ""));
@@ -558,7 +616,7 @@ export async function readLosses(path: string): Promise<LossReport> {
       [`filter.${d}.required`, "false"] as const,
     ]);
     const env = withConfig(GIT_ENV, [...neutral, ["status.submoduleSummary", "false"]]);
-    const status = await git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all"], t, env);
+    const status = await run(["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all"], env);
     if (!status.ok) note("コミットしていない変更", status);
     else {
       const parts = status.stdout.split("\0");
@@ -573,24 +631,32 @@ export async function readLosses(path: string): Promise<LossReport> {
     }
   }
   // stash
-  const stash = await git(path, ["rev-parse", "--verify", "-q", "refs/stash"], t);
+  const stash = await run(["rev-parse", "--verify", "-q", "refs/stash"]);
   if (stash.ok) {
-    const n = await git(path, ["rev-list", "--walk-reflogs", "--count", "refs/stash"], t);
-    if (n.ok) report.stashes = Number.parseInt(n.stdout.trim(), 10) || 0;
+    const n = await run(["rev-list", "--walk-reflogs", "--count", "refs/stash"]);
+    if (n.ok) report.stashes = num(n);
     else note("stash", n);
   } else if (stash.code !== 1) note("stash", stash);
-  // submodule の中は数えない（読むと、その中の設定から何が起きるか分からない）——数えていないと言う
+  // submodule の中は数えない（読むと、その中の設定から何が起きるか分からない）——あれば、数えていないと言う。
+  // `.gitmodules` が無くても index に submodule（mode 160000）があることがある
+  let submodules = false;
   try {
     await stat(`${path}/.gitmodules`);
-    report.problems.push("submodule の中の変更は数えていません");
+    submodules = true;
   } catch {
-    // submodule は無い
+    const staged = await run(["ls-files", "--stage", "-z"]);
+    if (!staged.ok) note("submodule", staged);
+    else submodules = staged.stdout.split("\0").some((e) => e.startsWith("160000 "));
   }
+  if (submodules) report.problems.push("submodule の中の変更は数えていません");
   return report;
 }
 
-/** worktree を消したあと、本体の側の記録を片づける */
-export async function pruneWorktrees(main: string): Promise<void> {
-  const r = await git(main, ["worktree", "prune"]);
+/**
+ * worktree を消したあと、本体の側の**その worktree の記録だけ**を片づける（`git worktree prune` は、ほかの
+ * 見つからない worktree の記録まで消す——たまたま外付けの場所にあって見えていないもの等）
+ */
+export async function removeWorktreeRecord(main: string, worktree: string): Promise<void> {
+  const r = await git(main, ["worktree", "remove", "--force", "--", worktree]);
   if (!r.ok) throw new Error(`本体（${main}）の worktree の記録を片づけられませんでした：${r.stderr.trim() || String(r.code)}`);
 }

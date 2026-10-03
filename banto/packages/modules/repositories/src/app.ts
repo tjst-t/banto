@@ -1660,6 +1660,7 @@ const SCRIPT = String.raw`
     for (const b of l.unpushed) lines.push("ブランチ " + b.branch + "：どのリモートにも無いコミット " + b.commits + " 件");
     if (l.detached > 0) lines.push("どのブランチにも無いコミット " + l.detached + " 件");
     if (l.localOnlyBranches.length > 0) lines.push("リモートに無いブランチ " + l.localOnlyBranches.length + " 本（" + l.localOnlyBranches.join("・") + "）");
+    if (l.localOnlyTags.length > 0) lines.push("どのリモートにも無いコミットを指すタグ " + l.localOnlyTags.length + " 個（" + l.localOnlyTags.slice(0, 5).join("・") + (l.localOnlyTags.length > 5 ? " ほか" : "") + "）");
     if (l.changed > 0) lines.push("コミットしていない変更 " + l.changed + " 件");
     if (l.untracked > 0) lines.push("追跡していないもの " + l.untracked + " 件（ignore 済みは数えていません）");
     if (l.stashes > 0) lines.push("stash " + l.stashes + " 件");
@@ -1680,7 +1681,7 @@ const SCRIPT = String.raw`
       canDelete = true;
       needsName = !!ins.needsTypedName;
       kids.push(h("section", { class: "preview band" }, [
-        h("div", { class: "top" }, [h("p", { class: "k", text: ins.kind === "worktree" ? "消す worktree（本体 " + ins.main + " は残します）" : "消すフォルダ" }), h("p", { class: "v", "data-testid": "repo-delete-path", text: ins.displayPath })]),
+        h("div", { class: "top" }, [h("p", { class: "k", text: ins.kind === "worktree" ? "消す worktree（本体 " + ins.main + " は残します）" : ins.kind === "orphan-worktree" ? "消す worktree（本体はもうありません）" : "消すフォルダ" }), h("p", { class: "v", "data-testid": "repo-delete-path", text: ins.displayPath })]),
       ]));
       const lines = lossLines(ins);
       if (lines.length > 0) {
@@ -1689,8 +1690,10 @@ const SCRIPT = String.raw`
           h("ul", {}, lines.map((t) => h("li", { "data-testid": "repo-delete-loss", text: t }))),
         ]));
       } else if (ins.losses.problems.length === 0) {
-        kids.push(h("p", { "data-testid": "repo-delete-nothing", text: "push していないコミット・変更・stash などはありません。フォルダごと消えます（" + ins.displayPath + "）。" }));
+        kids.push(h("p", { "data-testid": "repo-delete-nothing", text: "数えたもの（push していないコミット・リモートに無いブランチやタグ・変更・追跡していないもの・stash）はありません。フォルダごと消えます（" + ins.displayPath + "）。" }));
       }
+      // 数えていないもの——「無い」と言ったことにしない（あるかどうかも見ていない）
+      kids.push(h("p", { class: "help", "data-testid": "repo-delete-not-counted", text: "数えていないもの：reflog にだけ残っているコミット・Git LFS の push していないファイル・ignore 済みのファイル・submodule の中。要るなら、消す前にご自分で確かめてください。" }));
       for (const p of ins.losses.problems) kids.push(h("p", { class: "warnline", "data-testid": "repo-delete-problem", text: p + "——確かめられていないものは、失われるかもしれません" }));
       if (ins.projectsError) kids.push(h("p", { class: "warnline", text: "どの Project が使っているかを読めませんでした：" + ins.projectsError }));
       const active = (ins.projects || []).filter((p) => !p.closed);
@@ -1739,12 +1742,13 @@ const SCRIPT = String.raw`
       const closeIds = dl.closeProjects ? res.projects.filter((p) => !p.closed).map((p) => p.id) : [];
       deleteDialog.close();
       setFlash(res.displayPath + " をこのマシンから削除しました（GitHub などのリモートには触っていません）");
-      await load();
-      // 使っていた Project を閉じるのは core の確かめで（Module は Project に触らない）
+      // 使っていた Project を閉じるのは core の確かめで（Module は Project に触らない）。**一覧の読み直しより先に**
+      // ——読み直しが失敗・遅れても、閉じる案内には進む（読み直しの失敗は一覧が自分で出す）
       if (closeIds.length > 0) {
         try { await request("dev.banto/close-projects", { projectIds: closeIds }); }
-        catch (e) { setFlash("フォルダは消しました。Project を閉じる画面を開けませんでした：" + errText(e) + "（Project の設定から閉じられます）"); render(); }
+        catch (e) { setFlash("フォルダは消しました。Project を閉じる画面を開けませんでした：" + errText(e) + "（Project の設定から閉じられます）"); }
       }
+      await load();
     } catch (e) {
       dl.busy = false;
       // 調べたあとに増えていた等——もう一度調べ直して見せる

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GithubAccounts } from "./accounts.js";
 import { setRepositoryAccount } from "./assign.js";
-import { deleteRepository, inspectDelete } from "./delete.js";
+import { DELETE_HOOKS, deleteRepository, inspectDelete } from "./delete.js";
 import { GIT_ENV, GIT_TIMEOUTS, lossCount, readLosses } from "./git.js";
 import { httpGithub } from "./github.js";
 import { LedgerStore } from "./ledger.js";
@@ -56,7 +56,7 @@ test("失われるものを数える——push していないコミット（ups
   const w = world();
   try {
     const dir = w.clean("kakeibo");
-    assert.deepEqual((await readLosses(dir)), { unpushed: [], unpushedTotal: 0, detached: 0, localOnlyBranches: [], changed: 0, untracked: 0, stashes: 0, problems: [] });
+    assert.deepEqual((await readLosses(dir)), { unpushed: [], unpushedTotal: 0, detached: 0, localOnlyBranches: [], localOnlyTags: [], changed: 0, untracked: 0, stashes: 0, problems: [] });
     // main に2つ push していない
     for (const n of [1, 2]) {
       writeFileSync(join(dir, `a${n}.txt`), String(n));
@@ -299,6 +299,19 @@ test("アカウントを後から指定：見えないアカウントは断る�
     assert.equal(rows[0]!.account, undefined, "読むだけに戻したのに、一覧で付け直した");
     assert.equal((await w.store.entries())[0]!.readOnly, true);
 
+    // GitHub に聞いている間に一覧から外された——指定したことにしない（行を作り直さない）
+    const vanishing = {
+      ...github,
+      repoAccess: async (token: string, owner: string, name: string) => {
+        const access = await github.repoAccess(token, owner, name);
+        await w.store.update((e) => ({ entries: e.filter((x) => x.path !== repo), result: undefined }));
+        return access;
+      },
+    };
+    await assert.rejects(() => setRepositoryAccount({ ...deps, github: vanishing }, { path: repo, login: "alice" }, "c"), /一覧から外されたので、指定していません/);
+    assert.deepEqual(await w.store.entries(), []);
+    await w.store.update((e) => ({ entries: [...e, { path: repo, github: { owner: "alice", name: "secret" } }], result: undefined }));
+
     // 確かめられない（GitHub が落ちている）——指定しない
     await gh.close();
     await assert.rejects(() => setRepositoryAccount(deps, { path: repo, login: "alice" }, "c"), /確かめられなかったので、指定していません/);
@@ -307,5 +320,177 @@ test("アカウントを後から指定：見えないアカウントは断る�
     await gh.close().catch(() => undefined);
     w.done();
     void readdirSync;
+  }
+});
+
+test("タグだけが指すコミット・リモートに無いタグ・notes 等のほかの ref・index だけの submodule を見落とさない", async () => {
+  const w = world();
+  try {
+    const dir = w.clean("tags");
+    git(dir, "tag", "v-pushed");
+    // ブランチから外れ、タグだけが指すコミット
+    git(dir, "switch", "-q", "-c", "tmp");
+    writeFileSync(join(dir, "t.txt"), "t");
+    git(dir, "add", ".");
+    git(dir, "commit", "-q", "-m", "tagged only");
+    git(dir, "tag", "-a", "-m", "local", "v-local");
+    git(dir, "switch", "-q", "main");
+    git(dir, "branch", "-q", "-D", "tmp");
+    let l = await readLosses(dir);
+    assert.equal(l.unpushedTotal, 1, "タグだけが指すコミットを数えていない");
+    assert.deepEqual(l.localOnlyTags, ["v-local"], "リモートにあるコミットを指すタグまで出した・注釈つきタグを見落とした");
+    assert.equal(lossCount(l), 2);
+    await w.addToLedger(dir);
+    assert.equal((await inspectDelete(w.store, dir, noProjects, w.home)).needsTypedName, true, "タグだけのコミットがあるのに1回で消せる");
+
+    // notes——ブランチ・タグの外の ref にだけあるコミット
+    git(dir, "tag", "-d", "v-local");
+    git(dir, "notes", "add", "-m", "memo", "HEAD");
+    l = await readLosses(dir);
+    assert.equal(l.unpushedTotal, 0);
+    assert.deepEqual(l.problems, ["ブランチ・タグの外の ref（refs/notes/commits）にだけあるコミットが 1 件あります——中身は数えていません"]);
+    git(dir, "update-ref", "-d", "refs/notes/commits");
+
+    // .gitmodules が無くても、index に submodule（mode 160000）がある
+    const head = git(dir, "rev-parse", "HEAD").trim();
+    git(dir, "update-index", "--add", "--cacheinfo", `160000,${head},vendored`);
+    git(dir, "commit", "-q", "-m", "gitlink");
+    git(dir, "push", "-q", "origin", "main");
+    assert.deepEqual((await readLosses(dir)).problems, ["submodule の中の変更は数えていません"]);
+  } finally {
+    w.done();
+  }
+});
+
+test("リモートに無いブランチ：同じ名前は refs/remotes/<リモート>/<ブランチ> の完全一致で、リモートで消えた上流は無いと見る", async () => {
+  const w = world();
+  try {
+    const dir = w.clean("names");
+    // リモートには feature/x がある。手元の x は別物
+    git(dir, "push", "-q", "origin", "main:feature/x");
+    git(dir, "fetch", "-q", "origin");
+    git(dir, "branch", "-q", "x");
+    // 上流がリモートで消えた
+    git(dir, "push", "-q", "-u", "origin", "main:gone");
+    git(dir, "branch", "-q", "--set-upstream-to=origin/gone", "main");
+    git(dir, "branch", "-q", "gone");
+    git(dir, "branch", "-q", "--set-upstream-to=origin/gone", "gone");
+    git(dir, "branch", "-q", "--set-upstream-to=origin/main", "main");
+    git(dir, "push", "-q", "origin", "--delete", "gone");
+    git(dir, "fetch", "-q", "--prune", "origin");
+    assert.deepEqual((await readLosses(dir)).localOnlyBranches, ["gone", "x"]);
+  } finally {
+    w.done();
+  }
+});
+
+test("下のフォルダを Root にした Project も「使っている」に数える", async () => {
+  const w = world();
+  try {
+    const dir = w.clean("mono");
+    mkdirSync(join(dir, "packages", "app"), { recursive: true });
+    await w.addToLedger(dir);
+    const lookup: ProjectsLookup = {
+      ok: true,
+      projects: [
+        { id: "p1", name: "app", root: join(dir, "packages", "app"), status: "active" },
+        { id: "p2", name: "隣", root: `${dir}-other`, status: "active" },
+      ],
+    };
+    const look = await inspectDelete(w.store, dir, lookup, w.home);
+    assert.deepEqual(look.projects, [{ id: "p1", name: "app", closed: false }], "下のフォルダの Project を見落とした・名前が似た隣を数えた");
+    assert.equal(look.needsTypedName, true);
+    const res = await deleteRepository(w.store, { path: dir, confirmed: true, typedName: "mono" }, lookup, w.home);
+    assert.deepEqual(res.projects, [{ id: "p1", name: "app", closed: false }], "閉じる対象に入らない");
+  } finally {
+    w.done();
+  }
+});
+
+test("本体を先に消した worktree は、数えられないと言って名前を打たせて消せる。worktree を消すとき、ほかの worktree の記録は残す", async () => {
+  const w = world();
+  try {
+    const main = w.clean("body");
+    const wt1 = join(w.repoHome, "body-a");
+    const wt2 = join(w.repoHome, "body-b");
+    git(main, "worktree", "add", "-q", "-b", "a", wt1);
+    git(main, "worktree", "add", "-q", "-b", "b", wt2);
+    // wt2 はいま見えていない（外付けの場所等）——記録は残すべき
+    rmSync(wt2, { recursive: true, force: true });
+    await w.addToLedger(wt1);
+    await deleteRepository(w.store, { path: wt1, confirmed: true, typedName: "body-a" }, noProjects, w.home);
+    const list = git(main, "worktree", "list");
+    assert.doesNotMatch(list, /body-a/);
+    assert.match(list, /body-b/, "見えていないだけの別の worktree の記録まで消した");
+
+    // 本体を消したあとの worktree
+    const wt3 = join(w.repoHome, "body-c");
+    git(main, "worktree", "add", "-q", "-b", "c", wt3);
+    rmSync(main, { recursive: true, force: true });
+    await w.addToLedger(wt3);
+    const look = await inspectDelete(w.store, wt3, noProjects, w.home);
+    assert.equal(look.refusal, undefined, "本体の無い worktree を消せない");
+    assert.equal(look.kind, "orphan-worktree");
+    assert.match(look.losses!.problems[0]!, /本体の無い worktree です/);
+    assert.equal(look.needsTypedName, true, "数えられないのに1回で消せる");
+    await assert.rejects(() => deleteRepository(w.store, { path: wt3, confirmed: true }, noProjects, w.home), /リポジトリ名「body-c」を打って/);
+    await deleteRepository(w.store, { path: wt3, confirmed: true, typedName: "body-c" }, noProjects, w.home);
+    assert.ok(!existsSync(wt3));
+  } finally {
+    w.done();
+  }
+});
+
+test("消すときリンクを辿らない・中のマウントは断る・歩いて別の dev に当たったら止まる", async () => {
+  const w = world();
+  const saved = { ...DELETE_HOOKS };
+  try {
+    // 中にホーム（の大事なもの）へのリンク——リンクだけを消し、先は残す
+    const precious = join(w.home, "precious");
+    mkdirSync(precious);
+    writeFileSync(join(precious, "keep.txt"), "keep");
+    const dir = w.clean("links");
+    symlinkSync(w.home, join(dir, "to-home"));
+    symlinkSync(join(precious, "keep.txt"), join(dir, "to-file"));
+    writeFileSync(join(dir, ".git", "info", "exclude"), "to-home\nto-file\n");
+    await w.addToLedger(dir);
+    await deleteRepository(w.store, { path: dir, confirmed: true }, noProjects, w.home);
+    assert.ok(!existsSync(dir));
+    assert.ok(existsSync(join(precious, "keep.txt")), "リンクの先を消した");
+
+    // 中にマウント（一覧は差し替え——試験では本物のマウントを作れない。空白は \040）
+    const mounted = w.clean("mounted");
+    await w.addToLedger(mounted);
+    const info = join(w.home, "mountinfo");
+    writeFileSync(
+      info,
+      `22 1 8:1 / / rw - ext4 /dev/sda1 rw\n` +
+        `40 22 0:50 / ${mounted.replace(/ /g, "\\040")}/data\\040dir rw - fuse.sshfs host: rw\n` +
+        `41 22 0:51 / ${mounted}-sibling rw - tmpfs tmpfs rw\n`,
+    );
+    DELETE_HOOKS.mountinfo = info;
+    const look = await inspectDelete(w.store, mounted, noProjects, w.home);
+    assert.match(look.refusal ?? "", /中に別のファイルシステムがマウントされています（~\/banto\/mounted\/data dir）/);
+    await assert.rejects(() => deleteRepository(w.store, { path: mounted, confirmed: true }, noProjects, w.home), /消せません/);
+    assert.ok(existsSync(join(mounted, "README.md")));
+    // フォルダそのものがマウント
+    writeFileSync(info, `22 1 8:1 / / rw - ext4 /dev/sda1 rw\n40 22 0:50 / ${mounted} rw - fuse.sshfs host: rw\n`);
+    assert.match((await inspectDelete(w.store, mounted, noProjects, w.home)).refusal ?? "", /マウントされています（~\/banto\/mounted）/);
+
+    // 一覧に出ないマウント（一覧が無い・あとから付いた）——歩いて dev が違えば、その先へ入らない
+    writeFileSync(info, "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n");
+    mkdirSync(join(mounted, "data"));
+    writeFileSync(join(mounted, "data", "remote.txt"), "r");
+    const real = saved.lstat;
+    DELETE_HOOKS.lstat = (async (p: string) => {
+      const st = await real(p);
+      return p === join(mounted, "data") ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { dev: st.dev + 1 }) : st;
+    }) as typeof DELETE_HOOKS.lstat;
+    writeFileSync(join(mounted, ".git", "info", "exclude"), "data\n");
+    await assert.rejects(() => deleteRepository(w.store, { path: mounted, confirmed: true }, noProjects, w.home), /別のファイルシステム（マウント）なので、その先は消していません/);
+    assert.ok(existsSync(join(mounted, "data", "remote.txt")), "別の dev の中まで消した");
+  } finally {
+    Object.assign(DELETE_HOOKS, saved);
+    w.done();
   }
 });
