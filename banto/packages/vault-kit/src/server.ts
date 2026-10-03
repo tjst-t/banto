@@ -164,6 +164,22 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     await registry.load();
     await bindings.load();
   })();
+  /**
+   * **一覧（tool・資源）は起動を待たずに返す**（決定・2026-10-03、ユーザー）。中身は起動で変わらない
+   * 決まった形なので、待つ理由が無い。以前は待っていたので、vault-infisical が接続先に届かないと
+   * 起動に 16 秒かかり、その間 host はこの Module を「繋がった」と扱えず、banto 全体の Module の一覧
+   * （設定画面・Module の画面を開く・画面からの呼び出し）が丸ごと待たされた。
+   * 待つのは実際に中身を扱う呼び出しだけ。**起動に失敗したことは隠さない**——失敗が分かっていれば一覧でも
+   * 断る（host が「繋がらない」と出せる）。まだ途中なら一覧は返し、呼び出しの側でその失敗を返す
+   */
+  let initFailure: unknown;
+  initPromise.catch((err: unknown) => {
+    initFailure = err;
+    console.error(`[${moduleName}] 起動に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  function assertInitNotFailed(): void {
+    if (initFailure !== undefined) throw initFailure;
+  }
 
   /**
    * 使える状態でなければ**理由つきで断る**。`readiness` を渡していない
@@ -263,7 +279,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    await initPromise;
+    assertInitNotFailed();
     return {
       tools: [
         // **AI に見えるのはこの1本と resource だけ**なので、使い方の説明も
@@ -987,7 +1003,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   }));
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    await initPromise;
+    assertInitNotFailed();
     return {
       resources: [
         // **設定 Canvas**（決定・2026-09-07）。Vault は instance に1本なので、
@@ -1055,7 +1071,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   });
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    await initPromise;
+    // 画面の HTML は決まった中身——起動を待たない（設定画面の見出しと中身がすぐ出る）
     if (opts.configApp && request.params.uri === opts.configApp.uri) {
       return {
         contents: [
@@ -1068,6 +1084,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         contents: [{ uri: REQUEST_APP_URI, mimeType: "text/html;profile=mcp-app", text: REQUEST_APP_HTML }],
       };
     }
+    await initPromise;
     if (request.params.uri === ALIASES_URI) {
       await assertReady();
       // **使えないものは名前も見せない**（決定・2026-09-13）——AI に
