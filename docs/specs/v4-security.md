@@ -432,7 +432,7 @@ IP アドレスなら名前で開くよう書く。
   LAN へ直に出しているなら、待ち受けを 127.0.0.1 に絞ると http で届く道そのものが無くなる（未実施）
 - E2E：`e2e/specs/insecure-context.spec.ts`
 
-### 人のログイン（決定・2026-10-03、ユーザー。未実装）
+### 人のログイン（決定・2026-10-03、ユーザー。実装・2026-10-03）
 
 長く使う合言葉（`bantoToken`）を画面で持ち回るのをやめ、**端末ごとのセッション**にする。1人で使う前提で、
 アカウント・ユーザー名は持たない（ログインできる人＝持ち主）。
@@ -448,10 +448,11 @@ AI の文脈に入った）。(2) トークンが画面の JavaScript から読�
   2. **端末を追加**：入っている端末の設定画面で押すと、**QR とリンクの両方**（中身は同じ、リンクにはコピーの
      ボタン）を出す。**有効 10 分・1回だけ使える**。使われたら、出した側の画面に「端末が入りました」と出す
   3. **host のコマンドが出すログインのリンク**（1回だけ・10 分）。まっさらなとき・パスキーを全部なくしたときの
-     戻り道。**host に入れる人＝持ち主**を最後の頼りにする
+     戻り道。**host に入れる人＝持ち主**を最後の頼りにする。コマンドは `node scripts/login-link.mjs`
+     （`--rotate-machine-token` で機械の合言葉を作り直してから出す）
 - **いまの利用者の切り替え**（Fable のレビュー高1を受けて改めた）：トークンをセッションに引き換える口は作らない——
   あると、機械のトークンを持つ者がいつまでも人として入れる（パスキーの登録・端末の締め出しまで）。**最初の1回は host で
-  `banto login-link` を打って入り**、設定画面でパスキーを登録する。**切り替えのときに機械のトークンを作り直す**（漏れた値を
+  `node scripts/login-link.mjs --rotate-machine-token` を打ち、host を再起動して、出たリンクで入り**、設定画面でパスキーを登録する。**切り替えのときに機械のトークンを作り直す**（漏れた値を
   無効にする。2026-10-03 に値が AI の文脈に入っている）。画面の localStorage に残ったトークンは、画面が見つけ次第消す
 - 設定画面に**「ログイン中の端末」**の一覧（入った方法・最後に使った時刻・おおよその端末名）と、
   1台ずつ締め出す操作、パスキーの一覧と消す操作を持つ
@@ -472,8 +473,10 @@ Canvas の sandbox は `sandbox.banto.tjstkm.net`（iframe は親に postMessage
 敵になりうるものとして設計する。host の API は `0.0.0.0:4737` で待ち受け、コンテナからも届く——**認証の要らない口は
 すべてコンテナの AI から叩ける**前提で作る。WebSocket は core にも画面にも無い（2026-10-03 確認）。
 
-- **画面の公式のオリジン**：既にある config の `publicUrl`（OAuth の戻り先に使っている）をそのまま使い、オリジンの形で
-  あることを確かめる。別の項目は足さない。パスキーの RP ID・Origin の検め・リンクの組み立てに使う
+- **画面のオリジン**：config の `uiOrigin`。**省略時は `publicUrl`（OAuth の戻り先に使っている、外から見た banto の住所）の
+  オリジン**——本番は画面と API が同じオリジンなので書かなくてよい。開発・E2E は画面と host のポートが違うので書く
+  （`publicUrl` は API の住所なので、画面の住所を兼ねられない）。どちらも無ければ `http://localhost:4175`。
+  パスキーの RP ID・Origin の検め・CORS・リンクの組み立てに使う（`config/bootstrap.ts` の `loginOrigins`）
 - **API の基点は画面のオリジンに固定する**：`publicUrl` のある運用では、画面は `window.location.origin` の `/api` だけを
   呼ぶ。URL の `bantoHost` は **localhost・127.0.0.1 でだけ読む**（開発で画面と host のポートが違うとき）——本番で読むと、
   公開先のページが `?bantoHost=<自分>` へ飛ばして画面の接続先をすり替えられる（レビュー高2、今のコードの穴）。
@@ -494,25 +497,30 @@ Canvas の sandbox は `sandbox.banto.tjstkm.net`（iframe は親に postMessage
 - **パスキー**：RP ID は `banto.tjstkm.net`。**守りは検証時の origin の一致**（clientDataJSON の origin を画面のオリジン
   1つに固定）——RP ID の子（公開先・sandbox）は同じパスキーのプロンプトを出させられるので、RP ID では守れない
   （レビュー中4）。userVerification は required。公開鍵・credential id・署名回数だけを持ち、署名回数が増えないことを
-  複製とは見ない（同期型のパスキーは常に 0）。登録はセッションのあるときだけ。ライブラリは `@simplewebauthn/server`（予定）
+  複製とは見ない（同期型のパスキーは常に 0、同じパスキーを複数の端末で使うと回数は端末ごとに進む——ライブラリの
+  検めには 0 を渡す）。登録はセッションのあるときだけ。ライブラリは `@simplewebauthn/server`・`@simplewebauthn/browser`
 - **大事な操作は直前のパスキーを求める**（step-up、ユーザー）：端末を追加・パスキーの追加と削除・端末の締め出しは、その場で
   パスキーを通してから。本人の確かめ方は端末に任せる（指紋・顔・パスコードのどれでもよい）——画面に XSS が1つあれば、HttpOnly でも「端末を追加」を呼んで札を外へ送れるため（レビュー中6）。
   パスキーがまだ1つも無いとき（切り替え直後）は求めない
 - **1回だけの札**（端末を追加・host のリンク）：ランダム 256 bit、host はハッシュと期限（10 分）だけ。URL は
-  `https://banto.tjstkm.net/login#code=<札>`——**札はフラグメントに置く**（アクセスログ・Referer に残らない）。画面が
-  フラグメントを読み、`POST /api/auth/redeem` で引き換えて URL から消す。出した側には `/api/events` で「使われた」
-  （端末名）を届ける。http から https への案内（connect-gate）はフラグメントも運ぶ
-- **host のコマンド**：`banto login-link`（cli.ts）。host の設定とデータ置き場を読める人だけが打てる
+  `https://banto.tjstkm.net/#banto-login=<札>`——**札はフラグメントに置く**（アクセスログ・Referer に残らない）。門が
+  フラグメントを読み、先に URL から消してから `POST /api/auth/redeem` で引き換える。出した側には `/api/events` で
+  「使われた」（`auth.device_added`、端末名）を届ける。http から https への案内（connect-gate）はフラグメントも運ぶ。
+  端末を追加の札はプロセスメモリ（host を起こし直せば消える）
+- **host のコマンド**：`node scripts/login-link.mjs`。**札は API では作らず、データ置き場のファイル**
+  （`<dataDir>/auth/login-links/<札のハッシュ>`、中身は期限）に置く——API で作れると機械の合言葉で人として入れる。
+  host の設定とデータ置き場を読める人だけが打てる（コンテナからは見えない）。引き換えはファイルを消せたときだけ通す
 - **認証の要らない口**（redeem・パスキーの開始・publish-check・callback）は数と寿命に上限を置く（コンテナからも叩けるため）
 - **締め出し**：セッションを消せば、その端末の次の要求から 401。`/api/events` の流れも切る
 - **ログインしていない画面**：門（ConnectGate）が「パスキーで入る」と「ほかの端末から追加」の案内を出す。
   トークンを打つ欄は消す
 - **機械の合言葉**：起動ログにトークンを出さない（今は `cli.ts` が毎回出し、journald に残っている）。コンテナには今も
   渡しておらず（渡す env の一覧に無い）、これからも渡さない
-- **E2E**：`e2e/start-core.ts` が書く config に、その回の画面のオリジン（`http://127.0.0.1:<port>`）を `publicUrl` として
-  入れ、**画面には `banto login-link` と同じ口で出したリンクで入る**——Cookie・独自ヘッダ・札の引き換えの経路を毎回通す
-  （localhost は http でも Secure・`__Host-` の Cookie を受ける）。パスキーは Playwright の仮想認証器で通す。
-  API を直に叩く試験は今までどおり Bearer
+- **E2E**：**ブラウザは `localhost` で開く**（画面も core も。WebAuthn は IP アドレスを RP ID に取れない——127.0.0.1 では
+  「invalid domain」、実測）。config に `uiOrigin`（その回の画面のオリジン）を書き、どのテストも始めに host のコマンドと
+  同じ札をデータ置き場に置いてブラウザの文脈から引き換える（`e2e/test-base.ts` の `loginContext`）——Cookie・独自ヘッダ・
+  札の引き換えの経路を毎回通る（localhost は http でも Secure・`__Host-` の Cookie を受ける）。ログインそのものは
+  `connect-gate.spec.ts`（パスキーは Chromium の仮想認証器）。API を直に叩く試験は今までどおり Bearer
 
 #### 公開したものの前の認証
 
@@ -520,26 +528,38 @@ oauth2-proxy と同じ形。**banto のセッションの Cookie は公開先へ
 
 1. publish-caddy のルートを subroute にし、先頭で `/.banto-auth/*` を host に回す。それ以外は、host の確かめ口
    （`GET /api/auth/publish-check`）へ `reverse_proxy` の `rewrite`＋`handle_response`（Caddyfile の `forward_auth` を
-   JSON に落とした形）で問い、2xx なら次へ。元のメソッドと URI は `X-Forwarded-Method`・`X-Forwarded-Uri` で渡す
+   JSON に落とした形）で問い、2xx なら次へ。元のメソッドと URI は `X-Forwarded-Method`・`X-Forwarded-Uri` で渡す。
+   host の口は publish-caddy が中継の住所から知る（publish-caddy も Caddy も host にいる。例 `127.0.0.1:4737`）
 2. 確かめ口は、**その公開先の名前にだけ効く通行証**の Cookie（`__Host-banto-pass`、その公開先のホストだけに置く）を見る。
-   公開先は Caddy の付ける `X-Forwarded-Host` で知る——**4737 に直に来た要求（LAN・コンテナ）では使わない**（Caddy を
-   通ったことが分かる形で受ける。形は実装で決める）。通っていれば 200。無い・古いとき、画面の遷移
-   （`Sec-Fetch-Mode: navigate`）なら `https://banto.tjstkm.net/api/auth/publish-start?rd=<公開先の URL>` へ 302、
-   それ以外（fetch 等）は 401
-3. **公開先どうしの横取りを断る**：確かめ口は `Sec-Fetch-Site` が `same-origin`・`none` 以外なら断る——別の公開先の
-   ページから A へ要求を出すと、Lax の通行証が付いて A のサービスを人の名義で動かせるため（レビュー中5）
-4. `publish-start` は banto のセッションを確かめ（無ければログインの画面を経て **`publish-start` に戻る**——画面は自分で
-   飛ばさない）、`rd` を URL として読み、`https:` かつホストが**今公開中のホスト名のどれか**であるときだけ、1回だけ・1分の
-   札を付けて `https://<公開先>/.banto-auth/callback?code=<札>&rd=<元のパス>` へ戻す。渡すのはパスだけで、先頭は `/`
-   1文字（`//`・`/\` は断る——レビュー中8）
-5. host は札を引き換え、その公開先だけの通行証を Set-Cookie して元のパスへ戻す
+   公開先の名前は Caddy の付ける `X-Forwarded-Host`。**Caddy を通らずに 4737 へ直に来た要求がこれを偽っても得るものは
+   無い**——札も通行証も公開先の名前に結びつけてあり、偽った名前のものは持っていないので通らない（Caddy を通ったかを
+   見分ける仕組みは要らなかった）。通っていれば 200。無い・古いとき、画面の遷移（`Sec-Fetch-Mode: navigate`）なら
+   `https://banto.tjstkm.net/api/auth/publish-start?rd=<公開先の URL>` へ 302、それ以外（fetch 等）は 401
+3. **公開先どうしの横取りを断る**：確かめ口は、画面の遷移でない要求で `Sec-Fetch-Site` が `same-origin`・`none` 以外なら
+   断る——別の公開先のページから A へ要求を出すと、Lax の通行証が付いて A のサービスを人の名義で動かせるため
+   （レビュー中5）。画面の遷移（banto の一覧から公開先のリンクを押す＝`same-site`）は通す
+4. `publish-start` は banto のセッションを確かめ（無ければ `/?next=<publish-start>` でログインの画面を経て
+   **`publish-start` に戻る**——画面は自分で公開先へ飛ばさない）、`rd` を URL として読み、**banto の画面の名前の下
+   （`*.banto.tjstkm.net`）・同じ scheme とポート・sandbox ではない**ときだけ、1回だけ・1分の札を付けて
+   `https://<公開先>/.banto-auth/callback?code=<札>&rd=<元のパス>` へ戻す。札はその公開先の名前に結びつける。
+   渡すのはパスだけで、先頭は `/` 1文字（`//`・`/\` はただの `/` にする——レビュー中8）。
+   **「今公開中の名前か」は確かめない**（公開の一覧は publish の Module が持ち、core は知らない）——banto の名前の下の
+   よその名前へ札を渡しても、その札で手に入るのはその名前の通行証だけ。公開していない名前には Caddy の道が無い
+5. host は札を引き換え（札を結びつけた名前と `X-Forwarded-Host` が同じときだけ）、その公開先だけの通行証を
+   Set-Cookie して元のパスへ戻す。**通行証は HMAC で署名した中身**（セッションの印・公開先の名前・期限）で、鍵は
+   データ置き場（`<dataDir>/auth/pass-key`、0600）——host を起こし直しても効く
 6. **通過したあと、Caddy は通行証の Cookie を要求から外してからサービスへ渡す**（`headers` の Cookie の正規表現の
-   置き換え）。**応答の側でも、サービスが返す `__Host-banto-pass` の Set-Cookie を落とす**——サービスは自分のホストなので
-   通行証を書き換え・消せる（レビュー中9）。`/.banto-auth/` のパスはサービスへ渡さない
+   置き換え、`search_regexp`）。**応答の側でも、サービスが返す `__Host-banto-pass` の Set-Cookie を落とす**（`deferred`）
+   ——サービスは自分のホストなので通行証を書き換え・消せる（レビュー中9）。`/.banto-auth/` のパスはサービスへ渡さない。
+   本物の Caddy v2.11.4 で、未ログインは banto へ回る・ログイン後は開ける・通行証はサービスに届かず書き換えもできない・
+   別の公開先からの要求は届かない・締め出し後は開けない、を確かめた（2026-10-03）
 
 - 通行証は banto のセッションに結びつける——セッションを締め出せば、その端末の通行証も次の要求から効かない。
-  公開をやめれば、その公開先の通行証も効かない。期限はセッションと同じ
-- 承認の画面の認証の選択に「banto のログイン」を足し、**既定にする**。「無し」「Basic 認証」は残す
+  公開をやめれば、その公開先には Caddy の道が無くなる。期限はセッションと同じ（30 日）
+- 承認の画面の認証の選択に「banto のログイン」を足し、**既定にする**。「無し」「Basic 認証」は残す。窓口の画面の
+  ワンクリック公開（実装の既定で出す）も banto のログインになる
+- 確かめ口は Caddy からだけ呼ばれる想定だが、届くのは LAN・コンテナからも同じ。通行証は推測できない署名つきの値なので、
+  届いても通らない
 - **前提**：host の Caddy が `handle_response`・`headers` の正規表現の置き換えを持つ版であること（2.5 以降）。
   host の Caddy は v2.11.4（2026-09-28 に確認、v4-modules.md の Publish）なので足りる
 

@@ -174,3 +174,47 @@ sudo systemctl restart UNIT_HOST UNIT_UI
 
 **戻すとき**：`git -C "$REL" reset --hard <前のコミット>` → 3 をもう一度。前のコミットは
 `git -C "$REL" reflog` で分かる。
+
+---
+
+## C. 人のログインに切り替える（2026-10-03 の版を初めて反映するとき、1回だけ）
+
+この版から、画面は合言葉（`authToken`）を使わず、端末ごとのログイン（パスキー・端末を追加・host のリンク）で入る
+（`docs/specs/v4-security.md`「人のログイン」）。合言葉は機械の口（`restart-when-idle.mjs` 等）にだけ残す。
+**いまブラウザに覚えている合言葉は、新しい画面を開いた時点で消える**——この手順のリンクで入り直す。
+
+1. **設定に画面の住所があるか確かめる**。無ければ足す（無いと画面のオリジンを `http://localhost:4175` とみなし、
+   ログインが通らない）
+
+   ```sh
+   grep -E '"(publicUrl|uiOrigin)"' ~/.config/banto/config.json
+   # 何も出なければ、config.json に "publicUrl": "https://banto.tjstkm.net" を足す（画面と同じ住所。末尾の / は無し）
+   ```
+
+2. **B の 1〜3 で反映する**（release へ上げる・REL に取り込む・build・`restart-when-idle.mjs`）。
+   この時点ではまだ古い合言葉のまま動く
+
+3. **合言葉を作り直し、ログインのリンクを出す**（REL の `banto` で）
+
+   ```sh
+   cd "$REL/banto"
+   node scripts/login-link.mjs --rotate-machine-token
+   ```
+
+   作り直した合言葉は host を起こし直すまで効かない。**ここでは `restart-when-idle.mjs` を使えない**——設定の新しい
+   合言葉で聞くので、古い合言葉で動いている host に断られる（401）。2 で起こし直した直後なので、そのまま打つ：
+
+   ```sh
+   sudo systemctl restart banto-host.service
+   ```
+
+4. **3 で出たリンクを、パソコンのブラウザで開く**（10分・1回だけ。切れたら `node scripts/login-link.mjs` で出し直す）。
+   入ったら **設定 → ログイン → この端末のパスキーを登録**
+
+5. **携帯を足す**：パソコンの **設定 → ログイン → 端末を追加** で出る QR を携帯で読む（読めなければ、リンクを携帯へ
+   送って開く）。入ったら携帯でも **この端末のパスキーを登録**。「ログイン中の端末」に2台並ぶことを確かめる
+
+6. **公開中のもの**：前から公開しているものは「認証なし」のまま残る（記録の認証は書き換えない）。banto のログインで
+   守るなら、公開をやめて公開し直す（新しく公開するものは既定で banto のログイン）
+
+**入れなくなったとき**：host で `node scripts/login-link.mjs` を打てば、いつでも新しいリンクが出る。
