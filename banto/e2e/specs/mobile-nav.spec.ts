@@ -30,8 +30,15 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
 
   // FORKED に Fork を1つ作る（1ターン終えて resume-point が立ってから分ける——project-thread-fork.spec.ts と同じ）
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("目印" + fakeTurn({ say: "はい" }));
+  // **携帯ではキーボードの Enter は改行**（2026-10-03、ユーザー要望）。送るのは画面の送信ボタンだけ
+  await composer.fill("1行目");
   await composer.press("Enter");
+  await expect(composer, "携帯で Enter を押したのに改行が入らない").toHaveValue("1行目\n");
+  await page.waitForTimeout(1000);
+  await expect(page.locator('[data-role="user"]'), "携帯で Enter を押したら送られた").toHaveCount(0);
+  await composer.fill("目印" + fakeTurn({ say: "はい" }));
+  await page.getByRole("button", { name: "Send message" }).locator("visible=true").click();
+  await expect(page.locator('[data-role="user"]')).toHaveCount(1, { timeout: 15_000 });
   const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
   const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json();
   const forked = projects.find((p: { name: string }) => p.name === FORKED);

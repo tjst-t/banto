@@ -8,6 +8,7 @@
 // 時間は 238ms → 166ms と短くなる**（辿るたびに測り直さなくなるため）。
 "use client";
 
+import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
 import {
   ComposerAddAttachment,
   ComposerAttachments,
@@ -458,6 +459,9 @@ const Composer: FC<{
   composerActionSlot?: ReactNode;
 }> = ({ autoFocus, placeholder, composerActionSlot }) => {
   const pasteImages = usePasteImages();
+  // **画面のキーボードが出る端末では、Enter は改行**（banto、2026-10-03、ユーザー要望）。送るのは画面の送信ボタンだけ
+  // ——キーボードの Enter が送信だと改行が入れられない。見分けは自動の焦点と同じ（`useTouchKeyboard`）
+  const touchKeyboard = useTouchKeyboard();
   // 止めて取り消した発言を、ここへ戻す（banto、v4-frontend.md §6.31）
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useRestoreWithdrawn(inputRef);
@@ -476,7 +480,9 @@ const Composer: FC<{
             className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
             rows={1}
             autoFocus={autoFocus}
-            enterKeyHint="send"
+            // キーボードの Enter の表示も合わせる（携帯では「改行」、パソコンでは「送信」）
+            enterKeyHint={touchKeyboard ? "enter" : "send"}
+            submitMode={touchKeyboard ? "none" : "enter"}
             aria-label="Message input"
             addAttachmentOnPaste={false}
             onPaste={pasteImages}

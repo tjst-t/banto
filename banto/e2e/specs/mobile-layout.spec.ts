@@ -23,6 +23,11 @@ test.use({ viewport: { width: 412, height: 840 }, hasTouch: true });
 
 const PROJECT_NAME = "E2E Mobile Layout";
 
+/** 送る。**携帯ではキーボードの Enter は改行**なので（2026-10-03、ユーザー要望）、画面の送信ボタンを押す */
+async function send(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "Send message" }).locator("visible=true").click();
+}
+
 /** ヘッダ・入力欄・履歴の器の位置を、画面の座標で測る。 */
 async function layout(page: import("@playwright/test").Page) {
   return page.evaluate(() => {
@@ -68,7 +73,7 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
     "1 から 60 までの数字を並べて出して。" +
       fakeTurn({ say: Array.from({ length: 60 }, (_, i) => String(i + 1)).join("\n") }),
   );
-  await composer.press("Enter");
+  await send(page);
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "60" })).toBeVisible({
     timeout: 120_000,
   });
@@ -203,7 +208,7 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
   const longText = Array.from({ length: 120 }, (_, i) => `行 ${i + 1}`).join("\n");
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(`${longText}\n\nこの一覧は読まなくていいです。「はい」とだけ返して。`);
-  await composer.press("Enter");
+  await send(page);
   await expect(page.locator('[data-role="assistant"]').last()).toBeVisible({ timeout: 120_000 });
   await page.waitForTimeout(1000);
 
@@ -308,7 +313,7 @@ test("返事の直後（一番下に居る）でキーボードを開閉して�
   // ターン1：**「前のターン」となる中身**を作っておく（戻り先が見えるように長め）
   const longText = Array.from({ length: 80 }, (_, i) => `前ターン行 ${i + 1}`).join("\n");
   await composer.fill(`${longText}\n\nこの一覧は読まなくていいです。「はい」とだけ返して。`);
-  await composer.press("Enter");
+  await send(page);
   await expect(page.locator('[data-role="assistant"]')).toHaveCount(1, { timeout: 120_000 });
   await expect(page.locator('[data-role="assistant"]').last()).toContainText(/はい/, {
     timeout: 120_000,
@@ -323,7 +328,7 @@ test("返事の直後（一番下に居る）でキーボードを開閉して�
 
   // ターン2：これが「最後のターン」になり、返事を追って一番下に居る
   await composer.fill("今度も「はい」とだけ返して。");
-  await composer.press("Enter");
+  await send(page);
   await expect(page.locator('[data-role="assistant"]')).toHaveCount(2, { timeout: 120_000 });
   await expect(page.locator('[data-role="assistant"]').last()).toContainText(/はい/, {
     timeout: 120_000,
