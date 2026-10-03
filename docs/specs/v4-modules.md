@@ -2091,9 +2091,10 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 - **「取り組んだ Thread」から、その Thread を開く口**——Canvas から banto の会話を開かせる口が無い
   （`ui/open-link` は http/https を別タブで開くだけ）。押せるように見せないため、いまは Thread の id を文字で出すだけ（規則13）。
   `dev.banto/open-new-project` と同じ形で足すかは未決（Repositories の「既にある Project を Canvas から開く口」と同じ問い）
-- **今の `docs/tasks.json` の移行そのもの**——変換スクリプトで書き出したものは確かめたが、置き換えはまだ（人が確かめてから）。
-  いまのファイルには **id `module-registry-install` が2件ある**（変換は直さずに運び、Module は「直すところ」として出す）。
-  どちらを残すか・ストーリーへの組み直しは人と AI でやる
+- ~~今の `docs/tasks.json` の移行そのもの~~ **→ 2026-10-03 に置き換えた**（168件）。重なっていた id `module-registry-install` は、
+  終わったほう（npm・remote から入れる）を `module-registry-install-npm` に改め、積んだだけのほう（レジストリの検索、
+  v4-architecture.md が参照）に元の id を残した。マイルストーンの id は `phase-0`〜`phase-4` と `after-phase-0`（Phase 0以降）・
+  `phase-undecided`（Phase 未定）。**ストーリーへの組み直しはまだ**（人と AI でやる）
 - 画面の読み直しの間隔（3秒）は、他の Module に揃える前例が無かったので仮に決めた。host から「変わった」を
   知らせる口（MCP の `resources/subscribe` を Canvas に通す等）を作るかは未決
 
