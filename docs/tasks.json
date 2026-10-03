@@ -2425,11 +2425,22 @@
       "doneWhen": "稼働中の banto で、本物の GitHub の公開・自分の非公開（ブラウザでログインのアカウント）・GitHub の外のリポジトリを URL から clone でき、新しいリポジトリを作れ、「Project も作る」で新しい Project の画面がフォルダ入りで開いて作れることを人が確かめる"
     },
     {
-      "id": "repositories-next",
-      "title": "Repositories の続き：GitHub に公開・新しい Project の画面への持ち込み（_meta の名乗り）・既にある Project を Canvas から開く口（アカウントは段階2、clone・新しいリポジトリは段階3）",
-      "status": "pending",
+      "id": "repositories-stage4",
+      "title": "Repositories Module の段階4（「読むだけ」の行にアカウントを後から選ぶ・このマシンから削除（失われるものを数えて確かめる・使っていた Project は core の確かめで閉じる dev.banto/close-projects）・core の新しい Project の画面に Module が名乗ったタブ（folder-provider・dev.banto/folder-prepared））",
+      "status": "in-progress",
       "dependencies": [
         "repositories-stage3"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.4「このマシンから削除」「アカウント」「core との境目」・docs/specs/v4-frontend.md §6.2・docs/specs/v4-security.md §3",
+      "why": "2026-10-03、ユーザー。見えないアカウントは断り、書けないなら言って指定、読むだけに戻すと印を残して自動で付け直さない。削除は先に失われるもの（重ねない合計・detached・リモートに無いブランチ・変更・追跡していないもの・stash・worktree）を filter を空にして数え、あれば名前を打たせる。確かめは Module が消す直前にやり直す。置き場の外・リンク・realpath 違い・ホーム・/ は断る。Module は Project に触らず、core の確かめを開く。新しい Project の画面のタブは _meta の dev.banto/canvas の3つ目の値で名乗り、返す口は request。単体（Module 75本・core 370本・画面 21本）と e2e/specs/repositories.spec.ts（6本）は通し、壊して落ちることも見た。経緯は docs/notes/2026-10-03-repositories-stage4.md",
+      "doneWhen": "稼働中の banto で、読むだけの行に自分のアカウントを選べ（見えないものは断られ）、置き場の中のリポジトリを「このマシンから削除」でき（push していないものがあると名前を打たされ）、使っていた Project を閉じる確かめが出て閉じられること、新しい Project の画面の clone・新しいリポジトリのタブから Project を作れることを人が確かめる"
+    },
+    {
+      "id": "repositories-next",
+      "title": "Repositories の続き：GitHub に公開・既にある Project を Canvas から開く口（アカウントは段階2、clone・新しいリポジトリは段階3、新しい Project の画面への持ち込み・削除は段階4）",
+      "status": "pending",
+      "dependencies": [
+        "repositories-stage4"
       ],
       "spec": "docs/specs/v4-modules.md §2.4",
       "why": "段階1では『Project を始める』『GitHub に公開』『clone し直す』は押すと『まだ作っていない』と言うだけ。『URL から clone』『新しいリポジトリ』『git init して Import』は出していない（規則13）。Project の列は名前だけ（Canvas から banto の画面遷移を頼む口が無い）。台帳のアカウントの項目はアカウントを登録できるようになるときに足す",

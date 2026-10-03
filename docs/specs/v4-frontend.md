@@ -466,6 +466,47 @@ Repositories の「Project も作る」（clone・新しいリポジトリのあ
   Canvas）からの頼みは断る——「開いた」と言って何も出ないことにしない
 - Project を「開く」口（既にある Project へ移る）はまだ無い——要るまで足さない
 
+#### 画面から「この Project を閉じるかを人に確かめて」（banto の拡張、決定・2026-10-03、Repositories 段階4）
+
+Repositories の「このマシンから削除」で、消したフォルダを Root にしていた Project を閉じるかを人に聞くのに要る。
+Module は Project に触らない（v4-modules.md §2.4）ので、**閉じるのは core の確かめで人が押したとき**。上の
+`dev.banto/open-new-project` と同じ決まりで足す：
+
+| 向き | 形 |
+|---|---|
+| 画面 → banto | request `dev.banto/close-projects`（`params.projectIds`＝Project の id の並び。1〜20件、`[A-Za-z0-9_-]` 100字まで、重なりは1つに） |
+| banto | **core の「Project を Close しますか」の確かめを開くだけ**（閉じた Project の一覧から再開できる、削除ではない）。どの面からでも |
+| banto → 画面 | `{}`。読めない params は InvalidParams で断る |
+
+- **閉じない**——閉じるのは人が「Close する」を押したとき。閉じるのは core の `POST /api/projects/:id/close`
+  （画面の「Project を Close」と同じ）。見ていた Project を閉じたら、ほかへ移る
+- 出所を出す（「〈Module〉の画面から頼まれて開きました」）。**頼んだ理由は core が言わない**——core は Module の
+  都合（「削除したため」）を名指ししない。理由は頼む前に Module の画面が言う
+- 会話の中の画面からは人が押した直後だけ・開いている間は断る・開く場所の無い面からは断る——上と同じ
+  （`lib/backend/canvas-requests.ts` が2つの頼みの決まりを1か所に持つ）
+- id が見つからない・もう閉じているものは数だけ言い、閉じるものに入れない
+
+#### 新しい Project の画面に Module が差し出すタブ（決定・2026-10-03、Repositories 段階4）
+
+core の新しい Project の画面は「手元のフォルダ」だけを持ち、**フォルダを用意できる Module の画面**をタブとして並べる
+（v4-modules.md §2.4「core との境目」）。
+
+| 向き | 形 |
+|---|---|
+| Module → banto（名乗り） | 資源（`ui://`、`text/html;profile=mcp-app`）の `_meta["dev.banto/canvas"] = "folder-provider"`。タブの名前・説明・アイコンは資源の `name`・`description`・`icons[0].src`（MCP の標準の欄） |
+| banto が集める | `GET /api/ui-folder-providers`——banto 全体（instance）の Module のものだけ。アイコンは `data:image/svg+xml` か `data:image/png` の base64 で 2万字未満のものだけ渡す（画面に外へ読みに行かせない） |
+| 画面 → banto（返り） | request `dev.banto/folder-prepared`（`params.path`＝`/` から始まる 4096字まで、`params.summary`＝1〜500字、`params.suggestedName?`＝200字まで） |
+| banto → 画面 | `{}`。新しい Project の画面の枠の中に出した画面でなければ断る（-32000）。読めない params は InvalidParams |
+
+- 枠の中の画面は banto 全体の Module の画面（`owner: instance`）として出す。**点線の枠と出所**（「〈Module〉の画面」と
+  `ui://…`）を付ける——core の画面の中の「よそ様の画面」
+- 返ってきたら core が下の段（Project 名・Advanced）を出して作る。**そのフォルダを Root にした Project が既にあれば、
+  新しくは作らずそれを開く**（閉じていれば再開）——core が自分の Project の一覧で調べる（Module に聞かない）。
+  Module が言った1行（`summary`）を出所つきで添え、「別のフォルダにする」で Module の画面に戻れる
+- 名乗る Module が無ければタブを出さない（「手元のフォルダ」だけ）。名乗りが読めなければ理由を出し、手元のフォルダは選べる
+- 返す口を MCP Apps の標準（`ui/message`・`ui/update-model-context` 等）にしなかったのは、どれも「会話（モデル）へ
+  渡す」意味を持ち、ここは会話の外の画面だから
+
 **iOS との違いを1つ記録**：iOS は宣言（`Settings.bundle`）を OS が描くので、アプリの
 コードは設定画面で走らない。banto は Module の HTML を iframe で走らせるので、
 表現力は高いが**設定画面に第三者のコードが載る**。上の「常に `sandboxed`」は
