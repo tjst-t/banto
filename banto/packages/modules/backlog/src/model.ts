@@ -494,8 +494,9 @@ function buildItem(
     doneWhen: input.doneWhen ?? "",
     resolution: null,
     refs: [...(input.refs ?? [])],
-    // 進めている・閉じた状態で作ったなら、その Thread で取り組んだことになる（updateItem と同じ決まり）
-    threads: status === "in-progress" || isClosed({ status }) ? addThread([], thread) : [],
+    // 進めている状態で作ったなら、その Thread で取り組んだことになる（updateItem と同じ決まり）。
+    // 閉じた状態で作るのは、終わったことを後から書き留める片づけなので足さない
+    threads: status === "in-progress" ? addThread([], thread) : [],
     createdAt: now,
     updatedAt: now,
     closedAt: isClosed({ status }) ? now : null,
@@ -531,7 +532,10 @@ export interface ItemPatch {
 
 /**
  * 欄を変える。閉じれば `closedAt`、開き直せば `closedAt` と `resolution` を消す。
- * **呼び出し元の Thread**（`thread`）は、進めた（in-progress にした）・閉じたときにだけ足す
+ * **呼び出し元の Thread**（`thread`）は、進めた（in-progress にした）ときにだけ足す。閉じたときは足さない——
+ * 閉じるのは片づけ（他の Thread がやり終えたものをまとめて閉じる・要らなくなったものをやめる）でも起き、
+ * そこで足すと取り組んでいない Thread が残る（2026-10-03、tasks.json の組み直しで8件に付いた）。
+ * 取り組んだ Thread は、ふつう先に in-progress にしたときに記録されている
  */
 export function updateItem(
   doc: BacklogDocument,
@@ -560,7 +564,7 @@ export function updateItem(
     }
     // やめた理由を「終わった」に持ち越さない（理由を書き直すなら patch で渡す）
     if (next.status === "done" && before.status === "dropped" && patch.resolution === undefined) next.resolution = null;
-    if (next.status === "in-progress" || closed) next.threads = addThread(next.threads, thread);
+    if (next.status === "in-progress") next.threads = addThread(next.threads, thread);
   }
   return { doc: { ...doc, items: doc.items.map((i) => (i.id === id ? next : i)) }, result: next };
 }
