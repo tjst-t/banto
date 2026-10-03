@@ -17,6 +17,8 @@
 //
 // 開くのは banto の外枠（`RequestedNewProjectDialog`）。ここは頼みを受け渡す小さな置き場だけ。
 
+import { createCanvasRequestStore } from "./canvas-requests.ts";
+
 export const OPEN_NEW_PROJECT_METHOD = "dev.banto/open-new-project";
 
 export interface NewProjectRequest {
@@ -28,33 +30,21 @@ export interface NewProjectRequest {
   from?: string;
 }
 
-let current: NewProjectRequest | null = null;
-let seq = 0;
-/** 開く場所（`RequestedNewProjectDialog`）がいくつ出ているか */
-let hosts = 0;
-const listeners = new Set<() => void>();
+const store = createCanvasRequestStore<Omit<NewProjectRequest, "seq">>("新しい Project の画面");
 
-/** 頼みを受けてよいか。だめなら理由（画面にそのまま返す） */
+/** 頼みを受けてよいか。だめなら理由（画面にそのまま返す）。決まりは `canvas-requests.ts` */
 export function decideNewProjectRequest(input: {
   /** 会話の中の画面（AI の tool の結果として出たもの）からか */
   fromConversation: boolean;
   /** 人がその画面を押した直後か */
   activated: boolean;
 }): { ok: true } | { error: string } {
-  if (hosts === 0) return { error: "この画面からは新しい Project の画面を開けません（banto の画面で開いてください）" };
-  if (current) return { error: "新しい Project の画面は、もう開いています" };
-  if (input.fromConversation && !input.activated) {
-    return { error: "会話の中の画面からは、人が押した直後にだけ開けます" };
-  }
-  return { ok: true };
+  return store.decide(input);
 }
 
 /** 開く場所が出たこと・消えたことを知らせる（外枠の `RequestedNewProjectDialog`） */
 export function registerNewProjectHost(): () => void {
-  hosts += 1;
-  return () => {
-    hosts -= 1;
-  };
+  return store.registerHost();
 }
 
 /** 画面から来た params を読む。読めなければ理由を返す（画面にそのまま返す） */
@@ -69,21 +59,17 @@ export function parseNewProjectParams(params: unknown): { basePath: string; name
 }
 
 export function requestNewProject(input: { basePath: string; name?: string; from?: string }): void {
-  seq += 1;
-  current = { seq, ...input };
-  for (const l of listeners) l();
+  store.request(input);
 }
 
 export function clearNewProjectRequest(): void {
-  current = null;
-  for (const l of listeners) l();
+  store.clear();
 }
 
 export function subscribeNewProjectRequest(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+  return store.subscribe(listener);
 }
 
 export function getNewProjectRequest(): NewProjectRequest | null {
-  return current;
+  return store.get();
 }

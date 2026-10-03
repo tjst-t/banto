@@ -17,6 +17,7 @@ import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
 import { MobileNavProvider } from "./mobile-nav-drawer";
 import { RequestedNewProjectDialog } from "@/components/banto/project/requested-new-project-dialog";
+import { RequestedCloseProjectsDialog } from "@/components/banto/project/requested-close-projects-dialog";
 import {
   getServerSidebarPreference,
   getSidebarPreference,
@@ -138,6 +139,8 @@ function AppShellInner({ children }: { children: ReactNode }) {
       ) : null}
       {/* Module の画面から頼まれた「新しい Project」（Repositories の「Project も作る」等）——どの面からでも開く */}
       <RequestedNewProjectDialog />
+      {/* Module の画面から頼まれた「Project を閉じる」（Repositories の「このマシンから削除」）——どの面からでも開く */}
+      <RequestedCloseProjectsDialog />
       <CommandPalette
         projectId={projectId}
         stack={stack}

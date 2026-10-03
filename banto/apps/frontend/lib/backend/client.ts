@@ -1057,6 +1057,21 @@ export async function recordRealUiDisplayMode(
 }
 
 /** 人が直接開ける入口（launcher、§6.2）。名前と説明は Module が名乗ったもの。 */
+/** core の新しい Project の画面に差し出す始め方（Module が名乗ったもの、§2.4「core との境目」） */
+export interface RealFolderProvider {
+  server: string;
+  resourceUri: string;
+  name?: string;
+  description?: string;
+  /** `data:` の画像だけ（core が確かめて渡す） */
+  icon?: string;
+}
+
+/** banto 全体の Module が「Project の Root にするフォルダを用意できる」と名乗った画面の一覧 */
+export async function listRealFolderProviders(): Promise<RealFolderProvider[]> {
+  return request<RealFolderProvider[]>(`/api/ui-folder-providers`);
+}
+
 export interface RealUiLauncher {
   server: string;
   resourceUri: string;

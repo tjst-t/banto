@@ -37,6 +37,8 @@ import {
   parseNewProjectParams,
   requestNewProject,
 } from "@/lib/backend/canvas-new-project";
+import { CLOSE_PROJECTS_METHOD, closeProjectsRequests, parseCloseProjectsParams } from "@/lib/backend/canvas-close-projects";
+import { FOLDER_PREPARED_METHOD, parseFolderPrepared, type PreparedFolder } from "@/lib/backend/canvas-folder-prepared";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import {
   AlertDialog,
@@ -71,6 +73,11 @@ export interface ModuleCanvasProps {
   viewState?: unknown;
   /** 画面が「見ている場所」を預けてきたとき。渡さなければ預からない（会話の中のカード等） */
   onViewStateChange?: (state: unknown) => void;
+  /**
+   * 画面が「このフォルダを用意した」と返してきたとき（`dev.banto/folder-prepared`、新しい Project の画面の枠の中だけ）。
+   * 渡さなければ受けない
+   */
+  onFolderPrepared?: (folder: PreparedFolder) => void;
 }
 
 type CallToolResult = Parameters<AppBridge["sendToolResult"]>[0];
@@ -172,6 +179,7 @@ function SandboxFrame({
   onRequestFullscreen,
   viewState,
   onViewStateChange,
+  onFolderPrepared,
   sandboxUrl,
   resource,
 }: ModuleCanvasProps & { sandboxUrl: string; resource: RealUiResource }) {
@@ -189,9 +197,9 @@ function SandboxFrame({
   // Canvas を1つ出して Fork を開いて閉じるだけで **9回**。中身は生き延びていたが、
   // 張り直しの最中に飛んでいる呼び出しがあれば落ちる（規則2 の「黙って別の経路へ
   // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
-  const latest = useRef({ owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange });
+  const latest = useRef({ owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared });
   useEffect(() => {
-    latest.current = { owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange };
+    latest.current = { owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared };
   });
   // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
   // 回帰試験はこの数字が増えないことを見る
@@ -296,20 +304,36 @@ function SandboxFrame({
     // `lib/backend/canvas-new-project.ts`）。仕様に無い request なので「知らない request」の受け口で受ける。
     // 開くのは確かめる画面だけ——Project を作るのは人がそこで押したとき
     bridge.fallbackRequestHandler = async (request) => {
-      if (request.method !== OPEN_NEW_PROJECT_METHOD) {
-        // JSON-RPC の決まった番号で断る（受け口は投げたものの `code` を返事に使う）
-        throw Object.assign(new Error(`Method not found: ${request.method}`), { code: -32601 });
+      // JSON-RPC の決まった番号で断る（受け口は投げたものの `code` を返事に使う）
+      const refuse = (code: number, message: string) => Object.assign(new Error(message), { code });
+      const decideFrom = { fromConversation: latest.current.owner.kind === "thread", activated: navigator.userActivation?.isActive === true };
+      if (request.method === OPEN_NEW_PROJECT_METHOD) {
+        const parsed = parseNewProjectParams(request.params);
+        if ("error" in parsed) throw refuse(-32602, parsed.error);
+        // 会話の中の画面（AI の tool の結果）からは、人が押した直後だけ。開いている間・開く場所が無い面では断る
+        const decision = decideNewProjectRequest(decideFrom);
+        if ("error" in decision) throw refuse(-32000, decision.error);
+        requestNewProject({ ...parsed, from: latest.current.server });
+        return {};
       }
-      const parsed = parseNewProjectParams(request.params);
-      if ("error" in parsed) throw Object.assign(new Error(parsed.error), { code: -32602 });
-      // 会話の中の画面（AI の tool の結果）からは、人が押した直後だけ。開いている間・開く場所が無い面では断る
-      const decision = decideNewProjectRequest({
-        fromConversation: latest.current.owner.kind === "thread",
-        activated: navigator.userActivation?.isActive === true,
-      });
-      if ("error" in decision) throw Object.assign(new Error(decision.error), { code: -32000 });
-      requestNewProject({ ...parsed, from: latest.current.server });
-      return {};
+      if (request.method === CLOSE_PROJECTS_METHOD) {
+        const parsed = parseCloseProjectsParams(request.params);
+        if ("error" in parsed) throw refuse(-32602, parsed.error);
+        const decision = closeProjectsRequests.decide(decideFrom);
+        if ("error" in decision) throw refuse(-32000, decision.error);
+        closeProjectsRequests.request({ ...parsed, from: latest.current.server });
+        return {};
+      }
+      if (request.method === FOLDER_PREPARED_METHOD) {
+        // 受けるのは新しい Project の画面の枠の中に出した画面だけ
+        const onPrepared = latest.current.onFolderPrepared;
+        if (!onPrepared) throw refuse(-32000, "この画面はフォルダを受け取る場所に出ていません（新しい Project の画面の中でだけ使えます）");
+        const parsed = parseFolderPrepared(request.params);
+        if ("error" in parsed) throw refuse(-32602, parsed.error);
+        onPrepared(parsed);
+        return {};
+      }
+      throw refuse(-32601, `Method not found: ${request.method}`);
     };
 
     // **画面からのリンクを開く**（MCP Apps `ui/open-link`、追加・2026-09-28——Publish の入口の「開く」）。
