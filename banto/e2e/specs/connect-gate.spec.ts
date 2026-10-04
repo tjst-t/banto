@@ -109,13 +109,12 @@ test("パスキーを登録し、ログアウトしてから、パスキーで�
   );
 });
 
-test("端末を追加：パスキーを通してから QR とリンクが出る。別の端末がそれで入ると「入りました」と出て、締め出せばその端末は門に戻る", async ({
+test("端末を追加：QR とリンクが出る。別の端末がそれで入ると「入りました」と出て、締め出せばその端末は門に戻る", async ({
   page,
   browser,
 }) => {
   expect(registered, "前のテストでパスキーを登録できていない").toBeTruthy();
-  // 同じパスキーを持つ端末（Google パスワード マネージャー等で同期したのと同じ形）。入るのは host のリンクで
-  // ——パスキーで入っていないので、端末を追加の前に本人確認を求められる
+  // 同じパスキーを持つ端末（Google パスワード マネージャー等で同期したのと同じ形）。入るのは host のリンク
   const { cdp, authenticatorId } = await addAuthenticator(page);
   await cdp.send("WebAuthn.addCredential", { authenticatorId, credential: registered as never });
   await page.goto(await hostLink());
@@ -124,10 +123,9 @@ test("端末を追加：パスキーを通してから QR とリンクが出る�
   const panel = page.getByTestId("login-panel");
   const sessionsBefore = await panel.getByTestId("login-session-row").count();
 
-  // 本人確認（step-up）が実際に走る——パスキーで入っていないので、先にパスキーを通す
-  const stepUp = page.waitForResponse((r) => r.url().endsWith("/api/auth/stepup/verify") && r.status() === 200);
+  // リンクで入った直後の10分は本人を確かめたことになる（2026-10-04）ので、ここでは本人確認は走らない。
+  // 10分を過ぎたら求めることは core の単体試験が時計を進めて見ている（E2E では host の時計を進められない）
   await panel.getByTestId("login-add-device").click();
-  await stepUp;
   const dialog = page.getByTestId("add-device-dialog");
   await expect(dialog.getByTestId("add-device-qr").locator("svg")).toBeVisible({ timeout: 30_000 });
   const link = await dialog.getByTestId("add-device-link").inputValue();
@@ -138,8 +136,17 @@ test("端末を追加：パスキーを通してから QR とリンクが出る�
   const other: BrowserContext = await browser.newContext();
   try {
     const otherPage = await other.newPage();
+    // 足す端末にはまだパスキーが無い（自分の認証器だけ。2026-10-04、Android の実機で登録できなかった形）
+    await addAuthenticator(otherPage);
     await otherPage.goto(link);
     await expectInside(otherPage);
+    // 入った直後なので、ほかの端末のパスキーが無くても、この端末のパスキーを登録できる
+    await openLoginSettings(otherPage);
+    const otherPanel = otherPage.getByTestId("login-panel");
+    const keysBefore = await otherPanel.getByTestId("login-passkeys").locator("li").count();
+    await otherPanel.getByTestId("login-register-passkey").click();
+    await expect(otherPanel.getByTestId("login-passkeys").locator("li")).toHaveCount(keysBefore + 1, { timeout: 30_000 });
+    await expect(otherPanel.getByTestId("login-panel-action-error")).toHaveCount(0);
     // 出した側に知らせが届く
     await expect(dialog.getByTestId("add-device-joined")).toContainText("が入りました", { timeout: 30_000 });
     await page.keyboard.press("Escape");

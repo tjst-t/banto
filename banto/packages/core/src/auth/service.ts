@@ -36,6 +36,13 @@ export const CLIENT_HEADER = "x-banto-client";
 const COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60;
 /** step-up の効く時間（パスキーを通してから、この間だけ大事な操作ができる） */
 const STEP_UP_MS = 5 * 60 * 1000;
+/**
+ * **リンク（端末を追加・host のコマンド）で入った直後は、本人を確かめたことにする**（改訂・2026-10-04、実機で発覚）。
+ * 足したばかりの端末にはまだパスキーが無いので、パスキーの登録の前の本人確認が通らなかった（Android の Chrome：
+ * 「このデバイスには banto.tjstkm.net のパスキーがありません」）。札は、出す側で本人確認を通したもの（端末を追加）か、
+ * host に入れる人が出したもの（host のコマンド）なので、入った直後の確認として足りる。札と同じ 10 分
+ */
+const FRESH_LOGIN_MS = 10 * 60 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 /** 認証の要らない口は、コンテナからも叩ける（host は 0.0.0.0 で待ち受ける）。溜められる数に上限を置く */
 const MAX_PENDING_CHALLENGES = 50;
@@ -237,6 +244,7 @@ export class AuthService {
       const label = deviceLabel(req.headers["user-agent"]);
       const { token, session } = await this.opts.store.createSession(methodUsed, label);
       this.setSessionCookie(res, token, session.id);
+      this.stepUps.set(session.id, this.now() + FRESH_LOGIN_MS);
       if (device) this.opts.events?.publish({ type: "auth.device_added", codeId: device.codeId, label });
       return sendJson(res, 200, { ok: true, session: { id: session.id, label } });
     }

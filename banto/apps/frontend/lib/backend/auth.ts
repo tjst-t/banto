@@ -99,8 +99,25 @@ export async function withStepUp<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-export function registerPasskey(label?: string): Promise<{ passkey: { id: string; label: string } }> {
-  return withStepUp(async () => {
+export async function registerPasskey(label?: string): Promise<{ passkey: { id: string; label: string } }> {
+  try {
+    return await registerPasskeyOnce(label);
+  } catch (err) {
+    if (!(err instanceof StepUpRequiredError)) throw err;
+  }
+  // 入ってから10分を過ぎた端末は、登録の前に本人確認が要る。この端末にパスキーが無ければ通らない——そう言う
+  try {
+    await stepUp();
+  } catch {
+    throw new Error(
+      "登録の前の本人確認が通りませんでした。この端末にまだパスキーが無いときは、ほかの端末の「端末を追加」でこの端末に入り直し、10分以内に登録してください",
+    );
+  }
+  return registerPasskeyOnce(label);
+}
+
+function registerPasskeyOnce(label?: string): Promise<{ passkey: { id: string; label: string } }> {
+  return (async () => {
     const options = await call<Parameters<typeof startRegistration>[0]["optionsJSON"]>("/passkey/register/options", {
       method: "POST",
     });
@@ -117,7 +134,7 @@ export function registerPasskey(label?: string): Promise<{ passkey: { id: string
       method: "POST",
       body: { response, ...(label ? { label } : {}) },
     });
-  });
+  })();
 }
 
 export function listAuthSessions(): Promise<AuthSession[]> {

@@ -380,6 +380,36 @@ test("パスキーがあれば、端末を追加・締め出し・パスキー�
   });
 });
 
+test("リンクで入った直後の10分は、パスキーがほかにあっても、この端末のパスキーを登録できる（足したばかりの端末にはパスキーが無い）", async () => {
+  await withAuth(async (ctx) => {
+    const first = await loginWithLink(ctx);
+    const pc = new SoftAuthenticator();
+    const opts = (await (await ctx.ui("/api/auth/passkey/register/options", { method: "POST", cookie: first })).json()) as {
+      challenge: string;
+      rp: { id: string };
+    };
+    await ctx.ui("/api/auth/passkey/register/verify", { method: "POST", cookie: first, body: { response: pc.register(opts, UI) } });
+    ctx.clock.now += 11 * 60 * 1000; // PC の登録直後の5分は過ぎた
+    const issued = await ctx.ui("/api/auth/device-codes", { method: "POST", cookie: first });
+    assert.equal(issued.status, 403, "PC 側は端末を追加の前に本人確認が要る");
+    // 携帯：端末を追加の札で入る（PC の本人確認は別に通したとする——ここでは host のリンクで代える）
+    const phone = await loginWithLink(ctx);
+    const phoneKey = new SoftAuthenticator();
+    const phoneOpts = await ctx.ui("/api/auth/passkey/register/options", { method: "POST", cookie: phone });
+    assert.equal(phoneOpts.status, 200, "入った直後なのに本人確認を求めた");
+    const reg = await ctx.ui("/api/auth/passkey/register/verify", {
+      method: "POST",
+      cookie: phone,
+      body: { response: phoneKey.register((await phoneOpts.json()) as { challenge: string; rp: { id: string } }, UI) },
+    });
+    assert.equal(reg.status, 200, await reg.clone().text());
+    // 10分を過ぎて入った端末は、また本人確認を求められる
+    const late = await loginWithLink(ctx);
+    ctx.clock.now += 10 * 60 * 1000 + 1;
+    assert.equal((await ctx.ui("/api/auth/passkey/register/options", { method: "POST", cookie: late })).status, 403);
+  });
+});
+
 test("IP アドレスの画面ではパスキーを使えないと言う", async () => {
   const dir = await mkdtemp(join(tmpdir(), "banto-auth-ip-"));
   try {
