@@ -17,6 +17,7 @@
 // 「host が同意を求めてよい」としか言っていないが、banto は必ず通す。
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppBridge, PostMessageTransport, type McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
   answerRealInboxItem,
@@ -27,7 +28,7 @@ import {
   type RealUiResource,
 } from "@/lib/backend/client";
 import { getRealJudgments, refreshRealInbox } from "@/lib/backend/real-inbox";
-import { getProject } from "@/lib/mock/projects";
+import { getAllProjects, getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
 import { VIEW_STATE_KEY } from "@/lib/backend/canvas-view-state";
@@ -39,6 +40,7 @@ import {
 } from "@/lib/backend/canvas-new-project";
 import { CLOSE_PROJECTS_METHOD, closeProjectsRequests, parseCloseProjectsParams } from "@/lib/backend/canvas-close-projects";
 import { FOLDER_PREPARED_METHOD, parseFolderPrepared, type PreparedFolder } from "@/lib/backend/canvas-folder-prepared";
+import { OPEN_PROJECT_METHOD, decideOpenProject, parseOpenProjectParams } from "@/lib/backend/canvas-open-project";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import {
   AlertDialog,
@@ -197,9 +199,11 @@ function SandboxFrame({
   // Canvas を1つ出して Fork を開いて閉じるだけで **9回**。中身は生き延びていたが、
   // 張り直しの最中に飛んでいる呼び出しがあれば落ちる（規則2 の「黙って別の経路へ
   // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
-  const latest = useRef({ owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared });
+  const router = useRouter();
+  const navigate = (href: string) => router.push(href);
+  const latest = useRef({ owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate });
   useEffect(() => {
-    latest.current = { owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared };
+    latest.current = { owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate };
   });
   // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
   // 回帰試験はこの数字が増えないことを見る
@@ -314,6 +318,14 @@ function SandboxFrame({
         const decision = decideNewProjectRequest(decideFrom);
         if ("error" in decision) throw refuse(-32000, decision.error);
         requestNewProject({ ...parsed, from: latest.current.server });
+        return {};
+      }
+      if (request.method === OPEN_PROJECT_METHOD) {
+        const parsed = parseOpenProjectParams(request.params);
+        if ("error" in parsed) throw refuse(-32602, parsed.error);
+        const decision = decideOpenProject({ projectId: parsed.projectId, activated: decideFrom.activated, projects: getAllProjects() });
+        if ("error" in decision) throw refuse(-32000, decision.error);
+        latest.current.navigate(`/p/${parsed.projectId}`);
         return {};
       }
       if (request.method === CLOSE_PROJECTS_METHOD) {

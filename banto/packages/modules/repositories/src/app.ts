@@ -702,11 +702,20 @@ const SCRIPT = String.raw`
     return h("span", { class: "muted", "data-testid": "repo-account-readonly", title: r.remote.owner + " のアカウントが登録されていません（banto 全体の設定の Repositories で登録できます）", text: "読むだけ" });
   }
 
+  /** その Project へ移る。開けなければ理由を出す（閉じた・無い・押した直後でない） */
+  async function openProject(p) {
+    try { await request("dev.banto/open-project", { projectId: p.id }); }
+    catch (e) { setFlash("「" + p.name + "」を開けませんでした：" + errText(e)); render(); }
+  }
   function projectCell(r) {
     if (!r.projects) return null;
     if (r.projects.length > 0) {
       return h("div", { class: "proj", style: "gap:4px" }, r.projects.map((p) => h("span", { class: "proj", "data-testid": "repo-project" }, [
-        h("span", { class: p.closed ? "closed" : "", text: p.name }),
+        // 開いている Project は押すとそこへ移る（banto の拡張「dev.banto/open-project」）。閉じた Project は押せない——
+        // 再開は banto の「閉じたものの一覧」で
+        p.closed
+          ? h("span", { class: "closed", text: p.name })
+          : h("button", { class: "link", type: "button", "data-testid": "repo-project-open", "data-project-id": p.id, title: p.name + " を開く", text: p.name, onclick: () => openProject(p) }),
         p.closed || p.viaWorktree ? h("span", { class: "muted", text: [p.closed ? "閉じた Project" : null, p.viaWorktree ? "worktree で" : null].filter(Boolean).join(" · ") }) : null,
       ])));
     }
