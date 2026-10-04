@@ -307,6 +307,7 @@ export interface ThreadState {
   receivedFrom?: Record<ThreadId, string>;
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
+  /** 最新の1件だけ（2026-10-04 から。履歴は Event Store の usage.recorded） */
   usage: UsageEntry[];
   createdAt: string;
 }

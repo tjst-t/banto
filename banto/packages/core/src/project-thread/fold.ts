@@ -225,7 +225,8 @@ function unpackModel(raw: unknown): ProjectThreadReadModel {
       if (!msg) throw new Error(`スナップショットが壊れています：Thread ${id} のメッセージ ${p} が表にありません`);
       return msg;
     });
-    threads.set(id, { ...t, messages });
+    // 前の形は全ターンの使用量を持っている——最新の1件だけにする（usage.recorded の fold と同じ）
+    threads.set(id, { ...t, messages, usage: (t.usage ?? []).slice(-1) });
   }
   const { packedMessages: _drop, ...rest } = r;
   return { ...(rest as unknown as ProjectThreadReadModel), threads };
@@ -343,7 +344,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             const upTo = event.payload.forkedFromSeq ?? Number.MAX_SAFE_INTEGER;
             t.messages = parent.messages.filter((m) => m.seq <= upTo);
             t.markers = parent.markers.filter((m) => m.seq <= upTo);
-            t.usage = parent.usage.filter((u) => u.seq <= upTo);
+            t.usage = parent.usage.filter((u) => u.seq <= upTo).slice(-1);
             // **効かせた Skill も分けた時点のものを引き継ぐ**（決定・2026-09-23）。
             // Fork は親のセッションを `resume` して枝を分けるので、`instructions` は
             // 読み直されない（実測）——親がその時点で効かせていたものが、そのまま効く
@@ -528,12 +529,15 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "usage.recorded": {
         const t = next.threads.get(event.payload.threadId);
         if (t) {
-          t.usage.push({
+          // **最新の1件だけ持つ**（改訂・2026-10-04、実機で発覚）。読むのは最新だけ（app.ts）で、1件が SDK の
+          // getContextUsage の中身そのまま（数十 KB）なので、全ターン分を Fork の数だけ持つと写しが 113MB になった。
+          // 履歴は Event Store の usage.recorded に残っている
+          t.usage = [{
             seq: raw.seq,
             contextUsage: event.payload.contextUsage,
             compactionCount: event.payload.compactionCount,
             apiUsage: event.payload.apiUsage,
-          });
+          }];
         }
         return next;
       }

@@ -774,3 +774,15 @@ test("前の形（会話をそのまま書いた）スナップショットも�
     assert.equal(again.getThread(fork.id)!.messages[0]!.text, "こんにちは");
   });
 });
+
+test("使用量は最新の1件だけ持ち、Fork にも最新だけ引き継ぐ（2026-10-04、実機で 113MB）", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("demo", dir);
+    const base = await store.createBaseThread(project.id);
+    const s = store as unknown as { recordUsage(id: string, u: unknown, c: number, a?: unknown): Promise<void> };
+    for (let i = 0; i < 5; i++) await s.recordUsage(base.id, { n: i }, 0);
+    assert.deepEqual(store.getThread(base.id)!.usage.map((u) => u.contextUsage), [{ n: 4 }]);
+    const fork = await store.forkThread(base.id);
+    assert.deepEqual(store.getThread(fork.id)!.usage.map((u) => u.contextUsage), [{ n: 4 }]);
+  });
+});
