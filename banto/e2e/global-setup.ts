@@ -16,6 +16,7 @@ import {
   FRONTEND_BASE_URL,
   CLAUDE_CONFIG_DIR,
   CLAUDE_CREDENTIALS_DIR,
+  FAKE_SYSTEMCTL,
   RELEASE_DIR,
   SELF_UPDATE_DIR,
 } from "./config.ts";
@@ -46,6 +47,9 @@ export default function globalSetup(): void {
         uiOrigin: FRONTEND_BASE_URL,
         // 画面からの更新の置き場（人のものを読まない。中身は self-update.spec.ts が作る）
         releaseDir: RELEASE_DIR,
+        // 試験だけの差し替え（本番の config には書かない項目）：偽の systemctl と、動いているコードは試験の置き場の
+        // `current/banto`（版を替えると、host が見る「今の版」も替わる）
+        testOnlySelfUpdate: { systemctl: FAKE_SYSTEMCTL, codeDir: join(RELEASE_DIR, "current", "banto") },
       },
       null,
       2,

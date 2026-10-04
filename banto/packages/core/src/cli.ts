@@ -1606,6 +1606,12 @@ async function main(): Promise<void> {
    * 既定の実物が走る。**黙って偽物に落ちることは無い**（規則2）：
    * 指していて読めなければ、理由を言って**立ち上がりを止める**。
    */
+  if (bootstrap.testOnlySelfUpdate) {
+    console.warn(
+      `[host] **画面からの更新を差し替えています**（試験用、config.json の testOnlySelfUpdate）: systemctl=${bootstrap.testOnlySelfUpdate.systemctl}・` +
+        `動いているコード=${bootstrap.testOnlySelfUpdate.codeDir}`,
+    );
+  }
   const fakeRunnerPath = process.env.BANTO_FAKE_RUNNER;
   let runTurnOverride: Parameters<typeof createApp>[0]["runTurn"] | undefined;
   let listModelsOverride: Parameters<typeof createApp>[0]["listModels"] | undefined;
@@ -1651,13 +1657,13 @@ async function main(): Promise<void> {
     }),
     // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。動いているコードの本当のパスで、
     // 版ごとのフォルダから動いているかを見る。
-    // E2E だけが差し替える（本物の systemd は使えない）：systemctl は偽物（`update.mjs` と同じ名前の
-    // BANTO_UPDATE_SYSTEMCTL）、動いているコードは試験の置き場の `current/banto`（BANTO_UPDATE_CODE_DIR）
+    // E2E だけが差し替える（本物の systemd は使えない）：偽の systemctl と、試験の置き場の `current/banto`。
+    // **環境変数では受けない**——config.json の明示の項目 `testOnlySelfUpdate` だけ（理由は bootstrap.ts）
     selfUpdate: new SelfUpdate({
       releaseDir: bootstrap.releaseDir,
       dataDir: bootstrap.dataDir,
-      codeDir: process.env.BANTO_UPDATE_CODE_DIR || monorepoRoot,
-      ...(process.env.BANTO_UPDATE_SYSTEMCTL ? { systemctl: process.env.BANTO_UPDATE_SYSTEMCTL } : {}),
+      codeDir: bootstrap.testOnlySelfUpdate?.codeDir ?? monorepoRoot,
+      ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
     }),
     releaseProjectModules,
     projectContainerStatus: async (projectId: string) => {

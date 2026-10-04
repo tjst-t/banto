@@ -39,6 +39,17 @@ export interface BootstrapConfig {
    * `previous` を持つ（アーキ仕様 §2.5「画面から banto を更新する」）。既定は `~/.local/share/banto-release`
    */
   releaseDir: string;
+  /**
+   * **試験だけの差し替え：画面からの更新**（追加・2026-10-04、E2E の `self-update.spec.ts`）。本物の systemd を
+   * 使えない試験が、偽の systemctl と「動いているコードの場所」を指す。**本番の config には書かない**
+   * （install・setup-update.sh は書かない）。
+   *
+   * 環境変数にしない理由：host の環境は人の Shell・unit の `Environment=` から引き継がれ、しかも `update.mjs` は
+   * 同じ名前（`BANTO_UPDATE_SYSTEMCTL`）を自分の試験の差し替えに読む——そこに置いた値が、気づかないうちに本番の
+   * host の「準備が済んでいるか・今の版」の判断まで変えてしまう。設定ファイルの明示の項目なら、置いたのが誰か・
+   * どこかがはっきりし、起動時に警告も出る
+   */
+  testOnlySelfUpdate?: { systemctl: string; codeDir: string };
 }
 
 /** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
@@ -99,6 +110,15 @@ export function assertNoOverlap(configPath: string, dataDir: string): void {
   }
 }
 
+/** 形が違えば止まる（黙って本物の systemctl・動いているコードへ落ちない、規則2） */
+function parseTestOnlySelfUpdate(value: unknown): { systemctl: string; codeDir: string } {
+  const v = value as { systemctl?: unknown; codeDir?: unknown } | null;
+  if (typeof v?.systemctl !== "string" || !v.systemctl || typeof v.codeDir !== "string" || !v.codeDir) {
+    throw new Error("config.json の testOnlySelfUpdate は { systemctl: string, codeDir: string } です（試験だけの項目）");
+  }
+  return { systemctl: v.systemctl, codeDir: v.codeDir };
+}
+
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   globalThis.crypto.getRandomValues(bytes);
@@ -119,6 +139,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       ...(raw.publicUrl ? { publicUrl: raw.publicUrl } : {}),
       ...(raw.uiOrigin ? { uiOrigin: raw.uiOrigin } : {}),
       releaseDir: raw.releaseDir ?? defaultReleaseDir(),
+      ...(raw.testOnlySelfUpdate !== undefined ? { testOnlySelfUpdate: parseTestOnlySelfUpdate(raw.testOnlySelfUpdate) } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;

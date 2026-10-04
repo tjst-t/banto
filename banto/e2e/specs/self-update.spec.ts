@@ -1,7 +1,7 @@
 // **設定の「更新」**（決定・2026-10-04、アーキ仕様 §2.5「画面から banto を更新する」・`docs/specs/v4-frontend.md`）。
 //
 // 本物の systemd は使えないので、置き場（`releaseDir`）・systemctl・動いているコードの場所を実行ごとの置き場に向ける
-// （`config.ts` の SELF_UPDATE_DIR、`start-core.ts`）。**git は本物**：GitHub 役のリポジトリ・`repo.git`・
+// （`config.ts` の SELF_UPDATE_DIR、`global-setup.ts` が config.json に書く試験だけの項目 `testOnlySelfUpdate`）。**git は本物**：GitHub 役のリポジトリ・`repo.git`・
 // `versions/<頭12>`（worktree）・`current` をここで作る。偽の systemctl は2通りに動く：
 //
 // - `hold`：start で頼みを受け取るだけ。この spec が `update.mjs` の代わりに `state.json` を書いて段を進める
@@ -15,7 +15,7 @@
 import { test, expect } from "../test-base.js";
 import type { Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -97,11 +97,16 @@ function prepareReleaseDir(): string {
       "      (",
       `        BANTO_UPDATE_BUILD="$(cat "$D/build-command")" BANTO_UPDATE_HOST_URL='${CORE_BASE_URL}' \\`,
       `        BANTO_UPDATE_UI_URL='${FRONTEND_LISTEN_URL}/' BANTO_UPDATE_VERIFY_TIMEOUT=30 \\`,
-      "        BANTO_UPDATE_INTERVAL=0.5 BANTO_UPDATE_MARK_INTERVAL=0.2 \\",
+      // update.mjs の起こし直しも偽の systemctl で——渡さないと本物の systemctl restart banto-host.service を打つ
+      // （host の環境から引き継いでいた頃は渡さずに済んでいた。2026-10-04 に、それを外して本物を打ったのを踏んだ）
+      `        BANTO_UPDATE_SYSTEMCTL='${FAKE_SYSTEMCTL}' BANTO_UPDATE_INTERVAL=0.5 BANTO_UPDATE_MARK_INTERVAL=0.2 \\`,
       `        '${process.execPath}' '${UPDATE_SCRIPT}' --from-request`,
       '        echo inactive > "$D/active-state"',
       '      ) > "$D/update.out" 2>&1 < /dev/null &',
       "    fi ;;",
+      "  stop)",
+      "    # polkit の確かめ（host は unit が止まっているときだけ打つ）。deny-stop があれば規則が無い形で断る",
+      '    if [ -f "$D/deny-stop" ]; then echo "Failed to stop banto-update.service: Access denied" >&2; exit 4; fi ;;',
       "  restart) ;;",
       '  *) echo "偽の systemctl は $1 を知りません" >&2; exit 1 ;;',
       "esac",
@@ -165,8 +170,16 @@ test("準備が済んでいないときは、理由と手順書だけ。ボタ�
   }
 });
 
-test("整えたあと：今の版と「最新です」（確かめた時刻）", async ({ page }) => {
+test("整えたあと：polkit の規則が効いていなければ準備が済んでいない。効けば今の版と「最新です」（確かめた時刻）", async ({ page }) => {
   first = prepareReleaseDir();
+  writeFileSync(join(SELF_UPDATE_DIR, "deny-stop"), "");
+  await openUpdate(page);
+  const notReady = page.getByTestId("update-not-ready");
+  await expect(notReady.getByTestId("update-not-ready-reasons")).toContainText("polkit の規則が効いていません");
+  await expect(notReady.getByTestId("update-not-ready-reasons")).toContainText("Access denied");
+  await expect(page.getByTestId("update-check")).toHaveCount(0);
+  rmSync(join(SELF_UPDATE_DIR, "deny-stop"));
+
   await openUpdate(page);
   const current = page.getByTestId("update-current");
   await expect(current).toContainText("今の版");
@@ -375,12 +388,85 @@ test("すぐ更新：途中で切れる会話を確かめてから頼む。起�
   await expect(page.getByTestId("update-available")).toContainText("新しいコミットが 8 件あります");
 });
 
+test("受け取られない頼みは理由つきで出る（頼んだ人の名前・版）。始める前に断った回は段を出さずに「始められませんでした」", async ({
+  page,
+}) => {
+  await openUpdate(page);
+  // 前の回（前の版に戻した）は host の最後の結果なので、開き直しても出る。「もう一度ためす」で閉じて押す
+  await expect(page.getByTestId("update-failed")).toContainText("新しい版が起きなかったので、前の版に戻しました。");
+  await page.getByTestId("update-retry").click();
+  await page.getByTestId("update-wait").click();
+  await expect(page.getByTestId("update-progress")).toBeVisible({ timeout: 30_000 });
+  // unit が起きたが頼みを受け取らないまま止まり、猶予（60秒）が過ぎた
+  const requestPath = join(UPDATE_DIR, "request.json");
+  const request = JSON.parse(readFileSync(requestPath, "utf8")) as { commit: string; requestedBy: Record<string, unknown> };
+  expect(Object.keys(request.requestedBy), "頼みにセッションの id を書いた").toEqual(["label"]);
+  setActive(false);
+  const old = new Date(Date.now() - 61_000);
+  utimesSync(requestPath, old, old);
+
+  const stale = page.getByTestId("update-stale-request");
+  await expect(stale).toContainText("更新の unit が頼みを受け取っていません。journalctl -u banto-update を見てください", { timeout: 15_000 });
+  await expect(stale).toContainText(`${request.requestedBy.label as string} が頼んだもの`);
+  await expect(stale).toContainText(`版 ${short(newCommits[0]!.commit)}`);
+  await expect(page.getByTestId("update-progress")).toHaveCount(0);
+  // 前の回の失敗は閉じたまま。押せる面に戻っている
+  await expect(page.getByTestId("update-failed")).toHaveCount(0);
+  await expect(page.getByTestId("update-available")).toBeVisible();
+  rmSync(requestPath);
+
+  // 始める前に断った回（--from-request で頼みが無い等）：failedPhase が無い
+  writeState({
+    id: "unit-1",
+    phase: "failed",
+    mode: "wait",
+    from: null,
+    to: null,
+    startedAt: new Date().toISOString(),
+    error: "頼み（request.json）がありません。画面から頼まれずに banto-update.service が起きたので、何もしません",
+  });
+  await openUpdate(page);
+  await expect(page.getByTestId("update-stale-request")).toHaveCount(0);
+  const failed = page.getByTestId("update-failed");
+  await expect(failed.getByTestId("update-failed-title")).toHaveText("更新を始められませんでした");
+  await expect(failed).toContainText("今の版のまま動いています。");
+  await expect(failed.getByTestId("update-failed-error")).toContainText("画面から頼まれずに");
+  await expect(failed.getByTestId("update-steps"), "始める前なのに段を出した").toHaveCount(0);
+});
+
+test("待つ段の note（host が答えない等）を段の下に出す。unit が途中で止まったら「更新が途中で止まりました」とログ・理由", async ({ page }) => {
+  await openUpdate(page);
+  await expect(page.getByTestId("update-failed-title")).toHaveText("更新を始められませんでした");
+  await page.getByTestId("update-retry").click();
+  await page.getByTestId("update-wait").click();
+  await expect(page.getByTestId("update-progress")).toBeVisible({ timeout: 30_000 });
+  const request = pickUpRequest();
+  const note = "host が答えません（ECONNREFUSED）。banto-host.service は activating/start なので、答えるまで待ちます";
+  const logFile = join(UPDATE_DIR, `${request.id}.log`);
+  writeFileSync(logFile, "[t] 動いているものが無くなるまで待ちます\n[t] " + note + "\n");
+  writeState({ id: request.id, phase: "wait", mode: "wait", from: first, to: request.commit, startedAt: new Date().toISOString(), note, logFile });
+  await expectSteps(page, { wait: "current" });
+  await expect(page.getByTestId("update-progress").getByTestId("update-note")).toHaveText(note);
+
+  // update.mjs が落ちた（unit が止まった）。state.json は待つ段のまま
+  setActive(false);
+  const failed = page.getByTestId("update-failed");
+  await expect(failed.getByTestId("update-failed-title")).toHaveText("更新が途中で止まりました", { timeout: 15_000 });
+  await expect(failed.getByTestId("update-interrupted-reason")).toContainText("「wait」の途中で止まっています（ActiveState=inactive）");
+  await expect(failed.getByTestId("update-interrupted-reason")).toContainText("journalctl -u banto-update");
+  await expect(failed.getByTestId("update-failed-note")).toHaveText(`止まる前：${note}`);
+  await expect(failed).toContainText("今の版のまま動いています。");
+  await expectSteps(page, { fetch: "done", build: "done", wait: "failed", restart: "pending" });
+  await failed.getByTestId("update-log-toggle").click();
+  await expect(failed.getByTestId("update-log")).toContainText("動いているものが無くなるまで待ちます");
+});
+
 test("本物の update.mjs：組み立てで落ちたら「組み立てる」で止まり、今の版のまま。ログに組み立ての出力が出る", async ({ page }) => {
   writeFileSync(join(SELF_UPDATE_DIR, "on-start"), "run\n");
   writeFileSync(join(SELF_UPDATE_DIR, "build-command"), "echo '組み立てています'; echo 'error TS2339: 壊れた型' >&2; exit 2");
   await openUpdate(page);
-  // 前の回の結果（前の版に戻した）は host の最後の結果なので、開き直しても出る。「もう一度ためす」で戻って押す
-  await expect(page.getByTestId("update-failed")).toContainText("新しい版が起きなかったので、前の版に戻しました。");
+  // 前の回（途中で止まった）は host の最後の結果なので、開き直しても出る。「もう一度ためす」で戻って押す
+  await expect(page.getByTestId("update-failed-title")).toHaveText("更新が途中で止まりました");
   await page.getByTestId("update-retry").click();
   await page.getByTestId("update-wait").click();
 
@@ -398,14 +484,33 @@ test("本物の update.mjs：組み立てで落ちたら「組み立てる」で
   expect(readdirSync(join(RELEASE_DIR, "versions"))).toEqual([first.slice(0, 12)]);
 });
 
+test("本物の update.mjs：組み立ての途中でも「更新をやめる」で止まり、作りかけを消して今の版のまま", async ({ page }) => {
+  writeFileSync(join(SELF_UPDATE_DIR, "on-start"), "run\n");
+  writeFileSync(join(SELF_UPDATE_DIR, "build-command"), "echo '組み立てています'; sleep 60");
+  await openUpdate(page);
+  await expect(page.getByTestId("update-failed")).toContainText("「組み立てる」で止まりました");
+  await page.getByTestId("update-retry").click();
+  await page.getByTestId("update-wait").click();
+  await expectSteps(page, { fetch: "done", build: "current" });
+  await page.getByTestId("update-progress").getByTestId("update-stop").click();
+
+  await expect(page.getByTestId("update-cancelled")).toHaveText("更新をやめました。今の版のまま動いています。", { timeout: 30_000 });
+  await expect(page.getByTestId("update-progress")).toHaveCount(0);
+  await expect(page.getByTestId("update-available")).toContainText("新しいコミットが 8 件あります");
+  await expect(page.getByTestId("update-current")).toContainText(short(first));
+  const state = JSON.parse(readFileSync(join(UPDATE_DIR, "state.json"), "utf8")) as { phase: string; result: string };
+  expect(state.phase).toBe("cancelled");
+  expect(state.result).toContain("やめました");
+  expect(readdirSync(join(RELEASE_DIR, "versions")), "作りかけが残っている").toEqual([first.slice(0, 12)]);
+});
+
 test("本物の update.mjs：待つ→起こし直す→確かめる。終わったら「版 … になりました」と、今の版が替わって最新になる", async ({ page }) => {
   writeFileSync(join(SELF_UPDATE_DIR, "on-start"), "run\n");
   writeFileSync(join(SELF_UPDATE_DIR, "build-command"), "echo '組み立てました'");
   const latest = newCommits[0]!;
   await openUpdate(page);
-  // 前の回の失敗が出ている。「もう一度ためす」で戻って押す
-  await expect(page.getByTestId("update-failed")).toContainText("「組み立てる」で止まりました");
-  await page.getByTestId("update-retry").click();
+  // 前の回はやめた回（失敗ではない）——押せる面がそのまま出ている
+  await expect(page.getByTestId("update-cancelled")).toBeVisible();
   await page.getByTestId("update-wait").click();
 
   const done = page.getByTestId("update-done");
