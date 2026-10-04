@@ -312,3 +312,53 @@ test("終わったら届ける tool の札に、tool_use の id・埋めたカ�
   await runner.close();
   await moduleClient.close();
 });
+
+// **人の答えを待っている**（追加・2026-10-04）。Module が結果に `dev.banto/waitingOn` を載せたら、札を返事待ちにするときに渡す
+test("あとで届ける結果に「人を待っている」が載っていれば、返事待ちにするときに渡す（載っていなければ渡さない）", async () => {
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "ask",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { "dev.banto/visibility": "agent", "dev.banto/deliversLater": true },
+      },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => ({
+    content: [{ type: "text", text: "ok" }],
+    _meta: {
+      "dev.banto/pendingReply": true,
+      ...((req.params.arguments as { human?: boolean } | undefined)?.human
+        ? { "dev.banto/waitingOn": { on: "human", title: "試験の承認" } }
+        : {}),
+    },
+  }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["x"], dependsOn: [], isolation: "subprocess" }, "fake");
+  const marked: Array<{ replyTo: string; waitingOn: unknown }> = [];
+  const proxy = buildAgentProxy(
+    { name: "ask-p1", declaredName: "ask", client: moduleClient, meta },
+    {
+      projectId: "p1",
+      threadId: "t1",
+      replies: {
+        issue: () => `reply_${marked.length}`,
+        markAwaiting: async (replyTo, waitingOn) => {
+          marked.push({ replyTo, waitingOn });
+        },
+      },
+    },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+  await runner.callTool({ name: "ask", arguments: { human: true } });
+  await runner.callTool({ name: "ask", arguments: {} });
+  assert.deepEqual(marked[0]!.waitingOn, { on: "human", title: "試験の承認" });
+  assert.equal(marked[1]!.waitingOn, undefined);
+  await runner.close();
+  await moduleClient.close();
+});

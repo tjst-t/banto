@@ -303,8 +303,8 @@ async function main(): Promise<void> {
     // **返信用の札**（決定・2026-09-25）。ホップ数は、札を出したターンのもの（人が送ったターン＝0）
     replies: {
       issue: (input) => replyHandles.issue({ ...input, hop: threadTurns.hopOf(input.threadId) ?? 0 }),
-      markAwaiting: async (replyTo) => {
-        const h = replyHandles.markAwaiting(replyTo);
+      markAwaiting: async (replyTo, waitingOn) => {
+        const h = replyHandles.markAwaiting(replyTo, waitingOn);
         if (!h) return;
         await projectThread.recordAwaitingReply({
           threadId: h.threadId,

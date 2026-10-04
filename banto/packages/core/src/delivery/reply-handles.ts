@@ -31,6 +31,11 @@ export interface BackgroundWork {
   /** カード（`dev.banto/card`）の題と説明を、その呼び出しの引数で埋めたもの */
   title?: string;
   description?: string;
+  /**
+   * **人の答えを待っている**（追加・2026-10-04）。Module が「あとで届ける」と言うときに名乗る（`dev.banto/waitingOn`）。
+   * 無ければ裏で仕事が進んでいる
+   */
+  waitingOn?: "human";
 }
 
 export interface ReplyHandle {
@@ -95,10 +100,21 @@ export class ReplyHandles {
     return this.handles.get(id);
   }
 
-  /** 返事待ちにする（期限で切らない）。 */
-  markAwaiting(id: string): ReplyHandle | undefined {
+  /**
+   * 返事待ちにする（期限で切らない）。人の答えを待っていると名乗ったら、それも覚える
+   * （名乗った `title` はカードの題より優先する——その呼び出しで何を待っているかは Module が一番よく知っている）
+   */
+  markAwaiting(id: string, waitingOn?: { on: "human"; title?: string }): ReplyHandle | undefined {
     const h = this.handles.get(id);
-    if (h) h.awaiting = true;
+    if (!h) return h;
+    h.awaiting = true;
+    if (waitingOn) {
+      h.work = {
+        ...(h.work ?? { toolName: "" }),
+        waitingOn: "human",
+        ...(waitingOn.title ? { title: waitingOn.title } : {}),
+      };
+    }
     return h;
   }
 

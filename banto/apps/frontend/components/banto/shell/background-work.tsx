@@ -8,9 +8,13 @@
 // - 畳んだレール：出さない（レールの作りを見直すまで）
 // 文言は「〜待ち」にしない——banto では「判断待ち」「レビュー待ち」が人の番を指すので、人が返事する番に読める。
 // 押すと一覧を出し、1件を押すとその Thread へ移って、会話のカードと同じ画面（その呼び出し）を Canvas に開く。
+//
+// **人の答えを待っているもの**（公開の承認など。Module が `dev.banto/waitingOn` で名乗る、2026-10-04、ユーザー）は
+// 「バックグラウンド」と分けて、人の番の色（受信箱のバッジと同じ）で出す——放っておいてよいものに見せない。
+// 行は「人を待っている」が上、「バックグラウンド」が下の2行まで。Project の行の数は、人を待っているものがあれば人の番の色。
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Hourglass } from "lucide-react";
+import { Hand, Hourglass } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useBackgroundByThread, useThreadBackground, type BackgroundItem } from "@/lib/backend/background-work";
 import { cn } from "@/lib/utils";
@@ -32,8 +36,31 @@ function countOf(groups: readonly Group[]): number {
   return groups.reduce((n, g) => n + g.items.length, 0);
 }
 
+const isHuman = (item: BackgroundItem) => item.waitingOn === "human";
+
 function titleOf(item: BackgroundItem): string {
-  return item.title ?? `${item.module} に頼んだ仕事`;
+  return item.title ?? (isHuman(item) ? `${item.module} があなたの答えを待っています` : `${item.module} に頼んだ仕事`);
+}
+
+/** 一覧の見出しと1行の文。人を待っているものと、裏の仕事とで言い方を分ける */
+const KINDS = {
+  human: {
+    heading: (n: number) => `あなたの答えを待っているもの（${n}）`,
+    line: (n: number) => `あなたの答えを待っています（${n} 件）`,
+    since: "から待っています",
+  },
+  work: {
+    heading: (n: number) => `バックグラウンドで動いているもの（${n}）`,
+    line: (n: number) => `バックグラウンドで ${n} 件`,
+    since: "に頼んだ",
+  },
+} as const;
+type Kind = keyof typeof KINDS;
+
+function split(groups: readonly Group[]): Record<Kind, Group[]> {
+  const pick = (want: boolean) =>
+    groups.map((g) => ({ thread: g.thread, items: g.items.filter((i) => isHuman(i) === want) })).filter((g) => g.items.length > 0);
+  return { human: pick(true), work: pick(false) };
 }
 
 function minutesAgo(since: string, now: number): string {
@@ -71,41 +98,57 @@ function BackgroundList({
   const router = useRouter();
   // 開いたときの時刻で「何分前」を出す（開いている間は数え直さない）
   const [now] = useState(() => Date.now());
+  const parts = split(groups);
   return (
     <div className="flex flex-col gap-1" data-testid="background-list">
-      <p className="px-2 pt-1 text-xs font-medium text-ink-3">バックグラウンドで動いているもの（{countOf(groups)}）</p>
-      {groups.map((g) => (
-        <div key={g.thread.id} className="flex flex-col">
-          {showThread ? <p className="truncate px-2 pt-1 text-xs text-ink-3">{g.thread.title}</p> : null}
-          {g.items.map((item, i) => (
-            <button
-              key={`${item.toolCallId ?? item.since}-${i}`}
-              type="button"
-              data-testid="background-item"
-              onClick={() => {
-                onPicked();
-                router.push(hrefOf(projectId, g.thread, item));
-              }}
-              className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent"
-            >
-              <span className="truncate text-sm text-foreground">{titleOf(item)}</span>
-              {item.description ? <span className="line-clamp-2 text-xs text-ink-2">{item.description}</span> : null}
-              <span className="text-xs text-ink-3">
-                {item.module}・{minutesAgo(item.since, now)}に頼んだ
-              </span>
-            </button>
-          ))}
-        </div>
-      ))}
+      {(["human", "work"] as const).map((kind) =>
+        parts[kind].length === 0 ? null : (
+          <section key={kind} className="flex flex-col" data-kind={kind}>
+            <p className={cn("px-2 pt-1 text-xs font-medium", kind === "human" ? "text-turn" : "text-ink-3")}>
+              {KINDS[kind].heading(countOf(parts[kind]))}
+            </p>
+            {parts[kind].map((g) => (
+              <div key={g.thread.id} className="flex flex-col">
+                {showThread ? <p className="truncate px-2 pt-1 text-xs text-ink-3">{g.thread.title}</p> : null}
+                {g.items.map((item, i) => (
+                  <button
+                    key={`${item.toolCallId ?? item.since}-${i}`}
+                    type="button"
+                    data-testid="background-item"
+                    data-kind={kind}
+                    onClick={() => {
+                      onPicked();
+                      router.push(hrefOf(projectId, g.thread, item));
+                    }}
+                    className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent"
+                  >
+                    <span className="truncate text-sm text-foreground">{titleOf(item)}</span>
+                    {item.description ? <span className="line-clamp-2 text-xs text-ink-2">{item.description}</span> : null}
+                    <span className="text-xs text-ink-3">
+                      {item.module}・{minutesAgo(item.since, now)}
+                      {KINDS[kind].since}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </section>
+        ),
+      )}
     </div>
   );
 }
 
-function label(count: number, scope: string): string {
+function label(count: number, scope: string, kind: Kind | "all" = "work"): string {
+  if (kind === "human") return `${scope}であなたの答えを待っているもの（${count}件）を見る`;
+  if (kind === "all") return `${scope}で動いているもの・あなたの答えを待っているもの（${count}件）を見る`;
   return `${scope}のバックグラウンドで動いているもの（${count}件）を見る`;
 }
 
-/** Thread の行の名前の下の1行。行の Link の**外**に置く（押せるものを入れ子にしない） */
+/**
+ * Thread の行の名前の下の行。人を待っているもの・裏の仕事を1行ずつ（あるほうだけ）。行の Link の**外**に置く
+ * （押せるものを入れ子にしない）。どちらの行を押しても、両方の入った一覧を出す
+ */
 export function ThreadBackgroundLine({
   projectId,
   thread,
@@ -116,29 +159,40 @@ export function ThreadBackgroundLine({
   className?: string;
 }) {
   const items = useThreadBackground(thread.id);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<Kind | null>(null);
   if (items.length === 0) return null;
   const groups = [{ thread, items }];
+  const parts = split(groups);
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={label(items.length, thread.title)}
-          data-testid="thread-background"
-          className={cn(
-            "flex w-full items-center gap-1 truncate rounded-md py-0.5 pr-1 pl-8 text-left text-xs text-ink-3 hover:bg-sidebar-accent hover:text-foreground",
-            className,
-          )}
-        >
-          <Hourglass className="size-3 shrink-0" />
-          <span className="truncate">{items.length === 1 ? titleOf(items[0]!) : `バックグラウンドで ${items.length} 件`}</span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="right" align="start" className="w-72 p-1.5">
-        <BackgroundList projectId={projectId} groups={groups} showThread={false} onPicked={() => setOpen(false)} />
-      </PopoverContent>
-    </Popover>
+    <>
+      {(["human", "work"] as const).map((kind) => {
+        const mine = parts[kind][0]?.items ?? [];
+        if (mine.length === 0) return null;
+        const Icon = kind === "human" ? Hand : Hourglass;
+        return (
+          <Popover key={kind} open={open === kind} onOpenChange={(next) => setOpen(next ? kind : null)}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label={label(mine.length, thread.title, kind)}
+                data-testid={kind === "human" ? "thread-waiting-human" : "thread-background"}
+                className={cn(
+                  "flex w-full items-center gap-1 truncate rounded-md py-0.5 pr-1 pl-8 text-left text-xs hover:bg-sidebar-accent",
+                  kind === "human" ? "font-medium text-turn" : "text-ink-3 hover:text-foreground",
+                  className,
+                )}
+              >
+                <Icon className="size-3 shrink-0" />
+                <span className="truncate">{mine.length === 1 ? titleOf(mine[0]!) : KINDS[kind].line(mine.length)}</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="right" align="start" className="w-72 p-1.5">
+              <BackgroundList projectId={projectId} groups={groups} showThread={false} onPicked={() => setOpen(null)} />
+            </PopoverContent>
+          </Popover>
+        );
+      })}
+    </>
   );
 }
 
@@ -163,18 +217,24 @@ export function ProjectBackgroundBadge({
     .filter((g) => g.items.length > 0);
   const count = countOf(groups);
   if (count === 0) return null;
+  // 人を待っているものがあれば、人の番の色にする（数は全部）
+  const human = countOf(split(groups).human) > 0;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={label(count, projectName)}
+          aria-label={label(count, projectName, human ? "all" : "work")}
           data-testid="project-background"
+          data-human={human ? "" : undefined}
           onPointerDown={(e) => {
             const row = e.currentTarget.closest("li");
             if (row) setOffset(row.getBoundingClientRect().right - e.currentTarget.getBoundingClientRect().right + 8);
           }}
-          className="absolute top-4.5 left-6 z-10 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink-2 px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar hover:brightness-110"
+          className={cn(
+            "absolute top-4.5 left-6 z-10 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar hover:brightness-110",
+            human ? "bg-turn" : "bg-ink-2",
+          )}
         >
           {count}
         </button>

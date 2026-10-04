@@ -258,6 +258,9 @@ test("publishService は公開しない——Service の登録と待ち受けを
     requestIdOf(r.text);
     // 結果はあとで札で届ける（host に「返事待ち」と伝える）
     assert.equal(r.meta?.["dev.banto/pendingReply"], true);
+    // 人の答えを待っていると名乗る（2026-10-04）——サイドバーが「あなたの番」として出す
+    assert.equal((r.meta?.["dev.banto/waitingOn"] as { on?: string } | undefined)?.on, "human");
+    assert.match(String((r.meta?.["dev.banto/waitingOn"] as { title?: string }).title), /^公開の承認：/);
     assert.deepEqual(caddy.writes(), [], "頼まれただけで Caddy を書き換えた");
   });
 });

@@ -31,7 +31,9 @@ import {
   toolCardOf,
   uiResourceUriOf,
   visibilityOf,
+  waitingOnOf,
   type BantoModuleMeta,
+  type WaitingOn,
 } from "@banto/module-contract";
 import type { BackgroundWork } from "../delivery/reply-handles.js";
 
@@ -99,7 +101,8 @@ export interface AgentProxyOptions {
    */
   replies?: {
     issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; work?: BackgroundWork }): string;
-    markAwaiting(replyTo: string): Promise<void>;
+    /** `waitingOn`：Module が「人の答えを待っている」と名乗ったら（`dev.banto/waitingOn`） */
+    markAwaiting(replyTo: string, waitingOn?: WaitingOn): Promise<void>;
   };
 }
 
@@ -242,7 +245,10 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       );
       // **「あとで届ける」と約束したら、札を返事待ちにする**——Module が止まったら host が代わりに知らせる
       if (replyTo && (result as { _meta?: Record<string, unknown> })._meta?.[PENDING_REPLY_META_KEY] === true) {
-        await opts.replies!.markAwaiting(replyTo);
+        await opts.replies!.markAwaiting(
+          replyTo,
+          waitingOnOf((result as { _meta?: Record<string, unknown> })._meta),
+        );
       }
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {

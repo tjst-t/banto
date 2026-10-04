@@ -2057,6 +2057,10 @@ AI 間メッセージング）。例：インフラ管理の Project と、ア�
   カード（`dev.banto/card`）の題と説明をその呼び出しの引数で埋めたもの（`fillCardText`、`module-contract`）。
   **Module には聞かない**（申告させない）。返事待ちの記録（`reply.awaiting`）に一緒に残り、画面には出来事の流れで渡す。
   札そのもの（`replyTo`）は画面に出さない
+- **何を待っているかを名乗れる**（追加・2026-10-04、ユーザー）：「あとで届ける」と一緒に、tool の結果の
+  `_meta["dev.banto/waitingOn"]: { on: "human", title? }` で「人の答えを待っている」と名乗れる（`waitingOnOf`、`module-contract`）。
+  host は札の手がかりに `waitingOn: "human"` を足し、名乗った `title` をカードの題より優先する。名乗らなければ裏で仕事が
+  進んでいるとみなす。いま名乗っているのは Publish の `publishService`（題「公開の承認：<サービス>:<ポート>」）
 
 #### ループ防止には名前がある（規則12）
 

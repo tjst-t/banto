@@ -227,6 +227,30 @@ export const REPLY_TO_META_KEY = `${VENDOR_PREFIX}/replyTo`;
  */
 export const PENDING_REPLY_META_KEY = `${VENDOR_PREFIX}/pendingReply`;
 
+/**
+ * **何を待っているか**（追加・2026-10-04、ユーザー。v4-frontend.md §6.33）。「あとで届ける」（`PENDING_REPLY_META_KEY`）と
+ * 一緒に tool の結果の `_meta` に載せる。値は `{ on: "human", title? }`——**人の答えを待っている**（公開の承認など）。
+ * 載せなければ、裏で仕事が進んでいる（サブエージェントなど）とみなす。
+ *
+ * サイドバーは、人を待っているものを「あなたの番」として出し分ける——「バックグラウンド」と出すと放っておいてよいものに
+ * 見える。`title` はサイドバーに出す1行（無ければカードの題、それも無ければ Module 名から作る）
+ */
+export const WAITING_ON_META_KEY = `${VENDOR_PREFIX}/waitingOn`;
+
+export interface WaitingOn {
+  on: "human";
+  title?: string;
+}
+
+/** 何を待っているかを読む。**`on: "human"` のときだけ**返す（ほかは名乗っていない＝裏の仕事） */
+export function waitingOnOf(meta: Record<string, unknown> | undefined): WaitingOn | undefined {
+  const raw = meta?.[WAITING_ON_META_KEY];
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const { on, title } = raw as Record<string, unknown>;
+  if (on !== "human") return undefined;
+  return { on, ...(typeof title === "string" && title.trim() !== "" ? { title: title.trim() } : {}) };
+}
+
 /** その tool が「終わったら呼び出し元の Thread に届ける」と名乗っているか。**`true` 以外は名乗っていない** */
 export function deliversLater(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[DELIVERS_LATER_META_KEY] === true;

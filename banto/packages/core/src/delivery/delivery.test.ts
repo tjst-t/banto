@@ -238,3 +238,15 @@ test("返信用の札：渡した Module だけが使え、期限と回数があ
   // 知らない札
   assert.match((handles.use("reply_nope", { moduleName: "subagent" }) as { error: string }).error, /見つかりません/);
 });
+
+test("返事待ちにするとき、人を待っていると名乗ったら work に残り、名乗った題がカードの題に勝つ", () => {
+  const handles = new ReplyHandles();
+  const id = handles.issue({ threadId: "t", connName: "c", moduleName: "m", hop: 0, work: { toolName: "ask", title: "カードの題" } });
+  assert.deepEqual(handles.markAwaiting(id, { on: "human", title: "公開の承認：web:3000" })!.work, {
+    toolName: "ask",
+    title: "公開の承認：web:3000",
+    waitingOn: "human",
+  });
+  const other = handles.issue({ threadId: "t", connName: "c", moduleName: "m", hop: 0, work: { toolName: "run", title: "カードの題" } });
+  assert.deepEqual(handles.markAwaiting(other)!.work, { toolName: "run", title: "カードの題" });
+});

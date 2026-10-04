@@ -24,6 +24,8 @@ export interface RealBackgroundItem {
   resourceUri?: string;
   title?: string;
   description?: string;
+  /** 人の答えを待っている（公開の承認など、2026-10-04）。無ければ裏で仕事が進んでいる */
+  waitingOn?: "human";
 }
 
 export type RealAppEvent =

@@ -29,6 +29,7 @@ import {
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  WAITING_ON_META_KEY,
   AUDIT_ARGS_META_KEY,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
@@ -235,7 +236,10 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
             `\n${REQUEST_ID_LABEL}${req.id}`,
         },
       ],
-      ...(replyTo ? { _meta: { [PENDING_REPLY_META_KEY]: true } } : {}),
+      // **人の答えを待っている**と名乗る（追加・2026-10-04）——サイドバーが「あなたの番」として出す
+      ...(replyTo
+        ? { _meta: { [PENDING_REPLY_META_KEY]: true, [WAITING_ON_META_KEY]: { on: "human", title: `公開の承認：${name}:${port}` } } }
+        : {}),
     };
   }
 

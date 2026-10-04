@@ -19,6 +19,7 @@ import {
   THREAD_META_KEY,
   fillCardText,
   uiResourceUriOf,
+  waitingOnOf,
 } from "./meta.js";
 
 test("parses a valid module meta", () => {
@@ -276,4 +277,12 @@ test("uiResourceUriOf：_meta.ui.resourceUri が文字列のときだけ", () =>
   assert.equal(uiResourceUriOf({ _meta: { ui: { resourceUri: "ui://a/b" } } }), "ui://a/b");
   assert.equal(uiResourceUriOf({ _meta: { ui: { resourceUri: 1 } } }), undefined);
   assert.equal(uiResourceUriOf({}), undefined);
+});
+
+test("waitingOnOf：on が human のときだけ読み、空の題は捨てる", () => {
+  assert.deepEqual(waitingOnOf({ "dev.banto/waitingOn": { on: "human", title: " 公開の承認 " } }), { on: "human", title: "公開の承認" });
+  assert.deepEqual(waitingOnOf({ "dev.banto/waitingOn": { on: "human", title: "  " } }), { on: "human" });
+  assert.equal(waitingOnOf({ "dev.banto/waitingOn": { on: "work" } }), undefined);
+  assert.equal(waitingOnOf({ "dev.banto/waitingOn": "human" }), undefined);
+  assert.equal(waitingOnOf(undefined), undefined);
 });
