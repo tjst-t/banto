@@ -73,7 +73,12 @@ export interface GithubApi {
   /** そのトークンでの `owner/name` への権限（見えなければ `visible: false`。それ以外の断りは投げる） */
   repoAccess(token: string, owner: string, name: string): Promise<{ visible: false } | { visible: true; push: boolean; admin: boolean }>;
   /** 公開の行き先にできる持ち主（自分と、属する Organization）と、そこにリポジトリを作れそうか（段階5） */
-  publishOwners(token: string, login: string, kind: "app" | "pat"): Promise<PublishOwners>;
+  publishOwners(token: string, login: string, kind: "app" | "pat", app?: AppIdentity): Promise<PublishOwners>;
+  /**
+   * GitHub App のトークンで、その App が Install されている先と権限（`GET /user/installations`）。App のユーザーの
+   * トークンからは、その App のものだけが見える
+   */
+  appInstallations(token: string, app?: AppIdentity): Promise<AppInstallations>;
   /** 空のリポジトリを作る（README 等は作らない）。`org` があれば Organization に（段階5） */
   createRepo(token: string, input: { org?: string; name: string; private: boolean; description?: string }): Promise<CreatedRepo>;
 }
@@ -90,6 +95,31 @@ export interface PublishOwner {
   note?: string;
   /** 公開（public）のものしか作れない（classic PAT の public_repo だけ） */
   publicOnly?: boolean;
+  /** GitHub App がこの持ち主に入っていないとき、Install のページ（分かれば） */
+  installUrl?: string;
+}
+
+/** どの App か（client ID で見分け、Install のページは slug で引く——slug は人が設定に入れたものを、インストールが無いときだけ使う） */
+export interface AppIdentity {
+  clientId?: string;
+  slug?: string;
+}
+
+export interface AppInstallation {
+  account: string;
+  /** `User`・`Organization` */
+  accountType: string;
+  /** `read`・`write`、無ければ権限なし */
+  administration?: string;
+  contents?: string;
+  /** `all`・`selected` */
+  repositorySelection?: string;
+}
+
+export interface AppInstallations {
+  installations: AppInstallation[];
+  /** Install のページ（`<web>/apps/<slug>/installations/new`）。slug がインストールの返事にも設定にも無ければ無い */
+  installUrl?: string;
 }
 
 export interface PublishOwners {
@@ -285,7 +315,41 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       return { visible: true, push: body?.permissions?.push === true, admin: body?.permissions?.admin === true };
     },
 
-    async publishOwners(token, login, kind) {
+    async appInstallations(token, app) {
+      let res: Response;
+      try {
+        res = await fetch(`${api}/user/installations`, {
+          headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28", "user-agent": "banto" },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new GithubError(`GitHub に繋がりませんでした（${(err as Error).message}）`, "network");
+      }
+      const body = (await res.json().catch(() => undefined)) as { installations?: unknown } | undefined;
+      if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
+      if (!res.ok) throw new GithubError(`GitHub App のインストールを読めませんでした（HTTP ${res.status}）`, String(res.status));
+      type Raw = { account?: { login?: unknown; type?: unknown }; app_slug?: unknown; client_id?: unknown; permissions?: Record<string, unknown>; repository_selection?: unknown };
+      const raw = (Array.isArray(body?.installations) ? body.installations : []) as Raw[];
+      // その App のものだけ（client ID が返っていれば突き合わせる）
+      const mine = raw.filter((i) => !app?.clientId || typeof i.client_id !== "string" || i.client_id === app.clientId);
+      const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+      const installations = mine.flatMap((i): AppInstallation[] =>
+        typeof i.account?.login === "string"
+          ? [{
+              account: i.account.login,
+              accountType: str(i.account.type) ?? "User",
+              ...(str(i.permissions?.administration) ? { administration: str(i.permissions?.administration)! } : {}),
+              ...(str(i.permissions?.contents) ? { contents: str(i.permissions?.contents)! } : {}),
+              ...(str(i.repository_selection) ? { repositorySelection: str(i.repository_selection)! } : {}),
+            }]
+          : [],
+      );
+      // slug はインストールの返事が正。どこにも Install されていなければ返事が空なので、人が設定に入れたものを使う
+      const slug = mine.map((i) => str(i.app_slug)).find(Boolean) ?? app?.slug;
+      return { installations, ...(slug ? { installUrl: `${web}/apps/${encodeURIComponent(slug)}/installations/new` } : {}) };
+    },
+
+    async publishOwners(token, login, kind, app) {
       const headers = { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28", "user-agent": "banto" };
       const get = async (path: string): Promise<{ status: number; body: unknown; scopes: string | null }> => {
         let res: Response;
@@ -304,23 +368,14 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       const me = await get("/user");
       if (me.status !== 200) throw new GithubError(`GitHub がユーザーを返しませんでした（HTTP ${me.status}）`, String(me.status));
       const scopes = kind === "pat" && me.scopes !== null ? me.scopes.split(",").map((x) => x.trim()).filter(Boolean) : undefined;
-      let installations: Array<{ account: string; administration?: string }> | undefined;
+      let installations: AppInstallation[] | undefined;
+      let installUrl: string | undefined;
       if (kind === "app") {
-        const inst = await get("/user/installations");
-        if (inst.status === 200) {
-          const list = (inst.body as { installations?: unknown })?.installations;
-          installations = Array.isArray(list)
-            ? list.flatMap((i: { account?: { login?: unknown }; permissions?: { administration?: unknown } }) =>
-                typeof i?.account?.login === "string"
-                  ? [{ account: i.account.login, ...(typeof i.permissions?.administration === "string" ? { administration: i.permissions.administration } : {}) }]
-                  : [],
-              )
-            : [];
-        } else {
-          throw new GithubError(`GitHub App のインストールを読めませんでした（HTTP ${inst.status}）`, String(inst.status));
-        }
+        const r = await this.appInstallations(token, app);
+        installations = r.installations;
+        installUrl = r.installUrl;
       }
-      const judge = (owner: string): Pick<PublishOwner, "create" | "note" | "publicOnly"> => {
+      const judge = (owner: string): Pick<PublishOwner, "create" | "note" | "publicOnly" | "installUrl"> => {
         if (scopes !== undefined) {
           if (scopes.includes("repo")) return { create: "yes" };
           if (scopes.includes("public_repo")) return { create: "yes", publicOnly: true, note: "この PAT は public_repo だけなので、公開のリポジトリしか作れません" };
@@ -328,7 +383,13 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
         }
         if (installations !== undefined) {
           const at = installations.find((i) => i.account.toLowerCase() === owner.toLowerCase());
-          if (!at) return { create: "no", note: `GitHub App が ${owner} に入っていません——App のページの「Install」で ${owner} に入れてください` };
+          if (!at) {
+            return {
+              create: "no",
+              note: `GitHub App が ${owner} に入っていません——App のページの「Install」で ${owner} に入れてください`,
+              ...(installUrl ? { installUrl } : {}),
+            };
+          }
           if (at.administration !== "write") return { create: "no", note: `GitHub App に Administration（Read and write）の権限がありません——${APP_ADMINISTRATION_HINT}` };
           return { create: "yes" };
         }

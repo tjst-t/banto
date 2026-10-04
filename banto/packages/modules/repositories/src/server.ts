@@ -171,6 +171,12 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         "PAT でアカウントを登録する（貼った値は Vault に預ける。GitHub で login を確かめてから）",
         { pat: { type: "string" }, patAlias: PLACE_SCHEMA, ssh: PLACE_SCHEMA },
       ),
+      adminTool("set_github_app_slug", "GitHub App のページ（https://github.com/apps/<名前>、Install のページを開くため。null で消す）", {
+        slug: { type: ["string", "null"] },
+      }, ["slug"]),
+      adminTool("github_app_installations", "ブラウザでログインのアカウントの、GitHub App が Install されている先・権限・Install のページ", {
+        login: { type: "string" },
+      }, ["login"]),
       adminTool("start_github_login", "ブラウザでログイン（デバイスフロー）を始める。コードと開く URL を返す", { ssh: PLACE_SCHEMA }),
       adminTool("poll_github_login", "ブラウザでログインの結果を1回聞く（間隔より早ければ待ってから）", { flowId: { type: "string" } }, ["flowId"]),
       adminTool("cancel_github_login", "ブラウザでログインをやめる", { flowId: { type: "string" } }, ["flowId"]),
@@ -369,6 +375,10 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
             ),
           );
         }
+        case "set_github_app_slug":
+          return json(await accounts.setAppSlug(args.slug === null ? null : str(args.slug, "slug")));
+        case "github_app_installations":
+          return json(await accounts.installations(str(args.login, "login"), callIdOf(meta)));
         case "start_github_login": {
           const ssh = optionalPlace(args.ssh, "SSH 鍵");
           return json(await accounts.startLogin(ssh ? { ssh } : {}, callIdOf(meta)));

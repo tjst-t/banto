@@ -255,7 +255,10 @@ test("期限が近ければ使う前に取り直し、回った refresh token �
     assert.equal(second.expiresAt, w.clock.now + 8 * 3600 * 1000);
     assert.equal(w.vault.aliases.length, 1);
     // 取り直したトークンで GitHub に入れる
-    assert.deepEqual(await w.accounts.verify("tjst-t", "c"), { login: "tjst-t" });
+    // ブラウザでログイン（GitHub App）のアカウントは、同じトークンで Install 先も返す（2026-10-04）
+    const verified = await w.accounts.verify("tjst-t", "c");
+    assert.equal(verified.login, "tjst-t");
+    assert.deepEqual(verified.installs!.installations.map((i) => i.account), ["tjst-t"]);
   });
 });
 

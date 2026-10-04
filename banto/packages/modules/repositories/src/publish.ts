@@ -222,13 +222,18 @@ export class Publisher {
 
   /** 公開に使えるアカウントと、それぞれの持ち主（自分・Organization）にリポジトリを作れそうか */
   async targets(path: string | undefined, callId?: string): Promise<PublishTargets> {
-    const { accounts } = await this.deps.accounts.list();
+    const { accounts, appSlug } = await this.deps.accounts.list();
     const remembered = path ? (await this.deps.store.entries()).find((e) => e.path === path)?.account : undefined;
     const out: PublishTargets["accounts"] = [];
     for (const a of accounts) {
       try {
         const token = await this.deps.accounts.tokenFor(a.login, callId);
-        const owners = await this.deps.github.publishOwners(token, a.login, a.credential.kind);
+        const owners = await this.deps.github.publishOwners(
+          token,
+          a.login,
+          a.credential.kind,
+          a.credential.kind === "app" ? { clientId: a.credential.clientId, ...(appSlug ? { slug: appSlug } : {}) } : undefined,
+        );
         out.push({ login: a.login, owners: owners.owners, ...(owners.orgsError ? { orgsError: owners.orgsError } : {}) });
       } catch (err) {
         out.push({ login: a.login, owners: [], error: (err as Error).message });

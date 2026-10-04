@@ -276,13 +276,19 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .route .v { margin: 0; font-family: var(--mono); font-size: var(--t-md); word-break: break-all; color: var(--ink-2); }
 .route .v b { color: var(--ink); font-weight: 600; }
 .route .badge { flex: none; display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); padding: 2px 6px; font-size: var(--t-xs); color: var(--ink-2); }
-.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-xs); }
-.steps li { display: flex; align-items: center; gap: 8px; }
-.steps li[data-state="waiting"], .steps li[data-state="skipped"] { color: var(--ink-3); }
-.steps li[data-state="done"] .icon { color: var(--ok); }
-.steps li[data-state="failed"] .icon { color: var(--danger); }
-.steps li[data-state="running"] .icon { animation: spin 1s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .steps li[data-state="running"] .icon { animation: none; } }
+/* 公開の手順（client ID の欄の「手順」の .steps とは別——同じ名前にして、そちらの番号を消していた） */
+.pub-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-xs); }
+.pub-steps li { display: flex; align-items: center; gap: 8px; }
+.pub-steps li[data-state="waiting"], .pub-steps li[data-state="skipped"] { color: var(--ink-3); }
+.pub-steps li[data-state="done"] .icon { color: var(--ok); }
+.pub-steps li[data-state="failed"] .icon { color: var(--danger); }
+.pub-steps li[data-state="running"] .icon { animation: spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .pub-steps li[data-state="running"] .icon { animation: none; } }
+.installs { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: var(--t-xs); color: var(--ink-2); }
+.guide { margin-top: 8px; font-size: var(--t-xs); color: var(--ink-2); }
+.guide summary { cursor: pointer; color: var(--ink); font-weight: 500; }
+.guide h4 { margin: 8px 0 2px; font-size: var(--t-xs); font-weight: 600; color: var(--ink); }
+.guide p { margin: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .pub { display: flex; flex-direction: column; gap: 16px; max-width: 36rem; }
 .pub h2 { margin: 0; font-size: var(--h-sm); font-weight: 600; }
@@ -462,6 +468,9 @@ const SCRIPT = String.raw`
       clientDraft: null, clientError: null, clientBusy: false,
       /** 確かめた結果（login → { busy, ok, error }） */
       verify: {},
+      /** GitHub App の Install 先（login → { busy, data, error }） */
+      installs: {},
+      slugDraft: null, slugError: null, slugBusy: false,
       /** 「外す」を押して確かめている login */
       removing: null, removeError: null,
     },
@@ -967,6 +976,7 @@ const SCRIPT = String.raw`
       whoKids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-account-refresh-failure", text: "ログインを更新できませんでした：" + acc.refreshFailure.message }));
       whoKids.push(h("div", {}, [h("button", { class: "btn small", type: "button", "data-testid": "gh-account-relogin", onclick: () => startLogin(null) }, ["もう一度ブラウザでログイン"])]));
     }
+    if (c.kind === "app") whoKids.push(installsBlock(acc));
     if (v.ok) whoKids.push(h("p", { class: "okline", role: "status", "data-testid": "gh-account-verified", text: v.ok }));
     if (v.error) whoKids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-account-verify-error", text: v.error }));
     if (confirming) {
@@ -991,12 +1001,56 @@ const SCRIPT = String.raw`
     ]);
   }
 
+  /** GitHub App が Install されている先と権限（ブラウザでログインのアカウントだけ）。「確かめる」で取り直す */
+  function installsBlock(acc) {
+    const it = state.acct.installs[acc.login];
+    const perm = (v) => v === "write" ? "書ける" : v === "read" ? "読むだけ" : "無し";
+    if (!it || it.busy) return h("p", { class: "sub", "data-testid": "gh-account-installs-loading", text: "GitHub App の Install 先を確かめています…" });
+    if (it.error) return h("p", { class: "stopline", "data-testid": "gh-account-installs-error", text: "GitHub App の Install 先を読めませんでした：" + it.error });
+    const list = it.data.installations;
+    const install = it.data.installUrl
+      ? h("button", { class: "link", type: "button", "data-testid": "gh-account-install-open", text: list.length ? "ほかの先にも Install する" : "Install する", onclick: () => openLink(it.data.installUrl) })
+      : h("span", { class: "muted", "data-testid": "gh-account-install-noslug", text: "（下の「App のページ」を入れると、ここから Install のページを開けます）" });
+    if (list.length === 0) {
+      return h("p", { class: "warnline", "data-testid": "gh-account-installs-none" }, ["GitHub App がどこにも Install されていません——リポジトリを読む・作るには Install が要ります。", install]);
+    }
+    return h("div", { "data-testid": "gh-account-installs" }, [
+      h("p", { class: "sub", text: "GitHub App の Install 先" }),
+      h("ul", { class: "installs" }, list.map((i) => h("li", { "data-testid": "gh-account-install", "data-account": i.account }, [
+        h("span", { class: "mono", text: i.account }),
+        (i.accountType === "Organization" ? "（Organization）" : "（アカウント）") +
+          " · Administration " + perm(i.administration) + " · Contents " + perm(i.contents) +
+          (i.repositorySelection === "selected" ? " · 選んだリポジトリだけ" : ""),
+      ]))),
+      // 足りない権限は、まとめて1行で（作る＝Administration、push＝Contents）
+      list.some((i) => i.administration !== "write" || i.contents !== "write")
+        ? h("p", { class: "muted", "data-testid": "gh-account-installs-short", style: "margin:2px 0 0", text: "リポジトリを作る・push するには、App の Permissions で Administration と Contents を Read and write にして、Install 先で承認してください。" })
+        : null,
+      install,
+    ]);
+  }
+  async function loadInstalls(acc) {
+    state.acct.installs[acc.login] = { busy: true };
+    render();
+    try { state.acct.installs[acc.login] = { data: await call("github_app_installations", { login: acc.login }) }; }
+    catch (e) { state.acct.installs[acc.login] = { error: errText(e) }; }
+    render();
+  }
+  /** 外のページを別のタブで開く（MCP Apps の ui/open-link——人が押した直後だけ開く） */
+  async function openLink(url) {
+    try { await request("ui/open-link", { url: url }); }
+    catch (e) { setFlash("開けませんでした：" + errText(e) + "（" + url + "）"); render(); }
+  }
+
   async function verifyAccount(acc) {
     state.acct.verify[acc.login] = { busy: true };
     render();
     try {
       const r = await call("verify_github_account", { login: acc.login });
       state.acct.verify[acc.login] = { ok: "GitHub に " + r.login + " として入れました" };
+      // 同じトークンで取り直した Install 先（ブラウザでログインのアカウントだけ）
+      if (r.installs) state.acct.installs[acc.login] = { data: r.installs };
+      else if (r.installsError) state.acct.installs[acc.login] = { error: r.installsError };
     } catch (e) {
       state.acct.verify[acc.login] = { error: errText(e) };
     }
@@ -1139,6 +1193,7 @@ const SCRIPT = String.raw`
         a.login = null; a.form = null; clearPat();
         setFlash(r.relogin ? r.account.login + " のログインを新しくしました" : r.account.login + " をブラウザでログインして登録しました");
         await loadAccounts();
+        loadInstalls(r.account);
         await load();
         return;
       }
@@ -1206,13 +1261,39 @@ const SCRIPT = String.raw`
       ]),
     ];
     if (a.clientError) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-client-id-error", text: a.clientError }));
-    if (!current) {
-      kids.push(h("ol", { class: "steps", "data-testid": "gh-client-id-steps" }, [
-        h("li", { text: "GitHub の Settings → Developer settings → GitHub Apps → New GitHub App で App を作る（Callback URL と Webhook は要りません）" }),
-        h("li", { text: "「Enable Device Flow」に印を入れる" }),
-        h("li", { text: "作った App の Client ID（Iv で始まる）をここに写し、App を自分のアカウントに Install する" }),
-      ]));
-    }
+    // App のページ（slug）——Install のページを開くため。Install されていれば GitHub の返事の slug を使うので、要るのは
+    // まだどこにも Install していないときだけ
+    const slugNow = a.list.appSlug || "";
+    const slugValue = a.slugDraft !== null ? a.slugDraft : slugNow ? "https://github.com/apps/" + slugNow : "";
+    const slugChanged = a.slugDraft !== null && a.slugDraft.trim() !== (slugNow ? "https://github.com/apps/" + slugNow : "");
+    const slugInput = h("input", { id: "gh-app-slug", type: "text", value: slugValue, spellcheck: "false", placeholder: "https://github.com/apps/…", "data-testid": "gh-app-slug" });
+    slugInput.addEventListener("input", () => { a.slugDraft = slugInput.value; a.slugError = null; renderKeepFocusOn(slugInput, "gh-app-slug"); });
+    slugInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveSlug(a.slugDraft); } });
+    kids.push(
+      h("label", { class: "lbl", for: "gh-app-slug", style: "font-size:var(--t-sm);font-weight:500;margin-top:8px", text: "App のページ（Install に使います。任意）" }),
+      h("div", { class: "line" }, [
+        slugInput,
+        slugChanged ? h("button", { class: "btn small primary", type: "button", "data-testid": "gh-app-slug-save", disabled: a.slugBusy, text: "保存", onclick: () => saveSlug(a.slugDraft) }) : null,
+      ]),
+      h("p", { class: "help", text: "App の設定ページの「Public link」。どこかに Install すれば、なくても分かります。" }),
+    );
+    if (a.slugError) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "gh-app-slug-error", text: a.slugError }));
+    // 使い始める手順と、別のアカウント・Organization で使うとき（短く。まだ client ID が無いときは開いておく）
+    const guide = h("details", { class: "guide", "data-testid": "gh-app-guide" }, [
+      h("summary", { text: "GitHub App の使い方" }),
+      h("h4", { text: "はじめて使うとき" }),
+      h("ol", { class: "steps", "data-testid": "gh-client-id-steps" }, [
+        h("li", { text: "App を作る——GitHub の Settings → Developer settings → GitHub Apps → New GitHub App。「Enable Device Flow」に印、Repository permissions の Administration と Contents を Read and write に。Client ID をここに写す" }),
+        h("li", { text: "Install する——App のページの「Install」で、使うアカウントに入れる" }),
+        h("li", { text: "banto でログインする——「アカウントを登録」→「ブラウザでログイン」" }),
+      ]),
+      h("h4", { text: "別のアカウントで使うとき" }),
+      h("p", { text: "App の設定で「Any account」を選び、そのアカウントで Install してから、ブラウザをそのアカウントに切り替えてログインします。" }),
+      h("h4", { text: "Organization で使うとき" }),
+      h("p", { text: "Organization に Install するだけです。メンバーのログインで扱えます。「読むだけ」の行は、行の「…」→「アカウントを選ぶ」で。" }),
+    ]);
+    if (!current) guide.open = true;
+    kids.push(guide);
     return h("div", { class: "client", "data-testid": "gh-client-section" }, kids);
   }
   function renderKeepFocusOn(input, id) {
@@ -1220,6 +1301,21 @@ const SCRIPT = String.raw`
     render();
     const again = document.getElementById(id);
     if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+  }
+  async function saveSlug(next) {
+    const a = state.acct;
+    a.slugBusy = true; render();
+    try {
+      await call("set_github_app_slug", { slug: next === null || next.trim() === "" ? null : next });
+      a.slugDraft = null; a.slugError = null;
+      setFlash(next && next.trim() ? "App のページを保存しました" : "App のページを消しました");
+      await loadAccounts();
+      for (const acc of a.list.accounts) if (acc.credential.kind === "app") loadInstalls(acc);
+    } catch (e) {
+      a.slugError = errText(e);
+    }
+    a.slugBusy = false;
+    render();
   }
   async function saveClientId(next) {
     const a = state.acct;
@@ -1993,7 +2089,13 @@ const SCRIPT = String.raw`
         }, [y.login + (y.kind === "org" ? "（Organization）" : "")]))));
         else if (o) kids.push(h("p", { class: "help", "data-testid": "publish-owner-one", text: o.login + (o.kind === "org" ? "（Organization）" : "（あなたのアカウント）") }));
         if (o && o.note) kids.push(h("p", { class: o.create === "unknown" ? "help" : "warnline", "data-testid": "publish-owner-note", text: o.note }));
-        for (const y of no) kids.push(h("p", { class: "blocked", "data-testid": "publish-owner-blocked", text: y.login + " には作れません：" + y.note }));
+        for (const y of no) {
+          kids.push(h("p", { class: "blocked", "data-testid": "publish-owner-blocked" }, [
+            y.login + " には作れません：" + y.note,
+            // App が入っていないなら、Install のページを開く手をその場に
+            y.installUrl ? h("button", { class: "link", type: "button", "data-testid": "publish-owner-install", "data-owner": y.login, text: " Install のページを開く", onclick: () => openLink(y.installUrl) }) : null,
+          ]));
+        }
         if (a.orgsError) kids.push(h("p", { class: "blocked", text: "Organization を読めませんでした（" + a.orgsError + "）" }));
         p.owner.replaceChildren(h("div", { class: "field" }, kids));
       } else p.owner.replaceChildren();
@@ -2034,7 +2136,7 @@ const SCRIPT = String.raw`
       ]));
     }
     // 手順
-    fill(p.steps, job && job.steps ? h("ol", { class: "steps", "data-testid": "publish-steps", "aria-live": "polite" }, job.steps.map((st) => h("li", { "data-step": st.key, "data-state": st.state }, [
+    fill(p.steps, job && job.steps ? h("ol", { class: "pub-steps", "data-testid": "publish-steps", "aria-live": "polite" }, job.steps.map((st) => h("li", { "data-step": st.key, "data-state": st.state }, [
       icon(st.state === "done" ? "circleCheck" : st.state === "failed" ? "ban" : st.state === "running" ? "loader" : "circle"),
       h("span", { text: stepLabel(st, job) }),
     ]))) : null);
@@ -2312,6 +2414,8 @@ const SCRIPT = String.raw`
       return;
     }
     await Promise.all([load(), MODE === "config" ? loadAccounts() : null]);
+    // ブラウザでログインのアカウントは、GitHub App の Install 先も出す（設定の面だけ）
+    if (MODE === "config" && state.acct.list) for (const acc of state.acct.list.accounts) if (acc.credential.kind === "app") loadInstalls(acc);
   })();
 })();
 `;

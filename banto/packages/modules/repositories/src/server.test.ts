@@ -186,7 +186,9 @@ test("アカウントの口：PAT とブラウザでログインが画面の口�
         assert.equal(listed.body.appClientId, FAKE_CLIENT_ID);
         const verified = await call("verify_github_account", { login: "octo-bot" });
         results.push(verified.text);
-        assert.deepEqual(verified.body, { login: "octo-bot" });
+        assert.equal(verified.body.login, "octo-bot");
+        // GitHub App のアカウントは Install 先も返る（2026-10-04）——ここにも秘密は入らない
+        assert.deepEqual(verified.body.installs.installations.map((i: { account: string }) => i.account), ["octo-bot"]);
         const choices = await call("list_credential_aliases");
         results.push(choices.text);
         assert.deepEqual(choices.body.secrets.map((a: { name: string }) => a.name), ["github-tjst-t-pat"]);

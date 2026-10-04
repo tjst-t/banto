@@ -53,7 +53,9 @@ export interface FakeGithub {
    * GitHub App のトークン（`ghu_` で始まる——デバイスフローで出したもの）の login → App が入っている先と Administration の権限。
    * 無ければ、その login 自身に Administration（write）で入っている
    */
-  installations: Map<string, Array<{ account: string; administration?: "read" | "write" }>>;
+  installations: Map<string, Array<{ account: string; administration?: "read" | "write"; contents?: "read" | "write" }>>;
+  /** App の slug（インストールの返事に入る） */
+  appSlug: string;
   /** fine-grained PAT で Administration の権限が無いもの（作ると 403） */
   noAdministration: Set<string>;
   /** Organization（小文字 → login・メンバーの役割・メンバーが作れるか） */
@@ -126,6 +128,7 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
     refreshCalls: 0,
     tokenScopes: new Map(),
     installations: new Map(),
+    appSlug: "banto-fake-app",
     noAdministration: new Set(),
     orgs: new Map(),
     rejectPush: new Set(),
@@ -212,6 +215,11 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
               members: new Map(Object.entries(org.members).map(([k, v]) => [k.toLowerCase(), v])),
               membersCanCreate: org.membersCanCreate,
             });
+          }
+          const inst = (patch as { installations?: { login: string; list: Array<{ account: string; administration?: "read" | "write"; contents?: "read" | "write" }> | null } }).installations;
+          if (inst) {
+            if (inst.list === null) state.installations.delete(inst.login.toLowerCase());
+            else state.installations.set(inst.login.toLowerCase(), inst.list);
           }
           const reject = (patch as { rejectPush?: { repo: string; on: boolean } }).rejectPush;
           if (reject) {
@@ -324,13 +332,21 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
         const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
         const me = state.users.get(bearer);
         const isApp = bearer.startsWith("ghu_");
-        const installationsOf = (login: string) => state.installations.get(login.toLowerCase()) ?? [{ account: login, administration: "write" as const }];
+        const installationsOf = (login: string) =>
+          state.installations.get(login.toLowerCase()) ?? [{ account: login, administration: "write" as const, contents: "write" as const }];
         if (url.pathname === "/user/installations" && req.method === "GET") {
           if (!me) return send(401, { message: "Bad credentials" });
           if (!isApp) return send(403, { message: "Resource not accessible by personal access token" });
           return send(200, {
             total_count: installationsOf(me).length,
-            installations: installationsOf(me).map((i) => ({ account: { login: i.account }, permissions: i.administration ? { administration: i.administration } : {} })),
+            installations: installationsOf(me).map((i) => ({
+              account: { login: i.account, type: state.orgs.has(i.account.toLowerCase()) ? "Organization" : "User" },
+              app_slug: state.appSlug,
+              client_id: FAKE_CLIENT_ID,
+              repository_selection: "all",
+              html_url: `https://github.com/settings/installations/1`,
+              permissions: { ...(i.administration ? { administration: i.administration } : {}), ...(i.contents ? { contents: i.contents } : {}), metadata: "read" },
+            })),
           });
         }
         if (url.pathname === "/user/orgs" && req.method === "GET") {

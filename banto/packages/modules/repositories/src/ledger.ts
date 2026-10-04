@@ -42,6 +42,11 @@ export interface RepositoriesSettings {
   repoHome?: string;
   /** ブラウザでログインに使う GitHub App の client ID（秘密ではない。人が GitHub App を作って写す） */
   githubAppClientId?: string;
+  /**
+   * GitHub App の slug（`github.com/apps/<slug>`）。Install のページを開くためだけ——**App がどこにも Install されて
+   * いないときに使う**（Install されていれば GitHub の返事の slug が正）
+   */
+  githubAppSlug?: string;
 }
 
 /**
@@ -203,13 +208,15 @@ export class LedgerStore {
   }
 
   async settings(): Promise<RepositoriesSettings> {
-    const raw = (await this.readJson(SETTINGS_FILE)) as { repoHome?: unknown; githubAppClientId?: unknown } | undefined;
+    const raw = (await this.readJson(SETTINGS_FILE)) as { repoHome?: unknown; githubAppClientId?: unknown; githubAppSlug?: unknown } | undefined;
     if (raw === undefined) return {};
     if (raw.repoHome !== undefined && typeof raw.repoHome !== "string") throw new Error("設定の置き場が読めません");
     if (raw.githubAppClientId !== undefined && typeof raw.githubAppClientId !== "string") throw new Error("設定の client ID が読めません");
+    if (raw.githubAppSlug !== undefined && typeof raw.githubAppSlug !== "string") throw new Error("設定の GitHub App のページが読めません");
     return {
       ...(raw.repoHome ? { repoHome: raw.repoHome } : {}),
       ...(raw.githubAppClientId ? { githubAppClientId: raw.githubAppClientId } : {}),
+      ...(raw.githubAppSlug ? { githubAppSlug: raw.githubAppSlug } : {}),
     };
   }
 

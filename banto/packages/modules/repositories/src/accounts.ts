@@ -19,7 +19,7 @@
 // 中継の承認に掛かる（聞く会話も無い）。
 
 import { randomUUID } from "node:crypto";
-import type { GithubApi, TokenSet } from "./github.js";
+import type { AppInstallations, GithubApi, TokenSet } from "./github.js";
 import type { AccountCredential, GithubAccount, LedgerStore } from "./ledger.js";
 import type { NoticeSink } from "./relay-client.js";
 import type { AliasEntry, AliasPlace, VaultAccess } from "./vault.js";
@@ -143,9 +143,42 @@ export class GithubAccounts {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
-  async list(): Promise<{ accounts: AccountView[]; appClientId?: string }> {
+  async list(): Promise<{ accounts: AccountView[]; appClientId?: string; appSlug?: string }> {
     const [accounts, settings] = await Promise.all([this.deps.store.accounts(), this.deps.store.settings()]);
-    return { accounts: accounts.map(view), ...(settings.githubAppClientId ? { appClientId: settings.githubAppClientId } : {}) };
+    return {
+      accounts: accounts.map(view),
+      ...(settings.githubAppClientId ? { appClientId: settings.githubAppClientId } : {}),
+      ...(settings.githubAppSlug ? { appSlug: settings.githubAppSlug } : {}),
+    };
+  }
+
+  /**
+   * GitHub App の slug を覚える（Install のページを開くため）。`https://github.com/apps/<slug>`（App のページの
+   * Public link）か slug そのものを受ける。null で消す
+   */
+  async setAppSlug(input: string | null): Promise<{ appSlug?: string }> {
+    if (input === null || input.trim() === "") {
+      await this.deps.store.updateSettings({ githubAppSlug: undefined });
+      return {};
+    }
+    const m = /^(?:https?:\/\/[^/]+\/apps\/)?([A-Za-z0-9][A-Za-z0-9-]{0,98})\/?(?:installations\/new\/?)?$/.exec(input.trim());
+    if (!m) throw new Error("App のページの形が違います（GitHub App の設定の「Public link」——https://github.com/apps/<名前>——を写してください）");
+    const slug = m[1]!.toLowerCase();
+    await this.deps.store.updateSettings({ githubAppSlug: slug });
+    return { appSlug: slug };
+  }
+
+  /**
+   * ブラウザでログイン（GitHub App）のアカウントの、App が Install されている先と権限、Install のページ。PAT のアカウントは
+   * App と関係ないので断る
+   */
+  async installations(login: string, callId?: string): Promise<AppInstallations> {
+    const [accounts, settings] = await Promise.all([this.deps.store.accounts(), this.deps.store.settings()]);
+    const account = accounts.find((a) => sameLogin(a.login, login));
+    if (!account) throw new Error(`@${login} は登録されていません`);
+    if (account.credential.kind !== "app") throw new Error(`@${account.login} は PAT のアカウントです（GitHub App の Install とは関係ありません）`);
+    const token = await this.tokenFor(account.login, callId);
+    return this.deps.github.appInstallations(token, { clientId: account.credential.clientId, ...(settings.githubAppSlug ? { slug: settings.githubAppSlug } : {}) });
   }
 
   /** 登録の画面で選べる alias（値は通らない） */
@@ -448,12 +481,24 @@ export class GithubAccounts {
   }
 
   /** 確かめる——今使えるトークンで `GET /user` を引き、登録した login と同じかを見る（更新も通る） */
-  async verify(login: string, callId?: string): Promise<{ login: string }> {
+  /**
+   * 確かめる。ブラウザでログイン（GitHub App）のアカウントは、同じトークンで Install 先も取り直して返す（読めなければ
+   * 理由を `installsError` に——login の確かめは通ったことにする）
+   */
+  async verify(login: string, callId?: string): Promise<{ login: string; installs?: AppInstallations; installsError?: string }> {
     const token = await this.tokenFor(login, callId);
     const user = await this.deps.github.currentUser(token);
     if (!sameLogin(user.login, login)) {
       throw new Error(`この資格情報は @${user.login} のものです（登録は @${login}）。外して登録し直してください`);
     }
-    return { login: user.login };
+    const [accounts, settings] = await Promise.all([this.deps.store.accounts(), this.deps.store.settings()]);
+    const credential = accounts.find((a) => sameLogin(a.login, login))?.credential;
+    if (credential?.kind !== "app") return { login: user.login };
+    try {
+      const installs = await this.deps.github.appInstallations(token, { clientId: credential.clientId, ...(settings.githubAppSlug ? { slug: settings.githubAppSlug } : {}) });
+      return { login: user.login, installs };
+    } catch (err) {
+      return { login: user.login, installsError: (err as Error).message };
+    }
   }
 }
