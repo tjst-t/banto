@@ -4570,7 +4570,7 @@
       "id": "self-update-host-api",
       "kind": "task",
       "title": "host の /api/admin/update（読む・確かめる・頼む・やめる・すぐ）",
-      "status": "ready",
+      "status": "done",
       "parent": "self-update",
       "dependsOn": [
         "self-update-scripts"
@@ -4580,12 +4580,12 @@
       "labels": [],
       "body": "",
       "doneWhen": "単体試験で：人のセッション＋step-up でだけ頼める・合言葉では断る・見せた commit 以外は断る・走っている更新があれば断る・準備が済んでいなければその理由を返す",
-      "resolution": null,
+      "resolution": "main・release に入った（f408e782）。core の試験と self-update.spec.ts（11件）が通る",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-04T10:05:36.893Z",
-      "updatedAt": "2026-10-04T10:05:36.893Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-04T12:01:57.844Z",
+      "closedAt": "2026-10-04T12:01:57.844Z",
       "extra": {}
     },
     {
