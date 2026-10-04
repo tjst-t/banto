@@ -4481,7 +4481,7 @@
       "id": "backlog-push-not-relayed-to-repositories",
       "kind": "bug",
       "title": "Backlog の自動 push が Repositories に頼まれず、自分の git で失敗する",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4494,9 +4494,14 @@
         "docs/notes/2026-10-04-backlog-branch-store.md",
         "banto/packages/modules/backlog/src/remote.ts"
       ],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "e9148ef1-63cc-4346-aebf-033be298b9eb"
+        }
+      ],
       "createdAt": "2026-10-04T08:57:37.311Z",
-      "updatedAt": "2026-10-04T08:57:37.311Z",
+      "updatedAt": "2026-10-04T09:05:55.912Z",
       "closedAt": null,
       "extra": {}
     }
