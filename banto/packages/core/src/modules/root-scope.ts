@@ -37,7 +37,15 @@ function isAncestorOrSelf(candidate: string, of: string): boolean {
  */
 export function describeRootScope(
   root: string,
-  opts: { dataDir: string; configDir: string },
+  opts: {
+    dataDir: string;
+    configDir: string;
+    /**
+     * 画面から更新するときの置き場（`repo.git`・`versions/`・`current`。追加・2026-10-04）。中を書き換えられると、
+     * 次に host が起こし直したときにそのコードが host の権限で動く。渡さなければ見ない
+     */
+    releaseDir?: string;
+  },
 ): RootScope {
   const real = tryRealpath(root);
   const home = tryRealpath(homedir());
@@ -45,6 +53,9 @@ export function describeRootScope(
     { path: tryRealpath(opts.configDir), label: "banto の設定とアクセストークン" },
     { path: tryRealpath(opts.dataDir), label: "banto のデータ（全 Project の会話・Memory）" },
     { path: tryRealpath(`${home}/.claude`), label: "Claude の認証情報" },
+    ...(opts.releaseDir
+      ? [{ path: tryRealpath(opts.releaseDir), label: "banto が動かすコード（更新の置き場。書き換えると次の起動で host の権限で動く）" }]
+      : []),
   ];
   const includes = sensitive.filter((s) => isAncestorOrSelf(real, s.path)).map((s) => s.label);
   return { wide: includes.length > 0, includes };
