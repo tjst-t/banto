@@ -12,7 +12,9 @@
 curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | bash -s -- --domain banto.example.com
 ```
 
-途中で sudo のパスワードを聞かれる。端末から打てば、Cloudflare の API トークンも聞かれる（Enter だけなら飛ばす）。
+途中で sudo のパスワードを聞かれる——**build のあとにもう一度聞かれる**（npm の依存と build はユーザーの権限で
+流すので、その間は sudo の記憶を消している。取ってきたコードに root を使わせないため）。端末から打てば、Cloudflare の
+API トークンも聞かれる（Enter だけなら飛ばす。一度 `--no-cloudflare` にしたら聞かない）。
 最後に次が出る：
 
 - **開く URL**：`https://<名前>/`
@@ -50,6 +52,7 @@ curl -fsSL …/install.sh | bash -s -- --domain banto.example.com --cloudflare-t
 |---|---|
 | `--domain <名前>` | 画面の名前。初回は必須。`sandbox.<名前>`（Canvas のサンドボックス）・`*.<名前>`（Publish）も使う |
 | `--cloudflare-token <値>` / `-` | 上の表 |
+| `--no-cloudflare` | Cloudflare をやめて内部の CA に戻す（下の「Cloudflare をやめる」） |
 | `--ip <IPv4>` | DNS のレコードの向け先（既定：既定経路のインターフェースの IPv4） |
 | `--branch <名前>` / `--repo <URL\|パス>` | 取ってくるコード（既定 GitHub の `release`）。`file://`・ローカルのパス・git bundle も受ける |
 | `--pool-size <N>GiB` | Incus の置き場 `banto` の大きさ（`/var/lib/incus` が btrfs でないときのループファイル。既定は空きの半分・最大 50GiB） |
@@ -86,6 +89,38 @@ curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | b
 DNS のレコードを作り、Caddy の設定を `dns cloudflare` に替えて起こし直し、Publish の基のドメインを書く。
 各端末に入れた内部の CA は、もう要らなければ外してよい。
 
+### Cloudflare をやめる（内部の CA に戻す）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | bash -s -- --no-cloudflare
+```
+
+保存したトークン（`/etc/caddy/cloudflare.env`）を消し、Caddy を内部の CA に戻し、Publish の基のドメインを外す。
+**DNS のレコードは消さない**（内部の CA でも名前を引くのに使える）。要らなければ Cloudflare の画面で消す。
+Cloudflare の画面でトークンも無効にする。
+
+### 名前を替えたときの古い DNS のレコード
+
+トークンありの形で `--domain` を替えると、前の名前の `<旧名>`・`*.<旧名>` のうち、**install.sh が作ったもの**
+（Cloudflare の comment が `banto install.sh`）で**このホストの IP を向いているもの**だけを消す。それ以外は消さずに、
+最後の画面の「残っている DNS のレコード」に出す——人が作ったものや別のホストのものを消さないため。
+
+### Caddy を上げる
+
+caddyserver.com の配布は版を選べず、install.sh は Caddy が入っていれば触らない。上げるときは（入っている
+モジュール——Cloudflare の DNS——ごと最新に替わる）：
+
+```sh
+sudo /usr/local/bin/caddy upgrade
+sudo systemctl restart caddy
+/usr/local/bin/caddy version
+```
+
+### Docker を後から入れたとき
+
+Docker は Incus のブリッジの転送を止めるので、Docker を入れたら同じコマンドを打ち直す（転送を許す drop-in
+`/etc/systemd/system/docker.service.d/incus-forward.conf` と `/usr/local/sbin/incus-docker-forward.sh` を置く）。
+
 ### 手で組んだ host（今の banto の host など）に流すとき（未試験）
 
 install.sh は手で組んだ host の形に合わせて作ってあるが、**手で組んだ host に流したことはまだ無い**。流す前に：
@@ -118,10 +153,13 @@ sudo rm -f /etc/systemd/system/system.slice.d/50-banto-protect.conf
 sudo systemctl daemon-reload
 # 2. ファイアウォールの表と覚えた値
 sudo nft delete table inet banto 2>/dev/null; sudo rm -rf /etc/banto
-# 3. Caddy の banto の設定（Caddyfile の import の1行も消す）
-sudo rm -rf /etc/caddy/banto.d /etc/caddy/cloudflare.env
+# 3. Caddy の banto の設定（Caddyfile の import の1行も消す）。apt の caddy に drop-in で差し替えていたら、それも消す
+sudo rm -rf /etc/caddy/banto.d /etc/caddy/cloudflare.env /etc/systemd/system/caddy.service.d/50-banto.conf
 sudo sed -i '\#^import /etc/caddy/banto.d/\*.caddy$#d; /^# banto（install.sh が足した1行/d' /etc/caddy/Caddyfile
-sudo systemctl restart caddy
+sudo systemctl daemon-reload && sudo systemctl restart caddy
+# 3b. Docker の転送の drop-in（Docker が居たときだけ置いている）
+sudo rm -f /etc/systemd/system/docker.service.d/incus-forward.conf /usr/local/sbin/incus-docker-forward.sh
+sudo systemctl daemon-reload        # 今入っている DOCKER-USER の規則は Docker を起こし直すまで残る
 # 4. banto の Project のコンテナ（banto を動かしていたユーザーで）
 incus list --all-projects            # banto-* を確かめてから
 incus delete --force <名前> …        # 要らなければ
@@ -129,7 +167,8 @@ incus delete --force <名前> …        # 要らなければ
 rm -rf ~/.local/share/banto-release ~/.local/share/banto ~/.config/banto ~/banto-host.log ~/banto-frontend.log
 ```
 
-Incus・Caddy・Node（`/usr/local`）・Claude Code はほかでも使いうるので、ここでは消さない。消すなら
+Incus・Caddy・Node（`/usr/local`）・sops（`/usr/local/bin/sops`）・Claude Code はほかでも使いうるので、ここでは消さない。消すなら
+`sudo rm /usr/local/bin/sops`、
 `sudo apt-get purge incus`（置き場 `banto` も消える）、`sudo systemctl disable --now caddy && sudo rm /usr/local/bin/caddy`
 （apt の caddy でなければ `/etc/systemd/system/caddy.service` も）。Cloudflare の A レコードは Cloudflare の画面で消す。
 

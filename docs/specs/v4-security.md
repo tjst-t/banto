@@ -165,28 +165,44 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
 - **対象は Ubuntu 24.04・26.04 だけ**（それ以外は理由を出して断る）。**root では断る**——sudo できる普通のユーザーで
   打ち、そのユーザーが banto を動かす（unit の `User=`・HOME はそのユーザー）
 - **Incus**：24.04 は Zabbly の `lts-6.0`、26.04 は Zabbly の `stable`（`lts-6.0` に resolute が無く、Ubuntu の 6.0.5 は
-  前提に足りない）。鍵は指紋を照合。推奨パッケージは入れない。未初期化なら `incus admin init --minimal`。置き場 `banto` は
+  前提に足りない）。鍵は公開鍵が1つで指紋が合うことを確かめる。推奨パッケージは入れない。未初期化なら `incus admin init --minimal`。置き場 `banto` は
   `/var/lib/incus` が btrfs ならその中のフォルダ、違えばループファイル（大きさはディスクの空きの半分・最大 50GiB、引数で変える）。
   前提がそろったかは最後に doctor を banto のユーザーで（`sudo -u`——グループを引き直す）流して確かめ、落ちたら止まる
 - **Node**：公式の tarball（npm つき。LTS 24 系を版で固定し sha256 を照合）を `/usr/local` に——コンテナの土台がホストの
   node の一式を写すため
-- **入口は Caddy**（caddyserver.com の custom build、Cloudflare の DNS 入り）。**人の Caddyfile は書き換えない**——無ければ
+- **sudo の記憶を、取ってきたコードに使わせない**：root が要る段を先にまとめ、npm の依存・build・Claude の installer
+  （ユーザーの権限で走る、外から取ってきたもの）を流す前に `sudo -K` で記憶を消し、`setsid` で端末から切り離して流す。
+  build のあとに root が要る段（doctor・起こす・起こし直す）は sudo を取り直してから（パスワードの要る人には2度目を聞く）。
+  Claude の installer はファイルに落としてから流す（台本そのものの sha256・署名は公開されていない）
+- **口と置き場の真実は banto の `config.json`**（`port`・`sandboxPort`・`uiPort`・`releaseDir`）。install.sh は無ければ既定を
+  書き、Caddy の設定・unit・nftables の表はそこから作る
+- **入口は Caddy**（caddyserver.com の custom build、Cloudflare の DNS 入り。**版は選べない**——download API が版の指定を
+  受けない。取ってきた版を出し、2.5 以上かだけ見る。上げるのは人が `caddy upgrade`）。**人の Caddyfile は書き換えない**——無ければ
   最小のものを作り、`import /etc/caddy/banto.d/*.caddy` の1行だけを足す。banto の設定はそのファイルに生成する：
   `<名前>`（`/api/*` → 4737、ほか → 4175）・`sandbox.<名前>` → 4176・それ以外の `*.<名前>` は 404（Publish の道は
   publish-caddy が admin API でこの前に差し込む。admin API は localhost:2019 のまま）・http は https へ転送。
-  Caddy が受け付けない設定は元に戻して止まる
+  Caddy が受け付けない設定は元に戻して止まる。**動いている Caddy の設定を admin API で読み、Caddyfile を JSON にした
+  ものと比べて（publish-caddy が足した道は除く）違うときだけ読み直す**——読み直すと publish-caddy の道が次の突き合わせ
+  （15 秒ごと）まで消えるので毎回はしない。ファイルの変更ではなく実物と比べるので、前の回に読み直し損ねていても直る。
+  既に別の場所に Caddy の unit があれば（apt の caddy）drop-in で差し替え、`/etc` に丸ごとは書かない
 - **HTTPS は2つの形**：
   - **Cloudflare のトークンあり**：`<名前>` と `*.<名前>` の A レコードを作る／直す（`proxied: false`、ゾーンはトークンで
     見えるゾーンのうち名前の後ろが一番長く一致するもの、向け先はこのホストの LAN の IP）。証明書は DNS-01 の
-    Let's Encrypt（`*.<名前>` の1枚に sandbox も入れる）。Publish の基のドメインを書く
+    Let's Encrypt（`*.<名前>` の1枚に sandbox も入れる）。Publish の基のドメインを書く。作るレコードには印
+    （comment `banto install.sh`）を付け、**名前を替えたら前の名前のレコードのうち印つきでこのホストの IP を向くものだけ
+    消す**（ほかは最後の画面に「残っている」と出す——人が作ったもの・別のホストのものを消さない）
+  - **やめる**：`--no-cloudflare` で `cloudflare.env` を消し内部の CA に戻す（Publish の基のドメインも外す。DNS の
+    レコードは消さない。以後はトークンを聞かない）
   - **無し**：Caddy の内部の CA。DNS は人が用意し、各端末で CA を信頼する（ルート証明書は `http://<名前>/banto-ca.crt`
     で配る）。Publish は使えない。後からトークンを渡して打ち直せば Let's Encrypt に替わる
   - **トークンをログ・画面・コマンド行に出さない**（API は node から呼び、トークンは環境変数で渡す）。置くのは
     `/etc/caddy/cloudflare.env`（root:caddy 0640）だけ。Caddy は `--environ` を付けずに起こす
 - **外から banto の口に直に届かせない**：画面は 127.0.0.1 で待つ。**core は 0.0.0.0 のまま**（コンテナがブリッジ越しに
   `/relay` へ来る——127.0.0.1 に絞るとコンテナから Claude が使えない）。代わりに nftables の banto 専用の表
-  （`inet banto`）で、lo と `incusbr*` 以外から 4737・4176・4175 へ来たものを落とす。起動のたびに unit
-  （`banto-firewall.service`）が入れ、何度入れても同じ結果
+  （`inet banto`）で、lo と Incus のブリッジ（`incusbr*` と、Incus が持つ全区画の managed bridge の名前）以外から
+  banto の口へ来たものを落とす。起動のたびに unit（`banto-firewall.service`）が入れ、何度入れても同じ結果（表が消えて
+  いれば打ち直しで入れ直す）。default のプロファイルが Incus の持たないブリッジ（人の br0 等）に繋がっていれば、その先の
+  コンテナは /relay に届かないので警告する。ufw が有効なら、ブリッジを許す直し方つきで警告する
 - **host の守り**（`docs/runbooks/host-resource-protection.md`）も入れる：system.slice の CPUWeight=1000・MemoryLow=4G、
   banto の両 unit に OOMScoreAdjust=-800
 - **何度打っても壊れない**：済んだ段は確かめて飛ばす。2回目からは release の最新を取り込み（早送りで済まなければ止まる）、
@@ -200,7 +216,7 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
 - **Claude**：Claude Code の CLI が無ければ公式の入れ方で入れ、端末があればその場で `claude auth login` を流す
   （無ければ打つコマンドを出す）。banto が使うのはそのユーザーの `~/.claude`
 - **試験**：`banto/scripts/install-test/run.sh`（入れ子のシステムコンテナにまっさらな Ubuntu を立て、worktree のコミットで
-  流す）・`cloudflare.test.mjs`（Cloudflare の API の偽物）
+  流す。トークンありの形は中に立てた Cloudflare の API の偽物に向ける）・`cloudflare.test.mjs`（同じ偽物で DNS の部分だけ）
 
 **まだ決まっていないこと**（アーキ仕様 §10 にも載せる）：
 

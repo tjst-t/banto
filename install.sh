@@ -481,7 +481,6 @@ step_node() {
 # 5. banto の設定（config.json）と Publish の設定。口と置き場はここが真実
 # ---------------------------------------------------------------------------
 
-OLD_DOMAIN=""
 step_config() {
   step "banto の設定を書く"
   local result
@@ -524,7 +523,7 @@ try {
   if (!origins.includes(`https://${domain}`)) origins.push(`https://${domain}`);
   raw.allowedEmbedderOrigins = origins;
   out.push(writeJson(path, raw, before) ? "config=changed" : "config=same");
-  out.push(`old=${oldHost}`, `port=${raw.port}`, `sandboxPort=${raw.sandboxPort}`, `uiPort=${raw.uiPort}`, `releaseDir=${raw.releaseDir}`);
+  out.push(`port=${raw.port}`, `sandboxPort=${raw.sandboxPort}`, `uiPort=${raw.uiPort}`, `releaseDir=${raw.releaseDir}`);
   if (raw.uiOrigin && new URL(raw.uiOrigin).origin !== `https://${domain}`) out.push(`warn=設定の uiOrigin（${raw.uiOrigin}）が画面の住所と違います。ログインが通らないので、要らなければ消してください`);
   // Publish（publish-caddy）の設定：置き場は <dataDir>/modules/<入れた名前>。目録から入れるときの既定の名前 publish-caddy に置く
   const dataDir = raw.dataDir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "banto");
@@ -550,9 +549,8 @@ JS
   local line
   while IFS= read -r line; do
     case $line in
-      config=changed) BANTO_NEEDS_RESTART=1; ok "$CONFIG_PATH を直した（publicUrl=https://$DOMAIN）" ;;
+      config=changed) ok "$CONFIG_PATH を直した（publicUrl=https://$DOMAIN）" ;;
       config=same) ok "$CONFIG_PATH はそのまま" ;;
-      old=*) OLD_DOMAIN=${line#old=} ;;
       port=*) PORT_HOST=${line#port=} ;;
       sandboxPort=*) PORT_SANDBOX=${line#sandboxPort=} ;;
       uiPort=*) PORT_UI=${line#uiPort=} ;;
@@ -564,7 +562,6 @@ JS
       error=*) die "${line#error=}" "$CONFIG_PATH を直してから打ち直してください" ;;
     esac
   done <<<"$result"
-  [[ $OLD_DOMAIN == "$DOMAIN" ]] && OLD_DOMAIN=""
   say "口：host $PORT_HOST・サンドボックス $PORT_SANDBOX・画面 $PORT_UI／コードの置き場：$REL（config.json が真実）"
   if [[ $TLS_MODE == internal ]]; then
     say "Publish は使えません（公開先 *.$DOMAIN の DNS と証明書が要る——Cloudflare のトークンを渡して打ち直すと使える）"
@@ -946,6 +943,10 @@ step_https() {
   step "HTTPS と入口（Caddy）を設定する"
   local env_changed=0
   REMAINING_RECORDS=""
+  # 前の名前は、いま入口（Caddy）に効いている banto の設定から引く。config.json からは引かない——名前を替える回が
+  # DNS の段で止まると、config.json は新しい名前・入口は前の名前のままになり、次の回が前の名前を見失う
+  OLD_DOMAIN=$(sudo sed -nE 's/^([a-z0-9.-]+) \{$/\1/p' /etc/caddy/banto.d/banto.caddy 2>/dev/null | head -1 || true)
+  [[ $OLD_DOMAIN == "$DOMAIN" ]] && OLD_DOMAIN=""
   if [[ $TLS_MODE == cloudflare ]]; then
     if [[ $TOKEN_SOURCE == saved ]]; then
       TOKEN=$(sudo sed -n 's/^CLOUDFLARE_API_TOKEN=//p' "$CF_ENV" | head -1)
@@ -1012,7 +1013,7 @@ step_https() {
 
 step_units() {
   step "banto の unit を作る"
-  local path_env="$USER_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" changed=0
+  local path_env="$USER_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   put_root_file /etc/systemd/system/banto-host.service 644 <<EOF
 # banto の install.sh が作った（打ち直すと作り直す）。置き場と口は banto の config.json から。docs/runbooks/release.md
 [Unit]
@@ -1038,7 +1039,6 @@ StandardError=append:$USER_HOME/banto-host.log
 [Install]
 WantedBy=multi-user.target
 EOF
-  changed=$((changed | FILE_CHANGED))
   # 画面は 127.0.0.1 だけで待つ（外からは Caddy を通る）
   put_root_file /etc/systemd/system/banto-frontend.service 644 <<EOF
 # banto の install.sh が作った（打ち直すと作り直す）。置き場と口は banto の config.json から。docs/runbooks/release.md
@@ -1065,7 +1065,6 @@ StandardError=append:$USER_HOME/banto-frontend.log
 [Install]
 WantedBy=multi-user.target
 EOF
-  changed=$((changed | FILE_CHANGED))
 
   # host の守り（docs/runbooks/host-resource-protection.md）：コンテナと取り合っても host のサービスが先に回る
   put_root_file /etc/systemd/system/system.slice.d/50-banto-protect.conf 644 <<'EOF'
@@ -1081,11 +1080,9 @@ EOF
 [Service]
 OOMScoreAdjust=-800
 EOF
-    changed=$((changed | FILE_CHANGED))
   done
   sudo systemctl daemon-reload
   sudo systemctl enable --quiet banto-host.service banto-frontend.service
-  [[ $changed == 1 ]] && BANTO_NEEDS_RESTART=1
   ok "banto-host.service・banto-frontend.service（ユーザー $USER_NAME）・system.slice の守り"
 }
 
@@ -1197,11 +1194,34 @@ step_firewall() {
 # 11. 上げる（コードを取り込み、build し、動いていれば起こし直す）
 # ---------------------------------------------------------------------------
 
+# 動いている banto が、今の設定・unit・build より前に起きたか（起きた時刻とファイルの更新時刻を比べる）。
+# 「この回に変えた」を覚えて起こし直す形だと、変えたあと起こし直す前に止まった回の変更を、次の回が「同じ」と見て
+# 見落とす（名前を替える回が途中で止まり、打ち直しても前の名前のまま動いていた）。起こし直す理由は RESTART_REASON に
+RESTART_REASON=""
+banto_restart_needed() {
+  local u t started="" f
+  for u in banto-host banto-frontend; do
+    t=$(systemctl show -p ExecMainStartTimestamp --value "$u.service" 2>/dev/null || true)
+    [[ -n $t && $t != n/a ]] || continue
+    t=$(date -d "$t" +%s) || continue
+    [[ -z $started || $t -lt $started ]] && started=$t
+  done
+  [[ -n $started ]] || return 1
+  for f in "$CONFIG_PATH" "$REL/.git/banto-built-commit" /etc/systemd/system/banto-host.service /etc/systemd/system/banto-frontend.service \
+    /etc/systemd/system/banto-host.service.d/50-banto-oom.conf /etc/systemd/system/banto-frontend.service.d/50-banto-oom.conf; do
+    if [[ -e $f ]] && (($(stat -c %Y "$f") > started)); then
+      RESTART_REASON=$f
+      return 0
+    fi
+  done
+  return 1
+}
+
 # **「上げる」段はこの関数に閉じ込める**——稼働中の版の置き場（versions/<commit> と current の symlink、
 # scripts/update.mjs）が main に入ったら、ここを差し替える（docs/notes/2026-10-04-installer.md「差し替えのときにやること」）。
-# 引数：1 なら、コードが変わっていなくても（設定・unit が変わったので）起こし直す
+# 起こし直すかは banto_restart_needed で決める（コード・設定・unit のどれかが、動いている banto より新しいとき）
 upgrade_banto() {
-  local force_restart=${1:-0} code_changed=0 head built
+  local head built
   if [[ ! -d $REL/.git ]]; then
     [[ ! -e $REL ]] || die "$REL がありますが、git の clone ではありません" "中身を確かめて、別の場所へ動かしてから打ち直してください"
     say "取ってくる：$REPO（$BRANCH）→ $REL"
@@ -1232,15 +1252,15 @@ upgrade_banto() {
     (cd "$REL/banto" && run_detached env -u NODE_ENV npm ci --include=dev --no-audit --no-fund && run_detached env -u NODE_ENV npm run build) ||
       die "build に失敗しました（上の出力）" "コードの側の問題なら、直った版が release に来てから打ち直してください"
     echo "$head" >"$REL/.git/banto-built-commit"
-    code_changed=1
     reacquire_sudo "前提を確かめて banto を起こす・起こし直すため"
   else
     ok "コードは最新（$(git -C "$REL" log -1 --format='%h')）で build 済み"
   fi
   [[ -f $REL/banto/node_modules/next/dist/bin/next ]] || die "画面の起動に要る next が見つかりません（$REL/banto/node_modules/next）" "cd $REL/banto && npm ci --include=dev"
 
-  if [[ $code_changed == 1 || $force_restart == 1 ]] && unit_active banto-host.service; then
-    say "動いているもの（会話・サブエージェントの仕事・Module の呼び出し）が無くなるのを待って起こし直す（最長 30 分）"
+  if unit_active banto-host.service && banto_restart_needed; then
+    say "$RESTART_REASON が動いている banto より新しいので、起こし直す"
+    say "動いているもの（会話・サブエージェントの仕事・Module の呼び出し）が無くなるのを待つ（最長 30 分）"
     if ! (cd "$REL/banto" && node scripts/restart-when-idle.mjs --timeout 30); then
       warn "起こし直せませんでした。まだ前の版・前の設定で動いています"
       warn "空いたら：cd $REL/banto && node scripts/restart-when-idle.mjs"
@@ -1251,7 +1271,7 @@ upgrade_banto() {
 
 step_upgrade() {
   step "banto のコードを取り込んで build する"
-  upgrade_banto "${BANTO_NEEDS_RESTART:-0}"
+  upgrade_banto
 }
 
 # ---------------------------------------------------------------------------

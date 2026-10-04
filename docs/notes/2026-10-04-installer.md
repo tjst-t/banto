@@ -157,3 +157,98 @@ validate まで）・`/var/lib/incus` が btrfs でないホスト（ループ�
 ループ装置も使えない）・Docker が入っているホスト（転送の drop-in）・apt の caddy が既にあるホスト（drop-in で
 差し替える側）・手で組んだ host（今の banto の host）に流すこと・端末がある形（トークンを聞く・Claude のログインを流す）・
 arm64・Claude のログインそのもの（`claude auth login` があることと、ログインしていなければ `auth status` が 1 を返すことまで）
+
+## Fable のレビューを受けて（2026-10-04 の続き）
+
+人の確認：MemoryLow 4G・sops/age/openssh を入れる・publish-caddy の settings.json を先に置く・`/etc/banto/install.conf`
+はこのまま（人の返事はまだで、こちらの判断を採った）。
+
+### 直したもの・決めたこと
+
+- **sudo の記憶**：npm ci・build・Claude の installer は、ユーザーの権限で走る「外から取ってきたもの」。前の形は sudo の
+  keepalive が回ったまま流していたので、npm の依存の postinstall 等が `sudo -n` で root になれた。いまは
+  - root が要る段（apt・Incus・Caddy・unit・nftables・config.json）を先にまとめる
+  - build の前に keepalive を止めて `sudo -K`、`setsid --wait` で端末から切り離し、出力はパイプ（`| sed`）に通す
+    ——子に端末の装置を渡さない
+  - build のあとに root が要る段（doctor・起こす・起こし直す）は `sudo true` で取り直す（パスワードの要る人には2度目を
+    聞く。build が要らない打ち直しでは消さないので聞かない）
+  - Claude の installer とログインは最後、sudo を消してから
+  - **「root が要る段を全部 build の前に」はできない**：起こす・起こし直すは build の後でないと意味が無い。polkit で
+    ユーザーに banto の unit の再起動を許す形（fork/self-update の setup-update.sh）が入れば、取り直しを無くせる
+  - 試験で分かったこと（パスワードの要る sudo のユーザー・端末の無い形）：記憶を作った直後、同じシェルの
+    `sudo -n true` は通り、**`setsid --wait sudo -n true` は通らなかった**（新しいセッションの子は、作った記憶の
+    記録に当たらない）。`drop_sudo` のあとは、どちらも通らない。端末のある形は確かめていない
+- **Claude の installer**：`https://claude.ai/install.sh` そのものの sha256・署名は公開されていない（2026-10-04 に探した）。
+  台本は本体を同じ配布元の manifest.json の sha256 と照合する。ファイルに落としてから流すことで、途中で切れた台本を
+  流さないことだけは守れる
+- **Caddy の版**：caddyserver.com の download API は `version=` を受けても最新を返す（v2.11.6 を3通りで確かめた）。
+  `p=…/caddy/v2@vX` は 400。版の固定は xcaddy で自分で組むしか無く、Go が要るのでやめた。取ってきた版を出し、
+  `CADDY_MIN_VERSION`（2.5.0）以上かだけ見る。上げるのは `caddy upgrade`（runbook）
+- **Caddy の読み直し**：「毎回 reload」と「admin API の実物と比べる」のうち**比べる**を選んだ。理由：reload すると
+  publish-caddy が admin API で足した公開の道が消え、次の突き合わせ（`RECONCILE_INTERVAL_MS` = 15 秒）まで、その公開先は
+  `*.<名前>` の受け皿の 404 になる。打ち直しのたびにそれを起こす理由は無い。比べ方は「Caddyfile を `caddy adapt` で
+  JSON にしたもの」と「`GET /config/` から `@id` が `banto-publish-` で始まる道を除いたもの」を、キーを並べ替えて
+  文字列で比べる。比べられない（admin が unix ソケット・止まっている）ときは違うとみなして読み直す。
+  **publish-caddy が読み直しのあと実際に道を張り直すことは、この試験の場では確かめていない**（publish-caddy を入れて
+  公開するところまで流していない。根拠はコードの突き合わせの間隔と、無い道を足す処理）
+- **Caddy の unit の判定**：前の形は `systemctl cat` に印があるかで「自分の unit」と見ていたので、apt の caddy に drop-in を
+  置いた2回目に、drop-in の印を見て `/etc/systemd/system/caddy.service` を丸ごと書いていた。`FragmentPath` と drop-in の
+  有無で判定する
+- **ファイアウォール**：Incus の持つブリッジ（`managed` で `type: bridge`、全区画）の名前を表に入れる。区画のブリッジは
+  doctor が banto のユーザーとして初めて Incus に繋いだときにできるので、doctor のあとにもう一度表を作る。default の
+  プロファイルが Incus の持たないブリッジに繋がっていれば警告（人の br0 を表で許すと LAN を許すことになるので、入れない）。
+  表が消えていれば打ち直しで入れ直す（前は「unit は動いている・設定は同じ」で何もしなかった）
+- **Cloudflare**：作るレコードに comment `banto install.sh` を付ける（直す PATCH では付けない——人が作ったものを自分の
+  ものにしない）。名前を替えたら前の名前の `<旧名>`・`*.<旧名>` のうち、印つきでこのホストの IP を向くものだけ消す。
+  `--no-cloudflare` は cloudflare.env を消し、`tls_mode=internal` を覚えて以後はトークンを聞かない
+- **config.json を真実に**：`port`・`sandboxPort`・`uiPort`・`releaseDir` を書く（名前は fork/self-update の update.mjs が
+  読むものに合わせた）。install.sh は書いた値を読み戻し、Caddy・unit・nftables はそれを使う。そのため設定の段を
+  Incus より前（Node のすぐ後）に動かした
+- **環境変数のトークン**：`CLOUDFLARE_API_TOKEN` は写したらすぐ unset（以後の子——apt・npm・Claude の installer——に渡さない）
+
+### 差し替えのときにやること（fork/self-update が main に入ってから）
+
+`upgrade_banto` を `scripts/update.mjs` に差し替えるときに、次を片づける：
+
+- **unit のパス**：`WorkingDirectory`・`ExecStart` の `$REL/banto` を `$REL/current/banto` に。setup-update.sh も unit の
+  中の `<releaseDir>` を `<releaseDir>/current` に書き換えるので、install.sh が打ち直しで古い形に戻さないこと
+  （install.sh が unit を作るなら current の形で作り、setup-update.sh の書き換えは「もう current なら何もしない」に頼る）
+- **置き場の判定**：いまは `$REL/.git` が無ければ clone し、`$REL` があって clone でなければ止まる。新しい形
+  （`repo.git`・`versions/`・`current`）を「入っている」とみなし、古い形（`$REL` そのものが clone）は setup-update.sh の
+  移し替えに任せる。古い形の判定と `.git/banto-built-commit` は捨てる
+- **`--branch`**：update.mjs が取ってくるブランチをどこで決めるか（config.json か引数か）に合わせ、install.conf の
+  `branch` をそこへ渡す（真実を1つに）
+- **待ち方の timeout**：いまは `restart-when-idle.mjs --timeout 30`。update.mjs の待ち方（待つ・やめる・すぐ）と上限に合わせる。
+  時間切れのときに「前の版のまま」で終わる今の形（RESTART_PENDING）を保つ
+- **setup-update.sh の自前の再起動との衝突**：setup-update.sh は unit を書き換えたあと自分で起こし直す。install.sh も
+  設定・unit が変わったら起こし直すので、同じ回に2度起こさないよう、どちらが起こすかを1つに決める
+- **polkit**：polkitd は入れてある（apt_install）。規則（banto の unit の restart をユーザーに許す）は setup-update.sh が置く。
+  入ったら、build のあとの sudo の取り直しを無くせる（起こし直しを polkit で行う）
+
+### 試験の場で変えたこと
+
+- 外から届かないことを「表を消す→外から 200→打ち直し→000」で自動で見る
+- `grep -q 'dns cloudflare'`（自分で書いた文字列を自分で探していた恒真）をやめ、`caddy adapt` の JSON の
+  `challenges.dns.provider.name == "cloudflare"` を見る
+- トークンありの形を、中に立てた偽の Cloudflare（`cloudflare-fake.mjs`、`BANTO_CLOUDFLARE_API` で向ける）で流す。
+  DNS のレコードは偽物に作られ、Let's Encrypt は `.test` を受けないので取れず、「まだ取得中」で終わる道を通る
+- run のログ・banto-host.log・Caddy の journal に、authToken の値・偽のトークンが無いこと、banto-host.log と Caddy の
+  journal に `#banto-login=` が無いことを見る（**run のログにはログインのリンクが出る**——最後の画面に出すと決めたもの
+  なので、run のログについては `#banto-login=` を見ない）
+- config.json 0600・`~/.config/banto` 0700・install.conf 0644 root:root
+- apt の caddy の形（unit の本体が /usr/lib にある）で2回流し、`/etc` に unit を書かないこと
+- パスワードの要る sudo のユーザーで、drop_sudo のあとに記憶が使えないこと
+
+### 2回目の試験で見つかったもの（2026-10-04）
+
+- **名前を替える回が途中で止まると、次の回が起こし直さず、前の名前のまま動き続けた**：設定の段（config.json）は
+  先に済み、Cloudflare の段で止まった。次の回は config.json を「そのまま」と見て、「この回に変えたら起こし直す」形では
+  起こし直さなかった——画面の住所が変わらず、新しい名前でのログインが 403（Origin が違う）・サンドボックスの
+  frame-ancestors も前の名前のまま。**起こし直すかは、動いている banto の起きた時刻と、config.json・unit・build の印の
+  更新時刻を比べて決める**ようにした（覚えておく値を増やさず、実物から導く）
+- 同じ形で、**前の名前を config.json から引くと見失う**（config.json はもう新しい名前）。前の名前は、いま入口に効いている
+  `/etc/caddy/banto.d/banto.caddy`（DNS の段が通ってから書く）から引くようにした
+- 試験の場の誤り：名前を替える回で偽の Cloudflare の基点（`BANTO_CLOUDFLARE_API`）を渡し忘れ、本物の Cloudflare に偽の
+  トークンで問うていた（`6003 Invalid request headers` で止まった——止まり方としては正しい）
+- `caddy upgrade` は Cloudflare の DNS のモジュールを保ったまま最新に替える（試験の場で写しに対して流して確かめた。
+  v2.11.6 → v2.11.6、`dns.providers.cloudflare` あり）

@@ -231,8 +231,20 @@ X grep -q 'dns cloudflare {env.CLOUDFLARE_API_TOKEN}' /etc/caddy/banto.d/banto.c
 X grep -q "\"baseDomain\": \"$D3\"" "/home/$TUSER/.local/share/banto/modules/publish-caddy/settings.json" && pass "token：Publish の基のドメインを書いた" || fail "token：Publish の settings.json"
 X test ! -e /etc/systemd/system/caddy.service && pass "token：2回目も /etc に Caddy の unit を書かない" || fail "token：/etc に Caddy の unit ができた"
 
-note "トークンありで名前を替える：$D3 → $D4（install.sh が作ったものだけ消し、ほかは「残っている」と出す）"
+note "壊す：名前を替える回が Cloudflare に届かず途中で止まる（設定は書いたが起こし直す前）→ 次の回が起こし直す"
+pid_before=$(mainpid)
+RUN_ENV=("BANTO_CLOUDFLARE_API=http://127.0.0.1:1")
+rc=$(run_install run6a --domain "$D4" --no-claude-login)
+[[ $rc != 0 ]] && grep -q 'Cloudflare の DNS を直せませんでした' "$LOG/run6a.log" && grep -q '届きません' "$LOG/run6a.log" &&
+  pass "token：Cloudflare に届かなければ、理由を出して止まる" || fail "token：届かないときの rc=$rc"
+[[ $(mainpid) == "$pid_before" ]] && pass "token：止まった回は起こし直していない（前の名前のまま動いている）" || fail "token：止まった回に起こし直した"
+
+note "トークンありで名前を替える：$D3 → $D4（保存したトークンを使う。install.sh が作ったものだけ消し、ほかは「残っている」と出す）"
+RUN_ENV=("BANTO_CLOUDFLARE_API=$FAKE_API")
 rc=$(run_install run6 --domain "$D4" --no-claude-login)
+RUN_ENV=()
+grep -q 'config.json が動いている banto より新しいので、起こし直す' "$LOG/run6.log" && [[ $(mainpid) != "$pid_before" ]] &&
+  pass "token：前の回に書いた設定が動いている banto より新しいので、この回が起こし直した" || fail "token：起こし直していない"
 [[ $rc == 0 ]] && pass "token：名前を替えて通る（保存したトークンを使う）" || { fail "token：rc=$rc"; tail -30 "$LOG/run6.log"; }
 st=$(cfstate)
 node -e '
