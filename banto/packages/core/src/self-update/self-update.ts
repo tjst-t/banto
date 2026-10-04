@@ -13,8 +13,8 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 export const UPDATE_UNIT = "banto-update.service";
 export const RELEASE_REF = "refs/remotes/origin/release";
@@ -24,6 +24,8 @@ export const UPDATE_RUNBOOK = "docs/runbooks/release.md D";
 /** `systemctl start --no-block` から、`update.mjs` が頼みを受け取るまでの猶予 */
 const REQUEST_PICKUP_MS = 60_000;
 const FETCH_TIMEOUT_MS = 120_000;
+/** 画面の「ログを開く」に返す末尾の長さ。失敗の理由は最後のほうに出る */
+export const LOG_TAIL_BYTES = 64 * 1024;
 
 export interface CommandResult {
   code: number;
@@ -270,6 +272,41 @@ export class SelfUpdate {
     }
     await mkdir(this.updateDir, { recursive: true, mode: 0o700 });
     await writeFile(join(this.updateDir, kind), new Date(this.now()).toISOString());
+  }
+
+  /**
+   * **最後の更新のログの末尾**（追加・2026-10-04、画面の「ログを開く」）。読むのは `state.json` が指す
+   * この回のログだけ——更新の置き場の外を指していたら読まない
+   */
+  async readLog(maxBytes = LOG_TAIL_BYTES): Promise<{ id: string; text: string; truncated: boolean }> {
+    const state = await this.readState();
+    if (!state?.logFile) throw new SelfUpdateError(404, "まだ更新を走らせていないので、ログがありません", "no-log");
+    const path = resolve(state.logFile);
+    if (dirname(path) !== resolve(this.updateDir) || !path.endsWith(".log")) {
+      throw new SelfUpdateError(500, `state.json のログ（${state.logFile}）が更新の置き場（${this.updateDir}）の外を指しています`);
+    }
+    let handle;
+    try {
+      handle = await open(path, "r");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new SelfUpdateError(404, `この回（${state.id}）のログがありません：${path}`, "no-log");
+      }
+      throw err;
+    }
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, maxBytes);
+      const buf = Buffer.alloc(length);
+      await handle.read(buf, 0, length, size - length);
+      let text = buf.toString("utf8");
+      const truncated = size > length;
+      // 切ったところの行の残りは捨てる（文字の途中で切れていることもある）
+      if (truncated) text = text.slice(text.indexOf("\n") + 1);
+      return { id: state.id, text, truncated };
+    } finally {
+      await handle.close();
+    }
   }
 
   // ───────────── 中身 ─────────────

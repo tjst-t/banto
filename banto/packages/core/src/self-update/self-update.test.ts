@@ -382,3 +382,34 @@ test("待ちをやめるのはログイン中の人だけ。すぐ起こし直�
     assert.equal((await ctx.ui("/api/admin/update/cancel", { method: "POST", cookie })).status, 409);
   });
 });
+
+test("ログの末尾を読めるのはログイン中の人だけ。state.json が置き場の外を指していたら読まない", async () => {
+  await withUpdate(async (ctx) => {
+    const cookie = await ctx.login();
+    const updateDir = join(ctx.dataDir, "update");
+    const noLog = await ctx.ui("/api/admin/update/log", { cookie });
+    assert.equal(noLog.status, 404, "まだ走らせていないのにログを返した");
+
+    await mkdir(updateDir, { recursive: true });
+    const logFile = join(updateDir, "run-1.log");
+    const lines = Array.from({ length: 5000 }, (_, i) => `[行 ${i}] npm の出力`);
+    await writeFile(logFile, `${lines.join("\n")}\n組み立てで止まりました\n`);
+    await writeFile(join(updateDir, "state.json"), JSON.stringify({ id: "run-1", phase: "failed", failedPhase: "build", logFile }));
+
+    assert.equal((await ctx.machine("/api/admin/update/log")).status, 403, "機械の合言葉で組み立ての出力を読めた");
+    const res = await ctx.ui("/api/admin/update/log", { cookie });
+    assert.equal(res.status, 200, await res.clone().text());
+    const body = (await res.json()) as { id: string; text: string; truncated: boolean };
+    assert.equal(body.id, "run-1");
+    assert.equal(body.truncated, true);
+    assert.ok(body.text.endsWith("組み立てで止まりました\n"), "末尾が無い");
+    assert.ok(Buffer.byteLength(body.text) <= 64 * 1024);
+    assert.match(body.text, /^\[行 \d+\] npm の出力\n/, "切ったところの行の残りが先頭に出ている");
+
+    // 置き場の外を指す state.json（書き換えられた）からは読まない
+    await writeFile(join(updateDir, "state.json"), JSON.stringify({ id: "x", phase: "failed", logFile: join(ctx.dataDir, "auth.json") }));
+    const outside = await ctx.ui("/api/admin/update/log", { cookie });
+    assert.equal(outside.status, 500);
+    assert.match(((await outside.json()) as { error: string }).error, /外を指しています/);
+  });
+});

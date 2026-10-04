@@ -1258,13 +1258,19 @@ export function createApp(deps: AppDeps) {
         return;
       }
       // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5・`docs/specs/v4-security.md` §2「画面からの更新」）。
-      // 読むのは人も機械（`update.mjs` の確かめ）も。頼む・止めるのは人のセッションだけ（頼む・すぐ起こし直すは step-up も）
+      // 読むのは人も機械（`update.mjs` の確かめ）も。頼む・止める・ログを読むのは人のセッションだけ（頼む・すぐ起こし直すは step-up も）
       if (url.pathname === "/api/admin/update" || url.pathname.startsWith("/api/admin/update/")) {
         const selfUpdate = deps.selfUpdate;
         if (!selfUpdate) return json(res, 404, { error: "この host は画面からの更新を持っていません" });
         const action = url.pathname.slice("/api/admin/update".length);
         try {
           if (action === "" && req.method === "GET") return json(res, 200, await selfUpdate.status());
+          // 最後の更新のログの末尾（画面の「ログを開く」）。組み立ての出力そのものなので、人のセッションでだけ
+          if (action === "/log" && req.method === "GET") {
+            if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
+            deps.auth.requireHuman(principal, { stepUp: false });
+            return json(res, 200, await selfUpdate.readLog());
+          }
           if (req.method !== "POST" || !["", "/check", "/cancel", "/force-now"].includes(action)) {
             return json(res, 404, { error: "not found" });
           }

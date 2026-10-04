@@ -1650,8 +1650,15 @@ async function main(): Promise<void> {
       events: appEvents,
     }),
     // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。動いているコードの本当のパスで、
-    // 版ごとのフォルダから動いているかを見る
-    selfUpdate: new SelfUpdate({ releaseDir: bootstrap.releaseDir, dataDir: bootstrap.dataDir, codeDir: monorepoRoot }),
+    // 版ごとのフォルダから動いているかを見る。
+    // E2E だけが差し替える（本物の systemd は使えない）：systemctl は偽物（`update.mjs` と同じ名前の
+    // BANTO_UPDATE_SYSTEMCTL）、動いているコードは試験の置き場の `current/banto`（BANTO_UPDATE_CODE_DIR）
+    selfUpdate: new SelfUpdate({
+      releaseDir: bootstrap.releaseDir,
+      dataDir: bootstrap.dataDir,
+      codeDir: process.env.BANTO_UPDATE_CODE_DIR || monorepoRoot,
+      ...(process.env.BANTO_UPDATE_SYSTEMCTL ? { systemctl: process.env.BANTO_UPDATE_SYSTEMCTL } : {}),
+    }),
     releaseProjectModules,
     projectContainerStatus: async (projectId: string) => {
       const name = containerNameFor(projectId);
