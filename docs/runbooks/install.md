@@ -86,6 +86,19 @@ curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | b
 DNS のレコードを作り、Caddy の設定を `dns cloudflare` に替えて起こし直し、Publish の基のドメインを書く。
 各端末に入れた内部の CA は、もう要らなければ外してよい。
 
+### 手で組んだ host（今の banto の host など）に流すとき（未試験）
+
+install.sh は手で組んだ host の形に合わせて作ってあるが、**手で組んだ host に流したことはまだ無い**。流す前に：
+
+- **`/etc/caddy/Caddyfile` から banto のサイト（`<名前>`・`sandbox.<名前>`・`*.<名前>`）を消す**——banto の設定は
+  `/etc/caddy/banto.d/banto.caddy` に作るので、残っていると同じ名前のサイトが2つになり、Caddy が受け付けない
+  （install.sh はそこで止まり、banto の設定を元に戻す）
+- `banto-host.service`・`banto-frontend.service` は**作り直される**（手で足した行は消える。drop-in は残る）。
+  画面は `127.0.0.1:4175` で待つようになるので、Caddy 以外から 4175 に来ていたものは届かなくなる
+- 1回目は build し直して `restart-when-idle.mjs` で起こし直す。**build は動いている clone の中で行う**
+  （`docs/runbooks/release.md` の B と同じ。版ごとの置き場は相談中）
+- Cloudflare のトークンが `/etc/caddy/cloudflare.env` にあれば、それを使う（DNS のレコードも確かめ直す）
+
 ## 4. 入れ直す（動かすユーザーを替える等）
 
 banto は1台に1つ（口 4737・4176・4175 が決まっている）。`/etc/banto/install.conf` の `user=` と違うユーザーで打つと断る。
