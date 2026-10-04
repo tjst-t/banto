@@ -331,3 +331,44 @@ main（f408e782）に入った update.mjs・setup-update.sh の契約に合わ�
 前の install.sh（clone の形）で入れた host に打つと、置き場が古い形と分かり、unit は clone を指したまま（前と同じ中身）
 書き、setup-update.sh に移させる（clone の origin から repo.git を作り、今の clone を組み立て直さずに versions/ に入れ、
 unit を current に書き換えて起こし直す）。そのあと update.mjs で release の最新に上げる。
+
+### 試験で分かったこと（差し替え）
+
+- **画面の「更新」で新しい版が答えたあとも、update.mjs はしばらく lock を持っている**（state.json を `done` にしてから
+  古い版を片づける——node_modules ごと消すので数十秒）。その間に install.sh を打つと update.mjs が終了コード 3（ほかの
+  更新が走っている）で断り、install.sh は理由を出して止まる。止まり方としては正しい（打ち直せば通る）。試験は
+  banto-update.service が終わるのを待つようにした
+- **oneshot の unit は走っている間 `activating`**——`systemctl is-active` は 0 を返さない（試験の待ちが空振りした）。
+  `ActiveState` で見る
+- **走っている run.sh を書き換えると、bash が途中から別の行を読んで暴れる**（試験の結果の後半が無効になった）。
+  run.sh は写しから流すようにした
+- 起きない版（`cli.ts` の末尾で throw する版）では、update.mjs が起こし直したあと unit が落ちたのをその場で見て前の版に
+  戻し、`rolled-back`。install.sh は「新しい版が起きなかったので、update.mjs が前の版に戻しました：…」とログの場所を出して
+  止まる。current と host は前の版のまま
+- update.mjs で上げたあと、Project の Module を起こし直す（prepare）と、Project のコンテナの banto の装置の source が
+  `versions/<新しい版>/banto` になる（古い版の source は消える）
+
+### update.mjs・setup-update.sh の持ち主に伝えること
+
+1. **install.sh に `FETCH_REFSPEC` の写しが増えた**——update.mjs のヘッダの「同じものの写しがある所」に install.sh を足して
+   ほしい（release 以外を取るように変えるなら、install.sh も）
+2. **ブランチを選べない**：install.sh の `--branch` はやめた。別のブランチで動かしたい要望が出たら、update.mjs（と
+   setup-update.sh・self-update.ts）側でブランチを持つ形（例：config.json か repo.git の設定）が要る
+3. **update.mjs の待つ形に上限が無い**：install.sh は state.json の段を見て、30 分で「やめる印」を置いている。
+   `--wait-timeout <分>`（越えたら cancelled で終わる）があれば、install.sh は印を置かずに済む
+4. **`done` を書いてから片づける間も lock を持っている**：state.json を読む側は `done` で終わったと思うが、次の update.mjs は
+   断られる。片づけを `done` より前にするか、片づけ中であることを state.json に出す（`note`）とよい
+5. **setup-update.sh に「変えるものがあるか」だけを答える口が無い**（`--dry-run` は差分を出すだけで終了コードでは
+   答えず、ユーザーに読めない `/etc/polkit-1/rules.d/` を読むのに sudo を使う）。install.sh は「要るか」を自分で判定している（polkit の規則・banto-update.service の有無と、中の画面の口・node・
+   置き場）——setup-update.sh の書く中身を install.sh が知っている写しになっている。`--check`（sudo を使わず、変えるものが
+   無ければ 0）があれば、その写しを消せる
+6. **restart-when-idle.mjs は `sudo systemctl restart` を打つ**——polkit の規則がある host では sudo 無しの `systemctl restart`
+   で足りる。install.sh は `--dry-run`（空くまで待つだけ）のあと自分で `systemctl restart` している
+
+### 差し替えの試験の結果（2026-10-04、24.04、ユーザー bantotester）
+
+- 本筋（`run.sh`）：**PASS 146・FAIL 0**（まっさらから 285 秒）。版ごとのフォルダの形・update.mjs で上がる
+  （current・previous が替わる・host が新しい版で答える・コンテナの装置の source が新しい版）・起きない版で前の版に戻して
+  止まる・画面の「更新」の口（リンクで入ったセッションで POST /api/admin/update → banto-update.service が上げる）・
+  打ち直しで sudo を取り直さない、を含む
+- 移行（`run.sh --migrate-from 1f935395`、前の install.sh とコードで古い形に入れ、今の install.sh を打つ）：**PASS 22・FAIL 0**
