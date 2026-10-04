@@ -343,7 +343,10 @@ test("すぐ更新：途中で切れる会話を確かめてから頼む。起�
   await page.waitForTimeout(7_000);
   await expect(overlay).toBeVisible();
   await expect(page.getByTestId("update-failed")).toHaveCount(0);
-  await expect(page.getByTestId("update-load-error")).toHaveCount(0);
+  // 読み直しの失敗も出さない（出すと、待っている最中に「失敗した」と読める）
+  for (const id of ["update-load-error", "update-poll-error", "update-action-error"]) {
+    await expect(page.getByTestId(id), `繋がらない間に ${id} が出た`).toHaveCount(0);
+  }
 
   await page.unroute("**/api/admin/update");
   const failed = page.getByTestId("update-failed");
