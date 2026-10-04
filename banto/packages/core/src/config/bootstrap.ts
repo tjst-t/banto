@@ -34,6 +34,11 @@ export interface BootstrapConfig {
    * 開発・E2E は画面と host のポートが違うので書く。どちらも無ければ `http://localhost:4175`
    */
   uiOrigin?: string;
+  /**
+   * **稼働中の banto の置き場**（追加・2026-10-04、画面からの更新）。`repo.git`・`versions/<commit>`・`current`・
+   * `previous` を持つ（アーキ仕様 §2.5「画面から banto を更新する」）。既定は `~/.local/share/banto-release`
+   */
+  releaseDir: string;
 }
 
 /** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
@@ -67,6 +72,10 @@ export function resolveBootstrapConfigPath(): string {
 
 function defaultDataDir(): string {
   return join(xdgDataHome(), "banto");
+}
+
+function defaultReleaseDir(): string {
+  return join(xdgDataHome(), "banto-release");
 }
 
 function isAncestorOrEqual(candidate: string, of: string): boolean {
@@ -109,6 +118,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       sandboxPublicUrl: raw.sandboxPublicUrl ?? `http://127.0.0.1:${raw.sandboxPort ?? 4176}`,
       ...(raw.publicUrl ? { publicUrl: raw.publicUrl } : {}),
       ...(raw.uiOrigin ? { uiOrigin: raw.uiOrigin } : {}),
+      releaseDir: raw.releaseDir ?? defaultReleaseDir(),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;
@@ -121,6 +131,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
     sandboxPort: 4176,
     allowedEmbedderOrigins: DEFAULT_EMBEDDER_ORIGINS,
     sandboxPublicUrl: "http://127.0.0.1:4176",
+    releaseDir: defaultReleaseDir(),
   };
   assertNoOverlap(configPath, config.dataDir);
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });

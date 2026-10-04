@@ -80,6 +80,7 @@ import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
+import { SelfUpdate } from "./self-update/self-update.js";
 import {
   assertAllVisibilityExplicit,
   assertVisibilityValues,
@@ -1648,6 +1649,9 @@ async function main(): Promise<void> {
       sandboxOrigin: bootstrap.sandboxPublicUrl,
       events: appEvents,
     }),
+    // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。動いているコードの本当のパスで、
+    // 版ごとのフォルダから動いているかを見る
+    selfUpdate: new SelfUpdate({ releaseDir: bootstrap.releaseDir, dataDir: bootstrap.dataDir, codeDir: monorepoRoot }),
     releaseProjectModules,
     projectContainerStatus: async (projectId: string) => {
       const name = containerNameFor(projectId);

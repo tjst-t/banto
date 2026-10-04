@@ -558,6 +558,16 @@ export class AuthService {
     return this.rpID;
   }
 
+  /**
+   * **人のセッションでだけ・その場の本人確認（step-up）を済ませてから**の操作（host の口から使う。
+   * 追加・2026-10-04、画面からの更新）。機械の合言葉は断る。`stepUp` が false ならセッションであることだけ見る
+   */
+  requireHuman(principal: Principal, opts: { stepUp: boolean }): SessionRecord {
+    if (principal.kind !== "session") throw new AuthHttpError(403, "この操作は人のセッションでだけ使えます");
+    if (opts.stepUp) this.requireStepUp(principal.session.id);
+    return principal.session;
+  }
+
   /** 大事な操作の前の本人確認。パスキーがまだ1つも無いときは求めない */
   private requireStepUp(sessionId: string): void {
     if (this.opts.store.listPasskeys().length === 0) return;
