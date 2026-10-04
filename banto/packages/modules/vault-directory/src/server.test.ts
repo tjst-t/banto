@@ -1146,3 +1146,199 @@ test("putSecret は置き換えられる——ただし人が預けた秘密に�
     assert.equal(still, "人のもの");
   });
 });
+
+// ---- 参照（決定・2026-10-04、ユーザー。仕様 §2.1 C節「参照」）------------------
+
+/** 見えないグループ（tools）に元を置き、p1 のグループに参照を置く（窓口から）。 */
+async function linkedFromProject(ui: Client, implementation = "vault-local"): Promise<void> {
+  await ui.callTool({
+    name: "createAlias",
+    arguments: { implementation, name: "CF_TOKEN", kind: "secret", value: "cf-real", group: "tools" },
+  });
+  await ui.callTool({
+    name: "setGroupBinding",
+    arguments: { implementation, projectId: "p1", group: "p1-group" },
+  });
+  await ui.callTool({
+    name: "linkAlias",
+    arguments: { name: "CF_TOKEN", implementation, group: "tools", toGroup: "p1-group" },
+  });
+}
+
+test("参照：窓口から作ると、元の Vault に置かれ、一覧には指す先が画面まで届く", async () => {
+  await withUi(async ({ ui }) => {
+    await linkedFromProject(ui);
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const link = aliases.find((a: { group: string }) => a.group === "p1-group");
+    assert.equal(link.implementation, "vault-local");
+    assert.deepEqual(link.linkTo, { group: "tools", name: "CF_TOKEN" });
+    assert.equal(link.kind, "secret");
+    assert.equal(link.scope, "project");
+    // その Project からは、在りかが引けて、その Vault で値が引ける
+    const found = parse(await ui.callTool({ name: "lookupAlias", arguments: { name: "CF_TOKEN" }, _meta: forProject("p1") }));
+    assert.equal(found.group, "p1-group");
+    assert.equal(found.linkTo, undefined, "見えない元の置き場を Module に教えている");
+  });
+});
+
+test("参照：元は置き場で指す——指定したら既定の解決に落ちない／別の Vault には置けない", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "createAlias",
+      arguments: { name: "T", kind: "secret", value: "v", group: "tools" },
+    });
+    await assert.rejects(
+      () => ui.callTool({ name: "linkAlias", arguments: { name: "T", group: "nowhere", toGroup: "x" } }),
+      /alias "T" は nowhere にありません/,
+    );
+    await assert.rejects(
+      () =>
+        ui.callTool({
+          name: "linkAlias",
+          arguments: { name: "T", group: "tools", toGroup: "x", toImplementation: "vault-2" },
+        }),
+      /同じ Vault の中にしか作れません/,
+    );
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    assert.equal(aliases.length, 1, "断ったのに何か作られた");
+  }, { vaultNames: ["vault-local", "vault-2"] });
+});
+
+test("参照：元を消すと、一覧で broken になり、AI にも「使えない」と伝わる（指す先は見せない）", async () => {
+  await withUi(async ({ ui }) => {
+    await linkedFromProject(ui);
+    const read = async () =>
+      JSON.parse(
+        ((await ui.readResource({ uri: "vault://aliases", _meta: forProject("p1") })).contents as { text: string }[])[0]!
+          .text,
+      ) as { aliases: Array<Record<string, unknown>> };
+    const before = (await read()).aliases.find((a) => a.name === "CF_TOKEN")!;
+    assert.equal(before.kind, "secret");
+    assert.equal(before.linkTo, undefined, "AI に元の置き場が漏れている");
+
+    await ui.callTool({
+      name: "deleteAlias",
+      arguments: { implementation: "vault-local", name: "CF_TOKEN", group: "tools" },
+    });
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    assert.equal(aliases.length, 1);
+    assert.equal(aliases[0].broken, true);
+    assert.deepEqual(aliases[0].linkTo, { group: "tools", name: "CF_TOKEN" });
+    assert.equal((await read()).aliases.find((a) => a.name === "CF_TOKEN")!.broken, true);
+    // 「使えます」とは言わない
+    const asked = textOf(
+      await ui.callTool({ name: "requestAlias", arguments: { name: "CF_TOKEN" }, _meta: forProject("p1") }),
+    );
+    assert.match(asked, /元の秘密が無いので使えません/);
+  });
+});
+
+test("参照：Vault をまたいで、参照も・参照に指されている元も移せない（理由つき、何も動かない）", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    await linkedFromProject(ui);
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-2", name: "dest" } });
+    await assert.rejects(
+      () =>
+        ui.callTool({
+          name: "migrateAlias",
+          arguments: { name: "CF_TOKEN", implementation: "vault-local", group: "p1-group", toImplementation: "vault-2", toGroup: "dest" },
+        }),
+      /参照です（元は tools \/ CF_TOKEN）/,
+    );
+    await assert.rejects(
+      () =>
+        ui.callTool({
+          name: "migrateAlias",
+          arguments: { name: "CF_TOKEN", implementation: "vault-local", group: "tools", toImplementation: "vault-2", toGroup: "dest" },
+        }),
+      /この秘密を指す参照が 1 件あります（p1-group \/ CF_TOKEN）/,
+    );
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    assert.deepEqual(
+      aliases.map((a: { implementation: string; group: string }) => `${a.implementation}/${a.group}`).sort(),
+      ["vault-local/p1-group", "vault-local/tools"],
+      "断ったのに何かが動いた",
+    );
+    // 同じ Vault の中なら、元は移せて参照が追従する
+    await ui.callTool({
+      name: "migrateAlias",
+      arguments: { name: "CF_TOKEN", implementation: "vault-local", group: "tools", toGroup: "tools-2" },
+    });
+    const value = await vaults.get("vault-local")!.callTool({
+      name: "resolveAlias",
+      arguments: { name: "CF_TOKEN", group: "p1-group" },
+      _meta: forProject("p1"),
+    });
+    assert.equal((value.content as { text: string }[])[0]!.text, "cf-real");
+  }, { vaultNames: ["vault-local", "vault-2"] });
+});
+
+test("参照：置き場の変更で Vault をまたぐなら、参照と元は事前に出し、1つでもあれば何も移さない", async () => {
+  await withUi(async ({ ui }) => {
+    // p1 のグループに、ふつうの秘密と、参照に指されている元と、参照を置く
+    await ui.callTool({ name: "setGroupBinding", arguments: { implementation: "vault-local", projectId: "p1", group: "p1-group" } });
+    await ui.callTool({ name: "createAlias", arguments: { name: "plain", kind: "secret", value: "v", group: "p1-group" } });
+    await ui.callTool({ name: "createAlias", arguments: { name: "origin", kind: "secret", value: "v", group: "p1-group" } });
+    await ui.callTool({ name: "linkAlias", arguments: { name: "origin", group: "p1-group", toGroup: "elsewhere" } });
+    await ui.callTool({ name: "createAlias", arguments: { name: "far", kind: "secret", value: "v", group: "hidden" } });
+    await ui.callTool({ name: "linkAlias", arguments: { name: "far", group: "hidden", toGroup: "p1-group" } });
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-2", name: "dest" } });
+
+    const plan = parse(
+      await ui.callTool({
+        name: "planProjectPlacement",
+        arguments: { projectId: "p1", implementation: "vault-2", group: "dest" },
+      }),
+    );
+    assert.deepEqual(
+      plan.blockedAcrossVaults.map((b: { name: string }) => b.name).sort(),
+      ["far", "origin"],
+    );
+    await assert.rejects(
+      () =>
+        ui.callTool({
+          name: "setProjectPlacement",
+          arguments: { projectId: "p1", implementation: "vault-2", group: "dest", migrate: true },
+        }),
+      /別の Vault へは移せないものがあります（何も移していません）/,
+    );
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    assert.equal(
+      aliases.filter((a: { implementation: string }) => a.implementation === "vault-2").length,
+      0,
+      "all-or-nothing のはずが、一部だけ移った",
+    );
+    // 同じ Vault の中の置き場の変更なら、何も止めない
+    const same = parse(
+      await ui.callTool({
+        name: "planProjectPlacement",
+        arguments: { projectId: "p1", implementation: "vault-local", group: "next" },
+      }),
+    );
+    assert.deepEqual(same.blockedAcrossVaults, []);
+  }, { vaultNames: ["vault-local", "vault-2"] });
+});
+
+test("参照：同じ名前の元と参照があっても、用途の書き直しと公開鍵は一覧で選んだ行に届く", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({ name: "setGroupBinding", arguments: { projectId: "p1", group: "p1-group" } });
+    const made = parse(
+      await ui.callTool({ name: "generateSecret", arguments: { name: "deploy", kind: "ssh-identity", group: "keys" } }),
+    );
+    await ui.callTool({ name: "linkAlias", arguments: { name: "deploy", group: "keys", toGroup: "p1-group" } });
+    await ui.callTool({
+      name: "updateAlias",
+      arguments: { implementation: "vault-local", name: "deploy", group: "p1-group", note: "参照の用途" },
+    });
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    const by = (g: string) => aliases.find((a: { group: string }) => a.group === g);
+    assert.equal(by("p1-group").note, "参照の用途");
+    assert.equal(by("keys").note, undefined, "元の用途が書き換わった");
+    assert.equal(by("p1-group").kind, "ssh-identity");
+    // 公開鍵は元のもの（AI から、その Project で）
+    assert.equal(
+      textOf(await ui.callTool({ name: "getPublicKey", arguments: { name: "deploy" }, _meta: forProject("p1") })),
+      made.publicKey,
+    );
+  });
+});

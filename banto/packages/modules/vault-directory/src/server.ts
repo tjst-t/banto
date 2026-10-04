@@ -227,10 +227,53 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     return alias.scope === "shared" && alias.implementation === defaultVault;
   }
 
-  /** AI に見せる形。**金庫の名前も置き場も見せない**——選ばせる材料にしない。 */
+  /**
+   * AI に見せる形。**金庫の名前も置き場も見せない**——選ばせる材料にしない。
+   * **参照の指す先も見せない**（2026-10-04）——元のグループの見え方を変えないため。
+   * 元が無い参照は `broken: true` のまま残す（使えないことを人に伝えられるように）。
+   */
   function forAgent(alias: Record<string, unknown>, name: string): Record<string, unknown> {
-    const { implementation: _i, group: _g, projects: _p, scope: _s, name: _n, ...rest } = alias;
+    const { implementation: _i, group: _g, projects: _p, scope: _s, name: _n, linkTo: _l, ...rest } = alias;
     return { name, ...rest };
+  }
+
+  /**
+   * **Vault をまたいで動かせないもの**（決定・2026-10-04）。参照は値を持たないので、
+   * 別の Vault へ動かすには値を写すことになる（＝参照ではなくなる）。参照に指されている
+   * 元を動かすと、指している参照が切れる。**どちらも理由つきで断る**——
+   * 置き場の変更（planProjectPlacement）でも事前に出して、1つでもあれば何もしない。
+   */
+  function crossVaultBlockers(
+    moving: TaggedAlias[],
+    aliases: TaggedAlias[],
+  ): Array<{ name: string; group: string; reason: string }> {
+    const out: Array<{ name: string; group: string; reason: string }> = [];
+    for (const a of moving) {
+      const linkTo = a.linkTo as { group?: unknown; name?: unknown } | undefined;
+      if (linkTo) {
+        out.push({
+          name: String(a.name),
+          group: String(a.group),
+          reason: `参照です（元は ${String(linkTo.group)} / ${String(linkTo.name)}）。参照は同じ Vault の中でしか動かせません`,
+        });
+        continue;
+      }
+      const pointing = aliases.filter((x) => {
+        const to = x.linkTo as { group?: unknown; name?: unknown } | undefined;
+        return x.implementation === a.implementation && !!to && to.group === a.group && to.name === a.name;
+      });
+      if (pointing.length > 0) {
+        out.push({
+          name: String(a.name),
+          group: String(a.group),
+          reason:
+            `この秘密を指す参照が ${pointing.length} 件あります（` +
+            pointing.map((x) => `${String(x.group)} / ${String(x.name)}`).join("、") +
+            `）。別の Vault へ移すと参照が切れます`,
+        });
+      }
+    }
+    return out;
   }
 
   /**
@@ -275,10 +318,13 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       return;
     }
     // 別の Vault へ：窓口が値を運ぶ
-    const meta = (await crossAliases()).aliases.find(
+    const all = await crossAliases();
+    const meta = all.aliases.find(
       (a) => a.implementation === fromImpl && a.group === fromGroup && a.name === name,
     );
     if (!meta) throw new Error(`alias "${name}" が ${fromImpl} の ${fromGroup} に見つかりません`);
+    const blocked = crossVaultBlockers([meta], all.aliases);
+    if (blocked.length > 0) throw new Error(`"${name}" は別の Vault へ移せません：${blocked[0]!.reason}`);
     const value = await deps.relay.callTool(fromImpl, "resolveAlias", { name, group: fromGroup });
     await deps.relay.callTool(toImpl, "createAlias", {
       name,
@@ -294,7 +340,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
   }
 
   /** **監査に残してよい引数**（識別子だけ。値は決して含めない）。 */
-  const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "implementation", "projectId"];
+  const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "toName", "implementation", "projectId"];
 
   function tool(name: string, description: string, properties: Record<string, unknown>, required: string[] = []) {
     return {
@@ -413,7 +459,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       tool(
         "updateAlias",
         "alias の覚え書き・対象を変える（値は変えない）",
-        { ...IMPL, name: { type: "string" }, note: { type: "string" } },
+        {
+          ...IMPL,
+          name: { type: "string" },
+          group: { type: "string", description: "置き場（省略すると既定の解決に落ちる）" },
+          note: { type: "string" },
+        },
         ["implementation", "name"],
       ),
       tool(
@@ -469,6 +520,21 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           group: { type: "string", description: "移す元のグループ（省略可）" },
           toImplementation: { type: "string" },
           toGroup: { type: "string" },
+        },
+        ["name", "toGroup"],
+      ),
+      tool(
+        "linkAlias",
+        // **参照**（決定・2026-10-04、ユーザー）。値を写さずに、別の置き場からも使えるようにする。
+        // **同じ Vault の中だけ**——置く先の Vault は元の Vault（toImplementation は受けない）
+        "alias を同じ Vault の別のグループからも使えるようにする参照を作る（値は写さない）。" +
+          "元は implementation / group で指定する——省くと既定の解決（Project ＞ 共通の既定）で引く",
+        {
+          name: { type: "string", description: "元の alias の名前" },
+          implementation: { type: "string", description: "元の Vault（省略可）" },
+          group: { type: "string", description: "元のグループ（省略可）" },
+          toGroup: { type: "string", description: "参照を置くグループ（元と同じ Vault の中）" },
+          toName: { type: "string", description: "参照の名前（省略すると元と同じ）" },
         },
         ["name", "toGroup"],
       ),
@@ -567,6 +633,19 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const existing = usable.find(
           (a) => a.name === name || `${a.implementation}:${a.name}` === name,
         );
+        if (existing && existing.broken === true) {
+          // **在るのに使えない**（参照の元が無い）——「使えます」と言わない（規則2）
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `"${name}" は登録されていますが、指している元の秘密が無いので使えません。` +
+                  "ターンを終えて人に伝えてください（管理画面で直せます）",
+              },
+            ],
+          };
+        }
         if (existing) {
           return {
             content: [
@@ -605,7 +684,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const found = resolveName(name, aliases, callerOf(callMeta), await defaultVault());
         if (!found) throw new Error(`alias "${name}" はどの Vault にもありません`);
         // **backend には素の名前で聞く**——修飾名は窓口の中だけの表現
-        const body = await deps.relay.callTool(found.implementation, "getPublicKey", { name: String(found.name) });
+        // **置き場まで渡す**（2026-10-04）——参照は既定で元と同じ名前なので、名前だけだと
+        // backend の既定解決が同名の別の行（元や別の参照）を掴む
+        const body = await deps.relay.callTool(found.implementation, "getPublicKey", {
+          name: String(found.name),
+          group: String(found.group),
+        });
         return { content: [{ type: "text", text: body }] };
       }
 
@@ -629,7 +713,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           }
           throw new Error(`alias "${name}" はどの Vault にもありません`);
         }
-        const { implementation, ...meta } = found;
+        // 参照の指す先は渡さない（呼び出し元は参照の置き場のまま resolveAlias すればよい）
+        const { implementation, linkTo: _linkTo, ...meta } = found;
         // **値は返さない**——在りかと、値を使わずに分かることまで。
         // **`name` は backend での本当の名前**（修飾名で引かれても、その先の
         // `resolveAlias` は素の名前で呼ぶ必要がある）
@@ -695,8 +780,10 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const implementation = await target();
         const body = await deps.relay.callTool(implementation, "updateAlias", {
           name: requiredString(args.name, "name"),
+          // **置き場まで渡す**（2026-10-04）——参照は既定で元と同じ名前なので、名前だけだと
+          // 一覧で選んだ行とは別の行の用途を書き換える（deleteAlias で直したのと同じ穴）
+          group: optionalString(args.group, "group"),
           note: optionalString(args.note, "note"),
-
         });
         return text({ ok: true, message: body });
       }
@@ -815,12 +902,18 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const conflicts = moving
           .filter((a) => aliases.some((x) => x.implementation === implementation && x.group === group && x.name === a.name))
           .map((a) => String(a.name));
+        // **Vault をまたぐなら、参照と参照に指されている元は動かせない**（2026-10-04）
+        // ——事前に全部出す（1つでもあれば移さない、all-or-nothing）
+        const crossVault = !!current && current.implementation !== implementation;
+        const blockedAcrossVaults = crossVault ? crossVaultBlockers(moving, aliases) : [];
 
         const plan = {
           current: current ?? null,
           to: { implementation, group },
           moving: moving.map((a) => String(a.name)),
           conflicts,
+          /** Vault をまたいで移せないもの（参照・参照に指されている元）と、その理由。 */
+          blockedAcrossVaults,
           sharedWith,
           /** 移さない場合、ここに挙がるものは**どこにも紐付かなくなる**（unbound）。 */
           strandedIfNotMigrated: moving.map((a) => String(a.name)),
@@ -836,6 +929,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           if (conflicts.length > 0) {
             // **1つでもぶつかったら何もしない**——途中まで進めない（規則2）
             throw new Error(`移す先に同じ名前があります：${conflicts.join(", ")}。名前を直してからやり直してください`);
+          }
+          if (blockedAcrossVaults.length > 0) {
+            throw new Error(
+              "別の Vault へは移せないものがあります（何も移していません）：" +
+                blockedAcrossVaults.map((b) => `${b.name}——${b.reason}`).join(" / "),
+            );
           }
           for (const a of moving) {
             await migrateOne(String(a.name), current!.implementation, String(a.group), implementation, group);
@@ -889,6 +988,41 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           from: { implementation: found.implementation, group: found.group },
           to: { implementation: toImpl, group: toGroup },
         });
+      }
+
+      case "linkAlias": {
+        const name = requiredString(args.name, "name");
+        const toGroup = requiredString(args.toGroup, "toGroup");
+        // **同じ Vault の中だけ**——別の Vault を指されたら、黙って元の Vault に置かない（規則2）
+        if (args.toImplementation !== undefined) {
+          throw new Error("参照は同じ Vault の中にしか作れません（toImplementation は指定できません）");
+        }
+        const fromImpl = optionalString(args.implementation, "implementation");
+        const fromGroup = optionalString(args.group, "group");
+        const { aliases } = await crossAliases();
+        // **元は置き場で指す**（migrateAlias と同じ引き方）——指定したら既定解決に落ちない
+        const found =
+          fromImpl || fromGroup
+            ? aliases.find(
+                (a) =>
+                  a.name === name &&
+                  (fromImpl === undefined || a.implementation === fromImpl) &&
+                  (fromGroup === undefined || a.group === fromGroup),
+              )
+            : resolveName(name, aliases, callerOf(callMeta), await defaultVault());
+        if (!found) {
+          const where = [fromImpl, fromGroup].filter(Boolean).join(" / ");
+          throw new Error(
+            where ? `alias "${name}" は ${where} にありません` : `alias "${name}" はどの Vault にもありません`,
+          );
+        }
+        const body = await deps.relay.callTool(found.implementation, "linkAlias", {
+          name: String(found.name),
+          group: String(found.group),
+          toGroup,
+          toName: optionalString(args.toName, "toName"),
+        });
+        return text({ implementation: found.implementation, ...JSON.parse(body) });
       }
 
       case "setSharedPlacement": {
