@@ -31,7 +31,8 @@ if [[ $MODE == full ]]; then
   for u in banto-host banto-frontend caddy banto-firewall; do
     check "b: $u が動いている" systemctl is-active --quiet "$u"
   done
-  check "b: 画面は 127.0.0.1:4175 だけで待つ" bash -c "ss -ltnH 'sport = :4175' | awk '{print \$4}' | grep -qx '127.0.0.1:4175' && ! ss -ltnH 'sport = :4175' | grep -q '0.0.0.0'"
+  local4175=$(ss -ltnH 'sport = :4175' | awk '{print $4}' | sort -u | tr '\n' ' ')
+  if [[ $local4175 == "127.0.0.1:4175 " ]]; then pass "b: 画面は 127.0.0.1:4175 だけで待つ"; else fail "b: 画面の待ち受け：$local4175"; fi
   check "b: core は 0.0.0.0:4737 で待つ" bash -c "ss -ltnH 'sport = :4737' | grep -q '0.0.0.0:4737'"
   check "b: system.slice の CPUWeight=1000" bash -c "systemctl show system.slice -p CPUWeight | grep -qx CPUWeight=1000"
   check "b: banto-host の OOMScoreAdjust=-800" bash -c "systemctl show banto-host -p OOMScoreAdjust | grep -qx OOMScoreAdjust=-800"
@@ -62,7 +63,7 @@ if [[ $r == *' 200' ]]; then pass "d: Cookie で人のセッションだけの�
 r=$(c "${H[@]}" -o /dev/null -w '%{http_code}' "https://$D/api/auth/sessions")
 if [[ $r == 401 ]]; then pass "d: Cookie が無ければ 401"; else fail "d: Cookie なし → $r"; fi
 r=$(c -b "$JAR" -o /dev/null -w '%{http_code}' "https://$D/api/auth/sessions")
-if [[ $r == 403 ]]; then pass "d: X-Banto-Client が無ければ 403"; else fail "d: ヘッダなし → $r"; fi
+if [[ $r == 401 ]]; then pass "d: Cookie があっても X-Banto-Client が無ければ通らない（401）"; else fail "d: ヘッダなし → $r"; fi
 r=$(c "${H[@]}" -H 'content-type: application/json' -o /dev/null -w '%{http_code}' -X POST "https://$D/api/auth/redeem" -d "{\"code\":\"$code_in_link\"}")
 if [[ $r == 401 ]]; then pass "d: 同じリンクは2回目は通らない（401）"; else fail "d: 2回目の redeem → $r"; fi
 
@@ -77,7 +78,7 @@ if [[ -n $pid ]]; then pass "e: Project を作った（$pid）"; else fail "e: P
 start=$(date +%s)
 r=$(c -m 1200 -b "$JAR" "${H[@]}" -X POST "https://$D/api/projects/$pid/modules/prepare")
 info "e: prepare（$(($(date +%s) - start)) 秒）：$r"
-if [[ $r == *"\"shell-$pid\""* ]]; then pass "e: prepare で shell-$pid が繋がった"; else fail "e: prepare：$r"; fi
+if [[ $r == *"\"shell\""* ]]; then pass "e: prepare で shell が繋がった"; else fail "e: prepare：$r"; fi
 r=$(c -b "$JAR" "${H[@]}" "https://$D/api/projects/$pid/modules")
 if node -e 'const m = JSON.parse(process.argv[1]).find((x) => x.name === "shell"); process.exit(m?.connected === true ? 0 : 1)' "$r" 2>/dev/null; then
   pass "e: /modules で shell が connected"

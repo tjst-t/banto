@@ -25,6 +25,12 @@ NODE_VERSION=24.21.0
 NODE_SHA256_x64=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 # shellcheck disable=SC2034
 NODE_SHA256_arm64=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
+# sops（同梱の vault-local が秘密を暗号化して置くのに使う。Ubuntu の apt に無いので公式の配布物を版で固定して照合）
+SOPS_VERSION=3.13.3
+# shellcheck disable=SC2034 # step_base_packages が SOPS_SHA256_$CADDY_ARCH で引く
+SOPS_SHA256_amd64=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+# shellcheck disable=SC2034
+SOPS_SHA256_arm64=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77
 # Zabbly（Incus の配布元）の鍵の指紋（https://github.com/zabbly/incus の README の値）
 ZABBLY_FPR=4EFC590696CB15B87C73A3AD82CC8797C838DCFD
 
@@ -96,7 +102,9 @@ USAGE
 # ---------------------------------------------------------------------------
 
 # 標準入力の中身を root のファイルに置く。中身・権限・持ち主が同じなら触らない。
-# 変えたかどうかは FILE_CHANGED（1/0）に入れる——戻り値で返すと if の中で set -e が効かなくなるため
+# 変えたかどうかは FILE_CHANGED（1/0）に入れる——戻り値で返すと if の中で set -e が効かなくなるため。
+# **パイプで流し込まない**（`… | put_root_file` は右側が別のシェルになり、FILE_CHANGED が消える——Caddy の設定を
+# 変えても reload しなかった）。`< <(…)` か here-doc で渡す
 FILE_CHANGED=0
 put_root_file() {
   local path=$1 mode=$2 owner=${3:-root:root} tmp
@@ -186,7 +194,7 @@ read_install_conf() {
 }
 
 write_install_conf() {
-  {
+  put_root_file "$INSTALL_CONF" 644 < <(
     echo "# banto の install.sh が覚えた値（秘密は入れない）。打ち直しで引数を渡せば変わり、渡さなければこのまま"
     echo "user=$USER_NAME"
     echo "domain=$DOMAIN"
@@ -194,7 +202,7 @@ write_install_conf() {
     echo "branch=$BRANCH"
     echo "repo=$REPO"
     echo "pool_size=$POOL_SIZE"
-  } | put_root_file "$INSTALL_CONF" 644
+  )
 }
 
 valid_domain() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; }
@@ -238,7 +246,9 @@ step_check_host() {
   [[ -n $USER_HOME && -d $USER_HOME ]] || die "ユーザー $USER_NAME のホームが見つかりません" "ホームのあるユーザーで打ってください"
 
   say "sudo を確かめる（パスワードを聞かれたら、$USER_NAME のパスワードを打ってください）"
-  sudo -v || die "sudo できませんでした" "sudo できるユーザーで打ってください（例：sudo usermod -aG sudo $USER_NAME のあと、ログインし直す）"
+  # sudo -v ではなく sudo true——-v は当てはまる規則が全部 NOPASSWD でないとパスワードを求める（sudo グループの規則に
+  # 当たる、クラウドのイメージの NOPASSWD のユーザーで、端末が無いと止まった）
+  sudo true || die "sudo できませんでした" "sudo できるユーザーで打ってください（例：sudo usermod -aG sudo $USER_NAME のあと、ログインし直す）"
   # 長い build の間に sudo の記憶が切れないように
   (while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done) >/dev/null 2>&1 &
   SUDO_KEEPALIVE=$!
@@ -335,8 +345,20 @@ step_resolve_settings() {
 
 step_base_packages() {
   step "基本の道具を入れる"
-  apt_install ca-certificates curl git gnupg xz-utils nftables iproute2
-  ok "そろっている"
+  # age・openssh-client・sops は同梱の vault-local（秘密の置き場）が host で使う（age-keygen・ssh-keygen・ssh-agent・sops）
+  apt_install ca-certificates curl git gnupg xz-utils nftables iproute2 age openssh-client
+  if [[ "$(/usr/local/bin/sops --version 2>/dev/null | awk 'NR == 1 { print $2 }')" != "$SOPS_VERSION" ]]; then
+    local tmp sha_var="SOPS_SHA256_$CADDY_ARCH"
+    tmp=$(mktemp)
+    say "sops $SOPS_VERSION を入れる"
+    curl -fsSL "https://github.com/getsops/sops/releases/download/v$SOPS_VERSION/sops-v$SOPS_VERSION.linux.$CADDY_ARCH" -o "$tmp" ||
+      die "sops を取ってこられませんでした" "github.com に届くか確かめてください"
+    echo "${!sha_var}  $tmp" | sha256sum -c --quiet - ||
+      die "sops の sha256 が合いません（壊れているか、すり替えられている）" "時間をおいて打ち直してください"
+    sudo install -m 755 "$tmp" /usr/local/bin/sops
+    rm -f "$tmp"
+  fi
+  ok "そろっている（sops $SOPS_VERSION を含む）"
 }
 
 # ---------------------------------------------------------------------------
@@ -674,7 +696,7 @@ EOF
   fi
   cat <<'EOF'
 	handle {
-		redir https://{host}{uri} permanent
+		redir https://{host}{uri} 308
 	}
 }
 EOF
@@ -709,7 +731,7 @@ step_https() {
   local conf=/etc/caddy/banto.d/banto.caddy backup
   backup=$(mktemp)
   if sudo test -f "$conf"; then sudo cat "$conf" | cat >"$backup"; fi
-  render_banto_caddy "$DOMAIN" "$TLS_MODE" | put_root_file "$conf" 644
+  put_root_file "$conf" 644 < <(render_banto_caddy "$DOMAIN" "$TLS_MODE")
   local conf_changed=$FILE_CHANGED out
   if ! out=$(caddy_validate); then
     if [[ -s $backup ]]; then put_root_file "$conf" 644 <"$backup"; else sudo rm -f "$conf"; fi
@@ -870,8 +892,11 @@ MemoryLow=4G
 EOF
   local u
   for u in banto-host banto-frontend; do
-    printf '# banto の install.sh が置いた（docs/runbooks/host-resource-protection.md）\n[Service]\nOOMScoreAdjust=-800\n' |
-      put_root_file "/etc/systemd/system/$u.service.d/50-banto-oom.conf" 644
+    put_root_file "/etc/systemd/system/$u.service.d/50-banto-oom.conf" 644 <<'EOF'
+# banto の install.sh が置いた（docs/runbooks/host-resource-protection.md）
+[Service]
+OOMScoreAdjust=-800
+EOF
     changed=$((changed | FILE_CHANGED))
   done
   sudo systemctl daemon-reload
@@ -962,7 +987,9 @@ upgrade_banto() {
   head=$(git -C "$REL" rev-parse HEAD)
   built=$(cat "$REL/.git/banto-built-commit" 2>/dev/null || true)
   if [[ $head != "$built" ]]; then
-    say "build する（$(git -C "$REL" log -1 --format='%h %s' | cut -c1-80)）。数分かかります"
+    local subject
+    subject=$(git -C "$REL" log -1 --format='%h %s')
+    say "build する（${subject:0:60}）。数分かかります" # cut -c は日本語をバイトで切る
     (cd "$REL/banto" && env -u NODE_ENV npm ci --include=dev --no-audit --no-fund && env -u NODE_ENV npm run build) ||
       die "build に失敗しました（上の出力）" "コードの側の問題なら、直った版が release に来てから打ち直してください"
     echo "$head" >"$REL/.git/banto-built-commit"
@@ -1051,14 +1078,15 @@ step_claude() {
       die "Claude Code を入れられませんでした" "https://claude.ai に届くか確かめてください"
   fi
   [[ -x $claude ]] || claude=$(command -v claude)
-  if [[ -s $USER_HOME/.claude/.credentials.json ]]; then
+  # ログインしているかは CLI に聞く（auth status はログインしていなければ終了コード 1）
+  if "$claude" auth status >/dev/null 2>&1; then
     CLAUDE_STATE=ok
     ok "ログイン済み（$USER_HOME/.claude）"
     return
   fi
   if [[ $NO_CLAUDE_LOGIN == 0 ]] && have_tty; then
     say "ブラウザでのログインを始めます（出た URL を開き、表示されたコードを貼る）"
-    if "$claude" auth login </dev/tty >/dev/tty 2>&1 && [[ -s $USER_HOME/.claude/.credentials.json ]]; then
+    if "$claude" auth login </dev/tty >/dev/tty 2>&1 && "$claude" auth status >/dev/null 2>&1; then
       CLAUDE_STATE=ok
       ok "ログインした"
       return

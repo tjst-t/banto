@@ -82,9 +82,9 @@ X mkdir -p /etc/systemd/system/incus.service.d /opt/banto-test
 X sh -c 'printf "# 試験の場だけ：3段目の Incus は AppArmor を使えない\n[Service]\nEnvironment=INCUS_SECURITY_APPARMOR=false\n" > /etc/systemd/system/incus.service.d/90-install-test-no-apparmor.conf'
 X sh -c "printf '127.0.0.1 $D1 sandbox.$D1 nothing.$D1 $D2 sandbox.$D2 nothing.$D2\n' >> /etc/hosts"
 git -C "$repo" show "HEAD:install.sh" >"$LOG/install.sh"
-I file push "$LOG/install.sh" "$NAME/opt/banto-test/install.sh"
-I file push "$LOG/banto.bundle" "$NAME/opt/banto-test/banto.bundle"
-I file push "$here/checks.sh" "$NAME/opt/banto-test/checks.sh"
+I file push -q "$LOG/install.sh" "$NAME/opt/banto-test/install.sh"
+I file push -q "$LOG/banto.bundle" "$NAME/opt/banto-test/banto.bundle"
+I file push -q "$here/checks.sh" "$NAME/opt/banto-test/checks.sh"
 X chmod -R a+rX /opt/banto-test
 TUID=$(X id -u "$TUSER")
 echo "試験の場：$NAME（uid $TUID）ログ：$LOG"
@@ -160,7 +160,7 @@ note "f-2. 新しいコミットと --domain $D2 で打ち直す：取り込み�
 git clone -q "$LOG/banto.bundle" -b "$branch" "$LOG/clone"
 git -C "$LOG/clone" -c user.name=install-test -c user.email=install-test@example.invalid commit -q --allow-empty -m "試験：2つ目のコミット"
 git -C "$LOG/clone" bundle create "$LOG/banto2.bundle" "$branch" 2>/dev/null
-I file push "$LOG/banto2.bundle" "$NAME/opt/banto-test/banto.bundle"
+I file push -q "$LOG/banto2.bundle" "$NAME/opt/banto-test/banto.bundle"
 X chmod a+r /opt/banto-test/banto.bundle
 new_head=$(git -C "$LOG/clone" rev-parse HEAD)
 pid_before=$(mainpid)

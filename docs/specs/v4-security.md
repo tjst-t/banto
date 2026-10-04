@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-09-25（閉じ込めを Project ごとのシステムコンテナに移した。§1 の後半・§2 を書き直し、§3 の該当行を実装済みに）
+> 最終更新：2026-10-04（§1 に「入れ方」を足した——新しいホストへのインストール用スクリプト）
 
 ## 1. セキュリティ境界
 
@@ -151,10 +151,56 @@ Docker が転送を既定で止めるので、Incus のブリッジの許可を�
 `incusbr+` の許可を足す systemd の drop-in——このホストには入れてある）。**ホストで 0.0.0.0 に待ち受けているもの
 （banto の API など）には中から届く**——LAN から届くのと同じ範囲で、banto の API は合言葉が要る。
 
-**ホストの前提**（入れる手順は本実装で書く）：Incus 6.0.6 以降・banto を動かすユーザーが `incus` グループ
+**ホストの前提**（入れる手順は次の「入れ方」）：Incus 6.0.6 以降・banto を動かすユーザーが `incus` グループ
 （**`sg incus` ではなくグループを引き直して起動する**——`sg` は主グループを変え、作るファイルのグループが中に対応しない）・
 `/etc/subuid`・`/etc/subgid` に `root:<uid>:1`（ホストの uid をコンテナに対応させるため）・btrfs の置き場 `banto`・
 Docker が居れば上の drop-in。確かめる口：`node packages/container/dist/doctor.js`。
+
+### 入れ方（決定・2026-10-04、ユーザー。実装・2026-10-04）
+
+**1行で入れる**：`curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | bash -s -- --domain <名前>
+[--cloudflare-token <トークン>]`（リポジトリの直下の `install.sh`。人向けの手順は `docs/runbooks/install.md`）。
+上の前提・Caddy・HTTPS・設定・unit までを1本で行い、最後にログインのリンク（「人のログイン」の host のコマンド）を出す。
+
+- **対象は Ubuntu 24.04・26.04 だけ**（それ以外は理由を出して断る）。**root では断る**——sudo できる普通のユーザーで
+  打ち、そのユーザーが banto を動かす（unit の `User=`・HOME はそのユーザー）
+- **Incus**：24.04 は Zabbly の `lts-6.0`、26.04 は Zabbly の `stable`（`lts-6.0` に resolute が無く、Ubuntu の 6.0.5 は
+  前提に足りない）。鍵は指紋を照合。推奨パッケージは入れない。未初期化なら `incus admin init --minimal`。置き場 `banto` は
+  `/var/lib/incus` が btrfs ならその中のフォルダ、違えばループファイル（大きさはディスクの空きの半分・最大 50GiB、引数で変える）。
+  前提がそろったかは最後に doctor を banto のユーザーで（`sudo -u`——グループを引き直す）流して確かめ、落ちたら止まる
+- **Node**：公式の tarball（npm つき。LTS 24 系を版で固定し sha256 を照合）を `/usr/local` に——コンテナの土台がホストの
+  node の一式を写すため
+- **入口は Caddy**（caddyserver.com の custom build、Cloudflare の DNS 入り）。**人の Caddyfile は書き換えない**——無ければ
+  最小のものを作り、`import /etc/caddy/banto.d/*.caddy` の1行だけを足す。banto の設定はそのファイルに生成する：
+  `<名前>`（`/api/*` → 4737、ほか → 4175）・`sandbox.<名前>` → 4176・それ以外の `*.<名前>` は 404（Publish の道は
+  publish-caddy が admin API でこの前に差し込む。admin API は localhost:2019 のまま）・http は https へ転送。
+  Caddy が受け付けない設定は元に戻して止まる
+- **HTTPS は2つの形**：
+  - **Cloudflare のトークンあり**：`<名前>` と `*.<名前>` の A レコードを作る／直す（`proxied: false`、ゾーンはトークンで
+    見えるゾーンのうち名前の後ろが一番長く一致するもの、向け先はこのホストの LAN の IP）。証明書は DNS-01 の
+    Let's Encrypt（`*.<名前>` の1枚に sandbox も入れる）。Publish の基のドメインを書く
+  - **無し**：Caddy の内部の CA。DNS は人が用意し、各端末で CA を信頼する（ルート証明書は `http://<名前>/banto-ca.crt`
+    で配る）。Publish は使えない。後からトークンを渡して打ち直せば Let's Encrypt に替わる
+  - **トークンをログ・画面・コマンド行に出さない**（API は node から呼び、トークンは環境変数で渡す）。置くのは
+    `/etc/caddy/cloudflare.env`（root:caddy 0640）だけ。Caddy は `--environ` を付けずに起こす
+- **外から banto の口に直に届かせない**：画面は 127.0.0.1 で待つ。**core は 0.0.0.0 のまま**（コンテナがブリッジ越しに
+  `/relay` へ来る——127.0.0.1 に絞るとコンテナから Claude が使えない）。代わりに nftables の banto 専用の表
+  （`inet banto`）で、lo と `incusbr*` 以外から 4737・4176・4175 へ来たものを落とす。起動のたびに unit
+  （`banto-firewall.service`）が入れ、何度入れても同じ結果
+- **host の守り**（`docs/runbooks/host-resource-protection.md`）も入れる：system.slice の CPUWeight=1000・MemoryLow=4G、
+  banto の両 unit に OOMScoreAdjust=-800
+- **何度打っても壊れない**：済んだ段は確かめて飛ばす。2回目からは release の最新を取り込み（早送りで済まなければ止まる）、
+  build し、動いているものが無くなってから起こし直す（`restart-when-idle.mjs`）。何も変わっていなければ起こし直さない。
+  **「上げる」段は1つの関数（`upgrade_banto`）に閉じ込める**——稼働中の版の置き場（`versions/<commit>` と `current`）が
+  決まったら差し替える
+- **決めた値（秘密以外）は `/etc/banto/install.conf` に覚える**——打ち直しで渡した値だけが変わる。置き場を `/etc` に
+  したのは、値が1台に1つのもの（Caddy・DNS・ファイアウォール・Incus の置き場。口が決まっているので banto は1台に1つ）を
+  決め、root しか書けない所に置けば、別のユーザーで打ち直したときに気づいて断れるため。トークンは `cloudflare.env` に
+  あれば「あり」とみなす
+- **Claude**：Claude Code の CLI が無ければ公式の入れ方で入れ、端末があればその場で `claude auth login` を流す
+  （無ければ打つコマンドを出す）。banto が使うのはそのユーザーの `~/.claude`
+- **試験**：`banto/scripts/install-test/run.sh`（入れ子のシステムコンテナにまっさらな Ubuntu を立て、worktree のコミットで
+  流す）・`cloudflare.test.mjs`（Cloudflare の API の偽物）
 
 **まだ決まっていないこと**（アーキ仕様 §10 にも載せる）：
 
@@ -451,7 +497,8 @@ IP アドレスなら名前で開くよう書く。
   `bantoToken` を http の側に覚えてしまうため（E2E で実測）。URL の合言葉は https へのリンクにそのまま運ぶ
 - localhost・127.0.0.1 は安全な文脈なので止まらない（開発・E2E）
 - **入口の側（host で人が行う）**：前に置いた Caddy の http のサイトを https への転送にする。画面の 4175・host の 4737 を
-  LAN へ直に出しているなら、待ち受けを 127.0.0.1 に絞ると http で届く道そのものが無くなる（未実施）
+  LAN へ直に出しているなら、待ち受けを 127.0.0.1 に絞ると http で届く道そのものが無くなる（今の host では未実施。
+  `install.sh` で入れたホストは、画面を 127.0.0.1 で待たせ、core の口は nftables で落とす——§1「入れ方」）
 - E2E：`e2e/specs/insecure-context.spec.ts`
 
 ### 人のログイン（決定・2026-10-03、ユーザー。実装・2026-10-03）
