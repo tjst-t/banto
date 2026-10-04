@@ -137,3 +137,23 @@ install.sh はこれに合わせる（「上げる」段の差し替え先）：
 - 土台イメージを作るとき、入れ子の中で `cgroup2_devices … Failed to load bpf program` の ERROR がログに出るが、
   コンテナは起き、土台イメージもできた（害は無い）
 - Project を作ってから Shell が繋がるまで約 130 秒（初回は土台イメージを作るため。images: から取る・apt・publish）
+
+### 試験の結果（2026-10-04、install.sh は b89d8d48 の版）
+
+`banto/scripts/install-test/run.sh` で、トークン無しの形を流した：
+
+| | 24.04（ユーザー bantotester・uid 1001） | 26.04（ユーザー devops・uid 1001） |
+|---|---|---|
+| Incus | 6.0.6（Zabbly lts-6.0） | **7.5.1**（Zabbly stable。doctor の版の規則は 6.19 以上で通る） |
+| まっさらから1回目 | 286 秒 | 320 秒 |
+| Project を作ってから Shell が繋がるまで | 133 秒（土台イメージを作る分を含む） | 146 秒 |
+| 結果 | PASS 67・FAIL 0 | PASS 68・FAIL 0（Cloudflare の形の Caddy の設定の確かめを足した分） |
+
+外から 4737・4176・4175 が落ちるのが nftables の表のおかげであることは、表を止めると 200 が返り、入れ直すと
+届かなくなることで確かめた（24.04、手で）。
+
+**試していないもの**：Cloudflare のトークンを使う形を本物で（DNS のレコードの部分は偽物の API で、Caddy の設定は
+validate まで）・`/var/lib/incus` が btrfs でないホスト（ループファイルの置き場。入れ子の試験の場は / が btrfs で、
+ループ装置も使えない）・Docker が入っているホスト（転送の drop-in）・apt の caddy が既にあるホスト（drop-in で
+差し替える側）・手で組んだ host（今の banto の host）に流すこと・端末がある形（トークンを聞く・Claude のログインを流す）・
+arm64・Claude のログインそのもの（`claude auth login` があることと、ログインしていなければ `auth status` が 1 を返すことまで）
