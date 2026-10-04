@@ -1001,14 +1001,27 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const fromGroup = optionalString(args.group, "group");
         const { aliases } = await crossAliases();
         // **元は置き場で指す**（migrateAlias と同じ引き方）——指定したら既定解決に落ちない
-        const found =
+        const candidates =
           fromImpl || fromGroup
-            ? aliases.find(
+            ? aliases.filter(
                 (a) =>
                   a.name === name &&
                   (fromImpl === undefined || a.implementation === fromImpl) &&
                   (fromGroup === undefined || a.group === fromGroup),
               )
+            : [];
+        // **Vault だけ・グループだけで指して候補が2つ以上なら、選ばずに断る**（2026-10-04、レビュー）
+        // ——最初の1つを掴むと、一覧で選んだ行とは別の秘密を指す参照ができる
+        if (candidates.length > 1) {
+          throw new Error(
+            `alias "${name}" は ${candidates.length} か所にあります（` +
+              candidates.map((a) => `${a.implementation} / ${String(a.group)}`).join("、") +
+              "）。Vault とグループの両方で指してください",
+          );
+        }
+        const found =
+          fromImpl || fromGroup
+            ? candidates[0]
             : resolveName(name, aliases, callerOf(callMeta), await defaultVault());
         if (!found) {
           const where = [fromImpl, fromGroup].filter(Boolean).join(" / ");

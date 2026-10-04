@@ -1350,3 +1350,28 @@ test("管理画面に、参照を作る口と、参照の行の見せ方があ�
   assert.ok(MANAGE_APP_HTML.includes("元がありません"));
   assert.ok(MANAGE_APP_HTML.includes("この秘密を指す参照が "), "元を消す前に参照の件数を出していない");
 });
+
+test("参照：Vault だけ・グループだけで指して候補が2つ以上なら、選ばずに理由つきで断る", async () => {
+  await withUi(async ({ ui }) => {
+    for (const [implementation, group] of [["vault-local", "g1"], ["vault-local", "g2"], ["vault-2", "g1"]]) {
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation, name: "T", kind: "secret", value: `${implementation}-${group}`, group },
+      });
+    }
+    await assert.rejects(
+      () => ui.callTool({ name: "linkAlias", arguments: { name: "T", implementation: "vault-local", toGroup: "dst" } }),
+      /alias "T" は 2 か所にあります（vault-local \/ g1、vault-local \/ g2）/,
+    );
+    await assert.rejects(
+      () => ui.callTool({ name: "linkAlias", arguments: { name: "T", group: "g1", toGroup: "dst" } }),
+      /alias "T" は 2 か所にあります/,
+    );
+    const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+    assert.equal(aliases.length, 3, "断ったのに参照ができている");
+    // 両方で指せば1つに決まる
+    await ui.callTool({ name: "linkAlias", arguments: { name: "T", implementation: "vault-local", group: "g2", toGroup: "dst" } });
+    const after = parse(await ui.callTool({ name: "listAliases", arguments: {} })).aliases;
+    assert.deepEqual(after.find((a: { group: string }) => a.group === "dst").linkTo, { group: "g2", name: "T" });
+  }, { vaultNames: ["vault-local", "vault-2"] });
+});
