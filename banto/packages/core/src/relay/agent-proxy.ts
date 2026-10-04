@@ -11,7 +11,10 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
+  ErrorCode,
+  McpError,
   ListToolsRequestSchema,
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -85,6 +88,11 @@ export interface AgentProxyOptions {
   /** そのターンがどの Project のものか。**host が渡す**（Module に聞かない）。 */
   projectId?: string;
   moduleCalls?: ModuleCallTracker;
+  /**
+   * Module が進捗も返事も寄こさないまま待つ上限（ミリ秒、既定は MCP の60秒）。人の答えを待つ間は数えない。
+   * 試験が短くするためのもの（追加・2026-10-04）
+   */
+  toolIdleTimeoutMs?: number;
   /** Module からの問いを、正しいターンへ届けるための宛先表。 */
   elicitations?: ElicitationRouter;
   /**
@@ -213,6 +221,27 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
             ),
           })
         : undefined;
+    // **上限は host が自分で数える**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで止まる」）。
+    // 既定の60秒は、Module が黙ったまま返さないときの見張り。ところが Module の中の中継が人の承認を待つ間も
+    // 数えていたので、人が60秒で答えないと外側が切れ、承認のカードもターンと一緒に消えていた。Module の進捗で
+    // 数え直すのは今までどおり、**人の答えを待っている間（台帳の holdForHuman）は数えない**
+    const watchdog = new AbortController();
+    const idleLimit = opts.toolIdleTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (endCall && opts.moduleCalls?.isWaitingOnHuman(conn.name, endCall.id)) {
+          arm();
+          return;
+        }
+        watchdog.abort(new McpError(ErrorCode.RequestTimeout, "Request timed out", { timeout: idleLimit }));
+      }, idleLimit);
+    };
+    arm();
+    const onOuterAbort = () => watchdog.abort(extra.signal.reason);
+    if (extra.signal.aborted) onOuterAbort();
+    else extra.signal.addEventListener("abort", onOuterAbort, { once: true });
     try {
       const result = await conn.client.callTool(
         {
@@ -230,17 +259,18 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
         },
         undefined,
         {
-          signal: extra.signal,
-          resetTimeoutOnProgress: true,
-          onprogress:
-            progressToken !== undefined
-              ? (progress) => {
-                  void extra.sendNotification({
-                    method: "notifications/progress",
-                    params: { ...progress, progressToken },
-                  });
-                }
-              : undefined,
+          signal: watchdog.signal,
+          // SDK の上限は使わない（上の見張りが数える）。setTimeout に渡せる最大
+          timeout: 2 ** 31 - 1,
+          onprogress: (progress) => {
+            arm();
+            if (progressToken !== undefined) {
+              void extra.sendNotification({
+                method: "notifications/progress",
+                params: { ...progress, progressToken },
+              });
+            }
+          },
         },
       );
       // **「あとで届ける」と約束したら、札を返事待ちにする**——Module が止まったら host が代わりに知らせる
@@ -252,6 +282,8 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       }
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {
+      if (timer) clearTimeout(timer);
+      extra.signal.removeEventListener("abort", onOuterAbort);
       endCall?.end();
     }
   });

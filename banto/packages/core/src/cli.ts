@@ -1578,6 +1578,9 @@ async function main(): Promise<void> {
           message: judgment.message,
         });
       },
+      onJudgmentSettled: (threadId, settled) => {
+        turnEvents.publish(threadId, { type: "answered", judgmentId: settled.id, answer: settled.answer });
+      },
     }),
     onAudit: async ({ allowed, reason, ok, ts, ...call }) => {
       // **記録は Event Store が本体**（アーキ仕様 §2.5）。console はおまけ。

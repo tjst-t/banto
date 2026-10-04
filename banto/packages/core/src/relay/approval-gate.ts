@@ -44,13 +44,65 @@ export interface RelayApprovalGateDeps {
     threadId: string,
     judgment: { id: string; message: string; serverName: string; toolInput: unknown },
   ): void;
+  /**
+   * 判断待ちを host の側で畳んだ（聞いた呼び出しが終わった）ことを、その会話の画面へ流す——カードを回答済みにする
+   * （追加・2026-10-04）
+   */
+  onJudgmentSettled?(threadId: string, settled: { id: string; answer: string }): void;
 }
+
+/** 聞いた呼び出しが、答えを待たずに終わったとき（AI のターンが終わった・止まった・外側が切れた）の理由。 */
+export const RELAY_CALL_ENDED_REASON =
+  "承認を聞いた呼び出しが、人が答える前に終わりました（もう一度呼べば、また聞きます）";
 
 export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayApprovalGate {
   /** 同じ組み合わせの2本目以降は、1本目の答えに相乗りする——カードを増やさない。 */
   const inFlight = new Map<string, Promise<RelayApprovalDecision>>();
 
   async function ask(req: RelayApprovalRequest): Promise<RelayApprovalDecision> {
+    // **聞いた呼び出しが終わったら畳む**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで止まる」）。
+    // 答える口（会話のカード）は、その呼び出しのターンの中にしか出ない（受信箱は Thread を開くだけ）。以前は
+    // 呼び出しが終わっても待ち続け、カードの無い判断待ちが残り、次の呼び出しはそこに相乗りして**カードが二度と
+    // 出なかった**。畳めば、次の呼び出しでまた聞く（いまのターンにカードが出る）
+    let ended = false;
+    /** 畳んだのはこちら（人の拒否ではない） */
+    let expired = false;
+    let judgmentId: string | undefined;
+    let threadId: string | undefined;
+    const stopWatching = deps.moduleCalls.whenEnded(req.callerConnName, req.callerCallId, () => {
+      ended = true;
+      if (judgmentId === undefined) return;
+      const denied = { behavior: "deny" as const, message: RELAY_CALL_ENDED_REASON };
+      if (deps.pendingApprovals.resolve(judgmentId, denied)) {
+        expired = true;
+        const id = judgmentId;
+        void deps.inbox.answerJudgment(id, denied).then(
+          () => deps.onJudgmentSettled?.(threadId!, { id, answer: RELAY_CALL_ENDED_REASON }),
+          () => undefined,
+        );
+      }
+    });
+    try {
+      return await askWhileCalling(req, {
+        isEnded: () => ended,
+        markExpired: () => {
+          expired = true;
+        },
+        isExpired: () => expired,
+        raised: (id, thread) => {
+          judgmentId = id;
+          threadId = thread;
+        },
+      });
+    } finally {
+      stopWatching();
+    }
+  }
+
+  async function askWhileCalling(
+    req: RelayApprovalRequest,
+    watch: { isEnded(): boolean; markExpired(): void; isExpired(): boolean; raised(judgmentId: string, threadId: string): void },
+  ): Promise<RelayApprovalDecision> {
     const where = deps.moduleCalls.threadFor(req.callerConnName, req.callerCallId);
     if (where.kind !== "thread") {
       // **決められないなら通さない**（規則2）。どの会話で聞けばよいか分からない
@@ -91,6 +143,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       serverName: req.callerModule,
       toolInput,
     });
+    watch.raised(judgment.id, where.threadId);
     deps.onJudgmentRaised?.(where.threadId, {
       id: judgment.id,
       message,
@@ -98,15 +151,25 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       toolInput,
     });
 
-    // **答えを待つ。待つのをやめない**——外側の tool 呼び出しが MCP の既定
-    // タイムアウト（60秒）で先に諦めても、人が後から許可したことは記録に残す。
-    // そうしないと「許可したのに次も聞かれる」になり、いつまでも収束しない
-    // （§2.4.1「後で答える」と同じ考え方）。
+    // **答えを待つ。聞いた呼び出しが続く間は待つのをやめない**——外側の呼び出しは、人の答えを待つ間は
+    // 上限（60秒）を数えない（`agent-proxy.ts`、改訂・2026-10-04）。呼び出しが終わったら畳む（上の `ask`）
     const answer = await new Promise<{ behavior: string }>((resolve) => {
       deps.pendingApprovals.register(judgment.id, (result) => resolve(result as { behavior: string }));
+      // 出している間に呼び出しが終わっていた——待つ相手がいない
+      if (watch.isEnded()) {
+        const denied = { behavior: "deny" as const, message: RELAY_CALL_ENDED_REASON };
+        if (deps.pendingApprovals.resolve(judgment.id, denied)) {
+          watch.markExpired();
+          void deps.inbox.answerJudgment(judgment.id, denied).then(
+            () => deps.onJudgmentSettled?.(where.threadId, { id: judgment.id, answer: RELAY_CALL_ENDED_REASON }),
+            () => undefined,
+          );
+        }
+      }
     });
 
     if (answer.behavior !== "allow") {
+      if (watch.isExpired()) return { allowed: false, reason: RELAY_CALL_ENDED_REASON };
       // 拒否は覚えない——覚えると、気が変わったときに戻す口が要る。
       // 次に同じ呼び出しが来たら、もう一度聞く（fail closed のまま）。
       return { allowed: false, reason: "人が拒否しました" };
@@ -128,13 +191,19 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
     async requestApproval(req) {
       if (deps.grants.isGranted(req)) return { allowed: true, reason: "この Project で承認済み" };
 
-      const key = grantKey(req);
-      const running = inFlight.get(key);
-      if (running) return running;
+      // **人の答えを待っている間は、外側の呼び出しの上限を数えない**（追加・2026-10-04）——相乗りした呼び出しも
+      const release = deps.moduleCalls.holdForHuman(req.callerConnName, req.callerCallId);
+      try {
+        const key = grantKey(req);
+        const running = inFlight.get(key);
+        if (running) return await running;
 
-      const pending = ask(req).finally(() => inFlight.delete(key));
-      inFlight.set(key, pending);
-      return pending;
+        const pending = ask(req).finally(() => inFlight.delete(key));
+        inFlight.set(key, pending);
+        return await pending;
+      } finally {
+        release();
+      }
     },
   };
 }

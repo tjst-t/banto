@@ -362,3 +362,46 @@ test("あとで届ける結果に「人を待っている」が載っていれ�
   await runner.close();
   await moduleClient.close();
 });
+
+// **人の答えを待つ間は、外側の呼び出しの上限を数えない**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで
+// 止まる」）。Module の中の中継が人の承認を待つ間に、AI → Module の呼び出しが既定の60秒で切れていた
+test("Module が黙ったままなら上限で切れるが、人の答えを待っている間（holdForHuman）は数えない", async () => {
+  const { ModuleCallTracker } = await import("./module-calls.js");
+  const { CALL_ID_META_KEY } = await import("@banto/module-contract");
+  const tracker = new ModuleCallTracker();
+  const server = new Server({ name: "slow", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      { name: "silent", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } },
+      { name: "asksHuman", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const callId = (req.params._meta as Record<string, unknown> | undefined)?.[CALL_ID_META_KEY] as string;
+    if (req.params.name === "asksHuman") {
+      // 中継の承認と同じ形：人の答えを待つ間、台帳に「人を待っている」と刻む（上限の4倍待つ）
+      const release = tracker.holdForHuman("slow", callId);
+      await new Promise((r) => setTimeout(r, 400));
+      release();
+      return { content: [{ type: "text", text: "ANSWERED" }] };
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    return { content: [{ type: "text", text: "TOO-LATE" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const proxy = buildAgentProxy(
+    { name: "slow", client: moduleClient, meta: parseModuleMeta({ satisfies: [], dependsOn: [], isolation: "subprocess" }, "slow") },
+    { moduleCalls: tracker, threadId: "th", projectId: "p", toolIdleTimeoutMs: 100 },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+
+  const ok = await runner.callTool({ name: "asksHuman", arguments: {} });
+  assert.equal((ok.content as { text: string }[])[0]?.text, "ANSWERED");
+
+  await assert.rejects(runner.callTool({ name: "silent", arguments: {} }), /timed out/i);
+  assert.equal(tracker.list().length, 0, "切れた呼び出しも台帳から外す");
+});

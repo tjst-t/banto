@@ -30,3 +30,42 @@ test("呼び出しの印を渡せばその1件について答え、渡さなけ�
   elsewhere.end();
   assert.equal(t.originFor("window"), undefined);
 });
+
+test("whenEnded：対象の呼び出しが全部終わったら1回だけ呼ぶ／走っていなければすぐ呼ぶ／取り消せる", () => {
+  const t = new ModuleCallTracker();
+  let calls = 0;
+  t.whenEnded("m", undefined, () => calls++);
+  assert.equal(calls, 1, "走っていなければすぐ");
+
+  const a = t.beginCall("m", "th");
+  const b = t.beginCall("m", "th");
+  let both = 0;
+  t.whenEnded("m", undefined, () => both++);
+  let onlyA = 0;
+  t.whenEnded("m", a.id, () => onlyA++);
+  let cancelled = 0;
+  const cancel = t.whenEnded("m", b.id, () => cancelled++);
+  cancel();
+  a.end();
+  assert.equal(onlyA, 1);
+  assert.equal(both, 0, "b がまだ走っている");
+  b.end();
+  b.end();
+  assert.equal(both, 1);
+  assert.equal(cancelled, 0);
+});
+
+test("holdForHuman：待っている間だけ isWaitingOnHuman が true（重ねてよい・二度外しても負にならない）", () => {
+  const t = new ModuleCallTracker();
+  const a = t.beginCall("m", "th");
+  const r1 = t.holdForHuman("m", a.id);
+  const r2 = t.holdForHuman("m", a.id);
+  assert.equal(t.isWaitingOnHuman("m", a.id), true);
+  r1();
+  r1();
+  assert.equal(t.isWaitingOnHuman("m", a.id), true);
+  r2();
+  assert.equal(t.isWaitingOnHuman("m", a.id), false);
+  a.end();
+  assert.equal(t.isWaitingOnHuman("m", a.id), false);
+});

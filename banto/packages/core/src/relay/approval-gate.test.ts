@@ -442,3 +442,68 @@ test("ホストで動く Module からの呼び出しは、今までどおり道
     await t.close();
   }
 });
+
+// **聞いた呼び出しが終わったら畳む**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで止まる」）。
+// 以前は終わっても待ち続け、カードの無い判断待ちが残り、次の呼び出しはそこに相乗りしてカードが二度と出なかった
+test("聞いた呼び出しが答えを待たずに終わったら、判断待ちを畳み、次の呼び出しではまた聞く（相乗りしない）", async () => {
+  const t = await setup();
+  const seen = new Set<string>();
+  try {
+    const endFirst = t.moduleCalls.begin("shell-project-1", THREAD);
+    const first = t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+    });
+    const judgment = await waitForJudgment(t.inbox, seen);
+    assert.equal(t.moduleCalls.list().length, 1);
+
+    // 外側の呼び出し（AI → Module）が終わった——ターンが終わった・止まった等
+    endFirst();
+    const firstResult = await first.then(
+      (r) => r,
+      (err: unknown) => err,
+    );
+    assert.match(String((firstResult as Error).message ?? JSON.stringify(firstResult)), /人が答える前に終わりました/);
+    const settled = t.inbox.get(judgment.id) as JudgmentItem;
+    assert.equal(settled.liveness, "answered", "畳んだ判断待ちは受信箱にも残さない");
+
+    // 次の呼び出しは新しく聞く（いまのターンにカードが出る）
+    const endSecond = t.moduleCalls.begin("shell-project-1", THREAD);
+    const second = t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+    });
+    const again = await waitForJudgment(t.inbox, seen);
+    assert.notEqual(again.id, judgment.id);
+    t.pendingApprovals.resolve(again.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(again.id, { behavior: "allow" });
+    const result = await second;
+    assert.equal((result.content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    endSecond();
+  } finally {
+    await t.close();
+  }
+});
+
+test("承認を待っている間、その呼び出しは「人を待っている」——答えたら外れる", async () => {
+  const t = await setup({ bundled: true });
+  const seen = new Set<string>();
+  try {
+    const call = t.moduleCalls.beginCall("shell-project-1", THREAD);
+    assert.equal(t.moduleCalls.isWaitingOnHuman("shell-project-1", call.id), false);
+    const pending = t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+      _meta: { "dev.banto/callId": call.id },
+    });
+    const judgment = await waitForJudgment(t.inbox, seen);
+    assert.equal(t.moduleCalls.isWaitingOnHuman("shell-project-1", call.id), true);
+    t.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+    await pending;
+    assert.equal(t.moduleCalls.isWaitingOnHuman("shell-project-1", call.id), false);
+    call.end();
+  } finally {
+    await t.close();
+  }
+});

@@ -32,6 +32,21 @@ export type ModuleCallThread =
  */
 export type CallOrigin = "turn" | "canvas" | "host";
 
+/** 走っている1件の呼び出し。 */
+interface CallEntry {
+  threadId?: string;
+  projectId?: string;
+  origin: CallOrigin;
+  forInstance?: boolean;
+  /**
+   * **この呼び出しの中で、人の答えを待っている数**（追加・2026-10-04）。中継の承認を待っている間は 1 以上。
+   * host が外側の呼び出しの上限（既定60秒）を数えるとき、この間を数えない（`agent-proxy.ts`）
+   */
+  waitingOnHuman: number;
+  /** 終わったら呼ぶもの（`whenEnded`） */
+  onEnd: Set<() => void>;
+}
+
 export class ModuleCallTracker {
   /**
    * Module の接続名 → 走行中の呼び出し（呼び出しの印 → Thread・Project・出所）。
@@ -40,10 +55,7 @@ export class ModuleCallTracker {
    * `_meta["dev.banto/callId"]` で渡し、Module は中継を呼ぶときにそれを返す——台帳はその1件を引く
    * （下の `entriesOf`）。連番だと、同じ接続の別の呼び出しの印を当て推量で名乗れる
    */
-  private readonly inFlight = new Map<
-    string,
-    Map<string, { threadId?: string; projectId?: string; origin: CallOrigin; forInstance?: boolean }>
-  >();
+  private readonly inFlight = new Map<string, Map<string, CallEntry>>();
 
   /**
    * 1件の tool 呼び出しの開始。返ってきた関数を必ず finally で呼ぶ。
@@ -82,15 +94,68 @@ export class ModuleCallTracker {
       calls = new Map();
       this.inFlight.set(connName, calls);
     }
-    calls.set(callId, { threadId, projectId, origin, forInstance });
+    const entry: CallEntry = { threadId, projectId, origin, forInstance, waitingOnHuman: 0, onEnd: new Set() };
+    calls.set(callId, entry);
     return {
       id: callId,
       end: () => {
         const current = this.inFlight.get(connName);
-        if (!current) return;
+        if (!current || current.get(callId) !== entry) return;
         current.delete(callId);
         if (current.size === 0) this.inFlight.delete(connName);
+        for (const fn of [...entry.onEnd]) fn();
+        entry.onEnd.clear();
       },
+    };
+  }
+
+  /**
+   * **人の答えを待ち始めた**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで止まる」）。中継の承認が
+   * 呼ぶ。対象は `threadFor` と同じ選び方の呼び出し。返ってきた関数で待ち終わりにする（何度呼んでもよい）。
+   *
+   * なぜ要るか：外側の tool 呼び出し（AI → Module）は host が既定60秒の上限で待つ。中継の承認を待つ間は Module に
+   * 落ち度が無いのに、人が60秒以内に答えないと外側が切れ、承認のカードもターンと一緒に消えていた
+   */
+  holdForHuman(connName: string, callId?: string): () => void {
+    const entries = this.entriesOf(connName, callId);
+    for (const e of entries) e.waitingOnHuman += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const e of entries) e.waitingOnHuman = Math.max(0, e.waitingOnHuman - 1);
+    };
+  }
+
+  /** この呼び出しは、いま人の答えを待っているか（印で引く。もう終わっていれば false） */
+  isWaitingOnHuman(connName: string, callId: string): boolean {
+    return (this.inFlight.get(connName)?.get(callId)?.waitingOnHuman ?? 0) > 0;
+  }
+
+  /**
+   * **呼び出しが終わったら知らせる**（追加・2026-10-04）。対象は `threadFor` と同じ選び方の呼び出しで、
+   * **その全部が終わったとき**に1回だけ呼ぶ。走っていなければすぐ呼ぶ。返ってきた関数で取り消す。
+   * 中継の承認は、聞いた呼び出しが終わったら畳む——答えても届く先が無い（`approval-gate.ts`）
+   */
+  whenEnded(connName: string, callId: string | undefined, fn: () => void): () => void {
+    const entries = this.entriesOf(connName, callId);
+    if (entries.length === 0) {
+      fn();
+      return () => undefined;
+    }
+    let left = entries.length;
+    let done = false;
+    const one = () => {
+      left -= 1;
+      if (left === 0 && !done) {
+        done = true;
+        fn();
+      }
+    };
+    for (const e of entries) e.onEnd.add(one);
+    return () => {
+      done = true;
+      for (const e of entries) e.onEnd.delete(one);
     };
   }
 
