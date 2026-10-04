@@ -16,13 +16,21 @@ import { existsSync } from "node:fs";
 import { mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
+/** 写し：`scripts/update.mjs` の UPDATE_UNIT・`scripts/setup-update.sh` の UPDATE_UNIT（片方を変えたら、もう片方も） */
 export const UPDATE_UNIT = "banto-update.service";
 export const RELEASE_REF = "refs/remotes/origin/release";
-/** 取ってくるのは GitHub の `release` だけ（`update.mjs` と同じ refspec） */
+/**
+ * 取ってくるのは GitHub の `release` だけ。写し：`scripts/update.mjs` の FETCH_REFSPEC・`scripts/setup-update.sh` の
+ * FETCH_REFSPEC（片方を変えたら、もう片方も）
+ */
 export const FETCH_REFSPEC = `+refs/heads/release:${RELEASE_REF}`;
 export const UPDATE_RUNBOOK = "docs/runbooks/release.md D";
 /** `systemctl start --no-block` から、`update.mjs` が頼みを受け取るまでの猶予 */
 const REQUEST_PICKUP_MS = 60_000;
+/** unit がこの状態なら、更新が走っている */
+const UNIT_RUNNING = ["active", "activating", "deactivating", "reloading"];
+/** `update.mjs` が途中の段（終わっていない） */
+const IN_PROGRESS: ReadonlySet<UpdatePhase> = new Set(["fetch", "build", "wait", "restart", "verify"]);
 const FETCH_TIMEOUT_MS = 120_000;
 /** 画面の「ログを開く」に返す末尾の長さ。失敗の理由は最後のほうに出る */
 export const LOG_TAIL_BYTES = 64 * 1024;
@@ -70,11 +78,19 @@ export interface UpdateState {
   startedAt: string;
   updatedAt: string;
   waiting?: unknown;
+  /** いま止まっている理由（例「host が答えません…答えるまで待ちます」）。待つ段で `update.mjs` が書く */
+  note?: string;
   result?: string;
   error?: string;
   failedPhase?: UpdatePhase;
   logFile?: string;
-  requestedBy?: unknown;
+  /** 誰が頼んだか——人に見せる名前だけ（セッションの id は写さない） */
+  requestedBy?: { label?: string };
+}
+
+/** 頼んだ人（`request.json` に書くのも、画面に返すのも名前だけ） */
+export interface UpdateRequester {
+  label: string;
 }
 
 export interface CommitInfo {
@@ -105,6 +121,20 @@ export interface UpdateStatus {
   state: UpdateState | null;
   /** 更新が走っている（または起こしたばかりでまだ受け取られていない） */
   running: boolean;
+  /**
+   * **途中で止まった回**：`state.json` が途中の段（取ってくる〜確かめる）なのに unit が動いていない。`update.mjs` が
+   * 落ちた・止められた。黙って「走っていない」とだけ返さない
+   */
+  interrupted: { phase: UpdatePhase; reason: string } | null;
+  /** **受け取られていない頼み**：`request.json` を書いてから猶予を過ぎても unit が受け取っていない */
+  staleRequest: {
+    id: string | null;
+    mode: string | null;
+    commit: string | null;
+    requestedAt: string | null;
+    requestedBy: { label: string } | null;
+    reason: string;
+  } | null;
 }
 
 export class SelfUpdateError extends Error {
@@ -136,6 +166,13 @@ export class SelfUpdate {
   private readonly git: string;
   /** 同じ host への同時の頼み（確かめてから書くまでの間）を1本にする */
   private requesting = false;
+  /**
+   * **polkit の規則が効いているか**（最後に確かめた結果）。unit が動いていないときだけ `systemctl stop` を打って確かめる
+   * ——動いているときに打つと更新を止めてしまうので、そのときは前の結果を使う（まだ確かめていなければ分からない）
+   */
+  private polkit: { ok: boolean; detail: string } | undefined;
+  /** 走っている確かめ。頼みはこれが終わるのを待ってから unit を起こす（確かめの stop が、起こした更新を止めない） */
+  private probing: Promise<void> | null = null;
 
   constructor(private readonly opts: SelfUpdateOptions) {
     this.run = opts.run ?? runCommand;
@@ -162,7 +199,7 @@ export class SelfUpdate {
     return r.stdout;
   }
 
-  async status(): Promise<UpdateStatus> {
+  async status(opts: { ownsRequestLock?: boolean } = {}): Promise<UpdateStatus> {
     const reasons: string[] = [];
     const { releaseDir } = this.opts;
     const repoExists = existsSync(this.repoDir);
@@ -178,6 +215,20 @@ export class SelfUpdate {
 
     const load = await this.unitProperty("LoadState");
     if (load !== "loaded") reasons.push(`${UPDATE_UNIT} がありません（LoadState=${load || "不明"}）`);
+    const active = await this.unitProperty("ActiveState");
+    const unitRunning = UNIT_RUNNING.includes(active);
+    const pending = await this.readPendingRequest();
+    const pendingFresh = pending !== undefined && this.now() - pending.mtimeMs < REQUEST_PICKUP_MS;
+    const running = unitRunning || pendingFresh;
+    if (load === "loaded") {
+      const polkit = await this.checkPolkit({ running, ownsRequestLock: opts.ownsRequestLock ?? false });
+      if (polkit && !polkit.ok) {
+        reasons.push(
+          `polkit の規則が効いていません——banto を動かしているユーザーに ${UPDATE_UNIT} の操作が許されていません` +
+            `（手順書 ${UPDATE_RUNBOOK}。${polkit.detail}）`,
+        );
+      }
+    }
 
     let current: CommitInfo | null = null;
     if (repoExists && versionDir) {
@@ -187,6 +238,29 @@ export class SelfUpdate {
     }
 
     const latest = repoExists ? await this.latest(current?.commit ?? null) : null;
+    const state = await this.readState();
+    const interrupted =
+      !running && state && IN_PROGRESS.has(state.phase)
+        ? {
+            phase: state.phase,
+            reason:
+              `更新の unit（${UPDATE_UNIT}）が「${state.phase}」の途中で止まっています（ActiveState=${active || "不明"}）。` +
+              "ログと journalctl -u banto-update を見てください",
+          }
+        : null;
+    const staleRequest =
+      pending && !running
+        ? {
+            id: typeof pending.request.id === "string" ? pending.request.id : null,
+            mode: typeof pending.request.mode === "string" ? pending.request.mode : null,
+            commit: typeof pending.request.commit === "string" ? pending.request.commit : null,
+            requestedAt: typeof pending.request.requestedAt === "string" ? pending.request.requestedAt : null,
+            // 名前だけ返す（前の版の host が書いた request.json にセッションの id が残っていても出さない）
+            requestedBy:
+              typeof pending.request.requestedBy?.label === "string" ? { label: pending.request.requestedBy.label } : null,
+            reason: `更新の unit が頼みを受け取っていません。journalctl -u banto-update を見てください`,
+          }
+        : null;
     return {
       ready: reasons.length === 0,
       reasons,
@@ -194,8 +268,10 @@ export class SelfUpdate {
       releaseDir,
       current,
       latest,
-      state: await this.readState(),
-      running: await this.isRunning(),
+      state,
+      running,
+      interrupted,
+      staleRequest,
     };
   }
 
@@ -213,7 +289,7 @@ export class SelfUpdate {
    * **更新を頼む**。呼ぶ側（http の口）が「ログイン中の人・step-up 済み」を確かめてから呼ぶ。
    * `commit` は画面に見せた最新——人が読んだ一覧と違うものを組み立てない
    */
-  async request(input: { commit: unknown; mode: unknown }, requestedBy: unknown): Promise<{ id: string }> {
+  async request(input: { commit: unknown; mode: unknown }, requestedBy: UpdateRequester): Promise<{ id: string }> {
     if (typeof input.commit !== "string" || !/^[0-9a-f]{40}$/.test(input.commit)) {
       throw new SelfUpdateError(400, "commit（40文字の id）が要ります");
     }
@@ -221,7 +297,9 @@ export class SelfUpdate {
     if (this.requesting) throw new SelfUpdateError(409, "ほかの頼みを受け付けているところです", "running");
     this.requesting = true;
     try {
-      const status = await this.status();
+      // 走っている polkit の確かめ（stop）が終わってから起こす——後から届いた stop が、起こした更新を止めない
+      await this.probing;
+      const status = await this.status({ ownsRequestLock: true });
       if (!status.ready) {
         throw new SelfUpdateError(409, `画面から更新できる形になっていません：${status.reasons.join("／")}`, "not-ready");
       }
@@ -248,7 +326,8 @@ export class SelfUpdate {
         id,
         commit: input.commit,
         mode: input.mode,
-        requestedBy,
+        // 名前だけ（セッションの id は書かない——state.json・画面に写っていく）
+        requestedBy: { label: requestedBy.label },
         requestedAt: new Date(this.now()).toISOString(),
       };
       await writeAtomic(join(this.updateDir, "request.json"), JSON.stringify(request, null, 2));
@@ -367,10 +446,53 @@ export class SelfUpdate {
 
   private async isRunning(): Promise<boolean> {
     const active = await this.unitProperty("ActiveState");
-    if (["active", "activating", "deactivating", "reloading"].includes(active)) return true;
+    if (UNIT_RUNNING.includes(active)) return true;
     // 起こしたばかりで、まだ unit が動き出していない（`--no-block`）。受け取られないまま残った古い頼みは数えない
-    const pending = await stat(join(this.updateDir, "request.json")).catch(() => undefined);
+    const pending = await this.readPendingRequest();
     return pending !== undefined && this.now() - pending.mtimeMs < REQUEST_PICKUP_MS;
+  }
+
+  /** まだ受け取られていない頼み（`update.mjs` は受け取ったら消す）。読めなければ中身は空として扱う */
+  private async readPendingRequest(): Promise<
+    { mtimeMs: number; request: { id?: unknown; mode?: unknown; commit?: unknown; requestedAt?: unknown; requestedBy?: { label?: unknown } } } | undefined
+  > {
+    const path = join(this.updateDir, "request.json");
+    const st = await stat(path).catch(() => undefined);
+    if (!st) return undefined;
+    let request = {};
+    try {
+      request = JSON.parse(await readFile(path, "utf8")) as object;
+    } catch {
+      // 書きかけ・壊れている——いつ書かれたかだけで判断する（中身は出さない）
+    }
+    return { mtimeMs: st.mtimeMs, request };
+  }
+
+  /**
+   * **polkit の規則が効いているか**を `systemctl stop banto-update.service` で確かめる（規則が無ければ断られる）。
+   * **unit が動いていない・頼みも待っていないときだけ打つ**（動いている更新を止めない）。それ以外は前の結果を返す。
+   * 頼みの最中（ほかの呼び出しが鍵を持っている）は打たない——その頼みが起こした unit を止めないため
+   */
+  private async checkPolkit(opts: { running: boolean; ownsRequestLock: boolean }): Promise<{ ok: boolean; detail: string } | undefined> {
+    if (opts.running || (this.requesting && !opts.ownsRequestLock)) return this.polkit;
+    if (this.probing) {
+      await this.probing;
+      return this.polkit;
+    }
+    this.probing = (async () => {
+      const r = await this.run(this.systemctl, ["stop", UPDATE_UNIT]).catch((err: unknown) => ({
+        code: -1,
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+      }));
+      this.polkit = { ok: r.code === 0, detail: r.code === 0 ? "" : r.stderr.trim() || `systemctl stop が終了コード ${r.code}` };
+    })();
+    try {
+      await this.probing;
+    } finally {
+      this.probing = null;
+    }
+    return this.polkit;
   }
 
   private async readState(): Promise<UpdateState | null> {

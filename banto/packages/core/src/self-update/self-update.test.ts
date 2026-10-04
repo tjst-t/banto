@@ -33,6 +33,12 @@ interface FakeSystemd {
   loadState: string;
   activeState: string;
   startFails: boolean;
+  /** polkit の規則が無い（stop を断られる） */
+  stopFails: boolean;
+  /** stop にかかる時間（同時に読まれる試験で、stop が走っている間を作る） */
+  stopDelayMs: number;
+  /** stop の始まり・終わりと start（順番を見る） */
+  events: string[];
   calls: string[][];
 }
 
@@ -85,7 +91,7 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
   git(repo, "worktree", "add", "-q", "--detach", versionDir, first);
   const codeDir = opts.codeInVersions === false ? join(github, "banto") : join(versionDir, "banto");
 
-  const systemd: FakeSystemd = { loadState: "loaded", activeState: "inactive", startFails: false, calls: [] };
+  const systemd: FakeSystemd = { loadState: "loaded", activeState: "inactive", startFails: false, stopFails: false, stopDelayMs: 0, events: [], calls: [] };
   const run: CommandRunner = async (file, args, o) => {
     if (file !== "systemctl") return runCommand(file, args, o);
     systemd.calls.push(args);
@@ -93,7 +99,16 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
       const prop = args[2];
       return { code: 0, stdout: `${prop === "LoadState" ? systemd.loadState : systemd.activeState}\n`, stderr: "" };
     }
+    if (args[0] === "stop") {
+      systemd.events.push("stop>");
+      if (systemd.stopDelayMs) await new Promise((r) => setTimeout(r, systemd.stopDelayMs));
+      systemd.events.push("stop<");
+      return systemd.stopFails
+        ? { code: 4, stdout: "", stderr: "Failed to stop banto-update.service: Access denied" }
+        : { code: 0, stdout: "", stderr: "" };
+    }
     if (args[0] === "start") {
+      systemd.events.push("start");
       return systemd.startFails ? { code: 1, stdout: "", stderr: "Interactive authentication required." } : { code: 0, stdout: "", stderr: "" };
     }
     return { code: 1, stdout: "", stderr: `偽の systemctl は ${args[0]} を知りません` };
@@ -197,6 +212,8 @@ interface StatusBody {
   latest: { commit: string; fastForward: boolean; checkedAt: string | null; commits: Array<{ commit: string; subject: string }> } | null;
   running: boolean;
   state: unknown;
+  interrupted: { phase: string; reason: string } | null;
+  staleRequest: { id: string | null; requestedBy: unknown; reason: string } | null;
 }
 
 const starts = (s: FakeSystemd) => s.calls.filter((c) => c[0] === "start");
@@ -261,7 +278,9 @@ test("頼めるのはログイン中の人だけ、その場の本人確認（st
     assert.equal(request.id, id);
     assert.equal(request.commit, latest);
     assert.equal(request.mode, "wait");
-    assert.equal((request.requestedBy as { sessionId?: string }).sessionId !== undefined, true);
+    // 誰が頼んだかは名前だけ（セッションの id は書かない）
+    assert.deepEqual(Object.keys(request.requestedBy as object), ["label"]);
+    assert.equal(typeof (request.requestedBy as { label: unknown }).label, "string");
     assert.deepEqual(starts(ctx.systemd), [["start", "--no-block", UPDATE_UNIT]]);
   });
 });
@@ -411,5 +430,115 @@ test("ログの末尾を読めるのはログイン中の人だけ。state.json 
     const outside = await ctx.ui("/api/admin/update/log", { cookie });
     assert.equal(outside.status, 500);
     assert.match(((await outside.json()) as { error: string }).error, /外を指しています/);
+  });
+});
+
+const stops = (s: FakeSystemd) => s.calls.filter((c) => c[0] === "stop");
+
+test("polkit の規則が効いていなければ準備が済んでいない。確かめの stop は unit が動いていないときだけ打つ", async () => {
+  await withUpdate(async (ctx) => {
+    ctx.systemd.stopFails = true;
+    const denied = (await (await ctx.machine("/api/admin/update")).json()) as StatusBody;
+    assert.equal(denied.ready, false);
+    assert.ok(
+      denied.reasons.some((r) => r.includes("polkit の規則が効いていません") && r.includes("Access denied")),
+      denied.reasons.join("／"),
+    );
+    assert.deepEqual(stops(ctx.systemd), [["stop", UPDATE_UNIT]]);
+
+    // 動いている間は打たない（更新を止めてしまう）——前の結果を使う
+    ctx.systemd.activeState = "active";
+    const whileRunning = (await (await ctx.machine("/api/admin/update")).json()) as StatusBody;
+    assert.equal(stops(ctx.systemd).length, 1, "動いている unit に stop を打った");
+    assert.ok(whileRunning.reasons.some((r) => r.includes("polkit")), "前の結果を忘れた");
+
+    // 規則が入った。止まってから見直すと、準備が済んでいる
+    ctx.systemd.stopFails = false;
+    ctx.systemd.activeState = "inactive";
+    const ok = (await (await ctx.machine("/api/admin/update")).json()) as StatusBody;
+    assert.equal(ok.ready, true, ok.reasons.join("／"));
+    assert.equal(stops(ctx.systemd).length, 2);
+  });
+});
+
+test("途中の段のまま unit が動いていなければ「中断」として理由つきで返す。動いている間は返さない", async () => {
+  await withUpdate(async (ctx) => {
+    const updateDir = join(ctx.dataDir, "update");
+    await mkdir(updateDir, { recursive: true });
+    await writeFile(join(updateDir, "state.json"), JSON.stringify({ id: "run-1", phase: "build", mode: "wait" }));
+    ctx.systemd.activeState = "active";
+    const running = (await (await ctx.machine("/api/admin/update")).json()) as StatusBody;
+    assert.equal(running.running, true);
+    assert.equal(running.interrupted, null);
+
+    ctx.systemd.activeState = "failed";
+    const stopped = (await (await ctx.machine("/api/admin/update")).json()) as StatusBody;
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.interrupted?.phase, "build");
+    assert.match(stopped.interrupted?.reason ?? "", /「build」の途中で止まっています（ActiveState=failed）/);
+
+    // 終わった回は中断ではない
+    await writeFile(join(updateDir, "state.json"), JSON.stringify({ id: "run-1", phase: "failed", failedPhase: "build" }));
+    assert.equal(((await (await ctx.machine("/api/admin/update")).json()) as StatusBody).interrupted, null);
+  });
+});
+
+test("猶予を過ぎても受け取られていない頼みは、理由つきで返す（頼んだ人は名前だけ）", async () => {
+  await withUpdate(async (ctx) => {
+    const updateDir = join(ctx.dataDir, "update");
+    await mkdir(updateDir, { recursive: true });
+    const path = join(updateDir, "request.json");
+    // 前の版の host が書いた形（セッションの id つき）でも、返すのは名前だけ
+    await writeFile(
+      path,
+      JSON.stringify({ id: "req-1", commit: ctx.first, mode: "wait", requestedAt: "2026-10-04T00:00:00Z", requestedBy: { sessionId: "secret-session", label: "Chrome on Linux" } }),
+    );
+    const fresh = (await (await ctx.machine("/api/admin/update")).json()) as StatusBody;
+    assert.equal(fresh.running, true, "書いたばかりの頼みは走っている扱い");
+    assert.equal(fresh.staleRequest, null);
+
+    const old = new Date(Date.now() - 61 * 1000);
+    await utimes(path, old, old);
+    const res = await ctx.machine("/api/admin/update");
+    const text = await res.text();
+    assert.ok(!text.includes("secret-session"), "セッションの id を返した");
+    const stale = JSON.parse(text) as StatusBody;
+    assert.equal(stale.running, false);
+    assert.equal(stale.staleRequest?.id, "req-1");
+    assert.deepEqual(stale.staleRequest?.requestedBy, { label: "Chrome on Linux" });
+    assert.equal(stale.staleRequest?.reason, "更新の unit が頼みを受け取っていません。journalctl -u banto-update を見てください");
+  });
+});
+
+test("頼みと同時に読まれても、確かめの stop が起こした更新を止めない（stop が走っている間に start しない）", async () => {
+  await withUpdate(async (ctx) => {
+    const latest = ctx.commit("二つ目");
+    const cookie = await ctx.login();
+    await ctx.ui("/api/admin/update/check", { method: "POST", cookie });
+    ctx.systemd.events.length = 0;
+    ctx.systemd.stopDelayMs = 200;
+    // 頼みの間ずっと、20ms おきに読む（ほかのタブ・画面の読み直し）
+    let posting = true;
+    const reads: Promise<unknown>[] = [];
+    const reader = (async () => {
+      while (posting) {
+        reads.push(ctx.machine("/api/admin/update"));
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    })();
+    const posted = await ctx.ui("/api/admin/update", { method: "POST", cookie, body: { commit: latest, mode: "wait" } });
+    posting = false;
+    await reader;
+    await Promise.all(reads);
+    assert.equal(posted.status, 202, await posted.clone().text());
+    let inFlight = 0;
+    for (const e of ctx.systemd.events) {
+      if (e === "stop>") inFlight++;
+      if (e === "stop<") inFlight--;
+      assert.ok(!(e === "start" && inFlight > 0), `stop が走っている間に start した：${ctx.systemd.events.join(",")}`);
+    }
+    const started = ctx.systemd.events.indexOf("start");
+    assert.ok(started >= 0);
+    assert.equal(ctx.systemd.events.lastIndexOf("stop>") < started, true, `start のあとに stop を打った：${ctx.systemd.events.join(",")}`);
   });
 });

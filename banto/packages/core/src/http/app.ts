@@ -1287,7 +1287,8 @@ export function createApp(deps: AppDeps) {
           const body = (await readJsonBody(req)) as { commit?: unknown; mode?: unknown } | undefined;
           const { id } = await selfUpdate.request(
             { commit: body?.commit, mode: body?.mode },
-            { sessionId: session.id, label: session.label },
+            // 名前だけ（セッションの id は request.json・state.json・画面に写さない）
+            { label: session.label },
           );
           return json(res, 202, { ok: true, id });
         } catch (err) {
