@@ -44,7 +44,13 @@ CADDY_MIN_VERSION=2.5.0
 CF_RECORD_MARK="banto install.sh"
 
 DEFAULT_REPO=https://github.com/tjst-t/banto
-DEFAULT_BRANCH=release
+# 取ってくるのは release だけ。**写し**：update.mjs の FETCH_REFSPEC・setup-update.sh の FETCH_REFSPEC・
+# packages/core/src/self-update/self-update.ts の FETCH_REFSPEC（片方を変えたら全部）
+FETCH_REFSPEC="+refs/heads/release:refs/remotes/origin/release"
+# 打ち直しで「上げる」とき、動いているもの（会話・サブエージェントの仕事・Module の呼び出し）が無くなるのを待つ上限（分）。
+# update.mjs 自身は待ち続ける（画面から人がやめられる）が、install.sh は端末の前の人が打つもので、終わらないと困るので切る。
+# 切るときは update.mjs の「やめる印」（cancel）を置く——作りかけを消し、今の版のまま終わる（update.mjs の契約）
+WAIT_LIMIT_MIN=30
 INSTALL_CONF=/etc/banto/install.conf
 CF_ENV=/etc/caddy/cloudflare.env
 CADDY_BIN=/usr/local/bin/caddy
@@ -64,7 +70,7 @@ export PATH="/usr/local/bin:$PATH"
 
 CURRENT_STEP="始める前"
 STEP_NO=0
-STEP_TOTAL=14
+STEP_TOTAL=15
 
 step() {
   STEP_NO=$((STEP_NO + 1))
@@ -100,8 +106,8 @@ banto を入れる（Ubuntu 24.04・26.04。sudo できる普通のユーザー�
                              環境変数 CLOUDFLARE_API_TOKEN でも渡せる。無ければ Caddy の内部の CA で HTTPS にする
   --no-cloudflare            Cloudflare をやめて内部の CA に戻す（保存したトークンを消す。DNS のレコードは残す）
   --ip <IPv4>                DNS のレコードの向け先（既定：既定経路のインターフェースの IPv4）
-  --branch <名前>            動かすブランチ（既定 release）
-  --repo <URL|パス>          取ってくるリポジトリ（既定 https://github.com/tjst-t/banto。file://・パス・bundle も可）
+  --repo <URL|パス>          取ってくるリポジトリ（既定 https://github.com/tjst-t/banto。file://・パス・bundle も可）。
+                             取ってくるのはその release ブランチ（更新の本体 update.mjs が release 固定のため）
   --pool-size <N>GiB         Incus の置き場 banto の大きさ（/ が btrfs でないときのループファイル。既定：空きの半分、最大 50GiB）
   --no-claude-login          Claude のログインをその場で流さない（打つコマンドを出すだけ）
   --help                     これを出す
@@ -231,7 +237,7 @@ run_detached() {
 # 引数と覚えた値
 # ---------------------------------------------------------------------------
 
-ARG_DOMAIN="" ARG_IP="" ARG_BRANCH="" ARG_REPO="" ARG_POOL_SIZE="" ARG_TOKEN="" ARG_TOKEN_SET=0 NO_CLAUDE_LOGIN=0 NO_CLOUDFLARE=0
+ARG_DOMAIN="" ARG_IP="" ARG_REPO="" ARG_POOL_SIZE="" ARG_TOKEN="" ARG_TOKEN_SET=0 NO_CLAUDE_LOGIN=0 NO_CLOUDFLARE=0
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -240,8 +246,11 @@ parse_args() {
       --help | -h) usage; exit 0 ;;
       --no-claude-login) NO_CLAUDE_LOGIN=1; shift; continue ;;
       --no-cloudflare) NO_CLOUDFLARE=1; shift; continue ;;
+      --branch | --branch=*)
+        die "--branch はやめました（取ってくるのは --repo の release ブランチだけ）" \
+          "画面からの更新（update.mjs）が release を取ってくる形に決まっているため。別のブランチを試すなら、それを release という名前で持つリポジトリを --repo に渡してください" ;;
       --*=*) val=${opt#*=}; opt=${opt%%=*}; shift ;;
-      --domain | --cloudflare-token | --ip | --branch | --repo | --pool-size)
+      --domain | --cloudflare-token | --ip | --repo | --pool-size)
         [[ $# -ge 2 ]] || die "$opt に値がありません" "install.sh --help を見てください"
         val=$2; shift 2 ;;
       *) die "知らない引数です：$opt" "install.sh --help を見てください" ;;
@@ -250,7 +259,6 @@ parse_args() {
       --domain) ARG_DOMAIN=$val ;;
       --cloudflare-token) ARG_TOKEN=$val; ARG_TOKEN_SET=1 ;;
       --ip) ARG_IP=$val ;;
-      --branch) ARG_BRANCH=$val ;;
       --repo) ARG_REPO=$val ;;
       --pool-size) ARG_POOL_SIZE=$val ;;
       *) die "知らない引数です：$opt" "install.sh --help を見てください" ;;
@@ -285,8 +293,6 @@ write_install_conf() {
     echo "user=$USER_NAME"
     echo "domain=$DOMAIN"
     echo "ip=$IP_FIXED"
-    echo "branch=$BRANCH"
-    echo "repo=$REPO"
     echo "pool_size=$POOL_SIZE"
     echo "tls_mode=$TLS_REMEMBER"
   )
@@ -368,10 +374,10 @@ step_resolve_settings() {
     IP=$(default_ip || true)
   fi
 
-  BRANCH=${ARG_BRANCH:-${CONF[branch]:-$DEFAULT_BRANCH}}
-  REPO=${ARG_REPO:-${CONF[repo]:-$DEFAULT_REPO}}
-  # ローカルのパス（bundle を含む）は絶対パスにして覚える
-  if [[ $REPO != *://* && $REPO != *@*:* && -e $REPO ]]; then REPO=$(realpath "$REPO"); fi
+  # 取り込み元は覚えない——真実は repo.git の origin（update.mjs もそれを使う）。渡されたときだけ、それに替える
+  REPO=$ARG_REPO
+  # ローカルのパス（bundle を含む）は絶対パスにする
+  if [[ -n $REPO && $REPO != *://* && $REPO != *@*:* && -e $REPO ]]; then REPO=$(realpath "$REPO"); fi
 
   POOL_SIZE=${ARG_POOL_SIZE:-${CONF[pool_size]:-}}
   if [[ -n $POOL_SIZE ]]; then
@@ -420,7 +426,7 @@ step_resolve_settings() {
   write_install_conf
   say "名前：$DOMAIN（sandbox.$DOMAIN・*.$DOMAIN も使う）"
   say "このホストの IP：${IP:-（分からない）}${IP_FIXED:+（--ip で指定）}"
-  say "コード：$REPO の $BRANCH"
+  [[ -n $REPO ]] && say "取り込み元：$REPO の release"
   if [[ $TLS_MODE == cloudflare ]]; then
     local which_token="保存済みのもの"
     [[ $TOKEN_SOURCE == new ]] && which_token="今回渡されたもの"
@@ -525,7 +531,8 @@ try {
   if (!origins.includes(`https://${domain}`)) origins.push(`https://${domain}`);
   raw.allowedEmbedderOrigins = origins;
   out.push(writeJson(path, raw, before) ? "config=changed" : "config=same");
-  out.push(`port=${raw.port}`, `sandboxPort=${raw.sandboxPort}`, `uiPort=${raw.uiPort}`, `releaseDir=${raw.releaseDir}`);
+  const dataDirOut = raw.dataDir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "banto");
+  out.push(`port=${raw.port}`, `sandboxPort=${raw.sandboxPort}`, `uiPort=${raw.uiPort}`, `releaseDir=${raw.releaseDir}`, `dataDir=${dataDirOut}`);
   if (raw.uiOrigin && new URL(raw.uiOrigin).origin !== `https://${domain}`) out.push(`warn=設定の uiOrigin（${raw.uiOrigin}）が画面の住所と違います。ログインが通らないので、要らなければ消してください`);
   // Publish（publish-caddy）の設定：置き場は <dataDir>/modules/<入れた名前>。目録から入れるときの既定の名前 publish-caddy に置く
   const dataDir = raw.dataDir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "banto");
@@ -557,6 +564,7 @@ JS
       sandboxPort=*) PORT_SANDBOX=${line#sandboxPort=} ;;
       uiPort=*) PORT_UI=${line#uiPort=} ;;
       releaseDir=*) REL=${line#releaseDir=} ;;
+      dataDir=*) DATA_DIR=${line#dataDir=} ;;
       publish=changed:*) ok "Publish の基のドメインを $DOMAIN にした（${line#publish=changed:}）" ;;
       publish=same:*) ok "Publish の基のドメインは $DOMAIN のまま" ;;
       publish=removed:*) ok "Publish の基のドメインを外した（${line#publish=removed:}）" ;;
@@ -564,7 +572,16 @@ JS
       error=*) die "${line#error=}" "$CONFIG_PATH を直してから打ち直してください" ;;
     esac
   done <<<"$result"
+  REL=${REL%/}
   say "口：host $PORT_HOST・サンドボックス $PORT_SANDBOX・画面 $PORT_UI／コードの置き場：$REL（config.json が真実）"
+  LAYOUT=$(release_layout)
+  case $LAYOUT in
+    new) say "置き場：版ごとのフォルダの形（current → $(readlink "$REL/current")）" ;;
+    old) say "置き場：古い形（$REL がそのまま clone）——このあと setup-update.sh で版ごとのフォルダの形に移す" ;;
+    first | none) say "置き場：まだ無い——release を取ってきて最初の版を組み立てる" ;;
+    *) die "$REL が、知っている形（版ごとのフォルダの形・古い clone の形・無い）のどれでもありません" \
+      "中身を見て、要らなければ別の場所へ動かしてから打ち直してください（ls -la $REL）" ;;
+  esac
   if [[ $TLS_MODE == internal ]]; then
     say "Publish は使えません（公開先 *.$DOMAIN の DNS と証明書が要る——Cloudflare のトークンを渡して打ち直すと使える）"
   fi
@@ -1016,6 +1033,10 @@ step_https() {
 step_units() {
   step "banto の unit を作る"
   local path_env="$USER_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  # 起動元は current を通す。古い形の置き場だけは今の clone を指したまま書く——setup-update.sh が置き場を移すときに
+  # 中の <置き場> を <置き場>/current に書き換える（その書き換えの結果と、ここで current の形で書くものは同じ中身になる）
+  local code=$REL/current
+  [[ $LAYOUT == old ]] && code=$REL
   put_root_file /etc/systemd/system/banto-host.service 644 <<EOF
 # banto の install.sh が作った（打ち直すと作り直す）。置き場と口は banto の config.json から。docs/runbooks/release.md
 [Unit]
@@ -1028,7 +1049,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=$USER_NAME
-WorkingDirectory=$REL/banto
+WorkingDirectory=$code/banto
 Environment=NODE_ENV=production LANG=C.UTF-8 HOME=$USER_HOME PATH=$path_env
 ExecStart=/usr/local/bin/node packages/core/dist/cli.js
 KillMode=mixed
@@ -1054,9 +1075,9 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=$USER_NAME
-WorkingDirectory=$REL/banto/apps/frontend
+WorkingDirectory=$code/banto/apps/frontend
 Environment=NODE_ENV=production LANG=C.UTF-8 HOME=$USER_HOME PATH=$path_env
-ExecStart=/usr/local/bin/node $REL/banto/node_modules/next/dist/bin/next start -H 127.0.0.1 -p $PORT_UI
+ExecStart=/usr/local/bin/node $code/banto/node_modules/next/dist/bin/next start -H 127.0.0.1 -p $PORT_UI
 KillMode=mixed
 Restart=always
 RestartSec=3
@@ -1193,12 +1214,119 @@ step_firewall() {
 }
 
 # ---------------------------------------------------------------------------
-# 11. 上げる（コードを取り込み、build し、動いていれば起こし直す）
+# 11. banto のコード（版ごとのフォルダの形。docs/specs/v4-architecture.md §2.5「画面から banto を更新する」）
 # ---------------------------------------------------------------------------
+#
+# 置き場（config.json の releaseDir）：repo.git（bare。origin の release を取ってくる）・versions/<commit の頭12>（worktree）・
+# current → 動かす版・previous → 戻す先。取ってくる・組み立てる・待つ・起こし直す・確かめる・戻すは update.mjs の仕事で、
+# install.sh は (1) 初めてのとき repo.git を作って取ってきた版の update.mjs を --first で流し、(2) setup-update.sh で
+# 更新の unit と polkit の規則を置き（古い clone の形なら移してもらい）、(3) 打ち直しでは current の update.mjs を呼ぶ
 
-# 動いている banto が、今の設定・unit・build より前に起きたか（起きた時刻とファイルの更新時刻を比べる）。
+# 置き場の形：new（版ごとのフォルダ）・old（古い形——置き場そのものが clone。setup-update.sh が途中で止まった形も含む）・
+# first（repo.git はあるが current がまだ無い——前の回の --first が途中で止まった）・none（まだ無い）・unknown
+release_layout() {
+  if [[ -d $REL.tmp/.git || -d $REL/.git || -d $REL.setup-backup ]] && [[ ! -L $REL/current || -d $REL.tmp ]]; then
+    echo old
+  elif [[ -d $REL/repo.git && -L $REL/current ]]; then
+    echo new
+  elif [[ -d $REL/repo.git ]]; then
+    echo first
+  elif [[ ! -e $REL ]]; then
+    echo none
+  else
+    echo unknown
+  fi
+}
+
+# repo.git の取り込み元を --repo に替える（渡されたときだけ）
+set_origin() {
+  [[ -n $REPO && -d $REL/repo.git ]] || return 0
+  if [[ "$(git --git-dir "$REL/repo.git" remote get-url origin)" != "$REPO" ]]; then
+    git --git-dir "$REL/repo.git" remote set-url origin "$REPO"
+    say "取り込み元を $REPO に替えた（repo.git の origin）"
+  fi
+}
+
+# 初めて入れる：repo.git を作り、取ってきた版の update.mjs を置き場の外に写して --first で流す（組み立てて current を張る。
+# 起こすのは install.sh）。組み立ては取ってきたコードを動かすので、sudo の記憶を消して流す
+install_first_version() {
+  local repo=$REL/repo.git tmpd
+  mkdir -p "$REL"
+  if [[ ! -d $repo ]]; then
+    local origin=${REPO:-$DEFAULT_REPO}
+    say "repo.git を作る（取り込み元 $origin の release）"
+    rm -rf "$repo.tmp"
+    git init -q --bare "$repo.tmp"
+    git --git-dir "$repo.tmp" remote add origin "$origin"
+    mv "$repo.tmp" "$repo"
+  fi
+  set_origin
+  git --git-dir "$repo" fetch -q --no-tags origin "$FETCH_REFSPEC" ||
+    die "release を取ってこられませんでした（取り込み元 $(git --git-dir "$repo" remote get-url origin)）" "--repo の場所と、そこに release ブランチがあるかを確かめてください"
+  tmpd=$(mktemp -d)
+  git --git-dir "$repo" show "refs/remotes/origin/release:banto/scripts/update.mjs" >"$tmpd/update.mjs" 2>/dev/null ||
+    die "release に banto/scripts/update.mjs がありません（画面からの更新が入る前の版です）" "画面からの更新が入った版を release に置いてから打ち直してください"
+  say "最初の版を組み立てる（取ってきた版の update.mjs --first。数分かかります）"
+  drop_sudo "取ってきた版の update.mjs（npm の依存と build）"
+  run_detached /usr/local/bin/node "$tmpd/update.mjs" --first ||
+    die "最初の版を組み立てられませんでした（上の出力。ログは $DATA_DIR/update/ にも）" "コードの側の問題なら、直った版が release に来てから打ち直してください"
+  rm -rf "$tmpd"
+  [[ -L $REL/current ]] || die "update.mjs --first が終わったのに $REL/current がありません" "$DATA_DIR/update/state.json を見てください"
+  reacquire_sudo "更新の準備（setup-update.sh）と、banto を起こすため"
+  JUST_INSTALLED=1
+  ok "最初の版：$(readlink "$REL/current")"
+}
+
+step_code() {
+  step "banto のコードを用意する"
+  case $LAYOUT in
+    none | first) install_first_version ;;
+    old) say "古い形の置き場は、次の段で setup-update.sh が版ごとのフォルダの形に移す（組み立て直さない）" ;;
+    new)
+      set_origin
+      ok "置き場は版ごとのフォルダの形（current → $(readlink "$REL/current")）。最新にするのは最後の段（update.mjs）"
+      ;;
+  esac
+}
+
+# 画面からの更新の準備（setup-update.sh）が要るか：古い形・更新の unit か polkit の規則が無い・unit の中身が今の
+# 画面の口・node・置き場と違う。要らなければ打たない（打つと必ず sudo を使う。中身が同じなら何も変えない作りだが、
+# 聞かずに済むものは聞かない）
+SETUP_REASON=""
+update_setup_needed() {
+  local unit=/etc/systemd/system/banto-update.service text
+  [[ $LAYOUT == old ]] && { SETUP_REASON="置き場が古い形"; return 0; }
+  sudo test -f /etc/polkit-1/rules.d/50-banto-update.rules || { SETUP_REASON="polkit の規則が無い"; return 0; }
+  text=$(cat "$unit" 2>/dev/null) || { SETUP_REASON="banto-update.service が無い"; return 0; }
+  [[ $text == *"BANTO_UPDATE_UI_URL=http://127.0.0.1:$PORT_UI/"* ]] || { SETUP_REASON="画面の口が変わった"; return 0; }
+  [[ $text == *"ExecStart=$(readlink -f /usr/local/bin/node) $REL/current/banto/scripts/update.mjs --from-request"* ]] ||
+    { SETUP_REASON="更新の unit の node か置き場が違う"; return 0; }
+  return 1
+}
+
+# setup-update.sh を、置き場の外に写してから打つ（1回目は置き場そのものを動かすので——手順書 D）。どの版のものを使うか：
+# 古い形なら今の clone のもの（途中で止まった回の続きなら、移した先のもの）、版ごとのフォルダの形なら current のもの
+run_setup_update() {
+  local src="" c tmpd
+  for c in "$REL/current/banto" "$REL/banto" "$REL.tmp/banto" "$REL"/versions/*/banto; do
+    [[ -f $c/scripts/setup-update.sh ]] && { src=$c/scripts/setup-update.sh; break; }
+  done
+  [[ -n $src ]] || die "setup-update.sh が見つかりません（$REL）" "画面からの更新が入った版にしてから打ち直してください（docs/runbooks/release.md B）"
+  tmpd=$(mktemp -d)
+  cp "$src" "$tmpd/setup-update.sh"
+  say "画面からの更新の準備をする（$SETUP_REASON。setup-update.sh：更新の unit・polkit の規則・置き場の形）"
+  (cd / && BANTO_UI_URL="http://127.0.0.1:$PORT_UI/" NODE_BIN=/usr/local/bin/node bash "$tmpd/setup-update.sh" 2>&1 | sed 's/^/      /') ||
+    die "setup-update.sh が止まりました（上の出力）" "上の理由を直して、同じコマンドを打ち直してください（setup-update.sh は続きから行う）"
+  rm -rf "$tmpd"
+  LAYOUT=$(release_layout)
+  [[ $LAYOUT == new ]] || die "setup-update.sh のあとも置き場が版ごとのフォルダの形になっていません（$LAYOUT）" "ls -la $REL を見てください"
+  set_origin
+}
+
+# 動いている banto が、今の設定・unit より前に起きたか（起きた時刻とファイルの更新時刻を比べる）。
 # 「この回に変えた」を覚えて起こし直す形だと、変えたあと起こし直す前に止まった回の変更を、次の回が「同じ」と見て
-# 見落とす（名前を替える回が途中で止まり、打ち直しても前の名前のまま動いていた）。起こし直す理由は RESTART_REASON に
+# 見落とす（名前を替える回が途中で止まり、打ち直しても前の名前のまま動いていた）。版が替わったときの起こし直しは
+# update.mjs の仕事。起こし直す理由は RESTART_REASON に
 RESTART_REASON=""
 banto_restart_needed() {
   local u t started="" f
@@ -1209,7 +1337,7 @@ banto_restart_needed() {
     [[ -z $started || $t -lt $started ]] && started=$t
   done
   [[ -n $started ]] || return 1
-  for f in "$CONFIG_PATH" "$REL/.git/banto-built-commit" /etc/systemd/system/banto-host.service /etc/systemd/system/banto-frontend.service \
+  for f in "$CONFIG_PATH" /etc/systemd/system/banto-host.service /etc/systemd/system/banto-frontend.service \
     /etc/systemd/system/banto-host.service.d/50-banto-oom.conf /etc/systemd/system/banto-frontend.service.d/50-banto-oom.conf; do
     if [[ -e $f ]] && (($(stat -c %Y "$f") > started)); then
       RESTART_REASON=$f
@@ -1219,60 +1347,72 @@ banto_restart_needed() {
   return 1
 }
 
-# **「上げる」段はこの関数に閉じ込める**——稼働中の版の置き場（versions/<commit> と current の symlink、
-# scripts/update.mjs）が main に入ったら、ここを差し替える（docs/notes/2026-10-04-installer.md「差し替えのときにやること」）。
-# 起こし直すかは banto_restart_needed で決める（コード・設定・unit のどれかが、動いている banto より新しいとき）
-upgrade_banto() {
-  local head built
-  if [[ ! -d $REL/.git ]]; then
-    [[ ! -e $REL ]] || die "$REL がありますが、git の clone ではありません" "中身を確かめて、別の場所へ動かしてから打ち直してください"
-    say "取ってくる：$REPO（$BRANCH）→ $REL"
-    mkdir -p "$(dirname "$REL")"
-    git clone --quiet --branch "$BRANCH" "$REPO" "$REL" || die "コードを取ってこられませんでした" "--repo と --branch を確かめてください"
-  else
-    [[ -z $(git -C "$REL" status --porcelain) ]] || die "$REL に手を入れた跡があります（git status が空でない）" \
-      "git -C $REL status で中身を見て、要らなければ git -C $REL checkout -- . && git -C $REL clean -fd"
-    [[ "$(git -C "$REL" remote get-url origin)" == "$REPO" ]] || git -C "$REL" remote set-url origin "$REPO"
-    git -C "$REL" fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" ||
-      die "コードの最新を取ってこられませんでした" "--repo と --branch を確かめてください"
-    if [[ "$(git -C "$REL" rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]]; then
-      say "ブランチを $BRANCH に替える"
-      git -C "$REL" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
-    else
-      git -C "$REL" merge --quiet --ff-only "origin/$BRANCH" ||
-        die "$REL の $BRANCH が origin/$BRANCH から早送りできません（誰かが手を入れたか、release が書き換えられた）" \
-          "git -C $REL log --oneline -3 origin/$BRANCH と見比べてください。release に合わせるなら git -C $REL reset --hard origin/$BRANCH"
-    fi
-  fi
-  head=$(git -C "$REL" rev-parse HEAD)
-  built=$(cat "$REL/.git/banto-built-commit" 2>/dev/null || true)
-  if [[ $head != "$built" ]]; then
-    local subject
-    subject=$(git -C "$REL" log -1 --format='%h %s')
-    say "build する（${subject:0:60}）。数分かかります" # cut -c は日本語をバイトで切る
-    drop_sudo "npm の依存と build"
-    (cd "$REL/banto" && run_detached env -u NODE_ENV npm ci --include=dev --no-audit --no-fund && run_detached env -u NODE_ENV npm run build) ||
-      die "build に失敗しました（上の出力）" "コードの側の問題なら、直った版が release に来てから打ち直してください"
-    echo "$head" >"$REL/.git/banto-built-commit"
-    reacquire_sudo "前提を確かめて banto を起こす・起こし直すため"
-  else
-    ok "コードは最新（$(git -C "$REL" log -1 --format='%h')）で build 済み"
-  fi
-  [[ -f $REL/banto/node_modules/next/dist/bin/next ]] || die "画面の起動に要る next が見つかりません（$REL/banto/node_modules/next）" "cd $REL/banto && npm ci --include=dev"
+# update.mjs の state.json のうち、この回（started 以降）のもの：「段<TAB>結果<TAB>理由<TAB>ログ」
+update_state() {
+  node -e '
+    try {
+      const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      if (Date.parse(s.startedAt) < Number(process.argv[2]) * 1000 - 2000) process.exit(0);
+      process.stdout.write([s.phase, s.result ?? "", s.error ?? "", s.logFile ?? ""].map((v) => String(v).replace(/[\t\n]/g, " ")).join("\t"));
+    } catch {}' "$DATA_DIR/update/state.json" "$1"
+}
 
+# **「上げる」段はこの関数に閉じ込める**：current の update.mjs（いつも今動いている版のもの——アーキ仕様 §2.5）で release の
+# 最新にする。待つ形（動いているものが無くなってから起こし直す）。待ちが WAIT_LIMIT_MIN 分を越えたら「やめる印」を置く。
+# 起こし直すのは update.mjs（polkit の規則で、sudo を使わない）。新しい版が起きなければ update.mjs が前の版に戻す
+upgrade_banto() {
+  local upd=$REL/current/banto/scripts/update.mjs started pid rc=0 wait_since="" st phase result err logf
+  [[ -f $upd ]] || die "$upd がありません" "置き場（$REL）を見てください"
+  started=$(date +%s)
+  say "release の最新に上げる（$upd。新しい版があれば組み立て、動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待って起こし直す）"
+  run_detached /usr/local/bin/node "$upd" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    st=$(update_state "$started")
+    if [[ ${st%%$'\t'*} == wait ]]; then
+      [[ -n $wait_since ]] || wait_since=$(date +%s)
+      if (($(date +%s) - wait_since > WAIT_LIMIT_MIN * 60)) && [[ ! -e $DATA_DIR/update/cancel ]]; then
+        warn "${WAIT_LIMIT_MIN} 分待っても空かないので、待つのをやめる（今の版のまま。組み立てた版は消える）"
+        date -Is >"$DATA_DIR/update/cancel"
+      fi
+    fi
+    sleep 3
+  done
+  wait "$pid" || rc=$?
+  ((rc != 3)) || die "ほかの更新が走っています（画面の「更新」か、別の端末の update.mjs）" "終わってから打ち直してください（画面の 設定 → 更新 で進み具合を見られる）"
+  IFS=$'\t' read -r phase result err logf <<<"$(update_state "$started")"
+  case $phase in
+    done) ok "${result:-上げた}" ;;
+    cancelled)
+      warn "上げていません：${result}"
+      UPGRADE_PENDING=1
+      ;;
+    rolled-back) die "新しい版が起きなかったので、update.mjs が前の版に戻しました：$err" "ログ：$logf。release の版を直してから打ち直してください（今は前の版で動いています）" ;;
+    failed) die "release の最新に上げられませんでした：$err" "ログ：${logf:-$DATA_DIR/update/}" ;;
+    *) die "update.mjs が終わりましたが、この回の結果（$DATA_DIR/update/state.json）が読めません（終了コード $rc）" "上の出力を見てください" ;;
+  esac
+
+  # 版は同じでも、設定・unit が動いている banto より新しければ起こし直す（空くのを待ってから。polkit の規則で sudo を使わない）
   if unit_active banto-host.service && banto_restart_needed; then
-    say "$RESTART_REASON が動いている banto より新しいので、起こし直す"
-    say "動いているもの（会話・サブエージェントの仕事・Module の呼び出し）が無くなるのを待つ（最長 30 分）"
-    if ! (cd "$REL/banto" && node scripts/restart-when-idle.mjs --timeout 30); then
-      warn "起こし直せませんでした。まだ前の版・前の設定で動いています"
-      warn "空いたら：cd $REL/banto && node scripts/restart-when-idle.mjs"
+    say "$RESTART_REASON が動いている banto より新しいので、起こし直す（動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待つ）"
+    if (cd "$REL/current/banto" && node scripts/restart-when-idle.mjs --timeout "$WAIT_LIMIT_MIN" --dry-run >/dev/null) &&
+      systemctl restart banto-host.service banto-frontend.service; then
+      ok "起こし直した"
+    else
+      warn "起こし直せませんでした。まだ前の設定で動いています"
+      warn "空いたら：systemctl restart banto-host.service banto-frontend.service（このユーザーに polkit で許してある）"
       RESTART_PENDING=1
     fi
   fi
 }
 
 step_upgrade() {
-  step "banto のコードを取り込んで build する"
+  step "release の最新に上げる"
+  if [[ ${JUST_INSTALLED:-0} == 1 ]]; then
+    ok "いま入れた版が release の最新"
+    return
+  fi
+  drop_sudo "current の update.mjs（新しい版の組み立て）"
   upgrade_banto
 }
 
@@ -1281,9 +1421,11 @@ step_upgrade() {
 # ---------------------------------------------------------------------------
 
 step_doctor_and_start() {
-  step "コンテナの前提を確かめて、banto を起こす"
+  step "画面からの更新の準備・コンテナの前提を確かめて、banto を起こす"
+  if update_setup_needed; then run_setup_update; else ok "画面からの更新の準備は済んでいる（banto-update.service・polkit の規則）"; fi
+  [[ -f $REL/current/banto/node_modules/next/dist/bin/next ]] || die "画面の起動に要る next が見つかりません（$REL/current/banto/node_modules/next）" "$DATA_DIR/update/ のログを見てください"
   # banto のユーザーとして、グループを引き直して確かめる（sudo -u はグループを引き直す。sg は主グループを変えるので使わない）
-  (cd "$REL/banto" && sudo -u "$USER_NAME" -H /usr/local/bin/node packages/container/dist/doctor.js | sed 's/^/    /') ||
+  (cd "$REL/current/banto" && sudo -u "$USER_NAME" -H /usr/local/bin/node packages/container/dist/doctor.js | sed 's/^/    /') ||
     die "コンテナの前提がそろっていません（上の ✖ と直し方）" "上に出た直し方のとおりに直してから打ち直してください"
   # doctor が banto のユーザーとして初めて Incus に繋ぐと、そのユーザーの区画（とブリッジ）ができる——表に入れ直す
   apply_firewall
@@ -1374,14 +1516,17 @@ step_claude() {
 step_finish() {
   step "ログインのリンクを出す"
   local link
-  link=$(cd "$REL/banto" && node scripts/login-link.mjs | grep -oE 'https://[^ ]+#banto-login=[A-Za-z0-9_-]+' | head -1) ||
-    die "ログインのリンクを出せませんでした" "cd $REL/banto && node scripts/login-link.mjs を打って理由を見てください"
-  [[ -n $link ]] || die "ログインのリンクを出せませんでした" "cd $REL/banto && node scripts/login-link.mjs を打って理由を見てください"
+  link=$(cd "$REL/current/banto" && node scripts/login-link.mjs | grep -oE 'https://[^ ]+#banto-login=[A-Za-z0-9_-]+' | head -1) ||
+    die "ログインのリンクを出せませんでした" "cd $REL/current/banto && node scripts/login-link.mjs を打って理由を見てください"
+  [[ -n $link ]] || die "ログインのリンクを出せませんでした" "cd $REL/current/banto && node scripts/login-link.mjs を打って理由を見てください"
 
   printf '\n\033[1m==== banto を入れました ====\033[0m\n\n'
   printf '  開く URL：https://%s/\n' "$DOMAIN"
   printf '  ログインのリンク（10分・1回だけ）：\n    %s\n' "$link"
-  printf '    （切れたら：cd %s/banto && node scripts/login-link.mjs）\n' "$REL"
+  printf '    （切れたら：cd %s/current/banto && node scripts/login-link.mjs）\n' "$REL"
+  local running
+  running=$(git -C "$REL/current" log -1 --format='%h %s' 2>/dev/null || true)
+  printf '  動いている版：%s（更新は画面の 設定 → 更新、または同じコマンドを打ち直す）\n' "${running:0:60}"
   if [[ $TLS_MODE == cloudflare ]]; then
     printf '  HTTPS：Let'"'"'s Encrypt（Cloudflare の DNS で証明、*.%s の1枚）%s\n' "$DOMAIN" "$([[ $HTTPS_STATE == ok ]] || echo '——まだ取得中。journalctl -u caddy で見る')"
   else
@@ -1402,8 +1547,11 @@ step_finish() {
   if [[ $CLAUDE_STATE == todo:* ]]; then
     printf '   %d. Claude にログインする：%s で %s\n' "$n" "$USER_NAME" "${CLAUDE_STATE#todo:}"; n=$((n + 1))
   fi
+  if [[ ${UPGRADE_PENDING:-0} == 1 ]]; then
+    printf '   %d. release の最新にはまだ上げていない：空いたら画面の 設定 → 更新、または同じコマンドを打ち直す\n' "$n"; n=$((n + 1))
+  fi
   if [[ ${RESTART_PENDING:-0} == 1 ]]; then
-    printf '   %d. 新しい版はまだ動いていない：空いたら cd %s/banto && node scripts/restart-when-idle.mjs\n' "$n" "$REL"; n=$((n + 1))
+    printf '   %d. 設定の変更はまだ効いていない：空いたら systemctl restart banto-host.service banto-frontend.service\n' "$n"; n=$((n + 1))
   fi
   if [[ $TLS_MODE == internal ]]; then
     printf '   %d. Let'"'"'s Encrypt にするとき：同じコマンドに --cloudflare-token - を足して打ち直す\n' "$n"
@@ -1434,10 +1582,11 @@ main() {
   step_https
   step_units
   step_firewall
-  # build はユーザーの権限で、sudo の記憶を消してから（upgrade_banto の中）。そのあと sudo を取り直して起こす
-  step_upgrade
+  # 初めてのときの組み立てはユーザーの権限で、sudo の記憶を消してから（install_first_version の中）。そのあと取り直す
+  step_code
   step_doctor_and_start
-  # ここからは sudo を使わない
+  # ここからは sudo を使わない。上げる・起こし直すは update.mjs と polkit の規則
+  step_upgrade
   step_claude
   step_finish
 }

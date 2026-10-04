@@ -8,9 +8,15 @@
 # 偽のトークンで問うので取れず、「まだ取得中」で終わる道を通る。
 #
 #   banto/scripts/install-test/run.sh [--image 24.04|26.04] [--user <名前>] [--keep] [--first-only]
+#   banto/scripts/install-test/run.sh --migrate-from <前の版の commit> [--image …] [--user …] [--keep]
 #
-#   --keep        終わっても試験の場を消さない（中を見るとき。消すのは sudo incus delete --force <名前>）
-#   --first-only  1回目を入れて確かめる（a〜e・g）だけにする。打ち直し（f）と壊す試験を飛ばす
+#   --keep          終わっても試験の場を消さない（中を見るとき。消すのは sudo incus delete --force <名前>）
+#   --first-only    1回目を入れて確かめる（a〜e・g）だけにする。打ち直し（f）と壊す試験を飛ばす
+#   --migrate-from  その commit の install.sh とコードで入れ（古い形：置き場そのものが clone）、今の install.sh を打って
+#                   版ごとのフォルダの形に移ることを見る（ほかの試験はしない）
+#
+# 取り込み元は bundle。**release という名前のブランチで入れる**（update.mjs・setup-update.sh は release だけを取ってくる）。
+# 新しい版は、bundle を同じ場所に入れ替えて作る（$LOG/src の release にコミットを足して bundle し直す）
 #
 # **3段目の手当ては、ここにだけ置く**（install.sh には入れない）：
 #   - 中の Incus は AppArmor を使えない → install.sh を流す前に incus.service へ INCUS_SECURITY_APPARMOR=false の drop-in
@@ -20,13 +26,14 @@
 # shellcheck disable=SC2015,SC2016,SC2024,SC2317 # 試験：pass||fail の並び・中で展開する台本・自分のファイルへの書き出し・trap の関数
 set -euo pipefail
 
-IMAGE=24.04 TUSER=bantotester KEEP=0 FIRST_ONLY=0
+IMAGE=24.04 TUSER=bantotester KEEP=0 FIRST_ONLY=0 MIGRATE_FROM=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --image) IMAGE=$2; shift 2 ;;
     --user) TUSER=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
     --first-only) FIRST_ONLY=1; shift ;;
+    --migrate-from) MIGRATE_FROM=$2; shift 2 ;;
     *) echo "知らない引数：$1" >&2; exit 2 ;;
   esac
 done
@@ -76,7 +83,22 @@ nested_ip() { I list "$NAME" -c 4 -f csv | grep -oE '([0-9]+\.){3}[0-9]+ \(eth0\
 # ---------------------------------------------------------------------------
 note "試験の場を作る（ubuntu/$IMAGE・ユーザー $TUSER・$branch の $(git -C "$repo" rev-parse --short HEAD)）"
 [[ -z $(git -C "$repo" status --porcelain -- install.sh) ]] || echo "注意：install.sh にコミットしていない変更があります。試験に使うのはコミットしたものです" >&2
-git -C "$repo" bundle create "$LOG/banto.bundle" "$branch" 2>/dev/null
+# 取り込み元：worktree の今のコミットを release という名前にした bundle（$LOG/src を元に作り直していく）
+git clone -q --no-local "$repo" "$LOG/src" -b "$branch"
+git -C "$LOG/src" branch -q -f release HEAD
+git -C "$LOG/src" checkout -q release
+NEW_HEAD=$(git -C "$LOG/src" rev-parse HEAD)
+gitsrc() { git -C "$LOG/src" -c user.name=install-test -c user.email=install-test@example.invalid "$@"; }
+make_bundle() { rm -f "$LOG/banto.bundle"; git -C "$LOG/src" bundle create "$LOG/banto.bundle" release 2>/dev/null; }
+# release（$LOG/src で checkout している）を <commit> にして bundle し直し、試験の場の同じ場所に入れる
+push_release() {
+  git -C "$LOG/src" reset -q --hard "$1"
+  make_bundle
+  I file push -q "$LOG/banto.bundle" "$NAME/opt/banto-test/banto.bundle"
+  X chmod a+r /opt/banto-test/banto.bundle
+}
+[[ -z $MIGRATE_FROM ]] || git -C "$LOG/src" reset -q --hard "$MIGRATE_FROM"
+make_bundle
 I launch "images:ubuntu/$IMAGE" "$NAME" \
   -c security.nesting=true -c security.syscalls.intercept.mknod=true -c security.syscalls.intercept.setxattr=true \
   -c limits.cpu=3 -c limits.memory=6GiB >/dev/null
@@ -89,13 +111,58 @@ X mkdir -p /etc/systemd/system/incus.service.d /opt/banto-test
 X sh -c 'printf "# 試験の場だけ：3段目の Incus は AppArmor を使えない\n[Service]\nEnvironment=INCUS_SECURITY_APPARMOR=false\n" > /etc/systemd/system/incus.service.d/90-install-test-no-apparmor.conf'
 X sh -c "printf '127.0.0.1 $D1 sandbox.$D1 nothing.$D1 $D2 sandbox.$D2 nothing.$D2 $D3 sandbox.$D3 $D4 sandbox.$D4 nothing.$D4\n' >> /etc/hosts"
 git -C "$repo" show "HEAD:install.sh" >"$LOG/install.sh"
+[[ -z $MIGRATE_FROM ]] || git -C "$repo" show "$MIGRATE_FROM:install.sh" >"$LOG/install-old.sh"
 I file push -q "$LOG/install.sh" "$NAME/opt/banto-test/install.sh"
 I file push -q "$LOG/banto.bundle" "$NAME/opt/banto-test/banto.bundle"
 I file push -q "$here/checks.sh" "$NAME/opt/banto-test/checks.sh"
 I file push -q "$here/cloudflare-fake.mjs" "$NAME/opt/banto-test/cloudflare-fake.mjs"
+I file push -q "$here/api.sh" "$NAME/opt/banto-test/api.sh"
 X chmod -R a+rX /opt/banto-test
 TUID=$(X id -u "$TUSER")
 echo "試験の場：$NAME（uid $TUID）ログ：$LOG"
+REL="/home/$TUSER/.local/share/banto-release"
+mainpid() { X systemctl show -p MainPID --value banto-host; }
+# host が答える版（GET /api/admin/update の current.commit。機械の合言葉で）
+running_commit() {
+  U bash /opt/banto-test/api.sh GET /api/admin/update 2>/dev/null |
+    node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).current?.commit??"")}catch{console.log("")}})'
+}
+X_link() { X readlink "$REL/$1" | sed 's#^versions/##'; }
+
+# ---------------------------------------------------------------------------
+if [[ -n $MIGRATE_FROM ]]; then
+  note "古い形：${MIGRATE_FROM:0:12} の install.sh とコードで入れる（置き場そのものが clone）"
+  I file push -q "$LOG/install-old.sh" "$NAME/opt/banto-test/install-old.sh"
+  X chmod a+r /opt/banto-test/install-old.sh
+  rc=0
+  sudo incus exec "$NAME" --cwd /tmp -- sudo -u "$TUSER" -H bash -c 'cat /opt/banto-test/install-old.sh | bash -s -- --domain "$1" --repo /opt/banto-test/banto.bundle --branch release --no-claude-login' _ "$D1" \
+    </dev/null >"$LOG/old.log" 2>&1 || rc=$?
+  if [[ $rc == 0 ]] && grep -q 'banto を入れました' "$LOG/old.log"; then pass "移行：前の版の install.sh で入った"; else fail "移行：前の版の install.sh：rc=$rc"; tail -20 "$LOG/old.log"; exit 1; fi
+  X test -d "$REL/.git" && pass "移行：置き場そのものが clone（古い形）" || fail "移行：古い形になっていない"
+
+  note "今の install.sh を打つ（release は今のコミット ${NEW_HEAD:0:12}）"
+  push_release "$NEW_HEAD"
+  rc=$(run_install mig1 --no-claude-login)
+  [[ $rc == 0 ]] && pass "移行：今の install.sh が通る" || { fail "移行：rc=$rc"; tail -30 "$LOG/mig1.log"; }
+  grep -q 'setup-update.sh' "$LOG/mig1.log" && grep -q '置き場が古い形' "$LOG/mig1.log" && pass "移行：setup-update.sh に移させた" || fail "移行：setup-update.sh を打っていない"
+  X test -L "$REL/current" && X test -d "$REL/repo.git" && X test ! -d "$REL/.git" && pass "移行：版ごとのフォルダの形（repo.git・current）" || fail "移行：形：$(X ls -la "$REL")"
+  [[ $(X_link current) == "${NEW_HEAD:0:12}" && $(X_link previous) == "${MIGRATE_FROM:0:12}" ]] &&
+    pass "移行：前の clone は versions/${MIGRATE_FROM:0:12} に入り（previous）、update.mjs が ${NEW_HEAD:0:12} に上げた（current）" ||
+    fail "移行：current=$(X_link current) previous=$(X_link previous)"
+  [[ $(running_commit) == "$NEW_HEAD" ]] && pass "移行：host が新しい版で答える" || fail "移行：host の版：$(running_commit)"
+  unit=$(X systemctl cat banto-host banto-frontend)
+  [[ $unit == *"$REL/current/banto"* && $unit != *"$REL/banto"* ]] && pass "移行：unit は current を通る" || fail "移行：unit：$(echo "$unit" | grep -m2 WorkingDirectory)"
+  X test -f /etc/systemd/system/banto-update.service && X test -f /etc/polkit-1/rules.d/50-banto-update.rules && pass "移行：banto-update.service と polkit の規則がある" || fail "移行：更新の unit か規則が無い"
+  LINKM=$(grep -oE "https://$D1/#banto-login=[A-Za-z0-9_-]+" "$LOG/mig1.log" | head -1)
+  rc=0; U bash /opt/banto-test/checks.sh "$D1" "$LINKM" login >"$LOG/checks-mig.log" 2>&1 || rc=$?
+  grep -E '^(PASS|FAIL|INFO)' "$LOG/checks-mig.log" | sed 's/^/  /' | tee -a "$LOG/result.txt"
+  PASSES=$((PASSES + $(count '^PASS' "$LOG/checks-mig.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks-mig.log")))
+  pid_before=$(mainpid)
+  rc=$(run_install mig2 --no-claude-login)
+  [[ $rc == 0 ]] && grep -q 'もうこの版で動いています' "$LOG/mig2.log" && grep -q '準備は済んでいる' "$LOG/mig2.log" && [[ $(mainpid) == "$pid_before" ]] &&
+    pass "移行：もう一度打つと、何もせず（setup-update.sh も打たず、起こし直さず）通る" || fail "移行：2回目：rc=$rc"
+  echo; echo "PASS $PASSES・FAIL $FAILS（--migrate-from）"; exit $((FAILS > 0))
+fi
 
 # ---------------------------------------------------------------------------
 note "断る場合（root・--domain なし・知らない引数）"
@@ -105,17 +172,27 @@ rc=$(run_install neg-nodomain --no-claude-login)
 if [[ $rc != 0 ]] && grep -q -- '--domain がありません' "$LOG/neg-nodomain.log"; then pass "初回に --domain が無ければ止まる"; else fail "--domain なし：rc=$rc"; fi
 rc=$(run_install neg-arg --domain x.test --bogus)
 if [[ $rc != 0 ]] && grep -q '知らない引数です：--bogus' "$LOG/neg-arg.log"; then pass "知らない引数で止まる"; else fail "知らない引数：rc=$rc"; fi
+rc=$(run_install neg-branch --domain x.test --branch dev)
+if [[ $rc != 0 ]] && grep -q -- '--branch はやめました' "$LOG/neg-branch.log"; then pass "--branch は理由を出して断る（release 固定）"; else fail "--branch：rc=$rc"; fi
 X test ! -e /etc/banto/install.conf && pass "断ったときは何も覚えない" || fail "断ったのに install.conf ができた"
 
 # ---------------------------------------------------------------------------
 note "a. まっさらから1回流す（数十分かかる）"
 start=$(date +%s)
-rc=$(run_install run1 --domain "$D1" --repo /opt/banto-test/banto.bundle --branch "$branch" --no-claude-login)
+rc=$(run_install run1 --domain "$D1" --repo /opt/banto-test/banto.bundle --no-claude-login)
 echo "  $(($(date +%s) - start)) 秒・終了コード $rc"
 if [[ $rc == 0 ]] && grep -q 'banto を入れました' "$LOG/run1.log"; then pass "a: まっさらから最後まで通る（$(($(date +%s) - start)) 秒）"; else
   fail "a: 1回目：rc=$rc"; tail -30 "$LOG/run1.log"; exit 1
 fi
 LINK1=$(grep -oE "https://$D1/#banto-login=[A-Za-z0-9_-]+" "$LOG/run1.log" | head -1)
+X test -d "$REL/repo.git" && [[ $(X_link current) == "${NEW_HEAD:0:12}" ]] && X test ! -e "$REL/previous" && X test ! -d "$REL/.git" &&
+  pass "a: 版ごとのフォルダの形（repo.git・current → versions/${NEW_HEAD:0:12}・previous は無い）" || fail "a: 置き場の形：$(X ls -la "$REL")"
+[[ $(X git --git-dir "$REL/repo.git" remote get-url origin) == /opt/banto-test/banto.bundle ]] && pass "a: repo.git の origin は --repo" || fail "a: origin：$(X git --git-dir "$REL/repo.git" remote get-url origin)"
+grep -q 'update.mjs --first' "$LOG/run1.log" && pass "a: 最初の版は取ってきた版の update.mjs --first が組み立てた" || fail "a: --first の跡が無い"
+unit=$(X systemctl cat banto-host banto-frontend)
+[[ $unit == *"WorkingDirectory=$REL/current/banto"* && $unit == *"$REL/current/banto/node_modules/next"* ]] && pass "a: unit は current を通る" || fail "a: unit：$(echo "$unit" | grep -m2 WorkingDirectory)"
+X test -f /etc/systemd/system/banto-update.service && X test -f /etc/polkit-1/rules.d/50-banto-update.rules && pass "a: setup-update.sh が banto-update.service と polkit の規則を置いた" || fail "a: 更新の unit か規則が無い"
+[[ $(running_commit) == "$NEW_HEAD" ]] && pass "a: host は ${NEW_HEAD:0:12} で答える（GET /api/admin/update）" || fail "a: host の版：$(running_commit)"
 
 note "3段目の手当て（banto のユーザーの区画 user-$TUID に低い層を許す。試験の場だけ）"
 X incus project set "user-$TUID" restricted.containers.lowlevel=allow
@@ -142,7 +219,6 @@ fi
 
 # ---------------------------------------------------------------------------
 note "f-1. 何も渡さずに打ち直す：済んだ段が飛び、値が残り、起こし直さない"
-mainpid() { X systemctl show -p MainPID --value banto-host; }
 pid_before=$(mainpid)
 conf_before=$(X sha256sum "/home/$TUSER/.config/banto/config.json")
 # 壊す：表を消すと外から届く → 打ち直すと入れ直されて届かない（表が効いていることと、打ち直しで直ることを一度に見る）
@@ -153,7 +229,8 @@ rc=$(run_install run2 --no-claude-login)
 code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$IP:4737/api/auth/me" || true)
 [[ $code == 000 ]] && pass "g: 打ち直すと表が入れ直され、外から届かなくなる" || fail "g: 打ち直しても外から → $code"
 if [[ $rc == 0 ]]; then pass "f: 2回目が通る"; else fail "f: 2回目：rc=$rc"; tail -20 "$LOG/run2.log"; fi
-grep -q 'build 済み' "$LOG/run2.log" && pass "f: build を飛ばす" || fail "f: 2回目に build した"
+grep -q 'もうこの版で動いています' "$LOG/run2.log" && ! grep -q '組み立てました' "$LOG/run2.log" && pass "f: 版が同じなので update.mjs は組み立てない" || fail "f: 2回目に組み立てた"
+grep -q '準備は済んでいる' "$LOG/run2.log" && pass "f: setup-update.sh は打たない（準備が済んでいる）" || fail "f: 2回目に setup-update.sh を打った"
 grep -q 'apt で入れる' "$LOG/run2.log" && fail "f: 2回目に apt で入れた" || pass "f: apt を飛ばす"
 grep -q '入っている（/usr/local/bin/node' "$LOG/run2.log" && pass "f: Node を飛ばす" || fail "f: Node を入れ直した"
 grep -q "名前：$D1" "$LOG/run2.log" && pass "f: 名前（$D1）が残る" || fail "f: 名前が残らない"
@@ -163,7 +240,7 @@ grep -q "名前：$D1" "$LOG/run2.log" && pass "f: 名前（$D1）が残る" || 
 note "壊す試験：banto のユーザーを incus グループから外すと、doctor で止まる"
 X gpasswd -d "$TUSER" incus >/dev/null
 rc=0
-U bash -c 'BANTO_INSTALL_LIB=1 source /opt/banto-test/install.sh; trap "on_error \$? \$LINENO" ERR; parse_args --no-claude-login; step_check_host; step_resolve_settings; step_doctor_and_start' \
+U bash -c 'BANTO_INSTALL_LIB=1 source /opt/banto-test/install.sh; trap "on_error \$? \$LINENO" ERR; parse_args --no-claude-login; step_check_host; step_resolve_settings; step_node >/dev/null; step_config; step_doctor_and_start' \
   >"$LOG/break-group.log" 2>&1 || rc=$?
 if [[ $rc != 0 ]] && grep -q 'コンテナの前提がそろっていません' "$LOG/break-group.log" && grep -q 'incus グループに入っていません' "$LOG/break-group.log"; then
   pass "壊す：doctor が落ちると、どの段で何が足りないかを出して止まる"
@@ -171,20 +248,25 @@ else
   fail "壊す：rc=$rc $(tail -5 "$LOG/break-group.log")"
 fi
 
-note "f-2. 新しいコミットと --domain $D2 で打ち直す：取り込み・build・起こし直し・Caddy と config が替わる・グループも直る"
-git clone -q "$LOG/banto.bundle" -b "$branch" "$LOG/clone"
-git -C "$LOG/clone" -c user.name=install-test -c user.email=install-test@example.invalid commit -q --allow-empty -m "試験：2つ目のコミット"
-git -C "$LOG/clone" bundle create "$LOG/banto2.bundle" "$branch" 2>/dev/null
-I file push -q "$LOG/banto2.bundle" "$NAME/opt/banto-test/banto.bundle"
-X chmod a+r /opt/banto-test/banto.bundle
-new_head=$(git -C "$LOG/clone" rev-parse HEAD)
+note "f-2. 新しいコミットと --domain $D2 で打ち直す：update.mjs が上げ（current・previous が替わる）・Caddy と config が替わる・グループも直る"
+OLD12=${NEW_HEAD:0:12}
+gitsrc commit -q --allow-empty -m "試験：2つ目のコミット"
+GOOD=$(git -C "$LOG/src" rev-parse HEAD)
+push_release "$GOOD"
 pid_before=$(mainpid)
 rc=$(run_install run3 --domain "$D2" --no-claude-login)
 if [[ $rc == 0 ]]; then pass "f: --domain を変えて通る"; else fail "f: 3回目：rc=$rc"; tail -30 "$LOG/run3.log"; fi
-[[ $(U git -C "/home/$TUSER/.local/share/banto-release" rev-parse HEAD) == "$new_head" ]] && pass "f: 新しいコミットを取り込んだ" || fail "f: 新しいコミットになっていない"
-grep -q 'build する' "$LOG/run3.log" && pass "f: build した" || fail "f: build していない"
-[[ $(mainpid) != "$pid_before" ]] && pass "f: 空くのを待って起こし直した" || fail "f: 起こし直していない"
+grep -q '組み立てました' "$LOG/run3.log" && grep -q "${GOOD:0:12} に更新しました" "$LOG/run3.log" && pass "f: update.mjs が新しい版を組み立てて上げた" || fail "f: update.mjs で上がっていない"
+[[ $(X_link current) == "${GOOD:0:12}" && $(X_link previous) == "$OLD12" ]] && pass "f: current → ${GOOD:0:12}・previous → $OLD12" || fail "f: current=$(X_link current) previous=$(X_link previous)"
+[[ $(running_commit) == "$GOOD" ]] && pass "f: host が新しい版で答える" || fail "f: host の版：$(running_commit)"
+[[ $(mainpid) != "$pid_before" ]] && pass "f: 起こし直した（update.mjs が polkit の規則で）" || fail "f: 起こし直していない"
+! grep -q 'もう一度 sudo を使う' "$LOG/run3.log" && pass "f: 打ち直しでは sudo を取り直さない（起こし直しは polkit）" || fail "f: 打ち直しで sudo を取り直した"
 grep -q "incus グループに入れた" "$LOG/run3.log" && pass "f: 外したグループを打ち直しで直した" || fail "f: グループを直していない"
+# コンテナの Module が新しい版を見る：Module を起こし直すと（prepare）、banto の装置の source が新しい版になる
+PROJ=$(grep -oE 'e: Project を作った（[0-9a-f-]+）' "$LOG/checks1.log" | grep -oE '[0-9a-f-]{36}')
+U bash /opt/banto-test/api.sh POST "/api/projects/$PROJ/modules/prepare" >"$LOG/prepare2.json" || true
+devs=$(X incus config show --expanded --project "user-$TUID" "banto-$PROJ" 2>/dev/null | grep 'source:' || true)
+[[ $devs == *"versions/${GOOD:0:12}/banto"* && $devs != *"versions/$OLD12/banto"* ]] && pass "f: Project のコンテナの banto の装置の source が versions/${GOOD:0:12}/banto になった" || fail "f: 装置の source：$(echo "$devs" | tr '\n' ' ')"
 caddy=$(X cat /etc/caddy/banto.d/banto.caddy)
 if [[ $caddy == *"$D2 {"* && $caddy != *"$D1"* ]]; then pass "f: Caddy の設定が $D2 に替わった"; else fail "f: banto.caddy：$(echo "$caddy" | grep -m3 ' {')"; fi
 cfg=$(X cat "/home/$TUSER/.config/banto/config.json")
@@ -202,6 +284,29 @@ code=$(X curl -s --cacert /var/lib/caddy/.local/share/caddy/pki/authorities/loca
 [[ $code == 000 ]] && pass "f: 前の名前 $D1 にはもう答えない" || fail "f: 前の名前 $D1 → $code"
 
 # ---------------------------------------------------------------------------
+note "壊す：起きない版（host が起動ですぐ落ちる）を release に置いて打ち直す → update.mjs が前の版に戻し、install.sh が理由を出して止まる"
+printf '\nthrow new Error("試験：わざと起きない版");\n' >>"$LOG/src/banto/packages/core/src/cli.ts"
+gitsrc commit -q -am "試験：起きない版"
+BROKEN=$(git -C "$LOG/src" rev-parse HEAD)
+push_release "$BROKEN"
+rc=$(run_install run-broken --no-claude-login)
+[[ $rc != 0 ]] && grep -q '新しい版が起きなかったので、update.mjs が前の版に戻しました' "$LOG/run-broken.log" && pass "壊す：起きない版は前の版に戻し、理由を出して止まる" || { fail "壊す：rc=$rc"; tail -15 "$LOG/run-broken.log"; }
+[[ $(X_link current) == "${GOOD:0:12}" && $(running_commit) == "$GOOD" ]] && pass "壊す：current と host は前の版（${GOOD:0:12}）のまま" || fail "壊す：current=$(X_link current) host=$(running_commit)"
+# release を起きる版に戻す（ここからの打ち直しが毎回起きない版を組み立てないように）
+push_release "$GOOD"
+
+note "画面の「更新」の道：人のセッションで POST /api/admin/update → banto-update.service が上げる"
+gitsrc commit -q --allow-empty -m "試験：画面から上げる版"
+GOOD2=$(git -C "$LOG/src" rev-parse HEAD)
+push_release "$GOOD2"
+LINKU=$(U bash -c "cd $REL/current/banto && node scripts/login-link.mjs" | grep -oE "https://$D2/#banto-login=[A-Za-z0-9_-]+" | head -1)
+rc=0; U bash /opt/banto-test/checks.sh "$D2" "$LINKU" ui-update >"$LOG/checks-ui.log" 2>&1 || rc=$?
+grep -E '^(PASS|FAIL|INFO)' "$LOG/checks-ui.log" | sed 's/^/  /' | tee -a "$LOG/result.txt"
+PASSES=$((PASSES + $(count '^PASS' "$LOG/checks-ui.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks-ui.log")))
+[[ $(X_link current) == "${GOOD2:0:12}" && $(X_link previous) == "${GOOD:0:12}" ]] && pass "ui: current → ${GOOD2:0:12}・previous → ${GOOD:0:12}" || fail "ui: current=$(X_link current) previous=$(X_link previous)"
+X journalctl -u banto-update.service --no-pager >"$LOG/banto-update-journal.log" 2>&1 || true
+grep -q 'update.mjs' "$LOG/banto-update-journal.log" && pass "ui: banto-update.service が update.mjs を動かした（journal）" || fail "ui: banto-update.service の journal に update.mjs が無い"
+
 note "Caddy の unit：既に別の場所に unit がある host（apt の caddy の形）では drop-in で差し替え、/etc に丸ごと書かない"
 X sh -c 'mkdir -p /usr/lib/systemd/system && mv /etc/systemd/system/caddy.service /usr/lib/systemd/system/caddy.service && systemctl daemon-reload'
 rc=$(run_install run4 --no-claude-login)

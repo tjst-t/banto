@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 試験の場の中で、入れた banto をユーザーとして確かめる（run.sh が中に送って流す）。
-# usage: checks.sh <名前> <ログインのリンク> [full|login]
-#   full  ：b（前提と unit）・c（Caddy を通る）・d（ログイン）・e（Project とコンテナ）・g の中の側（コンテナから /relay）
-#   login ：c と d だけ（名前を変えたあと）
+# usage: checks.sh <名前> <ログインのリンク> [full|login|ui-update]
+#   full      ：b（前提と unit）・c（Caddy を通る）・d（ログイン）・e（Project とコンテナ）・g の中の側（コンテナから /relay）
+#   login     ：c と d だけ（名前を変えたあと）
+#   ui-update ：リンクで入った人のセッションで、画面の「更新」と同じ口（POST /api/admin/update）を叩き、上がるまで見る
 # 1行ずつ「PASS 何を」「FAIL 何を：なぜ」を出す。終了コードは FAIL の数
 # shellcheck disable=SC2015,SC2016,SC2024,SC2181 # pass||fail の並び・中で展開する台本・自分のファイルへの書き出し
 set -uo pipefail
@@ -26,7 +27,7 @@ c() { curl -s --cacert "$CA" "$@"; }
 
 if [[ $MODE == full ]]; then
   # ---- b. 前提と unit ----
-  out=$(cd "$REL/banto" && node packages/container/dist/doctor.js 2>&1)
+  out=$(cd "$REL/current/banto" && node packages/container/dist/doctor.js 2>&1)
   if [[ $? == 0 ]]; then pass "b: doctor が通る（$out）"; else fail "b: doctor：$out"; fi
   for u in banto-host banto-frontend caddy banto-firewall; do
     check "b: $u が動いている" systemctl is-active --quiet "$u"
@@ -107,6 +108,34 @@ r=$(c -b "$JAR" -o /dev/null -w '%{http_code}' "https://$D/api/auth/sessions")
 if [[ $r == 401 ]]; then pass "d: Cookie があっても X-Banto-Client が無ければ通らない（401）"; else fail "d: ヘッダなし → $r"; fi
 r=$(c "${H[@]}" -H 'content-type: application/json' -o /dev/null -w '%{http_code}' -X POST "https://$D/api/auth/redeem" -d "{\"code\":\"$code_in_link\"}")
 if [[ $r == 401 ]]; then pass "d: 同じリンクは2回目は通らない（401）"; else fail "d: 2回目の redeem → $r"; fi
+
+if [[ $MODE == ui-update ]]; then
+  # ---- 画面の「更新」の道：POST /api/admin/update/check → GET /api/admin/update → POST /api/admin/update（step-up は
+  # リンクで入った直後の 10 分で足りる——v4-security「人のログイン」）→ banto-update.service が update.mjs --from-request ----
+  TOKEN=$(node -e 'console.log(require(process.argv[1]).authToken)' "$HOME/.config/banto/config.json")
+  B=(-H "authorization: Bearer $TOKEN")
+  r=$(c -b "$JAR" "${H[@]}" -X POST -w ' %{http_code}' "https://$D/api/admin/update/check")
+  [[ $r == *' 200' ]] && pass "ui: 最新を確かめる（POST /api/admin/update/check）" || fail "ui: check → $r"
+  st=$(c "${B[@]}" "https://$D/api/admin/update")
+  read -r cur latest ready < <(node -e 'const s = JSON.parse(process.argv[1]); console.log(s.current?.commit ?? "-", s.latest?.commit ?? "-", (s.reasons ?? []).length === 0 ? "ready" : JSON.stringify(s.reasons))' "$st")
+  info "ui: 今の版 $cur・最新 $latest・準備 $ready"
+  [[ $ready == ready && $latest != - && $latest != "$cur" ]] && pass "ui: 準備が済んでいて、新しい版が見える" || fail "ui: 状態：$(echo "$st" | head -c 400)"
+  r=$(c -b "$JAR" "${H[@]}" -H 'content-type: application/json' -X POST -w ' %{http_code}' "https://$D/api/admin/update" -d "{\"commit\":\"$latest\",\"mode\":\"now\"}")
+  [[ $r == *' 202' ]] && pass "ui: 更新を頼む（POST /api/admin/update → 202）" || fail "ui: 頼む → $r"
+  r=$(c "${B[@]}" -H 'content-type: application/json' -X POST -o /dev/null -w '%{http_code}' "https://$D/api/admin/update" -d "{\"commit\":\"$latest\",\"mode\":\"now\"}")
+  [[ $r == 403 ]] && pass "ui: 機械の合言葉では頼めない（403）" || fail "ui: Bearer で頼む → $r"
+  now_commit=""
+  for _ in $(seq 300); do
+    now_commit=$(c "${B[@]}" "https://$D/api/admin/update" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).current?.commit??"")}catch{console.log("")}})')
+    [[ $now_commit == "$latest" ]] && break
+    sleep 3
+  done
+  [[ $now_commit == "$latest" ]] && pass "ui: banto-update.service が上げ、host が新しい版（${latest:0:12}）で答える" || fail "ui: 上がらない（今 $now_commit）"
+  phase=$(node -e 'console.log(require(process.argv[1]).phase)' "$HOME/.local/share/banto/update/state.json")
+  [[ $phase == "done" ]] && pass "ui: state.json は done" || fail "ui: state.json：$phase"
+  journalctl -u banto-update.service --no-pager 2>/dev/null | grep -q 'update.mjs\|Finished\|Deactivated' && pass "ui: banto-update.service の記録がある" || info "ui: journal を読めない（このユーザーでは読めないことがある）"
+  exit "$FAILS"
+fi
 
 [[ $MODE == full ]] || exit "$FAILS"
 
