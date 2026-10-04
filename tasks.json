@@ -4362,6 +4362,28 @@
       "extra": {}
     },
     {
+      "id": "factory-ui",
+      "kind": "task",
+      "title": "Factory の画面——実行の一覧・1件の段と記録・止める・答える",
+      "status": "ready",
+      "parent": "factory",
+      "dependsOn": [
+        "factory-runtime"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-modules.md §4.5「人の画面」。長引いたとき覗く場所。先にモックで形を決めてユーザーに見せる。",
+      "doneWhen": "実ブラウザの E2E で：走っている実行の1件を開くと、いまの段・時間・差分・最後のテスト結果・レビューの指摘・記録が出る／画面から止められる・止まったものに答えられる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-04T08:56:09.707Z",
+      "updatedAt": "2026-10-04T08:56:09.707Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "backlog-thread-recorded-on-housekeeping",
       "kind": "bug",
       "title": "片づけで閉じただけでも、閉じた Thread が「取り組んだ Thread」に記録される",
