@@ -3,7 +3,9 @@
 //
 // host で人が打つ（コンテナの中の AI からは host の systemd に届かない）。稼働中の host の
 // `GET /api/admin/activity` を数秒おきに見て、走っているターン・返事待ちの仕事（待たない形で頼んだ
-// サブエージェントなど）・Module の呼び出しが無くなったら `sudo systemctl restart` する。
+// サブエージェントなど）・Module の呼び出しが無くなったら `systemctl restart` する。まず sudo 無しで打ち
+// （画面からの更新を整えた host では polkit の規則で許されている——手順書 D）、断られたら（Interactive authentication
+// required・Access denied）`sudo systemctl restart` で打ち直す。
 // 待っている間は、何が残っているかを変わったときだけ表示する。
 //
 //   node scripts/restart-when-idle.mjs                 # 空くまで待って再起動
@@ -18,7 +20,7 @@
 // **空いたと見てから再起動するまでの間に新しいターンが始まることはありうる**（受け付けを止める仕組みは
 // まだ作っていない）。その場合、そのターンは再起動後に「途中で終わった」扱いになる。
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +42,25 @@ const timeoutMin = option("--timeout", undefined);
 const deadline = timeoutMin ? Date.now() + Number(timeoutMin) * 60_000 : undefined;
 const units = option("--units", "banto-host.service banto-frontend.service").split(/\s+/).filter(Boolean);
 const ignoreHuman = flag("--ignore-waiting-on-human");
+const restartCommand = `systemctl restart ${units.join(" ")}（polkit の規則が無い host では sudo を付けて）`;
+
+/** polkit に断られた（規則が無い）ときの systemctl の言葉。これのときだけ sudo で打ち直す——ほかの失敗は打ち直さない */
+const DENIED = /Interactive authentication required|Access denied/i;
+
+function restart() {
+  console.log(`systemctl restart ${units.join(" ")}`);
+  // --no-ask-password：断られたら、パスワードを聞かずにすぐ失敗する（端末だと polkit の問い合わせで止まる）
+  const r = spawnSync("systemctl", ["--no-ask-password", "restart", ...units], { stdio: ["inherit", "inherit", "pipe"], encoding: "utf8" });
+  if (r.error) throw r.error;
+  if (r.status === 0) return;
+  if (!DENIED.test(r.stderr ?? "")) {
+    process.stderr.write(r.stderr ?? "");
+    console.error(`systemctl restart が失敗しました（終了コード ${r.status}）`);
+    process.exit(1);
+  }
+  console.log(`polkit に断られたので sudo で打ち直します：sudo systemctl restart ${units.join(" ")}`);
+  execFileSync("sudo", ["systemctl", "restart", ...units], { stdio: "inherit" });
+}
 
 class NoEndpointError extends Error {}
 
@@ -84,8 +105,8 @@ try {
   console.error(
     err instanceof NoEndpointError
       ? "動いている host は、この口を持っていない古い版です。今回だけは画面で動いているものが無いかを確かめてから、" +
-          `sudo systemctl restart ${units.join(" ")} してください`
-      : `host が止まっているなら、待つものはありません。そのまま sudo systemctl restart ${units.join(" ")} してください`,
+          `${restartCommand} してください`
+      : `host が止まっているなら、待つものはありません。そのまま ${restartCommand} してください`,
   );
   process.exit(2);
 }
@@ -117,9 +138,8 @@ console.log(
     : "\n残っているのは人の返事待ちで止まっているターンだけです（--ignore-waiting-on-human）",
 );
 if (flag("--dry-run")) {
-  console.log(`--dry-run なので再起動しません（するなら：sudo systemctl restart ${units.join(" ")}）`);
+  console.log(`--dry-run なので再起動しません（するなら：${restartCommand}）`);
   process.exit(0);
 }
-console.log(`sudo systemctl restart ${units.join(" ")}`);
-execFileSync("sudo", ["systemctl", "restart", ...units], { stdio: "inherit" });
+restart();
 console.log("再起動しました");
