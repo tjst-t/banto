@@ -14,6 +14,7 @@
 //   node update.mjs --first --commit <sha>
 //                                       # 初めて入れる（current が無い）。待たない・戻す先が無い・起こすのは install.sh
 //   node update.mjs --dry-run           # 取ってきて、何をするかを出すだけ（組み立てない・何も書かない）
+//   --wait-timeout <分>                 # 待つ段の上限（既定は無し）。越えたら「やめる」と同じに片づけて cancelled
 //
 // **`--from-request` の無いときは request.json を使わない**——unit が頼み無しで起きた（人が systemctl start した等）
 // ときに、人が一覧を見ていない release の最新を入れないため。逆に unit は頼みが無ければ何もしない。
@@ -144,6 +145,13 @@ const fetchTimeoutMs = seconds("--fetch-timeout", "BANTO_UPDATE_FETCH_TIMEOUT", 
 const needBytesOverride = option("--need-bytes", "BANTO_UPDATE_NEED_BYTES", undefined);
 const activityIntervalMs = seconds("--interval", "BANTO_UPDATE_INTERVAL", 5);
 const markIntervalMs = seconds("--mark-interval", "BANTO_UPDATE_MARK_INTERVAL", 2);
+/** 待つ段の上限（分）。既定は無し——人が画面でやめる・すぐに切り替える。install.sh のように人が見ていない呼び手が付ける */
+const waitTimeoutMin = option("--wait-timeout", "BANTO_UPDATE_WAIT_TIMEOUT", undefined);
+const waitTimeoutMs = waitTimeoutMin === undefined ? undefined : Number(waitTimeoutMin) * 60_000;
+if (waitTimeoutMs !== undefined && !(waitTimeoutMs > 0)) {
+  console.error(`--wait-timeout は正の分で指してください：${waitTimeoutMin}`);
+  process.exit(2);
+}
 
 // 子プロセス（npm）は、この node と同じ所から探す（unit の PATH には nvm 等の node が無いことがある）
 const childEnv = {
@@ -155,10 +163,11 @@ const childEnv = {
 // ───────────── 道具 ─────────────
 
 class Stop extends Error {
-  /** @param {"failed"|"cancelled"} phase */
-  constructor(phase, message) {
+  /** @param {"failed"|"cancelled"} phase・`note` は終わったあとも state.json に残す説明 */
+  constructor(phase, message, { note } = {}) {
     super(message);
     this.phase = phase;
+    this.note = note;
   }
 }
 const fail = (message) => {
@@ -704,7 +713,8 @@ async function run() {
   // ── 3. 待つ ──
   if (mode === "wait" && !first) {
     setState({ phase: "wait" });
-    log("動いているものが無くなるまで待ちます");
+    log(`動いているものが無くなるまで待ちます${waitTimeoutMs ? `（上限 ${waitTimeoutMin} 分）` : ""}`);
+    const waitDeadline = waitTimeoutMs ? Date.now() + waitTimeoutMs : Infinity;
     let nextActivity = 0;
     let last = "";
     let lastNote;
@@ -717,6 +727,10 @@ async function run() {
     for (;;) {
       if (terminated) throw new Stop("cancelled", "止められました（SIGTERM）");
       if (marker("cancel")) throw new Stop("cancelled", "待つのをやめました");
+      if (Date.now() >= waitDeadline) {
+        const text = `待つ上限（${waitTimeoutMin} 分）を超えたのでやめました`;
+        throw new Stop("cancelled", text, { note: text });
+      }
       if (marker("force-now")) {
         log("すぐ起こし直す印があるので、待たずに進みます");
         break;
@@ -855,7 +869,7 @@ try {
     }
   }
   if (stop?.phase === "cancelled") {
-    setState({ phase: "cancelled", result: `${message}（今の版のまま）`, waiting: undefined, note: undefined });
+    setState({ phase: "cancelled", result: `${message}（今の版のまま）`, waiting: undefined, note: stop.note });
     log(message);
     exitCode = 0;
   } else {

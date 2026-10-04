@@ -341,6 +341,24 @@ test("待っている間は残っているものを state に書き、cancel で
   });
 });
 
+test("--wait-timeout：待つ段が上限を越えたら、やめるのと同じに片づけて cancelled（note に理由）", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    ctx.host.activity = BUSY;
+    const started = Date.now();
+    const { code, out } = await ctx.start(["--wait-timeout", "0.02"]).done;
+    assert.equal(code, 0, out);
+    assert.ok(Date.now() - started >= 1200, "上限（1.2秒）より前にやめた");
+    const s = ctx.state();
+    assert.equal(s.phase, "cancelled", JSON.stringify(s));
+    assert.equal(s.note, "待つ上限（0.02 分）を超えたのでやめました");
+    assert.equal(s.waiting, undefined);
+    assert.equal(ctx.current(), v(ctx.first));
+    assert.equal(existsSync(join(ctx.rel, v(b))), false, "作った版を消していない");
+    assert.deepEqual(ctx.systemctlCalls(), []);
+  });
+});
+
 test("cancel は組み立ての途中でも効く（子を止めて作りかけを消す）", T, async () => {
   await withRelease(async (ctx) => {
     const b = ctx.commit("二つ目");
