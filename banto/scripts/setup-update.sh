@@ -4,6 +4,11 @@
 #
 #   bash setup-update.sh --dry-run   # 何をするかを出すだけ（何も変えない）
 #   bash setup-update.sh             # 行う（root の所は sudo で。最後に banto を起こし直す）
+#   bash setup-update.sh --check     # 変えるものがあるかだけを答える（sudo を使わない・何も変えない）。見たものを1行ずつ出し、
+#                                    # 終了コード 0＝何も変えない・1＝変えるものがある（止まる理由があるときも 1——打てば
+#                                    # 理由が出る）・2＝root でないと分からない所がある。polkit の規則はこのユーザーには
+#                                    # 読めないので、止まっている banto-update.service の stop が許されるかで効き目を見る
+#                                    # （更新が走っている間は見ない＝2）。install.sh は「要るときだけ setup を打つ」のに使う
 #
 # 行うこと（**root の要る段（1〜5）を、置き場を動かす（6）より前に済ませる**——sudo で止まっても、動いている clone は
 # 元の場所のまま）：
@@ -25,11 +30,13 @@
 set -euo pipefail
 
 DRY=0
+CHECK=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
+    --check) CHECK=1 DRY=1 ;;
     -h | --help)
-      sed -n '2,26p' "$0"
+      sed -n '2,32p' "$0"
       exit 0
       ;;
     *)
@@ -39,7 +46,22 @@ for arg in "$@"; do
   esac
 done
 
+# --check：見たものだけを元の標準出力（3）に出し、ほかの出力は捨てる
+exec 3>&1
+[ $CHECK -eq 1 ] && exec 1>/dev/null
+CHANGES=0 UNKNOWN=0
+seen() { [ $CHECK -eq 1 ] && echo "そのまま：$*" >&3 || true; }
+changes() {
+  CHANGES=1
+  [ $CHECK -eq 1 ] && echo "変える：$*" >&3 || true
+}
+unknown() {
+  UNKNOWN=1
+  echo "分からない：$*" >&3
+}
+
 die() {
+  [ $CHECK -eq 1 ] && echo "止まる：$*" >&3
   echo "setup-update: $*" >&2
   exit 1
 }
@@ -61,10 +83,10 @@ as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi; }
 as_user() { if [ "$(id -u)" -eq 0 ]; then sudo -u "$RUN_USER" -H -- "$@"; else "$@"; fi; }
 # 変えるもの：--dry-run なら出すだけ
 run_user() {
-  if [ $DRY -eq 1 ]; then echo "   （予定）$*"; else as_user "$@"; fi
+  if [ $DRY -eq 1 ]; then echo "   （予定）$*"; changes "$*"; else as_user "$@"; fi
 }
 run_root() {
-  if [ $DRY -eq 1 ]; then echo "   （予定・root）$*"; else as_root "$@"; fi
+  if [ $DRY -eq 1 ]; then echo "   （予定・root）$*"; changes "$*"; else as_root "$@"; fi
 }
 
 NODE_BIN=${NODE_BIN:-$(command -v node || true)}
@@ -101,7 +123,7 @@ echo "ユーザー：$RUN_USER（$RUN_HOME）"
 echo "設定：$CONFIG_PATH"
 echo "置き場：$REL"
 echo "node：$NODE_BIN"
-[ $DRY -eq 1 ] && echo "（--dry-run：何も変えません）"
+[ $DRY -eq 1 ] && [ $CHECK -eq 0 ] && echo "（--dry-run：何も変えません）"
 echo
 
 # ───────────── 変える前に確かめる ─────────────
@@ -235,6 +257,7 @@ if [ $DRY -eq 0 ] && [ "$(id -u)" -ne 0 ]; then sudo true || die "sudo が通り
 
 if [ -x /usr/lib/polkit-1/polkitd ] || command -v pkaction >/dev/null 2>&1; then
   say "polkit：入っています"
+  seen "polkitd が入っています"
 else
   say "polkit を入れます"
   command -v apt-get >/dev/null || die "polkitd を入れてください（apt-get がありません）"
@@ -264,7 +287,24 @@ read_root_file() {
   if [ -r "$1" ]; then cat "$1"; elif as_root test -f "$1"; then as_root cat "$1"; else return 1; fi
 }
 put_root_file() {
-  local path=$1 content=$2 old
+  local path=$1 content=$2 old dir
+  if [ $CHECK -eq 1 ]; then
+    # sudo を使わずに見る。読めなければ「分からない」（中身が同じかを root でないと確かめられない）
+    dir=$(dirname "$path")
+    if [ -r "$path" ]; then
+      if [ "$(cat "$path")" = "$content" ]; then seen "$path"; return 1; fi
+      changes "$path（中身が違う）"
+    elif [ -e "$path" ]; then
+      unknown "$path（このユーザーには読めない）"
+      return 1
+    elif [ -x "$dir" ] || { [ ! -e "$dir" ] && [ -x "$(dirname "$dir")" ]; }; then
+      changes "$path（無い）"
+    else
+      unknown "$path（$dir に入れないので、あるかどうかも見えない）"
+      return 1
+    fi
+    return 0
+  fi
   if old=$(read_root_file "$path") && [ "$old" = "$content" ]; then
     echo "   変わりません：$path"
     return 1
@@ -302,6 +342,7 @@ for u in "${UNITS[@]}"; do
     new=$(rewrite <"$f")
     if [ "$new" = "$(cat "$f")" ]; then
       echo "   変わりません：$f"
+      seen "$f（起動元）"
       continue
     fi
     case "$f" in
@@ -315,7 +356,10 @@ done
 
 # 前の回が書いたあと（読み直す前）に止まっていれば、ファイルは「変わりません」でも systemd はまだ古い定義のまま
 for u in "${UNITS[@]}"; do
-  [ "$(systemctl show -p NeedDaemonReload --value "$u")" = yes ] && UNITS_CHANGED=1
+  if [ "$(systemctl show -p NeedDaemonReload --value "$u")" = yes ]; then
+    UNITS_CHANGED=1
+    changes "$u を systemd に読み直させる（ファイルは書き換え済み）"
+  fi
 done
 
 # ───────────── 3. banto-update.service ─────────────
@@ -342,8 +386,11 @@ $env_lines
 ExecStart=$NODE_BIN $REL/current/banto/scripts/update.mjs --from-request"
 # banto-update.service だけが変わったときは、読み直すだけ（banto は起こし直さない）
 RELOAD=$UNITS_CHANGED
-if put_root_file "$UPDATE_UNIT_PATH" "$update_unit" ||
-  [ "$(systemctl show -p NeedDaemonReload --value "$UPDATE_UNIT")" = yes ]; then RELOAD=1; fi
+if put_root_file "$UPDATE_UNIT_PATH" "$update_unit"; then RELOAD=1; fi
+if [ "$(systemctl show -p NeedDaemonReload --value "$UPDATE_UNIT")" = yes ]; then
+  RELOAD=1
+  changes "$UPDATE_UNIT を systemd に読み直させる"
+fi
 
 # ───────────── 4. polkit の規則 ─────────────
 
@@ -357,7 +404,34 @@ polkit.addRule(function(action, subject) {
   if (unit === \"$UPDATE_UNIT\" && (verb === \"start\" || verb === \"stop\")) return polkit.Result.YES;
   if ([\"${UNITS[0]}\", \"${UNITS[1]}\"].indexOf(unit) >= 0 && verb === \"restart\") return polkit.Result.YES;
 });"
-put_root_file "$POLKIT_RULE" "$rule" || true
+# --check で規則が読めないとき（/etc/polkit-1/rules.d は root:polkitd 750——Ubuntu 24.04 の polkit 124 で見た）は、
+# 中身の代わりに効き目を見る：止まっている banto-update.service の stop は何も変えず、polkit を通る（規則があれば
+# 許され、無ければ断られる。2026-10-04 に確かめた）。stop を許すのは今の形の規則だけ。走っている間は止めてしまうので見ない
+rule_in_effect() {
+  local st
+  if [ "$(systemctl show -p LoadState --value "$UPDATE_UNIT")" != loaded ]; then
+    unknown "$POLKIT_RULE（このユーザーには読めない。$UPDATE_UNIT が無いので、stop で効き目を確かめることもできない）"
+    return
+  fi
+  st=$(systemctl show -p ActiveState --value "$UPDATE_UNIT")
+  case "$st" in
+    inactive | failed) ;;
+    *)
+      unknown "$POLKIT_RULE（このユーザーには読めない。$UPDATE_UNIT が $st なので、stop で効き目を確かめることもしない）"
+      return
+      ;;
+  esac
+  if systemctl --no-ask-password stop "$UPDATE_UNIT" 2>/dev/null; then
+    seen "$POLKIT_RULE（読めないが効いている——止まっている $UPDATE_UNIT の stop が許された）"
+  else
+    changes "$POLKIT_RULE（無いか古い——止まっている $UPDATE_UNIT の stop が断られた）"
+  fi
+}
+if [ $CHECK -eq 1 ] && [ "$(id -u)" -ne 0 ] && [ ! -r "$POLKIT_RULE" ]; then
+  rule_in_effect
+else
+  put_root_file "$POLKIT_RULE" "$rule" || true
+fi
 
 # ───────────── 5. 規則が効いているか ─────────────
 
@@ -365,21 +439,27 @@ put_root_file "$POLKIT_RULE" "$rule" || true
 # JS の規則を読まない、規則が読み込まれていない等）なら止まる——画面から押してから気づかない。
 # pkcheck は root で打つ：--detail（どの unit・どの操作か）を付けて聞けるのは root か action の持ち主だけ
 # （ほかのユーザーが打つと NotAuthorized。2026-10-04 に polkit 124 で確かめた）
-if [ "$(id -u)" -ne 0 ]; then
-  PK_SUBJECT=$$ # この打っているシェル（RUN_USER のプロセス）
-else
-  PK_SUBJECT=$(systemctl show -p MainPID --value "${UNITS[0]}")
-  [ "${PK_SUBJECT:-0}" != 0 ] && [ "$(stat -c %U "/proc/$PK_SUBJECT" 2>/dev/null)" = "$RUN_USER" ] ||
-    die "polkit に聞くための $RUN_USER のプロセスが見つかりません（${UNITS[0]} が動いていません）。$RUN_USER で打ってください"
-fi
+pk_subject() {
+  if [ "$(id -u)" -ne 0 ]; then
+    PK_SUBJECT=$$ # この打っているシェル（RUN_USER のプロセス）
+  else
+    PK_SUBJECT=$(systemctl show -p MainPID --value "${UNITS[0]}")
+    [ "${PK_SUBJECT:-0}" != 0 ] && [ "$(stat -c %U "/proc/$PK_SUBJECT" 2>/dev/null)" = "$RUN_USER" ] ||
+      die "polkit に聞くための $RUN_USER のプロセスが見つかりません（${UNITS[0]} が動いていません）。$RUN_USER で打ってください"
+  fi
+}
 pk_allowed() {
   as_root pkcheck --action-id org.freedesktop.systemd1.manage-units --process "$PK_SUBJECT" \
     --detail unit "$1" --detail verb "$2" >/dev/null 2>&1
 }
-if [ $DRY -eq 1 ]; then
+if [ $CHECK -eq 1 ]; then
+  # 変えるものではない（確かめるだけ）。規則の中身が同じなら、書いたときに setup が確かめている
+  echo "見ていない：pkcheck（--check では打たない。setup が規則を書いたときに確かめる）" >&3
+elif [ $DRY -eq 1 ]; then
   say "polkit の規則が効いているか：（予定）pkcheck で確かめる"
 else
   say "polkit の規則が効いているか（pkcheck）"
+  pk_subject
   command -v pkcheck >/dev/null || die "pkcheck がありません（polkitd を入れてください）"
   for check in "$UPDATE_UNIT start" "$UPDATE_UNIT stop" "${UNITS[0]} restart" "${UNITS[1]} restart"; do
     # shellcheck disable=SC2086
@@ -443,13 +523,21 @@ if [ -n "$CLONE" ]; then
 fi
 # worktree の .git と、repo.git の中の登録を結び直し、index が無ければ（--no-checkout で作ったまま）HEAD から作る
 # （何度打ってもよい。入れ替えたあとで止まった回の続きもここで直る。作業ツリーのファイルには触らない）
+# 結び直しが要るか：repo.git の中の登録（<git-dir>/gitdir）がこの worktree の .git を指しているか
+worktree_linked() {
+  local gd
+  gd=$(as_user git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null) &&
+    [ "$(readlink -f "$(cat "$gd/gitdir" 2>/dev/null)")" = "$(readlink -f "$1/.git")" ]
+}
 for d in "$REL"/versions/*/; do
   [ -f "$d.git" ] || continue
-  run_user git -C "${d%/}" worktree repair
-  if [ $DRY -eq 0 ] && [ ! -e "$(as_user git -C "${d%/}" rev-parse --path-format=absolute --git-path index)" ]; then
+  if worktree_linked "${d%/}"; then seen "${d%/}（repo.git の worktree）"; else run_user git -C "${d%/}" worktree repair; fi
+  if [ ! -e "$(as_user git -C "${d%/}" rev-parse --path-format=absolute --git-path index 2>/dev/null)" ]; then
     run_user git -C "${d%/}" reset -q
-    [ -z "$(as_user git -C "${d%/}" status --porcelain --untracked-files=no)" ] ||
-      die "${d%/} を worktree にしたら差分が出ました（git -C ${d%/} status で見てください）"
+    if [ $DRY -eq 0 ]; then
+      [ -z "$(as_user git -C "${d%/}" status --porcelain --untracked-files=no)" ] ||
+        die "${d%/} を worktree にしたら差分が出ました（git -C ${d%/} status で見てください）"
+    fi
   fi
 done
 [ $DRY -eq 1 ] && [ -n "$CLONE" ] && run_user git -C "$CLONE" reset -q
@@ -471,6 +559,7 @@ if [ ! -L "$REL/current" ]; then
   LAYOUT_CHANGED=1
 else
   say "置き場：版ごとのフォルダの形です（current → $(readlink "$REL/current")）"
+  seen "$REL（版ごとのフォルダの形・current → $(readlink "$REL/current")）"
 fi
 
 # ───────────── 7. 読み直して起こし直す ─────────────
@@ -494,6 +583,11 @@ if [ $LAYOUT_CHANGED -eq 1 ] || [ $UNITS_CHANGED -eq 1 ]; then
   fi
 else
   say "変えたものが無いので、起こし直しません"
+fi
+if [ $CHECK -eq 1 ]; then
+  if [ $CHANGES -eq 1 ]; then exit 1; fi
+  if [ $UNKNOWN -eq 1 ]; then exit 2; fi
+  exit 0
 fi
 echo
 if [ $DRY -eq 1 ]; then

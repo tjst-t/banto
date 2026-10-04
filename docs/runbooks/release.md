@@ -251,6 +251,11 @@ clone は元の場所のまま。
    bash ~/banto-setup-update.sh --dry-run
    ```
 
+   **変えるものがあるかだけを知りたいとき**は `bash ~/banto-setup-update.sh --check`（sudo を使わず、何も変えない。
+   見たものを1行ずつ出し、終了コード 0＝何も変えない・1＝変えるものがある・2＝root でないと分からない所がある）。
+   polkit の規則はこのユーザーには読めないので、止まっている `banto-update.service` の stop が許されるかで効き目を見る
+   （更新が走っている間は見ない＝2）。install.sh は「要るときだけ setup を打つ」のにこれを使う
+
    画面のポートは `banto-frontend.service` の起動の仕方（ExecStart の `-p`、`npm run start` なら package.json の
    `scripts.start`、無ければ `PORT`）から読む。読めないと止まるので、そのときは
    `BANTO_UI_URL=http://127.0.0.1:4175/ bash ~/banto-setup-update.sh` のように指す
