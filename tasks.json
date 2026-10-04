@@ -4318,6 +4318,28 @@
       "extra": {}
     },
     {
+      "id": "factory-runtime",
+      "kind": "task",
+      "title": "Factory の骨組み——手順の実行（記録と流し直しで再開）・tool 4本・同梱の手順",
+      "status": "ready",
+      "parent": "factory",
+      "dependsOn": [
+        "subagent-for-factory"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-modules.md §4.5。Module の骨組み（目録に置く・scope project・exec）、手順＝JS の関数1本を動かす実行の仕組み（段の呼び出しを番号で記録・流し直しで終わった段は記録を返す・始めて終わっていないサブエージェントは返事を待つ）、runFactory／listFactoryRuns／answerFactory／cancelFactory、同梱の「1件を運ぶ」手順（実装→テストの関門→レビュー、上限つき）、設定（テストのコマンド必須・準備のコマンド・実装役とレビュー役・同時件数・上限）、止まったら頼んだ Thread に知らせる。Factory が必ず守るもの（worktree・Backlog・テストの関門）は手順の外に置く。",
+      "doneWhen": "偽のエージェントで：1件が実装→テスト→レビューを通って main に入り Backlog が done になる／テストが3回落ちたら止まって頼んだ Thread に知らせが届き、answerFactory で続けられる／Factory の Module を途中で落として起こし直すと、終わった段を繰り返さずに続く",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-04T08:56:04.618Z",
+      "updatedAt": "2026-10-04T08:56:04.618Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "backlog-thread-recorded-on-housekeeping",
       "kind": "bug",
       "title": "片づけで閉じただけでも、閉じた Thread が「取り組んだ Thread」に記録される",
