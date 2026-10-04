@@ -35,6 +35,7 @@
   "items": [
     {
       "id": "phase0-inbox",
+      "number": 1,
       "kind": "task",
       "title": "受信箱を実データに繋ぐ",
       "status": "done",
@@ -58,6 +59,7 @@
     },
     {
       "id": "phase0-f1-threshold",
+      "number": 2,
       "kind": "task",
       "title": "F1 しきい値検知——文脈が詰まってきたら人に上げる",
       "status": "backlog",
@@ -86,6 +88,7 @@
     },
     {
       "id": "phase0-stale-notify",
+      "number": 3,
       "kind": "task",
       "title": "滞留通知（A7）",
       "status": "backlog",
@@ -110,6 +113,7 @@
     },
     {
       "id": "judgment-liveness-after-host-restart",
+      "number": 4,
       "kind": "task",
       "title": "host を再起動すると、判断待ちが永久に live のまま残る",
       "status": "done",
@@ -132,6 +136,7 @@
     },
     {
       "id": "phase0-compaction-count",
+      "number": 5,
       "kind": "task",
       "title": "圧縮を1回起こして数える",
       "status": "done",
@@ -156,6 +161,7 @@
     },
     {
       "id": "app-shell-shared-layout",
+      "number": 6,
       "kind": "task",
       "title": "AppShell を共有のlayoutへ引き上げる",
       "status": "done",
@@ -178,6 +184,7 @@
     },
     {
       "id": "turn-stream-reattach",
+      "number": 7,
       "kind": "task",
       "title": "走行中のターンに再接続できる口",
       "status": "done",
@@ -203,6 +210,7 @@
     },
     {
       "id": "turn-latest-on-return",
+      "number": 8,
       "kind": "task",
       "title": "戻ってきたら、最新の状況をそのまま出す（帯をやめる）",
       "status": "done",
@@ -230,6 +238,7 @@
     },
     {
       "id": "project-instruction-ui",
+      "number": 9,
       "kind": "task",
       "title": "Project 固有の指示（system prompt の層3）を人が書く画面",
       "status": "backlog",
@@ -253,6 +262,7 @@
     },
     {
       "id": "ai-writes-global-memory",
+      "number": 10,
       "kind": "task",
       "title": "AI から Global Memory に書く経路",
       "status": "backlog",
@@ -277,6 +287,7 @@
     },
     {
       "id": "review-turn-lifecycle",
+      "number": 11,
       "kind": "task",
       "title": "ターンの生死を finally で必ず閉じる",
       "status": "done",
@@ -299,6 +310,7 @@
     },
     {
       "id": "review-block-send-while-pending",
+      "number": 12,
       "kind": "task",
       "title": "判断待ち中の送信を塞ぐ",
       "status": "done",
@@ -323,6 +335,7 @@
     },
     {
       "id": "review-permission-mode-authoritative",
+      "number": 13,
       "kind": "task",
       "title": "permissionMode の真実を host に寄せる",
       "status": "done",
@@ -346,6 +359,7 @@
     },
     {
       "id": "review-answer-resolution-result",
+      "number": 14,
       "kind": "task",
       "title": "答えられない承認に 200 を返さない",
       "status": "done",
@@ -368,6 +382,7 @@
     },
     {
       "id": "review-error-path-status",
+      "number": 15,
       "kind": "task",
       "title": "エラー経路の status を他と揃える",
       "status": "done",
@@ -390,6 +405,7 @@
     },
     {
       "id": "review-clear-during-turn",
+      "number": 16,
       "kind": "task",
       "title": "走行中の Clear が黙って取り消される",
       "status": "done",
@@ -412,6 +428,7 @@
     },
     {
       "id": "review-elicitation-not-connected",
+      "number": 17,
       "kind": "task",
       "title": "Elicitation の判断待ちが、答えても届かないのに答えられる",
       "status": "done",
@@ -437,6 +454,7 @@
     },
     {
       "id": "review-sync-restored-termination",
+      "number": 18,
       "kind": "task",
       "title": "リロード後の続きを6秒で諦めない",
       "status": "done",
@@ -459,6 +477,7 @@
     },
     {
       "id": "review-spec-who-answers",
+      "number": 19,
       "kind": "task",
       "title": "「どこで答えるか」を仕様で決め直す",
       "status": "done",
@@ -481,6 +500,7 @@
     },
     {
       "id": "review-use-tooluseid",
+      "number": 20,
       "kind": "task",
       "title": "canUseTool の toolUseID を使う",
       "status": "done",
@@ -503,6 +523,7 @@
     },
     {
       "id": "review-approval-shows-input",
+      "number": 21,
       "kind": "task",
       "title": "承認カードに tool の引数を出す",
       "status": "done",
@@ -528,6 +549,7 @@
     },
     {
       "id": "review-judgment-servername",
+      "number": 22,
       "kind": "task",
       "title": "どのサーバが聞いているかを出す（§2.4.1 の MUST）",
       "status": "done",
@@ -551,6 +573,7 @@
     },
     {
       "id": "review-bypass-dialog-wording",
+      "number": 23,
       "kind": "task",
       "title": "bypassPermissions の確認文言が仕様と逆",
       "status": "done",
@@ -574,6 +597,7 @@
     },
     {
       "id": "review-e2e-proves-resolution",
+      "number": 24,
       "kind": "task",
       "title": "承認が本当に解決したことを、tool の結果で見る",
       "status": "done",
@@ -596,6 +620,7 @@
     },
     {
       "id": "review-e2e-deny",
+      "number": 25,
       "kind": "task",
       "title": "拒否の経路の回帰テスト",
       "status": "done",
@@ -618,6 +643,7 @@
     },
     {
       "id": "review-unit-approval-resolution",
+      "number": 26,
       "kind": "task",
       "title": "host 側に承認解決の単体テストを置く",
       "status": "done",
@@ -642,6 +668,7 @@
     },
     {
       "id": "review-sse-error-after-headers",
+      "number": 27,
       "kind": "task",
       "title": "SSE 送出後の例外で host が落ちうる",
       "status": "done",
@@ -664,6 +691,7 @@
     },
     {
       "id": "review-snapshot-never-saved",
+      "number": 28,
       "kind": "task",
       "title": "スナップショットが本番で一度も保存されない",
       "status": "done",
@@ -686,6 +714,7 @@
     },
     {
       "id": "review-input-validation",
+      "number": 29,
       "kind": "task",
       "title": "境界で値を検証する（/answer と /permission-mode）",
       "status": "done",
@@ -708,6 +737,7 @@
     },
     {
       "id": "review-small-fixes",
+      "number": 30,
       "kind": "task",
       "title": "小さいずれ（復元の並び順・palette のフラグ）",
       "status": "done",
@@ -730,6 +760,7 @@
     },
     {
       "id": "phase1-module-contract",
+      "number": 31,
       "kind": "task",
       "title": "Module の宣言・登録の契約を確定する",
       "status": "done",
@@ -754,6 +785,7 @@
     },
     {
       "id": "phase1-python-module-wired",
+      "number": 32,
       "kind": "task",
       "title": "TypeScript でない Module を banto に繋ぐ",
       "status": "done",
@@ -779,6 +811,7 @@
     },
     {
       "id": "phase1-cache-measurement",
+      "number": 33,
       "kind": "task",
       "title": "ツールを足してもキャッシュが落ちないことを、本実装で数値確認",
       "status": "done",
@@ -802,6 +835,7 @@
     },
     {
       "id": "phase1-modules-verified-in-browser",
+      "number": 34,
       "kind": "task",
       "title": "3つの Module が仕様どおり画面から使えることの実測",
       "status": "done",
@@ -826,6 +860,7 @@
     },
     {
       "id": "phase1-project-modules-ui",
+      "number": 35,
       "kind": "task",
       "title": "Project 単位の Module 管理 UI",
       "status": "done",
@@ -852,6 +887,7 @@
     },
     {
       "id": "phase1-canvas-embed-foundation",
+      "number": 36,
       "kind": "task",
       "title": "MCP Apps の埋め込み受け皿（二重iframe＋postMessage 中継）",
       "status": "done",
@@ -877,6 +913,7 @@
     },
     {
       "id": "phase1-canvas-inline",
+      "number": 37,
       "kind": "task",
       "title": "MCP Apps：インライン（会話のカードに埋め込む）",
       "status": "done",
@@ -901,6 +938,7 @@
     },
     {
       "id": "phase1-canvas-fullscreen",
+      "number": 38,
       "kind": "task",
       "title": "MCP Apps：フルスクリーン（会話の隣に開く）",
       "status": "done",
@@ -925,6 +963,7 @@
     },
     {
       "id": "phase1-canvas-config",
+      "number": 39,
       "kind": "task",
       "title": "MCP Apps：設定画面への埋め込み（ui://<id>/config）",
       "status": "done",
@@ -949,6 +988,7 @@
     },
     {
       "id": "phase1-canvas-launcher",
+      "number": 40,
       "kind": "task",
       "title": "MCP Apps：ランチャー（人が AI を介さずに開く）",
       "status": "done",
@@ -974,6 +1014,7 @@
     },
     {
       "id": "phase1-module-selfreport",
+      "number": 41,
       "kind": "task",
       "title": "Module の自己申告と宣言の突き合わせを本番で走らせる",
       "status": "done",
@@ -999,6 +1040,7 @@
     },
     {
       "id": "module-connect-failure-surface",
+      "number": 42,
       "kind": "task",
       "title": "Module が繋がらないことの伝え方——毎ターン会話にエラーを出さない",
       "status": "done",
@@ -1024,6 +1066,7 @@
     },
     {
       "id": "ui-codeblock-cjk",
+      "number": 43,
       "kind": "task",
       "title": "AI の返事のコードブロックが、途中で更新を止める（日本語が消えて見える）",
       "status": "done",
@@ -1049,6 +1092,7 @@
     },
     {
       "id": "composer-image-attachment",
+      "number": 44,
       "kind": "task",
       "title": "画像を banto に送れるようにする",
       "status": "done",
@@ -1074,6 +1118,7 @@
     },
     {
       "id": "global-memory-mid-thread-delivery",
+      "number": 45,
       "kind": "task",
       "title": "Global Memory が走行中の会話に届かない",
       "status": "done",
@@ -1098,6 +1143,7 @@
     },
     {
       "id": "module-declaration-overlay",
+      "number": 46,
       "kind": "task",
       "title": "Module 宣言の上書きを「差分」で持つ（既定の改良が届くようにする）",
       "status": "done",
@@ -1123,6 +1169,7 @@
     },
     {
       "id": "perf-module-spawn-parallel",
+      "number": 47,
       "kind": "task",
       "title": "Module の起動を同時に行う（最初のターンの待ちを削る）",
       "status": "done",
@@ -1147,6 +1194,7 @@
     },
     {
       "id": "perf-frontend-production-build",
+      "number": 48,
       "kind": "task",
       "title": "画面を本番ビルドで出す（体感の最大要因を切り分ける）",
       "status": "done",
@@ -1169,6 +1217,7 @@
     },
     {
       "id": "perf-bootstrap-overfetch",
+      "number": 49,
       "kind": "task",
       "title": "起動時に、開いていない Project の Thread 一覧まで取りに行かない",
       "status": "done",
@@ -1193,6 +1242,7 @@
     },
     {
       "id": "canvas-open-card",
+      "number": 50,
       "kind": "task",
       "title": "開いたものは会話にカードとして残る（勝手に開くのは一度だけ）",
       "status": "done",
@@ -1218,6 +1268,7 @@
     },
     {
       "id": "mobile-keyboard-layout",
+      "number": 51,
       "kind": "task",
       "title": "携帯：キーボードが出てもヘッダと入力欄が消えない",
       "status": "done",
@@ -1241,6 +1292,7 @@
     },
     {
       "id": "mobile-transcript-height-jump",
+      "number": 52,
       "kind": "task",
       "title": "履歴を上へ辿ると、途中で高さが伸びる（体感の引っかかり）",
       "status": "done",
@@ -1264,6 +1316,7 @@
     },
     {
       "id": "sidebar-and-mobile-nav",
+      "number": 53,
       "kind": "task",
       "title": "サイドバー：名前と目次が読める・幅を変えられる・モバイルはひとつの目次に",
       "status": "done",
@@ -1293,6 +1346,7 @@
     },
     {
       "id": "relay-token-child-env",
+      "number": 54,
       "kind": "task",
       "title": "中継トークンを子プロセスに渡さない",
       "status": "done",
@@ -1320,6 +1374,7 @@
     },
     {
       "id": "relay-approval-gate-and-audit",
+      "number": 55,
       "kind": "task",
       "title": "Module 間中継の初回承認ゲートと Event Store 監査（§2.5 の未実装分）",
       "status": "done",
@@ -1349,6 +1404,7 @@
     },
     {
       "id": "relay-lifecycle-and-elicitation",
+      "number": 56,
       "kind": "task",
       "title": "中継のセッション・トークン・プロセス回収と Elicitation の宛先分離",
       "status": "done",
@@ -1377,6 +1433,7 @@
     },
     {
       "id": "relay-proc-allowlist",
+      "number": 57,
       "kind": "task",
       "title": "Landlock 許可リストから /proc を外せるか",
       "status": "done",
@@ -1404,6 +1461,7 @@
     },
     {
       "id": "ui-tool-call-visibility-boundary",
+      "number": 58,
       "kind": "task",
       "title": "画面 API（ui-tool-call）の可視性強制をどこに置くか",
       "status": "done",
@@ -1432,6 +1490,7 @@
     },
     {
       "id": "landlock-guard-wiring",
+      "number": 59,
       "kind": "task",
       "title": "assertRulesetIsSafe を本番経路に配線する",
       "status": "done",
@@ -1459,6 +1518,7 @@
     },
     {
       "id": "event-store-durability",
+      "number": 60,
       "kind": "task",
       "title": "Event Store の fsync と torn line 切り詰め（§2.1 の未実装分）",
       "status": "done",
@@ -1485,6 +1545,7 @@
     },
     {
       "id": "shell-progress-keepalive",
+      "number": 61,
       "kind": "task",
       "title": "runCommand 実行中の定期 progress 送出（v4-modules §2.3 の未実装分）",
       "status": "done",
@@ -1512,6 +1573,7 @@
     },
     {
       "id": "relay-health-turn-abort",
+      "number": 62,
       "kind": "task",
       "title": "代理サーバの健全性検査をターン冒頭に移す",
       "status": "done",
@@ -1536,6 +1598,7 @@
     },
     {
       "id": "module-meta-strict-values",
+      "number": 63,
       "kind": "task",
       "title": "visibility 等の不正値を「最も緩い既定」に落とさない",
       "status": "done",
@@ -1562,6 +1625,7 @@
     },
     {
       "id": "vault-os-surface-hardening",
+      "number": 64,
       "kind": "task",
       "title": "Vault の OS 面の穴をまとめて塞ぐ",
       "status": "done",
@@ -1587,6 +1651,7 @@
     },
     {
       "id": "declaration-repair-project-overlay",
+      "number": 65,
       "kind": "task",
       "title": "自己申告に合わせた宣言修復が Project 上書きを instance 既定へ書き戻す件",
       "status": "done",
@@ -1612,6 +1677,7 @@
     },
     {
       "id": "e2e-run-isolation",
+      "number": 66,
       "kind": "task",
       "title": "E2E の worker 並走と実行間衝突を止める",
       "status": "done",
@@ -1638,6 +1704,7 @@
     },
     {
       "id": "e2e-content-assertions",
+      "number": 67,
       "kind": "task",
       "title": "E2E の「中身を見ていない」検証を規則14の形に直す",
       "status": "done",
@@ -1666,6 +1733,7 @@
     },
     {
       "id": "docs-gardening-review-followup",
+      "number": 68,
       "kind": "task",
       "title": "レビューで見つかった文書の消し込み漏れをまとめて直す",
       "status": "done",
@@ -1693,6 +1761,7 @@
     },
     {
       "id": "frontend-error-surfacing",
+      "number": 69,
       "kind": "task",
       "title": "無言で失敗する箇所に「失敗したら見せる＋巻き戻す」の共通の型を入れる",
       "status": "done",
@@ -1720,6 +1789,7 @@
     },
     {
       "id": "memory-input-ime-enter",
+      "number": 70,
       "kind": "task",
       "title": "Memory 追加の Enter が IME 変換確定を拾う",
       "status": "done",
@@ -1745,6 +1815,7 @@
     },
     {
       "id": "core-turn-runner-unit-tests",
+      "number": 71,
       "kind": "task",
       "title": "turn-runner / runner-adapter の単体テスト",
       "status": "done",
@@ -1770,6 +1841,7 @@
     },
     {
       "id": "frontend-interaction-hardening",
+      "number": 72,
       "kind": "task",
       "title": "frontend の要確認4件（Escape 二重処理・SSE 食い合い・SandboxFrame 再接続・Reload/Edit 半接続）を検証して直す",
       "status": "done",
@@ -1795,6 +1867,7 @@
     },
     {
       "id": "phase1-closure-decision",
+      "number": 73,
       "kind": "task",
       "title": "Phase 1 を閉じるかどうか",
       "status": "done",
@@ -1820,6 +1893,7 @@
     },
     {
       "id": "module-registry-install-scope",
+      "number": 74,
       "kind": "task",
       "title": "§5.1「公式レジストリからインストール」は撤回か将来形か",
       "status": "done",
@@ -1845,6 +1919,7 @@
     },
     {
       "id": "module-registry-install",
+      "number": 75,
       "kind": "task",
       "title": "公式レジストリからの検索・インストール",
       "status": "backlog",
@@ -1868,6 +1943,7 @@
     },
     {
       "id": "default-permission-mode-alignment",
+      "number": 76,
       "kind": "task",
       "title": "defaultPermissionMode（仕様は既定 auto）と実装の食い違い",
       "status": "done",
@@ -1895,6 +1971,7 @@
     },
     {
       "id": "filesystem-path-scope",
+      "number": 77,
       "kind": "task",
       "title": "FileSystem の tool 引数を根からの相対に限るか",
       "status": "done",
@@ -1923,6 +2000,7 @@
     },
     {
       "id": "thread-branching-host",
+      "number": 78,
       "kind": "task",
       "title": "やり直し（分岐）を host 側に持つ",
       "status": "backlog",
@@ -1946,6 +2024,7 @@
     },
     {
       "id": "host-turn-concurrency-lock",
+      "number": 79,
       "kind": "task",
       "title": "同じ Thread で2つのターンを同時に走らせない（host 側の錠）",
       "status": "backlog",
@@ -1969,6 +2048,7 @@
     },
     {
       "id": "sidebar-reorder-rename",
+      "number": 80,
       "kind": "task",
       "title": "サイドバーで並べ替え・名前の変更",
       "status": "done",
@@ -1993,6 +2073,7 @@
     },
     {
       "id": "fork-from-message",
+      "number": 81,
       "kind": "task",
       "title": "発言の下から、その時点の Fork を作る",
       "status": "done",
@@ -2017,6 +2098,7 @@
     },
     {
       "id": "module-kit-extract",
+      "number": 82,
       "kind": "task",
       "title": "Module を書く足場（kit）と契約試験を切り出す",
       "status": "backlog",
@@ -2041,6 +2123,7 @@
     },
     {
       "id": "vault-tool-surface-to-spec",
+      "number": 83,
       "kind": "task",
       "title": "Vault の Tool 層を仕様（§2.1 A/B/C）まで揃える",
       "status": "done",
@@ -2068,6 +2151,7 @@
     },
     {
       "id": "vault-ui-module",
+      "number": 84,
       "kind": "task",
       "title": "VaultUI——Vault の管理だけをまとめて行う Module を作る",
       "status": "done",
@@ -2103,6 +2187,7 @@
     },
     {
       "id": "ai-facing-surface-and-secret-generation",
+      "number": 85,
       "kind": "task",
       "title": "AI に届いている面を実測して塞ぐ／Vault の使い方を伝える／秘密を Vault の中で作る／requestAlias を会話の中の入力欄にする",
       "status": "done",
@@ -2137,6 +2222,7 @@
     },
     {
       "id": "second-vault-backend-infisical",
+      "number": 86,
       "kind": "task",
       "title": "2本目の Vault（Infisical）を作り、@banto/vault-kit を切り出す",
       "status": "done",
@@ -2167,6 +2253,7 @@
     },
     {
       "id": "vault-directory-facade",
+      "number": 87,
       "kind": "task",
       "title": "vault-directory を窓口にする——AI に金庫を選ばせない／Shell の決め打ちを外す",
       "status": "done",
@@ -2189,6 +2276,7 @@
     },
     {
       "id": "vault-scope-by-group",
+      "number": 88,
       "kind": "task",
       "title": "グループを唯一の真実にする——scope を導出にし、アクセス制限を効かせる",
       "status": "done",
@@ -2211,6 +2299,7 @@
     },
     {
       "id": "vault-local-rename-and-infisical-settings",
+      "number": 89,
       "kind": "task",
       "title": "vault → vault-local に改名し、Infisical の繋ぎ方を設定画面から入れられるようにする",
       "status": "done",
@@ -2233,6 +2322,7 @@
     },
     {
       "id": "vault-placement-and-resolution",
+      "number": 90,
       "kind": "task",
       "title": "置き場と解決を設計し直す——既定は1つ、例外は明示、既定の外は修飾名",
       "status": "done",
@@ -2255,6 +2345,7 @@
     },
     {
       "id": "vault-migrate-alias",
+      "number": 91,
       "kind": "task",
       "title": "秘密を別の置き場へ移せるようにする（置き場の変更を可能に）",
       "status": "done",
@@ -2277,6 +2368,7 @@
     },
     {
       "id": "module-secret-placeholder",
+      "number": 92,
       "kind": "task",
       "title": "`${secret:名前}` ——Module の宣言に秘密を書かずに済ませる",
       "status": "done",
@@ -2299,6 +2391,7 @@
     },
     {
       "id": "module-remote-mcp",
+      "number": 93,
       "kind": "task",
       "title": "リモート MCP（`type:\"http\"`）を受け入れるか決めて、入れるなら実装する",
       "status": "done",
@@ -2321,6 +2414,7 @@
     },
     {
       "id": "module-remote-oauth",
+      "number": 94,
       "kind": "task",
       "title": "ログインが要るリモート MCP（OAuth）に繋ぐ",
       "status": "done",
@@ -2343,6 +2437,7 @@
     },
     {
       "id": "module-settings-table-and-bundled",
+      "number": 95,
       "kind": "task",
       "title": "Module の設定画面を1枚のテーブルに揃え、「同梱」の意味を分ける",
       "status": "done",
@@ -2365,6 +2460,7 @@
     },
     {
       "id": "judgment-answer-render-race",
+      "number": 96,
       "kind": "bug",
       "title": "承認に答えた直後にターンが終わると、「回答：…」が画面に出ない",
       "status": "backlog",
@@ -2385,6 +2481,7 @@
     },
     {
       "id": "fullscreen-canvas-order-fragility",
+      "number": 97,
       "kind": "task",
       "title": "Canvas が開かない——画面が「どの tool が画面を持つか」を聞き終わる前にターンを始めていた",
       "status": "done",
@@ -2405,6 +2502,7 @@
     },
     {
       "id": "human-canvas-call-blocked-by-concurrent-turn",
+      "number": 98,
       "kind": "bug",
       "title": "人が画面で押した管理操作が、同じ Module を AI が使っている最中だと無言で止まる",
       "status": "backlog",
@@ -2425,6 +2523,7 @@
     },
     {
       "id": "memory-tool-not-reachable-from-fake-runner",
+      "number": 99,
       "kind": "bug",
       "title": "AI が自分でメモを取る経路（remember_decision）は、偽 Runner から呼べない",
       "status": "backlog",
@@ -2445,6 +2544,7 @@
     },
     {
       "id": "module-registry-install-npm",
+      "number": 100,
       "kind": "task",
       "title": "MCP Registry の一覧から Module を入れて繋ぐ（npm・remote）",
       "status": "done",
@@ -2465,6 +2565,7 @@
     },
     {
       "id": "curated-module-catalog",
+      "number": 101,
       "kind": "task",
       "title": "banto が選んだ目録を主にし、MCP Registry は「カスタム」の中へ降ろす",
       "status": "done",
@@ -2485,6 +2586,7 @@
     },
     {
       "id": "paste-server-json",
+      "number": 102,
       "kind": "task",
       "title": "`server.json` を貼って Module を入れる",
       "status": "done",
@@ -2505,6 +2607,7 @@
     },
     {
       "id": "agent-sdk-check-broken",
+      "number": 103,
       "kind": "task",
       "title": "`npm run check:agent-sdk` が動かない（仕様が「SDK との疎通確認はこの1本」と決めている口）",
       "status": "done",
@@ -2525,6 +2628,7 @@
     },
     {
       "id": "skill-instructions-wiring",
+      "number": 104,
       "kind": "task",
       "title": "効いている Skill の名前と説明を `instructions` に載せる（core）",
       "status": "done",
@@ -2545,6 +2649,7 @@
     },
     {
       "id": "skill-module-bundled",
+      "number": 105,
       "kind": "task",
       "title": "Skill Module（同梱）——Skill を資源として配る",
       "status": "done",
@@ -2565,6 +2670,7 @@
     },
     {
       "id": "skill-import",
+      "number": 106,
       "kind": "task",
       "title": "`import_skill`——git / ZIP から取り込む（画面を持つ tool）",
       "status": "done",
@@ -2585,6 +2691,7 @@
     },
     {
       "id": "skill-activation-store",
+      "number": 107,
       "kind": "task",
       "title": "効かせる集合の記録——設定層＋会話に刻む",
       "status": "done",
@@ -2605,6 +2712,7 @@
     },
     {
       "id": "skill-context-meter",
+      "number": 108,
       "kind": "task",
       "title": "効いている Skill の数とトークン量を画面に出す",
       "status": "done",
@@ -2625,6 +2733,7 @@
     },
     {
       "id": "shell-home",
+      "number": 109,
       "kind": "task",
       "title": "Shell 専用のホーム——人が選んだ設定だけを写し、資格情報は写さない",
       "status": "done",
@@ -2645,6 +2754,7 @@
     },
     {
       "id": "shell-https-credential-forwarding",
+      "number": 110,
       "kind": "task",
       "title": "Shell の git が HTTPS の資格情報を Vault から取る（取り出し役の転送）",
       "status": "backlog",
@@ -2665,6 +2775,7 @@
     },
     {
       "id": "shell-worktree-project-git",
+      "number": 111,
       "kind": "bug",
       "title": "git の worktree を根にした Project で、Shell の git が使えない",
       "status": "backlog",
@@ -2687,6 +2798,7 @@
     },
     {
       "id": "filesystem-browser",
+      "number": 112,
       "kind": "task",
       "title": "FileSystem のファイルブラウザ・プレビュー・編集をモックと同じ機能まで本実装にする",
       "status": "done",
@@ -2707,6 +2819,7 @@
     },
     {
       "id": "filesystem-show-file",
+      "number": 113,
       "kind": "task",
       "title": "AI が人にファイルを見せる——showFile",
       "status": "done",
@@ -2727,6 +2840,7 @@
     },
     {
       "id": "filesystem-view-state",
+      "number": 114,
       "kind": "task",
       "title": "ファイルブラウザ：開いているファイルを別タブ・リロードでも保つ／切り替えと編集を1行に／「File」で入口が引ける",
       "status": "done",
@@ -2747,6 +2861,7 @@
     },
     {
       "id": "e2e-vault-directory-settings-infisical-missing",
+      "number": 115,
       "kind": "bug",
       "title": "E2E「Vault の置き場を、全体の設定画面から決められる」が HEAD で落ちている",
       "status": "backlog",
@@ -2767,6 +2882,7 @@
     },
     {
       "id": "thread-model-effort",
+      "number": 116,
       "kind": "task",
       "title": "入力欄の下でモデルと reasoning effort を選ぶ（Thread 単位・途中でも変えられる）",
       "status": "done",
@@ -2787,6 +2903,7 @@
     },
     {
       "id": "model-identity-in-system-prompt",
+      "number": 117,
       "kind": "task",
       "title": "AI に自分のモデル（名前と ID）をシステムプロンプトで伝える",
       "status": "done",
@@ -2807,6 +2924,7 @@
     },
     {
       "id": "agent-sdk-0.3.281",
+      "number": 118,
       "kind": "task",
       "title": "Agent SDK を 0.3.281（Claude Code 2.1.281 同梱）に上げる——既定が Opus 5.5 になる",
       "status": "done",
@@ -2827,6 +2945,7 @@
     },
     {
       "id": "subagent-poc-acp",
+      "number": 119,
       "kind": "task",
       "title": "SubAgent の PoC——Claude Code と OpenCode を ACP で動かして、未決を測る",
       "status": "done",
@@ -2847,6 +2966,7 @@
     },
     {
       "id": "subagent-module-sync",
+      "number": 120,
       "kind": "task",
       "title": "Subagent Module（待つ形）——Claude Code と OpenCode",
       "status": "done",
@@ -2869,6 +2989,7 @@
     },
     {
       "id": "subagent-permission-to-human",
+      "number": 121,
       "kind": "task",
       "title": "サブエージェントの確認を人に上げる",
       "status": "backlog",
@@ -2891,6 +3012,7 @@
     },
     {
       "id": "elicitation-answers",
+      "number": 122,
       "kind": "task",
       "title": "Module からの Elicitation に、受信箱から答えられるようにする",
       "status": "backlog",
@@ -2911,6 +3033,7 @@
     },
     {
       "id": "subagent-banto-modules",
+      "number": 123,
       "kind": "task",
       "title": "サブエージェントに banto の Module（FileSystem・Shell・Vault）を渡す",
       "status": "backlog",
@@ -2933,6 +3056,7 @@
     },
     {
       "id": "tool-progress-display",
+      "number": 124,
       "kind": "task",
       "title": "tool の進捗（notifications/progress）を会話のカードに出す",
       "status": "backlog",
@@ -2953,6 +3077,7 @@
     },
     {
       "id": "subagent-claude-host-login",
+      "number": 125,
       "kind": "task",
       "title": "Claude Code のサブエージェントに banto 本体のログインを共有する（中継）",
       "status": "done",
@@ -2975,6 +3100,7 @@
     },
     {
       "id": "subagent-claude-expiry-measure",
+      "number": 126,
       "kind": "task",
       "title": "本体のトークンの期限をまたいだサブエージェントの振る舞いを実測する",
       "status": "backlog",
@@ -2997,6 +3123,7 @@
     },
     {
       "id": "subagent-claude-default-model",
+      "number": 127,
       "kind": "task",
       "title": "Claude Code のサブエージェントの既定のモデルを本体と揃える",
       "status": "done",
@@ -3019,6 +3146,7 @@
     },
     {
       "id": "subagent-default-credentials",
+      "number": 128,
       "kind": "task",
       "title": "OpenCode の鍵を設定画面から入れ、既定で使う",
       "status": "done",
@@ -3041,6 +3169,7 @@
     },
     {
       "id": "subagent-settings-global",
+      "number": 129,
       "kind": "task",
       "title": "サブエージェントの鍵の設定を banto 全体の設定へ移す",
       "status": "done",
@@ -3063,6 +3192,7 @@
     },
     {
       "id": "subagent-launcher",
+      "number": 130,
       "kind": "task",
       "title": "サブエージェントの入口（launcher）——頼んだ仕事の一覧・状態・中身を見る、止める",
       "status": "done",
@@ -3085,6 +3215,7 @@
     },
     {
       "id": "subagent-launcher-design",
+      "number": 131,
       "kind": "task",
       "title": "サブエージェントの入口と設定の画面を作り直す——経過・書きかけの返答・状態が一目で分かる形へ",
       "status": "done",
@@ -3108,6 +3239,7 @@
     },
     {
       "id": "canvas-host-style-variables",
+      "number": 132,
       "kind": "task",
       "title": "Canvas の色と段は banto が持ち、hostContext.styles.variables で渡す",
       "status": "done",
@@ -3128,6 +3260,7 @@
     },
     {
       "id": "canvas-standard-style-names",
+      "number": 133,
       "kind": "task",
       "title": "Skills・Vault の画面が、banto の渡す色を標準の名前で受ける",
       "status": "backlog",
@@ -3150,6 +3283,7 @@
     },
     {
       "id": "project-module-canvas-admin-stamp",
+      "number": 134,
       "kind": "task",
       "title": "Project ごとの Module の設定画面から押した操作を、人の管理操作と刻むか決める",
       "status": "backlog",
@@ -3172,6 +3306,7 @@
     },
     {
       "id": "subagent-codex",
+      "number": 135,
       "kind": "task",
       "title": "Subagent に Codex を足す",
       "status": "backlog",
@@ -3194,6 +3329,7 @@
     },
     {
       "id": "subagent-async",
+      "number": 136,
       "kind": "task",
       "title": "Subagent の待たない形——終わったら依頼元の Thread に届ける",
       "status": "done",
@@ -3216,6 +3352,7 @@
     },
     {
       "id": "landlock-unix-socket-escape",
+      "number": 137,
       "kind": "task",
       "title": "閉じ込めの中から UNIX ソケット経由で外に出られる（docker.sock・systemd --user）",
       "status": "done",
@@ -3239,6 +3376,7 @@
     },
     {
       "id": "dev-environment-container",
+      "number": 138,
       "kind": "task",
       "title": "開発の自由度と閉じ込め：Project ごとのシステムコンテナ（Incus）にまとめ、Landlock をやめると決める",
       "status": "done",
@@ -3259,6 +3397,7 @@
     },
     {
       "id": "container-host-prereqs",
+      "number": 139,
       "kind": "task",
       "title": "コンテナの前提をホストで確かめ、足りなければ言う（Incus 6.0.6 以降・incus グループ・subuid・転送の許可）",
       "status": "done",
@@ -3281,6 +3420,7 @@
     },
     {
       "id": "container-lifecycle",
+      "number": 140,
       "kind": "task",
       "title": "host が Project ごとのコンテナを作り・起こし・止め・消す",
       "status": "done",
@@ -3303,6 +3443,7 @@
     },
     {
       "id": "container-e2e",
+      "number": 141,
       "kind": "task",
       "title": "E2E をコンテナの形で回せるようにする",
       "status": "done",
@@ -3325,6 +3466,7 @@
     },
     {
       "id": "container-module-spawn",
+      "number": 142,
       "kind": "task",
       "title": "Project の Module をコンテナの中で起こし、host の中継をブリッジ側でも待ち受ける",
       "status": "done",
@@ -3348,6 +3490,7 @@
     },
     {
       "id": "container-relay-per-alias",
+      "number": 143,
       "kind": "task",
       "title": "コンテナから値を返す口を呼ぶときは、鍵の名前ごとに人に聞く",
       "status": "done",
@@ -3370,6 +3513,7 @@
     },
     {
       "id": "container-subagent",
+      "number": 144,
       "kind": "task",
       "title": "サブエージェントを Project のコンテナで走らせ、Claude のログインの中継を host に残す",
       "status": "done",
@@ -3393,6 +3537,7 @@
     },
     {
       "id": "container-nesting-setting",
+      "number": 145,
       "kind": "task",
       "title": "Project ごとに「中で Docker を使う」（入れ子）を選べるようにする",
       "status": "done",
@@ -3415,6 +3560,7 @@
     },
     {
       "id": "container-instance-third-party",
+      "number": 146,
       "kind": "task",
       "title": "外から足した banto 全体の Module を、banto 全体用のコンテナ（1台）で動かす",
       "status": "done",
@@ -3437,6 +3583,7 @@
     },
     {
       "id": "container-landlock-removal",
+      "number": 147,
       "kind": "task",
       "title": "Landlock を外す（banto-landlock-exec・許可リスト・v4-security.md §2・画面の文言）",
       "status": "done",
@@ -3461,6 +3608,7 @@
     },
     {
       "id": "relay-grant-codeid-not-bound",
+      "number": 148,
       "kind": "bug",
       "title": "外から繋いだ宛先への承認が、コードの印（targetCodeId）に縛られていない",
       "status": "backlog",
@@ -3481,6 +3629,7 @@
     },
     {
       "id": "container-confinement-field",
+      "number": 149,
       "kind": "task",
       "title": "宣言の confinement（kind: \"landlock\"）を片づける——いまは読むだけの印",
       "status": "backlog",
@@ -3503,6 +3652,7 @@
     },
     {
       "id": "frontend-lint-red",
+      "number": 150,
       "kind": "bug",
       "title": "フロントの npm run lint が赤い（今回の変更の前から）",
       "status": "backlog",
@@ -3523,6 +3673,7 @@
     },
     {
       "id": "e2e-typecheck-red",
+      "number": 151,
       "kind": "bug",
       "title": "e2e の型検査が赤い・そもそも typecheck に入っていない",
       "status": "backlog",
@@ -3546,6 +3697,7 @@
     },
     {
       "id": "live-text-join-differs-from-record",
+      "number": 152,
       "kind": "task",
       "title": "流れている吹き出しと記録で、文のつなぎ方が違う",
       "status": "done",
@@ -3570,6 +3722,7 @@
     },
     {
       "id": "thread-messaging",
+      "number": 153,
       "kind": "task",
       "title": "Thread 間のメッセージ——AI が別の Thread の AI に送る（Thread に届ける口の上に）",
       "status": "done",
@@ -3592,6 +3745,7 @@
     },
     {
       "id": "subagent-from-modules",
+      "number": 154,
       "kind": "task",
       "title": "banto の中の別の Module からサブエージェントを呼べるようにする（残り：中継の時間の上限・札の宛先に Module）",
       "status": "backlog",
@@ -3614,6 +3768,7 @@
     },
     {
       "id": "latency-human-actions-2026-09-26",
+      "number": 155,
       "kind": "task",
       "title": "人の操作に対するレイテンシーを削る（設定画面・Project を開く・新しい Project・ターンの頭と尻）",
       "status": "done",
@@ -3634,6 +3789,7 @@
     },
     {
       "id": "project-container-prewarm",
+      "number": 156,
       "kind": "task",
       "title": "新しい Project のコンテナを先回りして作り置く（残り 1.5 秒のうち約 0.9 秒）",
       "status": "backlog",
@@ -3654,6 +3810,7 @@
     },
     {
       "id": "container-mount-guard-and-restart",
+      "number": 158,
       "kind": "bug",
       "title": "Project のコンテナのマウントを2点直す（危ない根を断る・付け直したら起こし直す）",
       "status": "backlog",
@@ -3674,6 +3831,7 @@
     },
     {
       "id": "fork-inline-fullscreen",
+      "number": 159,
       "kind": "bug",
       "title": "Fork の会話の中の Module 画面を「大きく表示」できない",
       "status": "backlog",
@@ -3694,6 +3852,7 @@
     },
     {
       "id": "ai-attach-module",
+      "number": 160,
       "kind": "task",
       "title": "AI が banto の目録から Module を選び、人の承認でその Project につけられるようにする",
       "status": "backlog",
@@ -3714,6 +3873,7 @@
     },
     {
       "id": "publish-host-verify",
+      "number": 161,
       "kind": "task",
       "title": "Publish（窓口＋Caddy のサブドメイン）を本物の Caddy・Incus・ブラウザで確かめる",
       "status": "done",
@@ -3734,6 +3894,7 @@
     },
     {
       "id": "claude-login-relay-owner",
+      "number": 157,
       "kind": "task",
       "title": "Claude ログインの中継を core に常設し、Project のコンテナの環境に住所と合言葉を入れる",
       "status": "ready",
@@ -3754,6 +3915,7 @@
     },
     {
       "id": "vault-directory-call-id",
+      "number": 162,
       "kind": "task",
       "title": "vault-directory も中継に呼び出しの印を返す（2つの Project の秘密の解決が同時に来ても断られないように）",
       "status": "ready",
@@ -3774,6 +3936,7 @@
     },
     {
       "id": "ai-start-forks",
+      "number": 163,
       "kind": "task",
       "title": "AI が tool から Fork を立てる（名前と最初の指示つき）＋ターンが終わったら受信箱にレビュー待ち",
       "status": "done",
@@ -3794,6 +3957,7 @@
     },
     {
       "id": "repositories-stage1",
+      "number": 164,
       "kind": "task",
       "title": "Repositories Module の段階1（台帳・Import・一覧から外す／元に戻す・既定の置き場・一覧の画面・入口をどの Project にも出す）",
       "status": "done",
@@ -3816,6 +3980,7 @@
     },
     {
       "id": "repositories-stage2",
+      "number": 165,
       "kind": "task",
       "title": "Repositories Module の段階2（GitHub のアカウント：PAT・ブラウザでログイン（GitHub App のデバイスフロー）・自動更新・更新の失敗を受信箱へ・台帳の扱うアカウント）",
       "status": "done",
@@ -3840,6 +4005,7 @@
     },
     {
       "id": "repositories-stage3",
+      "number": 166,
       "kind": "task",
       "title": "Repositories Module の段階3（URL から clone・新しいリポジトリ・clone し直す・「Project も作る」——Canvas から core の新しい Project の画面をフォルダ入りで開く口 dev.banto/open-new-project）",
       "status": "done",
@@ -3864,6 +4030,7 @@
     },
     {
       "id": "repositories-stage4",
+      "number": 167,
       "kind": "task",
       "title": "Repositories Module の段階4（「読むだけ」の行にアカウントを後から選ぶ・このマシンから削除（失われるものを数えて確かめる・使っていた Project は core の確かめで閉じる dev.banto/close-projects）・core の新しい Project の画面に Module が名乗ったタブ（folder-provider・dev.banto/folder-prepared））",
       "status": "done",
@@ -3888,6 +4055,7 @@
     },
     {
       "id": "repositories-next",
+      "number": 168,
       "kind": "story",
       "title": "Repositories の続き",
       "status": "in-progress",
@@ -3910,6 +4078,7 @@
     },
     {
       "id": "repositories-stage5",
+      "number": 169,
       "kind": "task",
       "title": "段階5：このマシンにだけあるリポジトリを GitHub に公開して push する",
       "status": "done",
@@ -3938,6 +4107,7 @@
     },
     {
       "id": "repositories-open-existing-project",
+      "number": 170,
       "kind": "task",
       "title": "既にある Project を Repositories の画面（Canvas）から開く口",
       "status": "in-progress",
@@ -3963,6 +4133,7 @@
     },
     {
       "id": "repositories-real-mount-delete-verify",
+      "number": 171,
       "kind": "task",
       "title": "本物のマウントで「このマシンから削除」を確かめる",
       "status": "ready",
@@ -3983,6 +4154,7 @@
     },
     {
       "id": "repositories-private-clone-fails",
+      "number": 172,
       "kind": "bug",
       "title": "非公開リポジトリの clone が失敗する",
       "status": "backlog",
@@ -4006,6 +4178,7 @@
     },
     {
       "id": "subagent-human-loop",
+      "number": 173,
       "kind": "story",
       "title": "サブエージェントと人のやり取り・Module からの呼び出し",
       "status": "backlog",
@@ -4026,6 +4199,7 @@
     },
     {
       "id": "module-foundation",
+      "number": 174,
       "kind": "story",
       "title": "Module の土台を整える（足場・目録・宣言の片づけ・色の名前）",
       "status": "backlog",
@@ -4046,6 +4220,7 @@
     },
     {
       "id": "thread-foundation",
+      "number": 175,
       "kind": "story",
       "title": "会話（Thread）と Memory の残り",
       "status": "backlog",
@@ -4066,6 +4241,7 @@
     },
     {
       "id": "unattended-run",
+      "number": 176,
       "kind": "story",
       "title": "人が見ていない長い自動実行に備える（詰まりの警報・滞留通知）",
       "status": "backlog",
@@ -4088,6 +4264,7 @@
     },
     {
       "id": "human-login",
+      "number": 177,
       "kind": "story",
       "title": "人のログイン（パスキー・端末を追加・公開先の通行証）",
       "status": "ready",
@@ -4110,6 +4287,7 @@
     },
     {
       "id": "login-core-session",
+      "number": 179,
       "kind": "task",
       "title": "core：セッションと1回だけの札（Cookie・独自ヘッダ・CORS・login-link・締め出し）",
       "status": "done",
@@ -4135,6 +4313,7 @@
     },
     {
       "id": "login-core-passkey",
+      "number": 180,
       "kind": "task",
       "title": "core：パスキーの登録・ログイン・step-up",
       "status": "done",
@@ -4162,6 +4341,7 @@
     },
     {
       "id": "login-frontend",
+      "number": 181,
       "kind": "task",
       "title": "画面：門・設定の「ログイン」区画（パスキー・端末を追加の QR とリンク・ログイン中の端末）、Bearer を画面から消す",
       "status": "done",
@@ -4190,6 +4370,7 @@
     },
     {
       "id": "login-e2e-migrate",
+      "number": 182,
       "kind": "task",
       "title": "E2E を新しい入り方に移す（画面は localhost、ログインのリンクで入る）",
       "status": "done",
@@ -4217,6 +4398,7 @@
     },
     {
       "id": "login-publish-pass",
+      "number": 183,
       "kind": "task",
       "title": "Publish：公開先の通行証（forward_auth・Cookie を外す・既定を banto のログインに）",
       "status": "done",
@@ -4244,6 +4426,7 @@
     },
     {
       "id": "login-deploy",
+      "number": 184,
       "kind": "task",
       "title": "反映：トークンの作り直し・host での login-link・release への push",
       "status": "in-progress",
@@ -4272,6 +4455,7 @@
     },
     {
       "id": "factory",
+      "number": 178,
       "kind": "story",
       "title": "Factory——依頼を耐久ワークフローとして進める",
       "status": "backlog",
@@ -4297,6 +4481,7 @@
     },
     {
       "id": "subagent-for-factory",
+      "number": 188,
       "kind": "task",
       "title": "Subagent に cwd・schema・頼んだ Module から止める口を足す",
       "status": "ready",
@@ -4319,6 +4504,7 @@
     },
     {
       "id": "factory-runtime",
+      "number": 189,
       "kind": "task",
       "title": "Factory の骨組み——手順の実行（記録と流し直しで再開）・tool 4本・同梱の手順",
       "status": "ready",
@@ -4341,6 +4527,7 @@
     },
     {
       "id": "factory-merge-queue",
+      "number": 190,
       "kind": "task",
       "title": "Factory のマージの列——Project で1本・rebase・再テスト・fast-forward",
       "status": "ready",
@@ -4363,6 +4550,7 @@
     },
     {
       "id": "factory-ui",
+      "number": 191,
       "kind": "task",
       "title": "Factory の画面——実行の一覧・1件の段と記録・止める・答える",
       "status": "ready",
@@ -4385,6 +4573,7 @@
     },
     {
       "id": "factory-acceptance",
+      "number": 192,
       "kind": "task",
       "title": "Factory の受け入れ——3件同時・1件失敗・host を起こし直して続く",
       "status": "ready",
@@ -4408,6 +4597,7 @@
     },
     {
       "id": "backlog-thread-recorded-on-housekeeping",
+      "number": 185,
       "kind": "bug",
       "title": "片づけで閉じただけでも、閉じた Thread が「取り組んだ Thread」に記録される",
       "status": "done",
@@ -4435,6 +4625,7 @@
     },
     {
       "id": "e2e-inbox-badge-counts-leftover-review",
+      "number": 186,
       "kind": "bug",
       "title": "E2E の受信箱の試験が、前の spec の残したレビュー待ちを数えて落ちる（main でも再現）",
       "status": "backlog",
@@ -4457,6 +4648,7 @@
     },
     {
       "id": "transcript-autolink-swallows-japanese",
+      "number": 187,
       "kind": "bug",
       "title": "会話の中の URL の自動リンクが、後ろに続く全角の「）」や日本語の文まで飲み込む",
       "status": "backlog",
@@ -4479,6 +4671,7 @@
     },
     {
       "id": "backlog-push-not-relayed-to-repositories",
+      "number": 193,
       "kind": "bug",
       "title": "Backlog の自動 push が Repositories に頼まれず、自分の git で失敗する",
       "status": "in-progress",
@@ -4508,6 +4701,7 @@
     },
     {
       "id": "self-update",
+      "number": 194,
       "kind": "story",
       "title": "設定画面から banto を最新版に更新する",
       "status": "ready",
@@ -4528,6 +4722,7 @@
     },
     {
       "id": "self-update-mock",
+      "number": 195,
       "kind": "task",
       "title": "「更新」の節のモックを人に見せて形を決める",
       "status": "done",
@@ -4548,6 +4743,7 @@
     },
     {
       "id": "self-update-scripts",
+      "number": 196,
       "kind": "task",
       "title": "update.mjs と setup-update.sh（版ごとのフォルダ・unit・polkit）",
       "status": "done",
@@ -4568,6 +4764,7 @@
     },
     {
       "id": "self-update-host-api",
+      "number": 197,
       "kind": "task",
       "title": "host の /api/admin/update（読む・確かめる・頼む・やめる・すぐ）",
       "status": "done",
@@ -4590,6 +4787,7 @@
     },
     {
       "id": "self-update-ui",
+      "number": 198,
       "kind": "task",
       "title": "設定の「更新」の節（本物の画面）",
       "status": "done",
@@ -4613,6 +4811,7 @@
     },
     {
       "id": "self-update-host-verify",
+      "number": 199,
       "kind": "task",
       "title": "この host で手順書 D を済ませ、画面から更新を確かめる",
       "status": "in-progress",
@@ -4640,6 +4839,7 @@
     },
     {
       "id": "resume-across-restart",
+      "number": 200,
       "kind": "story",
       "title": "起こし直しをまたいで続ける——Thread の AI とサブエージェントを再起動後に自動で動かし直す",
       "status": "backlog",
@@ -4663,6 +4863,7 @@
     },
     {
       "id": "backlog-item-number",
+      "number": 201,
       "kind": "task",
       "title": "Backlog の項目に通し番号（#42）を付けて画面に出し、番号でも指せるようにする",
       "status": "in-progress",
