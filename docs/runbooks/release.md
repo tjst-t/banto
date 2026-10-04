@@ -235,6 +235,8 @@ sudo systemctl restart UNIT_HOST UNIT_UI
 - 更新用の unit（`banto-update.service`）と polkit の規則1つを入れる
 
 これをまとめて行うのが `banto/scripts/setup-update.sh`（何度打っても壊れない。`install.sh` も同じものを使う）。
+**1回目は `$REL/banto/scripts/setup-update.sh`、済ませたあとに打ち直すときは `$REL/current/banto/scripts/setup-update.sh`**
+（1回目で REL が版ごとのフォルダの形に移るため）。下のコマンドは1回目のもの。
 
 1. **今の REL を最新にしておく**（B の 1〜3。この機能が入った版で動いていること）
 2. **何が変わるかを見る**（変えずに出すだけ）
