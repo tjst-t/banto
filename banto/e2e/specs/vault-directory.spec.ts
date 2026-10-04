@@ -739,6 +739,16 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   await expect(linkRow.locator("td").nth(4), "参照のグループが違う").toHaveText(projectGroup);
   // **参照の参照は作らない**——押せるのに断られるボタンを置かない
   await expect(linkRow.getByRole("button", { name: "参照を作る" })).toHaveCount(0);
+  // **参照の「移す」は元の Vault に固定**——別の Vault へは必ず断られるので選ばせない
+  await linkRow.getByRole("button", { name: "移す" }).click();
+  await expect(canvas.locator("#dlg-move")).toBeVisible();
+  await expect(canvas.locator("#move-vault"), "参照なのに Vault を選べる").toBeDisabled();
+  await expect(canvas.locator("#move-vault")).toHaveValue("vault-local");
+  expect(
+    await canvas.locator("#move-vault option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value)),
+  ).toEqual(["vault-local"]);
+  await canvas.locator("#dlg-move").getByRole("button", { name: "やめる" }).click();
+  await expect(canvas.locator("#dlg-move")).toBeHidden();
   // 既定の絞り込み（この Project から使える）に戻すと、参照は出て、元は出ない
   await canvas.locator("#target-filter").selectOption("usable");
   await expect(canvas.locator("tbody tr").filter({ hasText: linkName })).toHaveCount(1);

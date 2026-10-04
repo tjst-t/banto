@@ -1106,8 +1106,14 @@ ${ALIAS_KIND_RULES_JS}
       $("move-group").disabled = groups.length === 0;
       applyMoveEffect();
     };
-    $("move-vault").replaceChildren(...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
+    // **参照は Vault をまたいで動かせない**（2026-10-04）——別の Vault を選べると必ず断られるので、
+    // 参照の行では元の Vault に固定する（選べるように見せない、規則13）
+    const vaultChoices = a.linkTo
+      ? (places.vaults || []).filter((v) => v.implementation === a.implementation)
+      : places.vaults || [];
+    $("move-vault").replaceChildren(...vaultChoices.map((v) => option(v.implementation, v.implementation)));
     $("move-vault").value = a.implementation;
+    $("move-vault").disabled = !!a.linkTo;
     fill();
     $("move-vault").onchange = fill;
     $("move-group").onchange = applyMoveEffect;

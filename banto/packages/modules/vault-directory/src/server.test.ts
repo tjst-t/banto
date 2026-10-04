@@ -1375,3 +1375,12 @@ test("参照：Vault だけ・グループだけで指して候補が2つ以上�
     assert.deepEqual(after.find((a: { group: string }) => a.group === "dst").linkTo, { group: "g2", name: "T" });
   }, { vaultNames: ["vault-local", "vault-2"] });
 });
+
+test("管理画面：参照の行の「移す」は、Vault を元の Vault に固定する（別の Vault は選べない）", () => {
+  // 参照は Vault をまたいで動かせない——選べると必ず断られる
+  assert.ok(MANAGE_APP_HTML.includes('$("move-vault").disabled = !!a.linkTo;'), "参照の行でも Vault を選べてしまう");
+  assert.ok(
+    MANAGE_APP_HTML.includes("(places.vaults || []).filter((v) => v.implementation === a.implementation)"),
+    "参照の行の移す先に、別の Vault が並ぶ",
+  );
+});
