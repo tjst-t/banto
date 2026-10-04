@@ -73,6 +73,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
   td.name { font-weight: 500; }
   td.actions { text-align: right; white-space: nowrap; }
   .note-cell { opacity: .7; }
+  /* 参照の行の「→ 元のグループ / 名前」。名前より控えめに */
+  .link-to { font-weight: 400; opacity: .6; }
+  .link-broken { font-weight: 400; color: var(--mcp-ui-color-danger, #c0392b); }
   dialog {
     border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
     border-radius: 10px; padding: 0; color: inherit;
@@ -282,6 +285,30 @@ export const MANAGE_APP_HTML = `<!doctype html>
   </form>
 </dialog>
 
+<dialog id="dlg-link">
+  <form method="dialog" class="dialog-body">
+    <!-- **参照**（決定・2026-10-04、ユーザー）。見えないグループにある秘密のうち、特定の1つだけを
+         別の置き場から使えるようにする。「移す」は元を消し、「写す」は同じ値が2か所になるので、
+         元を1つのまま指す。**同じ Vault の中だけ**——Vault は元と同じに固定して見せる -->
+    <p class="dialog-title">この秘密を別の置き場から使えるようにする（参照）</p>
+    <p class="dialog-desc" id="link-now"></p>
+    <div class="field"><span>置く先</span>
+      <div class="row">
+        <select id="link-vault" style="flex:1 1 12em" disabled></select>
+        <select id="link-group" style="flex:1 1 12em"></select>
+      </div>
+    </div>
+    <label class="field"><span>名前</span><input id="link-name" autocomplete="off" required /></label>
+    <p class="dialog-desc">値は写しません。元を変えればこちらも変わり、元を消すとこちらは使えなくなります</p>
+    <p class="dialog-desc" id="link-effect"></p>
+    <div class="problem" id="link-error" hidden></div>
+    <div class="dialog-footer">
+      <button value="cancel" formnovalidate>やめる</button>
+      <button id="link-submit" value="ok">参照を作る</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="dlg-pubkey">
   <form method="dialog" class="dialog-body">
     <p class="dialog-title" id="pubkey-title">公開鍵ができました</p>
@@ -321,9 +348,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
   <form method="dialog" class="dialog-body">
     <p class="dialog-title">この秘密を削除する</p>
     <p class="dialog-desc" id="delete-target"></p>
-    <p class="dialog-desc">
-      値も一緒に消える。これを使っているコマンドは、次から動かなくなる
-    </p>
+    <p class="dialog-desc" id="delete-effect"></p>
+    <!-- **元を消すと、それを指す参照は使えなくなる**（2026-10-04）——押す前に言う -->
+    <p class="dialog-desc" id="delete-links" hidden></p>
     <div class="problem" id="delete-error" hidden></div>
     <div class="dialog-footer">
       <!-- **やめるは、検証を通さない**（訂正・2026-09-15、試験を書いていて発覚）。
@@ -447,8 +474,8 @@ ${ALIAS_KIND_RULES_JS}
     if (!q) return true;
     // **グループも検索に入れる**——列に出したものが引けないと、見えているのに探せない。
     // 引けるのは**列に出ている文字列**（backend での本当の名前）
-    return [a.name, KIND_LABEL[a.kind] || a.kind, targetOf(a).label,
-            a.group || "", a.implementation, a.note || ""]
+    return [a.name, KIND_LABEL[a.kind] || a.kind || "", targetOf(a).label,
+            a.group || "", a.implementation, a.note || "", linkLabel(a)]
       .join(" ").toLowerCase().includes(q);
   }
 
@@ -472,6 +499,21 @@ ${ALIAS_KIND_RULES_JS}
     // UUID そのままの名前は、人にとって意味が無い——せめて何であるかを言う
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(group)) return "別の Project 専用（" + group.slice(0, 8) + "…）";
     return group;
+  }
+
+  /**
+   * **参照の行が指している先**（追加・2026-10-04）。参照でなければ空。
+   * 元が無ければそう言う——黙って消さない（規則2）。
+   */
+  function linkLabel(a) {
+    if (!a.linkTo) return "";
+    return "→ " + a.linkTo.group + " / " + a.linkTo.name + (a.broken ? "（元がありません）" : "");
+  }
+
+  /** **この秘密を指している参照**（同じ Vault の中だけ。参照は Vault をまたがない）。 */
+  function linksPointingTo(a) {
+    return aliases.filter((x) => x.linkTo && x.implementation === a.implementation &&
+      x.linkTo.group === a.group && x.linkTo.name === a.name);
   }
 
   /** **その置き場に入れると、どう引けるようになるか**（1箇所で決める・規則3）。 */
@@ -592,7 +634,8 @@ ${ALIAS_KIND_RULES_JS}
       const kindTd = document.createElement("td");
       const kindBadge = document.createElement("span");
       kindBadge.className = "badge";
-      kindBadge.textContent = KIND_LABEL[a.kind] || a.kind;
+      // 参照の種別は元から導いたもの。**元が無ければ種別も分からない**——推測で埋めない
+      kindBadge.textContent = KIND_LABEL[a.kind] || a.kind || "—";
       kindTd.append(kindBadge);
 
       const targetTd = document.createElement("td");
@@ -636,6 +679,15 @@ ${ALIAS_KIND_RULES_JS}
       move.textContent = "移す";
       move.title = "この秘密を別の置き場へ移す";
       move.addEventListener("click", () => openMove(a));
+      // **参照を作る**（追加・2026-10-04）。**参照の行には出さない**——参照の参照は作らない
+      // （押せるのに必ず断られるボタンを置かない、規則13）
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "icon";
+      link.textContent = "参照を作る";
+      link.title = "値を写さずに、この秘密を別の置き場からも使えるようにする";
+      link.addEventListener("click", () => void openLink(a));
+      const rowActions = a.linkTo ? [move, del] : [move, link, del];
       if (a.kind === "ssh-identity") {
         const pub = document.createElement("button");
         pub.type = "button";
@@ -643,18 +695,34 @@ ${ALIAS_KIND_RULES_JS}
         pub.textContent = "公開鍵";
         pub.title = "公開鍵を表示してコピーする（秘密鍵は出ません）";
         pub.addEventListener("click", () => openPublicKey(a));
-        actions.append(edit, pub, move, del);
+        actions.append(edit, pub, ...rowActions);
       } else {
-        actions.append(edit, move, del);
+        actions.append(edit, ...rowActions);
       }
 
       // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
       const vaultTd = clipped(a.implementation);
       vaultTd.setAttribute("data-vault-col", "");
 
+      // **参照の行は、指している先を名前の横に出す**（2026-10-04）。全文は title で読める
+      const nameTd = clipped(a.name, "name");
+      if (a.linkTo) {
+        const to = document.createElement("span");
+        to.className = "link-to";
+        to.textContent = " → " + a.linkTo.group + " / " + a.linkTo.name;
+        nameTd.append(to);
+        if (a.broken) {
+          const broken = document.createElement("span");
+          broken.className = "link-broken";
+          broken.textContent = "（元がありません）";
+          nameTd.append(broken);
+        }
+        nameTd.title = a.name + " " + linkLabel(a);
+      }
+
       tr.append(
         kindTd,
-        clipped(a.name, "name"),
+        nameTd,
         targetTd,
         vaultTd,
         groupTd,
@@ -972,7 +1040,9 @@ ${ALIAS_KIND_RULES_JS}
 
   // 用途を書き直す
   let noteTarget = null;
+  let noteTargetGroup = null;
   function openNote(a) {
+    noteTargetGroup = a.group;
     noteTarget = a;
     $("note-error").hidden = true;
     $("note-target").textContent = a.implementation + " / " + a.name;
@@ -980,9 +1050,12 @@ ${ALIAS_KIND_RULES_JS}
     $("dlg-note").showModal();
   }
   onSubmit($("dlg-note"), $("note-submit"), $("note-error"), async () => {
+    // **置き場まで渡す**（2026-10-04）——参照は既定で元と同じ名前なので、名前だけでは
+    // 一覧で選んだ行と別の行の用途を書き換える
     await callTool("updateAlias", {
       implementation: noteTarget.implementation,
       name: noteTarget.name,
+      group: noteTargetGroup,
       note: $("note-text").value.trim(),
     });
   });
@@ -995,6 +1068,15 @@ ${ALIAS_KIND_RULES_JS}
     // **どの置き場のものを消すのかまで見せる**——同じ名前が複数の置き場に
     // 在るのは普通のことなので、名前だけでは「どれを消すか」が決まらない
     $("delete-target").textContent = a.implementation + " / " + a.group + " / " + a.name;
+    // **参照を消しても元は消えない**——消えるものを正しく言う（2026-10-04）
+    $("delete-effect").textContent = a.linkTo
+      ? "参照だけを消します。元の秘密（" + a.linkTo.group + " / " + a.linkTo.name + "）は残ります"
+      : "値も一緒に消える。これを使っているコマンドは、次から動かなくなる";
+    const pointing = a.linkTo ? [] : linksPointingTo(a);
+    $("delete-links").hidden = pointing.length === 0;
+    $("delete-links").textContent = pointing.length === 0 ? "" :
+      "この秘密を指す参照が " + pointing.length + " 件あり、使えなくなります（" +
+      pointing.map((x) => x.group + " / " + x.name).join("、") + "）";
     $("dlg-delete").showModal();
   }
   onSubmit($("dlg-delete"), $("delete-submit"), $("delete-error"), async () => {
@@ -1052,6 +1134,63 @@ ${ALIAS_KIND_RULES_JS}
     });
   });
 
+  // 参照を作る（**値は写さない。同じ Vault の中だけ**、2026-10-04）
+  let linkSource = null;
+  async function openLink(a) {
+    linkSource = a;
+    $("link-error").hidden = true;
+    $("link-now").textContent = "元は " + a.implementation + " / " + a.group + " / " + a.name;
+    // **Vault は元と同じに固定**——選べるように見せない（規則13）
+    $("link-vault").replaceChildren(option(a.implementation, a.implementation));
+    $("link-name").value = a.name;
+    const places = await callTool("getPlacements", project ? { projectId: project.id } : {});
+    const v = (places.vaults || []).find((x) => x.implementation === a.implementation);
+    const groups = (v && v.groups) || [];
+    $("link-group").replaceChildren(...groups.map((g) => option(g, groupLabel(a.implementation, g))));
+    $("link-group").disabled = groups.length === 0;
+    // **既定は「ここから使いたい」置き場**——この Project の置き場、無ければ Global
+    const mine = places.project && places.project.implementation === a.implementation ? places.project.group : null;
+    const shared = places.shared && places.shared.implementation === a.implementation ? places.shared.group : null;
+    const preferred = [mine, shared].find((g) => g && g !== a.group && groups.includes(g)) ||
+      groups.find((g) => g !== a.group);
+    if (preferred) $("link-group").value = preferred;
+    $("link-group").onchange = applyLinkEffect;
+    $("link-name").oninput = applyLinkEffect;
+    applyLinkEffect();
+    $("dlg-link").showModal();
+  }
+
+  /** **押す前に、置けるか・置いたらどう引けるかを出す**（ぶつかるなら押させない）。 */
+  function applyLinkEffect() {
+    if (!linkSource) return;
+    const impl = linkSource.implementation, group = $("link-group").value, name = $("link-name").value.trim();
+    let blocked = !group || !name;
+    let effect = "";
+    if (group && name) {
+      const taken = aliases.some((x) => x.implementation === impl && x.group === group && x.name === name);
+      if (taken) {
+        blocked = true;
+        effect = group === linkSource.group && name === linkSource.name
+          ? "元と同じ置き場です。別のグループか名前を選んでください"
+          : "置く先に同じ名前があります（上書きしません）——名前を変えてください";
+      } else {
+        effect = placementEffect(impl, group);
+      }
+    }
+    $("link-submit").disabled = blocked;
+    $("link-effect").textContent = effect;
+  }
+
+  onSubmit($("dlg-link"), $("link-submit"), $("link-error"), async () => {
+    await callTool("linkAlias", {
+      name: linkSource.name,
+      implementation: linkSource.implementation,
+      group: linkSource.group,
+      toGroup: $("link-group").value,
+      toName: $("link-name").value.trim(),
+    });
+  });
+
   // 置き場を変える（**移行あり／なしを選ぶ**）
   async function openPlace() {
     $("place-error").hidden = true;
@@ -1102,6 +1241,15 @@ ${ALIAS_KIND_RULES_JS}
           parts.push(
             "ただし移す先に同じ名前があります（" + plan.conflicts.join(", ") +
               "）——1つでもぶつかると何も移しません。先に名前を変えるか、移す先を変えてください",
+          );
+          blocked = true;
+        }
+        // **Vault をまたぐなら、参照と参照に指されている元は動かせない**（2026-10-04）
+        if ((plan.blockedAcrossVaults || []).length) {
+          parts.push(
+            "別の Vault へは移せないものがあります（" +
+              plan.blockedAcrossVaults.map((b) => b.name + "——" + b.reason).join(" / ") +
+              "）——1つでもあると何も移しません",
           );
           blocked = true;
         }

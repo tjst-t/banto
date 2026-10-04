@@ -1342,3 +1342,11 @@ test("参照：同じ名前の元と参照があっても、用途の書き直�
     );
   });
 });
+
+test("管理画面に、参照を作る口と、参照の行の見せ方がある", () => {
+  assert.ok(MANAGE_APP_HTML.includes("この秘密を別の置き場から使えるようにする（参照）"));
+  assert.ok(MANAGE_APP_HTML.includes("値は写しません。元を変えればこちらも変わり、元を消すとこちらは使えなくなります"));
+  assert.ok(MANAGE_APP_HTML.includes('callTool("linkAlias"'), "参照を作るボタンが窓口に繋がっていない");
+  assert.ok(MANAGE_APP_HTML.includes("元がありません"));
+  assert.ok(MANAGE_APP_HTML.includes("この秘密を指す参照が "), "元を消す前に参照の件数を出していない");
+});
