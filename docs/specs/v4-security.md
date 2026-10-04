@@ -106,7 +106,7 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
 - **資源の上限を付ける**（決定・2026-10-02、ユーザー。2026-09-30 に Project のコンテナの中のフル E2E が入れ子のコンテナを
   約50台立て、host の負荷 320・incusd が詰まり Module が全部止まった再発防止）。入れ子のコンテナも親の枠に入るので、
   暴走はその Project の中で止まる。**既定値は固定の数値にせず、コンテナを用意するときにその host の資源から計算する**
-  （いろんな host に入れるため。`defaultContainerLimits`）：メモリ＝host の全メモリから 2GiB を host に残した残り
+  （いろんな host に入れるため。`defaultContainerLimits`）：メモリ＝host の全メモリから 4GiB を host に残した残り（2026-10-04 に 2GiB から改めた——host の実測で incusd・banto 本体のピークがそれぞれ 3GiB 台）
   （最低 1GiB）、CPU＝コア数から1を引いた分を時間で切る上限（`limits.cpu.allowance`、最低1コア）、プロセス数＝8192。
   banto 全体用のコンテナも同じ。動いているコンテナにもそのまま効く（起こし直さない）。Subagent とその子（Claude Code 等）は
   Project のコンテナの中で動くので、その Project の枠に入る。

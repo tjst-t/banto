@@ -117,9 +117,9 @@ test("資源の上限——既定で付き、banto 全体と Project ごとに�
 
   type Limits = { host: { memoryMiB: number; cpus: number }; ceiling: { memoryMiB: number; cpus: number; processes: number } };
   const before = (await (await page.request.get(`${CORE_BASE_URL}/api/container-limits`, { headers })).json()) as Limits;
-  // 既定：2GiB・1コアを残す（中から見える資源で計算される）
+  // 既定：4GiB・1コアを残す（中から見える資源で計算される）
   expect(containerLimit(project.id, "limits.memory")).toBe(`${before.ceiling.memoryMiB}MiB`);
-  expect(before.ceiling.memoryMiB).toBe(Math.max(1024, before.host.memoryMiB - 2048));
+  expect(before.ceiling.memoryMiB).toBe(Math.max(1024, before.host.memoryMiB - 4096));
   expect(containerLimit(project.id, "limits.processes")).toBe("8192");
   const startedAt = (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/container`, { headers }).then((r) => r.json())) as {
     container: { status: string };
@@ -127,14 +127,14 @@ test("資源の上限——既定で付き、banto 全体と Project ごとに�
   expect(startedAt.container.status).toBe("Running");
 
   try {
-    // ---- banto 全体：残すメモリを 3GiB に ----
+    // ---- banto 全体：残すメモリを 5GiB に ----
     await openApp(page);
     await page.goto(`/settings?settings=1&section=container`);
     const panel = page.getByTestId("container-limits-panel");
     await expect(panel).toBeVisible({ timeout: 30_000 });
-    await panel.getByTestId("container-limits-reserve-memory").fill("3");
+    await panel.getByTestId("container-limits-reserve-memory").fill("5");
     await panel.getByRole("button", { name: "保存する" }).click();
-    const lowered = Math.max(1024, before.host.memoryMiB - 3072);
+    const lowered = Math.max(1024, before.host.memoryMiB - 5120);
     await expect.poll(() => containerLimit(project.id, "limits.memory"), { timeout: 30_000 }).toBe(`${lowered}MiB`);
 
     // ---- Project ごと：メモリ 1.5GiB・CPU 1 コア。上げようとした値（プロセス数）は天井で止まる ----
@@ -163,7 +163,7 @@ test("資源の上限——既定で付き、banto 全体と Project ごとに�
     // 他の spec に残さない（core は全 spec で共有）
     await page.request.put(`${CORE_BASE_URL}/api/container-limits`, {
       headers,
-      data: { hostReserveMemoryMiB: 2048, hostReserveCpus: 1, processes: 8192 },
+      data: { hostReserveMemoryMiB: 4096, hostReserveCpus: 1, processes: 8192 },
     });
   }
 });

@@ -11,8 +11,8 @@ function fakeConfig(instance: Record<string, unknown>, projects: Record<string, 
 }
 const HOST = { memoryBytes: 16 * 1024 ** 3, cpus: 4 };
 
-test("設定が無ければ既定（2GiB・1コアを残し、8192）", () => {
-  assert.deepEqual(limitNumbersFor(fakeConfig({}), HOST, "p1"), { memoryMiB: 14336, cpus: 3, processes: 8192 });
+test("設定が無ければ既定（4GiB・1コアを残し、8192）", () => {
+  assert.deepEqual(limitNumbersFor(fakeConfig({}), HOST, "p1"), { memoryMiB: 12288, cpus: 3, processes: 8192 });
 });
 
 test("banto 全体の残す量と Project ごとの値は別の鍵で、Project の値は天井より上がらない", () => {

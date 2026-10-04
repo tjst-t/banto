@@ -20,10 +20,10 @@ sudo mkdir -p /etc/systemd/system/system.slice.d
 sudo tee /etc/systemd/system/system.slice.d/50-banto-protect.conf >/dev/null <<'CONF'
 [Slice]
 CPUWeight=1000
-MemoryLow=2G
+MemoryLow=4G
 CONF
 sudo systemctl daemon-reload
-systemctl show system.slice -p CPUWeight -p MemoryLow   # CPUWeight=1000 / MemoryLow=2147483648
+systemctl show system.slice -p CPUWeight -p MemoryLow   # CPUWeight=1000 / MemoryLow=4294967296
 ```
 
 入れ子の環境での実測（2026-10-02）：1コアに絞ってコンテナと取り合わせたとき、host 側の処理の取り分は
@@ -31,8 +31,8 @@ systemctl show system.slice -p CPUWeight -p MemoryLow   # CPUWeight=1000 / Memor
 
 ## 2. メモリ：host のサービスのメモリを取り上げさせない（未実測）
 
-上の `MemoryLow=2G` は、メモリが足りなくなったとき `system.slice` の 2GiB までは追い出されにくくする
-（コンテナの上限の既定で host に残す量と同じ）。**これは実測していない**——効き目は、メモリが詰まったときの
+上の `MemoryLow=4G` は、メモリが足りなくなったとき `system.slice` の 4GiB までは追い出されにくくする
+（コンテナの上限の既定で host に残す量と同じ。2026-10-04 に 2G から 4G へ）。**これは実測していない**——効き目は、メモリが詰まったときの
 `/sys/fs/cgroup/system.slice/memory.events` の `low` の数で見られる。
 
 banto 本体が OOM で殺されないようにするには、banto の unit にだけ付ける。**ここでは再起動しない**——
@@ -75,7 +75,7 @@ sudo systemctl daemon-reload
 node /home/ubuntu/.local/share/banto-release/banto/scripts/restart-when-idle.mjs
 ```
 
-## 4. 残す量 2GiB を見直すための測り方
+## 4. 残す量 4GiB を見直すための測り方
 
 host で、banto と Incus がふだん使っている量を見る：
 
@@ -86,5 +86,5 @@ done
 echo "system.slice 全体 $(( $(cat /sys/fs/cgroup/system.slice/memory.current) / 1048576 )) MiB"
 ```
 
-`system.slice` 全体が 2GiB に近い・越えるなら、banto 全体の設定「コンテナ」で「この機械に残すメモリ」を上げ、
+`system.slice` 全体が 4GiB に近い・越えるなら、banto 全体の設定「コンテナ」で「この機械に残すメモリ」を上げ、
 上の `MemoryLow` も合わせる。

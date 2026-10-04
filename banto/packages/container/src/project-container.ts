@@ -69,8 +69,11 @@ export interface ContainerLimits {
   processes: string;
 }
 
-/** host に必ず残すメモリ（決定・2026-10-02） */
-export const HOST_MEMORY_RESERVE_BYTES = 2 * 1024 ** 3;
+/**
+ * host に必ず残すメモリ（決定・2026-10-02、2026-10-04 に 2GiB→4GiB）。host の実測で incusd と banto 本体のピークが
+ * それぞれ 3GiB 台あり（キャッシュを除いても banto 本体 1.4GiB・incusd 0.4GiB）、2GiB では足りなかった
+ */
+export const HOST_MEMORY_RESERVE_BYTES = 4 * 1024 ** 3;
 /** 上限がこれより小さくならないようにする（小さい host でもコンテナが起きられる分） */
 const MIN_CONTAINER_MEMORY_BYTES = 1024 ** 3;
 export const DEFAULT_CONTAINER_PROCESSES = 8192;
@@ -123,7 +126,7 @@ const MIN_PROCESSES = 256;
 /**
  * **上限を決める**（決定・2026-10-02、ユーザー）。いろんな host に入れるので固定の数値にしない：
  * - 天井（banto 全体）：メモリ＝host の全メモリから残す分を引いた残り（最低 1GiB）、CPU＝コア数から残す分を引いた残り
- *   （最低1コア）、プロセス数＝決めた値。既定は 2GiB・1コアを残し、8192
+ *   （最低1コア）、プロセス数＝決めた値。既定は 4GiB・1コアを残し、8192
  * - Project ごとの値は**天井より下げることだけ**できる——上げられると、host を守るための上限が Project の設定で外れる
  *
  * Project のコンテナの中で動く banto（E2E）から呼ぶと、中から見える資源（親の上限）で計算される

@@ -239,12 +239,12 @@ const SPEC = {
   owner: "/home/u/.local/share/banto",
   uid: 1000,
   gid: 1000,
-  limits: { memory: "13312MiB", cpuAllowance: "300ms/100ms", processes: "8192" },
+  limits: { memory: "11264MiB", cpuAllowance: "300ms/100ms", processes: "8192" },
 };
 
-test("既定の上限は host の資源から計算する——メモリは 2GiB を残し、CPU は1コアを残し、プロセス数は固定", () => {
+test("既定の上限は host の資源から計算する——メモリは 4GiB を残し、CPU は1コアを残し、プロセス数は固定", () => {
   assert.deepEqual(defaultContainerLimits({ memoryBytes: 15 * 1024 ** 3, cpus: 4 }), {
-    memory: "13312MiB",
+    memory: "11264MiB",
     cpuAllowance: "300ms/100ms",
     processes: "8192",
   });
@@ -271,7 +271,7 @@ test("上限を付ける——作るときも、前からある動いている�
   await new ProjectContainers(fresh.run).ensure(SPEC);
   const sets = (calls: string[][]) => calls.filter((a) => a[0] === "config" && a[1] === "set");
   assert.deepEqual(sets(fresh.calls), [
-    ["config", "set", "banto-p1", "limits.memory=13312MiB", "limits.cpu.allowance=300ms/100ms", "limits.processes=8192"],
+    ["config", "set", "banto-p1", "limits.memory=11264MiB", "limits.cpu.allowance=300ms/100ms", "limits.processes=8192"],
   ]);
 
   // 前からある（上限の無い）動いているコンテナ：付けるが、止めない
