@@ -182,7 +182,10 @@ td.cell > .label { color: var(--ink-3); }
 .popover {
   position: absolute; right: 0; top: 34px; z-index: 5; width: 18rem; padding: 4px; border-radius: var(--r-md);
   border: 1px solid var(--line); background: var(--bg); box-shadow: var(--shadow);
+  overflow-y: auto; overscroll-behavior: contain;
 }
+/* 下に入りきらないときは「…」の上に開く（placeRowMenu が決める） */
+.popover.up { top: auto; bottom: 34px; }
 .popover button {
   display: flex; width: 100%; gap: 8px; align-items: flex-start; text-align: left; padding: 8px; border: 0; border-radius: var(--r-sm);
   background: none; cursor: pointer;
@@ -773,9 +776,28 @@ const SCRIPT = String.raw`
         icon("folderX"), h("span", { style: "display:flex;flex-direction:column;gap:2px;min-width:0" }, [h("span", { class: "t", text: "このマシンから削除" }), h("span", { class: "d", text: "フォルダごと消します。先に、失われるものを調べます" })]),
       ]));
     }
-    const pop = h("div", { class: "popover", role: "menu" }, items);
-    queueMicrotask(() => item.focus());
+    const pop = h("div", { class: "popover", role: "menu", "data-testid": "repo-row-menu-popover" }, items);
+    queueMicrotask(() => { placeRowMenu(btn, pop); item.focus({ preventScroll: true }); });
     return h("div", { class: "menu-wrap" }, [btn, pop]);
+  }
+  /**
+   * 行の「…」のメニューを、見えている範囲（この画面の枠）に収める。下に入りきれば下、入りきらず上のほうが広ければ上に開く。
+   * どちらにも入りきらなければ広いほうに開き、高さをその広さに抑えて中をスクロールさせる（下の行で開くと枠の外に
+   * はみ出して見えなかった——ユーザー、2026-10-04）
+   */
+  const MENU_GAP = 34, MENU_MARGIN = 8;
+  function placeRowMenu(btn, pop) {
+    if (!pop.isConnected) return;
+    const view = window.innerHeight;
+    const b = btn.getBoundingClientRect();
+    const below = view - (b.top + MENU_GAP) - MENU_MARGIN;
+    const above = b.bottom - MENU_GAP - MENU_MARGIN;
+    const need = pop.scrollHeight;
+    const up = need > below && above > below;
+    pop.classList.toggle("up", up);
+    pop.dataset.placement = up ? "above" : "below";
+    const room = Math.max(up ? above : below, 120);
+    pop.style.maxHeight = need > room ? room + "px" : "";
   }
   document.addEventListener("click", () => { if (state.menuFor) { state.menuFor = null; render(); } });
   document.addEventListener("keydown", (e) => {

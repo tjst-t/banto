@@ -326,6 +326,30 @@ test("入口から開いた一覧で、Import の判断・足した行の中身�
   await expect(gone).toHaveCount(0);
   await expect(canvas.getByTestId("repo-filter").locator('[data-filter="missing"]'), "見つからないものが無いのに札が残っている").toHaveCount(0);
 
+  // ---- 5b. 行の「…」のメニューは画面の枠に収まる——下の行では上に開く（枠の外にはみ出していた、ユーザー 2026-10-04） --
+  const saved = page.viewportSize()!;
+  await page.setViewportSize({ width: saved.width, height: 560 });
+  // 同じ行を、枠の下端に寄せたとき（上に開く）と上端に寄せたとき（下に開く）で見る。最後の行は下に別の中身があって
+  // 枠の下端まで来ないことがあるので、下に中身がある最初の行を寄せる
+  for (const [end, placement] of [[true, "above"], [false, "below"]] as const) {
+    const dots = canvas.getByTestId("repo-row-menu").first();
+    await dots.evaluate((el, atEnd) => el.scrollIntoView({ block: atEnd ? "end" : "start" }), end);
+    await dots.click();
+    const pop = canvas.getByTestId("repo-row-menu-popover");
+    await expect(pop).toBeVisible();
+    const at = await pop.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom, view: window.innerHeight, placement: (el as HTMLElement).dataset.placement };
+    });
+    const where = end ? "枠の下端の行" : "枠の上端の行";
+    expect(at.placement, `${where}のメニューの開き方`).toBe(placement);
+    expect(at.top, `${where}のメニューが枠の上にはみ出している`).toBeGreaterThanOrEqual(0);
+    expect(at.bottom, `${where}のメニューが枠の下にはみ出している`).toBeLessThanOrEqual(at.view);
+    await page.keyboard.press("Escape");
+    await expect(pop).toHaveCount(0);
+  }
+  await page.setViewportSize(saved);
+
   // ---- 6. origin が変わった——origin を正として直し、一度だけ知らせる --------------------------
   git(usedRepo, "remote", "set-url", "origin", "https://github.com/e2e-org/used-repo.git");
   await page.reload();
