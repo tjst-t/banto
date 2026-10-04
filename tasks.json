@@ -4476,6 +4476,29 @@
       "updatedAt": "2026-10-04T00:31:17.821Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "backlog-push-not-relayed-to-repositories",
+      "kind": "bug",
+      "title": "Backlog の自動 push が Repositories に頼まれず、自分の git で失敗する",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-04、dd67c9cb を反映した後の本番（Banto開発 の Project）で、Backlog への書き込みのたびに pushError「このリポジトリの git の設定では資格情報がありません——could not read Username for 'https://github.com'」が返る。エラーに「Repositories に頼めませんでした／引き受けませんでした」の注記が無いので、`RelayingRemote.repositoriesModule` が中継の宛先の一覧（relayListTargets）に repositories 役割の Module を見つけられず、承認カードも出ずに自分の git（origin は https、資格情報なし）へ落ちている。\n\n調べること：この Project についている Backlog の宣言に repositories 役割への依存が入っているか（前の版でつけた宣言のままか）・relayListTargets の中身・banto 全体の Module が Project の Module の宛先一覧に出る条件。当座は人（AI）が `git push git@github.com:tjst-t/banto.git backlog:refs/heads/backlog` で手で送っている。",
+      "doneWhen": "本番の Banto開発 の Project で Backlog に1件書くと、Repositories 経由で backlog ブランチが GitHub に送られ（初回は承認カード）、pushError が返らない",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-10-04-backlog-branch-store.md",
+        "banto/packages/modules/backlog/src/remote.ts"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-04T08:57:37.311Z",
+      "updatedAt": "2026-10-04T08:57:37.311Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
