@@ -4276,19 +4276,22 @@
       "title": "Factory——依頼を耐久ワークフローとして進める",
       "status": "backlog",
       "parent": null,
-      "dependsOn": [],
+      "dependsOn": [
+        "subagent-from-modules"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "core ではなく Module として作る（決定・2026-09-11）。Backlog の依存（着手できるもの）を見て並べて進める。Thread ごとの開発を worktree で行う運用ルール（2026-10-03）はここでコード化する。\n\n**方向（決定・2026-10-04）**：Claude Code の Dynamic Workflows の形を借りて自前で作る。\n- 借りる：手順はスクリプトが持つ（途中結果は変数）／決定的なスクリプト＋終わった段の結果の記録で、流し直して再開（B5）／agent() に schema（レビューの判定）／段階と1体ずつの進み具合の画面\n- 足す：agent() は banto のサブエージェント（Claude Code・OpenCode）／worktree・テストの関門・Project で1本のマージの順番待ち（B7）・Backlog の状態を進める・判断待ちを出して待つ\n- 「Backlog のタスクを1件やり切る」スクリプトを1本保存して使う。AI がその場で書く使い方は後回し\n- 人は基本、終わったら知ればよい。長引いたら覗ける・止めて指示を足して続けられる\n\n参考：https://code.claude.com/docs/en/workflows",
+      "body": "core ではなく Module として作る（決定・2026-09-11）。Project ごとにつけ、Project の中で Subagent の tool を中継で呼ぶ（決定・2026-10-04）。Thread ごとの開発を worktree で行う運用ルール（2026-10-03）はここでコード化する。\n\n**方向（決定・2026-10-04）**：Claude Code の Dynamic Workflows の形を借りて自前で作る。\n- 借りる：手順はスクリプトが持つ（途中結果は変数）／決定的なスクリプト＋終わった段の結果の記録で、流し直して再開（B5）／agent() に schema（レビューの判定）／段階と1体ずつの進み具合の画面\n- 足す：agent() は banto のサブエージェント（Claude Code・OpenCode）／worktree・テストの関門・Project で1本のマージの順番待ち（B7）・Backlog の状態を進める・判断待ちを出して待つ\n- 「Backlog のタスクを1件やり切る」スクリプトを1本保存して使う。AI がその場で書く使い方は後回し\n- 人は基本、終わったら知ればよい。長引いたら覗ける・止めて指示を足して続けられる\n\n**1件やり切る段（決定・2026-10-04）**：worktree → 実装 → テストの関門（落ちたら実装へ戻す・上限）→ レビュー（別のサブエージェント・まっさらな文脈・完了条件で判定・差し戻し上限）→ マージの順番待ち（rebase・再テスト・fast-forward）→ Backlog を終わったに・worktree を片づける。上限超え・競合は判断待ちを出して止まる。\n\n**流し始め**：AI が tool で頼む形から（画面のボタン・自動拾いは後）。**マージ前に人を待たない**（B4 既定、待たせる設定も最初は作らない）。\n\n参考：https://code.claude.com/docs/en/workflows",
       "doneWhen": "3件の依頼（Backlog の ready なタスク）を同時に流して3つとも main に入る。1つ失敗させても他の2つは進む。banto の host を落として起こし直しても途中から続く（要件 B の受け入れ）。",
       "resolution": null,
       "refs": [
-        "docs/specs/v4-modules.md §4"
+        "docs/specs/v4-modules.md §4.5",
+        "docs/notes/2026-10-04-factory-design.md"
       ],
       "threads": [],
       "createdAt": "2026-10-03T14:16:39.224Z",
-      "updatedAt": "2026-10-04T01:43:29.495Z",
+      "updatedAt": "2026-10-04T08:55:54.543Z",
       "closedAt": null,
       "extra": {}
     },
