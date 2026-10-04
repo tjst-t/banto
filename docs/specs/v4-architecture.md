@@ -1502,8 +1502,12 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
 **host の口**（`/api/admin/update`）：
 
 - `GET`：今の版（commit・題・日時）・最後に確かめた `release` の最新と、その間のコミット（題・id・日時）・更新の
-  進み具合（`state.json`。中断・受け取られていない頼みも）・準備が済んでいるか（置き場の形で動いているか・unit が
-  あるか・polkit の規則が効いているか）。ログイン中の人と機械の口（合言葉）の両方から読める。
+  進み具合（`state.json`。中断は `interrupted: { phase, reason }`、受け取られていない頼みは
+  `staleRequest: { id, mode, commit, requestedAt, requestedBy: { label }, reason }`）・準備が済んでいるか（置き場の形で
+  動いているか・unit があるか・polkit の規則が効いているか）。ログイン中の人と機械の口（合言葉）の両方から読める。
+  **polkit の確かめは `systemctl stop banto-update.service` を打って、断られないかを見る**（規則が無ければ断られる）。
+  打つのは unit が動いていない・頼みも待っていないときだけ（動いている更新を止めない）で、それ以外は前の結果を使う。
+  頼みの最中は打たず、走っている確かめが終わってから unit を起こす（確かめの stop が、起こした更新を止めない）
   **`current.commit` は、前の版の `update.mjs` が新しい版の host に「起きたか」を聞く契約——形を変えない**
   （変えると、その変更を入れる更新そのものが「起きない」と判定されて戻される）
 - `POST …/check`：`repo.git` に fetch して差を出し直す。**ログイン中の人だけ**（step-up は要らない——読むだけで、
@@ -1511,13 +1515,19 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
 - `POST`（`{ commit, mode: "wait" | "now" }`）：**ログイン中の人だけ・その場の本人確認（step-up）が要る**。
   機械の口（合言葉）・Module・コンテナからは呼べない。`commit` は画面に見せた最新の commit——人が読んだ一覧と
   違うものを組み立てないため。走っている更新があれば断る
-- `POST …/cancel`・`POST …/force-now`：走っている更新の待ちをやめる・すぐ起こし直す。ログイン中の人だけ
-  （`force-now` は step-up が要る）
+- `POST …/cancel`・`POST …/force-now`：走っている更新をやめる（`update.mjs` は取ってくる・組み立てる・待つの間に
+  受ける。作りかけは消す）・待たずにすぐ起こし直す。ログイン中の人だけ（`force-now` は step-up が要る）。起こし直しに
+  入ったら（restart・verify）どちらも断る
 - `GET …/log`：最後の更新（`state.json` が指す回）のログの末尾（64KiB）。**ログイン中の人だけ**（組み立ての出力そのもの）。
   `state.json` のログが `<dataDir>/update/` の外を指していたら読まない
 
 **準備が済んでいないとき**（開発用のリポジトリから動かしている・unit が無い・polkit の規則が効いていない）は、
 画面はボタンを出さずに理由と手順書（`docs/runbooks/release.md` D）を出す。画面の作りは `docs/specs/v4-frontend.md` §6.34。
+
+**試験だけの差し替え**：本物の systemd を使えない E2E は、bootstrap config の `testOnlySelfUpdate: { systemctl, codeDir }`
+で偽の systemctl と「動いているコードの場所」を指す。**本番の config には書かない**。環境変数では受けない——host の
+環境は人の Shell・unit の `Environment=` から引き継がれ、`update.mjs` も同じ名前（`BANTO_UPDATE_SYSTEMCTL`）を自分の
+差し替えに読むので、置いた値が気づかないうちに本番の判断を変えるため。形が違えば起動を止め、あれば起動時に警告する
 
 ### 2.6 Configuration
 
