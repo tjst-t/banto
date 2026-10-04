@@ -4505,6 +4505,26 @@
       "updatedAt": "2026-10-04T09:38:25.357Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "self-update",
+      "kind": "story",
+      "title": "設定画面から banto を最新版に更新する",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "設定の「更新」のボタン1つで、GitHub の release の最新を取り込み・組み立て・AI が止まるのを待って（またはすぐ）起こし直す。決定は Memory「設定画面からの banto の更新」。仕様 v4-architecture.md §2.5「画面から banto を更新する」・v4-security.md §2「画面からの更新」、手順 docs/runbooks/release.md D。作業ブランチ fork/self-update（.worktrees/self-update）。install.sh（Fork「新しいホストへのインストール」）と update.mjs・setup-update.sh を共有する。",
+      "doneWhen": "この host で手順書 D を済ませたあと、設定の「更新」から（1）待つ形で更新して新しい版で起き直す（2）すぐ更新する（3）組み立てで失敗させても今の版のまま（4）起きない版で前の版に戻る——を確かめ、携帯からも押せる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-04T10:05:30.186Z",
+      "updatedAt": "2026-10-04T10:05:30.186Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
