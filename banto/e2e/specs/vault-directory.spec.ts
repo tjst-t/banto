@@ -646,3 +646,135 @@ test("一覧の行から、別の Vault へ移せる（Vault の選択を切り�
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },
   });
 });
+
+// **参照**（決定・2026-10-04、ユーザー。仕様 §2.1 C節「参照」）。
+// どこにも紐付いていないグループの秘密を、値を写さずにこの Project の置き場から使えるようにする。
+// 見るのは：小窓が出している中身（題・固定された Vault・既定の名前と置き場・説明）、作った参照の行
+// （→ 元のグループ / 名前・元から導いた種別・使える範囲）、元を消す確認の件数、元を消したあとの
+// 「元がありません」——そして**値がどこにも出ない**こと（規則14）
+test("一覧の行から参照を作ると、参照の行に「→ 元」が出て、元を消すと「元がありません」になる", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-link-"));
+  const stamp = Date.now();
+  const origin = `e2e-link-origin-${stamp}`;
+  const linkName = `${origin}-ref`;
+  const srcGroup = `e2e-linksrc-${stamp}`;
+  const secret = `LINK-MUST-NOT-APPEAR-${stamp}`;
+  const call = (server: string, tool: string, args: Record<string, unknown>) =>
+    page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+      data: { server, tool, arguments: args },
+    });
+
+  await openApp(page);
+  await createProject(page, "E2E 参照", projectRoot);
+  // 元は**どこにも紐付いていないグループ**に置く（この Project からは見えない）
+  await call("vault-directory", "createGroup", { implementation: "vault-local", name: srcGroup });
+  const created = await call("vault-directory", "createAlias", {
+    implementation: "vault-local",
+    name: origin,
+    kind: "secret",
+    value: secret,
+    group: srcGroup,
+  });
+  expect(created.ok(), `元を置けなかった: ${await created.text()}`).toBe(true);
+
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  // この Project の置き場を決める（最初に保存したときに決まる）
+  const seed = `e2e-link-seed-${stamp}`;
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(seed);
+  await canvas.locator("#new-value").fill("seed");
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  await expect(canvas.locator("tbody tr").filter({ hasText: seed })).toBeVisible({ timeout: 120_000 });
+  await expect(canvas.locator("#place-summary")).toContainText(" / ");
+  const projectGroup = (await canvas.locator("#place-summary").innerText()).split(" / ").pop()!.trim();
+
+  // 元はこの Project から使えないので、既定の絞り込みでは出ない——「すべて」にして元の行を出す
+  await canvas.locator("#target-filter").selectOption("all");
+  const originRow = canvas.locator("tbody tr").filter({ hasText: origin }).filter({ hasNotText: linkName });
+  await expect(originRow).toHaveCount(1, { timeout: 30_000 });
+  await expect(originRow, "元の行が未割当として出ていない").toContainText("未割当");
+
+  // ---- 小窓：「移す」と同じ形 -----------------------------------------------
+  await originRow.getByRole("button", { name: "参照を作る" }).click();
+  await expect(canvas.locator("#dlg-link")).toBeVisible();
+  await expect(canvas.locator("#dlg-link .dialog-title")).toHaveText("この秘密を別の置き場から使えるようにする（参照）");
+  await expect(canvas.locator("#link-now")).toHaveText(`元は vault-local / ${srcGroup} / ${origin}`);
+  // **Vault は元と同じに固定**（参照は同じ Vault の中だけ）
+  await expect(canvas.locator("#link-vault")).toBeDisabled();
+  await expect(canvas.locator("#link-vault")).toHaveValue("vault-local");
+  // 名前の既定は元と同じ、置き場の既定は「この Project」の置き場
+  await expect(canvas.locator("#link-name")).toHaveValue(origin);
+  await expect(canvas.locator("#link-group")).toHaveValue(projectGroup);
+  await expect(canvas.locator("#dlg-link")).toContainText(
+    "値は写しません。元を変えればこちらも変わり、元を消すとこちらは使えなくなります",
+  );
+  await expect(canvas.locator("#link-effect")).toContainText("この Project からだけ使えます");
+  // 元と同じ置き場・同じ名前は選ばせない
+  await canvas.locator("#link-group").selectOption(srcGroup);
+  await expect(canvas.locator("#link-effect")).toContainText("元と同じ置き場です");
+  await expect(canvas.locator("#link-submit")).toBeDisabled();
+  await canvas.locator("#link-group").selectOption(projectGroup);
+  // 名前は変えられる
+  await canvas.locator("#link-name").fill(linkName);
+  await expect(canvas.locator("#link-submit")).toBeEnabled();
+  await canvas.locator("#link-submit").click();
+  // **成功したときにだけ起きること＝小窓が閉じる**（規則14）
+  await expect(canvas.locator("#dlg-link"), "参照を作れずに小窓が開いたまま").toBeHidden({ timeout: 60_000 });
+
+  // ---- 参照の行：中身を1つずつ見る -------------------------------------------
+  const linkRow = canvas.locator("tbody tr").filter({ hasText: linkName });
+  await expect(linkRow, "作った参照が一覧に出てこない").toHaveCount(1, { timeout: 60_000 });
+  await expect(linkRow.locator("td").nth(1), "参照の行に指す先が出ていない").toHaveText(
+    `${linkName} → ${srcGroup} / ${origin}`,
+  );
+  await expect(linkRow.locator("td").nth(0), "種別が元から導かれていない").toHaveText("シークレット");
+  await expect(linkRow, "使える範囲がこの Project になっていない").toContainText("E2E 参照");
+  await expect(linkRow.locator("td").nth(4), "参照のグループが違う").toHaveText(projectGroup);
+  // **参照の参照は作らない**——押せるのに断られるボタンを置かない
+  await expect(linkRow.getByRole("button", { name: "参照を作る" })).toHaveCount(0);
+  // 既定の絞り込み（この Project から使える）に戻すと、参照は出て、元は出ない
+  await canvas.locator("#target-filter").selectOption("usable");
+  await expect(canvas.locator("tbody tr").filter({ hasText: linkName })).toHaveCount(1);
+  await expect(canvas.locator("tbody tr").filter({ hasText: origin }).filter({ hasNotText: linkName })).toHaveCount(0);
+
+  // backend の台帳にも、指す先として載っている
+  const listed = JSON.parse(
+    (JSON.parse(await (await call("vault-local", "listAliases", {})).text()) as { content: { text: string }[] })
+      .content[0]!.text,
+  ) as Array<{ name: string; group: string; linkTo?: { group: string; name: string } }>;
+  expect(listed.find((a) => a.name === linkName)?.linkTo).toEqual({ group: srcGroup, name: origin });
+
+  // ---- 元を消す：確認で参照の件数が出て、消したあとは「元がありません」 ---------
+  await canvas.locator("#target-filter").selectOption("all");
+  await originRow.getByRole("button", { name: "削除" }).click();
+  await expect(canvas.locator("#delete-links")).toHaveText(
+    `この秘密を指す参照が 1 件あり、使えなくなります（${projectGroup} / ${linkName}）`,
+  );
+  await canvas.locator("#delete-submit").click();
+  await expect(canvas.locator("#dlg-delete")).toBeHidden({ timeout: 60_000 });
+  await expect(originRow).toHaveCount(0, { timeout: 30_000 });
+  await expect(linkRow.locator("td").nth(1), "元が消えたことが参照の行に出ていない").toHaveText(
+    `${linkName} → ${srcGroup} / ${origin}（元がありません）`,
+  );
+  await expect(linkRow.locator("td").nth(0), "元が無いのに種別を推測している").toHaveText("—");
+  // 参照を消す確認は「参照だけを消す」と言う
+  await linkRow.getByRole("button", { name: "削除" }).click();
+  await expect(canvas.locator("#delete-effect")).toHaveText(
+    `参照だけを消します。元の秘密（${srcGroup} / ${origin}）は残ります`,
+  );
+  await expect(canvas.locator("#delete-links")).toBeHidden();
+  await canvas.locator("#delete-submit").click();
+  await expect(canvas.locator("#dlg-delete")).toBeHidden({ timeout: 60_000 });
+  await expect(linkRow).toHaveCount(0, { timeout: 30_000 });
+
+  // **値はどこにも出ない**
+  expect(await page.content()).not.toContain(secret);
+  await call("vault-directory", "deleteAlias", { implementation: "vault-local", name: seed, group: projectGroup });
+});
