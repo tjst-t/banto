@@ -70,3 +70,18 @@ cgroup ごと止めるなら問題ない。
   Thread の続きより先に行う（二重に扱わない）／承認待ちだった呼び出し・予約した Fork を文面で書き分ける／
   記録の無い最初のターンは発言を積み直さずに走らせ直す口が要る／覚え直した札は最後の届け1回だけ／
   上限は `turn.started` の `attempt` から数える。未確認の4点は仕様の「まだ確かめていないこと」
+
+## タスクの分け方（Backlog の resume-across-restart の子にする。2026-10-04 時点で Backlog に書けず、控え）
+
+稼働中の Backlog が通し番号（`number`）の入った一覧を読めない版だったため、splitStory が断られた。反映後にこのとおり足す。
+
+| id | 題 | 待つもの | 完了条件 |
+|---|---|---|---|
+| resume-restart-measure | 確かめ：鎖の選び方・KillMode・コンテナの Module の生死・本物のモデルの受け取り | — | 仕様の「まだ確かめていないこと」4点の結果をこのノートに表で書き、食い違いは仕様を直した |
+| resume-turn-events | Event Store にターンの始まり・会話の id・終わりを残す | measure | 既存の fold・store の試験が通る。偽の Runner で途中で止めて起動し直すと切れたターンが1件だけ見つかる。resume-point を書いたあと・Clear のあとは0件 |
+| resume-message-by-message | AI の発言を書き終えるごとに記録する | turn-events | 走っている最中にリロードしても吹き出しの数が記録と一致（実ブラウザの E2E で件数）。止めたターンの記録が二重にならない。turn-stop の試験が通る |
+| resume-thread-turn | 起き直したら切れたターンを自動で続ける（上限つき） | turn-events・message-by-message | 偽の Runner で：tool の途中で止めて起動し直すと人が何もせず続きが最後まで走る。続けて2回切れると受信箱に1件。Clear・閉じたあとは続けない |
+| resume-module-contract | Module の「続けられる」約束と札の覚え直し | turn-events | 名乗らない Module は今どおり。名乗った Module の「続ける」札は残り後で1回だけ届けられる。Thread の続きはその判定のあと |
+| resume-subagent | Subagent を起こし直しのあと続ける | module-contract | 別のデータ置き場の host で、本物の Claude Code の仕事の途中で起こし直しても結果が届く。記録のファイルに資格情報が無い |
+| resume-factory | Factory を同じ約束に乗せる | subagent・factory-runtime | 実装の段の途中で起こし直しても最後まで進む |
+| resume-light-update-wait | 更新の「待つ」を続けられないものだけ待つ形に | thread-turn・subagent | 実行中の tool が無ければ待たずに起こし直しへ進み、起き直したあと続く |
