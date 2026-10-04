@@ -4296,6 +4296,28 @@
       "extra": {}
     },
     {
+      "id": "subagent-for-factory",
+      "kind": "task",
+      "title": "Subagent に cwd・schema・頼んだ Module から止める口を足す",
+      "status": "ready",
+      "parent": "factory",
+      "dependsOn": [
+        "subagent-from-modules"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "Factory が使うための Subagent の追加（v4-modules.md §4.5「足りないもの」の2）。\n- `cwd`：Project の root の中だけ受ける（worktree で働かせる）。外を指したら断る\n- `schema`：最後の返答をその形の JSON にさせ、合わなければ同じセッションで直させる（回数上限）\n- `cancelSubagent`：中継の呼び出しは、呼んだ Module（host が刻む呼び出し元）と頼んだ記録の一致で止められる",
+      "doneWhen": "単体と E2E で：worktree を cwd に渡したサブエージェントがそこで働く／root の外の cwd は断る／schema に合わない返答が直されて合う JSON が返る／中継で頼んだ仕事を同じ Module から止められ、別の Module からは断られる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-04T08:56:00.627Z",
+      "updatedAt": "2026-10-04T08:56:00.627Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "backlog-thread-recorded-on-housekeeping",
       "kind": "bug",
       "title": "片づけで閉じただけでも、閉じた Thread が「取り組んだ Thread」に記録される",
