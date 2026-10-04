@@ -9,12 +9,14 @@ import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
 import {
   DATA_DIR,
+  FAKE_SYSTEMCTL,
   FRONTEND_PORT,
   CLAUDE_CONFIG_DIR,
   CLAUDE_CREDENTIALS_DIR,
   NPM_REGISTRY_PORT,
   REGISTRY_BASE_URL,
   REGISTRY_PORT,
+  RELEASE_DIR,
   SHELL_HOME_SOURCE,
   SUBAGENT_CLAUDE_CREDENTIALS,
   SUBAGENT_IMPORT_FILE,
@@ -143,5 +145,10 @@ writeFileSync(
 process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS = SUBAGENT_CLAUDE_CREDENTIALS;
 writeFileSync(SUBAGENT_IMPORT_FILE, JSON.stringify({ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }));
 process.env.BANTO_SUBAGENT_FAKE_IMPORT_FILE = SUBAGENT_IMPORT_FILE;
+
+// **画面からの更新も偽物の systemd で**（追加・2026-10-04）。systemctl は spec が作る偽物、動いているコードは
+// 試験の置き場の `current/banto`（版を替えると、host が見る「今の版」も替わる）
+process.env.BANTO_UPDATE_SYSTEMCTL = FAKE_SYSTEMCTL;
+process.env.BANTO_UPDATE_CODE_DIR = join(RELEASE_DIR, "current", "banto");
 
 await import("../packages/core/dist/cli.js");

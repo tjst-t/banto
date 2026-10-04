@@ -116,6 +116,14 @@ export const SUBAGENT_IMPORT_FILE = join(E2E_TMP, "subagent-import-auth.json");
 /** 取り込み元に置いてある鍵（試験がその sha256 を突き合わせる） */
 export const SUBAGENT_IMPORTED_KEY = "e2e-imported-key-7Q2";
 export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
+/**
+ * **画面から banto を更新する**（追加・2026-10-04、`self-update.spec.ts`）。本物の systemd も人の置き場
+ * （`~/.local/share/banto-release`）も使わない——置き場・偽の systemctl・動いているコードの場所を実行ごとの
+ * 置き場に向ける。中身（repo.git・版のフォルダ・偽の systemctl）は spec が作る。作るまでは「準備が済んでいない」
+ */
+export const SELF_UPDATE_DIR = join(E2E_TMP, "self-update");
+export const RELEASE_DIR = join(SELF_UPDATE_DIR, "release");
+export const FAKE_SYSTEMCTL = join(SELF_UPDATE_DIR, "systemctl");
 /** Repositories のアカウントのための偽の GitHub の行き先（core のプロセスが書き、spec が読む——`github-login-fixture.ts`） */
 export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.json");
 

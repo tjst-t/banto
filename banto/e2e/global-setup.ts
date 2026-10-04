@@ -16,6 +16,8 @@ import {
   FRONTEND_BASE_URL,
   CLAUDE_CONFIG_DIR,
   CLAUDE_CREDENTIALS_DIR,
+  RELEASE_DIR,
+  SELF_UPDATE_DIR,
 } from "./config.ts";
 
 export default function globalSetup(): void {
@@ -24,6 +26,7 @@ export default function globalSetup(): void {
   rmSync(DATA_DIR, { recursive: true, force: true });
   rmSync(dirname(CONFIG_PATH), { recursive: true, force: true });
   rmSync(CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+  rmSync(SELF_UPDATE_DIR, { recursive: true, force: true });
   mkdirSync(DATA_DIR, { recursive: true });
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
@@ -41,6 +44,8 @@ export default function globalSetup(): void {
         allowedEmbedderOrigins: [FRONTEND_BASE_URL],
         // 画面のオリジン（人のログイン：Cookie の要求の Origin・パスキー・CORS・ログインのリンク）
         uiOrigin: FRONTEND_BASE_URL,
+        // 画面からの更新の置き場（人のものを読まない。中身は self-update.spec.ts が作る）
+        releaseDir: RELEASE_DIR,
       },
       null,
       2,
