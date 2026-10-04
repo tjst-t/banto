@@ -271,3 +271,12 @@ arm64・Claude のログインそのもの（`claude auth login` があること
   同じ形があった**（`caddy list-modules | grep -qx dns.providers.cloudflare` は出力が長く、落ちると「Cloudflare の DNS が
   入っていません」で止まるか、Caddy を取り直す）。`grep … >/dev/null`（入力を最後まで読む）に直した。
   落ちたのは 4 回の試験のうち 1 回・1 箇所（規則6：間欠的な落ち方は機構の壊れ——待ち・やり直しではなく形を直した）
+
+### レビュー後の試験の結果（2026-10-04、install.sh は 347532fc、main に rebase 済み）
+
+24.04（ユーザー bantotester）：**PASS 113・FAIL 0**。まっさらから1回目 281 秒。26.04 はこの版では流していない
+（前の版で PASS 68）。この版で新しく通したもの：表を消す→外から 200→打ち直し→000、apt の caddy の形で2回流して
+/etc に unit を書かない、偽の Cloudflare でトークンありの形（「まだ取得中」で終わる・印つきで作る・人のレコードは
+向け先だけ直す・cloudflare.env 0640 root:caddy・Publish の基のドメイン）、名前を替える回が Cloudflare に届かず止まる→
+次の回が起こし直し・前の名前の印つきだけ消す・残りを最後の画面に出す、--no-cloudflare、秘密の grep、権限、
+Zabbly の鍵の混ざった束を断る、パスワードの要る sudo のユーザーで drop_sudo のあと記憶が使えない
