@@ -238,7 +238,12 @@ host の中継の住所と合言葉・宣言の `env` だけ。
   押す前に今の版と最新の間のコミットを全部出し、押したときに見せた commit だけを組み立てる（後から `release` が
   進んでも、それは入らない）。コミットへの署名を必須にする案は、release のたびに人が署名する手間に見合わないので採らない
 - **host の権限は増やさない**：組み立ても起こし直しも banto を動かしているユーザーで行う。足すのは polkit の規則1つ
-  （`banto-update.service` の start と、`banto-host`・`banto-frontend` の restart だけ）。sudo の規則は足さない
+  （`banto-update.service` の start・stop と、`banto-host`・`banto-frontend` の restart だけ）。sudo の規則は足さない。
+  規則が効いているか（と、それより広く許していないか）は整えるときに `pkcheck` で確かめる
+- **頼みが無ければ何もしない**：`banto-update.service` は `--from-request` で動き、host が書いた頼み（`request.json`）が
+  無ければ断る——unit が人の操作なしに起きても（`systemctl start` を誰かが打った等）、人が一覧を見ていない
+  `release` の最新は入らない。手で打つ `update.mjs` は、`--from-request` を付けない限り頼みを使わない
+- **誰が頼んだかは名前（label）だけを残す**——`state.json`・画面に返すものにセッションの id を出さない
 - **更新の本体は動いている版のもの**を使い、取ってきたコードのスクリプトは動かさない（`npm ci`・build は新しい
   コードを動かすが、これは手で反映するときと同じで、人が一覧を見て押したもの）
 
@@ -277,7 +282,9 @@ Module を落とす**。次に要るときに、コンテナの根を付け替�
 | **その Project の Module を選ぶ画面** | 同じ警告 |
 
 - 「広いか」の判断は **host が持つ**（`GET /api/config/root-scope`）——画面が home の場所を推測しない（規則3）。
-  判断は**パスの形ではなく中身**で決める：その根が **banto の設定・banto の記録・Claude の資格情報を含むか**
+  判断は**パスの形ではなく中身**で決める：その根が **banto の設定・banto の記録・Claude の資格情報・
+  banto が動かすコードの置き場（`releaseDir`——`repo.git`・`versions/`・`current`。書き換えられると、次に起こし直した
+  ときにそのコードが host の権限で動く。追加・2026-10-04）を含むか**
 - **残るリスクを、そのまま書いておく**：home を根にすると、home がまるごとコンテナに見え、AI のシェルは
   `~/.config/banto/config.json`（banto の合言葉）・`~/.local/share/banto`（全 Project の会話と Memory）・
   `~/.claude/.credentials.json`（Claude の資格情報）を読める。**マウントは根ごと**なので中身は分けられない

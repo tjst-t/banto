@@ -234,26 +234,43 @@ sudo systemctl restart UNIT_HOST UNIT_UI
 - `banto-host.service`・`banto-frontend.service` のパスを `current` を通す形に書き換える
 - 更新用の unit（`banto-update.service`）と polkit の規則1つを入れる
 
-これをまとめて行うのが `banto/scripts/setup-update.sh`（何度打っても壊れない。`install.sh` も同じものを使う）。
-**1回目は `$REL/banto/scripts/setup-update.sh`、済ませたあとに打ち直すときは `$REL/current/banto/scripts/setup-update.sh`**
-（1回目で REL が版ごとのフォルダの形に移るため）。下のコマンドは1回目のもの。
+これをまとめて行うのが `banto/scripts/setup-update.sh`（何度打っても壊れない）。**root の要る段（polkit・unit・規則・
+規則が効いているかの確かめ）を先に済ませ、置き場を動かすのはそのあと**——sudo や polkit で止まっても、動いている
+clone は元の場所のまま。
+
+**スクリプトは置き場の外に写してから打つ**——1回目は置き場そのものを動かすので、`$REL/banto/scripts/` から直に
+打つと、途中で止まったときに同じパスで打ち直せない。
 
 1. **今の REL を最新にしておく**（B の 1〜3。この機能が入った版で動いていること）
-2. **何が変わるかを見る**（変えずに出すだけ）
+2. **写して、何が変わるかを見る**（変えずに出すだけ）
 
    ```sh
-   bash "$REL/banto/scripts/setup-update.sh" --dry-run
+   cp "$REL/banto/scripts/setup-update.sh" ~/banto-setup-update.sh   # 2回目からは $REL/current/banto/scripts/ から
+   bash ~/banto-setup-update.sh --dry-run
    ```
 
-3. **行う**（途中で sudo のパスワードを聞かれる。最後に banto を起こし直すので、空いているときに）
+   画面のポートは `banto-frontend.service` の起動の仕方（ExecStart の `-p`、`npm run start` なら package.json の
+   `scripts.start`、無ければ `PORT`）から読む。読めないと止まるので、そのときは
+   `BANTO_UI_URL=http://127.0.0.1:4175/ bash ~/banto-setup-update.sh` のように指す
+
+3. **行う**（最初に sudo のパスワードを聞かれる。最後に banto を起こし直すので、空いているときに）
 
    ```sh
-   bash "$REL/banto/scripts/setup-update.sh"
+   bash ~/banto-setup-update.sh
    ```
 
-   unit の元の定義は `~/.local/share/banto-release/unit-backup/` に写してから書き換える
+   - unit の元の定義と、元の clone の `.git` は `$REL.setup-backup/` に写してから書き換える
+   - polkit の規則を置いたあと、`pkcheck` で「このユーザーに banto-update.service の start・stop、banto-host・
+     banto-frontend の restart が許され、banto-host の stop は断られる」ことを確かめる。通らなければ止まる
+     （polkit が古く JS の規則を読まない等。置き場はまだ動かしていない）
+   - **途中で止まったら、banto を触らず（手で直さず・起こし直さず）、同じコマンドを打ち直す**
+     （`bash ~/banto-setup-update.sh`）。どこまで済んだかは置き場の形から読み取って続きから行う
 
-4. **確かめる**：画面の 設定 → 更新 に今の版が出て、「準備が済んでいません」が出ない。A-6 の 1・2 ももう一度
+4. **確かめる**：
+   1. 画面の 設定 → 更新 に今の版が出て、「準備が済んでいません」が出ない
+   2. A-6 の 1・2 ももう一度（`cmd` が `~/.local/share/banto-release/current/...` になっている）
+   3. A-6 の 3 ももう一度——ただしコンテナに見えるパスは **`~/.local/share/banto-release/versions/<commit の頭12>/banto`**
+      になる（node が symlink を解いた本当のパスで動くため。`current` のままではない）
 
-**戻すとき**：`unit-backup/` の定義を `sudo systemctl edit --full` で戻し、`sudo systemctl daemon-reload`・
+**戻すとき**：`$REL.setup-backup/units/` の定義を `sudo systemctl edit --full` で戻し、`sudo systemctl daemon-reload`・
 restart。版のフォルダは `versions/` に残っているので、元のパスに戻すなら `setup-update.sh` が出した移し先を見る

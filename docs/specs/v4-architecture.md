@@ -1448,37 +1448,66 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
 
 **役の分け方**：
 
-- **更新の本体は `banto/scripts/update.mjs`**（1本。`install.sh` の「上げる」段も同じものを呼ぶ）。いつも
-  **今動いている版（`current`）のもの**を使う——取ってきた新しいコードのスクリプトは動かさない。初めて入れるとき
-  （`current` が無い）だけ、取ってきた版のものを `--first` で動かす（待たない・戻す先が無い・起こすのは `install.sh`）
-- **走らせるのは system の unit `banto-update.service`**（`Type=oneshot`、banto を動かしているユーザーで、`Nice=10`）。
-  banto-host の子として走らせると、起こし直したときに一緒に止められるため。oneshot なので同時に2本は走らない
+- **更新の本体は `banto/scripts/update.mjs`**（1本）。いつも**今動いている版（`current`）のもの**を使う——取ってきた
+  新しいコードのスクリプトは動かさない。初めて入れるとき（`current` が無い）だけ、取ってきた版のものを `--first` で
+  動かす（待たない・戻す先が無い）。**新しいホストに入れる `install.sh` はまだ無い**（Fork「新しいホストへの
+  インストール」が作成中・未作成）。できたら、その「上げる」段も `update.mjs` を呼ぶ
+- **走らせるのは system の unit `banto-update.service`**（`Type=oneshot`、banto を動かしているユーザーで、`Nice=10`・
+  `IOSchedulingClass=idle`・`CPUWeight=20`——組み立ての間も動いている banto を重くしない）。banto-host の子として
+  走らせると、起こし直したときに一緒に止められるため。oneshot なので同時に2本は走らない。**unit は
+  `update.mjs --from-request` を動かし、頼み（`request.json`）が無ければ何もせずに断る**（理由を `state.json` に書く）
 - **banto-host はこの unit を起こすだけ**。許すのは polkit の規則1つ：そのユーザーに `banto-update.service` の
-  start と、`banto-host.service`・`banto-frontend.service` の restart だけを、パスワード無しで許す（ほかの unit・
-  ほかの操作は断る。2026-10-04 に Ubuntu 24.04 のコンテナで確かめた）。sudo は使わない
+  start・stop（stop は詰まった更新を止めるため）と、`banto-host.service`・`banto-frontend.service` の restart だけを、
+  パスワード無しで許す（ほかの unit・ほかの操作は断る。2026-10-04 に Ubuntu 24.04 のコンテナで確かめた）。sudo は使わない
 - **頼みと進み具合はデータ置き場のファイル**（`<dataDir>/update/`）：host が `request.json`（どの commit を・待つか
-  すぐか・誰が・いつ）を書いて unit を起こす。`update.mjs` は `state.json`（段・残っているもの・結果）と
-  `<実行の id>.log` を書き、host はそれを読んで画面に返す。待っている間の「待つのをやめる」「待たずにすぐ起こし直す」も、
-  host が置く印のファイル（`cancel`・`force-now`）を `update.mjs` が数秒おきに見る
+  すぐか・誰が（label だけ）・いつ）を書いて unit を起こす。`update.mjs` は `state.json`（段・残っているもの・いま
+  止まっている理由（`note`）・結果）と `<実行の id>.log` を書き、host はそれを読んで画面に返す。待っている間の
+  「待つのをやめる」「待たずにすぐ起こし直す」も、host が置く印のファイル（`cancel`・`force-now`）を `update.mjs` が
+  数秒おきに見る
+- **頼みが黙って落ちない**：`update.mjs` は設定が読めなくても、分かる範囲の置き場（既定の `dataDir`）に断った理由を
+  `state.json` で残す。走っている更新があって断るとき（lock）は、走っている方の `state.json` を書き換えず、
+  `request.json` も消さない。host は**60秒を過ぎても受け取られていない `request.json`** を、理由つき（「更新の unit が
+  頼みを受け取っていません」）で画面に返す。**`state.json` の段が途中（fetch〜verify）なのに unit が走っていない**
+  ときは「中断」として返す（途中で殺された回）
 
 **`update.mjs` の段**：
 
-1. **取ってくる**：`repo.git` に GitHub の `release` を fetch し、頼まれた commit が `release` から辿れること・今の版が
-   その祖先であること（早送りだけ）を確かめる。違えば断る
-2. **組み立てる**：`versions/<commit>` を作り `npm ci --include=dev`・`npm run build`。**ここで落ちたら作りかけの
+1. **取ってくる**：まず、`current` が指す版と**動いている host が答える版**（`GET /api/admin/update` の
+   `current.commit`。host が答えなければ `current` のリンク）を突き合わせ、違えば「current と動いている版が
+   食い違っています」で止まる（前の回が起こし直しの途中で殺された等。直し方を `state.json` に書く）。それから
+   `repo.git` に GitHub の `release` を fetch し（上限あり。やめる印も見る）、頼まれた commit が `release` から
+   辿れること・今の版がその祖先であること（早送りだけ）を確かめる。違えば断る
+2. **組み立てる**：`versions/<commit>` を作り（その前に `git worktree prune`、今の版の大きさ以上の空きがあるかを
+   確かめ、無ければ組み立てる前に断る）、`npm ci --include=dev`・`npm run build`。**ここで落ちたら作りかけの
    フォルダを消し、今の版のまま終わる**
 3. **待つ**（待つ形のとき）：`GET /api/admin/activity` が `idle` になるまで数秒おきに見て、残っているものを
-   `state.json` に書く。上限は無し（人が画面でやめる・すぐに切り替える）
-4. **起こし直す**：`previous` を今の版に、`current` を新しい版に替えて、`banto-host`・`banto-frontend` を restart
-5. **確かめる**：120秒以内に host が答え、その版が新しい commit であること・画面の口が答えることを見る。
-   **起きなければ `current` を前の版に戻して restart し、「前の版に戻しました」で終わる**。起きれば古い版を片づける
+   `state.json` に書く。上限は無し（人が画面でやめる・すぐに切り替える）。**host が答えないことを「空いた」と
+   みなさない**——答えないときは `banto-host.service` の状態を見て、動いている（active・起動中）なら「host が
+   答えません」を書いて答えるまで待ち、止まっている（inactive・failed）ときだけ進む
+4. **起こし直す**：`previous` を今の版に、`current` を新しい版に替えて、`banto-host`・`banto-frontend` を restart。
+   **restart そのものが断られたら**（polkit 等）、戻す処理はせず `current`・`previous` だけを元に戻して
+   「起こし直せませんでした（今の版のまま動いています）」で終わる（`failedPhase: "restart"`）
+5. **確かめる**：host が答え、その版が新しい commit であること・画面の口が答えることを見る。同時に unit の状態を
+   見て、**落ちた（`failed`・`inactive`・`auto-restart`・自動で起こし直された回数（`NRestarts`）が restart の直前より
+   増えた。人の restart では 0 に戻らない）ならその場で**、起動中なら
+   上限（10分。計測した値ではない——落ちたことは上限を待たずに見るので、長めに取ってある）まで待ってから諦める。
+   **起きなければ `current` を前の版に戻して restart し、「前の版に戻しました」で終わる**。起きなかった版はすぐには
+   消さない（何が起きたかを見られるように。次の回が片づける）。起きれば古い版を片づける——**ただし、どこかの
+   Project のコンテナがまだ mount している版は残す**（host と同じ `incus` の口で装置の `source` を見る。次の回に
+   また見る）。Incus に聞けなければ何も消さない
+
+画面の口（確かめに使う URL）は、`setup-update.sh` が `banto-frontend.service` の起動の仕方から読んで
+`banto-update.service` に `BANTO_UPDATE_UI_URL` として書く（bootstrap config には画面のポートが無い）。
 
 **host の口**（`/api/admin/update`）：
 
 - `GET`：今の版（commit・題・日時）・最後に確かめた `release` の最新と、その間のコミット（題・id・日時）・更新の
-  進み具合（`state.json`）・準備が済んでいるか（置き場の形で動いているか・unit があるか）。ログイン中の人と
-  機械の口（合言葉）の両方から読める（`update.mjs` の確かめが使う）
-- `POST …/check`：`repo.git` に fetch して差を出し直す
+  進み具合（`state.json`。中断・受け取られていない頼みも）・準備が済んでいるか（置き場の形で動いているか・unit が
+  あるか・polkit の規則が効いているか）。ログイン中の人と機械の口（合言葉）の両方から読める。
+  **`current.commit` は、前の版の `update.mjs` が新しい版の host に「起きたか」を聞く契約——形を変えない**
+  （変えると、その変更を入れる更新そのものが「起きない」と判定されて戻される）
+- `POST …/check`：`repo.git` に fetch して差を出し直す。**ログイン中の人だけ**（step-up は要らない——読むだけで、
+  何も入れない）
 - `POST`（`{ commit, mode: "wait" | "now" }`）：**ログイン中の人だけ・その場の本人確認（step-up）が要る**。
   機械の口（合言葉）・Module・コンテナからは呼べない。`commit` は画面に見せた最新の commit——人が読んだ一覧と
   違うものを組み立てないため。走っている更新があれば断る
@@ -1487,8 +1516,8 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
 - `GET …/log`：最後の更新（`state.json` が指す回）のログの末尾（64KiB）。**ログイン中の人だけ**（組み立ての出力そのもの）。
   `state.json` のログが `<dataDir>/update/` の外を指していたら読まない
 
-**準備が済んでいないとき**（開発用のリポジトリから動かしている・unit が無い）は、画面はボタンを出さずに理由と
-手順書（`docs/runbooks/release.md` D）を出す。画面の作りは `docs/specs/v4-frontend.md` §6.34。
+**準備が済んでいないとき**（開発用のリポジトリから動かしている・unit が無い・polkit の規則が効いていない）は、
+画面はボタンを出さずに理由と手順書（`docs/runbooks/release.md` D）を出す。画面の作りは `docs/specs/v4-frontend.md` §6.34。
 
 ### 2.6 Configuration
 
