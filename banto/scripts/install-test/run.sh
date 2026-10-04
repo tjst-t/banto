@@ -313,7 +313,11 @@ grep -E '^(PASS|FAIL|INFO)' "$LOG/checks-ui.log" | sed 's/^/  /' | tee -a "$LOG/
 PASSES=$((PASSES + $(count '^PASS' "$LOG/checks-ui.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks-ui.log")))
 [[ $(X_link current) == "${GOOD2:0:12}" && $(X_link previous) == "${GOOD:0:12}" ]] && pass "ui: current → ${GOOD2:0:12}・previous → ${GOOD:0:12}" || fail "ui: current=$(X_link current) previous=$(X_link previous)"
 # 新しい版が答えたあとも、update.mjs は古い版を片づけている（lock を持ったまま）——終わるのを待つ
-for _ in $(seq 200); do X systemctl is-active --quiet banto-update.service || break; sleep 3; done
+# oneshot の unit は走っている間 activating（is-active は 0 を返さない）——ActiveState で見る
+for _ in $(seq 200); do
+  [[ $(X systemctl show -p ActiveState --value banto-update.service) == activating ]] || break
+  sleep 3
+done
 X journalctl -u banto-update.service --no-pager >"$LOG/banto-update-journal.log" 2>&1 || true
 grep -q '更新を始めます' "$LOG/banto-update-journal.log" && grep -q '更新しました' "$LOG/banto-update-journal.log" &&
   pass "ui: banto-update.service の中で update.mjs が始まり、終わった（journal）" || fail "ui: banto-update.service の journal：$(tail -3 "$LOG/banto-update-journal.log")"

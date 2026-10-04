@@ -131,7 +131,13 @@ if [[ $MODE == ui-update ]]; then
     sleep 3
   done
   [[ $now_commit == "$latest" ]] && pass "ui: banto-update.service が上げ、host が新しい版（${latest:0:12}）で答える" || fail "ui: 上がらない（今 $now_commit）"
-  phase=$(node -e 'console.log(require(process.argv[1]).phase)' "$HOME/.local/share/banto/update/state.json")
+  # host が新しい版で答えても、update.mjs はまだ確かめ（画面の口）・片づけの途中のことがある——段が終わりになるまで待つ
+  phase=""
+  for _ in $(seq 200); do
+    phase=$(node -e 'console.log(require(process.argv[1]).phase)' "$HOME/.local/share/banto/update/state.json")
+    [[ $phase == "done" || $phase == "failed" || $phase == "rolled-back" || $phase == "cancelled" ]] && break
+    sleep 3
+  done
   [[ $phase == "done" ]] && pass "ui: state.json は done" || fail "ui: state.json：$phase"
   exit "$FAILS"
 fi
