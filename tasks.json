@@ -4340,6 +4340,28 @@
       "extra": {}
     },
     {
+      "id": "factory-merge-queue",
+      "kind": "task",
+      "title": "Factory のマージの列——Project で1本・rebase・再テスト・fast-forward",
+      "status": "ready",
+      "parent": "factory",
+      "dependsOn": [
+        "factory-runtime"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-modules.md §4.5 の5。実行をまたいで Project で1本。root の作業ツリーで `git merge --ff-only`。main が動いたら rebase からやり直す（上限3）、競合・root の未コミットの変更とぶつかったら止まって知らせる。",
+      "doneWhen": "同じファイルの別の場所を触る2件を同時に流して、両方が順に main に入る（後の1件は rebase して再テストしてから）／本当に競合する2件では後の1件が止まり知らせが届く／root に未コミットの変更があって fast-forward できないとき止まって知らせる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-04T08:56:07.464Z",
+      "updatedAt": "2026-10-04T08:56:07.464Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "backlog-thread-recorded-on-housekeeping",
       "kind": "bug",
       "title": "片づけで閉じただけでも、閉じた Thread が「取り組んだ Thread」に記録される",
