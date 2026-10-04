@@ -31,7 +31,14 @@ import {
   CANVAS_META_KEY,
 } from "@banto/module-contract";
 import { REQUEST_APP_HTML, requestAppUri } from "./request-app.js";
-import { toPublic, type AliasMeta, type AliasStore } from "./alias-store.js";
+import {
+  isLink,
+  toPublic,
+  type AliasMeta,
+  type AliasStore,
+  type LinkAliasMeta,
+  type SecretAliasMeta,
+} from "./alias-store.js";
 import { GroupBindings } from "./group-bindings.js";
 import type { VaultBackend } from "./backend.js";
 
@@ -261,7 +268,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
    * ——値そのもの（`value`）は決して含めない。banto 側は名乗ったものしか拾わない
    * （`dev.banto/auditArgs`）ので、**ここに書かなければ記録は空のまま**。
    */
-  const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "implementation", "projectId"];
+  const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "toName", "implementation", "projectId"];
 
   function tool(
     name: string,
@@ -505,6 +512,23 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           "admin",
         ),
         tool(
+          "linkAlias",
+          // **値を写さずに、別の置き場からも使えるようにする**（決定・2026-10-04、ユーザー）。
+          // 「移す」は元を消し、「写す」は同じ値が2か所になる——元を1つのまま指す
+          "alias を別のグループからも使えるようにする参照を作る（人専用。同じ Vault の中だけ。値は写さない）",
+          {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "元の alias の名前" },
+              group: { type: "string", description: "元の置き場（同じ名前が複数あるとき）" },
+              toGroup: { type: "string", description: "参照を置くグループ" },
+              toName: { type: "string", description: "参照の名前（省略すると元と同じ）" },
+            },
+            required: ["name", "toGroup"],
+          },
+          "admin",
+        ),
+        tool(
           "clearGroupBinding",
           // **付け替えのために要る**（追加・2026-09-13）。1つの Project の秘密は
           // 1つの Vault にまとめるので、別の Vault へ移すときはこちらを外す
@@ -575,6 +599,58 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     if (inShared) return inShared;
     // 人の管理面（admin）は置き場を指定せずに引くことがある——1つなら通す
     return named.length === 1 ? named[0] : undefined;
+  }
+
+  /** 置き場の中のキー（"group/key" の key）。 */
+  function keyOf(backendPath: string): string {
+    return backendPath.slice(backendPath.indexOf("/") + 1);
+  }
+
+  /** 参照が指している元。**元が無い（か、元も参照）なら undefined**——辿るのは1段だけ。 */
+  function linkTarget(link: LinkAliasMeta, all: AliasMeta[]): SecretAliasMeta | undefined {
+    const target = all.find((m) => m.backendPath === link.linkTo);
+    return target && !isLink(target) ? target : undefined;
+  }
+
+  /**
+   * **値・鍵を取りに行く行**（追加・2026-10-04）。参照なら元、ふつうの alias ならそれ自身。
+   * 使えるかどうかは**呼ぶ前に参照の置き場で**確かめてあること（参照の目的は、元の
+   * グループが見えない Project から使わせることなので）。
+   * **元が無ければ理由つきで断る**——黙って空や別のものを返さない（規則2）。
+   */
+  async function valueSource(meta: AliasMeta, name: string): Promise<SecretAliasMeta> {
+    if (!isLink(meta)) return meta;
+    const target = linkTarget(meta, await registry.list());
+    if (!target) {
+      throw new Error(
+        `alias "${name}" は参照ですが、元（${groupOf({ backendPath: meta.linkTo })} / ${keyOf(meta.linkTo)}）がありません` +
+          "——元を作り直すか、管理画面でこの参照を消してください",
+      );
+    }
+    return target;
+  }
+
+  /**
+   * 人に見せる形。**参照の行は元から種別を導き**、指す先をグループと名前で添える。
+   * 元が無ければ `broken: true`（黙って一覧から消さない、規則2）。
+   */
+  function publicView(meta: AliasMeta, all: AliasMeta[]): Record<string, unknown> {
+    if (!isLink(meta)) return { ...toPublic(meta) };
+    const target = linkTarget(meta, all);
+    return {
+      ...toPublic(meta),
+      ...(target ? { kind: target.kind } : { broken: true }),
+      linkTo: { group: groupOf({ backendPath: meta.linkTo }), name: target ? target.name : keyOf(meta.linkTo) },
+    };
+  }
+
+  /**
+   * AI（と Module）に見せる形。**参照の指す先は出さない**——元のグループの見え方を
+   * 変えないため（元が見えない Project に、元の置き場と名前を教えない）。
+   */
+  function agentView(meta: AliasMeta, all: AliasMeta[]): Record<string, unknown> {
+    const { linkTo: _hidden, ...rest } = publicView(meta, all);
+    return rest;
   }
 
   async function assertPlaceIsFree(backendPath: string): Promise<void> {
@@ -680,8 +756,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const name = requiredString(args.name, "name");
         const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
+        // **使えるかは、引いた行（参照ならその置き場）で決める。値は元から**（2026-10-04）
         assertUsable(meta, name, callMeta);
-        const value = await backend.getSecret(meta.backendPath);
+        const source = await valueSource(meta, name);
+        const value = await backend.getSecret(source.backendPath);
         await registry.markUsed(meta.backendPath);
         return { content: [{ type: "text", text: String(value) }] };
       }
@@ -689,25 +767,28 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const name = requiredString(args.name, "name");
         const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
-        if (meta.kind !== "ssh-identity") {
-          throw new Error(`alias "${name}" は ssh-identity ではありません（${meta.kind}）`);
-        }
         // **公開鍵は秘密ではないが、どの鍵が在るかは使える範囲の話**
         // ——見える範囲は他の口と同じに揃える（規則3）
         assertUsable(meta, name, callMeta);
-        return { content: [{ type: "text", text: await backend.publicKeyOf(meta.backendPath) }] };
+        // 種別は元から導く（参照は種別を持たない）
+        const source = await valueSource(meta, name);
+        if (source.kind !== "ssh-identity") {
+          throw new Error(`alias "${name}" は ssh-identity ではありません（${source.kind}）`);
+        }
+        return { content: [{ type: "text", text: await backend.publicKeyOf(source.backendPath) }] };
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");
         const meta = await findAlias(identity, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`identity "${identity}" not found`);
-        if (meta.kind !== "ssh-identity") {
-          throw new Error(`alias "${identity}" は ssh-identity ではありません（${meta.kind}）`);
-        }
         assertUsable(meta, identity, callMeta);
+        const source = await valueSource(meta, identity);
+        if (source.kind !== "ssh-identity") {
+          throw new Error(`alias "${identity}" は ssh-identity ではありません（${source.kind}）`);
+        }
         // 窓口を立てる場所は host の刻印だけから取る（コンテナの中の呼び出し元から見えるフォルダ）
         const socketDir = socketDirOf(callMeta);
-        const { socketPath } = await backend.loadIntoAgent(meta.backendPath, socketDir ? { socketDir } : undefined);
+        const { socketPath } = await backend.loadIntoAgent(source.backendPath, socketDir ? { socketDir } : undefined);
         return { content: [{ type: "text", text: JSON.stringify({ socketPath }) }] };
       }
       case "verify": {
@@ -715,7 +796,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const meta = await findAlias(alias, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${alias}" not found`);
         assertUsable(meta, alias, callMeta);
-        const key = await backend.getSecret(meta.backendPath);
+        const source = await valueSource(meta, alias);
+        const key = await backend.getSecret(source.backendPath);
         const expected = createHmac("sha256", String(key))
           .update(requiredString(args.payload, "payload"))
           .digest();
@@ -768,6 +850,13 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const backendPath = `${group}/${name}`;
         // **人が預けたものは、この口からは触れない**（種別で区切る）
         const existing = (await registry.list()).find((a) => a.backendPath === backendPath);
+        // **参照を通して元を上書きしない**（2026-10-04）——書き換えるなら元を
+        if (existing && isLink(existing)) {
+          throw new Error(
+            `"${name}" は参照です（元は ${groupOf({ backendPath: existing.linkTo })} / ${keyOf(existing.linkTo)}）。` +
+              "値を変えるなら元を書き換えてください",
+          );
+        }
         if (existing && existing.kind !== BANTO_OWNED_KIND) {
           throw new Error(
             `"${name}" は人が預けた秘密です（${existing.kind}）。この口からは置き換えられません`,
@@ -872,8 +961,15 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             group ? `alias "${name}" は ${group} にありません` : `alias "${name}" はありません`,
           );
         }
-        await backend.deleteSecret(meta.backendPath);
-        await registry.delete(meta.backendPath);
+        if (isLink(meta)) {
+          // **参照を消しても元は消えない**（2026-10-04）——値を持っていないので、
+          // backend の秘密には触らない（組み込みでは存在しない秘密を消しにいかない）
+          await registry.deleteLink(meta.backendPath);
+        } else {
+          // 元を消しても、それを指す参照は残す——一覧で「元がありません」と出る（規則2）
+          await backend.deleteSecret(meta.backendPath);
+          await registry.delete(meta.backendPath);
+        }
         return {
           content: [{ type: "text", text: JSON.stringify({ deleted: true, name, group: groupOf(meta) }) }],
         };
@@ -904,7 +1000,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
               ? stored.filter((m) => scopeOf(m).scope === "shared")
               : stored.filter((m) => usableBy(m, caller.project));
         return {
-          content: [{ type: "text", text: JSON.stringify(visible.map((m) => ({ ...toPublic(m), ...scopeOf(m) }))) }],
+          content: [
+            { type: "text", text: JSON.stringify(visible.map((m) => ({ ...publicView(m, stored), ...scopeOf(m) }))) },
+          ],
         };
       }
       case "listGroups":
@@ -931,6 +1029,13 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         await assertPlaceIsFree(to);
         await backend.createGroup(toGroup);
 
+        if (isLink(meta)) {
+          // **参照を移すと、参照だけが動く**（指す先は同じ。2026-10-04）。値は無いので写さない
+          await registry.createLink({ ...meta, backendPath: to });
+          await registry.deleteLink(from);
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, moved: true, from, to }) }] };
+        }
+
         // **写す → 確かめる → 消す**。途中で落ちても「両方にある」で済み、
         // **値は失われない**（先に消すと、写す前に落ちたら秘密が消える）
         const value = await backend.getSecret(from);
@@ -941,9 +1046,56 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           throw new Error(`"${name}" を写せませんでした（${from} → ${to}）。元は残っています`);
         }
         await registry.create({ ...meta, backendPath: to });
+        // **元を指す参照は、新しい場所を指し直す**（2026-10-04）。**消す前に**——途中で
+        // 落ちても、参照は古い元（まだ在る）か新しい元のどちらかを指していて切れない
+        const links = (await registry.list()).filter((m) => isLink(m) && m.linkTo === from);
+        for (const link of links) await registry.retargetLink(link.backendPath, to);
         await backend.deleteSecret(from);
         await registry.delete(from);
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, moved: true, from, to }) }] };
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ ok: true, moved: true, from, to, relinked: links.length }) },
+          ],
+        };
+      }
+      case "linkAlias": {
+        // **作れるのは人が管理画面から押したときだけ**（2026-10-04）——作れると、
+        // 見えないはずのグループの秘密を自分の見える場所へ引き込める
+        assertHuman("参照を作る", callMeta);
+        const name = requiredString(args.name, "name");
+        const toGroup = requiredString(args.toGroup, "toGroup");
+        const toName = optionalString(args.toName, "toName") ?? name;
+        if (toName.trim() === "") throw new Error("toName が空です");
+        const group = optionalString(args.group, "group");
+        // **元は置き場で指す**（移すと同じ）——指定したら既定の解決に落ちない
+        const origin = await findAlias(name, group, callMeta);
+        if (!origin) {
+          throw new Error(group ? `alias "${name}" は ${group} にありません` : `alias "${name}" はありません`);
+        }
+        // **参照の参照は作らない**——辿る段数を1に固定する
+        if (isLink(origin)) {
+          throw new Error(
+            `"${name}" は参照です。参照の参照は作れません——元（${groupOf({ backendPath: origin.linkTo })} / ${keyOf(origin.linkTo)}）を指してください`,
+          );
+        }
+        const to = `${toGroup}/${toName}`;
+        // **置く先に同じ名前があれば上書きせずに断る**（移すと同じ）
+        await assertPlaceIsFree(to);
+        await backend.createGroup(toGroup); // 名前の検査もここが持つ
+        await registry.createLink({ name: toName, backendPath: to, linkTo: origin.backendPath });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ok: true,
+                name: toName,
+                group: toGroup,
+                linkTo: { group: groupOf(origin), name: origin.name },
+              }),
+            },
+          ],
+        };
       }
       case "clearGroupBinding": {
         assertHuman("紐付けの解除", callMeta);
@@ -1100,7 +1252,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             : all.filter((m) => usableBy(m, caller.project));
       return {
         contents: [
-          { uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(visible.map(toPublic)) },
+          {
+            uri: request.params.uri,
+            mimeType: "application/json",
+            text: JSON.stringify(visible.map((m) => agentView(m, all))),
+          },
         ],
       };
     }
@@ -1111,7 +1267,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       assertUsable(meta, match[1]!, request.params._meta as Record<string, unknown> | undefined);
       return {
         contents: [
-          { uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(toPublic(meta)) },
+          {
+            uri: request.params.uri,
+            mimeType: "application/json",
+            text: JSON.stringify(agentView(meta, await registry.list())),
+          },
         ],
       };
     }

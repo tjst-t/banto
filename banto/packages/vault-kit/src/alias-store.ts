@@ -16,9 +16,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AliasKind } from "./backend.js";
 
-export interface AliasMeta {
+interface AliasCommon {
   name: string;
-  kind: AliasKind;
   /**
    * **`scope` / `projectId` は持たない**（訂正・2026-09-13、ユーザー指摘）。
    *
@@ -38,20 +37,48 @@ export interface AliasMeta {
   expiresAt?: string;
 }
 
+/** 値を持つ秘密（ふつうの alias）。 */
+export interface SecretAliasMeta extends AliasCommon {
+  kind: AliasKind;
+  linkTo?: undefined;
+}
+
+/**
+ * **参照**（決定・2026-10-04、ユーザー。仕様 §2.1 C節「参照」）。
+ *
+ * 同じ Vault の別の置き場の秘密を、**値を写さずに**この置き場から使えるようにする行。
+ * `linkTo` は元の `backendPath`。**種別は持たない**——元から導く（規則3。写すと、元を
+ * 作り直したときに食い違う）。誰が使えるかは**この行の置き場**で決まる。
+ */
+export interface LinkAliasMeta extends AliasCommon {
+  linkTo: string;
+  kind?: undefined;
+}
+
+export type AliasMeta = SecretAliasMeta | LinkAliasMeta;
+
+export function isLink(meta: AliasMeta): meta is LinkAliasMeta {
+  return typeof meta.linkTo === "string";
+}
+
 /**
  * `update` に渡す差分。`undefined` は「触らない」、`null` は「消す」。
  * 名前と backend 内のパスは差し替えの対象にしない——名前が変わったら別の
- * alias、置き場が変わるのは移行（`migrateTo`）の仕事。
+ * alias、置き場が変わるのは移行（`migrateTo`）の仕事。種別と参照の指す先も
+ * ここでは変えない（指す先は `retargetLink`）。
  */
 export type AliasPatch = {
-  [K in keyof Omit<AliasMeta, "name" | "backendPath">]?: AliasMeta[K] | null;
+  [K in keyof Omit<AliasCommon, "name" | "backendPath">]?: AliasCommon[K] | null;
 };
 
-/** 人に見せてよい形（**backend 内のパスを外に出さない**）。 */
-export type PublicAliasMeta = Omit<AliasMeta, "backendPath">;
+/**
+ * 人に見せてよい形（**backend 内のパスを外に出さない**）。参照の `linkTo` も
+ * backend 内のパスなので落とす——見せる形（グループと名前）は kit が元から導いて足す。
+ */
+export type PublicAliasMeta = Omit<AliasCommon, "backendPath"> & { kind?: AliasKind };
 
 export function toPublic(meta: AliasMeta): PublicAliasMeta {
-  const { backendPath: _internal, ...rest } = meta;
+  const { backendPath: _internal, linkTo: _link, ...rest } = meta;
   return rest;
 }
 
@@ -71,10 +98,21 @@ export interface AliasStore {
   /** 立ち上がりの読み込み。 */
   load(): Promise<void>;
   list(): Promise<AliasMeta[]>;
-  create(meta: AliasMeta): Promise<void>;
+  create(meta: SecretAliasMeta): Promise<void>;
   update(backendPath: string, patch: AliasPatch): Promise<void>;
   delete(backendPath: string): Promise<void>;
   markUsed(backendPath: string): Promise<void>;
+  /**
+   * **参照を置く**（追加・2026-10-04）。値は写さない。**持ち方は backend ごと**なので、
+   * ここに口を置く——組み込みは台帳に行を足すだけ、Infisical は参照の置き場に
+   * 「元を指す秘密」を1つ置く（台帳がフォルダの秘密とその注記だから）。
+   * 置き場が空いていることは呼び出し側（kit）が確かめてから呼ぶ。
+   */
+  createLink(link: LinkAliasMeta): Promise<void>;
+  /** 参照の指す先を変える（元が同じ Vault の中で動いたとき）。 */
+  retargetLink(backendPath: string, linkTo: string): Promise<void>;
+  /** **参照だけ**を消す。元には触らない。 */
+  deleteLink(backendPath: string): Promise<void>;
 }
 
 /**
@@ -128,7 +166,29 @@ export class LocalFileAliasStore implements AliasStore {
     return Array.from(this.aliases.values());
   }
 
-  async create(meta: AliasMeta): Promise<void> {
+  async create(meta: SecretAliasMeta): Promise<void> {
+    await this.add(meta);
+  }
+
+  /** **秘密は置かない**——台帳に「この置き場は元を指す」の行があるだけ。 */
+  async createLink(link: LinkAliasMeta): Promise<void> {
+    await this.add(link);
+  }
+
+  async retargetLink(backendPath: string, linkTo: string): Promise<void> {
+    const existing = this.aliases.get(backendPath);
+    if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
+    this.aliases.set(backendPath, { ...existing, linkTo });
+    await this.save();
+  }
+
+  async deleteLink(backendPath: string): Promise<void> {
+    const existing = this.aliases.get(backendPath);
+    if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
+    await this.delete(backendPath);
+  }
+
+  private async add(meta: AliasMeta): Promise<void> {
     if (this.aliases.has(meta.backendPath)) {
       throw new Error(`"${meta.backendPath}" には既に別の秘密があります`);
     }

@@ -18,6 +18,9 @@ const aliasStore: AliasStore = {
   update: async () => {},
   delete: async () => {},
   markUsed: async () => {},
+  createLink: async () => {},
+  retargetLink: async () => {},
+  deleteLink: async () => {},
 };
 
 async function connect(init: () => Promise<void>): Promise<Client> {

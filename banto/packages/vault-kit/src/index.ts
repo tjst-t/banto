@@ -2,8 +2,11 @@ export { createVaultModuleServer, type VaultModuleOptions } from "./server.js";
 export {
   LocalFileAliasStore,
   toPublic,
+  isLink,
   type AliasStore,
   type AliasMeta,
+  type SecretAliasMeta,
+  type LinkAliasMeta,
   type AliasPatch,
   type PublicAliasMeta,
 } from "./alias-store.js";

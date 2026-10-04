@@ -756,3 +756,283 @@ test("公開鍵は、作ったあとでも何度でも読める（秘密鍵は�
     );
   });
 });
+
+// ---- 参照（決定・2026-10-04、ユーザー。仕様 §2.1 C節「参照」）------------------
+//
+// ある置き場の秘密を、**値を写さずに**別の置き場からも使えるようにする。台帳に
+// 「この置き場のこの名前は、元を指す」の行を1つ足すだけ。
+
+type Listed = {
+  name: string;
+  group: string;
+  kind?: string;
+  scope: string;
+  linkTo?: { group: string; name: string };
+  broken?: boolean;
+};
+
+async function listed(client: Client): Promise<Listed[]> {
+  return JSON.parse(textOf(await client.callTool({ name: "listAliases", arguments: {} }))) as Listed[];
+}
+
+/** 見えないグループ（どこにも紐付いていない）に元を置き、proj-a のグループに参照を置く。 */
+async function hiddenOriginWithLink(client: Client): Promise<void> {
+  await client.callTool({ name: "setGroupBinding", arguments: { projectId: "proj-a", group: "grp-a" } });
+  await client.callTool({
+    name: "createAlias",
+    arguments: { name: "cf-token", kind: "secret", group: "tools", value: "cf-secret-value", note: "外の道具も読む" },
+  });
+  await client.callTool({ name: "linkAlias", arguments: { name: "cf-token", group: "tools", toGroup: "grp-a" } });
+}
+
+test("参照：元のグループが見えない Project から、参照のグループ経由で元の値が引ける", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    // **使えるかは参照の置き場で決まる**——元（tools）はどこにも紐付いていないが、参照は proj-a のもの
+    assert.equal(
+      textOf(
+        await client.callTool({
+          name: "resolveAlias",
+          arguments: { name: "cf-token", group: "grp-a" },
+          _meta: forProject("proj-a"),
+        }),
+      ),
+      "cf-secret-value",
+    );
+    // 素の名前でも引ける（Project のグループが先）
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-a") })),
+      "cf-secret-value",
+    );
+    // **参照が無い Project からは引けない**——元の見え方は変わらない
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-b") }),
+      /この Project からは使えません|not found/,
+    );
+    await assert.rejects(
+      () =>
+        client.callTool({
+          name: "resolveAlias",
+          arguments: { name: "cf-token", group: "tools" },
+          _meta: forProject("proj-a"),
+        }),
+      /この Project からは使えません/,
+      "元の置き場を名指しすると、参照が無くても引けてしまう",
+    );
+  });
+});
+
+test("参照：一覧には指す先と、元から導いた種別が出る（台帳には種別を写さない）", async () => {
+  await withServer(async ({ client, }) => {
+    await hiddenOriginWithLink(client);
+    const link = (await listed(client)).find((a) => a.group === "grp-a")!;
+    assert.deepEqual(link.linkTo, { group: "tools", name: "cf-token" });
+    assert.equal(link.kind, "secret", "参照の種別が元から導かれていない");
+    assert.equal(link.scope, "project");
+    assert.equal(link.broken, undefined);
+    // 元の行は参照ではない
+    const origin = (await listed(client)).find((a) => a.group === "tools")!;
+    assert.equal(origin.linkTo, undefined);
+    assert.equal(origin.scope, "unbound");
+  });
+});
+
+test("参照：台帳に行を足すだけ——値も種別も写さない", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-vault-link-ledger-"));
+  try {
+    const server = createVaultServer(dir);
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([server.connect(s), client.connect(c)]);
+    const call = (name: string, args: Record<string, unknown>) =>
+      client.callTool({ name, arguments: args, _meta: ADMIN });
+    await call("createAlias", { name: "orig", kind: "secret", group: "tools", value: "LEDGER-MUST-NOT-COPY" });
+    await call("linkAlias", { name: "orig", group: "tools", toGroup: "elsewhere", toName: "alias-b" });
+    const ledger = await readFile(join(dir, "aliases.json"), "utf8");
+    const row = (JSON.parse(ledger) as Array<Record<string, unknown>>).find((r) => r.backendPath === "elsewhere/alias-b");
+    assert.deepEqual(row, { name: "alias-b", backendPath: "elsewhere/alias-b", linkTo: "tools/orig" });
+    assert.equal(ledger.includes("LEDGER-MUST-NOT-COPY"), false);
+    await client.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("参照：作れるのは人の管理画面からだけ（Module からは作れない）", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: "createAlias", arguments: { name: "x", kind: "secret", group: "tools", value: "v" } });
+    for (const meta of [forProject("proj-a"), { "dev.banto/caller": { instance: true } }, {}]) {
+      await assert.rejects(
+        () =>
+          client.callTool({ name: "linkAlias", arguments: { name: "x", group: "tools", toGroup: "grp-a" }, _meta: meta }),
+        /人の管理画面からしか行えません/,
+      );
+    }
+    assert.equal((await listed(client)).length, 1, "断ったのに参照ができている");
+  });
+});
+
+test("参照：参照の参照は作らない・置く先に同じ名前があれば上書きせずに断る", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    await assert.rejects(
+      () => client.callTool({ name: "linkAlias", arguments: { name: "cf-token", group: "grp-a", toGroup: "grp-c" } }),
+      /参照の参照は作れません/,
+    );
+    await client.callTool({ name: "createAlias", arguments: { name: "taken", kind: "secret", group: "grp-c", value: "keep" } });
+    await assert.rejects(
+      () =>
+        client.callTool({
+          name: "linkAlias",
+          arguments: { name: "cf-token", group: "tools", toGroup: "grp-c", toName: "taken" },
+        }),
+      /既に別の秘密があります/,
+    );
+    // 元と同じ置き場も「既にある」
+    await assert.rejects(
+      () => client.callTool({ name: "linkAlias", arguments: { name: "cf-token", group: "tools", toGroup: "tools" } }),
+      /既に別の秘密があります/,
+    );
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "taken", group: "grp-c" } })),
+      "keep",
+      "置く先にあったものが書き換わった",
+    );
+    // 名前を変えれば置ける
+    await client.callTool({
+      name: "linkAlias",
+      arguments: { name: "cf-token", group: "tools", toGroup: "grp-c", toName: "cf-token-2" },
+    });
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token-2", group: "grp-c" } })),
+      "cf-secret-value",
+    );
+  });
+});
+
+test("参照：値を書く口（putSecret）は参照を断る——元を書き換えさせる", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    await assert.rejects(
+      () =>
+        client.callTool({
+          name: "putSecret",
+          arguments: { name: "cf-token", group: "grp-a", value: "overwritten" },
+          _meta: forProject("proj-a"),
+        }),
+      /参照です.*元を書き換えてください/,
+    );
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token", group: "tools" } })),
+      "cf-secret-value",
+      "参照を通して元が書き換わった",
+    );
+  });
+});
+
+test("参照：参照を消しても元は残る／元を消すと参照は残って「元がありません」になり、引くと理由つきで断る", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    // 参照をもう1つ（消す用）
+    await client.callTool({
+      name: "linkAlias",
+      arguments: { name: "cf-token", group: "tools", toGroup: "grp-c", toName: "throwaway" },
+    });
+    await client.callTool({ name: "deleteAlias", arguments: { name: "throwaway", group: "grp-c" } });
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token", group: "tools" } })),
+      "cf-secret-value",
+      "参照を消したら元まで消えた",
+    );
+    assert.equal((await listed(client)).some((a) => a.name === "throwaway"), false);
+
+    // 元を消す
+    await client.callTool({ name: "deleteAlias", arguments: { name: "cf-token", group: "tools" } });
+    const link = (await listed(client)).find((a) => a.group === "grp-a");
+    assert.ok(link, "元を消したら参照が黙って消えた");
+    assert.equal(link.broken, true);
+    assert.deepEqual(link.linkTo, { group: "tools", name: "cf-token" });
+    assert.equal(link.kind, undefined, "元が無いのに種別を推測している");
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-a") }),
+      /参照ですが、元（tools \/ cf-token）がありません/,
+    );
+    // 壊れた参照も消せる（元が無くても、存在しない秘密を触りにいかない）
+    await client.callTool({ name: "deleteAlias", arguments: { name: "cf-token", group: "grp-a" } });
+    assert.equal((await listed(client)).length, 0);
+  });
+});
+
+test("参照：同じ Vault の中で元を移すと、参照は新しい場所を指し直す／参照を移すと参照だけが動く", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    const moved = JSON.parse(
+      textOf(await client.callTool({ name: "migrateAlias", arguments: { name: "cf-token", group: "tools", toGroup: "vault-tools" } })),
+    ) as { moved: boolean; relinked: number };
+    assert.equal(moved.moved, true);
+    assert.equal(moved.relinked, 1);
+    const link = (await listed(client)).find((a) => a.group === "grp-a")!;
+    assert.deepEqual(link.linkTo, { group: "vault-tools", name: "cf-token" }, "参照が古い場所を指したまま");
+    assert.equal(link.broken, undefined);
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-a") })),
+      "cf-secret-value",
+    );
+
+    // 参照を移す：参照だけが動き、元はそのまま
+    await client.callTool({ name: "migrateAlias", arguments: { name: "cf-token", group: "grp-a", toGroup: "grp-c" } });
+    const after = await listed(client);
+    assert.deepEqual(
+      after.map((a) => `${a.group}/${a.name}${a.linkTo ? `->${a.linkTo.group}/${a.linkTo.name}` : ""}`).sort(),
+      ["grp-c/cf-token->vault-tools/cf-token", "vault-tools/cf-token"],
+    );
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token", group: "grp-c" } })),
+      "cf-secret-value",
+    );
+  });
+});
+
+test("参照：SSH 鍵の参照は鍵として使える——公開鍵は元のもの、ssh-agent にも積める", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: "setGroupBinding", arguments: { projectId: "proj-a", group: "grp-a" } });
+    const made = JSON.parse(
+      textOf(await client.callTool({ name: "generateSecret", arguments: { name: "deploy", kind: "ssh-identity", group: "keys" } })),
+    ) as { publicKey: string };
+    await client.callTool({ name: "linkAlias", arguments: { name: "deploy", group: "keys", toGroup: "grp-a" } });
+    assert.equal(
+      textOf(await client.callTool({ name: "getPublicKey", arguments: { name: "deploy" }, _meta: forProject("proj-a") })),
+      made.publicKey,
+    );
+    assert.equal((await listed(client)).find((a) => a.group === "grp-a")!.kind, "ssh-identity");
+    assert.ok(
+      textOf(
+        await client.callTool({ name: "startSshAgent", arguments: { identity: "deploy" }, _meta: forProject("proj-a") }),
+      ).includes("socketPath"),
+    );
+    // 鍵でない元を指す参照は、鍵としては使えない
+    await client.callTool({ name: "createAlias", arguments: { name: "plain", kind: "secret", group: "keys", value: "v" } });
+    await client.callTool({ name: "linkAlias", arguments: { name: "plain", group: "keys", toGroup: "grp-a" } });
+    await assert.rejects(
+      () => client.callTool({ name: "getPublicKey", arguments: { name: "plain" }, _meta: forProject("proj-a") }),
+      /ssh-identity ではありません（secret）/,
+    );
+  });
+});
+
+test("参照：使った記録は参照の行に付く／AI の目録には指す先を出さない", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-a") });
+    const all = (await listed(client)) as Array<Listed & { lastUsedAt?: string }>;
+    assert.ok(all.find((a) => a.group === "grp-a")!.lastUsedAt, "参照の行に使った記録が無い");
+    assert.equal(all.find((a) => a.group === "tools")!.lastUsedAt, undefined);
+
+    const seen = JSON.parse(
+      resourceText(await client.readResource({ uri: "vault://aliases", _meta: forProject("proj-a") })),
+    ) as Array<Record<string, unknown>>;
+    assert.deepEqual(seen.map((a) => a.name), ["cf-token"]);
+    assert.equal(seen[0]!.kind, "secret");
+    assert.equal(seen[0]!.linkTo, undefined, "見えない元の置き場が AI に漏れている");
+  });
+});
