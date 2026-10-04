@@ -491,3 +491,30 @@ test("参照：Infisical 側で ${環境.フォルダ.キー} が元の値に展
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+// **Infisical の展開で、見えないグループの値を引き出せない**（2026-10-04、レビュー）。Project の刻印で
+// 呼べる putSecret で自分のグループに `${環境.見えないフォルダ.キー}` を置いても、引いて返るのはその文字列。
+test("参照の書き方を自分で置いても、見えないグループの値は返らない（Infisical に展開させない）", { skip }, async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-expand-"));
+  const hidden = uniqueGroup("hidden");
+  const mine = uniqueGroup("mine");
+  try {
+    await new InfisicalSettingsStore(dataDir).save(config!);
+    const server = createInfisicalVaultServer(dataDir);
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([server.connect(s), client.connect(c)]);
+    const project = { "dev.banto/caller": { project: `p-${mine}` } };
+    await client.callTool({ name: "createAlias", arguments: { name: "SECRET", kind: "secret", group: hidden, value: "hidden-value" }, _meta: ADMIN });
+    await client.callTool({ name: "setGroupBinding", arguments: { projectId: `p-${mine}`, group: mine }, _meta: ADMIN });
+    const reference = `\${${config!.environment}.${hidden}.SECRET}`;
+    await client.callTool({ name: "putSecret", arguments: { name: "STEAL", value: reference, forProject: `p-${mine}` }, _meta: project });
+    const got = await client.callTool({ name: "resolveAlias", arguments: { name: "STEAL" }, _meta: project });
+    assert.equal((got.content as { text: string }[])[0]!.text, reference, "見えないグループの値が返った");
+    await client.callTool({ name: "deleteAlias", arguments: { name: "STEAL", group: mine }, _meta: ADMIN });
+    await client.callTool({ name: "deleteAlias", arguments: { name: "SECRET", group: hidden }, _meta: ADMIN });
+    await client.close();
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

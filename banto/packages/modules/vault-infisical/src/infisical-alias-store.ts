@@ -25,6 +25,10 @@
 // 元の置き場（`linkTo`）を書く。値は Infisical 自身の参照の書き方
 // `${環境.フォルダ.キー}` にするので、banto の外の道具がそのフォルダを読んでも
 // 元の値が取れる（banto 自身は `linkTo` を辿って元を引く）。種別は書かない（元から導く）。
+//
+// **正は注記の `linkTo`**（2026-10-04、レビュー）。秘密の値（`${…}`）は banto の外の道具のための写しで、
+// banto はそれを読まない（backend の getSecret は展開もさせない）。人が Infisical 側で値だけ書き換えると
+// 2つが食い違うが、**検出はしない**——banto の振る舞いは注記だけで決まる。
 //   秘密 `/{group}/{key}`  ← ${dev.{元のフォルダ}.{元のキー}}
 //     secretComment        ← {"name":…,"linkTo":"{元のフォルダ}/{元のキー}","note":…}
 //
@@ -241,9 +245,13 @@ function parseComment(comment: string | undefined): StoredMeta | undefined {
   try {
     const parsed = JSON.parse(comment) as Partial<StoredMeta>;
     if (typeof parsed !== "object" || parsed === null) return undefined;
-    // **参照の注記は種別を持たない**（元から導く）——`linkTo` を落とさずに読む
-    if (typeof parsed.linkTo === "string" && parsed.kind === undefined) {
-      return typeof parsed.name === "string" ? (parsed as StoredMeta) : undefined;
+    // **参照の注記は種別を持たない**（元から導く）——`linkTo` を落とさずに読む。
+    // `kind` まで書かれていても**参照として読み、kind は捨てる**（2026-10-04、レビュー）——種別は元が正で、
+    // 写しを読むと元を作り直したときに食い違う
+    if (typeof parsed.linkTo === "string") {
+      if (typeof parsed.name !== "string") return undefined;
+      const { kind: _ignored, ...link } = parsed;
+      return link as StoredMeta;
     }
     if (parsed.kind !== "secret" && parsed.kind !== "ssh-identity" && parsed.kind !== "file") return undefined;
     // **`scope` はもう見ない**（改訂・2026-09-13）——使える範囲は置き場

@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
+import { InfisicalBackend } from "./infisical-backend.js";
 import type { InfisicalConnection } from "./client.js";
 
 type Stored = { secretValue: string; secretComment?: string };
@@ -104,4 +105,40 @@ test("`.` を含むフォルダ名・キーは Infisical の参照の書き方�
     /"\." を含むフォルダ名を指せません/,
   );
   assert.equal(secrets.size, 0);
+});
+
+test("注記が linkTo と kind を両方持っていても、参照として読み kind は捨てる（種別は元が正）", async () => {
+  const { conn, secrets } = fakeConnection();
+  const store = new InfisicalAliasStore(conn);
+  secrets.set("/proj\0K", {
+    secretValue: "${dev.tools.K}",
+    secretComment: JSON.stringify({ name: "K", kind: "ssh-identity", linkTo: "tools/K" }),
+  });
+  const row = (await store.list()).find((a) => a.backendPath === "proj/K")!;
+  assert.equal(row.linkTo, "tools/K");
+  assert.equal(row.kind, undefined, "注記に書かれた種別の写しを読んでいる");
+});
+
+test("参照で指せるかを先に聞ける——`.` を含む置き場は断る、そうでなければ通す", async () => {
+  const { conn } = fakeConnection();
+  const store = new InfisicalAliasStore(conn);
+  await store.assertCanLinkTo("tools/K");
+  await assert.rejects(() => store.assertCanLinkTo("my.tools/K"), /"\." を含むフォルダ名を指せません/);
+  await assert.rejects(() => store.assertCanLinkTo("tools/K.V"), /"\." を含むキー名を指せません/);
+});
+
+test("backend の getSecret は Infisical に参照を展開させない（展開すると見えないグループの値が返る）", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const conn = {
+    scope: { projectId: "p1", environment: "dev" },
+    secrets: () => ({
+      async getSecret(opts: Record<string, unknown>) {
+        seen.push(opts);
+        return { secretValue: "${dev.tools.CF_TOKEN}" };
+      },
+    }),
+  } as unknown as InfisicalConnection;
+  const backend = new InfisicalBackend(conn);
+  assert.equal(await backend.getSecret("proj/CF_TOKEN"), "${dev.tools.CF_TOKEN}");
+  assert.equal(seen[0]!.expandSecretReferences, false, "展開を切らずに読んでいる");
 });

@@ -67,6 +67,11 @@ export class InfisicalBackend implements VaultBackend {
       ...this.conn.scope,
       secretName: key,
       secretPath: `/${group}`,
+      // **Infisical に参照（`${環境.フォルダ.キー}`）を展開させない**（2026-10-04、レビュー）。SDK の既定は
+      // 展開するので、Project の刻印で呼べる putSecret で自分のグループに `${dev.tools.X}` を置いて
+      // 引くと、**見えないグループの値が返っていた**。banto の参照は台帳の linkTo を kit が辿り、
+      // 使えるかを参照の置き場で確かめてから元を引く——Infisical の展開はその判定の外を通る
+      expandSecretReferences: false,
     });
     if (got.secretValue === undefined) throw new Error(`vault secret not found: ${path}`);
     return got.secretValue;
