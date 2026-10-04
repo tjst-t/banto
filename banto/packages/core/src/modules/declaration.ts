@@ -1012,7 +1012,7 @@ export function loadModuleDeclarations(
   const source = sources.length > 0 ? sources.join("+") : "default";
   let raw: ModuleDeclaration[] = [...DEFAULT_MODULE_DECLARATIONS];
   for (const overlays of layers) raw = applyModuleOverlay(raw, overlays);
-  const parsed = raw.map((d) => parseModuleDeclaration(d, source));
+  const parsed = raw.map((d) => parseModuleDeclaration(refreshFromCatalog(d), source));
   const names = new Set<string>();
   for (const d of parsed) {
     if (names.has(d.name)) {
@@ -1022,6 +1022,36 @@ export function loadModuleDeclarations(
   }
   assertSingletonRoles(parsed, source);
   return parsed;
+}
+
+/**
+ * **目録から入れた Module の宣言は、読むたびに目録から取り直す**（決定・2026-10-04、ユーザー）。
+ *
+ * `installFromCatalog` は入れたときの launch と meta を設定に写す。写しは古いまま残るので、あとで目録の宣言を
+ * 直しても（依存を足す・閉じ込めを変える）、入れてあった Project には届かなかった——Backlog が Repositories への
+ * 依存を持たず中継で相手が見えなかった（2026-10-04）・Service が publish-directory への依存を持たなかった（2026-09-28）。
+ * 既定（`DEFAULT_MODULE_DECLARATIONS`）を写さないのと同じ理由（規則3）。
+ *
+ * **同じコード（command と args が目録の1本と一致）なら、meta と launch の env を目録のものにする。** 名前と、
+ * 人が変えたもの（有効・無効など、宣言の外の設定）はそのまま。違うコードは第三者のものとして触らない。
+ * 自己申告が目録より厳しければ起動で食い違いとして止まる——同梱のコードなので、それは目録の誤り（直すのはコード）。
+ */
+function refreshFromCatalog(d: ModuleDeclaration): ModuleDeclaration {
+  if (isRemoteLaunch(d.launch)) return d;
+  const launch = d.launch;
+  const entry = BUNDLED_CATALOG.find(
+    (e) =>
+      !isRemoteLaunch(e.launch) &&
+      e.launch.command === launch.command &&
+      e.launch.args.length === launch.args.length &&
+      e.launch.args.every((a, i) => a === launch.args[i]),
+  );
+  if (!entry || isRemoteLaunch(entry.launch)) return d;
+  return {
+    ...d,
+    launch: { ...launch, ...(entry.launch.env ? { env: { ...entry.launch.env } } : {}) },
+    meta: entry.meta,
+  };
 }
 
 /**

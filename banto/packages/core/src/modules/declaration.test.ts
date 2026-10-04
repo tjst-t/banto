@@ -26,6 +26,8 @@ import {
   setModuleDeclarations,
   listProjectModules,
   setProjectModuleSelection,
+  addModuleDeclaration,
+  BUNDLED_CATALOG,
 } from "./declaration.js";
 
 /** 設定だけを持つ空の置き場（この節の試験はどれも同じ形で始まる） */
@@ -798,4 +800,46 @@ test("URL に繋ぐ形には、閉じ込めが無くても秘密を渡す——�
   assert.equal(secretsAllowedFor(metaFor({}), remote).ok, true);
   // 金庫そのものは、形によらず断る
   assert.equal(secretsAllowedFor(metaFor({ satisfies: ["vault"], origin: "bundled" }), remote).ok, false);
+});
+
+test("**目録から入れた Module は、入れたときの写しが古くても今の目録の宣言で読む**（Backlog → repositories の依存が効かなかった回帰）", async () => {
+  await withConfig(async (config) => {
+    const entry = BUNDLED_CATALOG.find((e) => e.id === "backlog")!;
+    assert.ok(!isRemoteLaunch(entry.launch));
+    // 2026-10-03 に入れたときの写し：依存が空・閉じ込めは files-only・env が1つ欠けている
+    const oldEnv = { ...(entry.launch as StdioLaunch).env };
+    delete oldEnv.BANTO_HOST_MCP_TOKEN;
+    await addModuleDeclaration(config, {
+      name: "backlog",
+      launch: { ...(entry.launch as StdioLaunch), env: oldEnv },
+      meta: {
+        satisfies: ["backlog"],
+        dependsOn: [],
+        isolation: "subprocess",
+        scope: "project",
+        confinement: { kind: "landlock", root: "project", profile: "files-only" },
+      },
+    });
+    const got = loadModuleDeclarations(config, "p1").find((d) => d.name === "backlog")!;
+    assert.ok(
+      got.meta.dependsOn.some((d) => d.role === "repositories"),
+      "今の目録の依存（repositories）が効いていない——入れたときの写しのまま",
+    );
+    assert.deepEqual(got.meta.confinement, (entry.meta as { confinement: unknown }).confinement);
+    assert.deepEqual((got.launch as StdioLaunch).env, (entry.launch as StdioLaunch).env);
+    assert.equal(got.meta.origin, "bundled");
+  });
+});
+
+test("目録と違うコードの宣言は、目録で書き換えない（第三者のもの）", async () => {
+  await withConfig(async (config) => {
+    await addModuleDeclaration(config, {
+      name: "my-backlog",
+      launch: { command: "node", args: ["/somewhere/else/server.js"] },
+      meta: { satisfies: ["my-backlog"], dependsOn: [], isolation: "subprocess", scope: "instance" },
+    });
+    const got = loadModuleDeclarations(config, "p1").find((d) => d.name === "my-backlog")!;
+    assert.deepEqual(got.meta.satisfies, ["my-backlog"]);
+    assert.deepEqual(got.meta.dependsOn, []);
+  });
 });

@@ -2416,6 +2416,11 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 
 - **置き場は Configuration**（instance 既定＋Project 上書き）。Module 集合は Project 単位
   （アーキ仕様 §2.2）なので、既にある仕組みに乗せる——新しい置き場を作らない（規則12）
+- **目録（`BUNDLED_CATALOG`）から入れた Module の宣言は、読むたびに目録から取り直す**（決定・2026-10-04、ユーザー）。
+  保存した宣言の起動（command と args）が目録の1本と同じなら、meta と起動の環境変数は目録のものを使い、名前と
+  人が変えた設定（有効・無効など）はそのまま。入れたときの写しが古いまま残り、目録で足した依存が届かなかったため
+  （Backlog → repositories で中継の相手が見えず自動の push が自分の git に落ちた・Service → publish-directory）。
+  既定を写さないのと同じ理由（規則3）。コードが違う宣言（第三者）は書き換えない
 - **同梱の既定（Vault・Shell・FileSystem）も同じ宣言の形**で持つ。特別扱いしない（規則3）
 - **どこで動くか（閉じ込め）は宣言の `scope` と `origin` から host が導く**（改訂・2026-09-25、
   `v4-security.md` §2「どの Module がどこで動くか」）。宣言の `confinement` はもう置き場所を決めない
