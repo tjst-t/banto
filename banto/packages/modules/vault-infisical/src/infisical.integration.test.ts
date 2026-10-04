@@ -416,3 +416,78 @@ test("接続先が変われば、覚えたトークンは使わない", { skip }
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// **参照**（決定・2026-10-04、仕様 §2.1 C節「参照」）。参照の置き場に秘密を1つ置き、
+// 値は Infisical 自身の参照の書き方 `${環境.フォルダ.キー}`、注記に元の置き場（linkTo）。
+// **Infisical がそれを展開すること**（banto の外の道具が読んでも元の値が取れる）と、
+// **banto が linkTo を辿って元を引くこと**の両方を、本物で見る。
+test("参照：Infisical 側で ${環境.フォルダ.キー} が元の値に展開され、banto からも参照で引ける", { skip }, async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-link-"));
+  const src = uniqueGroup("link-src");
+  const dst = uniqueGroup("link-dst");
+  try {
+    await new InfisicalSettingsStore(dataDir).save(config!);
+    const server = createInfisicalVaultServer(dataDir);
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([server.connect(s), client.connect(c)]);
+    const call = (name: string, args: Record<string, unknown>, meta: Record<string, unknown> = ADMIN) =>
+      client.callTool({ name, arguments: args, _meta: meta });
+
+    await call("createAlias", { name: "CF_TOKEN", kind: "secret", group: src, value: "cf-real-value" });
+    await call("linkAlias", { name: "CF_TOKEN", group: src, toGroup: dst });
+
+    // Infisical 自身が展開する（banto の外の道具の見え方）
+    const conn = await connected();
+    const raw = await conn.secrets().getSecret({
+      ...conn.scope,
+      secretName: "CF_TOKEN",
+      secretPath: `/${dst}`,
+      expandSecretReferences: false,
+    });
+    assert.equal(raw.secretValue, `\${${config!.environment}.${src}.CF_TOKEN}`);
+    const expanded = await conn.secrets().getSecret({
+      ...conn.scope,
+      secretName: "CF_TOKEN",
+      secretPath: `/${dst}`,
+      expandSecretReferences: true,
+    });
+    assert.equal(expanded.secretValue, "cf-real-value", "Infisical が参照を展開していない");
+
+    // banto は linkTo を辿る。一覧は注記の linkTo を落とさない
+    const list = JSON.parse(
+      ((await call("listAliases", {})).content as { text: string }[])[0]!.text,
+    ) as Array<{ group: string; name: string; kind?: string; linkTo?: { group: string; name: string } }>;
+    const link = list.find((a) => a.group === dst && a.name === "CF_TOKEN");
+    assert.deepEqual(link?.linkTo, { group: src, name: "CF_TOKEN" });
+    assert.equal(link?.kind, "secret");
+    const resolved = await call("resolveAlias", { name: "CF_TOKEN", group: dst });
+    assert.equal((resolved.content as { text: string }[])[0]!.text, "cf-real-value");
+
+    // 元を移すと、注記と参照の書き方の両方が新しい場所を指す
+    const moved = uniqueGroup("link-moved");
+    await call("migrateAlias", { name: "CF_TOKEN", group: src, toGroup: moved });
+    const relinked = await conn.secrets().getSecret({
+      ...conn.scope,
+      secretName: "CF_TOKEN",
+      secretPath: `/${dst}`,
+      expandSecretReferences: false,
+    });
+    assert.equal(relinked.secretValue, `\${${config!.environment}.${moved}.CF_TOKEN}`);
+    assert.equal(
+      ((await call("resolveAlias", { name: "CF_TOKEN", group: dst })).content as { text: string }[])[0]!.text,
+      "cf-real-value",
+    );
+
+    // 参照を消しても元は残る
+    await call("deleteAlias", { name: "CF_TOKEN", group: dst });
+    assert.equal(
+      ((await call("resolveAlias", { name: "CF_TOKEN", group: moved })).content as { text: string }[])[0]!.text,
+      "cf-real-value",
+    );
+    await call("deleteAlias", { name: "CF_TOKEN", group: moved });
+    await client.close();
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
