@@ -38,6 +38,12 @@ if [[ $MODE == full ]]; then
   check "b: banto-host の OOMScoreAdjust=-800" bash -c "systemctl show banto-host -p OOMScoreAdjust | grep -qx OOMScoreAdjust=-800"
   check "b: banto-host の User が $(id -un)" bash -c "systemctl show banto-host -p User | grep -qx User=$(id -un)"
   check "b: nftables の表 banto" sudo nft list table inet banto
+  # Cloudflare の形の Caddy の設定も Caddy が受け付ける（トークンは偽物——validate は API を呼ばない）
+  tmpd=$(mktemp -d)
+  BANTO_INSTALL_LIB=1 bash -c 'source /opt/banto-test/install.sh && render_banto_caddy "$1" cloudflare' _ "$D" >"$tmpd/Caddyfile"
+  out=$(cd "$tmpd" && CLOUDFLARE_API_TOKEN=fakefakefakefakefakefakefakefakefake1234 XDG_DATA_HOME=$tmpd XDG_CONFIG_HOME=$tmpd \
+    caddy validate --adapter caddyfile --config "$tmpd/Caddyfile" 2>&1)
+  if [[ $? == 0 ]] && grep -q 'dns cloudflare' "$tmpd/Caddyfile"; then pass "b: Cloudflare の形の設定（dns cloudflare）も Caddy が受け付ける"; else fail "b: Cloudflare の形：$(echo "$out" | tail -2)"; fi
 fi
 
 # ---- c. Caddy の内部 CA で https が通る ----
