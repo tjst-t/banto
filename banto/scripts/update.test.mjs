@@ -106,6 +106,7 @@ exit 0
     `#!/bin/sh
 F="${fake}"
 if [ -e "$F/incus-down" ]; then echo "Error: Failed to connect to local daemon" >&2; exit 1; fi
+if [ -e "$F/incus-slow" ] && [ "$1" = query ]; then sleep 2; fi
 case "$1" in
   project) echo user-1000 ;;
   query) if [ -f "$F/instances.json" ]; then cat "$F/instances.json"; else echo '[]'; fi ;;
@@ -187,7 +188,7 @@ esac
     mark(name) {
       writeFileSync(join(updateDir, name), "");
     },
-    /** 偽の systemctl・incus への印（deny-restart・crash（中身が restarted なら「落ちて起き直した」）・incus-down） */
+    /** 偽の systemctl・incus への印（deny-restart・crash（中身が restarted なら「落ちて起き直した」）・incus-down・incus-slow） */
     fakeMark(name, content = "") {
       writeFileSync(join(fake, name), content);
     },
@@ -422,8 +423,10 @@ test("走っている更新があれば二重に起きない——走ってい�
     const running = JSON.stringify({ id: "走っている回", phase: "build" });
     writeFileSync(join(ctx.updateDir, "state.json"), running);
     ctx.request(b, "now");
+    const started = Date.now();
     const { code, out } = await ctx.start(["--from-request"]).done;
     assert.equal(code, 3);
+    assert.ok(Date.now() - started < 3000, "走っている回（終わりの状態でない）なのに、外れるのを待った");
     assert.match(out, /ほかの更新が走っています/);
     assert.equal(readFileSync(join(ctx.updateDir, "state.json"), "utf8"), running);
     assert.equal(existsSync(join(ctx.updateDir, "request.json")), true, "頼みを消した（host が「受け取られていない」と言えなくなる）");
@@ -677,6 +680,45 @@ test("残っている版（起こし直せなかった・戻した）を頼み�
     assert.match(ctx.state().error, /コンテナ（banto-p0）がまだ使っています/);
 
     ctx.instances([]);
+    const { code, out } = await ctx.start(["--now"]).done;
+    assert.equal(code, 0, out);
+    assert.equal(ctx.current(), v(b));
+  });
+});
+
+test("終わりの状態（done）は古い版を片づけてから書く——片づけの間は note に出し、done を見てすぐ打ち直しても断られない", T, async () => {
+  await withRelease(async (ctx) => {
+    const firstName = ctx.first.slice(0, 12);
+    ctx.commit("二つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    const c = ctx.commit("三つ目");
+    ctx.fakeMark("incus-slow"); // 片づけ（Incus に聞く）に2秒かかる
+    const run = ctx.start(["--now"]);
+    await ctx.waitForState((s) => s.note === "古い版を片づけています", "片づけていることが書かれません");
+    assert.equal(ctx.state().phase, "verify", "片づけの前に終わりの状態を書いた");
+    await ctx.waitForPhase("done");
+    assert.ok(!ctx.versions().includes(firstName), "done を書いたのに、まだ片づけ終わっていない");
+    assert.equal(ctx.state().note, undefined);
+    rmSync(join(ctx.fake, "incus-slow"));
+    const d = ctx.commit("四つ目");
+    const again = ctx.start(["--now"]); // done を見てすぐ打つ
+    const r = await again.done;
+    assert.equal(r.code, 0, `done を見てから打ったのに断られた：${r.out}`);
+    assert.equal((await run.done).code, 0);
+    assert.equal(ctx.current(), v(d));
+    assert.ok(ctx.versions().includes(c.slice(0, 12)));
+  });
+});
+
+test("lock を持つ回が終わりの状態を書いたあと（lock を外す前）に打たれた回は、断らずに外れるのを待つ。終わっていない回なら断る", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    mkdirSync(ctx.updateDir, { recursive: true });
+    const lock = join(ctx.updateDir, "lock");
+    // 1秒後に lock を外して終わる「前の回」
+    const holder = spawn("sh", ["-c", `sleep 1; rm -f '${lock}'`], { stdio: "ignore" });
+    writeFileSync(lock, String(holder.pid));
+    writeFileSync(join(ctx.updateDir, "state.json"), JSON.stringify({ id: "前の回", phase: "done" }));
     const { code, out } = await ctx.start(["--now"]).done;
     assert.equal(code, 0, out);
     assert.equal(ctx.current(), v(b));

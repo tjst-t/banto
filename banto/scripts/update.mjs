@@ -244,36 +244,76 @@ function setState(patch) {
 // ───────────── 二重起動を断る ─────────────
 
 const lockPath = join(updateDir, "lock");
+let lockHeld = false;
+const FINISHED = new Set(["done", "failed", "rolled-back", "cancelled"]);
+/**
+ * 走っている回が終わりの状態（done 等）を書いてから lock を外すまでの間に打たれた回は、断らずにこの間だけ待つ。
+ * 終わりの状態は片づけを済ませてから書く（下の finish）ので、書いた回に残っているのは lock を外して終わることだけ
+ */
+const LOCK_HANDOVER_MS = 5_000;
+function holderFinished() {
+  try {
+    return FINISHED.has(JSON.parse(readFileSync(join(updateDir, "state.json"), "utf8")).phase);
+  } catch {
+    return false;
+  }
+}
 /** 断ったときは state.json も request.json も触らずに終わる——走っている方の進み具合を壊さない */
-function acquireLock() {
-  for (let attempt = 0; attempt < 2; attempt++) {
+async function acquireLock() {
+  const handoverUntil = Date.now() + LOCK_HANDOVER_MS;
+  for (;;) {
     try {
       const fd = openSync(lockPath, "wx", 0o600);
       writeFileSync(fd, String(process.pid));
       closeSync(fd);
-      process.on("exit", () => rmSync(lockPath, { force: true }));
+      lockHeld = true;
+      process.on("exit", releaseLock);
       return;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      const pid = Number(readFileSync(lockPath, "utf8"));
-      let alive = false;
-      try {
-        process.kill(pid, 0);
-        alive = true;
-      } catch (e) {
-        alive = e.code === "EPERM";
-      }
-      if (alive) {
-        console.error(`ほかの更新が走っています（pid ${pid}、${lockPath}）。終わってからにしてください`);
-        process.exit(3);
-      }
+    }
+    let pid;
+    try {
+      pid = Number(readFileSync(lockPath, "utf8"));
+    } catch (err) {
+      if (err.code === "ENOENT") continue; // 読む前に外れた
+      throw err;
+    }
+    let alive = false;
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch (e) {
+      alive = e.code === "EPERM";
+    }
+    if (!alive) {
       // 落ちた回の残り
       rmSync(lockPath, { force: true });
+      continue;
     }
+    if (Date.now() < handoverUntil && holderFinished()) {
+      await sleep(50);
+      continue;
+    }
+    console.error(`ほかの更新が走っています（pid ${pid}、${lockPath}）。終わってからにしてください`);
+    process.exit(3);
   }
-  console.error(`${lockPath} を取れませんでした`);
-  process.exit(3);
 }
+function releaseLock() {
+  if (!lockHeld) return;
+  rmSync(lockPath, { force: true });
+  lockHeld = false;
+}
+
+/**
+ * **終わりの状態**（done・failed・rolled-back・cancelled）は、ここに預けて最後に書く——片づけ（古い版・作りかけを消す・
+ * 印を消す）を済ませてから書いて、すぐ lock を外す。state.json を読む側（画面・install.sh）は、終わりの状態を見たら
+ * 次を頼んでよい（先に書くと、片づけの間に打ち直した回が「ほかの更新が走っています」で断られていた）
+ */
+let finalState;
+const finish = (patch) => {
+  finalState = patch;
+};
 
 // ───────────── systemd ─────────────
 
@@ -558,7 +598,7 @@ try {
   console.error(`更新の置き場（${updateDir}）を作れません：${errorText(err)}${configError ? `（${configError}）` : ""}`);
   process.exit(2);
 }
-if (!dryRun) acquireLock();
+if (!dryRun) await acquireLock();
 
 // 画面からの頼み（host が書いたもの）。使うのは --from-request のときだけ
 let request;
@@ -657,7 +697,7 @@ async function run() {
   }
   if (gitRepo(["merge-base", "--is-ancestor", to, release]).status !== 0) fail(`${to} は release（${release}）から辿れません`);
   if (from && from === to) {
-    setState({ to, phase: "done", result: "もうこの版で動いています" });
+    finish({ to, phase: "done", result: "もうこの版で動いています" });
     log("もうこの版で動いています");
     return 0;
   }
@@ -778,7 +818,7 @@ async function run() {
   swapLink(currentLink, linkTarget(newDir));
   building = undefined;
   if (first) {
-    setState({ phase: "done", result: `${to.slice(0, 12)} を入れました（起こすのは install.sh）` });
+    finish({ phase: "done", result: `${to.slice(0, 12)} を入れました（起こすのは install.sh）` });
     log("入れました（初めて入れるときは起こし直しません）");
     return 0;
   }
@@ -792,7 +832,7 @@ async function run() {
       running.unreachable || running.refused || running.commit === from
         ? "今の版のまま動いています"
         : `ただし host が答えた版は ${running.commit ?? "不明"} です——確かめてください`;
-    setState({ phase: "failed", failedPhase: "restart", error: `起こし直せませんでした（${still}）：${restartError}` });
+    finish({ phase: "failed", failedPhase: "restart", error: `起こし直せませんでした（${still}）：${restartError}` });
     log(`起こし直せませんでした：${restartError}。current を ${linkTarget(fromDir)} に戻しました。組み立てた版は ${newDir} に残します（次の回が片づけます）`);
     return 1;
   }
@@ -801,9 +841,10 @@ async function run() {
   setState({ phase: "verify" });
   const checked = await verify(to, uiUrl);
   if (checked.ok) {
-    setState({ phase: "done", result: `${to.slice(0, 12)} に更新しました` });
     log("新しい版が起きました。古い版を片づけます");
+    setState({ note: "古い版を片づけています" });
     cleanUpOldVersions();
+    finish({ phase: "done", result: `${to.slice(0, 12)} に更新しました`, note: undefined });
     log("更新しました");
     return 0;
   }
@@ -814,10 +855,10 @@ async function run() {
   // 起きなかった版はすぐには消さない（何が起きたかを見られるように）。次の回が作りかけとして片づける
   log(`起きなかった版は ${newDir} に残します（次の回が片づけます）`);
   if (back.ok) {
-    setState({ phase: "rolled-back", failedPhase: "verify", error: checked.detail, result: "前の版に戻しました" });
+    finish({ phase: "rolled-back", failedPhase: "verify", error: checked.detail, result: "前の版に戻しました" });
     log("前の版に戻しました");
   } else {
-    setState({
+    finish({
       phase: "failed",
       failedPhase: "verify",
       error: `新しい版が起きず（${checked.detail}）、前の版に戻しても起きません（${back.detail}）`,
@@ -869,12 +910,12 @@ try {
     }
   }
   if (stop?.phase === "cancelled") {
-    setState({ phase: "cancelled", result: `${message}（今の版のまま）`, waiting: undefined, note: stop.note });
+    finish({ phase: "cancelled", result: `${message}（今の版のまま）`, waiting: undefined, note: stop.note });
     log(message);
     exitCode = 0;
   } else {
     // 始める前に断った（頼みが無い・設定が読めない）ときは、どの段でもない
-    setState({ phase: "failed", failedPhase: setupError ? undefined : failedPhase, error: message, waiting: undefined, note: undefined });
+    finish({ phase: "failed", failedPhase: setupError ? undefined : failedPhase, error: message, waiting: undefined, note: undefined });
     log(`失敗しました（${setupError ? "始める前" : failedPhase}）：${message}`);
     if (!stop) console.error(err);
     exitCode = 1;
@@ -886,4 +927,7 @@ try {
     rmSync(join(updateDir, "force-now"), { force: true });
   }
 }
+// 片づけを済ませたので、終わりの状態を書いて、すぐ lock を外す
+if (finalState) setState(finalState);
+releaseLock();
 process.exit(exitCode);
