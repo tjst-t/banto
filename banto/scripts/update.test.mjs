@@ -641,6 +641,30 @@ test("古い版は、コンテナがまだ mount していれば残す。Incus �
   });
 });
 
+test("残っている版（起こし直せなかった・戻した）を頼み直すと、Incus に聞いてから消して作り直す。聞けない・使われているなら断る", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    ctx.fakeMark("deny-restart");
+    assert.equal((await ctx.start(["--now"]).done).code, 1);
+    assert.ok(existsSync(join(ctx.rel, v(b))));
+    rmSync(join(ctx.fake, "deny-restart"));
+
+    ctx.fakeMark("incus-down");
+    assert.equal((await ctx.start(["--now"]).done).code, 1);
+    assert.match(ctx.state().error, /が残っています.*Incus に聞けないので.*worktree remove --force/);
+    rmSync(join(ctx.fake, "incus-down"));
+
+    ctx.instances([join(ctx.rel, v(b), "banto")]);
+    assert.equal((await ctx.start(["--now"]).done).code, 1);
+    assert.match(ctx.state().error, /コンテナ（banto-p0）がまだ使っています/);
+
+    ctx.instances([]);
+    const { code, out } = await ctx.start(["--now"]).done;
+    assert.equal(code, 0, out);
+    assert.equal(ctx.current(), v(b));
+  });
+});
+
 // ───────────── 組み立てる前 ─────────────
 
 test("手で消された版の worktree の登録が残っていても、組み立てられる（worktree add の前に prune）", T, async () => {

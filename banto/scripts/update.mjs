@@ -677,7 +677,13 @@ async function run() {
   if (existsSync(newDir)) {
     const inUse = versionsInUse();
     const users = inUse.used?.get(basename(newDir));
-    if (inUse.error) fail(`${newDir} が残っています（前の回の作りかけか、戻した版）。Incus に聞けないので、消して作り直してよいか分かりません：${inUse.error}`);
+    if (inUse.error) {
+      fail(
+        `${newDir} が残っています（前の回の作りかけか、戻した版）。Incus に聞けないので、消して作り直してよいか分かりません` +
+          `（${inUse.error}）。Incus に届くようにしてから頼み直すか、どのコンテナもこの版を mount していないと確かめてから ` +
+          `git --git-dir ${repo} worktree remove --force ${newDir} で消してください`,
+      );
+    }
     if (users) fail(`${newDir} が残っていて、コンテナ（${users.join("・")}）がまだ使っています。Project を開き直してから頼み直してください`);
     log(`${newDir} が残っています（前の回の作りかけか、戻した版）。消してから作り直します`);
     removeVersion(newDir);
