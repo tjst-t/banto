@@ -4487,7 +4487,7 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "2026-10-04、dd67c9cb を反映した後の本番（Banto開発 の Project）で、Backlog への書き込みのたびに pushError「このリポジトリの git の設定では資格情報がありません——could not read Username for 'https://github.com'」が返る。エラーに「Repositories に頼めませんでした／引き受けませんでした」の注記が無いので、`RelayingRemote.repositoriesModule` が中継の宛先の一覧（relayListTargets）に repositories 役割の Module を見つけられず、承認カードも出ずに自分の git（origin は https、資格情報なし）へ落ちている。\n\n調べること：この Project についている Backlog の宣言に repositories 役割への依存が入っているか（前の版でつけた宣言のままか）・relayListTargets の中身・banto 全体の Module が Project の Module の宛先一覧に出る条件。当座は人（AI）が `git push git@github.com:tjst-t/banto.git backlog:refs/heads/backlog` で手で送っている。",
+      "body": "2026-10-04、dd67c9cb を反映した後の本番で、Backlog への書き込みのたびに pushError（could not read Username）が返った。\n\n## 原因\n\n目録から Module を入れると、host は入れたときの launch と meta を設定に写す（installFromCatalog）。Backlog を入れたのは 10/3 で、repositories への依存を足したのは 10/4。本番の宣言（/api/modules/export）は dependsOn が空・confinement が files-only の古い写しのままだった。中継の relayListTargets は宣言した依存の相手しか返さないので Repositories が見えず、承認カードも出ずに自分の git に落ちていた。Service → publish-directory でも同じことが起きていた。\n\n## 直し方（36dfdb61、release に push 済み）\n\n保存した宣言の起動が目録の1本と同じなら、meta と env は読むたびに目録から取り直す（v4-modules.md §4.9）。単体試験2本（古い写しでも今の依存が効く・第三者のコードは書き換えない）。前者は直す前のコードで落ち、直した後に通る。core 全体 402 通過・0 失敗。\n\n## 残り\n\nhost で反映したあと、本番で Backlog に1件書いて完了条件を確かめる（初回は承認カードが2枚）。",
       "doneWhen": "本番の Banto開発 の Project で Backlog に1件書くと、Repositories 経由で backlog ブランチが GitHub に送られ（初回は承認カード）、pushError が返らない",
       "resolution": null,
       "refs": [
@@ -4501,7 +4501,7 @@
         }
       ],
       "createdAt": "2026-10-04T08:57:37.311Z",
-      "updatedAt": "2026-10-04T09:05:55.912Z",
+      "updatedAt": "2026-10-04T09:26:40.626Z",
       "closedAt": null,
       "extra": {}
     }
