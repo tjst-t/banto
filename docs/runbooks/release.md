@@ -175,6 +175,9 @@ sudo systemctl restart UNIT_HOST UNIT_UI
 **戻すとき**：`git -C "$REL" reset --hard <前のコミット>` → 3 をもう一度。前のコミットは
 `git -C "$REL" reflog` で分かる。
 
+> **D を済ませたあとは B を使わない**。設定の「更新」から行う（画面が開けないときは host で
+> `node "$REL/current/banto/scripts/update.mjs" --now`）。D のあとの REL は版ごとのフォルダの形で、B の `git merge` は当てはまらない
+
 ---
 
 ## C. 人のログインに切り替える（2026-10-03 の版を初めて反映するとき、1回だけ）
@@ -218,3 +221,37 @@ sudo systemctl restart UNIT_HOST UNIT_UI
    守るなら、公開をやめて公開し直す（新しく公開するものは既定で banto のログイン）
 
 **入れなくなったとき**：host で `node scripts/login-link.mjs` を打てば、いつでも新しいリンクが出る。
+
+---
+
+## D. 画面から更新できるようにする（一度だけ）
+
+設定の「更新」から反映できるように、host を整える（仕組みは `docs/specs/v4-architecture.md` §2.5
+「画面から banto を更新する」）。やることは3つ：
+
+- REL を版ごとのフォルダの形にする（`repo.git`・`versions/<commit>`・`current`）。今の clone はそのまま
+  「今の版」として `versions/` に入る（組み立て直さない）
+- `banto-host.service`・`banto-frontend.service` のパスを `current` を通す形に書き換える
+- 更新用の unit（`banto-update.service`）と polkit の規則1つを入れる
+
+これをまとめて行うのが `banto/scripts/setup-update.sh`（何度打っても壊れない。`install.sh` も同じものを使う）。
+
+1. **今の REL を最新にしておく**（B の 1〜3。この機能が入った版で動いていること）
+2. **何が変わるかを見る**（変えずに出すだけ）
+
+   ```sh
+   bash "$REL/banto/scripts/setup-update.sh" --dry-run
+   ```
+
+3. **行う**（途中で sudo のパスワードを聞かれる。最後に banto を起こし直すので、空いているときに）
+
+   ```sh
+   bash "$REL/banto/scripts/setup-update.sh"
+   ```
+
+   unit の元の定義は `~/.local/share/banto-release/unit-backup/` に写してから書き換える
+
+4. **確かめる**：画面の 設定 → 更新 に今の版が出て、「準備が済んでいません」が出ない。A-6 の 1・2 ももう一度
+
+**戻すとき**：`unit-backup/` の定義を `sudo systemctl edit --full` で戻し、`sudo systemctl daemon-reload`・
+restart。版のフォルダは `versions/` に残っているので、元のパスに戻すなら `setup-update.sh` が出した移し先を見る

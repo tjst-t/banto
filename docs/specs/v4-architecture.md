@@ -1422,8 +1422,71 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
 届いてまだ積んでいないもの（Event Store に残り、起動し直したら起こす）。
 
 使うのは host で人が打つ `banto/scripts/restart-when-idle.mjs`（空くまで待って `systemctl restart`、
-手順は `docs/runbooks/release.md` B-3）。**まだ作っていないもの**：受け付けを止めるモード（空いたと見てから
-再起動するまでに新しいターンが始まることはありうる）・画面での表示。困ってから足す。
+手順は `docs/runbooks/release.md` B-3）と、画面からの更新（次の節）。**まだ作っていないもの**：受け付けを止めるモード
+（空いたと見てから再起動するまでに新しいターンが始まることはありうる）。困ってから足す。
+
+#### 画面から banto を更新する（決定・2026-10-04、ユーザー）
+
+設定の「更新」の節のボタン1つで、GitHub の `release` の最新を取り込み、組み立て、AI が止まるのを待って（または
+すぐ）起こし直す。手で打つ手順（`docs/runbooks/release.md` B）と同じことを、host の外の役が最後まで行う。
+安全の考え方は `docs/specs/v4-security.md` §2「画面からの更新」。
+
+**置き場の形**（`releaseDir`、既定 `~/.local/share/banto-release`。bootstrap config で変えられる）：
+
+| 場所 | 中身 |
+|---|---|
+| `repo.git` | GitHub の `release` を取ってくる bare のリポジトリ（取り込み元は GitHub だけ） |
+| `versions/<commit の頭12文字>/` | 版ごとの作業ツリー（`repo.git` の worktree、detached）。中で `npm ci --include=dev`・`npm run build` 済み |
+| `current` → `versions/…` | 動かす版。systemd の unit はこの symlink を通したパスを指す |
+| `previous` → `versions/…` | 1つ前の版（戻す先）。これより古い版は、更新が成功したら消す |
+
+- **版を替えても core が付け直す**：node は起動したスクリプトの symlink を解いた本当のパスで `monorepoRoot` を作るので、
+  コンテナに読み取り専用で見せる banto のコードは `versions/<commit>/banto` になる。版が替わるとパスが変わり、
+  Module を起こすときの `ensure` が古いマウントを外して付け直す（`project-container.ts`。既存の作り）
+- **動いている版のフォルダには触らない**——組み立ては新しいフォルダで行う。以前の手順（動いている clone の中で
+  `npm ci`・build）は、組み立ての間、動いている Module の部品を書き換えていた
+
+**役の分け方**：
+
+- **更新の本体は `banto/scripts/update.mjs`**（1本。`install.sh` の「上げる」段も同じものを呼ぶ）。いつも
+  **今動いている版（`current`）のもの**を使う——取ってきた新しいコードのスクリプトは動かさない。初めて入れるとき
+  （`current` が無い）だけ、取ってきた版のものを `--first` で動かす（待たない・戻す先が無い・起こすのは `install.sh`）
+- **走らせるのは system の unit `banto-update.service`**（`Type=oneshot`、banto を動かしているユーザーで、`Nice=10`）。
+  banto-host の子として走らせると、起こし直したときに一緒に止められるため。oneshot なので同時に2本は走らない
+- **banto-host はこの unit を起こすだけ**。許すのは polkit の規則1つ：そのユーザーに `banto-update.service` の
+  start と、`banto-host.service`・`banto-frontend.service` の restart だけを、パスワード無しで許す（ほかの unit・
+  ほかの操作は断る。2026-10-04 に Ubuntu 24.04 のコンテナで確かめた）。sudo は使わない
+- **頼みと進み具合はデータ置き場のファイル**（`<dataDir>/update/`）：host が `request.json`（どの commit を・待つか
+  すぐか・誰が・いつ）を書いて unit を起こす。`update.mjs` は `state.json`（段・残っているもの・結果）と
+  `<実行の id>.log` を書き、host はそれを読んで画面に返す。待っている間の「待つのをやめる」「待たずにすぐ起こし直す」も、
+  host が置く印のファイル（`cancel`・`force-now`）を `update.mjs` が数秒おきに見る
+
+**`update.mjs` の段**：
+
+1. **取ってくる**：`repo.git` に GitHub の `release` を fetch し、頼まれた commit が `release` から辿れること・今の版が
+   その祖先であること（早送りだけ）を確かめる。違えば断る
+2. **組み立てる**：`versions/<commit>` を作り `npm ci --include=dev`・`npm run build`。**ここで落ちたら作りかけの
+   フォルダを消し、今の版のまま終わる**
+3. **待つ**（待つ形のとき）：`GET /api/admin/activity` が `idle` になるまで数秒おきに見て、残っているものを
+   `state.json` に書く。上限は無し（人が画面でやめる・すぐに切り替える）
+4. **起こし直す**：`previous` を今の版に、`current` を新しい版に替えて、`banto-host`・`banto-frontend` を restart
+5. **確かめる**：120秒以内に host が答え、その版が新しい commit であること・画面の口が答えることを見る。
+   **起きなければ `current` を前の版に戻して restart し、「前の版に戻しました」で終わる**。起きれば古い版を片づける
+
+**host の口**（`/api/admin/update`）：
+
+- `GET`：今の版（commit・題・日時）・最後に確かめた `release` の最新と、その間のコミット（題・id・日時）・更新の
+  進み具合（`state.json`）・準備が済んでいるか（置き場の形で動いているか・unit があるか）。ログイン中の人と
+  機械の口（合言葉）の両方から読める（`update.mjs` の確かめが使う）
+- `POST …/check`：`repo.git` に fetch して差を出し直す
+- `POST`（`{ commit, mode: "wait" | "now" }`）：**ログイン中の人だけ・その場の本人確認（step-up）が要る**。
+  機械の口（合言葉）・Module・コンテナからは呼べない。`commit` は画面に見せた最新の commit——人が読んだ一覧と
+  違うものを組み立てないため。走っている更新があれば断る
+- `POST …/cancel`・`POST …/force-now`：走っている更新の待ちをやめる・すぐ起こし直す。ログイン中の人だけ
+  （`force-now` は step-up が要る）
+
+**準備が済んでいないとき**（開発用のリポジトリから動かしている・unit が無い）は、画面はボタンを出さずに理由と
+手順書（`docs/runbooks/release.md` D）を出す。
 
 ### 2.6 Configuration
 
