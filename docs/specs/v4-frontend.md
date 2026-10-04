@@ -466,6 +466,23 @@ Repositories の「Project も作る」（clone・新しいリポジトリのあ
   Canvas）からの頼みは断る——「開いた」と言って何も出ないことにしない
 - Project を「開く」口（既にある Project へ移る）はまだ無い——要るまで足さない
 
+#### 画面から「この Project を開いて」（banto の拡張、決定・2026-10-04、Repositories）
+
+Repositories の一覧の「Project で使っている」の Project 名から、その Project へ移るのに要る。
+
+| 向き | 形 |
+|---|---|
+| 画面 → banto | request `dev.banto/open-project`（`params.projectId`＝Project の id、`[A-Za-z0-9_-]` 100字まで） |
+| banto | **確かめの画面は出さずに、その Project へ移る**（`/p/<id>`）。どの面からでも |
+| banto → 画面 | `{}`。読めない params は InvalidParams、受けられないときは -32000 と理由 |
+
+- **確かめの画面を出さない**——移るのは軽く、戻れる操作（作る・閉じるとは違う）
+- その代わり、**どの面の画面からでも、人がその画面を押した直後だけ**受ける（既存の2つは確かめの画面が人の目を通すので
+  入口・設定の面からは直後でなくても受ける。ここは確かめが無いので、押したことが確かめの代わり）
+- **閉じた Project・無い Project は断る**（理由を返す）——黙って再開しない。再開は Module の起動を伴うので、core の画面でも
+  「閉じたものの一覧」で人が押したときだけ
+- core は頼んできた Module を名指ししない。開く場所（外枠）は要らない（移るだけ）ので、別タブの Canvas からも移る
+
 #### 画面から「この Project を閉じるかを人に確かめて」（banto の拡張、決定・2026-10-03、Repositories 段階4）
 
 Repositories の「このマシンから削除」で、消したフォルダを Root にしていた Project を閉じるかを人に聞くのに要る。

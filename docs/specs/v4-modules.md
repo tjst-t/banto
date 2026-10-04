@@ -1378,9 +1378,9 @@ banto 全体の設定の Repositories の面にも同じものを出す（**bant
   処理している間だけ**（出所は host の台帳が決める。core は Repositories を名指ししない）。AI のターンからは引けない
   ——AI が別の Project の名前と場所を知る道になる。Canvas の `hostContext` に一覧を載せないのと同じ理由で、第三者の
   Module には渡さない。**引けなかったら区切らずに理由を出す**（「どの Project も使っていない」と言わない、規則2）
-- **画面から banto の中を動けない**（Canvas は banto の画面遷移を頼む口を持たない）ので、Project の列は名前を出す
-  だけで、押して開く形にはしていない（2026-10-01）。設定の面への「変える」も、入口からは「banto 全体の設定の
-  Repositories で変えられます」と言うだけ
+- **Project の列の名前を押すと、その Project へ移る**（2026-10-04）——banto の拡張 `dev.banto/open-project`
+  （v4-frontend.md §6.2）。閉じた Project は押せない（再開は banto の「閉じたものの一覧」で）。設定の面への「変える」は、
+  入口からは「banto 全体の設定の Repositories で変えられます」と言うだけ（今まで通り）
 
 **AI 向けの道具**：**まだ持たない**（決定・2026-10-01）。台帳はこのマシンのフォルダの場所で、Project のコンテナの
 中の AI からは届かない場所を指す——渡しても AI が次の一手に使えず、道具の説明で文脈を取られるだけになる（GitHub
@@ -1418,7 +1418,20 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
   置き換え、印も消える。「確かめる」はこの関数で取ったトークンで `GET /user` を引く
 - **外す**：ブラウザでログインしたものは Vault のログイン情報も消す（banto が置いた秘密——消すのがログアウト）。
   **PAT は消さない**（人が預けた秘密）。ログイン情報の Vault が読めないときは「もう無い」と見なさず、外すのを断る
-- client ID が未設定の間は、ブラウザでログインを選べず、GitHub App の作り方を3行で出す
+- client ID が未設定の間は、ブラウザでログインを選べない。client ID の欄の下に**使い方**を出す（client ID が無い間は
+  開いておき、入れたら畳む）：はじめて使うとき（App を作る——Enable Device Flow・Administration と Contents を Read and
+  write・Client ID を写す／Install する／banto でログインする）、別のアカウントで使うとき（App を Any account にして、
+  そのアカウントで Install し、ブラウザをそのアカウントにしてログイン）、Organization で使うとき（Org に Install するだけ・
+  メンバーのログインで扱える・読むだけの行は「アカウントを選ぶ」）（2026-10-04、ユーザーが Install し忘れでつまずいた）
+- **GitHub App の Install 先と権限を出す**（2026-10-04）：ブラウザでログインのアカウントの行に、App が Install されている
+  先（アカウント・Organization）と Administration・Contents の権限（`GET /user/installations`）。設定の面を開いたとき・
+  ログインしたとき・「確かめる」（同じトークンで）で取り直す。足りない権限は1行で言い、どこにも Install されていなければ
+  「Install されていません——Install する」
+- **Install のページ**（`<web>/apps/<slug>/installations/new`、`ui/open-link` で開く）：slug は**インストールの返事
+  （`app_slug`）が正**。どこにも Install されていないと返事が空で slug が分からないので、そのときのために設定に
+  「App のページ」（`https://github.com/apps/<slug>`、任意）の欄を置く——Install されていれば使わない。デバイスフローの
+  トークンでは `GET /app` は使えず、client ID から slug は引けない。公開の画面の「GitHub App が <owner> に入っていません」
+  にも同じ Install のページを添える
 - **後から指定する**（段階4で作った・2026-10-03。`assign.ts`）：一覧の行の「…」→「アカウントを選ぶ」で、登録した
   アカウントを台帳に書く（「読むだけ」の行も、もう指定してある行も）。書く前に、そのアカウントで
   `GET /repos/{owner}/{repo}` を引く：
