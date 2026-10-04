@@ -913,6 +913,7 @@ test("参照：参照の参照は作らない・置く先に同じ名前があ�
 test("参照：値を書く口（putSecret）は参照を断る——元を書き換えさせる", async () => {
   await withServer(async ({ client }) => {
     await hiddenOriginWithLink(client);
+    // Project（Module）には「参照なので」だけ——**元の置き場は言わない**（見えないグループの中身）
     await assert.rejects(
       () =>
         client.callTool({
@@ -920,7 +921,12 @@ test("参照：値を書く口（putSecret）は参照を断る——元を書�
           arguments: { name: "cf-token", group: "grp-a", value: "overwritten" },
           _meta: forProject("proj-a"),
         }),
-      /参照です.*元を書き換えてください/,
+      (err: Error) => /参照なので書き換えられません/.test(err.message) && !err.message.includes("tools"),
+    );
+    // 人の管理面には元の置き場まで言う
+    await assert.rejects(
+      () => client.callTool({ name: "putSecret", arguments: { name: "cf-token", group: "grp-a", value: "overwritten" } }),
+      /参照です（元は tools \/ cf-token）。値を変えるなら元を書き換えてください/,
     );
     assert.equal(
       textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "cf-token", group: "tools" } })),
@@ -953,8 +959,21 @@ test("参照：参照を消しても元は残る／元を消すと参照は残�
     assert.equal(link.broken, true);
     assert.deepEqual(link.linkTo, { group: "tools", name: "cf-token" });
     assert.equal(link.kind, undefined, "元が無いのに種別を推測している");
+    // Project（AI・Module）には「元がありません」だけ——**元の置き場と名前は言わない**
+    for (const [tool, args] of [
+      ["resolveAlias", { name: "cf-token" }],
+      ["verify", { alias: "cf-token", payload: "p", signature: "00" }],
+    ] as const) {
+      await assert.rejects(
+        () => client.callTool({ name: tool, arguments: args, _meta: forProject("proj-a") }),
+        (err: Error) =>
+          /参照ですが、参照の元がありません/.test(err.message) && !err.message.includes("tools"),
+        `${tool} が Project に元の置き場を言っている`,
+      );
+    }
+    // 人の管理面には、元の置き場まで言う（直すのは人なので）
     await assert.rejects(
-      () => client.callTool({ name: "resolveAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-a") }),
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "cf-token", group: "grp-a" } }),
       /参照ですが、元（tools \/ cf-token）がありません/,
     );
     // 壊れた参照も消せる（元が無くても、存在しない秘密を触りにいかない）
@@ -1047,5 +1066,17 @@ test("参照：指す先（linkTo）は人の管理面の一覧にだけ出す�
     assert.equal(fromProject[0]!.linkTo, undefined, "見えない元の置き場が Project に漏れている");
     assert.equal(fromProject[0]!.kind, "secret");
     assert.deepEqual((await listed(client)).find((a) => a.group === "grp-a")!.linkTo, { group: "tools", name: "cf-token" });
+  });
+});
+
+test("参照：元が無い参照を AI が頼んでも「登録されています」とは言わない（使えないと言う）", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    await client.callTool({ name: "deleteAlias", arguments: { name: "cf-token", group: "tools" } });
+    const answer = textOf(
+      await client.callTool({ name: "requestAlias", arguments: { name: "cf-token" }, _meta: forProject("proj-a") }),
+    );
+    assert.match(answer, /参照の元が無いので使えません/);
+    assert.equal(answer.includes("tools"), false, "見えない元の置き場を AI に言っている");
   });
 });

@@ -585,7 +585,19 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     group: string | undefined,
     rawMeta: Record<string, unknown> | undefined,
   ): Promise<AliasMeta | undefined> {
-    const all = await registry.list();
+    return pickAlias(await registry.list(), name, group, rawMeta);
+  }
+
+  /**
+   * `findAlias` の中身。**読んだ一覧を渡す**——参照を辿る口は同じ一覧で元を引くので、
+   * 台帳を2回読まない（遠くの台帳では1回ごとに往復が要る。2026-10-04）
+   */
+  function pickAlias(
+    all: AliasMeta[],
+    name: string,
+    group: string | undefined,
+    rawMeta: Record<string, unknown> | undefined,
+  ): AliasMeta | undefined {
     const named = all.filter((m) => m.name === name);
     if (group) return named.find((m) => groupOf(m) === group);
     const caller = callerOf(rawMeta);
@@ -618,16 +630,35 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
    * グループが見えない Project から使わせることなので）。
    * **元が無ければ理由つきで断る**——黙って空や別のものを返さない（規則2）。
    */
-  async function valueSource(meta: AliasMeta, name: string): Promise<SecretAliasMeta> {
+  function valueSource(
+    meta: AliasMeta,
+    name: string,
+    all: AliasMeta[],
+    rawMeta: Record<string, unknown> | undefined,
+  ): SecretAliasMeta {
     if (!isLink(meta)) return meta;
-    const target = linkTarget(meta, await registry.list());
+    const target = linkTarget(meta, all);
     if (!target) {
+      // **元の置き場と名前は人の管理面にだけ言う**（2026-10-04、レビュー）——Project（AI・Module）に
+      // 言うと、見えないはずのグループの中身が分かってしまう
       throw new Error(
-        `alias "${name}" は参照ですが、元（${groupOf({ backendPath: meta.linkTo })} / ${keyOf(meta.linkTo)}）がありません` +
-          "——元を作り直すか、管理画面でこの参照を消してください",
+        isAdmin(rawMeta)
+          ? `alias "${name}" は参照ですが、元（${describeLink(meta)}）がありません` +
+              "——元を作り直すか、管理画面でこの参照を消してください"
+          : `alias "${name}" は参照ですが、参照の元がありません（人に伝えてください。管理画面で直せます）`,
       );
     }
     return target;
+  }
+
+  /** 参照が指している置き場（"グループ / キー"）。**人の管理面にだけ出す**。 */
+  function describeLink(link: LinkAliasMeta): string {
+    return `${groupOf({ backendPath: link.linkTo })} / ${keyOf(link.linkTo)}`;
+  }
+
+  function isAdmin(rawMeta: Record<string, unknown> | undefined): boolean {
+    const caller = callerOf(rawMeta);
+    return !!caller && "admin" in caller;
   }
 
   /**
@@ -725,7 +756,23 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     switch (request.params.name) {
       case "requestAlias": {
         const name = requiredString(args.name, "name");
-        if (await findAlias(name, optionalString(args.group, "group"), callMeta)) {
+        const all = await registry.list();
+        const existing = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
+        if (existing && isLink(existing) && !linkTarget(existing, all)) {
+          // **在るのに使えない**（参照の元が無い）——「登録されています」と言わない（規則2）。
+          // 窓口と同じ答え。元の置き場は言わない（見えないグループの中身を教えない）
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `"${name}" は登録されていますが、参照の元が無いので使えません。` +
+                  "ターンを終えて人に伝えてください（管理画面で直せます）",
+              },
+            ],
+          };
+        }
+        if (existing) {
           return { content: [{ type: "text", text: `alias "${name}" は既に登録されています` }] };
         }
         // **会話の中に入力欄を出して、その場で人に入れてもらう**
@@ -754,24 +801,26 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "resolveAlias": {
         const name = requiredString(args.name, "name");
-        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
+        const all = await registry.list();
+        const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **使えるかは、引いた行（参照ならその置き場）で決める。値は元から**（2026-10-04）
         assertUsable(meta, name, callMeta);
-        const source = await valueSource(meta, name);
+        const source = valueSource(meta, name, all, callMeta);
         const value = await backend.getSecret(source.backendPath);
         await registry.markUsed(meta.backendPath);
         return { content: [{ type: "text", text: String(value) }] };
       }
       case "getPublicKey": {
         const name = requiredString(args.name, "name");
-        const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
+        const all = await registry.list();
+        const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **公開鍵は秘密ではないが、どの鍵が在るかは使える範囲の話**
         // ——見える範囲は他の口と同じに揃える（規則3）
         assertUsable(meta, name, callMeta);
         // 種別は元から導く（参照は種別を持たない）
-        const source = await valueSource(meta, name);
+        const source = valueSource(meta, name, all, callMeta);
         if (source.kind !== "ssh-identity") {
           throw new Error(`alias "${name}" は ssh-identity ではありません（${source.kind}）`);
         }
@@ -779,10 +828,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");
-        const meta = await findAlias(identity, optionalString(args.group, "group"), callMeta);
+        const all = await registry.list();
+        const meta = pickAlias(all, identity, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`identity "${identity}" not found`);
         assertUsable(meta, identity, callMeta);
-        const source = await valueSource(meta, identity);
+        const source = valueSource(meta, identity, all, callMeta);
         if (source.kind !== "ssh-identity") {
           throw new Error(`alias "${identity}" は ssh-identity ではありません（${source.kind}）`);
         }
@@ -793,10 +843,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "verify": {
         const alias = requiredString(args.alias, "alias");
-        const meta = await findAlias(alias, optionalString(args.group, "group"), callMeta);
+        const all = await registry.list();
+        const meta = pickAlias(all, alias, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${alias}" not found`);
         assertUsable(meta, alias, callMeta);
-        const source = await valueSource(meta, alias);
+        const source = valueSource(meta, alias, all, callMeta);
         const key = await backend.getSecret(source.backendPath);
         const expected = createHmac("sha256", String(key))
           .update(requiredString(args.payload, "payload"))
@@ -852,9 +903,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const existing = (await registry.list()).find((a) => a.backendPath === backendPath);
         // **参照を通して元を上書きしない**（2026-10-04）——書き換えるなら元を
         if (existing && isLink(existing)) {
+          // 元の置き場は人の管理面にだけ言う（見えないグループの中身を教えない）
           throw new Error(
-            `"${name}" は参照です（元は ${groupOf({ backendPath: existing.linkTo })} / ${keyOf(existing.linkTo)}）。` +
-              "値を変えるなら元を書き換えてください",
+            isAdmin(callMeta)
+              ? `"${name}" は参照です（元は ${describeLink(existing)}）。値を変えるなら元を書き換えてください`
+              : `"${name}" は参照なので書き換えられません`,
           );
         }
         if (existing && existing.kind !== BANTO_OWNED_KIND) {
