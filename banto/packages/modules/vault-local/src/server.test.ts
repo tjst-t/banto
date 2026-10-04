@@ -1080,3 +1080,17 @@ test("参照：元が無い参照を AI が頼んでも「登録されていま�
     assert.equal(answer.includes("tools"), false, "見えない元の置き場を AI に言っている");
   });
 });
+
+test("参照：名前（toName）は createAlias と同じ規律で検査する——空・空白・文字列でないものは断る", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: "createAlias", arguments: { name: "x", kind: "secret", group: "tools", value: "v" } });
+    for (const toName of ["", "   ", 42, null]) {
+      await assert.rejects(
+        () => client.callTool({ name: "linkAlias", arguments: { name: "x", group: "tools", toGroup: "grp-a", toName } }),
+        /toName が要ります/,
+        `toName ${JSON.stringify(toName)} を通した`,
+      );
+    }
+    assert.equal((await listed(client)).length, 1, "断ったのに参照ができている");
+  });
+});

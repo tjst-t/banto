@@ -1130,8 +1130,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         assertHuman("参照を作る", callMeta);
         const name = requiredString(args.name, "name");
         const toGroup = requiredString(args.toGroup, "toGroup");
-        const toName = optionalString(args.toName, "toName") ?? name;
-        if (toName.trim() === "") throw new Error("toName が空です");
+        // 名前の規律は createAlias と同じ（同じ検査を通す）
+        const toName = args.toName === undefined ? name : requiredString(args.toName, "toName");
         const group = optionalString(args.group, "group");
         // **元は置き場で指す**（移すと同じ）——指定したら既定の解決に落ちない
         const origin = await findAlias(name, group, callMeta);
