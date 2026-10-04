@@ -4492,7 +4492,8 @@
       "resolution": null,
       "refs": [
         "docs/notes/2026-10-04-backlog-branch-store.md",
-        "banto/packages/modules/backlog/src/remote.ts"
+        "banto/packages/modules/backlog/src/remote.ts",
+        "banto/packages/core/src/modules/declaration.ts"
       ],
       "threads": [
         {
@@ -4501,7 +4502,7 @@
         }
       ],
       "createdAt": "2026-10-04T08:57:37.311Z",
-      "updatedAt": "2026-10-04T09:26:40.626Z",
+      "updatedAt": "2026-10-04T09:38:25.357Z",
       "closedAt": null,
       "extra": {}
     }
