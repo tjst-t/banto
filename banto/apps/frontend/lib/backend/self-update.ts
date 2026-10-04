@@ -45,10 +45,15 @@ export interface UpdateRunState {
   startedAt: string;
   updatedAt: string;
   waiting?: UpdateActivity;
+  /** いま止まっている理由（例「host が答えません…答えるまで待ちます」） */
+  note?: string;
   result?: string;
   error?: string;
+  /** 失敗した段。**始める前に断ったとき（頼みが読めない・設定が無い等）は無い** */
   failedPhase?: UpdatePhase;
   logFile?: string;
+  /** 誰が頼んだか（名前だけ） */
+  requestedBy?: { label?: string };
 }
 
 export interface UpdateStatus {
@@ -67,6 +72,17 @@ export interface UpdateStatus {
     | null;
   state: UpdateRunState | null;
   running: boolean;
+  /** 途中の段のまま unit が止まっている回（`update.mjs` が落ちた・止められた） */
+  interrupted: { phase: UpdatePhase; reason: string } | null;
+  /** 猶予を過ぎても unit が受け取っていない頼み */
+  staleRequest: {
+    id: string | null;
+    mode: string | null;
+    commit: string | null;
+    requestedAt: string | null;
+    requestedBy: { label: string } | null;
+    reason: string;
+  } | null;
 }
 
 /** host に繋がらない（起こし直しの間など）。host が理由を返した失敗とは分ける */
@@ -119,7 +135,7 @@ export function requestUpdate(commit: string, mode: "wait" | "now"): Promise<{ o
   return call<{ ok: true; id: string }>("/api/admin/update", { method: "POST", body: { commit, mode } });
 }
 
-/** 待つのをやめる（組み立ての途中でも止まる） */
+/** 更新をやめる（`cancel` の印）。`update.mjs` は取ってくる・組み立てる・待つの間に受ける */
 export function cancelUpdate(): Promise<void> {
   return call<void>("/api/admin/update/cancel", { method: "POST" });
 }

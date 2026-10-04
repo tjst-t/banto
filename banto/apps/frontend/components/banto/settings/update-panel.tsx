@@ -155,8 +155,8 @@ export function UpdatePanel() {
   const [busy, setBusy] = useState<Busy>(null);
   const [steppingUp, setSteppingUp] = useState(false);
   const [confirm, setConfirm] = useState<{ reason: "now" | "skip-wait"; work: WorkRow[] } | null>(null);
-  // この画面で頼んだもの。受け取られないまま走らなくなったら、そう言う（黙って前の結果を出さない）
-  const [requested, setRequested] = useState<{ id: string; mode: Mode } | null>(null);
+  // この画面で頼んだ形（`state.json` に mode が書かれるまでの間、進み具合の段の出し方に使う）
+  const [requestedMode, setRequestedMode] = useState<Mode | null>(null);
   // 「もう一度ためす」で閉じた失敗
   const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
 
@@ -216,10 +216,9 @@ export function UpdatePanel() {
   }
 
   async function request(commit: string, mode: Mode) {
-    const { id } = await withPasskey(() => requestUpdate(commit, mode), () => setSteppingUp(true));
-    setDismissedRunId(null);
+    await withPasskey(() => requestUpdate(commit, mode), () => setSteppingUp(true));
+    setRequestedMode(mode);
     await refresh();
-    setRequested({ id, mode });
   }
 
   /** すぐ更新：動いている会話があれば先に確かめる（無ければ確かめない） */
@@ -272,15 +271,17 @@ export function UpdatePanel() {
   const last = status.state;
   // 走っている回。走り出したばかりで `state.json` がまだ前の回のままなら、取ってくる段にいる
   const live = status.running ? (last && !FINISHED.has(last.phase) ? last : null) : null;
-  const liveMode: Mode = live?.mode ?? requested?.mode ?? "wait";
+  const liveMode: Mode = live?.mode ?? requestedMode ?? "wait";
   const liveStep: StepId | null = status.running ? (live ? stepOf(live.phase) : "fetch") : null;
-  // 走っていないのに途中の段のまま——更新の役が途中で居なくなった
-  const stuck = !status.running && last !== null && !FINISHED.has(last.phase);
+  // 失敗・前の版に戻した・途中で止まった（host が「中断」と返す）回。「もう一度ためす」で閉じたものは出さない
   const failed =
-    !status.running && last !== null && (stuck || last.phase === "failed" || last.phase === "rolled-back") && last.id !== dismissedRunId
+    !status.running &&
+    last !== null &&
+    (status.interrupted !== null || last.phase === "failed" || last.phase === "rolled-back") &&
+    last.id !== dismissedRunId
       ? last
       : null;
-  const notPickedUp = requested !== null && !status.running && last?.id !== requested.id;
+  const stale = status.staleRequest;
   const current = status.current;
   const latest = status.latest;
   const justUpdated = !status.running && last?.phase === "done" && last.to !== null && current?.commit === last.to;
@@ -305,11 +306,19 @@ export function UpdatePanel() {
         </p>
       ) : null}
 
-      {notPickedUp ? (
-        <p data-testid="update-not-picked-up" className="rounded-md border border-stop/30 bg-stop-soft px-3 py-2 text-sm text-stop">
-          更新の役（banto-update.service）が頼みを受け取りませんでした。host で
-          <code className="mx-1 font-mono text-xs">journalctl -u banto-update.service</code>を見てください。
-        </p>
+      {stale ? (
+        <div data-testid="update-stale-request" className="rounded-md border border-stop/30 bg-stop-soft px-3 py-2 text-sm text-stop">
+          <p className="font-medium break-words">{stale.reason}</p>
+          <p className="mt-0.5 text-xs">
+            {[
+              stale.requestedBy ? `${stale.requestedBy.label} が頼んだもの` : "頼んだもの",
+              stale.requestedAt ? formatAt(stale.requestedAt) : null,
+              stale.commit ? `版 ${short(stale.commit)}` : null,
+            ]
+              .filter(Boolean)
+              .join("・")}
+          </p>
+        </div>
       ) : null}
 
       {actionError ? (
@@ -337,14 +346,20 @@ export function UpdatePanel() {
               waiting={live?.waiting}
               busy={busy}
               steppingUp={steppingUp}
-              onStopWaiting={() => void run("cancel", async () => {
+              note={live?.note}
+              onStop={() => void run("cancel", async () => {
                 await cancelUpdate();
                 await refresh();
               })}
               onSkipWait={pressSkipWait}
             />
           ) : failed ? (
-            <FailedCard run={failed} stuck={stuck} currentCommit={current?.commit ?? null} onRetry={() => setDismissedRunId(failed.id)} />
+            <FailedCard
+              run={failed}
+              interrupted={status.interrupted}
+              currentCommit={current?.commit ?? null}
+              onRetry={() => setDismissedRunId(failed.id)}
+            />
           ) : latest && current && latest.commit !== current.commit && !latest.fastForward ? (
             <NotFastForwardCard checkedAt={latest.checkedAt} busy={busy} onCheck={() => void run("check", async () => setStatus(await checkForUpdate()))} />
           ) : latest && current && latest.commits.length > 0 ? (
@@ -727,7 +742,8 @@ function ProgressCard({
   waiting,
   busy,
   steppingUp,
-  onStopWaiting,
+  note,
+  onStop,
   onSkipWait,
 }: {
   to: string | null;
@@ -736,10 +752,18 @@ function ProgressCard({
   waiting: UpdateActivity | undefined;
   busy: Busy;
   steppingUp: boolean;
-  onStopWaiting: () => void;
+  /** いま止まっている理由（`update.mjs` が書く。例「host が答えません…答えるまで待ちます」） */
+  note: string | undefined;
+  onStop: () => void;
   onSkipWait: () => void;
 }) {
   const remaining = waiting ? workRows(waiting) : [];
+  const noteLine = note ? (
+    <p data-testid="update-note" className="mt-2 flex items-start gap-1.5 text-xs break-words text-warn">
+      <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+      {note}
+    </p>
+  ) : null;
   return (
     <Card testId="update-progress">
       <CardLabel>{to ? <>版 <span className="font-mono">{short(to)}</span> に更新しています</> : "新しい版に更新しています"}</CardLabel>
@@ -748,13 +772,41 @@ function ProgressCard({
         hints={mode === "now" ? { wait: "待ちません（すぐ更新）" } : undefined}
         renderDetail={(s) => {
           if (s !== step) return null;
+          // 取ってくる・組み立てるの間もやめられる（update.mjs は取ってくる・組み立てる・待つの間に、やめる印を受ける）
+          const stopButton = (
+            <Button
+              type="button"
+              variant="ghost"
+              size="lg"
+              className="mt-2 h-10 sm:h-8"
+              disabled={busy !== null}
+              onClick={onStop}
+              data-testid="update-stop"
+            >
+              {busy === "cancel" ? <Loader2 className="size-4 animate-spin" /> : null}
+              更新をやめる
+            </Button>
+          );
+          if (s === "fetch")
+            return (
+              <>
+                {noteLine}
+                {stopButton}
+              </>
+            );
           if (s === "build")
             return (
-              <p className="mt-2 rounded-md bg-surface-2 px-2.5 py-1.5 text-xs text-ink-2">今の banto はそのまま使えます。</p>
+              <>
+                <p className="mt-2 rounded-md bg-surface-2 px-2.5 py-1.5 text-xs text-ink-2">今の banto はそのまま使えます。</p>
+                {noteLine}
+                {stopButton}
+              </>
             );
+          if (s === "restart") return noteLine;
           if (s === "wait")
             return (
               <div className="mt-2 flex flex-col gap-2">
+                {noteLine}
                 {remaining.length > 0 ? (
                   <>
                     <p className="text-xs text-ink-2" data-testid="update-remaining">
@@ -791,7 +843,7 @@ function ProgressCard({
                     size="lg"
                     className="h-10 sm:h-8"
                     disabled={busy !== null}
-                    onClick={onStopWaiting}
+                    onClick={onStop}
                     data-testid="update-stop-waiting"
                   >
                     {busy === "cancel" ? <Loader2 className="size-4 animate-spin" /> : null}
@@ -809,23 +861,31 @@ function ProgressCard({
 
 function FailedCard({
   run,
-  stuck,
+  interrupted,
   currentCommit,
   onRetry,
 }: {
   run: UpdateRunState;
-  stuck: boolean;
+  /** host が「途中で止まった」と返した回（段と理由） */
+  interrupted: UpdateStatus["interrupted"];
   currentCommit: string | null;
   onRetry: () => void;
 }) {
   const [log, setLog] = useState<{ text: string; truncated: boolean } | { error: string } | null>(null);
   const [logOpen, setLogOpen] = useState(false);
-  const step = stepOf(stuck ? run.phase : (run.failedPhase ?? run.phase));
+  // 始める前に断った回（頼みが読めない・設定が無い等）は、どの段でもない
+  const beforeStart = !interrupted && run.phase === "failed" && run.failedPhase === undefined;
+  const step = stepOf(interrupted ? interrupted.phase : (run.failedPhase ?? run.phase));
+  const title = interrupted
+    ? "更新が途中で止まりました"
+    : beforeStart
+      ? "更新を始められませんでした"
+      : `「${STEP_LABEL[step]}」で止まりました`;
   const summary =
     run.phase === "rolled-back"
       ? "新しい版が起きなかったので、前の版に戻しました。"
       : step === "restart"
-        ? `新しい版が起きず、前の版に戻しても確かめられませんでした。今動いているのは版 ${currentCommit ? short(currentCommit) : "（不明）"} です。`
+        ? `今動いているのは版 ${currentCommit ? short(currentCommit) : "（不明）"} です。`
         : "今の版のまま動いています。";
 
   function toggleLog() {
@@ -844,19 +904,29 @@ function FailedCard({
       <div className="mb-3 flex items-start gap-2 rounded-md border border-stop/30 bg-stop-soft px-3 py-2.5 text-stop">
         <CircleAlert className="mt-0.5 size-4 shrink-0" />
         <div className="min-w-0">
-          <p className="text-sm font-semibold">「{STEP_LABEL[step]}」で止まりました</p>
+          <p className="text-sm font-semibold" data-testid="update-failed-title">
+            {title}
+          </p>
           <p className="text-sm">{summary}</p>
-          {stuck ? (
-            <p className="mt-1 text-xs break-words">更新の役（update.mjs）が、途中で終わりました。</p>
-          ) : run.error ? (
+          {interrupted ? (
+            <p className="mt-1 text-xs break-words" data-testid="update-interrupted-reason">
+              {interrupted.reason}
+            </p>
+          ) : null}
+          {run.error ? (
             <p className="mt-1 text-xs break-words" data-testid="update-failed-error">
               {run.error}
+            </p>
+          ) : null}
+          {run.note ? (
+            <p className="mt-1 text-xs break-words" data-testid="update-failed-note">
+              止まる前：{run.note}
             </p>
           ) : null}
         </div>
       </div>
 
-      <StepList statuses={statusesFor(step, run.mode ?? "wait", true)} />
+      {beforeStart ? null : <StepList statuses={statusesFor(step, run.mode ?? "wait", true)} />}
 
       <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4 sm:flex-row">
         <Button
