@@ -37,6 +37,8 @@ export async function setGithubLoginFixture(patch: {
   addOrg?: { login: string; members: Record<string, "admin" | "member">; membersCanCreate: boolean };
   /** そのリポジトリ（`owner/name`）への push を断る・断るのをやめる（push の失敗の試験） */
   rejectPush?: { repo: string; on: boolean };
+  /** その login の GitHub App のインストールを差し替える（null で既定——自分に Administration・Contents が書けるもの——に戻す） */
+  installations?: { login: string; list: Array<{ account: string; administration?: "read" | "write"; contents?: "read" | "write" }> | null };
 }): Promise<{ refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }> }> {
   const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
   const res = await fetch(`${web}/__fake/state`, { method: "POST", body: JSON.stringify(patch) });

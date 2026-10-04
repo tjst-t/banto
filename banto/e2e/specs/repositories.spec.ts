@@ -405,7 +405,7 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
 
   // ---- 1. 空・client ID が無い間はブラウザでログインを選べず、手順が出る ------------------------
   await expect(inner.getByTestId("gh-accounts-empty")).toHaveText("まだありません。登録すると、GitHub のリポジトリをそのアカウントで扱えます。", { timeout: 60_000 });
-  await expect(inner.getByTestId("gh-client-id-steps")).toContainText("「Enable Device Flow」に印を入れる");
+  await expect(inner.getByTestId("gh-client-id-steps")).toContainText("「Enable Device Flow」に印、Repository permissions の Administration と Contents を Read and write に");
   await inner.getByTestId("gh-account-add").click();
   await expect(inner.getByTestId("gh-method-browser")).toBeDisabled();
   await expect(inner.getByTestId("gh-method-paste")).toBeChecked();
@@ -432,14 +432,21 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await expect(row(inner, ownedRepo).getByTestId("repo-account-login")).toHaveText(E2E_GITHUB_PAT_LOGIN, { timeout: 15_000 });
   await expect(row(inner, usedRepo).getByTestId("repo-account-readonly")).toHaveText("読むだけ");
 
-  // ---- 3. client ID を入れると手順が消え、ブラウザでログインが選べる -------------------------------
+  // ---- 3. client ID を入れると手順が畳まれ、ブラウザでログインが選べる -------------------------------
+  // まだ client ID が無い——使い方（3つの手順・別のアカウント・Organization）を開いておく
+  const guide = inner.getByTestId("gh-app-guide");
+  await expect(guide).toHaveAttribute("open", "");
+  await expect(guide.getByTestId("gh-client-id-steps").locator("li")).toHaveCount(3);
+  await expect(guide.getByTestId("gh-client-id-steps").locator("li").nth(1)).toHaveText("Install する——App のページの「Install」で、使うアカウントに入れる");
+  await expect(guide).toContainText("App の設定で「Any account」を選び、そのアカウントで Install してから、ブラウザをそのアカウントに切り替えてログインします。");
+  await expect(guide).toContainText("Organization に Install するだけです。メンバーのログインで扱えます。");
   await inner.getByTestId("gh-client-id").fill("123");
   await inner.getByTestId("gh-client-id-save").click();
   await expect(inner.getByTestId("gh-client-id-error")).toContainText("client ID の形が違います");
   await inner.getByTestId("gh-client-id").fill(E2E_GITHUB_CLIENT_ID);
   await inner.getByTestId("gh-client-id-save").click();
   await expect(inner.getByTestId("repo-flash")).toContainText("client ID を保存しました");
-  await expect(inner.getByTestId("gh-client-id-steps")).toHaveCount(0);
+  await expect(guide).not.toHaveAttribute("open", "");
 
   // ---- 4. ブラウザでログイン：コードと開く先を出し、許可されたら登録 ----------------------------------
   await inner.getByTestId("gh-account-add").click();
@@ -460,6 +467,33 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await expect(appRow.getByTestId("gh-account-credential")).toContainText(`ブラウザでログイン（GitHub App）· $oauth-github-${E2E_GITHUB_DEVICE_LOGIN}（vault-local`);
   await expect(inner.getByTestId("gh-login")).toHaveCount(0);
   await expect(inner.getByTestId("gh-account")).toHaveCount(2);
+
+  // ---- 4b. GitHub App の Install 先と権限。Install されていなければ、Install のページを開く手 -------------------
+  await expect(appRow.getByTestId("gh-account-install")).toHaveText([`${E2E_GITHUB_DEVICE_LOGIN}（アカウント） · Administration 書ける · Contents 書ける`], { timeout: 30_000 });
+  await expect(appRow.getByTestId("gh-account-installs-short")).toHaveCount(0);
+  await expect(patRow.getByTestId("gh-account-installs")).toHaveCount(0);
+  await setGithubLoginFixture({ installations: { login: E2E_GITHUB_DEVICE_LOGIN, list: [] } });
+  await appRow.getByTestId("gh-account-verify").click();
+  await expect(appRow.getByTestId("gh-account-installs-none")).toContainText("GitHub App がどこにも Install されていません——リポジトリを読む・作るには Install が要ります。");
+  // slug はインストールの返事にしか無い——無いうちは、App のページを入れてもらう
+  await expect(appRow.getByTestId("gh-account-install-noslug")).toBeVisible();
+  await inner.getByTestId("gh-app-slug").fill("https://github.com/apps/banto-e2e");
+  await inner.getByTestId("gh-app-slug-save").click();
+  await expect(inner.getByTestId("repo-flash")).toContainText("App のページを保存しました");
+  const installPopup = page.waitForEvent("popup");
+  await appRow.getByTestId("gh-account-install-open").click();
+  expect((await installPopup).url()).toMatch(/\/apps\/banto-e2e\/installations\/new$/);
+  await (await installPopup).close();
+  // Install されれば、GitHub の返事の slug が正（設定より優先）。権限が足りない先は1行で言う
+  await setGithubLoginFixture({ installations: { login: E2E_GITHUB_DEVICE_LOGIN, list: [{ account: E2E_GITHUB_DEVICE_LOGIN, administration: "read", contents: "write" }] } });
+  await appRow.getByTestId("gh-account-verify").click();
+  await expect(appRow.getByTestId("gh-account-install")).toHaveText([`${E2E_GITHUB_DEVICE_LOGIN}（アカウント） · Administration 読むだけ · Contents 書ける`]);
+  await expect(appRow.getByTestId("gh-account-installs-short")).toContainText("Administration と Contents を Read and write にして");
+  const morePopup = page.waitForEvent("popup");
+  await appRow.getByTestId("gh-account-install-open").click();
+  expect((await morePopup).url()).toMatch(/\/apps\/banto-fake-app\/installations\/new$/);
+  await (await morePopup).close();
+  await setGithubLoginFixture({ installations: { login: E2E_GITHUB_DEVICE_LOGIN, list: null } });
 
   // ---- 5. 確かめる：期限が近いので取り直し（更新が通る）、GitHub に入れる ------------------------------
   const before = (await setGithubLoginFixture({})).refreshCalls;
@@ -1063,9 +1097,17 @@ test("段階5：GitHub に公開——一覧の行から作って push し（失
   await expect(fromProject.getByRole("button", { name: "閉じる" })).toHaveCount(0);
   expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "main@{upstream}"], { cwd: projPath, encoding: "utf8" }).trim()).toBe("origin/main");
 
-  // 片づけ：アカウントを外し、置き場を戻す
+  // ---- 一覧の Project 名から、その Project を開く（banto の拡張 dev.banto/open-project）——設定の面から移る ----------
   inner = await openRepositoriesPane(page);
   await expect(row(inner, projPath).getByTestId("repo-remote")).toContainText(`${openOrg}/${proj}`, { timeout: 60_000 });
+  const projectLink = row(inner, projPath).getByTestId("repo-project-open");
+  await expect(projectLink).toHaveText(proj);
+  await projectLink.click();
+  await page.waitForURL(/\/p\/[0-9a-f-]+/, { timeout: 30_000 });
+  await expectProjectOpen(page, proj, "Project 名を押しても、その Project が開かない");
+
+  // 片づけ：アカウントを外し、置き場を戻す
+  inner = await openRepositoriesPane(page);
   await inner.locator(`[data-testid="gh-account"][data-login="${me}"]`).getByTestId("gh-account-remove").click();
   await inner.getByTestId("gh-account-remove-confirm").click();
   await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();
