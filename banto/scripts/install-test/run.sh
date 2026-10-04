@@ -52,6 +52,7 @@ FAKE_API=http://127.0.0.1:8787
 here=$INSTALL_TEST_HERE
 repo=$(git -C "$here" rev-parse --show-toplevel)
 branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD)
+[[ -z $MIGRATE_FROM ]] || MIGRATE_FROM=$(git -C "$repo" rev-parse "$MIGRATE_FROM^{commit}") # 頭12で比べるので、短い名前を伸ばす
 NAME="bt-install-${IMAGE//./}-$(date +%H%M%S)"
 LOG=$(mktemp -d "/tmp/install-test-$NAME-XXXX")
 FAILS=0 PASSES=0
