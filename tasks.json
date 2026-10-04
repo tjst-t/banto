@@ -4660,6 +4660,33 @@
       "updatedAt": "2026-10-04T13:27:46.188Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "backlog-item-number",
+      "kind": "task",
+      "title": "Backlog の項目に通し番号（#42）を付けて画面に出し、番号でも指せるようにする",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "backlog"
+      ],
+      "body": "2026-10-04、ユーザー要望。id（slug）は残し number を足す。作るときに最大＋1、再利用しない。画面は一覧の行の題の前と詳細の題の上に #n、絞り込みで #n。AI の tool は番号でも指せる。既存の項目には作った順（日時の無い古い分は元の並び）で一度だけ振る。",
+      "doneWhen": "新しく足した項目に最大＋1 の番号が付き、同時に2件足しても番号が重ならない（単体試験）。画面の一覧と詳細に #n が出る（E2E）。getItem/updateItem に 42 や \"#42\" を渡して項目が引ける。本番の一覧の全項目に重ならない番号が付いている",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "e9148ef1-63cc-4346-aebf-033be298b9eb"
+        }
+      ],
+      "createdAt": "2026-10-04T14:15:46.180Z",
+      "updatedAt": "2026-10-04T14:15:46.180Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
