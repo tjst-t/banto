@@ -4384,6 +4384,29 @@
       "extra": {}
     },
     {
+      "id": "factory-acceptance",
+      "kind": "task",
+      "title": "Factory の受け入れ——3件同時・1件失敗・host を起こし直して続く",
+      "status": "ready",
+      "parent": "factory",
+      "dependsOn": [
+        "factory-merge-queue",
+        "factory-ui"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "要件 B の受け入れをそのまま測る。本物のサブエージェント（Claude Code）で banto 以外の小さなリポジトリを使う。",
+      "doneWhen": "3件を同時に流して3つとも main に入る。1つ失敗させても他の2つは進む。banto の host を落として起こし直しても途中から続く",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-04T08:56:11.868Z",
+      "updatedAt": "2026-10-04T08:56:11.868Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "backlog-thread-recorded-on-housekeeping",
       "kind": "bug",
       "title": "片づけで閉じただけでも、閉じた Thread が「取り組んだ Thread」に記録される",
