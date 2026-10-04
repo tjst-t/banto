@@ -12,7 +12,9 @@
 // だけになる（§2.4 が GitHub 公式の MCP を繋がないのと同じ理由）。AI が「新しい開発を始めて」と頼む道具は
 // §2.4 の「まだ決めていないこと」にある。
 //
-// 道具はどれも**人の画面からだけ**（可視性 `admin`、呼び出しの刻印 `{admin: true}` でも確かめる）。
+// 道具はどれも**人の画面からだけ**（可視性 `admin`、呼び出しの刻印 `{admin: true}` でも確かめる）。例外は
+// **ブランチを送る・取ってくる口**（`push_branch`・`fetch_branch`、可視性 `module`、追加・2026-10-04）——Backlog が
+// 中継で呼ぶ。リポジトリは呼び出し元の Project の根で決まり（host に聞く）、引数で選べるのはブランチ名だけ。
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -22,10 +24,11 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf, callerOf } from "@banto/module-contract";
+import { AUDIT_ARGS_META_KEY, CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf, callerOf } from "@banto/module-contract";
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
 import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, PUBLISH_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
 import { setRepositoryAccount } from "./assign.js";
+import { BranchSync } from "./branch-sync.js";
 import { deleteRepository, inspectDelete } from "./delete.js";
 import { Cloner } from "./clone.js";
 import { Publisher } from "./publish.js";
@@ -74,6 +77,15 @@ function adminTool(name: string, description: string, properties: Record<string,
     description,
     inputSchema: { type: "object", properties, required },
     _meta: { [VISIBILITY_META_KEY]: "admin" },
+  };
+}
+
+function branchTool(name: string, description: string) {
+  return {
+    name,
+    description,
+    inputSchema: { type: "object", properties: { branch: { type: "string" } }, required: ["branch"] },
+    _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["branch"] },
   };
 }
 
@@ -134,6 +146,13 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     github: deps.github,
     endpoints: deps.githubEndpoints ?? GITHUB_COM,
     ...(home ? { home } : {}),
+  });
+  const branchSync = new BranchSync({
+    store,
+    accounts,
+    vault: deps.vault,
+    dataDir: deps.dataDir,
+    endpoints: deps.githubEndpoints ?? GITHUB_COM,
   });
   const lookupProjects = async (meta: Record<string, unknown> | undefined): Promise<ProjectsLookup> => {
     try {
@@ -230,6 +249,10 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       adminTool("publish_status", "公開の進み具合と結果", { jobId: { type: "string" } }, ["jobId"]),
       adminTool("cancel_publish", "push をやめる（GitHub に作ったリポジトリは消さない）", { jobId: { type: "string" } }, ["jobId"]),
       adminTool("retry_push", "push だけやり直す（GitHub の origin はあるが、いまのブランチが GitHub にまだ無い）", { path: { type: "string" } }, ["path"]),
+      // ── Backlog のブランチ（§2.4「ブランチを送る口」）。**中継からだけ**（可視性 module）。ブランチ名を識別子として
+      // 名乗る——中継のゲートは、コンテナからの呼び出しをブランチごとに初回だけ人に聞く ──
+      branchTool("push_branch", "呼び出し元の Project のリポジトリの、そのブランチだけを origin へ送る（force しない）"),
+      branchTool("fetch_branch", "呼び出し元の Project のリポジトリの origin から、そのブランチだけを refs/remotes/origin/<branch> に取ってくる"),
       adminTool("remove_github_account", "アカウントの登録を外す（ブラウザでログインしたものは Vault のログイン情報も消す）", {
         login: { type: "string" },
       }, ["login"]),
@@ -244,6 +267,15 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       // **人の操作だけ**。可視性で AI からは見えないが、呼び出しの刻印でも確かめる
       // ——人の画面からの呼び出しには、host が `{admin: true}` を刻む
       const caller = callerOf(meta);
+      if (name === "push_branch" || name === "fetch_branch") {
+        // **Project のための呼び出しだけ**（AI のターンでも人の画面でも）。どの Project かは host に聞き、刻印と照らす
+        const stamped = caller && "project" in caller ? caller.project : caller && "admin" in caller ? caller.forProject : undefined;
+        if (!stamped) throw new Error(`${name} は Project のための呼び出しからだけ呼べます`);
+        if (!deps.projects.callerProject) throw new Error("この Repositories は呼び出し元の Project を引く口を持っていません");
+        const project = await deps.projects.callerProject(callIdOf(meta));
+        if (project.id !== stamped) throw new Error(`呼び出しの刻印の Project（${stamped}）と、host の台帳の Project（${project.id}）が違います`);
+        return json(await branchSync.sync(name === "push_branch" ? "push" : "fetch", str(args.branch, "branch"), project, callIdOf(meta)));
+      }
       if (!caller || !("admin" in caller)) throw new Error(`${name} は人の操作からだけ呼べます`);
       switch (name) {
         case "list_repositories": {

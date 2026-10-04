@@ -138,6 +138,29 @@ function explainPush(own: string): string {
   return "";
 }
 
+/**
+ * push・fetch の資格情報を用意する（押した呼び出しの中で。Vault・GitHub の口はここで使い終える）。SSH 鍵のアカウントなら
+ * ssh-agent、そうでなければ一度きりの窓口（相手は GitHub の host）。公開と、Backlog のブランチ（`branch-sync.ts`）が使う
+ */
+export async function gitCredentialFor(
+  deps: Pick<PublisherDeps, "accounts" | "vault" | "dataDir" | "endpoints">,
+  login: string,
+  callId?: string,
+): Promise<{ ssh: boolean; credential: GitCredential; window?: CredentialWindow }> {
+  const account = (await deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === login.toLowerCase());
+  if (!account) throw new Error(`@${login} は登録されていません`);
+  if (account.ssh) {
+    const socket = (await deps.vault.startSshAgent(account.ssh, callId)).socketPath;
+    const knownHosts = await writeGithubKnownHosts(deps.dataDir, deps.endpoints);
+    sshCommandFor(socket, knownHosts);
+    return { ssh: true, credential: { kind: "ssh-agent", socket, knownHosts } };
+  }
+  const token = await deps.accounts.tokenFor(account.login, callId);
+  const web = new URL(deps.endpoints.web);
+  const window = await openCredentialWindow({ protocol: web.protocol.replace(/:$/, ""), host: web.host, username: account.login, password: token });
+  return { ssh: false, credential: { kind: "helper", command: window.helperCommand }, window };
+}
+
 export class Publisher {
   private readonly jobs = new Map<string, PublishJob>();
   /** 公開・push の最中のフォルダ（同じフォルダで2つ走らせない） */
@@ -270,23 +293,8 @@ export class Publisher {
     return `${this.deps.endpoints.web.replace(/\/+$/, "")}/${owner}/${name}.git`;
   }
 
-  /**
-   * push の資格情報を用意する（押した呼び出しの中で。Vault・GitHub の口はここで使い終える）。SSH 鍵のアカウントなら
-   * ssh-agent、そうでなければ一度きりの窓口（相手は GitHub の host——URL は作られた持ち主・名前から後で組む）
-   */
-  private async credentialFor(login: string, callId?: string): Promise<{ ssh: boolean; credential: GitCredential; window?: CredentialWindow }> {
-    const account = (await this.deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === login.toLowerCase());
-    if (!account) throw new Error(`@${login} は登録されていません`);
-    if (account.ssh) {
-      const socket = (await this.deps.vault.startSshAgent(account.ssh, callId)).socketPath;
-      const knownHosts = await writeGithubKnownHosts(this.deps.dataDir, this.deps.endpoints);
-      sshCommandFor(socket, knownHosts);
-      return { ssh: true, credential: { kind: "ssh-agent", socket, knownHosts } };
-    }
-    const token = await this.deps.accounts.tokenFor(account.login, callId);
-    const web = new URL(this.deps.endpoints.web);
-    const window = await openCredentialWindow({ protocol: web.protocol.replace(/:$/, ""), host: web.host, username: account.login, password: token });
-    return { ssh: false, credential: { kind: "helper", command: window.helperCommand }, window };
+  private credentialFor(login: string, callId?: string): Promise<{ ssh: boolean; credential: GitCredential; window?: CredentialWindow }> {
+    return gitCredentialFor(this.deps, login, callId);
   }
 
   /**

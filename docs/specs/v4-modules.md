@@ -1201,7 +1201,8 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 Repositories の節、`components/banto/canvas/repo-list-view.tsx` ほか）。経緯は本節の日付の会話（Base Thread）。
 
 **持たないもの**：
-- **git の操作**（status・commit・branch・log・diff・worktree）——AI は Shell で `git` を打つ
+- **git の操作**（status・commit・branch・log・diff・worktree）——AI は Shell で `git` を打つ。例外は資格情報の要る
+  **送る・取ってくる**を他の Module に代わってする口だけ（下の「ブランチを送る口」——Backlog の一覧のブランチ）
 - **GitHub の操作一般**（Issue・PR 等）——AI は Shell で `gh` を打つ（トークンは `envSecrets` で `GH_TOKEN` に）。
   **GitHub 公式の MCP サーバは繋がない**——道具の説明で文脈を取られるのを避けるため（2026-09-29）
 
@@ -1498,6 +1499,28 @@ Project の画面からも一覧からも開く。アカウント・名前・公
   **Contents（Read and write）**
 - AI 向けの道具は無い（人の画面だけ）
 
+**ブランチを送る口**（決定・2026-10-04、ユーザー。§4.4 Backlog の一覧のブランチのため）：Project のコンテナの中の git には
+資格情報が無い（origin が https だと `could not read Username`、この機械で実測）。資格情報を持つのはこの Module なので、
+**1本のブランチを origin へ送る・origin から取ってくる**だけを、中継から引き受ける（clone・公開と同じ渡し方——一度きりの
+窓口か ssh-agent。`branch-sync.ts`）。
+- **口**：`push_branch`・`fetch_branch`（引数は `branch` だけ。可視性 `module`——AI には見せず、中継からだけ）。送るのは
+  `refs/heads/<b>:refs/heads/<b>`（**force しない**・upstream を付けない）、取ってくるのは `+refs/heads/<b>:refs/remotes/origin/<b>`
+  （手元のブランチには触らない。タグ・submodule は取らない）。ブランチ名は1つの ref として読める字だけ（`-` で始まる・refspec の
+  記号・`..`・`@{` 等は断る）
+- **どのリポジトリかは引数で受けない**——呼び出しの刻印（`{project}` か、人が Project の画面から押した `{admin, forProject}`）の
+  Project と、**host の台帳が言う Project**（中継の `relayCallerProject`、v4-security.md の表）が一致したときだけ、その Project の
+  根のリポジトリの一番上（根が下のフォルダ・worktree でも本体）で。頼む側（Backlog）はコンテナの中で動き、中の AI は root で
+  中継の合言葉も読める——名乗りでリポジトリを選ばせると、人のトークンで別のリポジトリへ push できてしまう
+- **承認**は中継のゲートが聞く（`branch` を識別子として名乗るので、コンテナからの頼みは**ブランチごとに初回だけ**人に聞く。
+  人が画面で押したもの——同梱どうし——は聞かない）。`valueFree` にはしない（資格情報で外へ書く口なので）
+- **引き受けないもの**は `{handled: false, reason}` で返す——台帳に無い・アカウントが決まっていない／登録が外れた・origin が
+  無い・GitHub の外・根が git でない。頼んだ側はリポジトリ自身の git の設定のまま試す
+- **引き受けて断るもの**（`{handled: true, ok: false, message}`、頼んだ側は自分で試し直さない）：送り先・取ってくる先・TLS を
+  変える設定（`url.*`・`http.*`・`remote.origin.pushurl`・`proxy`・`receivepack`・`uploadpack`。**origin を読む前に見る**——
+  `insteadOf` は origin の読み方そのものを変える）がある・origin の URL が台帳の GitHub の場所の1つだけでない・方式（ssh／
+  https）がアカウントと合わない・git が断った（先を越された＝non-fast-forward は「origin のブランチが先に進んでいます」）
+- 取ってこようとしたブランチが origin にまだ無いのは失敗ではない（`{handled: true, ok: true, absent: true}`）
+
 **core との境目**（2026-10-01。名乗りの形と返す口は段階4で決めた・2026-10-03）：**core は Repositories を名指しで知らない**。
 - core の新しい Project の画面が持つのは「手元のフォルダを選ぶ」と、**Module が中身を持ち込む空きの場所**だけ。
   Module は `_meta` の印で「フォルダを用意できる」と名乗り（設定 Canvas・launcher と同じ仕組み）、画面（MCP Apps）を
@@ -1523,7 +1546,8 @@ Project の画面からも一覧からも開く。アカウント・名前・公
 Organization のものは「読むだけ」のまま。clone のときに選んだアカウントは台帳に書く——段階3）／
 gitlab 等のアカウント（いまはこのマシンの git の設定で clone するだけ）／Factory が worktree を頼む口（要件）／
 公開したあと、ほかのブランチを送る手（いまは人が git push で）／origin を足す前に失敗して GitHub にだけ空のリポジトリが
-残ったとき、それを origin にする手（いまは文言で `git remote add` を案内するだけ）。
+残ったとき、それを origin にする手（いまは文言で `git remote add` を案内するだけ）／ブランチを送る口で、GitHub の外（gitlab 等）の
+origin を引き受けるか（いまは引き受けず、頼んだ側がリポジトリの git の設定で試す）。
 
 ## 3. 境界の問題——FileSystem と Shell を同じ扱いにしない
 
@@ -1592,7 +1616,7 @@ Module の一覧には**2種類が混ざる**：
 | **Service** | 動き続けるものを起こしておく | **Shell とは別実装**（§2.1）。§4.2 |
 | **Publish** | 動いているものに届く URL を生やす | **窓口1本＋実装が複数**。§4.3 |
 | ~~**Repo（git）**~~ | ~~複数リポジトリの一覧・worktree・clone/branch/log~~ | **§2.4 Repositories に移した**（2026-10-01）。git の操作（branch/log 等）は持たない |
-| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json）。**実装・2026-10-03**（目録から入れる）。§4.4 |
+| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json——リポジトリの `backlog` ブランチ、2026-10-04）。**実装・2026-10-03**（目録から入れる）。§4.4 |
 | **Factory** | 依頼を耐久ワークフローとして進める（要件 B） | **設計はゼロから起こす。core ではなく Module として作る**（決定・2026-09-11、ユーザー）——「依頼を進める」は Module の形で書けるものであり、core に持たせると core が2つになる（要件 C8） |
 | **Browser** | 人と AI が**同じブラウザ**を触る。通信も見る | **外部をマウントする**（§3.1・§4.1） |
 
@@ -2007,11 +2031,50 @@ AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**
 Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**。窓口が AI の tool と人の一覧画面を持ち、実装を足すのに
 窓口を直さない。
 
-- **最初のバックエンドは tasks.json**——リポジトリに1つ。場所の既定は `docs/tasks.json` で、Backlog の設定で変えられる
+- **最初のバックエンドは tasks.json**——リポジトリに1つ。**置き場はコードとつながらない専用のブランチ**（既定 `backlog`、
+  Backlog の設定でブランチ名を変えられる。中のファイルは `tasks.json` 固定。下の「置き場」）
 - 将来は **GitHub Issues** など。対応：種類 → Issue の種類（Feature・Task・Bug）、親子 → sub-issue、依存 → blocked by、
   マイルストーン → Milestone、ラベル → Label。どれも GitHub の正式な機能（2025 年に GA、`gh` でも扱える）
 - 実装が扱えない欄（GitHub の `doneWhen` 等）は実装が逃がし方（本文に書く等）を持つ。窓口の形は変えない
 - **書き込みは必ず Module の tool を通し、Module が1件ずつ順に書く**——同じリポジトリを複数の Thread が同時に触るため
+
+#### 置き場——専用のブランチ（決定・2026-10-04、ユーザー）
+
+一覧（tasks.json、形は `banto-backlog/1` のまま）を、**コードとつながらない専用のブランチ**（既定 `backlog`。親を持たない
+orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下した案は `docs/notes/2026-10-04-backlog-branch-store.md`。
+
+- **Module は作業ツリーも index も使わない。** git の低レベルのコマンドで、**1件の変更ごとに1コミット**を直接積む：
+  - 読む：`git rev-parse refs/heads/<b>` と `git cat-file blob <コミット>:tasks.json`
+  - 書く：`git hash-object -w --stdin` → `git mktree` → `git commit-tree`（親は読んだときのコミット。無ければ親なし＝orphan）→
+    `git update-ref refs/heads/<b> <新> <読んだときの古い値>`（**compare-and-swap**。無かったなら「まだ無いこと」を確かめる）。
+    **先を越されたら読み直して操作をやり直す**（5回まで）
+  - コミットメッセージは操作の要約（`backlog: createItem <id>`・`backlog: updateItem <id>（status → done・title）`・
+    `backlog: splitStory <id>（n 件）`・`backlog: moveItem <id>（<相手> の前）`）、作者・コミッターは `banto <banto@localhost>`
+- これで **main・worktree・どのブランチを checkout していても正本は1つ**、コードの取り込み（merge・rebase）でぶつからない、
+  誰がコミットするかを決めなくてよい。**プロセスの中の1本の列**（書く操作の直列化）は残す——同じ Project の Thread が同時に
+  触っても、列の中ではやり直しが起きない（compare-and-swap が効くのは、別のプロセス・人の git とぶつかったとき）
+- **送る（push）**：**書くたびに Module が自動で試み、失敗しても書き込みは止めない**。まず **Repositories に頼む**（中継の
+  `push_branch`、§2.4「ブランチを送る口」——資格情報はそちら）。Repositories が無い・引き受けない（台帳に無い・アカウントが
+  無い・GitHub の外）・中継が断った（承認されなかった等）なら、**リポジトリ自身の git の設定のまま** `git push`（force しない）。
+  Repositories が引き受けて断ったもの（送り先を変える設定がある等）は自分では試し直さない。送るのは書く列の外で、送る操作
+  どうしは別の列で1本ずつ（送るのはその時点の ref——先に並んだ書き込みの分もまとめて送られる）
+- **まだ送っていないこと**を、画面の上（`backlog-sync`）と `listItems` の返り値（文の末尾と `sync`）で知らせる：手元の
+  ブランチが `refs/remotes/origin/<b>`（最後に取ってきた・送った時点）より先にあるコミットの数（ref から導く）と、最後に
+  送ったときの失敗の理由（覚えているのはこれだけ。送れたら消える）。書いた tool は送れなかったことを返り値で言う
+  （「書き込みは済みましたが、origin に送れませんでした：…」）。origin が無いリポジトリでは送らず、「送っていない」とも言わない
+- **取ってくる（fetch）**：**書く前と、画面を開いたとき**（`getBoard` の `fetch: true`）だけ。毎回の読み直し（画面の3秒ごと・
+  AI の `listItems`）ではやらない。経路は送ると同じ（Repositories の `fetch_branch` → リポジトリの git の設定）。
+  取ってくるのは `refs/remotes/origin/<b>` へ（手元のブランチには触らない）。取ってこれなかった理由も知らせる（書き込みは止めない）
+- **読むとき**：origin（最後に取ってきた時点）が手元より先で **fast-forward できるなら取り込む**（手元の ref を compare-and-swap で
+  進めるだけ）。手元にブランチが無く origin にあれば、それを手元のブランチにする。**両方に新しいコミットがある（食い違い）なら
+  書かずに理由を言う**（手元だけ n 件・origin だけ m 件。揃え方の例も）。読むことはできる（手元の中身を出し、上に知らせる）
+- **ブランチが無い**：一覧は空として返し、**最初の書き込みで orphan のコミットを作る**。**作業ツリーに `docs/tasks.json`
+  （`banto-backlog/1`）があってブランチが無いときは、それを移す道を案内する**（`listItems` の文・画面の「まだ無い」の中に
+  コマンド）。**移すのは人（かスクリプト）の1回の操作で、自動では移さない**——`scripts/move-to-branch.mjs`
+  （`--repo <根> --file docs/tasks.json --branch backlog --push`）。中身が `banto-backlog/1` として読めることを確かめ、**バイトを
+  変えずに** orphan のコミットを1つ作り、ブランチが**まだ無いときだけ**作る（あれば断る）。作業ツリーと index には触らず、
+  元のファイルは消さない（消すのは人が普通のコミットで）。`--push` でそのブランチだけを origin へ（リポジトリの git の設定で）
+- **Project の根が git のリポジトリでない**：読む tool は理由を言い、書かない。画面は理由だけを出す（「足す」を出さない）
 
 #### tasks.json の形（`banto-backlog/1`）
 
@@ -2070,7 +2133,7 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
 
 #### つけ方と AI の tool（決定・2026-10-02、ユーザー）
 
-**Project ごとにつける**——Shell と同じく Project の root の中の tasks.json を読み書きする。
+**Project ごとにつける**——Shell と同じく Project の root（のリポジトリ）につき、その一覧のブランチを読み書きする。
 
 | tool | 何をするか |
 |---|---|
@@ -2086,14 +2149,17 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
 #### 実装（2026-10-03）
 
 `packages/modules/backlog`（`@banto/module-backlog`）。**目録に置く**（`BUNDLED_CATALOG` の `backlog`、既定には入れない
-——人が「Module を追加」から入れる）。`scope: project`・`isolation: subprocess`・閉じ込めは FileSystem と同じ
-（Project の根、コマンドは走らせない）。いまは窓口とバックエンド（tasks.json）が1本の Module の中にある——
-実装の口を分けるのは2本目のバックエンドが来たとき（下の「まだ決めていない」）。
+——人が「Module を追加」から入れる）。`scope: project`・`isolation: subprocess`（Project のコンテナの中）・閉じ込めの profile は
+`exec`（git を走らせる。改訂・2026-10-04——以前は FileSystem と同じくコマンドを走らせなかった）。依存は `repositories`
+（`required: false`——送る・取ってくるを頼む。無くても動く）。中継の口（`BANTO_HOST_MCP_URL`・`BANTO_HOST_MCP_TOKEN`）を渡す。
+いまは窓口とバックエンド（tasks.json のブランチ）が1本の Module の中にある——実装の口を分けるのは2本目のバックエンドが
+来たとき（下の「まだ決めていない」）。
 
-**店（tasks.json の読み書き）**
+**店（一覧のブランチの読み書き——上の「置き場」）**
 
-- **書く操作は Module のプロセスの中で1本の列に並べる**。毎回ファイルを読み直してから変え、検証してから
-  一時ファイル → rename で書く（人が手で直す・git pull で変わるので、覚えた中身を土台にしない）
+- **書く操作は Module のプロセスの中で1本の列に並べる**。毎回ブランチを読み直してから変え、検証してから1コミットを積み、
+  compare-and-swap で ref を動かす（別の手元から送られたもの・人が git で直したものがあるので、覚えた中身を土台にしない。
+  土台は**読んだ中身のコミット**——ref を読み直さない）
 - 書く形は**2字下げ・末尾改行・項目の欄の順を固定**（上の表の順）。git の差分が読めるように
 - **検証**（違反は理由を言って断る。黙って直さない）：
   - `id` は読める名前——英小文字・数字と `-` `.` `_`、80字まで、重複なし。作るとき省けば題から作る
@@ -2104,9 +2170,12 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
   - `milestone` は `milestones` に在るものだけ
 - **手で入った前からある問題は、関係のない変更を止めない**——変える前に無かった問題が、変えた後に増えるときだけ断る。
   前からある問題は読むたびに AI（`listItems` の返り値）と人（画面の上の注意）に知らせる
-- **ファイルが無い**：一覧は空として返し「まだ tasks.json がありません（場所）」と言う。最初の作成でフォルダごと作る
-- **読めない形**（`format` が `banto-backlog/1` でない・型が違う・知らない欄がある・壊れた JSON）：**読まず・書かず**、
-  どこが違うかを言う。古い tasks.json の形（`tasks` の配列）なら、変換のコマンドも案内する
+- **ブランチが無い**：一覧は空として返し「まだ一覧のブランチ <b> がありません」と言う。最初の作成で orphan のコミットを作る
+  （作業ツリーに一覧が残っていれば移す道も——上の「置き場」）
+- **読めない形**（`format` が `banto-backlog/1` でない・型が違う・知らない欄がある・壊れた JSON・ブランチに tasks.json が無い）：
+  **読まず・書かず**（ref を動かさない）、どこが違うかを言う。古い tasks.json の形（`tasks` の配列）なら、変換のコマンドも
+  案内する（`git show <b>:tasks.json > old-tasks.json && node …/convert-tasks-json.mjs old-tasks.json <書き出す先>`——中身を
+  確かめてから、移すスクリプトでブランチへ移し直す）
 - 形に足したもの（`banto-backlog/1` のまま）：
   - いちばん外側の **`extra`**——移したときの古い見出し（`phaseN`・`$comment` 等）を落とさずに運ぶ。中身は読まない
   - `createdAt`・`updatedAt` は **`null` を許す**——古い形から移したもので日時が分からないとき（作らない）
@@ -2126,9 +2195,9 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 
 | tool | 何をするか |
 |---|---|
-| `getBoard` | 画面が描く全部（ファイルの様子・文書・問題・根）。`since` が今の版（中身のハッシュ）と同じなら `unchanged` だけ |
+| `getBoard` | 画面が描く全部（ブランチの様子・文書・問題・根・origin との様子）。`since` が今の版（ブランチの先頭と origin との様子のハッシュ）と同じなら `unchanged` だけ。`fetch: true` で先に origin から取ってくる（画面を開いたとき） |
 | `boardCreateItem`・`boardUpdateItem`・`boardSplitStory`・`boardMoveItem` | AI の4本と同じ操作を、書いた後の一覧ごと返す |
-| `getSettings`・`setSettings` | tasks.json の場所 |
+| `getSettings`・`setSettings` | 一覧を置くブランチの名前 |
 
 **人の画面**（launcher `ui://banto-backlog/items`）：モック（`mock/components/banto/canvas/backlog-*.tsx`、経緯は
 `docs/notes/2026-10-02-backlog-ui-survey.md`）の形をそのまま素の HTML に移した——見方の切り替え（次にやる／すべて／
@@ -2136,12 +2205,15 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 タスクの頭にストーリー名・詳細は一覧を離れずに右に出す（Canvas が 48rem 未満なら一覧と入れ替わる）・キー操作
 （↑↓ j/k Enter Esc C）・ドラッグと行のメニューで並べ替え（同じ段の中だけ）・その場で足す・タスクに分ける・やめる＋理由。
 **AI や手で変わったものを出すため、画面が見えている間は3秒ごとに読み直す**（版が同じなら中身は送られない。
-打っている途中・小窓・ドラッグの間は当てない）。ファイルが無いときは「足す」へ誘い、読めない形のときは理由と
-変換のコマンドだけを出して、足す・見方を出さない。
+打っている途中・小窓・ドラッグの間は当てない）。ブランチが無いときは「足す」へ誘い（作業ツリーに一覧が残っていれば移す
+コマンドも）、読めない形のときは理由と変換のコマンドだけを出して、足す・見方を出さない。見出しの横に**ブランチ名**。
+**origin との様子**（送っていない件数と理由・食い違い・取ってこれなかった理由）は一覧の上の注意に出す（無ければ出さない）。
 
-**設定**（設定 Canvas `ui://banto-backlog/config`）：tasks.json の場所。置き場は host が渡す `BANTO_MODULE_DATA_DIR`
-（Project ごとの Module は接続が Project ごとなので、**設定も Project ごと**）。Project の根の外（絶対パス・`..`）と
-`.json` でないものは断る。保存したら、その場所のファイルの様子（無い・読めない・n 件）を言う。
+**設定**（設定 Canvas `ui://banto-backlog/config`）：**一覧を置くブランチの名前**（既定 `backlog`。改訂・2026-10-04——以前は
+「tasks.json の場所」。前の設定 `path` は読まない）。ファイル名は tasks.json 固定。置き場は host が渡す `BANTO_MODULE_DATA_DIR`
+（Project ごとの Module は接続が Project ごとなので、**設定も Project ごと**）。ブランチ名は1つの ref として読める字だけ
+（英数字で始め、英数字と `. _ / -`。`..`・`//`・`/.`・`@{`・`/` `.` `.lock` で終わるものは断る。`refs/heads/` は外して受ける）。
+保存したら、そのブランチの様子（無い・読めない・n 件）を言う。
 
 **変換スクリプト**（`packages/modules/backlog/scripts/convert-tasks-json.mjs`）：古い形を**機械的に**読み替えて
 別の場所に書き出す（入力と同じ場所には書かない）。上の「移し方」に加えて：`in_progress` → `in-progress`、
@@ -2150,6 +2222,9 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 `phase` は数字なら `phase-N`（`"Phase 0"` と `"0"` は同じ）、それ以外は `milestone-N`。いちばん外側の `phaseN` に
 `closedAt` があればそのマイルストーンは closed。**kind は全部 task**——ストーリーへの組み直しは人と AI が後でやる。
 知らない `status` は読み替えずに断る。
+
+**移すスクリプト**（`packages/modules/backlog/scripts/move-to-branch.mjs`）：作業ツリーの tasks.json を一覧のブランチへ
+（上の「置き場」の「ブランチが無い」）。
 
 #### まだ決めていない
 
@@ -2163,6 +2238,13 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
   終わったほう（npm・remote から入れる）を `module-registry-install-npm` に改め、積んだだけのほう（レジストリの検索、
   v4-architecture.md が参照）に元の id を残した。マイルストーンの id は `phase-0`〜`phase-4` と `after-phase-0`（Phase 0以降）・
   `phase-undecided`（Phase 未定）。同日にストーリーへ組み直した（ストーリー7本、不具合はバグに）
+- **食い違い（手元と origin の両方に新しいコミット）を Module が直す手**——いまは書かずに理由と揃え方の例を言うだけ。
+  中身を項目ごとに3方向で合わせる（merge driver に当たるもの）か、人の画面に「どちらを残すか」を出すかは未決
+- **fetch を書く前に毎回するか**——いまは毎回（書く列の中で）。送る先が遠いと書くたびに待つ。待ちが問題になったら、
+  最後に取ってきてからの時間で省くかを決める
+- **作業ツリーの一覧を移すのを画面の1回の操作でもできるようにするか**——いまはスクリプトのコマンドを案内するだけ
+- **AI のターンから送るときの承認**——中継のゲートが Project ごと・ブランチごとに初回だけ聞く（fetch_branch と push_branch で
+  2回）。AI が最初に書いたターンで2枚のカードになる。まとめるかは未決
 - 画面の読み直しの間隔（3秒）は、他の Module に揃える前例が無かったので仮に決めた。host から「変わった」を
   知らせる口（MCP の `resources/subscribe` を Canvas に通す等）を作るかは未決
 

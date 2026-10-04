@@ -1,15 +1,23 @@
-// **Backlog**（v4-modules.md §4.4、2026-10-03）——仕事の一覧を Project の tasks.json で持つ Module。
+// **Backlog**（v4-modules.md §4.4、2026-10-03。置き場をブランチに・2026-10-04）——仕事の一覧を、Project のリポジトリの
+// **一覧のブランチ**（`backlog`、コードの履歴とつながらない orphan。中は tasks.json 1つ）で持つ Module。
 //
-// 目録から入れ、Project の根に見本の tasks.json（モックの見本と同じ 35 件）を置いて、入口から開く。
-// 規則14——「開けた」で終わらせず、画面が出している中身（見方ごとの件数・区切りの中の行・ストーリーの
-// 進み・詳細の依存・閉じたものの理由）と、**ファイルに書かれた中身**を一つずつ見る。
+// 目録から入れ、Project の根（git のリポジトリ。origin は一時の bare リポジトリ）の作業ツリーに見本の tasks.json
+// （モックの見本と同じ 35 件）を置いて、入口から開く。ブランチがまだ無いので画面は「移すコマンド」を案内し、
+// そのコマンドをそのまま走らせて移す。規則14——「開けた」で終わらせず、画面が出している中身（見方ごとの件数・区切りの
+// 中の行・ストーリーの進み・詳細の依存・閉じたものの理由）と、**ブランチに積まれた中身・コミット・origin**、
+// **作業ツリーに触っていないこと**を一つずつ見る。
 //
 // もう1本は AI の tool：AI が updateItem で進めたものが、人が何もしなくても数秒で画面に出て、
-// 「取り組んだ Thread」にそのターンの Thread が残る（host が刻む `dev.banto/thread`）。
+// 「取り組んだ Thread」にそのターンの Thread が残る（host が刻む `dev.banto/thread`）。AI のターンから
+// Repositories に送る・取ってくるを頼むので、中継の承認（ブランチごとに初回だけ）を人が答える。
+//
+// 最後の1本は origin との行き来：送れないと「送っていない」と理由を出し（書き込みは止めない）、戻れば送り、
+// origin が先へ進んでいれば開いたときに取り込む。設定のブランチ名で別の一覧・古い形の扱い。
 //
 // 目録から入れた Module は banto 全体の宣言なので、**終わったら外す**（後の spec の Project に入口が増えない）。
 import { test, expect, type Page } from "../test-base.js";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
@@ -22,10 +30,40 @@ const PROJECT_NAME = "E2E Backlog";
 const SAMPLE = new URL("../fixtures/backlog/tasks.json", import.meta.url).pathname;
 const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 
+function git(cwd: string, args: string[], input?: string): string {
+  return execFileSync("git", ["-c", "user.name=e2e", "-c", "user.email=e2e@example.com", "-c", "init.defaultBranch=main", ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    ...(input !== undefined ? { input } : {}),
+  }).trim();
+}
+
+// Project の根：コードのコミットが1つあるリポジトリ。作業ツリーに見本の docs/tasks.json（ブランチへ移す前の形）。
+// origin は根の中（.git の下）の bare リポジトリ——Project のコンテナにも同じパスで見える
 const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-backlog-"));
 const tasksFile = join(projectRoot, "docs/tasks.json");
+const originDir = join(projectRoot, ".git", "e2e-origin.git");
 mkdirSync(join(projectRoot, "docs"));
 copyFileSync(SAMPLE, tasksFile);
+git(projectRoot, ["init", "-q"]);
+git(projectRoot, ["add", "."]);
+git(projectRoot, ["commit", "-q", "-m", "code"]);
+git(projectRoot, ["init", "-q", "--bare", originDir]);
+git(projectRoot, ["remote", "add", "origin", originDir]);
+/** 作業ツリーと index の様子（Backlog が触っていないことを最後に見る） */
+const workingTreeBefore = () => ({ status: git(projectRoot, ["status", "--porcelain"]), head: git(projectRoot, ["symbolic-ref", "HEAD"]) });
+const WORKING_TREE = workingTreeBefore();
+const SAMPLE_TEXT = readFileSync(SAMPLE, "utf8");
+
+/** そのブランチの先頭（無ければ undefined）。`origin` で bare の側 */
+function headOf(branch = "backlog", where: "local" | "origin" = "local"): string | undefined {
+  try {
+    return git(where === "local" ? projectRoot : originDir, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`]);
+  } catch {
+    return undefined;
+  }
+}
 
 interface FileItem {
   id: string;
@@ -37,14 +75,35 @@ interface FileItem {
   threads: Array<{ projectId: string; threadId: string }>;
 }
 
-function fileItems(): FileItem[] {
-  return (JSON.parse(readFileSync(tasksFile, "utf8")) as { items: FileItem[] }).items;
+/** 一覧のブランチに積まれた中身（git から直接） */
+function fileItems(branch = "backlog"): FileItem[] {
+  return (JSON.parse(git(projectRoot, ["show", `refs/heads/${branch}:tasks.json`])) as { items: FileItem[] }).items;
 }
 
 function fileItem(id: string): FileItem {
   const found = fileItems().find((i) => i.id === id);
-  if (!found) throw new Error(`tasks.json に ${id} が無い`);
+  if (!found) throw new Error(`backlog ブランチの tasks.json に ${id} が無い`);
   return found;
+}
+
+/** ブランチのコミットの件名（新しい順） */
+function subjects(branch = "backlog"): string[] {
+  return git(projectRoot, ["log", "--format=%s", `refs/heads/${branch}`]).split("\n");
+}
+
+/** 作業ツリーに触らずに、ブランチに中身を直接積む（`dir` は bare でもよい） */
+function commitDirect(dir: string, branch: string, text: string, message: string): string {
+  const blob = git(dir, ["hash-object", "-w", "--stdin"], text);
+  const tree = git(dir, ["mktree"], `100644 blob ${blob}\ttasks.json\n`);
+  let parent: string | undefined;
+  try {
+    parent = git(dir, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`]);
+  } catch {
+    parent = undefined;
+  }
+  const commit = git(dir, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", message]);
+  git(dir, ["update-ref", `refs/heads/${branch}`, commit]);
+  return commit;
 }
 
 /** 撮った画面の置き場（コミットしない）。BANTO_E2E_SHOTS_DIR があればそこにも写す */
@@ -113,8 +172,23 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   await waitForProjectModule(page, PROJECT_NAME, "backlog");
   const inner = await openBacklog(page);
 
+  // ---- ブランチがまだ無い：作業ツリーの docs/tasks.json を移す道を案内する（自動では移さない）------------
+  await expect(inner.getByTestId("backlog-source")).toHaveText("backlog");
+  await expect(inner.getByTestId("backlog-missing")).toContainText("まだ一覧のブランチ backlog がありません");
+  await expect(inner.getByTestId("backlog-leftover")).toContainText("作業ツリーに docs/tasks.json があります");
+  const command = (await inner.getByTestId("backlog-move-command").textContent()) ?? "";
+  expect(command).toMatch(new RegExp(`^node \\S+/move-to-branch\\.mjs --repo ${projectRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} --file docs/tasks\\.json --branch backlog --push$`));
+  expect(headOf(), "案内しただけでブランチを作った").toBeUndefined();
+  await shot(page, "backlog-wide-leftover");
+  // 案内されたコマンドを、そのまま走らせて移す（画面は数秒ごとに読み直す——押さずに一覧が出る）
+  const moved = execFileSync("sh", ["-c", command], { encoding: "utf8" });
+  expect(moved).toContain("docs/tasks.json の 35 件を backlog ブランチに移しました");
+  expect(moved).toContain("origin へ送りました");
+  expect(git(projectRoot, ["show", "refs/heads/backlog:tasks.json"]) + "\n").toBe(SAMPLE_TEXT);
+  expect(headOf("backlog", "origin")).toBe(headOf());
+  await expect(inner.getByTestId("backlog-missing")).toHaveCount(0, { timeout: 30_000 });
+
   // ---- 見方ごとの件数と、次にやるの中身 ----------------------------------------
-  await expect(inner.getByTestId("backlog-source")).toHaveText("docs/tasks.json");
   for (const [view, n] of [["next", 12], ["all", 28], ["bugs", 5], ["closed", 7]] as const) {
     await expect(inner.getByTestId(`backlog-view-${view}`).locator(".count")).toHaveText(String(n));
   }
@@ -260,6 +334,27 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   await inner.getByTestId("backlog-menu-down").click();
   await expect.poll(titles, { timeout: 30_000 }).toEqual([before[0], before[2], before[1], ...before.slice(3)]);
 
+  // ---- ブランチ・origin・作業ツリー ------------------------------------------------------
+  // 1件の変更ごとに1コミット（操作の要約）。移したコミットが根で、親を持たない
+  expect(subjects()).toEqual([
+    expect.stringMatching(/^backlog: moveItem \S+（\S+ の(前|後ろ)）$/),
+    expect.stringMatching(/^backlog: moveItem \S+（\S+ の(前|後ろ)）$/),
+    "backlog: updateItem module-kit-extract（status → dropped・resolution）",
+    "backlog: updateItem backlog-module（dependsOn）",
+    "backlog: splitStory backlog-module（3 件）",
+    "backlog: createItem dedupe-memories",
+    "backlog: createItem measure-recall-accuracy",
+    "backlog: docs/tasks.json から移す（35 件）",
+  ]);
+  expect(git(projectRoot, ["rev-list", "--max-parents=0", "refs/heads/backlog"])).toBe(git(projectRoot, ["rev-list", "--reverse", "refs/heads/backlog"]).split("\n")[0]);
+  expect(git(projectRoot, ["log", "-1", "--format=%an <%ae>", "refs/heads/backlog"])).toBe("banto <banto@localhost>");
+  // 書くたびに origin へ送っている（Repositories の一覧に無いリポジトリなので、リポジトリの git の設定で）
+  await expect.poll(() => headOf("backlog", "origin"), { timeout: 30_000 }).toBe(headOf());
+  await expect(inner.getByTestId("backlog-sync")).toHaveCount(0);
+  // 作業ツリー・index・いまのブランチは触っていない（docs/tasks.json は移す前のまま残る）
+  expect(workingTreeBefore()).toEqual(WORKING_TREE);
+  expect(readFileSync(tasksFile, "utf8")).toBe(SAMPLE_TEXT);
+
   expect(pageErrors).toEqual([]);
 });
 
@@ -279,6 +374,16 @@ test("AI が tool で進めたものが、人が何もしなくても画面に�
   );
   await composer.press("Enter");
 
+  // AI のターンから Repositories に頼む（書く前に取ってくる・書いたら送る）——中継の承認を、ブランチごとに初回だけ聞く。
+  // 聞かれた中身を見てから答える（規則14）
+  for (const tool of ["fetch_branch", "push_branch"]) {
+    const card = page.locator('[data-role="judgment-card"]').filter({ hasText: `backlog が repositories の ${tool}` });
+    await expect(card).toBeVisible({ timeout: 120_000 });
+    await expect(card).toContainText("branch: backlog");
+    await card.getByRole("button", { name: "許可する" }).click();
+    await card.getByRole("button", { name: "この内容で送る" }).click();
+  }
+
   // 画面は数秒ごとに読み直す——押さずに出る
   await expect(doing.locator('[data-item-id="elicitation-answers"] [data-testid="backlog-row-title"]')).toHaveText(
     "Module からの問いに、受信箱から答えられるようにする",
@@ -295,6 +400,10 @@ test("AI が tool で進めたものが、人が何もしなくても画面に�
     status: "in-progress",
     threads: [{ projectId: id, threadId: base.id }],
   });
+  expect(subjects()[0]).toBe("backlog: updateItem elicitation-answers（status → in-progress）");
+  // AI のターンから書いたものも送られている（Repositories が引き受けないので、リポジトリの git の設定で）
+  await expect.poll(() => headOf("backlog", "origin"), { timeout: 30_000 }).toBe(headOf());
+  await expect(page.getByText("進めているにしました。", { exact: true })).toBeVisible();
   await inner.locator('[data-item-id="elicitation-answers"] [data-testid="backlog-row-open"]').click();
   await expect(inner.getByTestId("backlog-threads")).toHaveText(`Thread ${base.id}`);
 });
@@ -319,9 +428,49 @@ test("携帯の幅でも崩れない——一覧は横にはみ出さず、詳�
   await expect(inner.getByTestId("backlog-list-pane")).toBeVisible();
 });
 
-test("設定で場所を変えると、無いファイルは「足す」へ誘い、古い形は読まずに変換を案内する", async ({ page }) => {
+test("送れないときは「送っていない」と理由を出し、戻れば送る。origin が先なら開いたときに取り込む。設定のブランチ名で別の一覧", async ({ page }) => {
   const id = await gotoProject(page);
 
+  // ---- 送れない：書き込みは止めず、上に「送っていない」と理由 ----------------------------------
+  git(projectRoot, ["remote", "set-url", "origin", join(projectRoot, ".git", "no-such-origin.git")]);
+  let inner = await openBacklog(page);
+  await inner.getByTestId("backlog-view-all").click();
+  const countBefore = fileItems().length;
+  await inner.getByTestId("backlog-add-open").click();
+  await inner.getByTestId("backlog-composer-title").fill("Offline note");
+  await inner.getByTestId("backlog-composer-title").press("Enter");
+  await expect(inner.getByTestId("backlog-composer-note")).toHaveText(/^1 件足しました。/, { timeout: 30_000 });
+  await inner.getByTestId("backlog-composer-title").press("Escape");
+  expect(fileItems().map((i) => i.id)).toContain("offline-note");
+  expect(fileItems().length).toBe(countBefore + 1);
+  await expect(inner.getByTestId("backlog-sync-ahead")).toHaveText("origin に送っていない変更が 1 件あります。", { timeout: 30_000 });
+  await expect(inner.getByTestId("backlog-sync-push-error")).toContainText("送れなかった理由：");
+  await expect(inner.getByTestId("backlog-sync-push-error")).toContainText("no-such-origin.git");
+  await shot(page, "backlog-wide-unpushed");
+  expect(headOf("backlog", "origin")).not.toBe(headOf());
+
+  // ---- 戻れば、次の書き込みでまとめて送られ、知らせは消える ------------------------------------
+  git(projectRoot, ["remote", "set-url", "origin", originDir]);
+  await inner.locator('[data-item-id="offline-note"] [data-testid="backlog-row-open"]').click();
+  await inner.getByTestId("backlog-detail").getByTestId("backlog-close-drop").click();
+  await inner.getByTestId("backlog-detail").getByTestId("backlog-drop-reason").fill("試しに足しただけ");
+  await inner.getByTestId("backlog-detail").getByTestId("backlog-drop-submit").click();
+  await expect(inner.getByTestId("backlog-detail").getByTestId("backlog-closed-note")).toHaveText("やめました：試しに足しただけ", { timeout: 30_000 });
+  await expect(inner.getByTestId("backlog-sync")).toHaveCount(0, { timeout: 30_000 });
+  expect(headOf("backlog", "origin")).toBe(headOf());
+
+  // ---- origin が先へ進んだ（別の手元から送られた）：開いたときに取り込む --------------------------
+  const remoteDoc = JSON.parse(git(originDir, ["show", "refs/heads/backlog:tasks.json"])) as { items: Array<Record<string, unknown>> };
+  remoteDoc.items.push({ ...remoteDoc.items.find((i) => i.id === "offline-note")!, id: "from-elsewhere", title: "別の手元から足したもの", status: "ready", resolution: null, closedAt: null });
+  commitDirect(originDir, "backlog", `${JSON.stringify(remoteDoc, null, 2)}\n`, "backlog: createItem from-elsewhere");
+  await page.goto(`/p/${id}`);
+  inner = await openBacklog(page);
+  await inner.getByTestId("backlog-view-all").click();
+  await expect(inner.locator('[data-item-id="from-elsewhere"] [data-testid="backlog-row-title"]')).toHaveText("別の手元から足したもの", { timeout: 30_000 });
+  expect(headOf()).toBe(headOf("backlog", "origin"));
+  await expect(inner.getByTestId("backlog-sync")).toHaveCount(0);
+
+  // ---- 設定：ブランチ名を変えると別の一覧。無ければ「足す」へ誘い、最初の項目で orphan を作る ----------
   const openConfig = async () => {
     await openProjectSettings(page);
     await page.getByRole("button", { name: "Backlog", exact: true }).click();
@@ -329,39 +478,44 @@ test("設定で場所を変えると、無いファイルは「足す」へ誘�
     await expect(canvas).toBeVisible({ timeout: 30_000 });
     return canvas.locator("iframe").contentFrame().frameLocator("iframe");
   };
-  const setPath = async (path: string, expectFile: RegExp) => {
+  const setBranch = async (branch: string, expectState: RegExp) => {
     const config = await openConfig();
-    await expect(config.getByTestId("backlog-config-path")).not.toHaveValue("", { timeout: 30_000 });
-    await config.getByTestId("backlog-config-path").fill(path);
+    await expect(config.getByTestId("backlog-config-branch")).not.toHaveValue("", { timeout: 30_000 });
+    await config.getByTestId("backlog-config-branch").fill(branch);
     await config.getByTestId("backlog-config-save").click();
-    await expect(config.getByTestId("backlog-config-note")).toHaveText(`保存しました（${path}）`, { timeout: 30_000 });
-    await expect(config.getByTestId("backlog-config-file")).toHaveText(expectFile);
+    await expect(config.getByTestId("backlog-config-note")).toHaveText(`保存しました（${branch}）`, { timeout: 30_000 });
+    await expect(config.getByTestId("backlog-config-branch-state")).toHaveText(expectState);
   };
 
-  // 無い場所
-  await setPath("planning/backlog.json", /^planning\/backlog\.json はまだありません/);
+  await setBranch("planning", /^planning ブランチはまだありません/);
   await page.goto(`/p/${id}`);
-  let inner = await openBacklog(page);
-  await expect(inner.getByTestId("backlog-missing")).toContainText("まだ planning/backlog.json がありません");
+  inner = await openBacklog(page);
+  await expect(inner.getByTestId("backlog-source")).toHaveText("planning");
+  await expect(inner.getByTestId("backlog-missing")).toContainText("まだ一覧のブランチ planning がありません");
+  await expect(inner.getByTestId("backlog-leftover")).toContainText("--branch planning");
   await inner.getByTestId("backlog-invite-add").click();
   await inner.getByTestId("backlog-composer-title").fill("First item");
   await inner.getByTestId("backlog-composer-title").press("Enter");
   await expect(inner.getByTestId("backlog-missing")).toHaveCount(0, { timeout: 30_000 });
-  expect(JSON.parse(readFileSync(join(projectRoot, "planning/backlog.json"), "utf8")).items[0].id).toBe("first-item");
+  expect(fileItems("planning").map((i) => i.id)).toEqual(["first-item"]);
+  expect(git(projectRoot, ["rev-list", "--parents", "refs/heads/planning"]).split(" ")).toHaveLength(1);
+  await expect.poll(() => headOf("planning", "origin"), { timeout: 30_000 }).toBe(headOf("planning"));
 
-  // 古い形（今の docs/tasks.json の形）
-  const legacy = join(projectRoot, "legacy.json");
+  // 古い形の中身のブランチ：読まず・書かず、書き出して変換するコマンドを案内する
   const legacyText = JSON.stringify({ tasks: [{ id: "a", title: "A", status: "pending" }] });
-  writeFileSync(legacy, legacyText);
-  await setPath("legacy.json", /^legacy\.json は読めません：古い tasks\.json の形です/);
+  const legacyHead = commitDirect(projectRoot, "legacy", legacyText, "old");
+  await setBranch("legacy", /^legacy ブランチの tasks\.json は読めません：古い tasks\.json の形です/);
   await page.goto(`/p/${id}`);
   inner = await openBacklog(page);
   await expect(inner.getByTestId("backlog-refused")).toContainText("古い tasks.json の形です");
-  await expect(inner.getByTestId("backlog-convert-command")).toHaveText(/^node \S+\/convert-tasks-json\.mjs legacy\.json <書き出す先>$/);
+  await expect(inner.getByTestId("backlog-convert-command")).toHaveText(
+    /^git show legacy:tasks\.json > old-tasks\.json && node \S+\/convert-tasks-json\.mjs old-tasks\.json <書き出す先>$/,
+  );
   await expect(inner.getByTestId("backlog-add-open")).toHaveCount(0);
   await shot(page, "backlog-wide-legacy");
-  expect(readFileSync(legacy, "utf8")).toBe(legacyText);
+  expect(headOf("legacy")).toBe(legacyHead);
 
   // 元に戻す（この spec の後に Project を開いても、見本が出るように）
-  await setPath("docs/tasks.json", /^docs\/tasks\.json に \d+ 件あります。$/);
+  await setBranch("backlog", /^backlog ブランチに \d+ 件あります。$/);
+  expect(workingTreeBefore()).toEqual(WORKING_TREE);
 });

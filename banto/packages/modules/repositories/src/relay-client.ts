@@ -1,4 +1,5 @@
-// host の中継（docs/specs/v4-architecture.md §2.5）のうち、この Module が使う口——**Project の一覧・Vault・受信箱**。
+// host の中継（docs/specs/v4-architecture.md §2.5）のうち、この Module が使う口——**Project の一覧・呼び出し元の Project・
+// Vault・受信箱**。
 // publish-directory・vault-directory の `relay-client.ts` と同じ形（共有にはまだしない、`module-kit-extract`）。
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -15,6 +16,11 @@ import type { ProjectSummary } from "./repositories.js";
  */
 export interface ProjectsSource {
   listProjects(callId?: string): Promise<ProjectSummary[]>;
+  /**
+   * いま処理している呼び出しが、どの Project のためか（`relayCallerProject`、追加・2026-10-04）。**host の台帳が決める**
+   * ——呼び出し元（Backlog）の名乗りではない。決められなければ理由つきで投げる
+   */
+  callerProject?(callId?: string): Promise<ProjectSummary>;
 }
 
 /** 他の Module の道具を中継で1本呼ぶ（Vault）。返るのは宛先の返事の文字列。断られたら理由つきで投げる */
@@ -108,6 +114,11 @@ export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
 
   async listProjects(callId?: string): Promise<ProjectSummary[]> {
     return parseProjectSummaries(await this.relay("relayListProjects", {}, callId, "中継が Project の一覧を返しませんでした"));
+  }
+
+  async callerProject(callId?: string): Promise<ProjectSummary> {
+    const text = await this.relay("relayCallerProject", {}, callId, "中継が呼び出し元の Project を返しませんでした");
+    return parseProjectSummaries(`[${text}]`)[0]!;
   }
 
   callTool(targetModule: string, name: string, args: Record<string, unknown>, callId?: string): Promise<string> {

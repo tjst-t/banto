@@ -952,6 +952,57 @@ test("Project の一覧を引けるのは、banto 本体で動く同梱の banto
   }
 });
 
+test("呼び出し元の Project を引けるのは、banto 本体で動く同梱の banto 全体の Module だけ——AI のターンでも、その1件だけ", async () => {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const projects = [
+    { id: "pA", name: "家計簿", root: "/home/u/banto/kakeibo", status: "active" as const },
+    { id: "pB", name: "日記", root: "/home/u/banto/diary", status: "active" as const },
+  ];
+  const { url, close } = await startTestServer(registry, { moduleCalls, listProjects: () => projects });
+  const raw = { satisfies: ["repositories"], dependsOn: [], isolation: "subprocess", scope: "instance" };
+  const tokens = {
+    bundled: registry.issueToken({ moduleName: "repositories", meta: bundledMeta(raw, "repositories") }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil") }),
+    inContainer: registry.issueToken({ moduleName: "x", meta: bundledMeta(raw, "x"), inContainer: true, projectId: "pA" }),
+  };
+  const read = async (token: string, callId?: string) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(
+        textOf(await c.callTool({ name: "relayCallerProject", arguments: {}, ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}) })),
+      ) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  try {
+    // 何も処理していない——決められない
+    await assert.rejects(() => read(tokens.bundled), /決められません/);
+    // AI のターンの中（pB のため）——その1件だけ返す
+    const turn = moduleCalls.beginCall("repositories", "t1", "turn", "pB");
+    assert.deepEqual(await read(tokens.bundled, turn.id), projects[1]);
+    turn.end();
+    // Project の決まらない人の画面（banto 全体の設定）——決められない
+    const canvas = moduleCalls.beginCall("repositories", undefined, "canvas", undefined);
+    await assert.rejects(() => read(tokens.bundled, canvas.id), /決められません/);
+    canvas.end();
+    // 台帳にあっても一覧に無い Project は、見つからないと言う
+    const ghost = moduleCalls.beginCall("repositories", "t1", "turn", "gone");
+    await assert.rejects(() => read(tokens.bundled, ghost.id), /見つかりません/);
+    ghost.end();
+    // 第三者のコード・コンテナの中は引けない
+    const evil = moduleCalls.beginCall("evil", "t1", "turn", "pA");
+    await assert.rejects(() => read(tokens.thirdParty, evil.id), /banto 自身のコード/);
+    evil.end();
+    const inside = moduleCalls.beginCall("x", "t1", "turn", "pA");
+    await assert.rejects(() => read(tokens.inContainer, inside.id), /banto 本体で動く/);
+    inside.end();
+  } finally {
+    close();
+  }
+});
+
 test("受信箱に知らせを出せるのは、banto 本体で動く同梱の banto 全体の Module だけ——出所は問わず、空・長すぎは断る", async () => {
   const registry = new RelayRegistry();
   const raised: Array<{ module: string; key: string; title: string; detail: string }> = [];

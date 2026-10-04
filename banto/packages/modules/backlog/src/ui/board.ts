@@ -47,8 +47,15 @@ import { toast } from "./toast.js";
 export interface BoardData {
   state: "missing" | "refused" | "ok";
   root: { path: string; name: string };
-  path: string;
+  /** 一覧を置くブランチ */
+  branch: string;
   version: string;
+  /** origin との様子（store.ts の SyncState） */
+  sync?: { origin: boolean; ahead: number; behind: number; diverged: boolean; pushError?: string; fetchError?: string };
+  /** ブランチがまだ無く、作業ツリーに一覧が残っているとき——移すコマンド */
+  leftover?: { path: string; command: string };
+  /** Project の根が git のリポジトリでない（書けない） */
+  notRepository?: string;
   doc?: BacklogDocument;
   problems?: string[];
   reason?: string;
@@ -262,7 +269,8 @@ export class BacklogBoard {
 
   private async load(): Promise<void> {
     try {
-      this.apply(boardOf(await callTool("getBoard")));
+      // 開いたときだけ origin から取ってくる（3秒ごとの読み直しでは取ってこない）
+      this.apply(boardOf(await callTool("getBoard", { fetch: true })));
       this.loadError = null;
     } catch (err) {
       this.loadError = errorMessage(err);
@@ -500,8 +508,8 @@ export class BacklogBoard {
           data
             ? h("span", {
                 class: "source truncate",
-                text: data.path,
-                title: `${data.root.path}/${data.path}`,
+                text: data.branch,
+                title: `${data.root.path} の ${data.branch} ブランチ（中は tasks.json）`,
                 data: { testid: "backlog-source" },
               })
             : null,
@@ -591,15 +599,35 @@ export class BacklogBoard {
         }),
       ];
     }
-    if (data.state === "refused") return [this.renderRefused(data)];
+    // 書けない（Project の根が git のリポジトリでない）——足す誘いは出さない
+    if (data.notRepository) {
+      return [h("div", { class: "notice warn", attrs: { role: "status" }, data: { testid: "backlog-not-repository" } }, icon("TriangleAlert"), h("p", { text: data.notRepository }))];
+    }
+    const sync = this.renderSync(data);
+    if (data.state === "refused") return [...(sync ? [sync] : []), this.renderRefused(data)];
     const doc = data.doc ?? { format: "banto-backlog/1" as const, milestones: [], items: [] };
     const out: Child[] = [];
+    if (sync) out.push(sync);
     if (data.state === "missing") {
       out.push(
         h(
           "div",
           { class: "notice", data: { testid: "backlog-missing" } },
-          h("p", {}, "まだ ", h("code", { text: data.path }), " がありません。最初の項目を足すと、ここに作ります。"),
+          h(
+            "div",
+            {},
+            h("p", {}, "まだ一覧のブランチ ", h("code", { text: data.branch }), " がありません。最初の項目を足すと、コードの履歴とつながらないブランチとして作ります。"),
+            data.leftover
+              ? h(
+                  "p",
+                  { data: { testid: "backlog-leftover" } },
+                  "作業ツリーに ",
+                  h("code", { text: data.leftover.path }),
+                  " があります。ブランチへ移すには（自動では移しません）：",
+                  h("code", { class: "cmd", text: data.leftover.command, data: { testid: "backlog-move-command" } }),
+                )
+              : null,
+          ),
         ),
       );
     }
@@ -612,7 +640,7 @@ export class BacklogBoard {
           h(
             "div",
             {},
-            h("p", { text: "ファイルに直すところがあります（手で直したときに入ったもの）。この問題を増やす変更は断ります。" }),
+            h("p", { text: "一覧に直すところがあります（手で直したときに入ったもの）。この問題を増やす変更は断ります。" }),
             h("ul", {}, ...(data.problems ?? []).map((p) => h("li", { text: p }))),
           ),
         ),
@@ -641,23 +669,44 @@ export class BacklogBoard {
     return out;
   }
 
+  /** origin との様子で、知らせることがあれば（食い違い・送っていない・取ってこれなかった）。無ければ null */
+  private renderSync(data: BoardData): HTMLElement | null {
+    const sync = data.sync;
+    if (!sync?.origin) return null;
+    const lines: Child[] = [];
+    if (sync.diverged) {
+      lines.push(
+        h("p", { data: { testid: "backlog-sync-diverged" } }, `手元と origin の ${data.branch} が分かれています（手元だけに ${sync.ahead} 件・origin だけに ${sync.behind} 件）。揃えるまで書き込みません。`),
+      );
+    } else if (sync.ahead > 0) {
+      lines.push(h("p", { data: { testid: "backlog-sync-ahead" } }, `origin に送っていない変更が ${sync.ahead} 件あります。`));
+      if (sync.pushError) lines.push(h("p", { class: "quiet-text", text: `送れなかった理由：${sync.pushError}`, data: { testid: "backlog-sync-push-error" } }));
+    }
+    // 取ってこれなかった理由は、送れなかった理由と同じなら重ねて出さない（同じ origin に届かないだけ）
+    if (sync.fetchError && sync.fetchError !== sync.pushError) {
+      lines.push(h("p", { class: "quiet-text", text: `origin から取ってこれませんでした：${sync.fetchError}`, data: { testid: "backlog-sync-fetch-error" } }));
+    }
+    if (lines.length === 0) return null;
+    return h("div", { class: "notice warn", attrs: { role: "status" }, data: { testid: "backlog-sync" } }, icon("TriangleAlert"), h("div", {}, ...lines));
+  }
+
   private renderRefused(data: BoardData): HTMLElement {
     return h(
       "div",
       { class: "refused", data: { testid: "backlog-refused" } },
-      h("h3", {}, h("code", { text: data.path }), " を読めません"),
+      h("h3", {}, "ブランチ ", h("code", { text: data.branch }), " の tasks.json を読めません"),
       h("p", { text: data.reason ?? "" }),
       data.legacy
         ? h(
             "p",
             {},
-            "Backlog はこのファイルを読まず、書き込みもしません（壊さないため）。変換のスクリプトで ",
+            "Backlog はこの中身を読まず、書き込みもしません（壊さないため）。書き出して変換のスクリプトで ",
             h("code", { text: "banto-backlog/1" }),
-            " に読み替え、中身を確かめてから置き換えます：",
+            " に読み替え、中身を確かめてからブランチへ移し直します：",
           )
-        : h("p", { text: "ファイルを直すと、ここに一覧が出ます。" }),
+        : h("p", { text: "ブランチの中身を直すと、ここに一覧が出ます。" }),
       data.convertCommand ? h("p", {}, h("code", { class: "cmd", text: data.convertCommand, data: { testid: "backlog-convert-command" } })) : null,
-      h("p", { class: "quiet-text", text: "別のファイルを使うなら、設定の Backlog で場所を変えられます。" }),
+      h("p", { class: "quiet-text", text: "別のブランチを使うなら、設定の Backlog でブランチ名を変えられます。" }),
     );
   }
 

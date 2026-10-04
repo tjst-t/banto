@@ -3,6 +3,8 @@
 // - **AI の6本**（agent）：listItems・getItem・createItem・updateItem・splitStory・moveItem。**消す tool は作らない**
 //   （要らなくなったものは dropped で閉じれば記録が残る）。説明文は短く——全部のターンの文脈に載る
 // - **人の画面の口**（admin）：getBoard と board*（書いた後の一覧ごと返す）・設定。AI には見せない
+// - 書く操作は1件ごとに一覧のブランチへ1コミット（メッセージは操作の要約）。送れなかったことは返り値で言う——書き込みは
+//   済んでいる。まだ送っていないこと（と理由）は、読む tool も毎回添える
 //
 // 返り値は AI が読みやすい短い文（content）と、同じものの構造（structuredContent）。
 // 失敗は `isError` と理由の文で返す——AI にも画面にも、なぜ断ったかが届く（規則2）。
@@ -10,7 +12,7 @@
 import { homedir } from "node:os";
 import { basename, sep } from "node:path";
 import { realpathSync } from "node:fs";
-import { VISIBILITY_META_KEY, threadOf } from "@banto/module-contract";
+import { VISIBILITY_META_KEY, callIdOf, threadOf } from "@banto/module-contract";
 import {
   BacklogError,
   KINDS,
@@ -34,7 +36,7 @@ import {
   type NewItemInput,
   type SplitTaskInput,
 } from "./model.js";
-import { conversionCommand, conversionHint, type BacklogStore, type Snapshot } from "./store.js";
+import { conversionCommand, conversionHint, type BacklogStore, type MutateResult, type Snapshot, type SyncState } from "./store.js";
 import { readSettings, writeSettings } from "./settings.js";
 
 export interface ToolResult {
@@ -114,7 +116,7 @@ const MOVE_SCHEMA = {
 };
 
 export const TOOLS = [
-  agentTool("listItems", "仕事の一覧（ファイルの順＝優先順）。既定は閉じていないもの。actionable: true で今すぐ着手できるもの（ready で依存が全部 done）だけ", {
+  agentTool("listItems", "仕事の一覧（並び順＝優先順）。既定は閉じていないもの。actionable: true で今すぐ着手できるもの（ready で依存が全部 done）だけ", {
     properties: {
       kind: KIND,
       status: { type: "array", items: STATUS, description: "指定すると閉じたものも絞れる" },
@@ -130,17 +132,17 @@ export const TOOLS = [
   agentTool("splitStory", "ストーリーの下に複数のタスクを1回で作る。waitsFor で同じ回のタスク間の依存", SPLIT_SCHEMA),
   agentTool("moveItem", "並び順（＝優先順）を、指定した項目の前（before）か後ろ（after）へ動かす", MOVE_SCHEMA),
   // ---- 人の画面の口（admin）——AI には見せない ----
-  adminTool("getBoard", "画面が描く一覧の全部。since が今の版と同じなら unchanged だけ返す", {
-    properties: { since: { type: "string" } },
+  adminTool("getBoard", "画面が描く一覧の全部。since が今の版と同じなら unchanged だけ返す。fetch で先に origin から取ってくる（画面を開いたとき）", {
+    properties: { since: { type: "string" }, fetch: { type: "boolean" } },
   }),
   adminTool("boardCreateItem", "画面から1件足す（結果は一覧ごと）", CREATE_SCHEMA),
   adminTool("boardUpdateItem", "画面から欄を変える（結果は一覧ごと）", UPDATE_SCHEMA),
   adminTool("boardSplitStory", "画面からタスクに分ける（結果は一覧ごと）", SPLIT_SCHEMA),
   adminTool("boardMoveItem", "画面から並べ替える（結果は一覧ごと）", MOVE_SCHEMA),
-  adminTool("getSettings", "この Module のいまの設定（tasks.json の場所）", { properties: {} }),
-  adminTool("setSettings", "tasks.json の場所を変える（Project の根からの相対）", {
-    properties: { path: { type: "string" } },
-    required: ["path"],
+  adminTool("getSettings", "この Module のいまの設定（一覧を置くブランチ）", { properties: {} }),
+  adminTool("setSettings", "一覧を置くブランチを変える（中は tasks.json 1つ）", {
+    properties: { branch: { type: "string" } },
+    required: ["branch"],
   }),
 ];
 
@@ -292,17 +294,57 @@ function ok(text: string, structured: Record<string, unknown>): ToolResult {
   return { content: [{ type: "text", text }], structuredContent: structured };
 }
 
+/** 送れなかったときだけ、構造にも理由を入れる */
+function pushField(written: MutateResult<unknown>): Record<string, unknown> {
+  return written.push && !written.push.ok ? { pushError: written.push.message } : {};
+}
+
 function fail(message: string): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-/** 読めないファイルのときに言うこと（古い形なら変換の手段も） */
+/** 読めない中身のときに言うこと（古い形なら変換の手段も） */
 function refusal(snapshot: Extract<Snapshot, { state: "refused" }>): string {
-  return `${snapshot.path} を読めません：${snapshot.reason}。` + (snapshot.legacy ? conversionHint(snapshot.path) : "");
+  return `ブランチ ${snapshot.branch} の tasks.json を読めません：${snapshot.reason}。` + (snapshot.legacy ? conversionHint(snapshot.branch) : "");
+}
+
+/** ブランチがまだ無いときに言うこと（作業ツリーに一覧が残っていれば、移す道も） */
+function missingNote(snapshot: Extract<Snapshot, { state: "missing" }>): string {
+  if (snapshot.notRepository) return snapshot.notRepository;
+  return (
+    `まだ一覧のブランチ ${snapshot.branch} がありません` +
+    (snapshot.leftover
+      ? `。作業ツリーに ${snapshot.leftover.path} があります——ブランチへ移すには：${snapshot.leftover.command}（自動では移しません）`
+      : "")
+  );
 }
 
 function problemsNote(problems: readonly string[]): string {
-  return problems.length > 0 ? `\n（ファイルに問題があります：${problems.join("／")}）` : "";
+  return problems.length > 0 ? `\n（一覧に問題があります：${problems.join("／")}）` : "";
+}
+
+/** origin との様子で、知らせることがあれば1行（送っていない・食い違い・取ってこれなかった） */
+export function syncNote(sync: SyncState, branch: string): string {
+  if (!sync.origin) return "";
+  if (sync.diverged) {
+    return `\n（手元と origin の ${branch} が分かれています——手元だけに ${sync.ahead} 件・origin だけに ${sync.behind} 件。揃えるまで書けません）`;
+  }
+  const parts: string[] = [];
+  if (sync.ahead > 0) parts.push(`origin に送っていない変更が ${sync.ahead} 件あります${sync.pushError ? `（送れなかった理由：${sync.pushError}）` : ""}`);
+  if (sync.fetchError) parts.push(`origin から取ってこれませんでした（${sync.fetchError}）`);
+  return parts.length > 0 ? `\n（${parts.join("。")}）` : "";
+}
+
+/** 書いたあとに送れなかったときの1行（書き込みは済んでいる） */
+function pushNote(written: MutateResult<unknown>): string {
+  return written.push && !written.push.ok ? `\n（書き込みは済みましたが、origin に送れませんでした：${written.push.message}）` : "";
+}
+
+/** updateItem のコミットメッセージに添える、変えた欄（状態は行き先も） */
+function describePatch(patch: ItemPatch): string {
+  return Object.keys(patch)
+    .map((k) => (k === "status" ? `status → ${patch.status}` : k))
+    .join("・");
 }
 
 // ---- 処理 ----------------------------------------------------------------------
@@ -312,6 +354,8 @@ export interface ToolContext {
   root: string;
   now?: () => string;
 }
+
+const where = (w: "before" | "after") => (w === "before" ? "前" : "後ろ");
 
 /** 人に見せる根の場所（ホームの下なら ~ で縮める） */
 function displayRoot(root: string): { path: string; name: string } {
@@ -332,14 +376,20 @@ async function board(ctx: ToolContext, since?: string): Promise<ToolResult> {
     return ok("変わっていません", { unchanged: true, version: snapshot.version });
   }
   const root = displayRoot(ctx.root);
-  const base = { root, path: snapshot.path, version: snapshot.version, state: snapshot.state };
-  if (snapshot.state === "missing") return ok(`まだ ${snapshot.path} がありません`, base);
+  const base = { root, branch: snapshot.branch, version: snapshot.version, state: snapshot.state, sync: snapshot.sync };
+  if (snapshot.state === "missing") {
+    return ok(missingNote(snapshot), {
+      ...base,
+      ...(snapshot.leftover ? { leftover: snapshot.leftover } : {}),
+      ...(snapshot.notRepository ? { notRepository: snapshot.notRepository } : {}),
+    });
+  }
   if (snapshot.state === "refused") {
     return ok(refusal(snapshot), {
       ...base,
       reason: snapshot.reason,
       legacy: snapshot.legacy,
-      ...(snapshot.legacy ? { convertCommand: conversionCommand(snapshot.path) } : {}),
+      ...(snapshot.legacy ? { convertCommand: conversionCommand(snapshot.branch) } : {}),
     });
   }
   return ok(`${snapshot.doc.items.length} 件`, { ...base, doc: snapshot.doc, problems: snapshot.problems });
@@ -355,6 +405,8 @@ export async function callTool(
   const now = ctx.now ?? (() => new Date().toISOString());
   // **AI のターンからの呼び出しにだけ** host が刻む（人の画面・中継では来ない——そのときは足さない）
   const thread = threadOf(meta);
+  // **中継に添える呼び出しの印**（Repositories に送ってもらうとき、どの Project・どのターンの仕事かを host が引く）
+  const callId = callIdOf(meta);
   try {
     switch (name) {
       case "listItems":
@@ -363,56 +415,61 @@ export async function callTool(
         return await getItem(ctx, requiredStr(args, "id"));
       case "createItem": {
         const input = newItemFrom(args);
-        const { result, doc, path, created } = await ctx.store.mutate((d) => createItem(d, input, now(), thread));
+        const written = await ctx.store.mutate((d) => createItem(d, input, now(), thread), (r) => `backlog: createItem ${r.id}`, callId);
+        const { result, doc, branch, created } = written;
         return ok(
-          `${created ? `${path} を作り、` : ""}足しました：${line(result, doc.items)}`,
-          { item: result, path },
+          `${created ? `一覧のブランチ ${branch} を作り、` : ""}足しました：${line(result, doc.items)}${pushNote(written)}`,
+          { item: result, branch, ...pushField(written) },
         );
       }
       case "updateItem": {
         const id = requiredStr(args, "id");
         const patch = patchFrom(args);
-        const { result, doc } = await ctx.store.mutate((d) => updateItem(d, id, patch, now(), thread));
-        return ok(`変えました：${line(result, doc.items)}`, { item: result });
+        const written = await ctx.store.mutate((d) => updateItem(d, id, patch, now(), thread), () => `backlog: updateItem ${id}（${describePatch(patch)}）`, callId);
+        return ok(`変えました：${line(written.result, written.doc.items)}${pushNote(written)}`, { item: written.result, ...pushField(written) });
       }
       case "splitStory": {
         const { storyId, tasks } = splitFrom(args);
-        const { result, doc } = await ctx.store.mutate((d) => splitStory(d, storyId, tasks, now()));
+        const written = await ctx.store.mutate((d) => splitStory(d, storyId, tasks, now()), (r) => `backlog: splitStory ${storyId}（${r.length} 件）`, callId);
+        const { result, doc } = written;
         return ok(
-          `「${storyId}」を ${result.length} 件のタスクに分けました：\n${result.map((i) => line(i, doc.items)).join("\n")}`,
-          { items: result },
+          `「${storyId}」を ${result.length} 件のタスクに分けました：\n${result.map((i) => line(i, doc.items)).join("\n")}${pushNote(written)}`,
+          { items: result, ...pushField(written) },
         );
       }
       case "moveItem": {
-        const { id, target, where } = moveFrom(args);
-        const { doc } = await ctx.store.mutate((d) => moveItem(d, id, target, where));
-        const index = doc.items.findIndex((i) => i.id === id);
-        return ok(`「${id}」を「${target}」の${where === "before" ? "前" : "後ろ"}へ動かしました（上から ${index + 1} 番目）`, {
+        const { id, target, where: side } = moveFrom(args);
+        const written = await ctx.store.mutate((d) => moveItem(d, id, target, side), () => `backlog: moveItem ${id}（${target} の${where(side)}）`, callId);
+        const index = written.doc.items.findIndex((i) => i.id === id);
+        return ok(`「${id}」を「${target}」の${where(side)}へ動かしました（上から ${index + 1} 番目）${pushNote(written)}`, {
           id,
           index,
+          ...pushField(written),
         });
       }
       case "getBoard":
+        // 画面を開いたときだけ取ってくる（3秒ごとの読み直しでは取ってこない）
+        if (args.fetch === true) await ctx.store.refresh(callId);
         return await board(ctx, str(args, "since"));
       case "boardCreateItem": {
         const input = newItemFrom(args);
-        await ctx.store.mutate((d) => createItem(d, input, now()));
+        await ctx.store.mutate((d) => createItem(d, input, now()), (r) => `backlog: createItem ${r.id}`, callId);
         return await board(ctx);
       }
       case "boardUpdateItem": {
         const id = requiredStr(args, "id");
         const patch = patchFrom(args);
-        await ctx.store.mutate((d) => updateItem(d, id, patch, now()));
+        await ctx.store.mutate((d) => updateItem(d, id, patch, now()), () => `backlog: updateItem ${id}（${describePatch(patch)}）`, callId);
         return await board(ctx);
       }
       case "boardSplitStory": {
         const { storyId, tasks } = splitFrom(args);
-        await ctx.store.mutate((d) => splitStory(d, storyId, tasks, now()));
+        await ctx.store.mutate((d) => splitStory(d, storyId, tasks, now()), (r) => `backlog: splitStory ${storyId}（${r.length} 件）`, callId);
         return await board(ctx);
       }
       case "boardMoveItem": {
-        const { id, target, where } = moveFrom(args);
-        await ctx.store.mutate((d) => moveItem(d, id, target, where));
+        const { id, target, where: side } = moveFrom(args);
+        await ctx.store.mutate((d) => moveItem(d, id, target, side), () => `backlog: moveItem ${id}（${target} の${where(side)}）`, callId);
         return await board(ctx);
       }
       case "getSettings": {
@@ -420,7 +477,7 @@ export async function callTool(
         return ok(JSON.stringify(s), { ...s });
       }
       case "setSettings": {
-        const saved = writeSettings({ path: requiredStr(args, "path") });
+        const saved = writeSettings({ branch: requiredStr(args, "branch") });
         return ok(JSON.stringify(saved), { ...saved });
       }
       default:
@@ -446,10 +503,12 @@ async function listItems(ctx: ToolContext, args: Args): Promise<ToolResult> {
 
   const snapshot = await ctx.store.read();
   if (snapshot.state === "missing") {
-    return ok(`まだ tasks.json がありません（${snapshot.path}）。createItem で最初の項目を足すと作ります`, {
-      path: snapshot.path,
+    if (snapshot.notRepository) return fail(snapshot.notRepository);
+    return ok(`${missingNote(snapshot)}。createItem で最初の項目を足すと作ります`, {
+      branch: snapshot.branch,
       exists: false,
       items: [],
+      ...(snapshot.leftover ? { leftover: snapshot.leftover } : {}),
     });
   }
   if (snapshot.state === "refused") return fail(refusal(snapshot));
@@ -467,17 +526,18 @@ async function listItems(ctx: ToolContext, args: Args): Promise<ToolResult> {
     picked.length === 0
       ? "合う項目はありません"
       : `${picked.length} 件（上ほど優先）\n${picked.map((i) => line(i, items)).join("\n")}`;
-  return ok(text + problemsNote(snapshot.problems), {
-    path: snapshot.path,
+  return ok(text + problemsNote(snapshot.problems) + syncNote(snapshot.sync, snapshot.branch), {
+    branch: snapshot.branch,
     exists: true,
     items: picked.map((i) => summary(i, items)),
+    sync: snapshot.sync,
     ...(snapshot.problems.length > 0 ? { problems: snapshot.problems } : {}),
   });
 }
 
 async function getItem(ctx: ToolContext, id: string): Promise<ToolResult> {
   const snapshot = await ctx.store.read();
-  if (snapshot.state === "missing") return fail(`まだ tasks.json がありません（${snapshot.path}）`);
+  if (snapshot.state === "missing") return fail(missingNote(snapshot));
   if (snapshot.state === "refused") return fail(refusal(snapshot));
   const doc: BacklogDocument = snapshot.doc;
   const item = doc.items.find((i) => i.id === id);

@@ -156,12 +156,14 @@ UI・設定画面の配置・各 Module の Canvas）は**画面を見ないと�
 「3. 本実装」に入っている**（`banto/packages/core`・`banto/apps/frontend`・
 `banto/e2e`）。どこが実データに繋がっているかは
 `banto/apps/frontend/lib/feature-flags.ts` の `CONNECTED_FEATURES` が唯一の真実
-（規則3）。**いま何が残っているか・どの順でやるかは `docs/tasks.json` が唯一の一覧**
-（決定・2026-09-05）。2026-10-03 から形は Backlog Module の `banto-backlog/1`（ストーリー・タスク・バグと依存、
-v4-modules.md §4.4）。**読み書きは Backlog の tool（listItems・updateItem 等）を通す**——手で直さない。
+（規則3）。**いま何が残っているか・どの順でやるかは、このリポジトリの `backlog` ブランチの `tasks.json` が唯一の一覧**
+（決定・2026-09-05。置き場は 2026-10-04 から作業ツリーの `docs/tasks.json` ではなく、コードとつながらない専用のブランチ
+——どのブランチを checkout していても正本は1つ。v4-modules.md §4.4「置き場」）。形は Backlog Module の `banto-backlog/1`
+（ストーリー・タスク・バグと依存）。**読み書きは Backlog の tool（listItems・updateItem 等）を通す**——手で直さない
+（tool の外で見るだけなら `git show backlog:tasks.json`）。
 **なぜそうしたか・直近で踏んだ不具合は
 `docs/notes/2026-09-05-phase0-real-wiring-progress.md`。
-このセッションを引き継ぐときは、tasks.json → このノートの順で読む。**
+このセッションを引き継ぐときは、一覧（`backlog` ブランチ）→ このノートの順で読む。**
 
 **どの未決をどう解くかは `docs/specs/v4-architecture.md` §10.0〜10.2**
 ——解決の仕方で4つに分け、依存の順序と Phase ごとの最短経路を書いてある。

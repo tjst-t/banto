@@ -89,6 +89,7 @@ test("走らせてよいサブコマンドは一覧のものだけ（増やす�
     "worktree remove",
     "remote add",
     "push",
+    "fetch",
   ]);
 });
 

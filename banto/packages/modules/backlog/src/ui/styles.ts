@@ -108,7 +108,9 @@ body:not([data-mode="fullscreen"]) .screen { height: 640px; }
 .notice p { margin: 0; }
 .notice ul { margin: 4px 0 0; padding-left: 18px; font-size: var(--t-sm); }
 .notice code, .refused code { font: var(--t-xs)/1.6 var(--mono); background: var(--bg-2); padding: 2px 4px; border-radius: 4px; white-space: nowrap; }
-.refused code.cmd { white-space: normal; word-break: break-all; }
+.refused code.cmd, .notice code.cmd { white-space: normal; word-break: break-all; }
+.notice code.cmd { display: block; margin-top: 4px; }
+.notice > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .refused { display: flex; flex-direction: column; gap: 8px; padding: 24px 0; font-size: var(--t-md); color: var(--ink-2); }
 .refused h3 { margin: 0; font-size: var(--t-lg); color: var(--ink); }
 .refused p { margin: 0; }

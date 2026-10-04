@@ -455,24 +455,29 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
   },
   {
-    // **仕事の一覧**（v4-modules.md §4.4、2026-10-03）。Project の根の中の tasks.json を読み書きする。
-    // 必須ではないので既定ではなく目録に置く（人が「Module を追加」から入れる）。閉じ込めは FileSystem と同じ
-    // （Project の根だけ、コマンドは走らせない）。設定（tasks.json の場所）は `BANTO_MODULE_DATA_DIR`（host が渡す）
+    // **仕事の一覧**（v4-modules.md §4.4、2026-10-03）。Project の根のリポジトリの**一覧のブランチ**（既定 `backlog`、
+    // 中は tasks.json 1つ）を git の低レベルのコマンドで読み書きする（改訂・2026-10-04——作業ツリーの tasks.json から）。
+    // 必須ではないので既定ではなく目録に置く（人が「Module を追加」から入れる）。git を走らせるので exec。
+    // 送る・取ってくるは Repositories に中継で頼む（資格情報はそちら）。設定（ブランチ名）は `BANTO_MODULE_DATA_DIR`
     id: "backlog",
     name: "Backlog",
-    description: "今後やること・バグを、ストーリー・タスク・バグと依存で持つ（Project の tasks.json）。AI が一覧を引き、タスクに分ける",
+    description: "今後やること・バグを、ストーリー・タスク・バグと依存で持つ（リポジトリの backlog ブランチ）。AI が一覧を引き、タスクに分ける",
     suggestedName: "backlog",
     launch: {
       command: "${nodeExec}",
       args: ["${monorepoRoot}/packages/modules/backlog/dist/server.js"],
-      env: { BANTO_PROJECT_ROOT: "${projectRoot}" },
+      env: {
+        BANTO_PROJECT_ROOT: "${projectRoot}",
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
     },
     meta: {
       satisfies: ["backlog"],
-      dependsOn: [],
+      dependsOn: [{ role: "repositories", required: false }],
       isolation: "subprocess",
       scope: "project",
-      confinement: { kind: "landlock", root: "project" },
+      confinement: { kind: "landlock", root: "project", profile: "exec" },
     },
   },
   {

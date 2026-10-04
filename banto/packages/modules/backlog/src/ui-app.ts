@@ -9,7 +9,7 @@ export const UI_APP_MIME = "text/html;profile=mcp-app";
 /** 一覧（人が入口から開く）。 */
 export const BOARD_APP_URI = "ui://banto-backlog/items";
 
-/** 設定 Canvas（tasks.json の場所）。 */
+/** 設定 Canvas（一覧を置くブランチ）。 */
 export const CONFIG_APP_URI = "ui://banto-backlog/config";
 
 export type AppSurface = "board" | "config";

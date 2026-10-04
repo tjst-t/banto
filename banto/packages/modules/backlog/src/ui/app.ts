@@ -1,6 +1,6 @@
 // Backlog Module の画面の入口（MCP Apps）。どの面を描くかは HTML の `data-surface` が決める（`ui-app.ts`）：
 //   - `board`  … 一覧（人が入口から開く）
-//   - `config` … 設定 Canvas（tasks.json の場所）
+//   - `config` … 設定 Canvas（一覧を置くブランチ）
 // banto を知らない。MCP Apps の約束（`protocol.ts`）だけで親と話す。
 
 import { BacklogBoard } from "./board.js";

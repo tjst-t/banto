@@ -313,6 +313,17 @@ export function mayListProjects(identity: CallerIdentity, origin: "turn" | "canv
 }
 
 /**
+ * **いまの呼び出しの Project を引いてよいか**（追加・2026-10-04）。**banto 本体で動く同梱の banto 全体の Module だけ**。
+ * 出所（人の画面か AI のターンか）は問わない——返すのは、その呼び出しが既に「その Project のため」と刻まれている
+ * Project 1件で、ほかの Project の名前と場所は出ない（`mayListProjects` が AI のターンで断る理由はそこ）
+ */
+export function mayReadCallerProject(identity: CallerIdentity): string | undefined {
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが引ける";
+  if (identity.inContainer || identity.projectId !== undefined) return "banto 本体で動く、banto 全体の Module だけが引ける";
+  return undefined;
+}
+
+/**
  * **Project のアドレスを引いてよい呼び出し元**（追加・2026-09-27）。公開の実装（`publish` 役割）で、**banto 本体で
  * 動く banto 自身のコード**だけ。コンテナの中の Module（中の AI が合言葉を読める）と第三者のコードには引かせない
  * ——公開の道を張れるのは host で動くものだけ、という線（`docs/specs/v4-security.md` §1）をここでも崩さない
@@ -419,6 +430,14 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         inputSchema: { type: "object", properties: {} },
       },
       {
+        // **いまの呼び出しが、どの Project のためか**（追加・2026-10-04、§2.4 Repositories——Backlog のブランチを
+        // push する口が、呼び出し元の Project の根がそのリポジトリかを確かめる）。返すのはその1件だけ。
+        // 引ける相手は `mayReadCallerProject` が決め、Project は host の台帳が決める——Module は選べない
+        name: "relayCallerProject",
+        description: "いま処理している呼び出しがどの Project のためか（id・名前・根のパス・状態）。決められなければ断る",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
         // **受信箱に知らせる**（追加・2026-10-02、§2.4 Repositories——ログインの更新に失敗したとき）。
         // 出せる相手は `mayRaiseNotice` が決める。同じ鍵の知らせが開いている間は積まない
         name: "relayRaiseNotice",
@@ -495,6 +514,19 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       if (why) throw new Error(`${identity.moduleName} は Project の一覧を引けません（${why}）`);
       if (!opts.listProjects) throw new Error("この banto は Project の一覧を渡す口を持っていません");
       return { content: [{ type: "text", text: JSON.stringify(opts.listProjects()) }] };
+    }
+
+    // **宛先は host 自身**。返すのは、いま処理している呼び出しの Project 1件だけ（一覧ではない——ほかの Project の
+    // 名前と場所は出ない）ので、AI のターンの中でも引ける。どの Project かは host の台帳が決める
+    if (request.params.name === "relayCallerProject") {
+      const why = mayReadCallerProject(identity);
+      if (why) throw new Error(`${identity.moduleName} は呼び出し元の Project を引けません（${why}）`);
+      if (!opts.listProjects) throw new Error("この banto は Project を引く口を持っていません");
+      const projectId = opts.moduleCalls?.projectFor(identity.connName ?? identity.moduleName, callId);
+      if (!projectId) throw new Error("どの Project のための呼び出しか決められません（Project のための呼び出しを処理している間だけ引けます）");
+      const project = opts.listProjects().find((p) => p.id === projectId);
+      if (!project) throw new Error(`呼び出し元の Project（${projectId}）が見つかりません`);
+      return { content: [{ type: "text", text: JSON.stringify(project) }] };
     }
 
     // **宛先は host 自身**。値は通らない（文言だけ）ので承認は通さず、出せる相手を絞る

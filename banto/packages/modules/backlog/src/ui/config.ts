@@ -1,35 +1,36 @@
-// 設定 Canvas——tasks.json の場所（§4.4「Backlog の設定で変えられる」）。値は Module が持ち、読み書きは
-// この Module の tool（getSettings・setSettings）を呼ぶ。保存したら、その場所のファイルの様子も言う
+// 設定 Canvas——一覧を置くブランチ（§4.4「設定」。既定 backlog、中は tasks.json 固定）。値は Module が持ち、読み書きは
+// この Module の tool（getSettings・setSettings）を呼ぶ。保存したら、そのブランチの様子も言う
 // （無い・古い形・読める）——「保存できたのに一覧が空」の理由がその場で分かるように。
 
 import { h } from "./dom.js";
 import { callTool, errorMessage, reportSize } from "./protocol.js";
 
 interface Settings {
-  path: string;
+  branch: string;
 }
 
 function settingsOf(result: { structuredContent?: Record<string, unknown> }): Settings {
-  const path = result.structuredContent?.path;
-  if (typeof path !== "string") throw new Error("設定を読み取れませんでした");
-  return { path };
+  const branch = result.structuredContent?.branch;
+  if (typeof branch !== "string") throw new Error("設定を読み取れませんでした");
+  return { branch };
 }
 
-async function describeFile(): Promise<string> {
+async function describeBranch(): Promise<string> {
   const board = (await callTool("getBoard")).structuredContent as
-    | { state?: string; path?: string; reason?: string; doc?: { items?: unknown[] } }
+    | { state?: string; branch?: string; reason?: string; notRepository?: string; doc?: { items?: unknown[] } }
     | undefined;
   if (!board) return "";
-  if (board.state === "missing") return `${board.path} はまだありません。最初の項目を足したときに作ります。`;
-  if (board.state === "refused") return `${board.path} は読めません：${board.reason ?? ""}`;
-  return `${board.path} に ${board.doc?.items?.length ?? 0} 件あります。`;
+  if (board.notRepository) return board.notRepository;
+  if (board.state === "missing") return `${board.branch} ブランチはまだありません。最初の項目を足したときに作ります。`;
+  if (board.state === "refused") return `${board.branch} ブランチの tasks.json は読めません：${board.reason ?? ""}`;
+  return `${board.branch} ブランチに ${board.doc?.items?.length ?? 0} 件あります。`;
 }
 
 export function mountConfig(root: HTMLElement): void {
-  const input = h("input", { attrs: { "aria-label": "tasks.json の場所", spellcheck: "false" }, data: { testid: "backlog-config-path" } });
+  const input = h("input", { attrs: { "aria-label": "一覧を置くブランチ", spellcheck: "false" }, data: { testid: "backlog-config-branch" } });
   const save = h("button", { class: "btn", text: "保存する", attrs: { type: "button" }, data: { testid: "backlog-config-save" } });
   const note = h("p", { class: "note", text: "読み込んでいます…", data: { testid: "backlog-config-note" } });
-  const fileNote = h("p", { class: "note", data: { testid: "backlog-config-file" } });
+  const fileNote = h("p", { class: "note", data: { testid: "backlog-config-branch-state" } });
   root.replaceChildren(
     h(
       "div",
@@ -37,19 +38,22 @@ export function mountConfig(root: HTMLElement): void {
       h(
         "label",
         {},
-        "tasks.json の場所（Project の根から）",
+        "一覧を置くブランチ",
         h("span", { class: "field" }, input, save),
       ),
-      h("p", { class: "note", text: "既定は docs/tasks.json。Project の根の外は指せません。" }),
+      h("p", {
+        class: "note",
+        text: "既定は backlog。コードの履歴とつながらないブランチに tasks.json を1つ置き、変更のたびにコミットして origin へ送ります。作業ツリーには触りません。",
+      }),
       note,
       fileNote,
     ),
   );
   const refreshFile = async () => {
     try {
-      fileNote.textContent = await describeFile();
+      fileNote.textContent = await describeBranch();
     } catch (err) {
-      fileNote.textContent = `ファイルの様子を読めませんでした：${errorMessage(err)}`;
+      fileNote.textContent = `ブランチの様子を読めませんでした：${errorMessage(err)}`;
     }
     reportSize();
   };
@@ -58,9 +62,9 @@ export function mountConfig(root: HTMLElement): void {
     note.textContent = "保存しています…";
     reportSize();
     try {
-      const saved = settingsOf(await callTool("setSettings", { path: input.value }));
-      input.value = saved.path;
-      note.textContent = `保存しました（${saved.path}）`;
+      const saved = settingsOf(await callTool("setSettings", { branch: input.value }));
+      input.value = saved.branch;
+      note.textContent = `保存しました（${saved.branch}）`;
       await refreshFile();
     } catch (err) {
       // **保存できたふりをしない**
@@ -74,7 +78,7 @@ export function mountConfig(root: HTMLElement): void {
   });
   void (async () => {
     try {
-      input.value = settingsOf(await callTool("getSettings")).path;
+      input.value = settingsOf(await callTool("getSettings")).branch;
       note.textContent = "";
       await refreshFile();
     } catch (err) {

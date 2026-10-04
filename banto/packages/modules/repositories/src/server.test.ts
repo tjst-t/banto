@@ -55,7 +55,11 @@ test("道具はどれも人の画面からだけ——可視性は admin、刻�
   await withServer({ listProjects: async (id) => (seen.push(id), []) }, async (client, w) => {
     const { tools } = await client.listTools();
     assert.ok(tools.length > 0);
-    for (const t of tools) assert.equal((t._meta as Record<string, unknown>)[VISIBILITY_META_KEY], "admin", t.name);
+    // 例外は Backlog が中継で呼ぶ、ブランチを送る・取ってくる口（branch-sync.test.ts）
+    for (const t of tools) {
+      const expected = t.name === "push_branch" || t.name === "fetch_branch" ? "module" : "admin";
+      assert.equal((t._meta as Record<string, unknown>)[VISIBILITY_META_KEY], expected, t.name);
+    }
 
     // 刻印が無い（AI のターン・Module 間）——断る。台帳は書かない
     const refused = await client.callTool({ name: "import_repository", arguments: { path: w.repo } });

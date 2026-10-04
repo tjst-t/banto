@@ -78,6 +78,8 @@ export const GIT_COMMANDS: readonly string[] = [
   // 段階5：GitHub に公開——origin を足し、いまのブランチを push する（環境は `writeEnv`）
   "remote add",
   "push",
+  // Backlog のブランチを送る・取ってくる（`branch-sync.ts`。環境は `writeEnv`）
+  "fetch",
 ];
 
 /**
@@ -789,4 +791,72 @@ export async function readLosses(path: string): Promise<LossReport> {
 export async function removeWorktreeRecord(main: string, worktree: string): Promise<void> {
   const r = await git(main, ["worktree", "remove", "--force", "--", worktree]);
   if (!r.ok) throw new Error(`本体（${main}）の worktree の記録を片づけられませんでした：${r.stderr.trim() || String(r.code)}`);
+}
+
+// ── 1本のブランチを origin と行き来させる（Backlog の一覧のブランチ、`branch-sync.ts`） ─────────────────────────
+
+/**
+ * ブランチ名として受けるか。**git の決まり（`check-ref-format`）のうち、ここで要るものだけ**を見る——引数として
+ * git に渡すので、`-` で始まるもの・refspec の記号（`:` `+` `*` 等）・`..`・`@{` は通さない
+ */
+export function isSafeBranchName(name: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/.test(name)) return false;
+  if (name.includes("..") || name.includes("//") || name.includes("/.") || name.includes("@{")) return false;
+  return !name.endsWith("/") && !name.endsWith(".") && !name.endsWith(".lock");
+}
+
+/**
+ * 送り先・取ってくる先・TLS を、そのリポジトリの設定が変えていないか（`pushBlockers` に、取ってくる側の
+ * `remote.origin.uploadpack` を足したもの）。あればどちらもしない
+ */
+export async function syncBlockers(path: string): Promise<string[]> {
+  const r = await git(
+    path,
+    ["config", "--name-only", "--get-regexp", "^(url|http)\\.|^remote\\.origin\\.(pushurl|proxy|receivepack|uploadpack)$"],
+    GIT_TIMEOUTS.default,
+    writeEnv({ kind: "none" }),
+  );
+  if (r.ok) return [...new Set(r.stdout.split("\n").filter(Boolean))];
+  if (r.code === 1) return [];
+  return fail(`${path} の設定`, r);
+}
+
+/** origin の取ってくる先（`get-url --all`）。読むのは取ってくる仕事と同じ段（リポジトリの段だけ） */
+export async function fetchUrls(path: string): Promise<string[]> {
+  const r = await git(path, ["remote", "get-url", "--all", "origin"], GIT_TIMEOUTS.default, writeEnv({ kind: "none" }));
+  if (!r.ok) return fail(`${path} の origin`, r);
+  return r.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
+/**
+ * そのブランチだけを origin に送る（`refs/heads/<b>:refs/heads/<b>`。**force しない**——origin が先に進んでいれば
+ * 断られる）。upstream は付けない（人のブランチの設定を変えない）。呼ぶ側が `isSafeBranchName` で確かめてから
+ */
+export function gitPushBranch(input: { path: string; branch: string; credential: GitCredential }): Promise<CloneResult> {
+  return streamGit({
+    args: ["push", "--porcelain", "origin", `refs/heads/${input.branch}:refs/heads/${input.branch}`],
+    cwd: input.path,
+    credential: input.credential,
+    // porcelain の行（To …・Done・送れた ref）は文言から外す。断られた ref の行（`!`）は残す——理由がそこにある
+    quiet: /^(?:To |Done$|[ *=+-]\t)/,
+  });
+}
+
+/**
+ * そのブランチだけを origin から取ってくる（`refs/remotes/origin/<b>` に。追跡の ref なので `+`——origin で
+ * 書き換えられていても写しは origin に合わせる。手元のブランチには触らない）。タグ・submodule は取らない
+ */
+export function gitFetchBranch(input: { path: string; branch: string; credential: GitCredential }): Promise<CloneResult> {
+  return streamGit({
+    args: [
+      "fetch",
+      "--no-tags",
+      "--no-recurse-submodules",
+      "--no-write-fetch-head",
+      "origin",
+      `+refs/heads/${input.branch}:refs/remotes/origin/${input.branch}`,
+    ],
+    cwd: input.path,
+    credential: input.credential,
+  });
 }

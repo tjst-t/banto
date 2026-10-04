@@ -1,18 +1,36 @@
-// tool の口を MCP 越しに確かめる——見える tool・絞り込み・Thread の刻印・無いファイル・古い形・設定。
+// tool の口を MCP 越しに確かめる——見える tool・絞り込み・Thread の刻印・無いブランチ・古い形・設定・送れなかったこと・申告。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { THREAD_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { MODULE_META_KEY, THREAD_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import { createBacklogServer } from "./server.js";
+import { RelayingRemote } from "./remote.js";
 
-async function connect() {
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+  }).trim();
+}
+
+/** ブランチの中の一覧（git から直接） */
+function onBranch(root: string, branch = "backlog"): { items: Array<{ id: string }> } {
+  return JSON.parse(git(root, "show", `${branch}:tasks.json`)) as { items: Array<{ id: string }> };
+}
+
+async function connect(opts: { origin?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "backlog-server-"));
+  git(root, "init", "-q");
+  git(root, "commit", "-q", "--allow-empty", "-m", "code");
+  if (opts.origin) git(root, "remote", "add", "origin", opts.origin);
   process.env.BANTO_MODULE_DATA_DIR = mkdtempSync(join(tmpdir(), "backlog-data-"));
-  const server = createBacklogServer({ projectRoot: root, now: () => "2026-10-03T00:00:00.000Z" });
+  const server = createBacklogServer({ projectRoot: root, now: () => "2026-10-03T00:00:00.000Z", remote: new RelayingRemote(root, undefined) });
   const [s, c] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(s), client.connect(c)]);
@@ -37,14 +55,23 @@ test("AI に見せるのは6本だけ。消す tool は無い。人の画面の�
   }
 });
 
-test("無いファイル：一覧は空で「まだ tasks.json がありません」と言い、最初の作成で作る", async () => {
+test("無いブランチ：一覧は空で「まだ一覧のブランチ backlog がありません」と言い、最初の作成で作る。コミットは操作の要約", async () => {
   const { root, call } = await connect();
   const empty = await call("listItems");
-  assert.match(empty.content[0]!.text, /まだ tasks\.json がありません（docs\/tasks\.json）/);
+  assert.match(empty.content[0]!.text, /まだ一覧のブランチ backlog がありません。createItem で最初の項目を足すと作ります/);
   assert.deepEqual(empty.structuredContent?.items, []);
   const created = await call("createItem", { kind: "story", title: "Backlog module" });
-  assert.match(created.content[0]!.text, /docs\/tasks\.json を作り、足しました：backlog-module/);
-  assert.equal(JSON.parse(readFileSync(join(root, "docs/tasks.json"), "utf8")).items.length, 1);
+  assert.match(created.content[0]!.text, /一覧のブランチ backlog を作り、足しました：backlog-module/);
+  assert.equal(onBranch(root).items.length, 1);
+  await call("updateItem", { id: "backlog-module", status: "in-progress", title: "Backlog" });
+  await call("splitStory", { storyId: "backlog-module", tasks: [{ title: "One" }, { title: "Two" }] });
+  assert.deepEqual(git(root, "log", "--format=%s", "backlog").split("\n"), [
+    "backlog: splitStory backlog-module（2 件）",
+    "backlog: updateItem backlog-module（title・status → in-progress）",
+    "backlog: createItem backlog-module",
+  ]);
+  // 作業ツリーは空のまま（docs/tasks.json は作らない）
+  assert.equal(git(root, "status", "--porcelain"), "");
 });
 
 test("listItems：actionable は ready かつ依存が全部 done だけ。種類・親でも絞れる", async () => {
@@ -100,30 +127,85 @@ test("断るときは isError と理由（やめる理由なし・輪・知ら�
   assert.equal((await call("moveItem", { id: "b" })).isError, true);
 });
 
-test("古い形のファイル：読む tool も理由と変換の手段を返す。getBoard は画面に出す形で返す", async () => {
+test("古い形の中身：読む tool も理由と変換の手段を返す。getBoard は画面に出す形で返す", async () => {
   const { root, call } = await connect();
-  mkdirSync(join(root, "docs"));
-  writeFileSync(join(root, "docs/tasks.json"), JSON.stringify({ tasks: [] }));
+  const blob = execFileSync("git", ["-C", root, "hash-object", "-w", "--stdin"], { input: JSON.stringify({ tasks: [] }), encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["-C", root, "mktree"], { input: `100644 blob ${blob}\ttasks.json\n`, encoding: "utf8" }).trim();
+  git(root, "update-ref", "refs/heads/backlog", git(root, "commit-tree", tree, "-m", "old"));
   const r = await call("listItems");
   assert.equal(r.isError, true);
-  assert.match(r.content[0]!.text, /古い tasks\.json の形.*convert-tasks-json\.mjs/);
+  assert.match(r.content[0]!.text, /ブランチ backlog の tasks\.json を読めません：古い tasks\.json の形.*git show backlog:tasks\.json.*convert-tasks-json\.mjs/);
   const board = await call("getBoard");
   assert.equal(board.structuredContent!.state, "refused");
   assert.equal(board.structuredContent!.legacy, true);
+  assert.match(String(board.structuredContent!.convertCommand), /^git show backlog:tasks\.json > old-tasks\.json && node \S+convert-tasks-json\.mjs old-tasks\.json <書き出す先>$/);
 });
 
-test("getBoard：版が同じなら unchanged だけ。設定で場所を変えると別のファイルを読む", async () => {
+test("getBoard：版が同じなら unchanged だけ。設定でブランチを変えると別の一覧を読み書きする", async () => {
   const { root, call } = await connect();
   await call("boardCreateItem", { kind: "task", title: "Here" });
   const first = await call("getBoard");
+  assert.equal(first.structuredContent!.branch, "backlog");
   const again = await call("getBoard", { since: first.structuredContent!.version });
   assert.deepEqual(again.structuredContent, { unchanged: true, version: first.structuredContent!.version });
 
-  assert.equal((await call("setSettings", { path: "../outside.json" })).isError, true);
-  assert.equal((await call("setSettings", { path: "/etc/x.json" })).isError, true);
-  const saved = await call("setSettings", { path: "planning/backlog.json" });
-  assert.deepEqual(saved.structuredContent, { path: "planning/backlog.json" });
+  for (const bad of ["-f", "a:b", "+main", "a..b", "x.lock", "a b", ""]) {
+    assert.equal((await call("setSettings", { branch: bad })).isError, true, bad);
+  }
+  assert.deepEqual((await call("getSettings")).structuredContent, { branch: "backlog" });
+  const saved = await call("setSettings", { branch: "refs/heads/planning" });
+  assert.deepEqual(saved.structuredContent, { branch: "planning" });
   assert.equal((await call("getBoard")).structuredContent!.state, "missing");
   await call("createItem", { kind: "task", title: "There" });
-  assert.equal(JSON.parse(readFileSync(join(root, "planning/backlog.json"), "utf8")).items[0].id, "there");
+  assert.equal(onBranch(root, "planning").items[0]!.id, "there");
+  assert.deepEqual(onBranch(root, "backlog").items.map((i) => i.id), ["here"]);
+});
+
+test("送れなかったら、書いた tool はそう言い（書き込みは済み）、listItems はまだ送っていない件数と理由を毎回添える", async () => {
+  const { root, call } = await connect({ origin: join(tmpdir(), `backlog-no-origin-${Date.now()}`) });
+  const created = await call("createItem", { kind: "task", title: "Offline" });
+  assert.equal(created.isError, undefined);
+  assert.match(created.content[0]!.text, /足しました：offline.*\n（書き込みは済みましたが、origin に送れませんでした：/s);
+  assert.match(String(created.structuredContent!.pushError), /.+/);
+  assert.equal(onBranch(root).items[0]!.id, "offline");
+  const listed = await call("listItems");
+  assert.match(listed.content[0]!.text, /origin に送っていない変更が 1 件あります（送れなかった理由：/);
+  const sync = listed.structuredContent!.sync as { origin: boolean; ahead: number; pushError?: string };
+  assert.deepEqual({ origin: sync.origin, ahead: sync.ahead }, { origin: true, ahead: 1 });
+  assert.match(sync.pushError ?? "", /.+/);
+  const board = await call("getBoard", { fetch: true });
+  assert.equal((board.structuredContent!.sync as { ahead: number }).ahead, 1);
+  assert.match(String((board.structuredContent!.sync as { fetchError?: string }).fetchError), /.+/);
+});
+
+test("ブランチが無く作業ツリーに docs/tasks.json があれば、移すコマンドを案内する。Project の根が git でなければ書かない", async () => {
+  const { root, call } = await connect();
+  execFileSync("mkdir", ["-p", join(root, "docs")]);
+  writeFileSync(join(root, "docs/tasks.json"), JSON.stringify({ format: "banto-backlog/1", items: [] }));
+  const listed = await call("listItems");
+  assert.match(listed.content[0]!.text, /作業ツリーに docs\/tasks\.json があります——ブランチへ移すには：node \S+move-to-branch\.mjs --repo \S+ --file docs\/tasks\.json --branch backlog --push（自動では移しません）/);
+  const board = await call("getBoard");
+  assert.equal((board.structuredContent!.leftover as { path: string }).path, "docs/tasks.json");
+
+  const plain = mkdtempSync(join(tmpdir(), "backlog-server-plain-"));
+  const server = createBacklogServer({ projectRoot: plain });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  const r = (await client.callTool({ name: "createItem", arguments: { kind: "task", title: "X" } })) as { isError?: boolean; content: Array<{ text: string }> };
+  assert.equal(r.isError, true);
+  assert.match(r.content[0]!.text, /git のリポジトリではありません/);
+});
+
+test("申告：Repositories に頼む（無くても動く）・git を走らせる（exec）・Project ごと", async () => {
+  const { client } = await connect();
+  const { resources } = await client.listResources();
+  const meta = (resources.find((r) => r.uri === "backlog://module")!._meta as Record<string, unknown>)[MODULE_META_KEY];
+  assert.deepEqual(meta, {
+    satisfies: ["backlog"],
+    dependsOn: [{ role: "repositories", required: false }],
+    isolation: "subprocess",
+    scope: "project",
+    confinement: { kind: "landlock", root: "project", profile: "exec" },
+  });
 });
