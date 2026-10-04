@@ -33,8 +33,10 @@
 //
 // **同じものの写しがある所**（片方を変えたら、もう片方も）：
 //   - unit 名（banto-update.service・banto-host.service・banto-frontend.service）：ここ・`setup-update.sh` の
-//     UPDATE_UNIT／UNITS・`packages/core/src/self-update/self-update.ts` の UPDATE_UNIT
-//   - release の refspec：ここの FETCH_REFSPEC・`setup-update.sh` の FETCH_REFSPEC・`self-update.ts` の FETCH_REFSPEC
+//     UPDATE_UNIT／UNITS・`packages/core/src/self-update/self-update.ts` の UPDATE_UNIT・install.sh（作成中。Fork
+//     「新しいホストへのインストール」）
+//   - release の refspec：ここの FETCH_REFSPEC・`setup-update.sh` の FETCH_REFSPEC・`self-update.ts` の FETCH_REFSPEC・
+//     install.sh（作成中）。release 以外を取るように変えるなら、全部を
 //   - 画面の口：`setup-update.sh` が banto-frontend.service から読んで、`banto-update.service` に
 //     BANTO_UPDATE_UI_URL として書く。ここはそれを読むだけ
 //   - `GET /api/admin/update` の `current.commit`：確かめ（verify）と「今の版」の突き合わせに使う。**前の版の
@@ -76,9 +78,9 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 const RELEASE_REF = "refs/remotes/origin/release";
-/** 写し：`setup-update.sh` の FETCH_REFSPEC・core `self-update.ts` の FETCH_REFSPEC */
+/** 写し：`setup-update.sh` の FETCH_REFSPEC・core `self-update.ts` の FETCH_REFSPEC・install.sh（作成中） */
 const FETCH_REFSPEC = `+refs/heads/release:${RELEASE_REF}`;
-/** 写し：`setup-update.sh` の UPDATE_UNIT・core `self-update.ts` の UPDATE_UNIT */
+/** 写し：`setup-update.sh` の UPDATE_UNIT・core `self-update.ts` の UPDATE_UNIT・install.sh（作成中） */
 const UPDATE_UNIT = "banto-update.service";
 /**
  * 起こし直したあと、新しい版が答えるまで待つ上限（秒）。**計測していない**——組み立て済みなので普段は数秒〜数十秒のはずだが、
