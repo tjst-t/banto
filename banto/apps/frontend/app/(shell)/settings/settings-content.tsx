@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Box, Globe, KeyRound, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
+import { ArrowUpCircle, Bell, Box, Globe, KeyRound, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -14,6 +14,7 @@ import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import { ShellHomePanel } from "@/components/banto/settings/shell-home-panel";
 import { ContainerLimitsPanel } from "@/components/banto/settings/container-limits";
 import { LoginPanel } from "@/components/banto/settings/login-panel";
+import { UpdatePanel } from "@/components/banto/settings/update-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
@@ -80,6 +81,9 @@ const CONTAINER_CATEGORY: SettingsNavItem = { section: "container", label: "コ�
 /** 人のログイン（2026-10-03）。パスキー・端末を追加・ログイン中の端末 */
 const LOGIN_CATEGORY: SettingsNavItem = { section: "login", label: "ログイン", icon: KeyRound };
 
+/** banto 自身を GitHub の新しい版にする（2026-10-04、アーキ仕様 §2.5「画面から banto を更新する」） */
+const UPDATE_CATEGORY: SettingsNavItem = { section: "update", label: "更新", icon: ArrowUpCircle };
+
 /** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
 
@@ -94,6 +98,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   ...(CONNECTED_FEATURES.shellHome ? [SHELL_HOME_CATEGORY] : []),
   ...(CONNECTED_FEATURES.containerLimits ? [CONTAINER_CATEGORY] : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
+  ...(CONNECTED_FEATURES.selfUpdate ? [UPDATE_CATEGORY] : []),
 ];
 
 /** banto 全体に1本ある Module（Vault 等）。**Project ごとに立つ Module の設定は
@@ -186,6 +191,17 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
   }
   if (section === "login") {
     return <LoginPanel />;
+  }
+  if (section === "update") {
+    return (
+      <div>
+        <SectionHeading
+          title="更新"
+          description="banto を GitHub の新しい版にします。押す前に、何が入るかを読めます。"
+        />
+        <UpdatePanel />
+      </div>
+    );
   }
   if (section === "roles") {
     return (

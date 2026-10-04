@@ -71,6 +71,9 @@ export const CONNECTED_FEATURES = {
   // **人のログイン**（決定・2026-10-03、v4-security.md「人のログイン」）。パスキー・端末を追加・ログイン中の端末が
   // host の `/api/auth/*` に繋がっている
   login: true,
+  // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。host の `/api/admin/update` に繋がっていて、
+  // 組み立てと起こし直しは host の外の `banto-update.service`（`scripts/update.mjs`）が行う
+  selfUpdate: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す
