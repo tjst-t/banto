@@ -2162,7 +2162,7 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 - ~~今の `docs/tasks.json` の移行そのもの~~ **→ 2026-10-03 に置き換えた**（168件）。重なっていた id `module-registry-install` は、
   終わったほう（npm・remote から入れる）を `module-registry-install-npm` に改め、積んだだけのほう（レジストリの検索、
   v4-architecture.md が参照）に元の id を残した。マイルストーンの id は `phase-0`〜`phase-4` と `after-phase-0`（Phase 0以降）・
-  `phase-undecided`（Phase 未定）。**ストーリーへの組み直しはまだ**（人と AI でやる）
+  `phase-undecided`（Phase 未定）。同日にストーリーへ組み直した（ストーリー7本、不具合はバグに）
 - 画面の読み直しの間隔（3秒）は、他の Module に揃える前例が無かったので仮に決めた。host から「変わった」を
   知らせる口（MCP の `resources/subscribe` を Canvas に通す等）を作るかは未決
 

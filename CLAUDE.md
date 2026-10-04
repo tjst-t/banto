@@ -157,7 +157,8 @@ UI・設定画面の配置・各 Module の Canvas）は**画面を見ないと�
 `banto/e2e`）。どこが実データに繋がっているかは
 `banto/apps/frontend/lib/feature-flags.ts` の `CONNECTED_FEATURES` が唯一の真実
 （規則3）。**いま何が残っているか・どの順でやるかは `docs/tasks.json` が唯一の一覧**
-（決定・2026-09-05。TaskMaster AI の骨だけ借りた形——ツールは入れていない）。
+（決定・2026-09-05）。2026-10-03 から形は Backlog Module の `banto-backlog/1`（ストーリー・タスク・バグと依存、
+v4-modules.md §4.4）。**読み書きは Backlog の tool（listItems・updateItem 等）を通す**——手で直さない。
 **なぜそうしたか・直近で踏んだ不具合は
 `docs/notes/2026-09-05-phase0-real-wiring-progress.md`。
 このセッションを引き継ぐときは、tasks.json → このノートの順で読む。**
