@@ -727,3 +727,50 @@ test("Fork は分けた時点で効いていた集合を引き継ぐ——過去
     );
   });
 });
+
+test("Fork が引き継いだ会話は、スナップショットに1度だけ書き、読み戻しても同じものを指す（2026-10-04、実機で 121MB）", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("demo", dir);
+    const base = await store.createBaseThread(project.id);
+    const big = "x".repeat(100_000);
+    for (let i = 0; i < 5; i++) await store.appendMessage(base.id, i % 2 ? "assistant" : "user", `${i}${big}`);
+    const forks = [];
+    for (let i = 0; i < 10; i++) forks.push(await store.forkThread(base.id));
+    // Fork だけが持つ書き換え（表のものと中身が違う）はそのまま残る
+    await store.appendMessage(forks[0]!.id, "user", "fork だけの発言");
+    await store.save();
+
+    const { stat } = await import("node:fs/promises");
+    const size = (await stat(join(dir, "project-thread.v8.snapshot.json"))).size;
+    assert.ok(size < 5 * 100_000 * 2, `会話が Fork の数だけ写されている（${size} bytes）`);
+
+    const again = new ProjectThreadStore(dir, log);
+    await again.load();
+    const b = again.getThread(base.id)!;
+    const f = again.getThread(forks[3]!.id)!;
+    assert.equal(f.messages.length, 5);
+    assert.equal(f.messages[2], b.messages[2], "読み戻したら別々のオブジェクトになった");
+    assert.equal(again.getThread(forks[0]!.id)!.messages.at(-1)!.text, "fork だけの発言");
+    assert.deepEqual(
+      again.getThread(forks[9]!.id)!.messages.map((m) => m.text.slice(0, 1)),
+      ["0", "1", "2", "3", "4"],
+    );
+  });
+});
+
+test("前の形（会話をそのまま書いた）スナップショットも読め、同じ中身はまとめる", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("demo", dir);
+    const base = await store.createBaseThread(project.id);
+    await store.appendMessage(base.id, "user", "こんにちは");
+    const fork = await store.forkThread(base.id);
+    // 前の形で書く（pack を通さない）
+    const { writeFile: wf } = await import("node:fs/promises");
+    const replacer = (_k: string, v: unknown) => (v instanceof Map ? { __banto_map__: true, entries: [...v.entries()] } : v);
+    await wf(join(dir, "project-thread.v8.snapshot.json"), JSON.stringify({ seq: 999999, state: (store as unknown as { projection: { current: unknown } }).projection.current }, replacer));
+    const again = new ProjectThreadStore(dir, log);
+    await again.load();
+    assert.equal(again.getThread(fork.id)!.messages[0], again.getThread(base.id)!.messages[0]);
+    assert.equal(again.getThread(fork.id)!.messages[0]!.text, "こんにちは");
+  });
+});

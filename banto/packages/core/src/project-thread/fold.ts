@@ -157,7 +157,83 @@ function resolveMemoryProjectId(
 }
 
 
+/**
+ * **Fork が親から引き継いだ会話を、スナップショットでは1つにまとめる**（追加・2026-10-04、実機で発覚）。
+ *
+ * Fork を立てると、親の会話（messages）を Fork の記録に写す。メモリでは同じオブジェクトを指すので安いが、
+ * JSON にすると Fork の数だけ丸ごと写しができ、読み戻すと**本当に別々のオブジェクト**になる。実機では
+ * イベントの記録が 23MB なのにスナップショットが 121MB になり、起動直後から host が 1.2GiB 使っていた。
+ *
+ * そこで書き出すときは、メッセージを seq（その message.appended の seq。全体で一意）ごとに1つの表に置き、
+ * Thread には seq だけを書く。中身が表のものと違うもの（Fork だけが書き換えた等）はそのまま書く。
+ * 読むときは同じ seq を同じオブジェクトに戻す——前の形（全部そのまま）のスナップショットも、中身が同じなら
+ * まとめて読む（次に書き出すときに小さくなる）
+ */
+type PackedMessage = number | MessageEntry;
+interface PackedModel {
+  packedMessages: [number, MessageEntry][];
+  [key: string]: unknown;
+}
+
+function packModel(m: ProjectThreadReadModel): unknown {
+  const pool = new Map<number, MessageEntry>();
+  const poolJson = new Map<number, string>();
+  const same = (seq: number, msg: MessageEntry): boolean => {
+    const canonical = pool.get(seq);
+    if (canonical === undefined) {
+      pool.set(seq, msg);
+      return true;
+    }
+    if (canonical === msg) return true;
+    let a = poolJson.get(seq);
+    if (a === undefined) {
+      a = JSON.stringify(canonical);
+      poolJson.set(seq, a);
+    }
+    return a === JSON.stringify(msg);
+  };
+  const threads = new Map<string, unknown>();
+  for (const [id, t] of m.threads) {
+    const messages: PackedMessage[] = t.messages.map((msg) => (same(msg.seq, msg) ? msg.seq : msg));
+    threads.set(id, { ...t, messages });
+  }
+  return { ...m, threads, packedMessages: [...pool] } satisfies PackedModel;
+}
+
+function unpackModel(raw: unknown): ProjectThreadReadModel {
+  const r = raw as PackedModel & { threads: Map<string, ThreadState & { messages: PackedMessage[] }> };
+  const pool = new Map<number, MessageEntry>(r.packedMessages ?? []);
+  const poolJson = new Map<number, string>();
+  const intern = (msg: MessageEntry): MessageEntry => {
+    const canonical = pool.get(msg.seq);
+    if (canonical === undefined) {
+      pool.set(msg.seq, msg);
+      return msg;
+    }
+    let a = poolJson.get(msg.seq);
+    if (a === undefined) {
+      a = JSON.stringify(canonical);
+      poolJson.set(msg.seq, a);
+    }
+    return a === JSON.stringify(msg) ? canonical : msg;
+  };
+  const threads = new Map<string, ThreadState>();
+  for (const [id, t] of r.threads) {
+    const messages = t.messages.map((p) => {
+      if (typeof p !== "number") return intern(p);
+      const msg = pool.get(p);
+      if (!msg) throw new Error(`スナップショットが壊れています：Thread ${id} のメッセージ ${p} が表にありません`);
+      return msg;
+    });
+    threads.set(id, { ...t, messages });
+  }
+  const { packedMessages: _drop, ...rest } = r;
+  return { ...(rest as unknown as ProjectThreadReadModel), threads };
+}
+
 export const projectThreadFold: Fold<ProjectThreadReadModel> = {
+  pack: packModel,
+  unpack: unpackModel,
   initial: () => ({
     projects: new Map(),
     threads: new Map(),

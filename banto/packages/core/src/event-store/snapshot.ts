@@ -10,6 +10,13 @@ import type { EventLog, StoredEvent } from "./log.js";
 export interface Fold<S> {
   initial(): S;
   apply(state: S, event: StoredEvent): S;
+  /**
+   * **書き出す前の形に変える**（任意・追加・2026-10-04）。メモリでは同じものを指しているのに、JSON にすると
+   * 指している数だけ写しができるもの（Fork が親の会話を引き継ぐ等）を、1つにまとめて書くのに使う
+   */
+  pack?(state: S): unknown;
+  /** `pack` の逆。`pack` を使わなかった頃の形も読めること */
+  unpack?(raw: unknown): S;
 }
 
 // JSON は Map/Set を表現できない——素の JSON.stringify(state) だと
@@ -71,7 +78,7 @@ export class SnapshotProjection<S> {
     if (existsSync(this.snapshotPath)) {
       const raw = await readFile(this.snapshotPath, "utf8");
       const snap = JSON.parse(raw, snapshotReviver) as SnapshotFile<S>;
-      this.state = snap.state;
+      this.state = this.fold.unpack ? this.fold.unpack(snap.state) : snap.state;
       this.seq = snap.seq;
     }
     for await (const event of this.log.readFrom(this.seq)) {
@@ -103,7 +110,7 @@ export class SnapshotProjection<S> {
   async save(): Promise<void> {
     await mkdir(this.dataDir, { recursive: true, mode: 0o700 });
     const tmpPath = `${this.snapshotPath}.tmp`;
-    const snap: SnapshotFile<S> = { seq: this.seq, state: this.state };
+    const snap = { seq: this.seq, state: this.fold.pack ? this.fold.pack(this.state) : this.state };
     const fh = await open(tmpPath, "w");
     try {
       await fh.writeFile(JSON.stringify(snap, snapshotReplacer), "utf8");
