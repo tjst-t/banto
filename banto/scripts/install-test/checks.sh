@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# 試験の場の中で、入れた banto をユーザーとして確かめる（run.sh が中に送って流す）。
+# usage: checks.sh <名前> <ログインのリンク> [full|login]
+#   full  ：b（前提と unit）・c（Caddy を通る）・d（ログイン）・e（Project とコンテナ）・g の中の側（コンテナから /relay）
+#   login ：c と d だけ（名前を変えたあと）
+# 1行ずつ「PASS 何を」「FAIL 何を：なぜ」を出す。終了コードは FAIL の数
+# shellcheck disable=SC2016,SC2024,SC2181 # 中で展開する台本・自分のファイルへの書き出し
+set -uo pipefail
+
+D=$1 LINK=$2 MODE=${3:-full}
+REL="$HOME/.local/share/banto-release"
+FAILS=0
+pass() { echo "PASS $*"; }
+fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
+info() { echo "INFO $*"; }
+check() { # check <何を> <コマンド…>
+  local what=$1; shift
+  if "$@" >/dev/null 2>&1; then pass "$what"; else fail "$what"; fi
+}
+
+CA=$(mktemp)
+sudo cat /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt >"$CA"
+H=(-H "X-Banto-Client: 1" -H "Origin: https://$D")
+JAR=$(mktemp)
+c() { curl -s --cacert "$CA" "$@"; }
+
+if [[ $MODE == full ]]; then
+  # ---- b. 前提と unit ----
+  out=$(cd "$REL/banto" && node packages/container/dist/doctor.js 2>&1)
+  if [[ $? == 0 ]]; then pass "b: doctor が通る（$out）"; else fail "b: doctor：$out"; fi
+  for u in banto-host banto-frontend caddy banto-firewall; do
+    check "b: $u が動いている" systemctl is-active --quiet "$u"
+  done
+  check "b: 画面は 127.0.0.1:4175 だけで待つ" bash -c "ss -ltnH 'sport = :4175' | awk '{print \$4}' | grep -qx '127.0.0.1:4175' && ! ss -ltnH 'sport = :4175' | grep -q '0.0.0.0'"
+  check "b: core は 0.0.0.0:4737 で待つ" bash -c "ss -ltnH 'sport = :4737' | grep -q '0.0.0.0:4737'"
+  check "b: system.slice の CPUWeight=1000" bash -c "systemctl show system.slice -p CPUWeight | grep -qx CPUWeight=1000"
+  check "b: banto-host の OOMScoreAdjust=-800" bash -c "systemctl show banto-host -p OOMScoreAdjust | grep -qx OOMScoreAdjust=-800"
+  check "b: banto-host の User が $(id -un)" bash -c "systemctl show banto-host -p User | grep -qx User=$(id -un)"
+  check "b: nftables の表 banto" sudo nft list table inet banto
+fi
+
+# ---- c. Caddy の内部 CA で https が通る ----
+code=$(c -o /tmp/ui.html -w '%{http_code}' "https://$D/")
+if [[ $code == 200 ]] && grep -qi '<html' /tmp/ui.html; then pass "c: https://$D/ が 200（画面の HTML）"; else fail "c: https://$D/ → $code"; fi
+body=$(c -w ' %{http_code}' "https://$D/api/auth/me")
+if [[ $body == *'"authenticated":false'*' 200' ]]; then pass "c: https://$D/api/auth/me が host に届く（$body）"; else fail "c: /api/auth/me → $body"; fi
+hdr=$(c -D - -o /dev/null "https://sandbox.$D/sandbox.html")
+if [[ $hdr == *" 200"* && $hdr == *"frame-ancestors"*"https://$D"* ]]; then pass "c: https://sandbox.$D/sandbox.html が 200（frame-ancestors に https://$D）"; else fail "c: sandbox：$(echo "$hdr" | head -3 | tr '\r\n' '  ')"; fi
+code=$(c -o /dev/null -w '%{http_code}' "https://nothing.$D/")
+if [[ $code == 404 ]]; then pass "c: https://nothing.$D/ は 404（*.$D の受け皿）"; else fail "c: nothing.$D → $code"; fi
+loc=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://$D/x?y=1")
+if [[ $loc == "308 https://$D/x?y=1" ]]; then pass "c: http は https へ転送（$loc）"; else fail "c: http → $loc"; fi
+if curl -s "http://$D/banto-ca.crt" | cmp -s - "$CA"; then pass "c: http://$D/banto-ca.crt で CA のルート証明書を配る"; else fail "c: banto-ca.crt が root.crt と違う"; fi
+
+# ---- d. ログインのリンクで入る ----
+code_in_link=${LINK##*#banto-login=}
+if [[ $LINK == "https://$D/#banto-login="* ]]; then pass "d: リンクの形（https://$D/#banto-login=…）"; else fail "d: リンクの形：$LINK"; fi
+r=$(c -c "$JAR" "${H[@]}" -H 'content-type: application/json' -w ' %{http_code}' -X POST "https://$D/api/auth/redeem" -d "{\"code\":\"$code_in_link\"}")
+if [[ $r == *'"ok":true'*' 200' ]] && grep -q '__Host-banto-session' "$JAR"; then pass "d: redeem が 200 で __Host-banto-session を出す"; else fail "d: redeem → $r"; fi
+r=$(c -b "$JAR" "${H[@]}" -w ' %{http_code}' "https://$D/api/auth/sessions")
+if [[ $r == *' 200' ]]; then pass "d: Cookie で人のセッションだけの口（/api/auth/sessions）が通る"; else fail "d: sessions → $r"; fi
+r=$(c "${H[@]}" -o /dev/null -w '%{http_code}' "https://$D/api/auth/sessions")
+if [[ $r == 401 ]]; then pass "d: Cookie が無ければ 401"; else fail "d: Cookie なし → $r"; fi
+r=$(c -b "$JAR" -o /dev/null -w '%{http_code}' "https://$D/api/auth/sessions")
+if [[ $r == 403 ]]; then pass "d: X-Banto-Client が無ければ 403"; else fail "d: ヘッダなし → $r"; fi
+r=$(c "${H[@]}" -H 'content-type: application/json' -o /dev/null -w '%{http_code}' -X POST "https://$D/api/auth/redeem" -d "{\"code\":\"$code_in_link\"}")
+if [[ $r == 401 ]]; then pass "d: 同じリンクは2回目は通らない（401）"; else fail "d: 2回目の redeem → $r"; fi
+
+[[ $MODE == full ]] || exit "$FAILS"
+
+# ---- e. Project を作り、コンテナが起きて Shell が繋がる ----
+root="$HOME/install-test-project"
+mkdir -p "$root"
+r=$(c -b "$JAR" "${H[@]}" -H 'content-type: application/json' -X POST "https://$D/api/projects" -d "{\"name\":\"install-test\",\"root\":\"$root\"}")
+pid=$(node -e 'try { console.log(JSON.parse(process.argv[1]).id ?? "") } catch { console.log("") }' "$r")
+if [[ -n $pid ]]; then pass "e: Project を作った（$pid）"; else fail "e: Project：$r"; exit "$FAILS"; fi
+start=$(date +%s)
+r=$(c -m 1200 -b "$JAR" "${H[@]}" -X POST "https://$D/api/projects/$pid/modules/prepare")
+info "e: prepare（$(($(date +%s) - start)) 秒）：$r"
+if [[ $r == *"\"shell-$pid\""* ]]; then pass "e: prepare で shell-$pid が繋がった"; else fail "e: prepare：$r"; fi
+r=$(c -b "$JAR" "${H[@]}" "https://$D/api/projects/$pid/modules")
+if node -e 'const m = JSON.parse(process.argv[1]).find((x) => x.name === "shell"); process.exit(m?.connected === true ? 0 : 1)' "$r" 2>/dev/null; then
+  pass "e: /modules で shell が connected"
+else
+  fail "e: /modules：$(echo "$r" | head -c 600)"
+fi
+r=$(c -b "$JAR" "${H[@]}" "https://$D/api/projects/$pid/container")
+cname=$(node -e 'const j = JSON.parse(process.argv[1]); console.log(j.container?.status === "Running" ? j.container.name : "")' "$r" 2>/dev/null)
+if [[ -n $cname ]]; then pass "e: Project のコンテナ $cname が Running"; else fail "e: container：$r"; fi
+
+# ---- g（中の側）. コンテナから host の /relay に届く ----
+if [[ -n $cname ]]; then
+  r=$(incus exec "$cname" -- sh -c 'gw=$(ip route | awk "/^default/ {print \$3; exit}"); echo "$gw $(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://$gw:4737/relay")"' </dev/null 2>&1)
+  if [[ $r =~ ^[0-9.]+\ [1-5][0-9][0-9]$ ]]; then pass "g: コンテナから http://<ブリッジの host 側>:4737/relay に届く（$r）"; else fail "g: コンテナから /relay：$r"; fi
+  # Shell の Module のプロセスがコンテナの中で動いている
+  r=$(incus exec "$cname" -- ps -eo args </dev/null 2>&1 | grep -c 'modules/shell' || true)
+  if [[ $r -ge 1 ]]; then pass "e: コンテナの中で Shell の Module が動いている"; else fail "e: コンテナの中に Shell の Module のプロセスが無い"; fi
+fi
+
+exit "$FAILS"
