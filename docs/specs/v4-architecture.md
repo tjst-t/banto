@@ -1077,7 +1077,7 @@ fail closed で止まる**（実際にそうなった。詳細は
   （人の画面の印）を選べてしまうので、接続単位のまま（`valueFree` を同梱だけ信じるのと同じ線）
 - 形は分散トレースの文脈の受け渡し（W3C Trace Context）と、返信用の札（§4.2）と同じ
 - **いま印を返しているのは公開の窓口（`publish-directory`）だけ**。`vault-directory` は返していないので、
-  2つの Project の Shell が同時に秘密を引くと、窓口→Vault の2段目で Project が決まらず断られうる（未対応——`docs/tasks.json` の `vault-directory-call-id`）
+  2つの Project の Shell が同時に秘密を引くと、窓口→Vault の2段目で Project が決まらず断られうる（未対応——Backlog の `vault-directory-call-id`）
 
 #### host は「誰のための呼び出しか」を刻む（決定・2026-09-13）
 
@@ -2121,7 +2121,7 @@ canceled）、認証を持つ。
   Module から Module への中継の**時間の上限と途中経過**が要る——host が宛先を呼ぶところで上限を延ばさず、途中経過も
   呼び出し元へ中継していないので、MCP の既定（60 秒）を越える待つ形の呼び出しは切れる。**この2つは、サブエージェントを
   呼ぶ最初の Module を作るときに一緒にやる**（決定・2026-09-26、ユーザー——呼ぶ Module がまだ無いので、形を決める
-  材料が無い）。検討内容は `docs/notes/2026-09-25-thread-delivery.md`、タスクは `docs/tasks.json` subagent-from-modules。
+  材料が無い）。検討内容は `docs/notes/2026-09-25-thread-delivery.md`、タスクは Backlog の `subagent-from-modules`。
   **Project ごとの Module を呼べるのは同じ Project の中だけ**の縛りは入れた（2026-09-26、`docs/specs/v4-security.md` §3）
 
 #### Thread 間・Project 間の送り方（決定・2026-10-01、ユーザー。実装済み——`delivery/thread-messages.ts`）
@@ -2564,7 +2564,7 @@ Claude Desktop・Claude Code・Cursor 等が共通して使う実質標準の設
 REST API で検索し、見つけた `server.json` を変換して保存）は撤回**
 （決定・2026-09-10、ユーザー）——2026-09-06 の「受け入れる起動の形は1種類だけ。
 レジストリからの取得は入れない」（上記）と両立しないため、いまの仕様からは外す。
-**将来また入れる意向はある**——`docs/tasks.json` の backlog
+**将来また入れる意向はある**——Backlog に積んである
 （`module-registry-install`）で追跡する。それまでは、公開されている Module を
 使いたいときは**レジストリで見つけた `server.json` の URL を1つ目の入口に人が
 貼る**——検索は banto の外（ブラウザ）で行う。

@@ -1835,7 +1835,7 @@ Shell の `grep` で足りる）。
   systemd を触らない
 - **作り直す時点**は Module が起きたときと各 tool の前（`reconcile`）
 - **Claude のログインの環境変数は、まだ core から届いていない**——Module は `ANTHROPIC_BASE_URL` 等を自分の環境から
-  写す作りだが、core の常設の中継（`docs/specs/v4-security.md` §2、`docs/tasks.json` の `claude-login-relay-owner`）が
+  写す作りだが、core の常設の中継（`docs/specs/v4-security.md` §2、Backlog の `claude-login-relay-owner`）が
   未実装なので、いまは常に空
 - **SIGKILL で止められた**（systemd の止める待ち時間を超えた）ときは起動役が記録を書けず、状態は「まだ起きていない」
   に見える
@@ -2002,7 +2002,7 @@ AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**
   「開く」は MCP Apps の `ui/open-link` で banto に頼む——banto の画面は**http/https だけ・人が押した直後だけ**開く
   （`module-canvas.tsx`、同日に受けるようにした）。見た目の確かめは `publish-directory/scripts/preview.mjs`（banto の色と段で
   実ブラウザに出して撮る）。**Project の画面から押したとき Service の登録が中継で引けるのは、単体試験（core の中継・窓口の
-偽の中継を host の規則どおりに直したもの）で確かめた。実機では未確認**（`docs/tasks.json` の `publish-host-verify`）
+偽の中継を host の規則どおりに直したもの）で確かめた。実機では未確認**（Backlog の `publish-host-verify`）
 - **入口の画面から、まだ公開していないサーバをワンクリックで公開できる**（決定・2026-10-01、ユーザー）。人が「公開する」を
   押したことが承認そのもので、承認の頼みは作らない。設定は出し方の既定（認証は無し・サブドメインは既定）で、変えたいときは
   会話で頼む（承認の画面が出る）。待ち受けていないものは押せず、窓口も断る（人の口 `publish_route`、admin）
@@ -2419,7 +2419,7 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 - **同梱の既定（Vault・Shell・FileSystem）も同じ宣言の形**で持つ。特別扱いしない（規則3）
 - **どこで動くか（閉じ込め）は宣言の `scope` と `origin` から host が導く**（改訂・2026-09-25、
   `v4-security.md` §2「どの Module がどこで動くか」）。宣言の `confinement` はもう置き場所を決めない
-  ——Landlock の時の項目で、いまは読むだけの印（名前の付け直しは `docs/tasks.json`）
+  ——Landlock の時の項目で、いまは読むだけの印（名前の付け直しは Backlog）
 - 宣言は**起動する前に検める**。知らない差し込み語・空の起動・名前の重複・
   `scope` と閉じ込めの食い違いは、その場で落とす（規則2）
 
