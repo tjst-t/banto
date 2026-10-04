@@ -4,10 +4,10 @@
 // 一覧の読み直しを当てない（board.ts）——開いた小窓の足元が入れ替わらないように。
 // キー：↑↓ で動く・Enter で選ぶ・→ で下の段を開く・← / Esc で閉じる。
 
-import type { BacklogItem } from "../model.js";
+import { parseNumberRef, type BacklogItem } from "../model.js";
 import { h } from "./dom.js";
 import { icon } from "./icons.js";
-import { itemMark, KIND_LABEL } from "./parts.js";
+import { itemMark, KIND_LABEL, numberTag } from "./parts.js";
 
 export type MenuEntry =
   | {
@@ -22,7 +22,7 @@ export type MenuEntry =
   | { type: "sep" }
   | { type: "label"; text: string }
   | { type: "sub"; label: string; entries: MenuEntry[]; testid?: string }
-  | { type: "input"; label: string; placeholder: string; onEnter: (value: string) => void };
+  | { type: "input"; label: string; placeholder: string; onEnter: (value: string) => void; testid?: string };
 
 interface Open {
   el: HTMLElement;
@@ -139,7 +139,7 @@ export function openMenu(
     } else if (entry.type === "label") {
       el.append(h("div", { class: "label", text: entry.text }));
     } else if (entry.type === "input") {
-      const input = h("input", { attrs: { placeholder: entry.placeholder, "aria-label": entry.label } });
+      const input = h("input", { attrs: { placeholder: entry.placeholder, "aria-label": entry.label }, data: entry.testid ? { testid: entry.testid } : {} });
       input.addEventListener("keydown", (e) => {
         if (e.isComposing) return;
         if (e.key === "Enter" && input.value.trim() !== "") {
@@ -231,7 +231,9 @@ export function openPicker(
   let shown: BacklogItem[] = [];
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    shown = opts.candidates.filter((c) => q === "" || `${c.title} ${c.id}`.toLowerCase().includes(q));
+    // 番号（42・#42）でも引ける
+    const n = parseNumberRef(q);
+    shown = opts.candidates.filter((c) => q === "" || (n !== undefined && c.number === n) || `${c.title} ${c.id}`.toLowerCase().includes(q));
     active = Math.min(active, Math.max(0, shown.length - 1));
     results.replaceChildren(
       ...(shown.length === 0
@@ -241,6 +243,7 @@ export function openPicker(
               "button",
               { class: "mi", attrs: { type: "button", role: "option", "aria-selected": String(i === active) }, data: { testid: "backlog-picker-option" } },
               itemMark(c, opts.items, true),
+              numberTag(c),
               h("span", { class: "t", text: c.title }),
               c.kind !== "task" ? h("span", { class: "k", text: KIND_LABEL[c.kind] }) : null,
             );

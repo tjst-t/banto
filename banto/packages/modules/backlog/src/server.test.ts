@@ -61,14 +61,14 @@ test("無いブランチ：一覧は空で「まだ一覧のブランチ backlog
   assert.match(empty.content[0]!.text, /まだ一覧のブランチ backlog がありません。createItem で最初の項目を足すと作ります/);
   assert.deepEqual(empty.structuredContent?.items, []);
   const created = await call("createItem", { kind: "story", title: "Backlog module" });
-  assert.match(created.content[0]!.text, /一覧のブランチ backlog を作り、足しました：backlog-module/);
+  assert.match(created.content[0]!.text, /一覧のブランチ backlog を作り、足しました：#1 backlog-module \[backlog\] Backlog module/);
   assert.equal(onBranch(root).items.length, 1);
   await call("updateItem", { id: "backlog-module", status: "in-progress", title: "Backlog" });
   await call("splitStory", { storyId: "backlog-module", tasks: [{ title: "One" }, { title: "Two" }] });
   assert.deepEqual(git(root, "log", "--format=%s", "backlog").split("\n"), [
-    "backlog: splitStory backlog-module（2 件）",
-    "backlog: updateItem backlog-module（title・status → in-progress）",
-    "backlog: createItem backlog-module",
+    "backlog: splitStory #1 backlog-module（2 件）",
+    "backlog: updateItem #1 backlog-module（title・status → in-progress）",
+    "backlog: createItem #1 backlog-module",
   ]);
   // 作業ツリーは空のまま（docs/tasks.json は作らない）
   assert.equal(git(root, "status", "--porcelain"), "");
@@ -87,7 +87,47 @@ test("listItems：actionable は ready かつ依存が全部 done だけ。種�
   r = await call("listItems", { parent: "s", status: ["done", "ready"] });
   assert.deepEqual((r.structuredContent!.items as Array<{ id: string }>).map((i) => i.id), ["one", "two"]);
   r = await call("listItems", { kind: "bug" });
-  assert.match(r.content[0]!.text, /crash \[ready・着手できる\] Crash \(bug\)/);
+  assert.match(r.content[0]!.text, /#4 crash \[ready・着手できる\] Crash \(bug\)/);
+});
+
+test("番号で指す：getItem・updateItem・moveItem・splitStory・parent・dependsOn・listItems の parent は 42 でも \"#42\" でも受ける。番号は書けない", async () => {
+  const { root, call } = await connect();
+  await call("createItem", { kind: "story", title: "Story" }); // #1
+  await call("createItem", { kind: "task", title: "A" }); // #2
+  const b = await call("createItem", { kind: "task", title: "B", parent: 1, dependsOn: ["#2"] }); // #3
+  assert.match(b.content[0]!.text, /足しました：#3 b \[backlog\] B 親:story 待ち:a/);
+  assert.equal((b.structuredContent!.item as { number: number }).number, 3);
+  const got = await call("getItem", { id: "#3" });
+  assert.match(got.content[0]!.text, /^#3 b \[backlog\] B/);
+  assert.equal((await call("getItem", { id: 3 })).content[0]!.text, got.content[0]!.text);
+  const story = await call("getItem", { id: 1 });
+  assert.match(story.content[0]!.text, /タスク：#3 b \[backlog\]/);
+  const up = await call("updateItem", { id: 3, status: "ready", dependsOn: [] });
+  assert.match(up.content[0]!.text, /変えました：#3 b \[ready・着手できる\]/);
+  const split = await call("splitStory", { storyId: "#1", tasks: [{ title: "C", dependsOn: [2] }] });
+  assert.match(split.content[0]!.text, /「#1 story」を 1 件のタスクに分けました：\n#4 c \[ready\] C/);
+  const mv = await call("moveItem", { id: 4, before: "#3" });
+  assert.match(mv.content[0]!.text, /「#4 c」を「#3 b」の前へ動かしました/);
+  const kids = await call("listItems", { parent: 1, status: ["ready"] });
+  assert.deepEqual((kids.structuredContent!.items as Array<{ id: string; number: number }>).map((i) => `${i.number}:${i.id}`), ["4:c", "3:b"]);
+  // ブランチには id で書く（番号で指しても、親・依存は id）
+  const onDisk = JSON.parse(git(root, "show", "backlog:tasks.json")) as { items: Array<{ id: string; number: number; parent: string | null; dependsOn: string[] }> };
+  assert.deepEqual(onDisk.items.find((i) => i.id === "c"), { ...onDisk.items.find((i) => i.id === "c")!, number: 4, parent: "story", dependsOn: ["a"] });
+  assert.equal(git(root, "log", "-1", "--format=%s", "backlog"), "backlog: moveItem #4 c（#3 b の前）");
+  for (const [tool, args, re] of [
+    ["getItem", { id: 99 }, /項目「#99」がありません/],
+    ["getItem", { id: "#99" }, /項目「#99」がありません/],
+    ["updateItem", { id: 2, number: 50 }, /number は作るときに振られるもので、書けません/],
+    ["createItem", { kind: "task", title: "X", number: 50 }, /number は作るときに振られるもので、書けません/],
+    ["boardUpdateItem", { id: 2, number: 50 }, /number は作るときに振られるもので、書けません/],
+    ["updateItem", { id: 2, dependsOn: [99] }, /項目「#99」がありません/],
+    ["updateItem", { id: 1.5, title: "x" }, /id は項目の id か番号です/],
+  ] as const) {
+    const r = await call(tool, args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+    assert.match(r.content[0]!.text, re);
+  }
+  assert.equal((JSON.parse(git(root, "show", "backlog:tasks.json")) as { items: Array<{ number: number }> }).items.find((i) => i.number === 50), undefined);
 });
 
 test("updateItem：AI のターンの刻印があれば、進めたときに Thread を足す。閉じただけ・刻印が無いときは足さない", async () => {
@@ -165,7 +205,7 @@ test("送れなかったら、書いた tool はそう言い（書き込みは�
   const { root, call } = await connect({ origin: join(tmpdir(), `backlog-no-origin-${Date.now()}`) });
   const created = await call("createItem", { kind: "task", title: "Offline" });
   assert.equal(created.isError, undefined);
-  assert.match(created.content[0]!.text, /足しました：offline.*\n（書き込みは済みましたが、origin に送れませんでした：/s);
+  assert.match(created.content[0]!.text, /足しました：#1 offline.*\n（書き込みは済みましたが、origin に送れませんでした：/s);
   assert.match(String(created.structuredContent!.pushError), /.+/);
   assert.equal(onBranch(root).items[0]!.id, "offline");
   const listed = await call("listItems");

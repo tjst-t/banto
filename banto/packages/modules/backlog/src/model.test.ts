@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import {
   BACKLOG_FORMAT,
   BacklogError,
+  assignMissingNumbers,
   createItem,
   emptyDocument,
   findCycles,
+  findItem,
   isActionable,
   makeId,
   moveItem,
@@ -25,6 +27,7 @@ const T1 = "2026-10-03T01:00:00.000Z";
 function item(id: string, over: Partial<BacklogItem> = {}): BacklogItem {
   return {
     id,
+    number: null,
     kind: "task",
     title: id,
     status: "ready",
@@ -186,4 +189,74 @@ test("書く：2字下げ・末尾改行・欄の順は固定（読んだ順に�
   const back = parseDocument(JSON.parse(text));
   assert.ok(back.ok);
   assert.equal(serializeDocument(back.ok ? back.doc : emptyDocument()), text);
+});
+
+test("番号：作るときに「いまある最大＋1」。閉じた・やめた項目の番号も使い直さない。分けるときは続き番号", () => {
+  const d = doc(item("a", { number: 1 }), item("b", { number: 7, status: "dropped", resolution: "要らない", closedAt: T0 }), item("old"));
+  const made = createItem(d, { kind: "task", title: "c" }, T1);
+  assert.equal(made.result.number, 8);
+  const s = createItem(made.doc, { kind: "story", title: "s" }, T1);
+  assert.equal(s.result.number, 9);
+  const split = splitStory(s.doc, s.result.id, [{ title: "x" }, { title: "y" }], T1);
+  assert.deepEqual(split.result.map((i) => i.number), [10, 11]);
+  assert.deepEqual(validateDocument(split.doc), []);
+  // 番号の無い一覧なら 1 から
+  assert.equal(createItem(doc(item("old")), { kind: "task", title: "n" }, T1).result.number, 1);
+  // updateItem では変わらない（patch に欄が無い）
+  assert.equal(updateItem(made.doc, made.result.id, { title: "c2" }, T1).result.number, 8);
+});
+
+test("番号：重なり・0 以下は検証で言う。整数でないものは読まない。番号の無い項目は読めて、欄ごと書かない", () => {
+  const problems = validateDocument(doc(item("a", { number: 3 }), item("b", { number: 3 }), item("c", { number: 0 })));
+  assert.ok(problems.some((p) => p === "番号 #3 が 2 つあります（a・b）"), problems.join("／"));
+  assert.ok(problems.some((p) => /「c」の番号 0 は使えません/.test(p)), problems.join("／"));
+  const bad = parseDocument({ format: BACKLOG_FORMAT, items: [{ id: "a", kind: "task", title: "A", status: "ready", number: 1.5 }] });
+  assert.ok(!bad.ok && /number が整数ではありません/.test(bad.reason));
+  const old = parseDocument({ format: BACKLOG_FORMAT, items: [{ id: "a", kind: "task", title: "A", status: "ready" }] });
+  assert.ok(old.ok);
+  assert.equal(old.doc.items[0]!.number, null);
+  assert.ok(!serializeDocument(old.doc).includes('"number"'));
+  assert.match(serializeDocument(doc(item("a", { number: 4 }))), /"id": "a",\n      "number": 4,/);
+});
+
+test("指し方：id・番号（42・\"#42\"・\"42\"）。数字だけの id があれば id が先", () => {
+  const items = [item("a", { number: 42 }), item("7", { number: 1 })];
+  assert.equal(findItem(items, "a").id, "a");
+  assert.equal(findItem(items, 42).id, "a");
+  assert.equal(findItem(items, "#42").id, "a");
+  assert.equal(findItem(items, "42").id, "a");
+  assert.equal(findItem(items, "7").id, "7");
+  assert.equal(findItem(items, "#1").id, "7");
+  assert.throws(() => findItem(items, 5), /項目「#5」がありません/);
+  assert.throws(() => findItem(items, "#0"), /項目「#0」がありません/);
+  assert.throws(() => findItem(items, "zzz"), /項目「zzz」がありません/);
+});
+
+test("振り直し：createdAt の無いものが先で古い一覧の並び（id、合わなければ同じ題）、次に createdAt 順。番号のあるものは変えず、2回目は何も振らない", () => {
+  const d = doc(
+    item("has", { number: 5 }),
+    item("not-in-legacy", { createdAt: null }),
+    item("new-2", { createdAt: "2026-10-04T02:00:00.000Z" }),
+    item("legacy-b", { createdAt: null, title: "移したあとで題を直した" }),
+    item("renamed", { createdAt: null, title: "重なっていた題" }),
+    item("new-1", { createdAt: "2026-10-04T01:00:00.000Z" }),
+    item("legacy-a", { createdAt: null }),
+  );
+  const legacy = [
+    { id: "legacy-a", title: "legacy-a" },
+    { id: "legacy-a", title: "重なっていた題" },
+    { id: "gone", title: "消えた" },
+    { id: "legacy-b", title: "legacy-b" },
+  ];
+  const first = assignMissingNumbers(d, legacy);
+  assert.deepEqual(
+    first.result.map((i) => `${i.id}#${i.number}`),
+    ["legacy-a#6", "renamed#7", "legacy-b#8", "not-in-legacy#9", "new-1#10", "new-2#11"],
+  );
+  assert.equal(first.doc.items[0]!.number, 5);
+  assert.deepEqual(first.doc.items.map((i) => i.id), d.items.map((i) => i.id), "並び（優先順）は変えない");
+  assert.deepEqual(validateDocument(first.doc), []);
+  const again = assignMissingNumbers(first.doc, legacy);
+  assert.equal(again.result.length, 0);
+  assert.deepEqual(again.doc, first.doc);
 });

@@ -55,6 +55,19 @@ git(projectRoot, ["remote", "add", "origin", originDir]);
 const workingTreeBefore = () => ({ status: git(projectRoot, ["status", "--porcelain"]), head: git(projectRoot, ["symbolic-ref", "HEAD"]) });
 const WORKING_TREE = workingTreeBefore();
 const SAMPLE_TEXT = readFileSync(SAMPLE, "utf8");
+// 見本（番号の無い35件）に振り直しのスクリプトが振る番号——作った順（createdAt の無いものが先、次に createdAt 順）
+const NUMBERS: Record<string, number> = Object.fromEntries(
+  (
+    "phase0-stale-notify landlock-proc-allowlist registry-search-install module-kit-extract turn-latest-on-return " +
+    "human-canvas-call-blocked-by-concurrent-turn judgment-answer-render-race subagent-module-sync shell-worktree-project-git subagent-human-loop " +
+    "elicitation-answers subagent-permission-to-human subagent-banto-modules subagent-codex thread-messaging " +
+    "relay-grant-codeid-not-bound frontend-lint-red project-container-prewarm e2e-typecheck-red ai-forks " +
+    "ai-start-forks ai-forks-review-inbox ai-forks-live-check ai-attach-module fork-inline-fullscreen " +
+    "claude-login-relay-owner publish-host-verify vault-directory-call-id repositories-next repositories-stage1 " +
+    "repositories-stage2 repositories-stage3 repositories-publish repositories-open-project backlog-module")
+    .split(" ")
+    .map((id, n) => [id, n + 1]),
+);
 
 /** そのブランチの先頭（無ければ undefined）。`origin` で bare の側 */
 function headOf(branch = "backlog", where: "local" | "origin" = "local"): string | undefined {
@@ -67,6 +80,7 @@ function headOf(branch = "backlog", where: "local" | "origin" = "local"): string
 
 interface FileItem {
   id: string;
+  number?: number;
   title: string;
   status: string;
   parent: string | null;
@@ -188,6 +202,19 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   expect(headOf("backlog", "origin")).toBe(headOf());
   await expect(inner.getByTestId("backlog-missing")).toHaveCount(0, { timeout: 30_000 });
 
+  // ---- 番号の無い一覧に、一度だけ番号を振る（作った順——createdAt の無いものが先、次に createdAt 順）------------
+  // 振る前：番号は出ない
+  await expect(inner.getByTestId("backlog-number")).toHaveCount(0);
+  const scripts = command.replace(/^node (\S+)\/move-to-branch\.mjs .*$/, "$1");
+  const assigned = execFileSync("node", [join(scripts, "assign-numbers.mjs"), "--repo", projectRoot, "--push"], { encoding: "utf8" });
+  expect(assigned).toContain("backlog ブランチの 35 件に #1〜#35 を振りました");
+  expect(assigned).toContain("origin へ送りました");
+  expect(fileItems().map((i) => i.number)).toEqual(fileItems().map((i) => NUMBERS[i.id]));
+  // 2回目は何も変えない
+  const numberedHead = headOf();
+  expect(execFileSync("node", [join(scripts, "assign-numbers.mjs"), "--repo", projectRoot], { encoding: "utf8" })).toContain("もう全部番号があります");
+  expect(headOf()).toBe(numberedHead);
+
   // ---- 見方ごとの件数と、次にやるの中身 ----------------------------------------
   for (const [view, n] of [["next", 12], ["all", 28], ["bugs", 5], ["closed", 7]] as const) {
     await expect(inner.getByTestId(`backlog-view-${view}`).locator(".count")).toHaveText(String(n));
@@ -198,12 +225,15 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
     "AI が tool から Fork を立てる（名前と最初の指示つき）",
     "AI が同じ Module を使っている最中だと、人が画面で押した操作が無言で止まる",
   ]);
+  // 題の前に番号（画面は数秒ごとに読み直す——振った番号が押さずに出る）
+  await expect(doing.getByTestId("backlog-number")).toHaveText(["#32", `#${NUMBERS["ai-start-forks"]}`, "#6"], { timeout: 30_000 });
   // 次にやるでは、タスクの頭にストーリー名が付く。バグには札
   await expect(doing.nth(0).getByTestId("backlog-row-story")).toHaveText("Repositories の続き");
   await expect(doing.nth(2).getByTestId("backlog-bug-tag")).toBeVisible();
   await expect(doing.nth(0).getByTestId("backlog-rank")).toHaveAttribute("data-state", "in-progress");
   const actionable = inner.locator('[data-section="actionable"] [data-testid="backlog-row"]');
   await expect(actionable).toHaveCount(9);
+  await expect(actionable.getByTestId("backlog-number")).toHaveCount(9);
   await expect(inner.locator('[data-section="actionable"] h3 .hint')).toHaveText(
     "ほかに待っているもの・積んだだけのものが 12 件（「すべて」で見る）",
   );
@@ -219,6 +249,7 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   ]);
   const repoStory = inner.locator('[data-item-id="repositories-next"] > [data-testid="backlog-row"]');
   await expect(repoStory.getByTestId("backlog-progress")).toHaveText("2/5");
+  await expect(repoStory.getByTestId("backlog-number")).toHaveText("#29");
   await expect(repoStory.getByTestId("backlog-story-mark")).toHaveAttribute("data-ratio", "40");
   await expect(inner.locator('[data-item-id="repositories-next"] [data-testid="backlog-closed-kids"]')).toHaveText(
     "閉じたタスク 2 件を出す",
@@ -236,12 +267,18 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   const detail = inner.getByTestId("backlog-detail");
   await expect(detail.getByTestId("backlog-detail-title")).toHaveText("段階3：URL から clone・新しいリポジトリ・「Project も作る」");
   await expect(detail.getByTestId("backlog-detail-parent")).toHaveText("Repositories の続き");
-  await expect(detail.getByTestId("backlog-dep-before")).toHaveText([/段階2：GitHub のアカウント.*終わった/]);
+  // 詳細の題の上（親のパンくずの行）に番号。依存の行にも番号
+  await expect(detail.getByTestId("backlog-detail-where")).toHaveText(/^#32\s*Repositories の続き のタスク$/);
+  await expect(detail.getByTestId("backlog-dep-before")).toHaveText([/^#31\s*段階2：GitHub のアカウント.*終わった/]);
+  await expect(detail.getByTestId("backlog-dep-self").getByTestId("backlog-number")).toHaveText("#32");
+  await expect(detail.getByTestId("backlog-dep-after").getByTestId("backlog-number")).toHaveText(["#33", "#34"]);
   await expect(detail.getByTestId("backlog-dep-after")).toHaveCount(2);
   await expect(detail.getByTestId("backlog-dep-summary")).toHaveText("待っていたものは全部終わりました。終われば 2 件が進めます。");
   await expect(detail.getByTestId("backlog-threads")).toHaveText(/Thread banto-base/);
   await inner.getByTestId("backlog-view").press("k");
   await expect(detail.getByTestId("backlog-detail-title")).toHaveText("Repositories の続き");
+  await expect(detail.getByTestId("backlog-detail-where")).toHaveText(/^#29\s*ストーリー$/);
+  await expect(detail.getByTestId("backlog-detail-kids").getByTestId("backlog-number")).toHaveText(["#30", "#31", "#32", "#33", "#34"]);
   await shot(page, "backlog-wide-detail");
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
@@ -256,11 +293,13 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   await composer.press("Enter");
   await expect(inner.getByTestId("backlog-composer-note")).toHaveText(/^2 件足しました。/, { timeout: 30_000 });
   await composer.press("Escape");
-  expect(fileItems().slice(-2).map((i) => [i.id, i.status])).toEqual([
-    ["measure-recall-accuracy", "backlog"],
-    ["dedupe-memories", "backlog"],
+  // 足したものには「いまある最大＋1」
+  expect(fileItems().slice(-2).map((i) => [i.id, i.status, i.number])).toEqual([
+    ["measure-recall-accuracy", "backlog", 36],
+    ["dedupe-memories", "backlog", 37],
   ]);
   await expect(inner.locator('[data-item-id="dedupe-memories"] [data-testid="backlog-row-title"]')).toHaveText("Dedupe memories");
+  await expect(inner.locator('[data-item-id="dedupe-memories"] [data-testid="backlog-number"]')).toHaveText("#37");
   await expect(inner.getByTestId("backlog-view-all").locator(".count")).toHaveText("30");
 
   // ---- ストーリーをタスクに分ける（上から順に待つ）------------------------------------
@@ -272,13 +311,16 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   await expect(detail.getByTestId("backlog-detail-kids").locator(".t")).toHaveText(["Store", "Agent tools", "Screen"], {
     timeout: 30_000,
   });
-  expect(fileItem("screen")).toMatchObject({ parent: "backlog-module", status: "ready", dependsOn: ["agent-tools"] });
+  expect(fileItem("screen")).toMatchObject({ parent: "backlog-module", status: "ready", dependsOn: ["agent-tools"], number: 40 });
+  await expect(detail.getByTestId("backlog-detail-kids").getByTestId("backlog-number")).toHaveText(["#38", "#39", "#40"]);
   await expect(inner.locator('[data-item-id="backlog-module"] > [data-testid="backlog-row"] [data-testid="backlog-progress"]')).toHaveText("0/3");
 
   // ---- 依存を足す（検索して選ぶ）---------------------------------------------------
   await detail.getByTestId("backlog-dep-add").click();
-  await inner.getByTestId("backlog-picker").locator("input").fill("Claude ログイン");
+  // 候補の小窓は番号でも引ける。行に番号が出る
+  await inner.getByTestId("backlog-picker").locator("input").fill("#26");
   await expect(inner.getByTestId("backlog-picker-option")).toHaveCount(1);
+  await expect(inner.getByTestId("backlog-picker-option")).toHaveText(/^#26\s*Claude ログインの中継を core に常設する/);
   await inner.getByTestId("backlog-picker").locator("input").press("Enter");
   await expect(detail.getByTestId("backlog-dep-before")).toHaveText([/Claude ログインの中継を core に常設する.*着手できる/], {
     timeout: 30_000,
@@ -319,9 +361,28 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   await inner.getByTestId("backlog-view-closed").click();
   await expect(inner.getByTestId("backlog-view-closed").locator(".count")).toHaveText("8");
   await expect(inner.locator('[data-item-id="module-kit-extract"] .row-note')).toHaveText("やめた：repositories-next と重なっていた");
+  await expect(inner.locator('[data-item-id="module-kit-extract"] [data-testid="backlog-number"]')).toHaveText("#4");
+
+  // ---- # で番号を打って開く（どの見方にいても開く）。無い番号は知らせる ---------------------------
+  await inner.getByTestId("backlog-view-next").click();
+  await inner.getByTestId("backlog-view").focus();
+  await inner.getByTestId("backlog-view").press("#");
+  await expect(inner.getByTestId("backlog-jump")).toBeFocused();
+  await expect(inner.getByTestId("backlog-jump")).toHaveValue("");
+  await inner.getByTestId("backlog-jump").fill("4");
+  await inner.getByTestId("backlog-jump").press("Enter");
+  await expect(detail.getByTestId("backlog-detail-title")).toHaveText(fileItem("module-kit-extract").title);
+  await expect(detail.getByTestId("backlog-detail-where")).toHaveText(/^#4\s*タスク$/);
+  await expect(detail.getByTestId("backlog-closed-note")).toHaveText("やめました：repositories-next と重なっていた");
+  await shot(page, "backlog-wide-jump");
+  await detail.getByTestId("backlog-detail-close").click();
+  await inner.getByTestId("backlog-filter").click();
+  await inner.getByTestId("backlog-jump").fill("#999");
+  await inner.getByTestId("backlog-jump").press("Enter");
+  await expect(inner.getByTestId("toast").filter({ hasText: "#999 はありません" })).toBeVisible();
+  await expect(detail).toHaveCount(0);
 
   // ---- 並べ替え：ドラッグと、行のメニュー --------------------------------------------
-  await inner.getByTestId("backlog-view-next").click();
   const titles = () => actionable.getByTestId("backlog-row-title").allTextContents();
   const before = await titles();
   await actionable.nth(2).dragTo(actionable.nth(0), { targetPosition: { x: 200, y: 4 } });
@@ -337,15 +398,20 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   // ---- ブランチ・origin・作業ツリー ------------------------------------------------------
   // 1件の変更ごとに1コミット（操作の要約）。移したコミットが根で、親を持たない
   expect(subjects()).toEqual([
-    expect.stringMatching(/^backlog: moveItem \S+（\S+ の(前|後ろ)）$/),
-    expect.stringMatching(/^backlog: moveItem \S+（\S+ の(前|後ろ)）$/),
-    "backlog: updateItem module-kit-extract（status → dropped・resolution）",
-    "backlog: updateItem backlog-module（dependsOn）",
-    "backlog: splitStory backlog-module（3 件）",
-    "backlog: createItem dedupe-memories",
-    "backlog: createItem measure-recall-accuracy",
+    expect.stringMatching(/^backlog: moveItem #\d+ \S+（#\d+ \S+ の(前|後ろ)）$/),
+    expect.stringMatching(/^backlog: moveItem #\d+ \S+（#\d+ \S+ の(前|後ろ)）$/),
+    "backlog: updateItem #4 module-kit-extract（status → dropped・resolution）",
+    "backlog: updateItem #35 backlog-module（dependsOn）",
+    "backlog: splitStory #35 backlog-module（3 件）",
+    "backlog: createItem #37 dedupe-memories",
+    "backlog: createItem #36 measure-recall-accuracy",
+    "backlog: 番号の無い 35 件に #1〜#35 を振る（作った順）",
     "backlog: docs/tasks.json から移す（35 件）",
   ]);
+  // 番号は重ならず、振り直されていない
+  const numbers = fileItems().map((i) => i.number);
+  expect(new Set(numbers).size).toBe(numbers.length);
+  expect(fileItem("repositories-stage3").number).toBe(32);
   expect(git(projectRoot, ["rev-list", "--max-parents=0", "refs/heads/backlog"])).toBe(git(projectRoot, ["rev-list", "--reverse", "refs/heads/backlog"]).split("\n")[0]);
   expect(git(projectRoot, ["log", "-1", "--format=%an <%ae>", "refs/heads/backlog"])).toBe("banto <banto@localhost>");
   // 書くたびに origin へ送っている（Repositories の一覧に無いリポジトリなので、リポジトリの git の設定で）
@@ -400,7 +466,7 @@ test("AI が tool で進めたものが、人が何もしなくても画面に�
     status: "in-progress",
     threads: [{ projectId: id, threadId: base.id }],
   });
-  expect(subjects()[0]).toBe("backlog: updateItem elicitation-answers（status → in-progress）");
+  expect(subjects()[0]).toBe("backlog: updateItem #11 elicitation-answers（status → in-progress）");
   // AI のターンから書いたものも送られている（Repositories が引き受けないので、リポジトリの git の設定で）
   await expect.poll(() => headOf("backlog", "origin"), { timeout: 30_000 }).toBe(headOf());
   await expect(page.getByText("進めているにしました。", { exact: true })).toBeVisible();
@@ -423,6 +489,8 @@ test("携帯の幅でも崩れない——一覧は横にはみ出さず、詳�
   await inner.locator('[data-item-id="repositories-next"] > [data-testid="backlog-row"] [data-testid="backlog-row-open"]').click();
   await expect(inner.getByTestId("backlog-detail")).toBeVisible();
   await expect(inner.getByTestId("backlog-list-pane")).toBeHidden();
+  await expect(inner.getByTestId("backlog-detail-where")).toHaveText(/^#29\s*ストーリー$/);
+  await expect(inner.getByTestId("backlog-detail-kids").getByTestId("backlog-number")).toHaveText(["#30", "#31", "#32", "#33", "#34"]);
   await shot(page, "backlog-390-detail");
   await inner.getByTestId("backlog-detail-close").click();
   await expect(inner.getByTestId("backlog-list-pane")).toBeVisible();
@@ -461,7 +529,8 @@ test("送れないときは「送っていない」と理由を出し、戻れ�
 
   // ---- origin が先へ進んだ（別の手元から送られた）：開いたときに取り込む --------------------------
   const remoteDoc = JSON.parse(git(originDir, ["show", "refs/heads/backlog:tasks.json"])) as { items: Array<Record<string, unknown>> };
-  remoteDoc.items.push({ ...remoteDoc.items.find((i) => i.id === "offline-note")!, id: "from-elsewhere", title: "別の手元から足したもの", status: "ready", resolution: null, closedAt: null });
+  const nextNumber = Math.max(...remoteDoc.items.map((i) => Number(i.number))) + 1;
+  remoteDoc.items.push({ ...remoteDoc.items.find((i) => i.id === "offline-note")!, id: "from-elsewhere", number: nextNumber, title: "別の手元から足したもの", status: "ready", resolution: null, closedAt: null });
   commitDirect(originDir, "backlog", `${JSON.stringify(remoteDoc, null, 2)}\n`, "backlog: createItem from-elsewhere");
   await page.goto(`/p/${id}`);
   inner = await openBacklog(page);

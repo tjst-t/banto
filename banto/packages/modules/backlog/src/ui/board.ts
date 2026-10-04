@@ -17,6 +17,7 @@ import {
   childrenOf,
   dependents,
   isClosed,
+  parseNumberRef,
   rankState,
   waitingOn,
   type BacklogDocument,
@@ -36,6 +37,7 @@ import {
   formatDate,
   itemMark,
   markdownBody,
+  numberTag,
   priorityMark,
   rankMark,
 } from "./parts.js";
@@ -394,7 +396,22 @@ export class BacklogBoard {
     } else if (e.key === "c" || e.key === "C") {
       e.preventDefault();
       this.openComposer("top");
+    } else if (e.key === "#") {
+      // 番号で開く——絞り込みの小窓の先頭の欄に打つ（# そのものは欄に入れない）
+      e.preventDefault();
+      this.screen.querySelector<HTMLButtonElement>('[data-focus="filter"]')?.click();
     }
+  }
+
+  /** 番号（42・#42）で開く。どの見方にいても開く（詳細は一覧の全部から引く）。無ければ知らせる */
+  private openByNumber(text: string): void {
+    const n = parseNumberRef(text);
+    const item = n === undefined ? undefined : this.items.find((i) => i.number === n);
+    if (!item) {
+      toast(n === undefined ? "番号は #42 か 42 の形で打ちます" : `#${n} はありません`, { error: true });
+      return;
+    }
+    this.select(item.id, true);
   }
 
   private openComposer(key: string, kind?: BacklogKind): void {
@@ -525,7 +542,10 @@ export class BacklogBoard {
     const doc = this.doc;
     if (!doc) return [];
     const labels = [...new Set(doc.items.flatMap((i) => i.labels))].sort((a, b) => a.localeCompare(b, "ja"));
-    const entries: MenuEntry[] = [];
+    const entries: MenuEntry[] = [
+      { type: "input", label: "番号で開く", placeholder: "#42 で開く", testid: "backlog-jump", onEnter: (v) => this.openByNumber(v) },
+      { type: "sep" },
+    ];
     if (doc.milestones.length > 0) {
       entries.push({ type: "label", text: "マイルストーン" });
       for (const m of [...doc.milestones, { id: "none", title: "マイルストーン無し" }]) {
@@ -665,7 +685,7 @@ export class BacklogBoard {
     if (doc.items.length > 0) {
       out.push(this.renderGroups(doc, groups.filter((g) => g.nodes.length > 0 || g.composerMilestone !== undefined)));
     }
-    out.push(h("p", { class: "keys", text: "↑↓ で選ぶ　Enter で開く　Esc で閉じる　C で足す　行はつかんで並べ替え（上ほど先にやる）" }));
+    out.push(h("p", { class: "keys", text: "↑↓ で選ぶ　Enter で開く　Esc で閉じる　C で足す　# で番号から開く　行はつかんで並べ替え（上ほど先にやる）" }));
     return out;
   }
 
@@ -822,6 +842,7 @@ export class BacklogBoard {
           "button",
           { class: "closed-row", attrs: { type: "button" }, data: { focus: `row:${k.id}`, ...(this.selectedId === k.id ? { selected: "" } : {}) } },
           rankMark(rankState(k, items), true),
+          numberTag(k),
           h("span", { class: "t", text: k.title }),
         );
         b.addEventListener("click", () => this.select(k.id, true));
@@ -908,6 +929,7 @@ export class BacklogBoard {
         data: { testid: "backlog-row-open", focus: `row:${item.id}` },
       },
       itemMark(item, items, depth === 1),
+      numberTag(item),
       item.kind === "bug" ? bugTag() : null,
       node.story ? h("span", { class: "row-story", text: node.story, title: node.story, data: { testid: "backlog-row-story" } }) : null,
       node.story ? h("span", { class: "row-sep", text: "／", attrs: { "aria-hidden": "true" } }) : null,
@@ -1121,7 +1143,7 @@ export class BacklogBoard {
     const parent = item.parent ? items.find((i) => i.id === item.parent) : undefined;
     const closed = isClosed(item);
 
-    const where = h("p", { class: "where" });
+    const where = h("p", { class: "where", data: { testid: "backlog-detail-where" } }, numberTag(item));
     if (parent) {
       const b = h("button", { text: parent.title, attrs: { type: "button" }, data: { testid: "backlog-detail-parent" } });
       b.addEventListener("click", () => this.select(parent.id, true));
@@ -1405,6 +1427,7 @@ export class BacklogBoard {
   private itemLine(item: BacklogItem, items: readonly BacklogItem[], opts: { self?: boolean; onRemove?: () => void } = {}): HTMLElement {
     const content: Child[] = [
       itemMark(item, items, true),
+      numberTag(item),
       h("span", { class: opts.self ? "t self" : "t", text: item.title }),
       h("span", { class: "s", text: RANK_STATE_LABEL[rankState(item, items)] }),
     ];

@@ -46,6 +46,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .icon { width: 14px; height: 14px; flex: none; }
 .icon-md { width: 16px; height: 16px; flex: none; }
 .mono { font-family: var(--mono); }
+.num { flex: none; font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
@@ -233,6 +234,7 @@ ul.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction
 .detail-top .where { flex: 1; min-width: 0; margin: 0; font-size: var(--t-xs); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-top .where button { border: 0; background: none; padding: 0; font-size: inherit; color: inherit; cursor: pointer; border-radius: var(--r-sm); }
 .detail-top .where button:hover { color: var(--ink); }
+.detail-top .where .num { margin-right: 8px; }
 .detail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px 24px; }
 .detail-title { margin: 0; font-size: var(--h-sm); font-weight: 600; line-height: 1.4; color: var(--ink); border-radius: var(--r-sm); cursor: text; }
 .detail-title:hover { background: var(--bg-2); }

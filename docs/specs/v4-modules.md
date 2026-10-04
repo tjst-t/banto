@@ -2115,8 +2115,9 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
   - 書く：`git hash-object -w --stdin` → `git mktree` → `git commit-tree`（親は読んだときのコミット。無ければ親なし＝orphan）→
     `git update-ref refs/heads/<b> <新> <読んだときの古い値>`（**compare-and-swap**。無かったなら「まだ無いこと」を確かめる）。
     **先を越されたら読み直して操作をやり直す**（5回まで）
-  - コミットメッセージは操作の要約（`backlog: createItem <id>`・`backlog: updateItem <id>（status → done・title）`・
-    `backlog: splitStory <id>（n 件）`・`backlog: moveItem <id>（<相手> の前）`）、作者・コミッターは `banto <banto@localhost>`
+  - コミットメッセージは操作の要約（`backlog: createItem #<番号> <id>`・`backlog: updateItem #<番号> <id>（status → done・title）`・
+    `backlog: splitStory #<番号> <id>（n 件）`・`backlog: moveItem #<番号> <id>（#<番号> <相手> の前）`。番号の無い古い項目は
+    `<id>` だけ）、作者・コミッターは `banto <banto@localhost>`
 - これで **main・worktree・どのブランチを checkout していても正本は1つ**、コードの取り込み（merge・rebase）でぶつからない、
   誰がコミットするかを決めなくてよい。**プロセスの中の1本の列**（書く操作の直列化）は残す——同じ Project の Thread が同時に
   触っても、列の中ではやり直しが起きない（compare-and-swap が効くのは、別のプロセス・人の git とぶつかったとき）
@@ -2152,6 +2153,7 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
   "items": [
     {
       "id": "repositories-next",
+      "number": 29,
       "kind": "story",
       "title": "Repositories の続き",
       "status": "in-progress",
@@ -2175,6 +2177,7 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
 | 欄 | 中身 |
 |---|---|
 | `id` | 読める名前（slug）。GitHub 等に載せ替えたときは、実装が Issue の番号との対応を持つ |
+| `number` | 通し番号（正の整数。画面では `#42`）。作るときに振り、人も AI も書き換えない（下の「番号」） |
 | `kind` | `story`・`task`・`bug` |
 | `status` | `backlog`（積んだだけ）・`ready`（着手できる）・`in-progress`・`done`・`dropped`（やめた） |
 | `parent` | 親のストーリー（タスクだけ。無くてよい） |
@@ -2190,6 +2193,26 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
 
 **入れないもの**：スプリント・ストーリーポイント・作業時間・独自のワークフロー・コンポーネント・コメント・変更履歴
 （履歴は git、GitHub をバックエンドにしたら向こうのコメント）。
+
+#### 番号（決定・2026-10-04、ユーザー）
+
+`id`（読める slug）は残したまま、項目に**通し番号 `number`** を持たせる。人と AI が短く指す（「#42」）ため。
+
+- **振る**：作るとき（`createItem`・`splitStory`・人の画面の「足す」）に**いまある最大の `number` ＋1**。`splitStory` は
+  続き番号。**閉じた・やめた項目の番号も使い直さない**（最大は閉じたものも含めて数える）。振るのは書き込みの
+  compare-and-swap の中——**先を越されたら読み直して振り直す**ので、別のプロセス・人の git と同時でも重ならない
+- **書き換えられない**：`updateItem`・`createItem` に `number` を渡すと断る（人の画面の口も同じ）
+- **検証**：重なった番号・0 以下は断る（理由を言う）。整数でない値は読まない（型の違い）。**手で入った前からある問題は、
+  関係のない変更を止めない**（店の決まりどおり）
+- **番号の無い項目も読める**（振る前の古い形）。書くときも、番号の無い項目には欄を書かない（振るまでの書き込みで、全部の
+  項目に `null` の差分を出さない）
+- **一度だけの振り直し**（`scripts/assign-numbers.mjs --repo <根> [--branch backlog] [--legacy <rev>:<path>] [--push]`）：
+  番号の無い項目に、いまある最大＋1 から**作った順**で振る。`createdAt` の無い（古い）項目が先で、その中は `--legacy`
+  （Backlog の形に移す前の tasks.json の `tasks` の並び。id で合わせ、合わなかった古い行は同じ題の項目に合わせる——移すときに
+  重なった id を付け直したもの）の順、古い一覧にも無いものはその後ろに今の並びで。次に `createdAt` のある項目を
+  `createdAt` の順。**番号がある項目は変えない**——何度流しても同じ結果（振るものが無ければコミットしない）。書き方は
+  移すスクリプトと同じ（作業ツリー・index に触らず1コミット、compare-and-swap、先を越されたら読み直して振り直す）
+- 並び順（＝優先順）は番号と関係ない——並びはファイルの中の順のまま
 
 #### いまの docs/tasks.json の移し方
 
@@ -2213,6 +2236,11 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
 
 **消す tool は作らない。** 要らなくなったものは `dropped` で閉じれば記録が残る。
 
+**項目は id でも番号でも指せる**（2026-10-04）：id を受ける所（`getItem`・`updateItem` の `id`・`moveItem` の `id`・`before`・
+`after`・`splitStory` の `storyId`・`createItem`／`updateItem`／`splitStory` の `parent`・`dependsOn`・`listItems` の `parent`）は、
+番号（`42` か `"#42"`）も受ける。文字列は**まず id として**探し（数字だけの id もありうる）、無ければ番号として読む。
+引くのは書く直前に読んだ一覧に対して（やり直しのたびに引き直す）で、**ブランチには id で書く**。
+
 #### 実装（2026-10-03）
 
 `packages/modules/backlog`（`@banto/module-backlog`）。**目録に置く**（`BUNDLED_CATALOG` の `backlog`、既定には入れない
@@ -2235,6 +2263,7 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
   - `dependsOn` は在る項目だけ・自分を含む輪は断る（輪の経路を言う）
   - `dropped` には `resolution`（やめた理由）が要る。閉じると `closedAt`、開き直すと `closedAt` と `resolution` を消す
   - `milestone` は `milestones` に在るものだけ
+  - `number` は重ならない・1 以上（上の「番号」）
 - **手で入った前からある問題は、関係のない変更を止めない**——変える前に無かった問題が、変えた後に増えるときだけ断る。
   前からある問題は読むたびに AI（`listItems` の返り値）と人（画面の上の注意）に知らせる
 - **ブランチが無い**：一覧は空として返し「まだ一覧のブランチ <b> がありません」と言う。最初の作成で orphan のコミットを作る
@@ -2246,9 +2275,9 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
 - 形に足したもの（`banto-backlog/1` のまま）：
   - いちばん外側の **`extra`**——移したときの古い見出し（`phaseN`・`$comment` 等）を落とさずに運ぶ。中身は読まない
   - `createdAt`・`updatedAt` は **`null` を許す**——古い形から移したもので日時が分からないとき（作らない）
-  - 欄が省かれた項目は既定（空の配列・`null`・`normal`）で読む。書くときは全部の欄を書く
+  - 欄が省かれた項目は既定（空の配列・`null`・`normal`）で読む。書くときは全部の欄を書く（`number` の無い項目の `number` だけは書かない）
 
-**AI の tool**（`agent`。上の表の6本）——返り値は短い文（1項目1行：`id [状態] 題 (種類) 親: 待ち:`）と、
+**AI の tool**（`agent`。上の表の6本）——返り値は短い文（1項目1行：`#番号 id [状態] 題 (種類) 親: 待ち:`。番号の無い古い項目は `id` から）と、
 同じものの構造（`structuredContent`）。`listItems` は既定で閉じていないものだけ、`status` を渡すと閉じたものも絞れる。
 `splitStory` のタスク間の依存は `waitsFor`（同じ回のタスクの番号）、すでにある項目への依存は `dependsOn`。
 `moveItem` は `before` か `after` のどちらか1つ。`updateItem` の `dependsOn` は全体の張り替え。
@@ -2271,6 +2300,10 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 バグ／閉じたもの）・1項目1行・状態の輪とストーリーの角の丸い四角（子の終わった割合だけ下から満ちる）・次にやるで
 タスクの頭にストーリー名・詳細は一覧を離れずに右に出す（Canvas が 48rem 未満なら一覧と入れ替わる）・キー操作
 （↑↓ j/k Enter Esc C）・ドラッグと行のメニューで並べ替え（同じ段の中だけ）・その場で足す・タスクに分ける・やめる＋理由。
+**番号**（2026-10-04）：一覧の各行（ストーリー・閉じたタスクの行も）の題の前、詳細の題の上の行（親のパンくず）、依存・
+タスクの行、候補の小窓の行に、薄く等幅の `#42`（番号の無い古い項目は出さない）。候補の小窓は番号（`42`・`#42`）でも引ける。
+**`#` を押すと絞り込みの小窓の先頭「番号で開く」の欄が開き**、番号を打って Enter でその項目の詳細を開く（どの見方にいても。
+無い番号は知らせる）。
 **AI や手で変わったものを出すため、画面が見えている間は3秒ごとに読み直す**（版が同じなら中身は送られない。
 打っている途中・小窓・ドラッグの間は当てない）。ブランチが無いときは「足す」へ誘い（作業ツリーに一覧が残っていれば移す
 コマンドも）、読めない形のときは理由と変換のコマンドだけを出して、足す・見方を出さない。見出しの横に**ブランチ名**。
@@ -2292,6 +2325,8 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 
 **移すスクリプト**（`packages/modules/backlog/scripts/move-to-branch.mjs`）：作業ツリーの tasks.json を一覧のブランチへ
 （上の「置き場」の「ブランチが無い」）。
+
+**番号を振るスクリプト**（`packages/modules/backlog/scripts/assign-numbers.mjs`）：番号の無い項目に一度だけ振る（上の「番号」）。
 
 #### まだ決めていない
 

@@ -100,6 +100,8 @@ test("compare-and-swap：読んだあとに別の書き手が先にブランチ�
   );
   assert.equal(calls, 2, "やり直していない");
   assert.deepEqual(onBranch().items.map((i) => i.id), ["base", "other-writer", "mine"]);
+  // 番号はやり直しの中で振り直す——1回目に振った #2 は先を越した項目のもの
+  assert.deepEqual(onBranch().items.map((i) => i.number), [1, 2, 3]);
   assert.equal(written.commit, head());
   assert.equal(git(root, "rev-list", "--count", "backlog"), "3");
 
@@ -107,6 +109,7 @@ test("compare-and-swap：読んだあとに別の書き手が先にブランチ�
   const second = new BacklogStore({ root, branch: () => "backlog" });
   await Promise.all(Array.from({ length: 8 }, (_, n) => add(n % 2 === 0 ? store : second, `Race ${n}`)));
   assert.equal(onBranch().items.length, 11);
+  assert.deepEqual(onBranch().items.map((i) => i.number).sort((x, y) => x! - y!), Array.from({ length: 11 }, (_, n) => n + 1), "番号が重なった");
 });
 
 test("作業ツリーにも index にも触らない——未コミットの変更・HEAD・index はそのまま", async () => {

@@ -31,6 +31,11 @@ export interface BacklogThreadRef {
 
 export interface BacklogItem {
   id: string;
+  /**
+   * 通し番号（画面の `#42`）。作るときに「いまある最大＋1」を振り、人も AI も書き換えない。
+   * 番号を振る前の古い形から読んだものだけ `null`（scripts/assign-numbers.mjs で振る）
+   */
+  number: number | null;
   kind: BacklogKind;
   title: string;
   status: BacklogStatus;
@@ -63,6 +68,7 @@ export interface BacklogDocument {
 /** 書くときの欄の順（git の差分が読めるように固定する） */
 export const ITEM_FIELDS = [
   "id",
+  "number",
   "kind",
   "title",
   "status",
@@ -226,6 +232,9 @@ function parseItem(it: unknown, at: string): BacklogItem | string {
   }
   const extra = it.extra ?? {};
   if (!isRecord(extra)) return `${where}.extra がオブジェクトではありません`;
+  // 0 以下・重なりは型ではなく決まりの違反——検証で言う（手で入ったものが、関係のない変更を止めないように）
+  const number = it.number ?? null;
+  if (number !== null && !Number.isInteger(number)) return `${where}.number が整数ではありません`;
 
   const fields = {
     parent: nullableStr("parent"),
@@ -244,6 +253,7 @@ function parseItem(it: unknown, at: string): BacklogItem | string {
   const f = fields as { [K in keyof typeof fields]: Exclude<(typeof fields)[K], Error> };
   return {
     id: it.id,
+    number: number as number | null,
     kind: it.kind,
     title: it.title,
     status: it.status,
@@ -271,7 +281,10 @@ export function serializeDocument(doc: BacklogDocument): string {
   const ordered = {
     format: doc.format,
     milestones: doc.milestones.map((m) => ({ id: m.id, title: m.title, status: m.status })),
-    items: doc.items.map((item) => Object.fromEntries(ITEM_FIELDS.map((k) => [k, item[k]]))),
+    // 番号の無い（振る前の）項目は欄ごと書かない——振るまでの書き込みで、全部の項目に null の差分を出さない
+    items: doc.items.map((item) =>
+      Object.fromEntries(ITEM_FIELDS.filter((k) => !(k === "number" && item.number === null)).map((k) => [k, item[k]])),
+    ),
     ...(doc.extra !== undefined ? { extra: doc.extra } : {}),
   };
   return `${JSON.stringify(ordered, null, 2)}\n`;
@@ -298,6 +311,13 @@ export function validateDocument(doc: BacklogDocument): string[] {
     if (byId.has(item.id)) problems.push(`id「${item.id}」が2つあります`);
     else byId.set(item.id, item);
   }
+  const byNumber = new Map<number, string[]>();
+  for (const item of doc.items) {
+    if (item.number === null) continue;
+    if (item.number <= 0) problems.push(`「${item.id}」の番号 ${item.number} は使えません（1 からの整数）`);
+    else byNumber.set(item.number, [...(byNumber.get(item.number) ?? []), item.id]);
+  }
+  for (const [n, ids] of byNumber) if (ids.length > 1) problems.push(`番号 #${n} が ${ids.length} つあります（${ids.join("・")}）`);
   const milestoneIds = new Set(doc.milestones.map((m) => m.id));
   const seenMilestones = new Set<string>();
   for (const m of doc.milestones) {
@@ -361,6 +381,42 @@ export function findCycles(items: readonly BacklogItem[]): string[][] {
 }
 
 // ---- 読み取りの道具（画面と tool が共有）---------------------------------------
+
+/** 画面と AI に見せる番号（`#42`）。番号の無い古い項目は空 */
+export function numberLabel(item: Pick<BacklogItem, "number">): string {
+  return item.number === null ? "" : `#${item.number}`;
+}
+
+/** 番号の書き方（`42`・`#42`）なら、その数。違えば undefined */
+export function parseNumberRef(text: string): number | undefined {
+  const m = /^#?([0-9]+)$/.exec(text.trim());
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
+/** 項目の指し方——id か番号（`42`・`"#42"`） */
+export type ItemRef = string | number;
+
+/**
+ * 指し方から項目を引く。文字列は**まず id として**探し（数字だけの id もありうる）、無ければ番号の書き方として読む。
+ * 見つからなければ理由を言って断る
+ */
+export function findItem(items: readonly BacklogItem[], ref: ItemRef): BacklogItem {
+  const byId = typeof ref === "string" ? items.find((i) => i.id === ref) : undefined;
+  if (byId) return byId;
+  const n = typeof ref === "number" ? (Number.isSafeInteger(ref) && ref > 0 ? ref : undefined) : parseNumberRef(ref);
+  const byNumber = n === undefined ? undefined : items.find((i) => i.number === n);
+  if (byNumber) return byNumber;
+  throw new BacklogError(`項目「${typeof ref === "number" ? `#${ref}` : ref}」がありません`);
+}
+
+/** 次に振る番号——いまある最大＋1（閉じた・やめた項目の番号も使い直さない） */
+export function nextNumber(items: readonly BacklogItem[]): number {
+  let max = 0;
+  for (const i of items) if (i.number !== null && i.number > max) max = i.number;
+  return max + 1;
+}
 
 export function isClosed(item: Pick<BacklogItem, "status">): boolean {
   return item.status === "done" || item.status === "dropped";
@@ -464,6 +520,7 @@ function buildItem(
   input: NewItemInput,
   now: string,
   taken: Set<string>,
+  number: number,
   thread?: BacklogThreadRef,
 ): BacklogItem {
   const title = input.title.trim();
@@ -482,6 +539,7 @@ function buildItem(
   const status = input.status ?? "backlog";
   return {
     id,
+    number,
     kind: input.kind,
     title,
     status,
@@ -510,7 +568,7 @@ export function createItem(
   now: string,
   thread?: BacklogThreadRef,
 ): Change<BacklogItem> {
-  const item = buildItem(doc, input, now, new Set(doc.items.map((i) => i.id)), thread);
+  const item = buildItem(doc, input, now, new Set(doc.items.map((i) => i.id)), nextNumber(doc.items), thread);
   const at = insertIndex(doc.items, item.parent);
   return { doc: { ...doc, items: [...doc.items.slice(0, at), item, ...doc.items.slice(at)] }, result: item };
 }
@@ -594,7 +652,8 @@ export function splitStory(
   if (story.kind !== "story") throw new BacklogError(`「${storyId}」はストーリーではありません（分けられるのはストーリーだけ）`);
   if (tasks.length === 0) throw new BacklogError("分けるタスクが1つもありません");
   const taken = new Set(doc.items.map((i) => i.id));
-  const created: BacklogItem[] = tasks.map((t) =>
+  const first = nextNumber(doc.items);
+  const created: BacklogItem[] = tasks.map((t, i) =>
     buildItem(
       doc,
       {
@@ -611,6 +670,7 @@ export function splitStory(
       },
       now,
       taken,
+      first + i,
     ),
   );
   tasks.forEach((t, i) => {
@@ -643,4 +703,45 @@ export function moveItem(
   const t = rest.findIndex((i) => i.id === targetId);
   const at = where === "before" ? t : t + 1;
   return { doc: { ...doc, items: [...rest.slice(0, at), moving, ...rest.slice(at)] }, result: moving };
+}
+
+/** 古い一覧の1件（振り直しの順に使う）——id と題だけ */
+export interface LegacyEntry {
+  id: string;
+  title: string;
+}
+
+/**
+ * 番号の無い項目に、**作った順**で番号を振る（一度だけの振り直し、scripts/assign-numbers.mjs）。
+ * - 振るのは「いまある最大＋1」から。番号がある項目は変えない（何度流しても同じ結果）
+ * - 順：createdAt の無い（古い）項目が先。その中は `legacy`（Backlog の形に移す前の一覧）の並び——id で合わせ、
+ *   合わなかった古い行は同じ題の項目に合わせる（移すときに重なった id を付け直したもの）。古い一覧にも無いものは、
+ *   その後ろに今の並びで。次に createdAt のある項目を createdAt の順（同じなら今の並び）
+ */
+export function assignMissingNumbers(doc: BacklogDocument, legacy: readonly LegacyEntry[] = []): Change<BacklogItem[]> {
+  const missing = doc.items.filter((i) => i.number === null);
+  const undated = missing.filter((i) => i.createdAt === null);
+  const rank = new Map<string, number>();
+  const unmatched: { index: number; title: string }[] = [];
+  legacy.forEach((e, index) => {
+    if (!rank.has(e.id) && undated.some((i) => i.id === e.id)) rank.set(e.id, index);
+    else unmatched.push({ index, title: e.title });
+  });
+  for (const e of unmatched) {
+    const same = undated.find((i) => !rank.has(i.id) && i.title === e.title);
+    if (same) rank.set(same.id, e.index);
+  }
+  const position = new Map(doc.items.map((i, index) => [i.id, index]));
+  const byPosition = (a: BacklogItem, b: BacklogItem) => position.get(a.id)! - position.get(b.id)!;
+  const ordered = [
+    ...undated.filter((i) => rank.has(i.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!),
+    ...undated.filter((i) => !rank.has(i.id)).sort(byPosition),
+    ...missing
+      .filter((i) => i.createdAt !== null)
+      .sort((a, b) => (a.createdAt! < b.createdAt! ? -1 : a.createdAt! > b.createdAt! ? 1 : byPosition(a, b))),
+  ];
+  const first = nextNumber(doc.items);
+  const numbers = new Map(ordered.map((i, n) => [i.id, first + n]));
+  const items = doc.items.map((i) => (numbers.has(i.id) ? { ...i, number: numbers.get(i.id)! } : i));
+  return { doc: { ...doc, items }, result: ordered.map((i) => items.find((x) => x.id === i.id)!) };
 }

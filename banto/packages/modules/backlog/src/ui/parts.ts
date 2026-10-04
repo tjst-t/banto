@@ -7,6 +7,7 @@
 
 import {
   childrenOf,
+  numberLabel,
   rankState,
   type BacklogItem,
   type BacklogKind,
@@ -48,6 +49,12 @@ function svgEl(tag: string, attrs: Record<string, string | number>): SVGElement 
 
 function circle(c: number, r: number, extra: Record<string, string | number>): SVGElement {
   return svgEl("circle", { cx: c, cy: c, r, fill: "none", stroke: "currentColor", ...extra });
+}
+
+/** 通し番号（`#42`）。題の前に薄く、等幅の数字で。番号の無い古い項目は何も出さない */
+export function numberTag(item: Pick<BacklogItem, "number">): HTMLElement | null {
+  if (item.number === null) return null;
+  return h("span", { class: "num", text: numberLabel(item), data: { testid: "backlog-number" } });
 }
 
 /** 状態の印（タスク・バグ）。一覧で 22px、子の行と札では 18px */
