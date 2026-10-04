@@ -254,7 +254,7 @@ node -e '
   const del = s.mutations.filter((m) => m[0] === "DELETE").map((m) => m[2]);
   const ok = del.length === 1 && del[0] === d3 && s.records.some((r) => r.name === `*.${d3}`) && s.records.some((r) => r.name === d4 && r.comment === "banto install.sh");
   process.exit(ok ? 0 : 1)' "$st" "$D3" "$D4" && pass "token：前の名前は印つきの $D3 だけ消した" || fail "token：偽物の状態：$st"
-grep -A3 '残っている DNS のレコード' "$LOG/run6.log" | grep -q "\*\.$D3" && pass "token：最後の画面に残っている *.$D3 を出す" || fail "token：残っているレコードが出ない"
+grep -A3 '残っている DNS のレコード' "$LOG/run6.log" | grep "\*\.$D3" >/dev/null && pass "token：最後の画面に残っている *.$D3 を出す" || fail "token：残っているレコードが出ない"
 
 note "--no-cloudflare で内部の CA に戻す"
 rc=$(run_install run7 --no-cloudflare --no-claude-login)

@@ -62,7 +62,11 @@ if [[ $MODE == full ]]; then
   ! grep -qi 'token' /etc/banto/install.conf && pass "b: install.conf にトークンの項目が無い" || fail "b: install.conf：$(cat /etc/banto/install.conf)"
   # config.json の口と置き場（真実）を、unit・nftables・Caddy が使っている
   read -r cport cuport crel < <(node -e 'const c = require(process.argv[1]); console.log(c.port, c.uiPort, c.releaseDir)' "$HOME/.config/banto/config.json")
-  if [[ $cport == 4737 && $cuport == 4175 && $crel == "$REL" ]] && systemctl cat banto-frontend | grep -q -- "-p $cuport" && sudo nft list table inet banto | grep -q "$cport"; then
+  # 出力を先に変数に取ってから見る（`… | grep -q` は grep が先に終わると左が SIGPIPE で落ち、pipefail で偽になる——
+  # 4回目の試験で1度だけ落ちた）
+  unit_text=$(systemctl cat banto-frontend)
+  nft_text=$(sudo nft list table inet banto)
+  if [[ $cport == 4737 && $cuport == 4175 && $crel == "$REL" && $unit_text == *"-p $cuport"* && $nft_text == *"$cport"* ]]; then
     pass "b: config.json に port・uiPort・releaseDir があり、unit と nftables がそれを使う"
   else
     fail "b: config.json の口と置き場：$cport $cuport $crel"

@@ -60,6 +60,16 @@ install.sh はこれに合わせる（「上げる」段の差し替え先）：
 - 改訂：unit は `banto-update.service` 1本（template ではない）。polkit は banto-update.service の start と banto-host・banto-frontend の restart だけ。root の段は無い
 - fork/self-update に入った（f5f5ea52 update.mjs、2e596626 setup-update.sh、レビュー前）。main に入るのを待って取り込む。setup-update.sh は sudo 経由で動き root 直は断る、1回目に REL を versions の形へ移すので 2回目からは `<releaseDir>/current/banto/scripts/setup-update.sh` を呼ぶ。update.mjs は config の `uiPort`（無ければ 4175）で画面の口を確かめる
 
+### main に入った形（f408e782、2026-10-04 12:00、Fork「設定から最新版に更新」からの知らせ）
+- unit は `update.mjs --from-request` で起こす。初回は `--first`
+- setup-update.sh は root の段（polkitd・banto-update.service・polkit・pkcheck）を先に済ませ、置き場を動かすのは後。打ち直しで続きから。**置き場の外に写してから打つ**（1回目は置き場そのものを動かす）
+- 画面のポート：setup-update.sh が banto-frontend.service の起動の仕方から読んで banto-update.service に `BANTO_UPDATE_UI_URL` を書く。読めないと止まるので install.sh は `BANTO_UI_URL=http://127.0.0.1:<port>/` を渡す
+- 起きた判定：unit が failed・inactive・auto-restart・NRestarts 増 → すぐ戻す。起動中は最大600秒。HTTP は GET /api/admin/update の current.commit と画面の口
+- 古い版はコンテナの装置が指していれば消さない
+- banto-update.service：Nice=10・IOSchedulingClass=idle・CPUWeight=20。polkit は banto-update の start・stop、banto-host・banto-frontend の restart だけ
+- bootstrap config に `releaseDir`（既定 ~/.local/share/banto-release）
+- 詳しくは docs/runbooks/release.md D と v4-architecture.md §2.5
+
 ## 試験の場（Memory「インストール用スクリプトの事実と試し方」）
 
 この Project のコンテナの中の Incus（`sudo incus`）に、入れ子のシステムコンテナ（`security.nesting=true`、
@@ -256,3 +266,8 @@ arm64・Claude のログインそのもの（`claude auth login` があること
   Incus のブリッジ（`incusbr-1001`）のアドレスを拾い、**「外から 4737 に届かない」が何も見ていないのに通っていた**。
   1回目・2回目は順番の都合で eth0 を拾っていた。対照に置いた「外から 443 は通る」「表を消すと届く」が落ちて気づいた
   ——eth0 のアドレスを取るように直した
+- **パイプの右の `grep -q` は pipefail の下で偽になりうる**（4回目の試験の「config.json の口」が1度だけ落ちた——値は
+  正しく、`systemctl cat … | grep -q` で grep が先に終わり、左が SIGPIPE で落ちた）。試験だけでなく **install.sh にも
+  同じ形があった**（`caddy list-modules | grep -qx dns.providers.cloudflare` は出力が長く、落ちると「Cloudflare の DNS が
+  入っていません」で止まるか、Caddy を取り直す）。`grep … >/dev/null`（入力を最後まで読む）に直した。
+  落ちたのは 4 回の試験のうち 1 回・1 箇所（規則6：間欠的な落ち方は機構の壊れ——待ち・やり直しではなく形を直した）

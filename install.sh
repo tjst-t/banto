@@ -132,7 +132,9 @@ put_root_file() {
   rm -f "$tmp"
 }
 
-pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
+# **パイプの右に grep -q を置かない**：pipefail の下では、grep -q が先に終わると左が SIGPIPE で落ち、見つかったのに
+# 偽になる（試験で1度落ちた）。grep … >/dev/null は入力を最後まで読む
+pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep 'install ok installed' >/dev/null; }
 
 APT_UPDATED=0
 apt_update() {
@@ -613,7 +615,7 @@ EOF
     sudo incus admin init --minimal </dev/null
   fi
 
-  if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx incus; then
+  if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -x incus >/dev/null; then
     sudo usermod -aG incus "$USER_NAME"
     say "$USER_NAME を incus グループに入れた（banto の unit は起動のたびにグループを引き直すので、ログインし直さなくてよい）"
   fi
@@ -685,7 +687,7 @@ EOF
 
 step_caddy_install() {
   step "Caddy を入れる"
-  if [[ -x $CADDY_BIN ]] && "$CADDY_BIN" list-modules 2>/dev/null | grep -qx dns.providers.cloudflare; then
+  if [[ -x $CADDY_BIN ]] && "$CADDY_BIN" list-modules 2>/dev/null | grep -x dns.providers.cloudflare >/dev/null; then
     ok "入っている（$("$CADDY_BIN" version | cut -d' ' -f1)、Cloudflare の DNS 入り。上げ方は docs/runbooks/install.md）"
   else
     local tmp got
@@ -694,7 +696,7 @@ step_caddy_install() {
     curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=$CADDY_ARCH&p=github.com%2Fcaddy-dns%2Fcloudflare" -o "$tmp" ||
       die "Caddy を取ってこられませんでした" "https://caddyserver.com に届くか確かめてください"
     chmod +x "$tmp"
-    "$tmp" list-modules 2>/dev/null | grep -qx dns.providers.cloudflare || die "取ってきた Caddy に Cloudflare の DNS が入っていません" "時間をおいて打ち直してください"
+    "$tmp" list-modules 2>/dev/null | grep -x dns.providers.cloudflare >/dev/null || die "取ってきた Caddy に Cloudflare の DNS が入っていません" "時間をおいて打ち直してください"
     got=$("$tmp" version | cut -d' ' -f1)
     version_at_least "${got#v}" "$CADDY_MIN_VERSION" || die "取ってきた Caddy $got は banto が要る $CADDY_MIN_VERSION より古い" "時間をおいて打ち直してください"
     sudo install -m 755 "$tmp" "$CADDY_BIN"
@@ -985,7 +987,7 @@ step_https() {
     rm -f "$backup"
     printf '%s\n' "$vout" | tail -5 | sed 's/^/    /' >&2
     local hint="上の Caddy のエラー（どのファイルの何行目か）を見て、/etc/caddy/Caddyfile の側を直してください（banto の設定は install.sh が作るので手で直さない）"
-    if sudo grep -v '^[[:space:]]*#' /etc/caddy/Caddyfile | grep -qF "$DOMAIN"; then
+    if sudo grep -v '^[[:space:]]*#' /etc/caddy/Caddyfile | grep -F "$DOMAIN" >/dev/null; then
       hint="/etc/caddy/Caddyfile に $DOMAIN のサイトが既にあります。banto の設定は /etc/caddy/banto.d/banto.caddy に作るので、Caddyfile から $DOMAIN・sandbox.$DOMAIN・*.$DOMAIN のサイトを消してから打ち直してください"
     fi
     die "Caddy が設定を受け付けませんでした（banto の設定は元に戻した）" "$hint"
@@ -1183,7 +1185,7 @@ step_firewall() {
   # core は 0.0.0.0 で待つ（Project のコンテナがブリッジ越しに /relay へ来る）。lo と Incus のブリッジ以外から落とす
   apply_firewall
   ok "$FIREWALL_BRIDGES 以外から $PORT_HOST・$PORT_SANDBOX・$PORT_UI へ来たものを落とす（banto-firewall.service）"
-  if sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+  if sudo ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then
     warn "ufw が有効です。ufw は banto の表とは別に判断し、Incus のブリッジから host への DHCP・DNS・/relay を落とすことがあります。"
     warn "直し方（ブリッジごとに）：sudo ufw allow in on incusbr0 && sudo ufw route allow in on incusbr0 && sudo ufw route allow out on incusbr0"
     warn "（ブリッジの名前は incus network list で見る。banto のユーザーの区画のブリッジ incusbr-$USER_UID も同じように）"
