@@ -332,6 +332,16 @@ test("すぐ更新：途中で切れる会話を確かめてから頼む。起�
   writeState({ ...base, phase: "restart" });
   const overlay = page.getByTestId("update-reconnecting");
   await expect(overlay).toContainText("繋がり直すのを待っています", { timeout: 15_000 });
+  // 画面全体を覆う——左の Project の列の上でも、いちばん上にあるのは待つ画面（列が上に描かれて押せる、にしない）
+  const onTop = await page.evaluate(() =>
+    [
+      [40, 140],
+      [130, 660],
+      [380, 300],
+      [900, 400],
+    ].map(([x, y]) => document.elementFromPoint(x!, y!)?.closest('[data-testid="update-reconnecting"]') !== null),
+  );
+  expect(onTop, "待つ画面の上に、ほかのものが描かれている").toEqual([true, true, true, true]);
 
   // host が居なくなる（起こし直し）。その間に update.mjs は前の版に戻して終わる
   await page.route("**/api/admin/update", (route) => route.abort("connectionrefused"));

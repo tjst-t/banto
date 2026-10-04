@@ -14,6 +14,7 @@
 // 真実は host（`GET /api/admin/update`。進み具合は `update.mjs` が書いた `state.json`）。画面は覚えない（規則3）。
 // **読みに行くのは走っている間だけ**——GET は host で git を数回打つので、止まっているときは読まない
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowUpCircle,
   Check,
@@ -890,9 +891,12 @@ function FailedCard({
   );
 }
 
-/** 起こし直し中——繋がりが一度切れるので、画面全体に「繋がり直すのを待っている」を出す */
+/**
+ * 起こし直し中——繋がりが一度切れるので、画面全体に「繋がり直すのを待っている」を出す。body に出す
+ * （設定の枠の中に置くと、左の Project の列が覆われずに押せてしまう）
+ */
 function ReconnectingOverlay() {
-  return (
+  return createPortal(
     <div
       data-testid="update-reconnecting"
       className="fixed inset-0 z-40 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
@@ -906,7 +910,8 @@ function ReconnectingOverlay() {
           繋がり直すのを待っています
         </p>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
