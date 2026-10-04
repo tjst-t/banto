@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowUpCircle, Bell, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -8,6 +8,7 @@ import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane
 import { NotificationSettingsPanel } from "@/components/banto/settings/notification-settings-panel";
 import { RoleList } from "@/components/banto/settings/role-list";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
+import { UpdatePanel } from "@/components/banto/settings/update-panel";
 import {
   SettingsShell,
   type SearchEntry,
@@ -39,6 +40,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "defaults", label: "既定値", icon: SlidersHorizontal },
   { section: "credentials", label: "資格情報", icon: Sparkles },
   { section: "notifications", label: "通知", icon: Bell },
+  { section: "update", label: "更新", icon: ArrowUpCircle },
 ];
 
 // 検索が右側の中身も対象にするための索引（レビュー指摘、2026-09-01）。
@@ -55,6 +57,8 @@ const RUNTIME_DEFAULT_ENTRIES = [
 ];
 
 const NOTIFICATION_ENTRIES = [{ label: "デスクトップ通知", anchorId: "anchor-notifications-permission" }];
+
+const UPDATE_ENTRIES = [{ label: "今の版" }, { label: "新しいコミット" }];
 
 function buildSearchEntries(): readonly SearchEntry[] {
   const roleEntries = getRoles().flatMap((role) => [
@@ -84,6 +88,8 @@ function buildSearchEntries(): readonly SearchEntry[] {
     anchorId: e.anchorId,
   }));
 
+  const updateEntries = UPDATE_ENTRIES.map((e) => ({ section: "update" as const, label: e.label }));
+
   const moduleConfigEntries = getConfigurableImplementations().flatMap((impl) =>
     (mockModuleConfigFields[impl.id] ?? []).map((field, i) => ({
       section: `module:${impl.id}` as const,
@@ -97,6 +103,7 @@ function buildSearchEntries(): readonly SearchEntry[] {
     ...defaultEntries,
     ...credentialEntries,
     ...notificationEntries,
+    ...updateEntries,
     ...moduleConfigEntries,
   ];
 }
@@ -152,6 +159,17 @@ function renderInstanceSection(section: SettingsSection) {
           description="判断待ち・レビュー待ちが新着したとき、受信箱のバッジ以外にも気づけるようにする。"
         />
         <NotificationSettingsPanel />
+      </div>
+    );
+  }
+  if (section === "update") {
+    return (
+      <div>
+        <SectionHeading
+          title="更新"
+          description="banto を GitHub の新しい版にします。押す前に、何が入るかを読めます。"
+        />
+        <UpdatePanel />
       </div>
     );
   }
