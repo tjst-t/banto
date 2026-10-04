@@ -1090,6 +1090,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         if (from === to) return { content: [{ type: "text", text: JSON.stringify({ ok: true, moved: false }) }] };
         // **先に衝突を見る**（規則2——黙って上書きしない）
         await assertPlaceIsFree(to);
+        // **元を指す参照があるなら、新しい場所を参照で指せるかを写す前に確かめる**（2026-10-04、
+        // レビュー）。写したあとで指し直しに失敗すると、元が2か所に残る
+        const links = isLink(meta) ? [] : (await registry.list()).filter((m) => isLink(m) && m.linkTo === from);
+        if (links.length > 0) await registry.assertCanLinkTo(to);
         await backend.createGroup(toGroup);
 
         if (isLink(meta)) {
@@ -1111,7 +1115,6 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         await registry.create({ ...meta, backendPath: to });
         // **元を指す参照は、新しい場所を指し直す**（2026-10-04）。**消す前に**——途中で
         // 落ちても、参照は古い元（まだ在る）か新しい元のどちらかを指していて切れない
-        const links = (await registry.list()).filter((m) => isLink(m) && m.linkTo === from);
         for (const link of links) await registry.retargetLink(link.backendPath, to);
         await backend.deleteSecret(from);
         await registry.delete(from);
@@ -1144,6 +1147,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const to = `${toGroup}/${toName}`;
         // **置く先に同じ名前があれば上書きせずに断る**（移すと同じ）
         await assertPlaceIsFree(to);
+        // **元を参照で指せるかを、グループを作る前に確かめる**（2026-10-04、レビュー）
+        // ——断る前に作ると、空のグループ（Infisical のフォルダ）が残る
+        await registry.assertCanLinkTo(origin.backendPath);
         await backend.createGroup(toGroup); // 名前の検査もここが持つ
         await registry.createLink({ name: toName, backendPath: to, linkTo: origin.backendPath });
         return {

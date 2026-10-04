@@ -51,25 +51,44 @@ function recordingBackend() {
     async listGroups() {
       return [];
     },
-    async createGroup() {},
+    async createGroup(name) {
+      calls.push(`createGroup ${name}`);
+    },
   };
   return { backend, secrets, calls };
 }
 
-async function withKit(fn: (c: Client, rec: ReturnType<typeof recordingBackend>) => Promise<void>): Promise<void> {
+/**
+ * 台帳を数え、**`.` を含む置き場は参照で指せない**と言う置き場（Infisical の制約の写し）。
+ */
+class CountingStore extends LocalFileAliasStore {
+  lists = 0;
+  override async list() {
+    this.lists++;
+    return super.list();
+  }
+  override async assertCanLinkTo(backendPath: string): Promise<void> {
+    if (backendPath.includes(".")) throw new Error(`参照で指せません: ${backendPath}`);
+  }
+}
+
+async function withKit(
+  fn: (c: Client, rec: ReturnType<typeof recordingBackend>, store: CountingStore) => Promise<void>,
+): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "vault-kit-link-"));
   try {
     const rec = recordingBackend();
+    const store = new CountingStore(dir);
     const server = createVaultModuleServer({
       moduleName: "vault-test",
       backend: rec.backend,
-      aliasStore: new LocalFileAliasStore(dir),
+      aliasStore: store,
       dataDir: dir,
     });
     const [s, c] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0.0.0" });
     await Promise.all([server.connect(s), client.connect(c)]);
-    await fn(client, rec);
+    await fn(client, rec, store);
     await client.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -87,7 +106,8 @@ test("参照を作る・移す・消すは、backend の秘密に触らない（
     await call(c, "linkAlias", { name: "tok", group: "src", toGroup: "dst" });
     await call(c, "migrateAlias", { name: "tok", group: "dst", toGroup: "dst2" });
     await call(c, "deleteAlias", { name: "tok", group: "dst2" });
-    assert.deepEqual(rec.calls, [], `参照の操作が backend の秘密に触った: ${rec.calls.join(", ")}`);
+    const touched = rec.calls.filter((x) => !x.startsWith("createGroup "));
+    assert.deepEqual(touched, [], `参照の操作が backend の秘密に触った: ${touched.join(", ")}`);
     assert.deepEqual([...rec.secrets.keys()], ["src/tok"], "元が残っていない、か値が写された");
   });
 });
@@ -121,5 +141,44 @@ test("元を移すと参照は指し直す——消す前に（途中で落ち�
       linkTo?: { group: string };
     }>;
     assert.equal(list.find((a) => a.group === "dst")!.linkTo!.group, "moved");
+  });
+});
+
+test("参照から引くとき、台帳は1回しか読まない（元を引くのに読み直さない）", async () => {
+  await withKit(async (c, _rec, store) => {
+    await call(c, "createAlias", { name: "tok", kind: "secret", group: "src", value: "v1" });
+    await call(c, "linkAlias", { name: "tok", group: "src", toGroup: "dst" });
+    for (const [tool, args] of [
+      ["resolveAlias", { name: "tok", group: "dst" }],
+      ["verify", { alias: "tok", group: "dst", payload: "p", signature: "00" }],
+    ] as const) {
+      store.lists = 0;
+      await call(c, tool, args);
+      assert.equal(store.lists, 1, `${tool} が台帳を ${store.lists} 回読んだ`);
+    }
+  });
+});
+
+test("指されている元を、参照で指せない置き場へは移さない——写す前に断り、元は1か所のまま", async () => {
+  await withKit(async (c, rec) => {
+    await call(c, "createAlias", { name: "tok", kind: "secret", group: "src", value: "v1" });
+    await call(c, "linkAlias", { name: "tok", group: "src", toGroup: "dst" });
+    rec.calls.length = 0;
+    await assert.rejects(() => call(c, "migrateAlias", { name: "tok", group: "src", toGroup: "a.b" }), /参照で指せません: a\.b\/tok/);
+    assert.deepEqual(rec.calls, [], `断る前に backend に触った: ${rec.calls.join(", ")}`);
+    assert.deepEqual([...rec.secrets.keys()], ["src/tok"]);
+    // 参照に指されていなければ、制約は関係ない（移せる）
+    await call(c, "createAlias", { name: "free", kind: "secret", group: "src", value: "v2" });
+    await call(c, "migrateAlias", { name: "free", group: "src", toGroup: "a.b" });
+    assert.ok(rec.secrets.has("a.b/free"));
+  });
+});
+
+test("参照で指せない元なら、置く先のグループを作る前に断る（空のグループを残さない）", async () => {
+  await withKit(async (c, rec) => {
+    await call(c, "createAlias", { name: "tok", kind: "secret", group: "x.y", value: "v1" });
+    rec.calls.length = 0;
+    await assert.rejects(() => call(c, "linkAlias", { name: "tok", group: "x.y", toGroup: "dst" }), /参照で指せません/);
+    assert.deepEqual(rec.calls, [], `断る前にグループを作った: ${rec.calls.join(", ")}`);
   });
 });

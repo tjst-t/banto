@@ -113,6 +113,13 @@ export interface AliasStore {
   retargetLink(backendPath: string, linkTo: string): Promise<void>;
   /** **参照だけ**を消す。元には触らない。 */
   deleteLink(backendPath: string): Promise<void>;
+  /**
+   * **その置き場を参照で指せるか**（追加・2026-10-04、レビュー）。指せなければ理由つきで投げる。
+   * 参照の書き方に制約がある backend（Infisical は `.` を区切りに使う）のため——kit は参照を作る前と、
+   * 指されている元を移す（写す）前に聞く。後から断られると、空のグループや2か所の元が残る。
+   * 制約の無い backend は何もしない。
+   */
+  assertCanLinkTo(backendPath: string): Promise<void>;
 }
 
 /**
@@ -174,6 +181,9 @@ export class LocalFileAliasStore implements AliasStore {
   async createLink(link: LinkAliasMeta): Promise<void> {
     await this.add(link);
   }
+
+  /** 台帳に書くだけなので、どこでも指せる。 */
+  async assertCanLinkTo(_backendPath: string): Promise<void> {}
 
   async retargetLink(backendPath: string, linkTo: string): Promise<void> {
     const existing = this.aliases.get(backendPath);

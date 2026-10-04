@@ -21,6 +21,7 @@ const aliasStore: AliasStore = {
   createLink: async () => {},
   retargetLink: async () => {},
   deleteLink: async () => {},
+  assertCanLinkTo: async () => {},
 };
 
 async function connect(init: () => Promise<void>): Promise<Client> {

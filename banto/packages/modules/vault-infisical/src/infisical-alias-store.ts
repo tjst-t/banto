@@ -172,6 +172,11 @@ export class InfisicalAliasStore implements AliasStore {
     await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: `/${group}` });
   }
 
+  /** その置き場を `${環境.フォルダ.キー}` で表せるか（kit が参照を作る前・指されている元を写す前に聞く）。 */
+  async assertCanLinkTo(backendPath: string): Promise<void> {
+    this.referenceTo(backendPath);
+  }
+
   /**
    * Infisical の参照の書き方 `${環境.フォルダ.キー}`。**区切りが `.` なので、`.` を含む
    * フォルダ名・キーは指せない**——書くと別の場所を指す参照になるので、作らずに断る（規則2）
