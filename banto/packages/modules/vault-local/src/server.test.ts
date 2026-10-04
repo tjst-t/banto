@@ -1036,3 +1036,16 @@ test("参照：使った記録は参照の行に付く／AI の目録には指�
     assert.equal(seen[0]!.linkTo, undefined, "見えない元の置き場が AI に漏れている");
   });
 });
+
+test("参照：指す先（linkTo）は人の管理面の一覧にだけ出す——Project から読む一覧には出さない", async () => {
+  await withServer(async ({ client }) => {
+    await hiddenOriginWithLink(client);
+    const fromProject = JSON.parse(
+      textOf(await client.callTool({ name: "listAliases", arguments: {}, _meta: forProject("proj-a") })),
+    ) as Listed[];
+    assert.deepEqual(fromProject.map((a) => a.group), ["grp-a"], "元のグループまで見えている");
+    assert.equal(fromProject[0]!.linkTo, undefined, "見えない元の置き場が Project に漏れている");
+    assert.equal(fromProject[0]!.kind, "secret");
+    assert.deepEqual((await listed(client)).find((a) => a.group === "grp-a")!.linkTo, { group: "tools", name: "cf-token" });
+  });
+});

@@ -1001,7 +1001,17 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
               : stored.filter((m) => usableBy(m, caller.project));
         return {
           content: [
-            { type: "text", text: JSON.stringify(visible.map((m) => ({ ...publicView(m, stored), ...scopeOf(m) }))) },
+            {
+              type: "text",
+              // **参照の指す先は人の管理面にだけ出す**（2026-10-04）——Project から読むと、
+              // 見えないはずの元の置き場と名前が分かってしまう
+              text: JSON.stringify(
+                visible.map((m) => ({
+                  ...("admin" in caller ? publicView(m, stored) : agentView(m, stored)),
+                  ...scopeOf(m),
+                })),
+              ),
+            },
           ],
         };
       }
