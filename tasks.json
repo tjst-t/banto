@@ -4592,7 +4592,7 @@
       "id": "self-update-ui",
       "kind": "task",
       "title": "設定の「更新」の節（本物の画面）",
-      "status": "ready",
+      "status": "done",
       "parent": "self-update",
       "dependsOn": [
         "self-update-mock",
@@ -4603,12 +4603,12 @@
       "labels": [],
       "body": "",
       "doneWhen": "別のデータ置き場の host で、更新の各状態が画面に出て押せる（携帯の幅でも）",
-      "resolution": null,
+      "resolution": "main・release に入った（f408e782）。E2E self-update.spec.ts 11/11。パスキーを実際に通す流れと本物の systemd での起こし直しは host での確かめで見る",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-04T10:05:36.893Z",
-      "updatedAt": "2026-10-04T10:05:36.893Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-04T12:01:58.728Z",
+      "closedAt": "2026-10-04T12:01:58.728Z",
       "extra": {}
     },
     {
