@@ -3,7 +3,9 @@
 #
 # この Project のコンテナの中の Incus（sudo incus）に入れ子のシステムコンテナを立て、sudo できる普通のユーザーを作り、
 # **この worktree の今のコミット**（git bundle で渡す。GitHub からは取らない）で install.sh を `curl | bash` と同じ形
-# （標準入力から台本を読む）で流す。トークン無し（Caddy の内部の CA）の形だけを確かめる。
+# （標準入力から台本を読む）で流す。トークン無し（Caddy の内部の CA）の形を確かめ、トークンありの形は Cloudflare の API の
+# 偽物（cloudflare-fake.mjs を中で立てる）に向けて流す——DNS のレコードは偽物に作られ、Let's Encrypt は本物の Cloudflare に
+# 偽のトークンで問うので取れず、「まだ取得中」で終わる道を通る。
 #
 #   banto/scripts/install-test/run.sh [--image 24.04|26.04] [--user <名前>] [--keep] [--first-only]
 #
@@ -29,7 +31,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-D1=banto.test D2=banto2.test
+D1=banto.test D2=banto2.test D3=banto.cf.test D4=banto2.cf.test
+FAKE_TOKEN=fakeCloudflareToken0123456789abcdefXYZ
+FAKE_API=http://127.0.0.1:8787
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
 branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD)
@@ -56,10 +60,12 @@ cleanup() {
 trap cleanup EXIT
 
 # install.sh を `curl … | bash -s -- 引数` と同じ形（標準入力から台本）で流す。出力は LOG/<名前>.log
+# RUN_ENV に「名前=値」を入れておくと、その環境で流す（偽の Cloudflare に向けるとき）
+RUN_ENV=()
 run_install() {
   local log=$1; shift
   local rc=0
-  sudo incus exec "$NAME" --cwd /tmp -- sudo -u "$TUSER" -H bash -c 'cat /opt/banto-test/install.sh | bash -s -- "$@"' _ "$@" \
+  sudo incus exec "$NAME" --cwd /tmp -- sudo -u "$TUSER" -H env "${RUN_ENV[@]}" bash -c 'cat /opt/banto-test/install.sh | bash -s -- "$@"' _ "$@" \
     </dev/null >"$LOG/$log.log" 2>&1 || rc=$?
   echo "$rc"
 }
@@ -80,11 +86,12 @@ X useradd -m -s /bin/bash -G sudo "$TUSER"
 X sh -c "echo '$TUSER ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-$TUSER && chmod 0440 /etc/sudoers.d/90-$TUSER"
 X mkdir -p /etc/systemd/system/incus.service.d /opt/banto-test
 X sh -c 'printf "# 試験の場だけ：3段目の Incus は AppArmor を使えない\n[Service]\nEnvironment=INCUS_SECURITY_APPARMOR=false\n" > /etc/systemd/system/incus.service.d/90-install-test-no-apparmor.conf'
-X sh -c "printf '127.0.0.1 $D1 sandbox.$D1 nothing.$D1 $D2 sandbox.$D2 nothing.$D2\n' >> /etc/hosts"
+X sh -c "printf '127.0.0.1 $D1 sandbox.$D1 nothing.$D1 $D2 sandbox.$D2 nothing.$D2 $D3 sandbox.$D3 $D4 sandbox.$D4 nothing.$D4\n' >> /etc/hosts"
 git -C "$repo" show "HEAD:install.sh" >"$LOG/install.sh"
 I file push -q "$LOG/install.sh" "$NAME/opt/banto-test/install.sh"
 I file push -q "$LOG/banto.bundle" "$NAME/opt/banto-test/banto.bundle"
 I file push -q "$here/checks.sh" "$NAME/opt/banto-test/checks.sh"
+I file push -q "$here/cloudflare-fake.mjs" "$NAME/opt/banto-test/cloudflare-fake.mjs"
 X chmod -R a+rX /opt/banto-test
 TUID=$(X id -u "$TUSER")
 echo "試験の場：$NAME（uid $TUID）ログ：$LOG"
@@ -136,7 +143,13 @@ note "f-1. 何も渡さずに打ち直す：済んだ段が飛び、値が残り
 mainpid() { X systemctl show -p MainPID --value banto-host; }
 pid_before=$(mainpid)
 conf_before=$(X sha256sum "/home/$TUSER/.config/banto/config.json")
+# 壊す：表を消すと外から届く → 打ち直すと入れ直されて届かない（表が効いていることと、打ち直しで直ることを一度に見る）
+X nft delete table inet banto
+code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$IP:4737/api/auth/me" || true)
+[[ $code == 200 ]] && pass "g: 表を消すと外から $IP:4737 に届く（$code）——落としているのは表" || fail "g: 表を消しても外から → $code"
 rc=$(run_install run2 --no-claude-login)
+code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$IP:4737/api/auth/me" || true)
+[[ $code == 000 ]] && pass "g: 打ち直すと表が入れ直され、外から届かなくなる" || fail "g: 打ち直しても外から → $code"
 if [[ $rc == 0 ]]; then pass "f: 2回目が通る"; else fail "f: 2回目：rc=$rc"; tail -20 "$LOG/run2.log"; fi
 grep -q 'build 済み' "$LOG/run2.log" && pass "f: build を飛ばす" || fail "f: 2回目に build した"
 grep -q 'apt で入れる' "$LOG/run2.log" && fail "f: 2回目に apt で入れた" || pass "f: apt を飛ばす"
@@ -185,6 +198,84 @@ grep -E '^(PASS|FAIL|INFO)' "$LOG/checks2.log" | sed 's/^/  /' | tee -a "$LOG/re
 PASSES=$((PASSES + $(count '^PASS' "$LOG/checks2.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks2.log")))
 code=$(X curl -s --cacert /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt -o /dev/null -w '%{http_code}' "https://$D1/" || true)
 [[ $code == 000 ]] && pass "f: 前の名前 $D1 にはもう答えない" || fail "f: 前の名前 $D1 → $code"
+
+# ---------------------------------------------------------------------------
+note "Caddy の unit：既に別の場所に unit がある host（apt の caddy の形）では drop-in で差し替え、/etc に丸ごと書かない"
+X sh -c 'mkdir -p /usr/lib/systemd/system && mv /etc/systemd/system/caddy.service /usr/lib/systemd/system/caddy.service && systemctl daemon-reload'
+rc=$(run_install run4 --no-claude-login)
+[[ $rc == 0 ]] && pass "caddy unit：通る" || { fail "caddy unit：rc=$rc"; tail -20 "$LOG/run4.log"; }
+X test -f /etc/systemd/system/caddy.service.d/50-banto.conf && X test ! -e /etc/systemd/system/caddy.service &&
+  pass "caddy unit：drop-in を置き、/etc に unit を書かない" || fail "caddy unit：$(X ls /etc/systemd/system/ | grep caddy)"
+X systemctl is-active --quiet caddy && grep -q 'Caddy を通して確かめた' "$LOG/run4.log" && pass "caddy unit：drop-in の Caddy で https が通る" || fail "caddy unit：Caddy が動いていない"
+
+# ---------------------------------------------------------------------------
+note "トークンありの形（Cloudflare の API の偽物に向ける）：$D3"
+X systemd-run --quiet --unit banto-test-cf-fake /usr/local/bin/node /opt/banto-test/cloudflare-fake.mjs --port 8787 --token "$FAKE_TOKEN" --zones cf.test \
+  --seed "[{\"zoneName\":\"cf.test\",\"type\":\"A\",\"name\":\"*.$D3\",\"content\":\"10.9.9.9\",\"proxied\":false}]"
+for _ in $(seq 20); do X curl -fs "$FAKE_API/__state" >/dev/null 2>&1 && break; sleep 0.5; done
+cfstate() { X curl -fs "$FAKE_API/__state"; }
+RUN_ENV=("BANTO_CLOUDFLARE_API=$FAKE_API" "CLOUDFLARE_API_TOKEN=$FAKE_TOKEN")
+rc=$(run_install run5 --domain "$D3" --no-claude-login)
+RUN_ENV=()
+[[ $rc == 0 ]] && pass "token：通る（証明書が取れなくても止まらない）" || { fail "token：rc=$rc"; tail -30 "$LOG/run5.log"; }
+grep -q 'まだ取得中' "$LOG/run5.log" && pass "token：Let's Encrypt が取れないので「まだ取得中」で終わる（HTTPS_STATE=pending）" || fail "token：まだ取得中が出ない"
+st=$(cfstate)
+node -e '
+  const s = JSON.parse(process.argv[1]), d = process.argv[2];
+  const mine = s.records.find((r) => r.name === d);
+  const wild = s.records.find((r) => r.name === `*.${d}`);
+  process.exit(mine?.comment === "banto install.sh" && mine.proxied === false && wild?.content === mine.content && !wild.comment ? 0 : 1)' "$st" "$D3" &&
+  pass "token：$D3 を印つきで作り、人が作った *.$D3 は向け先だけ直した" || fail "token：偽物の状態：$st"
+[[ $(X stat -c '%a %U:%G' /etc/caddy/cloudflare.env) == "640 root:caddy" ]] && pass "token：cloudflare.env は 0640 root:caddy" || fail "token：cloudflare.env：$(X stat -c '%a %U:%G' /etc/caddy/cloudflare.env)"
+X grep -q 'dns cloudflare {env.CLOUDFLARE_API_TOKEN}' /etc/caddy/banto.d/banto.caddy && pass "token：Caddy の設定が dns cloudflare に替わった" || fail "token：banto.caddy に dns cloudflare が無い"
+X grep -q "\"baseDomain\": \"$D3\"" "/home/$TUSER/.local/share/banto/modules/publish-caddy/settings.json" && pass "token：Publish の基のドメインを書いた" || fail "token：Publish の settings.json"
+X test ! -e /etc/systemd/system/caddy.service && pass "token：2回目も /etc に Caddy の unit を書かない" || fail "token：/etc に Caddy の unit ができた"
+
+note "トークンありで名前を替える：$D3 → $D4（install.sh が作ったものだけ消し、ほかは「残っている」と出す）"
+rc=$(run_install run6 --domain "$D4" --no-claude-login)
+[[ $rc == 0 ]] && pass "token：名前を替えて通る（保存したトークンを使う）" || { fail "token：rc=$rc"; tail -30 "$LOG/run6.log"; }
+st=$(cfstate)
+node -e '
+  const s = JSON.parse(process.argv[1]), d3 = process.argv[2], d4 = process.argv[3];
+  const del = s.mutations.filter((m) => m[0] === "DELETE").map((m) => m[2]);
+  const ok = del.length === 1 && del[0] === d3 && s.records.some((r) => r.name === `*.${d3}`) && s.records.some((r) => r.name === d4 && r.comment === "banto install.sh");
+  process.exit(ok ? 0 : 1)' "$st" "$D3" "$D4" && pass "token：前の名前は印つきの $D3 だけ消した" || fail "token：偽物の状態：$st"
+grep -A3 '残っている DNS のレコード' "$LOG/run6.log" | grep -q "\*\.$D3" && pass "token：最後の画面に残っている *.$D3 を出す" || fail "token：残っているレコードが出ない"
+
+note "--no-cloudflare で内部の CA に戻す"
+rc=$(run_install run7 --no-cloudflare --no-claude-login)
+[[ $rc == 0 ]] && pass "no-cloudflare：通る" || { fail "no-cloudflare：rc=$rc"; tail -30 "$LOG/run7.log"; }
+X test ! -e /etc/caddy/cloudflare.env && pass "no-cloudflare：cloudflare.env を消した" || fail "no-cloudflare：cloudflare.env が残っている"
+X grep -q 'tls internal' /etc/caddy/banto.d/banto.caddy && pass "no-cloudflare：Caddy の設定が内部の CA に戻った" || fail "no-cloudflare：banto.caddy"
+X grep -qx 'tls_mode=internal' /etc/banto/install.conf && pass "no-cloudflare：覚えた（次から聞かない）" || fail "no-cloudflare：install.conf"
+! X grep -q baseDomain "/home/$TUSER/.local/share/banto/modules/publish-caddy/settings.json" && pass "no-cloudflare：Publish の基のドメインを外した" || fail "no-cloudflare：baseDomain が残っている"
+LINK4=$(grep -oE "https://$D4/#banto-login=[A-Za-z0-9_-]+" "$LOG/run7.log" | head -1)
+rc=0; U bash /opt/banto-test/checks.sh "$D4" "$LINK4" login >"$LOG/checks4.log" 2>&1 || rc=$?
+grep -E '^(PASS|FAIL|INFO)' "$LOG/checks4.log" | sed 's/^/  /' | tee -a "$LOG/result.txt"
+PASSES=$((PASSES + $(count '^PASS' "$LOG/checks4.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks4.log")))
+
+# ---------------------------------------------------------------------------
+note "秘密が出ていない（install.sh の出力・banto-host.log・Caddy の journal）"
+token=$(X node -e 'console.log(require(process.argv[1]).authToken)' "/home/$TUSER/.config/banto/config.json")
+X cat "/home/$TUSER/banto-host.log" >"$LOG/banto-host.log"
+X journalctl -u caddy --no-pager >"$LOG/caddy-journal.log"
+[[ ${#token} -ge 20 ]] || fail "秘密：authToken を読めない"
+! grep -lF "$token" "$LOG"/*.log && pass "秘密：authToken の値がどのログにも無い" || fail "秘密：authToken の値がログにある"
+! grep -lF "$FAKE_TOKEN" "$LOG"/*.log && pass "秘密：Cloudflare の（偽の）トークンがどのログにも無い（Caddy の journal を含む）" || fail "秘密：トークンがログにある"
+! grep -qF '#banto-login=' "$LOG/banto-host.log" "$LOG/caddy-journal.log" && pass "秘密：ログインの札が banto-host.log・Caddy の journal に無い" || fail "秘密：ログインの札がログにある"
+
+note "sudo の記憶を消す（パスワードの要る sudo のユーザーで）"
+X useradd -m -s /bin/bash -G sudo pwuser
+X sh -c 'echo "pwuser:pw-Test-1234" | chpasswd'
+r=$(X sudo -u pwuser -H bash -c '
+  echo pw-Test-1234 | sudo -S -p "" true 2>/dev/null || { echo seed=failed; exit; }
+  sudo -n true 2>/dev/null && echo before=ok || echo before=no
+  setsid --wait sudo -n true </dev/null 2>/dev/null && echo detached=ok || echo detached=no
+  BANTO_INSTALL_LIB=1 source /opt/banto-test/install.sh; USER_NAME=pwuser; drop_sudo 試験 >/dev/null
+  sudo -n true 2>/dev/null && echo after=ok || echo after=no
+  run_detached sudo -n true >/dev/null 2>&1 && echo after_detached=ok || echo after_detached=no' | tr '\n' ' ')
+echo "  INFO $r"
+[[ $r == *"before=ok"* && $r == *"after=no"* && $r == *"after_detached=no"* ]] && pass "sudo：drop_sudo のあとは記憶が使えない（$r）" || fail "sudo：$r"
 
 echo
 echo "PASS $PASSES・FAIL $FAILS"

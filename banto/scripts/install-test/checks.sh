@@ -4,7 +4,7 @@
 #   full  ：b（前提と unit）・c（Caddy を通る）・d（ログイン）・e（Project とコンテナ）・g の中の側（コンテナから /relay）
 #   login ：c と d だけ（名前を変えたあと）
 # 1行ずつ「PASS 何を」「FAIL 何を：なぜ」を出す。終了コードは FAIL の数
-# shellcheck disable=SC2016,SC2024,SC2181 # 中で展開する台本・自分のファイルへの書き出し
+# shellcheck disable=SC2015,SC2016,SC2024,SC2181 # pass||fail の並び・中で展開する台本・自分のファイルへの書き出し
 set -uo pipefail
 
 D=$1 LINK=$2 MODE=${3:-full}
@@ -38,12 +38,43 @@ if [[ $MODE == full ]]; then
   check "b: banto-host の OOMScoreAdjust=-800" bash -c "systemctl show banto-host -p OOMScoreAdjust | grep -qx OOMScoreAdjust=-800"
   check "b: banto-host の User が $(id -un)" bash -c "systemctl show banto-host -p User | grep -qx User=$(id -un)"
   check "b: nftables の表 banto" sudo nft list table inet banto
-  # Cloudflare の形の Caddy の設定も Caddy が受け付ける（トークンは偽物——validate は API を呼ばない）
+  # Cloudflare の形の Caddy の設定も Caddy が受け付け、JSON にすると DNS-01 の cloudflare になる（トークンは偽物——
+  # validate・adapt は API を呼ばない）
   tmpd=$(mktemp -d)
   BANTO_INSTALL_LIB=1 bash -c 'source /opt/banto-test/install.sh && render_banto_caddy "$1" cloudflare' _ "$D" >"$tmpd/Caddyfile"
   out=$(cd "$tmpd" && CLOUDFLARE_API_TOKEN=fakefakefakefakefakefakefakefakefake1234 XDG_DATA_HOME=$tmpd XDG_CONFIG_HOME=$tmpd \
     caddy validate --adapter caddyfile --config "$tmpd/Caddyfile" 2>&1)
-  if [[ $? == 0 ]] && grep -q 'dns cloudflare' "$tmpd/Caddyfile"; then pass "b: Cloudflare の形の設定（dns cloudflare）も Caddy が受け付ける"; else fail "b: Cloudflare の形：$(echo "$out" | tail -2)"; fi
+  vrc=$?
+  adapted=$(cd "$tmpd" && caddy adapt --adapter caddyfile --config "$tmpd/Caddyfile" 2>/dev/null)
+  if [[ $vrc == 0 ]] && node -e '
+      const j = JSON.parse(process.argv[1]);
+      const ok = (j.apps?.tls?.automation?.policies ?? []).some((p) => (p.issuers ?? []).some((i) => i.challenges?.dns?.provider?.name === "cloudflare" && i.challenges.dns.provider.api_token === "{env.CLOUDFLARE_API_TOKEN}"));
+      process.exit(ok ? 0 : 1)' "$adapted"; then
+    pass "b: Cloudflare の形の設定も Caddy が受け付け、DNS-01 の provider が cloudflare（トークンは環境変数の参照）"
+  else
+    fail "b: Cloudflare の形：$(echo "$out" | tail -2)"
+  fi
+
+  # 権限
+  [[ $(stat -c %a "$HOME/.config/banto/config.json") == 600 ]] && pass "b: config.json は 0600" || fail "b: config.json は $(stat -c %a "$HOME/.config/banto/config.json")"
+  [[ $(stat -c %a "$HOME/.config/banto") == 700 ]] && pass "b: ~/.config/banto は 0700" || fail "b: ~/.config/banto は $(stat -c %a "$HOME/.config/banto")"
+  [[ $(stat -c '%a %U:%G' /etc/banto/install.conf) == "644 root:root" ]] && pass "b: install.conf は 0644 root:root（秘密を入れない）" || fail "b: install.conf は $(stat -c '%a %U:%G' /etc/banto/install.conf)"
+  ! grep -qi 'token' /etc/banto/install.conf && pass "b: install.conf にトークンの項目が無い" || fail "b: install.conf：$(cat /etc/banto/install.conf)"
+  # config.json の口と置き場（真実）を、unit・nftables・Caddy が使っている
+  read -r cport cuport crel < <(node -e 'const c = require(process.argv[1]); console.log(c.port, c.uiPort, c.releaseDir)' "$HOME/.config/banto/config.json")
+  if [[ $cport == 4737 && $cuport == 4175 && $crel == "$REL" ]] && systemctl cat banto-frontend | grep -q -- "-p $cuport" && sudo nft list table inet banto | grep -q "$cport"; then
+    pass "b: config.json に port・uiPort・releaseDir があり、unit と nftables がそれを使う"
+  else
+    fail "b: config.json の口と置き場：$cport $cuport $crel"
+  fi
+
+  # 壊す：Zabbly の鍵の束に別の鍵が混ざっていたら断る
+  zk=$(mktemp -d)
+  curl -fsSL https://pkgs.zabbly.com/key.asc -o "$zk/zabbly.asc"
+  gpg --no-default-keyring --keyring /usr/share/keyrings/ubuntu-archive-keyring.gpg --export --armor 2>/dev/null >"$zk/ubuntu.asc"
+  cat "$zk/zabbly.asc" "$zk/ubuntu.asc" >"$zk/both.asc"
+  kr=$(BANTO_INSTALL_LIB=1 bash -c 'source /opt/banto-test/install.sh; for f in "$@"; do zabbly_key_ok "$f" && echo -n ok, || echo -n no,; done' _ "$zk/zabbly.asc" "$zk/both.asc" "$zk/ubuntu.asc")
+  [[ $kr == "ok,no,no," ]] && pass "b: Zabbly の鍵は1つで指紋が合うときだけ通る（混ざった束・別の鍵は断る）" || fail "b: Zabbly の鍵の判定：$kr"
 fi
 
 # ---- c. Caddy の内部 CA で https が通る ----

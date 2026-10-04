@@ -9,6 +9,10 @@
 # **トークンをログ・画面・コマンド行に出さない**——set -x を使わない。Cloudflare の API は node から呼び、
 # トークンは環境変数で渡す。保存するのは /etc/caddy/cloudflare.env（root:caddy 0640）だけ。
 #
+# **sudo の記憶を、取ってきたコードに使わせない**：root が要る段を先にまとめ、npm の依存・build・Claude の installer
+# （ユーザーの権限で走る、外から取ってきたもの）を流す前に sudo の記憶を消し（sudo -K）、setsid で端末から切り離して
+# 流す。build のあとに root が要る段（前提の確かめ・起こす・起こし直す）は、sudo を取り直してから行う。
+#
 # 試験のための差し替え（人は使わない）：BANTO_CLOUDFLARE_API（Cloudflare の API の基点）、
 # BANTO_INSTALL_LIB=1（関数を読み込むだけで流さない——banto/scripts/install-test/ が使う）。
 
@@ -33,13 +37,21 @@ SOPS_SHA256_amd64=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef
 SOPS_SHA256_arm64=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77
 # Zabbly（Incus の配布元）の鍵の指紋（https://github.com/zabbly/incus の README の値）
 ZABBLY_FPR=4EFC590696CB15B87C73A3AD82CC8797C838DCFD
+# Caddy：caddyserver.com の download API は版を選べない（version= を渡しても最新が来る。2026-10-04 に確かめた）。
+# 版は固定できないので、取ってきた版を出し、banto が頼る機能（handle_response・headers の正規表現）のある版以上かだけ見る
+CADDY_MIN_VERSION=2.5.0
+# Cloudflare のレコードに付ける印（これが付いていて、このホストの IP を向くものだけを、名前を替えたときに消す）
+CF_RECORD_MARK="banto install.sh"
 
 DEFAULT_REPO=https://github.com/tjst-t/banto
 DEFAULT_BRANCH=release
 INSTALL_CONF=/etc/banto/install.conf
 CF_ENV=/etc/caddy/cloudflare.env
 CADDY_BIN=/usr/local/bin/caddy
+CADDY_UNIT=/etc/systemd/system/caddy.service
+CADDY_DROPIN=/etc/systemd/system/caddy.service.d/50-banto.conf
 BANTO_POOL=banto
+# 口の既定。**真実は config.json**（port・sandboxPort・uiPort）——step_config が書いて読み戻し、Caddy・unit・nftables はそれを使う
 PORT_HOST=4737
 PORT_SANDBOX=4176
 PORT_UI=4175
@@ -63,17 +75,17 @@ say() { printf '    %s\n' "$*"; }
 ok() { printf '    \033[32m✔\033[0m %s\n' "$*"; }
 warn() { printf '    \033[33m!\033[0m %s\n' "$*" >&2; }
 
-# 何が足りないかと直し方を出して止まる
+# 何が足りないか（1つ目）と直し方（2つ目）を出して止まる
 die() {
-  printf '\n\033[31m✖ 段「%s」で止まりました：%s\033[0m\n' "$CURRENT_STEP" "$1" >&2
-  if [[ -n ${2:-} ]]; then printf '  直し方：%s\n' "$2" >&2; fi
-  printf '  直したら同じコマンドを打ち直してください（済んだ段は飛ばします）。\n' >&2
+  printf '\n\033[31m✖ 段「%s」で止まりました。%s\033[0m\n' "$CURRENT_STEP" "$1" >&2
+  printf '  直し方：%s\n' "${2:-上の出力に出ている原因を直してください}" >&2
+  printf '  直したら同じコマンドを打ち直してください（済んだ段は確かめて飛ばします）。\n' >&2
   exit 1
 }
 
 on_error() {
-  printf '\n\033[31m✖ 段「%s」で止まりました（install.sh の %s 行目・終了コード %s）。\033[0m\n' "$CURRENT_STEP" "$2" "$1" >&2
-  printf '  原因は上の出力にあります。直したら同じコマンドを打ち直してください（済んだ段は飛ばします）。\n' >&2
+  printf '\n\033[31m✖ 段「%s」で、思っていなかった失敗で止まりました（install.sh の %s 行目・終了コード %s）。\033[0m\n' "$CURRENT_STEP" "$2" "$1" >&2
+  printf '  原因は上の出力にあります。直したら同じコマンドを打ち直してください（済んだ段は確かめて飛ばします）。\n' >&2
 }
 
 usage() {
@@ -86,6 +98,7 @@ banto を入れる（Ubuntu 24.04・26.04。sudo できる普通のユーザー�
   --cloudflare-token <値>    Cloudflare の API トークン（Zone:Read と DNS:Edit）。渡すと DNS のレコードを作り、
                              Let's Encrypt の証明書を取る。"-" なら端末から見えない形で聞く。
                              環境変数 CLOUDFLARE_API_TOKEN でも渡せる。無ければ Caddy の内部の CA で HTTPS にする
+  --no-cloudflare            Cloudflare をやめて内部の CA に戻す（保存したトークンを消す。DNS のレコードは残す）
   --ip <IPv4>                DNS のレコードの向け先（既定：既定経路のインターフェースの IPv4）
   --branch <名前>            動かすブランチ（既定 release）
   --repo <URL|パス>          取ってくるリポジトリ（既定 https://github.com/tjst-t/banto。file://・パス・bundle も可）
@@ -143,20 +156,80 @@ have_tty() { { : </dev/tty; } 2>/dev/null; }
 
 unit_active() { systemctl is-active --quiet "$1"; }
 
+# a.b.c が min 以上か
+version_at_least() {
+  local i
+  local -a v m
+  IFS=. read -ra v <<<"$1"
+  IFS=. read -ra m <<<"$2"
+  for i in 0 1 2; do
+    ((${v[i]:-0} == ${m[i]:-0})) && continue
+    ((${v[i]:-0} > ${m[i]:-0}))
+    return
+  done
+}
+
 # Incus の版が banto の前提（6.0.x なら 6.0.6 以降、それより上は 6.19 以降）を満たすか
 # （banto/packages/container/src/prereqs.ts の versionHasNestingFix と同じ規則）
 incus_version_ok() {
-  local v=$1 a b c
-  IFS=. read -r a b c <<<"${v%%[-~+]*}"
-  a=${a:-0} b=${b:-0} c=${c:-0}
-  if [[ $a == 6 && $b == 0 ]]; then ((c >= 6)); else ((a > 6 || (a == 6 && b >= 19))); fi
+  local ver=${1%%[-~+]*}
+  if [[ $ver == 6.0.* || $ver == 6.0 ]]; then version_at_least "$ver" 6.0.6; else version_at_least "$ver" 6.19.0; fi
+}
+
+# Zabbly の鍵の束：公開鍵が1つだけで、その指紋が決めた値のときだけ通す（束に別の鍵が混ざっていたら断る）
+zabbly_key_ok() {
+  local colons pubs fpr
+  colons=$(gpg --show-keys --with-colons "$1" 2>/dev/null) || return 1
+  pubs=$(grep -c '^pub:' <<<"$colons" || true)
+  fpr=$(awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; exit }' <<<"$colons")
+  [[ $pubs == 1 && $fpr == "$ZABBLY_FPR" ]]
+}
+
+# caddy のユーザーのホーム（内部の CA の置き場の上）。無ければ止まる——空のまま組むと / の下を指してしまう
+caddy_home() {
+  local h
+  h=$(getent passwd caddy | cut -d: -f6)
+  [[ -n $h ]] || die "caddy のユーザーのホームが分かりません（getent passwd caddy が空）" "sudo usermod -d /var/lib/caddy caddy でホームを決めてから打ち直してください"
+  printf '%s\n' "$h"
+}
+
+# --- sudo の記憶 ---
+SUDO_KEEPALIVE=""
+start_sudo_keepalive() {
+  # 長い待ち（restart-when-idle の最長 30 分など）の間に記憶が切れないように
+  (while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done) >/dev/null 2>&1 &
+  SUDO_KEEPALIVE=$!
+}
+stop_sudo_keepalive() {
+  if [[ -n $SUDO_KEEPALIVE ]]; then
+    kill "$SUDO_KEEPALIVE" 2>/dev/null || true
+    wait "$SUDO_KEEPALIVE" 2>/dev/null || true
+    SUDO_KEEPALIVE=""
+  fi
+}
+# 取ってきたもの（npm の依存・build・Claude の installer）を流す前に、sudo の記憶を消す
+drop_sudo() {
+  stop_sudo_keepalive
+  sudo -K
+  say "sudo の記憶を消した（ここからはユーザー $USER_NAME の権限だけで、端末から切り離して流す：$1）"
+}
+# build のあとに root が要る段の前に取り直す。パスワードが要る人には、もう一度聞く
+reacquire_sudo() {
+  say "もう一度 sudo を使う（$1。パスワードを聞かれたら $USER_NAME のパスワード）"
+  sudo true || die "sudo を取り直せませんでした（取ってきたコードを流す間は sudo の記憶を消すので、もう一度要ります）" \
+    "端末から打つか、パスワード無しで sudo できるユーザーで打ってください"
+  start_sudo_keepalive
+}
+# ユーザーの権限で、端末から切り離して流す（出力はパイプを通す——端末の装置を子に渡さない）
+run_detached() {
+  setsid --wait "$@" </dev/null 2>&1 | sed 's/^/      /'
 }
 
 # ---------------------------------------------------------------------------
 # 引数と覚えた値
 # ---------------------------------------------------------------------------
 
-ARG_DOMAIN="" ARG_IP="" ARG_BRANCH="" ARG_REPO="" ARG_POOL_SIZE="" ARG_TOKEN="" ARG_TOKEN_SET=0 NO_CLAUDE_LOGIN=0
+ARG_DOMAIN="" ARG_IP="" ARG_BRANCH="" ARG_REPO="" ARG_POOL_SIZE="" ARG_TOKEN="" ARG_TOKEN_SET=0 NO_CLAUDE_LOGIN=0 NO_CLOUDFLARE=0
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -164,6 +237,7 @@ parse_args() {
     case $opt in
       --help | -h) usage; exit 0 ;;
       --no-claude-login) NO_CLAUDE_LOGIN=1; shift; continue ;;
+      --no-cloudflare) NO_CLOUDFLARE=1; shift; continue ;;
       --*=*) val=${opt#*=}; opt=${opt%%=*}; shift ;;
       --domain | --cloudflare-token | --ip | --branch | --repo | --pool-size)
         [[ $# -ge 2 ]] || die "$opt に値がありません" "install.sh --help を見てください"
@@ -180,19 +254,29 @@ parse_args() {
       *) die "知らない引数です：$opt" "install.sh --help を見てください" ;;
     esac
   done
+  if [[ $NO_CLOUDFLARE == 1 && $ARG_TOKEN_SET == 1 ]]; then
+    die "--no-cloudflare と --cloudflare-token は一緒に渡せません" "どちらか一方にしてください"
+  fi
 }
 
-# install.conf は「キー=値」の行だけ。source しない（中身をコードとして流さない）
+# install.conf は「キー=値」の行だけを読む（キーは英小文字と _、値は前後の空白を落とす）。source しない
+# ——中身をコードとして流さない
 declare -A CONF=()
 read_install_conf() {
   [[ -f $INSTALL_CONF ]] || return 0
-  local key value
-  while IFS='=' read -r key value; do
-    [[ -z $key || $key == \#* ]] && continue
+  local line key value
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^([a-z_]+)=(.*)$ ]] || continue
+    key=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
     CONF[$key]=$value
   done <"$INSTALL_CONF"
 }
 
+# **最後まで通るのを待たずに、値を決めた時点で覚える**——1回目が途中で止まっても、打ち直しで --domain 等を
+# 渡し直さずに続けられるように。秘密（トークン）は入れない
 write_install_conf() {
   put_root_file "$INSTALL_CONF" 644 < <(
     echo "# banto の install.sh が覚えた値（秘密は入れない）。打ち直しで引数を渡せば変わり、渡さなければこのまま"
@@ -202,6 +286,7 @@ write_install_conf() {
     echo "branch=$BRANCH"
     echo "repo=$REPO"
     echo "pool_size=$POOL_SIZE"
+    echo "tls_mode=$TLS_REMEMBER"
   )
 }
 
@@ -249,11 +334,9 @@ step_check_host() {
   # sudo -v ではなく sudo true——-v は当てはまる規則が全部 NOPASSWD でないとパスワードを求める（sudo グループの規則に
   # 当たる、クラウドのイメージの NOPASSWD のユーザーで、端末が無いと止まった）
   sudo true || die "sudo できませんでした" "sudo できるユーザーで打ってください（例：sudo usermod -aG sudo $USER_NAME のあと、ログインし直す）"
-  # 長い build の間に sudo の記憶が切れないように
-  (while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done) >/dev/null 2>&1 &
-  SUDO_KEEPALIVE=$!
+  start_sudo_keepalive
 
-  REL="$USER_HOME/.local/share/banto-release"
+  REL="$USER_HOME/.local/share/banto-release" # 既定。step_config で config.json の releaseDir に合わせる
   CONFIG_PATH="$USER_HOME/.config/banto/config.json"
   ok "Ubuntu $UBUNTU_VERSION（$UBUNTU_CODENAME）・$(dpkg --print-architecture)・ユーザー $USER_NAME（uid $USER_UID）"
 }
@@ -267,7 +350,7 @@ step_resolve_settings() {
   read_install_conf
   if [[ -n ${CONF[user]:-} && ${CONF[user]} != "$USER_NAME" ]]; then
     die "banto はユーザー ${CONF[user]} で入っています（$INSTALL_CONF）" \
-      "${CONF[user]} で打ってください。動かすユーザーを替えるなら docs/runbooks/install.md の「入れ直し」"
+      "${CONF[user]} で打ってください。動かすユーザーを替えるなら docs/runbooks/install.md の「入れ直す」"
   fi
 
   DOMAIN=${ARG_DOMAIN:-${CONF[domain]:-}}
@@ -294,9 +377,14 @@ step_resolve_settings() {
     POOL_SIZE="${BASH_REMATCH[1]}GiB"
   fi
 
-  # トークン：引数 → 環境変数 → 保存済み → 端末で聞く
+  # トークン：引数 → 環境変数 → 保存済み → 端末で聞く。環境変数は写したらすぐ消す（子に渡さない）
   TOKEN="" TOKEN_SOURCE=""
-  if [[ $ARG_TOKEN_SET == 1 ]]; then
+  local env_token=${CLOUDFLARE_API_TOKEN:-}
+  unset CLOUDFLARE_API_TOKEN
+  TLS_REMEMBER=${CONF[tls_mode]:-}
+  if [[ $NO_CLOUDFLARE == 1 ]]; then
+    TLS_REMEMBER=internal # これからは聞かない（トークンを渡して打ち直せば戻る）
+  elif [[ $ARG_TOKEN_SET == 1 ]]; then
     if [[ $ARG_TOKEN == - ]]; then
       have_tty || die "--cloudflare-token - ですが、聞くための端末がありません" "環境変数 CLOUDFLARE_API_TOKEN で渡してください"
       printf '    Cloudflare の API トークン（表示されません）：' >/dev/tty
@@ -306,18 +394,20 @@ step_resolve_settings() {
       TOKEN=$ARG_TOKEN
     fi
     TOKEN_SOURCE=new
-  elif [[ -n ${CLOUDFLARE_API_TOKEN:-} ]]; then
-    TOKEN=$CLOUDFLARE_API_TOKEN TOKEN_SOURCE=new
+  elif [[ -n $env_token ]]; then
+    TOKEN=$env_token TOKEN_SOURCE=new
   elif sudo test -f "$CF_ENV" && sudo grep -q '^CLOUDFLARE_API_TOKEN=.' "$CF_ENV"; then
     TOKEN_SOURCE=saved # 中身はここでは読まない（要るときに読む）
-  elif have_tty; then
+  elif [[ $TLS_REMEMBER != internal ]] && have_tty; then
     printf '    Cloudflare の API トークン（Enter だけなら Caddy の内部の CA で HTTPS にする。表示されません）：' >/dev/tty
     IFS= read -rs TOKEN </dev/tty || TOKEN=""
     printf '\n' >/dev/tty
     [[ -n $TOKEN ]] && TOKEN_SOURCE=new
   fi
+  ARG_TOKEN="" env_token=""
   if [[ $TOKEN_SOURCE == new ]]; then
     [[ $TOKEN =~ ^[A-Za-z0-9_-]{20,200}$ ]] || die "Cloudflare のトークンの形が違います（英数字と _- で 20 文字以上）" "Cloudflare の画面で作った API トークンを渡してください"
+    TLS_REMEMBER=""
   fi
   if [[ -n $TOKEN_SOURCE ]]; then TLS_MODE=cloudflare; else TLS_MODE=internal; fi
   if [[ $TLS_MODE == cloudflare && -z $IP ]]; then
@@ -328,11 +418,13 @@ step_resolve_settings() {
   write_install_conf
   say "名前：$DOMAIN（sandbox.$DOMAIN・*.$DOMAIN も使う）"
   say "このホストの IP：${IP:-（分からない）}${IP_FIXED:+（--ip で指定）}"
-  say "コード：$REPO の $BRANCH → $REL"
+  say "コード：$REPO の $BRANCH"
   if [[ $TLS_MODE == cloudflare ]]; then
     local which_token="保存済みのもの"
     [[ $TOKEN_SOURCE == new ]] && which_token="今回渡されたもの"
     say "HTTPS：Let's Encrypt（Cloudflare の DNS で証明。トークンは$which_token）"
+  elif [[ $NO_CLOUDFLARE == 1 ]]; then
+    say "HTTPS：Caddy の内部の CA に戻す（--no-cloudflare。保存したトークンを消す）"
   else
     say "HTTPS：Caddy の内部の CA（Cloudflare のトークンが無いため。後から --cloudflare-token で打ち直せば Let's Encrypt に替わる）"
   fi
@@ -345,8 +437,9 @@ step_resolve_settings() {
 
 step_base_packages() {
   step "基本の道具を入れる"
-  # age・openssh-client・sops は同梱の vault-local（秘密の置き場）が host で使う（age-keygen・ssh-keygen・ssh-agent・sops）
-  apt_install ca-certificates curl git gnupg xz-utils nftables iproute2 age openssh-client
+  # age・openssh-client・sops は同梱の vault-local（秘密の置き場）が host で使う（age-keygen・ssh-keygen・ssh-agent・sops）。
+  # polkitd は画面からの更新（scripts/setup-update.sh が polkit の規則で banto の unit の再起動をユーザーに許す）のため
+  apt_install ca-certificates curl git gnupg xz-utils nftables iproute2 age openssh-client polkitd
   if [[ "$(/usr/local/bin/sops --version 2>/dev/null | awk 'NR == 1 { print $2 }')" != "$SOPS_VERSION" ]]; then
     local tmp sha_var="SOPS_SHA256_$CADDY_ARCH"
     tmp=$(mktemp)
@@ -385,17 +478,111 @@ step_node() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Incus（banto の Project のコンテナ）
+# 5. banto の設定（config.json）と Publish の設定。口と置き場はここが真実
+# ---------------------------------------------------------------------------
+
+OLD_DOMAIN=""
+step_config() {
+  step "banto の設定を書く"
+  local result
+  result=$(node --input-type=module - "$CONFIG_PATH" "$DOMAIN" "$TLS_MODE" "$NO_CLOUDFLARE" "$REL" <<'JS'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
+const [path, domain, tlsMode, noCloudflare, defaultRel] = process.argv.slice(2);
+const out = [];
+function writeJson(p, value, before) {
+  const text = JSON.stringify(value, null, 2) + "\n";
+  if (text === before) return false;
+  mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
+  writeFileSync(`${p}.tmp`, text, { mode: 0o600 });
+  renameSync(`${p}.tmp`, p);
+  return true;
+}
+const port = (v, d, name) => {
+  if (v === undefined) return d;
+  if (!Number.isInteger(v) || v < 1 || v > 65535) throw new Error(`config.json の ${name} が口の番号ではありません：${JSON.stringify(v)}`);
+  return v;
+};
+try {
+  // 既にある設定は他の項目を残し、要る項目だけ直す。authToken は消さない（無ければ作る——無いと起動のたびに変わる）
+  const before = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const raw = before ? JSON.parse(before) : {};
+  if (!raw.authToken) raw.authToken = randomBytes(32).toString("base64url");
+  const oldHost = raw.publicUrl ? new URL(raw.publicUrl).hostname : "";
+  // 口と置き場は config.json を真実にする（書いてあればそれ、無ければ既定を書く）。Caddy・unit・nftables はこれを読む
+  raw.port = port(raw.port, 4737, "port");
+  raw.sandboxPort = port(raw.sandboxPort, 4176, "sandboxPort");
+  raw.uiPort = port(raw.uiPort, 4175, "uiPort");
+  raw.releaseDir ??= defaultRel;
+  if (typeof raw.releaseDir !== "string" || !isAbsolute(raw.releaseDir)) throw new Error(`config.json の releaseDir が絶対パスではありません：${JSON.stringify(raw.releaseDir)}`);
+  raw.publicUrl = `https://${domain}`;
+  raw.sandboxPublicUrl = `https://sandbox.${domain}`;
+  let origins = Array.isArray(raw.allowedEmbedderOrigins) ? raw.allowedEmbedderOrigins : ["http://127.0.0.1:4175", "http://localhost:4175"];
+  if (oldHost && oldHost !== domain) origins = origins.filter((o) => o !== `https://${oldHost}`);
+  if (!origins.includes(`https://${domain}`)) origins.push(`https://${domain}`);
+  raw.allowedEmbedderOrigins = origins;
+  out.push(writeJson(path, raw, before) ? "config=changed" : "config=same");
+  out.push(`old=${oldHost}`, `port=${raw.port}`, `sandboxPort=${raw.sandboxPort}`, `uiPort=${raw.uiPort}`, `releaseDir=${raw.releaseDir}`);
+  if (raw.uiOrigin && new URL(raw.uiOrigin).origin !== `https://${domain}`) out.push(`warn=設定の uiOrigin（${raw.uiOrigin}）が画面の住所と違います。ログインが通らないので、要らなければ消してください`);
+  // Publish（publish-caddy）の設定：置き場は <dataDir>/modules/<入れた名前>。目録から入れるときの既定の名前 publish-caddy に置く
+  const dataDir = raw.dataDir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "banto");
+  const sp = join(dataDir, "modules", "publish-caddy", "settings.json");
+  const sBefore = existsSync(sp) ? readFileSync(sp, "utf8") : "";
+  const s = sBefore ? JSON.parse(sBefore) : {};
+  if (tlsMode === "cloudflare") {
+    s.adminUrl ??= "http://127.0.0.1:2019";
+    s.reach ??= "internet";
+    s.baseDomain = domain;
+    out.push(writeJson(sp, s, sBefore) ? `publish=changed:${sp}` : `publish=same:${sp}`);
+  } else if (noCloudflare === "1" && s.baseDomain !== undefined && [domain, oldHost].includes(s.baseDomain)) {
+    delete s.baseDomain; // 内部の CA に戻したら公開先の名前は引けないので、install.sh が書いた基のドメインを外す
+    writeJson(sp, s, sBefore);
+    out.push(`publish=removed:${sp}`);
+  }
+} catch (err) {
+  out.push(`error=${err.message}`);
+}
+console.log(out.join("\n"));
+JS
+)
+  local line
+  while IFS= read -r line; do
+    case $line in
+      config=changed) BANTO_NEEDS_RESTART=1; ok "$CONFIG_PATH を直した（publicUrl=https://$DOMAIN）" ;;
+      config=same) ok "$CONFIG_PATH はそのまま" ;;
+      old=*) OLD_DOMAIN=${line#old=} ;;
+      port=*) PORT_HOST=${line#port=} ;;
+      sandboxPort=*) PORT_SANDBOX=${line#sandboxPort=} ;;
+      uiPort=*) PORT_UI=${line#uiPort=} ;;
+      releaseDir=*) REL=${line#releaseDir=} ;;
+      publish=changed:*) ok "Publish の基のドメインを $DOMAIN にした（${line#publish=changed:}）" ;;
+      publish=same:*) ok "Publish の基のドメインは $DOMAIN のまま" ;;
+      publish=removed:*) ok "Publish の基のドメインを外した（${line#publish=removed:}）" ;;
+      warn=*) warn "${line#warn=}" ;;
+      error=*) die "${line#error=}" "$CONFIG_PATH を直してから打ち直してください" ;;
+    esac
+  done <<<"$result"
+  [[ $OLD_DOMAIN == "$DOMAIN" ]] && OLD_DOMAIN=""
+  say "口：host $PORT_HOST・サンドボックス $PORT_SANDBOX・画面 $PORT_UI／コードの置き場：$REL（config.json が真実）"
+  if [[ $TLS_MODE == internal ]]; then
+    say "Publish は使えません（公開先 *.$DOMAIN の DNS と証明書が要る——Cloudflare のトークンを渡して打ち直すと使える）"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 6. Incus（banto の Project のコンテナ）
 # ---------------------------------------------------------------------------
 
 step_incus() {
   step "Incus を入れて、banto の前提をそろえる"
-  # 配布元（Zabbly）の鍵：指紋を照合してから置く
-  local key fpr
+  # 配布元（Zabbly）の鍵：公開鍵が1つで指紋が合うことを確かめてから置く
+  local key
   key=$(mktemp)
   curl -fsSL https://pkgs.zabbly.com/key.asc -o "$key" || die "Zabbly の鍵を取ってこられませんでした" "https://pkgs.zabbly.com に届くか確かめてください"
-  fpr=$(gpg --show-keys --with-colons "$key" 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')
-  [[ $fpr == "$ZABBLY_FPR" ]] || die "Zabbly の鍵の指紋が合いません（$fpr）" "鍵がすり替えられているおそれがあります。https://github.com/zabbly/incus の指紋と比べてください"
+  zabbly_key_ok "$key" || die "Zabbly の鍵が思っていたものと違います（公開鍵が1つで、指紋が $ZABBLY_FPR であること）" \
+    "鍵がすり替えられているおそれがあります。gpg --show-keys で中身を見て、https://github.com/zabbly/incus の指紋と比べてください"
   put_root_file /etc/apt/keyrings/zabbly.asc 644 <"$key"
   local key_changed=$FILE_CHANGED
   rm -f "$key"
@@ -496,24 +683,26 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# 6. Caddy（入口。HTTPS と、画面・API・サンドボックスへの振り分け）
+# 7. Caddy（入口。HTTPS と、画面・API・サンドボックスへの振り分け）
 # ---------------------------------------------------------------------------
 
 step_caddy_install() {
   step "Caddy を入れる"
   if [[ -x $CADDY_BIN ]] && "$CADDY_BIN" list-modules 2>/dev/null | grep -qx dns.providers.cloudflare; then
-    ok "入っている（$("$CADDY_BIN" version | cut -d' ' -f1)、Cloudflare の DNS 入り）"
+    ok "入っている（$("$CADDY_BIN" version | cut -d' ' -f1)、Cloudflare の DNS 入り。上げ方は docs/runbooks/install.md）"
   else
-    local tmp
+    local tmp got
     tmp=$(mktemp)
-    say "caddyserver.com から Cloudflare の DNS 入りの版を取ってくる"
+    say "caddyserver.com から Cloudflare の DNS 入りの版を取ってくる（版は選べず、その時の最新が来る）"
     curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=$CADDY_ARCH&p=github.com%2Fcaddy-dns%2Fcloudflare" -o "$tmp" ||
       die "Caddy を取ってこられませんでした" "https://caddyserver.com に届くか確かめてください"
     chmod +x "$tmp"
     "$tmp" list-modules 2>/dev/null | grep -qx dns.providers.cloudflare || die "取ってきた Caddy に Cloudflare の DNS が入っていません" "時間をおいて打ち直してください"
+    got=$("$tmp" version | cut -d' ' -f1)
+    version_at_least "${got#v}" "$CADDY_MIN_VERSION" || die "取ってきた Caddy $got は banto が要る $CADDY_MIN_VERSION より古い" "時間をおいて打ち直してください"
     sudo install -m 755 "$tmp" "$CADDY_BIN"
     rm -f "$tmp"
-    ok "入れた（$("$CADDY_BIN" version | cut -d' ' -f1)）"
+    ok "入れた（Caddy $got）"
   fi
 
   getent group caddy >/dev/null || sudo groupadd --system caddy
@@ -521,10 +710,13 @@ step_caddy_install() {
     sudo useradd --system --gid caddy --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin --comment "Caddy web server" caddy
   fi
 
-  # unit：apt の caddy 等が既にあれば drop-in で差し替え、無ければ作る。--environ は付けない（トークンが journal に出る）
-  local marker="# banto の install.sh が作った"
-  if systemctl cat caddy.service >/dev/null 2>&1 && ! systemctl cat caddy.service 2>/dev/null | grep -qF "$marker"; then
-    put_root_file /etc/systemd/system/caddy.service.d/50-banto.conf 644 <<EOF
+  # unit：既にある unit（apt の caddy 等）は drop-in で差し替え、無ければ作る。--environ は付けない（トークンが journal に出る）。
+  # 判定は unit の本体の場所と drop-in の有無で行う——drop-in の印を見て「自分の unit」と取り違え、2回目に /etc に
+  # 丸ごと書いて apt の unit を覆ってしまわないように
+  local marker="# banto の install.sh が作った" frag
+  frag=$(systemctl show -p FragmentPath --value caddy.service 2>/dev/null || true)
+  if sudo test -f "$CADDY_DROPIN" || [[ -n $frag && $frag != "$CADDY_UNIT" ]] || { [[ $frag == "$CADDY_UNIT" ]] && ! sudo grep -qF "$marker" "$CADDY_UNIT"; }; then
+    put_root_file "$CADDY_DROPIN" 644 <<EOF
 $marker（Cloudflare の DNS 入りの $CADDY_BIN に差し替える）
 [Service]
 ExecStart=
@@ -534,7 +726,7 @@ ExecReload=$CADDY_BIN reload --config /etc/caddy/Caddyfile --force
 EnvironmentFile=-$CF_ENV
 EOF
   else
-    put_root_file /etc/systemd/system/caddy.service 644 <<EOF
+    put_root_file "$CADDY_UNIT" 644 <<EOF
 $marker（Caddy の公式の unit から --environ を外し、Cloudflare のトークンを $CF_ENV から読む）
 [Unit]
 Description=Caddy
@@ -581,15 +773,17 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# 7. HTTPS（Cloudflare の DNS か、Caddy の内部の CA）と Caddy の設定
+# 8. HTTPS（Cloudflare の DNS か、Caddy の内部の CA）と Caddy の設定
 # ---------------------------------------------------------------------------
 
-# Cloudflare の API でゾーンを探し、<名前> と *.<名前> の A レコードを作る／直す（proxied: false）。
+# Cloudflare の API でゾーンを探し、<名前> と *.<名前> の A レコードを作る／直す（proxied: false。作るときは印を付ける）。
+# 3つ目に前の名前を渡すと、前の名前のレコードのうち印が付いていてこのホストの IP を向くものだけを消し、
+# ほかは「残っている：…」の行で知らせる。
 # トークンは環境変数 CLOUDFLARE_API_TOKEN で受ける（コマンド行に出さない）。基点は BANTO_CLOUDFLARE_API で差し替えられる
 cloudflare_upsert_records() {
-  local domain=$1 ip=$2
-  node --input-type=module - "$domain" "$ip" <<'JS'
-const [domain, ip] = process.argv.slice(2);
+  local domain=$1 ip=$2 old=${3:-}
+  node --input-type=module - "$domain" "$ip" "$old" "$CF_RECORD_MARK" <<'JS'
+const [domain, ip, old, mark] = process.argv.slice(2);
 const base = (process.env.BANTO_CLOUDFLARE_API || "https://api.cloudflare.com/client/v4").replace(/\/+$/, "");
 const token = process.env.CLOUDFLARE_API_TOKEN;
 if (!token) { console.error("CLOUDFLARE_API_TOKEN がありません"); process.exit(2); }
@@ -612,6 +806,7 @@ async function cf(method, path, body) {
   }
   return json;
 }
+const records = async (zone, name) => (await cf("GET", `/zones/${zone.id}/dns_records?type=A&name=${encodeURIComponent(name)}`)).result;
 try {
   const zones = [];
   for (let page = 1; ; page++) {
@@ -619,24 +814,41 @@ try {
     zones.push(...j.result);
     if (page >= (j.result_info?.total_pages ?? 1)) break;
   }
-  const zone = zones
-    .filter((z) => domain === z.name || domain.endsWith(`.${z.name}`))
-    .sort((a, b) => b.name.length - a.name.length)[0];
+  const zoneOf = (name) => zones.filter((z) => name === z.name || name.endsWith(`.${z.name}`)).sort((a, b) => b.name.length - a.name.length)[0];
+  const zone = zoneOf(domain);
   if (!zone) {
     throw new Error(`トークンで見えるゾーンに ${domain} を含むものがありません（見えるゾーン：${zones.map((z) => z.name).join(", ") || "無し"}）。トークンに Zone:Read を付け、対象のゾーンを含めてください`);
   }
   console.log(`ゾーン：${zone.name}`);
   for (const name of [domain, `*.${domain}`]) {
-    const found = (await cf("GET", `/zones/${zone.id}/dns_records?type=A&name=${encodeURIComponent(name)}`)).result;
+    const found = await records(zone, name);
     if (found.length > 1) throw new Error(`${name} の A レコードが ${found.length} 個あります（${found.map((r) => r.content).join(", ")}）。banto はどれを直すか決められません——Cloudflare の画面で1つにしてください`);
     if (found.length === 0) {
-      await cf("POST", `/zones/${zone.id}/dns_records`, { type: "A", name, content: ip, proxied: false, ttl: 1 });
+      await cf("POST", `/zones/${zone.id}/dns_records`, { type: "A", name, content: ip, proxied: false, ttl: 1, comment: mark });
       console.log(`作った：${name} → ${ip}`);
     } else if (found[0].content === ip && found[0].proxied === false) {
       console.log(`そのまま：${name} → ${ip}`);
     } else {
       await cf("PATCH", `/zones/${zone.id}/dns_records/${found[0].id}`, { content: ip, proxied: false });
       console.log(`直した：${name} ${found[0].content}${found[0].proxied ? "（proxied）" : ""} → ${ip}`);
+    }
+  }
+  if (old && old !== domain) {
+    const oldZone = zoneOf(old);
+    if (!oldZone) {
+      console.log(`残っている：${old}・*.${old}（トークンで見えるゾーンに無いので確かめられない）`);
+    } else {
+      for (const name of [old, `*.${old}`]) {
+        for (const r of await records(oldZone, name)) {
+          if (r.comment === mark && r.content === ip) {
+            await cf("DELETE", `/zones/${oldZone.id}/dns_records/${r.id}`);
+            console.log(`消した：${name} → ${r.content}（前の名前。install.sh が作ったもの）`);
+          } else {
+            const why = r.comment !== mark ? "install.sh が作った印が無い" : `このホスト（${ip}）を向いていない`;
+            console.log(`残っている：${name} → ${r.content}（${why}ので消さなかった）`);
+          }
+        }
+      }
     }
   }
 } catch (err) {
@@ -657,6 +869,7 @@ render_banto_caddy() {
   cat <<EOF
 # banto の install.sh が作る（打ち直すと作り直す。手で直さず、install.sh の引数で変える）
 # 画面 https://$domain（/api/* は host）・Canvas のサンドボックス https://sandbox.$domain・Publish の公開先 *.$domain
+# 口は banto の config.json（port・sandboxPort・uiPort）から
 
 $domain {
 $tls
@@ -683,7 +896,7 @@ $tls
 http://$domain, http://*.$domain {
 EOF
   if [[ $mode == internal ]]; then
-    ca_dir="$(getent passwd caddy | cut -d: -f6)/.local/share/caddy/pki/authorities/local"
+    ca_dir="$(caddy_home)/.local/share/caddy/pki/authorities/local"
     cat <<EOF
 	# 内部の CA のルート証明書（公開してよいもの）。各端末で信頼する
 	handle /banto-ca.crt {
@@ -702,21 +915,49 @@ EOF
 EOF
 }
 
-# Caddy に Caddyfile を確かめさせる（トークンは環境変数で渡す）
-caddy_validate() {
-  sudo -u caddy -H bash -c 'cd / && set -a && if [ -r "$1" ]; then . "$1"; fi && exec "$2" validate --config /etc/caddy/Caddyfile --adapter caddyfile' _ "$CF_ENV" "$CADDY_BIN" 2>&1
+# caddy のユーザーとして caddy を流す（トークンは環境変数で渡す——コマンド行に出さない）
+caddy_as_caddy() {
+  sudo -u caddy -H bash -c 'cd / && set -a && if [ -r "$1" ]; then . "$1"; fi && set +a && shift && exec "$@"' _ "$CF_ENV" "$CADDY_BIN" "$@"
+}
+
+# 動いている Caddy の設定が、Caddyfile を JSON にしたものと同じか（publish-caddy が admin API で足した道は除いて比べる）。
+# 同じなら 0。比べられない（admin API が無い・unix ソケット等）ときも「違う」として読み直させる
+# shellcheck disable=SC2016 # 中の JS のテンプレート文字列
+caddy_running_matches() {
+  local adapted
+  adapted=$(caddy_as_caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null) || return 1
+  node --input-type=module -e '
+    const want = JSON.parse(process.argv[1]);
+    const listen = want.admin?.listen ?? "localhost:2019";
+    if (want.admin?.disabled || listen.startsWith("unix/")) process.exit(1);
+    const res = await fetch(`http://${listen.replace(/^tcp\//, "")}/config/`).catch(() => null);
+    if (!res?.ok) process.exit(1);
+    const running = await res.json();
+    // publish-caddy の道（@id が banto-publish- で始まる）を除く
+    for (const s of Object.values(running?.apps?.http?.servers ?? {})) {
+      if (Array.isArray(s.routes)) s.routes = s.routes.filter((r) => !String(r["@id"] ?? "").startsWith("banto-publish-"));
+    }
+    const canon = (v) => Array.isArray(v) ? v.map(canon) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v;
+    process.exit(JSON.stringify(canon(running)) === JSON.stringify(canon(want)) ? 0 : 1);
+  ' "$adapted"
 }
 
 step_https() {
   step "HTTPS と入口（Caddy）を設定する"
   local env_changed=0
+  REMAINING_RECORDS=""
   if [[ $TLS_MODE == cloudflare ]]; then
     if [[ $TOKEN_SOURCE == saved ]]; then
       TOKEN=$(sudo sed -n 's/^CLOUDFLARE_API_TOKEN=//p' "$CF_ENV" | head -1)
     fi
-    say "Cloudflare の DNS に $DOMAIN と *.$DOMAIN（→ $IP）を作る／直す"
-    CLOUDFLARE_API_TOKEN=$TOKEN cloudflare_upsert_records "$DOMAIN" "$IP" | sed 's/^/    /' ||
+    say "Cloudflare の DNS に $DOMAIN と *.$DOMAIN（→ $IP）を作る／直す${OLD_DOMAIN:+。前の名前 $OLD_DOMAIN の分を片づける}"
+    local out
+    out=$(CLOUDFLARE_API_TOKEN=$TOKEN cloudflare_upsert_records "$DOMAIN" "$IP" "$OLD_DOMAIN" 2>&1) || {
+      printf '%s\n' "$out" | sed 's/^/    /' >&2
       die "Cloudflare の DNS を直せませんでした（理由は上）" "トークンに Zone:Read と DNS:Edit が付いているか、名前がそのゾーンの中かを確かめてください"
+    }
+    printf '%s\n' "$out" | sed 's/^/    /'
+    REMAINING_RECORDS=$(grep '^残っている：' <<<"$out" || true)
     # 一時ファイルを経ずに置く（トークンを残すのは cloudflare.env だけ）
     if [[ $TOKEN_SOURCE == new ]] && ! printf 'CLOUDFLARE_API_TOKEN=%s\n' "$TOKEN" | sudo cmp -s - "$CF_ENV" 2>/dev/null; then
       printf 'CLOUDFLARE_API_TOKEN=%s\n' "$TOKEN" |
@@ -724,6 +965,11 @@ step_https() {
       env_changed=1
       ok "トークンを $CF_ENV（root:caddy 0640）に置いた"
     fi
+  elif [[ $NO_CLOUDFLARE == 1 ]] && sudo test -f "$CF_ENV"; then
+    sudo rm -f "$CF_ENV"
+    env_changed=1
+    ok "保存していたトークン（$CF_ENV）を消した"
+    REMAINING_RECORDS="残っている：Cloudflare の $DOMAIN・*.$DOMAIN の A レコード（内部の CA でも名前を引くのに使えるので消していない。要らなければ Cloudflare の画面で消す）"
   fi
   TOKEN="" # これより先では使わない
 
@@ -732,94 +978,32 @@ step_https() {
   backup=$(mktemp)
   if sudo test -f "$conf"; then sudo cat "$conf" | cat >"$backup"; fi
   put_root_file "$conf" 644 < <(render_banto_caddy "$DOMAIN" "$TLS_MODE")
-  local conf_changed=$FILE_CHANGED out
-  if ! out=$(caddy_validate); then
+  local vout
+  if ! vout=$(caddy_as_caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1); then
     if [[ -s $backup ]]; then put_root_file "$conf" 644 <"$backup"; else sudo rm -f "$conf"; fi
     rm -f "$backup"
-    printf '%s\n' "$out" | tail -5 | sed 's/^/    /' >&2
-    local hint="上の Caddy のエラーを見てください"
+    printf '%s\n' "$vout" | tail -5 | sed 's/^/    /' >&2
+    local hint="上の Caddy のエラー（どのファイルの何行目か）を見て、/etc/caddy/Caddyfile の側を直してください（banto の設定は install.sh が作るので手で直さない）"
     if sudo grep -v '^[[:space:]]*#' /etc/caddy/Caddyfile | grep -qF "$DOMAIN"; then
-      hint="/etc/caddy/Caddyfile に $DOMAIN のサイトが既にあるようです。banto の設定は /etc/caddy/banto.d/ に作るので、Caddyfile の $DOMAIN の部分を消してから打ち直してください"
+      hint="/etc/caddy/Caddyfile に $DOMAIN のサイトが既にあります。banto の設定は /etc/caddy/banto.d/banto.caddy に作るので、Caddyfile から $DOMAIN・sandbox.$DOMAIN・*.$DOMAIN のサイトを消してから打ち直してください"
     fi
     die "Caddy が設定を受け付けませんでした（banto の設定は元に戻した）" "$hint"
   fi
   rm -f "$backup"
 
-  sudo systemctl enable caddy.service >/dev/null 2>&1
+  sudo systemctl enable --quiet caddy.service
   if ! unit_active caddy.service; then
     sudo systemctl start caddy.service
   elif [[ $env_changed == 1 || ${CADDY_NEEDS_RESTART:-0} == 1 ]]; then
-    # 環境変数（トークン）と unit は reload では読み直されない。公開の道は publish-caddy が routes.json から張り直す
+    # 環境変数（トークン）と unit は reload では読み直されない。公開の道は publish-caddy が 15 秒ごとに張り直す
     sudo systemctl restart caddy.service
-  elif [[ $conf_changed == 1 ]]; then
+  elif ! caddy_running_matches; then
+    # ファイルが変わったかではなく、動いている設定と比べる——前の回に reload し損ねていても直る
+    say "動いている Caddy の設定が Caddyfile と違うので読み直す（公開の道は publish-caddy が 15 秒以内に張り直す）"
     sudo systemctl reload caddy.service
   fi
   unit_active caddy.service || die "Caddy が起きません" "journalctl -u caddy -n 50 で理由を見てください"
   ok "Caddy：https://$DOMAIN・https://sandbox.$DOMAIN（$([[ $TLS_MODE == cloudflare ]] && echo "Let's Encrypt" || echo "内部の CA")）"
-}
-
-# ---------------------------------------------------------------------------
-# 8. banto の設定（config.json）と Publish の設定
-# ---------------------------------------------------------------------------
-
-step_config() {
-  step "banto の設定を書く"
-  local result
-  result=$(node --input-type=module - "$CONFIG_PATH" "$DOMAIN" "$TLS_MODE" <<'JS'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
-const [path, domain, tlsMode] = process.argv.slice(2);
-const out = [];
-function writeJson(p, value, before) {
-  const text = JSON.stringify(value, null, 2) + "\n";
-  if (text === before) return false;
-  mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
-  writeFileSync(`${p}.tmp`, text, { mode: 0o600 });
-  renameSync(`${p}.tmp`, p);
-  return true;
-}
-// 既にある設定は他の項目を残し、要る項目だけ直す。authToken は消さない（無ければ作る——無いと起動のたびに変わる）
-const before = existsSync(path) ? readFileSync(path, "utf8") : "";
-const raw = before ? JSON.parse(before) : {};
-if (!raw.authToken) raw.authToken = randomBytes(32).toString("base64url");
-const oldHost = raw.publicUrl ? new URL(raw.publicUrl).hostname : undefined;
-raw.publicUrl = `https://${domain}`;
-raw.sandboxPublicUrl = `https://sandbox.${domain}`;
-let origins = Array.isArray(raw.allowedEmbedderOrigins) ? raw.allowedEmbedderOrigins : ["http://127.0.0.1:4175", "http://localhost:4175"];
-if (oldHost && oldHost !== domain) origins = origins.filter((o) => o !== `https://${oldHost}`);
-if (!origins.includes(`https://${domain}`)) origins.push(`https://${domain}`);
-raw.allowedEmbedderOrigins = origins;
-out.push(writeJson(path, raw, before) ? "config=changed" : "config=same");
-if (raw.uiOrigin && new URL(raw.uiOrigin).origin !== `https://${domain}`) out.push(`warn=設定の uiOrigin（${raw.uiOrigin}）が画面の住所と違います。ログインが通らないので、要らなければ消してください`);
-// Publish（publish-caddy）の設定：置き場は <dataDir>/modules/<入れた名前>。目録から入れるときの既定の名前 publish-caddy に置く
-if (tlsMode === "cloudflare") {
-  const dataDir = raw.dataDir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "banto");
-  const sp = join(dataDir, "modules", "publish-caddy", "settings.json");
-  const sBefore = existsSync(sp) ? readFileSync(sp, "utf8") : "";
-  const s = sBefore ? JSON.parse(sBefore) : {};
-  s.adminUrl ??= "http://127.0.0.1:2019";
-  s.reach ??= "internet";
-  s.baseDomain = domain;
-  out.push(writeJson(sp, s, sBefore) ? `publish=changed:${sp}` : `publish=same:${sp}`);
-}
-console.log(out.join("\n"));
-JS
-)
-  local line
-  while IFS= read -r line; do
-    case $line in
-      config=changed) BANTO_NEEDS_RESTART=1; ok "$CONFIG_PATH を直した（publicUrl=https://$DOMAIN）" ;;
-      config=same) ok "$CONFIG_PATH はそのまま" ;;
-      publish=changed:*) ok "Publish の基のドメインを $DOMAIN にした（${line#publish=changed:}）" ;;
-      publish=same:*) ok "Publish の基のドメインは $DOMAIN のまま" ;;
-      warn=*) warn "${line#warn=}" ;;
-    esac
-  done <<<"$result"
-  if [[ $TLS_MODE == internal ]]; then
-    say "Publish は使えません（公開先 *.$DOMAIN の DNS と証明書が要る——Cloudflare のトークンを渡して打ち直すと使える）"
-  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -830,7 +1014,7 @@ step_units() {
   step "banto の unit を作る"
   local path_env="$USER_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" changed=0
   put_root_file /etc/systemd/system/banto-host.service 644 <<EOF
-# banto の install.sh が作った（打ち直すと作り直す）。docs/runbooks/release.md
+# banto の install.sh が作った（打ち直すと作り直す）。置き場と口は banto の config.json から。docs/runbooks/release.md
 [Unit]
 Description=banto host (core)
 After=network-online.target incus.socket incus.service
@@ -857,7 +1041,7 @@ EOF
   changed=$((changed | FILE_CHANGED))
   # 画面は 127.0.0.1 だけで待つ（外からは Caddy を通る）
   put_root_file /etc/systemd/system/banto-frontend.service 644 <<EOF
-# banto の install.sh が作った（打ち直すと作り直す）。docs/runbooks/release.md
+# banto の install.sh が作った（打ち直すと作り直す）。置き場と口は banto の config.json から。docs/runbooks/release.md
 [Unit]
 Description=banto frontend (Next.js)
 After=network-online.target banto-host.service
@@ -900,6 +1084,7 @@ EOF
     changed=$((changed | FILE_CHANGED))
   done
   sudo systemctl daemon-reload
+  sudo systemctl enable --quiet banto-host.service banto-frontend.service
   [[ $changed == 1 ]] && BANTO_NEEDS_RESTART=1
   ok "banto-host.service・banto-frontend.service（ユーザー $USER_NAME）・system.slice の守り"
 }
@@ -908,12 +1093,45 @@ EOF
 # 10. 外から banto の口に直に届かせない（nftables の banto 専用の表）
 # ---------------------------------------------------------------------------
 
-step_firewall() {
-  step "外から banto の口に直に届かないようにする"
-  # core は 0.0.0.0 で待つ（Project のコンテナがブリッジ越しに /relay へ来る）。lo と Incus のブリッジ以外から落とす。
+# Incus が持つブリッジ（managed で type が bridge のもの。全区画）の名前。区画ごとのブリッジ（incus-user の
+# incusbr-<uid>）も、default のプロファイルが別の名前のブリッジを使っている host も、これで拾う
+incus_bridges() {
+  local json
+  json=$(sudo incus query '/1.0/networks?recursion=1&all-projects=true' </dev/null 2>/dev/null ||
+    sudo incus query '/1.0/networks?recursion=1' </dev/null 2>/dev/null) || return 0
+  node -e '
+    const names = new Set(JSON.parse(process.argv[1]).filter((n) => n.managed && n.type === "bridge").map((n) => n.name));
+    for (const n of names) if (/^[A-Za-z0-9_.-]{1,15}$/.test(n)) console.log(n);
+  ' "$json"
+}
+
+# default のプロファイルの nic が、Incus の持つブリッジ以外（人が作った br0 等）に繋がっていれば、その名前
+incus_unmanaged_nics() {
+  local json
+  json=$(sudo incus query /1.0/profiles/default </dev/null 2>/dev/null) || return 0
+  node -e '
+    const bridges = new Set((process.argv[2] ?? "").split(" ").filter(Boolean));
+    for (const d of Object.values(JSON.parse(process.argv[1]).devices ?? {})) {
+      if (d.type !== "nic") continue;
+      const n = d.network ?? d.parent;
+      if (n && !bridges.has(n)) console.log(n);
+    }
+  ' "$json" "${1:-}"
+}
+
+# 表を書いて入れる。何度呼んでも同じ結果（表が消えていれば入れ直す）
+apply_firewall() {
+  local -a bridges=()
+  mapfile -t bridges < <(incus_bridges)
+  local extra="" others="" b
+  for b in "${bridges[@]}"; do
+    [[ $b == incusbr* ]] && continue
+    extra+=$'\t\t'"iifname \"$b\" accept"$'\n'
+    others+="・$b"
+  done
   # 表を作ってから消して作り直す——何度入れても同じ結果になる（nft -f は1つの処理として入る）
   put_root_file /etc/banto/nftables.conf 644 <<EOF
-# banto の install.sh が作った。lo と Incus のブリッジ（incusbr*）以外から banto の口へ来たものを落とす
+# banto の install.sh が作った。lo と Incus のブリッジ以外から banto の口（config.json の port・sandboxPort・uiPort）へ来たものを落とす
 table inet banto
 delete table inet banto
 table inet banto {
@@ -921,7 +1139,7 @@ table inet banto {
 		type filter hook input priority filter - 10; policy accept;
 		iifname "lo" accept
 		iifname "incusbr*" accept
-		tcp dport { $PORT_UI, $PORT_SANDBOX, $PORT_HOST } drop
+${extra}		tcp dport { $PORT_UI, $PORT_SANDBOX, $PORT_HOST } drop
 	}
 }
 EOF
@@ -944,15 +1162,35 @@ ExecStop=/usr/sbin/nft delete table inet banto
 [Install]
 WantedBy=multi-user.target
 EOF
-  sudo systemctl daemon-reload
-  sudo systemctl enable banto-firewall.service >/dev/null 2>&1
+  [[ $FILE_CHANGED == 1 ]] && sudo systemctl daemon-reload
+  sudo systemctl enable --quiet banto-firewall.service
   if ! unit_active banto-firewall.service; then
     sudo systemctl start banto-firewall.service
-  elif [[ $conf_changed == 1 ]]; then
+  elif [[ $conf_changed == 1 ]] || ! sudo nft list table inet banto >/dev/null 2>&1; then
+    # 設定が変わった・誰かが表を消した（nftables.service の flush ruleset 等）——入れ直す
     sudo systemctl reload banto-firewall.service
   fi
   sudo nft list table inet banto >/dev/null 2>&1 || die "nftables の表 banto が入っていません" "journalctl -u banto-firewall -n 20 で理由を見てください"
-  ok "lo・incusbr* 以外から $PORT_HOST・$PORT_SANDBOX・$PORT_UI へ来たものを落とす（banto-firewall.service）"
+  FIREWALL_BRIDGES="lo・incusbr*$others"
+  local nics
+  nics=$(incus_unmanaged_nics "${bridges[*]}" | tr '\n' ' ')
+  if [[ -n $nics ]]; then
+    warn "Incus の default のプロファイルが、Incus の持つブリッジではないもの（$nics）に繋がっています。"
+    warn "その先のコンテナは LAN 側から host の /relay に来るので、この表に落とされて Claude が使えません。"
+    warn "直し方：banto の Project のコンテナは Incus のブリッジ（incus network create <名前>）に繋いでください"
+  fi
+}
+
+step_firewall() {
+  step "外から banto の口に直に届かないようにする"
+  # core は 0.0.0.0 で待つ（Project のコンテナがブリッジ越しに /relay へ来る）。lo と Incus のブリッジ以外から落とす
+  apply_firewall
+  ok "$FIREWALL_BRIDGES 以外から $PORT_HOST・$PORT_SANDBOX・$PORT_UI へ来たものを落とす（banto-firewall.service）"
+  if sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+    warn "ufw が有効です。ufw は banto の表とは別に判断し、Incus のブリッジから host への DHCP・DNS・/relay を落とすことがあります。"
+    warn "直し方（ブリッジごとに）：sudo ufw allow in on incusbr0 && sudo ufw route allow in on incusbr0 && sudo ufw route allow out on incusbr0"
+    warn "（ブリッジの名前は incus network list で見る。banto のユーザーの区画のブリッジ incusbr-$USER_UID も同じように）"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -960,7 +1198,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 # **「上げる」段はこの関数に閉じ込める**——稼働中の版の置き場（versions/<commit> と current の symlink、
-# scripts/update.mjs）が決まったら、ここを差し替える（docs/notes/2026-10-04-installer.md）。
+# scripts/update.mjs）が main に入ったら、ここを差し替える（docs/notes/2026-10-04-installer.md「差し替えのときにやること」）。
 # 引数：1 なら、コードが変わっていなくても（設定・unit が変わったので）起こし直す
 upgrade_banto() {
   local force_restart=${1:-0} code_changed=0 head built
@@ -990,10 +1228,12 @@ upgrade_banto() {
     local subject
     subject=$(git -C "$REL" log -1 --format='%h %s')
     say "build する（${subject:0:60}）。数分かかります" # cut -c は日本語をバイトで切る
-    (cd "$REL/banto" && env -u NODE_ENV npm ci --include=dev --no-audit --no-fund && env -u NODE_ENV npm run build) ||
+    drop_sudo "npm の依存と build"
+    (cd "$REL/banto" && run_detached env -u NODE_ENV npm ci --include=dev --no-audit --no-fund && run_detached env -u NODE_ENV npm run build) ||
       die "build に失敗しました（上の出力）" "コードの側の問題なら、直った版が release に来てから打ち直してください"
     echo "$head" >"$REL/.git/banto-built-commit"
     code_changed=1
+    reacquire_sudo "前提を確かめて banto を起こす・起こし直すため"
   else
     ok "コードは最新（$(git -C "$REL" log -1 --format='%h')）で build 済み"
   fi
@@ -1022,9 +1262,10 @@ step_doctor_and_start() {
   step "コンテナの前提を確かめて、banto を起こす"
   # banto のユーザーとして、グループを引き直して確かめる（sudo -u はグループを引き直す。sg は主グループを変えるので使わない）
   (cd "$REL/banto" && sudo -u "$USER_NAME" -H /usr/local/bin/node packages/container/dist/doctor.js | sed 's/^/    /') ||
-    die "コンテナの前提がそろっていません（上の ✖ と直し方）" "直してから打ち直してください"
+    die "コンテナの前提がそろっていません（上の ✖ と直し方）" "上に出た直し方のとおりに直してから打ち直してください"
+  # doctor が banto のユーザーとして初めて Incus に繋ぐと、そのユーザーの区画（とブリッジ）ができる——表に入れ直す
+  apply_firewall
 
-  sudo systemctl enable banto-host.service banto-frontend.service >/dev/null 2>&1
   local u
   for u in banto-host banto-frontend; do
     unit_active "$u.service" || sudo systemctl start "$u.service"
@@ -1044,7 +1285,7 @@ step_doctor_and_start() {
   # Caddy を通して確かめる（名前はこのホストに向けて引く）
   local ca=() code=""
   if [[ $TLS_MODE == internal ]]; then
-    CA_ROOT="$(getent passwd caddy | cut -d: -f6)/.local/share/caddy/pki/authorities/local/root.crt"
+    CA_ROOT="$(caddy_home)/.local/share/caddy/pki/authorities/local/root.crt"
     for ((i = 0; i < 30; i++)); do sudo test -f "$CA_ROOT" && break; sleep 1; done
     CA_COPY=$(mktemp)
     sudo cat "$CA_ROOT" 2>/dev/null | cat >"$CA_COPY" || true
@@ -1065,17 +1306,24 @@ step_doctor_and_start() {
 }
 
 # ---------------------------------------------------------------------------
-# 13. Claude のログイン
+# 13. Claude Code を入れてログインする（ここからは sudo を使わない）
 # ---------------------------------------------------------------------------
 
 CLAUDE_STATE=""
 step_claude() {
   step "Claude Code を入れて、ログインする"
+  drop_sudo "Claude Code の installer とログイン"
   local claude="$USER_HOME/.local/bin/claude"
   if ! command -v claude >/dev/null 2>&1 && [[ ! -x $claude ]]; then
+    # 公式の入れ方（https://claude.ai/install.sh）をファイルに落としてから流す。この台本そのものの sha256・署名は
+    # 公開されていない（2026-10-04 に確かめた）——台本は本体を同じ配布元（downloads.claude.ai）の manifest.json の
+    # sha256 と照合して入れる
+    local tmp
+    tmp=$(mktemp)
     say "Claude Code を入れる（公式の入れ方：https://claude.ai/install.sh）"
-    curl -fsSL https://claude.ai/install.sh | bash ||
-      die "Claude Code を入れられませんでした" "https://claude.ai に届くか確かめてください"
+    curl -fsSL https://claude.ai/install.sh -o "$tmp" || die "Claude Code の installer を取ってこられませんでした" "https://claude.ai に届くか確かめてください"
+    run_detached bash "$tmp" || die "Claude Code を入れられませんでした（上の出力）" "https://downloads.claude.ai に届くか確かめてください"
+    rm -f "$tmp"
   fi
   [[ -x $claude ]] || claude=$(command -v claude)
   # ログインしているかは CLI に聞く（auth status はログインしていなければ終了コード 1）
@@ -1118,6 +1366,10 @@ step_finish() {
     printf '  HTTPS：Caddy の内部の CA（端末ごとに CA を信頼する必要がある）\n'
     printf '    CA のルート証明書：http://%s/banto-ca.crt（このホストでは %s）\n' "$DOMAIN" "$CA_ROOT"
   fi
+  if [[ -n ${REMAINING_RECORDS:-} ]]; then
+    printf '  残っている DNS のレコード：\n'
+    printf '%s\n' "$REMAINING_RECORDS" | sed 's/^残っている：/    /'
+  fi
   printf '\n  次にやること：\n'
   local n=1
   if [[ $TLS_MODE == internal ]]; then
@@ -1140,7 +1392,7 @@ step_finish() {
 # ---------------------------------------------------------------------------
 
 cleanup() {
-  [[ -n ${SUDO_KEEPALIVE:-} ]] && kill "$SUDO_KEEPALIVE" 2>/dev/null
+  stop_sudo_keepalive
   [[ -n ${CA_COPY:-} ]] && rm -f "$CA_COPY"
   return 0
 }
@@ -1149,18 +1401,21 @@ main() {
   trap 'on_error $? $LINENO' ERR
   trap cleanup EXIT
   parse_args "$@"
+  # root が要る段
   step_check_host
   step_resolve_settings
   step_base_packages
   step_node
+  step_config
   step_incus
   step_caddy_install
   step_https
-  step_config
   step_units
   step_firewall
+  # build はユーザーの権限で、sudo の記憶を消してから（upgrade_banto の中）。そのあと sudo を取り直して起こす
   step_upgrade
   step_doctor_and_start
+  # ここからは sudo を使わない
   step_claude
   step_finish
 }
