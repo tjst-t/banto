@@ -280,3 +280,7 @@ arm64・Claude のログインそのもの（`claude auth login` があること
 向け先だけ直す・cloudflare.env 0640 root:caddy・Publish の基のドメイン）、名前を替える回が Cloudflare に届かず止まる→
 次の回が起こし直し・前の名前の印つきだけ消す・残りを最後の画面に出す、--no-cloudflare、秘密の grep、権限、
 Zabbly の鍵の混ざった束を断る、パスワードの要る sudo のユーザーで drop_sudo のあと記憶が使えない
+- 2回目の rebase の時点（2026-10-04）で **fork/self-update は main に入っていた**（update.mjs・setup-update.sh・bootstrap の
+  releaseDir）。差し替えはこのレビューの範囲外（人の指示：「差し替え自体は main に入ってから」）なので、上の
+  「差し替えのときにやること」は次の仕事として残す。install.sh が書く `releaseDir`・`uiPort` は、main の bootstrap.ts と
+  update.mjs が読む名前と同じ（既定値も同じ `~/.local/share/banto-release`・4175）
