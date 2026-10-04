@@ -372,3 +372,4 @@ unit を current に書き換えて起こし直す）。そのあと update.mjs 
   止まる・画面の「更新」の口（リンクで入ったセッションで POST /api/admin/update → banto-update.service が上げる）・
   打ち直しで sudo を取り直さない、を含む
 - 移行（`run.sh --migrate-from 1f935395`、前の install.sh とコードで古い形に入れ、今の install.sh を打つ）：**PASS 22・FAIL 0**
+- 26.04（ユーザー devops、Incus は Zabbly stable）の本筋：**PASS 146・FAIL 0**（まっさらから 333 秒）。移行は 26.04 では流していない
