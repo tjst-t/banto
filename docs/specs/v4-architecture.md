@@ -1484,9 +1484,11 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
   違うものを組み立てないため。走っている更新があれば断る
 - `POST …/cancel`・`POST …/force-now`：走っている更新の待ちをやめる・すぐ起こし直す。ログイン中の人だけ
   （`force-now` は step-up が要る）
+- `GET …/log`：最後の更新（`state.json` が指す回）のログの末尾（64KiB）。**ログイン中の人だけ**（組み立ての出力そのもの）。
+  `state.json` のログが `<dataDir>/update/` の外を指していたら読まない
 
 **準備が済んでいないとき**（開発用のリポジトリから動かしている・unit が無い）は、画面はボタンを出さずに理由と
-手順書（`docs/runbooks/release.md` D）を出す。
+手順書（`docs/runbooks/release.md` D）を出す。画面の作りは `docs/specs/v4-frontend.md` §6.34。
 
 ### 2.6 Configuration
 
