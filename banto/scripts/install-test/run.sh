@@ -70,7 +70,8 @@ run_install() {
   echo "$rc"
 }
 
-nested_ip() { I list "$NAME" -c 4 -f csv | grep -oE '([0-9]+\.){3}[0-9]+' | head -1; }
+# 試験の場の外から見えるアドレス（eth0）。中の Incus のブリッジ（incusbr0・incusbr-<uid>）のアドレスを拾わない
+nested_ip() { I list "$NAME" -c 4 -f csv | grep -oE '([0-9]+\.){3}[0-9]+ \(eth0\)' | cut -d' ' -f1 | head -1; }
 
 # ---------------------------------------------------------------------------
 note "試験の場を作る（ubuntu/$IMAGE・ユーザー $TUSER・$branch の $(git -C "$repo" rev-parse --short HEAD)）"
@@ -127,6 +128,7 @@ PASSES=$((PASSES + $(count '^PASS' "$LOG/checks1.log"))); FAILS=$((FAILS + $(cou
 
 note "g. 外（試験の場の外）から banto の口に直に届かない"
 IP=$(nested_ip)
+[[ -n $IP ]] || { fail "g: 試験の場の eth0 のアドレスが分からない"; IP=0.0.0.0; }
 for p in 4737 4176 4175; do
   code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$IP:$p/" || true)
   if [[ $code == 000 ]]; then pass "g: 外から $IP:$p に届かない"; else fail "g: 外から $IP:$p → $code"; fi

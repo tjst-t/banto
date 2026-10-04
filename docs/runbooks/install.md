@@ -12,7 +12,7 @@
 curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | bash -s -- --domain banto.example.com
 ```
 
-途中で sudo のパスワードを聞かれる——**build のあとにもう一度聞かれる**（npm の依存と build はユーザーの権限で
+途中で sudo のパスワードを聞かれる——**build したときは、build のあとにもう一度聞かれる**（npm の依存と build はユーザーの権限で
 流すので、その間は sudo の記憶を消している。取ってきたコードに root を使わせないため）。端末から打てば、Cloudflare の
 API トークンも聞かれる（Enter だけなら飛ばす。一度 `--no-cloudflare` にしたら聞かない）。
 最後に次が出る：
