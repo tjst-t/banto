@@ -172,8 +172,16 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
   node の一式を写すため
 - **sudo の記憶を、取ってきたコードに使わせない**：root が要る段を先にまとめ、npm の依存・build・Claude の installer
   （ユーザーの権限で走る、外から取ってきたもの）を流す前に `sudo -K` で記憶を消し、`setsid` で端末から切り離して流す。
-  build のあとに root が要る段（doctor・起こす・起こし直す）は sudo を取り直してから（パスワードの要る人には2度目を聞く）。
+  初めて入れるときだけ、最初の版を組み立てたあとに sudo を取り直す（setup-update.sh・起こす。パスワードの要る人には
+  2度目を聞く）。打ち直しでは取り直さない——上げる・起こし直すは update.mjs と polkit の規則（下）。
   Claude の installer はファイルに落としてから流す（台本そのものの sha256・署名は公開されていない）
+- **コードは版ごとのフォルダの形**（アーキ仕様 §2.5「画面から banto を更新する」）。**上げるのは画面の「更新」と同じ本体
+  `update.mjs`**：初めては install.sh が `repo.git`（bare、origin は `--repo`）を作り、取ってきた版の `update.mjs` を置き場の外に
+  写して `--first` で流す。打ち直しは `current` の `update.mjs` を待つ形で呼び、待ちが 30 分を越えたら update.mjs の「やめる印」を
+  置く（今の版のまま終わる）。新しい版が起きなければ update.mjs が前の版に戻し、install.sh は理由を出して止まる。
+  取るのは `release` だけ（`--branch` は持たない）。画面から更新する準備（`banto-update.service`・polkit の規則）は
+  `setup-update.sh` に任せ、要るとき（初め・古い形・中身が違う）だけ打つ。前の install.sh で入れた古い形（置き場そのものが
+  clone）も setup-update.sh が移す。unit は `current` を通すパスで書く
 - **口と置き場の真実は banto の `config.json`**（`port`・`sandboxPort`・`uiPort`・`releaseDir`）。install.sh は無ければ既定を
   書き、Caddy の設定・unit・nftables の表はそこから作る
 - **入口は Caddy**（caddyserver.com の custom build、Cloudflare の DNS 入り。**版は選べない**——download API が版の指定を
@@ -205,10 +213,9 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
   コンテナは /relay に届かないので警告する。ufw が有効なら、ブリッジを許す直し方つきで警告する
 - **host の守り**（`docs/runbooks/host-resource-protection.md`）も入れる：system.slice の CPUWeight=1000・MemoryLow=4G、
   banto の両 unit に OOMScoreAdjust=-800
-- **何度打っても壊れない**：済んだ段は確かめて飛ばす。2回目からは release の最新を取り込み（早送りで済まなければ止まる）、
-  build し、動いているものが無くなってから起こし直す（`restart-when-idle.mjs`）。何も変わっていなければ起こし直さない。
-  **「上げる」段は1つの関数（`upgrade_banto`）に閉じ込める**——稼働中の版の置き場（`versions/<commit>` と `current`）が
-  決まったら差し替える
+- **何度打っても壊れない**：済んだ段は確かめて飛ばす。2回目からは update.mjs で release の最新にする（上）。版は同じでも
+  設定・unit が動いている banto より新しければ（起きた時刻とファイルの更新時刻で比べる）、空くのを待って polkit の規則で
+  起こし直す。何も変わっていなければ起こし直さない
 - **決めた値（秘密以外）は `/etc/banto/install.conf` に覚える**——打ち直しで渡した値だけが変わる。置き場を `/etc` に
   したのは、値が1台に1つのもの（Caddy・DNS・ファイアウォール・Incus の置き場。口が決まっているので banto は1台に1つ）を
   決め、root しか書けない所に置けば、別のユーザーで打ち直したときに気づいて断れるため。トークンは `cloudflare.env` に

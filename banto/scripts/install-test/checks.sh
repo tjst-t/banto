@@ -133,7 +133,6 @@ if [[ $MODE == ui-update ]]; then
   [[ $now_commit == "$latest" ]] && pass "ui: banto-update.service が上げ、host が新しい版（${latest:0:12}）で答える" || fail "ui: 上がらない（今 $now_commit）"
   phase=$(node -e 'console.log(require(process.argv[1]).phase)' "$HOME/.local/share/banto/update/state.json")
   [[ $phase == "done" ]] && pass "ui: state.json は done" || fail "ui: state.json：$phase"
-  journalctl -u banto-update.service --no-pager 2>/dev/null | grep -q 'update.mjs\|Finished\|Deactivated' && pass "ui: banto-update.service の記録がある" || info "ui: journal を読めない（このユーザーでは読めないことがある）"
   exit "$FAILS"
 fi
 

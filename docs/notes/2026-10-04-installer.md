@@ -284,3 +284,50 @@ Zabbly の鍵の混ざった束を断る、パスワードの要る sudo のユ�
   releaseDir）。差し替えはこのレビューの範囲外（人の指示：「差し替え自体は main に入ってから」）なので、上の
   「差し替えのときにやること」は次の仕事として残す。install.sh が書く `releaseDir`・`uiPort` は、main の bootstrap.ts と
   update.mjs が読む名前と同じ（既定値も同じ `~/.local/share/banto-release`・4175）
+
+## 「上げる」段を update.mjs・setup-update.sh に差し替えた（2026-10-04 の続き）
+
+main（f408e782）に入った update.mjs・setup-update.sh の契約に合わせた。決まったことは仕様（v4-security §1「入れ方」・
+アーキ §2.5）と runbook（install.md「置き場の形」）。
+
+### 形
+
+- **初めて**：install.sh が `repo.git` を作り（`git init --bare`、origin は `--repo`、`+refs/heads/release:refs/remotes/origin/release`
+  で取る）、取ってきた release の `banto/scripts/update.mjs` を `git show` で置き場の外（mktemp）に写して `--first` で流す。
+  update.mjs が worktree を作り組み立てて `current` を張る（起こさない）。このとき sudo の記憶を消している（組み立ては
+  取ってきたコードを動かす）。そのあと sudo を取り直して setup-update.sh → doctor → 起こす
+- **setup-update.sh は要るときだけ打つ**：古い形・polkit の規則が無い・`banto-update.service` が無いか中身（画面の口・
+  node・置き場）が今と違う。契約上は何度打っても同じ（変えたものが無ければ起こし直さない）だが、打つと必ず
+  `sudo true` から始まる——打ち直しで sudo を使わずに済ませるため、要らなければ打たない。置き場の外に写してから打つ
+  （手順書 D）。`BANTO_UI_URL=http://127.0.0.1:<uiPort>/`・`NODE_BIN=/usr/local/bin/node` を渡す
+- **unit は current を通すパスで書く**。古い形の置き場だけは clone を指したまま書く——setup-update.sh の書き換え
+  （中の `<置き場>` を `<置き場>/current` に）の結果と、install.sh が current の形で書くものが同じ中身になるので、
+  打ち直しで書き換えが行ったり来たりしない（試験で `/etc/systemd/system/banto-host.service` が打ち直しで変わらないことを
+  見ている——変わると mtime で起こし直す判定に掛かる）
+- **打ち直し**：sudo の記憶を消してから `current` の update.mjs（いつも今動いている版のもの）を待つ形で呼ぶ。
+  起こし直すのは update.mjs で、polkit の規則（restart だけ許す）を使う——**打ち直しでは sudo を取り直さない**
+  （前の形は build のあとに sudo を取り直していた。初めてのときだけ残る：setup-update.sh と start が要るため）
+- **待ちの上限は install.sh が持つ**：update.mjs は待ち続ける（画面から人がやめられる）。install.sh は端末の前の人が
+  打つもので、終わらないと困る——前の形（restart-when-idle --timeout 30）と同じ 30 分にした。state.json の段が `wait` に
+  なってから数え、越えたら update.mjs の「やめる印」（`<dataDir>/update/cancel`）を置く。update.mjs は作りかけを消して
+  `cancelled`（今の版のまま）で終わる——契約どおりの止め方で、殺さない。組み立ての時間は数えない（組み立て中に
+  やめる印を置くと、組み立て終わる前に消える）
+- **結果は state.json から読む**（この回のもの：startedAt が install.sh が呼んだ時刻以降）。done → 通る・cancelled →
+  通るが最後の画面に「まだ上げていない」・rolled-back／failed → 理由（error）とログの場所を出して止まる。終了コード 3
+  （ほかの更新が走っている）も止まる
+- **版は同じで設定・unit だけが新しい**ときは、前と同じく起きた時刻とファイルの更新時刻で判定し、
+  `restart-when-idle.mjs --dry-run --timeout 30`（空くまで待つだけ）のあと `systemctl restart`（polkit の規則で sudo 無し）。
+  restart-when-idle 自身は `sudo systemctl restart` を打つので、そのままでは使えない
+- **`--branch` はやめた**：update.mjs・setup-update.sh・self-update.ts が `refs/heads/release` 固定。install.sh だけ別の
+  ブランチを入れても、次の更新（画面・打ち直し）で release に戻される。update.mjs にブランチを足すのは update.mjs の持ち主の
+  仕事なので足していない（報告に書いた）。試験の場は bundle に release という名前で入れる
+- **取り込み元は覚えない**：install.conf から `repo`・`branch` を外し、`repo.git` の origin を真実にした（update.mjs も
+  それを使う）。`--repo` を渡したときだけ origin を替える
+- 消したもの：`.git/banto-built-commit`・clone の `git status` の判定・版を上げたときの restart-when-idle の呼び出し
+- **写しが1つ増えた**：install.sh の `FETCH_REFSPEC`（update.mjs のヘッダの「同じものの写しがある所」には載っていない）
+
+### 古い形からの移行
+
+前の install.sh（clone の形）で入れた host に打つと、置き場が古い形と分かり、unit は clone を指したまま（前と同じ中身）
+書き、setup-update.sh に移させる（clone の origin から repo.git を作り、今の clone を組み立て直さずに versions/ に入れ、
+unit を current に書き換えて起こし直す）。そのあと update.mjs で release の最新に上げる。

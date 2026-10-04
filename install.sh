@@ -1365,7 +1365,11 @@ upgrade_banto() {
   [[ -f $upd ]] || die "$upd がありません" "置き場（$REL）を見てください"
   started=$(date +%s)
   say "release の最新に上げる（$upd。新しい版があれば組み立て、動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待って起こし直す）"
-  run_detached /usr/local/bin/node "$upd" &
+  # 背景の子には ERR の罠を引き継がせない（update.mjs が 3 で終わったとき、子の側で「思っていなかった失敗」と出てしまう）
+  (
+    trap - ERR
+    run_detached /usr/local/bin/node "$upd"
+  ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     st=$(update_state "$started")

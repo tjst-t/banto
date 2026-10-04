@@ -1450,8 +1450,9 @@ host がメモリに持っている3つだけ（新しく覚えるものは無�
 
 - **更新の本体は `banto/scripts/update.mjs`**（1本）。いつも**今動いている版（`current`）のもの**を使う——取ってきた
   新しいコードのスクリプトは動かさない。初めて入れるとき（`current` が無い）だけ、取ってきた版のものを `--first` で
-  動かす（待たない・戻す先が無い）。**新しいホストに入れる `install.sh` はまだ無い**（Fork「新しいホストへの
-  インストール」が作成中・未作成）。できたら、その「上げる」段も `update.mjs` を呼ぶ
+  動かす（待たない・戻す先が無い）。**新しいホストに入れる `install.sh`**（リポジトリの直下、`docs/specs/v4-security.md` §1
+  「入れ方」）は、初めてのとき `repo.git` を作って取ってきた版の `update.mjs` を置き場の外に写して `--first` で流し、
+  `setup-update.sh` で更新の unit と polkit の規則を置く。打ち直しでは `current` の `update.mjs` を呼ぶ
 - **走らせるのは system の unit `banto-update.service`**（`Type=oneshot`、banto を動かしているユーザーで、`Nice=10`・
   `IOSchedulingClass=idle`・`CPUWeight=20`——組み立ての間も動いている banto を重くしない）。banto-host の子として
   走らせると、起こし直したときに一緒に止められるため。oneshot なので同時に2本は走らない。**unit は

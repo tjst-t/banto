@@ -26,6 +26,14 @@
 # shellcheck disable=SC2015,SC2016,SC2024,SC2317 # 試験：pass||fail の並び・中で展開する台本・自分のファイルへの書き出し・trap の関数
 set -euo pipefail
 
+# 走っている間に run.sh を書き換えても壊れないよう、写しから流す（bash は台本を少しずつ読むので、書き換えると
+# 途中から別の行を読んで暴れる——2026-10-04 に踏んだ）
+if [[ -z ${INSTALL_TEST_COPY:-} ]]; then
+  copy=$(mktemp /tmp/install-test-run-XXXX.sh)
+  cp "$0" "$copy"
+  INSTALL_TEST_COPY=1 INSTALL_TEST_HERE=$(cd "$(dirname "$0")" && pwd) exec bash "$copy" "$@"
+fi
+
 IMAGE=24.04 TUSER=bantotester KEEP=0 FIRST_ONLY=0 MIGRATE_FROM=""
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -41,7 +49,7 @@ done
 D1=banto.test D2=banto2.test D3=banto.cf.test D4=banto2.cf.test
 FAKE_TOKEN=fakeCloudflareToken0123456789abcdefXYZ
 FAKE_API=http://127.0.0.1:8787
-here=$(cd "$(dirname "$0")" && pwd)
+here=$INSTALL_TEST_HERE
 repo=$(git -C "$here" rev-parse --show-toplevel)
 branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD)
 NAME="bt-install-${IMAGE//./}-$(date +%H%M%S)"
@@ -304,8 +312,11 @@ rc=0; U bash /opt/banto-test/checks.sh "$D2" "$LINKU" ui-update >"$LOG/checks-ui
 grep -E '^(PASS|FAIL|INFO)' "$LOG/checks-ui.log" | sed 's/^/  /' | tee -a "$LOG/result.txt"
 PASSES=$((PASSES + $(count '^PASS' "$LOG/checks-ui.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks-ui.log")))
 [[ $(X_link current) == "${GOOD2:0:12}" && $(X_link previous) == "${GOOD:0:12}" ]] && pass "ui: current → ${GOOD2:0:12}・previous → ${GOOD:0:12}" || fail "ui: current=$(X_link current) previous=$(X_link previous)"
+# 新しい版が答えたあとも、update.mjs は古い版を片づけている（lock を持ったまま）——終わるのを待つ
+for _ in $(seq 200); do X systemctl is-active --quiet banto-update.service || break; sleep 3; done
 X journalctl -u banto-update.service --no-pager >"$LOG/banto-update-journal.log" 2>&1 || true
-grep -q 'update.mjs' "$LOG/banto-update-journal.log" && pass "ui: banto-update.service が update.mjs を動かした（journal）" || fail "ui: banto-update.service の journal に update.mjs が無い"
+grep -q '更新を始めます' "$LOG/banto-update-journal.log" && grep -q '更新しました' "$LOG/banto-update-journal.log" &&
+  pass "ui: banto-update.service の中で update.mjs が始まり、終わった（journal）" || fail "ui: banto-update.service の journal：$(tail -3 "$LOG/banto-update-journal.log")"
 
 note "Caddy の unit：既に別の場所に unit がある host（apt の caddy の形）では drop-in で差し替え、/etc に丸ごと書かない"
 X sh -c 'mkdir -p /usr/lib/systemd/system && mv /etc/systemd/system/caddy.service /usr/lib/systemd/system/caddy.service && systemctl daemon-reload'

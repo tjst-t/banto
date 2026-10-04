@@ -12,14 +12,15 @@
 curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | bash -s -- --domain banto.example.com
 ```
 
-途中で sudo のパスワードを聞かれる——**build したときは、build のあとにもう一度聞かれる**（npm の依存と build はユーザーの権限で
-流すので、その間は sudo の記憶を消している。取ってきたコードに root を使わせないため）。端末から打てば、Cloudflare の
+途中で sudo のパスワードを聞かれる——**初めて入れるときは、最初の版を組み立てたあとにもう一度聞かれる**（npm の依存と
+build はユーザーの権限で流すので、その間は sudo の記憶を消している。取ってきたコードに root を使わせないため）。
+打ち直しでは2度目は聞かない（上げる・起こし直すは polkit の規則で、sudo を使わない）。端末から打てば、Cloudflare の
 API トークンも聞かれる（Enter だけなら飛ばす。一度 `--no-cloudflare` にしたら聞かない）。
 最後に次が出る：
 
 - **開く URL**：`https://<名前>/`
 - **ログインのリンク**（10 分・1回だけ）。開いて入ったら、**設定 → ログイン でパスキーを登録**する。切れたら
-  `cd ~/.local/share/banto-release/banto && node scripts/login-link.mjs` で出し直す
+  `cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs` で出し直す
 - **HTTPS の状態**と、**次にやること**
 
 ### HTTPS の2つの形
@@ -54,7 +55,7 @@ curl -fsSL …/install.sh | bash -s -- --domain banto.example.com --cloudflare-t
 | `--cloudflare-token <値>` / `-` | 上の表 |
 | `--no-cloudflare` | Cloudflare をやめて内部の CA に戻す（下の「Cloudflare をやめる」） |
 | `--ip <IPv4>` | DNS のレコードの向け先（既定：既定経路のインターフェースの IPv4） |
-| `--branch <名前>` / `--repo <URL\|パス>` | 取ってくるコード（既定 GitHub の `release`）。`file://`・ローカルのパス・git bundle も受ける |
+| `--repo <URL\|パス>` | 取ってくるリポジトリ（既定 GitHub の banto）。取るのは **`release` ブランチだけ**（画面からの更新 `update.mjs` が release 固定のため。`--branch` はやめた）。`file://`・ローカルのパス・git bundle も受ける。覚えるのは `repo.git` の origin |
 | `--pool-size <N>GiB` | Incus の置き場 `banto` の大きさ（`/var/lib/incus` が btrfs でないときのループファイル。既定は空きの半分・最大 50GiB） |
 | `--no-claude-login` | Claude のログインをその場で流さない（打つコマンドを出すだけ） |
 
@@ -73,10 +74,31 @@ banto が使うのは、banto を動かすユーザーの `~/.claude` の資格�
 
 - **渡した値だけが変わり、渡さなかった値は前のまま**（`/etc/banto/install.conf` に覚えている。秘密は入らない）。
   例：名前を替える `bash -s -- --domain new.example.com`
-- release に新しいコミットがあれば取り込み、build して、**動いているもの（会話・サブエージェントの仕事・Module の
-  呼び出し）が無くなってから**起こし直す（`scripts/restart-when-idle.mjs`、最長 30 分待つ。待ちきれなければ
-  起こし直さずに終わり、打つコマンドを出す）。設定や unit が変わったときも同じ
+- **上げるのは画面の「更新」と同じ本体**（`<置き場>/current/banto/scripts/update.mjs`）：release に新しいコミットが
+  あれば新しい版のフォルダ（`versions/<commit の頭12>`）で組み立て、**動いているもの（会話・サブエージェントの仕事・
+  Module の呼び出し）が無くなってから**起こし直し、新しい版が答えるかを確かめる。**起きなければ前の版に戻し**、
+  install.sh は理由を出して止まる（前の版で動いたまま）。待つのは最長 30 分——越えたら上げずに終わる（作りかけは消える。
+  空いたら画面の 設定 → 更新 か、同じコマンドをもう一度）
+- 版は同じでも、設定や unit が変わったときは、空くのを待って起こし直す
 - 何も変わっていなければ起こし直さない
+- 画面の 設定 → 更新 からも上げられる（install.sh が `banto-update.service` と polkit の規則を置いてある——
+  `docs/runbooks/release.md` D）
+
+### 置き場の形
+
+`~/.local/share/banto-release`（`config.json` の `releaseDir`）は版ごとのフォルダの形
+（`docs/specs/v4-architecture.md` §2.5「画面から banto を更新する」）：
+
+| 場所 | 中身 |
+|---|---|
+| `repo.git` | release を取ってくる bare のリポジトリ（origin は `--repo`） |
+| `versions/<commit の頭12>/` | 版ごとの作業ツリー（組み立て済み） |
+| `current` → `versions/…` | 動かす版。banto の unit はここを通る |
+| `previous` → `versions/…` | 1つ前の版（戻す先） |
+
+**前の install.sh で入れた host**（置き場そのものが clone の古い形）に打つと、`setup-update.sh` が版ごとのフォルダの形に
+移す（今の clone は組み立て直さずに `versions/` に入る。元の unit と `.git` は `~/.local/share/banto-release.setup-backup/`）。
+そのあと release の最新に上げる。
 
 ### 後から HTTPS（Let's Encrypt）にする
 
@@ -130,8 +152,7 @@ install.sh は手で組んだ host の形に合わせて作ってあるが、**�
   （install.sh はそこで止まり、banto の設定を元に戻す）
 - `banto-host.service`・`banto-frontend.service` は**作り直される**（手で足した行は消える。drop-in は残る）。
   画面は `127.0.0.1:4175` で待つようになるので、Caddy 以外から 4175 に来ていたものは届かなくなる
-- 1回目は build し直して `restart-when-idle.mjs` で起こし直す。**build は動いている clone の中で行う**
-  （`docs/runbooks/release.md` の B と同じ。版ごとの置き場は相談中）
+- 置き場が古い形（clone）なら `setup-update.sh` が版ごとのフォルダの形に移し、起こし直す（release.md D と同じ）
 - Cloudflare のトークンが `/etc/caddy/cloudflare.env` にあれば、それを使う（DNS のレコードも確かめ直す）
 
 ## 4. 入れ直す（動かすユーザーを替える等）
@@ -145,9 +166,11 @@ banto は1台に1つ（口 4737・4176・4175 が決まっている）。`/etc/b
 **データを消す前に、要るものを写す**（Project のファイルは各 Project の根にあり、banto は消さない）。
 
 ```sh
-# 1. banto を止めて unit を消す
+# 1. banto を止めて unit を消す（画面からの更新の unit と polkit の規則も）
 sudo systemctl disable --now banto-host.service banto-frontend.service banto-firewall.service
-sudo rm -f /etc/systemd/system/banto-host.service /etc/systemd/system/banto-frontend.service /etc/systemd/system/banto-firewall.service
+sudo systemctl stop banto-update.service 2>/dev/null
+sudo rm -f /etc/systemd/system/banto-host.service /etc/systemd/system/banto-frontend.service /etc/systemd/system/banto-firewall.service \
+  /etc/systemd/system/banto-update.service /etc/polkit-1/rules.d/50-banto-update.rules
 sudo rm -rf /etc/systemd/system/banto-host.service.d /etc/systemd/system/banto-frontend.service.d
 sudo rm -f /etc/systemd/system/system.slice.d/50-banto-protect.conf
 sudo systemctl daemon-reload
@@ -164,7 +187,7 @@ sudo systemctl daemon-reload        # 今入っている DOCKER-USER の規則�
 incus list --all-projects            # banto-* を確かめてから
 incus delete --force <名前> …        # 要らなければ
 # 5. コード・データ・設定（戻せない）
-rm -rf ~/.local/share/banto-release ~/.local/share/banto ~/.config/banto ~/banto-host.log ~/banto-frontend.log
+rm -rf ~/.local/share/banto-release ~/.local/share/banto-release.setup-backup ~/.local/share/banto ~/.config/banto ~/banto-host.log ~/banto-frontend.log
 ```
 
 Incus・Caddy・Node（`/usr/local`）・sops（`/usr/local/bin/sops`）・Claude Code はほかでも使いうるので、ここでは消さない。消すなら
@@ -179,5 +202,6 @@ Incus・Caddy・Node（`/usr/local`）・sops（`/usr/local/bin/sops`）・Claud
 | 「段「…」で止まりました」 | その下の「直し方」。直して同じコマンドを打ち直す |
 | banto が起きない | `tail -50 ~/banto-host.log`・`systemctl status banto-host` |
 | https が通らない | `journalctl -u caddy -n 50`（証明書の取得・Caddyfile の誤り） |
-| Project の Module が繋がらない | `cd ~/.local/share/banto-release/banto && node packages/container/dist/doctor.js` |
-| ログインのリンクが切れた | `cd ~/.local/share/banto-release/banto && node scripts/login-link.mjs` |
+| 上げられなかった・前の版に戻った | 最後に出たログ（`~/.local/share/banto/update/<id>.log`）・`~/.local/share/banto/update/state.json`・画面の 設定 → 更新 の「ログを開く」 |
+| Project の Module が繋がらない | `cd ~/.local/share/banto-release/current/banto && node packages/container/dist/doctor.js` |
+| ログインのリンクが切れた | `cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs` |

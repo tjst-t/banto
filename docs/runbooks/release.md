@@ -229,7 +229,8 @@ sudo systemctl restart UNIT_HOST UNIT_UI
 ## D. 画面から更新できるようにする（一度だけ）
 
 設定の「更新」から反映できるように、host を整える（仕組みは `docs/specs/v4-architecture.md` §2.5
-「画面から banto を更新する」）。やることは3つ：
+「画面から banto を更新する」）。**`install.sh` で入れた host は、この D が済んだ形で入る**（install.sh が setup-update.sh を打つ。
+`docs/runbooks/install.md`）——ここは手で組んだ host のための手順。やることは3つ：
 
 - REL を版ごとのフォルダの形にする（`repo.git`・`versions/<commit>`・`current`）。今の clone はそのまま
   「今の版」として `versions/` に入る（組み立て直さない）
