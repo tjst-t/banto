@@ -1698,6 +1698,7 @@ async function main(): Promise<void> {
     finishOAuth,
     dataDir: bootstrap.dataDir,
     configDir: dirname(resolveBootstrapConfigPath()),
+    releaseDir: bootstrap.releaseDir,
     resolveModuleClientsForThread,
     resolveModuleClientsForProject,
     resolveInstanceModuleClients,

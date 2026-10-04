@@ -231,6 +231,8 @@ export interface AppDeps {
   /** banto 自身の置き場（根の広さを判断するのに使う、`/api/config/root-scope`）。 */
   dataDir?: string;
   configDir?: string;
+  /** 画面から更新するときの置き場（`repo.git`・`versions/`・`current`）。これを含む根も「広い」（2026-10-04） */
+  releaseDir?: string;
   /** Runner の差し替え口（試験用）。`runThreadTurn` がそのまま受け取る。 */
   runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
   /**
@@ -2518,7 +2520,15 @@ export function createApp(deps: AppDeps) {
       if (url.pathname === "/api/config/root-scope" && req.method === "GET") {
         const path = url.searchParams.get("path");
         if (!path) return json(res, 400, { error: "path is required" });
-        json(res, 200, describeRootScope(path, { dataDir: deps.dataDir ?? "", configDir: deps.configDir ?? "" }));
+        json(
+          res,
+          200,
+          describeRootScope(path, {
+            dataDir: deps.dataDir ?? "",
+            configDir: deps.configDir ?? "",
+            ...(deps.releaseDir ? { releaseDir: deps.releaseDir } : {}),
+          }),
+        );
         return;
       }
 

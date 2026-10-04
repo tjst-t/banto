@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -1089,6 +1089,27 @@ test("根の広さを host が答える——banto 自身の置き場を含む�
     const bad = await fetch(`${base}/api/config/root-scope`, { headers });
     assert.equal(bad.status, 400);
   });
+});
+
+test("更新の置き場（releaseDir）を含む根も「広い」——中を書き換えると、次の起動で host の権限で動く", async () => {
+  const releaseParent = await mkdtemp(join(tmpdir(), "banto-release-parent-"));
+  const releaseDir = join(releaseParent, "banto-release");
+  await mkdir(releaseDir, { recursive: true });
+  try {
+    await withApp(
+      async (base, token) => {
+        const headers = { authorization: `Bearer ${token}` };
+        const scope = (await (
+          await fetch(`${base}/api/config/root-scope?path=${encodeURIComponent(releaseParent)}`, { headers })
+        ).json()) as { wide: boolean; includes: string[] };
+        assert.equal(scope.wide, true, "更新の置き場を含む根が「広い」になっていない");
+        assert.ok(scope.includes.some((l) => l.includes("更新の置き場")), `何が入るのかを言っていない：${scope.includes.join("／")}`);
+      },
+      { releaseDir },
+    );
+  } finally {
+    await rm(releaseParent, { recursive: true, force: true });
+  }
 });
 
 // **Project の根を変える**（決定・2026-09-11、ユーザー要望）。根は閉じ込めの
