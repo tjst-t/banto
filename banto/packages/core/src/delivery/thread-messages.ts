@@ -85,7 +85,8 @@ export class ThreadMessaging {
     const waiting = new Set(
       this.deps.inbox
         .listOpen()
-        .filter((i) => i.kind === "judgment")
+        // 生きている判断待ちだけ（期限切れは誰も答えを待っていない。訂正・2026-10-04）
+        .filter((i) => i.kind === "judgment" && i.liveness === "live")
         .map((i) => (i as { threadId: string }).threadId),
     );
     const entries: ThreadDirectoryEntry[] = [];

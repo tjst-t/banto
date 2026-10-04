@@ -382,3 +382,28 @@ test("記録に残す AI の発言は、文ブロックの間で段落を分け�
     assert.equal(assistant?.text, "調べます。\n\n分かりました。\n\nAPI Error: 529 Overloaded.");
   });
 });
+
+// **期限切れの判断待ちは「まだ返事が無いもの」に出さない**（訂正・2026-10-04、ユーザー報告）。host の再起動で畳んだ
+// 承認が、公開が済んだあともターンの文脈に残り続けていた
+test("ターンの文脈の「まだ返事が無いもの」には、生きている判断待ちだけを出す（期限切れ・回答済みは出さない）", async () => {
+  await withThread(async ({ deps, threadId }) => {
+    const live = await deps.inbox.raiseJudgment({ threadId, source: "relay", message: "生きている承認", serverName: "x", toolInput: {} });
+    const expired = await deps.inbox.raiseJudgment({ threadId, source: "relay", message: "期限切れの承認", serverName: "x", toolInput: {} });
+    await deps.inbox.timeoutJudgment(expired.id);
+    const answered = await deps.inbox.raiseJudgment({ threadId, source: "relay", message: "答えた承認", serverName: "x", toolInput: {} });
+    await deps.inbox.answerJudgment(answered.id, { behavior: "allow" });
+    assert.equal(live.liveness, "live");
+
+    let prompt = "";
+    const fake = (async function* (opts: { prompt: string }) {
+      prompt = opts.prompt;
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "続けて", modules: [] }));
+
+    assert.match(prompt, /生きている承認/);
+    assert.doesNotMatch(prompt, /期限切れの承認/);
+    assert.doesNotMatch(prompt, /答えた承認/);
+  });
+});

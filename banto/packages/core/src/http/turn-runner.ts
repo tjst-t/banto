@@ -295,9 +295,11 @@ async function* runThreadTurnInner(
   const turnContext = buildTurnContext({
     thread,
     pendingMemory: [...memory.pending, ...global_.pending].sort((a, b) => a.changedAtSeq - b.changedAtSeq),
+    // **生きているものだけ**（訂正・2026-10-04、ユーザー報告）。期限切れ（host の再起動で畳んだ等）は受信箱の記録には
+    // 残るが、もう誰も答えを待っていない——以前は数えていて、片づいた承認がいつまでも「まだ返事が無い」に出ていた
     openJudgments: deps.inbox
       .listOpen()
-      .filter((i): i is JudgmentItem => i.kind === "judgment" && i.threadId === input.threadId),
+      .filter((i): i is JudgmentItem => i.kind === "judgment" && i.liveness === "live" && i.threadId === input.threadId),
     startedAt: new Date(),
   });
   const deliveredUpToSeq = [...memory.pending, ...global_.pending].reduce(
