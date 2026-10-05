@@ -79,6 +79,15 @@ export class TurnEventBus {
   }
 
   /**
+   * **走り始めた時刻を、記録に残した始まり（`turn.started` の ts）にそろえる**（追加・2026-10-05）。`begin` は
+   * 始まりを書くより前に呼ぶ（それより前に断ったターンも流し直せるように）ので、時刻はあとから直す
+   */
+  setStartedAt(threadId: string, startedAt: string): void {
+    const turn = this.live.get(threadId);
+    if (turn) turn.startedAt = startedAt;
+  }
+
+  /**
    * **そのターンが走り始めたら、一度だけ知らせる**（追加・2026-09-26）。順番の鍵を取ってから走り始めるまでには
    * Module を起こす等で数秒かかる——その間に繋ぎ直しに来た画面を「走っていない」と帰さないために待つ。
    * 返り値を呼ぶと、聞くのをやめる

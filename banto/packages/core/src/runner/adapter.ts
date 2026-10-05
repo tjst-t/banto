@@ -50,7 +50,8 @@ export interface RunnerTurnOptions {
   /**
    * **新しい会話の session id を host が先に決めて渡す**（SDK の `sessionId`、追加・2026-10-05、アーキ仕様 §2.5
    * 「起こし直しをまたいで続ける」）。UUID。`system/init` を待たずに記録できる——その前に切れても、起き直したら
-   * 同じ id で走らせ直せる（実測 M2）。`resumeSessionId` とは一緒に渡さない（SDK が断る）
+   * 同じ id で走らせ直せる（実測 M2）。Fork の最初のターン（`forkSession`）では分けた先の会話の id になる。
+   * `forkSession` 無しの `resumeSessionId` とは一緒に渡せない（SDK が断る——渡す前に止める）
    */
   sessionId?: string;
   prompt: string;
@@ -163,6 +164,9 @@ export const RUNNER_BUILTIN_TOOLS: string[] = [
 ];
 
 export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnEvent, RunnerTurnResult> {
+  if (opts.sessionId && opts.resumeSessionId && !opts.forkSession) {
+    throw new Error("sessionId は新しい会話か forkSession のときだけ渡せます（続きの会話は resume の id のまま）");
+  }
   const queue = new PushQueue<RunTurnEvent>();
   let sessionId: string | undefined;
   let approvalSeq = 0;

@@ -152,8 +152,9 @@ export async function* runThreadTurn(
       );
     }
     // **どう終わっても書く**（最後まで・人が止めた・失敗・呼び出し側が途中で読むのをやめた）。書けなければ、
-    // 起き直したときに切れたターンに見える——黙らずに書き残す（規則2）
-    if (turn.id !== undefined) {
+    // 起き直したときに切れたターンに見える——黙らずに書き残す（規則2）。人が止めたときは止めると決めた時点で
+    // 先に書いている（`turn.ended`）——二度は書かない
+    if (turn.id !== undefined && !turn.ended) {
       await deps.projectThread
         .endTurn(input.threadId, turn.id, outcome)
         .catch((err: unknown) => console.warn(`[host] ${input.threadId} のターンの終わりを記録できませんでした:`, err));
@@ -164,6 +165,8 @@ export async function* runThreadTurn(
 /** 始めたターンの id（`turn.started` を書いたら入る）。書く前に終わったターンは持たない */
 interface TurnProgress {
   id?: string;
+  /** `turn.ended` をもう書いた（人が止めたとき、止めると決めた時点で書く） */
+  ended?: boolean;
 }
 
 /** このターンで AI が予約した Fork（`fork-tool.ts`）と、立てたかどうか */
@@ -281,9 +284,18 @@ async function* runThreadTurnInner(
   // **ターンを始めたことを、発言を積むより先に残す**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで
   // 続ける」）。このターンで積む発言は、これより後ろの seq になる。ここから先はどう終わっても `turn.ended` を書く
   // （`runThreadTurn` の finally）。新しい会話なら session id を host が先に決めて渡す——`system/init` の前に
-  // 切れても、起き直したら同じ id で走らせ直せる（実測 M2）。Fork の最初のターンは resume（forkSession）なので
-  // ここでは決めない
-  const assignedSessionId = thread.resumePoint === undefined ? randomUUID() : undefined;
+  // 切れても、起き直したら同じ id で走らせ直せる（実測 M2）。**Fork の最初のターンも決める**（改訂・2026-10-05、
+  // Fable のレビュー）——分けた先の会話の id は `system/init` まで分からず、その前に切れると続ける会話を失う。
+  // SDK は `forkSession` と一緒なら `sessionId` を受ける（偽の API のプローブで確かめた、経緯ノート）
+  //
+  // 親から借りたresume-pointのままなら、このターンで枝を分ける（§2.2）
+  // ——分けないと親と同じセッションを共有し、会話が1本に混ざる。
+  // 既に共有されてしまっているもの（2026-09-05以前に作られたFork）も、
+  // ここで検知して分ける——黙って壊れたまま続けない（規則2）。
+  const forkSession =
+    thread.resumePoint !== undefined &&
+    (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId));
+  const assignedSessionId = thread.resumePoint === undefined || forkSession ? randomUUID() : undefined;
   const rewindTo = thread.resumePoint !== undefined ? thread.rewindTo : undefined;
   turn.id = await deps.projectThread.startTurn(input.threadId, {
     cause: hasHumanMessage ? "human" : "delivery",
@@ -292,6 +304,9 @@ async function* runThreadTurnInner(
     ...(rewindTo ? { rewindTo } : {}),
     ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
   });
+  // 画面に出す「走り始めた時刻」も、記録に残した始まりにそろえる（2つの時刻を持たない）
+  const startedAt = deps.projectThread.getThread(input.threadId)?.lastTurn?.startedAt;
+  if (startedAt) deps.turnEvents?.setStartedAt(input.threadId, startedAt);
   for (const d of delivered) {
     await deps.projectThread.appendMessage(input.threadId, "user", d.text, undefined, {
       from: d.from,
@@ -370,13 +385,6 @@ async function* runThreadTurnInner(
   const raisedJudgments: string[] = [];
   // このターンのセッション（`system/init` で分かる。止めたターンには `result` が来ない）
   let initSessionId: string | undefined;
-  // 親から借りたresume-pointのままなら、このターンで枝を分ける（§2.2）
-  // ——分けないと親と同じセッションを共有し、会話が1本に混ざる。
-  // 既に共有されてしまっているもの（2026-09-05以前に作られたFork）も、
-  // ここで検知して分ける——黙って壊れたまま続けない（規則2）。
-  const forkSession =
-    thread.resumePoint !== undefined &&
-    (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId));
   const unsubscribeSide = deps.turnEvents?.subscribeSide(input.threadId, (event) => {
     // ターンの外で出た判断待ち（中継の承認・Project をまたぐメッセージの承認）も、止めたら畳む
     if (event.type === "judgment") raisedJudgments.push(event.judgmentId);
@@ -448,6 +456,15 @@ async function* runThreadTurnInner(
         // **人が止めた**（§6.31）。CLI を止め、止まるのを少しだけ待つ（止めたあとの書き込みと、次のターンの
         // resume が重ならないように）。待ち切らない——止まらなくても、このターンはここで終える
         stoppedByHuman = true;
+        // **止めたことを、CLI を止めるより先に残す**（追加・2026-10-05、Fable のレビュー）。止めたあとの片づけ
+        // （取り消し・resume-point・返事の記録）の途中で host が落ちても、起き直したときに「切れた」として続けない
+        // ——人が止めたターンを勝手に続けない。書けなくても CLI は止める（終わりは finally がもう一度書こうとする）
+        try {
+          await deps.projectThread.endTurn(input.threadId, turn.id, "stopped");
+          turn.ended = true;
+        } catch (err) {
+          console.warn(`[host] ${input.threadId} の止めた印を記録できませんでした:`, err);
+        }
         abortTurn.abort();
         await Promise.race([pending, new Promise((r) => setTimeout(r, STOP_SETTLE_MS))]);
         break;
