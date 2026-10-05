@@ -70,6 +70,16 @@ install.sh はこれに合わせる（「上げる」段の差し替え先）：
 - bootstrap config に `releaseDir`（既定 ~/.local/share/banto-release）
 - 詳しくは docs/runbooks/release.md D と v4-architecture.md §2.5
 
+### update.mjs の持ち主からの返事（2026-10-04 14:55）
+fork/self-update で直して main に入れたら知らせが来る。入ったら install.sh を合わせる：
+- `--wait-timeout <分>`（超えたら cancelled）→ 「やめる印」を置く代わりにこれを使う
+- 片づけを済ませてから終わりの状態を書く（片づけ中は note「古い版を片づけています」）→ 試験の場の lock 待ちの工夫を見直す
+- setup-update.sh `--check`（sudo なし。0＝変えるものなし／1＝あり／2＝root でないと分からない→打つ側に倒す）→ install.sh の unit の中身の写しを消す
+- restart-when-idle.mjs は sudo なしで試し、断られたら sudo
+- update.mjs のヘッダの写しの一覧に install.sh が足される
+- ブランチを選ぶのは見送り（release だけ）
+- **main と release に入った（024e52ee、15:08）**。`--check` は polkit の規則を中身でなく「効いているか」で見る（24.04 は rules.d が root:polkitd 750 で読めない）。2 は更新が走っている・unit が無いときだけ。2 なら setup を打つ。終わりの状態の直後に始めた回は最大5秒待つ
+
 ## 試験の場（Memory「インストール用スクリプトの事実と試し方」）
 
 この Project のコンテナの中の Incus（`sudo incus`）に、入れ子のシステムコンテナ（`security.nesting=true`、
