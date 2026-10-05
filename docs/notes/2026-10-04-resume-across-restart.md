@@ -105,3 +105,45 @@ Module は子を2つ持つ（同じプロセスグループの `sleep 600` と�
   コンテナの中で走り続け、結果はどこにも返らない。続きの AI が同じコマンドを流し直すと二重に走る
 - → 「結果は分かりません。確かめてから進めてください」の文面は正しい。加えて「まだ動いているかもしれない」ことを書く。
   残ったコマンドを Module が起き直したときに片づけるか（Shell が起こしたプロセスを覚えておいて止める）は別に決める
+
+### M1〜M3（2026-10-05、プローブ `banto/probes/m-sdk.mjs`・`m3-host.mjs`・`m3.mjs`。偽の API、SDK 0.3.281）
+
+**前提の訂正**：`rewindTo`（`resumeSessionAt`）は「次のターン以降も渡し続ける」のではない——`thread.resume_point_updated`
+のたびに消える（`fold.ts`）。巻き戻したターンが最後まで行けば次からは付かない。**起こし直しで切れたときだけ残り、次の
+ターンでもう一度渡される**。
+
+**M1：巻き戻したあと、`resumeSessionAt` 無しで resume したとき CLI はどの鎖から続けるか**
+
+| ケース | 次のターンの要求に入った発言 |
+|---|---|
+| 巻き戻したターン3が完了 | TURN1・TURN3（新しい鎖） |
+| ターン3を SIGKILL | TURN1・**TURN2**（取り消した古い鎖が戻る） |
+| ターン3をプロセス木の全部に SIGTERM | TURN1・TURN3（新しい鎖、CLI が終わり際に書く） |
+| 同じ `resumeSessionAt` を渡す（SIGKILL・SIGTERM とも） | TURN1 だけ（ターン2もターン3も入らない） |
+| SIGKILL のあと `getSessionMessages` の鎖の最後の uuid を渡す | 失敗「No message found with message.uuid of: …」 |
+
+CLI はターンの終わりに書く `last-prompt`（`leafUuid`）の行で鎖を選んでいる（その行を消すと古い鎖に戻った）。SIGKILL では
+書かれない。`getSessionMessages` は新しい鎖を返し、CLI は古い鎖を選ぶ——**SDK の読む口と CLI の選び方が食い違う**。
+→ **切れたターンが巻き戻しの上にあったら、`resumeSessionAt` を保ったまま続ける**（今の作りのまま）。そのとき切れたターンの
+人の発言と途中の作業は CLI から消えるので、**続きの文に切れたターンの人の発言（と届いたもの）を入れ直す**
+
+**M2：記録の無い最初のターン**
+
+- `system/init` 直後の SIGKILL で記録ファイルは10回中10回できない
+- resume すると `system/init` は来ず `result`（`subtype: error_during_execution`・`num_turns: 0`・`errors: ["No conversation found with session ID: …"]`）
+  のあと例外。使っていない id と同じ形
+- **走らせる前に `getSessionInfo(id)` が `undefined` かで記録の有無が分かる**（文言に頼らない）
+- 記録が無ければ、同じ `options.sessionId` を渡して resume 無しで走らせ直せる。記録が有るのに同じ `sessionId` で新しく走らせると
+  「Session ID … is already in use」（result 無しで exit 1）
+→ **最初のターンは banto が session id を先に決めて `options.sessionId` で渡す**（`system/init` を待たずに記録できる）。
+起き直したら `getSessionInfo` で記録の有無を見て、無ければ同じ id で走らせ直し、有れば resume
+
+**M3：host（親）が止まったとき**
+
+- host に SIGTERM（host は保存して `process.exit(0)`。SDK は exit で起こした CLI に SIGTERM）：bash・sleep は 250ms 以内に消え、CLI は
+  2〜2.5秒孤児で生きて記録に `tool_result(is_error):"Exit code 137"` を書いた（resume すると AI はそれを見る）
+- host に SIGKILL（落ちたとき）：CLI・bash・sleep が全部生き残り、孤児の CLI は tool を最後までやって **API にもう1回要求を出し**
+  返事を記録に書いた（約2分）
+→ 落ちたあとに孤児の CLI が同じ記録に書き続けうる。**systemd が cgroup ごと刈る（`KillMode=control-group`）ことを前提にし、
+起き直したときにそれを確かめる**（設定は host で確認待ち）。banto の Runner は組み込みの Bash を使わない（tool は Module 経由）
+ので、Bash の子の形は banto とは違う
