@@ -4897,7 +4897,7 @@
       "number": 203,
       "kind": "task",
       "title": "Event Store にターンの始まり・会話の id・終わりを残す",
-      "status": "ready",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-restart-measure"
@@ -4907,12 +4907,12 @@
       "labels": [],
       "body": "turn.started（attempt・始めたときの resume-point と巻き戻しの位置）・turn.session_known（system/init の時点、最初のターンも。fold の resume-point は変えない）・turn.ended。起き直したとき「切れたターン」を見分ける関数（resume-point が更新されたものは除く・その後の Clear／閉じたものは除く）。スナップショットの版を上げる。",
       "doneWhen": "既存の fold・store の試験が全部通る。偽の Runner でターンの途中で止めて起動し直すと切れたターンが1件だけ見つかる。resume-point を書いたあとで止めた場合と、Clear のあとは0件",
-      "resolution": null,
+      "resolution": "ac5b35be〜（Fable のレビューの直し含む）、main・release 入り、568e71c1 で反映",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T04:15:28.591Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T10:57:50.266Z",
+      "closedAt": "2026-10-05T10:57:50.266Z",
       "extra": {}
     },
     {
