@@ -223,7 +223,8 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
 - **Claude**：Claude Code の CLI が無ければ公式の入れ方で入れ、端末があればその場で `claude auth login` を流す
   （無ければ打つコマンドを出す）。banto が使うのはそのユーザーの `~/.claude`
 - **試験**：`banto/scripts/install-test/run.sh`（入れ子のシステムコンテナにまっさらな Ubuntu を立て、worktree のコミットで
-  流す。トークンありの形は中に立てた Cloudflare の API の偽物に向ける）・`cloudflare.test.mjs`（同じ偽物で DNS の部分だけ）
+  流す。トークンありの形は中に立てた Cloudflare の API の偽物に向ける）・`cloudflare.test.mjs`（同じ偽物で DNS の部分だけ）・
+  `real-cloudflare.sh`（本物の Cloudflare と Let's Encrypt。`install-test*.tjstkm.net` だけを使い、終わったら必ず消す）
 
 **まだ決まっていないこと**（アーキ仕様 §10 にも載せる）：
 
