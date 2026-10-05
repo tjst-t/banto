@@ -134,7 +134,7 @@ export type ProjectThreadEvent =
         attempt: number;
         resumePoint?: string;
         rewindTo?: string;
-        /** 新しい会話の最初のターンで、host が先に決めて Runner に渡した session id */
+        /** 新しい会話の最初のターン・Fork の最初のターンで、host が先に決めて Runner に渡した session id */
         sessionId?: string;
       };
     }
@@ -587,6 +587,12 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // （v4-architecture.md §2.2）。新規query()として再開する。
           // 走行中のターンが終了時に同じsession idで戻ってきても復活させない
           if (t.resumePoint) t.abandonedSessions = [...t.abandonedSessions, t.resumePoint];
+          // **走っているターンの会話も切り離す**（追加・2026-10-05、Fable のレビュー）。新しい会話の最初のターン・
+          // Fork の最初のターンは、まだ resume-point に自分の会話を持っていない——上だけでは、終わりに来た
+          // resume-point の更新が Clear を取り消していた（前からある穴）
+          for (const id of [t.lastTurn?.assignedSessionId, t.lastTurn?.knownSessionId]) {
+            if (id !== undefined && !t.abandonedSessions.includes(id)) t.abandonedSessions = [...t.abandonedSessions, id];
+          }
           // 走っていたターンは、起き直しても続けない（人が会話を畳んだ）
           abandonLastTurn(t, "cleared");
           t.resumePoint = undefined;

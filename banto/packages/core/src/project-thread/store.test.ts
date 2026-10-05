@@ -938,3 +938,67 @@ test("ターンの進み具合はスナップショットから読み戻して�
     assert.equal(t?.attempt, 2);
   });
 });
+
+test("切れたターンが会話に積んだ発言の数（人の発言・届いたもの）を返す。始まりより前・AI の発言は数えない", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const empty = await store.createBaseThread(project.id);
+    const stacked = await store.createBaseThread(project.id);
+    await store.appendMessage(stacked.id, "user", "前のターンの発言");
+    await store.appendMessage(stacked.id, "assistant", "前のターンの返事");
+
+    // 発言を積む前に切れた
+    await store.startTurn(empty.id, { cause: "human", attempt: 0, sessionId: "s-empty" });
+    // 届いたものと人の発言を積んでから切れた
+    await store.startTurn(stacked.id, { cause: "human", attempt: 0, sessionId: "s-stacked" });
+    await store.appendMessage(stacked.id, "user", "届いたもの", undefined, { from: "m", title: "t", hop: 1, deliveryId: "d" });
+    await store.appendMessage(stacked.id, "user", "人の発言");
+    // AI の発言は数えない（止めて片づけたターンは返事を書くが、そのときは終わりも書いている。数え方だけを見る）
+    await store.appendMessage(stacked.id, "assistant", "途中の返事");
+
+    const found = new Map((await reopen(dir)).listInterruptedTurns().map((t) => [t.threadId, t.stackedMessages]));
+    assert.equal(found.get(empty.id), 0);
+    assert.equal(found.get(stacked.id), 2);
+  });
+});
+
+test("走っている最初のターンを Clear したら、終わりの resume-point の更新で Clear を取り消さない（新しい会話・Fork）", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const base = await store.createBaseThread(project.id);
+    // 新しい会話の最初のターン：resume-point はまだ無く、会話の id は先に決めたものだけ
+    await store.startTurn(base.id, { cause: "human", attempt: 0, sessionId: "s-new" });
+    await store.clearThread(base.id);
+    await store.updateResumePoint(base.id, "s-new");
+    assert.equal(store.getThread(base.id)?.resumePoint, undefined, "新しい会話の最初のターンが Clear を取り消した");
+
+    // Fork の最初のターン：resume-point は親から借りたもの、自分の会話の id は system/init で分かる
+    await store.updateResumePoint(base.id, "s-parent");
+    const fork = await store.forkThread(base.id);
+    const turnId = await store.startTurn(fork.id, { cause: "human", attempt: 0, resumePoint: "s-parent" });
+    await store.recordTurnSessionKnown(fork.id, turnId, "s-forked");
+    await store.clearThread(fork.id);
+    await store.updateResumePoint(fork.id, "s-forked");
+    assert.equal(store.getThread(fork.id)?.resumePoint, undefined, "Fork の最初のターンが Clear を取り消した");
+
+    // Clear のあとに始まった新しい会話は、当然入る
+    await store.startTurn(fork.id, { cause: "human", attempt: 0, sessionId: "s-after" });
+    await store.updateResumePoint(fork.id, "s-after");
+    assert.equal(store.getThread(fork.id)?.resumePoint, "s-after");
+  });
+});
+
+test("Fork は親の最後のターンを引き継がない（親の切れたターンが Fork のものに見えない）", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const base = await store.createBaseThread(project.id);
+    await store.updateResumePoint(base.id, "s-parent");
+    await store.startTurn(base.id, { cause: "human", attempt: 0, resumePoint: "s-parent" });
+    const fork = await store.forkThread(base.id);
+    assert.equal(store.getThread(fork.id)?.lastTurn, undefined);
+    assert.deepEqual(
+      store.listInterruptedTurns().map((t) => t.threadId),
+      [base.id],
+    );
+  });
+});

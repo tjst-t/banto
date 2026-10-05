@@ -336,11 +336,14 @@ export interface TurnRecord {
   cause: TurnCause;
   /** 起こし直しで続けたターンなら1以上（何回目の続きか）。ふつうは0 */
   attempt: number;
-  /** 始めたときに渡した resume-point。新しい会話なら無い */
+  /**
+   * 始めたときに渡した resume-point と巻き戻しの位置。Thread の今の値の写しではない——終わりの resume-point の
+   * 更新・Clear・取り消しで Thread の値は変わるが、続けるときは**始めたときの値**が要る（巻き戻しを保つ、実測 M1）。
+   * 新しい会話なら resume-point は無い
+   */
   resumePoint?: string;
-  /** 始めたときに渡した巻き戻しの位置（`resumeSessionAt`） */
   rewindTo?: string;
-  /** 新しい会話の最初のターンで、host が先に決めて Runner に渡した session id */
+  /** 新しい会話の最初のターン・Fork の最初のターンで、host が先に決めて Runner に渡した session id */
   assignedSessionId?: string;
   /** Runner の `system/init` で分かった session id（`turn.session_known`）。**resume-point は変えない** */
   knownSessionId?: string;
