@@ -291,6 +291,11 @@ export interface RealInboxNotice {
   dedupeKey: string;
   title: string;
   detail: string;
+  /**
+   * **「続ける」を押せる**（追加・2026-10-06、アーキ仕様 §2.5「上限」）。起こし直しのたびに切れるので host が自動で
+   * 続けるのをやめたターン。押すと `resumeRealNoticeTurn`
+   */
+  resume?: { threadId: string; turnId: string };
   acknowledged: boolean;
   createdAt: string;
 }
@@ -733,6 +738,11 @@ export async function listRealInbox(): Promise<RealInboxItem[]> {
 /** お知らせ・レビュー待ちを「見た」ことにする（決定・2026-09-07、レビュー待ちは 2026-09-27）。 */
 export async function acknowledgeRealNotice(id: string): Promise<void> {
   await request(`/api/inbox/${id}/acknowledge`, { method: "POST" });
+}
+
+/** 自動で続けるのをやめたターンを続けてもらう（お知らせの「続ける」）。続けられなければ理由を投げる */
+export async function resumeRealNoticeTurn(id: string): Promise<void> {
+  await request(`/api/inbox/${id}/resume`, { method: "POST" });
 }
 
 export async function answerRealInboxItem(id: string, answer: unknown): Promise<void> {

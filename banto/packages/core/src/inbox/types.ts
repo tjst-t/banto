@@ -65,6 +65,11 @@ export interface NoticeItem {
   dedupeKey: string;
   title: string;
   detail: string;
+  /**
+   * **人が「続ける」を押せる**（追加・2026-10-06、アーキ仕様 §2.5「上限」）。起こし直しのたびに切れるので自動で
+   * 続けるのをやめたターン。押すと host がそのターンの続きを起こす（`POST /api/inbox/:id/resume`）
+   */
+  resume?: { threadId: string; turnId: string };
   acknowledged: boolean;
   createdAt: string;
 }

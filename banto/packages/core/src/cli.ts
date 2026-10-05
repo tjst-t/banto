@@ -79,6 +79,7 @@ import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
+import { continueStoppedTurn, resumeInterruptedTurns } from "./delivery/turn-continuation.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import {
@@ -189,15 +190,6 @@ async function main(): Promise<void> {
 
   const projectThread = new ProjectThreadStore(bootstrap.dataDir, eventLog);
   await projectThread.load();
-  // **前の走行で途中で切れたターン**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。何かを
-  // 走らせる前に読む。続ける処理はまだ無い——いまは見えるようにするだけ
-  for (const t of projectThread.listInterruptedTurns()) {
-    console.log(
-      `[host] 前の走行で途中で切れたターン: Thread ${t.threadId} ターン ${t.turnId}（${t.startedAt} に始めた・` +
-        `${t.cause === "human" ? "人の発言" : "届いたもの"}・続き ${t.attempt} 回目・会話 ${t.sessionId ?? "不明"}` +
-        `${t.rewindTo ? `・巻き戻し ${t.rewindTo}` : ""}）`,
-    );
-  }
   const runtimeConfig = new RuntimeConfigStore(bootstrap.dataDir, eventLog);
   await runtimeConfig.load();
   const globalMemory = new GlobalMemoryStore(bootstrap.dataDir, eventLog);
@@ -299,6 +291,24 @@ async function main(): Promise<void> {
         await deliverLostReply({ threadId: t.id, replyTo: r.replyTo, moduleName: r.moduleName, hop: r.hop }, "banto を起動し直したため");
       }
     }
+  }
+  // **前の走行で途中で切れたターンを続ける**（追加・2026-10-06、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。
+  // 順番：Module の札の判定（すぐ上）→ Thread の続き。判断待ちはもう期限切れにしてある（承認を待っていた呼び出しを
+  // 文に書くのに使う）。続きは届いたものとして積むだけ——起こすのは待ち受けを始めてからの `resumeAll`
+  for (const r of await resumeInterruptedTurns({ projectThread, inbox, deliveries })) {
+    const t = r.turn;
+    console.log(
+      `[host] 前の走行で途中で切れたターン: Thread ${t.threadId} ターン ${t.turnId}（${t.startedAt} に始めた・` +
+        `${t.cause === "human" ? "人の発言" : "届いたもの"}・続き ${t.attempt} 回目・会話 ${t.sessionId ?? "不明"}` +
+        `${t.rewindTo ? `・巻き戻し ${t.rewindTo}` : ""}）→ ` +
+        (r.action === "continued"
+          ? "続きを届けた"
+          : r.action === "closed"
+            ? `続けずに閉じた（${r.reason}）`
+            : r.action === "stopped-retrying"
+              ? "続けて切れたので自動では続けない（受信箱に出した）"
+              : `片づけられなかった（${r.error}）`),
+    );
   }
 
   const registry = new RelayRegistry();
@@ -1675,6 +1685,7 @@ async function main(): Promise<void> {
       ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
     }),
     releaseProjectModules,
+    continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     projectContainerStatus: async (projectId: string) => {
       const name = containerNameFor(projectId);
       const st = await containers.state(name);

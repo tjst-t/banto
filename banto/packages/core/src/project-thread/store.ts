@@ -20,6 +20,7 @@ import type {
   MessageOrigin,
   MessageSender,
   TurnCause,
+  TurnContinuation,
   TurnOutcome,
 } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -322,7 +323,15 @@ export class ProjectThreadStore {
    */
   async startTurn(
     threadId: ThreadId,
-    input: { cause: TurnCause; attempt: number; resumePoint?: string; rewindTo?: string; sessionId?: string },
+    input: {
+      cause: TurnCause;
+      attempt: number;
+      resumePoint?: string;
+      rewindTo?: string;
+      sessionId?: string;
+      /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（追加・2026-10-06） */
+      continues?: { turnId: string; fromSeq: number };
+    },
   ): Promise<string> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     const turnId = randomUUID();
@@ -334,6 +343,7 @@ export class ProjectThreadStore {
       ...(input.resumePoint !== undefined ? { resumePoint: input.resumePoint } : {}),
       ...(input.rewindTo !== undefined ? { rewindTo: input.rewindTo } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+      ...(input.continues ? { continues: input.continues } : {}),
     });
     this.projection.applyOne(event);
     return turnId;
@@ -498,6 +508,8 @@ export class ProjectThreadStore {
     text: string;
     hop: number;
     sender?: MessageSender;
+    /** 起こし直しで切れたターンの続き（追加・2026-10-06）。ほかの届いたものより先に積まれる */
+    continues?: TurnContinuation;
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("delivery.received", input);

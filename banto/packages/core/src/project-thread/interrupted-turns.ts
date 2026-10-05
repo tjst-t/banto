@@ -34,6 +34,16 @@ export interface InterruptedTurn {
   /** 始めたときに渡した resume-point と巻き戻しの位置（`resumeSessionAt`）。続けるときも同じものを保つ（実測 M1） */
   resumePoint?: string;
   rewindTo?: string;
+  /**
+   * そのターンのホップ（追加・2026-10-06）。積んだ届いたもののホップの最大、人の発言だけなら 0（`ThreadTurns` が
+   * 鍵に持つ値と同じ）。続きのターンも同じホップで起こす
+   */
+  hop: number;
+  /**
+   * 切れたターンの会話が記録のどこから始まったか（追加・2026-10-06）。ふつうは `startedSeq`、続きのターンがまた
+   * 切れたなら最初に切れたターンの始まり（`TurnRecord.continuesFromSeq`）
+   */
+  fromSeq: number;
 }
 
 /**
@@ -58,19 +68,30 @@ export function findInterruptedTurns(threads: Iterable<ThreadState>): Interrupte
   for (const thread of threads) {
     const turn = thread.lastTurn;
     if (!turn || notInterruptedReason(turn) !== undefined) continue;
-    const sessionId = turn.knownSessionId ?? turn.assignedSessionId;
-    found.push({
-      threadId: thread.id,
-      turnId: turn.turnId,
-      startedSeq: turn.startedSeq,
-      stackedMessages: thread.messages.filter((m) => m.role === "user" && m.seq > turn.startedSeq).length,
-      startedAt: turn.startedAt,
-      cause: turn.cause,
-      attempt: turn.attempt,
-      ...(sessionId !== undefined ? { sessionId } : {}),
-      ...(turn.resumePoint !== undefined ? { resumePoint: turn.resumePoint } : {}),
-      ...(turn.rewindTo !== undefined ? { rewindTo: turn.rewindTo } : {}),
-    });
+    found.push(lastTurnOf(thread, turn));
   }
   return found;
+}
+
+/**
+ * **最後のターンを、続けるのに要る形で**（`InterruptedTurn`）。切れたかは見ない——自動で続けるのをやめたあと人が
+ * 「続ける」を押したとき（そのターンはもう `turn.ended` を書いてある）にも使う
+ */
+export function lastTurnOf(thread: ThreadState, turn: TurnRecord): InterruptedTurn {
+  const sessionId = turn.knownSessionId ?? turn.assignedSessionId;
+  const stacked = thread.messages.filter((m) => m.role === "user" && m.seq > turn.startedSeq);
+  return {
+    threadId: thread.id,
+    turnId: turn.turnId,
+    startedSeq: turn.startedSeq,
+    stackedMessages: stacked.length,
+    startedAt: turn.startedAt,
+    cause: turn.cause,
+    attempt: turn.attempt,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(turn.resumePoint !== undefined ? { resumePoint: turn.resumePoint } : {}),
+    ...(turn.rewindTo !== undefined ? { rewindTo: turn.rewindTo } : {}),
+    hop: Math.max(0, ...stacked.map((m) => m.origin?.hop ?? 0)),
+    fromSeq: turn.continuesFromSeq ?? turn.startedSeq,
+  };
 }

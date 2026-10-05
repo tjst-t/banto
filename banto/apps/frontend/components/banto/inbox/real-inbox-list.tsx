@@ -21,7 +21,7 @@ import {
   refreshRealInbox,
   useRealInboxVersion,
 } from "@/lib/backend/real-inbox";
-import { acknowledgeRealNotice } from "@/lib/backend/client";
+import { acknowledgeRealNotice, resumeRealNoticeTurn } from "@/lib/backend/client";
 import { getThread } from "@/lib/mock/threads";
 import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -58,6 +58,8 @@ export function RealInboxList() {
   // 「いま」はレンダー中に読まない（React の純粋性——同じレンダーで値が
   // 変わる）。表示のためだけの値なので、一定間隔で state に取り込む
   const [now, setNow] = useState(() => Date.now());
+  /** 「続ける」を断られたお知らせと、その理由 */
+  const [resumeErrors, setResumeErrors] = useState<Record<string, string>>({});
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
@@ -94,7 +96,33 @@ export function RealInboxList() {
               </span>
               <span className="mt-0.5 block text-sm text-foreground">{notice.title}</span>
               <span className="mt-0.5 block text-xs text-ink-3">{notice.detail}</span>
+              {resumeErrors[notice.id] ? (
+                <span data-testid="inbox-notice-resume-error" className="mt-0.5 block text-xs text-stop">
+                  続けられませんでした：{resumeErrors[notice.id]}
+                </span>
+              ) : null}
             </span>
+            {notice.resume ? (
+              <button
+                type="button"
+                data-roving-item
+                data-testid="inbox-notice-resume"
+                onClick={() => {
+                  // **自動で続けるのをやめたターンを続ける**（§2.5「上限」）。断られたら理由を出す（規則2）
+                  void resumeRealNoticeTurn(notice.id)
+                    .then(() =>
+                      setResumeErrors((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => id !== notice.id))),
+                    )
+                    .catch((err: unknown) =>
+                      setResumeErrors((prev) => ({ ...prev, [notice.id]: err instanceof Error ? err.message : String(err) })),
+                    )
+                    .finally(() => refreshRealInbox());
+                }}
+                className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-ink-2 hover:bg-accent"
+              >
+                続ける
+              </button>
+            ) : null}
             <button
               type="button"
               data-roving-item

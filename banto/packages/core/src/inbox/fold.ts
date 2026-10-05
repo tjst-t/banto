@@ -25,7 +25,14 @@ export type InboxEvent =
   | { type: "inbox.review_acknowledged"; payload: { id: string } }
   | {
       type: "inbox.notice_raised";
-      payload: { id: string; projectId?: string; dedupeKey: string; title: string; detail: string };
+      payload: {
+        id: string;
+        projectId?: string;
+        dedupeKey: string;
+        title: string;
+        detail: string;
+        resume?: { threadId: string; turnId: string };
+      };
     }
   | { type: "inbox.notice_acknowledged"; payload: { id: string } };
 
@@ -98,6 +105,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           dedupeKey: event.payload.dedupeKey,
           title: event.payload.title,
           detail: event.payload.detail,
+          ...(event.payload.resume ? { resume: event.payload.resume } : {}),
           acknowledged: false,
           createdAt: raw.ts,
         });

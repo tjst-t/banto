@@ -588,6 +588,28 @@ test("境界を待っている間に画面が切れたら、attached も書か�
   );
 });
 
+test("POST /api/inbox/:id/resume は「続ける」を host に頼み、断られたら理由と状態を返す", async () => {
+  const asked: string[] = [];
+  await withApp(
+    async (base, token) => {
+      const post = (id: string) =>
+        fetch(`${base}/api/inbox/${id}/resume`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+      const ok = await post("n-ok");
+      assert.equal(ok.status, 200);
+      const refused = await post("n-old");
+      assert.equal(refused.status, 409);
+      assert.deepEqual(await refused.json(), { error: "この会話はもう先へ進んでいます" });
+      assert.deepEqual(asked, ["n-ok", "n-old"]);
+    },
+    {
+      continueStoppedTurn: async (id: string) => {
+        asked.push(id);
+        return id === "n-ok" ? { ok: true as const } : { ok: false as const, status: 409 as const, error: "この会話はもう先へ進んでいます" };
+      },
+    },
+  );
+});
+
 // **いま動いているもの**（決定・2026-09-28）——再起動の頃合いを計る口。ターン・返事待ちの札・Module の呼び出しを数え、
 // 人の返事を待って止まっているだけのターンは見分けられる
 test("GET /api/admin/activity は動いているものを数え、人の返事待ちだけかを見分ける", async () => {

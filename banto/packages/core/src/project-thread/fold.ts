@@ -12,6 +12,7 @@ import type {
   ThreadEffort,
   ThreadState,
   TurnCause,
+  TurnContinuation,
   TurnOutcome,
   TurnRecord,
 } from "./types.js";
@@ -100,6 +101,8 @@ export type ProjectThreadEvent =
         hop: number;
         /** 別の Thread の AI が送ったものの送り元（追加・2026-10-01） */
         sender?: MessageSender;
+        /** 起こし直しで切れたターンの続き（追加・2026-10-06） */
+        continues?: TurnContinuation;
       };
     }
   | {
@@ -136,6 +139,8 @@ export type ProjectThreadEvent =
         rewindTo?: string;
         /** 新しい会話の最初のターン・Fork の最初のターンで、host が先に決めて Runner に渡した session id */
         sessionId?: string;
+        /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（`TurnContinuation`） */
+        continues?: { turnId: string; fromSeq: number };
       };
     }
   // Runner の `system/init` で会話の id が分かった。**resume-point は変えない**——resume-point は今どおりターンの
@@ -425,7 +430,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         // 返事は resume-point の更新より前の seq を持つ——更新の seq で履歴に積むと、返事から Fork を分けたとき
         // （`resumePointAsOf`）そのターンの会話が見つからない。ターンの始まりの seq で積む。ターンの外の更新
         // （この仕組みより前の記録・試験）は更新の seq のまま
-        const turnFrom = t.lastTurn && !t.lastTurn.resumePointUpdated ? t.lastTurn.startedSeq : raw.seq;
+        // 起こし直しで切れたターンの続きなら、切れたターンの会話の始まりから（追加・2026-10-06）——切れた吹き出しから
+        // 分けても、続きのターンが続けた会話が見つかる
+        const turnFrom =
+          t.lastTurn && !t.lastTurn.resumePointUpdated ? (t.lastTurn.continuesFromSeq ?? t.lastTurn.startedSeq) : raw.seq;
         // **最後まで行ったかは resume-point の更新で見る**（アーキ仕様 §2.5）——ターンの終わりは返事 → resume-point →
         // 使用量 → Fork → `turn.ended` と別々に書かれる。resume-point を書いたあとに落ちたターンは、CLI の
         // 側では終わっているので「切れた」にしない
@@ -437,7 +445,8 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         // 同じものが続くときは積まない（ターンごとに1件で足りる）
         const history = t.resumePoints ?? [];
         if (history[history.length - 1]?.sessionId !== event.payload.resumePoint) {
-          t.resumePoints = [...history, { seq: turnFrom, sessionId: event.payload.resumePoint }];
+          // seq の順に並べておく（`resumePointAsOf` は順に読む）——続きのターンの始まりは前のものより手前になりうる
+          t.resumePoints = [...history, { seq: turnFrom, sessionId: event.payload.resumePoint }].sort((a, b) => a.seq - b.seq);
         }
         // **Clear で切り離したセッションは、後から来ても入れない**（決定・2026-09-06）。
         // 走行中に Clear すると、そのターンは終了時に開始時のsession idで
@@ -544,7 +553,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         const t = next.threads.get(event.payload.threadId);
         if (t) {
           const { threadId: _thread, ...rest } = event.payload;
-          t.deliveries = [...(t.deliveries ?? []), { ...rest, receivedAt: raw.ts }];
+          const received = { ...rest, receivedAt: raw.ts };
+          // **切れたターンの続きは、ほかの届いたものより先に積む**（アーキ仕様 §2.5）——AI はまず切れたことを知る
+          t.deliveries = rest.continues
+            ? [received, ...(t.deliveries ?? [])]
+            : [...(t.deliveries ?? []), received];
           // 送り元への返事を承認なしで通すための記録（§4.2）。届くたびに数え直す
           if (rest.sender) t.receivedFrom = { ...(t.receivedFrom ?? {}), [rest.sender.threadId]: raw.ts };
         }
@@ -615,7 +628,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // **走っているターンの会話も切り離す**（追加・2026-10-05、Fable のレビュー）。新しい会話の最初のターン・
           // Fork の最初のターンは、まだ resume-point に自分の会話を持っていない——上だけでは、終わりに来た
           // resume-point の更新が Clear を取り消していた（前からある穴）
-          for (const id of [t.lastTurn?.assignedSessionId, t.lastTurn?.knownSessionId]) {
+          // 起こし直しで切れたターンの続きは、Thread の resume-point に無い会話（切れたターンが書いた会話）を続けている
+          // ——始めたときの resume-point も捨てる（追加・2026-10-06。`system/init` の前に Clear すると、まだ knownSessionId
+          // が無い）
+          for (const id of [t.lastTurn?.assignedSessionId, t.lastTurn?.knownSessionId, t.lastTurn?.resumePoint]) {
             if (id !== undefined && !t.abandonedSessions.includes(id)) t.abandonedSessions = [...t.abandonedSessions, id];
           }
           // 走っていたターンは、起き直しても続けない（人が会話を畳んだ）
@@ -643,6 +659,12 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             ...(p.resumePoint !== undefined ? { resumePoint: p.resumePoint } : {}),
             ...(p.rewindTo !== undefined ? { rewindTo: p.rewindTo } : {}),
             ...(p.sessionId !== undefined ? { assignedSessionId: p.sessionId } : {}),
+            ...(p.continues ? { continuesTurnId: p.continues.turnId } : {}),
+            // 切れたターンより後に Clear があれば、その会話の始まりは引き継がない（Clear より前から分けて、Clear の
+            // あとの会話にならないように）
+            ...(p.continues && !t.markers.some((m) => m.kind === "clear" && m.seq > p.continues!.fromSeq)
+              ? { continuesFromSeq: p.continues.fromSeq }
+              : {}),
           };
         }
         return next;

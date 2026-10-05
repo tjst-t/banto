@@ -249,7 +249,19 @@ async function* runThreadTurnInner(
     };
     return;
   }
-  if (thread.resumePoint === undefined && deps.resolveSessionSkills) {
+  // **起こし直しで切れたターンの続き**（追加・2026-10-06、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。続きは
+  // 送り手 banto の届いたものとして待ち行列の先頭に並び、続ける会話と `attempt` を持っている。切れたターンが自分の
+  // 会話を書いていたならそれを続け（`resume`）、新しい会話の最初のターンが書く前に切れたなら同じ id で最初から
+  // （`fresh`、実測 M2）。その会話を人が Clear で捨てていたら使わない（Thread の今の会話で走る）
+  const continuation = thread.deliveries?.find((d) => d.continues)?.continues;
+  const session =
+    continuation?.session &&
+    !thread.abandonedSessions.includes("resume" in continuation.session ? continuation.session.resume : continuation.session.fresh)
+      ? continuation.session
+      : undefined;
+  /** このターンが続ける会話（無ければ新しい会話） */
+  const resumeFrom = session ? ("resume" in session ? session.resume : undefined) : thread.resumePoint;
+  if (resumeFrom === undefined && deps.resolveSessionSkills) {
     try {
       const set = await deps.resolveSessionSkills(input.threadId);
       for (const p of set.problems) console.warn(`[host] Skill（${p.module}）: ${p.message}`);
@@ -294,16 +306,25 @@ async function* runThreadTurnInner(
   // 既に共有されてしまっているもの（2026-09-05以前に作られたFork）も、
   // ここで検知して分ける——黙って壊れたまま続けない（規則2）。
   const forkSession =
+    session === undefined &&
     thread.resumePoint !== undefined &&
     (!thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId));
-  const assignedSessionId = thread.resumePoint === undefined || forkSession ? randomUUID() : undefined;
-  const rewindTo = thread.resumePoint !== undefined ? thread.rewindTo : undefined;
+  const assignedSessionId = session
+    ? "fresh" in session
+      ? session.fresh
+      : undefined
+    : thread.resumePoint === undefined || forkSession
+      ? randomUUID()
+      : undefined;
+  // 巻き戻しの位置は Thread の resume-point の会話のもの——切れたターンの会話を続けるときは付けない
+  const rewindTo = session === undefined && thread.resumePoint !== undefined ? thread.rewindTo : undefined;
   turn.id = await deps.projectThread.startTurn(input.threadId, {
     cause: hasHumanMessage ? "human" : "delivery",
-    attempt: input.attempt ?? 0,
-    ...(thread.resumePoint !== undefined ? { resumePoint: thread.resumePoint } : {}),
+    attempt: continuation?.attempt ?? input.attempt ?? 0,
+    ...(resumeFrom !== undefined ? { resumePoint: resumeFrom } : {}),
     ...(rewindTo ? { rewindTo } : {}),
     ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
+    ...(continuation ? { continues: { turnId: continuation.turnId, fromSeq: continuation.fromSeq } } : {}),
   });
   // 画面に出す「走り始めた時刻」も、記録に残した始まりにそろえる（2つの時刻を持たない）。始まりの seq は流し直しの
   // 境界——このターンの AI の発言は、これより後ろの記録に書き終えるごとに入る（画面は流し直す分を記録から外す）
@@ -400,10 +421,10 @@ async function* runThreadTurnInner(
     // **前のターンの CLI が終わるまで、同じセッションを続きから走らせない**
     // （追加・2026-09-26）。ターンは答えが揃った時点で終わり、CLI の後片づけは
     // 裏で続く（`RunnerTurnResult.exited`）。ふつうは人が次を打つより先に終わっている
-    if (thread.resumePoint !== undefined) await cliExits.get(thread.resumePoint);
+    if (resumeFrom !== undefined) await cliExits.get(resumeFrom);
     const gen = (deps.runTurn ?? runTurn)({
       signal: abortTurn.signal,
-      resumeSessionId: thread.resumePoint,
+      resumeSessionId: resumeFrom,
       // 前のターンで人が発言を取り消した——CLI のセッションに書かれていても、その手前で切って続ける（§6.31）
       ...(rewindTo ? { resumeSessionAt: rewindTo } : {}),
       ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
@@ -583,7 +604,8 @@ async function* runThreadTurnInner(
   if (stoppedByHuman) {
     yield await settleStoppedTurn(deps, {
       threadId: input.threadId,
-      thread,
+      // 切れたターンの会話を続けたなら、その会話を始めたときの Thread として見る（どこで切るか・新しい会話か）
+      thread: session ? { ...thread, resumePoint: resumeFrom, rewindTo: undefined, resumeAnchor: undefined } : thread,
       forkSession,
       messages,
       replies,

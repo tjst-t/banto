@@ -55,6 +55,13 @@ export class InboxStore {
     return this.projection.current.items.get(id);
   }
 
+  /** その Thread の判断待ち（答えた・期限切れも含む）。起こし直しで切れたターンの続きの文を組むのに使う */
+  listJudgmentsForThread(threadId: string): JudgmentItem[] {
+    return Array.from(this.projection.current.items.values()).filter(
+      (i): i is JudgmentItem => i.kind === "judgment" && i.threadId === threadId,
+    );
+  }
+
   async raiseJudgment(input: {
     threadId: string;
     source: JudgmentSource;
@@ -123,6 +130,8 @@ export class InboxStore {
     dedupeKey: string;
     title: string;
     detail: string;
+    /** 人が「続ける」を押せるお知らせ（追加・2026-10-06、`NoticeItem.resume`） */
+    resume?: { threadId: string; turnId: string };
   }): Promise<NoticeItem> {
     const open = this.listOpen().find(
       (i): i is NoticeItem =>

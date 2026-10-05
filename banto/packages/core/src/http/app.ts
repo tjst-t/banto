@@ -202,6 +202,11 @@ export interface AppDeps {
   /** Project を畳んだときに、その Project のために立てたもの（Module の
    *  プロセス・合言葉・セッション）を落とす（決定・2026-09-10）。 */
   releaseProjectModules?(projectId: string, opts?: { stopContainer?: boolean }): Promise<string[]>;
+  /**
+   * **自動で続けるのをやめたターンを、人が「続ける」と言った**（追加・2026-10-06、アーキ仕様 §2.5「上限」）。受信箱の
+   * お知らせ（`NoticeItem.resume`）の id で呼ぶ。渡されなければ口は断る
+   */
+  continueStoppedTurn?(noticeId: string): Promise<{ ok: true } | { ok: false; status: 404 | 409; error: string }>;
   /** Project のコンテナの今の状態（無ければ undefined——まだ一度も Module を起こしていない） */
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
@@ -2763,6 +2768,16 @@ export function createApp(deps: AppDeps) {
         if (!item || (item.kind !== "notice" && item.kind !== "review")) return json(res, 404, { error: "not found" });
         if (item.kind === "notice") await deps.inbox.acknowledgeNotice(item.id);
         else await deps.inbox.acknowledgeReview(item.id);
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      // **自動で続けるのをやめたターンを続ける**（追加・2026-10-06、§2.5「上限」）——お知らせの「続ける」
+      const inboxResumeMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/resume$/);
+      if (inboxResumeMatch && req.method === "POST") {
+        if (!deps.continueStoppedTurn) return json(res, 501, { error: "この banto ではターンを続けられません" });
+        const result = await deps.continueStoppedTurn(inboxResumeMatch[1]!);
+        if (!result.ok) return json(res, result.status, { error: result.error });
         json(res, 200, { ok: true });
         return;
       }

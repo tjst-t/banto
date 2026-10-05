@@ -104,6 +104,32 @@ export interface MessageSender {
 export interface PendingDelivery extends MessageOrigin {
   text: string;
   receivedAt: string;
+  /** 起こし直しで切れたターンの続き（`TurnContinuation`）。このときは待ち行列の先頭に並ぶ */
+  continues?: TurnContinuation;
+}
+
+/**
+ * **起こし直しで切れたターンの続き**（追加・2026-10-06、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が
+ * 起き直したとき、切れたターンを「届いたもの」（送り手 `banto`）で起こし直す——その届いたものに付ける。これを積んだ
+ * ターンが続きのターンになる（`turn-runner.ts`）。記録に残るので、続きを起こす前に host がまた落ちても失われない
+ */
+export interface TurnContinuation {
+  /** 続ける（切れた）ターン */
+  turnId: string;
+  /** 続きのターンの `attempt`（切れたターンの `attempt` ＋1）。続けて切れた回数の上限に使う */
+  attempt: number;
+  /**
+   * 切れたターンの会話が記録のどこから始まったか（切れたターンの始まりの seq。続きの続きなら最初に切れたターンの
+   * もの）。続きのターンが書く resume-point の履歴をここに置く——切れた吹き出しから Fork を分けても会話が見つかる
+   */
+  fromSeq: number;
+  /**
+   * **続ける会話**。無ければ Thread の resume-point（と巻き戻しの位置）のまま——続いている会話・会話を書く前に切れた
+   * Fork の最初のターン（親から新しい id で分け直す）。`resume`：切れたターンが自分の会話を書いていた（新しい会話・
+   * Fork の最初のターン）のでそれを続ける。`fresh`：新しい会話の最初のターンが会話を書く前に切れたので、同じ id で
+   * 最初から（実測 M2）。その会話を Clear で捨てていたら使わない
+   */
+  session?: { resume: string } | { fresh: string };
 }
 
 /**
@@ -361,6 +387,13 @@ export interface TurnRecord {
   resumePointUpdated?: boolean;
   /** 始めたより後に、人がこの会話を Clear した・Thread を閉じた・Project を閉じた（最初の1つ） */
   abandonedBy?: "cleared" | "thread_closed" | "project_closed";
+  /** 起こし直しで切れたターンの続きなら、続けたターン（`TurnContinuation.turnId`） */
+  continuesTurnId?: string;
+  /**
+   * 続きのターンなら、切れたターンの会話が記録のどこから始まったか（`TurnContinuation.fromSeq`）。resume-point の
+   * 履歴はここに置く。間に Clear があれば持たない（Clear より前の発言から分けて、Clear のあとの会話にならないように）
+   */
+  continuesFromSeq?: number;
 }
 
 export interface ProjectThreadReadModel {

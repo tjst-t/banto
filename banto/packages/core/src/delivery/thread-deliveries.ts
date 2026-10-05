@@ -12,7 +12,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ProjectThreadStore } from "../project-thread/store.js";
-import type { MessageSender, PendingDelivery } from "../project-thread/types.js";
+import type { MessageSender, PendingDelivery, TurnContinuation } from "../project-thread/types.js";
 import type { ThreadTurns } from "./thread-turns.js";
 
 /** 仮置きの値（2026-09-25）——困ったら変える。根拠は `docs/notes/2026-09-25-thread-delivery.md` */
@@ -34,6 +34,11 @@ export interface DeliverInput {
   hop: number;
   /** 別の Thread の AI が送ったものならその送り元（追加・2026-10-01、§4.2）。受け取った AI はここへ返せる */
   sender?: MessageSender;
+  /**
+   * **起こし直しで切れたターンの続き**（追加・2026-10-06、アーキ仕様 §2.5）。付けたものは待ち行列の先頭に並び、
+   * 起こすときに速度の上限（`wakesPerHour`）に数えない——人のターンを続けるだけ。ホップの上限はそのまま効く
+   */
+  continues?: TurnContinuation;
   /**
    * 受信箱に「届きました」を出すか（既定は出す）。AI が立てた Fork の最初の指示は出さない——立てたことは
    * 親の会話に Fork として出て、終わればレビュー待ちが出る（§2.2「AI が Fork を立てる」）
@@ -113,7 +118,8 @@ export class ThreadDeliveries {
     // 起動の途中（ターンを開く口がまだ無い）——起動し終えたら `resumeAll` が起こす
     if (!this.runTurn) return { wake: "later" };
     const hop = Math.max(...pending.map((d) => d.hop));
-    this.recordWake(threadId);
+    // 切れたターンの続きを起こすのは、速度の上限に数えない（§2.5）
+    if (!pending.some((d) => d.continues)) this.recordWake(threadId);
     void this.runTurn(threadId, hop)
       .catch((err: unknown) => console.warn(`[host] 届いたもので ${threadId} を起こせませんでした:`, err));
     return { wake: "now" };
@@ -140,6 +146,8 @@ export class ThreadDeliveries {
     const now = (this.deps.now ?? Date.now)();
     const recent = (this.wakes.get(threadId) ?? []).filter((t) => now - t < 60 * 60 * 1000);
     this.wakes.set(threadId, recent);
+    // 切れたターンの続きは速度の上限で止めない（人のターンを続けるだけ、§2.5）。上の連鎖の上限は効く
+    if (pending.some((d) => d.continues)) return undefined;
     if (recent.length >= DELIVERY_LIMITS.wakesPerHour) {
       return `この1時間に届いたもので ${DELIVERY_LIMITS.wakesPerHour} 回起こしました（止まらない往復を防ぐため）`;
     }
