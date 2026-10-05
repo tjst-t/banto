@@ -43,7 +43,15 @@ export class ElicitationRouter {
     state.installed = true;
     conn.client.setRequestHandler(ElicitRequestSchema, async (request) => {
       const target = this.resolve(conn.name);
-      return target.elicitInput(request.params);
+      // **問いの答えを待つ間、その Module の呼び出しは人を待っている**（追加・2026-10-05、アーキ仕様 §2.5「画面から
+      // banto を更新する」の待つ段）。中継の承認と同じ印——起こし直しの「待つ」はこの呼び出しを待たない（待つと人が
+      // 答えるまでどこまでも待つ）。外側の呼び出しの上限もこの間は数えない（`agent-proxy.ts`、承認と同じ）
+      const release = this.moduleCalls.holdForHuman(conn.name);
+      try {
+        return await target.elicitInput(request.params);
+      } finally {
+        release();
+      }
     });
   }
 

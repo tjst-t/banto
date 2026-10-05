@@ -25,7 +25,8 @@
 //
 // 書くもの（<dataDir>/update/）：
 //   state.json   { id, phase: "fetch"|"build"|"wait"|"restart"|"verify"|"done"|"failed"|"rolled-back"|"cancelled",
-//                  mode, from, to, startedAt, updatedAt, waiting?（待っている間の activity の残り）,
+//                  mode, from, to, startedAt, updatedAt,
+//                  waiting?（待っている間の残り：{ blocking（activity の待つもの）, continuing（起き直したあと続くものの数）}）,
 //                  note?（いま止まっている理由。例「host が答えません」）, result?, error?, failedPhase?, logFile,
 //                  requestedBy?（{ label } だけ。セッションの id は写さない） }
 //   <id>.log     この回のログ（子プロセスの出力もそのまま）
@@ -530,6 +531,29 @@ async function fetchActivity() {
 }
 
 /**
+ * **待つ段の残り**（決定・2026-10-05、アーキ仕様 §2.5「画面から banto を更新する」の待つ段）。host の activity が
+ * `restartable` を持てば、待つのは `blocking`（切れると結果が分からなくなるもの）だけ——ターン・続けられる Module の仕事は
+ * 起き直したあと続く。持たない古い host なら今どおり全部（ターン・返事待ちの仕事・Module の呼び出し）を待つ。
+ * 返すのは進んでよいか（`ready`）と state.json の `waiting`：`{ blocking, continuing（起き直したあと続くものの数）}`
+ */
+function waitingOf(activity) {
+  if (typeof activity.restartable === "boolean") {
+    return { ready: activity.restartable, waiting: { blocking: activity.blocking, continuing: activity.continuesAfterRestart.length } };
+  }
+  return {
+    ready: activity.idle,
+    waiting: {
+      blocking: [
+        ...activity.turns.map((t) => ({ kind: "turn", ...t })),
+        ...activity.awaitingReplies.map((r) => ({ kind: "reply", ...r })),
+        ...activity.moduleCalls.map((c) => ({ kind: "call", waitingOnHuman: false, ...c })),
+      ],
+      continuing: 0,
+    },
+  };
+}
+
+/**
  * 動いている host が答える版（`GET /api/admin/update` の `current`）。答えなければ（繋がらない・時間切れ・5xx）
  * `{ unreachable }`、断られたら（4xx——合言葉が違う等）`{ refused }`
  */
@@ -753,7 +777,7 @@ async function run() {
   // ── 3. 待つ ──
   if (mode === "wait" && !first) {
     setState({ phase: "wait" });
-    log(`動いているものが無くなるまで待ちます${waitTimeoutMs ? `（上限 ${waitTimeoutMin} 分）` : ""}`);
+    log(`途中で切れるもの（実行中の呼び出し・続けられない仕事）が無くなるまで待ちます${waitTimeoutMs ? `（上限 ${waitTimeoutMin} 分）` : ""}`);
     const waitDeadline = waitTimeoutMs ? Date.now() + waitTimeoutMs : Infinity;
     let nextActivity = 0;
     let last = "";
@@ -790,12 +814,15 @@ async function run() {
           );
         } else {
           note(undefined);
-          const activity = r.activity;
-          if (activity.idle) break;
-          const text = JSON.stringify(activity);
+          const { ready, waiting } = waitingOf(r.activity);
+          if (ready) {
+            log(`途中で切れるものはありません${waiting.continuing > 0 ? `（起き直したあと続くもの ${waiting.continuing} 件）` : ""}`);
+            break;
+          }
+          const text = JSON.stringify(waiting);
           if (text !== last) {
-            log(`待っています：ターン ${activity.turns.length}・返事待ちの仕事 ${activity.awaitingReplies.length}・Module の呼び出し ${activity.moduleCalls.length}`);
-            setState({ waiting: activity });
+            log(`待っています：途中で切れるもの ${waiting.blocking.length} 件（起き直したあと続くもの ${waiting.continuing} 件）`);
+            setState({ waiting });
             last = text;
           }
         }
@@ -803,7 +830,6 @@ async function run() {
       }
       await sleep(markIntervalMs);
     }
-    if (last) log("動いているものがなくなりました");
   }
 
   // ── 4. 起こし直す ──

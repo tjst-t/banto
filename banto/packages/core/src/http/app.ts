@@ -161,6 +161,12 @@ export interface AppDeps {
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
    *  内部で他 Module を呼ぶとき、承認をどの会話に出すかがこれで決まる。 */
   moduleCalls?: ModuleCallTracker;
+  /**
+   * **起こし直しで待つか**を見る口（追加・2026-10-05、`GET /api/admin/activity`）。Module 宛ての返事待ちと、その Module が
+   * 「起こし直しても続けられる」と名乗っているか（札の判定 `delivery/restart-recovery.ts` と同じ口）。無ければ、
+   * Module 宛ての返事待ちは無く、どの Module も名乗っていない
+   */
+  restartActivity?: Pick<Parameters<typeof collectActivity>[0], "moduleReplies" | "resumesAfterRestart">;
   relayEndpoint: HostRelayEndpoint;
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
@@ -1276,7 +1282,7 @@ export function createApp(deps: AppDeps) {
       }
 
       // **いま動いているもの**（決定・2026-09-28、ユーザー「再起動の頃合いを計りたい」）。
-      // host の上の `scripts/restart-when-idle.mjs` が見る。中身は activity.ts
+      // host の上の `scripts/restart-when-idle.mjs` と画面からの更新（`update.mjs` の待つ段）が見る。中身は activity.ts
       if (url.pathname === "/api/admin/activity" && req.method === "GET") {
         json(
           res,
@@ -1286,6 +1292,7 @@ export function createApp(deps: AppDeps) {
             inbox: deps.inbox,
             ...(deps.threadTurns ? { threadTurns: deps.threadTurns } : {}),
             ...(deps.moduleCalls ? { moduleCalls: deps.moduleCalls } : {}),
+            ...deps.restartActivity,
           }),
         );
         return;

@@ -4,10 +4,12 @@
 // 「画面から banto を更新する」。形は人が OK を出したモック `mock/components/banto/settings/update-panel.tsx`）。
 //
 // - 今の版と、最新の release までに入る新しいコミットの一覧。**押す前に何が入るかを読ませる**のが目的
-// - 「AI が止まるまで待って更新」（主）と「すぐ更新」（副）。「すぐ更新」は先に今動いている会話を出して
-//   「途中で切れます」と確かめ、最後にパスキー（host が求めたときだけ。少し前に確かめていれば省かれる）
-// - 進み具合：取ってくる → 組み立てる → AI が止まるのを待つ → 起こし直す。待つ間の「待たずにすぐ起こし直す」は、
-//   同じ確かめでまだ動いている会話だけを並べる。「待つのをやめる」は最初の画面に戻る
+// - 「実行中の呼び出しを待って更新」（主）と「すぐ更新」（副）。待つのは、切れると結果が分からなくなるもの（実行中の
+//   呼び出し・続けられない仕事）だけ——AI の会話・続けられる仕事（サブエージェントなど）は起き直したあと続く
+//   （2026-10-05、アーキ仕様 §2.5 の待つ段）。「すぐ更新」は先に途中で切れる呼び出しを出して確かめ、最後にパスキー
+//   （host が求めたときだけ。少し前に確かめていれば省かれる）
+// - 進み具合：取ってくる → 組み立てる → 呼び出しが終わるのを待つ → 起こし直す。待つ間の「待たずにすぐ起こし直す」は、
+//   同じ確かめでまだ実行中の呼び出しだけを並べる。「待つのをやめる」は最初の画面に戻る
 // - 起こし直しの間は host が居ない——繋がらなくても失敗にせず、画面全体に「繋がり直すのを待っています」を出して待つ
 // - 準備が済んでいない（版ごとのフォルダから動いていない・unit が無い）ときは、理由と手順書だけ。ボタンは出さない
 //
@@ -49,11 +51,12 @@ import {
   fetchUpdateStatus,
   forceUpdateNow,
   requestUpdate,
-  type UpdateActivity,
+  type ActivityItem,
   type UpdateCommit,
   type UpdatePhase,
   type UpdateRunState,
   type UpdateStatus,
+  type UpdateWaiting,
 } from "@/lib/backend/self-update";
 import { cn } from "@/lib/utils";
 
@@ -81,7 +84,7 @@ function formatAt(iso: string): string {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** 途中で切れるもの1件（会話ごとにまとめる） */
+/** 途中で切れるもの1件 */
 interface WorkRow {
   key: string;
   title: string;
@@ -91,41 +94,57 @@ interface WorkRow {
   module?: string;
 }
 
-/** 今動いているもの（ターン・返事待ちの仕事・Module の呼び出し）を、会話ごとに1行にする */
-function workRows(activity: UpdateActivity): WorkRow[] {
+/**
+ * 待つもの（`blocking`）を1件1行にする。同じ会話の同じ Module の呼び出しは1行にまとめる。`turn` が来るのは
+ * `restartable` を返さない古い host に `update.mjs` が全部を待ったときだけ
+ */
+function workRows(items: readonly ActivityItem[]): WorkRow[] {
   const rows = new Map<string, WorkRow>();
-  for (const t of activity.turns) {
-    rows.set(t.threadId, {
-      key: t.threadId,
-      title: t.threadTitle ?? "（題の無い会話）",
-      projectName: t.projectName,
-      since: t.startedAt,
-      status: t.waitingOnHuman ? "human" : "ai",
-    });
-  }
-  for (const r of activity.awaitingReplies) {
-    if (rows.has(r.threadId)) continue;
-    rows.set(r.threadId, {
-      key: r.threadId,
-      title: r.threadTitle ?? "（題の無い会話）",
-      projectName: r.projectName,
-      since: r.since,
-      status: "reply",
-      module: r.module,
-    });
-  }
-  for (const c of activity.moduleCalls) {
-    const key = c.threadId ?? `call:${c.projectId ?? ""}:${c.connName}`;
-    if (rows.has(key)) continue;
-    rows.set(key, {
-      key,
-      title: c.threadTitle ?? `${c.connName} の操作`,
-      projectName: c.projectName,
-      status: "call",
-      module: c.connName,
-    });
+  for (const i of items) {
+    const row = workRow(i);
+    if (!rows.has(row.key)) rows.set(row.key, row);
   }
   return [...rows.values()];
+}
+
+function workRow(i: ActivityItem): WorkRow {
+  const untitled = "（題の無い会話）";
+  switch (i.kind) {
+    case "turn":
+      return {
+        key: `turn:${i.threadId}`,
+        title: i.threadTitle ?? untitled,
+        projectName: i.projectName,
+        since: i.startedAt,
+        status: i.waitingOnHuman ? "human" : "ai",
+      };
+    case "reply":
+      return {
+        key: `reply:${i.threadId}:${i.module}`,
+        title: i.threadTitle ?? untitled,
+        projectName: i.projectName,
+        since: i.since,
+        status: "reply",
+        module: i.module,
+      };
+    case "moduleReply":
+      return {
+        key: `module-reply:${i.projectId ?? ""}:${i.caller}:${i.module}`,
+        title: `${i.caller} が頼んだ仕事`,
+        projectName: i.projectName,
+        since: i.since,
+        status: "reply",
+        module: i.module,
+      };
+    case "call":
+      return {
+        key: `call:${i.threadId ?? i.projectId ?? ""}:${i.connName}`,
+        title: i.threadTitle ?? `${i.connName} の操作`,
+        projectName: i.projectName,
+        status: "call",
+        module: i.connName,
+      };
+  }
 }
 
 function sinceText(iso: string): string {
@@ -155,7 +174,7 @@ export function UpdatePanel() {
   const [reconnecting, setReconnecting] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [steppingUp, setSteppingUp] = useState(false);
-  const [confirm, setConfirm] = useState<{ reason: "now" | "skip-wait"; work: WorkRow[] } | null>(null);
+  const [confirm, setConfirm] = useState<{ reason: "now" | "skip-wait"; work: WorkRow[]; continuing: number } | null>(null);
   // この画面で頼んだ形（`state.json` に mode が書かれるまでの間、進み具合の段の出し方に使う）
   const [requestedMode, setRequestedMode] = useState<Mode | null>(null);
   // 「もう一度ためす」で閉じた失敗
@@ -222,20 +241,22 @@ export function UpdatePanel() {
     await refresh();
   }
 
-  /** すぐ更新：動いている会話があれば先に確かめる（無ければ確かめない） */
+  /** すぐ更新：途中で切れる呼び出しがあれば先に確かめる（無ければ確かめない——会話は起き直したあと続く） */
   function pressNow(commit: string) {
     void run("now", async () => {
-      const work = workRows(await fetchActivity());
-      if (work.length > 0) setConfirm({ reason: "now", work });
+      const activity = await fetchActivity();
+      const work = workRows(activity.blocking);
+      if (work.length > 0) setConfirm({ reason: "now", work, continuing: activity.continuesAfterRestart.length });
       else await request(commit, "now");
     });
   }
 
-  /** 待たずにすぐ起こし直す：まだ動いている会話だけ並べる。パスキーは host が求めたときだけ */
+  /** 待たずにすぐ起こし直す：まだ実行中の呼び出しだけ並べる。パスキーは host が求めたときだけ */
   function pressSkipWait() {
     void run("force", async () => {
-      const work = workRows(await fetchActivity());
-      if (work.length > 0) setConfirm({ reason: "skip-wait", work });
+      const activity = await fetchActivity();
+      const work = workRows(activity.blocking);
+      if (work.length > 0) setConfirm({ reason: "skip-wait", work, continuing: activity.continuesAfterRestart.length });
       else await forceNow();
     });
   }
@@ -399,6 +420,7 @@ export function UpdatePanel() {
         open={confirm !== null}
         reason={confirm?.reason ?? "now"}
         work={confirm?.work ?? []}
+        continuing={confirm?.continuing ?? 0}
         onCancel={() => setConfirm(null)}
         onConfirm={confirmed}
       />
@@ -513,7 +535,7 @@ function NewVersionCard({
                 data-testid="update-wait"
               >
                 {busy === "wait" ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                AI が止まるまで待って更新
+                実行中の呼び出しを待って更新
               </Button>
               <Button
                 type="button"
@@ -531,7 +553,7 @@ function NewVersionCard({
             <p className="mt-2 text-xs text-ink-3">
               {requesting
                 ? "頼んでいます"
-                : "組み立てが終わったら起こし直します。「すぐ更新」は AI を待たないので、動いている会話は途中で切れます。押すとパスキーで本人を確かめます（少し前に確かめていれば省きます）。"}
+                : "組み立てが終わったら、実行中の呼び出しが終わるのを待って起こし直します。AI の会話とサブエージェントの仕事は、起き直したあと続きます。「すぐ更新」は待たないので、実行中の呼び出しは途中で切れます。押すとパスキーで本人を確かめます（少し前に確かめていれば省きます）。"}
             </p>
           </>
         )}
@@ -618,14 +640,14 @@ function NotReadyCard({ reasons, runbook }: { reasons: string[]; runbook: string
 const STEP_LABEL: Record<StepId, string> = {
   fetch: "取ってくる",
   build: "組み立てる",
-  wait: "AI が止まるのを待つ",
+  wait: "呼び出しが終わるのを待つ",
   restart: "起こし直す",
 };
 
 const STEP_HINT: Record<StepId, string> = {
   fetch: "GitHub から新しい版を取ってきます",
   build: "数分かかります",
-  wait: "動いている会話が終わるまで待ちます",
+  wait: "途中で切れる呼び出しが終わるまで待ちます",
   restart: "画面が一度切れます",
 };
 
@@ -748,6 +770,16 @@ function WorkList({ work }: { work: readonly WorkRow[] }) {
   );
 }
 
+/** 起き直したあと続くもの（待たないもの）の数。無ければ出さない */
+function ContinuingLine({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <p data-testid="update-continuing" className="text-xs text-ink-2">
+      起き直したあと続くもの {count} 件（会話・サブエージェントなど）
+    </p>
+  );
+}
+
 function ProgressCard({
   to,
   mode,
@@ -762,7 +794,7 @@ function ProgressCard({
   to: string | null;
   mode: Mode;
   step: StepId;
-  waiting: UpdateActivity | undefined;
+  waiting: UpdateWaiting | undefined;
   busy: Busy;
   steppingUp: boolean;
   /** いま止まっている理由（`update.mjs` が書く。例「host が答えません…答えるまで待ちます」） */
@@ -770,7 +802,7 @@ function ProgressCard({
   onStop: () => void;
   onSkipWait: () => void;
 }) {
-  const remaining = waiting ? workRows(waiting) : [];
+  const remaining = workRows(waiting?.blocking ?? []);
   const noteLine = note ? (
     <p data-testid="update-note" className="mt-2 flex items-start gap-1.5 text-xs break-words text-warn">
       <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
@@ -828,8 +860,9 @@ function ProgressCard({
                     <WorkList work={remaining} />
                   </>
                 ) : (
-                  <p className="text-xs text-ink-2">動いている AI はありません</p>
+                  <p className="text-xs text-ink-2">途中で切れる呼び出しはありません</p>
                 )}
+                <ContinuingLine count={waiting?.continuing ?? 0} />
                 {steppingUp ? (
                   <p data-testid="update-passkey" className="flex items-center gap-2 py-1 text-sm text-ink-2">
                     <KeyRound className="size-4 shrink-0 text-accent-ink" />
@@ -1002,12 +1035,15 @@ function CutOffDialog({
   open,
   reason,
   work,
+  continuing,
   onCancel,
   onConfirm,
 }: {
   open: boolean;
   reason: "now" | "skip-wait";
   work: readonly WorkRow[];
+  /** 起き直したあと続くもの（待たないもの）の数 */
+  continuing: number;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -1018,15 +1054,16 @@ function CutOffDialog({
           <DialogTitle>{reason === "now" ? "すぐ更新しますか？" : "待たずに起こし直しますか？"}</DialogTitle>
           <DialogDescription>
             {reason === "now"
-              ? `組み立てが終わったら、AI を待たずに起こし直します。いま AI が動いている会話が ${work.length} 件あります。`
-              : `いま残っている会話が ${work.length} 件あります。`}
+              ? `組み立てが終わったら、待たずに起こし直します。いま途中で切れる呼び出しが ${work.length} 件あります。`
+              : `いま途中で切れる呼び出しが ${work.length} 件あります。`}
           </DialogDescription>
         </DialogHeader>
         <WorkList work={work} />
         <p className="flex items-start gap-1.5 text-sm font-medium text-warn">
           <CircleAlert className="mt-0.5 size-4 shrink-0" />
-          これらは途中で切れます。
+          これらは途中で切れ、結果が分からなくなります。
         </p>
+        <ContinuingLine count={continuing} />
         <DialogFooter className="gap-2">
           <Button type="button" variant="ghost" size="lg" className="h-10 sm:h-8" onClick={onCancel}>
             やめる

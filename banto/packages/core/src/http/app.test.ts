@@ -671,6 +671,122 @@ test("GET /api/admin/activity は動いているものを数え、人の返事�
   );
 });
 
+// **起こし直しで待つものと待たないもの**（決定・2026-10-05、アーキ仕様 §2.5「画面から banto を更新する」の待つ段）。
+// 続けられるもの（ターン・名乗った Module の札）と人を待っているものは待たない。待つのは実行中の呼び出しと、名乗らない
+// Module の札（Thread 宛て・Module 宛て）だけ
+test("GET /api/admin/activity：起こし直しで待つもの（blocking）と、起き直したら続くもの（continuesAfterRestart）を分ける", async () => {
+  const threadTurns = new ThreadTurns();
+  const moduleCalls = new ModuleCallTracker();
+  const awaitingModule: Array<{ replyTo: string; replyId: string; toConn: string; toModule: string; fromConn: string; fromModule: string; projectId?: string; since: string }> = [];
+  // 「続けられる」と名乗っているのは subagent だけ
+  const resumesAfterRestart = ({ moduleName }: { moduleName: string }) => moduleName === "subagent";
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const read = async () => {
+        const res = await fetch(`${base}/api/admin/activity`, { headers: { authorization: `Bearer ${token}` } });
+        assert.equal(res.status, 200);
+        return (await res.json()) as ActivityReport;
+      };
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      let a = await read();
+      assert.equal(a.restartable, true);
+      assert.deepEqual(a.blocking, []);
+      assert.deepEqual(a.continuesAfterRestart, []);
+
+      // 走っているターンが tool を呼んでいない（文を書いている・考えている）——起き直したら続くので待たない
+      const release = threadTurns.tryAcquire(thread.id, 0)!;
+      a = await read();
+      assert.equal(a.idle, false, "idle は今どおり全部空のときだけ");
+      assert.equal(a.restartable, true, "tool を呼んでいないターンを待っている");
+      assert.deepEqual(a.blocking, []);
+      assert.deepEqual(
+        a.continuesAfterRestart.map((i) => [i.kind, "threadTitle" in i ? i.threadTitle : undefined, "projectName" in i ? i.projectName : undefined]),
+        [["turn", thread.title, "P"]],
+      );
+
+      // tool を呼んでいる——切れると結果が分からないので待つ（ターンは続くものに残る）
+      const endCall = moduleCalls.beginCall(`shell-${project.id}`, thread.id, "turn", project.id);
+      a = await read();
+      assert.equal(a.restartable, false, "実行中の tool の呼び出しを待たない");
+      assert.deepEqual(
+        a.blocking.map((i) => ({ kind: i.kind, connName: "connName" in i ? i.connName : undefined, threadId: "threadId" in i ? i.threadId : undefined, projectName: i.projectName })),
+        [{ kind: "call", connName: `shell-${project.id}`, threadId: thread.id, projectName: "P" }],
+      );
+      assert.deepEqual(a.continuesAfterRestart.map((i) => i.kind), ["turn"]);
+
+      // その呼び出しが人の答え（中継の承認・Module の質問）を待っている——待つと人が答えるまで終わらないので待たない
+      const judgment = await deps.inbox.raiseJudgment({ threadId: thread.id, source: "relay", message: "承認" });
+      const unhold = moduleCalls.holdForHuman(`shell-${project.id}`, endCall.id);
+      a = await read();
+      assert.equal(a.restartable, true, "人を待っている呼び出しを待っている");
+      assert.deepEqual(a.blocking, []);
+      assert.deepEqual(
+        a.continuesAfterRestart.map((i) => [i.kind, "waitingOnHuman" in i ? i.waitingOnHuman : undefined]),
+        [["turn", true]],
+        "ターンの中の人待ちの呼び出しはターンの行と一緒（二重に数えない）",
+      );
+      // 人が答えた——呼び出しはまた実行中なので待つ
+      unhold();
+      await deps.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+      assert.equal((await read()).restartable, false);
+      endCall.end();
+
+      // 人が画面で押したもの（ターンの外）：実行中なら待つ。人を待っているなら待たず、続くものに1行
+      const canvas = moduleCalls.beginCall("backlog", undefined, "canvas", project.id);
+      a = await read();
+      assert.deepEqual(a.blocking.map((i) => [i.kind, "origin" in i ? i.origin : undefined]), [["call", "canvas"]]);
+      const unholdCanvas = moduleCalls.holdForHuman("backlog", canvas.id);
+      a = await read();
+      assert.equal(a.restartable, true);
+      assert.deepEqual(
+        a.continuesAfterRestart.map((i) => [i.kind, "connName" in i ? i.connName : undefined, "waitingOnHuman" in i ? i.waitingOnHuman : undefined]),
+        [
+          ["turn", undefined, false],
+          ["call", "backlog", true],
+        ],
+      );
+      unholdCanvas();
+      canvas.end();
+      release();
+      assert.equal((await read()).idle, true);
+
+      // 返事待ちの札：名乗った Module（subagent）のは続くので待たない、名乗らない Module のは待つ
+      await deps.projectThread.recordAwaitingReply({ threadId: thread.id, replyTo: "r1", connName: `subagent-${project.id}`, moduleName: "subagent", hop: 1 });
+      a = await read();
+      assert.equal(a.idle, false);
+      assert.equal(a.restartable, true, "名乗った Module の札を待っている");
+      assert.deepEqual(a.continuesAfterRestart.map((i) => [i.kind, "module" in i ? i.module : undefined]), [["reply", "subagent"]]);
+      await deps.projectThread.recordAwaitingReply({ threadId: thread.id, replyTo: "r2", connName: `factory-${project.id}`, moduleName: "factory", hop: 1 });
+      a = await read();
+      assert.equal(a.restartable, false, "名乗らない Module の札を待たない");
+      assert.deepEqual(a.blocking.map((i) => [i.kind, "module" in i ? i.module : undefined, "threadId" in i ? i.threadId : undefined]), [["reply", "factory", thread.id]]);
+      await deps.projectThread.settleReply(thread.id, "r2");
+
+      // 閉じた Thread の札は、名乗っていても起き直したら「途中で終わりました」になるので待つ
+      await deps.projectThread.closeThread(thread.id);
+      a = await read();
+      assert.equal(a.restartable, false, "閉じた Thread の札を待たない");
+      assert.deepEqual(a.blocking.map((i) => [i.kind, "module" in i ? i.module : undefined]), [["reply", "subagent"]]);
+      await deps.projectThread.settleReply(thread.id, "r1");
+      assert.equal((await read()).idle, true);
+
+      // Module 宛ての札（Module が中継で頼んだ仕事）も同じ。idle もこれを数える
+      awaitingModule.push({ replyTo: "m1", replyId: "rid_1", toConn: `factory-${project.id}`, toModule: "factory", fromConn: `subagent-${project.id}`, fromModule: "subagent", projectId: project.id, since: "2026-10-05T00:00:00.000Z" });
+      a = await read();
+      assert.equal(a.idle, false, "Module 宛ての返事待ちを数えていない");
+      assert.equal(a.restartable, true);
+      assert.deepEqual(a.moduleReplies, [{ projectId: project.id, projectName: "P", module: "subagent", caller: "factory", since: "2026-10-05T00:00:00.000Z" }]);
+      assert.deepEqual(a.continuesAfterRestart.map((i) => i.kind), ["moduleReply"]);
+      awaitingModule.push({ replyTo: "m2", replyId: "rid_2", toConn: "factory", toModule: "factory", fromConn: "shell", fromModule: "shell", since: "2026-10-05T00:00:00.000Z" });
+      a = await read();
+      assert.equal(a.restartable, false, "名乗らない Module に頼んだ Module 宛ての札を待たない");
+      assert.deepEqual(a.blocking, [{ kind: "moduleReply", module: "shell", caller: "factory", since: "2026-10-05T00:00:00.000Z" }]);
+    },
+    { threadTurns, moduleCalls, restartActivity: { moduleReplies: { awaiting: () => awaitingModule }, resumesAfterRestart } },
+  );
+});
+
 test("permissionModeは6値だけ受け付ける", async () => {
   await withApp(async (base, token) => {
     const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };

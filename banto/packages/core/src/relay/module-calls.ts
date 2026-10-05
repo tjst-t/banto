@@ -198,15 +198,17 @@ export class ModuleCallTracker {
 
   /**
    * **いま走っている呼び出しの一覧**（追加・2026-09-28、ユーザー「再起動の頃合いを計りたい」）。
-   * 開始時刻は持たない——ターンの中の呼び出しは、ターンの一覧のほうで時刻が分かる
+   * 開始時刻は持たない——ターンの中の呼び出しは、ターンの一覧のほうで時刻が分かる。
+   * `waitingOnHuman` はその呼び出しが人の答えを待っているか（追加・2026-10-05——起こし直しで待たないもの、`activity.ts`）
    */
-  list(): Array<{ connName: string; threadId?: string; projectId?: string; origin: CallOrigin }> {
+  list(): Array<{ connName: string; threadId?: string; projectId?: string; origin: CallOrigin; waitingOnHuman: boolean }> {
     return [...this.inFlight].flatMap(([connName, calls]) =>
       [...calls.values()].map((c) => ({
         connName,
         ...(c.threadId ? { threadId: c.threadId } : {}),
         ...(c.projectId ? { projectId: c.projectId } : {}),
         origin: c.origin,
+        waitingOnHuman: c.waitingOnHuman > 0,
       })),
     );
   }

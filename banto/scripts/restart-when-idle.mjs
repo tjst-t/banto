@@ -1,24 +1,26 @@
 #!/usr/bin/env node
-// **banto の中で動いているものが無くなるまで待ってから、再起動する**（決定・2026-09-28、ユーザー）。
+// **banto を、途中で切れるものが無くなるのを待ってから再起動する**（決定・2026-09-28、ユーザー。待つものを
+// 2026-10-05 に変えた——アーキ仕様 §2.5「画面から banto を更新する」の待つ段）。
 //
 // host で人が打つ（コンテナの中の AI からは host の systemd に届かない）。稼働中の host の
-// `GET /api/admin/activity` を数秒おきに見て、走っているターン・返事待ちの仕事（待たない形で頼んだ
-// サブエージェントなど）・Module の呼び出しが無くなったら `systemctl restart` する。まず sudo 無しで打ち
-// （画面からの更新を整えた host では polkit の規則で許されている——手順書 D）、断られたら（Interactive authentication
-// required・Access denied）`sudo systemctl restart` で打ち直す。
-// 待っている間は、何が残っているかを変わったときだけ表示する。
+// `GET /api/admin/activity` を数秒おきに見て、**待つもの**（`blocking`：実行中の Module の呼び出しと、「続けられる」と
+// 名乗らない Module の返事待ちの仕事——切れると結果が分からなくなるもの）が無くなったら `systemctl restart` する。
+// 走っている AI のターン・続けられる Module の仕事（サブエージェントなど）・人の返事待ちは、起き直したあと続くので
+// 待たない（`--all` で、今までどおり全部が空くまで待つ）。まず sudo 無しで打ち（画面からの更新を整えた host では
+// polkit の規則で許されている——手順書 D）、断られたら（Interactive authentication required・Access denied）
+// `sudo systemctl restart` で打ち直す。待っている間は、何が残っているかを変わったときだけ表示する。
 //
-//   node scripts/restart-when-idle.mjs                 # 空くまで待って再起動
-//   node scripts/restart-when-idle.mjs --status        # いま動いているものを出して終わる（空なら終了コード 0、動いていれば 1）
-//   node scripts/restart-when-idle.mjs --ignore-waiting-on-human
-//                                                      # 承認・質問の返事待ちで止まっているターンだけなら、待たずに再起動する
+//   node scripts/restart-when-idle.mjs                 # 途中で切れるものが無くなるまで待って再起動
+//   node scripts/restart-when-idle.mjs --all           # 全部（走っているターン・返事待ちの仕事・人の返事待ちも）空くまで待つ
+//   node scripts/restart-when-idle.mjs --status        # いま動いているものを出して終わる（再起動してよければ終了コード 0、待つものがあれば 1）
 //
 // そのほか：--interval <秒>（既定 5）・--timeout <分>（既定 無し）・--dry-run（再起動せずに終わる）・
 // --units "<unit> <unit>"（既定 "banto-host.service banto-frontend.service"）。
 // 合言葉と口は banto の設定（BANTO_CONFIG_PATH か ~/.config/banto/config.json）から読む。
+// `restartable` を返さない古い host には、`--all` と同じに全部が空くまで待つ。
 //
-// **空いたと見てから再起動するまでの間に新しいターンが始まることはありうる**（受け付けを止める仕組みは
-// まだ作っていない）。その場合、そのターンは再起動後に「途中で終わった」扱いになる。
+// **待つものが無いと見てから再起動するまでの間に、新しい呼び出しが始まることはありうる**（受け付けを止める仕組みは
+// まだ作っていない）。その呼び出しは切れて、続きの AI に「結果は分かりません」と伝わる。
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -32,6 +34,15 @@ const option = (name, fallback) => {
   return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback;
 };
 
+// 2026-10-05 に無くした——人の返事待ちは既定で待たなくなった。黙って受けると、--all と一緒に打ったときに意味が割れる
+if (flag("--ignore-waiting-on-human")) {
+  console.error(
+    "--ignore-waiting-on-human は無くなりました。人の返事待ちは既定で待ちません（起き直したら続きの AI がもう一度聞きます）。" +
+      "全部が空くまで待つなら --all を使ってください",
+  );
+  process.exit(2);
+}
+
 const configPath =
   process.env.BANTO_CONFIG_PATH ||
   join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "banto", "config.json");
@@ -41,7 +52,7 @@ const intervalMs = Number(option("--interval", "5")) * 1000;
 const timeoutMin = option("--timeout", undefined);
 const deadline = timeoutMin ? Date.now() + Number(timeoutMin) * 60_000 : undefined;
 const units = option("--units", "banto-host.service banto-frontend.service").split(/\s+/).filter(Boolean);
-const ignoreHuman = flag("--ignore-waiting-on-human");
+const all = flag("--all");
 const restartCommand = `systemctl restart ${units.join(" ")}（polkit の規則が無い host では sudo を付けて）`;
 
 /** polkit に断られた（規則が無い）ときの systemctl の言葉。これのときだけ sudo で打ち直す——ほかの失敗は打ち直さない */
@@ -77,25 +88,51 @@ const since = (iso) => {
   return s < 120 ? `${s}秒前から` : `${Math.round(s / 60)}分前から`;
 };
 
+/** 1件の行（待つもの・続くもの） */
+function line(i) {
+  if (i.kind === "turn") {
+    const state = i.waitingOnHuman ? "人の返事待ちで止まっている" : "走っている";
+    const queued = i.queued > 0 ? `・人の発言が${i.queued}件順番待ち` : "";
+    return `ターン：${where(i)}（${state}・${since(i.startedAt)}${queued}）`;
+  }
+  if (i.kind === "reply") return `返事待ちの仕事：${where(i)}（${i.module}・${since(i.since)}）`;
+  if (i.kind === "moduleReply")
+    return `Module が頼んだ仕事：${i.projectName ?? i.projectId ?? "banto 全体"}（${i.caller} が ${i.module} に・${since(i.since)}）`;
+  const origin = i.origin === "canvas" ? "人が画面で押したもの" : i.origin === "turn" ? "AI のターンから" : i.origin;
+  return `Module の呼び出し：${i.connName}（${origin}${i.threadId ? `・${where(i)}` : ""}${i.waitingOnHuman ? "・人の返事待ち" : ""}）`;
+}
+
+/** 古い host（`restartable` を返さない）の答えを、全部待つものとして並べる */
+function legacyItems(a) {
+  return [
+    ...a.turns.map((t) => ({ kind: "turn", ...t })),
+    ...a.awaitingReplies.map((r) => ({ kind: "reply", ...r })),
+    ...a.moduleCalls.map((c) => ({ kind: "call", ...c })),
+  ];
+}
+
+const modern = (a) => typeof a.restartable === "boolean";
+/** 再起動してよいか。既定は `restartable`（待つものが無い）、--all か古い host は `idle`（全部空） */
+const ready = (a) => (all || !modern(a) ? a.idle : a.restartable);
+
 function describe(a) {
   if (a.idle) return ["動いているものはありません"];
-  const lines = [];
-  for (const t of a.turns) {
-    const state = t.waitingOnHuman ? "人の返事待ちで止まっている" : "走っている";
-    const queued = t.queued > 0 ? `・人の発言が${t.queued}件順番待ち` : "";
-    lines.push(`ターン：${where(t)}（${state}・${since(t.startedAt)}${queued}）`);
+  if (!modern(a)) return ["（この host は待つものを分けて返さない古い版です。全部が空くまで待ちます）", ...legacyItems(a).map(line)];
+  if (all) {
+    // --all：全部待つ。続くものも待っているので、まとめて並べる
+    return [...a.blocking, ...a.continuesAfterRestart].map(line);
   }
-  for (const r of a.awaitingReplies) lines.push(`返事待ちの仕事：${where(r)}（${r.module}・${since(r.since)}）`);
-  const inTurns = new Set(a.turns.map((t) => t.threadId));
-  for (const c of a.moduleCalls) {
-    // ターンの中の呼び出しは、上のターンの行で分かる——人が画面で押したもの等だけ出す
-    if (c.threadId && inTurns.has(c.threadId)) continue;
-    lines.push(`Module の呼び出し：${c.connName}（${c.origin === "canvas" ? "人が画面で押したもの" : c.origin}${c.threadId ? `・${where(c)}` : ""}）`);
+  const lines = [];
+  if (a.blocking.length > 0) {
+    lines.push("待つもの（切れると結果が分からなくなる）：");
+    for (const i of a.blocking) lines.push(`  ${line(i)}`);
+  } else lines.push("待つものはありません");
+  if (a.continuesAfterRestart.length > 0) {
+    lines.push("起き直したあと続くもの（待たない）：");
+    for (const i of a.continuesAfterRestart) lines.push(`  ${line(i)}`);
   }
   return lines;
 }
-
-const ready = (a) => a.idle || (ignoreHuman && a.onlyWaitingOnHuman);
 
 let activity;
 try {
@@ -112,8 +149,8 @@ try {
 }
 
 if (flag("--status")) {
-  for (const line of describe(activity)) console.log(line);
-  process.exit(activity.idle ? 0 : 1);
+  for (const text of describe(activity)) console.log(text);
+  process.exit(ready(activity) ? 0 : 1);
 }
 
 let last = "";
@@ -135,7 +172,7 @@ while (!ready(activity)) {
 console.log(
   activity.idle
     ? "\n動いているものがなくなりました"
-    : "\n残っているのは人の返事待ちで止まっているターンだけです（--ignore-waiting-on-human）",
+    : `\n途中で切れるものはありません。起き直したあと続くもの ${activity.continuesAfterRestart.length} 件`,
 );
 if (flag("--dry-run")) {
   console.log(`--dry-run なので再起動しません（するなら：${restartCommand}）`);

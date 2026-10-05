@@ -344,14 +344,16 @@ async function main(): Promise<void> {
       return r.isError ? "refused" : "handed";
     },
   });
+  /** その Module が「起こし直しても続けられる」と名乗っているか（宣言で見る——起こさずに分かる）。札の判定と activity が使う */
+  const resumesAfterRestart = ({ moduleName, projectId }: { moduleName: string; projectId?: string }): boolean =>
+    loadModuleDeclarations(runtimeConfig, projectId ?? "").find((d) => d.name === moduleName)?.meta.resumesAfterRestart === true;
   recovery = new RestartRecovery({
     projectThread,
     inbox,
     deliveries,
     replyHandles,
     moduleReplies,
-    resumable: ({ moduleName, projectId }) =>
-      loadModuleDeclarations(runtimeConfig, projectId ?? "").find((d) => d.name === moduleName)?.meta.resumesAfterRestart === true,
+    resumable: resumesAfterRestart,
     // 起こして繋ぐ。期限（`signal`）が過ぎたら、繋がっても問いは送らない（`RestartRecovery` が見る）
     connect: async ({ moduleName, connName, projectId }, signal) => {
       const declaration = loadModuleDeclarations(runtimeConfig, projectId ?? "").find((d) => d.name === moduleName);
@@ -1793,6 +1795,8 @@ async function main(): Promise<void> {
     deliveries,
     appEvents,
     moduleCalls,
+    // 起こし直しで待つものと待たないもの（GET /api/admin/activity）
+    restartActivity: { moduleReplies, resumesAfterRestart },
     relayEndpoint,
     agentRelayEndpoint,
     authToken: bootstrap.authToken,

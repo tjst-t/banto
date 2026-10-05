@@ -142,3 +142,32 @@ test("ElicitationRouteError は router から直接も投げる（型で分か�
     ElicitationRouteError,
   );
 });
+
+// **問いの答えを待つ間、その呼び出しは人を待っている**（追加・2026-10-05）。起こし直しの「待つ」はこの呼び出しを待たない
+// （`http/activity.ts`）。答えが来たら外す
+test("問いの答えを待つ間だけ、その Module の呼び出しは人を待っている印が付く", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const module = await fakeModule();
+  const conn = { name: "vault", client: module.client, meta: META };
+  let answer!: () => void;
+  const seen: boolean[] = [];
+  router.register(conn, "thread-A", {
+    elicitInput: async () => {
+      seen.push(tracker.list().every((c) => c.waitingOnHuman));
+      await new Promise<void>((r) => (answer = r));
+      return { action: "decline" as const };
+    },
+  } as unknown as Server);
+
+  const end = tracker.begin("vault", "thread-A");
+  assert.deepEqual(tracker.list().map((c) => c.waitingOnHuman), [false]);
+  const asked = module.ask("alias が要ります");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(seen, [true], "問いの間に人を待っている印が無い");
+  answer();
+  await asked;
+  assert.deepEqual(tracker.list().map((c) => c.waitingOnHuman), [false], "答えたあとも人を待っている");
+  end();
+  await module.client.close();
+});

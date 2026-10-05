@@ -21,14 +21,44 @@ const TOKEN = "tok";
 const git = (cwd, ...args) =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" }).trim();
 
-const IDLE = { idle: true, onlyWaitingOnHuman: false, turns: [], awaitingReplies: [], moduleCalls: [] };
-const BUSY = {
-  idle: false,
+const IDLE = {
+  idle: true,
   onlyWaitingOnHuman: false,
-  turns: [{ threadId: "t1", threadTitle: "作業中", startedAt: "2026-10-04T00:00:00Z", hop: 0, queued: 0, waitingOnHuman: false }],
+  restartable: true,
+  blocking: [],
+  continuesAfterRestart: [],
+  turns: [],
   awaitingReplies: [],
+  moduleReplies: [],
   moduleCalls: [],
 };
+const TURN = { threadId: "t1", threadTitle: "作業中", startedAt: "2026-10-04T00:00:00Z", hop: 0, queued: 0, waitingOnHuman: false };
+const REPLY = { threadId: "t2", threadTitle: "調べもの", module: "subagent", since: "2026-10-04T00:00:00Z" };
+const CALL = { threadId: "t1", threadTitle: "作業中", connName: "shell-p1", origin: "turn" };
+/** ターンが tool を呼んでいる——呼び出しは切れると結果が分からないので待つ（ターンは起き直したあと続く） */
+const BUSY = {
+  ...IDLE,
+  idle: false,
+  restartable: false,
+  blocking: [{ kind: "call", waitingOnHuman: false, ...CALL }],
+  continuesAfterRestart: [{ kind: "turn", ...TURN }],
+  turns: [TURN],
+  moduleCalls: [CALL],
+};
+/** ターンが文を書いている・続けられる Module の仕事が走っている——どれも起き直したあと続くので待たない */
+const CONTINUES = {
+  ...IDLE,
+  idle: false,
+  continuesAfterRestart: [
+    { kind: "turn", ...TURN },
+    { kind: "reply", ...REPLY },
+  ],
+  turns: [TURN],
+  awaitingReplies: [REPLY],
+};
+/** `restartable` を持たない古い host の答え（2026-10-05 より前） */
+const OLD_IDLE = { idle: true, onlyWaitingOnHuman: false, turns: [], awaitingReplies: [], moduleCalls: [] };
+const OLD_BUSY = { ...OLD_IDLE, idle: false, turns: [TURN] };
 
 async function withRelease(fn) {
   const dir = mkdtempSync(join(tmpdir(), "banto-update-test-"));
@@ -328,7 +358,9 @@ test("待っている間は残っているものを state に書き、cancel で
     // 残っているものが書かれるまで
     const deadline = Date.now() + 5000;
     while (!ctx.state().waiting && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
-    assert.equal(ctx.state().waiting.turns[0].threadTitle, "作業中");
+    // 書くのは待つもの（切れると結果が分からないもの）と、起き直したあと続くものの数
+    assert.deepEqual(ctx.state().waiting, { blocking: [{ kind: "call", waitingOnHuman: false, ...CALL }], continuing: 1 });
+    assert.equal(ctx.state().phase, "wait");
     ctx.mark("cancel");
     const { code, out } = await run.done;
     assert.equal(code, 0, out);
@@ -339,6 +371,63 @@ test("待っている間は残っているものを state に書き、cancel で
     assert.equal(existsSync(join(ctx.rel, v(b))), false);
     assert.deepEqual(ctx.systemctlCalls(), []);
     assert.equal(existsSync(join(ctx.updateDir, "cancel")), false, "印を次の回に持ち越す");
+  });
+});
+
+test("ターンと続けられる仕事が動いていても、途中で切れるもの（実行中の呼び出し）が無ければ待たずに起こし直す", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    ctx.host.activity = CONTINUES;
+    ctx.request(b, "wait");
+    const { code, out } = await ctx.start(["--from-request"]).done;
+    assert.equal(code, 0, out);
+    const s = ctx.state();
+    assert.equal(s.phase, "done", JSON.stringify(s));
+    assert.equal(ctx.current(), v(b));
+    assert.deepEqual(ctx.systemctlCalls(), ["restart banto-host.service banto-frontend.service"]);
+    assert.ok(ctx.host.activityCalls >= 1, "host に聞いていない");
+    assert.match(readFileSync(s.logFile, "utf8"), /途中で切れるものはありません（起き直したあと続くもの 2 件）/);
+  });
+});
+
+test("実行中の呼び出しを待ち、終われば（ターンがまだ走っていても）起こし直す", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    ctx.host.activity = BUSY;
+    ctx.request(b, "wait");
+    const run = ctx.start(["--from-request"]);
+    await ctx.waitForPhase("wait");
+    const deadline = Date.now() + 5000;
+    while (!ctx.state().waiting && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(ctx.state().waiting.blocking.length, 1);
+    assert.deepEqual(ctx.systemctlCalls(), [], "呼び出しが実行中なのに起こし直した");
+    // 呼び出しが終わった（ターンは文を書いている）
+    ctx.host.activity = { ...BUSY, restartable: true, blocking: [], moduleCalls: [] };
+    const { code, out } = await run.done;
+    assert.equal(code, 0, out);
+    assert.equal(ctx.state().phase, "done");
+    assert.equal(ctx.state().waiting, undefined);
+    assert.deepEqual(ctx.systemctlCalls(), ["restart banto-host.service banto-frontend.service"]);
+  });
+});
+
+test("restartable を持たない古い host には、今どおり全部空く（idle）まで待つ。残りはターンも待つものとして書く", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    ctx.host.activity = OLD_BUSY;
+    ctx.request(b, "wait");
+    const run = ctx.start(["--from-request"]);
+    await ctx.waitForPhase("wait");
+    const deadline = Date.now() + 5000;
+    while (!ctx.state().waiting && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(ctx.state().waiting, { blocking: [{ kind: "turn", ...TURN }], continuing: 0 });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(ctx.systemctlCalls(), [], "古い host でターンが走っているのに起こし直した");
+    ctx.host.activity = OLD_IDLE;
+    const { code, out } = await run.done;
+    assert.equal(code, 0, out);
+    assert.equal(ctx.state().phase, "done");
+    assert.deepEqual(ctx.systemctlCalls(), ["restart banto-host.service banto-frontend.service"]);
   });
 });
 

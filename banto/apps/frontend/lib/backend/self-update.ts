@@ -27,12 +27,31 @@ export interface ActivityThreadRef {
   threadTitle?: string;
 }
 
-/** 今動いているもの（`GET /api/admin/activity`。`update.mjs` が待っている間 `state.waiting` にも写す） */
+/**
+ * 起こし直しで待つもの・待たないものの1件（`packages/core/src/http/activity.ts` の `ActivityItem`）。`turn` は起き直したあと
+ * 続くもの（待つものに出るのは、`restartable` を返さない古い host に `update.mjs` が全部を待ったときだけ）
+ */
+export type ActivityItem =
+  | (ActivityThreadRef & { kind: "turn"; startedAt: string; waitingOnHuman: boolean })
+  | (ActivityThreadRef & { kind: "reply"; module: string; since: string })
+  | { kind: "moduleReply"; projectId?: string; projectName?: string; module: string; caller: string; since: string }
+  | (Partial<ActivityThreadRef> & { kind: "call"; connName: string; origin: string; waitingOnHuman?: boolean });
+
+/**
+ * 今動いているもの（`GET /api/admin/activity`）。画面が使うのは、起こし直しで待つもの（`blocking`：切れると結果が
+ * 分からなくなる）と、起き直したあと続くもの（`continuesAfterRestart`）だけ
+ */
 export interface UpdateActivity {
   idle?: boolean;
-  turns: Array<ActivityThreadRef & { startedAt: string; waitingOnHuman: boolean }>;
-  awaitingReplies: Array<ActivityThreadRef & { module: string; since: string }>;
-  moduleCalls: Array<Partial<ActivityThreadRef> & { connName: string; origin: string }>;
+  restartable: boolean;
+  blocking: ActivityItem[];
+  continuesAfterRestart: ActivityItem[];
+}
+
+/** 待つ段の残り（`update.mjs` が `state.waiting` に書く）：待つものと、起き直したあと続くものの数 */
+export interface UpdateWaiting {
+  blocking: ActivityItem[];
+  continuing: number;
 }
 
 /** `update.mjs` が書く進み具合 */
@@ -44,7 +63,7 @@ export interface UpdateRunState {
   to: string | null;
   startedAt: string;
   updatedAt: string;
-  waiting?: UpdateActivity;
+  waiting?: UpdateWaiting;
   /** いま止まっている理由（例「host が答えません…答えるまで待ちます」） */
   note?: string;
   result?: string;
