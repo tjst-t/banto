@@ -429,3 +429,20 @@ host（`e2e/own-host.ts`、別の置き場・待ち受け）を起こし、画�
 - 受信箱の「まとめて確認」は「続ける」のお知らせも片づける（押さなくても、その会話で次を送れば続けられる）
 - 孤児の CLI（実測 M3）は今も systemd が cgroup ごと刈る前提
 - E2E の自前の host は Playwright が外から殺されると残りうる（片づけ役は E2E の core しか見ていない）
+
+### M5. systemd の止め方（2026-10-05）
+
+稼働中の host の設定（人が host で確認）：`banto-host.service` は `KillMode=mixed`・`TimeoutStopUSec=1min 30s`。
+
+同じ設定の試験用の unit を、この Project のコンテナの中の systemd で確かめた（`systemd-run -p KillMode=mixed -p Restart=on-failure`、
+主のプロセスは node で、SIGTERM で `process.exit(0)` し、子に同じグループ・別グループの `sleep` を持つ）：
+
+| 止め方 | 子（同じグループ・別グループ） |
+|---|---|
+| `systemctl stop`（主に SIGTERM → 主が終わる） | 3秒以内に両方消えた |
+| 主を `kill -9`（落ちた）→ `Restart=on-failure` で起こし直し | 起こし直す前（2秒後）に両方消えていた。起こし直したあとは新しい子だけ |
+
+→ **主（host）が終わると、cgroup に残ったもの（Runner の CLI・その子・Module を起こした `incus exec` のクライアント）は systemd が
+刈る**。M3 の「落ちたあと孤児の CLI が同じ記録に書き続ける」は、今の unit では起きない。人の起こし直しでも CLI は SIGTERM を
+受けて終わり際に書く前に刈られうるので、記録は SIGKILL と同じ形（`last-prompt` 無し）になりうる——巻き戻しの位置を保って続ける
+今の作りで足りる。コンテナの中の Module の子は cgroup の外なので残る（M4）。

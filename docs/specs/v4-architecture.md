@@ -1671,7 +1671,7 @@ banto 本体（host）が AI のターンの途中で止まって起き直した
   分け直すと通る。**続きのターンは親の resume-point から新しい id で分け直す**（実装・2026-10-06）——新しい id は続きの
   ターンの `turn.started` に、先に決めた id としてそのまま残る（Fork の最初のターンを始めるときと同じ）
 - **孤児の CLI**：host が落ちる（SIGKILL）と、Runner の CLI は孤児になってターンを最後まで走り、同じ記録に書き続ける（実測
-  M3）。systemd が cgroup ごと刈る（`KillMode=control-group`）ことを前提にする
+  M3）。systemd が cgroup ごと刈ることを前提にする（稼働中の `KillMode=mixed` で、主が終われば残りを刈る——実測 M5）
 - **承認待ちだったもの**は今どおり起き直したら期限切れにする
 - **上限**：Thread ごとに `turn.started` の `attempt` から数える（覚え直しは要らない）。起こし直しで続けたターンが
   終われば（最後まで・人が止めた・失敗のどれでも——切れたのではない）0 に戻す（次のふつうのターンは `attempt` 0）。
@@ -1716,7 +1716,8 @@ banto 本体（host）が AI のターンの途中で止まって起き直した
 
 **まだ確かめていないこと**（実装の最初に測る。Fable のレビュー 3）：
 - 巻き戻し（`resumeSessionAt`）で新しい鎖を足したあと、`resumeSessionAt` 無しで resume すると CLI がどの鎖の末尾を取るか
-- systemd が banto-host を止めるとき、Runner の CLI を cgroup ごと止めるか（`KillMode`。host で確認待ち）
+- ~~systemd が banto-host を止めるとき、Runner の CLI を cgroup ごと止めるか~~ → 稼働中は `KillMode=mixed`。主が終われば
+  残りは systemd が刈る（止めても落ちても。実測 M5、2026-10-05）。孤児の CLI は起きない
 - ~~host を起こし直したとき、コンテナの中の Project の Module が本当に止まるか~~ → **Module は止まる、Module が起こした
   コマンドは残る**（実測 M4、2026-10-05）。続きの文には「まだ動いているかもしれない」も書く。残ったコマンドを片づけるかは別に決める
 - ~~巻き戻しのあとの鎖の選び方~~ → 実測 M1（上の「起き直したら」に反映）
