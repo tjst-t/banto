@@ -395,3 +395,25 @@ unit を current に書き換えて起こし直す）。そのあと update.mjs 
   checks.sh が state.json の終わりの状態を待てば足りる。次の段の打ち直しが lock で止まらないことが確かめになる
 - restart-when-idle.mjs は sudo 無しで打ち、断られたら sudo で打ち直す形になった——install.sh の「--dry-run で待ってから
   自分で systemctl restart」をやめ、そのまま呼ぶ（polkit の規則がある host では sudo を使わない）
+
+### 本物の Cloudflare と Let's Encrypt で確かめた（2026-10-05、`banto/scripts/install-test/real-cloudflare.sh`）
+
+- 使った名前は `install-test.tjstkm.net` → `install-test2.tjstkm.net` だけ。流す前に、install.sh が触るのは
+  `<名前>`・`*.<名前>`・（名前を替えたとき）前の名前の2つだけで、前の名前は試験の場の banto.caddy から引く（ほかの
+  ホストの名前にはならない）ことをコードで確かめた。念のため、レコードの一覧を API の絞り込みに加えて名前と種類の
+  完全一致で絞るようにした（a77838a0）
+- トークンは試験の場へ `incus exec` の標準入力で渡し、中のユーザーの 0600 のファイルに置き、install.sh を流す直前に
+  環境変数へ読み込んですぐ消した。ログに無いことは、トークンをパターンとして標準入力から grep に渡して見た
+- 結果：**PASS 21・FAIL 0**、片づけのあと API で install-test*.tjstkm.net のレコードが0件（tjstkm.net のレコード数は
+  始める前と同じ 38 件・banto.tjstkm.net と *.banto.tjstkm.net はそのまま）。試験の場は消した
+  - トークン無しで入れ（内部の CA、435 秒）→ トークンを渡して打ち直す（17 秒）：A レコード2つを印つき・proxied でなく
+    作り、install.sh の終わりの時点でもう Let's Encrypt の証明書で通っていた（HTTPS_STATE=ok——DNS-01 は数十秒で済んだ）。
+    `install-test.tjstkm.net` は CN=YE1 の Let's Encrypt、sandbox は `*.install-test.tjstkm.net` のワイルドカード。
+    Publish の baseDomain・cloudflare.env 0640 root:caddy
+  - 名前を替えて打ち直す（20 秒）：印つきの前のレコード2つを消し、新しい名前で作り、証明書を取って 200
+  - トークンは install のログ3つ・banto-host.log・Caddy の journal・流している間の ps（8770 行）のどれにも無い
+- Let's Encrypt で取ったのは install-test.tjstkm.net・*.install-test.tjstkm.net・install-test2.tjstkm.net・
+  *.install-test2.tjstkm.net の各1回
+- 分かったこと：このトークン（新しい形式の `cfxx_…`）は `GET /user/tokens/verify` に `1000 Invalid API Token` を返すが、
+  ゾーンの一覧・DNS の書き換えは通る（アカウントのトークンは確かめる口が違う）。install.sh は verify を使っていないので
+  影響は無い
