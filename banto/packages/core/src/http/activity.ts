@@ -23,6 +23,12 @@
 //     までどこまでも待つ）
 // 名乗っているかは札の判定（`delivery/restart-recovery.ts`）と同じ口で見る。閉じた Thread・Project の札は、名乗っていても
 // 起き直したら「途中で終わりました」になるので待つ。
+//
+// **待たないものの例外——待つほうに回すもの**（改訂・2026-10-05、Fable のレビュー）：
+//   - 続けて切れた回数が上限に達するターン（`attempt`＋1 が `RESUME_CUT_LIMIT`）——起き直しても自動では続かない
+//     （受信箱で人に「続ける」を聞く）。理由（`reason`）つきで待つ
+//   - Module 宛ての札で、頼んだ先が名乗っていても**呼び元が名乗っていない**もの——呼び元の Thread 宛ての札は
+//     「途中で終わりました」になり、あとで結果が届き直して二重に見える。札の判定も同じ条件で問わずに「途中で終わりました」
 
 import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
@@ -30,6 +36,7 @@ import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ModuleAwaitingReply } from "../delivery/module-replies.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
+import { RESUME_CUT_LIMIT } from "../delivery/turn-continuation.js";
 
 export interface ActivityThreadRef {
   projectId?: string;
@@ -46,15 +53,20 @@ type Turn = ActivityThreadRef & {
   queued: number;
   /** 答えていない判断待ちがある（承認・質問） */
   waitingOnHuman: boolean;
+  /** 起こし直しで切れたターンの続きなら何回目か（`turn.started` の `attempt`）。ふつうは 0 */
+  attempt: number;
 };
 type AwaitingReply = ActivityThreadRef & { module: string; since: string };
 /** Module が中継で頼んだ仕事の返事待ち（`module` が頼んだ先、`caller` が頼んだ Module） */
 type ModuleReply = { projectId?: string; projectName?: string; module: string; caller: string; since: string };
 type ModuleCall = Partial<ActivityThreadRef> & { connName: string; origin: string };
 
-/** 起こし直しで待つもの・待たないものの1件。どの Project のどの会話の何か */
+/**
+ * 起こし直しで待つもの・待たないものの1件。どの Project のどの会話の何か。待つほうに回した例外には `reason`
+ * （なぜ起き直しても続かないか）が付く
+ */
 export type ActivityItem =
-  | ({ kind: "turn" } & Turn)
+  | ({ kind: "turn"; reason?: string } & Turn)
   | ({ kind: "reply" } & AwaitingReply)
   | ({ kind: "moduleReply" } & ModuleReply)
   | ({ kind: "call"; waitingOnHuman: boolean } & ModuleCall);
@@ -70,7 +82,7 @@ export interface ActivityReport {
    */
   restartable: boolean;
   /** 待つもの：切れると結果が分からなくなる（実行中の呼び出し・名乗らない Module の札） */
-  blocking: Array<Extract<ActivityItem, { kind: "call" | "reply" | "moduleReply" }>>;
+  blocking: ActivityItem[];
   /** 待たないもの：起き直したら続く（ターン・名乗った Module の札）か、人の答えを待っていて待つと終わらないもの */
   continuesAfterRestart: ActivityItem[];
   turns: Turn[];
@@ -111,16 +123,31 @@ export function collectActivity(deps: {
       .map((j) => j.threadId),
   );
 
-  const turns = (deps.threadTurns?.list() ?? []).map((t) => ({
-    ...ref(t.threadId),
-    startedAt: new Date(t.startedAt).toISOString(),
-    hop: t.hop,
-    queued: t.queued,
-    waitingOnHuman: humanWaits.has(t.threadId),
-  }));
+  const turns = (deps.threadTurns?.list() ?? []).map((t) => {
+    const last = deps.projectThread.getThread(t.threadId)?.lastTurn;
+    return {
+      ...ref(t.threadId),
+      startedAt: new Date(t.startedAt).toISOString(),
+      hop: t.hop,
+      queued: t.queued,
+      waitingOnHuman: humanWaits.has(t.threadId),
+      // 走っているターンは Thread の最後のターン（終わりがまだ書かれていない）
+      attempt: last && last.outcome === undefined ? last.attempt : 0,
+    };
+  });
 
-  const blocking: ActivityReport["blocking"] = [];
-  const continuesAfterRestart: ActivityItem[] = turns.map((t) => ({ kind: "turn" as const, ...t }));
+  const blocking: ActivityItem[] = [];
+  const continuesAfterRestart: ActivityItem[] = [];
+  for (const t of turns) {
+    // 切れたら上限に達するターンは、起き直しても自動では続かない（`turn-continuation.ts` の `gaveUp` と同じ条件）
+    if (t.attempt + 1 >= RESUME_CUT_LIMIT) {
+      blocking.push({
+        kind: "turn",
+        ...t,
+        reason: `起こし直しで続けて切れた回数が上限（${RESUME_CUT_LIMIT} 回）に達するので、起き直しても自動では続きません`,
+      });
+    } else continuesAfterRestart.push({ kind: "turn", ...t });
+  }
 
   const awaitingReplies: AwaitingReply[] = [];
   for (const p of deps.projectThread.listProjects()) {
@@ -149,7 +176,9 @@ export function collectActivity(deps: {
     };
   });
   for (const r of moduleReplies) {
-    (resumes({ moduleName: r.module, ...(r.projectId ? { projectId: r.projectId } : {}) }) ? continuesAfterRestart : blocking).push({
+    // 頼んだ先と呼び元の**両方**が名乗っていなければ続かない（`restart-recovery.ts` と同じ条件）
+    const where = r.projectId ? { projectId: r.projectId } : {};
+    (resumes({ moduleName: r.module, ...where }) && resumes({ moduleName: r.caller, ...where }) ? continuesAfterRestart : blocking).push({
       kind: "moduleReply",
       ...r,
     });

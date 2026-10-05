@@ -83,6 +83,7 @@ export class InboxStore {
     requestedSchema?: unknown;
     url?: string;
     toolCallId?: string;
+    withinToolCallId?: string;
     toolInput?: unknown;
     serverName?: string;
     choices?: string[];

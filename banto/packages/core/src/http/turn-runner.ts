@@ -17,6 +17,7 @@ import { createForkMcpServer, type ForkRequest } from "./fork-tool.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
+import type { ModuleCallTracker } from "../relay/module-calls.js";
 import type { JudgmentItem } from "../inbox/types.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadState, TurnOutcome } from "../project-thread/types.js";
@@ -199,6 +200,11 @@ async function* runThreadTurnInner(
     pendingApprovals: PendingApprovalRegistry;
     /** ターンの外（host の中継ゲート等）で起きた判断待ちの流し込み口。 */
     turnEvents?: TurnEventBus;
+    /**
+     * 走っている Module の呼び出しの台帳。Module の質問の判断待ちを、質問している AI の tool 呼び出しに結びつけるのに
+     * 使う（追加・2026-10-05、`ModuleCallTracker.elicitingToolUseId`）。無ければ結びつけない
+     */
+    moduleCalls?: Pick<ModuleCallTracker, "elicitingToolUseId">;
     /** Runner の差し替え口（試験用）。本番は既定の `runTurn`。 */
     runTurn?: typeof runTurn;
     /** 取り消す発言の手前を CLI の記録から引く口の差し替え（試験用）。本番は `findRewindBeforePrompt` */
@@ -591,7 +597,11 @@ async function* runThreadTurnInner(
           message: judgment.message,
         };
       } else if (event.type === "elicitation_requested") {
+        // **どの tool 呼び出しの中の質問か**（追加・2026-10-05）。質問の間は台帳がその呼び出しに印を立てている
+        // （`ElicitationRouter`）——この会話で1つに決まるときだけ結びつける
+        const withinToolCallId = deps.moduleCalls?.elicitingToolUseId(input.threadId);
         const judgment = await deps.inbox.raiseJudgment({
+          ...(withinToolCallId ? { withinToolCallId } : {}),
           threadId: input.threadId,
           source: "elicitation",
           message: event.pending.message,

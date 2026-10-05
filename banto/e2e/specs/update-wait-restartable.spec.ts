@@ -194,3 +194,66 @@ test("文を書いているターンとサブエージェントの待たない�
 
   });
 });
+
+// **止めるときは、新しい呼び出しを断り、実行中の呼び出しを待ってから止まる**（追加・2026-10-05、Fable のレビュー——
+// ターンを待たなくなったので、「待つものが無い」と見てから止まるまでに走っているターンが次の tool を呼んで切られる窓が
+// 実質の問題になった）。own-host で、ターンが長い tool（sleep）を呼んでいる最中に SIGTERM を送る：
+//   - host はその呼び出しが最後まで返るのを待ってから止まる（結果は AI に届く）
+//   - 待つ間に AI が呼んだ次の tool は Module に届かず、「起き直したあとにもう一度」が結果で返る
+//   - 起き直したら、切れたターン（次の文を書いていた）の続きが走る
+test("長い tool の最中に SIGTERM：その呼び出しは最後まで返り、次の呼び出しは断られ、起き直したら続きが走る", async ({ page }) => {
+  const NAME = "E2E Stop Drains Calls";
+  await withOwnHost(async (host) => {
+    await login(page, host);
+    await openApp(page, host.url);
+    await createProject(page, NAME, mkdtempSync(join(tmpdir(), "banto-e2e-stop-drain-")));
+    const project = (await api<Array<{ id: string; name: string }>>(host, "/api/projects")).find((p) => p.name === NAME)!;
+    const threadId = (await api<Array<{ id: string }>>(host, `/api/projects/${project.id}/threads`))[0]!.id;
+    const thread = () => api<HostThread & { lastTurn?: { attempt: number; outcome?: string } }>(host, `/api/threads/${threadId}`);
+    const activity = async () => summary(await api<ActivityReport>(host, "/api/admin/activity"), threadId, project.id);
+
+    const composer = page.getByPlaceholder(/に送る/);
+    await composer.fill(
+      "眠ってから数えて。" +
+        fakeTurn({
+          tools: [
+            { server: "shell", name: "runCommand", args: { command: "sleep 12; echo SLEPT-TO-THE-END" } },
+            { server: "shell", name: "runCommand", args: { command: "echo SHOULD-NOT-RUN" } },
+          ],
+          then: LINES.join("\n"),
+          thenStreamMs: 20_000,
+        }),
+    );
+    await composer.press("Enter");
+    // sleep が実行中——待つもの（切れると結果が分からない）
+    await expect
+      .poll(activity, { timeout: 120_000, intervals: [300], message: "sleep の呼び出しが実行中にならない" })
+      .toEqual({ restartable: false, idle: false, blocking: ["呼び出し（この会話・shell・turn）"], continuesAfterRestart: ["ターン（この会話）"] });
+    const sigterm = Date.now();
+    const logBefore = host.log().length;
+
+    // ---- SIGTERM（systemctl restart と同じ止め方）------------------------------------------------------------------
+    await host.stop("SIGTERM");
+    const stoppedIn = Date.now() - sigterm;
+    const stopLog = host.log().slice(logBefore);
+    // 実行中の sleep は最後まで返った（結果が AI に届いた）。そのあいだ host は止まらずに待った
+    expect(stopLog, "実行中の呼び出しの結果が返る前に止まった").toMatch(/runCommand の結果[^\n]*SLEPT-TO-THE-END/);
+    expect(stopLog).toMatch(/実行中の呼び出しが終わるのを \d+ 秒待ちました/);
+    expect(stoppedIn, "止める上限（60 秒）を越えた").toBeLessThan(60_000);
+    // 待つ間に AI が呼んだ次の呼び出しは、Module に届かず断られた
+    expect(stopLog, "止めている間の呼び出しが断られていない").toMatch(/runCommand の結果[^\n]*banto を起こし直しています。起き直したあとにもう一度呼んでください/);
+    expect(stopLog, "止めている間の呼び出しが実行された").not.toContain("SHOULD-NOT-RUN\\n");
+    // 止まったのはターンが次の文を流している途中（終わる前に止まった——host は止まっているので記録はログで見る）
+    expect(stopLog, "止める前にターンが終わった（試験の前提が崩れた）").not.toMatch(/\[fake-runner\] ターン終了/);
+
+    // ---- 起き直したら続きが走る ----------------------------------------------------------------------------------
+    await host.start();
+    await expect
+      .poll(async () => (await thread()).lastTurn, { timeout: 180_000, message: "切れたターンの続きが最後まで走らない" })
+      .toMatchObject({ attempt: 1, outcome: "completed" });
+    const after = await thread();
+    expect(after.messages.find((m) => m.origin?.from === "banto")?.origin?.title).toBe("banto を起こし直したため、直前のターンが途中で切れました");
+    expect(after.messages.filter((m) => m.role === "assistant").at(-1)!.text, "続きが最後まで流れない").toContain("[20]");
+    await expect(page.locator('[data-role="assistant"]').filter({ hasText: "（起こし直しで切れました）" })).toHaveCount(1, { timeout: 60_000 });
+  });
+});

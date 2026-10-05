@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/tjst-t/banto/release/install.sh | bash -s -- --domain <名前> [--cloudflare-token <トークン>]
 #
 # 何度打っても壊れない：済んだ段は確かめて飛ばす。2回目からは release の最新を取り込み、build して、
-# 動いているものが無くなってから起こし直す。決めた値は /etc/banto/install.conf に覚える（秘密は覚えない）。
+# 途中で切れる呼び出し（実行中の tool・続けられない仕事）が無くなってから起こし直す（AI の会話・続けられる仕事は
+# 起き直したあと続くので待たない——アーキ仕様 §2.5）。決めた値は /etc/banto/install.conf に覚える（秘密は覚えない）。
 #
 # **トークンをログ・画面・コマンド行に出さない**——set -x を使わない。Cloudflare の API は node から呼び、
 # トークンは環境変数で渡す。保存するのは /etc/caddy/cloudflare.env（root:caddy 0640）だけ。
@@ -47,7 +48,8 @@ DEFAULT_REPO=https://github.com/tjst-t/banto
 # 取ってくるのは release だけ。**写し**：update.mjs の FETCH_REFSPEC・setup-update.sh の FETCH_REFSPEC・
 # packages/core/src/self-update/self-update.ts の FETCH_REFSPEC（片方を変えたら全部）
 FETCH_REFSPEC="+refs/heads/release:refs/remotes/origin/release"
-# 打ち直しで「上げる」とき、動いているもの（会話・サブエージェントの仕事・Module の呼び出し）が無くなるのを待つ上限（分）。
+# 打ち直しで「上げる」とき、途中で切れる呼び出し（実行中の Module の呼び出し・「続けられる」と名乗らない Module の仕事）が
+# 無くなるのを待つ上限（分）。AI の会話・続けられる仕事（サブエージェントなど）は起き直したあと続くので待たない。
 # update.mjs は既定では待ち続ける（画面から人がやめられる）が、install.sh は端末の前の人が打つもので、終わらないと困るので
 # 切る——update.mjs の --wait-timeout に渡す（越えたら作りかけを消し、今の版のまま cancelled で終わる）。設定・unit だけが
 # 変わったときの restart-when-idle.mjs --timeout にも同じ値
@@ -1056,6 +1058,8 @@ WorkingDirectory=$code/banto
 Environment=NODE_ENV=production LANG=C.UTF-8 HOME=$USER_HOME PATH=$path_env
 ExecStart=/usr/local/bin/node packages/core/dist/cli.js
 KillMode=mixed
+# 止めるとき host は新しい呼び出しを断り、実行中の呼び出しを最長 60 秒待ってから終わる（STOP_DRAIN_LIMIT_MS）——それより長く
+TimeoutStopSec=90s
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
@@ -1364,13 +1368,13 @@ update_state() {
 }
 
 # **「上げる」段はこの関数に閉じ込める**：current の update.mjs（いつも今動いている版のもの——アーキ仕様 §2.5）で release の
-# 最新にする。待つ形（動いているものが無くなってから起こし直す）。待つのは --wait-timeout の WAIT_LIMIT_MIN 分まで。
+# 最新にする。待つ形（途中で切れる呼び出しが無くなってから起こし直す）。待つのは --wait-timeout の WAIT_LIMIT_MIN 分まで。
 # 起こし直すのは update.mjs（polkit の規則で、sudo を使わない）。新しい版が起きなければ update.mjs が前の版に戻す
 upgrade_banto() {
   local upd=$REL/current/banto/scripts/update.mjs started rc=0 phase result err logf
   [[ -f $upd ]] || die "$upd がありません" "置き場（$REL）を見てください"
   started=$(date +%s)
-  say "release の最新に上げる（$upd。新しい版があれば組み立て、動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待って起こし直す）"
+  say "release の最新に上げる（$upd。新しい版があれば組み立て、途中で切れる呼び出しが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待って起こし直す。会話は起き直したあと続く）"
   # 終わりの状態（state.json）は片づけ（古い版・作りかけを消す）のあとに書かれ、そのあと lock が外れる（update.mjs の契約）
   run_detached /usr/local/bin/node "$upd" --wait-timeout "$WAIT_LIMIT_MIN" || rc=$?
   ((rc != 3)) || die "ほかの更新が走っています（画面の「更新」か、別の端末の update.mjs）" "終わってから打ち直してください（画面の 設定 → 更新 で進み具合を見られる）"
@@ -1388,7 +1392,7 @@ upgrade_banto() {
 
   # 版は同じでも、設定・unit が動いている banto より新しければ起こし直す（空くのを待ってから。polkit の規則で sudo を使わない）
   if unit_active banto-host.service && banto_restart_needed; then
-    say "$RESTART_REASON が動いている banto より新しいので、起こし直す（動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待つ）"
+    say "$RESTART_REASON が動いている banto より新しいので、起こし直す（途中で切れる呼び出しが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待つ）"
     # restart-when-idle.mjs はまず sudo 無しで打つ（polkit の規則で通る）。断られたときだけ sudo で打ち直す
     if (cd "$REL/current/banto" && node scripts/restart-when-idle.mjs --timeout "$WAIT_LIMIT_MIN" 2>&1 | sed 's/^/      /'); then
       ok "起こし直した"

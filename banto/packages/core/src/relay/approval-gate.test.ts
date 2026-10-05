@@ -665,3 +665,29 @@ test("「承認をすべて自動で許可する」は、どの会話の呼び�
     await t.close();
   }
 });
+
+// **中継の承認の判断待ちに、属する AI の tool 呼び出しの id を残す**（追加・2026-10-05、Fable のレビュー）——起き直したあと、
+// 承認を待ったまま無効になった呼び出しを続きの文に書くため。決まらなければ（Runner が id を渡さない）残さない
+test("中継の承認の判断待ちは、呼び出しが持つ tool_use の id を withinToolCallId に残す（無ければ残さない）", async () => {
+  const t = await setup({ bundled: true });
+  const seen = new Set<string>();
+  try {
+    for (const toolUseId of ["toolu_outer", undefined]) {
+      const call = t.moduleCalls.beginCall("shell-project-1", THREAD, "turn", PROJECT, false, toolUseId);
+      const pending = t.caller.callTool({
+        name: "relayCallTool",
+        arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+        _meta: { "dev.banto/callId": call.id },
+      });
+      const judgment = await waitForJudgment(t.inbox, seen);
+      assert.equal(judgment.withinToolCallId, toolUseId);
+      assert.equal(judgment.toolCallId, undefined, "承認する呼び出しそのものの id と混ぜた");
+      t.pendingApprovals.resolve(judgment.id, { behavior: "deny", message: "いいえ" });
+      await t.inbox.answerJudgment(judgment.id, { behavior: "deny" });
+      await pending.catch(() => undefined);
+      call.end();
+    }
+  } finally {
+    await t.close();
+  }
+});

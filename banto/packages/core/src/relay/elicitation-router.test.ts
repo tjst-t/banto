@@ -11,7 +11,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { parseModuleMeta } from "@banto/module-contract";
+import { CALL_ID_META_KEY, parseModuleMeta } from "@banto/module-contract";
 import { ElicitationRouter, ElicitationRouteError } from "./elicitation-router.js";
 import { ModuleCallTracker } from "./module-calls.js";
 
@@ -170,4 +170,59 @@ test("問いの答えを待つ間だけ、その Module の呼び出しは人を
   assert.deepEqual(tracker.list().map((c) => c.waitingOnHuman), [false], "答えたあとも人を待っている");
   end();
   await module.client.close();
+});
+
+// **質問の印は質問した呼び出しだけに**（改訂・2026-10-05、Fable のレビュー）。Module が問いの `_meta` に呼び出しの印
+// （`dev.banto/callId`、中継と同じ契約）を返せば、その1件の会話に出してその1件だけを人待ちにする。返さなければ問いを出す
+// 会話の呼び出しだけ——同じ Module を別の会話から並べて呼んでいても、そちらは実行中のまま（起こし直しで待たれる）
+test("同じ接続の2つの呼び出しのうち片方だけが質問したら、その呼び出しだけが人待ちになる（印があれば会話もそれで決まる）", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const server = new Server({ name: "fake-vault", version: "0.0.0" }, { capabilities: {} });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "host", version: "0.0.0" }, { capabilities: { elicitation: {} } });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  const conn = { name: "vault", client, meta: META };
+  const seen: Array<{ label: string; waiting: boolean[] }> = [];
+  let answer!: () => void;
+  const proxy = (label: string) =>
+    ({
+      elicitInput: async () => {
+        seen.push({ label, waiting: tracker.list().map((x) => x.waitingOnHuman) });
+        await new Promise<void>((r) => (answer = r));
+        return { action: "decline" as const };
+      },
+    }) as unknown as Server;
+  router.register(conn, "thread-A", proxy("A"));
+  router.register(conn, "thread-B", proxy("B"));
+  const a = tracker.beginCall("vault", "thread-A", "turn", "p", false, "toolu_a");
+  const b = tracker.beginCall("vault", "thread-B", "turn", "p", false, "toolu_b");
+
+  // 印つき：2つの会話が同じ Module を使っていても、印の会話（B）に出て、B の呼び出しだけが人待ち
+  const asked = server.elicitInput({ message: "鍵は？", requestedSchema: { type: "object", properties: {} }, _meta: { [CALL_ID_META_KEY]: b.id } });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(seen, [{ label: "B", waiting: [false, true] }]);
+  assert.equal(tracker.elicitingToolUseId("thread-B"), "toolu_b");
+  answer();
+  await asked;
+  assert.deepEqual(tracker.list().map((x) => x.waitingOnHuman), [false, false]);
+
+  // 印なしで会話が決まらない（2つの会話が使っている）なら、今までどおり推測せず断る
+  await assert.rejects(server.elicitInput({ message: "鍵は？", requestedSchema: { type: "object", properties: {} } }));
+  a.end();
+  b.end();
+
+  // 印なし・同じ会話に2つ：その会話の呼び出しには両方立つ（どちらの質問か分からない——elicitingToolUseId は決めない）
+  const a1 = tracker.beginCall("vault", "thread-A", "turn", "p", false, "toolu_a1");
+  const a2 = tracker.beginCall("vault", "thread-A", "turn", "p", false, "toolu_a2");
+  seen.length = 0;
+  const asked2 = server.elicitInput({ message: "鍵は？", requestedSchema: { type: "object", properties: {} } });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(seen, [{ label: "A", waiting: [true, true] }]);
+  assert.equal(tracker.elicitingToolUseId("thread-A"), undefined);
+  answer();
+  await asked2;
+  a1.end();
+  a2.end();
+  await client.close();
 });

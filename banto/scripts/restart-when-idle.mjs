@@ -19,8 +19,8 @@
 // 合言葉と口は banto の設定（BANTO_CONFIG_PATH か ~/.config/banto/config.json）から読む。
 // `restartable` を返さない古い host には、`--all` と同じに全部が空くまで待つ。
 //
-// **待つものが無いと見てから再起動するまでの間に、新しい呼び出しが始まることはありうる**（受け付けを止める仕組みは
-// まだ作っていない）。その呼び出しは切れて、続きの AI に「結果は分かりません」と伝わる。
+// **待つものが無いと見てから再起動するまでの間に、新しい呼び出しが始まることはありうる**。host は止める信号を受けたら
+// 新しい呼び出しを実行せずに断り、実行中の呼び出しを最長 60 秒待ってから止まる（アーキ仕様 §2.5「いま動いているもの」）。
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";

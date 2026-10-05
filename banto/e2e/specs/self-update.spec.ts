@@ -268,6 +268,19 @@ test("待つ形：取ってくる→組み立てる→待つ（途中で切れ�
         { kind: "call", threadId: "t1", threadTitle: "初回描画のパフォーマンス調査", projectName: "banto", connName: "shell", origin: "turn", waitingOnHuman: false },
         { kind: "reply", threadId: "t3", threadTitle: "埋め込みの再計算コストを測る", projectName: "記憶の検証", module: "factory", since: ago(41) },
         { kind: "moduleReply", projectName: "記憶の検証", module: "shell", caller: "factory", since: ago(5) },
+        // 続けて切れた回数が上限に達する会話は、起き直しても自動では続かないので待つ（理由を出す）
+        {
+          kind: "turn",
+          threadId: "t4",
+          threadTitle: "切れ続けている会話",
+          projectName: "banto",
+          startedAt: ago(2),
+          hop: 0,
+          queued: 0,
+          waitingOnHuman: false,
+          attempt: 2,
+          reason: "起こし直しで続けて切れた回数が上限（3 回）に達するので、起き直しても自動では続きません",
+        },
       ],
       continuing: 3,
     },
@@ -275,9 +288,9 @@ test("待つ形：取ってくる→組み立てる→待つ（途中で切れ�
   await expectSteps(page, { fetch: "done", build: "done", wait: "current", restart: "pending" });
   const progress = page.getByTestId("update-progress");
   await expect(progress).toContainText("呼び出しが終わるのを待つ");
-  await expect(progress.getByTestId("update-remaining")).toHaveText("あと 3 件");
+  await expect(progress.getByTestId("update-remaining")).toHaveText("あと 4 件");
   const rows = progress.getByTestId("update-running").locator("li");
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(4);
   await expect(rows.nth(0)).toContainText("初回描画のパフォーマンス調査");
   await expect(rows.nth(0)).toContainText("banto");
   await expect(rows.nth(0)).toContainText("shell を呼んでいます");
@@ -288,6 +301,9 @@ test("待つ形：取ってくる→組み立てる→待つ（途中で切れ�
   await expect(rows.nth(2)).toContainText("factory が頼んだ仕事");
   await expect(rows.nth(2)).toContainText("5分前から");
   await expect(rows.nth(2)).toContainText("shell の仕事の返事を待っています");
+  await expect(rows.nth(3)).toContainText("切れ続けている会話");
+  await expect(rows.nth(3)).toContainText("起き直しても自動では続きません");
+  await expect(rows.nth(3)).not.toContainText("AI が動いています");
   await expect(progress.getByTestId("update-continuing")).toHaveText("起き直したあと続くもの 3 件（会話・サブエージェントなど）");
 
   // 呼び出しが終わった（会話は続いている）——待つものは無く、続くものの数だけ
@@ -307,6 +323,36 @@ test("待つ形：取ってくる→組み立てる→待つ（途中で切れ�
   await expect(page.getByTestId("update-progress")).toHaveCount(0);
   await expect(page.getByTestId("update-available")).toContainText("新しいコミットが 8 件あります");
   await expect(page.getByTestId("update-current")).toContainText(short(first));
+});
+
+// **待つものを分けて返さない古い host**（2026-10-05 より前）の答えでも、画面は落ちずに全部を切れるものとして並べる
+// （`update.mjs` の待つ段と同じ）。画面と host はふつう同じ版だが、開いている画面が新しく host が古い間がありうる
+test("すぐ更新：古い host の答え（blocking が無い）でも、動いているものを全部「途中で切れる」として確かめる", async ({ page }) => {
+  await page.route("**/api/admin/activity", (route) =>
+    route.fulfill({
+      json: {
+        idle: false,
+        onlyWaitingOnHuman: false,
+        turns: [{ threadId: "t1", threadTitle: "古い host の会話", projectName: "banto", startedAt: ago(4), hop: 0, queued: 0, waitingOnHuman: false }],
+        awaitingReplies: [{ threadId: "t2", threadTitle: "頼んだ仕事", projectName: "banto", module: "subagent", since: ago(9) }],
+        moduleCalls: [],
+        now: new Date().toISOString(),
+      },
+    }),
+  );
+  await openUpdate(page);
+  await page.getByTestId("update-now").click();
+  const dialog = page.getByTestId("update-cutoff-dialog");
+  await expect(dialog).toContainText("いま途中で切れる呼び出しが 2 件あります。");
+  const rows = dialog.getByTestId("update-running").locator("li");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("古い host の会話");
+  await expect(rows.nth(0)).toContainText("AI が動いています");
+  await expect(rows.nth(1)).toContainText("subagent の仕事の返事を待っています");
+  await expect(dialog.getByTestId("update-continuing")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "やめる" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(existsSync(join(UPDATE_DIR, "request.json")), "やめたのに頼んだ").toBe(false);
 });
 
 test("すぐ更新：途中で切れる呼び出しを確かめてから頼む。起こし直しで host が居ない間は待ち、戻ったら結果（前の版に戻した・ログ）", async ({

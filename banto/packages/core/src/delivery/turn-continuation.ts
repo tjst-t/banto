@@ -21,6 +21,7 @@ import type { InboxStore } from "../inbox/store.js";
 import { noteInterruptedTurn } from "../http/turn-runner.js";
 import { FORK_SERVER_NAME, FORK_TOOL_NAME } from "../http/fork-tool.js";
 import type { ThreadDeliveries } from "./thread-deliveries.js";
+import { RESTARTING_REFUSAL } from "../relay/module-calls.js";
 
 /**
  * **続けて切れた回数の上限**。切れたターン（続きの続きも含め、`attempt`＋1 回目の切れ）がこれに達したら自動で
@@ -342,10 +343,14 @@ export async function planContinuation(deps: TurnContinuationDeps, turn: Interru
   // 巻き戻しの上では、鎖の最後の人の発言が切れたターンで送った文と一致するときだけ、鎖から呼び出しを拾う（文の無い
   // 発言だけなら照らせない——拾わない）
   const cutTail = turn.rewindTo === undefined || (reached && stacked.some((m) => m.text !== "")) ? tail : undefined;
-  const expired = deps.inbox
+  const expiredInTurn = deps.inbox
     .listJudgmentsForThread(turn.threadId)
-    .filter((j) => j.liveness === "timed_out" && j.toolCallId !== undefined && j.createdAt >= turn.startedAt);
-  const expiredIds = new Set(expired.map((j) => j.toolCallId!));
+    .filter((j) => j.liveness === "timed_out" && j.createdAt >= turn.startedAt);
+  const expired = expiredInTurn.filter((j) => j.toolCallId !== undefined);
+  // **呼び出しの中で人を待っていたもの**（追加・2026-10-05、Fable のレビュー）：中継の承認・Module の質問。判断待ちが
+  // 属する外側の呼び出し（`withinToolCallId`）で照らす。決まらなかったもの（印の無いもの）は実行中だった呼び出しとして書く
+  const heldInside = expiredInTurn.filter((j) => j.toolCallId === undefined && j.withinToolCallId !== undefined);
+  const expiredIds = new Set([...expired.map((j) => j.toolCallId!), ...heldInside.map((j) => j.withinToolCallId!)]);
   const forkTool = `mcp__${FORK_SERVER_NAME}__${FORK_TOOL_NAME}`;
 
   const when = new Date(turn.startedAt).toLocaleString("ja-JP", { hour12: false });
@@ -364,6 +369,11 @@ export async function planContinuation(deps: TurnContinuationDeps, turn: Interru
             `いるかもしれません）。確かめてから進めてください`,
         );
       }
+      // **起こし直し中のため断った呼び出し**（追加・2026-10-05）：止める間に AI が呼んだもの。host は実行せずに断り、
+      // その文が会話の記録に結果として残っている
+      for (const call of cutTail.refused) {
+        lines.push(`起こし直し中のため断った呼び出し：${call.name}（${argsHead(call.input)}）——実行されていません。要るならもう一度呼んでください`);
+      }
     } else if (tail) {
       lines.push("切れたとき実行中だった呼び出しは分かりません（切れたターンが会話の記録に見つかりませんでした）");
     } else {
@@ -373,6 +383,14 @@ export async function planContinuation(deps: TurnContinuationDeps, turn: Interru
   for (const j of expired) {
     const name = cutTail?.unanswered.find((c) => c.id === j.toolCallId)?.name ?? j.message.replace(/^tool呼び出しの承認: /, "");
     lines.push(`${name} は承認を待ったまま無効になりました（実行されていません）。要るならもう一度呼んでください`);
+  }
+  for (const j of heldInside) {
+    const name = cutTail?.unanswered.find((c) => c.id === j.withinToolCallId)?.name ?? j.serverName ?? "Module の呼び出し";
+    lines.push(
+      j.source === "elicitation"
+        ? `${name} は質問の答えを待ったまま無効になりました（途中まで進んでいたかもしれません）。確かめてから、要るならもう一度呼んでください`
+        : `${name} は Module 間の呼び出しの承認を待ったまま無効になりました（承認を待っていた呼び出しは実行されていません）。要るならもう一度呼んでください`,
+    );
   }
   if (cutTail?.calledNames.includes(forkTool)) lines.push("このターンで頼んだ Fork は立っていません");
   for (const kept of deps.keptReplies?.(turn.threadId) ?? []) {
@@ -412,6 +430,8 @@ function runnerCwdOf(projectThread: ProjectThreadStore, thread: ThreadState): st
 function lastTurnOfChain(chain: SessionMessage[]): {
   humanText: string;
   unanswered: Array<{ id: string; name: string; input: unknown }>;
+  /** 起こし直し中のため host が断った呼び出し（結果が `RESTARTING_REFUSAL`） */
+  refused: Array<{ id: string; name: string; input: unknown }>;
   calledNames: string[];
 } {
   const contentOf = (m: SessionMessage): unknown[] => {
@@ -431,6 +451,7 @@ function lastTurnOfChain(chain: SessionMessage[]): {
       : "";
   const calls = new Map<string, { id: string; name: string; input: unknown }>();
   const answered = new Set<string>();
+  const refusedIds = new Set<string>();
   const calledNames: string[] = [];
   for (const m of chain.slice(start + 1)) {
     for (const raw of contentOf(m)) {
@@ -440,10 +461,23 @@ function lastTurnOfChain(chain: SessionMessage[]): {
         calledNames.push(b.name);
       } else if (m.type === "user" && b.type === "tool_result" && b.tool_use_id) {
         answered.add(b.tool_use_id);
+        if (resultText((raw as { content?: unknown }).content).includes(RESTARTING_REFUSAL)) refusedIds.add(b.tool_use_id);
       }
     }
   }
-  return { humanText, unanswered: [...calls.values()].filter((c) => !answered.has(c.id)), calledNames };
+  return {
+    humanText,
+    unanswered: [...calls.values()].filter((c) => !answered.has(c.id)),
+    refused: [...calls.values()].filter((c) => refusedIds.has(c.id)),
+    calledNames,
+  };
+}
+
+/** tool_result の中身の文（文字列か、text の塊の並び） */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((b) => ((b as { type?: string })?.type === "text" ? ((b as { text?: string }).text ?? "") : "")).join("");
 }
 
 /** 引数の頭（1行に収まる長さ） */

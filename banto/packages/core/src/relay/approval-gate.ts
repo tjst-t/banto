@@ -184,12 +184,16 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
     }
 
     const { message, toolInput } = describe(req, false);
+    // **その中継が属する AI の tool 呼び出し**（追加・2026-10-05）——起き直したあと、承認を待ったまま無効になった呼び出しを
+    // 続きの文に書くため（`turn-continuation.ts`）。決まらなければ付けない
+    const withinToolCallId = deps.moduleCalls.toolUseIdFor(req.callerConnName, req.callerCallId);
     const judgment = await deps.inbox.raiseJudgment({
       threadId: where.threadId,
       source: "relay",
       message,
       serverName: req.callerModule,
       toolInput,
+      ...(withinToolCallId ? { withinToolCallId } : {}),
     });
     watch.raised(judgment.id, where.threadId);
     deps.onJudgmentRaised?.(where.threadId, {

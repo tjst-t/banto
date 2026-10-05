@@ -52,6 +52,7 @@ import {
   forceUpdateNow,
   requestUpdate,
   type ActivityItem,
+  type UpdateActivity,
   type UpdateCommit,
   type UpdatePhase,
   type UpdateRunState,
@@ -92,6 +93,8 @@ interface WorkRow {
   since?: string;
   status: "ai" | "human" | "reply" | "call";
   module?: string;
+  /** 待つほうに回した理由（続けて切れた回数が上限に達する会話）。あれば状態の代わりに出す */
+  reason?: string;
 }
 
 /**
@@ -117,6 +120,7 @@ function workRow(i: ActivityItem): WorkRow {
         projectName: i.projectName,
         since: i.startedAt,
         status: i.waitingOnHuman ? "human" : "ai",
+        ...(i.reason ? { reason: i.reason } : {}),
       };
     case "reply":
       return {
@@ -145,6 +149,24 @@ function workRow(i: ActivityItem): WorkRow {
         module: i.connName,
       };
   }
+}
+
+/**
+ * **いま途中で切れるものと、起き直したあと続くものの数**（`GET /api/admin/activity`）。待つもの（`blocking`）を返さない古い
+ * host には、全部（ターン・返事待ちの仕事・呼び出し）を切れるものとして並べる——`update.mjs` の `waitingOf` と同じ
+ */
+function cutOffOf(activity: UpdateActivity): { work: WorkRow[]; continuing: number } {
+  if (Array.isArray(activity.blocking)) {
+    return { work: workRows(activity.blocking), continuing: activity.continuesAfterRestart?.length ?? 0 };
+  }
+  return {
+    work: workRows([
+      ...(activity.turns ?? []).map((t) => ({ kind: "turn" as const, ...t })),
+      ...(activity.awaitingReplies ?? []).map((r) => ({ kind: "reply" as const, ...r })),
+      ...(activity.moduleCalls ?? []).map((c) => ({ kind: "call" as const, ...c })),
+    ]),
+    continuing: 0,
+  };
 }
 
 function sinceText(iso: string): string {
@@ -244,9 +266,8 @@ export function UpdatePanel() {
   /** すぐ更新：途中で切れる呼び出しがあれば先に確かめる（無ければ確かめない——会話は起き直したあと続く） */
   function pressNow(commit: string) {
     void run("now", async () => {
-      const activity = await fetchActivity();
-      const work = workRows(activity.blocking);
-      if (work.length > 0) setConfirm({ reason: "now", work, continuing: activity.continuesAfterRestart.length });
+      const { work, continuing } = cutOffOf(await fetchActivity());
+      if (work.length > 0) setConfirm({ reason: "now", work, continuing });
       else await request(commit, "now");
     });
   }
@@ -254,9 +275,8 @@ export function UpdatePanel() {
   /** 待たずにすぐ起こし直す：まだ実行中の呼び出しだけ並べる。パスキーは host が求めたときだけ */
   function pressSkipWait() {
     void run("force", async () => {
-      const activity = await fetchActivity();
-      const work = workRows(activity.blocking);
-      if (work.length > 0) setConfirm({ reason: "skip-wait", work, continuing: activity.continuesAfterRestart.length });
+      const { work, continuing } = cutOffOf(await fetchActivity());
+      if (work.length > 0) setConfirm({ reason: "skip-wait", work, continuing });
       else await forceNow();
     });
   }
@@ -754,7 +774,9 @@ function WorkList({ work }: { work: readonly WorkRow[] }) {
                 <span>·</span>
               </>
             ) : null}
-            {w.status === "human" ? (
+            {w.reason ? (
+              <span>{w.reason}</span>
+            ) : w.status === "human" ? (
               <span className="rounded-sm bg-turn-soft px-1.5 text-turn">人の返事待ち</span>
             ) : w.status === "reply" ? (
               <span>{w.module} の仕事の返事を待っています</span>

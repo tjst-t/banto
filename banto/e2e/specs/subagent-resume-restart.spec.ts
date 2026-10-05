@@ -167,7 +167,15 @@ test("Module が中継で待たずに頼んだサブエージェントの仕事�
       body: JSON.stringify({
         name: MODULE,
         launch: { command: "${nodeExec}", args: [SERVER], env: { BANTO_HOST_MCP_URL: "${hostRelayUrl}", BANTO_HOST_MCP_TOKEN: "${hostRelayToken}" } },
-        meta: { satisfies: ["e2e-relay-caller"], dependsOn: [{ role: "subagent", required: true }], isolation: "subprocess", scope: "project" },
+        // 呼び元も「起こし直しても続けられる」と名乗る——名乗らない呼び元の札は、頼んだ先に問わず「途中で終わりました」になる
+        // （改訂・2026-10-05、アーキ仕様 §2.5「2.」。名乗らないときは単体 `turn-continuation.test.ts` が見る）
+        meta: {
+          satisfies: ["e2e-relay-caller"],
+          dependsOn: [{ role: "subagent", required: true }],
+          isolation: "subprocess",
+          scope: "project",
+          resumesAfterRestart: true,
+        },
       }),
     });
     expect(added.status, `試験用の Module を足せなかった：${await added.text()}`).toBeLessThan(400);

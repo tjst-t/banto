@@ -93,3 +93,64 @@ test("isModuleWaitingOnHuman：その Module のどれかの呼び出しが人�
   b.end();
   other.end();
 });
+
+// **起こし直しのために止める**（追加・2026-10-05、Fable のレビュー）。止め始めたら入口が断る印が立ち、`drain` は実行中の
+// 呼び出し（人を待っていないもの）が終わるまで待つ。人を待っているものは待たない。上限で抜けて残りの数を返す
+test("止め始めたら isStopping が立ち、drain は実行中の呼び出しが終わるまで待つ（人を待っているものは待たない）", async () => {
+  const t = new ModuleCallTracker();
+  assert.equal(t.isStopping(), false);
+  const running = t.beginCall("shell-p", "t1", "turn", "p");
+  const asking = t.beginCall("vault", "t2", "turn", "p");
+  t.holdForHuman("vault", asking.id);
+  t.stopAccepting();
+  assert.equal(t.isStopping(), true);
+  setTimeout(() => running.end(), 150);
+  const started = Date.now();
+  const r = await t.drain(5_000, 10);
+  assert.equal(r.left, 0, "人を待っている呼び出しまで待った");
+  assert.ok(Date.now() - started >= 140, "実行中の呼び出しを待たずに抜けた");
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test("drain は上限を過ぎたら、残っている呼び出しの数を返して抜ける", async () => {
+  const t = new ModuleCallTracker();
+  t.beginCall("shell-p", "t1", "turn", "p");
+  t.beginCall("shell-p", "t1", "turn", "p");
+  const started = Date.now();
+  const r = await t.drain(120, 10);
+  assert.equal(r.left, 2);
+  assert.ok(Date.now() - started >= 110 && Date.now() - started < 1_000, `上限どおりに抜けない（${Date.now() - started}ms）`);
+});
+
+// **質問の印は絞る**（追加・2026-10-05、Fable のレビュー）。印（callId）があればその1件、無ければ会話の呼び出しだけ
+test("質問の印：callId があればその1件だけ、会話で絞れば同じ接続の別の会話の呼び出しには立てない。tool_use の id に結びつく", () => {
+  const t = new ModuleCallTracker();
+  const a = t.beginCall("vault", "t1", "turn", "p", false, "toolu_a");
+  const b = t.beginCall("vault", "t1", "turn", "p", false, "toolu_b");
+  const c = t.beginCall("vault", "t2", "turn", "p", false, "toolu_c");
+  const waiting = () => t.list().map((x) => x.waitingOnHuman);
+
+  const release = t.holdForElicitation("vault", { callId: a.id });
+  assert.deepEqual(waiting(), [true, false, false], "質問していない呼び出しまで人待ちになった");
+  assert.equal(t.elicitingToolUseId("t1"), "toolu_a");
+  assert.equal(t.elicitingToolUseId("t2"), undefined);
+  release();
+  assert.deepEqual(waiting(), [false, false, false]);
+  assert.equal(t.elicitingToolUseId("t1"), undefined);
+
+  // 印が無ければ会話の呼び出しだけ——別の会話（t2）には立てない。会話の中で2つ立てば、どちらの質問か決めない
+  const byThread = t.holdForElicitation("vault", { threadId: "t1" });
+  assert.deepEqual(waiting(), [true, true, false]);
+  assert.equal(t.elicitingToolUseId("t1"), undefined, "2つの呼び出しのどちらの質問か決められないのに決めた");
+  byThread();
+  // もう終わった呼び出しの印なら何にも立てない
+  b.end();
+  t.holdForElicitation("vault", { callId: b.id });
+  assert.deepEqual(waiting(), [false, false]);
+
+  // 承認は質問に数えない
+  t.holdForHuman("vault", c.id);
+  assert.equal(t.elicitingToolUseId("t2"), undefined);
+  assert.equal(t.toolUseIdFor("vault", c.id), "toolu_c");
+  assert.equal(t.toolUseIdFor("vault"), undefined, "接続の全部から1つに決めた");
+});

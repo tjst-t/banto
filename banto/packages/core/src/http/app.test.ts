@@ -15,7 +15,7 @@ import { RuntimeConfigStore } from "../config/runtime.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
 import { AppEventBus } from "./app-events.js";
 import { TurnEventBus } from "./turn-events.js";
-import { ModuleCallTracker } from "../relay/module-calls.js";
+import { ModuleCallTracker, RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import type { ActivityReport } from "./activity.js";
 import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 
@@ -678,8 +678,8 @@ test("GET /api/admin/activity：起こし直しで待つもの（blocking）と�
   const threadTurns = new ThreadTurns();
   const moduleCalls = new ModuleCallTracker();
   const awaitingModule: Array<{ replyTo: string; replyId: string; toConn: string; toModule: string; fromConn: string; fromModule: string; projectId?: string; since: string }> = [];
-  // 「続けられる」と名乗っているのは subagent だけ
-  const resumesAfterRestart = ({ moduleName }: { moduleName: string }) => moduleName === "subagent";
+  // 「続けられる」と名乗っているのは subagent と backlog（Module 宛ての札の呼び元）だけ
+  const resumesAfterRestart = ({ moduleName }: { moduleName: string }) => moduleName === "subagent" || moduleName === "backlog";
   await withApp(
     async (base, token, _dir, deps) => {
       const read = async () => {
@@ -772,11 +772,11 @@ test("GET /api/admin/activity：起こし直しで待つもの（blocking）と�
       assert.equal((await read()).idle, true);
 
       // Module 宛ての札（Module が中継で頼んだ仕事）も同じ。idle もこれを数える
-      awaitingModule.push({ replyTo: "m1", replyId: "rid_1", toConn: `factory-${project.id}`, toModule: "factory", fromConn: `subagent-${project.id}`, fromModule: "subagent", projectId: project.id, since: "2026-10-05T00:00:00.000Z" });
+      awaitingModule.push({ replyTo: "m1", replyId: "rid_1", toConn: `backlog-${project.id}`, toModule: "backlog", fromConn: `subagent-${project.id}`, fromModule: "subagent", projectId: project.id, since: "2026-10-05T00:00:00.000Z" });
       a = await read();
       assert.equal(a.idle, false, "Module 宛ての返事待ちを数えていない");
       assert.equal(a.restartable, true);
-      assert.deepEqual(a.moduleReplies, [{ projectId: project.id, projectName: "P", module: "subagent", caller: "factory", since: "2026-10-05T00:00:00.000Z" }]);
+      assert.deepEqual(a.moduleReplies, [{ projectId: project.id, projectName: "P", module: "subagent", caller: "backlog", since: "2026-10-05T00:00:00.000Z" }]);
       assert.deepEqual(a.continuesAfterRestart.map((i) => i.kind), ["moduleReply"]);
       awaitingModule.push({ replyTo: "m2", replyId: "rid_2", toConn: "factory", toModule: "factory", fromConn: "shell", fromModule: "shell", since: "2026-10-05T00:00:00.000Z" });
       a = await read();
@@ -784,6 +784,71 @@ test("GET /api/admin/activity：起こし直しで待つもの（blocking）と�
       assert.deepEqual(a.blocking, [{ kind: "moduleReply", module: "shell", caller: "factory", since: "2026-10-05T00:00:00.000Z" }]);
     },
     { threadTurns, moduleCalls, restartActivity: { moduleReplies: { awaiting: () => awaitingModule }, resumesAfterRestart } },
+  );
+});
+
+// **待たないものの例外**（改訂・2026-10-05、Fable のレビュー）：続けて切れた回数が上限に達するターンは起き直しても自動では
+// 続かないので待つ（理由つき）。Module 宛ての札は、頼んだ先だけでなく呼び元も名乗っていなければ待つ
+test("GET /api/admin/activity：上限に達するターンと、呼び元が名乗らない Module 宛ての札は待つほうに回す", async () => {
+  const threadTurns = new ThreadTurns();
+  const awaitingModule: Array<{ replyTo: string; replyId: string; toConn: string; toModule: string; fromConn: string; fromModule: string; projectId?: string; since: string }> = [];
+  const resumesAfterRestart = ({ moduleName }: { moduleName: string }) => moduleName === "subagent" || moduleName === "factory";
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const read = async () =>
+        (await (await fetch(`${base}/api/admin/activity`, { headers: { authorization: `Bearer ${token}` } })).json()) as ActivityReport;
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      for (const [attempt, restartable] of [
+        [0, true],
+        [1, true],
+        [2, false],
+      ] as const) {
+        const turnId = await deps.projectThread.startTurn(thread.id, { cause: "delivery", attempt });
+        const release = threadTurns.tryAcquire(thread.id, 0)!;
+        const a = await read();
+        assert.equal(a.restartable, restartable, `attempt ${attempt}`);
+        const where = restartable ? a.continuesAfterRestart : a.blocking;
+        assert.deepEqual(where.map((i) => [i.kind, "attempt" in i ? i.attempt : undefined]), [["turn", attempt]]);
+        if (!restartable) {
+          assert.match((a.blocking[0] as { reason?: string }).reason ?? "", /続けて切れた回数が上限（3 回）に達するので、起き直しても自動では続きません/);
+        }
+        release();
+        await deps.projectThread.endTurn(thread.id, turnId, "completed");
+      }
+
+      // Module 宛ての札：頼んだ先（subagent）は名乗っていても、呼び元（shell）が名乗っていなければ待つ
+      awaitingModule.push({ replyTo: "m1", replyId: "rid_1", toConn: "shell-p", toModule: "shell", fromConn: "subagent-p", fromModule: "subagent", projectId: project.id, since: "2026-10-05T00:00:00.000Z" });
+      let a = await read();
+      assert.equal(a.restartable, false, "呼び元が名乗らない Module 宛ての札を待たない");
+      assert.deepEqual(a.blocking.map((i) => [i.kind, "caller" in i ? i.caller : undefined]), [["moduleReply", "shell"]]);
+      // 両方が名乗っていれば続く
+      awaitingModule[0] = { ...awaitingModule[0]!, toConn: "factory-p", toModule: "factory" };
+      a = await read();
+      assert.equal(a.restartable, true);
+      assert.deepEqual(a.continuesAfterRestart.map((i) => i.kind), ["moduleReply"]);
+    },
+    { threadTurns, restartActivity: { moduleReplies: { awaiting: () => awaitingModule }, resumesAfterRestart } },
+  );
+});
+
+// **起こし直しのために止めている間は、画面からの新しい呼び出しも断る**（追加・2026-10-05、Fable のレビュー）
+test("止め始めたら、画面からの呼び出し（会話・Project・banto 全体の3つの口）は 503 で断る", async () => {
+  const moduleCalls = new ModuleCallTracker();
+  await withApp(
+    async (base, token) => {
+      moduleCalls.stopAccepting();
+      for (const path of ["/api/threads/t1/ui-tool-call", "/api/projects/p1/ui-tool-call", "/api/ui-tool-call"]) {
+        const res = await fetch(`${base}${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ server: "backlog", tool: "updateItem", arguments: {} }),
+        });
+        assert.equal(res.status, 503, path);
+        assert.deepEqual(await res.json(), { error: RESTARTING_REFUSAL });
+      }
+    },
+    { moduleCalls },
   );
 });
 

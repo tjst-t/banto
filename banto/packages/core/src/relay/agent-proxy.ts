@@ -69,7 +69,7 @@ function backgroundWorkOf(
 }
 import { makeResourceVisibilityResolver } from "./visibility.js";
 import { APPROVAL_PROGRESS_INTERVAL_MS } from "./host-relay-endpoint.js";
-import type { ModuleCallTracker } from "./module-calls.js";
+import { RESTARTING_REFUSAL, type ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
 
 export interface RelayRecord {
@@ -218,8 +218,17 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     if (!allowed) {
       throw new Error(`tool "${request.params.name}" は agent 可視性ではありません`);
     }
+    // **起こし直しのために止めている間は、新しい呼び出しを断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いているもの」）。
+    // 実行しないで、AI に「起き直したあとにもう一度」と返す——続きの AI が呼び直せる。投げずに結果で返すのは、AI が
+    // 文を読めるように（投げると Runner が自分の言葉に包む）
+    if (opts.moduleCalls?.isStopping()) {
+      opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
+      return { isError: true, content: [{ type: "text" as const, text: RESTARTING_REFUSAL }] };
+    }
 
     const progressToken = extra._meta?.progressToken;
+    const requestMeta = request.params._meta as Record<string, unknown> | undefined;
+    const toolUseId = typeof requestMeta?.[RUNNER_TOOL_USE_ID_META_KEY] === "string" ? (requestMeta[RUNNER_TOOL_USE_ID_META_KEY] as string) : undefined;
     // **このハンドラが動いている間だけ**、この Module はこのターンの仕事をしている
     // ——中継の承認をどの会話に出すかは、これで決まる（relay/module-calls.ts）
     const endCall =
@@ -229,8 +238,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       // ——**Project は分かっているのに刻印が付かない**ので、中で他 Module を
       // 呼ぶ resource（横断した一覧）が「誰のためか分からない」で止まっていた。
       // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
-      // fail closed のまま
-      opts.moduleCalls?.beginCall(conn.name, opts.threadId, "turn", opts.projectId);
+      // fail closed のまま。Runner の tool_use の id も置く——中の中継の承認・質問を、会話のどの呼び出しの中のものかに
+      // 結びつける（追加・2026-10-05）
+      opts.moduleCalls?.beginCall(conn.name, opts.threadId, "turn", opts.projectId, false, toolUseId || undefined);
     // **終わったら届ける tool には、呼び出し元の Thread に結びついた札を渡す**（追加・2026-09-25）。
     // Thread が分からない接続では出さない——Module は「届ける先が無い」と断る（規則2）
     const replyTo =

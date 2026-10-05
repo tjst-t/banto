@@ -13,6 +13,7 @@
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CALL_ID_META_KEY } from "@banto/module-contract";
 import type { ModuleCallTracker } from "./module-calls.js";
 
 export class ElicitationRouteError extends Error {}
@@ -42,13 +43,23 @@ export class ElicitationRouter {
     if (state.installed) return;
     state.installed = true;
     conn.client.setRequestHandler(ElicitRequestSchema, async (request) => {
-      const target = this.resolve(conn.name);
-      // **問いの答えを待つ間、その Module の呼び出しは人を待っている**（追加・2026-10-05、アーキ仕様 §2.5「画面から
-      // banto を更新する」の待つ段）。中継の承認と同じ印——起こし直しの「待つ」はこの呼び出しを待たない（待つと人が
-      // 答えるまでどこまでも待つ）。外側の呼び出しの上限もこの間は数えない（`agent-proxy.ts`、承認と同じ）
-      const release = this.moduleCalls.holdForHuman(conn.name);
+      // **問いの答えを待つ間、その呼び出しは人を待っている**（追加・2026-10-05、アーキ仕様 §2.5「画面から banto を
+      // 更新する」の待つ段）。中継の承認と同じ印——起こし直しの「待つ」はこの呼び出しを待たない（待つと人が答えるまで
+      // どこまでも待つ）。外側の呼び出しの上限もこの間は数えない（`agent-proxy.ts`、承認と同じ）。
+      // **印を立てる呼び出しは絞る**（改訂・2026-10-05、Fable のレビュー）：Module が問いの `_meta` に呼び出しの印
+      // （`dev.banto/callId`、中継と同じ契約）を返せばその1件、返さなければ問いを出す会話の呼び出しだけ
+      const meta = (request.params._meta as Record<string, unknown> | undefined)?.[CALL_ID_META_KEY];
+      const callId = typeof meta === "string" && meta !== "" ? meta : undefined;
+      // 印があれば、出す会話もその1件の会話で決める（別の会話の呼び出しと並んでいても決まる）
+      const target = this.resolve(conn.name, callId);
+      const release =
+        callId !== undefined
+          ? this.moduleCalls.holdForElicitation(conn.name, { callId })
+          : target.threadId !== undefined
+            ? this.moduleCalls.holdForElicitation(conn.name, { threadId: target.threadId })
+            : () => undefined;
       try {
-        return await target.elicitInput(request.params);
+        return await target.server.elicitInput(request.params);
       } finally {
         release();
       }
@@ -66,17 +77,18 @@ export class ElicitationRouter {
     this.connections.delete(connName);
   }
 
-  private resolve(connName: string): Server {
+  /** 問いを届ける代理サーバと、その会話（走っている呼び出しで決めたとき。決めずに唯一の宛先へ渡したときは無い） */
+  private resolve(connName: string, callId?: string): { server: Server; threadId?: string } {
     const state = this.connections.get(connName);
     if (!state || state.byThread.size === 0) {
       throw new ElicitationRouteError(
         `${connName}: 問いを届ける先の会話がありません（走行中のターンがない）`,
       );
     }
-    const where = this.moduleCalls.threadFor(connName);
+    const where = this.moduleCalls.threadFor(connName, callId);
     if (where.kind === "thread") {
       const server = state.byThread.get(where.threadId);
-      if (server) return server;
+      if (server) return { server, threadId: where.threadId };
       throw new ElicitationRouteError(
         `${connName}: 走行中のターン（${where.threadId}）の代理サーバが見つかりません`,
       );
@@ -90,7 +102,7 @@ export class ElicitationRouter {
     }
     // 走行中の tool 呼び出しが無い＝この問いは誰の仕事でもない。
     // 1つしか繋がっていなければ、それが唯一の宛先になる（曖昧さが無い）
-    if (state.byThread.size === 1) return [...state.byThread.values()][0]!;
+    if (state.byThread.size === 1) return { server: [...state.byThread.values()][0]! };
     throw new ElicitationRouteError(
       `${connName}: どのターンからの問いか特定できません（走行中の tool 呼び出しがありません）`,
     );

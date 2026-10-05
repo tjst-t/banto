@@ -21,6 +21,13 @@ export interface JudgmentItem {
   requestedSchema?: unknown;
   url?: string;
   toolCallId?: string;
+  /**
+   * **この判断待ちが属する、AI の tool 呼び出しの id**（Runner の tool_use の id。追加・2026-10-05）。中継の承認・Module の
+   * 質問は tool 呼び出しの**中で**起きるので `toolCallId`（承認する呼び出しそのもの）は無い——代わりにこれで外側の
+   * 呼び出しに結びつける。起き直したあとの続きの文が「どの呼び出しが人を待ったまま無効になったか」を書くのに使う
+   * （`delivery/turn-continuation.ts`）。決まらなければ無い
+   */
+  withinToolCallId?: string;
   /** 承認する tool の引数（決定・2026-09-06）——何を承認するのかを人に見せるため。 */
   toolInput?: unknown;
   /** どのサーバが聞いているか（§2.4.1 の MUST）。 */

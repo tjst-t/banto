@@ -164,7 +164,10 @@ export class RestartRecovery {
     }
     // **Module 宛ての札**（追加・2026-10-05、上の注記）。Thread は留めない（Thread の続きとは関わらない）
     for (const a of this.deps.moduleReplies?.awaiting() ?? []) {
-      if (!this.deps.resumable({ moduleName: a.fromModule, ...(a.projectId ? { projectId: a.projectId } : {}) })) {
+      // **呼び元も名乗っていなければ問わない**（改訂・2026-10-05、Fable のレビュー）：呼び元は名乗っていなければ自分の
+      // Thread 宛ての札を「途中で終わりました」にする——頼んだ先が続けて結果が届き直すと、同じ仕事が二重に見える
+      const where = a.projectId ? { projectId: a.projectId } : {};
+      if (!this.deps.resumable({ moduleName: a.fromModule, ...where }) || !this.deps.resumable({ moduleName: a.toModule, ...where })) {
         await this.deps.moduleReplies!.loseOne(a.replyTo, "banto を起動し直したため");
         continue;
       }

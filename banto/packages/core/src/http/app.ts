@@ -92,6 +92,7 @@ import { McpServersError, fromMcpServers, toMcpServers } from "../modules/mcp-se
 import { describeRootScope } from "../modules/root-scope.js";
 import { listDirectories } from "./directories.js";
 import { collectActivity } from "./activity.js";
+import { RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import { SelfUpdateError, type SelfUpdate } from "../self-update/self-update.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
@@ -2404,6 +2405,11 @@ export function createApp(deps: AppDeps) {
       // 残る risk として記録する：Module 自身の画面が、その Module の危ない tool
       // （削除など）を黙って呼ぶことはできる。**Module を繋ぐこと自体が信頼の
       // 線引き**で、その手前は閉じ込め（コンテナ）と可視性で守る。
+      // **起こし直しのために止めている間は、画面からの新しい呼び出しも断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いて
+      // いるもの」）。会話・Project・banto 全体の3つの口（どれも `…/ui-tool-call`）。実行中のものは止まる前に待つ
+      if (req.method === "POST" && url.pathname.endsWith("/ui-tool-call") && deps.moduleCalls?.isStopping()) {
+        return json(res, 503, { error: RESTARTING_REFUSAL });
+      }
       const uiCallMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/ui-tool-call$/);
       if (uiCallMatch && req.method === "POST") {
         const body = (await readJsonBody(req)) as {

@@ -14,6 +14,7 @@ export type InboxEvent =
         requestedSchema?: unknown;
         url?: string;
         toolCallId?: string;
+        withinToolCallId?: string;
         toolInput?: unknown;
         serverName?: string;
         choices?: string[];
@@ -54,6 +55,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           requestedSchema: event.payload.requestedSchema,
           url: event.payload.url,
           toolCallId: event.payload.toolCallId,
+          ...(event.payload.withinToolCallId ? { withinToolCallId: event.payload.withinToolCallId } : {}),
           toolInput: event.payload.toolInput,
           serverName: event.payload.serverName,
           ...(event.payload.choices ? { choices: event.payload.choices } : {}),

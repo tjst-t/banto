@@ -32,6 +32,22 @@ export type ModuleCallThread =
  */
 export type CallOrigin = "turn" | "canvas" | "host";
 
+/**
+ * **起こし直しのために止めている間、新しい呼び出しに返す文**（追加・2026-10-05、アーキ仕様 §2.5「いま動いているもの」）。
+ * AI にはこの文が tool の結果として届く——続きの AI が、起き直したあとに呼び直せる。続きの文はこの文で「断った呼び出し」を
+ * 見分ける（`delivery/turn-continuation.ts`）ので、変えるときは両方
+ */
+export const RESTARTING_REFUSAL = "banto を起こし直しています。起き直したあとにもう一度呼んでください（この呼び出しは実行していません）";
+
+/**
+ * **止めるときに、実行中の呼び出しを待つ上限**（追加・2026-10-05）。systemd の止める上限（`TimeoutStopSec`、banto-host は
+ * 既定の 90 秒——`install.sh`）より短く。過ぎたら残りは切って止まる（続きの AI に「結果は分かりません」と伝わる）
+ */
+export const STOP_DRAIN_LIMIT_MS = 60_000;
+
+/** 人の答えを待っている理由。中継の承認か、Module の質問（elicitation）か */
+export type HumanWaitKind = "approval" | "elicitation";
+
 /** 走っている1件の呼び出し。 */
 interface CallEntry {
   threadId?: string;
@@ -43,6 +59,14 @@ interface CallEntry {
    * host が外側の呼び出しの上限（既定60秒）を数えるとき、この間を数えない（`agent-proxy.ts`）
    */
   waitingOnHuman: number;
+  /** そのうち Module の質問（elicitation）の答えを待っている数（追加・2026-10-05——判断待ちを外側の呼び出しに結びつける） */
+  elicitations: number;
+  /**
+   * **Runner がこの呼び出しに付けた tool_use の id**（追加・2026-10-05、`claudecode/toolUseId`）。AI のターンの呼び出しと、
+   * そこから中継で継いだ呼び出しだけが持つ。中継の承認・質問の判断待ちを、会話の記録のどの tool 呼び出しの中のものかに
+   * 結びつける（起き直したあとの続きの文、`turn-continuation.ts`）
+   */
+  toolUseId?: string;
   /** 終わったら呼ぶもの（`whenEnded`） */
   onEnd: Set<() => void>;
 }
@@ -56,6 +80,8 @@ export class ModuleCallTracker {
    * （下の `entriesOf`）。連番だと、同じ接続の別の呼び出しの印を当て推量で名乗れる
    */
   private readonly inFlight = new Map<string, Map<string, CallEntry>>();
+  /** 起こし直しのために止め始めた（`stopAccepting`）。入口（AI の tool・中継・画面）はこれを見て新しい呼び出しを断る */
+  private stopping = false;
 
   /**
    * 1件の tool 呼び出しの開始。返ってきた関数を必ず finally で呼ぶ。
@@ -87,6 +113,8 @@ export class ModuleCallTracker {
     origin: CallOrigin = "turn",
     projectId?: string,
     forInstance = false,
+    /** Runner が付けた tool_use の id（AI のターンの呼び出し・そこから継いだ中継だけ） */
+    toolUseId?: string,
   ): { id: string; end: () => void } {
     const callId = randomBytes(12).toString("base64url");
     let calls = this.inFlight.get(connName);
@@ -94,7 +122,16 @@ export class ModuleCallTracker {
       calls = new Map();
       this.inFlight.set(connName, calls);
     }
-    const entry: CallEntry = { threadId, projectId, origin, forInstance, waitingOnHuman: 0, onEnd: new Set() };
+    const entry: CallEntry = {
+      threadId,
+      projectId,
+      origin,
+      forInstance,
+      waitingOnHuman: 0,
+      elicitations: 0,
+      ...(toolUseId ? { toolUseId } : {}),
+      onEnd: new Set(),
+    };
     calls.set(callId, entry);
     return {
       id: callId,
@@ -116,15 +153,91 @@ export class ModuleCallTracker {
    * なぜ要るか：外側の tool 呼び出し（AI → Module）は host が既定60秒の上限で待つ。中継の承認を待つ間は Module に
    * 落ち度が無いのに、人が60秒以内に答えないと外側が切れ、承認のカードもターンと一緒に消えていた
    */
-  holdForHuman(connName: string, callId?: string): () => void {
-    const entries = this.entriesOf(connName, callId);
-    for (const e of entries) e.waitingOnHuman += 1;
+  holdForHuman(connName: string, callId?: string, kind: HumanWaitKind = "approval"): () => void {
+    return this.hold(this.entriesOf(connName, callId), kind);
+  }
+
+  /**
+   * **Module の質問（elicitation）の間、人を待っている印を立てる**（追加・2026-10-05、Fable のレビュー）。質問に呼び出しの
+   * 印（`_meta["dev.banto/callId"]`）が付いていて、いまその接続で走っていれば**その1件**。付いていなければ**その会話の
+   * 呼び出しだけ**（質問を出す会話は `ElicitationRouter` が決める）——接続の全部に立てると、同じ Module を別の会話・
+   * 同じ会話の別の呼び出しから並べて呼んでいるとき、質問していない呼び出しまで人待ちに見え、起こし直しで待たれない。
+   * 印が付いていても走っていなければ（もう終わった呼び出しの仕事）、何にも立てない
+   */
+  holdForElicitation(connName: string, target: { callId: string } | { threadId: string }): () => void {
+    const entries =
+      "callId" in target
+        ? this.entriesOf(connName, target.callId)
+        : [...(this.inFlight.get(connName)?.values() ?? [])].filter((e) => e.threadId === target.threadId);
+    return this.hold(entries, "elicitation");
+  }
+
+  private hold(entries: CallEntry[], kind: HumanWaitKind): () => void {
+    for (const e of entries) {
+      e.waitingOnHuman += 1;
+      if (kind === "elicitation") e.elicitations += 1;
+    }
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      for (const e of entries) e.waitingOnHuman = Math.max(0, e.waitingOnHuman - 1);
+      for (const e of entries) {
+        e.waitingOnHuman = Math.max(0, e.waitingOnHuman - 1);
+        if (kind === "elicitation") e.elicitations = Math.max(0, e.elicitations - 1);
+      }
     };
+  }
+
+  /**
+   * **その呼び出しが属する、AI の tool 呼び出しの id**（Runner の tool_use の id。追加・2026-10-05）。選び方は `threadFor` と
+   * 同じで、1つに決まるときだけ返す（推測しない）
+   */
+  toolUseIdFor(connName: string, callId?: string): string | undefined {
+    const ids = [...new Set(this.entriesOf(connName, callId).map((e) => e.toolUseId).filter((t): t is string => !!t))];
+    return ids.length === 1 ? ids[0] : undefined;
+  }
+
+  /**
+   * **その会話で、いま Module の質問の答えを待っている AI の tool 呼び出し**（追加・2026-10-05）。質問の判断待ちを外側の
+   * 呼び出しに結びつける（`turn-runner.ts`）。1つに決まるときだけ返す——同じ会話で2つの呼び出しが同時に質問していたら、
+   * どちらの質問かは分からない
+   */
+  elicitingToolUseId(threadId: string): string | undefined {
+    const ids = new Set<string>();
+    for (const calls of this.inFlight.values()) {
+      for (const e of calls.values()) if (e.threadId === threadId && e.elicitations > 0 && e.toolUseId) ids.add(e.toolUseId);
+    }
+    return ids.size === 1 ? [...ids][0] : undefined;
+  }
+
+  /**
+   * **起こし直しのために止め始める**（追加・2026-10-05、Fable のレビュー——ターンを待たなくなったので、「待つものが無い」と
+   * 見てから止めるまでに走っているターンが次の tool を呼んで切られる窓が実質の問題になった）。これ以降、入口（AI の tool・
+   * 中継・画面）は新しい呼び出しを `RESTARTING_REFUSAL` で断る。実行中の呼び出しと、それが中で呼ぶ中継は通す（`drain`）
+   */
+  stopAccepting(): void {
+    this.stopping = true;
+  }
+
+  /** 止め始めているか（入口が見る） */
+  isStopping(): boolean {
+    return this.stopping;
+  }
+
+  /**
+   * **実行中の呼び出し（人を待っていないもの）が無くなるまで待つ**（追加・2026-10-05）。人を待っている呼び出しは待たない
+   * （人が答えるまで終わらない——activity の待たないものと同じ）。上限を過ぎたら、残っている数を返して抜ける
+   */
+  async drain(limitMs: number, pollMs = 100): Promise<{ left: number; waitedMs: number }> {
+    const started = Date.now();
+    const running = () =>
+      [...this.inFlight.values()].reduce((n, calls) => n + [...calls.values()].filter((e) => e.waitingOnHuman === 0).length, 0);
+    for (;;) {
+      const left = running();
+      const waitedMs = Date.now() - started;
+      if (left === 0 || waitedMs >= limitMs) return { left, waitedMs };
+      await new Promise((r) => setTimeout(r, Math.min(pollMs, limitMs - waitedMs)));
+    }
   }
 
   /** この呼び出しは、いま人の答えを待っているか（印で引く。もう終わっていれば false） */

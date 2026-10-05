@@ -790,3 +790,35 @@ test("例外で抜けたターン・呼び出し側が途中で読むのをや�
     assert.equal(turn.outcome, "failed");
   });
 });
+
+// **Module の質問の判断待ちを、質問している AI の tool 呼び出しに結びつける**（追加・2026-10-05、Fable のレビュー）。質問の
+// 間は台帳がその呼び出しに印を立てている——この会話で1つに決まるときだけ `withinToolCallId` に残す
+test("Module の質問の判断待ちには、台帳で質問している tool 呼び出しの id が付く（決まらなければ付かない）", async () => {
+  await withThread(async ({ deps, threadId }) => {
+    const { ModuleCallTracker } = await import("../relay/module-calls.js");
+    const moduleCalls = new ModuleCallTracker();
+    const call = moduleCalls.beginCall("publish", threadId, "turn", undefined, false, "toolu_publish");
+    const release = moduleCalls.holdForElicitation("publish", { callId: call.id });
+    const elicit = (message: string) => ({
+      type: "elicitation_requested" as const,
+      pending: { message, serverName: "publish", mode: "form", requestedSchema: {}, resolve: () => undefined },
+    });
+    const fake = (async function* () {
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      yield elicit("パスワードは？") as never;
+      release();
+      yield elicit("もう一度？") as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    await collect(runThreadTurn({ ...deps, runTurn: fake, moduleCalls }, { threadId, prompt: "公開して", modules: [] }));
+    const judgments = deps.inbox.listJudgmentsForThread(threadId).filter((j) => j.source === "elicitation");
+    assert.deepEqual(
+      judgments.map((j) => [j.message, j.withinToolCallId]),
+      [
+        ["パスワードは？", "toolu_publish"],
+        ["もう一度？", undefined],
+      ],
+    );
+    call.end();
+  });
+});

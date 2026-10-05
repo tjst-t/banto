@@ -19,6 +19,7 @@ import type { runTurn, RunnerTurnOptions } from "../runner/adapter.js";
 import { ThreadTurns } from "./thread-turns.js";
 import { DELIVERY_LIMITS, ThreadDeliveries } from "./thread-deliveries.js";
 import { ReplyHandles } from "./reply-handles.js";
+import { RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import type { ModuleAwaitingReply } from "./module-replies.js";
 import { RestartRecovery, type RestartRecoveryDeps, type ResumeTarget } from "./restart-recovery.js";
 import type { ResumeQuestion } from "@banto/module-contract";
@@ -796,6 +797,54 @@ test("承認を待っていた呼び出しは「無効になりました」、�
   });
 });
 
+// **止める間に断った呼び出し・呼び出しの中で人を待っていたもの**（追加・2026-10-05、Fable のレビュー）。断った呼び出しは
+// 結果に `RESTARTING_REFUSAL` が残る——「実行されていません」。中継の承認・質問は判断待ちの `withinToolCallId` で外側の
+// 呼び出しに照らす——承認は「実行されていません」、質問は「途中まで進んでいたかもしれません」。照らせないものは今までどおり
+// 実行中だった呼び出し
+test("断った呼び出しは「起こし直し中のため断った」、中継の承認・質問を待っていた呼び出しは判断待ちが属する呼び出しで照らす", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await completeTurn(first, threadId, "前", [init(""), say("前の返事", "u0")]);
+    const refusedResult = (id: string, uuid: string) => ({
+      type: "user",
+      uuid,
+      message: { content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: [{ type: "text", text: RESTARTING_REFUSAL }] }] },
+    });
+    const script = [
+      init(""),
+      callTool("r1", "mcp__shell__runCommand", "u1", { command: "make deploy" }),
+      refusedResult("r1", "u2"),
+      callTool("a1", "mcp__subagent__runSubagent", "u3", { prompt: "調べて" }),
+      callTool("e1", "mcp__publish__publishService", "u4", { name: "web" }),
+      callTool("x1", "mcp__shell__runCommand", "u5", { command: "sleep 100" }),
+    ];
+    await cutTurn(first, threadId, "進めて", script);
+    // 切れたターンの中で出た判断待ち（起き直すと期限切れになる）
+    await first.inbox.raiseJudgment({ threadId, source: "relay", message: "Module 間の呼び出しの確認", serverName: "subagent", withinToolCallId: "a1" });
+    await first.inbox.raiseJudgment({ threadId, source: "elicitation", message: "パスワードは？", serverName: "publish", withinToolCallId: "e1" });
+    // 照らせない質問（外側の呼び出しが決まらなかった）は何も足さない
+    await first.inbox.raiseJudgment({ threadId, source: "elicitation", message: "どれ？", serverName: "shell" });
+
+    const runner = scriptedRunner([init(""), say("続き", "u9")]);
+    const host = await boot(dir, runner);
+    const chain = [human("…進めて", "c1"), ...script.slice(1)];
+    const sessionId = host.store.getThread(threadId)!.resumePoint!;
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({ [sessionId]: chain }) });
+    host.listen();
+    await settled(host, threadId);
+    const prompt = runner.calls[0]!.prompt;
+    assert.match(prompt, /起こし直し中のため断った呼び出し：mcp__shell__runCommand（\{"command":"make deploy"\}）——実行されていません/);
+    assert.match(
+      prompt,
+      /mcp__subagent__runSubagent は Module 間の呼び出しの承認を待ったまま無効になりました（承認を待っていた呼び出しは実行されていません）/,
+    );
+    assert.match(prompt, /mcp__publish__publishService は質問の答えを待ったまま無効になりました（途中まで進んでいたかもしれません）/);
+    // 照らした呼び出しは「実行中だった」に重ねない。照らせない呼び出しだけが実行中だった
+    const running = [...prompt.matchAll(/実行中だった呼び出し：(\S+)（([^）]*)）/g)].map((m) => `${m[1]} ${m[2]}`);
+    assert.deepEqual(running, ['mcp__shell__runCommand {"command":"sleep 100"}']);
+    assert.doesNotMatch(prompt, /make deploy[^\n]*結果は分かりません/, "断った呼び出しを実行中に数えた");
+  });
+});
+
 test("続きを届けたあと閉じる前に落ちても、続きを二重に届けない", async () => {
   await withDir(async ({ dir, first, threadId }) => {
     await cutTurn(first, threadId, "やって", [init(""), say("途中", "u1")]);
@@ -1371,7 +1420,8 @@ test("Module 宛ての札も、頼んだ先が続けられると名乗ってい�
     const { recovery, replyHandles, asked } = recoveryOf(
       host,
       async () => ({ answers: [{ replyTo: "m-keep", resume: true }, { replyTo: "m-drop", resume: false, reason: "記録がありません" }] }),
-      { moduleReplies: mr.stub },
+      // 呼び元（factory）も名乗っている——名乗っていなければ問わない（下の試験）
+      { moduleReplies: mr.stub, resumable: ({ moduleName }) => moduleName === RESUMABLE || moduleName === "factory" },
     );
     await recovery.beforeListen();
     // 名乗らない頼んだ先の札は、待ち受けの前に「途中で終わりました」
@@ -1393,6 +1443,23 @@ test("Module 宛ての札も、頼んだ先が続けられると名乗ってい�
     assert.equal(kept?.toModule?.replyId, "rid_m-keep");
     assert.equal(kept?.finalOnly, true);
     assert.equal(replyHandles.get("m-drop"), undefined);
+  });
+});
+
+// **呼び元が名乗っていなければ、頼んだ先が名乗っていても問わない**（改訂・2026-10-05、Fable のレビュー）——呼び元は自分の
+// Thread 宛ての札を「途中で終わりました」にするので、頼んだ先が続けて結果が届き直すと同じ仕事が二重に見える
+test("Module 宛ての札：呼び元が「続けられる」と名乗っていなければ、頼んだ先が名乗っていても問わずに「途中で終わりました」", async () => {
+  await withDir(async ({ dir, projectId }) => {
+    const host = await boot(dir);
+    const mr = moduleRepliesOf([{ replyTo: "m-caller-plain", fromModule: RESUMABLE, projectId }]);
+    const { recovery, replyHandles, asked } = recoveryOf(host, async () => ({ answers: [{ replyTo: "m-caller-plain", resume: true }] }), {
+      moduleReplies: mr.stub,
+    });
+    await recovery.beforeListen();
+    assert.deepEqual(mr.lostCalls, [["m-caller-plain", "banto を起動し直したため"]]);
+    await recovery.afterListen();
+    assert.deepEqual(asked, [], "名乗らない呼び元の札を頼んだ先に問うた");
+    assert.equal(replyHandles.get("m-caller-plain"), undefined);
   });
 });
 

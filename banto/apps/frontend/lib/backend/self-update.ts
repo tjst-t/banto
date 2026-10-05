@@ -32,7 +32,8 @@ export interface ActivityThreadRef {
  * 続くもの（待つものに出るのは、`restartable` を返さない古い host に `update.mjs` が全部を待ったときだけ）
  */
 export type ActivityItem =
-  | (ActivityThreadRef & { kind: "turn"; startedAt: string; waitingOnHuman: boolean })
+  /** `reason`：待つほうに回した理由（続けて切れた回数が上限に達するターン） */
+  | (ActivityThreadRef & { kind: "turn"; startedAt: string; waitingOnHuman: boolean; reason?: string })
   | (ActivityThreadRef & { kind: "reply"; module: string; since: string })
   | { kind: "moduleReply"; projectId?: string; projectName?: string; module: string; caller: string; since: string }
   | (Partial<ActivityThreadRef> & { kind: "call"; connName: string; origin: string; waitingOnHuman?: boolean });
@@ -43,9 +44,13 @@ export type ActivityItem =
  */
 export interface UpdateActivity {
   idle?: boolean;
-  restartable: boolean;
-  blocking: ActivityItem[];
-  continuesAfterRestart: ActivityItem[];
+  /** 待つもの・待たないものを分けて返さない古い host（2026-10-05 より前）には無い——そのときは下の前の形だけ */
+  restartable?: boolean;
+  blocking?: ActivityItem[];
+  continuesAfterRestart?: ActivityItem[];
+  turns?: Array<ActivityThreadRef & { startedAt: string; waitingOnHuman: boolean }>;
+  awaitingReplies?: Array<ActivityThreadRef & { module: string; since: string }>;
+  moduleCalls?: Array<Partial<ActivityThreadRef> & { connName: string; origin: string }>;
 }
 
 /** 待つ段の残り（`update.mjs` が `state.waiting` に書く）：待つものと、起き直したあと続くものの数 */

@@ -36,6 +36,7 @@ import {
   type Visibility,
 } from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
+import { RESTARTING_REFUSAL } from "./module-calls.js";
 
 export interface CallerIdentity {
   /** 宣言の名前（`shell`）。**承認の粒度はこちら**——Project は別に持つ。 */
@@ -277,7 +278,15 @@ export interface HostRelayServerOptions {
       origin: "turn" | "canvas" | "host",
       projectId?: string,
       forInstance?: boolean,
+      /** 呼び元の呼び出しが持つ Runner の tool_use の id（継ぐ） */
+      toolUseId?: string,
     ): { id: string; end: () => void };
+    /** 呼び元の呼び出しが属する AI の tool 呼び出しの id（Runner の tool_use の id）。1つに決まるときだけ */
+    toolUseIdFor?(connName: string, callId?: string): string | undefined;
+    /** 起こし直しのために止め始めているか（新しい中継を断る） */
+    isStopping?(): boolean;
+    /** その呼び出し（印が無ければその接続のどれか）がまだ走っているか */
+    isRunning?(connName: string, callId?: string): boolean;
   };
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
@@ -763,6 +772,14 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **宛先の申告を信じる方向は fail open** だった。
     const valueFreeCall = targetInfo?.valueFree === true && target.meta.origin === "bundled";
 
+    // **起こし直しのために止めている間は、新しい中継を断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いているもの」）。
+    // ただし**実行中の呼び出しの中の中継は通す**——止める前に待つのはその呼び出しが終わるまでで、中継を断ると待っている
+    // 呼び出しそのものが失敗する。走っている呼び出しに属さない中継（終わった呼び出しの後の仕事・Module が自分で始めた
+    // もの）だけ断る。承認を聞く前に断る（止める間に新しいカードを出さない）
+    if (opts.moduleCalls?.isStopping?.() && !opts.moduleCalls.isRunning?.(identity.connName ?? identity.moduleName, callId)) {
+      await audit(false, "banto を起こし直しているため断った");
+      throw new Error(RESTARTING_REFUSAL);
+    }
     const progressToken = extra._meta?.progressToken;
     const heartbeat =
       opts.gate &&
@@ -823,9 +840,11 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       // 窓口→金庫の2段目で「誰のためか分からない」に落ちる
       opts.moduleCalls?.instanceFor?.(callerConn, callId) ?? false,
     ] as const;
+    // **AI のどの tool 呼び出しの中の仕事かも継ぐ**（追加・2026-10-05）——宛先の中の承認・質問も、会話のその呼び出しに結びつく
+    const callerToolUseId = opts.moduleCalls?.toolUseIdFor?.(callerConn, callId);
     // **宛先にも呼び出しの印を渡す**（追加・2026-09-28）——宛先がさらに中継を呼ぶとき、この1件を名指せる
     const targetCall = opts.moduleCalls?.beginCall
-      ? opts.moduleCalls.beginCall(...targetArgs)
+      ? opts.moduleCalls.beginCall(...targetArgs, callerToolUseId)
       : { id: undefined, end: opts.moduleCalls?.begin(...targetArgs) };
     const endTargetCall = targetCall.end;
 

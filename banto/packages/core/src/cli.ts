@@ -46,7 +46,7 @@ import { PendingApprovalRegistry } from "./inbox/pending-approvals.js";
 import { RelayRegistry, HostRelayEndpoint } from "./relay/host-relay-endpoint.js";
 import { AgentRelayEndpoint } from "./relay/agent-relay-endpoint.js";
 import { RelayGrantStore } from "./relay/grants.js";
-import { ModuleCallTracker } from "./relay/module-calls.js";
+import { ModuleCallTracker, STOP_DRAIN_LIMIT_MS } from "./relay/module-calls.js";
 import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
@@ -1914,11 +1914,33 @@ async function main(): Promise<void> {
   snapshotTimer.unref();
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {
+      // 2回目の信号（人が Ctrl-C を重ねた等）は待たずに止まる
+      if (stopping) {
+        console.log(`[host] ${signal} をもう一度受けたので、実行中の呼び出しを待たずに止まります`);
+        void saveSnapshots()
+          .catch((err) => console.error("[host] 終了時のスナップショット保存に失敗:", err))
+          .finally(() => process.exit(0));
+        return;
+      }
       // 止める途中で Module が切れても、起こし直さない
       stopping = true;
       liveness.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
-      void saveSnapshots()
+      // **新しい Module の呼び出しを断り、実行中の呼び出しが終わるのを上限つきで待ってから止まる**（追加・2026-10-05、
+      // アーキ仕様 §2.5「いま動いているもの」）。ターン・続けられる仕事は待たずに起こし直すので、「待つものが無い」と見て
+      // から止まるまでに走っているターンが次の tool を呼ぶ——それを断り（AI には「起き直したあとにもう一度」と返る）、
+      // 呼んでいた途中のものは結果を返し終えるまで待つ。上限（`STOP_DRAIN_LIMIT_MS`）は systemd の止める上限より短い
+      moduleCalls.stopAccepting();
+      void moduleCalls
+        .drain(STOP_DRAIN_LIMIT_MS)
+        .then(({ left, waitedMs }) => {
+          if (left > 0) {
+            console.warn(`[host] 実行中の呼び出しが ${Math.round(waitedMs / 1000)} 秒で終わらないので、${left} 件を切って止まります`);
+          } else if (waitedMs > 0) {
+            console.log(`[host] 実行中の呼び出しが終わるのを ${Math.round(waitedMs / 1000)} 秒待ちました`);
+          }
+        })
+        .then(() => saveSnapshots())
         .catch((err) => console.error("[host] 終了時のスナップショット保存に失敗:", err))
         .finally(() => process.exit(0));
     });

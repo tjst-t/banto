@@ -16,7 +16,7 @@ import { markBundled, parseModuleMeta } from "@banto/module-contract";
  */
 const bundledMeta = (raw: unknown, source: string) => markBundled(parseModuleMeta(raw, source), source);
 import { HostRelayEndpoint, RelayRegistry, type HostRelayServerOptions } from "./host-relay-endpoint.js";
-import { ModuleCallTracker } from "./module-calls.js";
+import { ModuleCallTracker, RESTARTING_REFUSAL } from "./module-calls.js";
 
 async function fakeVaultClient(): Promise<Client> {
   const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
@@ -1428,5 +1428,56 @@ test("返事の受け口は中継からは呼べない——頼んだ仕事の�
     assert.equal(seen.length, 0, "受け口が呼ばれた");
   } finally {
     await close();
+  }
+});
+
+// **起こし直しのために止めている間の中継**（追加・2026-10-05、Fable のレビュー）。実行中の呼び出しの中の中継は通す
+// （止める前に待つのはその呼び出しの終わりで、中継を断ると待っている呼び出しが失敗する）。走っている呼び出しに属さない
+// 中継は、承認を聞く前に断る。宛先には外側の AI の tool 呼び出しの id を継ぐ
+test("止めている間：実行中の呼び出しの中の中継は通り（tool_use の id を継ぐ）、走っている呼び出しに属さない中継は断る", async () => {
+  const tracker = new ModuleCallTracker();
+  const reached: Array<string | undefined> = [];
+  const inner = new McpServer({ name: "fake-directory", version: "0.0.0" }, { capabilities: { tools: {} } });
+  inner.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "lookupAlias", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "module" } }],
+  }));
+  inner.setRequestHandler(CallToolRequestSchema, async () => {
+    reached.push(tracker.toolUseIdFor("vault-directory"));
+    return { content: [{ type: "text", text: "{}" }] };
+  });
+  const [is, ic] = InMemoryTransport.createLinkedPair();
+  const innerClient = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([inner.connect(is), innerClient.connect(ic)]);
+  const registry = new RelayRegistry();
+  registry.registerModule({
+    name: "vault-directory",
+    client: innerClient,
+    meta: bundledMeta({ satisfies: ["vault-directory"], dependsOn: [], isolation: "subprocess" }, "vault-directory"),
+  });
+  const token = registry.issueToken({
+    moduleName: "shell",
+    meta: bundledMeta({ satisfies: ["shell"], dependsOn: [{ role: "vault-directory", required: true }], isolation: "subprocess" }, "shell"),
+  });
+  const { url, audits, close } = await startTestServer(registry, { moduleCalls: tracker });
+  const client = new Client({ name: "shell-module", version: "0.0.0" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+    const relay = () =>
+      client.callTool({ name: "relayCallTool", arguments: { targetModule: "vault-directory", name: "lookupAlias", arguments: {} } });
+
+    const outer = tracker.beginCall("shell", "thread-1", "turn", undefined, false, "toolu_outer");
+    tracker.stopAccepting();
+    const ok = (await relay()) as { isError?: boolean };
+    assert.notEqual(ok.isError, true, "実行中の呼び出しの中の中継を断った");
+    assert.deepEqual(reached, ["toolu_outer"], "宛先に外側の tool_use の id が継がれていない");
+    outer.end();
+
+    // 断りは中継のエラーとして呼び元の Module に返る（Module はそれを自分の呼び出しの結果に包む）
+    await assert.rejects(relay(), (err: Error) => err.message.includes(RESTARTING_REFUSAL));
+    assert.equal(reached.length, 1, "止めている間の中継が宛先に届いた");
+    assert.equal((audits as Array<{ allowed: boolean; reason?: string }>).at(-1)?.reason, "banto を起こし直しているため断った");
+  } finally {
+    await client.close();
+    close();
   }
 });

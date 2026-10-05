@@ -15,6 +15,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { parseModuleMeta } from "@banto/module-contract";
 import { buildAgentProxy } from "./agent-proxy.js";
+import { ModuleCallTracker, RESTARTING_REFUSAL } from "./module-calls.js";
 
 async function setupFakeModuleClient(): Promise<Client> {
   const server = new Server(
@@ -606,6 +607,48 @@ test("人を待ち終えた直後の呼び出しは、上限をまるごと使�
   await new Promise((r) => setTimeout(r, startedAt + IDLE * 4 - IDLE / 8 - Date.now()));
   answer();
   assert.equal(((await call).content as { text: string }[])[0]?.text, "DONE");
+  await runner.close();
+  await moduleClient.close();
+});
+
+// **起こし直しのために止めている間は、AI の新しい tool 呼び出しを断る**（追加・2026-10-05、Fable のレビュー）。Module には
+// 届けず、AI には「起き直したあとにもう一度」を結果で返す（続きの AI が呼び直せる）。止める前に始まった呼び出しは最後まで返る。
+// 台帳には Runner の tool_use の id を置く（中の承認・質問を会話の呼び出しに結びつける）
+test("止め始めたら新しい tool 呼び出しは Module に届かず RESTARTING_REFUSAL で返る。実行中のものは最後まで返る", async () => {
+  const reached: string[] = [];
+  let finish!: () => void;
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "runCommand", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    reached.push(String((req.params.arguments as { command?: string }).command));
+    if ((req.params.arguments as { command?: string }).command === "slow") await new Promise<void>((r) => (finish = r));
+    return { content: [{ type: "text", text: "done" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["shell"], dependsOn: [], isolation: "subprocess" }, "fake");
+  const moduleCalls = new ModuleCallTracker();
+  const proxy = buildAgentProxy({ name: "shell-p", client: moduleClient, meta }, { moduleCalls, threadId: "t1", projectId: "p" });
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+
+  const slow = runner.callTool({ name: "runCommand", arguments: { command: "slow" }, _meta: { "claudecode/toolUseId": "toolu_slow" } });
+  while (reached.length === 0) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(moduleCalls.toolUseIdFor("shell-p"), "toolu_slow", "台帳に tool_use の id が無い");
+  moduleCalls.stopAccepting();
+  const refused = (await runner.callTool({ name: "runCommand", arguments: { command: "next" } })) as { isError?: boolean; content: Array<{ text: string }> };
+  assert.equal(refused.isError, true);
+  assert.equal(refused.content[0]!.text, RESTARTING_REFUSAL);
+  assert.deepEqual(reached, ["slow"], "止めている間の呼び出しが Module に届いた");
+  // 実行中の呼び出しは待たれて、結果が返る
+  const drained = moduleCalls.drain(5_000, 10);
+  finish();
+  assert.equal(((await slow) as { content: Array<{ text: string }> }).content[0]!.text, "done");
+  assert.equal((await drained).left, 0);
   await runner.close();
   await moduleClient.close();
 });
