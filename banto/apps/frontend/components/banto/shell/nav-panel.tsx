@@ -47,7 +47,7 @@ import {
 } from "@/lib/mock/threads";
 import { describeFailure } from "@/lib/report-failure";
 import { cn } from "@/lib/utils";
-import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref } from "@/lib/settings-link";
+import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref, threadRowHref } from "@/lib/settings-link";
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
@@ -290,8 +290,8 @@ function ProjectTreeItem({
               <SidebarMenuSubItem>
                 <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>
                   <Link
-                    // 設定を開いていれば、設定はそのまま下の画面だけ切り替える（2026-09-30、`threadNavHref`）
-                    href={threadNavHref(project.id, null, pathname, searchParams, settingsEntrySection)}
+                    // 設定を開いていても、設定を閉じてその会話を出す（2026-10-05、`threadRowHref`）
+                    href={threadRowHref(project.id, null)}
                     data-roving-item
                     onClick={onNavigate}
                   >
@@ -325,7 +325,7 @@ function ProjectTreeItem({
                             className={CONNECTED_FEATURES.threadCloseReopen ? "pr-8" : undefined}
                           >
                             <Link
-                              href={threadNavHref(project.id, fork.id, pathname, searchParams, settingsEntrySection)}
+                              href={threadRowHref(project.id, fork.id)}
                               data-roving-item
                               title={fork.title}
                               onClick={onNavigate}

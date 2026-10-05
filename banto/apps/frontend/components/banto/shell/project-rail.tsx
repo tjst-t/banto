@@ -44,7 +44,7 @@ import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
-import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref } from "@/lib/settings-link";
+import { isSettingsOpen, projectNavHref, settingsOpenHref, threadRowHref } from "@/lib/settings-link";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
 import { useThreadUnread } from "@/lib/backend/real-inbox";
@@ -238,7 +238,7 @@ function CollapsedRail({
                         {forks.map((fork) => (
                           <Link
                             key={fork.id}
-                            href={threadNavHref(project.id, fork.id, pathname, searchParams, "project-danger")}
+                            href={threadRowHref(project.id, fork.id)}
                             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-ink-2 hover:bg-accent hover:text-foreground"
                           >
                             <ThreadRowIcon threadId={fork.id} icon={ForkIcon} className="size-3.5 shrink-0 text-ink-3" />

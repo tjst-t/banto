@@ -94,10 +94,23 @@ export function projectNavHref(
 }
 
 /**
+ * **サイドバー・レールの Thread の行（Base か Fork）を押したときの行き先**（改訂・2026-10-05、ユーザー要望）。
+ * **設定を開いていても、設定を閉じてその会話を出す**。2026-09-30 から 10-05 までは設定を開いたまま下の画面だけ
+ * 替えていた（下の `threadNavHref`）が、「Thread を押したらその会話が見たい」に改めた。Project の名前を押したとき
+ * （`projectNavHref`）・Fork を閉じたあと・Command Palette はこれまでどおり `threadNavHref`。
+ */
+export function threadRowHref(projectId: string, forkId: string | null): string {
+  const under = new URLSearchParams();
+  if (forkId) under.set("fork", forkId);
+  return withQuery(`/p/${projectId}`, under);
+}
+
+/**
  * **Thread（Base か Fork）への行き先**（追加・2026-09-30、ユーザー指摘）。設定を開いていなければその会話へ。
  * **設定を開いていれば、設定は開いたまま、下の画面をその会話にし、設定もその Project の層にする**。
  * 以前は Project 名だけがこの形で、サイドバーの「Base Thread」・Fork の行・レールの Fork 一覧・Command Palette
- * は素の `/p/…` へ飛び、設定が閉じていた。設定を閉じるのは Escape・閉じるボタン・いま設定で見ている
+ * は素の `/p/…` へ飛び、設定が閉じていた（サイドバー・レールの Thread の行は 2026-10-05 に `threadRowHref` で
+ * 設定を閉じる形へ戻した）。設定を閉じるのは Escape・閉じるボタン・いま設定で見ている
  * Project の名前を押す（`projectNavHref`）とき。
  */
 export function threadNavHref(

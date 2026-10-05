@@ -234,4 +234,15 @@ test("設定は1つの面——層は線で分かれ、開いたまま Project �
   await page.getByTestId("sidebar-project-name").filter({ hasText: "設定の層A" }).first().click();
   await page.waitForURL(/\/p\/[0-9a-f-]+$/, { timeout: 20_000 });
   await expectProjectOpen(page, "設定の層A");
+
+  // **Thread の行を押す**——設定を閉じてその会話を出す（改訂・2026-10-05、ユーザー要望。以前は設定を開いたまま）
+  const projectA = new URL(page.url()).pathname;
+  await openProjectSettings(page);
+  await page.waitForURL(/[?&]settings=1/, { timeout: 20_000 });
+  await expect(page.locator("[data-banto-settings]")).toBeVisible();
+  await openNav(page);
+  await page.getByTestId("sidebar-base-name").first().click();
+  await page.waitForURL((url) => url.pathname === projectA && !url.searchParams.has("settings"), { timeout: 20_000 });
+  await expect(page.locator("[data-banto-settings]"), "Thread を押しても設定が閉じない").toHaveCount(0, { timeout: 10_000 });
+  await expectProjectOpen(page, "設定の層A");
 });
