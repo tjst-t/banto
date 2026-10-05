@@ -4674,7 +4674,7 @@
       "number": 193,
       "kind": "bug",
       "title": "Backlog の自動 push が Repositories に頼まれず、自分の git で失敗する",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -4695,8 +4695,8 @@
         }
       ],
       "createdAt": "2026-10-04T08:57:37.311Z",
-      "updatedAt": "2026-10-05T10:57:47.601Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T10:58:05.559Z",
+      "closedAt": "2026-10-05T10:58:05.559Z",
       "extra": {}
     },
     {
