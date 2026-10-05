@@ -4970,7 +4970,7 @@
       "number": 206,
       "kind": "task",
       "title": "Module の「起こし直しても続けられる」約束と札の覚え直し",
-      "status": "in-progress",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-turn-events"
@@ -4980,7 +4980,7 @@
       "labels": [],
       "body": "module-contract に印。host は起き直したら Thread を続ける前に、名乗った Module を起こして約束したまま終わっていない仕事の一覧を渡し、1件ずつ「続ける」か「途中で終わりました」を受ける。続けるものは同じ札を覚え直す（最後の届け1回だけ）。続けると答えてから長く届かない札を人に見せる。",
       "doneWhen": "契約の試験で：名乗らない Module は今どおり「途中で終わりました」。名乗った Module が「続ける」と答えた札は残り、あとで届けられる（2回目は断られる）。Thread の続きはその判定のあとに始まる",
-      "resolution": null,
+      "resolution": "296ba993〜b930fa05（Fable のレビューの直し含む）、main・release 入り。Module 宛ての札も名乗った Module なら問う（決定）。反映は人",
       "refs": [],
       "threads": [
         {
@@ -4989,8 +4989,8 @@
         }
       ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T10:58:31.136Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T13:11:58.738Z",
+      "closedAt": "2026-10-05T13:11:58.738Z",
       "extra": {}
     },
     {
