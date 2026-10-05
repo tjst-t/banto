@@ -50,6 +50,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
     border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit;
   }
   button:hover { opacity: .75; }
+  /* **押せないボタンは押せないと見せる**（訂正・2026-10-05、実機で踏んだ）——disabled の見た目が無く、
+     同じ名前で断られている「参照を作る」が押せるのに反応しないように見えた */
+  button[disabled], button[disabled]:hover { opacity: .45; cursor: default; }
   button.icon { padding: 2px 6px; border-color: transparent; opacity: .6; }
   button.icon:hover { opacity: 1; }
   button.danger { color: var(--mcp-ui-color-danger, #c0392b); }
