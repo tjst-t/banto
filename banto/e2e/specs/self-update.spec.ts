@@ -511,10 +511,33 @@ test("本物の update.mjs：待つ→起こし直す→確かめる。終わっ
   await openUpdate(page);
   // 前の回はやめた回（失敗ではない）——押せる面がそのまま出ている
   await expect(page.getByTestId("update-cancelled")).toBeVisible();
+  // **画面のサーバも新しい版を返す**（追加・2026-10-05）——E2E の画面は組み直さないので返事を差し替える。
+  // 更新した本人の画面は、終わったら自動で読み込み直す（読み込み直すと印が消える）
+  await page.route("**/banto-build", (route) => route.fulfill({ json: { build: "e2e-updated-build" } }));
+  await page.evaluate(() => {
+    (window as unknown as { __beforeReload?: boolean }).__beforeReload = true;
+  });
   await page.getByTestId("update-wait").click();
 
   const done = page.getByTestId("update-done");
   await expect(done).toHaveText(`版 ${short(latest.commit)} になりました`, { timeout: 90_000 });
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __beforeReload?: boolean }).__beforeReload ?? false), {
+      message: "更新が終わっても画面を読み込み直さない",
+      timeout: 30_000,
+    })
+    .toBe(false);
+  // 読み込み直したあとも同じ印が「新しい」と出るが、同じ版で2度は読み込み直さない（帯に任せる）
+  await page.evaluate(() => {
+    (window as unknown as { __afterReload?: boolean }).__afterReload = true;
+  });
+  await expect(page.getByTestId("new-build-banner")).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(3_000);
+  expect(
+    await page.evaluate(() => (window as unknown as { __afterReload?: boolean }).__afterReload ?? false),
+    "同じ版で読み込み直しを繰り返した",
+  ).toBe(true);
+  await page.unroute("**/banto-build");
   await expect(page.getByTestId("update-reconnecting")).toHaveCount(0);
   const current = page.getByTestId("update-current");
   await expect(current).toContainText(latest.subject);

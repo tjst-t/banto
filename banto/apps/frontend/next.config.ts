@@ -1,4 +1,24 @@
+import { execFileSync } from "node:child_process";
 import type { NextConfig } from "next";
+
+/**
+ * **この組み立ての印**（追加・2026-10-05、ユーザー報告「更新したけど何も変わってない」）。
+ *
+ * 画面から banto を更新しても、開いていたページは読み込み直されず、古い画面のプログラムが動き続けていた。
+ * 印をページに埋め、同じ印を `/banto-build` でも返す——ページが持つ印とサーバが返す印が違えば、
+ * サーバの画面は新しくなっている（`lib/backend/frontend-build.ts`）。同じ commit から組み直しても
+ * 中身は替わりうるので、組み立てた時刻も入れる
+ */
+function buildId(): string {
+  if (process.env.BANTO_FRONTEND_BUILD) return process.env.BANTO_FRONTEND_BUILD;
+  let commit = "unknown";
+  try {
+    commit = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    // git の外で組み立てた——時刻だけでも、組み直せば替わる
+  }
+  return `${commit}-${new Date().toISOString()}`;
+}
 
 const nextConfig: NextConfig = {
   /**
@@ -14,6 +34,7 @@ const nextConfig: NextConfig = {
    * 既定は `.next` のまま（人の環境は何も変わらない）。E2E だけが別を指す。
    */
   distDir: process.env.BANTO_NEXT_DIST_DIR ?? ".next",
+  env: { NEXT_PUBLIC_BANTO_BUILD: buildId() },
   // LAN 内の他端末（携帯等）から dev サーバへアクセスするために要る
   // （Next 15.2+ の既定ブロックを解除。無いと HMR やアセット取得が壊れる）。
   // "127.0.0.1"はサンドボックス内での動作確認用に追加した（決定・2026-09-03）

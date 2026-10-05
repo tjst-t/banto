@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { describeFailure } from "@/lib/report-failure";
+import { reloadOnceFor, useNewFrontendBuild } from "@/lib/backend/frontend-build";
 import { StepUpRequiredError, stepUp } from "@/lib/backend/auth";
 import {
   HostUnreachableError,
@@ -252,6 +253,18 @@ export function UpdatePanel() {
     if (current.reason === "now") void run("now", () => request(commit, "now"));
     else void run("force", forceNow);
   }
+
+  // **更新したら、この画面も新しくする**（追加・2026-10-05、ユーザー報告「更新したけど何も変わってなさそう」）。
+  // host が新しい版で起き直しても、このページは古い画面のプログラムのまま動いていた。更新が終わり、画面のサーバも
+  // 新しい印を返したら読み込み直す（1つの版につき1回。ほかのタブ・端末は帯で知らせる、new-build-banner.tsx）
+  const newBuild = useNewFrontendBuild();
+  useEffect(() => {
+    if (!status || newBuild === null) return;
+    const done = status.state;
+    if (!status.running && done?.phase === "done" && done.to !== null && status.current?.commit === done.to) {
+      reloadOnceFor(newBuild);
+    }
+  }, [status, newBuild]);
 
   if (!status) {
     if (loadError) {
