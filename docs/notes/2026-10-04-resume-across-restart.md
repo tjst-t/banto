@@ -85,3 +85,23 @@ cgroup ごと止めるなら問題ない。
 | resume-subagent | Subagent を起こし直しのあと続ける | module-contract | 別のデータ置き場の host で、本物の Claude Code の仕事の途中で起こし直しても結果が届く。記録のファイルに資格情報が無い |
 | resume-factory | Factory を同じ約束に乗せる | subagent・factory-runtime | 実装の段の途中で起こし直しても最後まで進む |
 | resume-light-update-wait | 更新の「待つ」を続けられないものだけ待つ形に | thread-turn・subagent | 実行中の tool が無ければ待たずに起こし直しへ進み、起き直したあと続く |
+
+## 実装の最初の確かめ（resume-restart-measure、2026-10-05）
+
+### M4. host が止まったとき、コンテナの中の Module とその子は止まるか
+
+プローブ `banto/probes/m4-incus-exec.mjs`。この Project のコンテナの中の Incus に使い捨てのコンテナ（rs-probe）を立て、
+banto と同じ形（`incus exec <名前> -- /bin/sh -c "exec node …"`、stdio は pipe、tty なし）で「Module」を起こした。
+Module は子を2つ持つ（同じプロセスグループの `sleep 600` と、別グループの `sleep 600`）。呼び出し元の `incus` クライアントを
+止めて中を数えた。
+
+| 呼び出し元への信号 | Module（node） | 同じグループの子 | 別グループの子 |
+|---|---|---|---|
+| SIGTERM | 2秒以内に止まった | **残った**（10秒後も） | **残った** |
+| SIGKILL | 2秒以内に止まった | **残った** | **残った** |
+
+- **Module は host と一緒に止まる**（仕様の見込みどおり）。Module は起き直した host が起こし直す
+- **Module が起こしたコマンドは止まらずに残る**（親を失って動き続ける）。Shell の `runCommand` の長いコマンドは、起こし直したあとも
+  コンテナの中で走り続け、結果はどこにも返らない。続きの AI が同じコマンドを流し直すと二重に走る
+- → 「結果は分かりません。確かめてから進めてください」の文面は正しい。加えて「まだ動いているかもしれない」ことを書く。
+  残ったコマンドを Module が起き直したときに片づけるか（Shell が起こしたプロセスを覚えておいて止める）は別に決める
