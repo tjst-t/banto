@@ -30,6 +30,7 @@ import {
   SOCKET_DIR_META_KEY,
   isValueFree,
   visibilityOf,
+  RESUME_AFTER_RESTART_TOOL,
   type BantoModuleMeta,
   type Visibility,
 } from "@banto/module-contract";
@@ -635,6 +636,13 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         ts: new Date().toISOString(),
       });
     };
+
+    // **起こし直したときの問いは host だけが呼ぶ**（追加・2026-10-05、Fable のレビュー。`@banto/module-contract` の
+    // `resume.ts`）——中継からは断る（宛先の Module も呼び元の印で断るが、ここでも通さない）
+    if (kind === "tool" && name === RESUME_AFTER_RESTART_TOOL) {
+      await audit(false, "起こし直したときの問いは banto 本体だけが呼べる");
+      throw new Error(`${name} は banto 本体だけが呼べます（中継からは呼べません）`);
+    }
 
     const notAllowed = opts.registry.whyNotAllowed(identity, targetModule, onBehalfOf);
     if (notAllowed) {

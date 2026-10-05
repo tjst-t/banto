@@ -69,6 +69,11 @@ export interface ReplyHandle {
   usesLeft: number;
   awaiting: boolean;
   work?: BackgroundWork;
+  /**
+   * **最後の届けにしか使えない**（追加・2026-10-05、起こし直しのあと覚え直した札——`restore`）。使える回数が1回なので、
+   * 最後でない届けに使うと札が使い切られたまま片づかずに残る——断る
+   */
+  finalOnly?: boolean;
 }
 
 export class ReplyHandles {
@@ -99,7 +104,7 @@ export class ReplyHandles {
   /**
    * 使ってよいかを確かめて1回分使う。**だめなら理由を返す**（黙って落とさない——呼んだ Module に言う）
    */
-  use(id: string, caller: { connName?: string; moduleName: string }): ReplyHandle | { error: string } {
+  use(id: string, caller: { connName?: string; moduleName: string }, opts: { final?: boolean } = {}): ReplyHandle | { error: string } {
     const h = this.handles.get(id);
     if (!h) return { error: "返信用の札が見つかりません（期限切れか、banto を起動し直した）" };
     if (!h.awaiting && h.expiresAt < this.now()) {
@@ -109,6 +114,9 @@ export class ReplyHandles {
     // **札を渡した相手と同じ Module か**——合言葉を持つ別の Module が札を拾っても使えない
     if (caller.moduleName !== h.moduleName || (caller.connName !== undefined && caller.connName !== h.connName)) {
       return { error: "この返信用の札は、あなたに渡したものではありません" };
+    }
+    if (h.finalOnly && opts.final === false) {
+      return { error: "banto を起こし直したあと覚え直した札は、最後の届け（final）にしか使えません" };
     }
     if (h.usesLeft <= 0) return { error: `返信用の札は ${REPLY_LIMITS.uses} 回まで使えます（使い切りました）` };
     h.usesLeft -= 1;
@@ -120,8 +128,8 @@ export class ReplyHandles {
    * 札は Event Store の返事待ち（`reply.awaiting`）に残っている。使った回数は残っていないので、**使えるのは
    * 最後の届け1回だけ**。返事待ちのまま（期限で切らない）。札を渡した Module 以外は使えない確かめはそのまま効く
    */
-  restore(id: string, input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting">): ReplyHandle {
-    const h: ReplyHandle = { ...input, expiresAt: this.now() + REPLY_LIMITS.ttlMs, usesLeft: 1, awaiting: true };
+  restore(id: string, input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting" | "finalOnly">): ReplyHandle {
+    const h: ReplyHandle = { ...input, expiresAt: this.now() + REPLY_LIMITS.ttlMs, usesLeft: 1, awaiting: true, finalOnly: true };
     this.handles.set(id, h);
     return h;
   }

@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseModuleMeta, classifyMetaDifference } from "./meta.js";
-import { parseResumeAnswers, parseResumeQuestion, replyToFingerprint } from "./resume.js";
+import { isHostResumeCall, parseResumeAnswers, parseResumeQuestion, replyToFingerprint } from "./resume.js";
+import { CALL_ID_META_KEY, CALLER_META_KEY, THREAD_META_KEY } from "./meta.js";
 
 const base = { satisfies: ["x"], isolation: "subprocess" };
 
@@ -23,6 +24,12 @@ test("問いを読む：形が違えば投げる", () => {
   );
   assert.throws(() => parseResumeQuestion({}), /items/);
   assert.throws(() => parseResumeQuestion({ items: [{ thread: { threadId: "t" } }] }), /replyTo/);
+  // Module が中継で頼んだ仕事は Thread の代わりに呼び元の Module。どちらか一方だけ
+  assert.deepEqual(parseResumeQuestion({ items: [{ replyTo: "r2", caller: { module: "factory", projectId: "p1" } }] }), {
+    items: [{ replyTo: "r2", caller: { module: "factory", projectId: "p1" } }],
+  });
+  assert.throws(() => parseResumeQuestion({ items: [{ replyTo: "r" }] }), /どちらか一方/);
+  assert.throws(() => parseResumeQuestion({ items: [{ replyTo: "r", thread: { threadId: "t" }, caller: { module: "m" } }] }), /どちらか一方/);
 });
 
 test("答えを読む：問いに無い札・形の違う答えは捨て、理由の無い「やめた」には理由を補う", () => {
@@ -51,4 +58,13 @@ test("札の指紋は札そのものを含まず、同じ札なら同じ", () =>
   assert.notEqual(f, replyToFingerprint("reply_abd"));
   assert.doesNotMatch(f, /reply_abc/);
   assert.equal(f.length, 32);
+});
+
+test("問いは host だけ：呼び元の印（人の画面・中継・AI のターン）が付いていたら host の問いではない", () => {
+  assert.equal(isHostResumeCall(undefined), true);
+  assert.equal(isHostResumeCall({ progressToken: 1 }), true);
+  assert.equal(isHostResumeCall({ [CALLER_META_KEY]: { admin: true } }), false);
+  assert.equal(isHostResumeCall({ [CALLER_META_KEY]: { project: "p1" } }), false);
+  assert.equal(isHostResumeCall({ [THREAD_META_KEY]: { projectId: "p1", threadId: "t1" } }), false);
+  assert.equal(isHostResumeCall({ [CALL_ID_META_KEY]: "c1" }), false);
 });

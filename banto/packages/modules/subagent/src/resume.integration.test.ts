@@ -14,6 +14,8 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
+  CALL_ID_META_KEY,
+  CALLER_META_KEY,
   MODULE_META_KEY,
   REPLY_TO_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
@@ -26,6 +28,8 @@ import { localClaudeLogin } from "./claude-login-access.js";
 import { createSubagentServer, resumePromptOf } from "./server.js";
 import { fakeVault } from "./testing/harness.js";
 import type { RunningRecord } from "./running.js";
+import { execFileSync, spawn } from "node:child_process";
+import { groupAlive, startTicksOf } from "./process-group.js";
 
 type Delivered = { replyTo: string; title: string; text: string };
 type ToolResult = { content: { text: string }[]; isError?: boolean };
@@ -91,8 +95,14 @@ const readRunning = (dirs: Dirs): RunningRecord[] =>
   runningFiles(dirs).map((f) => JSON.parse(readFileSync(join(runningDir(dirs), f), "utf8")) as RunningRecord);
 
 /** 待たない形で頼み、最初の tool を呼ぶまで待つ。走っている間の記録（ファイルの中身）を返す */
-async function startBackground(m: Awaited<ReturnType<typeof startModule>>, dirs: Dirs, args: Record<string, unknown>) {
-  const res = await m.call("runSubagent", { agent: "fake", runInBackground: true, ...args }, { [REPLY_TO_META_KEY]: REPLY_TO, [THREAD_META_KEY]: THREAD });
+async function startBackground(
+  m: Awaited<ReturnType<typeof startModule>>,
+  dirs: Dirs,
+  args: Record<string, unknown>,
+  /** 呼び元の印。既定は AI のターン（Thread）。Module が中継で頼んだ形は `{ caller: { project } }` だけ */
+  stamp: Record<string, unknown> = { [THREAD_META_KEY]: THREAD },
+) {
+  const res = await m.call("runSubagent", { agent: "fake", runInBackground: true, ...args }, { [REPLY_TO_META_KEY]: REPLY_TO, ...stamp });
   assert.equal(res.isError, undefined, res.content[0]?.text);
   const runId = (JSON.parse(res.content[0]!.text) as { runId: string }).runId;
   for (let i = 0; i < 100; i++) {
@@ -107,9 +117,14 @@ async function startBackground(m: Awaited<ReturnType<typeof startModule>>, dirs:
  * host が落ちたのと同じ置き場を作る：走っている間の記録の写しを取り、仕事を止めて後片づけさせ（記録が消える）、写しを
  * 書き戻す。`edit` で写しを書き換えられる
  */
-async function crashDuring(dirs: Dirs, args: Record<string, unknown>, edit?: (r: RunningRecord) => void): Promise<RunningRecord> {
+async function crashDuring(
+  dirs: Dirs,
+  args: Record<string, unknown>,
+  edit?: (r: RunningRecord) => void,
+  stamp?: Record<string, unknown>,
+): Promise<RunningRecord> {
   const before = await startModule(dirs);
-  const { runId, raw } = await startBackground(before, dirs, args);
+  const { runId, raw } = await startBackground(before, dirs, args, stamp);
   await before.call("cancelRun", { id: runId });
   await before.waitDelivered(1);
   assert.equal(runningFiles(dirs).length, 0, "届けたのに記録が消えない");
@@ -148,6 +163,7 @@ test("待たない形の仕事は、走っている間置き場に記録が残�
     assert.equal(r.promptHead, "[done-tool] [slow 30] 長い仕事");
     assert.equal(r.progressed, true);
     assert.deepEqual(r.toolsInFlight.map((t) => t.title), ["sleep 30"]);
+    assert.ok(r.agentProcess && r.agentProcess.pid > 1, "エージェントの pid が記録に無い");
     // 資格情報（Vault から受け取った値・起動の env）と札そのものは無い
     for (const secret of [STORED_KEY, ENV_SECRET, REPLY_TO, "FAKE_AGENT_TOKEN", "PATH"]) {
       assert.ok(!raw.includes(secret), `走っている記録に ${secret} が書かれている`);
@@ -276,4 +292,188 @@ test("記録の無い札・別の Thread の札には「続けない」と答え
 test("起こし直しのあと送る文：実行中の tool が無ければ「ありません」、あれば最後の1つ", () => {
   assert.equal(resumePromptOf({ toolsInFlight: [] }), "banto を起こし直したため、作業が途中で切れました。切れたとき実行中だった tool はありません。続けてください");
   assert.match(resumePromptOf({ toolsInFlight: [{ title: "a" }, { title: "make test" }] }), /実行中だった tool：make test——/);
+});
+
+// ---- 残ったエージェント（追加・2026-10-05。実測：Module が止まってもエージェントと子はコンテナの中で走り続ける）----
+
+/** 残ったエージェントの代わり：自分のプロセスグループで走り続ける（印つき） */
+function leftover(mark: string): { pid: number; startTicks: number } {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)", mark], { detached: true, stdio: "ignore" });
+  child.unref();
+  return { pid: child.pid!, startTicks: startTicksOf(child.pid!)! };
+}
+
+const alive = (pid: number) => groupAlive(pid);
+
+test("エージェントは自分のプロセスグループで起こし、記録に pid と開始時刻を残す。止めるとグループごと（子も）止まる", async () => {
+  await withDirs(async (dirs) => {
+    const m = await startModule(dirs);
+    const { runId, raw } = await startBackground(m, dirs, { prompt: "[child 120] [slow 30] 長い仕事" });
+    const r = JSON.parse(raw) as RunningRecord;
+    assert.ok(r.agentProcess, "エージェントの pid が記録に無い");
+    assert.equal(r.agentProcess.startTicks, startTicksOf(r.agentProcess.pid));
+    assert.ok(alive(r.agentProcess.pid));
+    const childOf = () => execFileSync("ps", ["-eo", "args"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(`fake-agent-child ${r.sessionId}`));
+    assert.equal(childOf().length, 1, "エージェントの子が起きていない（試験の前提）");
+    await m.call("cancelRun", { id: runId });
+    await m.waitDelivered(1);
+    for (let i = 0; i < 50 && alive(r.agentProcess.pid); i++) await new Promise((res) => setTimeout(res, 100));
+    assert.equal(alive(r.agentProcess.pid), false, "止めたのにグループが残っている");
+    assert.deepEqual(childOf(), [], "止めたのにエージェントの子が残っている");
+    await m.close();
+  });
+});
+
+test("続ける前に、前の走行のエージェント（グループ）が残っていれば止めてから続ける", async () => {
+  await withDirs(async (dirs) => {
+    const old = leftover("subagent-test-leftover");
+    try {
+      await crashDuring(dirs, { prompt: "[slow 30] 長い仕事" }, (r) => void (r.agentProcess = old));
+      const m = await startModule(dirs);
+      await ask(m, REPLY_TO);
+      await m.waitDelivered(1);
+      assert.equal(alive(old.pid), false, "前の走行のエージェントを止めずに続けた");
+      assert.match(m.delivered[0]!.text, /受け取った：banto を起こし直したため/);
+      await m.close();
+    } finally {
+      try {
+        process.kill(-old.pid, "SIGKILL");
+      } catch {
+        // もう居ない
+      }
+    }
+  });
+});
+
+test("続けないと決めた仕事も、残ったエージェントを止める", async () => {
+  await withDirs(async (dirs) => {
+    const old = leftover("subagent-test-leftover-abandon");
+    try {
+      await crashDuring(dirs, { prompt: "[slow 30] 長い仕事" }, (r) => void (r.agentProcess = old));
+      const m = await startModule(dirs);
+      await ask(m, "reply_unknown");
+      for (let i = 0; i < 100 && alive(old.pid); i++) await new Promise((res) => setTimeout(res, 100));
+      assert.equal(alive(old.pid), false, "問われなかった仕事のエージェントが残っている");
+      await m.close();
+    } finally {
+      try {
+        process.kill(-old.pid, "SIGKILL");
+      } catch {
+        // もう居ない
+      }
+    }
+  });
+});
+
+test("記録した pid が別のプロセスに使い回されていたら（開始時刻が違う）止めない", async () => {
+  await withDirs(async (dirs) => {
+    const other = leftover("subagent-test-not-mine");
+    try {
+      await crashDuring(dirs, { prompt: "[slow 30] 長い仕事" }, (r) => void (r.agentProcess = { pid: other.pid, startTicks: other.startTicks + 1 }));
+      const m = await startModule(dirs);
+      await ask(m, REPLY_TO);
+      await m.waitDelivered(1);
+      assert.equal(alive(other.pid), true, "別のプロセスを止めた");
+      await m.close();
+    } finally {
+      process.kill(-other.pid, "SIGKILL");
+    }
+  });
+});
+
+test("前の走行のエージェントが止まらなければ、続けずに失敗を同じ札で届ける", async (t) => {
+  // 止められないグループ：他人（root）のプロセスグループ。信号は EPERM で届かない
+  const rootLeader = readdirSync("/proc")
+    .filter((d) => /^\d+$/.test(d))
+    .map(Number)
+    .find((pid) => {
+      try {
+        const status = readFileSync(`/proc/${pid}/status`, "utf8");
+        return pid > 1 && /^Uid:\s+0\s/m.test(status) && startTicksOf(pid) !== undefined && groupLeader(pid);
+      } catch {
+        return false;
+      }
+    });
+  if (rootLeader === undefined || process.getuid?.() === 0) {
+    t.skip("止められないプロセスグループが見つからない");
+    return;
+  }
+  await withDirs(async (dirs) => {
+    await crashDuring(dirs, { prompt: "[slow 30] 長い仕事" }, (r) => void (r.agentProcess = { pid: rootLeader, startTicks: startTicksOf(rootLeader)! }));
+    const m = await startModule(dirs);
+    await ask(m, REPLY_TO);
+    await m.waitDelivered(1);
+    assert.equal(m.delivered[0]!.title, "Fake Agent（試験用） の仕事が失敗しました");
+    assert.match(m.delivered[0]!.text, /エージェント（pid \d+）が止まらないので、続けられませんでした/);
+    await m.close();
+  });
+});
+
+/** そのプロセスがグループの頭か（/proc/<pid>/stat の pgrp） */
+function groupLeader(pid: number): boolean {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]) === pid;
+}
+
+// ---- Fable のレビューを受けた直し（2026-10-05）----
+
+test("問いは host だけ：人の画面・中継・AI のターンの印が付いた問いは断り、記録には触らない", async () => {
+  await withDirs(async (dirs) => {
+    await crashDuring(dirs, { prompt: "[slow 30] 長い仕事" });
+    const m = await startModule(dirs);
+    const item = { replyTo: REPLY_TO, toolName: "runSubagent", thread: THREAD };
+    for (const stamp of [
+      { [CALLER_META_KEY]: { admin: true } },
+      { [CALLER_META_KEY]: { project: "p1" } },
+      { [THREAD_META_KEY]: THREAD },
+      { [CALL_ID_META_KEY]: "c1" },
+    ]) {
+      const res = await m.call(RESUME_AFTER_RESTART_TOOL, { items: [item] }, stamp);
+      assert.equal(res.isError, true, `${JSON.stringify(stamp)} の問いが通った`);
+      assert.match(res.content[0]!.text, /banto 本体だけが呼べます/);
+    }
+    assert.equal(runningFiles(dirs).length, 1, "断った問いで記録を片づけた");
+    assert.equal(m.delivered.length, 0);
+    // host の問い（印なし）は通る
+    assert.deepEqual(JSON.parse((await ask(m, REPLY_TO)).content[0]!.text), { answers: [{ replyTo: REPLY_TO, resume: true }] });
+    await m.waitDelivered(1);
+    await m.close();
+  });
+});
+
+test("Module が中継で頼んだ仕事（Thread の印が無い）も、呼び元の Module として問われたら続ける——Thread の仕事として問われたら続けない", async () => {
+  const relayStamp = { [CALLER_META_KEY]: { project: "p1" } };
+  await withDirs(async (dirs) => {
+    const cut = await crashDuring(dirs, { prompt: "[slow 30] 中継で頼まれた仕事" }, undefined, relayStamp);
+    assert.equal(cut.requestedBy, undefined, "試験の前提：Thread の印が無い");
+    const m = await startModule(dirs);
+    const res = await m.call(RESUME_AFTER_RESTART_TOOL, { items: [{ replyTo: REPLY_TO, caller: { module: "factory", projectId: "p1" } }] });
+    assert.deepEqual(JSON.parse(res.content[0]!.text), { answers: [{ replyTo: REPLY_TO, resume: true }] });
+    await m.waitDelivered(1);
+    assert.equal(m.delivered[0]!.replyTo, REPLY_TO);
+    assert.match(m.delivered[0]!.text, /受け取った：banto を起こし直したため/);
+    await m.close();
+  });
+  await withDirs(async (dirs) => {
+    await crashDuring(dirs, { prompt: "[slow 30] 中継で頼まれた仕事" }, undefined, relayStamp);
+    const m = await startModule(dirs);
+    const res = JSON.parse((await ask(m, REPLY_TO)).content[0]!.text) as { answers: Array<{ resume: boolean; reason?: string }> };
+    assert.equal(res.answers[0]!.resume, false);
+    assert.match(res.answers[0]!.reason!, /Module が中継で頼んだ仕事ですが、Thread の仕事として問われました/);
+    await m.close();
+  });
+});
+
+test("読めない走っている記録は横に退けて理由を残し、ほかの記録は続けられる（Subagent は起きる）", async () => {
+  await withDirs(async (dirs) => {
+    await crashDuring(dirs, { prompt: "[slow 30] 長い仕事" });
+    writeFileSync(join(runningDir(dirs), "broken.json"), "{ 壊れた");
+    writeFileSync(join(runningDir(dirs), "wrong-shape.json"), JSON.stringify({ hello: 1 }));
+    const m = await startModule(dirs);
+    const aside = readdirSync(runningDir(dirs)).filter((f) => f.includes(".unreadable-"));
+    assert.equal(aside.length, 2, `退けていない：${readdirSync(runningDir(dirs)).join(", ")}`);
+    assert.deepEqual(JSON.parse((await ask(m, REPLY_TO)).content[0]!.text), { answers: [{ replyTo: REPLY_TO, resume: true }] });
+    await m.waitDelivered(1);
+    await m.close();
+  });
 });

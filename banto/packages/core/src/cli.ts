@@ -293,6 +293,7 @@ async function main(): Promise<void> {
       console.warn(`[host] ${reply.threadId} に「途中で終わりました」を届けられませんでした:`, err);
     } finally {
       replyHandles.settle(reply.replyTo);
+      recovery?.noteSettled(reply.replyTo, "lost");
       await projectThread.settleReply(reply.threadId, reply.replyTo).catch(() => {});
       publishBackground(reply.threadId);
     }
@@ -320,28 +321,59 @@ async function main(): Promise<void> {
       );
     }
   };
+  /** 起動済みの Module。instance のものは key が名前、Project のものは `<名前>-<projectId>`。 */
+  const connectedModules = new Map<string, Client>();
+  /**
+   * **Module 宛ての返事**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。Module が中継で「終わったら届ける」
+   * tool を呼んだときの返事は、呼んだ Module の受け口（`dev.banto/receivesReplies`）に渡す。残してから渡すので、
+   * 呼んだ Module が止まっていても次に繋がったときに渡る。**起き直したときの札の判定より前に開く**——前の走行の返事待ちも
+   * 判定に乗せる（続けられると名乗った Module に頼んだものは続けるかを問い、ほかは「途中で終わりました」を残す。
+   * `delivery/restart-recovery.ts`、2026-10-05）
+   */
+  const moduleReplies = await ModuleReplies.open({
+    file: join(bootstrap.dataDir, "delivery", "module-replies.json"),
+    hand: async (toConn: string, args: ModuleReplyArguments) => {
+      const client = connectedModules.get(toConn);
+      if (!client) throw new Error(`${toConn} は繋がっていません`);
+      const { tools } = await client.listTools();
+      const receiver = tools.find((t) => receivesReplies(t as { _meta?: Record<string, unknown> }));
+      if (!receiver) throw new Error(`${toConn} は返事の受け口（dev.banto/receivesReplies）を名乗っていません`);
+      const r = await client.callTool({ name: receiver.name, arguments: { ...args } });
+      return r.isError ? "refused" : "handed";
+    },
+  });
   recovery = new RestartRecovery({
     projectThread,
     inbox,
     deliveries,
     replyHandles,
+    moduleReplies,
     resumable: ({ moduleName, projectId }) =>
-      loadModuleDeclarations(runtimeConfig, projectId).find((d) => d.name === moduleName)?.meta.resumesAfterRestart === true,
-    ask: async ({ moduleName, connName, projectId }, question) => {
-      const project = projectThread.getProject(projectId);
-      const declaration = loadModuleDeclarations(runtimeConfig, projectId).find((d) => d.name === moduleName);
-      if (!declaration || !project) throw new Error(`${moduleName} の宣言が見つかりません`);
+      loadModuleDeclarations(runtimeConfig, projectId ?? "").find((d) => d.name === moduleName)?.meta.resumesAfterRestart === true,
+    // 起こして繋ぐ。期限（`signal`）が過ぎたら、繋がっても問いは送らない（`RestartRecovery` が見る）
+    connect: async ({ moduleName, connName, projectId }, signal) => {
+      const declaration = loadModuleDeclarations(runtimeConfig, projectId ?? "").find((d) => d.name === moduleName);
+      if (!declaration) throw new Error(`${moduleName} の宣言が見つかりません`);
+      const project = projectId !== undefined ? projectThread.getProject(projectId) : undefined;
+      if (declaration.meta.scope === "project" && !project) throw new Error(`${moduleName} を起こす Project が分かりません`);
       const got = await connectDeclaredModule(declaration, declaration.meta.scope === "project" ? project : undefined);
+      if (signal.aborted) throw signal.reason;
       if (!got) throw new Error(`${moduleName} を起こせませんでした`);
       if (got !== connName) throw new Error(`${moduleName} の接続（${got}）が札を渡した接続（${connName}）と違います`);
       const client = connectedModules.get(got);
       if (!client) throw new Error(`${moduleName} に繋がっていません`);
-      const result = (await client.callTool({ name: RESUME_AFTER_RESTART_TOOL, arguments: { ...question } }, undefined, {
-        timeout: RESUME_ASK_TIMEOUT_MS,
-      })) as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
-      const text = result.content?.find((c) => c.type === "text")?.text ?? "";
-      if (result.isError) throw new Error(`${moduleName} が問いを断りました：${text.slice(0, 300)}`);
-      return JSON.parse(text) as unknown;
+      return {
+        ask: async (question, askSignal) => {
+          // 期限が来たら問いを取り消す（MCP の取り消しが Module に届く）
+          const result = (await client.callTool({ name: RESUME_AFTER_RESTART_TOOL, arguments: { ...question } }, undefined, {
+            timeout: RESUME_ASK_TIMEOUT_MS,
+            signal: askSignal,
+          })) as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+          const text = result.content?.find((c) => c.type === "text")?.text ?? "";
+          if (result.isError) throw new Error(`${moduleName} が問いを断りました：${text.slice(0, 300)}`);
+          return JSON.parse(text) as unknown;
+        },
+      };
     },
     deliverLost: deliverLostReply,
     publishBackground,
@@ -397,30 +429,6 @@ async function main(): Promise<void> {
     hostRelayUrl: relayUrl,
   };
 
-  /** 起動済みの Module。instance のものは key が名前、Project のものは `<名前>-<projectId>`。 */
-  const connectedModules = new Map<string, Client>();
-  /**
-   * **Module 宛ての返事**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。Module が中継で「終わったら届ける」
-   * tool を呼んだときの返事は、呼んだ Module の受け口（`dev.banto/receivesReplies`）に渡す。残してから渡すので、
-   * 呼んだ Module が止まっていても次に繋がったときに渡る
-   */
-  const moduleReplies = await ModuleReplies.open({
-    file: join(bootstrap.dataDir, "delivery", "module-replies.json"),
-    hand: async (toConn: string, args: ModuleReplyArguments) => {
-      const client = connectedModules.get(toConn);
-      if (!client) throw new Error(`${toConn} は繋がっていません`);
-      const { tools } = await client.listTools();
-      const receiver = tools.find((t) => receivesReplies(t as { _meta?: Record<string, unknown> }));
-      if (!receiver) throw new Error(`${toConn} は返事の受け口（dev.banto/receivesReplies）を名乗っていません`);
-      const r = await client.callTool({ name: receiver.name, arguments: { ...args } });
-      return r.isError ? "refused" : "handed";
-    },
-  });
-  // 起動し直した：前の走行で Module 宛ての返事待ちだったものも、その Module ごと止まっている——呼んだ Module に「途中で終わりました」を残す（繋がったときに渡る）
-  {
-    const lost = await moduleReplies.loseAll("banto を起動し直したため");
-    if (lost > 0) console.log(`[host] 前の走行で Module 宛ての返事待ちだった ${lost} 件に「途中で終わりました」を残しました`);
-  }
   /**
    * **Shell 専用のホーム**（接続名 → 置き場）。写すものの一覧を人が変えたら、立っている
    * Shell のホームにも写し直す——コマンドは毎回新しく起こすので、再起動は要らない。
@@ -1339,6 +1347,7 @@ async function main(): Promise<void> {
         // Module 宛ての札は下の `loseFrom` が呼んだ Module に知らせる
         if (h.toModule) {
           replyHandles.settle(replyTo);
+          recovery?.noteSettled(replyTo, "lost");
           continue;
         }
         void deliverLostReply({ threadId: h.threadId, replyTo, moduleName: h.moduleName, hop: h.hop + 1 }, "Module が止まったため");
@@ -1615,8 +1624,14 @@ async function main(): Promise<void> {
     registry,
     // **札で、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2）
     deliverToThread: async (caller, input) => {
-      const h = replyHandles.use(input.replyTo, { moduleName: caller.moduleName, ...(caller.connName ? { connName: caller.connName } : {}) });
+      // 起こし直しのあと覚え直した札は、最後の届けにしか使えない（`final` を渡して確かめる）
+      const h = replyHandles.use(
+        input.replyTo,
+        { moduleName: caller.moduleName, ...(caller.connName ? { connName: caller.connName } : {}) },
+        { final: input.final },
+      );
       if ("error" in h) return { ok: false, error: h.error };
+      if (input.final) recovery?.noteSettled(input.replyTo, "delivered");
       // **宛先が Module の札**（追加・2026-10-05）——呼んだ Module の受け口に渡す（残してから渡す）
       if (h.toModule) {
         const r = await moduleReplies.deliver({
@@ -1661,6 +1676,8 @@ async function main(): Promise<void> {
           toModule: h.toModule.moduleName,
           fromConn: h.connName,
           fromModule: h.moduleName,
+          // 起こし直したとき、頼んだ先が続けられると名乗っているかを宣言で見るのに使う（2026-10-05）
+          ...(h.projectId ? { projectId: h.projectId } : {}),
         });
       },
     },
@@ -1890,9 +1907,14 @@ async function main(): Promise<void> {
     // 受け取り、札で届ける。答えが出た Thread から切れたターンを片づけ、留めを解く
     void recovery!.afterListen().then(({ answers, turns }) => {
       for (const a of answers) {
+        const to = "threadId" in a.to ? `Thread ${a.to.threadId}` : `呼び元 ${a.to.module}`;
         console.log(
-          `[host] 前の走行の返事待ち（${a.target.moduleName}・Thread ${a.threadId}）→ ` +
-            (a.kept ? "続けると答えた（札を覚え直した。最後の届け1回だけ）" : `途中で終わりました（${a.why}）`),
+          `[host] 前の走行の返事待ち（${a.target.moduleName}・${to}）→ ` +
+            (a.outcome === "kept"
+              ? "続けると答えた（札を覚え直した。最後の届け1回だけ）"
+              : a.outcome === "settled"
+                ? `問いの答えより前に済んだ（${a.why}）`
+                : `途中で終わりました（${a.why}）`),
         );
       }
       logTurns(turns);

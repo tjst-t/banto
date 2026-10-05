@@ -60,10 +60,11 @@ test("頼んだ先が止まったら・起こし直したら、返事待ちは�
     assert.equal(handed[0]!.lost, true);
     assert.equal(handed[0]!.final, true);
     assert.match(handed[0]!.text, /止まったため/);
-    // 起こし直した：残りの返事待ちも全部
+    // 起こし直した：残りの返事待ちは読み直しても残っている。続けられない札は1件ずつ「途中で終わりました」
+    // （どれを続けるかは起き直したときの判定が決める——`restart-recovery.ts`）
     const reopened = await ModuleReplies.open({ file, hand: async (_to, a) => (handed.push(a), "handed") });
     assert.equal(reopened.awaiting().length, 1);
-    assert.equal(await reopened.loseAll("banto を起動し直したため"), 1);
+    await reopened.loseOne("reply_b", "banto を起動し直したため");
     await reopened.handPending("factory-p1");
     assert.equal(handed.at(-1)!.replyId, "rid_b");
     assert.equal(reopened.awaiting().length, 0);

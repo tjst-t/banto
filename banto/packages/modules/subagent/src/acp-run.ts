@@ -8,6 +8,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
+import { startTicksOf } from "./process-group.js";
 import {
   client,
   methods,
@@ -70,6 +71,11 @@ export interface RunDeps {
    * 残す（追加・2026-10-05）——起こし直したあと `session/load` で続ける
    */
   onSession?: (sessionId: string) => void;
+  /**
+   * エージェントを起こした（pid＝自分のプロセスグループの id と、開始時刻）。走っている仕事の記録に残し、起こし直したあと
+   * 続ける前に残ったものをグループごと止める（追加・2026-10-05、`process-group.ts`）
+   */
+  onSpawn?: (agent: { pid: number; startTicks?: number }) => void;
   /** 返答を書き進めた（ここまでの全文）。走っている間の画面に、書きかけを見せるのに使う */
   onText?: (textSoFar: string) => void;
   askPermission: (question: PermissionQuestion) => Promise<PermissionAnswer>;
@@ -101,6 +107,21 @@ const DEFAULT_CANCEL_GRACE_MS = 10_000;
 const STDERR_TAIL = 4000;
 /** 接続が閉じてから、プロセスの終了を待つ上限 */
 const EXIT_WAIT_MS = 1000;
+
+function optionalTicks(pid: number): { startTicks?: number } {
+  const startTicks = startTicksOf(pid);
+  return startTicks === undefined ? {} : { startTicks };
+}
+
+/** エージェントのグループごと信号を送る（もう誰も居なければ何もしない） */
+function killGroup(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    // もう誰も居ない
+  }
+}
 
 export class SubagentError extends Error {
   override name = "SubagentError";
@@ -167,7 +188,9 @@ interface SpawnedAgent {
 }
 
 function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
-  const child = spawn(launch.command, launch.args, { cwd, env: launch.env, stdio: ["pipe", "pipe", "pipe"] });
+  // **自分のプロセスグループで起こす**（追加・2026-10-05）——エージェントが起こす子（claude-agent-acp の CLI など）ごと
+  // 止められるように。Module が止まっても（banto の起こし直し）エージェントと子は残るので、続ける前にグループで止める
+  const child = spawn(launch.command, launch.args, { cwd, env: launch.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let stderr = "";
   child.stderr.on("data", (d: Buffer) => {
     stderr = (stderr + d.toString("utf8")).slice(-STDERR_TAIL);
@@ -203,7 +226,8 @@ function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
     },
     stop: () => {
       child.removeAllListeners("exit");
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      // グループごと（エージェントが起こした子も）。エージェントがもう終わっていても、子が残っていれば止める
+      killGroup(child, "SIGTERM");
     },
   };
 }
@@ -255,6 +279,7 @@ export async function describeAgent(launch: AgentLaunch, cwd: string): Promise<A
 export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunResult> {
   const spawned = spawnAgent(deps.launch, deps.cwd);
   const { child } = spawned;
+  if (child.pid !== undefined) deps.onSpawn?.({ pid: child.pid, ...optionalTicks(child.pid) });
 
   const result: Omit<RunResult, "agent" | "sessionId" | "stopReason"> = {
     text: "",
@@ -368,7 +393,7 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
         const onAbort = () => {
           void ctx.notify(methods.agent.session.cancel, { sessionId });
           // 取り消しを送っても止まらないエージェントは、待ちすぎずに殺す
-          setTimeout(() => child.kill("SIGKILL"), deps.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS).unref();
+          setTimeout(() => killGroup(child, "SIGKILL"), deps.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS).unref();
         };
         if (deps.signal?.aborted) onAbort();
         else deps.signal?.addEventListener("abort", onAbort, { once: true });

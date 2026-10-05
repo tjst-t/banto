@@ -1752,6 +1752,32 @@ test("走っている Thread に送ると並んで待ち、前が終わってか
   );
 });
 
+// **札は画面に出さない**（訂正・2026-10-05、Fable のレビュー）——Thread の中身を返す口は、返事待ちの札（replyTo）と
+// 札を渡した接続の名前を外す。人に見せる手がかり（Module の名前・頼んだ時刻・tool）は残す
+test("Thread の中身を返す口は、返事待ちの札そのもの（replyTo）と接続の名前を返さない", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const project = await deps.projectThread.createProject("demo", "/tmp");
+    const thread = await deps.projectThread.createBaseThread(project.id);
+    await deps.projectThread.recordAwaitingReply({
+      threadId: thread.id,
+      replyTo: "reply_SECRET-HANDLE",
+      connName: `subagent-${project.id}`,
+      moduleName: "subagent",
+      hop: 1,
+      work: { toolName: "runSubagent", toolCallId: "toolu_1" },
+    });
+    const res = await fetch(`${base}/api/threads/${thread.id}`, { headers: { authorization: `Bearer ${token}` } });
+    const raw = await res.text();
+    assert.ok(!raw.includes("reply_SECRET-HANDLE"), "札そのものが画面に出ている");
+    assert.ok(!raw.includes(`subagent-${project.id}`), "接続の名前が画面に出ている");
+    const body = JSON.parse(raw) as { awaitingReplies: Array<Record<string, unknown>> };
+    assert.equal(body.awaitingReplies.length, 1);
+    assert.equal(body.awaitingReplies[0]!.moduleName, "subagent");
+    assert.deepEqual(body.awaitingReplies[0]!.work, { toolName: "runSubagent", toolCallId: "toolu_1" });
+    assert.ok(typeof body.awaitingReplies[0]!.since === "string");
+  });
+});
+
 // **起こし直したあと Module に続けるかを聞いている Thread**（追加・2026-10-05、アーキ仕様 §2.5「2.」）——人が送ったターンも
 // 答えが出るまで始めない（先に始めると、切れたターンの続きを積む前に人のターンが最後のターンになる）
 test("起き直したあとの札の判定が終わるまで、その Thread に人が送ったターンは始まらない（発言は消えない）", async () => {

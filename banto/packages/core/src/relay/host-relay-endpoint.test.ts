@@ -83,6 +83,31 @@ test("a module with the right dependsOn can call the target module's tool throug
   }
 });
 
+// **起こし直したときの問いは host だけが呼ぶ**（追加・2026-10-05、Fable のレビュー）——中継からは断る
+test("起こし直したときの問い（resumeAfterRestart）は、中継からは呼べない", async () => {
+  const registry = new RelayRegistry();
+  registry.registerModule({
+    name: "vault",
+    client: await fakeVaultClient(),
+    meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
+  });
+  const shellMeta = bundledMeta({ satisfies: ["shell"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" }, "shell");
+  const token = registry.issueToken({ moduleName: "shell", meta: shellMeta });
+  const { url, audits, close } = await startTestServer(registry);
+  try {
+    const client = new Client({ name: "shell-module", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+    await assert.rejects(
+      () => client.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resumeAfterRestart", arguments: { items: [] } } }),
+      /banto 本体だけが呼べます/,
+    );
+    assert.deepEqual((audits as Array<{ name: string; allowed: boolean }>).map((a) => [a.name, a.allowed]), [["resumeAfterRestart", false]]);
+    await client.close();
+  } finally {
+    close();
+  }
+});
+
 test("a module without a declared dependency on the target is refused", async () => {
   const registry = new RelayRegistry();
   registry.registerModule({

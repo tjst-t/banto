@@ -101,6 +101,7 @@ import {
   toolCardOf,
   uiResourceUriOf,
   visibilityOf,
+  RESUME_AFTER_RESTART_TOOL,
   type ToolCardMeta,
 } from "@banto/module-contract";
 
@@ -420,6 +421,10 @@ async function checkUiCallable(
   client: ModuleClientLike,
   toolName: string,
 ): Promise<{ status: number; body: unknown } | undefined> {
+  // **起こし直したときの問いは host だけが呼ぶ**（追加・2026-10-05、Fable のレビュー）——画面からは呼べない
+  if (toolName === RESUME_AFTER_RESTART_TOOL) {
+    return { status: 403, body: { error: "この tool は banto 本体だけが呼べます（画面からは呼べません）", tool: toolName } };
+  }
   const { tools } = await client.listTools();
   const tool = tools.find((t) => (t as { name?: string }).name === toolName);
   if (!tool) return { status: 404, body: { error: "unknown tool", tool: toolName } };
@@ -917,8 +922,15 @@ function logIfSlow(req: IncomingMessage, res: ServerResponse): void {
  * （メーター）。記録（Event Store の `usage.recorded`）は変えない——返し方だけ。
  * 推移が要る日が来たら、そのとき別の口に分ける。
  */
-function toThreadDetail(thread: ThreadState): ThreadState {
-  return { ...thread, usage: thread.usage.slice(-1) };
+function toThreadDetail(thread: ThreadState) {
+  const { awaitingReplies, ...rest } = thread;
+  return {
+    ...rest,
+    usage: thread.usage.slice(-1),
+    // **札（replyTo）と札を渡した接続の名前は画面に出さない**（訂正・2026-10-05、Fable のレビュー）。札は届けるための
+    // 推測できない印——持てば誰でもその Thread に届けられる（`app-events.ts` の `BackgroundItem` と同じ姿勢）
+    ...(awaitingReplies ? { awaitingReplies: awaitingReplies.map(({ replyTo: _replyTo, connName: _connName, ...shown }) => shown) } : {}),
+  };
 }
 
 /** 一覧に出す分だけ（決定・2026-09-07）。**中身（messages/markers/usage）は返さない**

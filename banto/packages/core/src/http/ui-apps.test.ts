@@ -628,3 +628,19 @@ test("新しい Project の画面に差し出す始め方は、banto 全体の M
     assert.deepEqual(await (await fetch(`${base}/api/ui-folder-providers`, { headers })).json(), []);
   });
 });
+
+// **起こし直したときの問いは host だけが呼ぶ**（追加・2026-10-05、Fable のレビュー）——画面からの呼び出し口は断る
+test("起こし直したときの問い（resumeAfterRestart）は、画面からは呼べない", async () => {
+  await withApp(async ({ base, headers, threadId, projectId, module }) => {
+    for (const path of [`/api/threads/${threadId}/ui-tool-call`, `/api/projects/${projectId}/ui-tool-call`]) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ server: "filesystem", tool: "resumeAfterRestart", arguments: { items: [] } }),
+      });
+      assert.equal(res.status, 403, `${path} が通ってしまった`);
+      assert.match(JSON.stringify(await res.json()), /banto 本体だけが呼べます/);
+    }
+    assert.equal(module.calls.length, 0, "断ったのに Module を呼んでいる");
+  });
+});

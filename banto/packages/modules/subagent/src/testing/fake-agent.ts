@@ -13,6 +13,8 @@
 //                     （banto 本体のログインを共有する中継の試験用）
 //   [has VALUE]   環境変数のどれかに VALUE が含まれるかだけを答える（本物のトークンが入っていないことの試験用）
 //   [sha NAME]    環境変数 NAME の sha256 を答える（値を会話に出さずに、何が届いたかを確かめる）
+//   [child N]     子プロセスを1つ起こして N 秒走らせる（claude-agent-acp が CLI を子で起こすのと同じ形——ACP の管が
+//                 切れても子は走り続ける。起こし直しで古いエージェントが残るかの試験用。子の引数に fake-agent-child）
 //   [done-tool]   最初に tool を1つ呼んで、すぐ終わらせる（tool_call_update の completed。実行中の tool の数え方の試験用）
 //   [then-slow N] この頼みのあと、同じ会話の次の頼み（起こし直しのあと続けたとき）で tool を1つ始めて N 秒待つ
 //                 （続けている間の画面の試験用）
@@ -26,6 +28,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, type AgentContext, type SessionConfigOption } from "@agentclientprotocol/sdk";
 
@@ -109,6 +112,12 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     });
   try {
     if (text.includes("[crash]")) process.exit(3);
+    const child = /\[child (\d+)\]/.exec(text);
+    if (child) {
+      spawn(process.execPath, ["-e", `setTimeout(() => {}, ${Number(child[1]) * 1000})`, "fake-agent-child", sessionId], {
+        stdio: "ignore",
+      }).unref();
+    }
     if (text.includes("[done-tool]")) {
       const toolCallId = randomUUID();
       await cx.notify(methods.client.session.update, {

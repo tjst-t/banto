@@ -25,6 +25,7 @@ import {
   replyToOf,
   replyToFingerprint,
   parseResumeQuestion,
+  isHostResumeCall,
   RESUME_AFTER_RESTART_TOOL,
   threadOf,
   type ResumeAnswer,
@@ -48,6 +49,7 @@ import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
 import { RunLog } from "./runs.js";
 import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
+import { stopOwnedGroup } from "./process-group.js";
 
 export interface SubagentServerDeps {
   projectRoot: string;
@@ -347,6 +349,11 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         });
       }
       if (request.params.name === RESUME_AFTER_RESTART_TOOL) {
+        // **host だけが問う**（追加・2026-10-05、Fable のレビュー）。人の画面・中継・AI のターンからの呼び出しには呼び元の印が
+        // 付く——付いていたら断る（記録には触らない）
+        if (!isHostResumeCall(request.params._meta as Record<string, unknown> | undefined)) {
+          throw new SubagentError(`${RESUME_AFTER_RESTART_TOOL} は banto 本体だけが呼べます`);
+        }
         const question = parseResumeQuestion(args);
         const answers: ResumeAnswer[] = question.items.map((item) => {
           const record = interrupted.get(replyToFingerprint(item.replyTo));
@@ -354,24 +361,44 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           if (!record) return no("走っている仕事の記録がありません（待つ形で頼んだ仕事か、記録の前に切れた）");
           interrupted.delete(record.replyToFingerprint);
           if (!deps.deliver) {
-            running.remove(record.id);
+            abandon(record);
             return no("この Subagent には届ける口がありません");
           }
-          if (record.requestedBy && record.requestedBy.threadId !== item.thread.threadId) {
-            running.remove(record.id);
-            return no("記録の頼んだ Thread と、問われた Thread が違います");
+          // 頼んだ相手が記録と合うか：AI のターン（Thread）から頼んだ仕事は同じ Thread、Module が中継で頼んだ仕事は
+          // 呼び元の Module として問われる（Thread の印が無い）
+          const mismatch = item.thread
+            ? !record.requestedBy
+              ? "記録は Module が中継で頼んだ仕事ですが、Thread の仕事として問われました"
+              : record.requestedBy.threadId !== item.thread.threadId
+                ? "記録の頼んだ Thread と、問われた Thread が違います"
+                : undefined
+            : record.requestedBy
+              ? "記録は Thread から頼まれた仕事ですが、Module の仕事として問われました"
+              : undefined;
+          if (mismatch) {
+            abandon(record);
+            return no(mismatch);
           }
           if (!agents.some((a) => a.id === record.agent)) {
-            running.remove(record.id);
+            abandon(record);
             return no(`エージェント "${record.agent}" はもうありません`);
           }
-          // 答えを返してから続ける（host は答えを待っている。終わりは札で届く）
-          setImmediate(() => void resumeRun(record, item.replyTo));
+          // 答えを返してから続ける（host は答えを待っている。終わりは札で届く）。**host が問いを取り消したら続けない**
+          // ——期限を過ぎた問いで、host はもう「途中で終わりました」を届けている（続けても結果は誰にも届かない）
+          setImmediate(() => {
+            if (extra.signal.aborted) {
+              console.error(`[subagent] 仕事 ${record.id}：host が問いを取り消したので続けません`);
+              abandon(record);
+              return;
+            }
+            void resumeRun(record, item.replyTo);
+          });
           return { replyTo: item.replyTo, resume: true };
         });
-        // **問われなかった記録は片づける**——host はもうその札を待っていない（「途中で終わりました」を届けた）
+        // **問われなかった記録は片づける**——host はもうその札を待っていない（「途中で終わりました」を届けた）。host は
+        // Thread 宛ての札も Module 宛ての札（Module が中継で頼んだ仕事）も同じ問いで渡す
         for (const record of interrupted.values()) {
-          running.remove(record.id);
+          abandon(record);
           const run = runs.start({ ...runInputOf(record), continues: { id: record.id, startedAt: record.startedAt, notes: [] } });
           runs.finish(run.id, { error: "banto を起こし直したため途中で終わりました（host が続けるかを問いませんでした）" });
         }
@@ -568,6 +595,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       signal: opts.signal,
       onProgress: opts.onProgress,
       onSession: (sessionId) => record((r) => void (r.sessionId = sessionId)),
+      onSpawn: (agentProcess) => record((r) => void (r.agentProcess = agentProcess)),
       onToolCall: (title, kind, toolCallId) => {
         runs.toolCall(runId, title, kind);
         progressed = true;
@@ -583,6 +611,16 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       },
       askPermission: refusePermission,
     };
+  }
+
+  /** **続けない仕事の後片づけ**：記録を消し、前の走行のエージェントが残っていれば止める（答えは待たせない） */
+  function abandon(record: RunningRecord): void {
+    running.remove(record.id);
+    if (record.agentProcess) {
+      void stopOwnedGroup(record.agentProcess).then((stopped) => {
+        if (!stopped) console.error(`[subagent] 続けない仕事 ${record.id} のエージェント（pid ${record.agentProcess!.pid}）が止まりません`);
+      });
+    }
   }
 
   /**
@@ -608,6 +646,13 @@ export function createSubagentServer(deps: SubagentServerDeps) {
    */
   async function resumeRun(record: RunningRecord, replyTo: string): Promise<void> {
     const agent = agents.find((a) => a.id === record.agent)!;
+    // **前の走行のエージェントが残っていれば、先に止める**（実測：Module が止まってもエージェントと子はコンテナの中で
+    // 走り続ける）。止まったのを確かめてから続ける——同じ会話を2本が書かない。止まらなければ続けずに失敗を届ける
+    if (record.agentProcess && !(await stopOwnedGroup(record.agentProcess))) {
+      const message = `前の走行のエージェント（pid ${record.agentProcess.pid}）が止まらないので、続けられませんでした`;
+      await deliverEnd(record.id, replyTo, `${agent.title} の仕事が失敗しました`, JSON.stringify({ runId: record.id, resumedAfterRestart: true, error: message }));
+      return;
+    }
     if (record.finished) {
       await deliverEnd(record.id, replyTo, record.finished.title, record.finished.text);
       return;

@@ -6,7 +6,8 @@
 // - **残してから渡す**——届いたらまずファイルに残し、それから呼んだ Module の受け口の tool
 //   （`dev.banto/receivesReplies`）を呼ぶ。その瞬間に Module が止まっていても、次に繋がったときに渡す
 // - **返事待ちは失くさない**——頼んだ先の Module が止まったら、host が代わりに「途中で終わりました」（`lost: true`）を
-//   渡す。banto を起こし直したときも同じ（札は覚え直さないので、前の走行の返事待ちは全部「途中で終わりました」）
+//   渡す。banto を起こし直したときも同じ——ただし頼んだ先が「起こし直しても続けられる」と名乗っていれば、続けるかを
+//   問い、続けるなら同じ札で返事を待ち続ける（改訂・2026-10-05、アーキ仕様 §2.5「2.」・`restart-recovery.ts`）
 //
 // Event Store ではなく専用のファイルに置く：中身は Project・Thread のどちらにも属さない（banto 全体の Module どうしも
 // 使える）短命の待ち行列で、渡し終えたら消える。会話の記録として残すものではない。
@@ -28,6 +29,11 @@ export interface ModuleAwaitingReply {
   /** 頼んだ先（あとで届ける Module） */
   fromConn: string;
   fromModule: string;
+  /**
+   * 札を出した Project（呼んだ Module が Project の Module ならその Project。追加・2026-10-05）。起こし直したとき、頼んだ先が
+   * 「続けられる」と名乗っているかを宣言で見るのに使う（アーキ仕様 §2.5「2.」）。前からある行には無い
+   */
+  projectId?: string;
   since: string;
 }
 
@@ -122,12 +128,6 @@ export class ModuleReplies {
     return lost.length;
   }
 
-  /** **banto を起こし直した**——前の走行の返事待ちは全部「途中で終わりました」（札は覚え直さない） */
-  async loseAll(why: string): Promise<number> {
-    const lost = [...this.state.awaiting];
-    for (const a of lost) await this.deliverLost(a, why);
-    return lost.length;
-  }
 
   /** その札の返事待ちだけを「途中で終わりました」にする（頼んだ先が約束を果たさずに札を手放したとき等） */
   async loseOne(replyTo: string, why: string): Promise<void> {

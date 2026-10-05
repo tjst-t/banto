@@ -43,6 +43,11 @@ export interface RunningRecord {
   progressed: boolean;
   /** 実行中の tool（呼んで、まだ終わりが来ていないもの。古い順） */
   toolsInFlight: Array<{ id?: string; title: string }>;
+  /**
+   * いま走らせているエージェント（pid＝自分のプロセスグループの id と、開始時刻）。起こし直したあと続ける前・続けないと
+   * 決めたとき、残っていればグループごと止める（`process-group.ts`）
+   */
+  agentProcess?: { pid: number; startTicks?: number };
   /** 起こし直しのあと続けた回数 */
   resumes: number;
   /**
@@ -90,12 +95,33 @@ export class RunningStore {
     rmSync(this.fileOf(id), { force: true });
   }
 
-  /** 残っている記録（起動したとき＝前の走行で走っていたもの）。壊れたファイルは読み飛ばさず投げる（規則2） */
+  /**
+   * 残っている記録（起動したとき＝前の走行で走っていたもの）。**読めない1件は横に退けて理由を残す**（改訂・2026-10-05、
+   * Fable のレビュー——投げると Subagent が Project ごと起きなくなる。core の `module-replies.ts` と同じ形）。黙って
+   * 読み飛ばさない：退けた先と理由をログに出す
+   */
   list(): RunningRecord[] {
     if (!existsSync(this.dir)) return [];
-    return readdirSync(this.dir)
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => JSON.parse(readFileSync(join(this.dir, f), "utf8")) as RunningRecord);
+    const out: RunningRecord[] = [];
+    for (const f of readdirSync(this.dir).filter((name) => name.endsWith(".json"))) {
+      const file = join(this.dir, f);
+      try {
+        const r = JSON.parse(readFileSync(file, "utf8")) as Partial<RunningRecord>;
+        if (typeof r.id !== "string" || typeof r.replyToFingerprint !== "string" || typeof r.prompt !== "string" || typeof r.agent !== "string") {
+          throw new Error("走っている仕事の記録の形ではありません（id・agent・prompt・札の指紋が要ります）");
+        }
+        out.push(r as RunningRecord);
+      } catch (err) {
+        const aside = `${file}.unreadable-${Date.now()}`;
+        try {
+          renameSync(file, aside);
+        } catch {
+          // 退けられなくても、読めないものは使わない
+        }
+        console.error(`[subagent] 走っている仕事の記録 ${f} が読めませんでした（${aside} に退けました）:`, err instanceof Error ? err.message : err);
+      }
+    }
+    return out;
   }
 
   private fileOf(id: string): string {
