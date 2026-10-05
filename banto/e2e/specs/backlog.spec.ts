@@ -83,6 +83,7 @@ interface FileItem {
   number?: number;
   title: string;
   status: string;
+  priority?: string;
   parent: string | null;
   dependsOn: string[];
   resolution: string | null;
@@ -424,6 +425,72 @@ test("入口から開いた一覧で、見る・選ぶ・足す・分ける・�
   expect(pageErrors).toEqual([]);
 });
 
+// **承認を聞いた呼び出しが答えを待たずに終わったら、カードを畳み、次の呼び出しでまた聞く**（追加・2026-10-05、
+// docs/notes/2026-10-05-relay-stale-card.md）。本物の Claude Code は、返事も進捗も来ない呼び出しを300秒で諦め、host に
+// 何も言わずにターンを終えて去る（実測）——以前は host が気づかず、カードは受信箱に残り続け、同じ組み合わせの次の
+// 呼び出しはそこに相乗りして**カードが二度と出なかった**（2026-10-05、本番の Backlog で起きた）。
+// 人を待っている間は host が Runner へ進捗を送るので、待つ上限が進捗で延びる Runner は人を待ち続けられる
+test("承認を聞いたまま Runner が去るとカードは畳まれ、次のターンでまた聞く——人を待つ間は切れず、許可したら次からは聞かない", async ({ page }) => {
+  await gotoProject(page);
+  const composer = page.getByPlaceholder(/に送る/).first();
+  const fetchCards = page.locator('[data-role="judgment-card"]').filter({ hasText: "backlog が repositories の fetch_branch" });
+  const pushCards = page.locator('[data-role="judgment-card"]').filter({ hasText: "backlog が repositories の push_branch" });
+  const openJudgments = async () =>
+    ((await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{ kind: string; message?: string }>)
+      .filter((i) => i.kind === "judgment" && /backlog が repositories/.test(i.message ?? ""))
+      .map((i) => i.message);
+
+  // 1ターン目：Runner は4秒で諦める（host の進捗は10秒ごとなので、その前に去る——落ちた・止められたのと同じ去り方）
+  await composer.fill(
+    "優先度を下げます。" +
+      fakeTurn({
+        tools: [{ server: "backlog", name: "updateItem", args: { id: "turn-latest-on-return", priority: "low" } }],
+        giveUpToolAfterMs: 4_000,
+        then: "下げられませんでした。",
+      }),
+  );
+  await composer.press("Enter");
+  // 書く前に取ってくる——その中継の承認を聞かれる
+  await expect(fetchCards).toHaveCount(1, { timeout: 120_000 });
+  await expect(fetchCards.first()).toContainText("branch: backlog");
+  await expect(fetchCards.first().getByRole("button", { name: "許可する" })).toBeVisible();
+  // 答えずにいると、Runner が去ってターンが終わる。聞いた呼び出しが終わったので、カードは畳まれ、受信箱にも残らない
+  await expect(page.getByText("下げられませんでした。", { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect.poll(openJudgments, { timeout: 30_000 }).toEqual([]);
+  // 開き直すと、答える口は残らない（中継のカードは走っているターンの流れにしか描かれない）。**開き直さないと、カードは
+  // 答えられるように見えたまま**——畳んだことを流す先のターンがもう終わっている（今回は直していない。同ノート「残したこと」）
+  await page.reload();
+  await expect(page.getByText("下げられませんでした。", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
+
+  // 2ターン目：相乗りする先は無い——このターンで新しく聞かれる。Runner は15秒黙られたら諦めるが、人を待つ間は host が
+  // 進捗を送るので、25秒待たせても切れない
+  await composer.fill(
+    "優先度を上げます。" +
+      fakeTurn({
+        tools: [{ server: "backlog", name: "updateItem", args: { id: "turn-latest-on-return", priority: "high" } }],
+        giveUpToolAfterMs: 15_000,
+        then: "上げました。",
+      }),
+  );
+  await composer.press("Enter");
+  await expect(fetchCards).toHaveCount(1, { timeout: 120_000 });
+  const again = fetchCards.first();
+  await expect(again).toContainText("branch: backlog");
+  expect(await openJudgments()).toHaveLength(1);
+  await page.waitForTimeout(25_000); // 人が答えるのに時間がかかる——Runner の上限（15秒）より長く待たせる
+  await expect(again.getByRole("button", { name: "許可する" })).toBeVisible();
+  await again.getByRole("button", { name: "許可する" }).click();
+  // 書いたら送る——こちらも初回なので聞かれる
+  await expect(pushCards).toHaveCount(1, { timeout: 120_000 });
+  await expect(pushCards.first()).toContainText("branch: backlog");
+  await pushCards.first().getByRole("button", { name: "許可する" }).click();
+  await expect(page.getByText("上げました。", { exact: true })).toBeVisible({ timeout: 60_000 });
+  expect(fileItem("turn-latest-on-return")).toMatchObject({ priority: "high" });
+  await expect.poll(() => headOf("backlog", "origin"), { timeout: 30_000 }).toBe(headOf());
+  expect(await openJudgments()).toEqual([]);
+});
+
 test("AI が tool で進めたものが、人が何もしなくても画面に出て、その Thread が残る", async ({ page }) => {
   const id = await gotoProject(page);
   const inner = await openBacklog(page);
@@ -440,14 +507,8 @@ test("AI が tool で進めたものが、人が何もしなくても画面に�
   );
   await composer.press("Enter");
 
-  // AI のターンから Repositories に頼む（書く前に取ってくる・書いたら送る）——中継の承認を、ブランチごとに初回だけ聞く。
-  // 聞かれた中身を見てから答える（規則14）
-  for (const tool of ["fetch_branch", "push_branch"]) {
-    const card = page.locator('[data-role="judgment-card"]').filter({ hasText: `backlog が repositories の ${tool}` });
-    await expect(card).toBeVisible({ timeout: 120_000 });
-    await expect(card).toContainText("branch: backlog");
-    await card.getByRole("button", { name: "許可する" }).click();
-  }
+  // AI のターンから Repositories に頼む（書く前に取ってくる・書いたら送る）——中継の承認は、ブランチごとに初回だけ。
+  // 前の試験で両方とも許可したので、このターンでは聞かれない（下で、答える口のあるカードが1枚も出ていないことを見る）
 
   // 画面は数秒ごとに読み直す——押さずに出る
   await expect(doing.locator('[data-item-id="elicitation-answers"] [data-testid="backlog-row-title"]')).toHaveText(
@@ -469,6 +530,7 @@ test("AI が tool で進めたものが、人が何もしなくても画面に�
   // AI のターンから書いたものも送られている（Repositories が引き受けないので、リポジトリの git の設定で）
   await expect.poll(() => headOf("backlog", "origin"), { timeout: 30_000 }).toBe(headOf());
   await expect(page.getByText("進めているにしました。", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
   await inner.locator('[data-item-id="elicitation-answers"] [data-testid="backlog-row-open"]').click();
   await expect(inner.getByTestId("backlog-threads")).toHaveText(`Thread ${base.id}`);
 });

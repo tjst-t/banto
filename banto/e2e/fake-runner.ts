@@ -40,6 +40,13 @@ export interface FakePlan {
   /** 全部終わってから言うこと。 */
   then?: string;
   /**
+   * **tool の返事をこれだけ待ったら諦める**（ミリ秒、追加・2026-10-05）。本物の Claude Code は、返事も進捗も来ない
+   * MCP の呼び出しを300秒で諦める——**取り消しを送らず**、エラーを tool_result にしてターンを続け、ターンが終わると
+   * プロセスごと去る（同梱 CLI 2.1.281 で実測、docs/notes/2026-10-05-relay-stale-card.md）。その去り方を短い時間で
+   * 再現する。進捗が来たら数え直すのも本物と同じ
+   */
+  giveUpToolAfterMs?: number;
+  /**
    * tool を呼ぶ前に置く間（ミリ秒）。**画面が立ち上がるのを待つ必要がある spec だけ**
    * が指定する。本物の tool 呼び出しには必ず往復の時間がある。
    */
@@ -300,8 +307,16 @@ async function callRealTool(
   args: Record<string, unknown>,
   /** 本物の Claude Code と同じく、呼び出しの `_meta["claudecode/toolUseId"]` に tool_use の id を添える（2026-10-03、同梱 CLI で確かめた形） */
   toolUseId?: string,
+  signal?: AbortSignal,
+  /** 進捗が届いたら呼ぶ（`giveUpToolAfterMs` の数え直し） */
+  onProgress?: () => void,
 ): Promise<{ text: string; isError: boolean }> {
   const client = new Client({ name: "fake-runner", version: "0.0.0" });
+  // **止められたら、取り消しを送らずに接続を切る**（追加・2026-10-05、docs/notes/2026-10-05-relay-stale-card.md）。
+  // 本物はターンを止めると CLI がプロセスごと終わり、取り消しもセッションの終わりも送らない（同梱 CLI 2.1.281 で実測）
+  // ——host はそれでも呼び出しの終わりに気づかなければならない。偽物も同じ去り方をする
+  const leave = () => void client.close().catch(() => undefined);
+  signal?.addEventListener("abort", leave, { once: true });
   if (config?.type === "sdk" && config.instance) {
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await config.instance.connect(serverSide);
@@ -314,11 +329,15 @@ async function callRealTool(
     await client.connect(transport);
   }
   try {
-    const res = (await client.callTool({
-      name: toolName,
-      arguments: args,
-      ...(toolUseId ? { _meta: { "claudecode/toolUseId": toolUseId } } : {}),
-    })) as {
+    const res = (await client.callTool(
+      {
+        name: toolName,
+        arguments: args,
+        ...(toolUseId ? { _meta: { "claudecode/toolUseId": toolUseId } } : {}),
+      },
+      undefined,
+      onProgress ? { onprogress: onProgress, resetTimeoutOnProgress: true } : undefined,
+    )) as {
       content?: Array<{ type: string; text?: string }>;
       isError?: boolean;
     };
@@ -327,7 +346,40 @@ async function callRealTool(
       .join("\n");
     return { text, isError: res.isError === true };
   } finally {
+    signal?.removeEventListener("abort", leave);
     await client.close().catch(() => undefined);
+  }
+}
+
+/**
+ * **本物の CLI と同じ諦め方で呼ぶ**（`giveUpToolAfterMs`）。返事も進捗も `ms` 来なければ、取り消しを送らずに接続を切り、
+ * 本物と同じ形の文言のエラーを返す（文言は同梱 CLI 2.1.281 が返したものを縮めた）
+ */
+async function callGivingUp(
+  config: McpServerConfig,
+  toolName: string,
+  args: Record<string, unknown>,
+  toolUseId: string,
+  ms: number,
+  signal?: AbortSignal,
+): Promise<{ text: string; isError: boolean }> {
+  const leave = new AbortController();
+  signal?.addEventListener("abort", () => leave.abort(), { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let gaveUp!: (r: { text: string; isError: boolean }) => void;
+  const givenUp = new Promise<{ text: string; isError: boolean }>((r) => (gaveUp = r));
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      leave.abort();
+      gaveUp({ text: `MCP tool "${toolName}" sent no response or progress for ${Math.round(ms / 1000)}s; aborting.`, isError: true });
+    }, ms);
+  };
+  arm();
+  try {
+    return await Promise.race([callRealTool(config, toolName, args, toolUseId, leave.signal, arm), givenUp]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -517,7 +569,9 @@ export async function* runTurn(opts: {
     // **本物を呼ぶ。** 失敗はそのまま tool_result のエラーとして流す
     // （握りつぶさない・規則2——AI から見た失敗の見え方も本物と同じにする）
     try {
-      const { text, isError } = await callRealTool(servers[call.server] as McpServerConfig, call.name, args, toolUseId);
+      const { text, isError } = plan.giveUpToolAfterMs
+        ? await callGivingUp(servers[call.server] as McpServerConfig, call.name, args, toolUseId, plan.giveUpToolAfterMs, opts.signal)
+        : await callRealTool(servers[call.server] as McpServerConfig, call.name, args, toolUseId, opts.signal);
       console.warn(`[fake-runner] ${call.name} の結果(先頭120字): ${text.slice(0, 120).replace(/\n/g, " / ")}`);
       lastText = text;
       yield { type: "message", message: toolResultMessage(sessionId, toolUseId, text, isError) };

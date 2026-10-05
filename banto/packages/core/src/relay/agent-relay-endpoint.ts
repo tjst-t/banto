@@ -15,13 +15,22 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { buildAgentProxy, type AgentProxyOptions, type ModuleConnection } from "./agent-proxy.js";
+import { buildAgentProxy, type AgentProxy, type AgentProxyOptions, type ModuleConnection } from "./agent-proxy.js";
+
+/** POST の本文に入っている tool 呼び出しの JSON-RPC の id（1件でも、まとめて送られても） */
+function toolCallIdsOf(body: unknown): Array<string | number> {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.flatMap((m) => {
+    const msg = m as { method?: unknown; id?: unknown } | null;
+    return msg && msg.method === "tools/call" && (typeof msg.id === "string" || typeof msg.id === "number") ? [msg.id] : [];
+  });
+}
 
 export class AgentRelayEndpoint {
   private readonly connections = new Map<string, ModuleConnection>();
   private readonly sessions = new Map<
     string,
-    { transport: StreamableHTTPServerTransport; moduleName: string; threadId?: string }
+    { transport: StreamableHTTPServerTransport; proxy: AgentProxy; moduleName: string; threadId?: string }
   >();
 
   constructor(
@@ -96,7 +105,7 @@ export class AgentRelayEndpoint {
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (newSessionId) => {
-          this.sessions.set(newSessionId, { transport, moduleName, threadId });
+          this.sessions.set(newSessionId, { transport, proxy, moduleName, threadId });
         },
         // **閉じたセッションは覚えておかない**（決定・2026-09-10）。ターンが
         // 終わって Runner が切れたら、その分の宛先も台帳から外す
@@ -106,7 +115,20 @@ export class AgentRelayEndpoint {
         },
       });
       await proxy.server.connect(transport);
-      entry = { transport, moduleName, threadId };
+      entry = { transport, proxy, moduleName, threadId };
+    }
+
+    // **Runner が答えを受け取れなくなったら、その呼び出しを止める**（追加・2026-10-05、
+    // docs/notes/2026-10-05-relay-stale-card.md）。ターンを止めると CLI はプロセスごと終わり、取り消しも
+    // セッションの終わりも送ってこない（実測：SIGTERM でも SIGKILL でも、tool のハンドラは最後まで走った）。
+    // 返事はこの POST の応答の流れにしか載らない（再開のための記録は持たせていない）ので、応答が書き終わる前に
+    // 流れが閉じたら、その呼び出しの返事はもう誰にも届かない——止めれば、中継の承認も畳まれる
+    const callIds = req.method === "POST" ? toolCallIdsOf(parsedBody) : [];
+    if (callIds.length > 0) {
+      const proxy = entry.proxy;
+      res.once("close", () => {
+        if (!res.writableFinished) proxy.abortCalls(callIds, "Runner との接続が、返事を受け取る前に切れました");
+      });
     }
 
     await entry.transport.handleRequest(req, res, parsedBody);

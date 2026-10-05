@@ -507,3 +507,71 @@ test("承認を待っている間、その呼び出しは「人を待ってい�
     await t.close();
   }
 });
+
+// **相乗りした先が「聞いた呼び出しの終わり」で畳まれたら、続いている呼び出しは自分の会話で聞き直す**（追加・2026-10-05、
+// docs/notes/2026-10-05-relay-stale-card.md）。以前は畳まれた理由をそのまま受け取り、後ろのターンにはカードが一度も
+// 出なかった。許可したら記録に残り、次からは聞かない
+test("1枚目を聞いた呼び出しが終わったら、相乗りしていた呼び出しは自分の会話で聞き直す——許可は残り、次は聞かない", async () => {
+  const t = await setup({ bundled: true });
+  const seen = new Set<string>();
+  try {
+    const a = t.moduleCalls.beginCall("shell-project-1", THREAD);
+    const b = t.moduleCalls.beginCall("shell-project-1", "thread-2");
+    const relay = (callId: string) =>
+      t.caller.callTool({
+        name: "relayCallTool",
+        arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+        _meta: { "dev.banto/callId": callId },
+      });
+    const first = relay(a.id).then((r) => r, (e: unknown) => e);
+    const asked = await waitForJudgment(t.inbox, seen);
+    assert.equal(asked.threadId, THREAD);
+    const second = relay(b.id);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(t.inbox.listOpen().filter((x) => x.kind === "judgment").length, 1, "相乗りせずに2枚目を出した");
+    assert.equal(t.moduleCalls.isWaitingOnHuman("shell-project-1", b.id), true, "相乗りした呼び出しが人待ちになっていない");
+
+    // 1枚目を聞いた呼び出しが、人が答える前に終わった
+    a.end();
+    assert.match(String((await first as Error).message), /人が答える前に終わりました/);
+    assert.equal((t.inbox.get(asked.id) as JudgmentItem).liveness, "answered");
+    const again = await waitForJudgment(t.inbox, seen);
+    assert.equal(again.threadId, "thread-2", "続いている呼び出しの会話で聞き直していない");
+    t.pendingApprovals.resolve(again.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(again.id, { behavior: "allow" });
+    assert.equal(((await second).content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    b.end();
+
+    // 許可は残る——次の呼び出しは聞かない
+    const c = t.moduleCalls.beginCall("shell-project-1", "thread-3");
+    assert.equal(((await relay(c.id)).content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    assert.equal(t.inbox.listOpen().filter((x) => x.kind === "judgment").length, 0);
+    c.end();
+  } finally {
+    await t.close();
+  }
+});
+
+// **終わった呼び出しの印で来た中継は、別のターンの会話を借りない**（追加・2026-10-05）。外側が切れたあとも Module の中で
+// 続いていた仕事（Backlog の送る）が、同じ Module をたまたま使っていた別のターンにカードを出し、その呼び出しを人待ちにしていた
+test("終わった呼び出しの印で来た中継は、同じ Module を使っている別のターンでは聞かずに断る", async () => {
+  const t = await setup({ bundled: true });
+  try {
+    const live = t.moduleCalls.beginCall("shell-project-1", "thread-2");
+    const gone = t.moduleCalls.beginCall("shell-project-1", THREAD);
+    gone.end();
+    await assert.rejects(
+      t.caller.callTool({
+        name: "relayCallTool",
+        arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+        _meta: { "dev.banto/callId": gone.id },
+      }),
+      /特定できません/,
+    );
+    assert.equal(t.inbox.listOpen().filter((x) => x.kind === "judgment").length, 0, "別のターンの会話にカードを出した");
+    assert.equal(t.moduleCalls.isWaitingOnHuman("shell-project-1", live.id), false);
+    live.end();
+  } finally {
+    await t.close();
+  }
+});

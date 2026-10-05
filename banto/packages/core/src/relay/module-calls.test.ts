@@ -20,11 +20,15 @@ test("呼び出しの印を渡せばその1件について答え、渡さなけ�
   assert.equal(t.callerFor("window"), undefined);
   assert.deepEqual(t.threadFor("window"), { kind: "ambiguous", threadIds: ["t1", "t2", "t3"] });
 
-  // 終わった呼び出しの印・別の接続の印は、その1件を指さない（全部を合わせる形に戻る）
+  // 終わった呼び出しの印・別の接続の印は、**何も指さない**（改訂・2026-10-05、docs/notes/2026-10-05-relay-stale-card.md）
+  // ——以前は接続の全部に戻していたので、終わった呼び出しの仕事が、同じ Module を使っている別のターンの呼び出しを借りた
   canvas.end();
-  assert.equal(t.originFor("window", canvas.id), "turn");
+  assert.equal(t.originFor("window", canvas.id), undefined);
+  assert.deepEqual(t.threadFor("window", canvas.id), { kind: "none" }, "終わった呼び出しの印で、別のターンの会話を借りた");
+  assert.equal(t.isRunning("window", canvas.id), false);
+  assert.equal(t.isRunning("window"), true);
   const elsewhere = t.beginCall("other-module", "t9", "canvas", "pA");
-  assert.equal(t.originFor("window", elsewhere.id), "turn", "別の接続の印で、この接続の呼び出しを名指せた");
+  assert.equal(t.originFor("window", elsewhere.id), undefined, "別の接続の印で、この接続の呼び出しを名指せた");
   turn.end();
   other.end();
   elsewhere.end();
@@ -68,4 +72,24 @@ test("holdForHuman：待っている間だけ isWaitingOnHuman が true（重ね
   assert.equal(t.isWaitingOnHuman("m", a.id), false);
   a.end();
   assert.equal(t.isWaitingOnHuman("m", a.id), false);
+});
+
+test("isModuleWaitingOnHuman：その Module のどれかの呼び出しが人を待っている間だけ true（別の Module は数えない）", () => {
+  const t = new ModuleCallTracker();
+  const a = t.beginCall("m", "th1");
+  const b = t.beginCall("m", "th2");
+  const other = t.beginCall("n", "th3");
+  assert.equal(t.isModuleWaitingOnHuman("m"), false);
+  const release = t.holdForHuman("m", a.id);
+  assert.equal(t.isModuleWaitingOnHuman("m"), true);
+  assert.equal(t.isWaitingOnHuman("m", b.id), false, "後ろの呼び出し自身は人を待っていない");
+  assert.equal(t.isModuleWaitingOnHuman("n"), false);
+  release();
+  assert.equal(t.isModuleWaitingOnHuman("m"), false);
+  // 終わった呼び出しの印で持とうとしても、誰も人待ちにならない
+  a.end();
+  t.holdForHuman("m", a.id);
+  assert.equal(t.isModuleWaitingOnHuman("m"), false, "終わった呼び出しの印で、別の呼び出しが人待ちになった");
+  b.end();
+  other.end();
 });

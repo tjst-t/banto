@@ -55,11 +55,17 @@ export interface RelayApprovalGateDeps {
 export const RELAY_CALL_ENDED_REASON =
   "承認を聞いた呼び出しが、人が答える前に終わりました（もう一度呼べば、また聞きます）";
 
+/** 1回聞いた結果。`askerEnded`——人が答える前に、聞いた呼び出しが終わって畳んだ */
+interface AskOutcome {
+  decision: RelayApprovalDecision;
+  askerEnded: boolean;
+}
+
 export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayApprovalGate {
   /** 同じ組み合わせの2本目以降は、1本目の答えに相乗りする——カードを増やさない。 */
-  const inFlight = new Map<string, Promise<RelayApprovalDecision>>();
+  const inFlight = new Map<string, Promise<AskOutcome>>();
 
-  async function ask(req: RelayApprovalRequest): Promise<RelayApprovalDecision> {
+  async function ask(req: RelayApprovalRequest): Promise<AskOutcome> {
     // **聞いた呼び出しが終わったら畳む**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで止まる」）。
     // 答える口（会話のカード）は、その呼び出しのターンの中にしか出ない（受信箱は Thread を開くだけ）。以前は
     // 呼び出しが終わっても待ち続け、カードの無い判断待ちが残り、次の呼び出しはそこに相乗りして**カードが二度と
@@ -83,7 +89,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       }
     });
     try {
-      return await askWhileCalling(req, {
+      const decision = await askWhileCalling(req, {
         isEnded: () => ended,
         markExpired: () => {
           expired = true;
@@ -94,6 +100,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
           threadId = thread;
         },
       });
+      return { decision, askerEnded: expired };
     } finally {
       stopWatching();
     }
@@ -195,12 +202,23 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       const release = deps.moduleCalls.holdForHuman(req.callerConnName, req.callerCallId);
       try {
         const key = grantKey(req);
-        const running = inFlight.get(key);
-        if (running) return await running;
-
-        const pending = ask(req).finally(() => inFlight.delete(key));
-        inFlight.set(key, pending);
-        return await pending;
+        for (;;) {
+          const running = inFlight.get(key);
+          if (!running) {
+            const pending = ask(req).finally(() => inFlight.delete(key));
+            inFlight.set(key, pending);
+            return (await pending).decision;
+          }
+          const joined = await running;
+          // **相乗りした先が、聞いた呼び出しの終わりで畳まれた**（追加・2026-10-05、
+          // docs/notes/2026-10-05-relay-stale-card.md）。人は何も答えていない——こちらの呼び出しがまだ続いていれば、
+          // こちらの会話で聞き直す（以前は畳まれた理由をそのまま受け取り、こちらのターンには一度もカードが出なかった）
+          if (joined.askerEnded && deps.moduleCalls.isRunning(req.callerConnName, req.callerCallId)) {
+            if (deps.grants.isGranted(req)) return { allowed: true, reason: "この Project で承認済み" };
+            continue;
+          }
+          return joined.decision;
+        }
       } finally {
         release();
       }

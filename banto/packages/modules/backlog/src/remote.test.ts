@@ -6,7 +6,13 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RelayingRemote, type RelayCall } from "./remote.js";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { randomUUID } from "node:crypto";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { RelayingRemote, hostRelayCall, type RelayCall } from "./remote.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, encoding: "utf8" }).trim();
@@ -76,4 +82,56 @@ test("引き受けない・中継が断った・Repositories が居ないとき�
   // 呼べる相手に Repositories が居ない
   const none: RelayCall = async (name) => ({ text: name === "relayListTargets" ? "[]" : "", isError: false });
   assert.deepEqual(await new RelayingRemote(root, none).push("backlog"), { ok: true, via: "git" });
+});
+
+// **中継が断っても、接続は切らない**（追加・2026-10-05、docs/notes/2026-10-05-relay-stale-card.md）。以前は断られたら
+// 繋ぎ直していたので、同じ接続で人の承認を待っていた別の書き込みの中継まで切れ、host にはそのカードだけが残った
+test("hostRelayCall：1本が断られても、同じ接続で待っている別の1本は切れない", async () => {
+  let release!: () => void;
+  const released = new Promise<void>((r) => (release = r));
+  let waiting!: () => void;
+  const isWaiting = new Promise<void>((r) => (waiting = r));
+  let sessions = 0;
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const http = createServer((req, res) => {
+    void (async () => {
+      const sid = req.headers["mcp-session-id"] as string | undefined;
+      let t = sid ? transports.get(sid) : undefined;
+      if (!t) {
+        const server = new Server({ name: "host-relay", version: "0" }, { capabilities: { tools: {} } });
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
+        server.setRequestHandler(CallToolRequestSchema, async (r) => {
+          if ((r.params.arguments as { name?: string }).name === "fetch_branch") {
+            waiting();
+            await released;
+            return { content: [{ type: "text", text: "WAITED" }] };
+          }
+          throw new Error("中継は許可されていません：人が答える前に終わりました");
+        });
+        const created: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            sessions += 1;
+            transports.set(id, created);
+          },
+        });
+        await server.connect(created);
+        t = created;
+      }
+      await t.handleRequest(req, res);
+    })();
+  });
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  try {
+    const call = hostRelayCall(`http://127.0.0.1:${(http.address() as AddressInfo).port}/relay`, "t");
+    const pending = call("relayCallTool", { name: "fetch_branch" }, "call-1");
+    await isWaiting;
+    await assert.rejects(call("relayCallTool", { name: "push_branch" }, "call-2"), /許可されていません/);
+    release();
+    assert.deepEqual(await pending, { text: "WAITED", isError: false }, "断られた1本と一緒に、待っていた1本が切れた");
+    assert.equal(sessions, 1, "断られただけで繋ぎ直した");
+  } finally {
+    http.closeAllConnections();
+    http.close();
+  }
 });

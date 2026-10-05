@@ -133,6 +133,25 @@ export class ModuleCallTracker {
   }
 
   /**
+   * **この Module のどれかの呼び出しが、いま人の答えを待っているか**（追加・2026-10-05、
+   * docs/notes/2026-10-05-relay-stale-card.md）。
+   *
+   * なぜ要るか：Module は中で書き込みを1本ずつ並べることがある（Backlog は取ってくる・書く・送るを列に並べる）。
+   * 前の呼び出しが中継の承認で人を待つと、後ろの呼び出しは**人を待つ呼び出しの後ろで**黙って待つ——Module に落ち度は
+   * 無いのに、host の上限（既定60秒）で切れていた（実測）。どの呼び出しが列のどこにいるかは host から見えないので、
+   * 「この Module はいま人を待っている」を接続の単位で答える
+   */
+  isModuleWaitingOnHuman(connName: string): boolean {
+    for (const e of this.inFlight.get(connName)?.values() ?? []) if (e.waitingOnHuman > 0) return true;
+    return false;
+  }
+
+  /** **その呼び出しはまだ走っているか**（印で引く。印が無ければ、その接続で何か走っているか） */
+  isRunning(connName: string, callId?: string): boolean {
+    return this.entriesOf(connName, callId).length > 0;
+  }
+
+  /**
    * **呼び出しが終わったら知らせる**（追加・2026-10-04）。対象は `threadFor` と同じ選び方の呼び出しで、
    * **その全部が終わったとき**に1回だけ呼ぶ。走っていなければすぐ呼ぶ。返ってきた関数で取り消す。
    * 中継の承認は、聞いた呼び出しが終わったら畳む——答えても届く先が無い（`approval-gate.ts`）
@@ -161,14 +180,20 @@ export class ModuleCallTracker {
 
   /**
    * **どの呼び出しについて答えるか**（追加・2026-09-28）。呼び出しの印が渡され、それがいまその接続で走っていれば
-   * **その1件だけ**。印が無い・もう終わっている・別の接続の印なら、**その接続で走っている全部**（今までの形。
-   * 下の各問いは、全部が同じ答えになるときだけ答え、混ざっていれば厳しいほうに倒す）
+   * **その1件だけ**。印が無ければ**その接続で走っている全部**（下の各問いは、全部が同じ答えになるときだけ答え、
+   * 混ざっていれば厳しいほうに倒す）。
+   *
+   * **印があって、それがもう終わっている・別の接続の印なら、何も指さない**（改訂・2026-10-05、
+   * docs/notes/2026-10-05-relay-stale-card.md）。以前は接続の全部に戻していたので、外側が切れたあとも Module の中で
+   * 続いていた仕事（Backlog の送る）が、**同じ Module をたまたま使っていた別のターンの呼び出し**を借りて、その会話に
+   * 承認のカードを出し、その呼び出しを人待ちにしていた。終わった呼び出しの仕事は、誰のためでもない（決められない）
    */
   private entriesOf(connName: string, callId?: string) {
     const calls = this.inFlight.get(connName);
     if (!calls || calls.size === 0) return [];
-    const one = callId !== undefined ? calls.get(callId) : undefined;
-    return one ? [one] : [...calls.values()];
+    if (callId === undefined) return [...calls.values()];
+    const one = calls.get(callId);
+    return one ? [one] : [];
   }
 
   /**

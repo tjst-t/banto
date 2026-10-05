@@ -405,3 +405,164 @@ test("Module が黙ったままなら上限で切れるが、人の答えを待�
   await assert.rejects(runner.callTool({ name: "silent", arguments: {} }), /timed out/i);
   assert.equal(tracker.list().length, 0, "切れた呼び出しも台帳から外す");
 });
+
+// **同じ Module のほかの呼び出しが人を待つ間も数えず、待っている間は Runner へ進捗を送る**（追加・2026-10-05、
+// docs/notes/2026-10-05-relay-stale-card.md）。Backlog は書き込みを列に並べるので、2本目は1本目の承認待ちの後ろで黙って
+// 待ち、host の上限で -32001 になっていた（実測）。Runner（Claude Code）は進捗の来ない呼び出しを300秒で黙って諦める
+test("同じ Module の別の呼び出しが人を待つ間は、後ろで待つ呼び出しも切らず、Runner へ進捗を送る——待ち終えたらまた数える", async () => {
+  const { ModuleCallTracker } = await import("./module-calls.js");
+  const { CALL_ID_META_KEY } = await import("@banto/module-contract");
+  const tracker = new ModuleCallTracker();
+  let releaseFirst!: () => void;
+  let firstAnswered!: () => void;
+  const answered = new Promise<void>((r) => (firstAnswered = r));
+  /** Module の中の列：2本目は1本目が終わるまで待つ（Backlog の書き込みの列と同じ形） */
+  let queue: Promise<unknown> = Promise.resolve();
+  const server = new Server({ name: "queued", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "write", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const callId = (req.params._meta as Record<string, unknown> | undefined)?.[CALL_ID_META_KEY] as string;
+    const mine = queue.then(async () => {
+      if ((req.params.arguments as { first?: boolean }).first) {
+        // 中継の承認と同じ形：人の答えを待つ間、台帳に「人を待っている」と刻む
+        releaseFirst = tracker.holdForHuman("queued", callId);
+        await answered;
+        releaseFirst();
+        return "FIRST";
+      }
+      // 後ろの呼び出しは、前が終わったあと黙ったまま——上限で切れるのが正しい
+      if ((req.params.arguments as { silentAfter?: boolean }).silentAfter) await new Promise((r) => setTimeout(r, 400));
+      return "SECOND";
+    });
+    queue = mine.catch(() => undefined);
+    return { content: [{ type: "text", text: await mine }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const proxy = buildAgentProxy(
+    { name: "queued", client: moduleClient, meta: parseModuleMeta({ satisfies: [], dependsOn: [], isolation: "subprocess" }, "queued") },
+    { moduleCalls: tracker, threadId: "th", projectId: "p", toolIdleTimeoutMs: 100, humanWaitProgressIntervalMs: 20 },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+
+  const progress: string[] = [];
+  const opts = (label: string) => ({ timeout: 60_000, onprogress: (p: { message?: string }) => progress.push(`${label}:${p.message}`) });
+  const first = runner.callTool({ name: "write", arguments: { first: true } }, undefined, opts("first"));
+  await new Promise((r) => setTimeout(r, 30));
+  const second = runner.callTool({ name: "write", arguments: {} }, undefined, opts("second"));
+  // 上限（100ms）の4倍、人が答えない
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(progress.includes("first:人の承認を待っています"), `人を待つ呼び出しに進捗が来ていない: ${progress.join(",")}`);
+  assert.ok(progress.includes("second:人の承認を待っています"), `後ろで待つ呼び出しに進捗が来ていない: ${progress.join(",")}`);
+  firstAnswered();
+  assert.equal(((await first).content as { text: string }[])[0]?.text, "FIRST");
+  assert.equal(((await second).content as { text: string }[])[0]?.text, "SECOND", "後ろで待っていた呼び出しが、待ち終えた瞬間に切れた");
+
+  // 人を待っている者がいなければ、今までどおり上限で切れる
+  await assert.rejects(runner.callTool({ name: "write", arguments: { silentAfter: true } }), /timed out/i);
+  assert.equal(tracker.list().length, 0);
+  await runner.close();
+  await moduleClient.close();
+});
+
+// **Runner が答えを受け取れなくなった呼び出しを止める口**（追加・2026-10-05）——止めると Module への呼び出しも
+// 取り消され、台帳から外れる（中継の承認は、これで「聞いた呼び出しが終わった」を知って畳む）
+test("abortCalls：JSON-RPC の id で走っている呼び出しを止め、Module にも取り消しが届き、台帳から外れる", async () => {
+  const { ModuleCallTracker } = await import("./module-calls.js");
+  const tracker = new ModuleCallTracker();
+  let moduleSawAbort = false;
+  let started!: () => void;
+  const running = new Promise<void>((r) => (started = r));
+  const server = new Server({ name: "long", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "wait", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (_req, extra) => {
+    started();
+    await new Promise<void>((r) => extra.signal.addEventListener("abort", () => r(), { once: true }));
+    moduleSawAbort = true;
+    return { content: [{ type: "text", text: "ABORTED" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const proxy = buildAgentProxy(
+    { name: "long", client: moduleClient, meta: parseModuleMeta({ satisfies: [], dependsOn: [], isolation: "subprocess" }, "long") },
+    { moduleCalls: tracker, threadId: "th", projectId: "p" },
+  );
+  /** Runner が送った tools/call の id を拾う（本物の代理サーバの前で agent-relay-endpoint が本文から読むのと同じ値） */
+  const ids: Array<string | number> = [];
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const send = pc.send.bind(pc);
+  pc.send = async (message, options) => {
+    const m = message as { method?: string; id?: string | number };
+    if (m.method === "tools/call" && m.id !== undefined) ids.push(m.id);
+    return send(message, options);
+  };
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+
+  const call = runner.callTool({ name: "wait", arguments: {} }, undefined, { timeout: 60_000 }).then(
+    (r) => r,
+    (e: unknown) => e,
+  );
+  await running;
+  assert.equal(tracker.list().length, 1);
+  proxy.abortCalls(ids, "Runner との接続が、返事を受け取る前に切れました");
+  const result = await call;
+  assert.match(String((result as Error).message ?? JSON.stringify(result)), /返事を受け取る前に切れました/);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(moduleSawAbort, true, "Module に取り消しが届いていない");
+  assert.equal(tracker.list().length, 0, "止めた呼び出しが台帳に残った");
+  await runner.close();
+  await moduleClient.close();
+});
+
+// **待ち終えたら、上限は待ち終えたところから数える**（追加・2026-10-05）。待つ間に数え直さないと、待つ前から数えていた分で
+// 待ち終えた直後に切れる（probe で実測——前の呼び出しが畳まれた瞬間、後ろの呼び出しが -32001 になった）
+test("人を待ち終えた直後の呼び出しは、上限をまるごと使える（待つ前から数えた分で切れない）", async () => {
+  const { ModuleCallTracker } = await import("./module-calls.js");
+  const { CALL_ID_META_KEY } = await import("@banto/module-contract");
+  const IDLE = 400;
+  const tracker = new ModuleCallTracker();
+  let answer!: () => void;
+  const answered = new Promise<void>((r) => (answer = r));
+  let startedAt = 0;
+  const server = new Server({ name: "after-wait", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "write", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const callId = (req.params._meta as Record<string, unknown> | undefined)?.[CALL_ID_META_KEY] as string;
+    startedAt = Date.now();
+    const release = tracker.holdForHuman("after-wait", callId);
+    await answered;
+    release();
+    // 待ち終えてから、上限の 3/8 だけ黙って働く
+    await new Promise((r) => setTimeout(r, (IDLE * 3) / 8));
+    return { content: [{ type: "text", text: "DONE" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const proxy = buildAgentProxy(
+    { name: "after-wait", client: moduleClient, meta: parseModuleMeta({ satisfies: [], dependsOn: [], isolation: "subprocess" }, "after-wait") },
+    { moduleCalls: tracker, threadId: "th", projectId: "p", toolIdleTimeoutMs: IDLE, humanWaitProgressIntervalMs: IDLE / 8 },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+  const call = runner.callTool({ name: "write", arguments: {} }, undefined, { timeout: 60_000 });
+  while (startedAt === 0) await new Promise((r) => setTimeout(r, 5));
+  // 見張りが4回目に起きる少し前（上限の 1/8 前）に答える——待つ前から数えていると、働いている途中で4回目が来て切れる
+  await new Promise((r) => setTimeout(r, startedAt + IDLE * 4 - IDLE / 8 - Date.now()));
+  answer();
+  assert.equal(((await call).content as { text: string }[])[0]?.text, "DONE");
+  await runner.close();
+  await moduleClient.close();
+});

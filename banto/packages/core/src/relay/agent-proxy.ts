@@ -67,6 +67,7 @@ function backgroundWorkOf(
   };
 }
 import { makeResourceVisibilityResolver } from "./visibility.js";
+import { APPROVAL_PROGRESS_INTERVAL_MS } from "./host-relay-endpoint.js";
 import type { ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
 
@@ -93,6 +94,8 @@ export interface AgentProxyOptions {
    * 試験が短くするためのもの（追加・2026-10-04）
    */
   toolIdleTimeoutMs?: number;
+  /** 人の答えを待つ間、Runner へ進捗を送る間隔（ミリ秒、既定10秒）。試験が短くするためのもの（追加・2026-10-05） */
+  humanWaitProgressIntervalMs?: number;
   /** Module からの問いを、正しいターンへ届けるための宛先表。 */
   elicitations?: ElicitationRouter;
   /**
@@ -116,6 +119,11 @@ export interface AgentProxyOptions {
 
 export interface AgentProxy {
   server: Server;
+  /**
+   * **Runner がもう答えを受け取れない呼び出しを止める**（追加・2026-10-05、`agent-relay-endpoint.ts`）。
+   * 渡すのは JSON-RPC の id。止めると Module への呼び出しも取り消され、台帳から外れる——中継の承認は畳まれる
+   */
+  abortCalls(requestIds: ReadonlyArray<string | number>, reason: string): void;
   close(): Promise<void>;
 }
 
@@ -183,6 +191,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     return { tools: visible.map((t) => stripBantoMeta(t as Tool & { _meta?: Record<string, unknown> })) };
   });
 
+  /** 走っている tool 呼び出し（JSON-RPC の id → 止める口）。`abortCalls` が使う */
+  const running = new Map<string | number, AbortController>();
+
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     // 名前がRunnerに見えていたことを信じない——毎回ライブに再確認する。
     const real = await conn.client.listTools();
@@ -225,13 +236,22 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // 既定の60秒は、Module が黙ったまま返さないときの見張り。ところが Module の中の中継が人の承認を待つ間も
     // 数えていたので、人が60秒で答えないと外側が切れ、承認のカードもターンと一緒に消えていた。Module の進捗で
     // 数え直すのは今までどおり、**人の答えを待っている間（台帳の holdForHuman）は数えない**
+    //
+    // **同じ Module のほかの呼び出しが人を待っている間も数えない**（追加・2026-10-05、
+    // docs/notes/2026-10-05-relay-stale-card.md）。Module が中で書き込みを並べていると、この呼び出しは人を待つ
+    // 呼び出しの後ろで黙って待つ（Backlog で実測——2本目の書き込みが60秒で -32001 になった）
     const watchdog = new AbortController();
+    running.set(extra.requestId, watchdog);
     const idleLimit = opts.toolIdleTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+    const waitingOnHuman = () =>
+      !!endCall &&
+      !!opts.moduleCalls &&
+      (opts.moduleCalls.isWaitingOnHuman(conn.name, endCall.id) || opts.moduleCalls.isModuleWaitingOnHuman(conn.name));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const arm = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        if (endCall && opts.moduleCalls?.isWaitingOnHuman(conn.name, endCall.id)) {
+        if (waitingOnHuman()) {
           arm();
           return;
         }
@@ -239,6 +259,24 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       }, idleLimit);
     };
     arm();
+    // **人を待っている間は、Runner へ進捗を送る**（追加・2026-10-05、同ノート）。Runner（Claude Code 2.1.281）は
+    // 返事も進捗も来ない呼び出しを**300秒で諦め、しかも host に取り消しを送らない**（実測）——host はその呼び出しが
+    // 続いていると思い続け、承認のカードが畳まれずに残り、同じ組み合わせの次の呼び出しはそこに相乗りしていた。
+    // 人を待っているのを知っているのは host なので、host が送る（Module に流し直させない）。
+    // **待っている間は上限も数え直す**——数え直さないと、人を待ち終えた瞬間に、待つ前から数えていた分で切れる
+    // （同じ Module の後ろで待っていた呼び出しが、前の呼び出しが畳まれた直後に切れた。実測）
+    const heartbeat = setInterval(() => {
+      if (!waitingOnHuman()) return;
+      arm();
+      if (progressToken === undefined) return;
+      void extra
+        .sendNotification({
+          method: "notifications/progress",
+          params: { progressToken, progress: 0, message: "人の承認を待っています" },
+        })
+        .catch(() => undefined);
+    }, opts.humanWaitProgressIntervalMs ?? APPROVAL_PROGRESS_INTERVAL_MS);
+    heartbeat.unref();
     const onOuterAbort = () => watchdog.abort(extra.signal.reason);
     if (extra.signal.aborted) onOuterAbort();
     else extra.signal.addEventListener("abort", onOuterAbort, { once: true });
@@ -283,6 +321,8 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {
       if (timer) clearTimeout(timer);
+      clearInterval(heartbeat);
+      running.delete(extra.requestId);
       extra.signal.removeEventListener("abort", onOuterAbort);
       endCall?.end();
     }
@@ -342,6 +382,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
 
   return {
     server,
+    abortCalls(requestIds, reason) {
+      for (const id of requestIds) running.get(id)?.abort(new McpError(ErrorCode.ConnectionClosed, reason));
+    },
     close: () => server.close(),
   };
 }

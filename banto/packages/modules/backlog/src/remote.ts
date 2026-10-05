@@ -9,6 +9,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { CALL_ID_META_KEY } from "@banto/module-contract";
 import { GIT_TIMEOUTS, runGit } from "./git.js";
 
@@ -114,8 +115,18 @@ export class RelayingRemote implements BranchRemote {
 }
 
 /**
+ * **繋ぎ直すべき失敗か**——接続そのものが壊れたときだけ（追加・2026-10-05、docs/notes/2026-10-05-relay-stale-card.md）。
+ * host が返事として返した失敗（中継が断った・宛先が失敗した）は、接続は生きている。以前は何でも繋ぎ直していたので、
+ * 1本の書き込みの中継が断られると、**同じ接続で並んで人の承認を待っていた別の書き込みの中継まで切れ**、host にはその
+ * 承認のカードだけが残った（答えても届く先が無い）
+ */
+function connectionBroken(err: unknown): boolean {
+  return !(err instanceof McpError) || err.code === ErrorCode.ConnectionClosed;
+}
+
+/**
  * host の中継を呼ぶ口。**呼び出しの印（`dev.banto/callId`）を添える**——どの Project・どのターンの仕事かを host が1件ずつ
- * 引き、承認のカードもそのターンに出る。人の承認を待つ間は進捗が来るので、待つ上限を延ばす。失敗したら次は繋ぎ直す
+ * 引き、承認のカードもそのターンに出る。人の承認を待つ間は進捗が来るので、待つ上限を延ばす。接続が壊れたら次は繋ぎ直す
  */
 export function hostRelayCall(url: string, token: string): RelayCall {
   let client: Promise<Client> | undefined;
@@ -138,9 +149,11 @@ export function hostRelayCall(url: string, token: string): RelayCall {
       );
       return { text: (result.content as { type: string; text: string }[])[0]?.text ?? "", isError: result.isError === true };
     } catch (err) {
-      const old = client;
-      client = undefined;
-      void old?.then((c) => c.close()).catch(() => undefined);
+      if (connectionBroken(err)) {
+        const old = client;
+        client = undefined;
+        void old?.then((c) => c.close()).catch(() => undefined);
+      }
       throw err;
     }
   };

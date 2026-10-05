@@ -188,9 +188,9 @@ export class RelayRegistry {
 /**
  * 承認を待っている間、呼び出し元へ進捗を送る間隔。MCP の既定タイムアウト
  * （60秒）より十分短くする——Shell の長時間コマンドと同じ手当て
- * （docs/specs/v4-modules.md §2.3）。
+ * （docs/specs/v4-modules.md §2.3）。AI の代理サーバが Runner へ送るのも同じ間隔（`agent-proxy.ts`）
  */
-const APPROVAL_PROGRESS_INTERVAL_MS = 10_000;
+export const APPROVAL_PROGRESS_INTERVAL_MS = 10_000;
 
 export interface HostRelayServerOptions {
   registry: RelayRegistry;
