@@ -3,6 +3,7 @@
 // 即座にSSEへも流す（アーキ仕様§2.4「人に聞くはElicitationに乗せる」・
 // §6.0 hold-the-line）——ターンが終わってからまとめて返すのではない。
 
+import { randomUUID } from "node:crypto";
 import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
 import type { MessageImage, UiToolCallEntry } from "../project-thread/types.js";
 import type { ImageMediaType } from "../images/store.js";
@@ -18,7 +19,7 @@ import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
-import type { ThreadState } from "../project-thread/types.js";
+import type { ThreadState, TurnOutcome } from "../project-thread/types.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -108,6 +109,11 @@ export interface RunThreadTurnInput {
    * **人が止める合図**（追加・2026-10-01、v4-frontend.md §6.31）。立ったらすぐ CLI を止め、`stopped` で終える
    */
   stop?: AbortSignal;
+  /**
+   * **起こし直しで続けたターンなら、何回目の続きか**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで
+   * 続ける」）。`turn.started` に残し、続けて切れた回数の上限に使う。ふつうのターンは無い（0）
+   */
+  attempt?: number;
 }
 
 /**
@@ -123,8 +129,14 @@ export async function* runThreadTurn(
   deps.turnEvents?.begin(input.threadId, new Date().toISOString());
   // **AI が予約した Fork**（決定・2026-09-27、§2.2「AI が Fork を立てる」）。ターンの終わりに立てる
   const forks: ForkTurnState = { reserved: [], settled: false };
+  // **ターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5）。始めたら id が入る——終わりはここで1回だけ書く
+  const turn: TurnProgress = {};
+  let outcome: TurnOutcome = "failed";
   try {
-    for await (const event of runThreadTurnInner(deps, input, forks)) {
+    for await (const event of runThreadTurnInner(deps, input, forks, turn)) {
+      if (event.type === "done") outcome = "completed";
+      else if (event.type === "stopped") outcome = "stopped";
+      else if (event.type === "error") outcome = "failed";
       deps.turnEvents?.record(input.threadId, event);
       yield event;
     }
@@ -139,7 +151,19 @@ export async function* runThreadTurn(
         console.warn(`[host] ${input.threadId} で予約された Fork を片づけられませんでした:`, err),
       );
     }
+    // **どう終わっても書く**（最後まで・人が止めた・失敗・呼び出し側が途中で読むのをやめた）。書けなければ、
+    // 起き直したときに切れたターンに見える——黙らずに書き残す（規則2）
+    if (turn.id !== undefined) {
+      await deps.projectThread
+        .endTurn(input.threadId, turn.id, outcome)
+        .catch((err: unknown) => console.warn(`[host] ${input.threadId} のターンの終わりを記録できませんでした:`, err));
+    }
   }
+}
+
+/** 始めたターンの id（`turn.started` を書いたら入る）。書く前に終わったターンは持たない */
+interface TurnProgress {
+  id?: string;
 }
 
 /** このターンで AI が予約した Fork（`fork-tool.ts`）と、立てたかどうか */
@@ -190,6 +214,7 @@ async function* runThreadTurnInner(
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false },
+  turn: TurnProgress = {},
 ): AsyncGenerator<TurnStreamEvent> {
   const thread = deps.projectThread.getThread(input.threadId);
   if (!thread) {
@@ -253,6 +278,20 @@ async function* runThreadTurnInner(
     yield { type: "stopped", ...(hasHumanMessage ? { withdrawn: { text: input.prompt, images: imageNames } } : {}) };
     return;
   }
+  // **ターンを始めたことを、発言を積むより先に残す**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで
+  // 続ける」）。このターンで積む発言は、これより後ろの seq になる。ここから先はどう終わっても `turn.ended` を書く
+  // （`runThreadTurn` の finally）。新しい会話なら session id を host が先に決めて渡す——`system/init` の前に
+  // 切れても、起き直したら同じ id で走らせ直せる（実測 M2）。Fork の最初のターンは resume（forkSession）なので
+  // ここでは決めない
+  const assignedSessionId = thread.resumePoint === undefined ? randomUUID() : undefined;
+  const rewindTo = thread.resumePoint !== undefined ? thread.rewindTo : undefined;
+  turn.id = await deps.projectThread.startTurn(input.threadId, {
+    cause: hasHumanMessage ? "human" : "delivery",
+    attempt: input.attempt ?? 0,
+    ...(thread.resumePoint !== undefined ? { resumePoint: thread.resumePoint } : {}),
+    ...(rewindTo ? { rewindTo } : {}),
+    ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
+  });
   for (const d of delivered) {
     await deps.projectThread.appendMessage(input.threadId, "user", d.text, undefined, {
       from: d.from,
@@ -353,7 +392,8 @@ async function* runThreadTurnInner(
       signal: abortTurn.signal,
       resumeSessionId: thread.resumePoint,
       // 前のターンで人が発言を取り消した——CLI のセッションに書かれていても、その手前で切って続ける（§6.31）
-      ...(thread.resumePoint !== undefined && thread.rewindTo ? { resumeSessionAt: thread.rewindTo } : {}),
+      ...(rewindTo ? { resumeSessionAt: rewindTo } : {}),
+      ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
       forkSession,
       prompt: `${turnContext}\n\n${prompt}`,
       ...(images.length > 0 ? { images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })) } : {}),
@@ -436,6 +476,8 @@ async function* runThreadTurnInner(
         const m = event.message as { type?: string; subtype?: string; session_id?: string };
         if (m.type === "system" && m.subtype === "init" && typeof m.session_id === "string") {
           initSessionId = m.session_id;
+          // 会話の id を残す（最初のターンでも）。resume-point は変えない——今どおりターンの最後に書く
+          await deps.projectThread.recordTurnSessionKnown(input.threadId, turn.id, m.session_id);
         }
         // AI が返した＝添えたブロックがモデルに届いた。
         // ここで初めて「届けた」を記録する——組み立てた時点で記録すると、

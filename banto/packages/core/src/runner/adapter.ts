@@ -47,6 +47,12 @@ export interface RunnerTurnOptions {
    * AI に見せないために使う。`resumeSessionId` と一緒にだけ意味がある
    */
   resumeSessionAt?: string;
+  /**
+   * **新しい会話の session id を host が先に決めて渡す**（SDK の `sessionId`、追加・2026-10-05、アーキ仕様 §2.5
+   * 「起こし直しをまたいで続ける」）。UUID。`system/init` を待たずに記録できる——その前に切れても、起き直したら
+   * 同じ id で走らせ直せる（実測 M2）。`resumeSessionId` とは一緒に渡さない（SDK が断る）
+   */
+  sessionId?: string;
   prompt: string;
   /** 人が添えた画像（決定・2026-09-26）。**縮めずに渡す**——大きいものは CLI が長辺 2000px の
    *  JPEG に縮めてから API に送る（実測・2026-09-26、`docs/notes/2026-09-26-composer-images.md`） */
@@ -196,6 +202,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       resume: opts.resumeSessionId,
       forkSession: opts.forkSession,
       ...(opts.resumeSessionId && opts.resumeSessionAt ? { resumeSessionAt: opts.resumeSessionAt } : {}),
+      ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
       mcpServers: opts.mcpServers,
       // **毎ターン組み立て直したものをそのまま使わせる**（`snapshot: false`、2026-09-24）。
       // SDK 0.3.267 から、独自の system prompt は既定で「最初の要求で記録し、以後の要求と

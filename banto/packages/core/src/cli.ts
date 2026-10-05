@@ -189,6 +189,15 @@ async function main(): Promise<void> {
 
   const projectThread = new ProjectThreadStore(bootstrap.dataDir, eventLog);
   await projectThread.load();
+  // **前の走行で途中で切れたターン**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。何かを
+  // 走らせる前に読む。続ける処理はまだ無い——いまは見えるようにするだけ
+  for (const t of projectThread.listInterruptedTurns()) {
+    console.log(
+      `[host] 前の走行で途中で切れたターン: Thread ${t.threadId} ターン ${t.turnId}（${t.startedAt} に始めた・` +
+        `${t.cause === "human" ? "人の発言" : "届いたもの"}・続き ${t.attempt} 回目・会話 ${t.sessionId ?? "不明"}` +
+        `${t.rewindTo ? `・巻き戻し ${t.rewindTo}` : ""}）`,
+    );
+  }
   const runtimeConfig = new RuntimeConfigStore(bootstrap.dataDir, eventLog);
   await runtimeConfig.load();
   const globalMemory = new GlobalMemoryStore(bootstrap.dataDir, eventLog);

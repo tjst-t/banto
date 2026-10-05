@@ -344,6 +344,8 @@ export async function* runTurn(opts: {
   resumeSessionId?: string;
   resumeSessionAt?: string;
   forkSession?: boolean;
+  /** 新しい会話で host が先に決めた session id（本物の SDK の `options.sessionId`）。来たらそれを名乗る */
+  sessionId?: string;
   mcpServers?: Record<string, unknown>;
   /** banto が組み立てて送る文脈。**届いたかどうかを見るのに使う**。 */
   systemPrompt?: string[];
@@ -363,11 +365,11 @@ export async function* runTurn(opts: {
   const plan = parsePlan(opts.prompt);
   const servers = opts.mcpServers ?? {};
   // **resume は引き継ぎ、fork は新しい id にする**——banto の Fork の試験が
-  // 「親と同じセッションに混ざらない」ことを見ている
+  // 「親と同じセッションに混ざらない」ことを見ている。新しい会話で host が id を決めて渡したら、それを名乗る
   const sessionId =
     opts.resumeSessionId && !opts.forkSession
       ? opts.resumeSessionId
-      : `fake-session-${Math.abs(hash(opts.prompt + (opts.resumeSessionId ?? "")))}`;
+      : (opts.sessionId ?? `fake-session-${Math.abs(hash(opts.prompt + (opts.resumeSessionId ?? "")))}`);
 
   // **何を指示され、どのモードで走ったかを残す**（規則4——観測は機構の外に置く）。
   // E2E が落ちたとき、「指示が読めていない」のか「モードが届いていない」のかを

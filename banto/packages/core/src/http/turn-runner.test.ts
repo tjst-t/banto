@@ -57,6 +57,7 @@ async function withThread(
     deps: Parameters<typeof runThreadTurn>[0];
     threadId: string;
     store: ProjectThreadStore;
+    dir: string;
   }) => Promise<void>,
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "banto-turn-runner-"));
@@ -75,6 +76,7 @@ async function withThread(
       deps: { projectThread, globalMemory, inbox, pendingApprovals: new PendingApprovalRegistry() },
       threadId: thread.id,
       store: projectThread,
+      dir,
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -405,5 +407,206 @@ test("ターンの文脈の「まだ返事が無いもの」には、生きて�
     assert.match(prompt, /生きている承認/);
     assert.doesNotMatch(prompt, /期限切れの承認/);
     assert.doesNotMatch(prompt, /答えた承認/);
+  });
+});
+
+// **起こし直しをまたいで続ける**（2026-10-05、アーキ仕様 §2.5）——ターンの頭・system/init・終わりを Event Store に残す
+
+/**
+ * 渡されたものを覚える Runner。`hangAfterInit` なら system/init を出したあと返らない（host がそこで止まった）。
+ * 名乗る session id は本物と同じ決め方：resume ならその id、Fork なら新しい id、新しい会話なら渡された id
+ */
+function recordingRunner(options: { hangAfterInit?: boolean; throwAfterInit?: boolean } = {}) {
+  const calls: Array<{ sessionId?: string; resumeSessionId?: string; resumeSessionAt?: string; forkSession?: boolean }> = [];
+  const fake = (async function* (opts: {
+    sessionId?: string;
+    resumeSessionId?: string;
+    resumeSessionAt?: string;
+    forkSession?: boolean;
+    signal?: AbortSignal;
+  }) {
+    calls.push({
+      sessionId: opts.sessionId,
+      resumeSessionId: opts.resumeSessionId,
+      resumeSessionAt: opts.resumeSessionAt,
+      forkSession: opts.forkSession,
+    });
+    const sessionId =
+      opts.resumeSessionId && !opts.forkSession
+        ? opts.resumeSessionId
+        : (opts.sessionId ?? `forked-${calls.length}`);
+    yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: sessionId, mcp_servers: [] } } as never;
+    // 止められたら本物と同じく投げて終わる（止めない限り返らない）
+    if (options.hangAfterInit) {
+      await new Promise((_, reject) => opts.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }
+    if (options.throwAfterInit) throw new Error("API が落ちた");
+    yield {
+      type: "message" as const,
+      message: { type: "assistant", uuid: `uuid-${calls.length}`, message: { content: [{ type: "text", text: "はい" }] } },
+    } as never;
+    return { sessionId, compactionCount: 0 } as never;
+  }) as unknown as typeof runTurn;
+  return { fake, calls };
+}
+
+/** 同じ置き場を、起動し直したように開き直す（snapshot は書いていない——ログだけから畳む） */
+async function reopenStore(dir: string): Promise<ProjectThreadStore> {
+  const log = new EventLog(dir);
+  await log.init();
+  const store = new ProjectThreadStore(dir, log);
+  await store.load();
+  return store;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+test("新しい会話の最初のターンは、host が session id を先に決めて Runner に渡し、始まり・会話の id・終わりを残す", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake, calls } = recordingRunner();
+    const events = await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] }));
+    assert.ok(events.some((e) => e.type === "done"));
+
+    const assigned = calls[0]!.sessionId;
+    assert.match(assigned ?? "", UUID, "新しい会話なのに session id を先に決めていない");
+    const turn = store.getThread(threadId)!.lastTurn!;
+    assert.equal(turn.assignedSessionId, assigned);
+    assert.equal(turn.knownSessionId, assigned);
+    assert.equal(turn.cause, "human");
+    assert.equal(turn.attempt, 0);
+    assert.equal(turn.resumePoint, undefined);
+    assert.equal(turn.outcome, "completed");
+    assert.equal(store.getThread(threadId)!.resumePoint, assigned);
+    // このターンで積んだ人の発言は、始まりより後ろ
+    const human = store.getThread(threadId)!.messages.find((m) => m.role === "user")!;
+    assert.ok(human.seq > turn.startedSeq, "発言を始まりより先に積んでいる");
+    assert.deepEqual(store.listInterruptedTurns(), []);
+
+    // 続きのターン（resume）では決めない。始めたときの resume-point を残す
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "続き", modules: [], attempt: 1 }));
+    assert.equal(calls[1]!.sessionId, undefined, "resume なのに session id を渡している（SDK が断る）");
+    assert.equal(calls[1]!.resumeSessionId, assigned);
+    const second = store.getThread(threadId)!.lastTurn!;
+    assert.equal(second.resumePoint, assigned);
+    assert.equal(second.assignedSessionId, undefined);
+    assert.equal(second.attempt, 1);
+    assert.equal(second.outcome, "completed");
+  });
+});
+
+test("Fork の最初のターンは resume（forkSession）なので session id を先に決めない。会話の id は system/init で残す", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake, calls } = recordingRunner();
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "親", modules: [] }));
+    const fork = await store.forkThread(threadId);
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId: fork.id, prompt: "分けた", modules: [] }));
+    assert.equal(calls[1]!.forkSession, true);
+    assert.equal(calls[1]!.sessionId, undefined);
+    const turn = store.getThread(fork.id)!.lastTurn!;
+    assert.equal(turn.assignedSessionId, undefined);
+    assert.equal(turn.knownSessionId, "forked-2");
+    assert.equal(turn.resumePoint, calls[0]!.sessionId);
+  });
+});
+
+test("ターンの途中で host が止まったら、起動し直した store から切れたターンが1件見える", async () => {
+  await withThread(async ({ deps, threadId, dir }) => {
+    const { fake, calls } = recordingRunner({ hangAfterInit: true });
+    const gen = runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "長い仕事", modules: [] });
+    // system/init まで流れたところで止まる——ジェネレータは閉じない（finally を通らない＝プロセスが消えた）
+    const first = await gen.next();
+    assert.equal((first.value as { type: string }).type, "message");
+
+    const reopened = await reopenStore(dir);
+    const found = reopened.listInterruptedTurns();
+    assert.equal(found.length, 1);
+    assert.equal(found[0]!.threadId, threadId);
+    assert.equal(found[0]!.sessionId, calls[0]!.sessionId);
+    assert.equal(found[0]!.cause, "human");
+    assert.equal(found[0]!.attempt, 0);
+    assert.equal(reopened.getThread(threadId)!.resumePoint, undefined, "切れたターンで resume-point が進んでいる");
+
+    // 起き直したあとに人が Clear したら、もう続けない
+    await reopened.clearThread(threadId);
+    assert.deepEqual((await reopenStore(dir)).listInterruptedTurns(), []);
+  });
+});
+
+test("system/init より前に止まっても、host が先に決めた id で見分けられる", async () => {
+  await withThread(async ({ deps, threadId, dir }) => {
+    const calls: Array<{ sessionId?: string }> = [];
+    const fake = (async function* (opts: { sessionId?: string }) {
+      calls.push({ sessionId: opts.sessionId });
+      await new Promise(() => {});
+    }) as unknown as typeof runTurn;
+    const gen = runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] });
+    void gen.next();
+    // Runner が呼ばれるまで待つ（始まりはその前に書かれている）
+    for (let i = 0; i < 100 && calls.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    const [found] = (await reopenStore(dir)).listInterruptedTurns();
+    assert.match(found?.sessionId ?? "", UUID);
+    assert.equal(found?.sessionId, calls[0]!.sessionId);
+  });
+});
+
+test("resume-point を書いたあとに host が止まったターンは、切れたことにしない", async () => {
+  await withThread(async ({ deps, threadId, store, dir }) => {
+    const { fake } = recordingRunner();
+    // resume-point の次（返事の記録）で止まる
+    const original = store.appendMessage.bind(store);
+    let reached!: () => void;
+    const stuck = new Promise<void>((resolve) => (reached = resolve));
+    store.appendMessage = ((...args: Parameters<typeof original>) => {
+      if (args[1] === "assistant") {
+        reached();
+        return new Promise<number>(() => {});
+      }
+      return original(...args);
+    }) as typeof store.appendMessage;
+    void collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] }));
+    await stuck;
+
+    const reopened = await reopenStore(dir);
+    assert.ok(reopened.getThread(threadId)!.resumePoint, "resume-point が書かれていない（試験の前提が崩れた）");
+    assert.equal(reopened.getThread(threadId)!.lastTurn?.outcome, undefined, "終わりが書かれている（試験の前提が崩れた）");
+    assert.deepEqual(reopened.listInterruptedTurns(), []);
+  });
+});
+
+test("失敗したターンは failed、人が止めたターンは stopped で終わりを残す", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake } = recordingRunner({ throwAfterInit: true });
+    const events = await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] }));
+    assert.ok(events.some((e) => e.type === "error"));
+    assert.equal(store.getThread(threadId)!.lastTurn?.outcome, "failed");
+
+    const stop = new AbortController();
+    const { fake: hanging } = recordingRunner({ hangAfterInit: true });
+    const gen = runThreadTurn({ ...deps, runTurn: hanging }, { threadId, prompt: "止める", modules: [], stop: stop.signal });
+    await gen.next();
+    stop.abort();
+    const rest: TurnStreamEvent[] = [];
+    for await (const e of gen) rest.push(e);
+    assert.ok(rest.some((e) => e.type === "stopped"));
+    assert.equal(store.getThread(threadId)!.lastTurn?.outcome, "stopped");
+    assert.deepEqual(store.listInterruptedTurns(), []);
+  });
+});
+
+test("届いたものだけで起こしたターンは cause が delivery", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake } = recordingRunner();
+    await store.recordDelivery({ threadId, deliveryId: "d1", from: "subagent", title: "終わりました", text: "結果", hop: 1 });
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "", modules: [] }));
+    assert.equal(store.getThread(threadId)!.lastTurn?.cause, "delivery");
+  });
+});
+
+test("ターンを始める前に断ったもの（渡すものが無い等）は、始まりも終わりも残さない", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake } = recordingRunner();
+    const events = await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "", modules: [] }));
+    assert.ok(events.some((e) => e.type === "error"));
+    assert.equal(store.getThread(threadId)!.lastTurn, undefined);
   });
 });
