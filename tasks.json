@@ -5061,7 +5061,7 @@
       "number": 201,
       "kind": "task",
       "title": "Backlog の項目に通し番号（#42）を付けて画面に出し、番号でも指せるようにする",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5080,8 +5080,8 @@
         }
       ],
       "createdAt": "2026-10-04T14:15:46.180Z",
-      "updatedAt": "2026-10-04T14:15:46.180Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T04:20:08.503Z",
+      "closedAt": "2026-10-05T04:20:08.503Z",
       "extra": {}
     }
   ],
