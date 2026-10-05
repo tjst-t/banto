@@ -4877,7 +4877,7 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "v4-architecture.md §2.5「起こし直しをまたいで続ける」の「まだ確かめていないこと」4点を測る。プローブは .worktrees/resume-probe/banto/probes/（偽の API）。本物のモデルと Module の生死は別のデータ置き場の host（auto-memory banto-isolated-verify-host）で、稼働中の banto は起こし直さない。結果で仕様を直す。",
+      "body": "v4-architecture.md §2.5「起こし直しをまたいで続ける」の「まだ確かめていないこと」4点を測る。プローブは banto/probes/（偽の API）。\n\n済み（2026-10-05）：M1 鎖の選び方・M2 記録の無い最初のターン・M3 親が止まったとき・M4 コンテナの Module の生死・M5 KillMode=mixed（稼働中の設定）。結果は docs/notes/2026-10-04-resume-across-restart.md。\n\n残り：本物のモデル（Claude Code）での通し——切れたターンの続きの文・CLI が合成する tool_result の受け取り方。別のデータ置き場の host で、稼働中の banto は起こし直さない。",
       "doneWhen": "4点とも結果を docs/notes/2026-10-04-resume-across-restart.md に表で書き、食い違った点は仕様を直した",
       "resolution": null,
       "refs": [],
@@ -4888,7 +4888,7 @@
         }
       ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T04:18:39.553Z",
+      "updatedAt": "2026-10-05T10:58:26.580Z",
       "closedAt": null,
       "extra": {}
     },
