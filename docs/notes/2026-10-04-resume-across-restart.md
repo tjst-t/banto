@@ -147,3 +147,30 @@ CLI はターンの終わりに書く `last-prompt`（`leafUuid`）の行で鎖�
 → 落ちたあとに孤児の CLI が同じ記録に書き続けうる。**systemd が cgroup ごと刈る（`KillMode=control-group`）ことを前提にし、
 起き直したときにそれを確かめる**（設定は host で確認待ち）。banto の Runner は組み込みの Bash を使わない（tool は Module 経由）
 ので、Bash の子の形は banto とは違う
+
+## 実装の1つめ：ターンの進み具合を残す（resume-turn-events、2026-10-05）
+
+仕様 §2.5「1. Thread のターンを続ける」のうち、`turn.started`・`turn.session_known`・`turn.ended` を書くこと、
+切れたターンを見分けること（`findInterruptedTurns`）、新しい会話の session id を host が先に決めること。続ける処理は次。
+
+実装で決めたこと（仕様の該当の箇条に反映）：
+
+- **`turn.started` は発言を積むより先**：あとにすると「このターンで積んだ発言」が seq から引けない（直前の
+  user の並びを推すことになる）。先に書いて発言の前に落ちた場合は、発言の無い切れたターンになる——人の発言は
+  HTTP の要求の中にしか無かったので、どちらでも失われる。届いたものは待ち行列に残っているので、`resumeAll` が起こす
+- **始めた時刻は出来事の ts**：payload に同じ時刻をもう1つ持たない（規則3）
+- **`turn.session_known` は毎ターン書く**（resume のターンでは resume-point と同じ id）：`system/init` まで行ったか
+  の印にもなる。1ターン1件
+- **閉じて開き直した Thread**：閉じた時点で走っていたターンは続けない（印は消えない）
+- **終わりは `runThreadTurn` の finally で1回**：done→completed、stopped→stopped、それ以外（error・例外・呼び出し
+  側が読むのをやめた）→failed。書けなければログに残す（起き直したら切れたターンに見える）
+
+試験で確かめたこと：偽の Runner が `system/init` のあと返らない（＝host がそこで止まった）状態から、開き直した
+store で1件。`system/init` の前に止まっても先に決めた id で1件。resume-point を書いたあと（返事の記録）で止まったら
+0件。開き直したあと Clear したら0件。実装の該当行を1つずつ壊して（17か所）、どれも試験が落ちることを見た。
+
+気づいたこと（未決）：
+
+- 偽の Runner でしか通していない。banto の host から本物の SDK に `options.sessionId` を渡して走らせたことはまだ無い
+  （`system/init` がその id を名乗ること・記録ファイルがその名前になることは、ここでは確かめていない）
+- 1ターンにつき Event Store の書き込みが3件増える（started・session_known・ended）
