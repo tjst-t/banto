@@ -8,6 +8,7 @@
 //      画面に出る中身（種別・対象・backend・用途）まで1つずつ見る
 //   4. **値はどこにも出てこない**（画面にも、一覧にも）
 import { test, expect } from "../test-base.js";
+import type { FrameLocator, Locator } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,37 @@ const ALIAS = `e2e-vault-directory-${Date.now()}`;
 const SECRET = `MUST-NOT-APPEAR-${Date.now()}`;
 /** Vault を「またぐ」ことを試すための2本目（同じ vault-local を別の置き場で）。 */
 const SECOND_VAULT = "vault-local-2";
+
+/**
+ * **行の操作は「…」のメニューから**（改訂・2026-10-05、ユーザー指摘——操作を並べていたら表が
+ * 横にはみ出した）。開くと最初の項目に焦点が来るまで待ってから押す——メニューが出たことを見る。
+ */
+async function rowAction(canvas: FrameLocator, row: Locator, label: string): Promise<void> {
+  await row.getByRole("button", { name: /の操作$/ }).click();
+  const menu = canvas.getByRole("menu");
+  await expect(menu, "行のメニューが開かない").toBeVisible();
+  await menu.getByRole("menuitem", { name: label, exact: true }).click();
+  await expect(menu, "項目を選んでもメニューが閉じない").toHaveCount(0);
+}
+
+/** 行のメニューに並ぶ項目（開いて読み、Esc で閉じる）。 */
+async function rowMenuItems(canvas: FrameLocator, row: Locator): Promise<string[]> {
+  await row.getByRole("button", { name: /の操作$/ }).click();
+  const items = await canvas.getByRole("menu").getByRole("menuitem").allInnerTexts();
+  await canvas.getByRole("menu").getByRole("menuitem").first().press("Escape");
+  await expect(canvas.getByRole("menu")).toHaveCount(0);
+  return items;
+}
+
+/**
+ * **見えていることを、畳まれた中で見る**——toBeVisible は overflow で切られた分を見ない。
+ * 印や「→」がセルの外（切れた先）にあれば、画面には出ていない。
+ */
+async function expectWithin(child: Locator, container: Locator, message: string): Promise<void> {
+  await expect(child, message).toBeVisible();
+  const c = await child.boundingBox(), box = await container.boundingBox();
+  expect(c && box && c.width > 0 && c.x >= box.x - 0.5 && c.x + c.width <= box.x + box.width + 0.5, message).toBe(true);
+}
 
 test("VaultUI の入口から開いた画面が、実 Vault を横断して読み書きする", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-vault-directory-"));
@@ -88,8 +120,9 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   await expect(row.locator("td").nth(4), "グループが backend での名前で出ていない").toHaveText(placedGroup);
   // **長い名前でも、折り返さずに畳む**（追加・2026-09-20、ユーザー指摘——
   // 名前が1文字ずつ縦に流れていた）。**中身は全文のまま**（切るのは CSS）
-  await expect(row.locator("td").nth(1), "名前が畳まれていない").toHaveCSS("text-overflow", "ellipsis");
-  await expect(row.locator("td").nth(1), "名前が折り返されている").toHaveCSS("white-space", "nowrap");
+  // 畳むのは名前の文字そのもの（.name-text）——参照の行では、前に置く印を畳まないため（2026-10-05）
+  await expect(row.locator(".name-text"), "名前が畳まれていない").toHaveCSS("text-overflow", "ellipsis");
+  await expect(row.locator(".name-text"), "名前が折り返されている").toHaveCSS("white-space", "nowrap");
   await expect(row.locator("td").nth(1), "コピーすると切れた名前が取れる").toHaveText(ALIAS);
   // **実際に1行に収まっていること**（規則14——CSS が当たっていることと、
   // 見た目が1行であることは別）。畳む前は名前が1文字ずつ縦に流れて、
@@ -103,12 +136,9 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   await expect(canvas.locator("#target-filter"), "既定の絞り込みが当たっていない").toHaveValue("usable");
   // 絞り込みでも出る（画面が出している中身が、検索を通しても同じであること）
   await canvas.locator("#query").fill(ALIAS);
-  await expect
-    .poll(async () => (await canvas.locator("tbody tr").allInnerTexts()).join(" | "), {
-      timeout: 10_000,
-      message: "検索で絞ったのに1件にならない",
-    })
-    .not.toContain("\n");
+  // **行の数で待つ**（改訂・2026-10-05）。以前は「行の文字に改行が無い」で1件を見ていたが、
+  // 名前のセルが行（ブロック）を持つようになり、1行の中にも改行が入る
+  await expect(canvas.locator("tbody tr"), "検索で絞ったのに1件にならない").toHaveCount(1, { timeout: 10_000 });
   const rows = await canvas.locator("tbody tr").allInnerTexts();
   expect(rows, `検索で絞ると1件にならない: ${JSON.stringify(rows)}`).toHaveLength(1);
   await canvas.locator("#query").fill("");
@@ -142,7 +172,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   expect(audit.status()).toBe(200);
 
   // ---- 6. 用途の書き直しも届く ------------------------------------------
-  await row.getByRole("button", { name: "用途" }).click();
+  await rowAction(canvas, row, "用途");
   await canvas.locator("#note-text").fill("書き直した");
   await canvas.getByRole("button", { name: "保存する" }).click();
   await expect(
@@ -151,7 +181,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   ).toContainText("書き直した", { timeout: 120_000 });
 
   // ---- 7. 削除も届く -----------------------------------------------------
-  await canvas.locator("tbody tr").filter({ hasText: ALIAS }).getByRole("button", { name: "削除" }).click();
+  await rowAction(canvas, canvas.locator("tbody tr").filter({ hasText: ALIAS }), "削除");
   await canvas.getByRole("button", { name: "削除する" }).click();
   await expect(
     canvas.locator("tbody tr").filter({ hasText: ALIAS }),
@@ -320,7 +350,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
 
   // **あとからでも公開鍵を見られる**（追加・2026-09-13、ユーザー要望）。
   // 以前は作った直後の1回きりで、閉じたら二度と見られなかった
-  await row.getByRole("button", { name: "公開鍵" }).click();
+  await rowAction(canvas, row, "公開鍵");
   await expect(pubkey, "一覧から公開鍵を開けない").toBeVisible({ timeout: 60_000 });
   await expect
     .poll(() => pubkey.inputValue(), { timeout: 30_000, message: "公開鍵が出るまで" })
@@ -463,7 +493,7 @@ test("公開鍵のコピーは、押した結果を人に言う", async ({ page 
   const row = canvas.locator("tbody tr").filter({ hasText: keyAlias });
   await expect(row, "鍵ペアが一覧に出ない").toBeVisible({ timeout: 120_000 });
 
-  await row.getByRole("button", { name: "公開鍵" }).click();
+  await rowAction(canvas, row, "公開鍵");
   await expect(canvas.locator("#pubkey-text"), "公開鍵が出ていない").toHaveValue(/^ssh-/, { timeout: 60_000 });
   await canvas.getByRole("button", { name: "コピーする" }).click();
   // **黙って失敗しない**——成功なら「コピーしました」、駄目なら次の手を言う
@@ -528,7 +558,7 @@ test("一覧の行から、別の置き場へ移せる", async ({ page }) => {
   const row = canvas.locator("tbody tr").filter({ hasText: alias });
   await expect(row).toBeVisible({ timeout: 120_000 });
 
-  await row.getByRole("button", { name: "移す" }).click();
+  await rowAction(canvas, row, "移す");
   await expect(canvas.locator("#move-now"), "いまの置き場を言っていない").toContainText("いまは vault-local");
   await canvas.locator("#move-group").selectOption(dest);
   // **移した先からどう引けるようになるかを、押す前に出す**
@@ -598,7 +628,7 @@ test("一覧の行から、別の Vault へ移せる（Vault の選択を切り�
   const row = canvas.locator("tbody tr").filter({ hasText: alias });
   await expect(row).toBeVisible({ timeout: 120_000 });
 
-  await row.getByRole("button", { name: "移す" }).click();
+  await rowAction(canvas, row, "移す");
   await expect(canvas.locator("#dlg-move")).toBeVisible();
 
   // **移す先の Vault を切り替える**——ここが今まで一度も通っていなかった
@@ -656,7 +686,8 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-link-"));
   const stamp = Date.now();
   const origin = `e2e-link-origin-${stamp}`;
-  const linkName = `${origin}-ref`;
+  // **長い名前で試す**——実機では名前が畳まれて「→ 元」が見えなかった（2026-10-05）
+  const linkName = `${origin}-REFERENCE_WITH_A_LONG_NAME_LIKE_CLOUDFLARE_API_TOKEN_FOR_PRODUCTION`;
   const srcGroup = `e2e-linksrc-${stamp}`;
   const secret = `LINK-MUST-NOT-APPEAR-${stamp}`;
   const call = (server: string, tool: string, args: Record<string, unknown>) =>
@@ -702,7 +733,14 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   await expect(originRow, "元の行が未割当として出ていない").toContainText("未割当");
 
   // ---- 小窓：「移す」と同じ形 -----------------------------------------------
-  await originRow.getByRole("button", { name: "参照を作る" }).click();
+  expect(await rowMenuItems(canvas, originRow), "元の行のメニューの並びが違う").toEqual([
+    "用途",
+    "移す",
+    "参照を作る",
+    "削除",
+  ]);
+  await expect(originRow.locator(".link-badge"), "参照でない行に「参照」の印が出ている").toHaveCount(0);
+  await rowAction(canvas, originRow, "参照を作る");
   await expect(canvas.locator("#dlg-link")).toBeVisible();
   await expect(canvas.locator("#dlg-link .dialog-title")).toHaveText("この秘密を別の置き場から使えるようにする（参照）");
   await expect(canvas.locator("#link-now")).toHaveText(`元は vault-local / ${srcGroup} / ${origin}`);
@@ -731,16 +769,26 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   // ---- 参照の行：中身を1つずつ見る -------------------------------------------
   const linkRow = canvas.locator("tbody tr").filter({ hasText: linkName });
   await expect(linkRow, "作った参照が一覧に出てこない").toHaveCount(1, { timeout: 60_000 });
-  await expect(linkRow.locator("td").nth(1), "参照の行に指す先が出ていない").toHaveText(
-    `${linkName} → ${srcGroup} / ${origin}`,
-  );
+  // **一目で参照と分かる**（改訂・2026-10-05、ユーザー指摘）——名前の前に「参照」の印、2行目に
+  // 「→ 元」。名前は長くしてあるので畳まれる。**畳まれても印と「→」は見えている**こと
+  const nameTd = linkRow.locator("td").nth(1);
+  await expect(linkRow.locator(".name-text")).toHaveText(linkName);
+  expect(
+    await linkRow.locator(".name-text").evaluate((e) => e.scrollWidth > e.clientWidth),
+    "名前が畳まれていない（長い名前の場合を試せていない）",
+  ).toBe(true);
+  await expect(linkRow.locator(".link-badge")).toHaveText("参照");
+  await expectWithin(linkRow.locator(".link-badge"), nameTd, "「参照」の印が見えない（畳まれて切れている）");
+  await expect(linkRow.locator(".link-target")).toHaveText(`→ ${srcGroup} / ${origin}`);
+  await expectWithin(linkRow.locator(".link-target"), nameTd, "2行目の「→ 元」が見えない");
+  await expect(linkRow.locator(".link-broken"), "元が在るのに「元がありません」と出ている").toHaveCount(0);
   await expect(linkRow.locator("td").nth(0), "種別が元から導かれていない").toHaveText("シークレット");
   await expect(linkRow, "使える範囲がこの Project になっていない").toContainText("E2E 参照");
   await expect(linkRow.locator("td").nth(4), "参照のグループが違う").toHaveText(projectGroup);
-  // **参照の参照は作らない**——押せるのに断られるボタンを置かない
-  await expect(linkRow.getByRole("button", { name: "参照を作る" })).toHaveCount(0);
+  // **参照の参照は作らない**——押せるのに断られる項目を置かない
+  expect(await rowMenuItems(canvas, linkRow), "参照の行のメニューの並びが違う").toEqual(["用途", "移す", "削除"]);
   // **参照の「移す」は元の Vault に固定**——別の Vault へは必ず断られるので選ばせない
-  await linkRow.getByRole("button", { name: "移す" }).click();
+  await rowAction(canvas, linkRow, "移す");
   await expect(canvas.locator("#dlg-move")).toBeVisible();
   await expect(canvas.locator("#move-vault"), "参照なのに Vault を選べる").toBeDisabled();
   await expect(canvas.locator("#move-vault")).toHaveValue("vault-local");
@@ -763,19 +811,20 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
 
   // ---- 元を消す：確認で参照の件数が出て、消したあとは「元がありません」 ---------
   await canvas.locator("#target-filter").selectOption("all");
-  await originRow.getByRole("button", { name: "削除" }).click();
+  await rowAction(canvas, originRow, "削除");
   await expect(canvas.locator("#delete-links")).toHaveText(
     `この秘密を指す参照が 1 件あり、使えなくなります（${projectGroup} / ${linkName}）`,
   );
   await canvas.locator("#delete-submit").click();
   await expect(canvas.locator("#dlg-delete")).toBeHidden({ timeout: 60_000 });
   await expect(originRow).toHaveCount(0, { timeout: 30_000 });
-  await expect(linkRow.locator("td").nth(1), "元が消えたことが参照の行に出ていない").toHaveText(
-    `${linkName} → ${srcGroup} / ${origin}（元がありません）`,
-  );
+  await expect(linkRow.locator(".link-target")).toHaveText(`→ ${srcGroup} / ${origin}`);
+  await expect(linkRow.locator(".link-broken"), "元が消えたことが参照の行に出ていない").toHaveText("元がありません");
+  await expectWithin(linkRow.locator(".link-broken"), nameTd, "「元がありません」が見えない（畳まれて切れている）");
+  await expectWithin(linkRow.locator(".link-badge"), nameTd, "元が消えたら「参照」の印が見えなくなった");
   await expect(linkRow.locator("td").nth(0), "元が無いのに種別を推測している").toHaveText("—");
   // 参照を消す確認は「参照だけを消す」と言う
-  await linkRow.getByRole("button", { name: "削除" }).click();
+  await rowAction(canvas, linkRow, "削除");
   await expect(canvas.locator("#delete-effect")).toHaveText(
     `参照だけを消します。元の秘密（${srcGroup} / ${origin}）は残ります`,
   );
@@ -787,4 +836,100 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   // **値はどこにも出ない**
   expect(await page.content()).not.toContain(secret);
   await call("vault-directory", "deleteAlias", { implementation: "vault-local", name: seed, group: projectGroup });
+});
+
+// **行のメニューの作法と、表の幅**（追加・2026-10-05、ユーザー指摘）。
+// メニュー：開くと最初の項目に焦点、↑↓で移る（端で回る）、Esc で閉じて「…」に焦点が戻る、
+// 外を押しても閉じる、項目を選ぶとその処理が開く。表：狭い Canvas でも横にはみ出さない
+test("行の「…」のメニューはキーボードで操作でき、狭い Canvas でも表が横にはみ出さない", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-vault-menu-"));
+  const stamp = Date.now();
+  const alias = `e2e-vault-menu-${stamp}`;
+  const group = `e2e-vault-menu-${stamp}`;
+  const call = (tool: string, args: Record<string, unknown>) =>
+    page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+      data: { server: "vault-directory", tool, arguments: args },
+    });
+
+  await openApp(page);
+  await createProject(page, "E2E Vault メニュー", projectRoot);
+  await call("createGroup", { implementation: "vault-local", name: group });
+  const created = await call("createAlias", {
+    implementation: "vault-local",
+    name: alias,
+    kind: "secret",
+    value: `MENU-MUST-NOT-APPEAR-${stamp}`,
+    group,
+    note: "メニューの試験",
+  });
+  expect(created.ok(), `置けなかった: ${await created.text()}`).toBe(true);
+
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+  await canvas.locator("#target-filter").selectOption("all");
+  const row = canvas.locator("tbody tr").filter({ hasText: alias });
+  await expect(row).toHaveCount(1, { timeout: 30_000 });
+
+  // ---- 狭い Canvas でも、表が横にはみ出さない（このあとのメニューも狭いまま試す）----
+  // 画面の幅を変えて、Canvas の中の幅が 840px 前後から 500px 前後までで見る
+  // （実測・2026-10-05：画面 1500px → Canvas 839px、1280px → 693px、1000px → 506px）
+  const width = () => canvas.locator("html").evaluate((e) => ({ scroll: e.scrollWidth, client: e.clientWidth }));
+  for (const viewport of [1500, 1280, 1000]) {
+    await page.setViewportSize({ width: viewport, height: 800 });
+    await expect
+      .poll(async () => {
+        const w = await width();
+        return w.scroll <= w.client ? "fits" : `はみ出す（${w.scroll} > ${w.client}）`;
+      }, { message: `画面幅 ${viewport}px で表が横にはみ出す` })
+      .toBe("fits");
+    console.log(`[vault-menu] viewport ${viewport}px → Canvas の中の幅 ${(await width()).client}px`);
+  }
+
+  const more = row.getByRole("button", { name: `${alias} の操作` });
+  const menu = canvas.getByRole("menu");
+  await expect(more).toHaveAttribute("aria-haspopup", "menu");
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+
+  // ---- 開くと最初の項目に焦点、↑↓で移る -----------------------------------
+  await more.click();
+  await expect(menu).toBeVisible();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await expect(menu.getByRole("menuitem")).toHaveText(["用途", "移す", "参照を作る", "削除"]);
+  await expect(menu.getByRole("menuitem", { name: "用途" }), "開いても最初の項目に焦点が来ない").toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("menuitem", { name: "移す" })).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(menu.getByRole("menuitem", { name: "削除" }), "↑で端から回らない").toBeFocused();
+
+  // ---- Esc で閉じて「…」に焦点が戻る ---------------------------------------
+  await page.keyboard.press("Escape");
+  await expect(menu, "Esc でメニューが閉じない").toHaveCount(0);
+  await expect(more, "閉じたあと「…」に焦点が戻らない").toBeFocused();
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+
+  // ---- 外を押しても閉じる ---------------------------------------------------
+  await more.click();
+  await expect(menu).toBeVisible();
+  await canvas.locator("h1").click();
+  await expect(menu, "外を押してもメニューが閉じない").toHaveCount(0);
+
+  // ---- 項目を選ぶと、その処理が開く（キーボードで） -------------------------
+  await more.focus();
+  await page.keyboard.press("Enter");
+  await expect(menu.getByRole("menuitem", { name: "用途" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(menu).toHaveCount(0);
+  await expect(canvas.locator("#dlg-note"), "用途の小窓が開かない").toBeVisible();
+  await expect(canvas.locator("#note-target")).toHaveText(`vault-local / ${alias}`);
+  await expect(canvas.locator("#note-text")).toHaveValue("メニューの試験");
+  await canvas.locator("#dlg-note").getByRole("button", { name: "やめる" }).click();
+  await expect(canvas.locator("#dlg-note")).toBeHidden();
+
+  expect(await page.content()).not.toContain(`MENU-MUST-NOT-APPEAR-${stamp}`);
+  await call("deleteAlias", { implementation: "vault-local", name: alias, group });
 });

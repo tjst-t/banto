@@ -1351,6 +1351,24 @@ test("管理画面に、参照を作る口と、参照の行の見せ方があ�
   assert.ok(MANAGE_APP_HTML.includes("この秘密を指す参照が "), "元を消す前に参照の件数を出していない");
 });
 
+test("管理画面：参照の行は名前の前に印・2行目に指す先、行の操作は「…」のメニュー（2026-10-05）", () => {
+  // 名前に続けて「 → 元」を書いて1セルで畳むと、長い名前で → が切れて見えなかった
+  assert.ok(MANAGE_APP_HTML.includes('badge.className = "link-badge";'), "参照の印が無い");
+  assert.ok(MANAGE_APP_HTML.includes('linkLine.className = "link-line";'), "指す先が2行目に無い");
+  assert.equal(MANAGE_APP_HTML.includes('to.textContent = " → "'), false, "名前の横に → を続けている（前の形）");
+  // 操作を並べると表が横にはみ出した——menu button の作法で1つにまとめる
+  assert.ok(MANAGE_APP_HTML.includes('more.setAttribute("aria-haspopup", "menu");'));
+  assert.ok(MANAGE_APP_HTML.includes('more.setAttribute("aria-expanded", "false");'));
+  assert.ok(MANAGE_APP_HTML.includes('el.setAttribute("role", "menu");'));
+  assert.ok(MANAGE_APP_HTML.includes('b.setAttribute("role", "menuitem");'));
+  assert.ok(MANAGE_APP_HTML.includes('event.key === "Escape"'), "Esc で閉じない");
+  assert.equal(MANAGE_APP_HTML.includes("actions.append(edit"), false, "行にボタンを並べている（前の形）");
+  // 各項目は前と同じ処理を呼ぶだけ
+  for (const run of ["openNote(a)", "openPublicKey(a)", "openMove(a)", "openLink(a)", "openDelete(a)"]) {
+    assert.ok(MANAGE_APP_HTML.includes(run), `${run} がメニューから呼ばれていない`);
+  }
+});
+
 test("参照：Vault だけ・グループだけで指して候補が2つ以上なら、選ばずに理由つきで断る", async () => {
   await withUi(async ({ ui }) => {
     for (const [implementation, group] of [["vault-local", "g1"], ["vault-local", "g2"], ["vault-2", "g1"]]) {

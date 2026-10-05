@@ -74,11 +74,35 @@ export const MANAGE_APP_HTML = `<!doctype html>
      取れてしまう。CSS の省略なら DOM には全文が在るので、コピーは全文 */
   td.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.name { font-weight: 500; }
-  td.actions { text-align: right; white-space: nowrap; }
+  /* **名前の列は行ごとに畳む**（改訂・2026-10-05、ユーザー指摘）。以前は名前のあとに
+     「 → 元」を続けて1つのセルで畳んでいたので、名前が長いと「CLOUDFLARE_AP…」で切れて
+     **参照だという印（→）がまったく見えなかった**。印（参照）と「→」は行の頭に置き、
+     切れるのは名前と指す先の**末尾**だけにする——頭は必ず見える */
+  .name-line, .link-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .name-text, .link-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .link-badge {
+    flex: none; border-radius: 4px; padding: 0 5px; font-size: 10px; font-weight: 500; line-height: 16px;
+    color: var(--mcp-ui-color-info, #2f6fde); background: rgba(47,111,222,.12); white-space: nowrap;
+  }
+  /* 参照の行の2行目「→ 元のグループ / 名前」。名前より控えめに */
+  .link-line { font-size: 11px; font-weight: 400; line-height: 1.4; }
+  .link-target { opacity: .6; }
+  .link-broken { flex: none; color: var(--mcp-ui-color-danger, #c0392b); }
+  /* **行の操作は「…」1つ**（改訂・2026-10-05、ユーザー指摘）——操作を並べていたら
+     列が押し広げられ、表が横にはみ出していた */
+  td.actions { text-align: right; white-space: nowrap; padding-right: 0; }
+  button.more { padding: 0 6px; font-size: 15px; line-height: 20px; }
+  button.more[aria-expanded="true"] { opacity: 1; border-color: var(--mcp-ui-color-border, rgba(128,128,128,.35)); }
+  .menu {
+    position: fixed; z-index: 10; min-width: 9.5em; max-height: calc(100vh - 8px); overflow-y: auto;
+    display: grid; padding: 4px; border-radius: 8px;
+    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    background: var(--mcp-ui-color-surface, Canvas); box-shadow: 0 6px 20px rgba(0,0,0,.18);
+  }
+  .menu button { border: none; border-radius: 4px; text-align: left; padding: 5px 10px; white-space: nowrap; }
+  .menu button:hover, .menu button:focus { opacity: 1; outline: none; background: rgba(128,128,128,.16); }
+  .menu .sep { border-top: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.25)); margin: 4px 2px; }
   .note-cell { opacity: .7; }
-  /* 参照の行の「→ 元のグループ / 名前」。名前より控えめに */
-  .link-to { font-weight: 400; opacity: .6; }
-  .link-broken { font-weight: 400; color: var(--mcp-ui-color-danger, #c0392b); }
   dialog {
     border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
     border-radius: 10px; padding: 0; color: inherit;
@@ -168,7 +192,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <th style="width:9em">グループ</th>
         <th>用途</th>
         <th style="width:6.5em">最終使用</th>
-        <th style="width:11em"></th>
+        <th style="width:2.75em"></th>
       </tr>
     </thead>
     <tbody id="rows"></tbody>
@@ -607,12 +631,121 @@ ${ALIAS_KIND_RULES_JS}
       .join(" / ");
   }
 
+  // --- 行の操作のメニュー（「…」）-------------------------------------------
+  // **メニューは画面に1つだけ**——開くたびに中身を作り直すので、2つ同時に開くことが無い。
+  // 作法は WAI-ARIA の menu button（規則12——名前のある型をそのまま使う）：
+  // 開いたら最初の項目に焦点、↑↓（Home／End）で移る、外を押す・Esc・項目を選ぶと閉じて
+  // 「…」に焦点を戻す。**値は一切出さない**（出すのは操作の名前だけ）
+  let menu = null;        // 開いているメニュー（role="menu"）
+  let menuOwner = null;   // それを開いた「…」
+
+  function closeMenu(restoreFocus) {
+    if (!menu) return;
+    const owner = menuOwner;
+    menu.remove();
+    menu = null;
+    menuOwner = null;
+    owner.setAttribute("aria-expanded", "false");
+    if (restoreFocus && owner.isConnected) owner.focus({ preventScroll: true });
+  }
+
+  function openMenu(owner, items) {
+    closeMenu(false);
+    const el = document.createElement("div");
+    el.className = "menu";
+    el.setAttribute("role", "menu");
+    el.setAttribute("aria-label", owner.getAttribute("aria-label") || "操作");
+    for (const item of items) {
+      // 削除は区切り線の下（並びの最後に来る）
+      if (item.danger) {
+        const sep = document.createElement("div");
+        sep.className = "sep";
+        sep.setAttribute("role", "separator");
+        el.append(sep);
+      }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.tabIndex = -1;
+      b.textContent = item.label;
+      if (item.title) b.title = item.title;
+      if (item.danger) b.className = "danger";
+      b.addEventListener("click", () => {
+        // 先に閉じて焦点を「…」へ戻す——開くダイアログが閉じたとき、焦点がそこへ帰る
+        closeMenu(true);
+        item.run();
+      });
+      el.append(b);
+    }
+    document.body.append(el);
+    menu = el;
+    menuOwner = owner;
+    owner.setAttribute("aria-expanded", "true");
+    placeMenu(el, owner);
+    const first = el.querySelector('[role="menuitem"]');
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  /**
+   * **iframe の端からはみ出さない**——下に余白が無ければ上に開く。右端は「…」にそろえ、
+   * どちらにも収まらなければ画面の内側へ寄せる（高さは max-height で巻く）。
+   */
+  function placeMenu(el, owner) {
+    const r = owner.getBoundingClientRect();
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    const below = vh - r.bottom, above = r.top;
+    let top = below >= h + 4 || below >= above ? r.bottom + 2 : r.top - h - 2;
+    top = Math.max(4, Math.min(top, vh - h - 4));
+    const left = Math.max(4, Math.min(r.right - w, vw - w - 4));
+    el.style.top = top + "px";
+    el.style.left = left + "px";
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (!menu) return;
+    const list = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+    const at = list.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      const next = at < 0 ? (step > 0 ? 0 : list.length - 1) : (at + step + list.length) % list.length;
+      list[next].focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      list[event.key === "Home" ? 0 : list.length - 1].focus();
+    } else if (event.key === "Tab") {
+      // 焦点を「…」へ戻してから既定の Tab を通す——次の要素へ自然に進む
+      closeMenu(true);
+    }
+  });
+  // **外を押したら閉じる**。「…」そのものは自分の click で開閉する。押した先が焦点を取らない
+  // 所なら、焦点は「…」へ戻す（取る所なら、そちらへ移るのが人の意図）
+  document.addEventListener("pointerdown", (event) => {
+    if (!menu || menu.contains(event.target) || menuOwner.contains(event.target)) return;
+    const owner = menuOwner;
+    const focusable = event.target instanceof Element &&
+      event.target.closest("button, input, select, textarea, a[href], [tabindex]");
+    closeMenu(false);
+    if (!focusable) setTimeout(() => { if (owner.isConnected) owner.focus({ preventScroll: true }); }, 0);
+  }, true);
+  // 位置は開いたときの「…」に合わせてある——動いたら閉じる（置き去りのメニューを残さない）
+  window.addEventListener("resize", () => closeMenu(false));
+  window.addEventListener("scroll", (event) => {
+    if (menu && !menu.contains(event.target)) closeMenu(false);
+  }, true);
+
   function renderRows() {
     const shown = aliases.filter(matchesFilters);
     $("count").textContent = shown.length === aliases.length
       ? "預けている秘密（" + aliases.length + "）"
       : "預けている秘密（" + shown.length + " / " + aliases.length + "）";
 
+    // 行を描き直すと「…」が入れ替わる——開いていたメニューは閉じる
+    closeMenu(false);
     $("rows").replaceChildren(...shown.map((a) => {
       const tr = document.createElement("tr");
       const cell = (text, cls, attr) => {
@@ -656,71 +789,79 @@ ${ALIAS_KIND_RULES_JS}
       // 開いたときに突き合わせられる名前を出す
       const groupTd = clipped(a.group || "", "muted");
 
+      // **行の操作は「…」のメニューにまとめる**（改訂・2026-10-05、ユーザー指摘）。並びは前と同じ。
+      // **公開鍵はいつでも見られる**（追加・2026-09-13、ユーザー指摘）——作った直後の1回しか
+      // 出していなかったので、画面を閉じたら二度と見られなかった。
+      // **どこにも紐付いていないものを、行き止まりにしない**（追加・2026-09-15）——「移す」が
+      // 削除以外の唯一の出口。**参照の行に「参照を作る」は出さない**（2026-10-04）——参照の参照は
+      // 作らない（押せるのに必ず断られる項目を置かない、規則13）
+      const items = [
+        { label: "用途", title: "用途（note）を書き直す", run: () => openNote(a) },
+        ...(a.kind === "ssh-identity"
+          ? [{ label: "公開鍵", title: "公開鍵を表示してコピーする（秘密鍵は出ません）", run: () => void openPublicKey(a) }]
+          : []),
+        { label: "移す", title: "この秘密を別の置き場へ移す", run: () => void openMove(a) },
+        ...(a.linkTo
+          ? []
+          : [{ label: "参照を作る", title: "値を写さずに、この秘密を別の置き場からも使えるようにする", run: () => void openLink(a) }]),
+        { label: "削除", danger: true, run: () => openDelete(a) },
+      ];
       const actions = document.createElement("td");
       actions.className = "actions";
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.className = "icon";
-      edit.textContent = "用途";
-      edit.title = "用途（note）を書き直す";
-      edit.addEventListener("click", () => openNote(a));
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "icon danger";
-      del.textContent = "削除";
-      del.addEventListener("click", () => openDelete(a));
-      // **公開鍵はいつでも見られる**（追加・2026-09-13、ユーザー指摘）。
-      // 作った直後の1回しか出していなかったので、画面を閉じたら二度と
-      // 見られなかった——相手方に登録するためのものなのに
-      // **どこにも紐付いていないものを、行き止まりにしない**（追加・2026-09-15）。
-      // 置き場の変更で「移さない」を選ぶと秘密は unbound になり、画面は
-      // そう出すのに**直す操作がどこにも無かった**——できるのは削除だけ。
-      // 「使えなくなります」と警告した先が行き止まりでは、警告の意味が半分になる
-      const move = document.createElement("button");
-      move.type = "button";
-      move.className = "icon";
-      move.textContent = "移す";
-      move.title = "この秘密を別の置き場へ移す";
-      move.addEventListener("click", () => openMove(a));
-      // **参照を作る**（追加・2026-10-04）。**参照の行には出さない**——参照の参照は作らない
-      // （押せるのに必ず断られるボタンを置かない、規則13）
-      const link = document.createElement("button");
-      link.type = "button";
-      link.className = "icon";
-      link.textContent = "参照を作る";
-      link.title = "値を写さずに、この秘密を別の置き場からも使えるようにする";
-      link.addEventListener("click", () => void openLink(a));
-      const rowActions = a.linkTo ? [move, del] : [move, link, del];
-      if (a.kind === "ssh-identity") {
-        const pub = document.createElement("button");
-        pub.type = "button";
-        pub.className = "icon";
-        pub.textContent = "公開鍵";
-        pub.title = "公開鍵を表示してコピーする（秘密鍵は出ません）";
-        pub.addEventListener("click", () => openPublicKey(a));
-        actions.append(edit, pub, ...rowActions);
-      } else {
-        actions.append(edit, ...rowActions);
-      }
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "icon more";
+      more.textContent = "…";
+      more.setAttribute("aria-label", a.name + " の操作");
+      more.title = "操作（用途・移す・削除など）";
+      more.setAttribute("aria-haspopup", "menu");
+      more.setAttribute("aria-expanded", "false");
+      more.addEventListener("click", () => {
+        if (menuOwner === more) closeMenu(true);
+        else openMenu(more, items);
+      });
+      actions.append(more);
 
       // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
       const vaultTd = clipped(a.implementation);
       vaultTd.setAttribute("data-vault-col", "");
 
-      // **参照の行は、指している先を名前の横に出す**（2026-10-04）。全文は title で読める
-      const nameTd = clipped(a.name, "name");
+      // **名前の列**（改訂・2026-10-05、ユーザー指摘）。参照の行は、名前の前に「参照」の印、
+      // 2行目に「→ 元のグループ / 名前」。どちらの行も**末尾から**畳むので、印と「→」は
+      // 名前がどれだけ長くても見える。全文は各行の title で読める
+      const nameTd = document.createElement("td");
+      nameTd.className = "name";
+      const nameLine = document.createElement("div");
+      nameLine.className = "name-line";
+      const nameText = document.createElement("span");
+      nameText.className = "name-text";
+      nameText.textContent = a.name;
+      nameText.title = a.name;
       if (a.linkTo) {
+        const badge = document.createElement("span");
+        badge.className = "link-badge";
+        badge.textContent = "参照";
+        badge.title = "参照——値は持たず、別の置き場の秘密を指しています";
+        nameLine.append(badge);
+      }
+      nameLine.append(nameText);
+      nameTd.append(nameLine);
+      if (a.linkTo) {
+        const linkLine = document.createElement("div");
+        linkLine.className = "link-line";
+        linkLine.title = linkLabel(a);
         const to = document.createElement("span");
-        to.className = "link-to";
-        to.textContent = " → " + a.linkTo.group + " / " + a.linkTo.name;
-        nameTd.append(to);
+        to.className = "link-target";
+        to.textContent = "→ " + a.linkTo.group + " / " + a.linkTo.name;
+        linkLine.append(to);
+        // **元が無ければそう言う**——こちらは畳まない（切れて見えなくなると、壊れていることが分からない）
         if (a.broken) {
           const broken = document.createElement("span");
           broken.className = "link-broken";
-          broken.textContent = "（元がありません）";
-          nameTd.append(broken);
+          broken.textContent = "元がありません";
+          linkLine.append(broken);
         }
-        nameTd.title = a.name + " " + linkLabel(a);
+        nameTd.append(linkLine);
       }
 
       tr.append(
