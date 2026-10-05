@@ -5198,6 +5198,35 @@
       "updatedAt": "2026-10-05T10:59:18.517Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "inbox-cannot-answer-relay-card",
+      "number": 214,
+      "kind": "bug",
+      "title": "受信箱から中継の承認カードに答えられない",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "relay",
+        "inbox"
+      ],
+      "body": "2026-10-05 ユーザー報告。受信箱のカードを押しても会話を開くだけで、答える画面にたどり着けない（出た会話の中でしか答えられず、その会話の流れからカードが消えていると答える手段が無い）。",
+      "doneWhen": "受信箱で中継の承認の判断待ちに許可・拒否でき、答えがその呼び出しに届く（待っている呼び出しが続く）。E2E、直したコードを戻すと落ちる",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "e9148ef1-63cc-4346-aebf-033be298b9eb"
+        }
+      ],
+      "createdAt": "2026-10-05T10:59:21.119Z",
+      "updatedAt": "2026-10-05T10:59:21.119Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
