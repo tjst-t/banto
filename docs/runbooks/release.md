@@ -148,7 +148,7 @@ sudo systemctl restart UNIT_HOST UNIT_UI
    git merge --ff-only origin/release
    ```
 
-3. build して、**動いているものが無くなってから**起こし直す
+3. build して、**途中で切れるものが無くなってから**起こし直す
 
    ```sh
    cd "$REL/banto"
@@ -158,18 +158,23 @@ sudo systemctl restart UNIT_HOST UNIT_UI
    ```
 
    `restart-when-idle.mjs` は、稼働中の host に「いま動いているもの」（`GET /api/admin/activity`）を数秒おきに聞き、
-   走っているターン・返事待ちの仕事（待たない形で頼んだサブエージェントなど）・Module の呼び出しが無くなったら
-   `systemctl restart banto-host.service banto-frontend.service` する。まず sudo 無しで打ち（D を済ませた host では
-   polkit の規則で許されている）、断られたら（Interactive authentication required・Access denied）`sudo` で打ち直す
-   ——そのときは sudo のパスワードを聞かれることがある。待っている間は、何が残っているかが出る。
+   **切れると結果が分からなくなるもの**（実行中の Module の呼び出し・「続けられる」と名乗らない Module の返事待ちの
+   仕事）が無くなったら `systemctl restart banto-host.service banto-frontend.service` する。走っている AI のターン
+   （文を書いている・考えている）・続けられる Module の仕事（サブエージェントの待たない仕事など）・人の返事待ちは、
+   起き直したあと続くので待たない（アーキ仕様 §2.5「起こし直しをまたいで続ける」）。まず sudo 無しで打ち（D を済ませた
+   host では polkit の規則で許されている）、断られたら（Interactive authentication required・Access denied）`sudo` で
+   打ち直す——そのときは sudo のパスワードを聞かれることがある。待っている間は、待つものと起き直したあと続くものが出る。
 
-   - 見るだけ：`node scripts/restart-when-idle.mjs --status`（空なら終了コード 0、動いていれば 1）
-   - 承認や質問の返事待ちで止まっているターンだけなら待たない：`--ignore-waiting-on-human`
+   - 見るだけ：`node scripts/restart-when-idle.mjs --status`（再起動してよければ終了コード 0、待つものがあれば 1）
+   - 今までどおり全部（走っているターン・返事待ちの仕事・人の返事待ちも）が空くまで待つ：`--all`
    - 待ちきれないとき：`--timeout <分>`（時間切れなら再起動せずに終わる）
+   - `--ignore-waiting-on-human` は無くなった（人の返事待ちは既定で待たない）。打つと理由を出して止まる
 
-   空いたと見てから再起動するまでの間に新しいターンが始まることはありうる（受け付けを止める仕組みはまだ無い）。
-   Service で動かしているものはコンテナの中の systemd で動くので、数えない（host を起こし直しても切れない）。
-   **動いている host がこの口をまだ持たない版のとき**は 404 で止まる——その回だけは画面で確かめてから
+   待つものが無いと見てから再起動するまでの間に新しい呼び出しが始まることはありうる（受け付けを止める仕組みはまだ
+   無い）——その呼び出しは切れて、続きの AI に「結果は分かりません」と伝わる。Service で動かしているものはコンテナの
+   中の systemd で動くので、数えない（host を起こし直しても切れない）。**動いている host が待つものを分けて返さない
+   古い版のとき**（B では REL の新しいスクリプトが古い host に聞く）は、`--all` と同じに全部が空くまで待つ。
+   **この口をまだ持たない版のとき**は 404 で止まる——その回だけは画面で確かめてから
    `systemctl restart banto-host.service banto-frontend.service`（D の前なら `sudo` を付けて）を手で打つ
 
 4. A-6 の 1・2 で確かめる
