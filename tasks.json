@@ -5083,6 +5083,35 @@
       "updatedAt": "2026-10-05T04:20:08.503Z",
       "closedAt": "2026-10-05T04:20:08.503Z",
       "extra": {}
+    },
+    {
+      "id": "relay-approval-stale-card-blocks-backlog-push",
+      "number": 210,
+      "kind": "bug",
+      "title": "中継の承認カードが取り残され、Backlog の書き込みが毎回60秒で時間切れになる",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "backlog",
+        "relay"
+      ],
+      "body": "2026-10-05、本番。Backlog の書き込みは tool の中で push（Repositories の push_branch、初回は中継の承認）まで待つ。(1) 待つ間 AI 側の呼び出しが60秒で -32001 になる（Claude Code 側の上限。host の holdForHuman は host の数えだけ止める）。(2) 04:17 に Fork「起こし直しをまたいで続ける」で出た承認カードが、聞いた呼び出しが終わっても畳まれず残った（whenEnded が拾えていない。Backlog が中継に callId を返していない疑い）。(3) 同じ組み合わせは inFlight で1枚目に相乗りするので、以後の書き込みは新しいカードを出さず取り残されたカードを待つ。(4) そのカードは出た会話の中でしか答えられず、受信箱から押しても答えられない。ユーザー：push はすぐしたい、根本から直す。",
+      "doneWhen": "本番で Backlog に書いたとき、初回は書いた会話に承認カードが出て、答えるまで AI の呼び出しが時間切れにならず、許可すると push されて以後は聞かれない。聞いた呼び出しが終わったカードは畳まれ、次の書き込みで新しいカードが出る（それぞれ壊して落ちる試験つき）",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "e9148ef1-63cc-4346-aebf-033be298b9eb"
+        }
+      ],
+      "createdAt": "2026-10-05T04:41:36.553Z",
+      "updatedAt": "2026-10-05T04:41:36.553Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
