@@ -4967,7 +4967,7 @@
       "number": 206,
       "kind": "task",
       "title": "Module の「起こし直しても続けられる」約束と札の覚え直し",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-turn-events"
@@ -4979,9 +4979,14 @@
       "doneWhen": "契約の試験で：名乗らない Module は今どおり「途中で終わりました」。名乗った Module が「続ける」と答えた札は残り、あとで届けられる（2回目は断られる）。Thread の続きはその判定のあとに始まる",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "9e0bb59e-5bbc-47f1-baca-8434afafbae2"
+        }
+      ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T04:15:28.591Z",
+      "updatedAt": "2026-10-05T10:58:31.136Z",
       "closedAt": null,
       "extra": {}
     },
