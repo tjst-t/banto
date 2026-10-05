@@ -4822,7 +4822,7 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "",
+      "body": "2026-10-05：この host で手順書 D を済ませた（置き場は versions/・current の形、Module は versions/<commit>/banto から動く＝コンテナのマウントの付け直しも確認）。画面の「すぐ更新」で 024e52ee→568e71c1 に上がった（ユーザー）。\n\n残り：(1) 「AI が止まるまで待って更新」を本物の host で1回（次に release が進んだとき）(2) 携帯から押す。組み立ての失敗・前の版へ戻すは使い捨てのコンテナ（本物の systemd・polkit）で確かめ済みとし、本物の host ではわざと壊れた版を出して試さない（ユーザーに提案）。更新のあと画面が古いままだった件は別の枝が e5d5c1d0 で直した。",
       "doneWhen": "ストーリーの完了条件",
       "resolution": null,
       "refs": [],
@@ -4833,7 +4833,7 @@
         }
       ],
       "createdAt": "2026-10-04T10:05:36.893Z",
-      "updatedAt": "2026-10-04T12:01:59.516Z",
+      "updatedAt": "2026-10-05T11:44:26.096Z",
       "closedAt": null,
       "extra": {}
     },
