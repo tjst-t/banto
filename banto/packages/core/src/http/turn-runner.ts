@@ -436,7 +436,17 @@ async function* runThreadTurnInner(
   let initSessionId: string | undefined;
   const unsubscribeSide = deps.turnEvents?.subscribeSide(input.threadId, (event) => {
     // ターンの外で出た判断待ち（中継の承認・Project をまたぐメッセージの承認）も、止めたら畳む
-    if (event.type === "judgment") raisedJudgments.push(event.judgmentId);
+    if (event.type === "judgment") {
+      raisedJudgments.push(event.judgmentId);
+      // **中継の承認のカードは会話の記録にも残す**（追加・2026-10-05、`docs/notes/2026-10-05-relay-card-stop-keep.md`）
+      // ——残すのは id だけ（中身は受信箱）。残さないと、会話を記録から組み直したとき（止めた・開き直した）にカードが消える
+      const raised = deps.inbox.get(event.judgmentId);
+      if (raised?.kind === "judgment" && raised.source === "relay") {
+        void deps.projectThread
+          .recordJudgmentCard(input.threadId, event.judgmentId)
+          .catch((err: unknown) => console.warn(`[host] ${input.threadId} の中継の承認のカードを記録できませんでした:`, err));
+      }
+    }
     sideEvents.push(event);
     wakeSide?.();
   });
@@ -514,6 +524,9 @@ async function* runThreadTurnInner(
         } catch (err) {
           console.warn(`[host] ${input.threadId} の止めた印を記録できませんでした:`, err);
         }
+        // **このターンが出した判断待ちは、CLI を止めるより先に「止めた」で畳む**（追加・2026-10-05）。先に CLI を止めると、
+        // 中継の承認は「聞いた呼び出しが終わった」で畳まれ（`approval-gate.ts`）、止めたのに別の理由がカードに残る
+        await closeRaisedJudgments(deps, raisedJudgments);
         abortTurn.abort();
         await Promise.race([pending, new Promise((r) => setTimeout(r, STOP_SETTLE_MS))]);
         break;
@@ -730,6 +743,23 @@ export async function noteInterruptedTurn(
   await projectThread.appendMessage(turn.threadId, "assistant", INTERRUPTED_NOTE);
 }
 
+/** 人がターンを止めたときの答え（会話のカードには「回答：人がターンを止めました」と出る） */
+export const TURN_STOPPED_ANSWER = "人がターンを止めました";
+
+/** このターンが出した判断待ちのうち、まだ答えの無いものを「止めた」で畳む（何度呼んでもよい） */
+async function closeRaisedJudgments(
+  deps: { inbox: InboxStore; pendingApprovals: PendingApprovalRegistry },
+  raised: readonly string[],
+): Promise<void> {
+  for (const id of raised) {
+    const item = deps.inbox.get(id);
+    if (item?.kind !== "judgment" || item.liveness !== "live") continue;
+    const answer = { behavior: "deny" as const, message: TURN_STOPPED_ANSWER };
+    deps.pendingApprovals.resolve(id, answer);
+    await deps.inbox.answerJudgment(id, answer);
+  }
+}
+
 /**
  * **人が止めたターンを片づける**（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）。
  *
@@ -772,13 +802,7 @@ async function settleStoppedTurn(
     cwd?: string;
   },
 ): Promise<TurnStreamEvent> {
-  for (const id of turn.raisedJudgments) {
-    const item = deps.inbox.get(id);
-    if (item?.kind !== "judgment" || item.liveness !== "live") continue;
-    const answer = { behavior: "deny" as const, message: "人がターンを止めました" };
-    deps.pendingApprovals.resolve(id, answer);
-    await deps.inbox.answerJudgment(id, answer);
-  }
+  await closeRaisedJudgments(deps, turn.raisedJudgments);
 
   const { thread } = turn;
   // このターンが続けたセッションを、どこで切ればよいか。新しいセッション（最初のターン・Clear のあと・

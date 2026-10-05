@@ -930,10 +930,35 @@ function logIfSlow(req: IncomingMessage, res: ServerResponse): void {
  * （メーター）。記録（Event Store の `usage.recorded`）は変えない——返し方だけ。
  * 推移が要る日が来たら、そのとき別の口に分ける。
  */
-function toThreadDetail(thread: ThreadState) {
+/**
+ * 会話のカードに出す中継の承認の中身（追加・2026-10-05）。記録は id だけを持ち、中身はここで受信箱から引く（規則3）。
+ * 宛名（呼び出し元・宛先・tool・対象の名前）と答えだけ——引数（値）は判断待ちにも載せていない（アーキ仕様 §2.5）
+ */
+function judgmentCardsOf(inbox: InboxStore, ids: readonly string[]) {
+  return ids.flatMap((id) => {
+    const item = inbox.get(id);
+    if (item?.kind !== "judgment") return [];
+    return [
+      {
+        id,
+        message: item.message,
+        ...(item.serverName ? { serverName: item.serverName } : {}),
+        ...(item.toolInput !== undefined ? { toolInput: item.toolInput } : {}),
+        liveness: item.liveness,
+        ...(item.liveness === "answered" ? { answer: judgmentAnswerText(item.answer) } : {}),
+      },
+    ];
+  });
+}
+
+function toThreadDetail(thread: ThreadState, inbox: InboxStore) {
   const { awaitingReplies, ...rest } = thread;
   return {
     ...rest,
+    // 中継の承認のカード：記録の id に、受信箱の中身を添える（`judgmentIds` は画面に渡さない）
+    messages: thread.messages.map(({ judgmentIds, ...m }) =>
+      judgmentIds && judgmentIds.length > 0 ? { ...m, judgments: judgmentCardsOf(inbox, judgmentIds) } : m,
+    ),
     usage: thread.usage.slice(-1),
     // **札（replyTo）と札を渡した接続の名前は画面に出さない**（訂正・2026-10-05、Fable のレビュー）。札は届けるための
     // 推測できない印——持てば誰でもその Thread に届けられる（`app-events.ts` の `BackgroundItem` と同じ姿勢）
@@ -1838,7 +1863,7 @@ export function createApp(deps: AppDeps) {
       if (threadMatch && req.method === "GET") {
         const thread = deps.projectThread.getThread(threadMatch[1]!);
         if (!thread) return json(res, 404, { error: "not found" });
-        json(res, 200, toThreadDetail(thread));
+        json(res, 200, toThreadDetail(thread, deps.inbox));
         return;
       }
 

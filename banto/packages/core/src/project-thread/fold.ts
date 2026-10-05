@@ -86,6 +86,8 @@ export type ProjectThreadEvent =
         origin?: MessageOrigin;
         /** 人が添えた画像の名前（追加・2026-09-26）。中身は画像の置き場 */
         images?: MessageImage[];
+        /** そのターンで出た中継の承認の id（追加・2026-10-05）。中身は受信箱 */
+        judgmentIds?: string[];
       };
     }
   // **Thread に届いたもの**（追加・2026-09-25、アーキ仕様 §4.2）。会話に積むのはターンを始めるとき
@@ -534,10 +536,12 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             // ——ターンの最後にまとめて書いていたときと同じ形にする。文は段落を分けてつなぐ（`extractAssistantText`
             // と同じ）。seq は最初の発言のもの。Fork に写したものと同じオブジェクトなので、書き換えずに差し替える
             const calls = [...(last.uiToolCalls ?? []), ...(uiToolCalls ?? [])];
+            const judgmentIds = [...(last.judgmentIds ?? []), ...(event.payload.judgmentIds ?? [])];
             t.messages[t.messages.length - 1] = {
               ...last,
               text: [last.text, event.payload.text].filter((s) => s !== "").join("\n\n"),
               uiToolCalls: calls.length > 0 ? calls : undefined,
+              ...(judgmentIds.length > 0 ? { judgmentIds } : {}),
             };
             return next;
           }
@@ -547,6 +551,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             text: event.payload.text,
             ...(event.payload.origin ? { origin: event.payload.origin } : {}),
             ...(event.payload.images && event.payload.images.length > 0 ? { images: event.payload.images } : {}),
+            ...(event.payload.judgmentIds && event.payload.judgmentIds.length > 0 ? { judgmentIds: event.payload.judgmentIds } : {}),
             uiToolCalls,
           });
           // 積んだものは、届いたものの待ち行列から外す

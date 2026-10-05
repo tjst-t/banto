@@ -13,7 +13,8 @@ import { ProjectThreadStore } from "../project-thread/store.js";
 import { GlobalMemoryStore } from "../global-memory/store.js";
 import { InboxStore } from "../inbox/store.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
-import { runThreadTurn, STOPPED_NOTE, type TurnStreamEvent } from "./turn-runner.js";
+import { runThreadTurn, STOPPED_NOTE, TURN_STOPPED_ANSWER, type TurnStreamEvent } from "./turn-runner.js";
+import { TurnEventBus } from "./turn-events.js";
 import { TurnStops } from "./turn-stops.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
 import type { runTurn, RunnerTurnOptions } from "../runner/adapter.js";
@@ -313,5 +314,72 @@ test("Fork でも、最初のターン・続きのターンのどちらで止め
     const b = await runAndStop(deps, fork.id, "まちがえた2", second);
     assert.ok((b.events.at(-1) as { withdrawn?: unknown }).withdrawn, `続きのターンで取り消していない: ${JSON.stringify(b.events.at(-1))}`);
     assert.equal(store.getThread(fork.id)!.rewindTo, "uuid-grape");
+  });
+});
+
+// **止めても、中継の承認のカードは会話に残る**（追加・2026-10-05、ユーザー決定「止めたことを忘れそうなので残してほしい」）。
+// 記録には判断待ちの id だけを残し、止めたら CLI を止めるより先に「止めた」で畳む——先に CLI を止めると、聞いた呼び出しが
+// 終わったとして別の理由で畳まれる
+test("止めたら、中継の承認は CLI を止めるより先に「止めた」で畳み、カードの id は会話の記録に残る", async () => {
+  await withThread(async ({ deps, threadId, inbox, store }) => {
+    const turnEvents = new TurnEventBus();
+    let answeredBeforeAbort: string | undefined;
+    let judgmentId = "";
+    let reached!: () => void;
+    const hanging = new Promise<void>((r) => (reached = r));
+    const fake = (async function* (opts: RunnerTurnOptions) {
+      yield { type: "message" as const, message: init("session-1") } as never;
+      yield {
+        type: "message" as const,
+        message: { type: "assistant", uuid: "u1", message: { content: [{ type: "tool_use", id: "tu1", name: "mcp__backlog__createItem", input: {} }] } },
+      } as never;
+      reached();
+      await new Promise<void>((resolve) =>
+        opts.signal?.addEventListener("abort", () => {
+          // CLI が止められた瞬間に、判断待ちがもう「止めた」で畳まれているか
+          const item = inbox.get(judgmentId) as { liveness?: string; answer?: { message?: string } } | undefined;
+          answeredBeforeAbort = item?.liveness === "answered" ? item.answer?.message : undefined;
+          resolve();
+        }),
+      );
+      throw new Error("aborted");
+    }) as unknown as typeof runTurn;
+    const stop = new AbortController();
+    const done = collect(
+      runThreadTurn({ ...deps, turnEvents, runTurn: fake }, { threadId, prompt: "足して", modules: [], stop: stop.signal }),
+    );
+    await hanging;
+    // 中継の承認が立った（host のゲートと同じ形：受信箱に立て、ターンの外から流す）
+    const judgment = await inbox.raiseJudgment({ threadId, source: "relay", message: "Module 間の呼び出しの確認：backlog が repositories の fetch_branch を呼ぼうとしています", serverName: "backlog", toolInput: { 呼び出し元: "backlog", 宛先: "repositories" } });
+    judgmentId = judgment.id;
+    turnEvents.publish(threadId, { type: "judgment", judgmentId: judgment.id, kind: "approval", serverName: "backlog", message: judgment.message } as never);
+    for (let i = 0; i < 50 && !store.getThread(threadId)!.messages.some((m) => m.judgmentIds?.includes(judgment.id)); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    stop.abort();
+    await done;
+
+    assert.equal(answeredBeforeAbort, TURN_STOPPED_ANSWER, "CLI を止めるより先に「止めた」で畳んでいない");
+    const messages = store.getThread(threadId)!.messages;
+    const ai = messages.filter((m) => m.role === "assistant");
+    assert.equal(ai.length, 1, "1ターンの AI の発言が1つにまとまっていない");
+    assert.deepEqual(ai[0]!.judgmentIds, [judgment.id], "カードの id が会話の記録に残っていない");
+    assert.equal(ai[0]!.text, STOPPED_NOTE, "止めた印と同じ発言にまとまっていない");
+  });
+});
+
+test("中継の承認でない判断待ち（ターンの外から来たもの）は、カードの id を記録に残さない", async () => {
+  await withThread(async ({ deps, threadId, inbox, store }) => {
+    const turnEvents = new TurnEventBus();
+    const runner = scriptedRunner({ messages: [init("session-1")], hang: true });
+    const stop = new AbortController();
+    const done = collect(runThreadTurn({ ...deps, turnEvents, runTurn: runner.fake }, { threadId, prompt: "送って", modules: [], stop: stop.signal }));
+    await runner.seen.reachedHang;
+    const judgment = await inbox.raiseJudgment({ threadId, source: "message", message: "Project をまたぐメッセージの確認" });
+    turnEvents.publish(threadId, { type: "judgment", judgmentId: judgment.id, kind: "approval", message: judgment.message } as never);
+    await new Promise((r) => setTimeout(r, 50));
+    stop.abort();
+    await done;
+    assert.equal(store.getThread(threadId)!.messages.some((m) => m.judgmentIds !== undefined), false);
   });
 });

@@ -497,6 +497,16 @@ export class ProjectThreadStore {
   }
 
   /**
+   * **中継の承認のカードを会話に残す**（追加・2026-10-05、`docs/notes/2026-10-05-relay-card-stop-keep.md`）。そのターンの AI の
+   * 発言に、判断待ちの id だけを足す（fold が同じターンの発言にまとめる）。中身は受信箱にあり、ここに写さない（規則3）
+   */
+  async recordJudgmentCard(threadId: ThreadId, judgmentId: string): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const event = await this.log.append("message.appended", { threadId, role: "assistant", text: "", judgmentIds: [judgmentId] });
+    this.projection.applyOne(event);
+  }
+
+  /**
    * **Thread に届いたものを残す**（決定・2026-09-25、アーキ仕様 §4.2）。会話にはまだ積まない——積むのは
    * ターンを始めるとき（`appendMessage` の origin）。先に残すので、起こす前に host が落ちても消えない
    */

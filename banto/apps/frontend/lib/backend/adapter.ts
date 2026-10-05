@@ -629,6 +629,16 @@ export function realMessagesToInitial(
         result: call.result,
       });
     }
+    // **中継の承認のカード**（追加・2026-10-05、v4-frontend.md「Module 間中継の承認」）——止めた・開き直したあとも、
+    // 答え済みの形で残す。走っているときと同じ部品（`humanToolPart`）、答えは host が受信箱から添えたもの
+    for (const card of m.judgments ?? []) {
+      const toolCallId = `judgment-${card.id}`;
+      judgmentIdByToolCallId.set(toolCallId, card.id);
+      content.push({
+        ...humanToolPart(toolCallId, card.serverName ?? "banto", card.message, { toolInput: card.toolInput }),
+        ...(card.answer !== undefined ? { result: card.answer } : {}),
+      });
+    }
     if (m.text) content.push({ type: "text", text: m.text });
     // **届いたものは人の発言として描かない**（決定・2026-09-25）——印を渡し、会話の描き手が札にする
     return {

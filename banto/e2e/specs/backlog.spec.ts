@@ -149,6 +149,15 @@ async function gotoProject(page: Page): Promise<string> {
   return id;
 }
 
+/**
+ * 畳まれた「N tool calls」を全部開く。**答え済みの判断は、ほかの tool 呼び出しと一緒に畳んで出る**（v4-frontend.md
+ * ——答えを待っているものだけが開いて出る）。会話を記録から組み直したあと（止めた・開き直した）は畳まれている
+ */
+async function expandToolGroups(page: Page): Promise<void> {
+  const closed = page.getByRole("button", { name: /tool calls?$/, expanded: false });
+  for (let i = 0; i < 10 && (await closed.count()) > 0; i++) await closed.first().click();
+}
+
 async function openBacklog(page: Page) {
   // 携帯の幅では検索の入口はナビ（≡）の中
   await openNav(page);
@@ -462,9 +471,13 @@ test("承認を聞いたまま Runner が去るとカードは畳まれ、次の
   await expect(fetchCards.first()).toContainText("回答：承認を聞いた呼び出しが、人が答える前に終わりました", { timeout: 30_000 });
   await expect(fetchCards.first().getByRole("button", { name: "許可する" })).toHaveCount(0);
   await shot(page, "5-turn-ended-card-settled");
-  // 開き直しても、答える口は戻らない（中継のカードは走っているターンの流れにしか描かれない）
+  // 開き直しても、答え済みのカードとして残る（会話の記録にカードの id を残している、追加・2026-10-05）
   await page.reload();
   await expect(page.getByText("下げられませんでした。", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "許可する" })).toHaveCount(0);
+  await expandToolGroups(page);
+  await expect(fetchCards).toHaveCount(1, { timeout: 30_000 });
+  await expect(fetchCards.first()).toContainText("回答：承認を聞いた呼び出しが、人が答える前に終わりました");
   await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
 
   // 2ターン目：相乗りする先は無い——このターンで新しく聞かれる。Runner は15秒黙られたら諦めるが、人を待つ間は host が
@@ -478,8 +491,8 @@ test("承認を聞いたまま Runner が去るとカードは畳まれ、次の
       }),
   );
   await composer.press("Enter");
-  await expect(fetchCards).toHaveCount(1, { timeout: 120_000 });
-  const again = fetchCards.first();
+  await expect(fetchCards).toHaveCount(2, { timeout: 120_000 });
+  const again = fetchCards.nth(1);
   await expect(again).toContainText("branch: backlog");
   expect(await openJudgments()).toHaveLength(1);
   await page.waitForTimeout(25_000); // 人が答えるのに時間がかかる——Runner の上限（15秒）より長く待たせる

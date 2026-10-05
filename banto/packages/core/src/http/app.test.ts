@@ -2185,3 +2185,41 @@ test("POST /api/threads/:id/stop は走っているターンを止め、何も�
     },
   );
 });
+
+// **会話に残した中継の承認のカード**（追加・2026-10-05）。記録は id だけ、中身（宛名・答え）は受信箱から引いて添える
+test("GET /api/threads/:id は、記録に残した中継の承認のカードに受信箱の中身と答えを添える（id の並びは返さない）", async () => {
+  await withApp(async (base, token, dir, { inbox, projectThread }) => {
+    const headers = { authorization: `Bearer ${token}` };
+    const project = await projectThread.createProject("demo", dir);
+    const thread = await projectThread.createBaseThread(project.id);
+    await projectThread.appendMessage(thread.id, "user", "足して");
+    const asked = await inbox.raiseJudgment({
+      threadId: thread.id,
+      source: "relay",
+      message: "Module 間の呼び出しの確認：backlog が repositories の fetch_branch を呼ぼうとしています",
+      serverName: "backlog",
+      toolInput: { 呼び出し元: "backlog", 宛先: "repositories", 名前: "fetch_branch" },
+    });
+    await projectThread.recordJudgmentCard(thread.id, asked.id);
+    await inbox.answerJudgment(asked.id, { behavior: "deny", message: "人がターンを止めました" });
+    await projectThread.appendMessage(thread.id, "assistant", "（ここで止めました）");
+
+    const detail = (await (await fetch(`${base}/api/threads/${thread.id}`, { headers })).json()) as {
+      messages: Array<{ role: string; text: string; judgments?: unknown[]; judgmentIds?: unknown }>;
+    };
+    // （ターンの記録が無いので発言はまとまらない——まとめるのは turn-stop.test.ts が見る）
+    assert.equal(detail.messages.some((m) => m.judgmentIds !== undefined), false, "記録の id の並びを画面に渡している");
+    const withCard = detail.messages.filter((m) => m.judgments !== undefined);
+    assert.equal(withCard.length, 1);
+    assert.deepEqual(withCard[0]!.judgments, [
+      {
+        id: asked.id,
+        message: "Module 間の呼び出しの確認：backlog が repositories の fetch_branch を呼ぼうとしています",
+        serverName: "backlog",
+        toolInput: { 呼び出し元: "backlog", 宛先: "repositories", 名前: "fetch_branch" },
+        liveness: "answered",
+        answer: "人がターンを止めました",
+      },
+    ]);
+  });
+});

@@ -2,7 +2,7 @@
 //
 // Backlog の書き込みは、書く前に取ってくる・書いたら送るを Repositories に頼む（中継）。初回はどちらも人に聞く。
 // この spec は自分の Project（承認の記録が無い）を作り、2つを見る：
-//   1. カードが出ている間も「止める」が出て、押すとターンが止まり、カードは答え済み（畳まれた）になる（#213）
+//   1. カードが出ている間も「止める」が出て、押すとターンが止まり、カードは答え済みの形で会話に残る。開き直しても残る（#213）
 //   2. 受信箱で中継の承認に許可・拒否でき、答えがその呼び出しに届く（呼び出しが続いて書き込みが済む）。
 //      会話のカードも答え済みに変わる（#214）
 // 規則14——押せたで終わらせず、カードの文言・受信箱の中身・ブランチに積まれた中身・origin まで見る。
@@ -93,6 +93,15 @@ const pushCards = (page: Page) =>
   page.locator('[data-role="judgment-card"]').filter({ hasText: "backlog が repositories の push_branch" });
 const stopButton = (page: Page) => page.getByRole("button", { name: "Stop generating" });
 
+/**
+ * 畳まれた「N tool calls」を全部開く。**答え済みの判断は、ほかの tool 呼び出しと一緒に畳んで出る**（v4-frontend.md
+ * ——答えを待っているものだけが開いて出る）。会話を記録から組み直したあと（止めた・開き直した）は畳まれている
+ */
+async function expandToolGroups(page: Page): Promise<void> {
+  const closed = page.getByRole("button", { name: /tool calls?$/, expanded: false });
+  for (let i = 0; i < 10 && (await closed.count()) > 0; i++) await closed.first().click();
+}
+
 test("中継の承認カードが出ている間も「止める」が出て、押すとターンが止まり、カードは答え済みになる", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
@@ -123,12 +132,29 @@ test("中継の承認カードが出ている間も「止める」が出て、�
   await expect(stopButton(page)).toHaveCount(0, { timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
   await expect.poll(() => openRelayJudgments(page), { timeout: 30_000 }).toEqual([]);
-  // 止めたターンは記録から組み直される（§6.31：「ここで止めました」）。中継のカードは記録に載らないので、止めた
-  // ターンの tool のカードと一緒に消える——答えられるように見えるカードは残らない
+  // 止めたターンは記録から組み直される（§6.31：「ここで止めました」）。**中継のカードは消えず、答え済みの形で残る**
+  // （改訂・2026-10-05、ユーザー決定「止めたことを忘れそうなので残してほしい」）——会話の記録にカードの id を残している
   await expect(page.getByText("（ここで止めました）")).toBeVisible({ timeout: 30_000 });
-  await expect(fetchCards(page)).toHaveCount(0);
+  // 答える口はどこにも無い（畳まれた中も含めて、開く前に見る）
+  await expect(page.getByRole("button", { name: "許可する" })).toHaveCount(0);
+  await expandToolGroups(page);
+  await expect(fetchCards(page)).toHaveCount(1);
+  await expect(fetchCards(page).first()).toContainText("回答：人がターンを止めました");
+  await expect(fetchCards(page).first()).toContainText("branch: backlog");
   await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
   await shot(page, "2-stopped-card-settled");
+  // 開き直しても残る（まず畳まれた形——「1 tool call」と止めた印——を撮ってから開く）
+  await page.reload();
+  await expect(page.getByText("（ここで止めました）")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "許可する" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^1 tool call$/ })).toBeVisible();
+  await shot(page, "7-stopped-card-after-reload-folded");
+  await expandToolGroups(page);
+  await expect(fetchCards(page)).toHaveCount(1, { timeout: 30_000 });
+  await expect(fetchCards(page).first()).toContainText("回答：人がターンを止めました");
+  await expect(fetchCards(page).first()).toContainText("branch: backlog");
+  await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
+  await shot(page, "6-stopped-card-after-reload");
   expect(pageErrors).toEqual([]);
 });
 
@@ -142,7 +168,10 @@ test("受信箱で中継の承認に答えると、その呼び出しが続い�
   const composer = page.getByPlaceholder(/に送る/).first();
   await expect(composer).toBeVisible({ timeout: 30_000 });
 
-  // 前のターンのカード（開き直すと描かれない）を数えておき、このターンのカードを位置で指す
+  // 前のターンのカード（止めたターンのもの。答え済みで、畳まれて残っている）を開いて数え、このターンのカードを位置で指す
+  await expect(page.getByText("（ここで止めました）")).toBeVisible({ timeout: 30_000 });
+  await expandToolGroups(page);
+  await expect(fetchCards(page)).toHaveCount(1, { timeout: 30_000 });
   const before = await fetchCards(page).count();
   await composer.fill(
     "もう一つ足します。" +
@@ -186,5 +215,16 @@ test("受信箱で中継の承認に答えると、その呼び出しが続い�
   await expect(pushCards(page).first()).toContainText("回答：許可する");
   await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
   await shot(page, "4-conversation-cards-answered-from-inbox");
+  // 開き直しても、答え済みのカードとして残る（止めたターンのカードも、受信箱で答えたカードも）
+  await page.reload();
+  await expect(page.getByText("受信箱から許可されて足しました。", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "許可する" })).toHaveCount(0);
+  await expandToolGroups(page);
+  await expect(fetchCards(page)).toHaveCount(2, { timeout: 30_000 });
+  await expect(fetchCards(page).nth(0)).toContainText("回答：人がターンを止めました");
+  await expect(fetchCards(page).nth(1)).toContainText("回答：許可する");
+  await expect(pushCards(page)).toHaveCount(1);
+  await expect(pushCards(page).first()).toContainText("回答：許可する");
+  await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });

@@ -133,6 +133,22 @@ export interface RealThreadMessage {
   origin?: RealMessageOrigin;
   /** 人が添えた画像（決定・2026-09-26）。中身は `GET /api/images/:id` で取る */
   images?: RealMessageImage[];
+  /**
+   * そのターンで出た中継の承認のカード（追加・2026-10-05）。host が記録の id に受信箱の中身を添えて返す——会話を記録から
+   * 組み直しても（止めた・開き直した）カードが残る
+   */
+  judgments?: RealJudgmentCard[];
+}
+
+/** 会話に残す中継の承認のカード1枚（宛名と答えだけ。値は載らない、アーキ仕様 §2.5） */
+export interface RealJudgmentCard {
+  id: string;
+  message: string;
+  serverName?: string;
+  toolInput?: unknown;
+  liveness: "live" | "answered" | "timed_out";
+  /** 答え（会話のカードに「回答：…」と出す一言）。答えが付いていなければ無い */
+  answer?: string;
 }
 
 /** 発言に添えた画像1枚——名前は中身の SHA-256 */

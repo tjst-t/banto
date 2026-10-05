@@ -2,7 +2,7 @@
 // Step 2 時点では会話ビューに要る最小限だけ。受信箱・Module・Skill 等の型は
 // 次段（Step 3 以降）で ProjectId 以下に足していく。
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
-import type { RealMessageImage, RealMessageOrigin } from "@/lib/backend/client";
+import type { RealJudgmentCard, RealMessageImage, RealMessageOrigin } from "@/lib/backend/client";
 
 export type ProjectId = string;
 export type ThreadId = string;
@@ -76,6 +76,8 @@ export interface MockThread {
     origin?: RealMessageOrigin;
     /** 人が添えた画像（決定・2026-09-26）。中身は host から取る */
     images?: readonly RealMessageImage[];
+    /** そのターンで出た中継の承認のカード（追加・2026-10-05）。組み直しても残す */
+    judgments?: readonly RealJudgmentCard[];
   }[];
   /** real:trueのときだけ意味を持つ。**中身をまだ取っていないときの概要**
    *  （改訂・2026-09-07）——一覧は要約だけを返すので、閉じた Thread の
