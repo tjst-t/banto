@@ -4113,7 +4113,7 @@
       "number": 170,
       "kind": "task",
       "title": "既にある Project を Repositories の画面（Canvas）から開く口",
-      "status": "in-progress",
+      "status": "done",
       "parent": "repositories-next",
       "dependsOn": [],
       "milestone": "phase-2",
@@ -4121,7 +4121,7 @@
       "labels": [],
       "body": "## なぜ\n\n2026-10-04、ユーザー。worktree fork/repositories-polish で作り main に取り込んだ（80233a48）。banto の拡張 dev.banto/open-project（確かめの画面は出さずに移る・どの面からでも人が押した直後だけ・閉じた／無い Project は断る）。一覧の Project 名を押すと移る。あわせて GitHub App の Install 先と権限・Install のページ・使い方を設定の面に出した（ユーザーが Install し忘れでつまずいた）。経緯は docs/notes/2026-10-04-repositories-polish.md",
       "doneWhen": "稼働中の banto で、設定の Repositories の一覧の Project 名を押すとその Project が開き、ブラウザでログインのアカウントに GitHub App の Install 先と権限が出ること（Install していないと Install のページを開けること）を人が確かめる",
-      "resolution": null,
+      "resolution": "人が稼働中の banto で確かめた（2026-10-05）：一覧の Project 名から開く・Install 先と権限の表示・App のページから Install のページが開く。",
       "refs": [],
       "threads": [
         {
@@ -4130,8 +4130,8 @@
         }
       ],
       "createdAt": "2026-10-03T14:16:18.805Z",
-      "updatedAt": "2026-10-04T02:27:44.254Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T13:53:23.025Z",
+      "closedAt": "2026-10-05T13:53:23.025Z",
       "extra": {}
     },
     {
