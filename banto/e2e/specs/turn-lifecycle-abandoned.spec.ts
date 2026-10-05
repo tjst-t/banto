@@ -74,7 +74,6 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   // **答えられる状態で戻っていること**（いまはここが出ない＝誰も答えられない）
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   await expect
     .poll(

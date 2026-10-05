@@ -97,7 +97,6 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
     const allow = page.getByRole("button", { name: "許可する" });
     if ((await allow.count()) === 0) return false;
     await allow.last().click();
-    await page.getByRole("button", { name: "この内容で送る" }).last().click();
     return true;
   };
   // **成功したときにだけ現れるもの**を待つ（規則14）——エージェントが「渡っている」と答えた発言

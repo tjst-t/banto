@@ -47,7 +47,6 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   // 1回目の承認（AI から）
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 90_000 });
   await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   // ---- 1. 画面が出て、中身が本物 ------------------------------------------
   const embed = page.locator('[data-testid="inline-module-view"]');

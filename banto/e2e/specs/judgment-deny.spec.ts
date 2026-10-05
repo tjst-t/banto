@@ -51,7 +51,6 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
   const threadId: string = target.threadId;
 
   await page.getByRole("button", { name: "拒否する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   // host 側で決着する
   await expect

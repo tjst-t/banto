@@ -72,7 +72,6 @@ test("人の答えを待っているものは、バックグラウンドと分�
     const allow = page.getByRole("button", { name: "許可する" });
     if ((await allow.count()) > 0) {
       await allow.last().click();
-      await page.getByRole("button", { name: "この内容で送る" }).last().click();
     }
     await expect(page.getByText(/待たずに頼みました/)).toHaveCount(1, { timeout: 10_000 });
   }).toPass({ timeout: 120_000 });

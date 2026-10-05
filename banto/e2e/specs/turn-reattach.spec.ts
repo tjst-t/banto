@@ -266,7 +266,6 @@ test("判断待ちに答えたあとに開き直しても、その判断は答�
   const card = page.locator('[data-role="judgment-card"]').last();
   await expect(card).toBeVisible({ timeout: 60_000 });
   await card.getByRole("button", { name: "許可する" }).click();
-  await card.getByRole("button", { name: "この内容で送る" }).click();
   await expect(card).toContainText("回答：許可する", { timeout: 30_000 });
 
   // 答えたあと、まだ走っているうちに開き直す

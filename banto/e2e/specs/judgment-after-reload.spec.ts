@@ -47,7 +47,6 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
   // 実際に答えられて、止まっていたターンが動き出すところまで見る（規則14）
   const target = open.find((i: { kind: string }) => i.kind === "judgment");
   await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   await expect
     .poll(

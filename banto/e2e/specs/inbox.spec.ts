@@ -84,9 +84,8 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
   const target = before.find((i: { kind: string }) => i.kind === "judgment");
   expect(target).toBeTruthy();
 
-  // 「許可する」は選択肢——選んでから「この内容で送る」で確定する
+  // 「許可する」は押したらそのまま送る（選んでから送る2段はやめた・2026-10-05）
   await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   await expect
     .poll(

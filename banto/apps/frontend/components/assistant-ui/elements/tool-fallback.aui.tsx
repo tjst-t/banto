@@ -544,7 +544,7 @@ function ToolFallbackApproval({
   );
 }
 
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+const ToolFallbackImpl = ({
   toolName,
   argsText,
   result,
@@ -554,12 +554,19 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   interrupt,
   approval,
   respondToApproval,
+  hideApproval = false,
+}: ToolCallMessagePartProps & {
+  /**
+   * banto：Allow / Deny を出さない（2026-10-05）。承認は判断待ちのカードで聞くので、ここのボタンは host に届かない
+   * ——開く・閉じるは requires-action のまま今までどおり
+   */
+  hideApproval?: boolean;
 }) => {
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
   const isRequiresAction = status?.type === "requires-action";
   const shouldRenderApproval =
-    isRequiresAction && offersInterruptAction(status, approval, interrupt);
+    !hideApproval && isRequiresAction && offersInterruptAction(status, approval, interrupt);
 
   const [open, setOpen] = useState(isRequiresAction);
   const [prevRequiresAction, setPrevRequiresAction] =
@@ -596,7 +603,10 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
 const ToolFallback = memo(
   ToolFallbackImpl,
-) as unknown as ToolCallMessagePartComponent & {
+) as unknown as ((
+  props: React.ComponentProps<ToolCallMessagePartComponent> & { hideApproval?: boolean },
+) => React.ReactNode) & {
+  displayName?: string;
   Root: typeof ToolFallbackRoot;
   Trigger: typeof ToolFallbackTrigger;
   Content: typeof ToolFallbackContent;

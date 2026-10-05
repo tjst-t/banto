@@ -142,9 +142,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
     const allow = page.getByRole("button", { name: "許可する" });
     if ((await allow.count()) === 0) return false;
     await allow.last().click();
-    // **カードは同時に何枚も出る**（窓口が2つの金庫を並列に聞くため）。
-    // 押した札の送信ボタンだけを押す——名前だけで引くと2つに当たる
-    await page.getByRole("button", { name: "この内容で送る" }).last().click();
+    // **カードは同時に何枚も出る**（窓口が2つの金庫を並列に聞くため）。押せばその札だけ送る
     return true;
   };
 

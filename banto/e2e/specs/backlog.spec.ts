@@ -447,7 +447,6 @@ test("AI が tool で進めたものが、人が何もしなくても画面に�
     await expect(card).toBeVisible({ timeout: 120_000 });
     await expect(card).toContainText("branch: backlog");
     await card.getByRole("button", { name: "許可する" }).click();
-    await card.getByRole("button", { name: "この内容で送る" }).click();
   }
 
   // 画面は数秒ごとに読み直す——押さずに出る

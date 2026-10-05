@@ -117,7 +117,6 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
     const allow = page.getByRole("button", { name: "許可する" });
     if ((await allow.count()) === 0) return;
     await allow.last().click();
-    await page.getByRole("button", { name: "この内容で送る" }).last().click();
   };
   await expect(async () => {
     await approveOnePending();

@@ -60,7 +60,13 @@ export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
     // **inline の Canvas はここには出さない**（決定・2026-09-07、ユーザー指摘）。
     // tool コールの折りたたみの中に入れると、人が畳んだ瞬間に画面が消える
     // ——出すのは HumanAwareToolGroup の**外側**（§6.2）
-    return <ToolFallback {...props} />;
+    //
+    // **Allow / Deny は出さない**（2026-10-05、ユーザー報告）。判断待ちのカードが出ている間、assistant-ui は
+    // 同じ発言の結果の無い tool 呼び出しを全部 requires-action にし、ToolFallback はそこへ英語の「Allow / Deny」
+    // を出していた。押しても addResult が走るだけで host には届かない（承認は判断待ちのカードで聞く）——押せるのに
+    // 繋がっていないボタンを残さない（規則13）。人に聞くものは上の専用カードと HumanJudgmentCard が出す。
+    // status は変えない（requires-action で自動で開くのはそのまま。running にすると畳まれて結果が見えなくなった）
+    return <ToolFallback {...props} hideApproval />;
   }
 
   return <HumanJudgmentCard {...props} />;

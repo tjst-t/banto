@@ -35,7 +35,6 @@ async function allowIfAsked(page: Page): Promise<void> {
   const allow = page.getByRole("button", { name: "許可する" });
   if ((await allow.count()) > 0) {
     await allow.last().click();
-    await page.getByRole("button", { name: "この内容で送る" }).last().click();
   }
 }
 

@@ -108,7 +108,6 @@ test("Canvas の橋は、親が何度再描画されても張り直さない", a
     .last();
   await expect(myCard).toBeVisible({ timeout: 90_000 });
   await myCard.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   const embed = page.locator('[data-testid="inline-module-view"]');
   await expect(embed).toBeVisible({ timeout: 120_000 });

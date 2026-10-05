@@ -64,7 +64,6 @@ test("ほかの Project へ送る→承認（以後聞かない）→新しい F
   const card = page.locator('[data-role="judgment-card"]').filter({ hasText: "Project をまたぐメッセージの確認" });
   await expect(card, "Project をまたぐ送信で承認カードが出ない").toBeVisible({ timeout: 60_000 });
   await card.getByRole("button", { name: "許可し、以後この Project からは聞かない" }).click();
-  await card.getByRole("button", { name: "この内容で送る" }).click();
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "頼みました。" })).toBeVisible({ timeout: 60_000 });
 
   // 宛先：会話を引き継がない新しい Fork が、題の名前で立って届いている。送り元が載っている

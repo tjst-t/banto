@@ -66,7 +66,6 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   // 1つ目の判断待ち
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 60_000 });
   await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
   await expect(page.getByText("回答：許可する")).toBeVisible({ timeout: 60_000 });
 
   // 2つ目の判断待ち——**答える口があること**を見る（以前はここが
@@ -87,7 +86,6 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
 
   await expect(page.getByRole("button", { name: "許可する" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "許可する" }).click();
-  await page.getByRole("button", { name: "この内容で送る" }).click();
 
   // 2つとも決着し、会話が最後まで進む
   await expect
