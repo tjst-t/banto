@@ -443,8 +443,9 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await inner.getByTestId("gh-account-submit").click();
   await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_PAT_LOGIN} を登録しました`);
   const patRow = account(E2E_GITHUB_PAT_LOGIN);
-  await expect(patRow.getByTestId("gh-account-credential")).toContainText(`PAT $github-${E2E_GITHUB_PAT_LOGIN}-pat（vault-local`);
-  await expect(patRow.getByTestId("gh-account-ssh")).toHaveText("SSH 鍵なし（HTTPS で clone・push）");
+  await expect(patRow.getByTestId("gh-account-credential-kind")).toHaveText("PAT（トークンを貼った）");
+  await expect(patRow.getByTestId("gh-account-credential")).toContainText(`$github-${E2E_GITHUB_PAT_LOGIN}-pat（vault-local`);
+  await expect(patRow.getByTestId("gh-account-ssh")).toHaveText("なし（HTTPS で clone・push）");
   await expect(inner.getByTestId("gh-account-form"), "登録したのに欄が残っている").toHaveCount(0);
 
   // 台帳：持ち主が PAT の login と同じものは、そのアカウントで扱う。違うもの（e2e-org）は読むだけ
@@ -488,17 +489,18 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   // 偽の GitHub は1回「待って」と答え、次で許可する——interval（5秒）どおりに2回聞くので10秒ほど
   await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_DEVICE_LOGIN} をブラウザでログインして登録しました`, { timeout: 30_000 });
   const appRow = account(E2E_GITHUB_DEVICE_LOGIN);
-  await expect(appRow.getByTestId("gh-account-credential")).toContainText(`ブラウザでログイン（GitHub App）· $oauth-github-${E2E_GITHUB_DEVICE_LOGIN}（vault-local`);
+  await expect(appRow.getByTestId("gh-account-credential-kind")).toHaveText("ブラウザでログイン（GitHub App）");
+  await expect(appRow.getByTestId("gh-account-credential")).toContainText(`$oauth-github-${E2E_GITHUB_DEVICE_LOGIN}（vault-local`);
   await expect(inner.getByTestId("gh-login")).toHaveCount(0);
   await expect(inner.getByTestId("gh-account")).toHaveCount(2);
 
   // ---- 4b. GitHub App の Install 先と権限。Install されていなければ、Install のページを開く手 -------------------
-  await expect(appRow.getByTestId("gh-account-install")).toHaveText([`${E2E_GITHUB_DEVICE_LOGIN}（アカウント） · Administration 書ける · Contents 書ける`], { timeout: 30_000 });
+  await expect(appRow.getByTestId("gh-account-install")).toHaveText([`${E2E_GITHUB_DEVICE_LOGIN}　リポジトリを作れる、push できる`], { timeout: 30_000 });
   await expect(appRow.getByTestId("gh-account-installs-short")).toHaveCount(0);
   await expect(patRow.getByTestId("gh-account-installs")).toHaveCount(0);
   await setGithubLoginFixture({ installations: { login: E2E_GITHUB_DEVICE_LOGIN, list: [] } });
   await appRow.getByTestId("gh-account-verify").click();
-  await expect(appRow.getByTestId("gh-account-installs-none")).toContainText("GitHub App がどこにも Install されていません——リポジトリを読む・作るには Install が要ります。");
+  await expect(appRow.getByTestId("gh-account-installs-none")).toHaveText("どこにも Install されていません。リポジトリを読む・作るには Install が要ります");
   // slug はインストールの返事にしか無い——無いうちは、App のページを入れてもらう
   await expect(appRow.getByTestId("gh-account-install-noslug")).toBeVisible();
   await inner.getByTestId("gh-app-slug").fill("https://github.com/apps/banto-e2e");
@@ -511,7 +513,7 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   // Install されれば、GitHub の返事の slug が正（設定より優先）。権限が足りない先は1行で言う
   await setGithubLoginFixture({ installations: { login: E2E_GITHUB_DEVICE_LOGIN, list: [{ account: E2E_GITHUB_DEVICE_LOGIN, administration: "read", contents: "write" }] } });
   await appRow.getByTestId("gh-account-verify").click();
-  await expect(appRow.getByTestId("gh-account-install")).toHaveText([`${E2E_GITHUB_DEVICE_LOGIN}（アカウント） · Administration 読むだけ · Contents 書ける`]);
+  await expect(appRow.getByTestId("gh-account-install")).toHaveText([`${E2E_GITHUB_DEVICE_LOGIN}　リポジトリを作れない（Administration が読むだけ）、push できる`]);
   await expect(appRow.getByTestId("gh-account-installs-short")).toContainText("Administration と Contents を Read and write にして");
   const morePopup = page.waitForEvent("popup");
   await appRow.getByTestId("gh-account-install-open").click();

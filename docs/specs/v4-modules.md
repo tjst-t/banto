@@ -1495,6 +1495,10 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
   先（アカウント・Organization）と Administration・Contents の権限（`GET /user/installations`）。設定の面を開いたとき・
   ログインしたとき・「確かめる」（同じトークンで）で取り直す。足りない権限は1行で言い、どこにも Install されていなければ
   「Install されていません——Install する」
+- **アカウントの行の見せ方**（2026-10-05、ユーザー「ごちゃっとしている」）：login の下に「見出し：中身」の2列で、ログイン
+  （PAT／ブラウザでログイン）・Install 先（ブラウザでログインのときだけ）・SSH 鍵・預けた場所（Vault の alias）の順。
+  権限は GitHub の名前でなく**できること**で言う（Administration＝リポジトリを作れる、Contents＝push できる）。足りないとき
+  だけ GitHub の権限の名前を括弧で添える
 - **Install のページ**（`<web>/apps/<slug>/installations/new`、`ui/open-link` で開く）：slug は**インストールの返事
   （`app_slug`）が正**。どこにも Install されていないと返事が空で slug が分からないので、そのときのために設定に
   「App のページ」（`https://github.com/apps/<slug>`、任意）の欄を置く——Install されていれば使わない。デバイスフローの
