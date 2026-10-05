@@ -48,8 +48,9 @@ DEFAULT_REPO=https://github.com/tjst-t/banto
 # packages/core/src/self-update/self-update.ts の FETCH_REFSPEC（片方を変えたら全部）
 FETCH_REFSPEC="+refs/heads/release:refs/remotes/origin/release"
 # 打ち直しで「上げる」とき、動いているもの（会話・サブエージェントの仕事・Module の呼び出し）が無くなるのを待つ上限（分）。
-# update.mjs 自身は待ち続ける（画面から人がやめられる）が、install.sh は端末の前の人が打つもので、終わらないと困るので切る。
-# 切るときは update.mjs の「やめる印」（cancel）を置く——作りかけを消し、今の版のまま終わる（update.mjs の契約）
+# update.mjs は既定では待ち続ける（画面から人がやめられる）が、install.sh は端末の前の人が打つもので、終わらないと困るので
+# 切る——update.mjs の --wait-timeout に渡す（越えたら作りかけを消し、今の版のまま cancelled で終わる）。設定・unit だけが
+# 変わったときの restart-when-idle.mjs --timeout にも同じ値
 WAIT_LIMIT_MIN=30
 INSTALL_CONF=/etc/banto/install.conf
 CF_ENV=/etc/caddy/cloudflare.env
@@ -1289,35 +1290,38 @@ step_code() {
   esac
 }
 
-# 画面からの更新の準備（setup-update.sh）が要るか：古い形・更新の unit か polkit の規則が無い・unit の中身が今の
-# 画面の口・node・置き場と違う。要らなければ打たない（打つと必ず sudo を使う。中身が同じなら何も変えない作りだが、
-# 聞かずに済むものは聞かない）
-SETUP_REASON=""
-update_setup_needed() {
-  local unit=/etc/systemd/system/banto-update.service text
-  [[ $LAYOUT == old ]] && { SETUP_REASON="置き場が古い形"; return 0; }
-  sudo test -f /etc/polkit-1/rules.d/50-banto-update.rules || { SETUP_REASON="polkit の規則が無い"; return 0; }
-  text=$(cat "$unit" 2>/dev/null) || { SETUP_REASON="banto-update.service が無い"; return 0; }
-  [[ $text == *"BANTO_UPDATE_UI_URL=http://127.0.0.1:$PORT_UI/"* ]] || { SETUP_REASON="画面の口が変わった"; return 0; }
-  [[ $text == *"ExecStart=$(readlink -f /usr/local/bin/node) $REL/current/banto/scripts/update.mjs --from-request"* ]] ||
-    { SETUP_REASON="更新の unit の node か置き場が違う"; return 0; }
-  return 1
-}
-
-# setup-update.sh を、置き場の外に写してから打つ（1回目は置き場そのものを動かすので——手順書 D）。どの版のものを使うか：
+# setup-update.sh を、置き場の外に写す（1回目は置き場そのものを動かすので——手順書 D）。どの版のものを使うか：
 # 古い形なら今の clone のもの（途中で止まった回の続きなら、移した先のもの）、版ごとのフォルダの形なら current のもの
-run_setup_update() {
-  local src="" c tmpd
+SETUP_COPY=""
+copy_setup_update() {
+  local src="" c
   for c in "$REL/current/banto" "$REL/banto" "$REL.tmp/banto" "$REL"/versions/*/banto; do
     [[ -f $c/scripts/setup-update.sh ]] && { src=$c/scripts/setup-update.sh; break; }
   done
   [[ -n $src ]] || die "setup-update.sh が見つかりません（$REL）" "画面からの更新が入った版にしてから打ち直してください（docs/runbooks/release.md B）"
-  tmpd=$(mktemp -d)
-  cp "$src" "$tmpd/setup-update.sh"
-  say "画面からの更新の準備をする（$SETUP_REASON。setup-update.sh：更新の unit・polkit の規則・置き場の形）"
-  (cd / && BANTO_UI_URL="http://127.0.0.1:$PORT_UI/" NODE_BIN=/usr/local/bin/node bash "$tmpd/setup-update.sh" 2>&1 | sed 's/^/      /') ||
+  SETUP_COPY=$(mktemp -d)/setup-update.sh
+  cp "$src" "$SETUP_COPY"
+}
+setup_update() {
+  (cd / && BANTO_UI_URL="http://127.0.0.1:$PORT_UI/" NODE_BIN=/usr/local/bin/node bash "$SETUP_COPY" "$@")
+}
+
+# 画面からの更新の準備が要るかは setup-update.sh --check に聞く（sudo を使わず、何も変えない）。0＝要らない・1＝変える
+# ものがある・2＝root でないと分からない（打つ側に倒す）。--check を知らない古い版の setup-update.sh も 2 で終わるので打つ。
+# 何が変わるか（見たもの）は CHECK_OUT に
+CHECK_OUT=""
+update_setup_needed() {
+  local rc=0
+  CHECK_OUT=$(setup_update --check 2>/dev/null) || rc=$?
+  ((rc != 0))
+}
+
+# setup-update.sh を打つ（root の要る段で sudo を使う。古い形なら置き場を移して起こし直す）
+run_setup_update() {
+  say "画面からの更新の準備をする（setup-update.sh：更新の unit・polkit の規則・置き場の形）"
+  [[ -n $CHECK_OUT ]] && printf '%s\n' "$CHECK_OUT" | sed 's/^/      見た：/'
+  setup_update 2>&1 | sed 's/^/      /' ||
     die "setup-update.sh が止まりました（上の出力）" "上の理由を直して、同じコマンドを打ち直してください（setup-update.sh は続きから行う）"
-  rm -rf "$tmpd"
   LAYOUT=$(release_layout)
   [[ $LAYOUT == new ]] || die "setup-update.sh のあとも置き場が版ごとのフォルダの形になっていません（$LAYOUT）" "ls -la $REL を見てください"
   set_origin
@@ -1358,31 +1362,15 @@ update_state() {
 }
 
 # **「上げる」段はこの関数に閉じ込める**：current の update.mjs（いつも今動いている版のもの——アーキ仕様 §2.5）で release の
-# 最新にする。待つ形（動いているものが無くなってから起こし直す）。待ちが WAIT_LIMIT_MIN 分を越えたら「やめる印」を置く。
+# 最新にする。待つ形（動いているものが無くなってから起こし直す）。待つのは --wait-timeout の WAIT_LIMIT_MIN 分まで。
 # 起こし直すのは update.mjs（polkit の規則で、sudo を使わない）。新しい版が起きなければ update.mjs が前の版に戻す
 upgrade_banto() {
-  local upd=$REL/current/banto/scripts/update.mjs started pid rc=0 wait_since="" st phase result err logf
+  local upd=$REL/current/banto/scripts/update.mjs started rc=0 phase result err logf
   [[ -f $upd ]] || die "$upd がありません" "置き場（$REL）を見てください"
   started=$(date +%s)
   say "release の最新に上げる（$upd。新しい版があれば組み立て、動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待って起こし直す）"
-  # 背景の子には ERR の罠を引き継がせない（update.mjs が 3 で終わったとき、子の側で「思っていなかった失敗」と出てしまう）
-  (
-    trap - ERR
-    run_detached /usr/local/bin/node "$upd"
-  ) &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    st=$(update_state "$started")
-    if [[ ${st%%$'\t'*} == wait ]]; then
-      [[ -n $wait_since ]] || wait_since=$(date +%s)
-      if (($(date +%s) - wait_since > WAIT_LIMIT_MIN * 60)) && [[ ! -e $DATA_DIR/update/cancel ]]; then
-        warn "${WAIT_LIMIT_MIN} 分待っても空かないので、待つのをやめる（今の版のまま。組み立てた版は消える）"
-        date -Is >"$DATA_DIR/update/cancel"
-      fi
-    fi
-    sleep 3
-  done
-  wait "$pid" || rc=$?
+  # 終わりの状態（state.json）は片づけ（古い版・作りかけを消す）のあとに書かれ、そのあと lock が外れる（update.mjs の契約）
+  run_detached /usr/local/bin/node "$upd" --wait-timeout "$WAIT_LIMIT_MIN" || rc=$?
   ((rc != 3)) || die "ほかの更新が走っています（画面の「更新」か、別の端末の update.mjs）" "終わってから打ち直してください（画面の 設定 → 更新 で進み具合を見られる）"
   IFS=$'\t' read -r phase result err logf <<<"$(update_state "$started")"
   case $phase in
@@ -1399,8 +1387,8 @@ upgrade_banto() {
   # 版は同じでも、設定・unit が動いている banto より新しければ起こし直す（空くのを待ってから。polkit の規則で sudo を使わない）
   if unit_active banto-host.service && banto_restart_needed; then
     say "$RESTART_REASON が動いている banto より新しいので、起こし直す（動いているものが無くなるのを最長 ${WAIT_LIMIT_MIN} 分待つ）"
-    if (cd "$REL/current/banto" && node scripts/restart-when-idle.mjs --timeout "$WAIT_LIMIT_MIN" --dry-run >/dev/null) &&
-      systemctl restart banto-host.service banto-frontend.service; then
+    # restart-when-idle.mjs はまず sudo 無しで打つ（polkit の規則で通る）。断られたときだけ sudo で打ち直す
+    if (cd "$REL/current/banto" && node scripts/restart-when-idle.mjs --timeout "$WAIT_LIMIT_MIN" 2>&1 | sed 's/^/      /'); then
       ok "起こし直した"
     else
       warn "起こし直せませんでした。まだ前の設定で動いています"
@@ -1426,7 +1414,9 @@ step_upgrade() {
 
 step_doctor_and_start() {
   step "画面からの更新の準備・コンテナの前提を確かめて、banto を起こす"
-  if update_setup_needed; then run_setup_update; else ok "画面からの更新の準備は済んでいる（banto-update.service・polkit の規則）"; fi
+  copy_setup_update
+  if update_setup_needed; then run_setup_update; else ok "画面からの更新の準備は済んでいる（setup-update.sh --check：変えるもの無し）"; fi
+  rm -rf "$(dirname "$SETUP_COPY")"
   [[ -f $REL/current/banto/node_modules/next/dist/bin/next ]] || die "画面の起動に要る next が見つかりません（$REL/current/banto/node_modules/next）" "$DATA_DIR/update/ のログを見てください"
   # banto のユーザーとして、グループを引き直して確かめる（sudo -u はグループを引き直す。sg は主グループを変えるので使わない）
   (cd "$REL/current/banto" && sudo -u "$USER_NAME" -H /usr/local/bin/node packages/container/dist/doctor.js | sed 's/^/    /') ||

@@ -383,3 +383,15 @@ unit を current に書き換えて起こし直す）。そのあと update.mjs 
   打ち直しで sudo を取り直さない、を含む
 - 移行（`run.sh --migrate-from 1f935395`、前の install.sh とコードで古い形に入れ、今の install.sh を打つ）：**PASS 22・FAIL 0**
 - 26.04（ユーザー devops、Incus は Zabbly stable）の本筋：**PASS 146・FAIL 0**（まっさらから 333 秒）。移行は 26.04 では流していない
+
+### 024e52ee に合わせた（2026-10-05）
+
+- 待ちの上限：install.sh が state.json を見て「やめる印」を置く形をやめ、`update.mjs --wait-timeout 30` を渡す。
+  update.mjs は前景で流し、終わったら state.json の終わりの状態を読む（片づけのあとに書かれ、すぐ lock が外れる）
+- setup-update.sh を打つかは `setup-update.sh --check` に聞く（sudo を使わない。0 なら打たない、1・2 なら打つ）。
+  install.sh が持っていた banto-update.service の中身・polkit の規則の有無の写しは消した。`--check` を知らない古い版の
+  setup-update.sh（古い形の clone の中のもの）は「知らない引数」で 2 を返すので、打つ側に倒れる
+- 試験の場：画面の更新のあと unit が activating を抜けるのを待つ工夫を消した——終わりの状態は片づけのあとなので、
+  checks.sh が state.json の終わりの状態を待てば足りる。次の段の打ち直しが lock で止まらないことが確かめになる
+- restart-when-idle.mjs は sudo 無しで打ち、断られたら sudo で打ち直す形になった——install.sh の「--dry-run で待ってから
+  自分で systemctl restart」をやめ、そのまま呼ぶ（polkit の規則がある host では sudo を使わない）

@@ -177,10 +177,10 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
   Claude の installer はファイルに落としてから流す（台本そのものの sha256・署名は公開されていない）
 - **コードは版ごとのフォルダの形**（アーキ仕様 §2.5「画面から banto を更新する」）。**上げるのは画面の「更新」と同じ本体
   `update.mjs`**：初めては install.sh が `repo.git`（bare、origin は `--repo`）を作り、取ってきた版の `update.mjs` を置き場の外に
-  写して `--first` で流す。打ち直しは `current` の `update.mjs` を待つ形で呼び、待ちが 30 分を越えたら update.mjs の「やめる印」を
-  置く（今の版のまま終わる）。新しい版が起きなければ update.mjs が前の版に戻し、install.sh は理由を出して止まる。
+  写して `--first` で流す。打ち直しは `current` の `update.mjs` を待つ形で `--wait-timeout 30` を付けて呼ぶ（越えたら今の版の
+  まま終わる）。新しい版が起きなければ update.mjs が前の版に戻し、install.sh は理由を出して止まる。
   取るのは `release` だけ（`--branch` は持たない）。画面から更新する準備（`banto-update.service`・polkit の規則）は
-  `setup-update.sh` に任せ、要るとき（初め・古い形・中身が違う）だけ打つ。前の install.sh で入れた古い形（置き場そのものが
+  `setup-update.sh` に任せ、`setup-update.sh --check`（sudo を使わない）が「変えるものがある・分からない」と答えたときだけ打つ。前の install.sh で入れた古い形（置き場そのものが
   clone）も setup-update.sh が移す。unit は `current` を通すパスで書く
 - **口と置き場の真実は banto の `config.json`**（`port`・`sandboxPort`・`uiPort`・`releaseDir`）。install.sh は無ければ既定を
   書き、Caddy の設定・unit・nftables の表はそこから作る

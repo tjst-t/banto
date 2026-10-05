@@ -313,15 +313,12 @@ rc=0; U bash /opt/banto-test/checks.sh "$D2" "$LINKU" ui-update >"$LOG/checks-ui
 grep -E '^(PASS|FAIL|INFO)' "$LOG/checks-ui.log" | sed 's/^/  /' | tee -a "$LOG/result.txt"
 PASSES=$((PASSES + $(count '^PASS' "$LOG/checks-ui.log"))); FAILS=$((FAILS + $(count '^FAIL' "$LOG/checks-ui.log")))
 [[ $(X_link current) == "${GOOD2:0:12}" && $(X_link previous) == "${GOOD:0:12}" ]] && pass "ui: current → ${GOOD2:0:12}・previous → ${GOOD:0:12}" || fail "ui: current=$(X_link current) previous=$(X_link previous)"
-# 新しい版が答えたあとも、update.mjs は古い版を片づけている（lock を持ったまま）——終わるのを待つ
-# oneshot の unit は走っている間 activating（is-active は 0 を返さない）——ActiveState で見る
-for _ in $(seq 200); do
-  [[ $(X systemctl show -p ActiveState --value banto-update.service) == activating ]] || break
-  sleep 3
-done
+# checks.sh は state.json が終わりの状態になるまで待っている。update.mjs は片づけを済ませてから終わりの状態を書き、
+# すぐ lock を外す（その間に打たれた回は最大5秒待つ）ので、ここで unit の終わりを待たずに次の打ち直しへ進んでよい——
+# 次の段（Caddy の unit）の打ち直しが「ほかの更新が走っています」で止まらないことが、その確かめになる
 X journalctl -u banto-update.service --no-pager >"$LOG/banto-update-journal.log" 2>&1 || true
-grep -q '更新を始めます' "$LOG/banto-update-journal.log" && grep -q '更新しました' "$LOG/banto-update-journal.log" &&
-  pass "ui: banto-update.service の中で update.mjs が始まり、終わった（journal）" || fail "ui: banto-update.service の journal：$(tail -3 "$LOG/banto-update-journal.log")"
+grep -q '更新を始めます' "$LOG/banto-update-journal.log" && grep -q '組み立てました' "$LOG/banto-update-journal.log" &&
+  pass "ui: banto-update.service の中で update.mjs が始まり、組み立てた（journal。終わりは state.json で見ている）" || fail "ui: banto-update.service の journal：$(tail -3 "$LOG/banto-update-journal.log")"
 
 note "Caddy の unit：既に別の場所に unit がある host（apt の caddy の形）では drop-in で差し替え、/etc に丸ごと書かない"
 X sh -c 'mkdir -p /usr/lib/systemd/system && mv /etc/systemd/system/caddy.service /usr/lib/systemd/system/caddy.service && systemctl daemon-reload'
