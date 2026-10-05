@@ -204,4 +204,21 @@ test("オンの Project では tool・中継・Project をまたぐメッセー�
   expect(mine().filter((e) => e.type === "relay.grant_created")).toHaveLength(0);
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
+
+  // **後の spec に受信箱を持ち越さない**——メッセージが届いた知らせ・レビュー待ちが残ると、受信箱の数を見る spec
+  // （inbox.spec）が狂い、そこで残った判断待ちが次の spec まで落とした（2026-10-05、続けて回して踏んだ）
+  await expect
+    .poll(
+      async () => {
+        const left = (await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{ id: string; kind: string }>;
+        for (const item of left) {
+          if (item.kind === "notice" || item.kind === "review") {
+            await page.request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { headers });
+          }
+        }
+        return left.length;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(0);
 });

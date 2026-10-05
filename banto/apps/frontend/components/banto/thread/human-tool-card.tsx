@@ -98,7 +98,9 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
       className="my-1.5 flex flex-col gap-2 rounded-lg border border-turn/30 bg-turn-soft/50 p-3"
     >
       <p className="text-xs font-semibold text-turn">
-        {args.serverName} があなたの判断を待っています
+        {/* 答え済み（人が答えた・自動で許可した・止めた）なら「待っています」と言わない（2026-10-05、ユーザー。
+            「承認をすべて自動で許可する」で通したカードが、待っているように読めた） */}
+        {answer === null ? `${args.serverName} があなたの判断を待っています` : `${args.serverName} の確認`}
       </p>
       <p className="text-sm text-foreground">{args.message}</p>
       {args.toolInput !== undefined ? (
