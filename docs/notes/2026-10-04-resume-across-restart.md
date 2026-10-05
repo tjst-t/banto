@@ -174,3 +174,44 @@ store で1件。`system/init` の前に止まっても先に決めた id で1件
 - 偽の Runner でしか通していない。banto の host から本物の SDK に `options.sessionId` を渡して走らせたことはまだ無い
   （`system/init` がその id を名乗ること・記録ファイルがその名前になることは、ここでは確かめていない）
 - 1ターンにつき Event Store の書き込みが3件増える（started・session_known・ended）
+
+## Fable のレビューを受けた直し（2026-10-05）
+
+1. **何も積まずに切れたターン**：`InterruptedTurn.stackedMessages`（`startedSeq` より後ろの user の発言の数）を足した。
+   0 なら続けない——AI にはまだ何も渡っておらず、届いたものは待ち行列に残っていて `resumeAll` が起こす。人の発言は
+   HTTP の要求の中にしか無かったので、どちらにしても残っていない（続けても空のターンになる）
+2. **人が止めた直後に落ちる窓**：止めると決めた時点（`abortTurn.abort()` の前）で `turn.ended("stopped")` を書く。
+   印の出来事を足すより単純なので、終わりを前に出した。書いたら finally では書かない（二重にしない）。書けなかったら
+   CLI は止め、finally がもう一度書こうとする
+3. **Clear の防御の穴**（前からある）：新しい会話の最初のターン・Fork の最初のターンを走行中に Clear すると、
+   resume-point に自分の会話が無い（新しい会話は undefined、Fork は親から借りた id）ので、Clear が捨てる側に入るのは
+   それだけ。終わりに来た resume-point の更新（新しい会話・分けた会話の id）がそのまま入り、Clear を取り消していた。
+   Clear のとき最後のターンの `assignedSessionId`・`knownSessionId` も捨てた側に入れる
+4. **Fork の最初のターンも session id を先に決める**：下の実測 F1 で SDK が受けることを確かめた
+5. 小さいもの：画面に出す走り始めた時刻を `turn.started` の ts にそろえた（`TurnEventBus.setStartedAt`。`begin` は
+   始まりを書くより前に呼ぶので、時刻はあとから直す）／`turn.started` が resume-point・巻き戻しの位置を写して持つ理由
+   （続けるには始めたときの値が要る。Thread の値は終わり・Clear・取り消しで変わる）を型に書いた／Fork の最初の
+   ターンかは `ownsSession === false` から分かることを型に書いた
+6. 試験の穴：健全性検査の中断・例外・呼び出し側が読むのをやめたターンが failed になること、Fork が親の
+   `lastTurn` を引き継がないこと
+
+壊して落ちるかは、上の直しの該当行を12か所壊して見た。最初の版では3か所（発言の数に AI の発言も数える・走り始めた
+時刻をそろえない・既定の終わり方を completed にする）で試験が落ちなかったので、試験を直してから全部落ちることを見た。
+
+### F1：`forkSession` と一緒に `sessionId` を渡したら（2026-10-05、`banto/probes/m-sdk.mjs F1`。偽の API、SDK 0.3.281＝CLI 2.1.281）
+
+| ケース | 結果 |
+|---|---|
+| 新しい会話に `sessionId: A` | `system/init` の id＝A、記録は `A.jsonl` |
+| `resume: A`・`forkSession`・`sessionId: F` | `system/init` の id＝F、記録は `F.jsonl`。A の記録は1行も変わらない。最初の要求に TURN1（親の発言）が入る＝親の会話を引き継ぐ |
+| `resume: F`（`sessionId` 無し） | `system/init` の id＝F、要求に TURN1・TURN2・TURN3 |
+| `resume: A`・`forkSession`・`sessionId: G` を `system/init` で即 SIGKILL（5回） | 5回とも `G.jsonl` が**ある**が、中身は `mode`・`atis-latch` の2行だけ。`getSessionInfo(G)` は5回とも `undefined` |
+| そのあと同じ `sessionId: G` で分け直す | 失敗「Session ID … is already in use」（exit 1、result 無し） |
+| そのあと G を resume | 失敗「No conversation found with session ID: …」（`error_during_execution`） |
+| そのあと新しい `sessionId: H` で分け直す | 成功。要求に TURN1・新しい発言 |
+| `resume`（`forkSession` 無し）に `sessionId` | CLI が断る「--session-id can only be used with --continue or --resume if --fork-session is also specified」（adapter の試験で、断る行を外して見た） |
+
+→ Fork の最初のターンでも先に決めた id で会話が分かれる。ただし**会話を書く前に切れた Fork は、新しい会話（M2：記録
+ファイルができない）と違って中身の無い記録が残る**ので、同じ id では走らせ直せない。`getSessionInfo` が `undefined` を
+返すところは同じなので、続ける処理は「記録が無い」を見たら、Fork の最初のターンなら新しい id で分け直す必要がある
+（仕様 §2.5「会話の記録が無い」に註、決めるのは続ける処理）

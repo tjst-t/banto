@@ -1,5 +1,5 @@
 // M1・M2（2026-10-05）：巻き戻したあとの鎖の選び方／最初のターンの記録の有無の見分け
-// 使い方: node m-sdk.mjs <M1|M1k-tool|M1k-text|M2a|M2b|M2c>
+// 使い方: node m-sdk.mjs <M1|M1k-tool|M1k-text|M2a|M2b|M2c|F1>
 // モデルは偽の API（fake-api.mjs）。CLI が API に送った要求（＝モデルが見るもの）を記録する。
 import { query, getSessionMessages, getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -28,9 +28,9 @@ function turnMarkers(entry) {
 }
 
 /** 1ターン走らせる。killOn(m, state) が真を返したら（killDelayMs 後に）CLI をグループごと signal（SIGTERM なら 5 秒後に残りを SIGKILL） */
-async function turn(ctx, { label, prompt, resume, resumeSessionAt, killOn, killDelayMs = 3000, partial = false, sessionId, extraEnv }) {
+async function turn(ctx, { label, prompt, resume, resumeSessionAt, killOn, killDelayMs = 3000, partial = false, sessionId, forkSession, extraEnv }) {
   log(`\n=== ${label} ===`);
-  log(`  options: ${JSON.stringify({ resume, resumeSessionAt, sessionId, ...(extraEnv ? { extraEnv } : {}) })}`);
+  log(`  options: ${JSON.stringify({ resume, resumeSessionAt, sessionId, forkSession, ...(extraEnv ? { extraEnv } : {}) })}`);
   const apiFrom = apiLines(ctx.apiLog).length;
   const h = {};
   let closeInput;
@@ -54,6 +54,7 @@ async function turn(ctx, { label, prompt, resume, resumeSessionAt, killOn, killD
       ...(resume ? { resume } : {}),
       ...(resumeSessionAt ? { resumeSessionAt } : {}),
       ...(sessionId ? { sessionId } : {}),
+      ...(forkSession ? { forkSession: true } : {}),
       includePartialMessages: partial,
       spawnClaudeCodeProcess: detachedSpawner(h),
     },
@@ -266,6 +267,58 @@ const cases = {
     await sdkChain(ctx, sid, "kill 直後");
     await turn(ctx, { label: "同じ sessionId で新しい会話として（resume 無し）", prompt: "TURN1b：合言葉は pineapple-42。", sessionId: sid });
     dumpJsonl(findJsonl(ctx.config, sid), { from: before.length, log, label: "足された" });
+    await ctx.api.close();
+  },
+  // F1（2026-10-05、Fable のレビュー）：forkSession と一緒に sessionId を渡すと、分けた先の会話がその id になるか。
+  // 新しい会話の sessionId も同じく見る。init の id・記録ファイルの名前・親の記録が変わらないか・引き継いだ中身
+  async F1() {
+    const ctx = await setup("F1");
+    const lineCount = (sid) => { const f = findJsonl(ctx.config, sid); return f ? readJsonl(f).length : 0; };
+    const A = randomUUID();
+    log(`新しい会話に渡す id A=${A}`);
+    const t1 = await turn(ctx, { label: "ターン1（新しい会話、sessionId=A）", prompt: "TURN1：合言葉は pineapple-42。", sessionId: A });
+    log(`  判定: init の id ${t1.sessionId === A ? "＝" : "≠"} A ／ 記録ファイル ${findJsonl(ctx.config, A) ? "A.jsonl がある" : "A.jsonl が無い"}`);
+    await sdkChain(ctx, A, "ターン1のあと");
+    const parentLines = lineCount(A);
+
+    const F = randomUUID();
+    log(`\nFork に渡す id F=${F}`);
+    const t2 = await turn(ctx, { label: "ターン2（resume A・forkSession・sessionId=F）", prompt: "TURN2：分けた先です。合言葉は？", resume: A, forkSession: true, sessionId: F });
+    log(`  判定: init の id ${t2.sessionId === F ? "＝" : "≠"} F ／ 記録ファイル ${findJsonl(ctx.config, F) ? "F.jsonl がある" : "F.jsonl が無い"} ／ 親 A の記録 ${lineCount(A) === parentLines ? "変わらない" : `変わった（${parentLines}→${lineCount(A)} 行）`}`);
+    log(`  判定: ターン2の最初の要求の目印=${JSON.stringify(t2.reqs[0] ? turnMarkers(t2.reqs[0]) : null)}（TURN1 が入っていれば親の会話を引き継いでいる）`);
+    await sdkChain(ctx, F, "ターン2のあと（F）");
+
+    const t3 = await turn(ctx, { label: "ターン3（resume F、sessionId 無し）", prompt: "TURN3：続きです。", resume: F });
+    log(`  判定: init の id ${t3.sessionId === F ? "＝" : "≠"} F ／ 目印=${JSON.stringify(t3.reqs[0] ? turnMarkers(t3.reqs[0]) : null)}`);
+
+    // Fork の最初のターンが init の直後に切れた（M2 の Fork 版）——記録があるか、同じ id でやり直せるか
+    const G = randomUUID();
+    log(`\nFork に渡す id G=${G}`);
+    const t4 = await turn(ctx, { label: "ターン4（resume A・forkSession・sessionId=G、init で即 SIGKILL）", prompt: "TURN4：切れる Fork。", resume: A, forkSession: true, sessionId: G, killDelayMs: 0, killOn: (m) => m.type === "system" && m.subtype === "init" });
+    log(`  判定: init の id ${t4.sessionId === G ? "＝" : "≠"} G ／ 記録ファイル ${findJsonl(ctx.config, G) ? "G.jsonl がある" : "G.jsonl が無い"}`);
+    await sdkChain(ctx, G, "ターン4の kill 後");
+    const t5 = await turn(ctx, { label: "ターン4をやり直す（resume A・forkSession・同じ sessionId=G）", prompt: "TURN4b：やり直した Fork。", resume: A, forkSession: true, sessionId: G });
+    log(`  判定: init の id ${t5.sessionId === G ? "＝" : "≠"} G ／ 結果 ${t5.results.map((r) => r.subtype).join(",") || "無し"} ／ 目印=${JSON.stringify(t5.reqs[0] ? turnMarkers(t5.reqs[0]) : null)}`);
+    const t6 = await turn(ctx, { label: "G を resume（forkSession 無し）", prompt: "TURN4c：G の続き。", resume: G });
+    log(`  判定: init の id ${t6.sessionId === G ? "＝" : "≠"} G ／ 結果 ${t6.results.map((r) => r.subtype).join(",") || "無し"} ／ 目印=${JSON.stringify(t6.reqs[0] ? turnMarkers(t6.reqs[0]) : null)}`);
+    const H = randomUUID();
+    const t7 = await turn(ctx, { label: `新しい id で分け直す（resume A・forkSession・sessionId=H=${H}）`, prompt: "TURN4d：分け直した Fork。", resume: A, forkSession: true, sessionId: H });
+    log(`  判定: init の id ${t7.sessionId === H ? "＝" : "≠"} H ／ 結果 ${t7.results.map((r) => r.subtype).join(",") || "無し"} ／ 目印=${JSON.stringify(t7.reqs[0] ? turnMarkers(t7.reqs[0]) : null)}`);
+
+    // 窓の大きさ：Fork の最初のターンを init で即 SIGKILL したとき、記録ファイルと getSessionInfo がどうなるかを数える
+    const n = Number(process.argv[3] ?? 5);
+    let file = 0, info = 0;
+    for (let i = 0; i < n; i++) {
+      const id = randomUUID();
+      await turn(ctx, { label: `#${i + 1} Fork を init で即 SIGKILL`, prompt: "TURN9：x", resume: A, forkSession: true, sessionId: id, killDelayMs: 0, killOn: (m) => m.type === "system" && m.subtype === "init" });
+      const f = findJsonl(ctx.config, id);
+      if (f) file++;
+      process.env.CLAUDE_CONFIG_DIR = ctx.config;
+      const got = await getSessionInfo(id, { dir: ctx.work });
+      if (got !== undefined) info++;
+      log(`  記録ファイル: ${f ? `ある（${readJsonl(f).map((l) => l.type).join(",")}）` : "無い"} ／ getSessionInfo: ${got === undefined ? "undefined" : "ある"}`);
+    }
+    log(`\n  判定: Fork を init で切った ${n} 回中、記録ファイルがあった ${file} 回・getSessionInfo が返した ${info} 回`);
     await ctx.api.close();
   },
   // init 直後の kill で、記録ファイルがあるかを何回か数える（窓の大きさの目安）

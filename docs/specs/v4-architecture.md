@@ -1560,11 +1560,18 @@ banto 本体（host）が AI のターンの途中で止まって起き直した
   （`turn.session_known`。`system/init` の時点、**最初のターンでも**）、ターンの終わり（`turn.ended`：最後まで行った／
   止めた／失敗）。**`turn.session_known` は fold の resume-point を変えない**——resume-point は今どおりターンの最後に
   書く。走っている途中で人が Fork を切ったら前の完了した状態から分かれ、Clear の「捨てた resume-point」の防御も
-  今のまま効く（Fable のレビュー 1-3）。**形**（実装・2026-10-05）：`turn.started` は人の発言・届いたものを会話に
+  今のまま効く（Fable のレビュー 1-3）。**註**（2026-10-05）：「今のまま」には穴があった——新しい会話の最初のターン・
+  Fork の最初のターンは resume-point に自分の会話をまだ持たないので、走行中に Clear すると、終わりの resume-point の
+  更新が Clear を取り消していた。Clear のとき、最後のターンの会話の id（先に決めたもの・`system/init` で分かったもの）
+  も捨てた側に入れる。**形**（実装・2026-10-05）：`turn.started` は人の発言・届いたものを会話に
   積むより**先に**書く——このターンで積んだ発言はそれより後ろの seq を持つ（続けるときに入れ直す発言はこれで引く）。
-  始めた時刻は出来事の ts。始めたらどう終わっても `turn.ended` を1回書く（始める前に断ったものは何も書かない）。
+  始めた時刻は出来事の ts（画面に出す「走り始めた時刻」もこれにそろえる）。始めたらどう終わっても `turn.ended` を1回
+  書く（始める前に断ったものは何も書かない）。**人が止めたときは、止めると決めた時点（CLI を止める前）に
+  `turn.ended`（止めた）を書く**——止めたあとの片づけの途中で落ちても、人が止めたターンを勝手に続けない。
   fold は Thread ごとに最後のターンだけ持ち、切れたかを見分けるのは `findInterruptedTurns`
-  （`project-thread/interrupted-turns.ts`）。閉じたあと開き直した Thread でも、閉じた時に走っていたターンは続けない
+  （`project-thread/interrupted-turns.ts`）。閉じたあと開き直した Thread でも、閉じた時に走っていたターンは続けない。
+  **このターンで発言を1つも積まないうちに切れたもの**（`stackedMessages` が 0）**も続けない**——AI にはまだ何も
+  渡っておらず、届いたものは待ち行列に残っているので `resumeAll` が起こす（人の発言は要求の中にしか無かった）
 - **最後まで行ったかの判定は resume-point の更新で見る**：ターンの終わりは resume-point → 返事 → 使用量 → Fork →
   `turn.ended` と別々に書かれる。resume-point を書いたあとに落ちたターンは CLI の側では終わっているので「切れた」に
   しない（レビュー 1-1）
@@ -1595,11 +1602,16 @@ banto 本体（host）が AI のターンの途中で止まって起き直した
   - 続けられる Module が続けると答えた仕事：「<Module> の仕事は続いています（終わったら届きます）」
 - **新しい会話の最初のターンは、host が session id を先に決めて渡す**（SDK の `options.sessionId`）。`turn.started` に
   そのまま残せる（`system/init` を待たない）。resume-point の無いターン（会話を引き継がない Fork・Clear のあとを
-  含む）はどれも決める。Fork の最初のターンは resume（`forkSession`）なので決めない（実装・2026-10-05）
+  含む）はどれも決める。**Fork の最初のターン**（`forkSession`）**も決める**——SDK は `forkSession` と一緒なら
+  `sessionId` を受け、分けた先の会話がその id になる（実測 F1）。続きの会話（`forkSession` 無しの resume）には渡さない
+  （CLI が断る）（実装・2026-10-05）
 - **会話の記録が無い**（`system/init` の直後に切れた。10回中10回できない——実測 M2）：起き直したら走らせる前に SDK の
   `getSessionInfo(id)` で記録の有無を見る（失敗の文言に頼らない）。無ければ AI にはまだ何も届いていない。記録済みの
   人の発言（と積んだ届いたもの）を記録に積み直さず、もう一度 Runner に渡す口で走らせる——新しい会話なら同じ session id を
-  渡して最初から、続いている会話なら前の resume-point から（レビュー 1-2）
+  渡して最初から、続いている会話なら前の resume-point から（レビュー 1-2）。**Fork の最初のターンは違う**（実測 F1、
+  未決）：`system/init` の直後に切れると、CLI は中身の無い記録（`mode`・`atis-latch` の2行）を残す——`getSessionInfo` は
+  無いと答えるのに、同じ id で分け直すと「already in use」、その id を resume すると「No conversation found」。新しい id で
+  分け直すと通る。どう続けるか（新しい id を `turn.started` にどう残すか）は続ける処理で決める
 - **孤児の CLI**：host が落ちる（SIGKILL）と、Runner の CLI は孤児になってターンを最後まで走り、同じ記録に書き続ける（実測
   M3）。systemd が cgroup ごと刈る（`KillMode=control-group`）ことを前提にする
 - **承認待ちだったもの**は今どおり起き直したら期限切れにする
