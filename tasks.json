@@ -5050,7 +5050,7 @@
       "number": 209,
       "kind": "task",
       "title": "画面からの更新の「待つ」を、続けられないものだけ待つ形に",
-      "status": "in-progress",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-thread-turn",
@@ -5061,7 +5061,7 @@
       "labels": [],
       "body": "activity の idle を「続けられないもの（実行中の tool の呼び出し・名乗らない Module の札）」だけで数える。形は前の段ができてから決める。",
       "doneWhen": "AI のターンとサブエージェントの仕事が走っていても、実行中の tool の呼び出しが無ければ「待って更新」がすぐ起こし直しに進み、起き直したあと両方が続く",
-      "resolution": null,
+      "resolution": "b179c7c1〜b64e7944（Fable のレビューの直し含む）、main・release 入り。止める合図を受けたら新しい呼び出しを断り、実行中のものを最長60秒待ってから止まる。own-host の E2E で完了条件を確かめた。本物の update.mjs での通しは反映後",
       "refs": [],
       "threads": [
         {
@@ -5070,8 +5070,8 @@
         }
       ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T13:58:27.993Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T16:23:06.684Z",
+      "closedAt": "2026-10-05T16:23:06.684Z",
       "extra": {}
     },
     {
