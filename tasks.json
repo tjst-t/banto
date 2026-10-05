@@ -5117,6 +5117,29 @@
       "updatedAt": "2026-10-05T10:58:09.437Z",
       "closedAt": "2026-10-05T10:58:09.437Z",
       "extra": {}
+    },
+    {
+      "id": "claude",
+      "number": 211,
+      "kind": "bug",
+      "title": "サブエージェントを止めたあと、Claude ログインの中継を閉じる呼び出しが断られる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "subagent"
+      ],
+      "body": "2026-10-05、AI が cancelSubagent で runInBackground の仕事を止めたとき、届いた失敗の知らせが「MCP error -32603: subagent から subagent-settings の closeClaudeLoginProxy への中継は許可されていません：どのターンからの呼び出しか特定できません（走行中の tool 呼び出しがありません）」だった。止めたあとの後片づけは走行中のターンに紐づかないので、中継の出所の判定（ModuleCallTracker.callerFor）で断られる。中継が閉じられずに残る（host の起こし直しまで）おそれ。仕事の結果の文としても、止めた理由ではなくこの文が出て分かりにくい。",
+      "doneWhen": "runInBackground のサブエージェントを cancelSubagent で止めると、届く知らせが「止められました」になり、Claude ログインの中継が閉じられている（subagent-settings の開いている中継の数が戻る）ことを試験で確かめる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-05T10:58:42.526Z",
+      "updatedAt": "2026-10-05T10:58:42.526Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
