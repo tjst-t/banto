@@ -329,7 +329,7 @@ export class ProjectThreadStore {
       resumePoint?: string;
       rewindTo?: string;
       sessionId?: string;
-      /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（追加・2026-10-06） */
+      /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（追加・2026-10-05） */
       continues?: { turnId: string; fromSeq: number };
     },
   ): Promise<string> {
@@ -508,7 +508,7 @@ export class ProjectThreadStore {
     text: string;
     hop: number;
     sender?: MessageSender;
-    /** 起こし直しで切れたターンの続き（追加・2026-10-06）。ほかの届いたものより先に積まれる */
+    /** 起こし直しで切れたターンの続き（追加・2026-10-05）。ほかの届いたものより先に積まれる */
     continues?: TurnContinuation;
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);

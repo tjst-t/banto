@@ -79,7 +79,7 @@ import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
-import { continueStoppedTurn, resumeInterruptedTurns } from "./delivery/turn-continuation.js";
+import { continueStoppedTurn, resumeHoldReason, resumeInterruptedTurns, type TurnContinuationDeps } from "./delivery/turn-continuation.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import {
@@ -222,6 +222,8 @@ async function main(): Promise<void> {
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
+    // 起こし直しのたびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間は起こさない（§2.5「上限」）
+    hold: (threadId) => resumeHoldReason({ projectThread, inbox }, threadId),
   });
   threadTurns.onChange((change) => {
     const projectId = projectThread.getThread(change.threadId)?.projectId;
@@ -292,10 +294,13 @@ async function main(): Promise<void> {
       }
     }
   }
-  // **前の走行で途中で切れたターンを続ける**（追加・2026-10-06、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。
+  // **前の走行で途中で切れたターンを続ける**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。
   // 順番：Module の札の判定（すぐ上）→ Thread の続き。判断待ちはもう期限切れにしてある（承認を待っていた呼び出しを
-  // 文に書くのに使う）。続きは届いたものとして積むだけ——起こすのは待ち受けを始めてからの `resumeAll`
-  for (const r of await resumeInterruptedTurns({ projectThread, inbox, deliveries })) {
+  // 文に書くのに使う）。続きは届いたものとして積むだけ——起こすのは待ち受けを始めてからの `resumeAll`。
+  // 続けると答えた Module の仕事（`keptReplies`）はまだ渡さない——名乗る Module が無く、札はすぐ上で全部
+  // 「途中で終わりました」にしている
+  const turnContinuation: TurnContinuationDeps = { projectThread, inbox, deliveries };
+  for (const r of await resumeInterruptedTurns(turnContinuation)) {
     const t = r.turn;
     console.log(
       `[host] 前の走行で途中で切れたターン: Thread ${t.threadId} ターン ${t.turnId}（${t.startedAt} に始めた・` +
@@ -306,7 +311,7 @@ async function main(): Promise<void> {
           : r.action === "closed"
             ? `続けずに閉じた（${r.reason}）`
             : r.action === "stopped-retrying"
-              ? "続けて切れたので自動では続けない（受信箱に出した）"
+              ? "続けて切れたので自動では続けない（続きは積んで留めた・受信箱に出した）"
               : `片づけられなかった（${r.error}）`),
     );
   }
@@ -1685,7 +1690,7 @@ async function main(): Promise<void> {
       ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
     }),
     releaseProjectModules,
-    continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
+    continueStoppedTurn: (noticeId) => continueStoppedTurn(turnContinuation, noticeId),
     projectContainerStatus: async (projectId: string) => {
       const name = containerNameFor(projectId);
       const st = await containers.state(name);

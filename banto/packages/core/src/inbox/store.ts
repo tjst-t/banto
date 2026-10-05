@@ -130,7 +130,7 @@ export class InboxStore {
     dedupeKey: string;
     title: string;
     detail: string;
-    /** 人が「続ける」を押せるお知らせ（追加・2026-10-06、`NoticeItem.resume`） */
+    /** 人が「続ける」を押せるお知らせ（追加・2026-10-05、`NoticeItem.resume`） */
     resume?: { threadId: string; turnId: string };
   }): Promise<NoticeItem> {
     const open = this.listOpen().find(
@@ -163,6 +163,18 @@ export class InboxStore {
   async acknowledgeReview(id: string): Promise<void> {
     const event = await this.log.append("inbox.review_acknowledged", { id });
     this.apply(event);
+  }
+
+  /**
+   * **自動で続けるのをやめたお知らせを片づける**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。そのターンの続きを
+   * 引き継いだターンが始まった（人が送った・「続ける」を押した）。片づけた数を返す
+   */
+  async acknowledgeResumeNotices(threadId: string, turnId: string): Promise<number> {
+    const open = this.listOpen().filter(
+      (i): i is NoticeItem => i.kind === "notice" && i.resume?.threadId === threadId && i.resume.turnId === turnId,
+    );
+    for (const n of open) await this.acknowledgeNotice(n.id);
+    return open.length;
   }
 
   /** その Thread のレビュー待ちを全部「見た」にする（人がその Thread で送った・開いて見ている）。消した数を返す */

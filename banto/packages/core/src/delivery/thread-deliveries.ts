@@ -35,10 +35,15 @@ export interface DeliverInput {
   /** 別の Thread の AI が送ったものならその送り元（追加・2026-10-01、§4.2）。受け取った AI はここへ返せる */
   sender?: MessageSender;
   /**
-   * **起こし直しで切れたターンの続き**（追加・2026-10-06、アーキ仕様 §2.5）。付けたものは待ち行列の先頭に並び、
+   * **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5）。付けたものは待ち行列の先頭に並び、
    * 起こすときに速度の上限（`wakesPerHour`）に数えない——人のターンを続けるだけ。ホップの上限はそのまま効く
    */
   continues?: TurnContinuation;
+  /**
+   * **待ち行列の続きを出し直す**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。その届いたもの（同じ id）を置き換える
+   * ——続きの `attempt` を変えるため（人が「続ける」を押した・続きを積む前にまた切れた）。`continues` と一緒に使う
+   */
+  replaces?: string;
   /**
    * 受信箱に「届きました」を出すか（既定は出す）。AI が立てた Fork の最初の指示は出さない——立てたことは
    * 親の会話に Fork として出て、終わればレビュー待ちが出る（§2.2「AI が Fork を立てる」）
@@ -56,6 +61,11 @@ export interface ThreadDeliveriesDeps {
   turns: ThreadTurns;
   /** 人への知らせ（受信箱の「お知らせ」） */
   notify(input: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
+  /**
+   * **ほかの理由で起こさずに留める**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。留めるならその理由。起こし直しの
+   * たびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間、届いたものでも起こさない
+   */
+  hold?(threadId: string): string | undefined;
   now?: () => number;
 }
 
@@ -79,13 +89,18 @@ export class ThreadDeliveries {
     this.runTurn = run;
   }
 
-  /** 届ける。**残してから起こす**——起こせなくても消えない */
-  async deliver(input: DeliverInput): Promise<{ deliveryId: string } & WakeDecision> {
+  /**
+   * 届ける。**残してから起こす**——起こせなくても消えない。`wake: false` は残すだけ（起こさず、受信箱にも出さない）
+   * ——呼ぶ側があとで `kick` する（自動で続けるのをやめたターンの続きを積んでおく・「続ける」で出し直してから起こす）
+   */
+  async deliver(input: DeliverInput, opts: { wake?: boolean } = {}): Promise<{ deliveryId: string } & WakeDecision> {
     const thread = this.deps.projectThread.getThread(input.threadId);
     if (!thread) throw new Error(`宛先の Thread ${input.threadId} がありません`);
-    const deliveryId = randomUUID();
-    const { notify = true, ...record } = input;
+    const { notify = true, replaces, ...record } = input;
+    if (replaces !== undefined && !record.continues) throw new Error("出し直せるのは切れたターンの続きだけです");
+    const deliveryId = replaces ?? randomUUID();
     await this.deps.projectThread.recordDelivery({ ...record, deliveryId });
+    if (opts.wake === false) return { deliveryId, wake: "later" };
     const decision = this.kick(input.threadId);
     if (!notify && decision.wake !== "held") return { deliveryId, ...decision };
     const project = this.deps.projectThread.getProject(thread.projectId);
@@ -139,6 +154,8 @@ export class ThreadDeliveries {
     if (thread.status === "closed") return "この Thread は閉じられています";
     const project = this.deps.projectThread.getProject(thread.projectId);
     if (project?.status === "closed") return "この Project は閉じられています";
+    const held = this.deps.hold?.(threadId);
+    if (held !== undefined) return held;
     const hop = Math.max(...pending.map((d) => d.hop));
     if (hop > DELIVERY_LIMITS.maxHop) {
       return `届いたものから起こした連鎖が ${DELIVERY_LIMITS.maxHop} 回を超えました（止まらない往復を防ぐため）`;

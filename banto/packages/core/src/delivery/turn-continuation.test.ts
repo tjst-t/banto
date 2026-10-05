@@ -1,4 +1,4 @@
-// **起こし直しで切れたターンを続ける**（追加・2026-10-06、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。
+// **起こし直しで切れたターンを続ける**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。
 //
 // host が止まった（ここでは偽の Runner が途中で返らないまま、同じ置き場を開き直す）あと、起き直した host が人の手を
 // 借りずに切れたターンを続けるか。続きは送り手 banto の届いたもので起こし、切れたことと実行中だった呼び出しを伝える。
@@ -20,8 +20,10 @@ import { ThreadTurns } from "./thread-turns.js";
 import { DELIVERY_LIMITS, ThreadDeliveries } from "./thread-deliveries.js";
 import {
   continueStoppedTurn,
+  RESUME_CUT_LIMIT,
   RESUME_GAVE_UP_TITLE,
   RESUME_SENDER,
+  resumeHoldReason,
   resumeInterruptedTurns,
   type SessionReader,
 } from "./turn-continuation.js";
@@ -103,7 +105,13 @@ async function boot(dir: string, runner?: ReturnType<typeof scriptedRunner>): Pr
   await inbox.load();
   await inbox.expireOrphanedJudgments();
   const turns = new ThreadTurns();
-  const deliveries = new ThreadDeliveries({ projectThread: store, turns, notify: async (n) => void (await inbox.raiseNotice(n)) });
+  // cli.ts と同じく、自動で続けるのをやめた Thread は留める
+  const deliveries = new ThreadDeliveries({
+    projectThread: store,
+    turns,
+    notify: async (n) => void (await inbox.raiseNotice(n)),
+    hold: (threadId) => resumeHoldReason({ projectThread: store, inbox }, threadId),
+  });
   const deps = { projectThread: store, globalMemory, inbox, pendingApprovals: new PendingApprovalRegistry() };
   const listen = (): void => {
     if (!runner) throw new Error("この host には Runner がありません（試験の書き間違い）");
@@ -253,19 +261,30 @@ test("続きは、ほかの届いたものより先に積まれ、速度の上�
   });
 });
 
-test("続けたターンがまた切れたら自動で続けず、受信箱に1件——「続ける」を押すと続く", async () => {
-  await withDir(async ({ dir, first, threadId }) => {
-    await cutTurn(first, threadId, "長い仕事", [init(""), say("一", "u1")]);
-    // 1回目の起き直し：続けるが、続きもまた切れる
-    const cutAgain = scriptedRunner([init(""), say("二", "u2"), "hang"]);
-    const second = await boot(dir, cutAgain);
-    await resumeInterruptedTurns({ ...second, projectThread: second.store, sessions: sessionsOf({}) });
-    second.listen();
+/**
+ * 続けて切れるところまで進める：最初のターンを切り、起き直すたびに続きもまた切る。`cuts` 回切れた状態の置き場を返す
+ * （最後の起き直しはまだしていない——次に起こす host が `cuts` 回目の切れを見る）
+ */
+async function cutRepeatedly(dir: string, first: Host, threadId: string, cuts: number): Promise<void> {
+  await cutTurn(first, threadId, "長い仕事", [init(""), say("一", "u1")]);
+  for (let i = 1; i < cuts; i++) {
+    const cutAgain = scriptedRunner([init(""), say(`続き${i}`, `u-c${i}`), "hang"]);
+    const host = await boot(dir, cutAgain);
+    const results = await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    assert.deepEqual(results.map((r) => r.action), ["continued"], `${i} 回目の切れで続けていない`);
+    host.listen();
     // 続きのターンが止まった（＝host がそこで止まった）ところで、次の host を起こす
     await cutAgain.hung;
-    assert.equal(second.store.getThread(threadId)!.lastTurn?.attempt, 1);
+    assert.equal(host.store.getThread(threadId)!.lastTurn?.attempt, i);
+  }
+}
 
-    // 2回目の起き直し：続けて2回切れた——自動では続けない
+test(`続けて ${RESUME_CUT_LIMIT} 回切れたら自動で続けず、受信箱に1件——続きは積んで留め、「続ける」を押すと attempt 0 で続く`, async () => {
+  assert.equal(RESUME_CUT_LIMIT, 3, "切れた→続ける→切れた→もう一度だけ続ける→切れた（続けて3回）でやめる（ユーザーとの合意）");
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+
+    // 3回目の切れ：自動では続けない
     const runner = scriptedRunner([init(""), say("三", "u3")]);
     const third = await boot(dir, runner);
     const results = await resumeInterruptedTurns({ ...third, projectThread: third.store, sessions: sessionsOf({}) });
@@ -275,11 +294,16 @@ test("続けたターンがまた切れたら自動で続けず、受信箱に1�
     assert.equal(runner.calls.length, 0, "続けて切れたのに自動で続けた");
     const thread = third.store.getThread(threadId)!;
     assert.equal(thread.lastTurn?.outcome, "failed");
-    assert.equal(thread.deliveries?.length ?? 0, 0);
-    assert.match(thread.messages.at(-1)!.text, new RegExp(`二\\n\\n${INTERRUPTED_NOTE}$`));
+    assert.match(thread.messages.at(-1)!.text, new RegExp(`続き2\\n\\n${INTERRUPTED_NOTE}$`));
+    // 続きは積んである（起こさない）——次に始まるターンが引き継ぐ
+    const queued = thread.deliveries?.filter((d) => d.continues) ?? [];
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]!.continues!.attempt, RESUME_CUT_LIMIT);
     const notices = third.inbox.listOpen().filter((i) => i.kind === "notice");
     assert.equal(notices.length, 1);
     assert.equal(notices[0]!.kind === "notice" && notices[0]!.title, RESUME_GAVE_UP_TITLE);
+    assert.match(notices[0]!.kind === "notice" ? notices[0]!.detail : "", /続けて 3 回切れました/);
+    assert.equal(third.deliveries.kick(threadId).wake, "held", "お知らせが開いているのに留めていない");
     // 起き直しても同じものを出し直さない
     const fourth = await boot(dir, scriptedRunner([]));
     assert.deepEqual(await resumeInterruptedTurns({ ...fourth, projectThread: fourth.store, sessions: sessionsOf({}) }), []);
@@ -289,12 +313,248 @@ test("続けたターンがまた切れたら自動で続けず、受信箱に1�
     assert.deepEqual(res, { ok: true });
     await settled(third, threadId);
     assert.equal(runner.calls.length, 1);
-    assert.equal(third.store.getThread(threadId)!.lastTurn?.attempt, 2);
-    assert.equal(third.store.getThread(threadId)!.lastTurn?.outcome, "completed");
+    assert.match(runner.calls[0]!.prompt, /banto を起こし直したため/);
+    const after = third.store.getThread(threadId)!;
+    assert.equal(after.lastTurn?.attempt, 0, "人が押した続きなのに切れた回数を数え直していない");
+    assert.equal(after.lastTurn?.cause, "delivery");
+    assert.equal(after.lastTurn?.outcome, "completed");
+    assert.equal(after.messages.filter((m) => m.origin?.from === RESUME_SENDER).length, RESUME_CUT_LIMIT, "続きを二重に積んだ");
     assert.equal(third.inbox.listOpen().filter((i) => i.kind === "notice").length, 0, "押したお知らせが残っている");
     // 押し直しても二度は続けない
     const twice = await continueStoppedTurn({ ...third, projectThread: third.store }, notices[0]!.id);
     assert.equal(twice.ok, false);
+  });
+});
+
+test("自動で続けるのをやめた Thread は、お知らせが開いている間、届いたもの（Module の札）でも起こさない——「続ける」で一緒に積む", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+    const runner = scriptedRunner([init(""), say("続けます", "u9")]);
+    const host = await boot(dir, runner);
+    // cli.ts と同じ順：Module の札（「途中で終わりました」）を先に届け、それから切れたターン
+    await host.deliveries.deliver({ threadId, from: "subagent", title: "subagent の仕事は途中で終わりました", text: "もう届きません", hop: 1 });
+    const results = await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    assert.deepEqual(results.map((r) => r.action), ["stopped-retrying"]);
+    host.listen();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(runner.calls.length, 0, "留めていた Thread を届いたもので起こした");
+    // 起こし直しのあと届いたものも起こさない。人には「起こしませんでした」と出る
+    const late = await host.deliveries.deliver({ threadId, from: "other", title: "あとから届いた", text: "あと", hop: 1 });
+    assert.equal(late.wake, "held");
+    assert.ok(
+      host.inbox.listOpen().some((i) => i.kind === "notice" && i.detail.includes("自動では AI を起こしませんでした——起こし直しのたびに切れるので")),
+      "留めたことを人に知らせていない",
+    );
+    assert.equal(runner.calls.length, 0);
+    const pending = host.store.getThread(threadId)!.deliveries!;
+    assert.deepEqual(pending.map((d) => d.from), [RESUME_SENDER, "subagent", "other"], "続きが先頭に無い");
+
+    const notice = host.inbox.listOpen().find((i) => i.kind === "notice" && i.title === RESUME_GAVE_UP_TITLE)!;
+    assert.deepEqual(await continueStoppedTurn({ ...host, projectThread: host.store, sessions: sessionsOf({}) }, notice.id), { ok: true });
+    await settled(host, threadId);
+    assert.equal(runner.calls.length, 1, "1つのターンで引き継いでいない");
+    const prompt = runner.calls[0]!.prompt;
+    assert.ok(prompt.indexOf("banto を起こし直したため") < prompt.indexOf("もう届きません"), "続きが届いたものより後ろ");
+    assert.match(prompt, /あと/);
+    assert.equal(host.store.getThread(threadId)!.lastTurn?.attempt, 0);
+  });
+});
+
+test("自動で続けるのをやめたあと人がその Thread で送ると、そのターンが切れた会話を引き継ぐ——attempt 0・cause human・お知らせは片づく", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    // 新しい会話の最初のターンが会話を書いてから切れた——続けるのはその会話（Thread の resume-point には無い）
+    const cut = await cutTurn(first, threadId, "最初の頼み", [init(""), say("やります", "u1")]);
+    const own = cut.calls[0]!.sessionId!;
+    const chains = { [own]: [human("…最初の頼み", "c1"), say("やります", "c2")] };
+    for (let i = 1; i < RESUME_CUT_LIMIT; i++) {
+      const cutAgain = scriptedRunner([init(""), say(`続き${i}`, `u-c${i}`), "hang"]);
+      const host = await boot(dir, cutAgain);
+      await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf(chains) });
+      host.listen();
+      await cutAgain.hung;
+      // 続きの続きも同じ会話（Thread の resume-point には無い）
+      assert.equal(cutAgain.calls[0]?.resumeSessionId, own, `${i} 回目の続きが切れた会話を続けていない`);
+    }
+    const host = await boot(dir);
+    const results = await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf(chains) });
+    assert.deepEqual(results.map((r) => r.action), ["stopped-retrying"]);
+    assert.equal(host.store.getThread(threadId)!.resumePoint, undefined, "試験の前提：Thread の resume-point に切れた会話が無い");
+    await host.deliveries.deliver({ threadId, from: "subagent", title: "結果", text: "留めていた結果", hop: 2 });
+    const notice = host.inbox.listOpen().find((i) => i.kind === "notice" && i.title === RESUME_GAVE_UP_TITLE)!;
+
+    // 人が送る
+    const runner = await completeTurn(host, threadId, "どうなった？", [init(""), say("確かめます", "u9")]);
+    const [call] = runner.calls;
+    assert.equal(call?.resumeSessionId, own, "切れた会話を引き継いでいない（新しい会話になった）");
+    assert.equal(call?.sessionId, undefined);
+    assert.match(call!.prompt, /banto を起こし直したため/);
+    assert.match(call!.prompt, /留めていた結果/);
+    assert.match(call!.prompt, /（ここから人の発言）\nどうなった？/);
+    const thread = host.store.getThread(threadId)!;
+    assert.equal(thread.lastTurn?.attempt, 0, "人が送ったのに切れた回数を数え続けた");
+    assert.equal(thread.lastTurn?.cause, "human");
+    assert.equal(thread.lastTurn?.outcome, "completed");
+    assert.equal(thread.resumePoint, own);
+    assert.equal(thread.deliveries?.length ?? 0, 0);
+    const after = host.inbox.get(notice.id);
+    assert.equal(after?.kind === "notice" && after.acknowledged, true, "お知らせが残っている");
+    // 押しても、もう引き継がれている
+    const res = await continueStoppedTurn({ ...host, projectThread: host.store, sessions: sessionsOf({}) }, notice.id);
+    assert.equal(res.ok, false);
+  });
+});
+
+test("人のターンが続きを引き継いで切れたら、ホップは人のターン（0）・attempt 1 で続ける", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await first.store.recordDelivery({ threadId, deliveryId: "d1", from: "subagent", title: "結果", text: "結果です", hop: 3 });
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+    const host = await boot(dir);
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    // 人が送り、それもまた切れる
+    await cutTurn(host, threadId, "続けて", [init(""), say("はい", "u9")]);
+    assert.equal(host.store.getThread(threadId)!.lastTurn?.cause, "human");
+    const runner = scriptedRunner([init(""), say("続き", "u10")]);
+    const next = await boot(dir, runner);
+    const results = await resumeInterruptedTurns({ ...next, projectThread: next.store, sessions: sessionsOf({}) });
+    assert.deepEqual(results.map((r) => [r.action, r.turn.hop, r.turn.attempt]), [["continued", 0, 0]]);
+    next.listen();
+    await settled(next, threadId);
+    assert.match(runner.calls[0]!.prompt, new RegExp(`from="${RESUME_SENDER}" hop="0"`));
+    assert.equal(next.store.getThread(threadId)!.lastTurn?.attempt, 1);
+  });
+});
+
+test("「続ける」を同時に押しても、続きは1回だけ届く", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+    const runner = scriptedRunner([init(""), say("続けます", "u9")]);
+    const host = await boot(dir, runner);
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    host.listen();
+    const notice = host.inbox.listOpen().find((i) => i.kind === "notice")!;
+    const deps = { ...host, projectThread: host.store, sessions: sessionsOf({}) };
+    const both = await Promise.all([continueStoppedTurn(deps, notice.id), continueStoppedTurn(deps, notice.id)]);
+    // 先にターンを終わらせてから確かめる（走っている途中で置き場を消すと、落ちたあと試験のプロセスが終わらない）
+    await settled(host, threadId);
+    assert.deepEqual(both.map((r) => r.ok).sort(), [false, true]);
+    assert.deepEqual(both.find((r) => !r.ok), { ok: false, status: 409, error: "いま続けています" });
+    assert.equal(runner.calls.length, 1, "続きが二重に走った");
+    assert.equal(host.store.getThread(threadId)!.messages.filter((m) => m.origin?.from === RESUME_SENDER).length, RESUME_CUT_LIMIT);
+  });
+});
+
+test("「続ける」の出し直しが、人が送ったターンが続きを積んだあとに届いても、続きを二度は積まない", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+    const host = await boot(dir);
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    // 「続ける」が待ち行列の続きを読んだところで、人が送ったターンが先に積んだ
+    const [queued] = host.store.getThread(threadId)!.deliveries!;
+    await completeTurn(host, threadId, "どうなった？", [init(""), say("確かめます", "u9")]);
+    assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0);
+    // 遅れて出し直しが届く（同じ届いたものを置き換える形）
+    await host.deliveries.deliver(
+      { threadId, from: queued!.from, title: queued!.title, text: queued!.text, hop: queued!.hop, notify: false, continues: { ...queued!.continues!, attempt: 0 }, replaces: queued!.deliveryId },
+      { wake: false },
+    );
+    assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0, "引き継がれた続きがまた待ち行列に入った");
+    // 読み直しても同じ（fold）
+    const again = await boot(dir);
+    assert.equal(again.store.getThread(threadId)!.deliveries?.length ?? 0, 0);
+  });
+});
+
+test("留めている間に人が Clear したら、続きは捨てて留めも外れる——「続ける」は断る", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+    const runner = scriptedRunner([init(""), say("結果を読みました", "u9")]);
+    const host = await boot(dir, runner);
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    await host.deliveries.deliver({ threadId, from: "subagent", title: "結果", text: "終わった", hop: 1 });
+    const notice = host.inbox.listOpen().find((i) => i.kind === "notice" && i.title === RESUME_GAVE_UP_TITLE)!;
+    await host.store.clearThread(threadId);
+    assert.deepEqual(host.store.getThread(threadId)!.deliveries?.map((d) => d.from), ["subagent"], "続きが残っている");
+    host.listen();
+    await settled(host, threadId);
+    assert.equal(runner.calls.length, 1, "留めが外れていない");
+    assert.doesNotMatch(runner.calls[0]!.prompt, /起こし直したため/, "畳んだ会話の続きを積んだ");
+    const res = await continueStoppedTurn({ ...host, projectThread: host.store, sessions: sessionsOf({}) }, notice.id);
+    assert.equal(res.ok, false);
+  });
+});
+
+test("お知らせを「確認した」で片づけると留めは外れる（続きは積んだまま——次に起こしたターンが上限の attempt で引き継ぐ）", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutRepeatedly(dir, first, threadId, RESUME_CUT_LIMIT);
+    const host = await boot(dir);
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    host.deliveries.setTurnRunner(async () => true);
+    assert.equal(host.deliveries.kick(threadId).wake, "held");
+    const notice = host.inbox.listOpen().find((i) => i.kind === "notice")!;
+    await host.inbox.acknowledgeNotice(notice.id);
+    assert.equal(host.deliveries.kick(threadId).wake, "now");
+    assert.equal(host.store.getThread(threadId)!.deliveries?.[0]?.continues?.attempt, RESUME_CUT_LIMIT);
+  });
+});
+
+test("続きを積む前に切れた続きのターンも、切れた回数に数える——上限で止まる", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await cutTurn(first, threadId, "やって", [init(""), say("途中", "u1")]);
+    let host = await boot(dir);
+    await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+    const continued = host.store.getThread(threadId)!.deliveries![0]!;
+    for (let cuts = 2; cuts <= RESUME_CUT_LIMIT; cuts++) {
+      // 続きのターンが始まりだけ書いて、続きを積む前に止まった（turn-runner と同じ値で始める）
+      const queued = host.store.getThread(threadId)!.deliveries!.find((d) => d.continues)!;
+      await host.store.startTurn(threadId, {
+        cause: "delivery",
+        attempt: queued.continues!.attempt,
+        continues: { turnId: queued.continues!.turnId, fromSeq: queued.continues!.fromSeq },
+      });
+      host = await boot(dir);
+      const results = await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+      assert.deepEqual(results.map((r) => r.action), [cuts >= RESUME_CUT_LIMIT ? "stopped-retrying" : "continued"], `${cuts} 回目`);
+      const pending = host.store.getThread(threadId)!.deliveries!.filter((d) => d.continues);
+      assert.equal(pending.length, 1, "続きを二重に積んだ");
+      assert.equal(pending[0]!.deliveryId, continued.deliveryId, "同じ届いたものを置き換えていない");
+      assert.equal(pending[0]!.continues!.attempt, cuts, "切れた回数を数えていない");
+      assert.equal(pending[0]!.text, continued.text);
+    }
+    assert.equal(host.inbox.listOpen().filter((i) => i.kind === "notice" && i.title === RESUME_GAVE_UP_TITLE).length, 1);
+    host.deliveries.setTurnRunner(async () => true);
+    assert.equal(host.deliveries.kick(threadId).wake, "held");
+  });
+});
+
+test("続きを引き継いだ人のターンを、AI が何も出す前に止めたら：取り消さず（届いたものも積んだターン）、切れた会話は残る", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    const cut = await cutTurn(first, threadId, "最初の頼み", [init(""), say("やります", "u1")]);
+    const own = cut.calls[0]!.sessionId!;
+    const host = await boot(dir);
+    await resumeInterruptedTurns({
+      ...host,
+      projectThread: host.store,
+      sessions: sessionsOf({ [own]: [human("…最初の頼み", "c1"), say("やります", "c2")] }),
+    });
+    // 起き直した直後、続きを起こす前に人が送り、`system/init` の前に止めた
+    const stop = new AbortController();
+    const stopped = scriptedRunner(["hang"]);
+    const done = collect(runThreadTurn({ ...host.deps, runTurn: stopped.fake }, { threadId, prompt: "待って", modules: [], stop: stop.signal }));
+    await stopped.hung;
+    assert.equal(stopped.calls[0]?.resumeSessionId, own);
+    stop.abort();
+    const events = await done;
+    const end = events.at(-1)!;
+    assert.equal(end.type, "stopped");
+    assert.equal(end.type === "stopped" ? end.withdrawn : "x", undefined, "届いたものも積んだターンを取り消した");
+    const thread = host.store.getThread(threadId)!;
+    assert.equal(thread.lastTurn?.outcome, "stopped");
+    assert.equal(thread.lastTurn?.attempt, 0);
+    assert.equal(thread.deliveries?.length ?? 0, 0, "続きが待ち行列に戻った（積んだまま止めた）");
+    assert.ok(thread.messages.some((m) => m.origin?.from === RESUME_SENDER), "続きが記録に無い");
+    assert.ok(thread.messages.some((m) => m.role === "user" && !m.origin && m.text === "待って"), "人の発言を取り消した");
+    assert.equal(thread.resumePoint, own, "止めたら切れた会話を失った（次のターンが新しい会話になる）");
+    assert.deepEqual(host.store.listInterruptedTurns(), []);
   });
 });
 
@@ -397,6 +657,33 @@ test("新しい会話の最初のターンが会話を書いてから切れた�
     assert.equal(runner.calls[0]?.sessionId, undefined);
     assert.doesNotMatch(runner.calls[0]!.prompt, /入れ直します/);
     assert.equal(host.store.getThread(threadId)!.resumePoint, assigned);
+  });
+});
+
+test("新しい会話の最初のターンが会話を書いてから切れ、その続きが会話の id を名乗る前にまた切れても、次の続きは同じ会話を続ける", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    const cut = await cutTurn(first, threadId, "最初の頼み", [init(""), say("やります", "u1")]);
+    const own = cut.calls[0]!.sessionId!;
+    const chains = { [own]: [human("…最初の頼み", "c1"), say("やります", "c2")] };
+    // 続き：切れた会話を続けるが、`system/init` の前に止まる（続きは積んである）
+    const second = scriptedRunner(["hang"]);
+    const host2 = await boot(dir, second);
+    await resumeInterruptedTurns({ ...host2, projectThread: host2.store, sessions: sessionsOf(chains) });
+    host2.listen();
+    await second.hung;
+    assert.equal(second.calls[0]?.resumeSessionId, own);
+    assert.equal(host2.store.getThread(threadId)!.resumePoint, undefined, "試験の前提：Thread の resume-point に切れた会話が無い");
+
+    const third = scriptedRunner([init(""), say("最後まで", "u3")]);
+    const host3 = await boot(dir, third);
+    const results = await resumeInterruptedTurns({ ...host3, projectThread: host3.store, sessions: sessionsOf(chains) });
+    assert.deepEqual(results.map((r) => r.action), ["continued"]);
+    host3.listen();
+    await settled(host3, threadId);
+    assert.equal(third.calls[0]?.resumeSessionId, own, "切れた会話を捨てて新しい会話になった");
+    assert.equal(third.calls[0]?.sessionId, undefined);
+    assert.doesNotMatch(third.calls[0]!.prompt, /AI に届く前に切れました/);
+    assert.equal(host3.store.getThread(threadId)!.resumePoint, own);
   });
 });
 
@@ -541,26 +828,7 @@ test("続きでも連鎖の上限（ホップ）は効く", async () => {
   });
 });
 
-test("「続ける」は、その会話がもう先へ進んでいたら断る", async () => {
-  await withDir(async ({ dir, first, threadId }) => {
-    await cutTurn(first, threadId, "一", [init(""), say("一", "u1")]);
-    const cutAgain = scriptedRunner([init(""), say("二", "u2"), "hang"]);
-    const second = await boot(dir, cutAgain);
-    await resumeInterruptedTurns({ ...second, projectThread: second.store, sessions: sessionsOf({}) });
-    second.listen();
-    await cutAgain.hung;
-    const third = await boot(dir, scriptedRunner([init(""), say("人のターン", "u3")]));
-    await resumeInterruptedTurns({ ...third, projectThread: third.store, sessions: sessionsOf({}) });
-    const notice = third.inbox.listOpen().find((i) => i.kind === "notice")!;
-    // 人が先に次を送った
-    await completeTurn(third, threadId, "別の話", [init(""), say("別の返事", "u4")]);
-    const res = await continueStoppedTurn({ ...third, projectThread: third.store, sessions: sessionsOf({}) }, notice.id);
-    assert.deepEqual(res, { ok: false, status: 409, error: "この会話はもう先へ進んでいます" });
-    assert.equal(third.store.getThread(threadId)!.deliveries?.length ?? 0, 0);
-  });
-});
-
-test("続きを届けたあと、走る前に人が Clear したら、捨てた会話は続けず、Clear より前に会話の始まりを置かない", async () => {
+test("続きを届けたあと、走る前に人が Clear したら、続きは捨てる——次に人が送ったターンは新しい会話で、Clear より前に会話の始まりを置かない", async () => {
   await withDir(async ({ dir, first, threadId }) => {
     const cut = await cutTurn(first, threadId, "最初の頼み", [init(""), say("やります", "u1")]);
     const assigned = cut.calls[0]!.sessionId!;
@@ -572,11 +840,15 @@ test("続きを届けたあと、走る前に人が Clear したら、捨てた�
       sessions: sessionsOf({ [assigned]: [human("…最初の頼み", "c1"), say("やります", "c2")] }),
     });
     await host.store.clearThread(threadId);
+    assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0, "畳んだ会話の続きが残っている");
     host.listen();
-    await settled(host, threadId);
-    const [call] = runner.calls;
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(runner.calls.length, 0, "畳んだ会話の続きを走らせた");
+    const next = await completeTurn(host, threadId, "新しい話", [init(""), say("はい", "u3")]);
+    const [call] = next.calls;
     assert.equal(call?.resumeSessionId, undefined, "Clear で捨てた会話を続けた");
     assert.ok(call?.sessionId && call.sessionId !== assigned);
+    assert.doesNotMatch(call!.prompt, /起こし直したため/);
     const thread = host.store.getThread(threadId)!;
     assert.equal(thread.lastTurn?.continuesFromSeq, undefined);
     assert.equal(thread.resumePoints.at(-1)?.seq, thread.lastTurn?.startedSeq, "Clear より前に新しい会話の始まりを置いた");
@@ -671,3 +943,89 @@ test("続いている会話で、切れたターンの発言が CLI の記録に
     assert.doesNotMatch(runner.calls[0]!.prompt, /実行中だった呼び出し/, "前のターンの呼び出しを拾った");
   });
 });
+
+test("巻き戻しの上で、続きのターンが CLI に何も書く前にまた切れたら、鎖（前の切れたターンのもの）から実行中の呼び出しを拾わない", async () => {
+  await withDir(async ({ dir, first, threadId }) => {
+    await completeTurn(first, threadId, "りんご", [init(""), say("りんごの返事", "u-apple")]);
+    const stop = new AbortController();
+    const stopped = scriptedRunner([init(""), "hang"]);
+    const done = collect(runThreadTurn({ ...first.deps, runTurn: stopped.fake }, { threadId, prompt: "まちがい", modules: [], stop: stop.signal }));
+    await stopped.hung;
+    stop.abort();
+    await done;
+    await cutTurn(first, threadId, "ぶどう", [init(""), say("ぶどうの", "u2"), callTool("t1", "mcp__shell__runCommand", "u3")]);
+    const sessionId = first.store.getThread(threadId)!.resumePoint!;
+    // 1つめの切れ：鎖の末尾は切れたターン（「ぶどう」）——拾う
+    const cutChain = [human("りんご", "c1"), say("りんごの返事", "u-apple"), human("…ぶどう", "c3"), say("ぶどうの", "c4"), callTool("t1", "mcp__shell__runCommand", "c5")];
+    const cutAgain = scriptedRunner([init(""), "hang"]);
+    const second = await boot(dir, cutAgain);
+    await resumeInterruptedTurns({ ...second, projectThread: second.store, sessions: sessionsOf({ [sessionId]: cutChain }) });
+    second.listen();
+    await cutAgain.hung;
+    assert.match(cutAgain.calls[0]!.prompt, /実行中だった呼び出し：mcp__shell__runCommand/);
+    assert.equal(cutAgain.calls[0]?.resumeSessionAt, "u-apple");
+
+    // 2つめの切れ：続きのターンは CLI に何も書いていない——SDK が返す鎖は1つめの切れたターンのまま
+    const runner = scriptedRunner([init(""), say("続き", "u9")]);
+    const third = await boot(dir, runner);
+    await resumeInterruptedTurns({ ...third, projectThread: third.store, sessions: sessionsOf({ [sessionId]: cutChain }) });
+    third.listen();
+    await settled(third, threadId);
+    const prompt = runner.calls[0]!.prompt;
+    // 入れ直した発言（1つめの続きの文）の中には前の呼び出しが書いてある——見るのはそれより前の、この切れについての行
+    const own = prompt.slice(0, prompt.indexOf("入れ直します："));
+    assert.doesNotMatch(own, /実行中だった呼び出し：/, "前の切れたターンの呼び出しを、この切れで実行中だったと書いた");
+    assert.match(prompt, /切れたとき実行中だった呼び出しは分かりません（切れたターンが会話の記録に見つかりませんでした）/);
+    assert.match(prompt, /切れたターンは会話の記録から外れるので、そのとき渡したものをここに入れ直します/);
+    assert.equal(runner.calls[0]?.resumeSessionAt, "u-apple");
+  });
+});
+
+test("続けると答えた Module の仕事（keptReplies）は「続いています」と書く。会話の記録は Runner の cwd（Project の root）で引く", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await completeTurn(first, threadId, "前", [init(""), say("前の返事", "u0")]);
+    const sessionId = first.store.getThread(threadId)!.resumePoint!;
+    await cutTurn(first, threadId, "調べて", [init(""), say("調べます", "u1")]);
+    const runner = scriptedRunner([init(""), say("続き", "u2")]);
+    const host = await boot(dir, runner);
+    const asked: Array<[string, string | undefined]> = [];
+    const chains = { [sessionId]: [human("…調べて", "c1"), say("調べます", "c2")] };
+    const sessions: SessionReader = {
+      exists: async (id, at) => (asked.push([id, at]), id in chains),
+      messages: async (id, at) => (asked.push([id, at]), (chains[id] ?? []) as SessionMessage[]),
+    };
+    await resumeInterruptedTurns({
+      ...host,
+      projectThread: host.store,
+      sessions,
+      keptReplies: (id) => (id === threadId ? [{ moduleName: "subagent" }] : []),
+    });
+    host.listen();
+    await settled(host, threadId);
+    assert.match(runner.calls[0]!.prompt, /subagent の仕事は続いています（終わったら届きます）/);
+    const root = host.store.getProject(projectId)!.root;
+    assert.ok(asked.length > 0);
+    assert.deepEqual(asked.map(([, at]) => at), asked.map(() => root), "Runner の cwd で引いていない");
+  });
+});
+
+for (const [name, quit] of [
+  ["Clear した", (h: Host, id: string) => h.store.clearThread(id)],
+  ["Thread を閉じた", (h: Host, id: string) => h.store.closeThread(id)],
+  ["Project を閉じた", (h: Host, id: string) => h.store.closeProject(h.store.getThread(id)!.projectId)],
+] as const) {
+  test(`待ち行列の続きは、${name}ら捨てる（ほかの届いたものは残す）`, async () => {
+    await withDir(async ({ dir, first, threadId }) => {
+      await cutTurn(first, threadId, "やって", [init(""), say("途中", "u1")]);
+      const host = await boot(dir);
+      await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions: sessionsOf({}) });
+      await host.store.recordDelivery({ threadId, deliveryId: "d1", from: "subagent", title: "結果", text: "結果", hop: 1 });
+      assert.deepEqual(host.store.getThread(threadId)!.deliveries?.map((d) => d.from), [RESUME_SENDER, "subagent"]);
+      await quit(host, threadId);
+      assert.deepEqual(host.store.getThread(threadId)!.deliveries?.map((d) => d.from), ["subagent"]);
+      // 読み直しても同じ（fold）
+      const again = await boot(dir);
+      assert.deepEqual(again.store.getThread(threadId)!.deliveries?.map((d) => d.from), ["subagent"]);
+    });
+  });
+}

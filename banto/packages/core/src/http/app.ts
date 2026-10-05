@@ -203,7 +203,7 @@ export interface AppDeps {
    *  プロセス・合言葉・セッション）を落とす（決定・2026-09-10）。 */
   releaseProjectModules?(projectId: string, opts?: { stopContainer?: boolean }): Promise<string[]>;
   /**
-   * **自動で続けるのをやめたターンを、人が「続ける」と言った**（追加・2026-10-06、アーキ仕様 §2.5「上限」）。受信箱の
+   * **自動で続けるのをやめたターンを、人が「続ける」と言った**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。受信箱の
    * お知らせ（`NoticeItem.resume`）の id で呼ぶ。渡されなければ口は断る
    */
   continueStoppedTurn?(noticeId: string): Promise<{ ok: true } | { ok: false; status: 404 | 409; error: string }>;
@@ -2772,7 +2772,7 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
-      // **自動で続けるのをやめたターンを続ける**（追加・2026-10-06、§2.5「上限」）——お知らせの「続ける」
+      // **自動で続けるのをやめたターンを続ける**（追加・2026-10-05、§2.5「上限」）——お知らせの「続ける」
       const inboxResumeMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/resume$/);
       if (inboxResumeMatch && req.method === "POST") {
         if (!deps.continueStoppedTurn) return json(res, 501, { error: "この banto ではターンを続けられません" });

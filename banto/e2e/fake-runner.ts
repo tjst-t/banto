@@ -125,7 +125,7 @@ export function parsePlan(prompt: string): FakePlan {
   const at = prompt.lastIndexOf(MARKER);
   if (at === -1) return { say: defaultReply(prompt) };
   // 指示は印のあとの1行（`fakeTurn` は改行の無い JSON を書く）。後ろに文が続くことがある——起こし直しで切れた
-  // ターンの発言を、banto が続きの文の中に入れ直したとき（追加・2026-10-06）
+  // ターンの発言を、banto が続きの文の中に入れ直したとき（追加・2026-10-05）
   const json = prompt.slice(at + MARKER.length).split("\n")[0]!.trim();
   try {
     return JSON.parse(json) as FakePlan;

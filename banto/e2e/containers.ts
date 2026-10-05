@@ -10,8 +10,11 @@ export interface OwnedContainer {
   owner: string;
 }
 
-/** E2E の回のデータの置き場の形。HOME に依らない——サブエージェントの偽のホームで回した回も拾うため */
-const E2E_OWNER = /\/\.cache\/banto-e2e\/(\d+)\/data$/;
+/**
+ * E2E の回のデータの置き場の形。HOME に依らない——サブエージェントの偽のホームで回した回も拾うため。spec が自前で
+ * 起こす host（`own-host.ts`）の置き場（回の下の `own-*`）も同じ回のものとして拾う（追加・2026-10-05）
+ */
+const E2E_OWNER = /\/\.cache\/banto-e2e\/(\d+)\/(?:own-[^/]+\/)?data$/;
 
 /** 札の置き場から、その回の印（Playwright の pid）を読む。E2E のものでなければ null */
 export function runIdOf(owner: string): number | null {
@@ -24,6 +27,17 @@ export function isAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** そのプロセスグループに誰か居るか。EPERM は「居るが他人のもの」——居る扱い */
+export function isGroupAlive(pgid: number): boolean {
+  if (!Number.isInteger(pgid) || pgid <= 1) return false;
+  try {
+    process.kill(-pgid, 0);
     return true;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code !== "ESRCH";

@@ -35,15 +35,20 @@ export interface InterruptedTurn {
   resumePoint?: string;
   rewindTo?: string;
   /**
-   * そのターンのホップ（追加・2026-10-06）。積んだ届いたもののホップの最大、人の発言だけなら 0（`ThreadTurns` が
-   * 鍵に持つ値と同じ）。続きのターンも同じホップで起こす
+   * そのターンのホップ（追加・2026-10-05）。人が送ったターンは 0（届いたものも一緒に積んでいても）、届いたもので
+   * 起こしたターンは積んだ届いたもののホップの最大（`ThreadTurns` が鍵に持つ値と同じ）。続きのターンも同じホップで起こす
    */
   hop: number;
   /**
-   * 切れたターンの会話が記録のどこから始まったか（追加・2026-10-06）。ふつうは `startedSeq`、続きのターンがまた
+   * 切れたターンの会話が記録のどこから始まったか（追加・2026-10-05）。ふつうは `startedSeq`、続きのターンがまた
    * 切れたなら最初に切れたターンの始まり（`TurnRecord.continuesFromSeq`）
    */
   fromSeq: number;
+  /**
+   * 切れたターンが続きを引き継いだターンなら、その続きが続けていたターン（`TurnRecord.continuesTurnId`）。続きを
+   * 積む前に切れたとき、待ち行列に残った続きを見つけるのに使う
+   */
+  continuesTurnId?: string;
 }
 
 /**
@@ -74,10 +79,9 @@ export function findInterruptedTurns(threads: Iterable<ThreadState>): Interrupte
 }
 
 /**
- * **最後のターンを、続けるのに要る形で**（`InterruptedTurn`）。切れたかは見ない——自動で続けるのをやめたあと人が
- * 「続ける」を押したとき（そのターンはもう `turn.ended` を書いてある）にも使う
+ * **最後のターンを、続けるのに要る形で**（`InterruptedTurn`）。切れたかは見ない（見るのは `findInterruptedTurns`）
  */
-export function lastTurnOf(thread: ThreadState, turn: TurnRecord): InterruptedTurn {
+function lastTurnOf(thread: ThreadState, turn: TurnRecord): InterruptedTurn {
   const sessionId = turn.knownSessionId ?? turn.assignedSessionId;
   const stacked = thread.messages.filter((m) => m.role === "user" && m.seq > turn.startedSeq);
   return {
@@ -91,7 +95,8 @@ export function lastTurnOf(thread: ThreadState, turn: TurnRecord): InterruptedTu
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(turn.resumePoint !== undefined ? { resumePoint: turn.resumePoint } : {}),
     ...(turn.rewindTo !== undefined ? { rewindTo: turn.rewindTo } : {}),
-    hop: Math.max(0, ...stacked.map((m) => m.origin?.hop ?? 0)),
+    hop: turn.cause === "human" ? 0 : Math.max(0, ...stacked.map((m) => m.origin?.hop ?? 0)),
     fromSeq: turn.continuesFromSeq ?? turn.startedSeq,
+    ...(turn.continuesTurnId !== undefined ? { continuesTurnId: turn.continuesTurnId } : {}),
   };
 }

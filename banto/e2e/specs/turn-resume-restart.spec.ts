@@ -1,4 +1,4 @@
-// **ターンの途中で host が落ちても、起き直したら人が何もせずに続く**（追加・2026-10-06、アーキ仕様 §2.5
+// **ターンの途中で host が落ちても、起き直したら人が何もせずに続く**（追加・2026-10-05、アーキ仕様 §2.5
 // 「起こし直しをまたいで続ける」）。
 //
 // 自前の host（`own-host.ts`）で AI のターンを流している途中に host を SIGKILL で落とし、起こし直す。見るもの（規則14）：
@@ -8,13 +8,14 @@
 //   - 続きのターンが最後まで流れる（人の発言は増えない）
 //   - host の記録：続きのターンは attempt 1 で最後まで行き、切れたターンはもう「切れた」に見えない
 //   - 受信箱にお知らせは出ない（会話は続いている）
+// 続けて3回切れたら（上限）自動では続けず、受信箱の「続ける」・その会話で人が送る、のどちらかで続く（attempt 0 から）。
 import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FRONTEND_BASE_URL } from "../config.js";
 import { createProject, openApp, fakeTurn } from "../helpers.js";
-import { startOwnHost, type OwnHost } from "../own-host.js";
+import { withOwnHost, type OwnHost } from "../own-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
 test.setTimeout(300_000);
@@ -24,9 +25,14 @@ const LINES = Array.from({ length: 20 }, (_, i) => `[${i + 1}]`);
 const SLOW_TURN = fakeTurn({ say: LINES.join("\n"), streamMs: 20_000 });
 const PROJECT_NAME = "E2E Resume Restart";
 
+/** 続けて切れた回数の上限（core の `RESUME_CUT_LIMIT`。切れた→続ける→切れた→もう一度だけ続ける→切れた、でやめる） */
+const CUT_LIMIT = 3;
+const GAVE_UP_TITLE = "この会話は起こし直しのたびに切れるので、自動で続けるのをやめました";
+
 interface HostThread {
   messages: Array<{ seq: number; role: string; text: string; origin?: { from: string; title: string } }>;
-  lastTurn?: { attempt: number; outcome?: string; continuesTurnId?: string };
+  deliveries?: Array<{ from: string; continues?: { attempt: number } }>;
+  lastTurn?: { attempt: number; cause: string; outcome?: string; continuesTurnId?: string };
 }
 
 async function api<T>(host: OwnHost, path: string): Promise<T> {
@@ -52,8 +58,7 @@ async function login(page: Page, host: OwnHost): Promise<void> {
 }
 
 test("ターンの途中で host が落ちて起き直すと、「（起こし直しで切れました）」と続きが出て、最後まで走る", async ({ page }) => {
-  const host = await startOwnHost();
-  try {
+  await withOwnHost(async (host) => {
     await login(page, host);
     await openApp(page, host.url);
     await createProject(page, PROJECT_NAME, mkdtempSync(join(tmpdir(), "banto-e2e-resume-restart-")));
@@ -113,24 +118,28 @@ test("ターンの途中で host が落ちて起き直すと、「（起こし�
     await host.start();
     await page.waitForTimeout(3_000);
     expect((await baseThread(host)).messages.length, "起こし直すたびに続け直している").toBe(4);
-  } catch (err) {
-    throw new Error(`${(err as Error).message}\n\n--- 自前の host のログ（末尾）---\n${host.log().slice(-4000)}`);
-  } finally {
-    await host.close();
-  }
+  });
 });
 
-test("続けたターンもまた切れたら自動では続けず、受信箱の「続ける」を押すと最後まで走る", async ({ page }) => {
-  const host = await startOwnHost();
-  const name = "E2E Resume Give Up";
+/**
+ * 続けて `CUT_LIMIT` 回切れるところまで進める：最初のターンを流し、AI の発言が [3] まで流れるたびに host を落として
+ * 起こし直す（続きもまた [3] まで流れたところで落とす）。終わると、自動で続けるのをやめた状態
+ */
+async function cutUntilGivenUp(page: Page, host: OwnHost, name: string): Promise<() => Promise<HostThread>> {
   const thread = async (): Promise<HostThread> => {
     const projects = await api<Array<{ id: string; name: string }>>(host, "/api/projects");
     const project = projects.find((p) => p.name === name)!;
     const [t] = await api<Array<{ id: string }>>(host, `/api/projects/${project.id}/threads`);
     return api<HostThread>(host, `/api/threads/${t!.id}`);
   };
-  /** 最後の AI の発言が [3] まで流れ、まだ終わっていない——そこで落とす */
-  const cutAt = async (replies: number) => {
+  await login(page, host);
+  await openApp(page, host.url);
+  await createProject(page, name, mkdtempSync(join(tmpdir(), "banto-e2e-resume-give-up-")));
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill("1 から 20 まで数えて。" + SLOW_TURN);
+  await composer.press("Enter");
+  for (let replies = 1; replies <= CUT_LIMIT; replies++) {
+    // 最後の AI の発言が [3] まで流れ、まだ終わっていない——そこで落とす
     await expect
       .poll(
         async () => {
@@ -141,44 +150,57 @@ test("続けたターンもまた切れたら自動では続けず、受信箱�
         { timeout: 60_000, message: `${replies} 件目の AI の発言が流れ始めない` },
       )
       .toBe(true);
+    if (replies > 1) expect((await thread()).lastTurn?.attempt, `${replies - 1} 回目の続き`).toBe(replies - 1);
     await host.stop("SIGKILL");
     await host.start();
-  };
-  try {
-    await login(page, host);
-    await openApp(page, host.url);
-    await createProject(page, name, mkdtempSync(join(tmpdir(), "banto-e2e-resume-give-up-")));
-    const composer = page.getByPlaceholder(/に送る/);
-    await composer.fill("1 から 20 まで数えて。" + SLOW_TURN);
-    await composer.press("Enter");
+  }
+  // 3回目の切れ：自動では続けない。続きは積んで留めている
+  await expect.poll(async () => (await thread()).lastTurn?.outcome, { timeout: 30_000 }).toBe("failed");
+  await page.waitForTimeout(3_000);
+  const stopped = await thread();
+  expect(stopped.messages.map((m) => (m.origin ? `delivered:${m.origin.from}` : m.role)), "自動で続け直した").toEqual([
+    "user",
+    "assistant",
+    "delivered:banto",
+    "assistant",
+    "delivered:banto",
+    "assistant",
+  ]);
+  expect(stopped.messages[5]!.text).toMatch(/（起こし直しで切れました）$/);
+  expect(stopped.deliveries?.map((d) => [d.from, d.continues?.attempt]), "続きを積んで留めていない").toEqual([["banto", CUT_LIMIT]]);
+  return thread;
+}
 
-    await cutAt(1); // 1回目：続く
-    await cutAt(2); // 続きもまた切れた：自動では続けない
-    await expect.poll(async () => (await thread()).lastTurn?.outcome, { timeout: 30_000 }).toBe("failed");
-    await page.waitForTimeout(3_000);
-    const stopped = await thread();
-    expect(stopped.messages.map((m) => (m.origin ? `delivered:${m.origin.from}` : m.role)), "自動で続け直した").toEqual([
-      "user",
-      "assistant",
-      "delivered:banto",
-      "assistant",
-    ]);
-    expect(stopped.messages[3]!.text).toMatch(/（起こし直しで切れました）$/);
+test(`続けて ${CUT_LIMIT} 回切れたら自動では続けず、受信箱の「続ける」を押すと attempt 0 で最後まで走る`, async ({ page }) => {
+  const name = "E2E Resume Give Up";
+  await withOwnHost(async (host) => {
+    const thread = await cutUntilGivenUp(page, host, name);
 
     // 受信箱に1件、「続ける」が押せる
     await page.getByRole("button", { name: "受信箱" }).click();
-    const notice = page.locator('[data-testid="inbox-notice"]').filter({ hasText: "この会話は起こし直しのたびに切れるので、自動で続けるのをやめました" });
+    const notice = page.locator('[data-testid="inbox-notice"]').filter({ hasText: GAVE_UP_TITLE });
     await expect(notice, "受信箱にお知らせが出ない").toHaveCount(1, { timeout: 30_000 });
-    await expect(notice).toContainText(`${name} の Base Thread——起こし直しで続けて 2 回切れました`);
-    await notice.getByTestId("inbox-notice-resume").click();
+    await expect(notice).toContainText(`${name} の Base Thread——起こし直しで続けて ${CUT_LIMIT} 回切れました`);
+    // 続けて2回押しても、頼むのは1回（返事が来るまでボタンは効かない）。描き直す前の2回目も止まるかを見るため、同じ
+    // 手番で2回押す
+    const resumeRequests: string[] = [];
+    page.on("request", (r) => {
+      if (r.method() === "POST" && /\/api\/inbox\/[^/]+\/resume$/.test(r.url())) resumeRequests.push(r.url());
+    });
+    await notice.getByTestId("inbox-notice-resume").evaluate((button: HTMLButtonElement) => {
+      button.click();
+      button.click();
+    });
     await expect(notice, "押したのにお知らせが残っている").toHaveCount(0, { timeout: 30_000 });
+    expect(resumeRequests, "「続ける」を二重に頼んだ").toHaveLength(1);
     await expect(page.getByTestId("inbox-notice-resume-error")).toHaveCount(0);
     await page.keyboard.press("Escape");
 
     // 続きが最後まで走る
     await expect.poll(async () => (await thread()).lastTurn?.outcome, { timeout: 90_000 }).toBe("completed");
     const done = await thread();
-    expect(done.lastTurn?.attempt, "押した続きの attempt").toBe(2);
+    expect(done.lastTurn?.attempt, "人が押した続きなのに切れた回数を数え続けた").toBe(0);
+    expect(done.lastTurn?.cause).toBe("delivery");
     expect(done.messages.map((m) => (m.origin ? `delivered:${m.origin.from}` : m.role))).toEqual([
       "user",
       "assistant",
@@ -186,15 +208,66 @@ test("続けたターンもまた切れたら自動では続けず、受信箱�
       "assistant",
       "delivered:banto",
       "assistant",
+      "delivered:banto",
+      "assistant",
     ]);
-    expect(done.messages[5]!.text).toContain("[20]");
+    expect(done.messages[7]!.text).toContain("[20]");
     // 画面にも出ている
-    await expect(page.locator('[data-role="assistant"]')).toHaveCount(3, { timeout: 30_000 });
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(4, { timeout: 30_000 });
     await expect(page.locator('[data-role="assistant"]').last()).toContainText("[20]", { timeout: 30_000 });
-    await expect(page.getByTestId("delivered-message")).toHaveCount(2);
-  } catch (err) {
-    throw new Error(`${(err as Error).message}\n\n--- 自前の host のログ（末尾）---\n${host.log().slice(-4000)}`);
-  } finally {
-    await host.close();
-  }
+    await expect(page.getByTestId("delivered-message")).toHaveCount(3);
+    await expect(page.locator('[data-role="user"]')).toHaveCount(1);
+  });
+});
+
+test(`続けて ${CUT_LIMIT} 回切れたあと、その会話で人が送ると、そのターンが切れた会話を引き継ぐ（お知らせは片づく）`, async ({ page }) => {
+  const name = "E2E Resume Human Takes Over";
+  await withOwnHost(async (host) => {
+    const thread = await cutUntilGivenUp(page, host, name);
+    // お知らせは出ている（押さない）
+    const notices = async () =>
+      (await api<Array<{ kind: string; title?: string }>>(host, "/api/inbox")).filter((i) => i.kind === "notice" && i.title === GAVE_UP_TITLE);
+    expect(await notices()).toHaveLength(1);
+
+    const composer = page.getByPlaceholder(/に送る/);
+    await composer.fill("続けて。" + fakeTurn({ say: "人の発言を受けて続けました" }));
+    await composer.press("Enter");
+
+    await expect.poll(async () => (await thread()).lastTurn?.outcome, { timeout: 90_000 }).toBe("completed");
+    const done = await thread();
+    expect(done.lastTurn?.attempt, "人が送ったのに切れた回数を数え続けた").toBe(0);
+    expect(done.lastTurn?.cause).toBe("human");
+    expect(done.deliveries ?? [], "続きが待ち行列に残っている").toEqual([]);
+    expect(done.messages.map((m) => (m.origin ? `delivered:${m.origin.from}` : m.role))).toEqual([
+      "user",
+      "assistant",
+      "delivered:banto",
+      "assistant",
+      "delivered:banto",
+      "assistant",
+      "delivered:banto",
+      "user",
+      "assistant",
+    ]);
+    expect(done.messages[6]!.text, "引き継いだ続きの文").toContain("banto を起こし直したため");
+    expect(done.messages[8]!.text).toContain("人の発言を受けて続けました");
+    expect(await notices(), "引き継いだのにお知らせが残っている").toEqual([]);
+
+    // 画面：返事が出る。人が送ったターンが一緒に積んだ届いたもの（ここでは3つめの続き）は、送った画面の流れには
+    // 出ない（ターンの流れに「積んだ」という出来事が無い——留めていた届いたものを人のターンが積むときと同じ、前から
+    // の形）。記録から組み直すと、人の吹き出しの前に3つめの札として出る
+    await expect(page.locator('[data-role="assistant"]').last()).toContainText("人の発言を受けて続けました", { timeout: 30_000 });
+    await page.reload();
+    await expect(page.getByTestId("delivered-message"), "引き継いだ続きの札が出ない").toHaveCount(3, { timeout: 30_000 });
+    await expect(page.locator('[data-role="user"]')).toHaveCount(2);
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(4);
+    await expect(page.locator('[data-role="assistant"]').last()).toContainText("人の発言を受けて続けました");
+    // 並び：3つめの札は2つめの人の吹き出しより前
+    const order = await page
+      .locator('[data-testid="delivered-message"], [data-role="user"]')
+      .evaluateAll((els) => els.map((e) => (e.getAttribute("data-testid") === "delivered-message" ? "card" : "user")));
+    expect(order).toEqual(["user", "card", "card", "card", "user"]);
+    await page.getByRole("button", { name: "受信箱" }).click();
+    await expect(page.locator('[data-testid="inbox-notice"]').filter({ hasText: GAVE_UP_TITLE }), "受信箱にお知らせが残っている").toHaveCount(0);
+  });
 });

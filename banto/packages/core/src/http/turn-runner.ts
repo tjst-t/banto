@@ -112,7 +112,8 @@ export interface RunThreadTurnInput {
   stop?: AbortSignal;
   /**
    * **起こし直しで続けたターンなら、何回目の続きか**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで
-   * 続ける」）。`turn.started` に残し、続けて切れた回数の上限に使う。ふつうのターンは無い（0）
+   * 続ける」）。`turn.started` に残し、続けて切れた回数の上限に使う。ふつうのターンは無い（0）。**本番では渡さない**
+   * ——続きのターンの値は待ち行列の続き（`TurnContinuation.attempt`）が持つ。渡せばそれを使う（試験用）
    */
   attempt?: number;
 }
@@ -249,10 +250,12 @@ async function* runThreadTurnInner(
     };
     return;
   }
-  // **起こし直しで切れたターンの続き**（追加・2026-10-06、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。続きは
+  // **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。続きは
   // 送り手 banto の届いたものとして待ち行列の先頭に並び、続ける会話と `attempt` を持っている。切れたターンが自分の
   // 会話を書いていたならそれを続け（`resume`）、新しい会話の最初のターンが書く前に切れたなら同じ id で最初から
-  // （`fresh`、実測 M2）。その会話を人が Clear で捨てていたら使わない（Thread の今の会話で走る）
+  // （`fresh`、実測 M2）。その会話を人が Clear で捨てていたら使わない（Thread の今の会話で走る）。**人が送ったターン
+  // でも同じ**——続きが待ち行列にあれば（自動で続けるのをやめて留めていた・起き直した直後に人が先に送った）、
+  // そのターンが切れた会話を引き継ぐ
   const continuation = thread.deliveries?.find((d) => d.continues)?.continues;
   const session =
     continuation?.session &&
@@ -320,7 +323,8 @@ async function* runThreadTurnInner(
   const rewindTo = session === undefined && thread.resumePoint !== undefined ? thread.rewindTo : undefined;
   turn.id = await deps.projectThread.startTurn(input.threadId, {
     cause: hasHumanMessage ? "human" : "delivery",
-    attempt: continuation?.attempt ?? input.attempt ?? 0,
+    // 人が送ったターンは続きを引き継いでも 0 から数える（人が見て動かした——§2.5「上限」）
+    attempt: input.attempt ?? (hasHumanMessage ? 0 : (continuation?.attempt ?? 0)),
     ...(resumeFrom !== undefined ? { resumePoint: resumeFrom } : {}),
     ...(rewindTo ? { rewindTo } : {}),
     ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
@@ -339,6 +343,13 @@ async function* runThreadTurnInner(
       // 別の Thread からのメッセージは送り元も残す——画面が「どこから来たか」を出す（§4.2）
       ...(d.sender ? { sender: d.sender } : {}),
     });
+  }
+  // 続きを引き継いだ——「自動で続けるのをやめました」のお知らせは片づける（もう人の判断を待っていない）。片づけられなく
+  // てもターンは止めない（続きはもう待ち行列に無いので、留めは外れている。お知らせの「続ける」は断られる）
+  if (continuation) {
+    await deps.inbox
+      .acknowledgeResumeNotices(input.threadId, continuation.turnId)
+      .catch((err: unknown) => console.warn(`[host] ${input.threadId} の「続ける」のお知らせを片づけられませんでした:`, err));
   }
   let humanSeq: number | undefined;
   if (hasHumanMessage) {
@@ -606,6 +617,7 @@ async function* runThreadTurnInner(
       threadId: input.threadId,
       // 切れたターンの会話を続けたなら、その会話を始めたときの Thread として見る（どこで切るか・新しい会話か）
       thread: session ? { ...thread, resumePoint: resumeFrom, rewindTo: undefined, resumeAnchor: undefined } : thread,
+      ...(session && "resume" in session ? { continuedSession: session.resume } : {}),
       forkSession,
       messages,
       replies,
@@ -707,6 +719,11 @@ async function settleStoppedTurn(
     threadId: string;
     /** ターンを始めたときの Thread */
     thread: ThreadState;
+    /**
+     * 切れたターンの会話（Thread の resume-point に無いもの）を続けたなら、その会話（追加・2026-10-05）。止めても
+     * Thread の会話として残す——`system/init` の前に止めると名乗った id が無く、残さないと次のターンが新しい会話になる
+     */
+    continuedSession?: string;
     forkSession: boolean;
     messages: readonly unknown[];
     /** 書き終えた発言をもう書いたもの。止めたときは、まだ書いていない残りだけを書く */
@@ -757,7 +774,8 @@ async function settleStoppedTurn(
 
   // 取り消さない——CLI のセッションにはこのターンが載っているので、次はその続きから。**切る位置は残さない**
   // （途中で止めたやり取りのどこで切れば壊れないか分からない。次に最後まで走ったターンがまた残す）
-  if (turn.initSessionId) await deps.projectThread.updateResumePoint(turn.threadId, turn.initSessionId);
+  const kept = turn.initSessionId ?? turn.continuedSession;
+  if (kept) await deps.projectThread.updateResumePoint(turn.threadId, kept);
   // 書き終えた発言はもう記録にある——**まだ書いていない残り**（結果の来ていない画面つきの呼び出し）だけを、止めた印と
   // 一緒に書く。同じターンの発言は fold が1件にまとめる（前に書いた分の後ろに「ここで止めました」が続く）
   await deps.projectThread.appendMessage(turn.threadId, "assistant", STOPPED_NOTE, turn.replies.takePending());

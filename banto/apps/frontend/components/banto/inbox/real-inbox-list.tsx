@@ -11,7 +11,7 @@
 // host 側で生きている判断待ちは会話の画面に描き直している
 // （lib/backend/adapter.ts の restoredJudgmentMessages）。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { CheckCheck, CircleCheck, FolderGit2, PlugZap } from "lucide-react";
 import {
@@ -60,6 +60,12 @@ export function RealInboxList() {
   const [now, setNow] = useState(() => Date.now());
   /** 「続ける」を断られたお知らせと、その理由 */
   const [resumeErrors, setResumeErrors] = useState<Record<string, string>>({});
+  /**
+   * 「続ける」を押して返事を待っているお知らせ。押している間はボタンを効かなくする（二重に頼まない。host も同じ
+   * お知らせを同時には続けない）。続けて押されたときは描き直す前なので、確かめは ref で行う
+   */
+  const resumingRef = useRef(new Set<string>());
+  const [resuming, setResuming] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
@@ -107,8 +113,12 @@ export function RealInboxList() {
                 type="button"
                 data-roving-item
                 data-testid="inbox-notice-resume"
+                disabled={resuming.has(notice.id)}
                 onClick={() => {
                   // **自動で続けるのをやめたターンを続ける**（§2.5「上限」）。断られたら理由を出す（規則2）
+                  if (resumingRef.current.has(notice.id)) return;
+                  resumingRef.current.add(notice.id);
+                  setResuming(new Set(resumingRef.current));
                   void resumeRealNoticeTurn(notice.id)
                     .then(() =>
                       setResumeErrors((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => id !== notice.id))),
@@ -116,9 +126,13 @@ export function RealInboxList() {
                     .catch((err: unknown) =>
                       setResumeErrors((prev) => ({ ...prev, [notice.id]: err instanceof Error ? err.message : String(err) })),
                     )
-                    .finally(() => refreshRealInbox());
+                    .finally(() => {
+                      resumingRef.current.delete(notice.id);
+                      setResuming(new Set(resumingRef.current));
+                      void refreshRealInbox();
+                    });
                 }}
-                className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-ink-2 hover:bg-accent"
+                className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-ink-2 hover:bg-accent disabled:opacity-50"
               >
                 続ける
               </button>

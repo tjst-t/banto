@@ -292,7 +292,7 @@ export interface RealInboxNotice {
   title: string;
   detail: string;
   /**
-   * **「続ける」を押せる**（追加・2026-10-06、アーキ仕様 §2.5「上限」）。起こし直しのたびに切れるので host が自動で
+   * **「続ける」を押せる**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。起こし直しのたびに切れるので host が自動で
    * 続けるのをやめたターン。押すと `resumeRealNoticeTurn`
    */
   resume?: { threadId: string; turnId: string };

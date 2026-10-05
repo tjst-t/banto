@@ -1,5 +1,5 @@
 // M1・M2（2026-10-05）：巻き戻したあとの鎖の選び方／最初のターンの記録の有無の見分け
-// 使い方: node m-sdk.mjs <M1|M1k-tool|M1k-text|M2a|M2b|M2c|F1>
+// 使い方: node m-sdk.mjs <M1|M1k-tool|M1k-text|M2a|M2b|M2c|F1|P4>
 // モデルは偽の API（fake-api.mjs）。CLI が API に送った要求（＝モデルが見るもの）を記録する。
 import { query, getSessionMessages, getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -320,6 +320,56 @@ const cases = {
     }
     log(`\n  判定: Fork を init で切った ${n} 回中、記録ファイルがあった ${file} 回・getSessionInfo が返した ${info} 回`);
     await ctx.api.close();
+  },
+  // P4（2026-10-05、Fable のレビュー 4）：本物の CLI の記録で、続ける処理（planContinuation）が「切れたとき実行中だった
+  // 呼び出し」を正しく拾うか。banto の dist の planContinuation を、SDK の本物の読み口（sdkSessionReader）のまま呼ぶ
+  //   L：線形の会話で、ターン2を Bash の途中で SIGKILL
+  //   R1：巻き戻しの上（resumeSessionAt＝ターン1の最後）のターン2を Bash の途中で SIGKILL
+  //   R2：R1 の続きのターン3（同じ resumeSessionAt）を、CLI が何も書く前（init）で SIGKILL——鎖はターン2のまま
+  async P4() {
+    const { planContinuation } = await import("../packages/core/dist/delivery/turn-continuation.js");
+    const plan = async (ctx, label, { sid, rewindTo, sent }) => {
+      process.env.CLAUDE_CONFIG_DIR = ctx.config;
+      const thread = { id: "t", projectId: "p", ownsSession: true, resumePoint: sid, messages: [{ seq: 2, role: "user", text: sent }], deliveries: [] };
+      const turn = { threadId: "t", turnId: "x", startedSeq: 1, stackedMessages: 1, startedAt: new Date().toISOString(), cause: "human", attempt: 0, sessionId: sid, resumePoint: sid, ...(rewindTo ? { rewindTo } : {}), hop: 0, fromSeq: 1 };
+      const deps = {
+        projectThread: { getThread: () => thread, getProject: () => ({ root: ctx.work }) },
+        inbox: { listJudgmentsForThread: () => [] },
+      };
+      const out = await planContinuation(deps, turn);
+      const lines = out.text.split("\n\n").filter((l) => /実行中だった呼び出し|入れ直します/.test(l));
+      log(`  planContinuation（${label}）: ${lines.map((l) => JSON.stringify(l.slice(0, 110))).join("\n                              ")}`);
+      return out.text;
+    };
+    const atTool = (m) => m.type === "assistant" && m.message.content.some((b) => b.type === "tool_use");
+    const atInit = (m) => m.type === "system" && m.subtype === "init";
+
+    const L = await setup("P4-L");
+    const l1 = await turn(L, { label: "L ターン1（完了）", prompt: "TURN1：合言葉は pineapple-42 です。" });
+    const lSent = "TURN2 SLEEP_TOOL：sleep 120 を Bash で実行してください。";
+    await turn(L, { label: "L ターン2（Bash の途中で SIGKILL）", prompt: lSent, resume: l1.sessionId, killOn: atTool });
+    dumpJsonl(findJsonl(L.config, l1.sessionId), { log, label: "L kill 後の" });
+    await sdkChain(L, l1.sessionId, "L kill 後");
+    await plan(L, "L", { sid: l1.sessionId, sent: lSent });
+    await L.api.close();
+
+    const R = await setup("P4-R");
+    const r1 = await turn(R, { label: "R ターン1（完了）", prompt: "TURN1：合言葉は pineapple-42 です。" });
+    const at = lastAssistant(r1);
+    const sid = r1.sessionId;
+    const r2Sent = "TURN2 SLEEP_TOOL：sleep 120 を Bash で実行してください。";
+    await turn(R, { label: "R1 ターン2（resumeSessionAt＝ターン1の最後、Bash の途中で SIGKILL）", prompt: r2Sent, resume: sid, resumeSessionAt: at, killOn: atTool });
+    const afterR1 = dumpJsonl(findJsonl(R.config, sid), { log, label: "R1 kill 後の" });
+    await sdkChain(R, sid, "R1 kill 後");
+    await plan(R, "R1", { sid, rewindTo: at, sent: r2Sent });
+    const r3Sent = "TURN3：banto を起こし直したため、直前のターンが途中で切れました。続きをお願いします。";
+    await turn(R, { label: "R2 ターン3（同じ resumeSessionAt、init で即 SIGKILL）", prompt: r3Sent, resume: sid, resumeSessionAt: at, killDelayMs: 0, killOn: atInit });
+    dumpJsonl(findJsonl(R.config, sid), { log, from: afterR1.length, label: "R2 kill 後に足された" });
+    await sdkChain(R, sid, "R2 kill 後");
+    await plan(R, "R2", { sid, rewindTo: at, sent: r3Sent });
+    // 比べる：巻き戻しの印が無いと読んだら（＝この直しの前の拾い方）
+    await plan(R, "R2 を巻き戻し無しとして読んだら（直しの前の拾い方）", { sid, sent: r3Sent });
+    await R.api.close();
   },
   // init 直後の kill で、記録ファイルがあるかを何回か数える（窓の大きさの目安）
   async M2n() {

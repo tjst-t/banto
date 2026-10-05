@@ -101,7 +101,7 @@ export type ProjectThreadEvent =
         hop: number;
         /** 別の Thread の AI が送ったものの送り元（追加・2026-10-01） */
         sender?: MessageSender;
-        /** 起こし直しで切れたターンの続き（追加・2026-10-06） */
+        /** 起こし直しで切れたターンの続き（追加・2026-10-05） */
         continues?: TurnContinuation;
       };
     }
@@ -292,7 +292,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (p) next.projects.set(p.id, { ...p, status: "closed" });
         // 走っていたターンは、起き直しても続けない（人が Project ごと閉じた）
         for (const t of next.threads.values()) {
-          if (t.projectId === event.payload.id) abandonLastTurn(t, "project_closed");
+          if (t.projectId === event.payload.id) {
+            abandonLastTurn(t, "project_closed");
+            dropContinuations(t);
+          }
         }
         return next;
       }
@@ -414,6 +417,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         const t = next.threads.get(event.payload.id);
         if (t) {
           abandonLastTurn(t, "thread_closed");
+          dropContinuations(t);
           next.threads.set(t.id, { ...t, status: "closed" });
         }
         return next;
@@ -430,7 +434,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         // 返事は resume-point の更新より前の seq を持つ——更新の seq で履歴に積むと、返事から Fork を分けたとき
         // （`resumePointAsOf`）そのターンの会話が見つからない。ターンの始まりの seq で積む。ターンの外の更新
         // （この仕組みより前の記録・試験）は更新の seq のまま
-        // 起こし直しで切れたターンの続きなら、切れたターンの会話の始まりから（追加・2026-10-06）——切れた吹き出しから
+        // 起こし直しで切れたターンの続きなら、切れたターンの会話の始まりから（追加・2026-10-05）——切れた吹き出しから
         // 分けても、続きのターンが続けた会話が見つかる
         const turnFrom =
           t.lastTurn && !t.lastTurn.resumePointUpdated ? (t.lastTurn.continuesFromSeq ?? t.lastTurn.startedSeq) : raw.seq;
@@ -554,10 +558,17 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (t) {
           const { threadId: _thread, ...rest } = event.payload;
           const received = { ...rest, receivedAt: raw.ts };
-          // **切れたターンの続きは、ほかの届いたものより先に積む**（アーキ仕様 §2.5）——AI はまず切れたことを知る
-          t.deliveries = rest.continues
-            ? [received, ...(t.deliveries ?? [])]
-            : [...(t.deliveries ?? []), received];
+          const queue = t.deliveries ?? [];
+          if (rest.continues && queue.some((d) => d.deliveryId === rest.deliveryId)) {
+            // **待ち行列の続きを出し直した**（追加・2026-10-05、アーキ仕様 §2.5「上限」）——同じ届いたもの（同じ id）を
+            // 置き換える。人が「続ける」を押した（`attempt` を 0 に戻す）・続きを積む前にまた切れた（切れた回数を進める）
+            t.deliveries = queue.map((d) => (d.deliveryId === rest.deliveryId ? received : d));
+          } else if (rest.continues && t.messages.some((m) => m.origin?.deliveryId === rest.deliveryId)) {
+            // 出し直す前に、ターンがもう積んでいた（人が送ったターンが続きを引き継いだ）——二度は積まない
+          } else {
+            // **切れたターンの続きは、ほかの届いたものより先に積む**（アーキ仕様 §2.5）——AI はまず切れたことを知る
+            t.deliveries = rest.continues ? [received, ...queue] : [...queue, received];
+          }
           // 送り元への返事を承認なしで通すための記録（§4.2）。届くたびに数え直す
           if (rest.sender) t.receivedFrom = { ...(t.receivedFrom ?? {}), [rest.sender.threadId]: raw.ts };
         }
@@ -629,13 +640,14 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // Fork の最初のターンは、まだ resume-point に自分の会話を持っていない——上だけでは、終わりに来た
           // resume-point の更新が Clear を取り消していた（前からある穴）
           // 起こし直しで切れたターンの続きは、Thread の resume-point に無い会話（切れたターンが書いた会話）を続けている
-          // ——始めたときの resume-point も捨てる（追加・2026-10-06。`system/init` の前に Clear すると、まだ knownSessionId
+          // ——始めたときの resume-point も捨てる（追加・2026-10-05。`system/init` の前に Clear すると、まだ knownSessionId
           // が無い）
           for (const id of [t.lastTurn?.assignedSessionId, t.lastTurn?.knownSessionId, t.lastTurn?.resumePoint]) {
             if (id !== undefined && !t.abandonedSessions.includes(id)) t.abandonedSessions = [...t.abandonedSessions, id];
           }
           // 走っていたターンは、起き直しても続けない（人が会話を畳んだ）
           abandonLastTurn(t, "cleared");
+          dropContinuations(t);
           t.resumePoint = undefined;
           t.resumeAnchor = undefined;
           t.rewindTo = undefined;
@@ -689,6 +701,14 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
     }
   },
 };
+
+/**
+ * **待ち行列の切れたターンの続きを捨てる**（追加・2026-10-05、アーキ仕様 §2.5）。人が会話を畳んだ（Clear・閉じた）
+ * ——続きの文は畳んだ会話のことなので、あとで人が送ったターンや開き直した Thread に積まない。ほかの届いたものは残す
+ */
+function dropContinuations(t: ThreadState): void {
+  if (t.deliveries?.some((d) => d.continues)) t.deliveries = t.deliveries.filter((d) => !d.continues);
+}
 
 /** 最後のターンに「始めたより後に人がやめた」を書く（最初の1つだけ）。`t` は fold が作り直したもの */
 function abandonLastTurn(t: ThreadState, by: NonNullable<TurnRecord["abandonedBy"]>): void {
