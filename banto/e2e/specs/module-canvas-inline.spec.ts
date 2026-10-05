@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, SANDBOX_BASE_URL, FRONTEND_BASE_URL } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -112,18 +112,8 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   // **ターンが本当に終わってから押す**（人と同じ順番）。終わる前に押すと、
   // ターンが「走行中」のままなので**実機で起きる組み直しが起きない**
   // ——テストだけ通ってしまう（実測・2026-09-07）。
-  // host が会話を記録した時点＝ターンの終わり
-  await expect
-    .poll(
-      async () => {
-        const th = await (
-          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: HEADERS })
-        ).json();
-        return (th.messages ?? []).filter((m: { role: string }) => m.role === "assistant").length;
-      },
-      { timeout: 60_000 },
-    )
-    .toBeGreaterThan(0);
+  // host がターンの終わりを記録した時点（返事は書き終えるごとに記録に入るので、返事の件数では見ない——2026-10-05）
+  await waitTurnEnded(page, threadId, 1);
 
   // **会話が組み直されていないこと**を、要素そのもので見る（決定・2026-09-07、
   // ユーザー報告）。「見えている」だけでは、いったん消えて作り直されても通って
@@ -315,17 +305,7 @@ test("「フルスクリーンで開いて」と頼むと、最初から会話�
   const fsThreads = await (
     await page.request.get(`${CORE_BASE_URL}/api/projects/${fsProject.id}/threads`, { headers: HEADERS })
   ).json();
-  await expect
-    .poll(
-      async () => {
-        const th = await (
-          await page.request.get(`${CORE_BASE_URL}/api/threads/${fsThreads[0].id}`, { headers: HEADERS })
-        ).json();
-        return (th.messages ?? []).filter((m: { role: string }) => m.role === "assistant").length;
-      },
-      { timeout: 120_000 },
-    )
-    .toBeGreaterThan(0);
+  await waitTurnEnded(page, fsThreads[0].id, 1, 120_000);
 
   // ---- 閉じたら、会話には入口（カード）が残る -------------------------------
   // **勝手に開いてよいのは、tool が呼んだその一度だけ**（決定・2026-09-07、

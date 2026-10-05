@@ -45,8 +45,14 @@ export interface PendingMemoryChange {
 /** Thread再読み込み時の表示復元専用（決定・2026-09-04）。実行再開はresumePointが担う
  *  ——ここはUI表示に足る最小の形（発言者とテキストだけ）に絞る。 */
 export interface MessageEntry {
+  /** 最初の `message.appended` の seq */
   seq: number;
   role: "user" | "assistant";
+  /**
+   * **AI の発言は、1ターンぶんが1件**（改訂・2026-10-05、アーキ仕様 §2.5「書き終えた発言ごとに記録する」）。記録には
+   * 書き終えた発言ごとに1件ずつ足すが、fold が同じターンの分を1件にまとめる（段落を分けてつなぐ）——画面の吹き出しも
+   * ターンごとに1つ
+   */
   text: string;
   /** そのターンで呼ばれた**画面つきの tool**（決定・2026-09-07、ユーザー報告）。
    *  リロードすると会話は host の記録から組み直されるので、ここに残っていないと
@@ -224,6 +230,8 @@ export interface ThreadState {
    * 過去のメッセージから分けるには、その時点の resume-point が要る
    * ——`resumePoint` は「いま」の1つしか持たないので、履歴をここに残す。
    * **Clear で手放したものも残る**（Clear の前のやり取りから分けられるように）。
+   * `seq` はそのセッションの会話が載り始めたところ——ターンの中で書かれたものはターンの始まり（`turn.started`）の
+   * seq（改訂・2026-10-05。AI の発言は resume-point より前に記録される）
    */
   resumePoints: { seq: number; sessionId: string }[];
   /** この Thread が作られたイベントの seq（追加・2026-09-07）。

@@ -25,6 +25,7 @@ import {
   restoredSyncVersion,
 } from "./adapter";
 import { getThread } from "../mock/threads";
+import { withoutReplayedReply } from "./replayed-turn";
 
 /** いま画面に開いている会話（実 Thread）と、開いている面の数 */
 const openThreads = new Map<string, number>();
@@ -145,8 +146,9 @@ async function showLatestOnce(threadId: string): Promise<void> {
   const rebuild = needsRebuild.delete(threadId);
   const readThrough = readToEnd.delete(threadId);
   if (following || rebuild) {
-    // 記録から組み直し、走っていれば新しいランタイムがその流れを描き始める
-    applyThreadRecord(threadId, record);
+    // 記録から組み直し、走っていれば新しいランタイムがその流れを描き始める。**流し直すターンの AI の発言は記録から
+    // 外す**（追加・2026-10-05）——host は書き終えるごとに記録に入れるので、そのまま描くと流し直しと2回出る
+    applyThreadRecord(threadId, following ? withoutReplayedReply(record, following.startedSeq) : record);
   } else if (readThrough) {
     // 最後まで読んだ会話は描き直さない（流れた吹き出しがそのまま最新——描き直すと tool のカードが消える）
     shownThrough.set(threadId, { build: restoredSyncVersion(threadId), record });

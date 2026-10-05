@@ -18,7 +18,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, SUBAGENT_IMPORTED_KEY } from "../config.js";
-import { createProject, openApp, openProjectSettings, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, openProjectSettings, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -122,7 +122,7 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
     await approveOnePending();
     await expect(page.getByText(`FAKE_AGENT_TOKEN の sha256：${sha(PASTED)}`).first()).toBeVisible({ timeout: 20_000 });
   }).toPass({ timeout: 240_000 });
-  await expect.poll(async () => (await lastAssistant()).count, { timeout: 120_000 }).toBe(1);
+  await waitTurnEnded(page, threadId, 1, 120_000);
   expect((await lastAssistant()).text).toContain(sha(PASTED));
   await expect(page.getByText(PASTED), "会話に鍵の値が出ている").toHaveCount(0);
 

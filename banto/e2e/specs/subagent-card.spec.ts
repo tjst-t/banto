@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, confirmForkDialog, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -80,7 +80,7 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
     await allowIfAsked(page);
     await expect(detail.locator('[data-role="step"] .step-title')).toHaveText(["sleep 20"], { timeout: 5_000 });
   }).toPass({ timeout: 120_000 });
-  await expect.poll(() => assistantCount(page, threadId), { timeout: 90_000 }).toBe(1);
+  await waitTurnEnded(page, threadId, 1, 90_000);
   await expect(canvas.locator('[data-role="detail-status"]'), "終わったのに開いた画面が実行中のまま").toHaveText("完了", { timeout: 15_000 });
 
   // ---- 3. 待たない形でも同じカードが出る ---------------------------------------------------------

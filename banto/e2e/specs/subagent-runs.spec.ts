@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -72,7 +72,7 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
     }
     await expect(page.getByText(/書いた：memo\.txt/).first()).toBeVisible({ timeout: 15_000 });
   }).toPass({ timeout: 180_000 });
-  await expect.poll(async () => (await assistantTexts()).length, { timeout: 120_000 }).toBe(1);
+  await waitTurnEnded(page, threadId, 1, 120_000);
   const first = JSON.parse((await assistantTexts())[0]!) as { sessionId: string };
   await expect(canvas.locator('[data-role="run"]'), "開いたままの画面に、頼んだ仕事が出てこない").toHaveCount(1, { timeout: 30_000 });
   await expect(canvas.locator('[data-role="empty"]')).toHaveCount(0);
@@ -142,7 +142,7 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
   await expect(canvas.locator('[data-role="running-count"]')).toHaveCount(0);
   await expect(canvas.locator(".list-label")).toHaveText(["終わった仕事2"]);
   // 会話の側にも、取り消しとして返る
-  await expect.poll(async () => (await assistantTexts()).length, { timeout: 60_000 }).toBe(2);
+  await waitTurnEnded(page, threadId, 2);
   expect(JSON.parse((await assistantTexts())[1]!).stopReason).toBe("cancelled");
 
   // ---- 5. リロードしても記録が残る（広い画面で開き直す——一覧と中身が左右に並ぶ）----------------

@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR, CORE_BROWSER_URL } from "../config.js";
-import { createProject, expectProjectOpen, fakeTurn, openApp, openProjectSettings } from "../helpers.js";
+import { createProject, expectProjectOpen, fakeTurn, openApp, openProjectSettings, waitTurnEnded } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Skills";
@@ -95,8 +95,10 @@ async function sendAndWait(page: Page, threadId: string, text: string): Promise<
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(text);
   await composer.press("Enter");
-  await expect.poll(async () => (await assistants()).length, { timeout: 60_000 }).toBe(before + 1);
-  return (await assistants()).at(-1)!.text;
+  // 件数ではなくターンの終わりを待つ（改訂・2026-10-05）——AI の発言は書き終えるごとに記録に入るので、件数は最初の発言で
+  // 増え、そのあとの資源を読んだ発言はまだ入っていないことがある
+  const ended = await waitTurnEnded(page, threadId, before + 1);
+  return ended.messages.filter((m) => m.role === "assistant").at(-1)!.text;
 }
 
 const readBoth = fakeTurn({

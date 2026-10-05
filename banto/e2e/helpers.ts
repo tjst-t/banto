@@ -231,6 +231,42 @@ export async function explainMissingAiResult(page: Page, projectName: string): P
  *
  * **真実は一箇所**（規則3）——印の文字列は `fake-runner.ts` が持ち、ここは import する。
  */
+/**
+ * **そのターンが最後まで終わるまで待つ**（追加・2026-10-05）。AI の発言は書き終えるごとに記録に入る（アーキ仕様 §2.5
+ * 「書き終えた発言ごとに記録する」）ので、**記録の AI の件数はターンの最初の発言で増える**——終わりの合図にならない
+ * （そのあとの tool の結果・続きの文・resume-point はまだ）。見るのは：AI の発言（ターンごとに1件）が `replies` 件ある・
+ * 最後の発言が最後のターンのもの・そのターンが終わりを書いた（`lastTurn.outcome`）。終わったときの記録を返す
+ */
+export async function waitTurnEnded(
+  page: Page,
+  threadId: string,
+  replies: number,
+  timeout = 60_000,
+): Promise<{ messages: Array<{ seq: number; role: string; text: string }>; resumePoint?: string }> {
+  type Thread = {
+    messages: Array<{ seq: number; role: string; text: string }>;
+    resumePoint?: string;
+    lastTurn?: { startedSeq: number; outcome?: string };
+  };
+  let last: Thread | undefined;
+  await expect
+    .poll(
+      async () => {
+        last = (await (
+          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
+        ).json()) as Thread;
+        const said = last.messages.filter((m) => m.role === "assistant");
+        const reply = said.at(-1);
+        if (said.length !== replies) return `AI の発言が ${said.length} 件（待っているのは ${replies} 件）`;
+        if (!last.lastTurn || !reply || reply.seq < last.lastTurn.startedSeq) return "最後の発言が最後のターンのものではない";
+        return last.lastTurn.outcome ?? "ターンがまだ終わっていない";
+      },
+      { timeout, message: "ターンが最後まで終わらない" },
+    )
+    .toBe("completed");
+  return last!;
+}
+
 export function fakeTurn(plan: FakePlan): string {
   return `\n${FAKE_RUNNER_MARKER}${JSON.stringify(plan)}`;
 }

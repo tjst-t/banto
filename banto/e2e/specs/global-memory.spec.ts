@@ -12,7 +12,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, CORE_BROWSER_URL } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Global Memory Mid Thread";
@@ -95,13 +95,13 @@ test("走行中の Thread に Global Memory を足すと、その次のターン
       memoryDeliveredSeq: number;
       resumePoint?: string;
     };
-  const assistantCount = async () => (await thread()).messages.filter((m) => m.role === "assistant").length;
 
   // ---- 1ターン目：**セッションを走らせる**（ここで resume-point が立つ）------
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill("こんにちは。ひとことだけ返して。");
   await composer.press("Enter");
-  await expect.poll(assistantCount, { timeout: 120_000 }).toBe(1);
+  // 件数ではなくターンの終わりを待つ（改訂・2026-10-05）——resume-point は返事を記録したあとに書かれる
+  await waitTurnEnded(page, threadId, 1, 120_000);
 
   const afterFirst = await thread();
   expect(
@@ -126,7 +126,7 @@ test("走行中の Thread に Global Memory を足すと、その次のターン
   // 偽 Runner は受け取った文脈をそのまま返すので、そこに入っていれば届いている
   await composer.fill("文脈を見せて。" + fakeTurn({ sayContext: true }));
   await composer.press("Enter");
-  await expect.poll(assistantCount, { timeout: 120_000 }).toBe(2);
+  await waitTurnEnded(page, threadId, 2, 120_000);
 
   const afterSecond = await thread();
   const lastAnswer = afterSecond.messages.filter((m) => m.role === "assistant").at(-1)?.text ?? "";

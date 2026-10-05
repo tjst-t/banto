@@ -14,7 +14,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, openProjectSettings, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, openProjectSettings, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -64,7 +64,6 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
     id: string;
   }[];
   const threadId = threads[0]!.id;
-  const finishedTurns = async () => (await assistantTexts(page, threadId)).length;
   const lastResult = async (): Promise<RunResult> => {
     const texts = await assistantTexts(page, threadId);
     return JSON.parse(texts[texts.length - 1] ?? "") as RunResult;
@@ -104,7 +103,7 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
     await approveOnePending();
     await expect(page.getByText(/FAKE_AGENT_TOKEN は渡っている/).first()).toBeVisible({ timeout: 20_000 });
   }).toPass({ timeout: 240_000 });
-  await expect.poll(finishedTurns, { timeout: 120_000, message: "1ターン目が終わるまで" }).toBe(1);
+  await waitTurnEnded(page, threadId, 1, 120_000);
 
   const asked = (await page.locator('[data-role="judgment-card"]').allInnerTexts()).join("\n");
   expect(asked).toContain("subagent が vault-directory の lookupAlias");
@@ -145,7 +144,7 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
       }),
   );
   await composer.press("Enter");
-  await expect.poll(finishedTurns, { timeout: 120_000, message: "2ターン目が終わるまで" }).toBe(2);
+  await waitTurnEnded(page, threadId, 2, 120_000);
   const resumed = await lastResult();
   expect(resumed.sessionId).toBe(first.sessionId);
   expect(resumed.text).toContain("前に頼まれたこと：[env FAKE_AGENT_TOKEN]");
@@ -162,7 +161,7 @@ test("サブエージェントに頼む——資格情報は Vault から、閉�
       }),
   );
   await composer.press("Enter");
-  await expect.poll(finishedTurns, { timeout: 120_000, message: "3ターン目が終わるまで" }).toBe(3);
+  await waitTurnEnded(page, threadId, 3, 120_000);
   const escaped = await lastResult();
   expect(escaped.text).toMatch(/書けなかった：.*(EACCES|permission denied)/i);
   expect(existsSync(join(projectRoot, "made-by-subagent.txt")), "根の中に書けていない").toBe(true);

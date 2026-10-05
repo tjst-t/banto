@@ -12,7 +12,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -150,7 +150,7 @@ test("返事を待っているうちに Module が止まったら、「途中で
     }
     await expect(page.getByText(/待たずに頼みました/).first()).toBeVisible({ timeout: 10_000 });
   }).toPass({ timeout: 120_000 });
-  await expect.poll(assistantCount, { timeout: 60_000 }).toBe(1);
+  await waitTurnEnded(page, threadId, 1);
 
   // Module を止める（その Project の Module を立て直す操作）
   const res = await page.request.put(`${CORE_BASE_URL}/api/projects/${project.id}/container`, { headers, data: { nesting: true } });

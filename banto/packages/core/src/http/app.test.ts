@@ -502,6 +502,38 @@ test("走り始める前のターンに繋ぎに来たら、走り始めるま�
 
       // 鍵も取られていない——すぐ idle
       assert.match(await read(), /"type":"idle"/);
+
+      // **走り始めたが、始まりをまだ記録していない**（追加・2026-10-05）——記録との境界（始まりの seq）が決まるまで
+      // `attached` を返さない。決まったら `attached` に載せて流す
+      const release3 = threadTurns.tryAcquire(thread.id, 0)!;
+      turnEvents.begin(thread.id, "2026-10-05T00:00:00.000Z");
+      let answered = false;
+      const body3 = read().then((t) => {
+        answered = true;
+        return t;
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(answered, false, "境界が決まる前に答えた");
+      turnEvents.markStarted(thread.id, "2026-10-05T00:00:01.000Z", 42);
+      await new Promise((r) => setTimeout(r, 50));
+      turnEvents.record(thread.id, { type: "done", compactionCount: 0 });
+      turnEvents.end(thread.id);
+      release3();
+      const text3 = await body3;
+      assert.match(text3, /"type":"attached","startedAt":"2026-10-05T00:00:01.000Z","startedSeq":42/);
+      assert.match(text3, /"type":"done"/);
+
+      // 走り始めて、始まりを書く前に断った（何か流して終わる）——境界は無いまま、流したものを返す
+      const release4 = threadTurns.tryAcquire(thread.id, 0)!;
+      turnEvents.begin(thread.id, "2026-10-05T00:00:02.000Z");
+      const body4 = read();
+      await new Promise((r) => setTimeout(r, 100));
+      turnEvents.record(thread.id, { type: "error", message: "渡すものがありません" });
+      turnEvents.end(thread.id);
+      release4();
+      const text4 = await body4;
+      assert.match(text4, /"type":"attached","startedAt":"2026-10-05T00:00:02.000Z"\}/);
+      assert.match(text4, /渡すものがありません/);
     },
     { turnEvents, threadTurns },
   );

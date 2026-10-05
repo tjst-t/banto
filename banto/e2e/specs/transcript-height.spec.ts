@@ -18,7 +18,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -44,10 +44,6 @@ test("履歴を上へ辿っても、中身の高さは増えない", async ({ pa
   const threadId: string = (
     await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })).json()
   )[0].id;
-  const finishedTurns = async () => {
-    const t = await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers })).json();
-    return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
-  };
 
   // 画面より長い履歴を作る（コードブロックは行が畳まれないので高さが出る）
   const composer = page.getByPlaceholder(/に送る/);
@@ -57,7 +53,7 @@ test("履歴を上へ辿っても、中身の高さは増えない", async ({ pa
         "変数名の番号だけを 1 から 40 まで変えた行を、1行ずつ。説明は書かないで。",
     );
     await composer.press("Enter");
-    await expect.poll(finishedTurns, { timeout: 120_000, message: `${turn}ターン目` }).toBe(turn);
+    await waitTurnEnded(page, threadId, turn, 120_000);
   }
 
   // **一度リロードする**——人が踏むのは「開き直した会話を辿る」場面で、そのときの

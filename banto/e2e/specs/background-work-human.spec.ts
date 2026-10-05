@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(420_000);
@@ -46,10 +46,6 @@ test("人の答えを待っているものは、バックグラウンドと分�
   const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as { id: string; name: string }[];
   const project = projects.find((p) => p.name === PROJECT_NAME)!;
   const threadId = ((await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })).json()) as { id: string }[])[0]!.id;
-  const assistantCount = async () =>
-    ((await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers })).json()) as { messages: { role: string }[] }).messages.filter(
-      (m) => m.role === "assistant",
-    ).length;
 
   const sidebar = page.locator('[data-sidebar="sidebar"]');
   const humanLine = sidebar.getByTestId("thread-waiting-human");
@@ -75,7 +71,7 @@ test("人の答えを待っているものは、バックグラウンドと分�
     }
     await expect(page.getByText(/待たずに頼みました/)).toHaveCount(1, { timeout: 10_000 });
   }).toPass({ timeout: 120_000 });
-  await expect.poll(assistantCount, { timeout: 60_000, message: "最初のターンが終わらない" }).toBe(1);
+  await waitTurnEnded(page, threadId, 1);
 
   await expect(humanLine, "人を待つ行が出ない").toHaveText("試験の承認：A", { timeout: 30_000 });
   await expect(workLine, "裏の仕事の行が、人を待つ行に隠れた").toHaveText("fake に頼んだ仕事");
@@ -95,7 +91,7 @@ test("人の答えを待っているものは、バックグラウンドと分�
   // ---- 3. もう1つ人を待つ ----------------------------------------------------------------------------
   await composer.fill("もう1つ承認を頼んで。" + fakeTurn({ tools: [{ server: MODULE, name: "askHuman", args: { what: "B" } }] }));
   await composer.press("Enter");
-  await expect.poll(assistantCount, { timeout: 60_000 }).toBe(2);
+  await waitTurnEnded(page, threadId, 2);
   await expect(humanLine).toHaveText("あなたの答えを待っています（2 件）", { timeout: 30_000 });
   await expect(workLine).toHaveText("fake に頼んだ仕事");
   await humanLine.click();

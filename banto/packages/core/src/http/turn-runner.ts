@@ -20,6 +20,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadState, TurnOutcome } from "../project-thread/types.js";
+import type { InterruptedTurn } from "../project-thread/interrupted-turns.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -304,9 +305,10 @@ async function* runThreadTurnInner(
     ...(rewindTo ? { rewindTo } : {}),
     ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
   });
-  // 画面に出す「走り始めた時刻」も、記録に残した始まりにそろえる（2つの時刻を持たない）
-  const startedAt = deps.projectThread.getThread(input.threadId)?.lastTurn?.startedAt;
-  if (startedAt) deps.turnEvents?.setStartedAt(input.threadId, startedAt);
+  // 画面に出す「走り始めた時刻」も、記録に残した始まりにそろえる（2つの時刻を持たない）。始まりの seq は流し直しの
+  // 境界——このターンの AI の発言は、これより後ろの記録に書き終えるごとに入る（画面は流し直す分を記録から外す）
+  const started = deps.projectThread.getThread(input.threadId)?.lastTurn;
+  if (started) deps.turnEvents?.markStarted(input.threadId, started.startedAt, started.startedSeq);
   for (const d of delivered) {
     await deps.projectThread.appendMessage(input.threadId, "user", d.text, undefined, {
       from: d.from,
@@ -362,6 +364,9 @@ async function* runThreadTurnInner(
   );
 
   const messages: unknown[] = [];
+  // **AI の発言は書き終えるごとに記録へ足す**（追加・2026-10-05、アーキ仕様 §2.5）——ターンの最後にまとめて書くと、
+  // 途中で host が落ちたら AI の返事が1つも残らない
+  const replies = new ReplyRecorder(deps.projectThread, input.threadId, input.uiTools ?? []);
   let sessionId: string | undefined;
   let contextUsage: unknown;
   let compactionCount = 0;
@@ -506,6 +511,7 @@ async function* runThreadTurnInner(
           await deps.projectThread.markMemoryDelivered(input.threadId, deliveredUpToSeq);
         }
         messages.push(event.message);
+        await replies.add(event.message);
         yield { type: "message", message: event.message };
       } else if (event.type === "approval_requested") {
         const judgment = await deps.inbox.raiseJudgment({
@@ -560,6 +566,14 @@ async function* runThreadTurnInner(
       while (sideEvents.length > 0) yield sideEvents.shift()!;
     }
   } catch (err) {
+    // 書き終えた発言は記録にある。結果が来ないまま切れた画面つきの呼び出しも書いておく（黙って落とさない）。書けなければ
+    // 書き残してから、元の失敗を返す
+    const unanswered = replies.takePending();
+    if (unanswered.length > 0) {
+      await deps.projectThread
+        .appendMessage(input.threadId, "assistant", "", unanswered)
+        .catch((e: unknown) => console.warn(`[host] ${input.threadId} の画面つきの呼び出しを記録できませんでした:`, e));
+    }
     yield { type: "error", message: err instanceof Error ? err.message : String(err) };
     return;
   } finally {
@@ -572,26 +586,24 @@ async function* runThreadTurnInner(
       thread,
       forkSession,
       messages,
+      replies,
       initSessionId,
       humanSeq,
       deliveredCount: delivered.length,
       withdrawn: { text: input.prompt, images: imageNames },
       raisedJudgments,
-      uiTools: input.uiTools ?? [],
       sentPrompt: `${turnContext}\n\n${prompt}`,
       cwd: input.cwd,
     });
     return;
   }
 
+  // 返事は書き終えるごとに書いてある。結果が来ないまま終わった画面つきの呼び出しだけ、ここで書く（黙って落とさない）
+  const unanswered = replies.takePending();
+  if (unanswered.length > 0) await deps.projectThread.appendMessage(input.threadId, "assistant", "", unanswered);
   if (sessionId) {
     // このターンの最後のやり取りも残す——次のターンで人が発言を取り消したら、ここまでで切る（§6.31）
     await deps.projectThread.updateResumePoint(input.threadId, sessionId, lastChainUuid(messages));
-  }
-  const assistantText = extractAssistantText(messages);
-  const uiToolCalls = extractUiToolCalls(messages, input.uiTools ?? []);
-  if (assistantText || uiToolCalls.length > 0) {
-    await deps.projectThread.appendMessage(input.threadId, "assistant", assistantText, uiToolCalls);
   }
   await deps.projectThread.recordUsage(input.threadId, contextUsage, compactionCount, apiUsage);
   // **予約された Fork はここで立てる**——このターンの resume-point と返事を記録したあと。Fork は
@@ -615,6 +627,28 @@ const STOP_SETTLE_MS = 3_000;
 
 /** 止めたとき、返事の末尾に添える一行（記録に残る——「失敗」ではなく「人が止めた」と分かるように） */
 export const STOPPED_NOTE = "（ここで止めました）";
+
+/** 起こし直しで切れたターンの、返事の末尾に添える一行（追加・2026-10-05、アーキ仕様 §2.5） */
+export const INTERRUPTED_NOTE = "（起こし直しで切れました）";
+
+/**
+ * **起こし直しで切れたターンの記録を締める**（追加・2026-10-05、アーキ仕様 §2.5「書き終えた発言ごとに記録する」）。
+ * 起き直した host が、`listInterruptedTurns` の返したターンに1回呼ぶ。切れるまでに書き終えた発言はもう記録にあり、
+ * この一行はその後ろに続く（fold が同じ吹き出しにまとめる）。書いている途中だった文と、結果の来ていなかった画面つきの
+ * 呼び出しは、プロセスと一緒に消えている。
+ *
+ * そのターンがもう Thread の最後のターンでなければ断る——後のターンの吹き出しに付いてしまう
+ */
+export async function noteInterruptedTurn(
+  projectThread: ProjectThreadStore,
+  turn: Pick<InterruptedTurn, "threadId" | "turnId">,
+): Promise<void> {
+  const last = projectThread.getThread(turn.threadId)?.lastTurn;
+  if (last?.turnId !== turn.turnId) {
+    throw new Error(`${turn.threadId} の最後のターンは ${turn.turnId} ではありません（${last?.turnId ?? "ターン無し"}）`);
+  }
+  await projectThread.appendMessage(turn.threadId, "assistant", INTERRUPTED_NOTE);
+}
 
 /**
  * **人が止めたターンを片づける**（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）。
@@ -641,12 +675,13 @@ async function settleStoppedTurn(
     thread: ThreadState;
     forkSession: boolean;
     messages: readonly unknown[];
+    /** 書き終えた発言をもう書いたもの。止めたときは、まだ書いていない残りだけを書く */
+    replies: ReplyRecorder;
     initSessionId: string | undefined;
     humanSeq: number | undefined;
     deliveredCount: number;
     withdrawn: WithdrawnMessage;
     raisedJudgments: readonly string[];
-    uiTools: UiToolBinding[];
     /** CLI に送った発言の文（ターンに添えたもの込み）。切る位置を CLI の記録から引くときの目印 */
     sentPrompt: string;
     cwd?: string;
@@ -664,6 +699,8 @@ async function settleStoppedTurn(
   // このターンが続けたセッションを、どこで切ればよいか。新しいセッション（最初のターン・Clear のあと・
   // Fork の最初のターン）なら切る必要が無い——次のターンも同じところから始める
   const startsFresh = thread.resumePoint === undefined || turn.forkSession;
+  // **取り消すかはターン全体で見る**（AI が文も tool の呼び出しも出していない）。そのときは記録にも AI の発言は
+  // 1つも書いていない——書くのは文か画面つきの呼び出しがある発言だけで、どちらも「出した」に数える
   const candidate = turn.humanSeq !== undefined && turn.deliveredCount === 0 && !hasVisibleOutput(turn.messages);
   let rewindTo = thread.rewindTo ?? thread.resumeAnchor;
   if (candidate && !startsFresh && rewindTo === undefined) {
@@ -687,14 +724,9 @@ async function settleStoppedTurn(
   // 取り消さない——CLI のセッションにはこのターンが載っているので、次はその続きから。**切る位置は残さない**
   // （途中で止めたやり取りのどこで切れば壊れないか分からない。次に最後まで走ったターンがまた残す）
   if (turn.initSessionId) await deps.projectThread.updateResumePoint(turn.threadId, turn.initSessionId);
-  const text = extractAssistantText(turn.messages);
-  const uiToolCalls = extractUiToolCalls(turn.messages as unknown[], turn.uiTools);
-  await deps.projectThread.appendMessage(
-    turn.threadId,
-    "assistant",
-    text ? `${text}\n\n${STOPPED_NOTE}` : STOPPED_NOTE,
-    uiToolCalls,
-  );
+  // 書き終えた発言はもう記録にある——**まだ書いていない残り**（結果の来ていない画面つきの呼び出し）だけを、止めた印と
+  // 一緒に書く。同じターンの発言は fold が1件にまとめる（前に書いた分の後ろに「ここで止めました」が続く）
+  await deps.projectThread.appendMessage(turn.threadId, "assistant", STOPPED_NOTE, turn.replies.takePending());
   return { type: "stopped" };
 }
 
@@ -761,34 +793,42 @@ export function extractAssistantText(messages: readonly unknown[]): string {
 
 
 /**
- * そのターンで呼ばれた**画面つきの tool**を拾う（決定・2026-09-07、ユーザー報告）。
+ * **AI の発言を、書き終えるごとに Thread の記録へ足す**（追加・2026-10-05、アーキ仕様 §2.5「書き終えた発言ごとに
+ * 記録する」）。以前はターンの最後にまとめて1回書いていたので、途中で host が落ちると AI の返事が1つも残らなかった。
  *
- * リロードすると会話は host の記録から組み直される。記録が文章だけだと
- * **Module の画面が消える**（tool のカードごと失われる）ので、画面を出すのに
- * 要る分——どの tool を、どの引数で呼んで、何が返ったか——を残す。
- * **画面を持つ tool だけ**が対象。
+ *  - **文**は、その発言（SDK の assistant のメッセージ）が届いた時点で書く。流れている途中の文は SDK が1つの
+ *    メッセージとして渡さないので、ここには来ない
+ *  - **画面つきの tool の呼び出し**（決定・2026-09-07、ユーザー報告）は、結果（次の user のメッセージの
+ *    tool_result）が揃ってから書く——リロードしたら記録から Module の画面を出し直すので、どの tool を、どの引数で
+ *    呼んで、何が返ったかが要る。**画面を持つ tool だけ**が対象。結果の来ていないものは `takePending` で取り出す
+ *
+ * 同じターンの発言は、fold が会話の1件にまとめる（`message.appended`）
  */
-function extractUiToolCalls(messages: unknown[], uiTools: UiToolBinding[]): UiToolCallEntry[] {
-  if (uiTools.length === 0) return [];
-  const byToolName = new Map(uiTools.map((t) => [t.toolName, t]));
-  const calls = new Map<string, UiToolCallEntry>();
+class ReplyRecorder {
+  private readonly byToolName: Map<string, UiToolBinding>;
+  /** 呼んだが、まだ結果が来ていない画面つきの呼び出し（呼んだ順） */
+  private readonly pending = new Map<string, UiToolCallEntry>();
 
-  for (const raw of messages) {
-    const message = raw as {
-      type?: string;
-      message?: { content?: unknown };
-    };
+  constructor(
+    private readonly store: ProjectThreadStore,
+    private readonly threadId: string,
+    uiTools: UiToolBinding[],
+  ) {
+    this.byToolName = new Map(uiTools.map((t) => [t.toolName, t]));
+  }
+
+  async add(raw: unknown): Promise<void> {
+    const message = raw as { type?: string; message?: { content?: unknown } };
     const content = message.message?.content;
-    if (!Array.isArray(content)) continue;
-
+    if (!Array.isArray(content)) return;
     if (message.type === "assistant") {
       for (const block of content as Array<Record<string, unknown>>) {
-        if (block.type !== "tool_use") continue;
+        if (block?.type !== "tool_use") continue;
         const name = typeof block.name === "string" ? block.name : undefined;
         const id = typeof block.id === "string" ? block.id : undefined;
-        const binding = name ? byToolName.get(name) : undefined;
+        const binding = name ? this.byToolName.get(name) : undefined;
         if (!id || !name || !binding) continue;
-        calls.set(id, {
+        this.pending.set(id, {
           toolCallId: id,
           toolName: name,
           server: binding.server,
@@ -797,15 +837,26 @@ function extractUiToolCalls(messages: unknown[], uiTools: UiToolBinding[]): UiTo
           args: block.input,
         });
       }
+      const text = extractAssistantText([raw]);
+      if (text !== "") await this.store.appendMessage(this.threadId, "assistant", text);
     } else if (message.type === "user") {
+      const settled: UiToolCallEntry[] = [];
       for (const block of content as Array<Record<string, unknown>>) {
-        if (block.type !== "tool_result") continue;
+        if (block?.type !== "tool_result") continue;
         const id = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
-        const call = id ? calls.get(id) : undefined;
-        if (!call) continue;
-        call.result = block.is_error ? { error: block.content } : block.content;
+        const call = id ? this.pending.get(id) : undefined;
+        if (!id || !call) continue;
+        this.pending.delete(id);
+        settled.push({ ...call, result: block.is_error ? { error: block.content } : block.content });
       }
+      if (settled.length > 0) await this.store.appendMessage(this.threadId, "assistant", "", settled);
     }
   }
-  return [...calls.values()];
+
+  /** まだ書いていない（結果の来ていない）画面つきの呼び出しを取り出す。取り出したものはもう持たない */
+  takePending(): UiToolCallEntry[] {
+    const calls = [...this.pending.values()];
+    this.pending.clear();
+    return calls;
+  }
 }

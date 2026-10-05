@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -70,19 +70,7 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
   await expect(page.getByText("回答：拒否する")).toBeVisible({ timeout: 60_000 });
 
   // 拒否のあともターンは正しく終わる（AIがエラーを受けて返事を書く）
-  await expect
-    .poll(
-      async () => {
-        const t = await (
-          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
-        return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
-      },
-      { timeout: 120_000 },
-    )
-    .toBeGreaterThan(0);
+  await waitTurnEnded(page, threadId, 1, 120_000);
 
   // **読まれていないこと**——拒否したのに実行されていたら、必ずここに出る
   await expect(page.getByText(secret, { exact: false })).toHaveCount(0);

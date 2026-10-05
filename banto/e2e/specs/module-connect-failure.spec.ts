@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";
-import { expectProjectOpen, openApp } from "../helpers.js";
+import { expectProjectOpen, openApp, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -56,12 +56,6 @@ test("Module が繋がらなくても、会話は進み、受信箱に1件だけ
   await page.goto(`/p/${project.id}`);
   await expectProjectOpen(page, PROJECT_NAME);
 
-  const assistantCount = async () => {
-    const t = await (
-      await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: HEADERS })
-    ).json();
-    return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
-  };
   const noticeCount = async () => {
     const items = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: HEADERS })).json();
     return (items as { kind: string; projectId?: string }[]).filter(
@@ -73,7 +67,7 @@ test("Module が繋がらなくても、会話は進み、受信箱に1件だけ
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill("こんにちは。ひとことで返して。");
   await composer.press("Enter");
-  await expect.poll(assistantCount, { timeout: 120_000 }).toBe(1);
+  await waitTurnEnded(page, threadId, 1, 120_000);
 
   // **会話は進んでいる**（繋がった Module だけで動く）
   // **エラーは会話に出ていない**——起動の失敗はここには書かない
@@ -89,7 +83,7 @@ test("Module が繋がらなくても、会話は進み、受信箱に1件だけ
   // ---- 2ターン目：**増えない**ことがこの spec の核心 -----------------------
   await composer.fill("もう一度、ひとことだけ。");
   await composer.press("Enter");
-  await expect.poll(assistantCount, { timeout: 120_000 }).toBe(2);
+  await waitTurnEnded(page, threadId, 2, 120_000);
 
   const afterSecond = await noticeCount();
   expect(afterSecond, "発言のたびにお知らせが積み増している（毎ターン試し直している）").toBe(1);

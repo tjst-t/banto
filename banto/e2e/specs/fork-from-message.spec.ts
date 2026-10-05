@@ -12,25 +12,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect, type Page } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog, waitTurnEnded } from "../helpers.js";
 
 test.setTimeout(300_000);
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 
-/** ターンが終わって、host の記録に返事が入るまで */
+/**
+ * ターンが終わって、host の記録に返事が入るまで。**件数だけでは待たない**（改訂・2026-10-05）——AI の発言は書き終える
+ * ごとに記録に入り、resume-point はそのあとに書かれる
+ */
 async function waitForAssistantCount(page: Page, threadId: string, count: number) {
-  await expect
-    .poll(
-      async () => {
-        const t = await (
-          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: HEADERS })
-        ).json();
-        return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
-      },
-      { timeout: 120_000, message: `返事が ${count} 件になるまで` },
-    )
-    .toBe(count);
+  await waitTurnEnded(page, threadId, count, 120_000);
 }
 
 test("操作の帯は本文の左端にそろい、そこから枝を分けられる", async ({ page }) => {

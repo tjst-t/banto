@@ -187,6 +187,8 @@ interface LiveTurn extends LiveTurnState {
   turnId?: string;
   /** この画面が送った発言に添えた画像（取り消したら入力欄へ戻す——§6.31） */
   localImages?: WithdrawnImage[];
+  /** あとから乗った流れの、ターンの始まりの seq（host の `attached`）。記録と流し直しの境界——自分で送った流れには無い */
+  startedSeq?: number;
 }
 
 // ---- 止める（決定・2026-10-01、ユーザー要望。v4-frontend.md §6.31）-------------------------------
@@ -896,13 +898,19 @@ export function followVersion(): number {
   return followVersionCounter;
 }
 
+/** 乗ったターン。`startedSeq` はそのターンの始まりの seq——記録から組み直すとき、流し直す分を外す境界（`replayed-turn.ts`） */
+export interface FollowedTurn {
+  startedSeq?: number;
+}
+
 /**
- * **その Thread で host が走らせているターンに乗る**。乗ったら true（描き始めるのはランタイムが
+ * **その Thread で host が走らせているターンに乗る**。乗ったら、そのターン（描き始めるのはランタイムが
  * `takeFollowToStart` を見てから）。走っていなければ false。繋げなければ投げる（呼ぶ側が後でやり直す）。
  * すでにこの画面が読んでいるなら何もしない
  */
-export async function followRunningTurn(threadId: string): Promise<boolean> {
-  if (liveTurns.has(threadId)) return true;
+export async function followRunningTurn(threadId: string): Promise<false | FollowedTurn> {
+  const already = liveTurns.get(threadId);
+  if (already) return { ...(already.startedSeq !== undefined ? { startedSeq: already.startedSeq } : {}) };
   // **乗る前に、画面を持つ tool の一覧を聞いておく**（追加・2026-09-29）——自分で送るときと同じ。聞かずに乗ると、
   // そのターンで呼ばれた画面つきの tool（Publish の承認など）が会話に出ない
   const uiTools = waitUiTools(threadId);
@@ -949,11 +957,12 @@ export async function followRunningTurn(threadId: string): Promise<boolean> {
     consuming: false,
     close: stream.close,
     awaitingStart: true,
+    ...(first.startedSeq !== undefined ? { startedSeq: first.startedSeq } : {}),
   };
   self.turn = turn;
   liveTurns.set(threadId, turn);
   // 描き始めるのは、このあと記録から組み直した会話（`applyThreadRecord`）——ここでは印を付けない
-  return true;
+  return { ...(first.startedSeq !== undefined ? { startedSeq: first.startedSeq } : {}) };
 }
 
 /**

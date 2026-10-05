@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, fakeTurn, confirmForkDialog, waitTurnEnded } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -123,16 +123,7 @@ test("Canvas の橋は、親が何度再描画されても張り直さない", a
   const threadId: string = (
     await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })).json()
   )[0].id;
-  await expect
-    .poll(
-      async () =>
-        (
-          (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers })).json())
-            .messages ?? []
-        ).filter((m: { role: string }) => m.role === "assistant").length,
-      { timeout: 90_000 },
-    )
-    .toBeGreaterThan(0);
+  await waitTurnEnded(page, threadId, 1, 90_000);
 
   // 親（project-panels → ThreadPanel）を何度も描き直させる。
   // **Fork は親の履歴をそのまま持つ**ので、同じ toolCallId の画面が Fork にも出る

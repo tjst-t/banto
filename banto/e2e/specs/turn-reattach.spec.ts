@@ -98,8 +98,13 @@ async function baseThreadId(page: Page, projectName: string): Promise<string> {
 }
 
 async function recordedAssistants(page: Page, threadId: string): Promise<number> {
+  return (await recordedReplies(page, threadId)).length;
+}
+
+/** host の記録にある AI の発言（ターンごとに1件——書き終えた発言ごとに足され、1件にまとまる。2026-10-05） */
+async function recordedReplies(page: Page, threadId: string): Promise<string[]> {
   const t = await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: HEADERS })).json();
-  return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
+  return (t.messages as { role: string; text: string }[]).filter((m) => m.role === "assistant").map((m) => m.text);
 }
 
 /** 会話の本文に出ている AI の発言（1ターンぶんの流れている吹き出しも含む） */
@@ -126,7 +131,10 @@ async function expectStreamingInline(page: Page, message: string): Promise<void>
 
 /** 終わったら：本文の AI の発言はそのターンの1つだけで、最後の行まで入っている。エラーも帯も無い */
 async function expectFinishedOnce(page: Page, threadId: string, assistantsBefore: number, showTimeout = 30_000): Promise<void> {
-  await expect.poll(() => recordedAssistants(page, threadId), { timeout: 90_000, message: "ターンが終わるまで" }).toBe(assistantsBefore + 1);
+  // **ターンの終わりは host に聞く**（改訂・2026-10-05）——AI の発言は書き終えるごとに記録に入るので、記録の件数は
+  // 最初の行が出た時点でもう増えている（終わりの合図にならない）
+  await expect.poll(() => turnIsRunning(threadId), { timeout: 90_000, message: "ターンが終わるまで" }).toBe(false);
+  await expect.poll(() => recordedAssistants(page, threadId), { message: "記録の AI の発言がターンごとに1件になっていない" }).toBe(assistantsBefore + 1);
   await expect(assistantMessages(page), "AI の発言が二重に出ている／消えた").toHaveCount(assistantsBefore + 1, { timeout: showTimeout });
   await expect(assistantMessages(page).last(), "最後まで出ていない").toContainText("[60]", { timeout: showTimeout });
   await expect(page.getByText(/^エラー/), "繋ぎ直しの途中の失敗が、人にエラーとして見えている").toHaveCount(0);
@@ -154,6 +162,56 @@ test("走行中にリロードしても、いま走っているターンがそ�
   await expect(page.getByRole("button", { name: "Stop generating" }), "走っているのに走っているように見えない").toBeVisible();
 
   await expectFinishedOnce(page, threadId, 0);
+});
+
+test("走行中にリロードしても、AI の吹き出しの数は記録と一致する（記録に入った発言を流し直しで2回出さない）", async ({ page }) => {
+  // AI の発言は書き終えるごとに記録に入る（2026-10-05、アーキ仕様 §2.5）。リロードした画面は記録から組み直し、走っている
+  // ターンを最初から流し直してもらう——境界を持たないと、記録に入った行が「記録の吹き出し」と「流れている吹き出し」の
+  // 2つに出る
+  const name = "E2E Reattach Count";
+  await openApp(page);
+  await createProject(page, name, mkdtempSync(join(tmpdir(), "banto-e2e-reattach-count-")));
+  const threadId = await baseThreadId(page, name);
+  const composer = page.getByPlaceholder(/に送る/);
+
+  // 前のターン（終わったもの）が1つある会話
+  await composer.fill("「りんご」と返して");
+  await composer.press("Enter");
+  // 返事の中身が出るまで待つ（送った直後の流れ待ちの吹き出しや、まだ始まっていないターンで抜けない）
+  await expect(assistantMessages(page).first()).toContainText("りんご", { timeout: 60_000 });
+  await expect.poll(async () => (await turnIsRunning(threadId)) || (await recordedReplies(page, threadId)).join("|"), { timeout: 30_000 }).toBe("りんご");
+  await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
+
+  await composer.fill("1 から 60 までの数字を並べて出して。" + SLOW_TURN);
+  await composer.press("Enter");
+  // **走っているターンの発言が、もう記録に入っている**ところまで待つ（入る前にリロードしても試験にならない）
+  await expect
+    .poll(async () => (await recordedReplies(page, threadId))[1] ?? "", { timeout: 30_000, message: "走っているターンの発言が記録に入らない" })
+    .toContain("[3]");
+
+  await page.reload();
+  await expect(page.locator('[data-role="user"]').filter({ hasText: "1 から 60 までの数字" })).toBeVisible({ timeout: 30_000 });
+  await expectStreamingInline(page, "開き直したら、走っているターンが本文に出ない");
+  // 走っている最中：記録は「前のターンの返事」と「走っているターンの途中」の2件、画面の吹き出しも2つ
+  expect(await recordedAssistants(page, threadId), "走っているターンの発言が記録に無い（試験の前提が崩れた）").toBe(2);
+  await expect(assistantMessages(page), "記録に入った発言が二重に出ている／消えた").toHaveCount(2);
+  // 流れている吹き出しの中にも、同じ行が2回出ていない（記録の分と流し直しの分を混ぜていない）
+  const streaming = await assistantMessages(page).last().innerText();
+  expect(streaming.match(/\[1\]/g)?.length, `流れている吹き出しに同じ行が2回ある: ${streaming.slice(0, 120)}`).toBe(1);
+  expect(streaming, "流れている吹き出しに前のターンの返事が混ざった").not.toContain("りんご");
+  await expect(assistantMessages(page).first(), "前のターンの返事が消えた").toContainText("りんご");
+
+  await expectFinishedOnce(page, threadId, 1);
+  const finished = await assistantMessages(page).last().innerText();
+  expect(finished.match(/\[60\]/g)?.length, "終わった吹き出しに同じ行が2回ある").toBe(1);
+
+  // 終わってからリロードしても同じ数（記録から組み直したときも、1ターンの発言は1つの吹き出し）
+  await page.reload();
+  await expect(assistantMessages(page)).toHaveCount(2, { timeout: 30_000 });
+  expect(await recordedAssistants(page, threadId)).toBe(2);
+  const rebuilt = await assistantMessages(page).last().innerText();
+  expect(rebuilt.match(/\[1\]/g)?.length).toBe(1);
+  expect(rebuilt).toContain("[60]");
 });
 
 test("走行中に接続が切れて戻っても、エラーにならず最新の状況が出る（別アプリへ移って戻る）", async ({ page }) => {

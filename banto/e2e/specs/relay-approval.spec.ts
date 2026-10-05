@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -86,14 +86,6 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
    */
   const sinceSeq = Math.max(0, ...relayEvents().map((e) => e.seq));
   const mine = () => relayEvents().filter((e) => e.seq > sinceSeq);
-  /** ターンが**終わった**数（assistant の発言は終わってから記録される）。
-   *  走行中に次を送っても composer は受け取らないので、ここで区切る。 */
-  const finishedTurns = async () => {
-    const thread = (await (
-      await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers })
-    ).json()) as { messages: { role: string }[] };
-    return thread.messages.filter((m) => m.role === "assistant").length;
-  };
 
   // **確認を全部飛ばすモードにする**——それでも中継の確認は出る、が見たいこと
   await page.getByRole("button", { name: /permissionMode/ }).click();
@@ -168,7 +160,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   const askedCount = asked.length;
 
   // 3. 2回目は聞かれない（同じ Project 内で自動許可）
-  await expect.poll(finishedTurns, { timeout: 120_000, message: "1ターン目が終わるまで" }).toBe(1);
+  await waitTurnEnded(page, threadId, 1, 120_000);
   await composer.fill(PROMPT);
   await composer.press("Enter");
   // **待つのは「2回目の経路が通ったこと」**（規則14）。件数の合計で待つと、

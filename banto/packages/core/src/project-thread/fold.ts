@@ -421,8 +421,13 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "thread.resume_point_updated": {
         const t = next.threads.get(event.payload.id);
         if (!t) return next;
-        // **最後まで行ったかは resume-point の更新で見る**（アーキ仕様 §2.5）——ターンの終わりは resume-point →
-        // 返事 → 使用量 → Fork → `turn.ended` と別々に書かれる。resume-point を書いたあとに落ちたターンは、CLI の
+        // **このターンの会話が、どこから載っているか**（追加・2026-10-05）。AI の発言は書き終えるごとに記録するので、
+        // 返事は resume-point の更新より前の seq を持つ——更新の seq で履歴に積むと、返事から Fork を分けたとき
+        // （`resumePointAsOf`）そのターンの会話が見つからない。ターンの始まりの seq で積む。ターンの外の更新
+        // （この仕組みより前の記録・試験）は更新の seq のまま
+        const turnFrom = t.lastTurn && !t.lastTurn.resumePointUpdated ? t.lastTurn.startedSeq : raw.seq;
+        // **最後まで行ったかは resume-point の更新で見る**（アーキ仕様 §2.5）——ターンの終わりは返事 → resume-point →
+        // 使用量 → Fork → `turn.ended` と別々に書かれる。resume-point を書いたあとに落ちたターンは、CLI の
         // 側では終わっているので「切れた」にしない
         if (t.lastTurn && !t.lastTurn.resumePointUpdated) t.lastTurn = { ...t.lastTurn, resumePointUpdated: true };
         // **どの時点でどのセッションだったか**を残す（決定・2026-09-11、
@@ -432,7 +437,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         // 同じものが続くときは積まない（ターンごとに1件で足りる）
         const history = t.resumePoints ?? [];
         if (history[history.length - 1]?.sessionId !== event.payload.resumePoint) {
-          t.resumePoints = [...history, { seq: raw.seq, sessionId: event.payload.resumePoint }];
+          t.resumePoints = [...history, { seq: turnFrom, sessionId: event.payload.resumePoint }];
         }
         // **Clear で切り離したセッションは、後から来ても入れない**（決定・2026-09-06）。
         // 走行中に Clear すると、そのターンは終了時に開始時のsession idで
@@ -495,19 +500,39 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "message.appended": {
         const t = next.threads.get(event.payload.threadId);
         if (t) {
+          // 先に届いていた「どの面に出したか」をここで貼る（上の説明）
+          const uiToolCalls = Array.isArray(event.payload.uiToolCalls)
+            ? (event.payload.uiToolCalls as NonNullable<MessageEntry["uiToolCalls"]>).map((c) => {
+                const known = next.displayModeByToolCall.get(c.toolCallId);
+                return known ? { ...c, displayMode: c.displayMode ?? known } : c;
+              })
+            : undefined;
+          const last = t.messages[t.messages.length - 1];
+          if (
+            event.payload.role === "assistant" &&
+            last?.role === "assistant" &&
+            t.lastTurn !== undefined &&
+            last.seq > t.lastTurn.startedSeq
+          ) {
+            // **1ターンの AI の発言は1つにまとめる**（追加・2026-10-05、アーキ仕様 §2.5「書き終えた発言ごとに記録する」）。
+            // 記録（Event Store）には書き終えた発言ごとに1件ずつ書くが、会話の1件（＝画面の吹き出し1つ）はターンごと
+            // ——ターンの最後にまとめて書いていたときと同じ形にする。文は段落を分けてつなぐ（`extractAssistantText`
+            // と同じ）。seq は最初の発言のもの。Fork に写したものと同じオブジェクトなので、書き換えずに差し替える
+            const calls = [...(last.uiToolCalls ?? []), ...(uiToolCalls ?? [])];
+            t.messages[t.messages.length - 1] = {
+              ...last,
+              text: [last.text, event.payload.text].filter((s) => s !== "").join("\n\n"),
+              uiToolCalls: calls.length > 0 ? calls : undefined,
+            };
+            return next;
+          }
           t.messages.push({
             seq: raw.seq,
             role: event.payload.role,
             text: event.payload.text,
             ...(event.payload.origin ? { origin: event.payload.origin } : {}),
             ...(event.payload.images && event.payload.images.length > 0 ? { images: event.payload.images } : {}),
-            // 先に届いていた「どの面に出したか」をここで貼る（上の説明）
-            uiToolCalls: Array.isArray(event.payload.uiToolCalls)
-              ? (event.payload.uiToolCalls as NonNullable<MessageEntry["uiToolCalls"]>).map((c) => {
-                  const known = next.displayModeByToolCall.get(c.toolCallId);
-                  return known ? { ...c, displayMode: c.displayMode ?? known } : c;
-                })
-              : undefined,
+            uiToolCalls,
           });
           // 積んだものは、届いたものの待ち行列から外す
           const delivered = event.payload.origin?.deliveryId;

@@ -2101,14 +2101,49 @@ export function createApp(deps: AppDeps) {
           });
           snapshot = turnEvents.snapshot(threadId);
         }
+        // 境界を待つ間に流れたもの（下で続きを聞き始めるまでの分）
+        let caughtUp: TurnStreamEvent[] = [];
+        let stopCatchingUp: (() => void) | undefined;
+        if (snapshot && turnEvents && snapshot.startedSeq === undefined && snapshot.events.length === 0) {
+          // **流し直しの境界が決まるまで待つ**（追加・2026-10-05、アーキ仕様 §2.5「書き終えた発言ごとに記録する」）。
+          // AI の発言は書き終えるごとに記録に入る——画面は流し直すターンの分を記録から外すので、そのターンがどこから
+          // 始まったか（`turn.started` の seq）を `attached` で渡す。始まりを書く前（Skill を決めている等）に繋がれたら、
+          // 書くか、書かずに何か流すか、終わるまで待つ。**知らせを受けたその場で**途中経過を取り、続きを溜め始める
+          // ——こちらが動き出すまでにターンが終わっても、終わりまで流せる（取りこぼして idle と答えない）
+          await new Promise<void>((resolve) => {
+            const stop = turnEvents.whenStarted(threadId, () => {
+              snapshot = turnEvents.snapshot(threadId);
+              if (snapshot) {
+                const pending: TurnStreamEvent[] = [];
+                caughtUp = pending;
+                stopCatchingUp = turnEvents.subscribeStream(threadId, (event) => pending.push(event));
+              }
+              resolve();
+            });
+            req.on("close", () => {
+              stop();
+              resolve();
+            });
+          });
+        }
         if (!snapshot) {
+          stopCatchingUp?.();
           stopKeepAlive();
           res.write(`data: ${JSON.stringify({ type: "idle" })}\n\n`);
           res.end();
           return;
         }
-        res.write(`data: ${JSON.stringify({ type: "attached", startedAt: snapshot.startedAt })}\n\n`);
-        for (const event of snapshot.events) res.write(`data: ${JSON.stringify(event)}\n\n`);
+        // `startedSeq`：このターンの AI の発言は、これより後ろの記録にも入っている（流し直す分と同じもの）
+        res.write(
+          `data: ${JSON.stringify({
+            type: "attached",
+            startedAt: snapshot.startedAt,
+            ...(snapshot.startedSeq !== undefined ? { startedSeq: snapshot.startedSeq } : {}),
+          })}\n\n`,
+        );
+        for (const event of [...snapshot.events, ...caughtUp]) res.write(`data: ${JSON.stringify(event)}\n\n`);
+        stopCatchingUp?.();
+        const endedWhileCatchingUp = caughtUp.some((e) => e.type === "done" || e.type === "error" || e.type === "stopped");
         await new Promise<void>((resolve) => {
           const unsubscribe = deps.turnEvents!.subscribeStream(threadId, (event) => {
             res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -2127,7 +2162,7 @@ export function createApp(deps: AppDeps) {
           // 画面が先に切れることもある（別の画面へ移った・閉じた）
           req.on("close", finish);
           // 覚えている途中経過が既に終わっていた場合（競走）——取りこぼさない
-          if (!deps.turnEvents!.isRunning(threadId)) finish();
+          if (endedWhileCatchingUp || !deps.turnEvents!.isRunning(threadId)) finish();
         });
         return;
       }

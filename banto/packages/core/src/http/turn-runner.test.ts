@@ -559,17 +559,13 @@ test("system/init より前に止まっても、host が先に決めた id で�
 test("resume-point を書いたあとに host が止まったターンは、切れたことにしない", async () => {
   await withThread(async ({ deps, threadId, store, dir }) => {
     const { fake } = recordingRunner();
-    // resume-point の次（返事の記録）で止まる
-    const original = store.appendMessage.bind(store);
+    // resume-point の次（使用量の記録）で止まる。返事は書き終えるごとに、resume-point より前に書いてある（2026-10-05）
     let reached!: () => void;
     const stuck = new Promise<void>((resolve) => (reached = resolve));
-    store.appendMessage = ((...args: Parameters<typeof original>) => {
-      if (args[1] === "assistant") {
-        reached();
-        return new Promise<number>(() => {});
-      }
-      return original(...args);
-    }) as typeof store.appendMessage;
+    store.recordUsage = (() => {
+      reached();
+      return new Promise<void>(() => {});
+    }) as typeof store.recordUsage;
     void collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] }));
     await stuck;
 
@@ -725,20 +721,20 @@ test("画面に出す走り始めた時刻は、記録に残した turn.started 
     const gen = runThreadTurn({ ...deps, turnEvents, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] });
     await gen.next();
     assert.equal(turnEvents.snapshot(threadId)?.startedAt, store.getThread(threadId)!.lastTurn!.startedAt);
+    // 流し直しと記録の境界（始まりの seq）も同じ記録から（追加・2026-10-05）
+    assert.equal(turnEvents.snapshot(threadId)?.startedSeq, store.getThread(threadId)!.lastTurn!.startedSeq);
   });
 });
 
 test("例外で抜けたターン・呼び出し側が途中で読むのをやめたターンも failed で終わりを残す", async () => {
   await withThread(async ({ deps, threadId, store }) => {
     const { fake } = recordingRunner();
-    const original = store.appendMessage.bind(store);
-    store.appendMessage = ((...args: Parameters<typeof original>) => {
-      if (args[1] === "assistant") return Promise.reject(new Error("記録に書けない"));
-      return original(...args);
-    }) as typeof store.appendMessage;
+    // Runner が返したあとの書き込み（使用量の記録）で投げる——ターンの外へ例外のまま抜ける
+    const original = store.recordUsage.bind(store);
+    store.recordUsage = (() => Promise.reject(new Error("記録に書けない"))) as typeof store.recordUsage;
     await assert.rejects(collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "こんにちは", modules: [] })), /記録に書けない/);
     assert.equal(store.getThread(threadId)!.lastTurn?.outcome, "failed");
-    store.appendMessage = original;
+    store.recordUsage = original;
 
     const { fake: hanging } = recordingRunner({ hangAfterInit: true });
     const gen = runThreadTurn({ ...deps, runTurn: hanging }, { threadId, prompt: "途中まで", modules: [] });

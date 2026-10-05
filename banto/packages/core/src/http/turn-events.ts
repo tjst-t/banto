@@ -11,7 +11,9 @@
 // **最初から流し直して、続きもそのまま**渡せる。
 //
 // **記録の真実は Event Store のまま**（規則3）。ここが持つのは「いま走っている
-// ターンの、まだ記録に落ちていない途中経過」だけで、終われば捨てる。
+// ターンの途中経過」だけで、終われば捨てる。AI の発言は書き終えるごとに記録にも入る
+// （改訂・2026-10-05、アーキ仕様 §2.5）ので、流し直す分と記録は重なる——境界は
+// そのターンの始まりの seq（`startedSeq`）で、画面がそれより後ろの AI の記録を外す。
 
 import type { TurnStreamEvent } from "./turn-runner.js";
 
@@ -19,6 +21,11 @@ interface LiveTurn {
   /** そのターンがこれまでに出したイベント（再接続したときに流し直す）。 */
   events: TurnStreamEvent[];
   startedAt: string;
+  /**
+   * そのターンの `turn.started` の seq（追加・2026-10-05）。**流し直しと記録の境界**——AI の発言は書き終えるごとに
+   * これより後ろの記録に入るので、流し直す画面は記録からその分を外す（2回出さない）。始まりを書くまでは無い
+   */
+  startedSeq?: number;
 }
 
 /**
@@ -35,6 +42,7 @@ export class TurnEventBus {
   private readonly streamListeners = new Map<string, Set<(event: TurnStreamEvent) => void>>();
   private readonly live = new Map<string, LiveTurn>();
   private readonly beginListeners = new Map<string, Set<() => void>>();
+  private readonly startListeners = new Map<string, Set<() => void>>();
 
   private static add(
     map: Map<string, Set<(event: TurnStreamEvent) => void>>,
@@ -79,12 +87,45 @@ export class TurnEventBus {
   }
 
   /**
-   * **走り始めた時刻を、記録に残した始まり（`turn.started` の ts）にそろえる**（追加・2026-10-05）。`begin` は
-   * 始まりを書くより前に呼ぶ（それより前に断ったターンも流し直せるように）ので、時刻はあとから直す
+   * **ターンの始まりを記録した**（追加・2026-10-05）。走り始めた時刻を記録に残した始まり（`turn.started` の ts）に
+   * そろえ、始まりの seq（流し直しと記録の境界）を覚える。`begin` は始まりを書くより前に呼ぶ（それより前に断った
+   * ターンも流し直せるように）ので、あとから足す
    */
-  setStartedAt(threadId: string, startedAt: string): void {
+  markStarted(threadId: string, startedAt: string, startedSeq: number): void {
     const turn = this.live.get(threadId);
-    if (turn) turn.startedAt = startedAt;
+    if (!turn) return;
+    turn.startedAt = startedAt;
+    turn.startedSeq = startedSeq;
+    this.notifyStarted(threadId);
+  }
+
+  /**
+   * **流し直しの境界が決まったら、一度だけ知らせる**（追加・2026-10-05）。始まりを記録した・始まりを書く前に何か
+   * 流した（断った・止めた——このターンは記録に AI の発言を書かない）・終わった、のどれか。返り値を呼ぶと聞くのをやめる
+   */
+  whenStarted(threadId: string, listener: () => void): () => void {
+    const turn = this.live.get(threadId);
+    if (!turn || turn.startedSeq !== undefined || turn.events.length > 0) {
+      listener();
+      return () => undefined;
+    }
+    let set = this.startListeners.get(threadId);
+    if (!set) {
+      set = new Set();
+      this.startListeners.set(threadId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = this.startListeners.get(threadId);
+      current?.delete(listener);
+      if (current?.size === 0) this.startListeners.delete(threadId);
+    };
+  }
+
+  private notifyStarted(threadId: string): void {
+    const waiting = this.startListeners.get(threadId);
+    this.startListeners.delete(threadId);
+    for (const listener of waiting ?? []) listener();
   }
 
   /**
@@ -110,18 +151,24 @@ export class TurnEventBus {
   record(threadId: string, event: TurnStreamEvent): void {
     this.live.get(threadId)?.events.push(event);
     for (const listener of this.streamListeners.get(threadId) ?? []) listener(event);
+    this.notifyStarted(threadId);
   }
 
   /** ターンが終わった。**途中経過は捨てる**——ここから先の真実は Event Store。 */
   end(threadId: string): void {
     this.live.delete(threadId);
+    this.notifyStarted(threadId);
   }
 
   /** 走行中なら、それまでに出たイベント。走っていなければ undefined。 */
-  snapshot(threadId: string): { events: TurnStreamEvent[]; startedAt: string } | undefined {
+  snapshot(threadId: string): { events: TurnStreamEvent[]; startedAt: string; startedSeq?: number } | undefined {
     const turn = this.live.get(threadId);
     if (!turn) return undefined;
-    return { events: [...turn.events], startedAt: turn.startedAt };
+    return {
+      events: [...turn.events],
+      startedAt: turn.startedAt,
+      ...(turn.startedSeq !== undefined ? { startedSeq: turn.startedSeq } : {}),
+    };
   }
 
   isRunning(threadId: string): boolean {

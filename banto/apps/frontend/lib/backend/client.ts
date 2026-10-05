@@ -226,6 +226,8 @@ export interface RealThread {
   /** セッションごとに効かせた Skill（決定・2026-09-23、アーキ仕様 §5.7）。
    *  最後の1件がいまのセッションのもの。この仕組みより前の会話には無い。 */
   skillSets?: { seq: number; set: RealSessionSkillSet }[];
+  /** 最後のターンの始まり（追加・2026-10-05、host の `lastTurn` の一部）。流し直すターンとの境界を引くのに使う */
+  lastTurn?: { startedSeq: number };
   createdAt: string;
 }
 
@@ -789,7 +791,15 @@ export async function stopRealTurn(threadId: string, turnId?: string): Promise<R
 }
 
 /** 繋ぎ直しの流れだけが最初に返すもの：走っていない（`idle`）／走っている（`attached`） */
-export type RealFollowEvent = RealTurnEvent | { type: "idle" } | { type: "attached"; startedAt: string };
+export type RealFollowEvent =
+  | RealTurnEvent
+  | { type: "idle" }
+  /**
+   * `startedSeq`：そのターンの始まり（`turn.started`）の seq（追加・2026-10-05）。AI の発言は書き終えるごとに記録にも
+   * 入るので、流し直す分と記録が重なる——これより後ろのそのターンの AI の発言を記録から外して組み直す
+   * （`replayed-turn.ts`）。始まりを記録する前に終わったターンには無い
+   */
+  | { type: "attached"; startedAt: string; startedSeq?: number };
 
 /**
  * **黙って止まった接続を見切るまでの時間**（決定・2026-09-26）。host はどの流れにも15秒ごとに空行を送る
