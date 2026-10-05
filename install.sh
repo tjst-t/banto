@@ -823,7 +823,9 @@ async function cf(method, path, body) {
   }
   return json;
 }
-const records = async (zone, name) => (await cf("GET", `/zones/${zone.id}/dns_records?type=A&name=${encodeURIComponent(name)}`)).result;
+// 名前が完全に同じ A レコードだけ（API の絞り込みに加えて、ここでも名前と種類を確かめる——ほかのレコードに触らない）
+const records = async (zone, name) =>
+  (await cf("GET", `/zones/${zone.id}/dns_records?type=A&name=${encodeURIComponent(name)}`)).result.filter((r) => r.type === "A" && r.name === name);
 try {
   const zones = [];
   for (let page = 1; ; page++) {
