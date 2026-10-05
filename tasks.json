@@ -4920,7 +4920,7 @@
       "number": 204,
       "kind": "task",
       "title": "AI の発言を書き終えるごとに記録する",
-      "status": "ready",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-turn-events"
@@ -4930,12 +4930,12 @@
       "labels": [],
       "body": "今はターンの最後に1回。画面つき tool は結果が揃った単位、人が止めたときは残りだけ「ここで止めました」、走っているターンの流し直しに記録済みの境界、吹き出しの単位を決める。切れたターンの最後に「（起こし直しで切れました）」。",
       "doneWhen": "走っている最中にリロードしても吹き出しの数が記録と一致する（実ブラウザの E2E で件数を見る）。止めたターンの記録が二重にならない。turn-stop の試験が通る",
-      "resolution": null,
+      "resolution": "cba5a765〜dc9b0406、main・release 入り、568e71c1 で反映",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T04:15:28.591Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T10:58:04.171Z",
+      "closedAt": "2026-10-05T10:58:04.171Z",
       "extra": {}
     },
     {
