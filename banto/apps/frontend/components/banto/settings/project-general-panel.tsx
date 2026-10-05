@@ -32,6 +32,7 @@ import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-
 import { PathPicker } from "@/components/banto/settings/path-picker";
 import { ProjectContainerSection } from "@/components/banto/settings/project-container-section";
 import { ProjectMessageSendersSection } from "@/components/banto/settings/project-message-senders-section";
+import { ProjectAutoApproveSection } from "@/components/banto/settings/project-auto-approve-section";
 
 export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
@@ -143,6 +144,8 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
       <ProjectContainerSection projectId={projectId} />
 
       <ProjectMessageSendersSection projectId={projectId} />
+
+      <ProjectAutoApproveSection projectId={projectId} />
 
       {/* **危険な操作は、いちばん下**（決定・2026-09-11、ユーザー要望） */}
       <h2 className="mt-8 mb-2 text-sm font-semibold text-foreground">危険な操作</h2>

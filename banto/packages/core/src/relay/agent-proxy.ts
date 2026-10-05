@@ -28,6 +28,7 @@ import {
   PENDING_REPLY_META_KEY,
   REPLY_TO_META_KEY,
   THREAD_META_KEY,
+  AUTO_APPROVE_META_KEY,
   deliversLater,
   fillCardText,
   stripBantoMeta,
@@ -110,6 +111,11 @@ export interface AgentProxyOptions {
    * （`dev.banto/deliversLater`）を呼ぶときに、このターンの Thread に結びついた札を出して渡す。
    * 結果が「あとで届ける」（`dev.banto/pendingReply`）なら、札を返事待ちにする
    */
+  /**
+   * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。オンなら Module への
+   * 呼び出しに `dev.banto/autoApprove` を刻む（呼び出しのたびに引く）。渡されなければ刻まない
+   */
+  autoApproveFor?(projectId: string): boolean;
   replies?: {
     issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; work?: BackgroundWork }): string;
     /** `waitingOn`：Module が「人の答えを待っている」と名乗ったら（`dev.banto/waitingOn`） */
@@ -177,6 +183,15 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     return opts.projectId && opts.threadId
       ? { [THREAD_META_KEY]: { projectId: opts.projectId, threadId: opts.threadId } }
       : {};
+  }
+
+  /**
+   * **人に聞かずに許可してよいか**（追加・2026-10-05、`AUTO_APPROVE_META_KEY`）。その Project のスイッチがオンのときだけ刻む
+   * ——Module はスイッチを知らないので、人を待つもの（Publish の公開の承認）はこれを見る。**AI の引数からは渡らない**
+   * （ここで組む `_meta` は host が作り直したもので、Runner が添えた `_meta` は Module に流さない）
+   */
+  function autoApproveStamp(): Record<string, unknown> {
+    return opts.projectId && opts.autoApproveFor?.(opts.projectId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
   }
 
   /** 台帳が振った呼び出しの印（`CALL_ID_META_KEY`）。台帳が無ければ渡さない */
@@ -291,6 +306,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
           _meta: {
             ...callerStamp(),
             ...threadStamp(),
+            ...autoApproveStamp(),
             ...callIdStamp(endCall?.id),
             ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}),
           },

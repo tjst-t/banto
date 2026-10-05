@@ -33,6 +33,7 @@ import {
   AUDIT_ARGS_META_KEY,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
+  autoApproveOf,
   callIdOf,
   callerOf,
   replyToOf,
@@ -213,6 +214,24 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     const { routes } = await r.callJson<{ routes: RouteStatus[] }>(implementation, "listRoutes", { projectId });
     const already = routes.find((r) => r.service === name && r.port === port);
     if (already) throw new PublishDirectoryError(`${name}:${port} はもう公開しています（${already.url}）`);
+    // **承認をすべて自動で許可する**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4）。窓口は Project の設定を知らない
+    // ——host が刻んだ印だけを見る。立っていれば承認画面の既定の値（設定は `{}`＝出し方の既定）でそのまま公開する。
+    // 実装も同じ印を確かめてから道を張る（人の刻印の代わり）。結果はその場で返す（札で後から届けるものは無い）
+    if (autoApproveOf(meta)) {
+      const out = await r.callJson<{ url: string; reach: Reach }>(implementation, "publishRoute", { projectId, service: name, port, config: {} });
+      const done = await requests.addPublished({ projectId, service: name, port, implementation, plannedUrl: out.url, reach: out.reach }, out.url);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `公開しました：${name}:${port} を「${info.title}」で ${out.url} に（届く範囲：${REACH_LABEL[out.reach]}）。` +
+              "この Project は「承認をすべて自動で許可する」がオンなので、人に聞かずに既定の設定で公開しました。" +
+              `\n${REQUEST_ID_LABEL}${done.id}`,
+          },
+        ],
+      };
+    }
     const plan = await r.callJson<{ url: string; reach: Reach }>(implementation, "planPublish", { projectId, service: name, port, config: {} });
 
     const replyTo = replyToOf(meta);

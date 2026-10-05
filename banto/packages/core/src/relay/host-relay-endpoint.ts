@@ -24,6 +24,7 @@ import {
   waitingOnOf,
   type WaitingOn,
   CALL_ID_META_KEY,
+  AUTO_APPROVE_META_KEY,
   CALLER_META_KEY,
   ON_BEHALF_OF_META_KEY,
   callIdOf,
@@ -280,6 +281,11 @@ export interface HostRelayServerOptions {
   };
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
+  /**
+   * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。オンなら、AI のターンから始まった
+   * その Project のための中継の呼び出しに `dev.banto/autoApprove` を刻む。渡されなければ刻まない
+   */
+  autoApproveFor?(projectId: string): boolean;
   /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
   approvalProgressIntervalMs?: number;
   /**
@@ -850,6 +856,12 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
             ? { [CALLER_META_KEY]: { admin: true } }
             : {};
     if (targetCall.id) callerMeta[CALL_ID_META_KEY] = targetCall.id;
+    // **人に聞かずに許可してよいか**（追加・2026-10-05、v4-frontend.md §6.4「承認をすべて自動で許可する」）。AI のターンから
+    // 始まった、スイッチがオンの Project のための呼び出しにだけ刻む——Publish の窓口が中で実装の `publishRoute` を呼ぶとき、
+    // 実装は人の刻印の代わりにこれを見る。**呼び出し元の申告は使わない**（Project と出所は host の台帳から引いている）
+    if (!humanCanvas && origin === "turn" && callerProject && opts.autoApproveFor?.(callerProject) === true) {
+      callerMeta[AUTO_APPROVE_META_KEY] = true;
+    }
 
     // コンテナの中の呼び出し元には、窓口を立てる場所も刻む（呼び出し元の申告は使わない）
     if (identity.socketDir) callerMeta[SOCKET_DIR_META_KEY] = identity.socketDir;

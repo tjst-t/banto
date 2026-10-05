@@ -49,6 +49,7 @@ import { RelayGrantStore } from "./relay/grants.js";
 import { ModuleCallTracker } from "./relay/module-calls.js";
 import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
+import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY } from "./http/app.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
@@ -386,8 +387,15 @@ async function main(): Promise<void> {
   // Module からの問い（Elicitation）を、正しいターンへ届けるための宛先表
   // ——1本の接続にハンドラを付け替えると、並行ターンで別の会話に出る（決定・2026-09-10）
   const elicitations = new ElicitationRouter(moduleCalls);
+  /**
+   * **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。聞くたび・刻むたびに設定を引く
+   * ——保存した時点で、走っているターンにも次の承認から効く
+   */
+  const autoApproveAll = (projectId: string) => isAutoApproveAll(runtimeConfig, projectId);
   const agentRelayEndpoint = new AgentRelayEndpoint(bootstrap.authToken, {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
+    // Module は設定を知らない——人を待つもの（Publish）のために、呼び出しに刻む
+    autoApproveFor: autoApproveAll,
     moduleCalls,
     elicitations,
     // **返信用の札**（決定・2026-09-25）。ホップ数は、札を出したターンのもの（人が送ったターン＝0）
@@ -1623,6 +1631,7 @@ async function main(): Promise<void> {
 
   const relayEndpoint = new HostRelayEndpoint({
     registry,
+    autoApproveFor: autoApproveAll,
     // **札で、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2）
     deliverToThread: async (caller, input) => {
       // 起こし直しのあと覚え直した札は、最後の届けにしか使えない（`final` を渡して確かめる）
@@ -1721,6 +1730,7 @@ async function main(): Promise<void> {
       onJudgmentSettled: (threadId, settled) => {
         turnEvents.publish(threadId, { type: "answered", judgmentId: settled.id, answer: settled.answer });
       },
+      autoApproveAll,
     }),
     onAudit: async ({ allowed, reason, ok, ts, ...call }) => {
       // **記録は Event Store が本体**（アーキ仕様 §2.5）。console はおまけ。

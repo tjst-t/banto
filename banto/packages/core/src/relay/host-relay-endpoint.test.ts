@@ -1089,7 +1089,7 @@ async function recordingClient(
 }
 
 /** 窓口（banto 全体）・その Project の Service・別の Project の Service・公開の実装（banto 全体）を繋いだ中継 */
-async function publishWorld() {
+async function publishWorld(opts: { autoApprove?: Set<string> } = {}) {
   const registry = new RelayRegistry();
   const moduleCalls = new ModuleCallTracker();
   const seen: Array<{ tool: string; meta: Record<string, unknown>; origin?: string }> = [];
@@ -1121,7 +1121,11 @@ async function publishWorld() {
       return req.name === "publishRoute" ? { allowed: false, reason: "試験では聞いたら断る" } : { allowed: true, reason: "試験では通す" };
     },
   };
-  const server = await startTestServer(registry, { moduleCalls, gate });
+  const server = await startTestServer(registry, {
+    moduleCalls,
+    gate,
+    ...(opts.autoApprove ? { autoApproveFor: (projectId: string) => opts.autoApprove!.has(projectId) } : {}),
+  });
   const bundled = await relayClient(server.url, registry.issueToken({ moduleName: "publish-directory", meta: bundledMeta(windowRaw, "publish-directory") }));
   const thirdParty = await relayClient(server.url, registry.issueToken({ moduleName: "evil-window", meta: parseModuleMeta(windowRaw, "evil-window") }));
   const via = (client: Client) => ({
@@ -1182,6 +1186,34 @@ test("Project の画面から押した呼び出しの中では、その Project 
     await w.window.call("publish-caddy", "publishRoute", instanceCanvas.id);
     assert.deepEqual(w.last().meta["dev.banto/caller"], { admin: true });
     instanceCanvas.end();
+  } finally {
+    await w.close();
+  }
+});
+
+// **承認をすべて自動で許可する**（追加・2026-10-05、v4-frontend.md §6.4）。AI のターンから始まった、スイッチがオンの
+// Project のための中継にだけ `dev.banto/autoApprove` を刻む——publish-caddy は人の刻印の代わりにこれを見る。
+// 人の画面からの呼び出し・スイッチがオフの Project には刻まない
+test("AI のターンから始まった、スイッチがオンの Project のための中継にだけ、自動で許可の印を刻む", async () => {
+  const autoApprove = new Set(["pA"]);
+  const w = await publishWorld({ autoApprove });
+  try {
+    const turn = w.moduleCalls.beginCall("publish-directory", "t1", "turn", "pA");
+    await w.window.call("service-pA", "listServices", turn.id);
+    assert.equal(w.last().meta["dev.banto/autoApprove"], true, "オンの Project のターンなのに刻んでいない");
+    assert.deepEqual(w.last().meta["dev.banto/caller"], { project: "pA" });
+    turn.end();
+
+    const canvas = w.moduleCalls.beginCall("publish-directory", "t1", "canvas", "pA");
+    await w.window.call("service-pA", "listServices", canvas.id);
+    assert.equal(w.last().meta["dev.banto/autoApprove"], undefined, "人の画面からの呼び出しに刻んだ");
+    canvas.end();
+
+    autoApprove.delete("pA");
+    const off = w.moduleCalls.beginCall("publish-directory", "t1", "turn", "pA");
+    await w.window.call("service-pA", "listServices", off.id);
+    assert.equal(w.last().meta["dev.banto/autoApprove"], undefined, "スイッチを切ったのに刻んだ（設定は呼び出しのたびに引く）");
+    off.end();
   } finally {
     await w.close();
   }

@@ -57,6 +57,7 @@ import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
+import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
@@ -985,6 +986,9 @@ export function createApp(deps: AppDeps) {
   const imageStore = deps.dataDir ? new ImageStore(join(deps.dataDir, "images")) : undefined;
   // 人がターンを止める口（決定・2026-10-01、v4-frontend.md §6.31）。走っている・順番を待っているターンを覚える
   const turnStops = new TurnStops();
+  // **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。承認のたびに引く——保存した時点で、
+  // 走っているターンにも次の承認から効く
+  const autoApproveAll = (projectId: string) => isAutoApproveAll(deps.runtimeConfig, projectId);
   // **Thread 間・Project 間のメッセージ**（決定・2026-10-01、アーキ仕様 §4.2）。AI の `send_message` から呼ばれる
   const messaging = new ThreadMessaging({
     projectThread: deps.projectThread,
@@ -1002,6 +1006,9 @@ export function createApp(deps: AppDeps) {
         message: judgment.message,
         choices: judgment.choices,
       }),
+    publishAnswered: (threadId, answered) =>
+      deps.turnEvents?.publish(threadId, { type: "answered", judgmentId: answered.id, answer: answered.answer }),
+    autoApproveAll,
   });
 
   /**
@@ -1149,7 +1156,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, messaging }, {
+    yield* runThreadTurn({ ...deps, settleForks, messaging, autoApproveAll }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -2706,6 +2713,24 @@ export function createApp(deps: AppDeps) {
         if (projectId) await deps.runtimeConfig.setProjectOverride(projectId, DEFAULT_PERMISSION_MODE_KEY, body.mode);
         else await deps.runtimeConfig.setInstanceDefault(DEFAULT_PERMISSION_MODE_KEY, body.mode);
         json(res, 200, { ok: true });
+        return;
+      }
+
+      // **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。Project にだけ置ける。
+      // オフは上書きを外す（値を持たない＝オフ。真実を1つにする）
+      const autoApproveMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/auto-approve$/);
+      if (autoApproveMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = autoApproveMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { enabled?: unknown };
+          // **壊れた値は入れない**（規則2——黙って既定へ落とさない）
+          if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+          if (body.enabled) await deps.runtimeConfig.setProjectOverride(projectId, AUTO_APPROVE_ALL_KEY, true);
+          else await deps.runtimeConfig.unsetProjectOverride(projectId, AUTO_APPROVE_ALL_KEY);
+        }
+        json(res, 200, { enabled: autoApproveAll(projectId) });
         return;
       }
 

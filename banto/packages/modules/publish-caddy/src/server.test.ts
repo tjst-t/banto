@@ -133,6 +133,21 @@ test("公開は人の刻印があるときだけ——AI のターン（Project 
   });
 });
 
+// **承認をすべて自動で許可する**（追加・2026-10-05、v4-frontend.md §6.4）。host が Project の刻印と一緒に刻んだときだけ、
+// その Project の道を張る。印だけ（Project の刻印なし）・別の Project は断る
+test("自動で許可の印（dev.banto/autoApprove）が Project の刻印と一緒にあれば、その Project の公開だけ通す", async () => {
+  await withCaddy(async ({ call, caddy }) => {
+    const auto = (project: string) => ({ ...forProject(project), "dev.banto/autoApprove": true });
+    assert.ok((await call("publishRoute", publishArgs(), { "dev.banto/autoApprove": true })).isError, "印だけでは通さない");
+    assert.ok((await call("publishRoute", publishArgs({ projectId: P2 }), auto(P1))).isError, "別の Project は触れない");
+    assert.ok((await call("publishRoute", publishArgs(), { ...forProject(P1), "dev.banto/autoApprove": "yes" })).isError, "形が違えば立っていない");
+    assert.deepEqual(caddy.writes(), []);
+    const r = await call("publishRoute", { service: "web", port: 3000, config: {} }, auto(P1));
+    assert.equal(r.isError, false, r.text);
+    assert.equal(JSON.parse(r.text).url, "https://web-1a2b3c4d.banto.example.net", "既定のサブドメイン");
+  });
+});
+
 test("公開すると、まとめたルートより前に差し込み、Project のコンテナのアドレスへ中継する。Basic 認証はハッシュだけを渡す", async () => {
   await withCaddy(async ({ call, caddy, dir }) => {
     const r = await call("publishRoute", publishArgs());

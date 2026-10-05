@@ -383,14 +383,17 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     }, 300);
   }
 
-  function finishPublished(url, reach, reachLabel) {
+  function finishPublished(url, reach, reachLabel, autoApproved) {
     clearSecrets();
     show("request", false);
     phase("published");
     drawReach(reach, reachLabel);
     drawHost(url, true);
     $("reach").textContent = "公開しました。" + (REACH_SENTENCE[reach] || reachLabel).replace("ようになります", "ようになりました");
-    $("detail").textContent = "名前を押すと別のタブで開きます。";
+    // 人に聞かずに公開したもの（「承認をすべて自動で許可する」、追加・2026-10-05）——そうと分かるように言う
+    $("detail").textContent = (autoApproved
+      ? "自動で許可しました（承認をすべて自動で許可する がオン）——既定の設定で公開しています。"
+      : "") + "名前を押すと別のタブで開きます。";
     show("wide-warn", false);
     show("door-box", true);
   }
@@ -411,7 +414,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
       const r = await call("get_publish_request", { requestId: id });
       show("waiting", false);
       const req = r.request;
-      if (req.state === "published") { finishPublished(req.url, req.reach, req.reachLabel); return; }
+      if (req.state === "published") { finishPublished(req.url, req.reach, req.reachLabel, req.autoApproved === true); return; }
       if (req.state !== "pending") { drawHost(req.plannedUrl, false); finishDeclined(req.service, req.port); return; }
       if (!r.method.ready) problem("error", "この出し方はまだ使えません：" + (r.method.problem || ""));
       buildForm(r.method.configSchema);

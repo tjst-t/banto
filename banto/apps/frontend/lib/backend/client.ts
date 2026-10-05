@@ -706,6 +706,23 @@ export async function setRealProjectContainerNesting(projectId: string, nesting:
   await request(`/api/projects/${projectId}/container`, { method: "PUT", body: JSON.stringify({ nesting }) });
 }
 
+/**
+ * **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4「承認をすべて自動で許可する」）。
+ * Project にだけ置ける。読み書きの答えは host がいま持っている値
+ */
+export async function fetchRealAutoApproveAll(projectId: string): Promise<boolean> {
+  return (await request<{ enabled: boolean }>(`/api/projects/${projectId}/auto-approve`)).enabled;
+}
+
+export async function setRealAutoApproveAll(projectId: string, enabled: boolean): Promise<boolean> {
+  return (
+    await request<{ enabled: boolean }>(`/api/projects/${projectId}/auto-approve`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    })
+  ).enabled;
+}
+
 export async function updateRealProjectSettings(
   projectId: string,
   patch: { name?: string; root?: string },

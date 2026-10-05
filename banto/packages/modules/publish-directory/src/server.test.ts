@@ -63,6 +63,8 @@ async function fakeService(rows: () => ServiceRow[], hold: () => Promise<void> |
 interface Entry {
   origin: "turn" | "canvas";
   project?: string;
+  /** host が「承認をすべて自動で許可する」の印を刻んだ呼び出し（中継の先にも刻む、追加・2026-10-05） */
+  autoApprove?: boolean;
 }
 
 interface Ctx {
@@ -144,7 +146,9 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
       relayed.push({ target, name, args, stamp });
       const client = target === "service-p1" ? serviceClient : target === "publish-caddy" ? implClient : undefined;
       if (!client) throw new Error(`unknown target ${target}`);
-      const r = await client.callTool({ name, arguments: args, _meta: { "dev.banto/caller": stamp } });
+      // host は、AI のターンから始まった Project のための呼び出しに、スイッチがオンなら印を刻む（1件を名指せたときだけ真似る）
+      const auto = callId && ctx?.autoApprove && ctx.origin === "turn" && ctx.project ? { "dev.banto/autoApprove": true } : {};
+      const r = await client.callTool({ name, arguments: args, _meta: { "dev.banto/caller": stamp, ...auto } });
       if (drop.delete(name)) throw new Error("中継の返事が途中で切れました");
       return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
     },
@@ -165,7 +169,11 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
     const callId = randomUUID();
     if (caller && opts.ledger !== false) {
       const project = (caller.project ?? caller.forProject) as string | undefined;
-      inFlight.set(callId, { origin: caller.admin === true ? "canvas" : "turn", ...(project ? { project } : {}) });
+      inFlight.set(callId, {
+        origin: caller.admin === true ? "canvas" : "turn",
+        ...(project ? { project } : {}),
+        ...(meta["dev.banto/autoApprove"] === true ? { autoApprove: true } : {}),
+      });
     }
     try {
       const r = await client.callTool({ name, arguments: args, _meta: { ...meta, "dev.banto/callId": callId } });
@@ -321,6 +329,40 @@ test("人が承認の画面で押すと公開する。画面には実装の設�
     assert.match(deliveries[0]!.text, new RegExp(`https://${HOST.replace(/\./g, "\\.")}`));
     // 二度は公開しない
     assert.match((await asHuman("approve_publish", { requestId: id, config })).text, /もう答えが出ています/);
+  });
+});
+
+// **承認をすべて自動で許可する**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4）。窓口は host の印だけを見て、承認画面の
+// 既定の値で人を待たずに公開する。頼みは「公開済み（自動で許可）」で残り、会話の承認画面がそれを読む
+test("host が自動で許可の印を刻んだら、既定の設定で人を待たずに公開し、頼みを「自動で許可して公開済み」で残す", async () => {
+  await withDirectory(async ({ call, asHuman, caddy, deliveries, relayed }) => {
+    const r = await call("publishService", { service: "web" }, {
+      "dev.banto/caller": { project: P1 },
+      "dev.banto/replyTo": REPLY,
+      "dev.banto/autoApprove": true,
+    });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /公開しました：web:3000/);
+    assert.match(r.text, /承認をすべて自動で許可する/);
+    assert.equal(r.meta?.["dev.banto/pendingReply"], undefined, "後から届けるものは無い（人を待っていない）");
+    const passed = relayed.find((c) => c.name === "publishRoute")!;
+    assert.deepEqual(passed.args, { projectId: P1, service: "web", port: 3000, config: {} }, "既定の設定で公開する");
+    assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), "既定のサブドメインで公開していない");
+    assert.equal(deliveries.length, 0);
+
+    const view = JSON.parse((await asHuman("get_publish_request", { requestId: requestIdOf(r.text) })).text);
+    assert.equal(view.request.state, "published");
+    assert.equal(view.request.autoApproved, true, "承認画面が「自動で許可した」と言えない");
+    assert.equal(view.request.url, `https://${HOST}`);
+  });
+});
+
+test("自動で許可の印が無ければ（スイッチがオフ）、今までどおり人を待つ", async () => {
+  await withDirectory(async ({ asAi, caddy, relayed }) => {
+    const r = await asAi("publishService", { service: "web" });
+    assert.match(r.text, /公開するかは人が決めます/);
+    assert.equal(relayed.some((c) => c.name === "publishRoute"), false);
+    assert.equal(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), false);
   });
 });
 

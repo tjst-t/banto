@@ -22,6 +22,7 @@ import { HostRelayEndpoint, RelayRegistry } from "./host-relay-endpoint.js";
 import { RelayGrantStore } from "./grants.js";
 import { ModuleCallTracker } from "./module-calls.js";
 import { createRelayApprovalGate } from "./approval-gate.js";
+import { AUTO_APPROVED_ANSWER_TEXT, AUTO_APPROVED_REASON } from "../inbox/auto-approve.js";
 
 const THREAD = "thread-1";
 const PROJECT = "project-1";
@@ -47,7 +48,15 @@ async function fakeVaultClient(auditArgs?: string[]): Promise<Client> {
   return client;
 }
 
-async function setup(opts: { inContainer?: boolean; auditArgs?: string[]; bundled?: boolean } = {}) {
+async function setup(
+  opts: {
+    inContainer?: boolean;
+    auditArgs?: string[];
+    bundled?: boolean;
+    /** 「承認をすべて自動で許可する」（試験の途中で切り替える） */
+    autoApprove?: { on: boolean };
+  } = {},
+) {
   const dir = await mkdtemp(join(tmpdir(), "banto-relay-gate-"));
   const log = new EventLog(dir);
   await log.init();
@@ -57,6 +66,10 @@ async function setup(opts: { inContainer?: boolean; auditArgs?: string[]; bundle
   await grants.load();
   const pendingApprovals = new PendingApprovalRegistry();
   const moduleCalls = new ModuleCallTracker();
+
+  /** 会話へ流したカードと、その答え */
+  const cards: Array<{ threadId: string; id: string; message: string; toolInput: unknown }> = [];
+  const settled: Array<{ threadId: string; id: string; answer: string }> = [];
 
   const registry = new RelayRegistry();
   registry.registerModule({
@@ -82,7 +95,15 @@ async function setup(opts: { inContainer?: boolean; auditArgs?: string[]; bundle
     registry,
     // 進捗の間隔は試験用に短くする（本番は10秒）
     approvalProgressIntervalMs: 30,
-    gate: createRelayApprovalGate({ grants, inbox, pendingApprovals, moduleCalls }),
+    gate: createRelayApprovalGate({
+      grants,
+      inbox,
+      pendingApprovals,
+      moduleCalls,
+      onJudgmentRaised: (threadId, j) => cards.push({ threadId, id: j.id, message: j.message, toolInput: j.toolInput }),
+      onJudgmentSettled: (threadId, j) => settled.push({ threadId, ...j }),
+      ...(opts.autoApprove ? { autoApproveAll: (projectId: string) => projectId === PROJECT && opts.autoApprove!.on } : {}),
+    }),
     onAudit: async (r) => {
       await grants.recordCall(r, { allowed: r.allowed, reason: r.reason, ok: r.ok });
     },
@@ -108,6 +129,8 @@ async function setup(opts: { inContainer?: boolean; auditArgs?: string[]; bundle
     grants,
     pendingApprovals,
     moduleCalls,
+    cards,
+    settled,
     caller,
     events,
     async close() {
@@ -571,6 +594,73 @@ test("終わった呼び出しの印で来た中継は、同じ Module を使っ
     assert.equal(t.inbox.listOpen().filter((x) => x.kind === "judgment").length, 0, "別のターンの会話にカードを出した");
     assert.equal(t.moduleCalls.isWaitingOnHuman("shell-project-1", live.id), false);
     live.end();
+  } finally {
+    await t.close();
+  }
+});
+
+// **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。docs/specs/v4-frontend.md §6.4）。コンテナからの
+// 秘密を返す呼び出し（scope 付き）も聞かずに通す。**覚えない**——スイッチを切れば、また聞く
+test("「承認をすべて自動で許可する」がオンなら、scope 付きでも聞かずに通し、答え済みのカードを残す——grant は残さず、切ればまた聞く", async () => {
+  const autoApprove = { on: true };
+  const t = await setup({ inContainer: true, auditArgs: ["alias"], autoApprove });
+  const seen = new Set<string>();
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const result = await t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: { alias: "github-token" } },
+    });
+    assert.equal((result.content as { text: string }[])[0]?.text, "SECRET-VALUE", "人の操作なしで通る");
+    assert.equal(t.inbox.listOpen().filter((i) => i.kind === "judgment").length, 0, "受信箱に未解決を残さない");
+
+    // 会話には答え済みのカード——何を自動で通したかが読める
+    assert.equal(t.cards.length, 1);
+    assert.equal(t.cards[0]!.threadId, THREAD);
+    assert.match(t.cards[0]!.message, /shell が vault の resolveAlias（alias: github-token）/);
+    assert.match(JSON.stringify(t.cards[0]!.toolInput), /聞かずに通しました/);
+    assert.deepEqual(t.settled, [{ threadId: THREAD, id: t.cards[0]!.id, answer: AUTO_APPROVED_ANSWER_TEXT }]);
+    const item = t.inbox.get(t.cards[0]!.id) as JudgmentItem;
+    assert.equal(item.liveness, "answered", "判断待ちは出したそばから決着している");
+
+    let all = await t.events();
+    assert.equal(all.filter((e) => e.type === "relay.grant_created").length, 0, "自動で通したものは覚えない");
+    const recorded = all.filter((e) => e.type === "relay.call_recorded").map((e) => e.payload as Record<string, unknown>);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]!.allowed, true);
+    assert.equal(recorded[0]!.reason, AUTO_APPROVED_REASON, "記録に「自動で許可」と分かる理由を残す");
+
+    // スイッチを切ると、同じ呼び出しをまた聞く
+    autoApprove.on = false;
+    const again = t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: { alias: "github-token" } },
+    });
+    const judgment = await waitForJudgment(t.inbox, seen);
+    assert.match(JSON.stringify(judgment.toolInput), /次から自動で通します/);
+    t.pendingApprovals.resolve(judgment.id, { behavior: "deny", message: "拒否" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "deny", message: "拒否" });
+    await assert.rejects(again, /人が拒否しました/, "切った後は人の答えに従う");
+    endCall();
+
+    all = await t.events();
+    assert.equal(all.filter((e) => e.type === "relay.grant_created").length, 0);
+  } finally {
+    await t.close();
+  }
+});
+
+test("「承認をすべて自動で許可する」は、どの会話の呼び出しか分からなくても通す（カードは出さない）", async () => {
+  const t = await setup({ autoApprove: { on: true } });
+  try {
+    const result = await t.caller.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} },
+    });
+    assert.equal((result.content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    assert.equal(t.cards.length, 0);
+    const all = await t.events();
+    assert.equal(all.filter((e) => e.type === "inbox.judgment_raised").length, 0);
   } finally {
     await t.close();
   }

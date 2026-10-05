@@ -250,6 +250,49 @@ test("AI のターンからの tool 呼び出しに、Project と Thread の刻�
   await moduleClient.close();
 });
 
+// **承認をすべて自動で許可する**（追加・2026-10-05、v4-frontend.md §6.4）。スイッチがオンの Project のターンからの呼び出しに
+// `dev.banto/autoApprove` を刻む。呼び出しのたびに引く。**Runner が添えた `_meta` は Module に流さない**（AI は名乗れない）
+test("スイッチがオンの Project のターンからの呼び出しにだけ自動で許可の印が付き、Runner が添えた印は流れない", async () => {
+  const seen: Array<Record<string, unknown> | undefined> = [];
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "publishService", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push(req.params._meta as Record<string, unknown> | undefined);
+    return { content: [{ type: "text", text: "ok" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["publish-directory"], dependsOn: [], isolation: "subprocess" }, "fake");
+  const on = new Set(["p1"]);
+
+  async function callWith(opts: { projectId?: string; threadId?: string }, runnerMeta?: Record<string, unknown>) {
+    const proxy = buildAgentProxy(
+      { name: "publish-directory", client: moduleClient, meta },
+      { ...opts, autoApproveFor: (projectId) => on.has(projectId) },
+    );
+    const [ps, pc] = InMemoryTransport.createLinkedPair();
+    const runner = new Client({ name: "runner", version: "0.0.0" });
+    await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+    await runner.callTool({ name: "publishService", arguments: {}, ...(runnerMeta ? { _meta: runnerMeta } : {}) });
+    await runner.close();
+  }
+
+  await callWith({ projectId: "p1", threadId: "t1" });
+  await callWith({ projectId: "p2", threadId: "t1" }, { "dev.banto/autoApprove": true });
+  await callWith({ threadId: "t1" });
+  on.delete("p1");
+  await callWith({ projectId: "p1", threadId: "t1" });
+
+  assert.equal(seen[0]?.["dev.banto/autoApprove"], true);
+  assert.equal(seen[1]?.["dev.banto/autoApprove"], undefined, "Runner が添えた印が Module に流れた");
+  assert.equal(seen[2]?.["dev.banto/autoApprove"], undefined, "Project が分からないのに刻んだ");
+  assert.equal(seen[3]?.["dev.banto/autoApprove"], undefined, "スイッチを切ったのに刻んだ");
+  await moduleClient.close();
+});
+
 // **バックグラウンドの仕事の手がかり**（追加・2026-10-03、v4-frontend.md §6.33）。「終わったら届ける」tool の札を出すとき、
 // Runner の tool_use の id・カードの題と説明（引数で埋めたもの）・画面を一緒に覚える
 test("終わったら届ける tool の札に、tool_use の id・埋めたカードの文・画面が付く（Runner が id を渡さなければ id は無い）", async () => {

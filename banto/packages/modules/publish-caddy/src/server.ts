@@ -6,7 +6,9 @@
 //
 // - **道を張る（`publishRoute`）のは、人が押したときだけ**——host が刻む `{admin: true}` があるときだけ通す
 //   （Vault の「紐付けを変える口は人の刻印があるときだけ」と同じ形）。AI のターンからは刻印が Project になるので、
-//   窓口がどう呼ばれても、ここで止まる
+//   窓口がどう呼ばれても、ここで止まる。**例外は Project の「承認をすべて自動で許可する」**
+//   （追加・2026-10-05、ユーザー。v4-frontend.md §6.4）——host が Project の刻印と一緒に `dev.banto/autoApprove` を刻んだ
+//   ときだけ、その Project の道を張る。どちらも host だけが刻む（窓口や AI は名乗れない）
 // - やめる・一覧・見積もりは、その Project のためなら通す（公開を狭める・見るだけ）
 // - Basic 認証のパスワードは bcrypt にしてから持つ。**返り値にも記録にも出さない**
 
@@ -24,6 +26,7 @@ import {
   MODULE_META_KEY,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
+  autoApproveOf,
   callerOf,
   type CallerStamp,
 } from "@banto/module-contract";
@@ -168,7 +171,10 @@ export function createPublishCaddyServer(publisher: CaddyPublisher, store: Publi
         case "planPublish":
           return json(await publisher.plan({ ...args, projectId: projectFor(stamp, args) }, args.config));
         case "publishRoute":
-          if (!stamp || !("admin" in stamp)) throw new PublishError("公開は人が承認の画面で押したときだけできます");
+          // 人が押した（`admin`）か、その Project で人が承認の役を降りている（Project の刻印＋自動で許可の印）
+          if (!stamp || !("admin" in stamp || ("project" in stamp && autoApproveOf(request.params._meta as Record<string, unknown> | undefined)))) {
+            throw new PublishError("公開は人が承認の画面で押したときだけできます");
+          }
           return json(await publisher.publish({ ...args, projectId: projectFor(stamp, args) }, args.config));
         case "unpublishRoute":
           return json(await publisher.unpublish({ ...args, projectId: projectFor(stamp, args) }));

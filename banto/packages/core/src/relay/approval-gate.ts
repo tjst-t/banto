@@ -8,12 +8,18 @@
 // **permissionMode は見ない**（決定・2026-09-03、docs/specs/v4-frontend.md）
 // ——`bypassPermissions` が緩めるのは AI への信用であって、Project の内部配線
 // （どの Module が、どの Module の内部 tool に触れてよいか）への信用ではない。
+//
+// **例外は Project の「承認をすべて自動で許可する」だけ**（改訂・2026-10-05、ユーザー。docs/specs/v4-frontend.md §6.4）。
+// permissionMode の軸を混ぜたのではない——あちらは AI への信用、こちらは「この Project では人が承認の役を降りる」という
+// 別のスイッチで、中継の承認も含めて全部を通す（コンテナからの `scope` 付きの呼び出し＝秘密を返す `resolveAlias` も、案A）。
+// **通しても覚えない**（grant を残さない）——スイッチを切れば、また聞く
 
 import type { InboxStore } from "../inbox/store.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { RelayCallDescriptor, RelayGrantStore } from "./grants.js";
 import { grantKey } from "./grants-fold.js";
 import type { ModuleCallTracker } from "./module-calls.js";
+import { AUTO_APPROVED_ANSWER_TEXT, AUTO_APPROVED_REASON, raiseAutoApprovedJudgment } from "../inbox/auto-approve.js";
 
 export interface RelayApprovalRequest extends RelayCallDescriptor {
   /** 呼び出し元の**プロセス**の名前（`<Module 名>-<projectId>`）。 */
@@ -49,6 +55,11 @@ export interface RelayApprovalGateDeps {
    * （追加・2026-10-04）
    */
   onJudgmentSettled?(threadId: string, settled: { id: string; answer: string }): void;
+  /**
+   * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。聞くたびに引く——保存した時点で
+   * 次の承認から効く。渡されなければ今までどおり聞く
+   */
+  autoApproveAll?(projectId: string): boolean;
 }
 
 /** 聞いた呼び出しが、答えを待たずに終わったとき（AI のターンが終わった・止まった・外側が切れた）の理由。 */
@@ -61,7 +72,56 @@ interface AskOutcome {
   askerEnded: boolean;
 }
 
+/** 判断待ちに出す文と中身。`auto`——「承認をすべて自動で許可する」で聞かずに通したもの（注記だけが違う） */
+function describe(req: RelayApprovalRequest, auto: boolean): { message: string; toolInput: Record<string, unknown> } {
+  // **何を指しているか**（コンテナからの呼び出しは、それごとに聞く）。名前だけで、値は入らない
+  const scopeText =
+    req.scope && Object.keys(req.scope).length > 0
+      ? `（${Object.entries(req.scope).map(([k, v]) => `${k}: ${v}`).join("、")}）`
+      : "";
+  const message =
+    `Module 間の呼び出しの確認：${req.callerModule} が ${req.targetModule} の ` +
+    `${req.name}${scopeText || " "}を呼ぼうとしています`;
+  // **記録に残るのは宛名だけ**（アーキ仕様 §2.5）——引数は載せない。
+  // 判断待ちは Event Store に積まれるので、秘密の値が混ざる余地を作らない。
+  const toolInput = {
+    呼び出し元: req.callerModule,
+    宛先: req.targetModule,
+    種別: req.kind,
+    名前: req.name,
+    ...(req.scope && Object.keys(req.scope).length > 0 ? { 対象: req.scope } : {}),
+    注記: auto
+      ? "この Project は「承認をすべて自動で許可する」がオンなので、聞かずに通しました（許可は覚えません。オフにすれば、また聞きます）"
+      : req.scope
+        ? "許可すると、この Project では同じ組み合わせ・同じ対象を次から自動で通します（対象が違えば、また聞きます）"
+        : "許可すると、この Project では同じ組み合わせを次から自動で通します",
+  };
+  return { message, toolInput };
+}
+
 export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayApprovalGate {
+  /**
+   * **聞かずに通す**（追加・2026-10-05、「承認をすべて自動で許可する」）。どの会話の呼び出しか分かれば、そこに答え済みの
+   * カードを出す（何を自動で通したかを残す）。分からなくても通す——人はこの Project で承認の役を降りている。
+   * **grant は残さない**（覚えると、スイッチを切っても通り続ける）
+   */
+  async function autoApprove(req: RelayApprovalRequest): Promise<RelayApprovalDecision> {
+    const where = deps.moduleCalls.threadFor(req.callerConnName, req.callerCallId);
+    if (where.kind === "thread") {
+      const { message, toolInput } = describe(req, true);
+      const judgment = await raiseAutoApprovedJudgment(deps.inbox, {
+        threadId: where.threadId,
+        source: "relay",
+        message,
+        serverName: req.callerModule,
+        toolInput,
+      });
+      deps.onJudgmentRaised?.(where.threadId, { id: judgment.id, message, serverName: req.callerModule, toolInput });
+      deps.onJudgmentSettled?.(where.threadId, { id: judgment.id, answer: AUTO_APPROVED_ANSWER_TEXT });
+    }
+    return { allowed: true, reason: AUTO_APPROVED_REASON };
+  }
+
   /** 同じ組み合わせの2本目以降は、1本目の答えに相乗りする——カードを増やさない。 */
   const inFlight = new Map<string, Promise<AskOutcome>>();
 
@@ -123,26 +183,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       };
     }
 
-    // **何を指しているか**（コンテナからの呼び出しは、それごとに聞く）。名前だけで、値は入らない
-    const scopeText =
-      req.scope && Object.keys(req.scope).length > 0
-        ? `（${Object.entries(req.scope).map(([k, v]) => `${k}: ${v}`).join("、")}）`
-        : "";
-    const message =
-      `Module 間の呼び出しの確認：${req.callerModule} が ${req.targetModule} の ` +
-      `${req.name}${scopeText || " "}を呼ぼうとしています`;
-    // **記録に残るのは宛名だけ**（アーキ仕様 §2.5）——引数は載せない。
-    // 判断待ちは Event Store に積まれるので、秘密の値が混ざる余地を作らない。
-    const toolInput = {
-      呼び出し元: req.callerModule,
-      宛先: req.targetModule,
-      種別: req.kind,
-      名前: req.name,
-      ...(req.scope && Object.keys(req.scope).length > 0 ? { 対象: req.scope } : {}),
-      注記: req.scope
-        ? "許可すると、この Project では同じ組み合わせ・同じ対象を次から自動で通します（対象が違えば、また聞きます）"
-        : "許可すると、この Project では同じ組み合わせを次から自動で通します",
-    };
+    const { message, toolInput } = describe(req, false);
     const judgment = await deps.inbox.raiseJudgment({
       threadId: where.threadId,
       source: "relay",
@@ -197,6 +238,8 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
   return {
     async requestApproval(req) {
       if (deps.grants.isGranted(req)) return { allowed: true, reason: "この Project で承認済み" };
+      // Project のための呼び出しだけ（banto 全体の呼び出しは、どの Project のスイッチも効かせない）
+      if (req.projectId !== undefined && deps.autoApproveAll?.(req.projectId) === true) return autoApprove(req);
 
       // **人の答えを待っている間は、外側の呼び出しの上限を数えない**（追加・2026-10-04）——相乗りした呼び出しも
       const release = deps.moduleCalls.holdForHuman(req.callerConnName, req.callerCallId);

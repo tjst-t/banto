@@ -9,11 +9,14 @@
 // - **同じ Project の中は自由**。**Project をまたぐ送信は人が承認する**——承認モードが「全部許す」でも聞く（Project の
 //   内部配線の承認と同じ考え方：緩めるのは AI への信用であって、別の Project を起こしてよいかではない）。
 //   「以後聞かない」を選ぶと宛先の Project の「受け取ってよい Project」に足し、次からは聞かない
+// - **送り元の Project の「承認をすべて自動で許可する」がオンなら聞かない**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4）
+//   ——答え済みの承認カードだけ残し、「受け取ってよい Project」には足さない（覚えない。スイッチを切れば、また聞く）
 // - **返事は承認なし**——受け取ったメッセージの送り元の Thread へ、受け取ってから 24 時間以内に送るもの
 // - ループ防止（ホップ・速度）と受信箱のお知らせは、届ける口がそのまま持っている
 
 import type { InboxStore } from "../inbox/store.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
+import { AUTO_APPROVED_ANSWER_TEXT, raiseAutoApprovedJudgment } from "../inbox/auto-approve.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { MessageSender, ProjectState, ThreadState } from "../project-thread/types.js";
 import type { ThreadDeliveries } from "./thread-deliveries.js";
@@ -65,6 +68,12 @@ export interface ThreadMessagingDeps {
     threadId: string,
     judgment: { id: string; message: string; serverName: string; toolInput: unknown; choices: string[] },
   ): void;
+  /** 走っているターンの画面へ、判断待ちに答えがついたことを流す（自動で許可したカードを答え済みにする、追加・2026-10-05） */
+  publishAnswered?(threadId: string, answered: { id: string; answer: string }): void;
+  /**
+   * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。送るたびに引く。渡されなければ今までどおり聞く
+   */
+  autoApproveAll?(projectId: string): boolean;
   now?: () => number;
 }
 
@@ -151,7 +160,11 @@ export class ThreadMessaging {
     // ——Project をまたぐなら、許されているかを見る
     const crossProject = targetProject.id !== fromProject.id;
     if (crossProject && !this.mayPassWithoutAsking(from, fromProject, targetProject, target)) {
-      const decision = await this.ask(from, fromProject, targetProject, target, { title, text }, signal);
+      // **送り元の Project のスイッチで決める**（追加・2026-10-05）——頼んだのは送り元の AI で、聞かれるのも送り元の会話
+      const decision =
+        this.deps.autoApproveAll?.(fromProject.id) === true
+          ? await this.autoApprove(from, fromProject, targetProject, target, { title, text })
+          : await this.ask(from, fromProject, targetProject, target, { title, text }, signal);
       if (decision === "deny") {
         return { ok: false, text: "人が Project をまたぐ送信を許しませんでした。送っていません。" };
       }
@@ -206,15 +219,15 @@ export class ThreadMessaging {
     return now - Date.parse(received) <= REPLY_WINDOW_MS;
   }
 
-  private async ask(
+  /** 確認の画面に出す文と中身 */
+  private describe(
     from: ThreadState,
     fromProject: ProjectState,
     targetProject: ProjectState,
     target: ThreadState | undefined,
     message: { title: string; text: string },
-    signal: AbortSignal | undefined,
-  ): Promise<"allow" | "remember" | "deny"> {
-    if (signal?.aborted) return "deny";
+    auto: boolean,
+  ): { judgmentMessage: string; toolInput: Record<string, unknown> } {
     const toLabel = target ? `「${threadLabel(target)}」` : "新しい Fork";
     const judgmentMessage =
       `Project をまたぐメッセージの確認：「${fromProject.name}」の「${threadLabel(from)}」の AI が、` +
@@ -224,8 +237,46 @@ export class ThreadMessaging {
       宛先: `${targetProject.name} / ${target ? threadLabel(target) : "新しい Fork（会話を引き継がない）"}`,
       題: message.title,
       本文: message.text,
-      注記: `「${MESSAGE_ALLOW_REMEMBER}」を選ぶと、「${targetProject.name}」は「${fromProject.name}」からのメッセージを次から聞かずに受け取ります（${targetProject.name} の Project の設定で外せます）`,
+      注記: auto
+        ? `「${fromProject.name}」は「承認をすべて自動で許可する」がオンなので、聞かずに送りました（「受け取ってよい Project」には足していません）`
+        : `「${MESSAGE_ALLOW_REMEMBER}」を選ぶと、「${targetProject.name}」は「${fromProject.name}」からのメッセージを次から聞かずに受け取ります（${targetProject.name} の Project の設定で外せます）`,
     };
+    return { judgmentMessage, toolInput };
+  }
+
+  /** 聞かずに許可する（「承認をすべて自動で許可する」）。答え済みのカードだけを送り元の会話に残す。覚えない */
+  private async autoApprove(
+    from: ThreadState,
+    fromProject: ProjectState,
+    targetProject: ProjectState,
+    target: ThreadState | undefined,
+    message: { title: string; text: string },
+  ): Promise<"allow"> {
+    const { judgmentMessage, toolInput } = this.describe(from, fromProject, targetProject, target, message, true);
+    const choices = [MESSAGE_ALLOW, MESSAGE_ALLOW_REMEMBER, MESSAGE_DENY];
+    const judgment = await raiseAutoApprovedJudgment(this.deps.inbox, {
+      threadId: from.id,
+      source: "message",
+      message: judgmentMessage,
+      serverName: "banto",
+      toolInput,
+      choices,
+    });
+    this.deps.publishJudgment?.(from.id, { id: judgment.id, message: judgmentMessage, serverName: "banto", toolInput, choices });
+    this.deps.publishAnswered?.(from.id, { id: judgment.id, answer: AUTO_APPROVED_ANSWER_TEXT });
+    return "allow";
+  }
+
+  private async ask(
+    from: ThreadState,
+    fromProject: ProjectState,
+    targetProject: ProjectState,
+    target: ThreadState | undefined,
+    message: { title: string; text: string },
+    signal: AbortSignal | undefined,
+  ): Promise<"allow" | "remember" | "deny"> {
+    if (signal?.aborted) return "deny";
+    const { judgmentMessage, toolInput } = this.describe(from, fromProject, targetProject, target, message, false);
     const choices = [MESSAGE_ALLOW, MESSAGE_ALLOW_REMEMBER, MESSAGE_DENY];
     const judgment = await this.deps.inbox.raiseJudgment({
       threadId: from.id,

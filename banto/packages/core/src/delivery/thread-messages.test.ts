@@ -11,6 +11,7 @@ import { ProjectThreadStore } from "../project-thread/store.js";
 import { ThreadTurns } from "./thread-turns.js";
 import { ThreadDeliveries, composeTurnPrompt } from "./thread-deliveries.js";
 import { MESSAGE_ALLOW_REMEMBER, REPLY_WINDOW_MS, ThreadMessaging } from "./thread-messages.js";
+import { AUTO_APPROVED_ANSWER_TEXT } from "../inbox/auto-approve.js";
 
 interface Ctx {
   store: ProjectThreadStore;
@@ -24,6 +25,9 @@ interface Ctx {
   judgments: Array<{ threadId: string; id: string; choices: string[] }>;
   runs: string[];
   clock: { now: number };
+  /** 「承認をすべて自動で許可する」がオンの Project（試験の途中で変える） */
+  autoApprove: Set<string>;
+  answered: Array<{ threadId: string; id: string; answer: string }>;
 }
 
 async function setup(fn: (ctx: Ctx) => Promise<void>) {
@@ -45,6 +49,8 @@ async function setup(fn: (ctx: Ctx) => Promise<void>) {
       return true;
     });
     const judgments: Ctx["judgments"] = [];
+    const autoApprove = new Set<string>();
+    const answered: Ctx["answered"] = [];
     const messaging = new ThreadMessaging({
       projectThread: store,
       inbox,
@@ -52,6 +58,8 @@ async function setup(fn: (ctx: Ctx) => Promise<void>) {
       deliveries,
       threadTurns: turns,
       publishJudgment: (threadId, j) => judgments.push({ threadId, id: j.id, choices: j.choices }),
+      publishAnswered: (threadId, a) => answered.push({ threadId, ...a }),
+      autoApproveAll: (projectId) => autoApprove.has(projectId),
       now: () => clock.now,
     });
     const pa = await store.createProject("infra", dir);
@@ -70,6 +78,8 @@ async function setup(fn: (ctx: Ctx) => Promise<void>) {
       judgments,
       runs,
       clock,
+      autoApprove,
+      answered,
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -204,5 +214,35 @@ test("一覧は既定でこの Project だけ、指定でほかの Project も�
     const all = messaging.listThreads(a.fork, true);
     assert.equal(all.length, 3);
     assert.ok(all.every((e) => !("messages" in e)));
+  });
+});
+
+// **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。送り元の Project のスイッチで決める
+test("送り元の Project が「承認をすべて自動で許可する」なら聞かずに届き、答え済みのカードだけ残る——覚えず、切ればまた聞く", async () => {
+  await setup(async ({ store, inbox, messaging, a, b, judgments, approvals, autoApprove, answered }) => {
+    // 宛先の Project のスイッチは効かない（頼んだのは送り元）
+    autoApprove.add(b.projectId);
+    const viaTarget = messaging.send(a.base, { threadId: b.base, title: "0", text: "x" });
+    const asked = await nextJudgment({ judgments } as Ctx, 1);
+    approvals.resolve(asked.id, { behavior: "deny", message: "拒否する" });
+    assert.equal((await viaTarget).ok, false);
+    autoApprove.delete(b.projectId);
+
+    autoApprove.add(a.projectId);
+    const r = await messaging.send(a.fork, { threadId: b.base, title: "1", text: "y" });
+    assert.equal(r.ok, true, r.text);
+    assert.equal(store.getThread(b.base)!.deliveries?.length, 1);
+    const card = judgments[1]!;
+    assert.equal(card.threadId, a.fork, "送り元の会話にカードを残す");
+    assert.deepEqual(answered, [{ threadId: a.fork, id: card.id, answer: AUTO_APPROVED_ANSWER_TEXT }]);
+    const item = inbox.get(card.id);
+    assert.equal(item?.kind === "judgment" ? item.liveness : undefined, "answered", "受信箱に未解決を残さない");
+    assert.equal(store.getProject(b.projectId)!.acceptMessagesFrom, undefined, "「受け取ってよい Project」には足さない");
+
+    autoApprove.delete(a.projectId);
+    const again = messaging.send(a.fork, { threadId: b.base, title: "2", text: "z" });
+    const j = await nextJudgment({ judgments } as Ctx, 3);
+    approvals.resolve(j.id, { behavior: "allow" });
+    assert.equal((await again).ok, true);
   });
 });

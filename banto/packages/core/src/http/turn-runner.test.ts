@@ -296,6 +296,52 @@ test("判断待ちを起票した後にターンが落ちても、その判断�
   });
 });
 
+// **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。tool の確認を人に聞かずに許可し、
+// 会話には答え済みのカードを残す。受信箱に未解決は残さない。判断のたびに引く——ターンの途中で切れば、次からまた聞く
+test("「承認をすべて自動で許可する」がオンなら tool の確認をそのまま許可し、答え済みのカードを流す——途中で切れば次は聞く", async () => {
+  const { AUTO_APPROVED_ANSWER_TEXT } = await import("../inbox/auto-approve.js");
+  await withThread(async ({ deps, threadId }) => {
+    const auto = { on: true };
+    const resolved: unknown[] = [];
+    const fake = (async function* () {
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      for (const id of ["call-1", "call-2"]) {
+        const pending = {
+          toolCallId: id,
+          toolName: "mcp__shell__runCommand",
+          input: { command: "ls" },
+          resolve: (r: unknown) => resolved.push(r),
+        };
+        yield { type: "approval_requested" as const, pending } as never;
+        // 1つ目が答えられてから、人がスイッチを切った
+        auto.on = false;
+      }
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+
+    const events: TurnStreamEvent[] = [];
+    for await (const e of runThreadTurn(
+      { ...deps, runTurn: fake, autoApproveAll: () => auto.on },
+      { threadId, prompt: "走らせて", modules: [] },
+    )) {
+      events.push(e);
+      // 2つ目は人に聞いている——答える
+      if (e.type === "judgment" && events.filter((x) => x.type === "judgment").length === 2) {
+        assert.equal(deps.pendingApprovals.resolve(e.judgmentId, { behavior: "deny", message: "やめる" }), true);
+      }
+    }
+    const judgments = events.filter((e): e is Extract<TurnStreamEvent, { type: "judgment" }> => e.type === "judgment");
+    assert.equal(judgments.length, 2);
+    const answered = events.filter((e) => e.type === "answered");
+    assert.deepEqual(answered, [{ type: "answered", judgmentId: judgments[0]!.judgmentId, answer: AUTO_APPROVED_ANSWER_TEXT }]);
+    assert.deepEqual(resolved, [{ behavior: "allow" }, { behavior: "deny", message: "やめる" }]);
+    const first = deps.inbox.get(judgments[0]!.judgmentId);
+    assert.equal(first?.kind === "judgment" ? first.liveness : undefined, "answered", "受信箱に未解決を残さない");
+    const second = deps.inbox.get(judgments[1]!.judgmentId);
+    assert.equal(second?.kind === "judgment" ? second.liveness : undefined, "live", "切った後は人に聞いている");
+  });
+});
+
 // **効かせる Skill は、新しいセッションの最初のターンで決まる**（決定・2026-09-23、§5.7）。
 // `instructions` は resume では読み直されない（実測）——続きのターンで決め直しても
 // モデルには届かず、記録だけが嘘になる。

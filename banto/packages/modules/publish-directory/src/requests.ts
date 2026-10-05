@@ -31,6 +31,11 @@ export interface PublishRequest {
   state: "pending" | "published" | "declined" | "withdrawn";
   decidedAt?: string;
   url?: string;
+  /**
+   * **人に聞かずに公開した**（追加・2026-10-05、v4-frontend.md §6.4「承認をすべて自動で許可する」）。host が刻んだ
+   * `dev.banto/autoApprove` で、既定の設定のまま公開したもの。承認の画面はそうと分かる形で出す
+   */
+  autoApproved?: true;
 }
 
 const STATE_TEXT: Record<Exclude<PublishRequest["state"], "pending">, string> = {
@@ -91,6 +96,23 @@ export class RequestStore {
         throw new Error(`承認待ちの公開が ${MAX_PENDING_PER_PROJECT} 件あります。人が答えるのを待ってください`);
       }
       const req: PublishRequest = { ...input, id: randomUUID(), createdAt: this.now().toISOString(), state: "pending" };
+      await this.write([...all, req]);
+      return req;
+    });
+  }
+
+  /**
+   * **公開を済ませた頼みを残す**（追加・2026-10-05、「承認をすべて自動で許可する」）。人を待たずに公開したものも、会話の
+   * 承認の画面が「公開した」を言えるように頼みの形で残す（24時間）。**公開してから書く**——公開できなければ何も残さない
+   */
+  addPublished(
+    input: Omit<PublishRequest, "id" | "createdAt" | "state" | "decidedAt" | "url" | "autoApproved">,
+    url: string,
+  ): Promise<PublishRequest> {
+    return this.serialize(async () => {
+      const all = await this.read();
+      const at = this.now().toISOString();
+      const req: PublishRequest = { ...input, id: randomUUID(), createdAt: at, state: "published", decidedAt: at, url, autoApproved: true };
       await this.write([...all, req]);
       return req;
     });

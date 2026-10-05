@@ -171,6 +171,21 @@ export function threadOf(meta: Record<string, unknown> | undefined): ThreadStamp
 }
 
 /**
+ * **その Project では、人に聞かずに許可してよい**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4「承認をすべて自動で許可する」）。
+ * host だけが刻む——Project の設定のスイッチがオンで、その Project のための **AI のターンから始まった**呼び出し
+ * （AI の代理接続からの呼び出しと、その処理の中で Module が中継で呼ぶ先）にだけ。値は `true`。
+ *
+ * Module は Project の設定を知らないので、人を待つもの（Publish の公開の承認）はこれを見て、立っていれば人を待たずに進める。
+ * **人の画面からの呼び出しには刻まない**（人が押している）。受け手は**刻印が無ければ今までどおり人を待つ**——推測で埋めない
+ */
+export const AUTO_APPROVE_META_KEY = `${VENDOR_PREFIX}/autoApprove`;
+
+/** 自動で許可してよいと host が刻んだか。`true` のときだけ立っている（形が違えば立っていない） */
+export function autoApproveOf(meta: Record<string, unknown> | undefined): boolean {
+  return meta?.[AUTO_APPROVE_META_KEY] === true;
+}
+
+/**
  * **中継が、いまどの Project のための呼び出しとして扱っているか**（追加・2026-09-28）。`relayListTargets` の返事の
  * `_meta` に host が載せる。宛先の一覧に Project の Module が出ないとき、「その Project に無い」のか「どの Project の
  * ための呼び出しか決められなかった」のかを、呼び出し元が取り違えないため（規則2——「無い」と「決められない」を混ぜない）

@@ -22,6 +22,7 @@ import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadState, TurnOutcome } from "../project-thread/types.js";
 import { notInterruptedReason, type InterruptedTurn } from "../project-thread/interrupted-turns.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
+import { AUTO_APPROVED_ANSWER_TEXT, raiseAutoApprovedJudgment } from "../inbox/auto-approve.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionSkillSet } from "../skills/types.js";
@@ -216,6 +217,11 @@ async function* runThreadTurnInner(
     settleForks?(parentThreadId: string, forks: ForkRequest[], outcome: { ok: boolean }): Promise<void>;
     /** **Thread 間・Project 間のメッセージ**（決定・2026-10-01、§4.2）。渡されなければ tool は断る */
     messaging?: ThreadMessaging;
+    /**
+     * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。承認のたびに
+     * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
+     */
+    autoApproveAll?(projectId: string): boolean;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false },
@@ -546,16 +552,34 @@ async function* runThreadTurnInner(
         await replies.add(event.message);
         yield { type: "message", message: event.message };
       } else if (event.type === "approval_requested") {
-        const judgment = await deps.inbox.raiseJudgment({
+        const raise = {
           threadId: input.threadId,
-          source: "text",
+          source: "text" as const,
           message: `tool呼び出しの承認: ${event.pending.toolName}`,
           toolCallId: event.pending.toolCallId,
           // **何を承認するのか**を一緒に残す（決定・2026-09-06、見直し起点）。
           // 引数を見せずに承認させると、runCommand を中身を見ないまま
           // 許可することになる（§6.0「サーバを呼ぶ前に人に見せる」）
           toolInput: event.pending.input,
-        });
+        };
+        // **承認をすべて自動で許可する**（追加・2026-10-05、v4-frontend.md §6.4）。判断待ちは出して、そのまま host が
+        // 答える——会話には答え済みのカードが残り、何を自動で通したかが読める。受信箱に未解決は残らない
+        if (deps.autoApproveAll?.(thread.projectId) === true) {
+          const judgment = await raiseAutoApprovedJudgment(deps.inbox, raise);
+          event.pending.resolve({ behavior: "allow" });
+          yield {
+            type: "judgment",
+            judgmentId: judgment.id,
+            kind: "approval",
+            toolName: event.pending.toolName,
+            toolInput: event.pending.input,
+            message: judgment.message,
+          };
+          yield { type: "answered", judgmentId: judgment.id, answer: AUTO_APPROVED_ANSWER_TEXT };
+          pending = settle(gen.next());
+          continue;
+        }
+        const judgment = await deps.inbox.raiseJudgment(raise);
         deps.pendingApprovals.register(judgment.id, event.pending.resolve);
         raisedJudgments.push(judgment.id);
         yield {

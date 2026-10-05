@@ -15,6 +15,7 @@ import type { ForkFromMessage } from "@/components/banto/thread/fork-from-messag
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelMenu } from "@/components/banto/thread/composer-model-menu";
 import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
+import { ComposerAutoApproveBadge } from "@/components/banto/thread/composer-auto-approve-badge";
 import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/human-tool-card";
 import { OpenableCard } from "@/components/banto/thread/openable-card";
 import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
@@ -363,6 +364,8 @@ function ThreadRuntime({
               <ComposerModelMenu threadId={threadId} />
             ) : null}
             <ComposerPermissionModeMenu threadId={threadId} projectId={projectId} />
+            {/* 実 Project だけ——台本の Project には host の設定が無い（規則13） */}
+            {getThread(threadId)?.real ? <ComposerAutoApproveBadge projectId={projectId} /> : null}
           </>
         }
         components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
