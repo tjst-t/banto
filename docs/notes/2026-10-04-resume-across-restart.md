@@ -291,15 +291,45 @@ store で1件。`system/init` の前に止まっても先に決めた id で1件
 - **E2E の「件数でターンの終わりを待つ」**：監査（サブエージェント、読むだけ）で、記録の AI の件数をターンの終わりの
   合図にしている spec を洗った。確実に壊れるもの1本（`subagent.spec.ts` の3ターン目——件数が3になった時点で文がまだ
   空で `JSON.parse` が投げる）、件数のあとに続きの文・resume-point を読む・すぐ次を送るものが十数本。
-  `helpers.ts` に `waitTurnEnded`（件数・最後の発言が最後のターンのもの・`lastTurn.outcome`）を足して置き換えた。
+  `helpers.ts` に `waitTurnEnded`（件数・最後の発言が最後のターンのもの・`lastTurn.outcome`）を足し、監査が危ないと
+  挙げた15本で置き換えた（**訂正**：最初は「置き換えた」とだけ書いたが、監査が「問題なし」とした件数待ちが残っていた。
+  うち shell-confinement は否定の検査が空振りで通る形だった——下の「Fable のレビューを受けた直し」で残りも置き換えた）。
   件数のあと一度だけ resume-point を読む2本（fork-from-message・global-memory）は、resume-point が返事より後に
   書かれるようになったので新しく生まれた競走だった
 - 1発言ごとに fsync を待ってから画面に流す——長いターンでの遅れは測っていない
 - 失敗したターンでも書き終えた発言は残る。新しい会話の最初のターンが失敗すると resume-point が書かれないので、
   次のターンの AI はその発言を知らない（人の発言が残って AI が知らないのと同じ形。前からある）
 - `noteInterruptedTurn` は何度呼んでも足す（二度起き直すと2回付く）。一度だけにするかは呼ぶ側（続ける処理）で決める
+  （**訂正**：Fable のレビューで、口の側で一度だけ・切れたターンにだけ足すようにした——下）
 - **E2E の間欠（この変更とは別、直していない）**：関連 spec をまとめて回した回で `background-work-human.spec.ts` が1回
   落ちた（「待たずに頼みました」が2つ）。2つめは runSubagent の汎用の tool カードの「Result:」欄。画面は送る前に画面
   つき tool の一覧を最大5秒待つ（`UI_TOOLS_WAIT_MS`、待ち切らないのは決めたこと）が、その回は一覧の応答が 5459ms
   （Module の起動待ち・負荷）で、一覧を知らないまま送ったので専用のカードにならなかった。単独では変更あり1回・変更
   なし（main と同じ core と画面）2回とも通り、どれも一覧は 3.5〜3.7 秒。負荷で出る前からの間欠として残す（規則6）
+
+### Fable のレビューを受けた直し（resume-message-by-message、2026-10-05）
+
+- **E2E の件数待ちの残り**を `waitTurnEnded` に置き換えた：shell-confinement・subagent-background（2か所）・thread-model
+  （2か所）・subagent-card・background-work・composer-image-paste（2か所）・turn-lifecycle-abandoned。grep で見つけた残り：
+  judgment-after-reload（最後の返事の長さで待っていた）・assistant-text-blocks（返事が入ったかで待っていた）・
+  fork-dialog（resume-point で待っていた）・ai-start-forks と thread-messages（Fork の最後が AI の発言か——`lastTurn.outcome`
+  も見るようにした）。中身が出るまで待つもの（module-restart・shell-long-output）と、走っている間は0件であることを見る
+  subagent-card の1か所はそのまま。`explainMissingAiResult` の文面も、返事があっても終わったとは限らない形に直した
+- **shell-confinement の否定の検査**：「外の中身が出ていない」を見る前に、出るはずの場所（記録の返事・画面の最後の
+  吹き出し）に runCommand の返り値があることを見るようにした。AI が tool を呼ばずに「読めませんでした」と答える形に
+  壊すと、ここで落ちることを見た
+- **件数だけで待つと落ちるか**：`waitTurnEnded` を件数だけに壊して、subagent.spec（監査が「たぶん壊れる」とした）は
+  1回では通った（窓の狭い競走）。skills.spec は落ちた（資源を読んだ発言が入る前の記録を読んで「本文が読めない」）
+- `noteInterruptedTurn`：切れたターンにだけ（`notInterruptedReason`——`findInterruptedTurns` と同じ条件を1つに
+  した）、1つのターンに一度だけ足す。足したかは記録（そのターンの吹き出しがこの一行で終わっているか）から見る。印を
+  別の出来事にしなかったのは、発言と印の2回の書き込みの間で落ちたときに食い違うため
+- turn-events の前提（始まりを書く前に流すのは終わりだけ）をコメントに残し、`record` で崩れを見張る（崩れたら
+  `console.error`。止めはしない——表示の重なりのためにターンを落とさない）。始める前に断る道6つで前提どおりなことを
+  試験で見た
+- `GET …/stream`：境界を待つ間に画面が切れたら、`attached` を書かず購読も残さない。前は待ちが明けたあと、切れた接続に
+  書いて購読を足し、終わりの合図まで残っていた。最初に書いた試験は、壊すと assert で抜けたあとサーバが閉じられず
+  止まった——終わりを流してから見る形に直した
+- fold の試験：Fork が親の途中の吹き出しを写したあと親が伸びても写しは変わらない／snapshot から読み戻した最後の
+  ターンでまとめが続く（Fork の写しを持った snapshot も）／turn.started の無い前からの記録はまとめない。
+  `whenStarted` の聞き手の解除
+- 壊して落ちるか：新しく足した所を9か所壊し、どれも単体が落ちることを見た
