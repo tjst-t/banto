@@ -305,11 +305,51 @@ export interface ThreadState {
    * Thread の id、値は届いた時刻。受け取ってから 24 時間以内の送り元への返事は、Project をまたいでも承認なしで届く
    */
   receivedFrom?: Record<ThreadId, string>;
+  /**
+   * **最後に始めたターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が
+   * ターンの途中で止まって起き直したとき、切れたターンがあったかをここで見る（`findInterruptedTurns`）。1度も
+   * 走っていない・この仕組みより前のものは持たない
+   */
+  lastTurn?: TurnRecord;
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
   /** 最新の1件だけ（2026-10-04 から。履歴は Event Store の usage.recorded） */
   usage: UsageEntry[];
   createdAt: string;
+}
+
+/** ターンを始めたもの：人の発言（届いたものも一緒に積んだときを含む）か、届いたものだけで起こしたか */
+export type TurnCause = "human" | "delivery";
+
+/** ターンの終わり方：最後まで行った／人が止めた／失敗した */
+export type TurnOutcome = "completed" | "stopped" | "failed";
+
+/**
+ * **1ターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5「1. Thread のターンを続ける」）。`turn.started`・
+ * `turn.session_known`・`turn.ended` と、始めたより後に起きた出来事から fold が作る
+ */
+export interface TurnRecord {
+  turnId: string;
+  /** `turn.started` の seq。このターンで積んだ発言は、これより後ろの seq を持つ */
+  startedSeq: number;
+  startedAt: string;
+  cause: TurnCause;
+  /** 起こし直しで続けたターンなら1以上（何回目の続きか）。ふつうは0 */
+  attempt: number;
+  /** 始めたときに渡した resume-point。新しい会話なら無い */
+  resumePoint?: string;
+  /** 始めたときに渡した巻き戻しの位置（`resumeSessionAt`） */
+  rewindTo?: string;
+  /** 新しい会話の最初のターンで、host が先に決めて Runner に渡した session id */
+  assignedSessionId?: string;
+  /** Runner の `system/init` で分かった session id（`turn.session_known`）。**resume-point は変えない** */
+  knownSessionId?: string;
+  /** 終わり方（`turn.ended`）。無ければ終わりを書く前に止まった */
+  outcome?: TurnOutcome;
+  /** 始めたより後に resume-point が書かれた——CLI の側ではターンが最後まで行っている */
+  resumePointUpdated?: boolean;
+  /** 始めたより後に、人がこの会話を Clear した・Thread を閉じた・Project を閉じた（最初の1つ） */
+  abandonedBy?: "cleared" | "thread_closed" | "project_closed";
 }
 
 export interface ProjectThreadReadModel {

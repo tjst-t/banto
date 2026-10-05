@@ -11,6 +11,9 @@ import type {
   ThreadPermissionMode,
   ThreadEffort,
   ThreadState,
+  TurnCause,
+  TurnOutcome,
+  TurnRecord,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -119,7 +122,26 @@ export type ProjectThreadEvent =
         compactionCount: number;
         apiUsage?: unknown;
       };
-    };
+    }
+  // **ターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。起き直した host が
+  // 切れたターンを見分けるのに使う。始めた時刻は出来事の ts
+  | {
+      type: "turn.started";
+      payload: {
+        threadId: string;
+        turnId: string;
+        cause: TurnCause;
+        attempt: number;
+        resumePoint?: string;
+        rewindTo?: string;
+        /** 新しい会話の最初のターンで、host が先に決めて Runner に渡した session id */
+        sessionId?: string;
+      };
+    }
+  // Runner の `system/init` で会話の id が分かった。**resume-point は変えない**——resume-point は今どおりターンの
+  // 最後に書く（走っている途中に人が Fork を切ったら前の完了した状態から分かれ、Clear の防御も今のまま効く）
+  | { type: "turn.session_known"; payload: { threadId: string; turnId: string; sessionId: string } }
+  | { type: "turn.ended"; payload: { threadId: string; turnId: string; outcome: TurnOutcome } };
 
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
   return {
@@ -263,6 +285,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "project.closed": {
         const p = next.projects.get(event.payload.id);
         if (p) next.projects.set(p.id, { ...p, status: "closed" });
+        // 走っていたターンは、起き直しても続けない（人が Project ごと閉じた）
+        for (const t of next.threads.values()) {
+          if (t.projectId === event.payload.id) abandonLastTurn(t, "project_closed");
+        }
         return next;
       }
       case "project.message_senders_set": {
@@ -381,7 +407,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       }
       case "thread.closed": {
         const t = next.threads.get(event.payload.id);
-        if (t) next.threads.set(t.id, { ...t, status: "closed" });
+        if (t) {
+          abandonLastTurn(t, "thread_closed");
+          next.threads.set(t.id, { ...t, status: "closed" });
+        }
         return next;
       }
       case "thread.reopened": {
@@ -392,6 +421,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "thread.resume_point_updated": {
         const t = next.threads.get(event.payload.id);
         if (!t) return next;
+        // **最後まで行ったかは resume-point の更新で見る**（アーキ仕様 §2.5）——ターンの終わりは resume-point →
+        // 返事 → 使用量 → Fork → `turn.ended` と別々に書かれる。resume-point を書いたあとに落ちたターンは、CLI の
+        // 側では終わっているので「切れた」にしない
+        if (t.lastTurn && !t.lastTurn.resumePointUpdated) t.lastTurn = { ...t.lastTurn, resumePointUpdated: true };
         // **どの時点でどのセッションだったか**を残す（決定・2026-09-11、
         // ユーザー要望）。過去のメッセージから分けるには、その時点の
         // resume-point が要る——Clear で手放したものも含めて（Clear の前の
@@ -554,6 +587,8 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // （v4-architecture.md §2.2）。新規query()として再開する。
           // 走行中のターンが終了時に同じsession idで戻ってきても復活させない
           if (t.resumePoint) t.abandonedSessions = [...t.abandonedSessions, t.resumePoint];
+          // 走っていたターンは、起き直しても続けない（人が会話を畳んだ）
+          abandonLastTurn(t, "cleared");
           t.resumePoint = undefined;
           t.resumeAnchor = undefined;
           t.rewindTo = undefined;
@@ -564,8 +599,45 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         }
         return next;
       }
+      case "turn.started": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t) {
+          const p = event.payload;
+          t.lastTurn = {
+            turnId: p.turnId,
+            startedSeq: raw.seq,
+            startedAt: raw.ts,
+            cause: p.cause,
+            attempt: p.attempt,
+            ...(p.resumePoint !== undefined ? { resumePoint: p.resumePoint } : {}),
+            ...(p.rewindTo !== undefined ? { rewindTo: p.rewindTo } : {}),
+            ...(p.sessionId !== undefined ? { assignedSessionId: p.sessionId } : {}),
+          };
+        }
+        return next;
+      }
+      case "turn.session_known": {
+        const t = next.threads.get(event.payload.threadId);
+        // resume-point には触らない（上の型の説明）
+        if (t?.lastTurn?.turnId === event.payload.turnId) {
+          t.lastTurn = { ...t.lastTurn, knownSessionId: event.payload.sessionId };
+        }
+        return next;
+      }
+      case "turn.ended": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t?.lastTurn?.turnId === event.payload.turnId) {
+          t.lastTurn = { ...t.lastTurn, outcome: event.payload.outcome };
+        }
+        return next;
+      }
       default:
         return state;
     }
   },
 };
+
+/** 最後のターンに「始めたより後に人がやめた」を書く（最初の1つだけ）。`t` は fold が作り直したもの */
+function abandonLastTurn(t: ThreadState, by: NonNullable<TurnRecord["abandonedBy"]>): void {
+  if (t.lastTurn && !t.lastTurn.abandonedBy) t.lastTurn = { ...t.lastTurn, abandonedBy: by };
+}

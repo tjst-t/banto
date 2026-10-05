@@ -741,7 +741,7 @@ test("Fork が引き継いだ会話は、スナップショットに1度だけ�
     await store.save();
 
     const { stat } = await import("node:fs/promises");
-    const size = (await stat(join(dir, "project-thread.v8.snapshot.json"))).size;
+    const size = (await stat(join(dir, "project-thread.v9.snapshot.json"))).size;
     assert.ok(size < 5 * 100_000 * 2, `会話が Fork の数だけ写されている（${size} bytes）`);
 
     const again = new ProjectThreadStore(dir, log);
@@ -767,7 +767,7 @@ test("前の形（会話をそのまま書いた）スナップショットも�
     // 前の形で書く（pack を通さない）
     const { writeFile: wf } = await import("node:fs/promises");
     const replacer = (_k: string, v: unknown) => (v instanceof Map ? { __banto_map__: true, entries: [...v.entries()] } : v);
-    await wf(join(dir, "project-thread.v8.snapshot.json"), JSON.stringify({ seq: 999999, state: (store as unknown as { projection: { current: unknown } }).projection.current }, replacer));
+    await wf(join(dir, "project-thread.v9.snapshot.json"), JSON.stringify({ seq: 999999, state: (store as unknown as { projection: { current: unknown } }).projection.current }, replacer));
     const again = new ProjectThreadStore(dir, log);
     await again.load();
     assert.equal(again.getThread(fork.id)!.messages[0], again.getThread(base.id)!.messages[0]);
@@ -784,5 +784,157 @@ test("使用量は最新の1件だけ持ち、Fork にも最新だけ引き継�
     assert.deepEqual(store.getThread(base.id)!.usage.map((u) => u.contextUsage), [{ n: 4 }]);
     const fork = await store.forkThread(base.id);
     assert.deepEqual(store.getThread(fork.id)!.usage.map((u) => u.contextUsage), [{ n: 4 }]);
+  });
+});
+
+// **起こし直しをまたいで続ける**（2026-10-05、アーキ仕様 §2.5）——ターンの進み具合と、切れたターンの見分け方
+
+/** 同じ置き場を、起動し直したように開き直す（snapshot は書かない——ログだけから畳む） */
+async function reopen(dir: string): Promise<ProjectThreadStore> {
+  const log = new EventLog(dir);
+  await log.init();
+  const store = new ProjectThreadStore(dir, log);
+  await store.load();
+  return store;
+}
+
+test("始めて終わっていないターンは、起動し直した store から切れたターンとして見える", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const thread = await store.createBaseThread(project.id);
+    await store.updateResumePoint(thread.id, "session-1", "uuid-a");
+    const turnId = await store.startTurn(thread.id, {
+      cause: "human",
+      attempt: 0,
+      resumePoint: "session-1",
+      rewindTo: "uuid-a",
+    });
+    await store.recordTurnSessionKnown(thread.id, turnId, "session-1");
+
+    const reopened = await reopen(dir);
+    const found = reopened.listInterruptedTurns();
+    assert.equal(found.length, 1);
+    const [t] = found;
+    assert.equal(t!.threadId, thread.id);
+    assert.equal(t!.turnId, turnId);
+    assert.equal(t!.cause, "human");
+    assert.equal(t!.attempt, 0);
+    assert.equal(t!.sessionId, "session-1");
+    assert.equal(t!.resumePoint, "session-1");
+    assert.equal(t!.rewindTo, "uuid-a");
+    assert.ok(t!.startedSeq > 0);
+    assert.ok(t!.startedAt);
+  });
+});
+
+test("会話の id が分かっても resume-point は変えない（走行中の Fork・Clear の防御のため）", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const thread = await store.createBaseThread(project.id);
+    await store.updateResumePoint(thread.id, "session-1");
+    const turnId = await store.startTurn(thread.id, { cause: "human", attempt: 0, resumePoint: "session-1" });
+    // Fork の最初のターンのように、system/init で新しい id が分かった
+    await store.recordTurnSessionKnown(thread.id, turnId, "session-2");
+    assert.equal(store.getThread(thread.id)?.resumePoint, "session-1");
+    assert.equal(store.getThread(thread.id)?.lastTurn?.knownSessionId, "session-2");
+    assert.equal(store.listInterruptedTurns()[0]?.sessionId, "session-2");
+  });
+});
+
+test("新しい会話の最初のターンは、host が先に決めた id で見分けられる（system/init の前に切れても）", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const thread = await store.createBaseThread(project.id);
+    await store.startTurn(thread.id, { cause: "delivery", attempt: 1, sessionId: "assigned-1" });
+    const [t] = store.listInterruptedTurns();
+    assert.equal(t?.sessionId, "assigned-1");
+    assert.equal(t?.cause, "delivery");
+    assert.equal(t?.attempt, 1);
+    assert.equal(t?.resumePoint, undefined);
+  });
+});
+
+test("終わりを書いたターン・resume-point を書いたあとに止まったターンは、切れたことにしない", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const ended = await store.createBaseThread(project.id);
+    const afterResumePoint = (await store.forkThread(ended.id, { fresh: true })).id;
+
+    const a = await store.startTurn(ended.id, { cause: "human", attempt: 0, sessionId: "s-a" });
+    await store.updateResumePoint(ended.id, "s-a");
+    await store.endTurn(ended.id, a, "completed");
+
+    // resume-point → 返事 → … → turn.ended の途中で止まった（CLI の側ではターンは終わっている）
+    await store.startTurn(afterResumePoint, { cause: "human", attempt: 0, sessionId: "s-b" });
+    await store.updateResumePoint(afterResumePoint, "s-b");
+
+    assert.deepEqual((await reopen(dir)).listInterruptedTurns(), []);
+  });
+});
+
+test("止めた・失敗したターンも、終わりを書いていれば切れたことにしない", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const thread = await store.createBaseThread(project.id);
+    const turnId = await store.startTurn(thread.id, { cause: "human", attempt: 0, sessionId: "s" });
+    await store.endTurn(thread.id, turnId, "failed");
+    assert.equal(store.getThread(thread.id)?.lastTurn?.outcome, "failed");
+    assert.deepEqual(store.listInterruptedTurns(), []);
+  });
+});
+
+test("始めたあとに Clear・Thread を閉じた・Project を閉じたものは続けない", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const other = await store.createProject("Q", dir);
+    const cleared = await store.createBaseThread(project.id);
+    const closed = (await store.forkThread(cleared.id, { fresh: true })).id;
+    const inClosedProject = await store.createBaseThread(other.id);
+    const untouched = (await store.forkThread(cleared.id, { fresh: true })).id;
+
+    for (const id of [cleared.id, closed, inClosedProject.id, untouched]) {
+      await store.startTurn(id, { cause: "human", attempt: 0, sessionId: `s-${id}` });
+    }
+    await store.clearThread(cleared.id);
+    await store.closeThread(closed);
+    await store.closeProject(other.id);
+    // 開き直しても、閉じた時点で走っていたターンは続けない
+    await store.reopenThread(closed);
+
+    const found = (await reopen(dir)).listInterruptedTurns();
+    assert.deepEqual(
+      found.map((t) => t.threadId),
+      [untouched],
+    );
+    assert.equal(store.getThread(cleared.id)?.lastTurn?.abandonedBy, "cleared");
+    assert.equal(store.getThread(closed)?.lastTurn?.abandonedBy, "thread_closed");
+    assert.equal(store.getThread(inClosedProject.id)?.lastTurn?.abandonedBy, "project_closed");
+  });
+});
+
+test("見るのは最後のターンだけ。前のターンの id で来た出来事は、今のターンに付けない", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const thread = await store.createBaseThread(project.id);
+    const first = await store.startTurn(thread.id, { cause: "human", attempt: 0, sessionId: "s-1" });
+    await store.endTurn(thread.id, first, "completed");
+    const second = await store.startTurn(thread.id, { cause: "human", attempt: 0, resumePoint: "s-1" });
+    await store.recordTurnSessionKnown(thread.id, first, "s-old");
+    await store.endTurn(thread.id, first, "completed");
+    const [t] = store.listInterruptedTurns();
+    assert.equal(t?.turnId, second);
+    assert.equal(t?.sessionId, undefined, "前のターンの id で来た session id を付けている");
+  });
+});
+
+test("ターンの進み具合はスナップショットから読み戻しても残る", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("P", dir);
+    const thread = await store.createBaseThread(project.id);
+    const turnId = await store.startTurn(thread.id, { cause: "human", attempt: 2, sessionId: "s" });
+    await store.save();
+    const [t] = (await reopen(dir)).listInterruptedTurns();
+    assert.equal(t?.turnId, turnId);
+    assert.equal(t?.attempt, 2);
   });
 });

@@ -19,7 +19,10 @@ import type {
   MessageImage,
   MessageOrigin,
   MessageSender,
+  TurnCause,
+  TurnOutcome,
 } from "./types.js";
+import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
 import type { SessionSkillSet } from "../skills/types.js";
 import { sameSkillSet } from "../skills/activation.js";
 
@@ -59,6 +62,8 @@ export class ProjectThreadStore {
     // v3：ThreadにownsSession（親から借りたresume-pointか、自分のセッションか）
     // を足した（決定・2026-09-05）。v2以前には無いので読まずに作り直す。
     // v2でMemoryをProject持ちにした変更もここに含まれる。
+    // v9：ThreadState に lastTurn（ターンの進み具合）を足した（2026-10-05）。read model の形を変えたので上げる
+    //     （前の snapshot に turn.started は無いので、畳み直しても中身は同じ。起動1回ぶんログを読み直す）
     // v8：「どの面に出したか」を、会話より先に届いても取りこぼさないように
     //     read model に預かり場所を足した（実測・2026-09-07）
     // v7：UiToolCallEntry に displayMode、ThreadState に createdSeq を足した
@@ -66,7 +71,7 @@ export class ProjectThreadStore {
     // v6：MessageEntry に uiToolCalls を足した（決定・2026-09-07）
     // （上げていない：2026-09-25 に足した deliveries・awaitingReplies・MessageEntry.origin は、新しいイベントからしか
     //  生まれない——前の snapshot に畳み直すべきものが無い）
-    this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 8);
+    this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 9);
   }
 
   async load(): Promise<void> {
@@ -309,6 +314,45 @@ export class ProjectThreadStore {
       ...(anchor ? { anchor } : {}),
     });
     this.projection.applyOne(event);
+  }
+
+  /**
+   * **ターンを始めた**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。ターンの id を返す
+   * ——同じ id で `recordTurnSessionKnown`・`endTurn` を書く
+   */
+  async startTurn(
+    threadId: ThreadId,
+    input: { cause: TurnCause; attempt: number; resumePoint?: string; rewindTo?: string; sessionId?: string },
+  ): Promise<string> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const turnId = randomUUID();
+    const event = await this.log.append("turn.started", {
+      threadId,
+      turnId,
+      cause: input.cause,
+      attempt: input.attempt,
+      ...(input.resumePoint !== undefined ? { resumePoint: input.resumePoint } : {}),
+      ...(input.rewindTo !== undefined ? { rewindTo: input.rewindTo } : {}),
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+    });
+    this.projection.applyOne(event);
+    return turnId;
+  }
+
+  /** Runner の `system/init` で会話の id が分かった。**resume-point は変えない**（`updateResumePoint` は今どおり最後に） */
+  async recordTurnSessionKnown(threadId: ThreadId, turnId: string, sessionId: string): Promise<void> {
+    const event = await this.log.append("turn.session_known", { threadId, turnId, sessionId });
+    this.projection.applyOne(event);
+  }
+
+  async endTurn(threadId: ThreadId, turnId: string, outcome: TurnOutcome): Promise<void> {
+    const event = await this.log.append("turn.ended", { threadId, turnId, outcome });
+    this.projection.applyOne(event);
+  }
+
+  /** **起こし直しで切れたターン**（`findInterruptedTurns`）。起き直した直後、何かを走らせる前に読む */
+  listInterruptedTurns(): InterruptedTurn[] {
+    return findInterruptedTurns(this.projection.current.threads.values());
   }
 
   /**
