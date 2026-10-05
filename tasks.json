@@ -4943,7 +4943,7 @@
       "number": 205,
       "kind": "task",
       "title": "起き直したら切れたターンを自動で続ける（上限つき）",
-      "status": "ready",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-turn-events",
@@ -4954,12 +4954,12 @@
       "labels": [],
       "body": "機械からのメッセージをほかの届いたものより先に積んで起こす（ホップは切れたターンと同じ・速度の上限に数えない）。文面は実行中だった呼び出し（CLI の記録から引く）・承認待ちで無効になったもの・予約していた Fork を書き分ける。記録が無い最初のターンは発言を積み直さずに走らせ直す。続けて2回切れたら止めて受信箱に知らせ、人が「続ける」を押せる。",
       "doneWhen": "偽の Runner で：tool の途中で止めて起動し直すと、人が何もせずに「切れました」と実行中の呼び出しが届いて続きが最後まで走る。続けて2回切れると自動で続けず受信箱に1件出る。Clear のあと・Thread を閉じたあとに切れたものは続けない",
-      "resolution": null,
+      "resolution": "841417ed〜568e71c1（上限3・止めた Thread の留め・「続ける」）。偽の Runner と own-host の E2E で確かめた。本物の CLI での通しは resume-restart-measure の残り",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T04:15:28.591Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-05T10:58:11.835Z",
+      "closedAt": "2026-10-05T10:58:11.835Z",
       "extra": {}
     },
     {
