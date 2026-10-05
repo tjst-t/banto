@@ -24,6 +24,7 @@ type ThreadDetail = {
   kind: string;
   title?: string;
   messages: Array<{ role: string; text: string; origin?: { from: string; sender?: { projectId: string; threadId: string } } }>;
+  lastTurn?: { outcome?: string };
 };
 
 test("ほかの Project へ送る→承認（以後聞かない）→新しい Fork に届く→返事は承認なしで送り元に戻る", async ({ page }) => {
@@ -92,7 +93,12 @@ test("ほかの Project へ送る→承認（以後聞かない）→新しい F
       async () => {
         const t = (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${fork!.id}`, { headers })).json()) as ThreadDetail;
         const first = t.messages[0];
-        return first?.origin?.sender?.threadId === senderBase.id && t.messages.at(-1)?.role === "assistant";
+        // 返事が記録にあるだけでなく、そのターンが終わりを書いた（返事は書き終えるごとに記録に入る。2026-10-05）
+        return (
+          first?.origin?.sender?.threadId === senderBase.id &&
+          t.messages.at(-1)?.role === "assistant" &&
+          t.lastTurn?.outcome === "completed"
+        );
       },
       { timeout: 60_000, message: "新しい Fork が送り元つきで届き、走り終わるまで" },
     )

@@ -2080,6 +2080,10 @@ export function createApp(deps: AppDeps) {
           connection: "keep-alive",
         });
         const stopKeepAlive = keepSseAlive(res);
+        // **画面が先に切れたか**（追加・2026-10-05）。下の待ちの途中で切れたら、`attached` も書かず、購読も残さない
+        // ——切れたあとに足した `close` の聞き手は呼ばれないので、購読が終わりの合図まで残ってしまう
+        let closed = false;
+        req.on("close", () => (closed = true));
         let snapshot = deps.turnEvents?.snapshot(threadId);
         const turnEvents = deps.turnEvents;
         const threadTurns = deps.threadTurns;
@@ -2125,6 +2129,12 @@ export function createApp(deps: AppDeps) {
               resolve();
             });
           });
+        }
+        if (closed) {
+          // 待っている間に画面が切れた——何も書かず、溜めていた購読も外す
+          stopCatchingUp?.();
+          stopKeepAlive();
+          return;
         }
         if (!snapshot) {
           stopCatchingUp?.();

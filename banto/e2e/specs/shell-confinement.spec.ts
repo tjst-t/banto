@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 /**
  * **AI を通さずに、AI が通る経路そのもの**（代理サーバ）で runCommand を呼ぶ。
@@ -110,6 +110,7 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
   } catch (err) {
     throw new Error(`${(err as Error).message}\n\n${await captureFreezeEvidence(page, threadId, insideMarker)}`);
   }
+  await waitTurnEnded(page, threadId, 1, 120_000);
 
   // --- ② Project の外は読めない ---
   await composer.fill(
@@ -122,17 +123,16 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
   );
   await composer.press("Enter");
 
-  // ターンが終わるまで待つ（assistant の返事が増えるまで）
-  const assistantCount = async () => {
-    const t = await (
-      await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, {
-        headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-      })
-    ).json();
-    return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
-  };
-  const before = await assistantCount();
-  await expect.poll(assistantCount, { timeout: 180_000 }).toBeGreaterThan(before);
+  // **ターンが最後まで終わるまで待つ**（改訂・2026-10-05）。以前は返事の件数が増えるまでだった——返事は書き終える
+  // ごとに記録に入るので、件数は最初の発言で増え、下の「出ていない」の検査が中身の入る前に空振りで通っていた（規則14）
+  const ended = await waitTurnEnded(page, threadId, 2, 180_000);
+  // **「出ていない」を見る前に、出るはずの場所に結果が来ていること**を見る（規則14——空振りで通さない）。偽 Runner は
+  // runCommand の返り値（JSON）をそのまま最後の発言にする：記録にも、画面の最後の吹き出しにも、その返り値がある
+  const reply = ended.messages.filter((m) => m.role === "assistant").at(-1)!.text;
+  expect(reply, "外を読むターンの返事に runCommand の結果が無い（tool を呼んでいない）").toContain('"exitCode"');
+  await expect(page.locator('[data-role="assistant"]').last(), "外を読んだ結果が画面に出ていない").toContainText("exitCode", {
+    timeout: 30_000,
+  });
 
   // **外の中身が、画面にも記録にも出ていないこと**——閉じ込めが破れていたら必ず出る
   await expect(page.getByText(outsideSecret, { exact: false })).toHaveCount(0);

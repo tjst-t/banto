@@ -10,18 +10,22 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 test.setTimeout(120_000);
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Text Blocks";
 
-async function lastRecordedAssistant(page: Page): Promise<string | undefined> {
+async function baseThreadId(page: Page): Promise<string> {
   const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
   const project = projects.find((p: { name: string }) => p.name === PROJECT_NAME);
   const threads = await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers: HEADERS })).json();
-  const t = await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threads[0].id}`, { headers: HEADERS })).json();
+  return threads[0].id;
+}
+
+async function lastRecordedAssistant(page: Page): Promise<string | undefined> {
+  const t = await (await page.request.get(`${CORE_BASE_URL}/api/threads/${await baseThreadId(page)}`, { headers: HEADERS })).json();
   return (t.messages as { role: string; text: string }[]).filter((m) => m.role === "assistant").at(-1)?.text;
 }
 
@@ -40,7 +44,8 @@ test("別々に届いた文は、流れているときもリロード後も、�
   await composer.press("Enter");
 
   // 記録に返事が入るまで待つ（流れている途中ではなく、終わった形で比べる）
-  await expect.poll(() => lastRecordedAssistant(page), { timeout: 60_000 }).toBeTruthy();
+  // （返事は書き終えるごとに記録に入るので、最初の段落が入った時点ではまだ終わっていない——ターンの終わりを待つ。2026-10-05）
+  await waitTurnEnded(page, await baseThreadId(page), 1);
   await expect(page.getByRole("button", { name: "Send message" })).toBeVisible({ timeout: 30_000 });
 
   // 流れていたときの見え方：2つの段落（貼り合わさっていない）

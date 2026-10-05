@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, fakeTurn, openApp } from "../helpers.js";
+import { createProject, fakeTurn, openApp, waitTurnEnded } from "../helpers.js";
 
 // 前面の1枚だけが出る幅で見る（同じ aria-label が Base と Fork に並ばない）
 test.use({ viewport: { width: 390, height: 844 } });
@@ -46,9 +46,7 @@ test("Fork は名前を聞いて作り、ヘッダからだけ「まっさらで
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "ひとつめの返事" })).toBeVisible({
     timeout: 60_000,
   });
-  await expect
-    .poll(async () => (await getThread(baseId)).resumePoint, { timeout: 60_000, message: "ターンが終わるまで" })
-    .toBeTruthy();
+  await waitTurnEnded(page, baseId, 1);
 
   const dialog = page.getByTestId("fork-dialog");
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });

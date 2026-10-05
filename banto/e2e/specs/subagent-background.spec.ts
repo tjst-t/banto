@@ -43,7 +43,6 @@ test("待たずに頼んだ仕事は、終わると開いたままの会話に�
   const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as { id: string; name: string }[];
   const project = projects.find((p) => p.name === PROJECT_NAME)!;
   const threadId = ((await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })).json()) as { id: string }[])[0]!.id;
-  const assistantCount = async () => (await hostMessages(page, threadId)).filter((m) => m.role === "assistant").length;
 
   // ---- 1. 待たずに頼む ----------------------------------------------------------------------------
   // サブエージェントへの頼みに「〜と返して」を入れておく——届いた結果を読んだ AI（偽 Runner）がその語で返す
@@ -70,7 +69,7 @@ test("待たずに頼んだ仕事は、終わると開いたままの会話に�
     }
     await expect(page.getByText(/待たずに頼みました/).first()).toBeVisible({ timeout: 10_000 });
   }).toPass({ timeout: 120_000 });
-  await expect.poll(assistantCount, { timeout: 60_000, message: "最初のターンが終わらない" }).toBe(1);
+  await waitTurnEnded(page, threadId, 1);
   // 最初のターンが終わった時点では、まだ何も届いていない（仕事は走っている）
   expect((await hostMessages(page, threadId)).some((m) => m.origin), "待たずに頼んだのに、もう届いている").toBe(false);
 
@@ -82,7 +81,7 @@ test("待たずに頼んだ仕事は、終わると開いたままの会話に�
   await expect(card.getByTestId("delivered-title")).toHaveText(TITLE);
   await expect(card.getByTestId("delivered-summary")).toContainText("受け取った：[slow 4] 「届いた結果を読みました」と返して");
   // AI が起きて、届いたものを読んで返した（2ターン目）
-  await expect.poll(assistantCount, { timeout: 90_000, message: "届いたのに AI が起きない" }).toBe(2);
+  await waitTurnEnded(page, threadId, 2, 90_000);
   // 2ターン目の返事は、届いた中身から語を拾っている（偽 Runner は「〜と返して」の語を返す）
   const replies = (await hostMessages(page, threadId)).filter((m) => m.role === "assistant");
   expect(replies[1]!.text, "AI が届いたものを読んでいない").toContain("届いた結果を読みました");
@@ -135,7 +134,6 @@ test("返事を待っているうちに Module が止まったら、「途中で
   const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as { id: string; name: string }[];
   const project = projects.find((p) => p.name === name)!;
   const threadId = ((await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })).json()) as { id: string }[])[0]!.id;
-  const assistantCount = async () => (await hostMessages(page, threadId)).filter((m) => m.role === "assistant").length;
 
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(
@@ -160,7 +158,7 @@ test("返事を待っているうちに Module が止まったら、「途中で
   await expect(page.getByTestId("delivered-message"), "Module が止まったのに、何も届かない").toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("delivered-title")).toHaveText("subagent の仕事は途中で終わりました");
   await expect(page.getByTestId("delivered-summary")).toContainText("Module が止まったため");
-  await expect.poll(assistantCount, { timeout: 90_000, message: "届いたのに AI が起きない" }).toBe(2);
+  await waitTurnEnded(page, threadId, 2, 90_000);
   const delivered = (await hostMessages(page, threadId)).filter((m) => m.origin);
   expect(delivered).toHaveLength(1);
   expect(delivered[0]!.origin).toMatchObject({ from: "subagent", hop: 1 });

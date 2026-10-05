@@ -539,6 +539,55 @@ test("走り始める前のターンに繋ぎに来たら、走り始めるま�
   );
 });
 
+test("境界を待っている間に画面が切れたら、attached も書かず購読も残さない", async () => {
+  // 生きている流しの購読を数える Bus
+  class CountingBus extends TurnEventBus {
+    active = 0;
+    override subscribeStream(threadId: string, listener: Parameters<TurnEventBus["subscribeStream"]>[1]): () => void {
+      this.active += 1;
+      const off = super.subscribeStream(threadId, listener);
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        this.active -= 1;
+        off();
+      };
+    }
+  }
+  const turnEvents = new CountingBus();
+  const threadTurns = new ThreadTurns();
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("P", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const release = threadTurns.tryAcquire(thread.id, 0)!;
+      turnEvents.begin(thread.id, "2026-10-05T00:00:00.000Z");
+      // 始まりを書く前に繋ぎ、境界を待っている間に画面が切れる
+      const ctrl = new AbortController();
+      const reading = fetch(`${base}/api/threads/${thread.id}/stream`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
+      }).then((r) => r.text()).catch(() => "aborted");
+      await new Promise((r) => setTimeout(r, 100));
+      ctrl.abort();
+      assert.equal(await reading, "aborted");
+      await new Promise((r) => setTimeout(r, 100));
+      // そのあと始まりを書き、流す
+      turnEvents.markStarted(thread.id, "2026-10-05T00:00:01.000Z", 7);
+      turnEvents.record(thread.id, { type: "message", message: { type: "assistant" } });
+      await new Promise((r) => setTimeout(r, 100));
+      const leaked = turnEvents.active;
+      // 見る前に終わらせる——残った購読は終わりの合図まで応答を開いたままにするので、先に落とすとサーバが閉じられない
+      turnEvents.record(thread.id, { type: "done", compactionCount: 0 });
+      turnEvents.end(thread.id);
+      release();
+      assert.equal(leaked, 0, "切れた画面の購読が残っている");
+    },
+    { turnEvents, threadTurns },
+  );
+});
+
 // **いま動いているもの**（決定・2026-09-28）——再起動の頃合いを計る口。ターン・返事待ちの札・Module の呼び出しを数え、
 // 人の返事を待って止まっているだけのターンは見分けられる
 test("GET /api/admin/activity は動いているものを数え、人の返事待ちだけかを見分ける", async () => {

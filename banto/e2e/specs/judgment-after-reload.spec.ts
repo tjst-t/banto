@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp, fakeTurn } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
@@ -65,24 +65,10 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
   // 答えたあとの続き（このブラウザにはSSEが無い）が、hostの記録から画面に入る。
   // 「何か出た」で済ませず、**hostが記録した最後の返事の本文そのもの**が
   // 画面に出ていることを見る（規則14）
-  let lastAssistantText = "";
-  await expect
-    .poll(
-      async () => {
-        const t = await (
-          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
-        const assistant = (t.messages as { role: string; text: string }[]).filter(
-          (m) => m.role === "assistant",
-        );
-        lastAssistantText = assistant.at(-1)?.text ?? "";
-        return lastAssistantText.length > 0;
-      },
-      { timeout: 120_000 },
-    )
-    .toBe(true);
+  // ターンが最後まで終わってから、記録の返事を読む（返事は書き終えるごとに記録に入る——途中の文で比べない。2026-10-05）
+  const ended = await waitTurnEnded(page, threadId, 1, 120_000);
+  const lastAssistantText = ended.messages.filter((m) => m.role === "assistant").at(-1)?.text ?? "";
+  expect(lastAssistantText, "ターンが終わったのに返事の文が無い").not.toBe("");
 
   // **見出しやコード片で要素が分かれても落ちない形で比べる**（改訂・2026-09-10）。
   // 以前は「記録した本文の先頭30字が1つのテキストノードにある」ことを見ていたため、

@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp, fakeTurn } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -94,17 +94,8 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   // **待つのは、そのターンが終わった印**——host の記録に返事が入るまで。「送るボタンが見える」では待たない：
   // 答えた直後の一瞬はまだ「判断待ち」の形で送るボタンが出ていて、その直後に走り出す（実測・2026-09-26、
   // ここで Enter を押して、走っている最中の送信として無視されていた）
-  await expect
-    .poll(
-      async () => {
-        const t = await (
-          await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-        ).json();
-        return (t.messages as { role: string }[]).filter((m) => m.role === "assistant").length;
-      },
-      { timeout: 60_000, message: "答えたあと、ターンが終わらない" },
-    )
-    .toBe(1);
+  // （返事の件数では待たない——返事は書き終えるごとに記録に入る。2026-10-05）
+  await waitTurnEnded(page, threadId, 1);
   await expect(page.getByRole("button", { name: "Send message" }), "ターンが終わったのに、画面が終わった形に戻らない").toBeVisible({
     timeout: 30_000,
   });

@@ -20,7 +20,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadState, TurnOutcome } from "../project-thread/types.js";
-import type { InterruptedTurn } from "../project-thread/interrupted-turns.js";
+import { notInterruptedReason, type InterruptedTurn } from "../project-thread/interrupted-turns.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -633,20 +633,32 @@ export const INTERRUPTED_NOTE = "（起こし直しで切れました）";
 
 /**
  * **起こし直しで切れたターンの記録を締める**（追加・2026-10-05、アーキ仕様 §2.5「書き終えた発言ごとに記録する」）。
- * 起き直した host が、`listInterruptedTurns` の返したターンに1回呼ぶ。切れるまでに書き終えた発言はもう記録にあり、
+ * 起き直した host が、`listInterruptedTurns` の返したターンに呼ぶ。切れるまでに書き終えた発言はもう記録にあり、
  * この一行はその後ろに続く（fold が同じ吹き出しにまとめる）。書いている途中だった文と、結果の来ていなかった画面つきの
  * 呼び出しは、プロセスと一緒に消えている。
  *
- * そのターンがもう Thread の最後のターンでなければ断る——後のターンの吹き出しに付いてしまう
+ *  - **切れたターンにだけ足す**（`listInterruptedTurns` と同じ条件、`notInterruptedReason`）。もう Thread の最後の
+ *    ターンでない・終わりが書かれた・resume-point が書かれた・人がやめたターンには足さずに断る
+ *  - **1つのターンに一度だけ**。もう足してあれば何もしない（続けば何度も起き直しうる）。足したかは記録から見る——
+ *    そのターンの吹き出し（始まりより後ろの AI の発言）がこの一行で終わっているか
  */
 export async function noteInterruptedTurn(
   projectThread: ProjectThreadStore,
   turn: Pick<InterruptedTurn, "threadId" | "turnId">,
 ): Promise<void> {
-  const last = projectThread.getThread(turn.threadId)?.lastTurn;
+  const thread = projectThread.getThread(turn.threadId);
+  const last = thread?.lastTurn;
   if (last?.turnId !== turn.turnId) {
     throw new Error(`${turn.threadId} の最後のターンは ${turn.turnId} ではありません（${last?.turnId ?? "ターン無し"}）`);
   }
+  const reason = notInterruptedReason(last);
+  if (reason !== undefined) throw new Error(`${turn.threadId} のターン ${turn.turnId} は切れていません：${reason}`);
+  const reply = thread!.messages.at(-1);
+  const noted =
+    reply?.role === "assistant" &&
+    reply.seq > last.startedSeq &&
+    (reply.text === INTERRUPTED_NOTE || reply.text.endsWith(`\n\n${INTERRUPTED_NOTE}`));
+  if (noted) return;
   await projectThread.appendMessage(turn.threadId, "assistant", INTERRUPTED_NOTE);
 }
 

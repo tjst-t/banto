@@ -14,7 +14,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, openApp, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog, waitTurnEnded } from "../helpers.js";
 
 test.setTimeout(180_000);
 
@@ -27,11 +27,15 @@ interface HostMessage {
   images?: Array<{ id: string; name?: string }>;
 }
 
-async function hostMessages(page: Page): Promise<HostMessage[]> {
+async function baseThreadId(page: Page): Promise<string> {
   const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
   const project = projects.find((p: { name: string }) => p.name === PROJECT_NAME);
   const threads = await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers: HEADERS })).json();
-  return (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threads[0].id}`, { headers: HEADERS })).json()).messages;
+  return threads[0].id;
+}
+
+async function hostMessages(page: Page): Promise<HostMessage[]> {
+  return (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${await baseThreadId(page)}`, { headers: HEADERS })).json()).messages;
 }
 
 /**
@@ -111,7 +115,7 @@ test("貼り付けた画像が AI に届き、送った発言に付いて出て�
   await expect.poll(() => naturalSize(userImages.first())).toBe("64x48");
 
   // host の記録には名前だけ——名前で同じバイト列が取れる
-  await expect.poll(async () => (await hostMessages(page)).filter((m) => m.role === "assistant").length, { timeout: 60_000 }).toBe(1);
+  await waitTurnEnded(page, await baseThreadId(page), 1);
   const [sent] = (await hostMessages(page)).filter((m) => m.role === "user");
   expect(sent!.text).toBe("この画像を見て");
   expect(sent!.images).toHaveLength(1);
@@ -144,7 +148,7 @@ test("貼り付けた画像が AI に届き、送った発言に付いて出て�
   await expect.poll(() => naturalSize(page.locator(".aui-composer-attachments img"))).toBe("32x20");
   await composer.press("Enter");
   await expect(page.getByText(`受け取った画像: 1 枚（image/png ${onlySize} バイト）`)).toBeVisible({ timeout: 60_000 });
-  await expect.poll(async () => (await hostMessages(page)).filter((m) => m.role === "assistant").length, { timeout: 60_000 }).toBe(2);
+  await waitTurnEnded(page, await baseThreadId(page), 2);
   const users = (await hostMessages(page)).filter((m) => m.role === "user");
   expect(users).toHaveLength(2);
   expect(users[1]!.text).toBe("");

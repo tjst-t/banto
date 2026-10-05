@@ -1,7 +1,7 @@
 // **起こし直しで切れたターンを見分ける**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」の
 // 「1. Thread のターンを続ける」）。ここは見分けるだけ——続ける処理は別に置く。
 
-import type { ThreadId, ThreadState, TurnCause } from "./types.js";
+import type { ThreadId, ThreadState, TurnCause, TurnRecord } from "./types.js";
 
 /**
  * 切れたターン1件。続けるのに要るもの。
@@ -37,16 +37,27 @@ export interface InterruptedTurn {
 }
 
 /**
- * **最後のターンが始まったまま終わっていない Thread**を返す。切れたと見るのは、`turn.started` があって——
+ * **そのターンは切れたものか**——`turn.started` があって：
  *  - `turn.ended` が無い
  *  - 始めたより後に resume-point の更新が無い（書いたあとに落ちたターンは、CLI の側では終わっている）
  *  - 始めたより後に Clear・Thread を閉じた・Project を閉じた、が無い（人がやめたものは続けない）
+ *
+ * 切れたなら理由は無し（`undefined`）、切れていなければその理由。見分けと、切れた印を足す口（`noteInterruptedTurn`）で
+ * 同じ条件を使う
  */
+export function notInterruptedReason(turn: TurnRecord): string | undefined {
+  if (turn.outcome !== undefined) return `終わりが書かれている（${turn.outcome}）`;
+  if (turn.resumePointUpdated) return "resume-point が書かれている（CLI の側では終わっている）";
+  if (turn.abandonedBy !== undefined) return `人がやめた（${turn.abandonedBy}）`;
+  return undefined;
+}
+
+/** **最後のターンが切れたまま（`notInterruptedReason` が無い）の Thread**を返す */
 export function findInterruptedTurns(threads: Iterable<ThreadState>): InterruptedTurn[] {
   const found: InterruptedTurn[] = [];
   for (const thread of threads) {
     const turn = thread.lastTurn;
-    if (!turn || turn.outcome !== undefined || turn.resumePointUpdated || turn.abandonedBy !== undefined) continue;
+    if (!turn || notInterruptedReason(turn) !== undefined) continue;
     const sessionId = turn.knownSessionId ?? turn.assignedSessionId;
     found.push({
       threadId: thread.id,

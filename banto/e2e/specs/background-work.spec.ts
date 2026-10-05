@@ -13,7 +13,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(420_000);
@@ -23,13 +23,6 @@ const OTHER_NAME = "E2E Background Other";
 const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 const FIRST = "[slow 70] 一つ目の仕事";
 const SECOND = "[slow 120] 二つ目の仕事";
-
-async function assistantCount(page: Page, threadId: string): Promise<number> {
-  const thread = (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers })).json()) as {
-    messages: { role: string }[];
-  };
-  return thread.messages.filter((m) => m.role === "assistant").length;
-}
 
 test("待たずに頼んだ仕事が、どの Thread で動いているかサイドバーに出て、押すとその仕事が開く", async ({ page }) => {
   const pageErrors: string[] = [];
@@ -69,7 +62,7 @@ test("待たずに頼んだ仕事が、どの Thread で動いているかサイ
     }
     await expect(page.getByText(/待たずに頼みました/)).toHaveCount(2, { timeout: 10_000 });
   }).toPass({ timeout: 120_000 });
-  await expect.poll(() => assistantCount(page, threadId), { timeout: 60_000, message: "最初のターンが終わらない" }).toBe(1);
+  await waitTurnEnded(page, threadId, 1);
 
   await expect(line, "Base Thread の行にバックグラウンドの印が出ない").toHaveCount(1, { timeout: 30_000 });
   await expect(line).toHaveText("バックグラウンドで 2 件");

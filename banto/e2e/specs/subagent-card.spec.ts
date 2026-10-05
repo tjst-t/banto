@@ -95,7 +95,7 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
   await expect(cards.nth(1)).toContainText("fake に頼んだ仕事");
   await expect(cards.nth(1)).toContainText("二つ目の仕事");
   // 終わって届いたもので AI が起きるまで待つ（走っている途中のリロードを避ける）
-  await expect.poll(() => assistantCount(page, threadId), { timeout: 120_000 }).toBeGreaterThanOrEqual(3);
+  await waitTurnEnded(page, threadId, 3, 120_000);
 
   // ---- 4. リロードしても残り、古いほうを押すと古いほうの仕事が開く ------------------------------------
   await page.reload();

@@ -373,3 +373,111 @@ test("失敗したターンでも、結果の来ていない画面つきの呼�
     assert.deepEqual(reply.uiToolCalls?.map((c) => [c.toolCallId, c.result]), [["t1", undefined]]);
   });
 });
+
+test("切れた印は切れたターンにだけ足す——終わった・止めた・resume-point を書いた・人がやめたターンには断る", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const text = () => store.getThread(threadId)!.messages.map((m) => m.text);
+    // 最後まで行ったターン
+    const done = pausingRunner([init("session-1"), say("返事", "u1")]);
+    await collect(runThreadTurn({ ...deps, runTurn: done.fake }, { threadId, prompt: "一", modules: [] }));
+    const completed = store.getThread(threadId)!.lastTurn!;
+    await assert.rejects(noteInterruptedTurn(store, { threadId, turnId: completed.turnId }), /切れていません：終わりが書かれている（completed）/);
+
+    // 人が止めたターン
+    const stopped = pausingRunner([init("session-1"), say("途中", "u2"), "pause"]);
+    const stop = new AbortController();
+    const running = collect(runThreadTurn({ ...deps, runTurn: stopped.fake }, { threadId, prompt: "二", modules: [], stop: stop.signal }));
+    await stopped.state.reachedPause;
+    stop.abort();
+    await running;
+    await assert.rejects(noteInterruptedTurn(store, { threadId, turnId: store.getThread(threadId)!.lastTurn!.turnId }), /終わりが書かれている（stopped）/);
+
+    // resume-point を書いたあとに止まったターン（CLI の側では終わっている）
+    const afterResume = await store.startTurn(threadId, { cause: "human", attempt: 0, resumePoint: "session-1" });
+    await store.appendMessage(threadId, "user", "三");
+    await store.updateResumePoint(threadId, "session-1");
+    await assert.rejects(noteInterruptedTurn(store, { threadId, turnId: afterResume }), /resume-point が書かれている/);
+
+    // 人が Clear したターン
+    const cleared = await store.startTurn(threadId, { cause: "human", attempt: 0, resumePoint: "session-1" });
+    await store.appendMessage(threadId, "user", "四");
+    await store.clearThread(threadId);
+    await assert.rejects(noteInterruptedTurn(store, { threadId, turnId: cleared }), /人がやめた（cleared）/);
+
+    assert.equal(text().filter((t) => t.includes(INTERRUPTED_NOTE)).length, 0, "断ったのに印を足した");
+  });
+});
+
+test("切れた印は1つのターンに一度だけ——起き直すたびに呼んでも、開き直した記録からでも増えない", async () => {
+  await withThread(async ({ deps, threadId, dir }) => {
+    const runner = pausingRunner([init("session-1"), say("半分まで", "u1"), "pause"]);
+    void collect(runThreadTurn({ ...deps, runTurn: runner.fake }, { threadId, prompt: "長い仕事", modules: [] }));
+    await runner.state.reachedPause;
+
+    const first = await reopenStore(dir);
+    const [cut] = first.listInterruptedTurns();
+    await noteInterruptedTurn(first, cut!);
+    await noteInterruptedTurn(first, cut!);
+    const second = await reopenStore(dir);
+    await noteInterruptedTurn(second, second.listInterruptedTurns()[0]!);
+    assert.deepEqual(view(second, threadId).at(-1), ["assistant", `半分まで\n\n${INTERRUPTED_NOTE}`, 0]);
+    assert.equal((await assistantAppends(dir, threadId)).filter((a) => a.text === INTERRUPTED_NOTE).length, 1);
+  });
+});
+
+/** 始まりより前に終わり以外が流れたら覚える Bus（turn-events.ts の前提を見る） */
+class EarlyWatchBus extends TurnEventBus {
+  readonly early: string[] = [];
+  protected override reportEarlyEvent(_threadId: string, event: TurnStreamEvent): void {
+    this.early.push(event.type);
+  }
+}
+
+test("始まりを書く前に流すのは終わり（error・stopped）だけ——始める前に断る道のどれでも", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const turnEvents = new EarlyWatchBus();
+    const runner = pausingRunner([init("session-1"), say("返事", "u1")]);
+    const run = (input: Partial<Parameters<typeof runThreadTurn>[1]>, extra: Partial<Parameters<typeof runThreadTurn>[0]> = {}) =>
+      collect(runThreadTurn({ ...deps, turnEvents, runTurn: runner.fake, ...extra }, { threadId, prompt: "やって", modules: [], ...input }));
+    const stopped = new AbortController();
+    stopped.abort();
+    const lastTypes: string[] = [];
+    const note = (events: TurnStreamEvent[]) => lastTypes.push(events.map((e) => e.type).join(","));
+
+    note(await run({ threadId: "no-such-thread" }));
+    note(await run({ stop: stopped.signal }));
+    note(await run({ prompt: "" }));
+    note(await run({}, { resolveSessionSkills: async () => Promise.reject(new Error("Skill が読めない")) }));
+    // Skill を決めている間に止められた（2つめの止める確かめ）
+    const midway = new AbortController();
+    note(
+      await run(
+        { stop: midway.signal },
+        {
+          resolveSessionSkills: async () => {
+            midway.abort();
+            return { active: [], othersIn: [], problems: [] };
+          },
+        },
+      ),
+    );
+    // Project が無い（fold の不整合）
+    const getProject = store.getProject.bind(store);
+    store.getProject = (() => undefined) as typeof store.getProject;
+    note(await run({}));
+    store.getProject = getProject;
+    assert.deepEqual(lastTypes, ["error", "stopped", "error", "error", "stopped", "error"]);
+    assert.deepEqual(turnEvents.early, []);
+
+    // 始まったターンは、どんなイベントでも前提に触れない
+    note(await run({}));
+    assert.equal(lastTypes.at(-1), "message,message,done");
+    assert.deepEqual(turnEvents.early, []);
+
+    // 前提が崩れたら気づく（始まりより前に AI の発言を流した）
+    turnEvents.begin("t-x", new Date().toISOString());
+    turnEvents.record("t-x", { type: "message", message: say("早すぎる", "u9") });
+    turnEvents.record("t-x", { type: "error", message: "終わり" });
+    assert.deepEqual(turnEvents.early, ["message"]);
+  });
+});

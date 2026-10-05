@@ -204,12 +204,17 @@ export async function explainMissingAiResult(page: Page, projectName: string): P
     if (!thread) return "Thread が host に無い";
     const detail = (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${thread.id}`, { headers })).json()) as {
       messages?: Array<{ role: string; text?: string }>;
+      lastTurn?: { outcome?: string };
     };
     const said = (detail.messages ?? [])
       .filter((m) => m.role === "assistant" && (m.text ?? "").trim() !== "")
       .map((m) => m.text!.trim());
-    if (said.length === 0) {
-      return "AI はまだ何も答えていない——**ターンが終わっていない**（CLI が遅いか、止まっている）";
+    // 返事は書き終えるごとに記録に入る（2026-10-05）——返事があってもターンが終わったとは限らない。終わりは lastTurn で見る
+    if (said.length === 0 || detail.lastTurn?.outcome === undefined) {
+      return (
+        "**ターンが終わっていない**（CLI が遅いか、止まっている）" +
+        (said.length > 0 ? `。ここまでの返答: ${said[said.length - 1]!.slice(0, 300)}` : "——AI はまだ何も答えていない")
+      );
     }
     return (
       "AI は答えを返し終わっているのに UI が出ていない——**AI が tool を呼ばなかった**" +

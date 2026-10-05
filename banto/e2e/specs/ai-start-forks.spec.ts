@@ -72,9 +72,11 @@ test("AI が Fork を2つ立てる→名前つきで出て、最初の指示で�
       async () => {
         const t = (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${auth!.id}`, { headers })).json()) as {
           messages: Array<{ role: string; text: string; origin?: { from: string } }>;
+          lastTurn?: { outcome?: string };
         };
         const delivered = t.messages.find((m) => m.origin && m.text.includes("ログインの不具合を調べて直す"));
-        const answered = t.messages.at(-1)?.role === "assistant";
+        // 返事が記録にあるだけでなく、そのターンが終わりを書いた（返事は書き終えるごとに記録に入る。2026-10-05）
+        const answered = t.messages.at(-1)?.role === "assistant" && t.lastTurn?.outcome === "completed";
         return delivered && answered ? delivered.origin!.from : undefined;
       },
       { timeout: 60_000, message: "Fork が最初の指示で走り終わるまで" },

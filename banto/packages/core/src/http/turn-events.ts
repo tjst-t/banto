@@ -147,11 +147,32 @@ export class TurnEventBus {
     };
   }
 
-  /** そのターンが出したイベントを覚え、**あとから繋いだ画面**にも渡す。 */
+  /**
+   * そのターンが出したイベントを覚え、**あとから繋いだ画面**にも渡す。
+   *
+   * **前提：始まり（`markStarted`）より前に流すのは、ターンの終わり（`error`・`stopped`）だけ**（追加・2026-10-05）。
+   * 始まりを書く前に断る道（Thread が無い・渡すものが無い・Skill を決められない・始める前に止められた）はどれも、
+   * 終わりを1つ流して抜ける。`GET …/stream` はこれに頼って、始まりより前に何か流れたら「このターンは記録に AI の
+   * 発言を書かない」として境界無しで答える（`whenStarted`）。前提が崩れる——始まりを書く前に AI の発言や判断待ちを
+   * 流す——と、境界の無いまま記録と流し直しが重なり、同じ発言が2回出る。崩れたら黙らずに知らせる
+   * （`reportEarlyEvent`。試験は差し替えて見る、`turn-replies.test.ts`）
+   */
   record(threadId: string, event: TurnStreamEvent): void {
-    this.live.get(threadId)?.events.push(event);
+    const turn = this.live.get(threadId);
+    if (turn && turn.startedSeq === undefined && event.type !== "error" && event.type !== "stopped") {
+      this.reportEarlyEvent(threadId, event);
+    }
+    turn?.events.push(event);
     for (const listener of this.streamListeners.get(threadId) ?? []) listener(event);
     this.notifyStarted(threadId);
+  }
+
+  /** 始まりより前に、終わり以外が流れた（上の前提が崩れた）。試験はここを差し替えて見る */
+  protected reportEarlyEvent(threadId: string, event: TurnStreamEvent): void {
+    console.error(
+      `[host] ${threadId} のターンが、始まりを記録する前に ${event.type} を流しました——流し直しと記録の境界が無く、` +
+        `あとから繋いだ画面に同じ発言が2回出ます（turn-events.ts の前提が崩れています）`,
+    );
   }
 
   /** ターンが終わった。**途中経過は捨てる**——ここから先の真実は Event Store。 */

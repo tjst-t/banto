@@ -9,7 +9,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, fakeTurn, openApp } from "../helpers.js";
+import { createProject, fakeTurn, openApp, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -27,9 +27,6 @@ async function hostThread(
   return (await page.request.get(`${CORE_BASE_URL}/api/threads/${threads[0].id}`, { headers: HEADERS })).json();
 }
 
-async function assistantCount(page: Page): Promise<number> {
-  return (await hostThread(page)).messages.filter((m) => m.role === "assistant").length;
-}
 
 test("選んだモデルと effort で次のターンが走り、リロードしても残り、途中で変えるときは確かめる", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-model-"));
@@ -74,7 +71,7 @@ test("選んだモデルと effort で次のターンが走り、リロードし
   await composer.fill("どのモデルで答えている？" + fakeTurn({ sayRuntime: true }));
   await composer.press("Enter");
   await expect(page.getByText("model=sonnet effort=low"), "選んだモデルでターンが走っていない").toBeVisible({ timeout: 60_000 });
-  await expect.poll(() => assistantCount(page), { timeout: 60_000 }).toBe(1);
+  await waitTurnEnded(page, (await hostThread(page)).id, 1);
 
   // ---- リロードしても残る（host が持っている）--------------------------------
   await page.reload();
@@ -126,7 +123,7 @@ test("AI には、いま動いているモデルの名前と ID が届く——�
     page.getByText("あなたは Opus 5 with 1M context で動いている。モデル ID は claude-opus-5[1m]。"),
     "既定のままの会話で、実際のモデルが AI に届いていない",
   ).toBeVisible({ timeout: 60_000 });
-  await expect.poll(async () => (await hostThread(page, name)).messages.filter((m) => m.role === "assistant").length, { timeout: 60_000 }).toBe(1);
+  await waitTurnEnded(page, (await hostThread(page, name)).id, 1);
 
   // Sonnet に変えると、次のターンでは Sonnet と伝わる
   const button = page.getByTestId("composer-model");
