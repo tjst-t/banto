@@ -19,6 +19,19 @@ export class InboxStore {
     return () => this.listeners.delete(listener);
   }
 
+  /** 判断待ちに答えが付いたら知らせる相手（追加・2026-10-05、どの道で答えても——人・畳んだ host・止めたターン） */
+  private readonly answeredListeners = new Set<(item: JudgmentItem, answer: unknown) => void>();
+
+  /**
+   * **判断待ちに答えが付いたら知らせる**（追加・2026-10-05、docs/notes/2026-10-05-relay-card-followups.md）。
+   * 画面のカードはターンの流れで答えを受け取っていたが、ターンが先に終わると流れが無く、host が畳んだカードが
+   * 答えられるように見えたまま残った。ターンをまたぐ知らせ（`judgment.answered`）の元
+   */
+  onJudgmentAnswered(listener: (item: JudgmentItem, answer: unknown) => void): () => void {
+    this.answeredListeners.add(listener);
+    return () => this.answeredListeners.delete(listener);
+  }
+
   private apply(event: Parameters<SnapshotProjection<ReturnType<typeof inboxFold.initial>>["applyOne"]>[0]): void {
     this.projection.applyOne(event);
     for (const listener of this.listeners) {
@@ -83,6 +96,15 @@ export class InboxStore {
   async answerJudgment(id: string, answer: unknown): Promise<void> {
     const event = await this.log.append("inbox.judgment_answered", { id, answer });
     this.apply(event);
+    const item = this.get(id);
+    if (item?.kind !== "judgment") return;
+    for (const listener of this.answeredListeners) {
+      try {
+        listener(item, answer);
+      } catch (err) {
+        console.warn("[host] 判断待ちの答えの聞き手が例外を投げました:", err);
+      }
+    }
   }
 
   /**

@@ -28,7 +28,8 @@ import {
   isApprovalGated,
   wasApprovalBypassed,
 } from "@/lib/mock/adapter";
-import { getRealInlineView, sendRealAnswer } from "@/lib/backend/adapter";
+import { getRealInlineView, getRealJudgmentId, sendRealAnswer } from "@/lib/backend/adapter";
+import { useJudgmentAnswer } from "@/lib/backend/judgment-answers";
 import { useThreadId } from "@/components/banto/thread/thread-id-context";
 import type { MockElicitationForm, MockElicitationUrl } from "@/lib/mock/types";
 
@@ -84,8 +85,12 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
   // 答えても元の呼び出しに届かないものには、答える口を出さない
   // （規則13——押せるのに繋がっていない状態を残さない。決定・2026-09-06）
   const answerable = args.answerable !== false;
-  const isPending = props.status?.type === "requires-action" && answeredHere === null && answerable;
-  const answer = typeof props.result === "string" ? props.result : answeredHere;
+  // **ターンの流れの外で付いた答え**（追加・2026-10-05）——ターンが先に終わってから host が畳んだ・受信箱で答えた。
+  // 流れが無いと props.result は来ないので、host の知らせ（`judgment.answered`）で答え済みにする
+  const answeredElsewhere = useJudgmentAnswer(getRealJudgmentId(props.toolCallId));
+  const isPending =
+    props.status?.type === "requires-action" && answeredHere === null && answeredElsewhere === undefined && answerable;
+  const answer = typeof props.result === "string" ? props.result : (answeredHere ?? answeredElsewhere ?? null);
 
   return (
     <div

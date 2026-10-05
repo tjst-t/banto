@@ -267,6 +267,8 @@ export interface RealInboxJudgment {
   toolInput?: unknown;
   /** どのサーバが聞いているか（§2.4.1 の MUST）。 */
   serverName?: string;
+  /** 答えの選択肢（host は 2026-10-01 から持っている）。無ければ「許可する／拒否する」 */
+  choices?: string[];
   liveness: "live" | "answered" | "timed_out";
   createdAt: string;
 }

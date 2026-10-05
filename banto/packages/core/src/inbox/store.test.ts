@@ -152,3 +152,16 @@ test("同じお知らせがほぼ同時に来ても1件（確かめてから書�
     assert.equal(store.listOpen().filter((i) => i.kind === "notice").length, 1);
   });
 });
+
+// **判断待ちに答えが付いたら知らせる**（追加・2026-10-05）——画面がターンの流れの外でもカードを答え済みにする元
+test("onJudgmentAnswered：答えが付いたら、その判断待ちと答えで1回知らせる（お知らせ・レビューでは呼ばない）", async () => {
+  await withStore(async (store) => {
+    const seen: Array<{ id: string; threadId: string; answer: unknown }> = [];
+    store.onJudgmentAnswered((item, answer) => seen.push({ id: item.id, threadId: item.threadId, answer }));
+    const j = await store.raiseJudgment({ threadId: "t1", source: "relay", message: "中継の確認" });
+    await store.raiseReview({ threadId: "t1", summary: "done" });
+    assert.equal(seen.length, 0);
+    await store.answerJudgment(j.id, { behavior: "deny", message: "畳みました" });
+    assert.deepEqual(seen, [{ id: j.id, threadId: "t1", answer: { behavior: "deny", message: "畳みました" } }]);
+  });
+});

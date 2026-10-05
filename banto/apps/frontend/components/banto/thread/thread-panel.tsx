@@ -20,6 +20,7 @@ import { OpenableCard } from "@/components/banto/thread/openable-card";
 import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import {
   cancelRunQuietly,
+  useRealRunAwaitingHuman,
   followVersion,
   registerRuntimeBusy,
   releaseRealRun,
@@ -337,6 +338,9 @@ function ThreadRuntime({
   }, [runtime, threadId]);
 
   const hint: ReactNode = <ThreadMarkers markers={markers} />;
+  // **判断待ちのカードが出ている間も止められる**（追加・2026-10-05）——run が host の流れを読み続けている間だけ。
+  // 押すと停止ボタンと同じ `cancelRun`（人の停止として host のターンを止める、§6.31）
+  const awaitingHuman = useRealRunAwaitingHuman(threadId);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -370,6 +374,7 @@ function ThreadRuntime({
         // 「ここから Fork」——分ける位置（seq）だけを渡す。どのセッションへ
         // 戻すかは host が決める（アーキ仕様 §2.2）
         onForkFrom={onForkFrom}
+        onStopWhileAwaitingHuman={awaitingHuman ? () => runtime.thread.cancelRun() : undefined}
       />
       </ThreadIdProvider>
       </CanvasOpenerProvider>

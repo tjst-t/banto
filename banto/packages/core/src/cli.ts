@@ -41,6 +41,7 @@ import {
 import { RuntimeConfigStore } from "./config/runtime.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
+import { judgmentAnswerText } from "./inbox/answer-text.js";
 import { PendingApprovalRegistry } from "./inbox/pending-approvals.js";
 import { RelayRegistry, HostRelayEndpoint } from "./relay/host-relay-endpoint.js";
 import { AgentRelayEndpoint } from "./relay/agent-relay-endpoint.js";
@@ -250,6 +251,9 @@ async function main(): Promise<void> {
     }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
+  inbox.onJudgmentAnswered((item, answer) =>
+    appEvents.publish({ type: "judgment.answered", threadId: item.threadId, judgmentId: item.id, answer: judgmentAnswerText(answer) }),
+  );
   /**
    * **バックグラウンドの仕事が増えた・減ったら、画面に知らせる**（追加・2026-10-03、v4-frontend.md §6.33）。
    * 真実は Thread の返事待ちの札（Event Store）。その Thread の分を丸ごと送る

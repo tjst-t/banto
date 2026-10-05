@@ -14,6 +14,7 @@
 
 import { getBackendConfig, hostFetch, readSse } from "./client";
 import { refreshRealInbox } from "./real-inbox";
+import { noteJudgmentAnswered } from "./judgment-answers";
 
 /** バックグラウンドで動いているもの1件（host の `BackgroundItem`、§6.33） */
 export interface RealBackgroundItem {
@@ -43,6 +44,11 @@ export type RealAppEvent =
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
   | { type: "inbox.changed" }
+  /**
+   * 判断待ちに答えが付いた（追加・2026-10-05）——どの道で答えても（受信箱・別の画面・host が畳んだ）。ターンの流れが
+   * もう無い会話のカードも、これで答え済みになる（`judgment-answers.ts`）
+   */
+  | { type: "judgment.answered"; threadId: string; judgmentId: string; answer: string }
   /** 「端末を追加」の札が使われた（2026-10-03）。札を出した画面が「端末が入りました」と出す */
   | { type: "auth.device_added"; codeId: string; label: string };
 
@@ -83,6 +89,7 @@ async function readOnce(): Promise<void> {
 
 function dispatch(event: RealAppEvent): void {
   if (event.type === "inbox.changed") void refreshRealInbox();
+  if (event.type === "judgment.answered") noteJudgmentAnswered(event.judgmentId, event.answer);
   for (const listener of listeners) {
     try {
       listener(event);

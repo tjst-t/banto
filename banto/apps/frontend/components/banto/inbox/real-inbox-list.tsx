@@ -5,11 +5,11 @@
 // 並びは止まっているものが先——判断待ち → お知らせ → **レビュー待ち**（ターンが終わった Thread、
 // 決定・2026-09-27）。
 //
-// 行き先は**その Thread を開く**だけにする。答える口は Thread 側のカード1箇所
-// （§2.4.1、決定・2026-09-06）——同じ操作口を2つ持たない（規則3）。
-// そのぶん「Thread を開けば必ずカードがある」ことが要件で、走行中でなくても
-// host 側で生きている判断待ちは会話の画面に描き直している
-// （lib/backend/adapter.ts の restoredJudgmentMessages）。
+// 行を押せば**その Thread を開く**。**Module 間中継の承認だけは、ここでも答えられる**（改訂・2026-10-05、
+// ユーザー指示）——以前は答える口を Thread 側のカード1箇所にしていた（§2.4.1、決定・2026-09-06）が、中継のカードは
+// 走っているターンの流れの中にしか描かれず、会話を開いてもカードが見つからないと答える手段が無かった。答え方は
+// 会話のカードと同じ部品（`ElicitationFormView`）、送る道も同じ（`answerRealJudgment`）——答えれば会話のカードも
+// 答え済みになる（host がターンの流れと `judgment.answered` の両方で知らせる）
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -22,6 +22,8 @@ import {
   useRealInboxVersion,
 } from "@/lib/backend/real-inbox";
 import { acknowledgeRealNotice, resumeRealNoticeTurn } from "@/lib/backend/client";
+import { answerRealJudgment } from "@/lib/backend/adapter";
+import { ElicitationFormView } from "./elicitation-form";
 import { getThread } from "@/lib/mock/threads";
 import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -66,6 +68,8 @@ export function RealInboxList() {
    */
   const resumingRef = useRef(new Set<string>());
   const [resuming, setResuming] = useState<ReadonlySet<string>>(() => new Set());
+  /** 受信箱から答えようとして断られた判断待ちと、その理由（押したのに何も起きない、を作らない——規則2） */
+  const [answerErrors, setAnswerErrors] = useState<Record<string, string>>({});
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
@@ -181,7 +185,7 @@ export function RealInboxList() {
         );
 
         return (
-          <div key={item.id} className="border-b border-border last:border-b-0">
+          <div key={item.id} data-testid="inbox-judgment" className="border-b border-border last:border-b-0">
             {href ? (
               <Link
                 href={href}
@@ -195,6 +199,28 @@ export function RealInboxList() {
               // ——押せるように見せて何も起きない状態を作らない（規則13）
               <div className="flex w-full items-start gap-2.5 py-3 text-left opacity-60">{row}</div>
             )}
+            {item.source === "relay" ? (
+              // 会話のカードと同じ答え方（選択肢を押せばそのまま送る・右寄せ・最初だけ塗る、v4-frontend.md「答え方」）
+              <div data-testid="inbox-judgment-answer" className="pb-3 pl-6.5">
+                <ElicitationFormView
+                  elicitation={{ mode: "form", enumOptions: item.choices ?? ["許可する", "拒否する"], allowFreeText: false }}
+                  onAnswered={async (answer) => {
+                    try {
+                      await answerRealJudgment(item.id, answer);
+                      setAnswerErrors((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => id !== item.id)));
+                    } catch (err) {
+                      setAnswerErrors((prev) => ({ ...prev, [item.id]: err instanceof Error ? err.message : String(err) }));
+                      void refreshRealInbox();
+                    }
+                  }}
+                />
+                {answerErrors[item.id] ? (
+                  <span data-testid="inbox-judgment-answer-error" className="mt-1 block text-xs text-stop">
+                    答えを送れませんでした：{answerErrors[item.id]}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         );
       })}

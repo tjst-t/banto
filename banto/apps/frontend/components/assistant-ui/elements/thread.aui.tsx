@@ -129,6 +129,13 @@ export type ThreadComponents = {
  */
 const BranchingContext = createContext(true);
 
+/**
+ * **人の答えを待っている間も止められる**（banto、追加・2026-10-05）。assistant-ui は判断待ちのカードが出ている間
+ * （requires-action）を「走っていない」と数え、停止ボタンを出さない。banto の実 Thread は、その間も host のターンが
+ * 走っている——値があれば、その間も同じ停止ボタンを出し、押したらこれを呼ぶ（呼ぶ側がランタイムの `cancelRun`）
+ */
+const StopWhileAwaitingContext = createContext<(() => void) | null>(null);
+
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
   autoFocus?: boolean | undefined;
@@ -136,6 +143,8 @@ export type ThreadProps = {
   placeholder?: string | undefined;
   /** composer の左下、＋ボタンの右に出す任意の内容（banto: モデル／エフォート選択） */
   composerActionSlot?: ReactNode;
+  /** 判断待ちのカードが出ている間も停止ボタンを出すなら、押したときに呼ぶもの（banto、`StopWhileAwaitingContext`） */
+  onStopWhileAwaitingHuman?: (() => void) | undefined;
   /** composer の直上に出す任意の内容（banto: モックのデモヒントに使う） */
   composerHint?: ReactNode;
   /**
@@ -211,10 +220,12 @@ export const Thread: FC<ThreadProps> = ({
   transcriptMarkers,
   allowBranching = true,
   onForkFrom,
+  onStopWhileAwaitingHuman,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
+    <StopWhileAwaitingContext.Provider value={onStopWhileAwaitingHuman ?? null}>
     <ThreadComponentsContext.Provider value={components}>
       <BranchingContext.Provider value={allowBranching}>
       <ForkFromMessageProvider value={onForkFrom ?? null}>
@@ -229,6 +240,7 @@ export const Thread: FC<ThreadProps> = ({
       </ForkFromMessageProvider>
       </BranchingContext.Provider>
     </ThreadComponentsContext.Provider>
+    </StopWhileAwaitingContext.Provider>
   );
 };
 
@@ -495,6 +507,7 @@ const Composer: FC<{
 };
 
 const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerActionSlot }) => {
+  const stopWhileAwaiting = useContext(StopWhileAwaitingContext);
   return (
     // **狭い幅でも送信ボタンを枠の外へ押し出さない**（banto、2026-10-03、ユーザー報告：携帯でモデルと permissionMode の
     // 名前が長いと、送信ボタンがはみ出した）。左の群が縮み（中の名前を「…」で切る）、右の群（送信・停止）は縮めない
@@ -539,7 +552,22 @@ const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerAction
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        <AuiIf condition={(s) => !s.thread.isRunning}>
+        {stopWhileAwaiting ? (
+          // 判断待ちのカードが出ている間（走っていない扱い）も、ターンは host で走っている——送る代わりに止める
+          <AuiIf condition={(s) => !s.thread.isRunning}>
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="aui-composer-cancel size-7 rounded-full"
+              aria-label="Stop generating"
+              onClick={stopWhileAwaiting}
+            >
+              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+            </Button>
+          </AuiIf>
+        ) : null}
+        <AuiIf condition={(s) => !s.thread.isRunning && !stopWhileAwaiting}>
           <ComposerPrimitive.Send asChild>
             <TooltipIconButton
               tooltip="Send message"

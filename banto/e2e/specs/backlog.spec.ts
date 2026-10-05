@@ -457,8 +457,12 @@ test("承認を聞いたまま Runner が去るとカードは畳まれ、次の
   // 答えずにいると、Runner が去ってターンが終わる。聞いた呼び出しが終わったので、カードは畳まれ、受信箱にも残らない
   await expect(page.getByText("下げられませんでした。", { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect.poll(openJudgments, { timeout: 30_000 }).toEqual([]);
-  // 開き直すと、答える口は残らない（中継のカードは走っているターンの流れにしか描かれない）。**開き直さないと、カードは
-  // 答えられるように見えたまま**——畳んだことを流す先のターンがもう終わっている（今回は直していない。同ノート「残したこと」）
+  // **開き直さずに、カードが答え済みの見た目に変わる**（追加・2026-10-05、Backlog #212）——畳んだことを流す先のターンは
+  // もう終わっているが、host はターンをまたぐ知らせ（`judgment.answered`）でも知らせる
+  await expect(fetchCards.first()).toContainText("回答：承認を聞いた呼び出しが、人が答える前に終わりました", { timeout: 30_000 });
+  await expect(fetchCards.first().getByRole("button", { name: "許可する" })).toHaveCount(0);
+  await shot(page, "5-turn-ended-card-settled");
+  // 開き直しても、答える口は戻らない（中継のカードは走っているターンの流れにしか描かれない）
   await page.reload();
   await expect(page.getByText("下げられませんでした。", { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('[data-role="judgment-card"]').getByRole("button", { name: "許可する" })).toHaveCount(0);

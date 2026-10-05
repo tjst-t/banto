@@ -55,7 +55,8 @@ import { TurnStops, type TurnStopHandle } from "./turn-stops.js";
 import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
-import { MESSAGE_ALLOW_REMEMBER, ThreadMessaging } from "../delivery/thread-messages.js";
+import { ThreadMessaging } from "../delivery/thread-messages.js";
+import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
@@ -2810,12 +2811,7 @@ export function createApp(deps: AppDeps) {
         deps.turnEvents?.publish(item.threadId, {
           type: "answered",
           judgmentId: id,
-          answer:
-            body.answer.behavior === "allow"
-              ? (body.answer as { remember?: unknown }).remember === true
-                ? MESSAGE_ALLOW_REMEMBER
-                : "許可する"
-              : body.answer.message || "拒否する",
+          answer: judgmentAnswerText(body.answer),
         });
         json(res, 200, { ok: true });
         return;

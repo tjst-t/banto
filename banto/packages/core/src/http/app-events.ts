@@ -33,6 +33,9 @@ export type AppEvent =
   | { type: "turn.started"; threadId: string; projectId?: string; cause: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
   | { type: "inbox.changed" }
+  // 判断待ちに答えが付いた（追加・2026-10-05）。**ターンの流れが無くても**会話のカードを答え済みにする——ターンが先に
+  // 終わってから host が畳んだもの・受信箱で答えたもの。answer は会話のカードに出す一言（`judgmentAnswerText`）
+  | { type: "judgment.answered"; threadId: string; judgmentId: string; answer: string }
   // 「端末を追加」の札が使われた（決定・2026-10-03）。札を出した画面が「端末が入りました」と出す
   | { type: "auth.device_added"; codeId: string; label: string }
   // その Thread のバックグラウンドの仕事が増えた・減った。**その Thread の分を丸ごと**送る（画面は置き換える）

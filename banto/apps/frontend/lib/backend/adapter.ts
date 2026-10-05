@@ -9,6 +9,7 @@
 // 別経路で送る」——この2つを橋渡しするため、Thread単位の生きたSSE接続を
 // モジュールレベルに保持し、run()の再呼び出しではそれを読み進めるだけにする。
 
+import { useSyncExternalStore } from "react";
 import { randomId } from "@/lib/random-id";
 import type {
   ChatModelAdapter,
@@ -674,6 +675,37 @@ export function hasLiveRealRun(threadId: string): boolean {
   return liveTurns.has(threadId) || stoppingThreads.has(threadId) || (runtimeBusy.get(threadId)?.() ?? false);
 }
 
+// ---- 人を待っている間も止められる（追加・2026-10-05、docs/notes/2026-10-05-relay-card-followups.md）--------------------
+//
+// assistant-ui は判断待ちのカードが出ている間（requires-action）を「走っていない」と数え、停止ボタンを出さない。だが実
+// Thread の run は、カードを出したあとも host の流れを読み続けている（下の `continue`）——止める合図（`cancelRun`）は
+// そのまま届き、`stopOnHost` で host のターンを止められる。**その run が本当に読み続けている間だけ**ここに立てる。
+// 台本の会話（モック）は requires-action で run を終えるので立たない——押しても何も起きないボタンを出さない（規則13）
+
+const awaitingHumanThreads = new Set<string>();
+const awaitingHumanListeners = new Set<() => void>();
+
+function markAwaitingHuman(threadId: string, awaiting: boolean): void {
+  if (awaitingHumanThreads.has(threadId) === awaiting) return;
+  if (awaiting) awaitingHumanThreads.add(threadId);
+  else awaitingHumanThreads.delete(threadId);
+  for (const listener of awaitingHumanListeners) listener();
+}
+
+function subscribeAwaitingHuman(listener: () => void): () => void {
+  awaitingHumanListeners.add(listener);
+  return () => awaitingHumanListeners.delete(listener);
+}
+
+/** その Thread の走っている run が、判断待ちのカードを出したまま host の流れを読み続けているか */
+export function useRealRunAwaitingHuman(threadId: string): boolean {
+  return useSyncExternalStore(
+    subscribeAwaitingHuman,
+    () => awaitingHumanThreads.has(threadId),
+    () => false,
+  );
+}
+
 export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
@@ -799,6 +831,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           // status==="running" のときだけ——local-thread-runtime-core.js の
           // performRoundtrip、実測で確認）。**逆に、答え待ちが残っている間に
           // 戻してはいけない**（hasPendingHumanTool のコメント）
+          markAwaitingHuman(thread.id, live.acc.hasPendingHumanTool());
           yield { content: live.acc.snapshot(), status: status() };
         } else if (event.type === "judgment") {
           const toolCallId = `judgment-${event.judgmentId}`;
@@ -819,6 +852,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
               ...(event.choices ? { choices: event.choices } : {}),
             },
           );
+          markAwaitingHuman(thread.id, live.acc.hasPendingHumanTool());
           yield { content: live.acc.snapshot(), status: status() };
           // **ここで return しない。** hostは canUseTool を hold-the-line で
           // 止めているだけで、答えれば同じSSE接続がそのまま続く——止まっているのは
@@ -836,6 +870,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           const toolCallId = `judgment-${event.judgmentId}`;
           live.acc.finishTool(toolCallId, event.answer);
           liveByJudgmentToolCallId.delete(toolCallId);
+          markAwaitingHuman(thread.id, live.acc.hasPendingHumanTool());
           yield { content: live.acc.snapshot(), status: status() };
           continue;
         } else if (event.type === "disconnected") {
@@ -848,6 +883,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           // **答え待ちが残っていれば requires-action のまま**にする——固定で
           // running を返すと、未回答のカードが「回答済み」表示になって
           // 答える口が消える（見直し・2026-09-06。他の yield と揃える）
+          markAwaitingHuman(thread.id, false);
           yield { content: live.acc.snapshot(), status: status() };
           return;
         }
@@ -857,6 +893,8 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // 終了時の処理は streamRealTurn の onEvent 側で行う。
       }
 
+      // 流れはもう終わった——このあとは読まないので、止める先が無い
+      markAwaitingHuman(thread.id, false);
       yield { content: live.acc.snapshot(), status: status() };
       } finally {
         // **どう終わってもここを通る**——正常終了・エラー・停止ボタン・
@@ -865,6 +903,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // hold-the-line で生きたままなので、次に開いたときは
         // restoredJudgmentMessages が判断待ちを描き直して拾える。
         current.consuming = false;
+        markAwaitingHuman(thread.id, false);
         if (liveTurns.get(thread.id) === current) liveTurns.delete(thread.id);
         for (const [toolCallId, turn] of liveByJudgmentToolCallId) {
           if (turn === current) liveByJudgmentToolCallId.delete(toolCallId);
@@ -1002,6 +1041,15 @@ export function applyThreadRecord(threadId: string, record: RealThread): void {
 export async function sendRealAnswer(toolCallId: string, answer: string): Promise<boolean> {
   const judgmentId = judgmentIdByToolCallId.get(toolCallId);
   if (!judgmentId) return false;
+  await answerRealJudgment(judgmentId, answer);
+  return true;
+}
+
+/**
+ * **判断待ちに答える**（会話のカード・受信箱の両方から。受信箱から答えられるようにしたのは 2026-10-05、ユーザー指示）。
+ * 答えは選択肢の言葉のまま受け取り、host の形（許可・拒否）にして送る
+ */
+export async function answerRealJudgment(judgmentId: string, answer: string): Promise<void> {
   // 「許可し、以後この Project からは聞かない」（Project をまたぐメッセージの承認、§4.2）は、許可に「覚える」を添える
   const permissionResult =
     answer === "許可する"
@@ -1010,6 +1058,7 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
         ? { behavior: "allow" as const, remember: true }
         : { behavior: "deny" as const, message: answer };
   await answerRealInboxItem(judgmentId, permissionResult);
+  const toolCallId = `judgment-${judgmentId}`;
   const live = liveByJudgmentToolCallId.get(toolCallId);
   if (live) {
     // 答えを走っているrunのpartsに書き戻す——次にhostから何か届いたときの
@@ -1020,7 +1069,6 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
   // 読むのをやめたあとに答えても、続きは host が走らせ、終われば `turn.ended` で最新が出る
   // 決着したものは受信箱から消える（§2.4.1「解決済みは状態として持たない」）
   await refreshRealInbox();
-  return true;
 }
 
 /**
