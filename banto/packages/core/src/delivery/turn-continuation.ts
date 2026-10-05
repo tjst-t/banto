@@ -69,8 +69,7 @@ export interface TurnContinuationDeps {
   /**
    * **続けると答えた Module の仕事**（§2.5 の 2. への接ぎ目、2026-10-05）。Module の札の判定で残した返事待ち
    * （続けると答えて覚え直した札）のうち、その Thread のもの。続きの文に「<Module> の仕事は続いています（終わったら
-   * 届きます）」と書く。**いまは渡さない**——「続けられる」と名乗る Module がまだ無く、札は全部「途中で終わりました」
-   * になる（cli.ts の `deliverLostReply`）
+   * 届きます）」と書く。起き直したときの札の判定（`delivery/restart-recovery.ts`）が渡す
    */
   keptReplies?(threadId: string): Array<{ moduleName: string }>;
 }
@@ -87,9 +86,15 @@ export type InterruptedTurnHandling =
  */
 export async function resumeInterruptedTurns(
   deps: TurnContinuationDeps,
+  /**
+   * 片づける Thread を絞る（追加・2026-10-05）。続けられると名乗った Module の札を持つ Thread は、札の判定が終わってから
+   * 片づける（`delivery/restart-recovery.ts`）——起動の最初はそれ以外だけ
+   */
+  only?: (threadId: string) => boolean,
 ): Promise<Array<{ turn: InterruptedTurn } & (InterruptedTurnHandling | { action: "failed"; error: string })>> {
   const results: Array<{ turn: InterruptedTurn } & (InterruptedTurnHandling | { action: "failed"; error: string })> = [];
   for (const turn of deps.projectThread.listInterruptedTurns()) {
+    if (only && !only(turn.threadId)) continue;
     try {
       results.push({ turn, ...(await handleInterruptedTurn(deps, turn)) });
     } catch (err) {

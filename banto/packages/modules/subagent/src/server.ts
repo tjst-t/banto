@@ -23,9 +23,22 @@ import {
   PENDING_REPLY_META_KEY,
   VISIBILITY_META_KEY,
   replyToOf,
+  replyToFingerprint,
+  parseResumeQuestion,
+  RESUME_AFTER_RESTART_TOOL,
   threadOf,
+  type ResumeAnswer,
 } from "@banto/module-contract";
-import { describeAgent, runSubagent, SubagentError, type AgentLaunch, type PermissionQuestion } from "./acp-run.js";
+import {
+  describeAgent,
+  runSubagent,
+  SessionLoadError,
+  SubagentError,
+  type AgentLaunch,
+  type PermissionQuestion,
+  type RunDeps,
+  type RunResult,
+} from "./acp-run.js";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
 import { ClaudeLoginError } from "./claude-login-proxy.js";
 import { prepareAgentLaunch } from "./agent-home.js";
@@ -34,6 +47,7 @@ import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
 import { RunLog } from "./runs.js";
+import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
 
 export interface SubagentServerDeps {
   projectRoot: string;
@@ -78,6 +92,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   const agents = deps.agents ?? listAgents();
   // **頼んだ仕事の記録**——人が launcher の画面から一覧・状態・中身を見る（`runs.ts`）
   const runs = new RunLog(join(deps.moduleDataDir, "runs.jsonl"));
+  // **走っている仕事の記録**（追加・2026-10-05、アーキ仕様 §2.5「2.」）——待たない形の仕事を、走っている間ファイルに残す。
+  // 起動したときに残っているものは前の走行で切れた仕事で、起き直した host に問われたら続ける（`resumeAfterRestart`）
+  const running = new RunningStore(deps.moduleDataDir);
+  const interrupted = new Map(running.list().map((r) => [r.replyToFingerprint, r] as const));
   const server = new Server({ name: "banto-module-subagent", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
   // **自分が何者かを名乗る**（host は宣言と突き合わせる）。AI には見せない（admin）。
@@ -109,6 +127,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             ],
             isolation: "subprocess",
             scope: "project",
+            // 待たない形で頼まれた仕事は、banto を起こし直しても続けられる（§2.5「2.」）——終わりは必ず札で届ける
+            resumesAfterRestart: true,
           },
         },
       },
@@ -196,6 +216,34 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           required: ["runId"],
         },
         _meta: { [VISIBILITY_META_KEY]: "agent" },
+      },
+      // ---- host が起き直したときに呼ぶ（admin——AI には見せない） ----------------------------
+      {
+        // **起こし直しても続けられる**（追加・2026-10-05、アーキ仕様 §2.5「2. Module の仕事を続ける」、`@banto/module-contract`
+        // の `resume.ts`）。host が、この Module に「あとで届ける」と約束したまま終わっていない仕事を渡す。走っている仕事の
+        // 記録があるものは「続ける」と答えて続け、終わりは必ず札で届ける（成功も失敗も）
+        name: RESUME_AFTER_RESTART_TOOL,
+        description: "banto を起こし直したあと、途中で切れた待たない形の仕事を続けるかを答える（host だけが呼ぶ）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  replyTo: { type: "string" },
+                  toolName: { type: "string" },
+                  toolCallId: { type: "string" },
+                  thread: { type: "object", properties: { projectId: { type: "string" }, threadId: { type: "string" } } },
+                },
+                required: ["replyTo", "thread"],
+              },
+            },
+          },
+          required: ["items"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
       // ---- 人の入口の画面から呼ぶ（admin——AI には見せない） ----------------------------
       {
@@ -298,6 +346,38 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           ),
         });
       }
+      if (request.params.name === RESUME_AFTER_RESTART_TOOL) {
+        const question = parseResumeQuestion(args);
+        const answers: ResumeAnswer[] = question.items.map((item) => {
+          const record = interrupted.get(replyToFingerprint(item.replyTo));
+          const no = (reason: string): ResumeAnswer => ({ replyTo: item.replyTo, resume: false, reason });
+          if (!record) return no("走っている仕事の記録がありません（待つ形で頼んだ仕事か、記録の前に切れた）");
+          interrupted.delete(record.replyToFingerprint);
+          if (!deps.deliver) {
+            running.remove(record.id);
+            return no("この Subagent には届ける口がありません");
+          }
+          if (record.requestedBy && record.requestedBy.threadId !== item.thread.threadId) {
+            running.remove(record.id);
+            return no("記録の頼んだ Thread と、問われた Thread が違います");
+          }
+          if (!agents.some((a) => a.id === record.agent)) {
+            running.remove(record.id);
+            return no(`エージェント "${record.agent}" はもうありません`);
+          }
+          // 答えを返してから続ける（host は答えを待っている。終わりは札で届く）
+          setImmediate(() => void resumeRun(record, item.replyTo));
+          return { replyTo: item.replyTo, resume: true };
+        });
+        // **問われなかった記録は片づける**——host はもうその札を待っていない（「途中で終わりました」を届けた）
+        for (const record of interrupted.values()) {
+          running.remove(record.id);
+          const run = runs.start({ ...runInputOf(record), continues: { id: record.id, startedAt: record.startedAt, notes: [] } });
+          runs.finish(run.id, { error: "banto を起こし直したため途中で終わりました（host が続けるかを問いませんでした）" });
+        }
+        interrupted.clear();
+        return text({ answers });
+      }
       if (request.params.name === "listRuns") {
         const limit = typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : undefined;
         return text(runs.page(limit));
@@ -373,6 +453,28 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
           throw err;
         }
+        // **待たない形は、走っている間ファイルに残す**（§2.5「2.」）——起こし直したあと続けるため。資格情報は書かない
+        // （envSecrets は alias の名前）、札は指紋だけ
+        if (background) {
+          running.write({
+            id: run.id,
+            agent: agent.id,
+            agentTitle: agent.title,
+            cwd: deps.projectRoot,
+            ...(typeof args.model === "string" ? { model: args.model } : {}),
+            ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
+            ...(aliasNamesOf(args.envSecrets) ? { envSecrets: aliasNamesOf(args.envSecrets)! } : {}),
+            replyToFingerprint: replyToFingerprint(replyTo!),
+            ...(requestedBy ? { requestedBy } : {}),
+            prompt,
+            promptHead: promptHeadOf(prompt),
+            ...(typeof args.sessionId === "string" ? { resumedFrom: args.sessionId, sessionId: args.sessionId } : {}),
+            startedAt: Date.now(),
+            progressed: false,
+            toolsInFlight: [],
+            resumes: 0,
+          });
+        }
         const work = async () => {
           try {
             report(`${agent.title} を起こしています`);
@@ -383,18 +485,13 @@ export function createSubagentServer(deps: SubagentServerDeps) {
                 ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
                 ...(typeof args.sessionId === "string" ? { sessionId: args.sessionId } : {}),
               },
-              {
-                launch: launched.launch,
-                cwd: deps.projectRoot,
-                ...(agent.mode ? { mode: agent.mode } : {}),
+              agentRunDeps(run.id, launched.launch, agent, {
                 // 人が入口の画面で「止める」を押したときも止まる。待つ形なら、依頼元が取り消したときも
                 // ——待たない形は依頼元の呼び出しがもう終わっているので、それには縛らない
                 signal: background ? run.signal : AbortSignal.any([extra.signal, run.signal]),
                 onProgress: report,
-                onToolCall: (title, kind) => runs.toolCall(run.id, title, kind),
-                onText: (textSoFar) => runs.text(run.id, textSoFar),
-                askPermission: refusePermission,
-              },
+                recordRunning: background,
+              }),
             );
             const final = { ...result, notes: [...launched.notes, ...result.notes] };
             runs.finish(run.id, { result: final });
@@ -417,31 +514,14 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         }
 
         // 待たない形：走らせたまま返す。終わったら（止められても・失敗しても）札で届ける
-        void work()
-          .then(
-            (final) =>
-              deliver!({
-                replyTo: replyTo!,
-                title:
-                  final.stopReason === "cancelled"
-                    ? `${agent.title} の仕事は止められました`
-                    : `${agent.title} の仕事が終わりました`,
-                text: JSON.stringify({ runId: run.id, ...final }),
-              }),
-            (err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              runs.finish(run.id, { error: message });
-              return deliver!({
-                replyTo: replyTo!,
-                title: `${agent.title} の仕事が失敗しました`,
-                text: JSON.stringify({ runId: run.id, error: message }),
-              });
-            },
-          )
-          .catch((err: unknown) => {
-            // 届けられなかった——host が落ちている等。札は返事待ちなので、host が起きたら「途中で終わりました」になる
-            console.error(`[subagent] 仕事 ${run.id} の結果を届けられませんでした:`, err);
-          });
+        void work().then(
+          (final) => deliverEnd(run.id, replyTo!, endTitle(agent.title, final), JSON.stringify({ runId: run.id, ...final })),
+          (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            runs.finish(run.id, { error: message });
+            return deliverEnd(run.id, replyTo!, `${agent.title} の仕事が失敗しました`, JSON.stringify({ runId: run.id, error: message }));
+          },
+        );
         return {
           ...text({
             runId: run.id,
@@ -461,6 +541,127 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     }
     throw new Error(`unknown tool: ${request.params.name}`);
   });
+
+  /**
+   * エージェントを1回走らせるときの口（頼まれた仕事と、起こし直しのあと続ける仕事で同じ）。待たない形なら、会話の id・
+   * 呼んだ tool・進んだかを走っている仕事の記録にも書く
+   */
+  function agentRunDeps(
+    runId: string,
+    launch: AgentLaunch,
+    agent: AgentDefinition,
+    opts: { signal: AbortSignal; onProgress: (message: string) => void; recordRunning: boolean },
+  ): RunDeps {
+    const record = (change: (r: RunningRecord) => void) => {
+      if (opts.recordRunning) running.update(runId, change);
+    };
+    let progressed = false;
+    const markProgressed = () => {
+      if (progressed) return;
+      progressed = true;
+      record((r) => void (r.progressed = true));
+    };
+    return {
+      launch,
+      cwd: deps.projectRoot,
+      ...(agent.mode ? { mode: agent.mode } : {}),
+      signal: opts.signal,
+      onProgress: opts.onProgress,
+      onSession: (sessionId) => record((r) => void (r.sessionId = sessionId)),
+      onToolCall: (title, kind, toolCallId) => {
+        runs.toolCall(runId, title, kind);
+        progressed = true;
+        record((r) => {
+          r.progressed = true;
+          r.toolsInFlight.push({ ...(toolCallId ? { id: toolCallId } : {}), title });
+        });
+      },
+      onToolDone: (toolCallId) => record((r) => void (r.toolsInFlight = r.toolsInFlight.filter((t) => t.id !== toolCallId))),
+      onText: (textSoFar) => {
+        runs.text(runId, textSoFar);
+        markProgressed();
+      },
+      askPermission: refusePermission,
+    };
+  }
+
+  /**
+   * **終わりを札で届ける**（待たない形）。届いたら走っている仕事の記録を消す。**届けられなければ記録に結果を残す**
+   * ——host が落ちていた等。起き直した host に問われたら、走らせ直さずにそれを届ける（§2.5「2.」）
+   */
+  async function deliverEnd(runId: string, replyTo: string, title: string, body: string): Promise<void> {
+    try {
+      await deps.deliver!({ replyTo, title, text: body });
+      running.remove(runId);
+    } catch (err) {
+      console.error(`[subagent] 仕事 ${runId} の結果を届けられませんでした（記録に残し、起こし直したあと届け直します）:`, err);
+      running.update(runId, (r) => void (r.finished = { title, text: body }));
+    }
+  }
+
+  /**
+   * **起こし直しのあと続ける**（§2.5「2.」）。続けると答えた仕事なので、**終わりは必ず札で届ける**（成功も失敗も）。
+   *   - 結果はもう出ていて届ける前に止まった → それを届ける
+   *   - 会話の id があれば `session/load` して「途中で切れました。実行中だった tool：…」を送る（claude-agent-acp は
+   *     切れた tool を黙って落とすので、ここで書く）
+   *   - 会話の id が無い・load できず、まだ何も進んでいなかった（最初の頼みが記録される前に切れた）→ 同じ頼みで最初から
+   */
+  async function resumeRun(record: RunningRecord, replyTo: string): Promise<void> {
+    const agent = agents.find((a) => a.id === record.agent)!;
+    if (record.finished) {
+      await deliverEnd(record.id, replyTo, record.finished.title, record.finished.text);
+      return;
+    }
+    const note = `banto を起こし直したため途中で切れ、続きから再開しました（${record.resumes + 1} 回目）`;
+    running.update(record.id, (r) => void (r.resumes += 1));
+    const run = runs.start({ ...runInputOf(record), continues: { id: record.id, startedAt: record.startedAt, notes: [note] } });
+    const report = (message: string) => runs.progress(run.id, message);
+    const fail = (message: string) => {
+      runs.finish(run.id, { error: message });
+      return deliverEnd(record.id, replyTo, `${agent.title} の仕事が失敗しました`, JSON.stringify({ runId: record.id, resumedAfterRestart: true, error: message }));
+    };
+    let launched: Awaited<ReturnType<typeof launchFor>>;
+    try {
+      launched = await launchFor(agent, record.envSecrets, report);
+    } catch (err) {
+      await fail(`起こし直したあと、資格情報を受け取れませんでした: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const notes = [...launched.notes, note];
+    const runDeps = agentRunDeps(record.id, launched.launch, agent, { signal: run.signal, onProgress: report, recordRunning: true });
+    const options = { ...(record.model ? { model: record.model } : {}), ...(record.effort ? { effort: record.effort } : {}) };
+    try {
+      let result: RunResult | undefined;
+      if (record.sessionId !== undefined) {
+        report(`${agent.title} の会話を続きから開いています`);
+        try {
+          result = await runSubagent({ prompt: resumePromptOf(record), sessionId: record.sessionId, ...options }, runDeps);
+        } catch (err) {
+          // 最初の頼みが記録される前に切れた（まだ何もしていない）なら、同じ頼みで最初から。進んでいたなら失敗として届ける
+          if (!(err instanceof SessionLoadError) || record.progressed || record.resumedFrom !== undefined) throw err;
+          notes.push(`会話を続きから開けなかったので（${err.message}）、同じ頼みで最初からやり直しました`);
+        }
+      } else {
+        notes.push("会話が始まる前に切れていたので、同じ頼みで最初からやり直しました");
+      }
+      if (!result) {
+        running.update(record.id, (r) => {
+          delete r.sessionId;
+          r.toolsInFlight = [];
+        });
+        report(`${agent.title} を起こしています`);
+        result = await runSubagent({ prompt: record.prompt, ...options }, runDeps);
+      }
+      const final = { ...result, notes: [...notes, ...result.notes] };
+      runs.finish(run.id, { result: final });
+      await deliverEnd(record.id, replyTo, endTitle(agent.title, final), JSON.stringify({ runId: record.id, resumedAfterRestart: true, ...final }));
+    } catch (err) {
+      const explained = await launched.explain(err);
+      await fail(explained instanceof Error ? explained.message : String(explained));
+    } finally {
+      await launched.cleanup();
+    }
+  }
 
   /** 資格情報を Vault から受け取り（Claude は本体のログインを中継で渡し）、専用ホームに向けた起こし方を作る */
   async function launchFor(
@@ -545,6 +746,43 @@ export function createSubagentServer(deps: SubagentServerDeps) {
 async function refusePermission(question: PermissionQuestion): Promise<{ optionId: string } | "cancelled"> {
   const reject = question.options.find((o) => o.kind === "reject_once") ?? question.options.find((o) => o.kind.startsWith("reject"));
   return reject ? { optionId: reject.optionId } : "cancelled";
+}
+
+/** 終わりの題（止められた・終わった） */
+function endTitle(agentTitle: string, final: Pick<RunResult, "stopReason">): string {
+  return final.stopReason === "cancelled" ? `${agentTitle} の仕事は止められました` : `${agentTitle} の仕事が終わりました`;
+}
+
+/**
+ * **起こし直しのあと送る文**（§2.5「2.」）。実行中だった tool は走っている仕事の記録の、終わりの来ていない最後の tool
+ * ——claude-agent-acp は切れた tool を黙って落とすので、エージェントに任せず書く
+ */
+export function resumePromptOf(record: Pick<RunningRecord, "toolsInFlight">): string {
+  const last = record.toolsInFlight.at(-1);
+  return last
+    ? `banto を起こし直したため、作業が途中で切れました。切れたとき実行中だった tool：${last.title}——結果は分かりません` +
+        "（コマンドならまだ動いているかもしれません）。確かめてから続けてください"
+    : "banto を起こし直したため、作業が途中で切れました。切れたとき実行中だった tool はありません。続けてください";
+}
+
+/** envSecrets の名前の対応（環境変数名 → alias 名）。文字列だけ——値ではない。無ければ undefined */
+function aliasNamesOf(envSecrets: unknown): Record<string, string> | undefined {
+  if (typeof envSecrets !== "object" || envSecrets === null) return undefined;
+  const names = Object.fromEntries(Object.entries(envSecrets).filter((e): e is [string, string] => typeof e[1] === "string"));
+  return Object.keys(names).length > 0 ? names : undefined;
+}
+
+/** 走っている仕事の記録から、仕事の記録（`runs.ts`）を始める形 */
+function runInputOf(record: RunningRecord) {
+  return {
+    agent: record.agent,
+    agentTitle: record.agentTitle,
+    prompt: record.prompt,
+    ...(record.model ? { model: record.model } : {}),
+    ...(record.effort ? { effort: record.effort } : {}),
+    ...(record.resumedFrom ? { resumedFrom: record.resumedFrom } : {}),
+    ...(record.requestedBy ? { requestedBy: record.requestedBy } : {}),
+  };
 }
 
 function text(value: unknown) {

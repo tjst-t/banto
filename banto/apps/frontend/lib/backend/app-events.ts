@@ -27,6 +27,11 @@ export interface RealBackgroundItem {
   description?: string;
   /** 人の答えを待っている（公開の承認など、2026-10-04）。無ければ裏で仕事が進んでいる */
   waitingOn?: "human";
+  /**
+   * 起こし直しのあと Module が続けると答えた時刻（ISO。追加・2026-10-05、アーキ仕様 §2.5「2.」）。「起こし直しのあと
+   * 続けています」と出す——長く届かなければ人が気づける
+   */
+  keptAt?: string;
 }
 
 export type RealAppEvent =

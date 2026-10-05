@@ -18,6 +18,9 @@ import { INTERRUPTED_NOTE, runThreadTurn, type TurnStreamEvent } from "../http/t
 import type { runTurn, RunnerTurnOptions } from "../runner/adapter.js";
 import { ThreadTurns } from "./thread-turns.js";
 import { DELIVERY_LIMITS, ThreadDeliveries } from "./thread-deliveries.js";
+import { ReplyHandles } from "./reply-handles.js";
+import { RestartRecovery, type ResumeTarget } from "./restart-recovery.js";
+import type { ResumeQuestion } from "@banto/module-contract";
 import {
   continueStoppedTurn,
   RESUME_CUT_LIMIT,
@@ -91,6 +94,8 @@ interface Host {
   deps: Parameters<typeof runThreadTurn>[0];
   /** 待ち受けを始めた（cli.ts と同じく、ここで初めてターンを開く口ができ、`resumeAll` が起こす） */
   listen(): void;
+  /** 留める理由を足す（cli.ts と同じく、起き直したときの札の判定の留めを先に見る） */
+  holdAlso(hold: (threadId: string) => string | undefined): void;
 }
 
 /** その置き場で host を起こす（起き直したときと同じく、判断待ちを期限切れにする）。`runner` は届いたもので起こすターン用 */
@@ -105,12 +110,13 @@ async function boot(dir: string, runner?: ReturnType<typeof scriptedRunner>): Pr
   await inbox.load();
   await inbox.expireOrphanedJudgments();
   const turns = new ThreadTurns();
+  let extraHold: ((threadId: string) => string | undefined) | undefined;
   // cli.ts と同じく、自動で続けるのをやめた Thread は留める
   const deliveries = new ThreadDeliveries({
     projectThread: store,
     turns,
     notify: async (n) => void (await inbox.raiseNotice(n)),
-    hold: (threadId) => resumeHoldReason({ projectThread: store, inbox }, threadId),
+    hold: (threadId) => extraHold?.(threadId) ?? resumeHoldReason({ projectThread: store, inbox }, threadId),
   });
   const deps = { projectThread: store, globalMemory, inbox, pendingApprovals: new PendingApprovalRegistry() };
   const listen = (): void => {
@@ -128,7 +134,7 @@ async function boot(dir: string, runner?: ReturnType<typeof scriptedRunner>): Pr
     });
     deliveries.resumeAll();
   };
-  return { store, inbox, deliveries, turns, deps, listen };
+  return { store, inbox, deliveries, turns, deps, listen, holdAlso: (hold) => void (extraHold = hold) };
 }
 
 async function collect(gen: AsyncGenerator<TurnStreamEvent>): Promise<TurnStreamEvent[]> {
@@ -1029,3 +1035,187 @@ for (const [name, quit] of [
     });
   });
 }
+
+// ---- 起き直したときの札の判定（追加・2026-10-05、アーキ仕様 §2.5「2. Module の仕事を続ける」、`restart-recovery.ts`）----
+
+const RESUMABLE = "subagent";
+const PLAIN = "shell";
+
+/** cli.ts と同じ形で組む。`ask` は Module の答え（呼ばれた問いを控える） */
+function recoveryOf(host: Host, ask: (target: ResumeTarget, q: ResumeQuestion) => Promise<unknown>, opts: { askTimeoutMs?: number } = {}) {
+  const replyHandles = new ReplyHandles();
+  const asked: Array<{ target: ResumeTarget; q: ResumeQuestion }> = [];
+  const lost: string[] = [];
+  const recovery = new RestartRecovery({
+    projectThread: host.store,
+    inbox: host.inbox,
+    deliveries: host.deliveries,
+    replyHandles,
+    sessions: sessionsOf({}),
+    resumable: ({ moduleName }) => moduleName === RESUMABLE,
+    ask: (target, q) => {
+      asked.push({ target, q });
+      return ask(target, q);
+    },
+    // cli.ts の deliverLostReply と同じ
+    deliverLost: async (reply, why) => {
+      lost.push(`${reply.moduleName}:${why}`);
+      await host.deliveries.deliver({
+        threadId: reply.threadId,
+        from: reply.moduleName,
+        title: `${reply.moduleName} の仕事は途中で終わりました`,
+        text: `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。`,
+        hop: reply.hop,
+      });
+      replyHandles.settle(reply.replyTo);
+      await host.store.settleReply(reply.threadId, reply.replyTo);
+    },
+    publishBackground: () => undefined,
+    ...opts,
+  });
+  host.holdAlso((id) => recovery.holdReason(id));
+  return { recovery, replyHandles, asked, lost };
+}
+
+/** 前の走行で「あとで届ける」と約束した札（頼んだターンのホップ 0 → 届くときは 1） */
+async function awaiting(store: ProjectThreadStore, threadId: string, replyTo: string, moduleName: string, projectId: string) {
+  await store.recordAwaitingReply({
+    threadId,
+    replyTo,
+    connName: `${moduleName}-${projectId}`,
+    moduleName,
+    hop: 1,
+    work: { toolName: moduleName === RESUMABLE ? "runSubagent" : "runCommand", toolCallId: `toolu_${replyTo}` },
+  });
+}
+
+test("続けられると名乗らない Module の札は、待ち受けの前に「途中で終わりました」——問わない", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await awaiting(first.store, threadId, "r-plain", PLAIN, projectId);
+    const host = await boot(dir);
+    const { recovery, asked, lost } = recoveryOf(host, async () => ({ answers: [] }));
+    await recovery.beforeListen();
+    assert.deepEqual(lost, [`${PLAIN}:banto を起動し直したため`]);
+    assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length ?? 0, 0);
+    assert.deepEqual(host.store.getThread(threadId)!.deliveries?.map((d) => d.title), [`${PLAIN} の仕事は途中で終わりました`]);
+    assert.equal(recovery.holdReason(threadId), undefined, "名乗らない Module の札だけなら留めない");
+    await recovery.afterListen();
+    assert.equal(asked.length, 0);
+  });
+});
+
+test("名乗った Module が「続ける」と答えた札は残り、同じ印で最後の1回だけ届けられる（2回目は断られる）", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await awaiting(first.store, threadId, "r-sub", RESUMABLE, projectId);
+    const host = await boot(dir);
+    const { recovery, replyHandles, asked, lost } = recoveryOf(host, async (_t, q) => ({
+      answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })),
+    }));
+    await recovery.beforeListen();
+    assert.equal(asked.length, 0, "待ち受けの前には問わない");
+    const { answers } = await recovery.afterListen();
+    assert.deepEqual(answers.map((a) => [a.replyTo, a.kept]), [["r-sub", true]]);
+    assert.deepEqual(lost, []);
+    // 問いの形：札・呼んだ tool・tool_use の id・頼んだ Thread。問う相手は札を渡した接続
+    assert.deepEqual(asked[0]!.target, { moduleName: RESUMABLE, connName: `${RESUMABLE}-${projectId}`, projectId });
+    assert.deepEqual(asked[0]!.q, {
+      items: [{ replyTo: "r-sub", toolName: "runSubagent", toolCallId: "toolu_r-sub", thread: { projectId, threadId } }],
+    });
+    // 返事待ちのまま、続けると答えた時刻が残る（画面の「起こし直しのあと続けています」）——読み直しても
+    const kept = host.store.getThread(threadId)!.awaitingReplies!;
+    assert.equal(kept.length, 1);
+    assert.ok(kept[0]!.keptAt, "続けると答えた時刻が無い");
+    assert.ok((await boot(dir)).store.getThread(threadId)!.awaitingReplies![0]!.keptAt);
+    // 札を渡した Module 以外は使えない
+    assert.deepEqual(replyHandles.use("r-sub", { moduleName: "other" }), { error: "この返信用の札は、あなたに渡したものではありません" });
+    const once = replyHandles.use("r-sub", { moduleName: RESUMABLE, connName: `${RESUMABLE}-${projectId}` });
+    assert.ok(!("error" in once), "覚え直した札が使えない");
+    assert.equal(once.hop, 0, "札を出したターンのホップ");
+    const twice = replyHandles.use("r-sub", { moduleName: RESUMABLE, connName: `${RESUMABLE}-${projectId}` });
+    assert.ok("error" in twice, "覚え直した札が2回使えた");
+  });
+});
+
+test("名乗った Module が「続けられない」と答えた・答えない・起こせない・時間切れなら「途中で終わりました」（理由つき）", async () => {
+  for (const [name, ask, expected] of [
+    ["続けられない", async (_t: ResumeTarget, q: ResumeQuestion) => ({ answers: [{ replyTo: q.items[0]!.replyTo, resume: false, reason: "記録がありません" }] }), /続けられないと答えました：記録がありません/],
+    ["答えに無い", async () => ({ answers: [] }), /この仕事について答えませんでした/],
+    ["起こせない", async () => { throw new Error("subagent を起こせませんでした"); }, /続けるかを聞けませんでした：subagent を起こせませんでした/],
+    ["時間切れ", () => new Promise<unknown>(() => {}), /続けるかを聞けませんでした：0 秒待っても答えが来ませんでした/],
+  ] as const) {
+    await withDir(async ({ dir, first, threadId, projectId }) => {
+      await awaiting(first.store, threadId, "r-sub", RESUMABLE, projectId);
+      const host = await boot(dir);
+      const { recovery, replyHandles, lost } = recoveryOf(host, ask, { askTimeoutMs: 20 });
+      await recovery.beforeListen();
+      await recovery.afterListen();
+      assert.equal(lost.length, 1, name);
+      assert.match(lost[0]!, expected, name);
+      assert.equal(replyHandles.get("r-sub"), undefined, `${name}：札が残っている`);
+      assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length ?? 0, 0, name);
+    });
+  }
+});
+
+test("Thread の続きは札の判定のあと——それまで留め（届いたもの・人のターン）、続けると答えた Module は続きの文に「続いています」", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    // 前の走行：runInBackground で頼んだ（札は返事待ち）あと、次のターンの途中で host が止まった
+    await awaiting(first.store, threadId, "r-sub", RESUMABLE, projectId);
+    await cutTurn(first, threadId, "続きをやって", [init(""), say("途中", "u1")]);
+    const runner = scriptedRunner([init(""), say("続けます", "u2")]);
+    const host = await boot(dir, runner);
+    let answer!: (v: unknown) => void;
+    const { recovery } = recoveryOf(host, (_t, q) => new Promise((r) => (answer = () => r({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })) }))));
+    const before = await recovery.beforeListen();
+    assert.deepEqual(before, [], "判定の前に切れたターンを片づけた");
+    assert.equal(host.store.getThread(threadId)!.lastTurn?.outcome, undefined);
+    assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0, "判定の前に続きを積んだ");
+    host.listen();
+    const after = recovery.afterListen();
+    // 判定の間に Module 以外から届いても起こさない。人のターンも待つ
+    await host.deliveries.deliver({ threadId, from: "other", title: "別の結果", text: "別の結果", hop: 1 });
+    let humanWaited = false;
+    const human = recovery.waitFor(threadId).then(() => (humanWaited = true));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(runner.calls.length, 0, "判定の前に起こした");
+    assert.equal(humanWaited, false, "人のターンが判定を待たない");
+    answer(undefined);
+    const { turns } = await after;
+    await human;
+    assert.deepEqual(turns.map((t) => t.action), ["continued"]);
+    await settled(host, threadId);
+    assert.equal(runner.calls.length, 1);
+    assert.match(runner.calls[0]!.prompt, new RegExp(`${RESUMABLE} の仕事は続いています（終わったら届きます）`));
+    assert.match(runner.calls[0]!.prompt, /別の結果/);
+    assert.equal(recovery.holdReason(threadId), undefined);
+  });
+});
+
+test("続けられないと答えたら、続きの文に「続いています」は書かない（「途中で終わりました」が届く）", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await awaiting(first.store, threadId, "r-sub", RESUMABLE, projectId);
+    await cutTurn(first, threadId, "続きをやって", [init(""), say("途中", "u1")]);
+    const runner = scriptedRunner([init(""), say("続けます", "u2")]);
+    const host = await boot(dir, runner);
+    const { recovery } = recoveryOf(host, async (_t, q) => ({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: false, reason: "load できません" })) }));
+    await recovery.beforeListen();
+    host.listen();
+    await recovery.afterListen();
+    await settled(host, threadId);
+    assert.doesNotMatch(runner.calls[0]!.prompt, /続いています/);
+    assert.match(runner.calls[0]!.prompt, /途中で終わりました/);
+  });
+});
+
+test("閉じた Thread の札は、名乗った Module のものでも問わずに「途中で終わりました」", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await awaiting(first.store, threadId, "r-sub", RESUMABLE, projectId);
+    await first.store.closeThread(threadId);
+    const host = await boot(dir);
+    const { recovery, asked, lost } = recoveryOf(host, async () => ({ answers: [] }));
+    await recovery.beforeListen();
+    await recovery.afterListen();
+    assert.equal(asked.length, 0);
+    assert.equal(lost.length, 1);
+  });
+});

@@ -1752,6 +1752,41 @@ test("走っている Thread に送ると並んで待ち、前が終わってか
   );
 });
 
+// **起こし直したあと Module に続けるかを聞いている Thread**（追加・2026-10-05、アーキ仕様 §2.5「2.」）——人が送ったターンも
+// 答えが出るまで始めない（先に始めると、切れたターンの続きを積む前に人のターンが最後のターンになる）
+test("起き直したあとの札の判定が終わるまで、その Thread に人が送ったターンは始まらない（発言は消えない）", async () => {
+  let finish!: () => void;
+  const judged = new Promise<void>((r) => (finish = r));
+  const waited: string[] = [];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("demo", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const sent = fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers: h, body: JSON.stringify({ prompt: "こんにちは" }) });
+      await new Promise((res) => setTimeout(res, 200));
+      assert.deepEqual(waited, [thread.id]);
+      assert.equal(deps.projectThread.getThread(thread.id)!.messages.length, 0, "判定の前にターンを始めた");
+      finish();
+      const res = await sent;
+      assert.equal(res.status, 200);
+      await res.text();
+      assert.deepEqual(deps.projectThread.getThread(thread.id)!.messages.map((m) => [m.role, m.text]), [["user", "こんにちは"]]);
+    },
+    {
+      threadTurns: new ThreadTurns(),
+      awaitRestartRecovery: (threadId) => {
+        waited.push(threadId);
+        return judged;
+      },
+      runTurn: (async function* () {
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
+});
+
 // **画像を添えて送る**（決定・2026-09-26、ユーザー要望）。中身は置き場へ、記録には名前だけ、AI には画像として。
 
 const TINY_PNG_BASE64 =

@@ -110,6 +110,8 @@ export type ProjectThreadEvent =
       payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number; work?: BackgroundWork };
     }
   | { type: "reply.settled"; payload: { threadId: string; replyTo: string } }
+  // 起こし直しのあと Module が続けると答え、札を覚え直した（追加・2026-10-05、アーキ仕様 §2.5「2.」）
+  | { type: "reply.kept"; payload: { threadId: string; replyTo: string } }
   | { type: "thread.cleared"; payload: { threadId: string } }
   // **新しいセッションで効かせた Skill の集合**（決定・2026-09-23、§5.7）
   | { type: "thread.skills_fixed"; payload: { threadId: string; set: SessionSkillSet } }
@@ -585,6 +587,13 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "reply.settled": {
         const t = next.threads.get(event.payload.threadId);
         if (t?.awaitingReplies) t.awaitingReplies = t.awaitingReplies.filter((r) => r.replyTo !== event.payload.replyTo);
+        return next;
+      }
+      case "reply.kept": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t?.awaitingReplies) {
+          t.awaitingReplies = t.awaitingReplies.map((r) => (r.replyTo === event.payload.replyTo ? { ...r, keptAt: raw.ts } : r));
+        }
         return next;
       }
       // **どの面に出したか**を、その tool 呼び出しの記録に書き足す

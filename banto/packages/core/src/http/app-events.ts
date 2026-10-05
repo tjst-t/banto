@@ -22,10 +22,15 @@ export interface BackgroundItem {
   description?: string;
   /** 人の答えを待っている（追加・2026-10-04）。無ければ裏で仕事が進んでいる */
   waitingOn?: "human";
+  /**
+   * **起こし直しのあと続けている**（追加・2026-10-05、アーキ仕様 §2.5「2.」）——Module が続けると答えた時刻（ISO）。
+   * 画面は「起こし直しのあと続けています」と出す
+   */
+  keptAt?: string;
 }
 
 export function backgroundItemsOf(awaiting: readonly AwaitingReply[] | undefined): BackgroundItem[] {
-  return (awaiting ?? []).map((r) => ({ module: r.moduleName, since: r.since, ...(r.work ?? {}) }));
+  return (awaiting ?? []).map((r) => ({ module: r.moduleName, since: r.since, ...(r.work ?? {}), ...(r.keptAt ? { keptAt: r.keptAt } : {}) }));
 }
 
 export type AppEvent =

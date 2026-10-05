@@ -892,6 +892,8 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       ],
       isolation: "subprocess",
       scope: "project",
+      // 待たない形で頼んだ仕事は、banto を起こし直しても続けられる（追加・2026-10-05、アーキ仕様 §2.5「2.」）
+      resumesAfterRestart: true,
     },
   },
   {

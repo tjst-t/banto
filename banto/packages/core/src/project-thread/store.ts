@@ -530,6 +530,17 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
+  /**
+   * **起こし直しのあと Module が続けると答えた**（追加・2026-10-05、アーキ仕様 §2.5「2.」）。札は返事待ちのまま、
+   * 続けると答えた時刻を残す（画面の「起こし直しのあと続けています」）
+   */
+  async markReplyKept(threadId: ThreadId, replyTo: string): Promise<void> {
+    const t = this.getThread(threadId);
+    if (!t?.awaitingReplies?.some((r) => r.replyTo === replyTo)) return;
+    const event = await this.log.append("reply.kept", { threadId, replyTo });
+    this.projection.applyOne(event);
+  }
+
   /** 返事が済んだ（届いた・代わりに「途中で終わりました」を届けた）。 */
   async settleReply(threadId: ThreadId, replyTo: string): Promise<void> {
     const t = this.getThread(threadId);

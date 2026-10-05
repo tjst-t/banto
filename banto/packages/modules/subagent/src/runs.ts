@@ -108,13 +108,32 @@ export class RunLog {
     renameSync(tmp, this.file);
   }
 
-  start(input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom" | "requestedBy">): {
+  start(
+    input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom" | "requestedBy"> & {
+      /**
+       * 起こし直しのあと続ける仕事は、前の id と頼んだ時刻のまま（追加・2026-10-05）。画面の一覧で同じ仕事が続いて見える
+       */
+      continues?: { id: string; startedAt: number; notes: string[] };
+    },
+  ): {
     id: string;
     signal: AbortSignal;
   } {
-    const id = randomUUID();
+    const { continues, ...rest } = input;
+    const id = continues?.id ?? randomUUID();
     const abort = new AbortController();
-    this.running.set(id, { record: { ...input, id, status: "running", startedAt: Date.now(), toolCalls: [], steps: [] }, abort });
+    this.running.set(id, {
+      record: {
+        ...rest,
+        id,
+        status: "running",
+        startedAt: continues?.startedAt ?? Date.now(),
+        toolCalls: [],
+        steps: [],
+        ...(continues ? { notes: continues.notes } : {}),
+      },
+      abort,
+    });
     return { id, signal: abort.signal };
   }
 
@@ -214,6 +233,7 @@ export class RunLog {
   }
 
   get(id: string): RunRecord | undefined {
-    return this.running.get(id)?.record ?? this.finished.find((r) => r.id === id);
+    // 同じ id が2つあれば新しいほう（起こし直しのあと続けた仕事は、前の id のまま——2026-10-05）
+    return this.running.get(id)?.record ?? [...this.finished].reverse().find((r) => r.id === id);
   }
 }

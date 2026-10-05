@@ -13,9 +13,14 @@
 //                     （banto 本体のログインを共有する中継の試験用）
 //   [has VALUE]   環境変数のどれかに VALUE が含まれるかだけを答える（本物のトークンが入っていないことの試験用）
 //   [sha NAME]    環境変数 NAME の sha256 を答える（値を会話に出さずに、何が届いたかを確かめる）
+//   [done-tool]   最初に tool を1つ呼んで、すぐ終わらせる（tool_call_update の completed。実行中の tool の数え方の試験用）
+//   [then-slow N] この頼みのあと、同じ会話の次の頼み（起こし直しのあと続けたとき）で tool を1つ始めて N 秒待つ
+//                 （続けている間の画面の試験用）
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
-// 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。
+// 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。頼まれた文は
+// 頼まれた時点で残す（本物の CLI が API に送る前に人の発言を書くのと同じ。追加・2026-10-05）——途中で殺されても、
+// 続きの会話に残る
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -94,6 +99,9 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
   const abort = new AbortController();
   running.set(sessionId, abort);
   let reply = `受け取った：${text}`;
+  const previous = s.turns.slice();
+  s.turns.push({ user: text, agent: "" });
+  save(sessionId, s);
   const toolCall = async (title: string) =>
     cx.notify(methods.client.session.update, {
       sessionId,
@@ -101,7 +109,19 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     });
   try {
     if (text.includes("[crash]")) process.exit(3);
-    const slow = /\[slow (\d+)\]/.exec(text);
+    if (text.includes("[done-tool]")) {
+      const toolCallId = randomUUID();
+      await cx.notify(methods.client.session.update, {
+        sessionId,
+        update: { sessionUpdate: "tool_call", toolCallId, title: "look around", kind: "read", status: "in_progress" },
+      });
+      await cx.notify(methods.client.session.update, {
+        sessionId,
+        update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" },
+      });
+    }
+    const thenSlow = previous.map((t) => /\[then-slow (\d+)\]/.exec(t.user)).find((m) => m !== null);
+    const slow = /\[slow (\d+)\]/.exec(text) ?? thenSlow ?? null;
     if (slow) {
       await toolCall(`sleep ${slow[1]}`);
       if (text.includes("[draft]")) await say(cx, sessionId, "書きかけ…");
@@ -154,14 +174,14 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     }
     const has = /\[has ([^\]]+)\]/.exec(text);
     if (has) reply = `環境に ${Object.values(process.env).some((v) => v?.includes(has[1])) ? "含む" : "含まない"}`;
-    if (text.includes("前に")) reply = `前に頼まれたこと：${s.turns.map((t) => t.user).join(" / ") || "（無い）"}`;
+    if (text.includes("前に")) reply = `前に頼まれたこと：${previous.map((t) => t.user).join(" / ") || "（無い）"}`;
     reply += `（model=${s.model} effort=${s.effort} mode=${s.mode}）`;
     await say(cx, sessionId, reply);
     await cx.notify(methods.client.session.update, {
       sessionId,
       update: { sessionUpdate: "usage_update", used: 1200, size: 200000, cost: { amount: 0.001, currency: "USD" } },
     });
-    s.turns.push({ user: text, agent: reply });
+    s.turns[s.turns.length - 1] = { user: text, agent: reply };
     save(sessionId, s);
     return {
       stopReason: "end_turn" as const,
@@ -197,7 +217,7 @@ agent({ name: "fake-agent" })
         sessionId: ctx.params.sessionId,
         update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: t.user } },
       });
-      await say(ctx.client, ctx.params.sessionId, t.agent);
+      if (t.agent !== "") await say(ctx.client, ctx.params.sessionId, t.agent);
     }
     return { configOptions: configOptions(s) };
   })

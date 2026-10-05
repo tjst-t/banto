@@ -208,6 +208,12 @@ export interface AppDeps {
    * お知らせ（`NoticeItem.resume`）の id で呼ぶ。渡されなければ口は断る
    */
   continueStoppedTurn?(noticeId: string): Promise<{ ok: true } | { ok: false; status: 404 | 409; error: string }>;
+  /**
+   * **起こし直したあとの札の判定が終わるまで待つ**（追加・2026-10-05、アーキ仕様 §2.5「2. Module の仕事を続ける」）。
+   * 続けられると名乗った Module に続けるかを聞いている Thread では、人が送ったターンも答えのあとに始める——先に始めると、
+   * 切れたターンの続きを積む前に人のターンが最後のターンになる。待つ間は順番待ちと同じ（流れは生きている）
+   */
+  awaitRestartRecovery?(threadId: string): Promise<void>;
   /** Project のコンテナの今の状態（無ければ undefined——まだ一度も Module を起こしていない） */
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
@@ -1995,6 +2001,7 @@ export function createApp(deps: AppDeps) {
         try {
           // **同じ Thread のターンは1本ずつ**（決定・2026-09-25、アーキ仕様 §4.2）。走っていれば、終わるまで
           // 並んで待つ——断らない（送ったつもりで消えるのを作らない。届いたもので host が始めたターンでも同じ）
+          await deps.awaitRestartRecovery?.(threadId);
           const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0, stop.signal) : undefined;
           if (stop.signal.aborted) {
             release?.();

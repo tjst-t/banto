@@ -6,8 +6,10 @@
 //
 // **返事待ちの札**（tool の結果が `dev.banto/pendingReply`）は期限で切らない——Module が「あとで届ける」と約束した
 // ものなので、届くか、Module が止まって host が代わりに「途中で終わりました」を届けるまで生かす。返事待ちは
-// Event Store にも残る（`reply.awaiting`、host を起動し直しても分かる）。札そのもの（印）は覚え直さない
-// ——起動し直せば Module も立て直しで、前の札を使う者はいない。
+// Event Store にも残る（`reply.awaiting`、host を起動し直しても分かる）。札そのもの（印）は、起動し直したら
+// ふつうは覚え直さない——起動し直せば Module も立て直しで、前の札を使う者はいない。**例外は「起こし直しても続け
+// られる」と名乗った Module が続けると答えた札**（追加・2026-10-05、アーキ仕様 §2.5「2. Module の仕事を続ける」）：
+// 同じ印で覚え直し、**最後の届け1回だけ**使えるようにする（`restore`）。
 
 import { randomBytes } from "node:crypto";
 
@@ -110,6 +112,17 @@ export class ReplyHandles {
     }
     if (h.usesLeft <= 0) return { error: `返信用の札は ${REPLY_LIMITS.uses} 回まで使えます（使い切りました）` };
     h.usesLeft -= 1;
+    return h;
+  }
+
+  /**
+   * **起き直したあと、返事待ちの札を同じ印で覚え直す**（追加・2026-10-05、アーキ仕様 §2.5「2.」・レビュー 2-1）。
+   * 札は Event Store の返事待ち（`reply.awaiting`）に残っている。使った回数は残っていないので、**使えるのは
+   * 最後の届け1回だけ**。返事待ちのまま（期限で切らない）。札を渡した Module 以外は使えない確かめはそのまま効く
+   */
+  restore(id: string, input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting">): ReplyHandle {
+    const h: ReplyHandle = { ...input, expiresAt: this.now() + REPLY_LIMITS.ttlMs, usesLeft: 1, awaiting: true };
+    this.handles.set(id, h);
     return h;
   }
 

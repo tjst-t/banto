@@ -82,7 +82,8 @@ import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ModuleReplies } from "./delivery/module-replies.js";
 import { receivesReplies, type ModuleReplyArguments } from "@banto/module-contract";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
-import { continueStoppedTurn, resumeHoldReason, resumeInterruptedTurns, type TurnContinuationDeps } from "./delivery/turn-continuation.js";
+import { continueStoppedTurn, resumeHoldReason } from "./delivery/turn-continuation.js";
+import { RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import {
@@ -90,6 +91,7 @@ import {
   assertVisibilityValues,
   classifyMetaDifference,
   CALLER_META_KEY,
+  RESUME_AFTER_RESTART_TOOL,
 } from "@banto/module-contract";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -219,6 +221,8 @@ async function main(): Promise<void> {
   const threadTurns = new ThreadTurns();
   const replyHandles = new ReplyHandles();
   const appEvents = new AppEventBus();
+  /** 起き直したときの札の判定と切れたターン（下で作る。判定の終わっていない Thread は留める） */
+  let recovery: RestartRecovery | undefined;
   const deliveries = new ThreadDeliveries({
     projectThread,
     turns: threadTurns,
@@ -226,7 +230,8 @@ async function main(): Promise<void> {
       await inbox.raiseNotice(n);
     },
     // 起こし直しのたびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間は起こさない（§2.5「上限」）
-    hold: (threadId) => resumeHoldReason({ projectThread, inbox }, threadId),
+    // 起こし直したあと、続けられると名乗った Module に続けるかを聞いている間も起こさない（§2.5「2.」）
+    hold: (threadId) => recovery?.holdReason(threadId) ?? resumeHoldReason({ projectThread, inbox }, threadId),
   });
   threadTurns.onChange((change) => {
     const projectId = projectThread.getThread(change.threadId)?.projectId;
@@ -292,35 +297,56 @@ async function main(): Promise<void> {
       publishBackground(reply.threadId);
     }
   }
-  // 起動し直した：前の走行で返事待ちだったものは、その Module ごと止まっている
-  for (const p of projectThread.listProjects()) {
-    for (const t of projectThread.listThreadsForProject(p.id)) {
-      for (const r of t.awaitingReplies ?? []) {
-        await deliverLostReply({ threadId: t.id, replyTo: r.replyTo, moduleName: r.moduleName, hop: r.hop }, "banto を起動し直したため");
-      }
+  // **起き直したときの片づけ**（アーキ仕様 §2.5「起こし直しをまたいで続ける」、`delivery/restart-recovery.ts`）。
+  // 順番：判断待ちの期限切れ（上）→ 返事待ちの札の判定 → 切れたターン → 待ち受け → `resumeAll`。札を渡した Module が
+  // 「起こし直しても続けられる」と名乗っていなければ、ここで「途中で終わりました」（Module ごと止まっている）。名乗って
+  // いれば札を覚え直し、**待ち受けを始めてから**その Module を起こして続けるかを聞き、その Thread の切れたターンは
+  // 答えのあとに片づける（それまでその Thread は留める）。名乗った Module の札を持たない Thread の切れたターンは
+  // ここで片づける。続きは届いたものとして積むだけ——起こすのは待ち受けを始めてからの `resumeAll`
+  const logTurns = (results: Awaited<ReturnType<RestartRecovery["beforeListen"]>>) => {
+    for (const r of results) {
+      const t = r.turn;
+      console.log(
+        `[host] 前の走行で途中で切れたターン: Thread ${t.threadId} ターン ${t.turnId}（${t.startedAt} に始めた・` +
+          `${t.cause === "human" ? "人の発言" : "届いたもの"}・続き ${t.attempt} 回目・会話 ${t.sessionId ?? "不明"}` +
+          `${t.rewindTo ? `・巻き戻し ${t.rewindTo}` : ""}）→ ` +
+          (r.action === "continued"
+            ? "続きを届けた"
+            : r.action === "closed"
+              ? `続けずに閉じた（${r.reason}）`
+              : r.action === "stopped-retrying"
+                ? "続けて切れたので自動では続けない（続きは積んで留めた・受信箱に出した）"
+                : `片づけられなかった（${r.error}）`),
+      );
     }
-  }
-  // **前の走行で途中で切れたターンを続ける**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。
-  // 順番：Module の札の判定（すぐ上）→ Thread の続き。判断待ちはもう期限切れにしてある（承認を待っていた呼び出しを
-  // 文に書くのに使う）。続きは届いたものとして積むだけ——起こすのは待ち受けを始めてからの `resumeAll`。
-  // 続けると答えた Module の仕事（`keptReplies`）はまだ渡さない——名乗る Module が無く、札はすぐ上で全部
-  // 「途中で終わりました」にしている
-  const turnContinuation: TurnContinuationDeps = { projectThread, inbox, deliveries };
-  for (const r of await resumeInterruptedTurns(turnContinuation)) {
-    const t = r.turn;
-    console.log(
-      `[host] 前の走行で途中で切れたターン: Thread ${t.threadId} ターン ${t.turnId}（${t.startedAt} に始めた・` +
-        `${t.cause === "human" ? "人の発言" : "届いたもの"}・続き ${t.attempt} 回目・会話 ${t.sessionId ?? "不明"}` +
-        `${t.rewindTo ? `・巻き戻し ${t.rewindTo}` : ""}）→ ` +
-        (r.action === "continued"
-          ? "続きを届けた"
-          : r.action === "closed"
-            ? `続けずに閉じた（${r.reason}）`
-            : r.action === "stopped-retrying"
-              ? "続けて切れたので自動では続けない（続きは積んで留めた・受信箱に出した）"
-              : `片づけられなかった（${r.error}）`),
-    );
-  }
+  };
+  recovery = new RestartRecovery({
+    projectThread,
+    inbox,
+    deliveries,
+    replyHandles,
+    resumable: ({ moduleName, projectId }) =>
+      loadModuleDeclarations(runtimeConfig, projectId).find((d) => d.name === moduleName)?.meta.resumesAfterRestart === true,
+    ask: async ({ moduleName, connName, projectId }, question) => {
+      const project = projectThread.getProject(projectId);
+      const declaration = loadModuleDeclarations(runtimeConfig, projectId).find((d) => d.name === moduleName);
+      if (!declaration || !project) throw new Error(`${moduleName} の宣言が見つかりません`);
+      const got = await connectDeclaredModule(declaration, declaration.meta.scope === "project" ? project : undefined);
+      if (!got) throw new Error(`${moduleName} を起こせませんでした`);
+      if (got !== connName) throw new Error(`${moduleName} の接続（${got}）が札を渡した接続（${connName}）と違います`);
+      const client = connectedModules.get(got);
+      if (!client) throw new Error(`${moduleName} に繋がっていません`);
+      const result = (await client.callTool({ name: RESUME_AFTER_RESTART_TOOL, arguments: { ...question } }, undefined, {
+        timeout: RESUME_ASK_TIMEOUT_MS,
+      })) as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+      const text = result.content?.find((c) => c.type === "text")?.text ?? "";
+      if (result.isError) throw new Error(`${moduleName} が問いを断りました：${text.slice(0, 300)}`);
+      return JSON.parse(text) as unknown;
+    },
+    deliverLost: deliverLostReply,
+    publishBackground,
+  });
+  logTurns(await recovery.beforeListen());
 
   const registry = new RelayRegistry();
   const relayUrl = `http://127.0.0.1:${bootstrap.port}/relay`;
@@ -1761,7 +1787,9 @@ async function main(): Promise<void> {
       ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
     }),
     releaseProjectModules,
-    continueStoppedTurn: (noticeId) => continueStoppedTurn(turnContinuation, noticeId),
+    continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
+    // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
+    awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
     projectContainerStatus: async (projectId: string) => {
       const name = containerNameFor(projectId);
       const st = await containers.state(name);
@@ -1858,6 +1886,17 @@ async function main(): Promise<void> {
     // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
     // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
     deliveries.resumeAll();
+    // **続けられると名乗った Module に、続けるかを聞く**（§2.5「2.」）。待ち受けてから——Module は中継で資格情報を
+    // 受け取り、札で届ける。答えが出た Thread から切れたターンを片づけ、留めを解く
+    void recovery!.afterListen().then(({ answers, turns }) => {
+      for (const a of answers) {
+        console.log(
+          `[host] 前の走行の返事待ち（${a.target.moduleName}・Thread ${a.threadId}）→ ` +
+            (a.kept ? "続けると答えた（札を覚え直した。最後の届け1回だけ）" : `途中で終わりました（${a.why}）`),
+        );
+      }
+      logTurns(turns);
+    });
     // **合言葉はログに出さない**（改訂・2026-10-03、Fable のレビュー——journald に写しが残っていた）
     console.log(`[host] listening on http://0.0.0.0:${bootstrap.port}/（画面：${loginOrigins(bootstrap).uiOrigin}）`);
   });

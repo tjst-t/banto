@@ -58,8 +58,18 @@ export interface RunDeps {
   mode?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
-  /** エージェントが tool を呼んだ（題と種類）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う */
-  onToolCall?: (title: string, kind?: string) => void;
+  /** エージェントが tool を呼んだ（題と種類と id）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う */
+  onToolCall?: (title: string, kind?: string, toolCallId?: string) => void;
+  /**
+   * tool が終わった（`tool_call_update` の completed・failed）。走っている仕事の記録が「切れたとき実行中だった tool」を
+   * 持つのに使う（追加・2026-10-05、アーキ仕様 §2.5「2.」）
+   */
+  onToolDone?: (toolCallId: string) => void;
+  /**
+   * 会話の id が決まった（`session/new` の返事・`session/load` した id）。走っている仕事の記録に、prompt を送る前に
+   * 残す（追加・2026-10-05）——起こし直したあと `session/load` で続ける
+   */
+  onSession?: (sessionId: string) => void;
   /** 返答を書き進めた（ここまでの全文）。走っている間の画面に、書きかけを見せるのに使う */
   onText?: (textSoFar: string) => void;
   askPermission: (question: PermissionQuestion) => Promise<PermissionAnswer>;
@@ -94,6 +104,15 @@ const EXIT_WAIT_MS = 1000;
 
 export class SubagentError extends Error {
   override name = "SubagentError";
+}
+
+/**
+ * **続きから開けなかった**（`session/load` が断られた。追加・2026-10-05）。claude-agent-acp は最初の prompt が記録される
+ * 前に切れた会話を load できない（実測 B「Resource not found」）——起こし直しのあと続けるとき、まだ何も進んでいなければ
+ * 同じ頼みで最初からやり直す（`server.ts`）
+ */
+export class SessionLoadError extends SubagentError {
+  override name = "SessionLoadError";
 }
 
 function selectValues(option: SessionConfigOption): string[] {
@@ -262,8 +281,11 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
         break;
       case "tool_call":
         result.toolCalls.push(update.title);
-        deps.onToolCall?.(update.title, update.kind);
+        deps.onToolCall?.(update.title, update.kind, update.toolCallId);
         progress(`ツール：${update.title}`);
+        break;
+      case "tool_call_update":
+        if (update.status === "completed" || update.status === "failed") deps.onToolDone?.(update.toolCallId);
         break;
       case "usage_update":
         result.context = { used: update.used, size: update.size };
@@ -311,11 +333,16 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
           if (!init.agentCapabilities?.loadSession) {
             throw new SubagentError(`${agent.name} は続きからの再開（loadSession）を名乗っていません`);
           }
-          const loaded = await ctx.request(methods.agent.session.load, {
-            sessionId: input.sessionId,
-            cwd: deps.cwd,
-            mcpServers: [],
-          });
+          let loaded;
+          try {
+            loaded = await ctx.request(methods.agent.session.load, {
+              sessionId: input.sessionId,
+              cwd: deps.cwd,
+              mcpServers: [],
+            });
+          } catch (err) {
+            throw new SessionLoadError(`会話 ${input.sessionId} を続きから開けませんでした: ${describeError(err)}`);
+          }
           sessionId = input.sessionId;
           options = loaded.configOptions ?? [];
         } else {
@@ -323,6 +350,7 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
           sessionId = created.sessionId;
           options = created.configOptions ?? [];
         }
+        deps.onSession?.(sessionId);
 
         if (input.model) options = await applyOption(ctx, sessionId, options, "model", input.model);
         if (input.effort) options = await applyOption(ctx, sessionId, options, "thought_level", input.effort);

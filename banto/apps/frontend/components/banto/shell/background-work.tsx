@@ -128,6 +128,13 @@ function BackgroundList({
                       {item.module}・{minutesAgo(item.since, now)}
                       {KINDS[kind].since}
                     </span>
+                    {item.keptAt ? (
+                      // **起こし直しのあと続けている**（2026-10-05、アーキ仕様 §2.5「2.」）——続けると答えてから長く届かない
+                      // ものに人が気づけるよう、いつから続けているかを出す
+                      <span data-testid="background-item-kept" className="text-xs text-ink-3">
+                        起こし直しのあと続けています（{minutesAgo(item.keptAt, now)}から）
+                      </span>
+                    ) : null}
                   </button>
                 ))}
               </div>

@@ -450,6 +450,14 @@ export interface BantoModuleMeta {
    *  Project単位にプロセスを分ける必要があるModule向け。 */
   scope: Scope;
   confinement?: Confinement;
+  /**
+   * **起こし直しても続けられる**（追加・2026-10-05、アーキ仕様 §2.5「2. Module の仕事を続ける」）。`true` を名乗った
+   * Module は、host が起き直したとき「あとで届ける」と約束したまま終わっていない仕事を問われ（`resume.ts` の
+   * `RESUME_AFTER_RESTART_TOOL`）、1件ずつ続けるかを答えられる。名乗らなければ、その仕事は host が「途中で
+   * 終わりました」にする（今までどおり）。**続けると答えたら、終わりは必ず札で届ける**（成功も失敗も）。
+   * 起動の形には関わらない（`SPAWN_SHAPE_FIELDS` ではない）。既定 false
+   */
+  resumesAfterRestart: boolean;
 }
 
 export class ModuleMetaError extends Error {}
@@ -523,6 +531,13 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
     };
   }
 
+  // 書き間違いを「名乗らない」と同じに扱わない（上の handlesSecrets と同じ）
+  if (obj.resumesAfterRestart !== undefined && typeof obj.resumesAfterRestart !== "boolean") {
+    throw new ModuleMetaError(
+      `${source}: resumesAfterRestart は true か false（${JSON.stringify(obj.resumesAfterRestart)} が来ました）`,
+    );
+  }
+
   // **`bundled` は host だけが付けられる**（上記 ModuleOrigin）。
   // **書いてあっても読まない**——parse の出口は必ず `external` で、
   // 印を立てられるのは host の `markBundled()` だけ。捨てるのであって
@@ -536,6 +551,7 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
     handlesSecrets,
     scope,
     confinement,
+    resumesAfterRestart: obj.resumesAfterRestart === true,
   };
 
   assertConsistent(meta, source);
@@ -666,6 +682,7 @@ export function classifyMetaDifference(
   }
   if (JSON.stringify(declared.satisfies) !== JSON.stringify(selfReported.satisfies)) other.push("satisfies");
   if (JSON.stringify(declared.dependsOn) !== JSON.stringify(selfReported.dependsOn)) other.push("dependsOn");
+  if (declared.resumesAfterRestart !== selfReported.resumesAfterRestart) other.push("resumesAfterRestart");
 
   return { stricter, looser, other };
 }
@@ -691,6 +708,7 @@ export function reconcileModuleMeta(
   if (JSON.stringify(staticMeta.dependsOn) !== JSON.stringify(dynamicMeta.dependsOn)) {
     changedFields.push("dependsOn");
   }
+  if (staticMeta.resumesAfterRestart !== dynamicMeta.resumesAfterRestart) changedFields.push("resumesAfterRestart");
 
   // 動的自己申告を正とする（satisfies/dependsOnはルーティングにしか
   // 影響しないので、そのまま採用してよい）。
