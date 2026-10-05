@@ -1321,7 +1321,7 @@ update_setup_needed() {
 # setup-update.sh を打つ（root の要る段で sudo を使う。古い形なら置き場を移して起こし直す）
 run_setup_update() {
   say "画面からの更新の準備をする（setup-update.sh：更新の unit・polkit の規則・置き場の形）"
-  [[ -n $CHECK_OUT ]] && printf '%s\n' "$CHECK_OUT" | sed 's/^/      見た：/'
+  [[ -n $CHECK_OUT ]] && printf '%s\n' "$CHECK_OUT" | grep -v '^そのまま' | sed 's/^/      --check：/'
   setup_update 2>&1 | sed 's/^/      /' ||
     die "setup-update.sh が止まりました（上の出力）" "上の理由を直して、同じコマンドを打ち直してください（setup-update.sh は続きから行う）"
   LAYOUT=$(release_layout)
