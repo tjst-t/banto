@@ -38,8 +38,24 @@ export interface BackgroundWork {
   waitingOn?: "human";
 }
 
+/**
+ * **札の宛先が Module**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。Module が中継で「終わったら届ける」 tool を
+ * 呼んだときに出す。届いたら host がこの Module の受け口の tool（`dev.banto/receivesReplies`）を呼んで渡す
+ */
+export interface ReplyToModule {
+  /** 呼んだ Module の接続名（届け先） */
+  connName: string;
+  /** 呼んだ Module の宣言上の名前 */
+  moduleName: string;
+  /** 呼んだ Module に見せる返事の印（札そのものではない） */
+  replyId: string;
+}
+
 export interface ReplyHandle {
+  /** 宛先の Thread。宛先が Module なら空文字（`toModule` を見る） */
   threadId: string;
+  /** 宛先が Module のとき（これがあれば Thread には届けない） */
+  toModule?: ReplyToModule;
   projectId?: string;
   /** 札を渡した Module の接続名（Project ごとの Module は `<名前>-<projectId>`） */
   connName: string;
@@ -60,6 +76,7 @@ export class ReplyHandles {
 
   issue(input: {
     threadId: string;
+    toModule?: ReplyToModule;
     projectId?: string;
     connName: string;
     moduleName: string;
@@ -121,6 +138,21 @@ export class ReplyHandles {
   /** 返事が済んだ（最後の届け・代わりの「途中で終わりました」）。 */
   settle(id: string): void {
     this.handles.delete(id);
+  }
+
+  /**
+   * Module 宛ての札を出す（追加・2026-10-05）。返すのは札（宛先に渡す）と返事の印（呼んだ Module に見せる）
+   */
+  issueToModule(input: {
+    to: { connName: string; moduleName: string };
+    projectId?: string;
+    connName: string;
+    moduleName: string;
+  }): { replyTo: string; replyId: string } {
+    const replyId = `rid_${randomBytes(12).toString("base64url")}`;
+    const { to, ...rest } = input;
+    const replyTo = this.issue({ ...rest, threadId: "", toModule: { ...to, replyId }, hop: 0 });
+    return { replyTo, replyId };
   }
 
   /** その接続に渡した返事待ちの札（Module が止まったとき、代わりに届ける先） */

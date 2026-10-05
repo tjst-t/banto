@@ -2487,7 +2487,9 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 
 #### 足りないもの——Factory と一緒に作る
 
-1. **中継から Subagent を呼ぶ口の残り**（Backlog の `subagent-from-modules`。`docs/notes/2026-09-25-thread-delivery.md`）：
+1. ~~**中継から Subagent を呼ぶ口の残り**~~ **→ 実装・2026-10-05**（アーキ仕様 §4.2「Module 宛ての返事」。受け口の名乗りは
+   `dev.banto/receivesReplies`、頼んだときの結果に返事の印 `dev.banto/replyId`）。以下は当時の整理
+   （Backlog の `subagent-from-modules`。`docs/notes/2026-09-25-thread-delivery.md`）：
    ①中継の時間の上限と途中経過（Factory は待たない形しか使わないので当たらないが、同じタスクで直す）
    ②**札の宛先に Module**——中継の呼び出しでも札を出して呼んだ Module に結びつけ、host が呼んだ Module の受け口の tool
    （`_meta["dev.banto/receivesReplies"]: true` を名乗るもの）を呼んで渡す。先に記録してから渡す。**Factory はこれが無いと動かない**

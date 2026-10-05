@@ -106,3 +106,20 @@ Thread 間の通信と、できれば同じ仕組みにしたい。可能？」
   （受信箱）・呼んだ Module の後ろにいる Thread（大元の会話）にも知らせるか・ホップ数を Module の連鎖でどう数えるか
 - **採らなかった案**：Module どうしで MCP の Tasks を使う——Module どうしなら使えるが、Thread への返事は CLI が
   Tasks を名乗らないので使えず、仕組みが2つに分かれる（上の「Module から呼ぶとき」）
+
+## 残り2つを入れた（2026-10-05）
+
+Factory の前に、この2つを入れた（Backlog の `subagent-from-modules`）。仕様はアーキ仕様 §4.2「Module 宛ての返事」。
+
+- **② 中継の時間の上限**：直す前に測った——5 秒ごとに途中経過を送る 65 秒の宛先を中継で呼ぶと、呼び元が
+  `resetTimeoutOnProgress` を付けていても **60.0 秒で -32001**（host が宛先に progressToken を渡しておらず、途中経過が来ない）。
+  agent-proxy と同じく、host が自分で上限を数え・宛先の途中経過で数え直し・呼び元へ渡すようにして、同じ測りで 65.0 秒で通った
+- **③ 札の宛先に Module**：第一候補のまま入れた。受け口の tool は `dev.banto/receivesReplies` を名乗る（引数
+  `{ replyId, from, title, text, final, lost }`）。呼んだ Module には、頼んだときの結果の `_meta["dev.banto/replyId"]` で返事の印を
+  見せる（札は見せない）。残す場所は Event Store ではなく `<dataDir>/delivery/module-replies.json`
+- 上に「呼ぶ Module を作るときに決めること」と書いた4つの答え：受け口の名前と形は上のとおり／**人にも大元の Thread にも
+  知らせない**（返事を受けた Module が、要るなら自分の口で知らせる）／ホップ数は数えない（届いたもので AI を起こさない）
+- **E2E の偽 Runner の既定は 60 秒で、途中経過で数え直さない**——本物の CLI（300 秒・途中経過で数え直す）と違うので、
+  60 秒を越える呼び出しを試すときは計画に `giveUpToolAfterMs: 300000` を書く（最初これで「banto の側で切れた」と見誤りかけた）
+- 残る問い：呼んだ Module が立っていない（On demand）と、残った返事は次に誰かがその Module を使うまで渡らない
+

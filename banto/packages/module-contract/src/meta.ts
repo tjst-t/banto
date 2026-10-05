@@ -251,6 +251,51 @@ export function waitingOnOf(meta: Record<string, unknown> | undefined): WaitingO
   return { on, ...(typeof title === "string" && title.trim() !== "" ? { title: title.trim() } : {}) };
 }
 
+/**
+ * **他の Module に頼んだ「終わったら届ける」仕事の返事を受ける tool**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。
+ *
+ * Module が中継（`relayCallTool`）で「終わったら届ける」 tool（`DELIVERS_LATER_META_KEY`）を呼ぶと、host は**呼んだ Module に
+ * 結びついた札**を宛先に渡す。宛先が札で届けると、host は呼んだ Module のこの印を名乗る tool を呼んで渡す。引数は
+ * `{ replyId, from, title, text, final, lost }`（`ModuleReplyArguments`）。**この tool を名乗らない Module には札を出さない**
+ * ——宛先は「届ける先がない」と断る。
+ *
+ * この tool は host だけが呼ぶ：中継（他の Module）からも AI からも呼べない（host が断る）。可視性は `admin` で名乗る
+ */
+export const RECEIVES_REPLIES_META_KEY = `${VENDOR_PREFIX}/receivesReplies`;
+/**
+ * **この呼び出しの返事の印**（追加・2026-10-05）。中継で「終わったら届ける」 tool を呼んだとき、host が結果の `_meta` に
+ * 載せる。あとで届く返事（受け口の tool の `replyId`）と同じ値——呼んだ Module はこれでどの頼みの返事かを引き当てる。
+ * 札そのものではない（これでは届けられない）
+ */
+export const REPLY_ID_META_KEY = `${VENDOR_PREFIX}/replyId`;
+
+/** host が受け口の tool に渡す引数 */
+export interface ModuleReplyArguments {
+  /** 頼んだときの結果の `_meta[REPLY_ID_META_KEY]` と同じ値 */
+  replyId: string;
+  /** 届けた Module（宣言の名前） */
+  from: string;
+  title: string;
+  text: string;
+  /** これで最後か。最後ならその頼みの返事はもう来ない */
+  final: boolean;
+  /**
+   * **返事はもう届かない**（宛先が止まった・banto を起こし直した）。host が代わりに届けたもの。`final` も `true`
+   */
+  lost: boolean;
+}
+
+/** その tool が返事の受け口だと名乗っているか。**`true` 以外は名乗っていない** */
+export function receivesReplies(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[RECEIVES_REPLIES_META_KEY] === true;
+}
+
+/** 結果に載った返事の印を読む */
+export function replyIdOf(meta: Record<string, unknown> | undefined): string | undefined {
+  const raw = meta?.[REPLY_ID_META_KEY];
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
 /** その tool が「終わったら呼び出し元の Thread に届ける」と名乗っているか。**`true` 以外は名乗っていない** */
 export function deliversLater(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[DELIVERS_LATER_META_KEY] === true;

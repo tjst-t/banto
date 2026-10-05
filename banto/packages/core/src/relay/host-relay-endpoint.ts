@@ -12,9 +12,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   auditArgsOf,
+  deliversLater,
+  receivesReplies,
+  PENDING_REPLY_META_KEY,
+  REPLY_ID_META_KEY,
+  REPLY_TO_META_KEY,
+  waitingOnOf,
+  type WaitingOn,
   CALL_ID_META_KEY,
   CALLER_META_KEY,
   ON_BEHALF_OF_META_KEY,
@@ -68,6 +76,8 @@ export interface RelayAuditRecord {
 
 export interface RegisteredModule {
   name: string;
+  /** 宣言の名前（Project ごとの Module は接続名が `<これ>-<projectId>`）。無ければ `name` と同じ */
+  declaredName?: string;
   client: Client;
   meta: BantoModuleMeta;
   /**
@@ -201,7 +211,26 @@ export interface HostRelayServerOptions {
   deliverToThread?(
     caller: CallerIdentity,
     input: { replyTo: string; title: string; text: string; final: boolean },
-  ): Promise<{ ok: true; deliveryId: string; wake: string } | { ok: false; error: string }>;
+  ): Promise<{ ok: true; deliveryId: string; wake?: string } | { ok: false; error: string }>;
+  /**
+   * **Module 宛ての札**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。中継で「終わったら届ける」 tool
+   * （`dev.banto/deliversLater`）を呼ぶとき、呼んだ Module が受け口（`dev.banto/receivesReplies`）を名乗っていれば札を出して
+   * 宛先に渡す。渡さなければ札は出ない（宛先は「届ける先がない」と断る）
+   */
+  replies?: {
+    issueToModule(input: {
+      to: { connName: string; moduleName: string };
+      projectId?: string;
+      connName: string;
+      moduleName: string;
+    }): { replyTo: string; replyId: string };
+    /** 宛先が「あとで届ける」と約束した（`dev.banto/pendingReply`） */
+    markAwaiting(replyTo: string, waitingOn?: WaitingOn): Promise<void>;
+  };
+  /**
+   * 宛先が黙ったままのときに諦めるまでの時間（既定は MCP の 60 秒）。宛先の進捗・人を待つ間は数え直す。試験が短くするための穴
+   */
+  relayIdleTimeoutMs?: number;
   /**
    * 初回だけ人に聞くゲート（アーキ仕様 §2.5・docs/specs/v4-frontend.md
    * 「Module 間中継の承認」）。**渡さなければ宣言された依存だけで通す**
@@ -227,6 +256,10 @@ export interface HostRelayServerOptions {
     /** banto 全体のための呼び出しか——宛先へ継ぐ。 */
     instanceFor?(connName: string, callId?: string): boolean;
     threadFor(connName: string, callId?: string): { kind: "thread"; threadId: string } | { kind: string };
+    /** その呼び出しが人の答え（中継の承認）を待っているか——待っている間は上限を数えない */
+    isWaitingOnHuman?(connName: string, callId: string): boolean;
+    /** その Module のどれかの呼び出しが人を待っているか */
+    isModuleWaitingOnHuman?(connName: string): boolean;
     projectFor(connName: string, callId?: string): string | undefined;
     begin(
       connName: string,
@@ -343,12 +376,28 @@ const PUBLISH_ROLE = "publish";
 async function targetTool(
   client: Client,
   toolName: string,
-): Promise<{ visibility: Visibility; valueFree: boolean; auditArgs: string[] } | undefined> {
+): Promise<
+  | { visibility: Visibility; valueFree: boolean; auditArgs: string[]; deliversLater: boolean; receivesReplies: boolean }
+  | undefined
+> {
   const { tools } = await client.listTools().catch(() => ({ tools: [] as unknown[] }));
   const tool = tools.find((t) => (t as { name?: string }).name === toolName);
   if (!tool) return undefined;
   const x = tool as { _meta?: Record<string, unknown> };
-  return { visibility: visibilityOf(x), valueFree: isValueFree(x), auditArgs: auditArgsOf(x) };
+  return {
+    visibility: visibilityOf(x),
+    valueFree: isValueFree(x),
+    auditArgs: auditArgsOf(x),
+    deliversLater: deliversLater(x),
+    receivesReplies: receivesReplies(x),
+  };
+}
+
+/** その Module が返事の受け口（`dev.banto/receivesReplies`）を名乗っているか */
+async function hasReplyReceiver(client: Client | undefined): Promise<boolean> {
+  if (!client) return false;
+  const { tools } = await client.listTools().catch(() => ({ tools: [] as unknown[] }));
+  return tools.some((t) => receivesReplies(t as { _meta?: Record<string, unknown> }));
 }
 
 /**
@@ -455,8 +504,10 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
+        // **宛先が Module の札も同じ口で届ける**（追加・2026-10-05）——送り手は宛先を知らず、host が札で振り分ける
         name: "relayDeliverToThread",
-        description: "返信用の札で、呼び出し元の Thread に届ける（届いたらその Thread の AI が続きをやる）",
+        description:
+          "返信用の札で、呼び出し元に届ける。呼び出し元が Thread ならその Thread の AI が続きをやり、Module ならその Module の受け口に渡る",
         inputSchema: {
           type: "object",
           properties: {
@@ -639,6 +690,11 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **名乗った Module だけが緩む**（`dev.banto/valueFree`、無指定は「返す」）。
     const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName, callId);
     const targetInfo = kind === "tool" ? await targetTool(target.client, name) : undefined;
+    // **返事の受け口は host だけが呼ぶ**（追加・2026-10-05）——他の Module が呼べると、頼んだ仕事の返事を偽られる
+    if (targetInfo?.receivesReplies) {
+      await audit(false, "返事の受け口は host だけが呼ぶ");
+      throw new Error(`${targetModule} の ${name} は返事の受け口です。中継からは呼べません`);
+    }
     // **名乗った引数だけを拾う**（値そのものは拾わない）。長すぎるものも拾わない
     // ——識別子のつもりの欄に値が入っていたときに、記録へ流し込まないため
     if (targetInfo?.auditArgs.length) {
@@ -790,17 +846,98 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // コンテナの中の呼び出し元には、窓口を立てる場所も刻む（呼び出し元の申告は使わない）
     if (identity.socketDir) callerMeta[SOCKET_DIR_META_KEY] = identity.socketDir;
 
+    // **終わったら届ける tool には、呼んだ Module に結びついた札を渡す**（追加・2026-10-05、アーキ仕様 §4.2）。
+    // 呼んだ Module が受け口を名乗っていなければ出さない——宛先は「届ける先がない」と断る（規則2）
+    const reply =
+      request.params.name === "relayCallTool" &&
+      targetInfo?.deliversLater &&
+      opts.replies &&
+      (await hasReplyReceiver(opts.registry.getModule(callerConn)?.client))
+        ? opts.replies.issueToModule({
+            to: { connName: callerConn, moduleName: identity.moduleName },
+            ...(callerProject ? { projectId: callerProject } : {}),
+            connName: targetModule,
+            moduleName: target.declaredName ?? target.name,
+          })
+        : undefined;
+    if (reply) callerMeta[REPLY_TO_META_KEY] = reply.replyTo;
+
     try {
       if (request.params.name === "relayCallTool") {
         // 実データは host のプロセスメモリを一過性に通過するだけ——
         // ディスクにもEvent Storeにも記録しない。記録するのは識別子だけ。
-        const result = await target.client.callTool({
-          name,
-          arguments: (args.arguments as Record<string, unknown>) ?? {},
-          _meta: callerMeta,
-        });
+        //
+        // **上限は host が自分で数え、宛先の進捗を呼び元へ中継する**（追加・2026-10-05、AI の道（`agent-proxy.ts`）と同じ形）。
+        // 以前はオプション無しで呼んでいて、宛先が進捗を送っていても MCP の既定 60 秒で切れていた（実測・2026-10-05、
+        // 5 秒ごとに進捗を送る 65 秒の宛先が 60.0 秒で -32001）——宛先に progressToken を渡していなかった。
+        // 宛先の進捗で数え直し、宛先が人を待つ間（入れ子の中継の承認）は数えない。呼び元が取り消したら宛先へも取り消す
+        const watchdog = new AbortController();
+        const idleLimit = opts.relayIdleTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+        const targetWaitingOnHuman = () =>
+          (targetCall.id !== undefined && opts.moduleCalls?.isWaitingOnHuman?.(targetModule, targetCall.id) === true) ||
+          opts.moduleCalls?.isModuleWaitingOnHuman?.(targetModule) === true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const arm = () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            if (targetWaitingOnHuman()) {
+              arm();
+              return;
+            }
+            watchdog.abort(new McpError(ErrorCode.RequestTimeout, "Request timed out", { timeout: idleLimit }));
+          }, idleLimit);
+        };
+        arm();
+        const humanWait = setInterval(() => {
+          if (!targetWaitingOnHuman()) return;
+          arm();
+          if (progressToken === undefined) return;
+          void extra
+            .sendNotification({
+              method: "notifications/progress",
+              params: { progressToken, progress: 0, message: "人の承認を待っています" },
+            })
+            .catch(() => undefined);
+        }, opts.approvalProgressIntervalMs ?? APPROVAL_PROGRESS_INTERVAL_MS);
+        humanWait.unref();
+        const onOuterAbort = () => watchdog.abort(extra.signal.reason);
+        if (extra.signal.aborted) onOuterAbort();
+        else extra.signal.addEventListener("abort", onOuterAbort, { once: true });
+        let result: { content: unknown[]; _meta?: Record<string, unknown> };
+        try {
+          result = (await target.client.callTool(
+            {
+              name,
+              arguments: (args.arguments as Record<string, unknown>) ?? {},
+              _meta: callerMeta,
+            },
+            undefined,
+            {
+              signal: watchdog.signal,
+              // SDK の上限は使わない（上の見張りが数える）。setTimeout に渡せる最大
+              timeout: 2 ** 31 - 1,
+              onprogress: (progress) => {
+                arm();
+                if (progressToken !== undefined) {
+                  void extra
+                    .sendNotification({ method: "notifications/progress", params: { ...progress, progressToken } })
+                    .catch(() => undefined);
+                }
+              },
+            },
+          )) as { content: unknown[]; _meta?: Record<string, unknown> };
+        } finally {
+          if (timer) clearTimeout(timer);
+          clearInterval(humanWait);
+          extra.signal.removeEventListener("abort", onOuterAbort);
+        }
         await audit(true, decision.reason, true);
-        return result as { content: unknown[] };
+        // **「あとで届ける」と約束したら、札を返事待ちにし、呼んだ Module に返事の印を見せる**（札そのものは見せない）
+        if (reply && result._meta?.[PENDING_REPLY_META_KEY] === true) {
+          await opts.replies!.markAwaiting(reply.replyTo, waitingOnOf(result._meta));
+          return { ...result, _meta: { ...result._meta, [REPLY_ID_META_KEY]: reply.replyId } };
+        }
+        return result;
       }
 
       if (request.params.name === "relayReadResource") {

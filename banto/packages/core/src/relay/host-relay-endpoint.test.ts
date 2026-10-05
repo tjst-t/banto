@@ -1202,3 +1202,174 @@ test("AI のターンと人の画面が同時に窓口を通っても、呼び�
     await w.close();
   }
 });
+
+// ---- 長い仕事の中継と、Module 宛ての返事（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」） ----
+
+import {
+  DELIVERS_LATER_META_KEY,
+  PENDING_REPLY_META_KEY,
+  RECEIVES_REPLIES_META_KEY,
+  REPLY_ID_META_KEY,
+  REPLY_TO_META_KEY,
+} from "@banto/module-contract";
+import { ReplyHandles } from "../delivery/reply-handles.js";
+
+/** 宛先：`work` は ms 待って返す（`progressEveryMs` があれば途中経過を送る）。`later` は「あとで届ける」 */
+async function fakeWorkerClient(seen: { meta?: Record<string, unknown> }[]): Promise<Client> {
+  const server = new McpServer({ name: "fake-subagent", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      { name: "work", inputSchema: { type: "object", properties: {} } },
+      { name: "later", inputSchema: { type: "object", properties: {} }, _meta: { [DELIVERS_LATER_META_KEY]: true } },
+      { name: "receive", inputSchema: { type: "object", properties: {} }, _meta: { [RECEIVES_REPLIES_META_KEY]: true, "dev.banto/visibility": "admin" } },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    seen.push({ meta: req.params._meta as Record<string, unknown> | undefined });
+    const a = (req.params.arguments ?? {}) as { ms?: number; progressEveryMs?: number };
+    if (req.params.name === "later") {
+      return { content: [{ type: "text", text: "running" }], _meta: { [PENDING_REPLY_META_KEY]: true } };
+    }
+    const tok = req.params._meta?.progressToken;
+    const started = Date.now();
+    while (Date.now() - started < (a.ms ?? 0)) {
+      await new Promise((r) => setTimeout(r, a.progressEveryMs ?? a.ms ?? 0));
+      if (a.progressEveryMs && tok !== undefined) {
+        await extra.sendNotification({ method: "notifications/progress", params: { progressToken: tok, progress: Date.now() - started } });
+      }
+    }
+    return { content: [{ type: "text", text: "done" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  return client;
+}
+
+/** 呼ぶ側の Module（受け口を名乗るか選べる） */
+async function fakeCallerClient(withReceiver: boolean): Promise<Client> {
+  const server = new McpServer({ name: "fake-factory", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: withReceiver
+      ? [{ name: "receiveReply", inputSchema: { type: "object", properties: {} }, _meta: { [RECEIVES_REPLIES_META_KEY]: true } }]
+      : [],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  return client;
+}
+
+async function relayPair(opts: { withReceiver: boolean; extra?: Partial<HostRelayServerOptions> }) {
+  const seen: { meta?: Record<string, unknown> }[] = [];
+  const registry = new RelayRegistry();
+  registry.registerModule({
+    name: "subagent",
+    client: await fakeWorkerClient(seen),
+    meta: bundledMeta({ satisfies: ["subagent"], dependsOn: [], isolation: "subprocess" }, "subagent"),
+  });
+  const factoryMeta = bundledMeta(
+    { satisfies: ["factory"], dependsOn: [{ role: "subagent", required: true }], isolation: "subprocess" },
+    "factory",
+  );
+  registry.registerModule({ name: "factory", client: await fakeCallerClient(opts.withReceiver), meta: factoryMeta });
+  const token = registry.issueToken({ moduleName: "factory", meta: factoryMeta });
+  const server = await startTestServer(registry, opts.extra);
+  const client = new Client({ name: "factory-module", version: "0.0.0" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }),
+  );
+  return { seen, client, close: async () => { await client.close(); server.close(); } };
+}
+
+test("中継は宛先の途中経過で上限を数え直し、途中経過を呼び元へ渡す——黙ったままの宛先は上限で切る", async () => {
+  const { client, close } = await relayPair({ withReceiver: false, extra: { relayIdleTimeoutMs: 300 } });
+  try {
+    let progressed = 0;
+    // 上限 300ms の3倍かかるが、100ms ごとに途中経過を送る → 通る
+    const ok = await client.callTool(
+      { name: "relayCallTool", arguments: { targetModule: "subagent", name: "work", arguments: { ms: 900, progressEveryMs: 100 } } },
+      undefined,
+      { resetTimeoutOnProgress: true, timeout: 300, onprogress: () => void (progressed += 1) },
+    );
+    assert.equal((ok.content as { text: string }[])[0]?.text, "done");
+    assert.ok(progressed >= 3, `途中経過が呼び元に届いていない（${progressed} 回）`);
+    // 途中経過を送らない宛先は、host の上限で切れる
+    await assert.rejects(
+      () =>
+        client.callTool(
+          { name: "relayCallTool", arguments: { targetModule: "subagent", name: "work", arguments: { ms: 900 } } },
+          undefined,
+          { timeout: 5000 },
+        ),
+      /timed out/i,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("受け口を名乗る Module が「終わったら届ける」tool を中継で呼ぶと、呼んだ Module 宛ての札が出て、結果に返事の印が載る", async () => {
+  const handles = new ReplyHandles();
+  const awaiting: string[] = [];
+  const { client, seen, close } = await relayPair({
+    withReceiver: true,
+    extra: {
+      replies: {
+        issueToModule: (i) => handles.issueToModule(i),
+        markAwaiting: async (replyTo) => void awaiting.push(replyTo),
+      },
+    },
+  });
+  try {
+    const r = (await client.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "subagent", name: "later", arguments: {} },
+    })) as { _meta?: Record<string, unknown> };
+    const replyTo = seen.at(-1)?.meta?.[REPLY_TO_META_KEY] as string | undefined;
+    assert.ok(replyTo, "宛先に札が渡っていない");
+    const h = handles.get(replyTo!);
+    assert.equal(h?.toModule?.connName, "factory", "札の宛先が呼んだ Module になっていない");
+    assert.equal(h?.connName, "subagent", "札を使えるのが宛先の Module になっていない");
+    assert.deepEqual(awaiting, [replyTo], "あとで届けると約束したのに返事待ちにしていない");
+    assert.equal(r._meta?.[REPLY_ID_META_KEY], h?.toModule?.replyId, "呼んだ Module に返事の印が見えない");
+    assert.notEqual(r._meta?.[REPLY_ID_META_KEY], replyTo, "札そのものを呼んだ Module に見せている");
+    // 待つ形（deliversLater を名乗らない tool）には札を出さない
+    await client.callTool({ name: "relayCallTool", arguments: { targetModule: "subagent", name: "work", arguments: {} } });
+    assert.equal(seen.at(-1)?.meta?.[REPLY_TO_META_KEY], undefined);
+  } finally {
+    await close();
+  }
+});
+
+test("受け口を名乗らない Module には札を出さない——宛先が「届ける先がない」と断れるように", async () => {
+  const handles = new ReplyHandles();
+  const { client, seen, close } = await relayPair({
+    withReceiver: false,
+    extra: { replies: { issueToModule: (i) => handles.issueToModule(i), markAwaiting: async () => undefined } },
+  });
+  try {
+    const r = (await client.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "subagent", name: "later", arguments: {} },
+    })) as { _meta?: Record<string, unknown> };
+    assert.equal(seen.at(-1)?.meta?.[REPLY_TO_META_KEY], undefined);
+    assert.equal(r._meta?.[REPLY_ID_META_KEY], undefined);
+  } finally {
+    await close();
+  }
+});
+
+test("返事の受け口は中継からは呼べない——頼んだ仕事の返事を他の Module が偽れない", async () => {
+  const { client, seen, close } = await relayPair({ withReceiver: false });
+  try {
+    await assert.rejects(
+      () => client.callTool({ name: "relayCallTool", arguments: { targetModule: "subagent", name: "receive", arguments: {} } }),
+      /返事の受け口/,
+    );
+    assert.equal(seen.length, 0, "受け口が呼ばれた");
+  } finally {
+    await close();
+  }
+});

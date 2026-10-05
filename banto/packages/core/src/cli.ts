@@ -78,6 +78,8 @@ import { ConnectBackoff } from "./modules/connect-backoff.js";
 import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
+import { ModuleReplies } from "./delivery/module-replies.js";
+import { receivesReplies, type ModuleReplyArguments } from "@banto/module-contract";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, resumeInterruptedTurns, type TurnContinuationDeps } from "./delivery/turn-continuation.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
@@ -367,6 +369,28 @@ async function main(): Promise<void> {
 
   /** 起動済みの Module。instance のものは key が名前、Project のものは `<名前>-<projectId>`。 */
   const connectedModules = new Map<string, Client>();
+  /**
+   * **Module 宛ての返事**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。Module が中継で「終わったら届ける」
+   * tool を呼んだときの返事は、呼んだ Module の受け口（`dev.banto/receivesReplies`）に渡す。残してから渡すので、
+   * 呼んだ Module が止まっていても次に繋がったときに渡る
+   */
+  const moduleReplies = await ModuleReplies.open({
+    file: join(bootstrap.dataDir, "delivery", "module-replies.json"),
+    hand: async (toConn: string, args: ModuleReplyArguments) => {
+      const client = connectedModules.get(toConn);
+      if (!client) throw new Error(`${toConn} は繋がっていません`);
+      const { tools } = await client.listTools();
+      const receiver = tools.find((t) => receivesReplies(t as { _meta?: Record<string, unknown> }));
+      if (!receiver) throw new Error(`${toConn} は返事の受け口（dev.banto/receivesReplies）を名乗っていません`);
+      const r = await client.callTool({ name: receiver.name, arguments: { ...args } });
+      return r.isError ? "refused" : "handed";
+    },
+  });
+  // 起動し直した：前の走行で Module 宛ての返事待ちだったものも、その Module ごと止まっている——呼んだ Module に「途中で終わりました」を残す（繋がったときに渡る）
+  {
+    const lost = await moduleReplies.loseAll("banto を起動し直したため");
+    if (lost > 0) console.log(`[host] 前の走行で Module 宛ての返事待ちだった ${lost} 件に「途中で終わりました」を残しました`);
+  }
   /**
    * **Shell 専用のホーム**（接続名 → 置き場）。写すものの一覧を人が変えたら、立っている
    * Shell のホームにも写し直す——コマンドは毎回新しく起こすので、再起動は要らない。
@@ -1282,13 +1306,23 @@ async function main(): Promise<void> {
     client.onclose = () => {
       previousOnClose?.();
       for (const [replyTo, h] of replyHandles.awaitingFor(connName)) {
+        // Module 宛ての札は下の `loseFrom` が呼んだ Module に知らせる
+        if (h.toModule) {
+          replyHandles.settle(replyTo);
+          continue;
+        }
         void deliverLostReply({ threadId: h.threadId, replyTo, moduleName: h.moduleName, hop: h.hop + 1 }, "Module が止まったため");
       }
+      void moduleReplies
+        .loseFrom(connName, "頼んだ先の Module が止まったため")
+        .catch((err: unknown) => console.warn(`[host] ${connName} からの返事待ちを片づけられませんでした:`, err));
       void moduleLost(connName, client, origin, "接続が閉じました");
     };
     // **閉じずに黙ることもある**——定期的に確かめる（`liveness.ts`）
     liveness.watch(connName, client);
     if (token !== undefined) moduleTokens.set(connName, token);
+    // **この Module 宛ての返事が残っていれば渡す**（追加・2026-10-05）——止まっている間に届いたもの・前の走行の「途中で終わりました」
+    void moduleReplies.handPending(connName).catch(() => undefined);
     if (project) {
       const forThisProject = projectConnections.get(project.id) ?? new Set<string>();
       forThisProject.add(connName);
@@ -1553,6 +1587,23 @@ async function main(): Promise<void> {
     deliverToThread: async (caller, input) => {
       const h = replyHandles.use(input.replyTo, { moduleName: caller.moduleName, ...(caller.connName ? { connName: caller.connName } : {}) });
       if ("error" in h) return { ok: false, error: h.error };
+      // **宛先が Module の札**（追加・2026-10-05）——呼んだ Module の受け口に渡す（残してから渡す）
+      if (h.toModule) {
+        const r = await moduleReplies.deliver({
+          toConn: h.toModule.connName,
+          replyTo: input.replyTo,
+          args: {
+            replyId: h.toModule.replyId,
+            from: caller.moduleName,
+            title: input.title,
+            text: input.text,
+            final: input.final,
+            lost: false,
+          },
+        });
+        if (input.final) replyHandles.settle(input.replyTo);
+        return { ok: true, deliveryId: r.deliveryId };
+      }
       const r = await deliveries.deliver({
         threadId: h.threadId,
         from: caller.moduleName,
@@ -1566,6 +1617,22 @@ async function main(): Promise<void> {
         publishBackground(h.threadId);
       }
       return { ok: true, deliveryId: r.deliveryId, wake: r.wake };
+    },
+    // **Module 宛ての札**（追加・2026-10-05、アーキ仕様 §4.2）
+    replies: {
+      issueToModule: (input) => replyHandles.issueToModule(input),
+      markAwaiting: async (replyTo, waitingOn) => {
+        const h = replyHandles.markAwaiting(replyTo, waitingOn);
+        if (!h?.toModule) return;
+        await moduleReplies.recordAwaiting({
+          replyTo,
+          replyId: h.toModule.replyId,
+          toConn: h.toModule.connName,
+          toModule: h.toModule.moduleName,
+          fromConn: h.connName,
+          fromModule: h.moduleName,
+        });
+      },
     },
     // 出所（人の画面か、AI のターンか）を引くための台帳。承認の要否がここで分かれる
     moduleCalls,

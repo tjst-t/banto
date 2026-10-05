@@ -2451,19 +2451,46 @@ canceled）、認証を持つ。
 
 #### Module から頼んだ仕事の返事（決定・2026-09-26、ユーザー）
 
-- **Module が待たない形で頼んだ仕事の返事は、呼んだ Module に返す**（その呼び出しの大元の Thread ではない）
+- **Module が待たない形で頼んだ仕事の返事は、呼んだ Module に返す**（その呼び出しの大元の Thread ではない）。形は下の「Module 宛ての返事」
 - **banto の外（外部の MCP クライアント）から Module を呼ぶことは考えない**——§4.2「A2A は使わない」と同じ境界
+
+#### Module 宛ての返事（実装・2026-10-05。Backlog の `subagent-from-modules`、Factory の前提）
+
+**Thread と同じ仕組み（返信用の札・残してから渡す・返事待ちの後始末）に載せ、送り手（サブエージェント）の書き方は変えない。**
+
+- **札の宛先を Thread か Module にする**（`delivery/reply-handles.ts` の `toModule`）。Module が中継（`relayCallTool`）で
+  「終わったら届ける」 tool（`dev.banto/deliversLater`）を呼ぶと、host は**呼んだ Module に結びついた札**を宛先に渡す
+  （`_meta["dev.banto/replyTo"]`、AI の道と同じ）。送り手は今までどおり `relayDeliverToThread` で届け、host が札で振り分ける
+- **受け口**：呼んだ Module は、返事を受ける tool を `_meta["dev.banto/receivesReplies"]: true` で名乗る（`module-contract`）。
+  host はその tool を `{ replyId, from, title, text, final, lost }`（`ModuleReplyArguments`）で呼んで渡す。**受け口を名乗らない
+  Module には札を出さない**——宛先は「届ける先がない」と断る（規則2）。受け口は **host だけが呼ぶ**：中継からは呼べない
+  （頼んだ仕事の返事を他の Module が偽れない）。AI にも見せない（可視性は `admin` で名乗る）
+- **返事の印**（`replyId`）：宛先が「あとで届ける」と約束したら、host は中継の結果の `_meta["dev.banto/replyId"]` に印を載せる。
+  あとで受け口に渡す返事にも同じ印が付く——呼んだ Module はこれでどの頼みの返事かを引き当てる。**札そのものは呼んだ Module に
+  見せない**（印では届けられない）
+- **残してから渡す**（`delivery/module-replies.ts`）：届いたらまず `<dataDir>/delivery/module-replies.json` に残し、それから
+  受け口を呼ぶ。渡せなければ（呼んだ Module が止まっている等）残したまま、**その Module が次に繋がったときに届いた順に渡す**。
+  受け口が `isError` を返したものは捨てる（何度渡しても同じ。ログに残す）。Event Store ではなく専用のファイルにしたのは、
+  Project にも Thread にも属さない短命の待ち行列で、渡し終えたら消えるため
+- **返事待ちは失くさない**：頼んだ先の Module が止まったら、host は呼んだ Module に「途中で終わりました」（`lost: true`・
+  `final: true`）を残して渡す。banto を起こし直したときも、前の走行の返事待ちは全部同じ（札は覚え直さない）
+- **人と Thread には知らせない**（実装者の判断・2026-10-05）：Module 宛ての返事は受信箱にも、呼び出しの大元の Thread にも
+  出さない。返事を受けた Module が、要るなら自分の口（Factory なら頼んだ Thread への札）で知らせる。届いたもので AI を
+  起こさないのでホップ数も数えない（札の回数の上限 5 回はそのまま効く）
+- **中継の時間の上限と途中経過**：host が宛先を呼ぶところで、上限を自分で数え、**宛先の途中経過で数え直し、途中経過を
+  呼び元へ渡す**（AI の道 `agent-proxy.ts` と同じ形）。宛先が人を待つ間（入れ子の中継の承認）は数えない。呼び元が取り消したら
+  宛先へも取り消す。以前はオプション無しで呼んでいて、5 秒ごとに途中経過を送る 65 秒の宛先が 60.0 秒で -32001 になっていた
+  （実測・2026-10-05）
+- 試験：単体（`relay/host-relay-endpoint.test.ts`・`delivery/module-replies.test.ts`）と E2E（`e2e/specs/subagent-from-module.spec.ts`
+  ——Factory と同じ形の試験用 Module `e2e/fixtures/relay-caller-module` が、待つ形で 70 秒の仕事・待たない形の返事・頼んだ先が
+  止まったときの「途中で終わりました」を通す）
 
 #### まだ決めていない
 
-- **Module に返事を届ける形**——Thread と同じ仕組み（返信用の札・記録してから渡す・ループ防止・返事待ちの後始末）に
-  載せたい（ユーザー）。札の宛先を「Thread」か「Module」にし、送り手（サブエージェント）の側は変えない。宛先が
-  Module のときに何で渡すか（その Module が名乗った受け口の tool を host が呼ぶ、が第一候補）は未決。あわせて、
-  Module から Module への中継の**時間の上限と途中経過**が要る——host が宛先を呼ぶところで上限を延ばさず、途中経過も
-  呼び出し元へ中継していないので、MCP の既定（60 秒）を越える待つ形の呼び出しは切れる。**この2つは、サブエージェントを
-  呼ぶ最初の Module を作るときに一緒にやる**（決定・2026-09-26、ユーザー——呼ぶ Module がまだ無いので、形を決める
-  材料が無い）。検討内容は `docs/notes/2026-09-25-thread-delivery.md`、タスクは Backlog の `subagent-from-modules`。
-  **Project ごとの Module を呼べるのは同じ Project の中だけ**の縛りは入れた（2026-09-26、`docs/specs/v4-security.md` §3）
+- **呼んだ Module が立っていないと、残った返事は渡らない**——Project の Module は使うときに立つ（On demand）ので、返事を受ける
+  Module が止まったままだと、次に誰かがその Module を使うまで残ったままになる。Factory のように返事で仕事を進める Module は、
+  残った返事があれば立ち上げるのが要るかもしれない（Factory を作るときに決める）
+- 呼んだ Module の Project が閉じられたときの、残った返事の片づけ（いまは残ったまま）
 
 #### Thread 間・Project 間の送り方（決定・2026-10-01、ユーザー。実装済み——`delivery/thread-messages.ts`）
 
