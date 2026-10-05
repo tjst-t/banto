@@ -52,6 +52,7 @@ import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY } from "./http/app.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
+import { ContainerPressureWatch } from "./container-pressure.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
@@ -1873,6 +1874,26 @@ async function main(): Promise<void> {
       authStore.save(),
     ]);
   };
+  // **コンテナが資源の上限に当たったら受信箱で知らせる**（決定・2026-10-05、`container-pressure.ts`）。1分ごとに、
+  // 用意できているコンテナの数え（memory.events の oom_kill・pids.events の max）を見る
+  const instanceContainerKey = instanceContainerId(bootstrap.dataDir);
+  const pressureWatch = new ContainerPressureWatch({
+    read: (name) => containers.resourceEvents(name),
+    notify: (n) => inbox.raiseNotice(n),
+    describeLimits: (projectId) => {
+      const n = limitNumbersFor(runtimeConfig, hostResources(), projectId);
+      return `メモリ ${Math.round((n.memoryMiB / 1024) * 10) / 10} GiB・CPU ${n.cpus} コア分・プロセス ${n.processes}`;
+    },
+  });
+  const pressureTimer = setInterval(() => {
+    const targets = [...readyContainers].map(([id, r]) => ({
+      containerName: r.name,
+      ...(id === instanceContainerKey ? {} : { projectId: id }),
+    }));
+    void pressureWatch.tick(targets).catch((err: unknown) => console.warn("[host] コンテナの上限の見張りで例外:", err));
+    // 間隔は E2E だけ縮める（BANTO_CONTAINER_PRESSURE_INTERVAL_MS）
+  }, Number(process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS) || 60_000);
+  pressureTimer.unref();
   const snapshotTimer = setInterval(() => {
     void saveSnapshots().catch((err) => console.error("[host] スナップショット保存に失敗:", err));
   }, 60_000);

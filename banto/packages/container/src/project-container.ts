@@ -168,6 +168,21 @@ export function defaultContainerLimits(host: HostResources = hostResources()): C
   return toContainerLimits(limitCeiling(host, DEFAULT_LIMIT_POLICY));
 }
 
+/**
+ * `memory.events` と `pids.events` を続けて出したものを読む。pids.events の行は `max` だけ、memory.events にも `max`
+ * （上限に達して回収が走った回数）があるので、`oom_kill` の後に出てきた `max` を pids のものとして取る
+ */
+export function parseResourceEvents(text: string): { oomKills: number; pidsMax: number } | undefined {
+  let oomKills: number | undefined;
+  let pidsMax = 0;
+  for (const line of text.split("\n")) {
+    const [k, v] = line.trim().split(/\s+/);
+    if (k === "oom_kill") oomKills = Number(v);
+    else if (k === "max" && oomKills !== undefined) pidsMax = Number(v);
+  }
+  return oomKills === undefined || !Number.isFinite(oomKills) ? undefined : { oomKills, pidsMax };
+}
+
 /** 上限の Incus の設定の名前 */
 function limitsConfig(limits: ContainerLimits): Record<string, string> {
   return {
@@ -563,6 +578,18 @@ export class ProjectContainers {
       await this.incus(["config", "set", name, ...changes.map(([k, v]) => `${k}=${v}`)], "資源の上限を変えるの");
       return true;
     });
+  }
+
+  /**
+   * **上限に当たった回数**（追加・2026-10-05、ユーザー要望）。コンテナの中から自分の cgroup の数え（cgroup 名前空間で
+   * コンテナの枠が根に見える）を読む：`memory.events` の oom_kill（メモリの上限でカーネルが止めたプロセスの数）と
+   * `pids.events` の max（プロセス数の上限で fork が断られた回数）。数えはコンテナを起こし直すと 0 に戻る。
+   * 動いていない・読めなければ undefined（見張りを止めない）
+   */
+  async resourceEvents(name: string): Promise<{ oomKills: number; pidsMax: number } | undefined> {
+    const r = await this.run(["exec", name, "--", "cat", "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/pids.events"], { timeoutMs: 10_000 });
+    if (r.code !== 0) return undefined;
+    return parseResourceEvents(r.stdout);
   }
 
   /** 穏やかに止め、上限を過ぎたら強制停止する。無い・止まっているなら何もしない */

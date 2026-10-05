@@ -21,6 +21,7 @@ export {
   CONTAINER_NODE_PATH,
   DEFAULT_TIMEOUTS,
   defaultContainerLimits,
+  parseResourceEvents,
   hostResources,
   limitCeiling,
   effectiveLimitNumbers,

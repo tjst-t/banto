@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, execInContainer, limitCeiling, idmapFor, instanceContainerId } from "./project-container.js";
+import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, parseResourceEvents, execInContainer, limitCeiling, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 /** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
@@ -320,4 +320,10 @@ test("置き場が同じなら付け直さない。作るときも同じ1か所�
   const patches = fresh.calls.map(patchedDevices).filter((d) => d !== undefined);
   assert.equal(patches.length, 1);
   assert.deepEqual(Object.keys(patches[0]!).sort(), ["banto", "project"]);
+});
+
+test("上限に当たった回数を読む——memory.events の oom_kill と、その後の pids.events の max", () => {
+  const text = "low 0\nhigh 0\nmax 272\noom 0\noom_kill 13\noom_group_kill 0\nmax 4\n";
+  assert.deepEqual(parseResourceEvents(text), { oomKills: 13, pidsMax: 4 });
+  assert.equal(parseResourceEvents("cat: no such file"), undefined);
 });

@@ -167,3 +167,41 @@ test("資源の上限——既定で付き、banto 全体と Project ごとに�
     });
   }
 });
+
+// **上限に当たったら受信箱で知らせる**（決定・2026-10-05）：Project のメモリを絞り、中で上限を越えて使うと、
+// カーネルが止めたことがその Project のお知らせとして出る
+test("メモリの上限に当たってプロセスが止められたら、受信箱にその Project のお知らせが出る", async ({ page }) => {
+  const project = (await (
+    await page.request.post(`${CORE_BASE_URL}/api/projects`, {
+      headers,
+      data: { name: "E2E Container OOM", root: mkdtempSync(join(tmpdir(), "banto-e2e-oom-")) },
+    })
+  ).json()) as { id: string };
+  await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers });
+  await prepareModules(page, project.id);
+  const set = await page.request.put(`${CORE_BASE_URL}/api/projects/${project.id}/container/limits`, {
+    headers,
+    data: { memoryMiB: 512, cpus: null, processes: null },
+  });
+  expect(set.ok()).toBe(true);
+  expect(containerLimit(project.id, "limits.memory")).toBe("512MiB");
+  // 見張りが基準を取るまで待ってから越える（最初に見た値は知らせない）
+  await page.waitForTimeout(5_000);
+  const hog = spawnSync(
+    "incus",
+    ["exec", `banto-${project.id}`, "--", "/usr/local/bin/node", "-e", "const a=[];for(;;)a.push(Buffer.alloc(64<<20,1))"],
+    { encoding: "utf8", input: "", timeout: 60_000 },
+  );
+  expect(hog.status, `上限を越えたのに止められていない：${hog.stderr}`).not.toBe(0);
+
+  type Notice = { kind: string; projectId?: string; title?: string; detail?: string; acknowledged?: boolean };
+  await expect
+    .poll(
+      async () => {
+        const all = (await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Notice[];
+        return all.find((i) => i.kind === "notice" && i.projectId === project.id && i.title?.includes("メモリの上限"))?.detail ?? null;
+      },
+      { timeout: 30_000, message: "受信箱にメモリの上限のお知らせが出ない" },
+    )
+    .toMatch(/プロセスがカーネルに止められました.*いまの上限：メモリ 0\.5 GiB/);
+});
