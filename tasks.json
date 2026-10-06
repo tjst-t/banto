@@ -5392,6 +5392,30 @@
       "updatedAt": "2026-10-06T14:29:02.877Z",
       "closedAt": "2026-10-06T14:29:02.877Z",
       "extra": {}
+    },
+    {
+      "id": "host",
+      "number": 221,
+      "kind": "bug",
+      "title": "host が混んでいるとき、サブエージェントの仕事が終わってもサイドバーのバックグラウンドの印が消えないことがある",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-06、background-work-human.spec.ts を続けて流していた18回目に1回だけ「裏の仕事が終わったのに行が残っている」（180秒待っても印が消えない）で落ちた。その時刻、host の load average は 39 で、全部の Module の接続に「Received a response for an unknown message ID」が出て、この会話の Shell の Module も切れた（他の Fork の E2E と重なった）。混雑で終わりの知らせ（background.changed／札の決着）が落ちたのか、混雑と関係なく稀に起きる不具合かは区別できていない。直したあとの20回は全部通った。ログは .worktrees/flaky-tests の /tmp/bwhf-18.log（消えている可能性あり）。経緯 docs/notes/2026-10-06-flaky-tests.md「そのほか」。ユーザー判断：積んでおき、また起きたら調べる。",
+      "doneWhen": "また起きたときに原因（知らせが落ちたのか、札が決着しないのか）を突き止め、直すか、混雑時だけの現象なら画面が取り直して印を正すようにする",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T15:02:34.594Z",
+      "updatedAt": "2026-10-06T15:02:34.594Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
