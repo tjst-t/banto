@@ -796,11 +796,11 @@ ${ALIAS_KIND_RULES_JS}
       // 削除以外の唯一の出口。**参照の行に「参照を作る」は出さない**（2026-10-04）——参照の参照は
       // 作らない（押せるのに必ず断られる項目を置かない、規則13）
       const items = [
-        { label: "用途", title: "用途（note）を書き直す", run: () => openNote(a) },
+        { label: "用途を編集", title: "用途（note）を書き直す", run: () => openNote(a) },
         ...(a.kind === "ssh-identity"
-          ? [{ label: "公開鍵", title: "公開鍵を表示してコピーする（秘密鍵は出ません）", run: () => void openPublicKey(a) }]
+          ? [{ label: "公開鍵を表示", title: "公開鍵を表示してコピーする（秘密鍵は出ません）", run: () => void openPublicKey(a) }]
           : []),
-        { label: "移す", title: "この秘密を別の置き場へ移す", run: () => void openMove(a) },
+        { label: "秘密を移動", title: "この秘密を別の置き場へ移す", run: () => void openMove(a) },
         ...(a.linkTo
           ? []
           : [{ label: "参照を作る", title: "値を写さずに、この秘密を別の置き場からも使えるようにする", run: () => void openLink(a) }]),

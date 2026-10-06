@@ -172,7 +172,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   expect(audit.status()).toBe(200);
 
   // ---- 6. 用途の書き直しも届く ------------------------------------------
-  await rowAction(canvas, row, "用途");
+  await rowAction(canvas, row, "用途を編集");
   await canvas.locator("#note-text").fill("書き直した");
   await canvas.getByRole("button", { name: "保存する" }).click();
   await expect(
@@ -350,7 +350,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
 
   // **あとからでも公開鍵を見られる**（追加・2026-09-13、ユーザー要望）。
   // 以前は作った直後の1回きりで、閉じたら二度と見られなかった
-  await rowAction(canvas, row, "公開鍵");
+  await rowAction(canvas, row, "公開鍵を表示");
   await expect(pubkey, "一覧から公開鍵を開けない").toBeVisible({ timeout: 60_000 });
   await expect
     .poll(() => pubkey.inputValue(), { timeout: 30_000, message: "公開鍵が出るまで" })
@@ -493,7 +493,7 @@ test("公開鍵のコピーは、押した結果を人に言う", async ({ page 
   const row = canvas.locator("tbody tr").filter({ hasText: keyAlias });
   await expect(row, "鍵ペアが一覧に出ない").toBeVisible({ timeout: 120_000 });
 
-  await rowAction(canvas, row, "公開鍵");
+  await rowAction(canvas, row, "公開鍵を表示");
   await expect(canvas.locator("#pubkey-text"), "公開鍵が出ていない").toHaveValue(/^ssh-/, { timeout: 60_000 });
   await canvas.getByRole("button", { name: "コピーする" }).click();
   // **黙って失敗しない**——成功なら「コピーしました」、駄目なら次の手を言う
@@ -558,7 +558,7 @@ test("一覧の行から、別の置き場へ移せる", async ({ page }) => {
   const row = canvas.locator("tbody tr").filter({ hasText: alias });
   await expect(row).toBeVisible({ timeout: 120_000 });
 
-  await rowAction(canvas, row, "移す");
+  await rowAction(canvas, row, "秘密を移動");
   await expect(canvas.locator("#move-now"), "いまの置き場を言っていない").toContainText("いまは vault-local");
   await canvas.locator("#move-group").selectOption(dest);
   // **移した先からどう引けるようになるかを、押す前に出す**
@@ -628,7 +628,7 @@ test("一覧の行から、別の Vault へ移せる（Vault の選択を切り�
   const row = canvas.locator("tbody tr").filter({ hasText: alias });
   await expect(row).toBeVisible({ timeout: 120_000 });
 
-  await rowAction(canvas, row, "移す");
+  await rowAction(canvas, row, "秘密を移動");
   await expect(canvas.locator("#dlg-move")).toBeVisible();
 
   // **移す先の Vault を切り替える**——ここが今まで一度も通っていなかった
@@ -734,8 +734,8 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
 
   // ---- 小窓：「移す」と同じ形 -----------------------------------------------
   expect(await rowMenuItems(canvas, originRow), "元の行のメニューの並びが違う").toEqual([
-    "用途",
-    "移す",
+    "用途を編集",
+    "秘密を移動",
     "参照を作る",
     "削除",
   ]);
@@ -786,9 +786,9 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   await expect(linkRow, "使える範囲がこの Project になっていない").toContainText("E2E 参照");
   await expect(linkRow.locator("td").nth(4), "参照のグループが違う").toHaveText(projectGroup);
   // **参照の参照は作らない**——押せるのに断られる項目を置かない
-  expect(await rowMenuItems(canvas, linkRow), "参照の行のメニューの並びが違う").toEqual(["用途", "移す", "削除"]);
+  expect(await rowMenuItems(canvas, linkRow), "参照の行のメニューの並びが違う").toEqual(["用途を編集", "秘密を移動", "削除"]);
   // **参照の「移す」は元の Vault に固定**——別の Vault へは必ず断られるので選ばせない
-  await rowAction(canvas, linkRow, "移す");
+  await rowAction(canvas, linkRow, "秘密を移動");
   await expect(canvas.locator("#dlg-move")).toBeVisible();
   await expect(canvas.locator("#move-vault"), "参照なのに Vault を選べる").toBeDisabled();
   await expect(canvas.locator("#move-vault")).toHaveValue("vault-local");
@@ -898,10 +898,10 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
   await more.click();
   await expect(menu).toBeVisible();
   await expect(more).toHaveAttribute("aria-expanded", "true");
-  await expect(menu.getByRole("menuitem")).toHaveText(["用途", "移す", "参照を作る", "削除"]);
-  await expect(menu.getByRole("menuitem", { name: "用途" }), "開いても最初の項目に焦点が来ない").toBeFocused();
+  await expect(menu.getByRole("menuitem")).toHaveText(["用途を編集", "秘密を移動", "参照を作る", "削除"]);
+  await expect(menu.getByRole("menuitem", { name: "用途を編集" }), "開いても最初の項目に焦点が来ない").toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(menu.getByRole("menuitem", { name: "移す" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "秘密を移動" })).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowUp");
   await expect(menu.getByRole("menuitem", { name: "削除" }), "↑で端から回らない").toBeFocused();
@@ -921,7 +921,7 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
   // ---- 項目を選ぶと、その処理が開く（キーボードで） -------------------------
   await more.focus();
   await page.keyboard.press("Enter");
-  await expect(menu.getByRole("menuitem", { name: "用途" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "用途を編集" })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(menu).toHaveCount(0);
   await expect(canvas.locator("#dlg-note"), "用途の小窓が開かない").toBeVisible();
