@@ -4880,7 +4880,7 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "v4-architecture.md §2.5「起こし直しをまたいで続ける」の「まだ確かめていないこと」4点を測る。プローブは banto/probes/（偽の API）。\n\n済み（2026-10-05）：M1 鎖の選び方・M2 記録の無い最初のターン・M3 親が止まったとき・M4 コンテナの Module の生死・M5 KillMode=mixed（稼働中の設定）。結果は docs/notes/2026-10-04-resume-across-restart.md。\n\n残り：本物のモデル（Claude Code）での通し——切れたターンの続きの文・CLI が合成する tool_result の受け取り方。別のデータ置き場の host で、稼働中の banto は起こし直さない。",
+      "body": "v4-architecture.md §2.5「起こし直しをまたいで続ける」の「まだ確かめていないこと」4点を測る。プローブは banto/probes/（偽の API）。\n\n済み（2026-10-05）：M1 鎖の選び方・M2 記録の無い最初のターン・M3 親が止まったとき・M4 コンテナの Module の生死・M5 KillMode=mixed（稼働中の設定）。結果は docs/notes/2026-10-04-resume-across-restart.md。\n済み（2026-10-06、本番 45b502f5）：本物の Claude Code のサブエージェントが起こし直しをまたいで同じ会話を続けた（#207 の resolution）。\n\n残り：本物のモデルでの Thread のターンの続き——AI のターンが tool を実行中に banto を止め、続きの文（実行中だった呼び出し・結果は分からない）をモデルがどう受け取るか。",
       "doneWhen": "4点とも結果を docs/notes/2026-10-04-resume-across-restart.md に表で書き、食い違った点は仕様を直した",
       "resolution": null,
       "refs": [],
@@ -4891,7 +4891,7 @@
         }
       ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T10:58:26.580Z",
+      "updatedAt": "2026-10-06T11:23:08.228Z",
       "closedAt": null,
       "extra": {}
     },
