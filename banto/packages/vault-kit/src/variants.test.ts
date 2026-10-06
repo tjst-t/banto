@@ -228,3 +228,31 @@ test("空の鍵では verify しない・共通の置き場には版を付けら
     await assert.rejects(() => call(c, "setSharedGroup", { group: "g@prod" }), /版を付けられません/);
   });
 });
+
+test("既定の版を変えても参照は切れない（注記の linkTo も揃えて比べる）", async () => {
+  await withKit(true, async (c, mem, store) => {
+    // 参照は既定が dev だった頃に作ったので、注記の linkTo は tools@prod/CF のまま。いまは既定が prod で、
+    // 元の行は tools/CF として一覧に出る（Infisical は既定の環境を @ 無しで返す）
+    mem.state.default = "prod";
+    await call(c, "setGroupBinding", { projectId: "P", group: "proj" });
+    await call(c, "createAlias", { name: "CF", kind: "secret", group: "tools", value: "real" });
+    await store.createLink({ name: "CF", backendPath: "proj/CF", linkTo: "tools@prod/CF" });
+    assert.equal(await call(c, "resolveAlias", { name: "CF" }, PROJECT), "real", "生きている参照が「元が無い」になった");
+    const rows = JSON.parse(await call(c, "listAliases", {})) as Array<Record<string, unknown>>;
+    const link = rows.find((r) => r.group === "proj")!;
+    assert.equal(link.broken, undefined);
+    assert.deepEqual(link.linkTo, { group: "tools", name: "CF" });
+  });
+});
+
+test("Project の呼び出しで group に紐付いていない版付きのグループを指しても、そのグループは読みに行かない", async () => {
+  await withKit(true, async (c, _mem, store) => {
+    await call(c, "createAlias", { name: "HOST", kind: "secret", group: "g@prod", value: "pve" });
+    await call(c, "setGroupBinding", { projectId: "P", group: "g" });
+    store.seen.length = 0;
+    await assert.rejects(() => call(c, "resolveAlias", { name: "HOST", group: "g@prod" }, PROJECT), /not found/);
+    assert.ok(store.seen.every((o) => !(o?.alsoGroups ?? []).includes("g@prod")), "Project の指定で見えない版を読みに行った");
+    // 人の管理面からは読める
+    assert.equal(await call(c, "resolveAlias", { name: "HOST", group: "g@prod" }), "pve");
+  });
+});

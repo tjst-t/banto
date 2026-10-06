@@ -182,6 +182,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     return backend.canonicalGroup ? backend.canonicalGroup(groupId) : groupId;
   }
 
+  /** 置き場（`g@prod/sub/K`）のグループ部分を揃えた形。 */
+  function canonPath(backendPath: string): string {
+    const at = backendPath.indexOf("/");
+    return `${canon(backendPath.slice(0, at))}${backendPath.slice(at)}`;
+  }
+
   /** 台帳の紐付けを、揃えた形で読む。**紐付けと置き場を比べるところは全部ここを通す**。 */
   function sharedGroupId(): string {
     return canon(bindings.sharedGroup());
@@ -295,7 +301,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     group: string;
     projects: string[];
   } {
-    const group = meta.backendPath.slice(0, meta.backendPath.indexOf("/"));
+    // 行の置き場も揃える（台帳をファイルに持つ backend が版を名乗っても `g@<既定>/X` を unbound にしない）
+    const group = canon(meta.backendPath.slice(0, meta.backendPath.indexOf("/")));
     if (group === sharedGroupId()) return { scope: "shared", group, projects: [] };
     const projects = projectsBoundTo(group);
     if (projects.length > 0) return { scope: "project", group, projects };
@@ -654,7 +661,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   ): Promise<AliasMeta | undefined> {
     // **置き場まで指したなら、そのグループも読む**（2026-10-06）——まだ紐付いていない版付きのグループの秘密を
     // 人の管理面から用途の書き直し・削除・移すために。使えるかの判定はこのあと別にする
-    return pickAlias(await listAll(group ? [group] : []), name, group, rawMeta);
+    return pickAlias(await listAll(group && isAdmin(rawMeta) ? [group] : []), name, group, rawMeta);
   }
 
   /**
@@ -668,15 +675,15 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     rawMeta: Record<string, unknown> | undefined,
   ): AliasMeta | undefined {
     const named = all.filter((m) => m.name === name);
-    if (group) return named.find((m) => groupOf(m) === canon(group));
+    if (group) return named.find((m) => canon(groupOf(m)) === canon(group));
     const caller = callerOf(rawMeta);
     const shared = sharedGroupId();
     if (caller && "project" in caller) {
       const mine = boundGroupOf(caller.project);
-      const own = mine && named.find((m) => groupOf(m) === mine);
+      const own = mine && named.find((m) => canon(groupOf(m)) === mine);
       if (own) return own;
     }
-    const inShared = named.find((m) => groupOf(m) === shared);
+    const inShared = named.find((m) => canon(groupOf(m)) === shared);
     if (inShared) return inShared;
     // 人の管理面（admin）は置き場を指定せずに引くことがある——1つなら通す
     return named.length === 1 ? named[0] : undefined;
@@ -689,7 +696,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
 
   /** 参照が指している元。**元が無い（か、元も参照）なら undefined**——辿るのは1段だけ。 */
   function linkTarget(link: LinkAliasMeta, all: AliasMeta[]): SecretAliasMeta | undefined {
-    const target = all.find((m) => m.backendPath === link.linkTo);
+    // **揃えて比べる**（2026-10-06、レビュー）——注記の linkTo（`tools@prod/CF`）は書いた時の形のまま残るので、
+    // 既定の版を prod に変えると行の置き場（`tools/CF`）と食い違い、生きている参照が「元が無い」になる
+    const to = canonPath(link.linkTo);
+    const target = all.find((m) => canonPath(m.backendPath) === to);
     return target && !isLink(target) ? target : undefined;
   }
 
@@ -722,7 +732,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
 
   /** 参照が指している置き場（"グループ / キー"）。**人の管理面にだけ出す**。 */
   function describeLink(link: LinkAliasMeta): string {
-    return `${groupOf({ backendPath: link.linkTo })} / ${keyOf(link.linkTo)}`;
+    return `${canon(groupOf({ backendPath: link.linkTo }))} / ${keyOf(link.linkTo)}`;
   }
 
   function isAdmin(rawMeta: Record<string, unknown> | undefined): boolean {
@@ -742,7 +752,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       ...(target ? { kind: target.kind } : { broken: true }),
       // **元が空なら参照も空**（2026-10-06、レビュー）——参照の値は「元を指す書き方」なので空にならない
       ...(target?.empty ? { empty: true } : {}),
-      linkTo: { group: groupOf({ backendPath: meta.linkTo }), name: target ? target.name : keyOf(meta.linkTo) },
+      linkTo: { group: canon(groupOf({ backendPath: meta.linkTo })), name: target ? target.name : keyOf(meta.linkTo) },
     };
   }
 
@@ -811,7 +821,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   }
 
   /** 引数で置き場（group）を指していれば、そのグループ（一覧に含めて読む）。 */
-  function groupsNamedIn(args: Record<string, unknown>): string[] {
+  function groupsNamedIn(args: Record<string, unknown>, rawMeta: Record<string, unknown> | undefined): string[] {
+    // **人の管理面だけ**（2026-10-06、レビュー）——Project の呼び出しが任意の `x@prod` を指せると、値は渡さなくても
+    // 「その環境にその名前が在るか」が答えの違いで分かり、任意の環境のフォルダを読みに行かせられる。Project が
+    // 正当に指す置き場は紐付け済みで、もともと一覧に居る
+    if (!isAdmin(rawMeta)) return [];
     return typeof args.group === "string" && args.group !== "" ? [args.group] : [];
   }
 
@@ -851,7 +865,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     switch (request.params.name) {
       case "requestAlias": {
         const name = requiredString(args.name, "name");
-        const all = await listAll(groupsNamedIn(args));
+        const all = await listAll(groupsNamedIn(args, callMeta));
         const existing = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (existing && isLink(existing) && !linkTarget(existing, all)) {
           // **在るのに使えない**（参照の元が無い）——「登録されています」と言わない（規則2）。
@@ -896,7 +910,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "resolveAlias": {
         const name = requiredString(args.name, "name");
-        const all = await listAll(groupsNamedIn(args));
+        const all = await listAll(groupsNamedIn(args, callMeta));
         const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **使えるかは、引いた行（参照ならその置き場）で決める。値は元から**（2026-10-04）
@@ -909,7 +923,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "getPublicKey": {
         const name = requiredString(args.name, "name");
-        const all = await listAll(groupsNamedIn(args));
+        const all = await listAll(groupsNamedIn(args, callMeta));
         const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **公開鍵は秘密ではないが、どの鍵が在るかは使える範囲の話**
@@ -925,7 +939,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");
-        const all = await listAll(groupsNamedIn(args));
+        const all = await listAll(groupsNamedIn(args, callMeta));
         const meta = pickAlias(all, identity, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`identity "${identity}" not found`);
         assertUsable(meta, identity, callMeta);
@@ -942,7 +956,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "verify": {
         const alias = requiredString(args.alias, "alias");
-        const all = await listAll(groupsNamedIn(args));
+        const all = await listAll(groupsNamedIn(args, callMeta));
         const meta = pickAlias(all, alias, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${alias}" not found`);
         assertUsable(meta, alias, callMeta);
@@ -1212,7 +1226,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         await assertPlaceIsFree(to);
         // **元を指す参照があるなら、新しい場所を参照で指せるかを写す前に確かめる**（2026-10-04、
         // レビュー）。写したあとで指し直しに失敗すると、元が2か所に残る
-        const links = isLink(meta) ? [] : (await listAll()).filter((m) => isLink(m) && m.linkTo === from);
+        const links = isLink(meta) ? [] : (await listAll()).filter((m) => isLink(m) && canonPath(m.linkTo) === canonPath(from));
         if (links.length > 0) await registry.assertCanLinkTo(to);
         await backend.createGroup(toGroup);
 
