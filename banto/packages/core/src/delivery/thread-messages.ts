@@ -295,18 +295,23 @@ export class ThreadMessaging {
     const answer = await new Promise<{ behavior: string; remember?: unknown }>((resolve) => {
       this.deps.pendingApprovals.register(judgment.id, (result) => resolve(result as { behavior: string }));
       // ターンが止められた（tool の呼び出しが取り消された）——待つのをやめ、判断待ちも畳む
-      signal?.addEventListener(
-        "abort",
-        () => {
-          const denied = { behavior: "deny" as const, message: "ターンが止まりました" };
-          if (this.deps.pendingApprovals.resolve(judgment.id, denied)) {
-            folding = this.deps.inbox.answerJudgment(judgment.id, denied).catch(() => undefined);
-          }
-        },
-        { once: true },
-      );
+      const fold = (): void => {
+        const denied = { behavior: "deny" as const, message: "ターンが止まりました" };
+        if (this.deps.pendingApprovals.resolve(judgment.id, denied)) {
+          folding = this.deps.inbox.answerJudgment(judgment.id, denied).catch((err: unknown) => {
+            console.warn(`[messages] 止めたターンの判断待ち ${judgment.id} を畳めませんでした: ${String(err)}`);
+          });
+        }
+      };
+      // 判断待ちを出している間（raiseJudgment の await 中）に止められていたら、聞き手を付けてももう鳴らない
+      // ——ここで畳む（付け忘れると判断待ちが live のまま残り、あとで人が許すと止めたターンの送信が届いた。
+      // approval-gate の watch.isEnded() と同じ形。Fable のレビュー・2026-10-06）
+      if (signal?.aborted) fold();
+      else signal?.addEventListener("abort", fold, { once: true });
     });
     if (folding) await folding;
+    // 許されたあとでも、その間に止められていたら送らない
+    if (signal?.aborted) return "deny";
     if (answer.behavior !== "allow") return "deny";
     return answer.remember === true ? "remember" : "allow";
   }

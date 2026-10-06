@@ -135,17 +135,25 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
     let expired = false;
     let judgmentId: string | undefined;
     let threadId: string | undefined;
+    /**
+     * 畳むときの受信箱への書き込み。**書き終えてから返す**（追加・2026-10-06、Backlog #216 と同じ形。Fable のレビュー）
+     * ——返った時点で判断待ちが live のままだと、相乗りの列（inFlight）が先に空き、次の同じ組み合わせが新しい判断待ちを
+     * 出して一瞬 live が2つになる。試験も負荷のもとで古い判断待ちを live と見る
+     */
+    let folding: Promise<unknown> | undefined;
+    const fold = (id: string, thread: string, denied: { behavior: "deny"; message: string }): void => {
+      folding = deps.inbox.answerJudgment(id, denied).then(
+        () => deps.onJudgmentSettled?.(thread, { id, answer: RELAY_CALL_ENDED_REASON }),
+        (err: unknown) => console.warn(`[relay] 終わった呼び出しの判断待ち ${id} を畳めませんでした: ${String(err)}`),
+      );
+    };
     const stopWatching = deps.moduleCalls.whenEnded(req.callerConnName, req.callerCallId, () => {
       ended = true;
       if (judgmentId === undefined) return;
       const denied = { behavior: "deny" as const, message: RELAY_CALL_ENDED_REASON };
       if (deps.pendingApprovals.resolve(judgmentId, denied)) {
         expired = true;
-        const id = judgmentId;
-        void deps.inbox.answerJudgment(id, denied).then(
-          () => deps.onJudgmentSettled?.(threadId!, { id, answer: RELAY_CALL_ENDED_REASON }),
-          () => undefined,
-        );
+        fold(judgmentId, threadId!, denied);
       }
     });
     try {
@@ -159,16 +167,24 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
           judgmentId = id;
           threadId = thread;
         },
+        fold,
       });
       return { decision, askerEnded: expired };
     } finally {
       stopWatching();
+      if (folding) await folding;
     }
   }
 
   async function askWhileCalling(
     req: RelayApprovalRequest,
-    watch: { isEnded(): boolean; markExpired(): void; isExpired(): boolean; raised(judgmentId: string, threadId: string): void },
+    watch: {
+      isEnded(): boolean;
+      markExpired(): void;
+      isExpired(): boolean;
+      raised(judgmentId: string, threadId: string): void;
+      fold(judgmentId: string, threadId: string, denied: { behavior: "deny"; message: string }): void;
+    },
   ): Promise<RelayApprovalDecision> {
     const where = deps.moduleCalls.threadFor(req.callerConnName, req.callerCallId);
     if (where.kind !== "thread") {
@@ -212,10 +228,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
         const denied = { behavior: "deny" as const, message: RELAY_CALL_ENDED_REASON };
         if (deps.pendingApprovals.resolve(judgment.id, denied)) {
           watch.markExpired();
-          void deps.inbox.answerJudgment(judgment.id, denied).then(
-            () => deps.onJudgmentSettled?.(where.threadId, { id: judgment.id, answer: RELAY_CALL_ENDED_REASON }),
-            () => undefined,
-          );
+          watch.fold(judgment.id, where.threadId, denied);
         }
       }
     });

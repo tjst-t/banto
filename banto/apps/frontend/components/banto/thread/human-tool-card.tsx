@@ -69,7 +69,8 @@ export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
     // 同じ発言の結果の無い tool 呼び出しを全部 requires-action にし、ToolFallback はそこへ英語の「Allow / Deny」
     // を出していた。押しても addResult が走るだけで host には届かない（承認は判断待ちのカードで聞く）——押せるのに
     // 繋がっていないボタンを残さない（規則13）。人に聞くものは上の専用カードと HumanJudgmentCard が出す。
-    // status は変えない（requires-action で自動で開くのはそのまま。running にすると畳まれて結果が見えなくなった）
+    // status は変えない（running にすると畳まれて結果が見えなくなった）。**自動では開かない**（改訂・2026-10-06、
+    // ユーザー）——承認と関係のないカードが開いて承認のカードを埋もれさせていた。hideApproval がその印
     return <ToolFallback {...props} hideApproval />;
   }
 

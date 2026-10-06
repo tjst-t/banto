@@ -508,6 +508,31 @@ test("聞いた呼び出しが答えを待たずに終わったら、判断待�
   }
 });
 
+// **畳む書き込みを待ってから返す**（追加・2026-10-06、Backlog #216 と同じ形。Fable のレビュー）。以前は書き込みを投げっぱなしで
+// 返し、返った時点では判断待ちがまだ live。試験では書き込みをわざと遅らせて、その隙を確かめに見る
+test("聞いた呼び出しが終わって断られた時点で、判断待ちはもう畳まれている（受信箱への書き込みが遅くても）", async () => {
+  const t = await setup();
+  const seen = new Set<string>();
+  try {
+    const answer = t.inbox.answerJudgment.bind(t.inbox);
+    t.inbox.answerJudgment = async (...args: Parameters<typeof answer>) => {
+      await new Promise((r) => setTimeout(r, 300));
+      return answer(...args);
+    };
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const first = t.caller
+      .callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } })
+      .then((r) => r, (err: unknown) => err);
+    const judgment = await waitForJudgment(t.inbox, seen);
+    endCall();
+    await first;
+    assert.equal((t.inbox.get(judgment.id) as JudgmentItem).liveness, "answered", "断ったとき、判断待ちがまだ live");
+    assert.equal(t.settled.length, 1, "会話のカードを答え済みにする知らせが、断る前に出ていない");
+  } finally {
+    await t.close();
+  }
+});
+
 test("承認を待っている間、その呼び出しは「人を待っている」——答えたら外れる", async () => {
   const t = await setup({ bundled: true });
   const seen = new Set<string>();

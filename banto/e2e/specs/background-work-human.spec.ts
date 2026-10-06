@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded, aiTextMentioning, settleProjectsInbox } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(420_000);
@@ -28,6 +28,8 @@ const SERVER = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/ask-hu
 
 test.afterAll(async ({ request }) => {
   await request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(MODULE)}`, { headers });
+  // 落ちても後ろの spec を巻き込まない（Backlog #215）
+  await settleProjectsInbox(request, [PROJECT_NAME, OTHER_NAME]);
 });
 
 test("人の答えを待っているものは、バックグラウンドと分けて人の番の色で出る", async ({ page }) => {
@@ -69,9 +71,15 @@ test("人の答えを待っているものは、バックグラウンドと分�
     if ((await allow.count()) > 0) {
       await allow.last().click();
     }
-    await expect(page.getByText(/待たずに頼みました/)).toHaveCount(1, { timeout: 10_000 });
+    // **AI の文だけを数える**（2026-10-06、Backlog #215）。中継の承認（subagent → vault-directory の lookupAlias）の
+    // カードが出ている間は、同じ発言の結果の無い tool のカードが requires-action になって自動で開き、開いたままの
+    // runSubagent のカードの結果にも同じ文が出る——そちらまで数えると、開く順番しだいで数がずれていた
+    await expect(aiTextMentioning(page, /待たずに頼みました/)).toHaveCount(1, { timeout: 10_000 });
   }).toPass({ timeout: 120_000 });
   await waitTurnEnded(page, threadId, 1);
+  // 承認のカードが出ていた間も、関係のない tool のカード（runSubagent・askHuman）は自動で開かない（改訂・2026-10-06、
+  // ユーザー。v4-frontend.md「答え方」）——以前は開いたまま結果を見せていた
+  await expect(page.locator('[data-slot="tool-fallback-result"]'), "承認と関係のない tool のカードが勝手に開いている").toHaveCount(0);
 
   await expect(humanLine, "人を待つ行が出ない").toHaveText("試験の承認：A", { timeout: 30_000 });
   await expect(workLine, "裏の仕事の行が、人を待つ行に隠れた").toHaveText("fake に頼んだ仕事");

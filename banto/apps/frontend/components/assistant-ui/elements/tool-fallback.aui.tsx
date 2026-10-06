@@ -557,8 +557,10 @@ const ToolFallbackImpl = ({
   hideApproval = false,
 }: ToolCallMessagePartProps & {
   /**
-   * banto：Allow / Deny を出さない（2026-10-05）。承認は判断待ちのカードで聞くので、ここのボタンは host に届かない
-   * ——開く・閉じるは requires-action のまま今までどおり
+   * banto：Allow / Deny を出さない（2026-10-05）。承認は判断待ちのカードで聞くので、ここのボタンは host に届かない。
+   * **requires-action でも自動で開かない**（改訂・2026-10-06、ユーザー）——assistant-ui は判断待ちの間、同じ発言の結果の無い
+   * tool を全部 requires-action にする。それで承認と関係のないカードまで開いて開いたままになり、承認のカードが埋もれ、開くかどうかは
+   * 結果が届く順番しだいで揃わなかった。関係のないカードは閉じたまま（押せば今までどおり開く）
    */
   hideApproval?: boolean;
 }) => {
@@ -568,12 +570,12 @@ const ToolFallbackImpl = ({
   const shouldRenderApproval =
     !hideApproval && isRequiresAction && offersInterruptAction(status, approval, interrupt);
 
-  const [open, setOpen] = useState(isRequiresAction);
-  const [prevRequiresAction, setPrevRequiresAction] =
-    useState(isRequiresAction);
-  if (isRequiresAction !== prevRequiresAction) {
-    setPrevRequiresAction(isRequiresAction);
-    if (isRequiresAction) setOpen(true);
+  const autoOpen = isRequiresAction && !hideApproval;
+  const [open, setOpen] = useState(autoOpen);
+  const [prevAutoOpen, setPrevAutoOpen] = useState(autoOpen);
+  if (autoOpen !== prevAutoOpen) {
+    setPrevAutoOpen(autoOpen);
+    if (autoOpen) setOpen(true);
   }
 
   return (

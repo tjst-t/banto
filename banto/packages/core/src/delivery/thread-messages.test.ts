@@ -194,6 +194,27 @@ test("止められたら待つのをやめて断り、判断待ちも畳む", as
   });
 });
 
+test("判断待ちを出している最中に止められても、待たずに断り、判断待ちを畳む（あとで許しても届かない）", async () => {
+  // Fable のレビュー（2026-10-06）：止める合図の聞き手は raiseJudgment のあとに付くので、その間に止められると鳴らず、
+  // 判断待ちが live のまま残っていた。人があとで許すと、止めたターンの送信が届いた
+  await setup(async ({ store, inbox, approvals, messaging, a, b, judgments }) => {
+    const ac = new AbortController();
+    const raise = inbox.raiseJudgment.bind(inbox);
+    inbox.raiseJudgment = async (...args: Parameters<typeof raise>) => {
+      const j = await raise(...args);
+      ac.abort(); // 出し終えて、聞き手を付ける前に止める
+      return j;
+    };
+    const r = await messaging.send(a.base, { threadId: b.base, title: "t", text: "x" }, ac.signal);
+    assert.equal(r.ok, false);
+    assert.equal(judgments.length, 1);
+    const j = inbox.get(judgments[0]!.id) as { liveness: string } | undefined;
+    assert.notEqual(j?.liveness, "live", "止めたのに判断待ちが live のまま");
+    assert.equal(approvals.resolve(judgments[0]!.id, { behavior: "allow" }), false, "止めたのに答えを待ち続けている");
+    assert.equal(store.getThread(b.base)!.deliveries?.length ?? 0, 0, "止めたターンの送信が届いた");
+  });
+});
+
 test("宛先の誤りは理由を返して断る", async () => {
   await setup(async ({ messaging, a, b }) => {
     assert.match((await messaging.send(a.base, { threadId: a.base, title: "t", text: "x" })).text, /自分自身/);

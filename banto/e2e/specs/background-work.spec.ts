@@ -13,7 +13,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded, countAiText } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(420_000);
@@ -60,7 +60,13 @@ test("待たずに頼んだ仕事が、どの Thread で動いているかサイ
     if ((await allow.count()) > 0) {
       await allow.last().click();
     }
-    await expect(page.getByText(/待たずに頼みました/)).toHaveCount(2, { timeout: 10_000 });
+    // **AI の文だけを数える**（2026-10-06、Backlog #215）。中継の承認（subagent → vault-directory の lookupAlias）の
+    // カードが出ている間は、同じ発言の結果の無い tool のカードが requires-action になって自動で開き、開いたままの
+    // runSubagent のカードの結果にも同じ文が出る——そちらまで数えると、開く順番しだいで数がずれていた
+    // 偽の AI は最後の tool の結果を文にして終わるので、AI の文には1回だけ出る。以前の「2」は、承認の間に
+    // 勝手に開いた tool のカードの結果を数えていた（開かなくした、改訂・2026-10-06）。2件とも頼めたことは下の
+    // 「バックグラウンドで 2 件」で見る
+    await expect.poll(() => countAiText(page, /待たずに頼みました/), { timeout: 10_000 }).toBe(1);
   }).toPass({ timeout: 120_000 });
   await waitTurnEnded(page, threadId, 1);
 

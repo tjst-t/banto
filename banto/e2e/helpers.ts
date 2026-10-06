@@ -1,5 +1,5 @@
 // specから共通で使う手順。真実は一箇所（規則3）——同じ待ちを各specに写さない。
-import { expect, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { CORE_BASE_URL, CORE_BROWSER_URL, AUTH_TOKEN } from "./config.js";
 import { FAKE_RUNNER_MARKER, type FakePlan } from "./fake-runner.js";
 
@@ -115,7 +115,10 @@ export async function createProject(
 ): Promise<void> {
   await openNav(page);
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  // ダイアログが開いたことを先に見る——開かないまま fill すると、試験の上限まで黙って待つ（2026-10-06、プローブで3分止まった）
+  // （携帯の幅では閉じた Drawer も role=dialog で残るので、入力欄で見る）
   const nameInput = page.getByLabel("Project 名");
+  await expect(nameInput, "「新しい Project」を押してもダイアログが開かない").toBeVisible({ timeout: 15_000 });
   const pathInput = page.getByLabel("Root パス");
   const submit = page.getByRole("button", { name: "作成する" });
 
@@ -153,8 +156,35 @@ export async function createProject(
       });
   }
 
+  // **作った Project の画面に移り終わるまで待つ**（2026-10-06、Backlog #217）。名前はサイドバーに先に出るので、名前が
+  // 見えただけでは URL はまだ前の Project のことがある（`router.push` の前）。その隙に `page.reload()` すると前の
+  // Project の会話が開き、送った発言がそちらへ行っていた（turn-reattach の「判断待ち…」で承認カードが60秒出なかった
+  // 原因——前の Project の Thread は承認を求めないモードで、tool がそのまま走っていた。ログの session で確かめた）
+  //
+  // 行き先の id は、作る要求の返事から取る。同じ根の Project が既にあるときは作らずにそれを開く（要求が出ない）ので、
+  // 返事が無ければ名前で host に引く——どちらでも決まらなければ理由を言って落とす（黙って「名前まで」に戻すと、
+  // 重いときに同じ不具合が静かに戻る。Fable のレビュー）
+  const created = page
+    .waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/projects", { timeout: 30_000 })
+    .catch(() => undefined);
   await submit.click();
   await expectProjectOpen(page, projectName);
+  const res = await created;
+  let id = res && res.ok() ? ((await res.json().catch(() => undefined)) as { id?: string } | undefined)?.id : undefined;
+  if (!id) {
+    const projects = (await (
+      await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
+    ).json()) as { id: string; name: string }[];
+    const named = projects.filter((p) => p.name === projectName);
+    if (named.length !== 1) {
+      throw new Error(
+        `作った Project の id が決まらない（作る要求の返事=${res ? res.status() : "無し"}、同じ名前の Project=${named.length} 件）`,
+      );
+    }
+    id = named[0]!.id;
+  }
+  await page.waitForURL((url) => url.pathname === `/p/${id}`, { timeout: 30_000 });
+  await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
 }
 
 /**
@@ -325,4 +355,64 @@ export async function confirmForkDialog(
   if (options.start) await dialog.getByTestId(`fork-start-${options.start}`).click();
   await dialog.getByTestId("fork-dialog-submit").click();
   await expect(dialog).toBeHidden({ timeout: 30_000 });
+}
+
+/**
+ * **AI の発言の文のうち、その言葉を含む段落**（2026-10-06、Backlog #215）。`page.getByText` は会話の中の tool の
+ * カードの結果（開いていれば）も拾う——判断待ちが出ている間、結果の無い tool のカードは自動で開くので、開く順番
+ * しだいで数がずれる。AI の文だけを数えたいときはこれを使う
+ */
+/** AI の文にその言葉が何回出ているか（1つの段落に2回出ても数える） */
+export async function countAiText(page: Page, text: RegExp): Promise<number> {
+  const paragraphs = await page.locator('[data-slot="aui_assistant-message-content"] p.aui-md-p').allInnerTexts();
+  const global = new RegExp(text.source, text.flags.includes("g") ? text.flags : `${text.flags}g`);
+  return paragraphs.reduce((n, p) => n + (p.match(global)?.length ?? 0), 0);
+}
+
+export function aiTextMentioning(page: Page, text: RegExp | string) {
+  // 段落は markdown の `aui-md-p`。tool のカード（「Result:」の見出し・判断待ちの文）の <p> は拾わない
+  return page.locator('[data-slot="aui_assistant-message-content"] p.aui-md-p').filter({ hasText: text });
+}
+
+/**
+ * **その spec が作った Project の受信箱を片づける**（2026-10-06、Backlog #215）。途中で落ちると、答えていない
+ * 判断待ちと読んでいないお知らせが残り、同じ回の後ろの spec（受信箱のバッジの数・判断待ちの数を見るもの）を
+ * 道連れにしていた。`afterAll` から呼ぶ——落ちても通っても、答えていない判断待ちは断り、お知らせは見たにする
+ */
+export async function settleProjectsInbox(request: APIRequestContext, projectNames: string[]): Promise<void> {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
+  const projects = (await (await request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as { id: string; name: string }[];
+  const mine = projects.filter((p) => projectNames.includes(p.name));
+  const threadIds = new Set<string>();
+  for (const p of mine) {
+    const threads = (await (await request.get(`${CORE_BASE_URL}/api/projects/${p.id}/threads`, { headers })).json()) as { id: string }[];
+    for (const t of threads) threadIds.add(t.id);
+  }
+  const projectIds = new Set(mine.map((p) => p.id));
+  type Item = { id: string; kind: string; liveness?: string; source?: string; projectId?: string; threadId?: string };
+  const ours = (item: Item): boolean =>
+    (item.threadId !== undefined && threadIds.has(item.threadId)) || (item.projectId !== undefined && projectIds.has(item.projectId));
+  const inbox = async (): Promise<Item[]> =>
+    ((await (await request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Item[]).filter(ours);
+
+  // 1. 答えていない判断待ちを断る。断れなかったもの（待っている呼び出しがもう無い 409 等）は live のまま残る
+  //    ——黙って通さず、何が残ったかを言う（後ろの spec が落ちたときの手がかり）
+  const left: string[] = [];
+  for (const item of await inbox()) {
+    if (item.kind !== "judgment" || item.liveness !== "live") continue;
+    const res = await request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/answer`, {
+      headers,
+      data: { answer: { behavior: "deny", message: "試験の後片づけ" } },
+    });
+    if (!res.ok()) left.push(`${item.id}（source=${item.source ?? "?"}、${res.status()} ${await res.text()}）`);
+  }
+  // 2. 断ったせいで裏の仕事が失敗し、新しいお知らせが出ることがある——落ち着くのを待ってから見たにする
+  await new Promise((r) => setTimeout(r, 2_000));
+  for (const item of await inbox()) {
+    if (item.kind === "judgment") continue;
+    await request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { headers });
+  }
+  if (left.length > 0) {
+    console.warn(`[e2e] 片づけで断れなかった判断待ちが残っている——後ろの spec の受信箱の数がずれうる: ${left.join(" / ")}`);
+  }
 }
