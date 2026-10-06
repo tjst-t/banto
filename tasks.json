@@ -4510,7 +4510,7 @@
       "number": 189,
       "kind": "task",
       "title": "Factory の骨組み——手順の実行（記録と流し直しで再開）・tool 4本・同梱の手順",
-      "status": "ready",
+      "status": "done",
       "parent": "factory",
       "dependsOn": [
         "subagent-for-factory"
@@ -4520,12 +4520,12 @@
       "labels": [],
       "body": "v4-modules.md §4.5。Module の骨組み（目録に置く・scope project・exec）、手順＝JS の関数1本を動かす実行の仕組み（段の呼び出しを番号で記録・流し直しで終わった段は記録を返す・始めて終わっていないサブエージェントは返事を待つ）、runFactory／listFactoryRuns／answerFactory／cancelFactory、同梱の「1件を運ぶ」手順（実装→テストの関門→レビュー、上限つき）、設定（テストのコマンド必須・準備のコマンド・実装役とレビュー役・同時件数・上限）、止まったら頼んだ Thread に知らせる。Factory が必ず守るもの（worktree・Backlog・テストの関門）は手順の外に置く。",
       "doneWhen": "偽のエージェントで：1件が実装→テスト→レビューを通って main に入り Backlog が done になる／テストが3回落ちたら止まって頼んだ Thread に知らせが届き、answerFactory で続けられる／Factory の Module を途中で落として起こし直すと、終わった段を繰り返さずに続く",
-      "resolution": null,
+      "resolution": "b630db7d（main・release に push 済み、host での反映は人）。段の記録と流し直し・Factory が守る流れ・同梱の手順・tool 4本・知らせと答え・resumesAfterRestart。マージの列（rebase→テスト→ff、動いていたらやり直す）も一緒に入れた。単体 7・E2E factory 2本。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-04T08:56:04.618Z",
-      "updatedAt": "2026-10-04T08:56:04.618Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-06T14:20:00.055Z",
+      "closedAt": "2026-10-06T14:20:00.055Z",
       "extra": {}
     },
     {
