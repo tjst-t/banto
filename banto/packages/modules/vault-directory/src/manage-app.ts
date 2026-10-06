@@ -40,6 +40,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
   }
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"] { color-scheme: dark; }
+  /* **開いた選択肢の一覧は、地と字を自分で決める**（直し・2026-10-06、ユーザー指摘）。選択欄は地が透明で字を
+     受け継ぐので、一覧の項目も明るい字のまま、ブラウザが白い地で描くと読めなかった（暗い画面・Windows の Chrome） */
+  option, optgroup { background-color: var(--color-background-primary, var(--mcp-ui-color-surface, Canvas)); color: var(--ink); }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 0;
@@ -302,8 +305,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <p class="dialog-desc" id="place-variant-note" hidden></p>
     <label class="field"><span>いまある秘密をどうするか</span>
       <select id="place-migrate">
+        <!-- **既定は「移さない」**（2026-10-06、ユーザー）——移すと値が動く。動かしたいときだけ選ぶ -->
+        <option value="no" selected>移さない（古い置き場に残す）</option>
         <option value="yes">一緒に移す</option>
-        <option value="no">移さない（古い置き場に残す）</option>
       </select>
     </label>
     <p class="dialog-desc" id="place-effect"></p>
@@ -1476,6 +1480,7 @@ ${ALIAS_KIND_RULES_JS}
     fill();
     placeVaults = places;
     await fillVariant();
+    $("place-migrate").value = "no"; // 開くたびに既定（移さない）へ戻す
     $("place-vault").onchange = async () => { fill(); await fillVariant(); void preview(); };
     $("place-group").onchange = async () => { await fillVariant(); void preview(); };
     $("place-variant").onchange = () => void preview();

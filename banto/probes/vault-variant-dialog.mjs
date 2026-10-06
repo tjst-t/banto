@@ -41,7 +41,7 @@ const host = `<!doctype html><html><body style="margin:0">
     const m = e.data;
     if (!m || m.jsonrpc !== "2.0" || m.id === undefined || !m.method) return;
     let result;
-    if (m.method === "ui/initialize") result = { hostContext: { "dev.banto/project": { id: "P", name: "homelab" } } };
+    if (m.method === "ui/initialize") result = { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#e6e6e6", "--color-background-primary": "#1e1f22" } }, "dev.banto/project": { id: "P", name: "homelab" } } };
     else if (m.method === "tools/call") {
       window.calls.push({ name: m.params.name, args: m.params.arguments });
       const a = answers[m.params.name];
@@ -82,6 +82,12 @@ await page.waitForTimeout(300);
 check(await app.locator("#place-variant-field").isVisible(), "版を名乗る Vault では版の欄が出る");
 check((await app.locator("#place-variant-label").textContent()) === "環境", "欄の呼び名は Vault が名乗ったもの");
 check((await app.locator("#place-variant").inputValue()) === "prod", "いまの版が選ばれている");
+check((await app.locator("#place-migrate").inputValue()) === "no", "「いまある秘密をどうするか」の既定は「移さない」");
+const optColors = await app.locator("#place-variant option").first().evaluate((o) => {
+  const cs = getComputedStyle(o);
+  return { bg: cs.backgroundColor, fg: cs.color };
+});
+check(optColors.bg === "rgb(30, 31, 34)" && optColors.fg === "rgb(230, 230, 230)", `暗い画面の選択肢は暗い地に明るい字: ${JSON.stringify(optColors)}`);
 check((await app.locator("#place-group").inputValue()) === "homelab", "グループは版を外した名前で選ばれている");
 const opts = await app.locator("#place-variant option").allTextContents();
 check(opts.some((t) => t.includes("prod") && t.includes("値あり 5／5")) && opts.some((t) => t.includes("dev（既定）") && t.includes("値あり 1／5")), `版ごとの数が添えてある: ${opts.join(" | ")}`);

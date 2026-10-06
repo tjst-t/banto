@@ -28,6 +28,9 @@ export const CONFIG_APP_HTML = `<!doctype html>
   }
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"] { color-scheme: dark; }
+  /* **開いた選択肢の一覧は、地と字を自分で決める**（直し・2026-10-06、ユーザー指摘）。選択欄は地が透明で字を
+     受け継ぐので、一覧の項目も明るい字のまま、ブラウザが白い地で描くと読めなかった（暗い画面・Windows の Chrome） */
+  option, optgroup { background-color: var(--color-background-primary, var(--mcp-ui-color-surface, Canvas)); color: var(--ink); }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body {
