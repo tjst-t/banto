@@ -5440,6 +5440,30 @@
       "updatedAt": "2026-10-06T15:30:28.534Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "flaky-turn-reattach-stall",
+      "number": 223,
+      "kind": "bug",
+      "title": "E2E turn-reattach「走行中に接続が黙って止まっても…」が時々最後まで出ない（[1] だけ）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-06、#217 の確かめで turn-reattach.spec.ts を20回流したうち1回（14回目）、「走行中に接続が黙って止まっても、見切って最新の状況が出る（回線が変わった）」が落ちた：接続を止めたあと 120 秒待っても、AI の吹き出しが「[1]」のまま（[60] まで出ない）。ほかの19回は通った。接続が止まったと見切って記録から取り直す（45秒）ところが働かなかったのか、取り直した記録が古いのかは未調査。ログ .worktrees/flaky-tests/results/reattach/14.log。経緯 docs/notes/2026-10-06-flaky-tests.md。",
+      "doneWhen": "原因が分かり、直すか、再現しないことを20回の実行で示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T17:03:53.949Z",
+      "updatedAt": "2026-10-06T17:03:53.949Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
