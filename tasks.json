@@ -4998,7 +4998,7 @@
       "number": 207,
       "kind": "task",
       "title": "Subagent を起こし直しのあと続ける",
-      "status": "in-progress",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "resume-module-contract"
@@ -5008,7 +5008,7 @@
       "labels": [],
       "body": "走っている仕事の記録をファイルに（資格情報は書かない）。session/load して「作業が途中で切れました。実行中だった tool：…結果は不明」を送る。load できないもの（最初の頼みの記録前）は同じ頼みで最初からやり直す。\n\n実装済み（296ba993〜b930fa05、main・release 入り）：偽のエージェントと own-host の E2E で、host を SIGKILL→起こし直しても続いて結果が届く・残った古いエージェントはグループごと止めてから続ける。残り：完了条件の「本物の Claude Code」での確かめ（別のデータ置き場の host）。",
       "doneWhen": "サブエージェントの仕事の途中で banto を起こし直すと、続きが走って頼んだ Thread に結果が届く（別のデータ置き場の host で、本物の Claude Code）。走っている記録のファイルに資格情報が無いことを grep で確かめる",
-      "resolution": null,
+      "resolution": "2026-10-06 本番（45b502f5）で本物の Claude Code（haiku）で確かめた：runInBackground の仕事の sleep 150 の最中に restart-when-idle.mjs で起こし直し（「途中で切れるものはありません。起き直したあと続くもの 1 件」）→ 古いエージェント（acp・CLI）と sleep は止まり、新しい1本が同じ会話 8acbac49 を続け、resumedAfterRestart: true・notes「banto を起こし直したため途中で切れ、続きから再開しました（1 回目）」で結果がこの Thread に届いた。走っている記録に資格情報が無いことは単体の grep で確かめた（本番の記録は終わって消えていた）",
       "refs": [],
       "threads": [
         {
@@ -5017,8 +5017,8 @@
         }
       ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-05T13:12:00.731Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-06T01:11:31.663Z",
+      "closedAt": "2026-10-06T01:11:31.663Z",
       "extra": {}
     },
     {
