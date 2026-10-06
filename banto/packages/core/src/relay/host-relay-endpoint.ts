@@ -280,6 +280,8 @@ export interface HostRelayServerOptions {
       forInstance?: boolean,
       /** 呼び元の呼び出しが持つ Runner の tool_use の id（継ぐ） */
       toolUseId?: string,
+      /** 呼び元の呼び出し（人を待つ印を外側へたどるため、追加・2026-10-06） */
+      parent?: { connName: string; callId?: string },
     ): { id: string; end: () => void };
     /** 呼び元の呼び出しが属する AI の tool 呼び出しの id（Runner の tool_use の id）。1つに決まるときだけ */
     toolUseIdFor?(connName: string, callId?: string): string | undefined;
@@ -844,7 +846,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const callerToolUseId = opts.moduleCalls?.toolUseIdFor?.(callerConn, callId);
     // **宛先にも呼び出しの印を渡す**（追加・2026-09-28）——宛先がさらに中継を呼ぶとき、この1件を名指せる
     const targetCall = opts.moduleCalls?.beginCall
-      ? opts.moduleCalls.beginCall(...targetArgs, callerToolUseId)
+      ? opts.moduleCalls.beginCall(...targetArgs, callerToolUseId, { connName: callerConn, ...(callId ? { callId } : {}) })
       : { id: undefined, end: opts.moduleCalls?.begin(...targetArgs) };
     const endTargetCall = targetCall.end;
 

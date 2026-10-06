@@ -1481,3 +1481,52 @@ test("止めている間：実行中の呼び出しの中の中継は通り（to
     close();
   }
 });
+
+// **中継で呼んだ先の呼び出しは、呼んだ側を親として台帳に持つ**（追加・2026-10-06、本番で「Backlog の書き込みが承認の間もなく
+// 時間切れ」）。宛先の中で人を待つ（さらに奥の中継の承認）と、呼んだ側の呼び出しも人待ちになり、host は外側の上限を数えない
+test("中継の宛先で人を待つと、呼んだ側の呼び出しも人待ちになる（入れ子の承認で外側が切れない）", async () => {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  let seen: { outer: boolean; inner: boolean } | undefined;
+  const server = new McpServer({ name: "fake-repositories", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "push_branch", inputSchema: { type: "object", properties: {} } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    // 宛先の中で、さらに奥の中継の承認を待ち始めた（approval-gate が宛先の呼び出しに立てるのと同じ）
+    const innerId = (req.params._meta as Record<string, unknown> | undefined)?.["dev.banto/callId"] as string;
+    const release = moduleCalls.holdForHuman("repositories", innerId);
+    seen = { outer: moduleCalls.isWaitingOnHuman("backlog", outerCall.id), inner: moduleCalls.isWaitingOnHuman("repositories", innerId) };
+    release();
+    return { content: [{ type: "text", text: "pushed" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const target = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), target.connect(c)]);
+  registry.registerModule({
+    name: "repositories",
+    client: target,
+    meta: bundledMeta({ satisfies: ["repositories"], dependsOn: [], isolation: "subprocess" }, "repositories"),
+  });
+  const token = registry.issueToken({
+    moduleName: "backlog",
+    meta: bundledMeta({ satisfies: ["backlog"], dependsOn: [{ role: "repositories", required: false }], isolation: "subprocess" }, "backlog"),
+  });
+  const outerCall = moduleCalls.beginCall("backlog", "t1", "turn", "pA", false, "toolu_1");
+  const { url, close } = await startTestServer(registry, { moduleCalls });
+  const client = await relayClient(url, token);
+  try {
+    const r = await client.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "repositories", name: "push_branch", arguments: {} },
+      _meta: { "dev.banto/callId": outerCall.id },
+    });
+    assert.equal(textOf(r), "pushed");
+    assert.deepEqual(seen, { outer: true, inner: true }, "宛先で人を待っても、呼んだ側の呼び出しが人待ちにならない");
+    assert.equal(moduleCalls.isWaitingOnHuman("backlog", outerCall.id), false, "待ち終わっても外側が人待ちのまま");
+  } finally {
+    outerCall.end();
+    await client.close();
+    close();
+  }
+});

@@ -154,3 +154,26 @@ test("質問の印：callId があればその1件だけ、会話で絞れば同
   assert.equal(t.toolUseIdFor("vault", c.id), "toolu_c");
   assert.equal(t.toolUseIdFor("vault"), undefined, "接続の全部から1つに決めた");
 });
+
+// **入れ子の奥で人を待つと、外側の呼び出しも人待ちになる**（追加・2026-10-06、本番で「Backlog の書き込みが承認の間もなく
+// 時間切れ」）。AI → Backlog → Repositories → Vault の承認は Repositories の呼び出しで聞くが、host が上限を数えているのは
+// AI → Backlog——そちらにも印が立たないと 60 秒で切れ、承認カードも畳まれていた
+test("holdForHuman：中継で呼んだ側（parent）をたどって外側にも立て、外せば外側も戻る。関係ない呼び出しには立てない", () => {
+  const t = new ModuleCallTracker();
+  const outer = t.beginCall("backlog-p1", "t1", "turn", "p1", false, "toolu_1");
+  const middle = t.beginCall("repositories", "t1", "turn", "p1", false, "toolu_1", { connName: "backlog-p1", callId: outer.id });
+  const other = t.beginCall("backlog-p1", "t2", "turn", "p1");
+  const release = t.holdForHuman("repositories", middle.id);
+  assert.equal(t.isWaitingOnHuman("repositories", middle.id), true);
+  assert.equal(t.isWaitingOnHuman("backlog-p1", outer.id), true, "外側の呼び出しに人待ちが立たない");
+  assert.equal(t.isWaitingOnHuman("backlog-p1", other.id), false, "関係ない呼び出しまで人待ちになった");
+  release();
+  assert.equal(t.isWaitingOnHuman("backlog-p1", outer.id), false);
+  assert.equal(t.isWaitingOnHuman("repositories", middle.id), false);
+  // 外側が先に終わっていても、外すときに壊れない
+  const again = t.holdForHuman("repositories", middle.id);
+  outer.end();
+  again();
+  middle.end();
+  other.end();
+});

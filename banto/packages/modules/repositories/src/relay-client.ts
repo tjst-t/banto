@@ -95,11 +95,17 @@ export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
   private async relay(tool: string, args: Record<string, unknown>, callId: string | undefined, what: string): Promise<string> {
     try {
       const client = await this.connect();
-      const result = await client.callTool({
-        name: tool,
-        arguments: args,
-        ...(callId ? { _meta: { [CALL_ID_META_KEY]: callId } } : {}),
-      });
+      // **進捗で上限を延ばす**（追加・2026-10-06、本番で「Backlog の書き込みが承認の間もなく時間切れ」）。中継の初回は host が
+      // 人に承認を聞き、待つ間は進捗を送ってくる——数え直さないと、人が答える前に既定の 60 秒で切れる（Vault・Shell と同じ手当て）
+      const result = await client.callTool(
+        {
+          name: tool,
+          arguments: args,
+          ...(callId ? { _meta: { [CALL_ID_META_KEY]: callId } } : {}),
+        },
+        undefined,
+        { resetTimeoutOnProgress: true, onprogress: () => undefined },
+      );
       const text = (result.content as { type: string; text: string }[])[0]?.text ?? "";
       if (result.isError) throw new Error(text || what);
       return text;

@@ -69,6 +69,13 @@ interface CallEntry {
   toolUseId?: string;
   /** 終わったら呼ぶもの（`whenEnded`） */
   onEnd: Set<() => void>;
+  /**
+   * **この呼び出しを中継で呼んだ側の呼び出し**（追加・2026-10-06、本番で「Backlog の書き込みが承認の間もなく時間切れ」）。
+   * 人を待つ印（`hold`）は、ここをたどって外側の呼び出しにも立てる——AI → Backlog → Repositories → Vault のように入れ子に
+   * なると、承認を聞くのは奥の Repositories の呼び出しなのに、host が上限を数えているのは外側の AI → Backlog で、そちらが
+   * 60 秒で切れ、内側の承認カードも一緒に畳まれていた
+   */
+  parents: CallEntry[];
 }
 
 export class ModuleCallTracker {
@@ -115,6 +122,8 @@ export class ModuleCallTracker {
     forInstance = false,
     /** Runner が付けた tool_use の id（AI のターンの呼び出し・そこから継いだ中継だけ） */
     toolUseId?: string,
+    /** **中継で呼んだ側の呼び出し**（`host-relay-endpoint.ts`）。人を待つ印をたどって立てる先（追加・2026-10-06） */
+    parent?: { connName: string; callId?: string },
   ): { id: string; end: () => void } {
     const callId = randomBytes(12).toString("base64url");
     let calls = this.inFlight.get(connName);
@@ -131,6 +140,7 @@ export class ModuleCallTracker {
       elicitations: 0,
       ...(toolUseId ? { toolUseId } : {}),
       onEnd: new Set(),
+      parents: parent ? this.entriesOf(parent.connName, parent.callId) : [],
     };
     calls.set(callId, entry);
     return {
@@ -172,7 +182,15 @@ export class ModuleCallTracker {
     return this.hold(entries, "elicitation");
   }
 
-  private hold(entries: CallEntry[], kind: HumanWaitKind): () => void {
+  private hold(direct: CallEntry[], kind: HumanWaitKind): () => void {
+    // **外側の呼び出しにも立てる**（追加・2026-10-06）——中継で呼んだ側をたどる。同じものは1回だけ（輪にはならないが念のため）
+    const entries = new Set<CallEntry>();
+    const visit = (e: CallEntry) => {
+      if (entries.has(e)) return;
+      entries.add(e);
+      for (const p of e.parents) visit(p);
+    };
+    for (const e of direct) visit(e);
     for (const e of entries) {
       e.waitingOnHuman += 1;
       if (kind === "elicitation") e.elicitations += 1;
