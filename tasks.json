@@ -5290,6 +5290,30 @@
       "updatedAt": "2026-10-06T02:42:40.812Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "flaky-turn-reattach",
+      "number": 217,
+      "kind": "bug",
+      "title": "E2E turn-reattach で最初の承認カードが60秒出ないことがある",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-05 に1回見た。同じ組み合わせ・単独では通った。原因は未調査。",
+      "doneWhen": "原因が分かり、直すか、再現しないことを20回の実行で示す",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T02:42:42.905Z",
+      "updatedAt": "2026-10-06T02:42:42.905Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
