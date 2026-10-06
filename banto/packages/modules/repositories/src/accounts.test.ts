@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GithubAccounts, REFRESH_MARGIN_MS } from "./accounts.js";
-import { httpGithub } from "./github.js";
+import { GithubError, httpGithub } from "./github.js";
 import { LedgerStore } from "./ledger.js";
 import { FAKE_CLIENT_ID, MemoryVault, RecordingNotices, startFakeGithub, type FakeGithub } from "./test-fakes.js";
 
@@ -165,12 +165,12 @@ test("ブラウザでログイン：client ID が無ければ始めない。始�
       login: "tjst-t",
       credential: {
         kind: "app",
-        alias: { implementation: "vault-local", name: "oauth-github-tjst-t", group: "instance" },
+        alias: { implementation: "vault-local", name: "repositories-github-tjst-t", group: "instance" },
         clientId: FAKE_CLIENT_ID,
       },
     });
     // Vault には種別 oauth-token で、トークンの組が1つの alias にまとまっている
-    const stored = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const stored = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     assert.equal(w.vault.aliases[0]!.kind, "oauth-token");
     assert.match(stored.accessToken, /^ghu_fake_access_/);
     assert.match(stored.refreshToken, /^ghr_fake_refresh_/);
@@ -241,7 +241,7 @@ test("期限が近ければ使う前に取り直し、回った refresh token �
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const first = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const first = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     assert.equal(await w.accounts.tokenFor("tjst-t", "c"), first.accessToken);
     assert.equal(w.gh.refreshCalls, 0, "期限が遠いのに取り直した");
 
@@ -249,7 +249,7 @@ test("期限が近ければ使う前に取り直し、回った refresh token �
     w.clock.now = first.expiresAt - REFRESH_MARGIN_MS + 1;
     const token = await w.accounts.tokenFor("tjst-t", "c");
     assert.equal(w.gh.refreshCalls, 1);
-    const second = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const second = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     assert.equal(token, second.accessToken);
     assert.notEqual(second.refreshToken, first.refreshToken, "回った refresh token を置き換えていない");
     assert.equal(second.expiresAt, w.clock.now + 8 * 3600 * 1000);
@@ -266,13 +266,13 @@ test("同じアカウントの更新は1本ずつ——同時に3つ頼まれて
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const first = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const first = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     w.clock.now = first.expiresAt + 1;
     w.gh.refreshDelayMs = 50;
     const tokens = await Promise.all([1, 2, 3].map((i) => w.accounts.tokenFor("tjst-t", `c${i}`)));
     assert.equal(w.gh.refreshCalls, 1, "同時に何本も取り直した（refresh token は1回で無効になる）");
     assert.equal(new Set(tokens).size, 1);
-    assert.equal(tokens[0], JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!).accessToken);
+    assert.equal(tokens[0], JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!).accessToken);
     assert.deepEqual(w.notices.raised, []);
   });
 });
@@ -281,7 +281,7 @@ test("更新に失敗したら、アカウントに理由を残し、受信箱�
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const first = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const first = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     w.clock.now = first.expiresAt + 1;
     w.gh.refreshError = "bad_refresh_token";
     await assert.rejects(() => w.accounts.tokenFor("tjst-t", "c"), (err: Error) => {
@@ -297,7 +297,7 @@ test("更新に失敗したら、アカウントに理由を残し、受信箱�
     const [account] = (await w.accounts.list()).accounts;
     assert.match(account!.refreshFailure!.message, /refresh token/);
     // Vault の組は触っていない（失敗した更新で上書きしない）
-    assert.deepEqual(JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!), first);
+    assert.deepEqual(JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!), first);
 
     // 通るようになれば、印は消える
     w.gh.refreshError = undefined;
@@ -311,7 +311,7 @@ test("更新に失敗して受信箱にも出せなかった——黙らず、�
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const first = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const first = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     w.clock.now = first.expiresAt + 1;
     w.gh.refreshError = "bad_refresh_token";
     w.notices.fail = "中継に届きません";
@@ -326,7 +326,7 @@ test("取り直した組を Vault に置けなかったら、トークンは返�
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const at = "vault-local|instance|oauth-github-tjst-t";
+    const at = "vault-local|instance|repositories-github-tjst-t";
     const first = JSON.parse(w.vault.values.get(at)!);
     w.clock.now = first.expiresAt + 1;
     w.vault.failPut = "人の承認が得られませんでした";
@@ -369,7 +369,7 @@ test("置けないまま起こし直すと、Vault の鍵はもう無効——�
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const first = JSON.parse(w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!);
+    const first = JSON.parse(w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!);
     w.clock.now = first.expiresAt + 1;
     w.vault.failPut = "Vault が止まっています";
     await w.accounts.tokenFor("tjst-t", "c");
@@ -393,7 +393,7 @@ test("置けていない組があっても、もう一度ログインすれば�
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    const at = "vault-local|instance|oauth-github-tjst-t";
+    const at = "vault-local|instance|repositories-github-tjst-t";
     w.clock.now = JSON.parse(w.vault.values.get(at)!).expiresAt + 1;
     w.vault.failPut = "Vault が止まっています";
     await w.accounts.tokenFor("tjst-t", "c");
@@ -434,7 +434,7 @@ test("外す：ブラウザでログインしたものは Vault のログイン�
 
     // Vault の画面で先にログアウトしてあった
     await loginWithDevice(w);
-    w.vault.aliases.splice(w.vault.aliases.findIndex((a) => a.name === "oauth-github-tjst-t"), 1);
+    w.vault.aliases.splice(w.vault.aliases.findIndex((a) => a.name === "repositories-github-tjst-t"), 1);
     assert.equal((await w.accounts.remove("tjst-t", "c")).loginRemoved, false);
     assert.deepEqual((await w.accounts.list()).accounts, []);
   });
@@ -457,9 +457,10 @@ test("更新したトークンは、ログインを置いた元の置き場に�
   await withWorld(async (w) => {
     await w.accounts.setAppClientId(FAKE_CLIENT_ID);
     await loginWithDevice(w);
-    // ログインしたあとで、置き場が既定（vault-local の instance）でなくなった形——別の Vault に移した
+    // ログインしたあとで、置き場が既定（vault-local の instance）でなくなった形——別の Vault に移した。名前も前の形
+    // （`oauth-github-<login>`、2026-10-06 に改名）——アカウントは記録した在りかを使い続けるので、前の名前のままで回る
     const moved = { implementation: "vault-infisical", name: "oauth-github-tjst-t", group: "shared" };
-    const value = w.vault.values.get("vault-local|instance|oauth-github-tjst-t")!;
+    const value = w.vault.values.get("vault-local|instance|repositories-github-tjst-t")!;
     w.vault.aliases.splice(0, 1);
     w.vault.values.clear();
     w.vault.seed({ ...moved, kind: "oauth-token" }, value);
@@ -537,5 +538,70 @@ test("外すとき、ログイン情報の Vault が読めなければ「もう�
     // 別の Vault が読めないだけなら外せる
     w.vault.failures.splice(0, 1, { implementation: "vault-infisical", error: "繋がりません" });
     assert.equal((await w.accounts.remove("tjst-t", "c")).loginRemoved, true);
+  });
+});
+
+test("外すとき、Vault から消せなければ手元の組は捨てない（登録も残る）——消せたら捨てる", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    await loginWithDevice(w);
+    const at = "vault-local|instance|repositories-github-tjst-t";
+    w.clock.now = JSON.parse(w.vault.values.get(at)!).expiresAt + 1;
+    w.vault.failPut = "Vault が止まっています";
+    const held = await w.accounts.tokenFor("tjst-t", "c");
+    w.vault.failRemove = "Vault が止まっています";
+    await assert.rejects(() => w.accounts.remove("tjst-t", "c"), /Vault が止まっています/);
+    assert.equal((await w.accounts.list()).accounts.length, 1);
+    // 手元の組がまだある——Vault の無効な鍵ではなく、それを使い、置き直す
+    w.vault.failPut = undefined;
+    w.vault.failRemove = undefined;
+    assert.equal(await w.accounts.tokenFor("tjst-t", "c"), held, "消せなかったのに手元の組を捨てた");
+    assert.equal(JSON.parse(w.vault.values.get(at)!).accessToken, held);
+  });
+});
+
+test("更新を GitHub が断ったら手元の組を捨て（無効な鍵を置き直し続けない）、繋がらないだけなら残す", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    // 繋がらない形を作れる GitHub（偽の GitHub の前に、一時の失敗を挟む）
+    const real = httpGithub(w.gh.endpoints, () => w.clock.now);
+    let offline = false;
+    const accounts = new GithubAccounts({
+      store: w.store,
+      vault: w.vault,
+      github: {
+        ...real,
+        refresh: (clientId, token) => (offline ? Promise.reject(new GithubError("GitHub に繋がりませんでした（ECONNREFUSED）", "network")) : real.refresh(clientId, token)),
+      },
+      notices: w.notices,
+      now: () => w.clock.now,
+      sleep: async (ms) => void (w.clock.now += ms),
+    });
+    w.gh.script = ["authorized"];
+    const start = await accounts.startLogin({}, "c");
+    assert.equal((await accounts.pollLogin(start.flowId, "c")).state, "done");
+    const at = "vault-local|instance|repositories-github-tjst-t";
+    w.clock.now = JSON.parse(w.vault.values.get(at)!).expiresAt + 1;
+    w.vault.failPut = "Vault が止まっています";
+    const held = await accounts.tokenFor("tjst-t", "c");
+
+    // 繋がらない（一時の失敗）——手元の組は残り、繋がれば手元の組の鍵で取り直せる
+    w.clock.now += 8 * 3600 * 1000;
+    offline = true;
+    await assert.rejects(() => accounts.tokenFor("tjst-t", "c"), /GitHub に繋がりませんでした/);
+    offline = false;
+    const after = await accounts.tokenFor("tjst-t", "c");
+    assert.notEqual(after, held);
+    assert.equal(w.gh.users.get(after), "tjst-t", "繋がらなかっただけなのに手元の組を捨てた");
+
+    // GitHub が断った——手元の組を捨てる。次は Vault の（もう無効な）鍵を読み、置き直しには行かない
+    w.clock.now += 8 * 3600 * 1000;
+    w.gh.refreshError = "bad_refresh_token";
+    await assert.rejects(() => accounts.tokenFor("tjst-t", "c"), /GitHub が更新の鍵（refresh token）を受け付けませんでした/);
+    w.gh.refreshError = undefined;
+    w.vault.failPut = undefined;
+    const puts = w.vault.calls.filter((c) => c.op === "putOwned").length;
+    await assert.rejects(() => accounts.tokenFor("tjst-t", "c"), /更新の鍵（refresh token）が無効になっています/);
+    assert.equal(w.vault.calls.filter((c) => c.op === "putOwned").length, puts, "断られた組を Vault に置き直しに行った");
   });
 });

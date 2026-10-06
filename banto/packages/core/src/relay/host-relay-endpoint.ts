@@ -792,7 +792,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
      *
      * - **持ち主の確かめは宛先がする**——host は持ち主を知らない。だから名乗りを信じるのは**同梱の宛先だけ**
      *   （確かめない第三者の口が名乗るだけで緩むと、承認ゼロの書き込み口になる。`valueFree` と同じ線）
-     * - **呼び元も同梱で、banto 本体で動いているものだけ**——持ち主は呼び元の Module の刻印（下で host が刻む）で
+     * - **呼び元も同梱で、banto 本体で動く banto 全体の Module だけ**——持ち主は呼び元の Module の刻印（下で host が刻む）で
      *   決まる。外から入れた Module のコードは何を書くか分からず、コンテナの中の Module は AI が合言葉を読めて、
      *   その Module の名で書ける（`mayRaiseNotice` と同じ線）。どちらも今までどおり聞く
      */
@@ -800,7 +800,10 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       targetInfo?.callerOwned === true &&
       target.meta.origin === "bundled" &&
       identity.meta?.origin === "bundled" &&
-      !identity.inContainer;
+      !identity.inContainer &&
+      // banto 全体の Module だけ（`mayRaiseNotice` 等と同じ線）——Project の Module はいまコンテナの中でしか動かないが、
+      // コンテナ無しの起動形態ができても、その Project の AI の手の届く Module が承認なしで書けないように
+      identity.projectId === undefined;
 
     // **起こし直しのために止めている間は、新しい中継を断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いているもの」）。
     // ただし**実行中の呼び出しの中の中継は通す**——止める前に待つのはその呼び出しが終わるまでで、中継を断ると待っている

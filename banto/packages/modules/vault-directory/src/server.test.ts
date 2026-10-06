@@ -1402,3 +1402,66 @@ test("管理画面：参照の行の「移す」は、Vault を元の Vault に�
     "参照の行の移す先に、別の Vault が並ぶ",
   );
 });
+
+// **banto が置く秘密（oauth-token）は、Vault をまたいで移しても持ち主ごと移る**（2026-10-06、レビュー）。以前は移し先に
+// `createAlias` で写していたので持ち主が消え、置いた Module が回った鍵を書き戻せなくなる形だった。**人は oauth-token を
+// 手で作れない**（`createAlias` が断る）——移動は持ち主ごと受け取る別の口（人の管理操作の中だけ）を通る
+/** 断られた文言（投げても、isError で返っても）。通ったら落とす */
+async function refused(call: Promise<unknown>): Promise<string> {
+  let result: unknown;
+  try {
+    result = await call;
+  } catch (err) {
+    return (err as Error).message;
+  }
+  assert.equal((result as { isError?: boolean }).isError, true, `断られずに通った: ${textOf(result)}`);
+  return textOf(result);
+}
+
+test("oauth-token は Vault をまたいで移しても持ち主ごと移り、置いた Module からは置き換えられる。手では作れない", async () => {
+  await withUi(
+    async ({ ui, vaults }) => {
+      // Repositories が中継で置いた形（host が呼び元の Module を刻む）
+      const asRepositories = { "dev.banto/caller": { instance: true }, "dev.banto/callerModule": { name: "repositories", conn: "repositories" } };
+      await vaults.get("vault-local")!.callTool({ name: "putSecret", arguments: { name: "oauth-github-x", value: "tok-1" }, _meta: asRepositories });
+      await ui.callTool({
+        name: "migrateAlias",
+        arguments: { implementation: "vault-local", name: "oauth-github-x", group: "instance", toImplementation: "vault-keychain", toGroup: "instance" },
+      });
+      const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+      const moved = aliases.filter((a: { name: string }) => a.name === "oauth-github-x");
+      assert.deepEqual(
+        moved.map((a: Record<string, unknown>) => [a.implementation, a.kind, a.owner]),
+        [["vault-keychain", "oauth-token", "repositories"]],
+        "移し先で種別か持ち主が変わった（か、元が残った）",
+      );
+      assert.equal(await valueOf(vaults, "vault-keychain", "oauth-github-x", "instance"), "tok-1");
+      // 移し先でも、置いた Module からは置き換えられ、ほかからは断られる
+      const keychain = vaults.get("vault-keychain")!;
+      await keychain.callTool({ name: "putSecret", arguments: { name: "oauth-github-x", value: "tok-2" }, _meta: asRepositories });
+      assert.equal(await valueOf(vaults, "vault-keychain", "oauth-github-x", "instance"), "tok-2");
+      assert.match(
+        await refused(keychain.callTool({ name: "putSecret", arguments: { name: "oauth-github-x", value: "乗っ取り" }, _meta: { ...asRepositories, "dev.banto/callerModule": { name: "backlog", conn: "backlog" } } })),
+        /repositories が置いたものです。backlog からは置き換えられません/,
+        "持ち主でない Module が移した先の秘密を置き換えた",
+      );
+      assert.equal(await valueOf(vaults, "vault-keychain", "oauth-github-x", "instance"), "tok-2");
+
+      // 手では作れない（窓口から・金庫に直接、どちらも）
+      const handMade = /oauth-token は banto が置く秘密（ログイン情報）です。手では作れません/;
+      assert.match(await refused(ui.callTool({ name: "createAlias", arguments: { name: "fake-login", kind: "oauth-token", value: "x" } })), handMade, "窓口から oauth-token を手で作れた");
+      assert.match(
+        await refused(vaults.get("vault-local")!.callTool({ name: "createAlias", arguments: { name: "fake-login", kind: "oauth-token", value: "x" }, _meta: ADMIN })),
+        handMade,
+        "金庫に直接 oauth-token を手で作れた",
+      );
+      // 持ち主ごと受け取る口は、人の管理操作の中でだけ受ける（Module が自分で持ち主を名乗って置けない）
+      assert.match(
+        await refused(vaults.get("vault-local")!.callTool({ name: "importOwnedSecret", arguments: { name: "planted", value: "x", group: "instance", owner: "repositories" }, _meta: asRepositories })),
+        /人の管理画面からしか行えません/,
+        "人の管理操作の外で、持ち主を名乗って置けた",
+      );
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
+});

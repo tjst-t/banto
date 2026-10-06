@@ -33,6 +33,7 @@ import {
   CANVAS_META_KEY,
 } from "@banto/module-contract";
 import { REQUEST_APP_HTML, requestAppUri } from "./request-app.js";
+import { ALIAS_KIND_RULES } from "./kind-rules.js";
 import {
   isLink,
   toPublic,
@@ -53,6 +54,13 @@ const INSTANCE_GROUP = "instance";
 const ALIAS_KINDS = ["secret", "ssh-identity", "file", "oauth-token"] as const;
 /** **banto 自身が置くもの**（人は手で作らない）。`putSecret` はこれしか扱わない。 */
 const BANTO_OWNED_KIND = "oauth-token";
+/**
+ * **人が手で作れる種別**（2026-10-06、レビュー）。真実は `ALIAS_KIND_RULES` の `humanCreatable`（画面の選択肢と同じ）——
+ * `createAlias`・`requestAlias` はこれしか受けない。以前は `createAlias` が全部の種別を受け、画面が選ばせないだけだった
+ * ので、人（や画面から呼ぶ Module）が `oauth-token` を作れた——banto が置く秘密として `putSecret` の置き換えと
+ * 持ち主の引き取りの対象になる
+ */
+const HUMAN_KINDS = ALIAS_KINDS.filter((k) => ALIAS_KIND_RULES[k]?.humanCreatable === true);
 const ALIAS_SCOPES = ["instance", "project"] as const;
 
 /**
@@ -364,7 +372,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
               hint: { type: "string", description: "何に使うのか。人はこれを見て判断する" },
               kind: {
                 type: "string",
-                enum: [...ALIAS_KINDS],
+                enum: [...HUMAN_KINDS],
                 description: "secret＝汎用の文字列／ssh-identity＝SSH 鍵／file＝ファイルの中身",
               },
             },
@@ -412,7 +420,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             type: "object",
             properties: {
               name: { type: "string" },
-              kind: { type: "string", enum: [...ALIAS_KINDS] },
+              kind: { type: "string", enum: [...HUMAN_KINDS] },
               value: { type: "string" },
               note: { type: "string" },
               group: { type: "string", description: "置き場（グループ）を直に指定する。省略時は forProject／共通グループ" },
@@ -498,6 +506,30 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           },
           "module",
           { [CALLER_OWNED_META_KEY]: true },
+        ),
+        // **別の Vault から移す banto の秘密を、持ち主ごと受け取る**（追加・2026-10-06、レビュー）。窓口の「Vault を
+        // またいで移す」だけが使う——以前は移し先に `createAlias` で写していたので持ち主が消えた（同じ Vault の中の
+        // 移動は行ごと移るので保つ）。`createAlias` は人が手で作る口で、banto が置く秘密を受けない。
+        //
+        // **持ち主を指定できる口なので、絞る**：人の管理操作の中（host が刻んだ `admin`）でだけ受け、新しい置き場に
+        // しか置かない（あるものを書き換えない）。可視性は `module`——人の画面からでも、同梱どうし（窓口）でなければ
+        // 中継の承認に掛かる（`admin` にすると、外から入れた Module の画面から承認なしで呼べる）。印（`callerOwned`）も
+        // 名乗らない
+        tool(
+          "importOwnedSecret",
+          "別の Vault から移す、banto が置く秘密（oauth-token）を持ち主ごと受け取る（窓口の移動だけが使う。人の管理操作の中でだけ）",
+          {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              value: { type: "string" },
+              note: { type: "string" },
+              owner: { type: "string", description: "移し元の持ち主（無ければ持ち主無しのまま）" },
+              group: { type: "string", description: "置き場（グループ）" },
+            },
+            required: ["name", "value", "group"],
+          },
+          "module",
         ),
         tool(
           "updateAlias",
@@ -991,7 +1023,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "createAlias": {
         const name = requiredString(args.name, "name");
-        const kind = oneOf(args.kind, ALIAS_KINDS, "kind");
+        if (args.kind === BANTO_OWNED_KIND) {
+          throw new Error(`${BANTO_OWNED_KIND} は banto が置く秘密（ログイン情報）です。手では作れません`);
+        }
+        const kind = oneOf(args.kind, HUMAN_KINDS, "kind");
         const value = requiredString(args.value, "value");
         // **置き場を直接受ける**（改訂・2026-09-13）。`scope` は保存せず
         // 置き場から導くので、入口でも「どこに置くか」だけを聞く
@@ -1024,7 +1059,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         });
         const backendPath = `${group}/${name}`;
         // **人が預けたものは、この口からは触れない**（種別で区切る）
-        const existing = (await listAll([group])).find((a) => a.backendPath === backendPath);
+        // 置き場は揃えて比べる（版付きのグループ `g@<既定>` と素の `g` は同じ置き場、2026-10-06）
+        const existing = (await listAll([group])).find((a) => canonPath(a.backendPath) === canonPath(backendPath));
         // **参照を通して元を上書きしない**（2026-10-04）——書き換えるなら元を
         if (existing && isLink(existing)) {
           // 元の置き場は人の管理面にだけ言う（見えないグループの中身を教えない）
@@ -1060,9 +1096,28 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           });
         } else if (existing.owner === undefined && caller) {
           // **持ち主の記録が無いもの**（記録を始める前に置かれたもの）は、置き換えた Module が持ち主になる
-          await registry.update(backendPath, { owner: caller });
+          await registry.update(existing.backendPath, { owner: caller });
         }
         return { content: [{ type: "text", text: `stored ${name}` }] };
+      }
+      case "importOwnedSecret": {
+        assertHuman("banto が置く秘密を別の Vault から受け取る", callMeta);
+        const name = requiredString(args.name, "name");
+        const value = requiredString(args.value, "value");
+        const owner = optionalString(args.owner, "owner");
+        const group = await groupForNewAlias({ explicitGroup: requiredString(args.group, "group") });
+        const backendPath = `${group}/${name}`;
+        // **新しい置き場にだけ**——あるものを書き換えない（持ち主の検査を飛ばす道にしない）
+        await assertPlaceIsFree(backendPath);
+        await backend.putSecret(backendPath, value);
+        await registry.create({
+          name,
+          kind: BANTO_OWNED_KIND,
+          note: optionalString(args.note, "note"),
+          backendPath,
+          ...(owner ? { owner } : {}),
+        });
+        return { content: [{ type: "text", text: `imported ${name}` }] };
       }
       case "generateSecret": {
         const name = requiredString(args.name, "name");

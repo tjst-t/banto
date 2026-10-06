@@ -520,8 +520,11 @@ export class MemoryVault implements VaultAccess {
     this.agents.push(place);
     return { socketPath: this.agentSocket };
   }
+  /** 消すのを断らせる（外すときの失敗の試験） */
+  failRemove: string | undefined;
   async remove(place: AliasPlace, callId?: string) {
     this.calls.push({ op: "remove", ...(callId ? { callId } : {}) });
+    if (this.failRemove) throw new Error(this.failRemove);
     const at = this.aliases.findIndex((a) => this.key(a) === this.key(place));
     if (at < 0) throw new Error(`alias "${place.name}" はありません`);
     this.aliases.splice(at, 1);

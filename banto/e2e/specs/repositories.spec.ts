@@ -494,7 +494,7 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_DEVICE_LOGIN} をブラウザでログインして登録しました`, { timeout: 30_000 });
   const appRow = account(E2E_GITHUB_DEVICE_LOGIN);
   await expect(appRow.getByTestId("gh-account-credential-kind")).toHaveText("ブラウザでログイン（GitHub App）");
-  await expect(appRow.getByTestId("gh-account-credential")).toContainText(`$oauth-github-${E2E_GITHUB_DEVICE_LOGIN}（vault-local`);
+  await expect(appRow.getByTestId("gh-account-credential")).toContainText(`$repositories-github-${E2E_GITHUB_DEVICE_LOGIN}（vault-local`);
   await expect(inner.getByTestId("gh-login")).toHaveCount(0);
   await expect(inner.getByTestId("gh-account")).toHaveCount(2);
 
@@ -578,7 +578,7 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await page.getByRole("button", { name: "Vault（ローカル）", exact: true }).click();
   const vaultInner = page.locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe').contentFrame().frameLocator("iframe");
   await expect(vaultInner.getByText(`github-${E2E_GITHUB_PAT_LOGIN}-pat`).first()).toBeVisible({ timeout: 60_000 });
-  await expect(vaultInner.getByText(`oauth-github-${E2E_GITHUB_DEVICE_LOGIN}`)).toHaveCount(0);
+  await expect(vaultInner.getByText(`repositories-github-${E2E_GITHUB_DEVICE_LOGIN}`)).toHaveCount(0);
   await expect(vaultInner.getByText(E2E_GITHUB_PAT)).toHaveCount(0);
 
   expect(pageErrors).toEqual([]);
@@ -1277,7 +1277,7 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
         targetModule: "vault-local",
         allowed: true,
         ok: true,
-        identifiers: { name: `oauth-github-${login}` },
+        identifiers: { name: `repositories-github-${login}` },
       });
       expect(JSON.stringify(e.payload), "記録にトークンが出ている").not.toMatch(/gh[ur]_fake_/);
     }

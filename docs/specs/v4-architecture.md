@@ -1184,8 +1184,8 @@ Module 間の中継で宛先を呼ぶとき、host は `_meta["dev.banto/callerM
 
 #### 呼び元の Module が持ち主のものだけを書き換える口（決定・2026-10-06）
 
-**`_meta["dev.banto/callerOwned"]: true` を名乗った tool への中継は、宛先が同梱で、呼び元も同梱で banto 本体で動いて
-いるとき（コンテナの中ではない）に限り、初回の承認を聞かない。** 名乗る意味は「**この口は、呼び元の Module が
+**`_meta["dev.banto/callerOwned"]: true` を名乗った tool への中継は、宛先が同梱で、呼び元も同梱で banto 本体で動く
+banto 全体の Module（コンテナの中ではなく、Project ごとの Module でもない）のときに限り、初回の承認を聞かない。** 名乗る意味は「**この口は、呼び元の Module が
 持ち主のものだけを書き換え、新しく作るものは呼び元を持ち主として残し、値を返さない**」。記録（`relay.call_recorded`）
 には `reason: "呼び元の Module が持ち主のものだけを書き換える口"` として残る（黙って通らない、規則2）。
 
@@ -1193,9 +1193,16 @@ Module 間の中継で宛先を呼ぶとき、host は `_meta["dev.banto/callerM
   比べる。だから**名乗りを信じるのは同梱の宛先だけ**（確かめない第三者の口が名乗るだけで緩むと、承認ゼロの書き込み口に
   なる——`valueFree` を同梱だけ信じるのと同じ線）
 - **呼び元が外から入れた Module なら、今までどおり聞く**（何を書くか分からないコード）。**呼び元がコンテナの中の
-  Module でも聞く**——中では AI が root で中継の合言葉を読め、その Module の名で書ける（`mayRaiseNotice` と同じ線）
+  Module・Project ごとの Module でも聞く**——中では AI が root で中継の合言葉を読め、その Module の名で書ける
+  （`mayRaiseNotice` と同じ線。Project ごとの Module はいまコンテナの中でしか動かないが、コンテナ無しの起動形態が
+  できても、その Project の AI の手の届く Module が承認なしで書けないように、Project を持つかでも断る）
 - **緩むのは tool 単位**。同じ Vault の `resolveAlias`（値を返す）は今までどおり聞く
 - 名乗っているのは、いまは Vault の `putSecret`（banto が置く秘密 `oauth-token` だけを扱う口、`v4-modules.md` §2.1 B節）だけ
+- **承認なしで通る範囲は「持ち主のもの」と「新しく置くもの」で、新しく置く先は絞らない**——`putSecret` は引数の
+  `group`・`forProject` で置き場を選べ、承認なしの呼び出しでも任意のグループ（人の Project のグループを含む）に
+  新しい `oauth-token` を作れる。これを許すのは、呼び元が banto 本体の同梱のコード（何を書くかは banto が決めていて、
+  AI が名乗れない）に限られるから。作れるのは banto が置く秘密だけで、人が預けた秘密・参照・他の Module のものは
+  書き換えられない
 
 **なぜ要ったか**：Repositories の GitHub のログイン（8時間で切れる）は、使う直前に refresh token で取り直し、回った
 組を Vault に書き戻す。GitHub は取り直した時点で前の refresh token を無効にする。この書き戻しが AI のターンの中

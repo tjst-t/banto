@@ -57,16 +57,21 @@ const via = (module?: string) => ({
   ...(module ? { "dev.banto/callerModule": { name: module, conn: `${module}-conn` } } : {}),
 });
 
-async function withKit(fn: (c: Client, secrets: Map<string, string>, dir: string) => Promise<void>): Promise<void> {
+async function withKit(
+  fn: (c: Client, secrets: Map<string, string>, dir: string, store: LocalFileAliasStore) => Promise<void>,
+  opts: { canonicalGroup?: (g: string) => string } = {},
+): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "vault-kit-owner-"));
   try {
     const { backend, secrets } = memoryBackend();
-    const server = createVaultModuleServer({ moduleName: "vault-test", backend, aliasStore: new LocalFileAliasStore(dir), dataDir: dir });
+    if (opts.canonicalGroup) backend.canonicalGroup = opts.canonicalGroup;
+    const store = new LocalFileAliasStore(dir);
+    const server = createVaultModuleServer({ moduleName: "vault-test", backend, aliasStore: store, dataDir: dir });
     const [s, c] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0.0.0" });
     await Promise.all([server.connect(s), client.connect(c)]);
     try {
-      await fn(client, secrets, dir);
+      await fn(client, secrets, dir, store);
     } finally {
       await client.close();
     }
@@ -132,4 +137,65 @@ test("持ち主があっても、人が預けた秘密には今までどおり�
     await assert.rejects(() => put(c, "x", "repositories"), /人が預けた秘密です（secret）/);
     assert.equal(secrets.get("instance/oauth-x"), "human");
   });
+});
+
+test("人は oauth-token を手で作れない（createAlias が断る。人の管理画面からでも）", async () => {
+  await withKit(async (c, secrets) => {
+    await assert.rejects(
+      () => c.callTool({ name: "createAlias", arguments: { name: "oauth-x", kind: "oauth-token", value: "v" }, _meta: { "dev.banto/caller": { admin: true } } }),
+      /oauth-token は banto が置く秘密（ログイン情報）です。手では作れません/,
+    );
+    assert.deepEqual([...secrets.keys()], []);
+    const { tools } = await c.listTools();
+    for (const name of ["createAlias", "requestAlias"]) {
+      const kinds = (tools.find((t) => t.name === name)!.inputSchema.properties as Record<string, { enum?: string[] }>).kind!.enum;
+      assert.deepEqual(kinds, ["secret", "ssh-identity", "file"], `${name} が手で作れない種別を名乗っている`);
+    }
+  });
+});
+
+test("別の Vault から移す口（importOwnedSecret）：人の管理操作の中でだけ、新しい置き場に、持ち主ごと置く", async () => {
+  await withKit(async (c, secrets, dir) => {
+    const human = { "dev.banto/caller": { admin: true }, "dev.banto/callerModule": { name: "vault-directory", conn: "vault-directory" } };
+    await c.callTool({ name: "importOwnedSecret", arguments: { name: "oauth-x", value: "v1", group: "instance", owner: "repositories" }, _meta: human });
+    assert.equal(await ownerOf(dir, "oauth-x"), "repositories");
+    assert.equal(secrets.get("instance/oauth-x"), "v1");
+    // 持ち主の検査を飛ばす道にしない——あるものは書き換えない
+    await assert.rejects(
+      () => c.callTool({ name: "importOwnedSecret", arguments: { name: "oauth-x", value: "乗っ取り", group: "instance", owner: "backlog" }, _meta: human }),
+      /既に別の秘密があります/,
+    );
+    // 人の管理操作の外（AI のターン・banto 全体のための中継）では受けない
+    await assert.rejects(
+      () => c.callTool({ name: "importOwnedSecret", arguments: { name: "oauth-y", value: "v", group: "instance", owner: "repositories" }, _meta: via("backlog") }),
+      /人の管理画面からしか行えません/,
+    );
+    assert.equal(secrets.get("instance/oauth-x"), "v1");
+    assert.equal(secrets.has("instance/oauth-y"), false);
+    // 持ち主の無いものは、持ち主無しのまま移る
+    await c.callTool({ name: "importOwnedSecret", arguments: { name: "oauth-z", value: "v", group: "instance" }, _meta: human });
+    assert.equal(await ownerOf(dir, "oauth-z"), undefined);
+    const { tools } = await c.listTools();
+    const t = tools.find((x) => x.name === "importOwnedSecret")!;
+    assert.equal(t._meta?.["dev.banto/visibility"], "module", "admin にすると外から入れた Module の画面から承認なしで呼べる");
+    assert.equal(t._meta?.["dev.banto/callerOwned"], undefined);
+  });
+});
+
+test("持ち主は置き場を揃えて比べる——版付きのグループ（g@<既定>）と素の g は同じ置き場", async () => {
+  await withKit(
+    async (c, secrets, _dir, store) => {
+      // 台帳の行が版付きの書き方で残っている形（既定の版を後から変えた等）
+      await store.create({ name: "oauth-x", kind: "oauth-token", backendPath: "g@def/oauth-x", owner: "repositories" });
+      secrets.set("g@def/oauth-x", "v1");
+      await assert.rejects(
+        () => c.callTool({ name: "putSecret", arguments: { name: "oauth-x", value: "乗っ取り", group: "g" }, _meta: via("backlog") }),
+        /repositories が置いたものです/,
+        "揃えずに比べて、持ち主の検査を素通りした",
+      );
+      await c.callTool({ name: "putSecret", arguments: { name: "oauth-x", value: "v2", group: "g" }, _meta: via("repositories") });
+      assert.deepEqual((await store.list()).filter((r) => r.name === "oauth-x").map((r) => r.backendPath), ["g@def/oauth-x"], "同じ置き場に2つ目の行を作った");
+    },
+    { canonicalGroup: (g) => (g === "g@def" ? "g" : g) },
+  );
 });

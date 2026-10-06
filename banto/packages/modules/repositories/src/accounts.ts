@@ -5,7 +5,7 @@
 //
 // API の資格情報は2通り：
 // - **PAT**：人が画面で貼る→Vault に預ける（`github-<login>-pat`、種別 secret）。または Vault に既にある alias を選ぶ
-// - **ブラウザでログイン**：GitHub App のデバイスフロー。得たトークンの組を Vault に置く（`oauth-github-<login>`、
+// - **ブラウザでログイン**：GitHub App のデバイスフロー。得たトークンの組を Vault に置く（`repositories-github-<login>`、
 //   種別 `oauth-token`——MCP の OAuth のログイン情報と同じ置き方：1つの alias に JSON でまとめ、banto が置き換える）。
 //   **8時間で切れるので、使う直前に期限を見て refresh token で取り直す**（refresh token も回るので置き換える）。
 //   同じアカウントの更新は**1本ずつ**——GitHub の refresh token は1回使うと無効になるので、2本が同時に同じ鍵で
@@ -21,7 +21,7 @@
 // 中継の承認に掛かる（聞く会話も無い）。
 
 import { randomUUID } from "node:crypto";
-import type { AppInstallations, GithubApi, TokenSet } from "./github.js";
+import { GithubError, type AppInstallations, type GithubApi, type TokenSet } from "./github.js";
 import type { AccountCredential, GithubAccount, LedgerStore } from "./ledger.js";
 import type { NoticeSink } from "./relay-client.js";
 import type { AliasEntry, AliasPlace, VaultAccess } from "./vault.js";
@@ -85,7 +85,13 @@ interface LoginFlow {
 
 const sameLogin = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 export const patAliasFor = (login: string) => `github-${login.toLowerCase()}-pat`;
-export const appAliasFor = (login: string) => `oauth-github-${login.toLowerCase()}`;
+/**
+ * ブラウザでログインの組を置く alias の名前（改名・2026-10-06、レビュー）。以前は `oauth-github-<login>` で、banto 本体が
+ * リモート MCP の OAuth に使う `oauth-<Module 名>` と同じ形だった——`github-foo` という名のリモート MCP と、login `foo` の
+ * アカウントが同じ名前になる。**名前を使うのは新しくログインするときだけ**：アカウントは置いた在りか（名前も）を記録して
+ * いて、更新・もう一度ログインはそこへ置き換えるので、前の名前のアカウントはそのまま使い続けられる（移さない）
+ */
+export const appAliasFor = (login: string) => `repositories-github-${login.toLowerCase()}`;
 
 function view(a: GithubAccount): AccountView {
   return {
@@ -96,7 +102,7 @@ function view(a: GithubAccount): AccountView {
   };
 }
 
-function storedTokens(raw: string, login: string): TokenSet {
+function storedTokens(raw: string, login: string, aliasName: string): TokenSet {
   let body: Record<string, unknown>;
   try {
     body = JSON.parse(raw) as Record<string, unknown>;
@@ -105,7 +111,7 @@ function storedTokens(raw: string, login: string): TokenSet {
   }
   // **読めないものを「無い」にしない**（規則2）——直す手がかりが消える
   if (body.format !== STORED_FORMAT || typeof body.accessToken !== "string") {
-    throw new Error(`@${login} のログイン情報が読めません（Vault の ${appAliasFor(login)} が壊れています）。もう一度ログインしてください`);
+    throw new Error(`@${login} のログイン情報が読めません（Vault の ${aliasName} が壊れています）。もう一度ログインしてください`);
   }
   const num = (v: unknown) => (typeof v === "number" ? v : undefined);
   const expiresAt = num(body.expiresAt);
@@ -397,11 +403,13 @@ export class GithubAccounts {
         const { aliases, failures } = await this.deps.vault.listAliases(callId);
         const unreadable = failures.find((f) => f.implementation === alias.implementation);
         if (unreadable) throw new Error(`Vault（${unreadable.implementation}）が読めないので外せません：${unreadable.error}`);
-        // 置き直せていなかった組も捨てる（外したアカウントの鍵を、あとで Vault に置き直さない）
+        if (aliases.some((a) => samePlace(a, alias))) {
+          await this.deps.vault.remove(alias, callId);
+          loginRemoved = true;
+        }
+        // 置き直せていなかった組も捨てる（外したアカウントの鍵を、あとで Vault に置き直さない）。**消せてから**——消すのに
+        // 失敗したら登録は残るので、手元の最新の組も残す（捨てると、Vault の無効な鍵しか残らない）
         this.unsaved.delete(account.login.toLowerCase());
-        if (!aliases.some((a) => samePlace(a, alias))) return;
-        await this.deps.vault.remove(alias, callId);
-        loginRemoved = true;
       });
     }
     await this.deps.store.updateAccounts((accounts) => ({
@@ -440,12 +448,16 @@ export class GithubAccounts {
       // **置き直せていない組があれば、それが最新**——Vault にあるのは GitHub がもう無効にした鍵
       const held = this.unsaved.get(account.login.toLowerCase());
       if (held) await this.saveRotated(account.login, credential, held, callId);
-      const stored = held ?? storedTokens(await this.deps.vault.resolve(credential.alias, callId), account.login);
+      const stored = held ?? storedTokens(await this.deps.vault.resolve(credential.alias, callId), account.login, credential.alias.name);
       if (stored.expiresAt === undefined || stored.expiresAt - this.now() > REFRESH_MARGIN_MS) return stored.accessToken;
       let next: TokenSet;
       try {
         next = await this.refresh(credential, stored);
       } catch (err) {
+        // **GitHub が鍵を断った・鍵が使えない形なら、手元の組も捨てる**（置き直し続けない）。繋がらない・返事が読めない等の
+        // 一時の失敗では残す——Vault の鍵はもう無効で、手元の組が唯一の生きた鍵かもしれない
+        const transient = err instanceof GithubError && err.code !== "incorrect_client_credentials" && err.code !== "bad_refresh_token";
+        if (!transient) this.unsaved.delete(account.login.toLowerCase());
         let message = (err as Error).message;
         try {
           await this.refreshFailed(account.login, message);

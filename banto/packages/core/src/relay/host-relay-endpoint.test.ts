@@ -1592,6 +1592,13 @@ async function callerOwnedWorld(opts: { targetExternal?: boolean } = {}) {
       inContainer: true,
       meta: bundledMeta(rawCaller, "backlog"),
     }),
+    // Project の Module で、コンテナの外で動くもの（いまの起動形態には無いが、できても承認なしで書かせない）
+    projectOnHost: registry.issueToken({
+      moduleName: "shell",
+      connName: "shell-p1",
+      projectId: "p1",
+      meta: bundledMeta(rawCaller, "shell"),
+    }),
   };
   const asked: string[] = [];
   const { url, audits, close } = await startTestServer(registry, {
@@ -1665,14 +1672,14 @@ test("同梱→同梱の「呼び元の Module が持ち主のもの」の口は
   }
 });
 
-test("呼び元が外から入れた Module・コンテナの中の Module なら、持ち主のものだけを書き換える口でも聞く", async () => {
+test("呼び元が外から入れた Module・コンテナの中の Module・Project の Module（コンテナの外でも）なら、持ち主のものだけを書き換える口でも聞く", async () => {
   const w = await callerOwnedWorld();
   try {
-    for (const token of [w.tokens.external, w.tokens.inContainer]) {
+    for (const token of [w.tokens.external, w.tokens.inContainer, w.tokens.projectOnHost]) {
       const client = await w.connect(token);
       await assert.rejects(() => client.callTool(putSecretCall()), /許可されていません/);
     }
-    assert.deepEqual(w.asked, ["third-party:putSecret", "backlog:putSecret"], "名乗りを信じてよくない呼び元で、聞かずに通した");
+    assert.deepEqual(w.asked, ["third-party:putSecret", "backlog:putSecret", "shell:putSecret"], "名乗りを信じてよくない呼び元で、聞かずに通した");
     assert.deepEqual(w.seen, [], "聞いて断られた呼び出しが宛先に届いた");
   } finally {
     await w.close();
@@ -1721,5 +1728,69 @@ test("宛先に刻む呼び元の Module は宣言の名前と接続名の両方
     await client.close();
     close();
     await vault.close();
+  }
+});
+
+// **入れ子の中継（A → B → C）では、C に刻まれる呼び元は B**（すぐ手前の呼び元、2026-10-06、レビュー）。いちばん外側（A）を
+// 刻むと、B が A の名で C を書ける（混乱した代理人）——Repositories → 窓口 → 金庫で置くと、金庫の持ち主は窓口になる
+test("入れ子の中継では、宛先に刻む呼び元はすぐ手前の Module（いちばん外側ではない）", async () => {
+  const seen: Array<{ name: string; meta: Record<string, unknown> }> = [];
+  const vaultServer = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
+  vaultServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "putSecret", inputSchema: { type: "object" } }] }));
+  vaultServer.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push({ name: req.params.name, meta: (req.params._meta ?? {}) as Record<string, unknown> });
+    return { content: [{ type: "text", text: "stored" }] };
+  });
+  const [vs, vc] = InMemoryTransport.createLinkedPair();
+  const vault = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([vaultServer.connect(vs), vault.connect(vc)]);
+
+  const registry = new RelayRegistry();
+  registry.registerModule({ name: "vault", client: vault, meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault") });
+  const directoryMeta = bundledMeta({ satisfies: ["vault-directory"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" }, "vault-directory");
+  const directoryToken = registry.issueToken({ moduleName: "vault-directory", meta: directoryMeta });
+  const { url, close } = await startTestServer(registry);
+
+  // 窓口（B）：頼まれると、自分の合言葉で金庫（C）へ中継する
+  let inner: Client | undefined;
+  const directoryServer = new McpServer({ name: "fake-directory", version: "0.0.0" }, { capabilities: { tools: {} } });
+  directoryServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "putSecret", inputSchema: { type: "object" } }] }));
+  directoryServer.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push({ name: `directory:${req.params.name}`, meta: (req.params._meta ?? {}) as Record<string, unknown> });
+    inner ??= await relayClient(url, directoryToken);
+    return (await inner.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "vault", name: "putSecret", arguments: {} },
+      // 窓口が外側の呼び元を名乗っても渡らない
+      _meta: { "dev.banto/callerModule": { name: "repositories", conn: "repositories" } },
+    })) as { content: Array<{ type: "text"; text: string }> };
+  });
+  const [ds, dc] = InMemoryTransport.createLinkedPair();
+  const directory = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([directoryServer.connect(ds), directory.connect(dc)]);
+  registry.registerModule({ name: "vault-directory", client: directory, meta: directoryMeta });
+
+  // Repositories（A）：窓口に頼む
+  const repositoriesToken = registry.issueToken({
+    moduleName: "repositories",
+    meta: bundledMeta({ satisfies: ["repositories"], dependsOn: [{ role: "vault-directory", required: true }], isolation: "subprocess" }, "repositories"),
+  });
+  const outer = await relayClient(url, repositoriesToken);
+  try {
+    await outer.callTool({ name: "relayCallTool", arguments: { targetModule: "vault-directory", name: "putSecret", arguments: {} } });
+    assert.deepEqual(
+      seen.map((x) => [x.name, x.meta["dev.banto/callerModule"]]),
+      [
+        ["directory:putSecret", { name: "repositories", conn: "repositories" }],
+        ["putSecret", { name: "vault-directory", conn: "vault-directory" }],
+      ],
+      "入れ子の奥に、すぐ手前ではない呼び元が刻まれた",
+    );
+  } finally {
+    await outer.close();
+    await inner?.close();
+    close();
+    await vault.close();
+    await directory.close();
   }
 });

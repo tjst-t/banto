@@ -337,13 +337,20 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     const blocked = crossVaultBlockers([meta], all.aliases);
     if (blocked.length > 0) throw new Error(`"${name}" は別の Vault へ移せません：${blocked[0]!.reason}`);
     const value = await deps.relay.callTool(fromImpl, "resolveAlias", { name, group: fromGroup });
-    await deps.relay.callTool(toImpl, "createAlias", {
-      name,
-      kind: String(meta.kind ?? "secret"),
-      value,
-      note: meta.note ? String(meta.note) : undefined,
-      group: toGroup,
-    });
+    const note = meta.note ? String(meta.note) : undefined;
+    if (meta.kind === "oauth-token") {
+      // **banto が置く秘密は持ち主ごと移す**（2026-10-06、レビュー）。`createAlias` は人が手で作る口で、これを受けない
+      // ——写すと持ち主が消え、置いた Module が回った鍵を書き戻せなくなる（同じ Vault の中の移動は行ごと移るので保つ）
+      await deps.relay.callTool(toImpl, "importOwnedSecret", {
+        name,
+        value,
+        note,
+        group: toGroup,
+        ...(typeof meta.owner === "string" && meta.owner !== "" ? { owner: meta.owner } : {}),
+      });
+    } else {
+      await deps.relay.callTool(toImpl, "createAlias", { name, kind: String(meta.kind ?? "secret"), value, note, group: toGroup });
+    }
     // **確かめてから消す**——写せていないのに消したら秘密が消える
     const copied = await deps.relay.callTool(toImpl, "resolveAlias", { name, group: toGroup });
     if (copied !== value) throw new Error(`"${name}" を写せませんでした（${fromImpl} → ${toImpl}）。元は残っています`);

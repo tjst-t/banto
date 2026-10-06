@@ -576,7 +576,9 @@ list の操作に見える。**ボタンだけでなく、いまの置き場を�
 - **これで「黙って上書き」も塞がる**。以前は重複の検査が「banto が知っている
   alias」だけを見ていたので、人が置いた同名の秘密を**黙って上書きしていた**
   （実測・2026-09-13）。既存の秘密が見えれば、その名前は「既にある」になる
-- **banto が置いた秘密（種別 `oauth-token`）の注記も種別ごと読む**（訂正・2026-10-06）。以前は注記の種別を
+- **banto が置いた秘密（種別 `oauth-token`）の注記も種別ごと読む**（訂正・2026-10-06）。**限界**：注記に
+  `{"kind":"oauth-token"}` と banto の外で書かれた秘密も、banto が置いた持ち主の無いものとして読み、引き取りの対象に
+  なる（見分ける手が無い）。注記を書ける人は値も書き換えられるので、新しく開く道ではない。以前は注記の種別を
   `secret`・`ssh-identity`・`file` だけ読み、`oauth-token` の注記を「banto の注記ではない」として捨てていた
   ——一覧では種別 `secret`・注記の JSON が用途に出て、`putSecret` の置き換えが「人が預けた秘密です」で断られていた
   （回った OAuth の鍵を Infisical に書き戻せない）。持ち主（`owner`、下の B節 `putSecret`）も注記に入る
@@ -639,7 +641,8 @@ alias の一覧の在りか（`vault://aliases`）／値ではなく**名前**�
 | `startSshAgent({identity})` | → `{socketPath}` のみ。**秘密鍵は返さない** | ssh-agent 経由の git 認証（D5）。**旧名 `hostSshAgent` から改名**（2026-09-02）——「host」はアーキ仕様で core の配線・解決層を指す予約語（§2.5）であり、ここで別の意味（ssh-agentプロセスを起動する）に使うのは規則11（一般的な用語を使う）に反する紛らわしさがあった |
 | `verify({alias, payload, signature})` | → true/false のみ。値は一切返さない | Webhook 署名検証など、値そのものが要らない検証 |
 | `getPublicKey({name})` | → その `ssh-identity` の**公開鍵**（秘密鍵は返らない）。**保存せず、秘密鍵から `ssh-keygen -y` で導く**（規則3） | 相手方（GitHub 等）への登録。**公開鍵は秘密ではない**ので、窓口では `agent` 可視性で AI にも見せる |
-| `putSecret({name, value, note?, group?, forProject?})` | → 置いた名前だけ（値は返さない）。**banto が置く秘密（種別 `oauth-token`）だけ**を作る・置き換える——人が預けた秘密・参照は断る。**持ち主**（追加・2026-10-06）：新しく置くとき、host が刻んだ呼び元の Module（`dev.banto/callerModule` の `name`——宣言の名前）を持ち主として台帳に残し、**置き換えは持ち主と同じ Module からだけ**（違う Module・呼び元の Module が無い呼び出しは断る）。**持ち主の記録が無いもの**（記録を始める前に置かれたもの）は今までどおり置き換えられ、置き換えた Module が持ち主になる（呼び元の Module が無い呼び出しでは決まらない）。だから「**呼び元の Module が持ち主のものだけを書き換える口**」（`dev.banto/callerOwned`）を名乗る——同梱の Module（banto 本体で動くもの）からの中継は承認を聞かない（アーキ仕様 §2.5） | OAuth のログイン情報を預け、回った refresh token で置き換える（リモート MCP の OAuth——窓口を通すので持ち主は窓口——と、Repositories の GitHub のログイン——金庫へ直接置くので持ち主は `repositories`）。持ち主は台帳の一部で、組み込みは `aliases.json`、Infisical は秘密の注記に入る |
+| `importOwnedSecret({name, value, group, note?, owner?})` | → 置いた名前だけ。**Vault をまたぐ移動で、banto が置く秘密（`oauth-token`）を持ち主ごと受け取る**（追加・2026-10-06、レビュー）。**持ち主を指定できる口なので絞る**：人の管理操作の中（host が刻んだ `admin`）でだけ受け、新しい置き場にだけ置く（あるものは書き換えない）。可視性 `module`——同梱どうし（窓口）でなければ人の画面からでも中継の承認に掛かる。`callerOwned` は名乗らない | 窓口の「Vault をまたいで移す」だけが使う（同じ Vault の中の移動は行ごと移るので、もとから持ち主を保つ）。`createAlias` は人が手で作る口で `oauth-token` を受けない |
+| `putSecret({name, value, note?, group?, forProject?})` | → 置いた名前だけ（値は返さない）。**banto が置く秘密（種別 `oauth-token`）だけ**を作る・置き換える——人が預けた秘密・参照は断る。**持ち主**（追加・2026-10-06）：新しく置くとき、host が刻んだ呼び元の Module（`dev.banto/callerModule` の `name`——宣言の名前）を持ち主として台帳に残し、**置き換えは持ち主と同じ Module からだけ**（違う Module・呼び元の Module が無い呼び出しは断る）。**持ち主の記録が無いもの**（記録を始める前に置かれたもの）は今までどおり置き換えられ、置き換えた Module が持ち主になる（呼び元の Module が無い呼び出しでは決まらない）。だから「**呼び元の Module が持ち主のものだけを書き換える口**」（`dev.banto/callerOwned`）を名乗る——同梱の banto 全体の Module（banto 本体で動くもの）からの中継は承認を聞かない（アーキ仕様 §2.5）。**新しく置く先は `group`・`forProject` で選べ、承認なしの呼び出しでも絞らない**（任意のグループに `oauth-token` を作れる。呼び元は banto 本体の同梱のコードに限られる）。置き場は揃えて比べる（版付きのグループ `g@<既定>` と素の `g` は同じ置き場） | OAuth のログイン情報を預け、回った refresh token で置き換える（リモート MCP の OAuth——窓口を通すので持ち主は窓口——と、Repositories の GitHub のログイン——金庫へ直接置くので持ち主は `repositories`）。持ち主は台帳の一部で、組み込みは `aliases.json`、Infisical は秘密の注記に入る |
 
 > **`generateKeypair` は B から C の `generateSecret` に統合した**（訂正・2026-09-12、
 > ユーザー指摘）。当初は「Repo が新しい identity をセットアップするとき」のために
@@ -698,6 +701,10 @@ alias の一覧の在りか（`vault://aliases`）／値ではなく**名前**�
 alias の新規登録・値の入力・編集・削除／鍵ペアの import／`note` の記入／
 scope（instance⇔project）の割り当て／バックエンド間の移行／alias 使用履歴の
 閲覧。
+
+**新規登録（`createAlias`・`requestAlias`）が受ける種別は、人が手で作れるものだけ**（`ALIAS_KIND_RULES` の
+`humanCreatable`——`secret`・`ssh-identity`・`file`。2026-10-06、レビュー）。`oauth-token` は banto が置く秘密なので
+断る（窓口から・金庫に直接、どちらも）。以前は画面が選ばせないだけで、口は受けていた。
 
 **使用履歴の出所は2つあり、混同しない**——(1) 「いつ最後に使われたか」
 （`lastUsedAt`）は Vault 自身が A節の alias メタデータとして持つ（値を
@@ -1555,7 +1562,9 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
   - **PAT**：貼った値は `GET /user` で確かめてから窓口の `createAlias` で預ける（`github-<login>-pat`、種別 secret、
     既にあれば断る——人の秘密を上書きしない）。Vault に前からある alias（種別 secret）を選んでもよい（写さない）
   - **ブラウザでログイン**：トークンの組（access・refresh・それぞれの期限）を1つの alias に JSON でまとめる
-    （`oauth-github-<login>`、種別 `oauth-token`、`putSecret`）。**更新はそのトークンを出した App の client ID でしか
+    （`repositories-github-<login>`、種別 `oauth-token`、`putSecret`。2026-10-06 に `oauth-github-<login>` から改名
+    ——banto 本体のリモート MCP の OAuth の `oauth-<Module 名>` と、`github-foo` という名の Module で衝突しうるため。
+    名前を使うのは新しくログインするときだけで、前の名前のアカウントは記録した在りかへ置き換え続ける——移さない）。**更新はそのトークンを出した App の client ID でしか
     できない**ので、client ID はアカウントにも覚える（設定の client ID を後で変えても、前のアカウントは前の App で更新する）。
     **置くのは金庫へ直接**（改訂・2026-10-06）——新しく置くときも窓口の `putSecret` を通さず、窓口に既定の Vault
     （`getDefaultVault`）を聞いてその金庫の `putSecret` を呼び、置き場は窓口の `lookupAlias` で引く。金庫は置いた Module を
@@ -1579,7 +1588,10 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
     メモリに持ち**、トークンは返す（頼まれた仕事は進める）。受信箱に1件出す（「新しいログインを Vault に保存できていません」
     ——同じアカウントの知らせは開いている間は1件）。次に使うときは**メモリの組を使い、まず Vault に置き直す**（期限が
     来ていればメモリの組の refresh token で取り直す）。もう一度ログインすれば新しいログインが正（メモリの組は捨てる）、
-    外せば捨てる。**メモリだけなので、置き直す前に起こし直すと失われる**（秘密の第二の置き場をディスクに作らない）——
+    外せば捨てる（Vault から消せてから——消せなければ登録と一緒に残す）。**更新を GitHub が断ったら捨てる**
+    （`incorrect_client_credentials`・`bad_refresh_token`、手元の組に鍵が無い・期限切れ——無効な組を置き直し続けない）。
+    繋がらない・返事が読めない等の一時の失敗では残す（Vault の鍵はもう無効で、手元の組が唯一の生きた鍵かもしれない）。
+    **メモリだけなので、置き直す前に起こし直すと失われる**（秘密の第二の置き場をディスクに作らない）——
     そのときは次の更新が下の「鍵が無効」で断られ、もう一度ログインする
   - **更新で GitHub が `incorrect_client_credentials` を返したら「更新の鍵（refresh token）が無効になっています（前の
     更新を保存できなかった・取り消された等）。もう一度ブラウザでログインしてください」**（2026-10-06）。本物の GitHub は
