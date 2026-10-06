@@ -4817,7 +4817,7 @@
       "number": 199,
       "kind": "task",
       "title": "この host で手順書 D を済ませ、画面から更新を確かめる",
-      "status": "in-progress",
+      "status": "done",
       "parent": "self-update",
       "dependsOn": [
         "self-update-ui"
@@ -4827,7 +4827,7 @@
       "labels": [],
       "body": "2026-10-05：この host で手順書 D を済ませた（置き場は versions/・current の形、Module は versions/<commit>/banto から動く＝コンテナのマウントの付け直しも確認）。画面の「すぐ更新」で 024e52ee→568e71c1 に上がった（ユーザー）。\n\n残り：(1) 「AI が止まるまで待って更新」を本物の host で1回（次に release が進んだとき）(2) 携帯から押す。組み立ての失敗・前の版へ戻すは使い捨てのコンテナ（本物の systemd・polkit）で確かめ済みとし、本物の host ではわざと壊れた版を出して試さない（ユーザーに提案）。更新のあと画面が古いままだった件は別の枝が e5d5c1d0 で直した。",
       "doneWhen": "ストーリーの完了条件",
-      "resolution": null,
+      "resolution": "2026-10-05〜06：この host で手順書 D を済ませ、画面の「すぐ更新」と、携帯からの「実行中の呼び出しを待って更新」でどちらも上がった（ユーザー確認）。組み立ての失敗・前の版へ戻すは使い捨てのコンテナ（本物の systemd・polkit）で確かめ済みとした。追加の要望（新しいコミットの面に「もう一度確かめる」）は b5dc21b1",
       "refs": [],
       "threads": [
         {
@@ -4836,8 +4836,8 @@
         }
       ],
       "createdAt": "2026-10-04T10:05:36.893Z",
-      "updatedAt": "2026-10-05T11:44:26.096Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-06T11:48:40.245Z",
+      "closedAt": "2026-10-06T11:48:40.245Z",
       "extra": {}
     },
     {
