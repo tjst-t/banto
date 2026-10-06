@@ -15,13 +15,25 @@ export const CONFIG_APP_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <style>
-  :root { color-scheme: light dark; }
+  /* **色は host が渡す標準の名前（--color-*）で受け、明暗も host に合わせる**（訂正・2026-10-06）。
+     以前は渡されない --mcp-ui-color-* を読み、そもそも ui/initialize を送らず host の色を受けていなかった
+     ——いつも既定の色で、明暗も OS 任せだった。古い名前は既定の手前に残す */
+  :root {
+    color-scheme: light dark;
+    --ink: var(--color-text-primary, var(--mcp-ui-color-text, CanvasText));
+    --line: var(--color-border-primary, var(--mcp-ui-color-border, rgba(128,128,128,.35)));
+    --danger: var(--color-text-danger, var(--mcp-ui-color-danger, #c0392b));
+    --ok-line: var(--color-border-success, rgba(120,180,120,.5));
+    --todo-line: var(--color-border-warning, rgba(200,160,80,.6));
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body {
     margin: 0; padding: 14px;
     font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit);
+    color: var(--ink);
     background: transparent;
   }
   h1 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
@@ -33,20 +45,20 @@ export const CONFIG_APP_HTML = `<!doctype html>
   input, select {
     font: inherit; font-size: 12px; padding: 6px 8px; width: 100%;
     border-radius: 6px; background: transparent; color: inherit;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
   }
   button {
     font: inherit; font-size: 12px; padding: 6px 14px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit;
+    border: 1px solid var(--line); background: transparent; color: inherit;
   }
   button:hover { opacity: .75; }
   button[disabled] { opacity: .45; cursor: default; }
   .state { border-radius: 6px; padding: 8px 10px; font-size: 12px; margin-bottom: 12px; }
-  .ok { border: 1px solid rgba(120,180,120,.5); }
-  .todo { border: 1px solid rgba(200,160,80,.6); }
+  .ok { border: 1px solid var(--ok-line); }
+  .todo { border: 1px solid var(--todo-line); }
   .problem {
-    border: 1px solid var(--mcp-ui-color-danger, #c0392b); border-radius: 6px;
-    padding: 8px 10px; font-size: 12px; color: var(--mcp-ui-color-danger, #c0392b);
+    border: 1px solid var(--danger); border-radius: 6px;
+    padding: 8px 10px; font-size: 12px; color: var(--danger);
   }
 </style>
 </head>
@@ -116,7 +128,24 @@ export const CONFIG_APP_HTML = `<!doctype html>
       else resolve(msg.result);
       return;
     }
+    // **明暗が変わると host が色を渡し直す**——受けないと、開いたままの画面が古い色に残る
+    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
   });
+
+  /**
+   * **host の明暗と色を当てる**（訂正・2026-10-06）。色の名前は標準のもの（--color-text-primary など、
+   * 頭に -- が付いている）をそのまま置く。頭に -- の無い名前を渡す host には "--mcp-ui-" を付けて置く
+   * （CSS の古い名前が既定の手前で受ける）——vault-directory の画面と同じ
+   */
+  function applyAppearance(ctx) {
+    if (!ctx) return;
+    if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.dataset.theme = ctx.theme;
+    const vars = (ctx.styles && ctx.styles.variables) || {};
+    for (const [k, v] of Object.entries(vars)) {
+      if (typeof v !== "string") continue;
+      document.documentElement.style.setProperty(k.startsWith("--") ? k : "--mcp-ui-" + k, v);
+    }
+  }
 
   async function callTool(name, args) {
     const res = await request("tools/call", { name, arguments: args || {} });
@@ -194,7 +223,7 @@ export const CONFIG_APP_HTML = `<!doctype html>
     }
   });
 
-  (async () => {
+  async function load() {
     try {
       show(await callTool("getConnectionSettings", {}));
     } catch (err) {
@@ -202,7 +231,25 @@ export const CONFIG_APP_HTML = `<!doctype html>
       $("state").textContent = "いまの設定を読めませんでした：" + (err && err.message ? err.message : String(err));
     }
     reportHeight();
-  })();
+  }
+
+  // **初期化して host の色と明暗を受ける**（追加・2026-10-06）。以前は ui/initialize を送っておらず、
+  // host の色を一度も受けていなかった（いつも既定の色、明暗も OS 任せ）
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "banto-vault-infisical-config", version: "0.1.0" },
+    // **appCapabilities**——host が検査する名前はこちら（capabilities では弾かれる・2026-09-14）
+    appCapabilities: { availableDisplayModes: ["inline"] },
+  })
+    .then((result) => {
+      applyAppearance(result && result.hostContext);
+      send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+    })
+    .catch(() => {
+      // **初期化に失敗しても、画面ごと消さない**（規則13——出せるものは出す）。
+      // ここで得るのは見た目の変数だけなので、無くても設定はできる——vault-directory の設定画面と同じ
+    })
+    .then(load);
 })();
 </script>
 </body>

@@ -26,13 +26,24 @@ const APP_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <style>
-  :root { color-scheme: light dark; }
+  /* **色は host が渡す標準の名前（--color-*）で受け、明暗も host に合わせる**（訂正・2026-10-06）。
+     以前は渡されない --mcp-ui-color-* を読み、受けた名前の前に --mcp-ui- を足して置いていた
+     ——いつも既定の色で、明暗も OS 任せだった。古い名前は既定の手前に残す */
+  :root {
+    color-scheme: light dark;
+    --ink: var(--color-text-primary, var(--mcp-ui-color-text, CanvasText));
+    --line: var(--color-border-primary, var(--mcp-ui-color-border, rgba(128,128,128,.35)));
+    --line-soft: var(--color-border-primary, var(--mcp-ui-color-border, rgba(128,128,128,.25)));
+    --danger: var(--color-text-danger, var(--mcp-ui-color-danger, #c0392b));
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body {
     margin: 0; padding: 12px;
     font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit);
+    color: var(--ink);
     background: transparent;
   }
   h1 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
@@ -45,19 +56,19 @@ const APP_HTML = `<!doctype html>
   input[type=text] {
     font: inherit; font-size: 12px; padding: 5px 8px; width: 100%;
     border-radius: 6px; background: transparent; color: inherit;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
   }
   button {
     font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit;
+    border: 1px solid var(--line); background: transparent; color: inherit;
   }
   button:hover { opacity: .75; }
   button[disabled] { opacity: .45; cursor: default; }
   .problem, .warn {
     border-radius: 6px; padding: 8px 10px; font-size: 12px; margin: 8px 0;
   }
-  .problem { border: 1px solid var(--mcp-ui-color-danger, #c0392b); color: var(--mcp-ui-color-danger, #c0392b); }
-  .warn { border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.45)); }
+  .problem { border: 1px solid var(--danger); color: var(--danger); }
+  .warn { border: 1px solid var(--line); }
   .warn strong { font-weight: 600; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 8px; font-size: 12px; }
   dt { opacity: .6; }
@@ -65,10 +76,10 @@ const APP_HTML = `<!doctype html>
   pre {
     margin: 0; padding: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
     font-size: 11px; line-height: 1.5; border-radius: 6px;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
   }
   ul { margin: 0; padding-left: 18px; font-size: 12px; }
-  .skill { border-top: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.25)); padding: 8px 0; }
+  .skill { border-top: 1px solid var(--line-soft); padding: 8px 0; }
   .skill:first-child { border-top: 0; }
   .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
   .tabs button[aria-pressed=true] { font-weight: 600; }
@@ -362,16 +373,31 @@ const APP_HTML = `<!doctype html>
     if (msg.method === "ui/notifications/tool-result" && MODE === "tool") {
       void showToolResult(msg.params);
     }
+    // **明暗が変わると host が色を渡し直す**——受けないと、開いたままの画面が古い色に残る
+    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
   });
+
+  /**
+   * **host の明暗と色を当てる**（訂正・2026-10-06）。色の名前は標準のもの（--color-text-primary など、
+   * 頭に -- が付いている）をそのまま置く。頭に -- の無い名前を渡す host には "--mcp-ui-" を付けて置く
+   * （CSS の古い名前が既定の手前で受ける）——vault-directory の画面と同じ
+   */
+  function applyAppearance(ctx) {
+    if (!ctx) return;
+    if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.dataset.theme = ctx.theme;
+    const vars = (ctx.styles && ctx.styles.variables) || {};
+    for (const [k, v] of Object.entries(vars)) {
+      if (typeof v !== "string") continue;
+      document.documentElement.style.setProperty(k.startsWith("--") ? k : "--mcp-ui-" + k, v);
+    }
+  }
 
   request("ui/initialize", {
     protocolVersion: "2026-01-26",
     appInfo: { name: "banto-skills", version: "0.1.0" },
     appCapabilities: { availableDisplayModes: ["inline"] },
   }).then((result) => {
-    const ctx = (result && result.hostContext) || {};
-    const vars = (ctx.styles && ctx.styles.variables) || {};
-    for (const k of Object.keys(vars)) document.documentElement.style.setProperty("--mcp-ui-" + k, String(vars[k]));
+    applyAppearance(result && result.hostContext);
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
     if (MODE === "manage") { show("manage-top", true); void loadInstalled(); }
     else show("tool-top", true);

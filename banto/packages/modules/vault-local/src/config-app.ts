@@ -15,11 +15,19 @@ export const CONFIG_APP_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <style>
-  :root { color-scheme: light dark; }
+  /* **色は host が渡す標準の名前（--color-*）で受け、明暗も host に合わせる**（訂正・2026-10-06）。
+     以前は渡されない --mcp-ui-color-* を読み、受けた名前の前に --mcp-ui- を足して置いていた
+     ——いつも既定の色で、明暗も OS 任せだった。古い名前は既定の手前に残す */
+  :root {
+    color-scheme: light dark;
+    --ink: var(--color-text-primary, var(--mcp-ui-color-text, CanvasText));
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
   body {
     margin: 0; padding: 12px;
     font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit);
+    color: var(--ink);
     background: transparent;
   }
   ul { list-style: none; margin: 0; padding: 0; }
@@ -49,8 +57,26 @@ export const CONFIG_APP_HTML = `<!doctype html>
       waiting.delete(msg.id);
       if (msg.error) reject(new Error(msg.error.message || "呼び出しに失敗しました"));
       else resolve(msg.result);
+      return;
     }
+    // **明暗が変わると host が色を渡し直す**——受けないと、開いたままの画面が古い色に残る
+    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
   });
+
+  /**
+   * **host の明暗と色を当てる**（訂正・2026-10-06）。色の名前は標準のもの（--color-text-primary など、
+   * 頭に -- が付いている）をそのまま置く。頭に -- の無い名前を渡す host には "--mcp-ui-" を付けて置く
+   * （CSS の古い名前が既定の手前で受ける）——vault-directory の画面と同じ
+   */
+  function applyAppearance(ctx) {
+    if (!ctx) return;
+    if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.dataset.theme = ctx.theme;
+    const vars = (ctx.styles && ctx.styles.variables) || {};
+    for (const [k, v] of Object.entries(vars)) {
+      if (typeof v !== "string") continue;
+      document.documentElement.style.setProperty(k.startsWith("--") ? k : "--mcp-ui-" + k, v);
+    }
+  }
 
   const list = document.getElementById("aliases");
   const note = document.getElementById("note");
@@ -63,10 +89,7 @@ export const CONFIG_APP_HTML = `<!doctype html>
     appInfo: { name: "banto-vault-config", version: "0.1.0" },
     appCapabilities: { availableDisplayModes: ["inline"] },
   }).then(async (result) => {
-    const vars = ((result && result.hostContext && result.hostContext.styles) || {}).variables || {};
-    for (const [k, v] of Object.entries(vars)) {
-      document.documentElement.style.setProperty("--mcp-ui-" + k, String(v));
-    }
+    applyAppearance(result && result.hostContext);
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
 
     const res = await request("tools/call", { name: "listAliases", arguments: {} });
