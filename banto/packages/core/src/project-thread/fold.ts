@@ -4,6 +4,7 @@ import type { Fold } from "../event-store/snapshot.js";
 import type {
   MessageEntry,
   MessageImage,
+  TurnSummaryRecord,
   MessageOrigin,
   MessageSender,
   ProjectThreadReadModel,
@@ -88,6 +89,8 @@ export type ProjectThreadEvent =
         images?: MessageImage[];
         /** そのターンで出た中継の承認の id（追加・2026-10-05）。中身は受信箱 */
         judgmentIds?: string[];
+        /** ターンの終わりのまとめ（追加・2026-10-06）。同じターンの後ろのもので置き換える */
+        turnSummary?: TurnSummaryRecord;
       };
     }
   // **Thread に届いたもの**（追加・2026-09-25、アーキ仕様 §4.2）。会話に積むのはターンを始めるとき
@@ -542,6 +545,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
               text: [last.text, event.payload.text].filter((s) => s !== "").join("\n\n"),
               uiToolCalls: calls.length > 0 ? calls : undefined,
               ...(judgmentIds.length > 0 ? { judgmentIds } : {}),
+              ...((event.payload.turnSummary ?? last.turnSummary) ? { turnSummary: event.payload.turnSummary ?? last.turnSummary } : {}),
             };
             return next;
           }
@@ -552,6 +556,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             ...(event.payload.origin ? { origin: event.payload.origin } : {}),
             ...(event.payload.images && event.payload.images.length > 0 ? { images: event.payload.images } : {}),
             ...(event.payload.judgmentIds && event.payload.judgmentIds.length > 0 ? { judgmentIds: event.payload.judgmentIds } : {}),
+            ...(event.payload.turnSummary ? { turnSummary: event.payload.turnSummary } : {}),
             uiToolCalls,
           });
           // 積んだものは、届いたものの待ち行列から外す

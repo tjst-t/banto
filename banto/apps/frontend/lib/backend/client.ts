@@ -12,6 +12,8 @@
 // ページが `?bantoHost=<自分>` へ飛ばして画面の接続先をすり替えられる（Fable のレビュー高2）。
 
 const STORAGE_KEY = "banto.backend";
+import type { RealTurnSummary } from "@/lib/turn-summary";
+
 export const CLIENT_HEADER = "x-banto-client";
 /** 画面からの要求に必ず付けるもの */
 export const CLIENT_HEADERS: Record<string, string> = { [CLIENT_HEADER]: "1" };
@@ -138,6 +140,8 @@ export interface RealThreadMessage {
    * 組み直しても（止めた・開き直した）カードが残る
    */
   judgments?: RealJudgmentCard[];
+  /** ターンの終わりのまとめ（追加・2026-10-06、v4-frontend.md §6.35）。そのターンの最後の `report_turn` */
+  turnSummary?: RealTurnSummary;
 }
 
 /** 会話に残す中継の承認のカード1枚（宛名と答えだけ。値は載らない、アーキ仕様 §2.5） */
@@ -733,6 +737,22 @@ export async function fetchRealAutoApproveAll(projectId: string): Promise<boolea
 export async function setRealAutoApproveAll(projectId: string, enabled: boolean): Promise<boolean> {
   return (
     await request<{ enabled: boolean }>(`/api/projects/${projectId}/auto-approve`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    })
+  ).enabled;
+}
+
+/**
+ * **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。v4-frontend.md §6.35）。Project にだけ置ける、既定はオフ
+ */
+export async function fetchRealTurnSummary(projectId: string): Promise<boolean> {
+  return (await request<{ enabled: boolean }>(`/api/projects/${projectId}/turn-summary`)).enabled;
+}
+
+export async function setRealTurnSummary(projectId: string, enabled: boolean): Promise<boolean> {
+  return (
+    await request<{ enabled: boolean }>(`/api/projects/${projectId}/turn-summary`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     })

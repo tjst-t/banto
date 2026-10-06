@@ -337,6 +337,37 @@ Fork は「いまの続き」からだけでなく、**会話のどの発言か�
 - 画面：開いている画面は、host が作った Fork を「その Thread のターンが始まった」知らせで知り、一覧に足す
   （再読み込みしなくても親の会話に入口が出る）
 
+#### ターンの終わりのまとめ（決定・2026-10-06、ユーザー）
+
+Fork を何本も並べて進めると、各 Thread の最後を見ても「何を頼んで、何が出てきたのか」が分からない。**AI が人に返す
+ターンの最後に、core の tool `report_turn` を1回呼び**、頼んだこと・結果・人が決めること（返答の候補つき）を決まった形で
+渡す。画面はそれを会話のそのターンの一番下に出す（v4-frontend.md §6.35）。経緯は `docs/notes/2026-10-06-turn-summary.md`。
+
+- **Project ごとのスイッチ、既定はオフ**（ユーザー）。Configuration の鍵 `thread.turnSummary`（真偽値）。**Project の層だけ**
+  読み、オフは上書きを外す（値を持たない＝オフ）。HTTP は `GET/PUT /api/projects/:id/turn-summary {enabled}`。ターンを
+  始めるときに1回引く——走っているターンには効かず、次のターンから効く
+- **オンのときだけ渡すもの**（オフなら3つとも渡さない）：
+  1. `banto-thread` の tool `report_turn`（`http/turn-summary.ts`）。引数：`request`（頼まれたことを具体的に。「それでお願い」なら
+     前の話から補う）・`outcome`（`status` は done／partial／failed、`headline` 1文、`points` 3つまで、`notVerified`、`artifacts`）・
+     `decisions`（4つまで。`question`・`context`・`options` 2〜4個、各 `label`・`reply`・`recommended` は1つまで）・
+     `nextSuggestions`（4個まで）。**形に合わなければ断り、どこが違うかを文で返す**（AI が直して呼び直す）。受け付けたら
+     host が時刻を付けて記録に残す（`message.appended` の `turnSummary`。fold が同じターンの AI の発言にまとめ、後から来た
+     ものに置き換える＝**2回呼ばれたら最後の1回**）
+  2. システムプロンプトの節「人に返すとき」——人に返すターンの最後に必ず1回呼ぶ（短い受け答えでも）・呼んだら後ろに続けない・
+     報告の本文はいつもどおり書く。**動的な後半に置く**（前半は全 Project で前方一致させる、§3）
+  3. **Stop hook**（SDK の `hooks.Stop`）。そのターンで受け付けたまとめが無ければ、一度だけ差し戻す（理由はモデルに「Stop hook
+     feedback」として見え、同じターンの中で続く）。SDK の `stop_hook_active` が立っていれば差し戻さない——毎回差し戻すと
+     ターンが終わらない（偽の API で実測、`probes/turn-summary-stop-hook.mjs`）。人が止めたターンも差し戻さない
+- **`report_turn` は承認を聞かない**：SDK の `allowedTools` に入れる。承認モードが default でも `canUseTool` を呼ばない
+  （偽の API で実測）——記録するだけで外に何もしない tool に、毎ターン承認を求めないため
+- **元の人の発言は AI に引用させない**——画面が会話の記録（そのターンの前の人の発言）から取る。言い換えが混ざらない
+- **既存の Thread にも次のターンから効く**：システムプロンプトは毎ターン組み立て直して渡している（`snapshot: false`、§2.3）。
+  オンにしたあとの最初のターンはプロンプトと tool の一覧が変わるので、キャッシュが一度外れる
+- **出さないもの**：途中で切れたターン（人が止めた・起こし直し）。サブエージェント・Factory の中の AI（`runThreadTurn` を
+  通らない——tool も指示も渡らない）。届いたもので起きたターンでは出す（最後は人に返すため）
+- tool の一覧が Project ごとに変わるのは、オンオフが Project 単位で Base と Fork に同じく効くため。Fork が親のキャッシュを
+  引き継げなくなることは無い（`fork-tool.ts` の「Base と Fork で同じ tool を見せる」は保つ）
+
 #### 名前と並び順は、人の意図として記録に残す（決定・2026-09-11、ユーザー要望）
 
 Runner に渡すものではないが、**人が付けた名前と、人が決めた並び順**は Project /

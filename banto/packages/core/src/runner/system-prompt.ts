@@ -16,6 +16,7 @@
 // 判断待ち・確定後に増えた Memory）は**ここには入れない**——それは
 // turn-runner.ts がターンに添える。
 
+import { TURN_SUMMARY_PROMPT_SECTION } from "../http/turn-summary.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "@anthropic-ai/claude-agent-sdk";
 import type { EstablishedMemory } from "../project-thread/types.js";
 
@@ -91,6 +92,11 @@ export interface SystemPromptInput {
    * 分からなければ無い（書かない）。
    */
   model?: { name: string; id: string };
+  /**
+   * 層3：**ターンの終わりのまとめ**（追加・2026-10-06、§2.2）。その Project でスイッチがオンなら、`report_turn` の使い方の節を
+   * 足す。動的な後半に置く——オンオフは Project ごとなので、全 Project で前方一致する前半は変えない
+   */
+  turnSummary?: boolean;
 }
 
 /**
@@ -123,6 +129,8 @@ export function buildSystemPrompt(input: SystemPromptInput): string[] {
     const lines = memory.map((m) => (m.invalidated ? `- ~~${m.text}~~（取り消し済み）` : `- ${m.text}`));
     blocks.push(`# この Project で決まったこと（Memory）\n\n${lines.join("\n")}`);
   }
+
+  if (input.turnSummary) blocks.push(TURN_SUMMARY_PROMPT_SECTION);
 
   const instruction = input.projectInstruction?.trim();
   if (instruction) {

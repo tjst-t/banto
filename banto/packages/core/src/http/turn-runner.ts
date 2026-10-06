@@ -14,6 +14,7 @@ import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
 import { createForkMcpServer, type ForkRequest } from "./fork-tool.js";
+import { REPORT_TURN_TOOL_NAME, turnSummaryStopDecision, type TurnSummaryState } from "./turn-summary.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
@@ -228,6 +229,11 @@ async function* runThreadTurnInner(
      * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
      */
     autoApproveAll?(projectId: string): boolean;
+    /**
+     * **その Project で「ターンの終わりのまとめ」がオンか**（追加・2026-10-06、§2.2）。ターンを始めるときに1回引く——オンなら
+     * `report_turn`・システムプロンプトの節・Stop hook を渡す。渡されなければオフ
+     */
+    turnSummaryEnabled?(projectId: string): boolean;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false },
@@ -381,7 +387,17 @@ async function* runThreadTurnInner(
   mcpServers["banto-memory"] = createMemoryMcpServer(deps.projectThread, thread.projectId, input.threadId);
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
-  mcpServers["banto-thread"] = createForkMcpServer(deps.projectThread, input.threadId, forks.reserved, deps.messaging);
+  // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
+  const turnSummary: TurnSummaryState | undefined = deps.turnSummaryEnabled?.(thread.projectId) === true ? {} : undefined;
+  mcpServers["banto-thread"] = createForkMcpServer(
+    deps.projectThread,
+    input.threadId,
+    forks.reserved,
+    deps.messaging,
+    turnSummary
+      ? { state: turnSummary, record: (entry) => deps.projectThread.recordTurnSummary(input.threadId, entry) }
+      : undefined,
+  );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
   // （§2.3、決定・2026-09-05）。Project MemoryもGlobal Memoryも同じ規律・
@@ -478,7 +494,17 @@ async function* runThreadTurnInner(
         project: { name: project.name, root: project.root },
         memory: memory.established,
         ...(input.modelIdentity ? { model: input.modelIdentity } : {}),
+        ...(turnSummary ? { turnSummary: true } : {}),
       }),
+      // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）
+      ...(turnSummary ? { allowedTools: [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] } : {}),
+      // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
+      ...(turnSummary
+        ? {
+            onStop: ({ stopHookActive }: { stopHookActive: boolean }) =>
+              abortTurn.signal.aborted ? undefined : turnSummaryStopDecision(turnSummary, stopHookActive),
+          }
+        : {}),
     });
 
     type Step = Awaited<ReturnType<typeof gen.next>>;

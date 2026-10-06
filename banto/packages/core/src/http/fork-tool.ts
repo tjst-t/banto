@@ -14,6 +14,26 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import {
+  REPORT_TURN_ACCEPTED_TEXT,
+  REPORT_TURN_DESCRIPTION,
+  REPORT_TURN_TOOL_NAME,
+  reportTurnShape,
+  validateTurnSummary,
+  type TurnSummaryEntry,
+  type TurnSummaryState,
+} from "./turn-summary.js";
+
+/**
+ * **ターンの終わりのまとめ**（決定・2026-10-06、`turn-summary.ts`）。スイッチがオンの Project のターンだけ渡す——渡さなければ
+ * tool を見せない（オンオフは Project ごとなので、Base と Fork で一覧は食い違わない）
+ */
+export interface TurnSummaryTool {
+  state: TurnSummaryState;
+  /** 受け付けたまとめを会話の記録に残す */
+  record(entry: TurnSummaryEntry): Promise<void>;
+  now?(): Date;
+}
 
 /** 1回に立てられる数（仮置き・2026-09-27）。3つ並行が想定の典型で、それを少し超える余裕 */
 export const MAX_FORKS_PER_CALL = 5;
@@ -98,6 +118,7 @@ export function createForkMcpServer(
    * tool は見せたまま断る——構成で tool の一覧を変えない（§3）
    */
   messaging?: ThreadMessaging,
+  turnSummary?: TurnSummaryTool,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   return createSdkMcpServer({
@@ -105,6 +126,19 @@ export function createForkMcpServer(
     // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）
     alwaysLoad: true,
     tools: [
+      ...(turnSummary
+        ? [
+            tool(REPORT_TURN_TOOL_NAME, REPORT_TURN_DESCRIPTION, reportTurnShape, async (args) => {
+              const problem = validateTurnSummary(args);
+              if (problem) return { content: [{ type: "text" as const, text: problem }], isError: true };
+              const entry: TurnSummaryEntry = { summary: args, at: (turnSummary.now?.() ?? new Date()).toISOString() };
+              // **2回呼ばれたら最後の1回**（画面も記録も後ろのものを出す）
+              turnSummary.state.accepted = entry;
+              await turnSummary.record(entry);
+              return { content: [{ type: "text" as const, text: REPORT_TURN_ACCEPTED_TEXT }] };
+            }),
+          ]
+        : []),
       tool(
         LIST_THREADS_TOOL_NAME,
         [

@@ -9,6 +9,7 @@
 // 別経路で送る」——この2つを橋渡しするため、Thread単位の生きたSSE接続を
 // モジュールレベルに保持し、run()の再呼び出しではそれを読み進めるだけにする。
 
+import { TURN_SUMMARY_TOOL_NAME } from "@/lib/turn-summary";
 import { useSyncExternalStore } from "react";
 import { randomId } from "@/lib/random-id";
 import type {
@@ -640,6 +641,18 @@ export function realMessagesToInitial(
       });
     }
     if (m.text) content.push({ type: "text", text: m.text });
+    // **ターンの終わりのまとめ**（追加・2026-10-06、v4-frontend.md §6.35）——走っていたときと同じ tool 呼び出しの部品で、
+    // 発言の一番後ろに置く（画面はどこにあっても発言の一番下に描く）。結果には host が受け付けた時刻を載せる
+    if (m.turnSummary) {
+      content.push({
+        type: "tool-call",
+        toolCallId: `turn-summary-${m.seq}`,
+        toolName: TURN_SUMMARY_TOOL_NAME,
+        args: m.turnSummary.summary as unknown as ReadonlyJSONObject,
+        argsText: JSON.stringify(m.turnSummary.summary),
+        result: { at: m.turnSummary.at },
+      });
+    }
     // **届いたものは人の発言として描かない**（決定・2026-09-25）——印を渡し、会話の描き手が札にする
     return {
       id: `real-${m.seq}`,

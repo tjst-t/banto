@@ -58,6 +58,7 @@ import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
+import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
@@ -1021,6 +1022,8 @@ export function createApp(deps: AppDeps) {
   // **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。承認のたびに引く——保存した時点で、
   // 走っているターンにも次の承認から効く
   const autoApproveAll = (projectId: string) => isAutoApproveAll(deps.runtimeConfig, projectId);
+  // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。ターンを始めるときに引く
+  const turnSummaryEnabled = (projectId: string) => isTurnSummaryEnabled(deps.runtimeConfig, projectId);
   // **Thread 間・Project 間のメッセージ**（決定・2026-10-01、アーキ仕様 §4.2）。AI の `send_message` から呼ばれる
   const messaging = new ThreadMessaging({
     projectThread: deps.projectThread,
@@ -1188,7 +1191,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, messaging, autoApproveAll }, {
+    yield* runThreadTurn({ ...deps, settleForks, messaging, autoApproveAll, turnSummaryEnabled }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -2769,6 +2772,23 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, AUTO_APPROVE_ALL_KEY);
         }
         json(res, 200, { enabled: autoApproveAll(projectId) });
+        return;
+      }
+
+      // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。Project にだけ置ける、既定はオフ。
+      // オフは上書きを外す（値を持たない＝オフ）。次のターンから効く
+      const turnSummaryMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/turn-summary$/);
+      if (turnSummaryMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = turnSummaryMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { enabled?: unknown };
+          if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+          if (body.enabled) await deps.runtimeConfig.setProjectOverride(projectId, TURN_SUMMARY_KEY, true);
+          else await deps.runtimeConfig.unsetProjectOverride(projectId, TURN_SUMMARY_KEY);
+        }
+        json(res, 200, { enabled: turnSummaryEnabled(projectId) });
         return;
       }
 

@@ -48,3 +48,36 @@ Fork を何本も並べて進めると、各 Thread の最後を見ても「何�
 2. 呼び忘れの守り：system prompt で頼むだけ／Agent SDK の Stop hook で「tool を使ったのに reportTurn が無い」ときに一度だけ差し戻す（提案）。
 3. まとめの前の長い報告文をそのまま残すか、畳むか（提案は残す）。
 4. まとめをほかの場所でも使うか：サイドバーの Thread の行・受信箱のレビュー待ち・Fork の一覧に「頼んだこと」と結論の1文を出す（提案、まず会話の中だけ作ってから）。
+
+## 実装（2026-10-06）
+
+仕様は v4-architecture.md §2.2「ターンの終わりのまとめ」・v4-frontend.md §6.35。
+
+### 実測（偽の API、`banto/probes/turn-summary-stop-hook.mjs`、SDK 0.3.281 同梱の CLI）
+
+- Stop hook で `{ decision: "block", reason }` を返すと、CLI は合成の user「Stop hook feedback:\n<reason>」をモデルに見せ、
+  同じターンの中で続ける。その中で `report_turn` を呼べた。2回目の Stop では `stop_hook_active: true`
+- 毎回 block を返すと終わらない（打ち切りの120秒まで回り続けた）→ `stop_hook_active` なら差し戻さない
+- 承認モード default だと `report_turn` も `canUseTool` に来る。`allowedTools` に入れると来ない → 入れる
+- 合成の「Stop hook feedback」の user は、host の記録（ReplyRecorder は user の tool_result しか見ない）にも画面
+  （applyMessage も tool_result だけ）にも出ない
+
+### 実装で決めたこと（実装者の判断）
+
+- Configuration の鍵は `thread.turnSummary`（Project の層だけ）。設定の節の見出しは「会話」、スイッチは「ターンの終わりにまとめを出す」
+- 記録は `message.appended` の `turnSummary {summary, at}`（`recordTurnSummary`）。中継の承認カード（judgmentIds）と同じく、
+  fold が同じターンの発言にまとめる
+- 画面の「あなたの発言」は会話の記録から取る（host は付けない）。時刻は host が受け付けた時刻、走っている間は最初に描いた時刻
+- 上限：points 3・decisions 4・options 2〜4（おすすめ1つまで）・nextSuggestions 4
+
+### 確かめたこと
+
+- core の単体（turn-summary.test.ts 6件・app.test.ts の口1件）、core 全体 581 件で通過 578・失敗 1（落ちた1件は #216 の間欠で、
+  flaky-tests の Fork が直している）、画面の単体 33 件
+- E2E `turn-summary.spec.ts`：オフでは出ない・設定でオン・一番下に出る（後ろに文が続いても）・default でも承認を聞かない・
+  候補が入力欄に入る（2行・外す）・読み込み直し・呼び忘れの差し戻し・返事のあとは押せない
+- 関係する E2E 10本（auto-approve-all・inbox・inline-view-followed-turn・judgment-after-reload・judgment-deny・
+  module-canvas-inline・relay-cards・thread-messages・turn-stop と本件）：1回目に module-canvas-inline が1件落ち（#222）、
+  単独2回・同じ組み合わせの2回目は全部通った
+- 確かめていない：本物のモデルが指示どおりに `report_turn` を書くか（質）。コンテナの Shell には Claude のログインが無く、
+  サブエージェントからのプローブは権限確認で止められた。稼働中の banto に反映したあと、オンにした Project で見る

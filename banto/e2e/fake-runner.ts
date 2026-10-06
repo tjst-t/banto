@@ -87,6 +87,12 @@ export interface FakePlan {
    * 画面で選んだものが Runner まで届いたかを、発言の中身で見る（`thread-model.spec.ts`）。
    */
   sayRuntime?: boolean;
+  /**
+   * **ターンの終わりのまとめを呼び忘れたふりをする**（追加・2026-10-06、アーキ仕様 §2.2）。終わろうとしたとき banto の
+   * Stop hook（`onStop`）が差し戻したら、これを引数に `banto-thread` の `report_turn` を本物の口で呼んでから終える
+   * ——本物の CLI が差し戻しの理由をモデルに見せ、同じターンの中で続けさせるのと同じ（偽の API で実測）
+   */
+  stopReport?: Record<string, unknown>;
 }
 
 /**
@@ -405,6 +411,10 @@ export async function* runTurn(opts: {
   systemPrompt?: string[];
   /** `auto` は承認を求めず、`default` が求める（`inbox.spec.ts` の前提）。 */
   permissionMode?: string;
+  /** 承認を聞かずに通す tool（本物の SDK の `allowedTools`）。default でもここに載る tool は聞かない */
+  allowedTools?: string[];
+  /** 終わろうとしたときの差し戻し（本物の SDK の Stop hook）。文が返れば差し戻し */
+  onStop?(input: { stopHookActive: boolean }): string | undefined;
   /** 人がこの Thread で選んだモデルと effort（選んでいなければ来ない）。 */
   model?: string;
   effort?: string;
@@ -520,7 +530,7 @@ export async function* runTurn(opts: {
     // 呼ばない（`inbox.spec.ts` が「auto のままだと承認を求めずに実行される」と
     // 書いているのがその実物）。ここを固定にすると、**どのモードでゲートが効くか**
     // という検証そのものが消える
-    const asksHuman = opts.permissionMode === "default";
+    const asksHuman = opts.permissionMode === "default" && !(opts.allowedTools ?? []).includes(qualified);
     let decision: { behavior: string; message?: string } = { behavior: "allow" };
     if (asksHuman) {
       // **承認待ちは「流す」**——banto が判断待ちを立てるのは、コールバックでは
@@ -610,6 +620,36 @@ export async function* runTurn(opts: {
   if (plan.then) {
     lastText = plan.then;
     yield* speak(plan.then, plan.thenStreamMs);
+  }
+
+  // **終わろうとしたときの Stop hook**（追加・2026-10-06）。本物の CLI は差し戻されたら理由をモデルに見せて続け、もう一度
+  // 終わろうとしたときは stop_hook_active を立てて聞き直す
+  if (opts.onStop && !opts.signal?.aborted) {
+    const reason = opts.onStop({ stopHookActive: false });
+    if (reason) {
+      console.warn(`[fake-runner] Stop hook で差し戻された: ${reason.slice(0, 120)}`);
+      if (plan.stopReport) {
+        const toolUseId = `toolu_fake_${sessionId}_stop_${Math.abs(hash(JSON.stringify(plan.stopReport)))}`;
+        const qualified = "mcp__banto-thread__report_turn";
+        yield {
+          type: "message",
+          message: assistantMessage(sessionId, [{ type: "tool_use", id: toolUseId, name: qualified, input: plan.stopReport }]),
+        };
+        try {
+          const { text, isError } = await callRealTool(
+            servers["banto-thread"] as McpServerConfig,
+            "report_turn",
+            plan.stopReport,
+            toolUseId,
+            opts.signal,
+          );
+          yield { type: "message", message: toolResultMessage(sessionId, toolUseId, text, isError) };
+        } catch (err) {
+          yield { type: "message", message: toolResultMessage(sessionId, toolUseId, err instanceof Error ? err.message : String(err), true) };
+        }
+      }
+      opts.onStop({ stopHookActive: true });
+    }
   }
 
   console.warn(`[fake-runner] ターン終了 session=${sessionId}`);

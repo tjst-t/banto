@@ -32,6 +32,7 @@ import { getRealInlineView, getRealJudgmentId, sendRealAnswer } from "@/lib/back
 import { useJudgmentAnswer } from "@/lib/backend/judgment-answers";
 import { useThreadId } from "@/components/banto/thread/thread-id-context";
 import type { MockElicitationForm, MockElicitationUrl } from "@/lib/mock/types";
+import { TURN_SUMMARY_TOOL_NAME } from "@/lib/turn-summary";
 
 interface HumanToolArgs {
   serverName: string;
@@ -44,6 +45,8 @@ interface HumanToolArgs {
 }
 
 export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
+  // **ターンの終わりのまとめ**は折りたたみの中に出さない——発言の一番下に描く（turn-summary-card.tsx、v4-frontend.md §6.35）
+  if (props.toolName === TURN_SUMMARY_TOOL_NAME) return null;
   // Shell は承認待ち・実行後の両方を1つの専用カードで出す（承認用の別 tool は
   // 作らない、v4-modules.md §2.3「tool は runCommand 1本だけ」）
   if (props.toolName === SHELL_RUN_COMMAND_TOOL_NAME) {
@@ -212,15 +215,24 @@ export function HumanAwareToolGroup({
     if (shouldAutoOpen) setOpen(true);
   }
 
+  // まとめ（report_turn）は数えない。それだけの折りたたみは出さない（まとめは発言の一番下に出る）
+  const summaryCount = useAuiState(
+    (s) =>
+      group.indices.filter((i) => {
+        const part = s.message.parts[i];
+        return part?.type === "tool-call" && part.toolName === TURN_SUMMARY_TOOL_NAME;
+      }).length,
+  );
+  const otherCount = group.indices.length - summaryCount;
+
   return (
     <>
-      <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
-        <ToolGroupTrigger
-          count={group.indices.length}
-          active={group.status.type === "running"}
-        />
-        <ToolGroupContent>{children}</ToolGroupContent>
-      </ToolGroupRoot>
+      {otherCount > 0 ? (
+        <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
+          <ToolGroupTrigger count={otherCount} active={group.status.type === "running"} />
+          <ToolGroupContent>{children}</ToolGroupContent>
+        </ToolGroupRoot>
+      ) : null}
       {group.indices.map((index) => (
         <InlineViewForPart key={index} index={index} />
       ))}

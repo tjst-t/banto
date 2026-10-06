@@ -6,6 +6,7 @@
 // RemoteThreadListRuntime の前提とは相性が悪い。Thread ごとに Runtime を分けることで、
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
+import { TurnSummaryFooter } from "@/components/banto/thread/turn-summary-card";
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { AssistantRuntimeProvider, ExportedMessageRepository, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
@@ -368,7 +369,7 @@ function ThreadRuntime({
             {getThread(threadId)?.real ? <ComposerAutoApproveBadge projectId={projectId} /> : null}
           </>
         }
-        components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
+        components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup, AssistantMessageFooter: TurnSummaryFooter }}
         composerHint={hint}
         transcriptMarkers={transcriptMarkers}
         // やり直し（Edit・Reload・BranchPicker）——実 Thread では host が分岐を

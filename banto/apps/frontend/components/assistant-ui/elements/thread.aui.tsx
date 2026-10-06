@@ -120,6 +120,11 @@ export type ThreadComponents = {
   ReasoningGroup?:
     | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
     | undefined;
+  /**
+   * **AI の発言の一番下に置くもの**（banto が足した口・2026-10-06、v4-frontend.md §6.35「ターンの終わりのまとめ」）。
+   * 部品の並び（文・tool の折りたたみ）の後ろ、エラーの前に描く
+   */
+  AssistantMessageFooter?: ComponentType | undefined;
 };
 
 /**
@@ -615,6 +620,7 @@ const AssistantMessage: FC = () => {
     ToolFallback: ToolFallbackComponent = ToolFallback,
     ToolGroup,
     ReasoningGroup,
+    AssistantMessageFooter,
   } = useContext(ThreadComponentsContext);
 
   const ACTION_BAR_PT = "pt-1.5";
@@ -707,6 +713,7 @@ const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
+        {AssistantMessageFooter ? <AssistantMessageFooter /> : null}
         <MessageError />
       </div>
 

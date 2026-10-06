@@ -2223,3 +2223,20 @@ test("GET /api/threads/:id は、記録に残した中継の承認のカード�
     ]);
   });
 });
+
+// **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）——Project ごとのスイッチ、既定はオフ
+test("ターンの終わりのまとめのスイッチは Project ごとで、既定はオフ。壊れた値は断る", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await (
+      await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: dir }) })
+    ).json();
+    const url = `${base}/api/projects/${project.id}/turn-summary`;
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { enabled: false });
+    assert.deepEqual(await (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ enabled: true }) })).json(), { enabled: true });
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { enabled: true });
+    assert.equal((await fetch(url, { method: "PUT", headers, body: JSON.stringify({ enabled: "yes" }) })).status, 400);
+    assert.deepEqual(await (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ enabled: false }) })).json(), { enabled: false });
+    assert.equal((await fetch(`${base}/api/projects/nope/turn-summary`, { headers })).status, 404);
+  });
+});

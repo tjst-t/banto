@@ -3,6 +3,7 @@
 // 次段（Step 3 以降）で ProjectId 以下に足していく。
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
 import type { RealJudgmentCard, RealMessageImage, RealMessageOrigin } from "@/lib/backend/client";
+import type { RealTurnSummary } from "@/lib/turn-summary";
 
 export type ProjectId = string;
 export type ThreadId = string;
@@ -78,6 +79,8 @@ export interface MockThread {
     images?: readonly RealMessageImage[];
     /** そのターンで出た中継の承認のカード（追加・2026-10-05）。組み直しても残す */
     judgments?: readonly RealJudgmentCard[];
+    /** ターンの終わりのまとめ（追加・2026-10-06）。会話の一番下に出す */
+    turnSummary?: RealTurnSummary;
   }[];
   /** real:trueのときだけ意味を持つ。**中身をまだ取っていないときの概要**
    *  （改訂・2026-09-07）——一覧は要約だけを返すので、閉じた Thread の

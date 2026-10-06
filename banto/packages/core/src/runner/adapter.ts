@@ -74,6 +74,19 @@ export interface RunnerTurnOptions {
   onToolApprovalRequested?(pending: PendingToolApproval): void;
   /** 発火時点でInboxに記録するだけ。呼び出し自体の保留はSDK/Moduleに委ねる。 */
   onElicitation?(pending: PendingElicitation): void;
+  /**
+   * **AI がターンを終えようとしたとき**（SDK の Stop hook、追加・2026-10-06、§2.2「ターンの終わりのまとめ」）。文を返すと、
+   * それを理由に差し戻す（CLI はモデルに「Stop hook feedback」として見せ、同じターンの中で続けさせる）。`undefined` なら終える。
+   * `stopHookActive` は SDK の `stop_hook_active`——差し戻したあとの終わりなら true（そこで差し戻すと終わらなくなる）。
+   * 渡さなければ hook を付けない
+   */
+  onStop?(input: { stopHookActive: boolean }): string | undefined;
+  /**
+   * **承認を聞かずに通す tool**（SDK の `allowedTools`、追加・2026-10-06）。承認モードに依らず `canUseTool` を呼ばない
+   * （偽の API で実測、`probes/turn-summary-stop-hook.mjs default-allowed`）。記録するだけで外に何もしない core の tool
+   * （`report_turn`）にだけ使う
+   */
+  allowedTools?: string[];
   signal?: AbortSignal;
 }
 
@@ -248,6 +261,24 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       ...(opts.effort ? { effort: opts.effort } : {}),
       cwd: opts.cwd,
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,
+      ...(opts.allowedTools && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
+      ...(opts.onStop
+        ? {
+            hooks: {
+              Stop: [
+                {
+                  hooks: [
+                    async (input) => {
+                      const active = (input as { stop_hook_active?: unknown }).stop_hook_active === true;
+                      const reason = opts.onStop!({ stopHookActive: active });
+                      return reason ? { decision: "block" as const, reason } : {};
+                    },
+                  ],
+                },
+              ],
+            },
+          }
+        : {}),
       canUseTool: (toolName, input, options) =>
         new Promise<PermissionResult>((resolve) => {
           const pending: PendingToolApproval = {

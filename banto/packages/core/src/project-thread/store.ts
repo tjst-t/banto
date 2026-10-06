@@ -17,6 +17,7 @@ import type {
   ThreadState,
   UiToolCallEntry,
   MessageImage,
+  TurnSummaryRecord,
   MessageOrigin,
   MessageSender,
   TurnCause,
@@ -503,6 +504,16 @@ export class ProjectThreadStore {
   async recordJudgmentCard(threadId: ThreadId, judgmentId: string): Promise<void> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     const event = await this.log.append("message.appended", { threadId, role: "assistant", text: "", judgmentIds: [judgmentId] });
+    this.projection.applyOne(event);
+  }
+
+  /**
+   * **ターンの終わりのまとめを会話に残す**（追加・2026-10-06、アーキ仕様 §2.2）。そのターンの AI の発言に足す（fold が同じ
+   * ターンの発言にまとめ、後から来たもので置き換える）
+   */
+  async recordTurnSummary(threadId: ThreadId, entry: TurnSummaryRecord): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const event = await this.log.append("message.appended", { threadId, role: "assistant", text: "", turnSummary: entry });
     this.projection.applyOne(event);
   }
 

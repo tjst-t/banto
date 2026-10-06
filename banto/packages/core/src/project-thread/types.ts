@@ -65,10 +65,22 @@ export interface MessageEntry {
    * 無いと、会話を記録から組み直したとき（止めた・開き直した）にカードが消え、止めたことを忘れる
    */
   judgmentIds?: string[];
+  /**
+   * **ターンの終わりのまとめ**（追加・2026-10-06、アーキ仕様 §2.2「ターンの終わりのまとめ」）。AI が `report_turn` で渡した
+   * もの。1ターンに何度呼ばれても最後の1つだけ持つ（画面もそれを出す）。中身の形は `http/turn-summary.ts` が決める
+   */
+  turnSummary?: TurnSummaryRecord;
   /** **機械から届いたもの**の印（追加・2026-09-25）。**無ければ人の発言** */
   origin?: MessageOrigin;
   /** 人が添えた画像（決定・2026-09-26）。中身は画像の置き場にあり、ここは名前だけ（`images/store.ts`） */
   images?: MessageImage[];
+}
+
+/** 記録に残すまとめ。中身（summary）の形は `http/turn-summary.ts` の `TurnSummary` */
+export interface TurnSummaryRecord {
+  summary: Record<string, unknown>;
+  /** 受け付けた時刻（ISO） */
+  at: string;
 }
 
 /** 発言に添えた画像1枚。**形式は持たない**——中身から決まる（規則3） */
