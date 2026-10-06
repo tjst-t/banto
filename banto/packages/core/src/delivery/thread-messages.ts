@@ -288,6 +288,10 @@ export class ThreadMessaging {
     });
     this.deps.publishJudgment?.(from.id, { id: judgment.id, message: judgmentMessage, serverName: "banto", toolInput, choices });
 
+    // 止められて畳むときの受信箱への書き込み。**書き終えてから返す**——返った時点で判断待ちが受信箱に
+    // live のまま残っていると、呼び元（止めたターンの後始末・画面）が古い判断待ちを見る（2026-10-06、
+    // 単体試験が負荷のもとで時々 live を見ていた：Backlog #216）
+    let folding: Promise<unknown> | undefined;
     const answer = await new Promise<{ behavior: string; remember?: unknown }>((resolve) => {
       this.deps.pendingApprovals.register(judgment.id, (result) => resolve(result as { behavior: string }));
       // ターンが止められた（tool の呼び出しが取り消された）——待つのをやめ、判断待ちも畳む
@@ -296,12 +300,13 @@ export class ThreadMessaging {
         () => {
           const denied = { behavior: "deny" as const, message: "ターンが止まりました" };
           if (this.deps.pendingApprovals.resolve(judgment.id, denied)) {
-            void this.deps.inbox.answerJudgment(judgment.id, denied).catch(() => undefined);
+            folding = this.deps.inbox.answerJudgment(judgment.id, denied).catch(() => undefined);
           }
         },
         { once: true },
       );
     });
+    if (folding) await folding;
     if (answer.behavior !== "allow") return "deny";
     return answer.remember === true ? "remember" : "allow";
   }

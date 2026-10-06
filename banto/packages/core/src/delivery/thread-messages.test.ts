@@ -189,7 +189,7 @@ test("止められたら待つのをやめて断り、判断待ちも畳む", as
     ac.abort();
     const r = await sending;
     assert.equal(r.ok, false);
-    await new Promise((res) => setTimeout(res, 10));
+    // 返った時点で畳み終えている（決まった時間を待たない。Backlog #216）
     assert.notEqual(inbox.get(j.id)?.kind === "judgment" && (inbox.get(j.id) as { liveness: string }).liveness, "live");
   });
 });
