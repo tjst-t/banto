@@ -1530,3 +1530,17 @@ test("中継の宛先で人を待つと、呼んだ側の呼び出しも人待�
     close();
   }
 });
+
+test("中継は宛先に、頼んだ Module（宣言の名前と接続名）を刻む——呼び元が書いた刻印は使わない", async () => {
+  const { client, seen, close } = await relayPair({ withReceiver: false });
+  try {
+    await client.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: "subagent", name: "work", arguments: {} },
+      _meta: { "dev.banto/callerModule": { name: "vault", conn: "vault" } },
+    });
+    assert.deepEqual(seen.at(-1)?.meta?.["dev.banto/callerModule"], { name: "factory", conn: "factory" });
+  } finally {
+    await close();
+  }
+});

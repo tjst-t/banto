@@ -20,7 +20,7 @@ export interface RunningRecord {
   id: string;
   agent: string;
   agentTitle: string;
-  /** 作業場所（Project の根） */
+  /** 作業場所（Project の根の中。頼むときに選べる——既定は根） */
   cwd: string;
   /** エージェントの会話の id。`session/new` の返事で分かった時点で書く（prompt を送る前） */
   sessionId?: string;
@@ -32,6 +32,10 @@ export interface RunningRecord {
   replyToFingerprint: string;
   /** 頼んだ Thread（host の刻印 `dev.banto/thread`） */
   requestedBy?: { projectId: string; threadId: string };
+  /** 頼んだ Module（host の刻印 `dev.banto/callerModule`。中継で頼んだとき） */
+  requestedByModule?: { name: string; conn: string };
+  /** 決まった形で返させるときの JSON Schema（続けたあとも同じ形で返させる） */
+  schema?: Record<string, unknown>;
   /** 頼んだ文（全文——上の注記） */
   prompt: string;
   /** 頼んだ文の頭（一覧・ログ用） */

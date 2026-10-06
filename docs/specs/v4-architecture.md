@@ -2400,8 +2400,8 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 指定すると、起こして設定の候補を聞く）と、仕事を頼む（`runSubagent`）と、頼んだ仕事を止める
 （`cancelSubagent`、下の「AI が止める口」）。`runSubagent` の入力は
 **エージェント・頼む内容・モデル（任意）・effort（任意）・続きから走らせる session id（任意）・
-資格情報（`envSecrets`、任意）**、返すのは**最後の返答・session id・止まった理由（`stopReason`）・
-使用量・呼んだ tool・断った確認・注記**（名前は既存の Module の tool——`runCommand`・`showFile`——に揃える）。
+資格情報（`envSecrets`、任意）・作業場所（`cwd`、任意）・返す形（`schema`、任意）**、返すのは**最後の返答・session id・
+止まった理由（`stopReason`）・使用量・呼んだ tool・断った確認・注記・形に合った値（`structured`、`schema` を渡したとき）**（名前は既存の Module の tool——`runCommand`・`showFile`——に揃える）。
 
 - **1回の呼び出し＝エージェントのプロセス1つ**（起動→`initialize`→`session/new` か `session/load`
   →設定→`session/prompt`→終了）。§2.3 のモデルB と同じ考え方で、続きは `session/load` で拾う
@@ -2418,11 +2418,22 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   id を知っただけで止められないように。`runSubagent` のとき host が刻んだ Thread の印（§2.5
   「AI のターンからの呼び出しには、どの Thread かも刻む」）を仕事の記録（`requestedBy`）に残し、
   `cancelSubagent` に刻まれた印と Project・Thread の両方が一致したときだけ止める。**どちらかの印が無ければ断る**
-  （頼んだときの印が無い仕事——印を刻む前の host で頼んだもの等——は、人が画面から止める）
+  （頼んだときの印が無い仕事——印を刻む前の host で頼んだもの等——は、人が画面から止める）。
+  **Module が中継で頼んだ仕事は、頼んだ Module からだけ止められる**（追加・2026-10-06、Factory の前提）：中継のとき host が
+  宛先に「頼んだ Module」の印（`dev.banto/callerModule`、宣言の名前と接続名。§2.5——呼び元の申告ではなく中継の合言葉で
+  決まる）を刻み、`runSubagent` はそれを記録（`requestedByModule`）に残す。`cancelSubagent` にこの印があれば、接続名が
+  記録と同じときだけ止める（別の Module・Thread が頼んだ仕事は断る）
 - **モデルは設定項目（`session/new` の `configOptions`）で渡す。** 候補の一覧はそれが唯一の真実で
   （規則3）、**渡した資格情報で変わる**（OpenCode：427件／鍵1つだと108件）。**エージェントの
   既定に任せない**——OpenCode の既定は人の設定の `model` と一致しなかった（無料の別モデルになった）
-- **作業場所は Project の根**（Shell と同じ）。同じ根で2つを並行に走らせたときの取り合いは未決
+- **作業場所は既定で Project の根**（Shell と同じ）。**`cwd` で根の中のフォルダを選べる**（追加・2026-10-06、Factory が
+  worktree で働かせる）——相対なら根から。実体（realpath）で比べ、根の外・外へ出るリンク・無いフォルダ・フォルダでないものは
+  エージェントを起こす前に断る。待たない形の記録（起こし直しのあと続ける）にも残す
+- **決まった形で返させる（`schema`、追加・2026-10-06）**：Claude Code の Dynamic Workflows の `agent(…, { schema })` と同じ考え方。
+  JSON Schema を渡すと、頼む文の後ろに「最後の返答はこの形の JSON だけ」と足し、返答から JSON を取り出して確かめる
+  （全体・```json の囲み・文の中の括弧の釣り合った最後のもの）。合わなければ**同じ会話のまま**理由を添えて直させ（3回まで）、
+  合った値を `structured` で返す。直させても合わなければ失敗にする（文のまま返さない）。読めない schema はエージェントを起こさず
+  断る。エージェントに構造化出力の共通の口が無いので、指示と検査で行う（検査は ajv）。起こし直しのあと続けた仕事も同じ形で返させる
 - **サブエージェントの会話は、エージェント自身の置き場に残る**——Subagent Module のデータ置き場の
   下に、エージェントごとの専用ホームを1つ持つ。core に渡るのは tool の返り値（転記）だけ（上の原則）
 - **頼んだ仕事は、人が launcher から見られる**（決定・2026-09-24、ユーザー——「launcher から一覧や状態を見られる

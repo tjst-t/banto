@@ -171,6 +171,28 @@ export function threadOf(meta: Record<string, unknown> | undefined): ThreadStamp
 }
 
 /**
+ * **中継でこの呼び出しを頼んだ Module**（追加・2026-10-06、Factory の前提。v4-architecture.md §2.5）。**host だけが刻む**——
+ * Module 間の中継（`relayCallTool`）で宛先を呼ぶとき、呼び元の宣言の名前（`name`）と接続名（`conn`。Project ごとの Module は
+ * `<name>-<projectId>`）を載せる。呼び元の申告ではない（中継の合言葉が host の台帳で呼び元を決める）。AI のターン・人の画面からの
+ * 呼び出しには付かない。宛先は「頼んだ Module からだけ止められる」等の持ち主の確かめに使う
+ */
+export const CALLER_MODULE_META_KEY = `${VENDOR_PREFIX}/callerModule`;
+
+export interface CallerModuleStamp {
+  name: string;
+  conn: string;
+}
+
+/** 呼び元の Module の刻印を読む。**形が違えば `undefined`** */
+export function callerModuleOf(meta: Record<string, unknown> | undefined): CallerModuleStamp | undefined {
+  const raw = meta?.[CALLER_MODULE_META_KEY];
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const { name, conn } = raw as Record<string, unknown>;
+  if (typeof name !== "string" || name === "" || typeof conn !== "string" || conn === "") return undefined;
+  return { name, conn };
+}
+
+/**
  * **その Project では、人に聞かずに許可してよい**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4「承認をすべて自動で許可する」）。
  * host だけが刻む——Project の設定のスイッチがオンで、その Project のための **AI のターンから始まった**呼び出し
  * （AI の代理接続からの呼び出しと、その処理の中で Module が中継で呼ぶ先）にだけ。値は `true`。

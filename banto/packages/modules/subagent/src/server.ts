@@ -5,8 +5,8 @@
 // `cancelSubagent`（頼んだ仕事を止める。頼んだ Thread からだけ）。
 // 鍵の設定画面は banto 全体に1本の別 Module（`settings-server.ts`）が持つ——ここは Project ごとに立つので。
 
-import { rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { realpathSync, rmSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -28,6 +28,7 @@ import {
   isHostResumeCall,
   RESUME_AFTER_RESTART_TOOL,
   threadOf,
+  callerModuleOf,
   type ResumeAnswer,
 } from "@banto/module-contract";
 import {
@@ -50,6 +51,7 @@ import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
 import { RunLog } from "./runs.js";
 import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
 import { stopOwnedGroup } from "./process-group.js";
+import { compileSchema, extractJson, fixPrompt, schemaInstruction, STRUCTURED_RETRIES, type CompiledSchema } from "./structured.js";
 
 export interface SubagentServerDeps {
   projectRoot: string;
@@ -184,6 +186,17 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             },
             effort: { type: "string", description: "考える深さ（エージェントの thought_level）。省略時は既定" },
             sessionId: { type: "string", description: "続きから頼むときの session id（前の runSubagent の返り値）" },
+            cwd: {
+              type: "string",
+              description:
+                "作業する場所（Project root の中のフォルダ。相対なら Project root から。省略時は Project root）。worktree で働かせるときに使う",
+            },
+            schema: {
+              type: "object",
+              description:
+                "決まった形で返させるときの JSON Schema。最後の返答をこの形の JSON にさせ、合わなければ同じ会話で直させる" +
+                `（${STRUCTURED_RETRIES} 回まで）。合った値は返り値の structured に入る`,
+            },
             envSecrets: ENV_SECRETS_SCHEMA,
             runInBackground: {
               type: "boolean",
@@ -423,6 +436,19 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         const id = String(args.runId ?? "");
         const record = runs.get(id);
         if (!record) throw new SubagentError(`仕事 "${id}" はありません`);
+        // **Module が中継で頼んだ仕事は、頼んだ Module（接続名）からだけ止められる**（追加・2026-10-06、Factory）。印は host が刻む
+        const callerModule = callerModuleOf(request.params._meta as Record<string, unknown> | undefined);
+        if (callerModule) {
+          if (!record.requestedByModule || record.requestedByModule.conn !== callerModule.conn) {
+            throw new SubagentError(
+              record.requestedByModule
+                ? "この仕事は別の Module が頼んだものなので、ここからは止められません。止められるのは、この Module が頼んだ仕事だけです"
+                : "この仕事は Module が頼んだものではないので、Module からは止められません",
+            );
+          }
+          if (!runs.cancel(id)) throw new SubagentError(`その仕事はもう走っていません（状態：${record.status}）`);
+          return text({ ok: true, runId: id, note: "止めました。待たない形で頼んだものは、止まったことが頼んだ Module に届きます" });
+        }
         // **頼んだ Thread と呼び出し元の Thread が同じときだけ**。どちらかの印が無ければ確かめられないので断る（fail closed）
         const caller = threadOf(request.params._meta as Record<string, unknown> | undefined);
         if (!caller) {
@@ -457,8 +483,15 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         // **起こす前から記録する**——資格情報で止まったものも、一覧に「失敗」として残す。
         // 頼んだ Thread も残す（host の刻印。AI が止める口 `cancelSubagent` はこれで持ち主を確かめる）
         const requestedBy = threadOf(request.params._meta as Record<string, unknown> | undefined);
+        // 中継で頼んだ Module（host の刻印）。止める口が持ち主を確かめる
+        const requestedByModule = callerModuleOf(request.params._meta as Record<string, unknown> | undefined);
+        // **作業場所と形は、起こす前に確かめる**（間違いはエージェントを起こさずに断る）
+        const cwd = resolveCwd(args.cwd);
+        const compiled = args.schema === undefined ? undefined : compileOrRefuse(args.schema);
         const run = runs.start({
           ...(requestedBy ? { requestedBy } : {}),
+          ...(requestedByModule ? { requestedByModule } : {}),
+          ...(cwd !== deps.projectRoot ? { cwd } : {}),
           agent: agent.id,
           agentTitle: agent.title,
           prompt,
@@ -487,7 +520,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             id: run.id,
             agent: agent.id,
             agentTitle: agent.title,
-            cwd: deps.projectRoot,
+            cwd,
+            ...(compiled ? { schema: compiled.schema } : {}),
+            ...(requestedByModule ? { requestedByModule } : {}),
             ...(typeof args.model === "string" ? { model: args.model } : {}),
             ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
             ...(aliasNamesOf(args.envSecrets) ? { envSecrets: aliasNamesOf(args.envSecrets)! } : {}),
@@ -505,7 +540,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         const work = async () => {
           try {
             report(`${agent.title} を起こしています`);
-            const result = await runSubagent(
+            const result = await runStructured(
               {
                 prompt,
                 ...(typeof args.model === "string" ? { model: args.model } : {}),
@@ -518,7 +553,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
                 signal: background ? run.signal : AbortSignal.any([extra.signal, run.signal]),
                 onProgress: report,
                 recordRunning: background,
+                cwd,
               }),
+              compiled,
+              report,
             );
             const final = { ...result, notes: [...launched.notes, ...result.notes] };
             runs.finish(run.id, { result: final });
@@ -577,7 +615,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     runId: string,
     launch: AgentLaunch,
     agent: AgentDefinition,
-    opts: { signal: AbortSignal; onProgress: (message: string) => void; recordRunning: boolean },
+    opts: { signal: AbortSignal; onProgress: (message: string) => void; recordRunning: boolean; cwd: string },
   ): RunDeps {
     const record = (change: (r: RunningRecord) => void) => {
       if (opts.recordRunning) running.update(runId, change);
@@ -590,7 +628,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     };
     return {
       launch,
-      cwd: deps.projectRoot,
+      cwd: opts.cwd,
       ...(agent.mode ? { mode: agent.mode } : {}),
       signal: opts.signal,
       onProgress: opts.onProgress,
@@ -673,14 +711,22 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       return;
     }
     const notes = [...launched.notes, note];
-    const runDeps = agentRunDeps(record.id, launched.launch, agent, { signal: run.signal, onProgress: report, recordRunning: true });
+    const runDeps = agentRunDeps(record.id, launched.launch, agent, {
+      signal: run.signal,
+      onProgress: report,
+      recordRunning: true,
+      cwd: record.cwd,
+    });
+    const compiled = record.schema ? compileOrRefuse(record.schema) : undefined;
     const options = { ...(record.model ? { model: record.model } : {}), ...(record.effort ? { effort: record.effort } : {}) };
     try {
       let result: RunResult | undefined;
       if (record.sessionId !== undefined) {
         report(`${agent.title} の会話を続きから開いています`);
         try {
-          result = await runSubagent({ prompt: resumePromptOf(record), sessionId: record.sessionId, ...options }, runDeps);
+          result = await runStructured({ prompt: resumePromptOf(record), sessionId: record.sessionId, ...options }, runDeps, compiled, report, {
+            alreadyInstructed: true,
+          });
         } catch (err) {
           // 最初の頼みが記録される前に切れた（まだ何もしていない）なら、同じ頼みで最初から。進んでいたなら失敗として届ける
           if (!(err instanceof SessionLoadError) || record.progressed || record.resumedFrom !== undefined) throw err;
@@ -695,7 +741,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           r.toolsInFlight = [];
         });
         report(`${agent.title} を起こしています`);
-        result = await runSubagent({ prompt: record.prompt, ...options }, runDeps);
+        result = await runStructured({ prompt: record.prompt, ...options }, runDeps, compiled, report);
       }
       const final = { ...result, notes: [...notes, ...result.notes] };
       runs.finish(run.id, { result: final });
@@ -705,6 +751,73 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       await fail(explained instanceof Error ? explained.message : String(explained));
     } finally {
       await launched.cleanup();
+    }
+  }
+
+  /**
+   * **作業場所を決める**（追加・2026-10-06、Factory が worktree で働かせる）。Project の根の中のフォルダだけ（実体で比べる
+   * ——シンボリックリンクで外へ出させない）。省けば根
+   */
+  function resolveCwd(raw: unknown): string {
+    if (raw === undefined) return deps.projectRoot;
+    if (typeof raw !== "string" || raw.trim() === "") throw new SubagentError("cwd は文字列で渡してください");
+    const root = realpathSync(deps.projectRoot);
+    const wanted = isAbsolute(raw) ? raw : resolve(deps.projectRoot, raw);
+    let real: string;
+    try {
+      real = realpathSync(wanted);
+    } catch {
+      throw new SubagentError(`作業場所 ${raw} がありません`);
+    }
+    const rel = relative(root, real);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      throw new SubagentError(`作業場所 ${raw} は Project root（${deps.projectRoot}）の外です。Project root の中のフォルダだけ選べます`);
+    }
+    if (!statSync(real).isDirectory()) throw new SubagentError(`作業場所 ${raw} はフォルダではありません`);
+    return real;
+  }
+
+  function compileOrRefuse(raw: unknown): CompiledSchema {
+    try {
+      return compileSchema(raw);
+    } catch (err) {
+      throw new SubagentError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * **1回走らせ、形が決まっていれば合うまで同じ会話で直させる**（追加・2026-10-06、`structured.ts`）。合った値は
+   * `structured` に入れる。止められた・上限を越えた・合わないまま終わったら、そのとおり返す（合わないまま越えたら失敗）
+   */
+  async function runStructured(
+    input: { prompt: string; model?: string; effort?: string; sessionId?: string },
+    runDeps: RunDeps,
+    compiled: CompiledSchema | undefined,
+    report: (message: string) => void,
+    opts: { alreadyInstructed?: boolean } = {},
+  ): Promise<RunResult & { structured?: unknown }> {
+    if (!compiled) return runSubagent(input, runDeps);
+    const options = { ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}) };
+    let result = await runSubagent(
+      { ...input, prompt: opts.alreadyInstructed ? input.prompt : input.prompt + schemaInstruction(compiled.schema) },
+      runDeps,
+    );
+    const toolCalls = [...result.toolCalls];
+    const notes: string[] = [];
+    for (let attempt = 0; ; attempt++) {
+      if (result.stopReason !== "end_turn") return { ...result, toolCalls, notes: [...notes, ...result.notes] };
+      const found = extractJson(result.text);
+      const problem = found === undefined ? "JSON が見つかりません" : compiled.check(found.value);
+      if (problem === undefined) return { ...result, toolCalls, notes: [...notes, ...result.notes], structured: found!.value };
+      if (attempt >= STRUCTURED_RETRIES) {
+        throw new SubagentError(
+          `決まった形の返答になりませんでした（${STRUCTURED_RETRIES} 回直させても合わない）：${problem}。最後の返答の頭：${result.text.slice(0, 200)}`,
+        );
+      }
+      notes.push(`返答が決まった形に合わなかったので直させました（${attempt + 1} 回目）：${problem}`);
+      report(`返答を決まった形に直させています（${attempt + 1} 回目）`);
+      result = await runSubagent({ prompt: fixPrompt(problem, compiled.schema), sessionId: result.sessionId, ...options }, runDeps);
+      toolCalls.push(...result.toolCalls);
     }
   }
 
@@ -827,6 +940,8 @@ function runInputOf(record: RunningRecord) {
     ...(record.effort ? { effort: record.effort } : {}),
     ...(record.resumedFrom ? { resumedFrom: record.resumedFrom } : {}),
     ...(record.requestedBy ? { requestedBy: record.requestedBy } : {}),
+    ...(record.requestedByModule ? { requestedByModule: record.requestedByModule } : {}),
+    cwd: record.cwd,
   };
 }
 

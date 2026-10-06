@@ -2583,10 +2583,10 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
    ①中継の時間の上限と途中経過（Factory は待たない形しか使わないので当たらないが、同じタスクで直す）
    ②**札の宛先に Module**——中継の呼び出しでも札を出して呼んだ Module に結びつけ、host が呼んだ Module の受け口の tool
    （`_meta["dev.banto/receivesReplies"]: true` を名乗るもの）を呼んで渡す。先に記録してから渡す。**Factory はこれが無いと動かない**
-2. **Subagent に足すもの**：
+2. ~~**Subagent に足すもの**~~ **→ 実装・2026-10-06**（アーキ仕様 §4.1。Backlog の `subagent-for-factory`）：
    - 作業する場所 `cwd`（Project の root の中だけ。worktree で働かせる）
-   - 決まった形で返させる `schema`（最後の返答をその形の JSON にさせ、合わなければ同じセッションで直させる）
-   - **頼んだ Module から止める**——`cancelSubagent` は今 Thread の印でしか一致させない。中継の呼び出しは呼んだ Module で一致させる
+   - 決まった形で返させる `schema`（最後の返答をその形の JSON にさせ、合わなければ同じセッションで直させる。合った値は `structured`）
+   - **頼んだ Module から止める**——中継のとき host が `dev.banto/callerModule` を刻み、`cancelSubagent` は接続名で一致させる
 
 #### まだ決めていない
 

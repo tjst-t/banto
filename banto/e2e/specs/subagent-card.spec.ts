@@ -23,11 +23,15 @@ test.setTimeout(300_000);
 const PROJECT_NAME = "E2E Subagent Card";
 const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 
-async function assistantCount(page: Page, threadId: string): Promise<number> {
+/**
+ * **最後のターンが終わったか**（改訂・2026-10-06）。以前は「AI の発言が0件」で「まだ走っている」と見ていたが、書き終えた
+ * 発言はターンの途中でも記録に残るようになった（起こし直しをまたいで続ける、2026-10-05）ので、ターンの結末で見る
+ */
+async function lastTurnOutcome(page: Page, threadId: string): Promise<string | undefined> {
   const thread = (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers })).json()) as {
-    messages: { role: string }[];
+    lastTurn?: { outcome?: string };
   };
-  return thread.messages.filter((m) => m.role === "assistant").length;
+  return thread.lastTurn?.outcome;
 }
 
 /** 鍵を使うエージェントは、Project ごとに初回だけ Vault の在りかを聞く承認が出る——出ていれば通す */
@@ -65,7 +69,7 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
   await expect(cards.first()).toContainText("fake に頼んだ仕事");
   await expect(cards.first()).toContainText("[slow 20] 一つ目の仕事");
   await expect(cards.first()).toHaveAttribute("data-module", "subagent");
-  expect(await assistantCount(page, threadId), "カードが出たのは結果が返ってから（走っている間に出ていない）").toBe(0);
+  expect(await lastTurnOutcome(page, threadId), "カードが出たのはターンが終わってから（走っている間に出ていない）").toBeUndefined();
   // 画面は会話に埋めない
   await expect(page.getByTestId("inline-module-view")).toHaveCount(0);
 

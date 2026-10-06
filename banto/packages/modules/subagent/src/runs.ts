@@ -33,6 +33,15 @@ export interface RunRecord {
    * AI が止める口（`cancelSubagent`）は、これと同じ Thread からの呼び出しだけを通す。刻印の無い呼び出しで頼んだものは持たない
    */
   requestedBy?: { projectId: string; threadId: string };
+  /**
+   * **頼んだ Module**（追加・2026-10-06）。Module が中継で頼んだとき host が刻む印（`dev.banto/callerModule`）を写す。
+   * `cancelSubagent` は、同じ Module（接続名）からの呼び出しだけを通す
+   */
+  requestedByModule?: { name: string; conn: string };
+  /** 作業場所（Project の根の中。頼むときに選べる——既定は根） */
+  cwd?: string;
+  /** 決まった形で返させたなら、その形に合った JSON（`schema`） */
+  structured?: unknown;
   status: RunStatus;
   startedAt: number;
   finishedAt?: number;
@@ -109,7 +118,7 @@ export class RunLog {
   }
 
   start(
-    input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom" | "requestedBy"> & {
+    input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom" | "requestedBy" | "requestedByModule" | "cwd"> & {
       /**
        * 起こし直しのあと続ける仕事は、前の id と頼んだ時刻のまま（追加・2026-10-05）。画面の一覧で同じ仕事が続いて見える
        */
@@ -176,6 +185,9 @@ export class RunLog {
             ...(outcome.result.context ? { context: outcome.result.context } : {}),
             permissions: outcome.result.permissions,
             notes: outcome.result.notes,
+            ...((outcome.result as { structured?: unknown }).structured !== undefined
+              ? { structured: (outcome.result as { structured?: unknown }).structured }
+              : {}),
           }
         : { ...base, status: r.abort.signal.aborted ? "cancelled" : "error", error: outcome.error };
     mkdirSync(dirname(this.file), { recursive: true });

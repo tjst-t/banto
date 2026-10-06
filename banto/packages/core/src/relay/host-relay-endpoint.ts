@@ -26,6 +26,7 @@ import {
   CALL_ID_META_KEY,
   AUTO_APPROVE_META_KEY,
   CALLER_META_KEY,
+  CALLER_MODULE_META_KEY,
   ON_BEHALF_OF_META_KEY,
   callIdOf,
   SOCKET_DIR_META_KEY,
@@ -877,6 +878,9 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
             ? { [CALLER_META_KEY]: { admin: true } }
             : {};
     if (targetCall.id) callerMeta[CALL_ID_META_KEY] = targetCall.id;
+    // **頼んだ Module を刻む**（追加・2026-10-06、`CALLER_MODULE_META_KEY`）。呼び元は合言葉で決まる（申告ではない）——
+    // 宛先は「頼んだ Module からだけ止められる」等の持ち主の確かめに使う
+    callerMeta[CALLER_MODULE_META_KEY] = { name: identity.moduleName, conn: callerConn };
     // **人に聞かずに許可してよいか**（追加・2026-10-05、v4-frontend.md §6.4「承認をすべて自動で許可する」）。AI のターンから
     // 始まった、スイッチがオンの Project のための呼び出しにだけ刻む——Publish の窓口が中で実装の `publishRoute` を呼ぶとき、
     // 実装は人の刻印の代わりにこれを見る。**呼び出し元の申告は使わない**（Project と出所は host の台帳から引いている）

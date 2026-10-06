@@ -18,6 +18,9 @@
 //   [done-tool]   最初に tool を1つ呼んで、すぐ終わらせる（tool_call_update の completed。実行中の tool の数え方の試験用）
 //   [then-slow N] この頼みのあと、同じ会話の次の頼み（起こし直しのあと続けたとき）で tool を1つ始めて N 秒待つ
 //                 （続けている間の画面の試験用）
+//   [cwd]         会話の作業場所（session/new の cwd）を答える（作業場所を選べるかの試験用）
+//   [json-b64 B]  B（base64）を解いた文をそのまま返答にする（決まった形で返させる試験用。JSON は ] を含むので base64）
+//   [bad-then-json-b64 B]  この頼みには JSON でない文を返し、同じ会話の次の頼みから B を解いた文を返す（直させる試験用）
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
 // 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。頼まれた文は
@@ -184,6 +187,14 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     const has = /\[has ([^\]]+)\]/.exec(text);
     if (has) reply = `環境に ${Object.values(process.env).some((v) => v?.includes(has[1])) ? "含む" : "含まない"}`;
     if (text.includes("前に")) reply = `前に頼まれたこと：${previous.map((t) => t.user).join(" / ") || "（無い）"}`;
+    if (text.includes("[cwd]")) reply = `cwd=${s.cwd}`;
+    const b64 = (b: string) => Buffer.from(b, "base64").toString("utf8");
+    const json = /\[json-b64 ([A-Za-z0-9+/=]+)\]/.exec(text);
+    if (json) reply = b64(json[1]!);
+    const badThen = /\[bad-then-json-b64 ([A-Za-z0-9+/=]+)\]/.exec(text);
+    const laterJson = previous.map((t) => /\[bad-then-json-b64 ([A-Za-z0-9+/=]+)\]/.exec(t.user)).find((m) => m !== null);
+    if (badThen) reply = "まだ JSON にしていません";
+    else if (laterJson) reply = b64(laterJson[1]!);
     reply += `（model=${s.model} effort=${s.effort} mode=${s.mode}）`;
     await say(cx, sessionId, reply);
     await cx.notify(methods.client.session.update, {

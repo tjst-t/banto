@@ -40,9 +40,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "サブエージェントに中継で頼む（試験用）",
       inputSchema: {
         type: "object",
-        properties: { prompt: { type: "string" }, background: { type: "boolean" } },
+        properties: {
+          prompt: { type: "string" },
+          background: { type: "boolean" },
+          cwd: { type: "string" },
+          schema: { type: "object" },
+        },
         required: ["prompt"],
       },
+      _meta: { "dev.banto/visibility": "agent" },
+    },
+    {
+      name: "cancel",
+      description: "この Module が頼んだサブエージェントの仕事を止める（試験用）",
+      inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] },
       _meta: { "dev.banto/visibility": "agent" },
     },
     {
@@ -69,6 +80,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   if (request.params.name === "listReplies") {
     return { content: [{ type: "text", text: JSON.stringify(replies) }] };
   }
+  if (request.params.name === "cancel") {
+    const client = await relayClient();
+    const listed = await client.callTool({ name: "relayListTargets", arguments: {} });
+    const target = JSON.parse(listed.content[0].text).find((t) => t.roles.includes("subagent"));
+    const result = await client.callTool({
+      name: "relayCallTool",
+      arguments: { targetModule: target.name, name: "cancelSubagent", arguments: { runId: String(args.runId ?? "") } },
+    });
+    return { content: [{ type: "text", text: result.content?.[0]?.text ?? "" }], ...(result.isError ? { isError: true } : {}) };
+  }
   if (request.params.name === "delegate") {
     const client = await relayClient();
     // 宛先の名前は決め打ちしない（Project ごとの Module は `subagent-<projectId>`）
@@ -83,7 +104,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         arguments: {
           targetModule: target.name,
           name: "runSubagent",
-          arguments: { agent: "fake", prompt: String(args.prompt ?? ""), runInBackground: args.background === true },
+          arguments: {
+            agent: "fake",
+            prompt: String(args.prompt ?? ""),
+            runInBackground: args.background === true,
+            ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
+            ...(args.schema ? { schema: args.schema } : {}),
+          },
         },
       },
       undefined,

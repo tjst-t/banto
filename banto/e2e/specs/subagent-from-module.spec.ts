@@ -9,7 +9,7 @@
 //   3. 返事を待っているうちに頼んだ先（Subagent）が止まると、呼んだ Module に「途中で終わりました」（lost）が届く
 //      ——呼んだ Module も一緒に止まるが、host が残してから渡すので、次に立ったプロセスに渡る
 import { test, expect, type Page } from "../test-base.js";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,7 @@ interface HostMessage {
 }
 
 let projectId = "";
+let projectRoot = "";
 let threadId = "";
 let turns = 0;
 
@@ -60,25 +61,29 @@ async function hostThread(page: Page): Promise<{ messages: HostMessage[]; awaiti
 }
 
 /** AI にこの Module の delegate を呼ばせ、ターンが終わるまで待つ。中継の承認が出たら許す。tool の結果を返す */
-async function delegate(page: Page, prompt: string, background: boolean): Promise<string> {
+async function delegate(page: Page, prompt: string, background: boolean, extra: Record<string, unknown> = {}): Promise<string> {
+  return callFixture(page, "delegate", { prompt, background, ...extra });
+}
+
+async function callFixture(page: Page, name: string, args: Record<string, unknown>): Promise<string> {
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill(
     `Module 経由で頼んで。` +
       // 本物の CLI と同じ諦め方（返事も進捗も 300 秒来なければ諦める・進捗で数え直す）。偽 Runner の既定は
       // MCP の 60 秒で進捗でも数え直さない——それでは banto の側を測れない
-      fakeTurn({ giveUpToolAfterMs: 300_000, tools: [{ server: MODULE, name: "delegate", args: { prompt, background } }] }),
+      fakeTurn({ giveUpToolAfterMs: 300_000, tools: [{ server: MODULE, name, args }] }),
   );
   await composer.press("Enter");
   turns += 1;
   const want = turns;
   // 初回は中継の承認（この Module → subagent、subagent → Vault）が会話に出る
+  // **ターンが終わるまで押し続ける**——書き途中の返事も記録に出るので、返事の件数では「もう聞かれない」と言えない
+  // （2枚目のカードを押さずに抜けて、Vault の確認が答えられないまま切れた）
   await expect(async () => {
     const allow = page.getByRole("button", { name: "許可する" });
     if ((await allow.count()) > 0) await allow.last().click();
-    const assistants = (await hostThread(page)).messages.filter((m) => m.role === "assistant");
-    expect(assistants.length).toBeGreaterThanOrEqual(want);
-  }).toPass({ timeout: 200_000, intervals: [1000] });
-  await waitTurnEnded(page, threadId, want, 60_000);
+    await waitTurnEnded(page, threadId, want, 1_500);
+  }).toPass({ timeout: 240_000, intervals: [1000] });
   const last = (await hostThread(page)).messages.filter((m) => m.role === "assistant").at(-1)!;
   return last.text;
 }
@@ -110,7 +115,8 @@ test("Module から待つ形で頼んだ 60 秒を越える仕事が、中継で
   expect(added.status(), `試験用の Module を足せなかった：${await added.text()}`).toBeLessThan(400);
 
   await openApp(page);
-  await createProject(page, PROJECT_NAME, mkdtempSync(join(tmpdir(), "banto-e2e-subagent-from-module-")));
+  projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-subagent-from-module-"));
+  await createProject(page, PROJECT_NAME, projectRoot);
   await waitForProjectModule(page, PROJECT_NAME, "subagent");
   await waitForProjectModule(page, PROJECT_NAME, MODULE);
   const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as { id: string; name: string }[];
@@ -171,3 +177,41 @@ test("返事を待っているうちに頼んだ先が止まると、呼んだ M
   // Thread には届かない
   expect((await hostThread(page)).messages.filter((m) => m.origin)).toHaveLength(0);
 });
+
+// **Factory が使う口**（追加・2026-10-06、v4-modules.md §4.5「Subagent に足すもの」）：Module から、作業場所を選び・決まった形で
+// 返させ・頼んだ仕事を止める
+test("Module から作業場所を選び、決まった形で返させ、頼んだ仕事を止められる", async ({ page }) => {
+  await openProject(page);
+  mkdirSync(join(projectRoot, ".worktrees", "factory-e2e"), { recursive: true });
+
+  // 1. 作業場所：Project root の中の worktree で働く
+  const where = await delegate(page, "[cwd]", false, { cwd: ".worktrees/factory-e2e" });
+  expect(where, `作業場所が選べていない：${where}`).toMatch(/cwd=\S*\/\.worktrees\/factory-e2e/);
+
+  // 2. 決まった形：待たない形の返事に structured が入って、呼んだ Module に届く
+  const verdict = { verdict: "changes", items: [{ what: "名前を直す" }] };
+  const schema = {
+    type: "object",
+    required: ["verdict", "items"],
+    properties: { verdict: { enum: ["pass", "changes"] }, items: { type: "array" } },
+  };
+  const asked = await delegate(page, `[bad-then-json-b64 ${Buffer.from(JSON.stringify(verdict)).toString("base64")}]`, true, { schema });
+  const { replyId } = JSON.parse(asked.slice(asked.indexOf("{"))) as { replyId?: string };
+  await expect
+    .poll(async () => (await replies(page)).find((r) => r.replyId === replyId), { timeout: 90_000, message: "形の決まった返事が届かない" })
+    .toBeTruthy();
+  const got = JSON.parse((await replies(page)).find((r) => r.replyId === replyId)!.text) as { structured?: unknown; notes?: string[] };
+  expect(got.structured).toEqual(verdict);
+  expect(got.notes?.some((n) => n.includes("直させました")), "合わなかった返答を直させていない").toBe(true);
+
+  // 3. 止める：この Module が頼んだ仕事を、この Module から止める → 「止められました」が受け口に届く
+  const long = await delegate(page, "[slow 300] 止める仕事", true);
+  const longBody = JSON.parse(long.slice(long.indexOf("{"))) as { replyId?: string; result: string };
+  const { runId } = JSON.parse(longBody.result) as { runId: string };
+  const stopped = await callFixture(page, "cancel", { runId });
+  expect(stopped, `止められない：${stopped}`).toContain("止めました");
+  await expect
+    .poll(async () => (await replies(page)).find((r) => r.replyId === longBody.replyId)?.title, { timeout: 60_000 })
+    .toContain("止められました");
+});
+
