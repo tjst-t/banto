@@ -423,6 +423,7 @@ export function UpdatePanel() {
               steppingUp={steppingUp}
               onWait={() => void run("wait", () => request(latest.commit, "wait"))}
               onNow={() => pressNow(latest.commit)}
+              onCheck={() => void run("check", async () => setStatus(await checkForUpdate()))}
             />
           ) : (
             <UpToDateCard
@@ -490,12 +491,15 @@ function NewVersionCard({
   steppingUp,
   onWait,
   onNow,
+  onCheck,
 }: {
   latest: NonNullable<UpdateStatus["latest"]>;
   busy: Busy;
   steppingUp: boolean;
   onWait: () => void;
   onNow: () => void;
+  /** GitHub の release を取り直して一覧を出し直す（この画面を開いたあとに入ったコミットも出す。ユーザー要望・2026-10-06） */
+  onCheck: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
   const commits = showAll ? latest.commits : latest.commits.slice(0, COMMITS_SHOWN);
@@ -510,8 +514,22 @@ function NewVersionCard({
           <p className="text-md font-semibold text-foreground">新しいコミットが {latest.commits.length} 件あります</p>
           <p className="text-xs text-ink-3">
             最新の版 <span className="font-mono">{short(latest.commit)}</span>（{formatAt(latest.date)}）と比べています
+            {latest.checkedAt ? <span data-testid="update-checked-at">。確かめた時刻 {formatAt(latest.checkedAt)}</span> : null}
           </p>
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="ml-auto size-10 shrink-0 text-ink-2 sm:size-8"
+          disabled={busy !== null}
+          onClick={onCheck}
+          aria-label="もう一度確かめる"
+          title="もう一度確かめる（GitHub の release を取り直す）"
+          data-testid="update-recheck"
+        >
+          {busy === "check" ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+        </Button>
       </div>
 
       <ol data-testid="update-commits" className="flex flex-col divide-y divide-border rounded-md border border-border">

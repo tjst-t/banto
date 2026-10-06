@@ -623,3 +623,34 @@ test("本物の update.mjs：待つ→起こし直す→確かめる。終わっ
   await expect(page.getByTestId("update-done")).toHaveText(`版 ${short(latest.commit)} になりました`);
   await expect(page.getByTestId("update-current")).toContainText(short(latest.commit));
 });
+
+test("新しいコミットの面でも右上の「もう一度確かめる」で取り直す——開いたあとに入ったコミットも出る（ユーザー要望・2026-10-06）", async ({
+  page,
+}) => {
+  const a = commitOnRelease("feat: 開く前に入った変更");
+  await openUpdate(page);
+  await page.getByTestId("update-check").click();
+  const card = page.getByTestId("update-available");
+  await expect(card).toContainText("新しいコミットが 1 件あります", { timeout: 30_000 });
+  await expect(card).toContainText(`最新の版 ${short(a)}`);
+  await expect(card.getByTestId("update-checked-at")).toContainText(/確かめた時刻 \d+月\d+日 \d+:\d\d/);
+
+  // この面を開いたあとに release が進む
+  const b = commitOnRelease("fix: 開いたあとに入った変更");
+  await expect(card).toContainText("新しいコミットが 1 件あります");
+  const recheck = card.getByTestId("update-recheck");
+  await expect(recheck).toHaveAttribute("aria-label", "もう一度確かめる");
+  await recheck.click();
+  await expect(card).toContainText("新しいコミットが 2 件あります", { timeout: 30_000 });
+  await expect(card).toContainText(`最新の版 ${short(b)}`);
+  const items = card.getByTestId("update-commits").locator("li");
+  await expect(items.nth(0)).toContainText("fix: 開いたあとに入った変更");
+  await expect(items.nth(1)).toContainText("feat: 開く前に入った変更");
+
+  // 携帯の幅でも右上に収まり、押しやすい
+  await page.setViewportSize({ width: 390, height: 844 });
+  const box = await recheck.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  expect(box!.height, "押しにくい（低い）").toBeGreaterThanOrEqual(36);
+});
