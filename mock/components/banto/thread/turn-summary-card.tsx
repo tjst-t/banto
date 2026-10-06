@@ -15,10 +15,10 @@ import {
   type TurnSummaryOption,
 } from "@/lib/mock/turn-summary";
 
-const STATUS_TONE: Record<TurnOutcomeStatus, { icon: LucideIcon; text: string; rule: string }> = {
-  done: { icon: CircleCheck, text: "text-ok", rule: "border-l-ok" },
-  partial: { icon: CircleDashed, text: "text-warn", rule: "border-l-warn" },
-  failed: { icon: CircleX, text: "text-destructive", rule: "border-l-destructive" },
+const STATUS_TONE: Record<TurnOutcomeStatus, { icon: LucideIcon; text: string }> = {
+  done: { icon: CircleCheck, text: "text-ok" },
+  partial: { icon: CircleDashed, text: "text-warn" },
+  failed: { icon: CircleX, text: "text-destructive" },
 };
 
 /** 入力欄へ文を入れる。候補で入れた文だけを入れ替え、人が打った文は消さない */
@@ -127,8 +127,9 @@ export function TurnSummaryView({ summary, answered }: { summary: TurnSummaryArg
       data-slot="banto-turn-summary"
       className={cn(
         "@container my-4 overflow-hidden rounded-lg border border-l-4 border-border bg-card shadow-sm",
-        // 人が決めることがあれば人の番の色、無ければ結果の色
-        hasDecisions ? "border-l-turn" : tone.rule,
+        // 左の線は「あなたが何かする必要があるか」だけを表す（2026-10-06、ユーザー）：
+        // 決めることがあれば人の番の色（橙）、無ければ緑。結果の状態は「結果」の段の印と文字で出す
+        hasDecisions ? "border-l-turn" : "border-l-ok",
       )}
     >
       <header className="flex items-center gap-2 border-b border-border bg-surface-2 px-4 py-2">
