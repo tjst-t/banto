@@ -56,6 +56,25 @@ async function expectWithin(child: Locator, container: Locator, message: string)
   expect(c && box && c.width > 0 && c.x >= box.x - 0.5 && c.x + c.width <= box.x + box.width + 0.5, message).toBe(true);
 }
 
+/**
+ * **badge がセルの中身の幅に収まっている**（追加・2026-10-06）。セルの右の余白（padding）まで食い込むと、
+ * 隣の列の字に触れて見える——「シークレット」が隣の列へはみ出していた。比べるのは余白を引いた右端
+ */
+async function expectFitsCell(badge: Locator, cell: Locator, message: string): Promise<void> {
+  await expect(badge, message).toBeVisible();
+  const b = await badge.boundingBox(), c = await cell.boundingBox();
+  const padRight = await cell.evaluate((e) => parseFloat(getComputedStyle(e).paddingRight));
+  expect(
+    b && c && b.x >= c.x - 0.5 && b.x + b.width <= c.x + c.width - padRight + 0.5,
+    `${message}（badge ${b && Math.round(b.x + b.width)}px / セルの中身の右端 ${c && Math.round(c.x + c.width - padRight)}px）`,
+  ).toBe(true);
+}
+
+/** 見えている要素の数（hidden・display:none を数えない）。 */
+function visibleCount(loc: Locator): Promise<number> {
+  return loc.evaluateAll((els) => els.filter((e) => e.getClientRects().length > 0).length);
+}
+
 test("VaultUI の入口から開いた画面が、実 Vault を横断して読み書きする", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-vault-directory-"));
   const pageErrors: string[] = [];
@@ -109,7 +128,8 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   const row = canvas.locator("tbody tr").filter({ hasText: ALIAS });
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 120_000 });
   await expect(row, "種別が出ていない").toContainText("シークレット");
-  await expect(row, "対象が Project の名前で出ていない").toContainText(PROJECT_NAME);
+  // **使える範囲は4つだけ**（改訂・2026-10-06、ユーザー指示）——この Project の行は Project 名ではなく「この Project」
+  await expect(row.locator("td").nth(2), "使える範囲が「この Project」で出ていない").toHaveText("この Project");
   await expect(row, "どの backend のものか出ていない").toContainText("vault-local");
   await expect(row, "用途が出ていない").toContainText("E2E が置いた");
   // **グループの列は、backend での本当の名前**（改訂・2026-09-20、ユーザー指示）。
@@ -451,7 +471,7 @@ test("この Project の置き場を変えられる——移行の有無を選�
   // **秘密も一緒に動いた**（使える範囲は Project のまま）
   const row = canvas.locator("tbody tr").filter({ hasText: alias });
   await expect(row, "移したのに一覧から消えた").toBeVisible({ timeout: 60_000 });
-  await expect(row, "移したのに使えなくなっている").toContainText("E2E 置き場を変える");
+  await expect(row.locator("td").nth(2), "移したのに使えなくなっている").toHaveText("この Project");
   // **変えたことが、そのまま画面に映る**（古い置き場を出したままにしない・規則3）
   await expect(canvas.locator("#place-summary"), "置き場の表示が古いまま").toContainText(dest);
 
@@ -783,7 +803,7 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   await expectWithin(linkRow.locator(".link-target"), nameTd, "2行目の「→ 元」が見えない");
   await expect(linkRow.locator(".link-broken"), "元が在るのに「元がありません」と出ている").toHaveCount(0);
   await expect(linkRow.locator("td").nth(0), "種別が元から導かれていない").toHaveText("シークレット");
-  await expect(linkRow, "使える範囲がこの Project になっていない").toContainText("E2E 参照");
+  await expect(linkRow.locator("td").nth(2), "使える範囲がこの Project になっていない").toHaveText("この Project");
   await expect(linkRow.locator("td").nth(4), "参照のグループが違う").toHaveText(projectGroup);
   // **参照の参照は作らない**——押せるのに断られる項目を置かない
   expect(await rowMenuItems(canvas, linkRow), "参照の行のメニューの並びが違う").toEqual(["用途を編集", "秘密を移動", "削除"]);
@@ -864,6 +884,32 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
     note: "メニューの試験",
   });
   expect(created.ok(), `置けなかった: ${await created.text()}`).toBe(true);
+  // 種別の badge の収まりを、シークレット以外でも見る
+  const fileAlias = `${alias}-file`;
+  const createdFile = await call("createAlias", {
+    implementation: "vault-local",
+    name: fileAlias,
+    kind: "file",
+    value: `MENU-MUST-NOT-APPEAR-${stamp}`,
+    group,
+  });
+  expect(createdFile.ok(), `置けなかった: ${await createdFile.text()}`).toBe(true);
+  // **2つの Project に紐付けても「この Project」**（改訂・2026-10-06、ユーザー指示）。以前は
+  // 「<Project 名> ほか」と出ていた。この Project と、もう1つの Project を同じグループへ向ける
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as Array<{ id: string; name: string }>;
+  const here = projects.filter((p) => p.name === "E2E Vault メニュー").pop();
+  expect(here, "この Project の id が引けない").toBeTruthy();
+  const otherRes = await page.request.post(`${CORE_BASE_URL}/api/projects`, {
+    headers,
+    data: { name: "E2E Vault メニュー（もう1つ）", root: mkdtempSync(join(tmpdir(), "banto-e2e-vault-menu-other-")) },
+  });
+  expect(otherRes.ok(), `もう1つの Project を作れない: ${await otherRes.text()}`).toBe(true);
+  const other = (await otherRes.json()) as { id: string };
+  for (const projectId of [here!.id, other.id]) {
+    const bound = await call("setProjectPlacement", { projectId, implementation: "vault-local", group, migrate: false });
+    expect(bound.ok(), `グループに紐付けられない: ${await bound.text()}`).toBe(true);
+  }
 
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
   await page.getByRole("option", { name: /Vault を管理/ }).click();
@@ -871,8 +917,40 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
   await canvas.locator("#target-filter").selectOption("all");
-  const row = canvas.locator("tbody tr").filter({ hasText: alias });
+  const row = canvas.locator("tbody tr").filter({ hasText: alias }).filter({ hasNotText: fileAlias });
   await expect(row).toHaveCount(1, { timeout: 30_000 });
+  const fileRow = canvas.locator("tbody tr").filter({ hasText: fileAlias });
+  await expect(fileRow).toHaveCount(1);
+
+  // ---- 使える範囲は「この Project」——紐付いている Project の数によらない（2026-10-06）----
+  const target = row.locator("td").nth(2).locator(".badge");
+  await expect(target, "2つの Project に紐付いた行が「この Project」になっていない").toHaveText("この Project");
+  await expect(target, "いくつの Project から使えるかが指で読めない").toHaveAttribute(
+    "title",
+    "この Project を含む 2 つの Project から使えます",
+  );
+  // 絞り込みの選択肢も同じ言葉（Project 名・「ほか」を出さない）
+  const targetOptions = await canvas.locator("#target-filter option").allInnerTexts();
+  expect(targetOptions, "絞り込みに「この Project」が無い").toContain("この Project");
+  expect(
+    targetOptions.filter((o) => o.includes("ほか") || o.includes("E2E Vault メニュー")),
+    `絞り込みに Project 名が出ている: ${JSON.stringify(targetOptions)}`,
+  ).toEqual([]);
+  await canvas.locator("#target-filter").selectOption({ label: "この Project" });
+  await expect(canvas.locator("tbody tr").filter({ hasText: alias }), "「この Project」で絞ると出ない").toHaveCount(2);
+  await canvas.locator("#target-filter").selectOption("all");
+
+  // ---- Vault が1本なら、見出しもセルも Vault の列を畳む（列がずれない、2026-10-06）----
+  // 以前は見出しだけが隠れ、セルは残って列が1つずれていた（「使える範囲」の下に Vault の名前）
+  await expect(canvas.locator("#impls .chip"), "Vault が1本の条件で試せていない").toHaveCount(1);
+  await expect(canvas.locator("#vault-col")).toBeHidden();
+  await expect(row.locator("td").nth(3), "Vault のセルが隠れていない").toBeHidden();
+  expect(await visibleCount(row.locator("td")), "見出しとセルの数が揃っていない").toBe(
+    await visibleCount(canvas.locator("thead th")),
+  );
+  const headerX = (await canvas.locator("thead th").nth(2).boundingBox())!.x;
+  const cellX = (await row.locator("td").nth(2).boundingBox())!.x;
+  expect(Math.abs(headerX - cellX), `「使える範囲」の見出しとセルがずれている（${headerX} / ${cellX}）`).toBeLessThan(1);
 
   // ---- 狭い Canvas でも、表が横にはみ出さない（このあとのメニューも狭いまま試す）----
   // 画面の幅を変えて、Canvas の中の幅が 840px 前後から 500px 前後までで見る
@@ -887,7 +965,14 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
       }, { message: `画面幅 ${viewport}px で表が横にはみ出す` })
       .toBe("fits");
     console.log(`[vault-menu] viewport ${viewport}px → Canvas の中の幅 ${(await width()).client}px`);
+    // **badge が列に収まる**（2026-10-06）——「シークレット」が隣の列へはみ出していた
+    for (const r of [row, fileRow]) {
+      await expectFitsCell(r.locator("td").nth(0).locator(".badge"), r.locator("td").nth(0), `画面幅 ${viewport}px で種別の badge が列からはみ出す`);
+      await expectFitsCell(r.locator("td").nth(2).locator(".badge"), r.locator("td").nth(2), `画面幅 ${viewport}px で使える範囲の badge が列からはみ出す`);
+    }
   }
+  await expect(fileRow.locator("td").nth(0)).toHaveText("ファイル");
+  await expect(row.locator("td").nth(0)).toHaveText("シークレット");
 
   const more = row.getByRole("button", { name: `${alias} の操作` });
   const menu = canvas.getByRole("menu");
@@ -932,4 +1017,5 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
 
   expect(await page.content()).not.toContain(`MENU-MUST-NOT-APPEAR-${stamp}`);
   await call("deleteAlias", { implementation: "vault-local", name: alias, group });
+  await call("deleteAlias", { implementation: "vault-local", name: fileAlias, group });
 });

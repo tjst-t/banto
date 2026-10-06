@@ -21,15 +21,33 @@ export const MANAGE_APP_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <style>
-  :root { color-scheme: light dark; }
+  /* **色は host が渡す標準の名前で受ける**（訂正・2026-10-06）。banto は hostContext.styles.variables
+     に --color-text-primary などを入れて渡す（apps/frontend の canvas-host-styles.ts）。以前は
+     --mcp-ui-color-* を読んでいて、どこからも渡されないので**いつも既定の色**だった。
+     古い名前は既定の手前に残す（それを渡す host があっても壊れない）。
+     **明暗も host に合わせる**——color-scheme を OS に任せると、banto が暗いのに OS が明るいとき、
+     字が黒のまま暗い地に載る */
+  :root {
+    color-scheme: light dark;
+    --ink: var(--color-text-primary, var(--mcp-ui-color-text, CanvasText));
+    --line: var(--color-border-primary, var(--mcp-ui-color-border, rgba(128,128,128,.35)));
+    --line-soft: var(--color-border-primary, var(--mcp-ui-color-border, rgba(128,128,128,.2)));
+    --surface: var(--color-background-primary, var(--mcp-ui-color-surface, Canvas));
+    --danger: var(--color-text-danger, var(--mcp-ui-color-danger, #c0392b));
+    --danger-soft: var(--color-background-danger, rgba(192,57,43,.12));
+    --info: var(--color-text-info, var(--mcp-ui-color-info, #2f6fde));
+    --info-soft: var(--color-background-info, rgba(47,111,222,.12));
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 0;
     font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit);
+    color: var(--ink);
     background: transparent;
   }
-  .section { padding: 12px 16px; border-bottom: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.25)); }
+  .section { padding: 12px 16px; border-bottom: 1px solid var(--line-soft); }
   h1 { font-size: 13px; font-weight: 600; margin: 0; }
   .lead { margin: 4px 0 0; opacity: .65; font-size: 12px; }
   .label { font-size: 12px; font-weight: 500; opacity: .65; margin: 0 0 6px; }
@@ -37,17 +55,17 @@ export const MANAGE_APP_HTML = `<!doctype html>
   .spread { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .chip {
     display: inline-flex; align-items: center; gap: 8px;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 9px; font-size: 12px;
   }
   .muted { opacity: .6; }
   .badge {
-    display: inline-block; border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    display: inline-block; border: 1px solid var(--line);
     border-radius: 999px; padding: 0 8px; font-size: 11px; line-height: 18px; white-space: nowrap;
   }
   button {
     font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit;
+    border: 1px solid var(--line); background: transparent; color: inherit;
   }
   button:hover { opacity: .75; }
   /* **押せないボタンは押せないと見せる**（訂正・2026-10-05、実機で踏んだ）——disabled の見た目が無く、
@@ -55,20 +73,20 @@ export const MANAGE_APP_HTML = `<!doctype html>
   button[disabled], button[disabled]:hover { opacity: .45; cursor: default; }
   button.icon { padding: 2px 6px; border-color: transparent; opacity: .6; }
   button.icon:hover { opacity: 1; }
-  button.danger { color: var(--mcp-ui-color-danger, #c0392b); }
+  button.danger { color: var(--danger); }
   /* 添え物のボタン。主役（新規登録）と競らせない */
   button.quiet { padding: 2px 8px; font-size: 11px; }
   input, select, textarea {
     font: inherit; font-size: 12px; padding: 5px 8px; width: 100%;
     border-radius: 6px; background: transparent; color: inherit;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
   }
   /* **列幅を固定する**（改訂・2026-09-20、ユーザー指摘）。自動幅だと、名前の
      長い秘密（CLOUDFLARE_ACCOUNT_ID など）が入った列が潰れ、word-break で
      **1文字ずつ縦に流れて**表が読めなくなっていた */
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th { text-align: left; font-weight: 500; font-size: 11px; opacity: .55; padding: 0 8px 6px 0; }
-  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.18)); vertical-align: middle; }
+  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line-soft); vertical-align: middle; }
   /* **はみ出したら … で畳む。折り返さない。**
      **JS で文字列を切らない**——切ると、選んでコピーしたときに切れたものが
      取れてしまう。CSS の省略なら DOM には全文が在るので、コピーは全文 */
@@ -82,36 +100,36 @@ export const MANAGE_APP_HTML = `<!doctype html>
   .name-text, .link-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .link-badge {
     flex: none; border-radius: 4px; padding: 0 5px; font-size: 10px; font-weight: 500; line-height: 16px;
-    color: var(--mcp-ui-color-info, #2f6fde); background: rgba(47,111,222,.12); white-space: nowrap;
+    color: var(--info); background: var(--info-soft); white-space: nowrap;
   }
   /* 参照の行の2行目「→ 元のグループ / 名前」。名前より控えめに */
   .link-line { font-size: 11px; font-weight: 400; line-height: 1.4; }
   .link-target { opacity: .6; }
-  .link-broken { flex: none; color: var(--mcp-ui-color-danger, #c0392b); }
+  .link-broken { flex: none; color: var(--danger); }
   /* 値が空の秘密（2026-10-06）——渡そうとすると断られるので、名前の前に目立たせる */
   .empty-badge {
     flex: none; border-radius: 4px; padding: 0 5px; font-size: 10px; font-weight: 500; line-height: 16px;
-    color: var(--mcp-ui-color-danger, #c0392b); background: rgba(192,57,43,.12); white-space: nowrap;
+    color: var(--danger); background: var(--danger-soft); white-space: nowrap;
   }
   /* **行の操作は「…」1つ**（改訂・2026-10-05、ユーザー指摘）——操作を並べていたら
      列が押し広げられ、表が横にはみ出していた */
   td.actions { text-align: right; white-space: nowrap; padding-right: 0; }
   button.more { padding: 0 6px; font-size: 15px; line-height: 20px; }
-  button.more[aria-expanded="true"] { opacity: 1; border-color: var(--mcp-ui-color-border, rgba(128,128,128,.35)); }
+  button.more[aria-expanded="true"] { opacity: 1; border-color: var(--line); }
   .menu {
     position: fixed; z-index: 10; min-width: 9.5em; max-height: calc(100vh - 8px); overflow-y: auto;
     display: grid; padding: 4px; border-radius: 8px;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
-    background: var(--mcp-ui-color-surface, Canvas); box-shadow: 0 6px 20px rgba(0,0,0,.18);
+    border: 1px solid var(--line);
+    background: var(--surface); box-shadow: 0 6px 20px rgba(0,0,0,.18);
   }
   .menu button { border: none; border-radius: 4px; text-align: left; padding: 5px 10px; white-space: nowrap; }
   .menu button:hover, .menu button:focus { opacity: 1; outline: none; background: rgba(128,128,128,.16); }
-  .menu .sep { border-top: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.25)); margin: 4px 2px; }
+  .menu .sep { border-top: 1px solid var(--line-soft); margin: 4px 2px; }
   .note-cell { opacity: .7; }
   dialog {
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
     border-radius: 10px; padding: 0; color: inherit;
-    background: var(--mcp-ui-color-surface, Canvas);
+    background: var(--surface);
     min-width: min(440px, 92vw);
   }
   dialog::backdrop { background: rgba(0,0,0,.35); }
@@ -127,8 +145,8 @@ export const MANAGE_APP_HTML = `<!doctype html>
   .field > span { font-size: 11px; opacity: .65; }
   .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
   .problem {
-    border: 1px solid var(--mcp-ui-color-danger, #c0392b); border-radius: 6px;
-    padding: 8px 10px; font-size: 12px; color: var(--mcp-ui-color-danger, #c0392b);
+    border: 1px solid var(--danger); border-radius: 6px;
+    padding: 8px 10px; font-size: 12px; color: var(--danger);
   }
   .empty { padding: 24px 0; text-align: center; font-size: 12px; opacity: .6; }
 </style>
@@ -187,14 +205,18 @@ export const MANAGE_APP_HTML = `<!doctype html>
       <!-- **見出しも中身も端的に**（改訂・2026-09-20、ユーザー指示）。
            名前と用途だけを伸び縮みさせ、他は固定幅で畳む -->
       <tr>
-        <th style="width:7.5em">種別</th>
+        <!-- **幅の em は見出しの字（11px）の em**（訂正・2026-10-06）。7.5em は 82px しかなく、セルの右の
+             余白を引くと 74px——「シークレット」の badge（85px）が隣の列へはみ出していた。
+             中身で一番長い badge（シークレット・この Project）に、余白を引いても収まる幅にする。
+             広げた分は Vault・グループの列（どちらも … で畳む）から戻す——狭い Canvas で表をはみ出させない -->
+        <th style="width:9em">種別</th>
         <th>名前</th>
-        <th style="width:8em">使える範囲</th>
-        <th style="width:9em" data-vault-col>Vault</th>
+        <th style="width:8.5em">使える範囲</th>
+        <th style="width:8em" id="vault-col">Vault</th>
         <!-- **backend での本当の名前を出す**（改訂・2026-09-20、ユーザー指示）。
              Infisical ならフォルダ名そのもの。使える範囲は置き場から導いた値なので、
              元を隠すと「どのフォルダに在るのか」が画面から分からない -->
-        <th style="width:9em">グループ</th>
+        <th style="width:8em">グループ</th>
         <th>用途</th>
         <th style="width:6.5em">最終使用</th>
         <th style="width:2.75em"></th>
@@ -423,8 +445,27 @@ ${ALIAS_KIND_RULES_JS}
       waiting.delete(msg.id);
       if (msg.error) reject(new Error(msg.error.message || "呼び出しに失敗しました"));
       else resolve(msg.result);
+      return;
     }
+    // **明暗が変わると host が色を渡し直す**——受けないと、開いたままの画面が古い色に残る
+    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
   });
+
+  /**
+   * **host の明暗と色を当てる**（訂正・2026-10-06）。色の名前は標準のもの（--color-text-primary など、
+   * 頭に -- が付いている）をそのまま置く——以前は "--mcp-ui-" を前に足していたので
+   * "--mcp-ui---color-…" という誰も読まない名前に置かれていた。頭に -- の無い名前を渡す host には
+   * 前の置き方のまま（CSS の古い名前が既定の手前で受ける）
+   */
+  function applyAppearance(ctx) {
+    if (!ctx) return;
+    if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.dataset.theme = ctx.theme;
+    const vars = (ctx.styles && ctx.styles.variables) || {};
+    for (const [k, v] of Object.entries(vars)) {
+      if (typeof v !== "string") continue;
+      document.documentElement.style.setProperty(k.startsWith("--") ? k : "--mcp-ui-" + k, v);
+    }
+  }
 
   /** 自分の Module の tool を呼ぶ。**中身が読めないなら読めたふりをしない**（規則2）。 */
   async function callTool(name, args) {
@@ -474,17 +515,29 @@ ${ALIAS_KIND_RULES_JS}
     // （instance 全体の設定）が既に Global と呼んでいるので、そちらに寄せる。
     // **説明は付けない**（改訂・2026-09-20）——badge は1語。意味は「使える範囲」
     // という見出しが言っている
+    //
+    // **見分けるのは4つだけ**（改訂・2026-10-06、ユーザー指示）——Global・この Project・
+    // 別の Project・未割当。以前はこの Project の行に Project 名を出し、他の Project にも
+    // 紐付いていると「<名前> ほか」と出していたが、問いは「ここから使えるか」なので、
+    // 紐付いている Project の数によらず「この Project」。いくつに紐付いているかは title で読める
+    // （他の Project の名前は画面に渡されていないので、数だけ）
     if (a.scope === "shared") return { key: "shared", label: "Global" };
     if (a.scope === "unbound") return { key: "unbound", label: "未割当" };
     const ids = a.projects || [];
     if (project && ids.indexOf(project.id) >= 0) {
-      return { key: project.id, label: ids.length > 1 ? project.name + " ほか" : project.name };
+      return {
+        key: "here",
+        label: "この Project",
+        title: ids.length > 1
+          ? "この Project を含む " + ids.length + " つの Project から使えます"
+          : "この Project からだけ使えます",
+      };
     }
     if (ids.length === 0) return { key: "unbound", label: "未割当" };
     // **他の Project は1つにまとめる**（改訂・2026-09-20）。以前は id の頭8桁を
     // label に混ぜて見分けていたが、短くすると**同じ文字列の選択肢が絞り込みに
     // 並ぶ**ことになる——key も1つにして、まとめて絞れる形にする
-    return { key: "other", label: "別の Project" };
+    return { key: "other", label: "別の Project", title: ids.length + " つの別の Project から使えます" };
   }
 
   /**
@@ -600,6 +653,11 @@ ${ALIAS_KIND_RULES_JS}
     return o;
   }
 
+  /** Vault が2本以上繋がっているか（Vault の絞り込みと列を出すかどうか。判定はここだけ・規則3）。 */
+  function manyVaults() {
+    return implementations.length > 1;
+  }
+
   /** 選択肢は**いま実際にあるものから導く**——存在しない絞り込みを出さない。 */
   function fillFilters() {
     const keep = (sel) => sel.value;
@@ -623,9 +681,8 @@ ${ALIAS_KIND_RULES_JS}
     // **Vault が1本なら、選ばせない**（追加・2026-09-15）。選択肢が1つしかない
     // 絞り込みは、画面の情報量を増やすだけで何も決められない。
     // 同じ理由で表の Vault 列も畳む（どれも同じ値しか出ない）
-    const manyVaults = implementations.length > 1;
-    backend.hidden = !manyVaults;
-    for (const el of document.querySelectorAll("[data-vault-col]")) el.hidden = !manyVaults;
+    backend.hidden = !manyVaults();
+    $("vault-col").hidden = !manyVaults();
 
     for (const [sel, was] of [[kind, kindWas], [target, targetWas], [backend, backendWas]]) {
       if (was && Array.from(sel.options).some((o) => o.value === was)) sel.value = was;
@@ -815,9 +872,9 @@ ${ALIAS_KIND_RULES_JS}
       targetTd.className = "clip";
       const targetBadge = document.createElement("span");
       targetBadge.className = "badge";
-      targetBadge.textContent = targetOf(a).label;
-      // Project 名が長いことはある——badge は縮めずに、畳んだうえで指で読ませる
-      targetBadge.title = targetOf(a).label;
+      const target = targetOf(a);
+      targetBadge.textContent = target.label;
+      targetBadge.title = target.title || target.label;
       targetTd.append(targetBadge);
 
       // **backend での本当の名前をそのまま出す**（改訂・2026-09-20、ユーザー指示）。
@@ -860,9 +917,11 @@ ${ALIAS_KIND_RULES_JS}
       });
       actions.append(more);
 
-      // Vault が1本しかないときは畳む（fillFilters が hidden を立てる）
+      // Vault が1本しかないときは畳む。**セルはここで決める**（訂正・2026-10-06）——以前は
+      // fillFilters が見出しとセルにまとめて hidden を立てていたが、fillFilters は行を描く前に
+      // 動くので、新しく作ったセルには付かず、見出しだけが消えて**列が1つずれていた**
       const vaultTd = clipped(a.implementation);
-      vaultTd.setAttribute("data-vault-col", "");
+      vaultTd.hidden = !manyVaults();
 
       // **名前の列**（改訂・2026-10-05、ユーザー指摘）。参照の行は、名前の前に「参照」の印、
       // 2行目に「→ 元のグループ / 名前」。どちらの行も**末尾から**畳むので、印と「→」は
@@ -1563,10 +1622,7 @@ ${ALIAS_KIND_RULES_JS}
     appCapabilities: { availableDisplayModes: ["fullscreen", "inline"] },
   }).then(async (result) => {
     const host = (result && result.hostContext) || {};
-    const vars = ((host.styles || {}).variables) || {};
-    for (const [k, v] of Object.entries(vars)) {
-      document.documentElement.style.setProperty("--mcp-ui-" + k, String(v));
-    }
+    applyAppearance(host);
     // **どこで開かれたか**（banto が渡す。無ければ instance 全体の面として動く）
     const ctx = host["dev.banto/project"];
     project = ctx && typeof ctx.id === "string" ? { id: ctx.id, name: String(ctx.name || ctx.id) } : null;

@@ -16,13 +16,22 @@ export const CONFIG_APP_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <style>
-  :root { color-scheme: light dark; }
+  /* 色は host が渡す標準の名前（--color-*）で受け、明暗も host に合わせる——管理画面（manage-app.ts）と同じ
+     （訂正・2026-10-06。以前は渡されない --mcp-ui-color-* を読み、初期化で受けた色も捨てていた） */
+  :root {
+    color-scheme: light dark;
+    --ink: var(--color-text-primary, var(--mcp-ui-color-text, CanvasText));
+    --line: var(--color-border-primary, var(--mcp-ui-color-border, rgba(128,128,128,.35)));
+    --danger: var(--color-text-danger, var(--mcp-ui-color-danger, #c0392b));
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body {
     margin: 0; padding: 14px;
     font: 13px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    color: var(--mcp-ui-color-text, inherit);
+    color: var(--ink);
     background: transparent;
   }
   h1 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
@@ -34,17 +43,17 @@ export const CONFIG_APP_HTML = `<!doctype html>
   input, select {
     font: inherit; font-size: 12px; padding: 6px 8px; width: 100%;
     border-radius: 6px; background: transparent; color: inherit;
-    border: 1px solid var(--mcp-ui-color-border, rgba(128,128,128,.35));
+    border: 1px solid var(--line);
   }
   button {
     font: inherit; font-size: 12px; padding: 6px 14px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--mcp-ui-color-border, currentColor); background: transparent; color: inherit;
+    border: 1px solid var(--line); background: transparent; color: inherit;
   }
   button:hover { opacity: .75; }
   button[disabled] { opacity: .45; cursor: default; }
   .problem {
-    border: 1px solid var(--mcp-ui-color-danger, #c0392b); border-radius: 6px;
-    padding: 8px 10px; font-size: 12px; color: var(--mcp-ui-color-danger, #c0392b);
+    border: 1px solid var(--danger); border-radius: 6px;
+    padding: 8px 10px; font-size: 12px; color: var(--danger);
   }
   .done { font-size: 12px; }
 </style>
@@ -102,8 +111,26 @@ export const CONFIG_APP_HTML = `<!doctype html>
       waiting.delete(msg.id);
       if (msg.error) reject(new Error(msg.error.message || "呼び出しに失敗しました"));
       else resolve(msg.result);
+      return;
     }
+    // **明暗が変わると host が色を渡し直す**——受けないと、開いたままの画面が古い色に残る
+    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
   });
+
+  /**
+   * **host の明暗と色を当てる**（訂正・2026-10-06）。色の名前は標準のもの（--color-text-primary など、
+   * 頭に -- が付いている）をそのまま置く。頭に -- の無い名前を渡す host には "--mcp-ui-" を付けて置く
+   * （CSS の古い名前が既定の手前で受ける）——管理画面と同じ
+   */
+  function applyAppearance(ctx) {
+    if (!ctx) return;
+    if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.dataset.theme = ctx.theme;
+    const vars = (ctx.styles && ctx.styles.variables) || {};
+    for (const [k, v] of Object.entries(vars)) {
+      if (typeof v !== "string") continue;
+      document.documentElement.style.setProperty(k.startsWith("--") ? k : "--mcp-ui-" + k, v);
+    }
+  }
 
   async function callTool(name, args) {
     const res = await request("tools/call", { name, arguments: args || {} });
@@ -183,7 +210,10 @@ export const CONFIG_APP_HTML = `<!doctype html>
     // 弾かれ、画面が出ないまま終わる。実測で踏んだ・2026-09-14）
     appCapabilities: { availableDisplayModes: ["fullscreen", "inline"] },
   })
-    .then(() => send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }))
+    .then((result) => {
+      applyAppearance(result && result.hostContext);
+      send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+    })
     .catch(() => {
       // **初期化に失敗しても、画面ごと消さない**（規則13——出せるものは出す）。
       // ここで得るのは見た目の変数だけなので、無くても設定はできる
