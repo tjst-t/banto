@@ -251,6 +251,16 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     const out: Array<{ name: string; group: string; reason: string }> = [];
     for (const a of moving) {
       const linkTo = a.linkTo as { group?: unknown; name?: unknown } | undefined;
+      // **空の秘密は Vault をまたいで運べない**（2026-10-06、レビュー）——値を窓口が運ぶので、空なら
+      // 運ぶ途中で「値が空です」と断られ、置き場の変更が途中で止まる。事前に出す（all-or-nothing）
+      if (a.empty === true && !linkTo) {
+        out.push({
+          name: String(a.name),
+          group: String(a.group),
+          reason: "値が空なので別の Vault へは運べません（先に値を入れるか、移さずに変えてください）",
+        });
+        continue;
+      }
       if (linkTo) {
         out.push({
           name: String(a.name),
@@ -898,6 +908,15 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
                   .map((g) => splitVariant(g).group),
               ),
             ],
+            // **紐付けた版付きの置き場**（`g@prod`）——「移す」「参照を作る」の行き先に並べる（2026-10-06、レビュー）。
+            // グループの選択肢は版を外した名前なので、これが無いと版付きの置き場へ移せない
+            variantGroups: [
+              ...new Set(
+                [r.value.bindings.shared, ...r.value.bindings.projects.map((b) => b.group)].filter(
+                  (g) => !!g && splitVariant(g).variant !== undefined,
+                ),
+              ),
+            ],
             // 版を名乗る Vault だけ中身がある（無ければ null——画面は版の選択を出さない）
             variants: r.value.variants,
             ...(r.value.variantsError ? { variantsError: r.value.variantsError } : {}),
@@ -918,6 +937,18 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
         // いまの置き場と、そこに在るもの
         const { aliases } = await crossAliases();
+        // **移す先が版付きのグループなら、その行も読む**（2026-10-06、レビュー）——まだ紐付いていない版付きの
+        // グループは一覧に出ないので、読まずに見積もると、その版に既にある本物の値との衝突を見落とす
+        if (splitVariant(group).variant !== undefined) {
+          const rows = JSON.parse(
+            await deps.relay.callTool(implementation, "listAliases", { alsoGroups: [group] }),
+          ) as Array<Record<string, unknown>>;
+          for (const r of rows) {
+            if (r.group !== group) continue;
+            if (aliases.some((x) => x.implementation === implementation && x.group === group && x.name === r.name)) continue;
+            aliases.push({ ...r, implementation } as TaggedAlias);
+          }
+        }
         const bindings = (
           await acrossVaults(async (impl) => ({
             impl,

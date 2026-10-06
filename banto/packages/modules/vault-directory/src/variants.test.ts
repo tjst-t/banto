@@ -117,3 +117,54 @@ test("置き場：版を名乗る Vault だけ版の選択肢を返し、版付�
     for (const d of dirs) await rm(d, { recursive: true, force: true });
   }
 });
+
+test("置き場の変更：まだ紐付いていない版付きの置き場に同じ名前があれば、見積もりで衝突と出し、移さない（prod の本物の値を守る）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vd-var-c-"));
+  try {
+    const vault = await connect(
+      createVaultModuleServer({ moduleName: "vault-x", backend: variantBackend(), aliasStore: new VariantStore(dir), dataDir: dir }),
+    );
+    const relay: RelayLike = {
+      listTargets: async () => [{ name: "vault-x", roles: ["vault"] }],
+      callTool: async (_target, name, args) => {
+        const res = (await vault.callTool({ name, arguments: args, _meta: ADMIN })) as {
+          isError?: boolean;
+          content: Array<{ text: string }>;
+        };
+        if (res.isError) throw new Error(res.content[0]!.text);
+        return res.content[0]!.text;
+      },
+    };
+    const ui = await connect(createVaultDirectoryServer({ relay }));
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const res = (await ui.callTool({ name, arguments: args, _meta: ADMIN })) as { isError?: boolean; content: Array<{ text: string }> };
+      if (res.isError) throw new Error(res.content[0]!.text);
+      return JSON.parse(res.content[0]!.text);
+    };
+    // dev に紐付いた Project。prod には同じ名前の本物の値（ansible-homelab の形）
+    await call("setProjectPlacement", { projectId: "P", implementation: "vault-x", group: "homelab" });
+    await vault.callTool({ name: "createAlias", arguments: { name: "HOST", kind: "secret", group: "homelab", value: "" + "dev" }, _meta: ADMIN });
+    await vault.callTool({ name: "createAlias", arguments: { name: "HOST", kind: "secret", group: "homelab@prod", value: "pve" }, _meta: ADMIN });
+
+    const plan = await call("planProjectPlacement", { projectId: "P", implementation: "vault-x", group: "homelab", variant: "prod" });
+    assert.deepEqual(plan.moving, ["HOST"]);
+    assert.deepEqual(plan.conflicts, ["HOST"], "移す先の版にある同じ名前を見落とした");
+    await assert.rejects(
+      () => call("setProjectPlacement", { projectId: "P", implementation: "vault-x", group: "homelab", variant: "prod", migrate: true }),
+      /移す先に同じ名前があります/,
+    );
+    const prod = (await vault.callTool({ name: "resolveAlias", arguments: { name: "HOST", group: "homelab@prod" }, _meta: ADMIN })) as {
+      content: Array<{ text: string }>;
+    };
+    assert.equal(prod.content[0]!.text, "pve");
+
+    // 移さずに変えるのはできる。変えたあと、移す・参照の行き先に版付きの置き場が並ぶ
+    await call("setProjectPlacement", { projectId: "P", implementation: "vault-x", group: "homelab", variant: "prod" });
+    const places = await call("getPlacements", { projectId: "P" });
+    assert.deepEqual(places.vaults[0].variantGroups, ["homelab@prod"]);
+    await ui.close();
+    await vault.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

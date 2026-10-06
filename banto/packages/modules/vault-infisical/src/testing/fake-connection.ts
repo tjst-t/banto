@@ -65,7 +65,8 @@ export function fakeConnection(opts: { environment?: string; environments?: stri
         return { secretValue: got.secretValue };
       },
       async createSecret(key: string, o: { environment: string; secretPath: string; secretValue: string; secretComment?: string }) {
-        if (o.secretPath !== "/" && !folders.has(envKey(o.environment, o.secretPath)) && folders.size > 0) {
+        // **フォルダが無ければ書けない**（本物と同じ。フォルダを作らずに書く実装を見逃さない）
+        if (o.secretPath !== "/" && !folders.has(envKey(o.environment, o.secretPath))) {
           throw new Error(`folder ${o.secretPath} not found`);
         }
         if (secrets.has(at(o.environment, o.secretPath, key))) throw new Error("Secret already exist");

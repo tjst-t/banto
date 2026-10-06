@@ -165,7 +165,11 @@ export class InfisicalConnection {
       [`/api/v1/projects/${id}`, "project"],
       [`/api/v1/workspace/${id}`, "workspace"],
     ] as const) {
-      const res = await fetch(`${base}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+      // 届かない相手で画面を止めない（15 秒で諦めて理由を言う）
+      const res = await fetch(`${base}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15_000),
+      });
       if (!res.ok) {
         failures.push(`${path} → ${res.status}`);
         continue;

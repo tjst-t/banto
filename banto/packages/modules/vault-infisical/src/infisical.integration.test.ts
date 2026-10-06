@@ -518,3 +518,38 @@ test("参照の書き方を自分で置いても、見えないグループの�
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("版（環境）：環境の一覧を Infisical の API から読み、g@prod は prod のフォルダに置いて一覧・数に出る（本物の Infisical で）", { skip }, async () => {
+  const conn = await connected();
+  const backend = new InfisicalBackend(conn);
+  const store = new InfisicalAliasStore(conn);
+  // SDK に口が無いので REST を直接呼んでいる（GET /api/v1/projects/{id}）——応答の形を本物で確かめる
+  const axis = await backend.variants();
+  assert.equal(axis.label, "環境");
+  assert.equal(axis.default, config!.environment);
+  assert.ok(axis.options.includes(config!.environment), `既定の環境が選択肢に無い: ${axis.options.join(",")}`);
+  const other = axis.options.find((e) => e !== axis.default);
+  assert.ok(other, "既定のほかに環境が無い（Infisical の Project の既定は dev/staging/prod）");
+
+  const g = uniqueGroup("variant");
+  await backend.putSecret(`${g}@${other}/sub/K`, "real");
+  await backend.putSecret(`${g}/sub/K`, ""); // 既定の環境には名前だけの空欄
+  assert.equal(await backend.getSecret(`${g}@${other}/sub/K`), "real");
+
+  // フォルダを起点にした再帰の一覧が、絶対の道（/g/sub）を返すこと
+  const rows = await store.list({ alsoGroups: [`${g}@${other}`] });
+  const mine = rows.filter((a) => a.backendPath.startsWith(g));
+  assert.deepEqual(
+    mine.map((a) => [a.backendPath, a.name, a.empty ?? false]).sort(),
+    [
+      [`${g}/sub/K`, "sub/K", true],
+      [`${g}@${other}/sub/K`, "sub/K", false],
+    ],
+  );
+  const counts = await backend.countByVariant(g);
+  assert.deepEqual(counts.find((c) => c.variant === other), { variant: other, filled: 1, total: 1 });
+  assert.deepEqual(counts.find((c) => c.variant === axis.default), { variant: axis.default, filled: 0, total: 1 });
+
+  await backend.deleteSecret(`${g}@${other}/sub/K`);
+  await backend.deleteSecret(`${g}/sub/K`);
+});

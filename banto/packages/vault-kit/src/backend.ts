@@ -56,6 +56,12 @@ export interface VaultBackend {
   variants?(): Promise<VariantAxis>;
   /** 版ごとの「値が入っている秘密の数／全部の数」（版を選ぶ欄に添える）。`variants` を持つなら持つ。 */
   countByVariant?(group: string): Promise<VariantCount[]>;
+  /**
+   * **グループ名をいまの形に揃える**（同期、`variants` を持つなら持つ。2026-10-06、レビュー）。いまの既定の版を
+   * 指す `g@<既定>` は `g` に直す——既定の版を後から変えると、台帳の紐付け `g@prod` と素の `g` が同じ置き場を
+   * 指すようになるため。kit は紐付けと置き場を比べる前に必ずこれを通す
+   */
+  canonicalGroup?(groupId: string): string;
 }
 
 /** backend が名乗る版の軸。 */

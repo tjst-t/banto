@@ -9,7 +9,8 @@ import type { InfisicalConnection } from "./client.js";
 import { fakeConnection } from "./testing/fake-connection.js";
 
 test("参照は、参照の置き場に ${環境.フォルダ.キー} の秘密を1つ置き、注記に linkTo を書く（種別は書かない）", async () => {
-  const { conn, secrets } = fakeConnection();
+  const { conn, folders, secrets } = fakeConnection();
+  folders.add("/proj").add("/tools"); // kit がグループのフォルダを先に作る
   const store = new InfisicalAliasStore(conn);
   secrets.set("/tools\0CF_TOKEN", { secretValue: "real", secretComment: JSON.stringify({ name: "CF_TOKEN", kind: "secret" }) });
   await store.createLink({ name: "CF_TOKEN", backendPath: "proj/CF_TOKEN", linkTo: "tools/CF_TOKEN" });
@@ -21,7 +22,8 @@ test("参照は、参照の置き場に ${環境.フォルダ.キー} の秘密�
 });
 
 test("一覧は注記の linkTo を落とさない——参照の行として読む（種別は付けない）", async () => {
-  const { conn, secrets, listOptions } = fakeConnection();
+  const { conn, folders, secrets, listOptions } = fakeConnection();
+  folders.add("/proj").add("/tools"); // kit がグループのフォルダを先に作る
   const store = new InfisicalAliasStore(conn);
   secrets.set("/tools\0CF_TOKEN", { secretValue: "real", secretComment: JSON.stringify({ name: "CF_TOKEN", kind: "secret" }) });
   await store.createLink({ name: "cf", backendPath: "proj/cf", linkTo: "tools/CF_TOKEN", note: "外の道具も読む" });
@@ -44,7 +46,8 @@ test("一覧は注記の linkTo を落とさない——参照の行として読
 });
 
 test("指し直すと、注記と参照の書き方の両方が変わる／参照を消すと参照の秘密だけが消える", async () => {
-  const { conn, secrets } = fakeConnection();
+  const { conn, folders, secrets } = fakeConnection();
+  folders.add("/proj").add("/tools"); // kit がグループのフォルダを先に作る
   const store = new InfisicalAliasStore(conn);
   secrets.set("/tools\0K", { secretValue: "real", secretComment: JSON.stringify({ name: "K", kind: "secret" }) });
   await store.createLink({ name: "K", backendPath: "proj/K", linkTo: "tools/K" });

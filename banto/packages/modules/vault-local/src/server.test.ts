@@ -49,6 +49,10 @@ async function withServer(fn: (h: Harness) => Promise<void>): Promise<void> {
     client.readResource = ((params: Record<string, unknown>, ...rest: unknown[]) =>
       rawRead({ _meta: ADMIN, ...params } as never, ...(rest as []))) as typeof client.readResource;
     harness.client = client;
+    // **起動（鍵の用意）の終わりを待ってから試す**（直し・2026-10-06）。tool の一覧は起動を待たないので、一覧だけを
+    // 見る試験は age-keygen の途中で終わり、finally の rm と競走して ENOTEMPTY で間欠的に落ちていた（main でも
+    // 4回に1回）。中身を扱う口を1回呼ぶと起動を待つ。起動の失敗はそれを試す試験に任せる
+    await rawRead({ _meta: ADMIN, uri: "vault://aliases" } as never).catch(() => undefined);
     await fn(harness);
     await client.close();
   } finally {

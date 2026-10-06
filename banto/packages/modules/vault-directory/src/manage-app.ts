@@ -584,6 +584,15 @@ ${ALIAS_KIND_RULES_JS}
     return "→ 既定の置き場ではないので、" + impl + ":名前 のように " + impl + " を頭に付けて引きます";
   }
 
+  /**
+   * 「移す」「参照を作る」の行き先（2026-10-06、レビュー）。グループ（既定の版）に、紐付けた版付きの置き場
+   * （g@prod）を足す——足さないと、版付きに置かれた Project の置き場へ移せない
+   */
+  function placeChoices(v) {
+    if (!v) return [];
+    return [...new Set([...(v.groups || []), ...(v.variantGroups || [])])];
+  }
+
   function option(value, label) {
     const o = document.createElement("option");
     o.value = value;
@@ -1281,7 +1290,7 @@ ${ALIAS_KIND_RULES_JS}
     movePlaces = places;
     const fill = () => {
       const v = (places.vaults || []).find((x) => x.implementation === $("move-vault").value);
-      const groups = (v && v.groups) || [];
+      const groups = placeChoices(v);
       $("move-group").replaceChildren(
         ...groups.map((g) => option(g, groupLabel($("move-vault").value, g))),
       );
@@ -1333,7 +1342,7 @@ ${ALIAS_KIND_RULES_JS}
     $("link-name").value = a.name;
     const places = await callTool("getPlacements", project ? { projectId: project.id } : {});
     const v = (places.vaults || []).find((x) => x.implementation === a.implementation);
-    const groups = (v && v.groups) || [];
+    const groups = placeChoices(v);
     $("link-group").replaceChildren(...groups.map((g) => option(g, groupLabel(a.implementation, g))));
     $("link-group").disabled = groups.length === 0;
     // **既定は「ここから使いたい」置き場**——この Project の置き場、無ければ Global

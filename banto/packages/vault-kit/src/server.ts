@@ -166,10 +166,33 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
    * 一覧に含めるよう backend に渡す。backend は版の数だけグループを並べないので、渡さないと
    * 版付きのグループに紐付いた Project の秘密が一覧にも解決にも出てこない
    */
-  function listAll() {
-    const inUse = new Set([bindings.sharedGroup(), ...bindings.list().map((b) => b.group)]);
+  function listAll(extraGroups: readonly string[] = []) {
+    const inUse = new Set(
+      [bindings.sharedGroup(), ...bindings.list().map((b) => b.group), ...extraGroups].map(canon),
+    );
     const alsoGroups = [...inUse].filter((g) => splitVariant(g).variant !== undefined);
     return registry.list(alsoGroups.length > 0 ? { alsoGroups } : undefined);
+  }
+
+  /**
+   * **グループ名を比べる前に揃える**（2026-10-06、レビュー）。既定の版を後から変えると、台帳の `g@prod` と
+   * 素の `g` が同じ置き場を指す——backend が揃え方を知っている（版を名乗らない backend はそのまま）
+   */
+  function canon(groupId: string): string {
+    return backend.canonicalGroup ? backend.canonicalGroup(groupId) : groupId;
+  }
+
+  /** 台帳の紐付けを、揃えた形で読む。**紐付けと置き場を比べるところは全部ここを通す**。 */
+  function sharedGroupId(): string {
+    return canon(bindings.sharedGroup());
+  }
+  function boundGroupOf(projectId: string): string | undefined {
+    const bound = bindings.get(projectId);
+    return bound === undefined ? undefined : canon(bound);
+  }
+  function projectsBoundTo(group: string): string[] {
+    const target = canon(group);
+    return bindings.list().filter((b) => canon(b.group) === target).map((b) => b.projectId);
   }
 
   /**
@@ -181,7 +204,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     const where = isAdmin(rawMeta) ? `（置き場 ${groupOf(source)} / ${keyOf(source.backendPath)}）` : "";
     throw new Error(
       `alias "${name}" の値が空です${where}。空のまま渡すことはしません——Vault に値を入れてください` +
-        "（Infisical なら、紐付けた環境にこの秘密の値が入っているか確かめてください。人に伝えてください）",
+        "（版を選べる Vault なら、紐付けた版にこの秘密の値が入っているか確かめてください。人に伝えてください）",
     );
   }
 
@@ -240,15 +263,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     forProject?: string;
   }): Promise<string> {
     if (input.explicitGroup) {
-      await backend.createGroup(input.explicitGroup); // 名前の検査もここが持つ
-      return input.explicitGroup;
+      const explicit = canon(input.explicitGroup);
+      await backend.createGroup(explicit); // 名前の検査もここが持つ
+      return explicit;
     }
     if (!input.forProject) {
-      const shared = bindings.sharedGroup();
+      const shared = sharedGroupId();
       await backend.createGroup(shared);
       return shared;
     }
-    const bound = bindings.get(input.forProject);
+    const bound = boundGroupOf(input.forProject);
     if (bound) {
       await backend.createGroup(bound);
       return bound;
@@ -272,8 +296,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     projects: string[];
   } {
     const group = meta.backendPath.slice(0, meta.backendPath.indexOf("/"));
-    if (group === bindings.sharedGroup()) return { scope: "shared", group, projects: [] };
-    const projects = bindings.projectsFor(group);
+    if (group === sharedGroupId()) return { scope: "shared", group, projects: [] };
+    const projects = projectsBoundTo(group);
     if (projects.length > 0) return { scope: "project", group, projects };
     return { scope: "unbound", group, projects: [] };
   }
@@ -525,7 +549,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         tool(
           "describeVariants",
           // **版を名乗る backend だけが中身を返す**（2026-10-06）。名乗らなければ null
-          "この backend の版（Infisical なら環境）の呼び名・選択肢・既定。版が無い backend は null（人専用）",
+          "この backend の版（例：環境）の呼び名・選択肢・既定。版が無い backend は null（人専用）",
           { type: "object", properties: {} },
           "admin",
           { [VALUE_FREE_META_KEY]: true },
@@ -628,7 +652,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     group: string | undefined,
     rawMeta: Record<string, unknown> | undefined,
   ): Promise<AliasMeta | undefined> {
-    return pickAlias(await listAll(), name, group, rawMeta);
+    // **置き場まで指したなら、そのグループも読む**（2026-10-06）——まだ紐付いていない版付きのグループの秘密を
+    // 人の管理面から用途の書き直し・削除・移すために。使えるかの判定はこのあと別にする
+    return pickAlias(await listAll(group ? [group] : []), name, group, rawMeta);
   }
 
   /**
@@ -642,11 +668,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     rawMeta: Record<string, unknown> | undefined,
   ): AliasMeta | undefined {
     const named = all.filter((m) => m.name === name);
-    if (group) return named.find((m) => groupOf(m) === group);
+    if (group) return named.find((m) => groupOf(m) === canon(group));
     const caller = callerOf(rawMeta);
-    const shared = bindings.sharedGroup();
+    const shared = sharedGroupId();
     if (caller && "project" in caller) {
-      const mine = bindings.get(caller.project);
+      const mine = boundGroupOf(caller.project);
       const own = mine && named.find((m) => groupOf(m) === mine);
       if (own) return own;
     }
@@ -714,6 +740,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     return {
       ...toPublic(meta),
       ...(target ? { kind: target.kind } : { broken: true }),
+      // **元が空なら参照も空**（2026-10-06、レビュー）——参照の値は「元を指す書き方」なので空にならない
+      ...(target?.empty ? { empty: true } : {}),
       linkTo: { group: groupOf({ backendPath: meta.linkTo }), name: target ? target.name : keyOf(meta.linkTo) },
     };
   }
@@ -728,7 +756,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   }
 
   async function assertPlaceIsFree(backendPath: string): Promise<void> {
-    const taken = (await listAll()).find((m) => m.backendPath === backendPath);
+    // **置く先のグループも読む**（2026-10-06、レビュー）——まだ紐付いていない版付きのグループ（`g@prod`）は
+    // 一覧に出ないので、読まずに比べると、その版に既にある本物の値を黙って上書きしていた
+    const taken = (await listAll([groupOf({ backendPath })])).find((m) => m.backendPath === backendPath);
     if (taken) throw new Error(`"${backendPath}" には既に別の秘密があります`);
   }
 
@@ -780,6 +810,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     );
   }
 
+  /** 引数で置き場（group）を指していれば、そのグループ（一覧に含めて読む）。 */
+  function groupsNamedIn(args: Record<string, unknown>): string[] {
+    return typeof args.group === "string" && args.group !== "" ? [args.group] : [];
+  }
+
   /**
    * 紐付けるグループに版を付ける（2026-10-06）。**版を名乗らない backend に版を渡したら断る**
    * ——黙って既定の版に倒さない（規則2）。既定の版なら `@` を付けない
@@ -816,7 +851,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     switch (request.params.name) {
       case "requestAlias": {
         const name = requiredString(args.name, "name");
-        const all = await listAll();
+        const all = await listAll(groupsNamedIn(args));
         const existing = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (existing && isLink(existing) && !linkTarget(existing, all)) {
           // **在るのに使えない**（参照の元が無い）——「登録されています」と言わない（規則2）。
@@ -861,7 +896,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "resolveAlias": {
         const name = requiredString(args.name, "name");
-        const all = await listAll();
+        const all = await listAll(groupsNamedIn(args));
         const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **使えるかは、引いた行（参照ならその置き場）で決める。値は元から**（2026-10-04）
@@ -874,7 +909,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "getPublicKey": {
         const name = requiredString(args.name, "name");
-        const all = await listAll();
+        const all = await listAll(groupsNamedIn(args));
         const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **公開鍵は秘密ではないが、どの鍵が在るかは使える範囲の話**
@@ -885,11 +920,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         if (source.kind !== "ssh-identity") {
           throw new Error(`alias "${name}" は ssh-identity ではありません（${source.kind}）`);
         }
+        assertNotEmpty(await backend.getSecret(source.backendPath), name, source, callMeta);
         return { content: [{ type: "text", text: await backend.publicKeyOf(source.backendPath) }] };
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");
-        const all = await listAll();
+        const all = await listAll(groupsNamedIn(args));
         const meta = pickAlias(all, identity, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`identity "${identity}" not found`);
         assertUsable(meta, identity, callMeta);
@@ -897,6 +933,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         if (source.kind !== "ssh-identity") {
           throw new Error(`alias "${identity}" は ssh-identity ではありません（${source.kind}）`);
         }
+        // 空の秘密鍵を ssh-add に渡して分かりにくい失敗にしない（2026-10-06、レビュー）
+        assertNotEmpty(await backend.getSecret(source.backendPath), identity, source, callMeta);
         // 窓口を立てる場所は host の刻印だけから取る（コンテナの中の呼び出し元から見えるフォルダ）
         const socketDir = socketDirOf(callMeta);
         const { socketPath } = await backend.loadIntoAgent(source.backendPath, socketDir ? { socketDir } : undefined);
@@ -904,12 +942,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "verify": {
         const alias = requiredString(args.alias, "alias");
-        const all = await listAll();
+        const all = await listAll(groupsNamedIn(args));
         const meta = pickAlias(all, alias, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${alias}" not found`);
         assertUsable(meta, alias, callMeta);
         const source = valueSource(meta, alias, all, callMeta);
         const key = await backend.getSecret(source.backendPath);
+        // **空の鍵で検証しない**（2026-10-06、レビュー）——鍵が空と知っている相手は署名を作れる
+        assertNotEmpty(key, alias, source, callMeta);
         const expected = createHmac("sha256", String(key))
           .update(requiredString(args.payload, "payload"))
           .digest();
@@ -961,7 +1001,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         });
         const backendPath = `${group}/${name}`;
         // **人が預けたものは、この口からは触れない**（種別で区切る）
-        const existing = (await listAll()).find((a) => a.backendPath === backendPath);
+        const existing = (await listAll([group])).find((a) => a.backendPath === backendPath);
         // **参照を通して元を上書きしない**（2026-10-04）——書き換えるなら元を
         if (existing && isLink(existing)) {
           // 元の置き場は人の管理面にだけ言う（見えないグループの中身を教えない）
@@ -1106,7 +1146,13 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         }
         // 人の管理面は全部（「どこにも紐付いていない」も——隠すと直せない）。
         // Project は、その Project から使えるものだけ
-        const stored = await listAll();
+        // **人の管理面は、まだ紐付いていない版付きのグループも読める**（2026-10-06、レビュー）——窓口が
+        // 置き場の変更の前に、移す先（`g@prod`）に既にある秘密を数えるため
+        const extra =
+          "admin" in caller && Array.isArray(args.alsoGroups)
+            ? (args.alsoGroups as unknown[]).filter((g): g is string => typeof g === "string")
+            : [];
+        const stored = await listAll(extra);
         const visible =
           "admin" in caller
             ? stored
@@ -1143,13 +1189,20 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       case "listGroupBindings":
         return {
           content: [
-            { type: "text", text: JSON.stringify({ shared: bindings.sharedGroup(), projects: bindings.list() }) },
+            {
+              type: "text",
+              // **揃えた形で返す**（2026-10-06）——窓口は置き場の名前とそのまま比べる
+              text: JSON.stringify({
+                shared: sharedGroupId(),
+                projects: bindings.list().map((b) => ({ projectId: b.projectId, group: canon(b.group) })),
+              }),
+            },
           ],
         };
       case "migrateAlias": {
         assertHuman("置き場の変更", callMeta);
         const name = requiredString(args.name, "name");
-        const toGroup = requiredString(args.toGroup, "toGroup");
+        const toGroup = canon(requiredString(args.toGroup, "toGroup"));
         const meta = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         const from = meta.backendPath;
@@ -1196,7 +1249,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         // 見えないはずのグループの秘密を自分の見える場所へ引き込める
         assertHuman("参照を作る", callMeta);
         const name = requiredString(args.name, "name");
-        const toGroup = requiredString(args.toGroup, "toGroup");
+        const toGroup = canon(requiredString(args.toGroup, "toGroup"));
         // 名前の規律は createAlias と同じ（同じ検査を通す）
         const toName = args.toName === undefined ? name : requiredString(args.toName, "toName");
         const group = optionalString(args.group, "group");
@@ -1241,6 +1294,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       case "setSharedGroup": {
         assertHuman("共通の置き場の変更", callMeta);
         const group = requiredString(args.group, "group");
+        // **共通の置き場の版は今は選べない**（仕様 §2.1「グループの『版』」）——画面だけでなく口でも断る
+        if (splitVariant(group).variant !== undefined) {
+          throw new Error(`共通の置き場には版を付けられません（既定の版のまま）: ${group}`);
+        }
         await backend.createGroup(group); // 名前の検査は backend が持つ（規則3）
         await bindings.setSharedGroup(group);
         return { content: [{ type: "text", text: JSON.stringify({ shared: group }) }] };

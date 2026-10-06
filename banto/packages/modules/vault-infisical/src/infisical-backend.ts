@@ -114,6 +114,12 @@ export class InfisicalBackend implements VaultBackend {
    * **版＝Infisical の環境**（決定・2026-10-06）。選択肢はその Project の環境の一覧、既定は接続設定の環境。
    * 接続設定の環境が一覧に無いときも選択肢に残す（既定を選べないと今の紐付けが表せない）
    */
+  /** いまの既定の環境を指す `g@<既定>` は `g` に揃える（kit が紐付けと置き場を比べる前に通す、2026-10-06）。 */
+  canonicalGroup(groupId: string): string {
+    const { group, env } = parseGroupId(groupId);
+    return env === undefined || env === this.conn.scope.environment ? group : groupId;
+  }
+
   async variants(): Promise<VariantAxis> {
     const envs = await this.conn.listEnvironments();
     const def = this.conn.scope.environment;
@@ -280,10 +286,11 @@ function isAlive(pid: number): boolean {
 }
 
 /**
- * 「その環境にフォルダが無い」を見分ける。**それ以外の失敗は通す**（規則2）。文言は Infisical の版で
- * 揺れるので、状態符号 404 も見る
+ * 「その環境にフォルダが無い」を見分ける。**それ以外の失敗は通す**（規則2）
  */
 export function isFolderMissing(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /folder.*not found|not found.*folder|StatusCode=404/i.test(message);
+  // **404 だけでは決めない**（2026-10-06、レビュー）——環境が消された・Project が違う、も 404 で返り、
+  // それを「空の置き場」にすると紐付けた秘密が黙って0件になる。文言がフォルダの不在を言うときだけ
+  return /folder/i.test(message) && /not found|does not exist/i.test(message);
 }

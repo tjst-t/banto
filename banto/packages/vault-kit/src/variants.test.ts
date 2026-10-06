@@ -16,6 +16,7 @@ const PROJECT = { "dev.banto/caller": { project: "P" } } as const;
 
 function memoryBackend(withVariants: boolean) {
   const secrets = new Map<string, string>();
+  const state = { default: "dev" };
   const backend: VaultBackend = {
     async getSecret(path) {
       const v = secrets.get(path);
@@ -46,7 +47,11 @@ function memoryBackend(withVariants: boolean) {
     async createGroup() {},
     ...(withVariants
       ? {
-          variants: async () => ({ label: "環境", options: ["dev", "prod"], default: "dev" }),
+          variants: async () => ({ label: "環境", options: ["dev", "prod"], default: state.default }),
+          canonicalGroup: (id: string) => {
+            const { group, variant } = splitVariant(id);
+            return variant === undefined || variant === state.default ? group : id;
+          },
           countByVariant: async () => [
             { variant: "dev", filled: 0, total: 2 },
             { variant: "prod", filled: 2, total: 2 },
@@ -54,7 +59,7 @@ function memoryBackend(withVariants: boolean) {
         }
       : {}),
   };
-  return { backend, secrets };
+  return { backend, secrets, state };
 }
 
 /** 版付きのグループの行は、`alsoGroups` で渡されたときだけ返す（版を名乗る backend の振る舞いの写し）。 */
@@ -170,5 +175,56 @@ test("版ごとの数は人の管理面からだけ数えられる・版を付�
     ]);
     await assert.rejects(() => call(c, "countVariants", { group: "g" }, PROJECT), /人の管理画面からしか/);
     await assert.rejects(() => call(c, "countVariants", { group: "g@prod" }), /版を付けずに/);
+  });
+});
+
+test("まだ紐付いていない版付きの置き場にある秘密を、作る・移すで黙って上書きしない（置く先のグループも読む）", async () => {
+  await withKit(true, async (c, mem) => {
+    // prod に本物の値、dev に同じ名前（ansible-homelab の形）。どちらにも Project は紐付いていない
+    await call(c, "createAlias", { name: "HOST", kind: "secret", group: "g@prod", value: "pve" });
+    await call(c, "createAlias", { name: "HOST", kind: "secret", group: "g", value: "x" });
+    await assert.rejects(
+      () => call(c, "createAlias", { name: "HOST", kind: "secret", group: "g@prod", value: "y" }),
+      /既に別の秘密があります/,
+    );
+    await assert.rejects(() => call(c, "migrateAlias", { name: "HOST", group: "g", toGroup: "g@prod" }), /既に別の秘密があります/);
+    assert.equal(mem.secrets.get("g@prod/HOST"), "pve", "prod の本物の値が上書きされた");
+    assert.equal(mem.secrets.get("g/HOST"), "x", "移せなかったのに元が消えた");
+  });
+});
+
+test("人の管理面の一覧は、まだ紐付いていない版付きのグループも頼めば読める（Project からは頼めない）", async () => {
+  await withKit(true, async (c) => {
+    await call(c, "createAlias", { name: "HOST", kind: "secret", group: "g@prod", value: "pve" });
+    const plain = JSON.parse(await call(c, "listAliases", {})) as Array<Record<string, unknown>>;
+    assert.equal(plain.some((r) => r.group === "g@prod"), false);
+    const asked = JSON.parse(await call(c, "listAliases", { alsoGroups: ["g@prod"] })) as Array<Record<string, unknown>>;
+    assert.equal(asked.some((r) => r.group === "g@prod"), true);
+    const fromProject = JSON.parse(await call(c, "listAliases", { alsoGroups: ["g@prod"] }, PROJECT)) as unknown[];
+    assert.deepEqual(fromProject, []);
+  });
+});
+
+test("既定の版を後から変えても、紐付けは揃えた形で効く（g@prod は既定が prod になれば g）", async () => {
+  await withKit(true, async (c, mem) => {
+    await call(c, "setGroupBinding", { projectId: "P", group: "g", variant: "prod" });
+    await call(c, "createAlias", { name: "HOST", kind: "secret", group: "g", value: "now-default" });
+    mem.state.default = "prod"; // 接続設定の既定の環境を prod に変えた
+    assert.equal(await call(c, "resolveAlias", { name: "HOST" }, PROJECT), "now-default");
+    const bindings = JSON.parse(await call(c, "listGroupBindings", {}));
+    assert.deepEqual(bindings.projects, [{ projectId: "P", group: "g" }]);
+  });
+});
+
+test("空の鍵では verify しない・共通の置き場には版を付けられない", async () => {
+  await withKit(true, async (c, mem) => {
+    await call(c, "setGroupBinding", { projectId: "P", group: "g" });
+    await call(c, "createAlias", { name: "HMAC", kind: "secret", group: "g", value: "k" });
+    mem.secrets.set("g/HMAC", "");
+    await assert.rejects(
+      () => call(c, "verify", { alias: "HMAC", payload: "p", signature: "00" }, PROJECT),
+      /値が空です/,
+    );
+    await assert.rejects(() => call(c, "setSharedGroup", { group: "g@prod" }), /版を付けられません/);
   });
 });

@@ -113,11 +113,52 @@ test("接続設定の環境が Project の環境の一覧に無くても、既�
 });
 
 test("参照の書き方の環境は、指す先の置き場の版（無ければ既定）", async () => {
-  const { conn, secrets } = fakeConnection({ environment: "dev" });
+  const { conn, secrets, folders } = fakeConnection({ environment: "dev" });
+  folders.add("prod|/proj").add("/proj"); // kit がグループのフォルダを先に作る
   secrets.set("prod|/tools\0CF", { secretValue: "real" });
   const store = new InfisicalAliasStore(conn);
   await store.createLink({ name: "CF", backendPath: "proj@prod/CF", linkTo: "tools@prod/CF" });
   assert.equal(secrets.get("prod|/proj\0CF")!.secretValue, "${prod.tools.CF}");
   await store.createLink({ name: "CF2", backendPath: "proj/CF2", linkTo: "tools/CF" });
   assert.equal(secrets.get("/proj\0CF2")!.secretValue, "${dev.tools.CF}");
+});
+
+test("揃え方：いまの既定の環境を指す g@<既定> は g、ほかの環境はそのまま", () => {
+  const { conn } = fakeConnection({ environment: "prod" });
+  const backend = new InfisicalBackend(conn);
+  assert.equal(backend.canonicalGroup("homelab@prod"), "homelab");
+  assert.equal(backend.canonicalGroup("homelab@dev"), "homelab@dev");
+  assert.equal(backend.canonicalGroup("homelab"), "homelab");
+});
+
+test("既定の環境を後から変えても、同じ秘密を2行にしない（g@<既定> は既定の一覧に任せる）", async () => {
+  const { conn, secrets } = fakeConnection({ environment: "prod" });
+  secrets.set("/homelab\0HOST", { secretValue: "pve" });
+  const rows = await new InfisicalAliasStore(conn).list({ alsoGroups: ["homelab@prod"] });
+  assert.deepEqual(rows.map((a) => a.backendPath), ["homelab/HOST"]);
+});
+
+test("値を読む権限が無ければ、値を読まない一覧に戻す（空かどうかは付けない）", async () => {
+  const { conn, secrets } = fakeConnection();
+  secrets.set("/g\0K", { secretValue: "" });
+  const real = conn.secrets;
+  (conn as unknown as { secrets: () => unknown }).secrets = () => {
+    const api = real.call(conn) as unknown as Record<string, (o: { viewSecretValue?: boolean }) => Promise<unknown>>;
+    return {
+      ...api,
+      listSecrets: async (o: { viewSecretValue?: boolean }) => {
+        if (o.viewSecretValue) throw new Error("[StatusCode=403] You are not allowed to read secret values");
+        return api.listSecrets!(o);
+      },
+    };
+  };
+  const rows = await new InfisicalAliasStore(conn).list();
+  assert.deepEqual(rows.map((a) => [a.backendPath, a.empty]), [["g/K", undefined]]);
+});
+
+test("フォルダが無いと見なすのは、文言がフォルダの不在を言うときだけ（404 だけでは決めない）", async () => {
+  const { isFolderMissing } = await import("./infisical-backend.js");
+  assert.equal(isFolderMissing(new Error("[StatusCode=404] Folder with path '/g' not found")), true);
+  assert.equal(isFolderMissing(new Error("[StatusCode=404] Environment with slug 'prod' not found")), false);
+  assert.equal(isFolderMissing(new Error("[StatusCode=404] Project not found")), false);
 });

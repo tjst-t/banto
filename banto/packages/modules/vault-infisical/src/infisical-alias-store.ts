@@ -91,7 +91,8 @@ export class InfisicalAliasStore implements AliasStore {
       // 全部を読まない（kit が台帳の紐付けから渡す、2026-10-06）
       ...(opts?.alsoGroups ?? []).map((id) => {
         const { group, env } = parseGroupId(id);
-        if (env === undefined) return Promise.resolve([]);
+        // 既定の環境は上の一覧で読んでいる——もう一度読むと同じ秘密が `g/X` と `g@<既定>/X` の2行になる
+        if (env === undefined || env === this.conn.scope.environment) return Promise.resolve([]);
         return this.listIn(env, `/${group}`).catch((err) => {
           // 紐付けた環境にまだフォルダが無いのは「空の置き場」（作るのは最初に保存したとき）
           if (isFolderMissing(err)) return [];
@@ -104,15 +105,25 @@ export class InfisicalAliasStore implements AliasStore {
 
   /** 1つの環境の、1つのフォルダから下を読む。`env` が無ければ接続設定の環境（版を付けない）。 */
   private async listIn(env: string | undefined, secretPath: string): Promise<AliasMeta[]> {
-    const listed = await this.conn.secrets().listSecrets({
-      ...this.conn.scopeFor(env),
-      secretPath,
-      recursive: true,
-      viewSecretValue: true,
-      // **参照を展開させない**——元が消えた参照の展開でしくじると一覧ごと読めなくなる
-      // （「元がありません」と出すのは kit の仕事）
-      expandSecretReferences: false,
-    });
+    const read = (viewSecretValue: boolean) =>
+      this.conn.secrets().listSecrets({
+        ...this.conn.scopeFor(env),
+        secretPath,
+        recursive: true,
+        viewSecretValue,
+        // **参照を展開させない**——元が消えた参照の展開でしくじると一覧ごと読めなくなる
+        // （「元がありません」と出すのは kit の仕事）
+        expandSecretReferences: false,
+      });
+    let listed: Awaited<ReturnType<typeof read>>;
+    try {
+      listed = await read(true);
+    } catch (err) {
+      // **値を読む権限が無い Machine Identity でも一覧は出す**（2026-10-06、レビュー）——以前は値を読まずに
+      // 一覧を出していたので、値を読むようにしただけで一覧ごと失敗させない。空かどうかは「分からない」になる
+      if (!isPermissionDenied(err)) throw err;
+      listed = await read(false);
+    }
     const out: AliasMeta[] = [];
     for (const s of listed.secrets ?? []) {
       const backendPath = backendPathOf(secretPathOf(s.secretPath), s.secretKey, env);
@@ -317,4 +328,10 @@ function parseComment(comment: string | undefined): StoredMeta | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** 権限が無くて断られた（値を読む権限が無い等）。文言か状態符号 403 で見る。 */
+function isPermissionDenied(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /StatusCode=403|permission|forbidden/i.test(message);
 }
