@@ -4487,7 +4487,7 @@
       "number": 188,
       "kind": "task",
       "title": "Subagent に cwd・schema・頼んだ Module から止める口を足す",
-      "status": "ready",
+      "status": "done",
       "parent": "factory",
       "dependsOn": [
         "subagent-from-modules"
@@ -4497,12 +4497,12 @@
       "labels": [],
       "body": "Factory が使うための Subagent の追加（v4-modules.md §4.5「足りないもの」の2）。\n- `cwd`：Project の root の中だけ受ける（worktree で働かせる）。外を指したら断る\n- `schema`：最後の返答をその形の JSON にさせ、合わなければ同じセッションで直させる（回数上限）\n- `cancelSubagent`：中継の呼び出しは、呼んだ Module（host が刻む呼び出し元）と頼んだ記録の一致で止められる",
       "doneWhen": "単体と E2E で：worktree を cwd に渡したサブエージェントがそこで働く／root の外の cwd は断る／schema に合わない返答が直されて合う JSON が返る／中継で頼んだ仕事を同じ Module から止められ、別の Module からは断られる",
-      "resolution": null,
+      "resolution": "c35adcce で実装（main・release に push 済み、host での反映は人）。cwd（root の中だけ・realpath で比べる）、schema（ajv で検査・同じ会話で3回まで直させる・structured）、host が中継に dev.banto/callerModule を刻み cancelSubagent は接続名で一致させる。単体（subagent 67・core 567）と E2E subagent-from-module 4本、Subagent まわりの既存 E2E 8本で確認。subagent-card は main でも落ちていた（書き途中の発言が記録に残るようになったため）のを直した。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-04T08:56:00.627Z",
-      "updatedAt": "2026-10-04T08:56:00.627Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-06T05:28:01.986Z",
+      "closedAt": "2026-10-06T05:28:01.986Z",
       "extra": {}
     },
     {
