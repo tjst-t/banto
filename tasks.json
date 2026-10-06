@@ -5314,6 +5314,31 @@
       "updatedAt": "2026-10-06T02:42:42.905Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "github-login-refresh-lost",
+      "number": 218,
+      "kind": "bug",
+      "title": "GitHub ログインの更新で新しい鍵を Vault に書けず、ログアウトしたように見える",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "repositories",
+        "vault",
+        "relay"
+      ],
+      "body": "Memory「GitHub ログインの更新で『ログアウトしたように見える』不具合の直し方（決定・2026-10-06、案1）」のとおり。更新で GitHub が古い refresh token を無効にしたあと、新しい組を Vault に書く中継（Repositories→vault-local putSecret）が AI のターンの中で承認を要し、承認が切れる・起こし直しで無効になると書けず、Vault に無効な鍵だけが残る。2026-10-06 に実際に起き、Backlog の自動 push が「GitHub がこの client ID を知りません」で失敗し続けた（ユーザーがログインし直して復旧）。\n\n直し：(1) host が中継の宛先に呼び元の Module 名を刻む (2) Vault の putSecret（banto が置く oauth-token）は作った Module を持ち主として記録し、置き換えは持ち主からだけ (3) 「呼び元が持ち主のものだけを書き、値を返さない」と名乗った同梱の口は同梱の呼び元からなら承認なし (4) Repositories は書けなかった新しい組をメモリに持ち次に書き直す・文言を「更新の鍵が無効」に。一般の仕組みとして作り、Fable のレビューをしっかり。",
+      "doneWhen": "AI のターンの中で GitHub ログインの更新が起きても承認カードが出ず新しい鍵が Vault に入る／別の Module からはその鍵を置き換えられない（断られる）／更新の途中で banto を起こし直しても次の push が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T05:22:28.549Z",
+      "updatedAt": "2026-10-06T05:22:28.549Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
