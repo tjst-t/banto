@@ -35,6 +35,11 @@ interface AliasCommon {
   backendPath: string;
   lastUsedAt?: string;
   expiresAt?: string;
+  /**
+   * **値が空と分かっている**（一覧を読んだときだけ付く、保存しない。2026-10-06）。台帳が値を知らない
+   * backend（SOPS）は付けない——「付いていない」は「空でない」ではなく「分からない」
+   */
+  empty?: boolean;
 }
 
 /** 値を持つ秘密（ふつうの alias）。 */
@@ -94,10 +99,19 @@ export function toPublic(meta: AliasMeta): PublicAliasMeta {
  * 素の名前と修飾名で引き分ける（§2.1）。名前から1つに決めるのは kit の仕事
  * （呼び出し元の Project が要る）で、置き場の管理はここの仕事。
  */
+export interface AliasListOptions {
+  alsoGroups?: readonly string[];
+}
+
 export interface AliasStore {
   /** 立ち上がりの読み込み。 */
   load(): Promise<void>;
-  list(): Promise<AliasMeta[]>;
+  /**
+   * `alsoGroups`：**一覧に含めてほしい版付きのグループ**（`<グループ>@<版>`、2026-10-06）。kit が台帳の
+   * 紐付けから渡す。版を名乗らない backend は無視してよい。版付きの行の backendPath は渡された
+   * グループ名そのままで始める（`g@prod/KEY`）
+   */
+  list(opts?: AliasListOptions): Promise<AliasMeta[]>;
   create(meta: SecretAliasMeta): Promise<void>;
   update(backendPath: string, patch: AliasPatch): Promise<void>;
   delete(backendPath: string): Promise<void>;
@@ -169,7 +183,7 @@ export class LocalFileAliasStore implements AliasStore {
     await rename(tmp, this.filePath);
   }
 
-  async list(): Promise<AliasMeta[]> {
+  async list(_opts?: AliasListOptions): Promise<AliasMeta[]> {
     return Array.from(this.aliases.values());
   }
 

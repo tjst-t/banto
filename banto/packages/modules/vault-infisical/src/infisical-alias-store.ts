@@ -35,9 +35,10 @@
 // したがって**別の台帳ファイルを持たない**（規則3——真実は一箇所）。alias を
 // 消せばメタデータも一緒に消える。ホストを増やしても同じものが見える。
 
-import { isLink, type AliasMeta, type AliasPatch, type AliasStore, type LinkAliasMeta } from "@banto/vault-kit";
+import { isLink, type AliasListOptions, type AliasMeta, type AliasPatch, type AliasStore, type LinkAliasMeta } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
-import { backendPathOf, ensureFolders, nameWithinGroup, placeOf } from "./place.js";
+import { backendPathOf, ensureFolders, nameWithinGroup, parseGroupId, placeOf } from "./place.js";
+import { isFolderMissing } from "./infisical-backend.js";
 
 /**
  * 注記に書く中身。**`backendPath` は置き場そのものなので書かない**（規則3）。
@@ -69,55 +70,72 @@ export class InfisicalAliasStore implements AliasStore {
    * フォルダの数だけ直列に並び、**1回の一覧が 1.7〜3.0 秒**かかっていた。
    * `recursive: true` で1回にすると **0.2〜0.9 秒**（同じ 34 件）。
    *
-   * **値は取らない**（`viewSecretValue: false`）——名前と注記しか使わないのに、
-   * 以前は一覧のたびに全部の値が手元に届いていた。
+   * **値は空かどうかを見るためだけに読む**（改訂・2026-10-06、ユーザー了承）。以前は
+   * `viewSecretValue: false` で値を取らなかったが、それだと名前だけの空欄を一覧で示せない。
+   * 値は行に入れず、手元にも残さない（`toMeta`）。
+   *
+   * **版付きのグループ**（`g@prod`、2026-10-06）は、kit が `alsoGroups` で渡したものだけ、
+   * その環境のそのフォルダを読む。
    *
    * 再帰で返るもののうち、根に直接置かれた秘密は数えない（banto のグループではない）。
    * **フォルダの中のフォルダの秘密も数える**（改訂・2026-10-06、ユーザー）——グループは直下の
    * フォルダのまま、名前はグループからの相対の道（`sub/KEY`）にする。以前は直下のフォルダの
    * 秘密だけを数え、`infisical run --recursive` で読む人のサブフォルダの秘密が一覧に出なかった。
    */
-  async list(): Promise<AliasMeta[]> {
+  async list(opts?: AliasListOptions): Promise<AliasMeta[]> {
+    // **値も読み、空かどうかだけ残す**（決定・2026-10-06、ユーザー了承）——Infisical の一覧は値を隠すと
+    // 空かどうかも分からない。値は toMeta の中で使い切り、返す行にも手元にも残さない
+    const reads: Array<Promise<AliasMeta[]>> = [
+      this.listIn(undefined, "/"),
+      // **紐付けた版付きのグループ**（`g@prod`）は、その環境のそのフォルダだけを読む——環境の数だけ
+      // 全部を読まない（kit が台帳の紐付けから渡す、2026-10-06）
+      ...(opts?.alsoGroups ?? []).map((id) => {
+        const { group, env } = parseGroupId(id);
+        if (env === undefined) return Promise.resolve([]);
+        return this.listIn(env, `/${group}`).catch((err) => {
+          // 紐付けた環境にまだフォルダが無いのは「空の置き場」（作るのは最初に保存したとき）
+          if (isFolderMissing(err)) return [];
+          throw err;
+        });
+      }),
+    ];
+    return (await Promise.all(reads)).flat();
+  }
+
+  /** 1つの環境の、1つのフォルダから下を読む。`env` が無ければ接続設定の環境（版を付けない）。 */
+  private async listIn(env: string | undefined, secretPath: string): Promise<AliasMeta[]> {
     const listed = await this.conn.secrets().listSecrets({
-      ...this.conn.scope,
-      secretPath: "/",
+      ...this.conn.scopeFor(env),
+      secretPath,
       recursive: true,
-      viewSecretValue: false,
-      // **参照を展開させない**——値は使わないうえ、元が消えた参照の展開でしくじると
-      // 一覧ごと読めなくなる（「元がありません」と出すのは kit の仕事）
+      viewSecretValue: true,
+      // **参照を展開させない**——元が消えた参照の展開でしくじると一覧ごと読めなくなる
+      // （「元がありません」と出すのは kit の仕事）
       expandSecretReferences: false,
     });
     const out: AliasMeta[] = [];
     for (const s of listed.secrets ?? []) {
-      const backendPath = backendPathOf(secretPathOf(s.secretPath), s.secretKey);
+      const backendPath = backendPathOf(secretPathOf(s.secretPath), s.secretKey, env);
       if (backendPath === undefined) continue;
-      const meta = parseComment(s.secretComment);
-      if (meta && isLink(meta as AliasMeta)) {
-        out.push({ ...(meta as Omit<LinkAliasMeta, "backendPath">), backendPath });
-        continue;
-      }
-      out.push({
-        // **banto の注記が無い秘密も alias として数える**（訂正・2026-09-13、
-        // ユーザー指摘）。当初は「人が別の用途で置いた秘密が混ざる」として
-        // 飛ばしていたが、**その前提が逆だった**——既に Infisical をフォルダで
-        // 分けて使っている人にとって、そこに在る秘密は混ざりものではなく本体。
-        //
-        // **中身を見て推測しない**（規則2）：種別は `secret` として扱う
-        // （鍵かどうかは読まないと分からない）。用途は Infisical 側の注記を
-        // そのまま出す。**banto は注記を書き足さない**——読むだけで、
-        // 人の秘密に勝手に印を付けない
-        kind: (meta && meta.kind) ?? "secret",
-        note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
-        lastUsedAt: meta?.lastUsedAt,
-        expiresAt: meta?.expiresAt,
-        // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形
-        // ——どちらも**置き場の名前をそのまま使う**（推測で直さない）。サブフォルダの秘密は
-        // グループからの相対の道（`sub/KEY`）が名前
-        name: meta?.name ?? nameWithinGroup(backendPath),
-        backendPath,
-      });
+      out.push(toMeta(s, backendPath));
     }
     return out;
+  }
+
+  /**
+   * 1件だけ引く（注記の書き直しの前など）。**そのフォルダだけを読む**——版付きのグループの行は、
+   * 引数なしの一覧には出てこないので、一覧から探すと見つからない
+   */
+  private async find(backendPath: string): Promise<AliasMeta | undefined> {
+    const place = placeOf(backendPath);
+    const listed = await this.conn.secrets().listSecrets({
+      ...this.conn.scopeFor(place.env),
+      secretPath: place.folder,
+      viewSecretValue: false,
+      expandSecretReferences: false,
+    });
+    const hit = (listed.secrets ?? []).find((s) => s.secretKey === place.key);
+    return hit ? toMeta(hit, backendPath) : undefined;
   }
 
   /**
@@ -129,7 +147,7 @@ export class InfisicalAliasStore implements AliasStore {
   }
 
   async update(backendPath: string, patch: AliasPatch): Promise<void> {
-    const existing = (await this.list()).find((a) => a.backendPath === backendPath);
+    const existing = await this.find(backendPath);
     if (!existing) throw new Error(`alias "${backendPath}" not found`);
     const next: Record<string, unknown> = { ...stored(existing) };
     for (const [key, value] of Object.entries(patch)) {
@@ -154,7 +172,7 @@ export class InfisicalAliasStore implements AliasStore {
     // グループのフォルダは kit が作る。**その中のフォルダはここで作る**（kit はグループしか知らない）
     if (place.subfolders.length > 0) await ensureFolders(this.conn, place);
     await this.conn.secrets().createSecret(place.key, {
-      ...this.conn.scope,
+      ...this.conn.scopeFor(place.env),
       secretPath: place.folder,
       secretValue: target,
       secretComment: JSON.stringify(stored(link)),
@@ -163,11 +181,11 @@ export class InfisicalAliasStore implements AliasStore {
 
   /** 指す先を変える——注記と、Infisical の参照の書き方の両方を（片方だけだと食い違う）。 */
   async retargetLink(backendPath: string, linkTo: string): Promise<void> {
-    const existing = (await this.list()).find((a) => a.backendPath === backendPath);
+    const existing = await this.find(backendPath);
     if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
-    const { folder, key } = placeOf(backendPath);
+    const { folder, key, env } = placeOf(backendPath);
     await this.conn.secrets().updateSecret(key, {
-      ...this.conn.scope,
+      ...this.conn.scopeFor(env),
       secretPath: folder,
       secretValue: this.referenceTo(linkTo),
       secretComment: JSON.stringify(stored({ ...existing, linkTo })),
@@ -176,10 +194,10 @@ export class InfisicalAliasStore implements AliasStore {
 
   /** 参照の秘密（元を指す書き方が入っているだけ）を消す。**元には触らない**。 */
   async deleteLink(backendPath: string): Promise<void> {
-    const existing = (await this.list()).find((a) => a.backendPath === backendPath);
+    const existing = await this.find(backendPath);
     if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
-    const { folder, key } = placeOf(backendPath);
-    await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: folder });
+    const { folder, key, env } = placeOf(backendPath);
+    await this.conn.secrets().deleteSecret(key, { ...this.conn.scopeFor(env), secretPath: folder });
   }
 
   /** その置き場を `${環境.フォルダ.キー}` で表せるか（kit が参照を作る前・指されている元を写す前に聞く）。 */
@@ -192,8 +210,9 @@ export class InfisicalAliasStore implements AliasStore {
    * フォルダ名・キーは指せない**——書くと別の場所を指す参照になるので、作らずに断る（規則2）
    */
   private referenceTo(linkTo: string): string {
-    const { group, subfolders, key } = placeOf(linkTo);
-    const env = this.conn.scope.environment;
+    const { group, subfolders, key, env: variant } = placeOf(linkTo);
+    // 環境は**指す先の置き場の版**（無ければ接続設定の環境、2026-10-06）
+    const env = variant ?? this.conn.scope.environment;
     const parts: Array<readonly [string, string]> = [
       ["環境", env],
       ["フォルダ", group],
@@ -212,16 +231,16 @@ export class InfisicalAliasStore implements AliasStore {
   }
 
   async markUsed(backendPath: string): Promise<void> {
-    const existing = (await this.list()).find((a) => a.backendPath === backendPath);
+    const existing = await this.find(backendPath);
     if (!existing) return;
     await this.writeComment(existing.backendPath, { ...stored(existing), lastUsedAt: new Date().toISOString() });
   }
 
   /** 注記だけを書き換える。**値は渡さない**——渡すと上書きしてしまう。 */
   private async writeComment(backendPath: string, meta: StoredMeta): Promise<void> {
-    const { folder, key } = placeOf(backendPath);
+    const { folder, key, env } = placeOf(backendPath);
     await this.conn.secrets().updateSecret(key, {
-      ...this.conn.scope,
+      ...this.conn.scopeFor(env),
       secretPath: folder,
       secretComment: JSON.stringify(meta),
     });
@@ -239,9 +258,41 @@ function secretPathOf(secretPath: string | undefined): string {
   return secretPath;
 }
 
+/**
+ * 一覧の1件を alias の行にする。**値は空かどうかを見るだけで、行には入れない**（2026-10-06）。
+ * 値を読んでいない一覧（`find`）では空かどうかは付けない（分からないものを「空でない」と言わない）
+ */
+function toMeta(
+  s: { secretKey: string; secretComment?: string; secretValue?: string; secretValueHidden?: boolean },
+  backendPath: string,
+): AliasMeta {
+  const meta = parseComment(s.secretComment);
+  if (meta && isLink(meta as AliasMeta)) {
+    return { ...(meta as Omit<LinkAliasMeta, "backendPath">), backendPath };
+  }
+  const known = typeof s.secretValue === "string" && s.secretValueHidden !== true;
+  return {
+    // **banto の注記が無い秘密も alias として数える**（訂正・2026-09-13、ユーザー指摘）。
+    // 既に Infisical をフォルダで分けて使っている人にとって、そこに在る秘密は混ざりものではなく本体。
+    //
+    // **中身を見て推測しない**（規則2）：種別は `secret` として扱う（鍵かどうかは読まないと分からない）。
+    // 用途は Infisical 側の注記をそのまま出す。**banto は注記を書き足さない**——読むだけ
+    kind: (meta && meta.kind) ?? "secret",
+    note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
+    lastUsedAt: meta?.lastUsedAt,
+    expiresAt: meta?.expiresAt,
+    // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形——どちらも**置き場の名前を
+    // そのまま使う**（推測で直さない）。サブフォルダの秘密はグループからの相対の道（`sub/KEY`）が名前
+    name: meta?.name ?? nameWithinGroup(backendPath),
+    backendPath,
+    ...(known && s.secretValue === "" ? { empty: true } : {}),
+  };
+}
+
+/** 注記に書く形。**`empty` は書かない**——一覧を読んだときだけの印（保存すると古くなる）。 */
 function stored(meta: AliasMeta): StoredMeta {
-  const { backendPath: _b, ...rest } = meta;
-  return rest;
+  const { backendPath: _b, empty: _e, ...rest } = meta;
+  return rest as StoredMeta;
 }
 
 /** 壊れた注記を「たぶんこう」で読まない（規則2）——読めなければ alias ではない。 */

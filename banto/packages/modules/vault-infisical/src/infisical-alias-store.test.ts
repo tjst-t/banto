@@ -6,45 +6,7 @@ import assert from "node:assert/strict";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
 import { InfisicalBackend } from "./infisical-backend.js";
 import type { InfisicalConnection } from "./client.js";
-
-type Stored = { secretValue: string; secretComment?: string };
-
-/** フォルダ `/g` の秘密を Map で持つ、SDK の secrets() の写し。 */
-function fakeConnection() {
-  const secrets = new Map<string, Stored>(); // "/g\0key"
-  const listOptions: Array<Record<string, unknown>> = [];
-  const at = (path: string, key: string) => `${path}\0${key}`;
-  const conn = {
-    scope: { projectId: "p1", environment: "dev" },
-    secrets: () => ({
-      async listSecrets(opts: Record<string, unknown>) {
-        listOptions.push(opts);
-        return {
-          secrets: [...secrets.entries()].map(([k, v]) => {
-            const [secretPath, secretKey] = k.split("\0");
-            return { secretPath, secretKey, secretComment: v.secretComment ?? "" };
-          }),
-        };
-      },
-      async createSecret(key: string, opts: { secretPath: string; secretValue: string; secretComment?: string }) {
-        if (secrets.has(at(opts.secretPath, key))) throw new Error("Secret already exist");
-        secrets.set(at(opts.secretPath, key), { secretValue: opts.secretValue, secretComment: opts.secretComment });
-      },
-      async updateSecret(key: string, opts: { secretPath: string; secretValue?: string; secretComment?: string }) {
-        const cur = secrets.get(at(opts.secretPath, key));
-        if (!cur) throw new Error("not found");
-        secrets.set(at(opts.secretPath, key), {
-          secretValue: opts.secretValue ?? cur.secretValue,
-          secretComment: opts.secretComment ?? cur.secretComment,
-        });
-      },
-      async deleteSecret(key: string, opts: { secretPath: string }) {
-        if (!secrets.delete(at(opts.secretPath, key))) throw new Error("not found");
-      },
-    }),
-  };
-  return { conn: conn as unknown as InfisicalConnection, secrets, listOptions };
-}
+import { fakeConnection } from "./testing/fake-connection.js";
 
 test("参照は、参照の置き場に ${環境.フォルダ.キー} の秘密を1つ置き、注記に linkTo を書く（種別は書かない）", async () => {
   const { conn, secrets } = fakeConnection();
@@ -131,6 +93,7 @@ test("backend の getSecret は Infisical に参照を展開させない（展�
   const seen: Array<Record<string, unknown>> = [];
   const conn = {
     scope: { projectId: "p1", environment: "dev" },
+    scopeFor: (env?: string) => ({ projectId: "p1", environment: env ?? "dev" }),
     secrets: () => ({
       async getSecret(opts: Record<string, unknown>) {
         seen.push(opts);

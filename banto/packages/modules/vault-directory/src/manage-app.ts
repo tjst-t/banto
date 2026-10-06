@@ -88,6 +88,11 @@ export const MANAGE_APP_HTML = `<!doctype html>
   .link-line { font-size: 11px; font-weight: 400; line-height: 1.4; }
   .link-target { opacity: .6; }
   .link-broken { flex: none; color: var(--mcp-ui-color-danger, #c0392b); }
+  /* 値が空の秘密（2026-10-06）——渡そうとすると断られるので、名前の前に目立たせる */
+  .empty-badge {
+    flex: none; border-radius: 4px; padding: 0 5px; font-size: 10px; font-weight: 500; line-height: 16px;
+    color: var(--mcp-ui-color-danger, #c0392b); background: rgba(192,57,43,.12); white-space: nowrap;
+  }
   /* **行の操作は「…」1つ**（改訂・2026-10-05、ユーザー指摘）——操作を並べていたら
      列が押し広げられ、表が横にはみ出していた */
   td.actions { text-align: right; white-space: nowrap; padding-right: 0; }
@@ -267,6 +272,12 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <select id="place-group" style="flex:1 1 12em"></select>
       </div>
     </div>
+    <!-- **版**（2026-10-06）——版を名乗る Vault（Infisical の環境）を選んだときだけ出す。
+         版ごとに「値が入っている数／全部の数」を添える（名前だけの空欄があるので、名前の数では選べない） -->
+    <label class="field" id="place-variant-field" hidden><span id="place-variant-label">版</span>
+      <select id="place-variant"></select>
+    </label>
+    <p class="dialog-desc" id="place-variant-note" hidden></p>
     <label class="field"><span>いまある秘密をどうするか</span>
       <select id="place-migrate">
         <option value="yes">一緒に移す</option>
@@ -519,13 +530,30 @@ ${ALIAS_KIND_RULES_JS}
   function groupLabel(impl, group) {
     const p = placements && placements.project;
     const sh = placements && placements.shared;
+    const suffix = variantSuffix(impl, group);
     if (p && p.implementation === impl && p.group === group) {
-      return project ? "この Project 専用（" + project.name + "）" : "この Project 専用";
+      return (project ? "この Project 専用（" + project.name + "）" : "この Project 専用") + suffix;
     }
-    if (sh && sh.implementation === impl && sh.group === group) return "Global";
+    if (sh && sh.implementation === impl && sh.group === group) return "Global" + suffix;
+    const base = baseOf(group);
     // UUID そのままの名前は、人にとって意味が無い——せめて何であるかを言う
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(group)) return "別の Project 専用（" + group.slice(0, 8) + "…）";
-    return group;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(base)) return "別の Project 専用（" + base.slice(0, 8) + "…）" + suffix;
+    return base + suffix;
+  }
+
+  /** 版付きの置き場（g@prod）の版を外した名前（2026-10-06）。 */
+  function baseOf(group) {
+    const at = String(group).indexOf("@");
+    return at === -1 ? String(group) : String(group).slice(0, at);
+  }
+
+  /** 版付きの置き場なら「（環境 prod）」——呼び名はその Vault が名乗ったもの（2026-10-06）。 */
+  function variantSuffix(impl, group) {
+    const at = String(group).indexOf("@");
+    if (at === -1) return "";
+    const v = ((placements && placements.vaults) || []).find((x) => x.implementation === impl);
+    const label = (v && v.variants && v.variants.label) || "版";
+    return "（" + label + " " + String(group).slice(at + 1) + "）";
   }
 
   /**
@@ -787,7 +815,8 @@ ${ALIAS_KIND_RULES_JS}
       // Infisical ならフォルダ名。言い換え（「この Project 専用（…）」）は
       // **長いうえに、実際に見に行く先の名前と一致しない**——人が Infisical を
       // 開いたときに突き合わせられる名前を出す
-      const groupTd = clipped(a.group || "", "muted");
+      // 版付きの置き場は「フォルダ名（環境 prod）」——Infisical で見に行く先（フォルダと環境）と突き合わせられる形（2026-10-06）
+      const groupTd = clipped(a.group ? baseOf(a.group) + variantSuffix(a.implementation, a.group) : "", "muted");
 
       // **行の操作は「…」のメニューにまとめる**（改訂・2026-10-05、ユーザー指摘）。並びは前と同じ。
       // **公開鍵はいつでも見られる**（追加・2026-09-13、ユーザー指摘）——作った直後の1回しか
@@ -843,6 +872,14 @@ ${ALIAS_KIND_RULES_JS}
         badge.textContent = "参照";
         badge.title = "参照——値は持たず、別の置き場の秘密を指しています";
         nameLine.append(badge);
+      }
+      // **値が空**（2026-10-06）——渡そうとすると断られる。Infisical の名前だけの空欄など
+      if (a.empty) {
+        const empty = document.createElement("span");
+        empty.className = "empty-badge";
+        empty.textContent = "空";
+        empty.title = "値が空です——AI や Shell に渡そうとすると断られます。Vault に値を入れてください";
+        nameLine.append(empty);
       }
       nameLine.append(nameText);
       nameTd.append(nameLine);
@@ -946,7 +983,8 @@ ${ALIAS_KIND_RULES_JS}
       ? "この Project の保存先は " +
         placements.project.implementation +
         " / " +
-        placements.project.group
+        baseOf(placements.project.group) +
+        variantSuffix(placements.project.implementation, placements.project.group)
       : "この Project の保存先はまだ決まっていません（最初に保存したときに決まります）";
     $("place-line").hidden = false;
   }
@@ -1351,22 +1389,81 @@ ${ALIAS_KIND_RULES_JS}
     }
     const places = await callTool("getPlacements", { projectId: project.id });
     $("place-now").textContent = places.project
-      ? "いまは " + places.project.implementation + " / " + places.project.group
+      ? "いまは " + places.project.implementation + " / " + baseOf(places.project.group) +
+        variantSuffix(places.project.implementation, places.project.group)
       : "まだ決まっていません（最初に保存したときに決まります）";
     const fill = () => {
       const v = (places.vaults || []).find((x) => x.implementation === $("place-vault").value);
       const groups = (v && v.groups) || [];
       $("place-group").replaceChildren(...groups.map((g) => option(g, g)));
       $("place-group").disabled = groups.length === 0;
+      // いまの置き場のグループを選んでおく（版は別の欄）
+      const p = places.project;
+      if (p && v && p.implementation === v.implementation && groups.includes(baseOf(p.group))) {
+        $("place-group").value = baseOf(p.group);
+      }
     };
     $("place-vault").replaceChildren(...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
     if (places.project) $("place-vault").value = places.project.implementation;
     fill();
-    $("place-vault").onchange = () => { fill(); void preview(); };
-    $("place-group").onchange = () => void preview();
+    placeVaults = places;
+    await fillVariant();
+    $("place-vault").onchange = async () => { fill(); await fillVariant(); void preview(); };
+    $("place-group").onchange = async () => { await fillVariant(); void preview(); };
+    $("place-variant").onchange = () => void preview();
     $("place-migrate").onchange = () => void preview();
     await preview();
     $("dlg-place").showModal();
+  }
+
+  /** 置き場ダイアログが見ている Vault の一覧（版の選択に使う）。 */
+  let placeVaults = null;
+
+  /**
+   * **版の選択**（2026-10-06）。版を名乗る Vault だけ出し、版ごとに「値が入っている数／全部の数」を添える。
+   * 版を読めなかったときは理由を出す——黙って「版が無い」にしない
+   */
+  async function fillVariant() {
+    const places = placeVaults || {};
+    const v = (places.vaults || []).find((x) => x.implementation === $("place-vault").value);
+    const axis = v && v.variants;
+    const note = $("place-variant-note");
+    note.hidden = true;
+    $("place-variant-field").hidden = !axis;
+    if (v && v.variantsError) {
+      note.hidden = false;
+      note.textContent = "版を読めませんでした（既定の版に置きます）：" + v.variantsError;
+    }
+    if (!axis) {
+      $("place-variant").replaceChildren();
+      return;
+    }
+    $("place-variant-label").textContent = axis.label;
+    const group = $("place-group").value;
+    const p = places.project;
+    const current = p && p.implementation === v.implementation && baseOf(p.group) === group
+      ? (p.variant || axis.default)
+      : axis.default;
+    const labelOf = (o, count) =>
+      o + (o === axis.default ? "（既定）" : "") +
+      (count ? "　値あり " + count.filled + "／" + count.total : "");
+    $("place-variant").replaceChildren(...axis.options.map((o) => option(o, labelOf(o))));
+    $("place-variant").value = current;
+    if (!group) return;
+    try {
+      const counts = await callTool("countVariants", { implementation: v.implementation, group });
+      for (const opt of Array.from($("place-variant").options)) {
+        opt.textContent = labelOf(opt.value, (counts || []).find((c) => c.variant === opt.value));
+      }
+    } catch (err) {
+      note.hidden = false;
+      note.textContent = axis.label + "ごとの数を読めませんでした：" + (err && err.message ? err.message : String(err));
+    }
+  }
+
+  /** 選んだ版（版の選択が出ていなければ渡さない）。 */
+  function chosenVariant() {
+    return $("place-variant-field").hidden ? undefined : $("place-variant").value || undefined;
   }
 
   /** **変える前に、何が起きるかを出す**（規則2——黙って使えなくしない）。 */
@@ -1377,6 +1474,7 @@ ${ALIAS_KIND_RULES_JS}
         projectId: project.id,
         implementation: $("place-vault").value,
         group: $("place-group").value,
+        ...(chosenVariant() ? { variant: chosenVariant() } : {}),
       });
       const migrate = $("place-migrate").value === "yes";
       const parts = [];
@@ -1431,6 +1529,7 @@ ${ALIAS_KIND_RULES_JS}
       projectId: project.id,
       implementation: $("place-vault").value,
       group: $("place-group").value,
+      ...(chosenVariant() ? { variant: chosenVariant() } : {}),
       migrate: $("place-migrate").value === "yes",
     });
     await reload();

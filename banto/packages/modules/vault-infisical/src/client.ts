@@ -140,8 +140,44 @@ export class InfisicalConnection {
     return this.ready().folders();
   }
 
-  /** どの Project・どの環境か。呼び出しのたびに要る共通の引数。 */
+  /** どの Project・どの環境か。呼び出しのたびに要る共通の引数（接続設定の環境＝既定の版）。 */
   get scope(): { projectId: string; environment: string } {
     return { projectId: this.config.projectId, environment: this.config.environment };
+  }
+
+  /** 版（環境）を指定した共通の引数。無ければ接続設定の環境（2026-10-06）。 */
+  scopeFor(env: string | undefined): { projectId: string; environment: string } {
+    return { projectId: this.config.projectId, environment: env ?? this.config.environment };
+  }
+
+  /**
+   * **その Project の環境の一覧**（slug、2026-10-06）。SDK に口が無いので Infisical の API を直接呼ぶ
+   * ——`GET /api/v1/projects/{id}`（新しい形）、無ければ `GET /api/v1/workspace/{id}`（古い自前ホスト）。
+   * 応答の `project`／`workspace` の `environments[].slug` を返す。読めなければ理由を言って止まる（規則2）
+   */
+  async listEnvironments(): Promise<string[]> {
+    const token = this.ready().auth().getAccessToken();
+    if (!token) throw new Error("Infisical のアクセストークンがありません（ログインし直してください）");
+    const base = this.config.siteUrl.replace(/\/+$/, "");
+    const id = encodeURIComponent(this.config.projectId);
+    const failures: string[] = [];
+    for (const [path, field] of [
+      [`/api/v1/projects/${id}`, "project"],
+      [`/api/v1/workspace/${id}`, "workspace"],
+    ] as const) {
+      const res = await fetch(`${base}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) {
+        failures.push(`${path} → ${res.status}`);
+        continue;
+      }
+      const body = (await res.json()) as Record<string, { environments?: Array<{ slug?: unknown }> } | undefined>;
+      const envs = body[field]?.environments;
+      if (!Array.isArray(envs)) {
+        failures.push(`${path} の応答に ${field}.environments がありません`);
+        continue;
+      }
+      return envs.map((e) => e.slug).filter((slug): slug is string => typeof slug === "string");
+    }
+    throw new Error(`Infisical の環境の一覧を読めませんでした（${failures.join("、")}）`);
   }
 }

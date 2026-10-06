@@ -40,7 +40,7 @@ import {
   type SecretAliasMeta,
 } from "./alias-store.js";
 import { GroupBindings } from "./group-bindings.js";
-import type { VaultBackend } from "./backend.js";
+import { joinVariant, splitVariant, type VaultBackend } from "./backend.js";
 
 /** 一覧の resource（§2.1 A節）。**単体の `vault://aliases/{name}` と対**。 */
 const ALIASES_URI = "vault://aliases";
@@ -160,6 +160,30 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   const { backend, aliasStore: registry, moduleName } = opts;
   const bindings = new GroupBindings(opts.dataDir);
   const REQUEST_APP_URI = requestAppUri(moduleName);
+
+  /**
+   * **台帳を読む口は全部ここを通す**（2026-10-06）——紐付けた版付きのグループ（`<グループ>@<版>`）も
+   * 一覧に含めるよう backend に渡す。backend は版の数だけグループを並べないので、渡さないと
+   * 版付きのグループに紐付いた Project の秘密が一覧にも解決にも出てこない
+   */
+  function listAll() {
+    const inUse = new Set([bindings.sharedGroup(), ...bindings.list().map((b) => b.group)]);
+    const alsoGroups = [...inUse].filter((g) => splitVariant(g).variant !== undefined);
+    return registry.list(alsoGroups.length > 0 ? { alsoGroups } : undefined);
+  }
+
+  /**
+   * **値が空なら渡さない**（決定・2026-10-06、仕様 §2.1「値が空の秘密」）。Infisical では名前だけの
+   * 空欄が普通にでき、黙って空文字を渡すと使う側で分かりにくい失敗になっていた
+   */
+  function assertNotEmpty(value: string | Buffer, name: string, source: { backendPath: string }, rawMeta: Record<string, unknown> | undefined) {
+    if (value.length > 0) return;
+    const where = isAdmin(rawMeta) ? `（置き場 ${groupOf(source)} / ${keyOf(source.backendPath)}）` : "";
+    throw new Error(
+      `alias "${name}" の値が空です${where}。空のまま渡すことはしません——Vault に値を入れてください` +
+        "（Infisical なら、紐付けた環境にこの秘密の値が入っているか確かめてください。人に伝えてください）",
+    );
+  }
 
   const server = new Server(
     { name: `banto-module-${moduleName}`, version: "0.1.0" },
@@ -489,10 +513,29 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           "この Project が使う backend のグループを決める（人専用）",
           {
             type: "object",
-            properties: { projectId: { type: "string" }, group: { type: "string" } },
+            properties: {
+              projectId: { type: "string" },
+              group: { type: "string" },
+              variant: { type: "string", description: "版（describeVariants が名乗るもの）。省くと既定の版" },
+            },
             required: ["projectId", "group"],
           },
           "admin",
+        ),
+        tool(
+          "describeVariants",
+          // **版を名乗る backend だけが中身を返す**（2026-10-06）。名乗らなければ null
+          "この backend の版（Infisical なら環境）の呼び名・選択肢・既定。版が無い backend は null（人専用）",
+          { type: "object", properties: {} },
+          "admin",
+          { [VALUE_FREE_META_KEY]: true },
+        ),
+        tool(
+          "countVariants",
+          "グループの版ごとの「値が入っている秘密の数／全部の数」（人専用。値は返さない）",
+          { type: "object", properties: { group: { type: "string" } }, required: ["group"] },
+          "admin",
+          { [VALUE_FREE_META_KEY]: true },
         ),
         ...(opts.extraTools ?? []).map((t) => t.definition),
         tool(
@@ -585,7 +628,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     group: string | undefined,
     rawMeta: Record<string, unknown> | undefined,
   ): Promise<AliasMeta | undefined> {
-    return pickAlias(await registry.list(), name, group, rawMeta);
+    return pickAlias(await listAll(), name, group, rawMeta);
   }
 
   /**
@@ -685,7 +728,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   }
 
   async function assertPlaceIsFree(backendPath: string): Promise<void> {
-    const taken = (await registry.list()).find((m) => m.backendPath === backendPath);
+    const taken = (await listAll()).find((m) => m.backendPath === backendPath);
     if (taken) throw new Error(`"${backendPath}" には既に別の秘密があります`);
   }
 
@@ -737,6 +780,23 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     );
   }
 
+  /**
+   * 紐付けるグループに版を付ける（2026-10-06）。**版を名乗らない backend に版を渡したら断る**
+   * ——黙って既定の版に倒さない（規則2）。既定の版なら `@` を付けない
+   */
+  async function groupWithVariant(group: string, variant: string | undefined): Promise<string> {
+    if (splitVariant(group).variant !== undefined) {
+      throw new Error(`グループと版は分けて渡してください（group に "@" は使えません）: ${group}`);
+    }
+    if (variant === undefined || variant === "") return group;
+    if (!backend.variants) throw new Error(`この Vault には版がありません（${moduleName}）`);
+    const axis = await backend.variants();
+    if (!axis.options.includes(variant)) {
+      throw new Error(`${axis.label}「${variant}」はありません（選べるのは ${axis.options.join(" / ")}）`);
+    }
+    return joinVariant(group, variant, axis.default);
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     await initPromise;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
@@ -756,7 +816,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     switch (request.params.name) {
       case "requestAlias": {
         const name = requiredString(args.name, "name");
-        const all = await registry.list();
+        const all = await listAll();
         const existing = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (existing && isLink(existing) && !linkTarget(existing, all)) {
           // **在るのに使えない**（参照の元が無い）——「登録されています」と言わない（規則2）。
@@ -801,19 +861,20 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "resolveAlias": {
         const name = requiredString(args.name, "name");
-        const all = await registry.list();
+        const all = await listAll();
         const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **使えるかは、引いた行（参照ならその置き場）で決める。値は元から**（2026-10-04）
         assertUsable(meta, name, callMeta);
         const source = valueSource(meta, name, all, callMeta);
         const value = await backend.getSecret(source.backendPath);
+        assertNotEmpty(value, name, source, callMeta);
         await registry.markUsed(meta.backendPath);
         return { content: [{ type: "text", text: String(value) }] };
       }
       case "getPublicKey": {
         const name = requiredString(args.name, "name");
-        const all = await registry.list();
+        const all = await listAll();
         const meta = pickAlias(all, name, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${name}" not found`);
         // **公開鍵は秘密ではないが、どの鍵が在るかは使える範囲の話**
@@ -828,7 +889,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");
-        const all = await registry.list();
+        const all = await listAll();
         const meta = pickAlias(all, identity, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`identity "${identity}" not found`);
         assertUsable(meta, identity, callMeta);
@@ -843,7 +904,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "verify": {
         const alias = requiredString(args.alias, "alias");
-        const all = await registry.list();
+        const all = await listAll();
         const meta = pickAlias(all, alias, optionalString(args.group, "group"), callMeta);
         if (!meta) throw new Error(`alias "${alias}" not found`);
         assertUsable(meta, alias, callMeta);
@@ -900,7 +961,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         });
         const backendPath = `${group}/${name}`;
         // **人が預けたものは、この口からは触れない**（種別で区切る）
-        const existing = (await registry.list()).find((a) => a.backendPath === backendPath);
+        const existing = (await listAll()).find((a) => a.backendPath === backendPath);
         // **参照を通して元を上書きしない**（2026-10-04）——書き換えるなら元を
         if (existing && isLink(existing)) {
           // 元の置き場は人の管理面にだけ言う（見えないグループの中身を教えない）
@@ -1045,7 +1106,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         }
         // 人の管理面は全部（「どこにも紐付いていない」も——隠すと直せない）。
         // Project は、その Project から使えるものだけ
-        const stored = await registry.list();
+        const stored = await listAll();
         const visible =
           "admin" in caller
             ? stored
@@ -1059,10 +1120,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
               // **参照の指す先は人の管理面にだけ出す**（2026-10-04）——Project から読むと、
               // 見えないはずの元の置き場と名前が分かってしまう
               text: JSON.stringify(
-                visible.map((m) => ({
-                  ...("admin" in caller ? publicView(m, stored) : agentView(m, stored)),
-                  ...scopeOf(m),
-                })),
+                visible.map((m) => {
+                  const where = scopeOf(m);
+                  // **版付きのグループは版も添える**（画面がグループ名と版を分けて出せるように、2026-10-06）
+                  const variant = splitVariant(where.group).variant;
+                  return {
+                    ...("admin" in caller ? publicView(m, stored) : agentView(m, stored)),
+                    ...where,
+                    ...(variant !== undefined ? { variant } : {}),
+                  };
+                }),
               ),
             },
           ],
@@ -1092,7 +1159,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         await assertPlaceIsFree(to);
         // **元を指す参照があるなら、新しい場所を参照で指せるかを写す前に確かめる**（2026-10-04、
         // レビュー）。写したあとで指し直しに失敗すると、元が2か所に残る
-        const links = isLink(meta) ? [] : (await registry.list()).filter((m) => isLink(m) && m.linkTo === from);
+        const links = isLink(meta) ? [] : (await listAll()).filter((m) => isLink(m) && m.linkTo === from);
         if (links.length > 0) await registry.assertCanLinkTo(to);
         await backend.createGroup(toGroup);
 
@@ -1178,15 +1245,30 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         await bindings.setSharedGroup(group);
         return { content: [{ type: "text", text: JSON.stringify({ shared: group }) }] };
       }
+      case "describeVariants": {
+        // 版を名乗らない backend は null——画面は版の選択を出さない
+        const axis = backend.variants ? await backend.variants() : null;
+        return { content: [{ type: "text", text: JSON.stringify(axis) }] };
+      }
+      case "countVariants": {
+        assertHuman("版ごとの数を数える", callMeta);
+        const group = requiredString(args.group, "group");
+        if (splitVariant(group).variant !== undefined) throw new Error(`グループに版を付けずに渡してください: ${group}`);
+        if (!backend.countByVariant) return { content: [{ type: "text", text: JSON.stringify([]) }] };
+        return { content: [{ type: "text", text: JSON.stringify(await backend.countByVariant(group)) }] };
+      }
       case "setGroupBinding": {
         assertHuman("置き場の紐付け", callMeta);
         const projectId = requiredString(args.projectId, "projectId");
-        const group = requiredString(args.group, "group");
+        const group = await groupWithVariant(
+          requiredString(args.group, "group"),
+          optionalString(args.variant, "variant"),
+        );
         // 名前の検査は backend が持つ（規則3——同じ検査を2箇所に書かない）。
         // 事前作成が要らない backend では no-op
         await backend.createGroup(group);
         await bindings.set(projectId, group);
-        return { content: [{ type: "text", text: JSON.stringify({ projectId, group }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ projectId, group, variant: splitVariant(group).variant }) }] };
       }
       default:
         throw new Error(`unknown tool: ${request.params.name}`);
@@ -1311,7 +1393,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       // **使えないものは名前も見せない**（決定・2026-09-13）——AI に
       // 「あるが使えない」を見せても、頼める先が無い
       const caller = callerOf(request.params._meta as Record<string, unknown> | undefined);
-      const all = await registry.list();
+      const all = await listAll();
       const visible = !caller
         ? []
         : "admin" in caller
@@ -1339,7 +1421,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           {
             uri: request.params.uri,
             mimeType: "application/json",
-            text: JSON.stringify(agentView(meta, await registry.list())),
+            text: JSON.stringify(agentView(meta, await listAll())),
           },
         ],
       };

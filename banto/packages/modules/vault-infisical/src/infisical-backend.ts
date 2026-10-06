@@ -25,9 +25,9 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { agentSocketPath, type VaultBackend } from "@banto/vault-kit";
+import { agentSocketPath, type VariantAxis, type VariantCount, type VaultBackend } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
-import { assertSafeFolder, backendPathOf, ensureFolders, isAlreadyExists, placeOf } from "./place.js";
+import { backendPathOf, ensureFolders, isAlreadyExists, parseGroupId, placeOf } from "./place.js";
 
 const execFileP = promisify(execFile);
 
@@ -39,9 +39,9 @@ export class InfisicalBackend implements VaultBackend {
   constructor(private readonly conn: InfisicalConnection) {}
 
   async getSecret(path: string): Promise<string> {
-    const { folder, key } = placeOf(path);
+    const { folder, key, env } = placeOf(path);
     const got = await this.conn.secrets().getSecret({
-      ...this.conn.scope,
+      ...this.conn.scopeFor(env),
       secretName: key,
       secretPath: folder,
       // **Infisical に参照（`${環境.フォルダ.キー}`）を展開させない**（2026-10-04、レビュー）。SDK の既定は
@@ -57,22 +57,23 @@ export class InfisicalBackend implements VaultBackend {
   async putSecret(path: string, value: string | Buffer): Promise<void> {
     const place = placeOf(path);
     const { folder, key } = place;
+    const scope = this.conn.scopeFor(place.env);
     const secretValue = Buffer.isBuffer(value) ? value.toString("base64") : value;
     // **サブフォルダも作る**（`g/sub/key` なら `/g` と `/g/sub`、2026-10-06）
     await ensureFolders(this.conn, place);
     // **既にあれば上書き、無ければ作る。** Infisical は create と update が
     // 別の口なので、ここで1つの意味（「この名前をこの値にする」）にまとめる
     try {
-      await this.conn.secrets().createSecret(key, { ...this.conn.scope, secretPath: folder, secretValue });
+      await this.conn.secrets().createSecret(key, { ...scope, secretPath: folder, secretValue });
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
-      await this.conn.secrets().updateSecret(key, { ...this.conn.scope, secretPath: folder, secretValue });
+      await this.conn.secrets().updateSecret(key, { ...scope, secretPath: folder, secretValue });
     }
   }
 
   async deleteSecret(path: string): Promise<void> {
-    const { folder, key } = placeOf(path);
-    await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: folder });
+    const { folder, key, env } = placeOf(path);
+    await this.conn.secrets().deleteSecret(key, { ...this.conn.scopeFor(env), secretPath: folder });
   }
 
   async listPaths(prefix?: string): Promise<string[]> {
@@ -104,8 +105,47 @@ export class InfisicalBackend implements VaultBackend {
    * ——ただし**「既にある」以外の失敗は通す**（規則2——握りつぶさない）。
    */
   async createGroup(name: string): Promise<void> {
-    assertSafeFolder(name);
-    await ensureFolders(this.conn, { group: name, subfolders: [] });
+    // `g@prod` なら環境 prod に作る（版付きのグループ、2026-10-06）
+    const { group, env } = parseGroupId(name);
+    await ensureFolders(this.conn, { group, env, subfolders: [] });
+  }
+
+  /**
+   * **版＝Infisical の環境**（決定・2026-10-06）。選択肢はその Project の環境の一覧、既定は接続設定の環境。
+   * 接続設定の環境が一覧に無いときも選択肢に残す（既定を選べないと今の紐付けが表せない）
+   */
+  async variants(): Promise<VariantAxis> {
+    const envs = await this.conn.listEnvironments();
+    const def = this.conn.scope.environment;
+    return { label: "環境", options: envs.includes(def) ? envs : [def, ...envs], default: def };
+  }
+
+  /**
+   * 環境ごとに、そのグループ（サブフォルダも含む）の「値が入っている秘密の数／全部の数」。
+   * **値は数えたらすぐ捨てる**。その環境にフォルダが無いのは 0／0（失敗ではない）
+   */
+  async countByVariant(group: string): Promise<VariantCount[]> {
+    parseGroupId(group);
+    const { options } = await this.variants();
+    return Promise.all(
+      options.map(async (env) => {
+        let secrets: Array<{ secretValue?: string }> = [];
+        try {
+          const listed = await this.conn.secrets().listSecrets({
+            ...this.conn.scopeFor(env),
+            secretPath: `/${group}`,
+            recursive: true,
+            viewSecretValue: true,
+            expandSecretReferences: false,
+          });
+          secrets = listed.secrets ?? [];
+        } catch (err) {
+          if (!isFolderMissing(err)) throw err;
+        }
+        const filled = secrets.filter((s) => typeof s.secretValue === "string" && s.secretValue !== "").length;
+        return { variant: env, filled, total: secrets.length };
+      }),
+    );
   }
 
   /**
@@ -237,4 +277,13 @@ function isAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 「その環境にフォルダが無い」を見分ける。**それ以外の失敗は通す**（規則2）。文言は Infisical の版で
+ * 揺れるので、状態符号 404 も見る
+ */
+export function isFolderMissing(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /folder.*not found|not found.*folder|StatusCode=404/i.test(message);
 }

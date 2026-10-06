@@ -5,65 +5,11 @@ import assert from "node:assert/strict";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
 import { InfisicalBackend } from "./infisical-backend.js";
 import { backendPathOf, placeOf } from "./place.js";
-import type { InfisicalConnection } from "./client.js";
-
-type Stored = { secretValue: string; secretComment?: string };
-
-function fakeConnection() {
-  const secrets = new Map<string, Stored>(); // "/g/sub\0key"
-  const folders = new Set<string>(); // "/g", "/g/sub"
-  const at = (path: string, key: string) => `${path}\0${key}`;
-  const conn = {
-    scope: { projectId: "p1", environment: "prod" },
-    folders: () => ({
-      async create(opts: { name: string; path: string }) {
-        const full = opts.path === "/" ? `/${opts.name}` : `${opts.path}/${opts.name}`;
-        if (opts.path !== "/" && !folders.has(opts.path)) throw new Error(`parent folder ${opts.path} not found`);
-        if (folders.has(full)) throw new Error("Folder already exists");
-        folders.add(full);
-      },
-      async listFolders() {
-        return [...folders].filter((f) => f.split("/").length === 2).map((f) => ({ name: f.slice(1) }));
-      },
-    }),
-    secrets: () => ({
-      async listSecrets() {
-        return {
-          secrets: [...secrets.entries()].map(([k, v]) => {
-            const [secretPath, secretKey] = k.split("\0");
-            return { secretPath, secretKey, secretComment: v.secretComment ?? "" };
-          }),
-        };
-      },
-      async getSecret(opts: { secretName: string; secretPath: string }) {
-        const got = secrets.get(at(opts.secretPath, opts.secretName));
-        if (!got) throw new Error("not found");
-        return { secretValue: got.secretValue };
-      },
-      async createSecret(key: string, opts: { secretPath: string; secretValue: string; secretComment?: string }) {
-        if (!folders.has(opts.secretPath)) throw new Error(`folder ${opts.secretPath} not found`);
-        if (secrets.has(at(opts.secretPath, key))) throw new Error("Secret already exist");
-        secrets.set(at(opts.secretPath, key), { secretValue: opts.secretValue, secretComment: opts.secretComment });
-      },
-      async updateSecret(key: string, opts: { secretPath: string; secretValue?: string; secretComment?: string }) {
-        const cur = secrets.get(at(opts.secretPath, key));
-        if (!cur) throw new Error("not found");
-        secrets.set(at(opts.secretPath, key), {
-          secretValue: opts.secretValue ?? cur.secretValue,
-          secretComment: opts.secretComment ?? cur.secretComment,
-        });
-      },
-      async deleteSecret(key: string, opts: { secretPath: string }) {
-        if (!secrets.delete(at(opts.secretPath, key))) throw new Error("not found");
-      },
-    }),
-  };
-  return { conn: conn as unknown as InfisicalConnection, secrets, folders };
-}
+import { fakeConnection } from "./testing/fake-connection.js";
 
 test("置き場の読み方：`g/sub/KEY` はフォルダ `/g/sub` の `KEY`、根の秘密はグループに属さない", () => {
-  assert.deepEqual(placeOf("g/KEY"), { group: "g", subfolders: [], key: "KEY", folder: "/g" });
-  assert.deepEqual(placeOf("g/a/b/KEY"), { group: "g", subfolders: ["a", "b"], key: "KEY", folder: "/g/a/b" });
+  assert.deepEqual(placeOf("g/KEY"), { group: "g", env: undefined, groupId: "g", subfolders: [], key: "KEY", folder: "/g" });
+  assert.deepEqual(placeOf("g/a/b/KEY"), { group: "g", env: undefined, groupId: "g", subfolders: ["a", "b"], key: "KEY", folder: "/g/a/b" });
   assert.equal(backendPathOf("/g/sub", "KEY"), "g/sub/KEY");
   assert.equal(backendPathOf("/g/sub/", "KEY"), "g/sub/KEY");
   assert.equal(backendPathOf("/", "KEY"), undefined);
@@ -110,7 +56,7 @@ test("backend はサブフォルダの秘密を読み・書き（フォルダを
 });
 
 test("注記の書き直し・参照もサブフォルダで動く（参照はフォルダを . でつなぐ）", async () => {
-  const { conn, secrets, folders } = fakeConnection();
+  const { conn, secrets, folders } = fakeConnection({ environment: "prod" });
   folders.add("/tools").add("/tools/cf").add("/proj");
   secrets.set("/tools/cf\0TOKEN", { secretValue: "real" });
   const store = new InfisicalAliasStore(conn);

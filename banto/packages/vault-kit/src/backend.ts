@@ -42,8 +42,58 @@ export interface VaultBackend {
    * 見えるフォルダ（`SOCKET_DIR_META_KEY`、追加・2026-09-27）。無ければ今までどおり一時フォルダ
    */
   loadIntoAgent(privateKeyRef: string, opts?: { socketDir?: string }): Promise<{ socketPath: string }>;
+  /**
+   * **既定の版のグループだけ**を返す（版付きのグループ `<グループ>@<版>` は並べない、2026-10-06）。
+   */
   listGroups(): Promise<string[]>;
+  /** `name` は版付き（`<グループ>@<版>`）でもよい——版を名乗る backend はその版に作る。冪等。 */
   createGroup(name: string): Promise<void>;
+  /**
+   * **版を名乗る**（任意、決定・2026-10-06。仕様 §2.1「グループの『版』」）。同じグループに版違いの値が
+   * 並ぶ backend（Infisical の環境等）だけが実装する。**kit は版の意味を知らない**——呼び名と選択肢を
+   * 画面に出し、紐付けを `<グループ>@<版>` で書くだけ。実装しない backend には版の選択が出ない
+   */
+  variants?(): Promise<VariantAxis>;
+  /** 版ごとの「値が入っている秘密の数／全部の数」（版を選ぶ欄に添える）。`variants` を持つなら持つ。 */
+  countByVariant?(group: string): Promise<VariantCount[]>;
+}
+
+/** backend が名乗る版の軸。 */
+export interface VariantAxis {
+  /** 人に見せる呼び名（Infisical なら「環境」）。 */
+  label: string;
+  /** 選べる版。 */
+  options: string[];
+  /** 既定の版——`@` の付かないグループはこれを指す。 */
+  default: string;
+}
+
+export interface VariantCount {
+  variant: string;
+  /** 値が入っている秘密の数。 */
+  filled: number;
+  /** 全部の数（名前だけの空欄も含む）。 */
+  total: number;
+}
+
+/**
+ * 版付きのグループの書き方 `<グループ>@<版>`（kit の決まった書き方、2026-10-06）。
+ * **kit が読むのはこの書き方だけ**——版の意味は backend だけが知る。グループ名に `@` は使えない
+ */
+export const VARIANT_SEPARATOR = "@";
+
+export function splitVariant(groupId: string): { group: string; variant?: string } {
+  const at = groupId.indexOf(VARIANT_SEPARATOR);
+  if (at === -1) return { group: groupId };
+  return { group: groupId.slice(0, at), variant: groupId.slice(at + 1) };
+}
+
+/** 既定の版なら `@` を付けない（今までのグループと置き場がそのまま既定の版を指すように）。 */
+export function joinVariant(group: string, variant: string | undefined, defaultVariant?: string): string {
+  if (group.includes(VARIANT_SEPARATOR)) throw new Error(`グループ名に "${VARIANT_SEPARATOR}" は使えません: ${group}`);
+  if (variant === undefined || variant === "" || variant === defaultVariant) return group;
+  if (variant.includes(VARIANT_SEPARATOR) || variant.includes("/")) throw new Error(`版の名前が正しくありません: ${variant}`);
+  return `${group}${VARIANT_SEPARATOR}${variant}`;
 }
 
 /**

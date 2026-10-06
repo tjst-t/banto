@@ -43,7 +43,7 @@ import {
 } from "@banto/module-contract";
 import { MANAGE_APP_HTML, MANAGE_APP_URI, UI_APP_MIME } from "./manage-app.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
-import { REQUEST_APP_HTML, requestAppUri } from "@banto/vault-kit";
+import { REQUEST_APP_HTML, joinVariant, requestAppUri, splitVariant, type VariantAxis } from "@banto/vault-kit";
 
 /** 会話の中の入力欄。**窓口が1枚だけ持つ**——backend ごとに同じ画面を持たない */
 const REQUEST_APP_URI = requestAppUri("vault-directory");
@@ -233,7 +233,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
    * 元が無い参照は `broken: true` のまま残す（使えないことを人に伝えられるように）。
    */
   function forAgent(alias: Record<string, unknown>, name: string): Record<string, unknown> {
-    const { implementation: _i, group: _g, projects: _p, scope: _s, name: _n, linkTo: _l, ...rest } = alias;
+    // **版も見せない**（置き場の一部。2026-10-06）。空の印（empty）は残す——渡そうとする前に AI が知れるように
+    const { implementation: _i, group: _g, projects: _p, scope: _s, name: _n, linkTo: _l, variant: _v, ...rest } = alias;
     return { name, ...rest };
   }
 
@@ -353,6 +354,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
   }
 
   const IMPL = { implementation: { type: "string", description: "どの vault 実装に対してか" } };
+  /** 版（2026-10-06）。版を名乗る Vault（Infisical の環境）だけが受ける。省くと既定の版。 */
+  const VARIANT = { type: "string", description: "版（Infisical なら環境）。省くと既定の版" };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -481,8 +484,15 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       tool(
         "setGroupBinding",
         "この Project が使うグループを決める",
-        { ...IMPL, projectId: { type: "string" }, group: { type: "string" } },
+        { ...IMPL, projectId: { type: "string" }, group: { type: "string" }, variant: VARIANT },
         ["implementation", "projectId", "group"],
+      ),
+      tool(
+        "countVariants",
+        // **版を選ぶ欄に添える数**（2026-10-06）——値は返さない
+        "グループの版（Infisical なら環境）ごとの「値が入っている秘密の数／全部の数」",
+        { ...IMPL, group: { type: "string" } },
+        ["implementation", "group"],
       ),
       tool(
         "getPlacements",
@@ -500,6 +510,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           projectId: { type: "string" },
           implementation: { type: "string" },
           group: { type: "string" },
+          variant: VARIANT,
           migrate: { type: "boolean", description: "いまの秘密も移すか（既定 false＝紐付けだけ変える）" },
         },
         ["projectId", "implementation", "group"],
@@ -508,7 +519,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         "planProjectPlacement",
         // **変える前に、何が起きるかを見せる**（規則2——黙って使えなくしない）
         "置き場を変えたら何が起きるかを調べる（移す対象・名前の衝突・移さない場合に使えなくなるもの）",
-        { projectId: { type: "string" }, implementation: { type: "string" }, group: { type: "string" } },
+        { projectId: { type: "string" }, implementation: { type: "string" }, group: { type: "string" }, variant: VARIANT },
         ["projectId", "implementation", "group"],
       ),
       tool(
@@ -589,6 +600,32 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
      * 人に選ばせるしかなかった——**決めていないことを人に押し付けていた**。
      * 既定を1つ持てば、**変えたいときだけ選べばよい**。
      */
+    /**
+     * その Vault の版（2026-10-06）。**版を名乗らない Vault は null**。名乗るのに読めなかった
+     * （Infisical に環境の一覧を聞けなかった等）ときは理由を添える——黙って「版が無い」にしない（規則2）。
+     * 古い Vault（describeVariants を持たない）も null
+     */
+    async function variantsOf(impl: string): Promise<{ variants: VariantAxis | null; variantsError?: string }> {
+      try {
+        return { variants: JSON.parse(await deps.relay.callTool(impl, "describeVariants", {})) as VariantAxis | null };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/unknown tool/i.test(message)) return { variants: null };
+        return { variants: null, variantsError: message };
+      }
+    }
+
+    /** 置き場を版付きにする。既定の版なら `@` を付けない（kit と同じ書き方。確かめるのは kit の紐付けの口）。 */
+    async function placeWithVariant(impl: string, group: string, variant: string | undefined): Promise<string> {
+      if (!variant) return group;
+      const { variants, variantsError } = await variantsOf(impl);
+      if (!variants) throw new Error(variantsError ?? `${impl} には版がありません`);
+      if (!variants.options.includes(variant)) {
+        throw new Error(`${variants.label}「${variant}」はありません（選べるのは ${variants.options.join(" / ")}）`);
+      }
+      return joinVariant(group, variant, variants.default);
+    }
+
     async function target(): Promise<string> {
       const known = await vaultImplementations();
       const implementation = optionalString(args.implementation, "implementation");
@@ -829,14 +866,17 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           groups: JSON.parse(await deps.relay.callTool(impl, "listGroups", {})) as string[],
           // 紐付けが指している名前も候補に入れる（**まだ作られていないことがある**
           // ——SOPS は使うときに作るので、`listGroups` に出てこない）
-        }))).filter((r): r is { implementation: string; ok: true; value: { impl: string; bindings: { shared: string; projects: Array<{ projectId: string; group: string }> }; groups: string[] } } => r.ok);
+          ...(await variantsOf(impl)),
+        }))).filter((r): r is { implementation: string; ok: true; value: { impl: string; bindings: { shared: string; projects: Array<{ projectId: string; group: string }> }; groups: string[]; variants: VariantAxis | null; variantsError?: string } } => r.ok);
 
         const mine = projectId
           ? perVault
-              .map((r) => ({
-                implementation: r.value.impl,
-                group: r.value.bindings.projects.find((b) => b.projectId === projectId)?.group,
-              }))
+              .map((r) => {
+                const group = r.value.bindings.projects.find((b) => b.projectId === projectId)?.group;
+                // **版付きのグループは、グループと版に分けても添える**（画面が別々に出せるように、2026-10-06）。
+                // `group` は今までどおり置き場そのもの（`g@prod`）——比べるときはこちらを使う
+                return { implementation: r.value.impl, group, ...(group ? placeParts(group) : {}) };
+              })
               .find((x) => x.group)
           : undefined;
         return text({
@@ -850,13 +890,17 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           // `listGroups` に出てこない。**出ていないものを「無い」と見せない**（規則2）
           vaults: perVault.map((r) => ({
             implementation: r.value.impl,
+            // **グループの選択肢は版を外した名前**（2026-10-06）——版は別の欄で選ぶ。版の数だけ並べない
             groups: [
-              ...new Set([
-                ...r.value.groups,
-                r.value.bindings.shared,
-                ...r.value.bindings.projects.map((b) => b.group),
-              ]),
-            ].filter(Boolean),
+              ...new Set(
+                [...r.value.groups, r.value.bindings.shared, ...r.value.bindings.projects.map((b) => b.group)]
+                  .filter(Boolean)
+                  .map((g) => splitVariant(g).group),
+              ),
+            ],
+            // 版を名乗る Vault だけ中身がある（無ければ null——画面は版の選択を出さない）
+            variants: r.value.variants,
+            ...(r.value.variantsError ? { variantsError: r.value.variantsError } : {}),
           })),
         });
       }
@@ -865,7 +909,10 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       case "setProjectPlacement": {
         const projectId = requiredString(args.projectId, "projectId");
         const implementation = requiredString(args.implementation, "implementation");
-        const group = requiredString(args.group, "group");
+        const baseGroup = requiredString(args.group, "group");
+        const variant = optionalString(args.variant, "variant");
+        // **比べるのは置き場そのもの**（版付きなら `g@prod`、既定の版なら `g`。2026-10-06）
+        const group = await placeWithVariant(implementation, baseGroup, variant);
         const migrate = args.migrate === true;
         const planOnly = request.params.name === "planProjectPlacement";
 
@@ -948,7 +995,11 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
             await deps.relay.callTool(r.value.impl, "clearGroupBinding", { projectId });
           }
         }
-        await deps.relay.callTool(implementation, "setGroupBinding", { projectId, group });
+        await deps.relay.callTool(implementation, "setGroupBinding", {
+          projectId,
+          group: baseGroup,
+          ...(variant ? { variant } : {}),
+        });
         return text({ ok: true, placement: { implementation, group }, migrated: migrate ? plan.moving : [] });
       }
 
@@ -1092,11 +1143,19 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
               "1つの Project の秘密は1つの Vault にまとめてください（移すなら、先にそちらの紐付けを外す）",
           );
         }
+        const variant = optionalString(args.variant, "variant");
         const body = await deps.relay.callTool(implementation, "setGroupBinding", {
           projectId,
           group: requiredString(args.group, "group"),
+          ...(variant ? { variant } : {}),
         });
         return text({ ok: true, binding: JSON.parse(body) });
+      }
+
+      case "countVariants": {
+        const implementation = await target();
+        const body = await deps.relay.callTool(implementation, "countVariants", { group: requiredString(args.group, "group") });
+        return text(JSON.parse(body));
       }
 
       default:
@@ -1240,4 +1299,10 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     dataDir: process.env.BANTO_VAULT_DIRECTORY_DATA_DIR,
   });
   await server.connect(new StdioServerTransport());
+}
+
+/** 置き場（`g` か `g@prod`）をグループと版に分けて添える形（画面が別々に出せるように、2026-10-06）。 */
+function placeParts(groupId: string): { baseGroup: string; variant?: string } {
+  const { group, variant } = splitVariant(groupId);
+  return { baseGroup: group, ...(variant !== undefined ? { variant } : {}) };
 }
