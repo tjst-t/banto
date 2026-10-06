@@ -481,6 +481,37 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
   },
   {
+    // **Backlog のタスクを手順どおりに main まで運ぶ**（v4-modules.md §4.5、2026-10-06）。Project のコンテナの中で git と
+    // テストを走らせ、サブエージェントは Subagent に、タスクの読み書きは Backlog に中継で頼む。返事は受け口で受ける。
+    // 起こし直しても記録から流し直して続ける（resumesAfterRestart）。必須ではないので目録に置く
+    id: "factory",
+    name: "Factory",
+    description:
+      "Backlog のタスクを worktree で実装（サブエージェント）→ テスト → レビュー（別のサブエージェント）→ main へ取り込みまで運ぶ。" +
+      "Subagent と Backlog が要ります。テストのコマンドを設定してから使います",
+    suggestedName: "factory",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/factory/dist/server.js"],
+      env: {
+        BANTO_PROJECT_ROOT: "${projectRoot}",
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["factory"],
+      dependsOn: [
+        { role: "subagent", required: true },
+        { role: "backlog", required: true },
+      ],
+      isolation: "subprocess",
+      scope: "project",
+      confinement: { kind: "landlock", root: "project", profile: "exec" },
+      resumesAfterRestart: true,
+    },
+  },
+  {
     // **動いているものに届く URL を生やす窓口**（v4-modules.md §4.3、2026-09-27）。AI の道具（publishService・
     // unpublishService・listPublished）と承認の画面を持ち、道を張るのは `publish` 役割の実装。**banto 本体で動く**
     // ——承認の画面を出すコードがコンテナの中にあると、中で root の AI が偽れる（v4-security.md §1）。

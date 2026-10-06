@@ -20,6 +20,9 @@
 //                 （続けている間の画面の試験用）
 //   [cwd]         会話の作業場所（session/new の cwd）を答える（作業場所を選べるかの試験用）
 //   [json-b64 B]  B（base64）を解いた文をそのまま返答にする（決まった形で返させる試験用。JSON は ] を含むので base64）
+//   [commit PATH]  作業場所に PATH を書いて git commit する（Factory の実装役の試験用）。「レビュー役」の頼みでは何もしない
+//   [then-commit PATH]  この頼みのあと、同じ会話の次の頼みで PATH を書いて git commit する
+//   [review-b64 B]  「レビュー役」の頼みに B（base64）を解いた文を返す。印が無ければ {"verdict":"pass","items":[]}
 //   [bad-then-json-b64 B]  この頼みには JSON でない文を返し、同じ会話の次の頼みから B を解いた文を返す（直させる試験用）
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
@@ -31,7 +34,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, type AgentContext, type SessionConfigOption } from "@agentclientprotocol/sdk";
 
@@ -188,6 +191,26 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     if (has) reply = `環境に ${Object.values(process.env).some((v) => v?.includes(has[1])) ? "含む" : "含まない"}`;
     if (text.includes("前に")) reply = `前に頼まれたこと：${previous.map((t) => t.user).join(" / ") || "（無い）"}`;
     if (text.includes("[cwd]")) reply = `cwd=${s.cwd}`;
+    const commit = (path: string) => {
+      writeFileSync(resolve(s.cwd, path), `${sessionId} ${previous.length}\n`);
+      execFileSync("git", ["add", path], { cwd: s.cwd });
+      execFileSync("git", ["-c", "user.name=fake-agent", "-c", "user.email=fake@localhost", "commit", "-q", "-m", `fake: ${path}`], { cwd: s.cwd });
+    };
+    if (text.includes("レビュー役")) {
+      const review = /\[review-b64 ([A-Za-z0-9+/=]+)\]/.exec(text);
+      reply = review ? Buffer.from(review[1]!, "base64").toString("utf8") : JSON.stringify({ verdict: "pass", items: [] });
+    } else {
+      for (const m of text.matchAll(/\[commit ([^\]]+)\]/g)) {
+        await toolCall(`git commit ${m[1]}`);
+        commit(m[1]!);
+      }
+      if (previous.length > 0) {
+        for (const m of previous.flatMap((t) => [...t.user.matchAll(/\[then-commit ([^\]]+)\]/g)])) {
+          await toolCall(`git commit ${m[1]}`);
+          commit(m[1]!);
+        }
+      }
+    }
     const b64 = (b: string) => Buffer.from(b, "base64").toString("utf8");
     const json = /\[json-b64 ([A-Za-z0-9+/=]+)\]/.exec(text);
     if (json) reply = b64(json[1]!);

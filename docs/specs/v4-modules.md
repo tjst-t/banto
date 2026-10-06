@@ -2476,7 +2476,7 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 - 画面の読み直しの間隔（3秒）は、他の Module に揃える前例が無かったので仮に決めた。host から「変わった」を
   知らせる口（MCP の `resources/subscribe` を Canvas に通す等）を作るかは未決
 
-### 4.5 Factory——Backlog のタスクを手順どおりに main まで運ぶ（決定・2026-10-04、ユーザー。未実装）
+### 4.5 Factory——Backlog のタスクを手順どおりに main まで運ぶ（決定・2026-10-04、ユーザー。骨組みを実装・2026-10-06）
 
 この節の tool・止まったときの知らせ方・流せるもの・既定の数は、実装者の案をユーザーが確認した（2026-10-04「全部OK」）。
 
@@ -2610,6 +2610,43 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 | レビュー役（同） | Claude Code の既定。**実装役と別のものを選べる** |
 | 同時に走らせる件数 | 3（テストを並べてコンテナの資源を食い潰さないため。マージの列は別に1本） |
 | 上限（テストのやり直し・レビューの差し戻し・rebase のやり直し） | 3・2・3 |
+
+#### 実装（2026-10-06、Backlog の factory-runtime）
+
+`packages/modules/factory`（`@banto/module-factory`）。**目録に置く**（`BUNDLED_CATALOG` の `factory`）。`scope: project`・
+`profile: exec`・依存は subagent と backlog（必須）・`resumesAfterRestart: true`。
+
+- **段の記録**（`journal.ts`）：1件ごとに JSON Lines。段（`stage:<名前>`・`agent:<役>`・`test`・`commits-ahead`・`backlog:*`・
+  `worktree`・`prepare`・`rebase`・`fast-forward`・`ask`・`cleanup`）は番号順に「始めた」「（サブエージェントなら）頼んだ——返事の印」
+  「結果」を追記する。流し直しで記録と鍵が食い違ったら、人に聞いて最初からやり直すかやめる
+- **Factory が守る流れ**（`engine.ts`）：始める（Backlog を in-progress・worktree・準備のコマンド）→ 手順 → マージの列 → Backlog を done・
+  worktree とブランチを消す。手順の段が失敗したら人に聞き、「続ける」はその段からやり直す
+- **マージの列**：Project で1本（Factory のプロセスの中の錠）。rebase（競合なら `rebase --abort` して止まる）→ テスト（取り込む直前に
+  必ず）→ 取り込む先が checkout されている作業ツリーで `merge --ff-only`、どこにも無ければ `update-ref` を compare-and-swap で。
+  取り込む先が先に進んでいたら rebase から（上限 rebaseRetries）。**人を待つ間はマージの列も同時に走らせる枠も空ける**
+- **同梱の手順**（`procedure.ts`）：実装 → コミットがあるか（無ければ戻す、上限 noCommitRetries＝2）→ テスト（落ちたら出力の末尾を
+  添えて実装役の同じ会話へ）→ レビュー（`schema` で `{ verdict: pass|changes, items: [{what, where?, why}] }`）→ 直すことがあれば
+  実装役へ。上限を越えたら `ask`
+- **答え方**（`answerFactory`）：`continue`（指示を足して続ける）・`accept`（レビューの指摘を承知でこのまま取り込む。ほかの止まり方では
+  continue と同じ）・`retry`（段を指定してやり直す。無ければいまの段から）・`drop`（やめる）
+- **承認は runFactory の中で出す**（実装者の判断）：Factory は裏で Subagent・Backlog を呼ぶので、その中継には聞く会話が無い
+  （「どのターンからの呼び出しか特定できません」で断られる）。runFactory（と answerFactory）は、走り出した各件が最初のサブエージェント
+  に頼めるまで待ってから返し、その間の中継に呼び出しの印を添える——要る承認はその会話で出て、Project に覚えられ、以後の裏の呼び出しは
+  聞かれずに通る。順番待ちの件は待たない
+- **知らせ**：runFactory の返信用の札で、止まったら（`final: false`）・全件が終わったら（`final: true`）頼んだ Thread に届ける。札は
+  メモリにだけ持ち（置き場には指紋だけ）、使い切った・最後の1回を使ったあとに answerFactory を呼ぶと、その呼び出しの札を引き継ぐ。
+  知らせられなかったことは実行の記録（`notifyErrors`）に残す
+- **起こし直し**：Factory のプロセスが起きたら、終わっていない実行を記録から流し直す。サブエージェントの返事を待っていた段は頼み直さず、
+  同じ返事の印を待つ（host が残してから受け口に渡す）。banto を起こし直したときは、host が「続けられる」と名乗った Factory を起こして
+  問い、Factory は終わっていない実行の札を「続ける」と答える（以後その札は最後の1回だけ）
+- **やめた・止めた**：Backlog を ready に戻し、worktree とブランチは残す（作業を失わない）。同じタスクを流し直す前に人か AI が消す
+  （残っていれば worktree をそのまま使う）
+- **設定**（`getSettings`・`setSettings`、admin）：`testCommand`（必須）・`prepareCommand`・`targetBranch`（既定 main）・
+  `implementer`/`reviewer`（agent・model・effort。既定 claude-code）・`concurrency`（3）・`limits`・`testTimeoutMinutes`（60）。
+  流し始めたときの設定を実行の記録に写し、最後までそれで走る（流し直しが同じ手順になるように）。**設定の画面はまだ無い**（factory-ui）
+- 試験：単体 7（本物の git と偽の Subagent・Backlog——取り込み・テストの上限と答え・起き直して頼み直さない・2件の列・レビューの上限と
+  accept・止める）、E2E `e2e/specs/factory.spec.ts` 2本（本物の Module、偽のエージェントは `[commit 名前]` でコミット・「レビュー役」に
+  判定を返す）
 
 #### 足りないもの——Factory と一緒に作る
 
