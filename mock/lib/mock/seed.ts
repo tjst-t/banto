@@ -9,6 +9,10 @@ export function seedToInitialMessages(seed: readonly MockStep[]): ThreadMessageL
 
   for (const step of seed) {
     if (step.t === "delay") continue;
+    if (step.t === "user") {
+      messages.push({ id: `seed-${seq++}`, role: "user", content: [{ type: "text", text: step.text }] });
+      continue;
+    }
     if (step.t === "text") {
       messages.push({
         id: `seed-${seq++}`,

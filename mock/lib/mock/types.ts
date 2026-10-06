@@ -41,6 +41,8 @@ export interface MockThread {
 /** 会話の台本。ChatModelAdapter がこれを再生してダミー応答を作る。 */
 export type MockStep =
   | { t: "delay"; ms: number }
+  // 人の発言（seed の中でだけ使う。replies では無視する）
+  | { t: "user"; text: string }
   | { t: "text"; text: string; charMs?: number }
   | {
       t: "tool";

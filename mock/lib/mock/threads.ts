@@ -1,5 +1,11 @@
 import type { MockThread } from "./types";
 import { notifyMockStoreChange } from "./store-events";
+import {
+  TURN_SUMMARY_TOOL_NAME,
+  loginSummary,
+  vaultVariantDeploySummary,
+  vaultVariantSummary,
+} from "./turn-summary";
 
 const bantoBaseScript: MockThread["script"] = {
   seed: [
@@ -188,6 +194,72 @@ const bantoForkUiScript: MockThread["script"] = {
   ],
 };
 
+// ターンの終わりのまとめの見本（検討中・2026-10-06）。人の最後の発言は「それでお願い」だけ、
+// AI の報告は長い——まとめのカードだけ読めば分かるかを見る
+const vaultVariantScript: MockThread["script"] = {
+  seed: [
+    { t: "user", text: "Project ごとに Infisical の env を選べるようにしたい。どう作るのがいい？" },
+    {
+      t: "text",
+      text: "案は3つあります。\n\n- **案A**：グループを env の数だけ並べる（`folder@dev`・`folder@prod` を全部一覧に出す）。\n- **案B**：Vault の共通部品に汎用の「版」を入れ、紐付けにだけ版を持つ。名乗った実装だけ画面に版の選択が出る。\n- **案C**：Infisical の Module の中だけで Project → env を持つ。\n\nおすすめは案B です。案A はグループが3倍になり、案C は同じ置き場が呼ぶ Project で別の値になって一覧・参照・移動の前提が崩れます。",
+    },
+    { t: "user", text: "それでお願い" },
+    {
+      t: "text",
+      text: "仕様を v4-modules.md §2.1 に書き、vault-kit に `variants()`・`countByVariant()`・`canonicalGroup()` を足しました。版付きのグループは `<グループ>@<版>` で表し、既定の版は `@` を外して比べます。台帳は書き換えません。\n\n紐付けた版付きのグループだけを `AliasStore.list({ alsoGroups })` で読ませるので、まだ紐付いていない版の本物の値を上書きすることはありません。Project の呼び出しの group 引数では読みに行きません。\n\nInfisical では環境の一覧を REST の `GET /api/v1/projects/{id}` で取り、無ければ `/api/v1/workspace/{id}` に戻ります。一覧のたびに値を読み、空かどうかだけ残してすぐ捨てます。403 なら値を読まない一覧に戻ります。\n\nFable のレビューは2回。1回目の指摘5件（紐付けの比べ方・空の参照・Vault をまたぐ移動の見積もり・置き場ダイアログの数の出し方・403 の扱い）を直し、2回目は「取り込んでよい」でした。単体テスト 412 件と E2E の vault 系 18 件が通っています。main と release に push 済みです。",
+    },
+    {
+      t: "tool",
+      name: TURN_SUMMARY_TOOL_NAME,
+      args: vaultVariantSummary as unknown as Record<string, never>,
+      result: { ok: true },
+    },
+  ],
+  replies: [
+    {
+      match: /反映/,
+      steps: [
+        { t: "delay", ms: 400 },
+        { t: "text", text: "稼働中の banto を更新します。いま動いている会話が区切りまで待ってから起こし直します。" },
+        { t: "delay", ms: 600 },
+        {
+          t: "text",
+          text: "\n\n更新できました。起こし直したあと、Vault の一覧が出ることと、Project の設定の置き場ダイアログに「環境」が出ることを確かめました。本物の Infisical での確かめは Backlog に積みました。",
+        },
+        { t: "delay", ms: 300 },
+        {
+          t: "tool",
+          name: TURN_SUMMARY_TOOL_NAME,
+          args: vaultVariantDeploySummary as unknown as Record<string, never>,
+          result: { ok: true },
+          runMs: 200,
+        },
+      ],
+    },
+    { match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答——「反映して」を含む文を送ると、次のまとめが出ます）" }] },
+  ],
+};
+
+const loginScript: MockThread["script"] = {
+  seed: [
+    { t: "text", text: "この Fork ではパスキーでのログインを実装しています。" },
+    { t: "user", text: "携帯で端末を追加したら、パスキーの登録のところで止まった" },
+    { t: "text", text: "再現の手順を確かめます。どの画面で止まりましたか？" },
+    { t: "user", text: "さっきのやつ直しておいて" },
+    {
+      t: "text",
+      text: "携帯の Safari と Chrome で再現しました。パソコンでは起きません。\n\n原因：リンクで入った直後の端末にはまだパスキーが無いため、「自分のパスキーを登録する」前の本人確認（step-up）を通る手段がありません。\n\n直し方は2つ考えられます。A はリンクで入った直後の10分を本人確認済みとして扱う形、B は元の端末で許可を押してもらう形です。",
+    },
+    {
+      t: "tool",
+      name: TURN_SUMMARY_TOOL_NAME,
+      args: loginSummary as unknown as Record<string, never>,
+      result: { ok: true },
+    },
+  ],
+  replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+};
+
 let mockThreads: MockThread[] = [
   {
     id: "banto-base",
@@ -207,6 +279,15 @@ let mockThreads: MockThread[] = [
     script: bantoForkUiScript,
     status: "open",
   },
+  {
+    id: "vault-variant",
+    projectId: "banto",
+    kind: "fork",
+    title: "Vault の版（Infisical の環境）",
+    parentThreadId: "banto-base",
+    script: vaultVariantScript,
+    status: "open",
+  },
   // 返事待ちの印の見本（2026-10-03）：「AI が動いているだけ」と「何も無い」の行を見せるために足した
   {
     id: "login",
@@ -214,10 +295,7 @@ let mockThreads: MockThread[] = [
     kind: "fork",
     title: "ログインの実装",
     parentThreadId: "banto-base",
-    script: {
-      seed: [{ t: "text", text: "この Fork ではパスキーでのログインを実装しています。" }],
-      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
-    },
+    script: loginScript,
     status: "open",
   },
   {

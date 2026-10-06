@@ -20,6 +20,8 @@ import { ElicitationFormView } from "@/components/banto/inbox/elicitation-form";
 import { InlineModuleView } from "@/components/banto/thread/inline-module-view";
 import { RelayApprovalCard } from "@/components/banto/thread/relay-approval-card";
 import { ShellCommandCard } from "@/components/banto/thread/shell-command-card";
+import { TurnSummaryView } from "@/components/banto/thread/turn-summary-card";
+import { TURN_SUMMARY_TOOL_NAME, type TurnSummaryArgs } from "@/lib/mock/turn-summary";
 import {
   HUMAN_TOOL_NAME,
   MODULE_RELAY_TOOL_NAME,
@@ -37,6 +39,9 @@ interface HumanToolArgs {
 }
 
 export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
+  // ターンのまとめは折りたたみの外に出す（HumanAwareToolGroup の SummaryForPart）。
+  // 折りたたみの中には何も出さない
+  if (props.toolName === TURN_SUMMARY_TOOL_NAME) return null;
   // Shell は承認待ち・実行後の両方を1つの専用カードで出す（承認用の別 tool は
   // 作らない、v4-modules.md §2.3「tool は runCommand 1本だけ」）
   if (props.toolName === SHELL_RUN_COMMAND_TOOL_NAME) {
@@ -105,6 +110,15 @@ function InlineViewForPart({ index }: { index: number }) {
   );
 }
 
+/** ターンのまとめは、ほかの tool と並んでいても折りたたみの外に出す */
+function SummaryForPart({ index }: { index: number }) {
+  const part = useAuiState((s) => s.message.parts[index]);
+  // 後ろに人の返事があれば、候補は押せなくする
+  const isLast = useAuiState((s) => s.message.isLast);
+  if (!part || part.type !== "tool-call" || part.toolName !== TURN_SUMMARY_TOOL_NAME) return null;
+  return <TurnSummaryView summary={part.args as unknown as TurnSummaryArgs} answered={!isLast} />;
+}
+
 export function HumanAwareToolGroup({
   group,
   children,
@@ -129,17 +143,28 @@ export function HumanAwareToolGroup({
     if (shouldAutoOpen) setOpen(true);
   }
 
+  const summaryCount = useAuiState(
+    (s) =>
+      group.indices.filter((i) => {
+        const part = s.message.parts[i];
+        return part?.type === "tool-call" && part.toolName === TURN_SUMMARY_TOOL_NAME;
+      }).length,
+  );
+  const otherCount = group.indices.length - summaryCount;
+
   return (
     <>
-      <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
-        <ToolGroupTrigger
-          count={group.indices.length}
-          active={group.status.type === "running"}
-        />
-        <ToolGroupContent>{children}</ToolGroupContent>
-      </ToolGroupRoot>
+      {otherCount > 0 ? (
+        <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
+          <ToolGroupTrigger count={otherCount} active={group.status.type === "running"} />
+          <ToolGroupContent>{children}</ToolGroupContent>
+        </ToolGroupRoot>
+      ) : null}
       {group.indices.map((index) => (
         <InlineViewForPart key={index} index={index} />
+      ))}
+      {group.indices.map((index) => (
+        <SummaryForPart key={`summary-${index}`} index={index} />
       ))}
     </>
   );
