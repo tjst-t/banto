@@ -1003,3 +1003,12 @@ install.sh に書いた。ここは理由と確かめたこと。
 - 断った呼び出しの続きの文は、会話の記録（CLI）を読めたときだけ出る。E2E の偽の Runner は記録を作らないので単体だけ
 - 止める間に新しく始まったターン（人が送った・届いたもの）は走り出し、tool は断られる。止まったら続きとして起き直す
 - Factory が名乗るまで、Factory が中継で頼んだ仕事は起こし直しで失われる（上の 5）
+
+### 本物のモデルでの通し（2026-10-06、本番 8dee294c）
+
+| 確かめ | 結果 |
+|---|---|
+| Thread のターン：AI（Opus 5.5）が Shell の `sleep 240` を実行中に `systemctl restart banto-host.service banto-frontend.service` | host は実行中の呼び出しを待ったうえで止まり、ターンは tool の途中で切れた。起き直すと人が何もせずに banto からの届いたもの「直前のターンが途中で切れました（11:24:11 に始めたターン）。切れたとき実行中だった呼び出し：mcp__shell__runCommand（…sleep 240…）——結果は分かりません（コマンドならまだ動いているかもしれません）」で次のターンが起きた（11:26:13） |
+| モデルが見たもの | CLI が合成した `[Tool call interrupted: … outcome is unknown …]` と「No response requested.」のあとに banto の続きの文。モデルは文どおりコマンドを流し直さず、まず `ps` で確かめた |
+| コンテナの中のコマンド | `sleep 240` は親（Shell の Module）を失ったまま走り続けていた（M4 のとおり）。結果はどこにも返らない |
+| サブエージェント（2026-10-06 01:09、本番 45b502f5、haiku） | `restart-when-idle.mjs` は「途中で切れるものはありません。起き直したあと続くもの 1 件」で待たずに起こし直した。古い acp・CLI・sleep は止まり、新しい1本が同じ会話を続け、`resumedAfterRestart: true` で結果が届いた |
