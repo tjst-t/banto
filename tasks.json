@@ -5339,6 +5339,30 @@
       "updatedAt": "2026-10-06T05:22:28.549Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "vault-putsecret-importownedsecret-projec",
+      "number": 219,
+      "kind": "bug",
+      "title": "Vault の putSecret・importOwnedSecret が、Project の呼び元に紐付いていないグループへの書き込みを許している",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "vault",
+        "security"
+      ],
+      "body": "## なぜ\n2026-10-06、Fable のレビュー（GitHub ログインの更新の直し 6d9755e7〜8dee294c）で見つかった、この変更より前からある隙間。resolveAlias は assertUsable で「紐付いたグループか共通だけ」に縛るが、putSecret と importOwnedSecret は呼び元が `{project: B}` でも group・forProject で任意のグループに書ける。読めない場所に書けるのは非対称。持ち主は宣言の名前（name）なので、Project A の backlog が置いたものを Project B の backlog が承認つきで置き換えられる（プローブで確認）。いまは Project の Module で putSecret を呼ぶものが無く、callerOwned は projectId のある呼び元を通さないので承認なしにはならない——実害は無い。\n\n## 直し方の提案\n`{project}` の呼び元には、groupForNewAlias の結果が紐付いたグループか共通であることを要求する。あわせて（好み）assertPlaceIsFree を canonPath で比べる・importOwnedSecret の owner を Module 名の形に揃える。経緯は docs/notes/2026-10-06-oauth-refresh-owner.md。",
+      "doneWhen": "Project の呼び元からの putSecret・importOwnedSecret が、紐付いていないグループを指すと理由つきで断られる単体試験があり、直しを外すと落ちる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T06:12:53.658Z",
+      "updatedAt": "2026-10-06T06:12:53.658Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
