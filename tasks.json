@@ -5416,6 +5416,30 @@
       "updatedAt": "2026-10-06T15:02:34.594Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-module-canvas-inline",
+      "number": 222,
+      "kind": "bug",
+      "title": "E2E module-canvas-inline で「大きく表示」のあと会話の入口のカードが見えないことがある",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-06、ターンの終わりのまとめの枝（fork/turn-summary）で関係する E2E を10本まとめて2回流したとき、1回目だけ `specs/module-canvas-inline.spec.ts:194` が落ちた。\n\n- 落ち方：「大きく表示」を押して Canvas が開いたあと、`[data-testid=\"canvas-reopen-card\"][data-module=\"filesystem\"]` は DOM にあるが hidden のまま 15 秒（「会話に入口のカードが残っていない」）。携帯の幅（390px）の試験。\n- 単独では2回とも通り、同じ10本の組み合わせの2回目も全部通った。\n- その枝が触ったのは tool の折りたたみ（report_turn だけの折りたたみを出さない）と発言の一番下の口（AssistantMessageFooter）で、入口のカードの描き方には触れていない。main で同じ組み合わせを流して比べてはいない。\n\n確かめ方：同じ組み合わせ（turn-summary・auto-approve-all・inbox・inline-view-followed-turn・judgment-after-reload・judgment-deny・module-canvas-inline・relay-cards・thread-messages・turn-stop）を何回か流し、落ちたときの trace で、カードが Canvas の面に隠れているのか描かれていないのかを見る。",
+      "doneWhen": "同じ組み合わせを10回流して module-canvas-inline が1回も落ちない",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T15:30:28.534Z",
+      "updatedAt": "2026-10-06T15:30:28.534Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
