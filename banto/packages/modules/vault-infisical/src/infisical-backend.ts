@@ -4,8 +4,9 @@
 // 「グループ」にあたる（§2.1「Project ↔ backend グループの紐付け」で
 // 「Infisical の Folder」と名指しされている）：
 //
-//   グループ            → Folder（`/g1`）
-//   path `"g1/key"`     → Folder `/g1` の中の秘密 `key`
+//   グループ              → Folder（`/g1`）
+//   path `"g1/key"`       → Folder `/g1` の中の秘密 `key`
+//   path `"g1/sub/key"`   → Folder `/g1/sub` の中の秘密 `key`（サブフォルダ、2026-10-06。対応は place.ts）
 //
 // **SOPS と違うところ**（2本目を書いて分かった、2026-09-12）：
 //
@@ -26,25 +27,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentSocketPath, type VaultBackend } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
+import { assertSafeFolder, backendPathOf, ensureFolders, isAlreadyExists, placeOf } from "./place.js";
 
 const execFileP = promisify(execFile);
-
-/**
- * グループ名として許す形。**組み込み Vault と同じ規律**（2026-09-10 の
- * `vault-os-surface-hardening`）——Infisical では `/` がフォルダの区切りなので、
- * 通すとフォルダ階層の外を指せる。
- */
-const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-function assertSafeGroup(name: string): void {
-  if (!SAFE_SEGMENT.test(name) || name === "." || name === "..") {
-    throw new Error(
-      `グループ名に使えるのは英数字と . _ - だけです（先頭は英数字）: ${JSON.stringify(name)}`,
-    );
-  }
-}
-
-/** SSH 鍵を預けるグループ。**人が作った名前と混ざらない**ように分けておく。 */
 
 export class InfisicalBackend implements VaultBackend {
   /** 立てた ssh-agent（鍵の参照 → プロセス）。**同じ鍵で増やさない**。 */
@@ -53,20 +38,12 @@ export class InfisicalBackend implements VaultBackend {
 
   constructor(private readonly conn: InfisicalConnection) {}
 
-  private split(path: string): { group: string; key: string } {
-    const idx = path.indexOf("/");
-    if (idx === -1) throw new Error(`vault path must be "group/key", got "${path}"`);
-    const group = path.slice(0, idx);
-    assertSafeGroup(group);
-    return { group, key: path.slice(idx + 1) };
-  }
-
   async getSecret(path: string): Promise<string> {
-    const { group, key } = this.split(path);
+    const { folder, key } = placeOf(path);
     const got = await this.conn.secrets().getSecret({
       ...this.conn.scope,
       secretName: key,
-      secretPath: `/${group}`,
+      secretPath: folder,
       // **Infisical に参照（`${環境.フォルダ.キー}`）を展開させない**（2026-10-04、レビュー）。SDK の既定は
       // 展開するので、Project の刻印で呼べる putSecret で自分のグループに `${dev.tools.X}` を置いて
       // 引くと、**見えないグループの値が返っていた**。banto の参照は台帳の linkTo を kit が辿り、
@@ -78,29 +55,39 @@ export class InfisicalBackend implements VaultBackend {
   }
 
   async putSecret(path: string, value: string | Buffer): Promise<void> {
-    const { group, key } = this.split(path);
+    const place = placeOf(path);
+    const { folder, key } = place;
     const secretValue = Buffer.isBuffer(value) ? value.toString("base64") : value;
-    await this.createGroup(group);
+    // **サブフォルダも作る**（`g/sub/key` なら `/g` と `/g/sub`、2026-10-06）
+    await ensureFolders(this.conn, place);
     // **既にあれば上書き、無ければ作る。** Infisical は create と update が
     // 別の口なので、ここで1つの意味（「この名前をこの値にする」）にまとめる
     try {
-      await this.conn.secrets().createSecret(key, { ...this.conn.scope, secretPath: `/${group}`, secretValue });
+      await this.conn.secrets().createSecret(key, { ...this.conn.scope, secretPath: folder, secretValue });
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
-      await this.conn.secrets().updateSecret(key, { ...this.conn.scope, secretPath: `/${group}`, secretValue });
+      await this.conn.secrets().updateSecret(key, { ...this.conn.scope, secretPath: folder, secretValue });
     }
   }
 
   async deleteSecret(path: string): Promise<void> {
-    const { group, key } = this.split(path);
-    await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: `/${group}` });
+    const { folder, key } = placeOf(path);
+    await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: folder });
   }
 
   async listPaths(prefix?: string): Promise<string[]> {
+    // **サブフォルダまで1回で**（2026-10-06）。根に直接置いた秘密はグループに属さないので数えない
+    const listed = await this.conn.secrets().listSecrets({
+      ...this.conn.scope,
+      secretPath: "/",
+      recursive: true,
+      viewSecretValue: false,
+      expandSecretReferences: false,
+    });
     const out: string[] = [];
-    for (const group of await this.listGroups()) {
-      const listed = await this.conn.secrets().listSecrets({ ...this.conn.scope, secretPath: `/${group}` });
-      for (const s of listed.secrets ?? []) out.push(`${group}/${s.secretKey}`);
+    for (const s of listed.secrets ?? []) {
+      const path = backendPathOf(s.secretPath ?? "/", s.secretKey);
+      if (path !== undefined) out.push(path);
     }
     return prefix ? out.filter((p) => p.startsWith(prefix)) : out;
   }
@@ -117,12 +104,8 @@ export class InfisicalBackend implements VaultBackend {
    * ——ただし**「既にある」以外の失敗は通す**（規則2——握りつぶさない）。
    */
   async createGroup(name: string): Promise<void> {
-    assertSafeGroup(name);
-    try {
-      await this.conn.folders().create({ ...this.conn.scope, name, path: "/" });
-    } catch (err) {
-      if (!isAlreadyExists(err)) throw err;
-    }
+    assertSafeFolder(name);
+    await ensureFolders(this.conn, { group: name, subfolders: [] });
   }
 
   /**
@@ -254,10 +237,4 @@ function isAlive(pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-/** Infisical の「もうある」を見分ける。**文言に頼るのは弱い**ので、状態符号も見る。 */
-function isAlreadyExists(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /already exist/i.test(message) || /StatusCode=409/.test(message);
 }

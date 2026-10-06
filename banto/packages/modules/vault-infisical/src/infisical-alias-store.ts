@@ -37,6 +37,7 @@
 
 import { isLink, type AliasMeta, type AliasPatch, type AliasStore, type LinkAliasMeta } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
+import { backendPathOf, ensureFolders, nameWithinGroup, placeOf } from "./place.js";
 
 /**
  * 注記に書く中身。**`backendPath` は置き場そのものなので書かない**（規則3）。
@@ -71,9 +72,10 @@ export class InfisicalAliasStore implements AliasStore {
    * **値は取らない**（`viewSecretValue: false`）——名前と注記しか使わないのに、
    * 以前は一覧のたびに全部の値が手元に届いていた。
    *
-   * 再帰で返るもののうち、alias として数えるのは**直下のフォルダの秘密だけ**
-   * （以前と同じ範囲）。根に直接置かれた秘密と、フォルダの中のフォルダは
-   * banto のグループではない。
+   * 再帰で返るもののうち、根に直接置かれた秘密は数えない（banto のグループではない）。
+   * **フォルダの中のフォルダの秘密も数える**（改訂・2026-10-06、ユーザー）——グループは直下の
+   * フォルダのまま、名前はグループからの相対の道（`sub/KEY`）にする。以前は直下のフォルダの
+   * 秘密だけを数え、`infisical run --recursive` で読む人のサブフォルダの秘密が一覧に出なかった。
    */
   async list(): Promise<AliasMeta[]> {
     const listed = await this.conn.secrets().listSecrets({
@@ -87,11 +89,11 @@ export class InfisicalAliasStore implements AliasStore {
     });
     const out: AliasMeta[] = [];
     for (const s of listed.secrets ?? []) {
-      const group = groupOf(s.secretPath);
-      if (group === undefined) continue;
+      const backendPath = backendPathOf(secretPathOf(s.secretPath), s.secretKey);
+      if (backendPath === undefined) continue;
       const meta = parseComment(s.secretComment);
       if (meta && isLink(meta as AliasMeta)) {
-        out.push({ ...(meta as Omit<LinkAliasMeta, "backendPath">), backendPath: `${group}/${s.secretKey}` });
+        out.push({ ...(meta as Omit<LinkAliasMeta, "backendPath">), backendPath });
         continue;
       }
       out.push({
@@ -109,9 +111,10 @@ export class InfisicalAliasStore implements AliasStore {
         lastUsedAt: meta?.lastUsedAt,
         expiresAt: meta?.expiresAt,
         // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形
-        // ——どちらも**置き場の名前をそのまま使う**（推測で直さない）
-        name: meta?.name ?? s.secretKey,
-        backendPath: `${group}/${s.secretKey}`,
+        // ——どちらも**置き場の名前をそのまま使う**（推測で直さない）。サブフォルダの秘密は
+        // グループからの相対の道（`sub/KEY`）が名前
+        name: meta?.name ?? nameWithinGroup(backendPath),
+        backendPath,
       });
     }
     return out;
@@ -146,11 +149,14 @@ export class InfisicalAliasStore implements AliasStore {
    * フォルダは呼び出し側（kit）が作ってから呼ぶ。
    */
   async createLink(link: LinkAliasMeta): Promise<void> {
-    const { group, key } = split(link.backendPath);
-    await this.conn.secrets().createSecret(key, {
+    const place = placeOf(link.backendPath);
+    const target = this.referenceTo(link.linkTo);
+    // グループのフォルダは kit が作る。**その中のフォルダはここで作る**（kit はグループしか知らない）
+    if (place.subfolders.length > 0) await ensureFolders(this.conn, place);
+    await this.conn.secrets().createSecret(place.key, {
       ...this.conn.scope,
-      secretPath: `/${group}`,
-      secretValue: this.referenceTo(link.linkTo),
+      secretPath: place.folder,
+      secretValue: target,
       secretComment: JSON.stringify(stored(link)),
     });
   }
@@ -159,10 +165,10 @@ export class InfisicalAliasStore implements AliasStore {
   async retargetLink(backendPath: string, linkTo: string): Promise<void> {
     const existing = (await this.list()).find((a) => a.backendPath === backendPath);
     if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
-    const { group, key } = split(backendPath);
+    const { folder, key } = placeOf(backendPath);
     await this.conn.secrets().updateSecret(key, {
       ...this.conn.scope,
-      secretPath: `/${group}`,
+      secretPath: folder,
       secretValue: this.referenceTo(linkTo),
       secretComment: JSON.stringify(stored({ ...existing, linkTo })),
     });
@@ -172,8 +178,8 @@ export class InfisicalAliasStore implements AliasStore {
   async deleteLink(backendPath: string): Promise<void> {
     const existing = (await this.list()).find((a) => a.backendPath === backendPath);
     if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
-    const { group, key } = split(backendPath);
-    await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: `/${group}` });
+    const { folder, key } = placeOf(backendPath);
+    await this.conn.secrets().deleteSecret(key, { ...this.conn.scope, secretPath: folder });
   }
 
   /** その置き場を `${環境.フォルダ.キー}` で表せるか（kit が参照を作る前・指されている元を写す前に聞く）。 */
@@ -186,16 +192,23 @@ export class InfisicalAliasStore implements AliasStore {
    * フォルダ名・キーは指せない**——書くと別の場所を指す参照になるので、作らずに断る（規則2）
    */
   private referenceTo(linkTo: string): string {
-    const { group, key } = split(linkTo);
+    const { group, subfolders, key } = placeOf(linkTo);
     const env = this.conn.scope.environment;
-    for (const [label, part] of [["環境", env], ["フォルダ", group], ["キー", key]] as const) {
+    const parts: Array<readonly [string, string]> = [
+      ["環境", env],
+      ["フォルダ", group],
+      ...subfolders.map((sub) => ["フォルダ", sub] as const),
+      ["キー", key],
+    ];
+    for (const [label, part] of parts) {
       if (part.includes(".")) {
         throw new Error(
           `Infisical の参照の書き方（\${環境.フォルダ.キー}）では、"." を含む${label}名を指せません: ${part}`,
         );
       }
     }
-    return `\${${env}.${group}.${key}}`;
+    // サブフォルダは `.` でつなぐ（`${dev.g.sub.KEY}`——Infisical の参照の書き方）
+    return `\${${parts.map(([, part]) => part).join(".")}}`;
   }
 
   async markUsed(backendPath: string): Promise<void> {
@@ -206,32 +219,24 @@ export class InfisicalAliasStore implements AliasStore {
 
   /** 注記だけを書き換える。**値は渡さない**——渡すと上書きしてしまう。 */
   private async writeComment(backendPath: string, meta: StoredMeta): Promise<void> {
-    const { group, key } = split(backendPath);
+    const { folder, key } = placeOf(backendPath);
     await this.conn.secrets().updateSecret(key, {
       ...this.conn.scope,
-      secretPath: `/${group}`,
+      secretPath: folder,
       secretComment: JSON.stringify(meta),
     });
   }
 }
 
 /**
- * 秘密の置き場（`/group`）からグループ名を取る。直下のフォルダでなければ無い。
- *
- * **置き場が返ってこないなら止まる**（規則2）——黙って飛ばすと、alias が
+ * 一覧の1件の置き場。**置き場が返ってこないなら止まる**（規則2）——黙って飛ばすと、alias が
  * 一覧から理由なく消える。SDK の型では任意だが、`recursive` の応答には必ず載る
  */
-function groupOf(secretPath: string | undefined): string | undefined {
+function secretPathOf(secretPath: string | undefined): string {
   if (secretPath === undefined) {
     throw new Error("Infisical の一覧に秘密の置き場（secretPath）が入っていません");
   }
-  const m = /^\/([^/]+)\/?$/.exec(secretPath);
-  return m ? m[1] : undefined;
-}
-
-function split(backendPath: string): { group: string; key: string } {
-  const idx = backendPath.indexOf("/");
-  return { group: backendPath.slice(0, idx), key: backendPath.slice(idx + 1) };
+  return secretPath;
 }
 
 function stored(meta: AliasMeta): StoredMeta {
