@@ -33,6 +33,13 @@ interface AliasCommon {
   note?: string;
   /** backend内のパス（"group/key"）。値そのものではない。 */
   backendPath: string;
+  /**
+   * **持ち主**（追加・2026-10-06、仕様 §2.1 C節「banto が置く秘密の持ち主」）。banto が置く秘密（種別 `oauth-token`）を
+   * `putSecret` で新しく置いた Module の宣言の名前（host が刻んだ呼び元の Module）。置き換えは持ち主と同じ Module からだけ。
+   * 人が預けた秘密・参照には付かない。**記録が無いもの**（この記録を始める前に置かれたもの・Module を介さずに置かれたもの）は、
+   * 次に置き換えた Module が持ち主になる
+   */
+  owner?: string;
   lastUsedAt?: string;
   expiresAt?: string;
   /**

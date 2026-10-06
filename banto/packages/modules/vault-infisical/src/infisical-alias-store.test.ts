@@ -108,3 +108,20 @@ test("backend の getSecret は Infisical に参照を展開させない（展�
   assert.equal(await backend.getSecret("proj/CF_TOKEN"), "${dev.tools.CF_TOKEN}");
   assert.equal(seen[0]!.expandSecretReferences, false, "展開を切らずに読んでいる");
 });
+
+// **banto が置く秘密（`oauth-token`）を種別ごと読む**（訂正・2026-10-06）。以前は注記の種別を secret・ssh-identity・file
+// だけ読み、`oauth-token` の注記を「banto の注記ではない」として捨てていた——一覧では種別 secret・注記の JSON が用途に
+// 出て、`putSecret` の置き換えは「人が預けた秘密です（secret）」で断られていた（回った OAuth の鍵を書き戻せない）。
+// 持ち主（`owner`）も注記に入り、読み戻せる
+test("oauth-token の注記を種別ごと読み、持ち主も落とさない", async () => {
+  const { conn, secrets } = fakeConnection();
+  const store = new InfisicalAliasStore(conn);
+  secrets.set("/shared\0oauth-github-x", { secretValue: "{}" });
+  await store.create({ name: "oauth-github-x", kind: "oauth-token", backendPath: "shared/oauth-github-x", owner: "repositories" });
+  const [listed] = await store.list();
+  assert.deepEqual(listed, { name: "oauth-github-x", kind: "oauth-token", backendPath: "shared/oauth-github-x", owner: "repositories", note: undefined, lastUsedAt: undefined, expiresAt: undefined });
+  // 持ち主の記録が無い既存のものに、あとから持ち主を書ける（注記の他の項目はそのまま）
+  secrets.set("/shared\0oauth-old", { secretValue: "{}", secretComment: JSON.stringify({ name: "oauth-old", kind: "oauth-token", note: "前から" }) });
+  await store.update("shared/oauth-old", { owner: "vault-directory" });
+  assert.deepEqual(JSON.parse(secrets.get("/shared\0oauth-old")!.secretComment!), { name: "oauth-old", kind: "oauth-token", note: "前から", owner: "vault-directory" });
+});

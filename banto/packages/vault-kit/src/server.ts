@@ -23,6 +23,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   AUDIT_ARGS_META_KEY,
+  CALLER_OWNED_META_KEY,
+  callerModuleOf,
   callerOf,
   socketDirOf,
   VALUE_FREE_META_KEY,
@@ -474,9 +476,15 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         //
         // 可視性は `module`（AI には見せない）。刻印は要る（createAlias と同じ
         // ——**預ける行為は制限を広げない**ので、人専用にはしない）。
+        //
+        // **置き換えは持ち主の Module からだけ**（追加・2026-10-06）。新しく置くときに host が刻んだ呼び元の Module を
+        // 持ち主として残し、違う Module からの置き換えは断る。だからこの口は「呼び元の Module が持ち主のものだけを
+        // 書き換え、値を返さない」と名乗れる（`dev.banto/callerOwned`）——host は同梱の Module からの中継を人に聞かずに
+        // 通す。AI のターンの中で回った OAuth の鍵を書き戻すのに人を待つと、答えが無いまま切れたとき、相手が既に
+        // 無効にした古い鍵だけが残る（Repositories の GitHub のログインで本番で起きた）
         tool(
           "putSecret",
-          "banto 自身が保管する秘密（OAuth のログイン情報）を置く。既にあれば置き換える",
+          "banto 自身が保管する秘密（OAuth のログイン情報）を置く。既にあれば置き換える（置いた Module からだけ）",
           {
             type: "object",
             properties: {
@@ -489,6 +497,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             required: ["name", "value"],
           },
           "module",
+          { [CALLER_OWNED_META_KEY]: true },
         ),
         tool(
           "updateAlias",
@@ -1030,6 +1039,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             `"${name}" は人が預けた秘密です（${existing.kind}）。この口からは置き換えられません`,
           );
         }
+        // **持ち主は host が刻んだ呼び元の Module**（呼び元の申告ではない）。人の画面・banto 本体から直接なら無い
+        // 持ち主は「どのコードが置いたか」——宣言の名前（接続名は host の名付けの都合で、Vault に残す記録には向かない）
+        const caller = callerModuleOf(callMeta)?.name;
+        if (existing?.owner !== undefined && existing.owner !== caller) {
+          // 人の画面から直接でも断る——置き換えるなら、その Module の画面から（ログインし直す）か、消してから
+          throw new Error(
+            `"${name}" は ${existing.owner} が置いたものです。` +
+              `${caller ? `${caller} から` : "Module を介さずに"}は置き換えられません`,
+          );
+        }
         await backend.putSecret(backendPath, value);
         if (!existing) {
           await registry.create({
@@ -1037,7 +1056,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             kind: BANTO_OWNED_KIND,
             note: optionalString(args.note, "note"),
             backendPath,
+            ...(caller ? { owner: caller } : {}),
           });
+        } else if (existing.owner === undefined && caller) {
+          // **持ち主の記録が無いもの**（記録を始める前に置かれたもの）は、置き換えた Module が持ち主になる
+          await registry.update(backendPath, { owner: caller });
         }
         return { content: [{ type: "text", text: `stored ${name}` }] };
       }

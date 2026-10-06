@@ -31,6 +31,7 @@ import {
   callIdOf,
   SOCKET_DIR_META_KEY,
   isValueFree,
+  isCallerOwned,
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
   type BantoModuleMeta,
@@ -396,7 +397,14 @@ async function targetTool(
   client: Client,
   toolName: string,
 ): Promise<
-  | { visibility: Visibility; valueFree: boolean; auditArgs: string[]; deliversLater: boolean; receivesReplies: boolean }
+  | {
+      visibility: Visibility;
+      valueFree: boolean;
+      callerOwned: boolean;
+      auditArgs: string[];
+      deliversLater: boolean;
+      receivesReplies: boolean;
+    }
   | undefined
 > {
   const { tools } = await client.listTools().catch(() => ({ tools: [] as unknown[] }));
@@ -406,6 +414,7 @@ async function targetTool(
   return {
     visibility: visibilityOf(x),
     valueFree: isValueFree(x),
+    callerOwned: isCallerOwned(x),
     auditArgs: auditArgsOf(x),
     deliversLater: deliversLater(x),
     receivesReplies: receivesReplies(x),
@@ -774,6 +783,24 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // 呼び出し側の「無指定は値を返す扱い」は fail closed だが、
     // **宛先の申告を信じる方向は fail open** だった。
     const valueFreeCall = targetInfo?.valueFree === true && target.meta.origin === "bundled";
+    /**
+     * **呼び元の Module が持ち主のものだけを書き換える口**（追加・2026-10-06、`dev.banto/callerOwned`）。
+     *
+     * ゲートが聞いているのは「Module A に Module B を呼ばせてよいか」。ところが banto 自身の部品が、自分で置いた
+     * ものを置き換えるだけの呼び出し（Repositories が回った GitHub のログインを Vault に書き戻す）は、AI のターンの
+     * 中で起きると人を待ち、答えが無いまま切れると、相手が既に無効にした古い鍵だけが Vault に残っていた。
+     *
+     * - **持ち主の確かめは宛先がする**——host は持ち主を知らない。だから名乗りを信じるのは**同梱の宛先だけ**
+     *   （確かめない第三者の口が名乗るだけで緩むと、承認ゼロの書き込み口になる。`valueFree` と同じ線）
+     * - **呼び元も同梱で、banto 本体で動いているものだけ**——持ち主は呼び元の Module の刻印（下で host が刻む）で
+     *   決まる。外から入れた Module のコードは何を書くか分からず、コンテナの中の Module は AI が合言葉を読めて、
+     *   その Module の名で書ける（`mayRaiseNotice` と同じ線）。どちらも今までどおり聞く
+     */
+    const callerOwnedCall =
+      targetInfo?.callerOwned === true &&
+      target.meta.origin === "bundled" &&
+      identity.meta?.origin === "bundled" &&
+      !identity.inContainer;
 
     // **起こし直しのために止めている間は、新しい中継を断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いているもの」）。
     // ただし**実行中の呼び出しの中の中継は通す**——止める前に待つのはその呼び出しが終わるまでで、中継を断ると待っている
@@ -790,6 +817,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       !humanBundledCanvasCall &&
       !ownHousekeeping &&
       !valueFreeCall &&
+      !callerOwnedCall &&
       progressToken !== undefined
         ? setInterval(() => {
             void extra.sendNotification({
@@ -808,6 +836,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       ? Promise.resolve({ allowed: true, reason: "人が画面で行った、同梱 Module どうしの操作" })
       : valueFreeCall
       ? Promise.resolve({ allowed: true, reason: "値を返さない口" })
+      : callerOwnedCall
+      ? Promise.resolve({ allowed: true, reason: "呼び元の Module が持ち主のものだけを書き換える口" })
       : opts.gate
         ? opts.gate
             .requestApproval({
@@ -879,7 +909,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
             : {};
     if (targetCall.id) callerMeta[CALL_ID_META_KEY] = targetCall.id;
     // **頼んだ Module を刻む**（追加・2026-10-06、`CALLER_MODULE_META_KEY`）。呼び元は合言葉で決まる（申告ではない）——
-    // 宛先は「頼んだ Module からだけ止められる」等の持ち主の確かめに使う
+    // 宛先は「頼んだ Module からだけ止められる」（`conn`）・banto が置く秘密の持ち主（`name`、`callerOwned` の口）等の確かめに使う。
+    // `callerMeta` は host が組み立てたもので、呼び元が自分で `_meta` に書いた同じ名前の鍵は宛先に渡らない
     callerMeta[CALLER_MODULE_META_KEY] = { name: identity.moduleName, conn: callerConn };
     // **人に聞かずに許可してよいか**（追加・2026-10-05、v4-frontend.md §6.4「承認をすべて自動で許可する」）。AI のターンから
     // 始まった、スイッチがオンの Project のための呼び出しにだけ刻む——Publish の窓口が中で実装の `publishRoute` を呼ぶとき、

@@ -145,6 +145,15 @@ export const PAT_ADMINISTRATION_HINT =
   "fine-grained PAT なら Repository permissions の「Administration」を「Read and write」に（Resource owner を作る先にして）作り直し、classic PAT なら repo の権限を付けてください";
 
 const TIMEOUT_MS = 15_000;
+
+/**
+ * **更新で `incorrect_client_credentials` が返ったとき**（追加・2026-10-06）。本物の GitHub は、無効になった refresh token
+ * （1回使うと無効になる——前の更新の後で新しい組を保存できなかった・取り消された）にも `bad_refresh_token` ではなく
+ * これを返す（実測・2026-10-06。デバイスフローのトークンは client secret 無しで更新できることも同じ日に確かめた）。
+ * client ID はログインのときに通ったものなので、ここで「client ID を知らない」と言うと探す場所を間違える
+ */
+export const REFRESH_TOKEN_INVALID_MESSAGE =
+  "更新の鍵（refresh token）が無効になっています（前の更新を保存できなかった・取り消された等）。もう一度ブラウザでログインしてください";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
 /** GitHub の `error` を、人が次の手を選べる言い方に。知らないものは GitHub の文言のまま */
@@ -262,7 +271,12 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
         refresh_token: refreshToken,
       });
       if (typeof body.error === "string") {
-        throw new GithubError(explain(body.error, body.error_description as string | undefined), body.error);
+        // 同じ返事でも、ログイン（デバイスフロー）では client ID の誤り、更新では鍵が無効——呼ぶ場所で訳し分ける
+        const message =
+          body.error === "incorrect_client_credentials"
+            ? REFRESH_TOKEN_INVALID_MESSAGE
+            : explain(body.error, body.error_description as string | undefined);
+        throw new GithubError(message, body.error);
       }
       return tokenSet(body, now());
     },

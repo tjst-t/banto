@@ -59,11 +59,17 @@ test("断りは理由つき——client ID が違う・デバイスフローが�
       assert.doesNotMatch(err.message, /ghp_not_a_real_token_123/);
       return true;
     });
+    // **無効な refresh token には、本物どおり incorrect_client_credentials**（実測・2026-10-06）——更新では「鍵が無効」と
+    // 訳す（ログインの同じ返事は上のとおり client ID の誤り）
     await assert.rejects(() => api.refresh(FAKE_CLIENT_ID, "ghr_stale_one"), (err: GithubError) => {
-      assert.equal(err.code, "bad_refresh_token");
-      assert.doesNotMatch(err.message, /ghr_stale_one/);
+      assert.equal(err.code, "incorrect_client_credentials");
+      assert.equal(err.message, "更新の鍵（refresh token）が無効になっています（前の更新を保存できなかった・取り消された等）。もう一度ブラウザでログインしてください");
+      assert.doesNotMatch(err.message, /client ID|ghr_stale_one/);
       return true;
     });
+    // 期限切れ等で GitHub が bad_refresh_token と言うときは今までの訳のまま
+    gh.refreshError = "bad_refresh_token";
+    await assert.rejects(() => api.refresh(FAKE_CLIENT_ID, "ghr_stale_one"), /GitHub が更新の鍵（refresh token）を受け付けませんでした/);
   } finally {
     await gh.close();
   }
@@ -85,7 +91,7 @@ test("更新は client ID と refresh token だけで送り（client secret は�
       refresh_token: first.tokens.refreshToken!,
     });
     assert.notEqual(next.refreshToken, first.tokens.refreshToken);
-    await assert.rejects(() => api.refresh(FAKE_CLIENT_ID, first.tokens.refreshToken!), /refresh token/);
+    await assert.rejects(() => api.refresh(FAKE_CLIENT_ID, first.tokens.refreshToken!), /更新の鍵（refresh token）が無効になっています/);
   } finally {
     await gh.close();
   }

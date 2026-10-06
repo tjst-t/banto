@@ -20,6 +20,8 @@ import {
   fillCardText,
   uiResourceUriOf,
   waitingOnOf,
+  callerModuleOf,
+  isCallerOwned,
 } from "./meta.js";
 
 test("parses a valid module meta", () => {
@@ -285,4 +287,16 @@ test("waitingOnOf：on が human のときだけ読み、空の題は捨てる",
   assert.equal(waitingOnOf({ "dev.banto/waitingOn": { on: "work" } }), undefined);
   assert.equal(waitingOnOf({ "dev.banto/waitingOn": "human" }), undefined);
   assert.equal(waitingOnOf(undefined), undefined);
+});
+
+test("callerModuleOf・isCallerOwned：{name, conn}・true のときだけ（形が違えば名乗っていない）", () => {
+  assert.deepEqual(callerModuleOf({ "dev.banto/callerModule": { name: "shell", conn: "shell-p1" } }), { name: "shell", conn: "shell-p1" });
+  // 刻印は1つの形だけ——宣言の名前だけの文字列は読まない
+  assert.equal(callerModuleOf({ "dev.banto/callerModule": "repositories" }), undefined);
+  assert.equal(callerModuleOf({ "dev.banto/callerModule": { name: "repositories" } }), undefined);
+  assert.equal(callerModuleOf({ "dev.banto/callerModule": { name: "", conn: "x" } }), undefined);
+  assert.equal(callerModuleOf(undefined), undefined);
+  assert.equal(isCallerOwned({ _meta: { "dev.banto/callerOwned": true } }), true);
+  assert.equal(isCallerOwned({ _meta: { "dev.banto/callerOwned": "true" } }), false);
+  assert.equal(isCallerOwned({}), false);
 });

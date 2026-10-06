@@ -1,7 +1,8 @@
 // 試験のための偽物：**偽の GitHub（本物の HTTP で立てる）**・Vault・受信箱。試験からだけ使う（index から出さない）。
 //
 // 偽の GitHub は本物と同じ話し方をする——form で受け、`{error}` を 200 で返し、refresh token は**1回使うと無効**
-// （回る）。同時に2本が同じ鍵で更新すると、片方は `bad_refresh_token` で負ける（本物と同じ）。
+// （回る）。**無効な refresh token には `incorrect_client_credentials`**（本物と同じ。`bad_refresh_token` ではない——
+// 実測・2026-10-06）。同時に2本が同じ鍵で更新すると、片方はこれで負ける。
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -190,7 +191,10 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
             if (state.refreshDelayMs > 0) await new Promise((r) => setTimeout(r, state.refreshDelayMs));
             if (state.refreshError) return send(200, { error: state.refreshError, error_description: "refused by fake" });
             const login = state.refreshTokens.get(form.refresh_token ?? "");
-            if (!login) return send(200, { error: "bad_refresh_token", error_description: "The refresh token passed is incorrect or expired." });
+            // 本物は無効な（使い終わった・取り消された）refresh token にもこう返す（実測・2026-10-06）
+            if (!login) {
+              return send(200, { error: "incorrect_client_credentials", error_description: "The client_id and/or client_secret passed are incorrect." });
+            }
             // **回る**——使った鍵は無効になる
             state.refreshTokens.delete(form.refresh_token!);
             return send(200, issue(login));

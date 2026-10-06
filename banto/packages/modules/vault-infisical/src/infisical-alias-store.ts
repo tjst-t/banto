@@ -292,6 +292,8 @@ function toMeta(
     note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
     lastUsedAt: meta?.lastUsedAt,
     expiresAt: meta?.expiresAt,
+    // banto が置く秘密の持ち主（`putSecret` が残す。2026-10-06）
+    ...(meta?.owner ? { owner: meta.owner } : {}),
     // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形——どちらも**置き場の名前を
     // そのまま使う**（推測で直さない）。サブフォルダの秘密はグループからの相対の道（`sub/KEY`）が名前
     name: meta?.name ?? nameWithinGroup(backendPath),
@@ -320,7 +322,12 @@ function parseComment(comment: string | undefined): StoredMeta | undefined {
       const { kind: _ignored, ...link } = parsed;
       return link as StoredMeta;
     }
-    if (parsed.kind !== "secret" && parsed.kind !== "ssh-identity" && parsed.kind !== "file") return undefined;
+    // **`oauth-token`（banto が置く秘密）も読む**（訂正・2026-10-06）。以前は3つしか読まず、banto が置いた
+    // ログイン情報を「banto の注記ではない」として種別 secret に落としていた——`putSecret` の置き換えが
+    // 「人が預けた秘密です」で断られ、回った OAuth の鍵を書き戻せなかった
+    if (parsed.kind !== "secret" && parsed.kind !== "ssh-identity" && parsed.kind !== "file" && parsed.kind !== "oauth-token") {
+      return undefined;
+    }
     // **`scope` はもう見ない**（改訂・2026-09-13）——使える範囲は置き場
     // （グループ）から導くので、注記に書かれた古い `scope` は無視する。
     // 消さずに無視するだけ（規則2——推測で書き換えない）

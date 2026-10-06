@@ -20,13 +20,17 @@
 //      用意したフォルダで Project を作る・もう Project があればそれを開く
 //  11. 段階5：GitHub に公開——一覧の行から（アカウント・持ち主・名前のぶつかり・公開範囲の警告・作る→origin→push、
 //      push の失敗で作ったものは残り push だけやり直せる）と、Project の画面の入口「この Project を GitHub に公開」から
+//  12. **AI のターンの中で期限の来たログインを取り直し、人に聞かずに Vault に書き戻す**（2026-10-06）——Backlog の項目を
+//      AI が変えると、Backlog が中継で Repositories の fetch_branch・push_branch を呼び、そこで GitHub のトークンを取り直す。
+//      回った鍵の書き戻し（Repositories → Vault の putSecret）に承認のカードが出ず、Vault の置き換えが記録に「持ち主の
+//      ものだけを書き換える口」で残り、以後の更新も通る（Vault に最新の鍵がある）
 import { test, expect, type FrameLocator, type Page, type Route } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL } from "../config.js";
-import { createProject, expectProjectOpen, openApp, openNav } from "../helpers.js";
+import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL, DATA_DIR, GITHUB_LOGIN_FIXTURE_FILE } from "../config.js";
+import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, waitForProjectModule } from "../helpers.js";
 import {
   E2E_GITHUB_CLIENT_ID,
   E2E_GITHUB_DEVICE_LOGIN,
@@ -1141,4 +1145,181 @@ test("段階5：GitHub に公開——一覧の行から作って push し（失
   await expect(inner.getByTestId("repo-home-input")).toHaveValue("~/banto");
   rmSync(repoHome, { recursive: true, force: true });
   expect(pageErrors).toEqual([]);
+});
+
+// **AI のターンの中で、期限の来たログインを取り直して Vault に書き戻す——人に聞かない**（2026-10-06、本番で起きた不具合）。
+// Backlog の項目を AI が変えるたびに、Backlog（Project のコンテナの中）が中継で Repositories の fetch_branch・push_branch を
+// 呼び、Repositories はそこで GitHub のトークンを使う。期限が近いと取り直し（GitHub は前の鍵を無効にする）、回った組を
+// Vault に書き戻す（Repositories → vault-local の putSecret）。以前はこの書き戻しが中継の承認に掛かり、答えが無いまま
+// 切れると Vault に無効な鍵だけが残って、以後の更新は毎回断られた。いまは Repositories が置いたもの（持ち主）だけを
+// 書き換える口として、聞かずに通る。見るのは：
+//   - 出るカードは、Backlog → Repositories の送る・取ってくる（ブランチごとの初回）と、Repositories → Vault の値を引く
+//     （初回）だけ。**putSecret のカードは1枚も出ない**（受信箱にも残らない）
+//   - 書き戻しは記録（`relay.call_recorded`）に、聞かずに通した理由つきで成功として残る
+//   - 偽の GitHub は本物どおり使った鍵を無効にするので、以後の更新が通る＝Vault に最新の鍵がある。次のターンも聞かずに通り、
+//     origin（偽の GitHub）のブランチが進む
+test("AI のターンの中で期限の来たログインを取り直し、人に聞かずに Vault に書き戻す——以後の更新も通る", async ({ page, request }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const installed = await request.post(`${CORE_BASE_URL}/api/modules/catalog/backlog`, {
+    headers: { ...headers, "content-type": "application/json" },
+    data: { name: "backlog" },
+  });
+  if (!installed.ok() && !(await installed.text()).includes("その名前はもう使われています")) {
+    throw new Error(`Backlog を目録から入れられませんでした: ${installed.status()}`);
+  }
+  // Project の根になる（コンテナに同じパスで見せる）——Incus がマウントを許す、この回の一時の置き場の中に作る
+  const repoHome = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-refresh-home-")));
+  const name = `tasks-${Date.now().toString(36)}`;
+  const repoPath = join(repoHome, name);
+  const login = E2E_GITHUB_DEVICE_LOGIN;
+  let passed = false;
+  try {
+    // 出すトークンの寿命を5分の余裕より短くして、使うたびに取り直しが走るようにする
+    await setGithubLoginFixture({ script: ["authorized"], accessTokenTtl: 60, refreshError: null, addRepo: { owner: login, name } });
+    let inner = await openRepositoriesPane(page);
+    // 置き場は home の下（この回の一時の置き場）——画面は `~/…` で見せる
+    await inner.getByTestId("repo-home-input").fill(repoHome);
+    await inner.getByTestId("repo-home-save").click();
+    await expect(inner.getByTestId("repo-list-lead")).toContainText(`${shown(repoHome)} に置きます`);
+
+    // ---- ブラウザでログインして、そのアカウントで clone し、そのフォルダで Project を作る -------------------------
+    await inner.getByTestId("gh-account-add").click();
+    await expect(inner.getByTestId("gh-method-browser")).toBeChecked();
+    await inner.getByTestId("gh-account-submit").click();
+    await expect(inner.getByTestId("repo-flash")).toContainText(`${login} をブラウザでログインして登録しました`, { timeout: 30_000 });
+    await inner.getByTestId("repo-clone-open").first().click();
+    await inner.getByTestId("repo-clone-url").fill(`${login}/${name}`);
+    await expect(inner.getByTestId("repo-clone-account-one")).toContainText(`${login} で clone します`);
+    await inner.getByTestId("repo-clone-submit").click();
+    const dialog = page.getByRole("dialog", { name: "新しい Project" });
+    await expect(dialog, "clone のあと core の新しい Project の画面が開かない").toBeVisible({ timeout: 60_000 });
+    const escaped = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    await expect(dialog.locator("#new-project-path")).toHaveValue(new RegExp(`^(${escaped(repoPath)}|${escaped(shown(repoPath))})$`));
+    // 一覧のブランチを、作業ツリーに触らずに積んでおく（Backlog の見本の一覧）
+    const sample = readFileSync(new URL("../fixtures/backlog/tasks.json", import.meta.url).pathname, "utf8");
+    const plumb = (args: string[], input?: string) =>
+      execFileSync("git", ["-c", "user.name=e2e", "-c", "user.email=e2e@example.com", ...args], { cwd: repoPath, encoding: "utf8", ...(input !== undefined ? { input } : {}) }).trim();
+    const blob = plumb(["hash-object", "-w", "--stdin"], sample);
+    const tree = plumb(["mktree"], `100644 blob ${blob}\ttasks.json\n`);
+    plumb(["update-ref", "refs/heads/backlog", plumb(["commit-tree", tree, "-m", "e2e: 一覧"])]);
+    await dialog.getByRole("button", { name: "作成する" }).click();
+    await expectProjectOpen(page, name, "clone したフォルダの Project が開かない");
+    await waitForProjectModule(page, name, "backlog");
+    inner = await openRepositoriesPane(page);
+    await expect(row(inner, repoPath).getByTestId("repo-account-login")).toHaveText(login, { timeout: 60_000 });
+
+    // ---- AI のターン：Backlog の項目を変える → 取ってくる・送るのたびに、期限の来たログインを取り直す ---------------
+    const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
+    const originBacklog = () => {
+      const out = execFileSync("git", ["ls-remote", `${web}/${login}/${name}.git`, "refs/heads/backlog"], { encoding: "utf8" }).trim();
+      return out ? out.split(/\s+/)[0] : undefined;
+    };
+    const localBacklog = () => plumb(["rev-parse", "refs/heads/backlog"]);
+    expect(originBacklog(), "まだ送っていないのに origin に一覧のブランチがある").toBeUndefined();
+    const relayEvents = () =>
+      readFileSync(join(DATA_DIR, "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line.includes('"relay.call_recorded"'))
+        .map((line) => JSON.parse(line) as { seq: number; payload: Record<string, unknown> });
+    const sinceSeq = Math.max(0, ...relayEvents().map((e) => e.seq));
+    // このアカウントについての知らせ（前の試験がわざと失敗させたものは開いたまま残っている——ここからあとに出たものだけ見る）
+    const accountNotices = async () =>
+      ((await (await request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{ id: string }>).filter((i) =>
+        JSON.stringify(i).includes(`@${login}`),
+      );
+    const noticesBefore = new Set((await accountNotices()).map((n) => n.id));
+    const refreshesBefore = (await setGithubLoginFixture({})).refreshCalls;
+
+    await openApp(page);
+    const projects = (await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as Array<{ id: string; name: string }>;
+    await page.goto(`/p/${projects.find((p) => p.name === name)!.id}`);
+    const composer = page.getByPlaceholder(/に送る/).first();
+    await expect(composer).toBeVisible({ timeout: 30_000 });
+    const cards = page.locator('[data-role="judgment-card"]');
+    const putSecretCards = cards.filter({ hasText: "putSecret" });
+    const openJudgments = async () =>
+      ((await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{ kind: string; message?: string }>)
+        .filter((i) => i.kind === "judgment")
+        .map((i) => i.message);
+    const allow = async (hasText: string) => {
+      const card = cards.filter({ hasText });
+      await expect(card.getByRole("button", { name: "許可する" }), `${hasText} の承認を聞いていない`).toBeVisible({ timeout: 120_000 });
+      // 書き戻しのカードは、どの時点でも出ていない
+      await expect(putSecretCards, "回った鍵の書き戻しで人を止めている").toHaveCount(0);
+      await card.getByRole("button", { name: "許可する" }).click();
+    };
+
+    await composer.fill(
+      "優先度を下げます。" +
+        fakeTurn({ tools: [{ server: "backlog", name: "updateItem", args: { id: "turn-latest-on-return", priority: "low" } }], then: "下げました。" }),
+    );
+    await composer.press("Enter");
+    // 書く前に取ってくる（ブランチごとの初回）→ その中で Repositories がトークンを引く（値を返す口の初回）
+    await allow("backlog が repositories の fetch_branch");
+    await allow("repositories が vault-local の resolveAlias");
+    // 取り直した組の書き戻しは聞かれない。書いたら送る（初回）——送る前にもう一度取り直す
+    await allow("backlog が repositories の push_branch");
+    await expect(page.getByText("下げました。", { exact: true })).toBeVisible({ timeout: 120_000 });
+    await expect(putSecretCards, "回った鍵の書き戻しで人を止めている").toHaveCount(0);
+    expect(await openJudgments(), "答えていない承認が受信箱に残っている").toEqual([]);
+    await expect.poll(originBacklog, { timeout: 30_000 }).toBe(localBacklog());
+
+    // 取り直して、その組を Vault に置き換えた——聞かずに通した理由つきで、成功として記録に残る
+    expect((await setGithubLoginFixture({})).refreshCalls, "期限が来ているのに取り直していない").toBeGreaterThanOrEqual(refreshesBefore + 2);
+    // 設定の面を開いたときの取り直し（人の画面から——別の理由で通る）が裏で混ざりうるので、どれも成功していることと、
+    // AI のターンの中の2回（取ってくる・送る）が「持ち主のもの」の理由で通ったことを見る
+    const writes = relayEvents().filter((e) => e.seq > sinceSeq && e.payload.name === "putSecret");
+    for (const e of writes) {
+      expect(e.payload, "Vault への書き戻しが断られた・失敗した").toMatchObject({
+        callerModule: "repositories",
+        targetModule: "vault-local",
+        allowed: true,
+        ok: true,
+        identifiers: { name: `oauth-github-${login}` },
+      });
+      expect(JSON.stringify(e.payload), "記録にトークンが出ている").not.toMatch(/gh[ur]_fake_/);
+    }
+    const unattended = writes.filter((e) => e.payload.reason === "呼び元の Module が持ち主のものだけを書き換える口");
+    expect(unattended.length, "AI のターンの中の書き戻しが、持ち主のものとして聞かずに通っていない").toBeGreaterThanOrEqual(2);
+
+    // ---- 以後も通る：次のターンは何も聞かれず（承認は覚えている）、Vault の最新の鍵で取り直し、送る -----------------
+    const refreshesMid = (await setGithubLoginFixture({})).refreshCalls;
+    const cardsBefore = await cards.count();
+    await composer.fill(
+      "優先度を上げます。" +
+        fakeTurn({ tools: [{ server: "backlog", name: "updateItem", args: { id: "turn-latest-on-return", priority: "high" } }], then: "上げました。" }),
+    );
+    await composer.press("Enter");
+    await expect(page.getByText("上げました。", { exact: true })).toBeVisible({ timeout: 120_000 });
+    expect(await cards.count(), "2回目のターンで承認を聞いた").toBe(cardsBefore);
+    expect((await setGithubLoginFixture({})).refreshCalls, "2回目のターンで取り直していない").toBeGreaterThanOrEqual(refreshesMid + 2);
+    await expect.poll(originBacklog, { timeout: 30_000 }).toBe(localBacklog());
+    expect(JSON.parse(plumb(["show", "refs/heads/backlog:tasks.json"])).items.find((i: { id: string }) => i.id === "turn-latest-on-return").priority).toBe("high");
+    // 書き戻しに失敗した知らせ・更新に失敗した知らせは出ていない
+    expect((await accountNotices()).filter((n) => !noticesBefore.has(n.id)), "ログインの保存・更新の失敗が受信箱に出ている").toEqual([]);
+    // 画面にもトークンは出ていない
+    for (const frame of page.frames()) expect(/gh[ur]_fake_/.test(await frame.content().catch(() => ""))).toBe(false);
+    expect(pageErrors).toEqual([]);
+    passed = true;
+  } finally {
+    // 片づけ：アカウントを外し（Vault のログイン情報も消える）、置き場を戻し、目録から入れた Backlog を外す。
+    // **試験が落ちたあとの片づけの失敗で、落ちた理由を隠さない**——片づけが投げるのは、本体が通ったときだけ
+    try {
+      const inner = await openRepositoriesPane(page);
+      const account = inner.locator(`[data-testid="gh-account"][data-login="${login}"]`);
+      if ((await account.count()) > 0) {
+        await account.getByTestId("gh-account-remove").click();
+        await account.getByTestId("gh-account-remove-confirm").click();
+        await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible({ timeout: 30_000 });
+      }
+      await inner.getByTestId("repo-home-reset").click();
+    } catch (err) {
+      if (passed) throw err;
+    } finally {
+      await request.delete(`${CORE_BASE_URL}/api/modules/backlog`, { headers });
+      rmSync(repoHome, { recursive: true, force: true });
+    }
+  }
 });

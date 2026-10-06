@@ -77,6 +77,25 @@ export function skillEntryProblem(name: unknown, description: unknown): string |
 export const VALUE_FREE_META_KEY = `${VENDOR_PREFIX}/valueFree`;
 
 /**
+ * **その tool は、呼び元の Module が持ち主のものだけを書き換え、値を返さない**ことの申告（追加・2026-10-06、
+ * アーキ仕様 §2.5「呼び元の Module が持ち主のものだけを書き換える口」）。値は `true` だけ。
+ *
+ * 名乗った tool は、**新しく作るものは呼び元の Module（`CALLER_MODULE_META_KEY`）を持ち主として残し、既にあるものは
+ * 持ち主と同じ Module からの呼び出しでだけ書き換える**——持ち主の確かめは宛先が自分の記録と host の刻印で行う
+ * （host は持ち主を知らない）。host はこれを名乗る口への中継を、宛先も呼び元も同梱で、呼び元が banto 本体で動いている
+ * ときに限り、人に聞かずに通す。**名乗りを信じるのは同梱の宛先だけ**（`valueFree` と同じ線——確かめるのは宛先なので、
+ * 第三者が名乗るだけで緩むと、確かめない口が承認を飛ばす）。
+ *
+ * **無指定は「名乗っていない」**（fail closed）。
+ */
+export const CALLER_OWNED_META_KEY = `${VENDOR_PREFIX}/callerOwned`;
+
+/** その tool が「呼び元の Module が持ち主のものだけを書き換える」と名乗っているか。**`true` 以外は名乗っていない** */
+export function isCallerOwned(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[CALLER_OWNED_META_KEY] === true;
+}
+
+/**
  * **その呼び出しが、どの Project のためのものか**（決定・2026-09-13）。
  *
  * host が中継するときに刻む——**Module に自己申告させない**（申告なら詐称できる）。
@@ -171,10 +190,15 @@ export function threadOf(meta: Record<string, unknown> | undefined): ThreadStamp
 }
 
 /**
- * **中継でこの呼び出しを頼んだ Module**（追加・2026-10-06、Factory の前提。v4-architecture.md §2.5）。**host だけが刻む**——
- * Module 間の中継（`relayCallTool`）で宛先を呼ぶとき、呼び元の宣言の名前（`name`）と接続名（`conn`。Project ごとの Module は
- * `<name>-<projectId>`）を載せる。呼び元の申告ではない（中継の合言葉が host の台帳で呼び元を決める）。AI のターン・人の画面からの
- * 呼び出しには付かない。宛先は「頼んだ Module からだけ止められる」等の持ち主の確かめに使う
+ * **中継でこの呼び出しを頼んだ Module**（追加・2026-10-06、Factory の前提・banto が置く秘密の持ち主。v4-architecture.md §2.5）。
+ * **host だけが刻む**——Module 間の中継（`relayCallTool`）で宛先を呼ぶとき、呼び元の宣言の名前（`name`）と接続名（`conn`。
+ * Project ごとの Module は `<name>-<projectId>`）を載せる。呼び元の申告ではない（中継の合言葉が host の台帳で呼び元を決める。
+ * 中継は宛先に渡す `_meta` を自分で組み立て、呼び元が書いた同じ名前の鍵は渡さない）。AI のターン・人の画面からの呼び出しには
+ * 付かない。入れ子の中継（A → B → C）では、C に刻まれるのは B（すぐ手前の呼び元）。
+ *
+ * どちらを使うかは確かめる中身で選ぶ：**その接続（プロセス）が頼んだもの**なら `conn`（Subagent の `cancelSubagent`）、
+ * **どのコードが置いたもの**なら `name`（Vault の `putSecret` の持ち主——承認の粒度と同じ。接続名は host の名付けの都合で、
+ * Vault に残す記録には向かない）
  */
 export const CALLER_MODULE_META_KEY = `${VENDOR_PREFIX}/callerModule`;
 

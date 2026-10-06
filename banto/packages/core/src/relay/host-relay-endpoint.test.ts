@@ -1544,3 +1544,182 @@ test("中継は宛先に、頼んだ Module（宣言の名前と接続名）を�
     await close();
   }
 });
+
+// **呼び元の Module が持ち主のものだけを書き換える口**（追加・2026-10-06、`dev.banto/callerOwned`）。
+//
+// Repositories が回った GitHub のログインを Vault に書き戻す呼び出しが、AI のターンの中で人を待ち、答えが無いまま
+// 切れて、相手が既に無効にした古い鍵だけが Vault に残っていた（本番）。host は宛先に**呼び元の Module**を刻み
+// （`dev.banto/callerModule`——呼び元が書いたものは渡さない）、印を名乗る同梱の口への、banto 本体で動く同梱の
+// Module からの中継だけを聞かずに通す。持ち主の確かめは宛先がする。見るのは：
+//   1. 同梱→同梱の印つきの口は聞かない（記録に理由）。印の無い口は今までどおり聞く
+//   2. 宛先が受け取る呼び元の刻印は宣言の名前で、呼び元が自分で書いた刻印では偽れない
+//   3. 呼び元が外から入れた Module・コンテナの中の Module なら聞く
+//   4. 宛先が外から入れた Module なら、印を名乗っても聞く
+async function callerOwnedWorld(opts: { targetExternal?: boolean } = {}) {
+  const seen: Array<{ name: string; meta: Record<string, unknown> }> = [];
+  const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      { name: "putSecret", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "module", "dev.banto/callerOwned": true } },
+      { name: "createAlias", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "admin" } },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push({ name: req.params.name, meta: (req.params._meta ?? {}) as Record<string, unknown> });
+    return { content: [{ type: "text", text: "stored" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const vaultClient = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), vaultClient.connect(c)]);
+
+  const registry = new RelayRegistry();
+  const vaultMeta = { satisfies: ["vault"], dependsOn: [], isolation: "subprocess" };
+  registry.registerModule({
+    name: "vault",
+    client: vaultClient,
+    meta: opts.targetExternal ? parseModuleMeta(vaultMeta, "vault") : bundledMeta(vaultMeta, "vault"),
+    ...(opts.targetExternal ? { codeId: "code-v1" } : {}),
+  });
+  const rawCaller = { satisfies: ["repositories"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" };
+  const tokens = {
+    bundled: registry.issueToken({ moduleName: "repositories", meta: bundledMeta(rawCaller, "repositories") }),
+    external: registry.issueToken({ moduleName: "third-party", meta: parseModuleMeta(rawCaller, "third-party") }),
+    // Project のコンテナの中の同梱の Module（AI が root で、合言葉も読める）。接続名は Project ごと
+    inContainer: registry.issueToken({
+      moduleName: "backlog",
+      connName: "backlog-p1",
+      projectId: "p1",
+      inContainer: true,
+      meta: bundledMeta(rawCaller, "backlog"),
+    }),
+  };
+  const asked: string[] = [];
+  const { url, audits, close } = await startTestServer(registry, {
+    // 出所は AI のターン——人の画面・banto 自身の仕事という別の緩めは使わない
+    moduleCalls: {
+      originFor: () => "turn",
+      threadFor: () => ({ kind: "none" }),
+      projectFor: () => undefined,
+      begin: () => () => undefined,
+    },
+    gate: {
+      async requestApproval(req) {
+        asked.push(`${req.callerModule}:${req.name}`);
+        return { allowed: false, reason: "この試験では人が答えない" };
+      },
+    },
+  });
+  // 落ちたときも繋ぎっぱなしにしない——開いたままだと http の close が待ち続け、試験が落ちずに止まる
+  const clients: Client[] = [];
+  const connect = async (token: string) => {
+    const client = await relayClient(url, token);
+    clients.push(client);
+    return client;
+  };
+  return {
+    seen,
+    asked,
+    audits,
+    tokens,
+    connect,
+    close: async () => {
+      await Promise.all(clients.map((x) => x.close().catch(() => undefined)));
+      close();
+      await vaultClient.close();
+    },
+  };
+}
+
+const putSecretCall = (meta?: Record<string, unknown>) => ({
+  name: "relayCallTool",
+  arguments: { targetModule: "vault", name: "putSecret", arguments: { name: "oauth-github-x", value: "v" } },
+  ...(meta ? { _meta: meta } : {}),
+});
+
+test("同梱→同梱の「呼び元の Module が持ち主のもの」の口は聞かずに通り、宛先には host が刻んだ呼び元の Module が届く——呼び元が書いた刻印では偽れない", async () => {
+  const w = await callerOwnedWorld();
+  try {
+    const client = await w.connect(w.tokens.bundled);
+    // 呼び元が自分で別の Module を名乗っても、宛先に渡るのは host の刻印だけ
+    const result = await client.callTool(putSecretCall({ "dev.banto/callerModule": { name: "vault-directory", conn: "vault-directory" } }));
+    assert.equal(textOf(result), "stored");
+    assert.deepEqual(w.asked, [], "持ち主のものだけを書き換える口で人を止めている");
+    assert.deepEqual(w.seen[0]?.meta["dev.banto/callerModule"], { name: "repositories", conn: "repositories" }, "呼び元の Module の刻印が host のものではない");
+    const audit = (w.audits as Array<{ name: string; allowed: boolean; reason?: string; ok?: boolean }>).find((a) => a.name === "putSecret");
+    assert.deepEqual(
+      { allowed: audit?.allowed, reason: audit?.reason, ok: audit?.ok },
+      { allowed: true, reason: "呼び元の Module が持ち主のものだけを書き換える口", ok: true },
+      "聞かずに通した理由が記録に残っていない",
+    );
+    // 印の無い口は今までどおり聞く
+    await assert.rejects(
+      () => client.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "createAlias", arguments: {} } }),
+      /許可されていません/,
+    );
+    assert.deepEqual(w.asked, ["repositories:createAlias"], "緩めが印の無い口まで広がっている");
+    // 聞かれて断られた口でも、刻印は付いていない呼び出しは宛先に届いていない
+    assert.deepEqual(w.seen.map((x) => x.name), ["putSecret"]);
+    await client.close();
+  } finally {
+    await w.close();
+  }
+});
+
+test("呼び元が外から入れた Module・コンテナの中の Module なら、持ち主のものだけを書き換える口でも聞く", async () => {
+  const w = await callerOwnedWorld();
+  try {
+    for (const token of [w.tokens.external, w.tokens.inContainer]) {
+      const client = await w.connect(token);
+      await assert.rejects(() => client.callTool(putSecretCall()), /許可されていません/);
+    }
+    assert.deepEqual(w.asked, ["third-party:putSecret", "backlog:putSecret"], "名乗りを信じてよくない呼び元で、聞かずに通した");
+    assert.deepEqual(w.seen, [], "聞いて断られた呼び出しが宛先に届いた");
+  } finally {
+    await w.close();
+  }
+});
+
+test("宛先が外から入れた Module なら、持ち主のものだけを書き換える口を名乗っても聞く", async () => {
+  const w = await callerOwnedWorld({ targetExternal: true });
+  try {
+    const client = await w.connect(w.tokens.bundled);
+    await assert.rejects(() => client.callTool(putSecretCall()), /許可されていません/);
+    assert.deepEqual(w.asked, ["repositories:putSecret"], "確かめるかどうか分からない宛先の名乗りで、承認を飛ばした");
+    await client.close();
+  } finally {
+    await w.close();
+  }
+});
+
+test("宛先に刻む呼び元の Module は宣言の名前と接続名の両方——Project ごとの Module でも（接続名を名前に化かさない）", async () => {
+  // ゲート無し（宣言された依存だけで通す）で、Project ごとの Module から呼び、宛先に届く刻印を見る
+  const seen: Record<string, unknown>[] = [];
+  const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "putSecret", inputSchema: { type: "object" } }] }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push((req.params._meta ?? {}) as Record<string, unknown>);
+    return { content: [{ type: "text", text: "stored" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const vault = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), vault.connect(c)]);
+  const registry = new RelayRegistry();
+  registry.registerModule({ name: "vault", client: vault, meta: bundledMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault") });
+  const token = registry.issueToken({
+    moduleName: "backlog",
+    connName: "backlog-p1",
+    projectId: "p1",
+    meta: bundledMeta({ satisfies: ["backlog"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" }, "backlog"),
+  });
+  const { url, close } = await startTestServer(registry);
+  const client = await relayClient(url, token);
+  try {
+    await client.callTool(putSecretCall());
+    // 1つの刻印に両方——持ち主（Vault）は宣言の名前、接続ごとの確かめ（Subagent）は接続名を使う
+    assert.deepEqual(seen[0]?.["dev.banto/callerModule"], { name: "backlog", conn: "backlog-p1" });
+  } finally {
+    await client.close();
+    close();
+    await vault.close();
+  }
+});

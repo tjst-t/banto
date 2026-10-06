@@ -1,12 +1,18 @@
 // アカウントの秘密の置き場——**Vault**（docs/specs/v4-modules.md §2.1・§2.4）。この Module は秘密の値を持たない：
 // 台帳・設定に書くのは alias の在りか（Vault・置き場・名前）だけで、値は使うたびに Vault から引く（写さない、規則3）。
 //
-// 呼ぶのはどれも中継（`relayCallTool`）で、**人の画面からの呼び出しを処理している間だけ**呼ぶ。人が押した、同梱どうしの
-// 呼び出しなので承認ゲートは通らない（docs/specs/v4-security.md §3。値を返す `resolveAlias` も）。AI のターンからは呼ばない。
+// 呼ぶのはどれも中継（`relayCallTool`）。ほとんどは**人の画面からの呼び出しを処理している間**に呼ぶ——人が押した、同梱どうしの
+// 呼び出しなので承認ゲートは通らない（docs/specs/v4-security.md §3。値を返す `resolveAlias` も）。**例外はブランチを送る口**
+// （`push_branch`・`fetch_branch`。Backlog が AI のターンの中から中継で呼ぶ）で、トークンを引く `resolveAlias` は中継の承認に
+// 掛かる（初回だけ）。回ったトークンを書き戻す `putSecret` は下のとおり聞かれない。
 //
 // - 窓口（`vault-directory`）：目録・在りかを引く・人が貼った PAT を預ける（`createAlias`）・消す
-// - 金庫（在りかの `implementation`）：値を引く（`resolveAlias`）・**banto が置く秘密を置き換える**（`putSecret`——
-//   種別 `oauth-token` だけ。人が預けた秘密には、この口から届かない。MCP の OAuth のログイン情報と同じ置き方）
+// - 金庫（在りかの `implementation`）：値を引く（`resolveAlias`）・**banto が置く秘密を置く・置き換える**（`putSecret`——
+//   種別 `oauth-token` だけ。人が預けた秘密には、この口から届かない。MCP の OAuth のログイン情報と同じ置き方）。
+//   **新しく置くときも金庫へ直接**（2026-10-06）：金庫は置いた Module（host が刻む呼び元）を持ち主として残し、置き換えは
+//   持ち主からだけ受ける。窓口を通すと持ち主が窓口になり、あとで直接置き換えられない。持ち主のものを置き換えるだけの
+//   この口は、AI のターンの中（Backlog の中継の奥で回った GitHub のログインを書き戻す）でも人に聞かずに通る
+//   （docs/specs/v4-security.md「呼び元の Module が持ち主のものだけを書き換える口」）
 
 import type { ModuleCaller } from "./relay-client.js";
 
@@ -90,7 +96,11 @@ export class RelayVault implements VaultAccess {
       );
       return place;
     }
-    await this.relay.callTool(DIRECTORY, "putSecret", { name: input.name, value: input.value, note: input.note }, callId);
+    // **新しく置くのも金庫へ直接**——窓口の putSecret を通すと、金庫に残る持ち主が窓口になる（上記）。置く先は窓口が
+    // 決める既定の Vault（人が設定画面で選ぶもの）。置き場（グループ）は金庫が決めるので、置いたあとで窓口に引く
+    const { vault } = JSON.parse(await this.relay.callTool(DIRECTORY, "getDefaultVault", {}, callId)) as { vault?: unknown };
+    if (typeof vault !== "string" || vault === "") throw new Error("既定の Vault が分かりません");
+    await this.relay.callTool(vault, "putSecret", { name: input.name, value: input.value, note: input.note }, callId);
     return this.lookup(input.name, callId);
   }
 
