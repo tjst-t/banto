@@ -5369,7 +5369,7 @@
       "number": 220,
       "kind": "bug",
       "title": "同梱 Module の画面が host の色（--color-*）と明暗を受け取れていない",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5377,7 +5377,7 @@
       "labels": [],
       "body": "2026-10-06、Vault の管理画面を直したとき（798dfd02）に見つけた。host（banto）は iframe に `--color-text-primary` などの標準の名前で色を渡しているが、画面は `--mcp-ui-color-*` を読み、受けた名前の前にも `--mcp-ui-` を付けて置いていたので、いつも既定の色で描かれていた。明暗（theme）と、明暗の切り替えの通知にも追っていない（OS 任せ）。\n\n同じ間違いの画面：vault-kit の request-app（会話の中の秘密の入力欄）・skills の app・filesystem／vault-local／publish-caddy の config-app。vault-infisical の config-app は古い名前を読むうえ host から色を受け取ってもいない。\n正しく受けているもの：publish-directory・repositories・filesystem の画面本体・subagent・backlog。直し方の手本は vault-directory の manage-app.ts と config-app.ts（798dfd02）と、その単体試験 app-html.test.ts。",
       "doneWhen": "挙げた6画面が標準の色の名前を先に読み（古い名前は既定値の手前に残す）、host の明暗とその切り替えに追う。単体試験で色の名前と明暗の追随を確かめ、壊すと落ちる。banto を暗い配色にして各画面の字・枠・入力欄が読める（スクリーンショット）。",
-      "resolution": null,
+      "resolution": "93af37dc（main と release に push、host での反映は人）。6画面が --color-* を先に読み（古い名前は既定の手前）、ui/initialize の hostContext と host-context-changed で明暗と色を当てる。vault-infisical は ui/initialize 自体を足した。単体試験 app-html.test.ts を各パッケージに（元に戻すと落ちることを確認）。E2E は skills・skills-import・vault-request-inline・module-settings-canvas で 13/14、落ちた1件（:242 の vault-infisical が一覧に出ない）は Infisical の開発サーバが動いていないためで色とは無関係。スクリーンショットは本物の banto ではなく、canvas-host-styles.ts と同じ色を渡す試験用のページで撮った（banto の sandbox.html の中継の枠は通していない）。",
       "refs": [
         "banto/packages/modules/vault-directory/src/manage-app.ts",
         "banto/packages/modules/vault-directory/src/app-html.test.ts"
@@ -5389,8 +5389,8 @@
         }
       ],
       "createdAt": "2026-10-06T14:09:01.415Z",
-      "updatedAt": "2026-10-06T14:09:18.749Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-06T14:29:02.877Z",
+      "closedAt": "2026-10-06T14:29:02.877Z",
       "extra": {}
     }
   ],
