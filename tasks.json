@@ -5242,6 +5242,30 @@
       "updatedAt": "2026-10-05T14:07:27.746Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "flaky-background-work-human",
+      "number": 215,
+      "kind": "bug",
+      "title": "E2E background-work-human が時々落ちる（「待たずに頼みました」が2つ見える）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-05、relay-card の作業中に測った：main で 0/5〜1/5、変更版で最大 3/7。trace では、サブエージェント → vault-directory の中継の承認カードで tool のまとまりが開き、結果がまとまりの中と AI の文の2か所に出ていた。この spec が落ちると判断待ちが受信箱に残り、同じ回の inbox.spec・permission-mode-and-two-approvals.spec が件数のずれで落ちる。経緯 docs/notes/2026-10-05-relay-card-followups.md・2026-10-05-relay-card-stop-keep.md。",
+      "doneWhen": "単独で20回続けて通る。落ちても後の spec を巻き込まない",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T02:42:38.444Z",
+      "updatedAt": "2026-10-06T02:42:38.444Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
