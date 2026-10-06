@@ -5266,6 +5266,30 @@
       "updatedAt": "2026-10-06T02:42:38.444Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "flaky-thread-messages-unit",
+      "number": 216,
+      "kind": "bug",
+      "title": "単体 delivery/thread-messages.test.ts が時々落ちる（fire-and-forget の書き込みを10msだけ待つ）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "test",
+        "flaky"
+      ],
+      "body": "2026-10-05 に測った：前の版 2/20、変更版 5/20。決まった時間を待たず、書き込みの終わりを待つ形にする。経緯 docs/notes/2026-10-05-relay-card-stop-keep.md。",
+      "doneWhen": "50回続けて通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-06T02:42:40.812Z",
+      "updatedAt": "2026-10-06T02:42:40.812Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
