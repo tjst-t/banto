@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -397,6 +398,31 @@ test("外から止められたもの（cancelCommand ではない SIGTERM）は�
     } finally {
       await shell.close();
     }
+  });
+});
+
+test("起動役：started.json を書いた直後に止められても、終わり方を書き、子を残さない（信号の受け口を先に置く）", async () => {
+  await withDirs(async (dirs) => {
+    // 以前は started.json を書いて子を起こしてから受け口を置いていて、見た直後の SIGTERM で 30 回中 30 回書けなかった
+    for (let i = 0; i < 10; i++) {
+      const dir = join(dirs.root, `race-${i}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "job.json"),
+        JSON.stringify({ id: "x", command: "sleep 31", cwd: dirs.project, startedAt: "", replyToFingerprint: "f", unit: "u" }),
+      );
+      writeFileSync(join(dir, "env.json"), JSON.stringify({ PATH: process.env.PATH }));
+      const wrapper = spawn(process.execPath, [WRAPPER, dir, join(dir, "env.json")], { stdio: "ignore", detached: true });
+      const exited = new Promise((r) => wrapper.on("exit", r));
+      while (!existsSync(join(dir, "started.json"))) await new Promise((r) => setImmediate(r));
+      process.kill(JSON.parse(readFileSync(join(dir, "started.json"), "utf8")).pid as number, "SIGTERM");
+      await exited;
+      assert.ok(existsSync(join(dir, "exit.json")), `${i} 回目：終わり方を書けなかった`);
+      assert.equal(JSON.parse(readFileSync(join(dir, "exit.json"), "utf8")).stopRequested, true);
+    }
+    // 子（自分のグループで起こした sleep）まで止まっている
+    for (let waited = 0; waited < 3_000 && spawnSync("pgrep", ["-f", "^sleep 31$"]).status === 0; waited += 50) await new Promise((r) => setTimeout(r, 50));
+    assert.notEqual(spawnSync("pgrep", ["-f", "^sleep 31$"]).status, 0, "子が残った");
   });
 });
 

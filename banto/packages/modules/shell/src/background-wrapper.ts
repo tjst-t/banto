@@ -50,6 +50,19 @@ export async function main(dir: string, envFile: string): Promise<never> {
     process.exit(0);
   };
 
+  // **信号の受け口は最初に置く**（実測・2026-10-07）——置く前に SIGTERM が来ると既定の動き（その場で終わる）になり、
+  // 終わり方を書けず、自分のグループで起こした子も残る。以前は started.json を書いて子を起こしてから置いていて、
+  // started.json を見た直後に止めると 30 回中 30 回書けなかった。受け口の中身は子を起こしてから決まる
+  // （JS の受け口は次の周回で走るので、子を起こすまでの同じ周回の間に来た信号も、子を起こしたあとに受ける）
+  let stopRequested = false;
+  let onStop: (() => void) | undefined;
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      stopRequested = true;
+      onStop?.();
+    });
+  }
+
   // ---- 1. 環境を読んで、すぐ消す --------------------------------------------------------------
   let envText: string | undefined;
   let envError: unknown;
@@ -120,7 +133,6 @@ export async function main(dir: string, envFile: string): Promise<never> {
   child.stdout.on("data", take);
   child.stderr.on("data", take);
 
-  let stopRequested = false;
   let timedOut = false;
   let killTimer: NodeJS.Timeout | undefined;
   const killGroup = (signal: NodeJS.Signals) => {
@@ -135,13 +147,9 @@ export async function main(dir: string, envFile: string): Promise<never> {
     killGroup(signal);
     killTimer ??= setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
   };
-  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
-    process.on(sig, () => {
-      stopRequested = true;
-      // systemd は cgroup の全員に同じ信号を送るので子にも届いているが、手で起こした場合に備えて送る
-      stopChild("SIGTERM");
-    });
-  }
+  // systemd は cgroup の全員に同じ信号を送るので子にも届いているが、手で起こした場合に備えて送る
+  onStop = () => stopChild("SIGTERM");
+  if (stopRequested) onStop();
   if (job.timeoutSec !== undefined && job.timeoutSec > 0) {
     setTimeout(() => {
       timedOut = true;
