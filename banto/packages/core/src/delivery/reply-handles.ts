@@ -12,10 +12,11 @@
 // 同じ印で覚え直し、**最後の届け1回だけ**使えるようにする（`restore`）。
 
 import { randomBytes } from "node:crypto";
+import { REPLY_TO_USES } from "@banto/module-contract";
 
 export const REPLY_LIMITS = {
   ttlMs: 24 * 60 * 60 * 1000,
-  uses: 5,
+  uses: REPLY_TO_USES,
 } as const;
 
 /**

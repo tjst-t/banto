@@ -1,7 +1,7 @@
 // Factory の入口の画面（ブラウザで動く。`apps.ts` がこの JS を HTML に埋める）。banto を知らない——MCP Apps の約束
 // （postMessage の JSON-RPC）だけで親と話す。形はモック（mock/components/banto/canvas/factory-view.tsx、決定・2026-10-07）：
 //   - 一覧は1件ずつ。「あなたの答えを待っている」→「動いている」→「終わったもの」（畳む）
-//   - 行の左に段の5目盛り。いまの段に LONG_MIN 分以上いれば「長引いています」
+//   - 行の左に段の5目盛り。Factory が「長引いている」と判定した件（`long`。物差しは設定の longStageMinutes）は「長引いています」
 //   - 行を押すと詳細。止まっていれば答える欄を一番上に。広ければ左右、狭ければ入れ替わる
 // banto の「人の番の色」は Canvas に渡らない（MCP Apps の標準の名前だけ）——人を待つものは warning の色で出す。
 
@@ -13,6 +13,8 @@ interface ItemSummary {
   subagentRunId?: string; lastTest?: { ok: boolean; code: number; at: string };
   lastReview?: { verdict: string; items: Array<{ what: string; where?: string; why: string }>; at: string };
   result?: string;
+  /** Factory の判定（いまの段に居る時間が設定の物差しを越えた）。画面では決めない */
+  long?: boolean; longSince?: string;
 }
 interface RunSummary { runId: string; createdAt: string; finishedAt?: string; items: ItemSummary[]; notifyErrors?: string[] }
 interface Detail {
@@ -26,8 +28,6 @@ interface Detail {
 }
 
 const STAGES = ["始める", "実装", "テスト", "レビュー", "マージ"];
-/** 長引いているとみなす目安（分）。物差しは未決（Backlog の unattended-run）——いまは段に居る時間だけで見る */
-const LONG_MIN = 30;
 
 // ---- 親との話し方（MCP Apps） ------------------------------------------------------------
 let nextId = 1;
@@ -114,7 +114,7 @@ function minutes(m: number): string {
   return m < 60 ? `${m}分` : `${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ""}`;
 }
 const active = (s: Status) => s === "running" || s === "merging" || s === "queued";
-const isLong = (i: ItemSummary) => (i.status === "running" || i.status === "merging") && minutesSince(i.stageSince) >= LONG_MIN;
+const isLong = (i: ItemSummary) => i.long === true;
 function stageIndex(stage: string): number {
   if (stage === "マージ待ち") return 4;
   if (stage === "終わった") return 5;

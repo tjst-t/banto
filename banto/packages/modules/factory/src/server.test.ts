@@ -35,7 +35,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
   writeSettings(data, { testCommand: "test -f done.txt", implementer: { agent: "fake" }, reviewer: { agent: "fake" }, ...settings });
   const delivered: Array<{ replyTo: string; title: string; text: string; final: boolean }> = [];
   const held: Array<{ replyId: string; body: unknown }> = [];
-  const state = { current: undefined as Factory | undefined, holdImplementer: true, implements: 0, seq: 0, failDeliveries: 0 };
+  const state = { current: undefined as Factory | undefined, holdImplementer: true, holdReviewer: false, implements: 0, seq: 0, failDeliveries: 0 };
   const hand = (replyId: string, body: unknown) =>
     setTimeout(() => state.current!.receiveReply({ replyId, from: "subagent", title: "終わりました", text: JSON.stringify(body), final: true, lost: false }), 5);
   const relay = async (name: string, args: Record<string, unknown>): Promise<RelayResult> => {
@@ -63,11 +63,15 @@ function setup(settings: Partial<FactorySettings> = {}) {
     if (tool === "updateItem") return { text: "ok", isError: false };
     if (tool === "runSubagent") {
       const replyId = `rid_${++state.seq}`;
-      if (a.schema) hand(replyId, { text: "", sessionId: "rev", structured: { verdict: "pass", items: [] } });
+      if (a.schema) {
+        const body = { text: "", sessionId: "rev", structured: { verdict: "pass", items: [] } };
+        if (state.holdReviewer) held.push({ replyId, body });
+        else hand(replyId, body);
+      }
       else {
         state.implements++;
         const cwd = join(project, String(a.cwd));
-        writeFileSync(join(cwd, "done.txt"), "x\n");
+        writeFileSync(join(cwd, "done.txt"), `${state.implements}\n`);
         git(cwd, "add", "done.txt");
         git(cwd, "commit", "-q", "-m", "done");
         const body = { text: "やりました", sessionId: "impl" };
@@ -80,7 +84,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
   };
   const open: Client[] = [];
   /** サーバを起こして繋ぐ（2本目からは「起こし直した」もの） */
-  const start = async (opts: { resumeAskWaitMs?: number } = {}) => {
+  const start = async (opts: { resumeAskWaitMs?: number; minuteMs?: number } = {}) => {
     const { server, factory } = createFactoryServer({ projectRoot: project, dataDir: data, relay, ...opts });
     state.current = factory;
     const [s, c] = InMemoryTransport.createLinkedPair();
@@ -301,6 +305,93 @@ test("終わった1件に答える・止める（走っていない1件）は、
     const cancelled = await s.call("cancelFactory", { runId, item: "a" });
     assert.equal(cancelled.isError, true);
     assert.match(cancelled.text, /走っていません/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+const release = (h: ReturnType<typeof setup>) => {
+  for (const r of h.held.splice(0)) h.state.current!.receiveReply({ replyId: r.replyId, from: "subagent", title: "終わりました", text: JSON.stringify(r.body), final: true, lost: false });
+};
+const longTitles = (h: ReturnType<typeof setup>) => h.delivered.filter((d) => /が長引いています/.test(d.title)).map((d) => d.title);
+type Listed = { runs: Array<{ items: Array<{ stage: string; long?: boolean; longSince?: string }>; notifyErrors?: string[] }> };
+
+test("同じ段に設定の分より長く居ると long が付き、頼んだ会話に1回だけ知らせる。段が変われば数え直す", async () => {
+  // 1分を 200ms に縮める——物差しは 200ms
+  const h = setup({ longStageMinutes: 1 });
+  try {
+    h.state.holdReviewer = true;
+    const s = await h.start({ minuteMs: 200 });
+    const { runId } = JSON.parse((await s.call("runFactory", { items: ["a"] }, runMeta)).text) as { runId: string };
+    await until(() => longTitles(h).some((t) => /（実装・\d+分）$/.test(t)), "実装の段で長引いた知らせが届かない");
+    const notice = h.delivered.find((d) => /（実装・/.test(d.title))!;
+    assert.match(notice.title, /^Factory：題 が長引いています（実装・\d+分）$/);
+    assert.equal(notice.replyTo, "rt_run");
+    assert.equal(notice.final, false);
+    const body = JSON.parse(notice.text) as { runId: string; task: string; stage: string; long: boolean; howToHandle: string };
+    assert.equal(body.runId, runId);
+    assert.equal(body.task, "a");
+    assert.equal(body.stage, "実装");
+    assert.equal(body.long, true);
+    assert.match(body.howToHandle, /cancelFactory/);
+    assert.match(body.howToHandle, /listFactoryRuns/);
+    // Factory の判定が一覧（AI・人の画面）と1件の詳細に載る
+    const listed = JSON.parse((await s.call("listFactoryRuns", { runId })).text) as Listed;
+    assert.equal(listed.runs[0]!.items[0]!.long, true);
+    assert.ok(listed.runs[0]!.items[0]!.longSince);
+    const runs = JSON.parse((await s.call("getRuns", {})).text) as Listed;
+    assert.equal(runs.runs[0]!.items[0]!.long, true);
+    const detail = JSON.parse((await s.call("getRunItem", { runId, item: "a" })).text) as { item: { long?: boolean } };
+    assert.equal(detail.item.long, true);
+    // 同じ段に居続けても2回目は出さない（物差しの3倍待つ）
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(longTitles(h).filter((t) => /（実装・/.test(t)).length, 1, "同じ段で2回知らせた");
+
+    // 段が変われば数え直す：レビューで返事を止めておくと、もう1回届く
+    release(h);
+    await until(() => longTitles(h).some((t) => /（レビュー・\d+分）$/.test(t)), "レビューの段で長引いた知らせが届かない");
+    const reviewing = JSON.parse((await s.call("listFactoryRuns", { runId })).text) as Listed;
+    assert.equal(reviewing.runs[0]!.items[0]!.stage, "レビュー");
+    assert.equal(reviewing.runs[0]!.items[0]!.long, true);
+    release(h);
+    await until(() => h.delivered.some((d) => d.final), "最後の知らせが届かない");
+    const titles = longTitles(h);
+    assert.equal(new Set(titles.map((t) => /（(.+)・\d+分）$/.exec(t)![1])).size, titles.length, `同じ段で2回知らせた：${titles.join(" / ")}`);
+    assert.equal(h.delivered.at(-1)!.final, true);
+    assert.match(h.delivered.at(-1)!.title, /^Factory の実行が終わりました（取り込み 1／1 件）/);
+    // 終わった件は長引いていない
+    const done = JSON.parse((await s.call("listFactoryRuns", { runId })).text) as Listed;
+    assert.equal(done.runs[0]!.items[0]!.long, undefined);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("札の残りが2回より少なければ長引いた知らせは出さず（最後の知らせの分を残す）、記録に残す", async () => {
+  // テストが必ず落ちる——止まるたびに札を1回使う。4回止まったら残りは1回（最後の知らせの分）
+  const h = setup({ testCommand: "test -f never.txt", longStageMinutes: 1, limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 } });
+  try {
+    h.state.holdImplementer = false;
+    const s = await h.start({ minuteMs: 500 });
+    const { runId } = JSON.parse((await s.call("runFactory", { items: ["a"] }, runMeta)).text) as { runId: string };
+    for (let n = 1; n <= 4; n++) {
+      await until(() => h.delivered.length === n && s.factory.get(runId)!.items[0]!.status === "stopped", `${n} 回目に止まらない`);
+      if (n === 4) break;
+      await s.call("answerFactory", { runId, item: "a", action: "continue" });
+    }
+    assert.deepEqual(longTitles(h), [], "止まる前に長引いた知らせが出た（試験の前提が崩れた）");
+    // 実装の段で返事を止めて長引かせる
+    h.state.holdImplementer = true;
+    await s.call("answerFactory", { runId, item: "a", action: "continue" });
+    await until(() => h.held.length === 1, "実装役に頼まない");
+    await until(() => (s.factory.get(runId)!.notifyErrors ?? []).some((e) => /長引いています/.test(e)), "知らせなかったことが記録に残らない");
+    assert.match(s.factory.get(runId)!.notifyErrors.find((e) => /長引いています/.test(e))!, /最後の知らせの分を残すため/);
+    assert.deepEqual(longTitles(h), []);
+    assert.equal(h.delivered.length, 4);
+    // 最後の知らせは届く
+    await s.call("cancelFactory", { runId });
+    await until(() => h.delivered.length === 5, "最後の知らせが届かない");
+    assert.equal(h.delivered[4]!.final, true);
   } finally {
     await h.cleanup();
   }

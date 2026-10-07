@@ -24,6 +24,7 @@ import {
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
   RECEIVES_REPLIES_META_KEY,
+  REPLY_TO_USES,
   RESUME_AFTER_RESTART_TOOL,
   VISIBILITY_META_KEY,
   callIdOf,
@@ -132,6 +133,8 @@ export interface FactoryServerDeps {
   exec?: FactoryPorts["exec"];
   /** 起き直したあと、知らせを host の問いまで待たせる上限（既定 `RESUME_ASK_WAIT_MS`） */
   resumeAskWaitMs?: number;
+  /** 1分の長さ（ミリ秒）。試験が「長引いている」を短く確かめる口 */
+  minuteMs?: number;
 }
 
 /**
@@ -164,9 +167,10 @@ export function createFactoryServer(deps: FactoryServerDeps) {
 
   /**
    * **頼んだ Thread への知らせの札**（実行ごと、メモリにだけ持つ——札は平文で書かない）。`finalOnly` は host を起こし直した
-   * あとに問われて続けたもの——最後の1回しか使えない
+   * あとに問われて続けたもの——最後の1回しか使えない。`used` はこの札で届けようとした回数（host は札1つにつき
+   * `REPLY_TO_USES` 回まで——最後の知らせの分を残すために数える）
    */
-  const handles = new Map<string, { replyTo: string; finalOnly: boolean }>();
+  const handles = new Map<string, { replyTo: string; finalOnly: boolean; used: number }>();
   /**
    * **起き直して流し直した実行のうち、host にまだ問われていないもの**（追加・2026-10-07、resume-factory）。札はメモリにしか
    * 無いので、問われて覚え直すまで知らせる先が無い。流し直しが問いより先に進んで知らせる（記録の最後の段だけ残っていた等）
@@ -201,6 +205,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
       return false;
     }
     const last = final || h.finalOnly;
+    h.used++;
     const r = await deps.relay("relayDeliverToThread", { replyTo: h.replyTo, title, text: body, final: last });
     if (last) {
       handles.delete(run.id);
@@ -210,28 +215,46 @@ export function createFactoryServer(deps: FactoryServerDeps) {
     return !r.isError;
   }
 
-  const factory = new Factory({
+  const factory: Factory = new Factory({
     dataDir: deps.dataDir,
     projectRoot: deps.projectRoot,
     ports,
     procedure: deliverTask,
     replies: new ReplyBox(join(deps.dataDir, "replies")),
+    ...(deps.minuteMs ? { minuteMs: deps.minuteMs } : {}),
     events: {
       itemStopped: (run, item) => {
         const stop = item.stopped;
         return notify(
           run,
           `Factory：${item.task.title} が止まりました（${stop?.stage ?? item.stage}）`,
-          JSON.stringify({ runId: run.id, task: item.task.id, ...describeItem(item), howToAnswer: HOW_TO_ANSWER }),
+          JSON.stringify({ runId: run.id, task: item.task.id, ...describeItem(run, item), howToAnswer: HOW_TO_ANSWER }),
           false,
           () => item.stopped === stop,
+        );
+      },
+      itemLong: async (run, item, minutes) => {
+        const title = `Factory：${item.task.title} が長引いています（${item.stage}・${minutes}分）`;
+        // **最後の知らせ（final）の分は必ず残す**——札の残りが2回以上のときだけ使う。起こし直したあとの札は最後の1回しか無い
+        const h = handles.get(run.id);
+        if (!h || h.finalOnly || REPLY_TO_USES - h.used < 2) {
+          factory.noteNotifyError(run, `知らせませんでした（${title}）——${h ? "最後の知らせの分を残すため" : "知らせる先がありません"}`);
+          return;
+        }
+        await notify(
+          run,
+          title,
+          JSON.stringify({ runId: run.id, task: item.task.id, ...describeItem(run, item), howToHandle: HOW_TO_HANDLE_LONG }),
+          false,
+          // 札を待つ間に段が変わった・止まった——もう長引いていない
+          () => item.longReported === true && factory.longOf(run, item).long,
         );
       },
       runFinished: async (run) =>
         void (await notify(
           run,
           `Factory の実行が終わりました（取り込み ${run.items.filter((i) => i.status === "done").length}／${run.items.length} 件）`,
-          JSON.stringify({ runId: run.id, items: run.items.map((i) => ({ task: i.task.id, ...describeItem(i) })) }),
+          JSON.stringify({ runId: run.id, items: run.items.map((i) => ({ task: i.task.id, ...describeItem(run, i) })) }),
           true,
         )),
     },
@@ -256,6 +279,26 @@ export function createFactoryServer(deps: FactoryServerDeps) {
   const HOW_TO_ANSWER =
     "answerFactory で答える：action=continue（instruction で指示を足して続ける）／accept（レビューの指摘を承知でこのまま取り込む）／" +
     "retry（stage で段を指定してやり直す。無ければいまの段から）／drop（やめる。Backlog は ready に戻る）";
+
+  const HOW_TO_HANDLE_LONG =
+    "様子を見る：listFactoryRuns（runId を渡す）か、人が Factory の画面を開く。止める：cancelFactory（runId と item。" +
+    "走っているサブエージェントとテストも止め、Backlog は ready に戻す）。待つなら何もしなくてよい——終われば知らせが届く";
+
+  /** 1件の様子（Factory が判定した「長引いている」を添える） */
+  function describeItem(run: RunRecord, item: RunItem) {
+    const long = factory.longOf(run, item);
+    return { ...describeItemState(item), ...(long.long ? { long: true, longSince: long.since } : {}) };
+  }
+
+  function describeRun(run: RunRecord) {
+    return {
+      runId: run.id,
+      createdAt: run.createdAt,
+      ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
+      items: run.items.map((i) => ({ item: i.task.id, number: i.task.number, title: i.task.title, ...describeItem(run, i) })),
+      ...(run.notifyErrors.length ? { notifyErrors: run.notifyErrors } : {}),
+    };
+  }
 
   /** 起きたら、終わっていない実行を続ける（札は host に問われたら覚え直す。それまで知らせは待たせる） */
   const resumed = factory.resumeAll();
@@ -472,7 +515,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           const run = factory.start({ tasks, settings, ...(thread ? { requestedBy: thread } : {}) });
           const replyTo = replyToOf(meta);
           if (replyTo) {
-            handles.set(run.id, { replyTo, finalOnly: false });
+            handles.set(run.id, { replyTo, finalOnly: false, used: 0 });
             factory.recordHandle(run, replyToFingerprint(replyTo));
           }
           // 走り出した各件が最初のサブエージェントに頼めるまで待つ——承認（Factory→Subagent・Backlog、Subagent→Vault）を
@@ -481,7 +524,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           return {
             ...text({
               runId: run.id,
-              started: run.items.map((i) => ({ item: i.task.id, title: i.task.title, ...describeItem(i) })),
+              started: run.items.map((i) => ({ item: i.task.id, title: i.task.title, ...describeItem(run, i) })),
               ...(refused.length ? { refused } : {}),
               note: replyTo
                 ? "流しました。終わったら（止まって答えが要るときも）この会話に届きます。それまで他の仕事を続けてよい"
@@ -516,13 +559,13 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           const replyTo = replyToOf(meta);
           const adopt = !!replyTo && !handles.has(run.id) && !run.finishedAt;
           if (adopt) {
-            handles.set(run.id, { replyTo: replyTo!, finalOnly: false });
+            handles.set(run.id, { replyTo: replyTo!, finalOnly: false, used: 0 });
             factory.recordHandle(run, replyToFingerprint(replyTo!));
             handleArrived(run.id);
           }
           await factory.withCall(run.id, callId, () => factory.settled(run.id));
           return {
-            ...text({ runId: run.id, item: item.task.id, answered: action, now: describeItem(item) }),
+            ...text({ runId: run.id, item: item.task.id, answered: action, now: describeItem(run, item) }),
             ...(adopt ? { _meta: { [PENDING_REPLY_META_KEY]: true } } : {}),
           };
         }
@@ -564,7 +607,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
             if (!run || (run.finishedAt && !awaitingAsk.has(run.id))) {
               return { replyTo: q.replyTo, resume: false, reason: "終わっていない Factory の実行がありません" };
             }
-            handles.set(run.id, { replyTo: q.replyTo, finalOnly: true });
+            handles.set(run.id, { replyTo: q.replyTo, finalOnly: true, used: 0 });
             handleArrived(run.id);
             return { replyTo: q.replyTo, resume: true };
           });
@@ -581,7 +624,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
             ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
             ...(run.requestedBy ? { requestedBy: run.requestedBy } : {}),
             settings: { testCommand: run.settings.testCommand, targetBranch: run.settings.targetBranch, limits: run.settings.limits },
-            item: { item: item.task.id, number: item.task.number, title: item.task.title, ...(item.task.parent ? { story: item.task.parent.title } : {}), ...describeItem(item) },
+            item: { item: item.task.id, number: item.task.number, title: item.task.title, ...(item.task.parent ? { story: item.task.parent.title } : {}), ...describeItem(run, item) },
             lastTest: item.lastTest,
             counts: countsOf(steps),
             journal: describeJournal(steps, run.createdAt, item.branch, run.settings.targetBranch),
@@ -644,7 +687,7 @@ async function diffOf(root: string, target: string, branch: string, exec: Factor
   return { commits: Number(count.out.trim()), files };
 }
 
-function describeItem(item: RunItem) {
+function describeItemState(item: RunItem) {
   return {
     status: item.status,
     stage: item.stage,
@@ -656,16 +699,6 @@ function describeItem(item: RunItem) {
     ...(item.lastTest ? { lastTest: { ok: item.lastTest.ok, code: item.lastTest.code, at: item.lastTest.at } } : {}),
     ...(item.lastReview ? { lastReview: item.lastReview } : {}),
     ...(item.result ? { result: item.result } : {}),
-  };
-}
-
-function describeRun(run: RunRecord) {
-  return {
-    runId: run.id,
-    createdAt: run.createdAt,
-    ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
-    items: run.items.map((i) => ({ item: i.task.id, number: i.task.number, title: i.task.title, ...describeItem(i) })),
-    ...(run.notifyErrors.length ? { notifyErrors: run.notifyErrors } : {}),
   };
 }
 

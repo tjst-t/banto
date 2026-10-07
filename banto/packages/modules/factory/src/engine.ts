@@ -76,6 +76,10 @@ export interface RunItem {
   branch: string;
   /** `notified`：頼んだ Thread に知らせが届いた（流し直しで同じ問いに戻ったとき、届け直さない） */
   stopped?: { reason: string; stage: string; since: string; notified?: boolean };
+  /** いまの段で、止まって人を待っていた時間（ミリ秒）。段が変われば消す——長引いているかの物差しから引く */
+  stagePausedMs?: number;
+  /** いまの段で「長引いています」を知らせ口に渡した（届いたかは問わない——同じ段で2回目を出さない）。段が変われば消す */
+  longReported?: boolean;
   /** いま走っているサブエージェントの仕事（Subagent の画面で開ける） */
   subagentRunId?: string;
   lastTest?: TestResult & { at: string };
@@ -243,6 +247,22 @@ function deferred<T = void>() {
 }
 
 const now = () => new Date().toISOString();
+
+/** マージの列が空くのを待つ段（長引いているかを数えない） */
+export const MERGE_WAIT_STAGE = "マージ待ち";
+
+/**
+ * **長引いているか**（v4-modules.md §4.5「人の画面」）。物差しは「いまの段に居る時間」で、止まって人を待つ間・マージ待ち・
+ * 順番待ちの間は数えない。`since` は物差しを越えた時刻。`minuteMs` は試験が分を短くする口
+ */
+export function longOf(item: RunItem, settings: FactorySettings, nowMs = Date.now(), minuteMs = 60_000): { long: boolean; since?: string } {
+  const counting = item.status === "running" || (item.status === "merging" && item.stage !== MERGE_WAIT_STAGE);
+  if (!counting) return { long: false };
+  // 流し始めた設定に無い（前の版で流した）実行は既定の分
+  const limitMs = (settings.longStageMinutes ?? 30) * minuteMs;
+  const over = nowMs - Date.parse(item.stageSince) - (item.stagePausedMs ?? 0) - limitMs;
+  return over >= 0 ? { long: true, since: new Date(nowMs - over).toISOString() } : { long: false };
+}
 const tail = (s: string, max = 6000) => (s.length > max ? `…${s.slice(-max)}` : s);
 
 // ---- 本体 --------------------------------------------------------------------------------------------------
@@ -252,6 +272,8 @@ export interface FactoryEvents {
   itemStopped(run: RunRecord, item: RunItem): Promise<boolean>;
   /** 実行の全件が終わった（入った・やめた） */
   runFinished(run: RunRecord): Promise<void>;
+  /** 1件が同じ段に長く居る（`longStageMinutes` を越えた）。その件のその段で1回だけ。`minutes` はいまの段に居る分 */
+  itemLong(run: RunRecord, item: RunItem, minutes: number): Promise<void>;
 }
 
 interface LiveItem {
@@ -284,8 +306,34 @@ export class Factory {
       procedure: Procedure;
       events: FactoryEvents;
       replies: ReplyBox;
+      /** 1分の長さ（ミリ秒）。試験が「長引いている」を短く確かめる口。既定 60000 */
+      minuteMs?: number;
     },
-  ) {}
+  ) {
+    // 長引いているかを見回る（1分の 1/4 ごと）。起きている間だけでよい——人が見ていない間に知らせるため
+    setInterval(() => this.checkLong(), Math.max(5, this.minuteMs / 4)).unref();
+  }
+
+  private get minuteMs(): number {
+    return this.deps.minuteMs ?? 60_000;
+  }
+
+  /** 1件が長引いているか（画面と AI に出す——Factory が判定する） */
+  longOf(run: RunRecord, item: RunItem): { long: boolean; since?: string } {
+    return longOf(item, run.settings, Date.now(), this.minuteMs);
+  }
+
+  /** 物差しを越えた件を、その段で1回だけ知らせ口に渡す */
+  private checkLong(): void {
+    for (const live of this.live.values()) {
+      const { run, item } = live;
+      if (item.longReported || !this.longOf(run, item).long) continue;
+      item.longReported = true;
+      this.save(run);
+      const minutes = Math.floor((Date.now() - Date.parse(item.stageSince) - (item.stagePausedMs ?? 0)) / this.minuteMs);
+      void this.deps.events.itemLong(run, item, minutes).catch((err: unknown) => this.noteNotifyError(run, String(err)));
+    }
+  }
 
   private runDir(runId: string) {
     return join(this.deps.dataDir, "runs", runId);
@@ -446,6 +494,8 @@ export class Factory {
     if (live.item.stage !== stage || (status && live.item.status !== status)) {
       live.item.stage = stage;
       live.item.stageSince = now();
+      delete live.item.stagePausedMs;
+      delete live.item.longReported;
       if (status) live.item.status = status;
       this.save(live.run);
     }
@@ -497,9 +547,7 @@ export class Factory {
           if (err instanceof Diverged) {
             // 記録と食い違う——流し直しで続けられない。人に聞いて、やり直すかやめるか
             const answer = await pass.askOutsideJournal(`記録と手順が食い違いました：${err.message}`);
-            item.status = "running";
-            delete item.stopped;
-            this.save(run);
+            this.resumeFromStop(live, "running");
             if (answer.action === "drop") {
               await this.dropItem(live, answer.reason ?? "人がやめると答えました");
               return;
@@ -543,7 +591,25 @@ export class Factory {
     await this.deps.events.runFinished(run).catch((err: unknown) => this.noteNotifyError(run, String(err)));
   }
 
+  /**
+   * 止まっていた1件が人の答えで動き出す。止まっていた時間を、いまの段の「長引いているか」の物差しから引く（流し直しで
+   * 段の時計が始め直されていれば、始め直したときから）
+   */
+  private resumeFromStop(live: LiveItem, status: ItemStatus): void {
+    const { item } = live;
+    if (item.stopped && item.stopped.stage === item.stage) {
+      const from = Math.max(Date.parse(item.stopped.since), Date.parse(item.stageSince));
+      item.stagePausedMs = (item.stagePausedMs ?? 0) + Math.max(0, Date.now() - from);
+    }
+    item.status = status;
+    delete item.stopped;
+    this.save(live.run);
+  }
+
   // ItemPass が使う
+  /** @internal */ resumed(live: LiveItem, status: ItemStatus): void {
+    this.resumeFromStop(live, status);
+  }
   /** @internal */ callIdOf(runId: string): string | undefined {
     return this.callIds.get(runId);
   }
@@ -737,9 +803,7 @@ class ItemPass implements ProcedureContext {
 
   async ask(reason: string): Promise<{ instruction?: string; accept?: boolean }> {
     const answer = await this.step<Answer>("ask", async (prev) => this.waitForAnswer(reason, prev !== undefined));
-    this.live.item.status = "running";
-    delete this.live.item.stopped;
-    this.factory.saveRun(this.live.run);
+    this.factory.resumed(this.live, "running");
     if (answer.action === "accept") return { accept: true };
     if (answer.action === "continue") return answer.instruction ? { instruction: answer.instruction } : {};
     throw new Answered(answer);
@@ -857,8 +921,7 @@ class ItemPass implements ProcedureContext {
     } catch (err) {
       if (!(err instanceof StepFailed)) throw err;
       const answer = await this.step<Answer>("ask", async (prev) => this.waitForAnswer(`段が失敗しました：${err.message}`, prev !== undefined));
-      this.live.item.status = "running";
-      delete this.live.item.stopped;
+      this.factory.resumed(this.live, "running");
       if (answer.action === "continue" || answer.action === "accept") throw new Answered({ action: "retry" }, err.n);
       throw new Answered(answer, answer.action === "retry" && !answer.stage ? err.n : undefined);
     }
@@ -867,7 +930,7 @@ class ItemPass implements ProcedureContext {
   /** **マージの列**——Project で1本。最新の取り込み先に rebase → テスト → fast-forward。動いていたら rebase から */
   private async merge(): Promise<void> {
     const target = this.settings.targetBranch;
-    this.factory.stageOf(this.live, "マージ待ち", "merging");
+    this.factory.stageOf(this.live, MERGE_WAIT_STAGE, "merging");
     this.slot.release();
     const lock = this.factory.mergeQueue();
     const queue = {
@@ -976,9 +1039,7 @@ class ItemPass implements ProcedureContext {
         await queue.acquire(this.signal);
       }
     });
-    this.live.item.status = "merging";
-    delete this.live.item.stopped;
-    this.factory.saveRun(this.live.run);
+    this.factory.resumed(this.live, "merging");
     if (answer.action !== "continue" && answer.action !== "accept") throw new Answered(answer);
   }
 

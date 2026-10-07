@@ -24,6 +24,11 @@ export interface FactorySettings {
   limits: { testRetries: number; reviewRounds: number; rebaseRetries: number; noCommitRetries: number; conflictFixes: number };
   /** テスト1回の上限（分） */
   testTimeoutMinutes: number;
+  /**
+   * **長引いている**とみなす、同じ段に居る時間（分）。人を待つ間（止まっている）とマージ待ちの間は数えない。越えたら
+   * 画面に出し、頼んだ会話に1回だけ知らせる
+   */
+  longStageMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: FactorySettings = {
@@ -35,6 +40,7 @@ export const DEFAULT_SETTINGS: FactorySettings = {
   concurrency: 3,
   limits: { testRetries: 3, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 },
   testTimeoutMinutes: 60,
+  longStageMinutes: 30,
 };
 
 export class SettingsError extends Error {}
@@ -94,6 +100,8 @@ export function normalizeSettings(raw: unknown): FactorySettings {
     },
     testTimeoutMinutes:
       o.testTimeoutMinutes === undefined ? d.testTimeoutMinutes : intIn(o.testTimeoutMinutes, 1, 24 * 60, "testTimeoutMinutes"),
+    longStageMinutes:
+      o.longStageMinutes === undefined ? d.longStageMinutes : intIn(o.longStageMinutes, 1, 24 * 60, "longStageMinutes"),
   };
 }
 

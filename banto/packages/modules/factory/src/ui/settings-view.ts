@@ -14,6 +14,7 @@ interface Settings {
   concurrency: number;
   limits: { testRetries: number; reviewRounds: number; rebaseRetries: number; noCommitRetries: number; conflictFixes: number };
   testTimeoutMinutes: number;
+  longStageMinutes: number;
 }
 
 let nextId = 1;
@@ -176,7 +177,18 @@ function render(): void {
         numberField("factory-conflicts", "競合を実装役に解かせる", d.limits.conflictFixes ?? 2, 0, 20, (v) => (d.limits.conflictFixes = v)),
       ]),
     ]),
-    h("div", { class: "field" }, [numberField("factory-timeout", "テスト1回の上限（分）", d.testTimeoutMinutes, 1, 1440, (v) => (d.testTimeoutMinutes = v))]),
+    h("div", { class: "field grid" }, [
+      numberField("factory-timeout", "テスト1回の上限（分）", d.testTimeoutMinutes, 1, 1440, (v) => (d.testTimeoutMinutes = v)),
+      numberField(
+        "factory-long-stage",
+        "長引いているとみなす（分）",
+        d.longStageMinutes,
+        1,
+        1440,
+        (v) => (d.longStageMinutes = v),
+        "同じ段にこれより長く居たら、頼んだ会話に1回知らせます（人を待つ間・マージ待ちは数えない）",
+      ),
+    ]),
   );
   const save = h("button", { type: "button", class: "btn btn-primary", "data-testid": "factory-config-save", text: "設定を保存" }) as HTMLButtonElement;
   save.addEventListener("click", () => void doSave());

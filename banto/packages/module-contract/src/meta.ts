@@ -283,6 +283,11 @@ export const DELIVERS_LATER_META_KEY = `${VENDOR_PREFIX}/deliversLater`;
 /** host が渡す返信用の札（推測できない印）。**host だけが刻む**——tool の引数ではない */
 export const REPLY_TO_META_KEY = `${VENDOR_PREFIX}/replyTo`;
 /**
+ * **返信用の札1つで届けられる回数**（host が数える）。最後の知らせ（`final`）もこの1回に入る——途中の知らせに使う Module は、
+ * 最後の分を残しておく
+ */
+export const REPLY_TO_USES = 5;
+/**
  * **この札で、あとで届ける**（tool の結果の `_meta` に `true`）。host は札を「返事待ち」として記録し、
  * Module が止まったら代わりに「途中で終わりました」を届ける——呼び出し元の AI が来ない返事を待ち続けない
  */

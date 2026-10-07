@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Factory, ReplyBox, type FactoryPorts, type Procedure, type RunRecord, type TaskSnapshot } from "./engine.js";
+import { Factory, longOf, ReplyBox, type RunItem, type FactoryPorts, type Procedure, type RunRecord, type TaskSnapshot } from "./engine.js";
 import { deliverTask } from "./procedure.js";
 import { execCommand } from "./server.js";
 import { DEFAULT_SETTINGS, type FactorySettings } from "./settings.js";
@@ -20,13 +20,15 @@ interface Fake {
   backlog: Array<{ id: string; status: string }>;
   stopped: string[];
   finished: RunRecord[];
+  /** 長引いた知らせ（段・分） */
+  long: Array<{ stage: string; minutes: number }>;
 }
 
 /**
  * 偽の Subagent：実装役は頼みの中の `<commit 名前>` のファイルをその worktree に書いてコミットする（続きの頼みでは
  * `fix` の名前で）。レビュー役は `verdicts` を順に返す
  */
-function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
+function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-"));
   const project = join(root, "project");
   const data = join(root, "data");
@@ -35,7 +37,7 @@ function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?:
   writeFileSync(join(project, "README"), "x\n");
   git(project, "add", ".");
   git(project, "commit", "-q", "-m", "init");
-  const fake: Fake = { implements: 0, reviews: 0, backlog: [], stopped: [], finished: [] };
+  const fake: Fake = { implements: 0, reviews: 0, backlog: [], stopped: [], finished: [], long: [] };
   const verdicts = [...(opts.verdicts ?? [])];
   let seq = 0;
   let factory!: Factory;
@@ -82,7 +84,9 @@ function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?:
           return !opts.notifyFails;
         },
         runFinished: async (run) => void fake.finished.push(run),
+        itemLong: async (_run, item, minutes) => void fake.long.push({ stage: item.stage, minutes }),
       },
+      ...(opts.minuteMs ? { minuteMs: opts.minuteMs } : {}),
     });
   factory = make();
   const settings: FactorySettings = { ...DEFAULT_SETTINGS, testCommand: "test -f README", ...opts.settings };
@@ -531,6 +535,69 @@ test("実装役が rebase を途中で残したら畳み、次の rebase がや�
     assert.deepEqual((leftover.end as { value: unknown }).value, { aborted: true });
     assert.equal(git(join(s.project, stopped.worktree), "status", "--porcelain"), "", "畳んでいない");
     assert.match(s.fake.stopped[0]!, /実装役に 1 回解かせても main に rebase できませんでした/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("長引いているかの物差し：いまの段に居る時間から、止まっていた時間を引く。止まっている・マージ待ち・順番待ちの間は長引いていない", () => {
+  const settings: FactorySettings = { ...DEFAULT_SETTINGS, longStageMinutes: 30 };
+  const at = Date.parse("2026-10-07T00:00:00.000Z");
+  const item = (over: Partial<RunItem>): RunItem => ({
+    task: task("x"),
+    status: "running",
+    stage: "実装",
+    stageSince: new Date(at).toISOString(),
+    worktree: "w",
+    branch: "b",
+    ...over,
+  });
+  const min = 60_000;
+  assert.deepEqual(longOf(item({}), settings, at + 29 * min), { long: false });
+  assert.deepEqual(longOf(item({}), settings, at + 31 * min), { long: true, since: new Date(at + 30 * min).toISOString() });
+  // 止まっていた10分は数えない
+  assert.deepEqual(longOf(item({ stagePausedMs: 10 * min }), settings, at + 31 * min), { long: false });
+  assert.equal(longOf(item({ stagePausedMs: 10 * min }), settings, at + 41 * min).since, new Date(at + 40 * min).toISOString());
+  assert.equal(longOf(item({ status: "stopped" }), settings, at + 60 * min).long, false);
+  assert.equal(longOf(item({ status: "merging", stage: "マージ待ち" }), settings, at + 60 * min).long, false);
+  assert.equal(longOf(item({ status: "queued", stage: "順番待ち" }), settings, at + 60 * min).long, false);
+  assert.equal(longOf(item({ status: "merging", stage: "マージ" }), settings, at + 60 * min).long, true);
+  // 前の版で流した（設定に物差しが無い）実行は既定の30分
+  const { longStageMinutes: _omit, ...old } = settings;
+  assert.equal(longOf(item({}), old as FactorySettings, at + 31 * min).long, true);
+});
+
+test("同じ段で止まって人を待っていた時間は数えない——答えて同じ段で続けても、すぐには長引かない。その段で知らせるのは1回", async () => {
+  // 1分を 100ms に縮める。段「実装」で問い、答えたらサブエージェントに頼む（返事は止めておく）
+  const s = setup({
+    holdReplies: true,
+    minuteMs: 100,
+    settings: { longStageMinutes: 2 },
+    procedure: async (ctx) => {
+      await ctx.stage("実装");
+      await ctx.ask("聞く");
+      await ctx.agent("implementer", { prompt: "<commit a.txt>" });
+    },
+  });
+  try {
+    const run = s.factory.start({ tasks: [task("p")], settings: s.settings });
+    await until(() => run.items[0]!.status === "stopped", "止まらない");
+    // 物差し（200ms）の3倍止まっておく
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(s.fake.long.length, 0, "止まっている間に長引いたとした");
+    s.factory.answer(run.id, "p", { action: "continue" });
+    await until(() => s.held.length === 1, "サブエージェントに頼まない");
+    assert.equal(run.items[0]!.stage, "実装");
+    assert.equal(s.factory.longOf(run, run.items[0]!).long, false, "止まっていた時間を数えた");
+    assert.ok((run.items[0]!.stagePausedMs ?? 0) >= 500, `止まっていた時間が残っていない：${run.items[0]!.stagePausedMs}`);
+    await until(() => s.fake.long.length === 1, "長引かない");
+    assert.equal(s.fake.long[0]!.stage, "実装");
+    assert.ok(s.fake.long[0]!.minutes >= 2);
+    assert.equal(s.factory.longOf(run, run.items[0]!).long, true);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(s.fake.long.length, 1, "同じ段で2回知らせた");
+    for (const go of s.held.splice(0)) go();
+    await until(() => s.fake.finished.length === 1, "終わらない");
   } finally {
     s.cleanup();
   }

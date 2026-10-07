@@ -2703,6 +2703,14 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 - 1件を開くと：いまの段・かかっている時間・worktree の main からの差分・最後のテストの結果・レビューの指摘・
   記録（何が起きたか）。サブエージェントの経過は Subagent の実行の画面へ渡す
 - 止める・止まったものに答える（AI の tool と同じ操作）
+- **長引いている**（決定・2026-10-07、Backlog の factory-30）：物差しは**いまの段に居る時間**（`stageSince` から）。止まって人を
+  待っている間・マージ待ち・順番待ちの間は数えない（同じ段で止まって答えて続けたら、止まっていた時間を引く）。設定の
+  `longStageMinutes`（既定30分）を越えた件に、**Factory が判定して** `getRuns`・`listFactoryRuns`・`getRunItem` の1件に `long: true`
+  と越えた時刻 `longSince` を載せる——画面は判定を出すだけで、自分では決めない。越えたら**頼んだ会話に1回だけ知らせる**（その件の
+  その段で1回。同じ段に居続けても2回目は出さない。段が変われば数え直す）。題は「Factory：<題> が長引いています（<段>・<n>分）」、
+  本文は1件の様子と「止める（`cancelFactory`）・様子を見る（`listFactoryRuns`・人の画面）」の案内。知らせは runFactory の返信用の札で、
+  **最後の知らせ（final）の分を必ず残す**——札は1つにつき5回まで（`REPLY_TO_USES`）なので、Factory は札ごとに使った回数を数え、
+  残りが2回以上のときだけ使う。足りなければ（起こし直したあとの最後の1回だけの札も）知らせず、`notifyErrors` に残す
 
 #### 設定（Project ごと）
 
@@ -2714,6 +2722,7 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 | レビュー役（同） | Claude Code の既定。**実装役と別のものを選べる** |
 | 同時に走らせる件数 | 3（テストを並べてコンテナの資源を食い潰さないため。マージの列は別に1本） |
 | 上限（テストのやり直し・レビューの差し戻し・rebase のやり直し） | 3・2・3 |
+| 長引いているとみなす、同じ段に居る時間（`longStageMinutes`、1〜1440分） | 30分 |
 
 #### 実装（2026-10-06、Backlog の factory-runtime）
 
@@ -2772,18 +2781,19 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 - **やめた・止めた**：Backlog を ready に戻し、worktree とブランチは残す（作業を失わない）。同じタスクを流し直す前に人か AI が消す
   （残っていれば worktree をそのまま使う）
 - **設定**（`getSettings`・`setSettings`、admin）：`testCommand`（必須）・`prepareCommand`・`targetBranch`（既定 main）・
-  `implementer`/`reviewer`（agent・model・effort。既定 claude-code）・`concurrency`（3）・`limits`・`testTimeoutMinutes`（60）。
+  `implementer`/`reviewer`（agent・model・effort。既定 claude-code）・`concurrency`（3）・`limits`・`testTimeoutMinutes`（60）・
+  `longStageMinutes`（30。前の版で流した——設定に無い——実行も30）。
   流し始めたときの設定を実行の記録に写し、最後までそれで走る（流し直しが同じ手順になるように）
 - **人の画面**（実装・2026-10-07、Backlog の factory-ui。形はモック a5aefc0d——`mock/components/banto/canvas/factory-view.tsx`・
   `settings/factory-config-section.tsx`、ユーザー「モックの形でよい」）：
   - 入口（launcher `ui://banto-factory/runs`、`getRuns`・`getRunItem`・`answerFactory`・`cancelFactory` を呼ぶ）：一覧は**実行ではなく
-    1件ずつ**、「あなたの答えを待っている」→「動いている」→「終わったもの」（畳む）。行の左に段の5目盛り、いまの段に 30 分以上いれば
-    「長引いています」（仮の目安——物差しは unattended-run）。詳細は段と回数（落ちた n 回／上限）・止まっていれば答える欄（指示を足して
+    1件ずつ**、「あなたの答えを待っている」→「動いている」→「終わったもの」（畳む）。行の左に段の5目盛り、Factory が長引いていると判定した件
+    （`long`、上の「人の画面」）は「長引いています」。詳細は段と回数（落ちた n 回／上限）・止まっていれば答える欄（指示を足して
     続ける・指摘を承知で取り込む＝レビューで止まったときだけ・段を選んでやり直す＝通った段だけ・やめる＋理由）・最後のテスト・レビューの
     指摘・変更（`git diff --numstat`）・何が起きたか（段の記録を `describe.ts` が文にしたもの）・止める。動いているものがあれば3秒、
     無ければ10秒ごとに読み直す（答える欄に打っている間は描き直さない）
   - 設定（config `ui://banto-factory/config`）：テストのコマンドを一番上に（空なら促す）・準備のコマンド・実装役とレビュー役（エージェントは
-    Subagent の `listSubagents` から、モデルは文字で）・取り込む先・同時件数・止まって聞くまでの回数・テストの上限
+    Subagent の `listSubagents` から、モデルは文字で）・取り込む先・同時件数・止まって聞くまでの回数・テストの上限・長引いているとみなす分
   - **モックと違うところ**：banto の「人の番の色」（turn）は Canvas に渡らない（MCP Apps の標準の名前だけ、v4-frontend.md §6.27）ので、
     人を待つものは warning の色で出す。「経過を見る」（Subagent の画面を開く）と「設定を開く」のボタンは、Canvas から別の画面を開く口が
     無いので置かない——仕事の id を文字で出し、設定は Project の設定にあると書く（規則13）
@@ -2796,6 +2806,10 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
   ところで host を SIGKILL→起こし直す：Factory と Subagent が続けると答え、古いエージェントは止まって続けた1本だけ、同じ返事の印で
   Factory に届き、どの段も始めたのは1回のままテスト・レビュー・マージまで進み、Backlog が done・main に入り、頼んだ Thread に最後の
   知らせだけが届き、その中身はその1件が done、host に Factory 宛ての返事待ちも渡す前の返事も残らない）
+  長引いた（追加・2026-10-07、factory-30）：`engine.test.ts` に物差し（止まっていた時間・止まっている・マージ待ち・順番待ちを数えない）と
+  「同じ段で止まって答えて続けてもすぐには長引かず、知らせは1回」、`server.test.ts` に「実装の段で返事を止めると long が一覧・詳細に
+  載り、頼んだ会話に1回だけ届く。レビューの段でもう1回（段が変われば数え直す）」と「札の残りが2回より少なければ知らせず記録に残し、
+  最後の知らせは届く」——1分の長さを縮める口（`minuteMs`）で
 
 #### 足りないもの——Factory と一緒に作る
 
@@ -2818,7 +2832,7 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
 - root の作業ツリーで fast-forward するときに、人や他の Thread の未コミットの変更とぶつかったときの扱い（いまは止まって
   知らせる）
 - Backlog の「取り組んだ Thread」（`threads`）に何を刻むか——中継の呼び出しには Thread の印が無い。頼んだ Thread を刻むか
-- 長引いたことを知らせる物差し（同じ段に居る時間・足踏み）——ストーリー `unattended-run` で決める
+- 長引いた物差しのうち**足踏み**（段は動いているが同じところを回っている）——いまは同じ段に居る時間だけで見る
 - 止まった1件を人が Thread で引き取って会話する口（いまは止めて指示を足して続けるだけ）
 
 ## 4.9 Module の宣言（決定・2026-09-06、Phase 1）
