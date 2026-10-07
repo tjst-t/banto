@@ -11,7 +11,7 @@
 //   4. `secretFiles` を消す（待つ形と同じく、コマンドが終わったら必ず）
 
 import { spawn } from "node:child_process";
-import { createWriteStream, readFileSync, unlinkSync, type WriteStream } from "node:fs";
+import { createWriteStream, openSync, readFileSync, unlinkSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import {
   EXIT_FILE,
@@ -91,10 +91,18 @@ export async function main(dir: string, envFile: string): Promise<never> {
     return fail(`コマンドの記録を読めませんでした（${err instanceof Error ? err.message : String(err)}）`);
   }
 
+  // **出力のファイルは started.json より先に作る**——runCommand は started.json を見て outputFile を返すので、
+  // 後に作ると、返事を受けてすぐ読んだ AI（と試験）が ENOENT になる（2026-10-07、負荷の下で 15 回に 1 回）
+  let outFd: number;
+  try {
+    outFd = openSync(join(dir, OUTPUT_FILE), "w", 0o600);
+  } catch (err) {
+    return fail(`出力のファイルを作れませんでした（${err instanceof Error ? err.message : String(err)}）`);
+  }
   writeJsonAtomic(join(dir, STARTED_FILE), { pid: process.pid, startTicks: startTicksOf(process.pid), at: new Date().toISOString() });
 
   // ---- 2. 走らせる -----------------------------------------------------------------------------
-  const out: WriteStream = createWriteStream(join(dir, OUTPUT_FILE), { flags: "w", mode: 0o600 });
+  const out: WriteStream = createWriteStream("", { fd: outFd });
   let writeError: string | undefined;
   // 'error' を拾わないと起動役ごと落ちる（ディスクがいっぱい等）。落ちても子は走らせ続け、終わり方は書く
   out.on("error", (err) => {

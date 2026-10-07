@@ -403,6 +403,8 @@ test("外から止められたもの（cancelCommand ではない SIGTERM）は�
       assert.equal(deliveredBody(shell.delivered[0]!).status, "stopped");
 
       const lost = await runInBackground(shell, { command: "echo partial-output; sleep 60" }, stamp(THREAD, "reply_L"));
+      // 返事の outputFile はもうある（起動役は started.json より先に作る。後だと負荷の下で ENOENT だった）
+      assert.ok(existsSync(lost.outputFile), "runCommand が返した時点で outputFile が無い");
       for (let i = 0; i < 100 && !readFileSync(lost.outputFile, "utf8").includes("partial-output"); i++) await new Promise((r) => setTimeout(r, 50));
       const pid = readStarted(dirs, lost.commandId).pid;
       // 起動役もコマンドも SIGKILL（コンテナが落ちたのと同じ——終わり方を書く間が無い）。コマンドは自分のグループ
