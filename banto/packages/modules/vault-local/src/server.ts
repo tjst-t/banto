@@ -8,10 +8,13 @@
 // メタデータは **banto がローカルに持つ**（`LocalFileAliasStore`）。組み込みの
 // backend は「メタデータの持ち方自体を banto が決められる」（§2.1 D節）ので
 // これでよい。**共有が眼目の backend（Infisical 等）は別の置き場を使う**。
+//
+// **設定 Canvas は持たない**（2026-10-07、ユーザー）。以前は alias の名前を並べるだけの画面
+// （`ui://banto-vault-local/config`）を渡していたが、設定することが無く、同じ一覧は窓口の管理 Canvas にある
+// ——設定画面に「Vault（ローカル）」が出ても、開いて決められることが無かった（規則13）
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createVaultModuleServer, LocalFileAliasStore } from "@banto/vault-kit";
-import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { SopsBackend } from "./sops-backend.js";
 
 export function createVaultServer(dataDir: string) {
@@ -21,7 +24,6 @@ export function createVaultServer(dataDir: string) {
     backend,
     aliasStore: new LocalFileAliasStore(dataDir),
     dataDir,
-    configApp: { uri: CONFIG_APP_URI, html: CONFIG_APP_HTML, name: "Vault（ローカル）" },
     init: () => backend.init(),
   });
 }

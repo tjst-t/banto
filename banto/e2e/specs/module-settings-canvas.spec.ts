@@ -126,29 +126,36 @@ test("設定の置き場は Module の scope が決める——Vault は全体�
 
   // banto 全体の設定には Vault が出て、FileSystem は出ない
   await page.goto("/settings");
-  // 左メニューには Vault が並び、Project ごとの Module（FileSystem）は並ばない
-  const vaultNav = page.getByRole("button", { name: "Vault（ローカル）", exact: true });
+  // 左メニューには Vault（窓口の置き場の設定）が並び、Project ごとの Module（FileSystem）は並ばない
+  // **組み込みの Vault（vault-local）は設定画面を持たない**（2026-10-07、ユーザー）——alias の名前を並べるだけで、
+  // 設定することが無かった。出るのは窓口（vault-directory）の「Vault の置き場」
+  const vaultNav = page.getByRole("button", { name: "Vault の置き場", exact: true });
   await expect(vaultNav, "全体の設定の左メニューに Vault が出ていない").toBeVisible({ timeout: 30_000 });
   await expect(
     page.getByRole("button", { name: "FileSystem", exact: true }),
     "Project ごとの Module が全体の設定の左メニューに出ている",
   ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Vault（ローカル）", exact: true }),
+    "設定することの無い組み込みの Vault が左メニューに出ている",
+  ).toHaveCount(0);
   await vaultNav.click();
   await expect(
-    page.locator('[data-testid="module-settings-canvas"][data-module="vault-local"]'),
+    page.locator('[data-testid="module-settings-canvas"][data-module="vault-directory"]'),
     "全体の設定に Vault が出ていない",
   ).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-testid="module-settings-canvas"][data-module="vault-local"]')).toHaveCount(0);
   await expect(
     page.locator('[data-testid="module-settings-canvas"][data-module="filesystem"]'),
     "Project ごとの Module が全体の設定に出ている",
   ).toHaveCount(0);
 
-  // 中身も本物（Vault が名乗った画面が描かれている）
+  // 中身も本物（窓口が名乗った画面が描かれている）
   const vaultInner = page
-    .locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe')
+    .locator('[data-testid="module-settings-canvas"][data-module="vault-directory"] iframe')
     .contentFrame()
     .frameLocator("iframe");
-  await expect(vaultInner.getByText(/alias|件/)).toBeVisible({ timeout: 60_000 });
+  await expect(vaultInner.getByText("Global の秘密の置き場")).toBeVisible({ timeout: 60_000 });
 });
 
 // **Infisical の繋ぎ方を、全体の設定から入れられる**（追加・2026-09-13、
@@ -218,9 +225,9 @@ test("設定画面を切り替えると、中身も入れ替わる", async ({ pa
     await page.getByRole("button", { name, exact: true }).click();
   };
 
-  // 先に組み込みの Vault を開く
-  await pick("Vault（ローカル）");
-  await expect(inner("vault-local").getByText(/alias|件/)).toBeVisible({ timeout: 60_000 });
+  // 先に窓口の置き場の設定を開く（組み込みの Vault は設定画面を持たない、2026-10-07）
+  await pick("Vault の置き場");
+  await expect(inner("vault-directory").getByText("Global の秘密の置き場")).toBeVisible({ timeout: 60_000 });
 
   // そのまま Infisical へ切り替える
   await pick("Vault（Infisical）");
@@ -230,9 +237,9 @@ test("設定画面を切り替えると、中身も入れ替わる", async ({ pa
   ).toBeVisible({ timeout: 60_000 });
 
   // **戻しても入れ替わる**（片道だけ直っていないこと）
-  await pick("Vault（ローカル）");
+  await pick("Vault の置き場");
   await expect(
-    inner("vault-local").getByText(/alias|件/),
+    inner("vault-directory").getByText("Global の秘密の置き場"),
     "戻したのに Infisical の画面が残っている",
   ).toBeVisible({ timeout: 60_000 });
 });
