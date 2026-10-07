@@ -4287,6 +4287,27 @@
       "extra": {}
     },
     {
+      "id": "factory-30",
+      "number": 228,
+      "kind": "task",
+      "title": "Factory の「長引いています」の物差しを決める（いまは同じ段に30分の仮の目安）",
+      "status": "backlog",
+      "parent": "unattended-run",
+      "dependsOn": [],
+      "milestone": "phase-2",
+      "priority": "normal",
+      "labels": [],
+      "body": "## なぜ\n\n人は基本、終わったら知ればよく、長引いたときだけ覗きたい（2026-10-03、ユーザー）。Factory の画面は、いまの段に30分以上いると「長引いています」と出すが、30分は根拠の無い仮の値で、画面に出すだけ（知らせない）。\n\n## 決めること\n\n- 物差し：段に居る時間（段ごと・テストのコマンドの長さで変える？）／足踏み（同じテストが同じ所で落ち続ける・コミットが増えない）／サブエージェントが黙っている時間\n- 越えたら：画面の印だけか、頼んだ会話・受信箱に知らせるか（滞留通知 phase0-stale-notify と同じ口にするか）\n- Factory の受け入れ（2026-10-07、sonnet）では、関数1つの実装が約2分・競合を解くのが約1.5分だった",
+      "doneWhen": "物差しと越えたときの振る舞いをユーザーと決めて仕様（v4-modules.md §4.5）に書き、Factory が実装している",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-07T15:21:55.015Z",
+      "updatedAt": "2026-10-07T15:21:55.015Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "human-login",
       "number": 177,
       "kind": "story",
