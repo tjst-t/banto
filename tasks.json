@@ -4556,7 +4556,7 @@
       "number": 191,
       "kind": "task",
       "title": "Factory の画面——実行の一覧・1件の段と記録・止める・答える",
-      "status": "ready",
+      "status": "done",
       "parent": "factory",
       "dependsOn": [
         "factory-runtime"
@@ -4566,12 +4566,12 @@
       "labels": [],
       "body": "v4-modules.md §4.5「人の画面」。長引いたとき覗く場所。先にモックで形を決めてユーザーに見せる。",
       "doneWhen": "実ブラウザの E2E で：走っている実行の1件を開くと、いまの段・時間・差分・最後のテスト結果・レビューの指摘・記録が出る／画面から止められる・止まったものに答えられる",
-      "resolution": null,
+      "resolution": "f90a7b64（main・release に push 済み、host での反映は人）。モック a5aefc0d の形で入口（件ごとの一覧・詳細・答える欄・止める）と設定の画面。E2E factory で設定の画面から入れる・入口で答えるを確認。Canvas に人の番の色が渡らないので warning の色、別の画面を開くボタンは口が無いので置かない。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-04T08:56:09.707Z",
-      "updatedAt": "2026-10-04T08:56:09.707Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-07T07:29:05.041Z",
+      "closedAt": "2026-10-07T07:29:05.041Z",
       "extra": {}
     },
     {
