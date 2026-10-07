@@ -5514,6 +5514,32 @@
       "updatedAt": "2026-10-07T05:54:33.641Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "vault-manage-polish",
+      "number": 226,
+      "kind": "story",
+      "title": "Vault の管理画面の直し——グループを作る入口・値の書き換え・Vault（ローカル）の設定を消す",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "ユーザー要望（2026-10-07）。Memory の「Vault の秘密の値を書き換える」「SSH 鍵も対象にする（案X）」を参照。\n1. 「Vault を管理」の3つのダイアログ（置き場の変更・移す・参照を作る）のグループの選択肢に「＋ 新しいグループを作る…」。Infisical ではフォルダができる旨を書く\n2. 一覧の行の「値を変える」（admin だけ）。参照の行は不可で元の場所を出す。oauth-token は不可。SSH 鍵は注意つきで、貼り付けか Vault の中で作り直し、変えたら新しい公開鍵を出す。値を変えた日時を台帳に残し一覧に出す\n3. vault-local の設定 Canvas（ui://banto-vault-local/config、名前の一覧を見せるだけ）を消す",
+      "doneWhen": "単体と Vault の E2E で：3つのダイアログからグループを作ってそこへ置ける／ふつうの秘密・ファイル・SSH 鍵の値を変えられ、日時が一覧に出る／参照・oauth-token の行は変えられず理由が出る／AI（admin でない呼び出し）からは断られる／設定画面に Vault（ローカル）が出ない",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "f0ae5979-d32a-4f57-a80c-ff13ff3b431d"
+        }
+      ],
+      "createdAt": "2026-10-07T14:56:19.130Z",
+      "updatedAt": "2026-10-07T14:56:19.130Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
