@@ -5026,7 +5026,7 @@
       "number": 208,
       "kind": "task",
       "title": "Factory を起こし直しの約束に乗せる",
-      "status": "in-progress",
+      "status": "done",
       "parent": "resume-across-restart",
       "dependsOn": [
         "factory-runtime",
@@ -5037,7 +5037,7 @@
       "labels": [],
       "body": "記録と流し直しで再開する作り（v4-modules.md §4.5）を、host の起こし直しでも働くようにする。",
       "doneWhen": "Factory の1件が実装の段の途中で banto を起こし直しても、流し直して Subagent の返事を受け取り最後まで進む",
-      "resolution": null,
+      "resolution": "f6dc6223・7bdbd10f（Fable のレビュー2回の直し含む）、main・release 入り。own-host の E2E で、実装役が sleep 600 の最中に host を SIGKILL→起こし直しても Factory と Subagent が続けると答え、同じ返事の印で Factory に届き、段を繰り返さず main まで進み、最後の知らせだけが届くことを確かめた。反映は人",
       "refs": [],
       "threads": [
         {
@@ -5046,8 +5046,8 @@
         }
       ],
       "createdAt": "2026-10-05T04:15:28.591Z",
-      "updatedAt": "2026-10-07T04:27:56.586Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-07T05:36:29.875Z",
+      "closedAt": "2026-10-07T05:36:29.875Z",
       "extra": {}
     },
     {
