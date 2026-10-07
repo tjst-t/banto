@@ -488,6 +488,19 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         ["implementation", "name"],
       ),
       tool(
+        "replaceSecretValue",
+        // **既にある秘密の値を置き換える**（決定・2026-10-07、ユーザー）——実装へ中継するだけ。値は返らない（SSH なら公開鍵だけ）
+        "既にある秘密の値を置き換える（値は返らない。SSH 鍵は value か regenerate で、新しい公開鍵だけ返る）",
+        {
+          ...IMPL,
+          name: { type: "string" },
+          group: { type: "string", description: "置き場（省略すると既定の解決に落ちる）" },
+          value: { type: "string" },
+          regenerate: { type: "boolean" },
+        },
+        ["implementation", "name"],
+      ),
+      tool(
         "deleteAlias",
         "alias を削除する。**置き場（group）まで指す**——同じ名前が複数の置き場に在るのは普通のこと",
         { ...IMPL, name: { type: "string" }, group: { type: "string", description: "置き場（省略すると既定の解決に落ちる）" } },
@@ -629,6 +642,20 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const message = err instanceof Error ? err.message : String(err);
         if (/unknown tool/i.test(message)) return { variants: null };
         return { variants: null, variantsError: message };
+      }
+    }
+
+    /**
+     * グループを作ると何ができるか（2026-10-07）。**describeGroups を持たない古い実装は null**——添え書きは無くてよいもの。
+     * それ以外の失敗は通す（その Vault は置き場の一覧で「読めなかった」になる）
+     */
+    async function groupCreateNoteOf(impl: string): Promise<string | null> {
+      try {
+        const got = JSON.parse(await deps.relay.callTool(impl, "describeGroups", {})) as { createNote?: unknown };
+        return typeof got.createNote === "string" && got.createNote !== "" ? got.createNote : null;
+      } catch (err) {
+        if (/unknown tool/i.test(err instanceof Error ? err.message : String(err))) return null;
+        throw err;
       }
     }
 
@@ -842,6 +869,33 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         return text({ ok: true, message: body });
       }
 
+      case "replaceSecretValue": {
+        const implementation = await target();
+        const name = requiredString(args.name, "name");
+        const group = optionalString(args.group, "group");
+        // **参照なら、元の場所を実装の名前つきで言って断る**（2026-10-07）。実装の名前（接続名）を知っているのは窓口
+        // ——kit も断るが、kit が知っているのは自分の宣言上の名前だけ。値を渡す前に見るので、値は実装へ行かない
+        const listed = JSON.parse(
+          await deps.relay.callTool(implementation, "listAliases", group ? { alsoGroups: [group] } : {}),
+        ) as Array<Record<string, unknown>>;
+        const row = listed.find((a) => a.name === name && (group === undefined || a.group === group));
+        const linkTo = row?.linkTo as { group?: unknown; name?: unknown } | undefined;
+        if (linkTo) {
+          throw new Error(
+            `"${name}" は参照です。値は元の場所（${implementation}/${String(linkTo.group)}/${String(linkTo.name)}）で変えてください`,
+          );
+        }
+        // **値はここを通過するだけ**（createAlias と同じ）。ログにもエラー文にも載せない
+        const body = await deps.relay.callTool(implementation, "replaceSecretValue", {
+          name,
+          group,
+          ...(args.value === undefined ? {} : { value: requiredString(args.value, "value") }),
+          ...(args.regenerate === undefined ? {} : { regenerate: args.regenerate }),
+        });
+        // backend の返事をそのまま返す（公開鍵を沈めない——generateSecret と同じ）
+        return { content: [{ type: "text", text: body }] };
+      }
+
       case "deleteAlias": {
         const implementation = await target();
         // **置き場まで指して消す**（訂正・2026-09-15）。同じ名前が同一 Vault の
@@ -881,10 +935,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
             projects: Array<{ projectId: string; group: string }>;
           },
           groups: JSON.parse(await deps.relay.callTool(impl, "listGroups", {})) as string[],
+          // グループを作ると何ができるかの添え書き（2026-10-07、Infisical ならフォルダ）。古い実装は持たない
+          groupCreateNote: await groupCreateNoteOf(impl),
           // 紐付けが指している名前も候補に入れる（**まだ作られていないことがある**
           // ——SOPS は使うときに作るので、`listGroups` に出てこない）
           ...(await variantsOf(impl)),
-        }))).filter((r): r is { implementation: string; ok: true; value: { impl: string; bindings: { shared: string; projects: Array<{ projectId: string; group: string }> }; groups: string[]; variants: VariantAxis | null; variantsError?: string } } => r.ok);
+        }))).filter((r): r is { implementation: string; ok: true; value: { impl: string; bindings: { shared: string; projects: Array<{ projectId: string; group: string }> }; groups: string[]; groupCreateNote: string | null; variants: VariantAxis | null; variantsError?: string } } => r.ok);
 
         const mine = projectId
           ? perVault
@@ -926,6 +982,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
             ],
             // 版を名乗る Vault だけ中身がある（無ければ null——画面は版の選択を出さない）
             variants: r.value.variants,
+            ...(r.value.groupCreateNote ? { groupCreateNote: r.value.groupCreateNote } : {}),
             ...(r.value.variantsError ? { variantsError: r.value.variantsError } : {}),
           })),
         });

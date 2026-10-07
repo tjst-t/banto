@@ -226,3 +226,29 @@ test("同じ鍵で ssh-agent を増やさない——使い回して、最後に
     assert.equal(existsSync(first.socketPath), false, "落としたのに socket が残っている");
   });
 });
+
+// **鍵を置き換えたら、その鍵で立てた ssh-agent は落とす**（追加・2026-10-07、値の置き換え `replaceSecretValue`）。
+// agent は鍵を抱えたまま使い回すので、落とさないと次の startSshAgent が**古い鍵**を配り続ける
+// ——相手（GitHub）には新しい公開鍵を登録したのに、古い鍵で名乗って断られる
+test("鍵を置き換えると、古い鍵を抱えた ssh-agent を落とし、次は新しい鍵で立て直す（別の鍵の agent は残す）", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    const { privateKeyRef } = await backend.generateKeypair("ssh", "keys/deploy");
+    const other = await backend.generateKeypair("ssh", "keys/other");
+    const before = await backend.loadIntoAgent(privateKeyRef);
+    const otherAgent = await backend.loadIntoAgent(other.privateKeyRef);
+
+    const { publicKey: renewed } = await backend.generateKeypair("ssh", privateKeyRef); // 置き換えの「作り直し」と同じ口
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(existsSync(before.socketPath), false, "置き換えたのに古い鍵の agent が残っている");
+    assert.ok(existsSync(otherAgent.socketPath), "別の鍵の agent まで落とした");
+
+    const after = await backend.loadIntoAgent(privateKeyRef);
+    const listed = await execFileP("ssh-add", ["-L"], { env: { ...process.env, SSH_AUTH_SOCK: after.socketPath } });
+    // 公開鍵の本体（種類と鍵、注記を除く）で比べる
+    const body = (k: string) => k.trim().split(/\s+/).slice(0, 2).join(" ");
+    assert.equal(body(listed.stdout), body(renewed), "立て直した agent が新しい鍵を持っていない");
+    await backend.stopAgents();
+  });
+});

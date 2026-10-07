@@ -29,6 +29,20 @@ window.addEventListener("message", (e) => {
   if (name === "getPlacements") return text({ shared: s.shared, project: s.project, vaults: s.vaults });
   if (name === "countVariants") return text([]);
   if (name === "planProjectPlacement") return text({ moving: [], conflicts: [], sharedWith: [], strandedIfNotMigrated: [], blockedAcrossVaults: [] });
+  // グループを作る（2026-10-07）——作れたら置き場の一覧に足す。s.refuse[name] があれば、その文言で断る（isError）
+  const refused = s.refuse && s.refuse[name];
+  if (refused) return reply({ content: [{ type: "text", text: refused }], isError: true });
+  if (name === "createGroup") {
+    const v = s.vaults.find((x) => x.implementation === args.implementation);
+    if (v && !v.groups.includes(args.name)) v.groups = [...v.groups, args.name].sort();
+    return text({ ok: true });
+  }
+  // 値を変える（2026-10-07）——SSH 鍵には新しい公開鍵を返す（窓口と同じ形）
+  if (name === "replaceSecretValue") {
+    const a = s.aliases.find((x) => x.implementation === args.implementation && x.group === args.group && x.name === args.name);
+    if (a) a.valueUpdatedAt = "2026-10-07T05:04:00.000Z";
+    return text({ ok: true, name: args.name, group: args.group, kind: a && a.kind, ...(a && a.kind === "ssh-identity" ? { publicKey: "ssh-ed25519 AAAANEWKEY" } : {}) });
+  }
   return text({ ok: true });
 });
 window.__setTheme = (t) => {
@@ -52,6 +66,7 @@ export function variantState() {
         groups: ["homelab", "instance", PROJECT_GROUP, "tools"],
         variantGroups: ["homelab@prod"],
         variants: { label: "環境", options: ["dev", "staging", "prod"], default: "dev" },
+        groupCreateNote: "Infisical ではフォルダができます",
       },
       // 版を名乗らない Vault——版の欄は出さない
       { implementation: "vault-local", groups: ["instance", "local-a"], variantGroups: [], variants: null },

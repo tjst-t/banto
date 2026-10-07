@@ -125,6 +125,11 @@ export interface VaultModuleOptions {
   /** 設定 Canvas（`ui://<id>/config`）。持たない Module もあってよい。
    *  `name` は**人に見える名前**——設定画面の左メニューに出る。 */
   configApp?: { uri: string; html: string; name: string };
+  /**
+   * **グループを作ると backend に何ができるか**の添え書き（任意、追加・2026-10-07）。管理画面の「＋ 新しいグループを作る…」の
+   * 名前の欄の下に出る（Infisical：「Infisical ではフォルダができます」）。kit は中身を知らない——`describeGroups` で返すだけ
+   */
+  groupCreateNote?: string;
   /** 立ち上がりにやること（鍵の用意・ログインなど）。 */
   init?(): Promise<void>;
   /**
@@ -474,9 +479,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         ),
         // **banto 自身が置く秘密**（追加・2026-09-18、OAuth のため）。
         //
-        // 金庫には値を書き換える口が無い（`updateAlias` は注記だけ）。これは
-        // 「人が預けたものを黙って書き換えない」という設計で、**正しい**。
-        // ところが OAuth の refresh token は**回る**ので、置き換えが要る。
+        // 金庫には値を書き換える口が無かった（`updateAlias` は注記だけ。人が置き換える `replaceSecretValue` は
+        // 2026-10-07 に足したが、人専用）。これは「人が預けたものを黙って書き換えない」という設計で、**正しい**。
+        // ところが OAuth の refresh token は**回る**ので、Module から置き換える口が要る。
         //
         // そこで**置き換えてよい範囲を種別で区切る**：`oauth-token` だけ。
         // 既にその置き場に在るものが `oauth-token` でなければ**断る**
@@ -544,6 +549,23 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           },
           "admin",
         ),
+        // **既にある秘密の値を置き換える**（決定・2026-10-07、ユーザー。仕様 §2.1 C節）。以前は「差し替えは消して作る」
+        // だったが、消すと用途・参照の指す先が切れ、作り直すまで名前が無くなる。人専用（assertHuman）で、値は返さない
+        tool(
+          "replaceSecretValue",
+          "既にある秘密の値を置き換える（人専用。値は返さない）。ssh-identity は value（秘密鍵）か regenerate: true で、新しい公開鍵だけ返す",
+          {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              group: { type: "string", description: "置き場（同じ名前が複数あるとき）" },
+              value: { type: "string", description: "新しい値（ssh-identity なら秘密鍵）。regenerate と一緒には渡さない" },
+              regenerate: { type: "boolean", description: "ssh-identity だけ。Vault の中で鍵ペアを作り直す" },
+            },
+            required: ["name"],
+          },
+          "admin",
+        ),
         tool(
           "deleteAlias",
           "aliasを削除する（人専用）",
@@ -572,6 +594,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           "backendに新しいグループを作る（人専用）",
           { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
           "admin",
+        ),
+        tool(
+          "describeGroups",
+          // **グループを作ると何ができるか**（2026-10-07）——画面の「＋ 新しいグループを作る…」に添える。名乗らなければ null
+          "グループを作ると backend に何ができるかの添え書き（人専用）。無ければ createNote は null",
+          { type: "object", properties: {} },
+          "admin",
+          { [VALUE_FREE_META_KEY]: true },
         ),
         tool(
           "listGroupBindings",
@@ -1175,9 +1205,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "updateAlias": {
         assertHuman("alias の書き換え", callMeta);
-        // **値は変えない**——ここで変えられるのは人が付けた覚え書きと、どこの
-        // ものかだけ。値の差し替えは作り直し（消して作る）にする：中途半端に
-        // 上書きできると、「いつ何に変わったか」が alias の外から分からなくなる
+        // **値は変えない**——ここで変えられるのは人が付けた覚え書きだけ。値の置き換えは
+        // `replaceSecretValue`（2026-10-07。以前は「消して作る」）——置き換えた日時を台帳に残す
         const name = requiredString(args.name, "name");
         const existing = await findAlias(name, optionalString(args.group, "group"), callMeta);
         if (!existing) throw new Error(`alias "${name}" not found`);
@@ -1192,6 +1221,77 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         }
         await registry.update(existing.backendPath, { note: optionalString(args.note, "note") });
         return { content: [{ type: "text", text: `updated ${name}` }] };
+      }
+      case "replaceSecretValue": {
+        assertHuman("値の置き換え", callMeta);
+        const name = requiredString(args.name, "name");
+        const group = optionalString(args.group, "group");
+        const regenerate = args.regenerate === undefined ? false : args.regenerate;
+        if (typeof regenerate !== "boolean") throw new Error("regenerate は true / false です");
+        // **値は検査の文言にも出さない**——長さも中身も言わない
+        const value = args.value === undefined ? undefined : requiredString(args.value, "value");
+        if (regenerate && value !== undefined) throw new Error("value と regenerate は一緒に渡せません（どちらか1つ）");
+        if (!regenerate && value === undefined) throw new Error("新しい値（value）か regenerate: true が要ります");
+        const meta = await findAlias(name, group, callMeta);
+        if (!meta) throw new Error(group ? `alias "${name}" は ${group} にありません` : `alias "${name}" はありません`);
+        // **参照を通して元を上書きしない**（putSecret と同じ）——変えるのは元の場所で
+        if (isLink(meta)) {
+          throw new Error(
+            `"${name}" は参照です。値は元の場所（${moduleName}/${canon(groupOf({ backendPath: meta.linkTo }))}/${keyOf(meta.linkTo)}）で変えてください`,
+          );
+        }
+        if (meta.kind === BANTO_OWNED_KIND) {
+          throw new Error(
+            `"${name}" は banto が置くログイン情報（${BANTO_OWNED_KIND}）です。手では置き換えられません` +
+              "——置いた Module からログインし直すと置き換わります",
+          );
+        }
+        if (regenerate && meta.kind !== "ssh-identity") {
+          throw new Error(`regenerate は ssh-identity だけです（"${name}" は ${meta.kind}）`);
+        }
+        let publicKey: string | undefined;
+        if (meta.kind === "ssh-identity" && regenerate) {
+          // **作り直すのは backend の仕事**（generateSecret の鍵と同じ）——秘密鍵が backend の外に出ない実装もそのまま使える
+          const made = await backend.generateKeypair("ssh", meta.backendPath);
+          if (made.privateKeyRef !== meta.backendPath) {
+            // 言われた場所に置けなかったなら止まる（規則2）——黙って別の置き場に作られると、この名前は古い鍵のまま
+            throw new Error(
+              `backend が指定した置き場に鍵を作りませんでした（頼んだ: ${meta.backendPath}、返った: ${made.privateKeyRef}）`,
+            );
+          }
+          publicKey = made.publicKey;
+        } else if (meta.kind === "ssh-identity") {
+          // **貼った鍵が読めなければ、元の鍵に書き戻して断る**——読めない鍵で、動いている鍵を壊さない。
+          // 鍵として読めるかは backend が導く公開鍵で確かめる（kit は鍵を解釈しない）
+          const previous = await backend.getSecret(meta.backendPath);
+          await backend.putSecret(meta.backendPath, value!);
+          try {
+            publicKey = await backend.publicKeyOf(meta.backendPath);
+          } catch {
+            // 失敗の文言は ssh-keygen の出力を含みうるので出さない（貼った鍵の断片が混ざらないように）
+            try {
+              await backend.putSecret(meta.backendPath, previous);
+            } catch (restoreErr) {
+              // 戻せなかったことは隠さない（規則2）——いまは読めない鍵が入っている
+              throw new Error(
+                `貼られたものを秘密鍵として読めず、元の鍵にも戻せませんでした（"${name}" には読めない値が入っています）：` +
+                  (restoreErr instanceof Error ? restoreErr.message : String(restoreErr)),
+              );
+            }
+            throw new Error(`貼られたものを秘密鍵として読めませんでした。"${name}" は元の鍵のままです`);
+          }
+        } else {
+          await backend.putSecret(meta.backendPath, value!);
+        }
+        await registry.update(meta.backendPath, { valueUpdatedAt: new Date().toISOString() });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: true, name, group: groupOf(meta), kind: meta.kind, ...(publicKey ? { publicKey } : {}) }),
+            },
+          ],
+        };
       }
       case "deleteAlias": {
         assertHuman("alias の削除", callMeta);
@@ -1278,6 +1378,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       case "createGroup":
         await backend.createGroup(requiredString(args.name, "name"));
         return { content: [{ type: "text", text: "ok" }] };
+      case "describeGroups":
+        return { content: [{ type: "text", text: JSON.stringify({ createNote: opts.groupCreateNote ?? null }) }] };
       case "listGroupBindings":
         return {
           content: [

@@ -69,6 +69,7 @@ export class InfisicalBackend implements VaultBackend {
       if (!isAlreadyExists(err)) throw err;
       await this.conn.secrets().updateSecret(key, { ...scope, secretPath: folder, secretValue });
     }
+    this.dropAgents(path);
   }
 
   async deleteSecret(path: string): Promise<void> {
@@ -238,6 +239,27 @@ export class InfisicalBackend implements VaultBackend {
     this.agents.set(agentKey, { socketPath, pid: agentPid });
     this.registerAgentCleanup();
     return { socketPath };
+  }
+
+  /**
+   * **その置き場の鍵で立てた ssh-agent を落とす**（追加・2026-10-07、値の置き換え）。agent は鍵を抱えたまま使い回すので、
+   * 値を置き換えても落とさないと、次の startSshAgent が**古い鍵**を配る。次に呼ばれたら新しい鍵で立て直す
+   */
+  private dropAgents(path: string): void {
+    for (const [agentKey, { pid, socketPath }] of this.agents) {
+      if (agentKey !== path && !agentKey.startsWith(`${path}\0`)) continue;
+      try {
+        if (pid) process.kill(pid, "SIGTERM");
+      } catch {
+        // もう居ない
+      }
+      try {
+        if (existsSync(socketPath)) rmSync(socketPath, { force: true });
+      } catch {
+        // 消せなくても、使い回しの表からは外す（次は立て直す）
+      }
+      this.agents.delete(agentKey);
+    }
   }
 
   private registerAgentCleanup(): void {

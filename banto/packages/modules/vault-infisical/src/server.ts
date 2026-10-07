@@ -152,6 +152,8 @@ export function createInfisicalVaultServer(dataDir: string, moduleName = CANONIC
       // 設定画面の見出しはこの名前なので、固定にすると同じ見出しが並ぶ
       name: moduleName === CANONICAL_NAME ? "Vault（Infisical）" : `Vault（Infisical：${moduleName}）`,
     },
+    // グループ＝フォルダ（管理画面の「＋ 新しいグループを作る…」に添える、2026-10-07）
+    groupCreateNote: "Infisical ではフォルダができます",
     // **未設定でも立つ**。繋がらない理由は readiness で返す
     init: () => lazy.start(),
     readiness: async () => lazy.readiness(),

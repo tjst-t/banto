@@ -1465,3 +1465,87 @@ test("oauth-token は Vault をまたいで移しても持ち主ごと移り、�
     { vaultNames: ["vault-local", "vault-keychain"] },
   );
 });
+
+// **値を変える**（決定・2026-10-07、ユーザー。仕様 §2.1 C節 `replaceSecretValue`）——窓口は実装へ中継するだけ。
+// 見るのは：置き場まで渡すこと（同じ名前の別の置き場に触らない）、置き換えた日時が横断の一覧に載ること、
+// 参照は**窓口が実装の名前つきで**元の場所を言って断ること（kit が知っているのは宣言上の名前だけ——
+// 2本目の vault-local は自分を "vault-local" だと思っている）、SSH 鍵は公開鍵だけが返ること
+test("値を変える：置き場まで渡して置き換え、日時が一覧に載る。参照は実装の名前つきで元の場所を言って断る", async () => {
+  await withUi(
+    async ({ ui, vaults }) => {
+      const impl = "vault-local-2";
+      for (const group of ["g1", "g2"]) {
+        await ui.callTool({
+          name: "createAlias",
+          arguments: { implementation: impl, name: "tok", kind: "secret", group, value: `old-${group}` },
+        });
+      }
+      const res = await ui.callTool({
+        name: "replaceSecretValue",
+        arguments: { implementation: impl, name: "tok", group: "g2", value: "NEW-VALUE" },
+      });
+      assert.doesNotMatch(textOf(res), /NEW-VALUE/, "答えに値が載っている");
+      const vault = vaults.get(impl)!;
+      const resolve = async (group: string) =>
+        textOf(await vault.callTool({ name: "resolveAlias", arguments: { name: "tok", group }, _meta: ADMIN }));
+      assert.equal(await resolve("g2"), "NEW-VALUE");
+      assert.equal(await resolve("g1"), "old-g1", "同じ名前の別の置き場まで置き換えた");
+      const rows = parse(await ui.callTool({ name: "listAliases", arguments: {} })).aliases as Array<Record<string, unknown>>;
+      assert.ok(rows.find((a) => a.group === "g2" && a.name === "tok")!.valueUpdatedAt, "置き換えた日時が一覧に無い");
+      assert.equal(rows.find((a) => a.group === "g1" && a.name === "tok")!.valueUpdatedAt, undefined);
+
+      // 参照：元の場所を、窓口が知っている実装の名前で言う。値は実装に渡らない（元も参照も変わらない）
+      await ui.callTool({ name: "linkAlias", arguments: { implementation: impl, name: "tok", group: "g1", toGroup: "g3", toName: "ref" } });
+      await assert.rejects(
+        () => ui.callTool({ name: "replaceSecretValue", arguments: { implementation: impl, name: "ref", group: "g3", value: "VIA-REF" } }),
+        /"ref" は参照です。値は元の場所（vault-local-2\/g1\/tok）で変えてください/,
+      );
+      assert.equal(await resolve("g1"), "old-g1");
+    },
+    { vaultNames: ["vault-local", "vault-local-2"] },
+  );
+});
+
+test("値を変える：SSH 鍵は作り直し（regenerate）で新しい公開鍵だけが返り、あとから読む公開鍵もそれになる", async () => {
+  await withUi(async ({ ui, vaults }) => {
+    const made = parse(
+      await ui.callTool({ name: "generateSecret", arguments: { name: "deploy", kind: "ssh-identity", group: "keys" } }),
+    );
+    const res = await ui.callTool({
+      name: "replaceSecretValue",
+      arguments: { implementation: "vault-local", name: "deploy", group: "keys", regenerate: true },
+    });
+    assert.notEqual(res.isError, true, textOf(res));
+    const body = parse(res);
+    assert.match(body.publicKey, /^ssh-ed25519 AAAA/);
+    assert.notEqual(body.publicKey, made.publicKey, "作り直したのに公開鍵が前のまま");
+    assert.doesNotMatch(textOf(res), /PRIVATE KEY/);
+    const pub = await vaults.get("vault-local")!.callTool({ name: "getPublicKey", arguments: { name: "deploy", group: "keys" }, _meta: ADMIN });
+    assert.equal(textOf(pub), body.publicKey);
+  });
+});
+
+test("置き場の一覧に、グループを作ると何ができるかの添え書きが載る（名乗らない実装・古い実装には付かない）", async () => {
+  await withUi(async ({ vaults }) => {
+    const base = relayTo(vaults);
+    const relay: RelayLike = {
+      listTargets: () => base.listTargets(),
+      async callTool(target, name, args) {
+        if (name === "describeGroups" && target === "vault-local-2") return JSON.stringify({ createNote: "フォルダができます" });
+        // 古い実装（describeGroups を持たない）——null として扱い、置き場の一覧から落とさない
+        if (name === "describeGroups" && target === "vault-local") throw new Error("unknown tool: describeGroups");
+        return base.callTool(target, name, args);
+      },
+    };
+    const server = createVaultDirectoryServer({ relay });
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const ui = new Client({ name: "canvas", version: "0.0.0" });
+    await Promise.all([server.connect(s), ui.connect(c)]);
+    const places = parse(await ui.callTool({ name: "getPlacements", arguments: {}, _meta: ADMIN }));
+    const byImpl = new Map((places.vaults as Array<Record<string, unknown>>).map((v) => [v.implementation, v]));
+    assert.equal(byImpl.get("vault-local-2")!.groupCreateNote, "フォルダができます");
+    assert.ok(byImpl.has("vault-local"), "古い実装が置き場の一覧から落ちた");
+    assert.equal(byImpl.get("vault-local")!.groupCreateNote, undefined);
+    await ui.close();
+  }, { vaultNames: ["vault-local", "vault-local-2"] });
+});

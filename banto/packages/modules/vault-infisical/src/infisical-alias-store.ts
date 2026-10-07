@@ -292,6 +292,8 @@ function toMeta(
     note: meta?.note ?? (meta ? undefined : s.secretComment || undefined),
     lastUsedAt: meta?.lastUsedAt,
     expiresAt: meta?.expiresAt,
+    // 人が値を置き換えた日時（2026-10-07）。**読まずに捨てると、次に注記を書き直したとき（markUsed 等）に消える**
+    ...(meta?.valueUpdatedAt ? { valueUpdatedAt: meta.valueUpdatedAt } : {}),
     // banto が置く秘密の持ち主（`putSecret` が残す。2026-10-06）
     ...(meta?.owner ? { owner: meta.owner } : {}),
     // 注記に名前が無いのは、banto 以外が置いたものか、名前を書く前の形——どちらも**置き場の名前を

@@ -149,6 +149,9 @@ export const MANAGE_APP_HTML = `<!doctype html>
   .link-line { font-size: 11px; font-weight: 400; line-height: 1.4; }
   .link-target { opacity: .6; }
   .link-broken { flex: none; color: var(--danger); }
+  /* 値を最後に変えた日時（2026-10-07）——名前の下に控えめに。無ければ行ごと出さない */
+  .updated-line { font-size: 11px; font-weight: 400; line-height: 1.4; opacity: .6;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 値が空の秘密（2026-10-06）——渡そうとすると断られるので、名前の前に目立たせる */
   .empty-badge {
     flex: none; border-radius: 4px; padding: 0 5px; font-size: 10px; font-weight: 500; line-height: 16px;
@@ -339,6 +342,15 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <select id="place-group" style="flex:1 1 12em"></select>
       </div>
     </div>
+    <!-- **グループを作る入口**（2026-10-07、ユーザー）——グループ欄の最後の「＋ 新しいグループを作る…」を選ぶと出る -->
+    <div class="field" id="place-newgroup" hidden>
+      <span>新しいグループの名前</span>
+      <div class="row">
+        <input id="place-newgroup-name" autocomplete="off" spellcheck="false" style="flex:1 1 12em" />
+        <button type="button" id="place-newgroup-create">作る</button>
+      </div>
+      <p class="dialog-desc" id="place-newgroup-note" hidden></p>
+    </div>
     <!-- **版**（2026-10-06）——版を名乗る Vault（Infisical の環境）を選んだときだけ出す。
          版ごとに「値が入っている数／全部の数」を添える（名前だけの空欄があるので、名前の数では選べない） -->
     <label class="field" id="place-variant-field" hidden><span id="place-variant-label">版</span>
@@ -380,6 +392,15 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <select id="move-variant" style="flex:0 1 9em" hidden></select>
       </div>
     </div>
+    <!-- **グループを作る入口**（2026-10-07、ユーザー）——グループ欄の最後の「＋ 新しいグループを作る…」を選ぶと出る -->
+    <div class="field" id="move-newgroup" hidden>
+      <span>新しいグループの名前</span>
+      <div class="row">
+        <input id="move-newgroup-name" autocomplete="off" spellcheck="false" style="flex:1 1 12em" />
+        <button type="button" id="move-newgroup-create">作る</button>
+      </div>
+      <p class="dialog-desc" id="move-newgroup-note" hidden></p>
+    </div>
     <p class="dialog-desc" id="move-variant-note" hidden></p>
     <p class="dialog-desc" id="move-effect"></p>
     <div class="problem" id="move-error" hidden></div>
@@ -408,6 +429,15 @@ export const MANAGE_APP_HTML = `<!doctype html>
         <select id="link-variant" style="flex:0 1 9em" hidden></select>
       </div>
     </div>
+    <!-- **グループを作る入口**（2026-10-07、ユーザー）——グループ欄の最後の「＋ 新しいグループを作る…」を選ぶと出る -->
+    <div class="field" id="link-newgroup" hidden>
+      <span>新しいグループの名前</span>
+      <div class="row">
+        <input id="link-newgroup-name" autocomplete="off" spellcheck="false" style="flex:1 1 12em" />
+        <button type="button" id="link-newgroup-create">作る</button>
+      </div>
+      <p class="dialog-desc" id="link-newgroup-note" hidden></p>
+    </div>
     <p class="dialog-desc" id="link-variant-note" hidden></p>
     <label class="field"><span>名前</span><input id="link-name" autocomplete="off" required /></label>
     <p class="dialog-desc">値は写しません。元を変えればこちらも変わり、元を消すとこちらは使えなくなります</p>
@@ -434,6 +464,38 @@ export const MANAGE_APP_HTML = `<!doctype html>
       <span class="muted" id="pubkey-copied" style="margin-right:auto"></span>
       <button id="pubkey-copy" type="button">コピーする</button>
       <button value="ok">閉じる</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-value">
+  <form method="dialog" class="dialog-body">
+    <!-- **既にある秘密の値を置き換える**（決定・2026-10-07、ユーザー）。以前は「消して作る」しかなく、消すと用途・参照の
+         指す先が切れた。**値は画面に出ない**——入力した値は閉じたら DOM から消す（新規登録と同じ） -->
+    <p class="dialog-title">値を変える</p>
+    <p class="dialog-desc" id="value-target"></p>
+    <!-- 変えられない行（参照・banto が置くログイン情報）では、入力欄を出さずに理由と元の場所を出す -->
+    <p class="dialog-desc" id="value-refuse" hidden></p>
+    <div id="value-form" style="display:grid; gap:10px">
+      <label class="field" id="value-source-field" hidden><span>新しい鍵</span><select id="value-source">
+        <option value="typed">秘密鍵を貼り付ける</option>
+        <option value="generated">Vault の中で作り直す（秘密鍵は誰も見ない）</option>
+      </select></label>
+      <p class="dialog-desc" id="value-ssh-warn" hidden>
+        <strong>相手（GitHub など）に登録した公開鍵と合わなくなります。</strong>
+        終わったら出る新しい公開鍵を、登録し直してください
+      </p>
+      <label class="field" id="value-input-field"><span id="value-label">新しい値</span>
+        <input id="value-input" type="password" autocomplete="off" />
+        <textarea id="value-multiline" rows="4" autocomplete="off" spellcheck="false" hidden
+          placeholder="-----BEGIN OPENSSH PRIVATE KEY----- から -----END ... ----- まで"></textarea>
+      </label>
+      <p class="dialog-desc" id="value-effect"></p>
+    </div>
+    <div class="problem" id="value-error" hidden></div>
+    <div class="dialog-footer">
+      <button value="cancel" formnovalidate id="value-cancel">やめる</button>
+      <button id="value-submit" value="ok">値を変える</button>
     </div>
   </form>
 </dialog>
@@ -730,9 +792,10 @@ ${ALIAS_KIND_RULES_JS}
   function fillDestination(prefix, v, preferred) {
     const groups = (v && v.groups) || [];
     const impl = v ? v.implementation : "";
-    setOptions($(prefix + "-group"), ...groups.map((g) => groupOption(g, g, groupTag(impl, g, true))));
-    $(prefix + "-group").disabled = groups.length === 0;
+    setOptions($(prefix + "-group"), ...groups.map((g) => groupOption(g, g, groupTag(impl, g, true))), newGroupOption());
+    $(prefix + "-group").disabled = !v;
     if (preferred && groups.includes(baseOf(preferred))) $(prefix + "-group").value = baseOf(preferred);
+    syncNewGroup(prefix, v);
 
     const axis = v && v.variants;
     const sel = $(prefix + "-variant");
@@ -755,8 +818,106 @@ ${ALIAS_KIND_RULES_JS}
   /** 選んだ行き先の置き場（g か g@prod）。グループが無ければ空。 */
   function chosenDestination(prefix, v) {
     const g = $(prefix + "-group").value;
-    if (!g) return "";
+    // 「＋ 新しいグループを作る…」を選んでいる間は、まだ行き先が無い（作ってから選ぶ）
+    if (!g || g === NEW_GROUP) return "";
     return $(prefix + "-variant").hidden ? g : joinVariant(g, $(prefix + "-variant").value, v && v.variants);
+  }
+
+  /**
+   * **グループを作る入口は、グループ欄の最後の選択肢**（決定・2026-10-07、ユーザー。仕様 §2.1「紐付けの選択肢は2つ：
+   * 既存グループから選ぶ／新しいグループを作る」）。置き場の変更・移す・参照を作るの3つの小窓に同じ形で置く。
+   * 選ぶと名前の欄と「作る」が出て、作ったらそのグループを選んだ状態にする（設定画面の「作る」と同じ考え——
+   * 作ってから選び直させない）。版の欄はグループ欄と独立のまま（作るのは既定の版のグループの名前）
+   */
+  const NEW_GROUP = "__new-group__";
+  function newGroupOption() {
+    return option(NEW_GROUP, "＋ 新しいグループを作る…");
+  }
+
+  /** グループ欄で「＋ 新しいグループを作る…」を選んでいる間だけ、名前の欄を出す。添え書きは Vault が名乗ったもの（Infisical）。 */
+  function syncNewGroup(prefix, v) {
+    const on = $(prefix + "-group").value === NEW_GROUP;
+    const box = $(prefix + "-newgroup");
+    const opening = on && box.hidden;
+    box.hidden = !on;
+    const note = $(prefix + "-newgroup-note");
+    note.textContent = (v && v.groupCreateNote) || "";
+    note.hidden = !on || !note.textContent;
+    if (opening) {
+      $(prefix + "-newgroup-name").value = "";
+      $(prefix + "-newgroup-name").focus();
+    }
+  }
+
+  /**
+   * 「作る」を押したとき（小窓ごとに違うのは、どの Vault に作るかと、作ったあとの選び直しだけ）。
+   * **作れなかったら、その小窓のエラー欄に出す**。作ったのに選択肢に出てこなければ、そう言う（規則2）
+   */
+  const NEW_GROUP_FLOW = {
+    place: {
+      error: "place-error",
+      vault: () => (((placeVaults && placeVaults.vaults) || []).find((x) => x.implementation === $("place-vault").value)),
+      async after(places, made) {
+        placeVaults = places;
+        fillPlaceGroups(made);
+        await fillVariant();
+        void preview();
+      },
+    },
+    move: {
+      error: "move-error",
+      vault: () => moveVault(),
+      async after(places, made) {
+        const variant = $("move-variant").hidden ? undefined : $("move-variant").value;
+        movePlaces = places;
+        fillDestination("move", moveVault(), variant ? made + "@" + variant : made);
+        applyMoveEffect();
+      },
+    },
+    link: {
+      error: "link-error",
+      vault: () => linkVault,
+      async after(places, made) {
+        const variant = $("link-variant").hidden ? undefined : $("link-variant").value;
+        linkVault = (places.vaults || []).find((x) => linkSource && x.implementation === linkSource.implementation);
+        fillDestination("link", linkVault, variant ? made + "@" + variant : made);
+        applyLinkEffect();
+      },
+    },
+  };
+  for (const prefix of Object.keys(NEW_GROUP_FLOW)) {
+    const flow = NEW_GROUP_FLOW[prefix];
+    const create = $(prefix + "-newgroup-create");
+    const nameInput = $(prefix + "-newgroup-name");
+    create.addEventListener("click", async () => {
+      const errorBox = $(flow.error);
+      errorBox.hidden = true;
+      create.disabled = true;
+      try {
+        const name = nameInput.value.trim();
+        if (!name) throw new Error("新しいグループの名前を入れてください");
+        const v = flow.vault();
+        if (!v) throw new Error("どの Vault に作るかが決まっていません");
+        // 名前の検査は backend が持つ（規則3）——ここでは確かめず、断られたらそのまま出す
+        await callTool("createGroup", { implementation: v.implementation, name });
+        const places = await callTool("getPlacements", project ? { projectId: project.id } : {});
+        placements = places;
+        await flow.after(places, name);
+        if ($(prefix + "-group").value !== name) {
+          throw new Error("グループ「" + name + "」は作りましたが、選択肢に出てきませんでした");
+        }
+      } catch (err) {
+        showError(errorBox, err);
+      } finally {
+        create.disabled = false;
+      }
+    });
+    // 名前の欄で Enter を押したら「作る」——小窓の送信（やめる・実行）に流さない
+    nameInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      create.click();
+    });
   }
 
   /**
@@ -1038,6 +1199,8 @@ ${ALIAS_KIND_RULES_JS}
       // 作らない（押せるのに必ず断られる項目を置かない、規則13）
       const items = [
         { label: "用途を編集", title: "用途（note）を書き直す", run: () => openNote(a) },
+        // **値を変える**（2026-10-07、ユーザー）。参照・banto が置くログイン情報の行でも出し、押すと理由と元の場所を言う
+        { label: "値を変える", title: "この秘密の値を置き換える（値は画面に出ません）", run: () => openValue(a) },
         ...(a.kind === "ssh-identity"
           ? [{ label: "公開鍵を表示", title: "公開鍵を表示してコピーする（秘密鍵は出ません）", run: () => void openPublicKey(a) }]
           : []),
@@ -1097,6 +1260,14 @@ ${ALIAS_KIND_RULES_JS}
       }
       nameLine.append(nameText);
       nameTd.append(nameLine);
+      // **値を最後に変えた日時**（2026-10-07）——台帳に残っているときだけ。無いものを出さない
+      if (a.valueUpdatedAt) {
+        const updated = document.createElement("div");
+        updated.className = "updated-line";
+        updated.textContent = "値を変更 " + formatDateTime(a.valueUpdatedAt);
+        updated.title = "値を最後に変えた日時：" + formatDateTime(a.valueUpdatedAt);
+        nameTd.append(updated);
+      }
       if (a.linkTo) {
         const linkLine = document.createElement("div");
         linkLine.className = "link-line";
@@ -1433,6 +1604,90 @@ ${ALIAS_KIND_RULES_JS}
     $("new-value-multiline").value = "";
   });
 
+  /** 日時（「2026/10/07 14:03」）。 */
+  function formatDateTime(iso) {
+    return new Date(iso).toLocaleString("ja-JP", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+  }
+
+  // 値を変える（**値は返らない。SSH 鍵なら新しい公開鍵だけ**、2026-10-07）
+  let valueTarget = null;
+  /** 値を変えられない理由（無ければ空）。**参照は元の場所まで言う**——そこへ行けば変えられる */
+  function valueRefusal(a) {
+    if (a.linkTo) {
+      return "参照なので、ここでは値を変えられません。値は元の場所（" + a.implementation + "/" + a.linkTo.group + "/" +
+        a.linkTo.name + "）で変えてください" + (a.broken ? "（いまは元がありません）" : "");
+    }
+    if (a.kind === "oauth-token") {
+      return "banto が置くログイン情報（OAuth）は、手では変えられません——置いた Module からログインし直すと置き換わります";
+    }
+    return "";
+  }
+  function openValue(a) {
+    valueTarget = a;
+    $("value-error").hidden = true;
+    $("value-target").textContent = a.implementation + " / " + groupName(a.implementation, a.group) + " / " + a.name;
+    const refusal = valueRefusal(a);
+    $("value-refuse").hidden = !refusal;
+    $("value-refuse").textContent = refusal;
+    $("value-form").hidden = !!refusal;
+    $("value-submit").hidden = !!refusal;
+    $("value-cancel").textContent = refusal ? "閉じる" : "やめる";
+    clearValueInputs();
+    $("value-source").value = "typed";
+    applyValueSource();
+    $("dlg-value").showModal();
+  }
+  /** SSH 鍵は「貼り付ける／作り直す」を選ぶ。何を聞くかは種別が決める——規則は kind-rules.ts の1枚（規則3） */
+  function applyValueSource() {
+    const a = valueTarget;
+    if (!a) return;
+    const ssh = a.kind === "ssh-identity";
+    const generated = ssh && $("value-source").value === "generated";
+    const rule = kindRule(a.kind);
+    $("value-source-field").hidden = !ssh;
+    $("value-ssh-warn").hidden = !ssh;
+    $("value-label").textContent = "新しい" + rule.valueLabel;
+    $("value-input-field").hidden = generated;
+    $("value-input").hidden = rule.multiline;
+    $("value-multiline").hidden = !rule.multiline;
+    $("value-effect").textContent = generated
+      ? "Vault の中で新しい鍵ペアを作り、いまの鍵と入れ替えます。終わったら新しい公開鍵が出ます"
+      : (a.empty ? "いまは空です。値を入れると使えるようになります。" : "") +
+        "これを使うコマンドは、次から新しい値で動きます。前の値は残りません";
+  }
+  $("value-source").addEventListener("change", applyValueSource);
+  /** いま使っている値の入力欄（種別で1行か複数行かが変わる）。 */
+  function valueInput() {
+    return kindRule(valueTarget.kind).multiline ? $("value-multiline") : $("value-input");
+  }
+  /** **入力した値を DOM に残さない**——閉じたら（やめても、変えても）消す */
+  function clearValueInputs() {
+    $("value-input").value = "";
+    $("value-multiline").value = "";
+  }
+  $("dlg-value").addEventListener("close", clearValueInputs);
+  onSubmit($("dlg-value"), $("value-submit"), $("value-error"), async () => {
+    const a = valueTarget;
+    const regenerate = a.kind === "ssh-identity" && $("value-source").value === "generated";
+    const input = valueInput();
+    if (!regenerate && !input.value) throw new Error("新しい" + kindRule(a.kind).valueLabel + "を入力してください");
+    // **置き場まで渡す**（用途の書き直し・削除と同じ）——同じ名前が別の置き場に在るのは普通のこと
+    const result = await callTool("replaceSecretValue", {
+      implementation: a.implementation,
+      name: a.name,
+      group: a.group,
+      ...(regenerate ? { regenerate: true } : { value: input.value }),
+    });
+    clearValueInputs();
+    if (a.kind === "ssh-identity") {
+      // **返らなかったら、そう言う**（規則2——空の箱を出さない）
+      if (!result || !result.publicKey) throw new Error("鍵は置き換えましたが、新しい公開鍵が返ってきませんでした");
+      showPublicKey(result.publicKey, "新しい公開鍵：" + a.name);
+    }
+  });
+
   // 用途を書き直す
   let noteTarget = null;
   let noteTargetGroup = null;
@@ -1519,6 +1774,7 @@ ${ALIAS_KIND_RULES_JS}
 
   /** **移した先からどう引けるようになるか**を、押す前に出す。 */
   function applyMoveEffect() {
+    syncNewGroup("move", moveVault());
     const impl = $("move-vault").value, group = chosenDestination("move", moveVault());
     const same = moveTarget && impl === moveTarget.implementation && group === moveTarget.group;
     $("move-submit").disabled = !!same || !group;
@@ -1567,6 +1823,7 @@ ${ALIAS_KIND_RULES_JS}
   /** **押す前に、置けるか・置いたらどう引けるかを出す**（ぶつかるなら押させない）。 */
   function applyLinkEffect() {
     if (!linkSource) return;
+    syncNewGroup("link", linkVault);
     const impl = linkSource.implementation, group = chosenDestination("link", linkVault), name = $("link-name").value.trim();
     let blocked = !group || !name;
     let effect = "";
@@ -1609,25 +1866,14 @@ ${ALIAS_KIND_RULES_JS}
     $("place-now").textContent = places.project
       ? "いまは " + places.project.implementation + " / " + groupName(places.project.implementation, places.project.group)
       : "まだ決まっていません（最初に保存したときに決まります）";
-    const fill = () => {
-      const v = (places.vaults || []).find((x) => x.implementation === $("place-vault").value);
-      const groups = (v && v.groups) || [];
-      setOptions($("place-group"), ...groups.map((g) => groupOption(g, g, groupTag(v.implementation, g, true))));
-      $("place-group").disabled = groups.length === 0;
-      // いまの置き場のグループを選んでおく（版は別の欄）
-      const p = places.project;
-      if (p && v && p.implementation === v.implementation && groups.includes(baseOf(p.group))) {
-        $("place-group").value = baseOf(p.group);
-      }
-    };
     setOptions($("place-vault"), ...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
     if (places.project) $("place-vault").value = places.project.implementation;
-    fill();
     placeVaults = places;
+    fillPlaceGroups();
     await fillVariant();
     $("place-migrate").value = "no"; // 開くたびに既定（移さない）へ戻す
-    $("place-vault").onchange = async () => { fill(); await fillVariant(); void preview(); };
-    $("place-group").onchange = async () => { await fillVariant(); void preview(); };
+    $("place-vault").onchange = async () => { fillPlaceGroups(); await fillVariant(); void preview(); };
+    $("place-group").onchange = async () => { syncNewGroup("place", placeVault()); await fillVariant(); void preview(); };
     $("place-variant").onchange = () => void preview();
     $("place-migrate").onchange = () => void preview();
     await preview();
@@ -1636,6 +1882,26 @@ ${ALIAS_KIND_RULES_JS}
 
   /** 置き場ダイアログが見ている Vault の一覧（版の選択に使う）。 */
   let placeVaults = null;
+
+  /** 置き場ダイアログで選んでいる Vault。 */
+  function placeVault() {
+    return ((placeVaults && placeVaults.vaults) || []).find((x) => x.implementation === $("place-vault").value);
+  }
+
+  /** 置き場ダイアログのグループ欄。preferred（作ったばかりのグループ）が無ければ、いまの置き場のグループを選んでおく（版は別の欄）。 */
+  function fillPlaceGroups(preferred) {
+    const v = placeVault();
+    const groups = (v && v.groups) || [];
+    setOptions($("place-group"), ...groups.map((g) => groupOption(g, g, groupTag(v.implementation, g, true))), newGroupOption());
+    $("place-group").disabled = !v;
+    const p = placeVaults && placeVaults.project;
+    if (preferred && groups.includes(preferred)) {
+      $("place-group").value = preferred;
+    } else if (p && v && p.implementation === v.implementation && groups.includes(baseOf(p.group))) {
+      $("place-group").value = baseOf(p.group);
+    }
+    syncNewGroup("place", v);
+  }
 
   /**
    * **版の選択**（2026-10-06）。版を名乗る Vault だけ出し、版ごとに「値が入っている数／全部の数」を添える。
@@ -1667,7 +1933,7 @@ ${ALIAS_KIND_RULES_JS}
       (count ? "　値あり " + count.filled + "／" + count.total : "");
     setOptions($("place-variant"), ...axis.options.map((o) => option(o, labelOf(o))));
     $("place-variant").value = current;
-    if (!group) return;
+    if (!group || group === NEW_GROUP) return;
     try {
       const counts = await callTool("countVariants", { implementation: v.implementation, group });
       for (const opt of Array.from($("place-variant").options)) {
@@ -1687,6 +1953,12 @@ ${ALIAS_KIND_RULES_JS}
   /** **変える前に、何が起きるかを出す**（規則2——黙って使えなくしない）。 */
   async function preview() {
     if (!project) return;
+    // グループを作っている途中は、まだ行き先が無い——見積もらず、押させない
+    if ($("place-group").value === NEW_GROUP || !$("place-group").value) {
+      $("place-submit").disabled = true;
+      $("place-effect").textContent = "";
+      return;
+    }
     try {
       const plan = await callTool("planProjectPlacement", {
         projectId: project.id,

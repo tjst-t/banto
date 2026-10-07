@@ -56,6 +56,8 @@ test("移す：版を名乗る Vault だけ版の欄が出て、選んだグル�
     "instance => instance — Global",
     `${PROJECT_GROUP} => ${PROJECT_GROUP}`,
     "tools => tools",
+    // 最後はグループを作る入口（2026-10-07）
+    "__new-group__ => ＋ 新しいグループを作る…",
   ]);
   // 添えは薄く（base-select では span のまま描かれる）
   await expect(app.locator('#move-group option[value="homelab"] .opt-tag')).toHaveCSS("opacity", "0.55");
@@ -99,7 +101,7 @@ test("移す：版を名乗る Vault だけ版の欄が出て、選んだグル�
   await app.locator("#move-vault").selectOption("vault-local");
   await expect(app.locator("#move-variant")).toBeHidden();
   await expect(app.locator("#move-variant-note")).toBeHidden();
-  expect(await optionTexts(app, "move-group")).toEqual(["instance => instance", "local-a => local-a"]);
+  expect(await optionTexts(app, "move-group")).toEqual(["instance => instance", "local-a => local-a", "__new-group__ => ＋ 新しいグループを作る…"]);
   await app.locator("#move-vault").selectOption("vault-broken");
   await expect(app.locator("#move-variant")).toBeHidden();
   await expect(app.locator("#move-variant-note")).toHaveText("版を読めませんでした（既定の版に置きます）：接続できませんでした");

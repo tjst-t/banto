@@ -9,7 +9,8 @@
 //   4. **値はどこにも出てこない**（画面にも、一覧にも）
 import { test, expect } from "../test-base.js";
 import type { FrameLocator, Locator } from "@playwright/test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
@@ -652,7 +653,9 @@ test("選択欄：グループは Vault での本当の名前（この Project�
   const textOf = new Map(texts);
   expect(textOf.get(projectGroup), "この Project の置き場の選択肢").toBe(`${projectGroup} — この Project`);
   expect(textOf.get(sharedGroup!), "Global の置き場の選択肢").toBe(`${sharedGroup} — Global`);
-  for (const [value, text] of texts) {
+  // 最後はグループを作る入口（2026-10-07）。それ以外の選択肢の主はグループ名
+  expect(texts.at(-1), "グループを作る入口が最後に無い").toEqual(["__new-group__", "＋ 新しいグループを作る…"]);
+  for (const [value, text] of texts.slice(0, -1)) {
     expect(text!.startsWith(value), `選択肢の主がグループ名ではない: ${text}`).toBe(true);
     expect(text, "言い換えが残っている").not.toMatch(/専用/);
   }
@@ -884,6 +887,7 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   // ---- 小窓：「移す」と同じ形 -----------------------------------------------
   expect(await rowMenuItems(canvas, originRow), "元の行のメニューの並びが違う").toEqual([
     "用途を編集",
+    "値を変える",
     "秘密を移動",
     "参照を作る",
     "削除",
@@ -938,7 +942,7 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   await expect(linkRow.locator("td").nth(2), "使える範囲がこの Project になっていない").toHaveText("この Project");
   await expect(linkRow.locator("td").nth(4), "参照のグループが違う").toHaveText(projectGroup);
   // **参照の参照は作らない**——押せるのに断られる項目を置かない
-  expect(await rowMenuItems(canvas, linkRow), "参照の行のメニューの並びが違う").toEqual(["用途を編集", "秘密を移動", "削除"]);
+  expect(await rowMenuItems(canvas, linkRow), "参照の行のメニューの並びが違う").toEqual(["用途を編集", "値を変える", "秘密を移動", "削除"]);
   // **参照の「移す」は元の Vault に固定**——別の Vault へは必ず断られるので選ばせない
   await rowAction(canvas, linkRow, "秘密を移動");
   await expect(canvas.locator("#dlg-move")).toBeVisible();
@@ -1115,10 +1119,10 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
   await more.click();
   await expect(menu).toBeVisible();
   await expect(more).toHaveAttribute("aria-expanded", "true");
-  await expect(menu.getByRole("menuitem")).toHaveText(["用途を編集", "秘密を移動", "参照を作る", "削除"]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["用途を編集", "値を変える", "秘密を移動", "参照を作る", "削除"]);
   await expect(menu.getByRole("menuitem", { name: "用途を編集" }), "開いても最初の項目に焦点が来ない").toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(menu.getByRole("menuitem", { name: "秘密を移動" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "値を変える" })).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowUp");
   await expect(menu.getByRole("menuitem", { name: "削除" }), "↑で端から回らない").toBeFocused();
@@ -1150,4 +1154,131 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
   expect(await page.content()).not.toContain(`MENU-MUST-NOT-APPEAR-${stamp}`);
   await call("deleteAlias", { implementation: "vault-local", name: alias, group });
   await call("deleteAlias", { implementation: "vault-local", name: fileAlias, group });
+});
+
+// **値を変える・グループを作る**（2026-10-07、ユーザー）を、本物の banto で——Canvas → 窓口 → 中継 → vault-local。
+// 値そのものは画面 API から読めない（resolveAlias は人の画面からも 403、vault-visibility.spec）ので、**届いたことは SSH 鍵で
+// 確かめる**：手元で作った鍵を貼り、backend が秘密鍵から導く公開鍵が手元の公開鍵と一致すれば、貼った値が Vault に入っている。
+// 作り直し（regenerate）は公開鍵が変わること、一覧の行に値を変えた日時が出ること、移すの小窓で作ったグループへ実際に移ることを見る
+test("値を変える・グループを作る：SSH 鍵を作り直す／貼ると公開鍵が変わり、行に日時が出る。移すの小窓で作ったグループへ移せる", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-vault-edit-"));
+  const stamp = Date.now();
+  const key = `e2e-edit-key-${stamp}`;
+  const secret = `e2e-edit-secret-${stamp}`;
+  const newGroup = `e2e-made-${stamp}`;
+  const call = (server: string, tool: string, args: Record<string, unknown>) =>
+    page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+      data: { server, tool, arguments: args },
+    });
+  const listed = async (): Promise<Array<Record<string, unknown>>> => {
+    const outer = JSON.parse(await (await call("vault-local", "listAliases", {})).text()) as { content: { text: string }[] };
+    return JSON.parse(outer.content[0]!.text) as Array<Record<string, unknown>>;
+  };
+  // 公開鍵の本体（種類と鍵）。注記は比べない
+  const body = (k: string) => k.trim().split(/\s+/).slice(0, 2).join(" ");
+
+  await openApp(page);
+  await createProject(page, "E2E Vault 値を変える", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  // ---- SSH 鍵を作る（この Project の置き場）----------------------------------------------------
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(key);
+  await canvas.locator("#new-kind").selectOption("ssh-identity");
+  await canvas.locator("#new-source").selectOption("generated");
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  const pubkey = canvas.locator("#pubkey-text");
+  await expect(pubkey).toBeVisible({ timeout: 120_000 });
+  const first = await pubkey.inputValue();
+  expect(first).toMatch(/^ssh-ed25519 AAAA/);
+  await canvas.getByRole("button", { name: "閉じる", exact: true }).click();
+  const keyRow = canvas.locator("tbody tr").filter({ hasText: key });
+  await expect(keyRow).toBeVisible({ timeout: 60_000 });
+  await expect(keyRow.locator(".updated-line"), "まだ変えていないのに日時が出ている").toHaveCount(0);
+
+  // ---- 作り直す：注意が出て、新しい公開鍵が出る ------------------------------------------------
+  await rowAction(canvas, keyRow, "値を変える");
+  await expect(canvas.locator("#value-ssh-warn")).toContainText("相手（GitHub など）に登録した公開鍵と合わなくなります");
+  await canvas.locator("#value-source").selectOption("generated");
+  await canvas.locator("#value-submit").click();
+  await expect(canvas.locator("#value-error"), "作り直しでエラーが出た").toBeHidden();
+  await expect(canvas.locator("#pubkey-title")).toHaveText(`新しい公開鍵：${key}`, { timeout: 120_000 });
+  const second = await pubkey.inputValue();
+  expect(second).toMatch(/^ssh-ed25519 AAAA/);
+  expect(body(second), "作り直したのに公開鍵が前のまま").not.toBe(body(first));
+  await canvas.getByRole("button", { name: "閉じる", exact: true }).click();
+  // 行に値を変えた日時。あとから読む公開鍵も新しいもの（backend が秘密鍵から導く）
+  await expect(keyRow.locator(".updated-line"), "値を変えた日時が行に出ない").toHaveText(/^値を変更 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/, { timeout: 60_000 });
+  await rowAction(canvas, keyRow, "公開鍵を表示");
+  await expect.poll(() => pubkey.inputValue(), { timeout: 30_000 }).toBe(second);
+  await canvas.getByRole("button", { name: "閉じる", exact: true }).click();
+
+  // ---- 貼る：手元で作った鍵を貼ると、backend の公開鍵が手元の公開鍵になる -----------------------
+  const keyDir = mkdtempSync(join(tmpdir(), "banto-e2e-key-"));
+  execFileSync("ssh-keygen", ["-t", "ed25519", "-f", join(keyDir, "id"), "-N", "", "-q", "-C", "e2e"]);
+  const privateKey = readFileSync(join(keyDir, "id"), "utf8");
+  const localPub = readFileSync(join(keyDir, "id.pub"), "utf8");
+  await rowAction(canvas, keyRow, "値を変える");
+  await expect(canvas.locator("#value-source")).toHaveValue("typed");
+  await canvas.locator("#value-multiline").fill(privateKey);
+  await canvas.locator("#value-submit").click();
+  await expect(canvas.locator("#pubkey-title")).toHaveText(`新しい公開鍵：${key}`, { timeout: 120_000 });
+  expect(body(await pubkey.inputValue()), "貼った鍵が Vault に入っていない（公開鍵が手元のものと違う）").toBe(body(localPub));
+  await canvas.getByRole("button", { name: "閉じる", exact: true }).click();
+  await rowAction(canvas, keyRow, "公開鍵を表示");
+  await expect.poll(async () => body(await pubkey.inputValue()), { timeout: 30_000 }).toBe(body(localPub));
+  await canvas.getByRole("button", { name: "閉じる", exact: true }).click();
+  // 貼った秘密鍵は、画面のどこにも残っていない
+  const domValues = await canvas.locator("input, textarea").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+  expect(domValues.some((v) => v.includes("PRIVATE KEY") && v.includes(privateKey.split("\n")[1]!)), "貼った秘密鍵が DOM に残っている").toBe(false);
+
+  // ---- secret の値を変える → 台帳に日時 ---------------------------------------------------------
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(secret);
+  await canvas.locator("#new-value").fill(`OLD-${stamp}`);
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  const secretRow = canvas.locator("tbody tr").filter({ hasText: secret });
+  await expect(secretRow).toBeVisible({ timeout: 120_000 });
+  await rowAction(canvas, secretRow, "値を変える");
+  await canvas.locator("#value-input").fill(`NEW-${stamp}`);
+  await canvas.locator("#value-submit").click();
+  await expect(canvas.locator("#dlg-value"), "値を変えられずに小窓が開いたまま").toBeHidden({ timeout: 60_000 });
+  await expect(secretRow.locator(".updated-line")).toHaveText(/^値を変更 /, { timeout: 60_000 });
+  const secretMeta = (await listed()).find((a) => a.name === secret);
+  expect(secretMeta?.valueUpdatedAt, `台帳に日時が無い: ${JSON.stringify(secretMeta)}`).toBeTruthy();
+  expect(JSON.stringify(await listed())).not.toContain(`NEW-${stamp}`);
+  expect(await page.content()).not.toContain(`NEW-${stamp}`);
+
+  // ---- 移すの小窓でグループを作って、そこへ移す --------------------------------------------------
+  await rowAction(canvas, secretRow, "秘密を移動");
+  await canvas.locator("#move-group").selectOption("__new-group__");
+  await expect(canvas.locator("#move-newgroup")).toBeVisible();
+  // vault-local は添え書きを名乗らない
+  await expect(canvas.locator("#move-newgroup-note")).toBeHidden();
+  await canvas.locator("#move-newgroup-name").fill(newGroup);
+  await canvas.locator("#move-newgroup-create").click();
+  await expect(canvas.locator("#move-group"), "作ったグループが選ばれていない").toHaveValue(newGroup, { timeout: 60_000 });
+  await expect(canvas.locator("#move-error")).toBeHidden();
+  await expect(canvas.locator("#move-effect")).toContainText("頭に付けて引きます");
+  await canvas.locator("#move-submit").click();
+  await expect(canvas.locator("#dlg-move"), "移せずに小窓が開いたまま").toBeHidden({ timeout: 60_000 });
+  // 移した先はどの Project にも紐付いていない（未割当）——既定の絞り込み（この Project から使える）では隠れるので、すべてを出す
+  await canvas.locator("#target-filter").selectOption("all");
+  await expect(secretRow.locator("td").nth(4), "移した先のグループが一覧に出ない").toHaveText(newGroup, { timeout: 60_000 });
+  await expect(secretRow.locator("td").nth(2)).toHaveText("未割当");
+  const moved = (await listed()).find((a) => a.name === secret);
+  expect(moved?.group, `移した先が違う: ${JSON.stringify(moved)}`).toBe(newGroup);
+  // 置き換えた日時は行ごと移る
+  expect(moved?.valueUpdatedAt).toBe(secretMeta!.valueUpdatedAt);
+
+  const keyMeta = (await listed()).find((a) => a.name === key);
+  await call("vault-directory", "deleteAlias", { implementation: "vault-local", name: secret, group: newGroup });
+  await call("vault-directory", "deleteAlias", { implementation: "vault-local", name: key, group: keyMeta?.group });
 });

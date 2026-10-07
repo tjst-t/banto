@@ -125,3 +125,25 @@ test("oauth-token の注記を種別ごと読み、持ち主も落とさない",
   await store.update("shared/oauth-old", { owner: "vault-directory" });
   assert.deepEqual(JSON.parse(secrets.get("/shared\0oauth-old")!.secretComment!), { name: "oauth-old", kind: "oauth-token", note: "前から", owner: "vault-directory" });
 });
+
+// **値を置き換えた日時は注記に残り、注記を書き直しても消えない**（追加・2026-10-07、仕様 §2.1 C節 `replaceSecretValue`）。
+// 注記は書き直すたびに「読んだ行」から組み直すので、読むとき（toMeta）に拾わないと、次の使用記録（markUsed）や
+// 用途の書き直しで黙って消える。空の秘密に値を入れたら「空」も外れる（空は一覧を読んだときの印で、保存しない）
+test("置き換えた日時（valueUpdatedAt）は注記に残り、使用記録・用途の書き直しのあとも読める。値を入れたら空が外れる", async () => {
+  const { conn, folders, secrets } = fakeConnection();
+  folders.add("/proj");
+  const store = new InfisicalAliasStore(conn);
+  const backend = new InfisicalBackend(conn);
+  secrets.set("/proj\0HOST", { secretValue: "", secretComment: JSON.stringify({ name: "HOST", kind: "secret" }) });
+  assert.equal((await store.list()).find((a) => a.backendPath === "proj/HOST")!.empty, true);
+
+  await backend.putSecret("proj/HOST", "example.org");
+  await store.update("proj/HOST", { valueUpdatedAt: "2026-10-07T05:00:00.000Z" });
+  await store.markUsed("proj/HOST");
+  await store.update("proj/HOST", { note: "書き直し" });
+  const row = (await store.list()).find((a) => a.backendPath === "proj/HOST")!;
+  assert.equal(row.valueUpdatedAt, "2026-10-07T05:00:00.000Z", "注記を書き直したら置き換えた日時が消えた");
+  assert.equal(row.empty, undefined, "値を入れたのに空のまま");
+  assert.equal(row.note, "書き直し");
+  assert.equal(secrets.get("/proj\0HOST")!.secretValue, "example.org");
+});
