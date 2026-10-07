@@ -4222,6 +4222,27 @@
       "extra": {}
     },
     {
+      "id": "module-banto-module-project",
+      "number": 227,
+      "kind": "task",
+      "title": "Module の画面から banto の別の画面（他の Module の画面・Project の設定の節）を開く口",
+      "status": "backlog",
+      "parent": "module-foundation",
+      "dependsOn": [],
+      "milestone": "phase-2",
+      "priority": "normal",
+      "labels": [],
+      "body": "## なぜ\n\nFactory の入口の画面（モック）には「経過を見る」（Subagent の画面でその仕事を開く）と「Factory の設定を開く」（Project の設定の Factory の節）のボタンがあったが、Module の画面（Canvas）から banto の別の面を開く口が無いので本物には置けなかった（f90a7b64）。いまは仕事の id を文字で出し、設定は Project の設定にあると書いているだけ。Backlog の「取り組んだ Thread を開く」・Repositories の「既にある Project を開く」も同じ問い（v4-modules.md §4.4「まだ決めていない」）。\n\n## 形の候補\n\n`dev.banto/open-new-project` と同じく、Canvas が postMessage で banto に頼み、banto が開く（人の操作の直後だけ受ける等の安全の決まりも同じ形）。開ける先：他の Module の launcher（引数で選ぶ物を渡す——Subagent なら runId）・Project の設定の Module の節・Thread。",
+      "doneWhen": "Factory の入口の画面に「経過を見る」「設定を開く」のボタンが出て、押すと実ブラウザの E2E で Subagent の画面がその仕事を選んだ状態で開く・Project の設定の Factory の節が開く",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-07T15:21:49.975Z",
+      "updatedAt": "2026-10-07T15:21:49.975Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "thread-foundation",
       "number": 175,
       "kind": "story",
