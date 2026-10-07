@@ -2170,7 +2170,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
   - **写しの持ち方**：`hello` に `background: [{ threadId, projectId, items }]`（札がある Thread だけ）、札が増えた・済んだら
     `background.changed`（その Thread の分を丸ごと）。画面は置き換えるだけ（`lib/backend/background-work.ts`）。
     1件は `{ module, since, toolName, toolCallId, resourceUri, title, description }`——**札そのもの（`replyTo`）は画面に出さない**
-- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`・`e2e/specs/background-work.spec.ts`
+- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`・`e2e/specs/background-work.spec.ts`・`e2e/specs/shell-background.spec.ts`（Shell の待たない形の印——題はコマンド）
 
 ### 6.34 設定の「更新」——banto 自身を GitHub の新しい版にする（決定・2026-10-04、ユーザー。モックで確認 → 本実装）
 

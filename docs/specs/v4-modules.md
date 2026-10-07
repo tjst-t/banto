@@ -1303,7 +1303,8 @@ Claude Code・Gemini CLI・Goose と同じく、全体はファイルに残す�
   単位の名前は `banto-shell-<commandId>`）で、Shell の起動役（`background-wrapper.js`）を起こし、起動役が
   `/bin/sh -c <command>` を走らせる。Shell の Module や banto 本体を起こし直してもコマンドは止まらない。
   Shell の環境には `XDG_RUNTIME_DIR` が無いので、`/run/user/<uid>` とそのバスを足して呼ぶ（Service と同じ）。
-  linger が無ければ入れる（同）。**コンテナの外（`BANTO_IN_CONTAINER` が無い）では待たない形は断る**——
+  linger が無ければ入れる（同）。**入れられなければ `user@<uid>.service` を直に起こす**——入れ子のコンテナ（E2E）では
+  logind に繋がらず、root でも linger を入れられない（実測・2026-10-07）。**コンテナの外（`BANTO_IN_CONTAINER` が無い）では待たない形は断る**——
   人の機械の systemd にコマンドを残さない
 - **置き場**：`<Shell の Module の置き場>/commands/<commandId>/`（host のディスク。起こし直しても残り、
   コンテナの中から同じパスで見える）。Shell が書く `job.json`（コマンド・cwd・始めた時刻・頼んだ Thread・
@@ -1339,10 +1340,13 @@ Claude Code・Gemini CLI・Goose と同じく、全体はファイルに残す�
   Thread が違うものは「続けない」（host が「途中で終わりました」を届ける）。**問われなかった記録のコマンドは止めない**
   （一覧に出て、`cancelCommand` で止められる）
 
+- **回帰試験**：`packages/modules/shell/src/background.test.ts`（systemd の代わりに起動役を切り離した子として起こす）・
+  `e2e/specs/shell-background.spec.ts`（コンテナの中の本物の systemd）
+
 **知っている限界**（2026-10-07）：
 - **Shell だけが起こし直されたとき**（banto 本体は起き直していない——人が Module を立て直した等）は、host が
   返事待ちの札に「途中で終わりました」を届ける（§4.2「返事待ちの札は失くさない」）が、コマンドは動き続ける。
-  結果はどこにも届かない（一覧には出る）。Subagent と同じ
+  結果はどこにも届かない（一覧には出る。そこから止めると「届ける約束はもう切れている」と返す）。Subagent と同じ
 - 札の期限は返事待ちの間は切れない。起こし直しをまたいだ札は最後の届け1回だけ使える（届けるのは1回なので足りる）
 
 **`secretFiles`**（`.npmrc`・`kubeconfig` 等、アーキ仕様 §2.5 に原則はあるが
