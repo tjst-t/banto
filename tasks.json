@@ -5582,6 +5582,31 @@
       "updatedAt": "2026-10-07T14:56:19.130Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "canvas-refresh-resets-scroll",
+      "number": 229,
+      "kind": "bug",
+      "title": "Subagent・Factory の画面で、中の枠を下にスクロールしても数秒後に一番上へ戻される",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "frontend",
+        "subagent",
+        "factory"
+      ],
+      "body": "## 起きていること（2026-10-07、ユーザー報告・スクリーンショットあり）\n\nSubagent の入口の画面（`ui://banto-subagent/runs`）で、走っている仕事の「頼んだ内容」の枠を下へスクロールしても、数秒後に一番上へ戻る。Factory の入口の画面（`ui://banto-factory/runs`）も同じ作りなので、詳細の本文・テストの出力の枠・一覧で同じことが起きるはず。\n\n## 原因の見立て\n\nどちらの画面も、走っているものがあると数秒ごとに読み直し（Subagent `packages/modules/subagent/src/ui/runs-view.ts` の `refresh` は 1.5 秒、Factory `packages/modules/factory/src/ui/runs-view.ts` は 3 秒）、`render()` が `app.replaceChildren()` で DOM を丸ごと作り直す。作り直した要素は scrollTop が 0 になる。Subagent は走っている間は中身が変わらなくても毎回描き直している（経過の時刻を進めるため）。\n\n## 直し方の方針\n\n描き直しても、スクロールできる枠（`overflow: auto` の要素）の位置を保つ。描き直す前に、枠ごとに安定した印（`data-scroll-key` など——仕事の id・段落の名前）と scrollTop を控え、描いたあとに戻す。ページ全体（body・#app）のスクロールも同じ。書きかけの入力の焦点を保つ既存の手当て（Factory の runs-view の `render` の先頭）と並べる。描き直さずに済む所（中身が同じ）は描き直さない、でもよい。\n\n## 確かめ方\n\n実ブラウザの E2E で、Subagent の画面（偽のエージェントで `[slow 30]` の走っている仕事を選ぶ）の「頼んだ内容」の枠（長い頼み）と経過の枠を下までスクロールし、5 秒待っても位置が変わらないこと。Factory の画面も、走っている1件の詳細の本文で同じ。E2E は該当の spec だけ流す（フルは流さない——Project のコンテナで重い E2E を並べるとホストが詰まる）。",
+      "doneWhen": "Subagent と Factory の入口の画面で、走っているものがある間に中の枠（頼んだ内容・経過・詳細の本文・テストの出力・一覧）を下へスクロールしても、読み直しのあとも位置が保たれる。実ブラウザの E2E（e2e/specs の該当 spec）で確かめてある",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-07T15:37:43.298Z",
+      "updatedAt": "2026-10-07T15:37:43.298Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
