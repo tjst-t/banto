@@ -5464,6 +5464,27 @@
       "updatedAt": "2026-10-06T17:03:53.949Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "long-run-done-notify",
+      "number": 224,
+      "kind": "task",
+      "title": "Shell・Service で流した長い処理が終わったら、頼んだ会話に知らせて AI を起こす",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-06、Fork「間欠的に落ちる試験を直す」で困ったこと（ユーザー要望で積む）。数時間かかる E2E の繰り返しを流したかったが：\n- Shell の runCommand は1回で終わる契約で、終わるまでターンが止まる（timeout の上限もある）。裏で流した分は終わっても知らせが無い。途中で Shell の Module が切れると結果も返らない\n- Service で流すと止まらずに動くが、終わったことを会話に届ける口が無い。AI はファイルを読みに行くしかなく、ターンの外では気づけない（人に「声をかけて」と頼むしかなかった）\n- 回避として見張りのサブエージェント（runInBackground）を立てたが、コマンドの許可で断られて結果を読めなかった\n\n「終わったら届ける」口（deliversLater と返信用の札、v4-architecture.md §4.2）は Subagent にはあるが、Shell・Service には無い。形の案（未決、ユーザーと決める）：Shell の runCommand に「待たない」（runInBackground と同じ形）を足して終わったら結果（終了コード・出力の末尾）を頼んだ Thread に届ける／Service に「終わったら（exited・crashed で）頼んだ Thread に知らせる」を足す／どちらか一方。起こし直しをまたぐ扱い（resume-across-restart の Module の約束）とサイドバーのバックグラウンドの印にも乗せる。",
+      "doneWhen": "AI が数十分〜数時間の処理を待たずに頼み、ターンを終えても、処理が終わったら頼んだ Thread に結果が届いて AI が起こされる（E2E で確かめる）。サイドバーにバックグラウンドの印が出る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-07T04:13:59.533Z",
+      "updatedAt": "2026-10-07T04:13:59.533Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
