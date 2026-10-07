@@ -78,7 +78,11 @@ body[data-mode="fullscreen"] #app { height: 100vh; }
 .menu-list { position: absolute; z-index: 5; top: 32px; left: 0; min-width: 160px; margin: 0; padding: 4px; list-style: none; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); box-shadow: 0 4px 16px color-mix(in srgb, CanvasText 12%, transparent); }
 .menu-list button { width: 100%; height: 28px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; cursor: pointer; }
 .menu-list button:hover { background: var(--bg-2); }
-.now { display: flex; flex-direction: column; margin-top: 16px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.now { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.now .now-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.now .btn { flex-shrink: 0; }
+.top .open-settings { margin-left: auto; }
+.empty .btn { margin-top: 8px; }
 .now .who { font-size: var(--t-sm); color: var(--ink-3); }
 .now .what { font-size: var(--t-md); color: var(--ink); }
 .result { margin: 16px 0 0; font-size: var(--t-md); color: var(--ink-2); }

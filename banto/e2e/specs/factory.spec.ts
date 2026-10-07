@@ -197,3 +197,70 @@ test("テストが上限を越えて落ちると止まって会話に届き、�
   await inner.getByRole("button", { name: /終わったもの/ }).click({ timeout: 10_000 });
   await expect(inner.locator('[data-testid="factory-row"][data-item="e2e-b"]')).toHaveAttribute("data-status", "done", { timeout: 30_000 });
 });
+
+// **入口の画面から banto の別の面を開く**（`dev.banto/open-surface`、v4-frontend.md §6.2、2026-10-07）。
+// 2件を同時に走らせ、**一覧の先頭でない方**の「経過を見る」を押す——Subagent の画面は何も選んでいなければ先頭（走っている
+// うちの新しいもの）を開くので、先頭を押しても「選んで開いた」ことにはならない
+test("入口の画面の「経過を見る」で Subagent の画面がその仕事を選んで開き、「設定を開く」で Project の設定の Factory の節が開く", async ({ page }) => {
+  await openApp(page);
+  await page.goto(`/p/${projectId}?bantoHost=${CORE_BROWSER_URL}`);
+  await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+  await uiCall(page, "factory", "setSettings", {
+    settings: { testCommand: "test -f never.txt", implementer: { agent: "fake" }, reviewer: { agent: "fake" } },
+  });
+  for (const id of ["e2e-c", "e2e-d"]) {
+    await uiCall(page, "backlog", "boardCreateItem", { id, kind: "task", title: `${id} を待たせる`, body: `[slow 600] ${id} の本文`, status: "ready" });
+  }
+  const started = await aiCalls(page, "factory", "runFactory", { items: ["e2e-c", "e2e-d"] });
+  const { runId } = JSON.parse(started.slice(started.indexOf("{"))) as { runId: string };
+
+  // 両方の実装役が走り出すのを待ち、Subagent の一覧で先頭でない方を選ぶ
+  let target = { item: "", subagentRunId: "", first: "" };
+  await expect(async () => {
+    const runs = JSON.parse(await uiCall(page, "factory", "getRuns", {})) as { runs: Array<{ runId: string; items: Array<{ item: string; subagentRunId?: string }> }> };
+    const items = runs.runs.find((r) => r.runId === runId)!.items;
+    expect(items.every((i) => i.subagentRunId), "実装役がまだ走っていない").toBe(true);
+    const listed = JSON.parse(await uiCall(page, "subagent", "listRuns", { limit: 10 })) as { runs: Array<{ id: string; status: string }> };
+    const running = listed.runs.filter((r) => r.status === "running").map((r) => r.id);
+    const second = items.find((i) => running.indexOf(i.subagentRunId!) === 1);
+    expect(second, "2件とも Subagent の一覧で走っていない").toBeTruthy();
+    target = { item: second!.item, subagentRunId: second!.subagentRunId!, first: running[0]! };
+  }).toPass({ timeout: 120_000, intervals: [1000] });
+
+  await openNav(page);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  const entry = page.locator('[role="option"][data-value^="launcher:factory:"]');
+  await expect(entry).toBeVisible({ timeout: 30_000 });
+  await entry.click();
+  const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const row = inner.locator(`[data-testid="factory-row"][data-item="${target.item}"]`);
+  await expect(row).toHaveAttribute("data-status", "running", { timeout: 60_000 });
+  await row.click();
+  const detail = inner.getByTestId("factory-detail");
+  await expect(detail.getByText("いま：実装役が働いている")).toBeVisible({ timeout: 30_000 });
+  await detail.getByTestId("factory-open-progress").click();
+
+  // Subagent の入口の画面に替わり、その仕事が選ばれている（一覧の印と、右の中身の両方）
+  await expect(page).toHaveURL(/canvas=subagent%3Aui%3A%2F%2Fbanto-subagent%2Fruns/, { timeout: 30_000 });
+  await expect(page.getByText("Canvas — subagent")).toBeVisible();
+  const runs = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(runs.locator(`[data-role="run"][data-run="${target.subagentRunId}"]`)).toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+  await expect(runs.locator(`[data-role="run"][data-run="${target.first}"]`)).not.toHaveAttribute("aria-current", "true");
+  await expect(runs.locator('[data-role="detail"]')).toHaveAttribute("data-run", target.subagentRunId);
+  await expect(runs.locator('[data-role="detail-prompt"]')).toContainText(`${target.item} の本文`);
+  await expect(runs.locator('[data-role="detail-status"]')).toContainText("実行中");
+
+  // Factory の入口に戻り、上の段の「設定を開く」——Project の設定の Factory の節が、入口の画面の上に開く
+  await page.goBack();
+  await expect(page).toHaveURL(/canvas=factory%3A/, { timeout: 30_000 });
+  await inner.getByTestId("factory-open-settings").click();
+  const settings = page.locator('[data-testid="module-settings-canvas"][data-module="factory"]');
+  await expect(settings).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/settings=1/);
+  await expect(page).toHaveURL(/section=project-module%3Afactory/);
+  await expect(page).toHaveURL(/canvas=factory%3A/);
+  const config = settings.locator("iframe").contentFrame().frameLocator("iframe");
+  await expect(config.getByTestId("factory-test")).toHaveValue("test -f never.txt", { timeout: 30_000 });
+
+  for (const item of ["e2e-c", "e2e-d"]) await uiCall(page, "factory", "cancelFactory", { runId, item, reason: "E2E の片づけ" });
+});

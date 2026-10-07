@@ -134,7 +134,7 @@ Factory は「他の Module より先に磨く特別なもの」ではなく**�
 
 | Module | 何をするか | 備考 |
 |---|---|---|
-| **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1。**MCP サーバであり ACP クライアント**——Claude Code・OpenCode などを ACP の同じ口で起こす。**サブエージェントの会話は core ではなくこの Module（とエージェント自身の置き場）の持ち物**で、core に渡るのは結果の転記だけ（訂正・2026-09-24——以前ここに「会話を走らせるのは core」とあったのは §4.1 の 2026-08-31 の決定と食い違っていた）。tool・閉じ込め・資格情報は §4.1「Subagent Module の形」。**鍵の設定画面は banto 全体に1本の `subagent-settings`**（同じパッケージの別の入口——走らせる側は Project ごとなので分けた）。**頼んだ仕事の記録は最新 200 件まで**——超えた古いものはファイル（`runs.jsonl`）からも消す。入口の画面は終わった仕事を 10 件ずつ出し「もっと見る」で足す（決定・2026-10-01、ユーザー要望）。**待たない形の仕事は走っている間 `running/` に記録し、banto を起こし直したあと続ける**（「起こし直しても続けられる」と名乗る。アーキ仕様 §2.5「2.」、2026-10-05） |
+| **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1。**MCP サーバであり ACP クライアント**——Claude Code・OpenCode などを ACP の同じ口で起こす。**サブエージェントの会話は core ではなくこの Module（とエージェント自身の置き場）の持ち物**で、core に渡るのは結果の転記だけ（訂正・2026-09-24——以前ここに「会話を走らせるのは core」とあったのは §4.1 の 2026-08-31 の決定と食い違っていた）。tool・閉じ込め・資格情報は §4.1「Subagent Module の形」。**鍵の設定画面は banto 全体に1本の `subagent-settings`**（同じパッケージの別の入口——走らせる側は Project ごとなので分けた）。**頼んだ仕事の記録は最新 200 件まで**——超えた古いものはファイル（`runs.jsonl`）からも消す。入口の画面は終わった仕事を 10 件ずつ出し「もっと見る」で足す（決定・2026-10-01、ユーザー要望）。**入口の画面は「見ている場所」（`dev.banto/view-state`）を `{ runId }` で受け・預ける**——別の Module の画面が `dev.banto/open-surface` の `select: { runId }` で開くと、その仕事を選んだ状態で開く（v4-frontend.md §6.2、2026-10-07）。**待たない形の仕事は走っている間 `running/` に記録し、banto を起こし直したあと続ける**（「起こし直しても続けられる」と名乗る。アーキ仕様 §2.5「2.」、2026-10-05） |
 | **Skill** | Skill を取り込む・作る・**資源として配る** | アーキ仕様 §5.6・§5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装。**取り込みは Module 側、効かせるのは core 側**（core が `instructions` を組み立てる、決定・2026-09-23）。**同梱の `scripts/` は実行しない**——Runner に `Bash` が無い。**`import_skill` は画面を持つ tool**——AI が提案でき、承認カードに出所・`SKILL.md` の中身・`scripts/` の有無を出してから人が押す（アーキ仕様 §5.7）。**同梱の実装は `skills`**（2026-09-23）：banto 全体に1本、banto 本体で動く同梱 Module（改訂・2026-09-25——以前は Landlock で自分の置き場だけに閉じ込めていた。`v4-security.md` §2「どの Module がどこで動くか」）。置き場は `<Module の置き場>/skills/<Skill 名>/`（フォルダの中は原文のまま）。`SKILL.md` を `skill://<Skill 名>/SKILL.md` として印つきで、兄弟ファイルを `skill://<Skill 名>/<相対パス>` として配る——本文の相対パスが、本文の URI からの相対でそのまま引ける。一覧に載せたファイルしか読ませない（隠しファイル・シンボリックリンクは辿らない）。**tool**：AI に見えるのは `import_skill`（GitHub から取ってきて仮置きし、取り込む前の確認を画面に出す——取り込まない）だけ。人の操作だけの口（`admin`、呼び出しの刻印も `{admin: true}` を確かめる）：`prepare_skill_import`（GitHub か ZIP）・`get_skill_import`・`confirm_skill_import`・`discard_skill_import`・`list_installed_skills`・`remove_skill`。**画面**：`ui://banto-skills/import`（`import_skill` の画面）と `ui://banto-skills/manage`（設定面「Skill の置き場」）——同じ HTML |
 | **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Service とは別実装**（下記） |
@@ -2560,9 +2560,8 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 - 実装の口（`backlog` 役割。Vault の D節・Publish の実装の口に当たるもの）——2本目のバックエンドが来たときに分ける
 - ~~人の一覧画面の形（モックで決める）~~ **→ モックで決めて実装した（2026-10-03、上の「人の画面」）**
 - ~~Factory との繋ぎ方（§5 の 6）~~ **→ §4.5**（Factory が Backlog の tool を中継で呼ぶ。流すのは `ready` で依存が全部 `done` のもの）
-- **「取り組んだ Thread」から、その Thread を開く口**——Canvas から banto の会話を開かせる口が無い
-  （`ui/open-link` は http/https を別タブで開くだけ）。押せるように見せないため、いまは Thread の id を文字で出すだけ（規則13）。
-  `dev.banto/open-new-project` と同じ形で足すかは未決（Repositories の「既にある Project を Canvas から開く口」と同じ問い）
+- **「取り組んだ Thread」から、その Thread を開くボタン**——口は 2026-10-07 にできた（`dev.banto/open-surface` の
+  `surface: "thread"`、v4-frontend.md §6.2）。ボタンはまだ置いていない（いまは Thread の id を文字で出すだけ、規則13）
 - ~~今の `docs/tasks.json` の移行そのもの~~ **→ 2026-10-03 に置き換えた**（168件）。重なっていた id `module-registry-install` は、
   終わったほう（npm・remote から入れる）を `module-registry-install-npm` に改め、積んだだけのほう（レジストリの検索、
   v4-architecture.md が参照）に元の id を残した。マイルストーンの id は `phase-0`〜`phase-4` と `after-phase-0`（Phase 0以降）・
@@ -2795,8 +2794,11 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
   - 設定（config `ui://banto-factory/config`）：テストのコマンドを一番上に（空なら促す）・準備のコマンド・実装役とレビュー役（エージェントは
     Subagent の `listSubagents` から、モデルは文字で）・取り込む先・同時件数・止まって聞くまでの回数・テストの上限・長引いているとみなす分
   - **モックと違うところ**：banto の「人の番の色」（turn）は Canvas に渡らない（MCP Apps の標準の名前だけ、v4-frontend.md §6.27）ので、
-    人を待つものは warning の色で出す。「経過を見る」（Subagent の画面を開く）と「設定を開く」のボタンは、Canvas から別の画面を開く口が
-    無いので置かない——仕事の id を文字で出し、設定は Project の設定にあると書く（規則13）
+    人を待つものは warning の色で出す
+  - **「経過を見る」「設定を開く」**（2026-10-07）：banto の拡張 `dev.banto/open-surface`（v4-frontend.md §6.2）で開いてもらう。
+    「経過を見る」は実装役・レビュー役が働いている間の詳細に出し、Subagent の入口をその仕事を選んだ状態で開く（`select: { runId }`）。
+    「設定を開く」は上の段と、まだ何も流していないときの案内に出し、Project の設定の Factory の節をいまの画面の上に開く。
+    断られたら理由を画面に出す
 - 試験：単体 14（`engine.test.ts` 9——本物の git と偽の Subagent・Backlog：取り込み・テストの上限と答え・起き直して頼み直さない・
   止まった知らせを届け直さない／届いていなければ届け直す・記録と手順の食い違いで止まった知らせを届け直さない・2件の列・レビューの
   上限と accept・止める。`server.test.ts` 5——Module の口を起こし直しの形で：問いより先に終わった実行に問われたら続けて最後の知らせを

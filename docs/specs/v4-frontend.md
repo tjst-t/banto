@@ -487,6 +487,31 @@ Repositories の一覧の「Project で使っている」の Project 名から�
   「閉じたものの一覧」で人が押したときだけ
 - core は頼んできた Module を名指ししない。開く場所（外枠）は要らない（移るだけ）ので、別タブの Canvas からも移る
 
+#### 画面から「同じ Project の別の面を開いて」（banto の拡張、決定・2026-10-07、Factory）
+
+Factory の入口の「経過を見る」（Subagent の画面でその仕事を選んで開く）・「設定を開く」（Project の設定の Factory の節）に要る。
+Backlog の「取り組んだ Thread」も同じ口に乗る（ボタンはまだ置いていない）。`lib/backend/canvas-open-surface.ts`。
+
+| 向き | 形 |
+|---|---|
+| 画面 → banto | request `dev.banto/open-surface`。`params` は次のどれか：<br>`{ surface: "launcher", server, resourceUri?, select? }`——その Module の入口（launcher）の画面。`resourceUri` を省いたら、その Module の入口が1つだけのときそれ<br>`{ surface: "settings", server? }`——Project の設定の、その Module の節。`server` を省いたら頼んできた Module 自身（Module は自分がどの名前で入れられたかを知らない）<br>`{ surface: "thread", threadId }`——その Thread（Base なら Project の会話、Fork ならその Fork） |
+| banto | **確かめの画面は出さずに移る**。入口は `/p/<id>?canvas=<server>:<uri>`、設定は**いまの画面の上に重ねる**（閉じると元の画面に戻る）、Thread は `/p/<id>`・`?fork=<id>` |
+| banto → 画面 | `{}`。読めない params は InvalidParams、受けられないときは -32000 と理由 |
+
+- **選ぶもの（`select`）は、開いた画面に「見ている場所」として渡す**（`dev.banto/view-state`、下の「見ている場所」）——
+  中身は開かれる画面のもので、banto は解釈しない。**どの形で受けるかは開かれる側の Module が決めて書く**
+  （Subagent の入口は `{ runId }`。人が仕事を選んだときも同じ形で預けるので、開き直しても同じ仕事に戻る）。
+  URL に載るので大きいもの（2000字を超える）は断る。tool の入出力（`ui/notifications/tool-input`）には乗せない——
+  あれは「この画面を起こした tool 呼び出し」で、無い呼び出しを作らない
+- `dev.banto/open-project` と同じく**どの面の画面からでも、人がその画面を押した直後だけ**受ける（確かめが無いので、
+  押したことが確かめの代わり）
+- **同じ Project の中だけ**——頼んできた画面が開かれている Project（会話の中なら その Thread の Project）の入口・設定の節・
+  Thread だけ。banto 全体の設定の画面（Project が無い）からは断る。**無い Module・無い入口・設定に節の無い Module・
+  別の Project の Thread・畳んだ Fork は断る**（黙って別のものを開かない。畳んだ Fork は履歴から人が再度開く）
+- 入口と設定の節が在るかは、**移る前に host に聞き直す**（画面の控えが古くて断る、をしない）
+- **移っている間の頼みは断る**——聞き直している間に2回押されても、2回移らない
+- core は頼んできた Module を名指ししない。開く場所（外枠）は要らない（移るだけ）
+
 #### 画面から「この Project を閉じるかを人に確かめて」（banto の拡張、決定・2026-10-03、Repositories 段階4）
 
 Repositories の「このマシンから削除」で、消したフォルダを Root にしていた Project を閉じるかを人に聞くのに要る。

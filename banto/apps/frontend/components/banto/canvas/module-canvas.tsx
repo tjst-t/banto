@@ -24,6 +24,8 @@ import {
   callRealUiTool,
   fetchRealUiConfig,
   fetchRealUiResource,
+  listRealLaunchers,
+  listRealUiSettings,
   type RealCanvasOwner,
   type RealUiResource,
 } from "@/lib/backend/client";
@@ -31,7 +33,7 @@ import { getRealJudgments, refreshRealInbox } from "@/lib/backend/real-inbox";
 import { getAllProjects, getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
-import { VIEW_STATE_KEY } from "@/lib/backend/canvas-view-state";
+import { VIEW_STATE_KEY, serializeViewState } from "@/lib/backend/canvas-view-state";
 import {
   decideNewProjectRequest,
   OPEN_NEW_PROJECT_METHOD,
@@ -41,6 +43,7 @@ import {
 import { CLOSE_PROJECTS_METHOD, closeProjectsRequests, parseCloseProjectsParams } from "@/lib/backend/canvas-close-projects";
 import { FOLDER_PREPARED_METHOD, parseFolderPrepared, type PreparedFolder } from "@/lib/backend/canvas-folder-prepared";
 import { OPEN_PROJECT_METHOD, decideOpenProject, parseOpenProjectParams } from "@/lib/backend/canvas-open-project";
+import { OPEN_SURFACE_METHOD, decideOpenSurface, parseOpenSurfaceParams, runOpenSurface } from "@/lib/backend/canvas-open-surface";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import {
   AlertDialog,
@@ -326,6 +329,30 @@ function SandboxFrame({
         const decision = decideOpenProject({ projectId: parsed.projectId, activated: decideFrom.activated, projects: getAllProjects() });
         if ("error" in decision) throw refuse(-32000, decision.error);
         latest.current.navigate(`/p/${parsed.projectId}`);
+        return {};
+      }
+      if (request.method === OPEN_SURFACE_METHOD) {
+        // **同じ Project の中の別の面へ移る**（`lib/backend/canvas-open-surface.ts`）。押した直後かは、一覧を取り直す前に見る
+        const target = parseOpenSurfaceParams(request.params, latest.current.server);
+        if ("error" in target) throw refuse(-32602, target.error);
+        const projectId = bantoProjectContext(latest.current.owner)?.id;
+        const outcome = await runOpenSurface(async () => {
+          // 一覧は移る前に取り直す——画面が古い控えで「無い」と断られない（取れなければ理由を返す、規則2）
+          const decision = decideOpenSurface({
+            target,
+            projectId,
+            activated: decideFrom.activated,
+            launchers: target.surface === "launcher" && projectId && decideFrom.activated ? await listRealLaunchers(projectId) : undefined,
+            settings: target.surface === "settings" && projectId && decideFrom.activated ? await listRealUiSettings({ kind: "project", id: projectId }) : undefined,
+            getThread,
+            here: { pathname: window.location.pathname, search: window.location.search },
+            serializeSelect: serializeViewState,
+          });
+          if ("error" in decision) return decision;
+          latest.current.navigate(decision.href);
+          return {};
+        });
+        if ("error" in outcome) throw refuse(-32000, outcome.error);
         return {};
       }
       if (request.method === CLOSE_PROJECTS_METHOD) {

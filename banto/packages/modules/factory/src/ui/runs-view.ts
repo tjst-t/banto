@@ -59,6 +59,22 @@ window.addEventListener("message", (event: MessageEvent) => {
   }
   if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params as Appearance);
 });
+/**
+ * banto の別の画面を開いてもらう（banto の拡張 `dev.banto/open-surface`）。押した直後だけ受けてもらえるので、ボタンの
+ * click の中で呼ぶ。断られたら理由を出す（黙って何も起きない、にしない）
+ */
+function openSurface(params: Record<string, unknown>): void {
+  request("dev.banto/open-surface", params).catch((err: Error) => {
+    state.error = `開けませんでした：${err.message}`;
+    render();
+  });
+}
+const settingsButton = (label: string) => {
+  const b = btn(label, "btn-quiet open-settings", () => openSurface({ surface: "settings" }), "Project の設定の「Factory」を開く");
+  b.dataset.testid = "factory-open-settings";
+  return b;
+};
+
 async function call<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
   const result = await request<ToolResult>("tools/call", { name, arguments: args });
   const text = result.content?.[0]?.text ?? "";
@@ -182,6 +198,7 @@ function render(): void {
       state.loaded
         ? h("span", { class: "muted", text: `${moving.length} 件が動いている${human.length ? `・${human.length} 件があなたの答えを待っている` : ""}` })
         : h("span", { class: "muted", text: "読み込んでいます…" }),
+      settingsButton(wide() ? "Factory の設定を開く" : "設定"),
     ]),
   );
 
@@ -195,6 +212,7 @@ function render(): void {
             "Backlog のタスクを Factory に流すのは、会話の AI に頼みます（例：「#42 を Factory に流して」）。テストを通ったものだけを取り込むので、" +
             "先に Project の設定の「Factory」でテストのコマンドを入れてください。",
         }),
+        settingsButton("Factory の設定を開く"),
       ]),
     );
   } else {
@@ -319,9 +337,17 @@ function renderDetail(): HTMLElement {
     const role = item.stage === "レビュー" ? "レビュー役" : "実装役";
     body.append(
       h("div", { class: "now" }, [
-        h("span", { class: "who", text: `いま：${role}が働いている${isLong(item) ? `（この段に ${minutes(minutesSince(item.stageSince))}）` : ""}` }),
-        // 経過は Subagent の入口の画面にある。Canvas から別の Module の画面を開く口がまだ無いので、仕事の id を出す
-        h("span", { class: "what", text: `Subagent の画面で仕事 ${item.subagentRunId.slice(0, 8)} の経過を見られます` }),
+        h("span", { class: "now-text" }, [
+          h("span", { class: "who", text: `いま：${role}が働いている${isLong(item) ? `（この段に ${minutes(minutesSince(item.stageSince))}）` : ""}` }),
+          h("span", { class: "what", text: "何をどの順にしているかは、Subagent の画面で見られます" }),
+        ]),
+        // 経過は Subagent の入口の画面にある——その仕事を選んだ状態で開いてもらう（Subagent は `{ runId }` で受ける）
+        (() => {
+          const runId = item.subagentRunId;
+          const b = btn("経過を見る", "", () => openSurface({ surface: "launcher", server: "subagent", select: { runId } }), "Subagent の画面でこの仕事の経過を開く");
+          b.dataset.testid = "factory-open-progress";
+          return b;
+        })(),
       ]),
     );
   }

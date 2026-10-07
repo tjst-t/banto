@@ -198,6 +198,23 @@ function wantFromResult(params: unknown): void {
     // 結果が JSON でない（失敗の文など）——頼んだ内容で探すほうに任せる
   }
 }
+// ---- banto の別の画面から「この仕事を開いて」と開かれたとき（2026-10-07） ---------------------
+//
+// 別の Module の画面（Factory の「経過を見る」）が banto に頼んでこの画面を開くと、選ぶ仕事が「見ている場所」
+// （hostContext の `dev.banto/view-state`）として届く。形は `{ runId }`——人が選んだ仕事も同じ形で預けるので、
+// 開き直したとき（リロード・別タブ）も同じ仕事に戻る
+const VIEW_STATE = "dev.banto/view-state";
+function wantFromViewState(value: unknown): void {
+  const runId = (value as { runId?: unknown } | undefined)?.runId;
+  if (typeof runId !== "string" || want.runId) return;
+  want.runId = runId;
+  pickWanted();
+}
+/** 選んだ仕事を預ける（banto が URL に持つ）。選んでいなければ空 */
+function keepViewState(): void {
+  send({ method: VIEW_STATE, params: { state: state.selected ? { runId: state.selected } : {} } });
+}
+
 /** 探している仕事が分かれば選ぶ。**一度選んだら、あとは人の選び方に任せる**（取り直しのたびに戻さない） */
 function pickWanted(): void {
   if (want.done) return;
@@ -376,7 +393,7 @@ function renderDetail(): HTMLElement {
   const head = h("div", { class: "detail-head" }, [
     wide() ? null : (() => {
       const back = h("button", { type: "button", class: "btn btn-quiet back", "aria-label": "一覧に戻る", "data-focus": "back" }, [icon("back"), "一覧"]);
-      back.addEventListener("click", () => { state.selected = null; state.detail = null; render(); });
+      back.addEventListener("click", () => { state.selected = null; state.detail = null; keepViewState(); render(); });
       return back;
     })(),
     h("span", { class: "pill", "data-tone": STATUS_TONE[r.status], "data-role": "detail-status" }, [h("span", { class: "dot" }), STATUS_LABEL[r.status]]),
@@ -461,6 +478,7 @@ function paint(): void {
 // ---- 取り直す ---------------------------------------------------------------------------
 async function select(id: string): Promise<void> {
   state.selected = id;
+  keepViewState();
   try {
     state.detail = await call<RunRecord>("getRun", { id });
     state.error = undefined;
@@ -504,13 +522,14 @@ window.addEventListener("resize", () => render());
 
 (async () => {
   try {
-    const init = await request<{ hostContext?: { theme?: string; displayMode?: string; styles?: { variables?: Record<string, string | undefined> } } }>("ui/initialize", {
+    const init = await request<{ hostContext?: { theme?: string; displayMode?: string; styles?: { variables?: Record<string, string | undefined> }; [VIEW_STATE]?: unknown } }>("ui/initialize", {
       protocolVersion: "2026-01-26",
       appInfo: { name: "banto-subagent-runs", version: "0.2.0" },
       appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
     });
     const ctx = init.hostContext ?? {};
     applyAppearance(ctx);
+    wantFromViewState(ctx[VIEW_STATE]);
     document.body.dataset.mode = ctx.displayMode === "fullscreen" ? "fullscreen" : "inline";
     send({ method: "ui/notifications/initialized", params: {} });
   } catch (err) {
