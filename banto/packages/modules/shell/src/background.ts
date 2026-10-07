@@ -162,6 +162,11 @@ export class BackgroundCommands {
     return this.observe(id);
   }
 
+  /** このコマンドの終わりを届ける約束を持っているか（Shell だけが起こし直されたあとは、問われるまで持たない） */
+  willDeliver(id: string): boolean {
+    return this.watched.has(id);
+  }
+
   /**
    * 止める。止めると頼んだ時刻を先に書く（起動役が「止められた」と書いたとき、cancelCommand か外からかを分ける）。
    * 返ったら止まっている。届けるのは見張り（すぐ見に行く）

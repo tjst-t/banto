@@ -240,8 +240,15 @@ export function createShellServer(deps: ShellServerDeps) {
             );
           }
         }
+        const willDeliver = background.willDeliver(id);
         const after = await background.cancel(id);
-        return text({ ok: true, ...after, note: "止めました。「止めました」と出力の末尾がこの会話に届きます" });
+        return text({
+          ok: true,
+          ...after,
+          note: willDeliver
+            ? "止めました。「止めました」と出力の末尾がこの会話に届きます"
+            : "止めました。このコマンドの終わりを届ける約束はもう切れているので（Shell が起こし直された等）、何も届きません。出力は outputFile にあります",
+        });
       }
       if (request.params.name === RESUME_AFTER_RESTART_TOOL) {
         // **host だけが問う**——人の画面・中継・AI のターンからの呼び出しには呼び元の印が付く。付いていたら断る

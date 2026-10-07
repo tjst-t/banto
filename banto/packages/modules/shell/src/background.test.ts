@@ -345,6 +345,7 @@ test("一覧と止める口は、流した Thread の分だけ。止めると「
       const cancelled = await shell.call("cancelCommand", { commandId: mine.commandId }, { [THREAD_META_KEY]: THREAD });
       assert.equal(cancelled.isError, undefined, cancelled.content[0]?.text);
       assert.equal(JSON.parse(cancelled.content[0]!.text).status, "cancelled");
+      assert.match(JSON.parse(cancelled.content[0]!.text).note, /この会話に届きます/);
       await shell.waitDelivered(1);
       const d = shell.delivered[0]!;
       assert.equal(d.replyTo, "reply_A");
@@ -435,7 +436,7 @@ test("起こし直しをまたぐ：Shell を捨てても動き続け、立て�
     const running = await runInBackground(before, { command: "sleep 1.5; echo done-after-restart" }, stamp(THREAD, "reply_RUNNING"));
     const finished = await runInBackground(before, { command: "echo finished-while-down" }, stamp(THREAD, "reply_FINISHED"));
     const other = await runInBackground(before, { command: "echo other-thread" }, stamp(OTHER_THREAD, "reply_OTHER"));
-    const unasked = await runInBackground(before, { command: "sleep 3; echo unasked" }, stamp(THREAD, "reply_UNASKED"));
+    const unasked = await runInBackground(before, { command: "sleep 30; echo unasked" }, stamp(THREAD, "reply_UNASKED"));
     // 届ける前に Shell が落ちる（見張りを止めて接続を切る——banto の起こし直しで Module が止まるのと同じ）
     await before.close();
     assert.equal(before.delivered.length, 0, "落ちる前に届いた（試験の前提が崩れた）");
@@ -489,6 +490,12 @@ test("起こし直しをまたぐ：Shell を捨てても動き続け、立て�
       assert.equal(after.delivered.length, 2, "問われなかったものまで届けた");
       assert.ok(!after.delivered.some((d) => d.replyTo === "reply_OTHER"));
       assert.equal(other.commandId.length > 0, true);
+      // 問われなかったものも流した Thread から止められる。届ける約束は無いので、そう言って何も届けない
+      const cancelled = await after.call("cancelCommand", { commandId: unasked.commandId }, { [THREAD_META_KEY]: THREAD });
+      assert.equal(cancelled.isError, undefined, cancelled.content[0]?.text);
+      assert.match(JSON.parse(cancelled.content[0]!.text).note, /何も届きません/);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(after.delivered.length, 2, "約束の無いものを届けた");
     } finally {
       await after.close();
     }
