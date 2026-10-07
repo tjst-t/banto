@@ -1249,7 +1249,7 @@ host に預け、リロードしても別タブに出しても、そのまま開
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
 | `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒。待つ形は省略時 120、待たない形は省略時は上限なし）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記）／`runInBackground`（真偽、既定 false。下の「待たない形」） | 返り値は `exitCode`／`timedOut`／`stdout`／`stderr`（**この順**——下記「長い出力」）。出力が長いときは `stdoutFile`／`stderrFile`（同）。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23）。**待たない形はすぐ** `commandId`／`status: "running"`／`outputFile` を返し、終わったら結果を届ける |
-| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順に 20 件まで）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07） |
+| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07） |
 | `cancelCommand` | `commandId` | 待たずに流したコマンドを止める。**流した Thread からだけ**。止めたら頼んだ Thread に「止めました」を届けて終わる（追加・2026-10-07） |
 
 **コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
@@ -1304,39 +1304,53 @@ Claude Code・Gemini CLI・Goose と同じく、全体はファイルに残す�
   `/bin/sh -c <command>` を走らせる。Shell の Module や banto 本体を起こし直してもコマンドは止まらない。
   Shell の環境には `XDG_RUNTIME_DIR` が無いので、`/run/user/<uid>` とそのバスを足して呼ぶ（Service と同じ）。
   linger が無ければ入れる（同）。**入れられなければ `user@<uid>.service` を直に起こす**——入れ子のコンテナ（E2E）では
-  logind に繋がらず、root でも linger を入れられない（実測・2026-10-07）。**コンテナの外（`BANTO_IN_CONTAINER` が無い）では待たない形は断る**——
-  人の機械の systemd にコマンドを残さない
+  logind に繋がらず、root でも linger を入れられない（実測・2026-10-07）。`systemd-run` が失敗したら、用意できたことを
+  忘れて次の呼び出しで確かめ直す（ユーザーの systemd が落ちたままにしない）。**コンテナの外（`BANTO_IN_CONTAINER` が無い）
+  では待たない形を持たない**——人の機械の systemd にコマンドを残さない。そのときは `runInBackground` の引数・
+  「終わったら届ける」の名乗り・`listCommands`・`cancelCommand` を **tools/list から外す**（見えるのに必ず断る口を出さない。規則13）
+- **起動役が起きなければ止めてから消す**：Shell は起動役が `started.json` を書くまで（20 秒）待ってから「流しました」と
+  返す。期限までに起きなければ、**単位を止めてから**記録を消して断る（止めずに消すと、遅れて起きた起動役が記録も札も
+  無いまま走り、一覧にも出ず止められない）。止められなければ記録を残し（一覧に出て止められる）、そう言って断る
 - **置き場**：`<Shell の Module の置き場>/commands/<commandId>/`（host のディスク。起こし直しても残り、
   コンテナの中から同じパスで見える）。Shell が書く `job.json`（コマンド・cwd・始めた時刻・頼んだ Thread・
   札の**指紋**・`secretFiles` の書き出し先・止めると頼んだ時刻）、起動役が書く `started.json`（pid とその開始時刻）・
   `exit.json`（終了コード・信号・止められたか・時間切れか・出力の末尾）、出力の `output.log`（stdout と stderr を
   **1つのファイルに、出た順に**——端末で見えるのと同じ並び。1本 64 MiB まで、越えた分は書かないが末尾は本当の
-  終わりを `exit.json` に残す）。**札そのものはディスクに書かない**（Subagent と同じ）。終わったものは
-  新しい 20 件だけ残す
+  終わりを `exit.json` に残す）、届けたら `delivered.json`（届けた印）。**札そのものはディスクに書かない**（Subagent と同じ）。
+  古いものを消すのは**届けたもの**（新しい 20 件を残す）と、**届けないまま終わってから 7 日たったもの**だけ——届ける前の
+  記録は、起き直した host に問われたら届けるのに要る
 - **終わったことの見張り**：Shell は届ける約束をしたコマンドを数秒ごとに見る。`exit.json` があれば終わり、無くて
   起動役の pid（開始時刻で使い回しを見分ける）が居なければ「途中で終わった」（コンテナが起こし直された・
   強制的に止められた）。**終了コードは単位の状態に頼らない**——`--collect` の単位は終わると消える
 - **届けるもの**（最後の届け1回）：題（「コマンドが終わりました：<コマンドの頭>」「〜が失敗しました（終了コード N）」
   「〜を止めました」など）と、本文の JSON——**終了コードを先頭に**、状態・`commandId`・コマンド・`outputFile`・
   **出力の末尾 50 行**（1行は 1,000 文字で切り、全体で 16,000 文字まで——1通の大きさを抑える。MCP の stdio は
-  1通 10 MiB まで）。全体は `outputFile` を Shell の `grep`・`tail` で読む
+  1通 10 MiB まで）。全体は `outputFile` を Shell の `grep`・`tail` で読む。時間切れの猶予の間に止めたものは
+  「止めました（その前に時間切れになっていました）」と両方を書く
+- **届けられなかったら**（中継の一時的な失敗）、見張りに残して次の見張りで届け直す（5 回まで）。越えたら諦めて
+  ログに残す——記録は残るので、起き直した host に問われたら届ける
 - **一覧**（`listCommands`）：**呼んだ Thread が流したものだけ**（Thread の印 `dev.banto/thread` は host が刻む）。
-  Thread の印が無い呼び出しは全部を出す。理由は経緯ノート
+  Thread の印が無い呼び出しは全部を出す。動いているものは件数に関わらず全部、終わったものは 20 件まで。理由は経緯ノート。
+  **中継で呼ぶ Module には Thread の印が付かない**ので、Module からの一覧は Project の全 Thread 分になる（受け入れる——
+  `cancelSubagent` と同じ線。Module は Project の AI と同じ境界の内側にいる）
 - **止める**（`cancelCommand`）：**流した Thread からだけ**——host が刻む Thread の印と Project が流したときと
   同じときだけ（`cancelSubagent` と同じ形。印が無ければ断る＝fail closed）。Module が中継で流したものは、流した
   Module からだけ。`job.json` に止めると頼んだ時刻を書いてから `systemctl --user stop`（cgroup ごと SIGTERM、
   10 秒で SIGKILL）。止まったら頼んだ Thread に「止めました」を届けて札を閉じる。人やコンテナの停止で外から
-  止められたものは「外から止められました」と分けて届ける
+  止められたものは「外から止められました」と分けて届ける。**止める前に自然に終わっていたら「止めました」と言わない**
+  ——返事は「止める前にもう終わっていました（状態）」（`alreadyEnded: true`）、届く知らせも「終わりました」などになる
 - **時間の上限**：待たない形の `timeout` は省略時は上限なし。書けば起動役がその秒数で止める（時間切れとして届ける）
 - **秘密の渡し方**：`envSecrets` の値は Shell が受け取り、**コンテナの中の tmpfs（`/run/user/<uid>/banto-shell/`）
   に 0600 のファイル**で置き、起動役が起動してすぐ読んで消す。systemd の単位のプロパティ（`systemctl show`
   で見える）にも、host のディスク（置き場）にも書かない。コマンドの環境（Claude のログインの中継の変数を
   含む、待つ形と同じ `buildChildEnv` のもの）も同じファイルで渡す——ユーザー単位は Shell の環境を継がない。
   `secretFiles` は待つ形と同じく書き出し、**コマンドが終わったら起動役が消す**（起動役が消せずに終わったら、
-  Shell が終わりを見たときに消す）。`sshIdentity` は待つ形と同じ（ソケットのパスを渡すだけ）
+  Shell が終わりを見たときに消す）。`sshIdentity` は待つ形と同じく ssh-agent のソケットのパスを渡す——ただし
+  **ssh-agent は Vault の Module が持つ**ので、banto を起こし直すと消える（下の「知っている限界」）。断らずに、待たない形の
+  返事の `note` にそう添える
 - **起こし直しをまたぐ**：Shell は「起こし直しても続けられる」（`resumesAfterRestart`、アーキ仕様 §2.5「2.」）と
   名乗る。起き直した host の問い（`resumeAfterRestart`）に1件ずつ答える——札の指紋が合う記録があり、頼んだ
-  Thread が合えば「続ける」（まだ動いていれば見張りを続け、もう終わっていればすぐ結果を届ける）。記録が無いもの・
+  Thread（Project と Thread の両方）が合えば「続ける」（まだ動いていれば見張りを続け、もう終わっていればすぐ結果を届ける）。記録が無いもの・
   Thread が違うものは「続けない」（host が「途中で終わりました」を届ける）。**問われなかった記録のコマンドは止めない**
   （一覧に出て、`cancelCommand` で止められる）
 
@@ -1348,6 +1362,11 @@ Claude Code・Gemini CLI・Goose と同じく、全体はファイルに残す�
   返事待ちの札に「途中で終わりました」を届ける（§4.2「返事待ちの札は失くさない」）が、コマンドは動き続ける。
   結果はどこにも届かない（一覧には出る。そこから止めると「届ける約束はもう切れている」と返す）。Subagent と同じ
 - 札の期限は返事待ちの間は切れない。起こし直しをまたいだ札は最後の届け1回だけ使える（届けるのは1回なので足りる）
+- **`sshIdentity` と待たない形**：ssh-agent は Vault の Module が立て、Vault が終わるときに落とす（`vault-local` の
+  `sops-backend.ts` の `loadIntoAgent`——鍵を持つプロセスを Vault より長生きさせない）。
+  banto を起こし直すとコマンドは続くが ssh-agent は消え、そのあとの `git push` などは失敗する（終わりの知らせの出力で分かる）。
+  ssh-agent を Vault の外で持つ形は決めていない
+- **中継で流したコマンド**：Module からの `listCommands` は Project の全 Thread 分、`cancelCommand` の縛りは接続名だけ（上の一覧・止める）
 
 **`secretFiles`**（`.npmrc`・`kubeconfig` 等、アーキ仕様 §2.5 に原則はあるが
 tool 引数の形は未設計だった部分——ここで決める）：実行直前、Shell が host 中継
