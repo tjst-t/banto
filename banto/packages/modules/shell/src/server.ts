@@ -42,6 +42,39 @@ export interface ShellServerDeps {
   backgroundUnavailable?: string;
 }
 
+const BACKGROUND_DESCRIPTION =
+  "**長いコマンド（数分〜数時間のビルド・試験の繰り返しなど）は runInBackground: true で待たずに流せる**——" +
+  "すぐ commandId と outputFile が返り、終わったら終了コードと出力の末尾 50 行がこの会話に届いて、あなたが起こされる" +
+  "（届くまで他の仕事を続けてよい。結果を待つために同じコマンドを流し直さない。`&` で後ろに回さない）。" +
+  "途中の様子は outputFile を tail・grep で読む。流したものの一覧は listCommands、止めるのは cancelCommand。";
+
+/** 待たずに流したコマンドの一覧と止める口（待たない形が使える Shell だけが見せる） */
+const BACKGROUND_TOOLS = [
+  {
+    name: "listCommands",
+    description:
+      "runCommand の runInBackground で待たずに流したコマンドの一覧（この会話（Thread）で流したものだけ。動いているものは全部、終わったものは新しい順に 20 件まで）。" +
+      "commandId・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
+      "cancelled：cancelCommand で止めた／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
+    inputSchema: { type: "object", properties: {} },
+    _meta: { [VISIBILITY_META_KEY]: "agent" },
+  },
+  {
+    // **止められるのは流した Thread からだけ**——同じ Project の別の Thread（Fork）が、id を知っただけで止められない
+    // ように（cancelSubagent と同じ形）。どの Thread からの呼び出しかは host が刻む印（`dev.banto/thread`）で見る
+    name: "cancelCommand",
+    description:
+      "runCommand の runInBackground で待たずに流したコマンドを止める（cgroup ごと SIGTERM、10 秒で SIGKILL）。" +
+      "**止められるのは、この会話（Thread）で流したものだけ**。止めると「止めました」と出力の末尾がこの会話に届く",
+    inputSchema: {
+      type: "object",
+      properties: { commandId: { type: "string", description: "止めるコマンドの id（runCommand の返り値の commandId）" } },
+      required: ["commandId"],
+    },
+    _meta: { [VISIBILITY_META_KEY]: "agent" },
+  },
+];
+
 /** 頼み方の誤りは AI に理由ごと返す（黙って空を返さない） */
 class ShellRefusal extends Error {}
 
@@ -82,6 +115,9 @@ export function createShellServer(deps: ShellServerDeps) {
     ],
   }));
 
+  // **待たない形が使えない Shell（コンテナの外）では、その口を見せない**（訂正・2026-10-07、Fable のレビュー、規則13）——
+  // 見えるのに必ず断る口を AI に出さない。runCommand の runInBackground の引数・説明・「終わったら届ける」の名乗りも外す
+  const background = deps.background !== undefined;
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
@@ -102,10 +138,7 @@ export function createShellServer(deps: ShellServerDeps) {
           "必要な alias が無ければ requestAlias で人に登録を頼む。" +
           "**出力が長いとき**（stdout と stderr の合計が 3万文字超）は、長いほうの頭と末尾だけを返し、" +
           "全体は stdoutFile / stderrFile のファイルに残す——grep や sed -n で読む（同じコマンドを打ち直さない）。" +
-          "**長いコマンド（数分〜数時間のビルド・試験の繰り返しなど）は runInBackground: true で待たずに流せる**——" +
-          "すぐ commandId と outputFile が返り、終わったら終了コードと出力の末尾 50 行がこの会話に届いて、あなたが起こされる" +
-          "（届くまで他の仕事を続けてよい。結果を待つために同じコマンドを流し直さない。`&` で後ろに回さない）。" +
-          "途中の様子は outputFile を tail・grep で読む。流したものの一覧は listCommands、止めるのは cancelCommand。",
+          (background ? BACKGROUND_DESCRIPTION : ""),
         inputSchema: {
           type: "object",
           properties: {
@@ -113,7 +146,9 @@ export function createShellServer(deps: ShellServerDeps) {
             cwd: { type: "string", description: "Project root からの相対パス。省略時は root そのもの" },
             timeout: {
               type: "number",
-              description: "秒。超えると SIGTERM で止める。省略時は 120（runInBackground のときは上限なし）",
+              description: background
+                ? "秒。超えると SIGTERM で止める。省略時は 120（runInBackground のときは上限なし）"
+                : "秒。省略時は 120。超えると SIGTERM で止める",
             },
             envSecrets: {
               type: "object",
@@ -135,12 +170,16 @@ export function createShellServer(deps: ShellServerDeps) {
                 "kind が ssh-identity の alias 名。ssh-agent を立てて SSH_AUTH_SOCK を渡す" +
                 "（git push 等に使う）。**秘密鍵はファイルにもあなたの文脈にも出ない**",
             },
-            runInBackground: {
-              type: "boolean",
-              description:
-                "true なら待たない。すぐ commandId と outputFile（stdout と stderr を出た順に書くファイル）を返し、" +
-                "終わったら終了コードと出力の末尾がこの会話に届く（既定 false：終わるまで待つ）",
-            },
+            ...(background
+              ? {
+                  runInBackground: {
+                    type: "boolean",
+                    description:
+                      "true なら待たない。すぐ commandId と outputFile（stdout と stderr を出た順に書くファイル）を返し、" +
+                      "終わったら終了コードと出力の末尾がこの会話に届く（既定 false：終わるまで待つ）",
+                  },
+                }
+              : {}),
           },
           required: ["command"],
         },
@@ -150,33 +189,10 @@ export function createShellServer(deps: ShellServerDeps) {
         // 会話の表示は変わらない
         _meta: {
           [VISIBILITY_META_KEY]: "agent",
-          [DELIVERS_LATER_META_KEY]: true,
-          [CARD_META_KEY]: { title: "{command}" },
+          ...(background ? { [DELIVERS_LATER_META_KEY]: true, [CARD_META_KEY]: { title: "{command}" } } : {}),
         },
       },
-      {
-        name: "listCommands",
-        description:
-          "runCommand の runInBackground で待たずに流したコマンドの一覧（この会話（Thread）で流したものだけ、新しい順に 20 件まで）。" +
-          "commandId・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
-          "cancelled：cancelCommand で止めた／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
-        inputSchema: { type: "object", properties: {} },
-        _meta: { [VISIBILITY_META_KEY]: "agent" },
-      },
-      {
-        // **止められるのは流した Thread からだけ**——同じ Project の別の Thread（Fork）が、id を知っただけで止められない
-        // ように（cancelSubagent と同じ形）。どの Thread からの呼び出しかは host が刻む印（`dev.banto/thread`）で見る
-        name: "cancelCommand",
-        description:
-          "runCommand の runInBackground で待たずに流したコマンドを止める（cgroup ごと SIGTERM、10 秒で SIGKILL）。" +
-          "**止められるのは、この会話（Thread）で流したものだけ**。止めると「止めました」と出力の末尾がこの会話に届く",
-        inputSchema: {
-          type: "object",
-          properties: { commandId: { type: "string", description: "止めるコマンドの id（runCommand の返り値の commandId）" } },
-          required: ["commandId"],
-        },
-        _meta: { [VISIBILITY_META_KEY]: "agent" },
-      },
+      ...(background ? BACKGROUND_TOOLS : []),
       // ---- host が起き直したときに呼ぶ（admin——AI には見せない） ----------------------------
       {
         // **起こし直しても続けられる**（追加・2026-10-07、アーキ仕様 §2.5「2.」、`@banto/module-contract` の `resume.ts`）。
@@ -212,7 +228,9 @@ export function createShellServer(deps: ShellServerDeps) {
     try {
       if (request.params.name === "listCommands") {
         const background = requireBackground();
-        // **一覧も流した Thread の分だけ**（決定・2026-10-07）——止められるのも同じ範囲。Thread の印が無い呼び出しは全部
+        // **一覧も流した Thread の分だけ**（決定・2026-10-07）——止められるのも同じ範囲。Thread の印が無い呼び出しは全部。
+        // 中継で呼ぶ Module には Thread の印が付かないので、Module からは Project の全 Thread 分が見える（受け入れる——
+        // cancelSubagent と同じ線。v4-modules.md §2.3）
         const owner = threadOf(meta);
         return text({ commands: background.list(owner) });
       }
@@ -242,12 +260,17 @@ export function createShellServer(deps: ShellServerDeps) {
         }
         const willDeliver = background.willDeliver(id);
         const after = await background.cancel(id);
+        // **止める前に自然に終わっていたら、止めたとは言わない**（訂正・2026-10-07、Fable のレビュー）。届く知らせも
+        // ファイルから決まるので「終わりました」「失敗しました」になる
+        const stopped = after.status === "cancelled";
+        const what = stopped ? "止めました" : `止める前にもう終わっていました（状態：${after.status}）`;
         return text({
           ok: true,
           ...after,
+          ...(stopped ? {} : { alreadyEnded: true }),
           note: willDeliver
-            ? "止めました。「止めました」と出力の末尾がこの会話に届きます"
-            : "止めました。このコマンドの終わりを届ける約束はもう切れているので（Shell が起こし直された等）、何も届きません。出力は outputFile にあります",
+            ? `${what}。終わり方と出力の末尾がこの会話に届きます`
+            : `${what}。このコマンドの終わりを届ける約束はもう切れているので（Shell が起こし直された等）、何も届きません。出力は outputFile にあります`,
         });
       }
       if (request.params.name === RESUME_AFTER_RESTART_TOOL) {

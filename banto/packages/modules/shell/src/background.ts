@@ -8,7 +8,7 @@
 // （`resumeAfterRestart`）で渡されたものだけ、また見張って届ける。
 
 import { randomBytes } from "node:crypto";
-import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { replyToFingerprint, type ResumeAnswer, type ResumeQuestionItem } from "@banto/module-contract";
 import {
@@ -65,11 +65,21 @@ export interface BackgroundCommandsDeps {
   startWaitMs?: number;
   /** 終わったものを残す数（既定 20） */
   keepFinished?: number;
+  /** 届けられなかったとき、次の見張りで届け直す回数（既定 5） */
+  deliverRetries?: number;
 }
 
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_START_WAIT_MS = 20_000;
 const DEFAULT_KEEP_FINISHED = 20;
+const DEFAULT_DELIVER_RETRIES = 5;
+/**
+ * 届けていないものを消してよくなるまでの時間（終わってから）。**届ける前の記録は消さない**——起き直した host に問われたら
+ * 届けるのに要る。ただ、届ける約束が切れたもの（Shell だけが起こし直された等）はいつまでも問われないので、ここで区切る
+ */
+const UNDELIVERED_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+/** 届けた印（Shell が書く）。古いものを消してよいかはこれで見る */
+const DELIVERED_FILE = "delivered.json";
 /** 起動役が書く前に死んだとき、ファイルの終わりから読む量 */
 const READ_TAIL_BYTES = 64 * 1024;
 
@@ -86,6 +96,8 @@ export class BackgroundCommands {
   /** 届ける約束をしたコマンド（id → 札）。**札はここにだけ**——ディスクには指紋 */
   private readonly watched = new Map<string, string>();
   private readonly delivering = new Set<string>();
+  /** 届けられなかった回数（id → 回数）。上限までは見張りに残して次の見張りで届け直す */
+  private readonly deliverFailures = new Map<string, number>();
   private timer?: NodeJS.Timeout;
 
   constructor(private readonly deps: BackgroundCommandsDeps) {}
@@ -130,19 +142,34 @@ export class BackgroundCommands {
       throw new BackgroundCommandError(`コマンドを流す用意ができませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
     const envFile = join(this.deps.secretsDir, `${id}.env.json`);
+    let launched = false;
     try {
       mkdirSync(this.deps.secretsDir, { recursive: true, mode: 0o700 });
       writeFileSync(envFile, JSON.stringify(input.env), { mode: 0o600 });
       await this.deps.launcher.start({ unit: record.unit, dir, envFile });
+      launched = true;
       await this.waitStarted(id);
     } catch (err) {
       rmSync(envFile, { force: true });
-      // 起動役が起きなかったものは記録ごと消す（一覧に「動いていない何か」を残さない）
+      const reason = err instanceof Error ? err.message : String(err);
+      // **起こすのを頼み終えたあとなら、単位を止めてから記録を消す**（訂正・2026-10-07、Fable のレビュー）。止めずに消すと、
+      // 遅れて起きた起動役が記録も札も無いままコマンドを走らせ、一覧にも出ず止められない。止められなければ記録を残す
+      // ——一覧に出て、流した Thread から止められる
+      if (launched) {
+        try {
+          await this.deps.launcher.stop({ unit: record.unit });
+        } catch (stopErr) {
+          throw new BackgroundCommandError(
+            `コマンドを流せませんでした（${reason}）。起動役を止められなかったので、動いているかもしれません——` +
+              `listCommands に ${id} として出ています。止めるなら cancelCommand。止められなかった理由：` +
+              (stopErr instanceof Error ? stopErr.message : String(stopErr)),
+          );
+        }
+      }
+      // 起動役が起きなかったもの・止めたものは記録ごと消す（一覧に「動いていない何か」を残さない）
       rmSync(dir, { recursive: true, force: true });
       // AI に理由ごと返す（MCP のエラーにして「何が起きたか分からない」にしない）
-      throw err instanceof BackgroundCommandError
-        ? err
-        : new BackgroundCommandError(`コマンドを流せませんでした: ${err instanceof Error ? err.message : String(err)}`);
+      throw err instanceof BackgroundCommandError ? err : new BackgroundCommandError(`コマンドを流せませんでした: ${reason}`);
     }
     this.watched.set(id, input.replyTo);
     this.ensureTimer();
@@ -150,11 +177,15 @@ export class BackgroundCommands {
     return this.view(this.observe(id)!);
   }
 
-  /** 一覧（新しい順）。`owner` を渡せば、その Thread が流したものだけ */
+  /**
+   * 一覧（新しい順）。`owner` を渡せば、その Thread が流したものだけ。**動いているものは全部出し、終わったものだけ
+   * `limit` 件で切る**（訂正・2026-10-07、Fable のレビュー——動いているものが件数の外に落ちると、止める口の id が分からない）
+   */
   list(owner?: { projectId: string; threadId: string }, limit = DEFAULT_KEEP_FINISHED): CommandView[] {
+    let finished = 0;
     return this.observeAll()
       .filter((o) => !owner || (o.record.requestedBy?.projectId === owner.projectId && o.record.requestedBy?.threadId === owner.threadId))
-      .slice(0, limit)
+      .filter((o) => o.status === "running" || ++finished <= limit)
       .map((o) => this.view(o));
   }
 
@@ -202,8 +233,8 @@ export class BackgroundCommands {
       const mismatch = item.thread
         ? !record.requestedBy
           ? "記録は Module が中継で流したコマンドですが、Thread のものとして問われました"
-          : record.requestedBy.threadId !== item.thread.threadId
-            ? "記録の流した Thread と、問われた Thread が違います"
+          : record.requestedBy.threadId !== item.thread.threadId || record.requestedBy.projectId !== item.thread.projectId
+            ? "記録の流した Thread（Project）と、問われた Thread が違います"
             : undefined
         : record.requestedBy
           ? "記録は Thread から流したコマンドですが、Module のものとして問われました"
@@ -272,10 +303,28 @@ export class BackgroundCommands {
       for (const path of found.record.secretFiles ?? []) rmSync(path, { force: true });
       const { title, text } = this.report(found);
       await this.deps.deliver({ replyTo, title, text, final: true });
-    } catch (err) {
-      console.error(`[shell] コマンド ${id} の結果を届けられませんでした（起き直した host に問われたら届け直します）:`, err);
-    } finally {
       this.watched.delete(id);
+      this.deliverFailures.delete(id);
+      // 届けた印——古いものを消してよいかはこれで見る（届ける前の記録は消さない）
+      try {
+        writeJsonAtomic(jobPath(this.deps.dir, id, DELIVERED_FILE), { at: new Date().toISOString() });
+      } catch (err) {
+        console.error(`[shell] コマンド ${id} に届けた印を書けませんでした:`, err);
+      }
+    } catch (err) {
+      // **中継の一時的な失敗で諦めない**（訂正・2026-10-07、Fable のレビュー）。上限までは見張りに残し、次の見張りで届け直す。
+      // 越えたら外す——記録は残るので、起き直した host に問われたら届ける
+      const failures = (this.deliverFailures.get(id) ?? 0) + 1;
+      const limit = this.deps.deliverRetries ?? DEFAULT_DELIVER_RETRIES;
+      if (failures >= limit) {
+        console.error(`[shell] コマンド ${id} の結果を ${failures} 回届けられませんでした（諦めます。起き直した host に問われたら届け直します）:`, err);
+        this.watched.delete(id);
+        this.deliverFailures.delete(id);
+      } else {
+        console.error(`[shell] コマンド ${id} の結果を届けられませんでした（${failures} 回目。次の見張りで届け直します）:`, err);
+        this.deliverFailures.set(id, failures);
+      }
+    } finally {
       this.delivering.delete(id);
     }
   }
@@ -292,7 +341,9 @@ export class BackgroundCommands {
         : o.status === "timedOut"
           ? `コマンドが時間切れで止まりました：${head}`
           : o.status === "cancelled"
-            ? `コマンドを止めました：${head}`
+            ? exit?.timedOut
+              ? `コマンドを止めました（その前に時間切れになっていました）：${head}`
+              : `コマンドを止めました：${head}`
             : o.status === "stopped"
               ? `コマンドが外から止められました：${head}`
               : `コマンドが途中で終わりました：${head}`;
@@ -302,6 +353,9 @@ export class BackgroundCommands {
       notes.push("終わり方の記録がありません（コンテナが起こし直された・強制的に止められた等）。出力は outputFile に途中まで残っています。");
     }
     if (o.status === "cancelled" && !exit) notes.push("止めると頼んだあと、終わり方を書く前に強制的に止まりました。");
+    if (o.status === "cancelled" && exit?.timedOut) {
+      notes.push(`timeout（${o.record.timeoutSec} 秒）で止めている途中（猶予の間）に cancelCommand で止めました。`);
+    }
     if (o.status === "stopped") notes.push("cancelCommand ではなく外から止められました（人の systemctl stop・コンテナの停止など）。");
     if (exit?.capped) notes.push(`出力が 64 MiB を越えたので、越えた分は outputFile に書いていません（tail は本当の終わり）。全体は ${exit.outputBytes} バイト。`);
     if (exit?.error) notes.push(exit.error);
@@ -309,6 +363,7 @@ export class BackgroundCommands {
       exitCode: exit ? exit.code : null,
       ...(exit?.signal ? { signal: exit.signal } : {}),
       status: o.status,
+      ...(exit?.timedOut ? { timedOut: true } : {}),
       commandId: o.record.id,
       command: o.record.command,
       cwd: this.relCwd(o.record.cwd),
@@ -384,6 +439,8 @@ export class BackgroundCommands {
       if (readJsonIfExists(jobPath(this.deps.dir, id, STARTED_FILE)) !== undefined) return;
       await new Promise((r) => setTimeout(r, 50));
     }
+    // 期限の際に起きたものは起きたとみなす（止めて消すのは、本当に起きていないものだけ）
+    if (readJsonIfExists(jobPath(this.deps.dir, id, STARTED_FILE)) !== undefined) return;
     throw new BackgroundCommandError(`コマンドの起動役が ${Math.round(limit / 1000)} 秒たっても起きませんでした`);
   }
 
@@ -404,10 +461,20 @@ export class BackgroundCommands {
     }
   }
 
-  /** 終わったものは新しい `keepFinished` 件だけ残す。動いているもの・届ける約束をしたものは消さない */
+  /**
+   * 終わったものは新しい `keepFinished` 件だけ残す。動いているもの・届ける約束をしたもの・**まだ届けていないもの**は消さない
+   * （訂正・2026-10-07、Fable のレビュー——届ける前に消すと、起き直した host に問われても届けられない）。届けていないものも、
+   * 終わってから `UNDELIVERED_KEEP_MS` たてば消してよい（もう問われない）
+   */
   private prune(): void {
     const keep = this.deps.keepFinished ?? DEFAULT_KEEP_FINISHED;
-    const finished = this.observeAll().filter((o) => o.status !== "running" && !this.watched.has(o.record.id));
+    const now = Date.now();
+    const finished = this.observeAll().filter((o) => {
+      if (o.status === "running" || this.watched.has(o.record.id)) return false;
+      if (existsSync(jobPath(this.deps.dir, o.record.id, DELIVERED_FILE))) return true;
+      const endedAt = Date.parse(o.exit?.at ?? o.started?.at ?? o.record.startedAt);
+      return Number.isFinite(endedAt) && now - endedAt > UNDELIVERED_KEEP_MS;
+    });
     for (const o of finished.slice(keep)) {
       try {
         rmSync(join(this.deps.dir, o.record.id), { recursive: true, force: true });

@@ -20,15 +20,20 @@ export interface BackgroundLauncher {
   prepare(): Promise<void>;
   /** 起動役を起こす。返ったら起こすのを頼み終えている（起きたかは `started.json` で見る） */
   start(target: LaunchTarget): Promise<void>;
-  /** 止める（cgroup・グループごと SIGTERM、待って残れば SIGKILL）。返ったら止め終えている */
+  /**
+   * 止める（cgroup・グループごと SIGTERM、待って残れば SIGKILL）。返ったら止め終えている。**単位の名前だけで止められる**
+   * （起動役が started.json を書く前でも）。`pid` は試験の起こし方が、別の Shell が起こしたものを止めるときの手がかり
+   */
   stop(target: { unit: string; pid?: number }): Promise<void>;
 }
 
-interface Exec {
+export interface Exec {
   code: number;
   stdout: string;
   stderr: string;
 }
+
+export type RunCommandFn = (file: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<Exec>;
 
 function run(file: string, args: string[], env?: NodeJS.ProcessEnv): Promise<Exec> {
   return new Promise((resolve) => {
@@ -51,11 +56,27 @@ export class SystemdLauncher implements BackgroundLauncher {
   private readonly env: NodeJS.ProcessEnv;
   private ready?: Promise<void>;
 
+  private readonly run: RunCommandFn;
+  private readonly busExists: (path: string) => Promise<boolean>;
+
   constructor(
     private readonly nodePath: string,
     private readonly wrapperPath: string,
     private readonly uid: number = userInfo().uid,
+    /** **試験で差し替えるための穴**（systemd を呼ぶ口と、バスがあるかの確かめ）。本番では渡さない */
+    hooks: { run?: RunCommandFn; busExists?: (path: string) => Promise<boolean> } = {},
   ) {
+    this.run = hooks.run ?? run;
+    this.busExists =
+      hooks.busExists ??
+      (async (path) => {
+        try {
+          await access(path);
+          return true;
+        } catch {
+          return false;
+        }
+      });
     const runtime = `/run/user/${uid}`;
     this.env = { ...process.env, XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${runtime}/bus` };
   }
@@ -73,7 +94,7 @@ export class SystemdLauncher implements BackgroundLauncher {
     await this.ensureUserManager();
     // **コマンドも環境も単位に書かない**——コマンドは置き場の job.json、環境は tmpfs のファイル（起動役が読んで消す）。
     // `--setenv` は `systemctl show` で読める
-    const r = await run(
+    const r = await this.run(
       "systemd-run",
       [
         "--user",
@@ -92,11 +113,16 @@ export class SystemdLauncher implements BackgroundLauncher {
       ],
       this.env,
     );
-    if (r.code !== 0) throw new Error(`systemd-run で起こせませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
+    if (r.code !== 0) {
+      // **用意できたことを覚え続けない**（訂正・2026-10-07、Fable のレビュー）——ユーザーの systemd が落ちた・バスに繋がらない
+      // まま覚えていると、以後ずっと確かめ直さずに失敗する。次の呼び出しで確かめ直す
+      this.ready = undefined;
+      throw new Error(`systemd-run で起こせませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
+    }
   }
 
   async stop(target: { unit: string }): Promise<void> {
-    const r = await run("systemctl", ["--user", "stop", `${target.unit}.service`], this.env);
+    const r = await this.run("systemctl", ["--user", "stop", `${target.unit}.service`], this.env);
     // もう終わって片づいた単位は「not loaded」——止める相手がいないだけ
     if (r.code !== 0 && !/not loaded|not found/i.test(r.stderr)) {
       throw new Error(`systemctl --user stop で止められませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
@@ -114,22 +140,18 @@ export class SystemdLauncher implements BackgroundLauncher {
       const bus = `/run/user/${this.uid}/bus`;
       const busUp = async (tries: number) => {
         for (let i = 0; i < tries; i++) {
-          try {
-            await access(bus);
-            return true;
-          } catch {
-            await new Promise((res) => setTimeout(res, 200));
-          }
+          if (await this.busExists(bus)) return true;
+          await new Promise((res) => setTimeout(res, 200));
         }
         return false;
       };
       if (await busUp(1)) return;
       const problems: string[] = [];
-      const linger = await run("sudo", ["-n", "loginctl", "enable-linger", userInfo().username]);
+      const linger = await this.run("sudo", ["-n", "loginctl", "enable-linger", userInfo().username]);
       if (linger.code !== 0) {
         problems.push(`loginctl enable-linger: ${linger.stderr.trim()}`);
         console.error(`[shell] linger を入れられませんでした（user@${this.uid}.service を直に起こします）: ${linger.stderr.trim()}`);
-        const started = await run("sudo", ["-n", "systemctl", "start", `user@${this.uid}.service`]);
+        const started = await this.run("sudo", ["-n", "systemctl", "start", `user@${this.uid}.service`]);
         if (started.code !== 0) problems.push(`systemctl start user@${this.uid}.service: ${started.stderr.trim()}`);
       }
       if (await busUp(50)) return;
@@ -148,6 +170,9 @@ export class SystemdLauncher implements BackgroundLauncher {
  * 起動役は残る——起こし直しをまたぐ試験に使う。本番では使わない（コンテナの外で待たない形は断る）
  */
 export class DetachedLauncher implements BackgroundLauncher {
+  /** 単位の名前 → 起こした起動役の pid（自分のグループの頭）。systemd の単位の名前で止めるのと同じ口にする */
+  private readonly pids = new Map<string, number>();
+
   constructor(
     private readonly nodePath: string,
     private readonly wrapperPath: string,
@@ -161,25 +186,27 @@ export class DetachedLauncher implements BackgroundLauncher {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
+    if (child.pid !== undefined) this.pids.set(target.unit, child.pid);
     child.unref();
   }
 
-  async stop(target: { pid?: number }): Promise<void> {
-    if (target.pid === undefined) return;
+  async stop(target: { unit: string; pid?: number }): Promise<void> {
+    const pid = this.pids.get(target.unit) ?? target.pid;
+    if (pid === undefined) return;
     const alive = () => {
       try {
-        process.kill(-target.pid!, 0);
+        process.kill(-pid, 0);
         return true;
       } catch {
         return false;
       }
     };
     try {
-      process.kill(-target.pid, "SIGTERM");
+      process.kill(-pid, "SIGTERM");
     } catch {
       return;
     }
     for (let waited = 0; waited < 10_000 && alive(); waited += 50) await new Promise((r) => setTimeout(r, 50));
-    if (alive()) process.kill(-target.pid, "SIGKILL");
+    if (alive()) process.kill(-pid, "SIGKILL");
   }
 }

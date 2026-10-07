@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -31,7 +31,7 @@ import {
 } from "@banto/module-contract";
 import { createShellServer } from "./server.js";
 import { BackgroundCommands, type DeliverInput } from "./background.js";
-import { DetachedLauncher } from "./background-launcher.js";
+import { DetachedLauncher, SystemdLauncher, type BackgroundLauncher, type Exec } from "./background-launcher.js";
 import { tailLines, type JobRecord, type StartedRecord } from "./background-files.js";
 import type { HostRelayClient } from "./host-relay-client.js";
 
@@ -61,7 +61,13 @@ function fakeRelay(): HostRelayClient {
 /** 同じ置き場で Shell を立てる（起き直しは、同じ置き場で立て直すこと） */
 async function startShell(
   dirs: Dirs,
-  opts: { deliver?: (input: DeliverInput) => Promise<unknown>; background?: false; pollMs?: number } = {},
+  opts: {
+    deliver?: (input: DeliverInput) => Promise<unknown>;
+    background?: false;
+    pollMs?: number;
+    launcher?: BackgroundLauncher;
+    startWaitMs?: number;
+  } = {},
 ) {
   const delivered: DeliverInput[] = [];
   const background =
@@ -71,7 +77,8 @@ async function startShell(
           dir: dirs.commands,
           secretsDir: dirs.secrets,
           projectRoot: dirs.project,
-          launcher: new DetachedLauncher(process.execPath, WRAPPER),
+          launcher: opts.launcher ?? new DetachedLauncher(process.execPath, WRAPPER),
+          ...(opts.startWaitMs !== undefined ? { startWaitMs: opts.startWaitMs } : {}),
           deliver:
             opts.deliver ??
             (async (input) => {
@@ -143,6 +150,21 @@ function allFileText(dir: string): string {
     if (entry.isFile()) out += readFileSync(join(entry.parentPath, entry.name), "utf8");
   }
   return out;
+}
+
+/** そのプロセスが居るか（ゾンビは居ない扱い） */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z");
+  } catch {
+    return false;
+  }
 }
 
 const readJob = (dirs: Dirs, id: string) => JSON.parse(readFileSync(join(dirs.commands, id, "job.json"), "utf8")) as JobRecord;
@@ -405,12 +427,21 @@ test("外から止められたもの（cancelCommand ではない SIGTERM）は�
 test("起動役：started.json を書いた直後に止められても、終わり方を書き、子を残さない（信号の受け口を先に置く）", async () => {
   await withDirs(async (dirs) => {
     // 以前は started.json を書いて子を起こしてから受け口を置いていて、見た直後の SIGTERM で 30 回中 30 回書けなかった
+    // 子は自分の pid を書いてから sleep に化ける——残ったかは pid で見る（名前で探すと、並んで走る別の試験を拾う）
+    const childPids: number[] = [];
     for (let i = 0; i < 10; i++) {
       const dir = join(dirs.root, `race-${i}`);
       mkdirSync(dir, { recursive: true });
       writeFileSync(
         join(dir, "job.json"),
-        JSON.stringify({ id: "x", command: "sleep 31", cwd: dirs.project, startedAt: "", replyToFingerprint: "f", unit: "u" }),
+        JSON.stringify({
+          id: "x",
+          command: `echo $$ > '${join(dir, "child.pid")}'; exec sleep 31`,
+          cwd: dirs.project,
+          startedAt: "",
+          replyToFingerprint: "f",
+          unit: "u",
+        }),
       );
       writeFileSync(join(dir, "env.json"), JSON.stringify({ PATH: process.env.PATH }));
       const wrapper = spawn(process.execPath, [WRAPPER, dir, join(dir, "env.json")], { stdio: "ignore", detached: true });
@@ -420,10 +451,15 @@ test("起動役：started.json を書いた直後に止められても、終わ�
       await exited;
       assert.ok(existsSync(join(dir, "exit.json")), `${i} 回目：終わり方を書けなかった`);
       assert.equal(JSON.parse(readFileSync(join(dir, "exit.json"), "utf8")).stopRequested, true);
+      // 子が生き残っていれば、この間に pid を書く
+      await new Promise((r) => setTimeout(r, 300));
+      if (existsSync(join(dir, "child.pid"))) childPids.push(Number(readFileSync(join(dir, "child.pid"), "utf8")));
     }
     // 子（自分のグループで起こした sleep）まで止まっている
-    for (let waited = 0; waited < 3_000 && spawnSync("pgrep", ["-f", "^sleep 31$"]).status === 0; waited += 50) await new Promise((r) => setTimeout(r, 50));
-    assert.notEqual(spawnSync("pgrep", ["-f", "^sleep 31$"]).status, 0, "子が残った");
+    for (const pid of childPids) {
+      for (let waited = 0; waited < 3_000 && alive(pid); waited += 50) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(alive(pid), false, `子（pid ${pid}）が残った`);
+    }
   });
 });
 
@@ -574,4 +610,231 @@ test("終わったものは新しい 20 件だけ残す（動いているもの�
       await shell.close();
     }
   });
+});
+
+// ---- Fable のレビューを受けた直し（2026-10-07）-------------------------------------------------------------
+
+test("起動役が期限までに起きなければ、単位を止めてから記録を消す（遅れて起きた起動役が記録も札も無いまま走らない）", async () => {
+  await withDirs(async (dirs) => {
+    // 起動役を 3 秒遅らせて起こす口（遅いコンテナを模す）。自分の pid を書いてから眠る——止めたかは pid で見る
+    const pidFile = join(dirs.root, "slow-wrapper.pid");
+    const slow = join(dirs.root, "slow-wrapper.sh");
+    writeFileSync(slow, `echo $$ > '${pidFile}'; sleep 3; exec '${process.execPath}' '${WRAPPER}' "$@"\n`);
+    const shell = await startShell(dirs, { launcher: new DetachedLauncher("/bin/sh", slow), startWaitMs: 1 });
+    try {
+      const res = await shell.call("runCommand", { command: `touch '${join(dirs.project, "ran")}'; sleep 30`, runInBackground: true }, stamp());
+      assert.equal(res.isError, true);
+      assert.match(res.content[0]!.text, /起きませんでした/);
+      for (let i = 0; i < 40 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      assert.equal(alive(pid), false, "遅れた起動役が止められずに残っている");
+      assert.deepEqual(existsSync(dirs.commands) ? readdirSync(dirs.commands) : [], [], "記録が残っている");
+      await new Promise((r) => setTimeout(r, 3_500));
+      assert.equal(existsSync(join(dirs.project, "ran")), false, "記録の無いコマンドが走った");
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("届けるのに失敗しても、次の見張りで届け直す（中継の一時的な失敗で、起こし直しまで待たせない）", async () => {
+  await withDirs(async (dirs) => {
+    let calls = 0;
+    const delivered: DeliverInput[] = [];
+    const shell = await startShell(dirs, {
+      deliver: async (input) => {
+        calls += 1;
+        if (calls <= 2) throw new Error("中継が一時的に繋がりません");
+        delivered.push(input);
+        return {};
+      },
+    });
+    try {
+      await runInBackground(shell, { command: "echo retried" });
+      for (let i = 0; i < 200 && delivered.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(delivered.length, 1, `届け直していない（呼んだ回数 ${calls}）`);
+      assert.equal(calls, 3);
+      assert.match(deliveredBody(delivered[0]!).tail, /retried/);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+/** 終わった記録を置く（試験用）。`delivered` なら届けた印も */
+function putFinished(dirs: Dirs, id: string, at: string, opts: { delivered?: boolean; thread?: typeof THREAD } = {}) {
+  mkdirSync(join(dirs.commands, id), { recursive: true });
+  writeFileSync(
+    join(dirs.commands, id, "job.json"),
+    JSON.stringify({ id, command: "old", cwd: dirs.project, startedAt: at, replyToFingerprint: "x", unit: "u", requestedBy: opts.thread ?? THREAD }),
+  );
+  writeFileSync(
+    join(dirs.commands, id, "exit.json"),
+    JSON.stringify({ at, code: 0, signal: null, stopRequested: false, timedOut: false, outputBytes: 0, capped: false, tail: "" }),
+  );
+  if (opts.delivered) writeFileSync(join(dirs.commands, id, "delivered.json"), JSON.stringify({ at }));
+}
+
+test("古いものを消すのは、届けたもの（と終わってから長くたったもの）だけ——届ける前の記録は消さない", async () => {
+  await withDirs(async (dirs) => {
+    const recent = (i: number) => new Date(Date.now() - (60 - i) * 1000).toISOString();
+    for (let i = 0; i < 25; i++) putFinished(dirs, `undelivered-${String(i).padStart(2, "0")}`, recent(i));
+    for (let i = 0; i < 25; i++) putFinished(dirs, `delivered-${String(i).padStart(2, "0")}`, recent(i), { delivered: true });
+    const shell = await startShell(dirs);
+    try {
+      await runInBackground(shell, { command: "true" });
+      const left = readdirSync(dirs.commands);
+      assert.equal(left.filter((d) => d.startsWith("undelivered-")).length, 25, "届ける前の記録を消した");
+      assert.equal(left.filter((d) => d.startsWith("delivered-")).length, 20, "届けたものが 20 件に切られていない");
+      await shell.waitDelivered(1);
+      assert.ok(existsSync(join(dirs.commands, readdirSync(dirs.commands).find((d) => !/^(un)?delivered-/.test(d))!, "delivered.json")), "届けた印を書いていない");
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("一覧：動いているものは件数に関わらず全部出し、終わったものだけ 20 件で切る", async () => {
+  await withDirs(async (dirs) => {
+    // 動いているもの（起動役の代わりにこの試験のプロセス——居る）を一番古く置き、そのあとに終わったものを 25 件
+    const id = "20200101-000000-running";
+    mkdirSync(join(dirs.commands, id), { recursive: true });
+    writeFileSync(
+      join(dirs.commands, id, "job.json"),
+      JSON.stringify({ id, command: "long", cwd: dirs.project, startedAt: "2020-01-01T00:00:00Z", replyToFingerprint: "x", unit: "u", requestedBy: THREAD }),
+    );
+    writeFileSync(join(dirs.commands, id, "started.json"), JSON.stringify({ pid: process.pid, at: "2020-01-01T00:00:00Z" }));
+    for (let i = 0; i < 25; i++) putFinished(dirs, `finished-${String(i).padStart(2, "0")}`, new Date(Date.now() - i * 1000).toISOString());
+    const shell = await startShell(dirs);
+    try {
+      const listed = JSON.parse((await shell.call("listCommands", {}, { [THREAD_META_KEY]: THREAD })).content[0]!.text).commands as Array<{
+        commandId: string;
+        status: string;
+      }>;
+      assert.ok(listed.some((c) => c.commandId === id && c.status === "running"), "動いているものが一覧から落ちた");
+      assert.equal(listed.filter((c) => c.status !== "running").length, 20);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("止める口：止める前に自然に終わっていたら「止めました」と言わない（届く知らせも「終わりました」）", async () => {
+  await withDirs(async (dirs) => {
+    // 止めるのが遅い口（止めずに待つ）——その間にコマンドが自然に終わる
+    const real = new DetachedLauncher(process.execPath, WRAPPER);
+    const lazy: BackgroundLauncher = {
+      prepare: () => real.prepare(),
+      start: (t) => real.start(t),
+      stop: () => new Promise((r) => setTimeout(r, 1_500)),
+    };
+    const shell = await startShell(dirs, { launcher: lazy });
+    try {
+      const { commandId } = await runInBackground(shell, { command: "sleep 0.5; echo natural-end" });
+      const res = await shell.call("cancelCommand", { commandId }, { [THREAD_META_KEY]: THREAD });
+      assert.equal(res.isError, undefined, res.content[0]?.text);
+      const body = JSON.parse(res.content[0]!.text) as { status: string; alreadyEnded?: boolean; note: string };
+      assert.equal(body.status, "exited");
+      assert.equal(body.alreadyEnded, true);
+      assert.match(body.note, /止める前にもう終わっていました/);
+      assert.doesNotMatch(body.note, /^止めました/);
+      await shell.waitDelivered(1);
+      assert.match(shell.delivered[0]!.title, /^コマンドが終わりました/);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("時間切れの猶予の間に止めたら、題に時間切れも書く", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs);
+    try {
+      // SIGTERM を無視するコマンド（時間切れの SIGTERM で止まらず、猶予のあと SIGKILL）
+      const { commandId } = await runInBackground(shell, { command: "trap '' TERM; echo ignoring; sleep 30", timeout: 1 });
+      await new Promise((r) => setTimeout(r, 2_000));
+      const res = await shell.call("cancelCommand", { commandId }, { [THREAD_META_KEY]: THREAD });
+      assert.equal(res.isError, undefined, res.content[0]?.text);
+      await shell.waitDelivered(1, 20_000);
+      const d = shell.delivered[0]!;
+      assert.match(d.title, /^コマンドを止めました（その前に時間切れになっていました）/);
+      const body = deliveredBody(d);
+      assert.equal(body.status, "cancelled");
+      assert.equal(body.timedOut, true);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("起こし直しの問い：Thread が同じでも Project が違えば続けない", async () => {
+  await withDirs(async (dirs) => {
+    const before = await startShell(dirs, { pollMs: 600_000 });
+    await runInBackground(before, { command: "echo p" }, stamp(THREAD, "reply_P"));
+    await before.close();
+    const after = await startShell(dirs);
+    try {
+      const res = await after.call(RESUME_AFTER_RESTART_TOOL, { items: [{ replyTo: "reply_P", thread: { projectId: "p2", threadId: THREAD.threadId } }] });
+      const answer = JSON.parse(res.content[0]!.text).answers[0] as { resume: boolean; reason?: string };
+      assert.equal(answer.resume, false);
+      assert.match(answer.reason!, /Thread（Project）と、問われた Thread が違います/);
+    } finally {
+      await after.close();
+    }
+  });
+});
+
+test("sshIdentity を待たない形で使うと、起こし直しで ssh-agent が消えることを返事に添える（断らない）", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs);
+    try {
+      const { result } = await runInBackground(shell, { command: "true", sshIdentity: "deploy-key" });
+      assert.match(JSON.parse(result.content[0]!.text).note, /sshIdentity の ssh-agent は banto の Vault が持っている/);
+      const plain = await runInBackground(shell, { command: "true" });
+      assert.doesNotMatch(JSON.parse(plain.result.content[0]!.text).note, /ssh-agent/);
+      await shell.waitDelivered(2);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("待たない形が使えない Shell は、一覧・止める口と runInBackground の引数を見せない（見えるのに断る口を出さない）", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs, { background: false });
+    try {
+      const { tools } = await shell.client.listTools();
+      assert.deepEqual(
+        tools.map((t) => t.name).filter((n) => n !== RESUME_AFTER_RESTART_TOOL),
+        ["runCommand"],
+      );
+      const run = tools.find((t) => t.name === "runCommand")!;
+      assert.equal((run.inputSchema.properties as Record<string, unknown>).runInBackground, undefined);
+      assert.equal(run._meta?.[DELIVERS_LATER_META_KEY], undefined, "終わったら届けると名乗っている");
+      assert.doesNotMatch(run.description!, /runInBackground/);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("systemd の口：systemd-run が失敗したら、用意できたことを忘れて次の呼び出しで確かめ直す", async () => {
+  let busChecks = 0;
+  let runs = 0;
+  const launcher = new SystemdLauncher("/node", "/wrapper.js", 1000, {
+    busExists: async () => {
+      busChecks += 1;
+      return true;
+    },
+    run: async (file): Promise<Exec> => {
+      if (file !== "systemd-run") return { code: 0, stdout: "", stderr: "" };
+      runs += 1;
+      return runs === 1 ? { code: 1, stdout: "", stderr: "Failed to connect to bus" } : { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  await assert.rejects(launcher.start({ unit: "u", dir: "/d", envFile: "/e" }), /Failed to connect to bus/);
+  await launcher.start({ unit: "u", dir: "/d", envFile: "/e" });
+  assert.equal(busChecks, 2, "失敗のあと確かめ直していない");
+  await launcher.start({ unit: "u", dir: "/d", envFile: "/e" });
+  assert.equal(busChecks, 2, "成功のあとも毎回確かめている");
 });

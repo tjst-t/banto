@@ -367,7 +367,13 @@ export async function runCommandInBackground(
       note:
         "待たずに流しました。終わったら終了コードと出力の末尾がこの会話に届き、あなたが起こされます。" +
         "それまで他の仕事を続けてよい（結果を待つために同じコマンドを流し直さない）。途中の出力は outputFile を tail・grep で読めます。" +
-        "止めるときは cancelCommand",
+        "止めるときは cancelCommand" +
+        // **sshIdentity の ssh-agent は Vault の Module が持つ**（Fable のレビュー、2026-10-07）——banto を起こし直すと Vault も
+        // 起き直して ssh-agent が消え、途中の git push などは失敗する。断らずに言っておく
+        (input.sshIdentity
+          ? "。注意：sshIdentity の ssh-agent は banto の Vault が持っているので、コマンドの途中で banto が起こし直されると" +
+            "消え、そのあとの git push などは失敗します（終わりの知らせの出力で分かります）"
+          : ""),
     };
   } catch (err) {
     await removeSecretFiles(writtenSecretFiles);
