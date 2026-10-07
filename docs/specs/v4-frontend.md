@@ -2144,7 +2144,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
   いる Thread のどれかが未読なら Project 名を太字**にする。いま開いている Project の名前は太字にしない（中の行で分かる）。
   見分けは `data-unread`（`useThreadUnread`・`useAnyThreadUnread`、`lib/backend/real-inbox.ts`）
 - **バックグラウンドで動いているものを出す**（追加・2026-10-03、ユーザー。見本 `mock/components/banto/shell/pending-replies.tsx`）：
-  AI が「終わったら届ける」tool（`dev.banto/deliversLater`、`runSubagent` の `runInBackground` など）で頼み、Module が
+  AI が「終わったら届ける」tool（`dev.banto/deliversLater`、`runSubagent` の `runInBackground`・Shell の `runCommand` の `runInBackground`（2026-10-07。題はカードの `{command}`）など）で頼み、Module が
   「あとで届ける」と約束して、まだ届いていないもの（host の返事待ちの札、アーキ仕様 §4.2）。AI が動いている印（回る輪）とは
   別のことなので、**別の場所に置く**——両方が同時に見える。**待つ形の呼び出しは出さない**（その間はターンが走っていて輪が回る）
   - **Thread の行**（Base・Fork、広いサイドバーと Drawer）：名前の下に薄い1行。1件ならカードの題（tool が名乗る

@@ -393,6 +393,24 @@ Module を落とす**。次に要るときに、コンテナの根を付け替�
   Project と Shell のホームの外（人のホームの下）を指していたら、結果に `confinementNote` を添える（人にも AI にも、
   「自分の端末では動くのに」の理由が分かる）
 
+### Shell の待たない形のコマンドは、コンテナの中の systemd で動く（決定・2026-10-07、ユーザー）
+
+`runCommand` の `runInBackground`（`docs/specs/v4-modules.md` §2.3「待たない形」）は、コマンドを Shell の Module から
+切り離し、**その Project のコンテナの中の** systemd のユーザー単位で動かす。境界は待つ形と同じ（コンテナ）で、
+増えるのは「Shell と banto を起こし直しても動き続ける」ことだけ。
+
+- **コンテナの外では使わない**：`BANTO_IN_CONTAINER` が無い Shell（試験で banto 本体と同じ所に立てたもの）は
+  待たない形を断る——人の機械の systemd にコマンドを残さない
+- **秘密は host のディスクにも systemd のプロパティにも書かない**：`envSecrets` の値（とコマンドの環境）は
+  コンテナの中の tmpfs（`/run/user/<uid>/banto-shell/`、0700 の下に 0600 のファイル）に置き、起動役が起動してすぐ
+  読んで消す。`systemd-run --setenv` は `systemctl show` で読めるので使わない。走っている間、値は待つ形と同じく
+  子の環境にある（中の AI は root なので読める——§1 の帰結として受け入れ済み）
+- **札そのものは置き場に書かない**（指紋だけ）。置き場（Shell の Module の置き場、host のディスク）に残るのは
+  コマンド・cwd・出力・終わり方
+- **止める口は流した Thread からだけ**（host が刻む Thread の印で見る）。同じ Project の別の Thread がコマンドの
+  id を知っただけで止められないように——ただし中の AI は root なので `kill` で止められる。これは事故を防ぐ線で、
+  権限の線ではない
+
 ### サブエージェントは Project のコンテナの中で走る（決定・2026-09-24、改訂・2026-09-25）
 
 Subagent Module（アーキ仕様 §4.1）は Project の Module なので、**Module ごと Project のコンテナの中で起き、
