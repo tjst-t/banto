@@ -4579,7 +4579,7 @@
       "number": 192,
       "kind": "task",
       "title": "Factory の受け入れ——3件同時・1件失敗・host を起こし直して続く",
-      "status": "ready",
+      "status": "done",
       "parent": "factory",
       "dependsOn": [
         "factory-merge-queue",
@@ -4590,12 +4590,12 @@
       "labels": [],
       "body": "要件 B の受け入れをそのまま測る。本物のサブエージェント（Claude Code）で banto 以外の小さなリポジトリを使う。",
       "doneWhen": "3件を同時に流して3つとも main に入る。1つ失敗させても他の2つは進む。banto の host を落として起こし直しても途中から続く",
-      "resolution": null,
+      "resolution": "2026-10-07、稼働中の banto（99958116）で本物の Claude Code（sonnet）により確認：3件を同時に流し、実装の途中で banto を起こし直しても頼み直さず続き、取り込みの競合も実装役が解いて3件とも main に入った（3／3）。1回目で、わざと落とした1件が止まってもほかは進むことを確認。途中で直したもの：5605dd9f（競合をまず実装役に解かせる）・99958116（答え・止めるが 500）・83e540b2（REBASE_HEAD の誤判定）。経緯は docs/notes/2026-10-04-factory-design.md。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-04T08:56:11.868Z",
-      "updatedAt": "2026-10-04T08:56:11.868Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-07T15:15:28.011Z",
+      "closedAt": "2026-10-07T15:15:28.011Z",
       "extra": {}
     },
     {
