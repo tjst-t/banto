@@ -5607,6 +5607,29 @@
       "updatedAt": "2026-10-07T15:54:59.394Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "factory-answer-waits-merge",
+      "number": 230,
+      "kind": "bug",
+      "title": "マージの段で止まった件に answerFactory で「続ける」と答えると、AI の呼び出しが 60 秒で切れる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "factory"
+      ],
+      "body": "## 起きたこと（2026-10-07、Factory の実行 52a00f3f の #227）\n\n取り込む直前のテストで止まった件に、AI が answerFactory（continue）で答えると、答え自体は通り（件は merging に戻った）のに、AI の tool 呼び出しは `MCP error -32001: Request timed out` で返った。\n\n## 見立て\n\nanswerFactory は `factory.withCall(run.id, callId, () => factory.settled(run.id))` で「走り出した各件が最初のサブエージェントに頼めた・止まった・終わった」まで待つ。マージの段からの続きはサブエージェントに頼まず rebase→テスト（banto では約5分）→取り込みと進むので、settled が長く解けず、host の 60 秒の見張り（進捗が来ない）で切れる。待つのは「サブエージェントに頼む段に着いたか、人を待たない段に入ったか」までにする（マージの段なら待たない）か、待つ間に進捗を送る。\n\n## 確かめ方\n\n単体（server.test.ts）：マージの直前のテストで止めた件に answerFactory（continue）すると、テストの長さによらずすぐ返る（テストのコマンドに sleep を入れて確かめる）。",
+      "doneWhen": "マージの段で止まった件への answerFactory がテストを待たずに返る。単体で確かめてある",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-07T16:07:51.029Z",
+      "updatedAt": "2026-10-07T16:07:51.029Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
