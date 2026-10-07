@@ -920,7 +920,16 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
       case "createGroup": {
         const implementation = await target();
-        await deps.relay.callTool(implementation, "createGroup", { name: requiredString(args.name, "name") });
+        const name = requiredString(args.name, "name");
+        // **人が作るグループの名前に `@` を入れさせない**（2026-10-07、レビュー）。`@` は版付きの置き場の書き方
+        // （`<グループ>@<版>`、仕様 §2.1「グループの『版』」）で、Infisical は `g@prod` を「環境 prod のフォルダ g」と読む
+        // ——付けたつもりの「g@prod」ではなく、環境 prod に「g」ができる。版は版の欄で選ぶ。kit の backend.createGroup は
+        // 版付きの名前を受ける（紐付け・移す・参照で版付きの置き場を作るとき kit の中から呼ぶ）ので、断るのは人の入口である
+        // ここ（管理画面・banto 全体の設定画面の「作る」はどちらもここを通る）
+        if (name.includes("@")) {
+          throw new Error(`グループ名に「@」は使えません（「@」は版を表す書き方に使っています。版は版の欄で選んでください）: ${name}`);
+        }
+        await deps.relay.callTool(implementation, "createGroup", { name });
         return text({ ok: true });
       }
 

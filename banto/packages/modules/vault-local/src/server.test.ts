@@ -1098,3 +1098,38 @@ test("参照：名前（toName）は createAlias と同じ規律で検査する�
     assert.equal((await listed(client)).length, 1, "断ったのに参照ができている");
   });
 });
+
+// **貼った SSH の秘密鍵の改行をそろえる**（2026-10-07、レビュー）——本物の ssh-keygen で。`ssh-keygen -y` は末尾に改行の
+// 無い鍵・CRLF の鍵を読めない（実測 `error in libcrypto`）。画面の欄に貼ると末尾の改行が落ちたり、Windows で写すと CRLF に
+// なったりするので、kit が置く前にそろえる。作る（createAlias）・置き換える（replaceSecretValue）の両方
+test("末尾に改行の無い鍵・CRLF の鍵を貼っても、公開鍵が導ける（作る・置き換える）", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { readFileSync } = await import("node:fs");
+  const keyDir = await mkdtemp(join(tmpdir(), "banto-vault-paste-"));
+  try {
+    const make = (name: string) => {
+      execFileSync("ssh-keygen", ["-t", "ed25519", "-f", join(keyDir, name), "-N", "", "-q", "-C", name]);
+      return { key: readFileSync(join(keyDir, name), "utf8"), pub: readFileSync(join(keyDir, `${name}.pub`), "utf8") };
+    };
+    const body = (k: string) => k.trim().split(/\s+/).slice(0, 2).join(" ");
+    const a = make("a"), b = make("b");
+    await withServer(async ({ client }) => {
+      // 末尾の改行を落とした鍵で作る
+      await client.callTool({
+        name: "createAlias",
+        arguments: { name: "deploy", kind: "ssh-identity", group: "keys", value: a.key.trimEnd() },
+      });
+      const pub = await client.callTool({ name: "getPublicKey", arguments: { name: "deploy", group: "keys" } });
+      assert.equal(body(textOf(pub)), body(a.pub), `末尾の改行が無い鍵から公開鍵を導けない: ${textOf(pub)}`);
+      // CRLF の鍵（末尾の改行も無し）で置き換える
+      const replaced = await client.callTool({
+        name: "replaceSecretValue",
+        arguments: { name: "deploy", group: "keys", value: b.key.trimEnd().replace(/\n/g, "\r\n") },
+      });
+      assert.notEqual(replaced.isError, true, textOf(replaced));
+      assert.equal(body(JSON.parse(textOf(replaced)).publicKey), body(b.pub));
+    });
+  } finally {
+    await rm(keyDir, { recursive: true, force: true });
+  }
+});

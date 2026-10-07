@@ -1549,3 +1549,34 @@ test("置き場の一覧に、グループを作ると何ができるかの添�
     await ui.close();
   }, { vaultNames: ["vault-local", "vault-local-2"] });
 });
+
+// **人が作るグループの名前に `@` を入れさせない**（2026-10-07、レビュー）。`@` は版付きの置き場の書き方で、Infisical は
+// `g@prod` を「環境 prod のフォルダ g」と読む。断るのは窓口の createGroup（管理画面・banto 全体の設定画面の「作る」が通る口）。
+// あわせて、kit の createGroup の口が人専用になっても（assertHuman）、窓口の中継（人の画面から＝admin の刻印）では作れること
+test("窓口の createGroup：「@」を含む名前は実装へ渡さずに断り、ふつうの名前は中継（admin の刻印）で作れる", async () => {
+  await withUi(async ({ vaults }) => {
+    const base = relayTo(vaults);
+    const relayed: string[] = [];
+    const relay: RelayLike = {
+      listTargets: () => base.listTargets(),
+      async callTool(target, name, args) {
+        relayed.push(`${target} ${name} ${JSON.stringify(args)}`);
+        return base.callTool(target, name, args);
+      },
+    };
+    const server = createVaultDirectoryServer({ relay });
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const ui = new Client({ name: "canvas", version: "0.0.0" });
+    await Promise.all([server.connect(s), ui.connect(c)]);
+    await assert.rejects(
+      () => ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "tools@prod" }, _meta: ADMIN }),
+      /グループ名に「@」は使えません/,
+    );
+    assert.ok(!relayed.some((x) => x.includes(" createGroup ")), `断ったのに実装へ渡した: ${relayed.join(" / ")}`);
+
+    await ui.callTool({ name: "createGroup", arguments: { implementation: "vault-local", name: "team-a" }, _meta: ADMIN });
+    const places = parse(await ui.callTool({ name: "getPlacements", arguments: {}, _meta: ADMIN }));
+    assert.ok(places.vaults[0].groups.includes("team-a"), `作ったグループが無い: ${JSON.stringify(places.vaults[0].groups)}`);
+    await ui.close();
+  });
+});

@@ -1282,3 +1282,32 @@ test("値を変える・グループを作る：SSH 鍵を作り直す／貼る�
   await call("vault-directory", "deleteAlias", { implementation: "vault-local", name: secret, group: newGroup });
   await call("vault-directory", "deleteAlias", { implementation: "vault-local", name: key, group: keyMeta?.group });
 });
+
+// **banto 全体の設定画面の「作る」も、「@」を含むグループ名を断る**（2026-10-07、レビュー）。設定画面（Global の置き場）の
+// 作る入口は管理画面と同じ窓口の createGroup を通るので、窓口で断れば両方に効く——それを本物の画面で確かめる。
+// 断ったあとは選択肢にも Vault にも出ない。ふつうの名前は作れて、そのまま選ばれる（窓口の中継＝admin の刻印で通る）
+test("設定画面の「作る」：「@」を含むグループ名は理由つきで断り、ふつうの名前は作れる", async ({ page }) => {
+  const stamp = Date.now();
+  await openApp(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Vault の置き場", exact: true }).click();
+  const inner = page
+    .locator('[data-testid="module-settings-canvas"][data-module="vault-directory"] iframe')
+    .contentFrame()
+    .frameLocator("iframe");
+  await expect(inner.getByText("Global の秘密の置き場")).toBeVisible({ timeout: 60_000 });
+  await expect(inner.locator("#vault")).toContainText("vault-local", { timeout: 60_000 });
+  await inner.locator("#vault").selectOption("vault-local");
+
+  await inner.locator("#new-group").fill(`e2e-at@${stamp}`);
+  await inner.locator("#create").click();
+  await expect(inner.locator("#error")).toContainText("グループ名に「@」は使えません", { timeout: 60_000 });
+  await expect(inner.locator(`#group option[value="e2e-at@${stamp}"]`)).toHaveCount(0);
+  await expect(inner.locator(`#group option[value="e2e-at"]`)).toHaveCount(0);
+
+  const made = `e2e-settings-${stamp}`;
+  await inner.locator("#new-group").fill(made);
+  await inner.locator("#create").click();
+  await expect(inner.locator("#group"), "作ったグループが選ばれない").toHaveValue(made, { timeout: 60_000 });
+  await expect(inner.locator("#error")).toBeHidden();
+});

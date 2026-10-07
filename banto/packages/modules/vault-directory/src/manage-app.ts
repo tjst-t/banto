@@ -896,6 +896,8 @@ ${ALIAS_KIND_RULES_JS}
       try {
         const name = nameInput.value.trim();
         if (!name) throw new Error("新しいグループの名前を入れてください");
+        // 「@」は版を表す書き方（g@prod）——Infisical では別の環境にフォルダができる。窓口も断るが、押す前に言う
+        if (name.indexOf("@") >= 0) throw new Error("グループ名に「@」は使えません（「@」は版を表す書き方に使っています。版は版の欄で選んでください）");
         const v = flow.vault();
         if (!v) throw new Error("どの Vault に作るかが決まっていません");
         // 名前の検査は backend が持つ（規則3）——ここでは確かめず、断られたらそのまま出す

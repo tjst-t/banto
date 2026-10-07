@@ -48,8 +48,9 @@ function fakeBackend() {
     },
     async publicKeyOf(path) {
       const v = secrets.get(path) ?? "";
-      // 実物の ssh-keygen は読めない鍵の断片を出力に含めうる——kit がそれを文言に載せないことを見るため、わざと含める
-      if (!v.startsWith(KEY_HEAD)) throw new Error(`ssh-keygen: invalid format: ${v}`);
+      // 実物の ssh-keygen は読めない鍵の断片を出力に含めうる——kit がそれを文言に載せないことを見るため、わざと含める。
+      // 実物と同じく、CRLF の鍵・末尾に改行の無い鍵は読めない（実測 `error in libcrypto`、2026-10-07）
+      if (!v.startsWith(KEY_HEAD) || v.includes("\r") || !v.endsWith("\n")) throw new Error(`ssh-keygen: invalid format: ${v}`);
       return `ssh-ed25519 PUB(${v.split("\n")[1]})`;
     },
     async loadIntoAgent() {
@@ -58,7 +59,9 @@ function fakeBackend() {
     async listGroups() {
       return [];
     },
-    async createGroup() {},
+    async createGroup(name) {
+      calls.push(`createGroup ${name}`);
+    },
   };
   return { backend, secrets, calls };
 }
@@ -239,4 +242,70 @@ test("describeGroups：backend が名乗った添え書きを返し、名乗ら�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// **貼った SSH の秘密鍵の改行をそろえる**（2026-10-07、レビュー）。ssh-keygen は末尾に改行の無い鍵・CRLF の鍵を読めないので、
+// 置く前に `\r` を除いて末尾に `\n` を補う。**ssh-identity だけ**——secret・file の値は1バイトも変えない
+test("ssh-identity の貼った鍵は CRLF を LF にし末尾の改行を補ってから置く（作る・置き換えるの両方）。secret・file は変えない", async () => {
+  await withKit(async (c, rec) => {
+    await call(c, "createAlias", { name: "k1", kind: "ssh-identity", group: "keys", value: `${KEY_HEAD}\r\nbody1\r\n-----END-----` });
+    assert.equal(rec.secrets.get("keys/k1"), `${KEY_HEAD}\nbody1\n-----END-----\n`);
+    const pub = await call(c, "getPublicKey", { name: "k1", group: "keys" });
+    assert.equal(textOf(pub), "ssh-ed25519 PUB(body1)");
+
+    const replaced = await call(c, "replaceSecretValue", { name: "k1", group: "keys", value: `${KEY_HEAD}\r\nbody2` });
+    assert.equal(JSON.parse(textOf(replaced)).publicKey, "ssh-ed25519 PUB(body2)");
+    assert.equal(rec.secrets.get("keys/k1"), `${KEY_HEAD}\nbody2\n`);
+
+    // secret・file は貼られたとおり（\r も末尾の改行の無さも保つ）
+    await call(c, "createAlias", { name: "s", kind: "secret", group: "g", value: "a\r\nb" });
+    await call(c, "createAlias", { name: "f", kind: "file", group: "g", value: "x=1\r\ny=2" });
+    assert.equal(rec.secrets.get("g/s"), "a\r\nb");
+    assert.equal(rec.secrets.get("g/f"), "x=1\r\ny=2");
+    await call(c, "replaceSecretValue", { name: "s", group: "g", value: "c\r\nd" });
+    await call(c, "replaceSecretValue", { name: "f", group: "g", value: "z=3\r\n" });
+    assert.equal(rec.secrets.get("g/s"), "c\r\nd");
+    assert.equal(rec.secrets.get("g/f"), "z=3\r\n");
+  });
+});
+
+test("読めない鍵を貼り、元の鍵にも戻せなかったら、そう言う——backend の失敗の文言は載せない", async () => {
+  await withKit(async (c, rec) => {
+    await call(c, "generateSecret", { name: "deploy", kind: "ssh-identity", group: "keys" });
+    let puts = 0;
+    const realPut = rec.backend.putSecret.bind(rec.backend);
+    rec.backend.putSecret = async (path, value) => {
+      puts++;
+      // 1回目（貼ったものを置く）は通し、2回目（元に戻す）で落とす。文言に値の断片を混ぜる
+      if (puts === 2) throw new Error(`BACKEND-DETAIL ${String(value).slice(0, 20)}`);
+      return realPut(path, value);
+    };
+    await assert.rejects(
+      () => call(c, "replaceSecretValue", { name: "deploy", group: "keys", value: "NOT-A-KEY-PASTED" }),
+      (err: Error) => {
+        assert.match(err.message, /元の鍵にも戻せませんでした/);
+        assert.doesNotMatch(err.message, /BACKEND-DETAIL|NOT-A-KEY|PRIVATE KEY/, `backend の文言が載っている: ${err.message}`);
+        return true;
+      },
+    );
+  });
+});
+
+// **createGroup の口は人専用**（2026-10-07、レビュー）。台帳・置き場を変える他の口と揃える。kit の中で置くついでに作る
+// （putSecret・createAlias の groupForNewAlias）は口を通らないので、Module からの置き場づくりは今までどおり
+test("createGroup の口は人の刻印が無ければ断る（作らない）。人の口は通り、置くついでに作るのは Module からでも通る", async () => {
+  await withKit(async (c, rec) => {
+    for (const meta of [{ "dev.banto/caller": { project: "P" } }, { "dev.banto/caller": { instance: true } }, {}]) {
+      await assert.rejects(() => call(c, "createGroup", { name: "g1" }, meta), /グループの作成 は人の管理画面からしか行えません/);
+    }
+    assert.ok(!rec.calls.includes("createGroup g1"), "断ったのに作った");
+    await call(c, "createGroup", { name: "g1" });
+    assert.ok(rec.calls.includes("createGroup g1"), "人の口から作れない");
+    // banto が置く秘密を Module が置くと、置き場のグループはついでに作られる（口を通らない）
+    await call(c, "putSecret", { name: "tok", value: "v", group: "g2" }, {
+      "dev.banto/caller": { instance: true },
+      "dev.banto/callerModule": { name: "repositories", conn: "repositories" },
+    });
+    assert.ok(rec.calls.includes("createGroup g2"), "置くついでのグループづくりまで止めた");
+  });
 });

@@ -107,6 +107,16 @@ function requiredString(value: unknown, label: string): string {
   return value;
 }
 
+/**
+ * **貼られた SSH の秘密鍵を、ssh-keygen が読める形にそろえる**（追加・2026-10-07、レビュー）。`ssh-keygen -y` は
+ * 末尾に改行の無い鍵・CRLF の鍵を読めない（実測：`error in libcrypto`）——画面の欄に貼ると末尾の改行が落ちたり、
+ * Windows で写すと CRLF になったりする。`\r` を除き、末尾に `\n` を補う。**ssh-identity だけ**（secret・file の値は1バイトも変えない）
+ */
+function normalizePrivateKey(value: string): string {
+  const lf = value.replace(/\r/g, "");
+  return lf.endsWith("\n") ? lf : `${lf}\n`;
+}
+
 function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new Error(`${label} は文字列です`);
@@ -1057,7 +1067,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           throw new Error(`${BANTO_OWNED_KIND} は banto が置く秘密（ログイン情報）です。手では作れません`);
         }
         const kind = oneOf(args.kind, HUMAN_KINDS, "kind");
-        const value = requiredString(args.value, "value");
+        const typed = requiredString(args.value, "value");
+        const value = kind === "ssh-identity" ? normalizePrivateKey(typed) : typed;
         // **置き場を直接受ける**（改訂・2026-09-13）。`scope` は保存せず
         // 置き場から導くので、入口でも「どこに置くか」だけを聞く
         const group = await groupForNewAlias({
@@ -1264,18 +1275,19 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           // **貼った鍵が読めなければ、元の鍵に書き戻して断る**——読めない鍵で、動いている鍵を壊さない。
           // 鍵として読めるかは backend が導く公開鍵で確かめる（kit は鍵を解釈しない）
           const previous = await backend.getSecret(meta.backendPath);
-          await backend.putSecret(meta.backendPath, value!);
+          await backend.putSecret(meta.backendPath, normalizePrivateKey(value!));
           try {
             publicKey = await backend.publicKeyOf(meta.backendPath);
           } catch {
             // 失敗の文言は ssh-keygen の出力を含みうるので出さない（貼った鍵の断片が混ざらないように）
             try {
               await backend.putSecret(meta.backendPath, previous);
-            } catch (restoreErr) {
-              // 戻せなかったことは隠さない（規則2）——いまは読めない鍵が入っている
+            } catch {
+              // 戻せなかったことは隠さない（規則2）——いまは読めない鍵が入っている。**backend の文言は載せない**
+              // （2026-10-07、レビュー）——上の分岐と同じく、backend の失敗の文言に値の断片が混ざらない保証が無い
               throw new Error(
-                `貼られたものを秘密鍵として読めず、元の鍵にも戻せませんでした（"${name}" には読めない値が入っています）：` +
-                  (restoreErr instanceof Error ? restoreErr.message : String(restoreErr)),
+                `貼られたものを秘密鍵として読めず、元の鍵にも戻せませんでした（"${name}" には読めない値が入っています。` +
+                  "もう一度、正しい鍵を貼るか作り直してください）",
               );
             }
             throw new Error(`貼られたものを秘密鍵として読めませんでした。"${name}" は元の鍵のままです`);
@@ -1376,6 +1388,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       case "listGroups":
         return { content: [{ type: "text", text: JSON.stringify(await backend.listGroups()) }] };
       case "createGroup":
+        // **人の口は人の刻印があるときだけ**（2026-10-07、レビュー）——他の台帳・置き場を変える口（setGroupBinding 等）と
+        // 揃える。kit の中で置くついでに作る（groupForNewAlias 等の backend.createGroup 直呼び）はこの口を通らないので変わらない
+        assertHuman("グループの作成", callMeta);
         await backend.createGroup(requiredString(args.name, "name"));
         return { content: [{ type: "text", text: "ok" }] };
       case "describeGroups":

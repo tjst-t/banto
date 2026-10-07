@@ -46,6 +46,10 @@
   なる（元の注記は用途として中に残る）。「banto は注記を書き足さない」に反するが、使用記録（`lastUsedAt`）と用途の書き直しが
   既に同じことをしている。分けるなら注記の外（Infisical の秘密の `updatedAt` 等）を使うことになるが、注記を書くたびに
   変わるので「値を変えた日時」にならない
+- **限界**：貼った鍵の置き換えは「置く（新）→ 公開鍵を導く → だめなら置く（旧）」なので、その間に Vault のプロセスが落ちると
+  読めない鍵が残り、日時も付かない（一覧からは置き換えたことが分からない）。backend に「書いて確かめてから入れ替える」口が無いため
+- **限界**：窓口の `replaceSecretValue` は `group` を省くと、その実装の一覧で**同じ名前の最初の行**を見て参照かを決める。
+  kit の解決（共通の既定 ＞ 1つだけ）とは別の行を見ることがある。画面は必ず `group` を渡す
 - AI の目録（`vault://aliases`）にも `valueUpdatedAt` は載る（`lastUsedAt` と同じ扱いのメタデータで、値ではない）
 - 空の秘密：一覧の `empty` は読んだときの印で保存しないので、置き換えれば外れる（Infisical の店の試験で確認）
 - 画面：行のメニューの「用途を編集」の次に「値を変える」。参照・OAuth の行でも出し、押すと入力欄を出さずに理由と元の場所を
@@ -73,3 +77,19 @@
   （2026-10-07 に両方を計測）。グループの選択肢の順は vault-local の `listGroups`（ディレクトリを読んだ順）に
   紐付けを足したもので、この Project のグループ（UUID）が先頭に来ると、キーボードで「1つ上を選ぶ」段が成り立たない。
   機構（並び順が決まっていない）の問題で、この作業の範囲の外なので直していない。人に上げる
+
+## レビューの指摘で直したこと（2026-10-07、Fable）
+
+- **貼った SSH 鍵の改行**：`ssh-keygen -y` は末尾に改行の無い鍵・CRLF の鍵を読めない（手元で実測、`error in libcrypto`）。
+  `createAlias`・`replaceSecretValue` の ssh-identity は `\r` を除き末尾に `\n` を補ってから置く。secret・file は変えない
+- **グループ名の `@`**：Infisical は `g@prod` を「環境 prod のフォルダ g」と読むので、人の入口（管理画面の作る欄・窓口の
+  `createGroup`）で断る。banto 全体の設定画面の「作る」も窓口を通るので効く（E2E で確かめた）。kit の `backend.createGroup` は
+  版付きの名前を受けたまま（紐付け・移す・参照で版付きの置き場を作るのに要る）
+- **kit の `createGroup` の口に `assertHuman`**：台帳・置き場を変える他の口と揃えた。置くついでに作る（`groupForNewAlias`）は
+  口を通らないので変わらない。窓口の中継（人の画面＝admin の刻印）からは作れる（単体・E2E で確かめた）
+- **書き戻し失敗の文言**：backend のエラー文を載せない（他の分岐と同じく伏せる）
+- **古い実装の判定は `/unknown tool/i` の文言のまま**（直していない）：実装が `describeGroups`・`describeVariants` を持つかを
+  tools/list で見たいが、Module が中継で使える口は `relayListTargets`・`relayCallTool`・`relayReadResource` 等で、
+  **相手の tool の一覧を引く口が無い**（core の `host-relay-endpoint.ts`）。足すと中継の許可・監査の作り替えになるので今はしない。
+  文言は kit が投げる `unknown tool: <名前>`（kit の既定の分岐）で、kit を変えるときはこの判定（窓口の `variantsOf`・
+  `groupCreateNoteOf`）も見ること

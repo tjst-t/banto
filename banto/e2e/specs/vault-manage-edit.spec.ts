@@ -99,6 +99,15 @@ test("グループを作る：移すの小窓——最後の選択肢で名前�
   await expect(app.locator("#move-group")).toHaveValue("__new-group__");
   await refuse(page, "createGroup", null);
 
+  // 「@」は版を表す書き方（g@prod）——Infisical では別の環境にフォルダができる。押す前に断り、窓口を呼ばない
+  const before = (await calls(page, "createGroup")).length;
+  await app.locator("#move-newgroup-name").fill("tools@prod");
+  await app.locator("#move-newgroup-create").click();
+  await expect(app.locator("#move-error")).toHaveText(
+    "グループ名に「@」は使えません（「@」は版を表す書き方に使っています。版は版の欄で選んでください）",
+  );
+  expect((await calls(page, "createGroup")).length, "「@」を含む名前で窓口を呼んだ").toBe(before);
+
   await app.locator("#move-newgroup-name").fill("cloudflare");
   await app.locator("#move-newgroup-create").click();
   await expect(app.locator("#move-error")).toBeHidden();
