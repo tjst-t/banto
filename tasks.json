@@ -4226,7 +4226,7 @@
       "number": 227,
       "kind": "task",
       "title": "Module の画面から banto の別の画面（他の Module の画面・Project の設定の節）を開く口",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "module-foundation",
       "dependsOn": [],
       "milestone": "phase-2",
@@ -4238,7 +4238,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-07T15:21:49.975Z",
-      "updatedAt": "2026-10-07T15:37:52.425Z",
+      "updatedAt": "2026-10-07T15:38:15.235Z",
       "closedAt": null,
       "extra": {}
     },
