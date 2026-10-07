@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Factory, ReplyBox, type FactoryPorts, type Procedure, type RunRecord, type TaskSnapshot } from "./engine.js";
@@ -280,6 +280,120 @@ test("サブエージェントの返事を待っているうちに Factory が�
     s.held.shift()!();
     await until(() => s.fake.finished.length === 1, "終わらない");
     assert.equal(s.factory.get(run.id)!.items[0]!.status, "done");
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ---- マージの列（Backlog の factory-merge-queue） ---------------------------------------------------------
+
+/** README の n 行目（1 から）を書き換えてコミットする実装役。頼みの中の `<line N 文>` で決まる */
+function editLine(prompt: string, cwd: string, n: number) {
+  const m = /<line (\d+) ([^>]+)>/.exec(prompt);
+  if (!m) return defaultImplement(prompt, cwd, n);
+  const lines = readFileSync(join(cwd, "README"), "utf8").split("\n");
+  lines[Number(m[1]) - 1] = m[2]!;
+  writeFileSync(join(cwd, "README"), lines.join("\n"));
+  git(cwd, "commit", "-q", "-am", `README ${m[1]} 行目を ${m[2]}`);
+}
+
+/** main の README を5行にしておく（worktree は流し始めたときの main から作られる） */
+function fiveLines(project: string) {
+  writeFileSync(join(project, "README"), "1\n2\n3\n4\n5\n");
+  git(project, "commit", "-q", "-am", "5行にする");
+}
+
+test("同じファイルの別の場所を触る2件は、両方とも順に main に入る——後の1件は rebase してテストし直してから", async () => {
+  const s = setup({ implement: editLine });
+  try {
+    fiveLines(s.project);
+    const run = s.factory.start({ tasks: [task("top", "<line 1 上>"), task("bottom", "<line 5 下>")], settings: s.settings });
+    await until(() => s.fake.finished.length === 1, "終わらない");
+    assert.deepEqual(run.items.map((i) => i.status), ["done", "done"]);
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), "上\n2\n3\n4\n下\n", "両方の変更が main（作業ツリー）に揃っていない");
+    // 履歴は一直線（マージコミットを作らない）。後に入った1件は先の1件の上に積み直されている
+    const subjects = git(s.project, "log", "--format=%s", "main").split("\n");
+    assert.equal(subjects.length, 4);
+    assert.ok(subjects.slice(0, 2).every((x) => x.startsWith("README")), subjects.join(" / "));
+    assert.equal(git(s.project, "rev-list", "--merges", "--count", "main"), "0");
+    for (const item of run.items) {
+      const steps = s.factory.journalOf(run.id, item.task.id).map((x) => x.key);
+      assert.ok(steps.includes("rebase") && steps.filter((k) => k === "test").length >= 2, `${item.task.id} が取り込む直前にテストしていない：${steps.join(",")}`);
+    }
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("本当に競合する2件では、後の1件が rebase で止まって知らせる。worktree で直して「続ける」と入る", async () => {
+  const s = setup({ implement: editLine });
+  try {
+    fiveLines(s.project);
+    const run = s.factory.start({ tasks: [task("a", "<line 3 甲>"), task("b", "<line 3 乙>")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "競合で止まらない");
+    assert.match(s.fake.stopped[0]!, /main に rebase できませんでした（競合）/);
+    const done = run.items.find((i) => i.status === "done")!;
+    const stopped = run.items.find((i) => i.status === "stopped")!;
+    assert.ok(done && stopped, `片方が入り片方が止まっていない：${run.items.map((i) => i.status).join(",")}`);
+    assert.equal(stopped.stage, "マージ");
+    // 先の1件は入っている。止まった1件の worktree は rebase を畳んだきれいな状態で残っている
+    const mine = done.task.id === "a" ? "甲" : "乙";
+    const theirs = mine === "甲" ? "乙" : "甲";
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), `1\n2\n${mine}\n4\n5\n`);
+    const wt = join(s.project, stopped.worktree);
+    assert.equal(git(wt, "status", "--porcelain"), "", "止まった worktree が rebase の途中のまま");
+    // 人（か AI）が worktree で直す：main に積み直して、両方を残す形で解く
+    try {
+      git(wt, "rebase", "main");
+    } catch {
+      // 競合する——解いて続ける
+    }
+    writeFileSync(join(wt, "README"), `1\n2\n${mine}${theirs}\n4\n5\n`);
+    git(wt, "add", "README");
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.editor=true", "rebase", "--continue"], { cwd: wt });
+    s.factory.answer(run.id, stopped.task.id, { action: "continue" });
+    await until(() => s.fake.finished.length === 1, "直して答えたのに終わらない");
+    assert.equal(stopped.status, "done");
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), `1\n2\n${mine}${theirs}\n4\n5\n`);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("root の作業ツリーに未コミットの変更があって取り込めないときは止まって知らせ、片づけて「続ける」と入る——変更は消さない", async () => {
+  const s = setup({ implement: editLine });
+  try {
+    fiveLines(s.project);
+    // 人が root で同じファイルを書きかけている（コミットしていない）
+    writeFileSync(join(s.project, "README"), "1\n2\n3\n4\n5\n書きかけ\n");
+    const run = s.factory.start({ tasks: [task("c", "<line 2 二>")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    assert.match(s.fake.stopped[0]!, /main に fast-forward できませんでした/);
+    assert.equal(run.items[0]!.stage, "マージ");
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), "1\n2\n3\n4\n5\n書きかけ\n", "人の書きかけを消した");
+    assert.equal(git(s.project, "log", "-1", "--format=%s", "main"), "5行にする", "取り込めないはずが main が動いた");
+    // 人が書きかけを退ける
+    git(s.project, "stash", "-q");
+    s.factory.answer(run.id, "c", { action: "continue" });
+    await until(() => s.fake.finished.length === 1, "片づけて答えたのに終わらない");
+    assert.equal(run.items[0]!.status, "done");
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), "1\n二\n3\n4\n5\n");
+    assert.equal(git(s.project, "stash", "list").split("\n").length, 1, "退けた書きかけが残っていない");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("root の作業ツリーの変更が取り込む変更と関係なければ、そのまま取り込み、人の変更も残す", async () => {
+  const s = setup({ implement: editLine });
+  try {
+    fiveLines(s.project);
+    writeFileSync(join(s.project, "notes.txt"), "人のメモ\n");
+    const run = s.factory.start({ tasks: [task("d", "<line 4 四>")], settings: s.settings });
+    await until(() => s.fake.finished.length === 1, "終わらない");
+    assert.equal(run.items[0]!.status, "done");
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), "1\n2\n3\n四\n5\n");
+    assert.equal(readFileSync(join(s.project, "notes.txt"), "utf8"), "人のメモ\n");
   } finally {
     s.cleanup();
   }
