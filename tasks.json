@@ -4291,7 +4291,7 @@
       "number": 228,
       "kind": "task",
       "title": "Factory の「長引いています」の物差しを決める（いまは同じ段に30分の仮の目安）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "unattended-run",
       "dependsOn": [],
       "milestone": "phase-2",
@@ -4303,7 +4303,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-07T15:21:55.015Z",
-      "updatedAt": "2026-10-07T15:38:02.529Z",
+      "updatedAt": "2026-10-07T15:38:15.907Z",
       "closedAt": null,
       "extra": {}
     },
