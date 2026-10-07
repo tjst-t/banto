@@ -286,3 +286,22 @@ test("2件が止まったまま起き直し、1件に answerFactory で答えて
     await h.cleanup();
   }
 });
+
+test("終わった1件に答える・止める（走っていない1件）は、理由つきで断る（例外にしない）", async () => {
+  const h = setup();
+  try {
+    h.state.holdImplementer = false;
+    const s = await h.start();
+    const started = await s.call("runFactory", { items: ["a"] }, runMeta);
+    const { runId } = JSON.parse(started.text) as { runId: string };
+    await until(() => s.factory.get(runId)?.items[0]?.status === "done", "終わらない");
+    const answered = await s.call("answerFactory", { runId, item: "a", action: "drop" });
+    assert.equal(answered.isError, true);
+    assert.match(answered.text, /止まっていません（いま：done/);
+    const cancelled = await s.call("cancelFactory", { runId, item: "a" });
+    assert.equal(cancelled.isError, true);
+    assert.match(cancelled.text, /走っていません/);
+  } finally {
+    await h.cleanup();
+  }
+});

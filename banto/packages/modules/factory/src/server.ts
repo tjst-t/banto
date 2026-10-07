@@ -506,7 +506,12 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           else if (action === "retry") answer = { action, ...(typeof args.stage === "string" && args.stage.trim() ? { stage: args.stage.trim() } : {}) };
           else if (action === "drop") answer = { action, ...(typeof args.reason === "string" ? { reason: args.reason } : {}) };
           else throw new FactoryError("action は continue・accept・retry・drop のどれか");
-          factory.answer(run.id, item.task.id, answer);
+          // 止まっていない（もう終わった・やめた・走っている）1件への答えは、理由つきで断る（HTTP の 500 にしない）
+          try {
+            factory.answer(run.id, item.task.id, answer);
+          } catch (err) {
+            throw new FactoryError(err instanceof Error ? err.message : String(err));
+          }
           // 知らせる札が無くなっていれば（使い切った・起こし直したあと最後の1回を使った）、この呼び出しの札を引き継ぐ
           const replyTo = replyToOf(meta);
           const adopt = !!replyTo && !handles.has(run.id) && !run.finishedAt;
@@ -525,9 +530,14 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           const run = factory.get(String(args.runId ?? ""));
           if (!run) throw new FactoryError(`実行 ${String(args.runId)} はありません`);
           const taskId = args.item === undefined ? undefined : itemOf(run, args.item).task.id;
-          const stopped = await factory.withCall(run.id, callId, () =>
+          let stopped: string[];
+          try {
+            stopped = await factory.withCall(run.id, callId, () =>
             factory.cancel(run.id, taskId, typeof args.reason === "string" && args.reason.trim() ? args.reason : "止めました"),
           );
+          } catch (err) {
+            throw new FactoryError(err instanceof Error ? err.message : String(err));
+          }
           return text({ runId: run.id, stopping: stopped, note: "止めています。Backlog は ready に戻し、worktree は残します" });
         }
         case "receiveReply": {
