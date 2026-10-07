@@ -5588,7 +5588,7 @@
       "number": 229,
       "kind": "bug",
       "title": "Subagent・Factory の画面で、中の枠を下にスクロールしても数秒後に一番上へ戻される",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5604,7 +5604,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-07T15:37:43.298Z",
-      "updatedAt": "2026-10-07T15:37:43.298Z",
+      "updatedAt": "2026-10-07T15:54:59.394Z",
       "closedAt": null,
       "extra": {}
     }
