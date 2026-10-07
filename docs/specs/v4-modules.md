@@ -2725,7 +2725,9 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
   「結果」を追記する。流し直しで記録と鍵が食い違ったら、人に聞いて最初からやり直すかやめる
 - **Factory が守る流れ**（`engine.ts`）：始める（Backlog を in-progress・worktree・準備のコマンド）→ 手順 → マージの列 → Backlog を done・
   worktree とブランチを消す。手順の段が失敗したら人に聞き、「続ける」はその段からやり直す
-- **マージの列**：Project で1本（Factory のプロセスの中の錠）。rebase（競合なら `rebase --abort` して止まる）→ テスト（取り込む直前に
+- **マージの列**：Project で1本（Factory のプロセスの中の錠）。rebase（競合なら `rebase --abort` し、**まず実装役の同じ会話に
+  解かせる**——`limits.conflictFixes`、既定2回。その間は列を空ける。解かせても残れば止まる。改訂・2026-10-07、本物の受け入れで
+  関数を1つずつ足す2件が同じファイルの末尾で必ず競合して止まったため）→ テスト（取り込む直前に
   必ず）→ 取り込む先が checkout されている作業ツリーで `merge --ff-only`、どこにも無ければ `update-ref` を compare-and-swap で。
   取り込む先が先に進んでいたら rebase から（上限 rebaseRetries）。**人を待つ間はマージの列も同時に走らせる枠も空ける**。
   確かめたこと（単体、2026-10-07、Backlog の factory-merge-queue）：同じファイルの別の行を触る2件は両方入り履歴は一直線／同じ行を

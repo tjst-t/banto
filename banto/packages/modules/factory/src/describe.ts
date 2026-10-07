@@ -111,6 +111,9 @@ export function describeJournal(steps: StepRecord[], _runCreatedAt: string, bran
       case "fast-forward":
         if (end) push(at, v?.ok ? "git" : "fail", v?.ok ? `${target} に取り込んだ` : `${target} に取り込めなかった`);
         break;
+      case "rebase-leftover":
+        if (end && v?.aborted) push(at, "fail", "実装役が rebase を途中で残した——畳んだ");
+        break;
       case "cleanup":
         push(at, "git", "worktree とブランチを消した");
         break;

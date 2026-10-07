@@ -21,7 +21,7 @@ export interface FactorySettings {
   reviewer: AgentChoice;
   /** 同時に走らせる件数（マージの列は別に1本） */
   concurrency: number;
-  limits: { testRetries: number; reviewRounds: number; rebaseRetries: number; noCommitRetries: number };
+  limits: { testRetries: number; reviewRounds: number; rebaseRetries: number; noCommitRetries: number; conflictFixes: number };
   /** テスト1回の上限（分） */
   testTimeoutMinutes: number;
 }
@@ -33,7 +33,7 @@ export const DEFAULT_SETTINGS: FactorySettings = {
   implementer: { agent: "claude-code" },
   reviewer: { agent: "claude-code" },
   concurrency: 3,
-  limits: { testRetries: 3, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2 },
+  limits: { testRetries: 3, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 },
   testTimeoutMinutes: 60,
 };
 
@@ -89,6 +89,8 @@ export function normalizeSettings(raw: unknown): FactorySettings {
         limits.rebaseRetries === undefined ? d.limits.rebaseRetries : intIn(limits.rebaseRetries, 0, 20, "limits.rebaseRetries"),
       noCommitRetries:
         limits.noCommitRetries === undefined ? d.limits.noCommitRetries : intIn(limits.noCommitRetries, 0, 20, "limits.noCommitRetries"),
+      conflictFixes:
+        limits.conflictFixes === undefined ? d.limits.conflictFixes : intIn(limits.conflictFixes, 0, 20, "limits.conflictFixes"),
     },
     testTimeoutMinutes:
       o.testTimeoutMinutes === undefined ? d.testTimeoutMinutes : intIn(o.testTimeoutMinutes, 1, 24 * 60, "testTimeoutMinutes"),

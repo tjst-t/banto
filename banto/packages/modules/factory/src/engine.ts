@@ -886,6 +886,9 @@ class ItemPass implements ProcedureContext {
     try {
       await this.stage("マージ");
       this.factory.stageOf(this.live, "マージ", "merging");
+      // 流し始めた設定に無い（前の版で流した）実行は既定の回数
+      const conflictLimit = this.settings.limits.conflictFixes ?? 2;
+      let conflicts = 0;
       for (let attempt = 0; ; attempt++) {
         const rebased = await this.step<{ ok: boolean; out: string }>("rebase", async () => {
           const r = await this.git(["rebase", target]);
@@ -893,8 +896,17 @@ class ItemPass implements ProcedureContext {
           await this.git(["rebase", "--abort"]);
           return { ok: false, out: tail(r.out, 2000) };
         });
+        if (!rebased.ok && conflicts < conflictLimit) {
+          // **競合はまず実装役に解かせる**（2026-10-07、本物の受け入れで発覚）——並べて流した2件が同じファイルの末尾に足すだけで
+          // 競合する（関数を1つずつ足す件どうしでほぼ毎回）。人に聞くのは、解かせても解けなかったときだけ
+          conflicts++;
+          await this.resolveConflict(queue, rebased.out, conflicts);
+          continue;
+        }
         if (!rebased.ok) {
-          await this.askMerge(queue, `${target} に rebase できませんでした（競合）。worktree（${this.worktree}）で直してコミットしてから「続ける」と答えてください：${rebased.out}`);
+          await this.askMerge(queue, `${conflicts > 0 ? `実装役に ${conflicts} 回解かせても ` : ""}${target} に rebase できませんでした（競合）。`
+            + `worktree（${this.worktree}）で直してコミットしてから「続ける」と答えてください：${rebased.out}`);
+          conflicts = 0;
           continue;
         }
         const t = await this.test();
@@ -914,6 +926,39 @@ class ItemPass implements ProcedureContext {
       }
     } finally {
       queue.release();
+    }
+  }
+
+  /**
+   * **競合を実装役に解かせる**。その間はマージの列を空ける（ほかの件を取り込めるように）。実装役の同じ会話に頼み、終わったら
+   * worktree が rebase の途中で残っていないか確かめる（残っていれば畳む——次の rebase がやり直す）
+   */
+  private async resolveConflict(
+    queue: { acquire(signal: AbortSignal): Promise<void>; release(): void },
+    out: string,
+    n: number,
+  ): Promise<void> {
+    const target = this.settings.targetBranch;
+    queue.release();
+    try {
+      const prompt =
+        `取り込む先の ${target} が先に進み、あなたの変更と競合しました（${n} 回目）。このフォルダで次をしてください：\n` +
+        `1. \`git rebase ${target}\` を実行し、競合を解く。${target} に入った変更を消さず、両方が活きる形にする\n` +
+        "2. `git add` と `git rebase --continue` で rebase を終える（途中で残さない）\n" +
+        `3. テスト（\`${this.settings.testCommand}\`）を通す。直したら新しいコミットにしてよい\n\n` +
+        `rebase したときの出力：\n\`\`\`\n${tail(out, 3000)}\n\`\`\``;
+      const session = this.implementerSession;
+      await this.agent("implementer", session ? { prompt, sessionId: session } : { prompt: `${taskHeader(this.task)}\n\n${prompt}` });
+      await this.step("rebase-leftover", async () => {
+        const inProgress = await this.git(["rev-parse", "--verify", "--quiet", "REBASE_HEAD"]);
+        if (inProgress.code === 0) {
+          await this.git(["rebase", "--abort"]);
+          return { aborted: true };
+        }
+        return { aborted: false };
+      });
+    } finally {
+      await queue.acquire(this.signal);
     }
   }
 
@@ -966,4 +1011,9 @@ class ItemPass implements ProcedureContext {
   get lastImplementerSession(): string | undefined {
     return this.implementerSession;
   }
+}
+
+/** 実装役の会話が無いとき（別の手順で流した等）に、どのタスクかを伝える頭書き */
+function taskHeader(task: TaskSnapshot): string {
+  return `あなたは Backlog のタスク「${task.title}」（${task.id}）を実装した担当の代わりです。このフォルダ（git の worktree）にその変更があります。`;
 }

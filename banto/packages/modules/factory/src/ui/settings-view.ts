@@ -12,7 +12,7 @@ interface Settings {
   implementer: AgentChoice;
   reviewer: AgentChoice;
   concurrency: number;
-  limits: { testRetries: number; reviewRounds: number; rebaseRetries: number; noCommitRetries: number };
+  limits: { testRetries: number; reviewRounds: number; rebaseRetries: number; noCommitRetries: number; conflictFixes: number };
   testTimeoutMinutes: number;
 }
 
@@ -173,6 +173,7 @@ function render(): void {
         numberField("factory-test-retries", "テストのやり直し", d.limits.testRetries, 0, 20, (v) => (d.limits.testRetries = v)),
         numberField("factory-review-rounds", "レビューの差し戻し", d.limits.reviewRounds, 0, 20, (v) => (d.limits.reviewRounds = v)),
         numberField("factory-rebase", "取り込みのやり直し", d.limits.rebaseRetries, 0, 20, (v) => (d.limits.rebaseRetries = v)),
+        numberField("factory-conflicts", "競合を実装役に解かせる", d.limits.conflictFixes ?? 2, 0, 20, (v) => (d.limits.conflictFixes = v)),
       ]),
     ]),
     h("div", { class: "field" }, [numberField("factory-timeout", "テスト1回の上限（分）", d.testTimeoutMinutes, 1, 1440, (v) => (d.testTimeoutMinutes = v))]),

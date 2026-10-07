@@ -168,7 +168,7 @@ test("起き直したあと問われないまま待ちの上限を越えたら�
 });
 
 test("止まって人を待っていた1件は、起き直して流し直しても「止まりました」を届け直さない（札は最後の知らせに残す）", async () => {
-  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2 } });
+  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 } });
   try {
     h.state.holdImplementer = false;
     const first = await h.start();
@@ -207,7 +207,7 @@ function within<T>(ms: number, what: string, work: Promise<T>): Promise<T> {
  * （札を引き継ぐ）。そのあと host の問いが来る
  */
 async function stoppedAndAnsweredBeforeAsk(action: "drop" | "continue") {
-  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2 } });
+  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 } });
   h.state.holdImplementer = false;
   h.state.failDeliveries = 1;
   const first = await h.start();
@@ -268,7 +268,7 @@ test("問いの前に answerFactory が札を引き継いだら、answerFactory 
 });
 
 test("2件が止まったまま起き直し、1件に answerFactory で答えて札を引き継いだら、もう1件の待たせていた「止まりました」はすぐその札に届く", async () => {
-  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2 } });
+  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 } });
   try {
     h.state.holdImplementer = false;
     h.state.failDeliveries = 2;

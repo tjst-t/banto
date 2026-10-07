@@ -325,7 +325,7 @@ test("同じファイルの別の場所を触る2件は、両方とも順に mai
   }
 });
 
-test("本当に競合する2件では、後の1件が rebase で止まって知らせる。worktree で直して「続ける」と入る", async () => {
+test("実装役に解かせても競合が残る2件では、後の1件が rebase で止まって知らせる。worktree で直して「続ける」と入る", async () => {
   const s = setup({ implement: editLine });
   try {
     fiveLines(s.project);
@@ -452,6 +452,57 @@ test("main が動き続けてやり直しの上限を越えたら止まって知
     await until(() => s.fake.finished.length === 1, "答えたのに終わらない");
     assert.equal(run.items[0]!.status, "done");
     assert.deepEqual(git(s.project, "log", "--format=%s", "main").split("\n").slice(0, 3), ["README 2 行目を 二", "人のコミット 3", "人のコミット 2"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+/** 競合したら頼みに従って rebase し、競合を「両方残す」で解いて続ける実装役（editLine の続き） */
+function resolvingEditor(prompt: string, cwd: string, n: number) {
+  if (!prompt.includes("競合しました")) return editLine(prompt, cwd, n);
+  try {
+    git(cwd, "rebase", "main");
+    return;
+  } catch {
+    // 競合——README の印を外して両方残す
+  }
+  const text = readFileSync(join(cwd, "README"), "utf8")
+    .split("\n")
+    .filter((l) => !/^(<<<<<<<|=======|>>>>>>>)/.test(l))
+    .join("\n");
+  writeFileSync(join(cwd, "README"), text);
+  git(cwd, "add", "README");
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.editor=true", "rebase", "--continue"], { cwd });
+}
+
+test("競合したらまず実装役に解かせ、解ければ止まらずに入る（人には聞かない）", async () => {
+  const s = setup({ implement: resolvingEditor });
+  try {
+    fiveLines(s.project);
+    const run = s.factory.start({ tasks: [task("p", "<line 3 甲>"), task("q", "<line 3 乙>")], settings: s.settings });
+    await until(() => s.fake.finished.length === 1, "終わらない");
+    assert.deepEqual(s.fake.stopped, [], "解けたのに人に聞いた");
+    assert.deepEqual(run.items.map((i) => i.status), ["done", "done"]);
+    const readme = readFileSync(join(s.project, "README"), "utf8").split("\n");
+    assert.ok(readme.includes("甲") && readme.includes("乙"), `両方の変更が残っていない：${readme.join("|")}`);
+    assert.equal(s.fake.implements, 3, "競合を解かせる頼みが1回でない");
+    const later = run.items.find((i) => s.factory.journalOf(run.id, i.task.id).filter((x) => x.key === "rebase").length > 1)!;
+    const keys = s.factory.journalOf(run.id, later.task.id).map((x) => x.key);
+    assert.ok(keys.includes("rebase-leftover"), keys.join(","));
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("解かせる回数を0にすると、競合したらすぐ人に聞く", async () => {
+  const s = setup({ implement: resolvingEditor });
+  try {
+    fiveLines(s.project);
+    const settings = { ...s.settings, limits: { ...s.settings.limits, conflictFixes: 0 } };
+    s.factory.start({ tasks: [task("r", "<line 3 甲>"), task("t", "<line 3 乙>")], settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    assert.match(s.fake.stopped[0]!, /^main に rebase できませんでした（競合）/);
+    assert.equal(s.fake.implements, 2);
   } finally {
     s.cleanup();
   }
