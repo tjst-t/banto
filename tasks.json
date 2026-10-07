@@ -5562,7 +5562,7 @@
       "number": 226,
       "kind": "story",
       "title": "Vault の管理画面の直し——グループを作る入口・値の書き換え・Vault（ローカル）の設定を消す",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5570,7 +5570,7 @@
       "labels": [],
       "body": "ユーザー要望（2026-10-07）。Memory の「Vault の秘密の値を書き換える」「SSH 鍵も対象にする（案X）」を参照。\n1. 「Vault を管理」の3つのダイアログ（置き場の変更・移す・参照を作る）のグループの選択肢に「＋ 新しいグループを作る…」。Infisical ではフォルダができる旨を書く\n2. 一覧の行の「値を変える」（admin だけ）。参照の行は不可で元の場所を出す。oauth-token は不可。SSH 鍵は注意つきで、貼り付けか Vault の中で作り直し、変えたら新しい公開鍵を出す。値を変えた日時を台帳に残し一覧に出す\n3. vault-local の設定 Canvas（ui://banto-vault-local/config、名前の一覧を見せるだけ）を消す",
       "doneWhen": "単体と Vault の E2E で：3つのダイアログからグループを作ってそこへ置ける／ふつうの秘密・ファイル・SSH 鍵の値を変えられ、日時が一覧に出る／参照・oauth-token の行は変えられず理由が出る／AI（admin でない呼び出し）からは断られる／設定画面に Vault（ローカル）が出ない",
-      "resolution": null,
+      "resolution": "843a22e5〜2741f2f0（main と release に push、host での反映は人）。Fable のレビュー「取り込んでよい」、指摘は 2741f2f0 で直した。単体 kit 44・窓口 62・vault-local 54・Infisical 36、E2E vault-manage-edit 6・vault-directory 13（「選択欄」の1本を除く——変更前から間欠、ユーザー判断待ち）・vault-visibility 5・vault-request-inline 2・module-settings-canvas 3。本物の Infisical では未確認。",
       "refs": [],
       "threads": [
         {
@@ -5579,8 +5579,8 @@
         }
       ],
       "createdAt": "2026-10-07T14:56:19.130Z",
-      "updatedAt": "2026-10-07T14:56:19.130Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-07T16:26:31.499Z",
+      "closedAt": "2026-10-07T16:26:31.499Z",
       "extra": {}
     },
     {
