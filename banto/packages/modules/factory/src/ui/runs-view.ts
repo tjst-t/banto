@@ -186,6 +186,11 @@ function render(): void {
   const focused = document.activeElement as HTMLTextAreaElement | null;
   const focusId = focused?.id;
   const caret = focused && "selectionStart" in focused ? focused.selectionStart : null;
+  // 読み直すたびに丸ごと作り直すので、スクロールする枠（`data-scroll-key` を付けた所）とページの位置も控えて戻す
+  // ——控えないと、動いているものがある間は3秒ごとに先頭へ戻される。印は1件ごとに変え、別の件を開いたら先頭から
+  const scrolled = new Map<string, number>();
+  for (const el of app.querySelectorAll<HTMLElement>("[data-scroll-key]")) scrolled.set(el.dataset.scrollKey!, el.scrollTop);
+  const page = document.scrollingElement?.scrollTop ?? 0;
   app.replaceChildren();
   const all = rows();
   const human = all.filter((r) => r.item.status === "stopped");
@@ -217,7 +222,7 @@ function render(): void {
     );
   } else {
     const layout = h("div", { class: `layout${wide() ? " wide" : ""}${state.selected ? " show-detail" : ""}` });
-    const list = h("div", { class: "list" });
+    const list = h("div", { class: "list", "data-scroll-key": "list" });
     const rowEl = ({ run, item }: { run: RunSummary; item: ItemSummary }) => {
       const sub =
         item.status === "stopped"
@@ -273,6 +278,12 @@ function render(): void {
   }
   if (state.error) app.append(h("p", { class: "error", text: state.error }));
 
+  for (const el of app.querySelectorAll<HTMLElement>("[data-scroll-key]")) {
+    const top = scrolled.get(el.dataset.scrollKey!);
+    if (top) el.scrollTop = top;
+  }
+  if (page && document.scrollingElement) document.scrollingElement.scrollTop = page;
+
   if (focusId) {
     const again = document.getElementById(focusId) as HTMLTextAreaElement | null;
     if (again) {
@@ -299,7 +310,8 @@ function renderDetail(): HTMLElement {
     return pane;
   }
   const item = d.item;
-  const body = h("div", { class: "d-body" });
+  const key = `${d.runId}/${item.item}`;
+  const body = h("div", { class: "d-body", "data-scroll-key": `detail:${key}` });
   const runAt = d.finishedAt ? `${minutes(minutesSince(d.finishedAt))}前に終わった実行` : `${minutes(minutesSince(d.createdAt))}前に流した実行`;
   body.append(
     h("h2", { class: "d-title", text: item.title }),
@@ -358,7 +370,7 @@ function renderDetail(): HTMLElement {
     const sec = h("section", { class: "d-sec" }, [
       h("h3", { "data-tone": t.ok ? "ok" : "danger", text: t.ok ? "最後のテスト：通った" : `最後のテスト：落ちた（終了コード ${t.code}）` }),
       h("p", { class: "cmd", text: d.settings.testCommand }),
-      h("pre", { class: "out", text: t.tail }),
+      h("pre", { class: "out", "data-scroll-key": `test:${key}`, text: t.tail }),
     ]);
     body.append(sec);
   }

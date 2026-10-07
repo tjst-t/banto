@@ -166,3 +166,61 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
 
   expect(pageErrors).toEqual([]);
 });
+
+// 走っている間は1.5秒ごとに読み直して丸ごと描き直す——中の枠（頼んだ内容・中身の本文）を下へスクロールしても、
+// 読み直しのあとに先頭へ戻されない（2026-10-07、ユーザー報告）
+test("サブエージェントの入口：走っている仕事の中の枠をスクロールしても、読み直しで先頭へ戻らない", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-subagent-runs-scroll-"));
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  // 低い画面にして、中身の本文もはみ出させる
+  await page.setViewportSize({ width: 1280, height: 560 });
+
+  await openApp(page);
+  await createProject(page, `${PROJECT_NAME} Scroll`, projectRoot);
+  await waitForProjectModule(page, `${PROJECT_NAME} Scroll`, "subagent");
+  const longPrompt = ["[slow 40] 長い頼み", ...Array.from({ length: 60 }, (_, i) => `${i + 1} 行目：ここまで読んだ`)].join("\n");
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill("長い頼みを出して。" + fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: longPrompt } }] }));
+  await composer.press("Enter");
+
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /サブエージェント/ }).click();
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const running = canvas.locator('[data-role="run-item"][data-status="running"]');
+  const detail = canvas.locator('[data-role="detail"]');
+  // 鍵を Vault に探しに行く承認が初回だけ出る——tool を始めた（経過に出た）まで押し続ける
+  await expect(async () => {
+    const allow = page.getByRole("button", { name: "許可する" });
+    if ((await allow.count()) > 0) await allow.last().click();
+    await expect(running).toHaveCount(1, { timeout: 5_000 });
+    if ((await detail.count()) === 0) await running.locator('[data-role="run"]').click();
+    await expect(detail.locator('[data-role="step"] .step-title')).toHaveText(["sleep 40"], { timeout: 5_000 });
+  }).toPass({ timeout: 120_000 });
+  const prompt = detail.locator('[data-role="detail-prompt"]');
+  await expect(prompt).toContainText("60 行目：ここまで読んだ");
+
+  // 頼んだ内容の枠と中身の本文を、どちらも一番下まで送る
+  const toBottom = (el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight;
+    return el.scrollTop;
+  };
+  const promptTop = await prompt.evaluate(toBottom);
+  const detailTop = await detail.evaluate(toBottom);
+  expect(promptTop, "頼んだ内容の枠がスクロールできない（長さが足りない）").toBeGreaterThan(0);
+  expect(detailTop, "中身の本文がスクロールできない（画面が高すぎる）").toBeGreaterThan(0);
+
+  // 読み直しで描き直されたこと（経過の時刻が進む）を確かめてから、位置を見る
+  const clock = detail.locator(".step-end .step-at");
+  const before = await clock.textContent();
+  await page.waitForTimeout(5_000);
+  await expect(clock).not.toHaveText(before ?? "");
+  await expect(running).toHaveCount(1);
+  expect(await prompt.evaluate((el) => el.scrollTop), "頼んだ内容の枠が先頭へ戻された").toBe(promptTop);
+  expect(await detail.evaluate((el) => el.scrollTop), "中身の本文が先頭へ戻された").toBe(detailTop);
+
+  // 止めて片づける
+  await canvas.locator(".detail-head").getByRole("button", { name: "止める" }).click();
+  await expect(canvas.locator('[data-role="detail-status"]')).toHaveText("取り消し", { timeout: 20_000 });
+  expect(pageErrors).toEqual([]);
+});

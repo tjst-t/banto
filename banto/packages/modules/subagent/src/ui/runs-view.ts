@@ -303,7 +303,7 @@ function stopButton(id: string): HTMLElement {
 }
 
 function renderList(): HTMLElement {
-  const list = h("section", { class: "list", "aria-label": "頼んだ仕事" });
+  const list = h("section", { class: "list", "data-scroll-key": "list", "aria-label": "頼んだ仕事" });
   if (!state.loaded) return list;
   if (state.runs.length === 0) {
     list.append(
@@ -401,9 +401,9 @@ function renderDetail(): HTMLElement {
     h("span", { class: "grow" }),
     r.status === "running" ? stopButton(r.id) : null,
   ]);
-  const body = h("div", { class: "detail-body", "data-role": "detail", "data-run": r.id }, [
+  const body = h("div", { class: "detail-body", "data-role": "detail", "data-run": r.id, "data-scroll-key": `detail:${r.id}` }, [
     h("h2", { class: "section-label", text: "頼んだ内容" }),
-    h("blockquote", { class: "prompt", "data-role": "detail-prompt", text: r.prompt }),
+    h("blockquote", { class: "prompt", "data-role": "detail-prompt", "data-scroll-key": `prompt:${r.id}`, text: r.prompt }),
     h("h2", { class: "section-label", text: "経過" }),
     renderTrace(r),
     r.text !== undefined && r.text !== ""
@@ -438,20 +438,21 @@ function renderDetail(): HTMLElement {
 }
 
 /** 取り直しのたびに描き直すので、**見ていた場所と手元の焦点を持ち越す**——走っている間は1.5秒ごとに
- *  描き直す。持ち越さないと、読んでいる途中でスクロールが先頭へ戻り、キーボードの焦点も消える */
-let renderedDetail: string | undefined;
+ *  描き直す。持ち越さないと、読んでいる途中でスクロールが先頭へ戻り、キーボードの焦点も消える。
+ *  スクロールする枠には `data-scroll-key`（仕事の id つき）を付け、同じ印の枠へ位置を戻す——別の仕事を開いたら先頭から */
 const SPIN_MS = 900;
 const PULSE_MS = 1400;
 function render(): void {
-  const keep = {
-    list: app.querySelector<HTMLElement>(".list")?.scrollTop ?? 0,
-    detail: app.querySelector<HTMLElement>(".detail-body")?.scrollTop ?? 0,
-    focus: (document.activeElement as HTMLElement | null)?.dataset.focus,
-  };
+  const scrolled = new Map<string, number>();
+  for (const el of app.querySelectorAll<HTMLElement>("[data-scroll-key]")) scrolled.set(el.dataset.scrollKey!, el.scrollTop);
+  const page = document.scrollingElement?.scrollTop ?? 0;
+  const keep = { focus: (document.activeElement as HTMLElement | null)?.dataset.focus };
   paint();
-  app.querySelector<HTMLElement>(".list")?.scrollTo({ top: keep.list });
-  if (state.detail?.id === renderedDetail) app.querySelector<HTMLElement>(".detail-body")?.scrollTo({ top: keep.detail });
-  renderedDetail = state.detail?.id;
+  for (const el of app.querySelectorAll<HTMLElement>("[data-scroll-key]")) {
+    const top = scrolled.get(el.dataset.scrollKey!);
+    if (top) el.scrollTop = top;
+  }
+  if (page && document.scrollingElement) document.scrollingElement.scrollTop = page;
   if (keep.focus) app.querySelector<HTMLElement>(`[data-focus="${CSS.escape(keep.focus)}"]`)?.focus({ preventScroll: true });
   // 動きの位相を時計に合わせる——描き直すたびに回転や脈が頭から始まって、ちらつくのを防ぐ
   const now = Date.now();

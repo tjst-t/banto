@@ -264,3 +264,42 @@ test("入口の画面の「経過を見る」で Subagent の画面がその仕�
 
   for (const item of ["e2e-c", "e2e-d"]) await uiCall(page, "factory", "cancelFactory", { runId, item, reason: "E2E の片づけ" });
 });
+
+// 動いているものがある間は3秒ごとに読み直して丸ごと描き直す——詳細の本文を下へスクロールしても、読み直しのあとに
+// 先頭へ戻されない（2026-10-07、ユーザー報告。Subagent の入口と同じ作り）
+test("入口の画面：動いている1件の詳細の本文をスクロールしても、読み直しで先頭へ戻らない", async ({ page }) => {
+  // 低い画面にして、詳細の本文をはみ出させる
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await openApp(page);
+  await page.goto(`/p/${projectId}?bantoHost=${CORE_BROWSER_URL}`);
+  await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+  await uiCall(page, "factory", "setSettings", { settings: { testCommand: "true", implementer: { agent: "fake" }, reviewer: { agent: "fake" } } });
+  await uiCall(page, "backlog", "boardCreateItem", { id: "e2e-e", kind: "task", title: "e をゆっくり足す", body: "[slow 60]", status: "ready" });
+  const started = await aiCalls(page, "factory", "runFactory", { items: ["e2e-e"] });
+  const { runId } = JSON.parse(started.slice(started.indexOf("{"))) as { runId: string };
+
+  await openNav(page);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.locator('[role="option"][data-value^="launcher:factory:"]').click();
+  const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const row = inner.locator('[data-testid="factory-row"][data-item="e2e-e"]');
+  await expect(row).toHaveAttribute("data-status", "running", { timeout: 60_000 });
+  await row.click();
+  const body = inner.getByTestId("factory-detail").locator(".d-body");
+  await expect(body.locator(".d-title")).toHaveText("e をゆっくり足す", { timeout: 30_000 });
+  await expect(body.getByText(/いま：実装役が働いている/)).toBeVisible({ timeout: 30_000 });
+
+  const top = await body.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    el.dataset.probe = "before";
+    return el.scrollTop;
+  });
+  expect(top, "詳細の本文がスクロールできない（画面が高すぎる）").toBeGreaterThan(0);
+  // 読み直しで作り直された（印を付けた要素が入れ替わった）ことを確かめてから、位置を見る
+  await expect(body).not.toHaveAttribute("data-probe", "before", { timeout: 10_000 });
+  await page.waitForTimeout(3_500);
+  await expect(row).toHaveAttribute("data-status", "running");
+  expect(await body.evaluate((el) => el.scrollTop), "詳細の本文が先頭へ戻された").toBe(top);
+
+  await uiCall(page, "factory", "cancelFactory", { runId, item: "e2e-e", reason: "試験の片づけ" });
+});
