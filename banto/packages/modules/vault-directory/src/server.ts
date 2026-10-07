@@ -915,8 +915,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
                   .map((g) => splitVariant(g).group),
               ),
             ],
-            // **紐付けた版付きの置き場**（`g@prod`）——「移す」「参照を作る」の行き先に並べる（2026-10-06、レビュー）。
-            // グループの選択肢は版を外した名前なので、これが無いと版付きの置き場へ移せない
+            // **紐付けた版付きの置き場**（`g@prod`）——一覧に出る版付きの置き場はこれだけ（仕様 §2.1「グループの『版』」）。
+            // 画面は「移す」「参照を作る」で、ここに無い版付きの置き場を選ぶと「一覧に出なくなる」と先に言う（2026-10-07）
             variantGroups: [
               ...new Set(
                 [r.value.bindings.shared, ...r.value.bindings.projects.map((b) => b.group)].filter(

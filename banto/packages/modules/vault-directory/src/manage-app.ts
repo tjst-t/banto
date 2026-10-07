@@ -84,6 +84,46 @@ export const MANAGE_APP_HTML = `<!doctype html>
     border-radius: 6px; background: transparent; color: inherit;
     border: 1px solid var(--line);
   }
+  select[disabled] { opacity: .45; }
+  /* **選択欄の開いた一覧を、行の「…」メニューと同じ形にする**（2026-10-07、ユーザー）。OS の素の一覧は
+     暗い画面で浮いていた。Chromium の customizable select（appearance: base-select）だけで整え、部品は
+     作り直さない——キーボード・読み上げは素の select のまま。**対応しないブラウザ（Firefox・Safari）は
+     この塊を読まない**ので、今までどおり素の select（上の option の地と字の指定が効く） */
+  @supports (appearance: base-select) {
+    select, ::picker(select) { appearance: base-select; }
+    select {
+      display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; min-width: 0;
+      background: transparent; cursor: pointer;
+    }
+    /* 選んだものは欄の幅で … に畳む（長いグループ名・UUID で ▼ が押し出されない） */
+    select > button { display: contents; }
+    selectedcontent { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    select:hover:not([disabled]) { background: rgba(128,128,128,.08); }
+    select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+    select[disabled] { cursor: default; }
+    select::picker-icon {
+      content: ""; width: 6px; height: 6px; margin: 0 2px 3px auto; flex: none;
+      border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg); opacity: .6;
+    }
+    select:open::picker-icon { transform: translateY(3px) rotate(225deg); }
+    ::picker(select) {
+      margin-block: 2px; padding: 4px; border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface); color: var(--ink); box-shadow: 0 6px 20px rgba(0,0,0,.18);
+    }
+    option {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 10px; border-radius: 4px; white-space: nowrap;
+      background: transparent; color: inherit; cursor: pointer;
+    }
+    option:hover, option:focus-visible { outline: none; background: rgba(128,128,128,.16); }
+    option:checked { font-weight: 500; }
+    option::checkmark { content: "✓"; order: 1; margin-left: auto; padding-left: 12px; color: var(--info); }
+    option:disabled { opacity: .45; cursor: default; }
+  }
+  /* 選択肢の添え（「— この Project」など）は薄く。素の select では字のまま並ぶ */
+  .opt-tag { opacity: .55; }
   /* **列幅を固定する**（改訂・2026-09-20、ユーザー指摘）。自動幅だと、名前の
      長い秘密（CLOUDFLARE_ACCOUNT_ID など）が入った列が潰れ、word-break で
      **1文字ずつ縦に流れて**表が読めなくなっていた */
@@ -134,6 +174,8 @@ export const MANAGE_APP_HTML = `<!doctype html>
     border-radius: 10px; padding: 0; color: inherit;
     background: var(--surface);
     min-width: min(440px, 92vw);
+    /* 説明の長い文（「移す」の行き先の注意など）で横に伸びきらない（2026-10-07） */
+    max-width: min(560px, 92vw);
   }
   dialog::backdrop { background: rgba(0,0,0,.35); }
   .dialog-body { padding: 16px; display: grid; gap: 10px; }
@@ -332,10 +374,13 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <p class="dialog-desc" id="move-now"></p>
     <div class="field"><span>移す先</span>
       <div class="row">
-        <select id="move-vault" style="flex:1 1 12em"></select>
-        <select id="move-group" style="flex:1 1 12em"></select>
+        <select id="move-vault" style="flex:1 1 10em"></select>
+        <select id="move-group" style="flex:1 1 10em"></select>
+        <!-- **版**（2026-10-07、ユーザー）——版を名乗る Vault のときだけ、置き場の変更と同じ形で出す -->
+        <select id="move-variant" style="flex:0 1 9em" hidden></select>
       </div>
     </div>
+    <p class="dialog-desc" id="move-variant-note" hidden></p>
     <p class="dialog-desc" id="move-effect"></p>
     <div class="problem" id="move-error" hidden></div>
     <div class="dialog-footer">
@@ -358,10 +403,12 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <p class="dialog-desc" id="link-now"></p>
     <div class="field"><span>置く先</span>
       <div class="row">
-        <select id="link-vault" style="flex:1 1 12em" disabled></select>
-        <select id="link-group" style="flex:1 1 12em"></select>
+        <select id="link-vault" style="flex:1 1 10em" disabled></select>
+        <select id="link-group" style="flex:1 1 10em"></select>
+        <select id="link-variant" style="flex:0 1 9em" hidden></select>
       </div>
     </div>
+    <p class="dialog-desc" id="link-variant-note" hidden></p>
     <label class="field"><span>名前</span><input id="link-name" autocomplete="off" required /></label>
     <p class="dialog-desc">値は写しません。元を変えればこちらも変わり、元を消すとこちらは使えなくなります</p>
     <p class="dialog-desc" id="link-effect"></p>
@@ -575,27 +622,49 @@ ${ALIAS_KIND_RULES_JS}
   }
 
   /**
-   * **グループの見える名前**（追加・2026-09-15、レビューで発覚）。
-   *
-   * Project の既定グループ名は projectId（UUID）そのもの——衝突しない値を
-   * 選んだ結果だが、**人は UUID からどの Project のものか判別できない**。
-   * 「1つのグループに複数の Project を向けるのが共有の意思表示」という設計が、
-   * 画面の上では実質できない状態になっていた。
-   *
-   * **識別子は変えず、見せ方だけ変える**——既に在る秘密の置き場を動かさずに済む。
+   * **グループの見える名前は Vault での本当の名前**（改訂・2026-10-07、ユーザー「Project 名じゃなくて
+   * Vault 側のグループ名を出して」）。Infisical ならフォルダ名、UUID なら UUID をそのまま（省かない）、
+   * 版付きなら「（環境 prod）」。一覧の表のグループ列と同じ言葉——以前は「この Project 専用（Banto開発）」
+   * 「別の Project 専用（2ced47c4…）」と言い換えていたので、選択肢と表と Infisical の画面が突き合わなかった。
+   * どの置き場かは添え（tag）で言う：この Project の置き場・Global（共通の置き場）だけ
    */
-  function groupLabel(impl, group) {
+  function groupName(impl, group) {
+    return baseOf(group) + variantSuffix(impl, group);
+  }
+
+  /**
+   * 置き場の添え（「この Project」「Global」、無ければ空）。比べるのは置き場そのもの（版まで）。
+   * byBase：版を別の欄で選ぶグループ欄では、版を外した名前どうしで比べる（その置き場のあるグループ）
+   */
+  function groupTag(impl, group, byBase) {
     const p = placements && placements.project;
     const sh = placements && placements.shared;
-    const suffix = variantSuffix(impl, group);
-    if (p && p.implementation === impl && p.group === group) {
-      return (project ? "この Project 専用（" + project.name + "）" : "この Project 専用") + suffix;
+    const same = (x) => !!x && x.implementation === impl &&
+      (byBase ? baseOf(x.group) === baseOf(group) : x.group === group);
+    if (same(p)) return "この Project";
+    if (same(sh)) return "Global";
+    return "";
+  }
+
+  /** 文で言うときの形（「homelab — この Project」）。 */
+  function groupLabel(impl, group) {
+    const tag = groupTag(impl, group);
+    return groupName(impl, group) + (tag ? " — " + tag : "");
+  }
+
+  /**
+   * **グループの選択肢**——主は本当の名前、添えは薄く（span）。素の select は span を描かず字を並べるので、
+   * 添えの前の「 — 」も字で持つ（どちらでも「homelab — この Project」と読める）
+   */
+  function groupOption(value, name, tag) {
+    const o = option(value, name);
+    if (tag) {
+      const t = document.createElement("span");
+      t.className = "opt-tag";
+      t.textContent = " — " + tag;
+      o.append(t);
     }
-    if (sh && sh.implementation === impl && sh.group === group) return "Global" + suffix;
-    const base = baseOf(group);
-    // UUID そのままの名前は、人にとって意味が無い——せめて何であるかを言う
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(base)) return "別の Project 専用（" + base.slice(0, 8) + "…）" + suffix;
-    return base + suffix;
+    return o;
   }
 
   /** 版付きの置き場（g@prod）の版を外した名前（2026-10-06）。 */
@@ -641,13 +710,86 @@ ${ALIAS_KIND_RULES_JS}
     return "→ 既定の置き場ではないので、" + impl + ":名前 のように " + impl + " を頭に付けて引きます";
   }
 
+  /** 版付きの置き場の版（g@prod なら prod、既定の版なら undefined）。 */
+  function variantOf(group) {
+    const at = String(group).indexOf("@");
+    return at === -1 ? undefined : String(group).slice(at + 1);
+  }
+
+  /** **版付きの置き場の書き方**（kit の決まり、仕様 §2.1「グループの『版』」）——既定の版は @ を付けない。 */
+  function joinVariant(group, variant, axis) {
+    return !axis || !variant || variant === axis.default ? group : group + "@" + variant;
+  }
+
   /**
-   * 「移す」「参照を作る」の行き先（2026-10-06、レビュー）。グループ（既定の版）に、紐付けた版付きの置き場
-   * （g@prod）を足す——足さないと、版付きに置かれた Project の置き場へ移せない
+   * **「移す」「参照を作る」の行き先は「グループ」と「版」の2つの欄**（改訂・2026-10-07、ユーザー「Env の指定も
+   * できる必要があるかも」）。置き場の変更の小窓と同じ形——グループ欄は既定の版の名前だけ、版の欄は Vault が
+   * 版を名乗るときだけ出す。以前は紐付けた版付きの置き場（g@prod）をグループ欄に混ぜていて、まだどこも紐付けて
+   * いない版へは移せなかった。prefix は "move" か "link"、preferred は最初に選んでおく置き場（g / g@prod）
    */
-  function placeChoices(v) {
-    if (!v) return [];
-    return [...new Set([...(v.groups || []), ...(v.variantGroups || [])])];
+  function fillDestination(prefix, v, preferred) {
+    const groups = (v && v.groups) || [];
+    const impl = v ? v.implementation : "";
+    setOptions($(prefix + "-group"), ...groups.map((g) => groupOption(g, g, groupTag(impl, g, true))));
+    $(prefix + "-group").disabled = groups.length === 0;
+    if (preferred && groups.includes(baseOf(preferred))) $(prefix + "-group").value = baseOf(preferred);
+
+    const axis = v && v.variants;
+    const sel = $(prefix + "-variant");
+    sel.hidden = !axis;
+    const note = $(prefix + "-variant-note");
+    // **版を読めなかったら、そう言う**——黙って「版が無い」にしない
+    note.hidden = !(v && v.variantsError);
+    note.textContent = v && v.variantsError ? "版を読めませんでした（既定の版に置きます）：" + v.variantsError : "";
+    if (!axis) {
+      setOptions(sel);
+      return;
+    }
+    sel.setAttribute("aria-label", axis.label);
+    sel.title = axis.label;
+    setOptions(sel, ...axis.options.map((o) => option(o, o + (o === axis.default ? "（既定）" : ""))));
+    const want = (preferred && variantOf(preferred)) || axis.default;
+    sel.value = axis.options.includes(want) ? want : axis.default;
+  }
+
+  /** 選んだ行き先の置き場（g か g@prod）。グループが無ければ空。 */
+  function chosenDestination(prefix, v) {
+    const g = $(prefix + "-group").value;
+    if (!g) return "";
+    return $(prefix + "-variant").hidden ? g : joinVariant(g, $(prefix + "-variant").value, v && v.variants);
+  }
+
+  /**
+   * **紐付いていない版付きの置き場は一覧に出ない**（仕様 §2.1「一覧に版付きのグループが出るのは、どこかが
+   * 紐付けたものだけ」）——そこへ移す・置くと、banto の一覧から見えなくなる。押す前に言う（規則2）
+   */
+  function unlistedNote(v, group) {
+    const variant = variantOf(group);
+    if (variant === undefined || !v || (v.variantGroups || []).includes(group)) return "";
+    return "。" + ((v.variants && v.variants.label) || "版") + " " + variant + " の " + baseOf(group) +
+      " はどの Project にも紐付いていないので、紐付けるまで この一覧には出ません（Vault には在ります）";
+  }
+
+  /**
+   * **選択欄の中身を入れ替える**（2026-10-07）。customizable select の「ボタン」（先頭の
+   * <button><selectedcontent>）は残す——replaceChildren で全部入れ替えると消え、長いグループ名（UUID）が
+   * 欄からはみ出して ▼ が見えなくなる
+   */
+  function setOptions(sel, ...opts) {
+    const head = sel.querySelector(":scope > button");
+    sel.replaceChildren(...(head ? [head] : []), ...opts);
+  }
+
+  /**
+   * **選んだものを … で畳んで見せる**（2026-10-07）。customizable select の決まった形
+   * （<button><selectedcontent>）を、対応するブラウザでだけ先頭に足す——素の select は中に button を持てない
+   */
+  if (CSS.supports("appearance", "base-select") && "HTMLSelectedContentElement" in window) {
+    for (const sel of document.querySelectorAll("select")) {
+      const button = document.createElement("button");
+      button.append(document.createElement("selectedcontent"));
+      sel.prepend(button);
+    }
   }
 
   function option(value, label) {
@@ -672,16 +814,16 @@ ${ALIAS_KIND_RULES_JS}
     // 見出しは「いま実際にあるものから導く」なのに、種別だけ全部出していた
     // ——選んでも必ず0件になる絞り込みが並ぶ
     const kinds = Object.keys(KIND_LABEL).filter((k) => aliases.some((a) => a.kind === k));
-    kind.replaceChildren(option("all", "種別：すべて"), ...kinds.map((k) => option(k, KIND_LABEL[k])));
+    setOptions(kind, option("all", "種別：すべて"), ...kinds.map((k) => option(k, KIND_LABEL[k])));
     const targets = new Map();
     for (const a of aliases) { const t = targetOf(a); targets.set(t.key, t.label); }
     // **「この Project から使える」を先頭に置く**（追加・2026-09-20、ユーザー指示）。
     // 専用のものと Global をまとめた1つの選択肢——この2つは別々の key なので、
     // 導出した一覧（targets）からは作れない。Project の上でだけ出す（規則13）
-    target.replaceChildren(option("all", "使える範囲：すべて"),
+    setOptions(target, option("all", "使える範囲：すべて"),
       ...(project ? [option("usable", "この Project から使える")] : []),
       ...Array.from(targets, ([k, l]) => option(k, l)));
-    backend.replaceChildren(option("all", "Vault：すべて"), ...implementations.map((i) => option(i, i)));
+    setOptions(backend, option("all", "Vault：すべて"), ...implementations.map((i) => option(i, i)));
     // **Vault が1本なら、選ばせない**（追加・2026-09-15）。選択肢が1つしかない
     // 絞り込みは、画面の情報量を増やすだけで何も決められない。
     // 同じ理由で表の Vault 列も畳む（どれも同じ値しか出ない）
@@ -886,7 +1028,7 @@ ${ALIAS_KIND_RULES_JS}
       // **長いうえに、実際に見に行く先の名前と一致しない**——人が Infisical を
       // 開いたときに突き合わせられる名前を出す
       // 版付きの置き場は「フォルダ名（環境 prod）」——Infisical で見に行く先（フォルダと環境）と突き合わせられる形（2026-10-06）
-      const groupTd = clipped(a.group ? baseOf(a.group) + variantSuffix(a.implementation, a.group) : "", "muted");
+      const groupTd = clipped(a.group ? groupName(a.implementation, a.group) : "", "muted");
 
       // **行の操作は「…」のメニューにまとめる**（改訂・2026-10-05、ユーザー指摘）。並びは前と同じ。
       // **公開鍵はいつでも見られる**（追加・2026-09-13、ユーザー指摘）——作った直後の1回しか
@@ -1055,8 +1197,7 @@ ${ALIAS_KIND_RULES_JS}
       ? "この Project の保存先は " +
         placements.project.implementation +
         " / " +
-        baseOf(placements.project.group) +
-        variantSuffix(placements.project.implementation, placements.project.group)
+        groupName(placements.project.implementation, placements.project.group)
       : "この Project の保存先はまだ決まっていません（最初に保存したときに決まります）";
     $("place-line").hidden = false;
   }
@@ -1089,7 +1230,7 @@ ${ALIAS_KIND_RULES_JS}
   // 新規登録
   $("new-alias").addEventListener("click", () => {
     $("new-error").hidden = true;
-    $("new-kind").replaceChildren(...Object.keys(KIND_LABEL).map((k) => option(k, KIND_LABEL[k])));
+    setOptions($("new-kind"), ...Object.keys(KIND_LABEL).map((k) => option(k, KIND_LABEL[k])));
     void fillPlacementChoices();
     $("new-name").value = "";
     $("new-value").value = "";
@@ -1144,7 +1285,7 @@ ${ALIAS_KIND_RULES_JS}
         );
       }
     }
-    $("new-scope").replaceChildren(...opts);
+    setOptions($("new-scope"), ...opts);
     applyPlacementEffect();
   }
 
@@ -1175,7 +1316,7 @@ ${ALIAS_KIND_RULES_JS}
     // **人が作れる種別だけ**（選べない道を選択肢に残さない——規則13）
     const kinds = generated ? generatableKinds() : humanCreatableKinds();
     const was = $("new-kind").value;
-    $("new-kind").replaceChildren(...kinds.map((k) => option(k, KIND_LABEL[k])));
+    setOptions($("new-kind"), ...kinds.map((k) => option(k, KIND_LABEL[k])));
     $("new-kind").value = kinds.includes(was) ? was : kinds[0];
 
     // **何を聞くかは種別が決める**——規則は kind-rules.ts の1枚だけ（規則3）
@@ -1350,14 +1491,10 @@ ${ALIAS_KIND_RULES_JS}
     $("move-error").hidden = true;
     $("move-now").textContent = "いまは " + a.implementation + " / " + groupLabel(a.implementation, a.group);
     const places = await callTool("getPlacements", project ? { projectId: project.id } : {});
-    movePlaces = places;
-    const fill = () => {
-      const v = (places.vaults || []).find((x) => x.implementation === $("move-vault").value);
-      const groups = placeChoices(v);
-      $("move-group").replaceChildren(
-        ...groups.map((g) => option(g, groupLabel($("move-vault").value, g))),
-      );
-      $("move-group").disabled = groups.length === 0;
+    placements = movePlaces = places;
+    // **最初は いまの置き場を選んでおく**（2026-10-07）——版だけ・グループだけを変える人が、もう片方を選び直さずに済む
+    const fill = (preferred) => {
+      fillDestination("move", moveVault(), preferred);
       applyMoveEffect();
     };
     // **参照は Vault をまたいで動かせない**（2026-10-04）——別の Vault を選べると必ず断られるので、
@@ -1365,23 +1502,29 @@ ${ALIAS_KIND_RULES_JS}
     const vaultChoices = a.linkTo
       ? (places.vaults || []).filter((v) => v.implementation === a.implementation)
       : places.vaults || [];
-    $("move-vault").replaceChildren(...vaultChoices.map((v) => option(v.implementation, v.implementation)));
+    setOptions($("move-vault"), ...vaultChoices.map((v) => option(v.implementation, v.implementation)));
     $("move-vault").value = a.implementation;
     $("move-vault").disabled = !!a.linkTo;
-    fill();
-    $("move-vault").onchange = fill;
+    fill(a.group);
+    $("move-vault").onchange = () => fill($("move-vault").value === a.implementation ? a.group : undefined);
     $("move-group").onchange = applyMoveEffect;
+    $("move-variant").onchange = applyMoveEffect;
     $("dlg-move").showModal();
+  }
+
+  /** 「移す」で選んでいる Vault（置き場の一覧の中の1つ）。 */
+  function moveVault() {
+    return ((movePlaces && movePlaces.vaults) || []).find((x) => x.implementation === $("move-vault").value);
   }
 
   /** **移した先からどう引けるようになるか**を、押す前に出す。 */
   function applyMoveEffect() {
-    const impl = $("move-vault").value, group = $("move-group").value;
+    const impl = $("move-vault").value, group = chosenDestination("move", moveVault());
     const same = moveTarget && impl === moveTarget.implementation && group === moveTarget.group;
     $("move-submit").disabled = !!same || !group;
     $("move-effect").textContent = same
       ? "もう その置き場に在ります"
-      : placementEffect(impl, group);
+      : group ? placementEffect(impl, group) + unlistedNote(moveVault(), group) : "";
   }
 
   onSubmit($("dlg-move"), $("move-submit"), $("move-error"), async () => {
@@ -1390,31 +1533,32 @@ ${ALIAS_KIND_RULES_JS}
       implementation: moveTarget.implementation,
       group: moveTarget.group,
       toImplementation: $("move-vault").value,
-      toGroup: $("move-group").value,
+      toGroup: chosenDestination("move", moveVault()),
     });
   });
 
   // 参照を作る（**値は写さない。同じ Vault の中だけ**、2026-10-04）
   let linkSource = null;
+  let linkVault = null;   // 「参照を作る」が見ている Vault（元と同じ）
   async function openLink(a) {
     linkSource = a;
     $("link-error").hidden = true;
-    $("link-now").textContent = "元は " + a.implementation + " / " + a.group + " / " + a.name;
+    $("link-now").textContent = "元は " + a.implementation + " / " + groupName(a.implementation, a.group) + " / " + a.name;
     // **Vault は元と同じに固定**——選べるように見せない（規則13）
-    $("link-vault").replaceChildren(option(a.implementation, a.implementation));
+    setOptions($("link-vault"), option(a.implementation, a.implementation));
     $("link-name").value = a.name;
     const places = await callTool("getPlacements", project ? { projectId: project.id } : {});
-    const v = (places.vaults || []).find((x) => x.implementation === a.implementation);
-    const groups = placeChoices(v);
-    $("link-group").replaceChildren(...groups.map((g) => option(g, groupLabel(a.implementation, g))));
-    $("link-group").disabled = groups.length === 0;
-    // **既定は「ここから使いたい」置き場**——この Project の置き場、無ければ Global
+    placements = places;
+    linkVault = (places.vaults || []).find((x) => x.implementation === a.implementation);
+    const groups = (linkVault && linkVault.groups) || [];
+    // **既定は「ここから使いたい」置き場**——この Project の置き場、無ければ Global（版まで含めた置き場）
     const mine = places.project && places.project.implementation === a.implementation ? places.project.group : null;
     const shared = places.shared && places.shared.implementation === a.implementation ? places.shared.group : null;
-    const preferred = [mine, shared].find((g) => g && g !== a.group && groups.includes(g)) ||
+    const preferred = [mine, shared].find((g) => g && g !== a.group && groups.includes(baseOf(g))) ||
       groups.find((g) => g !== a.group);
-    if (preferred) $("link-group").value = preferred;
+    fillDestination("link", linkVault, preferred);
     $("link-group").onchange = applyLinkEffect;
+    $("link-variant").onchange = applyLinkEffect;
     $("link-name").oninput = applyLinkEffect;
     applyLinkEffect();
     $("dlg-link").showModal();
@@ -1423,10 +1567,11 @@ ${ALIAS_KIND_RULES_JS}
   /** **押す前に、置けるか・置いたらどう引けるかを出す**（ぶつかるなら押させない）。 */
   function applyLinkEffect() {
     if (!linkSource) return;
-    const impl = linkSource.implementation, group = $("link-group").value, name = $("link-name").value.trim();
+    const impl = linkSource.implementation, group = chosenDestination("link", linkVault), name = $("link-name").value.trim();
     let blocked = !group || !name;
     let effect = "";
     if (group && name) {
+      // 紐付いていない版付きの置き場は一覧に無いので、ここでは比べられない——置く先の空きは kit が読んで断る
       const taken = aliases.some((x) => x.implementation === impl && x.group === group && x.name === name);
       if (taken) {
         blocked = true;
@@ -1434,7 +1579,7 @@ ${ALIAS_KIND_RULES_JS}
           ? "元と同じ置き場です。別のグループか名前を選んでください"
           : "置く先に同じ名前があります（上書きしません）——名前を変えてください";
       } else {
-        effect = placementEffect(impl, group);
+        effect = placementEffect(impl, group) + unlistedNote(linkVault, group);
       }
     }
     $("link-submit").disabled = blocked;
@@ -1446,7 +1591,7 @@ ${ALIAS_KIND_RULES_JS}
       name: linkSource.name,
       implementation: linkSource.implementation,
       group: linkSource.group,
-      toGroup: $("link-group").value,
+      toGroup: chosenDestination("link", linkVault),
       toName: $("link-name").value.trim(),
     });
   });
@@ -1460,14 +1605,14 @@ ${ALIAS_KIND_RULES_JS}
       return;
     }
     const places = await callTool("getPlacements", { projectId: project.id });
+    placements = places; // 選択肢の添え（この Project・Global）が見る
     $("place-now").textContent = places.project
-      ? "いまは " + places.project.implementation + " / " + baseOf(places.project.group) +
-        variantSuffix(places.project.implementation, places.project.group)
+      ? "いまは " + places.project.implementation + " / " + groupName(places.project.implementation, places.project.group)
       : "まだ決まっていません（最初に保存したときに決まります）";
     const fill = () => {
       const v = (places.vaults || []).find((x) => x.implementation === $("place-vault").value);
       const groups = (v && v.groups) || [];
-      $("place-group").replaceChildren(...groups.map((g) => option(g, g)));
+      setOptions($("place-group"), ...groups.map((g) => groupOption(g, g, groupTag(v.implementation, g, true))));
       $("place-group").disabled = groups.length === 0;
       // いまの置き場のグループを選んでおく（版は別の欄）
       const p = places.project;
@@ -1475,7 +1620,7 @@ ${ALIAS_KIND_RULES_JS}
         $("place-group").value = baseOf(p.group);
       }
     };
-    $("place-vault").replaceChildren(...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
+    setOptions($("place-vault"), ...(places.vaults || []).map((v) => option(v.implementation, v.implementation)));
     if (places.project) $("place-vault").value = places.project.implementation;
     fill();
     placeVaults = places;
@@ -1508,7 +1653,7 @@ ${ALIAS_KIND_RULES_JS}
       note.textContent = "版を読めませんでした（既定の版に置きます）：" + v.variantsError;
     }
     if (!axis) {
-      $("place-variant").replaceChildren();
+      setOptions($("place-variant"));
       return;
     }
     $("place-variant-label").textContent = axis.label;
@@ -1520,7 +1665,7 @@ ${ALIAS_KIND_RULES_JS}
     const labelOf = (o, count) =>
       o + (o === axis.default ? "（既定）" : "") +
       (count ? "　値あり " + count.filled + "／" + count.total : "");
-    $("place-variant").replaceChildren(...axis.options.map((o) => option(o, labelOf(o))));
+    setOptions($("place-variant"), ...axis.options.map((o) => option(o, labelOf(o))));
     $("place-variant").value = current;
     if (!group) return;
     try {

@@ -9,7 +9,7 @@
 //   4. **値はどこにも出てこない**（画面にも、一覧にも）
 import { test, expect } from "../test-base.js";
 import type { FrameLocator, Locator } from "@playwright/test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
@@ -544,8 +544,10 @@ test("秘密鍵を貼ってやめたら、次に開いたときに残ってい�
   await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
   await canvas.locator("#new-kind").selectOption("ssh-identity");
   await canvas.locator("#new-value-multiline").fill(leaked);
-  // **同じ名前のボタンが複数のダイアログにある**——閉じたい相手を名指しする
-  await canvas.locator("#dlg-new").getByRole("button", { name: "やめる" }).click();
+  // **同じ名前のボタンが複数のダイアログにある**——閉じたい相手を名指しする。名前は完全一致で（2026-10-07）
+  // ——選択欄の中の <button><selectedcontent>（customizable select）を Playwright は button と数え、その名前は
+  // 選んでいる選択肢（「この Project（E2E 貼ってやめる）」）になる。Chromium の読み上げの木では combobox 1つのまま
+  await canvas.locator("#dlg-new").getByRole("button", { name: "やめる", exact: true }).click();
   await expect(canvas.locator("#dlg-new"), "やめるを押しても閉じない").toBeHidden();
 
   await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
@@ -603,6 +605,133 @@ test("一覧の行から、別の置き場へ移せる", async ({ page }) => {
       server: "vault-directory",
       tool: "deleteAlias",
       arguments: { implementation: "vault-local", name: alias, group: dest },
+    },
+  });
+});
+
+// **選択欄**（2026-10-07、ユーザー——実機の暗い配色で「移す」の移す先を開いて）。
+//   1. 選択肢の主は **Vault での本当のグループ名**（Project の既定グループは UUID をそのまま、省かない）。この Project・
+//      Global の置き場は「— この Project」「— Global」の添え。以前の言い換え（「この Project 専用（…）」）を出さない
+//   2. 開いた一覧は customizable select（appearance: base-select）で、行の「…」メニューと同じ host の色——明るい・暗い
+//      両方で、一覧の地と字が host の地と字になっていること。閉じた欄は選んだものを … で畳み、▼ を押し出さない
+//   3. キーボードは素の select のまま（↑で開き、↑ Enter で選ぶ）
+// 開いたところを tmp-shots/ に写す（worktree の頭）
+test("選択欄：グループは Vault での本当の名前（この Project・Global は添え）、開いた一覧は base-select で host の色", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-select-"));
+  const alias = `e2e-select-${Date.now()}`;
+  const shots = join(import.meta.dirname, "../../../tmp-shots");
+  mkdirSync(shots, { recursive: true });
+  await openApp(page);
+  await createProject(page, "E2E 選択欄", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  await canvas.getByRole("button", { name: "＋ 秘密を登録" }).click();
+  await canvas.locator("#new-name").fill(alias);
+  await canvas.locator("#new-value").fill("select-me");
+  await canvas.locator("#new-scope").selectOption({ index: 0 });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  const row = canvas.locator("tbody tr").filter({ hasText: alias });
+  await expect(row).toBeVisible({ timeout: 120_000 });
+  await expect(canvas.locator("#place-summary")).toContainText(" / ");
+  const projectGroup = (await canvas.locator("#place-summary").innerText()).split(" / ").pop()!.trim();
+  const sharedGroup = /vault-local \/ (.+?)（/.exec(await canvas.locator("#shared-hint").innerText())?.[1];
+  expect(sharedGroup, "Global の置き場が読めていない").toBeTruthy();
+
+  // ---- 1. 文言 -------------------------------------------------------------------------------
+  await rowAction(canvas, row, "秘密を移動");
+  await expect(canvas.locator("#dlg-move")).toBeVisible();
+  await expect(canvas.locator("#move-now")).toHaveText(`いまは vault-local / ${projectGroup} — この Project`);
+  const group = canvas.locator("#move-group");
+  const texts = await group.locator("option").evaluateAll((os) =>
+    os.map((o) => [(o as HTMLOptionElement).value, o.textContent] as const),
+  );
+  const textOf = new Map(texts);
+  expect(textOf.get(projectGroup), "この Project の置き場の選択肢").toBe(`${projectGroup} — この Project`);
+  expect(textOf.get(sharedGroup!), "Global の置き場の選択肢").toBe(`${sharedGroup} — Global`);
+  for (const [value, text] of texts) {
+    expect(text!.startsWith(value), `選択肢の主がグループ名ではない: ${text}`).toBe(true);
+    expect(text, "言い換えが残っている").not.toMatch(/専用/);
+  }
+  // 版を名乗らない Vault（vault-local）には版の欄を出さない
+  await expect(canvas.locator("#move-variant")).toBeHidden();
+  // 最初はいまの置き場を選んでおく——動かないので押させない
+  await expect(group).toHaveValue(projectGroup);
+  await expect(canvas.locator("#move-effect")).toHaveText("もう その置き場に在ります");
+  await expect(canvas.locator("#move-submit")).toBeDisabled();
+
+  // ---- 2. 見た目（閉じた欄）-------------------------------------------------------------------
+  expect(await group.evaluate((e) => getComputedStyle(e).appearance), "base-select が効いていない").toBe("base-select");
+  // 閉じた欄は選んだもの（主と添え）を出し、長いと … で畳む。▼ は欄の中に残る
+  const shown = group.locator("selectedcontent");
+  await expect(shown).toHaveText(`${projectGroup} — この Project`);
+  await expect(shown).toHaveCSS("text-overflow", "ellipsis");
+  const sb = (await group.boundingBox())!, cb = (await shown.boundingBox())!;
+  expect(cb.x + cb.width, "選んだものが欄からはみ出して ▼ を押し出している").toBeLessThan(sb.x + sb.width - 12);
+
+  /** 開いた一覧の地と字が、小窓（host の地と字）と同じか。 */
+  async function expectPickerInHostColors(label: string): Promise<void> {
+    await group.click();
+    await expect.poll(() => group.evaluate((e) => e.matches(":open")), `${label}：一覧が開かない`).toBe(true);
+    const shared = group.locator(`option[value="${sharedGroup}"]`);
+    await expect(shared, `${label}：開いた一覧の項目が見えない`).toBeVisible();
+    await expect(shared.locator(".opt-tag")).toHaveCSS("opacity", "0.55");
+    const [picker, option, dialog] = await group.evaluate((e) => {
+      const p = getComputedStyle(e, "::picker(select)");
+      const o = getComputedStyle(e.querySelector("option")!);
+      const d = getComputedStyle(e.closest("dialog")!);
+      return [[p.backgroundColor, p.color, p.borderTopLeftRadius], [o.color], [d.backgroundColor, d.color]] as const;
+    });
+    expect(picker[0], `${label}：開いた一覧の地が host の地ではない`).toBe(dialog[0]);
+    expect(picker[1], `${label}：開いた一覧の字が host の字ではない`).toBe(dialog[1]);
+    expect(option[0], `${label}：項目の字が host の字ではない`).toBe(dialog[1]);
+    expect(picker[2], `${label}：一覧の角が「…」メニューと揃っていない`).toBe("8px");
+  }
+
+  // ---- 2. 見た目（開いた一覧・明るい）----------------------------------------------------------
+  await expectPickerInHostColors("明るい");
+  const light = await group.evaluate((e) => getComputedStyle(e, "::picker(select)").backgroundColor);
+  await page.screenshot({ path: join(shots, "vault-select-light.png") });
+  // Esc は一覧だけ閉じる（小窓は開いたまま）
+  await page.keyboard.press("Escape");
+  await expect.poll(() => group.evaluate((e) => e.matches(":open"))).toBe(false);
+  await expect(canvas.locator("#dlg-move")).toBeVisible();
+
+  // ---- 3. キーボード：↑で開き、↑ Enter で1つ上を選ぶ ------------------------------------------
+  const values = texts.map(([v]) => v);
+  const at = values.indexOf(projectGroup);
+  expect(at, "試験の前提：この Project の置き場の上に選択肢がある").toBeGreaterThan(0);
+  await group.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect.poll(() => group.evaluate((e) => e.matches(":open")), "↑で一覧が開かない").toBe(true);
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  await expect(group, "キーボードで選べない").toHaveValue(values[at - 1]!);
+  await expect.poll(() => group.evaluate((e) => e.matches(":open"))).toBe(false);
+  await expect(canvas.locator("#move-submit")).toBeEnabled();
+  await group.selectOption(projectGroup);
+
+  // ---- 2. 見た目（開いた一覧・暗い）------------------------------------------------------------
+  await page.getByRole("button", { name: "明暗を切り替え" }).click();
+  await page.getByRole("menuitem", { name: "ダーク" }).click();
+  await expect(canvas.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expectPickerInHostColors("暗い");
+  const dark = await group.evaluate((e) => getComputedStyle(e, "::picker(select)").backgroundColor);
+  expect(dark, "暗くしても開いた一覧の地が変わらない").not.toBe(light);
+  await page.screenshot({ path: join(shots, "vault-select-dark.png") });
+  await page.keyboard.press("Escape");
+  await canvas.locator("#dlg-move").getByRole("button", { name: "やめる" }).click();
+  await expect(canvas.locator("#dlg-move")).toBeHidden();
+
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: {
+      server: "vault-directory",
+      tool: "deleteAlias",
+      arguments: { implementation: "vault-local", name: alias, group: projectGroup },
     },
   });
 });
@@ -770,6 +899,9 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   // 名前の既定は元と同じ、置き場の既定は「この Project」の置き場
   await expect(canvas.locator("#link-name")).toHaveValue(origin);
   await expect(canvas.locator("#link-group")).toHaveValue(projectGroup);
+  // 選択肢の主は Vault での本当の名前、この Project の置き場は添え（2026-10-07）。vault-local は版を名乗らない
+  await expect(canvas.locator(`#link-group option[value="${projectGroup}"]`)).toHaveText(`${projectGroup} — この Project`);
+  await expect(canvas.locator("#link-variant")).toBeHidden();
   await expect(canvas.locator("#dlg-link")).toContainText(
     "値は写しません。元を変えればこちらも変わり、元を消すとこちらは使えなくなります",
   );

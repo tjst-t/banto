@@ -17,6 +17,8 @@ const PROJECT = { "dev.banto/caller": { project: "P" } } as const;
 function memoryBackend(withVariants: boolean) {
   const secrets = new Map<string, string>();
   const state = { default: "dev" };
+  /** 作ったグループ（Infisical ならフォルダ）——断る前に作っていないかを見る */
+  const created: string[] = [];
   const backend: VaultBackend = {
     async getSecret(path) {
       const v = secrets.get(path);
@@ -44,7 +46,9 @@ function memoryBackend(withVariants: boolean) {
     async listGroups() {
       return [];
     },
-    async createGroup() {},
+    async createGroup(group) {
+      created.push(group);
+    },
     ...(withVariants
       ? {
           variants: async () => ({ label: "環境", options: ["dev", "prod"], default: state.default }),
@@ -59,7 +63,7 @@ function memoryBackend(withVariants: boolean) {
         }
       : {}),
   };
-  return { backend, secrets, state };
+  return { backend, secrets, state, created };
 }
 
 /** 版付きのグループの行は、`alsoGroups` で渡されたときだけ返す（版を名乗る backend の振る舞いの写し）。 */
@@ -178,7 +182,7 @@ test("版ごとの数は人の管理面からだけ数えられる・版を付�
   });
 });
 
-test("まだ紐付いていない版付きの置き場にある秘密を、作る・移すで黙って上書きしない（置く先のグループも読む）", async () => {
+test("まだ紐付いていない版付きの置き場にある秘密を、作る・移す・参照で黙って上書きしない（置く先のグループも読む）", async () => {
   await withKit(true, async (c, mem) => {
     // prod に本物の値、dev に同じ名前（ansible-homelab の形）。どちらにも Project は紐付いていない
     await call(c, "createAlias", { name: "HOST", kind: "secret", group: "g@prod", value: "pve" });
@@ -188,6 +192,11 @@ test("まだ紐付いていない版付きの置き場にある秘密を、作�
       /既に別の秘密があります/,
     );
     await assert.rejects(() => call(c, "migrateAlias", { name: "HOST", group: "g", toGroup: "g@prod" }), /既に別の秘密があります/);
+    // 参照も同じ——管理画面の「参照を作る」で版を選べる（2026-10-07）。置く先の版の行を読まずに比べると、台帳が
+    // 断るまで進み、**断る前に置く先のグループを作る**（Infisical では空のフォルダが残る）。kit がグループを作る前に断る
+    mem.created.length = 0;
+    await assert.rejects(() => call(c, "linkAlias", { name: "HOST", group: "g", toGroup: "g@prod" }), /既に別の秘密があります/);
+    assert.deepEqual(mem.created, [], "置く先の空きを見る前にグループを作った");
     assert.equal(mem.secrets.get("g@prod/HOST"), "pve", "prod の本物の値が上書きされた");
     assert.equal(mem.secrets.get("g/HOST"), "x", "移せなかったのに元が消えた");
   });

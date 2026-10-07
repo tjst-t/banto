@@ -158,10 +158,75 @@ test("置き場の変更：まだ紐付いていない版付きの置き場に�
     };
     assert.equal(prod.content[0]!.text, "pve");
 
-    // 移さずに変えるのはできる。変えたあと、移す・参照の行き先に版付きの置き場が並ぶ
+    // 移さずに変えるのはできる。変えたあと、紐付けた版付きの置き場が variantGroups に出る（一覧に出る版付きの置き場）
     await call("setProjectPlacement", { projectId: "P", implementation: "vault-x", group: "homelab", variant: "prod" });
     const places = await call("getPlacements", { projectId: "P" });
     assert.deepEqual(places.vaults[0].variantGroups, ["homelab@prod"]);
+    await ui.close();
+    await vault.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// **「移す」「参照を作る」で版を選べる**（2026-10-07、ユーザー「Env の指定もできる必要があるかも」）。画面は選んだ
+// グループと版から `g@prod` を作って toGroup に渡す——窓口はそれをそのまま中継し、まだどこも紐付けていない版へも
+// 移せる・置ける。その版に同じ名前の本物の値があれば、kit が置く先の版も読んで断る（上書きしない）
+test("移す・参照：toGroup の g@prod を中継し、まだ紐付いていない版に同じ名前があれば上書きせずに断る", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vd-var-d-"));
+  try {
+    const vault = await connect(
+      createVaultModuleServer({ moduleName: "vault-x", backend: variantBackend(), aliasStore: new VariantStore(dir), dataDir: dir }),
+    );
+    const direct = async (name: string, args: Record<string, unknown>) => {
+      const res = (await vault.callTool({ name, arguments: args, _meta: ADMIN })) as { isError?: boolean; content: Array<{ text: string }> };
+      if (res.isError) throw new Error(res.content[0]!.text);
+      return res.content[0]!.text;
+    };
+    const relay: RelayLike = {
+      listTargets: async () => [{ name: "vault-x", roles: ["vault"] }],
+      callTool: async (_target, name, args) => direct(name, args),
+    };
+    const ui = await connect(createVaultDirectoryServer({ relay }));
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const res = (await ui.callTool({ name, arguments: args, _meta: ADMIN })) as { isError?: boolean; content: Array<{ text: string }> };
+      if (res.isError) throw new Error(res.content[0]!.text);
+      return JSON.parse(res.content[0]!.text);
+    };
+    const rowsIn = async (group: string) =>
+      (JSON.parse(await direct("listAliases", { alsoGroups: [group] })) as Array<{ name: string; group: string; linkTo?: unknown }>).filter(
+        (r) => r.group === group,
+      );
+
+    await call("setProjectPlacement", { projectId: "P", implementation: "vault-x", group: "homelab" });
+    await direct("createAlias", { name: "HOST", kind: "secret", group: "homelab@prod", value: "pve" });
+    await direct("createAlias", { name: "HOST", kind: "secret", group: "homelab", value: "dev-host" });
+    await direct("createAlias", { name: "TOKEN", kind: "secret", group: "homelab", value: "tok" });
+
+    // prod に同じ名前の本物の値がある——移す・参照のどちらも断る。prod の値も dev の元も残る
+    await assert.rejects(
+      () => call("migrateAlias", { name: "HOST", implementation: "vault-x", group: "homelab", toGroup: "homelab@prod" }),
+      /既に別の秘密があります/,
+    );
+    await assert.rejects(
+      () => call("linkAlias", { name: "HOST", implementation: "vault-x", group: "homelab", toGroup: "homelab@prod" }),
+      /既に別の秘密があります/,
+    );
+    assert.equal(await direct("resolveAlias", { name: "HOST", group: "homelab@prod" }), "pve", "prod の本物の値が上書きされた");
+    assert.equal(await direct("resolveAlias", { name: "HOST", group: "homelab" }), "dev-host", "移せなかったのに元が消えた");
+
+    // 空いていれば、まだ紐付いていない版へ移せる・参照を置ける
+    const moved = await call("migrateAlias", { name: "TOKEN", implementation: "vault-x", group: "homelab", toGroup: "homelab@prod" });
+    assert.deepEqual(moved.to, { implementation: "vault-x", group: "homelab@prod" });
+    assert.equal(await direct("resolveAlias", { name: "TOKEN", group: "homelab@prod" }), "tok");
+    await call("linkAlias", { name: "HOST", implementation: "vault-x", group: "homelab", toGroup: "homelab@prod", toName: "DEV_HOST" });
+    const prod = await rowsIn("homelab@prod");
+    assert.deepEqual(prod.map((r) => r.name).sort(), ["DEV_HOST", "HOST", "TOKEN"]);
+    assert.deepEqual(prod.find((r) => r.name === "DEV_HOST")!.linkTo, { group: "homelab", name: "HOST" });
+    // 紐付いていない版の行は、ふだんの一覧（窓口の横断）には出ない——画面はこれを先に言う（getPlacements の variantGroups に無い）
+    const listed = await call("listAliases", {});
+    assert.equal(listed.aliases.some((a: { group: string }) => a.group === "homelab@prod"), false);
+    assert.deepEqual((await call("getPlacements", { projectId: "P" })).vaults[0].variantGroups, []);
     await ui.close();
     await vault.close();
   } finally {
