@@ -398,3 +398,61 @@ test("root の作業ツリーの変更が取り込む変更と関係なければ
     s.cleanup();
   }
 });
+
+/**
+ * 取り込む直前のテストの最中に、人が main にコミットする（main が先に進む）。テストのコマンドが何回目に呼ばれたかで決める
+ * ——1回目は手順のテスト、2回目からが取り込む直前のテスト。`at` に入っている回で main に空のコミットを積む
+ */
+function movingMain(s: { project: string }, at: number[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "factory-hook-"));
+  const script = join(dir, "test.sh");
+  writeFileSync(
+    script,
+    [
+      "set -e",
+      "test -f README",
+      `n=$(cat ${dir}/count 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${dir}/count`,
+      `case " ${at.join(" ")} " in *" $n "*) git -C ${s.project} -c user.name=人 -c user.email=h@h commit -q --allow-empty -m "人のコミット $n" ;; esac`,
+    ].join("\n"),
+  );
+  return `sh ${script}`;
+}
+
+test("取り込む直前のテストの間に main が先に進んだら、rebase からやり直して入る（人のコミットの上に積む）", async () => {
+  const s = setup({ implement: editLine });
+  try {
+    fiveLines(s.project);
+    const run = s.factory.start({ tasks: [task("m", "<line 1 一>")], settings: { ...s.settings, testCommand: movingMain(s, [2]) } });
+    await until(() => s.fake.finished.length === 1, "終わらない");
+    assert.equal(run.items[0]!.status, "done");
+    assert.deepEqual(s.fake.stopped, [], "やり直せる回数の中なのに止まった");
+    const subjects = git(s.project, "log", "--format=%s", "main").split("\n");
+    assert.deepEqual(subjects.slice(0, 2), ["README 1 行目を 一", "人のコミット 2"], "人のコミットの上に積まれていない");
+    assert.equal(git(s.project, "rev-list", "--merges", "--count", "main"), "0");
+    const steps = s.factory.journalOf(run.id, "m").map((x) => x.key);
+    assert.equal(steps.filter((k) => k === "rebase").length, 2, `rebase をやり直していない：${steps.join(",")}`);
+    assert.equal(steps.filter((k) => k === "fast-forward").length, 2);
+    assert.equal(readFileSync(join(s.project, "README"), "utf8"), "一\n2\n3\n4\n5\n");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("main が動き続けてやり直しの上限を越えたら止まって知らせ、「続ける」でもう一度試して入る", async () => {
+  const s = setup({ implement: editLine });
+  try {
+    fiveLines(s.project);
+    const settings = { ...s.settings, testCommand: movingMain(s, [2, 3]), limits: { ...s.settings.limits, rebaseRetries: 1 } };
+    const run = s.factory.start({ tasks: [task("n", "<line 2 二>")], settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    assert.match(s.fake.stopped[0]!, /main が動き続けて取り込めませんでした（2 回）/);
+    assert.equal(run.items[0]!.stage, "マージ");
+    assert.equal(git(s.project, "log", "-1", "--format=%s", "main"), "人のコミット 3", "止まったのに main に入れた");
+    s.factory.answer(run.id, "n", { action: "continue" });
+    await until(() => s.fake.finished.length === 1, "答えたのに終わらない");
+    assert.equal(run.items[0]!.status, "done");
+    assert.deepEqual(git(s.project, "log", "--format=%s", "main").split("\n").slice(0, 3), ["README 2 行目を 二", "人のコミット 3", "人のコミット 2"]);
+  } finally {
+    s.cleanup();
+  }
+});
