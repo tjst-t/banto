@@ -47,12 +47,13 @@ const KINDS = {
   human: {
     heading: (n: number) => `あなたの答えを待っているもの（${n}）`,
     line: (n: number) => `あなたの答えを待っています（${n} 件）`,
-    since: "から待っています",
+    // 「いま」のときは「に」を挟まない（「いまに頼んだ」になっていた、2026-10-07）
+    since: (ago: string) => `${ago}から待っています`,
   },
   work: {
     heading: (n: number) => `バックグラウンドで動いているもの（${n}）`,
     line: (n: number) => `バックグラウンドで ${n} 件`,
-    since: "に頼んだ",
+    since: (ago: string) => (ago === "いま" ? "いま頼んだ" : `${ago}に頼んだ`),
   },
 } as const;
 type Kind = keyof typeof KINDS;
@@ -125,8 +126,7 @@ function BackgroundList({
                     <span className="truncate text-sm text-foreground">{titleOf(item)}</span>
                     {item.description ? <span className="line-clamp-2 text-xs text-ink-2">{item.description}</span> : null}
                     <span className="text-xs text-ink-3">
-                      {item.module}・{minutesAgo(item.since, now)}
-                      {KINDS[kind].since}
+                      {item.module}・{KINDS[kind].since(minutesAgo(item.since, now))}
                     </span>
                     {item.keptAt ? (
                       // **起こし直しのあと続けている**（2026-10-05、アーキ仕様 §2.5「2.」）——続けると答えてから長く届かない

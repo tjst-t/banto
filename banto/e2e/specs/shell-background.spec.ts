@@ -90,7 +90,9 @@ test("待たずに流したコマンドは、終わると開いたままの会�
   const item = list.getByTestId("background-item");
   await expect(item).toHaveCount(1);
   await expect(item).toContainText("sleep 20; echo");
-  await expect(item).toContainText(/shell・(いま|\d+分前)に頼んだ/);
+  // 1分たっていなければ「いま頼んだ」（「いまに頼んだ」と出ていた、2026-10-07）
+  await expect(item).toContainText(/shell・(いま頼んだ|\d+分前に頼んだ)/);
+  await expect(item).not.toContainText("いまに");
   await page.keyboard.press("Escape");
 
   // ---- 3. AI が一覧を見る（この Thread の分）--------------------------------------------------------------------
