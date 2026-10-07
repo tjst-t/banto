@@ -14,7 +14,13 @@ import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
 import { createForkMcpServer, type ForkRequest } from "./fork-tool.js";
-import { REPORT_TURN_TOOL_NAME, turnSummaryStopDecision, type TurnSummaryState } from "./turn-summary.js";
+import {
+  REPORT_TURN_TOOL_NAME,
+  noteToolUsed,
+  shouldEndTurnAfterTool,
+  turnSummaryStopDecision,
+  type TurnSummaryState,
+} from "./turn-summary.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
@@ -388,7 +394,7 @@ async function* runThreadTurnInner(
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
-  const turnSummary: TurnSummaryState | undefined = deps.turnSummaryEnabled?.(thread.projectId) === true ? {} : undefined;
+  const turnSummary: TurnSummaryState | undefined = deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -503,6 +509,11 @@ async function* runThreadTurnInner(
         ? {
             onStop: ({ stopHookActive }: { stopHookActive: boolean }) =>
               abortTurn.signal.aborted ? undefined : turnSummaryStopDecision(turnSummary, stopHookActive),
+            // まとめを受け付けたらそこで終える（AI をもう一度呼ばない）。作業に数える tool も数える
+            onToolUsed: ({ toolName }: { toolName: string }) => {
+              noteToolUsed(turnSummary, toolName);
+              return shouldEndTurnAfterTool(turnSummary, toolName);
+            },
           }
         : {}),
     });

@@ -415,6 +415,8 @@ export async function* runTurn(opts: {
   allowedTools?: string[];
   /** 終わろうとしたときの差し戻し（本物の SDK の Stop hook）。文が返れば差し戻し */
   onStop?(input: { stopHookActive: boolean }): string | undefined;
+  /** tool が終わるたび（本物の SDK の PostToolUse）。true ならそこでターンを終える（AI をもう一度呼ばない） */
+  onToolUsed?(input: { toolName: string }): boolean;
   /** 人がこの Thread で選んだモデルと effort（選んでいなければ来ない）。 */
   model?: string;
   effort?: string;
@@ -509,6 +511,7 @@ export async function* runTurn(opts: {
   }
 
   let lastText = plan.say ?? "";
+  let endedByHook = false;
   for (const [index, call] of (plan.tools ?? []).entries()) {
     if (opts.signal?.aborted) break;
     // **呼び出しごとに一意**（訂正・2026-09-21）。以前は tool 名と順番だけで
@@ -591,10 +594,17 @@ export async function* runTurn(opts: {
       lastText = err instanceof Error ? err.message : String(err);
       yield { type: "message", message: toolResultMessage(sessionId, toolUseId, lastText, true) };
     }
+    // 本物の CLI は PostToolUse の continue: false でそこで終える——後ろの tool・文は出さない
+    const endHere = opts.onToolUsed?.({ toolName: qualified }) === true;
+    console.warn(`[fake-runner] PostToolUse ${qualified}: ${opts.onToolUsed ? (endHere ? "ここで終える" : "続ける") : "(hook 無し)"}`);
+    if (endHere) {
+      endedByHook = true;
+      break;
+    }
   }
 
   // **resource を読んで、読めた中身を発言にする**
-  for (const want of plan.resources ?? []) {
+  for (const want of endedByHook ? [] : (plan.resources ?? [])) {
     if (opts.signal?.aborted) break;
     let text: string;
     try {
@@ -613,18 +623,18 @@ export async function* runTurn(opts: {
   // ここを省くと、記録に残る assistant の発言が**空のまま**になり、
   // 「答えたあとの続きが画面に入る」類の試験が通らない
   // （2026-09-21、`judgment-after-reload` がこれで落ちた）
-  if ((plan.tools ?? []).length > 0 && !plan.then) {
+  if (!endedByHook && (plan.tools ?? []).length > 0 && !plan.then) {
     yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: lastText }]) };
   }
 
-  if (plan.then) {
+  if (plan.then && !endedByHook) {
     lastText = plan.then;
     yield* speak(plan.then, plan.thenStreamMs);
   }
 
   // **終わろうとしたときの Stop hook**（追加・2026-10-06）。本物の CLI は差し戻されたら理由をモデルに見せて続け、もう一度
   // 終わろうとしたときは stop_hook_active を立てて聞き直す
-  if (opts.onStop && !opts.signal?.aborted) {
+  if (opts.onStop && !endedByHook && !opts.signal?.aborted) {
     const reason = opts.onStop({ stopHookActive: false });
     if (reason) {
       console.warn(`[fake-runner] Stop hook で差し戻された: ${reason.slice(0, 120)}`);
@@ -647,8 +657,10 @@ export async function* runTurn(opts: {
         } catch (err) {
           yield { type: "message", message: toolResultMessage(sessionId, toolUseId, err instanceof Error ? err.message : String(err), true) };
         }
+        if (!opts.onToolUsed?.({ toolName: qualified })) opts.onStop({ stopHookActive: true });
+      } else {
+        opts.onStop({ stopHookActive: true });
       }
-      opts.onStop({ stopHookActive: true });
     }
   }
 

@@ -2259,7 +2259,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
 
 AI が `report_turn` で渡したまとめ（アーキ仕様 §2.2「ターンの終わりのまとめ」）を、**そのターンの AI の発言の一番下**に出す。
 Project の設定「一般」の節「会話」のスイッチ「ターンの終わりにまとめを出す」（既定はオフ、押したらすぐ保存）でオンにした
-Project だけ。モックは `mock/components/banto/thread/turn-summary-card.tsx`、本物は
+Project だけ。出るのは作業をしたターン・長い報告のあと（短い受け答えには出ない、改訂・2026-10-07）。モックは `mock/components/banto/thread/turn-summary-card.tsx`、本物は
 `apps/frontend/components/banto/thread/turn-summary-card.tsx`。
 
 - **普通の発言と見分けがつく票**：会話の幅いっぱいの枠に見出し「このターンのまとめ」と時刻。中は3段：

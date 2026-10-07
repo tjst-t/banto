@@ -17,7 +17,10 @@ import { createForkMcpServer } from "./fork-tool.js";
 import { runThreadTurn } from "./turn-runner.js";
 import {
   REPORT_TURN_MISSING_REASON,
+  TURN_SUMMARY_LONG_TURN_MS,
   TURN_SUMMARY_PROMPT_SECTION,
+  noteToolUsed,
+  shouldEndTurnAfterTool,
   turnSummaryStopDecision,
   validateTurnSummary,
   type TurnSummary,
@@ -74,12 +77,28 @@ test("形が合っていれば通り、合わなければ直し方の分かる�
   );
 });
 
-test("Stop hook は、まとめが無ければ一度だけ差し戻す（stop_hook_active なら終える）", () => {
+test("催促は、作業をした・3分以上かかったターンで、まとめが無いときだけ一度だけ（stop_hook_active なら終える）", () => {
+  const t0 = 1_000_000;
+  const short: TurnSummaryState = { startedAt: t0 };
+  noteToolUsed(short, "mcp__banto-memory__remember_decision");
+  noteToolUsed(short, "mcp__banto-thread__report_turn");
+  assert.equal(turnSummaryStopDecision(short, false, t0 + 1000), undefined, "短い受け答えでは催促しない");
+  assert.equal(turnSummaryStopDecision(short, false, t0 + TURN_SUMMARY_LONG_TURN_MS), REPORT_TURN_MISSING_REASON, "3分以上なら催促する");
+
+  const worked: TurnSummaryState = { startedAt: t0 };
+  noteToolUsed(worked, "mcp__shell__runCommand");
+  assert.equal(turnSummaryStopDecision(worked, false, t0 + 1000), REPORT_TURN_MISSING_REASON);
+  assert.equal(turnSummaryStopDecision(worked, true, t0 + 1000), undefined, "差し戻したあとの終わりで、もう一度差し戻すと終わらない");
+  worked.accepted = { summary: good, at: "2026-10-06T00:00:00.000Z" };
+  assert.equal(turnSummaryStopDecision(worked, false, t0 + 1000), undefined);
+});
+
+test("まとめを受け付けたらそこでターンを終える。断った呼び出し・ほかの tool では終えない", () => {
   const state: TurnSummaryState = {};
-  assert.equal(turnSummaryStopDecision(state, false), REPORT_TURN_MISSING_REASON);
-  assert.equal(turnSummaryStopDecision(state, true), undefined, "差し戻したあとの終わりで、もう一度差し戻すと終わらない");
-  state.accepted = { summary: good, at: "2026-10-06T00:00:00.000Z" };
-  assert.equal(turnSummaryStopDecision(state, false), undefined);
+  assert.equal(shouldEndTurnAfterTool(state, "mcp__banto-thread__report_turn"), false, "断った（受け付けていない）ときは直させる");
+  state.accepted = { summary: good, at: "2026-10-07T00:00:00.000Z" };
+  assert.equal(shouldEndTurnAfterTool(state, "mcp__banto-thread__report_turn"), true);
+  assert.equal(shouldEndTurnAfterTool(state, "mcp__shell__runCommand"), false);
 });
 
 test("システムプロンプトの節は、オンのときだけ動的な後半に足す", () => {
@@ -181,6 +200,8 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     assert.ok(first!.systemPrompt.includes(TURN_SUMMARY_PROMPT_SECTION));
     assert.equal(typeof first!.onStop, "function");
     assert.deepEqual(first!.allowedTools, ["mcp__banto-thread__report_turn"], "毎ターン承認を求めない");
+    assert.equal(first!.onStop!({ stopHookActive: false }), undefined, "tool を使っていない短いターンでは催促しない");
+    assert.equal(first!.onToolUsed!({ toolName: "mcp__shell__runCommand" }), false);
     assert.equal(first!.onStop!({ stopHookActive: false }), REPORT_TURN_MISSING_REASON);
     assert.equal(first!.onStop!({ stopHookActive: true }), undefined);
     const tools = (await (await connect((first!.mcpServers as Record<string, never>)["banto-thread"])).listTools()).tools;
@@ -188,6 +209,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
 
     assert.ok(!second!.systemPrompt.includes(TURN_SUMMARY_PROMPT_SECTION));
     assert.equal(second!.onStop, undefined);
+    assert.equal(second!.onToolUsed, undefined);
     assert.equal(second!.allowedTools, undefined);
   });
 });

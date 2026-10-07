@@ -117,20 +117,40 @@ export function validateTurnSummary(input: TurnSummary): string | undefined {
   return `まとめを受け付けられませんでした。直してもう一度 report_turn を呼んでください：\n${problems.map((p) => `- ${p}`).join("\n")}`;
 }
 
-/** そのターンで受け付けたまとめ（turn-runner が Stop hook で見る） */
+/** そのターンで受け付けたまとめと、作業らしい作業をしたか（turn-runner が Stop hook で見る） */
 export interface TurnSummaryState {
   accepted?: TurnSummaryEntry;
+  /** report_turn・remember_decision 以外の tool を呼んだ回数 */
+  workTools?: number;
+  /** ターンを始めた時刻（ms） */
+  startedAt?: number;
+}
+
+/**
+ * **催促（Stop hook の差し戻し）をかけるターン**（改訂・2026-10-07、ユーザー）：作業をした（tool を使った）か、3分以上かかった
+ * ターンだけ。短い受け答えでまとめが出るのは煩わしい
+ */
+export const TURN_SUMMARY_LONG_TURN_MS = 3 * 60_000;
+
+/** 作業に数えない tool（まとめそのものと、決まったことの記録） */
+export const NON_WORK_TOOLS: ReadonlySet<string> = new Set([
+  `mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`,
+  "mcp__banto-memory__remember_decision",
+]);
+
+export function noteToolUsed(state: TurnSummaryState, toolName: string): void {
+  if (!NON_WORK_TOOLS.has(toolName)) state.workTools = (state.workTools ?? 0) + 1;
 }
 
 export const REPORT_TURN_DESCRIPTION = [
-  "このターンのまとめを人に渡す。人に返すターンの最後に必ず1回呼ぶ（短い受け答えでも）。",
+  "このターンのまとめを人に渡す。作業をした（tool を使った）ターンや長い報告のとき、人に返す最後に1回呼ぶ。短い受け答えには呼ばない。",
   "人は作業を見ておらず、前の話を覚えていないこともある——頼まれたこと・結果・人が決めること（返答の候補つき）を、",
   "それだけ読めば分かるように書く。画面はこれを会話のそのターンの一番下に出す。",
   "人への返事の本文を書き終えてから、最後に呼ぶ（これは本文の代わりではない——本文を書かずに呼ぶと、人には返事が届かない）。",
-  "呼んだらターンを終える。",
+  "呼ぶとそこでターンが終わる。",
 ].join("");
 
-export const REPORT_TURN_ACCEPTED_TEXT = "記録した。これでターンを終える——このあとに文や tool の呼び出しを続けない。";
+export const REPORT_TURN_ACCEPTED_TEXT = "記録した。これでターンを終える。";
 
 /** Stop hook の差し戻しの理由（モデルに「Stop hook feedback」として見える） */
 export const REPORT_TURN_MISSING_REASON =
@@ -139,18 +159,34 @@ export const REPORT_TURN_MISSING_REASON =
 /**
  * Stop hook の判断。差し戻すなら理由を返す。**`stop_hook_active` なら差し戻さない**（一度だけ）
  */
-export function turnSummaryStopDecision(state: TurnSummaryState, stopHookActive: boolean): string | undefined {
+export function turnSummaryStopDecision(
+  state: TurnSummaryState,
+  stopHookActive: boolean,
+  now: number = Date.now(),
+): string | undefined {
   if (stopHookActive) return undefined;
   if (state.accepted) return undefined;
+  const worked = (state.workTools ?? 0) > 0;
+  const long = state.startedAt !== undefined && now - state.startedAt >= TURN_SUMMARY_LONG_TURN_MS;
+  if (!worked && !long) return undefined;
   return REPORT_TURN_MISSING_REASON;
+}
+
+/**
+ * **まとめを受け付けたら、そこでターンを終える**（追加・2026-10-07）。終えないと CLI が AI にもう一度書かせ、AI が空で終えると
+ * CLI が「no visible output」の知らせを足してまた書かせる——その文が本文とまとめの間に割り込んでいた（偽の API で再現、
+ * `probes/turn-summary-stop-hook.mjs empty`）。断った呼び出し（形が合わない）では終えない——AI が直して呼び直す
+ */
+export function shouldEndTurnAfterTool(state: TurnSummaryState, toolName: string): boolean {
+  return toolName === `mcp__banto-thread__${REPORT_TURN_TOOL_NAME}` && state.accepted !== undefined;
 }
 
 /** システムプロンプトに足す節（スイッチがオンの Project だけ） */
 export const TURN_SUMMARY_PROMPT_SECTION = `# 人に返すとき（ターンの終わりのまとめ）
 
-人に返すターンの最後に、必ず report_turn を1回呼ぶ。短い受け答えでも呼ぶ。
+作業をした（tool を使った）ターンや、長い報告をしたターンでは、人に返す最後に report_turn を1回呼ぶ。短い受け答え（質問に答えるだけ・相づち・言い直し）には呼ばない。
 
-**順番：人への返事の本文を書き終えてから、最後に report_turn を呼ぶ。** report_turn は本文の要約であって、本文の代わりではない——本文を書く前に呼んだり、本文を書かずに呼んだりすると、人には返事が届かない。呼んだらターンを終える——後ろに文や tool の呼び出しを続けない。
+**順番：人への返事の本文を書き終えてから、最後に report_turn を呼ぶ。** report_turn は本文の要約であって、本文の代わりではない——本文を書く前に呼んだり、本文を書かずに呼んだりすると、人には返事が届かない。呼ぶとそこでターンが終わる——後ろに文や tool の呼び出しを続けられない。
 
 - request：人の言葉をなぞらず、何を頼まれたかを具体的に書く。「それでお願い」「さっきの直して」なら、何を指すかを前の話から補う。
 - outcome：作業を見ていない人が、前の話を覚えていなくても分かるように書く。確かめていないことは notVerified に書き、確かめたように書かない。

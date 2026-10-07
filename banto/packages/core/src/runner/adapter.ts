@@ -82,6 +82,11 @@ export interface RunnerTurnOptions {
    */
   onStop?(input: { stopHookActive: boolean }): string | undefined;
   /**
+   * **tool が終わるたび**（SDK の PostToolUse・PostToolUseFailure hook、追加・2026-10-07）。`true` を返すと、そこでターンを
+   * 終える（`continue: false`——AI をもう一度呼ばない）。渡さなければ hook を付けない
+   */
+  onToolUsed?(input: { toolName: string }): boolean;
+  /**
    * **承認を聞かずに通す tool**（SDK の `allowedTools`、追加・2026-10-06）。承認モードに依らず `canUseTool` を呼ばない
    * （偽の API で実測、`probes/turn-summary-stop-hook.mjs default-allowed`）。記録するだけで外に何もしない core の tool
    * （`report_turn`）にだけ使う
@@ -262,15 +267,26 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       cwd: opts.cwd,
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,
       ...(opts.allowedTools && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
-      ...(opts.onStop
+      ...(opts.onStop || opts.onToolUsed
         ? {
             hooks: {
+              ...(opts.onToolUsed
+                ? (() => {
+                    const after = async (input: unknown) => {
+                      const name = (input as { tool_name?: unknown }).tool_name;
+                      const end = typeof name === "string" && opts.onToolUsed!({ toolName: name });
+                      return end ? { continue: false as const, stopReason: "まとめを受け付けた" } : {};
+                    };
+                    return { PostToolUse: [{ hooks: [after] }], PostToolUseFailure: [{ hooks: [after] }] };
+                  })()
+                : {}),
               Stop: [
                 {
                   hooks: [
                     async (input) => {
+                      if (!opts.onStop) return {};
                       const active = (input as { stop_hook_active?: unknown }).stop_hook_active === true;
-                      const reason = opts.onStop!({ stopHookActive: active });
+                      const reason = opts.onStop({ stopHookActive: active });
                       return reason ? { decision: "block" as const, reason } : {};
                     },
                   ],

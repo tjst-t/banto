@@ -8,10 +8,18 @@ import { z } from "zod";
 import { childEnv, freshDirs } from "./lib.mjs";
 
 const requests = [];
+const MODE = process.argv[2] ?? "block-once";
 function respond(body) {
-  const msgs = body.messages ?? [];
+  const msgs = (body.messages ?? []).filter((m) => m.role !== "system");
   const last = msgs[msgs.length - 1];
   const blocks = typeof last?.content === "string" ? [{ type: "text", text: last.content }] : (last?.content ?? []);
+  // empty：本文＋report_turn → 結果のあとは中身の無い返事（本物のモデルが何も書かずに終えた形）。CLI の知らせが来たら文を足す
+  if (MODE.startsWith("empty")) {
+    const t = blocks.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+    if (t.includes("no visible output")) return { text: "（促されて足した文）" };
+    if (blocks.some((b) => b.type === "tool_result")) return { text: "" };
+    return { lead: "本文です。", tool: { name: "mcp__banto-thread__report_turn", input: { request: "挨拶を返す", headline: "挨拶した" } } };
+  }
   if (blocks.some((b) => b.type === "tool_result")) return { text: "（まとめを出しました）" };
   const all = blocks.filter((b) => b.type === "text").map((b) => b.text).join(" ");
   if (all.includes("REPORT_NOW")) {
@@ -34,7 +42,7 @@ const server = createServer(async (req, res) => {
   }
   // 本筋の会話だけ数える（タイトル作り等の別の要求を除く：tools を持つもの）
   const main = Array.isArray(body.tools) && body.tools.length > 0;
-  if (main) requests.push(body.messages);
+  if (main) requests.push(body.messages.filter((m) => m.role !== "system"));
   const p = main ? respond(body) : { text: "x" };
   const id = `msg_${requests.length}_${Math.random().toString(36).slice(2, 6)}`;
   const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
@@ -42,10 +50,19 @@ const server = createServer(async (req, res) => {
   const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   ev("message_start", { message: { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage } });
   if (p.tool) {
-    ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_${id}`, name: p.tool.name, input: {} } });
-    ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(p.tool.input) } });
-    ev("content_block_stop", { index: 0 });
+    let i = 0;
+    if (p.lead) {
+      ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+      ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: p.lead } });
+      ev("content_block_stop", { index: 0 });
+      i = 1;
+    }
+    ev("content_block_start", { index: i, content_block: { type: "tool_use", id: `toolu_${id}`, name: p.tool.name, input: {} } });
+    ev("content_block_delta", { index: i, delta: { type: "input_json_delta", partial_json: JSON.stringify(p.tool.input) } });
+    ev("content_block_stop", { index: i });
     ev("message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 5 } });
+  } else if (p.text === "") {
+    ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
   } else {
     ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
     ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: p.text } });
@@ -58,7 +75,9 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
-const mode = process.argv[2] ?? "block-once";
+// empty：まとめのあと AI が空で終えると CLI が「no visible output」を足して書かせる（2026-10-07 の割り込みの再現）
+// empty-stop-after：まとめのあと PostToolUse で continue: false を返すと、AI をもう一度呼ばずに終わる（直し）
+const mode = MODE;
 const dirs = freshDirs(`turn-summary-${mode}`);
 let reported = 0;
 const hookCalls = [];
@@ -98,6 +117,9 @@ const q = query({
       : { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true }),
     systemPrompt: { type: "custom", prompt: ["試験"], snapshot: false },
     hooks: {
+      ...(mode === "empty-stop-after"
+        ? { PostToolUse: [{ hooks: [async () => ({ continue: false, stopReason: "まとめを受け付けた" })] }] }
+        : {}),
       Stop: [
         {
           hooks: [

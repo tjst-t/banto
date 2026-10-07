@@ -3,11 +3,12 @@
 // 見ること（画面と host の記録で）：
 //   1. 既定はオフ——AI が呼び忘れても差し戻さず、まとめは出ない
 //   2. Project の設定「一般」のスイッチでオンにできる（真実は host）
-//   3. オンなら、AI の report_turn が会話のそのターンの一番下に「このターンのまとめ」として出る。後ろに文が続いても下。
-//      承認モードが default でも report_turn には承認を聞かない。元の人の発言（「それでお願い」）を添える
+//   3. オンなら、AI の report_turn が会話のそのターンの一番下に「このターンのまとめ」として出る。受け付けたらそこでターンが
+//      終わる（後ろの文は出ない）。承認モードが default でも report_turn には承認を聞かない。元の人の発言（「それでお願い」）を添える
+//   3'. オンでも、tool を使わない短い受け答えでは呼び忘れても催促しない（まとめは出ない）
 //   4. 返答の候補を押すと入力欄に入る（判断が2つなら2行、もう一度押すと外れる）
 //   5. 読み込み直しても記録から同じまとめが出る
-//   6. AI が呼び忘れたら Stop hook で差し戻され、まとめが出る。後ろに返事をしたまとめの候補は押せない
+//   6. 作業をした（tool を使った）ターンで AI が呼び忘れたら Stop hook で差し戻され、まとめが出る。後ろに返事をしたまとめの候補は押せない
 import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,6 +94,13 @@ test("オンの Project では report_turn がターンの一番下にまとめ�
     .toBe(true);
   await page.goto(`/p/${project.id}`);
 
+  // --- 3'. 短い受け答えでは催促しない ---
+  await composer.fill("ありがとう。" + fakeTurn({ say: "どういたしまして。", stopReport: SECOND }));
+  await composer.press("Enter");
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "どういたしまして。" })).toBeVisible({ timeout: 60_000 });
+  await waitTurnEnded(page, threadId, 2);
+  await expect(summaries, "短い受け答えで催促した").toHaveCount(0);
+
   // 承認モードを default にする——report_turn には聞かないことを見る
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -104,7 +112,8 @@ test("オンの Project では report_turn がターンの一番下にまとめ�
       fakeTurn({
         say: "報告の本文です。",
         tools: [{ server: "banto-thread", name: "report_turn", args: FIRST }],
-        then: "最後に添えた文です。",
+        // 受け付けたらそこで終わる——これは出ない
+        then: "まとめのあとの文です。",
       }),
   );
   await composer.press("Enter");
@@ -117,15 +126,13 @@ test("オンの Project では report_turn がターンの一番下にまとめ�
   await expect(first).toContainText("あなたの発言「それでお願い");
   await expect(first).toContainText("」を、前の話から読み替えています");
   await expect(page.locator('[data-role="judgment-card"]'), "report_turn に承認を聞いた").toHaveCount(0);
-  await waitTurnEnded(page, threadId, 2);
-  // 後ろに文が続いても、まとめは発言の一番下
-  const tail = page.getByText("最後に添えた文です。").first();
-  await expect(tail).toBeVisible();
-  const tailBox = (await tail.boundingBox())!;
-  const cardBox = (await first.boundingBox())!;
-  expect(cardBox.y, "まとめが発言の一番下に無い").toBeGreaterThan(tailBox.y);
+  await waitTurnEnded(page, threadId, 3);
+  // まとめを受け付けたらそこで終わり、後ろの文は出ない。まとめは本文の下
+  await expect(page.locator('[data-role="assistant"]').getByText("まとめのあとの文です。", { exact: true })).toHaveCount(0);
+  const body = page.locator('[data-role="assistant"]').getByText("報告の本文です。", { exact: true }).first();
+  expect((await first.boundingBox())!.y, "まとめが本文の下に無い").toBeGreaterThan((await body.boundingBox())!.y);
   // tool の折りたたみに report_turn を出さない（この発言の tool は report_turn だけ——折りたたみ自体が出ない）
-  const reply = page.locator('[data-role="assistant"]').filter({ hasText: "最後に添えた文です。" });
+  const reply = page.locator('[data-role="assistant"]').filter({ hasText: "報告の本文です。" });
   await expect(reply.locator('[data-slot="tool-group-root"]')).toHaveCount(0);
 
   // --- 4. 候補を押すと入力欄に入る ---
@@ -143,14 +150,20 @@ test("オンの Project では report_turn がターンの一番下にまとめ�
   await expect(summaries.first().getByRole("button", { name: /反映して/ })).toBeEnabled();
 
   // --- 6. 呼び忘れは差し戻され、まとめが出る ---
-  await composer.fill("稼働中の banto に反映して。" + fakeTurn({ say: "反映しました。", stopReport: SECOND }));
+  await composer.fill(
+    "稼働中の banto に反映して。" +
+      fakeTurn({ say: "反映しました。", tools: [{ server: "banto-thread", name: "list_threads" }], stopReport: SECOND }),
+  );
   await composer.press("Enter");
+  // 作業の tool（list_threads）は承認モード default なので聞かれる——許可する
+  const toolCard = page.locator('[data-role="judgment-card"]').filter({ hasText: "mcp__banto-thread__list_threads" });
+  await toolCard.getByRole("button", { name: "許可する" }).click({ timeout: 60_000 });
   await expect(summaries).toHaveCount(2, { timeout: 60_000 });
   const second = summaries.nth(1);
   await expect(second.getByTestId("turn-summary-request")).toHaveText(SECOND.request);
   await expect(second).toContainText("次に頼めること");
   await expect(second).toContainText("決めてもらうことはありません");
-  await waitTurnEnded(page, threadId, 3);
+  await waitTurnEnded(page, threadId, 4);
   // 後ろに返事をしたまとめの候補は押せない
   await expect(summaries.first().getByRole("button", { name: /反映して/ })).toBeDisabled();
   await expect(summaries.first()).toContainText("このまとめのあとに返事をしています");
