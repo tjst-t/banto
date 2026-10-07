@@ -17,6 +17,7 @@ import { getProject } from "@/lib/mock/projects";
 import { RepoList } from "@/components/banto/canvas/repo-list-view";
 import { GithubAccountsSection } from "./github-accounts-section";
 import { RepoHomeSection } from "./repo-home-section";
+import { FactoryConfigSection } from "./factory-config-section";
 
 export function ModuleConfigPane({
   implementationId,
@@ -63,8 +64,10 @@ export function ModuleConfigPane({
         ) : null}
         {/* この枠の中だけ、banto 自身の UI と質感を変える——背景・角丸・枠線を
             banto のカードとずらし、「ここから先は他人のコードの領域」を示す */}
-        <div className="rounded-md border border-border bg-card p-3">
-          {fields.length === 0 ? (
+        <div className="@container rounded-md border border-border bg-card p-3">
+          {impl.roleId === "factory" && projectId ? (
+            <FactoryConfigSection projectId={projectId} />
+          ) : fields.length === 0 ? (
             <p className="text-sm text-ink-3">この Module はまだ設定項目を公開していない</p>
           ) : (
             <dl className="flex flex-col gap-2">

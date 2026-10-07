@@ -327,6 +327,29 @@ let implementations: MockModuleImplementation[] = [
     mcpServersJson: sampleMcpServersJson("banto-backlog", "node", ["./modules/backlog/index.js"], ["backlog"]),
   },
   {
+    id: "banto.factory",
+    roleId: "factory",
+    // Project ごとにつける（§4.5、2026-10-06）——Backlog のタスクを worktree で実装→テスト→レビュー→main まで運ぶ
+    scope: "project",
+    name: "Factory",
+    isolation: "subprocess",
+    enabled: true,
+    dependsOn: [
+      { role: "subagent", required: true },
+      { role: "backlog", required: true },
+    ],
+    tools: [
+      { name: "runFactory", visibility: "agent" },
+      { name: "listFactoryRuns", visibility: "agent" },
+      { name: "answerFactory", visibility: "agent" },
+      { name: "cancelFactory", visibility: "agent" },
+    ],
+    handlesSecrets: false,
+    hasConfigSurface: true,
+    launchers: [{ id: "runs", label: "Factory", viewId: "runs" }],
+    mcpServersJson: sampleMcpServersJson("banto-factory", "node", ["./modules/factory/index.js"], ["factory"]),
+  },
+  {
     id: "banto.vault-ui",
     roleId: "vault-ui",
     scope: "instance",
@@ -714,6 +737,7 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "banto", implementationId: "banto.vault-local" },
   { projectId: "banto", implementationId: "banto.repositories" },
   { projectId: "banto", implementationId: "banto.backlog" },
+  { projectId: "banto", implementationId: "banto.factory" },
   { projectId: "banto", implementationId: "banto.vault-ui" },
   { projectId: "home", implementationId: "banto.fs" },
   { projectId: "home", implementationId: "banto.shell" },
