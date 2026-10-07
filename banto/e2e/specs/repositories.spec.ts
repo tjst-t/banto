@@ -437,12 +437,22 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await inner.getByTestId("gh-account-add").click();
   await expect(inner.getByTestId("gh-method-browser")).toBeDisabled();
   await expect(inner.getByTestId("gh-method-paste")).toBeChecked();
+  // PAT に付ける権限の案内：貼るときは開いていて、fine-grained と classic の両方を書く
+  const patGuide = inner.getByTestId("gh-pat-guide");
+  await expect(patGuide).toHaveAttribute("open", "");
+  await expect(inner.getByTestId("gh-pat-guide-fine")).toContainText("Contents：Read and write");
+  await expect(inner.getByTestId("gh-pat-guide-fine")).toContainText("Administration：Read and write");
+  await expect(inner.getByTestId("gh-pat-guide-classic")).toContainText("repo");
+  // 閉じたら、描き直し（下の失敗の表示）でも閉じたまま
+  await patGuide.locator("summary").click();
+  await expect(patGuide).not.toHaveAttribute("open", "");
 
   // ---- 2. PAT を貼る——GitHub で login を確かめ、Vault に預け、画面には alias の名前だけ ----------------
   await inner.getByTestId("gh-pat-input").fill("ghp_not_valid_at_all");
   await inner.getByTestId("gh-account-submit").click();
   await expect(inner.getByTestId("gh-account-error")).toContainText("この PAT では GitHub に入れませんでした");
   await expect(inner.getByTestId("gh-account-error")).toContainText("401");
+  await expect(patGuide).not.toHaveAttribute("open", "");
   await inner.getByTestId("gh-pat-input").fill(E2E_GITHUB_PAT);
   await inner.getByTestId("gh-account-submit").click();
   await expect(inner.getByTestId("repo-flash")).toContainText(`${E2E_GITHUB_PAT_LOGIN} を登録しました`);

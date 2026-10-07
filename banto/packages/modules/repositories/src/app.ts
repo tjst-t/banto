@@ -1159,6 +1159,7 @@ const SCRIPT = String.raw`
       sel.addEventListener("change", () => { f.patAlias = sel.value; f.error = null; render(); });
       kids.push(h("div", {}, [h("label", { class: "lbl", for: "gh-pat-alias", text: "PAT の alias" }), sel]));
     }
+    if (f.method === "paste" || f.method === "alias") kids.push(patGuide(f));
     const sshSel = h("select", { id: "gh-ssh", "data-testid": "gh-ssh" }, [
       ...sshKeys.map((p) => h("option", { value: placeKey(p), selected: f.ssh === placeKey(p), text: aliasLabel(p) })),
       h("option", { value: "", selected: f.ssh === "", text: "使わない（HTTPS で clone・push）" }),
@@ -1174,6 +1175,36 @@ const SCRIPT = String.raw`
     ]));
     // Vault の目録を読み終えたか（読み終える前の「選べる alias がありません」と、本当に無いのを分ける印）
     return h("div", { class: "form", "data-testid": "gh-account-form", "data-choices": a.choices ? "loaded" : a.choicesError ? "error" : "loading" }, kids);
+  }
+
+  /**
+   * PAT に付ける権限の案内。Repositories が GitHub でするのは clone・push・リポジトリを作る（公開）・誰のものかを確かめる
+   * （GET /user）だけ——その分だけを書く。貼るときは開いておき、開け閉めは描き直しても保つ（f.patGuideOpen）
+   */
+  function patGuide(f) {
+    const open = f.patGuideOpen !== undefined ? f.patGuideOpen : f.method === "paste";
+    const guide = h("details", { class: "guide", "data-testid": "gh-pat-guide" }, [
+      h("summary", { text: "PAT に付ける権限" }),
+      h("h4", { text: "fine-grained PAT（おすすめ）" }),
+      h("ul", { class: "steps", "data-testid": "gh-pat-guide-fine" }, [
+        h("li", { text: "Resource owner：リポジトリを作る先（自分か Organization）。1本の PAT で扱える持ち主は1つです" }),
+        h("li", { text: "Repository access：All repositories（新しく作るリポジトリも対象に入れるため）" }),
+        h("li", { text: "Repository permissions の Contents：Read and write（非公開の clone・push）" }),
+        h("li", { text: "Repository permissions の Administration：Read and write（リポジトリを作る。clone・push だけなら不要）" }),
+      ]),
+      h("p", { text: "fine-grained PAT は権限を前もって確かめられないので、足りなければリポジトリを作るときに断られます。" }),
+      h("h4", { text: "classic PAT" }),
+      h("ul", { class: "steps", "data-testid": "gh-pat-guide-classic" }, [
+        h("li", { text: "repo（非公開を含む clone・push・作成。public_repo だけだと公開のものしか作れません）" }),
+        h("li", { text: "read:org（任意。公開の行き先に Organization を並べるとき）" }),
+      ]),
+      h("p", {}, [
+        h("button", { class: "link", type: "button", "data-testid": "gh-pat-guide-open", text: "GitHub で fine-grained PAT を作る", onclick: () => openLink("https://github.com/settings/personal-access-tokens/new") }),
+      ]),
+    ]);
+    guide.open = open;
+    guide.addEventListener("toggle", () => { f.patGuideOpen = guide.open; });
+    return guide;
   }
 
   async function submitAccount() {
