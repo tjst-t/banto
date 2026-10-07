@@ -874,6 +874,8 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       // **コマンドを走らせる Module だけが exec**（明示・2026-09-15）。
       // 以前は host が `satisfies` から推していた
       confinement: { kind: "landlock", root: "project", profile: "exec" },
+      // 待たずに流したコマンドは、banto を起こし直しても続けられる（追加・2026-10-07、v4-modules.md §2.3「待たない形」）
+      resumesAfterRestart: true,
     },
   },
   {

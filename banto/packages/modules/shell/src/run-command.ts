@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { AliasPlace, HostRelayClient } from "./host-relay-client.js";
 import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
+import type { BackgroundCommands } from "./background.js";
 
 export interface RunCommandInput {
   command: string;
@@ -128,7 +129,19 @@ export function buildChildEnv(parentEnv: NodeJS.ProcessEnv = process.env): NodeJ
   return child;
 }
 
-export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): Promise<RunCommandResult> {
+/** 走らせる前の用意が済んだもの（待つ形と待たない形で同じ） */
+interface PreparedCommand {
+  env: NodeJS.ProcessEnv;
+  cwd: string;
+  /** 書き出した secretFiles（絶対パス）。走らせたあと必ず消す */
+  writtenSecretFiles: string[];
+}
+
+/**
+ * **走らせる前の用意**：コマンドの環境（専用のホーム・秘密）と cwd、secretFiles の書き出し。待つ形も待たない形も
+ * ここを通る（規則3——秘密の受け取り方を2通りにしない）。**途中で失敗したら、書き出した secretFiles を消してから投げる**
+ */
+async function prepareCommand(input: RunCommandInput, deps: RunCommandDeps): Promise<PreparedCommand> {
   const directoryModule = deps.directoryModuleName ?? "vault-directory";
   const env = buildChildEnv();
   if (deps.homeDir) {
@@ -216,6 +229,22 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
     }
 
     const cwd = input.cwd ? resolve(deps.projectRoot, input.cwd) : deps.projectRoot;
+    return { env, cwd, writtenSecretFiles };
+  } catch (err) {
+    await removeSecretFiles(writtenSecretFiles);
+    throw err;
+  }
+}
+
+async function removeSecretFiles(paths: string[]): Promise<void> {
+  for (const path of paths) {
+    await unlink(path).catch(() => undefined);
+  }
+}
+
+export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): Promise<RunCommandResult> {
+  const { env, cwd, writtenSecretFiles } = await prepareCommand(input, deps);
+  try {
     const timeoutMs = (input.timeout ?? DEFAULT_TIMEOUT_SEC) * 1000;
 
     return await new Promise<RunCommandResult>((resolvePromise, reject) => {
@@ -293,8 +322,55 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
   } finally {
     // 中断・タイムアウト・正常終了いずれでも、secretFilesは必ず削除する
     // （規則2、決定・2026-09-02「既知の限界として受け入れる」節のTODO対応の一部）。
-    for (const path of writtenSecretFiles) {
-      await unlink(path).catch(() => undefined);
-    }
+    await removeSecretFiles(writtenSecretFiles);
+  }
+}
+
+/** 待たない形の返り値（すぐ返す）。結果は終わったら札で届く */
+export interface BackgroundStarted {
+  commandId: string;
+  status: "running";
+  outputFile: string;
+  note: string;
+}
+
+/**
+ * **待たない形**（決定・2026-10-07、docs/specs/v4-modules.md §2.3「待たない形」）。用意（秘密の受け取りと、その承認）
+ * までは呼び出しの中で済ませ、走らせるのは Shell から切り離した起動役に任せてすぐ返す。secretFiles は起動役が
+ * コマンドのあとに消す——**起こせなかったら、ここで消す**
+ */
+export async function runCommandInBackground(
+  input: RunCommandInput,
+  deps: RunCommandDeps & {
+    background: BackgroundCommands;
+    replyTo: string;
+    requestedBy?: { projectId: string; threadId: string };
+    requestedByModule?: { name: string; conn: string };
+  },
+): Promise<BackgroundStarted> {
+  const { env, cwd, writtenSecretFiles } = await prepareCommand(input, deps);
+  try {
+    const started = await deps.background.start({
+      command: input.command,
+      cwd,
+      env,
+      ...(input.timeout !== undefined && input.timeout > 0 ? { timeoutSec: input.timeout } : {}),
+      secretFiles: writtenSecretFiles,
+      replyTo: deps.replyTo,
+      ...(deps.requestedBy ? { requestedBy: deps.requestedBy } : {}),
+      ...(deps.requestedByModule ? { requestedByModule: deps.requestedByModule } : {}),
+    });
+    return {
+      commandId: started.commandId,
+      status: "running",
+      outputFile: started.outputFile,
+      note:
+        "待たずに流しました。終わったら終了コードと出力の末尾がこの会話に届き、あなたが起こされます。" +
+        "それまで他の仕事を続けてよい（結果を待つために同じコマンドを流し直さない）。途中の出力は outputFile を tail・grep で読めます。" +
+        "止めるときは cancelCommand",
+    };
+  } catch (err) {
+    await removeSecretFiles(writtenSecretFiles);
+    throw err;
   }
 }
