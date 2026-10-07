@@ -126,7 +126,15 @@ export interface FactoryServerDeps {
   dataDir: string;
   relay: Relay;
   exec?: FactoryPorts["exec"];
+  /** 起き直したあと、知らせを host の問いまで待たせる上限（既定 `RESUME_ASK_WAIT_MS`） */
+  resumeAskWaitMs?: number;
 }
+
+/**
+ * 起き直したあと、流し直した実行の知らせを host の問い（`resumeAfterRestart`）まで待たせる上限。host は Module を起こす時間も
+ * 入れて 120 秒まで問う（core の `RESUME_ASK_TIMEOUT_MS`）——それより少し長く待つ
+ */
+export const RESUME_ASK_WAIT_MS = 150_000;
 
 export function createFactoryServer(deps: FactoryServerDeps) {
   const server = new Server({ name: "banto-module-factory", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
@@ -155,17 +163,29 @@ export function createFactoryServer(deps: FactoryServerDeps) {
    * あとに問われて続けたもの——最後の1回しか使えない
    */
   const handles = new Map<string, { replyTo: string; finalOnly: boolean }>();
+  /**
+   * **起き直して流し直した実行のうち、host にまだ問われていないもの**（追加・2026-10-07、resume-factory）。札はメモリにしか
+   * 無いので、問われて覚え直すまで知らせる先が無い。流し直しが問いより先に進んで知らせる（記録の最後の段だけ残っていた等）
+   * と、以前は知らせを捨て、問われると「終わっていない実行がありません」と答えて、頼んだ Thread には仕事が済んだのに
+   * 「途中で終わりました」が届いていた。**知らせは問いまで待たせ**（上限 `RESUME_ASK_WAIT_MS`）、問われたら終わった実行でも
+   * 「続ける」と答えて待たせた知らせを届ける
+   */
+  const awaitingAsk = new Map<string, () => void>();
+  const askArrived = new Map<string, Promise<void>>();
 
-  async function notify(run: RunRecord, title: string, body: string, final: boolean): Promise<void> {
+  /** 頼んだ Thread に知らせる。返すのは届いたか */
+  async function notify(run: RunRecord, title: string, body: string, final: boolean): Promise<boolean> {
+    if (!handles.has(run.id)) await askArrived.get(run.id);
     const h = handles.get(run.id);
     if (!h) {
       factory.noteNotifyError(run, `知らせる先がありません（${title}）——listFactoryRuns で見てください`);
-      return;
+      return false;
     }
     const last = final || h.finalOnly;
     const r = await deps.relay("relayDeliverToThread", { replyTo: h.replyTo, title, text: body, final: last });
     if (last) handles.delete(run.id);
     if (r.isError) factory.noteNotifyError(run, `知らせられませんでした（${title}）：${r.text.slice(0, 300)}`);
+    return !r.isError;
   }
 
   const factory = new Factory({
@@ -182,13 +202,13 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           JSON.stringify({ runId: run.id, task: item.task.id, ...describeItem(item), howToAnswer: HOW_TO_ANSWER }),
           false,
         ),
-      runFinished: (run) =>
-        notify(
+      runFinished: async (run) =>
+        void (await notify(
           run,
           `Factory の実行が終わりました（取り込み ${run.items.filter((i) => i.status === "done").length}／${run.items.length} 件）`,
           JSON.stringify({ runId: run.id, items: run.items.map((i) => ({ task: i.task.id, ...describeItem(i) })) }),
           true,
-        ),
+        )),
     },
   });
 
@@ -196,9 +216,22 @@ export function createFactoryServer(deps: FactoryServerDeps) {
     "answerFactory で答える：action=continue（instruction で指示を足して続ける）／accept（レビューの指摘を承知でこのまま取り込む）／" +
     "retry（stage で段を指定してやり直す。無ければいまの段から）／drop（やめる。Backlog は ready に戻る）";
 
-  /** 起きたら、終わっていない実行を続ける（札は host に問われたら覚え直す） */
+  /** 起きたら、終わっていない実行を続ける（札は host に問われたら覚え直す。それまで知らせは待たせる） */
   const resumed = factory.resumeAll();
+  for (const run of resumed) {
+    if (run.handleFingerprints.length > 0) askArrived.set(run.id, new Promise<void>((resolve) => awaitingAsk.set(run.id, resolve)));
+  }
   if (resumed.length > 0) console.error(`[factory] 終わっていない実行を ${resumed.length} 件続けます`);
+  if (awaitingAsk.size > 0) {
+    // 問われないまま上限を越えたら待つのをやめる（Factory だけが起き直した——host は問わない。知らせは記録に残る）
+    setTimeout(() => {
+      for (const [runId, resolve] of awaitingAsk) {
+        awaitingAsk.delete(runId);
+        askArrived.delete(runId);
+        resolve();
+      }
+    }, deps.resumeAskWaitMs ?? RESUME_ASK_WAIT_MS).unref();
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -442,9 +475,16 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           const question = parseResumeQuestion(args);
           const answers: ResumeAnswer[] = question.items.map((q) => {
             const fp = replyToFingerprint(q.replyTo);
-            const run = factory.list().find((r) => !r.finishedAt && r.handleFingerprints.includes(fp));
+            // 終わった実行でも、最後の知らせを問いまで待たせていれば続ける（届けるのは答えを返したあと）
+            const run = factory.list().find((r) => (!r.finishedAt || awaitingAsk.has(r.id)) && r.handleFingerprints.includes(fp));
             if (!run) return { replyTo: q.replyTo, resume: false, reason: "終わっていない Factory の実行がありません" };
             handles.set(run.id, { replyTo: q.replyTo, finalOnly: true });
+            const release = awaitingAsk.get(run.id);
+            if (release) {
+              awaitingAsk.delete(run.id);
+              askArrived.delete(run.id);
+              setImmediate(release);
+            }
             return { replyTo: q.replyTo, resume: true };
           });
           return text({ answers });

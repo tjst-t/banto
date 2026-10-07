@@ -74,7 +74,8 @@ export interface RunItem {
   stageSince: string;
   worktree: string;
   branch: string;
-  stopped?: { reason: string; stage: string; since: string };
+  /** `notified`：頼んだ Thread に知らせが届いた（流し直しで同じ問いに戻ったとき、届け直さない） */
+  stopped?: { reason: string; stage: string; since: string; notified?: boolean };
   /** いま走っているサブエージェントの仕事（Subagent の画面で開ける） */
   subagentRunId?: string;
   lastTest?: TestResult & { at: string };
@@ -247,8 +248,8 @@ const tail = (s: string, max = 6000) => (s.length > max ? `…${s.slice(-max)}` 
 // ---- 本体 --------------------------------------------------------------------------------------------------
 
 export interface FactoryEvents {
-  /** 1件が止まって人を待っている */
-  itemStopped(run: RunRecord, item: RunItem): Promise<void>;
+  /** 1件が止まって人を待っている。返すのは、頼んだ Thread に届いたか */
+  itemStopped(run: RunRecord, item: RunItem): Promise<boolean>;
   /** 実行の全件が終わった（入った・やめた） */
   runFinished(run: RunRecord): Promise<void>;
 }
@@ -547,8 +548,11 @@ export class Factory {
   /** @internal */ get root(): string {
     return this.deps.projectRoot;
   }
-  /** @internal */ async stopped(live: LiveItem): Promise<void> {
-    await this.deps.events.itemStopped(live.run, live.item).catch((err: unknown) => this.noteNotifyError(live.run, String(err)));
+  /** @internal */ async stopped(live: LiveItem): Promise<boolean> {
+    return this.deps.events.itemStopped(live.run, live.item).catch((err: unknown) => {
+      this.noteNotifyError(live.run, String(err));
+      return false;
+    });
   }
   /** @internal */ mergeQueue(): Semaphore {
     return this.mergeLock;
@@ -724,7 +728,7 @@ class ItemPass implements ProcedureContext {
   }
 
   async ask(reason: string): Promise<{ instruction?: string; accept?: boolean }> {
-    const answer = await this.step<Answer>("ask", async () => this.waitForAnswer(reason));
+    const answer = await this.step<Answer>("ask", async (prev) => this.waitForAnswer(reason, prev !== undefined));
     this.live.item.status = "running";
     delete this.live.item.stopped;
     this.factory.saveRun(this.live.run);
@@ -738,16 +742,27 @@ class ItemPass implements ProcedureContext {
     return this.waitForAnswer(reason);
   }
 
-  private async waitForAnswer(reason: string): Promise<Answer> {
+  /**
+   * 止まって人の答えを待つ。`replayed` は流し直しで、始めたが答えの無かった問いに戻ってきたとき——前の走行で知らせが
+   * 届いていれば届け直さない（host を起こし直したあとの札は最後の1回しか使えない。届いていなければ届ける。追加・
+   * 2026-10-07、resume-factory）
+   */
+  private async waitForAnswer(reason: string, replayed = false): Promise<Answer> {
     const { item } = this.live;
+    // 前の走行の同じ止まり方（流し直しの間に段の印が status を running に戻すので、止まった印の理由で見る）
+    const before = replayed && item.stopped?.reason === reason ? item.stopped : undefined;
+    const notified = before?.notified === true;
     item.status = "stopped";
-    item.stopped = { reason, stage: item.stage, since: now() };
+    item.stopped = { reason, stage: item.stage, since: before?.since ?? now(), ...(notified ? { notified } : {}) };
     this.factory.saveRun(this.live.run);
     // 人を待つ間は枠を空ける（ほかの件を進める）
     this.slot.release();
     const answered = new Promise<Answer>((resolve) => (this.live.pendingAnswer = resolve));
     this.live.settled.resolve();
-    await this.factory.stopped(this.live);
+    if (!notified && (await this.factory.stopped(this.live)) && item.stopped) {
+      item.stopped.notified = true;
+      this.factory.saveRun(this.live.run);
+    }
     const answer = await answered;
     if (answer.action !== "drop") await this.slot.acquire();
     return answer;
@@ -824,7 +839,7 @@ class ItemPass implements ProcedureContext {
       await fn();
     } catch (err) {
       if (!(err instanceof StepFailed)) throw err;
-      const answer = await this.step<Answer>("ask", async () => this.waitForAnswer(`段が失敗しました：${err.message}`));
+      const answer = await this.step<Answer>("ask", async (prev) => this.waitForAnswer(`段が失敗しました：${err.message}`, prev !== undefined));
       this.live.item.status = "running";
       delete this.live.item.stopped;
       if (answer.action === "continue" || answer.action === "accept") throw new Answered({ action: "retry" }, err.n);
@@ -888,10 +903,10 @@ class ItemPass implements ProcedureContext {
   /** マージの段で止まって聞く。「続ける」は rebase からもう一度 */
   private async askMerge(queue: { acquire(signal: AbortSignal): Promise<void>; release(): void }, reason: string): Promise<void> {
     // 人を待つ間はマージの列を空ける（ほかの件を取り込めるように）
-    const answer = await this.step<Answer>("ask", async () => {
+    const answer = await this.step<Answer>("ask", async (prev) => {
       queue.release();
       try {
-        return await this.waitForAnswer(reason);
+        return await this.waitForAnswer(reason, prev !== undefined);
       } finally {
         await queue.acquire(this.signal);
       }

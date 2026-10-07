@@ -26,7 +26,7 @@ interface Fake {
  * 偽の Subagent：実装役は頼みの中の `<commit 名前>` のファイルをその worktree に書いてコミットする（続きの頼みでは
  * `fix` の名前で）。レビュー役は `verdicts` を順に返す
  */
-function setup(opts: { holdReplies?: boolean; settings?: Partial<FactorySettings>; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
+function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; settings?: Partial<FactorySettings>; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-"));
   const project = join(root, "project");
   const data = join(root, "data");
@@ -77,7 +77,10 @@ function setup(opts: { holdReplies?: boolean; settings?: Partial<FactorySettings
       procedure: deliverTask,
       replies: new ReplyBox(join(data, "replies")),
       events: {
-        itemStopped: async (_run, item) => void fake.stopped.push(item.stopped!.reason),
+        itemStopped: async (_run, item) => {
+          fake.stopped.push(item.stopped!.reason);
+          return !opts.notifyFails;
+        },
         runFinished: async (run) => void fake.finished.push(run),
       },
     });
@@ -86,6 +89,7 @@ function setup(opts: { holdReplies?: boolean; settings?: Partial<FactorySettings
   return {
     project,
     fake,
+    opts,
     get factory() {
       return factory;
     },
@@ -155,17 +159,44 @@ test("Factory を起こし直すと、記録から流し直して続ける——
   const s = setup({ settings: { testCommand: "test -f never.txt", limits: { ...DEFAULT_SETTINGS.limits, testRetries: 0 } } });
   try {
     const run = s.factory.start({ tasks: [task("c")], settings: s.settings });
-    await until(() => s.fake.stopped.length === 1, "止まらない");
+    await until(() => s.factory.get(run.id)!.items[0]!.stopped?.notified === true, "止まったことを知らせない");
     const before = s.fake.implements;
     // 起こし直す（前の Factory は捨てる——走っていた待ちは消える）
     const resumed = s.restart();
     assert.equal(resumed.length, 1);
-    await until(() => s.fake.stopped.length === 2, "起こし直したあと、また問いまで来ない");
+    await until(() => answerWhenAsked(s.factory, run.id, "c", { action: "drop", reason: "試験" }), "起こし直したあと、また問いまで来ない");
     assert.equal(s.fake.implements, before, "起こし直しで実装役にもう一度頼んだ");
-    s.factory.answer(run.id, "c", { action: "drop", reason: "試験" });
+    assert.equal(s.fake.stopped.length, 1, "届いた「止まりました」を流し直しで届け直した");
     await until(() => s.fake.finished.length === 1, "やめたのに終わらない");
     assert.equal(s.factory.get(run.id)!.items[0]!.status, "dropped");
     assert.equal(s.fake.backlog.at(-1)?.status, "ready");
+  } finally {
+    s.cleanup();
+  }
+});
+
+/** 止まって問いを待っていれば答える（流し直しが問いまで来たか）。まだなら false */
+function answerWhenAsked(factory: Factory, runId: string, taskId: string, answer: Parameters<Factory["answer"]>[2]): boolean {
+  try {
+    factory.answer(runId, taskId, answer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("止まった知らせが届かないまま Factory が起き直したら、流し直して問いに戻ったとき届け直す", async () => {
+  const s = setup({ notifyFails: true, settings: { testCommand: "test -f never.txt", limits: { ...DEFAULT_SETTINGS.limits, testRetries: 0 } } });
+  try {
+    const run = s.factory.start({ tasks: [task("c2")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    assert.equal(s.factory.get(run.id)!.items[0]!.stopped?.notified, undefined);
+    s.opts.notifyFails = false;
+    s.restart();
+    await until(() => s.fake.stopped.length === 2, "届かなかった「止まりました」を届け直さない");
+    await until(() => s.factory.get(run.id)!.items[0]!.stopped?.notified === true, "届いたことが記録に残らない");
+    assert.ok(answerWhenAsked(s.factory, run.id, "c2", { action: "drop", reason: "試験" }));
+    await until(() => s.fake.finished.length === 1, "やめたのに終わらない");
   } finally {
     s.cleanup();
   }
