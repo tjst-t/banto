@@ -5490,6 +5490,30 @@
       "updatedAt": "2026-10-07T05:54:29.791Z",
       "closedAt": "2026-10-07T05:54:29.791Z",
       "extra": {}
+    },
+    {
+      "id": "service-nested-container-user-manager",
+      "number": 225,
+      "kind": "bug",
+      "title": "Service が入れ子のコンテナ（E2E）で systemd のユーザー単位を起こせないかもしれない",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "service",
+        "未決"
+      ],
+      "body": "2026-10-07、Shell の待たない形（#224）の実装中に分かったこと（未確認）。E2E の入れ子のコンテナでは logind が root でも linger を断り（Access denied）、/run/user/1000 が無い。Shell は linger が効かないとき user@<uid>.service を直接起こす手当てを入れたが、Service の ensureUserManager（packages/modules/service/src/systemd.ts）は linger しか試さないので、同じ場では Service が起きない可能性がある。本番の Project のコンテナで起きるかは未確認。",
+      "doneWhen": "入れ子のコンテナ（E2E）で Service の startService が動くことを確かめる、または動かなければ Shell と同じ手当てを入れて E2E で確かめる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-07T05:54:33.641Z",
+      "updatedAt": "2026-10-07T05:54:33.641Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
