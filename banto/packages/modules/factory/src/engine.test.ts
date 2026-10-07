@@ -487,8 +487,10 @@ test("競合したらまず実装役に解かせ、解ければ止まらずに�
     assert.ok(readme.includes("甲") && readme.includes("乙"), `両方の変更が残っていない：${readme.join("|")}`);
     assert.equal(s.fake.implements, 3, "競合を解かせる頼みが1回でない");
     const later = run.items.find((i) => s.factory.journalOf(run.id, i.task.id).filter((x) => x.key === "rebase").length > 1)!;
-    const keys = s.factory.journalOf(run.id, later.task.id).map((x) => x.key);
-    assert.ok(keys.includes("rebase-leftover"), keys.join(","));
+    const leftover = s.factory.journalOf(run.id, later.task.id).filter((x) => x.key === "rebase-leftover");
+    assert.equal(leftover.length, 1);
+    // 実装役は rebase を終えている——「途中で残した」と数えない（REBASE_HEAD は終えたあとも残る）
+    assert.deepEqual(leftover[0]!.end, { ok: true, value: { aborted: false }, at: leftover[0]!.end!.at });
   } finally {
     s.cleanup();
   }
@@ -503,6 +505,32 @@ test("解かせる回数を0にすると、競合したらすぐ人に聞く", a
     await until(() => s.fake.stopped.length === 1, "止まらない");
     assert.match(s.fake.stopped[0]!, /^main に rebase できませんでした（競合）/);
     assert.equal(s.fake.implements, 2);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("実装役が rebase を途中で残したら畳み、次の rebase がやり直す", async () => {
+  const s = setup({
+    implement: (prompt, cwd, n) => {
+      if (!prompt.includes("競合しました")) return editLine(prompt, cwd, n);
+      try {
+        git(cwd, "rebase", "main");
+      } catch {
+        // 競合のまま残して帰る
+      }
+    },
+    settings: { limits: { ...DEFAULT_SETTINGS.limits, conflictFixes: 1 } },
+  });
+  try {
+    fiveLines(s.project);
+    const run = s.factory.start({ tasks: [task("u", "<line 3 甲>"), task("v", "<line 3 乙>")], settings: { ...s.settings, limits: { ...DEFAULT_SETTINGS.limits, conflictFixes: 1 } } });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    const stopped = run.items.find((i) => i.status === "stopped")!;
+    const leftover = s.factory.journalOf(run.id, stopped.task.id).find((x) => x.key === "rebase-leftover")!;
+    assert.deepEqual((leftover.end as { value: unknown }).value, { aborted: true });
+    assert.equal(git(join(s.project, stopped.worktree), "status", "--porcelain"), "", "畳んでいない");
+    assert.match(s.fake.stopped[0]!, /実装役に 1 回解かせても main に rebase できませんでした/);
   } finally {
     s.cleanup();
   }

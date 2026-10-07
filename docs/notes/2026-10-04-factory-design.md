@@ -77,3 +77,19 @@
 Module が受信箱に判断待ちを立てる一般の口はまだ無い（`relayRaiseNotice` は banto 本体で動く同梱の banto 全体の Module だけで、
 お知らせ）。Factory は**頼んだ Thread への知らせ**（札）で止まったことを届ける——AI が起きて人に説明し、人の答えを
 Factory の tool で渡す。受信箱の判断待ちにしないのは、新しい口を作らずに済むのと、事情を一番知っているのが頼んだ会話だから。
+
+## 本物での受け入れ（2026-10-07、Backlog の factory-acceptance）
+
+稼働中の banto に試験用の Project「Factory 受け入れ」（banto の根の `tmp-factory-accept`、小さな文字列の道具・`npm test`）を作り、
+会話の AI（Opus 5.5）に runFactory で3件ずつ流させた。実装役・レビュー役は本物の Claude Code（sonnet）。
+
+| 回 | 版 | 結果 |
+|---|---|---|
+| 1 | 407bb2c8 | capitalize は止まらず入った。わざと落とした reverse-words（テストのコマンドが worktree の名前で落ちる）は2回落ちて止まり、会話に知らせ、その間ほかは進んだ。slugify は取り込みで**競合して止まった**——同じファイル（src/index.js）の末尾に関数を1つずつ足す2件は、ほぼ必ず競合する。会話の AI が worktree で解いて「続ける」と答え、入った（2／3） |
+| 2 | 99958116 | truncate・countWords・isPalindrome を流し、**実装の段の途中で人が banto を起こし直した**。実装役の3本は頼み直さずに続き（Subagent の記録に「起こし直したため途中で切れ、続きから再開しました（1 回目）」）、テスト（`sleep 60 && npm test`）・レビューを通り、2件は取り込みで競合したが**実装役が解いて**（count-words は2回）、人に聞かずに3件とも main に入った。最後に「取り込み 3／3 件」が会話に届いた |
+
+見つけて直したもの：
+- **競合したらまず実装役に解かせる**（5605dd9f、`limits.conflictFixes` 既定2）——1回目の slugify
+- 止まっていない1件への answerFactory・走っていない1件への cancelFactory が HTTP 500（99958116）
+- **REBASE_HEAD は rebase を終えたあとも残る**——実装役が終えた rebase を毎回「途中で残した」と数えて `rebase --abort` していた
+  （何もしない abort なので害は無かったが記録が誤り）。rebase-merge・rebase-apply のフォルダで見るように直した

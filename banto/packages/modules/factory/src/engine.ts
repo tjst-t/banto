@@ -9,7 +9,7 @@
 // 答えたあと Factory が起き直しても同じところから続く。
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Journal, type StepRecord } from "./journal.js";
 import type { AgentChoice, FactorySettings } from "./settings.js";
@@ -950,8 +950,11 @@ class ItemPass implements ProcedureContext {
       const session = this.implementerSession;
       await this.agent("implementer", session ? { prompt, sessionId: session } : { prompt: `${taskHeader(this.task)}\n\n${prompt}` });
       await this.step("rebase-leftover", async () => {
-        const inProgress = await this.git(["rev-parse", "--verify", "--quiet", "REBASE_HEAD"]);
-        if (inProgress.code === 0) {
+        // REBASE_HEAD は rebase を終えたあとも残るので印にならない（本物の受け入れで、終えた rebase を毎回「残した」と
+        // 数えていた）。途中かどうかは rebase-merge・rebase-apply のフォルダで見る
+        const inProgress = await this.git(["rev-parse", "--git-path", "rebase-merge", "--git-path", "rebase-apply"]);
+        const dirs = inProgress.out.split("\n").map((l) => l.trim()).filter(Boolean).map((p) => (isAbsolute(p) ? p : join(this.abs, p)));
+        if (dirs.some((d) => existsSync(d))) {
           await this.git(["rebase", "--abort"]);
           return { aborted: true };
         }
