@@ -320,6 +320,11 @@ export class Factory {
     this.deps.replies.receive(reply);
   }
 
+  /** 1件の段の記録（画面の「何が起きたか」）。ファイルから読み直す */
+  journalOf(runId: string, taskId: string): StepRecord[] {
+    return new Journal(join(this.runDir(runId), `${taskId}.jsonl`)).all();
+  }
+
   get(runId: string): RunRecord | undefined {
     return this.runs.get(runId);
   }

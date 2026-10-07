@@ -18,6 +18,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+  CANVAS_META_KEY,
   CALL_ID_META_KEY,
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
@@ -36,6 +37,9 @@ import {
 import { Factory, ReplyBox, type Answer, type FactoryPorts, type RelayResult, type RunItem, type RunRecord, type TaskSnapshot } from "./engine.js";
 import { deliverTask } from "./procedure.js";
 import { readSettings, SettingsError, writeSettings } from "./settings.js";
+import { CONFIG_APP_HTML, CONFIG_APP_URI, RUNS_APP_HTML, RUNS_APP_URI, UI_APP_MIME } from "./apps.js";
+import { describeJournal, type ItemCounts } from "./describe.js";
+import type { StepRecord } from "./journal.js";
 
 class FactoryError extends Error {}
 
@@ -348,6 +352,12 @@ export function createFactoryServer(deps: FactoryServerDeps) {
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
       {
+        name: "getRunItem",
+        description: "1件の詳細（人の画面用）：段・最後のテスト・回数・何が起きたか・変更",
+        inputSchema: { type: "object", properties: { runId: { type: "string" }, item: { type: ["string", "integer"] } }, required: ["runId", "item"] },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
         name: "getRuns",
         description: "実行の一覧（人の画面用。中身は listFactoryRuns と同じ）",
         inputSchema: { type: "object", properties: {} },
@@ -358,6 +368,21 @@ export function createFactoryServer(deps: FactoryServerDeps) {
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
+      {
+        // **人が直接開く入口**（launcher）。長引いたとき・止まったときに覗く場所
+        uri: RUNS_APP_URI,
+        name: "Factory",
+        description: "Factory に流したタスクの様子（段・止まっている理由・テスト・レビュー・変更）。止まったものに答える・止める",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
+      },
+      {
+        // 設定 Canvas——テストのコマンド・実装役とレビュー役・上限
+        uri: CONFIG_APP_URI,
+        name: "Factory",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config", ui: { prefersBorder: false } },
+      },
       {
         uri: "factory://module",
         name: "この Module の申告",
@@ -370,6 +395,8 @@ export function createFactoryServer(deps: FactoryServerDeps) {
     ],
   }));
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri === RUNS_APP_URI) return { contents: [{ uri: RUNS_APP_URI, mimeType: UI_APP_MIME, text: RUNS_APP_HTML }] };
+    if (request.params.uri === CONFIG_APP_URI) return { contents: [{ uri: CONFIG_APP_URI, mimeType: UI_APP_MIME, text: CONFIG_APP_HTML }] };
     if (request.params.uri !== "factory://module") throw new Error(`unknown resource: ${request.params.uri}`);
     return { contents: [{ uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(MODULE_META) }] };
   });
@@ -504,7 +531,8 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           return text({ runId: run.id, stopping: stopped, note: "止めています。Backlog は ready に戻し、worktree は残します" });
         }
         case "receiveReply": {
-          if (callIdOf(meta) || threadOf(meta)) throw new FactoryError("receiveReply は banto 本体だけが呼べます");
+          // host は印を何も付けずに呼ぶ。人の画面・中継・AI のターンの呼び出しには印が付く——付いていたら断る
+          if (!isHostResumeCall(meta)) throw new FactoryError("receiveReply は banto 本体だけが呼べます");
           factory.receiveReply(args as never);
           return text("ok");
         }
@@ -532,8 +560,37 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           });
           return text({ answers });
         }
-        case "getSettings":
-          return text({ settings: readSettings(deps.dataDir) });
+        case "getRunItem": {
+          const run = factory.get(String(args.runId ?? ""));
+          if (!run) throw new FactoryError(`実行 ${String(args.runId)} はありません`);
+          const item = itemOf(run, args.item);
+          const steps = factory.journalOf(run.id, item.task.id);
+          return text({
+            runId: run.id,
+            createdAt: run.createdAt,
+            ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
+            ...(run.requestedBy ? { requestedBy: run.requestedBy } : {}),
+            settings: { testCommand: run.settings.testCommand, targetBranch: run.settings.targetBranch, limits: run.settings.limits },
+            item: { item: item.task.id, number: item.task.number, title: item.task.title, ...(item.task.parent ? { story: item.task.parent.title } : {}), ...describeItem(item) },
+            lastTest: item.lastTest,
+            counts: countsOf(steps),
+            journal: describeJournal(steps, run.createdAt, item.branch, run.settings.targetBranch),
+            diff: await diffOf(deps.projectRoot, run.settings.targetBranch, item.branch, ports.exec),
+          });
+        }
+        case "getSettings": {
+          // 選べるエージェント（Subagent に聞く。聞けなくても設定は出す——理由を添える）
+          let agents: Array<{ id: string; title: string }> | undefined;
+          let agentsError: string | undefined;
+          try {
+            const r = await ports.call("subagent", "listSubagents", {}, callId);
+            if (r.isError) agentsError = r.text.slice(0, 300);
+            else agents = (JSON.parse(r.text) as Array<{ id: string; title: string }>).map((a) => ({ id: a.id, title: a.title }));
+          } catch (err) {
+            agentsError = err instanceof Error ? err.message : String(err);
+          }
+          return text({ settings: readSettings(deps.dataDir), ...(agents ? { agents } : {}), ...(agentsError ? { agentsError } : {}) });
+        }
         case "setSettings":
           return text({ settings: writeSettings(deps.dataDir, args.settings) });
       }
@@ -545,6 +602,36 @@ export function createFactoryServer(deps: FactoryServerDeps) {
   });
 
   return { server, factory };
+}
+
+/** 回数（落ちたテスト・直すことがあったレビュー）。上限と並べて画面に出す */
+function countsOf(steps: StepRecord[]): ItemCounts {
+  let testFails = 0;
+  let reviewChanges = 0;
+  for (const s of steps) {
+    const v = s.end?.ok ? (s.end.value as Record<string, unknown> | null) : null;
+    if (s.key === "test" && v && v.ok === false) testFails++;
+    if (s.key === "agent:reviewer" && v && (v.structured as { verdict?: string } | undefined)?.verdict === "changes") reviewChanges++;
+  }
+  return { testFails, reviewChanges };
+}
+
+/** 取り込む先からの変更（コミットの数・ファイルごとの増減）。ブランチがもう無ければ出さない */
+async function diffOf(root: string, target: string, branch: string, exec: FactoryPorts["exec"]) {
+  const ref = await exec(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: root });
+  if (ref.code !== 0) return undefined;
+  const count = await exec(["git", "rev-list", "--count", `${target}..${branch}`], { cwd: root });
+  const numstat = await exec(["git", "diff", "--numstat", `${target}...${branch}`], { cwd: root });
+  if (count.code !== 0 || numstat.code !== 0) return undefined;
+  const files = numstat.out
+    .split("\n")
+    .filter((l) => l.trim())
+    .slice(0, 200)
+    .map((l) => {
+      const [add, del, ...path] = l.split("\t");
+      return { path: path.join("\t"), add: add === "-" ? null : Number(add), del: del === "-" ? null : Number(del) };
+    });
+  return { commits: Number(count.out.trim()), files };
 }
 
 function describeItem(item: RunItem) {

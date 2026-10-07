@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, CORE_BROWSER_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, openNav, openProjectSettings, fakeTurn, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(480_000);
@@ -110,9 +110,24 @@ test("AI が流したタスクが、実装→テスト→レビュー→main へ
   const refused = await aiCalls(page, "factory", "runFactory", { items: ["e2e-a"] });
   expect(refused).toContain("テストのコマンドが設定されていません");
 
-  await uiCall(page, "factory", "setSettings", {
-    settings: { testCommand: "test -f a.txt", implementer: { agent: "fake" }, reviewer: { agent: "fake" } },
-  });
+  // **設定の画面**から入れる（Project の設定の Factory の節）
+  await openProjectSettings(page);
+  await page.getByRole("button", { name: "Factory", exact: true }).click();
+  const canvas = page.locator('[data-testid="module-settings-canvas"][data-module="factory"]');
+  await expect(canvas).toBeVisible({ timeout: 30_000 });
+  const config = canvas.locator("iframe").contentFrame().frameLocator("iframe");
+  await expect(config.getByTestId("factory-test")).toBeVisible({ timeout: 30_000 });
+  await expect(config.getByText("テストのコマンドを入れると、Factory に流せるようになります")).toBeVisible();
+  await config.getByTestId("factory-test").fill("test -f a.txt");
+  await config.getByTestId("factory-config-implementer").selectOption("fake");
+  await config.getByTestId("factory-config-reviewer").selectOption("fake");
+  await config.getByTestId("factory-config-save").click();
+  await expect(config.getByTestId("factory-config-note")).toContainText("に保存しました", { timeout: 30_000 });
+  const savedSettings = JSON.parse(await uiCall(page, "factory", "getSettings", {})) as { settings: { testCommand: string; implementer: { agent: string } } };
+  expect(savedSettings.settings).toMatchObject({ testCommand: "test -f a.txt", implementer: { agent: "fake" } });
+  await page.goto(`/p/${projectId}?bantoHost=${CORE_BROWSER_URL}`);
+  await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+
   const started = await aiCalls(page, "factory", "runFactory", { items: ["e2e-a"] });
   expect(started, `流せていない：${started}`).toContain("流しました");
 
@@ -125,7 +140,7 @@ test("AI が流したタスクが、実装→テスト→レビュー→main へ
   expect(execFileSync("git", ["branch", "--list", "factory/e2e-a"], { cwd: root, encoding: "utf8" }).trim()).toBe("");
 });
 
-test("テストが上限を越えて落ちると止まって会話に届き、answerFactory で指示を足すと直して入る", async ({ page }) => {
+test("テストが上限を越えて落ちると止まって会話に届き、入口の画面で指示を足して答えると直して入る", async ({ page }) => {
   await openApp(page);
   await page.goto(`/p/${projectId}?bantoHost=${CORE_BROWSER_URL}`);
   await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
@@ -149,9 +164,25 @@ test("テストが上限を越えて落ちると止まって会話に届き、an
   expect(item.status).toBe("stopped");
   expect(item.stopped?.reason).toContain("テストが 1 回続けて落ちました");
 
-  // 止まったことで AI が起きたターンが終わるのを待ってから答える
+  // 止まったことで AI が起きたターンが終わるのを待ってから、**人が入口の画面で**答える
   await expect.poll(async () => (await hostThread(page)).lastTurn?.outcome, { timeout: 60_000 }).toBe("completed");
-  await aiCalls(page, "factory", "answerFactory", { runId, item: "e2e-b", action: "continue", instruction: "[commit ok.txt] を足して" });
+  await openNav(page);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  const entry = page.locator('[role="option"][data-value^="launcher:factory:"]');
+  await expect(entry).toBeVisible({ timeout: 30_000 });
+  await entry.click();
+  const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const row = inner.locator('[data-testid="factory-row"][data-item="e2e-b"]');
+  await expect(row).toHaveAttribute("data-status", "stopped", { timeout: 60_000 });
+  await expect(row).toContainText("テストが 1 回続けて落ちました");
+  await row.click();
+  const detail = inner.getByTestId("factory-detail");
+  await expect(detail.getByTestId("factory-stopped-reason")).toContainText("テストが 1 回続けて落ちました", { timeout: 30_000 });
+  await expect(detail.getByText(/最後のテスト：落ちた/)).toBeVisible();
+  await expect(detail.getByText("テストが落ちた（終了コード 1）")).toBeVisible();
+  await detail.getByTestId("factory-instruction").fill("[commit ok.txt] を足して");
+  await detail.getByRole("button", { name: "指示を足して続ける" }).click();
+  await expect(detail.getByTestId("factory-stopped-reason")).toHaveCount(0, { timeout: 60_000 });
   await expect
     .poll(async () => (await deliveredTitles(page)).filter((t) => t.startsWith("Factory の実行が終わりました（取り込み 1／1 件）")).length, {
       timeout: 180_000,
@@ -160,4 +191,9 @@ test("テストが上限を越えて落ちると止まって会話に届き、an
     .toBe(2);
   expect(existsSync(join(root, "b.txt")) && existsSync(join(root, "ok.txt"))).toBe(true);
   expect(backlogStatus("e2e-b")).toBe("done");
+  // 入口の画面にも終わったことが出る（開いたままの詳細に結果、一覧に戻ると「終わったもの」の中）
+  await expect(detail.getByTestId("factory-result")).toHaveText("取り込みました", { timeout: 30_000 });
+  await detail.getByRole("button", { name: "一覧に戻る" }).click();
+  await inner.getByRole("button", { name: /終わったもの/ }).click({ timeout: 10_000 });
+  await expect(inner.locator('[data-testid="factory-row"][data-item="e2e-b"]')).toHaveAttribute("data-status", "done", { timeout: 30_000 });
 });

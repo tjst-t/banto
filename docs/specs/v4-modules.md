@@ -2766,7 +2766,20 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
   （残っていれば worktree をそのまま使う）
 - **設定**（`getSettings`・`setSettings`、admin）：`testCommand`（必須）・`prepareCommand`・`targetBranch`（既定 main）・
   `implementer`/`reviewer`（agent・model・effort。既定 claude-code）・`concurrency`（3）・`limits`・`testTimeoutMinutes`（60）。
-  流し始めたときの設定を実行の記録に写し、最後までそれで走る（流し直しが同じ手順になるように）。**設定の画面はまだ無い**（factory-ui）
+  流し始めたときの設定を実行の記録に写し、最後までそれで走る（流し直しが同じ手順になるように）
+- **人の画面**（実装・2026-10-07、Backlog の factory-ui。形はモック a5aefc0d——`mock/components/banto/canvas/factory-view.tsx`・
+  `settings/factory-config-section.tsx`、ユーザー「モックの形でよい」）：
+  - 入口（launcher `ui://banto-factory/runs`、`getRuns`・`getRunItem`・`answerFactory`・`cancelFactory` を呼ぶ）：一覧は**実行ではなく
+    1件ずつ**、「あなたの答えを待っている」→「動いている」→「終わったもの」（畳む）。行の左に段の5目盛り、いまの段に 30 分以上いれば
+    「長引いています」（仮の目安——物差しは unattended-run）。詳細は段と回数（落ちた n 回／上限）・止まっていれば答える欄（指示を足して
+    続ける・指摘を承知で取り込む＝レビューで止まったときだけ・段を選んでやり直す＝通った段だけ・やめる＋理由）・最後のテスト・レビューの
+    指摘・変更（`git diff --numstat`）・何が起きたか（段の記録を `describe.ts` が文にしたもの）・止める。動いているものがあれば3秒、
+    無ければ10秒ごとに読み直す（答える欄に打っている間は描き直さない）
+  - 設定（config `ui://banto-factory/config`）：テストのコマンドを一番上に（空なら促す）・準備のコマンド・実装役とレビュー役（エージェントは
+    Subagent の `listSubagents` から、モデルは文字で）・取り込む先・同時件数・止まって聞くまでの回数・テストの上限
+  - **モックと違うところ**：banto の「人の番の色」（turn）は Canvas に渡らない（MCP Apps の標準の名前だけ、v4-frontend.md §6.27）ので、
+    人を待つものは warning の色で出す。「経過を見る」（Subagent の画面を開く）と「設定を開く」のボタンは、Canvas から別の画面を開く口が
+    無いので置かない——仕事の id を文字で出し、設定は Project の設定にあると書く（規則13）
 - 試験：単体 14（`engine.test.ts` 9——本物の git と偽の Subagent・Backlog：取り込み・テストの上限と答え・起き直して頼み直さない・
   止まった知らせを届け直さない／届いていなければ届け直す・記録と手順の食い違いで止まった知らせを届け直さない・2件の列・レビューの
   上限と accept・止める。`server.test.ts` 5——Module の口を起こし直しの形で：問いより先に終わった実行に問われたら続けて最後の知らせを
