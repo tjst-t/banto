@@ -21,7 +21,7 @@
 //   [cwd]         会話の作業場所（session/new の cwd）を答える（作業場所を選べるかの試験用）
 //   [json-b64 B]  B（base64）を解いた文をそのまま返答にする（決まった形で返させる試験用。JSON は ] を含むので base64）
 //   [commit PATH]  作業場所に PATH を書いて git commit する（Factory の実装役の試験用）。「レビュー役」の頼みでは何もしない
-//                 （[slow N]・[child N] も同じ——レビュー役の頼みにもタスクの本文が入るので、印は実装役にだけ効かせる）
+//                 （[slow N]・[child N]・[crash] も同じ——レビュー役の頼みにもタスクの本文が入るので、印は実装役にだけ効かせる）
 //   [then-commit PATH]  この頼みのあと、同じ会話の次の頼みで PATH を書いて git commit する
 //   [review-b64 B]  「レビュー役」の頼みに B（base64）を解いた文を返す。印が無ければ {"verdict":"pass","items":[]}
 //   [bad-then-json-b64 B]  この頼みには JSON でない文を返し、同じ会話の次の頼みから B を解いた文を返す（直させる試験用）
@@ -117,10 +117,10 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
       sessionId,
       update: { sessionUpdate: "tool_call", toolCallId: randomUUID(), title, kind: "other", status: "in_progress" },
     });
-  // 「レビュー役」の頼み（Factory）にはタスクの本文が入る——実装役に向けた [slow]・[child] は効かせない
+  // 「レビュー役」の頼み（Factory）にはタスクの本文が入る——実装役に向けた [slow]・[child]・[crash] は効かせない
   const reviewer = text.includes("レビュー役");
   try {
-    if (text.includes("[crash]")) process.exit(3);
+    if (!reviewer && text.includes("[crash]")) process.exit(3);
     const child = reviewer ? null : /\[child (\d+)\]/.exec(text);
     if (child) {
       spawn(process.execPath, ["-e", `setTimeout(() => {}, ${Number(child[1]) * 1000})`, "fake-agent-child", sessionId], {

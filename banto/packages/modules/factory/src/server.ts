@@ -172,10 +172,25 @@ export function createFactoryServer(deps: FactoryServerDeps) {
    */
   const awaitingAsk = new Map<string, () => void>();
   const askArrived = new Map<string, Promise<void>>();
+  /** 最後の知らせを届けた実行（あとから来た問いの札は、引き継いだことを知らせて閉じる） */
+  const finalSent = new Set<string>();
 
-  /** 頼んだ Thread に知らせる。返すのは届いたか */
-  async function notify(run: RunRecord, title: string, body: string, final: boolean): Promise<boolean> {
+  /** 札が付いた（問われた・answerFactory が引き継いだ）——問いまで待たせていた知らせを放す */
+  function handleArrived(runId: string): void {
+    const release = awaitingAsk.get(runId);
+    if (!release) return;
+    awaitingAsk.delete(runId);
+    askArrived.delete(runId);
+    setImmediate(release);
+  }
+
+  /**
+   * 頼んだ Thread に知らせる。返すのは届いたか。`stillWanted` は、札を待つ間に要らなくなったか（止まった1件に答えが来た）——
+   * 要らなくなった知らせは届けない
+   */
+  async function notify(run: RunRecord, title: string, body: string, final: boolean, stillWanted?: () => boolean): Promise<boolean> {
     if (!handles.has(run.id)) await askArrived.get(run.id);
+    if (stillWanted && !stillWanted()) return false;
     const h = handles.get(run.id);
     if (!h) {
       factory.noteNotifyError(run, `知らせる先がありません（${title}）——listFactoryRuns で見てください`);
@@ -183,7 +198,10 @@ export function createFactoryServer(deps: FactoryServerDeps) {
     }
     const last = final || h.finalOnly;
     const r = await deps.relay("relayDeliverToThread", { replyTo: h.replyTo, title, text: body, final: last });
-    if (last) handles.delete(run.id);
+    if (last) {
+      handles.delete(run.id);
+      if (!r.isError) finalSent.add(run.id);
+    }
     if (r.isError) factory.noteNotifyError(run, `知らせられませんでした（${title}）：${r.text.slice(0, 300)}`);
     return !r.isError;
   }
@@ -195,13 +213,16 @@ export function createFactoryServer(deps: FactoryServerDeps) {
     procedure: deliverTask,
     replies: new ReplyBox(join(deps.dataDir, "replies")),
     events: {
-      itemStopped: (run, item) =>
-        notify(
+      itemStopped: (run, item) => {
+        const stop = item.stopped;
+        return notify(
           run,
-          `Factory：${item.task.title} が止まりました（${item.stopped?.stage ?? item.stage}）`,
+          `Factory：${item.task.title} が止まりました（${stop?.stage ?? item.stage}）`,
           JSON.stringify({ runId: run.id, task: item.task.id, ...describeItem(item), howToAnswer: HOW_TO_ANSWER }),
           false,
-        ),
+          () => item.stopped === stop,
+        );
+      },
       runFinished: async (run) =>
         void (await notify(
           run,
@@ -211,6 +232,22 @@ export function createFactoryServer(deps: FactoryServerDeps) {
         )),
     },
   });
+
+  /** 覚え直した札を、answerFactory の呼び出しに引き継いだことを知らせて閉じる */
+  async function handOver(run: RunRecord, replyTo: string): Promise<void> {
+    const r = await deps.relay("relayDeliverToThread", {
+      replyTo,
+      title: "Factory：知らせの宛先を answerFactory の呼び出しに引き継ぎました",
+      text: JSON.stringify({
+        runId: run.id,
+        note:
+          "banto を起こし直したあと、この実行には answerFactory で答えがあり、知らせはその呼び出しに引き継ぎました。" +
+          (finalSent.has(run.id) ? "最後の知らせはそちらに届けてあります" : "これからの知らせはそちらに届きます"),
+      }),
+      final: true,
+    });
+    if (r.isError) factory.noteNotifyError(run, `覚え直した札を閉じられませんでした：${r.text.slice(0, 300)}`);
+  }
 
   const HOW_TO_ANSWER =
     "answerFactory で答える：action=continue（instruction で指示を足して続ける）／accept（レビューの指摘を承知でこのまま取り込む）／" +
@@ -449,6 +486,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           if (adopt) {
             handles.set(run.id, { replyTo: replyTo!, finalOnly: false });
             factory.recordHandle(run, replyToFingerprint(replyTo!));
+            handleArrived(run.id);
           }
           await factory.withCall(run.id, callId, () => factory.settled(run.id));
           return {
@@ -475,16 +513,21 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           const question = parseResumeQuestion(args);
           const answers: ResumeAnswer[] = question.items.map((q) => {
             const fp = replyToFingerprint(q.replyTo);
-            // 終わった実行でも、最後の知らせを問いまで待たせていれば続ける（届けるのは答えを返したあと）
-            const run = factory.list().find((r) => (!r.finishedAt || awaitingAsk.has(r.id)) && r.handleFingerprints.includes(fp));
-            if (!run) return { replyTo: q.replyTo, resume: false, reason: "終わっていない Factory の実行がありません" };
-            handles.set(run.id, { replyTo: q.replyTo, finalOnly: true });
-            const release = awaitingAsk.get(run.id);
-            if (release) {
-              awaitingAsk.delete(run.id);
-              askArrived.delete(run.id);
-              setImmediate(release);
+            const run = factory.list().find((r) => r.handleFingerprints.includes(fp));
+            // **問いの前に answerFactory が札を引き継いだ**（追加・2026-10-07、Fable のレビュー）：引き継いだ札を上書きしない
+            // ——上書きすると引き継いだ札が返事待ちのまま残る。覚え直した札は、引き継いだことを最後の知らせとして届けて閉じる
+            // （「続ける」と答えたまま使わないと「続けています」が残り、「続けない」と答えると「途中で終わりました」が届く）
+            if (run && (handles.has(run.id) || finalSent.has(run.id))) {
+              handleArrived(run.id);
+              setImmediate(() => void handOver(run, q.replyTo));
+              return { replyTo: q.replyTo, resume: true };
             }
+            // 終わった実行でも、最後の知らせを問いまで待たせていれば続ける（届けるのは答えを返したあと）
+            if (!run || (run.finishedAt && !awaitingAsk.has(run.id))) {
+              return { replyTo: q.replyTo, resume: false, reason: "終わっていない Factory の実行がありません" };
+            }
+            handles.set(run.id, { replyTo: q.replyTo, finalOnly: true });
+            handleArrived(run.id);
             return { replyTo: q.replyTo, resume: true };
           });
           return text({ answers });

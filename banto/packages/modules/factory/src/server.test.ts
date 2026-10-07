@@ -33,9 +33,9 @@ function setup(settings: Partial<FactorySettings> = {}) {
   git(project, "add", ".");
   git(project, "commit", "-q", "-m", "init");
   writeSettings(data, { testCommand: "test -f done.txt", implementer: { agent: "fake" }, reviewer: { agent: "fake" }, ...settings });
-  const delivered: Array<{ replyTo: string; title: string; final: boolean }> = [];
+  const delivered: Array<{ replyTo: string; title: string; text: string; final: boolean }> = [];
   const held: Array<{ replyId: string; body: unknown }> = [];
-  const state = { current: undefined as Factory | undefined, holdImplementer: true, implements: 0, seq: 0 };
+  const state = { current: undefined as Factory | undefined, holdImplementer: true, implements: 0, seq: 0, failDeliveries: 0 };
   const hand = (replyId: string, body: unknown) =>
     setTimeout(() => state.current!.receiveReply({ replyId, from: "subagent", title: "終わりました", text: JSON.stringify(body), final: true, lost: false }), 5);
   const relay = async (name: string, args: Record<string, unknown>): Promise<RelayResult> => {
@@ -43,7 +43,12 @@ function setup(settings: Partial<FactorySettings> = {}) {
       return { text: JSON.stringify([{ name: "subagent-p1", roles: ["subagent"] }, { name: "backlog-p1", roles: ["backlog"] }]), isError: false };
     }
     if (name === "relayDeliverToThread") {
-      delivered.push({ replyTo: String(args.replyTo), title: String(args.title), final: args.final === true });
+      // host が落ちて届かなかった知らせ
+      if (state.failDeliveries > 0) {
+        state.failDeliveries--;
+        return { text: "届けられません", isError: true };
+      }
+      delivered.push({ replyTo: String(args.replyTo), title: String(args.title), text: String(args.text), final: args.final === true });
       return { text: "ok", isError: false };
     }
     const tool = String(args.name);
@@ -187,6 +192,96 @@ test("止まって人を待っていた1件は、起き直して流し直して�
     assert.equal(h.delivered[1]!.replyTo, "rt_run");
     assert.equal(h.delivered[1]!.final, true);
     assert.match(h.delivered[1]!.title, /^Factory の実行が終わりました（取り込み 0／1 件）/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/** 期限までに終わらなければ落とす（以前は最長 150 秒返らなかった呼び出しを、上限まで待たずに落とすため） */
+function within<T>(ms: number, what: string, work: Promise<T>): Promise<T> {
+  return Promise.race([work, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${ms}ms で ${what}`)), ms).unref())]);
+}
+
+/**
+ * 起き直して流し直した1件が、前の走行で届かなかった「止まりました」を問いまで待たせている間に、AI が answerFactory で答えた
+ * （札を引き継ぐ）。そのあと host の問いが来る
+ */
+async function stoppedAndAnsweredBeforeAsk(action: "drop" | "continue") {
+  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2 } });
+  h.state.holdImplementer = false;
+  h.state.failDeliveries = 1;
+  const first = await h.start();
+  const { runId } = JSON.parse((await first.call("runFactory", { items: ["a"] }, runMeta)).text) as { runId: string };
+  await until(() => (first.factory.get(runId)?.notifyErrors.length ?? 0) === 1, "止まった知らせが届かなかったことが残らない");
+  const second = await h.start();
+  await until(() => second.factory.get(runId)?.items[0]?.status === "stopped", "流し直して止まったところまで戻らない");
+  const t0 = Date.now();
+  const answered = await within(5_000, "answerFactory が返らない", second.call("answerFactory", { runId, item: "a", action }, { [REPLY_TO_META_KEY]: "rt_answer", [THREAD_META_KEY]: THREAD }));
+  assert.equal(answered.isError, false, answered.text);
+  return { h, second, runId, answeredInMs: Date.now() - t0 };
+}
+
+test("問いの前に answerFactory が札を引き継いだら、問いは引き継いだ札を上書きせず、覚え直した札は引き継いだことを知らせて閉じる（やめた）", async () => {
+  const { h, second, runId } = await stoppedAndAnsweredBeforeAsk("drop");
+  try {
+    await until(() => h.delivered.some((d) => d.replyTo === "rt_answer" && d.final), "引き継いだ札に最後の知らせが届かない");
+    const answers = JSON.parse((await second.call(RESUME_AFTER_RESTART_TOOL, ask("rt_run"))).text) as { answers: Array<{ resume: boolean }> };
+    assert.equal(answers.answers[0]!.resume, true, "覚え直した札を「途中で終わりました」にさせた");
+    await until(() => h.delivered.some((d) => d.replyTo === "rt_run"), "覚え直した札を閉じない");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(
+      h.delivered.map((d) => [d.replyTo, d.final, d.title.replace(/（.*$/, "")]),
+      [
+        ["rt_answer", true, "Factory の実行が終わりました"],
+        ["rt_run", true, "Factory：知らせの宛先を answerFactory の呼び出しに引き継ぎました"],
+      ],
+      "答えたあとに古い「止まりました」が届いた・同じ札に二度届いた",
+    );
+    assert.deepEqual(second.factory.get(runId)!.notifyErrors.length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("問いの前に answerFactory が札を引き継いだら、answerFactory はすぐ返り、以後の知らせは引き継いだ札に届く（続けた）", async () => {
+  const { h, second, runId, answeredInMs } = await stoppedAndAnsweredBeforeAsk("continue");
+  try {
+    assert.ok(answeredInMs < 5_000, `answerFactory が ${answeredInMs}ms 返らなかった`);
+    // 続けた → 実装役に戻ってまたテストが落ち、止まる。その知らせは引き継いだ札（最後ではない）に届く
+    await until(() => h.delivered.some((d) => d.replyTo === "rt_answer" && /が止まりました/.test(d.title)), "引き継いだ札に「止まりました」が届かない");
+    const answers = JSON.parse((await second.call(RESUME_AFTER_RESTART_TOOL, ask("rt_run"))).text) as { answers: Array<{ resume: boolean }> };
+    assert.equal(answers.answers[0]!.resume, true);
+    await until(() => h.delivered.some((d) => d.replyTo === "rt_run"), "覚え直した札を閉じない");
+    await second.call("answerFactory", { runId, item: "a", action: "drop" });
+    await until(() => h.delivered.some((d) => /^Factory の実行が終わりました/.test(d.title)), "最後の知らせが届かない");
+    assert.deepEqual(
+      h.delivered.map((d) => [d.replyTo, d.final, d.title.replace(/（.*$/, "")]),
+      [
+        ["rt_answer", false, "Factory：題 が止まりました"],
+        ["rt_run", true, "Factory：知らせの宛先を answerFactory の呼び出しに引き継ぎました"],
+        ["rt_answer", true, "Factory の実行が終わりました"],
+      ],
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("2件が止まったまま起き直し、1件に answerFactory で答えて札を引き継いだら、もう1件の待たせていた「止まりました」はすぐその札に届く", async () => {
+  const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2 } });
+  try {
+    h.state.holdImplementer = false;
+    h.state.failDeliveries = 2;
+    const first = await h.start();
+    const { runId } = JSON.parse((await first.call("runFactory", { items: ["a", "b"] }, runMeta)).text) as { runId: string };
+    await until(() => (first.factory.get(runId)?.notifyErrors.length ?? 0) === 2, "2件の止まった知らせが届かなかったことが残らない");
+    const second = await h.start();
+    await until(() => second.factory.get(runId)?.items.every((i) => i.status === "stopped") === true, "流し直して2件とも止まったところまで戻らない");
+    await within(5_000, "answerFactory が返らない", second.call("answerFactory", { runId, item: "b", action: "drop" }, { [REPLY_TO_META_KEY]: "rt_answer", [THREAD_META_KEY]: THREAD }));
+    await until(() => h.delivered.length > 0, "もう1件の「止まりました」が引き継いだ札に届かない（問いまで待っている）", 5_000);
+    assert.equal(h.delivered[0]!.replyTo, "rt_answer");
+    assert.equal(h.delivered[0]!.final, false);
+    assert.equal((JSON.parse(h.delivered[0]!.text) as { task: string }).task, "a");
   } finally {
     await h.cleanup();
   }

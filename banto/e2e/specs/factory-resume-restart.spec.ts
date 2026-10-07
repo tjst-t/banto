@@ -118,7 +118,9 @@ test("Factory の1件が実装の段の途中で host が落ちても、起き�
     const factoryData = join(host.dataDir, "modules", `factory-${project.id}`);
     const moduleReplies = () => {
       const file = join(host.dataDir, "delivery", "module-replies.json");
-      return existsSync(file) ? readFileSync(file, "utf8") : "";
+      return existsSync(file)
+        ? (JSON.parse(readFileSync(file, "utf8")) as { awaiting: Array<{ replyId: string; toModule: string }>; pending: Array<{ toConn: string }> })
+        : { awaiting: [], pending: [] };
     };
 
     await uiCall("factory", "setSettings", {
@@ -155,7 +157,7 @@ test("Factory の1件が実装の段の途中で host が落ちても、起き�
       .map((l) => JSON.parse(l) as { n: number; phase: string; key?: string; replyId?: string });
     const implementerReplyId = launchedBefore.find((l) => l.phase === "launched")?.replyId;
     expect(implementerReplyId, "実装役に頼んだ返事の印が記録に無い").toMatch(/^rid_/);
-    expect(moduleReplies(), "host が Factory 宛ての返事待ちを残していない").toContain(implementerReplyId!);
+    expect(moduleReplies().awaiting.map((a) => [a.toModule, a.replyId]), "host が Factory 宛ての返事待ちを残していない").toEqual([["factory", implementerReplyId]]);
     expect(agentProcesses().agents, "試験の前提：走っているエージェントが1本").toHaveLength(1);
     const oldPid = agentProcesses().agents[0]!;
     expect(agentProcesses().children.filter((c) => c.includes(record!.sessionId!)), "試験の前提：エージェントの子").toHaveLength(1);
@@ -186,6 +188,14 @@ test("Factory の1件が実装の段の途中で host が落ちても、起き�
     expect(titles, "最後の知らせのほかに届いたものがある（途中で終わりました・止まりました）").toEqual([
       "factory：Factory の実行が終わりました（取り込み 1／1 件）",
     ]);
+    // 最後の知らせの中身：その実行の1件が取り込まれた（done）
+    const finalText = (await thread()).messages.find((m) => m.origin?.from === "factory")!.text;
+    const finalBody = JSON.parse(finalText.slice(finalText.indexOf("{"), finalText.lastIndexOf("}") + 1)) as {
+      runId: string;
+      items: Array<{ task: string; status: string; stage: string; result?: string }>;
+    };
+    expect(finalBody.runId).toBe(runId);
+    expect(finalBody.items.map((i) => [i.task, i.status, i.stage, i.result])).toEqual([[TASK, "done", "終わった", "取り込みました"]]);
     await expect.poll(async () => (await thread()).lastTurn, { timeout: 60_000 }).toMatchObject({ cause: "delivery", outcome: "completed" });
     expect((await thread()).awaitingReplies ?? [], "最後の知らせのあとも札が残っている").toEqual([]);
 
@@ -195,6 +205,9 @@ test("Factory の1件が実装の段の途中で host が落ちても、起き�
     expect(reply.text).toContain('"resumedAfterRestart":true');
     expect(reply.text).toContain("受け取った：banto を起こし直したため、作業が途中で切れました。切れたとき実行中だった tool：sleep 600");
     expect(runningRecords(), "届けたのに走っている記録が残っている").toEqual([]);
+    // host の返事待ち・渡す前の返事に Factory 宛てのものが残っていない（レビュー役の返事も渡し終えた）
+    const { awaiting, pending } = moduleReplies();
+    expect({ awaiting, pending }, "Factory 宛ての返事待ちか渡す前の返事が残っている").toEqual({ awaiting: [], pending: [] });
 
     // 終わった段は繰り返していない：どの段も「始めた」は1回、実装役に頼んだのは1回（レビュー役も1回）
     const lines = readFileSync(journalFile, "utf8")

@@ -492,6 +492,9 @@ export class Factory {
           if (err instanceof Diverged) {
             // 記録と食い違う——流し直しで続けられない。人に聞いて、やり直すかやめるか
             const answer = await pass.askOutsideJournal(`記録と手順が食い違いました：${err.message}`);
+            item.status = "running";
+            delete item.stopped;
+            this.save(run);
             if (answer.action === "drop") {
               await this.dropItem(live, answer.reason ?? "人がやめると答えました");
               return;
@@ -737,9 +740,12 @@ class ItemPass implements ProcedureContext {
     throw new Answered(answer);
   }
 
-  /** 記録に残さずに聞く（記録と手順が食い違ったとき——その記録はもう使えない） */
+  /**
+   * 記録に残さずに聞く（記録と手順が食い違ったとき——その記録はもう使えない）。起き直すたびに同じ食い違いでここへ来るので、
+   * 前の走行で届いた同じ理由の知らせは届け直さない（答えたら止まった印は消すので、残っているのは前の走行のものだけ）
+   */
   async askOutsideJournal(reason: string): Promise<Answer> {
-    return this.waitForAnswer(reason);
+    return this.waitForAnswer(reason, true);
   }
 
   /**
@@ -759,9 +765,15 @@ class ItemPass implements ProcedureContext {
     this.slot.release();
     const answered = new Promise<Answer>((resolve) => (this.live.pendingAnswer = resolve));
     this.live.settled.resolve();
-    if (!notified && (await this.factory.stopped(this.live)) && item.stopped) {
-      item.stopped.notified = true;
-      this.factory.saveRun(this.live.run);
+    // 知らせと答えは並べて待つ——起き直したあとの知らせは host の問いまで待つことがあり（server.ts）、その間に来た答えを
+    // 止めない（answerFactory が返らなくなる）。答えたあとに届く前だった知らせは、Factory の口が捨てる
+    const stop = item.stopped;
+    if (!notified) {
+      void this.factory.stopped(this.live).then((ok) => {
+        if (!ok || item.stopped !== stop) return;
+        stop.notified = true;
+        this.factory.saveRun(this.live.run);
+      });
     }
     const answer = await answered;
     if (answer.action !== "drop") await this.slot.acquire();

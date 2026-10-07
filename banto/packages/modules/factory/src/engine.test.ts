@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Factory, ReplyBox, type FactoryPorts, type RunRecord, type TaskSnapshot } from "./engine.js";
+import { Factory, ReplyBox, type FactoryPorts, type Procedure, type RunRecord, type TaskSnapshot } from "./engine.js";
 import { deliverTask } from "./procedure.js";
 import { execCommand } from "./server.js";
 import { DEFAULT_SETTINGS, type FactorySettings } from "./settings.js";
@@ -26,7 +26,7 @@ interface Fake {
  * 偽の Subagent：実装役は頼みの中の `<commit 名前>` のファイルをその worktree に書いてコミットする（続きの頼みでは
  * `fix` の名前で）。レビュー役は `verdicts` を順に返す
  */
-function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; settings?: Partial<FactorySettings>; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
+function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-"));
   const project = join(root, "project");
   const data = join(root, "data");
@@ -74,7 +74,7 @@ function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; settings?: 
       dataDir: data,
       projectRoot: project,
       ports,
-      procedure: deliverTask,
+      procedure: (ctx) => (opts.procedure ?? deliverTask)(ctx),
       replies: new ReplyBox(join(data, "replies")),
       events: {
         itemStopped: async (_run, item) => {
@@ -196,6 +196,28 @@ test("止まった知らせが届かないまま Factory が起き直したら�
     await until(() => s.fake.stopped.length === 2, "届かなかった「止まりました」を届け直さない");
     await until(() => s.factory.get(run.id)!.items[0]!.stopped?.notified === true, "届いたことが記録に残らない");
     assert.ok(answerWhenAsked(s.factory, run.id, "c2", { action: "drop", reason: "試験" }));
+    await until(() => s.fake.finished.length === 1, "やめたのに終わらない");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("記録と手順が食い違って止まった1件は、起き直して同じ食い違いで止まっても「止まりました」を届け直さない", async () => {
+  const s = setup({ settings: { testCommand: "test -f never.txt", limits: { ...DEFAULT_SETTINGS.limits, testRetries: 0 } } });
+  try {
+    const run = s.factory.start({ tasks: [task("g")], settings: s.settings });
+    await until(() => s.factory.get(run.id)!.items[0]!.stopped?.notified === true, "止まらない");
+    // 手順が変わった（4 番目の段が違う）——流し直すと記録と食い違う
+    s.opts.procedure = async (ctx) => {
+      await ctx.stage("違う段");
+    };
+    s.restart();
+    await until(() => s.fake.stopped.length === 2, "食い違いで止まらない");
+    assert.match(s.fake.stopped[1]!, /記録と手順が食い違いました/);
+    await until(() => s.factory.get(run.id)!.items[0]!.stopped?.notified === true, "届いたことが記録に残らない");
+    s.restart();
+    await until(() => answerWhenAsked(s.factory, run.id, "g", { action: "drop", reason: "試験" }), "起こし直したあと、また問いまで来ない");
+    assert.equal(s.fake.stopped.length, 2, "同じ食い違いの「止まりました」を届け直した");
     await until(() => s.fake.finished.length === 1, "やめたのに終わらない");
   } finally {
     s.cleanup();
