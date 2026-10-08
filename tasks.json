@@ -5937,7 +5937,7 @@
       "number": 244,
       "kind": "story",
       "title": "Project を SSH で入る別のサーバで動かす（実行場所——別のサーバ）",
-      "status": "backlog",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5955,7 +5955,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-08T09:35:39.190Z",
-      "updatedAt": "2026-10-08T09:35:39.190Z",
+      "updatedAt": "2026-10-08T09:45:37.861Z",
       "closedAt": null,
       "extra": {}
     },
