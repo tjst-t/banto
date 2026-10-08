@@ -65,6 +65,21 @@ export function describeBackgroundItems(items: readonly BackgroundItem[]): strin
 }
 
 /**
+ * **閉じなかったとき、そのターンの会話に残す印**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。
+ * 受信箱には出さない——閉じなかったことはその Fork の会話で分かれば足りる。`STOPPED_NOTE` と同じ括弧書き
+ */
+export const CLOSE_FORK_DROPPED_NOTE = "この Fork を閉じるのをやめました";
+
+/** 閉じなかった印の文。`items` があれば、予約のあとに頼んだ裏の仕事が残っていたため */
+export function closeForkDroppedNote(reason: string, items?: readonly BackgroundItem[]): string {
+  if (items && items.length > 0) {
+    const titles = items.map((i) => `「${i.title ?? i.toolName ?? "（題なし）"}」`).join("、");
+    return `（${CLOSE_FORK_DROPPED_NOTE}——閉じると予約したあとで裏の仕事を頼んだため。残っている仕事：${titles}。予約の理由：${reason}）`;
+  }
+  return `（${CLOSE_FORK_DROPPED_NOTE}——ターンが途中で終わったため。予約の理由：${reason}）`;
+}
+
+/**
  * 閉じてよいかを確かめる。**断る理由を文で返す**。通れば `undefined`。呼ばれたときと、実際に閉じる直前の2回使う
  */
 export function validateCloseFork(store: ProjectThreadStore, threadId: string): string | undefined {

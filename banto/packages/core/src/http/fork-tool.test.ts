@@ -431,6 +431,8 @@ test("Fork で close_fork を呼ぶと、ターンが最後まで終わってか
       assert.equal(detail.closedReason, "引き継ぎ先へ 送り終えた");
       // 受信箱には知らせない
       assert.equal(h.inbox.listOpen().filter((i) => i.kind === "notice").length, 0);
+      // 閉じたときは印を足さない
+      assert.ok(!h.projectThread.getThread(forkId)!.messages.some((m) => m.text.includes("閉じるのをやめました")));
     },
   );
 });
@@ -480,13 +482,13 @@ test("その Fork が頼んだ裏の仕事が残っていると断り、残っ�
   );
 });
 
-test("予約のあとに裏の仕事を頼んだら、ターンが終わっても閉じず、人に知らせる", async () => {
+test("予約のあとに裏の仕事を頼んだら、ターンが終わっても閉じず、そのターンの会話に残りの題と理由を残す（受信箱には出さない）", async () => {
   let forkId = "";
   let store!: ProjectThreadStore;
   await withForkApp(
     async function* (opts) {
       yield init("s");
-      const r = await callCloseTool(opts, "終わった");
+      const r = await callCloseTool(opts, "引き継ぎ済み");
       assert.equal(r.isError, undefined);
       // 閉じると言ったあとで、待たない形で仕事を頼んだ
       await store.recordAwaitingReply({
@@ -506,35 +508,40 @@ test("予約のあとに裏の仕事を頼んだら、ターンが終わって�
       const base = await h.projectThread.createBaseThread(project.id);
       forkId = (await h.projectThread.forkThread(base.id)).id;
       assert.match(await send(h, forkId, "閉じて"), /"type":"done"/);
-      await waitFor(() => h.inbox.listOpen().some((i) => i.kind === "notice"), "閉じなかったお知らせ");
-      const notice = h.inbox.listOpen().find((i) => i.kind === "notice");
-      assert.ok(notice && notice.kind === "notice");
-      assert.equal(notice.title, "Fork を閉じませんでした");
-      assert.match(notice.detail, /「テストを回す」（shell）/);
+      // 印はターンの終わりの片づけで書く——ストリームが閉じたときには書き終えている
+      const ai = h.projectThread.getThread(forkId)!.messages.filter((m) => m.role === "assistant");
+      assert.equal(ai.length, 1, "同じターンの発言にまとまっていない");
+      assert.equal(
+        ai[0]!.text,
+        "閉じます\n\n（この Fork を閉じるのをやめました——閉じると予約したあとで裏の仕事を頼んだため。残っている仕事：「テストを回す」。予約の理由：引き継ぎ済み）",
+      );
       assert.equal(h.projectThread.getThread(forkId)!.status, "active");
       assert.equal(h.events.filter((e) => e.type === "thread.closed").length, 0);
+      assert.equal(h.inbox.listOpen().filter((i) => i.kind === "notice").length, 0, "受信箱に出していた");
     },
   );
 });
 
-test("途中で終わったターンでは閉じず、「閉じるのをやめました」を人に知らせる", async () => {
+test("途中で終わったターンでは閉じず、そのターンの会話に「閉じるのをやめました」と予約の理由を残す（受信箱には出さない）", async () => {
+  let forkId = "";
   await withForkApp(
     async function* (opts) {
       yield init("s");
-      await callCloseTool(opts, "終わった");
+      await callCloseTool(opts, "引き継ぎ済み");
       throw new Error("CLI が落ちた");
     },
     async (h) => {
       const project = await h.projectThread.createProject("demo", "/tmp");
       const base = await h.projectThread.createBaseThread(project.id);
-      const fork = await h.projectThread.forkThread(base.id);
-      assert.match(await send(h, fork.id, "閉じて"), /"type":"error"/);
-      await waitFor(() => h.inbox.listOpen().some((i) => i.kind === "notice"), "やめたお知らせ");
-      const notice = h.inbox.listOpen().find((i) => i.kind === "notice");
-      assert.ok(notice && notice.kind === "notice");
-      assert.equal(notice.title, "Fork を閉じるのをやめました");
-      assert.match(notice.detail, /終わった/);
-      assert.equal(h.projectThread.getThread(fork.id)!.status, "active");
+      forkId = (await h.projectThread.forkThread(base.id)).id;
+      assert.match(await send(h, forkId, "閉じて"), /"type":"error"/);
+      const notes = h.projectThread
+        .getThread(forkId)!
+        .messages.filter((m) => m.role === "assistant" && m.text.includes("この Fork を閉じるのをやめました"));
+      assert.equal(notes.length, 1);
+      assert.match(notes[0]!.text, /（この Fork を閉じるのをやめました——ターンが途中で終わったため。予約の理由：引き継ぎ済み）/);
+      assert.equal(h.projectThread.getThread(forkId)!.status, "active");
+      assert.equal(h.inbox.listOpen().filter((i) => i.kind === "notice").length, 0, "受信箱に出していた");
     },
   );
 });

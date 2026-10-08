@@ -61,7 +61,7 @@ import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
-import { composeForkInstruction, describeBackgroundItems, type ForkRequest } from "./fork-tool.js";
+import { closeForkDroppedNote, composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
 import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
@@ -1111,30 +1111,19 @@ export function createApp(deps: AppDeps) {
   /**
    * **AI が予約した「この Fork を閉じる」を片づける**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。
    * ターンが最後まで行ったら、閉じる直前に裏の仕事をもう一度確かめて閉じる。途中で終わった・裏の仕事が残っていたら
-   * 閉じずに、人に知らせる（予約した Fork を立てなかったときと同じ残し方）
+   * 閉じずに、そのターンの会話に「閉じるのをやめました」を残す（受信箱には出さない。同じターンの発言にまとまる）
    */
   async function settleClose(threadId: string, reason: string, outcome: { ok: boolean }): Promise<void> {
     const thread = deps.projectThread.getThread(threadId);
     if (!thread) return;
-    const label = thread.title ? `Fork「${thread.title}」` : "Fork Thread";
     if (!outcome.ok) {
-      await deps.inbox.raiseNotice({
-        projectId: thread.projectId,
-        dedupeKey: `fork-close-dropped:${threadId}:${randomUUID()}`,
-        title: "Fork を閉じるのをやめました",
-        detail: `${label}のターンが途中で終わったため、AI が予約した「この Fork を閉じる」（理由：${reason}）はやめました。閉じるなら、画面から閉じるか、もう一度頼んでください`,
-      });
+      await deps.projectThread.appendMessage(threadId, "assistant", closeForkDroppedNote(reason));
       return;
     }
     // 予約のあとに頼んだ裏の仕事があれば閉じない——閉じても仕事は止まらず、結果は閉じた Fork に溜まるだけ
     const items = backgroundItemsOf(thread.awaitingReplies);
     if (items.length > 0) {
-      await deps.inbox.raiseNotice({
-        projectId: thread.projectId,
-        dedupeKey: `fork-close-refused:${threadId}:${randomUUID()}`,
-        title: "Fork を閉じませんでした",
-        detail: `AI が${label}を閉じると予約した（理由：${reason}）あとで裏の仕事を頼んだため、閉じていません。残っている仕事：\n${describeBackgroundItems(items)}`,
-      });
+      await deps.projectThread.appendMessage(threadId, "assistant", closeForkDroppedNote(reason, items));
       return;
     }
     await closeThreadAndTell(threadId, { by: "ai", reason });
