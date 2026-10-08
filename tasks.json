@@ -5840,7 +5840,7 @@
       "number": 240,
       "kind": "task",
       "title": "コンテナの中で Chromium と screencast を測る",
-      "status": "in-progress",
+      "status": "done",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -5848,7 +5848,7 @@
       "labels": [],
       "body": "Project のコンテナ（Incus のシステムコンテナ、資源の上限つき）で headless Chromium が動くかを確かめ、CDP の screencast の絵の大きさ・枚数・CPU・メモリを測る。入れ方（Playwright 同梱の chromium か chrome-headless-shell か）を決める。結果で v4-modules.md §4.1 の「確かめていない」を直す。",
       "doneWhen": "コンテナの中で Chromium を起こしてページを開け、screencast の1枚の大きさ（画質・大きさ別）・毎秒の枚数・Chromium のメモリと CPU を数字で記録し、§4.1 に入れ方と既定値を書いた。",
-      "resolution": null,
+      "resolution": "コンテナの中で Playwright 同梱の chromium-headless-shell が設定なしで動いた。1280×800 画質80で1枚約110KiB、動くページは毎秒60枚・CPU 約140%、止まったページはほぼ0、入力→次の絵は数十ms、メモリ約400MiB。既定（画質70・everyNthFrame 2・映していない間は止める）と実測を v4-modules.md §4.1 に書いた（28acf369）。流れの口を通した速さは #242 で測る。",
       "refs": [],
       "threads": [
         {
@@ -5857,8 +5857,8 @@
         }
       ],
       "createdAt": "2026-10-08T09:12:04.953Z",
-      "updatedAt": "2026-10-08T09:12:11.686Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-08T09:18:15.054Z",
+      "closedAt": "2026-10-08T09:18:15.054Z",
       "extra": {}
     },
     {
