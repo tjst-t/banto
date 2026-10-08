@@ -55,6 +55,7 @@ import { TurnStops, type TurnStopHandle } from "./turn-stops.js";
 import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
+import { reopenProject, reopenThread } from "../delivery/reopen.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
@@ -2272,7 +2273,8 @@ export function createApp(deps: AppDeps) {
       const threadReopenMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/reopen$/);
       if (threadReopenMatch && req.method === "POST") {
         try {
-          await deps.projectThread.reopenThread(threadReopenMatch[1]!);
+          // 閉じている間に溜まった届いたもので起こす（§2.2）
+          await reopenThread(deps, threadReopenMatch[1]!);
           json(res, 200, { ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
@@ -2300,7 +2302,7 @@ export function createApp(deps: AppDeps) {
       const projectReopenMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/reopen$/);
       if (projectReopenMatch && req.method === "POST") {
         try {
-          await deps.projectThread.reopenProject(projectReopenMatch[1]!);
+          await reopenProject(deps, projectReopenMatch[1]!);
           json(res, 200, { ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });

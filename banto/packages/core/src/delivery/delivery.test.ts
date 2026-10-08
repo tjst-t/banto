@@ -8,6 +8,7 @@ import { ProjectThreadStore } from "../project-thread/store.js";
 import { ThreadTurns } from "./thread-turns.js";
 import { ThreadDeliveries, DELIVERY_LIMITS, composeTurnPrompt } from "./thread-deliveries.js";
 import { ReplyHandles, REPLY_LIMITS } from "./reply-handles.js";
+import { reopenProject, reopenThread } from "./reopen.js";
 
 async function setup(fn: (ctx: {
   store: ProjectThreadStore;
@@ -134,6 +135,53 @@ test("閉じた Thread は起こさない", async () => {
     const r = await deliveries.deliver(input(threadId));
     assert.equal(r.wake, "held");
     assert.deepEqual(runs, []);
+  });
+});
+
+test("閉じた Fork に届いたものは留まり、開き直すとその場で起こす（§2.2）", async () => {
+  await setup(async ({ store, deliveries, threadId, runs, notices }) => {
+    const fork = await store.forkThread(threadId);
+    await store.closeThread(fork.id);
+    assert.equal((await deliveries.deliver(input(fork.id, 2))).wake, "held");
+    assert.deepEqual(runs, [], "閉じた Fork を起こした");
+    assert.match(notices[0]!.detail, /閉じられています/);
+    await reopenThread({ projectThread: store, deliveries }, fork.id);
+    assert.deepEqual(runs, [{ threadId: fork.id, hop: 2 }], "開き直したのに起こさない");
+  });
+});
+
+test("開き直しても、溜まったものが無ければ何も起きない", async () => {
+  await setup(async ({ store, deliveries, threadId, runs }) => {
+    const fork = await store.forkThread(threadId);
+    await store.closeThread(fork.id);
+    await reopenThread({ projectThread: store, deliveries }, fork.id);
+    assert.equal(store.getThread(fork.id)!.status, "active");
+    assert.deepEqual(runs, []);
+  });
+});
+
+test("開き直しても、速度の上限を超えていれば留まる", async () => {
+  await setup(async ({ store, deliveries, threadId, runs }) => {
+    for (let i = 0; i < DELIVERY_LIMITS.wakesPerHour; i++) await deliveries.deliver(input(threadId));
+    await store.closeThread(threadId);
+    await deliveries.deliver(input(threadId));
+    await reopenThread({ projectThread: store, deliveries }, threadId);
+    assert.equal(runs.length, DELIVERY_LIMITS.wakesPerHour, "上限を超えたのに開き直しで起こした");
+    assert.equal(store.getThread(threadId)!.deliveries!.length > 0, true, "留めたものを捨てた");
+  });
+});
+
+test("Project を開き直すと、その中の開いている Thread だけ起こす", async () => {
+  await setup(async ({ store, deliveries, threadId, runs }) => {
+    const project = store.getThread(threadId)!.projectId;
+    const closedFork = await store.forkThread(threadId);
+    await store.closeThread(closedFork.id);
+    await store.closeProject(project);
+    assert.equal((await deliveries.deliver(input(threadId))).wake, "held");
+    assert.equal((await deliveries.deliver(input(closedFork.id))).wake, "held");
+    assert.deepEqual(runs, []);
+    await reopenProject({ projectThread: store, deliveries }, project);
+    assert.deepEqual(runs, [{ threadId, hop: 1 }], "開いている Thread を起こさない・閉じた Fork を起こした");
   });
 });
 
