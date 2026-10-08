@@ -5963,7 +5963,7 @@
       "number": 245,
       "kind": "task",
       "title": "実行場所の口を core に切り出す（今のコンテナを1つ目の実装に）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [],
       "milestone": null,
@@ -5975,7 +5975,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-08T09:45:40.184Z",
+      "updatedAt": "2026-10-08T12:18:41.354Z",
       "closedAt": null,
       "extra": {}
     },
