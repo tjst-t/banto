@@ -5727,7 +5727,7 @@
       "number": 235,
       "kind": "task",
       "title": "close_fork で閉じなかったとき、受信箱ではなくそのターンの会話に「閉じるのをやめました（理由）」を残す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "ai-close-fork",
       "dependsOn": [],
       "milestone": null,
@@ -5739,7 +5739,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T05:08:30.449Z",
-      "updatedAt": "2026-10-08T05:08:30.449Z",
+      "updatedAt": "2026-10-08T05:08:34.835Z",
       "closedAt": null,
       "extra": {}
     }
