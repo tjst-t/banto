@@ -584,12 +584,17 @@ test("設定の Repositories の面で GitHub のアカウントを登録・確�
   await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible();
   await expect(row(inner, ownedRepo).getByTestId("repo-account-readonly")).toContainText(`${E2E_GITHUB_PAT_LOGIN} は登録が外れています`);
 
-  // Vault の一覧：ログインは消え、PAT は残っている（値は出ない）
-  await page.getByRole("button", { name: "Vault（ローカル）", exact: true }).click();
-  const vaultInner = page.locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe').contentFrame().frameLocator("iframe");
-  await expect(vaultInner.getByText(`github-${E2E_GITHUB_PAT_LOGIN}-pat`).first()).toBeVisible({ timeout: 60_000 });
-  await expect(vaultInner.getByText(`repositories-github-${E2E_GITHUB_DEVICE_LOGIN}`)).toHaveCount(0);
-  await expect(vaultInner.getByText(E2E_GITHUB_PAT)).toHaveCount(0);
+  // Vault の一覧：ログインは消え、PAT は残っている（値は出ない）。設定画面の「Vault（ローカル）」の面は無くなった
+  // （2026-10-07、vault-local は設定 Canvas を持たない）ので、本物の Vault に一覧を聞く（vault-directory.spec と同じ口）
+  const listed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-local", tool: "listAliases", arguments: {} },
+  });
+  expect(listed.status()).toBe(200);
+  const aliases = await listed.text();
+  expect(aliases, "PAT が Vault から消えた").toContain(`github-${E2E_GITHUB_PAT_LOGIN}-pat`);
+  expect(aliases, "外したログインが Vault に残っている").not.toContain(`repositories-github-${E2E_GITHUB_DEVICE_LOGIN}`);
+  expect(aliases, "Vault の一覧に PAT の値が入っている").not.toContain(E2E_GITHUB_PAT);
 
   expect(pageErrors).toEqual([]);
 });

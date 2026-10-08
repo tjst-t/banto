@@ -94,14 +94,16 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
   await expect(row.getByLabel("FAKE_AGENT_TOKEN の鍵"), "保存したあとも入力欄が開いている").toHaveCount(0);
   await expect(inner.getByText(PASTED), "設定画面に鍵の値が出ている").toHaveCount(0);
 
-  // banto 全体の Vault の一覧にも出る（置き場は Vault——Module は持たない）
-  await page.getByRole("button", { name: "Vault（ローカル）", exact: true }).click();
-  const vaultInner = page
-    .locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe')
-    .contentFrame()
-    .frameLocator("iframe");
-  await expect(vaultInner.getByText(ALIAS).first(), "Vault の一覧に既定の鍵が出ていない").toBeVisible({ timeout: 60_000 });
-  await expect(vaultInner.getByText(PASTED), "Vault の一覧に値が出ている").toHaveCount(0);
+  // banto 全体の Vault の一覧にも出る（置き場は Vault——Module は持たない）。設定画面の「Vault（ローカル）」の面は
+  // 無くなった（2026-10-07、vault-local は設定 Canvas を持たない）ので、本物の Vault に一覧を聞く（vault-directory.spec と同じ口）
+  const listed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers,
+    data: { server: "vault-local", tool: "listAliases", arguments: {} },
+  });
+  expect(listed.status()).toBe(200);
+  const aliases = await listed.text();
+  expect(aliases, "Vault の一覧に既定の鍵が出ていない").toContain(ALIAS);
+  expect(aliases, "Vault の一覧に値が出ている").not.toContain(PASTED);
 
   // ---- 3. envSecrets を書かずに頼むと、貼った値そのものが届く ----------------------------------
   await page.goto(threadUrl);
