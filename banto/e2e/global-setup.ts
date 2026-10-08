@@ -15,7 +15,6 @@ import {
   SANDBOX_BASE_URL,
   FRONTEND_BASE_URL,
   CLAUDE_CONFIG_DIR,
-  CLAUDE_CREDENTIALS_DIR,
   FAKE_SYSTEMCTL,
   RELEASE_DIR,
   SELF_UPDATE_DIR,
@@ -31,7 +30,6 @@ export default function globalSetup(): void {
   mkdirSync(DATA_DIR, { recursive: true });
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  assertCredentialsReadable();
   writeFileSync(
     CONFIG_PATH,
     JSON.stringify(
@@ -54,33 +52,6 @@ export default function globalSetup(): void {
       null,
       2,
     ),
-  );
-}
-
-/**
- * **認証がどこから来るかを、走る前に確かめる**（2026-09-16）。
- *
- * `CLAUDE_CONFIG_DIR` を実行ごとの置き場に移すと、claude CLI は認証も
- * そちらから読もうとする。`CLAUDE_SECURESTORAGE_CONFIG_DIR` で本物を
- * 指しそこねると、**全 spec が「AI が何も返さない」という形で落ちる**
- * ——原因が認証だと画面からは分からない。ここで止めて理由を出す（規則2）。
- *
- * **環境変数のログインでもよい**（追加・2026-10-08、Backlog `claude-login-relay-owner`）。banto の Project のコンテナの
- * 中には資格情報のファイルが無く、core が中継の住所と合言葉（`ANTHROPIC_BASE_URL`・`CLAUDE_CODE_OAUTH_TOKEN`）を
- * 環境に入れている。CLI はファイルより先に `CLAUDE_CODE_OAUTH_TOKEN` を読み、Runner はこのプロセスの環境を継ぐので、
- * そのまま通る。
- */
-function assertCredentialsReadable(): void {
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return;
-  const credentials = join(CLAUDE_CREDENTIALS_DIR, ".credentials.json");
-  if (existsSync(credentials)) return;
-  throw new Error(
-    `[e2e] claude CLI の資格情報が見つかりません: ${credentials}\n` +
-      `E2E は記録を ${CLAUDE_CONFIG_DIR} に隔離し、認証だけ ` +
-      `CLAUDE_SECURESTORAGE_CONFIG_DIR（既定は ~/.claude）から読みます。` +
-      `置き場が違うなら CLAUDE_SECURESTORAGE_CONFIG_DIR を指定してください。` +
-      `banto の Project のコンテナの中なら、Project 設定の「Claude のログイン」をオンにして Module を起こし直すと、` +
-      `環境変数（CLAUDE_CODE_OAUTH_TOKEN）で通ります。`,
   );
 }
 

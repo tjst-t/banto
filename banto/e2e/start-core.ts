@@ -45,7 +45,8 @@ globalSetup();
 
 // **claude CLI に人の `~/.claude` を触らせない**（決定・2026-09-16、config.ts 参照）。
 // Runner が起こす CLI はこのプロセスの env を引き継ぐので、cli.js を読み込む前に置く。
-// 記録（projects/sessions）は実行ごとの置き場へ、認証は本物の置き場から。
+// 記録（projects/sessions）も資格情報の置き場も実行ごとの置き場へ——E2E は実 LLM を使わない（`config.ts` の
+// CLAUDE_CREDENTIALS_DIR）。
 process.env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
 process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = CLAUDE_CREDENTIALS_DIR;
 

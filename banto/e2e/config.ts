@@ -145,18 +145,20 @@ export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.jso
 export const CLAUDE_CONFIG_DIR = join(E2E_TMP, "claude");
 
 /**
- * **資格情報だけは本物の場所を見せる**（`CLAUDE_SECURESTORAGE_CONFIG_DIR`）。
+ * **資格情報の置き場も、人のものを見せない**（改訂・2026-10-08）。
  *
- * `CLAUDE_CONFIG_DIR` を移すと CLI は認証も移った先から読み、`Not logged in` で
- * 止まる（実測）。**コピーは作らない**——CLI はトークンを更新するときに書き戻すので、
- * 写しを持たせると**人の側のトークンが取り残されて壊れる**（規則3——写しを持つと、
- * いつか食い違う）。この env は資格情報の置き場だけを別に指せるので、
- * 記録は実行ごとの置き場・認証は本物、という分け方ができる（実測で確認）。
+ * 以前は `CLAUDE_SECURESTORAGE_CONFIG_DIR` で人の `~/.claude` を指し、`global-setup.ts` がそこに
+ * `.credentials.json` があるかを走る前に確かめていた（無いと全 spec が「AI が何も返さない」で落ちたため）。
+ * **2026-09-20 から E2E は実 LLM を使わない**（`fake-runner.ts`）——Runner の発言・選べるモデルは偽物が返し、
+ * サブエージェントも偽物（`BANTO_SUBAGENT_FAKE_AGENT`、設定画面が読むログインは `SUBAGENT_CLAUDE_CREDENTIALS`）。
+ * 取り消しの手前探し（`findRewindBeforePrompt`）は記録のファイルを読むだけで、認証は要らない。
+ * なので資格情報は要らず、確かめは「人のホームに無いと始まらない」だけの障害になっていた（サブエージェント・
+ * Factory は偽のホームで回すので毎回止まった）。
  *
- * 既に指定があればそれに従う（自分で設定した値を読み直しても同じ値になる）。
+ * 置き場は**この回の CLI の置き場そのもの**（資格情報は置かない）。どこかに本物の CLI を起こす道が残っていても、
+ * 人のアカウントで黙って推論せず `Not logged in` で落ちる——実 LLM を使わない約束が破れたことが見える（規則2）。
  */
-export const CLAUDE_CREDENTIALS_DIR =
-  process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? join(homedir(), ".claude");
+export const CLAUDE_CREDENTIALS_DIR = CLAUDE_CONFIG_DIR;
 export const AUTH_TOKEN = "e2e-fixed-token";
 export const PORT = CORE_PORT;
 
