@@ -6125,7 +6125,7 @@
       "number": 252,
       "kind": "task",
       "title": "実機の確かめ：ユーザーの別の VM で containerlab まで動かす",
-      "status": "ready",
+      "status": "backlog",
       "parent": "remote-runtime",
       "dependsOn": [
         "remote-runtime-host-side",
@@ -6141,7 +6141,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-08T09:37:11.139Z",
+      "updatedAt": "2026-10-08T09:37:33.978Z",
       "closedAt": null,
       "extra": {}
     }
