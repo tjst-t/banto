@@ -18,6 +18,11 @@ export interface SandboxServerOptions {
   /** この画面から埋め込まれることだけを許す（`frame-ancestors`）。
    *  環境ごとに変わる（Caddy 経由・LAN 直・E2E）ので設定から受け取る。 */
   allowedEmbedderOrigins: string[];
+  /**
+   * **画面と Module の間の流れの住所**（`wss://<banto>/api/streams`、決定・2026-10-08、アーキ仕様 §5.8）。
+   * connect-src に host が足す——Module には書かせない（申告の `connectDomains` は http・https のオリジンだけ）
+   */
+  streamUrl?: string;
 }
 
 /** Module が `_meta.ui.csp` で申告できる接続先。仕様の語彙をそのまま使う。 */
@@ -54,8 +59,8 @@ function parseDeclaredCsp(raw: string | null): DeclaredCsp {
   }
 }
 
-export function buildCsp(declared: DeclaredCsp, allowedEmbedderOrigins: string[]): string {
-  const connect = safeDomains(declared.connectDomains);
+export function buildCsp(declared: DeclaredCsp, allowedEmbedderOrigins: string[], streamUrl?: string): string {
+  const connect = [...safeDomains(declared.connectDomains), ...(streamUrl ? [streamUrl] : [])];
   const resource = safeDomains(declared.resourceDomains);
   const frame = safeDomains(declared.frameDomains);
   const baseUri = safeDomains(declared.baseUriDomains);
@@ -164,14 +169,14 @@ window.parent.postMessage({ jsonrpc: "2.0", method: PROXY_READY, params: {} }, H
 }
 
 export function createSandboxServer(options: SandboxServerOptions): Server {
-  const { allowedEmbedderOrigins } = options;
+  const { allowedEmbedderOrigins, streamUrl } = options;
   if (allowedEmbedderOrigins.length === 0) {
     throw new Error("サンドボックスを埋め込める相手が1つも設定されていません");
   }
 
   return createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://sandbox.invalid");
-    const csp = buildCsp(parseDeclaredCsp(url.searchParams.get("csp")), allowedEmbedderOrigins);
+    const csp = buildCsp(parseDeclaredCsp(url.searchParams.get("csp")), allowedEmbedderOrigins, streamUrl);
 
     if (url.pathname === "/sandbox.html") {
       res.writeHead(200, {

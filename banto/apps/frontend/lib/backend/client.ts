@@ -1236,6 +1236,20 @@ export async function callRealUiTool(
 }
 
 /**
+ * **画面と Module の間の流れの札**（決定・2026-10-08、アーキ仕様 §5.8）。host が持ち主から見える Module か・
+ * その画面がその名前を名乗っているかを確かめて、1回だけ・30 秒の札を返す。`frame` は iframe ごとの印
+ */
+export async function requestRealUiStream(
+  owner: RealCanvasOwner,
+  input: { server: string; resourceUri: string; name: string; params: Record<string, unknown>; frame: string },
+): Promise<{ url: string; ticket: string; expiresAt: string }> {
+  return request<{ url: string; ticket: string; expiresAt: string }>(`${ownerPath(owner)}/ui-stream`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
  * **banto 全体の Module**（追加・2026-09-15、§10 item 14 (a)）。
  *
  * Project ごとの選択（`RealProjectModule`）は「この Project の AI に見せるか」。

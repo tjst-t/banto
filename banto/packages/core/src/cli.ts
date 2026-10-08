@@ -56,6 +56,7 @@ import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/rela
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
+import { StreamRelay, streamUrlOf } from "./http/streams.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
   expandLaunch,
@@ -95,6 +96,7 @@ import {
   classifyMetaDifference,
   CALLER_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
+  STREAM_SOCKET_RELATIVE_PATH,
 } from "@banto/module-contract";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1820,6 +1822,12 @@ async function main(): Promise<void> {
     }
   }
 
+  // **画面と Module の間の流れ**（決定・2026-10-08、アーキ仕様 §5.8）。住所は画面から見た API の基点の `/api/streams`
+  // （本番は画面と同じオリジン）。繋いでよいのはサンドボックスのオリジンからだけ
+  const streamRelay = new StreamRelay({
+    url: streamUrlOf(loginOrigins(bootstrap).apiBaseUrl),
+    allowedOrigin: bootstrap.sandboxPublicUrl,
+  });
   const app = createApp({
     warmModelCatalog: true,
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
@@ -1905,6 +1913,11 @@ async function main(): Promise<void> {
     resolveModuleClientsForProject,
     resolveInstanceModuleClients,
     sandboxPublicUrl: bootstrap.sandboxPublicUrl,
+    // 待ち受けは Module の置き場（host とコンテナで同じパス）の中——host は host の側のパスへ直接繋ぐ
+    streams: {
+      relay: streamRelay,
+      socketPathOf: (connName) => join(bootstrap.dataDir, "modules", connName, STREAM_SOCKET_RELATIVE_PATH),
+    },
     // **引く registry を差し替えられるようにしておく**（追加・2026-09-21）。
     // 既定は公式。自前の registry を立てている人と、**本物を叩かない E2E**
     // の両方がここを使う（規則6——外の都合で落ちる試験にしない）
@@ -1964,6 +1977,8 @@ async function main(): Promise<void> {
       }
       // 止める途中で Module が切れても、起こし直さない
       stopping = true;
+      // 開いている流れは 1012（起こし直し中）で閉じる——画面は札を取り直して繋ぎ直す（§5.8）
+      streamRelay.closeAll();
       liveness.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
       // **新しい Module の呼び出しを断り、実行中の呼び出しが終わるのを上限つきで待ってから止まる**（追加・2026-10-05、
@@ -1988,7 +2003,7 @@ async function main(): Promise<void> {
 
   // Module の Canvas を隔離するサンドボックス（決定・2026-09-06、§6.2）。
   // **画面とは別オリジンでなければならない**ので、別の口で配る。
-  const sandbox = createSandboxServer({ allowedEmbedderOrigins: bootstrap.allowedEmbedderOrigins });
+  const sandbox = createSandboxServer({ allowedEmbedderOrigins: bootstrap.allowedEmbedderOrigins, streamUrl: streamRelay.url });
   sandbox.listen(bootstrap.sandboxPort, "0.0.0.0", () => {
     console.log(
       `[host] sandbox listening on http://0.0.0.0:${bootstrap.sandboxPort}/ ` +

@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { createSandboxServer } from "./sandbox-server.js";
+import { buildCsp, createSandboxServer } from "./sandbox-server.js";
 
 const EMBEDDERS = ["http://banto.tjstkm.net", "http://127.0.0.1:4175"];
 
@@ -108,4 +108,10 @@ test("知らない道は 404——この口では他に何も配らない", asyn
     assert.equal((await fetch(`${base}/../etc/passwd`)).status, 404);
     assert.equal((await fetch(`${base}/api/projects`)).status, 404);
   });
+});
+
+test("流れの住所（§5.8）は host が connect-src に足す。Module の申告はそれとは別に http・https だけ", () => {
+  const csp = buildCsp({ connectDomains: ["wss://evil.example", "https://api.example"] }, EMBEDDERS, "wss://banto.tjstkm.net/api/streams");
+  const connect = /connect-src ([^;]*)/.exec(csp)?.[1] ?? "";
+  assert.deepEqual(connect.split(" "), ["https://api.example", "wss://banto.tjstkm.net/api/streams"]);
 });

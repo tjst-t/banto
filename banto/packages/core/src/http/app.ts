@@ -100,6 +100,7 @@ import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
 import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
+import { StreamRefusal, type StreamRelay } from "./streams.js";
 import {
   CALL_ID_META_KEY,
   CALLER_META_KEY,
@@ -107,6 +108,8 @@ import {
   uiResourceUriOf,
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
+  STREAM_PARAMS_MAX_BYTES,
+  streamNamesOf,
   type ToolCardMeta,
 } from "@banto/module-contract";
 
@@ -240,6 +243,15 @@ export interface AppDeps {
   };
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
+  /**
+   * **画面と Module の間の流れ**（決定・2026-10-08、アーキ仕様 §5.8）。札を出し、`/api/streams` の WebSocket を
+   * Module の待ち受けへ中継する。無ければ `…/ui-stream` は 404
+   */
+  streams?: {
+    relay: StreamRelay;
+    /** その Module（プロセスの名前）の待ち受けの host の側のパス */
+    socketPathOf(connName: string): string;
+  };
   /**
    * **いま繋がっているか・繋げなかった理由**（追補・2026-09-11、ユーザー報告）。
    * 設定の一覧が「使う」と言っている Module でも、立たないことがある
@@ -879,6 +891,74 @@ function toolArguments(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** 画面の中身と、Module が申告した CSP 等を返す（Thread/Project で共通）。 */
+/**
+ * **画面の流れの札を出す**（決定・2026-10-08、アーキ仕様 §5.8「札」）。会話・Project・banto 全体の3つの口
+ * （`ui-tool-call` と同じ持ち主）から呼ぶ。
+ *
+ * - **札を出すのはログインした人の Cookie のセッションだけ**——機械の合言葉は Vault にあり、コンテナの AI も使える
+ * - その持ち主から見える Module か・その画面がその名前を名乗っているか（`_meta["dev.banto/streams"]`）を確かめる
+ * - Module に渡す刻印は host が組み立てる（画面の申告をそのまま使わない）
+ */
+async function issueUiStream(
+  deps: AppDeps,
+  principal: { kind: string; session?: { id: string } },
+  modules: Array<{ name: string; client: ModuleClientLike; connName?: string }>,
+  body: unknown,
+  where: { projectId?: string; threadId?: string },
+): Promise<{ status: number; body: unknown }> {
+  const streams = deps.streams;
+  if (!streams) return { status: 404, body: { error: "この host は流れを持っていません" } };
+  if (principal.kind !== "session" || !principal.session) {
+    return { status: 403, body: { error: "流れはログインした人の画面からだけ開けます" } };
+  }
+  const b = (body ?? {}) as { server?: unknown; resourceUri?: unknown; name?: unknown; params?: unknown; frame?: unknown };
+  if (typeof b.server !== "string" || typeof b.resourceUri !== "string" || typeof b.name !== "string" || b.name === "") {
+    return { status: 400, body: { error: "server・resourceUri・name が要ります" } };
+  }
+  if (typeof b.frame !== "string" || b.frame === "" || b.frame.length > 128) {
+    return { status: 400, body: { error: "どの画面からか（frame）が要ります" } };
+  }
+  const params = b.params ?? {};
+  if (typeof params !== "object" || params === null || Array.isArray(params)) {
+    return { status: 400, body: { error: "params は JSON のオブジェクトで渡してください" } };
+  }
+  if (Buffer.byteLength(JSON.stringify(params)) > STREAM_PARAMS_MAX_BYTES) {
+    return { status: 400, body: { error: `params は ${STREAM_PARAMS_MAX_BYTES} バイトまでです` } };
+  }
+  const found = modules.find((m) => m.name === b.server);
+  if (!found || !found.connName) return { status: 404, body: { error: "unknown module", server: b.server } };
+  const declared = (await listResourcesIfAny(found.client)).find((r) => (r as { uri?: unknown }).uri === b.resourceUri) as
+    | { mimeType?: unknown; _meta?: unknown }
+    | undefined;
+  if (!declared || !isUiResourceMime(declared.mimeType)) {
+    return { status: 404, body: { error: "unknown ui resource", uri: b.resourceUri } };
+  }
+  if (!streamNamesOf(declared._meta).includes(b.name)) {
+    return { status: 403, body: { error: `この画面は流れ「${b.name}」を名乗っていません` } };
+  }
+  const socketPath = streams.socketPathOf(found.connName);
+  try {
+    const grant = streams.relay.issue({
+      server: b.server,
+      connName: found.connName,
+      socketPath,
+      frameKey: `${principal.session.id}:${b.frame}`,
+      stamp: {
+        name: b.name,
+        params: params as Record<string, unknown>,
+        ...(where.projectId ? { projectId: where.projectId } : {}),
+        ...(where.threadId ? { threadId: where.threadId } : {}),
+        resourceUri: b.resourceUri,
+        human: true,
+      },
+    });
+    return { status: 200, body: grant };
+  } catch (err) {
+    if (err instanceof StreamRefusal) return { status: err.status, body: { error: err.message } };
+    throw err;
+  }
+}
+
 async function readUiResource(
   modules: Array<{ name: string; client: ModuleClientLike }>,
   serverName: string,
@@ -1284,7 +1364,7 @@ export function createApp(deps: AppDeps) {
     return true;
   });
 
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     // **CORS は画面のオリジンにだけ、資格情報つきで許す**（改訂・2026-10-03、`*` をやめた——Cookie のセッションを
     // 兄弟のサブドメインから読ませない）。本番は画面と API が同じオリジンなので、効くのは開発（ポート違い）だけ
     deps.auth?.applyCors(req, res);
@@ -2500,9 +2580,36 @@ export function createApp(deps: AppDeps) {
       // 線引き**で、その手前は閉じ込め（コンテナ）と可視性で守る。
       // **起こし直しのために止めている間は、画面からの新しい呼び出しも断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いて
       // いるもの」）。会話・Project・banto 全体の3つの口（どれも `…/ui-tool-call`）。実行中のものは止まる前に待つ
-      if (req.method === "POST" && url.pathname.endsWith("/ui-tool-call") && deps.moduleCalls?.isStopping()) {
+      // 流れの札（`…/ui-stream`）も同じ（§5.8）
+      if (
+        req.method === "POST" &&
+        (url.pathname.endsWith("/ui-tool-call") || url.pathname.endsWith("/ui-stream")) &&
+        deps.moduleCalls?.isStopping()
+      ) {
         return json(res, 503, { error: RESTARTING_REFUSAL });
       }
+      // **画面と Module の間の流れの札**（決定・2026-10-08、アーキ仕様 §5.8）。持ち主は `ui-tool-call` と同じ3つ
+      const threadStreamMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/ui-stream$/);
+      if (threadStreamMatch && req.method === "POST") {
+        const threadId = threadStreamMatch[1]!;
+        const modules = (await deps.resolveModuleClientsForThread?.(threadId)) ?? [];
+        const projectId = deps.projectThread.getThread(threadId)?.projectId;
+        const out = await issueUiStream(deps, principal, modules, await readJsonBody(req), { threadId, ...(projectId ? { projectId } : {}) });
+        return json(res, out.status, out.body);
+      }
+      const projectStreamMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ui-stream$/);
+      if (projectStreamMatch && req.method === "POST") {
+        const projectId = projectStreamMatch[1]!;
+        const modules = await modulesForProjectCanvas(deps, projectId);
+        const out = await issueUiStream(deps, principal, modules, await readJsonBody(req), { projectId });
+        return json(res, out.status, out.body);
+      }
+      if (url.pathname === "/api/ui-stream" && req.method === "POST") {
+        const modules = (await deps.resolveInstanceModuleClients?.()) ?? [];
+        const out = await issueUiStream(deps, principal, modules, await readJsonBody(req), {});
+        return json(res, out.status, out.body);
+      }
+
       const uiCallMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/ui-tool-call$/);
       if (uiCallMatch && req.method === "POST") {
         const body = (await readJsonBody(req)) as {
@@ -3034,4 +3141,11 @@ export function createApp(deps: AppDeps) {
       json(res, 500, { error: message });
     }
   });
+
+  // **画面と Module の間の流れ**（§5.8）。WebSocket の Upgrade は `/api/streams` だけ受ける——ほかの口は閉じる
+  server.on("upgrade", (req, socket, head) => {
+    if (deps.streams?.relay.handleUpgrade(req, socket, head)) return;
+    socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+  });
+  return server;
 }

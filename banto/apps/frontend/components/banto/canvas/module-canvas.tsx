@@ -22,6 +22,7 @@ import { AppBridge, PostMessageTransport, type McpUiHostContext } from "@modelco
 import {
   answerRealInboxItem,
   callRealUiTool,
+  requestRealUiStream,
   fetchRealUiConfig,
   fetchRealUiResource,
   listRealLaunchers,
@@ -45,6 +46,7 @@ import { FOLDER_PREPARED_METHOD, parseFolderPrepared, type PreparedFolder } from
 import { OPEN_PROJECT_METHOD, decideOpenProject, parseOpenProjectParams } from "@/lib/backend/canvas-open-project";
 import { OPEN_SURFACE_METHOD, decideOpenSurface, parseOpenSurfaceParams, runOpenSurface } from "@/lib/backend/canvas-open-surface";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
+import { STREAM_OPEN_METHOD, newFrameId, parseStreamOpenParams } from "@/lib/backend/canvas-stream";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -177,6 +179,7 @@ export function ModuleCanvas(props: ModuleCanvasProps) {
 function SandboxFrame({
   owner,
   server,
+  resourceUri,
   toolName,
   toolArgs,
   toolResult,
@@ -189,6 +192,8 @@ function SandboxFrame({
   resource,
 }: ModuleCanvasProps & { sandboxUrl: string; resource: RealUiResource }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // **この枠の印**（流れの札を頼むときに添える、§5.8）。上限は描いた iframe ごとに数える
+  const [frameId] = useState(newFrameId);
   // 画面が頼んできたダウンロードのうち、**人の操作の直後でなかったもの**（下の ondownloadfile）
   const [pendingDownload, setPendingDownload] = useState<{
     files: PreparedDownload[];
@@ -204,9 +209,9 @@ function SandboxFrame({
   // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
   const router = useRouter();
   const navigate = (href: string) => router.push(href);
-  const latest = useRef({ owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate });
+  const latest = useRef({ owner, server, resourceUri, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate });
   useEffect(() => {
-    latest.current = { owner, server, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate };
+    latest.current = { owner, server, resourceUri, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate };
   });
   // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
   // 回帰試験はこの数字が増えないことを見る
@@ -362,6 +367,23 @@ function SandboxFrame({
         if ("error" in decision) throw refuse(-32000, decision.error);
         closeProjectsRequests.request({ ...parsed, from: latest.current.server });
         return {};
+      }
+      if (request.method === STREAM_OPEN_METHOD) {
+        // **画面と Module の間の流れの札を頼む**（§5.8、`lib/backend/canvas-stream.ts`）。宛先はこの画面の Module・資源で、
+        // 画面は選べない。host が断ったら理由をそのまま返す（画面は繋ぎ直しの合間に出す）
+        const parsed = parseStreamOpenParams(request.params);
+        if ("error" in parsed) throw refuse(-32602, parsed.error);
+        try {
+          return await requestRealUiStream(latest.current.owner, {
+            server: latest.current.server,
+            resourceUri: latest.current.resourceUri,
+            name: parsed.name,
+            params: parsed.params,
+            frame: frameId,
+          });
+        } catch (err) {
+          throw refuse(-32000, err instanceof Error ? err.message : String(err));
+        }
       }
       if (request.method === FOLDER_PREPARED_METHOD) {
         // 受けるのは新しい Project の画面の枠の中に出した画面だけ

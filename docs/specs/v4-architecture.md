@@ -3913,7 +3913,7 @@ Skill が Project をまたぐという性質そのものから出ている）
 > **効く・効かないの記録先**（設定層。ただし会話にも刻む）、
 > **Fork で効かせ直せるか**（できない。境目は `resume` を外したかどうか）。
 
-### 5.8 画面と Module の間の流れ（stream relay）（決定・2026-10-08、ユーザー。未実装）
+### 5.8 画面と Module の間の流れ（stream relay）（決定・2026-10-08、ユーザー。口と共通の部品は実装済み・2026-10-08）
 
 **Module の画面（Canvas の `ui://`）と Module の間で、途切れずに双方向に流す口を、core に1本だけ持つ。**
 最初に乗るのは Terminal（`docs/specs/v4-modules.md` §4.6——打鍵と端末の出力）と Browser（同 §4.1——screencast の絵と
@@ -3964,34 +3964,40 @@ banto の画面（親）── 2. POST …/ui-stream ──▶ host：札を出�
   コンテナのアドレス・ポートを使わない（Service の `ports` と取り合わない、アドレスが一時的に引けないことも無い）。
   banto 本体で動く Module（scope instance）も同じ場所に置く。**実行場所が別のサーバなら、host はソケットの転送の手元の端へ
   繋ぐ**（`docs/specs/v4-security.md` §1「Project の実行場所——別のサーバ」、追加・2026-10-08）
-  - **測ってから確定する**：コンテナの中で作ったソケットに host から繋げるか（2026-09-27 に測ったのは逆向き——host で
-    作ったものに中から繋ぐ）。繋げなければ、次の順で替える：(a) host が流れごとに `incus exec <コンテナ> -- <小さな中継>`
-    でソケットへ繋ぐ（Module を起こすのと同じ経路。incusd が起こし直すと exec が半開きで残る罠に注意）、
-    (b) コンテナのアドレスの決まったポート
-  - パスは 107 バイトまで。超えたら名乗りを無効として扱い、画面に理由を返す
+  - **測って確定した（2026-10-08）**：コンテナの中（uid 1000、`raw.idmap` で host と同じ番号）で作ったソケットに、
+    host から繋げる（同じパスで見せたフォルダ、btrfs のプール、カーネル 6.8）。incus exec の中継・決まったポートには替えない
+  - **パスの長さに縛られない**：UNIX ソケットのパスは 107 バイトまでだが、置き場は `<banto の置き場>/modules/<名前>-<Project の id>`
+    で、E2E の置き場では 115 バイトを越えた（本番でも名前が 16 字を越えると届かない）。そこで**両側とも、置き場のフォルダを開いた
+    番号を通して** `/proc/self/fd/<番号>/stream.sock` で立てる・繋ぐ（Linux の決まった逃げ道。`@banto/module-contract` の
+    `viaDirectoryFd`）。「107 バイトを越えたら名乗りを無効にする」はやめた（決定・2026-10-08、実測）
 - host が Module へ繋ぐときは、**最初の要求のヘッダ `X-Banto-Stream` に刻印を入れる**：流れの名前・画面が渡した引数
   （`params`、JSON・4KiB まで）・Project・Thread（会話の中の画面なら）・画面の資源の URI・`human: true`。
-  **画面の申告はそのまま使わず host が組み立てる**（中継の刻印と同じ、§2.5）。Module はこの刻印だけを信じる
+  **画面の申告はそのまま使わず host が組み立てる**（中継の刻印と同じ、§2.5）。Module はこの刻印だけを信じる。
+  ヘッダの値は JSON を base64url にしたもの（`params` の日本語をヘッダにそのまま載せられないため。`encodeStreamStamp`・
+  `decodeStreamStamp`）
 
 #### 札
 
 - 画面（iframe）は、MCP Apps の橋の上で親に `dev.banto/stream/open`（`{ name, params }`）を頼む。仕様に無い request
   なので、ほかの banto の拡張（`dev.banto/open-new-project` など）と同じく「知らない request」の受け口で受ける
 - 親は今の面に合わせて `POST /api/threads/:id/ui-stream`・`/api/projects/:id/ui-stream`・`/api/ui-stream`
-  （`ui-tool-call` と同じ3つの持ち主）に `{ server, resourceUri, name, params }` を送る。host は、その持ち主から見える
+  （`ui-tool-call` と同じ3つの持ち主）に `{ server, resourceUri, name, params, frame }` を送る（`frame` は親が描いた
+  iframe ごとに付ける印。宛先の Module と資源はその iframe のもので、画面は選べない）。host は、その持ち主から見える
   Module か・その画面がその名前を名乗っているかを確かめ、札を返す：`{ url, ticket, expiresAt }`
 - **札を出すのはログインした人の Cookie のセッションだけ。** 機械から使う合言葉（authToken）では出さない——合言葉は
   Vault にあり、コンテナの AI も使える（E2E は `loginContext` で入る）
 - 札は 32 バイトの乱数、**30 秒で切れ、1回だけ使える**。持ち主・Module の接続名・画面の資源・流れの名前・`params`
   に結びつける。host のメモリにだけ持つ（起こし直せば無効、画面が取り直す）
 - **札は URL に載せない。** 画面は WebSocket を開いたら最初の1通（文字、`{ "ticket": "…" }`）で送る——URL は
-  Caddy のアクセスログに残るため。host は最初の1通を 5 秒待ち、来なければ・違えば閉じる
+  Caddy のアクセスログに残るため。host は最初の1通を 5 秒待ち、来なければ・違えば閉じる（1008）。Origin が違えば
+  Upgrade の時点で 403
 - **host は WebSocket の `Origin` がサンドボックスのオリジン（`sandboxPublicUrl`）かを確かめる。** 公開先
   （`*.banto.tjstkm.net`）も同じサイトなので、Cookie や SameSite では区別できないため
 - **`/api/streams` はログインの Cookie を見ず、札だけで通す**（札を出す側でログインを確かめている）
 - 「起こし直すので止めている間」（`isStopping`）は札を出さない（503、`ui-tool-call` と同じ）
-- 待ち受けの住所（`url`）は host が組み立てる：画面のオリジン（`uiOrigin`）の `/api/streams` を `wss:` にしたもの。
-  **CSP の `connect-src` には host がこの住所を足す**（Module には書かせない）。Module が申告する `connectDomains` は
+- 待ち受けの住所（`url`）は host が組み立てる：画面から見た API の基点（`publicUrl`、本番は画面と同じオリジン）の
+  `/api/streams` を `wss:` にしたもの（開発・E2E は画面と API のポートが違うので、画面のオリジンではなく API の基点）。
+  **CSP の `connect-src` には host がこの住所を足す**（サンドボックスの配信口が足す。Module には書かせない）。Module が申告する `connectDomains` は
   今までどおり http・https のオリジンだけ
 
 #### 流れの中の決まり
@@ -4007,8 +4013,11 @@ banto の画面（親）── 2. POST …/ui-stream ──▶ host：札を出�
   Module は流れごとに別の相手として扱う（同じセッションを共有するかは Module が決める）
 - host は 15 秒ごとに両側へ ping を送る（Caddy と携帯の回線が黙って切るのを避ける。45 秒返事が無ければ閉じる）
 - **画面（iframe）1つが同時に開ける流れは 8 本まで**——数えるのは描いた iframe ごとで、パソコンと携帯で同じ画面を
-  開けば別々に数える（親は iframe ごとに印を付けて札を頼む）。**Project ごとに 64 本まで**（端末をまたいで数える）。超えたら札を断る
-- Module が閉じた・落ちた・畳まれたら、host は画面の側を **1012**（起こし直し中）で閉じる。札の持ち主の面が閉じたら
+  開けば別々に数える（親は iframe ごとに印を付けて札を頼む）。**Project ごとに 64 本まで**（端末をまたいで数える）。
+  数えるのは開いている流れと、まだ使われていない札。超えたら札を断る（429）
+- Module が閉じた・落ちた・畳まれたら、host は画面の側を **1012**（起こし直し中）で閉じる。Module が自分の番号
+  （4404 など、送れる番号）で閉じたらそれを渡す。Module の待ち受けに繋がらないときも 1012（画面は札を取り直す）。
+  banto が止まるときは開いている流れを 1012 で閉じ、それからは札を出さない。札の持ち主の面が閉じたら
   （画面が iframe を外した）WebSocket ごと消える
 
 #### 切れたとき——繋ぎ直しは口の約束に入れる
@@ -4038,8 +4047,10 @@ banto の起こし直し・Module の起こし直し・携帯で裏に回した�
 
 #### 共通の部品——Module が各自で書かない
 
-- **`@banto/stream-client`**（画面に組み込む）：`openStream(app, { name, params })` が `dev.banto/stream/open` を頼み、
-  WebSocket を開いて札を送り、切れたら上の順で繋ぎ直す。状態（繋いでいる・繋ぎ直している・終わった）を知らせる
+- **`@banto/stream-client`**（画面に組み込む）：`openStream(bridge, { name, params, onMessage, onState })` が
+  `dev.banto/stream/open` を頼み（`bridge.request(method, params)`——MCP Apps の橋の上の request を投げる口）、
+  WebSocket を開いて札を送り、切れたら上の順で繋ぎ直す。状態（繋いでいる・開いた・繋ぎ直している・終わった）を知らせる。
+  Module の画面は素の JavaScript の1枚の HTML のことが多いので、同じ関数を文字列（`STREAM_CLIENT_SCRIPT`）でも渡す
 - **`@banto/stream-server`**（Module に組み込む）：`$BANTO_MODULE_DATA_DIR/s/stream.sock` に待ち受けを立て、刻印を
   読んで名前ごとの受け口へ渡す。古いソケットのファイルが残っていれば消してから立てる
 - 両方とも Terminal と Browser の実装より先に作る（Backlog の依存で張る）
