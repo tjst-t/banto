@@ -3911,6 +3911,118 @@ Skill が Project をまたぐという性質そのものから出ている）
 > **効く・効かないの記録先**（設定層。ただし会話にも刻む）、
 > **Fork で効かせ直せるか**（できない。境目は `resume` を外したかどうか）。
 
+### 5.8 画面と Module の間の流れ（stream relay）（決定・2026-10-08、ユーザー。未実装）
+
+**Module の画面（Canvas の `ui://`）と Module の間で、途切れずに双方向に流す口を、core に1本だけ持つ。**
+最初に乗るのは Terminal（`docs/specs/v4-modules.md` §4.6——打鍵と端末の出力）と Browser（同 §4.1——screencast の絵と
+マウス・キーの入力）。どちらも各自で口を作らず、**この口と共通の部品だけを使う**（ユーザー「実装を二重化しないように」）。
+
+**なぜ要るか**：画面から Module を呼べるのは「頼んで、答えが返る」tool の呼び出し（`ui-tool-call`、
+`docs/specs/v4-frontend.md` §6.2）だけで、Module から画面へ押し出す口が無い。画面の中から自分で WebSocket を開くことは
+MCP Apps の仕様の中でできる（`_meta.ui.csp.connectDomains` は fetch・XHR・WebSocket の `connect-src`）。しかし宛先の
+Module は Project のコンテナの中に居て、人のブラウザからは届かない。Publish で外に出す形は、公開先の通行証の Cookie
+（`docs/specs/v4-security.md`「人のログイン」）を iframe の中で通せず、ブラウザによっては塞がれるので採らない。
+打鍵を `write`、出力を待たせた `read` で運ぶ形（core を変えない）も検討したが、ブラウザの絵（毎秒10枚×数十KB）は
+運べないので、**最初から共通の口に乗せる**（決定・2026-10-08、ユーザー）。`docs/specs/v4-frontend.md` 冒頭の
+「すべて MCP 経由が初めて運べないものに当たった箇所」への答えがこれである。
+
+#### 形
+
+```
+画面（sandbox のオリジンの iframe）
+  │ 1. dev.banto/stream/open（MCP Apps の橋の上の banto の拡張の request）
+  ▼
+banto の画面（親）── 2. POST …/ui-stream ──▶ host：札を出す（1回だけ・30秒）
+  │ 3. { url, ticket } を iframe へ返す
+  ▼
+画面 ── 4. WebSocket（wss://<banto>/api/streams）、最初の1通で札 ──▶ host
+                                                   │ 5. 札・Origin を確かめ、
+                                                   │    Module の待ち受けへ WebSocket で繋ぐ（刻印つき）
+                                                   ▼
+                                           Module（コンテナの中）
+```
+
+- **host は中身を解釈しない。** 繋がったあとは、両側の WebSocket のメッセージを1通ずつそのまま渡す（文字と2進の別も、
+  閉じるときの番号も保つ）。何を流すかは Module と自分の画面の約束で、core は知らない
+- **会話の記録（Event Store）には何も積まない。** 打鍵も絵も記録しない。開いた・閉じたも積まない
+- **流れは「いま動いているもの」（`/api/admin/activity`、§2.5）に数えない**——開きっぱなしの端末があるだけで
+  「空くまで待って更新」が終わらなくなるため。起こし直せば切れ、画面が繋ぎ直す（下の「切れたとき」）
+
+#### Module の名乗り方
+
+- **Module は、画面の資源（`ui://`）の `_meta["dev.banto/streams"]` に、その画面が開いてよい流れの名前を並べる**
+  （例 `["terminal"]`。§5.4——別のマニフェストを作らない）。host は名乗っていない画面・名前の流れには札を出さない
+- **待ち受けは Module の置き場の中の UNIX ソケット**：`$BANTO_MODULE_DATA_DIR/s/stream.sock`（Vault の ssh-agent の
+  窓口と同じ `<置き場>/s`、0700。v4-modules.md §2.3 `sshIdentity`）。その上で WebSocket（HTTP の Upgrade）を話す。
+  Module の置き場は host のフォルダをコンテナにマウントしたものなので、**host は host の側のパスへ直接繋ぐ**——
+  コンテナのアドレス・ポートを使わない（Service の `ports` と取り合わない、アドレスが一時的に引けないことも無い）。
+  banto 本体で動く Module（scope instance）も同じ場所に置く
+  - **測ってから確定する**：コンテナの中で作ったソケットに host から繋げるか（2026-09-27 に測ったのは逆向き——host で
+    作ったものに中から繋ぐ）。繋げなければ、次の順で替える：(a) host が流れごとに `incus exec <コンテナ> -- <小さな中継>`
+    でソケットへ繋ぐ（Module を起こすのと同じ経路。incusd が起こし直すと exec が半開きで残る罠に注意）、
+    (b) コンテナのアドレスの決まったポート
+  - パスは 107 バイトまで。超えたら名乗りを無効として扱い、画面に理由を返す
+- host が Module へ繋ぐときは、**最初の要求のヘッダ `X-Banto-Stream` に刻印を入れる**：流れの名前・画面が渡した引数
+  （`params`、JSON・4KiB まで）・Project・Thread（会話の中の画面なら）・画面の資源の URI・`human: true`。
+  **画面の申告はそのまま使わず host が組み立てる**（中継の刻印と同じ、§2.5）。Module はこの刻印だけを信じる
+
+#### 札
+
+- 画面（iframe）は、MCP Apps の橋の上で親に `dev.banto/stream/open`（`{ name, params }`）を頼む。仕様に無い request
+  なので、ほかの banto の拡張（`dev.banto/open-new-project` など）と同じく「知らない request」の受け口で受ける
+- 親は今の面に合わせて `POST /api/threads/:id/ui-stream`・`/api/projects/:id/ui-stream`・`/api/ui-stream`
+  （`ui-tool-call` と同じ3つの持ち主）に `{ server, resourceUri, name, params }` を送る。host は、その持ち主から見える
+  Module か・その画面がその名前を名乗っているかを確かめ、札を返す：`{ url, ticket, expiresAt }`
+- **札を出すのはログインした人の Cookie のセッションだけ。** 機械から使う合言葉（authToken）では出さない——合言葉は
+  Vault にあり、コンテナの AI も使える（E2E は `loginContext` で入る）
+- 札は 32 バイトの乱数、**30 秒で切れ、1回だけ使える**。持ち主・Module の接続名・画面の資源・流れの名前・`params`
+  に結びつける。host のメモリにだけ持つ（起こし直せば無効、画面が取り直す）
+- **札は URL に載せない。** 画面は WebSocket を開いたら最初の1通（文字、`{ "ticket": "…" }`）で送る——URL は
+  Caddy のアクセスログに残るため。host は最初の1通を 5 秒待ち、来なければ・違えば閉じる
+- **host は WebSocket の `Origin` がサンドボックスのオリジン（`sandboxPublicUrl`）かを確かめる。** 公開先
+  （`*.banto.tjstkm.net`）も同じサイトなので、Cookie や SameSite では区別できないため
+- **`/api/streams` はログインの Cookie を見ず、札だけで通す**（札を出す側でログインを確かめている）
+- 「起こし直すので止めている間」（`isStopping`）は札を出さない（503、`ui-tool-call` と同じ）
+- 待ち受けの住所（`url`）は host が組み立てる：画面のオリジン（`uiOrigin`）の `/api/streams` を `wss:` にしたもの。
+  **CSP の `connect-src` には host がこの住所を足す**（Module には書かせない）。Module が申告する `connectDomains` は
+  今までどおり http・https のオリジンだけ
+
+#### 流れの中の決まり
+
+- 1通の大きさは **1 MiB まで**。超えたら閉じる（1009）
+- **背圧**：片側へ渡しきれていない量が 4 MiB を超えたら、もう片側から読むのを止め、下がったら再開する。絵のように
+  捨ててよいものは Module の側で間引く（CDP の screencast は受け取りの印を返すまで次を送らない——v4-modules.md §4.1）
+- host は 15 秒ごとに両側へ ping を送る（Caddy と携帯の回線が黙って切るのを避ける。45 秒返事が無ければ閉じる）
+- **1つの画面で開ける流れは 8 本まで**、Project ごとに 64 本まで。超えたら札を断る
+- Module が閉じた・落ちた・畳まれたら、host は画面の側を **1012**（起こし直し中）で閉じる。札の持ち主の面が閉じたら
+  （画面が iframe を外した）WebSocket ごと消える
+
+#### 切れたとき——繋ぎ直しは口の約束に入れる
+
+banto の起こし直し・Module の起こし直し・携帯で裏に回したタブ（Safari はすぐ切る）で、流れは必ず切れる。
+**切れるのは普通のこととして扱い、画面が札を取り直して繋ぎ直す。** 続きが戻るかは Module の側の持ち方による
+（Terminal は tmux に持たせるので戻る、v4-modules.md §4.6）。
+
+- 繋ぎ直しは 1・2・4・8・15 秒（以後 15 秒ごと）。タブが前に戻った（`visibilitychange`）・回線が戻った（`online`）
+  ときはすぐ試す。止めるのは画面を閉じたとき・Module が「もう無い」（4404）で閉じたときだけ
+- 画面は「繋ぎ直しています」を出す（エラーとして出さない、v4-frontend.md §6.8 と同じ考え）
+
+#### 共通の部品——Module が各自で書かない
+
+- **`@banto/stream-client`**（画面に組み込む）：`openStream(app, { name, params })` が `dev.banto/stream/open` を頼み、
+  WebSocket を開いて札を送り、切れたら上の順で繋ぎ直す。状態（繋いでいる・繋ぎ直している・終わった）を知らせる
+- **`@banto/stream-server`**（Module に組み込む）：`$BANTO_MODULE_DATA_DIR/s/stream.sock` に待ち受けを立て、刻印を
+  読んで名前ごとの受け口へ渡す。古いソケットのファイルが残っていれば消してから立てる
+- 両方とも Terminal と Browser の実装より先に作る（Backlog の依存で張る）
+
+#### コンテナの中では AI と分けられない
+
+**この口は、人の画面からの流れを人のものとして Module に渡すが、Module のほうへの近道を塞ぐ境界ではない。**
+Module の待ち受けはコンテナの中にあり、同じコンテナの AI（Shell）は同じユーザーでそのソケットにも Module の
+状態（Terminal の tmux、Browser の CDP）にも直接届く。「人専用」にしたいものは、AI の道具を出さない・断るだけで、
+閉じ込めではない。これは隠さず `docs/specs/v4-security.md` §1 に書く。Project の外（ほかの Project・host）へは、
+今までどおり札と刻印で届かない。
+
 > **§6 フロントエンド側の core は `docs/specs/v4-frontend.md` に分離した**（2026-09-02）。
 
 ## 6.5 試験の層——E2E に実 LLM を使わない（決定・2026-09-21、ユーザー）
