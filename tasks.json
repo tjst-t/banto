@@ -6144,6 +6144,27 @@
       "updatedAt": "2026-10-08T09:45:56.748Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "factory-factory-module",
+      "number": 253,
+      "kind": "bug",
+      "title": "Factory の「同時に動かす数」を変えても、Factory の Module を起こし直すまで効かない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "**起きたこと（2026-10-08、ユーザー）**：Factory の設定で同時に動かす数（concurrency）を2から3に上げたが、順番待ちの #237 は始まらなかった。\n\n**原因**：`packages/modules/factory/src/engine.ts` の runItem が、最初の1件を流したときに `this.slots = new Semaphore(run.settings.concurrency)` を一度だけ作り、そのあと作り直さない。だから Module のプロセスが生きている間は、最初の数のままになる。設定の画面では変えられるのに効かない（規則13：画面は制約を示しているのに実装は制約していない）。\n\n**直し方の案**：数の上限を設定から都度読む（取るときに「いま持っている数 < いまの設定」で判断する）。下げたときは、走っている件は止めず、空いても新しく始めない。",
+      "doneWhen": "走っている件があるときに同時に動かす数を上げると、Module を起こし直さずに順番待ちの件がすぐ始まる。下げると、走っている件は続き、数が下がるまで新しく始めない。単体テストで確かめた。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-08T11:26:55.082Z",
+      "updatedAt": "2026-10-08T11:26:55.082Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
