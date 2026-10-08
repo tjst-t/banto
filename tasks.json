@@ -5704,7 +5704,7 @@
       "number": 234,
       "kind": "task",
       "title": "画面：裏の仕事がある Fork を閉じるときの警告・AI が閉じた Fork の帯と履歴の理由",
-      "status": "in-progress",
+      "status": "done",
       "parent": "ai-close-fork",
       "dependsOn": [
         "close-fork-tool"
@@ -5714,12 +5714,12 @@
       "labels": [],
       "body": "仕様：docs/specs/v4-frontend.md §6「Fork を閉じるときの警告」（先に読む）。host の側は前のタスク close-fork-tool で、Thread の closedBy・closedReason と画面への知らせ thread.closed が来る。\n\nやること：\n1. **人が閉じるときの警告**：Fork を閉じる手順は1箇所（`banto/apps/frontend/lib/mock/threads.ts` の foldForkThread。サイドバーの「…」＝`components/banto/shell/nav-panel.tsx` の closeFork と、ヘッダの Close＝`components/banto/thread/thread-actions-menu.tsx` 付近）。押したとき、その Thread のバックグラウンドの仕事（画面が既に持っている一覧、`lib/backend/background-work.ts`・`components/banto/shell/background-work.tsx`）が1件以上あれば、閉じる前に小窓（既存の確かめの小窓の部品に合わせる）を出す。件数と中身（題・Module 名・何分前、人を待っているものは分けて）、「閉じても仕事は止まりません。結果はこの Fork に溜まり、開き直すまで AI は読みません」。ボタンは「やめる」「それでも閉じる」。無ければ今までどおり確かめずに閉じる。\n2. **AI が閉じた Fork**：閉じた Fork の一覧（`components/banto/archive/archive-dialog.tsx`）の行に「AI が閉じました：（理由）」。画面への知らせ thread.closed を受けたらサイドバーの開いている Fork から外し（`lib/backend/app-events.ts`）、その Fork を開いている画面は Base へ飛ばさず会話の上に「この Fork は閉じました（理由）」の帯と「開き直す」を出し、入力欄は開き直すまで使えない。人が自分で閉じたときは今までどおり Base へ戻る。\n3. 色・文字は既存のトークン。mock/ ではなく apps/frontend を直す。lint は `npm run lint`（check-tokens を含む）。\n\nE2E の注意：偽の Runner からは core の in-process の tool（banto-thread）を呼べない（Backlog memory-tool-not-reachable-from-fake-runner）。裏の仕事は偽 Runner から Module の待たない呼び出し（例 e2e/fixtures/ask-human-module や Shell の runInBackground）で作れる。AI が閉じた形は、試験でだけ by: ai の閉じを作れる手段が要るなら、本番で人や AI が通れない形で用意する（無理なら画面の単体試験で確かめる）。フル E2E は回さず、足した spec だけ。",
       "doneWhen": "実ブラウザの E2E で：裏の仕事が1件ある Fork をサイドバーから閉じると小窓にその題が出る／「やめる」で閉じない／「それでも閉じる」で閉じる／裏の仕事が無ければ小窓を出さず閉じる。AI が閉じた Fork（by: ai）について：履歴に「AI が閉じました：理由」が出る／開いている画面が Base へ飛ばず帯と「開き直す」が出て、押すと開き直せる（E2E か画面の単体試験）。frontend の npm run lint と型検査が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/close-fork-ui）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T02:02:51.193Z",
-      "updatedAt": "2026-10-08T02:20:22.879Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-08T02:47:35.198Z",
+      "closedAt": "2026-10-08T02:47:35.198Z",
       "extra": {}
     }
   ],
