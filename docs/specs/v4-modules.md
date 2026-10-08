@@ -139,7 +139,7 @@ Factory は「他の Module より先に磨く特別なもの」ではなく**�
 | **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Service とは別実装**（下記） |
 | **Repositories** | 手元のリポジトリの台帳と一覧。clone・新しく作る・Import・GitHub への公開と、GitHub のアカウントの割り当て | **既定で入っていて消せない**（決定・2026-10-01、ユーザー——Shell・FileSystem・Vault と同じ扱い）。banto 全体に1本・banto 本体で動く。§2.4 |
-| **Vault（Infisical）** | 同じ `vault` 役割の2本目（実装・2026-09-12）。**行き先は Infisical Cloud**、開発と試験は自前ホスト（`packages/modules/vault-infisical/dev/`）——**backend のコードは両方で同じ**で、違うのは接続先と資格情報だけ。資格情報は**Infisical には入れられない**（Vault を開ける鍵は Vault に入らない）ので、組み込み Vault の `identity.txt` と同じく設定として持つ。**宣言には書かない**——宣言は Event Store に残るので、秘密が記録に残ってしまう |
+| **Vault（Infisical）** | 同じ `vault` 役割の2本目（実装・2026-09-12）。**行き先は Infisical Cloud**、手で試すときと Module の統合試験は自前ホスト（`packages/modules/vault-infisical/dev/`）、E2E は偽の Infisical（`e2e/infisical-fixture.ts`、2026-10-08）——**backend のコードは両方で同じ**で、違うのは接続先と資格情報だけ。資格情報は**Infisical には入れられない**（Vault を開ける鍵は Vault に入らない）ので、組み込み Vault の `identity.txt` と同じく設定として持つ。**宣言には書かない**——宣言は Event Store に残るので、秘密が記録に残ってしまう |
 | **Vault** | 鍵・トークンを預かる | **必須に格上げ**（決定・2026-09-01、アーキ仕様 §2.8）——複数資格情報の使い分けが中核機能である以上、無いインストールは成立しない。**Phase 0/1 に格上げ**（決定・2026-09-02、上記）——Shell が依存するため。**複数バックエンド可**（`vault` を役割として、複数の実装が名乗る形、アーキ仕様 §2.5）。**banto はローカルの組み込みバックエンドを同梱**し、追加インストール無しに動く。実行は他バックエンド同様 **core とは別プロセス**（`docs/requirements.md` C8b：鍵を持つものは subprocess）。他バックエンドを足したときの**移行操作は人専用**（AI には露出しない） |
 
 ### 2.1 Vault のインターフェース（決定・2026-09-02）
