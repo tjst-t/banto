@@ -3960,7 +3960,8 @@ banto の画面（親）── 2. POST …/ui-stream ──▶ host：札を出�
   窓口と同じ `<置き場>/s`、0700。v4-modules.md §2.3 `sshIdentity`）。その上で WebSocket（HTTP の Upgrade）を話す。
   Module の置き場は host のフォルダをコンテナにマウントしたものなので、**host は host の側のパスへ直接繋ぐ**——
   コンテナのアドレス・ポートを使わない（Service の `ports` と取り合わない、アドレスが一時的に引けないことも無い）。
-  banto 本体で動く Module（scope instance）も同じ場所に置く
+  banto 本体で動く Module（scope instance）も同じ場所に置く。**実行場所が別のサーバなら、host はソケットの転送の手元の端へ
+  繋ぐ**（`docs/specs/v4-security.md` §1「Project の実行場所——別のサーバ」、追加・2026-10-08）
   - **測ってから確定する**：コンテナの中で作ったソケットに host から繋げるか（2026-09-27 に測ったのは逆向き——host で
     作ったものに中から繋ぐ）。繋げなければ、次の順で替える：(a) host が流れごとに `incus exec <コンテナ> -- <小さな中継>`
     でソケットへ繋ぐ（Module を起こすのと同じ経路。incusd が起こし直すと exec が半開きで残る罠に注意）、
