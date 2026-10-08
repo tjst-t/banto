@@ -5704,7 +5704,7 @@
       "number": 234,
       "kind": "task",
       "title": "画面：裏の仕事がある Fork を閉じるときの警告・AI が閉じた Fork の帯と履歴の理由",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "ai-close-fork",
       "dependsOn": [
         "close-fork-tool"
@@ -5718,7 +5718,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T02:02:51.193Z",
-      "updatedAt": "2026-10-08T02:02:51.193Z",
+      "updatedAt": "2026-10-08T02:20:22.879Z",
       "closedAt": null,
       "extra": {}
     }
