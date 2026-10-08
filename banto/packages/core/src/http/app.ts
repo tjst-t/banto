@@ -1111,7 +1111,9 @@ export function createApp(deps: AppDeps) {
   /**
    * **AI が予約した「この Fork を閉じる」を片づける**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。
    * ターンが最後まで行ったら、閉じる直前に裏の仕事をもう一度確かめて閉じる。途中で終わった・裏の仕事が残っていたら
-   * 閉じずに、そのターンの会話に「閉じるのをやめました」を残す（受信箱には出さない。同じターンの発言にまとまる）
+   * 閉じずに、そのターンの会話に「閉じるのをやめました」を残す（受信箱には出さない。同じターンの発言にまとまる）。
+   * ふつうは turn-runner が終わりのイベントの前に残して画面へ流している（`dropCloseIfDue`）——ここで残すのは、
+   * 終わりのイベントを出さずに抜けたターンと、終わりのイベントのあとで裏の仕事を頼まれたときだけ
    */
   async function settleClose(threadId: string, reason: string, outcome: { ok: boolean }): Promise<void> {
     const thread = deps.projectThread.getThread(threadId);

@@ -13,7 +13,14 @@ import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
-import { CLOSE_FORK_TOOL_NAME, createForkMcpServer, type CloseForkReservation, type ForkRequest } from "./fork-tool.js";
+import {
+  CLOSE_FORK_TOOL_NAME,
+  closeForkDroppedNote,
+  createForkMcpServer,
+  type CloseForkReservation,
+  type ForkRequest,
+} from "./fork-tool.js";
+import { backgroundItemsOf } from "./app-events.js";
 import {
   REPORT_TURN_TOOL_NAME,
   noteToolUsed,
@@ -149,6 +156,15 @@ export async function* runThreadTurn(
       if (event.type === "done") outcome = "completed";
       else if (event.type === "stopped") outcome = "stopped";
       else if (event.type === "error") outcome = "failed";
+      // **閉じないと決まったら、終わりのイベントより前に会話へ残して流す**——終わりを受けた画面は、最後まで読んだ会話を
+      // 描き直さない（done）・記録から組み直さない（error）。あとから記録に足しても画面には届かない
+      if (event.type === "done" || event.type === "error" || event.type === "stopped") {
+        const note = await dropCloseIfDue(deps, input.threadId, forks.closing, event.type === "done");
+        if (note) {
+          deps.turnEvents?.record(input.threadId, note);
+          yield note;
+        }
+      }
       deps.turnEvents?.record(input.threadId, event);
       yield event;
     }
@@ -173,7 +189,8 @@ export async function* runThreadTurn(
     }
     // **閉じるのは、ターンの終わりまで書いたあと**——resume-point と返事を記録し、`turn.ended` も書いたあと。先に閉じると
     // 走っているターンを「人がやめた」と読む（fold の `thread_closed`）。最後まで行かなかったターンでは閉じない——
-    // 黙って捨てず、片づける側（`settleClose`）が残す（規則2）
+    // 黙って捨てず、そのターンに「閉じるのをやめました」を残す（ふつうは終わりのイベントの前に `dropCloseIfDue` が残している。
+    // 終わりのイベントを出さずに抜けたときだけ、片づける側（`settleClose`）が記録に残す——規則2）
     const closing = forks.closing;
     if (closing.reason !== undefined && !closing.settled) {
       closing.settled = true;
@@ -182,6 +199,31 @@ export async function* runThreadTurn(
       );
     }
   }
+}
+
+/**
+ * **予約された「この Fork を閉じる」を、閉じずに終えるか**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。
+ * ターンが最後まで行かなかった・予約のあとに頼んだ裏の仕事が残っていたら、そのターンの会話に「閉じるのをやめました」を書き、
+ * 画面へ流す発言を返す（予約は片づけ済みにする——ターンの終わりで閉じない）。閉じてよければ何もしない（閉じるのは
+ * ターンの終わりを書いたあと、`settleClose` が確かめ直してから）
+ */
+async function dropCloseIfDue(
+  deps: Parameters<typeof runThreadTurnInner>[0],
+  threadId: string,
+  closing: CloseForkReservation,
+  completed: boolean,
+): Promise<TurnStreamEvent | undefined> {
+  if (closing.reason === undefined || closing.settled) return undefined;
+  const items = completed ? backgroundItemsOf(deps.projectThread.getThread(threadId)?.awaitingReplies) : [];
+  if (completed && items.length === 0) return undefined;
+  closing.settled = true;
+  const note = closeForkDroppedNote(closing.reason, completed ? items : undefined);
+  try {
+    await deps.projectThread.appendMessage(threadId, "assistant", note);
+  } catch (err) {
+    console.warn(`[host] ${threadId} に「閉じるのをやめました」を記録できませんでした:`, err);
+  }
+  return { type: "message", message: { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: note }] } } };
 }
 
 /** 始めたターンの id（`turn.started` を書いたら入る）。書く前に終わったターンは持たない */

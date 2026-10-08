@@ -507,8 +507,10 @@ test("予約のあとに裏の仕事を頼んだら、ターンが終わって�
       const project = await h.projectThread.createProject("demo", "/tmp");
       const base = await h.projectThread.createBaseThread(project.id);
       forkId = (await h.projectThread.forkThread(base.id)).id;
-      assert.match(await send(h, forkId, "閉じて"), /"type":"done"/);
-      // 印はターンの終わりの片づけで書く——ストリームが閉じたときには書き終えている
+      const stream = await send(h, forkId, "閉じて");
+      // 開いている画面へは、終わり（done）より前に流れる——done を受けた画面は最後まで読んだ会話を描き直さない
+      const noteAt = stream.indexOf("この Fork を閉じるのをやめました");
+      assert.ok(noteAt >= 0 && noteAt < stream.indexOf('"type":"done"'), "印が done より前に流れていない");
       const ai = h.projectThread.getThread(forkId)!.messages.filter((m) => m.role === "assistant");
       assert.equal(ai.length, 1, "同じターンの発言にまとまっていない");
       assert.equal(
@@ -534,7 +536,10 @@ test("途中で終わったターンでは閉じず、そのターンの会話�
       const project = await h.projectThread.createProject("demo", "/tmp");
       const base = await h.projectThread.createBaseThread(project.id);
       forkId = (await h.projectThread.forkThread(base.id)).id;
-      assert.match(await send(h, forkId, "閉じて"), /"type":"error"/);
+      const stream = await send(h, forkId, "閉じて");
+      // 失敗を受けた画面は記録から組み直さない——印は error より前に流れる
+      const noteAt = stream.indexOf("この Fork を閉じるのをやめました");
+      assert.ok(noteAt >= 0 && noteAt < stream.indexOf('"type":"error"'), "印が error より前に流れていない");
       const notes = h.projectThread
         .getThread(forkId)!
         .messages.filter((m) => m.role === "assistant" && m.text.includes("この Fork を閉じるのをやめました"));

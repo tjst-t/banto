@@ -642,7 +642,7 @@ test("失敗したターンは failed、人が止めたターンは stopped で�
   });
 });
 
-test("AI が予約した「Fork を閉じる」は、最後まで行ったターンだけ ok: true——失敗・人が止めたターンは ok: false。承認は聞かない", async () => {
+test("AI が予約した「Fork を閉じる」：失敗・人が止めたターンは閉じず、終わりのイベントより前に会話へ印を残して流す——最後まで行ったターンだけ閉じに回す。承認は聞かない", async () => {
   await withThread(async ({ deps, threadId, store }) => {
     const fork = await store.forkThread(threadId);
     const settled: Array<{ threadId: string; reason: string; ok: boolean; endedBefore: boolean }> = [];
@@ -660,7 +660,7 @@ test("AI が予約した「Fork を閉じる」は、最後まで行ったター
         };
         const r = await server.instance._registeredTools["close_fork"]!.handler({ reason: `${end} の理由` }, {});
         assert.equal(r.isError, undefined);
-        assert.deepEqual(settled.length, calls, "tool を呼んだ時点で片づけている");
+        assert.equal(settled.length, 0, "tool を呼んだ時点で片づけている");
         if (end === "throw") throw new Error("API が落ちた");
         if (end === "hang") {
           if (opts.signal?.aborted) throw new Error("aborted");
@@ -670,23 +670,39 @@ test("AI が予約した「Fork を閉じる」は、最後まで行ったター
         return { sessionId: "s", compactionCount: 0 } as never;
       }) as unknown as typeof runTurn;
     const allowed: Array<string[] | undefined> = [];
-    let calls = 0;
 
-    await collect(runThreadTurn({ ...deps, settleClose, runTurn: closing("throw") }, { threadId: fork.id, prompt: "a", modules: [] }));
-    calls = 1;
+    const noteText = (reason: string) => `（この Fork を閉じるのをやめました——ターンが途中で終わったため。予約の理由：${reason}）`;
+    /** 流れたイベントの種類と、終わりのイベントを受けた時点で記録の最後の AI の発言に印が載っていたか */
+    const seen: string[] = [];
+    const watch = async (gen: AsyncGenerator<TurnStreamEvent>, reason: string, onFirst?: () => void) => {
+      for await (const e of gen) {
+        onFirst?.();
+        onFirst = undefined;
+        if (e.type === "message") {
+          const m = e.message as { type?: string; message?: { content?: Array<{ text?: string }> } };
+          if (m.type === "assistant" && m.message?.content?.[0]?.text === noteText(reason)) seen.push("note");
+        } else if (e.type === "error" || e.type === "stopped" || e.type === "done") {
+          const ai = store.getThread(fork.id)!.messages.filter((x) => x.role === "assistant").at(-1);
+          seen.push(`${e.type}${ai?.text.endsWith(noteText(reason)) ? "（記録に印あり）" : ""}`);
+        }
+      }
+    };
+
+    await watch(runThreadTurn({ ...deps, settleClose, runTurn: closing("throw") }, { threadId: fork.id, prompt: "a", modules: [] }), "throw の理由");
     const stop = new AbortController();
-    const gen = runThreadTurn({ ...deps, settleClose, runTurn: closing("hang") }, { threadId: fork.id, prompt: "b", modules: [], stop: stop.signal });
-    await gen.next();
-    stop.abort();
-    for await (const _ of gen) void _;
-    calls = 2;
-    await collect(runThreadTurn({ ...deps, settleClose, runTurn: closing("done") }, { threadId: fork.id, prompt: "c", modules: [] }));
+    await watch(
+      runThreadTurn({ ...deps, settleClose, runTurn: closing("hang") }, { threadId: fork.id, prompt: "b", modules: [], stop: stop.signal }),
+      "hang の理由",
+      () => stop.abort(),
+    );
+    await watch(runThreadTurn({ ...deps, settleClose, runTurn: closing("done") }, { threadId: fork.id, prompt: "c", modules: [] }), "done の理由");
 
-    assert.deepEqual(settled, [
-      { threadId: fork.id, reason: "throw の理由", ok: false, endedBefore: true },
-      { threadId: fork.id, reason: "hang の理由", ok: false, endedBefore: true },
-      { threadId: fork.id, reason: "done の理由", ok: true, endedBefore: true },
-    ]);
+    // 印は終わりのイベントより前に流れ、そのときにはもう記録にある（終わりを受けた画面が組み直しても・組み直さなくても出る）
+    assert.deepEqual(seen, ["note", "error（記録に印あり）", "note", "stopped（記録に印あり）", "done"]);
+    const notes = store.getThread(fork.id)!.messages.filter((m) => m.text.includes("この Fork を閉じるのをやめました"));
+    assert.equal(notes.length, 2, "印が1ターンに1つではない");
+    // 閉じに回すのは最後まで行ったターンだけ（失敗・止めたターンは印を残した時点で片づいている）
+    assert.deepEqual(settled, [{ threadId: fork.id, reason: "done の理由", ok: true, endedBefore: true }]);
     for (const a of allowed) assert.ok(a?.includes("mcp__banto-thread__close_fork"), "close_fork で承認を聞く");
   });
 });

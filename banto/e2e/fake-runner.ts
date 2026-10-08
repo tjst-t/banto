@@ -93,6 +93,11 @@ export interface FakePlan {
    * ——本物の CLI が差し戻しの理由をモデルに見せ、同じターンの中で続けさせるのと同じ（偽の API で実測）
    */
   stopReport?: Record<string, unknown>;
+  /**
+   * **ここで失敗する**（追加・2026-10-08）。`then` まで言ってから、この文で投げる——API が途中で落ちたターン。AI が予約した
+   * 「この Fork を閉じる」を、失敗したターンでやめて会話に印を残す試験（`close-fork-dropped.spec.ts`）が使う
+   */
+  fail?: string;
 }
 
 /**
@@ -631,6 +636,7 @@ export async function* runTurn(opts: {
     lastText = plan.then;
     yield* speak(plan.then, plan.thenStreamMs);
   }
+  if (plan.fail) throw new Error(plan.fail);
 
   // **終わろうとしたときの Stop hook**（追加・2026-10-06）。本物の CLI は差し戻されたら理由をモデルに見せて続け、もう一度
   // 終わろうとしたときは stop_hook_active を立てて聞き直す
