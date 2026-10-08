@@ -5772,7 +5772,7 @@
       "number": 237,
       "kind": "task",
       "title": "core の流れの中継と共通部品（@banto/stream-client・@banto/stream-server）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "terminal-module",
       "dependsOn": [],
       "milestone": null,
@@ -5784,7 +5784,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T08:20:57.282Z",
-      "updatedAt": "2026-10-08T08:52:23.282Z",
+      "updatedAt": "2026-10-08T10:48:10.411Z",
       "closedAt": null,
       "extra": {}
     },
