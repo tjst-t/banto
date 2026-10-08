@@ -27,9 +27,9 @@ interface HostMessage {
   images?: Array<{ id: string; name?: string }>;
 }
 
-async function baseThreadId(page: Page): Promise<string> {
+async function baseThreadId(page: Page, projectName = PROJECT_NAME): Promise<string> {
   const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
-  const project = projects.find((p: { name: string }) => p.name === PROJECT_NAME);
+  const project = projects.find((p: { name: string }) => p.name === projectName);
   const threads = await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers: HEADERS })).json();
   return threads[0].id;
 }
@@ -180,4 +180,52 @@ test("貼り付けた画像が AI に届き、送った発言に付いて出て�
       expect(got.status(), "Fork の記録の画像が取れない").toBe(200);
     }
   }
+});
+
+// **書きかけに添えた画像も、別のページへ行って戻っても・リロードしても残る**（決定・2026-10-08、ユーザー要望
+// 「下書きは別ページに遷移しても残るようになったけど、添付ファイルが残らない」）。見るのは小窓の画像の実寸と、
+// 戻したあと送った画像が**貼ったときと同じバイト数で AI に届く**こと。送ったら残っていたものは消える
+test("書きかけに添えた画像は、別の Project へ行って戻っても・リロードしても残り、送れば消える", async ({ page }) => {
+  const DRAFT_PROJECT = "E2E Composer Image Draft";
+  await openApp(page);
+  await createProject(page, DRAFT_PROJECT, mkdtempSync(join(tmpdir(), "banto-e2e-image-draft-")));
+  const composer = page.getByPlaceholder(/に送る/);
+  await expect(composer).toBeVisible({ timeout: 30_000 });
+  const tile = page.locator(".aui-composer-attachments img");
+
+  const size = await paste(page, { image: { width: 40, height: 30 } });
+  await expect.poll(() => naturalSize(tile)).toBe("40x30");
+  await composer.fill("画像つきの書きかけ");
+  const draftUrl = page.url();
+
+  // ---- 別の Project（別のページ）へ行って戻る ------------------------------------
+  await createProject(page, `${DRAFT_PROJECT} 2`, mkdtempSync(join(tmpdir(), "banto-e2e-image-draft2-")));
+  await expect(page).not.toHaveURL(draftUrl);
+  await expect(page.locator(".aui-composer-attachments img"), "別の Project に前の書きかけの画像が出た").toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(draftUrl);
+  await expect(composer).toHaveValue("画像つきの書きかけ", { timeout: 15_000 });
+  await expect(tile, "別のページから戻ったら添えた画像が消えた").toHaveCount(1, { timeout: 15_000 });
+  await expect.poll(() => naturalSize(tile)).toBe("40x30");
+
+  // ---- リロードしても残る ----------------------------------------------------------
+  await page.reload();
+  await expect(composer).toHaveValue("画像つきの書きかけ", { timeout: 30_000 });
+  await expect(tile, "リロードしたら添えた画像が消えた").toHaveCount(1, { timeout: 15_000 });
+  await expect.poll(() => naturalSize(tile)).toBe("40x30");
+
+  // ---- 戻した画像をそのまま送れる（同じバイト列が届く）。送れば残っていたものは消える ----
+  await composer.press("Enter");
+  await expect(
+    page.getByText(`受け取った画像: 1 枚（image/png ${size} バイト）`),
+    "戻した画像が AI まで届いていない（または中身が変わった）",
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(tile).toHaveCount(0);
+  await waitTurnEnded(page, await baseThreadId(page, DRAFT_PROJECT), 1);
+  await page.reload();
+  await expect(page.getByText("画像つきの書きかけ")).toBeVisible({ timeout: 30_000 });
+  await expect(composer).toHaveValue("");
+  // 戻すのは非同期——少し待っても出てこないことを見る
+  await page.waitForTimeout(1_500);
+  await expect(tile, "送ったのにリロードしたら書きかけの画像が戻ってきた").toHaveCount(0);
 });
