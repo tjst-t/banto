@@ -5984,7 +5984,7 @@
       "number": 246,
       "kind": "task",
       "title": "E2E 用に SSH で入れる相手を入れ子のコンテナで立てる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [],
       "milestone": null,
@@ -5996,7 +5996,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-08T09:45:42.484Z",
+      "updatedAt": "2026-10-08T10:48:13.011Z",
       "closedAt": null,
       "extra": {}
     },
