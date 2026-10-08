@@ -59,6 +59,8 @@ export async function listenStreams(
   if (!dataDir) throw new Error("流れの待ち受けを立てる置き場がありません（BANTO_MODULE_DATA_DIR）");
   const path = streamSocketPathOf(dataDir);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  // すでにあるフォルダ（Vault の ssh-agent の窓口と同じ `<置き場>/s`）には mode が効かないので、持ち主だけに締める
+  chmodSync(dirname(path), 0o700);
   // 前の自分が落ちて残したファイル。残っていると listen が EADDRINUSE で失敗する
   rmSync(path, { force: true });
 

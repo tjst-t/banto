@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { listenStreams, streamSocketPathOf, type StreamServer } from "@banto/stream-server";
-import { StreamRelay, STREAMS_PER_FRAME, StreamRefusal, streamUrlOf, type StreamTarget } from "./streams.js";
+import { StreamRelay, STREAMS_PER_FRAME, STREAMS_PER_PROJECT, StreamRefusal, streamUrlOf, type StreamTarget } from "./streams.js";
 
 const SANDBOX = "http://127.0.0.1:4176";
 
@@ -207,6 +207,22 @@ test("1つの画面（iframe）で 8 本まで。別の iframe は別に数え�
     // 札が切れたら数えない
     h.clock.now += 30_001;
     h.relay.issue(h.target());
+  });
+});
+
+test("1つの Project で 64 本まで（iframe をまたいで数える）。別の Project・Project の無い画面は別", async () => {
+  await withRelay(async (h) => {
+    const p1 = (i: number) => h.target({ frameKey: `session:frame-${Math.floor(i / STREAMS_PER_FRAME)}` });
+    for (let i = 0; i < STREAMS_PER_PROJECT; i++) h.relay.issue(p1(i));
+    assert.throws(
+      () => h.relay.issue(h.target({ frameKey: "session:frame-new" })),
+      (err: unknown) => err instanceof StreamRefusal && err.status === 429,
+    );
+    const p2 = h.target({ frameKey: "session:frame-p2" });
+    h.relay.issue({ ...p2, stamp: { ...p2.stamp, projectId: "p2" } });
+    const instance = h.target({ frameKey: "session:frame-instance" });
+    const { projectId: _projectId, ...stamp } = instance.stamp;
+    h.relay.issue({ ...instance, stamp });
   });
 });
 
