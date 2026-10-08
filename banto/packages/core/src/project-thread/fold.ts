@@ -10,6 +10,7 @@ import type {
   ProjectThreadReadModel,
   ProjectState,
   ThreadPermissionMode,
+  ThreadClosedBy,
   ThreadEffort,
   ThreadState,
   TurnCause,
@@ -55,7 +56,8 @@ export type ProjectThreadEvent =
     }
   // **承認なしでメッセージを受け取ってよい Project の一覧**（追加・2026-10-01、アーキ仕様 §4.2）。一覧そのものを置き換える
   | { type: "project.message_senders_set"; payload: { id: string; senders: string[] } }
-  | { type: "thread.closed"; payload: { id: string } }
+  // by・reason（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。それより前の記録は持たない
+  | { type: "thread.closed"; payload: { id: string; by?: ThreadClosedBy; reason?: string } }
   // Fork の名前（決定・2026-09-11、ユーザー要望）。**付けていないものは持たない**
   // ——既定の「Fork 1」は連番から導出できる（規則3）
   | { type: "thread.renamed"; payload: { id: string; title: string } }
@@ -425,13 +427,22 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (t) {
           abandonLastTurn(t, "thread_closed");
           dropContinuations(t);
-          next.threads.set(t.id, { ...t, status: "closed" });
+          next.threads.set(t.id, {
+            ...t,
+            status: "closed",
+            ...(event.payload.by ? { closedBy: event.payload.by } : {}),
+            ...(event.payload.reason ? { closedReason: event.payload.reason } : {}),
+          });
         }
         return next;
       }
       case "thread.reopened": {
         const t = next.threads.get(event.payload.id);
-        if (t) next.threads.set(t.id, { ...t, status: "active" });
+        if (t) {
+          // 閉じた人・理由は閉じている間だけのもの——開き直したら外す
+          const { closedBy: _by, closedReason: _reason, ...rest } = t;
+          next.threads.set(t.id, { ...rest, status: "active" });
+        }
         return next;
       }
       case "thread.resume_point_updated": {

@@ -21,7 +21,9 @@ import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
 import { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import { createApp } from "./app.js";
+import { AppEventBus, type AppEvent } from "./app-events.js";
 import {
+  CLOSE_FORK_TOOL_NAME,
   composeForkInstruction,
   FORK_SERVER_NAME,
   FORK_TOOL_NAME,
@@ -35,6 +37,17 @@ type RunnerOpts = {
   forkSession?: boolean;
   mcpServers: Record<string, unknown>;
 };
+
+/** Runner に渡った MCP サーバから、Fork を閉じる tool を直接呼ぶ */
+async function callCloseTool(opts: RunnerOpts, reason: string) {
+  const server = opts.mcpServers[FORK_SERVER_NAME] as {
+    instance: { _registeredTools: Record<string, { handler: (args: unknown, extra: unknown) => Promise<unknown> }> };
+  };
+  return (await server.instance._registeredTools[CLOSE_FORK_TOOL_NAME]!.handler({ reason }, {})) as {
+    isError?: boolean;
+    content: Array<{ text: string }>;
+  };
+}
 
 /** Runner に渡った MCP サーバから、Fork の tool を直接呼ぶ（SDK が呼ぶのと同じ handler） */
 async function callForkTool(opts: RunnerOpts, forks: Array<{ title: string; instruction: string }>) {
@@ -61,6 +74,8 @@ interface Harness {
   inbox: InboxStore;
   turns: ThreadTurns;
   notices: string[];
+  /** 画面への知らせ（`AppEventBus`） */
+  events: AppEvent[];
 }
 
 async function withForkApp(
@@ -95,7 +110,11 @@ async function withForkApp(
       }
     });
     const token = "test-token";
+    const appEvents = new AppEventBus();
+    const events: AppEvent[] = [];
+    appEvents.subscribe((e) => events.push(e));
     const server = createApp({
+      appEvents,
       projectThread,
       globalMemory,
       inbox,
@@ -120,6 +139,7 @@ async function withForkApp(
         inbox,
         turns,
         notices,
+        events,
       });
     } finally {
       server.close();
@@ -330,4 +350,212 @@ test("レビュー待ちは1つの Thread に1件まで。その Thread のも�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ---- AI が自分の Fork を閉じる（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」） ----
+
+async function send(h: Harness, threadId: string, prompt: string): Promise<string> {
+  const res = await fetch(`${h.base}/api/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: h.headers,
+    body: JSON.stringify({ prompt }),
+  });
+  return res.text();
+}
+
+/** 返事待ちの札を1枚置く（待たない形で頼んだ裏の仕事） */
+async function awaitWork(h: Harness, threadId: string, title: string): Promise<void> {
+  await h.projectThread.recordAwaitingReply({
+    threadId,
+    replyTo: `r-${title}`,
+    connName: "c",
+    moduleName: "subagent",
+    hop: 0,
+    work: { toolName: "spawnAgent", title },
+  });
+}
+
+/** ターンの中から Fork の状態を見る（`forkCount` と同じく外から差し込む） */
+let closedState: () => string = () => "";
+
+test("Fork で close_fork を呼ぶと、ターンが最後まで終わってから閉じ、by: ai と理由を残して画面に知らせる", async () => {
+  let forkId = "";
+  let statusDuringTurn = "";
+  let reply = "";
+  await withForkApp(
+    async function* (opts) {
+      yield init("s");
+      const r = await callCloseTool(opts, "  引き継ぎ先へ\n送り終えた  ");
+      assert.equal(r.isError, undefined, r.content[0]!.text);
+      reply = r.content[0]!.text;
+      // **呼んだ時点では閉じない**——このあとの返事が切れる
+      statusDuringTurn = closedState();
+      yield say("閉じます");
+      return { sessionId: "s2", compactionCount: 0 };
+    },
+    async (h) => {
+      const project = await h.projectThread.createProject("demo", "/tmp");
+      const base = await h.projectThread.createBaseThread(project.id);
+      const fork = await h.projectThread.forkThread(base.id, { title: "認証" });
+      forkId = fork.id;
+      closedState = () => h.projectThread.getThread(forkId)!.status;
+      assert.match(await send(h, fork.id, "終わったら閉じて"), /"type":"done"/);
+      assert.equal(statusDuringTurn, "active", "ターンの途中で閉じていた");
+      assert.match(reply, /このターンが終わったら/);
+      assert.match(reply, /report_turn/);
+
+      await waitFor(() => h.projectThread.getThread(forkId)!.status === "closed", "Fork が閉じる");
+      const t = h.projectThread.getThread(forkId)!;
+      assert.equal(t.closedBy, "ai");
+      assert.equal(t.closedReason, "引き継ぎ先へ 送り終えた", "理由を1行に丸めていない");
+      // 閉じたのはターンの終わりを書いたあと（順番は turn-runner の試験が見る）
+      assert.equal(t.lastTurn?.outcome, "completed");
+      assert.deepEqual(
+        h.events.filter((e) => e.type === "thread.closed"),
+        [{ type: "thread.closed", threadId: forkId, projectId: project.id, by: "ai", reason: "引き継ぎ先へ 送り終えた" }],
+      );
+      // 一覧にも中身にも、誰が閉じたか・理由が出る
+      const list = (await (await fetch(`${h.base}/api/projects/${project.id}/threads`, { headers: h.headers })).json()) as Array<{
+        id: string;
+        closedBy?: string;
+        closedReason?: string;
+      }>;
+      const row = list.find((r) => r.id === forkId)!;
+      assert.equal(row.closedBy, "ai");
+      assert.equal(row.closedReason, "引き継ぎ先へ 送り終えた");
+      const detail = (await (await fetch(`${h.base}/api/threads/${forkId}`, { headers: h.headers })).json()) as {
+        closedBy?: string;
+        closedReason?: string;
+      };
+      assert.equal(detail.closedBy, "ai");
+      assert.equal(detail.closedReason, "引き継ぎ先へ 送り終えた");
+      // 受信箱には知らせない
+      assert.equal(h.inbox.listOpen().filter((i) => i.kind === "notice").length, 0);
+    },
+  );
+});
+test("Base Thread で close_fork を呼ぶと断る（閉じない）", async () => {
+  let r: Awaited<ReturnType<typeof callCloseTool>> | undefined;
+  await withForkApp(
+    async function* (opts) {
+      yield init("s");
+      r = await callCloseTool(opts, "終わった");
+      yield say("閉じられませんでした");
+      return { sessionId: "s2", compactionCount: 0 };
+    },
+    async (h) => {
+      const project = await h.projectThread.createProject("demo", "/tmp");
+      const base = await h.projectThread.createBaseThread(project.id);
+      assert.match(await send(h, base.id, "閉じて"), /"type":"done"/);
+      assert.equal(r?.isError, true);
+      assert.match(r!.content[0]!.text, /Base Thread は閉じられません/);
+      assert.equal(h.projectThread.getThread(base.id)!.status, "active");
+      assert.equal(h.events.filter((e) => e.type === "thread.closed").length, 0);
+    },
+  );
+});
+
+test("その Fork が頼んだ裏の仕事が残っていると断り、残っている仕事の題と Module を返す", async () => {
+  let r: Awaited<ReturnType<typeof callCloseTool>> | undefined;
+  await withForkApp(
+    async function* (opts) {
+      yield init("s");
+      r = await callCloseTool(opts, "終わった");
+      yield say("閉じられませんでした");
+      return { sessionId: "s2", compactionCount: 0 };
+    },
+    async (h) => {
+      const project = await h.projectThread.createProject("demo", "/tmp");
+      const base = await h.projectThread.createBaseThread(project.id);
+      const fork = await h.projectThread.forkThread(base.id);
+      await awaitWork(h, fork.id, "ログを集める");
+      assert.match(await send(h, fork.id, "閉じて"), /"type":"done"/);
+      assert.equal(r?.isError, true);
+      assert.match(r!.content[0]!.text, /止めるか、引き継ぎ先へ/);
+      assert.match(r!.content[0]!.text, /「ログを集める」（subagent）/);
+      // 断ったので、ターンが終わっても閉じない
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(h.projectThread.getThread(fork.id)!.status, "active");
+    },
+  );
+});
+
+test("予約のあとに裏の仕事を頼んだら、ターンが終わっても閉じず、人に知らせる", async () => {
+  let forkId = "";
+  let store!: ProjectThreadStore;
+  await withForkApp(
+    async function* (opts) {
+      yield init("s");
+      const r = await callCloseTool(opts, "終わった");
+      assert.equal(r.isError, undefined);
+      // 閉じると言ったあとで、待たない形で仕事を頼んだ
+      await store.recordAwaitingReply({
+        threadId: forkId,
+        replyTo: "r1",
+        connName: "c",
+        moduleName: "shell",
+        hop: 0,
+        work: { toolName: "runCommand", title: "テストを回す" },
+      });
+      yield say("閉じます");
+      return { sessionId: "s2", compactionCount: 0 };
+    },
+    async (h) => {
+      store = h.projectThread;
+      const project = await h.projectThread.createProject("demo", "/tmp");
+      const base = await h.projectThread.createBaseThread(project.id);
+      forkId = (await h.projectThread.forkThread(base.id)).id;
+      assert.match(await send(h, forkId, "閉じて"), /"type":"done"/);
+      await waitFor(() => h.inbox.listOpen().some((i) => i.kind === "notice"), "閉じなかったお知らせ");
+      const notice = h.inbox.listOpen().find((i) => i.kind === "notice");
+      assert.ok(notice && notice.kind === "notice");
+      assert.equal(notice.title, "Fork を閉じませんでした");
+      assert.match(notice.detail, /「テストを回す」（shell）/);
+      assert.equal(h.projectThread.getThread(forkId)!.status, "active");
+      assert.equal(h.events.filter((e) => e.type === "thread.closed").length, 0);
+    },
+  );
+});
+
+test("途中で終わったターンでは閉じず、「閉じるのをやめました」を人に知らせる", async () => {
+  await withForkApp(
+    async function* (opts) {
+      yield init("s");
+      await callCloseTool(opts, "終わった");
+      throw new Error("CLI が落ちた");
+    },
+    async (h) => {
+      const project = await h.projectThread.createProject("demo", "/tmp");
+      const base = await h.projectThread.createBaseThread(project.id);
+      const fork = await h.projectThread.forkThread(base.id);
+      assert.match(await send(h, fork.id, "閉じて"), /"type":"error"/);
+      await waitFor(() => h.inbox.listOpen().some((i) => i.kind === "notice"), "やめたお知らせ");
+      const notice = h.inbox.listOpen().find((i) => i.kind === "notice");
+      assert.ok(notice && notice.kind === "notice");
+      assert.equal(notice.title, "Fork を閉じるのをやめました");
+      assert.match(notice.detail, /終わった/);
+      assert.equal(h.projectThread.getThread(fork.id)!.status, "active");
+    },
+  );
+});
+
+test("人が POST /close で閉じても、画面に thread.closed（by: human）を出し、記録に残す", async () => {
+  await withForkApp(
+    async function* () {
+      yield init("s");
+      return { sessionId: "s", compactionCount: 0 };
+    },
+    async (h) => {
+      const project = await h.projectThread.createProject("demo", "/tmp");
+      const base = await h.projectThread.createBaseThread(project.id);
+      const fork = await h.projectThread.forkThread(base.id);
+      const res = await fetch(`${h.base}/api/threads/${fork.id}/close`, { method: "POST", headers: h.headers });
+      assert.equal(res.status, 200);
+      assert.equal(h.projectThread.getThread(fork.id)!.closedBy, "human");
+      assert.deepEqual(
+        h.events.filter((e) => e.type === "thread.closed"),
+        [{ type: "thread.closed", threadId: fork.id, projectId: project.id, by: "human" }],
+      );
+    },
+  );
 });

@@ -244,6 +244,9 @@ export interface ProjectState {
 export type ThreadKind = "base" | "fork";
 
 /** Claude Agent SDKの`permissionMode`（v4-frontend.md §6.4の6値）。 */
+/** Thread を閉じたのは AI（`close_fork`）か人（画面）か */
+export type ThreadClosedBy = "ai" | "human";
+
 export type ThreadPermissionMode =
   | "default"
   | "acceptEdits"
@@ -309,6 +312,13 @@ export interface ThreadState {
    *  自分のsession idを受け取った時点で true になる。 */
   ownsSession: boolean;
   status: "active" | "closed";
+  /**
+   * **誰が閉じたか・なぜか**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。閉じている間だけ持つ
+   * ——開き直したら外す。これより前に閉じた記録は持たない
+   */
+  closedBy?: ThreadClosedBy;
+  /** AI が閉じたときの理由（`close_fork` の `reason`） */
+  closedReason?: string;
   /** system promptに入れるMemoryの上限seq（決定・2026-09-05）。Thread作成時と
    *  「畳んだ」時点で確定し、走行中は動かない——§3「走行中の枝の先頭は変えない」。
    *  これより後に増えた分は、ターンに添えて届ける（§2.3）。

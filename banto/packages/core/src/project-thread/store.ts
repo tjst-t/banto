@@ -13,6 +13,7 @@ import type {
   ProjectState,
   ThreadId,
   ThreadPermissionMode,
+  ThreadClosedBy,
   ThreadEffort,
   ThreadState,
   UiToolCallEntry,
@@ -281,9 +282,16 @@ export class ProjectThreadStore {
     return found;
   }
 
-  async closeThread(id: ThreadId): Promise<void> {
+  /**
+   * 閉じる。`by`・`reason` は記録に残す（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）
+   */
+  async closeThread(id: ThreadId, opts?: { by: ThreadClosedBy; reason?: string }): Promise<void> {
     if (!this.getThread(id)) throw new NotFoundError(`thread ${id} not found`);
-    const event = await this.log.append("thread.closed", { id });
+    const event = await this.log.append("thread.closed", {
+      id,
+      ...(opts ? { by: opts.by } : {}),
+      ...(opts?.reason ? { reason: opts.reason } : {}),
+    });
     this.projection.applyOne(event);
   }
 

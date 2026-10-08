@@ -13,7 +13,7 @@ import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
-import { createForkMcpServer, type ForkRequest } from "./fork-tool.js";
+import { CLOSE_FORK_TOOL_NAME, createForkMcpServer, type CloseForkReservation, type ForkRequest } from "./fork-tool.js";
 import {
   REPORT_TURN_TOOL_NAME,
   noteToolUsed,
@@ -139,7 +139,8 @@ export async function* runThreadTurn(
 ): AsyncGenerator<TurnStreamEvent> {
   deps.turnEvents?.begin(input.threadId, new Date().toISOString());
   // **AI が予約した Fork**（決定・2026-09-27、§2.2「AI が Fork を立てる」）。ターンの終わりに立てる
-  const forks: ForkTurnState = { reserved: [], settled: false };
+  // **AI が予約した「この Fork を閉じる」**（決定・2026-10-08、§2.2「AI が自分の Fork を閉じる」）も同じ入れ物に
+  const forks: ForkTurnState = { reserved: [], settled: false, closing: {} };
   // **ターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5）。始めたら id が入る——終わりはここで1回だけ書く
   const turn: TurnProgress = {};
   let outcome: TurnOutcome = "failed";
@@ -170,6 +171,16 @@ export async function* runThreadTurn(
         .endTurn(input.threadId, turn.id, outcome)
         .catch((err: unknown) => console.warn(`[host] ${input.threadId} のターンの終わりを記録できませんでした:`, err));
     }
+    // **閉じるのは、ターンの終わりまで書いたあと**——resume-point と返事を記録し、`turn.ended` も書いたあと。先に閉じると
+    // 走っているターンを「人がやめた」と読む（fold の `thread_closed`）。最後まで行かなかったターンでは閉じない——
+    // 黙って捨てず、片づける側（`settleClose`）が残す（規則2）
+    const closing = forks.closing;
+    if (closing.reason !== undefined && !closing.settled) {
+      closing.settled = true;
+      await deps.settleClose?.(input.threadId, closing.reason, { ok: outcome === "completed" }).catch((err: unknown) =>
+        console.warn(`[host] ${input.threadId} で予約された「Fork を閉じる」を片づけられませんでした:`, err),
+      );
+    }
   }
 }
 
@@ -184,6 +195,8 @@ interface TurnProgress {
 interface ForkTurnState {
   reserved: ForkRequest[];
   settled: boolean;
+  /** AI が予約した「この Fork を閉じる」（`close_fork`） */
+  closing: CloseForkReservation;
 }
 
 /**
@@ -228,6 +241,12 @@ async function* runThreadTurnInner(
      * 渡されなければ予約は受けても何もしない（試験用）
      */
     settleForks?(parentThreadId: string, forks: ForkRequest[], outcome: { ok: boolean }): Promise<void>;
+    /**
+     * **AI が予約した「この Fork を閉じる」を閉じる／閉じずに片づける**（決定・2026-10-08、§2.2「AI が自分の Fork を
+     * 閉じる」）。ターンが最後まで行ったら `ok: true`（ターンの終わりまで記録したあと）——閉じる直前に裏の仕事を確かめ直す。
+     * 途中で終わったら `ok: false`。渡されなければ予約は受けても閉じない（試験用）
+     */
+    settleClose?(threadId: string, reason: string, outcome: { ok: boolean }): Promise<void>;
     /** **Thread 間・Project 間のメッセージ**（決定・2026-10-01、§4.2）。渡されなければ tool は断る */
     messaging?: ThreadMessaging;
     /**
@@ -242,7 +261,7 @@ async function* runThreadTurnInner(
     turnSummaryEnabled?(projectId: string): boolean;
   },
   input: RunThreadTurnInput,
-  forks: ForkTurnState = { reserved: [], settled: false },
+  forks: ForkTurnState = { reserved: [], settled: false, closing: {} },
   turn: TurnProgress = {},
 ): AsyncGenerator<TurnStreamEvent> {
   const thread = deps.projectThread.getThread(input.threadId);
@@ -403,6 +422,7 @@ async function* runThreadTurnInner(
     turnSummary
       ? { state: turnSummary, record: (entry) => deps.projectThread.recordTurnSummary(input.threadId, entry) }
       : undefined,
+    forks.closing,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -502,8 +522,12 @@ async function* runThreadTurnInner(
         ...(input.modelIdentity ? { model: input.modelIdentity } : {}),
         ...(turnSummary ? { turnSummary: true } : {}),
       }),
-      // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）
-      ...(turnSummary ? { allowedTools: [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] } : {}),
+      // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）。自分の Fork を閉じるのも聞かない
+      // （開き直せば元に戻る、§2.2「AI が自分の Fork を閉じる」）
+      allowedTools: [
+        `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
+        ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
+      ],
       // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
       ...(turnSummary
         ? {

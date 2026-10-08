@@ -14,6 +14,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
   REPORT_TURN_DESCRIPTION,
@@ -47,6 +48,41 @@ export const FORK_SERVER_NAME = "banto-thread";
 export const FORK_TOOL_NAME = "start_forks";
 export const LIST_THREADS_TOOL_NAME = "list_threads";
 export const SEND_MESSAGE_TOOL_NAME = "send_message";
+export const CLOSE_FORK_TOOL_NAME = "close_fork";
+
+/**
+ * **AI が自分の Fork を閉じる予約**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。tool は理由を
+ * ここに置くだけ——閉じるのはターンが最後まで終わってから（turn-runner）。2回呼ばれたら最後の理由
+ */
+export interface CloseForkReservation {
+  reason?: string;
+  settled?: boolean;
+}
+
+/** 残っている裏の仕事を1行ずつ（題・Module 名）。題が無ければ tool の名前 */
+export function describeBackgroundItems(items: readonly BackgroundItem[]): string {
+  return items.map((i) => `- 「${i.title ?? i.toolName ?? "（題なし）"}」（${i.module}）`).join("\n");
+}
+
+/**
+ * 閉じてよいかを確かめる。**断る理由を文で返す**。通れば `undefined`。呼ばれたときと、実際に閉じる直前の2回使う
+ */
+export function validateCloseFork(store: ProjectThreadStore, threadId: string): string | undefined {
+  const thread = store.getThread(threadId);
+  if (!thread) return "この Thread が見つかりません。";
+  if (thread.kind !== "fork") {
+    return "Base Thread は閉じられません（閉じられるのは、いま話している Fork Thread 自身だけです）。";
+  }
+  const items = backgroundItemsOf(thread.awaitingReplies);
+  if (items.length > 0) {
+    return [
+      "この Fork が頼んだ裏の仕事がまだ残っているので、閉じられません。閉じても仕事は止まらず、結果は閉じた Fork に溜まるだけで誰も読みません。",
+      "止めるか、引き継ぎ先へ send_message で送ってから、もう一度閉じてください。残っている仕事：",
+      describeBackgroundItems(items),
+    ].join("\n");
+  }
+  return undefined;
+}
 
 /**
  * 呼ばれた内容を確かめる。**断る理由を文で返す**（AI が読んで直せるように）。通れば `undefined`
@@ -119,6 +155,8 @@ export function createForkMcpServer(
    */
   messaging?: ThreadMessaging,
   turnSummary?: TurnSummaryTool,
+  /** このターンの「閉じる」の予約の入れ物——ターンの終わりに turn-runner が見て閉じる */
+  closing: CloseForkReservation = {},
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   return createSdkMcpServer({
@@ -180,6 +218,33 @@ export function createForkMcpServer(
             signal,
           );
           return { content: [{ type: "text", text: result.text }], ...(result.ok ? {} : { isError: true }) };
+        },
+      ),
+      tool(
+        CLOSE_FORK_TOOL_NAME,
+        [
+          "いま話しているこの Fork Thread を閉じる。仕事を引き継いだ・担当を終えたときに使う。人の承認は要らない。",
+          "閉じるのはこのターンが最後まで終わってから（人への返事はこのあとに書いてよい）。report_turn を呼ぶならそれより前に呼ぶ（report_turn でターンが終わるため）。",
+          "閉じても会話と Memory は残り、人は履歴から開き直せる。Base Thread では使えない。",
+          "この Fork が頼んだ裏の仕事（返事を待っているサブエージェント・コマンド・Factory など）が残っていると断る——止めるか、引き継ぎ先へ送ってから呼ぶ。",
+        ].join(""),
+        {
+          reason: z.string().describe("閉じる理由（1行）。閉じた Fork の一覧に「AI が閉じました」と一緒に出る"),
+        },
+        async ({ reason }) => {
+          const line = reason.trim().replace(/\s+/g, " ");
+          if (line === "") return { content: [{ type: "text" as const, text: "閉じる理由（reason）が空です。" }], isError: true };
+          const problem = validateCloseFork(store, threadId);
+          if (problem) return { content: [{ type: "text" as const, text: problem }], isError: true };
+          closing.reason = line;
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "受け付けた。このターンが終わったらこの Fork を閉じる。人への返事・report_turn はこのあとに。",
+              },
+            ],
+          };
         },
       ),
       tool(

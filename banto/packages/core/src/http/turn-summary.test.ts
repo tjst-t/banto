@@ -199,7 +199,11 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     const [first, second] = seen;
     assert.ok(first!.systemPrompt.includes(TURN_SUMMARY_PROMPT_SECTION));
     assert.equal(typeof first!.onStop, "function");
-    assert.deepEqual(first!.allowedTools, ["mcp__banto-thread__report_turn"], "毎ターン承認を求めない");
+    assert.deepEqual(
+      first!.allowedTools,
+      ["mcp__banto-thread__close_fork", "mcp__banto-thread__report_turn"],
+      "毎ターン承認を求めない",
+    );
     assert.equal(first!.onStop!({ stopHookActive: false }), undefined, "tool を使っていない短いターンでは催促しない");
     assert.equal(first!.onToolUsed!({ toolName: "mcp__shell__runCommand" }), false);
     assert.equal(first!.onStop!({ stopHookActive: false }), REPORT_TURN_MISSING_REASON);
@@ -210,6 +214,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     assert.ok(!second!.systemPrompt.includes(TURN_SUMMARY_PROMPT_SECTION));
     assert.equal(second!.onStop, undefined);
     assert.equal(second!.onToolUsed, undefined);
-    assert.equal(second!.allowedTools, undefined);
+    // 自分の Fork を閉じるのはまとめのオンオフに依らず聞かない（§2.2「AI が自分の Fork を閉じる」）
+    assert.deepEqual(second!.allowedTools, ["mcp__banto-thread__close_fork"]);
   });
 });

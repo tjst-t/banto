@@ -25,7 +25,7 @@ import {
 } from "../project-thread/store.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
-import type { ThreadState } from "../project-thread/types.js";
+import type { ThreadClosedBy, ThreadState } from "../project-thread/types.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
 import { DEFAULT_MODEL_VALUE, ModelCatalog, modelIdentityOf, type ModelIdentity } from "../runner/models.js";
@@ -61,7 +61,7 @@ import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
-import { composeForkInstruction, type ForkRequest } from "./fork-tool.js";
+import { composeForkInstruction, describeBackgroundItems, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
 import { searchRegistry, RegistryUnavailableError } from "../modules/registry/client.js";
@@ -993,6 +993,9 @@ function toThreadSummary(thread: ThreadState) {
     /** 親の会話のどこで分岐したか（Fork の入口をその場所に置くのに使う） */
     createdSeq: thread.createdSeq,
     status: thread.status,
+    /** 誰が閉じたか・理由（追加・2026-10-08）。閉じた Fork の一覧に「AI が閉じました：（理由）」と出す */
+    closedBy: thread.closedBy,
+    closedReason: thread.closedReason,
     permissionMode: thread.permissionMode,
     model: thread.model,
     effort: thread.effort,
@@ -1087,6 +1090,54 @@ export function createApp(deps: AppDeps) {
         notify: false,
       });
     }
+  }
+
+  /**
+   * **Thread を閉じて、開いている画面に知らせる**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。
+   * 人が画面で閉じるときも、AI が `close_fork` で閉じるときもここを通る
+   */
+  async function closeThreadAndTell(threadId: string, by: { by: ThreadClosedBy; reason?: string }): Promise<void> {
+    await deps.projectThread.closeThread(threadId, by);
+    const thread = deps.projectThread.getThread(threadId);
+    deps.appEvents?.publish({
+      type: "thread.closed",
+      threadId,
+      ...(thread ? { projectId: thread.projectId } : {}),
+      by: by.by,
+      ...(by.reason ? { reason: by.reason } : {}),
+    });
+  }
+
+  /**
+   * **AI が予約した「この Fork を閉じる」を片づける**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。
+   * ターンが最後まで行ったら、閉じる直前に裏の仕事をもう一度確かめて閉じる。途中で終わった・裏の仕事が残っていたら
+   * 閉じずに、人に知らせる（予約した Fork を立てなかったときと同じ残し方）
+   */
+  async function settleClose(threadId: string, reason: string, outcome: { ok: boolean }): Promise<void> {
+    const thread = deps.projectThread.getThread(threadId);
+    if (!thread) return;
+    const label = thread.title ? `Fork「${thread.title}」` : "Fork Thread";
+    if (!outcome.ok) {
+      await deps.inbox.raiseNotice({
+        projectId: thread.projectId,
+        dedupeKey: `fork-close-dropped:${threadId}:${randomUUID()}`,
+        title: "Fork を閉じるのをやめました",
+        detail: `${label}のターンが途中で終わったため、AI が予約した「この Fork を閉じる」（理由：${reason}）はやめました。閉じるなら、画面から閉じるか、もう一度頼んでください`,
+      });
+      return;
+    }
+    // 予約のあとに頼んだ裏の仕事があれば閉じない——閉じても仕事は止まらず、結果は閉じた Fork に溜まるだけ
+    const items = backgroundItemsOf(thread.awaitingReplies);
+    if (items.length > 0) {
+      await deps.inbox.raiseNotice({
+        projectId: thread.projectId,
+        dedupeKey: `fork-close-refused:${threadId}:${randomUUID()}`,
+        title: "Fork を閉じませんでした",
+        detail: `AI が${label}を閉じると予約した（理由：${reason}）あとで裏の仕事を頼んだため、閉じていません。残っている仕事：\n${describeBackgroundItems(items)}`,
+      });
+      return;
+    }
+    await closeThreadAndTell(threadId, { by: "ai", reason });
   }
 
   /**
@@ -1192,7 +1243,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, messaging, autoApproveAll, turnSummaryEnabled }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, autoApproveAll, turnSummaryEnabled }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -2261,7 +2312,7 @@ export function createApp(deps: AppDeps) {
       const threadCloseMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/close$/);
       if (threadCloseMatch && req.method === "POST") {
         try {
-          await deps.projectThread.closeThread(threadCloseMatch[1]!);
+          await closeThreadAndTell(threadCloseMatch[1]!, { by: "human" });
           json(res, 200, { ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });

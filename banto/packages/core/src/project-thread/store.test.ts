@@ -278,6 +278,34 @@ test("thread close/reopen round-trips status, closing an unknown thread throws N
   });
 });
 
+test("閉じた人・理由を thread.closed に残し、読み直しても残る。開き直したら外す。by の無い古い記録も読める", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("demo", dir);
+    const base = await store.createBaseThread(project.id);
+    const byAi = await store.forkThread(base.id);
+    const old = await store.forkThread(base.id);
+
+    await store.closeThread(byAi.id, { by: "ai", reason: "引き継いだ" });
+    assert.equal(store.getThread(byAi.id)!.closedBy, "ai");
+    assert.equal(store.getThread(byAi.id)!.closedReason, "引き継いだ");
+    // 古い記録：by も reason も無い thread.closed（この仕組みより前に閉じたもの）
+    await log.append("thread.closed", { id: old.id });
+
+    const again = new ProjectThreadStore(dir, log);
+    await again.load();
+    assert.equal(again.getThread(byAi.id)!.closedBy, "ai");
+    assert.equal(again.getThread(byAi.id)!.closedReason, "引き継いだ");
+    assert.equal(again.getThread(old.id)!.status, "closed");
+    assert.equal(again.getThread(old.id)!.closedBy, undefined);
+    assert.equal(again.getThread(old.id)!.closedReason, undefined);
+
+    await again.reopenThread(byAi.id);
+    assert.equal(again.getThread(byAi.id)!.status, "active");
+    assert.equal(again.getThread(byAi.id)!.closedBy, undefined);
+    assert.equal(again.getThread(byAi.id)!.closedReason, undefined);
+  });
+});
+
 test("project close/reopen round-trips status, closing an unknown project throws NotFoundError", async () => {
   await withStore(async (store, dir) => {
     const project = await store.createProject("demo", dir);

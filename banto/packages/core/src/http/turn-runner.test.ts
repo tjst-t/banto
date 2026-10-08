@@ -642,6 +642,55 @@ test("失敗したターンは failed、人が止めたターンは stopped で�
   });
 });
 
+test("AI が予約した「Fork を閉じる」は、最後まで行ったターンだけ ok: true——失敗・人が止めたターンは ok: false。承認は聞かない", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const fork = await store.forkThread(threadId);
+    const settled: Array<{ threadId: string; reason: string; ok: boolean; endedBefore: boolean }> = [];
+    const settleClose = async (id: string, reason: string, outcome: { ok: boolean }) => {
+      // ターンの終わりを書いたあとで呼ぶ（先に閉じると、走っているターンを「人がやめた」と読む）
+      settled.push({ threadId: id, reason, ok: outcome.ok, endedBefore: store.getThread(id)!.lastTurn?.outcome !== undefined });
+    };
+    /** close_fork を呼んでから、言われたとおりに終わる Runner */
+    const closing = (end: "done" | "throw" | "hang") =>
+      (async function* (opts: { sessionId?: string; signal?: AbortSignal; mcpServers: Record<string, unknown>; allowedTools?: string[] }) {
+        allowed.push(opts.allowedTools);
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        const server = opts.mcpServers["banto-thread"] as {
+          instance: { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<{ isError?: boolean }> }> };
+        };
+        const r = await server.instance._registeredTools["close_fork"]!.handler({ reason: `${end} の理由` }, {});
+        assert.equal(r.isError, undefined);
+        assert.deepEqual(settled.length, calls, "tool を呼んだ時点で片づけている");
+        if (end === "throw") throw new Error("API が落ちた");
+        if (end === "hang") {
+          if (opts.signal?.aborted) throw new Error("aborted");
+          await new Promise((_, reject) => opts.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+        }
+        yield { type: "message" as const, message: { type: "assistant", uuid: "u", message: { content: [{ type: "text", text: "はい" }] } } } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as typeof runTurn;
+    const allowed: Array<string[] | undefined> = [];
+    let calls = 0;
+
+    await collect(runThreadTurn({ ...deps, settleClose, runTurn: closing("throw") }, { threadId: fork.id, prompt: "a", modules: [] }));
+    calls = 1;
+    const stop = new AbortController();
+    const gen = runThreadTurn({ ...deps, settleClose, runTurn: closing("hang") }, { threadId: fork.id, prompt: "b", modules: [], stop: stop.signal });
+    await gen.next();
+    stop.abort();
+    for await (const _ of gen) void _;
+    calls = 2;
+    await collect(runThreadTurn({ ...deps, settleClose, runTurn: closing("done") }, { threadId: fork.id, prompt: "c", modules: [] }));
+
+    assert.deepEqual(settled, [
+      { threadId: fork.id, reason: "throw の理由", ok: false, endedBefore: true },
+      { threadId: fork.id, reason: "hang の理由", ok: false, endedBefore: true },
+      { threadId: fork.id, reason: "done の理由", ok: true, endedBefore: true },
+    ]);
+    for (const a of allowed) assert.ok(a?.includes("mcp__banto-thread__close_fork"), "close_fork で承認を聞く");
+  });
+});
+
 test("届いたものだけで起こしたターンは cause が delivery", async () => {
   await withThread(async ({ deps, threadId, store }) => {
     const { fake } = recordingRunner();

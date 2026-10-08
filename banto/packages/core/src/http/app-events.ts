@@ -4,7 +4,7 @@
 // 気づく道が要る。**ポーリングはしない**（受信箱で踏んだ——再描画が assistant-ui のランタイムを壊した）。
 // 流すのは「何が起きたか」の知らせだけで、中身は画面が既存の口で取りに行く（繋ぎ直す・記録を読む・受信箱）。
 
-import type { AwaitingReply } from "../project-thread/types.js";
+import type { AwaitingReply, ThreadClosedBy } from "../project-thread/types.js";
 
 /**
  * **バックグラウンドで動いているもの1件**（追加・2026-10-03、v4-frontend.md §6.33）。返事待ちの札（`AwaitingReply`）から
@@ -44,7 +44,10 @@ export type AppEvent =
   // 「端末を追加」の札が使われた（決定・2026-10-03）。札を出した画面が「端末が入りました」と出す
   | { type: "auth.device_added"; codeId: string; label: string }
   // その Thread のバックグラウンドの仕事が増えた・減った。**その Thread の分を丸ごと**送る（画面は置き換える）
-  | { type: "background.changed"; threadId: string; projectId?: string; items: BackgroundItem[] };
+  | { type: "background.changed"; threadId: string; projectId?: string; items: BackgroundItem[] }
+  // Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
+  // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
+  | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string };
 
 export class AppEventBus {
   private readonly listeners = new Set<(event: AppEvent) => void>();
