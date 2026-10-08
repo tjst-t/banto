@@ -6079,7 +6079,7 @@
       "number": 250,
       "kind": "task",
       "title": "別のサーバへのソケットの転送（Vault の ssh-agent・流れの口）",
-      "status": "backlog",
+      "status": "ready",
       "parent": "remote-runtime",
       "dependsOn": [
         "stream-relay",
@@ -6094,7 +6094,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-08T09:43:34.193Z",
+      "updatedAt": "2026-10-08T09:45:51.972Z",
       "closedAt": null,
       "extra": {}
     },
