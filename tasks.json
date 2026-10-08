@@ -5869,7 +5869,6 @@
       "status": "ready",
       "parent": "browser-module",
       "dependsOn": [
-        "stream-relay",
         "browser-measure"
       ],
       "milestone": null,
@@ -5881,7 +5880,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:12:04.953Z",
-      "updatedAt": "2026-10-08T09:12:04.953Z",
+      "updatedAt": "2026-10-08T10:42:45.981Z",
       "closedAt": null,
       "extra": {}
     },
