@@ -77,6 +77,8 @@ interface OpenStream {
   client: WebSocket;
   upstream?: WebSocket;
   openedAt: number;
+  /** 閉じたのは banto だと記録する（止めるとき、両側を閉じる前に） */
+  markClosedByBanto?: (code: number) => void;
 }
 
 export interface StreamRelayOptions {
@@ -185,7 +187,10 @@ export class StreamRelay {
   closeAll(code = STREAM_CLOSE_RESTARTING, reason = "banto を起こし直しています"): void {
     this.closing = true;
     this.tickets.clear();
-    for (const s of this.open) {
+    for (const s of [...this.open]) {
+      // 先に「banto が閉じた」と記録する——Module の側の閉じる・失敗（繋いでいる途中を切ると error になる）を
+      // Module のせいとして書かない
+      s.markClosedByBanto?.(code);
       s.client.resume();
       s.client.close(code, reason);
       s.upstream?.close(1001, reason);
@@ -288,6 +293,7 @@ export class StreamRelay {
       maxPayload: STREAM_MAX_MESSAGE_BYTES,
     });
     stream.upstream = upstream;
+    stream.markClosedByBanto = (code) => finish("banto", code);
     let upstreamOpen = false;
     upstream.once("upgrade", releaseFd);
     upstream.once("close", releaseFd);
@@ -348,7 +354,9 @@ export class StreamRelay {
     });
     upstream.on("error", (err) => {
       if (tooBig(err)) upstreamTooBig = true;
-      if (upstreamOpen) return; // 開いたあとの失敗は close で扱う
+      // 開いたあとの失敗は close で扱う。画面の側が先に閉じた（繋いでいる途中で terminate した）なら、Module の
+      // 失敗ではない——「Module に繋がりません」を記録しない・断らない
+      if (upstreamOpen || closedBy) return;
       finish("module", STREAM_CLOSE_RESTARTING);
       this.audit({ event: "stream.refused", ...base, reason: `Module に繋がりません（${(err as NodeJS.ErrnoException).code ?? err.message}）` });
       refuse("Module に繋がりません");

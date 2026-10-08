@@ -5,12 +5,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { listenStreams, streamSocketPathOf, type StreamServer } from "@banto/stream-server";
+import { viaDirectoryFd } from "@banto/module-contract";
 import { StreamRelay, STREAMS_PER_FRAME, STREAMS_PER_PROJECT, StreamRefusal, streamUrlOf, type StreamTarget } from "./streams.js";
 
 const SANDBOX = "http://127.0.0.1:4176";
@@ -218,6 +219,53 @@ test("Module の待ち受けが無ければ 1012（画面は札を取り直す�
     const c = connect(h.url, h.relay.issue(h.target()).ticket);
     assert.equal((await c.closed).code, 1012);
     assert.ok(h.audit.some((e) => e.event === "stream.refused"));
+  });
+});
+
+test("Module へ繋いでいる途中で画面が閉じたら、閉じたことだけを記録する（「Module に繋がりません」と書かない）", async () => {
+  await withRelay(async (h) => {
+    // 繋がりは受けるが、Upgrade に答えない待ち受け——host の側は繋いでいる途中のまま
+    const dir = join(h.dataDir, "hang");
+    mkdirSync(dir, { recursive: true });
+    const socketPath = join(dir, "stream.sock");
+    const held: Socket[] = [];
+    let arrived!: () => void;
+    const reached = new Promise<void>((resolve) => (arrived = resolve));
+    const hang = createNetServer((sock) => {
+      held.push(sock);
+      sock.once("data", () => arrived());
+    });
+    await viaDirectoryFd(socketPath, (p) => new Promise<void>((resolve) => hang.listen(p, resolve)));
+    try {
+      // 画面の回線が切れる（繋いでいる途中は画面から読むのを止めているので、気づけるのは RST で切れたとき）
+      const c = connect(h.url, h.relay.issue(h.target({ socketPath })).ticket);
+      await reached;
+      (c.ws as unknown as { _socket: Socket })._socket.resetAndDestroy(); // ws の型に下の口が無い（試験で RST を起こすため）
+      await waitFor(() => h.audit.some((e) => e.event === "stream.close"));
+      // terminate が出す error が後から届く分を待つ
+      await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(
+        h.audit.map((e) => [e.event, e.closedBy]),
+        [["stream.close", "screen"]],
+      );
+      assert.equal(h.relay.openCount, 0);
+
+      // banto が止まる（closeAll）ときも同じ：途中で切ったのは banto で、Module の失敗ではない
+      h.audit.length = 0;
+      const d = connect(h.url, h.relay.issue(h.target({ socketPath })).ticket);
+      await waitFor(() => held.length === 2);
+      await new Promise((r) => setTimeout(r, 50));
+      h.relay.closeAll();
+      assert.equal((await d.closed).code, 1012);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(
+        h.audit.map((e) => [e.event, e.closedBy, e.code]),
+        [["stream.close", "banto", 1012]],
+      );
+    } finally {
+      for (const s of held) s.destroy();
+      await new Promise<void>((resolve) => hang.close(() => resolve()));
+    }
   });
 });
 

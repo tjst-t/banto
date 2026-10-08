@@ -74,3 +74,18 @@ E2E（`stream-relay.spec.ts`）でも、Project のコンテナの中で動く�
 - 直し：両側の `error` で `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH` を捉え、閉じる番号・記録とも 1009 にする。
   単体試験に逆向き（画面が 1009 を受ける・理由が「止まりました」でない・越えた1通が画面に渡らない・記録が 1009）と、
   画面からの向きで Module に 1009 が渡ることを足した（直しを外すと両方落ちることを確かめた）
+
+## レビューの指摘：iframe の印と、繋いでいる途中で閉じたときの記録（2026-10-08）
+
+- **iframe ごとの印**（`newFrameId`）が `crypto.randomUUID()` を直に呼んでいた。安全でない文脈（http の LAN アドレスの携帯）
+  では定義されず、流れを使わない画面でも iframe を描くたびに走るので、Canvas 全体が描けなくなる。既存の `lib/random-id.ts`
+  の `randomId()` に替えた（`randomUUID` を外して作れることを単体試験で見る。直しを外すと落ちることを確かめた）
+- **繋いでいる途中で閉じたときの記録が嘘になっていた**：Module へ繋いでいる途中（CONNECTING）に upstream を切ると `ws` は
+  error を出し、それが「Module に繋がりません」の `stream.refused` として残っていた。道は2つ
+  - 画面の側が切れた（`client` の close → `upstream.terminate()`）。繋いでいる途中は画面から読むのを止めている（`pause`）
+    ので、気づけるのは回線が RST で切れたときだけ（普通に閉じる返事は読まれない）。試験は RST で起こす
+  - banto が止まる（`closeAll` → `upstream.close()`）。こちらは閉じたのが「module」とも記録されていた
+  直し：閉じ始めの印（`closedBy`）が立っていれば upstream の error を記録しない・断らない。`closeAll` は両側を閉じる前に
+  「banto が閉じた」（1012）と記録する
+- 確かめているとき `module-canvas-inline.spec.ts`（会話に入口のカードが残っていない、`toBeVisible` が hidden）が
+  3回中1回落ちた。直す前の `crypto.randomUUID()` に戻しても3回中1回落ちたので、この変更によるものではない。直していない

@@ -7,6 +7,8 @@
 // - 返すのは host の `{ url, ticket, expiresAt }` をそのまま。画面はそれで WebSocket を開く（`@banto/stream-client`）
 // - どの面の画面からでも受ける（人が押した直後かは見ない）——開いたままの端末が、裏で切れたあと自分で繋ぎ直すため
 
+import { randomId } from "../random-id.ts";
+
 export const STREAM_OPEN_METHOD = "dev.banto/stream/open";
 
 /** 画面から来た params を読む。読めなければ理由 */
@@ -20,7 +22,7 @@ export function parseStreamOpenParams(
   return { name: p.name, params: inner as Record<string, unknown> };
 }
 
-/** iframe ごとの印（描いた枠1つに1つ） */
+/** iframe ごとの印（描いた枠1つに1つ）。`crypto.randomUUID` は http の LAN アドレスなどでは無い（`lib/random-id.ts`） */
 export function newFrameId(): string {
-  return crypto.randomUUID();
+  return randomId();
 }
