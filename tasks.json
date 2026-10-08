@@ -6165,6 +6165,27 @@
       "updatedAt": "2026-10-08T11:26:55.082Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "factory-stopped-lost-after-restart",
+      "number": 254,
+      "kind": "bug",
+      "title": "Factory の Module が起こし直されると、止まっていた件に answerFactory も cancelFactory も効かなくなる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "2026-10-08 12:18、#241（browser-core、実行 8d2a8db5）の実装中に Subagent の Module が止まり、件は stopped（実装、「段が失敗しました：subagent の仕事は途中で終わりました」）になった。その直後に Factory の Module も起こし直されたらしく、知らせは「知らせる先がありません」（notifyErrors）で届かなかった。\n\nそのあと answerFactory（continue・retry とも）が「browser-core は止まっていません（いま：stopped・実装）」で断る。engine.ts の answer() は live（メモリの中の走っている件）と pendingAnswer を見ているが、起こし直したあと stopped の件の live が作り直されていないため。cancelFactory も live を見るので「走っていません」になるはず。記録（RunRecord）では stopped なのに、答えも止めもできず、Backlog は in-progress のまま残る。\n\n回避：作業ツリーの変更を手でコミットし、Backlog を ready に戻して runFactory で流し直した（作業ツリーがあれば使い回すので続きから）。\n\n直す：起こし直したとき、記録で stopped の件は「答えを待つ」live を作り直して answerFactory・cancelFactory を受ける（v4-architecture.md §2.5「起こし直しをまたいで続ける」の Factory の分）。あわせて、知らせる先（札）が起こし直しで失われた止まりの知らせを、どう人に届けるかも決める。",
+      "doneWhen": "Factory の Module を起こし直したあとも、止まっていた件に answerFactory（continue・retry・drop）と cancelFactory が効くことを試験で確かめた。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-08T12:49:58.881Z",
+      "updatedAt": "2026-10-08T12:49:58.881Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
