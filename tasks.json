@@ -5683,7 +5683,7 @@
       "number": 233,
       "kind": "task",
       "title": "host：Fork を開き直したら、閉じている間に溜まった届いたもので AI を起こす",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "ai-close-fork",
       "dependsOn": [],
       "milestone": null,
@@ -5695,7 +5695,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T02:02:51.193Z",
-      "updatedAt": "2026-10-08T02:02:51.193Z",
+      "updatedAt": "2026-10-08T02:03:14.709Z",
       "closedAt": null,
       "extra": {}
     },
