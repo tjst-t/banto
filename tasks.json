@@ -5662,7 +5662,7 @@
       "number": 232,
       "kind": "task",
       "title": "host：core の tool close_fork——自分の Fork をターンの終わりに閉じる・裏の仕事があれば断る・理由を記録に残す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "ai-close-fork",
       "dependsOn": [],
       "milestone": null,
@@ -5674,7 +5674,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T02:02:51.193Z",
-      "updatedAt": "2026-10-08T02:02:51.193Z",
+      "updatedAt": "2026-10-08T02:03:14.110Z",
       "closedAt": null,
       "extra": {}
     },
