@@ -512,6 +512,29 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
   },
   {
+    // **人と AI が同じブラウザを触り、通信を調べる**（v4-modules.md §4.1、2026-10-08）。Project のコンテナの中で
+    // Playwright 同梱の chromium-headless-shell を CDP で使う——コンテナの中の localhost（Publish していない開発サーバ）に
+    // 届く。ブラウザ・プロファイル（ログイン状態）・通信の記録はこの Module のデータ置き場（`BANTO_MODULE_DATA_DIR`）。
+    // 必須ではないので既定ではなく目録に置く。ブラウザ（子プロセス）を走らせるので exec
+    id: "browser",
+    name: "Browser",
+    description:
+      "この Project のコンテナの中のブラウザを AI が開いて操作し、通信（要求・応答・WebSocket）とコンソールを記録して調べる。" +
+      "ログイン状態は Project ごとに残る。初めて使うときにブラウザを入れます",
+    suggestedName: "browser",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/browser/dist/server.js"],
+    },
+    meta: {
+      satisfies: ["browser"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "project",
+      confinement: { kind: "landlock", root: "project", profile: "exec" },
+    },
+  },
+  {
     // **動いているものに届く URL を生やす窓口**（v4-modules.md §4.3、2026-09-27）。AI の道具（publishService・
     // unpublishService・listPublished）と承認の画面を持ち、道を張るのは `publish` 役割の実装。**banto 本体で動く**
     // ——承認の画面を出すコードがコンテナの中にあると、中で root の AI が偽れる（v4-security.md §1）。
