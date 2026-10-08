@@ -42,6 +42,8 @@ export const STREAMS_PER_PROJECT = 64;
 export const STREAM_CLOSE_RESTARTING = 1012;
 /** 札・Origin が違う */
 const CLOSE_POLICY = 1008;
+/** 1通が 1 MiB を越えた（どちら向きでも） */
+const CLOSE_TOO_BIG = 1009;
 
 /** 札を出すのを断った（HTTP の番号つき） */
 export class StreamRefusal extends Error {
@@ -335,13 +337,28 @@ export class StreamRelay {
       finish("module", STREAM_CLOSE_RESTARTING);
       refuse(`Module が流れを受けませんでした（${res.statusCode}）`);
     });
+    // Module から 1 MiB を越えた1通が来たか。ws は Module へ 1009 を送るが、自分の close は 1006 になる
+    // ——そのままだと画面に「Module が止まりました」（1012）と、起きていないことを伝えてしまう
+    // 画面からの向きも同じ（画面へは ws が 1009 を送るが、記録と Module へ渡す番号が 1006 由来になる）
+    let upstreamTooBig = false;
+    let clientTooBig = false;
+    const tooBig = (err: Error) => (err as NodeJS.ErrnoException).code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH";
+    client.on("error", (err) => {
+      if (tooBig(err)) clientTooBig = true;
+    });
     upstream.on("error", (err) => {
+      if (tooBig(err)) upstreamTooBig = true;
       if (upstreamOpen) return; // 開いたあとの失敗は close で扱う
       finish("module", STREAM_CLOSE_RESTARTING);
       this.audit({ event: "stream.refused", ...base, reason: `Module に繋がりません（${(err as NodeJS.ErrnoException).code ?? err.message}）` });
       refuse("Module に繋がりません");
     });
     upstream.on("close", (code: number, reason: Buffer) => {
+      if (upstreamTooBig) {
+        finish("module", CLOSE_TOO_BIG);
+        if (client.readyState === WebSocket.OPEN) client.close(CLOSE_TOO_BIG, "Module からの1通が 1 MiB を越えました");
+        return;
+      }
       finish("module", code);
       if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) return;
       // Module が自分の番号で閉じたら渡す（4404 は「もう無い」）。落ちた・止まる（1006・1001）は起こし直し中
@@ -349,12 +366,14 @@ export class StreamRelay {
       else client.close(STREAM_CLOSE_RESTARTING, "Module が止まりました");
     });
     client.on("close", (code: number, reason: Buffer) => {
-      finish("screen", code);
+      finish("screen", clientTooBig ? CLOSE_TOO_BIG : code);
       if (upstream.readyState === WebSocket.CONNECTING) {
         upstream.terminate();
         return;
       }
-      if (upstream.readyState === WebSocket.OPEN) upstream.close(sendable(code) ? code : 1001, reasonText(reason));
+      if (upstream.readyState !== WebSocket.OPEN) return;
+      if (clientTooBig) upstream.close(CLOSE_TOO_BIG, "画面からの1通が 1 MiB を越えました");
+      else upstream.close(sendable(code) ? code : 1001, reasonText(reason));
     });
   }
 }

@@ -21,6 +21,8 @@ interface Harness {
   module: StreamServer;
   dataDir: string;
   audit: Array<Record<string, unknown>>;
+  /** Module の側で流れが閉じた番号 */
+  moduleCloses: number[];
   clock: { now: number };
   target(overrides?: Partial<StreamTarget>): StreamTarget;
 }
@@ -32,13 +34,16 @@ async function withRelay(
   const root = mkdtempSync(join(tmpdir(), "banto-streams-"));
   const dataDir = opts.dataDir ?? join(root, "m");
   mkdirSync(dataDir, { recursive: true });
+  const moduleCloses: number[] = [];
   const module = await listenStreams(
     {
       echo(ws, stamp) {
         ws.send(JSON.stringify({ hello: stamp }));
+        ws.on("close", (code) => moduleCloses.push(code));
         ws.on("message", (data, isBinary) => {
           if (!isBinary && data.toString() === "gone") return ws.close(4404, "もう無い");
           if (!isBinary && data.toString() === "crash") return ws.terminate();
+          if (!isBinary && data.toString() === "huge") return ws.send(Buffer.alloc(1024 * 1024 + 1));
           ws.send(data, { binary: isBinary });
         });
       },
@@ -67,6 +72,7 @@ async function withRelay(
       module,
       dataDir,
       audit,
+      moduleCloses,
       clock,
       target: (overrides = {}) => ({
         server: "echo-module",
@@ -177,6 +183,22 @@ test("1MiB を越えた1通は 1009 で閉じる。Module の番号（4404）は
     await tooBig.next(1);
     tooBig.ws.send(Buffer.alloc(1024 * 1024 + 1));
     assert.equal((await tooBig.closed).code, 1009);
+    await waitFor(() => h.moduleCloses.length === 1);
+    assert.deepEqual(h.moduleCloses, [1009], "Module に 1009 が渡っていない");
+
+    // 逆向き（Module → 画面）も 1009。「Module が止まりました」（1012）にしない。記録にも 1009 を残す
+    const tooBigBack = connect(h.url, h.relay.issue(h.target()).ticket);
+    await tooBigBack.next(1);
+    tooBigBack.ws.send("huge");
+    const back = await tooBigBack.closed;
+    assert.equal(back.code, 1009);
+    assert.doesNotMatch(back.reason, /止まりました/);
+    assert.equal(tooBigBack.got.length, 1, "1 MiB を越えた1通が画面に渡った");
+    await waitFor(() => h.audit.filter((e) => e.event === "stream.close").length === 2);
+    assert.deepEqual(
+      h.audit.filter((e) => e.event === "stream.close").map((e) => e.code),
+      [1009, 1009],
+    );
 
     const gone = connect(h.url, h.relay.issue(h.target()).ticket);
     await gone.next(1);
