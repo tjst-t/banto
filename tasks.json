@@ -5810,6 +5810,30 @@
       "updatedAt": "2026-10-08T08:20:57.282Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "browser-module",
+      "number": 239,
+      "kind": "story",
+      "title": "Browser Module——人と AI が同じブラウザを触り、通信を調べる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 v4-modules.md §4.1（main d17669ba）。Project のコンテナの中の headless Chromium を自作の Module が持ち、人の画面には CDP の screencast をアーキ仕様 §5.8 の流れの口で流す。AI の道具は9本、通信は CDP の Network で記録する（ブラウザの通信だけ。サービスどうしは第2段）。ログイン状態は Project ごとに残す。決定は 2026-10-08、Fork「ブラウザの Module の検討」。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §4.1",
+        "docs/specs/v4-architecture.md §5.8"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-08T09:11:51.698Z",
+      "updatedAt": "2026-10-08T09:11:51.698Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
