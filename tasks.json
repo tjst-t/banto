@@ -5931,6 +5931,33 @@
       "updatedAt": "2026-10-08T09:12:09.460Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "remote-runtime",
+      "number": 244,
+      "kind": "story",
+      "title": "Project を SSH で入る別のサーバで動かす（実行場所——別のサーバ）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "container",
+        "security"
+      ],
+      "body": "## なぜ\ncontainerlab で Proxmox を試し、その上で VM を動かしたい。banto の host 自体が VM なので、今のコンテナでも Proxmox が2段目・その上の VM が3段目の入れ子になり、ハードウェアの仮想化支援が効かない。物理サーバで Project を動かせば1段目・2段目で済む（2026-10-08、ユーザー）。\n\n## 形\n- まず SSH で入るサーバ丸ごとを、その Project の箱にする。あとでそのサーバの中の Incus のコンテナを足せる形にする\n- 実行場所は Module ではなく core の中の差し替え口。今のコンテナがその1つ目の実装\n- 本番の物理サーバは同じ LAN の Ubuntu（これから組む）。実機の確かめはユーザーが立てる別の VM で\n\n仕様は v4-security.md §1「Project の実行場所——別のサーバ」。",
+      "doneWhen": "ユーザーが立てた別の VM を実行場所に登録し、そこで作った Project で Shell・FileSystem・Service・サブエージェント（Claude のログインの中継）・Publish が動き、containerlab が向こうの docker で起きる",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §1「Project の実行場所——別のサーバ」",
+        "docs/notes/2026-10-08-remote-runtime.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-08T09:35:39.190Z",
+      "updatedAt": "2026-10-08T09:35:39.190Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
