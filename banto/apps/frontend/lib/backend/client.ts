@@ -350,6 +350,9 @@ export async function prepareRealProjectModules(projectId: string): Promise<stri
  * （API 転送 2.88MB のうち 2.875MB がこれ）。中身は開いたときに
  * `getRealThread` で取る。
  */
+/** Thread を閉じたのは AI（`close_fork`）か人（画面）か（host の `ThreadClosedBy`、追加・2026-10-08） */
+export type RealThreadClosedBy = "ai" | "human";
+
 export interface RealThreadSummary {
   id: string;
   projectId: string;
@@ -363,6 +366,9 @@ export interface RealThreadSummary {
    *  「この Fork を開く」をその場所に置くのに使う。 */
   forkedFromSeq?: number;
   status: "active" | "closed";
+  /** 誰が閉じたか・理由（追加・2026-10-08）。閉じている間だけ。これより前に閉じた記録には無い */
+  closedBy?: RealThreadClosedBy;
+  closedReason?: string;
   permissionMode?: MockPermissionModeValue;
   model?: string;
   effort?: RealEffort;

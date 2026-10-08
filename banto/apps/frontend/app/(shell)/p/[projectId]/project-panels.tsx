@@ -27,6 +27,8 @@ import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ForkDialog, type ForkDialogRequest } from "@/components/banto/thread/fork-dialog";
+import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
+import { ForkClosedBanner } from "@/components/banto/thread/fork-closed-banner";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import {
   clearRealThread,
@@ -39,6 +41,7 @@ import {
   foldForkThread,
   getThread,
   refreshRealProjectThreads,
+  reopenThread,
   registerRealFork,
   renameForkThread,
   updateRealThreadData,
@@ -289,6 +292,19 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // ——会話中はassistant-ui側のruntimeが状態を持ち、mockThreadsへは書き戻さない）
   // ——畳む直前にhost側の最新状態を取り直してから畳む。取り直さないと、
   // 履歴（Archive）の概要が「0件のやり取り」のまま古くなる（指摘・2026-09-04）。
+  // 裏の仕事が残っていれば、閉じる前に確かめる（v4-frontend.md §6「Fork を閉じるときの警告」）
+  const { confirmClose, dialog: closeForkDialog } = useCloseForkConfirm();
+
+  // **閉じた Fork を開いている画面から開き直す**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）
+  // ——AI が閉じた・別の画面で閉じた Fork は、開いている画面を Base へ飛ばさず帯を出している。その帯の「開き直す」
+  async function handleReopenFork(threadId: string) {
+    try {
+      await reopenThread(threadId);
+    } catch (err) {
+      toast(`Fork を開き直せませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   async function handleCloseFork(threadId: string) {
     try {
       // 畳む手順そのものは lib/mock/threads.ts に1つだけ持つ——サイドバーの
@@ -423,6 +439,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       )}
       renderFork={(threadId) => {
         const thread = getThread(threadId);
+        const closed = thread?.status === "closed";
         return (
           <div className="flex h-full min-h-0 flex-col">
             <ClosablePanelHeader
@@ -450,19 +467,25 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                     onClear={() => handleClear(threadId)}
                     onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(threadId, "compact") : undefined}
                   />
-                  {CONNECTED_FEATURES.threadCloseReopen ? (
+                  {CONNECTED_FEATURES.threadCloseReopen && !closed ? (
                     <IconHeaderButton
                       icon={CloseIcon}
                       label="この Fork Thread を Close"
-                      onClick={() => handleCloseFork(threadId)}
+                      onClick={() =>
+                        confirmClose(threadId, thread?.title ?? threadId, () => void handleCloseFork(threadId))
+                      }
                     />
                   ) : null}
                 </div>
               }
             />
+            {closed && thread ? (
+              <ForkClosedBanner thread={thread} onReopen={() => void handleReopenFork(threadId)} />
+            ) : null}
             <div className="min-h-0 flex-1">
               <ThreadPanel
                 threadId={threadId}
+                closed={closed}
                 // **Fork の会話からも Canvas を開ける**（2026-10-01、ユーザー報告）。渡していなかったので、Fork の中では
                 // 画面つき tool のカードに「開く」も「大きく開く」も出なかった。開くと Fork はそのまま細く残る
                 onOpenCanvas={(moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })}
@@ -543,6 +566,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         );
       }}
     />
+    {closeForkDialog}
     <ForkDialog
       request={forkRequest}
       onOpenChange={(open) => {

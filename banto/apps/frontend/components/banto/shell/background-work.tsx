@@ -86,6 +86,66 @@ function hrefOf(projectId: string, thread: ThreadRef, item: BackgroundItem): str
   return query ? `/p/${projectId}?${query}` : `/p/${projectId}`;
 }
 
+/** 1件の中身（題・説明・Module 名と何分前）。一覧の行と、Fork を閉じる前の確かめとで同じ出し方にする */
+function ItemBody({ item, kind, now }: { item: BackgroundItem; kind: Kind; now: number }) {
+  return (
+    <>
+      <span className="truncate text-sm text-foreground">{titleOf(item)}</span>
+      {/* 題と同じ文なら出さない（Shell の待たない形で呼び名を付けなかったとき、題も説明もコマンド。2026-10-08） */}
+      {distinctDescription(item.title, item.description) ? (
+        <span data-testid="background-item-description" className="line-clamp-2 text-xs text-ink-2">
+          {item.description}
+        </span>
+      ) : null}
+      <span className="text-xs text-ink-3">
+        {item.module}・{KINDS[kind].since(minutesAgo(item.since, now))}
+      </span>
+      {item.keptAt ? (
+        // **起こし直しのあと続けている**（2026-10-05、アーキ仕様 §2.5「2.」）——続けると答えてから長く届かない
+        // ものに人が気づけるよう、いつから続けているかを出す
+        <span data-testid="background-item-kept" className="text-xs text-ink-3">
+          起こし直しのあと続けています（{minutesAgo(item.keptAt, now)}から）
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * **押せない一覧**（追加・2026-10-08、v4-frontend.md §6「Fork を閉じるときの警告」）。1つの Thread の分を、サイドバーの
+ * 一覧と同じ見出し・出し方で並べる——人を待っているものが上、裏の仕事が下
+ */
+export function BackgroundItemsSummary({ items }: { items: readonly BackgroundItem[] }) {
+  const [now] = useState(() => Date.now());
+  const parts = split([{ thread: { id: "", title: "", fork: true }, items }]);
+  return (
+    <div className="flex flex-col gap-1" data-testid="background-summary">
+      {(["human", "work"] as const).map((kind) => {
+        const mine = parts[kind][0]?.items ?? [];
+        return mine.length === 0 ? null : (
+          <section key={kind} className="flex flex-col" data-kind={kind}>
+            <p className={cn("pt-1 text-xs font-medium", kind === "human" ? "text-turn" : "text-ink-3")}>
+              {KINDS[kind].heading(mine.length)}
+            </p>
+            <ul className="flex flex-col">
+              {mine.map((item, i) => (
+                <li
+                  key={`${item.toolCallId ?? item.since}-${i}`}
+                  data-testid="background-summary-item"
+                  data-kind={kind}
+                  className="flex flex-col gap-0.5 py-1"
+                >
+                  <ItemBody item={item} kind={kind} now={now} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function BackgroundList({
   projectId,
   groups,
@@ -124,23 +184,7 @@ function BackgroundList({
                     }}
                     className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent"
                   >
-                    <span className="truncate text-sm text-foreground">{titleOf(item)}</span>
-                    {/* 題と同じ文なら出さない（Shell の待たない形で呼び名を付けなかったとき、題も説明もコマンド。2026-10-08） */}
-                    {distinctDescription(item.title, item.description) ? (
-                      <span data-testid="background-item-description" className="line-clamp-2 text-xs text-ink-2">
-                        {item.description}
-                      </span>
-                    ) : null}
-                    <span className="text-xs text-ink-3">
-                      {item.module}・{KINDS[kind].since(minutesAgo(item.since, now))}
-                    </span>
-                    {item.keptAt ? (
-                      // **起こし直しのあと続けている**（2026-10-05、アーキ仕様 §2.5「2.」）——続けると答えてから長く届かない
-                      // ものに人が気づけるよう、いつから続けているかを出す
-                      <span data-testid="background-item-kept" className="text-xs text-ink-3">
-                        起こし直しのあと続けています（{minutesAgo(item.keptAt, now)}から）
-                      </span>
-                    ) : null}
+                    <ItemBody item={item} kind={kind} now={now} />
                   </button>
                 ))}
               </div>

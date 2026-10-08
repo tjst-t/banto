@@ -69,6 +69,11 @@ export function useThreadBackground(threadId: string): readonly BackgroundItem[]
   );
 }
 
+/** その Thread のバックグラウンドの仕事を、いまの写しから1回だけ読む（Fork を閉じる前の確かめ、v4-frontend.md §6） */
+export function getThreadBackground(threadId: string): readonly BackgroundItem[] {
+  return byThread.get(threadId)?.items ?? EMPTY;
+}
+
 /** 写し全体（Project の行で、その Project の Thread の分を集めるため） */
 export function useBackgroundByThread(): ReadonlyMap<string, ThreadBackground> {
   return useSyncExternalStore(

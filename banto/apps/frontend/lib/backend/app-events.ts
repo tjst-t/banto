@@ -12,7 +12,7 @@
 // 繋ぎ直す——**繋がっていない間も人は止めない**（開き直せば記録から見える）。黙って止まった接続も見切る
 // （`readSse`）——携帯で別アプリから戻ったとき、知らせが止まったままにならない。
 
-import { getBackendConfig, hostFetch, readSse } from "./client";
+import { getBackendConfig, hostFetch, readSse, type RealThreadClosedBy } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 import { noteJudgmentAnswered } from "./judgment-answers";
 
@@ -55,7 +55,12 @@ export type RealAppEvent =
    */
   | { type: "judgment.answered"; threadId: string; judgmentId: string; answer: string }
   /** 「端末を追加」の札が使われた（2026-10-03）。札を出した画面が「端末が入りました」と出す */
-  | { type: "auth.device_added"; codeId: string; label: string };
+  | { type: "auth.device_added"; codeId: string; label: string }
+  /**
+   * Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
+   * 人が画面で閉じたときも。サイドバーの開いている一覧から外し、開いている画面は飛ばさず帯を出す
+   */
+  | { type: "thread.closed"; threadId: string; projectId?: string; by: RealThreadClosedBy; reason?: string };
 
 const listeners = new Set<(event: RealAppEvent) => void>();
 let started = false;

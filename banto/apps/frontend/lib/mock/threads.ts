@@ -120,6 +120,8 @@ export function registerRealFork(
   realOverview?: MockThread["realOverview"],
   /** 人が付けた名前（決定・2026-09-11）。無ければこの Project の中の連番 */
   title?: string,
+  /** 閉じているなら、誰が閉じたか・理由（追加・2026-10-08） */
+  closed?: { by?: MockThread["closedBy"]; reason?: string },
 ): MockThread {
   const existing = mockThreads.find((t) => t.id === threadId);
   if (existing) return existing;
@@ -135,6 +137,8 @@ export function registerRealFork(
     realOverview,
     script: { seed: [], replies: [{ match: "*", steps: [{ t: "text", text: "" }] }] },
     status,
+    closedBy: status === "closed" ? closed?.by : undefined,
+    closedReason: status === "closed" ? closed?.reason : undefined,
     real: true,
     realMessages,
     realMarkers,
@@ -202,7 +206,28 @@ export function appendRealUsage(threadId: string, contextUsage: unknown, compact
 export async function closeThread(id: string): Promise<void> {
   const thread = getThread(id);
   if (thread?.real) await closeRealThread(id);
-  mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "closed", closedAt: "たった今" } : t));
+  markThreadClosed(id, { by: "human" });
+}
+
+/**
+ * **閉じたことを手元へ写す**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。この画面で閉じたときも、
+ * host から「閉じた」（`thread.closed`）が届いたとき——AI が閉じた・別の画面で閉じた——も、ここを通る。
+ * 開いている一覧（サイドバー）は `status` から出しているので、ここで外れる
+ */
+export function markThreadClosed(id: string, by: { by: "ai" | "human"; reason?: string }): void {
+  if (!getThread(id)) return;
+  mockThreads = mockThreads.map((t) =>
+    t.id === id
+      ? {
+          ...t,
+          status: "closed",
+          // 先にこの画面で閉じていたら、閉じた時刻はそのまま
+          closedAt: t.status === "closed" ? t.closedAt : "たった今",
+          closedBy: by.by,
+          closedReason: by.reason,
+        }
+      : t,
+  );
   notifyMockStoreChange();
 }
 
@@ -268,7 +293,9 @@ export async function reopenThread(id: string): Promise<void> {
   // 中身はここでは取らない——閉じた Fork は中身を持っていないことがある（Project を開いたときに
   // 取るのは開いている Thread だけ）が、開いた面が最新を取りに行く（`latest-state.ts`）
   if (thread?.real) await reopenRealThread(id);
-  mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "open", closedAt: undefined } : t));
+  mockThreads = mockThreads.map((t) =>
+    t.id === id ? { ...t, status: "open", closedAt: undefined, closedBy: undefined, closedReason: undefined } : t,
+  );
   notifyMockStoreChange();
 }
 

@@ -166,6 +166,8 @@ export type ThreadProps = {
   /** **そのメッセージの時点から**枝を分ける（決定・2026-09-11）。渡さなければ
    *  「ここから Fork」は出ない（記録に繋がっていない会話では分けられない） */
   onForkFrom?: ForkFromMessage;
+  /** 入力欄を出さない（banto: 閉じた Fork、開き直すまで送れない。2026-10-08） */
+  composerHidden?: boolean;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -226,6 +228,7 @@ export const Thread: FC<ThreadProps> = ({
   allowBranching = true,
   onForkFrom,
   onStopWhileAwaitingHuman,
+  composerHidden = false,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -241,6 +244,7 @@ export const Thread: FC<ThreadProps> = ({
         composerActionSlot={composerActionSlot}
         composerHint={composerHint}
         transcriptMarkers={transcriptMarkers}
+        composerHidden={composerHidden}
       />
       </ForkFromMessageProvider>
       </BranchingContext.Provider>
@@ -256,7 +260,8 @@ const ThreadRoot: FC<{
   composerActionSlot?: ReactNode;
   composerHint?: ReactNode;
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
-}> = ({ isEmpty, autoFocus, placeholder, composerActionSlot, composerHint, transcriptMarkers }) => {
+  composerHidden: boolean;
+}> = ({ isEmpty, autoFocus, placeholder, composerActionSlot, composerHint, transcriptMarkers, composerHidden }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   // **作り直された面は、読んでいた場所へ戻す**（決定・2026-09-28）。覚えた場所が「一番下」以外なら、
   // ライブラリの「最初に一番下へ」を止めて RememberScrollPosition が戻す。決まるのは作られたとき1回だけ
@@ -326,7 +331,9 @@ const ThreadRoot: FC<{
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
             {composerHint}
-            <Composer autoFocus={autoFocus} placeholder={placeholder} composerActionSlot={composerActionSlot} />
+            {composerHidden ? null : (
+              <Composer autoFocus={autoFocus} placeholder={placeholder} composerActionSlot={composerActionSlot} />
+            )}
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>

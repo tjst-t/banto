@@ -270,6 +270,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
         fork.forkedFromSeq ?? fork.createdSeq,
         overviewOf(fork),
         fork.title,
+        { by: fork.closedBy, reason: fork.closedReason },
       );
       seedThreadPermissionMode(fork.id, fork.permissionMode);
       seedThreadModel(fork.id, fork.model, fork.effort);
@@ -302,6 +303,7 @@ export async function registerNewRealForks(projectId: string): Promise<void> {
       fork.forkedFromSeq ?? fork.createdSeq,
       { messageCount: fork.messageCount, firstMessage: fork.firstMessage, lastMessage: fork.lastMessage },
       fork.title,
+      { by: fork.closedBy, reason: fork.closedReason },
     );
     seedThreadPermissionMode(fork.id, fork.permissionMode);
     seedThreadModel(fork.id, fork.model, fork.effort);

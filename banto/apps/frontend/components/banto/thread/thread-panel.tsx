@@ -105,8 +105,11 @@ export function ThreadPanel({
   onOpenFork,
   onForkFrom,
   markers,
+  closed = false,
 }: {
   threadId: string;
+  /** 閉じた Fork（追加・2026-10-08）。開き直すまで入力欄を出さない——送っても閉じた Fork には届けない */
+  closed?: boolean;
   /** MCP Apps の display mode "fullscreen"——tool 呼び出し自身が要求したら呼ばれる（§6.2） */
   onOpenCanvas?: CanvasOpener;
   /** 分岐した場所に残る「この Fork を開く」（決定・2026-09-07） */
@@ -252,6 +255,7 @@ export function ThreadPanel({
       onForkFrom={thread.real ? onForkFrom : undefined}
       // 画像を添えられるのは host に届く Thread だけ（モックの台本は画像を読まない・規則13）
       imageAttachments={!!thread.real && CONNECTED_FEATURES.composerImages}
+      closed={closed}
     />
   );
 }
@@ -269,6 +273,7 @@ function ThreadRuntime({
   onForkFrom,
   imageAttachments,
   build,
+  closed,
 }: {
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
@@ -283,6 +288,7 @@ function ThreadRuntime({
   imageAttachments: boolean;
   /** この会話を記録から組み立てた版（`restoredSyncVersion`）。進んだら記録を流し込み直す。乗った流れを描き始めてよいかの照合にも使う */
   build: number;
+  closed: boolean;
 }) {
   const touchKeyboard = useTouchKeyboard();
   const attachments = useMemo(
@@ -379,6 +385,7 @@ function ThreadRuntime({
         // 戻すかは host が決める（アーキ仕様 §2.2）
         onForkFrom={onForkFrom}
         onStopWhileAwaitingHuman={awaitingHuman ? () => runtime.thread.cancelRun() : undefined}
+        composerHidden={closed}
       />
       </ThreadIdProvider>
       </CanvasOpenerProvider>

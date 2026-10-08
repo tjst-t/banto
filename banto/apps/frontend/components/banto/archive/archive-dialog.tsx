@@ -40,6 +40,7 @@ function ArchiveRow({
   icon: Icon,
   title,
   subtitle,
+  note,
   expanded,
   onToggle,
   onReopen,
@@ -48,6 +49,8 @@ function ArchiveRow({
   icon: IconComponent;
   title: string;
   subtitle: string;
+  /** 題の下のもう1行（AI が閉じた Fork の「AI が閉じました：（理由）」） */
+  note?: string;
   expanded: boolean;
   onToggle: () => void;
   onReopen: () => void;
@@ -67,7 +70,12 @@ function ArchiveRow({
         <Icon className="mt-0.5 size-4 shrink-0 text-ink-3" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-foreground">{title}</span>
-          <span className="text-xs text-ink-3">{subtitle}</span>
+          <span className="block text-xs text-ink-3">{subtitle}</span>
+          {note ? (
+            <span data-testid="archive-row-note" className="block text-xs text-ink-2">
+              {note}
+            </span>
+          ) : null}
         </span>
       </button>
       {expanded ? (
@@ -265,6 +273,12 @@ export function ArchiveDialog({
                   icon={ForkIcon}
                   title={thread.title}
                   subtitle={thread.closedAt ? `Close した日：${thread.closedAt}` : "Close した日：不明（再読み込み前に閉じた）"}
+                  // **AI が閉じた Fork は、そう出す**（決定・2026-10-08、v4-frontend.md §6「Fork を閉じるときの警告」）
+                  note={
+                    thread.closedBy === "ai"
+                      ? `AI が閉じました${thread.closedReason ? `：${thread.closedReason}` : ""}`
+                      : undefined
+                  }
                   expanded={expandedId === thread.id}
                   onToggle={() => toggle(thread.id)}
                   onReopen={() => handleReopenFork(thread.id)}

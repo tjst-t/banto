@@ -54,6 +54,7 @@ import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags"
 import { SidebarItemMenu } from "./sidebar-item-menu";
 import { SortableList, SortableRow } from "./sortable-list";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
+import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { LoaderCircle } from "lucide-react";
 import { useProjectRunning } from "@/lib/backend/running-threads";
@@ -168,6 +169,9 @@ function ProjectTreeItem({
   const anyUnread = useAnyThreadUnread([project.baseThreadId, ...forks.map((f) => f.id)]);
   const projectUnread = !isCurrent && anyUnread;
   const closedForkCount = getClosedForksForProject(project.id).length;
+
+  // 裏の仕事が残っていれば、閉じる前に確かめる（v4-frontend.md §6「Fork を閉じるときの警告」）
+  const { confirmClose, dialog: closeForkDialog } = useCloseForkConfirm();
 
   async function closeFork(fork: MockThread) {
     try {
@@ -315,7 +319,11 @@ function ProjectTreeItem({
                         onMoveDown={index < forks.length - 1 ? () => moveFork(index, 1) : undefined}
                         // Close の口はメニューの中へ移した（改訂・2026-09-11、ユーザー要望）
                         // ——行に出しっぱなしの操作を1つに減らす。削除ではなく整理
-                        onClose={CONNECTED_FEATURES.threadCloseReopen ? () => void closeFork(fork) : undefined}
+                        onClose={
+                          CONNECTED_FEATURES.threadCloseReopen
+                            ? () => confirmClose(fork.id, fork.title, () => void closeFork(fork))
+                            : undefined
+                        }
                       >
                         {(more) => (
                         <div className="relative" {...forkDrag}>
@@ -369,6 +377,7 @@ function ProjectTreeItem({
               ) : null}
             </SidebarMenuSub>
           ) : null}
+          {closeForkDialog}
         </>
       )}
     </SortableRow>
