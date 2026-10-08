@@ -31,6 +31,7 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-root-warning";
 import { PathPicker } from "@/components/banto/settings/path-picker";
 import { ProjectContainerSection } from "@/components/banto/settings/project-container-section";
+import { ProjectClaudeLoginSection } from "@/components/banto/settings/project-claude-login-section";
 import { ProjectMessageSendersSection } from "@/components/banto/settings/project-message-senders-section";
 import { ProjectAutoApproveSection } from "@/components/banto/settings/project-auto-approve-section";
 import { ProjectTurnSummarySection } from "@/components/banto/settings/project-turn-summary-section";
@@ -143,6 +144,7 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
       </div>
 
       <ProjectContainerSection projectId={projectId} />
+      <ProjectClaudeLoginSection projectId={projectId} />
 
       <ProjectMessageSendersSection projectId={projectId} />
 

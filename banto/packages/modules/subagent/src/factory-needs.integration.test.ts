@@ -9,7 +9,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CALLER_MODULE_META_KEY, REPLY_TO_META_KEY, THREAD_META_KEY } from "@banto/module-contract";
 import { listAgents } from "./agents.js";
-import { localClaudeLogin } from "./claude-login-access.js";
 import { createSubagentServer } from "./server.js";
 import { fakeVault } from "./testing/harness.js";
 
@@ -30,7 +29,7 @@ async function withServer(fn: (ctx: { client: Client; project: string; delivered
     moduleDataDir: data,
     relayClient: fakeVault().relay,
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
-    claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }),
+    claudeLoginEnv: {},
     deliver: async (input) => void delivered.push(input),
   });
   const [a, b] = InMemoryTransport.createLinkedPair();

@@ -4,6 +4,7 @@
 // ので、ここで確実にconfig.jsonを書いてからcli.jsを読み込む
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
@@ -16,7 +17,7 @@ import {
   REGISTRY_BASE_URL,
   REGISTRY_PORT,
   SHELL_HOME_SOURCE,
-  SUBAGENT_CLAUDE_CREDENTIALS,
+  CLAUDE_RELAY_CREDENTIALS,
   SUBAGENT_IMPORT_FILE,
   SUBAGENT_IMPORTED_KEY,
 } from "./config.ts";
@@ -137,12 +138,24 @@ process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS = "2000";
 // サブエージェントの Module は Project のコンテナの中で動き、host の環境を受け継がない——偽物の印だけを
 // 中に渡す（決定・2026-09-25。人の banto では使わない口）
 process.env.BANTO_CONTAINER_ENV_PASSTHROUGH = "BANTO_SUBAGENT_FAKE_AGENT";
-// 設定画面が読むもの（本体の Claude ログインと、鍵の取り込み元）も偽物に向ける——人のものを読まない
+// **Claude のログインの中継**（core に常設、決定・2026-09-27）も偽物に向ける——人のログインを読まず、本物の API に
+// 出さない。上流の偽物は受け取った Authorization とパスをそのまま返す（spec が「本物のトークンに差し替わった」を見る）
 writeFileSync(
-  SUBAGENT_CLAUDE_CREDENTIALS,
+  CLAUDE_RELAY_CREDENTIALS,
   JSON.stringify({ claudeAiOauth: { accessToken: "e2e-not-a-token", subscriptionType: "max", rateLimitTier: "e2e-tier" } }),
 );
-process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS = SUBAGENT_CLAUDE_CREDENTIALS;
+process.env.BANTO_CLAUDE_RELAY_CREDENTIALS = CLAUDE_RELAY_CREDENTIALS;
+{
+  const upstream = createServer((req, res) => {
+    req.resume();
+    req.on("end", () =>
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ fakeUpstream: true, path: req.url, auth: req.headers.authorization ?? null })),
+    );
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  process.env.BANTO_CLAUDE_RELAY_UPSTREAM = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
+}
+// 鍵の取り込み元も偽物に向ける——人のものを読まない
 writeFileSync(SUBAGENT_IMPORT_FILE, JSON.stringify({ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }));
 process.env.BANTO_SUBAGENT_FAKE_IMPORT_FILE = SUBAGENT_IMPORT_FILE;
 

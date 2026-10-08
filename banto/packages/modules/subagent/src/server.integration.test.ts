@@ -3,11 +3,9 @@
 // コンテナの中で確かめる
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { listAgents } from "./agents.js";
-import { localClaudeLogin } from "./claude-login-access.js";
 import { fakeVault, sha, withServer } from "./testing/harness.js";
 
 test("一覧：使えるエージェントと、その設定の候補", async () => {
@@ -16,7 +14,7 @@ test("一覧：使えるエージェントと、その設定の候補", async ()
     assert.deepEqual(list.map((a) => a.id), ["fake", "fake-host"]);
     // 何を書かずに使えるかも返す
     assert.match(list[0]!.credentials, /banto 全体の設定の「サブエージェント」で入れた鍵を使う/);
-    assert.match(list[1]!.credentials, /使えない：banto 本体が Claude にログインしていません/);
+    assert.match(list[1]!.credentials, /使えない：この Project では banto 本体の Claude ログインを使えません/);
     const desc = JSON.parse((await call("listSubagents", { agent: "fake" })).text) as {
       agent: { name: string };
       options: { category?: string; values: string[] }[];
@@ -91,62 +89,59 @@ test("頼み方の誤りは、理由ごと isError で返す", async () => {
   });
 });
 
-// **banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー）——本物のトークンは
-// エージェントに入らず、中継だけが上流に差し込む
-test("Claude は本体のログインを中継で使う：上流には本物、エージェントには合言葉だけ", async () => {
-  const { createServer } = await import("node:http");
-  const seen: { url: string; auth: string }[] = [];
-  const upstream = createServer((req, res) => {
-    seen.push({ url: req.url ?? "", auth: req.headers.authorization ?? "" });
-    res.writeHead(200, { "content-type": "application/json" }).end('{"ok":"upstream"}');
-  });
-  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
-  const port = (upstream.address() as { port: number }).port;
-  const credDir = mkdtempSync(join(tmpdir(), "subagent-cred-"));
-  const REAL = `real-access-token-${Date.now()}`;
-  writeFileSync(join(credDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: REAL, refreshToken: "never-leaves" } }));
+// **banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー）——本物のトークンはエージェントに入らない。
+// 中継は core に常設し、コンテナの環境に住所と合言葉が入っている（決定・2026-09-27）。ここではそれを写すことだけを見る
+// ——中継そのもの（上流に本物を差し込む・推論だけ通す）は core の `claude-login/relay.test.ts`
+const RELAY_ENV = {
+  ANTHROPIC_BASE_URL: "http://10.0.0.1:4737/claude-login",
+  CLAUDE_CODE_OAUTH_TOKEN: "banto-project-secret",
+  CLAUDE_CODE_SUBSCRIPTION_TYPE: "max",
+  CLAUDE_CODE_RATE_LIMIT_TIER: "tier-x",
+};
+
+test("Claude は本体のログインの中継を使う：コンテナの環境の住所と合言葉・契約の種類を渡す", async () => {
   const fake = listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" })[0]!;
-  try {
-    await withServer(
-      async (call) => {
-        const ok = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[anthropic /v1/messages?beta=true]" })).text) as { text: string };
-        assert.match(ok.text, /anthropic: 200 \{"ok":"upstream"\}/);
-        assert.deepEqual(seen, [{ url: "/v1/messages?beta=true", auth: `Bearer ${REAL}` }]);
-        // 推論以外は通さない（本体のトークンは会話の履歴やコネクタにも触れる広さを持つ）
-        const other = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[anthropic /api/oauth/profile]" })).text) as { text: string };
-        assert.match(other.text, /anthropic: 403 .*推論/);
-        assert.equal(seen.length, 1, "推論以外が上流へ出た");
-        // エージェントの環境には、本物のトークンも refresh token も無い
-        for (const value of [REAL, "never-leaves"]) {
-          const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: `[has ${value}]` })).text) as { text: string };
-          assert.match(r.text, /環境に 含まない/, `${value} がエージェントの環境に入っている`);
-        }
-        // 自分の資格情報を渡したときは、中継を使わない
-        const own = JSON.parse(
-          (await call("runSubagent", { agent: "fake", prompt: "[env ANTHROPIC_BASE_URL]", envSecrets: { ANTHROPIC_API_KEY: "k" } })).text,
-        ) as { text: string };
-        assert.match(own.text, /ANTHROPIC_BASE_URL は渡っていない/);
-      },
-      {
-        agents: [{ ...fake, sharesHostClaudeLogin: true, credentialEnv: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] }],
-        claudeLogin: localClaudeLogin({ credentialsPath: join(credDir, ".credentials.json"), upstream: `http://127.0.0.1:${port}` }),
-      },
-    );
-  } finally {
-    upstream.close();
-    rmSync(credDir, { recursive: true, force: true });
-  }
+  await withServer(
+    async (call) => {
+      for (const [name, value] of Object.entries(RELAY_ENV)) {
+        const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: `[sha ${name}]` })).text) as { text: string };
+        assert.match(r.text, new RegExp(sha(value)), `${name} が届いていない`);
+      }
+      // 自分の資格情報を渡したときは、中継を使わない（住所が中継のままだと、その資格情報が中継で断られる）
+      const own = JSON.parse(
+        (await call("runSubagent", { agent: "fake", prompt: "[env ANTHROPIC_BASE_URL]", envSecrets: { ANTHROPIC_API_KEY: "k" } })).text,
+      ) as { text: string };
+      assert.match(own.text, /ANTHROPIC_BASE_URL は渡っていない/);
+      // 本体のログインの状態は、一覧にも出る（契約の種類は環境から）
+      const list = JSON.parse((await call("listSubagents", {})).text) as { id: string; credentials: string }[];
+      assert.match(list.find((a) => a.id === "fake")!.credentials, /banto 本体の Claude ログインを使う（契約：max/);
+    },
+    {
+      agents: [{ ...fake, sharesHostClaudeLogin: true, credentialEnv: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] }],
+      claudeLoginEnv: RELAY_ENV,
+    },
+  );
 });
 
-test("本体が Claude にログインしていなければ、エージェントを起こさずに理由を返す", async () => {
+test("本体のログインを使うエージェントに、鍵を使うエージェントの分は渡さない", async () => {
+  await withServer(
+    async (call) => {
+      const r = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "[env ANTHROPIC_BASE_URL]" })).text) as { text: string };
+      assert.match(r.text, /ANTHROPIC_BASE_URL は渡っていない/);
+    },
+    { claudeLoginEnv: RELAY_ENV },
+  );
+});
+
+test("コンテナの環境に中継が無ければ（Project 設定で切られた）、エージェントを起こさずに理由を返す", async () => {
   const fake = listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" })[0]!;
   await withServer(
     async (call) => {
       const r = await call("runSubagent", { agent: "fake", prompt: "x" });
       assert.equal(r.isError, true);
-      assert.match(r.text, /banto 本体が Claude にログインしていません/);
+      assert.match(r.text, /Project 設定の「Claude のログイン」がオフ/);
     },
-    { agents: [{ ...fake, sharesHostClaudeLogin: true }], claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }) },
+    { agents: [{ ...fake, sharesHostClaudeLogin: true }], claudeLoginEnv: {} },
   );
 });
 
@@ -177,30 +172,6 @@ test("既定の鍵が在るか分からない（読めていない Vault があ�
     },
     { relayClient: vault.relay },
   );
-});
-
-test("本体のログインを使うエージェントには、契約の種類を渡して既定を本体と揃える", async () => {
-  const credDir = mkdtempSync(join(tmpdir(), "subagent-cred-"));
-  writeFileSync(
-    join(credDir, ".credentials.json"),
-    JSON.stringify({ claudeAiOauth: { accessToken: "t", subscriptionType: "max", rateLimitTier: "tier-x" } }),
-  );
-  try {
-    await withServer(
-      async (call) => {
-        for (const [name, value] of [["CLAUDE_CODE_SUBSCRIPTION_TYPE", "max"], ["CLAUDE_CODE_RATE_LIMIT_TIER", "tier-x"]] as const) {
-          const r = JSON.parse((await call("runSubagent", { agent: "fake-host", prompt: `[sha ${name}]` })).text) as { text: string };
-          assert.match(r.text, new RegExp(sha(value)), `${name} が届いていない`);
-        }
-        // 本体のログインの状態は、一覧にも出る
-        const list = JSON.parse((await call("listSubagents", {})).text) as { id: string; credentials: string }[];
-        assert.match(list.find((a) => a.id === "fake-host")!.credentials, /banto 本体の Claude ログインを使う（契約：max/);
-      },
-      { claudeLogin: localClaudeLogin({ credentialsPath: join(credDir, ".credentials.json") }) },
-    );
-  } finally {
-    rmSync(credDir, { recursive: true, force: true });
-  }
 });
 
 test("Project ごとの Module は鍵の設定の口を持たない（banto 全体の設定の Module が持つ）", async () => {

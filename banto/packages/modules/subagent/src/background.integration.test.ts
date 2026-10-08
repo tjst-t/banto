@@ -9,7 +9,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { DELIVERS_LATER_META_KEY, PENDING_REPLY_META_KEY, REPLY_TO_META_KEY, THREAD_META_KEY } from "@banto/module-contract";
 import { listAgents } from "./agents.js";
-import { localClaudeLogin } from "./claude-login-access.js";
 import { createSubagentServer } from "./server.js";
 import { fakeVault } from "./testing/harness.js";
 
@@ -27,7 +26,7 @@ async function withBackground(fn: (ctx: { client: Client; delivered: Delivered[]
     moduleDataDir: data,
     relayClient: fakeVault().relay,
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
-    claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }),
+    claudeLoginEnv: {},
     deliver: async (input) => {
       delivered.push(input);
       return { deliveryId: `d${delivered.length}`, wake: "now" };

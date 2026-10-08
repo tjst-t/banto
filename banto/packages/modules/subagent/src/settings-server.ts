@@ -18,10 +18,8 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CANVAS_META_KEY, MODULE_META_KEY, VALUE_FREE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
-import { ClaudeLoginError, hostClaudeCredentialsPath, readHostClaudeAccount, startClaudeLoginProxy, type ClaudeLoginProxy } from "./claude-login-proxy.js";
-import { randomUUID } from "node:crypto";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { CredentialError, deleteKey, importableValue, storedKeys, storeKey, type CredentialsRelay } from "./credentials.js";
 import { HostRelayClient } from "./host-relay-client.js";
@@ -29,29 +27,12 @@ import { HostRelayClient } from "./host-relay-client.js";
 export interface SubagentSettingsDeps {
   relayClient: CredentialsRelay;
   agents?: AgentDefinition[];
-  /** banto 本体の Claude ログインの置き場（試験で差し替える）。既定は本体と同じ解決 */
-  claudeCredentialsPath?: string;
-  /** Claude の上流（試験で差し替える） */
-  claudeUpstream?: string;
 }
-
-/**
- * 開いた中継の寿命の上限。閉じ忘れ（サブエージェントの Module が落ちた等）で残り続けないように。
- * 長い仕事より長く取る——仕事の途中で切ると、その仕事が推論を呼べなくなる
- */
-const PROXY_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 
 const UI_APP_MIME = "text/html;profile=mcp-app";
 
 export function createSubagentSettingsServer(deps: SubagentSettingsDeps) {
   const agents = deps.agents ?? listAgents();
-  const claudeCredentialsPath = deps.claudeCredentialsPath ?? hostClaudeCredentialsPath();
-  /**
-   * **banto 本体の Claude ログインの中継**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。サブエージェントの
-   * Module は Project のコンテナの中にいて、本体のログインは中に無い（入れてはいけない）。中継はここ（host で動く
-   * 同梱のコード）が持ち、開いた中継の住所と1回ごとの合言葉だけを渡す
-   */
-  const proxies = new Map<string, { proxy: ClaudeLoginProxy; timer: NodeJS.Timeout }>();
   const server = new Server({ name: "banto-module-subagent-settings", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
@@ -127,25 +108,6 @@ export function createSubagentSettingsServer(deps: SubagentSettingsDeps) {
         inputSchema: agentAndEnv,
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
-      // **サブエージェントの Module だけが呼ぶ口**（module——AI にも人の画面にも出さない）
-      {
-        name: "claudeLoginStatus",
-        description: "banto 本体の Claude ログインの状態（契約の種類）。値は返さない",
-        inputSchema: { type: "object", properties: {} },
-        _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true },
-      },
-      {
-        name: "openClaudeLoginProxy",
-        description: "サブエージェントの1つの仕事のために、本体の Claude ログインの中継を開く（本物のトークンは渡さない）",
-        inputSchema: { type: "object", properties: { listenHost: { type: "string" } }, required: ["listenHost"] },
-        _meta: { [VISIBILITY_META_KEY]: "module" },
-      },
-      {
-        name: "closeClaudeLoginProxy",
-        description: "開いた中継を閉じる。上流が 401 を返した回数を返す（期限切れを理由つきで伝えるため）",
-        inputSchema: { type: "object", properties: { proxyId: { type: "string" } }, required: ["proxyId"] },
-        _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true },
-      },
     ],
   }));
 
@@ -176,57 +138,23 @@ export function createSubagentSettingsServer(deps: SubagentSettingsDeps) {
         case "deleteCredential":
           await deleteKey(agentOf(args.agent), String(args.env), deps.relayClient);
           return text({ ok: true });
-        case "claudeLoginStatus":
-          return text(await readHostClaudeAccount(claudeCredentialsPath));
-        case "openClaudeLoginProxy": {
-          const proxy = await startClaudeLoginProxy({
-            credentialsPath: claudeCredentialsPath,
-            host: String(args.listenHost ?? ""),
-            ...(deps.claudeUpstream ? { upstream: deps.claudeUpstream } : {}),
-          });
-          const proxyId = randomUUID();
-          const timer = setTimeout(() => void closeProxy(proxyId), PROXY_MAX_LIFETIME_MS);
-          timer.unref();
-          proxies.set(proxyId, { proxy, timer });
-          return text({
-            proxyId,
-            url: proxy.url,
-            secret: proxy.secret,
-            ...(proxy.account.subscriptionType ? { subscriptionType: proxy.account.subscriptionType } : {}),
-            ...(proxy.account.rateLimitTier ? { rateLimitTier: proxy.account.rateLimitTier } : {}),
-          });
-        }
-        case "closeClaudeLoginProxy":
-          return text(await closeProxy(String(args.proxyId)));
         default:
           throw new Error(`unknown tool: ${request.params.name}`);
       }
     } catch (err) {
       // 失敗は理由ごと画面に返す（保存できたふりをしない）
-      if (err instanceof CredentialError || err instanceof ClaudeLoginError) return { content: [{ type: "text", text: err.message }], isError: true };
+      if (err instanceof CredentialError) return { content: [{ type: "text", text: err.message }], isError: true };
       throw err;
     }
   });
-
-  /** 開いた中継を閉じる（無ければ 0 回として返す——閉じ忘れの上限で先に閉じていることがある） */
-  async function closeProxy(proxyId: string): Promise<{ upstreamAuthFailures: number }> {
-    const opened = proxies.get(proxyId);
-    if (!opened) return { upstreamAuthFailures: 0 };
-    proxies.delete(proxyId);
-    clearTimeout(opened.timer);
-    const upstreamAuthFailures = opened.proxy.upstreamAuthFailures();
-    await opened.proxy.close();
-    return { upstreamAuthFailures };
-  }
 
   /** 設定画面に出す状態。**値は返さない**（在るか・取り込めるかだけ） */
   async function credentialsStatus() {
     const present = agents.some(usesStoredKeys) ? await storedKeys(deps.relayClient) : new Map();
     return Promise.all(
       agents.map(async (a) => {
-        if (a.sharesHostClaudeLogin) {
-          return { id: a.id, title: a.title, hostLogin: await readHostClaudeAccount(claudeCredentialsPath) };
-        }
+        // 本体のログインを使わせるかは Project ごとに決める（Project 設定の「Claude のログイン」、決定・2026-09-27）
+        if (a.sharesHostClaudeLogin) return { id: a.id, title: a.title, sharesHostLogin: true };
         return {
           id: a.id,
           title: a.title,
@@ -261,8 +189,6 @@ if (process.argv[1] && process.argv[1].endsWith("/settings-server.js")) {
   }
   const server = createSubagentSettingsServer({
     relayClient: new HostRelayClient({ url: hostUrl, token: hostToken }),
-    // 試験は本物のログインを読まない（E2E が用意した偽物を指す）。ふだんは本体と同じ解決
-    ...(process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS ? { claudeCredentialsPath: process.env.BANTO_SUBAGENT_CLAUDE_CREDENTIALS } : {}),
   });
   await server.connect(new StdioServerTransport());
 }

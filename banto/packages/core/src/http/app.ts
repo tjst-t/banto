@@ -99,6 +99,7 @@ import { SelfUpdateError, type SelfUpdate } from "../self-update/self-update.js"
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
+import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
 import {
   CALL_ID_META_KEY,
   CALLER_META_KEY,
@@ -171,6 +172,11 @@ export interface AppDeps {
    */
   restartActivity?: Pick<Parameters<typeof collectActivity>[0], "moduleReplies" | "resumesAfterRestart">;
   relayEndpoint: HostRelayEndpoint;
+  /**
+   * **Claude のログインの中継**（core に常設、決定・2026-09-27、`docs/specs/v4-security.md` §2）。コンテナから
+   * `/claude-login/v1/messages` に来る。無ければその口は無い（試験の最小構成）
+   */
+  claudeLogin?: ClaudeLoginRelay;
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
   authToken: string;
@@ -608,6 +614,14 @@ export const DEFAULT_PERMISSION_MODE_KEY = "defaultPermissionMode";
  * 入れ子を許したコンテナだけ `/proc`・`/sys` の保護が外れるので、要る Project だけに許す。既定は使わない
  */
 export const CONTAINER_NESTING_KEY = "container.nesting";
+
+/** core の口の Claude の中継：どの Project も受け、送り元はその Project のコンテナに縛る（`claude-login/relay.ts`） */
+const CORE_CLAUDE_LOGIN_LISTENER = { acceptsProject: () => true, bindSource: true };
+
+/** この Project に Claude のログインを使わせるか。**既定はオン**——書かれているのが false のときだけ切る */
+export function claudeLoginEnabled(runtimeConfig: RuntimeConfigStore | undefined, projectId: string): boolean {
+  return runtimeConfig?.resolve(CLAUDE_LOGIN_ENABLED_KEY, projectId) !== false;
+}
 
 function isThreadPermissionMode(value: unknown): value is (typeof THREAD_PERMISSION_MODES)[number] {
   return typeof value === "string" && (THREAD_PERMISSION_MODES as readonly string[]).includes(value);
@@ -1286,6 +1300,13 @@ export function createApp(deps: AppDeps) {
       // プロセスが立ち上がっているかは分かってよい——中身は返さない。
       if (url.pathname === "/healthz" && req.method === "GET") {
         json(res, 200, { status: "ok" });
+        return;
+      }
+
+      // **Claude のログインの中継**（決定・2026-09-27）。合言葉（Project ごと）と送り元（その Project のコンテナ）で
+      // 確かめる——画面の認証とは別の経路。本文は読まずに上流へ流す
+      if (deps.claudeLogin && url.pathname.startsWith(`${CLAUDE_LOGIN_PATH}/`)) {
+        await deps.claudeLogin.handle(req, res, CORE_CLAUDE_LOGIN_LISTENER);
         return;
       }
 
@@ -2833,6 +2854,32 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, TURN_SUMMARY_KEY);
         }
         json(res, 200, { enabled: turnSummaryEnabled(projectId) });
+        return;
+      }
+
+      // **この Project に Claude のログインを使わせる**（決定・2026-09-27、ユーザー。`docs/specs/v4-security.md` §2）。
+      // 既定はオン。切ったらその時点で合言葉を無効にし、入れ直すと新しいものが出る（立っている Module には、
+      // 次に起こしたときに効く）。観測（要求の回数・最終時刻・直近の 401）と本体のログインの様子も返す
+      const claudeLoginMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/claude-login$/);
+      if (claudeLoginMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = claudeLoginMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.claudeLogin) return json(res, 501, { error: "この banto は Claude のログインの中継を持っていません" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { enabled?: unknown };
+          if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+          if (body.enabled) await deps.runtimeConfig.unsetProjectOverride(projectId, CLAUDE_LOGIN_ENABLED_KEY);
+          else {
+            await deps.runtimeConfig.setProjectOverride(projectId, CLAUDE_LOGIN_ENABLED_KEY, false);
+            deps.claudeLogin.revoke(projectId);
+          }
+        }
+        json(res, 200, {
+          enabled: claudeLoginEnabled(deps.runtimeConfig, projectId),
+          hostLogin: await deps.claudeLogin.hostLogin(),
+          stats: deps.claudeLogin.statsFor(projectId),
+        });
         return;
       }
 

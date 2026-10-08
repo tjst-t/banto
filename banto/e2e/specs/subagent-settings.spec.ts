@@ -1,12 +1,13 @@
 // サブエージェントの設定画面（決定・2026-09-24、ユーザー——「Claude は本体のログインを共有」
 // 「OpenCode の Secret は設定から入れられるといい」「鍵の設定は Project ではなく Global に」）。
 //
-// 偽物（start-core.ts）：本体の Claude ログイン＝契約 max の資格情報ファイル、取り込み元＝
+// 偽物（start-core.ts）：取り込み元＝
 // `{ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }`。エージェントは偽の2つ
 // （fake＝鍵を使う・OpenCode と同じ形、fake-host＝本体のログインを使う・Claude Code と同じ形）。
 //
 // 見るもの（規則14——押せたで終わらせず、画面に出る中身と、その操作が効く先まで）：
-//   1. **banto 全体の設定**の「Module ごとの設定」に「サブエージェント」が出て、本体のログインの状態が読める
+//   1. **banto 全体の設定**の「Module ごとの設定」に「サブエージェント」が出て、本体のログインを使うものは案内だけ
+//      （使わせるか・使った回数は Project 設定の「Claude のログイン」——`claude-login-relay.spec.ts`）
 //   2. 貼り付けて保存すると「設定済み」になり、値は画面のどこにも出ない。banto 全体の Vault の一覧にも出る
 //   3. 会話で envSecrets を書かずに頼むと、**貼った値そのもの**がエージェントに届く（sha256 で突き合わせ）
 //   4. 取り込むと置き換わり、次の仕事には**取り込んだ値**が届く（Vault の書き換えが、この画面から通る）
@@ -58,10 +59,10 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
     return { count: mine.length, text: mine[mine.length - 1]?.text ?? "" };
   };
 
-  // ---- 1. 設定画面が出て、本体のログインの状態が読める ----------------------------------
+  // ---- 1. 設定画面が出て、本体のログインを使うものは案内だけ ------------------------------
   let inner = await openSubagentSettings(page);
   await expect(inner.locator('[data-role="host-login"][data-agent="fake-host"]')).toHaveText(
-    "banto 本体の Claude ログインを使います（契約：max）。入れるものはありません。",
+    "banto 本体の Claude ログインを使います。入れるものはありません。使わせるかどうかと、使った回数は Project 設定の「Claude のログイン」で見ます。",
     { timeout: 30_000 },
   );
   let row = inner.locator('[data-role="credential"][data-agent="fake"][data-env="FAKE_AGENT_TOKEN"]');
@@ -72,9 +73,9 @@ test("サブエージェントの設定（banto 全体）：本体のログイ�
   // 開いた瞬間の読み取りで人を止めない
   await expect(page.locator('[data-testid="canvas-approval"]')).toHaveCount(0);
 
-  // カードの見出し：鍵を使うほうは件数、本体のログインを使うほうは使えるかどうか
+  // カードの見出し：鍵を使うほうは件数、本体のログインを使うほうはそう書く
   await expect(inner.locator('section.card[data-agent="fake"] .card-head .pill')).toHaveText("鍵なし");
-  await expect(inner.locator('section.card[data-agent="fake-host"] .card-head .pill')).toHaveText("使える");
+  await expect(inner.locator('section.card[data-agent="fake-host"] .card-head .pill')).toHaveText("本体のログイン");
 
   // ---- 2. 貼り付けて保存する ----------------------------------------------------------
   // 入力欄は「鍵を貼る」を押してから出る（値は画面に出さない——password）

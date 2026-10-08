@@ -231,7 +231,7 @@ function renderAgents(): HTMLElement {
     let tone = "ok";
     let label: string;
     if (a.hostLogin) {
-      label = a.hostLogin.loggedIn ? `本体のログイン${a.hostLogin.subscriptionType ? `・${a.hostLogin.subscriptionType}` : ""}` : "本体が未ログイン";
+      label = a.hostLogin.loggedIn ? `本体のログイン${a.hostLogin.subscriptionType ? `・${a.hostLogin.subscriptionType}` : ""}` : "本体のログインを使えない";
       if (!a.hostLogin.loggedIn) tone = "danger";
     } else if (a.keysError) {
       label = "鍵を確かめられない";

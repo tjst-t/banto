@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { listAgents } from "../agents.js";
-import { localClaudeLogin } from "../claude-login-access.js";
 import { createSubagentServer } from "../server.js";
 import { createSubagentSettingsServer } from "../settings-server.js";
 
@@ -76,8 +75,8 @@ export async function withServer(
     moduleDataDir: data,
     relayClient: fakeVault().relay,
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
-    // 試験は本物のログインを読まない
-    claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }),
+    // 試験は本物の環境を読まない（core が中継の変数を入れていない形）
+    claudeLoginEnv: {},
     ...overrides,
   });
   const conn = await connect(server);
@@ -95,7 +94,6 @@ export async function withSettings(fn: (call: Call) => Promise<void>, overrides:
     createSubagentSettingsServer({
       relayClient: fakeVault().relay,
       agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
-      claudeCredentialsPath: "/nonexistent/.credentials.json",
       ...overrides,
     }),
   );

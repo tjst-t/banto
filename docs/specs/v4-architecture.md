@@ -2605,7 +2605,7 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   **強制できる層は閉じ込め**
 - **閉じ込め**（改訂・2026-09-25）：**Subagent Module ごと Project のコンテナの中で起き、エージェントも中で走る**
   （`docs/specs/v4-security.md` §1）。**Claude のログインの中継は host に残し、core が常設して Project のコンテナの
-  環境に住所と合言葉を入れておく**（改訂・2026-09-27、ユーザー。以前は `subagent-settings` が持ち、実装はまだその形。
+  環境に住所と合言葉を入れておく**（改訂・2026-09-27、ユーザー。以前は `subagent-settings` が持っていた——移した・2026-10-08。
   本物の資格情報を中に入れないのは変わらない）。エージェントには専用ホーム（`HOME`・
   `TMPDIR`・XDG をここへ向ける）を渡す。**エージェントに渡す環境変数は一覧で絞る**
   （`PATH`・`LANG` など）——host が Module に渡した `BANTO_*` も、人の環境の秘密も渡さない。
@@ -2614,7 +2614,7 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   Claude を使っているのに、サブエージェントに別のログインが要るのは違和感がある」。同日の「setup-token を
   Vault に置く」を置き換える）。**本物のトークンは渡さない**：core が host に常設する中継の住所と、その Project 用の
   合言葉がコンテナの環境に入っていて（改訂・2026-09-27。以前は `subagent-settings` が1回ごとに立てていた——
-  実装はまだその形）、エージェントには `ANTHROPIC_BASE_URL`＝中継と、`CLAUDE_CODE_OAUTH_TOKEN`＝合言葉をそのまま渡す。中継は合言葉を
+  移した・2026-10-08）、エージェントには `ANTHROPIC_BASE_URL`＝中継と、`CLAUDE_CODE_OAUTH_TOKEN`＝合言葉をそのまま渡す。中継は合言葉を
   確かめ、Authorization を本体の access token（本体の置き場から**毎回読み直す**——本体の CLI が更新した
   ものをそのまま拾う）に差し替えて api.anthropic.com へ流す。**通すのは推論（`/v1/messages`）だけ**
   ——本体のトークンは会話の履歴・claude.ai のコネクタ・ファイルの送り込みまで触れる広さを持つ。
@@ -2624,8 +2624,9 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   ない）を `CLAUDE_CODE_SUBSCRIPTION_TYPE`・`CLAUDE_CODE_RATE_LIMIT_TIER` で渡す**——env のトークンのとき CLI は
   ここから読む（CLI 自身も同じ仕組みを使う）。実測で、既定が Opus 5.5（1M）・候補の並びも本体と同じになった。
   **トークンの期限が長い仕事の途中で来ると落ちる**
-  ——本体の CLI が次の呼び出しで更新するので、`sessionId` を渡して続きから頼み直せば通る（落ちたときは
-  そう書いて返す）
+  ——本体の CLI が次の呼び出しで更新するので、`sessionId` を渡して続きから頼み直せば通る。上流が 401 を返したら
+  core の中継が受信箱に「本体の Claude ログインが期限切れ」を1件出す（改訂・2026-10-08。以前はサブエージェントが
+  閉じた中継の 401 の回数から推測して、失敗の文に書き足していた）
 - **鍵を使うエージェント（OpenCode）は、人が設定画面で入れた鍵を既定で使う**（決定・2026-09-24、ユーザー——
   「Secret は設定から入れられるといい」「鍵の設定は Project ではなく Global に」）。**banto 全体の設定**の
   「Module ごとの設定」に「サブエージェント」（設定 Canvas）が出て、変数ごとに「この機械の OpenCode から
@@ -2633,7 +2634,8 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   置き換え）・「消す」がある。**鍵は Vault の決まった名前（`subagent.<エージェント>.<変数>`）に置く**——banto
   全体で1つ、どの Project でも使う。Module は鍵を持たない（規則3）。`runSubagent` で envSecrets を書かなければ、
   その名前を直接引いて使う（**目録は引かない**——会話の中から目録を引くと人への承認が1枚増えた。実測）。
-  Claude Code（本体のログインを共有）の欄は、状態（ログイン中・契約の種類）を出すだけ。
+  Claude Code（本体のログインを共有）の欄は案内だけ（改訂・2026-10-08）——使わせるか・本体のログインの様子・
+  使われた回数は Project 設定の「Claude のログイン」に出す（`docs/specs/v4-security.md` §2）。
   **設定画面は別の Module（`subagent-settings`、banto 全体に1本）が持つ**——設定画面がどちらの設定に出るかは
   Module の単位が決め、走らせる Module は Project ごと（作業場所と閉じ込めがある）なので分けた（同じパッケージの
   別の入口）。banto 全体の設定画面から押した操作は、host が人の管理操作（`{admin}`）と刻むので、**Vault の

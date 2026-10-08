@@ -24,7 +24,6 @@ import {
   replyToFingerprint,
 } from "@banto/module-contract";
 import { defaultAliasName, listAgents } from "./agents.js";
-import { localClaudeLogin } from "./claude-login-access.js";
 import { createSubagentServer, resumePromptOf } from "./server.js";
 import { fakeVault } from "./testing/harness.js";
 import type { RunningRecord } from "./running.js";
@@ -53,7 +52,7 @@ async function startModule(dirs: Dirs) {
     moduleDataDir: dirs.data,
     relayClient: vault.relay,
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
-    claudeLogin: localClaudeLogin({ credentialsPath: "/nonexistent/.credentials.json" }),
+    claudeLoginEnv: {},
     deliver: async (input) => {
       delivered.push(input);
       return { deliveryId: `d${delivered.length}`, wake: "now" };

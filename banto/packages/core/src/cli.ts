@@ -51,7 +51,8 @@ import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
-import { createApp, CONTAINER_NESTING_KEY } from "./http/app.js";
+import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled } from "./http/app.js";
+import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
@@ -207,6 +208,41 @@ async function main(): Promise<void> {
   const orphaned = await inbox.expireOrphanedJudgments();
   if (orphaned > 0) console.log(`[host] 前回の走行が抱えていた判断待ち ${orphaned} 件を期限切れにした`);
   const pendingApprovals = new PendingApprovalRegistry();
+  /**
+   * **Claude のログインの中継**（core に常設、決定・2026-09-27、`docs/specs/v4-security.md` §2）。Project のコンテナの
+   * 環境に住所とその Project の合言葉を入れ、コンテナの中の `claude -p`・Agent SDK・サブエージェント・Service が
+   * 本体のログインで推論を呼べる。本物のトークンは中に入れない
+   */
+  const claudeLogin = new ClaudeLoginRelay({
+    // 試験は本物のログインを読まない（E2E が置いた偽物を指す）。ふだんは本体（Runner）と同じ置き場
+    credentialsPath: process.env.BANTO_CLAUDE_RELAY_CREDENTIALS ?? hostClaudeCredentialsPath(),
+    ...(process.env.BANTO_CLAUDE_RELAY_UPSTREAM ? { upstream: process.env.BANTO_CLAUDE_RELAY_UPSTREAM } : {}),
+    secretsPath: join(bootstrap.dataDir, "claude-login-secrets.json"),
+    enabled: (projectId) => claudeLoginEnabled(runtimeConfig, projectId),
+    // **送り元はその Project のコンテナ**（測った・2026-10-08：同じブリッジの別のコンテナからも core の口に届く。
+    // 起こし直しでもアドレスは変わらない（MAC が固定・DHCP の貸し出しは1時間）が、中の root はアドレスを足せる）。
+    // 覚えずに毎回 Incus に聞く——止まっている・無いコンテナは「違う」
+    sourceMatches: async (projectId, remote) => {
+      try {
+        return (await containers.containerAddress(containerNameFor(projectId), bootstrap.dataDir)) === remote;
+      } catch (err) {
+        if (err instanceof ContainerAddressUnavailable) return false;
+        throw err;
+      }
+    },
+    // **本体のログインが切れたら、受信箱に1件**（同じものが開いている間は増やさない）
+    onUpstreamUnauthorized: () => {
+      void inbox
+        .raiseNotice({
+          dedupeKey: "claude-login-upstream-unauthorized",
+          title: "banto 本体の Claude ログインが期限切れです",
+          detail:
+            "Project のコンテナからの Claude の呼び出しが、本体のログインで断られました（401）。" +
+            "banto を動かしているユーザーで `claude` を一度起こすとトークンが更新されます。切れたままなら `claude auth login` でログインし直してください",
+        })
+        .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
+    },
+  });
   // Module 間中継の許可と記録（アーキ仕様 §2.5）。**許可は Event Store に残す**
   // ——プロセスメモリに置くと、host を再起動するたびに人が承認し直すことになる
   const relayGrants = new RelayGrantStore(bootstrap.dataDir, eventLog);
@@ -1197,8 +1233,11 @@ async function main(): Promise<void> {
             HOME: context.moduleDataDir,
             // コンテナの中で動いていることを Module に知らせる（Shell の説明の言い方が変わる）
             BANTO_IN_CONTAINER: "1",
-            // 中から届く host 側のアドレス（サブエージェントが Claude の中継をここで開いてもらう）
-            BANTO_HOST_ADDRESS: container.hostAddress,
+            // **Claude のログイン**（決定・2026-09-27）：中継の住所とその Project の合言葉・契約の種類。Shell の子・
+            // サブエージェント・Service はこれをそのまま使う。Project 設定で切られていれば入れない
+            ...(where === "project-container" && project
+              ? await claudeLogin.envFor(project.id, `http://${container.hostAddress}:${bootstrap.port}`)
+              : undefined),
             BANTO_MODULE_DATA_DIR: context.moduleDataDir,
             // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てることがある——Module 自身が
             // 「自分はどの1本か」を知らないと、画面に同じ名前が並ぶ。host が必ず渡す
@@ -1798,6 +1837,7 @@ async function main(): Promise<void> {
     // 起こし直しで待つものと待たないもの（GET /api/admin/activity）
     restartActivity: { moduleReplies, resumesAfterRestart },
     relayEndpoint,
+    claudeLogin,
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
     auth: new AuthService({

@@ -24,7 +24,7 @@ export interface AgentDefinition {
   mode?: string;
   /**
    * **banto 本体の Claude ログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは渡さず、
-   * Module の中継（`claude-login-proxy.ts`）の合言葉だけを渡す
+   * core の中継（`core/src/claude-login/relay.ts`）の住所と、その Project の合言葉だけを渡す
    */
   sharesHostClaudeLogin?: boolean;
   /**

@@ -21,7 +21,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CLAUDE_CREDENTIALS_DIR, FRONTEND_BASE_URL, SUBAGENT_CLAUDE_CREDENTIALS, SUBAGENT_IMPORT_FILE } from "./config.ts";
+import { CLAUDE_CREDENTIALS_DIR, FRONTEND_BASE_URL, CLAUDE_RELAY_CREDENTIALS, SUBAGENT_IMPORT_FILE } from "./config.ts";
 import { isGroupAlive, listOwnedContainers, removeContainers } from "./containers.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -135,7 +135,7 @@ export async function startOwnHost(): Promise<OwnHost> {
         // もの）。Project のコンテナの中の Module に偽物の印だけを渡す（追加・2026-10-05）
         BANTO_SUBAGENT_FAKE_AGENT: "1",
         BANTO_CONTAINER_ENV_PASSTHROUGH: "BANTO_SUBAGENT_FAKE_AGENT",
-        BANTO_SUBAGENT_CLAUDE_CREDENTIALS: SUBAGENT_CLAUDE_CREDENTIALS,
+        BANTO_CLAUDE_RELAY_CREDENTIALS: CLAUDE_RELAY_CREDENTIALS,
         BANTO_SUBAGENT_FAKE_IMPORT_FILE: SUBAGENT_IMPORT_FILE,
       },
       // 自分のプロセスグループで（グループごと止めるため・Playwright に届く信号の巻き添えにならないため）

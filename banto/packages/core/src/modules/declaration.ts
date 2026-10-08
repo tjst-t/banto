@@ -916,12 +916,11 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
     meta: {
       satisfies: ["subagent"],
-      // 資格情報は Vault の alias から受け取る（Shell の envSecrets と同じ経路）。本体の Claude ログインの中継は
-      // banto 全体の設定の Module が開く（決定・2026-09-25——本体のログインはコンテナの中に無い）
+      // 資格情報は Vault の alias から受け取る（Shell の envSecrets と同じ経路）。本体の Claude ログインは、core が
+      // コンテナの環境に入れた中継の住所と合言葉を使う（決定・2026-09-27——中継は core に常設）
       dependsOn: [
         { role: "vault-directory", required: true },
         { role: "vault", required: true },
-        { role: "subagent-settings", required: true },
       ],
       isolation: "subprocess",
       scope: "project",
@@ -935,7 +934,7 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     // **設定だけを受け持つ banto 全体の Module** を分けた（同じパッケージの別の入口）。
     // 鍵は Vault の決まった名前に置き、どの Project でも使う。banto 全体の設定画面から押した操作は
     // 人の管理操作と刻まれるので、Vault の書き換え・削除もここからできる。
-    // 閉じ込めない——本体の Claude ログインの状態と、この機械の OpenCode の設定（取り込み元）を読む
+    // 閉じ込めない——この機械の OpenCode の設定（取り込み元）を読む
     name: "subagent-settings",
     launch: {
       command: "${nodeExec}",

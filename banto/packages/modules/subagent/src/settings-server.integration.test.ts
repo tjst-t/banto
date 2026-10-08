@@ -89,79 +89,16 @@ test("置けないものは理由ごと断る：空・知らない変数・本�
   );
 });
 
-test("本体のログインの状態（契約の種類）を出す。読めなければ理由を出す", async () => {
-  const credDir = mkdtempSync(join(tmpdir(), "subagent-cred-"));
-  writeFileSync(
-    join(credDir, ".credentials.json"),
-    JSON.stringify({ claudeAiOauth: { accessToken: "t", subscriptionType: "max", rateLimitTier: "tier-x" } }),
-  );
-  try {
-    await withSettings(
-      async (settings) => {
-        const status = JSON.parse((await settings("getCredentials", {})).text) as { agents: { id: string; hostLogin?: unknown }[] };
-        assert.deepEqual(status.agents.find((a) => a.id === "fake-host")!.hostLogin, {
-          loggedIn: true,
-          subscriptionType: "max",
-          rateLimitTier: "tier-x",
-        });
-        // トークンは出さない
-        assert.doesNotMatch(JSON.stringify(status), /"t"|accessToken/);
-      },
-      { claudeCredentialsPath: join(credDir, ".credentials.json") },
-    );
-    await withSettings(async (settings) => {
-      const status = JSON.parse((await settings("getCredentials", {})).text) as { agents: { id: string; hostLogin?: { loggedIn: boolean; reason?: string } }[] };
-      const h = status.agents.find((a) => a.id === "fake-host")!.hostLogin!;
-      assert.equal(h.loggedIn, false);
-      assert.match(h.reason!, /banto 本体が Claude にログインしていません/);
-    });
-  } finally {
-    rmSync(credDir, { recursive: true, force: true });
-  }
-});
-
-// **本体の Claude ログインの中継は、banto 全体の設定の Module が持つ**（決定・2026-09-25）。サブエージェントの
-// Module は Project のコンテナの中にいて、本体のログインは中に無い——中継を開いてもらい、住所と合言葉だけを受け取る
-test("Claude の中継：状態は値を返さず、自分のアドレスでだけ開き、合言葉で通り、閉じたら使えない", async () => {
-  const credDir = mkdtempSync(join(tmpdir(), "subagent-settings-claude-"));
-  const REAL = `real-access-${Date.now()}`;
-  writeFileSync(join(credDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: REAL, refreshToken: "never-leaves", subscriptionType: "max" } }));
-  // 上流の代役：受け取った Authorization をそのまま返す
-  const { createServer } = await import("node:http");
-  const upstream = createServer((req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ auth: req.headers.authorization })));
-  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
-  const port = (upstream.address() as { port: number }).port;
-  try {
-    await withSettings(
-      async (settings) => {
-        const status = await settings("claudeLoginStatus", {});
-        assert.equal(status.isError, false, status.text);
-        assert.deepEqual(JSON.parse(status.text), { loggedIn: true, subscriptionType: "max" });
-        assert.doesNotMatch(status.text, new RegExp(REAL));
-
-        // 自分のアドレス以外では待ち受けない（外から届く口にしない）
-        const refused = await settings("openClaudeLoginProxy", { listenHost: "0.0.0.0" });
-        assert.equal(refused.isError, true);
-        assert.match(refused.text, /自分のアドレスでしか待ち受けません/);
-
-        const opened = await settings("openClaudeLoginProxy", { listenHost: "127.0.0.1" });
-        assert.equal(opened.isError, false, opened.text);
-        assert.doesNotMatch(opened.text, new RegExp(REAL), "本物のトークンを渡している");
-        const p = JSON.parse(opened.text) as { proxyId: string; url: string; secret: string; subscriptionType?: string };
-        assert.equal(p.subscriptionType, "max");
-        const through = await fetch(`${p.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${p.secret}` }, body: "{}" });
-        assert.deepEqual(await through.json(), { auth: `Bearer ${REAL}` }, "中継が本体のトークンに差し替えていない");
-        const wrong = await fetch(`${p.url}/v1/messages`, { method: "POST", headers: { authorization: "Bearer nope" }, body: "{}" });
-        assert.equal(wrong.status, 401);
-
-        const closed = await settings("closeClaudeLoginProxy", { proxyId: p.proxyId });
-        assert.deepEqual(JSON.parse(closed.text), { upstreamAuthFailures: 0 });
-        await assert.rejects(fetch(`${p.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${p.secret}` }, body: "{}" }));
-      },
-      { claudeCredentialsPath: join(credDir, ".credentials.json"), claudeUpstream: `http://127.0.0.1:${port}` },
-    );
-  } finally {
-    upstream.close();
-    rmSync(credDir, { recursive: true, force: true });
-  }
+// **本体のログインを使わせるかは Project ごとに決める**（決定・2026-09-27）——banto 全体の設定は案内だけで、本体の
+// 資格情報は読まない（中継とその状態は core に常設、Project 設定の「Claude のログイン」に出る）
+test("本体のログインを使うエージェントは、案内だけを出す（本体の資格情報は読まない）。中継の口は無い", async () => {
+  await withSettings(async (settings) => {
+    const status = JSON.parse((await settings("getCredentials", {})).text) as { agents: { id: string; sharesHostLogin?: boolean }[] };
+    const host = status.agents.find((a) => a.id === "fake-host")!;
+    assert.equal(host.sharesHostLogin, true);
+    assert.deepEqual(Object.keys(host).sort(), ["id", "sharesHostLogin", "title"]);
+    for (const tool of ["claudeLoginStatus", "openClaudeLoginProxy", "closeClaudeLoginProxy"]) {
+      await assert.rejects(settings(tool, {}), /unknown tool/, `${tool} が残っている`);
+    }
+  });
 });

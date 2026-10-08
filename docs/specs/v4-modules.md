@@ -2216,9 +2216,6 @@ Shell の `grep` で足りる）。
   使えなければ「待ち受け無し」と言わずに理由を出す／core の申告の試験は `BANTO_SERVICE_NO_SYSTEMD=1` で本物の
   systemd を触らない
 - **作り直す時点**は Module が起きたときと各 tool の前（`reconcile`）
-- **Claude のログインの環境変数は、まだ core から届いていない**——Module は `ANTHROPIC_BASE_URL` 等を自分の環境から
-  写す作りだが、core の常設の中継（`docs/specs/v4-security.md` §2、Backlog の `claude-login-relay-owner`）が
-  未実装なので、いまは常に空
 - **SIGKILL で止められた**（systemd の止める待ち時間を超えた）ときは起動役が記録を書けず、状態は「まだ起きていない」
   に見える
 - **HOME は Shell とまだ揃えていない**（サービスの HOME はコンテナの中のホーム）。Shell の専用ホームは Shell の

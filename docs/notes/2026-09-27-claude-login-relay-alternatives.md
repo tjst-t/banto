@@ -271,3 +271,43 @@ Cloudflare Sandbox・nono の形。`gh`・`git` のような住所を差し替�
 観測は Project ごとの計数と、本体のログインが切れたときの受信箱1件。**Shell の `claudeLogin` 引数は実装しない**
 （同日の決定を取り消し）。仕様は `v4-security.md` §1・§2、`v4-modules.md` §2.3・§4.2、`v4-architecture.md` §4.1 に
 反映した。移行は `docs/tasks.json` の `claude-login-relay-owner`（pending）。
+
+## 11. 実装（2026-10-08、Backlog `claude-login-relay-owner`）
+
+**入れたもの**：中継は `banto/packages/core/src/claude-login/relay.ts`（core の口 `/claude-login/*`）。合言葉は
+`<データの置き場>/claude-login-secrets.json`（0600、Project の id → 合言葉）に持ち、banto を起こし直しても同じ。
+コンテナで起こす Module の env に4つを足す（`cli.ts`、`BANTO_HOST_ADDRESS` は消した）。Project 設定の
+`GET/PUT /api/projects/:id/claude-login` と画面の節。専用の待ち受けの形は `core/src/relay/relay-listener.ts`
+（立てて繋ぐのは別のサーバの実装で）。サブエージェントからは `openClaudeLoginProxy`・`closeClaudeLoginProxy`・
+`claude-login-access.ts`・12時間の上限・`subagent-settings` への dependsOn を消した。
+
+**§8 の「測る」の答え**（入れ子の Incus に使い捨てのコンテナを2台立てて、host 側で送り元を返す口に curl した）：
+
+- 同じブリッジの別のコンテナから届くか → **届く**。Project のコンテナは全部 `incusbr-1000`（制限つきの区画の
+  ブリッジ）に乗っている。だから合言葉だけでなく送り元も縛る
+- IP が途中で変わるか → `incus restart` では**変わらない**（MAC が `volatile.eth0.hwaddr` に固定、dnsmasq の貸し出しは
+  1時間・30分で更新）。同じ名前で作り直すと MAC が替わりアドレスも替わった
+- 追加で分かったこと：**中の root はアドレスを足せ、host にはそのアドレスのまま届く**（`security.ipv4_filtering` は
+  掛けていない）。動いている別のコンテナのアドレスを名乗ると、ARP がぶつかって TCP が通らなかった（curl が
+  時間切れ）。止まっている Project の合言葉は、縛りで「コンテナが動いていない」として断る
+
+**決めたこと（仕様に書いたもの以外の細部）**：
+
+- 送り元のアドレスは覚えずに毎回 Incus に聞く（規則3）。ただし**同じ接続（keep-alive）の続きでは聞き直さない**
+  ——接続の送り元は変わらず、コンテナが止まれば接続も切れる。Incus が答えないときは 502 で理由を返す（通さない）
+- 合言葉が違う・その待ち受けで受けない Project・スイッチが切れている、はどれも同じ 401（どれに当たったかを外に言わない）
+- サブエージェントに4つを渡すのは「本体のログインを使うエージェントで、自分の資格情報を envSecrets で渡されなかった
+  とき」だけ（仕様の「渡す変数の一覧に4つを足す」を、以前の開け閉めの条件のまま写した）。住所が中継のまま
+  自分の資格情報を渡すと、その資格情報が中継で断られるため
+- サブエージェントが失敗の文に「期限切れかも」と書き足すのはやめた（閉じた中継の 401 の回数から推測していた）。
+  代わりに core が上流の 401 で受信箱に1件出す（仕様どおり）
+- スイッチを入れ直しても、立っている Module は起こし直さない（「次に起こすときに効く」のまま）。入れ直した直後は、
+  立っている Module の環境は古い合言葉で 401 になる——画面の説明にそう書いた。起こし直して効かせるかは、使ってから決める
+- 専用の待ち受けの `/relay` は、受ける Project で絞っていない（`/relay` の合言葉は Module ごとで、Project はすでに
+  刻まれている）。別のサーバの実装で要るなら、そのときに足す
+
+**`claude -p` が通ることの確かめ**（2026-10-08、`/tmp/claude-p-probe.mjs`——使い捨て）：本物の Claude Code の CLI に、core が
+コンテナに入れるのと同じ4つ（住所はパスつき `http://…/claude-login`）だけを渡し、中継の先を偽の上流にした。CLI は
+`/claude-login/v1/messages?beta=true` に投げ（パスつきの住所をそのまま使う）、上流には本体のトークンと
+`anthropic-beta` の `oauth-2025-04-20` が届き、既定のモデルは `claude-opus-5-5`（契約の種類が効いた）、標準出力は
+偽の上流の返事だった。E2E（`claude-login-relay.spec.ts`）は CLI の入っていない Project のコンテナで curl で同じ道を通す。

@@ -1,14 +1,15 @@
 // サブエージェントの設定画面（ブラウザで動く。`config-app.ts` がこの JS を HTML に埋める）。
 // banto 全体の設定の「Module ごとの設定」に出る。MCP Apps の約束だけで親と話す。
 //
-// エージェントごとに1枚のカード。本体のログインを使うもの（Claude Code）は状態だけ、鍵を使うもの
+// エージェントごとに1枚のカード。本体のログインを使うもの（Claude Code）は使わせ方の案内だけ、鍵を使うもの
 // （OpenCode）は変数ごとに1行——どこの鍵か・入っているか・取り込む／貼る／置き換える／消す。
 // **値は画面に出さない**（入力欄は password、保存したら空にする）。
 
 interface KeyRow { env: string; alias: string; set: boolean; importable: boolean }
 interface AgentCredentials {
   id: string; title: string; importLabel?: string;
-  hostLogin?: { loggedIn: true; subscriptionType?: string } | { loggedIn: false; reason: string };
+  /** 本体の Claude ログインを使う（使わせるかは Project ごとの設定——決定・2026-09-27） */
+  sharesHostLogin?: true;
   keys?: KeyRow[];
 }
 interface ToolResult { content?: { type: string; text?: string }[]; isError?: boolean }
@@ -143,18 +144,15 @@ function keyRow(agent: AgentCredentials, key: KeyRow): HTMLElement {
 }
 
 function card(agent: AgentCredentials): HTMLElement {
-  if (agent.hostLogin) {
-    const ok = agent.hostLogin.loggedIn;
+  if (agent.sharesHostLogin) {
     return h("section", { class: "card", "data-agent": agent.id }, [
       h("header", { class: "card-head" }, [
         h("h2", { class: "card-title", text: agent.title }),
-        h("span", { class: "pill", "data-tone": ok ? "ok" : "danger" }, [h("span", { class: "dot" }), ok ? "使える" : "使えない"]),
+        h("span", { class: "pill", "data-tone": "ok" }, [h("span", { class: "dot" }), "本体のログイン"]),
       ]),
       h("p", {
         class: "card-note", "data-role": "host-login", "data-agent": agent.id,
-        text: agent.hostLogin.loggedIn
-          ? `banto 本体の Claude ログインを使います（契約：${agent.hostLogin.subscriptionType ?? "不明"}）。入れるものはありません。`
-          : `banto 本体が Claude にログインしていません：${agent.hostLogin.reason}`,
+        text: "banto 本体の Claude ログインを使います。入れるものはありません。使わせるかどうかと、使った回数は Project 設定の「Claude のログイン」で見ます。",
       }),
     ]);
   }

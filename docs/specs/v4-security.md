@@ -145,8 +145,8 @@ Project の根は見せない。どの Module がどこで動くかの一覧は 
   人に聞く**（§3 の表）
 - **Claude のログインの中継は host に置く**——本物の資格情報を中に入れない。**core が1本だけ常設し、Project の
   コンテナの環境に住所とその Project 用の合言葉を入れておく**（改訂・2026-09-27、ユーザー。以前は banto 全体の
-  `subagent-settings` が1回ごとに開け閉め——**実装はまだその形**。§2「banto 本体の Claude ログインは、中継で
-  共有する」）。**待ち受けは Project のネットワークの host 側のアドレス**——127.0.0.1 はコンテナから届かず、
+  `subagent-settings` が1回ごとに開け閉め。実装・2026-10-08、`core/src/claude-login/relay.ts`。§2「banto 本体の
+  Claude ログインは、中継で共有する」）。**待ち受けは Project のネットワークの host 側のアドレス**——127.0.0.1 はコンテナから届かず、
   proxy デバイスは制限つきの区画で使えない（実測）
 - **Module が呼ぶ host の中継**（`BANTO_HOST_MCP_URL`）も同じ理由で、Project のネットワークの host 側のアドレスで
   待ち受ける（合言葉は今までどおり）
@@ -262,9 +262,9 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
 Incus のコンテナで動かす形（向こうでも閉じ込め・資源の上限が使え、同じサーバに Project を複数置ける）を同じ口に
 足せるようにしておく。
 
-**先にやること**：Claude のログインの中継を core に常設する（Backlog `claude-login-relay-owner`、§2「banto 本体の
-Claude ログインは、中継で共有する」の改訂の形）。今の実装は `subagent-settings` が開くたびに新しいポートで待ち受ける
-ので、別のサーバからは決まった道（下の「向こうとの道」）で届かない。
+**先にやること**：~~Claude のログインの中継を core に常設する~~（済み・2026-10-08、Backlog `claude-login-relay-owner`。
+以前は `subagent-settings` が開くたびに新しいポートで待ち受けたので、別のサーバからは決まった道で届かなかった）。
+中継だけを受ける専用の待ち受けの形（`core/src/relay/relay-listener.ts`）もできている——立てて繋ぐのは別のサーバの実装で。
 
 #### 実行場所は core の中の差し替え口
 
@@ -642,7 +642,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   **持ち主が core なのは**、中継の寿命がコンテナと同じで、コンテナを起こし止めるのが core だから。中継は AI の
   tool ではなく境界の機構で、host 中継 `/relay` と同じ層（「機能は MCP の向こう」の原則の対象外）
   - ~~中継は banto 全体の `subagent-settings` が持ち、Subagent Module が1回ごとに開いてもらって閉じる（閉じ忘れは
-    12時間で閉じる）~~（2026-09-25 の決定。**実装はまだこの形**——移行は Backlog の `claude-login-relay-owner`）。
+    12時間で閉じる）~~（2026-09-25 の決定。移した・2026-10-08、Backlog の `claude-login-relay-owner`）。
     寿命が「1回の仕事」で必要な単位（Project）より短く、呼び出し口（サブエージェント・Shell・Service・E2E）が
     増えるたびに開け閉めの配線と寿命の規則が増えるため改めた
 - **合言葉は Project ごとに1つで、固定**（改訂・2026-09-27、ユーザー——当初は「コンテナを起こすたびに
@@ -654,7 +654,9 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   来たものはその Project の AI と同じに扱う」）
 - **コンテナの環境に常に入れる**：`ANTHROPIC_BASE_URL`（中継の住所）・`CLAUDE_CODE_OAUTH_TOKEN`（合言葉）・
   `CLAUDE_CODE_SUBSCRIPTION_TYPE`・`CLAUDE_CODE_RATE_LIMIT_TIER`。**入れ方は core が `incus exec` で Module を
-  起こすときの env**（いま `BANTO_HOST_ADDRESS` を渡している経路。新しい機構を増やさない）。Shell の子は
+  起こすときの env**（`BANTO_IN_CONTAINER` 等を渡している経路。新しい機構を増やさない。以前ここで渡していた
+  `BANTO_HOST_ADDRESS` は、サブエージェントが中継を開いてもらうためだけのものだったので消した）。
+  住所は `http://<ブリッジの host 側>:<core の口>/claude-login`（CLI が `/v1/messages` を足す）。Shell の子は
   `buildChildEnv` がそのまま通し、サブエージェントは渡す変数の一覧に4つを足し、Service は systemd の定義に写す。
   Incus の `environment.*`（人が `incus exec` で入っても通る）は、欲しくなったときに足す
 - **Claude Code の認証の形は今のまま**：合言葉は `CLAUDE_CODE_OAUTH_TOKEN` で渡す。公式の gateway の作法
@@ -663,10 +665,19 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 - 合言葉が違えば 401。シェルから読めても、**その Project のコンテナが起きている間、その中継を通して推論を
   呼べる**以上のことはできない（本物のトークンを持ち出せない）
 - **送り元をその Project のコンテナのアドレスに縛る**（方針。2026-09-27）——漏れた合言葉が他から効かないように。
-  **入れる前に測る**：同じブリッジの別のコンテナから届くか・コンテナの IP が寿命の途中で変わることがあるか。
+  **測った**（2026-10-08、入れ子の Incus の使い捨てのコンテナ2台）：Project のコンテナは全部同じブリッジ
+  （制限つきの区画に1つ）にいて、**別のコンテナからも core の口に届く**（縛る意味がある）。起こし直しても
+  アドレスは変わらない（MAC が `volatile.eth0.hwaddr` に固定・DHCP の貸し出しは1時間）。ただし**中の root は
+  アドレスを足せ、host にはそのアドレスで届く**（Incus の `security.ipv4_filtering` は掛けていない）。動いている
+  別のコンテナのアドレスを名乗ると ARP がぶつかって繋がらなかった。**縛り方**：送り元を、その Project のコンテナの
+  いまのアドレス（Incus に毎回聞く。覚えない）と比べ、止まっている・無いコンテナなら断る。同じ接続（keep-alive）の
+  続きでは聞き直さない（接続の送り元は変わらず、コンテナが止まれば接続も切れる）。Incus が答えないときは通さず
+  理由を返す
   **この縛りはコンテナの段のもの**（追加・2026-10-08）：別のサーバ（§1「Project の実行場所——別のサーバ」）からの要求は
   SSH のトンネルで来るので、host からは全部 127.0.0.1 に見える。そこでは**実行場所ごとの専用の待ち受け（ポート）が送り元の
-  代わり**になる——その待ち受けに来た合言葉は、その実行場所の Project のものだけを受ける。中継は待ち受けを複数持てる形に作る
+  代わり**になる——その待ち受けに来た合言葉は、その実行場所の Project のものだけを受ける。中継は待ち受けを複数持てる
+  （`ClaudeLoginListener`——受ける Project と、送り元を縛るか。専用の待ち受けは `core/src/relay/relay-listener.ts`
+  で、`/relay` と Claude の中継だけを受ける。立てて繋ぐのは別のサーバの実装で）
 - **通すのは `/v1/messages`（と `/v1/messages/count_tokens`）だけ**（それ以外は 403）。実測で Claude Code が
   中継に投げたのはこれだけ
 - **人の確認は Project の設定のスイッチにする**（決定・2026-09-27、ユーザー）：「この Project に Claude の

@@ -765,6 +765,24 @@ export async function setRealTurnSummary(projectId: string, enabled: boolean): P
   ).enabled;
 }
 
+/**
+ * **この Project に Claude のログインを使わせる**（決定・2026-09-27、ユーザー。`docs/specs/v4-security.md` §2）。既定はオン。
+ * 真実は host（`packages/core/src/claude-login/relay.ts`）。観測（回数・最終時刻・直近の 401）は banto を起こしてからの分
+ */
+export interface RealClaudeLogin {
+  enabled: boolean;
+  hostLogin: { loggedIn: true; subscriptionType?: string; rateLimitTier?: string } | { loggedIn: false; reason: string };
+  stats: { requests: number; lastRequestAt?: string; lastUnauthorizedAt?: string };
+}
+
+export async function fetchRealClaudeLogin(projectId: string): Promise<RealClaudeLogin> {
+  return request<RealClaudeLogin>(`/api/projects/${projectId}/claude-login`);
+}
+
+export async function setRealClaudeLogin(projectId: string, enabled: boolean): Promise<RealClaudeLogin> {
+  return request<RealClaudeLogin>(`/api/projects/${projectId}/claude-login`, { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
 export async function updateRealProjectSettings(
   projectId: string,
   patch: { name?: string; root?: string },

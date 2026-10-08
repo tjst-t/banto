@@ -42,9 +42,7 @@ import {
   type RunResult,
 } from "./acp-run.js";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
-import { ClaudeLoginError } from "./claude-login-proxy.js";
 import { prepareAgentLaunch } from "./agent-home.js";
-import { relayClaudeLogin, type ClaudeLoginAccess, type OpenedClaudeProxy } from "./claude-login-access.js";
 import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
@@ -60,10 +58,10 @@ export interface SubagentServerDeps {
   relayClient: StoredKeysRelay;
   agents?: AgentDefinition[];
   /**
-   * **banto 本体の Claude ログインを使わせる口**（決定・2026-09-25）。中継は host の `subagent-settings` が持つ
-   * （`claude-login-access.ts`）。試験は同じ中継をその場で立てる
+   * **banto 本体の Claude ログイン**（core に常設の中継、決定・2026-09-27、`docs/specs/v4-security.md` §2）。core が
+   * Project のコンテナの環境に住所とその Project の合言葉を入れておくので、ここから写すだけ。既定はこのプロセスの環境
    */
-  claudeLogin: ClaudeLoginAccess;
+  claudeLoginEnv?: NodeJS.ProcessEnv;
   /**
    * **待たない形の仕事が終わったら、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.1・§4.2）。
    * host の中継の `relayDeliverToThread`。無ければ待たない形は断る
@@ -76,6 +74,25 @@ export interface SubagentServerDeps {
 // **渡すのはこの一覧と、専用ホーム・資格情報だけ**
 const PASS_THROUGH_ENV = ["PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM", "TZ", "USER", "LOGNAME", "SHELL"];
 const HOST_ENV_PREFIX = "BANTO_";
+/**
+ * **Claude のログインの中継の変数**（core がコンテナの環境に入れる）。本体のログインを使うエージェントにだけ渡す
+ * ——自分の資格情報を envSecrets で渡されたときは渡さない（住所が中継のままだと、その資格情報が中継で断られる）
+ */
+const CLAUDE_LOGIN_ENV = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SUBSCRIPTION_TYPE", "CLAUDE_CODE_RATE_LIMIT_TIER"];
+
+/** 本体のログインを使えるか（値は返さない）。core が環境に入れていなければ、理由を返す */
+export type HostLoginStatus = { loggedIn: true; subscriptionType?: string } | { loggedIn: false; reason: string };
+export function hostLoginStatusOf(env: NodeJS.ProcessEnv): HostLoginStatus {
+  if (!env.ANTHROPIC_BASE_URL || !env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return {
+      loggedIn: false,
+      reason:
+        "この Project では banto 本体の Claude ログインを使えません（Project 設定の「Claude のログイン」がオフか、" +
+        "この Module がコンテナの外で起きています。オンにしたら、この Module が次に起きたときから使えます）",
+    };
+  }
+  return { loggedIn: true, ...(env.CLAUDE_CODE_SUBSCRIPTION_TYPE ? { subscriptionType: env.CLAUDE_CODE_SUBSCRIPTION_TYPE } : {}) };
+}
 
 const ENV_SECRETS_SCHEMA = {
   type: "object",
@@ -94,6 +111,7 @@ function agentIdsText(agents: AgentDefinition[]): string {
 
 export function createSubagentServer(deps: SubagentServerDeps) {
   const agents = deps.agents ?? listAgents();
+  const claudeLoginEnv = deps.claudeLoginEnv ?? process.env;
   // **頼んだ仕事の記録**——人が launcher の画面から一覧・状態・中身を見る（`runs.ts`）
   const runs = new RunLog(join(deps.moduleDataDir, "runs.jsonl"));
   // **走っている仕事の記録**（追加・2026-10-05、アーキ仕様 §2.5「2.」）——待たない形の仕事を、走っている間ファイルに残す。
@@ -127,7 +145,6 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             dependsOn: [
               { role: "vault-directory", required: true },
               { role: "vault", required: true },
-              { role: "subagent-settings", required: true },
             ],
             isolation: "subprocess",
             scope: "project",
@@ -315,7 +332,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
                 id: a.id,
                 title: a.title,
                 credentials: a.sharesHostClaudeLogin
-                  ? await hostLoginSummary()
+                  ? hostLoginSummary()
                   : "人が banto 全体の設定の「サブエージェント」で入れた鍵を使う（入っていなければ envSecrets で渡す）",
                 credentialEnv: a.credentialEnv,
               })),
@@ -324,13 +341,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         }
         const agent = agentOf(args.agent);
         const launched = await launchFor(agent, args.envSecrets, onProgress);
-        try {
-          return text(await describeAgent(launched.launch, deps.projectRoot));
-        } catch (err) {
-          throw await launched.explain(err);
-        } finally {
-          await launched.cleanup();
-        }
+        return text(await describeAgent(launched.launch, deps.projectRoot));
       }
 
 
@@ -350,7 +361,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           agents: await Promise.all(
             agents.map(async (a) =>
               a.sharesHostClaudeLogin
-                ? { id: a.id, title: a.title, hostLogin: await deps.claudeLogin.status() }
+                ? { id: a.id, title: a.title, hostLogin: hostLoginStatusOf(claudeLoginEnv) }
                 : {
                     id: a.id,
                     title: a.title,
@@ -537,35 +548,30 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             resumes: 0,
           });
         }
+        // 期限切れ（上流の 401）は core の中継が受信箱に知らせる——ここでは推測しない
         const work = async () => {
-          try {
-            report(`${agent.title} を起こしています`);
-            const result = await runStructured(
-              {
-                prompt,
-                ...(typeof args.model === "string" ? { model: args.model } : {}),
-                ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
-                ...(typeof args.sessionId === "string" ? { sessionId: args.sessionId } : {}),
-              },
-              agentRunDeps(run.id, launched.launch, agent, {
-                // 人が入口の画面で「止める」を押したときも止まる。待つ形なら、依頼元が取り消したときも
-                // ——待たない形は依頼元の呼び出しがもう終わっているので、それには縛らない
-                signal: background ? run.signal : AbortSignal.any([extra.signal, run.signal]),
-                onProgress: report,
-                recordRunning: background,
-                cwd,
-              }),
-              compiled,
-              report,
-            );
-            const final = { ...result, notes: [...launched.notes, ...result.notes] };
-            runs.finish(run.id, { result: final });
-            return final;
-          } catch (err) {
-            throw await launched.explain(err);
-          } finally {
-            await launched.cleanup();
-          }
+          report(`${agent.title} を起こしています`);
+          const result = await runStructured(
+            {
+              prompt,
+              ...(typeof args.model === "string" ? { model: args.model } : {}),
+              ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
+              ...(typeof args.sessionId === "string" ? { sessionId: args.sessionId } : {}),
+            },
+            agentRunDeps(run.id, launched.launch, agent, {
+              // 人が入口の画面で「止める」を押したときも止まる。待つ形なら、依頼元が取り消したときも
+              // ——待たない形は依頼元の呼び出しがもう終わっているので、それには縛らない
+              signal: background ? run.signal : AbortSignal.any([extra.signal, run.signal]),
+              onProgress: report,
+              recordRunning: background,
+              cwd,
+            }),
+            compiled,
+            report,
+          );
+          const final = { ...result, notes: [...launched.notes, ...result.notes] };
+          runs.finish(run.id, { result: final });
+          return final;
         };
 
         if (!background) {
@@ -599,7 +605,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       }
     } catch (err) {
       // 頼み方の誤り・エージェントの失敗は、AI に理由ごと返す（黙って空を返さない）
-      if (err instanceof SubagentError || err instanceof ClaudeLoginError) {
+      if (err instanceof SubagentError) {
         return { content: [{ type: "text", text: err.message }], isError: true };
       }
       throw err;
@@ -747,10 +753,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       runs.finish(run.id, { result: final });
       await deliverEnd(record.id, replyTo, endTitle(agent.title, final), JSON.stringify({ runId: record.id, resumedAfterRestart: true, ...final }));
     } catch (err) {
-      const explained = await launched.explain(err);
-      await fail(explained instanceof Error ? explained.message : String(explained));
-    } finally {
-      await launched.cleanup();
+      await fail(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -821,16 +824,26 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     }
   }
 
-  /** 資格情報を Vault から受け取り（Claude は本体のログインを中継で渡し）、専用ホームに向けた起こし方を作る */
+  /** 資格情報を Vault から受け取り（Claude は本体のログインの中継の変数を写し）、専用ホームに向けた起こし方を作る */
   async function launchFor(
     agent: AgentDefinition,
     envSecrets: unknown,
     onProgress?: (message: string) => void,
-  ): Promise<{ launch: AgentLaunch; notes: string[]; cleanup: () => Promise<void>; explain: (err: unknown) => Promise<unknown> }> {
+  ): Promise<{ launch: AgentLaunch; notes: string[] }> {
     const env: NodeJS.ProcessEnv = {};
     for (const name of PASS_THROUGH_ENV) if (process.env[name] !== undefined) env[name] = process.env[name];
 
     const secrets = (envSecrets ?? {}) as Record<string, unknown>;
+    // **Claude は banto 本体のログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは渡さず、core が
+    // コンテナの環境に入れた中継の住所と合言葉を写す（決定・2026-09-27——中継は core に常設）。自分の資格情報を
+    // envSecrets で渡されたときは、そちらを使う
+    if (agent.sharesHostClaudeLogin && !agent.credentialEnv.some((name) => name in secrets)) {
+      const status = hostLoginStatusOf(claudeLoginEnv);
+      if (!status.loggedIn) throw new SubagentError(status.reason);
+      // **既定を本体と揃える**（決定・2026-09-24、ユーザー）。契約の種類（トークンではない）も一緒に渡る——
+      // 無いと既定が Sonnet・文脈20万になった（実測）
+      for (const name of CLAUDE_LOGIN_ENV) if (claudeLoginEnv[name] !== undefined) env[name] = claudeLoginEnv[name];
+    }
     for (const [name, alias] of Object.entries(secrets)) {
       // host が渡した変数を上書きさせない（Shell の envSecrets と同じ。規則2——黙って無視しない）
       if (name.startsWith(HOST_ENV_PREFIX)) throw new SubagentError(`envSecrets に ${HOST_ENV_PREFIX} で始まる名前は使えません: ${name}`);
@@ -843,50 +856,12 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     const stored = await resolveStoredKeys(agent, new Set(Object.keys(secrets)), deps.relayClient, onProgress);
     Object.assign(env, stored.env);
 
-    // **Claude は banto 本体のログインを共有する**（決定・2026-09-24、ユーザー）。本物のトークンは
-    // 渡さず、中継の合言葉だけを渡す。中継は host の `subagent-settings` が開く（決定・2026-09-25——本体の
-    // ログインはコンテナの中に無い）。自分の資格情報を envSecrets で渡されたときは、そちらを使う
-    let proxy: OpenedClaudeProxy | undefined;
-    if (agent.sharesHostClaudeLogin && !agent.credentialEnv.some((name) => name in secrets)) {
-      onProgress?.("banto 本体の Claude ログインの中継を開いています");
-      proxy = await deps.claudeLogin.open();
-      env.CLAUDE_CODE_OAUTH_TOKEN = proxy.secret;
-      env.ANTHROPIC_BASE_URL = proxy.url;
-      // **既定を本体と揃える**（決定・2026-09-24、ユーザー）。env のトークンのとき、CLI は契約の種類を
-      // ここから読む（トークンではない）。無いと既定が Sonnet・文脈20万になった（実測）
-      if (proxy.subscriptionType) env.CLAUDE_CODE_SUBSCRIPTION_TYPE = proxy.subscriptionType;
-      if (proxy.rateLimitTier) env.CLAUDE_CODE_RATE_LIMIT_TIER = proxy.rateLimitTier;
-    }
-
-    try {
-      const shape = prepareAgentLaunch(agent, deps.projectRoot, join(deps.moduleDataDir, "agents", agent.id, "home"));
-      return {
-        launch: { command: shape.command, args: shape.args, env: { ...env, ...shape.env } },
-        notes: stored.notes,
-        cleanup: async () => {
-          await proxy?.close();
-        },
-        explain: async (err) => {
-          // **期限切れを、理由つきで返す**——本体のトークンは本体の CLI が更新する。サブエージェントが
-          // 長く走ると途中で切れることがあり、そのときは続きから頼み直せば、本体が更新したものを中継が拾う
-          const failures = proxy ? (await proxy.close()).upstreamAuthFailures : 0;
-          if (failures > 0 && err instanceof Error) {
-            return new SubagentError(
-              `${err.message}\n（banto 本体の Claude ログインのトークンが、途中で期限切れになった可能性があります。` +
-                "sessionId を渡して続きから頼み直してください——本体が次の呼び出しで更新します）",
-            );
-          }
-          return err;
-        },
-      };
-    } catch (err) {
-      await proxy?.close();
-      throw err;
-    }
+    const shape = prepareAgentLaunch(agent, deps.projectRoot, join(deps.moduleDataDir, "agents", agent.id, "home"));
+    return { launch: { command: shape.command, args: shape.args, env: { ...env, ...shape.env } }, notes: stored.notes };
   }
 
-  async function hostLoginSummary(): Promise<string> {
-    const h = await deps.claudeLogin.status();
+  function hostLoginSummary(): string {
+    const h = hostLoginStatusOf(claudeLoginEnv);
     return h.loggedIn
       ? `banto 本体の Claude ログインを使う（契約：${h.subscriptionType ?? "不明"}。何も渡さなくてよい）`
       : `使えない：${h.reason}`;
@@ -964,8 +939,6 @@ if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
     projectRoot,
     moduleDataDir,
     relayClient,
-    // 中継はコンテナから届く host 側のアドレスで開いてもらう（host が渡す。コンテナの外なら 127.0.0.1）
-    claudeLogin: relayClaudeLogin(relayClient, process.env.BANTO_HOST_ADDRESS ?? "127.0.0.1"),
     deliver: (input) => relayClient.deliverToThread(input),
   });
   await server.connect(new StdioServerTransport());
