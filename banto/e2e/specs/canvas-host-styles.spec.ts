@@ -11,7 +11,7 @@ import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, openApp, waitForProjectModule } from "../helpers.js";
+import { createProject, openApp, waitForProjectModule, openPaletteEntry } from "../helpers.js";
 
 test.setTimeout(180_000);
 
@@ -66,8 +66,7 @@ test("Canvas の色と段は banto が渡す——開いたままでも、明暗
   const light = await hostValues(page);
 
   // ---- 1. 開いた画面の値が、banto の画面の値と同じ -------------------------------------------
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /ファイル/ }).click();
+  await openPaletteEntry(page, /ファイル/);
   await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
   const frame = page.locator('[data-testid="module-canvas-frame"]');
   const fs = frame.contentFrame().frameLocator("iframe");
@@ -95,8 +94,7 @@ test("Canvas の色と段は banto が渡す——開いたままでも、明暗
   expect(await frame.getAttribute("data-bridge-generation"), "明暗の切り替えで画面を張り直した").toBe(generation);
 
   // ---- 3. 暗いときに開いた別の Module の画面も、はじめから暗い -----------------------------------
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /サブエージェント/ }).click();
+  await openPaletteEntry(page, /サブエージェント/);
   await expect(page.getByText(/^Canvas — subagent$/)).toBeVisible({ timeout: 30_000 });
   const sub = page.locator('[data-testid="module-canvas-frame"]').contentFrame().frameLocator("iframe");
   await expect(sub.locator(".title")).toHaveText("サブエージェント", { timeout: 60_000 });

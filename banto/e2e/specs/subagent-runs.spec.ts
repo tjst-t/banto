@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitForProjectModule, waitTurnEnded, openPaletteEntry } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -184,8 +184,7 @@ test("サブエージェントの入口：走っている仕事の中の枠を�
   await composer.fill("長い頼みを出して。" + fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: longPrompt } }] }));
   await composer.press("Enter");
 
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /サブエージェント/ }).click();
+  await openPaletteEntry(page, /サブエージェント/);
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   const running = canvas.locator('[data-role="run-item"][data-status="running"]');
   const detail = canvas.locator('[data-role="detail"]');

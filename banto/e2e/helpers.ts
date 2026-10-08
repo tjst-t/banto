@@ -481,3 +481,15 @@ export async function openToolCards(page: Page, toolName: string): Promise<void>
   for (let i = 0; i < 10 && (await closed.count()) > 0; i++) await closed.first().click();
   await expect(closed, `「Used tool: ${toolName}」のカードが開かない`).toHaveCount(0);
 }
+
+/**
+ * **Command Palette から Module の入口を開く**（追加・2026-10-08）。入口はその Project の Module が立ってから出る——
+ * 負荷が高いとコンテナの起動に 40 秒を超え、action の上限（30 秒、`playwright.config.ts`）では押す前に切れた
+ * （vault-directory:1009）。出るまで 60 秒は待ち、出なければ「入口が出ない」と言って落ちる
+ */
+export async function openPaletteEntry(page: Page, name: RegExp): Promise<void> {
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  const entry = page.getByRole("option", { name });
+  await expect(entry, `Command Palette に入口 ${name} が出ない（その Module が立っていない？）`).toBeVisible({ timeout: 60_000 });
+  await entry.click();
+}

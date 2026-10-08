@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openPaletteEntry } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -319,8 +319,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   const name = `e2e-mgr-key-${Date.now()}`;
   await openApp(page);
   await createProject(page, "E2E Vault 管理の鍵", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -399,8 +398,7 @@ test("管理 Canvas に共通の置き場の設定を置かない——見る・
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-noplace-"));
   await openApp(page);
   await createProject(page, "E2E 置き場なし", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -418,8 +416,7 @@ test("この Project の置き場を変えられる——移行の有無を選�
   const alias = `e2e-move-${Date.now()}`;
   await openApp(page);
   await createProject(page, "E2E 置き場を変える", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -494,8 +491,7 @@ test("公開鍵のコピーは、押した結果を人に言う", async ({ page 
   const keyAlias = `e2e-copy-key-${Date.now()}`;
   await openApp(page);
   await createProject(page, "E2E コピー", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -536,8 +532,7 @@ test("秘密鍵を貼ってやめたら、次に開いたときに残ってい�
   const leaked = `LEFTOVER-PRIVATE-KEY-${Date.now()}`;
   await openApp(page);
   await createProject(page, "E2E 貼ってやめる", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -567,8 +562,7 @@ test("一覧の行から、別の置き場へ移せる", async ({ page }) => {
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },
     data: { server: "vault-directory", tool: "createGroup", arguments: { implementation: "vault-local", name: dest } },
   });
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -624,8 +618,7 @@ test("選択欄：グループは Vault での本当の名前（この Project�
   mkdirSync(shots, { recursive: true });
   await openApp(page);
   await createProject(page, "E2E 選択欄", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -775,8 +768,7 @@ test("一覧の行から、別の Vault へ移せる（Vault の選択を切り�
   });
   await openApp(page);
   await createProject(page, "E2E Vault をまたぐ", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -870,8 +862,7 @@ test("一覧の行から参照を作ると、参照の行に「→ 元」が出�
   });
   expect(created.ok(), `元を置けなかった: ${await created.text()}`).toBe(true);
 
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -1056,8 +1047,7 @@ test("行の「…」のメニューはキーボードで操作でき、狭い C
     expect(bound.ok(), `グループに紐付けられない: ${await bound.text()}`).toBe(true);
   }
 
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
@@ -1189,8 +1179,7 @@ test("値を変える・グループを作る：SSH 鍵を作り直す／貼る�
 
   await openApp(page);
   await createProject(page, "E2E Vault 値を変える", projectRoot);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await openPaletteEntry(page, /Vault を管理/);
   await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
   const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });

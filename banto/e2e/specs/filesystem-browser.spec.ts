@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { unzipSync } from "fflate";
 import { CORE_BASE_URL, SANDBOX_BASE_URL } from "../config.js";
-import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
+import { createProject, fakeTurn, openApp, waitForProjectModule, openPaletteEntry } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -462,8 +462,7 @@ fetch("${CORE_BASE_URL}/healthz").then(function () { document.getElementById("ne
   await openApp(page);
   await createProject(page, "E2E FS HTML Preview", projectRoot);
   await waitForProjectModule(page, "E2E FS HTML Preview", "filesystem");
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  await page.getByRole("option", { name: /ファイル/ }).click();
+  await openPaletteEntry(page, /ファイル/);
   const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
   const row = (path: string) => inner.locator(`.row[data-path="${path}"]`);
   await row("demo.html").click({ timeout: 60_000 });
