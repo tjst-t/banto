@@ -3,7 +3,7 @@
 // 次の回の始め（`global-setup.ts`）。どれも札（`user.banto.owner`＝その回のデータの置き場）で引く——人の banto や、
 // 別のセッションで走っている E2E のものは消さない。
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 
 export interface OwnedContainer {
   name: string;
@@ -58,6 +58,20 @@ export function listOwnedContainers(): OwnedContainer[] {
     const owner = c.config?.["user.banto.owner"];
     return owner ? [{ name: c.name, owner }] : [];
   });
+}
+
+/**
+ * 前の回が残したもの（札が E2E の回の置き場で、その回がもう走っていない——置き場が消えた、または印の pid が
+ * 生きていない）の名前。`current`（この回の置き場）のものは入れない。別のセッションが同時に回している E2E のものも
+ * 入れない
+ */
+export function staleOwnedContainers(current: string): string[] {
+  return listOwnedContainers()
+    .filter((c) => {
+      const runId = runIdOf(c.owner);
+      return runId !== null && c.owner !== current && (!existsSync(c.owner) || !isAlive(runId));
+    })
+    .map((c) => c.name);
 }
 
 /**

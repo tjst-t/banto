@@ -5,7 +5,7 @@
 // 「たまたま前回のデータが残っていたから通った」になりかねない。
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { isAlive, listOwnedContainers, removeContainers, runIdOf } from "./containers.ts";
+import { removeContainers, staleOwnedContainers } from "./containers.ts";
 import {
   CONFIG_PATH,
   DATA_DIR,
@@ -119,9 +119,5 @@ function removeStaleRuns(): void {
  * ふつうは回が終われば片づけ役（`run-reaper.ts`）が消すので、ここはその片づけ役ごと殺されたときの受け皿
  */
 function removeStaleContainers(): void {
-  const stale = listOwnedContainers().filter((c) => {
-    const runId = runIdOf(c.owner);
-    return runId !== null && c.owner !== DATA_DIR && (!existsSync(c.owner) || !isAlive(runId));
-  });
-  removeContainers(stale.map((c) => c.name), (line) => console.log(`${line}（前の回が残したもの）`), 1);
+  removeContainers(staleOwnedContainers(DATA_DIR), (line) => console.log(`${line}（前の回が残したもの）`), 1);
 }

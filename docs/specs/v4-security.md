@@ -454,6 +454,12 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
   （前提の確かめは本番と同じ規則で通り、linger の注意が出ることも見る）。見るもの：実行場所の登録・host 鍵の確かめ・コードの送り込みと
   照合・Shell・FileSystem・Service・Claude の中継（偽の API）・流れの口・ssh-agent・切れたときに前の Module を止めてから
   繋ぎ直すこと・向こうの `ps` に合言葉が出ないこと・前提が欠けた相手で名指しして断ること
+  - 相手は `banto/e2e/ssh-host.ts`（`startSshHost`／`withSshHost`）。土台は banto の土台イメージ＋sshd（イメージ
+    `banto-e2e-sshd-<ハッシュ>`、1回だけ作る）。専用のユーザー `banto-remote`（uid 1500、host と違う番号）・**sudo できない**
+    （土台の「誰でも sudo」を外す）・host 鍵はコンテナごとに作る・パスワードでは入れない。試験の鍵は試験の側で作り、秘密鍵を
+    試験の Vault（vault-local）に `ssh-identity` で預ける。コンテナには Project のコンテナと同じ札（`user.banto.owner`）を
+    付け、閉じたとき・片づけ役（`run-reaper.ts`）・次の回の始め（`global-setup.ts`）で消える（相手そのものの試験は
+    `e2e/specs/remote-runtime-ssh-host.spec.ts`）
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
 ## 2. コンテナの中の細部（2026-09-25 に Landlock から移した）
