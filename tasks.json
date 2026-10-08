@@ -6056,7 +6056,7 @@
       "number": 249,
       "kind": "task",
       "title": "host が Project のフォルダに触っていたものを別のサーバに合わせる",
-      "status": "backlog",
+      "status": "ready",
       "parent": "remote-runtime",
       "dependsOn": [
         "remote-runtime-ssh"
@@ -6070,7 +6070,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-08T09:43:31.983Z",
+      "updatedAt": "2026-10-08T09:45:49.402Z",
       "closedAt": null,
       "extra": {}
     },
