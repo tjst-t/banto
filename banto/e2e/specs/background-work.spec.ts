@@ -84,7 +84,7 @@ test("待たずに頼んだ仕事が、どの Thread で動いているかサイ
   await expect(items).toHaveCount(2);
   await expect(items.nth(0)).toContainText("fake に頼んだ仕事");
   await expect(items.nth(0)).toContainText(FIRST);
-  await expect(items.nth(0)).toContainText(/subagent・(いま|\d+分前)に頼んだ/);
+  await expect(items.nth(0)).toContainText(/subagent・(いま|\d+分前に)頼んだ/);
   await expect(items.nth(1)).toContainText("fake に頼んだ仕事");
   await expect(items.nth(1)).toContainText(SECOND);
   await expect(list, "開いている Thread の一覧に Thread の見出しが出ている").not.toContainText("Base Thread");
