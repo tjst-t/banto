@@ -2,7 +2,7 @@
 // 順序をPlaywrightに委ねると競合しうる（実測——globalSetup前にcliが起動し、
 // config.jsonが無いまま既定値＝本番と同じport/dataDirで立ち上がりEADDRINUSEになった）
 // ので、ここで確実にconfig.jsonを書いてからcli.jsを読み込む
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ import { startRegistryFixture } from "./registry-fixture.ts";
 import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
 import { startGithubFixture } from "./github-fixture.ts";
 import { startGithubLoginFixture } from "./github-login-fixture.ts";
+import { startInfisicalFixture } from "./infisical-fixture.ts";
 
 globalSetup();
 
@@ -61,23 +62,12 @@ process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = CLAUDE_CREDENTIALS_DIR;
 // **Module を既定から外すと、それが居る前提の試験は落ちずに中身だけ減る**
 // ——実際、Vault をまたぐ移動の不具合がこの穴から素通りした。
 //
-// 資格情報は開発用の Infisical（`packages/modules/vault-infisical/dev/`）から取る。
-// **無ければ渡さない**——そのときは vault-infisical が繋がらず、受信箱に理由が
-// 出る（黙って緑にしない、規則2）。立て方は同 `dev/README.md`。
-const identity = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "../packages/modules/vault-infisical/dev/.identity.json",
-);
-if (existsSync(identity)) {
-  const c = JSON.parse(readFileSync(identity, "utf8")) as Record<string, string>;
-  process.env.BANTO_INFISICAL_SITE_URL = c.siteUrl;
-  process.env.BANTO_INFISICAL_CLIENT_ID = c.clientId;
-  process.env.BANTO_INFISICAL_CLIENT_SECRET = c.clientSecret;
-  process.env.BANTO_INFISICAL_PROJECT_ID = c.projectId;
-  process.env.BANTO_INFISICAL_ENVIRONMENT = c.environment;
-} else {
-  console.warn("[e2e] 開発用の Infisical が未用意——vault-infisical は繋がりません");
-}
+// **相手は偽の Infisical**（改訂・2026-10-08、ユーザー決定）。以前は開発用の Infisical
+// （`packages/modules/vault-infisical/dev/`、docker）の `.identity.json` を読んでいたが、docker の無い機械では
+// vault-infisical が「fetch failed」を出し続け、Infisical を使う試験が落ちる・遅くなった。GitHub と同じく
+// ここで立てる（`infisical-fixture.ts`）。vault-infisical は host の env を継ぐので、ここで置けば届く
+const infisical = await startInfisicalFixture();
+Object.assign(process.env, infisical.env);
 
 // **E2E は実 LLM を使わない**（決定・2026-09-20、ユーザー）。見たいのは banto 自身の
 // 振る舞いで、モデルがどの tool を選ぶかではない。実 LLM を引き金にすると

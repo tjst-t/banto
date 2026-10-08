@@ -126,6 +126,8 @@ export const RELEASE_DIR = join(SELF_UPDATE_DIR, "release");
 export const FAKE_SYSTEMCTL = join(SELF_UPDATE_DIR, "systemctl");
 /** Repositories のアカウントのための偽の GitHub の行き先（core のプロセスが書き、spec が読む——`github-login-fixture.ts`） */
 export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.json");
+/** 偽の Infisical の行き先と資格情報（core のプロセスが書き、自前の host が読む——`infisical-fixture.ts`） */
+export const INFISICAL_FIXTURE_FILE = join(E2E_TMP, "infisical-fixture.json");
 
 /**
  * **claude CLI 自身の置き場**。E2E は**人の `~/.claude` を一切書き換えない**

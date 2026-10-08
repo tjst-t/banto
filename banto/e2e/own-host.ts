@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLAUDE_CREDENTIALS_DIR, FRONTEND_BASE_URL, CLAUDE_RELAY_CREDENTIALS, SUBAGENT_IMPORT_FILE } from "./config.ts";
 import { isGroupAlive, listOwnedContainers, removeContainers } from "./containers.ts";
+import { infisicalFixtureEnv } from "./infisical-fixture.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "../packages/core/dist/cli.js");
@@ -137,6 +138,8 @@ export async function startOwnHost(): Promise<OwnHost> {
         BANTO_CONTAINER_ENV_PASSTHROUGH: "BANTO_SUBAGENT_FAKE_AGENT",
         BANTO_CLAUDE_RELAY_CREDENTIALS: CLAUDE_RELAY_CREDENTIALS,
         BANTO_SUBAGENT_FAKE_IMPORT_FILE: SUBAGENT_IMPORT_FILE,
+        // Infisical も E2E の core と同じ偽物に（`start-core.ts` が立てて置き場に書いたもの。追加・2026-10-08）
+        ...infisicalFixtureEnv(),
       },
       // 自分のプロセスグループで（グループごと止めるため・Playwright に届く信号の巻き添えにならないため）
       detached: true,
