@@ -5793,7 +5793,7 @@
       "number": 238,
       "kind": "task",
       "title": "Terminal の Module（tmux・人の画面・携帯のキーの帯）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "terminal-module",
       "dependsOn": [
         "stream-relay"
@@ -5807,7 +5807,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T08:20:57.282Z",
-      "updatedAt": "2026-10-08T08:20:57.282Z",
+      "updatedAt": "2026-10-08T14:30:27.924Z",
       "closedAt": null,
       "extra": {}
     },
