@@ -8,6 +8,8 @@
 //   1. 開いている Project を全部畳む（コンテナの有無に関わらず）。この回のコンテナは消す（下の「使い回しにはしない」）
 //   2. banto 全体の Module のうち、回の始めに無かったものを外し、止めた・動かしたものは回の始めの状態に戻す
 //   3. 受信箱：答えていない判断待ちは断り、お知らせ・レビュー待ちは見たにする（`helpers.ts` の `settleInbox`）
+//   4. banto 全体の Vault（vault-local）の alias のうち、回の始めに無かったものを消す（追加・2026-10-08——subagent-settings が
+//      途中で落ちて既定の鍵を消さずに残し、次の subagent.spec の続きの依頼がその鍵を拾って承認待ちのまま落ちた）
 // 戻せなかったものは理由つきで落とす（Module・Project）か警告する（受信箱の、答えられない判断待ち）——黙って続けない。
 //
 // **beforeAll より先に戻す**：Playwright の自動の fixture はテストにしか付かず、beforeAll はその前に走る。spec の
@@ -53,6 +55,8 @@ export * from "@playwright/test";
 const LAST_SPEC_FILE = join(dirname(DATA_DIR), "last-spec-file");
 /** 回の始めの banto 全体の Module（名前と、使うかどうか）。worker は落ちると作り直されるので、変数ではなくファイルに */
 const MODULES_BASELINE_FILE = join(dirname(DATA_DIR), "instance-modules-baseline.json");
+/** 回の始めの vault-local の alias（グループと名前）。同じ理由でファイルに */
+const ALIASES_BASELINE_FILE = join(dirname(DATA_DIR), "vault-aliases-baseline.json");
 
 /**
  * **どのテストも、ログインした状態で始まる**（追加・2026-10-03、人のログイン）。host のコマンド
@@ -125,9 +129,11 @@ async function resetIfNewSpec(testInfo: TestInfo): Promise<void> {
   if (last === null) {
     const modules = await apiJson<InstanceModule[]>("/api/modules");
     writeFileSync(MODULES_BASELINE_FILE, JSON.stringify(modules.map(({ name, enabled }) => ({ name, enabled }))));
+    writeFileSync(ALIASES_BASELINE_FILE, JSON.stringify(await vaultAliases()));
   } else {
     if (!process.env.BANTO_E2E_KEEP_SPEC_CONTAINERS) await closeProjects();
     await restoreInstanceModules();
+    await removeAddedAliases();
     const left = await settleInbox();
     if (left.length > 0) {
       console.warn(`[e2e] 前の spec の受信箱を片づけきれなかった——この spec の受信箱の数がずれうる: ${left.join(" / ")}`);
@@ -173,20 +179,53 @@ async function restoreInstanceModules(): Promise<void> {
   if (problems.length > 0) throw new Error(`[e2e] 前の spec の Module を回の始めの姿に戻せません：${problems.join(" / ")}`);
 }
 
+type VaultAlias = { name: string; group?: string };
+
+/** vault-local を人の管理面の口（`/api/ui-tool-call`）で呼ぶ。失敗は理由つきで投げる */
+async function vaultLocal(tool: string, args: Record<string, unknown>): Promise<string> {
+  const res = await api("/api/ui-tool-call", "POST", { server: "vault-local", tool, arguments: args });
+  const body = (await res.json().catch(() => null)) as { isError?: boolean; content?: { type: string; text?: string }[] } | null;
+  const text = body?.content?.find((c) => c.type === "text")?.text ?? "";
+  if (!res.ok || !body || body.isError) throw new Error(`[e2e] vault-local の ${tool} が失敗：${res.status} ${text || JSON.stringify(body)}`);
+  return text;
+}
+
+async function vaultAliases(): Promise<VaultAlias[]> {
+  return (JSON.parse(await vaultLocal("listAliases", {})) as VaultAlias[]).map(({ name, group }) => ({ name, group }));
+}
+
+/** vault-local の alias のうち、回の始めに無かったものを消す。消せないものは理由つきで落とす */
+async function removeAddedAliases(): Promise<void> {
+  const key = (a: VaultAlias) => `${a.group ?? ""}/${a.name}`;
+  const baseline = new Set((JSON.parse(readFileSync(ALIASES_BASELINE_FILE, "utf8")) as VaultAlias[]).map(key));
+  const problems: string[] = [];
+  for (const alias of (await vaultAliases()).filter((a) => !baseline.has(key(a)))) {
+    try {
+      await vaultLocal("deleteAlias", { name: alias.name });
+    } catch (err) {
+      problems.push(`${key(alias)}（${(err as Error).message}）`);
+    }
+  }
+  if (problems.length > 0) throw new Error(`[e2e] 前の spec が Vault に置いた alias を消せません：${problems.join(" / ")}`);
+}
+
 /**
- * **落ちたテストに、起きていないコンテナの起動の記録を添える**（追加・2026-10-08）。コンテナが起きないと core は
+ * **落ちたテストに、この回のコンテナの起動の記録を添える**（追加・2026-10-08）。コンテナが起きないと core は
  * 「起こせなかった」としか言わず、理由（`incusd forkstart` 等）は Incus の側にしか無い——wide-root が
- * それで落ちても、手がかりが残らなかった。この回のコンテナのうち動いていないものの `incus info --show-log` を付ける
+ * それで落ちても、手がかりが残らなかった。この回のコンテナ全部の `incus info --show-log` を付ける。
+ * **動いているものも含める**——core は起こせなかったコンテナを5秒ごとに起こし直すので、落ちた瞬間に一覧を読むと
+ * `Running` に見えることがある（wide-root で実測、動いていないものだけに絞ったら何も付かなかった）。替わり目に前の
+ * spec のコンテナは消えているので、数台で済む
  */
 async function attachContainerLogs(testInfo: TestInfo): Promise<void> {
-  let notRunning;
+  let mine;
   try {
-    notRunning = listOwnedContainers().filter((c) => c.owner === DATA_DIR && c.status !== "Running");
+    mine = listOwnedContainers().filter((c) => c.owner === DATA_DIR);
   } catch (err) {
     await testInfo.attach("incus-show-log", { body: `コンテナの一覧を読めません：${(err as Error).message}`, contentType: "text/plain" });
     return;
   }
-  for (const c of notRunning) {
+  for (const c of mine) {
     await testInfo.attach(`incus-show-log-${c.name}`, { body: `状態：${c.status}\n\n${containerLog(c.name)}`, contentType: "text/plain" });
   }
 }
