@@ -2,30 +2,17 @@
 // banto本体の起動プロセス（host）。ここまで作った全パッケージを実際に配線する。
 // これがPhase 0/1の完了条件を実測する対象そのもの。
 
-import { existsSync, mkdirSync } from "node:fs";
-import { availableParallelism, userInfo } from "node:os";
+import { mkdirSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UnauthorizedError, auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { BantoOAuthProvider, oauthAliasFor } from "./oauth/provider.js";
-import {
-  CONTAINER_NODE_PATH,
-  ContainerAddressUnavailable,
-  ProjectContainers,
-  checkContainerPrereqs,
-  ensureBaseImage,
-  execInContainer,
-  hostPrereqDeps,
-  instanceContainerId,
-  containerNameFor,
-  hostResources,
-  toContainerLimits,
-  runIncus,
-} from "@banto/container";
+import { hostResources, toContainerLimits } from "@banto/container";
 import { loadOrCreateBootstrapConfig, loginOrigins, resolveBootstrapConfigPath } from "./config/bootstrap.js";
 import { AuthStore } from "./auth/store.js";
 import { AuthService } from "./auth/service.js";
@@ -55,6 +42,8 @@ import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled } from "./http/app
 import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
+import { HostContainerRuntime } from "./runtime/host-container.js";
+import { RuntimeStopError, type PreparedPlace, type RuntimePlace } from "./runtime/runtime.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import { StreamRelay, streamUrlOf } from "./http/streams.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
@@ -105,13 +94,6 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = join(__dirname, "..", "..", "..");
-
-/** Module の置き場の中の、鍵の窓口用のフォルダ（0700）。Unix ソケットのパスは短くないと作れないので名前は短く */
-function ensureSocketDir(moduleDataDir: string): string {
-  const dir = join(moduleDataDir, "s");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
-}
 
 /** その Module が名乗っている tool・resource（可視性の検査に渡す形）。 */
 async function listVisibilityEntries(
@@ -183,23 +165,11 @@ async function main(): Promise<void> {
   const bootstrap = loadOrCreateBootstrapConfig();
   console.log(`[host] dataDir=${bootstrap.dataDir} port=${bootstrap.port}`);
 
-  // **閉じ込めはコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。前提が欠けていれば、
-  // コンテナで起こす Module（Project の Module・外から足した banto 全体の Module）は起こさず、受信箱で言う
-  // （黙って閉じ込め無しで起こさない、規則2）。banto 本体で動く同梱の Module はそのまま立つ
-  const containerPrereqs = await checkContainerPrereqs(hostPrereqDeps());
-  const containers = new ProjectContainers(runIncus);
   /**
    * **中に渡してよい host の環境変数**（名前をカンマで並べる）。コンテナには host の環境を渡さない——
    * 試験の差し替え（偽のエージェントなど）を中の Module に届ける口。人の banto では使わない
    */
   const containerEnvPassthrough = (process.env.BANTO_CONTAINER_ENV_PASSTHROUGH ?? "").split(",").map((x) => x.trim()).filter(Boolean);
-  console.log(
-    `[host] コンテナの前提: ${
-      containerPrereqs.ok
-        ? `そろっている（Incus ${containerPrereqs.serverVersion}）`
-        : containerPrereqs.problems.map((p) => `${p.message} 直し方：${p.fix}`).join(" / ")
-    }`,
-  );
 
   const eventLog = new EventLog(bootstrap.dataDir);
   await eventLog.init();
@@ -208,6 +178,20 @@ async function main(): Promise<void> {
   await projectThread.load();
   const runtimeConfig = new RuntimeConfigStore(bootstrap.dataDir, eventLog);
   await runtimeConfig.load();
+  // **Project の実行場所**（決定・2026-10-08、`docs/specs/v4-security.md` §1「実行場所は core の中の差し替え口」）。
+  // 今は この host のコンテナだけ。**閉じ込めはコンテナ**（決定・2026-09-25）——前提が欠けていれば、
+  // コンテナで起こす Module（Project の Module・外から足した banto 全体の Module）は起こさず、受信箱で言う
+  // （黙って閉じ込め無しで起こさない、規則2）。banto 本体で動く同梱の Module はそのまま立つ
+  const runtime = await HostContainerRuntime.create({
+    dataDir: bootstrap.dataDir,
+    port: bootstrap.port,
+    bantoDir: monorepoRoot,
+    // この host の資源と、banto 全体・Project ごとの設定から計算する（決定・2026-10-02）
+    limitsFor: (placeId) => toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), placeId)),
+    // **どこから写すか**は既定で人のホーム。E2E だけが差し替える（本物のホームを試験に使わない）
+    ...(process.env.BANTO_SHELL_HOME_SOURCE ? { shellHomeSource: process.env.BANTO_SHELL_HOME_SOURCE } : {}),
+  });
+  console.log(`[host] ${runtime.describePrerequisites()}`);
   const globalMemory = new GlobalMemoryStore(bootstrap.dataDir, eventLog);
   await globalMemory.load();
   const inbox = new InboxStore(bootstrap.dataDir, eventLog);
@@ -229,15 +213,8 @@ async function main(): Promise<void> {
     enabled: (projectId) => claudeLoginEnabled(runtimeConfig, projectId),
     // **送り元はその Project のコンテナ**（測った・2026-10-08：同じブリッジの別のコンテナからも core の口に届く。
     // 起こし直しでもアドレスは変わらない（MAC が固定・DHCP の貸し出しは1時間）が、中の root はアドレスを足せる）。
-    // 覚えずに毎回 Incus に聞く——止まっている・無いコンテナは「違う」
-    sourceMatches: async (projectId, remote) => {
-      try {
-        return (await containers.containerAddress(containerNameFor(projectId), bootstrap.dataDir)) === remote;
-      } catch (err) {
-        if (err instanceof ContainerAddressUnavailable) return false;
-        throw err;
-      }
-    },
+    // 覚えずに毎回、実行場所に聞く——止まっている・無いコンテナは「違う」
+    sourceMatches: (projectId, remote) => runtime.sourceMatches(projectId, remote),
     // **本体のログインが切れたら、受信箱に1件**（同じものが開いている間は増やさない）
     onUpstreamUnauthorized: () => {
       void inbox
@@ -488,16 +465,22 @@ async function main(): Promise<void> {
   };
 
   /**
-   * **Shell 専用のホーム**（接続名 → 置き場）。写すものの一覧を人が変えたら、立っている
+   * **Shell 専用のホーム**（接続名 → 写し直す口）。写すものの一覧を人が変えたら、立っている
    * Shell のホームにも写し直す——コマンドは毎回新しく起こすので、再起動は要らない。
+   * 写すのは実行場所（`PreparedPlace.prepareShellHome`）——host は Module の置き場に直接書かない
    */
-  const shellHomes = new Map<string, string>();
+  const shellHomes = new Map<string, (files: readonly string[]) => Promise<ShellHomeSync>>();
   let lastShellHomeSync: ShellHomeSync | undefined;
-  // **どこから写すか**は既定で人のホーム。E2E だけが差し替える（本物のホームを試験に使わない）
-  const shellHomeSource = process.env.BANTO_SHELL_HOME_SOURCE || undefined;
+  /** banto 本体で起こす Module の Shell のホーム（host の置き場にそのまま写す） */
+  async function hostShellHome(moduleDataDir: string, files: readonly string[]) {
+    const home = join(moduleDataDir, "home");
+    const sourceHome = process.env.BANTO_SHELL_HOME_SOURCE || undefined;
+    const resync = (f: readonly string[]) => syncShellHome(home, f, { sourceHome });
+    return { home, sync: await resync(files), resync };
+  }
   async function resyncShellHomes(): Promise<ShellHomeSync | undefined> {
-    for (const home of shellHomes.values()) {
-      lastShellHomeSync = await syncShellHome(home, shellHomeFiles(runtimeConfig), { sourceHome: shellHomeSource });
+    for (const resync of shellHomes.values()) {
+      lastShellHomeSync = await resync(shellHomeFiles(runtimeConfig));
     }
     return lastShellHomeSync;
   }
@@ -540,70 +523,8 @@ async function main(): Promise<void> {
   // 待ちを延ばして誤魔化さない（規則6）——同時に来たものは同じ1本を待つ。
   const moduleSpawns = new SingleFlight<string>();
 
-  /**
-   * **Module を起こすコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。Project ごとに1台、外から
-   * 足した banto 全体の Module 用に1台。起こす前に用意する——無ければ作り、根と設定を合わせ、起こす。
-   * 道具を入れた状態は残る。同時に来ても1回にまとめる
-   */
-  interface ContainerPlacement {
-    /** Project の id、または `instanceContainerId(置き場)` */
-    id: string;
-    /** Project の根（banto 全体用のコンテナには無い） */
-    root?: string;
-    /** 中で Docker を使うか（Project ごとの設定） */
-    nesting: boolean;
-  }
-  interface ReadyContainer {
-    name: string;
-    /** 中から host に届くアドレス（ブリッジの host 側）。host は 0.0.0.0 で待ち受けている */
-    hostAddress: string;
-    root?: string;
-    nesting: boolean;
-  }
-  const readyContainers = new Map<string, ReadyContainer>();
-  const containerSpawns = new SingleFlight<ReadyContainer>();
   /** 中で Docker を使うか（Project ごとの設定）。入れ子を許したコンテナだけ `/proc`・`/sys` の保護が外れる */
   const projectNesting = (projectId: string) => runtimeConfig.resolve(CONTAINER_NESTING_KEY, projectId) === true;
-  async function ensureContainer(placement: ContainerPlacement): Promise<ReadyContainer> {
-    const ready = readyContainers.get(placement.id);
-    if (ready && ready.root === placement.root && ready.nesting === placement.nesting) return ready;
-    return containerSpawns.run(placement.id, async () => {
-      if (!containerPrereqs.ok) {
-        throw new Error(
-          "コンテナを用意できません——前提が欠けています：" +
-            containerPrereqs.problems.map((p) => `${p.message}（直し方：${p.fix}）`).join(" ") +
-            " 直したら banto を起動し直してください",
-        );
-      }
-      // gid はユーザーの登録情報から——起動のしかたで主グループが変わっていても、中の同じ番号に揃える
-      const { uid, gid } = userInfo();
-      const { name } = await containers.ensure({
-        projectId: placement.id,
-        ...(placement.root ? { root: placement.root } : {}),
-        bantoDir: monorepoRoot,
-        nodePath: process.execPath,
-        nodeVersion: process.version,
-        nesting: placement.nesting,
-        // banto の機能が頼る道具（git・ssh・curl・node）を入れた土台から作る——無ければ一度だけ作る
-        image: await ensureBaseImage(runIncus),
-        uid,
-        gid,
-        owner: bootstrap.dataDir,
-        // 資源の上限（決定・2026-10-02）。この host の資源と、banto 全体・Project ごとの設定から計算する
-        limits: toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), placement.id)),
-      });
-      const r: ReadyContainer = {
-        name,
-        hostAddress: await containers.hostAddress(name),
-        ...(placement.root ? { root: placement.root } : {}),
-        nesting: placement.nesting,
-      };
-      readyContainers.set(placement.id, r);
-      return r;
-    });
-  }
-  /** ホストのフォルダを中に見せる口の名前（Incus の装置名。パスから決まる） */
-  const diskDeviceName = (dir: string) => `m-${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
 
   /**
    * **繋げなかったことを覚えておく**（決定・2026-09-07、ユーザー報告）。
@@ -668,7 +589,7 @@ async function main(): Promise<void> {
   // **資源の逼迫を見せる**（決定・2026-10-09、v4-security.md §1、`resources.ts`）。host がコンテナの cgroup のファイルを
   // 直接読む（incus exec を通さない）。10 秒ごと。混んでいる Project が変わったら画面に知らせる
   const resourceWatch = new ResourceWatch({
-    incusProject: () => containers.incusProjectName(),
+    incusProject: () => runtime.resourceScope(),
     cores: availableParallelism(),
     selfBytes: () => process.memoryUsage().rss,
     stalls: () => hostStall.recent(100),
@@ -710,7 +631,7 @@ async function main(): Promise<void> {
     for (const set of projectConnections.values()) set.delete(connName);
     await agentRelayEndpoint.unregisterModule(connName);
     // 次に起こすときは、コンテナの状態を確かめ直す（止まっていれば起こす）
-    if (origin.containerId) readyContainers.delete(origin.containerId);
+    if (origin.containerId) runtime.forget(origin.containerId);
     // **黙っているだけで、プロセスは残っていることがある**（`incus exec` が incus-user に繋がったまま等）
     // ——確実に落とす。閉じたことでもう一度ここへ来るが、上で台帳から外してあるので素通りする
     await client.close().catch((err: unknown) => {
@@ -1174,72 +1095,78 @@ async function main(): Promise<void> {
     //   同梱の banto 全体の Module → banto 本体
     // 中からは host の 127.0.0.1 に届かないので、中継の住所はブリッジの host 側にする（host は 0.0.0.0 で待ち受けている）
     const where = modulePlacement(declaration.meta, declaration.launch);
-    const placement: ContainerPlacement | undefined =
+    const place: RuntimePlace | undefined =
       where === "project-container" && project
         ? { id: project.id, root: project.root, nesting: projectNesting(project.id) }
         : where === "instance-container"
-          ? { id: instanceContainerId(bootstrap.dataDir), nesting: false }
+          ? { id: runtime.instancePlaceId, nesting: false }
           : undefined;
     // **繋がるまでにどこで時間を使ったかを、繋がった行に添える**（追加・2026-09-26）——新しい Project を
     // 開くのが遅いとき、手元でプローブを書かずに `~/banto-host.log` で内訳が分かるように（規則4）
     const started = performance.now();
     const phases: string[] = [];
     const mark = (what: string, since: number) => phases.push(`${what} ${Math.round(performance.now() - since)}ms`);
-    const container = placement ? await ensureContainer(placement) : undefined;
-    if (container) mark("コンテナ", started);
+    const prepared: PreparedPlace | undefined = place ? await runtime.prepare(place) : undefined;
+    if (prepared) mark("コンテナ", started);
+    // Module の置き場（host の側のパス）。Module ごとに1つ。**その Module の分だけ**書けるようにする（決定・2026-09-07）
+    const moduleDataDir = join(bootstrap.dataDir, "modules", connName);
+    // **プログラムの置き場は、状態の置き場と分ける**（追加・2026-09-21）。
+    // registry から取ってきたものがここに入り、起動時は**読み取り専用**で渡す
+    // **宣言の名前で引く**（プロセス名 `<名前>-<projectId>` ではない）
+    // ——入れるときも同じ名前で置いている（`install/paths.ts`、規則3）
+    const modulePackageDir = modulePackageDirOf(bootstrap.dataDir, declaration.name);
     const token = registry.issueToken({
       moduleName: declaration.name,
       connName,
       projectId: project?.id,
       meta: declaration.meta,
       // 中では AI がこの合言葉も読める——値を返す口への承認を、何を指していたかごとに分ける
-      ...(container ? { inContainer: true } : {}),
-      // **鍵の窓口を立てる場所**（追加・2026-09-27）。Module の置き場はコンテナに同じパスで見せているので、
-      // その中なら host の Vault が立てた ssh-agent に中から届く（host の /tmp は中から見えない）
-      ...(container ? { socketDir: ensureSocketDir(join(bootstrap.dataDir, "modules", connName)) } : {}),
+      ...(prepared ? { inContainer: true } : {}),
+      // **鍵の窓口を立てる場所**（追加・2026-09-27）。host の Vault がここに立てた ssh-agent に、中の Module が届く
+      ...(prepared ? { socketDir: prepared.socketDirFor(moduleDataDir) } : {}),
     });
+    // **差し込み語は実行場所の側のパスで組み立てる**（`docs/specs/v4-security.md` §1「実行場所は core の中の差し替え口」）
+    // ——Module の宣言・Module のコードは実行場所を知らない
+    const inside = (hostPath: string) => (prepared ? prepared.pathInside(hostPath) : hostPath);
     const context: LaunchContext = {
       ...launchContextBase,
-      ...(container ? { hostRelayUrl: `http://${container.hostAddress}:${bootstrap.port}/relay` } : {}),
+      ...(prepared
+        ? {
+            nodeExec: prepared.nodePath,
+            monorepoRoot: inside(monorepoRoot),
+            dataDir: inside(bootstrap.dataDir),
+            hostRelayUrl: `${prepared.bantoOrigin}/relay`,
+          }
+        : {}),
       hostRelayToken: token,
-      projectRoot: project?.root,
-      // Module ごとに1つ。**その Module の分だけ**書けるようにする（決定・2026-09-07）
-      moduleDataDir: join(bootstrap.dataDir, "modules", connName),
-      // **プログラムの置き場は、状態の置き場と分ける**（追加・2026-09-21）。
-      // registry から取ってきたものがここに入り、起動時は**読み取り専用**で渡す
-      // **宣言の名前で引く**（プロセス名 `<名前>-<projectId>` ではない）
-      // ——入れるときも同じ名前で置いている（`install/paths.ts`、規則3）
-      modulePackageDir: modulePackageDirOf(bootstrap.dataDir, declaration.name),
+      projectRoot: project ? inside(project.root) : undefined,
+      moduleDataDir: inside(moduleDataDir),
+      modulePackageDir: inside(modulePackageDir),
     };
-    mkdirSync(context.moduleDataDir, { recursive: true, mode: 0o700 });
     // **中に見せる置き場は、先に頼んでおく**（改訂・2026-09-26、実測）——下の Shell のホームの用意や
     // 金庫の語の解決を待ってから頼むと、並んで起きる他の Module のマウントの束に乗り遅れ、
     // 自分の分だけもう1回待つことになっていた。起こす直前に揃っていればよい
     const mounting = performance.now();
-    const mounted = container
-      ? Promise.all([
-          containers.ensureDisk(container.name, diskDeviceName(context.moduleDataDir), context.moduleDataDir),
-          ...(existsSync(context.modulePackageDir)
-            ? [containers.ensureDisk(container.name, diskDeviceName(context.modulePackageDir), context.modulePackageDir, { readonly: true })]
-            : []),
-        ])
-      : undefined;
+    const mounted = prepared?.prepareModuleDirs({ dataDir: moduleDataDir, packageDir: modulePackageDir });
+    if (!prepared) mkdirSync(moduleDataDir, { recursive: true, mode: 0o700 });
     // 待たずに進むあいだに失敗しても、下で待つまで「誰も読まない拒否」にしない
     mounted?.catch(() => undefined);
     // **Shell 専用のホーム**（決定・2026-09-23、ユーザー）。人のホームは閉じ込めで
     // 読めないので、Project ごとに書けるホームを用意し、人が選んだ設定だけを写す。
     // `shell` は同梱だけが名乗れる役割（RESERVED_ROLES）——**第三者の Module に
-    // 人の git の設定を渡さない**
+    // 人の git の設定を渡さない**。写すのは実行場所（banto 本体で起こすなら host の置き場にそのまま）
     let shellHome: string | undefined;
     if ((declaration.meta.satisfies as string[]).includes("shell") && declaration.meta.confinement) {
-      shellHome = join(context.moduleDataDir, "home");
-      const sync = await syncShellHome(shellHome, shellHomeFiles(runtimeConfig), { sourceHome: shellHomeSource });
-      shellHomes.set(connName, shellHome);
-      lastShellHomeSync = sync;
-      if (sync.removedGitKeys.length > 0 || sync.rewrittenGitKeys.length > 0) {
+      const prep = prepared
+        ? await prepared.prepareShellHome(moduleDataDir, shellHomeFiles(runtimeConfig))
+        : await hostShellHome(moduleDataDir, shellHomeFiles(runtimeConfig));
+      shellHome = prep.home;
+      shellHomes.set(connName, prep.resync);
+      lastShellHomeSync = prep.sync;
+      if (prep.sync.removedGitKeys.length > 0 || prep.sync.rewrittenGitKeys.length > 0) {
         console.log(
-          `[host] ${connName}: Shell のホームへ写した git の設定から外したもの ${JSON.stringify(sync.removedGitKeys)}` +
-            `・向け直したもの ${JSON.stringify(sync.rewrittenGitKeys)}`,
+          `[host] ${connName}: Shell のホームへ写した git の設定から外したもの ${JSON.stringify(prep.sync.removedGitKeys)}` +
+            `・向け直したもの ${JSON.stringify(prep.sync.rewrittenGitKeys)}`,
         );
       }
     }
@@ -1249,49 +1176,40 @@ async function main(): Promise<void> {
     // ここへ来るのは起動する形だけ（URL に繋ぐ形は上で分かれている）
     const launch = expandLaunch(withSecrets, context) as StdioLaunch;
 
-    // **コンテナの中で起こす**。閉じ込めはコンテナそのもの。中に見せるのは Project の根（作るときに）・
+    // **実行場所の中で起こす**。閉じ込めはその箱そのもの。中に見せるのは Project の根（作るときに）・
     // banto のコード（読み取り専用、作るときに）・この Module の置き場・取ってきた配布物（読み取り専用）だけ。
-    // **host の環境は渡さない**（`incus exec` は引き継がない。渡すのは下の一覧だけ）
-    if (container) {
+    // **host の環境は渡さない**（渡すのは下の一覧だけ）
+    if (prepared) {
       await mounted;
       mark("マウント", mounting);
-      const { uid, gid } = userInfo();
       const passthrough = Object.fromEntries(
         containerEnvPassthrough.flatMap((name) => (process.env[name] !== undefined ? [[name, process.env[name]!]] : [])),
       );
-      const inside = execInContainer(
-        container.name,
-        {
-          cwd: project?.root ?? context.moduleDataDir,
-          uid,
-          gid,
-          env: {
-            ...passthrough,
-            HOME: context.moduleDataDir,
-            // コンテナの中で動いていることを Module に知らせる（Shell の説明の言い方が変わる）
-            BANTO_IN_CONTAINER: "1",
-            // **Claude のログイン**（決定・2026-09-27）：中継の住所とその Project の合言葉・契約の種類。Shell の子・
-            // サブエージェント・Service はこれをそのまま使う。Project 設定で切られていれば入れない
-            ...(where === "project-container" && project
-              ? await claudeLogin.envFor(project.id, `http://${container.hostAddress}:${bootstrap.port}`)
-              : undefined),
-            BANTO_MODULE_DATA_DIR: context.moduleDataDir,
-            // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てることがある——Module 自身が
-            // 「自分はどの1本か」を知らないと、画面に同じ名前が並ぶ。host が必ず渡す
-            BANTO_MODULE_NAME: declaration.name,
-            ...(shellHome ? { BANTO_SHELL_HOME: shellHome } : {}),
-            ...launch.env,
-          },
+      const spawned = prepared.processCommand({
+        command: launch.command,
+        args: launch.args,
+        cwd: context.projectRoot ?? context.moduleDataDir,
+        env: {
+          ...passthrough,
+          HOME: context.moduleDataDir,
+          // 箱の中で動いていることを Module に知らせる（Shell の説明の言い方が変わる）
+          BANTO_IN_CONTAINER: "1",
+          // **Claude のログイン**（決定・2026-09-27）：中継の住所とその Project の合言葉・契約の種類。Shell の子・
+          // サブエージェント・Service はこれをそのまま使う。Project 設定で切られていれば入れない
+          ...(where === "project-container" && project ? await claudeLogin.envFor(project.id, prepared.bantoOrigin) : undefined),
+          BANTO_MODULE_DATA_DIR: context.moduleDataDir,
+          // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てることがある——Module 自身が
+          // 「自分はどの1本か」を知らないと、画面に同じ名前が並ぶ。host が必ず渡す
+          BANTO_MODULE_NAME: declaration.name,
+          ...(shellHome ? { BANTO_SHELL_HOME: shellHome } : {}),
+          ...launch.env,
         },
-        // node は中の決まった場所に置いてある（ホストと同じ版）
-        launch.command === process.execPath ? CONTAINER_NODE_PATH : launch.command,
-        launch.args,
-      );
-      // `incus` 自身はホストで動く——ホストの環境（Incus の設定の置き場など）はこちらに渡す
+      });
+      // 起こす役（`incus` など）自身は host で動く——host の環境（Incus の設定の置き場など）はこちらに渡す
       const connecting = performance.now();
-      const client = await connectStdioModule(inside.command, inside.args, undefined, process.env);
+      const client = await connectStdioModule(spawned.command, spawned.args, undefined, process.env);
       mark("起動と接続", connecting);
-      return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases }, placement?.id);
+      return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases }, place?.id);
     }
 
     // **banto 本体で起こす**：同梱の banto 全体の Module（banto 自身のコード——Vault は秘密の置き場を持つ）。
@@ -1511,20 +1429,16 @@ async function main(): Promise<void> {
     // **Project を畳んだらコンテナも止める**（決定・2026-09-25）。止めるのは待ちすぎない（上限→強制停止）。
     // 止められなくても畳むこと自体は済んでいるので、畳む操作は失敗させない——ただし**黙らない**：
     // 動いたまま残ったことを受信箱で言う（規則2）
-    const ready = readyContainers.get(projectId);
-    readyContainers.delete(projectId);
-    if (opts.stopContainer && ready) {
-      await containers.stop(ready.name).catch(async (err: unknown) => {
-        const reason = err instanceof Error ? err.message : String(err);
-        console.warn(`[host] project ${projectId} のコンテナ ${ready.name} を止められませんでした: ${reason}`);
-        await inbox.raiseNotice({
-          projectId,
-          dedupeKey: `container-stop:${projectId}`,
-          title: "Project のコンテナを止められませんでした",
-          detail: `${ready.name} が動いたまま残っています：${reason}`,
-        });
+    await runtime.release(projectId, { stop: opts.stopContainer === true }).catch(async (err: unknown) => {
+      if (!(err instanceof RuntimeStopError)) throw err;
+      console.warn(`[host] project ${projectId} のコンテナ ${err.placeName} を止められませんでした: ${err.reason}`);
+      await inbox.raiseNotice({
+        projectId,
+        dedupeKey: `container-stop:${projectId}`,
+        title: "Project のコンテナを止められませんでした",
+        detail: `${err.placeName} が動いたまま残っています：${err.reason}`,
       });
-    }
+    });
     return names;
   }
 
@@ -1780,15 +1694,8 @@ async function main(): Promise<void> {
     // 出所（人の画面か、AI のターンか）を引くための台帳。承認の要否がここで分かれる
     moduleCalls,
     // **公開の実装が、Project のコンテナに届くアドレスを引く**（§4.3 Publish）。この banto が作ったものだけ。
-    // 確かに届かない（止まっている・無い・他人のもの）は値で返し、分からない（Incus が答えない）は投げる
-    projectAddress: (projectId) =>
-      containers.containerAddress(containerNameFor(projectId), bootstrap.dataDir).then(
-        (address) => ({ address }),
-        (err: unknown) => {
-          if (err instanceof ContainerAddressUnavailable) return { unavailable: err.message };
-          throw err;
-        },
-      ),
+    // 確かに届かない（止まっている・無い・他人のもの）は値で返し、分からない（実行場所が答えない）は投げる
+    projectAddress: (projectId) => runtime.address(projectId),
     // **Project の一覧**（§2.4 Repositories——どの Project がそのフォルダを根にしているか）。引ける相手と場面は
     // 中継が絞る（`mayListProjects`）。根は store が正規化したもの（realpath）
     listProjects: () =>
@@ -1917,21 +1824,15 @@ async function main(): Promise<void> {
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
-    projectContainerStatus: async (projectId: string) => {
-      const name = containerNameFor(projectId);
-      const st = await containers.state(name);
-      return st ? { name, status: st.status } : undefined;
-    },
+    projectContainerStatus: (projectId: string) => runtime.status(projectId),
     // **資源の上限**（決定・2026-10-02）。設定を変えたら、動いているコンテナにも起こし直さずに効かせる
     containerLimits: {
       describe: (projectId?: string) => describeLimits(runtimeConfig, hostResources(), projectId),
       async apply(projectId?: string) {
         const ids = projectId !== undefined
           ? [projectId]
-          : [...projectThread.listProjects().map((p) => p.id), instanceContainerId(bootstrap.dataDir)];
-        for (const id of ids) {
-          await containers.applyLimits(containerNameFor(id), toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), id)), userInfo().uid);
-        }
+          : [...projectThread.listProjects().map((p) => p.id), runtime.instancePlaceId];
+        for (const id of ids) await runtime.applyLimits(id);
       },
     },
     resolveModulesForThread,
@@ -1990,7 +1891,6 @@ async function main(): Promise<void> {
   };
   // **コンテナが資源の上限に当たったら受信箱で知らせる**（決定・2026-10-05、`container-pressure.ts`）。1分ごとに、
   // 用意できているコンテナの数え（memory.events の oom_kill・pids.events の max）を見る
-  const instanceContainerKey = instanceContainerId(bootstrap.dataDir);
   const pressureWatch = new ContainerPressureWatch({
     // 数えは host から cgroup のファイルを直接読む（2026-10-09、incus exec を通さない）
     read: (name) => resourceWatch.readEvents(name),
@@ -2001,10 +1901,7 @@ async function main(): Promise<void> {
     },
   });
   const pressureTimer = setInterval(() => {
-    const targets = [...readyContainers].map(([id, r]) => ({
-      containerName: r.name,
-      ...(id === instanceContainerKey ? {} : { projectId: id }),
-    }));
+    const targets = runtime.resourceTargets();
     void pressureWatch.tick(targets).catch((err: unknown) => console.warn("[host] コンテナの上限の見張りで例外:", err));
     // 間隔は E2E だけ縮める（BANTO_CONTAINER_PRESSURE_INTERVAL_MS）
   }, Number(process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS) || 60_000);
@@ -2014,8 +1911,8 @@ async function main(): Promise<void> {
     // 用意できているかに依らず、banto が知っている Project のコンテナを全部見る（2026-10-09）——起こし直した直後は Module を
     // 使うまで「用意できた」にならず、動いているのに名前の無いコンテナとして出ていた。動いていなければ読めずに飛ばす
     const targets = [
-      ...projectThread.listProjects().map((p) => ({ containerName: containerNameFor(p.id), projectId: p.id, name: p.name })),
-      { containerName: containerNameFor(instanceContainerKey), name: "banto 全体用のコンテナ" },
+      ...projectThread.listProjects().map((p) => ({ containerName: runtime.placeName(p.id), projectId: p.id, name: p.name })),
+      { containerName: runtime.placeName(runtime.instancePlaceId), name: "banto 全体用のコンテナ" },
     ];
     void resourceWatch
       .tick(targets)

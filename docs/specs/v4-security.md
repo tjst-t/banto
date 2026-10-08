@@ -321,7 +321,8 @@ Incus のコンテナで動かす形（向こうでも閉じ込め・資源の�
 閉じ込めは core が持つ（§1「なぜ Module ごとではなく core なのか」）。廃止した Environment Module（2026-09-27）の
 復活ではなく、「Project のコンテナ」を広げたもの。
 
-実行場所が満たす約束（今のコンテナの実装が、そのまま1つ目の実装になる）：
+実行場所が満たす約束（今のコンテナの実装が、そのまま1つ目の実装になる）。口は `core/src/runtime/runtime.ts`、今のコンテナの実装は `core/src/runtime/host-container.ts`（済み・2026-10-08、
+Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 
 | 約束 | 今のコンテナ | 別のサーバ |
 |---|---|---|
