@@ -5721,6 +5721,27 @@
       "updatedAt": "2026-10-08T02:47:35.198Z",
       "closedAt": "2026-10-08T02:47:35.198Z",
       "extra": {}
+    },
+    {
+      "id": "close-fork-dropped-in-transcript",
+      "number": 235,
+      "kind": "task",
+      "title": "close_fork で閉じなかったとき、受信箱ではなくそのターンの会話に「閉じるのをやめました（理由）」を残す",
+      "status": "ready",
+      "parent": "ai-close-fork",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様：docs/specs/v4-architecture.md §2.2「AI が自分の Fork を閉じる」——「人が止めた・失敗したターンでは閉じない（黙って捨てず、そのターンに『閉じるのをやめました』を残す）」。ユーザーが 2026-10-08 に仕様のとおりにするよう指示。\n\n今（3f861547）：`banto/packages/core/src/http/app.ts` の settleClose が、閉じなかったとき受信箱にお知らせを出している（2か所：ターンが途中で終わった `fork-close-dropped`・予約のあとに裏の仕事を頼んだ `fork-close-refused`）。\n\nやること：\n1. この2か所とも、受信箱に出す代わりに、その Thread の会話の記録に AI の側の短い印を1つ足す（`deps.projectThread.appendMessage(threadId, \"assistant\", 文)`。turn-runner.ts の STOPPED_NOTE「（ここで止めました）」と同じ書き方）。文は括弧書きで理由つき：\n   - ターンが途中で終わった：「（この Fork を閉じるのをやめました——ターンが途中で終わったため。予約の理由：<reason>）」\n   - 裏の仕事が残っていた：「（この Fork を閉じるのをやめました——閉じると予約したあとで裏の仕事を頼んだため。残っている仕事：<題の一覧>。予約の理由：<reason>）」\n   定数と組み立ての関数は1か所に置く。受信箱のお知らせは出さない。\n2. 足した印が画面にも出ること（同じターンの発言の後ろか、続く発言として。STOPPED_NOTE が画面に出るのと同じ経路で、記録を読み直したときも出る）。\n3. 仕様 v4-architecture.md §2.2 の該当行に、印の文と「受信箱には出さない」を書き足す。\n\n試験：単体（settleClose の既存の試験を置き換え）。直した所を戻すと落ちること。",
+      "doneWhen": "単体試験で：止めた・失敗したターンで close_fork の予約があると、その Thread の記録に「この Fork を閉じるのをやめました」と予約の理由を含む assistant の印が1件足され、受信箱のお知らせは出ない／予約のあとに裏の仕事が残っていたときも、残りの題と理由を含む印が足され、Thread は閉じず、受信箱には出ない／最後まで行って裏の仕事が無ければ今までどおり閉じ、印は足さない。core の単体試験が全部通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-08T05:08:30.449Z",
+      "updatedAt": "2026-10-08T05:08:30.449Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
