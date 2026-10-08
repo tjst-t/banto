@@ -659,6 +659,11 @@ test("選択欄：グループは Vault での本当の名前（この Project�
     expect(text!.startsWith(value), `選択肢の主がグループ名ではない: ${text}`).toBe(true);
     expect(text, "言い換えが残っている").not.toMatch(/専用/);
   }
+  // グループは名前の順（2026-10-08、ユーザー——以前はフォルダを読んだ順で決まっていなかった）
+  const names = texts.slice(0, -1).map(([v]) => v);
+  expect(names, "グループが名前の順に並んでいない").toEqual(
+    [...names].sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" })),
+  );
   // 版を名乗らない Vault（vault-local）には版の欄を出さない
   await expect(canvas.locator("#move-variant")).toBeHidden();
   // 最初はいまの置き場を選んでおく——動かないので押させない
@@ -703,16 +708,20 @@ test("選択欄：グループは Vault での本当の名前（この Project�
   await expect.poll(() => group.evaluate((e) => e.matches(":open"))).toBe(false);
   await expect(canvas.locator("#dlg-move")).toBeVisible();
 
-  // ---- 3. キーボード：↑で開き、↑ Enter で1つ上を選ぶ ------------------------------------------
+  // ---- 3. キーボード：↑で開き、↑（先頭なら ↓）Enter で隣を選ぶ -------------------------------
+  // グループは名前の順（2026-10-08）。この Project のグループ（UUID）はその回の名前次第で先頭にも来るので、
+  // 「1つ上」を前提にしない（以前はその前提で 4回に1〜2回落ちていた）
   const values = texts.map(([v]) => v);
   const at = values.indexOf(projectGroup);
-  expect(at, "試験の前提：この Project の置き場の上に選択肢がある").toBeGreaterThan(0);
+  expect(values.length, "試験の前提：この Project の置き場のほかに選べるグループがある").toBeGreaterThan(2);
+  const step = at > 0 ? "ArrowUp" : "ArrowDown";
+  const neighbour = values[at > 0 ? at - 1 : at + 1]!;
   await group.focus();
   await page.keyboard.press("ArrowUp");
   await expect.poll(() => group.evaluate((e) => e.matches(":open")), "↑で一覧が開かない").toBe(true);
-  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press(step);
   await page.keyboard.press("Enter");
-  await expect(group, "キーボードで選べない").toHaveValue(values[at - 1]!);
+  await expect(group, "キーボードで選べない").toHaveValue(neighbour);
   await expect.poll(() => group.evaluate((e) => e.matches(":open"))).toBe(false);
   await expect(canvas.locator("#move-submit")).toBeEnabled();
   await group.selectOption(projectGroup);

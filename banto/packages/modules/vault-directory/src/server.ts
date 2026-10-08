@@ -973,13 +973,15 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           vaults: perVault.map((r) => ({
             implementation: r.value.impl,
             // **グループの選択肢は版を外した名前**（2026-10-06）——版は別の欄で選ぶ。版の数だけ並べない
+            // **名前の順に並べる**（2026-10-08、ユーザー）——以前は実装が返した順（vault-local はフォルダを読んだ順、
+            // つまり決まっていない）に紐付けを足した順で、開くたびに選択肢の並びが変わりえた
             groups: [
               ...new Set(
                 [...r.value.groups, r.value.bindings.shared, ...r.value.bindings.projects.map((b) => b.group)]
                   .filter(Boolean)
                   .map((g) => splitVariant(g).group),
               ),
-            ],
+            ].sort(byGroupName),
             // **紐付けた版付きの置き場**（`g@prod`）——一覧に出る版付きの置き場はこれだけ（仕様 §2.1「グループの『版』」）。
             // 画面は「移す」「参照を作る」で、ここに無い版付きの置き場を選ぶと「一覧に出なくなる」と先に言う（2026-10-07）
             variantGroups: [
@@ -1409,4 +1411,9 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
 function placeParts(groupId: string): { baseGroup: string; variant?: string } {
   const { group, variant } = splitVariant(groupId);
   return { baseGroup: group, ...(variant !== undefined ? { variant } : {}) };
+}
+
+/** グループの選択肢の並び（名前の順。大文字小文字・数字の桁は人の読む順で比べる） */
+function byGroupName(a: string, b: string): number {
+  return a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }) || (a < b ? -1 : a > b ? 1 : 0);
 }

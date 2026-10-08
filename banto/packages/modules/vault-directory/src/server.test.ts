@@ -1580,3 +1580,28 @@ test("窓口の createGroup：「@」を含む名前は実装へ渡さずに断�
     await ui.close();
   });
 });
+
+// **グループの選択肢は名前の順**（2026-10-08、ユーザー）。以前は実装が返した順（vault-local はフォルダを読んだ順）のままで、
+// E2E「選択欄」が 4回に1〜2回、この Project のグループが先頭に来て落ちていた
+test("置き場の一覧のグループは、実装が返した順ではなく名前の順に並ぶ", async () => {
+  await withUi(async ({ vaults }) => {
+    const base = relayTo(vaults);
+    const relay: RelayLike = {
+      listTargets: () => base.listTargets(),
+      async callTool(target, name, args) {
+        if (name === "listGroups") return JSON.stringify(["zeta", "Alpha", "group10", "group2", "beta"]);
+        return base.callTool(target, name, args);
+      },
+    };
+    const server = createVaultDirectoryServer({ relay });
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const ui = new Client({ name: "canvas", version: "0.0.0" });
+    await Promise.all([server.connect(s), ui.connect(c)]);
+    const places = parse(await ui.callTool({ name: "getPlacements", arguments: {}, _meta: ADMIN }));
+    const groups = places.vaults[0].groups as string[];
+    const mine = ["zeta", "Alpha", "group10", "group2", "beta"];
+    assert.deepEqual(groups.filter((g) => mine.includes(g)), ["Alpha", "beta", "group2", "group10", "zeta"]);
+    assert.deepEqual(groups, [...groups].sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" })), `名前の順になっていない: ${JSON.stringify(groups)}`);
+    await ui.close();
+  });
+});
