@@ -5909,7 +5909,7 @@
       "number": 243,
       "kind": "task",
       "title": "第2段：サービスどうしの通信の代理（コンテナの中だけで信頼する CA）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "browser-module",
       "dependsOn": [
         "browser-core"
@@ -5923,7 +5923,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:12:04.953Z",
-      "updatedAt": "2026-10-08T09:12:04.953Z",
+      "updatedAt": "2026-10-08T09:12:09.460Z",
       "closedAt": null,
       "extra": {}
     }
