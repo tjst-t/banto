@@ -5630,6 +5630,32 @@
       "updatedAt": "2026-10-08T01:16:36.568Z",
       "closedAt": "2026-10-08T01:16:36.568Z",
       "extra": {}
+    },
+    {
+      "id": "ai-close-fork",
+      "number": 231,
+      "kind": "story",
+      "title": "AI が自分の Fork を閉じる tool と、閉じるときの裏の仕事の扱い",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "thread"
+      ],
+      "body": "決定・2026-10-08、ユーザー（Fork「Fork を AI が自分で閉じる tool」）。仕様は docs/specs/v4-architecture.md §2.2「AI が自分の Fork を閉じる」と docs/specs/v4-frontend.md §6「Fork を閉じるときの警告」（371cafaa）。\n\n- core の tool `close_fork`（banto-thread、reason 必須）。自分の Fork だけ・承認なし・ターンが最後まで終わってから閉じる・裏の仕事（返信用の札が awaiting）が残っていれば断る・理由を thread.closed に残す・開いている画面は飛ばさず帯を出す\n- 人が画面で閉じるとき、裏の仕事が残っていれば警告。承知で閉じられる\n- 開き直したら、閉じている間に溜まった届いたもので AI を起こす（今は banto を起こし直すまで起きない）",
+      "doneWhen": "子のタスクが全部 done。本番の banto で Fork の AI が close_fork を呼ぶと、ターンの終わりにその Fork が閉じ、閉じた Fork の一覧に理由が出る",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.2「AI が自分の Fork を閉じる」",
+        "docs/specs/v4-frontend.md §6「Fork を閉じるときの警告」"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-08T02:00:11.093Z",
+      "updatedAt": "2026-10-08T02:00:11.093Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
