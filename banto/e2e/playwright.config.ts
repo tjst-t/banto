@@ -7,6 +7,11 @@ import {
   FRONTEND_DIST_DIR,
   CONFIG_PATH,
 } from "./config.js";
+import { acquireMachineLock } from "./run-lock.ts";
+
+// **同じ機械の E2E は一度に1回**（`run-lock.ts`）。webServer を起こす前に取る——config はここで読まれ終わってから
+// webServer が起きる。worker・webServer の子は env の印を見て何もしない
+acquireMachineLock(new URL("..", import.meta.url).pathname);
 
 export default defineConfig({
   testDir: "./specs",
