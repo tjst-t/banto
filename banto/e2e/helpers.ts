@@ -86,8 +86,18 @@ function isMobileViewport(page: Page): boolean {
 export async function openNav(page: Page): Promise<void> {
   if (!isMobileViewport(page)) return;
   const newProject = page.getByRole("button", { name: "新しい Project", exact: true });
-  if (await newProject.isVisible().catch(() => false)) return; // すでに開いている
+  // **開いているかは Drawer の印で見る**（改訂・2026-10-08）。以前は「新しい Project が見えるか」で見ていたので、
+  // **閉じる途中の Drawer**（Project を作った直後など）を「開いている」と取り違え、中の「設定」を押しに行って
+  // 動き続ける・消えるリンクを30秒待って落ちていた（project-modules:290、3回に2回。main でも同じ）。
+  // 閉じる途中なら閉じ終わるのを待ってから開き直す
+  const opened = page.locator('[data-slot="drawer-content"][data-state="open"]');
+  if (await opened.isVisible().catch(() => false)) return; // すでに開いている
+  await expect(
+    page.locator('[data-slot="drawer-content"][data-state="closed"]'),
+    "閉じる途中の Drawer が閉じ終わらない",
+  ).toBeHidden({ timeout: 10_000 });
   await page.getByRole("button", { name: "Project と Thread の一覧を開く" }).first().click();
+  await expect(opened).toBeVisible({ timeout: 10_000 });
   await expect(newProject).toBeVisible({ timeout: 10_000 });
 }
 
