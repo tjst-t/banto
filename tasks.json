@@ -3900,7 +3900,7 @@
       "number": 157,
       "kind": "task",
       "title": "Claude ログインの中継を core に常設し、Project のコンテナの環境に住所と合言葉を入れる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -3912,7 +3912,7 @@
       "refs": [],
       "threads": [],
       "createdAt": null,
-      "updatedAt": "2026-10-08T09:45:35.307Z",
+      "updatedAt": "2026-10-08T10:33:23.212Z",
       "closedAt": null,
       "extra": {}
     },
