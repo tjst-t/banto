@@ -227,7 +227,12 @@ Module が自分の設定 Canvas を持てること（§6.2）。
 置きたい。これは **Module が tool の `_meta["dev.banto/card"]` で名乗る**（banto は Module を名指しで知らない）。
 
 - 値は `{ title, description }`。どちらも文で、`{引数名}` をその呼び出しの引数で置き換える
-  （例：サブエージェントは `"{agent} に頼んだ仕事"`／`"{prompt}"`）。長ければ畳む
+  （例：サブエージェントは `"{agent} に頼んだ仕事"`／`"{prompt}"`）。長ければ畳む。引数に無い名前はそのまま残す
+- **代わりの指定 `{a|b}`**（追加・2026-10-08）：左から順に見て、使える最初の引数で置き換える（数・真偽と、空白だけではない
+  文字列。どれも無ければそのまま残す）。任意の引数が無いときに別の引数へ戻すため（例：Shell の待たない形は題が
+  `"{label|command}"`——AI が付けた呼び名、無ければコマンド）。埋めるのは `module-contract` の `fillCardText`
+  （host）と、その写しの `apps/frontend/lib/card-text.ts`（画面）
+- **説明が題と同じ文なら、説明を出さない**（追加・2026-10-08）——同じ文を2行並べない（Shell で呼び名を付けなかったとき）
 - **呼んだ時点から（結果を待たずに）出す**——待つ形の呼び出しはターンの終わりまで返らないので、結果を
   待ってから出すのでは「走っている間に見に行く」ができない
 - 押すと Canvas に開き、画面には**その呼び出しの**引数（と、返っていれば結果）が渡る。画面はそれで
@@ -2169,7 +2174,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
   いる Thread のどれかが未読なら Project 名を太字**にする。いま開いている Project の名前は太字にしない（中の行で分かる）。
   見分けは `data-unread`（`useThreadUnread`・`useAnyThreadUnread`、`lib/backend/real-inbox.ts`）
 - **バックグラウンドで動いているものを出す**（追加・2026-10-03、ユーザー。見本 `mock/components/banto/shell/pending-replies.tsx`）：
-  AI が「終わったら届ける」tool（`dev.banto/deliversLater`、`runSubagent` の `runInBackground`・Shell の `runCommand` の `runInBackground`（2026-10-07。題はカードの `{command}`）など）で頼み、Module が
+  AI が「終わったら届ける」tool（`dev.banto/deliversLater`、`runSubagent` の `runInBackground`・Shell の `runCommand` の `runInBackground`（2026-10-07。題はカードの `{label|command}`——AI が付けた呼び名、無ければコマンド。2026-10-08）など）で頼み、Module が
   「あとで届ける」と約束して、まだ届いていないもの（host の返事待ちの札、アーキ仕様 §4.2）。AI が動いている印（回る輪）とは
   別のことなので、**別の場所に置く**——両方が同時に見える。**待つ形の呼び出しは出さない**（その間はターンが走っていて輪が回る）
   - **Thread の行**（Base・Fork、広いサイドバーと Drawer）：名前の下に薄い1行。1件ならカードの題（tool が名乗る
@@ -2177,8 +2182,8 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
     「**バックグラウンドで n 件**」。いま開いている Project の Thread の行に出る
   - **いま開いていない Project の行**：頭文字の右下に件数の丸。いま開いている Project の行には出さない（中の行で分かる）
   - **畳んだレールには出さない**（レールの作りを見直すまで）
-  - 押すと一覧（見出し「バックグラウンドで動いているもの（n）」、1件ごとに題・頼んだ内容の頭・Module 名・何分前に頼んだか。
-    Project の行から開いたものは Thread ごとに見出しを付ける）。1件を押すと、その Thread へ移り、**会話のカードと同じ画面**
+  - 押すと一覧（見出し「バックグラウンドで動いているもの（n）」、1件ごとに題・頼んだ内容の頭（カードの説明。**題と同じ文なら
+    出さない**、2026-10-08）・Module 名・何分前に頼んだか。Project の行から開いたものは Thread ごとに見出しを付ける）。1件を押すと、その Thread へ移り、**会話のカードと同じ画面**
     （その tool の `ui.resourceUri` を、その呼び出しの toolCallId で）を Canvas に開く。画面を持たない tool なら Thread へ移るだけ
   - **起こし直しのあと続けているもの**（追加・2026-10-05、アーキ仕様 §2.5「2.」）：banto を起こし直したあと Module が続けると
     答えた仕事は、一覧の1件に「起こし直しのあと続けています（<何分前>から）」を添える——続けると言ったまま長く届かない
@@ -2195,7 +2200,7 @@ Fork を作る口は2つあり、どちらも**押すとダイアログが出て
   - **写しの持ち方**：`hello` に `background: [{ threadId, projectId, items }]`（札がある Thread だけ）、札が増えた・済んだら
     `background.changed`（その Thread の分を丸ごと）。画面は置き換えるだけ（`lib/backend/background-work.ts`）。
     1件は `{ module, since, toolName, toolCallId, resourceUri, title, description }`——**札そのもの（`replyTo`）は画面に出さない**
-- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`・`e2e/specs/background-work.spec.ts`・`e2e/specs/shell-background.spec.ts`（Shell の待たない形の印——題はコマンド）
+- 回帰試験：`e2e/specs/thread-running-icon.spec.ts`・`e2e/specs/sidebar-unread-running.spec.ts`・`e2e/specs/background-work.spec.ts`・`e2e/specs/shell-background.spec.ts`（Shell の待たない形の印——題は呼び名・説明はコマンド、呼び名が無ければ題がコマンドで説明は出さない）
 
 ### 6.34 設定の「更新」——banto 自身を GitHub の新しい版にする（決定・2026-10-04、ユーザー。モックで確認 → 本実装）
 
