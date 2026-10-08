@@ -58,6 +58,8 @@ window.addEventListener("message", (event: MessageEvent) => {
     return;
   }
   if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params as Appearance);
+  // 会話のカード・サイドバーのバックグラウンドの一覧から開かれた（runFactory・answerFactory の呼び出し）——その実行を選ぶ
+  if (msg.method === "ui/notifications/tool-result") wantFromResult(msg.params);
 });
 /**
  * banto の別の画面を開いてもらう（banto の拡張 `dev.banto/open-surface`）。押した直後だけ受けてもらえるので、ボタンの
@@ -170,6 +172,36 @@ const keyOf = (s?: { runId: string; item: string }) => (s ? `${s.runId}/${s.item
 
 function rows(): Array<{ run: RunSummary; item: ItemSummary }> {
   return state.runs.flatMap((run) => run.items.map((item) => ({ run, item })));
+}
+
+/** 開かれたときに選びたい実行（と件）。一覧が届くまで探せないので覚えておく */
+const want: { runId?: string; item?: string; done: boolean } = { done: true };
+function wantFromResult(params: unknown): void {
+  const text = (params as ToolResult | undefined)?.content?.[0]?.text;
+  if (!text) return;
+  try {
+    const got = JSON.parse(text) as { runId?: unknown; item?: unknown };
+    if (typeof got.runId !== "string") return;
+    want.runId = got.runId;
+    want.item = typeof got.item === "string" ? got.item : undefined;
+    want.done = false;
+    pickWanted();
+  } catch {
+    // 結果が JSON でない（断った文など）——何も選ばない
+  }
+}
+/** 覚えた実行の中から、人を待っているもの→動いているもの→先頭の順に選ぶ（件の指定があればそれ） */
+function pickWanted(): void {
+  if (want.done || !want.runId) return;
+  const run = state.runs.find((r) => r.runId === want.runId);
+  if (!run) return;
+  want.done = true;
+  const item =
+    run.items.find((i) => i.item === want.item) ??
+    run.items.find((i) => i.status === "stopped") ??
+    run.items.find((i) => active(i.status)) ??
+    run.items[0];
+  if (item) select(run.runId, item.item);
 }
 
 function select(runId: string, item: string): void {
@@ -524,6 +556,8 @@ async function refresh(force = false): Promise<void> {
     const got = await call<{ runs: RunSummary[] }>("getRuns");
     state.runs = got.runs;
     state.loaded = true;
+    // 開かれたときに選びたい実行があれば先に選ぶ（一覧が届くまで探せなかった分）
+    pickWanted();
     // 広いときは、何も選んでいなければ人を待っているもの→動いているものの一番上を開いておく
     if (!state.selected && wide()) {
       const first = rows().find((r) => r.item.status === "stopped") ?? rows().find((r) => active(r.item.status));

@@ -2808,6 +2808,10 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
   `implementer`/`reviewer`（agent・model・effort。既定 claude-code）・`concurrency`（3）・`limits`・`testTimeoutMinutes`（60）・
   `longStageMinutes`（30。前の版で流した——設定に無い——実行も30）。
   流し始めたときの設定を実行の記録に写し、最後までそれで走る（流し直しが同じ手順になるように）
+- **会話のカードとバックグラウンドの一覧から開く**（追加・2026-10-08、ユーザー要望）：runFactory・answerFactory は
+  `ui.resourceUri`（入口の画面）とカード（`dev.banto/card`、題「Factory に流した仕事」「Factory：{item} に答えた」）を名乗る——
+  会話にはカードだけ残り、サイドバーのバックグラウンドの一覧から押すと入口の画面が開く。画面は呼び出しの結果の runId（と item）で
+  その実行の件を選ぶ（人を待っているもの→動いているもの→先頭の順）
 - **人の画面**（実装・2026-10-07、Backlog の factory-ui。形はモック a5aefc0d——`mock/components/banto/canvas/factory-view.tsx`・
   `settings/factory-config-section.tsx`、ユーザー「モックの形でよい」）：
   - 入口（launcher `ui://banto-factory/runs`、`getRuns`・`getRunItem`・`answerFactory`・`cancelFactory` を呼ぶ）：一覧は**実行ではなく

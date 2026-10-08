@@ -19,6 +19,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   CANVAS_META_KEY,
+  CARD_META_KEY,
   CALL_ID_META_KEY,
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
@@ -333,7 +334,14 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           },
           required: ["items"],
         },
-        _meta: { [VISIBILITY_META_KEY]: "agent", [DELIVERS_LATER_META_KEY]: true },
+        // **会話にはカードを残し、押せば入口の画面でその実行を開く**（追加・2026-10-08、ユーザー要望——サイドバーのバックグラウンドの
+        // 一覧から押しても何も開かなかった）。Subagent の runSubagent と同じ形
+        _meta: {
+          [VISIBILITY_META_KEY]: "agent",
+          [DELIVERS_LATER_META_KEY]: true,
+          ui: { resourceUri: RUNS_APP_URI },
+          [CARD_META_KEY]: { title: "Factory に流した仕事" },
+        },
       },
       {
         name: "listFactoryRuns",
@@ -358,7 +366,12 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           },
           required: ["runId", "item", "action"],
         },
-        _meta: { [VISIBILITY_META_KEY]: "agent", [DELIVERS_LATER_META_KEY]: true },
+        _meta: {
+          [VISIBILITY_META_KEY]: "agent",
+          [DELIVERS_LATER_META_KEY]: true,
+          ui: { resourceUri: RUNS_APP_URI },
+          [CARD_META_KEY]: { title: "Factory：{item} に答えた" },
+        },
       },
       {
         name: "cancelFactory",

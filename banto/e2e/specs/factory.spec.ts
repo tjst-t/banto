@@ -166,17 +166,21 @@ test("テストが上限を越えて落ちると止まって会話に届き、�
 
   // 止まったことで AI が起きたターンが終わるのを待ってから、**人が入口の画面で**答える
   await expect.poll(async () => (await hostThread(page)).lastTurn?.outcome, { timeout: 60_000 }).toBe("completed");
-  await openNav(page);
-  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
-  const entry = page.locator('[role="option"][data-value^="launcher:factory:"]');
-  await expect(entry).toBeVisible({ timeout: 30_000 });
-  await entry.click();
+  // **サイドバーのバックグラウンドの一覧から開く**（追加・2026-10-08、ユーザー要望）——runFactory の呼び出しの画面（入口）が
+  // その実行を選んだ状態で開く
   const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const bgLine = page.locator('[data-sidebar="sidebar"]').getByTestId("thread-background");
+  await expect(bgLine, "サイドバーに Factory の仕事が出ない").toContainText("Factory に流した仕事", { timeout: 30_000 });
+  await bgLine.click();
+  await page.getByTestId("background-list").getByTestId("background-item").filter({ hasText: "Factory に流した仕事" }).first().click();
+  await expect(page.getByText(/^Canvas — factory$/), "押しても Factory の画面が開かない").toBeVisible({ timeout: 30_000 });
+  const detail = inner.getByTestId("factory-detail");
+  await expect(detail.getByRole("heading", { name: "b を足す" }), "開いた画面でその実行の件が選ばれていない").toBeVisible({ timeout: 60_000 });
+  // 会話にはカードが残る（画面は埋めない）
+  await expect(page.getByTestId("tool-entry-card").filter({ hasText: "Factory に流した仕事" }).first()).toBeVisible();
   const row = inner.locator('[data-testid="factory-row"][data-item="e2e-b"]');
   await expect(row).toHaveAttribute("data-status", "stopped", { timeout: 60_000 });
   await expect(row).toContainText("テストが 1 回続けて落ちました");
-  await row.click();
-  const detail = inner.getByTestId("factory-detail");
   await expect(detail.getByTestId("factory-stopped-reason")).toContainText("テストが 1 回続けて落ちました", { timeout: 30_000 });
   await expect(detail.getByText(/最後のテスト：落ちた/)).toBeVisible();
   await expect(detail.getByText("テストが落ちた（終了コード 1）")).toBeVisible();
