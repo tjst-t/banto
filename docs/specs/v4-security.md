@@ -252,14 +252,19 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
 ### Project の実行場所——別のサーバ（決定・2026-10-08、ユーザー。未実装）
 
 **Project を、banto の host のコンテナではなく、SSH で入る別のサーバで動かせるようにする。** 経緯は
-`docs/notes/2026-10-08-remote-runtime.md`。
+`docs/notes/2026-10-08-remote-runtime.md`（Fable のレビュー（2026-10-08）を受けて改めた）。
 
 **なぜ要るか**：本命の場面は「containerlab で Proxmox を試し、その上で VM を動かす」こと。banto の host 自体が VM
 なので、今のコンテナでも Proxmox が2段目・その上の VM が3段目の入れ子になり、ハードウェアの仮想化支援が効かない。
 物理サーバで動かせば Proxmox は1段目、その上の VM は2段目で済む。ほかに GPU・大きい機械・今ある開発機にも効く。
 
 **段階**：まず **SSH で入るサーバ丸ごとを、その Project の箱にする**（以下「別のサーバ」）。あとで、そのサーバの中の
-Incus のコンテナで動かす形（向こうでも閉じ込め・資源の上限が使える）を同じ口に足せるようにしておく。
+Incus のコンテナで動かす形（向こうでも閉じ込め・資源の上限が使え、同じサーバに Project を複数置ける）を同じ口に
+足せるようにしておく。
+
+**先にやること**：Claude のログインの中継を core に常設する（Backlog `claude-login-relay-owner`、§2「banto 本体の
+Claude ログインは、中継で共有する」の改訂の形）。今の実装は `subagent-settings` が開くたびに新しいポートで待ち受ける
+ので、別のサーバからは決まった道（下の「向こうとの道」）で届かない。
 
 #### 実行場所は core の中の差し替え口
 
@@ -273,72 +278,140 @@ Incus のコンテナで動かす形（向こうでも閉じ込め・資源の�
 |---|---|---|
 | 用意する（無ければ作る・起こす・前提を確かめる） | `incus init`／`start` | SSH で繋ぎ、前提を確かめ、コードと node を送る |
 | プロセスを起こして標準入出力を繋ぐ（env を渡す・cwd・uid） | `incus exec` | `ssh`（多重化した接続の上） |
+| 起こしたプロセスを確実に止める | host が切れば中も死ぬ | 向こうの systemd の単位で包んで止める（下） |
 | Project の根 | host のフォルダを同じパスでマウント | 向こうのフォルダ（host には無い） |
-| Module の置き場・配布物・banto のコード | host のフォルダを同じパスでマウント | 向こうに置く（パスは向こうのもの） |
+| 根の正規化（realpath） | host で | 向こうで（作るときに1回。下） |
+| Module の置き場・配布物・banto のコード | host のフォルダを同じパスでマウント（コードは読み取り専用） | 向こうに置く（パスは向こうのもの。読み取り専用にできない——下） |
 | 中から banto に届く住所（host 中継・Claude の中継） | ブリッジの host 側のアドレス | SSH の逆向きのトンネル（向こうの 127.0.0.1） |
 | host から中のソケットに届く（流れの口・アーキ §5.8） | host の側のパスに直接 | SSH の転送 |
+| Vault の鍵の窓口（ssh-agent）を中に見せる | 置き場の中に立てる（同じパス） | SSH の転送（host の中継がパスを付け替える） |
 | 外から中のサービスに届くアドレス（Publish） | コンテナのブリッジのアドレス | 向こうの LAN のアドレス |
-| 資源の上限・上限に当たった知らせ | Incus の `limits.*`・cgroup の数え | **作らない**（向こうの持ち主の責任） |
-| 止める・畳む | `incus stop` | SSH の接続を閉じる（向こうの機械は止めない） |
+| 資源の上限・上限に当たった知らせ | Incus の `limits.*`・cgroup の数え | **作らない**（向こうの持ち主の責任）。上限の一括反映・見張りの対象から外す |
+| 止める・畳む | `incus stop` | 向こうの Module を止めて SSH の接続を閉じる（向こうの機械は止めない） |
 
 **Module の宣言・Module のコードは実行場所を知らない**——host は差し込み語（`LaunchContext` の `monorepoRoot`・
 `moduleDataDir`・`modulePackageDir`・`projectRoot`）を**実行場所の側のパスで組み立てる**。今は host と中で同じパス
 なので区別が無かった。Module に渡す `BANTO_IN_CONTAINER` は「banto が用意した箱の中」の意味のまま別のサーバでも渡す
-（Shell の待たない形などが、箱の外の人の機械では断る印）。
+（Shell の待たない形などが、箱の外の人の機械では断る印）。**中継の合言葉の刻印も `inContainer` と同じにする**——
+値を返す口を鍵の名前ごとに聞く・banto 全体の口を出せない、などの扱い（§3）がそのまま効く。
+
+**Project の記録に実行場所を持つ**（`runtime`：`host-container` か `remote:<名前>`）。host の中で Project の根を
+使うところは、これを見て分ける：
+
+- **根の正規化**（`project-thread/store.ts` の `normalizeProjectRoot`）は今は host の `realpathSync` で、作るときだけでなく
+  読み直し・ターンの始まり（`http/app.ts`）・届いたものの続き（`delivery/turn-continuation.ts`）でも呼ばれる。別のサーバの
+  Project は**作るときに向こうで正規化した文字列をそのまま持ち**、host では正規化しない
+- **Runner の作業ディレクトリ**（上の2つのファイル。CLI の記録の置き場の鍵でもある）は、host の側に Project ごとの
+  空のフォルダを作って使う（データの置き場の中、Project の id で決まる）。起こし直しをまたぐ続きも同じ関数で引く。
+  システムプロンプトの root には向こうのパスと実行場所の名前を出す
+- **Project の一覧を Module に渡す口**（`listProjects`、Repositories が使う）は各要素に `runtime` を添える（下の表）
+- **コンテナの上限の一括反映**（設定を保存したとき全 Project に `applyLimits`）は、実行場所が host のものだけにする
 
 #### 登録と選び方
 
 - **banto 全体の設定に「実行場所」の一覧**を持つ。1件は名前・SSH の宛先（ホスト・ユーザー・ポート）・鍵（Vault の
   `ssh-identity` の alias）・置き場の根（既定 `~/.local/share/banto-remote`）。**初めて繋ぐときは host 鍵の指紋を
-  画面に出し、人が確かめて覚える**（以後は覚えた鍵と違えば繋がない。`StrictHostKeyChecking=yes`、known_hosts は
-  banto の置き場に持ち、人の `~/.ssh` は読まず書かない——Repositories の GitHub と同じ）
+  画面に出し、人が確かめて覚える**（以後は覚えた鍵と違えば繋がない。known_hosts は banto の置き場に持つ）
 - **Project を作るときに実行場所を選ぶ**。既定は今どおり「この host のコンテナ」。**あとから変えない**——変えると
   Project のフォルダが別の機械へ移ることになる。Project の設定には実行場所を読むだけで出す
 - 新しい Project の画面の「手元のフォルダを選ぶ」は、別のサーバを選んだら**向こうのフォルダの一覧を SSH で引く**
   （`GET /api/fs/directories` と同じく名前だけ）。広すぎる根の警告（§2「根と Project の関係」）は、向こうの banto の
   置き場の根を含むかで判断する
-- 同じ実行場所に Project を複数置いてよい。ただし**同じ実行場所の Project どうしは分けられない**（同じユーザーで
-  動く）——画面で選ぶときにそう出す。分けたいときは向こうのコンテナの段（あとで足す）を使う
+- **最初の版では、1つの実行場所に置ける Project は1つ**（決定・2026-10-08、レビューを受けて）。同じ SSH のユーザーで
+  動くと、Service の unit（`banto-<名前>.service`、印は宣言の名前だけで Project を含まない）が別の Project の unit を
+  孤児と見なして止めて消す・Service の `ports` が Project どうしでぶつかる——コンテナでは `~/.config/systemd/user` と
+  ネットワークが Project ごとに別だったので起きなかった。2つ目を選ぼうとしたら理由を出して断る。複数置きたいときは
+  向こうのコンテナの段（あとで足す）を使う
 
 #### 向こうに置くもの
 
 置き場の根（既定 `~/.local/share/banto-remote`）の下に、banto ごと（データの置き場で分ける、`owner` と同じ）に：
 
-- **banto のコード**：Module を起こすのに要る分を、動いている版（`versions/<commit>`）ごとに送る。版が変われば
-  送り直し、前の版を1つ残す。送るのは host（tar を SSH で流す）
+- **banto のコード**：Module を起こすのに要る分（各パッケージの `dist`・`package.json`、`node_modules` はワークスペースの
+  symlink を保ったまま）を tar で SSH に流して送る。**版の鍵は送る中身のハッシュ**（commit ではない——開発中は作業ツリーが
+  汚れていて commit と中身がずれる）。版が変われば送り直し、前の版を1つ残す
+- **向こうのコードは AI が書き換えうる**：コンテナでは読み取り専用でマウントしたが、向こうでは中の AI がそのユーザーの
+  ファイルを書き換えられる。**Module を起こすたびに送った中身と照合し、違えば送り直す**。書き換えても効くのはその
+  Project の中だけ（host の権限では動かない——§2「稼働中の banto は、開発用とは別の clone から動かす」の穴は無い）
 - **node**：host と同じ版の実行ファイルを送る（コンテナと同じ）。**向こうの CPU の種類（`uname -m`）・libc が host と
   違えば断る**（推測で動かさない）
-- **Module の置き場**（Project・Module ごと）と、registry から取ってきた配布物
-- **Shell のホーム**：host が人の設定（`.gitconfig` 等、§2「専用のホーム」）を送り込む。資格情報を外す規則は同じ
+- **Module の置き場**（Module ごと）と、registry から取ってきた配布物
+- **Shell のホーム**：host が人の設定（`.gitconfig` 等、§2「専用のホーム」）を送り込む。資格情報を外す規則は同じ。
+  人が一覧を変えたとき（今は立っている Shell のホームに写し直す）は、SSH で送り直す
 - **Project の根は向こうのフォルダ**。host には無い
 
-**root が要る準備は人が行う**：docker・containerlab・道具（git・ssh・curl など、土台のイメージの `BASE_PACKAGES` と
-同じ一覧）・ユーザーの systemd を常に動かす設定（`loginctl enable-linger`。Service と Shell の待たない形が使う）。
-banto は繋いだときに確かめ、**足りないものを名指しし、直し方を添えて断る**（§2「前提が欠けていれば、Module を
-起こさずに断る」と同じ）。banto は向こうで sudo しない。
+**Project を閉じても、向こうの置き場は消さない**（向こうは人の機械。コンテナを止めても消さないのと同じ）。画面に
+置き場のパスを出し、要らなければ人が消す。
+
+#### 前提の確かめ
+
+**root が要る準備は人が行う**。banto は向こうで sudo しない。**繋いだとき・Module を起こす前に次を確かめ、足りないものを
+名指しし、直し方を添えて断る**（§2「前提が欠けていれば、Module を起こさずに断る」と同じ）。Module が自分で sudo を
+試みる前に止める（Service・Shell の待たない形は linger が無いと `sudo -n` を試みる）：
+
+- `uname -m`・libc が host と同じ
+- **ログインシェルが何も出さない**（`ssh <宛先> true` の標準出力が空）——sshd から起こされた bash は非対話でも
+  `~/.bashrc` を読み、そこに echo が1行でもあれば MCP の標準入出力が壊れる
+- 道具：土台のイメージの `BASE_PACKAGES` と同じ一覧（git・ssh・curl など）
+- ユーザーの systemd が使える：`/run/user/<uid>/bus` があり、linger が有効（`loginctl show-user -p Linger`）。
+  Service・Shell の待たない形・Module を包む単位（下）が使う
+- 置き場の根に書ける
+- sshd がこの使い方を許す：TCP と UNIX ソケットの転送（`AllowTcpForwarding`・`AllowStreamLocalForwarding`）・
+  1本の接続に開けるセッションの数（`MaxSessions`、既定 10）が Module の数に足りる
+- 「中で Docker を使う」を入れた Project は `docker` が使える（containerlab もここで確かめる）
 
 #### 向こうとの道——SSH の接続1本
 
 - **Project ごとに SSH の接続を1本**（多重化、`ControlMaster`）張り、その上に載せる：Module の標準入出力（Module ごとの
-  セッション）・**逆向きのトンネル**（向こうの 127.0.0.1 の空いたポート→ host の core の口。host 中継 `/relay` と
-  Claude のログインの中継）・**ソケットの転送**（流れの口——host から向こうの `<置き場>/s/stream.sock` へ。Vault の
-  ssh-agent——host の窓口を向こうの `<置き場>/s` へ）
-- **向こうに LAN の待ち受けを開けない**。banto の側の入口（nftables の表 `inet banto`、§1「入れ方」）も今のまま閉じて
-  おける——向こうから banto へは SSH の接続の中だけを通る
+  セッション）・**逆向きのトンネル1本**（下）・**ソケットの転送**（流れの口と Vault の ssh-agent。下）
+- **`ssh` の設定は banto が固定し、人の設定を読まない**：`-F /dev/null`（`~/.ssh/config` を読まない——`ForwardAgent yes`
+  があると Vault の窓口が丸ごと向こうの AI に渡る）・`UserKnownHostsFile=<banto の置き場>`・`StrictHostKeyChecking=yes`・
+  `ForwardAgent=no`・`IdentitiesOnly=yes`・`IdentityAgent=<Vault が立てた窓口>`・`ServerAliveInterval`／`ServerAliveCountMax`
+  （切れたのを早く知る）。`ControlPath` は UNIX ソケットの 107 バイトに収まる短いパスに置く
 - 鍵は Vault から：host が Vault に鍵の窓口（ssh-agent）を立ててもらい、host の `ssh` がそれを使う。秘密鍵は host の
   ディスクにも向こうにも出ない
-- **env はコマンド行に載せない**：中継の合言葉などは、Module を起こすたびに向こうの置き場へ 0600 のファイルで送り、
-  起動役が読んですぐ消す（Shell の待たない形と同じ形、§2）。`ssh` のコマンド行は向こうの `ps` で読める
+- **向こうに LAN の待ち受けを開けない**。banto の側の入口（nftables の表 `inet banto`、§1「入れ方」）も今のまま閉じて
+  おける——向こうから banto へは SSH の接続の中だけを通る
+
+**逆向きのトンネルの先は、中継だけを受ける専用の待ち受け**：
+
+- 向こうの 127.0.0.1 は**そのサーバの全ユーザーに開く**。トンネルの先を core の口（`/api/*`・人のログイン・
+  OAuth の戻り先・`/agent-relay` まで同じポート）にすると、それが全部向こうの機械に出る。そこで host は
+  **127.0.0.1 の専用のポートに、host 中継 `/relay` と Claude のログインの中継だけを受ける待ち受け**を立て、トンネルは
+  そこへ繋ぐ（実行場所ごとに1つ。向こうの側のポートは `-R 0:…` で sshd に選ばせ、決まった番号を Module の住所にする）
+- 中継の合言葉で守るのは今と同じ。**向こうに他の人のアカウントがあれば、その人にも中継の口が見える**——専用の
+  サーバ・専用のユーザーを前提にし、実行場所を登録する画面にそう出す
+
+**Module の起こし方と、確実に止める**：
+
+- 向こうでは起動役（banto のコードの中の小さな node のスクリプト）を起こし、**env は標準入力の最初の1行（JSON）で
+  渡す**。起動役はそれを読んでから Module を `exec` し、残りの標準入出力を MCP に使う——env はコマンド行（向こうの
+  `ps` で読める）にもファイルにも載らない
+- 起動役は Module を**向こうのユーザーの systemd の単位で包む**（`systemd-run --user --scope --unit=banto-mod-<接続名>`）。
+  起こす前に同じ名前の単位が残っていれば止める
+- **なぜ要るか**：`incus exec` は host の側で切れば中も死ぬが、`ssh <宛先> <コマンド>` は回線が落ちても、向こうの sshd が
+  切断に気づくまで（sshd の既定では TCP の keepalive の約2時間）Module が標準入力の終わりを受け取らずに生き続ける。
+  そのまま繋ぎ直すと、同じ置き場の FileSystem・Backlog・Factory・Subagent（走っている claude ごと）が2本になる
+- host が Module を落とす（`moduleLost`・畳む）ときは、標準入出力を閉じたうえで `systemctl --user stop banto-mod-<接続名>`
+  を流す。接続が切れていたら、繋ぎ直したときに上の「残っていれば止める」が拾う
 - 接続が切れたら、その Project の Module は落ちたものとして扱い、次に要るときに繋ぎ直す（今の「繋げなかった」の
   扱い・間を空けて試し直す、と同じ）
+
+**ソケットの転送**（OpenSSH の UNIX ソケットの転送。張るのも外すのも、多重化した接続に `-O forward`／`-O cancel`）：
+
+- **流れの口**（アーキ §5.8）：host から向こうの `<置き場>/s/stream.sock` へ。host は流れごとに転送の先へ繋ぐ
+- **Vault の ssh-agent**：Vault は鍵の窓口を host の側（呼び出し元の Module の置き場に当たる host のフォルダの `s`）に
+  立て、そのパスを返す。**呼び元が別のサーバのとき、host の中継が応答を書き換える**——向こうの `<置き場>/s` の同じ名前へ
+  転送を張り、応答の `socketPath` を向こうのパスにして Module に返す。Vault が窓口を閉じたら転送も外す。転送を張る前に
+  向こうの同じパスのファイルを消す（sshd の `StreamLocalBindUnlink` に頼らない——root の設定なので）
 
 #### host が Project のフォルダに直接触っていたもの
 
 | 何が | 別のサーバでは |
 |---|---|
-| 会話の本体（Runner）の作業ディレクトリ（CLI の記録の置き場の鍵でもある） | host の側に Project ごとの空のフォルダを作って使う。システムプロンプトの root には向こうのパスと実行場所の名前を出す |
+| 会話の本体（Runner）の作業ディレクトリ・根の正規化 | 上の「Project の記録に実行場所を持つ」 |
 | フォルダ選び・広すぎる根の判定 | SSH で向こうを見る（上の「登録と選び方」） |
-| Repositories（clone・削除・Import・ブランチを送る口） | **最初は向こうのフォルダを扱わない**。clone は AI が Shell で行う。Repositories の一覧にも出さない |
+| Repositories（clone・削除・Import・ブランチを送る口） | **最初は向こうのフォルダを扱わない**。clone は AI が Shell で行う。`listProjects` の `runtime` が host 以外のものは、フォルダとの突き合わせ（一覧・削除・Import・ブランチを送る口）から外す——向こうの `/home/dev/x` と host の同じ文字列のフォルダを同じものと見なさないため |
 | Backlog の push（Repositories のブランチを送る口） | 引き受けない（`handled: false`）——向こうの git の設定と、Vault の SSH 鍵（`sshIdentity`）で送る |
 
 #### 閉じ込め
@@ -351,13 +424,13 @@ banto は繋いだときに確かめ、**足りないものを名指しし、直
 - **向こうのサービスは LAN から直に届く**——コンテナはブリッジの奥だったが、別のサーバで `0.0.0.0` に待ち受けたもの
   （Service で動かしたもの）は、Publish の認証を通らずに LAN から届く。banto は塞げないので、実行場所を登録する画面と
   Publish の承認画面にそう出す
-- 向こうから host へ届くのは SSH のトンネルの先（core の口）だけで、合言葉が要るのは今と同じ
+- 向こうから host へ届くのは、逆向きのトンネルの先の中継の待ち受けだけ（上）
 
 #### 最初は作らないもの
 
 - 向こうでの資源の上限・上限に当たった知らせ（`container-pressure`）——向こうの機械の持ち主の責任
 - Repositories で向こうのフォルダを扱うこと
-- 向こうのコンテナの段（上の「段階」）
+- 1つの実行場所に Project を複数置くこと・向こうのコンテナの段（上の「段階」）
 - 実行場所をあとから変えること
 
 #### Publish
@@ -368,8 +441,11 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
 
 #### 試験
 
-- E2E：**SSH で入れる相手を入れ子のコンテナで立てる**（試験用の sshd を入れた土台）。実行場所の登録・host 鍵の確かめ・
-  コードの送り込み・Shell・FileSystem・Service・流れの口・切れたときの繋ぎ直しを見る
+- E2E：**SSH で入れる相手を入れ子のコンテナで立てる**（試験用の sshd を入れた土台）。入れ子では `loginctl enable-linger`
+  が root でも断られる（2026-10-07 に実測）ので、試験用の土台では root が `user@<uid>.service` を起こしておき、前提の
+  確かめは「`/run/user/<uid>/bus` があれば可」で通す。見るもの：実行場所の登録・host 鍵の確かめ・コードの送り込みと
+  照合・Shell・FileSystem・Service・Claude の中継（偽の API）・流れの口・ssh-agent・切れたときに前の Module を止めてから
+  繋ぎ直すこと・向こうの `ps` に合言葉が出ないこと・前提が欠けた相手で名指しして断ること
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
 ## 2. コンテナの中の細部（2026-09-25 に Landlock から移した）
