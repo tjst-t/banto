@@ -26,10 +26,16 @@ export default defineConfig({
   // この回が作ったコンテナを消す（`global-teardown.ts`）
   globalTeardown: "./global-teardown.ts",
   retries: 0,
+  // **spec ごとの所要時間を残す**（追加・2026-10-08）。list は流れを見るため、json は回のあとで調べるため（trace と同じ
+  // test-results に置く。次の回が始まるときに消える）、spec-timing は回の終わりに遅い spec の上位と合計を出す
   reporter: [["list"], ["json", { outputFile: "test-results/report.json" }], ["./spec-timing-reporter.ts"]],
   use: {
     baseURL: FRONTEND_BASE_URL,
     trace: "retain-on-failure",
+    // **action と画面の移動に上限を付ける**（追加・2026-10-08）。無いと、押せないボタンを試験全体の上限（長い spec は
+    // 300秒）まで黙って待ち、何を待っていたのかだけが残る。本当に長い action は、その場で理由を書いて個別に延ばす
+    actionTimeout: 30_000,
+    navigationTimeout: 30_000,
   },
   webServer: [
     {
