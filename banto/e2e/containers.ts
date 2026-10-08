@@ -8,6 +8,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 export interface OwnedContainer {
   name: string;
   owner: string;
+  /** Incus の状態（`Running`・`Stopped` 等） */
+  status: string;
 }
 
 /**
@@ -45,7 +47,10 @@ export function isGroupAlive(pgid: number): boolean {
 }
 
 function incus(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  return spawnSync("incus", args, { encoding: "utf8", input: "" });
+  // 上限を付ける——incus のクライアントは incusd の側が起こし直されると宙に浮いたまま戻らないことがある（2026-10-08 に実測）
+  const r = spawnSync("incus", args, { encoding: "utf8", input: "", timeout: 120_000 });
+  if (r.error) return { status: null, stdout: r.stdout ?? "", stderr: `${r.stderr ?? ""}${r.error.message}` };
+  return r;
 }
 
 /** 札の付いたコンテナの一覧。読めなければ投げる（incus グループが効いていない等） */
@@ -54,9 +59,9 @@ export function listOwnedContainers(): OwnedContainer[] {
   if (project.status !== 0) throw new Error(`Incus に繋がりません（incus グループが効いていない？）：${project.stderr.trim()}`);
   const listed = incus(["query", `/1.0/instances?recursion=1&project=${encodeURIComponent(project.stdout.trim())}`]);
   if (listed.status !== 0) throw new Error(`コンテナの一覧を読めません：${listed.stderr.trim()}`);
-  return (JSON.parse(listed.stdout) as { name: string; config?: Record<string, string> }[]).flatMap((c) => {
+  return (JSON.parse(listed.stdout) as { name: string; status?: string; config?: Record<string, string> }[]).flatMap((c) => {
     const owner = c.config?.["user.banto.owner"];
-    return owner ? [{ name: c.name, owner }] : [];
+    return owner ? [{ name: c.name, owner, status: c.status ?? "?" }] : [];
   });
 }
 
@@ -72,6 +77,15 @@ export function staleOwnedContainers(current: string): string[] {
       return runId !== null && c.owner !== current && (!existsSync(c.owner) || !isAlive(runId));
     })
     .map((c) => c.name);
+}
+
+/**
+ * **コンテナの起動の記録**（`incus info --show-log`、追加・2026-10-08）。コンテナが起きない（`incusd forkstart` で落ちる等）
+ * とき、core のログには「起こせなかった」としか出ず、なぜかは Incus の側にしか無い。読めなければ理由を返す
+ */
+export function containerLog(name: string): string {
+  const r = incus(["info", "--show-log", name]);
+  return r.status === 0 ? r.stdout : `（incus info --show-log ${name} が失敗：${r.stderr.trim()}）`;
 }
 
 /**

@@ -26,7 +26,7 @@ export default defineConfig({
   // この回が作ったコンテナを消す（`global-teardown.ts`）
   globalTeardown: "./global-teardown.ts",
   retries: 0,
-  reporter: "list",
+  reporter: [["list"], ["json", { outputFile: "test-results/report.json" }], ["./spec-timing-reporter.ts"]],
   use: {
     baseURL: FRONTEND_BASE_URL,
     trace: "retain-on-failure",
