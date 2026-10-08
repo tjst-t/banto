@@ -382,7 +382,8 @@ export function replyToOf(meta: Record<string, unknown> | undefined): string | u
  * 様子を見に行ける入口が要るもの（サブエージェントに頼んだ仕事など）に使う。
  *
  * 値は `{ title, description }`。どちらも文で、`{引数名}` をその呼び出しの引数（文字列・数・真偽）で置き換える
- * （例：`"{agent} に頼んだ仕事"`）。**MCP Apps の仕様には無い、banto が足した拡張。**
+ * （例：`"{agent} に頼んだ仕事"`）。`{a|b}` は代わりの指定——左から順に、使える最初の引数（空白だけの文字列は使えない）
+ * （例：Shell の `"{label|command}"`——呼び名が無ければコマンド。追加・2026-10-08）。**MCP Apps の仕様には無い、banto が足した拡張。**
  */
 export const CARD_META_KEY = `${VENDOR_PREFIX}/card`;
 
@@ -413,15 +414,24 @@ export function uiResourceUriOf(tool: unknown): string | undefined {
  * カードの文の `{引数名}` を、その呼び出しの引数（文字列・数・真偽）で置き換える。**1行に収め**（改行は空白に）、
  * 80 字を超えれば畳む。引数に無い名前はそのまま残す（黙って消すと、Module の書き間違いに気づけない）。
  *
+ * `{a|b|…}` は**代わりの指定**（追加・2026-10-08）：左から順に見て、使える最初の引数で置き換える。使えるのは数・真偽と、
+ * **空白だけではない**文字列——付けなかった・空で渡した呼び名を飛ばして次へ進むため。どれも使えなければそのまま残す。
+ *
  * host がバックグラウンドの仕事の題を作るのに使う（追加・2026-10-03）。**画面（apps/frontend）にも同じものがある**
- * （`inline-module-view.tsx` の `fillCardText`）——画面は workspace のパッケージに依存していないため。変えるなら両方
+ * （`apps/frontend/lib/card-text.ts` の `fillCardText`）——画面は workspace のパッケージに依存していないため。変えるなら両方
  */
 export function fillCardText(template: string | undefined, args?: Record<string, unknown>): string | undefined {
   if (!template) return undefined;
   const filled = template
-    .replace(/\{([A-Za-z0-9_]+)\}/g, (whole, name: string) => {
-      const v = args?.[name];
-      return typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : whole;
+    .replace(/\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)\}/g, (whole, names: string) => {
+      const choices = names.split("|");
+      for (const name of choices) {
+        const v = args?.[name];
+        if (typeof v === "number" || typeof v === "boolean") return String(v);
+        // 名前が1つなら空の文字列もそのまま埋める（前からの振る舞い）。代わりがあるときは空白だけの文字列を飛ばす
+        if (typeof v === "string" && (choices.length === 1 || v.trim() !== "")) return v;
+      }
+      return whole;
     })
     .replace(/\s+/g, " ")
     .trim();

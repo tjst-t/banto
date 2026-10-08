@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 import { Hand, Hourglass } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useBackgroundByThread, useThreadBackground, type BackgroundItem } from "@/lib/backend/background-work";
+import { distinctDescription } from "@/lib/card-text";
 import { cn } from "@/lib/utils";
 
 interface ThreadRef {
@@ -124,7 +125,12 @@ function BackgroundList({
                     className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent"
                   >
                     <span className="truncate text-sm text-foreground">{titleOf(item)}</span>
-                    {item.description ? <span className="line-clamp-2 text-xs text-ink-2">{item.description}</span> : null}
+                    {/* 題と同じ文なら出さない（Shell の待たない形で呼び名を付けなかったとき、題も説明もコマンド。2026-10-08） */}
+                    {distinctDescription(item.title, item.description) ? (
+                      <span data-testid="background-item-description" className="line-clamp-2 text-xs text-ink-2">
+                        {item.description}
+                      </span>
+                    ) : null}
                     <span className="text-xs text-ink-3">
                       {item.module}・{KINDS[kind].since(minutesAgo(item.since, now))}
                     </span>

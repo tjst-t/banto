@@ -17,6 +17,7 @@ import { markInlineViewDisplayMode, type RealInlineView } from "@/lib/backend/ad
 import { recordRealUiDisplayMode } from "@/lib/backend/client";
 import { useCanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { OpenableCard } from "@/components/banto/thread/openable-card";
+import { distinctDescription, fillCardText } from "@/lib/card-text";
 
 /**
  * 実 Module の画面を inline で埋める（決定・2026-09-06）。
@@ -46,11 +47,12 @@ export function RealInlineModuleView({
   // 画面は埋めず、Fork の「この Fork を開く」と同じ形のカードを置く。押すと Canvas に開き、
   // 画面にはこの呼び出しの引数（と、返っていれば結果）が渡る
   if (view.card) {
+    const title = fillCardText(view.card.title, view.toolArgs) ?? `${view.server} の画面`;
     return (
       <OpenableCard
         icon={Bot}
-        title={fillCardText(view.card.title, view.toolArgs) ?? `${view.server} の画面`}
-        description={fillCardText(view.card.description, view.toolArgs)}
+        title={title}
+        description={distinctDescription(title, fillCardText(view.card.description, view.toolArgs))}
         onOpen={open}
         testId="tool-entry-card"
         moduleName={view.server}
@@ -108,23 +110,6 @@ export function RealInlineModuleView({
       />
     </OpenableCard>
   );
-}
-
-/**
- * カードの文の `{引数名}` を、その呼び出しの引数で置き換える。**1行に収める**（改行は空白に）、長ければ畳む。
- * 引数に無い名前はそのまま残す（黙って消すと、Module の書き間違いに気づけない）
- */
-export function fillCardText(template: string | undefined, args?: Record<string, unknown>): string | undefined {
-  if (!template) return undefined;
-  const filled = template
-    .replace(/\{([A-Za-z0-9_]+)\}/g, (whole, name: string) => {
-      const v = args?.[name];
-      return typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : whole;
-    })
-    .replace(/\s+/g, " ")
-    .trim();
-  if (filled === "") return undefined;
-  return filled.length > 80 ? `${filled.slice(0, 80)}…` : filled;
 }
 
 /** カードに出す「何を呼んだか」の手がかり。長い引数は畳む。 */
