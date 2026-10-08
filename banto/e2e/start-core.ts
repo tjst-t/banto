@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
 import {
+  CONFIG_PATH,
   DATA_DIR,
   FRONTEND_PORT,
   CLAUDE_CONFIG_DIR,
@@ -27,6 +28,8 @@ import { startGithubFixture } from "./github-fixture.ts";
 import { startGithubLoginFixture } from "./github-login-fixture.ts";
 import { startInfisicalFixture } from "./infisical-fixture.ts";
 
+// どの core かは webServer が渡す `BANTO_E2E_CORE_INDEX`（`config.ts`）。設定の置き場もその core のものにする
+process.env.BANTO_CONFIG_PATH = CONFIG_PATH;
 globalSetup();
 
 // **回が終わったらコンテナを必ず消す片づけ役を、別のセッションで起こしておく**（追加・2026-10-01、`run-reaper.ts`）。

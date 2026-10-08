@@ -8,7 +8,9 @@ import { dirname, join } from "node:path";
 import { removeContainers, staleOwnedContainers } from "./containers.ts";
 import {
   CONFIG_PATH,
+  CORE_INDEX,
   DATA_DIR,
+  E2E_BASE,
   PORT,
   AUTH_TOKEN,
   SANDBOX_PORT,
@@ -21,8 +23,11 @@ import {
 } from "./config.ts";
 
 export default function globalSetup(): void {
-  removeStaleRuns();
-  removeStaleContainers();
+  // 前の回の片づけは回に1度（core は worker の数だけ同時に起きる。同じコンテナを何本もが消しに行かない）
+  if (CORE_INDEX === 0) {
+    removeStaleRuns();
+    removeStaleContainers();
+  }
   rmSync(DATA_DIR, { recursive: true, force: true });
   rmSync(dirname(CONFIG_PATH), { recursive: true, force: true });
   rmSync(CLAUDE_CONFIG_DIR, { recursive: true, force: true });
@@ -61,7 +66,7 @@ export default function globalSetup(): void {
  * **走っているかもしれない実行には触らない**——1日より古いものだけ消す。
  */
 function removeStaleRuns(): void {
-  const runsRoot = dirname(dirname(DATA_DIR));
+  const runsRoot = E2E_BASE;
   const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
   let entries: string[];
   try {

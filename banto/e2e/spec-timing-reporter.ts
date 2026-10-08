@@ -1,10 +1,11 @@
 // **回の終わりに、spec ファイルごとの所要時間を出す**（追加・2026-10-08）。
 //
 // list の reporter は試験ごとの秒数を流すだけで、どの spec が回を長くしているかは残らない（フル E2E が 58 分かかった
-// とき、どこに時間を使ったか答えられなかった）。workers=1 で spec ファイルは並ばずに1本ずつ走るので、**ファイルの最初の
-// 試験が始まってから最後の試験が終わるまで**をそのファイルの所要時間とする（beforeAll・後片づけの fixture も入る）。
+// とき、どこに時間を使ったか答えられなかった）。spec ファイルの中は1つの worker で順に走る（`fullyParallel: false`）ので、
+// **ファイルの最初の試験が始まってから最後の試験が終わるまで**をそのファイルの所要時間とする（beforeAll・後片づけの
+// fixture も入る）。worker が何本もあると spec は並んで走るので、spec の時間の和は回の合計を超える（改訂・2026-10-08）。
 // 中身は test-results/spec-timing.json にも残す。
-import type { FullResult, Reporter, TestCase, TestResult } from "@playwright/test/reporter";
+import type { FullConfig, FullResult, Reporter, TestCase, TestResult } from "@playwright/test/reporter";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,8 +25,11 @@ export default class SpecTimingReporter implements Reporter {
   private spans = new Map<string, Span>();
   private runStart = Date.now();
 
-  onBegin(): void {
+  private workers = 1;
+
+  onBegin(config: FullConfig): void {
     this.runStart = Date.now();
+    this.workers = config.workers;
   }
 
   onTestBegin(test: TestCase, result: TestResult): void {
@@ -57,12 +61,12 @@ export default class SpecTimingReporter implements Reporter {
         (s, i) =>
           `  ${String(i + 1).padStart(2)}. ${fmt(s.ms).padStart(7)}  ${s.file}（${s.tests} 件${s.failed ? `・落ち ${s.failed}` : ""}）`,
       ),
-      `[e2e] 回の合計 ${fmt(total)}（onBegin から。spec の中 ${fmt(inSpecs)}・spec の外 ${fmt(total - inSpecs)}）・結果 ${result.status}`,
+      `[e2e] 回の合計 ${fmt(total)}（onBegin から。worker ${this.workers} 本・spec の時間の和 ${fmt(inSpecs)}）・結果 ${result.status}`,
     ];
     console.log(lines.join("\n"));
     const out = join(HERE, "test-results", "spec-timing.json");
     mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, JSON.stringify({ totalMs: total, status: result.status, specs: spans }, null, 2));
+    writeFileSync(out, JSON.stringify({ totalMs: total, workers: this.workers, status: result.status, specs: spans }, null, 2));
   }
 
   printsToStdio(): boolean {

@@ -16,18 +16,63 @@ import { join } from "node:path";
  */
 const RUN_ID = (process.env.BANTO_E2E_RUN_ID ??= String(process.pid));
 
-/** 実行ごとに違う port を選ぶ。**衝突したら Playwright が止まる**（黙って相乗りしない）。 */
-function portForRun(offsetInRun: number): number {
-  // 4740〜4939 の枠を、実行ごとに**5つずつ**使う
-  // （core・sandbox・frontend・MCP Registry の偽物・npm registry の偽物）
-  const slot = Number(RUN_ID) % 40;
-  return 4740 + slot * 5 + offsetInRun;
+/**
+ * 既定の並列の数（2026-10-08 に測って決めた。経緯は `docs/notes/2026-10-08-e2e-parallel.md`）。この機械（4 コア・
+ * 11.6GiB）で同じ 18 本を流して 1 本：787 秒・2 本：534 秒・3 本：532 秒（どれも全部通った）。3 本は CPU が詰まり
+ * （/proc/pressure/cpu の some が平均 60%）、spec 1本ずつが遅くなるだけで回は縮まなかった
+ */
+export const DEFAULT_WORKERS = 2;
+/** 1回に使う port の枠（画面1つ＋core ごとに4つ）に収まる上限 */
+const MAX_WORKERS = 6;
+
+/**
+ * **worker ごとに core を1本持つ**（追加・2026-10-08、`docs/notes/2026-10-08-e2e-parallel.md`）。
+ *
+ * spec ファイルは worker に配られて並んで走る。全 worker が1つの core を共有すると、受信箱・Project の一覧・
+ * banto 全体の Module を奪い合う（2026-09-10 に workers を 1 にした理由）。そこで **worker の数だけ core を起こし**
+ * （`playwright.config.ts` の webServer）、worker は自分の番号（Playwright が渡す `TEST_PARALLEL_INDEX`。worker が
+ * 落ちて作り直されても同じ番号）の core だけを相手にする。core の側は webServer が渡す `BANTO_E2E_CORE_INDEX` で
+ * 自分の番号を知る。主プロセス（番号を持たない）では 0 番の値になる——回の全部の core を見たいところ
+ * （回の終わりの片づけ・webServer）は `coreDataDir(i)` などを `CORE_COUNT` だけ回す。
+ *
+ * **定数の名前は変えない**（65 の spec が module の読み込み時に import している）。値の決め方だけを番号ごとにする。
+ */
+export const CORE_COUNT = coreCountFromEnv();
+export const CORE_INDEX = Number(process.env.BANTO_E2E_CORE_INDEX ?? process.env.TEST_PARALLEL_INDEX ?? "0");
+if (!Number.isInteger(CORE_INDEX) || CORE_INDEX < 0 || CORE_INDEX >= CORE_COUNT) {
+  // `--workers`（`-j`）で worker を増やすと、core の無い番号の worker ができる——黙って 0 番の core に相乗りしない
+  throw new Error(
+    `[e2e] worker ${CORE_INDEX} 番の core がありません（core は ${CORE_COUNT} 本）。` +
+      `並列の数は --workers ではなく BANTO_E2E_WORKERS で変えてください`,
+  );
 }
 
-export const CORE_PORT = portForRun(0);
+function coreCountFromEnv(): number {
+  const raw = process.env.BANTO_E2E_WORKERS;
+  if (raw === undefined || raw === "") return DEFAULT_WORKERS;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_WORKERS) {
+    throw new Error(`[e2e] BANTO_E2E_WORKERS は 1〜${MAX_WORKERS} の整数で（いま「${raw}」）`);
+  }
+  return n;
+}
+
+/**
+ * 実行ごとに違う port を選ぶ。**衝突したら Playwright が止まる**（黙って相乗りしない）。
+ *
+ * 4740〜4939 の枠を、実行ごとに **25 ずつ**使う（8 枠）：先頭が画面、その後ろに core ごとに4つ
+ * （core・sandbox・MCP Registry の偽物・npm registry の偽物）。同じ機械の回は機械全体のロック（`run-lock.ts`）で
+ * 1回ずつなので、枠がぶつかるのはロックを外して重ねたときだけ
+ */
+const RUN_PORT_BASE = 4740 + (Number(RUN_ID) % 8) * 25;
+function corePort(index: number, offsetInCore: number): number {
+  return RUN_PORT_BASE + 1 + index * 4 + offsetInCore;
+}
+
+export const CORE_PORT = corePort(CORE_INDEX, 0);
 // Module の画面を隔離するサンドボックス（§6.2）。**画面とは別オリジン**
 // でなければならないので、E2E でも別ポートで立てる
-export const SANDBOX_PORT = portForRun(1);
+export const SANDBOX_PORT = corePort(CORE_INDEX, 1);
 
 // **フロントも E2E 専用に起こす**（訂正・2026-09-13、ユーザー指摘
 // 「E2E のテスト環境は、私が触る環境とは別に立てるべきでは」）。
@@ -43,7 +88,8 @@ export const SANDBOX_PORT = portForRun(1);
 // 落ちる。**人の画面を壊しながら試験していた**。
 //
 // なので **port は実行ごとに分け、ビルド成果物は人のものと分ける**。
-export const FRONTEND_PORT = portForRun(2);
+// 画面は回に1本（core が何本でも、`?bantoHost=` で繋ぐ先を選べる）
+export const FRONTEND_PORT = RUN_PORT_BASE;
 
 /**
  * **試験用の MCP Registry**（追加・2026-09-21、`registry-fixture.ts`）。
@@ -51,7 +97,7 @@ export const FRONTEND_PORT = portForRun(2);
  * **本物の registry を叩かない**（規則6）——一覧の中身は毎日変わるので、
  * 並び順の検査が外の都合で落ちる。core と同じプロセスで立てる。
  */
-export const REGISTRY_PORT = portForRun(3);
+export const REGISTRY_PORT = corePort(CORE_INDEX, 2);
 export const REGISTRY_BASE_URL = `http://127.0.0.1:${REGISTRY_PORT}`;
 
 /**
@@ -60,7 +106,7 @@ export const REGISTRY_BASE_URL = `http://127.0.0.1:${REGISTRY_PORT}`;
  * registry から入れた Module を**実際に取ってきて繋ぐ**ところまで見るのに要る。
  * 本物の npm を叩くと、外の都合で落ちる試験になる（規則6）。
  */
-export const NPM_REGISTRY_PORT = portForRun(4);
+export const NPM_REGISTRY_PORT = corePort(CORE_INDEX, 3);
 export const NPM_REGISTRY_BASE_URL = `http://127.0.0.1:${NPM_REGISTRY_PORT}`;
 
 /**
@@ -88,18 +134,32 @@ export const FRONTEND_DIST_DIR = ".next-e2e";
 // 無い形で、試験環境だけが緩くなる。なので置き場は本番と同じ関係（リポジトリの外）にする。
 /**
  * **Project の Module はコンテナの中で動く**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。E2E は
- * incus グループが効いたプロセスで回す（`sudo -u "$USER" npx playwright test`。`sg incus` は主グループを
- * 変えるので使わない）。
+ * incus グループが効いたプロセスで回す（付いていなければ主プロセスが `sudo -n -E -u <自分>` で自分を起こし直す
+ * ——`incus-access.ts`。`sg incus` は主グループを変えるので使わない）。
  *
  * **置き場をホームの下に置く**：権限を絞った Incus の区画は、ホームの下しかコンテナに見せられない。Project の根も
  * Module の置き場もコンテナに見せるので、E2E の置き場ごとホームの下に置き、**`TMPDIR` もそこへ向ける**——spec は
  * Project の根を `tmpdir()` の下に作っている（84 か所）ので、spec を書き換えずに済む
  */
 export const E2E_BASE = join(homedir(), ".cache", "banto-e2e");
-const E2E_TMP = join(E2E_BASE, RUN_ID);
+/** 回の置き場（Playwright の pid）。その下に core ごとの置き場 `w<番号>` を置く */
+export const RUN_DIR = join(E2E_BASE, RUN_ID);
+/** core ごとの置き場。真実は一箇所——回の終わりの片づけ（全部の core）もここから引く */
+export function coreDir(index: number): string {
+  return join(RUN_DIR, `w${index}`);
+}
+/** その番号の core のデータの置き場（コンテナの札 `user.banto.owner` はこれ） */
+export function coreDataDir(index: number): string {
+  return join(coreDir(index), "data");
+}
+/** その番号の core の待ち受け（主プロセスが webServer の起動を確かめる・片づけ役に渡す） */
+export function coreBaseUrl(index: number): string {
+  return `http://127.0.0.1:${corePort(index, 0)}`;
+}
+const E2E_TMP = coreDir(CORE_INDEX);
 process.env.TMPDIR = join(E2E_TMP, "tmp");
 mkdirSync(process.env.TMPDIR, { recursive: true });
-export const DATA_DIR = join(E2E_TMP, "data");
+export const DATA_DIR = coreDataDir(CORE_INDEX);
 /**
  * **Shell のホームへ写す元**（追加・2026-09-23）。本物の人のホーム（`~/.gitconfig`）を
  * 試験に使わない——実行ごとの置き場に偽のホームを作る（`start-core.ts`）。

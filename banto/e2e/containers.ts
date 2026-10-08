@@ -14,9 +14,10 @@ export interface OwnedContainer {
 
 /**
  * E2E の回のデータの置き場の形。HOME に依らない——サブエージェントの偽のホームで回した回も拾うため。spec が自前で
- * 起こす host（`own-host.ts`）の置き場（回の下の `own-*`）も同じ回のものとして拾う（追加・2026-10-05）
+ * 起こす host（`own-host.ts`）の置き場（回の下の `own-*`）も同じ回のものとして拾う（追加・2026-10-05）。
+ * core は worker ごとに回の下の `w<番号>` に置く（追加・2026-10-08、`config.ts` の coreDir）
  */
-const E2E_OWNER = /\/\.cache\/banto-e2e\/(\d+)\/(?:own-[^/]+\/)?data$/;
+const E2E_OWNER = /\/\.cache\/banto-e2e\/(\d+)\/(?:w\d+\/)?(?:own-[^/]+\/)?data$/;
 
 /** 札の置き場から、その回の印（Playwright の pid）を読む。E2E のものでなければ null */
 export function runIdOf(owner: string): number | null {

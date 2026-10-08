@@ -41,6 +41,10 @@
 //
 // 「前の spec ファイル」は回の置き場のファイルに覚える——Playwright はテストが落ちると worker を作り直すので、
 // worker の中の変数だと、同じ spec の続きを別の spec と取り違える。
+//
+// **戻すのは自分の core だけ**（追加・2026-10-08、worker ごとに core を持つ——`config.ts` の CORE_COUNT）。CORE_BASE_URL・
+// DATA_DIR はこの worker の番号の core のもので、覚えるファイル（前の spec・回の始めの Module・alias）もその core の置き場
+// （`w<番号>`）に置く。作り直された worker は同じ番号を受け取るので、同じファイルの続きから読む
 import { test as base, type BrowserContext, type TestInfo } from "@playwright/test";
 import { containerNameFor } from "@banto/container";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
