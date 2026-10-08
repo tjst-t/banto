@@ -1,13 +1,19 @@
 import { defineConfig } from "@playwright/test";
-import {
+import { ensureIncusAccess } from "./incus-access.ts";
+import { acquireMachineLock } from "./run-lock.ts";
+
+// **Incus に繋がる形で走る**（`incus-access.ts`）。incus グループの付いていないプロセスから流されたら、ここで自分を
+// 起こし直す。**`config.ts` を読む前に**——config は読んだプロセスの pid を回の印にし、TMPDIR を書き換える
+// （起こし直す親の値が子に渡ってはいけない）ので、静的な import にしない
+await ensureIncusAccess();
+const {
   CORE_BASE_URL,
   FRONTEND_BASE_URL,
   FRONTEND_LISTEN_URL,
   FRONTEND_PORT,
   FRONTEND_DIST_DIR,
   CONFIG_PATH,
-} from "./config.js";
-import { acquireMachineLock } from "./run-lock.ts";
+} = await import("./config.js");
 
 // **同じ機械の E2E は一度に1回**（`run-lock.ts`）。webServer を起こす前に取る——config はここで読まれ終わってから
 // webServer が起きる。worker・webServer の子は env の印を見て何もしない
