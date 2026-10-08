@@ -283,7 +283,7 @@ interface LiveItem {
   abort: AbortController;
   /** 人の答えを待っている問い */
   pendingAnswer?: (a: Answer) => void;
-  /** AI の呼び出しが待つ合図：最初のサブエージェントに頼めた・止まった・終わった・順番待ちになった */
+  /** AI の呼び出しが待つ合図：最初のサブエージェントに頼めた・止まった・終わった・順番待ちになった・マージの段で答えを受けた */
   settled: { promise: Promise<void>; resolve: () => void };
   /** 走っているコマンドを止める */
   execAbort?: AbortController;
@@ -1036,6 +1036,9 @@ class ItemPass implements ProcedureContext {
       try {
         return await this.waitForAnswer(reason, prev !== undefined);
       } finally {
+        // マージの段の続き（rebase → テスト → 取り込み）はサブエージェントに頼まず人も待たない——AI の呼び出し（answerFactory）を
+        // 待たせない（取り込む直前のテストは長い。待つと host の見張りで呼び出しが切れる）。列の空き待ちも待たせない
+        this.live.settled.resolve();
         await queue.acquire(this.signal);
       }
     });

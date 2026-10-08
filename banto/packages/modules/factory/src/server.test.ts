@@ -310,6 +310,32 @@ test("終わった1件に答える・止める（走っていない1件）は、
   }
 });
 
+test("取り込む直前のテストで止まった1件に answerFactory で「続ける」と答えると、テストの長さによらずすぐ返る", async () => {
+  // テストの1回目（手順の関門）は通り、2回目（取り込む直前）は落ち、3回目（答えたあと）は 3 秒かかって通る
+  const counter = join(mkdtempSync(join(tmpdir(), "factory-count-")), "n");
+  const h = setup({
+    testCommand: `n=$(cat ${counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${counter}; [ $n -eq 2 ] && exit 1; [ $n -ge 3 ] && sleep 3; exit 0`,
+  });
+  try {
+    h.state.holdImplementer = false;
+    const s = await h.start();
+    const { runId } = JSON.parse((await s.call("runFactory", { items: ["a"] }, runMeta)).text) as { runId: string };
+    await until(() => s.factory.get(runId)?.items[0]?.status === "stopped", "取り込む直前のテストで止まらない");
+    assert.match(s.factory.get(runId)!.items[0]!.stopped!.reason, /^取り込む直前のテストが落ちました/);
+    const t0 = Date.now();
+    const answered = await s.call("answerFactory", { runId, item: "a", action: "continue" });
+    const ms = Date.now() - t0;
+    assert.equal(answered.isError, false, answered.text);
+    assert.ok(ms < 1_500, `answerFactory がテストを待った（${ms}ms）`);
+    assert.equal(s.factory.get(runId)!.items[0]!.status, "merging");
+    await until(() => s.factory.get(runId)?.items[0]?.status === "done", "取り込まれない");
+    assert.equal(execFileSync("cat", [counter], { encoding: "utf8" }).trim(), "3");
+  } finally {
+    await h.cleanup();
+    rmSync(join(counter, ".."), { recursive: true, force: true });
+  }
+});
+
 const release = (h: ReturnType<typeof setup>) => {
   for (const r of h.held.splice(0)) h.state.current!.receiveReply({ replyId: r.replyId, from: "subagent", title: "終わりました", text: JSON.stringify(r.body), final: true, lost: false });
 };
