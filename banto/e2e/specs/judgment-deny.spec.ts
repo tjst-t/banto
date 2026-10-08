@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
+import { createProject, openApp, fakeTurn, waitTurnEnded, currentProjectId, projectInbox } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -27,6 +27,8 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
 
   await openApp(page);
   await createProject(page, PROJECT_NAME, projectRoot);
+  // 受信箱は banto 全体で1つ——見るのはこの Project の分だけ（helpers.ts の projectInbox）
+  const projectId = currentProjectId(page);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -43,12 +45,10 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
   const card = page.locator('[data-role="judgment-card"]').first();
   await expect(card.getByText(/secret\.txt/)).toBeVisible({ timeout: 15_000 });
 
-  const before = await (
-    await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-  ).json();
-  const target = before.find((i: { kind: string }) => i.kind === "judgment");
+  const before = await projectInbox(projectId);
+  const target = before.find((i: { kind: string }) => i.kind === "judgment")!;
   expect(target).toBeTruthy();
-  const threadId: string = target.threadId;
+  const threadId: string = target.threadId!;
 
   await page.getByRole("button", { name: "拒否する" }).click();
 
@@ -56,11 +56,7 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
   await expect
     .poll(
       async () => {
-        const open = await (
-          await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
+        const open = await projectInbox(projectId);
         return open.some((i: { id: string }) => i.id === target.id);
       },
       { timeout: 60_000 },

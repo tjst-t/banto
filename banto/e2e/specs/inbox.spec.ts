@@ -11,8 +11,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn } from "../helpers.js";
+import { createProject, openApp, fakeTurn, currentProjectId, projectInbox } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 // 実AIターン＋hold-the-lineの待ち＋受信箱のポーリング（5秒間隔）が入るので、
@@ -41,6 +40,8 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
   await openApp(page);
 
   await createProject(page, PROJECT_NAME, projectRoot);
+  // 受信箱は banto 全体で1つ——数えるのはこの Project の分だけ（helpers.ts の projectInbox）
+  const projectId = currentProjectId(page);
 
   // permissionMode を default に（auto のままだと承認を求めずに実行される）
   await page.getByRole("button", { name: /permissionMode/ }).click();
@@ -78,10 +79,8 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
   // **バッジが0になることでは見ない**——答えた直後にAIがターンを続けて
   // 別の判断待ちを出しうるので非決定的（実測・2026-09-05）。
   // 「この判断待ちが answered になったか」をhost側の記録で見る。
-  const before = await (
-    await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-  ).json();
-  const target = before.find((i: { kind: string }) => i.kind === "judgment");
+  const before = await projectInbox(projectId);
+  const target = before.find((i: { kind: string }) => i.kind === "judgment")!;
   expect(target).toBeTruthy();
 
   // 「許可する」は押したらそのまま送る（選んでから送る2段はやめた・2026-10-05）
@@ -90,11 +89,7 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
   await expect
     .poll(
       async () => {
-        const open = await (
-          await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
+        const open = await projectInbox(projectId);
         return open.some((i: { id: string }) => i.id === target.id);
       },
       { timeout: 30_000 },

@@ -5,8 +5,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn, waitTurnEnded, currentProjectId, projectInbox } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
@@ -19,6 +18,8 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
 
   await openApp(page);
   await createProject(page, PROJECT_NAME, projectRoot);
+  // 受信箱は banto 全体で1つ——見るのはこの Project の分だけ（helpers.ts の projectInbox）
+  const projectId = currentProjectId(page);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -34,28 +35,22 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
   await page.reload();
   await expectProjectOpen(page, PROJECT_NAME);
 
-  const open = await (
-    await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-  ).json();
+  const open = await projectInbox(projectId);
   expect(open.some((i: { kind: string }) => i.kind === "judgment")).toBe(true);
-  const threadId: string = open.find((i: { kind: string }) => i.kind === "judgment").threadId;
+  const threadId: string = open.find((i: { kind: string }) => i.kind === "judgment")!.threadId!;
 
   // 会話の画面に、答えられる承認カードが戻っているか
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("tool呼び出しの承認: mcp__filesystem__listDirectory")).toBeVisible();
 
   // 実際に答えられて、止まっていたターンが動き出すところまで見る（規則14）
-  const target = open.find((i: { kind: string }) => i.kind === "judgment");
+  const target = open.find((i: { kind: string }) => i.kind === "judgment")!;
   await page.getByRole("button", { name: "許可する" }).click();
 
   await expect
     .poll(
       async () => {
-        const now = await (
-          await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
+        const now = await projectInbox(projectId);
         return now.some((i: { id: string }) => i.id === target.id);
       },
       { timeout: 30_000 },

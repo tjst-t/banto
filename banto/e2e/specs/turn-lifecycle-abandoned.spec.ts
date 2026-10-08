@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp, fakeTurn, waitTurnEnded } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn, waitTurnEnded, currentProjectId, projectInbox } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -36,6 +36,8 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
 
   await openApp(page);
   await createProjectInTmp(page, PROJECT_A);
+  // 受信箱は banto 全体で1つ——見るのはこの Project（A）の分だけ（helpers.ts の projectInbox）
+  const projectId = currentProjectId(page);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -46,12 +48,10 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   await composer.press("Enter");
   await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 60_000 });
 
-  const judgments = await (
-    await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-  ).json();
-  const target = judgments.find((i: { kind: string }) => i.kind === "judgment");
+  const judgments = await projectInbox(projectId);
+  const target = judgments.find((i: { kind: string }) => i.kind === "judgment")!;
   expect(target).toBeTruthy();
-  const threadId: string = target.threadId;
+  const threadId: string = target.threadId!;
 
   // 戻る先を控えておく——**レールのリンクでは引かない**。E2Eの Project 名は
   // どれも「E」で始まるので、頭文字のアイコンでは別の Project を掴む
@@ -66,9 +66,7 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   await expectProjectOpen(page, PROJECT_A);
 
   // host 側では判断待ちは生きたまま
-  const stillOpen = await (
-    await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-  ).json();
+  const stillOpen = await projectInbox(projectId);
   expect(stillOpen.some((i: { id: string }) => i.id === target.id)).toBe(true);
 
   // **答えられる状態で戻っていること**（いまはここが出ない＝誰も答えられない）
@@ -78,11 +76,7 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   await expect
     .poll(
       async () => {
-        const now = await (
-          await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
+        const now = await projectInbox(projectId);
         return now.some((i: { id: string }) => i.id === target.id);
       },
       { timeout: 60_000 },

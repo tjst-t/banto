@@ -11,8 +11,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, expectProjectOpen, openApp, fakeTurn } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn, currentProjectId, projectInbox } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -30,6 +29,8 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
 
   await openApp(page);
   await createProject(page, PROJECT_NAME, projectRoot);
+  // 受信箱は banto 全体で1つ——数えるのはこの Project の分だけ（helpers.ts の projectInbox）
+  const projectId = currentProjectId(page);
 
   // --- 1. permissionMode を default にして、リロードしても残ること ---
   await page.getByRole("button", { name: /permissionMode/ }).click();
@@ -45,9 +46,7 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   });
 
   // host 側にも残っている（真実は host——画面の表示だけで確かめない）
-  const inboxBefore = await (
-    await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
-  ).json();
+  const inboxBefore = await projectInbox(projectId);
   expect(Array.isArray(inboxBefore)).toBe(true);
 
   // --- 2. tool 呼び出しを2回起こし、**2つとも**答えられること ---
@@ -73,11 +72,7 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   await expect
     .poll(
       async () => {
-        const open = await (
-          await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
+        const open = await projectInbox(projectId);
         return open.filter((i: { kind: string }) => i.kind === "judgment").length;
       },
       { timeout: 90_000 },
@@ -91,11 +86,7 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   await expect
     .poll(
       async () => {
-        const open = await (
-          await page.request.get(`${CORE_BASE_URL}/api/inbox`, {
-            headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-          })
-        ).json();
+        const open = await projectInbox(projectId);
         return open.filter((i: { kind: string }) => i.kind === "judgment").length;
       },
       { timeout: 120_000 },

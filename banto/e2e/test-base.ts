@@ -1,4 +1,20 @@
-// **spec ファイルが替わるたびに、前の spec の Project のコンテナを片づける**（追加・2026-10-01、ユーザー）。
+// **spec ファイルが替わるたびに、banto を「回の始めの姿」に戻す**（追加・2026-10-01、広げた・2026-10-08、ユーザー）。
+//
+// 2026-10-08 に広げた理由：spec は自分の Project を畳まず、目録から入れた Module も外さず、受信箱も片づけない。
+// 1回のフル E2E で Project が約 146 個たまり、受信箱（banto 全体で1つ）には前の spec の判断待ち・お知らせが並び、
+// `installInfisical` で入れた2本目の Vault が後ろの spec まで残った——落ちた 11 件のうち 10 件の根がこれだった
+// （受信箱のバッジが 1 のはずが 4、「Vault は1本」が2本、設定の面のボタンが出ずに 300 秒待つ）。spec はどれも単独で
+// 回せる前提なので、替わり目で次のものを戻す：
+//   1. 開いている Project を全部畳む（コンテナの有無に関わらず）。この回のコンテナは消す（下の「使い回しにはしない」）
+//   2. banto 全体の Module のうち、回の始めに無かったものを外し、止めた・動かしたものは回の始めの状態に戻す
+//   3. 受信箱：答えていない判断待ちは断り、お知らせ・レビュー待ちは見たにする（`helpers.ts` の `settleInbox`）
+// 戻せなかったものは理由つきで落とす（Module・Project）か警告する（受信箱の、答えられない判断待ち）——黙って続けない。
+//
+// **beforeAll より先に戻す**：Playwright の自動の fixture はテストにしか付かず、beforeAll はその前に走る。spec の
+// beforeAll が目録から入れた Module（backlog・factory 等）を、後から「回の始めに無かったもの」として外してしまう
+// ので、ここで書き出す `test.beforeAll` は、spec の関数の前に同じ戻しを挟む。
+//
+// 以下はもとの説明（Project のコンテナの片づけ、2026-10-01）。
 //
 // Project のコンテナは Project ごとに1台（`banto-<Project の id>`）で、Project を畳むまで動き続ける。spec は
 // それぞれ自分の Project を作って畳まないので、1回のフル E2E で約 50 台が**同時に**動いたままになり、
@@ -23,17 +39,20 @@
 //
 // 「前の spec ファイル」は回の置き場のファイルに覚える——Playwright はテストが落ちると worker を作り直すので、
 // worker の中の変数だと、同じ spec の続きを別の spec と取り違える。
-import { test as base, type BrowserContext } from "@playwright/test";
+import { test as base, type BrowserContext, type TestInfo } from "@playwright/test";
 import { containerNameFor } from "@banto/container";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL, DATA_DIR, FRONTEND_BASE_URL } from "./config.ts";
 import { writeLoginLink } from "../packages/core/dist/auth/login-links.js";
-import { listOwnedContainers, removeContainers } from "./containers.ts";
+import { containerLog, listOwnedContainers, removeContainers } from "./containers.ts";
+import { settleInbox } from "./helpers.ts";
 
 export * from "@playwright/test";
 
 const LAST_SPEC_FILE = join(dirname(DATA_DIR), "last-spec-file");
+/** 回の始めの banto 全体の Module（名前と、使うかどうか）。worker は落ちると作り直されるので、変数ではなくファイルに */
+const MODULES_BASELINE_FILE = join(dirname(DATA_DIR), "instance-modules-baseline.json");
 
 /**
  * **どのテストも、ログインした状態で始まる**（追加・2026-10-03、人のログイン）。host のコマンド
@@ -49,42 +68,125 @@ export async function loginContext(context: BrowserContext): Promise<void> {
   if (!res.ok()) throw new Error(`[e2e] ログインできませんでした：${res.status()} ${await res.text()}`);
 }
 
-export const test = base.extend<{ releasePreviousSpecContainers: void; loggedIn: boolean }>({
+const extended = base.extend<{ resetAtSpecBoundary: void; loggedIn: boolean }>({
   loggedIn: [true, { option: true }],
   context: async ({ context, loggedIn }, use) => {
     if (loggedIn) await loginContext(context);
     await use(context);
   },
-  releasePreviousSpecContainers: [
+  resetAtSpecBoundary: [
     async ({}, use, testInfo) => {
-      const last = existsSync(LAST_SPEC_FILE) ? readFileSync(LAST_SPEC_FILE, "utf8") : null;
-      if (last !== null && last !== testInfo.file && !process.env.BANTO_E2E_KEEP_SPEC_CONTAINERS) await releaseProjectContainers();
-      if (last !== testInfo.file) writeFileSync(LAST_SPEC_FILE, testInfo.file);
+      await resetIfNewSpec(testInfo);
       await use();
+      if (testInfo.status !== testInfo.expectedStatus) await attachContainerLogs(testInfo);
     },
-    { auto: true, timeout: 120_000 },
+    { auto: true, timeout: 180_000 },
   ],
 });
 
-async function api(path: string, method = "GET"): Promise<Response> {
-  return fetch(`${CORE_BASE_URL}${path}`, { method, headers: { authorization: `Bearer ${AUTH_TOKEN}` } });
+/**
+ * spec の `test.beforeAll` の前にも、替わり目の戻しを挟む（上の「beforeAll より先に戻す」）。Playwright は関数の
+ * 文字列から使う fixture を読む（最初の引数の分割代入）ので、包んだ関数の toString は spec の関数のものを返す
+ */
+type HookFn = (fixtures: Record<string, unknown>, testInfo: TestInfo) => unknown;
+const originalBeforeAll = extended.beforeAll.bind(extended) as (...args: unknown[]) => void;
+extended.beforeAll = ((...args: unknown[]) => {
+  const fn = args.pop() as HookFn;
+  const wrapped: HookFn = async (fixtures, testInfo) => {
+    await resetIfNewSpec(testInfo);
+    return fn(fixtures, testInfo);
+  };
+  wrapped.toString = () => fn.toString();
+  originalBeforeAll(...args, wrapped);
+}) as typeof extended.beforeAll;
+
+export const test = extended;
+
+async function api(path: string, method = "GET", body?: unknown): Promise<Response> {
+  return fetch(`${CORE_BASE_URL}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${AUTH_TOKEN}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
 }
 
-/** この回の Project のコンテナを全部片づける（開いている Project は畳む） */
-async function releaseProjectContainers(): Promise<void> {
-  const res = await api("/api/projects");
-  if (!res.ok) throw new Error(`[e2e] Project の一覧を読めません：${res.status}`);
-  const projects = (await res.json()) as { id: string; status: "active" | "closed" }[];
-  const byContainer = new Map(projects.map((p) => [containerNameFor(p.id), p]));
-  const mine = listOwnedContainers().filter((c) => c.owner === DATA_DIR && byContainer.has(c.name));
-  for (const c of mine) {
-    const project = byContainer.get(c.name)!;
-    if (project.status === "active") {
-      // 畳むと core が Module を落としてコンテナを止める
-      const closed = await api(`/api/projects/${project.id}/close`, "POST");
-      if (!closed.ok) throw new Error(`[e2e] Project ${project.id} を畳めません：${closed.status}`);
+async function apiJson<T>(path: string): Promise<T> {
+  const res = await api(path);
+  if (!res.ok) throw new Error(`[e2e] ${path} を読めません：${res.status} ${await res.text()}`);
+  return (await res.json()) as T;
+}
+
+type InstanceModule = { name: string; enabled: boolean };
+
+/** 前のテストと spec ファイルが違えば戻す。回の最初の spec では、戻す先（回の始めの Module）を覚えるだけ */
+async function resetIfNewSpec(testInfo: TestInfo): Promise<void> {
+  const last = existsSync(LAST_SPEC_FILE) ? readFileSync(LAST_SPEC_FILE, "utf8") : null;
+  if (last === testInfo.file) return;
+  if (last === null) {
+    const modules = await apiJson<InstanceModule[]>("/api/modules");
+    writeFileSync(MODULES_BASELINE_FILE, JSON.stringify(modules.map(({ name, enabled }) => ({ name, enabled }))));
+  } else {
+    if (!process.env.BANTO_E2E_KEEP_SPEC_CONTAINERS) await closeProjects();
+    await restoreInstanceModules();
+    const left = await settleInbox();
+    if (left.length > 0) {
+      console.warn(`[e2e] 前の spec の受信箱を片づけきれなかった——この spec の受信箱の数がずれうる: ${left.join(" / ")}`);
     }
   }
+  writeFileSync(LAST_SPEC_FILE, testInfo.file);
+}
+
+/**
+ * 開いている Project を全部畳み、この回の Project のコンテナを消す。
+ * 畳むと core が Module を落としてコンテナを止め、「用意できたコンテナ」の台帳から外す
+ */
+async function closeProjects(): Promise<void> {
+  const projects = await apiJson<{ id: string; name: string; status: "active" | "closed" }[]>("/api/projects");
+  for (const project of projects.filter((p) => p.status === "active")) {
+    const closed = await api(`/api/projects/${project.id}/close`, "POST");
+    if (!closed.ok) throw new Error(`[e2e] Project「${project.name}」（${project.id}）を畳めません：${closed.status} ${await closed.text()}`);
+  }
+  const byContainer = new Set(projects.map((p) => containerNameFor(p.id)));
+  const mine = listOwnedContainers().filter((c) => c.owner === DATA_DIR && byContainer.has(c.name));
   const failed = removeContainers(mine.map((c) => c.name), () => {});
   if (failed.length > 0) throw new Error(`[e2e] 前の spec のコンテナを消せませんでした：${failed.join(", ")}`);
+}
+
+/** banto 全体の Module を回の始めの姿に戻す。外せない・戻せないものは理由つきで落とす */
+async function restoreInstanceModules(): Promise<void> {
+  const baseline = JSON.parse(readFileSync(MODULES_BASELINE_FILE, "utf8")) as InstanceModule[];
+  const before = new Map(baseline.map((m) => [m.name, m.enabled]));
+  const now = await apiJson<InstanceModule[]>("/api/modules");
+  const problems: string[] = [];
+  for (const m of now) {
+    const wasEnabled = before.get(m.name);
+    if (wasEnabled === undefined) {
+      const res = await api(`/api/modules/${encodeURIComponent(m.name)}`, "DELETE");
+      if (!res.ok) problems.push(`${m.name} を外せない（${res.status} ${await res.text()}）`);
+    } else if (wasEnabled !== m.enabled) {
+      const res = await api(`/api/modules/${encodeURIComponent(m.name)}`, "PUT", { enabled: wasEnabled });
+      if (!res.ok) problems.push(`${m.name} を${wasEnabled ? "使う" : "止める"}に戻せない（${res.status} ${await res.text()}）`);
+    }
+  }
+  const missing = baseline.filter((m) => !now.some((n) => n.name === m.name)).map((m) => m.name);
+  if (missing.length > 0) problems.push(`回の始めにあった ${missing.join("・")} が無くなっている（ここでは戻せない）`);
+  if (problems.length > 0) throw new Error(`[e2e] 前の spec の Module を回の始めの姿に戻せません：${problems.join(" / ")}`);
+}
+
+/**
+ * **落ちたテストに、起きていないコンテナの起動の記録を添える**（追加・2026-10-08）。コンテナが起きないと core は
+ * 「起こせなかった」としか言わず、理由（`incusd forkstart` 等）は Incus の側にしか無い——wide-root が
+ * それで落ちても、手がかりが残らなかった。この回のコンテナのうち動いていないものの `incus info --show-log` を付ける
+ */
+async function attachContainerLogs(testInfo: TestInfo): Promise<void> {
+  let notRunning;
+  try {
+    notRunning = listOwnedContainers().filter((c) => c.owner === DATA_DIR && c.status !== "Running");
+  } catch (err) {
+    await testInfo.attach("incus-show-log", { body: `コンテナの一覧を読めません：${(err as Error).message}`, contentType: "text/plain" });
+    return;
+  }
+  for (const c of notRunning) {
+    await testInfo.attach(`incus-show-log-${c.name}`, { body: `状態：${c.status}\n\n${containerLog(c.name)}`, contentType: "text/plain" });
+  }
 }

@@ -374,45 +374,100 @@ export function aiTextMentioning(page: Page, text: RegExp | string) {
   return page.locator('[data-slot="aui_assistant-message-content"] p.aui-md-p').filter({ hasText: text });
 }
 
-/**
- * **その spec が作った Project の受信箱を片づける**（2026-10-06、Backlog #215）。途中で落ちると、答えていない
- * 判断待ちと読んでいないお知らせが残り、同じ回の後ろの spec（受信箱のバッジの数・判断待ちの数を見るもの）を
- * 道連れにしていた。`afterAll` から呼ぶ——落ちても通っても、答えていない判断待ちは断り、お知らせは見たにする
- */
-export async function settleProjectsInbox(request: APIRequestContext, projectNames: string[]): Promise<void> {
-  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
-  const projects = (await (await request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as { id: string; name: string }[];
-  const mine = projects.filter((p) => projectNames.includes(p.name));
+/** 受信箱の1件（`GET /api/inbox`）。判断待ち・レビュー待ちは Thread に、お知らせは Project に（無ければ banto 全体に）付く */
+export type InboxItem = {
+  id: string;
+  kind: "judgment" | "notice" | "review";
+  liveness?: string;
+  source?: string;
+  projectId?: string;
+  threadId?: string;
+  title?: string;
+  message?: string;
+};
+
+async function coreGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${CORE_BASE_URL}${path}`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } });
+  if (!res.ok) throw new Error(`[e2e] ${path} を読めません：${res.status} ${await res.text()}`);
+  return (await res.json()) as T;
+}
+
+/** 名前（か id）で Project を選び、その Project とその Thread に付いた受信箱の1件かを見る関数を返す */
+async function projectFilter(projects: string[]): Promise<(item: InboxItem) => boolean> {
+  const all = await coreGet<{ id: string; name: string }[]>("/api/projects");
+  const mine = all.filter((p) => projects.includes(p.name) || projects.includes(p.id));
   const threadIds = new Set<string>();
   for (const p of mine) {
-    const threads = (await (await request.get(`${CORE_BASE_URL}/api/projects/${p.id}/threads`, { headers })).json()) as { id: string }[];
-    for (const t of threads) threadIds.add(t.id);
+    for (const t of await coreGet<{ id: string }[]>(`/api/projects/${p.id}/threads`)) threadIds.add(t.id);
   }
   const projectIds = new Set(mine.map((p) => p.id));
-  type Item = { id: string; kind: string; liveness?: string; source?: string; projectId?: string; threadId?: string };
-  const ours = (item: Item): boolean =>
+  return (item) =>
     (item.threadId !== undefined && threadIds.has(item.threadId)) || (item.projectId !== undefined && projectIds.has(item.projectId));
-  const inbox = async (): Promise<Item[]> =>
-    ((await (await request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Item[]).filter(ours);
+}
 
-  // 1. 答えていない判断待ちを断る。断れなかったもの（待っている呼び出しがもう無い 409 等）は live のまま残る
-  //    ——黙って通さず、何が残ったかを言う（後ろの spec が落ちたときの手がかり）
-  const left: string[] = [];
-  for (const item of await inbox()) {
-    if (item.kind !== "judgment" || item.liveness !== "live") continue;
-    const res = await request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/answer`, {
-      headers,
-      data: { answer: { behavior: "deny", message: "試験の後片づけ" } },
-    });
-    if (!res.ok()) left.push(`${item.id}（source=${item.source ?? "?"}、${res.status()} ${await res.text()}）`);
+/**
+ * **その Project の受信箱**（追加・2026-10-08）。受信箱は banto 全体で1つ（`GET /api/inbox`）なので、件数を数える試験が
+ * 全体を数えると、同じ回の前の spec が残したものまで数える（permission-mode-and-two-approvals が 0 にならなかった）。
+ * 試験が見たいのは自分の Project のものだけ——Project の名前か id で絞る。Project を作り直さない限り、Thread が
+ * 増えても毎回引き直す
+ */
+export async function projectInbox(project: string): Promise<InboxItem[]> {
+  const ours = await projectFilter([project]);
+  return (await coreGet<InboxItem[]>("/api/inbox")).filter(ours);
+}
+
+/**
+ * **受信箱を片づける**（一般化・2026-10-08。もとは `settleProjectsInbox`、2026-10-06、Backlog #215）。答えていない判断待ちは
+ * 断り（deny）、お知らせ・レビュー待ちは見たにする。断ると裏の仕事が失敗して**新しいお知らせが出る**ことがあるので、
+ * 決まった秒数を待つのではなく、**何も片づけるものが無い見回りが2回続くまで**繰り返す（上限つき）。
+ *
+ * 片づけられなかったもの（待っている呼び出しがもう無い判断待ち＝409 等）は理由つきで返す——呼ぶ側が落とすか警告する。
+ * `filter` を渡せばその分だけ、渡さなければ全部（spec の替わり目の後片づけ、`test-base.ts`）
+ */
+export async function settleInbox(filter: (item: InboxItem) => boolean = () => true): Promise<string[]> {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
+  const unsettled = new Map<string, string>();
+  let quietRounds = 0;
+  for (let round = 0; round < 15 && quietRounds < 2; round++) {
+    if (round > 0) await new Promise((r) => setTimeout(r, 500));
+    let acted = 0;
+    for (const item of (await coreGet<InboxItem[]>("/api/inbox")).filter(filter)) {
+      if (unsettled.has(item.id)) continue;
+      if (item.kind === "judgment") {
+        // 期限切れ（timed_out）は一覧に残るが、答えられず数にも入らない（画面のバッジは live だけを数える）
+        if (item.liveness !== "live") continue;
+        const res = await fetch(`${CORE_BASE_URL}/api/inbox/${item.id}/answer`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ answer: { behavior: "deny", message: "試験の後片づけ" } }),
+        });
+        if (!res.ok) unsettled.set(item.id, `判断待ち ${item.id}（source=${item.source ?? "?"}、${res.status} ${await res.text()}）`);
+      } else {
+        const res = await fetch(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { method: "POST", headers });
+        if (!res.ok) unsettled.set(item.id, `${item.kind} ${item.id}（${item.title ?? ""}、${res.status} ${await res.text()}）`);
+      }
+      acted++;
+    }
+    quietRounds = acted === 0 ? quietRounds + 1 : 0;
   }
-  // 2. 断ったせいで裏の仕事が失敗し、新しいお知らせが出ることがある——落ち着くのを待ってから見たにする
-  await new Promise((r) => setTimeout(r, 2_000));
-  for (const item of await inbox()) {
-    if (item.kind === "judgment") continue;
-    await request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { headers });
-  }
+  if (quietRounds < 2) unsettled.set("-", "見回るたびに新しいものが出て、落ち着かなかった");
+  return [...unsettled.values()];
+}
+
+/**
+ * **その spec が作った Project の受信箱を片づける**（2026-10-06、Backlog #215）。spec の替わり目に test-base が受信箱を
+ * 全部片づけるようになった（2026-10-08）ので、ここは spec の中で自分の分を先に片づけたいときに使う
+ */
+export async function settleProjectsInbox(_request: APIRequestContext, projectNames: string[]): Promise<void> {
+  const left = await settleInbox(await projectFilter(projectNames));
   if (left.length > 0) {
-    console.warn(`[e2e] 片づけで断れなかった判断待ちが残っている——後ろの spec の受信箱の数がずれうる: ${left.join(" / ")}`);
+    console.warn(`[e2e] 片づけられなかった受信箱の項目が残っている——後ろの spec の受信箱の数がずれうる: ${left.join(" / ")}`);
   }
+}
+
+/** いま開いている Project の id（URL の `/p/<id>`）。`createProject` のあとに呼ぶ */
+export function currentProjectId(page: Page): string {
+  const id = /\/p\/([0-9a-f-]+)/.exec(new URL(page.url()).pathname)?.[1];
+  if (!id) throw new Error(`[e2e] Project を開いていない（URL=${page.url()}）`);
+  return id;
 }
