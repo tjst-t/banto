@@ -33,6 +33,7 @@ export type CommandStatus = "running" | "exited" | "timedOut" | "cancelled" | "s
 export interface CommandView {
   commandId: string;
   command: string;
+  label?: string;
   /** Project root からの相対（root なら "."） */
   cwd: string;
   startedAt: string;
@@ -108,6 +109,8 @@ export class BackgroundCommands {
    */
   async start(input: {
     command: string;
+    /** AI が付けた呼び名（整える前）。1行に収め、`LABEL_MAX` 字で切って記録に残す */
+    label?: string;
     cwd: string;
     env: NodeJS.ProcessEnv;
     timeoutSec?: number;
@@ -119,9 +122,11 @@ export class BackgroundCommands {
     const id = newCommandId();
     const dir = join(this.deps.dir, id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const label = labelOf(input.label);
     const record: JobRecord = {
       id,
       command: input.command,
+      ...(label ? { label } : {}),
       cwd: input.cwd,
       startedAt: new Date().toISOString(),
       ...(input.timeoutSec !== undefined ? { timeoutSec: input.timeoutSec } : {}),
@@ -331,7 +336,8 @@ export class BackgroundCommands {
 
   /** 届ける題と本文。**終了コードを先頭に**（長い本文を先頭から切られても成否は残る） */
   report(o: Observed): { title: string; text: string } {
-    const head = oneLine(o.record.command, 40);
+    // 呼び名があれば呼び名、無ければコマンドの頭（追加・2026-10-08、ユーザー要望——コマンドの文字そのままでは何の仕事か読みにくい）
+    const head = o.record.label ?? oneLine(o.record.command, 40);
     const exit = o.exit;
     const title =
       o.status === "exited"
@@ -365,6 +371,7 @@ export class BackgroundCommands {
       status: o.status,
       ...(exit?.timedOut ? { timedOut: true } : {}),
       commandId: o.record.id,
+      ...(o.record.label ? { label: o.record.label } : {}),
       command: o.record.command,
       cwd: this.relCwd(o.record.cwd),
       startedAt: o.record.startedAt,
@@ -379,6 +386,7 @@ export class BackgroundCommands {
   private view(o: Observed): CommandView {
     return {
       commandId: o.record.id,
+      ...(o.record.label ? { label: o.record.label } : {}),
       command: o.record.command,
       cwd: this.relCwd(o.record.cwd),
       startedAt: o.record.startedAt,
@@ -500,6 +508,16 @@ function statusOf(record: JobRecord, started: StartedRecord | undefined, exit: E
 function newCommandId(): string {
   const at = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
   return `${at}-${randomBytes(3).toString("hex")}`;
+}
+
+/** 呼び名の長さの上限（字）。カードの題（`fillCardText`）が畳むのと同じ長さ */
+export const LABEL_MAX = 80;
+
+/** 呼び名を1行に収めて `LABEL_MAX` 字で切る。空白だけなら無いのと同じ（カードの題もコマンドに戻る） */
+export function labelOf(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const line = oneLine(raw, LABEL_MAX);
+  return line === "" ? undefined : line;
 }
 
 function oneLine(s: string, max: number): string {

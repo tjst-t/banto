@@ -11,6 +11,8 @@ import type { BackgroundCommands } from "./background.js";
 
 export interface RunCommandInput {
   command: string;
+  /** 待たない形の呼び名（一覧・知らせの見出しに出す）。待つ形では使わない */
+  label?: string;
   cwd?: string;
   timeout?: number;
   envSecrets?: Record<string, string>;
@@ -352,6 +354,7 @@ export async function runCommandInBackground(
   try {
     const started = await deps.background.start({
       command: input.command,
+      ...(input.label !== undefined ? { label: input.label } : {}),
       cwd,
       env,
       ...(input.timeout !== undefined && input.timeout > 0 ? { timeoutSec: input.timeout } : {}),

@@ -26,7 +26,7 @@ import {
 } from "@banto/module-contract";
 import { runCommand, runCommandInBackground } from "./run-command.js";
 import { HostRelayClient } from "./host-relay-client.js";
-import { BackgroundCommandError, BackgroundCommands } from "./background.js";
+import { BackgroundCommandError, BackgroundCommands, LABEL_MAX } from "./background.js";
 import { SystemdLauncher } from "./background-launcher.js";
 
 export interface ShellServerDeps {
@@ -46,7 +46,8 @@ const BACKGROUND_DESCRIPTION =
   "**長いコマンド（数分〜数時間のビルド・試験の繰り返しなど）は runInBackground: true で待たずに流せる**——" +
   "すぐ commandId と outputFile が返り、終わったら終了コードと出力の末尾 50 行がこの会話に届いて、あなたが起こされる" +
   "（届くまで他の仕事を続けてよい。結果を待つために同じコマンドを流し直さない。`&` で後ろに回さない）。" +
-  "途中の様子は outputFile を tail・grep で読む。流したものの一覧は listCommands、止めるのは cancelCommand。";
+  "途中の様子は outputFile を tail・grep で読む。流したものの一覧は listCommands、止めるのは cancelCommand。" +
+  "流すときは label に短い呼び名（「E2E を 20 回」など）を付ける——人の画面の一覧と、終わったときの知らせに出る。";
 
 /** 待たずに流したコマンドの一覧と止める口（待たない形が使える Shell だけが見せる） */
 const BACKGROUND_TOOLS = [
@@ -54,7 +55,7 @@ const BACKGROUND_TOOLS = [
     name: "listCommands",
     description:
       "runCommand の runInBackground で待たずに流したコマンドの一覧（この会話（Thread）で流したものだけ。動いているものは全部、終わったものは新しい順に 20 件まで）。" +
-      "commandId・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
+      "commandId・label（付けた呼び名）・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
       "cancelled：cancelCommand で止めた／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
     inputSchema: { type: "object", properties: {} },
     _meta: { [VISIBILITY_META_KEY]: "agent" },
@@ -178,6 +179,13 @@ export function createShellServer(deps: ShellServerDeps) {
                       "true なら待たない。すぐ commandId と outputFile（stdout と stderr を出た順に書くファイル）を返し、" +
                       "終わったら終了コードと出力の末尾がこの会話に届く（既定 false：終わるまで待つ）",
                   },
+                  label: {
+                    type: "string",
+                    description:
+                      "待たずに流すとき（runInBackground）、人の画面の一覧（サイドバー）と、終わったときにこの会話に届く知らせの" +
+                      "見出しに出す短い呼び名（例「E2E を 20 回」「本番のビルド」）。付けなければコマンドの頭を出す。" +
+                      `1行・${LABEL_MAX} 字まで（越えた分は切る）`,
+                  },
                 }
               : {}),
           },
@@ -186,10 +194,13 @@ export function createShellServer(deps: ShellServerDeps) {
         // **待たない形の終わりは、host が渡す返信用の札で届ける**（追加・2026-10-07、アーキ仕様 §4.2）。札は呼び出しの
         // たびに渡るが、「あとで届ける」と返すのは runInBackground のときだけ（runSubagent と同じ名乗り方）。
         // カードの題はサイドバーのバックグラウンドの印に出る（v4-frontend.md §6.33）——Shell は画面を持たないので、
-        // 会話の表示は変わらない
+        // 会話の表示は変わらない。題は AI が付けた呼び名、無ければコマンド。説明はコマンド（改訂・2026-10-08、ユーザー要望
+        // ——コマンドの文字そのままでは何の仕事か読みにくい）
         _meta: {
           [VISIBILITY_META_KEY]: "agent",
-          ...(background ? { [DELIVERS_LATER_META_KEY]: true, [CARD_META_KEY]: { title: "{command}" } } : {}),
+          ...(background
+            ? { [DELIVERS_LATER_META_KEY]: true, [CARD_META_KEY]: { title: "{label|command}", description: "{command}" } }
+            : {}),
         },
       },
       ...(background ? BACKGROUND_TOOLS : []),
@@ -306,6 +317,10 @@ export function createShellServer(deps: ShellServerDeps) {
       const args = request.params.arguments as Record<string, unknown>;
       const progressToken = extra._meta?.progressToken;
 
+      if (args.label !== undefined && typeof args.label !== "string") {
+        throw new ShellRefusal("label は文字列で渡してください（一覧・知らせに出す短い呼び名）");
+      }
+
       if (args.runInBackground === true) {
         // **届ける先（host が渡した返信用の札）が無ければ断る**——黙って待つ形に落とさない（規則2。AI は「届く」と
         // 思って待ち続けることになる）
@@ -322,6 +337,7 @@ export function createShellServer(deps: ShellServerDeps) {
         const started = await runCommandInBackground(
           {
             command: String(args.command),
+            ...(args.label !== undefined ? { label: args.label as string } : {}),
             cwd: args.cwd as string | undefined,
             timeout: args.timeout as number | undefined,
             envSecrets: args.envSecrets as Record<string, string> | undefined,

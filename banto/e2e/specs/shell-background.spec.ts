@@ -4,12 +4,14 @@
 //
 // 見るもの（規則14——押せたで終わらせず、画面に出る中身まで）：
 //   1. 待たずに流すと、最初のターンはすぐ終わる（コマンドはまだ動いている）。返事に commandId と outputFile
-//   2. サイドバーの Base Thread の行に、カードの題（コマンド）の印。押すと一覧に shell の1件
-//   3. AI が listCommands で一覧を見ると、そのコマンドが running
-//   4. 終わると、開いたままの画面に「shell から届きました」の札。題は「コマンドが終わりました：…」、本文は
+//   2. サイドバーの Base Thread の行に、カードの題（AI が付けた呼び名 label）の印。押すと一覧に shell の1件——
+//      題は呼び名、説明はコマンド（2026-10-08、ユーザー要望——コマンドの文字そのままを題にしない）
+//   3. AI が listCommands で一覧を見ると、そのコマンドが running（呼び名つき）
+//   4. 終わると、開いたままの画面に「shell から届きました」の札。題は「コマンドが終わりました：<呼び名>」、本文は
 //      終了コードが先頭・出力の末尾（コマンドの文字には無い、走らせて初めて出る語）。AI が起きて、届いた出力を読んで返す
 //   5. 印が消える。出力のファイルは次の runCommand で読める
-//   6. もう1本流して cancelCommand で止めると、「コマンドを止めました：…」が届いて AI が起きる。一覧は cancelled
+//   6. もう1本（呼び名なし）流すと、印と一覧の題はコマンド・説明は出さない（同じ文を2行並べない）。cancelCommand で
+//      止めると、「コマンドを止めました：<コマンド>」が届いて AI が起きる。一覧は cancelled
 import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +29,7 @@ const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 const OPEN = "$(printf '\\343\\200\\214')";
 const CLOSE = "$(printf '\\343\\200\\215')";
 const LONG_COMMAND = `sleep 20; echo "${OPEN}流したコマンドの出力を読みました${CLOSE}と返して"; echo $((6*7))-computed`;
+const LONG_LABEL = "長い計算を待たずに流す";
 const CANCEL_COMMAND = "echo cancel-me-started; sleep 300";
 
 interface HostMessage {
@@ -67,7 +70,7 @@ test("待たずに流したコマンドは、終わると開いたままの会�
   await sendTurn(
     page,
     "長いコマンドを待たずに流して。" +
-      fakeTurn({ tools: [{ server: "shell", name: "runCommand", args: { command: LONG_COMMAND, runInBackground: true } }] }),
+      fakeTurn({ tools: [{ server: "shell", name: "runCommand", args: { command: LONG_COMMAND, runInBackground: true, label: LONG_LABEL } }] }),
   );
   const first = await waitTurnEnded(page, threadId, 1, 120_000);
   const started = JSON.parse(first.messages.filter((m) => m.role === "assistant").at(-1)!.text) as {
@@ -81,15 +84,16 @@ test("待たずに流したコマンドは、終わると開いたままの会�
   expect(started.outputFile.endsWith(`/commands/${started.commandId}/output.log`), started.outputFile).toBe(true);
   expect((await hostMessages(page, threadId)).some((m) => m.origin), "待たずに流したのに、もう届いている").toBe(false);
 
-  // ---- 2. サイドバーの印（カードの題＝コマンド） ---------------------------------------------------------------
+  // ---- 2. サイドバーの印（カードの題＝呼び名、説明＝コマンド） ------------------------------------------------------
   await expect(line, "Base Thread の行にバックグラウンドの印が出ない").toHaveCount(1, { timeout: 30_000 });
-  await expect(line).toContainText("sleep 20; echo");
+  await expect(line).toHaveText(LONG_LABEL);
   await line.click();
   const list = page.getByTestId("background-list");
   await expect(list).toContainText("バックグラウンドで動いているもの（1）");
   const item = list.getByTestId("background-item");
   await expect(item).toHaveCount(1);
-  await expect(item).toContainText("sleep 20; echo");
+  await expect(item.locator("span").first(), "一覧の題が呼び名ではない").toHaveText(LONG_LABEL);
+  await expect(item.getByTestId("background-item-description"), "一覧の説明がコマンドではない").toHaveText(/^sleep 20; echo/);
   // 1分たっていなければ「いま頼んだ」（「いまに頼んだ」と出ていた、2026-10-07）
   await expect(item).toContainText(/shell・(いま頼んだ|\d+分前に頼んだ)/);
   await expect(item).not.toContainText("いまに");
@@ -99,24 +103,27 @@ test("待たずに流したコマンドは、終わると開いたままの会�
   await sendTurn(page, "流したコマンドの一覧を見せて。" + fakeTurn({ tools: [{ server: "shell", name: "listCommands", args: {} }] }));
   const listed = await waitTurnEnded(page, threadId, 2, 60_000);
   const commands = (JSON.parse(listed.messages.filter((m) => m.role === "assistant").at(-1)!.text) as {
-    commands: Array<{ commandId: string; status: string; command: string; cwd: string }>;
+    commands: Array<{ commandId: string; status: string; command: string; cwd: string; label?: string }>;
   }).commands;
-  expect(commands.map((c) => [c.commandId, c.status, c.cwd])).toEqual([[started.commandId, "running", "."]]);
+  expect(commands.map((c) => [c.commandId, c.status, c.cwd, c.label, c.command])).toEqual([
+    [started.commandId, "running", ".", LONG_LABEL, LONG_COMMAND],
+  ]);
 
   // ---- 4. 終わると届き、AI が起きる（開いたままの画面で）---------------------------------------------------------
   const card = page.getByTestId("delivered-message");
   await expect(card, "届いたものが、開いたままの画面に出ない").toBeVisible({ timeout: 90_000 });
   await expect(card).toHaveAttribute("data-from", "shell");
   await expect(card).toContainText("shell から届きました");
-  await expect(card.getByTestId("delivered-title")).toHaveText(/^コマンドが終わりました：sleep 20; echo/);
+  await expect(card.getByTestId("delivered-title")).toHaveText(`コマンドが終わりました：${LONG_LABEL}`);
   await waitTurnEnded(page, threadId, 3, 90_000);
   const messages = await hostMessages(page, threadId);
   const delivered = messages.filter((m) => m.origin);
   expect(delivered).toHaveLength(1);
-  expect(delivered[0]!.origin).toMatchObject({ from: "shell", hop: 1 });
+  expect(delivered[0]!.origin).toMatchObject({ from: "shell", hop: 1, title: `コマンドが終わりました：${LONG_LABEL}` });
   expect(delivered[0]!.text.startsWith('{"exitCode":0,'), delivered[0]!.text.slice(0, 60)).toBe(true);
-  const body = JSON.parse(delivered[0]!.text) as { status: string; commandId: string; tail: string; outputFile: string };
+  const body = JSON.parse(delivered[0]!.text) as { status: string; commandId: string; tail: string; outputFile: string; label?: string };
   expect(body.status).toBe("exited");
+  expect(body.label).toBe(LONG_LABEL);
   expect(body.commandId).toBe(started.commandId);
   expect(body.tail, "出力の末尾が届いていない").toContain("42-computed");
   // AI は届いた出力（コマンドの文字には無い「」）を読んで返した
@@ -142,7 +149,14 @@ test("待たずに流したコマンドは、終わると開いたままの会�
   );
   const second = await waitTurnEnded(page, threadId, 5, 120_000);
   const toCancel = JSON.parse(second.messages.filter((m) => m.role === "assistant").at(-1)!.text) as { commandId: string };
-  await expect(line).toContainText("sleep 300", { timeout: 30_000 });
+  // 呼び名なし：印と一覧の題はコマンド、説明は出さない（題と同じ文を2行並べない）
+  await expect(line).toHaveText(CANCEL_COMMAND, { timeout: 30_000 });
+  await line.click();
+  await expect(item).toHaveCount(1);
+  await expect(item.locator("span").first()).toHaveText(CANCEL_COMMAND);
+  await expect(item.getByTestId("background-item-description"), "題と同じ文の説明を出している").toHaveCount(0);
+  await expect(item).toContainText(/shell・(いま頼んだ|\d+分前に頼んだ)/);
+  await page.keyboard.press("Escape");
   await sendTurn(
     page,
     "さっきのを止めて。" + fakeTurn({ tools: [{ server: "shell", name: "cancelCommand", args: { commandId: toCancel.commandId } }] }),
@@ -165,11 +179,11 @@ test("待たずに流したコマンドは、終わると開いたままの会�
   await sendTurn(page, "一覧をもう一度。" + fakeTurn({ tools: [{ server: "shell", name: "listCommands", args: {} }] }));
   const last = await waitTurnEnded(page, threadId, 8, 60_000);
   const finalList = (JSON.parse(last.messages.filter((m) => m.role === "assistant").at(-1)!.text) as {
-    commands: Array<{ commandId: string; status: string; exitCode?: number | null }>;
+    commands: Array<{ commandId: string; status: string; exitCode?: number | null; label?: string }>;
   }).commands;
-  expect(finalList.map((c) => [c.commandId, c.status])).toEqual([
-    [toCancel.commandId, "cancelled"],
-    [started.commandId, "exited"],
+  expect(finalList.map((c) => [c.commandId, c.status, c.label])).toEqual([
+    [toCancel.commandId, "cancelled", undefined],
+    [started.commandId, "exited", LONG_LABEL],
   ]);
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);

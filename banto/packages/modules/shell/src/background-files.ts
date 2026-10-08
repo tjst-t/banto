@@ -13,6 +13,8 @@ import { join } from "node:path";
 export interface JobRecord {
   id: string;
   command: string;
+  /** AI が付けた短い呼び名（一覧・知らせの見出しに出す。1行・`LABEL_MAX` 字までに整えたもの）。無ければコマンドの頭を出す */
+  label?: string;
   /** 絶対パス */
   cwd: string;
   /** ISO 8601 */

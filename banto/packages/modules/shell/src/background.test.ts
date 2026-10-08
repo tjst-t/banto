@@ -172,16 +172,19 @@ const readStarted = (dirs: Dirs, id: string) => JSON.parse(readFileSync(join(dir
 
 // ---- 名乗り ----------------------------------------------------------------------------------------------
 
-test("名乗り：runCommand は終わったら届ける・カードの題はコマンド、Module は起こし直しても続けられる、道具が2本増える", async () => {
+test("名乗り：runCommand は終わったら届ける・カードの題は呼び名（無ければコマンド）・説明はコマンド、Module は起こし直しても続けられる、道具が2本増える", async () => {
   await withDirs(async (dirs) => {
     const shell = await startShell(dirs);
     try {
       const { tools } = await shell.client.listTools();
       const run = tools.find((t) => t.name === "runCommand")!;
       assert.equal(run._meta?.[DELIVERS_LATER_META_KEY], true);
-      const card = run._meta?.[CARD_META_KEY] as { title: string };
+      const card = run._meta?.[CARD_META_KEY] as { title: string; description: string };
       assert.equal(fillCardText(card.title, { command: "npm run e2e" }), "npm run e2e");
+      assert.equal(fillCardText(card.title, { command: "npm run e2e", label: "E2E を 20 回" }), "E2E を 20 回");
+      assert.equal(fillCardText(card.description, { command: "npm run e2e", label: "E2E を 20 回" }), "npm run e2e");
       assert.ok((run.inputSchema.properties as Record<string, unknown>).runInBackground, "runInBackground の引数が無い");
+      assert.ok((run.inputSchema.properties as Record<string, unknown>).label, "label の引数が無い");
       for (const name of ["listCommands", "cancelCommand"]) {
         assert.equal(tools.find((t) => t.name === name)?._meta?.["dev.banto/visibility"], "agent", name);
       }
@@ -236,6 +239,62 @@ test("待たずに流すとすぐ返り、終わったら札で終了コード�
         list.commands.map((c) => [c.commandId, c.status, c.exitCode, c.cwd]),
         [[commandId, "exited", 3, "."]],
       );
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("呼び名（label）：知らせの見出し・本文・一覧・記録に出る。無ければコマンドの頭。1行に収めて 80 字で切る。文字列でなければ断る", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs);
+    try {
+      const labelled = await runInBackground(shell, { command: "echo labelled-run; exit 0", label: "E2E を 20 回" });
+      await shell.waitDelivered(1);
+      const d = shell.delivered[0]!;
+      assert.equal(d.title, "コマンドが終わりました：E2E を 20 回");
+      assert.ok(d.text.startsWith('{"exitCode":0,'), "終了コードが先頭に無い");
+      assert.deepEqual(
+        [deliveredBody(d).label, deliveredBody(d).command],
+        ["E2E を 20 回", "echo labelled-run; exit 0"],
+      );
+      assert.equal(readJob(dirs, labelled.commandId).label, "E2E を 20 回");
+
+      // 付けない・空白だけ：コマンドの頭（label は本文にも一覧にも出さない）
+      const plain = await runInBackground(shell, { command: "echo plain-run; exit 2" });
+      const blank = await runInBackground(shell, { command: "echo blank-label", label: " \n " });
+      await shell.waitDelivered(3);
+      const byId = new Map(shell.delivered.map((x) => [deliveredBody(x).commandId as string, x]));
+      assert.equal(byId.get(plain.commandId)!.title, "コマンドが失敗しました（終了コード 2）：echo plain-run; exit 2");
+      assert.equal(byId.get(blank.commandId)!.title, "コマンドが終わりました：echo blank-label");
+      assert.equal("label" in deliveredBody(byId.get(plain.commandId)!), false);
+      assert.equal(readJob(dirs, blank.commandId).label, undefined);
+
+      // 長い・改行のある呼び名は1行に収めて 80 字で切る
+      const long = await runInBackground(shell, { command: "echo long-label", label: `一行目\n${"あ".repeat(100)}` });
+      await shell.waitDelivered(4);
+      const cut = `一行目 ${"あ".repeat(76)}…`;
+      assert.equal(readJob(dirs, long.commandId).label, cut);
+      assert.equal(shell.delivered[3]!.title, `コマンドが終わりました：${cut}`);
+
+      const list = JSON.parse((await shell.call("listCommands", {}, { [THREAD_META_KEY]: THREAD })).content[0]!.text) as {
+        commands: Array<{ commandId: string; label?: string; command: string }>;
+      };
+      assert.deepEqual(
+        list.commands.map((c) => [c.commandId, c.label, c.command]),
+        [
+          [long.commandId, cut, "echo long-label"],
+          [blank.commandId, undefined, "echo blank-label"],
+          [plain.commandId, undefined, "echo plain-run; exit 2"],
+          [labelled.commandId, "E2E を 20 回", "echo labelled-run; exit 0"],
+        ],
+      );
+
+      // 文字列でない呼び名は断る（何も流さない）
+      const refused = await shell.call("runCommand", { runInBackground: true, command: "echo never", label: 3 }, stamp());
+      assert.equal(refused.isError, true);
+      assert.match(refused.content[0]!.text, /label は文字列/);
+      assert.equal(readdirSync(dirs.commands).length, 4, "断ったのに流した");
     } finally {
       await shell.close();
     }
@@ -471,7 +530,11 @@ test("起こし直しをまたぐ：Shell を捨てても動き続け、立て�
   await withDirs(async (dirs) => {
     // 落ちる前の Shell は見張らない（届ける前に落ちたことにする）
     const before = await startShell(dirs, { pollMs: 600_000 });
-    const running = await runInBackground(before, { command: "sleep 1.5; echo done-after-restart" }, stamp(THREAD, "reply_RUNNING"));
+    const running = await runInBackground(
+      before,
+      { command: "sleep 1.5; echo done-after-restart", label: "起こし直しをまたぐ仕事" },
+      stamp(THREAD, "reply_RUNNING"),
+    );
     const finished = await runInBackground(before, { command: "echo finished-while-down" }, stamp(THREAD, "reply_FINISHED"));
     const other = await runInBackground(before, { command: "echo other-thread" }, stamp(OTHER_THREAD, "reply_OTHER"));
     const unasked = await runInBackground(before, { command: "sleep 30; echo unasked" }, stamp(THREAD, "reply_UNASKED"));
@@ -515,6 +578,10 @@ test("起こし直しをまたぐ：Shell を捨てても動き続け、立て�
       assert.match(deliveredBody(byHandle.get("reply_FINISHED")!).tail, /finished-while-down/);
       const resumed = deliveredBody(byHandle.get("reply_RUNNING")!);
       assert.equal(resumed.exitCode, 0);
+      // 呼び名は記録から読む——起こし直しのあとも見出しと本文に出る
+      assert.equal(byHandle.get("reply_RUNNING")!.title, "コマンドが終わりました：起こし直しをまたぐ仕事");
+      assert.equal(resumed.label, "起こし直しをまたぐ仕事");
+      assert.equal(byHandle.get("reply_FINISHED")!.title, "コマンドが終わりました：echo finished-while-down");
       assert.match(resumed.tail, /done-after-restart/);
       assert.equal(byHandle.get("reply_RUNNING")!.final, true);
 
@@ -812,6 +879,8 @@ test("待たない形が使えない Shell は、一覧・止める口と runInB
       );
       const run = tools.find((t) => t.name === "runCommand")!;
       assert.equal((run.inputSchema.properties as Record<string, unknown>).runInBackground, undefined);
+      assert.equal((run.inputSchema.properties as Record<string, unknown>).label, undefined, "待たない形が無いのに label を見せている");
+      assert.equal(run._meta?.[CARD_META_KEY], undefined, "待たない形が無いのにカードを名乗っている");
       assert.equal(run._meta?.[DELIVERS_LATER_META_KEY], undefined, "終わったら届けると名乗っている");
       assert.doesNotMatch(run.description!, /runInBackground/);
     } finally {
