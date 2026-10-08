@@ -11,7 +11,7 @@ import { test, expect } from "../test-base.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, expectProjectOpen, openApp, fakeTurn, currentProjectId, projectInbox } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, fakeTurn, currentProjectId, projectInbox, openToolCards } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -93,7 +93,9 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
     )
     .toBe(0);
 
-  // 読んだ中身が実際に返ってくる（規則14——「進んだ」ではなく中身で見る）
+  // 読んだ中身が実際に返ってくる（規則14——「進んだ」ではなく中身で見る）。tool のカードは自動で開かない
+  // （v4-frontend.md「答え方」の改訂・2026-10-06）ので、開いてから見る
+  await openToolCards(page, "mcp__filesystem__readFile");
   await expect(page.getByText(/ひとつめ/)).toBeVisible({ timeout: 90_000 });
   // **1つ出ていればよい**（改訂・2026-09-21）。tool の結果はカードにも出るし、
   // AI が結果を読み上げれば本文にも出る——**何回出るか**は見たいことではない

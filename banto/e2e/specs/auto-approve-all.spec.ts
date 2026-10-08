@@ -14,7 +14,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";
-import { createProject, fakeTurn, openApp, waitForProjectModule, waitTurnEnded } from "../helpers.js";
+import { createProject, fakeTurn, openApp, openToolCards, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -123,7 +123,10 @@ test("オンの Project では tool・中継・Project をまたぐメッセー�
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "全部終わりました。" })).toBeVisible({
     timeout: 120_000,
   });
-  // 中身まで届いている（規則14——「止まらなかった」ではなく）
+  // 中身まで届いている（規則14——「止まらなかった」ではなく）。承認を求めるカードではない tool のカードは
+  // 自動で開かない（v4-frontend.md「答え方」の改訂・2026-10-06）ので、押して開いてから結果を見る
+  await openToolCards(page, "mcp__shell__runCommand");
+  await openToolCards(page, "mcp__filesystem__readFile");
   await expect(page.getByText(`got=${SECRET}`).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(/ひとつめ/).first()).toBeVisible();
 
@@ -200,6 +203,8 @@ test("オンの Project では tool・中継・Project をまたぐメッセー�
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "二度目が終わりました。" })).toBeVisible({
     timeout: 120_000,
   });
+  // 閉じたカードの中は見えないので、開いてから「出ていない」を見る（閉じたままだと何も見ていない）
+  await openToolCards(page, "mcp__shell__runCommand");
   await expect(page.getByText(`again=${SECRET}`)).toHaveCount(0);
   expect(mine().filter((e) => e.type === "relay.grant_created")).toHaveLength(0);
 

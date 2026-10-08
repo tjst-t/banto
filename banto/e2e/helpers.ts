@@ -471,3 +471,13 @@ export function currentProjectId(page: Page): string {
   if (!id) throw new Error(`[e2e] Project を開いていない（URL=${page.url()}）`);
   return id;
 }
+
+/**
+ * **閉じている tool のカード（「Used tool: <名前>」）を全部開く**（追加・2026-10-08）。承認を求めるカードではない tool の
+ * カードは自動で開かない（v4-frontend.md「答え方」の改訂・2026-10-06）——結果を画面で見るときは、押して開いてから見る
+ */
+export async function openToolCards(page: Page, toolName: string): Promise<void> {
+  const closed = page.getByRole("button", { name: `Used tool: ${toolName}`, expanded: false });
+  for (let i = 0; i < 10 && (await closed.count()) > 0; i++) await closed.first().click();
+  await expect(closed, `「Used tool: ${toolName}」のカードが開かない`).toHaveCount(0);
+}
