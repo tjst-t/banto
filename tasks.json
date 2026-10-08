@@ -5613,7 +5613,7 @@
       "number": 230,
       "kind": "bug",
       "title": "マージの段で止まった件に answerFactory で「続ける」と答えると、AI の呼び出しが 60 秒で切れる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5627,7 +5627,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-07T16:07:51.029Z",
-      "updatedAt": "2026-10-07T16:07:51.029Z",
+      "updatedAt": "2026-10-08T01:01:00.474Z",
       "closedAt": null,
       "extra": {}
     }
