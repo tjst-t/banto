@@ -1447,8 +1447,14 @@ async function main(): Promise<void> {
     for (const [connName, pending] of [...pendingRestarts]) {
       if (pending.origin.projectId === projectId) cancelRestart(connName);
     }
+    // **先に全部を台帳から外し、それから落とす**（改訂・2026-10-09）。以前は1つずつ「外す→落とす」だったので、頼んだ先
+    // （subagent 等）を落とした瞬間の「途中で終わりました」が、**まだ台帳に残っている同じ Project の呼んだ Module**（この
+    // あと落とすもの）に渡り、そのプロセスごと消えていた——畳む順番しだいで、次に立ったプロセスに届かない（E2E
+    // subagent-from-module:153 がたまに落ちていた）。全部を先に外せば、渡せずに残り（`module-replies.ts` の「残してから渡す」）、
+    // 次に繋がったときに渡る
+    const clients: Array<[string, Client | undefined]> = [];
     for (const connName of names) {
-      const client = connectedModules.get(connName);
+      clients.push([connName, connectedModules.get(connName)]);
       connectedModules.delete(connName);
       connectionOrigins.delete(connName);
       liveness.unwatch(connName);
@@ -1458,8 +1464,10 @@ async function main(): Promise<void> {
       moduleTokens.delete(connName);
       shellHomes.delete(connName);
       await agentRelayEndpoint.unregisterModule(connName);
-      // **プロセスを落とすのは最後**（先に台帳から外しておけば、落とす途中に
-      // 来た要求が死にかけの接続を掴まない）
+    }
+    // **プロセスを落とすのは最後**（先に台帳から外しておけば、落とす途中に
+    // 来た要求が死にかけの接続を掴まない）
+    for (const [connName, client] of clients) {
       await client?.close().catch((err: unknown) => {
         console.warn(`[host] ${connName} を畳むときに例外:`, err);
       });
