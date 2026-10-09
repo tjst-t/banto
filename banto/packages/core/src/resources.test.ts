@@ -160,3 +160,41 @@ test("中身：Shell の待たない形の単位はコマンドとして数え�
   assert.deepEqual(groups.map((g) => g.id), ["commands"]);
   assert.equal(groups[0]!.items[0]!.name, "待たないコマンド abc");
 });
+
+test("この機械の「その他」を割る：banto 本体の unit・Incus・system.slice のサービス・ユーザー・見ていないコンテナ・小さいものはまとめる。コンテナのカーネルの分も数える", async () => {
+  const MB = 1024 * 1024;
+  const root = "/sys/fs/cgroup/lxc.payload.user-1000_banto-p1";
+  const f: Record<string, string> = {
+    [`${root}/memory.stat`]: `anon ${1000 * MB}\nfile ${200 * MB}\nshmem 0\nkernel ${300 * MB}\n`,
+    [`${root}/memory.max`]: `${4000 * MB}\n`,
+    "/proc/self/cgroup": "0::/system.slice/banto-host.service\n",
+    "/sys/fs/cgroup/system.slice/banto-host.service/memory.stat": `anon ${800 * MB}\nfile 0\nkernel ${50 * MB}\n`,
+    "/sys/fs/cgroup/system.slice/incus.service/memory.stat": `anon ${400 * MB}\nfile 0\n`,
+    "/sys/fs/cgroup/system.slice/cloudcli.service/memory.stat": `anon ${2000 * MB}\nfile 0\n`,
+    "/sys/fs/cgroup/system.slice/caddy.service/memory.stat": `anon ${40 * MB}\nfile 0\n`,
+    "/sys/fs/cgroup/system.slice/cron.service/memory.stat": `anon ${10 * MB}\nfile 0\n`,
+    "/sys/fs/cgroup/user.slice/user-1000.slice/memory.stat": `anon ${500 * MB}\nfile 0\n`,
+    "/sys/fs/cgroup/lxc.payload.user-1000_banto-old/memory.stat": `anon ${300 * MB}\nfile 0\n`,
+    "/proc/meminfo": `MemTotal: ${16000 * 1024} kB\nMemAvailable: ${10000 * 1024} kB\n`,
+  };
+  const w = new ResourceWatch({ fs: fakeFs(f), incusProject: async () => "user-1000", cores: 4, selfBytes: () => 1, stalls: () => [] });
+  const s = await w.tick([{ containerName: "banto-p1", projectId: "p1", name: "banto" }]);
+  assert.equal(s.projects[0]!.usedBytes, 1300 * MB, "コンテナのカーネルの分も使っている量に数える");
+  assert.deepEqual(
+    s.projects[0]!.groups.find((g) => g.id === "other")?.items.map((i) => [i.name, i.bytes]),
+    [["カーネルが使っている分（ページ表・ネットワーク等）", 300 * MB]],
+  );
+  assert.deepEqual(
+    s.host.memory.map((m) => [m.label, Math.round(m.bytes / MB)]),
+    [
+      ["banto", 1300],
+      ["banto 本体（会話の AI を含む）", 850],
+      ["Incus", 400],
+      ["cloudcli", 2000],
+      ["ユーザー 1000 のプロセス", 500],
+      ["コンテナ banto-old", 300],
+      ["そのほかのサービス（64 MB 未満）", 50],
+      ["OS・カーネル（どの組にも入らない分）", 6000 - 1300 - 850 - 400 - 2000 - 500 - 300 - 50],
+    ],
+  );
+});

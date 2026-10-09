@@ -148,6 +148,12 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
   **混んでいるかは待たされている時間で決める**（使っている量だけでは決めない——ビルド中はキャッシュで多く見える）。
   仮の区切り（段3で実物を見て決め直す）：メモリの some avg10 が 10% 以上、CPU の full avg10 が 10% 以上、使っている量が
   上限の 90% 以上、のどれか。この機械は `/proc/pressure` で同じ区切りか、MemAvailable が 1 GiB 未満。
+  **使っている量にはカーネルの分も数える**（`memory.stat` の anon＋shmem＋kernel。追加・2026-10-09）——数えないと host の
+  「その他」に紛れた（本番で「その他」が 4.8 GB と出て中身が分からなかった）。Project の内訳では「その他」の
+  「カーネルが使っている分」に出す。**この機械のメモリも組ごとに割る**：banto 本体は自分の unit（`/proc/self/cgroup` が
+  `….service` のとき。会話の Claude などの子も含む）、Incus、`system.slice` のサービスごと、`user.slice` のユーザーごと、
+  banto が見ていないコンテナ、そのほかの根の組。64 MB 未満は「そのほかのサービス」にまとめ、残り（MemTotal−MemAvailable
+  から上を引いた分）を「OS・カーネル」とする。
   見せ方は v4-frontend.md §6.36（設定の「資源」とサイドバーの印）。口は `GET /api/admin/resources`（合言葉か
   ログインのセッション）、混んでいる Project とこの機械が混んでいるかは `/api/events` の hello と `resources.busy`（変わった
   ときだけ）で画面に渡す

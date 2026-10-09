@@ -60,12 +60,19 @@ function num(text: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-/** cgroup の「使っている」メモリ（anon＋shmem）と「戻せる」キャッシュ（file）。memory.stat が読めなければ memory.current を使っている側に */
-function memoryOf(fs: FsReader, dir: string): { used: number; cache: number } | undefined {
+/**
+ * cgroup の「使っている」メモリ（anon＋shmem＋kernel）と「戻せる」キャッシュ（file）。kernel はページ表・ネットワークの
+ * 置き場など、その組のためにカーネルが使っている分（2026-10-09 に足した——数えないと host の「その他」に紛れて大きく見えた）。
+ * memory.stat が読めなければ memory.current を使っている側に
+ */
+function memoryOf(fs: FsReader, dir: string): { used: number; cache: number; kernel: number } | undefined {
   const stat = kv(fs.read(join(dir, "memory.stat")));
-  if (stat.has("anon")) return { used: (stat.get("anon") ?? 0) + (stat.get("shmem") ?? 0), cache: stat.get("file") ?? 0 };
+  if (stat.has("anon")) {
+    const kernel = stat.get("kernel") ?? 0;
+    return { used: (stat.get("anon") ?? 0) + (stat.get("shmem") ?? 0) + kernel, cache: stat.get("file") ?? 0, kernel };
+  }
   const cur = num(fs.read(join(dir, "memory.current")));
-  return cur === undefined ? undefined : { used: cur, cache: 0 };
+  return cur === undefined ? undefined : { used: cur, cache: 0, kernel: 0 };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -257,6 +264,10 @@ export function readConsumers(fs: FsReader, root: string, procRoot = "/proc"): C
       if (mem && mem.used > 0) items.push({ group: "other", name: "システムのサービス（Incus・Docker 等）", bytes: mem.used });
     }
   }
+
+  // コンテナのためにカーネルが使っている分（ページ表・ネットワークの置き場等）。プロセスの分には入らない
+  const kernel = memoryOf(fs, root)?.kernel ?? 0;
+  if (kernel > 0) items.push({ group: "other", name: "カーネルが使っている分（ページ表・ネットワーク等）", bytes: kernel });
 
   const order: ConsumerGroupId[] = ["modules", "work", "commands", "services", "nested", "other"];
   return order
@@ -492,13 +503,11 @@ export class ResourceWatch {
       io: parsePressure(this.fs.read(join(this.procRoot, "pressure", "io")) ?? ""),
     };
     const memory: HostResources["memory"] = [...containerMemory];
-    memory.push({ id: "banto", label: "banto 本体", bytes: this.opts.selfBytes() });
-    const incus = memoryOf(this.fs, join(this.cgroupRoot, "system.slice", "incus.service"));
-    if (incus) memory.push({ id: "incus", label: "Incus", bytes: incus.used });
+    memory.push(...this.hostServices(new Set(targets.map((t) => t.containerName)), incusProject));
     if (meminfo.total !== undefined && meminfo.available !== undefined) {
       const used = meminfo.total - meminfo.available;
       const known = memory.reduce((a, m) => a + m.bytes, 0);
-      if (used > known) memory.push({ id: "other", label: "その他（OS・Caddy 等）", bytes: used - known });
+      if (used > known) memory.push({ id: "other", label: "OS・カーネル（どの組にも入らない分）", bytes: used - known });
     }
     const hostReason = busyReason(hostPressure, undefined, meminfo.available);
     const stallHorizon = now - 10 * 60_000;
@@ -520,6 +529,67 @@ export class ResourceWatch {
       projects: projects.sort((a, b) => Number(b.busy) - Number(a.busy) || b.usedBytes - a.usedBytes),
     };
     return this.latest;
+  }
+
+  /**
+   * **この機械の「その他」を組ごとに割る**（追加・2026-10-09、ユーザー「その他 4.8 GB の中身が分からない」）。host の cgroup の
+   * 根の下を読む：banto 本体（自分の unit。会話の Claude などの子も含む）・Incus・`system.slice` のサービス・`user.slice` の
+   * ユーザー・用意できていないコンテナ。小さいもの（64 MB 未満）は「そのほかのサービス」にまとめる
+   */
+  private hostServices(knownContainers: ReadonlySet<string>, incusProject: string): HostResources["memory"] {
+    const out: HostResources["memory"] = [];
+    const small = { bytes: 0 };
+    const add = (id: string, label: string, bytes: number) => {
+      if (bytes <= 0) return;
+      if (bytes < 64 * 1024 * 1024) small.bytes += bytes;
+      else out.push({ id, label, bytes });
+    };
+
+    // banto 本体：自分の unit（system.slice/banto-host.service 等）があればその組の分、無ければ自分のプロセスだけ
+    const selfPath = /^0::(\/.+\.service)$/m.exec(this.fs.read(join(this.procRoot, "self", "cgroup")) ?? "")?.[1];
+    const selfDir = selfPath ? join(this.cgroupRoot, selfPath) : undefined;
+    const selfMem = selfDir ? memoryOf(this.fs, selfDir) : undefined;
+    out.push({
+      id: "banto",
+      label: selfMem ? "banto 本体（会話の AI を含む）" : "banto 本体",
+      bytes: selfMem?.used ?? this.opts.selfBytes(),
+    });
+
+    const sys = join(this.cgroupRoot, "system.slice");
+    for (const unit of this.fs.dirs(sys).sort()) {
+      const dir = join(sys, unit);
+      if (dir === selfDir) continue;
+      const mem = memoryOf(this.fs, dir);
+      if (!mem) continue;
+      if (unit === "incus.service") out.push({ id: "incus", label: "Incus", bytes: mem.used });
+      else add(`unit:${unit}`, unit.replace(/\.service$/, ""), mem.used);
+    }
+    const users = join(this.cgroupRoot, "user.slice");
+    for (const slice of this.fs.dirs(users).sort()) {
+      const mem = memoryOf(this.fs, join(users, slice));
+      const uid = /^user-(\d+)\.slice$/.exec(slice)?.[1];
+      if (mem) add(`user:${slice}`, uid ? `ユーザー ${uid} のプロセス` : slice, mem.used);
+    }
+    // 用意できていない（banto が見ていない）コンテナ——E2E の残り・止め損ねたもの
+    const prefix = `lxc.payload.${incusProject && incusProject !== "default" ? `${incusProject}_` : ""}`;
+    for (const child of this.fs.dirs(this.cgroupRoot).sort()) {
+      if (child === "system.slice" || child === "user.slice") continue;
+      if (!child.startsWith("lxc.payload.")) {
+        // そのほかの根の組（init.scope・machine.slice・lxc.monitor.* 等）
+        const mem = memoryOf(this.fs, join(this.cgroupRoot, child));
+        if (mem) add(`root:${child}`, child, mem.used);
+        continue;
+      }
+      const name = child.startsWith(prefix) ? child.slice(prefix.length) : child.slice("lxc.payload.".length);
+      if (knownContainers.has(name)) continue;
+      const mem = memoryOf(this.fs, join(this.cgroupRoot, child));
+      if (mem) add(`container:${name}`, `コンテナ ${name}`, mem.used);
+    }
+    // banto 本体・Incus を頭に、ほかは大きい順
+    const head = out.filter((m) => m.id === "banto" || m.id === "incus");
+    const rest = out.filter((m) => m.id !== "banto" && m.id !== "incus").sort((a, b) => b.bytes - a.bytes);
+    if (small.bytes > 0) rest.push({ id: "small", label: "そのほかのサービス（64 MB 未満）", bytes: small.bytes });
+    return [...head, ...rest];
   }
 
   /** 上限に当たった数え（受信箱で知らせる見張り `container-pressure.ts` が使う）。読めなければ undefined */
