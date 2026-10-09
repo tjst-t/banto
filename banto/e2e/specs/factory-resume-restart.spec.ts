@@ -42,11 +42,28 @@ interface HostThread {
 }
 
 /** この worktree の偽のエージェントと、その子（会話の id つき）。ホストから見える（コンテナはカーネルを分けない） */
-function agentProcesses(): { agents: number[]; children: string[] } {
+/**
+ * そのプロセスがその Project のコンテナ（`banto-<id>`）の中で動いているか。`/proc/<pid>/cwd` や environ はコンテナの
+ * 中のプロセスだと読めない（EACCES、実測）が、cgroup は読める——コンテナの中のものは `lxc.payload.banto-<id>` の下にある
+ */
+function inProjectContainer(pid: number, projectId: string): boolean {
+  try {
+    return readFileSync(`/proc/${pid}/cgroup`, "utf8").includes(`banto-${projectId}`);
+  } catch {
+    return false;
+  }
+}
+
+function agentProcesses(projectId: string): { agents: number[]; children: string[] } {
   const lines = execFileSync("ps", ["-eo", "pid,args"], { encoding: "utf8" }).split("\n");
   const here = join(import.meta.dirname, "..", "..");
   return {
-    agents: lines.filter((l) => l.includes(`${here}/packages/modules/subagent/dist/testing/fake-agent.js`)).map((l) => Number(l.trim().split(/\s+/)[0])),
+    // **この Project の分だけ数える**（2026-10-09、並列化）。機械全体の ps なので、もう1つの worker が同時に走らせている
+    // エージェントまで数えて「1本のはずが2本」で落ちていた
+    agents: lines
+      .filter((l) => l.includes(`${here}/packages/modules/subagent/dist/testing/fake-agent.js`))
+      .map((l) => Number(l.trim().split(/\s+/)[0]))
+      .filter((pid) => inProjectContainer(pid, projectId)),
     children: lines.filter((l) => l.includes("fake-agent-child")).map((l) => l.trim()),
   };
 }
@@ -158,14 +175,14 @@ test("Factory の1件が実装の段の途中で host が落ちても、起き�
     const implementerReplyId = launchedBefore.find((l) => l.phase === "launched")?.replyId;
     expect(implementerReplyId, "実装役に頼んだ返事の印が記録に無い").toMatch(/^rid_/);
     expect(moduleReplies().awaiting.map((a) => [a.toModule, a.replyId]), "host が Factory 宛ての返事待ちを残していない").toEqual([["factory", implementerReplyId]]);
-    expect(agentProcesses().agents, "試験の前提：走っているエージェントが1本").toHaveLength(1);
-    const oldPid = agentProcesses().agents[0]!;
-    expect(agentProcesses().children.filter((c) => c.includes(record!.sessionId!)), "試験の前提：エージェントの子").toHaveLength(1);
+    expect(agentProcesses(project.id).agents, "試験の前提：走っているエージェントが1本").toHaveLength(1);
+    const oldPid = agentProcesses(project.id).agents[0]!;
+    expect(agentProcesses(project.id).children.filter((c) => c.includes(record!.sessionId!)), "試験の前提：エージェントの子").toHaveLength(1);
 
     // ---- host が落ちて、起き直す --------------------------------------------------------------------------
     await host.stop("SIGKILL");
     await new Promise((r) => setTimeout(r, 2_000));
-    expect(agentProcesses().agents, "host が落ちたらエージェントも消えた（試験の前提が崩れた）").toContain(oldPid);
+    expect(agentProcesses(project.id).agents, "host が落ちたらエージェントも消えた（試験の前提が崩れた）").toContain(oldPid);
     await host.start();
 
     // host が Factory と Subagent に問い、両方「続ける」と答えた
@@ -175,8 +192,8 @@ test("Factory の1件が実装の段の途中で host が落ちても、起き�
     expect(host.log()).toMatch(/前の走行の返事待ち（subagent・呼び元 factory）→ 続けると答えた/);
     expect((await thread()).awaitingReplies?.map((r) => Boolean(r.keptAt)), "Thread の札が「続けています」にならない").toEqual([true]);
     // 続けている間：前の走行のエージェントと子は居ない。居るのは続けた1本だけ
-    await expect.poll(() => agentProcesses().agents.length, { timeout: 60_000, message: "続けたエージェントが走っていない" }).toBe(1);
-    const now = agentProcesses();
+    await expect.poll(() => agentProcesses(project.id).agents.length, { timeout: 60_000, message: "続けたエージェントが走っていない" }).toBe(1);
+    const now = agentProcesses(project.id);
     expect(now.agents, "前の走行のエージェントが残っている（同じ会話を2本が書く）").not.toContain(oldPid);
     expect(now.children.filter((c) => c.includes(record!.sessionId!)), "前の走行のエージェントの子が残っている").toEqual([]);
 
