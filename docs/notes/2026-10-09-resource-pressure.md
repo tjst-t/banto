@@ -67,3 +67,18 @@ ping の時間切れの直後には「Received a response for an unknown message
 - 口：`GET /api/admin/resources`、`/api/events` の hello の `resources` と `resources.busy`（変わったときだけ）
 - E2E `resources.spec.ts`：上限を 1 GiB にして中でメモリを 95% まで掴むと、サイドバーに印・行が「混んでいる」・理由
   「メモリが上限の 96% に達しています」、放すと印が消える
+
+## 段2a：仕事の組と天井（2026-10-09）
+
+- core がコンテナを用意するとき・上限を変えたときに、root で `/etc/systemd/user/banto-work{,-jobs,-services}.slice` を書き
+  （仕事の組はコンテナのメモリの 75%・プロセス数の 70%）、ユーザーの systemd を起こして読み直させる
+- 仕事を組に入れる共通の口は `@banto/module-contract` の `inWorkScope`（`systemd-run --user --scope`、中の `sh` が
+  oom_score_adj=500・memory.oom.group=1 を書いて exec）。Shell の待つ形・サブエージェント・Factory のテストが使う。
+  Shell の待たない形は service のまま `--slice`・`OOMScoreAdjust=500`・`OOMPolicy=kill`。Service の unit は
+  `Slice=banto-work-services.slice`・`OOMScoreAdjust=200`（既に動いている Service は起こし直したときに移る）
+- 実測：入れ子のコンテナ（E2E）では、ユーザーの systemd が `incus exec` のプロセス（`.lxc`）を自分の組へ移せず scope が
+  作れない（`Couldn't move process … Permission denied`、`systemd-run` は 1 で終わりコマンドは走らない）。入れ子でない
+  Project のコンテナ（このコンテナ）では移せる。だから最初に `/bin/true` で試して、だめなら組に入れずに起こす（5 分で試し直す）。
+  service（待たない形）は systemd が自分で起こすので入れ子でも組に入る
+- E2E `work-slice.spec.ts`：上限 1 GiB で天井 768 MiB が書かれ、待たない形は `banto-work-jobs.slice` で oom_score_adj 500、
+  食い尽くすと仕事の組の天井で止められ（oom_kill）、Shell は答え続ける（4 回続けて通過）

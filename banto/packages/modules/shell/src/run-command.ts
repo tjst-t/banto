@@ -8,6 +8,7 @@ import { dirname, resolve } from "node:path";
 import type { AliasPlace, HostRelayClient } from "./host-relay-client.js";
 import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
 import type { BackgroundCommands } from "./background.js";
+import { inWorkScope } from "@banto/module-contract";
 
 export interface RunCommandInput {
   command: string;
@@ -250,9 +251,12 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
     const timeoutMs = (input.timeout ?? DEFAULT_TIMEOUT_SEC) * 1000;
 
     return await new Promise<RunCommandResult>((resolvePromise, reject) => {
-      const child = spawn("/bin/sh", ["-c", input.command], {
+      // **仕事の組に入れて起こす**（段2a、`docs/specs/v4-security.md` §1）——メモリを食い尽くしても組の中だけで止まり、
+      // Module（この Shell も）は巻き込まれない。入れられなければ今までどおり
+      const launch = inWorkScope("/bin/sh", ["-c", input.command], { kind: "shell", env });
+      const child = spawn(launch.command, launch.args, {
         cwd,
-        env,
+        env: launch.env,
         timeout: timeoutMs,
         killSignal: "SIGTERM",
       });

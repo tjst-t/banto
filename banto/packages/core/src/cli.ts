@@ -1922,7 +1922,7 @@ async function main(): Promise<void> {
           ? [projectId]
           : [...projectThread.listProjects().map((p) => p.id), instanceContainerId(bootstrap.dataDir)];
         for (const id of ids) {
-          await containers.applyLimits(containerNameFor(id), toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), id)));
+          await containers.applyLimits(containerNameFor(id), toContainerLimits(limitNumbersFor(runtimeConfig, hostResources(), id)), userInfo().uid);
         }
       },
     },

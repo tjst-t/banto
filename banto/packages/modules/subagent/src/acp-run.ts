@@ -25,6 +25,7 @@ import {
   type Stream,
   type Usage,
 } from "@agentclientprotocol/sdk";
+import { inWorkScope } from "@banto/module-contract";
 
 export interface AgentLaunch {
   command: string;
@@ -190,7 +191,11 @@ interface SpawnedAgent {
 function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
   // **自分のプロセスグループで起こす**（追加・2026-10-05）——エージェントが起こす子（claude-agent-acp の CLI など）ごと
   // 止められるように。Module が止まっても（banto の起こし直し）エージェントと子は残るので、続ける前にグループで止める
-  const child = spawn(launch.command, launch.args, { cwd, env: launch.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  // **仕事の組に入れて起こす**（段2a、`docs/specs/v4-security.md` §1）——エージェントと子（Claude Code・ブラウザ等）が
+  // メモリを食い尽くしても組の中だけで止まり、Module は巻き込まれない。`systemd-run --scope` はその場で exec するので、
+  // 標準入出力（ACP）とプロセスグループはそのまま
+  const scoped = inWorkScope(launch.command, launch.args, { kind: "subagent", env: launch.env });
+  const child = spawn(scoped.command, scoped.args, { cwd, env: scoped.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let stderr = "";
   child.stderr.on("data", (d: Buffer) => {
     stderr = (stderr + d.toString("utf8")).slice(-STDERR_TAIL);

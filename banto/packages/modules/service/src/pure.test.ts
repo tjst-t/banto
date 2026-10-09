@@ -43,6 +43,8 @@ test("unit：% はエスケープし、ExecStart の各語は引用符で包む�
   assert.match(u, /ExecStart="\/usr\/local\/bin\/node" "\/c d\/w\.js" "\/s\/web"/);
   assert.match(u, /EnvironmentFile=-\/s\/web\/env/);
   assert.match(u, /Restart=on-failure/);
+  // 仕事の組の天井の中で、仕事より一段守る（段2a）
+  assert.match(u, /\nSlice=banto-work-services.slice\nOOMScoreAdjust=200\n/);
   assert.match(u, /WantedBy=default\.target/);
 });
 

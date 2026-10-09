@@ -183,6 +183,28 @@ export function parseResourceEvents(text: string): { oomKills: number; pidsMax: 
   return oomKills === undefined || !Number.isFinite(oomKills) ? undefined : { oomKills, pidsMax };
 }
 
+/**
+ * **仕事の組の天井**（決定・2026-10-08〜09、`docs/specs/v4-security.md` §1 の段2a）。コンテナの中の systemd のユーザー単位の
+ * slice の中身を返す（ファイル名 → 中身）。仕事（`banto-work-jobs.slice`）と Service（`banto-work-services.slice`）を合わせて
+ * コンテナのメモリの 75%・プロセス数の 70% まで——残りは Module などの取り分として差し引きで残る
+ */
+export const WORK_SLICE_MEMORY_RATIO = 0.75;
+export const WORK_SLICE_TASKS_RATIO = 0.7;
+
+export function workSliceFiles(limits: ContainerLimits): Record<string, string> {
+  const m = /^(\d+)(MiB|GiB)?$/.exec(limits.memory.trim());
+  const bytes = m ? Number(m[1]) * (m[2] === "GiB" ? 1024 ** 3 : m[2] === "MiB" ? 1024 ** 2 : 1) : undefined;
+  const processes = Number(limits.processes);
+  const lines = ["# banto が書く（コンテナを用意するとき・上限を変えたとき）。手で変えても次に書き戻す", "[Slice]"];
+  if (bytes) lines.push(`MemoryMax=${Math.floor(bytes * WORK_SLICE_MEMORY_RATIO)}`);
+  if (Number.isFinite(processes) && processes > 0) lines.push(`TasksMax=${Math.floor(processes * WORK_SLICE_TASKS_RATIO)}`);
+  return {
+    "banto-work.slice": `${lines.join("\n")}\n`,
+    "banto-work-jobs.slice": "# banto が書く。仕事（Shell のコマンド・サブエージェント・Factory のテスト）\n[Slice]\nCPUWeight=100\n",
+    "banto-work-services.slice": "# banto が書く。Service——仕事より一段守る\n[Slice]\nCPUWeight=200\n",
+  };
+}
+
 /** 上限の Incus の設定の名前 */
 function limitsConfig(limits: ContainerLimits): Record<string, string> {
   return {
@@ -399,7 +421,36 @@ export class ProjectContainers {
     if (needsRestart || st.status !== "Running") await this.incus(["start", name], `コンテナ ${name} を起こすの`);
     await this.waitReady(name);
     await this.ensureNode(name, spec);
+    await this.ensureWorkSlices(name, spec.uid, spec.limits);
     return { name, created };
+  }
+
+  /**
+   * **仕事の組の天井をコンテナの中に置く**（段2a）。root で `/etc/systemd/user/` に slice を書き、変わっていればユーザーの
+   * systemd に読み直させる（動いていなければ、起きたときに読む）。書けなくてもコンテナの用意は止めない——天井が無いだけで
+   * 動きは今までどおり（ログに残す）
+   */
+  async ensureWorkSlices(name: string, uid: number, limits: ContainerLimits): Promise<boolean> {
+    const files = workSliceFiles(limits);
+    const script = [
+      "set -e",
+      "mkdir -p /etc/systemd/user",
+      "changed=0",
+      'while [ $# -ge 2 ]; do f="/etc/systemd/user/$1"; if [ "$(cat "$f" 2>/dev/null)" != "$(printf %s "$2")" ]; then printf %s "$2" > "$f"; changed=1; fi; shift 2; done',
+      `user=$(getent passwd ${uid} | cut -d: -f1)`,
+      // ユーザーの systemd を起こしておく（無ければ仕事の組に入れられず、そのまま起こすことになる）。linger は入れ子の
+      // コンテナでは効かないことがあるので、user@ を直に起こすのも試す（Shell の待たない形と同じ）
+      `if [ -n "$user" ]; then loginctl enable-linger "$user" >/dev/null 2>&1 || true; systemctl start user@${uid}.service >/dev/null 2>&1 || true; fi`,
+      'if [ "$changed" = 1 ] && [ -n "$user" ]; then systemctl --user -M "$user@" daemon-reload >/dev/null 2>&1 || true; fi',
+      "echo $changed",
+    ].join("\n");
+    const args = Object.entries(files).flatMap(([f, text]) => [f, text]);
+    const r = await this.run(["exec", name, "--", "/bin/sh", "-c", script, "banto-work-slices", ...args], { timeoutMs: 30_000 });
+    if (r.code !== 0) {
+      console.warn(`[container] ${name} に仕事の組の天井を置けませんでした（天井無しで続けます）: ${r.stderr.trim()}`);
+      return false;
+    }
+    return r.stdout.trim() === "1";
   }
 
   /** 中でコマンドが通るまで待つ（起こした直後は init がまだ立ち上がっていない） */
@@ -574,13 +625,15 @@ export class ProjectContainers {
    * **動いているコンテナの上限だけを書き換える**（追加・2026-10-02）。設定を変えたときに、起こし直さずに効かせる。
    * 無ければ何もしない（次に作るとき `ensure` が付ける）。書き換えたら true
    */
-  async applyLimits(name: string, limits: ContainerLimits): Promise<boolean> {
+  async applyLimits(name: string, limits: ContainerLimits, uid?: number): Promise<boolean> {
     return this.serialize(name, async () => {
       const st = await this.state(name);
       if (!st) return false;
       const changes = Object.entries(limitsConfig(limits)).filter(([k, v]) => st.config[k] !== v);
       if (changes.length === 0) return false;
       await this.incus(["config", "set", name, ...changes.map(([k, v]) => `${k}=${v}`)], "資源の上限を変えるの");
+      // 仕事の組の天井も上限に合わせる（動いているコンテナだけ）
+      if (st.status === "Running" && uid !== undefined) await this.ensureWorkSlices(name, uid, limits);
       return true;
     });
   }

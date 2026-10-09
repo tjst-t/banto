@@ -1,6 +1,7 @@
 // systemd の写しを作る（docs/specs/v4-modules.md §4.2）。マスターは Module の登録で、ここで作るものは写し。
 
 import { join } from "node:path";
+import { WORK_SERVICES_SLICE } from "@banto/module-contract";
 
 export interface ServicePaths {
   /** systemd のユーザー単位の unit を置く所（コンテナの中の `~/.config/systemd/user`） */
@@ -51,6 +52,10 @@ export function renderUnit(opts: {
     `ExecStart=${quoteWord(opts.nodePath)} ${quoteWord(opts.wrapperPath)} ${quoteWord(opts.dir)}`,
     // 起こし直すのは異常終了のときだけ。上限は systemd の既定のまま（決定・2026-09-27）
     "Restart=on-failure",
+    // **仕事の組の天井の中**（決定・2026-10-08、ユーザー。`docs/specs/v4-security.md` §1 の段2a）——丸ごとは止めず
+    // （OOMPolicy は既定）、仕事（+500）より後に止められるよう一段守る
+    `Slice=${WORK_SERVICES_SLICE}`,
+    "OOMScoreAdjust=200",
     "",
     "[Install]",
     "WantedBy=default.target",

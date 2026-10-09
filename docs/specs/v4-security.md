@@ -156,6 +156,23 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
   `….service` のとき。会話の Claude などの子も含む）、Incus、`system.slice` のサービスごと、`user.slice` のユーザーごと、
   banto が見ていないコンテナ、そのほかの根の組。64 MB 未満は「そのほかのサービス」にまとめ、残り（MemTotal−MemAvailable
   から上を引いた分）を「OS・カーネル」とする。
+  **段2a：仕事を「仕事の組」に入れて天井を付ける**（決定・2026-10-08〜09、ユーザー。実装 2026-10-09）。Module を守るのは
+  Module の値を下げるのではなく（権限を絞ったコンテナでは root でも oom_score_adj を下げられない、実測）、**仕事の組に天井を
+  付けて Module の取り分を差し引きで残し、尽きたら仕事の組の中だけで止まる**ようにする。コンテナの中の systemd のユーザー単位で：
+  - `banto-work.slice`：`MemoryMax`＝コンテナのメモリの上限の 75%、`TasksMax`＝コンテナのプロセス数の上限の 70%（絶対値で書く。
+    core がコンテナを用意するとき・上限を変えたときに root で `/etc/systemd/user/` に置き、ユーザーの systemd を読み直させる）
+  - `banto-work-jobs.slice`（仕事）：Shell の待つ形・待たない形のコマンド、サブエージェント（ACP のエージェントとその子）、
+    Factory のテスト。1件ずつ単位（待つ形・サブエージェント・テストは `systemd-run --user --scope`、待たない形は今どおり
+    service）にし、**oom_score_adj を +500**（カーネルが先に止める。上げるのは誰でもできる）・**memory.oom.group=1**（止めるときは
+    その件を丸ごと——ブラウザの一部だけ消えて試験が迷走するより良い）。scope は単位の属性で付けられないので、起こす `sh` が
+    自分で書いてから exec する。service は `OOMScoreAdjust=500`・`OOMPolicy=kill`
+  - `banto-work-services.slice`（Service）：天井の中に入れるが丸ごとは止めない（oom.group 無し）、`OOMScoreAdjust=200`・
+    `CPUWeight=200` で仕事より一段守る（決定・2026-10-08、ユーザー）
+  - ユーザーの systemd に繋がらないとき（バスが無い）・コンテナの外では、組に入れずに今どおり起こす（黙って落とさない。資源の
+    画面では Module の子のコマンドとして出る）。入れ子のコンテナ・Docker は組に入れられない（コンテナの根の直下に生える）
+  - 実測（2026-10-09、このコンテナ）：`/etc/systemd/user/` の slice は root で `systemctl --user -M <user>@ daemon-reload` すると
+    効く。scope の中で oom_score_adj=500・oom.group=1 を書け、上限を越えると組の中だけが止まった（oom_group_kill 1）。
+    service の `OOMScoreAdjust=500`・`OOMPolicy=kill` も効く
   見せ方は v4-frontend.md §6.36（設定の「資源」とサイドバーの印）。口は `GET /api/admin/resources`（合言葉か
   ログインのセッション）、混んでいる Project とこの機械が混んでいるかは `/api/events` の hello と `resources.busy`（変わった
   ときだけ）で画面に渡す

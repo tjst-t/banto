@@ -5,6 +5,7 @@
 import { execFile, spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { userInfo } from "node:os";
+import { WORK_JOBS_SLICE, WORK_OOM_SCORE_ADJ } from "@banto/module-contract";
 
 export interface LaunchTarget {
   /** systemd の単位の名前（`banto-shell-<id>`） */
@@ -105,6 +106,10 @@ export class SystemdLauncher implements BackgroundLauncher {
         // 起動役を exec できたところで返る——起こせなければ systemd-run が失敗する（黙って起動待ちで止まらない）
         "--property=Type=exec",
         `--property=TimeoutStopSec=${STOP_TIMEOUT}`,
+        // **仕事の組**（段2a、`docs/specs/v4-security.md` §1）——天井の中で、カーネルが先に止め、止めるときは丸ごと
+        `--slice=${WORK_JOBS_SLICE}`,
+        `--property=OOMScoreAdjust=${WORK_OOM_SCORE_ADJ}`,
+        "--property=OOMPolicy=kill",
         "--",
         this.nodePath,
         this.wrapperPath,

@@ -327,3 +327,11 @@ test("上限に当たった回数を読む——memory.events の oom_kill と�
   assert.deepEqual(parseResourceEvents(text), { oomKills: 13, pidsMax: 4 });
   assert.equal(parseResourceEvents("cat: no such file"), undefined);
 });
+
+test("仕事の組の天井：コンテナのメモリの 75%・プロセス数の 70% を絶対値で書き、仕事と Service の slice も作る", async () => {
+  const { workSliceFiles } = await import("./project-container.js");
+  const files = workSliceFiles({ memory: "1024MiB", cpuAllowance: "300ms/100ms", processes: "8192" });
+  assert.match(files["banto-work.slice"]!, /\[Slice\]\nMemoryMax=805306368\nTasksMax=5734\n/);
+  assert.match(files["banto-work-jobs.slice"]!, /CPUWeight=100/);
+  assert.match(files["banto-work-services.slice"]!, /CPUWeight=200/);
+});

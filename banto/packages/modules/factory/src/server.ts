@@ -42,6 +42,7 @@ import { readSettings, SettingsError, writeSettings } from "./settings.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI, RUNS_APP_HTML, RUNS_APP_URI, UI_APP_MIME } from "./apps.js";
 import { describeJournal, type ItemCounts } from "./describe.js";
 import type { StepRecord } from "./journal.js";
+import { inWorkScope } from "@banto/module-contract";
 
 class FactoryError extends Error {}
 
@@ -97,7 +98,9 @@ export async function execCommand(
   env.GIT_COMMITTER_NAME ??= "banto factory";
   env.GIT_COMMITTER_EMAIL ??= "factory@banto.localhost";
   return new Promise((resolve) => {
-    const child = spawn(argv[0]!, argv.slice(1), { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    // **仕事の組に入れて起こす**（段2a、`docs/specs/v4-security.md` §1）——テストが食い尽くしても組の中だけで止まる
+    const scoped = inWorkScope(argv[0]!, argv.slice(1), { kind: "factory-test", env });
+    const child = spawn(scoped.command, scoped.args, { cwd: opts.cwd, env: scoped.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let out = "";
     const add = (b: Buffer) => {
       out += b.toString("utf8");
