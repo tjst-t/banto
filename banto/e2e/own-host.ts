@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { CLAUDE_CREDENTIALS_DIR, FRONTEND_BASE_URL, CLAUDE_RELAY_CREDENTIALS, SUBAGENT_IMPORT_FILE } from "./config.ts";
 import { isGroupAlive, listOwnedContainers, removeContainers } from "./containers.ts";
 import { infisicalFixtureEnv } from "./infisical-fixture.ts";
+import { startOutsideRunGroup } from "./outside-group.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "../packages/core/dist/cli.js");
@@ -110,14 +111,8 @@ export async function startOwnHost(): Promise<OwnHost> {
   );
   // 片づけ役：この worker が居なくなったら host のグループを止め、コンテナと置き場を消す。置き場が消えたら（ふつうに
   // `close` した）何もせずに終わる
-  {
-    const reaperLog = openSync(join(runDir, "own-host-reaper.log"), "a");
-    spawn(process.execPath, [join(HERE, "own-host-reaper.ts"), String(process.pid), dir], {
-      detached: true,
-      stdio: ["ignore", reaperLog, reaperLog],
-    }).unref();
-    closeSync(reaperLog);
-  }
+  // 回の cgroup の外で起こす（`outside-group.ts`）——回が cgroup ごと止められても残る
+  startOutsideRunGroup("own-host-reaper", [join(HERE, "own-host-reaper.ts"), String(process.pid), dir], join(runDir, "own-host-reaper.log"));
   let child: ChildProcess | undefined;
   let output = "";
   const apiUrl = `http://127.0.0.1:${port}`;

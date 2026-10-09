@@ -3,7 +3,6 @@
 // config.jsonが無いまま既定値＝本番と同じport/dataDirで立ち上がりEADDRINUSEになった）
 // ので、ここで確実にconfig.jsonを書いてからcli.jsを読み込む
 import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -27,25 +26,23 @@ import { startNpmRegistryFixture } from "./npm-registry-fixture.ts";
 import { startGithubFixture } from "./github-fixture.ts";
 import { startGithubLoginFixture } from "./github-login-fixture.ts";
 import { startInfisicalFixture } from "./infisical-fixture.ts";
+import { startOutsideRunGroup } from "./outside-group.ts";
 
 // どの core かは webServer が渡す `BANTO_E2E_CORE_INDEX`（`config.ts`）。設定の置き場もその core のものにする
 process.env.BANTO_CONFIG_PATH = CONFIG_PATH;
 globalSetup();
 
 // **回が終わったらコンテナを必ず消す片づけ役を、別のセッションで起こしておく**（追加・2026-10-01、`run-reaper.ts`）。
-// `globalTeardown` は外から殺された回（`timeout` の打ち切り・SIGKILL）では走らない。片づけ役は setsid で
-// プロセスグループの外に出るので、回ごと殺されても残り、Playwright が居なくなったのを見て core と画面のサーバを止め、
-// コンテナを消す。
+// `globalTeardown` は外から殺された回（`timeout` の打ち切り・SIGKILL）では走らない。片づけ役は回のプロセスの組の外で
+// 動くので、回ごと殺されても残り、Playwright が居なくなったのを見て core と画面のサーバを止め、コンテナを消す。
 // 回の印（BANTO_E2E_RUN_ID）は Playwright 本体の pid、このプロセスが core 自身
-{
-  const reaperLog = openSync(join(dirname(DATA_DIR), "reaper.log"), "a");
-  spawn(
-    process.execPath,
-    [fileURLToPath(new URL("./run-reaper.ts", import.meta.url)), process.env.BANTO_E2E_RUN_ID!, String(process.pid), DATA_DIR, String(FRONTEND_PORT)],
-    { detached: true, stdio: ["ignore", reaperLog, reaperLog] },
-  ).unref();
-  closeSync(reaperLog);
-}
+// **回の cgroup の外で起こす**（改訂・2026-10-09、`outside-group.ts`）——banto の中では回が cgroup ごと止められ、setsid の
+// 片づけ役も一緒に死んでいた
+startOutsideRunGroup(
+  "reaper",
+  [fileURLToPath(new URL("./run-reaper.ts", import.meta.url)), process.env.BANTO_E2E_RUN_ID!, String(process.pid), DATA_DIR, String(FRONTEND_PORT)],
+  join(dirname(DATA_DIR), "reaper.log"),
+);
 
 // **claude CLI に人の `~/.claude` を触らせない**（決定・2026-09-16、config.ts 参照）。
 // Runner が起こす CLI はこのプロセスの env を引き継ぐので、cli.js を読み込む前に置く。
