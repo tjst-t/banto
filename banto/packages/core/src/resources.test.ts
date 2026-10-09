@@ -198,3 +198,9 @@ test("この機械の「その他」を割る：banto 本体の unit・Incus・s
     ],
   );
 });
+
+test("host のサービスの名前：Docker のコンテナは id の頭12桁、ほかは .service を外す", async () => {
+  const { unitLabel } = await import("./resources.js");
+  assert.equal(unitLabel("docker-a7f2ba24641290ecce127f5055f079d91181d882750ea2f90377d3bdaee1796d.scope"), "Docker のコンテナ a7f2ba246412");
+  assert.equal(unitLabel("cloudcli.service"), "cloudcli");
+});

@@ -207,6 +207,13 @@ export function classifyProcesses(procs: readonly Proc[]): Array<{ group: Consum
   return out;
 }
 
+/** host のサービスの見せる名前。Docker のコンテナ（`docker-<64桁>.scope`）は id の頭12桁にする（docker ps と同じ） */
+export function unitLabel(unit: string): string {
+  const docker = /^docker-([0-9a-f]{12})[0-9a-f]*\.scope$/.exec(unit);
+  if (docker) return `Docker のコンテナ ${docker[1]}`;
+  return unit.replace(/\.service$/, "");
+}
+
 function unitServiceName(unit: string): { group: ConsumerGroupId; name: string } | undefined {
   const shell = /^banto-shell-(.+)\.service$/.exec(unit);
   if (shell) return { group: "commands", name: `待たないコマンド ${shell[1]}` };
@@ -562,7 +569,7 @@ export class ResourceWatch {
       const mem = memoryOf(this.fs, dir);
       if (!mem) continue;
       if (unit === "incus.service") out.push({ id: "incus", label: "Incus", bytes: mem.used });
-      else add(`unit:${unit}`, unit.replace(/\.service$/, ""), mem.used);
+      else add(`unit:${unit}`, unitLabel(unit), mem.used);
     }
     const users = join(this.cgroupRoot, "user.slice");
     for (const slice of this.fs.dirs(users).sort()) {

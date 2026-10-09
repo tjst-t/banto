@@ -134,7 +134,9 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
   **段1：host がコンテナの cgroup のファイルを直接読む**（`packages/core/src/resources.ts`）。`incus exec` を通さない——incusd が
   詰まったときに見張りも一緒に止まるため。コンテナの cgroup は host の `/sys/fs/cgroup/lxc.payload.<区画>_<コンテナ名>`
   （区画が `default` なら `lxc.payload.<コンテナ名>`）。banto は権限を絞った Incus のユーザーのままで読める（実測）。
-  **10 秒ごと**に、用意できているコンテナごとに読む：`memory.stat`（anon・shmem＝使っている、file＝戻せるキャッシュ）・
+  **10 秒ごと**に、banto が知っている Project（と banto 全体用）のコンテナを読む——用意できているかに依らない（起こし直した
+  直後は Module を使うまで「用意できた」にならず、動いているのに名前の無いコンテナとして出ていた。動いていなければ読めずに
+  飛ばす）。Docker のコンテナ（`docker-<id>.scope`）は id の頭12桁で出す。読むもの：`memory.stat`（anon・shmem＝使っている、file＝戻せるキャッシュ）・
   `memory.max`・`memory.events`（oom_kill）・`pids.current`／`pids.max`／`pids.events`（max）・`cpu.stat`（usage_usec の差から
   使った CPU）・`cpu.max`・`{cpu,memory,io}.pressure`。上限に当たった知らせ（上の「上限に当たったら受信箱で知らせる」）も
   同じ読み方に替えた（間隔は今どおり1分）。

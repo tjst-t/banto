@@ -2003,12 +2003,12 @@ async function main(): Promise<void> {
   pressureTimer.unref();
   let lastBusy = "";
   const resourceTimer = setInterval(() => {
-    const targets = [...readyContainers].map(([id, r]) => ({
-      containerName: r.name,
-      ...(id === instanceContainerKey
-        ? { name: "banto 全体用のコンテナ" }
-        : { projectId: id, name: projectThread.getProject(id)?.name ?? id }),
-    }));
+    // 用意できているかに依らず、banto が知っている Project のコンテナを全部見る（2026-10-09）——起こし直した直後は Module を
+    // 使うまで「用意できた」にならず、動いているのに名前の無いコンテナとして出ていた。動いていなければ読めずに飛ばす
+    const targets = [
+      ...projectThread.listProjects().map((p) => ({ containerName: containerNameFor(p.id), projectId: p.id, name: p.name })),
+      { containerName: containerNameFor(instanceContainerKey), name: "banto 全体用のコンテナ" },
+    ];
     void resourceWatch
       .tick(targets)
       .then(() => {
