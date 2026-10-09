@@ -395,7 +395,7 @@ export function BusyProjectMark({ projectName, reason }: { projectName: string; 
         <span
           role="img"
           aria-label={`${projectName} が混んでいます`}
-          className="ml-auto flex size-5 shrink-0 items-center justify-center text-warn"
+          className="flex size-5 shrink-0 items-center justify-center text-warn"
         >
           <Gauge className="size-3.5" />
         </span>

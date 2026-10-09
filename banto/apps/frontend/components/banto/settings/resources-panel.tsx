@@ -383,7 +383,8 @@ function ConsumerGroupBlock({ g }: { g: RealResourceGroup }) {
 }
 
 /**
- * サイドバーの Project の行に付ける印（混んでいるときだけ、§6.36）。行そのものが Project へのリンクなので、印はリンクにしない
+ * サイドバーの Project の行に付ける印（混んでいるときだけ、§6.36）。行そのものが Project へのリンクなので、印はリンクにしない。
+ * 名前のすぐ後ろに置く——行の右端には「…」と開閉の印が重なって出るので、右端に寄せない（2026-10-09、ユーザー報告）
  */
 export function BusyProjectMark({ projectName, reason }: { projectName: string; reason: string }): ReactNode {
   return (
@@ -393,7 +394,7 @@ export function BusyProjectMark({ projectName, reason }: { projectName: string; 
           role="img"
           data-testid="sidebar-project-busy"
           aria-label={`${projectName} が混んでいます`}
-          className="ml-auto flex size-5 shrink-0 items-center justify-center text-warn"
+          className="flex size-5 shrink-0 items-center justify-center text-warn"
         >
           <Gauge className="size-3.5" />
         </span>
