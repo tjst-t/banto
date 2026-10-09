@@ -2240,3 +2240,17 @@ test("ターンの終わりのまとめのスイッチは Project ごとで、�
     assert.equal((await fetch(`${base}/api/projects/nope/turn-summary`, { headers })).status, 404);
   });
 });
+
+// **banto 本体の止まり具合と host の詰まり具合**（決定・2026-10-09、v4-architecture.md §5.4-0）——資源の画面が読む口
+test("GET /api/admin/host-health は合言葉があるときだけ本体の止まりと host の詰まり具合を返す", async () => {
+  const report = { at: "2026-10-09T00:00:00.000Z", stall: { max10s: 0, max60s: 12000, recent: [] }, pressure: {} };
+  await withApp(
+    async (base, token) => {
+      assert.equal((await fetch(`${base}/api/admin/host-health`)).status, 401, "合言葉なしでは見せない");
+      const res = await fetch(`${base}/api/admin/host-health`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), report);
+    },
+    { hostHealth: () => report },
+  );
+});

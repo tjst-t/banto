@@ -174,6 +174,8 @@ export interface AppDeps {
    * Module 宛ての返事待ちは無く、どの Module も名乗っていない
    */
   restartActivity?: Pick<Parameters<typeof collectActivity>[0], "moduleReplies" | "resumesAfterRestart">;
+  /** banto 本体の止まり具合と host の詰まり具合（`GET /api/admin/host-health`、追加・2026-10-09）。無ければその口は 404 */
+  hostHealth?: () => unknown;
   relayEndpoint: HostRelayEndpoint;
   /**
    * **Claude のログインの中継**（core に常設、決定・2026-09-27、`docs/specs/v4-security.md` §2）。コンテナから
@@ -1468,6 +1470,11 @@ export function createApp(deps: AppDeps) {
             ...deps.restartActivity,
           }),
         );
+        return;
+      }
+      // **banto 本体の止まり具合と host の詰まり具合**（決定・2026-10-09、v4-architecture.md §5.4-0）。資源の画面が読む
+      if (url.pathname === "/api/admin/host-health" && req.method === "GET" && deps.hostHealth) {
+        json(res, 200, deps.hostHealth());
         return;
       }
       // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5・`docs/specs/v4-security.md` §2「画面からの更新」）。

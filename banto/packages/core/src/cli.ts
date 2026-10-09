@@ -81,6 +81,8 @@ import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
 import { ConnectBackoff } from "./modules/connect-backoff.js";
 import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
+import { HostStallMeter } from "./host-stall.js";
+import { collectHostHealth, timestampConsole } from "./host-health.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ModuleReplies } from "./delivery/module-replies.js";
@@ -174,6 +176,8 @@ function needsLogin(err: unknown): boolean {
 }
 
 async function main(): Promise<void> {
+  // `~/banto-host.log` の行に時刻を付ける（決定・2026-10-09、v4-architecture.md §5.4-0）
+  timestampConsole();
   const bootstrap = loadOrCreateBootstrapConfig();
   console.log(`[host] dataDir=${bootstrap.dataDir} port=${bootstrap.port}`);
 
@@ -646,10 +650,24 @@ async function main(): Promise<void> {
   let stopping = false;
   const connectionOrigins = new Map<string, ConnectionOrigin>();
   const pendingRestarts = new Map<string, { timer: NodeJS.Timeout; origin: ConnectionOrigin }>();
-  const liveness = new LivenessMonitor(LIVENESS, (connName, client, reason) => {
-    const origin = connectionOrigins.get(connName);
-    if (origin) void moduleLost(connName, client as Client, origin, reason);
-  });
+  // **banto 本体の止まり具合を測る**（決定・2026-10-09、v4-architecture.md §5.4-0）——本体が止まっていた間の
+  // ping の時間切れを Module のせいにしない。1 秒以上止まったらログに残す
+  const hostStall = new HostStallMeter(undefined, (s) =>
+    console.warn(`[host] 本体が ${(s.ms / 1000).toFixed(1)} 秒止まっていました`),
+  );
+  hostStall.start();
+  const liveness = new LivenessMonitor(
+    LIVENESS,
+    (connName, client, reason) => {
+      const origin = connectionOrigins.get(connName);
+      if (origin) void moduleLost(connName, client as Client, origin, reason);
+    },
+    hostStall,
+    (connName, stalledMs, elapsedMs) =>
+      console.warn(
+        `[host] ${connName} の ping が時間切れでしたが、その間 本体が ${(stalledMs / 1000).toFixed(1)} 秒止まっていたので数えません（待った ${(elapsedMs / 1000).toFixed(1)} 秒）。もう一度確かめます`,
+      ),
+  );
 
   function cancelRestart(connName: string): void {
     const pending = pendingRestarts.get(connName);
@@ -1852,6 +1870,8 @@ async function main(): Promise<void> {
     moduleCalls,
     // 起こし直しで待つものと待たないもの（GET /api/admin/activity）
     restartActivity: { moduleReplies, resumesAfterRestart },
+    // 本体の止まり具合と host の詰まり具合（GET /api/admin/host-health）
+    hostHealth: () => collectHostHealth(hostStall),
     relayEndpoint,
     claudeLogin,
     agentRelayEndpoint,
@@ -1988,6 +2008,7 @@ async function main(): Promise<void> {
       // 開いている流れは 1012（起こし直し中）で閉じる——画面は札を取り直して繋ぎ直す（§5.8）
       streamRelay.closeAll();
       liveness.stop();
+      hostStall.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
       // **新しい Module の呼び出しを断り、実行中の呼び出しが終わるのを上限つきで待ってから止まる**（追加・2026-10-05、
       // アーキ仕様 §2.5「いま動いているもの」）。ターン・続けられる仕事は待たずに起こし直すので、「待つものが無い」と見て
