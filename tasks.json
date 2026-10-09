@@ -6210,6 +6210,29 @@
       "updatedAt": "2026-10-09T23:42:36.655Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "memory-rebaseline-on-compact",
+      "number": 256,
+      "kind": "bug",
+      "title": "途中で足された Memory が自動の要約で抜け落ちる——要約のときに土台の Memory を確定し直す",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "## なぜ\nsystem prompt に入る Memory は Thread 作成時（Clear のときは Clear の時点）に確定し、それより後に足された分はターンの頭の banto-turn-context に1回だけ添える（turn-runner.ts・memory-split.ts）。SDK の自動の要約で会話が入れ替わると、添えた分が消える。実際、Fork「リソース逼迫問題」が Memory の「人へは日本語で」に従わなくなった。\n\n## 何をする（仕様 v4-architecture.md §2.2「走行中に増えた Memory は、メッセージで届ける」の改訂、91ceb2b7）\n- adapter.ts はすでに `compact_boundary` を数えている（compactionCount）。そのターンで1回以上起きたら、host がターンの終わりに Event Store へイベント（例 `thread.compacted`）を積む\n- fold.ts でそのイベントのとき `memoryBaselineSeq = raw.seq`（`thread.cleared` と同じ扱い）。`memoryDeliveredSeq` との関係も Clear に揃える\n- 次のターンから、途中で足された Memory と Global Memory が system prompt に入る\n\n## 確かめ方\nfold の単体テスト（要約のイベントで baseline が進み、pending が空になり established に入る）。偽の Runner で compact_boundary を出せるなら E2E も。",
+      "doneWhen": "Thread の途中で Memory を足し、そのあと自動の要約が起きたターンの次のターンで、足した Memory が system prompt の「# この Project で決まったこと」に入っていることをテストで確かめる。",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.2"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-09T23:42:42.937Z",
+      "updatedAt": "2026-10-09T23:42:42.937Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
