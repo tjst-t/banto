@@ -120,6 +120,8 @@ export type ProjectThreadEvent =
   // 起こし直しのあと Module が続けると答え、札を覚え直した（追加・2026-10-05、アーキ仕様 §2.5「2.」）
   | { type: "reply.kept"; payload: { threadId: string; replyTo: string } }
   | { type: "thread.cleared"; payload: { threadId: string } }
+  // **自動の要約（SDK の compact_boundary）が起きたターン**（追加・2026-10-09、アーキ仕様 §2.2）
+  | { type: "thread.compacted"; payload: { threadId: string; compactionCount: number } }
   // **新しいセッションで効かせた Skill の集合**（決定・2026-09-23、§5.7）
   | { type: "thread.skills_fixed"; payload: { threadId: string; set: SessionSkillSet } }
   | {
@@ -686,6 +688,14 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // （決定・2026-09-05）——次のターンは新しいキャッシュ境界から始まる。
           t.memoryBaselineSeq = raw.seq;
         }
+        return next;
+      }
+      case "thread.compacted": {
+        const t = next.threads.get(event.payload.threadId);
+        // 要約で会話が入れ替わると、ターンに添えて届けた Memory が抜け落ちうる——Clear と同じく、
+        // system prompt に入れる Memory をこの時点で確定し直す（改訂・2026-10-09、§2.2）。
+        // memoryDeliveredSeq は Clear と同じく動かさない（確定した分は届け済みかどうかに関わらず system prompt に入る）
+        if (t) t.memoryBaselineSeq = raw.seq;
         return next;
       }
       case "turn.started": {

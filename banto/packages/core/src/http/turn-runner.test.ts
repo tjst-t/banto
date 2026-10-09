@@ -887,3 +887,35 @@ test("Module の質問の判断待ちには、台帳で質問している tool �
     call.end();
   });
 });
+
+// **自動の要約が起きたら、次のターンから途中で足された Memory を system prompt に入れる**（改訂・2026-10-09、§2.2）。
+// 添えて届けた分は会話の中にしかなく、要約で抜け落ちる——長い Fork が「人へは日本語で」に従わなくなった
+test("自動の要約が起きたターンの次のターンで、途中で足された Memory が system prompt の「この Project で決まったこと」に入る", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const projectId = store.getThread(threadId)!.projectId;
+    const seen: Array<{ systemPrompt: string[]; prompt: string }> = [];
+    const runner = (compactionCount: number) =>
+      (async function* (opts: { systemPrompt: string[]; prompt: string }) {
+        seen.push({ systemPrompt: opts.systemPrompt, prompt: opts.prompt });
+        yield { type: "message" as const, message: initMessage([]) } as never;
+        yield { type: "message" as const, message: assistantMessage("はい") } as never;
+        return { sessionId: "session-1", compactionCount } as never;
+      }) as unknown as typeof runTurn;
+    const memorySection = (i: number) => seen[i]!.systemPrompt.find((b) => b.startsWith("# この Project で決まったこと"));
+
+    await collect(runThreadTurn({ ...deps, runTurn: runner(0) }, { threadId, prompt: "1", modules: [] }));
+    await store.appendMemory(projectId, "人へは日本語で書く");
+    await deps.globalMemory.append("人の名前は太郎");
+
+    // 足したあとのターン：system prompt には入らず、ターンに添えて届く。このターンの中で要約が起きた
+    await collect(runThreadTurn({ ...deps, runTurn: runner(1) }, { threadId, prompt: "2", modules: [] }));
+    assert.equal(memorySection(1), undefined);
+    assert.match(seen[1]!.prompt, /人へは日本語で書く/);
+
+    // 次のターン：system prompt に入っている
+    await collect(runThreadTurn({ ...deps, runTurn: runner(0) }, { threadId, prompt: "3", modules: [] }));
+    assert.match(memorySection(2) ?? "", /- 人へは日本語で書く/, "要約のあとも system prompt に入っていない");
+    assert.ok(seen[2]!.systemPrompt.some((b) => b.includes("人の名前は太郎")), "Global Memory も入る");
+    assert.doesNotMatch(seen[2]!.prompt, /人へは日本語で書く/, "同じ差分を添え直している");
+  });
+});

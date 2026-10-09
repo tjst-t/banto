@@ -609,6 +609,14 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
+  /** 自動の要約（SDK の compact_boundary）が起きたターンを記録する（改訂・2026-10-09、v4-architecture.md §2.2）。
+   *  foldがこれを見て、system promptに入れるMemoryを確定し直す。 */
+  async recordCompaction(threadId: ThreadId, compactionCount: number): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const event = await this.log.append("thread.compacted", { threadId, compactionCount });
+    this.projection.applyOne(event);
+  }
+
   /** UIの「Clear」——会話を畳む（v4-architecture.md §2.2）。resume-pointを捨てて、
    *  次のRunner呼び出しを新規query()にする。過去のmessages/memoryは物理削除しない
    *  （規則3）——横線マーカーとして記録するだけ。 */

@@ -124,6 +124,27 @@ test("clearing a thread re-establishes the memory baseline", async () => {
   });
 });
 
+test("an automatic compaction re-establishes the memory baseline, like clearing", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("demo", dir);
+    const thread = await store.createBaseThread(project.id);
+    await store.appendMemory(project.id, "decided later", thread.id);
+    const seq = store.getProjectMemory(project.id)[0]!.seq;
+    await store.markMemoryDelivered(thread.id, seq);
+    assert.equal(store.memoryForThread(thread.id).established.length, 0);
+
+    // 要約で会話が入れ替わると、添えて届けた分が抜け落ちうる——ここで確定し直す（改訂・2026-10-09、§2.2）
+    await store.recordCompaction(thread.id, 1);
+    const t = store.getThread(thread.id)!;
+    assert.ok(t.memoryBaselineSeq > seq);
+    const after = store.memoryForThread(thread.id);
+    assert.equal(after.pending.length, 0);
+    assert.deepEqual(after.established.map((m) => m.text), ["decided later"]);
+    // resume-point は捨てない（Clear と違い、会話は続いている）
+    assert.equal(t.markers.length, 0);
+  });
+});
+
 test("a fork does not own the inherited session until it runs its own turn (§2.2)", async () => {
   await withStore(async (store, dir) => {
     const project = await store.createProject("demo", dir);

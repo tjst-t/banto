@@ -790,6 +790,8 @@ async function* runThreadTurnInner(
     await deps.projectThread.updateResumePoint(input.threadId, sessionId, lastChainUuid(messages));
   }
   await deps.projectThread.recordUsage(input.threadId, contextUsage, compactionCount, apiUsage);
+  // 自動の要約が起きたら、次のターンから途中で足された Memory も system prompt に入れる（改訂・2026-10-09、§2.2）
+  if (compactionCount > 0) await deps.projectThread.recordCompaction(input.threadId, compactionCount);
   // **予約された Fork はここで立てる**——このターンの resume-point と返事を記録したあと。Fork は
   // このターンの会話を最後まで引き継ぐ（§2.2「AI が Fork を立てる」）
   if (forks.reserved.length > 0 && !forks.settled) {
