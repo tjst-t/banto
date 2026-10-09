@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowUpCircle, Bell, Gauge, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -9,6 +9,7 @@ import { NotificationSettingsPanel } from "@/components/banto/settings/notificat
 import { RoleList } from "@/components/banto/settings/role-list";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
 import { UpdatePanel } from "@/components/banto/settings/update-panel";
+import { ResourcesPanel } from "@/components/banto/settings/resources-panel";
 import {
   SettingsShell,
   type SearchEntry,
@@ -40,6 +41,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "defaults", label: "既定値", icon: SlidersHorizontal },
   { section: "credentials", label: "資格情報", icon: Sparkles },
   { section: "notifications", label: "通知", icon: Bell },
+  { section: "resources", label: "資源", icon: Gauge },
   { section: "update", label: "更新", icon: ArrowUpCircle },
 ];
 
@@ -159,6 +161,17 @@ function renderInstanceSection(section: SettingsSection) {
           description="判断待ち・レビュー待ちが新着したとき、受信箱のバッジ以外にも気づけるようにする。"
         />
         <NotificationSettingsPanel />
+      </div>
+    );
+  }
+  if (section === "resources") {
+    return (
+      <div>
+        <SectionHeading
+          title="資源"
+          description="この機械と Project のコンテナが、いま何にどれだけ使っているか。混んでいるときは、何が使っているかを開いて見られます。"
+        />
+        <ResourcesPanel />
       </div>
     );
   }

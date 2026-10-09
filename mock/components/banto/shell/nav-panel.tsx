@@ -50,6 +50,8 @@ import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { ThemeToggle } from "./theme-toggle";
 import { isThreadRunning } from "@/lib/mock/background-work";
+import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
+import { getResourcesSnapshot, parseResourcesDemo } from "@/lib/mock/resources";
 import { collectPending, PendingProjectBadge, PendingSubline, ThreadRowIcon } from "./pending-replies";
 
 /** 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
@@ -124,6 +126,10 @@ function ProjectTreeItem({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const isCurrent = project.id === activeProjectId;
+  // 混んでいる Project には印（資源の画面と同じ判断。モックは `?resources-demo` で切り替える）
+  const busyProject = getResourcesSnapshot(parseResourcesDemo(searchParams.get("resources-demo"))).projects.find(
+    (p) => p.projectId === project.id && p.busy === "busy",
+  );
   const threads = getThreadsForProject(project.id);
   const forks = threads.filter((t): t is MockThread => t.kind === "fork");
   const closedForkCount = getClosedForksForProject(project.id).length;
@@ -154,6 +160,7 @@ function ProjectTreeItem({
         >
           <ProjectInitialOrRunning project={project} active={isCurrent} />
           <span className="truncate">{project.name}</span>
+          {busyProject ? <BusyProjectMark projectName={project.name} reason={busyProject.busyReason} /> : null}
         </Link>
       </SidebarMenuButton>
       <PendingProjectBadge groups={projectPending} scope={project.name} />
@@ -264,6 +271,8 @@ export function NavPanel({
   headerAction?: ReactNode;
 }) {
   const judgmentCount = getJudgmentCount();
+  const navSearchParams = useSearchParams();
+  const hostSnap = getResourcesSnapshot(parseResourcesDemo(navSearchParams.get("resources-demo")));
   const { containerRef, onKeyDown } = useRovingFocus<HTMLUListElement>();
   // 開いている Project の目次は既定で開く。人が畳んだ／開いたときだけ、その
   // 選択を覚える（導出できる既定値を保存しない、規則3）
@@ -310,6 +319,7 @@ export function NavPanel({
       </SidebarHeader>
 
       <SidebarContent>
+        {hostSnap.host.busy === "busy" ? <HostBusyBand reason={hostSnap.host.busyReason} /> : null}
         <SidebarGroup>
           <SidebarGroupLabel>Project</SidebarGroupLabel>
           <SidebarGroupAction
