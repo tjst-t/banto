@@ -703,6 +703,61 @@ export interface RealContainerLimits {
   effective?: RealLimitNumbers;
 }
 
+/**
+ * **資源**（決定・2026-10-09、v4-frontend.md §6.36）。host が 10 秒ごとに測った最新。まだ測っていなければ null。
+ * 形は host の `resources.ts` の `ResourcesSnapshot` と同じ
+ */
+export interface RealResourceConsumer {
+  name: string;
+  detail?: string;
+  bytes: number;
+}
+export interface RealResourceGroup {
+  id: "modules" | "work" | "commands" | "services" | "nested" | "other";
+  label: string;
+  items: RealResourceConsumer[];
+}
+export interface RealResourceWaiting {
+  cpu: number;
+  memory: number;
+  io: number;
+}
+export interface RealProjectResources {
+  projectId: string;
+  name: string;
+  containerName: string;
+  busy: boolean;
+  busyReason?: string;
+  usedBytes: number;
+  cacheBytes: number;
+  limitBytes?: number;
+  cpuLimit?: number;
+  cpuUsed?: number;
+  waiting: RealResourceWaiting;
+  processes: number;
+  processLimit?: number;
+  groups: RealResourceGroup[];
+  hits: Array<{ at: string; what: string }>;
+}
+export interface RealResourcesSnapshot {
+  measuredAt: string;
+  host: {
+    busy: boolean;
+    busyReason?: string;
+    totalBytes?: number;
+    availableBytes?: number;
+    cores: number;
+    waiting: RealResourceWaiting;
+    memory: Array<{ id: string; label: string; bytes: number; projectId?: string }>;
+    stalls: Array<{ at: string; seconds: number }>;
+  };
+  projects: RealProjectResources[];
+}
+
+export async function fetchRealResources(): Promise<RealResourcesSnapshot | null> {
+  return request<RealResourcesSnapshot | null>("/api/admin/resources");
+}
+
 export async function fetchRealContainerLimits(): Promise<RealContainerLimits> {
   return request<RealContainerLimits>("/api/container-limits");
 }

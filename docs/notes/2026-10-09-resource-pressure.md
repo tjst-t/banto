@@ -53,3 +53,17 @@ ping の時間切れの直後には「Received a response for an unknown message
 - banto 本体が止まった理由（本体の中の重い同期処理か、host の CPU の詰まりで順番が回らなかったか）。時刻が付いたので、
   次に起きたら「本体が N 秒止まっていました」の時刻と、そのときの `/api/admin/host-health` の pressure で切り分ける
 - 記録に時刻が無かったので、10/5 のメモリの直し（状態の写し 121MB→6MB、同期の JSON 化が軽くなった）の前か後かは分からない
+
+## 段1の残り（2026-10-09、ユーザー「この形でよい」、モック dc5f55c3）
+
+- `packages/core/src/resources.ts`：host が `/sys/fs/cgroup/lxc.payload.<区画>_<コンテナ名>` を直接読む（incus exec を通さない）。
+  10 秒ごと（E2E は `BANTO_RESOURCES_INTERVAL_MS=2000`）。上限に当たった知らせ（`container-pressure.ts`）の数えもこの読み方に替えた
+- 内訳：`.lxc` のプロセスを `/proc` の親子でたどる（Module のサーバ・サブエージェント・Module の子のコマンド）、`app.slice` の
+  `banto-shell-*`＝コマンド・`banto-<名前>`＝Service、`lxc.payload.*`＝入れ子のコンテナ、`system.slice`＝その他。
+  この Project のコンテナ（`/sys/fs/cgroup` が根に見える）で実物を読み、Module 239MB・Service 1.3GB（mock の dev サーバ2本）・
+  入れ子 33MB・その他 446MB と、コンテナの anon 2.1GB とほぼ合うのを確かめた
+- 混んでいるかの仮の区切り：メモリの some avg10 ≥ 10%、CPU の full avg10 ≥ 10%、使っている量が上限の 90% 以上（この機械は
+  MemAvailable < 1 GiB も）。段3で実物を見て決め直す
+- 口：`GET /api/admin/resources`、`/api/events` の hello の `resources` と `resources.busy`（変わったときだけ）
+- E2E `resources.spec.ts`：上限を 1 GiB にして中でメモリを 95% まで掴むと、サイドバーに印・行が「混んでいる」・理由
+  「メモリが上限の 96% に達しています」、放すと印が消える

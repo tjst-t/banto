@@ -43,7 +43,11 @@ export type RealAppEvent =
       type: "hello";
       running?: Array<{ threadId: string; projectId?: string }>;
       background?: Array<{ threadId: string; projectId?: string; items: RealBackgroundItem[] }>;
+      /** 混んでいる Project とこの機械（追加・2026-10-09、§6.36）。古い host は付けない */
+      resources?: RealResourcesBusy;
     }
+  /** 混んでいる Project とこの機械が変わった（全体を置き換える） */
+  | { type: "resources.busy"; busy: RealResourcesBusy }
   /** その Thread のバックグラウンドの仕事が増えた・減った（その Thread の分を丸ごと） */
   | { type: "background.changed"; threadId: string; projectId?: string; items: RealBackgroundItem[] }
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
@@ -61,6 +65,12 @@ export type RealAppEvent =
    * 人が画面で閉じたときも。サイドバーの開いている一覧から外し、開いている画面は飛ばさず帯を出す
    */
   | { type: "thread.closed"; threadId: string; projectId?: string; by: RealThreadClosedBy; reason?: string };
+
+/** 混んでいる Project とこの機械（host の `ResourcesBusy` と同じ形） */
+export interface RealResourcesBusy {
+  projects: Array<{ projectId: string; reason?: string }>;
+  host?: { reason?: string };
+}
 
 const listeners = new Set<(event: RealAppEvent) => void>();
 let started = false;

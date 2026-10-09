@@ -11,6 +11,7 @@ import { getThread, markThreadClosed } from "@/lib/mock/threads";
 import { onRealAppEvent, startRealAppEvents } from "@/lib/backend/app-events";
 import { wireRunningThreads } from "@/lib/backend/running-threads";
 import { wireBackgroundWork } from "@/lib/backend/background-work";
+import { wireResourcesBusy } from "@/lib/backend/resources-busy";
 import { reportFailure } from "@/lib/report-failure";
 
 export function RealProjectsBootstrap() {
@@ -24,6 +25,8 @@ export function RealProjectsBootstrap() {
     wireRunningThreads();
     // バックグラウンドで動いているものの写し（§6.33）。同じ理由で読み始める前に
     wireBackgroundWork();
+    // 混んでいる Project とこの機械（§6.36）。同じ理由で読み始める前に
+    wireResourcesBusy();
     // host からの知らせ（host が始めたターン・受信箱の変化）を読み始める（決定・2026-09-25）
     startRealAppEvents();
     // **AI が立てた Fork を一覧に出す**（決定・2026-09-27）——host が作った Fork は、その最初のターンが

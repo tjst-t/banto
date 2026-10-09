@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Box, Globe, KeyRound, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
+import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -15,6 +15,7 @@ import { ShellHomePanel } from "@/components/banto/settings/shell-home-panel";
 import { ContainerLimitsPanel } from "@/components/banto/settings/container-limits";
 import { LoginPanel } from "@/components/banto/settings/login-panel";
 import { UpdatePanel } from "@/components/banto/settings/update-panel";
+import { ResourcesPanel } from "@/components/banto/settings/resources-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
@@ -84,6 +85,9 @@ const LOGIN_CATEGORY: SettingsNavItem = { section: "login", label: "ログイン
 /** banto 自身を GitHub の新しい版にする（2026-10-04、アーキ仕様 §2.5「画面から banto を更新する」） */
 const UPDATE_CATEGORY: SettingsNavItem = { section: "update", label: "更新", icon: ArrowUpCircle };
 
+/** この機械と Project のコンテナが何にどれだけ使っているか（2026-10-09、v4-frontend.md §6.36） */
+const RESOURCES_CATEGORY: SettingsNavItem = { section: "resources", label: "資源", icon: Gauge };
+
 /** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
 
@@ -97,6 +101,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   ...(CONNECTED_FEATURES.skills ? [SKILLS_CATEGORY] : []),
   ...(CONNECTED_FEATURES.shellHome ? [SHELL_HOME_CATEGORY] : []),
   ...(CONNECTED_FEATURES.containerLimits ? [CONTAINER_CATEGORY] : []),
+  ...(CONNECTED_FEATURES.resources ? [RESOURCES_CATEGORY] : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
   ...(CONNECTED_FEATURES.selfUpdate ? [UPDATE_CATEGORY] : []),
 ];
@@ -191,6 +196,17 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
   }
   if (section === "login") {
     return <LoginPanel />;
+  }
+  if (section === "resources") {
+    return (
+      <div>
+        <SectionHeading
+          title="資源"
+          description="この機械と Project のコンテナが、いま何にどれだけ使っているか。混んでいるときは、何が使っているかを開いて見られます。"
+        />
+        <ResourcesPanel />
+      </div>
+    );
   }
   if (section === "update") {
     return (

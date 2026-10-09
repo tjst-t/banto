@@ -58,6 +58,8 @@ import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confir
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { LoaderCircle } from "lucide-react";
 import { useProjectRunning } from "@/lib/backend/running-threads";
+import { useHostBusy, useProjectBusy } from "@/lib/backend/resources-busy";
+import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
 import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
@@ -164,6 +166,7 @@ function ProjectTreeItem({
   // その Project の層で最初に開く節（繋がっているものは Project ごとに違う）
   const settingsEntrySection = useProjectCategories(project.id)[0]?.section ?? "project-danger";
   const isCurrent = project.id === activeProjectId;
+  const busyReason = useProjectBusy(project.id);
   const forks = getThreadsForProject(project.id).filter((t): t is MockThread => t.kind === "fork");
   // **いま開いていない Project で、まだ開いていない Thread があれば名前を太字に**（2026-10-03、§6.33）
   const anyUnread = useAnyThreadUnread([project.baseThreadId, ...forks.map((f) => f.id)]);
@@ -257,6 +260,8 @@ function ProjectTreeItem({
                   >
                     {project.name}
                   </span>
+                  {/* 混んでいる印（§6.36）。いま開いている Project にも出す */}
+                  {busyReason !== undefined ? <BusyProjectMark projectName={project.name} reason={busyReason} /> : null}
                 </Link>
               </SidebarMenuButton>
               {more}
@@ -415,6 +420,7 @@ export function NavPanel({
   headerAction?: ReactNode;
 }) {
   const judgmentCount = useJudgmentCount();
+  const hostBusy = useHostBusy();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { containerRef, onKeyDown } = useRovingFocus<HTMLUListElement>();
@@ -489,6 +495,14 @@ export function NavPanel({
       </SidebarHeader>
 
       <SidebarContent>
+        {/* この機械全体が混んでいる（§6.36）。押すと設定の「資源」 */}
+        {hostBusy !== undefined ? (
+          <HostBusyBand
+            reason={hostBusy}
+            href={settingsOpenHref(pathname, searchParams, { section: "resources" })}
+            {...(onNavigate ? { onNavigate } : {})}
+          />
+        ) : null}
         <SidebarGroup>
           <SidebarGroupLabel>Project</SidebarGroupLabel>
           <SidebarGroupAction

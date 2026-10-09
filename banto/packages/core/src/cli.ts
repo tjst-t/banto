@@ -3,7 +3,7 @@
 // これがPhase 0/1の完了条件を実測する対象そのもの。
 
 import { existsSync, mkdirSync } from "node:fs";
-import { userInfo } from "node:os";
+import { availableParallelism, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -83,6 +83,7 @@ import { ConnectBackoff } from "./modules/connect-backoff.js";
 import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { HostStallMeter } from "./host-stall.js";
 import { collectHostHealth, timestampConsole } from "./host-health.js";
+import { ResourceWatch } from "./resources.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ModuleReplies } from "./delivery/module-replies.js";
@@ -656,6 +657,14 @@ async function main(): Promise<void> {
     console.warn(`[host] 本体が ${(s.ms / 1000).toFixed(1)} 秒止まっていました`),
   );
   hostStall.start();
+  // **資源の逼迫を見せる**（決定・2026-10-09、v4-security.md §1、`resources.ts`）。host がコンテナの cgroup のファイルを
+  // 直接読む（incus exec を通さない）。10 秒ごと。混んでいる Project が変わったら画面に知らせる
+  const resourceWatch = new ResourceWatch({
+    incusProject: () => containers.incusProjectName(),
+    cores: availableParallelism(),
+    selfBytes: () => process.memoryUsage().rss,
+    stalls: () => hostStall.recent(100),
+  });
   const liveness = new LivenessMonitor(
     LIVENESS,
     (connName, client, reason) => {
@@ -1872,6 +1881,8 @@ async function main(): Promise<void> {
     restartActivity: { moduleReplies, resumesAfterRestart },
     // 本体の止まり具合と host の詰まり具合（GET /api/admin/host-health）
     hostHealth: () => collectHostHealth(hostStall),
+    // 資源（GET /api/admin/resources・hello の混んでいる印）
+    resources: { snapshot: () => resourceWatch.snapshot(), busy: () => resourceWatch.busySummary() },
     relayEndpoint,
     claudeLogin,
     agentRelayEndpoint,
@@ -1973,7 +1984,8 @@ async function main(): Promise<void> {
   // 用意できているコンテナの数え（memory.events の oom_kill・pids.events の max）を見る
   const instanceContainerKey = instanceContainerId(bootstrap.dataDir);
   const pressureWatch = new ContainerPressureWatch({
-    read: (name) => containers.resourceEvents(name),
+    // 数えは host から cgroup のファイルを直接読む（2026-10-09、incus exec を通さない）
+    read: (name) => resourceWatch.readEvents(name),
     notify: (n) => inbox.raiseNotice(n),
     describeLimits: (projectId) => {
       const n = limitNumbersFor(runtimeConfig, hostResources(), projectId);
@@ -1989,6 +2001,28 @@ async function main(): Promise<void> {
     // 間隔は E2E だけ縮める（BANTO_CONTAINER_PRESSURE_INTERVAL_MS）
   }, Number(process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS) || 60_000);
   pressureTimer.unref();
+  let lastBusy = "";
+  const resourceTimer = setInterval(() => {
+    const targets = [...readyContainers].map(([id, r]) => ({
+      containerName: r.name,
+      ...(id === instanceContainerKey
+        ? { name: "banto 全体用のコンテナ" }
+        : { projectId: id, name: projectThread.getProject(id)?.name ?? id }),
+    }));
+    void resourceWatch
+      .tick(targets)
+      .then(() => {
+        const busy = resourceWatch.busySummary();
+        const key = JSON.stringify(busy);
+        if (key !== lastBusy) {
+          lastBusy = key;
+          appEvents.publish({ type: "resources.busy", busy });
+        }
+      })
+      .catch((err: unknown) => console.warn("[host] 資源の見張りで例外:", err));
+    // 間隔は E2E だけ縮める（BANTO_RESOURCES_INTERVAL_MS）
+  }, Number(process.env.BANTO_RESOURCES_INTERVAL_MS) || 10_000);
+  resourceTimer.unref();
   const snapshotTimer = setInterval(() => {
     void saveSnapshots().catch((err) => console.error("[host] スナップショット保存に失敗:", err));
   }, 60_000);

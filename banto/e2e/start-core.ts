@@ -129,6 +129,8 @@ process.env.BANTO_SHELL_HOME_SOURCE = SHELL_HOME_SOURCE;
 process.env.BANTO_SUBAGENT_FAKE_AGENT = "1";
 // コンテナの上限の見張り（`container-pressure.ts`）は1分ごと——試験では2秒にする
 process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS = "2000";
+// 資源の見張り（`resources.ts`、設定の「資源」とサイドバーの印）は10秒ごと——試験では2秒にする
+process.env.BANTO_RESOURCES_INTERVAL_MS = "2000";
 // サブエージェントの Module は Project のコンテナの中で動き、host の環境を受け継がない——偽物の印だけを
 // 中に渡す（決定・2026-09-25。人の banto では使わない口）
 process.env.BANTO_CONTAINER_ENV_PASSTHROUGH = "BANTO_SUBAGENT_FAKE_AGENT";

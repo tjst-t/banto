@@ -176,6 +176,10 @@ export interface AppDeps {
   restartActivity?: Pick<Parameters<typeof collectActivity>[0], "moduleReplies" | "resumesAfterRestart">;
   /** banto 本体の止まり具合と host の詰まり具合（`GET /api/admin/host-health`、追加・2026-10-09）。無ければその口は 404 */
   hostHealth?: () => unknown;
+  /**
+   * **資源**（追加・2026-10-09、`GET /api/admin/resources` と `/api/events` の hello）。無ければその口は 404、hello に載せない
+   */
+  resources?: { snapshot(): unknown; busy(): import("./app-events.js").ResourcesBusy };
   relayEndpoint: HostRelayEndpoint;
   /**
    * **Claude のログインの中継**（core に常設、決定・2026-09-27、`docs/specs/v4-security.md` §2）。コンテナから
@@ -1473,6 +1477,11 @@ export function createApp(deps: AppDeps) {
         return;
       }
       // **banto 本体の止まり具合と host の詰まり具合**（決定・2026-10-09、v4-architecture.md §5.4-0）。資源の画面が読む
+      // **資源**（決定・2026-10-09、v4-security.md §1「資源の逼迫を見せる」・v4-frontend.md §6.36）。まだ一度も測っていなければ null
+      if (url.pathname === "/api/admin/resources" && req.method === "GET" && deps.resources) {
+        json(res, 200, deps.resources.snapshot() ?? null);
+        return;
+      }
       if (url.pathname === "/api/admin/host-health" && req.method === "GET" && deps.hostHealth) {
         json(res, 200, deps.hostHealth());
         return;
@@ -2269,7 +2278,9 @@ export function createApp(deps: AppDeps) {
             .filter((t) => (t.awaitingReplies?.length ?? 0) > 0)
             .map((t) => ({ threadId: t.id, projectId: p.id, items: backgroundItemsOf(t.awaitingReplies) })),
         );
-        res.write(`data: ${JSON.stringify({ type: "hello", running, background })}\n\n`);
+        // **混んでいる Project とこの機械も渡す**（追加・2026-10-09、§6.36）——サイドバーの印。以後は resources.busy で置き換える
+        const resources = deps.resources?.busy();
+        res.write(`data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}) })}\n\n`);
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);
         await new Promise<void>((resolve) => {

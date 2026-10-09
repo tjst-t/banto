@@ -47,7 +47,15 @@ export type AppEvent =
   | { type: "background.changed"; threadId: string; projectId?: string; items: BackgroundItem[] }
   // Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
   // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
-  | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string };
+  | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string }
+  // 混んでいる Project とこの機械（追加・2026-10-09、v4-frontend.md §6.36）。**変わったときだけ**、全体を送る（画面は置き換える）
+  | { type: "resources.busy"; busy: ResourcesBusy };
+
+/** 混んでいる Project とこの機械（サイドバーの印） */
+export interface ResourcesBusy {
+  projects: Array<{ projectId: string; reason?: string }>;
+  host?: { reason?: string };
+}
 
 export class AppEventBus {
   private readonly listeners = new Set<(event: AppEvent) => void>();

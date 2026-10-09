@@ -127,6 +127,30 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
   代わりに **host の側を守る**：`system.slice` の CPUWeight を上げると、コンテナが CPU を取り合っても host のサービスが
   先に回る（入れ子の環境で、競合時の取り分が約47%→約81%になるのを実測）。手順は `docs/runbooks/host-resource-protection.md`
   （host で人が一度行う）
+- **資源の逼迫を見せる・共倒れさせない**（決定・2026-10-08〜09、ユーザー。経緯 `docs/notes/2026-10-09-resource-pressure.md`）。
+  段の順：0 原因を確かめる（済）→1 見える化→2a 仕事を組に入れて天井→2b Module を名前つきの単位で起こす→3 順番待ち。
+  段0の結論：本番の Module はカーネルの OOM で止められていない。一斉に止まったのは banto 本体の event loop が止まり ping が
+  時間切れになったため（アーキ仕様 §5.4-0 で直した）と、incusd が止まったため。
+  **段1：host がコンテナの cgroup のファイルを直接読む**（`packages/core/src/resources.ts`）。`incus exec` を通さない——incusd が
+  詰まったときに見張りも一緒に止まるため。コンテナの cgroup は host の `/sys/fs/cgroup/lxc.payload.<区画>_<コンテナ名>`
+  （区画が `default` なら `lxc.payload.<コンテナ名>`）。banto は権限を絞った Incus のユーザーのままで読める（実測）。
+  **10 秒ごと**に、用意できているコンテナごとに読む：`memory.stat`（anon・shmem＝使っている、file＝戻せるキャッシュ）・
+  `memory.max`・`memory.events`（oom_kill）・`pids.current`／`pids.max`／`pids.events`（max）・`cpu.stat`（usage_usec の差から
+  使った CPU）・`cpu.max`・`{cpu,memory,io}.pressure`。上限に当たった知らせ（上の「上限に当たったら受信箱で知らせる」）も
+  同じ読み方に替えた（間隔は今どおり1分）。
+  **何が使っているか**（内訳）：段2で組に分けるまでは、コンテナの中の cgroup とプロセスから分ける。
+  `.lxc`（`incus exec` で起こしたもの）のプロセスは `/proc/<pid>/stat`・`cmdline`・`status`（RssAnon＋RssShmem）を読み、
+  親子をたどって根で分類する——Module のサーバ（`…/modules/<名前>/dist/server.js`）＝**Module**（自分の分だけ）、
+  サブエージェント（`claude-agent-acp`・`opencode` 等）とその子＝**AI の仕事**、Module の子で上のどれでもないもの（Shell の
+  `sh -c …`・Factory のテスト等）とその子＝**コマンド**。`user@<uid>.service/app.slice` の単位のうち `banto-shell-*` は
+  **コマンド**（Shell の待たない形）、ほかの `banto-<名前>.service` は **Service**。`lxc.payload.*` の子は**入れ子のコンテナ**、
+  `system.slice`（Docker・入れ子の incusd）とそれ以外は**その他**。
+  **混んでいるかは待たされている時間で決める**（使っている量だけでは決めない——ビルド中はキャッシュで多く見える）。
+  仮の区切り（段3で実物を見て決め直す）：メモリの some avg10 が 10% 以上、CPU の full avg10 が 10% 以上、使っている量が
+  上限の 90% 以上、のどれか。この機械は `/proc/pressure` で同じ区切りか、MemAvailable が 1 GiB 未満。
+  見せ方は v4-frontend.md §6.36（設定の「資源」とサイドバーの印）。口は `GET /api/admin/resources`（合言葉か
+  ログインのセッション）、混んでいる Project とこの機械が混んでいるかは `/api/events` の hello と `resources.busy`（変わった
+  ときだけ）で画面に渡す
 - **置き場は banto 専用の btrfs（`banto`）**（決定・2026-09-25、実測）：写しを共有するので2台目からは 0.2 秒で作れ、
   3台とイメージで 627MB（`dir` は毎回 3.4 秒・1台 602MB 丸写し。E2E は Project ごとに1台作る）
 

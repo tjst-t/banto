@@ -304,6 +304,11 @@ export class ProjectContainers {
     return this.project;
   }
 
+  /** いまの区画の名前（host から cgroup の場所を引くのに使う、`packages/core/src/resources.ts`） */
+  async incusProjectName(): Promise<string> {
+    return this.currentProject();
+  }
+
   /** 無ければ undefined（「無い」と「読めない」を混ぜない） */
   async state(name: string): Promise<InstanceState | undefined> {
     const project = encodeURIComponent(await this.currentProject());
