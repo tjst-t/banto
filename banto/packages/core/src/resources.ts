@@ -214,12 +214,31 @@ export function unitLabel(unit: string): string {
   return unit.replace(/\.service$/, "");
 }
 
-function unitServiceName(unit: string): { group: ConsumerGroupId; name: string } | undefined {
+/**
+ * ユーザーの systemd の単位を、内訳のどこに数えるか（段2a で仕事の組に入れたものも）。
+ * `banto-shell-<16進>.scope`＝待つ形のコマンド、`banto-shell-<id>.service`＝待たない形、`banto-subagent-*.scope`＝サブエージェント、
+ * `banto-factory-test-*.scope`＝Factory のテスト、そのほかの `banto-<名前>.service`＝Service
+ */
+export function unitServiceName(unit: string): { group: ConsumerGroupId; name: string } | undefined {
+  if (/^banto-shell-[0-9a-f]+\.scope$/.test(unit)) return { group: "commands", name: "コマンド" };
   const shell = /^banto-shell-(.+)\.service$/.exec(unit);
   if (shell) return { group: "commands", name: `待たないコマンド ${shell[1]}` };
+  if (/^banto-subagent-.+\.scope$/.test(unit)) return { group: "work", name: "サブエージェント" };
+  if (/^banto-factory-test-.+\.scope$/.test(unit)) return { group: "commands", name: "Factory のテスト" };
   const svc = /^banto-(.+)\.service$/.exec(unit);
   if (svc) return { group: "services", name: svc[1]! };
   return undefined;
+}
+
+/** フォルダの下の単位（.service・.scope）を、slice をたどって集める */
+function leafUnits(fs: FsReader, dir: string, depth = 0): Array<{ unit: string; dir: string }> {
+  const out: Array<{ unit: string; dir: string }> = [];
+  for (const child of fs.dirs(dir)) {
+    const path = join(dir, child);
+    if (child.endsWith(".slice") && depth < 6) out.push(...leafUnits(fs, path, depth + 1));
+    else if (child.endsWith(".service") || child.endsWith(".scope")) out.push({ unit: child, dir: path });
+  }
+  return out;
 }
 
 /** 単位の中の代表のコマンド（sh -c があればその中身） */
@@ -244,17 +263,18 @@ export function readConsumers(fs: FsReader, root: string, procRoot = "/proc"): C
   const procs = lxcPids.map((pid) => readProc(fs, pid, procRoot)).filter((p): p is Proc => !!p);
   items.push(...classifyProcesses(procs));
 
-  // systemd のユーザー単位（Service・Shell の待たない形）
+  // systemd のユーザー単位（Service・Shell のコマンド・サブエージェント・Factory のテスト）。段2a からは仕事の組
+  // （`banto.slice/banto-work.slice/…`）に入るので、slice をたどって集める。1 MB 未満は出さない
   for (const userSlice of fs.dirs(join(root, "user.slice"))) {
     for (const userSvc of fs.dirs(join(root, "user.slice", userSlice))) {
       if (!userSvc.startsWith("user@")) continue;
-      const appSlice = join(root, "user.slice", userSlice, userSvc, "app.slice");
-      for (const unit of fs.dirs(appSlice)) {
+      for (const { unit, dir } of leafUnits(fs, join(root, "user.slice", userSlice, userSvc))) {
+        if (unit === "init.scope") continue;
+        const mem = memoryOf(fs, dir);
+        if (!mem || mem.used < 1024 * 1024) continue;
         const kind = unitServiceName(unit);
-        const mem = memoryOf(fs, join(appSlice, unit));
-        if (!mem || mem.used === 0) continue;
         if (kind) {
-          const detail = unitCommand(fs, join(appSlice, unit), procRoot);
+          const detail = kind.group === "work" ? undefined : unitCommand(fs, dir, procRoot);
           items.push({ group: kind.group, name: kind.name, ...(detail ? { detail } : {}), bytes: mem.used });
         } else items.push({ group: "other", name: unit, bytes: mem.used });
       }

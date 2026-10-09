@@ -204,3 +204,24 @@ test("host のサービスの名前：Docker のコンテナは id の頭12桁�
   assert.equal(unitLabel("docker-a7f2ba24641290ecce127f5055f079d91181d882750ea2f90377d3bdaee1796d.scope"), "Docker のコンテナ a7f2ba246412");
   assert.equal(unitLabel("cloudcli.service"), "cloudcli");
 });
+
+test("中身：仕事の組（banto.slice の下）に入った Service・待つ形のコマンド・サブエージェント・Factory のテストも数える（1 MB 未満は出さない）", () => {
+  const u = "/c/user.slice/user-1000.slice/user@1000.service";
+  const w = `${u}/banto.slice/banto-work.slice`;
+  const f: Record<string, string> = {
+    [`${w}/banto-work-services.slice/banto-mock.service/memory.stat`]: "anon 200000000\n",
+    [`${w}/banto-work-jobs.slice/banto-shell-ac271270.scope/memory.stat`]: "anon 30000000\n",
+    [`${w}/banto-work-jobs.slice/banto-subagent-1a2b3c4d.scope/memory.stat`]: "anon 900000000\n",
+    [`${w}/banto-work-jobs.slice/banto-factory-test-31e5d216.scope/memory.stat`]: "anon 200000000\n",
+    [`${u}/app.slice/dbus.socket/memory.stat`]: "anon 4096\n",
+  };
+  const groups = readConsumers(fakeFs(f), "/c");
+  assert.deepEqual(
+    groups.map((g) => [g.id, g.items.map((i) => i.name)]),
+    [
+      ["work", ["サブエージェント"]],
+      ["commands", ["Factory のテスト", "コマンド"]],
+      ["services", ["mock"]],
+    ],
+  );
+});
