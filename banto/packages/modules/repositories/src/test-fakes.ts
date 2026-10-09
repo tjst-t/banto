@@ -290,6 +290,14 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
             },
             stdio: ["pipe", "pipe", "ignore"],
           });
+          // git http-backend は本文を読み切る前に終わることがある（断る・中身が要らない）。そのあと書くと stdin が EPIPE を出し、
+          // 拾わないと偽の GitHub を起こした E2E の core ごと落ちる（2026-10-09、フル E2E で worker 1 本の後ろが全部 fetch failed）。
+          // 答えは stdout に出るので、書けなかったことは無視してよい
+          cgi.stdin.on("error", () => {});
+          cgi.on("error", (err) => {
+            if (!res.headersSent) res.writeHead(500);
+            res.end(String(err));
+          });
           cgi.stdin.end(Buffer.concat(chunks));
           const out: Buffer[] = [];
           cgi.stdout.on("data", (c: Buffer) => out.push(c));
