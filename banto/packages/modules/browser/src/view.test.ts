@@ -15,7 +15,9 @@ import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
 import {
   BrowserView,
+  MAX_FRAME_PIXELS,
   decodeFrame,
+  frameScale,
   encodeFrame,
   normalizeUrl,
   parseViewMessage,
@@ -102,6 +104,22 @@ test("screencast の大きさ：一番大きい画面（デバイスピクセル
     ),
     { maxWidth: 1280, maxHeight: 800 },
   );
+});
+
+test("絵の画素数の上限：大きなページ（AI の resize で 7680×4320 まで）でも、絵は MAX_FRAME_PIXELS に収まるよう縮める", () => {
+  for (const viewport of [
+    { width: 1920, height: 1080 },
+    { width: 2560, height: 1440 },
+    { width: 7680, height: 4320 },
+  ]) {
+    const limits = screencastLimits([{ width: viewport.width, height: viewport.height, devicePixelRatio: 2 }], viewport);
+    const k = frameScale(limits, viewport);
+    const pixels = Math.round(viewport.width * k) * Math.round(viewport.height * k);
+    assert.ok(pixels <= MAX_FRAME_PIXELS, `${viewport.width}×${viewport.height} の絵が ${pixels} 画素`);
+    assert.ok(pixels > MAX_FRAME_PIXELS * 0.95, `${viewport.width}×${viewport.height} で縮めすぎ（${pixels} 画素）`);
+  }
+  // 上限より小さいものは縮めない（1280×800 は 1.02 メガ画素）
+  assert.deepEqual(screencastLimits([{ width: 1280, height: 800, devicePixelRatio: 1 }], { width: 1280, height: 800 }), { maxWidth: 1280, maxHeight: 800 });
 });
 
 test("画面の資源：流れの口を埋め込み、受け取りの印を返し、入力欄と通信の欄を持つ", () => {
@@ -291,6 +309,24 @@ test("流れ：開くとブラウザを起こして映し、印が返るまで�
   assert.equal(status.running, true);
 });
 
+/** JPEG の大きさ（SOF の印から読む） */
+function jpegSize(b: Buffer): { width: number; height: number } {
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) throw new Error("JPEG の印が読めません");
+    const marker = b[i + 1]!;
+    if (marker >= 0xc0 && marker <= 0xc3) return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  throw new Error("JPEG の大きさが見つかりません");
+}
+
+/** 文字の多いページ（絵が大きくなる） */
+const DENSE_PAGE =
+  '<body style="font:12px sans-serif;margin:0">' +
+  Array.from({ length: 6000 }, (_, i) => `<span style="color:hsl(${(i * 37) % 360},70%,40%)">項目${i} lorem ${(i * 7919) % 10007}</span>`).join(" ") +
+  "</body>";
+
 function lastText(s: FakeSocket, pred: (t: Record<string, unknown>) => boolean): Record<string, unknown> | undefined {
   for (let i = s.texts.length - 1; i >= 0; i--) if (pred(s.texts[i]!)) return s.texts[i];
   return undefined;
@@ -305,3 +341,76 @@ async function waitValue<T>(read: () => Promise<T>, expected: T, timeoutMs = 10_
   }
   return last;
 }
+
+test("大きなページ：AI が 2560×1440 にしても、screencast の絵も最初の1枚（撮った絵）も画素数の上限と 1 MiB に収まる", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+  const page = (await ctx.session.currentOrNew()).page;
+  await page.setContent(DENSE_PAGE);
+  await callTool(ctx, "browserAct", { action: "resize", width: 2560, height: 1440 });
+  const pc = new FakeSocket();
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 2560, height: 1440, dpr: 1, visible: true }));
+  try {
+    // 静かなページなので、最初の1枚は captureScreenshot で撮ったもの
+    const first = await until("最初の絵", () => pc.frames[0]);
+    const check = (data: Buffer) => {
+      const { header, jpeg } = decodeFrame(data);
+      const size = jpegSize(jpeg);
+      assert.deepEqual([header.width, header.height], [2560, 1440], "頭はページの大きさ（CSS ピクセル）");
+      assert.ok(size.width * size.height <= MAX_FRAME_PIXELS, `絵が ${size.width}×${size.height}`);
+      assert.ok(Math.abs(size.width / size.height - 2560 / 1440) < 0.01, `比が違う ${size.width}×${size.height}`);
+      assert.ok(data.length < 1024 * 1024, `${data.length} バイト`);
+    };
+    check(first);
+    // ページを動かして screencast の絵も見る
+    pc.post({ type: "ack", seq: decodeFrame(first).header.seq });
+    await page.evaluate(() => document.body.prepend("動いた"));
+    const next = await until("screencast の絵", () => pc.frames[1]);
+    check(next);
+  } finally {
+    pc.close(1000);
+    await callTool(ctx, "browserAct", { action: "resize", width: 1280, height: 800 });
+  }
+});
+
+test("1 MiB（ここでは小さくした上限）を越えた絵は送らず、越え始めたときに1度だけ理由を言う", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+  const small = new BrowserView({ session: ctx.session, state: ctx.state, log: ctx.log, logLine: () => undefined, maxMessageBytes: 2_000 });
+  const pc = new FakeSocket();
+  small.handler()(pc as unknown as WebSocket, stamp({ width: 800, height: 600, dpr: 1, visible: true }));
+  try {
+    const page = ctx.session.page().page;
+    await until("越えた理由", () => pc.texts.find((t) => t.type === "error" && /1 MiB/.test(String(t.message))));
+    for (let i = 0; i < 5; i++) await page.evaluate((n) => document.body.prepend(`更新${n}`), i);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(pc.frames.length, 0, "上限を越えた絵を送った");
+    assert.equal(pc.texts.filter((t) => t.type === "error").length, 1, "理由を何度も言った");
+  } finally {
+    pc.close(1000);
+    await small.close();
+  }
+});
+
+test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる。切ると全部戻る", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+  // タブが1つも無い（携帯で開いた最初の姿）
+  for (const t of await ctx.session.listTabs()) await ctx.session.close(t.id);
+  await until("タブが無い", () => ctx.session.current === undefined);
+  const phone = new FakeSocket();
+  view.handler()(phone as unknown as WebSocket, stamp({ width: 390, height: 640, dpr: 3, visible: true }));
+  try {
+    phone.post({ type: "fit", on: true });
+    await until("切り替えが入った", () => lastText(phone, (t) => t.type === "state")?.fit === true);
+    phone.post({ type: "navigate", url: base.replace("http://", "") + "/" });
+    const opened = await until("URL 欄で開いたタブ", () => lastText(phone, (t) => t.type === "state" && typeof t.current === "string" && (t.viewport as { width: number } | null)?.width === 390));
+    const first = opened.current as string;
+    assert.deepEqual(ctx.session.page(first).page.viewportSize(), { width: 390, height: 640 });
+    await until("絵もその大きさ", () => phone.lastFrame()?.width === 390);
+    // ＋で新しいタブ
+    phone.post({ type: "tab", action: "new" });
+    const added = await until("＋のタブ", () => lastText(phone, (t) => t.type === "state" && t.current !== first && (t.viewport as { width: number } | null)?.width === 390));
+    const second = added.current as string;
+    // 切ると、合わせたタブは全部既定に戻る
+    phone.post({ type: "fit", on: false });
+    await until("戻る", () => ctx.session.page(first).page.viewportSize()?.width === 1280 && ctx.session.page(second).page.viewportSize()?.width === 1280);
+    await ctx.session.close(second);
+  } finally {
+    phone.close(1000);
+  }
+});

@@ -9,8 +9,11 @@
 //   4. AI の browserAct の click が、どの Thread の AI か・『送る』を押した、の帯と枠つきで映る。絵が新しくなる
 //   5. HAR で保存：ダウンロードした HAR に送った要求がある（人の画面なので Authorization は伏せない）
 //   6. 「AI に触らせない」を画面で入れると browserAct が断る。切ると戻る
-//   7. 画面を閉じると screencast が止まる（getBrowserStatus の view）。入口からも開ける
-//   8. 携帯：「画面に合わせる」でページが携帯の幅になり、指で押してキーボードの欄から打てる。閉じるとページの大きさが戻る
+//   7. 画面の操作を一度ずつ：URL 欄で開く・戻る/進む/読み直し・タブの ＋/切り替え/×（AI の「いま選んでいるタブ」も変わる）。
+//      どれも成功したときにだけ現れるもの（タブの並びの題・URL 欄・絵の data-tab・通信の件数）で待つ
+//   8. 画面を閉じると screencast が止まる（getBrowserStatus の view）。入口からも開ける
+//   9. 携帯：「画面に合わせる」でページが携帯の幅になり、指で押してキーボードの欄から打てる。閉じるとページの大きさが戻る
+//  10. 「ブラウザの記録を消す」（2回押す）：通信とコンソールの件数が 0 になり、前のタブが消えて起こし直す
 import { test, expect, loginContext, type FrameLocator, type Page } from "../test-base.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -257,7 +260,54 @@ test("人の画面：カードから開いて映し、人の入力がページ�
   expect((await uiCall(page, "getBrowserStatus")).aiBlocked).toBe(false);
   expect(await ai(page, "browserAct", { action: "reload" })).toContain("読み直しました");
 
-  // ---- 7. 閉じると screencast が止まる。入口からも開ける --------------------------------------------
+  // ---- 7. 画面の操作を一度ずつ ------------------------------------------------------------------------
+  const urlBar = f.getByRole("textbox", { name: "URL" });
+  const tab1 = f.locator('.tab[data-tab="t1"]');
+  const documents = async (path: string) =>
+    ((await uiCall(page, "listNetworkRecords", { urlContains: path, type: "document" })) as { records: unknown[] }).records.length;
+  // URL 欄で開く（scheme を書かなくてよい）
+  await urlBar.fill(`127.0.0.1:${PORT}/second`);
+  await urlBar.press("Enter");
+  await expect(tab1, "URL 欄で開いたページの題がタブに出ない").toContainText("2ページ目");
+  await expect(urlBar).toHaveValue(`${BASE}/second`);
+  // 戻る・進む
+  await f.getByRole("button", { name: "戻る" }).click();
+  await expect(tab1, "戻るで前のページに戻らない").toContainText("Browser 試験のページ");
+  await expect(urlBar).toHaveValue(`${BASE}/`);
+  await f.getByRole("button", { name: "進む" }).click();
+  await expect(tab1, "進むで次のページへ進まない").toContainText("2ページ目");
+  await expect(urlBar).toHaveValue(`${BASE}/second`);
+  // 読み直す：そのページの文書の要求がもう1件増える
+  const before = await documents("/second");
+  await f.getByRole("button", { name: "読み直す" }).click();
+  await expect.poll(() => documents("/second"), { message: "読み直すで要求が出ない" }).toBe(before + 1);
+  await f.getByRole("button", { name: "戻る" }).click();
+  await expect(tab1).toContainText("Browser 試験のページ");
+  // ＋：新しいタブ t2 が選ばれ、絵も t2 になる。URL 欄で開くとそのタブに開く
+  await f.getByRole("button", { name: "新しいタブ" }).click();
+  const tab2 = f.locator('.tab[data-tab="t2"]');
+  await expect(tab2, "＋でタブができない").toHaveAttribute("aria-selected", "true");
+  await expect(tab1).toHaveAttribute("aria-selected", "false");
+  await expect(f.getByTestId("browser-screen")).toHaveAttribute("data-tab", "t2");
+  await urlBar.fill(`${BASE}/second`);
+  await urlBar.press("Enter");
+  await expect(tab2).toContainText("2ページ目");
+  await expect(tab1).toContainText("Browser 試験のページ");
+  // 画面で選んだタブは AI の「いま選んでいるタブ」でもある
+  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(/\* t2 \S+\/second 2ページ目/);
+  // 切り替え
+  await tab1.locator(".tab-name").click();
+  await expect(tab1, "タブを押しても切り替わらない").toHaveAttribute("aria-selected", "true");
+  await expect(f.getByTestId("browser-screen")).toHaveAttribute("data-tab", "t1");
+  await expect(urlBar).toHaveValue(`${BASE}/`);
+  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(/\* t1 \S+\/ Browser 試験のページ/);
+  // ×：t2 を閉じる
+  await f.getByRole("button", { name: "t2 を閉じる" }).click();
+  await expect(f.locator(".tab[data-tab]"), "× でタブが閉じない").toHaveCount(1);
+  await expect(tab2).toHaveCount(0);
+  expect(((await uiCall(page, "getBrowserStatus")).tabs as { id: string }[]).map((t) => t.id)).toEqual(["t1"]);
+
+  // ---- 8. 閉じると screencast が止まる。入口からも開ける --------------------------------------------
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
   await expect.poll(async () => (await uiCall(page, "getBrowserStatus")).view, { timeout: 20_000, message: "画面を閉じても screencast が止まらない" }).toEqual({
     viewers: 0,
@@ -272,7 +322,7 @@ test("人の画面：カードから開いて映し、人の入力がページ�
   f = canvasFrame(page);
   await expectShowing(f, "t1");
 
-  // ---- 8. 携帯 ------------------------------------------------------------------------------------
+  // ---- 9. 携帯 ------------------------------------------------------------------------------------
   const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   try {
     await loginContext(mobile);
@@ -304,6 +354,21 @@ test("人の画面：カードから開いて映し、人の入力がページ�
   }
   // 携帯を閉じたら、ページの大きさは元に戻る
   await expect(f.getByTestId("viewport")).toHaveText("ページ 1280×800", { timeout: 20_000 });
+
+  // ---- 10. 「ブラウザの記録を消す」（2回押す）----------------------------------------------------------
+  await expect(f.getByRole("button", { name: /^通信/ })).not.toHaveAccessibleName("通信0");
+  await f.getByRole("button", { name: "ブラウザの記録を消す" }).click();
+  // 1回目は確かめるだけ（まだ消さない）
+  await f.getByRole("button", { name: "もう一度押すと消します" }).click();
+  await expect(f.getByRole("button", { name: /^通信/ }), "記録を消しても通信の件数が 0 にならない").toHaveAccessibleName("通信0", { timeout: 30_000 });
+  await expect(f.getByRole("button", { name: /^コンソール/ })).toHaveAccessibleName("コンソール0");
+  await expect(f.getByRole("button", { name: "ブラウザの記録を消す" })).toBeVisible();
+  // ブラウザは止めて起こし直した：前のタブは無く、記録も無い
+  await expect(tab1, "消したのに前のタブが残っている").toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => {
+    const st = await uiCall(page, "getBrowserStatus");
+    return { running: st.running, records: (st.log as { records: number }).records };
+  }, { timeout: 30_000 }).toEqual({ running: true, records: 0 });
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });
