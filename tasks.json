@@ -6192,7 +6192,7 @@
       "number": 255,
       "kind": "task",
       "title": "Project ごとの「AI への指示」を土台の指示に入れる",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6200,15 +6200,15 @@
       "labels": [],
       "body": "## なぜ\nMemory に「人へは日本語で書く」と書いても、長い Fork が英語で返してきた。人が Project ごとに振る舞いの決まりを書ける場所が要る（決定・2026-10-09、ユーザー、案A）。\n\n## 何をする\n仕様は v4-architecture.md §2.3「Project ごとの『AI への指示』」、v4-frontend.md §6.17「AI への指示」（91ceb2b7）。\n- Configuration の Project の層に鍵 `thread.instruction`（文字列）。`GET/PUT /api/projects/:id/instruction`（`{ text }`、上限 8,000 字、超えたら断る）。turn-summary（`thread.turnSummary`）の作りが見本\n- turn-runner.ts の `buildSystemPrompt` 呼び出しで `projectInstruction` に渡す（口は system-prompt.ts にもうある）。毎ターン読むので、書き換えたら次のターンから全 Thread に効く\n- 画面：Project の設定「一般」の Claude のログインの下に複数行の欄と「保存」。説明と Global Memory への入口を付ける\n- CLAUDE.md は読まない（settingSources: [] のまま）\n\n## 確かめ方\n単体テスト（turn-runner に渡ること・空なら節が出ないこと・上限）と E2E（設定で書いて保存→次のターンの system prompt に「# この Project 固有の指示」が入る。偽の Runner で受け取った systemPrompt を見る）。",
       "doneWhen": "Project の設定「一般」で書いて保存すると、その Project の既存の Thread でも次のターンの system prompt の末尾に「# この Project 固有の指示」とその文が入ることを E2E で確かめ、空で保存すると節が消える。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-instruction）",
       "refs": [
         "docs/specs/v4-architecture.md §2.3",
         "docs/specs/v4-frontend.md §6.17"
       ],
       "threads": [],
       "createdAt": "2026-10-09T23:42:36.655Z",
-      "updatedAt": "2026-10-10T00:08:50.382Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-10T00:53:49.590Z",
+      "closedAt": "2026-10-10T00:53:49.590Z",
       "extra": {}
     },
     {
