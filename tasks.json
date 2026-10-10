@@ -6257,6 +6257,29 @@
       "updatedAt": "2026-10-10T11:01:22.639Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-next-e2e",
+      "number": 258,
+      "kind": "bug",
+      "title": "E2E の画面の組み立てが、前の回の .next-e2e に残った壊れたキャッシュで落ち続ける",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e"
+      ],
+      "body": "2026-10-10、Fork「PWA 対応」で作業ツリー .worktrees/pwa の E2E を流したら、画面のサーバ（webServer）の `next build` が2回続けて落ち、E2E が1件も始まらなかった。\n\nエラー：`Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/font'`、`next/font/google queries have exactly one entry`（Turbopack、Next 16.3.3）。CSS のクラス名が文字化けした警告（`linear-gradient(to �\\u0000…`）は、通る組み立てでも毎回出るので別件。\n\n切り分け：\n- 同じコマンド（`BANTO_NEXT_DIST_DIR=.next-e2e npm run build --workspace=@banto/frontend`）で、前の回の `apps/frontend/.next-e2e` を残したまま組み立てると落ち、消すと通る。壊れた Turbopack のキャッシュを読む限り、毎回落ちる。\n- 最初の1回がなぜ落ちたかは分かっていない（Google Fonts の取得がたまたま失敗した、等の可能性）。手で別の出力先に組み立てたときも、最初の2回は同じエラーで落ち、そのあと5回通った。\n\n回避：E2E の前に `apps/frontend/.next-e2e` を消す。\n\n直し方の案：E2E の土台（playwright.config.ts の webServer）で組み立ての前に `.next-e2e` を消すか、組み立てが落ちたら1回だけ消してやり直す。",
+      "doneWhen": "前の回の .next-e2e が壊れていても、次の E2E の画面の組み立てが通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-10T11:44:37.313Z",
+      "updatedAt": "2026-10-10T11:44:37.313Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
