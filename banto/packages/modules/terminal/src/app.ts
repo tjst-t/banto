@@ -91,6 +91,8 @@ button, input { font: inherit; color: inherit; }
 /* ---- 端末 ---- */
 .term-wrap { position: relative; flex: 1; min-height: 0; padding: 4px 0 0 6px; }
 #term { position: absolute; inset: 4px 0 0 6px; }
+/* 指の縦の動きは自分でスクロールに換える（下の「指でのスクロール」）。ブラウザに持っていかせない */
+@media (hover: none) and (pointer: coarse) { #term { touch-action: none; } }
 .empty { padding: 24px 16px; color: var(--ink-2); max-width: 52ch; }
 .empty p { margin: 0 0 8px; }
 `;
@@ -234,6 +236,66 @@ const SCRIPT = String.raw`
       sendSize();
     }, 60);
   }).observe($("term"));
+
+  // ---- 指でのスクロール（携帯） ----
+  // xterm.js は指の縦の動きで履歴を動かさない（携帯で「スワイプでスクロールできない」、2026-10-10 ユーザー報告）。
+  // 指の動きを行に換えて自分で動かす。全画面の物（vim・less・man 等、alternate の画面）は履歴を持たないので、Termux と
+  // 同じく ↑・↓ を送る。少し動いてから（8px）スクロールとみなし、動かさずに離した指は今までどおりタップ（キーボードを出す）
+  if (TOUCH) {
+    const el = $("term");
+    let startY = 0, lastY = 0, lastT = 0, acc = 0, scrolling = false, velocity = 0, glide = 0;
+    const cellHeight = () => Math.max(8, el.clientHeight / Math.max(1, term.rows));
+    function scrollBy(lines) {
+      if (!lines) return;
+      if (term.buffer.active.type === "alternate") {
+        const key = (term.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + (lines < 0 ? "A" : "B");
+        sendRaw(key.repeat(Math.min(Math.abs(lines), 20)));
+      } else {
+        term.scrollLines(lines);
+      }
+    }
+    function move(dy) {
+      acc += dy;
+      const h = cellHeight();
+      const lines = Math.trunc(acc / h);
+      if (lines) { acc -= lines * h; scrollBy(lines); }
+    }
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      window.cancelAnimationFrame(glide);
+      startY = lastY = e.touches[0].clientY;
+      lastT = performance.now();
+      acc = 0; velocity = 0; scrolling = false;
+    }, { passive: true, capture: true });
+    el.addEventListener("touchmove", (e) => {
+      if (e.touches.length !== 1) return;
+      const y = e.touches[0].clientY;
+      if (!scrolling && Math.abs(y - startY) < 8) return;
+      scrolling = true;
+      e.preventDefault();
+      e.stopPropagation();
+      const now = performance.now();
+      const dy = lastY - y; // 指を上へ＝先（下の行）へ
+      // 速さは px/ms。指の速さの上限ほど（3px/ms）で抑える——続けざまの出来事で桁違いに滑らないように
+      velocity = Math.max(-3, Math.min(3, dy / Math.max(1, now - lastT)));
+      lastY = y; lastT = now;
+      move(dy);
+    }, { passive: false, capture: true });
+    el.addEventListener("touchend", (e) => {
+      if (!scrolling) return;
+      e.preventDefault(); // スクロールした指でタップ扱いにしない
+      scrolling = false;
+      // 指を離したあとも少し滑らせる（携帯のスクロールと同じ手ざわり）
+      let v = velocity * 16;
+      const step = () => {
+        if (Math.abs(v) < 0.5) return;
+        move(v);
+        v *= 0.92;
+        glide = window.requestAnimationFrame(step);
+      };
+      glide = window.requestAnimationFrame(step);
+    }, { passive: false, capture: true });
+  }
 
   // ---- 流れ ----
   const STATE_TEXT = { connecting: "connecting…", open: "connected", reconnecting: "reconnecting…", ended: "closed" };

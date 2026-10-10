@@ -224,8 +224,36 @@ test("ターミナル：入口から開いて打ち、閉じて開き直す・2�
       await expect(ctrl, "lock の Ctrl が1打で外れた").toHaveAttribute("data-mod", "lock");
       await ctrl.click();
       await expect(ctrl).toHaveAttribute("data-mod", "off");
-      // 同じセッションなので、パソコンの画面にも出る
-      await expectScreen(t, /after-ctrl-c-25/);
+      // 指で上へなぞると履歴が戻る（xterm.js は指の動きでスクロールしないので、画面が自分で換える）
+      await m.keyboard.type("for i in $(seq 1 150); do echo swipe-line-$i; done");
+      await m.keyboard.press("Enter");
+      await expectScreen(mt, /swipe-line-150/, "行が出ない");
+      const swipe = async (from: number, to: number) => {
+        await mt.getByTestId("terminal").evaluate(async (el, [y0, y1]) => {
+          const r = el.getBoundingClientRect();
+          const x = r.left + r.width / 2;
+          const touch = (y: number) => new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+          const fire = (type: string, y: number) =>
+            el.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === "touchend" ? [] : [touch(y)], changedTouches: [touch(y)] }));
+          fire("touchstart", y0);
+          // 指の速さに近づける（16ms ごと）
+          for (let i = 1; i <= 10; i++) {
+            await new Promise((r) => setTimeout(r, 16));
+            fire("touchmove", y0 + ((y1 - y0) * i) / 10);
+          }
+          fire("touchend", y1);
+        }, [from, to]);
+      };
+      const box = (await mt.getByTestId("terminal").boundingBox())!;
+      // 1回なぞるだけ（何度もなぞると、滑った分も足されて履歴の頭まで行く）
+      await swipe(box.y + 40, box.y + box.height - 40);
+      await expect(mt.locator(".xterm-rows"), "指で下へなぞっても履歴が戻らない").not.toContainText("swipe-line-150", { timeout: 10_000 });
+      await expect(mt.locator(".xterm-rows")).toContainText("swipe-line-");
+      // 逆になぞれば最後に戻る
+      for (let i = 0; i < 10; i++) await swipe(box.y + box.height - 40, box.y + 40);
+      await expect(mt.locator(".xterm-rows"), "指で上へなぞっても最後に戻らない").toContainText("swipe-line-150", { timeout: 10_000 });
+      // 同じセッションなので、パソコンの画面にも出る（携帯で上へ戻していても、パソコンの画面は最後のまま）
+      await expectScreen(t, /swipe-line-150/);
     } finally {
       await mobile.close();
     }
