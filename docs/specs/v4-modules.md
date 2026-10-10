@@ -1966,7 +1966,7 @@ Module の一覧には**2種類が混ざる**：
 | 名前 | **Browser**（画面の表示は「ブラウザ」） |
 | 付け方 | **Project ごと**（`scope: project`）、目録（`BUNDLED_CATALOG`）に置き人が「Module を追加」からつける。既定には入れない |
 | 動く場所 | **Project のコンテナの中**（`v4-security.md` §1）。コンテナの中のサービスに `localhost` で届く——**Publish していない開発サーバをそのまま開ける**。資源はその Project の枠に入る |
-| ブラウザ | **Playwright 同梱の `chromium-headless-shell`**（実測・2026-10-08、下の「実測」）。通常の Chromium より起動が速くメモリが半分。Ubuntu の `chromium` は snap なので使わない。Module が CDP で話す。版は Module が使う Playwright に合わせて固定し、Module が入れる |
+| ブラウザ | **Playwright 同梱の `chromium-headless-shell`**（実測・2026-10-08、下の「実測」）。通常の Chromium より起動が速くメモリが半分。Ubuntu の `chromium` は snap なので使わない。Module が CDP で話す。版は Module が使う Playwright に合わせて固定し、Module が入れる。名乗りは普通の Chrome に揃え、言語は日本語（下の「名乗りと言語」） |
 | 起こす・止める | 最初の道具の呼び出しか、人が画面を開いたときに起こす。画面が閉じていて AI の呼び出しも無いまま30分たったら止める（メモリを返す。数字は仮） |
 | ログイン状態 | **Project ごとに残す**（決定・2026-10-08、ユーザー）。プロファイル（Cookie・localStorage 等）は Module の置き場に Project ごとに置き、止めても起こし直しても残る。人の画面に**「ブラウザの記録を消す」**（プロファイルと通信の記録を消す）を置く |
 | 人の画面 | `ui://banto-browser/view`（下の「人の画面」）。launcher から開ける。AI の `browserOpen` のカードからも開く |
@@ -2069,7 +2069,7 @@ Module の一覧には**2種類が混ざる**：
   `<<ページの中身ここまで:1a2b3c4d>>`）——ページが同じ印を書いて区切りの外へ出たふりをできないように
 - **人の画面の口**（`admin`、#242 が使う）：`getBrowserStatus`・`listBrowserTabs`・`listNetworkRecords`・`getNetworkRecord`
   （ヘッダを伏せない）・`exportHar`（HAR 1.2）・`clearNetworkLog`・`clearBrowserData`（「ブラウザの記録を消す」）・
-  `setAiBlocked`（「AI に触らせない」）・`getSettings`・`setSettings`
+  `setAiBlocked`（「AI に触らせない」）・`getSettings`・`setSettings`（`idleMinutes`・`locale`・`timezone`——下の「名乗りと言語」）
 - 「AI に触らせない」は `browserOpen`・`browserAct`・`browserEval`・`browserTabs` の `select`/`close` を断る
   （上の「人と AI の同時操作」の「切り替え」に `close` も入れた——閉じるのも操作）
 
@@ -2093,10 +2093,21 @@ Module の一覧には**2種類が混ざる**：
     読めないものは理由つきで流れを閉じる（1008）
 - **screencast はいま選んでいるタブに1本だけ張り、映している画面の全部で分ける**（画面ごとに張らない——CPU が画面の数だけ
   かかる）。CDP には受け取ったらすぐ印を返し、画面ごとの流量は画面の `ack` で絞る（送った絵の印が返るまで次を送らず、
-  間に来たものは最新の1枚だけ残す）。間引きは `everyNthFrame: 2`・画質70
+  間に来たものは最新の1枚だけ残す）。**CDP では間引かない**（`everyNthFrame: 1`）・画質70（訂正・2026-10-10、Backlog #257——
+  以前は `everyNthFrame: 2`。間引くと**ページが静かになる直前の最後の描画が捨てられ、人の画面が古い絵のまま止まる**。
+  google.com/sorry で reCAPTCHA の枠の中身が人の画面に映らず、`browserScreenshot` には写っていた。実測：その画面を開いて
+  7秒後の絵が `Page.captureScreenshot` と食い違ったのは `everyNthFrame: 2` で9回中6回、`1` で6回中0回。動き続けるページでは
+  毎秒30枚→60枚になり、ブラウザの CPU が2〜4割増える（粗い計測）——画面が開いていて、ページが動き続けている間だけの費用）。
+  **原因は別プロセスの iframe（out-of-process iframe）ではなかった**：headless-shell の screencast も、別サイトの iframe
+  （127.0.0.1 の中の localhost・github.io の中の google.com の reCAPTCHA）を合成して流す（実測・2026-10-10）。google.com/sorry の
+  reCAPTCHA は同じサイト（www.google.com）でもある。ブラウザを通常の Chromium に替える・サイトの分離を切る・
+  `captureScreenshot` を間引いて流す、の案は要らなくなった
 - **大きさ**：`maxWidth`・`maxHeight` は映している画面のうち一番大きいもの（CSS ピクセル×`devicePixelRatio`）を 64 で丸め、
   ページの大きさで頭を押さえる（絵はページの大きさより大きくならない）。ページの大きさ・タブ・映す画面の大きさが変わったら
-  張り直す——**ページの大きさを変えても、張ったままの screencast は前の大きさの絵を出す**（実測・2026-10-10）
+  張り直す——**ページの大きさを変えても、張ったままの screencast は前の大きさの絵を出す**（実測・2026-10-10）。
+  **絵の頭の大きさは張ったときのページの大きさ**にする。screencast の絵に付く `metadata.deviceWidth`・`deviceHeight` は使わない
+  ——縮めて流すとき、縮めた絵の大きさを返すことがある（実測・2026-10-10、Backlog #257：2560×1440 を 1685×948 に縮めて20回中2回。
+  頭がずれると人の入力の座標がずれる）
 - **1枚を 1 MiB に収める**（流れの1通の上限、アーキ仕様 §5.8。越えると host が 1009 で閉じ、画面は繋ぎ直すたびに同じ絵で
   切れ続ける）：
   - **絵の画素数は 1.6 メガ画素（1600×1000）まで**。上の `maxWidth`・`maxHeight` で決まる絵（ページを縦横同じ比で縮めたもの）が
@@ -2130,6 +2141,30 @@ Module の一覧には**2種類が混ざる**：
   `view: { viewers, watching, screencasting, screencastTab? }` も返す
 - **会話のカード**：`browserOpen` に `ui.resourceUri`＝`ui://banto-browser/view` と `dev.banto/card`（`ブラウザで開いた：{url}`）
 - **HAR で保存**は絞り込みに関わらず記録の全部を `exportHar` で取り、`ui/download-file` の文字（`browser-<日時>.har`）で渡す
+
+#### 名乗りと言語（決定・2026-10-10、ユーザー。実装・2026-10-10、Backlog #257）
+
+chromium-headless-shell はそのままだと `HeadlessChrome/<版>` と名乗り（User-Agent と Client Hints の brands の両方）、言語は
+`en-US` だけ・時刻は UTC。Google の検索はこれでロボットと判定した（「unusual traffic」の google.com/sorry に回された。
+実測・2026-10-10：`HeadlessChrome/151.0.7922.34`・`navigator.webdriver` が true・`languages` が `en-US` だけ）。
+
+- **名乗りを普通の Chrome に揃える**：User-Agent は Linux の Chrome の形で、版は**使っているブラウザに聞いた版**
+  （`--version`。決め打ちしない）——`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<版> Safari/537.36`。
+  Client Hints（`Sec-CH-UA`・`navigator.userAgentData`）の brands からも `HeadlessChrome` を除く（残すのは GREASE の1つと `Chromium`）
+- **言語**：設定の `locale`（既定 `ja-JP`）から、Accept-Language と `navigator.languages` を `ja-JP, ja, en-US, en`（locale・その言語・
+  英語）にし、Intl のロケールも locale にする。**時刻の地域**は設定の `timezone`（既定 `Asia/Tokyo`）。どちらも人の画面の口
+  `setSettings` で変えられ、次にブラウザを起こしたときから効く
+- **それ以上の偽装はしない**（決定・2026-10-10、ユーザー）：`navigator.webdriver`・プラグイン・WebGL・指紋の類は変えない。
+  **ボット判定をすり抜ける細工はしない**
+- **AI には検索エンジンを使わせない**：`browserOpen` の説明に「Web の検索には WebSearch を使う。このブラウザで検索エンジンを
+  開かない（ロボット判定と規約のため）。このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの」と書く
+- **効かせ方**（実測・2026-10-10）：起こすときの引数 `--user-agent`・`--accept-lang`・`--lang`（ブラウザ全体に効き、Worker と
+  ポップアップの最初の要求にも届く）と、タブごとの CDP（`Emulation.setUserAgentOverride` の `userAgentMetadata`・
+  `setLocaleOverride`——brands と Intl のロケールは引数では変えられない。headless-shell に brands を変える引数は無い）、
+  時刻の地域は Playwright の `timezoneId`。Playwright の `userAgent`・`locale` は使わない（`userAgent` は brands を変えず、
+  `locale` は Accept-Language を `ja-JP` だけにする）
+- **届かないところ**：ページが開いたポップアップ（`target=_blank`・`window.open`）の**最初の1件の要求**の `Sec-CH-UA` には
+  `HeadlessChrome` が残る（タブごとの CDP が間に合わない。User-Agent と Accept-Language は引数で揃っている）
 
 #### 第2段：サービスどうしの通信（未実装・形だけ）
 
@@ -2171,7 +2206,8 @@ CDP の screencast を測った（JPEG、1枚ごとにすぐ受け取りの印�
 - **費用は「ページが動いているか」で決まる。** 止まっているページは安く、動き続けるページ（回る印・動画・アニメ）を
   映し続けると CPU を1コア以上食う。**受け取りの印を遅らせても枚数は下がりきらない**（200ms 遅らせても毎秒13枚・
   CPU 約70%）ので、**間引きは `everyNthFrame` と組み合わせる**。既定は：画質70・`everyNthFrame: 2`（最大毎秒30枚）、
-  画面からの受け取りの印で流量を絞る（§4.1「人の画面」）。**誰も映していない間は screencast を止める**（画面が
+  画面からの受け取りの印で流量を絞る（§4.1「人の画面」）。**→ 訂正・2026-10-10：`everyNthFrame` は 1（間引かない）にした**
+  ——間引くと静かになる直前の最後の絵が来ない（上の「人の画面で決めたこと」）。**誰も映していない間は screencast を止める**（画面が
   裏に回った・閉じた——それで約5%まで下がる）
 - **screencast の絵は CSS ピクセルの大きさで来る**（`deviceScaleFactor: 2` でも 1280×800）。高精細の画面では文字が
   少しぼやける。止まっているときに `Page.captureScreenshot`（倍率どおり）の1枚に差し替える案は、作ってから考える

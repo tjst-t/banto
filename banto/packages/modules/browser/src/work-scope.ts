@@ -35,6 +35,13 @@ function registry(): Registry {
   return bundle.registry.registry;
 }
 
+/** Playwright が起こすブラウザ（chromium-headless-shell）の在りか。入っているかは見ない */
+export function browserExecutablePath(): string {
+  const real = registry().findExecutable(BROWSER_NAME)?.executablePath();
+  if (!real) throw new Error(`${BROWSER_NAME} はこの機械の種類では使えません`);
+  return real;
+}
+
 /**
  * 仕事の組で起こすための `executablePath` と環境を用意する。組に入れられなければ undefined（Playwright にそのまま起こさせる）。
  * ブラウザが無い・ライブラリが足りないときは Playwright と同じ文言で投げる——`launchWithInstall` がそれを見て入れる
@@ -42,8 +49,8 @@ function registry(): Registry {
 export async function prepareScopedLaunch(wrapperPath: string): Promise<{ executablePath: string; env: Record<string, string> } | undefined> {
   const reg = registry();
   const executable = reg.findExecutable(BROWSER_NAME);
-  const real = executable?.executablePath();
-  if (!executable || !real) throw new Error(`${BROWSER_NAME} はこの機械の種類では使えません`);
+  if (!executable) throw new Error(`${BROWSER_NAME} はこの機械の種類では使えません`);
+  const real = browserExecutablePath();
   const scoped = inWorkScope(real, [], { kind: "browser" });
   if (!scoped.scoped) return undefined;
   // 包む sh では Playwright の「入っていない」「ライブラリが足りない」の確かめが走らない——先に同じ確かめをする

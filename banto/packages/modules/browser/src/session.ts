@@ -6,13 +6,14 @@ import { rmSync } from "node:fs";
 import type { BrowserContext, CDPSession, Page } from "playwright-core";
 import { BrowserError } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
+import { applyIdentity, type BrowserIdentity, type CdpSender } from "./identity.js";
 import type { ConsoleLevel, NetworkLog } from "./network-log.js";
 
 export interface SessionDeps {
   profileDir: string;
   log: NetworkLog;
-  /** プロファイルの置き場でブラウザを起こす（入っていなければ入れる——install.ts） */
-  launch: (profileDir: string, onProgress?: (message: string) => void) => Promise<BrowserContext>;
+  /** プロファイルの置き場でブラウザを起こす（入っていなければ入れる——install.ts）。名乗りと言語はタブごとにも効かせる（identity.ts） */
+  launch: (profileDir: string, onProgress?: (message: string) => void) => Promise<{ context: BrowserContext; identity: BrowserIdentity }>;
   /** 使われなければ止めるまでの時間（ms）。呼ぶたびに読む——設定を変えたら次から効く */
   idleMs: () => number;
 }
@@ -29,6 +30,7 @@ export const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 
 export class BrowserSession {
   private context: BrowserContext | undefined;
+  private identity: BrowserIdentity | undefined;
   private starting: Promise<BrowserContext> | undefined;
   private readonly pages = new Map<string, Page>();
   /** 登録が終わる（CDP の Network を有効にし終える）まで待てるように、約束で持つ */
@@ -43,6 +45,11 @@ export class BrowserSession {
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: SessionDeps) {}
+
+  /** 動いているブラウザの版（ブラウザに聞いたもの。動いていなければ undefined） */
+  get browserVersion(): string | undefined {
+    return this.context ? this.identity?.version : undefined;
+  }
 
   get running(): boolean {
     return this.context !== undefined;
@@ -104,7 +111,8 @@ export class BrowserSession {
   }
 
   private async start(onProgress?: (message: string) => void): Promise<BrowserContext> {
-    const context = await this.deps.launch(this.deps.profileDir, onProgress);
+    const { context, identity } = await this.deps.launch(this.deps.profileDir, onProgress);
+    this.identity = identity;
     // タブの id は**止めて起こし直しても続きから**振る——通信とコンソールの記録はタブの id を持って残るので、t1 から
     // 振り直すと前に起こしたときの t1 と混ざる（listNetwork の tab で絞ったとき）。Module ごと起こし直したときも記録の続きから
     this.nextTab = Math.max(this.nextTab, this.deps.log.maxTabNumber() + 1);
@@ -190,6 +198,8 @@ export class BrowserSession {
     const cdp = await this.context!.newCDPSession(page);
     // Playwright の CDPSession は知らせの名前ごとに型が付く——ここでは名前を文字で受ける形に合わせる
     attachRecorder(log, () => id, cdp as unknown as CdpLike);
+    // 名乗りと言語は記録より先に——この口は閉じないので、ページを移っても効き続ける
+    await applyIdentity(cdp as unknown as CdpSender, this.identity!);
     // 本文はブラウザの中の入れ物にあるうちに取る——入れ物を大きめにして、取る前に捨てられにくくする
     await cdp.send("Network.enable", { maxTotalBufferSize: 100 * 1024 * 1024, maxResourceBufferSize: 10 * 1024 * 1024 });
     this.emit();

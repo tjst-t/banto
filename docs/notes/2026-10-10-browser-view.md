@@ -83,3 +83,51 @@ Module のログの「…が 5000ms 返りませんでした」で、どの呼�
   越えた絵は送らず理由を1度だけ・タブの無いうちに入れた「画面に合わせる」が URL 欄と ＋ のタブに効き、切ると全部戻る——は
   5回流して5回通った）。E2E は画面の操作の列を足して browser-view 4/4（単独・browser.spec.ts と一緒・`--repeat-each=2`）、
   browser.spec.ts 1/1
+
+## 追記（2026-10-10、Backlog #257）：reCAPTCHA の枠が人の画面に映らない／名乗りと言語
+
+### 映らなかった理由——別プロセスの iframe ではなく、`everyNthFrame: 2`
+
+見立ては「screencast が別プロセスで描かれる別サイトの iframe（OOPIF）を合成しない」だった。測ったら違った：
+
+- 別サイトの iframe（127.0.0.1 のページの中の localhost、github.io のページの中の google.com の reCAPTCHA）は、
+  headless-shell の screencast にも描かれていた（素の CDP で、screencast の1枚と `captureScreenshot` が同じ）
+- google.com/sorry の reCAPTCHA の iframe（`www.google.com/recaptcha/enterprise/anchor`）は親と**同じサイト**で、そもそも別プロセスではない
+- 本物の `BrowserView`（偽の画面が印を返す）で google.com/sorry を開き、7秒後に画面が受けた最後の絵と `captureScreenshot` を
+  画素で比べた：最初に開いたときに、**枠はあるが中の文字（I'm not a robot）が無い絵のまま止まる**のが 9回中6回。
+  `everyNthFrame: 1` にすると6回中0回。iframe の中の文字（web フォント）の描画が、ページが静かになる前の最後の1枚で、
+  2枚に1枚を捨てるとそれが捨てられることがある。静かなページはそのあと絵を出さないので、古い絵のまま残る
+- 試験用のページ（`/frame`、別オリジンの iframe が読み終えて少し後と押すたびに1度だけ色を変える）で単体の試験を作り、
+  `everyNthFrame: 2` で5回中5回落ち、`1` で通ることを確かめた
+
+却下した案：(a) 通常の Chromium の `--headless=new` に替える（重い——760MiB 対 400MiB。原因が OOPIF でないので効く理由も無い）、
+(b) サイトの分離を切る（安全が下がる。同上）、(c) screencast をやめて `captureScreenshot` を間引いて流す（撮るたびに全面を
+符号化するので重い）、(d) `everyNthFrame: 2` のまま、絵が止まってしばらくしたら1枚撮り足す（直るが、止まったかの判定と
+撮った絵と screencast の絵の順序の扱いが増える。間引かないほうが単純）。
+
+費用：動き続けるページ（回る四角）で、毎秒 30 → 60 枚、ブラウザの CPU は 120% → 140〜160%（`ps` の秒単位の粗い計測）。
+画面が開いていてページが動き続けている間だけ。
+
+### 名乗りと言語（ユーザー決定）
+
+- Playwright の `userAgent` は User-Agent を変えるが、Client Hints の brands（`HeadlessChrome`）は変えない
+  （Playwright が作る `userAgentMetadata` に brands が無い）。`locale` は Accept-Language を `ja-JP` だけにする
+- 引数 `--user-agent`・`--accept-lang` はブラウザ全体に効く（Worker・ポップアップの最初の要求も）。brands と Intl のロケールは
+  タブごとの CDP（`Emulation.setUserAgentOverride` の `userAgentMetadata`・`setLocaleOverride`）でしか変えられない
+  （headless-shell に brands を変える引数は無い——`--product-version` も効かなかった）
+- タブごとの CDP はポップアップの最初の1件の要求に間に合わず、その `Sec-CH-UA` には `HeadlessChrome` が残る。
+  ブラウザ全体の自動接続（`Target.setAutoAttach` で止めて効かせてから走らせる）なら塞げるが、Playwright も同じことをしていて
+  食い合うので、ここではやらない（仕様の「届かないところ」）
+- 版は `--version` でブラウザに聞く（起こす前に要る——引数に入れるため）。User-Agent の形は Linux の Chrome の形で、
+  headless-shell の名乗りから `Headless` を除いたものと同じ
+
+### 間引くのをやめたら表に出た2つ（同じ日、Backlog #257）
+
+- **絵の頭の大きさが、縮めた絵の大きさになることがある**：単体の「大きなページ」（2560×1440 を 1685×948 に縮めて流す）が
+  20回中12回落ちた。screencast の絵に付く `metadata.deviceWidth`・`deviceHeight` が、ときどき 2560×1440 ではなく 1685×948 を
+  返していた（素の CDP の小さな試しでは20回で出ず、`BrowserView` の経路で出た）。`everyNthFrame: 2` でも20回中2回出ていた
+  ——間引いていて最初の1枚が捨てられることが多く、隠れていた。頭は張ったときのページの大きさにした（張ったままの screencast は
+  その大きさの絵を出す、§4.1）。直した後 20回中0回
+- 単体の「流れ」が、携帯の画面を裏に回した直後に `screencasting` を読んで、15回に2回ほど false を見た。見ている画面が変わると
+  上限が変わって張り直すので、止めてから張るまでの間を読んでいた（機構の不具合ではなく試験の読み方）。張られるまで待つ形に
+  直し、フルの単体を15回流して15回通った

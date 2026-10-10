@@ -25,9 +25,13 @@ import type { StateFile } from "./state.js";
 import type { NetworkLog } from "./network-log.js";
 import type { ViewHooks } from "./tools.js";
 
-/** screencast の既定（v4-modules.md §4.1「実測」——画質70・everyNthFrame 2、最大毎秒30枚） */
+/**
+ * screencast の既定（v4-modules.md §4.1「人の画面で決めたこと」——画質70・間引かない）。**間引かない**：`everyNthFrame` を 2 に
+ * すると、ページが静かになる直前の最後の描画が捨てられ、人の画面が古い絵のまま止まる（実測・2026-10-10——google.com/sorry で
+ * reCAPTCHA の枠の文字が描かれた最後の1枚が来ず、9回中6回。1 なら6回中0回）。流量は画面の受け取りの印で絞る
+ */
 export const SCREENCAST_QUALITY = 70;
-export const SCREENCAST_EVERY_NTH_FRAME = 2;
+export const SCREENCAST_EVERY_NTH_FRAME = 1;
 /** 静かなページは screencast を張っても絵が来ない（実測・2026-10-10）——これだけ待って来なければ1枚撮って送る */
 const FIRST_FRAME_WAIT_MS = 150;
 /** 記録が変わった合図を間引く */
@@ -650,15 +654,17 @@ export class BrowserView implements ViewHooks {
     this.deliver(cast, { seq, tab: cast.tab, data: encodeFrame({ seq, tab: cast.tab, ...viewport }, Buffer.from(shot.data, "base64")) }, viewport);
   }
 
-  private onFrame(cast: Cast, f: { data: string; sessionId: number; metadata: { deviceWidth?: number; deviceHeight?: number } }, viewport: { width: number; height: number }): void {
-    // CDP には受け取ったとすぐ返す。画面ごとの流量は画面の印で絞る（間引きは everyNthFrame）
+  private onFrame(cast: Cast, f: { data: string; sessionId: number }, viewport: { width: number; height: number }): void {
+    // CDP には受け取ったとすぐ返す。画面ごとの流量は画面の印で絞る（CDP では間引かない——最後の1枚を捨てないため）
     cast.cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => undefined); // 閉じた口——次の張り直しで直る
     if (this.cast !== cast) return;
     cast.gotFrame = true;
-    const width = Math.round(f.metadata.deviceWidth ?? viewport.width);
-    const height = Math.round(f.metadata.deviceHeight ?? viewport.height);
+    // 頭の大きさは張ったときのページの大きさ（張ったままの screencast はその大きさの絵を出す）。絵に付いてくる
+    // `metadata.deviceWidth`・`deviceHeight` は使わない——縮めて流すとき、縮めた絵の大きさを返すことがある
+    // （実測・2026-10-10：2560×1440 を 1685×948 に縮めて、20回中2回。人の入力の座標がずれる）
+    const { width, height } = viewport;
     const seq = ++this.seq;
-    this.deliver(cast, { seq, tab: cast.tab, data: encodeFrame({ seq, tab: cast.tab, width, height }, Buffer.from(f.data, "base64")) }, { width, height });
+    this.deliver(cast, { seq, tab: cast.tab, data: encodeFrame({ seq, tab: cast.tab, width, height }, Buffer.from(f.data, "base64")) }, viewport);
     // ページの大きさが変わった（AI の resize・人の「画面に合わせる」）——張り直すと新しい大きさの絵になる
     const now = cast.page.viewportSize();
     if (now && (now.width !== viewport.width || now.height !== viewport.height)) this.refresh();

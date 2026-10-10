@@ -14,6 +14,9 @@
 //   8. 画面を閉じると screencast が止まる（getBrowserStatus の view）。入口からも開ける
 //   9. 携帯：「画面に合わせる」でページが携帯の幅になり、指で押してキーボードの欄から打てる。閉じるとページの大きさが戻る
 //  10. 「ブラウザの記録を消す」（2回押す）：通信とコンソールの件数が 0 になり、前のタブが消えて起こし直す
+//  11. 名乗りと言語：要求とページから見て HeadlessChrome を名乗らず同じ版の Chrome、言語は ja-JP から（Backlog #257）
+//  12. 別オリジンの iframe：人の画面の絵に iframe の中身（静かになる直前の描画も）が映り、絵の上で押すと iframe に届く——
+//      絵の画素の色で確かめる（Backlog #257——google.com/sorry の reCAPTCHA の枠が映らなかった）
 import { test, expect, loginContext, type FrameLocator, type Page } from "../test-base.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -369,6 +372,40 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     const st = await uiCall(page, "getBrowserStatus");
     return { running: st.running, records: (st.log as { records: number }).records };
   }, { timeout: 30_000 }).toEqual({ running: true, records: 0 });
+
+  // ---- 11. 名乗りと言語 -------------------------------------------------------------------------------
+  const whoami = await ai(page, "browserOpen", { url: `${BASE}/whoami` });
+  const version = / Chrome\/(\d+\.\d+\.\d+\.\d+) /.exec(whoami);
+  expect(whoami, "要求の User-Agent が HeadlessChrome を名乗っている").not.toContain("HeadlessChrome");
+  expect(version?.[1], `要求の User-Agent に Chrome/<版> が無い：${whoami}`).toBeTruthy();
+  expect(whoami, "要求の Accept-Language が ja-JP から始まらない").toMatch(/acceptLanguage\W+ja-JP,ja;q=0\.9,/);
+  const nav = await ai(page, "browserEval", { expression: "'NAV ' + navigator.userAgent + ' | ' + navigator.languages.join(',')" });
+  expect(nav).toContain(`Chrome/${version![1]} Safari`);
+  expect(nav).not.toContain("HeadlessChrome");
+  expect(nav).toContain(" | ja-JP,ja,en-US,en");
+
+  // ---- 12. 別オリジンの iframe ------------------------------------------------------------------------
+  // iframe の中は全面が1色（試験用のページの FRAME_COLORS）：読み終えて少し後に赤、押すたびに緑・青
+  const FRAME = { x: 100, y: 100, width: 400, height: 300 };
+  const frameCenter = [FRAME.x + FRAME.width / 2, FRAME.y + FRAME.height / 2] as const;
+  /** 人の画面の絵（canvas）の、ページの点に当たる画素の色 */
+  const colorOnScreen = () =>
+    f.getByTestId("browser-screen").evaluate((canvas: HTMLCanvasElement, [x, y]) => {
+      const k = canvas.width / Number(canvas.dataset.pageWidth);
+      const d = canvas.getContext("2d")!.getImageData(Math.round(x! * k), Math.round(y! * k), 1, 1).data;
+      return d[0]! > 200 && d[1]! < 60 && d[2]! < 60 ? "red" : d[0]! < 60 && d[1]! > 200 && d[2]! < 60 ? "green" : d[0]! < 60 && d[1]! < 60 && d[2]! > 200 ? "blue" : `rgb(${d[0]},${d[1]},${d[2]})`;
+    }, frameCenter);
+  const urlBarNow = f.getByRole("textbox", { name: "URL" });
+  await urlBarNow.fill(`${BASE}/frame`);
+  await urlBarNow.press("Enter");
+  await expect(f.locator(".tab[aria-selected=true]"), "別オリジンの iframe のページが開かない").toContainText("別オリジンの iframe");
+  await expect.poll(colorOnScreen, { timeout: 20_000, message: "人の画面に iframe の中身（読み終えた後の描画）が映らない" }).toBe("red");
+  await pressOnScreen(f, ...frameCenter, "click");
+  await expect.poll(colorOnScreen, { timeout: 20_000, message: "絵の上で押しても iframe が変わらない（または変わった絵が来ない）" }).toBe("green");
+  await pressOnScreen(f, ...frameCenter, "click");
+  await expect.poll(colorOnScreen, { timeout: 20_000, message: "2回目の押下の後の絵が来ない" }).toBe("blue");
+  // 押した数は iframe の中から試験用のページのサーバに届いている
+  expect(await ai(page, "browserEval", { expression: "fetch('/api/frame-clicks').then((r) => r.text()).then((t) => 'CLICKS ' + t)" })).toMatch(/CLICKS \{\W*clicks\W*:2\}/);
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

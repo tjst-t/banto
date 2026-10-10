@@ -4,9 +4,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrowserError, parseAct, parseConsoleQuery, parseNetworkQuery, parseNetworkRequest, parseOpen, parseScreenshot, parseTabs } from "./args.js";
+import { BrowserError, parseAct, parseConsoleQuery, parseNetworkQuery, parseNetworkRequest, parseOpen, parseScreenshot, parseSettings, parseTabs } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import { pageContent } from "./content.js";
+import { acceptLanguages, browserIdentity, identityArgs, parseBrowserVersion } from "./identity.js";
 import { launchWithInstall, type Installer } from "./install.js";
 import { DEFAULT_LIMITS, NetworkLog, formatDetail, formatLine, toHar, type NetworkRecord } from "./network-log.js";
 import { redactHeaders } from "./redact.js";
@@ -330,11 +331,13 @@ test("状態：「AI に触らせない」と設定は置き場に残り、壊�
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-state-"));
   try {
     const path = join(dir, "state.json");
-    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 30, aiBlocked: false });
-    new StateFile(path).set({ aiBlocked: true, idleMinutes: 5 });
-    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 5, aiBlocked: true });
+    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo" });
+    new StateFile(path).set({ aiBlocked: true, idleMinutes: 5, locale: "en-US", timezone: "UTC" });
+    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 5, aiBlocked: true, locale: "en-US", timezone: "UTC" });
     writeFileSync(path, JSON.stringify({ aiBlocked: "yes" }));
     assert.throws(() => new StateFile(path), /aiBlocked が true \/ false ではありません/);
+    writeFileSync(path, JSON.stringify({ timezone: "Mars/Olympus" }));
+    assert.throws(() => new StateFile(path), /timezone が時刻の地域として読めません/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -353,4 +356,24 @@ test("仕事の組：包む sh の引数は sh を通してもそのまま届き
   } finally {
     if (saved !== undefined) process.env.BANTO_IN_CONTAINER = saved;
   }
+});
+
+// ---- 名乗りと言語 ------------------------------------------------------------------------------
+
+test("名乗りと言語：版はブラウザの答えから読み、HeadlessChrome を名乗らず、言語は locale・その言語・英語の順", () => {
+  assert.equal(parseBrowserVersion("Google Chrome for Testing 151.0.7922.34\n"), "151.0.7922.34");
+  assert.throws(() => parseBrowserVersion("bash: not found"), /版が読めません/);
+  const id = browserIdentity("151.0.7922.34", "ja-JP", "Asia/Tokyo");
+  assert.equal(id.userAgent, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.34 Safari/537.36");
+  assert.deepEqual(id.languages, ["ja-JP", "ja", "en-US", "en"]);
+  assert.deepEqual(acceptLanguages("en-US"), ["en-US", "en"]);
+  assert.deepEqual(acceptLanguages("fr"), ["fr", "en-US", "en"]);
+  assert.deepEqual(identityArgs(id), [`--user-agent=${id.userAgent}`, "--accept-lang=ja-JP,ja,en-US,en", "--lang=ja-JP"]);
+});
+
+test("設定：locale と timezone は読めるものだけ受け、読めないものは理由つきで断る", () => {
+  assert.deepEqual(parseSettings({ locale: "en-US", timezone: "Europe/London", idleMinutes: 10 }), { idleMinutes: 10, locale: "en-US", timezone: "Europe/London" });
+  assert.throws(() => parseSettings({ locale: "ja_JP" }), BrowserError);
+  assert.throws(() => parseSettings({ locale: "ja-jp" }), /ja-JP の形で書きます/);
+  assert.throws(() => parseSettings({ timezone: "Tokyo" }), /時刻の地域として読めません/);
 });

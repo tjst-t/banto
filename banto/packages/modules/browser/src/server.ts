@@ -12,6 +12,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { CANVAS_META_KEY, MODULE_META_KEY, STREAMS_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { BrowserContext } from "playwright-core";
 import { NetworkLog } from "./network-log.js";
@@ -110,7 +111,8 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
   process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
   const { chromium } = await import("playwright-core");
   const { launchWithInstall, playwrightInstaller } = await import("./install.js");
-  const { prepareScopedLaunch } = await import("./work-scope.js");
+  const { browserExecutablePath, prepareScopedLaunch } = await import("./work-scope.js");
+  const { browserIdentity, identityArgs, readBrowserVersion } = await import("./identity.js");
   const installer = playwrightInstaller(browsersPath);
   const log = new NetworkLog(paths.network);
   const state = new StateFile(paths.state);
@@ -119,17 +121,29 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
     log,
     idleMs: () => state.get().idleMinutes * 60_000,
     launch: async (profileDir, onProgress) => {
-      const context: BrowserContext = await launchWithInstall(
+      const { context, identity } = await launchWithInstall(
         async () => {
+          // 名乗りと言語（identity.ts）。版はブラウザに聞く——入っていなければ Playwright と同じ文言で投げ、launchWithInstall が入れる
+          const executable = browserExecutablePath();
+          if (!existsSync(executable)) throw new Error(`Executable doesn't exist at ${executable}`);
+          const { locale, timezone } = state.get();
+          const identity = browserIdentity(readBrowserVersion(executable), locale, timezone);
           // 入れられるなら仕事の組（banto-work-jobs.slice）に入れる。入れられなければそのまま
           const scoped = await prepareScopedLaunch(paths.scopeWrapper);
-          return chromium.launchPersistentContext(profileDir, { headless: true, viewport: { ...DEFAULT_VIEWPORT }, ...(scoped ?? {}) });
+          const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
+            headless: true,
+            viewport: { ...DEFAULT_VIEWPORT },
+            timezoneId: timezone,
+            args: identityArgs(identity),
+            ...(scoped ?? {}),
+          });
+          return { context, identity };
         },
         installer,
         onProgress,
       );
       context.setDefaultTimeout(10_000);
-      return context;
+      return { context, identity };
     },
   });
   return { session, log, state };

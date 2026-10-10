@@ -92,6 +92,8 @@ export const TOOLS = [
     name: "browserOpen",
     description:
       "**この Project のコンテナの中のブラウザでページを開く。** コンテナの中のサービスに localhost で届く（Publish していない開発サーバも開ける）。" +
+      "**このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの。Web の検索には WebSearch を使い、このブラウザで検索エンジン" +
+      "（Google 等）を開かない**——ロボットと判定されて止められ、検索エンジンの規約にも反するため。" +
       "ログイン状態（Cookie 等）は Project ごとに残る。返すのはタブ・状態コード・最終の URL・タイトル・アクセシビリティツリー（短く、[ref=…] 付き）。" +
       `ページを読むのは browserSnapshot、操作は browserAct、通信は listNetwork。${PAGE_NOTE}。${BLOCK_NOTE}`,
     inputSchema: {
@@ -286,14 +288,17 @@ export const TOOLS = [
   },
   {
     name: "getSettings",
-    description: "この Module の設定（使われなければ止めるまでの分）",
+    description: "この Module の設定（使われなければ止めるまでの分・ブラウザの言語と時刻の地域）",
     inputSchema: { type: "object", properties: {} },
     _meta: admin,
   },
   {
     name: "setSettings",
-    description: "設定を変える。idleMinutes：AI の呼び出しが無いままこれだけたったらブラウザを止める（分、1〜1440）",
-    inputSchema: { type: "object", properties: { idleMinutes: { type: "number" } } },
+    description:
+      "設定を変える。idleMinutes：AI の呼び出しが無いままこれだけたったらブラウザを止める（分、1〜1440）。" +
+      "locale：ブラウザの言語（ja-JP の形。Accept-Language と navigator.languages は locale・その言語・en-US・en の順）。" +
+      "timezone：時刻の地域（Asia/Tokyo の形）。locale と timezone は次にブラウザを起こしたときから効く",
+    inputSchema: { type: "object", properties: { idleMinutes: { type: "number" }, locale: { type: "string" }, timezone: { type: "string" } } },
     _meta: admin,
   },
 ];

@@ -1,5 +1,6 @@
 // **道具の引数を確かめる**。頼み方の誤りは理由ごと AI に返す（黙って既定に倒さない、規則2）。
 
+import { checkLocale, checkTimezone } from "./state.js";
 import { STATUS_FILTER_PATTERN, parseSince, type ConsoleLevel, type ConsoleQuery, type DetailPart, type NetworkQuery } from "./network-log.js";
 
 /** 頼み方の誤り・断り。理由を AI（または人の画面）に返す */
@@ -256,7 +257,21 @@ export function parseBlocked(args: Args): boolean {
   return v;
 }
 
-export function parseSettings(args: Args): { idleMinutes?: number } {
+export function parseSettings(args: Args): { idleMinutes?: number; locale?: string; timezone?: string } {
+  const out: { idleMinutes?: number; locale?: string; timezone?: string } = {};
   const idleMinutes = int(args, "idleMinutes", 1, 24 * 60);
-  return idleMinutes !== undefined ? { idleMinutes } : {};
+  if (idleMinutes !== undefined) out.idleMinutes = idleMinutes;
+  const locale = str(args, "locale");
+  if (locale !== undefined) {
+    const why = checkLocale(locale);
+    if (why) throw new BrowserError(why);
+    out.locale = locale;
+  }
+  const timezone = str(args, "timezone");
+  if (timezone !== undefined) {
+    const why = checkTimezone(timezone);
+    if (why) throw new BrowserError(why);
+    out.timezone = timezone;
+  }
+  return out;
 }

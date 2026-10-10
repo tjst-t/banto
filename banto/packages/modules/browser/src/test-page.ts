@@ -5,6 +5,11 @@
 // 開くと：Cookie を置き（Set-Cookie。期限つき——期限の無い Cookie はブラウザを閉じると消えるのがブラウザの決まり）、200・500・届かない要求（安全でないポート 9 番）を出し、Authorization 付きの
 // 要求も出し、console.error を出す。WebSocket（1フレーム受けて返す）と EventSource（1件）も開く。
 // 「例外を出す」ボタンは捕まえない例外を投げる。
+//
+// `/whoami` は届いた要求の名乗りと言語（User-Agent・Accept-Language・Sec-CH-UA）を JSON で返す。
+// `/frame` は**別オリジンの iframe**（127.0.0.1 で開けば localhost、逆も同じ——別のサイトなので別のプロセスで描かれる）を
+// 置いたページ。iframe の中は全面が1色で、読み終えて少し待ってから1度だけ色を変え（静かなページの最後の描画）、押すたびに
+// 次の色へ変えて押された数をサーバに知らせる（`/api/frame-clicks` で読める）。
 
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -50,10 +55,60 @@ function wsTextFrame(text: string): Buffer {
   return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
 }
 
+/** `/frame` の iframe の位置と大きさ（ページの CSS ピクセル）と、色の移り変わり（読み終えて少し後に [1]、押すたびに次へ） */
+export const FRAME_BOX = { x: 100, y: 100, width: 400, height: 300 };
+export const FRAME_COLORS = ["#808080", "#ff0000", "#00ff00", "#0000ff", "#ff0000"] as const;
+
+function framePage(innerOrigin: string): string {
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>別オリジンの iframe</title></head>
+<body style="margin:0;background:#fff">
+<iframe src="${innerOrigin}/frame-inner" title="別オリジン" style="position:absolute;left:${FRAME_BOX.x}px;top:${FRAME_BOX.y}px;width:${FRAME_BOX.width}px;height:${FRAME_BOX.height}px;border:0"></iframe>
+</body></html>`;
+}
+
+const FRAME_INNER = `<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;height:100vh;background:${FRAME_COLORS[0]}">
+<script>
+const colors = ${JSON.stringify(FRAME_COLORS)};
+let i = 0;
+const next = () => { i = Math.min(i + 1, colors.length - 1); document.body.style.background = colors[i]; window.changedAt = performance.timeOrigin + performance.now(); };
+addEventListener('load', () => setTimeout(next, 800));
+addEventListener('click', () => { next(); fetch('/api/frame-click', { method: 'POST' }); });
+</script>
+</body></html>`;
+
 export function createTestPageServer(): Server {
+  let frameClicks = 0;
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     switch (url.pathname) {
+      case "/whoami":
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ userAgent: req.headers["user-agent"] ?? "", acceptLanguage: req.headers["accept-language"] ?? "", secChUa: req.headers["sec-ch-ua"] ?? "" }));
+        return;
+      case "/frame": {
+        // 開いた名前と違う名前（127.0.0.1 ⇔ localhost）で iframe を置く——別のサイトになる
+        const host = req.headers.host ?? "127.0.0.1";
+        const port = host.split(":")[1] ?? "80";
+        const other = host.startsWith("localhost") ? "127.0.0.1" : "localhost";
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(framePage(`http://${other}:${port}`));
+        return;
+      }
+      case "/frame-inner":
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(FRAME_INNER);
+        return;
+      case "/api/frame-click":
+        frameClicks += 1;
+        res.setHeader("access-control-allow-origin", "*");
+        res.end("ok");
+        return;
+      case "/api/frame-clicks":
+        res.setHeader("content-type", "application/json");
+        res.setHeader("access-control-allow-origin", "*");
+        res.end(JSON.stringify({ clicks: frameClicks }));
+        return;
       case "/":
         res.setHeader("set-cookie", `${TEST_COOKIE}; Path=/; Max-Age=86400; SameSite=Lax`);
         res.setHeader("content-type", "text/html; charset=utf-8");

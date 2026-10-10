@@ -56,6 +56,14 @@ async function until(fn: () => Promise<boolean>, what: string) {
   assert.fail(`${what} が揃わない`);
 }
 
+/** ページの中で JSON の文字を返す式を評価して読む（browserEval は値を JSON で、区切りの中に返す） */
+async function evalJson<T>(expression: string): Promise<T> {
+  const r = await call("browserEval", { expression });
+  const m = /^(".*")$/m.exec(r.text);
+  assert.ok(m, `browserEval の答えが読めない:\n${r.text}`);
+  return JSON.parse(JSON.parse(m[1]!) as string) as T;
+}
+
 const skip = installed ? false : `ブラウザが ${browsersPath} に入っていない`;
 
 test("9本の道具が試験用のページで動き、失敗した通信が絞れ、秘密のヘッダの値は伏せられる", { skip }, async () => {
@@ -223,4 +231,30 @@ test("9本の道具が試験用のページで動き、失敗した通信が絞�
   assert.match((await call("listNetwork")).text, /当てはまる通信はありません（記録は全部で 0 件）/);
   await call("browserOpen", { url: `${base}/second` });
   assert.match((await call("browserEval", { expression: "document.cookie" })).text, /""/);
+});
+
+test("名乗りと言語：ページから見ても要求でも HeadlessChrome を名乗らず同じ版の Chrome、言語は ja-JP から、時刻は Asia/Tokyo。webdriver は変えない", { skip }, async () => {
+  const version = ctx.session.browserVersion;
+  assert.match(version ?? "", /^\d+\.\d+\.\d+\.\d+$/);
+  // 要求のヘッダ（サーバが受けたもの）
+  const opened = await call("browserOpen", { url: `${base}/whoami` });
+  assert.equal(opened.isError, undefined, opened.text);
+  const seen = await evalJson<{ userAgent: string; acceptLanguage: string; secChUa: string }>("document.body.innerText");
+  assert.doesNotMatch(seen.userAgent, /HeadlessChrome/);
+  assert.match(seen.userAgent, new RegExp(` Chrome/${version!.replaceAll(".", "\\.")} `));
+  assert.match(seen.acceptLanguage, /^ja-JP,ja;q=0\.9,en-US;q=0\.8,en;q=0\.7$/);
+  assert.doesNotMatch(seen.secChUa, /HeadlessChrome/);
+  assert.match(seen.secChUa, /"Chromium";v="\d+"/);
+  // ページから見たもの
+  const nav = await evalJson<{ ua: string; langs: string[]; tz: string; locale: string; brands: string[]; webdriver: boolean }>(
+    "JSON.stringify({ ua: navigator.userAgent, langs: navigator.languages, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, " +
+      "locale: Intl.DateTimeFormat().resolvedOptions().locale, brands: navigator.userAgentData.brands.map((b) => b.brand), webdriver: navigator.webdriver })",
+  );
+  assert.equal(nav.ua, seen.userAgent);
+  assert.deepEqual(nav.langs, ["ja-JP", "ja", "en-US", "en"]);
+  assert.equal(nav.tz, "Asia/Tokyo");
+  assert.equal(nav.locale, "ja-JP");
+  assert.ok(!nav.brands.includes("HeadlessChrome"), nav.brands.join(","));
+  // それ以上の偽装はしない（ユーザー決定・2026-10-10）
+  assert.equal(nav.webdriver, true);
 });

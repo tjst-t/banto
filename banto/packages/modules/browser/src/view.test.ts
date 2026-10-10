@@ -9,7 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StreamStamp, WebSocket } from "@banto/stream-server";
-import { createTestPageServer } from "./test-page.js";
+import { FRAME_BOX, FRAME_COLORS, createTestPageServer } from "./test-page.js";
 import { createBrowserContextFromDataDir } from "./server.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
@@ -287,7 +287,8 @@ test("流れ：開くとブラウザを起こして映し、印が返るまで�
   // 携帯が裏に回っても、パソコンが見ているので映し続ける。携帯を閉じるとページの大きさを戻す
   phone.post({ type: "visible", visible: false });
   await until("見ている画面は1つ", () => view.status().watching === 1);
-  assert.equal(view.status().screencasting, true);
+  // 見ている画面が変わると大きさの上限が変わり、張り直す——張り直しの間（止めてから張るまで）を読まないよう、張られるまで待つ
+  await until("映し続ける", () => view.status().screencasting);
   phone.close(1000);
   await until("ページの大きさが戻る", () => lastText(pc, (t) => t.type === "state" && (t.viewport as { width: number } | null)?.width === 1280));
 
@@ -414,3 +415,46 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
     phone.close(1000);
   }
 });
+
+test("別オリジンの iframe：静かになる直前の iframe の描画も、人の画面に絵として届き、押した入力は iframe に届く", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+  const pc = new FakeSocket();
+  // 描き終えた画面のふり：絵を受けたらすぐ印を返し、受けた時刻を残す
+  const arrived: number[] = [];
+  const send = pc.send.bind(pc);
+  pc.send = (data: Buffer | string) => {
+    send(data);
+    if (typeof data === "string") return;
+    arrived.push(Date.now());
+    setImmediate(() => pc.post({ type: "ack", seq: decodeFrame(data).header.seq }));
+  };
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 1280, height: 800, dpr: 1, visible: true }));
+  try {
+    pc.post({ type: "navigate", url: `${base}/frame` });
+    const inner = await until("iframe が読めた", () => (ctx.session.running && ctx.session.current !== undefined ? ctx.session.page().page.frames().find((f) => f.url().includes("/frame-inner")) : undefined));
+    assert.match(inner.url(), /^http:\/\/localhost:/, "iframe が別オリジンではない");
+    const changedAt = () => inner.evaluate(() => (window as unknown as { changedAt?: number }).changedAt ?? 0);
+    const center = { x: FRAME_BOX.x + FRAME_BOX.width / 2, y: FRAME_BOX.y + FRAME_BOX.height / 2 };
+    // 読み終えて少し後の1回と、押すたびの1回——どれも iframe の中だけの1度きりの描画で、そのあとページは静かになる
+    for (let step = 1; step < FRAME_COLORS.length; step++) {
+      const before = await changedAt();
+      if (step > 1) for (const event of ["down", "up"]) pc.post({ type: "mouse", event, ...center, button: "left", buttons: event === "down" ? 1 : 0, clickCount: 1 });
+      const at = await waitChange(changedAt, before);
+      await until(`${step} 番目の色に変わったあとの絵`, () => arrived.some((t) => t > at), 3_000);
+    }
+    // 押した数がページのサーバに届いた（iframe の中の fetch）
+    const clicks = await ctx.session.page().page.evaluate(() => fetch("/api/frame-clicks").then((r) => r.json() as Promise<{ clicks: number }>));
+    assert.ok(clicks.clicks >= FRAME_COLORS.length - 2, `iframe に届いた押下が ${clicks.clicks} 回`);
+  } finally {
+    pc.close(1000);
+  }
+});
+
+async function waitChange(read: () => Promise<number>, before: number, timeoutMs = 10_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = await read();
+    if (v > before) return v;
+    if (Date.now() > deadline) throw new Error("iframe の色が変わらない");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
