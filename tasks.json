@@ -6050,7 +6050,7 @@
       "number": 248,
       "kind": "task",
       "title": "別のサーバの実装：SSH の接続1本・前提の確かめ・コードと node の送り込み・Module の起動",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [
         "runtime-seam",
@@ -6067,7 +6067,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-10T05:21:33.017Z",
+      "updatedAt": "2026-10-10T16:36:44.447Z",
       "closedAt": null,
       "extra": {}
     },
