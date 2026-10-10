@@ -3102,9 +3102,17 @@ fast-forward を妨げた／サブエージェントが途中で終わった（S
   `{ session, cols, rows }`。画面→Module は文字のメッセージ `{ "type": "input", "data": "…" }`・
   `{ "type": "resize", "cols": n, "rows": n }`、Module→画面は端末への出力のバイト列（2進）
 - 繋いだとき・繋ぎ直したときは、Module が今の画面の中身を先に送ってから続きを流す（制御モードなら `capture-pane -e`）
-- **画面のキーボードが出る端末**（`useTouchKeyboard`、v4-frontend.md）では、端末の上に**キーの帯**（Esc・Ctrl・Tab・
-  矢印・`|`・`~` など。Ctrl は次の1文字にだけ効く）を出す
-- 選んだ文字のコピーと貼り付けは画面の中の操作で行う：コピーは Ctrl+Shift+C とキーの帯の「コピー」（書き込みは
+- **画面のキーボードが出る端末**（`useTouchKeyboard`、v4-frontend.md）では、**端末の下（＝画面のキーボードのすぐ上）に
+  キーの帯**を出す（改訂・2026-10-10、ユーザー要望。以前は端末の上）。banto は画面のキーボードが出るとレイアウトを縮める
+  （`interactive-widget=resizes-content`、v4-frontend.md）ので、下に置けばキーボードの上に来る。形は携帯のターミナルの
+  アプリに倣う：**Android の Termux の既定の2段・8列**（横に流さず全部見える）——上段 ESC・`/`・`-`・`|`・HOME・↑・END・
+  PGUP、下段 TAB・CTRL・ALT・`~`・←・↓・→・PGDN。**修飾キー（CTRL・ALT）は iOS の Blink Shell・Termux に倣い**、1回押すと
+  次の1打だけ（once）、続けて2回で押し続け（lock、もう一度で外れる）。画面のキーボードの文字にも帯のキーにも効く（Ctrl は
+  制御文字、Alt は ESC を前に付ける、矢印・HOME・END・PGUP/PGDN は xterm の `ESC [ 1 ; <m> X`・`ESC [ n ; <m> ~`）。
+  矢印は長押しで繰り返す。画面の上の帯（セッションの切り替え）は「+」（セッションを足す）と、流れの状態を英語の短い語
+  （connecting…・connected・reconnecting…・closed）で出す（2026-10-10、ユーザー要望）。iOS Safari はレイアウトを縮めない
+  ので、iOS でキーボードの上に来るかは確かめていない
+- 選んだ文字のコピーと貼り付けは画面の中の操作で行う：コピーは Ctrl+Shift+C と、画面のキーボードの端末では上の帯の「コピー」（書き込みは
   banto の画面が Canvas の iframe に渡している `clipboard-write` で通る——Vault の公開鍵のコピーと同じ経路）、
   貼り付けはブラウザの貼り付け（Ctrl+Shift+V・Cmd+V・長押し。paste の出来事なので読み取りの権限は要らない）。
   MCP Apps の `permissions` での申告は要らなかった（実装・2026-10-08）

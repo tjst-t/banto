@@ -3,7 +3,7 @@
 // 上にセッションの切り替え（足す・名前を変える・閉じる）、下に端末（xterm.js）。打鍵と出力は共通の流れの口
 // （アーキ仕様 §5.8、`@banto/stream-client` を埋め込む）に乗る。流れの名前は `terminal`、params は
 // `{ session, cols, rows }`。画面のキーボードが出る端末（`(hover: none) and (pointer: coarse)`——banto の画面の
-// `useTouchKeyboard` と同じ見分け）では、端末の上にキーの帯を出す。
+// `useTouchKeyboard` と同じ見分け）では、端末の下（＝画面のキーボードのすぐ上）にキーの帯を出す。
 //
 // xterm.js はこの HTML に埋め込む（Canvas の iframe は外から読み込めない。数百 KB あるので Shell には足さず、
 // 任意の Terminal にだけ載せる——§4.6「Shell に足さず、別の Module にする」）。
@@ -63,6 +63,7 @@ button, input { font: inherit; color: inherit; }
 .tab input { height: 24px; width: 12ch; margin: 0 4px; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); font-family: var(--mono); }
 .btn { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); cursor: pointer; white-space: nowrap; }
 .btn:hover { background: var(--bg-3); }
+.btn.icon { width: 28px; padding: 0; font-size: 16px; line-height: 1; }
 .spacer { flex: 1; }
 .state { color: var(--ink-3); font-size: var(--t-xs); white-space: nowrap; }
 .state[data-state="open"] { color: var(--ink-2); }
@@ -80,9 +81,12 @@ button, input { font: inherit; color: inherit; }
 .error { margin: 6px 8px 0; padding: 6px 10px; border-radius: var(--r-md); background: var(--danger-soft); color: var(--danger); font-size: var(--t-xs); }
 
 /* ---- キーの帯（画面のキーボードが出る端末だけ） ---- */
-.keys { display: flex; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--line); overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.key { flex: none; min-width: 40px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); font-family: var(--mono); touch-action: manipulation; user-select: none; -webkit-user-select: none; }
-.key[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.keys { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--bg-2); }
+.key { min-width: 0; height: 38px; padding: 0; border: 0; border-radius: var(--r-sm); background: var(--bg); font-family: var(--mono); font-size: 13px; touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+.key:active, .key[data-down] { background: var(--bg-3); }
+.key.mod { font-size: 11px; letter-spacing: .02em; }
+.key[data-mod="once"] { background: var(--accent-soft); color: var(--accent); }
+.key[data-mod="lock"] { background: var(--accent); color: var(--bg); }
 
 /* ---- 端末 ---- */
 .term-wrap { position: relative; flex: 1; min-height: 0; padding: 4px 0 0 6px; }
@@ -175,19 +179,34 @@ const SCRIPT = String.raw`
   let session = null;
   let stream = null;
   let streamState = "connecting";
-  /** Ctrl を押してある（次の1文字にだけ効く） */
-  let ctrlArmed = false;
+  /**
+   * 帯の修飾キー（Ctrl・Alt）。Termux・Blink に倣い、1回押すと次の1打にだけ効き（once）、続けて2回押すと
+   * 押し続けた形で残る（lock、もう一度押すと外れる）。画面のキーボードで打った文字にも、帯のキーにも効く
+   */
+  const mods = { ctrl: "off", alt: "off" };
 
+  function ctrlOf(data) {
+    if (data.length !== 1) return data;
+    const c = data.toUpperCase().charCodeAt(0);
+    // @ A-Z [ \ ] ^ _ → 制御文字、? → DEL、空白 → NUL
+    if (c >= 64 && c <= 95) return String.fromCharCode(c - 64);
+    if (data === "?") return "\x7f";
+    if (data === " ") return "\x00";
+    return data;
+  }
+  /** 修飾キーを効かせる。once のものはここで外す */
+  function applyMods(data) {
+    if (mods.ctrl !== "off") data = ctrlOf(data);
+    if (mods.alt !== "off") data = "\x1b" + data;
+    for (const k of ["ctrl", "alt"]) if (mods[k] === "once") setMod(k, "off");
+    return data;
+  }
+  function sendRaw(data) {
+    if (stream) stream.send(JSON.stringify({ type: "input", data }));
+  }
   function sendInput(data) {
     if (!stream) return;
-    if (ctrlArmed && data.length === 1) {
-      const c = data.toUpperCase().charCodeAt(0);
-      // @ A-Z [ \ ] ^ _ → 制御文字、? → DEL
-      if (c >= 64 && c <= 95) data = String.fromCharCode(c - 64);
-      else if (data === "?") data = "\x7f";
-      setCtrl(false);
-    }
-    stream.send(JSON.stringify({ type: "input", data }));
+    sendRaw(applyMods(data));
   }
   term.onData(sendInput);
   // 選んだ文字のコピー（Ctrl+Shift+C）・貼り付け（Ctrl+Shift+V はブラウザの貼り付けに任せる）
@@ -217,7 +236,7 @@ const SCRIPT = String.raw`
   }).observe($("term"));
 
   // ---- 流れ ----
-  const STATE_TEXT = { connecting: "繋いでいます…", open: "繋がっています", reconnecting: "繋ぎ直しています…", ended: "閉じています" };
+  const STATE_TEXT = { connecting: "connecting…", open: "connected", reconnecting: "reconnecting…", ended: "closed" };
   function setStreamState(state, detail) {
     streamState = state;
     const el = $("state");
@@ -385,40 +404,78 @@ const SCRIPT = String.raw`
   }
 
   // ---- キーの帯 ----
-  function setCtrl(on) {
-    ctrlArmed = on;
-    const b = $("key-ctrl");
-    if (b) b.setAttribute("aria-pressed", on ? "true" : "false");
+  // 形は Android の Termux の既定（2段・8列、横に流さない）に倣い、修飾キーは iOS の Blink Shell・Termux に倣って
+  // 1回で次の1打だけ・2回で押し続け。矢印・BS は長押しで繰り返す。置き場は端末の下——banto は画面のキーボードが
+  // 出るとレイアウトを縮める（interactive-widget=resizes-content）ので、帯はキーボードのすぐ上に来る
+  function setMod(k, state) {
+    mods[k] = state;
+    const b = $("key-" + k);
+    if (!b) return;
+    b.dataset.mod = state;
+    b.setAttribute("aria-pressed", state === "off" ? "false" : "true");
   }
+  let lastModTap = { k: null, at: 0 };
+  function tapMod(k) {
+    const now = Date.now();
+    const twice = lastModTap.k === k && now - lastModTap.at < 350;
+    lastModTap = { k, at: now };
+    if (mods[k] === "lock") setMod(k, "off");
+    else if (mods[k] === "once") setMod(k, twice ? "lock" : "off");
+    else setMod(k, "once");
+  }
+  /** 矢印などの CSI。修飾があれば xterm の形（ESC [ 1 ; <m> X）にする */
+  function csiKey(final, tilde) {
+    return () => {
+      const m = 1 + (mods.alt !== "off" ? 2 : 0) + (mods.ctrl !== "off" ? 4 : 0);
+      for (const k of ["ctrl", "alt"]) if (mods[k] === "once") setMod(k, "off");
+      if (tilde) return m > 1 ? "\x1b[" + tilde + ";" + m + "~" : "\x1b[" + tilde + "~";
+      if (m > 1) return "\x1b[1;" + m + final;
+      return (term.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + final;
+    };
+  }
+  const plain = (d) => () => applyMods(d);
   function setupKeys() {
     const bar = $("keys");
     if (!TOUCH) { bar.hidden = true; return; }
     bar.hidden = false;
-    const arrow = (c) => () => (term.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + c;
+    // [表示, 読み上げ, 送るもの（関数）| 修飾キーの名前, 長押しで繰り返すか]
     const KEYS = [
-      ["Esc", () => "\x1b"],
-      ["Ctrl", null],
-      ["Tab", () => "\t"],
-      ["←", arrow("D")], ["↑", arrow("A")], ["↓", arrow("B")], ["→", arrow("C")],
-      ["|", () => "|"], ["~", () => "~"], ["/", () => "/"], ["-", () => "-"],
-      ["コピー", "copy"],
+      ["ESC", "Esc", plain("\x1b")], ["/", "/", plain("/")], ["-", "-", plain("-")], ["|", "|", plain("|")],
+      ["HOME", "Home", csiKey("H")], ["↑", "↑", csiKey("A"), true], ["END", "End", csiKey("F")], ["PGUP", "Page Up", csiKey(null, "5")],
+      ["TAB", "Tab", plain("\t")], ["CTRL", "Ctrl", "ctrl"], ["ALT", "Alt", "alt"], ["~", "~", plain("~")],
+      ["←", "←", csiKey("D"), true], ["↓", "↓", csiKey("B"), true], ["→", "→", csiKey("C"), true], ["PGDN", "Page Down", csiKey(null, "6")],
     ];
-    for (const [label, make] of KEYS) {
-      const b = h("button", { class: "key", type: "button", text: label, "data-key": label, "aria-label": label === "Ctrl" ? "Ctrl（次の1文字）" : label });
-      if (label === "Ctrl") { b.id = "key-ctrl"; b.setAttribute("aria-pressed", "false"); }
+    for (const [label, name, make, repeat] of KEYS) {
+      const isMod = typeof make === "string";
+      const b = h("button", { class: isMod || label.length > 2 ? "key mod" : "key", type: "button", text: label, "data-key": name, "aria-label": name });
+      if (isMod) { b.id = "key-" + make; b.dataset.mod = "off"; b.setAttribute("aria-pressed", "false"); }
+      let timer = 0, interval = 0, fired = false;
+      const stop = () => { window.clearTimeout(timer); window.clearInterval(interval); timer = interval = 0; delete b.dataset.down; };
       // 押しても端末から焦点を外さない（画面のキーボードを閉じない）
-      b.addEventListener("pointerdown", (e) => e.preventDefault());
+      b.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        if (isMod || !repeat) return;
+        b.dataset.down = "";
+        fired = false;
+        timer = window.setTimeout(() => {
+          interval = window.setInterval(() => { fired = true; sendRaw(make()); }, 60);
+        }, 400);
+      });
+      b.addEventListener("pointerup", stop);
+      b.addEventListener("pointercancel", stop);
+      b.addEventListener("pointerleave", stop);
       b.addEventListener("click", () => {
-        if (label === "Ctrl") { setCtrl(!ctrlArmed); term.focus(); return; }
-        if (make === "copy") { copySelection(); return; }
-        const data = make();
-        // 帯のキーにも Ctrl は効かない（文字を打つときだけ）——押してあれば外す
-        setCtrl(false);
-        if (stream) stream.send(JSON.stringify({ type: "input", data }));
+        if (isMod) { tapMod(make); term.focus(); return; }
+        if (fired) { fired = false; term.focus(); return; } // 長押しで繰り返した分は、離したときに1回足さない
+        sendRaw(make());
         term.focus();
       });
       bar.append(b);
     }
+    // 選んだ文字のコピーは上の帯に置く（画面のキーボードの端末だけ）
+    $("copy").hidden = false;
+    $("copy").addEventListener("pointerdown", (e) => e.preventDefault());
+    $("copy").addEventListener("click", () => copySelection());
   }
 
   (async () => {
@@ -469,7 +526,8 @@ export function terminalAppHtml(): string {
 <div id="app">
   <div class="bar">
     <div class="tabs" id="tabs" role="tablist" aria-label="セッション"></div>
-    <button class="btn" id="add" type="button" title="セッションを足す">＋ 足す</button>
+    <button class="btn icon" id="add" type="button" title="セッションを足す" aria-label="セッションを足す">+</button>
+    <button class="btn" id="copy" type="button" title="選んだ文字をコピー" hidden>コピー</button>
     <span class="spacer"></span>
     <span class="state" id="state" data-state="connecting" data-testid="terminal-state">繋いでいます…</span>
   </div>
@@ -479,11 +537,11 @@ export function terminalAppHtml(): string {
   </div>
   <div id="lost" class="lost" data-testid="terminal-lost" hidden></div>
   <div id="error" class="error" role="status" hidden></div>
-  <div class="keys" id="keys" data-testid="terminal-keys" hidden></div>
   <div class="term-wrap">
-    <div class="empty" id="empty" hidden><p>開いているセッションがありません。</p><p>「＋ 足す」でセッションを作ります。</p></div>
+    <div class="empty" id="empty" hidden><p>開いているセッションがありません。</p><p>「+」でセッションを作ります。</p></div>
     <div id="term" data-testid="terminal"></div>
   </div>
+  <div class="keys" id="keys" data-testid="terminal-keys" role="toolbar" aria-label="キー" hidden></div>
 </div>
 <script>${asset("@xterm/xterm/lib/xterm.js")}</script>
 <script>${asset("@xterm/addon-fit/lib/addon-fit.js")}</script>

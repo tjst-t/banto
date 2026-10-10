@@ -19,6 +19,24 @@ import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { parseCanvasParam } from "@/components/banto/shell/use-panel-stack";
 import { fetchRealUiToolCall, type RealUiToolCall } from "@/lib/backend/client";
 import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
+import { getAllProjects } from "@/lib/mock/projects";
+import { getThread } from "@/lib/mock/threads";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
+
+/**
+ * **見出しとタブの名前は「<Module> - <Project の名前>」**（2026-10-10、ユーザー要望）。別タブはどの Project の画面かを
+ * 示すものが他に無く、Project をまたいで同じ Module（terminal 等）を開くと見分けられない。Project の一覧は
+ * RealProjectsBootstrap が読み込むので、読めるまでは Module の名前だけを出す（推測した名前を出さない）
+ */
+function useWindowTitle(base: string, projectId: string | null | undefined): string {
+  useMockStoreVersion();
+  const name = projectId ? getAllProjects().find((p) => p.id === projectId)?.name : undefined;
+  const title = name ? `${base} - ${name}` : base;
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
+  return title;
+}
 
 function CanvasWindowInner() {
   const searchParams = useSearchParams();
@@ -45,7 +63,7 @@ function CanvasWindowInner() {
   // どの Module のどの画面かは URL がそのまま持っている（決定・2026-09-07）
   if (projectId && canvas.viewId.startsWith("ui://")) {
     return (
-      <CanvasWindowFrame title={canvas.moduleId}>
+      <CanvasWindowFrame title={canvas.moduleId} projectId={projectId}>
         <div className="h-full" data-testid="canvas-window-module" data-module={canvas.moduleId}>
           <ModuleCanvas
             owner={{ kind: "project", id: projectId }}
@@ -67,7 +85,16 @@ function CanvasWindowInner() {
   );
 }
 
-function CanvasWindowFrame({ title, children }: { title: string; children: React.ReactNode }) {
+function CanvasWindowFrame({
+  title: base,
+  projectId,
+  children,
+}: {
+  title: string;
+  projectId?: string | null;
+  children: React.ReactNode;
+}) {
+  const title = useWindowTitle(base, projectId);
   return (
     <div className="flex h-dvh min-h-0 flex-col">
       <div className="flex h-11 shrink-0 items-center border-b border-border px-3">
@@ -134,7 +161,7 @@ function RealCanvasWindow({
 
   const { call } = state;
   return (
-    <CanvasWindowFrame title={call.server}>
+    <CanvasWindowFrame title={call.server} projectId={getThread(threadId)?.projectId}>
       <div className="h-full" data-testid="canvas-window-module" data-module={call.server}>
         <ModuleCanvas
           owner={{ kind: "thread", id: threadId }}

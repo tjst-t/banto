@@ -1466,7 +1466,8 @@ Command Palette で探すしかなかった（規則13 の観点で不備）。
 
 - **いま見ている Project は URL が持つ**（規則3）——外枠は `useParams()` で読む。
   props で配ると、配る側（各面の layout）が要ることになり、外枠が分かれる
-- **Canvas の別タブ（`/canvas-window`）はこの外**——banto のクロムを持たない面
+- **Canvas の別タブ（`/canvas-window`）はこの外**——banto のクロムを持たない面。見出しとブラウザのタブの名前は **「<Module の名前> - <Project の名前>」**
+  （2026-10-10、ユーザー要望——別タブにはどの Project の画面かを示すものが他に無い）。Project の一覧が読めるまでは Module の名前だけ
 
 **Escape は、いちばん上の1枚だけを閉じる。**
 

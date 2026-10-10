@@ -142,7 +142,7 @@ test("ターミナル：入口から開いて打ち、閉じて開き直す・2�
     await pageB.close();
 
     // ---- 5. セッションを足す・名前を変える・切り替える・閉じる ----
-    await t.getByRole("button", { name: "＋ 足す" }).click();
+    await t.getByRole("button", { name: "セッションを足す" }).click();
     await expect(t.locator('.tab[data-session="s2"]')).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
     await expect(t.getByTestId("terminal-state")).toHaveAttribute("data-state", "open", { timeout: 30_000 });
     await expect(t.locator(".xterm-rows"), "新しいセッションに main の出力が出ている").not.toContainText("from-a-7", { timeout: 15_000 });
@@ -190,7 +190,12 @@ test("ターミナル：入口から開いて打ち、閉じて開き直す・2�
       await expect(mt.getByTestId("terminal-state")).toHaveAttribute("data-state", "open", { timeout: 60_000 });
       const keys = mt.getByTestId("terminal-keys");
       await expect(keys, "携帯でキーの帯が出ない").toBeVisible();
-      await expect(keys.locator(".key")).toHaveText(["Esc", "Ctrl", "Tab", "←", "↑", "↓", "→", "|", "~", "/", "-", "コピー"]);
+      // Termux の既定に倣った2段・8列。端末の下（画面のキーボードのすぐ上）に出る
+      await expect(keys.locator(".key")).toHaveText(["ESC", "/", "-", "|", "HOME", "↑", "END", "PGUP", "TAB", "CTRL", "ALT", "~", "←", "↓", "→", "PGDN"]);
+      const termBox = await mt.getByTestId("terminal").boundingBox();
+      const keysBox = await keys.boundingBox();
+      expect(termBox && keysBox && keysBox.y >= termBox.y + termBox.height - 1, "キーの帯が端末の下に無い").toBeTruthy();
+      await expect(mt.getByTestId("terminal-state")).toHaveText("connected");
       // ← を2回で、カーソルを戻して打ち込む：`echo k$((7*1))` の「1」の後ろに「1」を足すと 7*11
       await mt.getByTestId("terminal").click();
       await m.keyboard.type("echo k$((7*1))");
@@ -202,14 +207,23 @@ test("ターミナル：入口から開いて打ち、閉じて開き直す・2�
       // Ctrl は次の1文字にだけ効く：長く待つコマンドを Ctrl+C で止める
       await m.keyboard.type('sleep 300; echo "not-""interrupted"');
       await m.keyboard.press("Enter");
-      await keys.getByRole("button", { name: "Ctrl（次の1文字）" }).click();
-      await expect(keys.getByRole("button", { name: "Ctrl（次の1文字）" })).toHaveAttribute("aria-pressed", "true");
+      await keys.getByRole("button", { name: "Ctrl" }).click();
+      await expect(keys.getByRole("button", { name: "Ctrl" })).toHaveAttribute("aria-pressed", "true");
       await m.keyboard.type("c");
-      await expect(keys.getByRole("button", { name: "Ctrl（次の1文字）" })).toHaveAttribute("aria-pressed", "false");
+      await expect(keys.getByRole("button", { name: "Ctrl" })).toHaveAttribute("aria-pressed", "false");
       await m.keyboard.type('echo "after-ctrl-c-$((5*5))"');
       await m.keyboard.press("Enter");
       await expectScreen(mt, /after-ctrl-c-25/, "帯の Ctrl+C で止まらない");
       await expect(mt.locator(".xterm-rows")).not.toContainText("not-interrupted");
+      // 2回続けて押すと押し続けた形で残り（lock）、打っても外れない。もう一度押すと外れる
+      const ctrl = keys.getByRole("button", { name: "Ctrl" });
+      await ctrl.click();
+      await ctrl.click();
+      await expect(ctrl).toHaveAttribute("data-mod", "lock");
+      await m.keyboard.type("u");
+      await expect(ctrl, "lock の Ctrl が1打で外れた").toHaveAttribute("data-mod", "lock");
+      await ctrl.click();
+      await expect(ctrl).toHaveAttribute("data-mod", "off");
       // 同じセッションなので、パソコンの画面にも出る
       await expectScreen(t, /after-ctrl-c-25/);
     } finally {
