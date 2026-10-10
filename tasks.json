@@ -6239,7 +6239,7 @@
       "number": 257,
       "kind": "bug",
       "title": "Browser の人の画面に別サイトの iframe（reCAPTCHA 等）が映らない／ブラウザの名乗りを普通の Chrome に揃え、言語を日本語にする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6254,7 +6254,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-10T10:59:53.372Z",
-      "updatedAt": "2026-10-10T11:01:20.324Z",
+      "updatedAt": "2026-10-10T11:01:22.639Z",
       "closedAt": null,
       "extra": {}
     }
