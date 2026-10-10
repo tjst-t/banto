@@ -17,12 +17,23 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { folderExists, listChildFolders, normalizeFolderPath, parentFolder } from "@/lib/mock/github";
 
+/** フォルダの木の引き方。既定はこの機械（別のサーバでは SSH で名前だけを引く——`lib/mock/runtimes.ts`） */
+export interface FolderSource {
+  exists: (path: string) => boolean;
+  list: (path: string) => string[];
+  /** どこのフォルダか（選ぶ画面の題に出す。この機械なら無し） */
+  where?: string;
+}
+
+const HOST_SOURCE: FolderSource = { exists: folderExists, list: listChildFolders };
+
 export function PathPicker({
   id,
   value,
   onChange,
   autoFocus,
   pickerDescription = "いま開いている場所を、この Project の Root にします。",
+  source = HOST_SOURCE,
 }: {
   id: string;
   value: string;
@@ -30,6 +41,7 @@ export function PathPicker({
   autoFocus?: boolean;
   /** 「フォルダを選ぶ」の説明文（何のために選ぶか） */
   pickerDescription?: string;
+  source?: FolderSource;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -54,6 +66,7 @@ export function PathPicker({
         <PickerDialog
           startAt={value}
           description={pickerDescription}
+          source={source}
           onClose={() => setOpen(false)}
           onPick={(path) => {
             onChange(path);
@@ -68,27 +81,29 @@ export function PathPicker({
 function PickerDialog({
   startAt,
   description,
+  source,
   onClose,
   onPick,
 }: {
   startAt: string;
   description: string;
+  source: FolderSource;
   onClose: () => void;
   onPick: (path: string) => void;
 }) {
   // いま入っているパスから始める。知らない場所なら home から
   const [at, setAt] = useState(() => {
     const start = normalizeFolderPath(startAt);
-    return folderExists(start) ? start : "~";
+    return source.exists(start) ? start : "~";
   });
-  const entries = listChildFolders(at);
+  const entries = source.list(at);
   const parent = parentFolder(at);
 
   return (
     <Dialog open onOpenChange={(next) => (next ? null : onClose())}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>フォルダを選ぶ</DialogTitle>
+          <DialogTitle>{source.where ? `${source.where} のフォルダを選ぶ` : "フォルダを選ぶ"}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 

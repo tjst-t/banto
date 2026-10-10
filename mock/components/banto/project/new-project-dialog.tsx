@@ -19,7 +19,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { CircleCheck, ChevronRight, FolderOpen, ShieldCheck } from "lucide-react";
+import { CircleCheck, ChevronRight, FolderOpen, Server, ShieldCheck } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -47,7 +47,17 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import type { MockPreparedFolder, MockProjectOverrides } from "@/lib/mock/types";
 import { moveChoiceByKey } from "./choice-pills";
 import { ModuleIcon } from "./module-icon";
-import { PathPicker, WideRootWarning } from "./path-picker";
+import { PathPicker, WideRootWarning, type FolderSource } from "./path-picker";
+import {
+  HOST_CONTAINER,
+  getRuntime,
+  remoteFolderSource,
+  runtimeIdOfProject,
+  runtimeUnavailableReason,
+  setProjectRuntime,
+  sshTarget,
+  useRuntimes,
+} from "@/lib/mock/runtimes";
 
 type Overrides = Omit<MockProjectOverrides, "projectId" | "securityRoot">;
 
@@ -63,6 +73,8 @@ export interface NewProjectPreset {
   folder?: string;
   /** Project 名の初期値 */
   name?: string;
+  /** 実行場所（`lib/mock/runtimes.ts` の id）。無ければこの機械のコンテナ */
+  runtimeId?: string;
 }
 
 /** 始め方の1つ。core の分は「手元のフォルダ」だけで、あとは Module が名乗ったもの */
@@ -100,7 +112,11 @@ export function NewProjectDialog({
 function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone: () => void }) {
   useMockStoreVersion();
   const router = useRouter();
-  const methods: Method[] = [
+  const runtimes = useRuntimes();
+  // **実行場所は作るときに決め、あとから変えない**（v4-security.md §1「Project の実行場所——別のサーバ」）
+  const [runtimeId, setRuntimeId] = useState<string>(preset?.runtimeId ?? HOST_CONTAINER);
+  const remote = runtimeId === HOST_CONTAINER ? undefined : getRuntime(runtimeId);
+  const allMethods: Method[] = [
     {
       key: "folder",
       label: "手元のフォルダ",
@@ -115,6 +131,12 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
       provider: p,
     })),
   ];
+  // 別のサーバでは、フォルダを用意する Module（Repositories の clone など）はまだ使えない——向こうのフォルダは
+  // host の Repositories が扱わない（最初の版）。手元のフォルダ＝向こうのフォルダを選ぶ、だけにする
+  const methods = remote ? allMethods.slice(0, 1) : allMethods;
+  const folderSource: FolderSource | undefined = remote
+    ? { ...remoteFolderSource(remote.id), where: remote.name }
+    : undefined;
   const [methodChoice, setMethod] = useState<StartMethod>(preset?.method ?? "folder");
   // 名乗っていた Module が外れたら（`?modules=none`）、手元のフォルダに戻る
   const current = methods.find((m) => m.key === methodChoice) ?? methods[0];
@@ -132,7 +154,10 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [overrides, setOverrides] = useState<Overrides>({});
   // そのフォルダを、もう Project が Root にしているか——core が自分で調べる（Module に聞かない）
-  const existing = root ? getAllProjects().find((p) => p.basePath === root) : undefined;
+  // 実行場所が違えば、同じパスでも別のフォルダ（向こうの /home/dev/x と、この機械の同じ文字列は別物）
+  const existing = root
+    ? getAllProjects().find((p) => p.basePath === root && runtimeIdOfProject(p.id) === runtimeId)
+    : undefined;
   const showProjectStep = !current.provider || !!ready;
 
   function changeMethod(next: StartMethod) {
@@ -157,8 +182,10 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
     }
     if (primary.action !== "create") return;
     const project = createProject({ name: name.trim(), basePath: root, overrides });
+    setProjectRuntime(project.id, runtimeId);
     onDone();
     router.push(`/p/${project.id}`);
+    if (remote) toast(`Project「${project.name}」を作りました——${remote.name}（${sshTarget(remote)}）で動かします`);
     // Module が用意したなら、誰が何をしたかも添える（Module が返した1行をそのまま）
     if (ready && current.provider) {
       toast(`Project「${project.name}」を作りました——${current.provider.roleName}：${ready.summary}`);
@@ -171,6 +198,22 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         <DialogTitle>新しい Project</DialogTitle>
         <DialogDescription>Root にするフォルダを決めて、そこに Project を作ります。</DialogDescription>
       </DialogHeader>
+
+      <RuntimeStep
+        runtimes={runtimes}
+        value={runtimeId}
+        onChange={(next) => {
+          setRuntimeId(next);
+          // フォルダは実行場所ごとに別物——選び直したら空にする
+          setBasePath("");
+          setMethod("folder");
+          setPrepared(null);
+        }}
+        onAdd={() => {
+          onDone();
+          router.push("/settings?section=runtimes");
+        }}
+      />
 
       <div className="flex flex-col gap-2">
         <h3 id="new-project-folder-step" className="text-sm font-semibold text-foreground">
@@ -237,7 +280,12 @@ function NewProjectForm({ preset, onDone }: { preset?: NewProjectPreset; onDone:
         className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-y-auto [&>*]:shrink-0"
       >
         {!current.provider ? (
-          <FolderField basePath={basePath} onBasePathChange={setBasePath} autoFocus={!preset?.folder} />
+          <FolderField
+            basePath={basePath}
+            onBasePathChange={setBasePath}
+            autoFocus={!preset?.folder}
+            source={folderSource}
+          />
         ) : ready ? (
           <PreparedFolder
             folder={ready}
@@ -381,17 +429,32 @@ function FolderField({
   basePath,
   onBasePathChange,
   autoFocus,
+  source,
 }: {
   basePath: string;
   onBasePathChange: (next: string) => void;
   autoFocus: boolean;
+  source?: FolderSource;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor="new-project-path">Root パス</Label>
-      <PathPicker id="new-project-path" value={basePath} onChange={onBasePathChange} autoFocus={autoFocus} />
+      <Label htmlFor="new-project-path">Root パス{source?.where ? `（${source.where} の上）` : ""}</Label>
+      <PathPicker
+        id="new-project-path"
+        value={basePath}
+        onChange={onBasePathChange}
+        autoFocus={autoFocus}
+        source={source}
+        pickerDescription={
+          source?.where
+            ? `${source.where} のフォルダです。いま開いている場所を、この Project の Root にします。`
+            : undefined
+        }
+      />
       <p className="text-xs text-ink-3">
-        Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
+        {source?.where
+          ? "向こうのサーバのフォルダです。この機械には置きません。リポジトリの clone は、Project を作ったあと AI に頼んでください。"
+          : "Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能"}
       </p>
       <WideRootWarning path={basePath} />
     </div>
@@ -527,5 +590,71 @@ function AdvancedOverrides({
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * どこで動かすか（決定・2026-10-08、ユーザー）。既定はこの機械のコンテナ。登録した別のサーバのうち、
+ * 選べないもの（ほかの Project が使っている・host 鍵が変わった・前提が足りない）は理由を添えて出す——隠すと
+ * 「登録したのに出てこない」になる。実行場所は作ったあとに変えられない
+ */
+function RuntimeStep({
+  runtimes,
+  value,
+  onChange,
+  onAdd,
+}: {
+  runtimes: ReturnType<typeof useRuntimes>;
+  value: string;
+  onChange: (next: string) => void;
+  onAdd: () => void;
+}) {
+  const remote = value === HOST_CONTAINER ? undefined : runtimes.find((r) => r.id === value);
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="new-project-runtime">
+      <div className="flex items-baseline justify-between gap-2">
+        <Label htmlFor="new-project-runtime">どこで動かすか</Label>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="text-xs text-ink-3 underline-offset-2 hover:text-foreground hover:underline"
+        >
+          別のサーバを登録する
+        </button>
+      </div>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger id="new-project-runtime" className="h-9 w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={HOST_CONTAINER}>
+            <span className="flex items-center gap-2">
+              <ShieldCheck className="size-3.5 shrink-0 text-ink-3" />
+              この機械のコンテナ
+            </span>
+          </SelectItem>
+          {runtimes.map((r) => {
+            const reason = runtimeUnavailableReason(r);
+            return (
+              <SelectItem key={r.id} value={r.id} disabled={!!reason}>
+                <span className="flex min-w-0 flex-col items-start">
+                  <span className="flex items-center gap-2">
+                    <Server className="size-3.5 shrink-0 text-ink-3" />
+                    {r.name}
+                    <span className="font-mono text-xs text-ink-3">{sshTarget(r)}</span>
+                  </span>
+                  {reason ? <span className="pl-5.5 text-xs text-ink-3">{reason}</span> : null}
+                </span>
+              </SelectItem>
+            );
+          })}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-ink-3" data-testid="new-project-runtime-note">
+        {remote
+          ? `${remote.name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${remote.user} ができることを全部できます。作ったあとで変えられません。`
+          : "banto と同じ機械の、この Project 専用のコンテナで動かします。作ったあとで変えられません。"}
+      </p>
+    </div>
   );
 }

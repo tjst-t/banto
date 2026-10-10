@@ -10,7 +10,7 @@
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Puzzle, ShieldAlert, SlidersHorizontal, TriangleAlert } from "lucide-react";
+import { Puzzle, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,6 +40,7 @@ import {
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { closeProject, getActiveProjects, getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
+import { HOST_CONTAINER, getRuntime, runtimeIdOfProject, sshTarget } from "@/lib/mock/runtimes";
 import {
   getImplementation,
   getProjectModuleLinks,
@@ -239,6 +240,7 @@ export function ProjectSettingsContent({
           <p className="mb-3 text-xs text-ink-3">
             Shell・FileSystem をこの根に閉じ込める。
           </p>
+          <RuntimeReadOnly projectId={projectId} />
           <Input
             value={overrides.securityRoot}
             onChange={(e) => patch({ securityRoot: e.target.value })}
@@ -298,4 +300,38 @@ export function ProjectSettingsContent({
 /** この Project の文脈で設定面を出せる Module（左メニューの見出し下に並ぶ） */
 export function projectConfigurableModules(projectId: string) {
   return getProjectModuleLinks(projectId).filter((i) => i.hasConfigSurface && i.enabled);
+}
+
+/**
+ * この Project の実行場所——**読むだけ**（作るときに決め、あとから変えない。v4-security.md §1「Project の実行場所——
+ * 別のサーバ」）。別のサーバなら、根はそのサーバのパスで、この機械には無い
+ */
+function RuntimeReadOnly({ projectId }: { projectId: string }) {
+  const id = runtimeIdOfProject(projectId);
+  const remote = id === HOST_CONTAINER ? undefined : getRuntime(id);
+  return (
+    <div className="mb-3 flex items-start gap-2.5 rounded-md border border-border bg-surface-2 px-3 py-2.5" data-testid="project-runtime">
+      {remote ? (
+        <Server className="mt-0.5 size-4 shrink-0 text-ink-3" />
+      ) : (
+        <ShieldCheck className="mt-0.5 size-4 shrink-0 text-ink-3" />
+      )}
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <p className="text-sm text-foreground">
+          {remote ? (
+            <>
+              {remote.name} <span className="font-mono text-xs text-ink-3">{sshTarget(remote)}</span> で動いています
+            </>
+          ) : (
+            "この機械のコンテナで動いています"
+          )}
+        </p>
+        <p className="text-xs text-ink-3">
+          {remote
+            ? `下の根は ${remote.name} の上のフォルダです。サーバ丸ごとがこの Project の箱で、そのサーバの中ではコンテナのような閉じ込めはありません。実行場所はあとから変えられません。`
+            : "実行場所はあとから変えられません。"}
+        </p>
+      </div>
+    </div>
+  );
 }

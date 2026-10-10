@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Gauge, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowUpCircle, Bell, Gauge, Puzzle, Server, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -10,6 +10,7 @@ import { RoleList } from "@/components/banto/settings/role-list";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
 import { UpdatePanel } from "@/components/banto/settings/update-panel";
 import { ResourcesPanel } from "@/components/banto/settings/resources-panel";
+import { RuntimesPanel } from "@/components/banto/settings/runtimes-panel";
 import {
   SettingsShell,
   type SearchEntry,
@@ -42,6 +43,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "credentials", label: "資格情報", icon: Sparkles },
   { section: "notifications", label: "通知", icon: Bell },
   { section: "resources", label: "資源", icon: Gauge },
+  { section: "runtimes", label: "実行場所", icon: Server },
   { section: "update", label: "更新", icon: ArrowUpCircle },
 ];
 
@@ -172,6 +174,17 @@ function renderInstanceSection(section: SettingsSection) {
           description="この機械と Project のコンテナが、いま何にどれだけ使っているか。混んでいるときは、何が使っているかを開いて見られます。"
         />
         <ResourcesPanel />
+      </div>
+    );
+  }
+  if (section === "runtimes") {
+    return (
+      <div>
+        <SectionHeading
+          title="実行場所"
+          description="Project をどこで動かすか。既定はこの機械のコンテナです。別のサーバを登録すると、新しい Project を作るときに選べます。"
+        />
+        <RuntimesPanel />
       </div>
     );
   }
