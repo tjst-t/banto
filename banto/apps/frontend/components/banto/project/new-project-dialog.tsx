@@ -13,9 +13,15 @@
 // 画面の中の「よそ様の画面」と分かるように点線の枠と出所を付ける。Module の画面が `dev.banto/folder-prepared` で
 // フォルダを返したら、core が下の段（Project 名・Advanced）を出して作る。そのフォルダをもう Project が使っていれば、
 // 新しくは作らずにそれを開く（core が自分で調べる）。名乗る Module が無ければ、タブは出ない
+//
+// **どこで動かすか**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」。画面はモックの `RuntimeStep` の形で
+// 決定・2026-10-10）：一番上で選ぶ。既定はこの機械のコンテナ。登録した別のサーバのうち選べないものは、host が言う理由を
+// 添えて薄く出す（隠すと「登録したのに出てこない」になる）。別のサーバでは、Root は向こうのフォルダ（host が SSH で名前
+// だけを引く）で、Module が名乗る始め方（clone 等）は出さない——向こうのフォルダは Repositories が扱わない（最初の版）。
+// 実行場所は作ったあとに変えられない
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, CircleCheck, FolderOpen, ShieldCheck } from "lucide-react";
+import { ChevronRight, CircleCheck, FolderOpen, Server, ShieldCheck } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -36,13 +42,23 @@ import {
 } from "@/components/ui/select";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { cn } from "@/lib/utils";
-import { PathPicker } from "@/components/banto/settings/path-picker";
+import { PathPicker, type FolderSource } from "@/components/banto/settings/path-picker";
+import { sshTarget } from "@/components/banto/settings/runtimes-panel";
 import {
   WideRootWarning,
   useRootScope,
 } from "@/components/banto/settings/wide-root-warning";
 import { createRealProject, getAllProjects, reopenProject } from "@/lib/mock/projects";
-import { listRealFolderProviders, type RealFolderProvider } from "@/lib/backend/client";
+import {
+  HOST_CONTAINER_RUNTIME,
+  listRealFolderProviders,
+  listRealRuntimeDirectories,
+  listRealRuntimes,
+  remoteRuntimeName,
+  type RealFolderProvider,
+  type RealRemoteRuntime,
+} from "@/lib/backend/client";
+import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import type { PreparedFolder } from "@/lib/backend/canvas-folder-prepared";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/settings";
@@ -83,6 +99,10 @@ export function NewProjectDialog({
   const [prepared, setPrepared] = useState<{ method: string; folder: PreparedFolder } | null>(null);
   /** 「別のフォルダにする」で Module の画面を初めからにする */
   const [surfaceKey, setSurfaceKey] = useState(0);
+  // どこで動かすか：`host-container` か `remote:<名前>`
+  const [runtime, setRuntime] = useState<string>(HOST_CONTAINER_RUNTIME);
+  const [runtimes, setRuntimes] = useState<RealRemoteRuntime[] | null>(null);
+  const [runtimesError, setRuntimesError] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -90,12 +110,24 @@ export function NewProjectDialog({
       (list) => !cancelled && setProviders(list),
       (err: unknown) => !cancelled && setProvidersError(err instanceof Error ? err.message : String(err)),
     );
+    if (CONNECTED_FEATURES.remoteRuntimes) {
+      listRealRuntimes().then(
+        (list) => !cancelled && setRuntimes(list),
+        (err: unknown) => !cancelled && setRuntimesError(err instanceof Error ? err.message : String(err)),
+      );
+    }
     return () => {
       cancelled = true;
     };
   }, [open]);
+  const remoteName = remoteRuntimeName(runtime);
+  const folderSource: FolderSource | undefined = remoteName
+    ? { list: (path) => listRealRuntimeDirectories(remoteName, path), where: remoteName }
+    : undefined;
   const providerKey = (p: RealFolderProvider) => `${p.server}|${p.resourceUri}`;
-  const provider = providers?.find((p) => providerKey(p) === method);
+  // 別のサーバでは、フォルダを用意する Module（Repositories の clone など）は使えない——向こうのフォルダを選ぶだけ
+  const visibleProviders = remoteName ? [] : (providers ?? []);
+  const provider = visibleProviders.find((p) => providerKey(p) === method);
   // **初期値は入れない**（改訂・2026-09-11、ユーザー指摘）——`~/worktrees/` を
   // 置いていたが、その場所を使うかどうかは人が決めること。空にしておけば、
   // 「選ぶ」は home から始まる（host の既定、`resolveBrowsePath`）。Module の画面から頼まれたときだけ入る
@@ -109,6 +141,7 @@ export function NewProjectDialog({
 
   function reset() {
     setName(null);
+    setRuntime(HOST_CONTAINER_RUNTIME);
     setBasePath("");
     setShowAdvanced(false);
     setOverrides(EMPTY_OVERRIDES);
@@ -120,10 +153,13 @@ export function NewProjectDialog({
   const root = provider ? (ready?.path ?? "") : basePath.trim();
   // **Module が用意したフォルダにも広い根の警告を出す**（2026-10-03、レビュー）——第三者の Module が `/home/u` や `/` を
   // 返すことはありうる。手元のフォルダと同じ判断（host の `/api/config/root-scope`）で
-  const rootScope = useRootScope(root);
+  const rootScope = useRootScope(root, remoteName);
   const name = typedName ?? (ready ? (ready.suggestedName ?? ready.path.split("/").pop() ?? "") : "");
-  // そのフォルダを、もう Project が Root にしているか——core が自分で調べる（Module に聞かない）
-  const existing = root ? getAllProjects().find((p) => p.basePath === root) : undefined;
+  // そのフォルダを、もう Project が Root にしているか——core が自分で調べる（Module に聞かない）。
+  // **実行場所が違えば、同じパスでも別のフォルダ**（向こうの /home/dev/x と、この機械の同じ文字列は別物）
+  const existing = root
+    ? getAllProjects().find((p) => p.basePath === root && (p.runtime ?? HOST_CONTAINER_RUNTIME) === runtime)
+    : undefined;
   const showProjectStep = !provider || !!ready;
 
   const [submitting, setSubmitting] = useState(false);
@@ -152,7 +188,12 @@ export function NewProjectDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const project = await createRealProject({ name: name.trim(), basePath: root, overrides });
+      const project = await createRealProject({
+        name: name.trim(),
+        basePath: root,
+        overrides,
+        ...(remoteName ? { runtime } : {}),
+      });
       onCreated?.();
       onOpenChange(false);
       reset();
@@ -172,7 +213,7 @@ export function NewProjectDialog({
         if (!next) reset();
       }}
     >
-      <DialogContent className={providers && providers.length > 0 ? "sm:max-w-xl" : "sm:max-w-md"}>
+      <DialogContent className={visibleProviders.length > 0 || (runtimes && runtimes.length > 0) ? "sm:max-w-xl" : "sm:max-w-md"}>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>新しい Project</DialogTitle>
@@ -188,17 +229,36 @@ export function NewProjectDialog({
           </DialogHeader>
 
           <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto py-4 [&>*]:shrink-0">
+            {CONNECTED_FEATURES.remoteRuntimes && !requestedBy ? (
+              <RuntimeStep
+                runtimes={runtimes}
+                error={runtimesError}
+                value={runtime}
+                onChange={(next) => {
+                  setRuntime(next);
+                  // フォルダは実行場所ごとに別物——選び直したら空にする
+                  setBasePath("");
+                  setMethod("folder");
+                  setPrepared(null);
+                }}
+                onAdd={() => {
+                  onOpenChange(false);
+                  reset();
+                  router.push("/settings?section=runtimes");
+                }}
+              />
+            ) : null}
             {/* 始め方が1つ（手元のフォルダだけ）なら、選ぶものは無い——タブを出さない */}
-            {providers && providers.length > 0 ? (
+            {visibleProviders.length > 0 ? (
               <div className="flex flex-col gap-2">
                 <div
                   role="tablist"
                   aria-label="Root にするフォルダ"
                   data-testid="start-method"
                   className="grid border-b border-border"
-                  style={{ gridTemplateColumns: `repeat(${providers.length + 1}, minmax(0, 1fr))` }}
+                  style={{ gridTemplateColumns: `repeat(${visibleProviders.length + 1}, minmax(0, 1fr))` }}
                 >
-                  {[{ key: "folder", label: "手元のフォルダ", icon: undefined as string | undefined }, ...providers.map((p) => ({ key: providerKey(p), label: p.name ?? p.resourceUri, icon: p.icon }))].map((m) => {
+                  {[{ key: "folder", label: "手元のフォルダ", icon: undefined as string | undefined }, ...visibleProviders.map((p) => ({ key: providerKey(p), label: p.name ?? p.resourceUri, icon: p.icon }))].map((m) => {
                     const active = method === m.key;
                     return (
                       <button
@@ -304,10 +364,12 @@ export function NewProjectDialog({
               <div className="flex flex-col gap-1.5">
                 {/* **呼び名は Root にそろえる**（改訂・2026-09-11、ユーザー指摘
                     ——作る画面と設定画面で「Base」「Root」が混ざっていた、規則11） */}
-                <Label htmlFor="new-project-path">Root パス</Label>
-                <PathPicker id="new-project-path" value={basePath} onChange={setBasePath} />
+                <Label htmlFor="new-project-path">Root パス{remoteName ? `（${remoteName} の上）` : ""}</Label>
+                <PathPicker id="new-project-path" value={basePath} onChange={setBasePath} source={folderSource} />
                 <p className="text-xs text-ink-3">
-                  Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
+                  {remoteName
+                    ? "向こうのサーバのフォルダです。この機械には置きません。リポジトリの clone は、Project を作ったあと AI に頼んでください。"
+                    : "Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能"}
                 </p>
                 {/* **広い根は止めない。選ぶ前に見せる**（決定・2026-09-11、ユーザー） */}
                 <WideRootWarning scope={rootScope} />
@@ -451,5 +513,81 @@ export function NewProjectDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * どこで動かすか（決定・2026-10-08、ユーザー。モックの `RuntimeStep`）。既定はこの機械のコンテナ。登録した別のサーバの
+ * うち、選べないもの（ほかの Project が使っている・host 鍵が変わった・前提が足りない）は host が言う理由を添えて出す
+ */
+function RuntimeStep({
+  runtimes,
+  error,
+  value,
+  onChange,
+  onAdd,
+}: {
+  runtimes: RealRemoteRuntime[] | null;
+  error: string | null;
+  value: string;
+  onChange: (next: string) => void;
+  onAdd: () => void;
+}) {
+  const remote = runtimes?.find((r) => r.runtime === value);
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="new-project-runtime">
+      <div className="flex items-baseline justify-between gap-2">
+        <Label htmlFor="new-project-runtime">どこで動かすか</Label>
+        <button
+          type="button"
+          onClick={onAdd}
+          data-testid="new-project-runtime-add"
+          className="text-xs text-ink-3 underline-offset-2 hover:text-foreground hover:underline"
+        >
+          別のサーバを登録する
+        </button>
+      </div>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger id="new-project-runtime" className="h-9 w-full" data-testid="new-project-runtime-select">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={HOST_CONTAINER_RUNTIME}>
+            <span className="flex items-center gap-2">
+              <ShieldCheck className="size-3.5 shrink-0 text-ink-3" />
+              この機械のコンテナ
+            </span>
+          </SelectItem>
+          {(runtimes ?? []).map((r) => (
+            <SelectItem
+              key={r.name}
+              value={r.runtime}
+              disabled={!!r.unavailableReason}
+              data-testid="new-project-runtime-option"
+              data-runtime={r.name}
+            >
+              <span className="flex min-w-0 flex-col items-start">
+                <span className="flex items-center gap-2">
+                  <Server className="size-3.5 shrink-0 text-ink-3" />
+                  {r.name}
+                  <span className="font-mono text-xs text-ink-3">{sshTarget(r)}</span>
+                </span>
+                {r.unavailableReason ? (
+                  <span className="pl-5.5 text-xs text-ink-3" data-testid="new-project-runtime-reason">
+                    {r.unavailableReason}
+                  </span>
+                ) : null}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error ? <p className="text-xs text-stop">別のサーバの一覧を読めませんでした（この機械のコンテナは選べます）：{error}</p> : null}
+      <p className="text-xs text-ink-3" data-testid="new-project-runtime-note">
+        {remote
+          ? `${remote.name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${remote.user} ができることを全部できます。作ったあとで変えられません。`
+          : "banto と同じ機械の、この Project 専用のコンテナで動かします。作ったあとで変えられません。"}
+      </p>
+    </div>
   );
 }

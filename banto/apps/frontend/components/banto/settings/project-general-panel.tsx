@@ -31,6 +31,9 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-root-warning";
 import { PathPicker } from "@/components/banto/settings/path-picker";
 import { ProjectContainerSection } from "@/components/banto/settings/project-container-section";
+import { ProjectRuntimeSection } from "@/components/banto/settings/project-runtime-section";
+import { remoteRuntimeName } from "@/lib/backend/client";
+import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { ProjectClaudeLoginSection } from "@/components/banto/settings/project-claude-login-section";
 import { ProjectInstructionSection } from "@/components/banto/settings/project-instruction-section";
 import { ProjectMessageSendersSection } from "@/components/banto/settings/project-message-senders-section";
@@ -45,7 +48,9 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   const [root, setRoot] = useState(project.basePath);
   const [saving, setSaving] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
-  const rootScope = useRootScope(root);
+  // 別のサーバの Project：根は向こうのパスで、まだ変えられない（host が断る）。この機械のコンテナも無い
+  const remoteName = remoteRuntimeName(project.runtime);
+  const rootScope = useRootScope(root, remoteName);
 
   // **別の Project に切り替わったら、その Project の値から始める。**
   // 打っている途中の値を捨てないよう、見ている Project が変わったときだけ。
@@ -103,11 +108,22 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
           />
         </div>
 
+        {CONNECTED_FEATURES.remoteRuntimes ? <ProjectRuntimeSection runtime={project.runtime} /> : null}
+
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="project-root">Root パス</Label>
-          <PathPicker id="project-root" value={root} onChange={setRoot} />
+          <Label htmlFor="project-root">Root パス{remoteName ? `（${remoteName} の上）` : ""}</Label>
+          {remoteName ? (
+            // 向こうで正規化し直す口がまだ無い——変えられないものを、変えられるように見せない（規則13）
+            <p id="project-root" data-testid="project-root-readonly" className="rounded-md bg-surface-2 px-2.5 py-2 font-mono text-xs break-all text-ink-2">
+              {project.basePath}
+            </p>
+          ) : (
+            <PathPicker id="project-root" value={root} onChange={setRoot} />
+          )}
           <p className="text-xs text-ink-3">
-            Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能。
+            {remoteName
+              ? "別のサーバで動く Project の根は、まだ変えられません。"
+              : "Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能。"}
             {rootChanged ? "変えると、この Project の Module は立て直しになる。" : ""}
           </p>
           <WideRootWarning scope={rootScope} />
@@ -144,7 +160,8 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
         ) : null}
       </div>
 
-      <ProjectContainerSection projectId={projectId} />
+      {/* 別のサーバの Project には、この機械のコンテナは無い */}
+      {remoteName ? null : <ProjectContainerSection projectId={projectId} />}
       <ProjectClaudeLoginSection projectId={projectId} />
       <ProjectInstructionSection projectId={projectId} />
 

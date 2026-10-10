@@ -1,0 +1,142 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EventLog } from "../event-store/log.js";
+import { ProjectThreadStore, RemoteProjectError, isRemoteProject } from "../project-thread/store.js";
+import { RemoteRuntimeStore } from "./remote-store.js";
+import { RemoteRuntimeError, RemoteRuntimes, parseHostKey, parseRuntimeInput, remoteNameOf } from "./remote-runtimes.js";
+import { fingerprintOf, type RuntimeCheck } from "./ssh.js";
+
+const KEY = { type: "ssh-ed25519", key: "AAAAC3NzaC1lZDI1NTE5AAAAIOld", fingerprint: fingerprintOf("AAAAC3NzaC1lZDI1NTE5AAAAIOld") };
+const NEW_KEY = { type: "ssh-ed25519", key: "AAAAC3NzaC1lZDI1NTE5AAAAINew", fingerprint: fingerprintOf("AAAAC3NzaC1lZDI1NTE5AAAAINew") };
+const INPUT = { name: "lab", host: "192.168.1.80", user: "banto", port: 22, identity: "lab-ssh", dataRoot: "~/.local/share/banto-remote" };
+const OK: RuntimeCheck[] = [{ id: "tools", label: "道具", status: "ok" }];
+
+async function withStores(fn: (s: { dir: string; log: EventLog; store: RemoteRuntimeStore; projects: ProjectThreadStore; runtimes: RemoteRuntimes }) => Promise<void>) {
+  const dir = await mkdtemp(join(tmpdir(), "banto-rt-test-"));
+  try {
+    const log = new EventLog(dir);
+    await log.init();
+    const store = new RemoteRuntimeStore(dir, log);
+    await store.load();
+    const projects = new ProjectThreadStore(dir, log);
+    await projects.load();
+    const runtimes = new RemoteRuntimes({
+      dataDir: dir,
+      store,
+      startSshAgent: async () => {
+        throw new Error("この試験では繋がない");
+      },
+      publicKeyOf: async () => {
+        throw new Error("この試験では繋がない");
+      },
+      projectsUsing: (rt) => projects.listProjects().filter((p) => p.runtime === rt).map((p) => ({ id: p.id, name: p.name })),
+    });
+    await fn({ dir, log, store, projects, runtimes });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("宛先の入力：名前（id を兼ねる）・ホスト・鍵を確かめ、置き場の既定を入れる", () => {
+  assert.deepEqual(parseRuntimeInput({ name: "lab", host: " 192.168.1.80 ", user: "banto", port: "2222", identity: "k" }), {
+    name: "lab",
+    host: "192.168.1.80",
+    user: "banto",
+    port: 2222,
+    identity: "k",
+    dataRoot: "~/.local/share/banto-remote",
+  });
+  assert.throws(() => parseRuntimeInput({ ...INPUT, name: "Lab PVE" }), /名前/);
+  assert.throws(() => parseRuntimeInput({ ...INPUT, host: "-oProxyCommand=sh" }), /ホスト/);
+  assert.throws(() => parseRuntimeInput({ ...INPUT, identity: "" }), /SSH 鍵/);
+  assert.throws(() => parseRuntimeInput({ ...INPUT, dataRoot: "relative/x" }), /置き場/);
+});
+
+test("画面から来た host 鍵の指紋は信じず、鍵から計算し直す", () => {
+  assert.deepEqual(parseHostKey({ ...KEY, fingerprint: "SHA256:嘘" }), KEY);
+  assert.throws(() => parseHostKey({ type: "ssh-ed25519; rm", key: "x", fingerprint: "" }), /形/);
+});
+
+test("記録：登録・鍵の違い・覚え直し・外す、が畳み直しても同じ", async () => {
+  await withStores(async ({ dir, log, store }) => {
+    await store.register(INPUT, KEY, OK);
+    await store.recordMismatch("lab", NEW_KEY);
+    let r = store.get("lab")!;
+    assert.equal(r.hostKey.fingerprint, KEY.fingerprint);
+    assert.equal(r.hostKeyMismatch?.fingerprint, NEW_KEY.fingerprint);
+    await store.acceptHostKey("lab", NEW_KEY);
+    r = store.get("lab")!;
+    assert.equal(r.hostKey.fingerprint, NEW_KEY.fingerprint);
+    assert.equal(r.hostKeyMismatch, undefined);
+    // 読み直しても同じ（ログから畳む）
+    const again = new RemoteRuntimeStore(dir, log);
+    await again.load();
+    assert.deepEqual(again.get("lab"), r);
+    await store.remove("lab");
+    assert.equal(store.get("lab"), undefined);
+  });
+});
+
+test("選べない理由：ほかの Project が使っている → 鍵が違う → 前提が足りない の順", async () => {
+  await withStores(async ({ store, projects, runtimes }) => {
+    await store.register(INPUT, KEY, [{ id: "tools", label: "道具", status: "fail" }]);
+    assert.equal(runtimes.get("lab")!.unavailableReason, "前提が足りません");
+    await store.recordMismatch("lab", NEW_KEY);
+    assert.equal(runtimes.get("lab")!.unavailableReason, "host 鍵が前と違うので繋ぎません");
+    await projects.createProject("pve", "/home/banto/pve", { runtime: "remote:lab" });
+    const view = runtimes.get("lab")!;
+    assert.equal(view.unavailableReason, "Project「pve」が使っています（1つの実行場所に Project は1つ）");
+    assert.deepEqual(view.usedBy.map((p) => p.name), ["pve"]);
+    assert.equal(view.runtime, "remote:lab");
+  });
+});
+
+test("使っている Project があれば外せない（閉じていても）。無ければ外せる", async () => {
+  await withStores(async ({ store, projects, runtimes }) => {
+    await store.register(INPUT, KEY, OK);
+    const p = await projects.createProject("pve", "/home/banto/pve", { runtime: "remote:lab" });
+    await projects.closeProject(p.id);
+    await assert.rejects(runtimes.remove("lab"), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 409 && /pve/.test(err.message));
+    await store.register({ ...INPUT, name: "spare" }, KEY, OK);
+    await runtimes.remove("spare");
+    assert.equal(store.get("spare"), undefined);
+  });
+});
+
+test("鍵が違う実行場所には繋がない（フォルダを引く・確かめ直すの前に断る）。覚え直しは見た指紋が同じときだけ", async () => {
+  await withStores(async ({ store, runtimes }) => {
+    await store.register(INPUT, KEY, OK);
+    await store.recordMismatch("lab", NEW_KEY);
+    await assert.rejects(runtimes.listDirectories("lab", "~"), /host 鍵が前と違う/);
+    await assert.rejects(runtimes.recheck("lab"), /host 鍵が前と違う/);
+    await assert.rejects(runtimes.acceptHostKey("lab", KEY.fingerprint), /指紋が違います/);
+  });
+});
+
+test("同じ実行場所に2つ目の Project は作れない（繋ぐ前に断る）", async () => {
+  await withStores(async ({ store, projects, runtimes }) => {
+    await store.register(INPUT, KEY, OK);
+    await projects.createProject("pve", "/home/banto/pve", { runtime: "remote:lab" });
+    await assert.rejects(
+      runtimes.createProjectOn("lab", "/home/banto/other", async () => assert.fail("作ってはいけない")),
+      (err: unknown) => err instanceof RemoteRuntimeError && err.status === 409 && /使っています/.test(err.message),
+    );
+  });
+});
+
+test("別のサーバの Project：根はこの機械で正規化しない・あとから根を変えられない・印を読む", async () => {
+  await withStores(async ({ projects }) => {
+    // この機械に無いパスでも、向こうで正規化した文字列をそのまま記録する
+    const p = await projects.createProject("pve", "/nonexistent/on/this/host", { runtime: "remote:lab" });
+    assert.equal(p.root, "/nonexistent/on/this/host");
+    assert.equal(p.runtime, "remote:lab");
+    assert.ok(isRemoteProject(p));
+    assert.equal(projects.getProject(p.id)!.root, "/nonexistent/on/this/host");
+    await assert.rejects(projects.setProjectRoot(p.id, "/tmp"), RemoteProjectError);
+    assert.equal(remoteNameOf(p.runtime), "lab");
+    assert.equal(remoteNameOf("host-container"), undefined);
+  });
+});

@@ -17,7 +17,7 @@ import { loadOrCreateBootstrapConfig, loginOrigins, resolveBootstrapConfigPath }
 import { AuthStore } from "./auth/store.js";
 import { AuthService } from "./auth/service.js";
 import { EventLog } from "./event-store/log.js";
-import { ProjectThreadStore, currentSkillSet } from "./project-thread/store.js";
+import { ProjectThreadStore, currentSkillSet, isRemoteProject } from "./project-thread/store.js";
 import {
   discoverSkills,
   isSkillEnabled,
@@ -43,6 +43,8 @@ import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/rela
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
 import { HostContainerRuntime } from "./runtime/host-container.js";
+import { RemoteRuntimeStore } from "./runtime/remote-store.js";
+import { RemoteRuntimes, remoteNameOf } from "./runtime/remote-runtimes.js";
 import { RuntimeStopError, type PreparedPlace, type RuntimePlace } from "./runtime/runtime.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import { StreamRelay, streamUrlOf } from "./http/streams.js";
@@ -89,6 +91,7 @@ import {
   classifyMetaDifference,
   CALLER_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
+  SOCKET_DIR_META_KEY,
   STREAM_SOCKET_RELATIVE_PATH,
 } from "@banto/module-contract";
 
@@ -181,6 +184,9 @@ async function main(): Promise<void> {
   await projectThread.load();
   const runtimeConfig = new RuntimeConfigStore(bootstrap.dataDir, eventLog);
   await runtimeConfig.load();
+  // **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）
+  const remoteRuntimeStore = new RemoteRuntimeStore(bootstrap.dataDir, eventLog);
+  await remoteRuntimeStore.load();
   // **Project の実行場所**（決定・2026-10-08、`docs/specs/v4-security.md` §1「実行場所は core の中の差し替え口」）。
   // 今は この host のコンテナだけ。**閉じ込めはコンテナ**（決定・2026-09-25）——前提が欠けていれば、
   // コンテナで起こす Module（Project の Module・外から足した banto 全体の Module）は起こさず、受信箱で言う
@@ -707,6 +713,22 @@ async function main(): Promise<void> {
         : declaration.name;
     // 繋がっているなら、それが答え（試し直しの間の記録より先に見る）
     if (connectedModules.has(connName)) return connName;
+    // **別のサーバの Project の Module は、まだ起こせない**（Backlog `remote-runtime-launch`）。この機械のコンテナで
+    // 起こすと、向こうのパスを根にした別物になる——黙ってそうしない（規則2）。お知らせは Project ごとに1件
+    const remoteProject = declaration.meta.scope === "project" && forProject ? projectThread.getProject(forProject.id) : undefined;
+    if (remoteProject && isRemoteProject(remoteProject)) {
+      void inbox
+        .raiseNotice({
+          projectId: remoteProject.id,
+          dedupeKey: `remote-runtime-not-yet:${remoteProject.id}`,
+          title: `${remoteProject.name} の Module はまだ起こせません`,
+          detail:
+            `この Project は別のサーバ（${remoteNameOf(remoteProject.runtime)}）で動かす設定です。` +
+            "別のサーバで Module を起こす仕組みはまだありません（実行場所の登録と Project の作成までができています）",
+        })
+        .catch((noticeErr: unknown) => console.warn("[host] お知らせを出せませんでした:", noticeErr));
+      return undefined;
+    }
     const fingerprint = declarationFingerprint(declaration);
     if (connectBackoff.blocked(connName, fingerprint) !== undefined) return undefined;
 
@@ -893,6 +915,88 @@ async function main(): Promise<void> {
     const connName = await connectDeclaredModule(declaration);
     return connName ? connectedModules.get(connName) : undefined;
   }
+
+  /**
+   * **別のサーバに繋ぐ鍵を、Vault から使わせてもらう**（決定・2026-10-08、v4-security.md §1「向こうとの道」）。
+   * core が自分のために頼む（`resolveSecretPlaceholders` と同じく承認を聞かない——人が実行場所に登録した鍵だけ）。
+   * 刻印は banto 全体（共通の秘密だけ）。値（秘密鍵）は返らない：公開鍵と、鍵を持った ssh-agent の窓口だけ
+   */
+  async function sshIdentityThroughVault(
+    alias: string,
+    tool: "getPublicKey" | "startSshAgent",
+    socketDir?: string,
+  ): Promise<string> {
+    const directory = await ensureVaultDirectory();
+    if (!directory) throw new Error("Vault の窓口が繋がっていません");
+    const caller = { instance: true as const };
+    const endDirectoryCall = moduleCalls.begin("vault-directory", undefined, "host", undefined, true);
+    let found: { implementation?: string; name?: string; group?: string; kind?: string };
+    try {
+      found = JSON.parse(
+        ((
+          await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: { [CALLER_META_KEY]: caller } })
+        ).content as { text: string }[])[0]!.text,
+      ) as typeof found;
+    } finally {
+      endDirectoryCall();
+    }
+    if (!found.implementation || !found.name) throw new Error(`"${alias}" の在りかが分かりません`);
+    const backend = connectedModules.get(found.implementation);
+    if (!backend) throw new Error(`${found.implementation} が繋がっていません`);
+    const result = await backend.callTool({
+      name: tool,
+      arguments:
+        tool === "getPublicKey"
+          ? { name: found.name, ...(found.group ? { group: found.group } : {}) }
+          : { identity: found.name, ...(found.group ? { group: found.group } : {}) },
+      _meta: { [CALLER_META_KEY]: caller, ...(socketDir ? { [SOCKET_DIR_META_KEY]: socketDir } : {}) },
+    });
+    const text = (result.content as { text?: string }[])[0]?.text ?? "";
+    if (result.isError) throw new Error(text || `${found.implementation} の ${tool} が失敗しました`);
+    await relayGrants.recordCall(
+      {
+        projectId: undefined,
+        callerModule: "banto",
+        targetModule: found.implementation,
+        kind: "tool",
+        name: tool,
+        identifiers: { name: alias },
+      },
+      { allowed: true, reason: "別のサーバに繋ぐ鍵（実行場所）" },
+    );
+    if (tool === "getPublicKey") return text;
+    const socketPath = (JSON.parse(text) as { socketPath?: unknown }).socketPath;
+    if (typeof socketPath !== "string" || socketPath === "") throw new Error(`SSH 鍵 ${alias} の ssh-agent の窓口が返ってきませんでした`);
+    return socketPath;
+  }
+
+  /** 実行場所の登録の画面で選べる SSH 鍵（banto 全体から使える ssh-identity の alias の名前） */
+  async function sshIdentitiesThroughVault(): Promise<string[]> {
+    const directory = await ensureVaultDirectory();
+    if (!directory) throw new Error("Vault の窓口が繋がっていません");
+    const endDirectoryCall = moduleCalls.begin("vault-directory", undefined, "host", undefined, true);
+    try {
+      const body = JSON.parse(
+        ((
+          await directory.callTool({ name: "listAliases", arguments: {}, _meta: { [CALLER_META_KEY]: { instance: true } } })
+        ).content as { text: string }[])[0]!.text,
+      ) as { aliases?: Array<{ name?: unknown; kind?: unknown; scope?: unknown }> };
+      const names = (body.aliases ?? [])
+        .filter((a) => a.kind === "ssh-identity" && a.scope === "shared" && typeof a.name === "string")
+        .map((a) => a.name as string);
+      return [...new Set(names)].sort();
+    } finally {
+      endDirectoryCall();
+    }
+  }
+
+  const remoteRuntimes = new RemoteRuntimes({
+    dataDir: bootstrap.dataDir,
+    store: remoteRuntimeStore,
+    startSshAgent: (identity, socketDir) => sshIdentityThroughVault(identity, "startSshAgent", socketDir),
+    publicKeyOf: (identity) => sshIdentityThroughVault(identity, "getPublicKey"),
+    projectsUsing: (rt) => projectThread.listProjects().filter((p) => p.runtime === rt).map((p) => ({ id: p.id, name: p.name })),
+  });
 
   /** 窓口で在りかを引いてから、その金庫に値を聞く（relay と同じ2段）。 */
   async function resolveSecretThroughVault(
@@ -1707,7 +1811,9 @@ async function main(): Promise<void> {
     // **Project の一覧**（§2.4 Repositories——どの Project がそのフォルダを根にしているか）。引ける相手と場面は
     // 中継が絞る（`mayListProjects`）。根は store が正規化したもの（realpath）
     listProjects: () =>
-      projectThread.listProjects().map((p) => ({ id: p.id, name: p.name, root: p.root, status: p.status })),
+      projectThread
+        .listProjects()
+        .map((p) => ({ id: p.id, name: p.name, root: p.root, status: p.status, runtime: p.runtime ?? "host-container" })),
     // **受信箱に知らせる**（§2.4 Repositories——ログインの更新に失敗したとき）。出せる相手は中継が絞る
     // （`mayRaiseNotice`）。鍵は Module ごとに分ける——別の Module の知らせを潰さない
     raiseNotice: async (caller, input) => {
@@ -1832,14 +1938,25 @@ async function main(): Promise<void> {
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
-    projectContainerStatus: (projectId: string) => runtime.status(projectId),
+    remoteRuntimes,
+    listSshIdentities: sshIdentitiesThroughVault,
+    // 別のサーバの Project にはこの機械のコンテナは無い（あれば前の名残——聞かない）
+    projectContainerStatus: async (projectId: string) => {
+      const project = projectThread.getProject(projectId);
+      return project && isRemoteProject(project) ? undefined : runtime.status(projectId);
+    },
     // **資源の上限**（決定・2026-10-02）。設定を変えたら、動いているコンテナにも起こし直さずに効かせる
     containerLimits: {
       describe: (projectId?: string) => describeLimits(runtimeConfig, hostResources(), projectId),
       async apply(projectId?: string) {
-        const ids = projectId !== undefined
+        // **上限はこの機械のコンテナだけ**（別のサーバの資源は向こうの持ち主の責任——v4-security.md §1）
+        const ids = (projectId !== undefined
           ? [projectId]
-          : [...projectThread.listProjects().map((p) => p.id), runtime.instancePlaceId];
+          : [...projectThread.listProjects().map((p) => p.id), runtime.instancePlaceId]
+        ).filter((id) => {
+          const project = projectThread.getProject(id);
+          return !project || !isRemoteProject(project);
+        });
         for (const id of ids) await runtime.applyLimits(id);
       },
     },
@@ -1893,6 +2010,7 @@ async function main(): Promise<void> {
       globalMemory.save(),
       inbox.save(),
       runtimeConfig.save(),
+      remoteRuntimeStore.save(),
       relayGrants.save(),
       authStore.save(),
     ]);

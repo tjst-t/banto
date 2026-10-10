@@ -29,6 +29,8 @@ export interface ProjectSummary {
   name: string;
   root: string;
   status: "active" | "closed";
+  /** 実行場所（`host-container` か `remote:<名前>`。無ければこの機械のコンテナ） */
+  runtime?: string;
 }
 
 /** どの Project が使っているかを引けたか。**引けなかったことを「使っていない」と言わない**（規則2） */

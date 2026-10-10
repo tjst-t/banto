@@ -57,8 +57,23 @@ export function parseProjectSummaries(text: string): ProjectSummary[] {
     ) {
       throw new Error(`中継の Project の一覧の ${i + 1} 件目の形が違います（id・name・root・status が要ります）`);
     }
-    return { id: r.id, name: r.name, root: r.root, status: r.status };
+    return {
+      id: r.id,
+      name: r.name,
+      root: r.root,
+      status: r.status,
+      ...(typeof r.runtime === "string" ? { runtime: r.runtime } : {}),
+    };
   });
+}
+
+/**
+ * **この機械のフォルダを根にした Project だけ**（追加・2026-10-10、v4-security.md §1「host が Project のフォルダに直接
+ * 触っていたもの」）。別のサーバの Project（`runtime` が `remote:…`）の根は向こうのパスなので、この機械の同じ文字列の
+ * フォルダと突き合わせない——一覧・削除・Import・ブランチを送る口から外す
+ */
+export function hostFolderProjects(projects: ProjectSummary[]): ProjectSummary[] {
+  return projects.filter((p) => p.runtime === undefined || p.runtime === "host-container");
 }
 
 export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
@@ -119,7 +134,9 @@ export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
   }
 
   async listProjects(callId?: string): Promise<ProjectSummary[]> {
-    return parseProjectSummaries(await this.relay("relayListProjects", {}, callId, "中継が Project の一覧を返しませんでした"));
+    return hostFolderProjects(
+      parseProjectSummaries(await this.relay("relayListProjects", {}, callId, "中継が Project の一覧を返しませんでした")),
+    );
   }
 
   async callerProject(callId?: string): Promise<ProjectSummary> {

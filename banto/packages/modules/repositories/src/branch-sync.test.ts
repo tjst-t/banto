@@ -200,6 +200,11 @@ test("引き受けないものは理由だけ返す（台帳に無い・アカ�
       handled: false,
       reason: "この Project の根は git のリポジトリではありません",
     });
+    // 別のサーバの Project：根が同じ文字列でも、この機械のフォルダとは別物（v4-security.md §1）
+    assert.deepEqual(await w.sync.sync("push", "backlog", { ...project, runtime: "remote:lab" }, "c"), {
+      handled: false,
+      reason: "この Project は別のサーバで動いています（根はこの機械のフォルダではありません）",
+    });
     assert.equal(bareHead(w.gh, "backlog"), undefined);
   });
 });

@@ -76,6 +76,10 @@ export const CONNECTED_FEATURES = {
   selfUpdate: true,
   // **資源**（決定・2026-10-09、v4-frontend.md §6.36）。host の `/api/admin/resources` と `/api/events` の混んでいる印
   resources: true,
+  // **実行場所——別のサーバの登録**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。host の `/api/runtimes` に
+  // 繋がっていて、SSH で host 鍵を引く・前提を確かめる・向こうのフォルダを引くまでができる。**向こうで Module を起こす
+  // 仕組みはまだ無い**（Backlog `remote-runtime-launch`）——作った Project の会話は、理由を出して断る
+  remoteRuntimes: true,
 } as const;
 
 /** instance設定（/settings）への入口を出すか。中身が1つでも繋がっていれば出す

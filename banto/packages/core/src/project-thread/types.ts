@@ -227,7 +227,13 @@ export interface UsageEntry {
 export interface ProjectState {
   id: ProjectId;
   name: string;
+  /** 根。別のサーバの Project なら向こうのパス（作るときに向こうで正規化したもの。この機械には無い） */
   root: string;
+  /**
+   * **実行場所**（決定・2026-10-08、v4-security.md §1「Project の記録に実行場所を持つ」）。`remote:<名前>` なら登録した
+   * 別のサーバ。無ければこの機械のコンテナ（`host-container`）。作るときに決め、あとから変えない
+   */
+  runtime?: string;
   status: "active" | "closed";
   /** Memoryの持ち主はProject（§1.1・§2.2、決定・2026-09-05）。Threadは写しを
    *  持たず、「どこまでをsystem promptに入れるか」の境界（memoryBaselineSeq）

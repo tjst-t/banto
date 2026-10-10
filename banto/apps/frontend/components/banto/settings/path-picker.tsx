@@ -7,7 +7,8 @@
 // 右に「選ぶ」を置く。
 //
 // 中身（フォルダの一覧）は host が答える（`/api/fs/directories`）
-// ——画面はファイルの場所を推測しない（規則3）。
+// ——画面はファイルの場所を推測しない（規則3）。別のサーバのフォルダは host が SSH で引いて答える
+// （`/api/runtimes/<名前>/directories`、v4-security.md §1「登録と選び方」）——引き方を `source` で差し替える
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, CornerLeftUp, Folder, FolderOpen } from "lucide-react";
 import {
@@ -23,16 +24,27 @@ import { Input } from "@/components/ui/input";
 import { describeFailure } from "@/lib/report-failure";
 import { listRealDirectories, type RealDirectoryListing } from "@/lib/backend/client";
 
+/** フォルダの引き方。既定はこの機械（別のサーバでは host が SSH で名前だけを引く） */
+export interface FolderSource {
+  list: (path?: string) => Promise<RealDirectoryListing>;
+  /** どこのフォルダか（選ぶ画面の題に出す。この機械なら無し） */
+  where?: string;
+}
+
+const HOST_SOURCE: FolderSource = { list: listRealDirectories };
+
 export function PathPicker({
   id,
   value,
   onChange,
   placeholder,
+  source = HOST_SOURCE,
 }: {
   id: string;
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
+  source?: FolderSource;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -56,6 +68,7 @@ export function PathPicker({
       <PickerDialog
         open={open}
         onOpenChange={setOpen}
+        source={source}
         startAt={value}
         onPick={(path) => {
           onChange(path);
@@ -69,11 +82,13 @@ export function PathPicker({
 function PickerDialog({
   open,
   onOpenChange,
+  source,
   startAt,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  source: FolderSource;
   startAt: string;
   onPick: (path: string) => void;
 }) {
@@ -81,15 +96,16 @@ function PickerDialog({
   const [listing, setListing] = useState<RealDirectoryListing | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const list = source.list;
   const load = useCallback((path: string | undefined) => {
-    listRealDirectories(path)
+    list(path)
       .then((next) => {
         setError(null);
         setListing(next);
       })
       // **読めなかったことを、空のフォルダに見せない**（規則2）
       .catch((err: unknown) => setError(describeFailure(err)));
-  }, []);
+  }, [list]);
 
   // 開いたときは、いま入っているパスから始める（打った途中でも、その近くへ）。
   // **開いた回数で数える**——`open` を効果の中で見て state を触ると、描画が
@@ -114,9 +130,11 @@ function PickerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg" data-testid="path-picker">
         <DialogHeader>
-          <DialogTitle>フォルダを選ぶ</DialogTitle>
+          <DialogTitle>{source.where ? `${source.where} のフォルダを選ぶ` : "フォルダを選ぶ"}</DialogTitle>
           <DialogDescription>
-            いま開いている場所を、この Project の Root にします。
+            {source.where
+              ? `${source.where} のフォルダです。いま開いている場所を、この Project の Root にします。`
+              : "いま開いている場所を、この Project の Root にします。"}
           </DialogDescription>
         </DialogHeader>
 

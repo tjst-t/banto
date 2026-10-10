@@ -344,8 +344,11 @@ export function mayRaiseNotice(identity: CallerIdentity): string | undefined {
 export interface ProjectSummaryForModule {
   id: string;
   name: string;
+  /** 根（実行場所の側のパス。別のサーバなら向こうのパスで、この機械には無い） */
   root: string;
   status: "active" | "closed";
+  /** 実行場所（`host-container` か `remote:<名前>`。無ければこの機械）。この機械のフォルダと突き合わせる Module はこれを見て外す */
+  runtime?: string;
 }
 
 /**

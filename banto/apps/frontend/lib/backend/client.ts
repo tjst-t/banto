@@ -119,6 +119,8 @@ export interface RealProject {
   name: string;
   root: string;
   status: "active" | "closed";
+  /** 実行場所（`remote:<名前>` なら別のサーバ。無ければこの機械のコンテナ）。作ったあとは変わらない */
+  runtime?: string;
   /** 承認なしでメッセージを受け取ってよい Project の id（追加・2026-10-01、アーキ仕様 §4.2）。無ければ空 */
   acceptMessagesFrom?: string[];
   createdAt: string;
@@ -324,8 +326,11 @@ export interface RealInboxNotice {
 
 export type RealInboxItem = RealInboxJudgment | RealInboxReview | RealInboxNotice;
 
-export async function createRealProject(name: string, root: string): Promise<RealProject> {
-  return request<RealProject>("/api/projects", { method: "POST", body: JSON.stringify({ name, root }) });
+export async function createRealProject(name: string, root: string, runtime?: string): Promise<RealProject> {
+  return request<RealProject>("/api/projects", {
+    method: "POST",
+    body: JSON.stringify({ name, root, ...(runtime ? { runtime } : {}) }),
+  });
 }
 
 export async function listRealProjects(): Promise<RealProject[]> {
@@ -536,6 +541,104 @@ export async function listRealDirectories(path?: string): Promise<RealDirectoryL
 
 export async function fetchRealRootScope(path: string): Promise<RealRootScope> {
   return request<RealRootScope>(`/api/config/root-scope?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * **実行場所——別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」、Backlog
+ * `remote-runtime-registry`）。判断（選べない理由・前提の ✓✕）は host が持ち、画面はそのまま出す
+ */
+export const HOST_CONTAINER_RUNTIME = "host-container";
+
+export interface RealHostKey {
+  /** `ssh-ed25519` 等 */
+  type: string;
+  key: string;
+  /** `SHA256:…` */
+  fingerprint: string;
+}
+
+export interface RealRuntimeCheck {
+  id: string;
+  label: string;
+  status: "ok" | "warn" | "fail";
+  detail?: string;
+  fix?: string;
+}
+
+export interface RealRuntimeInput {
+  name: string;
+  host: string;
+  user: string;
+  port: number;
+  /** Vault の ssh-identity の alias */
+  identity: string;
+  dataRoot: string;
+}
+
+export interface RealRemoteRuntime extends RealRuntimeInput {
+  /** Project の記録に書く印（`remote:<名前>`） */
+  runtime: string;
+  hostKey: RealHostKey & { confirmedAt: string };
+  hostKeyMismatch?: RealHostKey & { seenAt: string };
+  checks: RealRuntimeCheck[];
+  checkedAt: string;
+  usedBy: Array<{ id: string; name: string }>;
+  /** 新しい Project で選べない理由（選べるなら無し） */
+  unavailableReason?: string;
+}
+
+export async function listRealRuntimes(): Promise<RealRemoteRuntime[]> {
+  return (await request<{ runtimes: RealRemoteRuntime[] }>("/api/runtimes")).runtimes;
+}
+
+export async function listRealSshIdentities(): Promise<string[]> {
+  return (await request<{ identities: string[] }>("/api/runtimes/identities")).identities;
+}
+
+export async function scanRealRuntimeHostKey(input: RealRuntimeInput): Promise<RealHostKey> {
+  return (await request<{ hostKey: RealHostKey }>("/api/runtimes/scan", { method: "POST", body: JSON.stringify(input) })).hostKey;
+}
+
+export async function checkRealRuntime(input: RealRuntimeInput, hostKey: RealHostKey): Promise<RealRuntimeCheck[]> {
+  return (
+    await request<{ checks: RealRuntimeCheck[] }>("/api/runtimes/check", {
+      method: "POST",
+      body: JSON.stringify({ runtime: input, hostKey }),
+    })
+  ).checks;
+}
+
+export async function registerRealRuntime(input: RealRuntimeInput, hostKey: RealHostKey): Promise<RealRemoteRuntime> {
+  return request<RealRemoteRuntime>("/api/runtimes", { method: "POST", body: JSON.stringify({ runtime: input, hostKey }) });
+}
+
+export async function recheckRealRuntime(name: string): Promise<RealRemoteRuntime> {
+  return request<RealRemoteRuntime>(`/api/runtimes/${encodeURIComponent(name)}/recheck`, { method: "POST" });
+}
+
+export async function acceptRealRuntimeHostKey(name: string, fingerprint: string): Promise<RealRemoteRuntime> {
+  return request<RealRemoteRuntime>(`/api/runtimes/${encodeURIComponent(name)}/accept-host-key`, {
+    method: "POST",
+    body: JSON.stringify({ fingerprint }),
+  });
+}
+
+export async function removeRealRuntime(name: string): Promise<void> {
+  await request<{ ok: true }>(`/api/runtimes/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export async function listRealRuntimeDirectories(name: string, path?: string): Promise<RealDirectoryListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return request<RealDirectoryListing>(`/api/runtimes/${encodeURIComponent(name)}/directories${query}`);
+}
+
+export async function fetchRealRuntimeRootScope(name: string, path: string): Promise<RealRootScope> {
+  return request<RealRootScope>(`/api/runtimes/${encodeURIComponent(name)}/root-scope?path=${encodeURIComponent(path)}`);
+}
+
+/** `remote:<名前>` から名前を引く（この機械のコンテナなら undefined） */
+export function remoteRuntimeName(runtime: string | undefined): string | undefined {
+  return runtime?.startsWith("remote:") ? runtime.slice("remote:".length) : undefined;
 }
 
 /**

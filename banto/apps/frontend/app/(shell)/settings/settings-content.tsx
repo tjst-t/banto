@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, Puzzle, ScrollText, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
+import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, Puzzle, ScrollText, Server, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -16,6 +16,7 @@ import { ContainerLimitsPanel } from "@/components/banto/settings/container-limi
 import { LoginPanel } from "@/components/banto/settings/login-panel";
 import { UpdatePanel } from "@/components/banto/settings/update-panel";
 import { ResourcesPanel } from "@/components/banto/settings/resources-panel";
+import { RuntimesPanel } from "@/components/banto/settings/runtimes-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
@@ -88,6 +89,9 @@ const UPDATE_CATEGORY: SettingsNavItem = { section: "update", label: "更新", i
 /** この機械と Project のコンテナが何にどれだけ使っているか（2026-10-09、v4-frontend.md §6.36） */
 const RESOURCES_CATEGORY: SettingsNavItem = { section: "resources", label: "資源", icon: Gauge };
 
+/** Project をどこで動かすか——この機械のコンテナと、登録した別のサーバ（2026-10-10、v4-security.md §1「登録と選び方」） */
+const RUNTIMES_CATEGORY: SettingsNavItem = { section: "runtimes", label: "実行場所", icon: Server };
+
 /** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
 
@@ -102,6 +106,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   ...(CONNECTED_FEATURES.shellHome ? [SHELL_HOME_CATEGORY] : []),
   ...(CONNECTED_FEATURES.containerLimits ? [CONTAINER_CATEGORY] : []),
   ...(CONNECTED_FEATURES.resources ? [RESOURCES_CATEGORY] : []),
+  ...(CONNECTED_FEATURES.remoteRuntimes ? [RUNTIMES_CATEGORY] : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
   ...(CONNECTED_FEATURES.selfUpdate ? [UPDATE_CATEGORY] : []),
 ];
@@ -205,6 +210,17 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
           description="この機械と Project のコンテナが、いま何にどれだけ使っているか。混んでいるときは、何が使っているかを開いて見られます。"
         />
         <ResourcesPanel />
+      </div>
+    );
+  }
+  if (section === "runtimes") {
+    return (
+      <div>
+        <SectionHeading
+          title="実行場所"
+          description="Project をどこで動かすか。既定はこの機械のコンテナです。別のサーバを登録すると、新しい Project を作るときに選べます。"
+        />
+        <RuntimesPanel />
       </div>
     );
   }

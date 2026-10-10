@@ -33,6 +33,13 @@ import { sameSkillSet } from "../skills/activation.js";
 export const MEMORY_ENTRY_MAX_CHARS = 20_000;
 
 export class MemoryLimitExceededError extends Error {}
+/** 別のサーバの Project には、まだできないこと（根を変える等） */
+export class RemoteProjectError extends Error {}
+
+/** 別のサーバの Project か（根は向こうのパスで、この機械では正規化しない） */
+export function isRemoteProject(project: Pick<ProjectState, "runtime">): boolean {
+  return project.runtime !== undefined && project.runtime !== "host-container";
+}
 export class NotFoundError extends Error {}
 export class InvalidProjectRootError extends Error {}
 
@@ -111,6 +118,8 @@ export class ProjectThreadStore {
   getProject(id: ProjectId): ProjectState | undefined {
     const project = this.projection.current.projects.get(id);
     if (!project) return undefined;
+    // 別のサーバの根は、作るときに向こうで正規化した文字列をそのまま使う（この機械の realpath に通さない）
+    if (isRemoteProject(project)) return project;
     try {
       const root = normalizeProjectRoot(project.root);
       return root === project.root ? project : { ...project, root };
@@ -161,7 +170,13 @@ export class ProjectThreadStore {
    * **立て直す**必要がある（呼び出し側が `releaseProjectModules`）。
    */
   async setProjectRoot(id: ProjectId, root: string): Promise<ProjectState> {
-    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    // 向こうで正規化し直す口はまだ無い——この機械の realpath で確かめると、向こうのパスを「無い」と断るか、この機械の
+    // 同じ文字列のフォルダに化ける。黙ってどちらかにしない
+    if (isRemoteProject(project)) {
+      throw new RemoteProjectError("別のサーバで動く Project の根は、まだ変えられません");
+    }
     // 作るときと同じ検め方を通す（規則3——2通りの正規化を持たない）
     const resolved = normalizeProjectRoot(root);
     const event = await this.log.append("project.root_changed", { id, root: resolved });
@@ -199,10 +214,19 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
-  async createProject(name: string, root: string): Promise<ProjectState> {
-    const resolvedRoot = normalizeProjectRoot(root);
+  /**
+   * `remote`：別のサーバで動かすとき（決定・2026-10-08）。`root` は呼び手が**向こうで**正規化したものをそのまま記録する
+   * ——この機械には無いので、ここでは確かめない
+   */
+  async createProject(name: string, root: string, remote?: { runtime: string }): Promise<ProjectState> {
+    const resolvedRoot = remote ? root : normalizeProjectRoot(root);
     const id = randomUUID();
-    const event = await this.log.append("project.created", { id, name, root: resolvedRoot });
+    const event = await this.log.append("project.created", {
+      id,
+      name,
+      root: resolvedRoot,
+      ...(remote ? { runtime: remote.runtime } : {}),
+    });
     this.projection.applyOne(event);
     const project = this.getProject(id);
     if (!project) throw new Error("invariant: project.created did not produce a project");

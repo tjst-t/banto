@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-08（§1 に「Project の実行場所——別のサーバ」を足した）
+> 最終更新：2026-10-10（§1「Project の実行場所——別のサーバ」の「登録と選び方」を実装し、その形を書いた）
 
 ## 1. セキュリティ境界
 
@@ -299,7 +299,7 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
   AI の下書きをそこに出す。**作らないもの**：host で任意のコマンドを打てる tool に承認を付ける形（人は
   読み切れず承認が素通りになる）・一時的に AI に host の権限を渡す非常口
 
-### Project の実行場所——別のサーバ（決定・2026-10-08、ユーザー。未実装）
+### Project の実行場所——別のサーバ（決定・2026-10-08、ユーザー。「登録と選び方」まで実装・2026-10-10）
 
 **Project を、banto の host のコンテナではなく、SSH で入る別のサーバで動かせるようにする。** 経緯は
 `docs/notes/2026-10-08-remote-runtime.md`（Fable のレビュー（2026-10-08）を受けて改めた）。
@@ -373,6 +373,42 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   孤児と見なして止めて消す・Service の `ports` が Project どうしでぶつかる——コンテナでは `~/.config/systemd/user` と
   ネットワークが Project ごとに別だったので起きなかった。2つ目を選ぼうとしたら理由を出して断る。複数置きたいときは
   向こうのコンテナの段（あとで足す）を使う
+
+**実装の形**（済み・2026-10-10、Backlog `remote-runtime-registry`。画面はモック abb6ef82 の形で決定・2026-10-10、ユーザー）：
+
+- **部品**：SSH で繋ぐ共通の部品は `core/src/runtime/ssh.ts`（host 鍵を引く・前提を確かめる・向こうのフォルダを引く・根を
+  向こうで正規化する・向こうの置き場を含むか。本当の起動 `remote-runtime-launch` も同じものを使う）。記録は Event Store の
+  イベント（`core/src/runtime/remote-store.ts`、`runtime.remote_*`）、判断は `core/src/runtime/remote-runtimes.ts`、口は
+  `/api/runtimes`（一覧・Vault の SSH 鍵・`scan`・`check`・登録・`<名前>/recheck`・`<名前>/accept-host-key`・外す・
+  `<名前>/directories`・`<名前>/root-scope`）
+- **名前が id**（英小文字・数字・`-`、32 字まで）。Project の記録は `runtime: "remote:<名前>"`。あとから変えない
+- **登録の順**：宛先と鍵（Vault の ssh-identity のうち banto 全体で使えるもの）→ `ssh-keyscan` で host 鍵を引く（まだ
+  繋がない）→ 人が向こうで `ssh-keygen -lf` を打って指紋を見比べ「同じなので覚える」→ **その鍵で繋いで**前提を確かめる →
+  登録（host がもう一度繋いで確かめ、✕ があれば断る。画面が送ってきた結果も指紋も信じない——指紋は鍵から計算し直す）
+- **known_hosts**：記録を真実とし、繋ぐたびに `<データの置き場>/remote-runtimes/<名前>/known_hosts` へ1行だけ書き出す。
+  `HostKeyAlias=banto-runtime`（宛先の書き方に左右されない）・`HostKeyAlgorithms` を覚えた鍵の種類に固定・
+  `StrictHostKeyChecking=yes`・`UpdateHostKeys=no`。人の `~/.ssh` は読まない・書かない
+- **鍵**：Vault に ssh-agent を立ててもらい（窓口は `<データの置き場>/s`）、公開鍵（`getPublicKey`）をファイルにして
+  `-i` に渡す＋`IdentitiesOnly=yes`——agent の中のその鍵だけを出し、人の `~/.ssh/id_*` は試さない。ssh の環境に人の
+  `SSH_AUTH_SOCK` を引き継がない。**窓口を閉じるのは本当の起動の段で**（いまは Vault の使い回しのまま）
+- **鍵が変わったとき**：ssh が鍵の違いで断ったら、いまの鍵を `ssh-keyscan` で引いて記録する（`hostKeyMismatch`）。記録が
+  あるあいだは繋がない（確かめ直す・フォルダを引く・Project を作る、の前に断る）。人が「新しい鍵を覚え直す」を押すと、
+  **画面が見せた指紋が記録した新しい鍵と同じときだけ**覚え直し、その鍵で確かめ直す
+- **前提の確かめ**（§「前提の確かめ」の実装）：1本目の接続で台本（`sh -s`、標準入力で渡す）を流して様子を引き、台本の
+  出力より前に何か出ていれば「ログインシェルが出力する」として ✕。転送は `ExitOnForwardFailure=yes` で `-R`（TCP と
+  UNIX ソケット）を**1本ずつ別の接続で**実際に頼んで確かめる（最初の断りで ssh が終わるので、まとめると片方が分からない）。
+  `MaxSessions` は root でないと `sshd -T` で読めないので設定のファイル（`sshd_config.d` が先・最初の値）を読み、10 未満なら
+  注意。linger（`/var/lib/systemd/linger/<ユーザー>`）・tmux・Docker が無いのは注意
+- **選べない理由**（host が決め、画面はそのまま出す）：ほかの Project が使っている（閉じた Project も数える）→ host 鍵が
+  違う → 前提が足りない。同じ実行場所への Project の作成は1本ずつ通し、向こうで根を正規化したあとでもう一度確かめる
+- **画面**：設定（banto 全体）の「実行場所」・新しい Project の画面の一番上の「どこで動かすか」（Module に頼まれて開いた
+  ときは出さない——頼んだ Module はこの機械のフォルダを用意している）・Project の設定の「一般」の Root パスの上に読むだけ
+  （「セキュリティ境界」の節は本物ではまだモックのまま隠れているので）。別のサーバの Project では Root パスは読むだけ
+  （下）・「コンテナ」の節は出さない
+- **本当の起動（`remote-runtime-launch`）ができるまで**：別のサーバの Project の Module は起こさない（この機械のコンテナで
+  向こうのパスを根にした別物を起こさない）——受信箱に Project ごとに1件「まだ起こせません」。会話のターンは理由を出して
+  断る。**根を変えることも断る**（向こうで正規化し直す口がまだ無い）。Repositories は `listProjects` の `runtime` が
+  この機械以外のものを突き合わせから外し、ブランチを送る口は `handled: false` で返す
 
 #### 向こうに置くもの
 

@@ -82,6 +82,11 @@ export class BranchSync {
    */
   async sync(direction: "push" | "fetch", branch: string, project: ProjectSummary, callId?: string): Promise<BranchSyncResult> {
     if (!isSafeBranchName(branch)) throw new Error(`ブランチ名として受け付けられない形です：${JSON.stringify(branch.slice(0, 80))}`);
+    // **別のサーバの Project は引き受けない**（v4-security.md §1）——根は向こうのパスで、この機械の同じ文字列のフォルダは
+    // 別物。向こうの git の設定と Vault の SSH 鍵で送ってもらう
+    if (project.runtime !== undefined && project.runtime !== "host-container") {
+      return { handled: false, reason: "この Project は別のサーバで動いています（根はこの機械のフォルダではありません）" };
+    }
     const entry = await this.entryFor(project);
     if ("reason" in entry) return { handled: false, reason: entry.reason };
 

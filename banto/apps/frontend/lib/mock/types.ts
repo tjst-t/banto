@@ -23,6 +23,8 @@ export interface MockProject {
   closedAt?: string;
   /** 実bantoホストのProject（決定・2026-09-03）。台本は持たず、実データで動く。 */
   real?: boolean;
+  /** 実行場所（`remote:<名前>` なら別のサーバ。無ければこの機械のコンテナ）。作ったあとは変わらない */
+  runtime?: string;
 }
 
 /** 画面つき tool の呼び出し1件（host の記録をそのまま受ける）。 */

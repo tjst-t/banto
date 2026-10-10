@@ -11,9 +11,10 @@
 // 判断は host が持つ（`/api/config/root-scope`）——画面が home の場所を推測しない。
 import { useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
-import { fetchRealRootScope, type RealRootScope } from "@/lib/backend/client";
+import { fetchRealRootScope, fetchRealRuntimeRootScope, type RealRootScope } from "@/lib/backend/client";
 
-export function useRootScope(path: string | undefined): RealRootScope | null {
+/** `runtimeName`：別のサーバの根なら、その名前（向こうの banto の置き場を含むかで判断する——host が SSH で見る） */
+export function useRootScope(path: string | undefined, runtimeName?: string): RealRootScope | null {
   const [scope, setScope] = useState<RealRootScope | null>(null);
   // **開いた最初の1回は待たずに聞く**（改訂・2026-09-26）——待つのは打っている途中の連打を
   // 避けるためで、画面を開いたときに既に入っている値まで 250 ms 遅らせる理由は無い
@@ -28,7 +29,7 @@ export function useRootScope(path: string | undefined): RealRootScope | null {
         setScope(null);
         return;
       }
-      fetchRealRootScope(trimmed)
+      (runtimeName ? fetchRealRuntimeRootScope(runtimeName, trimmed) : fetchRealRootScope(trimmed))
         .then((next) => !cancelled && setScope(next))
         // **分からなかったら、何も言わない**——「安全です」とは言わない（規則2）
         .catch(() => !cancelled && setScope(null));
@@ -37,7 +38,7 @@ export function useRootScope(path: string | undefined): RealRootScope | null {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [path]);
+  }, [path, runtimeName]);
   return scope;
 }
 

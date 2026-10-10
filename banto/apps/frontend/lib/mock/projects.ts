@@ -125,6 +125,8 @@ export async function reorderProjects(visibleOrderedIds: string[]): Promise<void
 export interface NewProjectInput {
   name: string;
   basePath: string;
+  /** 実行場所（`remote:<名前>`）。無ければこの機械のコンテナ */
+  runtime?: string;
   /** Advanced で選んだ Configuration の上書き（§2.2「設定のカスケード」） */
   overrides?: Omit<MockProjectOverrides, "projectId" | "securityRoot">;
 }
@@ -153,7 +155,7 @@ export function prepareProjectModules(projectId: string): Promise<void> {
  * 実bantoホストにProjectとBase Threadを作る（決定・2026-09-03）。
  */
 export async function createRealProject(input: NewProjectInput): Promise<MockProject> {
-  const realProject = await createRealProjectOnHost(input.name, input.basePath);
+  const realProject = await createRealProjectOnHost(input.name, input.basePath, input.runtime);
   const realThread = await createRealBaseThread(realProject.id);
   const project: MockProject = {
     id: realProject.id,
@@ -163,6 +165,7 @@ export async function createRealProject(input: NewProjectInput): Promise<MockPro
     basePath: realProject.root,
     status: realProject.status,
     real: true,
+    ...(realProject.runtime ? { runtime: realProject.runtime } : {}),
   };
   projects = [...projects, project];
   registerRealThread(
@@ -230,6 +233,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       basePath: rp.root,
       status: rp.status,
       real: true,
+      ...(rp.runtime ? { runtime: rp.runtime } : {}),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。

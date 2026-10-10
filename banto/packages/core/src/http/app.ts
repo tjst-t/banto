@@ -20,9 +20,18 @@ import {
   normalizeProjectRoot,
   InvalidProjectRootError,
   NotFoundError,
+  RemoteProjectError,
   currentSkillSet,
+  isRemoteProject,
   type ProjectThreadStore,
 } from "../project-thread/store.js";
+import {
+  RemoteRuntimeError,
+  parseHostKey,
+  parseRuntimeInput,
+  remoteNameOf,
+  type RemoteRuntimes,
+} from "../runtime/remote-runtimes.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { ThreadClosedBy, ThreadState } from "../project-thread/types.js";
@@ -243,6 +252,10 @@ export interface AppDeps {
   awaitRestartRecovery?(threadId: string): Promise<void>;
   /** Project のコンテナの今の状態（無ければ undefined——まだ一度も Module を起こしていない） */
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
+  /** **登録した別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。無ければ実行場所はこの機械だけ */
+  remoteRuntimes?: RemoteRuntimes;
+  /** 実行場所の登録で選べる SSH 鍵（Vault の ssh-identity の alias の名前） */
+  listSshIdentities?(): Promise<string[]>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
   containerLimits?: {
     describe(projectId?: string): ContainerLimitsView;
@@ -1294,6 +1307,17 @@ export function createApp(deps: AppDeps) {
     // 正規化する（真実は一箇所だが、コードの前後関係でデータが逸脱しうる
     // ことが実際にあった、2026-09-05）。失敗したら error のイベントとして返す
     let cwd: string | undefined;
+    // **別のサーバの Project の会話は、まだ始められない**（Backlog `remote-runtime-launch`）——根は向こうのパスで、
+    // この機械の realpath に通すと「無い」と言う。嘘の理由を出さず、何が無いのかを言う
+    if (project && isRemoteProject(project)) {
+      yield {
+        type: "error",
+        message:
+          `この Project は別のサーバ（${remoteNameOf(project.runtime)}）で動かす設定です。` +
+          "別のサーバで会話と Module を動かす仕組みはまだありません",
+      };
+      return;
+    }
     if (project) {
       try {
         cwd = normalizeProjectRoot(project.root);
@@ -1528,10 +1552,83 @@ export function createApp(deps: AppDeps) {
         }
       }
       if (url.pathname === "/api/projects" && req.method === "POST") {
-        const body = (await readJsonBody(req)) as { name: string; root: string };
-        const project = await deps.projectThread.createProject(body.name, body.root);
-        json(res, 201, project);
+        const body = (await readJsonBody(req)) as { name: string; root: string; runtime?: unknown };
+        // **どこで動かすか**（決定・2026-10-08、v4-security.md §1）。無いか `host-container` ならこの機械のコンテナ。
+        // `remote:<名前>` なら登録した別のサーバで、根は向こうで正規化する。作ったあとは変えない
+        const remote = typeof body.runtime === "string" ? remoteNameOf(body.runtime) : undefined;
+        if (body.runtime !== undefined && body.runtime !== "host-container" && !remote) {
+          return json(res, 400, { error: "runtime は host-container か remote:<名前> で渡してください" });
+        }
+        try {
+          const project = remote
+            ? await (deps.remoteRuntimes
+                ? deps.remoteRuntimes.createProjectOn(remote, String(body.root ?? ""), (root, runtime) =>
+                    deps.projectThread.createProject(body.name, root, { runtime }),
+                  )
+                : Promise.reject(new RemoteRuntimeError(501, "この banto は別のサーバを扱えません")))
+            : await deps.projectThread.createProject(body.name, body.root);
+          json(res, 201, project);
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message });
+          if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
+          throw err;
+        }
         return;
+      }
+
+      // **実行場所——別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」、Backlog `remote-runtime-registry`）。
+      // 登録の順は「宛先 → host 鍵を引く → 人が指紋を確かめる → その鍵で前提を確かめる → 登録」（`remote-runtimes.ts`）
+      if (url.pathname === "/api/runtimes" || url.pathname.startsWith("/api/runtimes/")) {
+        const runtimes = deps.remoteRuntimes;
+        if (!runtimes) return json(res, 501, { error: "この banto は別のサーバを扱えません" });
+        const rest = url.pathname.slice("/api/runtimes".length);
+        try {
+          if (rest === "" && req.method === "GET") return json(res, 200, { runtimes: runtimes.list() });
+          if (rest === "/identities" && req.method === "GET") {
+            if (!deps.listSshIdentities) return json(res, 501, { error: "Vault の SSH 鍵を引けません" });
+            return json(res, 200, { identities: await deps.listSshIdentities() });
+          }
+          if (rest === "/scan" && req.method === "POST") {
+            const input = parseRuntimeInput(await readJsonBody(req));
+            return json(res, 200, { hostKey: await runtimes.scan(input) });
+          }
+          if (rest === "/check" && req.method === "POST") {
+            const body = (await readJsonBody(req)) as { runtime?: unknown; hostKey?: unknown };
+            return json(res, 200, { checks: await runtimes.check(parseRuntimeInput(body.runtime), parseHostKey(body.hostKey)) });
+          }
+          if (rest === "" && req.method === "POST") {
+            const body = (await readJsonBody(req)) as { runtime?: unknown; hostKey?: unknown };
+            return json(res, 201, await runtimes.register(parseRuntimeInput(body.runtime), parseHostKey(body.hostKey)));
+          }
+          const one = rest.match(/^\/([a-z0-9-]+)(\/[a-z-]+)?$/);
+          if (one) {
+            const [, name, action] = one as unknown as [string, string, string | undefined];
+            if (!action && req.method === "DELETE") {
+              await runtimes.remove(name);
+              return json(res, 200, { ok: true });
+            }
+            if (action === "/recheck" && req.method === "POST") return json(res, 200, await runtimes.recheck(name));
+            if (action === "/accept-host-key" && req.method === "POST") {
+              const body = (await readJsonBody(req)) as { fingerprint?: unknown };
+              if (typeof body.fingerprint !== "string") return json(res, 400, { error: "確かめた指紋（fingerprint）が要ります" });
+              return json(res, 200, await runtimes.acceptHostKey(name, body.fingerprint));
+            }
+            // 広すぎる根か（向こうの banto の置き場を含むか。`/api/config/root-scope` と同じ形）
+            if (action === "/root-scope" && req.method === "GET") {
+              const path = url.searchParams.get("path");
+              if (!path) return json(res, 400, { error: "path is required" });
+              return json(res, 200, await runtimes.describeRootScope(name, path));
+            }
+            // 向こうのフォルダ（名前だけ。`/api/fs/directories` と同じ形）
+            if (action === "/directories" && req.method === "GET") {
+              return json(res, 200, await runtimes.listDirectories(name, url.searchParams.get("path") ?? undefined));
+            }
+          }
+          return json(res, 404, { error: "not found" });
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
+          throw err;
+        }
       }
 
       // **banto 全体の Module**（追加・2026-09-15、§10 item 14 (a)）。
@@ -1956,6 +2053,7 @@ export function createApp(deps: AppDeps) {
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
           if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
+          if (err instanceof RemoteProjectError) return json(res, 400, { error: err.message });
           throw err;
         }
         return;
