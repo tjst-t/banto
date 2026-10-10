@@ -158,7 +158,12 @@ export class RemoteRuntimes {
 
   /** 2. 人が確かめた鍵で繋いで、前提を確かめる（まだ登録しない） */
   async check(input: RemoteRuntimeInput, hostKey: HostKey): Promise<RuntimeCheck[]> {
-    return this.withFiles(input, hostKey, `.probe-${randomBytes(4).toString("hex")}`, true, async (files) => {
+    return this.probe(input, hostKey, `.probe-${randomBytes(4).toString("hex")}`, true);
+  }
+
+  /** 前提を確かめる。`dirName` の置き場に known_hosts・公開鍵を書き出して繋ぐ（`temporary` なら終わったら消す） */
+  private probe(input: RemoteRuntimeInput, hostKey: HostKey, dirName: string, temporary: boolean): Promise<RuntimeCheck[]> {
+    return this.withFiles(input, hostKey, dirName, temporary, async (files) => {
       const { checks, result } = await probePrerequisites(input, files, hostKey.type, input.dataRoot);
       if (checks.length > 0) return checks;
       if (isHostKeyRefusal(result)) {
@@ -171,11 +176,19 @@ export class RemoteRuntimes {
   /** 3. 登録する。host がもう一度確かめ、✕ があれば断る */
   async register(input: RemoteRuntimeInput, hostKey: HostKey): Promise<RemoteRuntimeView> {
     if (this.deps.store.get(input.name)) throw new RemoteRuntimeError(409, `「${input.name}」という名前はもう使われています`);
-    const checks = await this.check(input, hostKey);
-    if (checks.some((c) => c.status === "fail")) {
-      throw new RemoteRuntimeError(409, "足りない前提があるので登録できません", { checks });
+    // 登録のときから恒久の置き場（`remote-runtimes/<名前>/`）に書き出して繋ぐ——known_hosts は「繋ぐたびに記録から
+    // 書き出す」写しなので、登録の接続でも同じ場所に書く。登録しなかったら消す（記録に無い名前の写しを残さない）
+    const dir = join(this.deps.dataDir, "remote-runtimes", input.name);
+    try {
+      const checks = await this.probe(input, hostKey, input.name, false);
+      if (checks.some((c) => c.status === "fail")) {
+        throw new RemoteRuntimeError(409, "足りない前提があるので登録できません", { checks });
+      }
+      return this.view(await this.deps.store.register(input, hostKey, checks));
+    } catch (err) {
+      if (!this.deps.store.get(input.name)) rmSync(dir, { recursive: true, force: true });
+      throw err;
     }
-    return this.view(await this.deps.store.register(input, hostKey, checks));
   }
 
   /** 確かめ直す。鍵が違えば繋がずに記録する */

@@ -10,8 +10,10 @@
 //   4. 新しい Project の画面で実行場所を選び、向こうのフォルダの一覧（SSH）から根を選んで作れる。Project の記録に
 //      実行場所が残り、設定に読むだけで出る。設定の一覧に「使っています」が出て、外せない
 //   5. 同じ実行場所に2つ目の Project は作れない（画面で選べない・host も断る）
-//   6. その Project の Module は起こさず、理由を受信箱に出す（別のサーバでの起動はまだ無い）
+//   6. その Project の Module は起こさず（この機械のコンテナも作らない）、理由を受信箱に1件出す（別のサーバでの起動は
+//      まだ無い）。banto 全体の Module（Vault 等）は Project の箱に置かないので、今までどおり繋がる
 import { test, expect, type Locator, type Page } from "../test-base.js";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -265,9 +267,20 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       expect(second.status()).toBe(409);
       expect(((await second.json()) as { error: string }).error).toContain("使っています");
 
-      // ---- 6. Module は起こさず、理由を受信箱に出す -----------------------------------------------------
+      // ---- 6. この Project の Module は起こさず、理由を受信箱に出す ------------------------------------------
+      // 繋がってよいのは banto 全体の Module（Vault 等。banto 本体・banto 全体用のコンテナで動き、この Project の箱には
+      // 置かない）だけ。Project ごとの Module（shell・filesystem 等）は、この機械のコンテナにも立てない
+      const instanceModules = (
+        (await (await page.request.get(`${CORE_BASE_URL}/api/modules`, { headers })).json()) as Array<{ name: string; scope?: string }>
+      )
+        .filter((m) => m.scope === "instance")
+        .map((m) => m.name);
       const prepared = await page.request.post(`${CORE_BASE_URL}/api/projects/${projectId}/modules/prepare`, { headers });
-      expect(((await prepared.json()) as { connected: string[] }).connected).toEqual([]);
+      const connected = ((await prepared.json()) as { connected: string[] }).connected;
+      expect(connected, "Project ごとの Module が繋がった").not.toEqual(expect.arrayContaining(["shell"]));
+      expect(connected).not.toEqual(expect.arrayContaining(["filesystem"]));
+      expect(connected.filter((n) => !instanceModules.includes(n)), "banto 全体の Module 以外が繋がった").toEqual([]);
+      expect(spawnSync("incus", ["info", `banto-${projectId}`], { encoding: "utf8", input: "" }).status, "この Project のコンテナが作られた").not.toBe(0);
       await expect
         .poll(
           async () =>
