@@ -6192,7 +6192,7 @@
       "number": 255,
       "kind": "task",
       "title": "Project ごとの「AI への指示」を土台の指示に入れる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6207,7 +6207,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-09T23:42:36.655Z",
-      "updatedAt": "2026-10-09T23:42:36.655Z",
+      "updatedAt": "2026-10-10T00:08:50.382Z",
       "closedAt": null,
       "extra": {}
     },
