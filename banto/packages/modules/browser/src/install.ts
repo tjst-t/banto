@@ -28,6 +28,7 @@ function run(args: string[], env: NodeJS.ProcessEnv, what: string, onProgress?: 
     const started = Date.now();
     let last = "";
     onProgress?.(what);
+    console.error(`[browser] ${what}（playwright ${args.join(" ")}）`);
     const heartbeat = setInterval(() => {
       onProgress?.(`${what}（${Math.round((Date.now() - started) / 1000)} 秒${last ? `：${last.slice(0, 200)}` : ""}）`);
     }, INSTALL_HEARTBEAT_MS);
@@ -47,6 +48,8 @@ function run(args: string[], env: NodeJS.ProcessEnv, what: string, onProgress?: 
     });
     child.on("close", (code) => {
       clearInterval(heartbeat);
+      // Module のログ（host の記録に入る）にも残す——入れたかどうか・何秒かかったかを後から確かめられるように
+      console.error(`[browser] ${what}：終了コード ${code}（${Math.round((Date.now() - started) / 1000)} 秒）`);
       resolve({ code, tail });
     });
   });
