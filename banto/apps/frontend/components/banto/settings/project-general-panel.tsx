@@ -32,6 +32,7 @@ import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-
 import { PathPicker } from "@/components/banto/settings/path-picker";
 import { ProjectContainerSection } from "@/components/banto/settings/project-container-section";
 import { ProjectClaudeLoginSection } from "@/components/banto/settings/project-claude-login-section";
+import { ProjectInstructionSection } from "@/components/banto/settings/project-instruction-section";
 import { ProjectMessageSendersSection } from "@/components/banto/settings/project-message-senders-section";
 import { ProjectAutoApproveSection } from "@/components/banto/settings/project-auto-approve-section";
 import { ProjectTurnSummarySection } from "@/components/banto/settings/project-turn-summary-section";
@@ -145,6 +146,7 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
 
       <ProjectContainerSection projectId={projectId} />
       <ProjectClaudeLoginSection projectId={projectId} />
+      <ProjectInstructionSection projectId={projectId} />
 
       <ProjectMessageSendersSection projectId={projectId} />
 

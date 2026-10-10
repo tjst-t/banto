@@ -301,6 +301,11 @@ async function* runThreadTurnInner(
      * `report_turn`・システムプロンプトの節・Stop hook を渡す。渡されなければオフ
      */
     turnSummaryEnabled?(projectId: string): boolean;
+    /**
+     * **その Project の「AI への指示」**（追加・2026-10-09、§2.3）。**毎ターン引く**——人が書き換えたら次のターンから、その
+     * Project の全 Thread の system prompt の末尾に入る。渡されなければ無し
+     */
+    projectInstruction?(projectId: string): string | undefined;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false, closing: {} },
@@ -455,6 +460,7 @@ async function* runThreadTurnInner(
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
+  const projectInstruction = deps.projectInstruction?.(thread.projectId);
   const turnSummary: TurnSummaryState | undefined = deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
@@ -563,6 +569,7 @@ async function* runThreadTurnInner(
         memory: memory.established,
         ...(input.modelIdentity ? { model: input.modelIdentity } : {}),
         ...(turnSummary ? { turnSummary: true } : {}),
+        ...(projectInstruction ? { projectInstruction } : {}),
       }),
       // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）。自分の Fork を閉じるのも聞かない
       // （開き直せば元に戻る、§2.2「AI が自分の Fork を閉じる」）

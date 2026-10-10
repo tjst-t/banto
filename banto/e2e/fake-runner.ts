@@ -83,6 +83,12 @@ export interface FakePlan {
    */
   sayContext?: boolean;
   /**
+   * **banto が渡した system prompt だけを、そのまま発言にする**（追加・2026-10-09）。ブロックの間は
+   * `SYSTEM_PROMPT_BLOCK_SEPARATOR` で区切る——どのブロックが末尾かを試験が見られる（`sayContext` は prompt まで
+   * 混ぜるので、末尾かどうかが分からない）。Project ごとの「AI への指示」（`project-instruction.spec.ts`）が使う
+   */
+  saySystemPrompt?: boolean;
+  /**
    * **このターンがどのモデル・effort で走ったかを、そのまま発言にする**（追加・2026-09-23）。
    * 画面で選んだものが Runner まで届いたかを、発言の中身で見る（`thread-model.spec.ts`）。
    */
@@ -99,6 +105,9 @@ export interface FakePlan {
    */
   fail?: string;
 }
+
+/** `saySystemPrompt` のブロックの区切り */
+export const SYSTEM_PROMPT_BLOCK_SEPARATOR = "\n<<<block>>>\n";
 
 /**
  * **選べるモデル**（追加・2026-09-23）。本物は CLI に聞く（`runner/models.ts`）。
@@ -512,6 +521,11 @@ export async function* runTurn(opts: {
     const at = opts.prompt.indexOf(MARKER);
     const visiblePrompt = at === -1 ? opts.prompt : opts.prompt.slice(0, at);
     const text = [...(opts.systemPrompt ?? []), ...(instructions ? [instructions] : []), visiblePrompt].join("\n");
+    yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
+  }
+
+  if (plan.saySystemPrompt) {
+    const text = (opts.systemPrompt ?? []).join(SYSTEM_PROMPT_BLOCK_SEPARATOR);
     yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
   }
 

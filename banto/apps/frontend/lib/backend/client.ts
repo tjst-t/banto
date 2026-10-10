@@ -821,6 +821,22 @@ export async function setRealTurnSummary(projectId: string, enabled: boolean): P
 }
 
 /**
+ * **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。v4-frontend.md §6.17）。空なら無し。上限は host だけが持つ——超えたら host が理由つきで断る（規則3）
+ */
+export async function fetchRealProjectInstruction(projectId: string): Promise<string> {
+  return (await request<{ text: string }>(`/api/projects/${projectId}/instruction`)).text;
+}
+
+export async function setRealProjectInstruction(projectId: string, text: string): Promise<string> {
+  return (
+    await request<{ text: string }>(`/api/projects/${projectId}/instruction`, {
+      method: "PUT",
+      body: JSON.stringify({ text }),
+    })
+  ).text;
+}
+
+/**
  * **この Project に Claude のログインを使わせる**（決定・2026-09-27、ユーザー。`docs/specs/v4-security.md` §2）。既定はオン。
  * 真実は host（`packages/core/src/claude-login/relay.ts`）。観測（回数・最終時刻・直近の 401）は banto を起こしてからの分
  */

@@ -2241,6 +2241,28 @@ test("ターンの終わりのまとめのスイッチは Project ごとで、�
   });
 });
 
+// **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）——Project の層の文字列、空なら無し
+test("AI への指示は Project ごとに読み書きでき、空で保存すると消え、上限を超えたら断る", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await (
+      await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: dir }) })
+    ).json();
+    const url = `${base}/api/projects/${project.id}/instruction`;
+    const put = (body: unknown) => fetch(url, { method: "PUT", headers, body: JSON.stringify(body) });
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { text: "" });
+    assert.deepEqual(await (await put({ text: "人へは日本語で書く。" })).json(), { text: "人へは日本語で書く。" });
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { text: "人へは日本語で書く。" });
+    const tooLong = await put({ text: "あ".repeat(8_001) });
+    assert.equal(tooLong.status, 400);
+    assert.match(((await tooLong.json()) as { error: string }).error, /8,000 字まで/);
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { text: "人へは日本語で書く。" }, "断ったら元のまま");
+    assert.equal((await put({ text: 1 })).status, 400);
+    assert.deepEqual(await (await put({ text: "  " })).json(), { text: "" });
+    assert.equal((await fetch(`${base}/api/projects/nope/instruction`, { headers })).status, 404);
+  });
+});
+
 // **banto 本体の止まり具合と host の詰まり具合**（決定・2026-10-09、v4-architecture.md §5.4-0）——資源の画面が読む口
 test("GET /api/admin/host-health は合言葉があるときだけ本体の止まりと host の詰まり具合を返す", async () => {
   const report = { at: "2026-10-09T00:00:00.000Z", stall: { max10s: 0, max60s: 12000, recent: [] }, pressure: {} };

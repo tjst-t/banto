@@ -60,6 +60,7 @@ import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
+import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { closeForkDroppedNote, composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
@@ -1128,6 +1129,7 @@ export function createApp(deps: AppDeps) {
   const autoApproveAll = (projectId: string) => isAutoApproveAll(deps.runtimeConfig, projectId);
   // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。ターンを始めるときに引く
   const turnSummaryEnabled = (projectId: string) => isTurnSummaryEnabled(deps.runtimeConfig, projectId);
+  const projectInstruction = (projectId: string) => projectInstructionOf(deps.runtimeConfig, projectId);
   // **Thread 間・Project 間のメッセージ**（決定・2026-10-01、アーキ仕様 §4.2）。AI の `send_message` から呼ばれる
   const messaging = new ThreadMessaging({
     projectThread: deps.projectThread,
@@ -1334,7 +1336,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, autoApproveAll, turnSummaryEnabled }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -2979,6 +2981,25 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, TURN_SUMMARY_KEY);
         }
         json(res, 200, { enabled: turnSummaryEnabled(projectId) });
+        return;
+      }
+
+      // **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）。人の画面からだけ書く。空なら消す。
+      // 上限を超えたら断る（黙って切り詰めない、規則2）
+      const instructionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/instruction$/);
+      if (instructionMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = instructionMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { text?: unknown };
+          if (typeof body.text !== "string") return json(res, 400, { error: "text は文字列で渡してください" });
+          const problem = validateProjectInstruction(body.text);
+          if (problem) return json(res, 400, { error: problem });
+          if (body.text.trim() !== "") await deps.runtimeConfig.setProjectOverride(projectId, PROJECT_INSTRUCTION_KEY, body.text);
+          else await deps.runtimeConfig.unsetProjectOverride(projectId, PROJECT_INSTRUCTION_KEY);
+        }
+        json(res, 200, { text: projectInstruction(projectId) ?? "" });
         return;
       }
 
