@@ -11,13 +11,6 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
 import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 
-export type PanelRole = "primary" | "slim" | "spine";
-
-export type PanelLayer =
-  | { kind: "base"; role: PanelRole }
-  | { kind: "fork"; threadId: string; role: PanelRole }
-  | { kind: "canvas"; moduleId: string; viewId: string; role: "primary" };
-
 export type OverlayKind = "inbox" | "palette" | "archive" | null;
 
 export interface PanelStackState {
@@ -28,7 +21,6 @@ export interface PanelStackState {
   /** Canvas の display mode。仕様の fullscreen を banto は「Base・Fork を隠して全幅」に割り当てる（§6.2） */
   canvasFullscreen: boolean;
   overlay: OverlayKind;
-  layers: readonly PanelLayer[];
 }
 
 export interface OpenPanelInput {
@@ -53,48 +45,6 @@ export function parseCanvasParam(
   return { moduleId: canvasParam.slice(0, sep), viewId: canvasParam.slice(sep + 1) };
 }
 
-/**
- * 開いているものの組み合わせから、Base Thread・Fork Thread・Canvas それぞれの role を決める
- * （prototype の重なりの規則をそのまま関数にしたもの——幹は地、枝と面はその上に浮く紙）。
- *
- * Fork Thread と Canvas が両方開いているとき、Base は幅44pxの帯（spine）になる。
- * 文言は持たない——押すと Base に戻れる、という機能だけを残す（PO指摘：
- * 「banto そのもの」という文言に意味が無い。帯そのものは「地が続いている」ことを見せる）。
- */
-function computeLayers(
-  forkThreadId: string | null,
-  canvas: { moduleId: string; viewId: string } | null,
-  canvasFullscreen: boolean,
-): PanelLayer[] {
-  const hasFork = forkThreadId !== null;
-  const hasCanvas = canvas !== null;
-
-  if (hasCanvas && canvasFullscreen) {
-    return [{ kind: "canvas", moduleId: canvas.moduleId, viewId: canvas.viewId, role: "primary" }];
-  }
-  if (!hasFork && !hasCanvas) {
-    return [{ kind: "base", role: "primary" }];
-  }
-  if (hasFork && !hasCanvas) {
-    return [
-      { kind: "base", role: "primary" },
-      { kind: "fork", threadId: forkThreadId, role: "primary" },
-    ];
-  }
-  if (!hasFork && hasCanvas) {
-    return [
-      { kind: "base", role: "slim" },
-      { kind: "canvas", moduleId: canvas.moduleId, viewId: canvas.viewId, role: "primary" },
-    ];
-  }
-  // hasFork && hasCanvas
-  return [
-    { kind: "base", role: "spine" },
-    { kind: "fork", threadId: forkThreadId as string, role: "slim" },
-    { kind: "canvas", moduleId: canvas!.moduleId, viewId: canvas!.viewId, role: "primary" },
-  ];
-}
-
 export function usePanelStack(projectId: string): UsePanelStackResult {
   const router = useRouter();
   const pathname = usePathname();
@@ -113,11 +63,6 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
     if (!parsed) return null;
     return canvasToolParam ? { ...parsed, toolCallId: canvasToolParam } : parsed;
   }, [canvasParam, canvasToolParam]);
-
-  const layers = useMemo(
-    () => computeLayers(forkThreadId, canvas, canvasFullscreen),
-    [forkThreadId, canvas, canvasFullscreen],
-  );
 
   const open = useCallback(
     (next: OpenPanelInput) => {
@@ -174,7 +119,6 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
     canvas,
     canvasFullscreen,
     overlay: overlayParam,
-    layers,
     open,
     close,
   };

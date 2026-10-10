@@ -16,7 +16,7 @@ import { createProject, openApp, fakeTurn, confirmForkDialog, waitTurnEnded } fr
 
 test.setTimeout(300_000);
 
-test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き添えにしない", async ({ page }) => {
+test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き添えにしない・Fork は Escape で閉じない", async ({ page }) => {
   await openApp(page);
   await createProject(page, "Escape の spec", mkdtempSync(join(tmpdir(), "banto-e2e-esc-")));
 
@@ -53,8 +53,13 @@ test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き
     timeout: 10_000,
   });
 
-  // もう一度押せば、こんどは Fork が閉じる（前面がもう無いので）
+  // **Escape では Fork を閉じない**（改訂・2026-10-10、ユーザー）。Fork は全面の面で、Base へは ← かサイドバーで戻る
   await page.keyboard.press("Escape");
+  await page.waitForTimeout(500);
+  await expect(back, "Escape で Fork が閉じた").toBeVisible();
+  await expect(page).toHaveURL(/[?&]fork=/);
+  // ← で Base へ戻る
+  await back.click();
   await expect(back).toBeHidden({ timeout: 10_000 });
 });
 
