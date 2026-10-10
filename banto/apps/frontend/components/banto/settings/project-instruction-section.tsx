@@ -17,6 +17,8 @@ import { fetchRealProjectInstruction, setRealProjectInstruction } from "@/lib/ba
 import { settingsOpenHref } from "@/lib/settings-link";
 
 type Loaded = { projectId: string } & ({ text: string } | { error: string });
+/** 最後の保存の結果。読み込みと同じく Project に結びつける——別の Project に移ったら出さない */
+type SaveOutcome = { projectId: string } & ({ saved: true } | { error: string });
 
 export function ProjectInstructionSection({ projectId }: { projectId: string }) {
   const pathname = usePathname();
@@ -24,13 +26,10 @@ export function ProjectInstructionSection({ projectId }: { projectId: string }) 
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [justSaved, setJustSaved] = useState(false);
+  const [outcome, setOutcome] = useState<SaveOutcome | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setSaveError(null);
-    setJustSaved(false);
     fetchRealProjectInstruction(projectId)
       .then((text) => {
         if (cancelled) return;
@@ -47,18 +46,21 @@ export function ProjectInstructionSection({ projectId }: { projectId: string }) 
   const saved = current && "text" in current ? current.text : null;
   const loadError = current && "error" in current ? current.error : null;
   const dirty = saved !== null && draft !== saved;
+  const currentOutcome = outcome?.projectId === projectId ? outcome : null;
+  const saveError = currentOutcome && "error" in currentOutcome ? currentOutcome.error : null;
+  const justSaved = currentOutcome !== null && "saved" in currentOutcome;
 
   async function save() {
     if (!dirty || saving) return;
     setSaving(true);
-    setSaveError(null);
+    setOutcome(null);
     try {
       const text = await setRealProjectInstruction(projectId, draft);
       setLoaded({ projectId, text });
       setDraft(text);
-      setJustSaved(true);
+      setOutcome({ projectId, saved: true });
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      setOutcome({ projectId, error: err instanceof Error ? err.message : String(err) });
     } finally {
       setSaving(false);
     }
@@ -99,7 +101,7 @@ export function ProjectInstructionSection({ projectId }: { projectId: string }) 
             className="min-h-32 font-mono text-xs"
             onChange={(e) => {
               setDraft(e.target.value);
-              setJustSaved(false);
+              if (justSaved) setOutcome(null);
             }}
           />
           {saveError ? (
@@ -121,7 +123,7 @@ export function ProjectInstructionSection({ projectId }: { projectId: string }) 
                 disabled={saving}
                 onClick={() => {
                   setDraft(saved);
-                  setSaveError(null);
+                  setOutcome(null);
                 }}
               >
                 捨てる
