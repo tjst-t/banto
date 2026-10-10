@@ -5936,7 +5936,7 @@
       "number": 259,
       "kind": "task",
       "title": "Browser：headless をやめ、仮想の画面で普通の Chromium を画面ありで起こす（人が使うブラウザと同じ振る舞いにする）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -5948,7 +5948,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-10T14:36:01.220Z",
-      "updatedAt": "2026-10-10T14:36:01.220Z",
+      "updatedAt": "2026-10-10T14:36:05.261Z",
       "closedAt": null,
       "extra": {}
     },
