@@ -295,6 +295,18 @@ export class NetworkLog {
     return out;
   }
 
+  /** 記録に残っているタブの番号の最大（無ければ 0）。タブの id を記録と混ざらないように続きから振るのに使う */
+  maxTabNumber(): number {
+    let max = 0;
+    const take = (tab: string) => {
+      const m = /^t(\d+)$/.exec(tab);
+      if (m) max = Math.max(max, Number(m[1]));
+    };
+    for (const r of this.records.values()) take(r.tab);
+    for (const c of this.consoleEntries) take(c.tab);
+    return max;
+  }
+
   /** いまの記録の番号の境目（browserAct が「その間に起きたこと」を数えるのに使う） */
   marks(): { record: number; console: number } {
     return { record: this.nextRecord - 1, console: this.nextConsole - 1 };

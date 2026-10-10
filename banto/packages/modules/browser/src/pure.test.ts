@@ -174,6 +174,15 @@ test("上限：WebSocket のフレームは1本あたりの数を越えたら古
   assert.equal(log.stats().bodyBytes, 2);
 });
 
+test("タブの番号：記録とコンソールに残っているタブの最大を返す（無ければ 0）", () => {
+  const log = new NetworkLog(undefined);
+  assert.equal(log.maxTabNumber(), 0);
+  log.startRecord(rec({ tab: "t3" }));
+  log.startRecord(rec({ tab: "t1" }));
+  log.addConsole({ tab: "t7", level: "log", kind: "console", text: "x", at: Date.now() });
+  assert.equal(log.maxTabNumber(), 7);
+});
+
 test("置き場：止めて読み直しても記録と本文が残り、番号は続く。消すと本文のファイルも消える", () => {
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-log-"));
   try {

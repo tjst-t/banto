@@ -195,10 +195,20 @@ test("9本の道具が試験用のページで動き、失敗した通信が絞�
   assert.equal(new StateFile(join(dataDir, "state.json")).get().aiBlocked, true);
   await call("setAiBlocked", { blocked: false });
 
-  // ---- 止めて起こし直しても、ログイン状態（Cookie）は残る ----
+  // ---- 止めて起こし直しても、ログイン状態（Cookie）は残る。タブの id は振り直さず続きから ----
+  const tabNumber = (id: string) => Number(id.slice(1));
+  const lastTab = Math.max(...(await ctx.session.listTabs()).map((t) => tabNumber(t.id)), ctx.log.maxTabNumber());
   await ctx.session.stop("試験");
   assert.equal(ctx.session.running, false);
-  await call("browserOpen", { url: `${base}/second` });
+  const reopened = await call("browserOpen", { url: `${base}/second` });
+  const reopenedTab = /タブ (t\d+) で開きました/.exec(reopened.text)?.[1];
+  assert.ok(reopenedTab && tabNumber(reopenedTab) > lastTab, `起こし直したタブ ${reopenedTab} が前のタブ（t${lastTab} まで）と重なる`);
+  // Module ごと起こし直しても（記録だけが置き場に残る）、記録にあるタブの続きから
+  await ctx.session.stop("試験");
+  ctx.log.saveNow();
+  ctx = await createBrowserContextFromDataDir(dataDir, { browsersPath });
+  const restarted = /タブ (t\d+) で開きました/.exec((await call("browserOpen", { url: `${base}/second` })).text)?.[1];
+  assert.ok(restarted && tabNumber(restarted) > tabNumber(reopenedTab), `Module を起こし直したタブ ${restarted} が ${reopenedTab} と重なる`);
   assert.match((await call("browserEval", { expression: "document.cookie" })).text, new RegExp(TEST_COOKIE));
 
   // ---- HAR は伏せない。「ブラウザの記録を消す」でプロファイルと記録が消える ----

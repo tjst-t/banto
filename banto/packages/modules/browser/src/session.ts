@@ -65,6 +65,9 @@ export class BrowserSession {
 
   private async start(onProgress?: (message: string) => void): Promise<BrowserContext> {
     const context = await this.deps.launch(this.deps.profileDir, onProgress);
+    // タブの id は**止めて起こし直しても続きから**振る——通信とコンソールの記録はタブの id を持って残るので、t1 から
+    // 振り直すと前に起こしたときの t1 と混ざる（listNetwork の tab で絞ったとき）。Module ごと起こし直したときも記録の続きから
+    this.nextTab = Math.max(this.nextTab, this.deps.log.maxTabNumber() + 1);
     this.context = context;
     context.on("close", () => {
       // ブラウザが落ちた・止めた——次の呼び出しで起こし直す
