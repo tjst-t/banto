@@ -5866,7 +5866,7 @@
       "number": 241,
       "kind": "task",
       "title": "Browser Module 本体：Chromium の起こし方・AI の道具9本・通信の記録",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [
         "browser-measure"
@@ -5880,7 +5880,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:12:04.953Z",
-      "updatedAt": "2026-10-10T00:12:02.845Z",
+      "updatedAt": "2026-10-10T00:12:56.566Z",
       "closedAt": null,
       "extra": {}
     },
