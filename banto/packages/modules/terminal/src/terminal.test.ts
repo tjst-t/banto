@@ -265,3 +265,79 @@ test("流れ：大きさが範囲の外・知らないメッセージは断る",
     }
   });
 });
+
+/** 端末に出た `n<数>` を、出た順に拾う（色などの逃がしを外し、最後の書きかけの行は捨てる） */
+function countersOf(screen: string): number[] {
+  // eslint-disable-next-line no-control-regex
+  const plain = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[=>c]/g, "");
+  const lines = plain.split(/\r?\n/);
+  lines.pop();
+  return lines.flatMap((line) => {
+    const m = /^n(\d+)\s*$/.exec(line.trim());
+    return m ? [Number(m[1])] : [];
+  });
+}
+
+/**
+ * **写しと続きの継ぎ目で出力を落とさない・二重にしない**（レビューの指摘・2026-10-10）。tmux の stdout の1チャンクに写しの
+ * 返事の最後の `%end` と続く `%output` が一緒に入ると、Promise の解決を待って境目を決めていた作りでは、その `%output` を
+ * 捨てていた（30 回中 17〜20 回、写しの最後の行の直後に抜け）。連番を速く流すペインに何度も繋いで、数が1つずつ続くことを見る
+ */
+test("流れ：連番を速く流しているペインに繋いでも、写しと続きの継ぎ目で抜けも二重も無い", needsTmux, async () => {
+  await withTerminal(async ({ terminal, tmux, dataDir }) => {
+    const server = await listenStreams({ terminal: terminalStreamHandler({ tmux, log: () => undefined }) }, { dataDir });
+    const path = streamSocketPathOf(dataDir);
+    try {
+      await terminal.createSession({ name: "main", cols: 80, rows: 24 });
+      await tmux.exec(["send-keys", "-t", "=main:", "clear; i=0; while :; do i=$((i+1)); echo n$i; done", "Enter"]);
+      const rounds = Number(process.env.BANTO_TERMINAL_SEAM_ROUNDS ?? 8);
+      const broken: string[] = [];
+      for (let round = 0; round < rounds; round++) {
+        const c = dial(path, { session: "main", cols: 80, rows: 24 });
+        await c.until(/n\d+\r?\n[\s\S]*n\d+\r?\n[\s\S]*n\d+\r?\n/);
+        await new Promise((r) => setTimeout(r, 150));
+        c.ws.close();
+        await c.closed;
+        const seen = countersOf(c.screen);
+        for (let i = 1; i < seen.length; i++) {
+          if (seen[i] !== seen[i - 1]! + 1) {
+            broken.push(`${round + 1} 回目：n${seen[i - 1]} の次が n${seen[i]}`);
+            break;
+          }
+        }
+      }
+      assert.deepEqual(broken, [], `継ぎ目で数が続かない（${broken.length}/${rounds}）`);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+/**
+ * **閉じる理由は 123 バイトに切る**（レビューの指摘・2026-10-10）。日本語 31 字の名前だと理由が越え、`ws.close` が投げて
+ * 流れが宙に浮いていた（開いている間に閉じたときは受け口の無い reject で Module ごと落ちた）
+ */
+test("流れ：長い日本語の名前でも、無い・使えない・閉じられたを理由つきで閉じる", { ...needsTmux, timeout: 30_000 }, async () => {
+  await withTerminal(async ({ terminal, tmux, dataDir }) => {
+    const server = await listenStreams({ terminal: terminalStreamHandler({ tmux, log: () => undefined }) }, { dataDir });
+    const path = streamSocketPathOf(dataDir);
+    const long = "あ".repeat(31);
+    try {
+      const missing = await dial(path, { session: long, cols: 80, rows: 24 }).closed;
+      assert.equal(missing.code, 4404);
+      assert.match(missing.reason, /^セッション「あ+」はあり$/);
+      assert.ok(Buffer.byteLength(missing.reason) <= 123);
+      assert.equal((await dial(path, { session: "い".repeat(41), cols: 80, rows: 24 }).closed).code, 1008);
+
+      await terminal.createSession({ name: long });
+      const c = dial(path, { session: long, cols: 80, rows: 24 });
+      await c.until(/^\x1bc/);
+      await terminal.closeSession({ name: long });
+      const gone = await c.closed;
+      assert.equal(gone.code, 4404);
+      assert.ok(Buffer.byteLength(gone.reason) <= 123);
+    } finally {
+      await server.close();
+    }
+  });
+});

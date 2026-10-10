@@ -92,6 +92,12 @@ export interface TerminalStreamDeps {
   log?: (line: string) => void;
 }
 
+/** 写しを取っている間に、返事より後に届いた出力 */
+interface HeldOutput {
+  pane: string;
+  data: Buffer;
+}
+
 /** セッション（tmux の id）ごとに、いま大きさを決めている流れ */
 type LatestMap = Map<string, object>;
 
@@ -103,7 +109,7 @@ export function terminalStreamHandler(deps: TerminalStreamDeps): StreamHandler {
     const problem = sessionNameProblem(name);
     const size = parseSize(stamp.params.cols ?? 80, stamp.params.rows ?? 24);
     if (problem || !size) {
-      ws.close(1008, problem ?? "端末の大きさ（cols・rows）が範囲の外です");
+      closeStream(ws, 1008, problem ?? "端末の大きさ（cols・rows）が範囲の外です");
       return;
     }
     attach(ws, name as string, size, deps.tmux, latest, log);
@@ -116,8 +122,12 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
   let control: TmuxControlClient | undefined;
   let paneId: string | undefined;
   let sessionId: string | undefined;
-  /** 写しを取っている間は出力を流さない（写しに含まれている） */
+  /**
+   * 写しを取っている間の出力：返事より前のものは写しに含まれているので捨て（`held` が undefined）、返事の `%end` を
+   * 読んだ後のものは溜めて、写しを送ったあとに流す（取りこぼしも二重も無い）
+   */
   let syncing = true;
+  let held: HeldOutput[] | undefined;
   /**
    * 繋ぐ・写しを取る・打鍵・大きさは、この順に1つずつ流す（ペインが決まる前の打鍵を先に送らない）。受け口は
    * 最初に付ける——付ける前に届いた1通は捨てられてしまう
@@ -133,7 +143,7 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
         // 握りつぶさない：流れを閉じ、画面は繋ぎ直す（そのときに写しを取り直す）
         log(`セッション「${name}」の流れを閉じます: ${(err as Error).message}`);
         alive = false;
-        if (ws.readyState === ws.OPEN) ws.close(1011, truncateReason((err as Error).message));
+        if (ws.readyState === ws.OPEN) closeStream(ws, 1011, (err as Error).message);
         control?.close();
       }
     });
@@ -142,12 +152,17 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
   async function connect(): Promise<void> {
     if (!(await tmux.has(name))) {
       alive = false;
-      ws.close(STREAM_CLOSE_GONE, `セッション「${name}」はありません`);
+      closeStream(ws, STREAM_CLOSE_GONE, `セッション「${name}」はありません`);
       return;
     }
     control = new TmuxControlClient(tmux.attachControl(name), {
       onOutput(pane, data) {
-        if (syncing || pane !== paneId || ws.readyState !== ws.OPEN) return;
+        if (syncing) {
+          // 返事より後のものだけ溜める（ペインは写しのあとで見る——初めはまだ決まっていない）
+          held?.push({ pane, data });
+          return;
+        }
+        if (pane !== paneId || ws.readyState !== ws.OPEN) return;
         ws.send(data, { binary: true });
       },
       onNotification(line) {
@@ -161,9 +176,13 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
         void (async () => {
           // セッションが閉じられたなら「もう無い」——画面は繋ぎ直しをやめる
           const gone = sessionId ? !(await tmux.hasId(sessionId).catch(() => true)) : true;
-          if (gone) ws.close(STREAM_CLOSE_GONE, `セッション「${name}」は閉じられました`);
-          else ws.close(1011, truncateReason(reason));
-        })();
+          if (gone) closeStream(ws, STREAM_CLOSE_GONE, `セッション「${name}」は閉じられました`);
+          else closeStream(ws, 1011, reason);
+        })().catch((err: unknown) => {
+          // ここで投げると受け口が無く Module ごと落ちる。記録して、理由なしで閉じる
+          log(`セッション「${name}」の流れを閉じられませんでした: ${(err as Error).message}`);
+          closeStream(ws, 1011);
+        });
       },
     });
     await sync();
@@ -171,12 +190,19 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
 
   async function sync(): Promise<void> {
     syncing = true;
+    held = undefined;
     const target = sessionId ?? paneTarget(name);
-    const [, captured, info] = await control!.run([
-      `refresh-client -C ${size.cols}x${size.rows}`,
-      `capture-pane -p -e -S -${SNAPSHOT_HISTORY} -t '${target}'`,
-      `display-message -p -t '${target}' '${INFO_FORMAT}'`,
-    ]);
+    const [, captured, info] = await control!.run(
+      [
+        `refresh-client -C ${size.cols}x${size.rows}`,
+        `capture-pane -p -e -S -${SNAPSHOT_HISTORY} -t '${target}'`,
+        `display-message -p -t '${target}' '${INFO_FORMAT}'`,
+      ],
+      // 返事を読んだその場から後の出力は写しに入っていない——溜める（Promise の解決を待つと、同じチャンクの続きを捨てる）
+      () => {
+        held = [];
+      },
+    );
     const pane = parseInfo(info![0]);
     paneId = pane.paneId;
     sessionId = pane.sessionId;
@@ -187,6 +213,14 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
       if (ws.readyState !== ws.OPEN) return;
       ws.send(snapshot.subarray(i, i + CHUNK_BYTES), { binary: true });
     }
+    // 返事の後に届いていた出力を、写しの後に順に流す
+    // `held` は onReplied（別の関数）が入れるので、TS の絞り込み（上で undefined にした）を外して読む
+    for (const item of (held as HeldOutput[] | undefined) ?? []) {
+      if (item.pane !== paneId) continue;
+      if (ws.readyState !== ws.OPEN) break;
+      ws.send(item.data, { binary: true });
+    }
+    held = undefined;
     syncing = false;
   }
 
@@ -214,14 +248,14 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
 
   ws.on("message", (data, isBinary) => {
     if (isBinary) {
-      ws.close(1003, "2進は受けません（文字の JSON で送ってください）");
+      closeStream(ws, 1003, "2進は受けません（文字の JSON で送ってください）");
       return;
     }
     let message: { type?: unknown; data?: unknown; cols?: unknown; rows?: unknown };
     try {
       message = JSON.parse(data.toString()) as typeof message;
     } catch {
-      ws.close(1007, "JSON ではありません");
+      closeStream(ws, 1007, "JSON ではありません");
       return;
     }
     if (message.type === "input" && typeof message.data === "string") {
@@ -232,13 +266,13 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
     if (message.type === "resize") {
       const next = parseSize(message.cols, message.rows);
       if (!next) {
-        ws.close(1008, "端末の大きさ（cols・rows）が範囲の外です");
+        closeStream(ws, 1008, "端末の大きさ（cols・rows）が範囲の外です");
         return;
       }
       enqueue(() => resize(next));
       return;
     }
-    ws.close(1008, "知らないメッセージです");
+    closeStream(ws, 1008, "知らないメッセージです");
   });
   ws.on("close", () => {
     alive = false;
@@ -249,9 +283,23 @@ function attach(ws: WebSocket, name: string, size: TerminalSize, tmux: Tmux, lat
   enqueue(connect);
 }
 
-/** 閉じる理由は 123 バイトまで（WebSocket の決まり） */
-function truncateReason(reason: string): string {
-  let out = reason;
-  while (Buffer.byteLength(out, "utf8") > 123) out = out.slice(0, -1);
-  return out;
+/** 閉じる理由は 123 バイトまで（WebSocket の決まり）。文字の途中では切らない */
+export function truncateReason(reason: string): string {
+  const chars = Array.from(reason);
+  while (Buffer.byteLength(chars.join(""), "utf8") > 123) chars.pop();
+  return chars.join("");
+}
+
+/**
+ * **流れを閉じる口は全部ここを通す**（レビューの指摘・2026-10-10）。理由は 123 バイトに切る——セッションの名前（40 字まで）
+ * を含む理由は日本語だと越え、`ws.close` が RangeError を投げて流れが閉じられずに残っていた（onExit の中では受け口の無い
+ * reject になり Module ごと落ちた）。それでも投げたら理由なしで閉じる
+ */
+export function closeStream(ws: WebSocket, code: number, reason?: string): void {
+  try {
+    if (reason === undefined) ws.close(code);
+    else ws.close(code, truncateReason(reason));
+  } catch {
+    ws.close(code);
+  }
 }

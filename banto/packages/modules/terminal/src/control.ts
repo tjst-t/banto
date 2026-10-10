@@ -40,6 +40,8 @@ function isOctal(b: number | undefined): boolean {
 interface Pending {
   resolve(lines: string[]): void;
   reject(err: Error): void;
+  /** 返事の `%end`（`%error`）を読んだその場で呼ぶ（Promise の解決より前・同じチャンクの続きの行より前） */
+  onReplied?: () => void;
 }
 
 export class TmuxControlClient {
@@ -68,14 +70,18 @@ export class TmuxControlClient {
 
   /**
    * コマンドを1行で送り、それぞれの返事（出力の行）を返す。`commands` は `;` で並べて1行にする——間に端末の出力を
-   * 挟まない。どれかが `%error` なら投げる
+   * 挟まない。どれかが `%error` なら投げる。
+   *
+   * `onReplied` は最後の返事の `%end` を読んだ**その場で**（同期で）呼ぶ。返事の Promise が解決するのはマイクロタスクの
+   * 後なので、同じ stdout のチャンクに続いて入っていた `%output` はそれより先に `onOutput` に届く——「返事より後の出力」の
+   * 境目はこちらで知る（レビューの指摘・2026-10-10：Promise の解決で境目を決めると、写しの直後の出力が落ちていた）
    */
-  run(commands: string[]): Promise<string[][]> {
+  run(commands: string[], onReplied?: () => void): Promise<string[][]> {
     if (this.exited) return Promise.reject(new Error("tmux の client はもう終わっています"));
     const replies = commands.map(
-      () =>
+      (_, i) =>
         new Promise<string[]>((resolve, reject) => {
-          this.pending.push({ resolve, reject });
+          this.pending.push({ resolve, reject, ...(i === commands.length - 1 && onReplied ? { onReplied } : {}) });
         }),
     );
     this.child.stdin.write(`${commands.join(" ; ")}\n`);
@@ -121,6 +127,7 @@ export class TmuxControlClient {
         if (!block.own) return;
         const waiter = this.pending.shift();
         if (!waiter) return;
+        waiter.onReplied?.();
         if (end[1] === "error") waiter.reject(new Error(block.lines.join("\n") || "tmux のコマンドが失敗しました"));
         else waiter.resolve(block.lines);
         return;
