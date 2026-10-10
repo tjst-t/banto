@@ -381,18 +381,21 @@ test("記録した pid が別のプロセスに使い回されていたら（開
 });
 
 test("前の走行のエージェントが止まらなければ、続けずに失敗を同じ札で届ける", async (t) => {
-  // 止められないグループ：他人（root）のプロセスグループ。信号は EPERM で届かない
+  // 止められないグループ：他人（root）のプロセスグループ。信号は EPERM で届かない。**いちばん古くから居るもの**を選ぶ
+  // ——最初に見つかったものだと、機械の上の別の E2E の入れ子コンテナの `[lxc monitor]` を引くことがあり、試験の途中で
+  // そのコンテナが消えると「止まった」になって続きが走る（2026-10-10 実測、混んだ機械で 20 回中 4 回）
   const rootLeader = readdirSync("/proc")
     .filter((d) => /^\d+$/.test(d))
     .map(Number)
-    .find((pid) => {
+    .filter((pid) => {
       try {
         const status = readFileSync(`/proc/${pid}/status`, "utf8");
         return pid > 1 && /^Uid:\s+0\s/m.test(status) && startTicksOf(pid) !== undefined && groupLeader(pid);
       } catch {
         return false;
       }
-    });
+    })
+    .sort((a, b) => (startTicksOf(a) ?? Infinity) - (startTicksOf(b) ?? Infinity))[0];
   if (rootLeader === undefined || process.getuid?.() === 0) {
     t.skip("止められないプロセスグループが見つからない");
     return;
