@@ -5748,7 +5748,7 @@
       "number": 236,
       "kind": "story",
       "title": "人が触れるターミナル（Terminal）と、画面と Module の間の流れの口",
-      "status": "ready",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -5756,15 +5756,15 @@
       "labels": [],
       "body": "人が画面から Project のコンテナでシェルを打てるようにする。打鍵と出力は、core に1本だけ持つ「画面と Module の間の流れの口」で運ぶ。この口は Browser と共有する。\n\n仕様：docs/specs/v4-architecture.md §5.8（流れの口）・docs/specs/v4-modules.md §4.6（Terminal）・v4-security.md §3 の「画面と Module の間の流れ」の行。決めたのは 2026-10-08（ユーザー。Fork「Terminal の Module の検討」）。",
       "doneWhen": "",
-      "resolution": null,
+      "resolution": "子の #237（流れの中継）・#238（Terminal の Module）がどちらも終わり、稼働中で打てることを確かめた（2026-10-10）。",
       "refs": [
         "docs/specs/v4-architecture.md §5.8",
         "docs/specs/v4-modules.md §4.6"
       ],
       "threads": [],
       "createdAt": "2026-10-08T08:20:30.942Z",
-      "updatedAt": "2026-10-08T08:20:30.942Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-10T11:12:27.309Z",
+      "closedAt": "2026-10-10T11:12:27.309Z",
       "extra": {}
     },
     {
