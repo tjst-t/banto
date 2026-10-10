@@ -36,9 +36,24 @@ function devConfig(): InfisicalConfig | undefined {
   return JSON.parse(readFileSync(IDENTITY, "utf8")) as InfisicalConfig;
 }
 
+/**
+ * **資格情報のファイルがあっても、相手が立っているとは限らない**（追加・2026-10-10）。`.identity.json` は作業ツリーに
+ * 写される（Factory の worktree 等）が、`dev/docker-compose.yml` の Infisical は立ち上げた機械にしか居ない——Project の
+ * コンテナには docker も居ない。ファイルだけで「立っている」とみなすと、全件が約14秒ずつ待って落ち、Factory の
+ * 取り込む前のテストが関係の無い変更で止まった（#245）。繋がらなければ、そう言って飛ばす
+ */
+async function unreachableReason(c: InfisicalConfig): Promise<string | undefined> {
+  try {
+    await fetch(new URL("/api/status", c.siteUrl), { signal: AbortSignal.timeout(3000) });
+    return undefined;
+  } catch (err) {
+    return `開発用の Infisical（${c.siteUrl}）に繋がりません：${err instanceof Error ? (err.cause instanceof Error ? err.cause.message : err.message) : String(err)}（立て方は packages/modules/vault-infisical/dev/README.md）`;
+  }
+}
+
 const config = devConfig();
 const skip = config
-  ? false
+  ? ((await unreachableReason(config)) ?? false)
   : "開発用の Infisical が用意されていません（packages/modules/vault-infisical/dev/README.md）";
 
 /** 試験ごとに別のグループを使う——同じ Infisical を共有するので混ざらないように。 */
