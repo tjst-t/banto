@@ -75,7 +75,15 @@ oom.group は付けない。**
   （oom.group あり）に入る。人のセッションも道連れで丸ごと止まりうるが、起きるのは AI がわざわざサーバを起こしたときだけ
   なので、塞がない
 - 入れ子のコンテナ（E2E）では組に入れられない（`inWorkScope` が試して諦め、そのまま起こす）ので、E2E はこの経路を
-  通らない。組に入ったことは稼働中の banto で確かめる
+  通らない。
+- **稼働中の banto の Project のコンテナで確かめた（2026-10-10）**：Factory の作業場所（稼働中の banto の Project のコンテナ、
+  入れ子でない・Ubuntu 24.04・tmux 3.4）で、この版の Terminal の部品（`Terminal`・`terminalStreamHandler`・
+  `@banto/stream-server` の口）を通し、流れに `echo "real-$((6*7))"` を打って `real-42` が返り、ホームは専用のホーム。
+  tmux のサーバは `banto-work-jobs.slice/banto-terminal-<乱数>.scope`、シェルは `banto-work-jobs.slice/tmux-spawn-<uuid>.scope`
+  で、どちらも oom_score_adj 500・oom.group 0。
+  **まだ確かめていないこと**：稼働中の banto そのものへの反映（release に載せて更新し、画面の入口から開いて打つ）。
+  反映は release ブランチと更新の段（`scripts/update.mjs`）を通るので、push しない約束の作業場所からはできない
+  ——main に入ったあと、人が更新して入口から打って確かめる
 
 ## 走り直しで踏んだもの（2026-10-10）
 
