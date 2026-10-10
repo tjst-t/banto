@@ -405,7 +405,11 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 - `uname -m`・libc が host と同じ
 - **ログインシェルが何も出さない**（`ssh <宛先> true` の標準出力が空）——sshd から起こされた bash は非対話でも
   `~/.bashrc` を読み、そこに echo が1行でもあれば MCP の標準入出力が壊れる
-- 道具：土台のイメージの `BASE_PACKAGES` と同じ一覧（git・ssh・curl など）
+- 道具：土台のイメージの `BASE_PACKAGES` と同じ一覧。**banto が動くのに要るもの（git・ssh・curl・tar）は足りなければ断る。
+  特定の Module だけが使うもの（tmux——Terminal、v4-modules.md §4.6）は断らず注意を出し**、その Module が使うときに理由と
+  入れ方を添えて断る（決定・2026-10-10。Terminal を使わない Project まで Module を1つも起こせなくしないため。「中で Docker を
+  使う」の docker と同じ扱い）。コンテナでは Terminal が自分で `sudo apt-get install tmux` で入れるが、別のサーバでは
+  sudo しないので入れない
 - **ユーザーの systemd が使える：`/run/user/<uid>/bus` がある**。無ければ断る（Service・Shell の待たない形・Module を包む
   単位（下）が使う）。**linger が無いことは断らず**、受信箱に注意を出す——「SSH の接続を閉じると Service と待たない形の
   コマンドが止まります。向こうで `sudo loginctl enable-linger <ユーザー>` を」。本番と試験で同じ規則で判定する
