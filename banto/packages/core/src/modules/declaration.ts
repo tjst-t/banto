@@ -513,8 +513,8 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
   },
   {
     // **人と AI が同じブラウザを触り、通信を調べる**（v4-modules.md §4.1、2026-10-08）。Project のコンテナの中で
-    // Playwright 同梱の chromium-headless-shell を CDP で使う——コンテナの中の localhost（Publish していない開発サーバ）に
-    // 届く。ブラウザ・プロファイル（ログイン状態）・通信の記録はこの Module のデータ置き場（`BANTO_MODULE_DATA_DIR`）。
+    // 普通のブラウザ（x86_64 は Google Chrome）を仮想の画面で画面ありで起こし、CDP で使う——コンテナの中の localhost
+    // （Publish していない開発サーバ）に届く。プロファイル（ログイン状態）・通信の記録はこの Module のデータ置き場（`BANTO_MODULE_DATA_DIR`）。
     // 必須ではないので既定ではなく目録に置く。ブラウザ（子プロセス）を走らせるので exec
     id: "browser",
     name: "Browser",

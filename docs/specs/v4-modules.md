@@ -1966,7 +1966,7 @@ Module の一覧には**2種類が混ざる**：
 | 名前 | **Browser**（画面の表示は「ブラウザ」） |
 | 付け方 | **Project ごと**（`scope: project`）、目録（`BUNDLED_CATALOG`）に置き人が「Module を追加」からつける。既定には入れない |
 | 動く場所 | **Project のコンテナの中**（`v4-security.md` §1）。コンテナの中のサービスに `localhost` で届く——**Publish していない開発サーバをそのまま開ける**。資源はその Project の枠に入る |
-| ブラウザ | **Playwright 同梱の `chromium-headless-shell`**（実測・2026-10-08、下の「実測」）。通常の Chromium より起動が速くメモリが半分。Ubuntu の `chromium` は snap なので使わない。Module が CDP で話す。版は Module が使う Playwright に合わせて固定し、Module が入れる。名乗りは普通の Chrome に揃え、言語は日本語（下の「名乗りと言語」） |
+| ブラウザ | **普通のブラウザを、仮想の画面（Xvfb）で画面ありで起こす**（決定・2026-10-10、ユーザー、Backlog #259——「普通に人が使っている Chromium に AI も触れるだけ。完全に人が使っているのと同じように動作するように」）。x86_64 は **Google Chrome の安定版**（人が使っているのと同じもの。Playwright の `install chrome` が Google の apt から入れる）、arm64 は Google Chrome が無いので Playwright 同梱の `chromium`（arm64 は Playwright が組んだ Chromium）。**Chrome for Testing**（x86_64 の Playwright の `chromium`）と headless-shell は使わない。Ubuntu の `chromium` は snap なので使わない。Module が自分で起こし、CDP で話す（下の「起こし方」）。名乗りと言語は本物の値（下の「名乗りと言語」） |
 | 起こす・止める | 最初の道具の呼び出しか、人が画面を開いたときに起こす。画面が閉じていて AI の呼び出しも無いまま30分たったら止める（メモリを返す。数字は仮） |
 | ログイン状態 | **Project ごとに残す**（決定・2026-10-08、ユーザー）。プロファイル（Cookie・localStorage 等）は Module の置き場に Project ごとに置き、止めても起こし直しても残る。人の画面に**「ブラウザの記録を消す」**（プロファイルと通信の記録を消す）を置く |
 | 人の画面 | `ui://banto-browser/view`（下の「人の画面」）。launcher から開ける。AI の `browserOpen` のカードからも開く |
@@ -2039,22 +2039,30 @@ Module の一覧には**2種類が混ざる**：
 
 #### 本体で決めたこと（実装・2026-10-08、Backlog #241）
 
-- **置き場**（Module の置き場 `BANTO_MODULE_DATA_DIR` の中）：`browsers/`（ブラウザ本体、`PLAYWRIGHT_BROWSERS_PATH`）・
-  `profile/`（プロファイル）・`network/`（通信の記録——目次 `index.json` と本文 `bodies/`）・`state.json`
-  （「AI に触らせない」と設定）・`chrome-in-work-scope.sh`（下の「仕事の組に入れる」）。パッケージは `packages/modules/browser`
-- **入れる**：最初に起こすとき、ブラウザが無ければ `playwright-core` の `install chromium-headless-shell` で置き場に
-  入れる（実測 約20秒）。コンテナにブラウザが頼るライブラリが無ければ（土台イメージには無い）`install-deps` で
-  入れる（中は sudo できる、`v4-security.md` §1）。入れられなければ理由つきで断る。入れる間は進捗を送る
-- **仕事の組に入れる**（決定・2026-10-10、Backlog #241）：ブラウザ（chromium-headless-shell とその子）は Shell のコマンド・
+- **置き場**（Module の置き場 `BANTO_MODULE_DATA_DIR` の中）：`browsers/`（arm64 の chromium、`PLAYWRIGHT_BROWSERS_PATH`。
+  x86_64 の Google Chrome はコンテナの `/opt/google/chrome`）・`profile/`（プロファイル、`--user-data-dir`）・`network/`（通信の
+  記録——目次 `index.json` と本文 `bodies/`）・`state.json`（「AI に触らせない」と設定）・`xvfb.pid`（立てた仮想の画面——下の
+  「止める」）。パッケージは `packages/modules/browser`
+- **入れる**：最初に起こすとき、ブラウザが無ければ `playwright-core` の `install chrome`（x86_64。Google の apt から
+  `google-chrome-stable` を入れる——中は sudo できる、`v4-security.md` §1）か `install chromium`（arm64、置き場に）で入れる。
+  仮想の画面（Xvfb）が無ければ `install-deps chromium` で入れる——Xvfb・字体（日本語を含む）・ブラウザが頼るライブラリを
+  まとめて入れる（土台イメージには無い）。入れられなければ理由つきで断る。入れる間は進捗を送る
+- **仕事の組に入れる**（決定・2026-10-10、Backlog #241）：ブラウザ（とその子）は Shell のコマンド・
   サブエージェントと同じ**仕事**として `banto-work-jobs.slice` の scope（`banto-browser-<乱数>.scope`、oom_score_adj +500・
   memory.oom.group=1）で起こす（`v4-security.md` §1 の段2a）。メモリを食うのはブラウザで、尽きたら組の中だけで止まり、
   Module（記録と「AI に触らせない」を持つ側）は巻き込まれない。止まったブラウザは次の道具の呼び出しで起こし直す。
-  Playwright は起こす命令の前に挟む口を持たないので、`executablePath` に置き場の小さな sh（`chrome-in-work-scope.sh`、
-  起こすたびに書き直す）を渡し、それが `inWorkScope`（`@banto/module-contract`）の形に exec する（pid・パイプは変わらない）。
-  組に入れられないとき（コンテナの外・ユーザーの systemd のバスが無い・入れ子のコンテナ）はそのまま起こす。包むと
-  Playwright の「入っていない」「ライブラリが足りない」の確かめが走らないので、Module が同じ確かめを先にする
+  Module が自分で起こすので、起こす命令を `inWorkScope`（`@banto/module-contract`）の形にそのまま包む（`--scope` はその場で
+  exec するので pid は変わらない）。組に入れられないとき（コンテナの外・ユーザーの systemd のバスが無い・入れ子のコンテナ）は
+  そのまま起こす。仮想の画面（Xvfb、約19MiB）は Module の子のまま
 - **止める**：AI の呼び出しが無いまま `idleMinutes`（既定30、設定の口で変えられる）たったら止める。host が繋がりを
-  閉じたら（標準入力が閉じる）ブラウザも止める——コンテナの中に宙づりの Chromium を残さない
+  閉じたら（標準入力が閉じる）ブラウザも止める——コンテナの中に宙づりの Chromium を残さない。止めるときはブラウザに
+  `Browser.close` で閉じてもらい（プロファイルを書き終えてから終わる）、5秒で終わらなければ殺し、仮想の画面も止める。
+  **パイプで繋いでいないので、Module が止まらずに消えると（SIGKILL）ブラウザと Xvfb が残る**——次に起こすとき、同じ
+  プロファイルを掴んだままのブラウザ（`SingletonLock` が指す pid）と `xvfb.pid` の Xvfb を止めてから起こす（残したまま起こすと、
+  新しいブラウザは前のブラウザに URL を渡して自分は終わる）
+- **最後のタブを閉じたら止める**（2026-10-10、Backlog #259）：画面ありのブラウザは人のブラウザと同じく、最後のタブ（窓）を
+  閉じると自分で終わる（headless は残った）。`browserTabs` の `close`・人の画面の × が最後のタブなら、終わるのを待たずに
+  Module から止める（終わりかけのブラウザに次の呼び出しが当たらないように）。次に開くと起こし直す
 - **ログイン状態の限り**：残るのは**期限つきの Cookie** と localStorage 等。期限の無い Cookie（セッション Cookie）は
   ブラウザを止めると消える（ブラウザの決まり）
 - **通信の記録の上限**（数字は仮）：2000件・本文の合計 50MiB・1件の本文 2MiB（越えたら頭だけ持ち全体の大きさを添える）・
@@ -2070,6 +2078,9 @@ Module の一覧には**2種類が混ざる**：
 - **人の画面の口**（`admin`、#242 が使う）：`getBrowserStatus`・`listBrowserTabs`・`listNetworkRecords`・`getNetworkRecord`
   （ヘッダを伏せない）・`exportHar`（HAR 1.2）・`clearNetworkLog`・`clearBrowserData`（「ブラウザの記録を消す」）・
   `setAiBlocked`（「AI に触らせない」）・`getSettings`・`setSettings`（`idleMinutes`・`locale`・`timezone`——下の「名乗りと言語」）
+- **戻る・進む**は移ったところ（commit）まで待ち、戻る先・進む先があるかは履歴（`Page.getNavigationHistory`）で見る——
+  人のブラウザと同じく**戻る・進むのキャッシュ（bfcache）が効いていて**、キャッシュから戻すと `load` が来ず応答も無い
+  （実測・2026-10-10。Playwright の launch は `--disable-back-forward-cache` でこれを切っていた）
 - 「AI に触らせない」は `browserOpen`・`browserAct`・`browserEval`・`browserTabs` の `select`/`close` を断る
   （上の「人と AI の同時操作」の「切り替え」に `close` も入れた——閉じるのも操作）
 
@@ -2098,7 +2109,7 @@ Module の一覧には**2種類が混ざる**：
   google.com/sorry で reCAPTCHA の枠の中身が人の画面に映らず、`browserScreenshot` には写っていた。実測：その画面を開いて
   7秒後の絵が `Page.captureScreenshot` と食い違ったのは `everyNthFrame: 2` で9回中6回、`1` で6回中0回。動き続けるページでは
   毎秒30枚→60枚になり、ブラウザの CPU が2〜4割増える（粗い計測）——画面が開いていて、ページが動き続けている間だけの費用）。
-  **原因は別プロセスの iframe（out-of-process iframe）ではなかった**：headless-shell の screencast も、別サイトの iframe
+  **原因は別プロセスの iframe（out-of-process iframe）ではなかった**：（当時の）headless-shell の screencast も、別サイトの iframe
   （127.0.0.1 の中の localhost・github.io の中の google.com の reCAPTCHA）を合成して流す（実測・2026-10-10）。google.com/sorry の
   reCAPTCHA は同じサイト（www.google.com）でもある。ブラウザを通常の Chromium に替える・サイトの分離を切る・
   `captureScreenshot` を間引いて流す、の案は要らなくなった
@@ -2142,29 +2153,55 @@ Module の一覧には**2種類が混ざる**：
 - **会話のカード**：`browserOpen` に `ui.resourceUri`＝`ui://banto-browser/view` と `dev.banto/card`（`ブラウザで開いた：{url}`）
 - **HAR で保存**は絞り込みに関わらず記録の全部を `exportHar` で取り、`ui/download-file` の文字（`browser-<日時>.har`）で渡す
 
-#### 名乗りと言語（決定・2026-10-10、ユーザー。実装・2026-10-10、Backlog #257）
+#### 起こし方——人のブラウザと同じ形で（決定・2026-10-10、ユーザー。実装・2026-10-10、Backlog #259）
 
-chromium-headless-shell はそのままだと `HeadlessChrome/<版>` と名乗り（User-Agent と Client Hints の brands の両方）、言語は
-`en-US` だけ・時刻は UTC。Google の検索はこれでロボットと判定した（「unusual traffic」の google.com/sorry に回された。
-実測・2026-10-10：`HeadlessChrome/151.0.7922.34`・`navigator.webdriver` が true・`languages` が `en-US` だけ）。
+#257 で headless-shell の名乗りを Chrome に揃え言語を日本語にしたが、Google の検索はまだ reCAPTCHA の画像選びを求めた。
+Playwright の launch で headless-shell を起こしていたので、「自動操作のブラウザ」の印が残っていた——`navigator.webdriver` が
+true・headless の印・窓が無い・Playwright の既定の引数（`--enable-automation`・`--disable-background-networking` 等の
+`--disable-*` の類、`--disable-back-forward-cache`）。ユーザーの決定：**普通に人が使っているブラウザに AI も触れるだけにする**
+（Chrome の Claude の拡張と同じ）。
 
-- **名乗りを普通の Chrome に揃える**：User-Agent は Linux の Chrome の形で、版は**使っているブラウザに聞いた版**
-  （`--version`。決め打ちしない）——`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<版> Safari/537.36`。
-  Client Hints（`Sec-CH-UA`・`navigator.userAgentData`）の brands からも `HeadlessChrome` を除く（残すのは GREASE の1つと `Chromium`）
-- **言語**：設定の `locale`（既定 `ja-JP`）から、Accept-Language と `navigator.languages` を `ja-JP, ja, en-US, en`（locale・その言語・
-  英語）にし、Intl のロケールも locale にする。**時刻の地域**は設定の `timezone`（既定 `Asia/Tokyo`）。どちらも人の画面の口
-  `setSettings` で変えられ、次にブラウザを起こしたときから効く
-- **それ以上の偽装はしない**（決定・2026-10-10、ユーザー）：`navigator.webdriver`・プラグイン・WebGL・指紋の類は変えない。
-  **ボット判定をすり抜ける細工はしない**
+- **headless をやめる**：コンテナの中に**仮想の画面**（Xvfb、1920×1080×24、`-nolisten tcp`。空いている番号は Xvfb に選ばせる
+  ——`-displayfd`）を立て、そこに普通のブラウザ（上の「形」）を**画面ありで**起こす
+- **Playwright の launch は使わない**（launch が既定で足す引数を避けるため）。Module が自分でブラウザを起こし、CDP の口
+  `--remote-debugging-port=0`（127.0.0.1——コンテナの中だけ。番号はプロファイルの `DevToolsActivePort` から読む）に
+  `connectOverCDP` で繋ぐ。プロファイルは `--user-data-dir` で今までと同じ置き場、Project ごとに残る
+- **起動の引数はこれだけ**：`--user-data-dir`・`--remote-debugging-port=0`・`--disable-blink-features=AutomationControlled`・
+  `--no-sandbox`（今までと同じ。境界はコンテナ——`v4-security.md` §1）・`--no-first-run`・`--no-default-browser-check`
+  （初めて起こしたときの案内のタブと「既定のブラウザにする」の帯を出さない）・`--accept-lang`・`--window-position`・
+  `--window-size`。`--enable-automation`・`--headless`・`--user-agent`・Playwright の `--disable-*` の類は付けない
+- **`--disable-blink-features=AutomationControlled` を足す理由**：Chrome は CDP の口を開いて起こすと、**それだけで**
+  `navigator.webdriver` を true にする（実測・2026-10-10、Google Chrome 155：口なしで false・`--remote-debugging-port` でも
+  `--remote-debugging-pipe` でも true）。人が使う Chrome は口を開いていないので false——その状態に揃える。ページの JS を
+  上書きする細工ではなく、ブラウザの機能の切り替え
+- **ページの大きさ**はタブごとに既定（1280×800）にそろえる（Playwright の `setViewportSize`——今までの launch の `viewport` と
+  同じ）。**窓の自然な大きさには頼らない**：Google Chrome は起こした直後だけ窓の枠が 56px 厚く、少したつと消える（実測・
+  2026-10-10——中身が 800 から 856 に変わり、人の画面の絵と入力の座標がずれた）。ポップアップの窓は大きさがまちまち。
+  窓は `--window-size` で 1280×887（枠の 87px は Google Chrome 155 の実測）にして、窓の形を人の窓に近づける
+- **TMPDIR は短い所に**：画面ありのブラウザは TMPDIR の下に UNIX ソケット（`SingletonSocket`）を作り、パスが 108 バイトを
+  越えると起きずに落ちる（実測・2026-10-10、banto が Module に渡す長い TMPDIR で落ちた）。TMPDIR が 60 文字を越えるときは
+  ブラウザには `/tmp` を渡す
+
+#### 名乗りと言語（決定・2026-10-10、ユーザー。実装・2026-10-10、Backlog #257。改訂・2026-10-10、Backlog #259）
+
+- **名乗りは変えない**：普通のブラウザを画面ありで起こしているので、本物の値が人のブラウザと同じになる——User-Agent は
+  `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<メジャー版>.0.0.0 Safari/537.36`
+  （Chrome 自身の縮めた形）、Client Hints の brands は `Google Chrome`・`Chromium`・GREASE。#257 で入れた User-Agent の上書き
+  （`--user-agent`）と Client Hints の書き換え（`Emulation.setUserAgentOverride`）・`setLocaleOverride`・Playwright の
+  `timezoneId` は外した
+- **言語と時刻は起動の引数と環境で本物として設定する**：設定の `locale`（既定 `ja-JP`）から `--accept-lang=ja-JP,ja,en-US,en`
+  （Accept-Language と `navigator.languages`。locale・その言語・英語）、環境の `LANG=ja_JP.UTF-8`・`LANGUAGE=ja_JP:ja`（画面の
+  言語と Intl——Linux のブラウザは `--lang` を見ない。`LC_ALL`・`LC_MESSAGES` は外す）。Intl の既定のロケールはブラウザの画面の
+  言語（`ja`）になる——日本語の Chrome を使う人と同じ。**時刻の地域**は設定の `timezone`（既定 `Asia/Tokyo`）を環境の `TZ` で。
+  どちらも人の画面の口 `setSettings` で変えられ、次にブラウザを起こしたときから効く
+- **ページの JS を上書きする細工はしない**（決定・2026-10-10、ユーザー）：`navigator.webdriver`・プラグイン・WebGL・指紋の類を
+  JS で上書きしない——本物を動かすことで揃える。実測（2026-10-10、Google Chrome 155）：`navigator.webdriver` false・プラグイン
+  5・`mimeTypes` 2・窓あり（外 1280×887／中 1280×800）。WebGL は無い（仮想の画面に GPU が無く、Chrome は既定でソフトウェアの
+  WebGL を使わない——`--enable-unsafe-swiftshader` で出せるが、名前の通り安全でないので入れない）
+- **CAPTCHA（ロボット確認）は人が解く**：`browserOpen`・`browserAct` の説明に「CAPTCHA が出たら AI は解かない。操作を止めて、
+  人の画面で人に解いてもらうよう頼む」と書く
 - **AI には検索エンジンを使わせない**：`browserOpen` の説明に「Web の検索には WebSearch を使う。このブラウザで検索エンジンを
   開かない（ロボット判定と規約のため）。このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの」と書く
-- **効かせ方**（実測・2026-10-10）：起こすときの引数 `--user-agent`・`--accept-lang`・`--lang`（ブラウザ全体に効き、Worker と
-  ポップアップの最初の要求にも届く）と、タブごとの CDP（`Emulation.setUserAgentOverride` の `userAgentMetadata`・
-  `setLocaleOverride`——brands と Intl のロケールは引数では変えられない。headless-shell に brands を変える引数は無い）、
-  時刻の地域は Playwright の `timezoneId`。Playwright の `userAgent`・`locale` は使わない（`userAgent` は brands を変えず、
-  `locale` は Accept-Language を `ja-JP` だけにする）
-- **届かないところ**：ページが開いたポップアップ（`target=_blank`・`window.open`）の**最初の1件の要求**の `Sec-CH-UA` には
-  `HeadlessChrome` が残る（タブごとの CDP が間に合わない。User-Agent と Accept-Language は引数で揃っている）
 
 #### 第2段：サービスどうしの通信（未実装・形だけ）
 
@@ -2177,41 +2214,42 @@ chromium-headless-shell はそのままだと `HeadlessChrome/<版>` と名乗�
   条件は、Project のコンテナ（2026-09-25）で構造的に満たされる
 - 記録は同じ通信の欄に「サーバ」の印で出し、同じ道具（`listNetwork` の `source`）で引く
 
-#### 実測（2026-10-08、Backlog #240）
+#### 実測（2026-10-10、Backlog #259——画面ありの Google Chrome）
 
-この Project のコンテナ（Ubuntu 24.04・4コア・Incus のシステムコンテナ）で、Playwright 1.62.1 同梱の Chromium を起こして
-CDP の screencast を測った（JPEG、1枚ごとにすぐ受け取りの印を返す。表・メニュー・回り続ける印のある管理画面ふうのページ）。
+この機械（4コア・12GiB。Project のコンテナ）で、Module の起こし方そのまま（Xvfb＋Google Chrome 155、`connectOverCDP`）と、
+前の起こし方（Playwright の launch で headless-shell 151）を同じ台本で3回ずつ測った。メモリはプロセスの木の PSS の合計、
+CPU は4コアのうち。screencast は 1280×800・JPEG 画質70・`everyNthFrame: 1`・1枚ごとにすぐ受け取りの印を返す。動くページは
+表と回る印（16ms ごとに描き替える）。機械の負荷が低かった回の値（ほかの回は負荷で起動が 2〜9 倍になった）：
 
-| | 通常の Chromium | **headless-shell** |
+| | **画面ありの Google Chrome（いま）** | headless-shell（前） |
 |---|---|---|
-| 起こすまで | 130〜770ms | **50〜90ms** |
-| メモリ（ブラウザ全体、タブ1つ） | 約760MiB | **約400MiB**（タブ5つで約810MiB） |
-
-**headless-shell・1280×800・画質80**：
-
-| ページ | 毎秒の枚数 | 1枚 | 流れの量 | CPU（4コアのうち） | 入力→次の絵 |
-|---|---|---|---|---|---|
-| 止まっているページ | 変わったときだけ（ほぼ0） | 110KiB | ほぼ0 | **約1%** | 20〜40ms |
-| 動き続けるページ（間引かない） | 60 | 110KiB | 約6.5MB/秒 | 約140% | 25ms |
-| 〃（`everyNthFrame: 4`） | 15 | 110KiB | 約1.6MB/秒 | 約70% | — |
-| 〃（screencast を止める） | — | — | — | 約5% | — |
-
-ほかの大きさ：画質60で1枚 81KiB、1920×1080 で1枚 180KiB（毎秒45枚、CPU 約220%）、携帯（390×844）で1枚 27KiB。
+| 起こすまで（Xvfb・CDP で繋ぐまで込み） | **約0.8秒**（負荷が高いと 2.7〜8秒） | 約0.1秒 |
+| メモリ（止まっているページ、タブ1つ） | **約490MiB ＋ Xvfb 約19MiB** | 約160MiB |
+| 〃（動くページを映している間） | 約510MiB ＋ Xvfb | 約200MiB |
+| CPU：起こしてから最初の10秒 | 約10〜20%（起動の後の仕事——下） | ほぼ0 |
+| CPU：止まっているページ（落ち着いた後） | **ほぼ0** | ほぼ0 |
+| CPU：動くページを映す | 約145%・毎秒60枚・1枚約79KiB | 約140%・毎秒60枚・1枚約77KiB |
+| CPU：動くページ・映していない | 約15% | 約12% |
+| プロセスの数 | 12 | 6 |
 
 分かったこと・決めたこと：
 
-- **動く。** 特別な設定（sandbox の調整・`/dev/shm`）なしで、このコンテナで起きる
-- **1枚は 1MiB に遠く届かない**（大きい画面でも 200KiB 前後）。アーキ仕様 §5.8 の1通 1MiB で足りる
-- **入力の遅れは小さい**（押してから次の絵まで数十ms）。操作感を決めるのは流れの口と回線のほう
-- **費用は「ページが動いているか」で決まる。** 止まっているページは安く、動き続けるページ（回る印・動画・アニメ）を
-  映し続けると CPU を1コア以上食う。**受け取りの印を遅らせても枚数は下がりきらない**（200ms 遅らせても毎秒13枚・
-  CPU 約70%）ので、**間引きは `everyNthFrame` と組み合わせる**。既定は：画質70・`everyNthFrame: 2`（最大毎秒30枚）、
-  画面からの受け取りの印で流量を絞る（§4.1「人の画面」）。**→ 訂正・2026-10-10：`everyNthFrame` は 1（間引かない）にした**
-  ——間引くと静かになる直前の最後の絵が来ない（上の「人の画面で決めたこと」）。**誰も映していない間は screencast を止める**（画面が
-  裏に回った・閉じた——それで約5%まで下がる）
-- **screencast の絵は CSS ピクセルの大きさで来る**（`deviceScaleFactor: 2` でも 1280×800）。高精細の画面では文字が
-  少しぼやける。止まっているときに `Page.captureScreenshot`（倍率どおり）の1枚に差し替える案は、作ってから考える
-- 起こすのが速い（0.1秒）ので、**使われていなければ止める**は気軽にできる
+- **headless-shell を選んだ理由（起こすのが速い・メモリが半分）は、人のブラウザと同じに振る舞うことより軽い**（決定・
+  2026-10-10、ユーザー）。headless-shell は自動操作のブラウザの印（`navigator.webdriver`・headless の印・窓が無い）を消せず、
+  名乗りを上書きしても Google の検索は reCAPTCHA の画像選びを求めた。払うのはメモリ約3倍（Project ごとに約0.5GiB）と
+  起こす時間（0.1秒→0.8秒）。**使われていなければ止める**（既定30分）はこのまま——起こし直しても1秒かからない
+- **映している間の費用は変わらない**：screencast の枚数・1枚の大きさ・CPU は headless-shell とほぼ同じ。費用を決めるのは
+  今までどおり「ページが動いているか」と「誰かが映しているか」（誰も映していない間は screencast を止める）
+- **起こしてから最初の10秒ほど CPU を使う**：Google Chrome の起動の後の仕事（部品の更新の確かめ等。Playwright の launch は
+  `--disable-background-networking`・`--disable-component-update` 等で切っていた）。人の Chrome と同じなので切らない
+- **1枚は 1MiB に遠く届かない**（1280×800 で約79KiB）。アーキ仕様 §5.8 の1通 1MiB で足りる（大きな画面の上限は上の
+  「人の画面で決めたこと」）
+- **入れる時間**は測っていない（この機械には Google Chrome を apt で入れていない——単体試験は展開した包みで回した）。E2E は
+  新しい Project のコンテナで入れるところから通す
+- 前の実測（2026-10-08、headless-shell）から引き継ぐこと：特別な設定（`/dev/shm`）なしでコンテナで動く・入力の遅れは
+  数十ms（押してから次の絵まで）・screencast の絵は CSS ピクセルの大きさで来る（`deviceScaleFactor: 2` でも 1280×800。高精細の
+  画面では文字が少しぼやける）。`everyNthFrame` を上げると CPU は下がるが、静かになる直前の最後の絵が来ない（上の
+  「人の画面で決めたこと」）ので間引かない
 
 #### まだ決めていない・確かめていない
 

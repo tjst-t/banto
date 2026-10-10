@@ -7,13 +7,13 @@ import { join } from "node:path";
 import { BrowserError, parseAct, parseConsoleQuery, parseNetworkQuery, parseNetworkRequest, parseOpen, parseScreenshot, parseSettings, parseTabs } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import { pageContent } from "./content.js";
-import { acceptLanguages, browserIdentity, identityArgs, parseBrowserVersion } from "./identity.js";
+import { chromeArgs, chromeEnv, killStale, localeEnv } from "./chrome.js";
+import { acceptLanguages, parseBrowserVersion } from "./identity.js";
 import { launchWithInstall, type Installer } from "./install.js";
 import { DEFAULT_LIMITS, NetworkLog, formatDetail, formatLine, toHar, type NetworkRecord } from "./network-log.js";
 import { redactHeaders } from "./redact.js";
 import { StateFile } from "./state.js";
-import { prepareScopedLaunch, shellQuote } from "./work-scope.js";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 // ---- 引数 --------------------------------------------------------------------------------------
 
@@ -314,7 +314,7 @@ test("入れる：無ければブラウザを入れ、ライブラリが足り�
       done.push("deps");
     },
   };
-  const failures = [new Error("browserType.launchPersistentContext: Executable doesn't exist at /x"), new Error("Host system is missing dependencies to run browsers.")];
+  const failures = [new Error("Executable doesn't exist at /opt/google/chrome/chrome"), new Error("Host system is missing dependencies to run browsers（Xvfb がありません）")];
   const launched = await launchWithInstall(async () => {
     const f = failures.shift();
     if (f) throw f;
@@ -343,32 +343,47 @@ test("状態：「AI に触らせない」と設定は置き場に残り、壊�
   }
 });
 
-// ---- 仕事の組 ----------------------------------------------------------------------------------
+// ---- 起こし方・名乗りと言語 ------------------------------------------------------------------------
 
-test("仕事の組：包む sh の引数は sh を通してもそのまま届き、コンテナの外では包まない", async () => {
-  const tricky = ["a b", "it's", 'say "$HOME"', "x;rm -rf /", ""];
-  const r = spawnSync("/bin/sh", ["-c", `printf '%s\\n' ${tricky.map(shellQuote).join(" ")}`], { encoding: "utf8" });
-  assert.deepEqual(r.stdout.split("\n").slice(0, -1), tricky);
-  const saved = process.env.BANTO_IN_CONTAINER;
-  delete process.env.BANTO_IN_CONTAINER;
+test("起こし方：自動操作の起動の印（--enable-automation・--headless）も名乗りの上書きも付けず、言語は起動の引数と環境で本物に設定する", () => {
+  const args = chromeArgs({ profileDir: "/p", languages: acceptLanguages("ja-JP"), viewport: { width: 1280, height: 800 } });
+  for (const mark of ["--enable-automation", "--headless", "--user-agent", "--disable-background-networking", "--disable-component-update"]) {
+    assert.ok(!args.some((a) => a.startsWith(mark)), `${mark} が付いている：${args.join(" ")}`);
+  }
+  assert.ok(args.includes("--user-data-dir=/p"));
+  assert.ok(args.includes("--accept-lang=ja-JP,ja,en-US,en"));
+  assert.ok(args.includes("--remote-debugging-port=0"));
+  assert.ok(args.includes("--disable-blink-features=AutomationControlled"));
+  assert.deepEqual(localeEnv("ja-JP"), { LANG: "ja_JP.UTF-8", LANGUAGE: "ja_JP:ja" });
+  assert.deepEqual(localeEnv("fr"), { LANG: "fr.UTF-8", LANGUAGE: "fr" });
+  const env = chromeEnv({ LC_ALL: "C", PATH: "/bin", HOME: "/h" }, ":7", "ja-JP", "Asia/Tokyo");
+  assert.equal(env.LC_ALL, undefined, "LC_ALL が残ると LANG が効かない");
+  assert.deepEqual([env.DISPLAY, env.TZ, env.LANG, env.PATH], [":7", "Asia/Tokyo", "ja_JP.UTF-8", "/bin"]);
+  assert.ok(env.TMPDIR!.length <= 60, `TMPDIR が長い（ソケットのパスが 108 バイトを越える）：${env.TMPDIR}`);
+});
+
+test("起こし方：前の Module が残した Xvfb は止め、同じ名前でも別のプロセスは止めない", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-browser-stale-"));
+  const other = spawn("sleep", ["30"], { stdio: "ignore" });
   try {
-    assert.equal(await prepareScopedLaunch(join(tmpdir(), "never-written.sh")), undefined);
+    const pidFile = join(dir, "xvfb.pid");
+    // pid の先が Xvfb でない（使い回された pid）——止めない
+    writeFileSync(pidFile, String(other.pid));
+    assert.deepEqual(killStale(join(dir, "profile"), pidFile), []);
+    assert.equal(other.exitCode, null);
+    assert.equal(other.signalCode, null);
   } finally {
-    if (saved !== undefined) process.env.BANTO_IN_CONTAINER = saved;
+    other.kill();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
-// ---- 名乗りと言語 ------------------------------------------------------------------------------
-
-test("名乗りと言語：版はブラウザの答えから読み、HeadlessChrome を名乗らず、言語は locale・その言語・英語の順", () => {
-  assert.equal(parseBrowserVersion("Google Chrome for Testing 151.0.7922.34\n"), "151.0.7922.34");
+test("名乗りと言語：版はブラウザの答えから読み、言語は locale・その言語・英語の順", () => {
+  assert.equal(parseBrowserVersion("Google Chrome 155.0.8059.39 \n"), "155.0.8059.39");
   assert.throws(() => parseBrowserVersion("bash: not found"), /版が読めません/);
-  const id = browserIdentity("151.0.7922.34", "ja-JP", "Asia/Tokyo");
-  assert.equal(id.userAgent, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.34 Safari/537.36");
-  assert.deepEqual(id.languages, ["ja-JP", "ja", "en-US", "en"]);
+  assert.deepEqual(acceptLanguages("ja-JP"), ["ja-JP", "ja", "en-US", "en"]);
   assert.deepEqual(acceptLanguages("en-US"), ["en-US", "en"]);
   assert.deepEqual(acceptLanguages("fr"), ["fr", "en-US", "en"]);
-  assert.deepEqual(identityArgs(id), [`--user-agent=${id.userAgent}`, "--accept-lang=ja-JP,ja,en-US,en", "--lang=ja-JP"]);
 });
 
 test("設定：locale と timezone は読めるものだけ受け、読めないものは理由つきで断る", () => {

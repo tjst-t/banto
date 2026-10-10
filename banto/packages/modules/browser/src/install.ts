@@ -1,15 +1,42 @@
-// **ブラウザを入れる**（v4-modules.md §4.1「形」——Playwright 同梱の chromium-headless-shell。版は Module が使う
-// playwright-core に合わせ、Module が入れる）。置き場は Module の置き場の中（`PLAYWRIGHT_BROWSERS_PATH`）。
+// **ブラウザを入れる**（v4-modules.md §4.1「形」）。**普通のブラウザ**を入れる——x86_64 は **Google Chrome**（安定版。
+// Playwright の `install chrome` が Google の apt から /opt/google/chrome に入れる。人が使っているのと同じもの）、
+// arm64 は Google Chrome が無いので Playwright 同梱の chromium（arm64 は Playwright が組んだ Chromium。置き場は
+// Module の置き場の中——`PLAYWRIGHT_BROWSERS_PATH`）。Chrome for Testing（x86_64 の Playwright の chromium）は使わない。
 //
-// 入っていなければ最初に起こすときに入れる。ブラウザが頼るライブラリがコンテナに無ければ、それも入れる
-// （Playwright の install-deps——コンテナの中は sudo できる、v4-security.md §1）。入れられなければ理由つきで断る。
+// 入っていなければ最初に起こすときに入れる。仮想の画面（Xvfb）・字体・ブラウザが頼るライブラリがコンテナに無ければ、それも
+// 入れる（Playwright の install-deps——コンテナの中は sudo できる、v4-security.md §1）。入れられなければ理由つきで断る。
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { BrowserError } from "./args.js";
 
-export const BROWSER_NAME = "chromium-headless-shell";
+/** Playwright の呼び名（`chrome` は Google Chrome の安定版） */
+export const BROWSER_NAME = process.arch === "x64" ? "chrome" : "chromium";
+/** install-deps に渡す名前（Xvfb と字体を含む。chrome は apt が頼るものを入れるが、Xvfb と字体は入れない） */
+const DEPS_NAME = "chromium";
+
+interface RegistryExecutable {
+  executablePath(): string | undefined;
+}
+
+/** Google Chrome の在りか（Google の apt の包みが入れる所。Playwright の registry も同じ所を見る） */
+const GOOGLE_CHROME = "/opt/google/chrome/chrome";
+
+/**
+ * ブラウザの在りか。chromium は Playwright が知っている在りか。**公開の口に無いので playwright-core の中の registry を引く**（版は package.json で
+ * 固定——上げたら壊れていないかを tools.integration.test が見る）。`PLAYWRIGHT_BROWSERS_PATH` を置いた後に呼ぶ。入っているかは見ない
+ */
+export function browserExecutablePath(): string {
+  // chrome は入っていないと registry が在りかを返さない——在りかは決まっているので、そのまま返す（無ければ起こすときに入れる）
+  if (BROWSER_NAME === "chrome") return GOOGLE_CHROME;
+  const require = createRequire(import.meta.url);
+  // 中の口なので型は無い——ここで使う1つだけを受ける
+  const bundle = require("playwright-core/lib/coreBundle") as { registry: { registry: { findExecutable(name: string): RegistryExecutable | undefined } } };
+  const real = bundle.registry.registry.findExecutable(BROWSER_NAME)?.executablePath();
+  if (!real) throw new Error(`${BROWSER_NAME} はこの機械の種類では使えません`);
+  return real;
+}
 
 function playwrightCli(): string {
   const require = createRequire(import.meta.url);
@@ -68,7 +95,7 @@ export function playwrightInstaller(browsersPath: string): Installer {
       if (r.code !== 0) throw new BrowserError(`ブラウザ（${BROWSER_NAME}）を入れられませんでした（終了コード ${r.code}）: ${r.tail.trim().slice(-1500)}`);
     },
     async installDeps(onProgress) {
-      const r = await run(["install-deps", BROWSER_NAME], env, "ブラウザが頼るライブラリをコンテナに入れています（apt-get）", onProgress);
+      const r = await run(["install-deps", DEPS_NAME], env, "仮想の画面（Xvfb）・字体・ブラウザが頼るライブラリをコンテナに入れています（apt-get）", onProgress);
       if (r.code !== 0) {
         throw new BrowserError(
           `ブラウザが頼るライブラリを入れられませんでした（終了コード ${r.code}。コンテナから外へ出られるか・sudo できるかを確かめてください）: ${r.tail.trim().slice(-1500)}`,

@@ -1,18 +1,16 @@
-// **9本の道具を本物のブラウザで呼ぶ**（試験用のページを相手に）。ブラウザ（chromium-headless-shell）がこの機械に
+// **9本の道具を本物のブラウザで呼ぶ**（試験用のページを相手に）。ブラウザがこの機械に
 // 入っていなければ飛ばす——入れるのは Module の仕事で、その経路は E2E が通す。
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createTestPageServer, TEST_COOKIE, TEST_TITLE, TEST_TOKEN } from "./test-page.js";
 import { createBrowserContextFromDataDir } from "./server.js";
+import { browserOpts, installed, skipReason } from "./test-browser.js";
 import { callTool, type ToolContext } from "./tools.js";
 import { StateFile } from "./state.js";
-
-const browsersPath = process.env.BANTO_BROWSER_TEST_BROWSERS ?? join(homedir(), ".cache", "ms-playwright");
-const installed = existsSync(browsersPath) && readdirSync(browsersPath).some((d) => d.startsWith("chromium_headless_shell-"));
 
 const dataDir = mkdtempSync(join(tmpdir(), "banto-browser-test-"));
 const server = createTestPageServer();
@@ -23,7 +21,7 @@ before(async () => {
   if (!installed) return;
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  ctx = await createBrowserContextFromDataDir(dataDir, { browsersPath });
+  ctx = await createBrowserContextFromDataDir(dataDir, browserOpts);
 });
 
 after(async () => {
@@ -64,7 +62,7 @@ async function evalJson<T>(expression: string): Promise<T> {
   return JSON.parse(JSON.parse(m[1]!) as string) as T;
 }
 
-const skip = installed ? false : `ブラウザが ${browsersPath} に入っていない`;
+const skip = skipReason;
 
 test("9本の道具が試験用のページで動き、失敗した通信が絞れ、秘密のヘッダの値は伏せられる", { skip }, async () => {
   // ---- browserOpen ----
@@ -214,7 +212,7 @@ test("9本の道具が試験用のページで動き、失敗した通信が絞�
   // Module ごと起こし直しても（記録だけが置き場に残る）、記録にあるタブの続きから
   await ctx.session.stop("試験");
   ctx.log.saveNow();
-  ctx = await createBrowserContextFromDataDir(dataDir, { browsersPath });
+  ctx = await createBrowserContextFromDataDir(dataDir, browserOpts);
   const restarted = /タブ (t\d+) で開きました/.exec((await call("browserOpen", { url: `${base}/second` })).text)?.[1];
   assert.ok(restarted && tabNumber(restarted) > tabNumber(reopenedTab), `Module を起こし直したタブ ${restarted} が ${reopenedTab} と重なる`);
   assert.match((await call("browserEval", { expression: "document.cookie" })).text, new RegExp(TEST_COOKIE));
@@ -233,28 +231,43 @@ test("9本の道具が試験用のページで動き、失敗した通信が絞�
   assert.match((await call("browserEval", { expression: "document.cookie" })).text, /""/);
 });
 
-test("名乗りと言語：ページから見ても要求でも HeadlessChrome を名乗らず同じ版の Chrome、言語は ja-JP から、時刻は Asia/Tokyo。webdriver は変えない", { skip }, async () => {
+test("人のブラウザと同じ：画面ありで、自動操作の起動の印も JS の上書きも無いまま、webdriver は false・Headless を名乗らない・プラグインあり・言語は ja-JP から・時刻は Asia/Tokyo", { skip }, async () => {
   const version = ctx.session.browserVersion;
   assert.match(version ?? "", /^\d+\.\d+\.\d+\.\d+$/);
+  const major = version!.split(".")[0];
   // 要求のヘッダ（サーバが受けたもの）
-  const opened = await call("browserOpen", { url: `${base}/whoami` });
+  // 新しいタブで（前の試験が resize したタブではなく、起こしたときの窓の大きさのまま）
+  const opened = await call("browserOpen", { url: `${base}/whoami`, newTab: true });
   assert.equal(opened.isError, undefined, opened.text);
   const seen = await evalJson<{ userAgent: string; acceptLanguage: string; secChUa: string }>("document.body.innerText");
-  assert.doesNotMatch(seen.userAgent, /HeadlessChrome/);
-  assert.match(seen.userAgent, new RegExp(` Chrome/${version!.replaceAll(".", "\\.")} `));
+  assert.doesNotMatch(seen.userAgent, /Headless/);
+  // 本物の Chrome は版を縮めて名乗る（`Chrome/155.0.0.0`——User-Agent Reduction）
+  assert.match(seen.userAgent, new RegExp(`^Mozilla/5\\.0 \\(X11; Linux x86_64\\) AppleWebKit/537\\.36 \\(KHTML, like Gecko\\) Chrome/${major}\\.0\\.0\\.0 Safari/537\\.36$`));
   assert.match(seen.acceptLanguage, /^ja-JP,ja;q=0\.9,en-US;q=0\.8,en;q=0\.7$/);
-  assert.doesNotMatch(seen.secChUa, /HeadlessChrome/);
-  assert.match(seen.secChUa, /"Chromium";v="\d+"/);
+  assert.doesNotMatch(seen.secChUa, /Headless/);
+  assert.match(seen.secChUa, new RegExp(`"Chromium";v="${major}"`));
   // ページから見たもの
-  const nav = await evalJson<{ ua: string; langs: string[]; tz: string; locale: string; brands: string[]; webdriver: boolean }>(
+  const nav = await evalJson<{ ua: string; langs: string[]; tz: string; brands: string[]; webdriver: boolean; plugins: number; mimeTypes: number; outer: number[]; inner: number[] }>(
     "JSON.stringify({ ua: navigator.userAgent, langs: navigator.languages, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, " +
-      "locale: Intl.DateTimeFormat().resolvedOptions().locale, brands: navigator.userAgentData.brands.map((b) => b.brand), webdriver: navigator.webdriver })",
+      "brands: navigator.userAgentData.brands.map((b) => b.brand), webdriver: navigator.webdriver, plugins: navigator.plugins.length, " +
+      "mimeTypes: navigator.mimeTypes.length, outer: [outerWidth, outerHeight], inner: [innerWidth, innerHeight] })",
   );
   assert.equal(nav.ua, seen.userAgent);
+  assert.equal(nav.webdriver, false);
+  assert.ok(nav.plugins > 0, `プラグインが ${nav.plugins} 個`);
+  assert.ok(nav.mimeTypes > 0);
   assert.deepEqual(nav.langs, ["ja-JP", "ja", "en-US", "en"]);
   assert.equal(nav.tz, "Asia/Tokyo");
-  assert.equal(nav.locale, "ja-JP");
-  assert.ok(!nav.brands.includes("HeadlessChrome"), nav.brands.join(","));
-  // それ以上の偽装はしない（ユーザー決定・2026-10-10）
-  assert.equal(nav.webdriver, true);
+  assert.ok(!nav.brands.some((b) => /Headless/.test(b)), nav.brands.join(","));
+  // 窓がある（headless の窓は枠が無く、外と中の大きさが同じ）。中身は既定の大きさ
+  assert.deepEqual(nav.inner, [1280, 800]);
+  assert.ok(nav.outer[1]! > nav.inner[1]!, `窓の枠が無い：外 ${nav.outer.join("×")}・中 ${nav.inner.join("×")}`);
+
+  // 起こしたブラウザの引数に、自動操作の起動の印が無い（プロセスを見る）
+  const port = Number(readFileSync(join(dataDir, "profile", "DevToolsActivePort"), "utf8").split("\n")[0]);
+  const { webSocketDebuggerUrl } = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as { webSocketDebuggerUrl: string };
+  assert.ok(webSocketDebuggerUrl);
+  const pid = Number(/-(\d+)$/.exec(readlinkSync(join(dataDir, "profile", "SingletonLock")))?.[1]);
+  const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+  for (const mark of ["--enable-automation", "--headless", "--user-agent"]) assert.ok(!cmd.some((a) => a.startsWith(mark)), `${mark} が付いている`);
 });

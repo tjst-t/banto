@@ -14,7 +14,8 @@
 //   8. 画面を閉じると screencast が止まる（getBrowserStatus の view）。入口からも開ける
 //   9. 携帯：「画面に合わせる」でページが携帯の幅になり、指で押してキーボードの欄から打てる。閉じるとページの大きさが戻る
 //  10. 「ブラウザの記録を消す」（2回押す）：通信とコンソールの件数が 0 になり、前のタブが消えて起こし直す
-//  11. 名乗りと言語：要求とページから見て HeadlessChrome を名乗らず同じ版の Chrome、言語は ja-JP から（Backlog #257）
+//  11. 人のブラウザと同じ：要求とページから見て Headless を名乗らない Chrome・webdriver は false・プラグインあり・言語は ja-JP から
+//      （Backlog #257・#259——名乗りの上書きも JS の上書きもせず、画面ありの普通のブラウザの本物の値で）
 //  12. 別オリジンの iframe：人の画面の絵に iframe の中身（静かになる直前の描画も）が映り、絵の上で押すと iframe に届く——
 //      絵の画素の色で確かめる（Backlog #257——google.com/sorry の reCAPTCHA の枠が映らなかった）
 import { test, expect, loginContext, type FrameLocator, type Page } from "../test-base.js";
@@ -373,16 +374,20 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     return { running: st.running, records: (st.log as { records: number }).records };
   }, { timeout: 30_000 }).toEqual({ running: true, records: 0 });
 
-  // ---- 11. 名乗りと言語 -------------------------------------------------------------------------------
+  // ---- 11. 人のブラウザと同じ（名乗り・webdriver・プラグイン・言語）---------------------------------------
   const whoami = await ai(page, "browserOpen", { url: `${BASE}/whoami` });
-  const version = / Chrome\/(\d+\.\d+\.\d+\.\d+) /.exec(whoami);
-  expect(whoami, "要求の User-Agent が HeadlessChrome を名乗っている").not.toContain("HeadlessChrome");
-  expect(version?.[1], `要求の User-Agent に Chrome/<版> が無い：${whoami}`).toBeTruthy();
+  const version = / Chrome\/(\d+)\.0\.0\.0 /.exec(whoami);
+  expect(whoami, "要求の User-Agent が Headless を名乗っている").not.toContain("Headless");
+  expect(version?.[1], `要求の User-Agent に Chrome/<版>.0.0.0 が無い：${whoami}`).toBeTruthy();
   expect(whoami, "要求の Accept-Language が ja-JP から始まらない").toMatch(/acceptLanguage\W+ja-JP,ja;q=0\.9,/);
-  const nav = await ai(page, "browserEval", { expression: "'NAV ' + navigator.userAgent + ' | ' + navigator.languages.join(',')" });
-  expect(nav).toContain(`Chrome/${version![1]} Safari`);
-  expect(nav).not.toContain("HeadlessChrome");
-  expect(nav).toContain(" | ja-JP,ja,en-US,en");
+  const nav = await ai(page, "browserEval", {
+    expression: "'NAV ' + navigator.userAgent + ' | ' + navigator.languages.join(',') + ' | webdriver=' + navigator.webdriver + ' | plugins=' + navigator.plugins.length",
+  });
+  expect(nav).toContain(`Chrome/${version![1]}.0.0.0 Safari`);
+  expect(nav).not.toContain("Headless");
+  expect(nav).toContain(" | ja-JP,ja,en-US,en | ");
+  expect(nav).toContain(" | webdriver=false | ");
+  expect(nav).toMatch(/ \| plugins=[1-9]\d*/);
 
   // ---- 12. 別オリジンの iframe ------------------------------------------------------------------------
   // iframe の中は全面が1色（試験用のページの FRAME_COLORS）：読み終えて少し後に赤、押すたびに緑・青

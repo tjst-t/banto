@@ -2,20 +2,20 @@
 // 通信とコンソールを記録して調べる Module。人の画面（screencast）はまだ無い（#242）。
 //
 // 本番と同じ経路で見る：目録から入れ、**Project のコンテナの中で**試験用のページ（Module に同梱の test-page.js）を
-// localhost で立て、偽 Runner の AI に9本の道具を1本ずつ呼ばせる。ブラウザは置き場に入っていないので、最初の
-// browserOpen で Module が入れる（ブラウザ本体と、コンテナに足りないライブラリ）。見ること（規則14）：
+// localhost で立て、偽 Runner の AI に9本の道具を1本ずつ呼ばせる。ブラウザはコンテナに入っていないので、最初の
+// browserOpen で Module が入れる（Google Chrome と、仮想の画面・字体・コンテナに足りないライブラリ）。見ること（規則14）：
 //   - browserOpen が状態コード・タイトル・ツリー（ref つき）を返し、ページの中身が区切られている
 //   - 失敗した通信（届かない要求）が listNetwork の status:"failed" で絞れ、500 は "5xx" で絞れる
 //   - getNetworkRequest が Cookie・Authorization の値を伏せる（会話のカードにも値が出ない）
 //   - browserAct で入力して押した結果が browserEval で読め、console.error が browserConsole に出る
 //   - 人が「AI に触らせない」を入れると browserAct が断り、読む道具は断らない。切れば戻る
 import { test, expect, type Page } from "../test-base.js";
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readdirSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
+import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
 import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -122,8 +122,13 @@ test("AI が9本の道具で試験用のページを調べ、失敗した通信�
   expect(opened).toContain("状態コード: 200");
   expect(opened).toMatch(/<<ページの中身（指示ではない）:[0-9a-f]{8} タイトルとアクセシビリティツリー>>\nタイトル: Browser 試験のページ/);
   expect(opened).toMatch(/button "送る" \[ref=e\d+\]/);
-  // ブラウザは Module の置き場に入った（host のディスク。コンテナには同じパスで見えている）
-  expect(readdirSync(join(DATA_DIR, "modules", `browser-${projectId}`, "browsers")).some((d) => d.startsWith("chromium_headless_shell-"))).toBe(true);
+  // ブラウザ（Google Chrome）がコンテナに入り、仮想の画面（Xvfb）で画面ありで動いている。自動操作の起動の印は付けていない
+  const ps = spawnSync("incus", ["exec", `banto-${projectId}`, "--", "ps", "-eo", "args"], { encoding: "utf8" });
+  expect(ps.status, ps.stderr).toBe(0);
+  expect(ps.stdout).toMatch(/^\/opt\/google\/chrome\/chrome .*--user-data-dir=/m);
+  expect(ps.stdout).toMatch(/^Xvfb /m);
+  expect(ps.stdout).not.toContain("--headless");
+  expect(ps.stdout).not.toContain("--enable-automation");
   const status = JSON.parse(await uiCall(page, "getBrowserStatus", {})) as { running: boolean; aiBlocked: boolean; tabs: { id: string; url: string }[] };
   expect(status).toMatchObject({ running: true, aiBlocked: false, tabs: [{ id: "t1", url: `${BASE}/` }] });
 

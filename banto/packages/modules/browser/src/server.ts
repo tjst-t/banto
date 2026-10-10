@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // docs/specs/v4-modules.md §4.1 Browser——人と AI が同じブラウザを触り、通信を調べる。
-// Project ごと・Project のコンテナの中で動く。ブラウザは Playwright 同梱の chromium-headless-shell を CDP で使う。
+// Project ごと・Project のコンテナの中で動く。ブラウザは普通のブラウザ（x86_64 は Google Chrome）を仮想の画面で画面ありで
+// 起こし、CDP で使う（chrome.ts）。
 // 人の画面は `ui://banto-browser/view`（view-app.ts）で、絵と入力は流れ「browser」（view-stream.ts、アーキ仕様 §5.8）。
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -12,9 +13,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { CANVAS_META_KEY, MODULE_META_KEY, STREAMS_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { BrowserContext } from "playwright-core";
 import { NetworkLog } from "./network-log.js";
 import { BrowserSession, DEFAULT_VIEWPORT } from "./session.js";
 import { StateFile } from "./state.js";
@@ -96,8 +95,8 @@ export function browserPaths(dataDir: string) {
     profile: join(dataDir, "profile"),
     network: join(dataDir, "network"),
     state: join(dataDir, "state.json"),
-    /** 仕事の組で起こすときにブラウザを包む sh（起こすたびに書き直す——work-scope.ts） */
-    scopeWrapper: join(dataDir, "chrome-in-work-scope.sh"),
+    /** 立てた仮想の画面（Xvfb）の pid（Module が消えた後に残ったものを、次に起こすときに止める——chrome.ts） */
+    displayPid: join(dataDir, "xvfb.pid"),
   };
 }
 
@@ -105,14 +104,14 @@ export function browserPaths(dataDir: string) {
  * 置き場から Module の中身を組み立てる。**playwright-core はここで初めて読み込む**——ブラウザの置き場
  * （`PLAYWRIGHT_BROWSERS_PATH`）は読み込むときに決まるので、先に環境へ置く
  */
-export async function createBrowserContextFromDataDir(dataDir: string, opts: { browsersPath?: string } = {}): Promise<ToolContext> {
+export async function createBrowserContextFromDataDir(dataDir: string, opts: { browsersPath?: string; executable?: string } = {}): Promise<ToolContext> {
   const paths = browserPaths(dataDir);
   const browsersPath = opts.browsersPath ?? paths.browsers;
   process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
   const { chromium } = await import("playwright-core");
-  const { launchWithInstall, playwrightInstaller } = await import("./install.js");
-  const { browserExecutablePath, prepareScopedLaunch } = await import("./work-scope.js");
-  const { browserIdentity, identityArgs, readBrowserVersion } = await import("./identity.js");
+  const { browserExecutablePath, launchWithInstall, playwrightInstaller } = await import("./install.js");
+  const { acceptLanguages, readBrowserVersion } = await import("./identity.js");
+  const { startChrome } = await import("./chrome.js");
   const installer = playwrightInstaller(browsersPath);
   const log = new NetworkLog(paths.network);
   const state = new StateFile(paths.state);
@@ -121,29 +120,22 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
     log,
     idleMs: () => state.get().idleMinutes * 60_000,
     launch: async (profileDir, onProgress) => {
-      const { context, identity } = await launchWithInstall(
+      const running = await launchWithInstall(
         async () => {
-          // 名乗りと言語（identity.ts）。版はブラウザに聞く——入っていなければ Playwright と同じ文言で投げ、launchWithInstall が入れる
-          const executable = browserExecutablePath();
-          if (!existsSync(executable)) throw new Error(`Executable doesn't exist at ${executable}`);
+          // 入っていなければ Playwright と同じ文言で投げ、launchWithInstall が入れる（chrome.ts）
+          const executable = opts.executable ?? browserExecutablePath();
           const { locale, timezone } = state.get();
-          const identity = browserIdentity(readBrowserVersion(executable), locale, timezone);
-          // 入れられるなら仕事の組（banto-work-jobs.slice）に入れる。入れられなければそのまま
-          const scoped = await prepareScopedLaunch(paths.scopeWrapper);
-          const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
-            headless: true,
-            viewport: { ...DEFAULT_VIEWPORT },
-            timezoneId: timezone,
-            args: identityArgs(identity),
-            ...(scoped ?? {}),
-          });
-          return { context, identity };
+          const chrome = await startChrome(
+            { executable, profileDir, displayPidFile: paths.displayPid, languages: acceptLanguages(locale), locale, timezone, viewport: DEFAULT_VIEWPORT },
+            (endpoint) => chromium.connectOverCDP(endpoint),
+          );
+          return { ...chrome, version: readBrowserVersion(executable) };
         },
         installer,
         onProgress,
       );
-      context.setDefaultTimeout(10_000);
-      return { context, identity };
+      running.context.setDefaultTimeout(10_000);
+      return running;
     },
   });
   return { session, log, state };

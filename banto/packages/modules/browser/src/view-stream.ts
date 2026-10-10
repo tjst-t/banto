@@ -497,8 +497,9 @@ export class BrowserView implements ViewHooks {
       case "history":
         void this.act(v, async () => {
           const { page } = this.deps.session.page();
-          if (m.action === "back") await page.goBack({ timeout: 15_000 });
-          else if (m.action === "forward") await page.goForward({ timeout: 15_000 });
+          // 移ったところまで待つ（キャッシュから戻すと load が来ない——tools.ts の back）
+          if (m.action === "back") await page.goBack({ waitUntil: "commit", timeout: 15_000 });
+          else if (m.action === "forward") await page.goForward({ waitUntil: "commit", timeout: 15_000 });
           else await page.reload({ timeout: 30_000 });
         });
         return;

@@ -1,16 +1,17 @@
 // **人の画面の流れ**（view-stream.ts）：中身の約束の読み書き（ブラウザ無しで）と、本物のブラウザで
 // 受け取りの印による絞り・映す画面が居なくなったら screencast を止める・人の入力がページに届く・AI の操作が帯の
-// 知らせになる・画面の HTML が組み立てられること。ブラウザ（chromium-headless-shell）がこの機械に無ければ後半は飛ばす。
+// 知らせになる・画面の HTML が組み立てられること。ブラウザがこの機械に無ければ後半は飛ばす。
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StreamStamp, WebSocket } from "@banto/stream-server";
 import { FRAME_BOX, FRAME_COLORS, createTestPageServer } from "./test-page.js";
 import { createBrowserContextFromDataDir } from "./server.js";
+import { browserOpts, installed, skipReason } from "./test-browser.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
 import {
@@ -134,12 +135,13 @@ test("画面の資源：流れの口を埋め込み、受け取りの印を返�
   const withCard = TOOLS.filter((t) => (t._meta as Record<string, unknown>)["dev.banto/card"] !== undefined).map((t) => t.name);
   assert.deepEqual(withCard, ["browserOpen"]);
   assert.equal((TOOLS[0]!._meta as { ui?: { resourceUri?: string } }).ui?.resourceUri, BROWSER_VIEW_URI);
+  // CAPTCHA は人が解く（AI は解かない）・Web の検索は WebSearch、と道具の説明で AI に伝える
+  for (const name of ["browserOpen", "browserAct"]) assert.match(TOOLS.find((t) => t.name === name)!.description, /CAPTCHA（ロボット確認[^]*AI は解かない[^]*人に解いてもらう/);
+  assert.match(TOOLS.find((t) => t.name === "browserOpen")!.description, /Web の検索には WebSearch を使い/);
 });
 
 // ---- 本物のブラウザで ---------------------------------------------------------------------------
 
-const browsersPath = process.env.BANTO_BROWSER_TEST_BROWSERS ?? join(homedir(), ".cache", "ms-playwright");
-const installed = existsSync(browsersPath) && readdirSync(browsersPath).some((d) => d.startsWith("chromium_headless_shell-"));
 
 /** 流れの相手のふり（host の WebSocket の代わり）。送られたものを溜め、画面からの1通を送れる */
 class FakeSocket extends EventEmitter {
@@ -190,7 +192,7 @@ before(async () => {
   if (!installed) return;
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  ctx = await createBrowserContextFromDataDir(dataDir, { browsersPath });
+  ctx = await createBrowserContextFromDataDir(dataDir, browserOpts);
   view = new BrowserView({ session: ctx.session, state: ctx.state, log: ctx.log, logLine: () => undefined });
   ctx.view = view;
 });
@@ -204,7 +206,7 @@ after(async () => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("流れ：開くとブラウザを起こして映し、印が返るまで次の絵を送らず、閉じると screencast を止める。入力はページに届き、AI の操作は帯で知らせる", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+test("流れ：開くとブラウザを起こして映し、印が返るまで次の絵を送らず、閉じると screencast を止める。入力はページに届き、AI の操作は帯で知らせる", { skip: skipReason }, async () => {
   const pc = new FakeSocket();
   view.handler()(pc as unknown as WebSocket, stamp({ width: 1000, height: 700, dpr: 1, visible: true }));
 
@@ -343,7 +345,7 @@ async function waitValue<T>(read: () => Promise<T>, expected: T, timeoutMs = 10_
   return last;
 }
 
-test("大きなページ：AI が 2560×1440 にしても、screencast の絵も最初の1枚（撮った絵）も画素数の上限と 1 MiB に収まる", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+test("大きなページ：AI が 2560×1440 にしても、screencast の絵も最初の1枚（撮った絵）も画素数の上限と 1 MiB に収まる", { skip: skipReason }, async () => {
   const page = (await ctx.session.currentOrNew()).page;
   await page.setContent(DENSE_PAGE);
   await callTool(ctx, "browserAct", { action: "resize", width: 2560, height: 1440 });
@@ -372,7 +374,7 @@ test("大きなページ：AI が 2560×1440 にしても、screencast の絵も
   }
 });
 
-test("1 MiB（ここでは小さくした上限）を越えた絵は送らず、越え始めたときに1度だけ理由を言う", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+test("1 MiB（ここでは小さくした上限）を越えた絵は送らず、越え始めたときに1度だけ理由を言う", { skip: skipReason }, async () => {
   const small = new BrowserView({ session: ctx.session, state: ctx.state, log: ctx.log, logLine: () => undefined, maxMessageBytes: 2_000 });
   const pc = new FakeSocket();
   small.handler()(pc as unknown as WebSocket, stamp({ width: 800, height: 600, dpr: 1, visible: true }));
@@ -389,7 +391,7 @@ test("1 MiB（ここでは小さくした上限）を越えた絵は送らず、
   }
 });
 
-test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる。切ると全部戻る", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる。切ると全部戻る", { skip: skipReason }, async () => {
   // タブが1つも無い（携帯で開いた最初の姿）
   for (const t of await ctx.session.listTabs()) await ctx.session.close(t.id);
   await until("タブが無い", () => ctx.session.current === undefined);
@@ -416,7 +418,7 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
   }
 });
 
-test("別オリジンの iframe：静かになる直前の iframe の描画も、人の画面に絵として届き、押した入力は iframe に届く", { skip: !installed && "chromium-headless-shell が入っていない" }, async () => {
+test("別オリジンの iframe：静かになる直前の iframe の描画も、人の画面に絵として届き、押した入力は iframe に届く", { skip: skipReason }, async () => {
   const pc = new FakeSocket();
   // 描き終えた画面のふり：絵を受けたらすぐ印を返し、受けた時刻を残す
   const arrived: number[] = [];
