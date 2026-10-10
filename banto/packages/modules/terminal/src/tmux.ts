@@ -114,8 +114,13 @@ export class Tmux {
         { env: this.options.env, timeout: 300_000 },
       );
     } catch (err) {
-      const e = err as { stderr?: string; message: string };
-      throw new TerminalError(`tmux が無く、入れられませんでした: ${(e.stderr ?? "").trim().split("\n").slice(-3).join(" ") || e.message}`);
+      // 別のサーバ（実行場所）では sudo が無い・パスワードが要ることがある。そのままの sudo のエラーだけを出さず、人が向こうで
+      // 打つ入れ方を添える（v4-security.md §1「前提の確かめ」——特定の Module だけが使う道具は、使うときに理由と入れ方を添えて断る）
+      const e = err as NodeJS.ErrnoException & { stderr?: string };
+      const detail = e.code === "ENOENT" ? "sudo がありません" : (e.stderr ?? "").trim().split("\n").slice(-3).join(" ") || e.message;
+      throw new TerminalError(
+        `この実行場所には tmux がありません。自動では入れられませんでした（${detail}）。向こうで \`sudo apt install tmux\` を打ってから開き直してください`,
+      );
     }
   }
 

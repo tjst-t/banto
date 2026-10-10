@@ -341,3 +341,32 @@ test("流れ：長い日本語の名前でも、無い・使えない・閉じ�
     }
   });
 });
+
+// 別のサーバ（実行場所）では sudo にパスワードが要る・sudo が無いことがある。そのときは理由と入れ方を添えて断る
+// （v4-security.md §1「前提の確かめ」——特定の Module だけが使う道具は、使うときに断る）
+test("tmux が無く入れられないときは、理由と入れ方を添えて断る", async () => {
+  const { Tmux, TerminalError } = await import("./tmux.js");
+  const { writeFileSync, chmodSync } = await import("node:fs");
+  const withSudo = mkdtempSync(join("/tmp", "term-nosudo-"));
+  const empty = mkdtempSync(join("/tmp", "term-empty-"));
+  try {
+    writeFileSync(join(withSudo, "sudo"), "#!/bin/sh\necho 'sudo: a password is required' >&2\nexit 1\n");
+    chmodSync(join(withSudo, "sudo"), 0o755);
+    for (const [dir, detail] of [
+      [withSudo, "a password is required"],
+      [empty, "sudo がありません"],
+    ] as const) {
+      const tmux = new Tmux({ env: { PATH: dir }, socket: `t-nosudo-${process.pid}` });
+      await assert.rejects(tmux.ensureInstalled(() => {}), (err: Error) => {
+        assert.ok(err instanceof TerminalError);
+        assert.match(err.message, /この実行場所には tmux がありません/);
+        assert.ok(err.message.includes(detail), err.message);
+        assert.ok(err.message.includes("sudo apt install tmux"), err.message);
+        return true;
+      });
+    }
+  } finally {
+    rmSync(withSudo, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
