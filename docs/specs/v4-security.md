@@ -162,7 +162,8 @@ AI が読めるものとして扱う**。本物の Claude ログインは中に�
   - `banto-work.slice`：`MemoryMax`＝コンテナのメモリの上限の 75%、`TasksMax`＝コンテナのプロセス数の上限の 70%（絶対値で書く。
     core がコンテナを用意するとき・上限を変えたときに root で `/etc/systemd/user/` に置き、ユーザーの systemd を読み直させる）
   - `banto-work-jobs.slice`（仕事）：Shell の待つ形・待たない形のコマンド、サブエージェント（ACP のエージェントとその子）、
-    Factory のテスト、Browser の Module のブラウザ（v4-modules.md §4.1）。1件ずつ単位（待つ形・サブエージェント・テストは `systemd-run --user --scope`、待たない形は今どおり
+    Factory のテスト、Browser の Module のブラウザ（v4-modules.md §4.1）、Terminal の tmux のサーバ（人のシェル。**oom.group は付けない**——人のセッションが全部入るので、
+    丸ごと止めると1つのコマンドのせいで全部消える。v4-modules.md §4.6）。1件ずつ単位（待つ形・サブエージェント・テストは `systemd-run --user --scope`、待たない形は今どおり
     service）にし、**oom_score_adj を +500**（カーネルが先に止める。上げるのは誰でもできる）・**memory.oom.group=1**（止めるときは
     その件を丸ごと——ブラウザの一部だけ消えて試験が迷走するより良い）。scope は単位の属性で付けられないので、起こす `sh` が
     自分で書いてから exec する。service は `OOMScoreAdjust=500`・`OOMPolicy=kill`

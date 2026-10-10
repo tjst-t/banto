@@ -21,7 +21,8 @@ import { BANTO_POOL } from "./prereqs.js";
 export const UPSTREAM_IMAGE = "images:ubuntu/24.04";
 
 /** banto の機能が頼る道具だけ。それ以外は Project ごとに入れる */
-export const BASE_PACKAGES = ["git", "curl", "ca-certificates", "openssh-client", "unzip", "xz-utils", "sudo"] as const;
+// tmux：人が打つ Terminal のセッションの置き場（v4-modules.md §4.6）
+export const BASE_PACKAGES = ["git", "curl", "ca-certificates", "openssh-client", "unzip", "xz-utils", "sudo", "tmux"] as const;
 
 /**
  * **中では誰でもパスワード無しで sudo できる**（決定・2026-09-25）。Shell の説明が AI に「要る道具は sudo apt-get

@@ -1154,9 +1154,14 @@ async function main(): Promise<void> {
     // **Shell 専用のホーム**（決定・2026-09-23、ユーザー）。人のホームは閉じ込めで
     // 読めないので、Project ごとに書けるホームを用意し、人が選んだ設定だけを写す。
     // `shell` は同梱だけが名乗れる役割（RESERVED_ROLES）——**第三者の Module に
-    // 人の git の設定を渡さない**。写すのは実行場所（banto 本体で起こすなら host の置き場にそのまま）
+    // 人の git の設定を渡さない**。写すのは実行場所（banto 本体で起こすなら host の置き場にそのまま）。
+    // 人が打つ Terminal（v4-modules.md §4.6）も同じ形のホームを持つが、`terminal` は予約していないので、
+    // 同梱のコードであること（origin）で見る
     let shellHome: string | undefined;
-    if ((declaration.meta.satisfies as string[]).includes("shell") && declaration.meta.confinement) {
+    const satisfies = declaration.meta.satisfies as string[];
+    const wantsShellHome =
+      satisfies.includes("shell") || (satisfies.includes("terminal") && declaration.meta.origin === "bundled");
+    if (wantsShellHome && declaration.meta.confinement) {
       const prep = prepared
         ? await prepared.prepareShellHome(moduleDataDir, shellHomeFiles(runtimeConfig))
         : await hostShellHome(moduleDataDir, shellHomeFiles(runtimeConfig));

@@ -217,7 +217,7 @@ export function unitLabel(unit: string): string {
 /**
  * ユーザーの systemd の単位を、内訳のどこに数えるか（段2a で仕事の組に入れたものも）。
  * `banto-shell-<16進>.scope`＝待つ形のコマンド、`banto-shell-<id>.service`＝待たない形、`banto-subagent-*.scope`＝サブエージェント、
- * `banto-factory-test-*.scope`＝Factory のテスト、そのほかの `banto-<名前>.service`＝Service
+ * `banto-factory-test-*.scope`＝Factory のテスト、`banto-terminal-*.scope`・`tmux-spawn-*.scope`＝Terminal の tmux（人のシェル）、そのほかの `banto-<名前>.service`＝Service
  */
 export function unitServiceName(unit: string): { group: ConsumerGroupId; name: string } | undefined {
   if (/^banto-shell-[0-9a-f]+\.scope$/.test(unit)) return { group: "commands", name: "コマンド" };
@@ -225,6 +225,8 @@ export function unitServiceName(unit: string): { group: ConsumerGroupId; name: s
   if (shell) return { group: "commands", name: `待たないコマンド ${shell[1]}` };
   if (/^banto-subagent-.+\.scope$/.test(unit)) return { group: "work", name: "サブエージェント" };
   if (/^banto-factory-test-.+\.scope$/.test(unit)) return { group: "commands", name: "Factory のテスト" };
+  // tmux はペインごとに自分で `tmux-spawn-<uuid>.scope` をサーバと同じ slice に作る（実測・2026-10-10）——シェルはそちらに居る
+  if (/^(banto-terminal-.+|tmux-spawn-.+)\.scope$/.test(unit)) return { group: "commands", name: "ターミナル" };
   const svc = /^banto-(.+)\.service$/.exec(unit);
   if (svc) return { group: "services", name: svc[1]! };
   return undefined;

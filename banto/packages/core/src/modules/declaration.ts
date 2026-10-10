@@ -535,6 +535,28 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
   },
   {
+    // **人が画面から Project のコンテナでシェルを打つ**（v4-modules.md §4.6、2026-10-08）。シェルはコンテナの中の tmux
+    // （`tmux -L banto-terminal`）のセッションで、画面を閉じても banto を起こし直しても残る。打鍵と出力は画面と Module の
+    // 間の流れ（アーキ仕様 §5.8）。AI 向けの tool は出さない。端末の描画の部品（xterm.js）が大きいので Shell には足さず、
+    // 要る人が目録から入れる。シェルの環境は Shell と揃える（専用のホームは host が渡す・Claude のログインの中継）
+    id: "terminal",
+    name: "Terminal",
+    description: "この Project のコンテナでシェルを手で打つ（入口「ターミナル」）。tmux のセッションなので、画面を閉じても残る",
+    suggestedName: "terminal",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/terminal/dist/server.js"],
+      env: { BANTO_PROJECT_ROOT: "${projectRoot}" },
+    },
+    meta: {
+      satisfies: ["terminal"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "project",
+      confinement: { kind: "landlock", root: "project", profile: "exec" },
+    },
+  },
+  {
     // **動いているものに届く URL を生やす窓口**（v4-modules.md §4.3、2026-09-27）。AI の道具（publishService・
     // unpublishService・listPublished）と承認の画面を持ち、道を張るのは `publish` 役割の実装。**banto 本体で動く**
     // ——承認の画面を出すコードがコンテナの中にあると、中で root の AI が偽れる（v4-security.md §1）。

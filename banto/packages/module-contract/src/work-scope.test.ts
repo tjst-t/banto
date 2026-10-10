@@ -19,3 +19,13 @@ test("入れられるときは systemd-run --user --scope で banto-work-jobs.sl
   assert.equal(r.env.DBUS_SESSION_BUS_ADDRESS, "unix:path=/run/user/1000/bus");
   assert.equal(r.env.A, "1");
 });
+
+test("oomGroup: false なら oom_score_adj だけ書き、oom.group は書かない（Terminal の tmux のサーバ）", () => {
+  const r = inWorkScope("tmux", ["new-session", "-d"], { kind: "terminal", available: () => true, uid: 1000, oomGroup: false });
+  assert.equal(r.scoped, true);
+  assert.match(r.unit!, /^banto-terminal-[0-9a-f]{8}\.scope$/);
+  const prelude = r.args[r.args.indexOf("-c") + 1]!;
+  assert.match(prelude, /echo 500 > \/proc\/self\/oom_score_adj.*exec "\$@"/);
+  assert.doesNotMatch(prelude, /oom\.group/);
+  assert.deepEqual(r.args.slice(-4), ["banto-work", "tmux", "new-session", "-d"]);
+});

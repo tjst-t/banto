@@ -28,6 +28,11 @@ export interface WorkScopeOptions {
   /** 試験用：本当にコンテナの中・バスがあるかの確かめを差し替える */
   available?: () => boolean;
   uid?: number;
+  /**
+   * 止めるときにその件を丸ごと止めるか（memory.oom.group=1、既定 true）。false は Terminal の tmux のサーバ——中に人の
+   * セッションが全部入るので、1つのコマンドが食い尽くしただけで全部のシェルを道連れにしない（カーネルが一番大きいものを止める）
+   */
+  oomGroup?: boolean;
 }
 
 export interface WorkScopeLaunch {
@@ -93,6 +98,8 @@ const SCOPE_PRELUDE = [
   '[ -n "$cg" ] && echo 1 > "/sys/fs/cgroup$cg/memory.oom.group" 2>/dev/null',
   'exec "$@"',
 ].join("; ");
+/** oom.group を書かない形（`oomGroup: false`） */
+const SCOPE_PRELUDE_NO_GROUP = [`echo ${WORK_OOM_SCORE_ADJ} > /proc/self/oom_score_adj 2>/dev/null`, 'exec "$@"'].join("; ");
 
 /**
  * `command args` を仕事の組の scope で起こす形にして返す。入れられなければそのまま返す
@@ -116,7 +123,7 @@ export function inWorkScope(command: string, args: readonly string[], opts: Work
       "--",
       "/bin/sh",
       "-c",
-      SCOPE_PRELUDE,
+      opts.oomGroup === false ? SCOPE_PRELUDE_NO_GROUP : SCOPE_PRELUDE,
       "banto-work",
       command,
       ...args,

@@ -205,7 +205,7 @@ test("host のサービスの名前：Docker のコンテナは id の頭12桁�
   assert.equal(unitLabel("cloudcli.service"), "cloudcli");
 });
 
-test("中身：仕事の組（banto.slice の下）に入った Service・待つ形のコマンド・サブエージェント・Factory のテストも数える（1 MB 未満は出さない）", () => {
+test("中身：仕事の組（banto.slice の下）に入った Service・待つ形のコマンド・サブエージェント・Factory のテスト・ターミナルも数える（1 MB 未満は出さない）", () => {
   const u = "/c/user.slice/user-1000.slice/user@1000.service";
   const w = `${u}/banto.slice/banto-work.slice`;
   const f: Record<string, string> = {
@@ -213,6 +213,8 @@ test("中身：仕事の組（banto.slice の下）に入った Service・待つ
     [`${w}/banto-work-jobs.slice/banto-shell-ac271270.scope/memory.stat`]: "anon 30000000\n",
     [`${w}/banto-work-jobs.slice/banto-subagent-1a2b3c4d.scope/memory.stat`]: "anon 900000000\n",
     [`${w}/banto-work-jobs.slice/banto-factory-test-31e5d216.scope/memory.stat`]: "anon 200000000\n",
+    [`${w}/banto-work-jobs.slice/banto-terminal-5e6f7a8b.scope/memory.stat`]: "anon 10000000\n",
+    [`${w}/banto-work-jobs.slice/tmux-spawn-50f7489e-c1dd-4489-a3b3-c548cf0b5b5b.scope/memory.stat`]: "anon 90000000\n",
     [`${u}/app.slice/dbus.socket/memory.stat`]: "anon 4096\n",
   };
   const groups = readConsumers(fakeFs(f), "/c");
@@ -220,7 +222,7 @@ test("中身：仕事の組（banto.slice の下）に入った Service・待つ
     groups.map((g) => [g.id, g.items.map((i) => i.name)]),
     [
       ["work", ["サブエージェント"]],
-      ["commands", ["Factory のテスト", "コマンド"]],
+      ["commands", ["Factory のテスト", "ターミナル", "コマンド", "ターミナル"]],
       ["services", ["mock"]],
     ],
   );
