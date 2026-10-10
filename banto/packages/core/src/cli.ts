@@ -82,6 +82,7 @@ import { SingleFlight } from "./modules/single-flight.js";
 import { ConnectBackoff } from "./modules/connect-backoff.js";
 import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { HostStallMeter } from "./host-stall.js";
+import { StallProfiler } from "./stall-profiler.js";
 import { collectHostHealth, timestampConsole } from "./host-health.js";
 import { ResourceWatch } from "./resources.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
@@ -278,10 +279,13 @@ async function main(): Promise<void> {
     // 起こし直したあと、続けられると名乗った Module に続けるかを聞いている間も起こさない（§2.5「2.」）
     hold: (threadId) => recovery?.holdReason(threadId) ?? resumeHoldReason({ projectThread, inbox }, threadId),
   });
+  // ターンの始まりに本体が止まったら、何をしていたかを残す（`stall-profiler.ts`、下で用意する）
+  let stallProfiler: StallProfiler | undefined;
   threadTurns.onChange((change) => {
     const projectId = projectThread.getThread(change.threadId)?.projectId;
     // 届いたもので起こしたターンはホップ 1 以上、人が送ったターンは 0
     if (change.type === "started") {
+      void stallProfiler?.capture(`turn-${change.threadId.slice(0, 8)}`);
       appEvents.publish({ type: "turn.started", threadId: change.threadId, ...(projectId ? { projectId } : {}), cause: change.hop > 0 ? "delivery" : "human" });
     } else {
       appEvents.publish({ type: "turn.ended", threadId: change.threadId, ...(projectId ? { projectId } : {}) });
@@ -657,6 +661,10 @@ async function main(): Promise<void> {
     console.warn(`[host] 本体が ${(s.ms / 1000).toFixed(1)} 秒止まっていました`),
   );
   hostStall.start();
+  stallProfiler = new StallProfiler({
+    dir: join(bootstrap.dataDir, "profiles"),
+    stalledBetween: (from, to) => hostStall.stalledBetween(from, to),
+  });
   // **資源の逼迫を見せる**（決定・2026-10-09、v4-security.md §1、`resources.ts`）。host がコンテナの cgroup のファイルを
   // 直接読む（incus exec を通さない）。10 秒ごと。混んでいる Project が変わったら画面に知らせる
   const resourceWatch = new ResourceWatch({
@@ -2043,6 +2051,7 @@ async function main(): Promise<void> {
       streamRelay.closeAll();
       liveness.stop();
       hostStall.stop();
+      stallProfiler?.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
       // **新しい Module の呼び出しを断り、実行中の呼び出しが終わるのを上限つきで待ってから止まる**（追加・2026-10-05、
       // アーキ仕様 §2.5「いま動いているもの」）。ターン・続けられる仕事は待たずに起こし直すので、「待つものが無い」と見て
