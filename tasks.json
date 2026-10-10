@@ -6239,7 +6239,7 @@
       "number": 257,
       "kind": "bug",
       "title": "Browser の人の画面に別サイトの iframe（reCAPTCHA 等）が映らない／ブラウザの名乗りを普通の Chrome に揃え、言語を日本語にする",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6247,15 +6247,15 @@
       "labels": [],
       "body": "## 1. 人の画面に別サイトの iframe が映らない（不具合）\n\n2026-10-10 稼働中の banto（release 84a8e943）でユーザーが Google 検索をしたら「unusual traffic」のページ（google.com/sorry）になった。そのページの reCAPTCHA の「I'm not a robot」の枠が、人の画面（screencast）では空白で、押せない。同じタブを browserScreenshot（Page.captureScreenshot）で撮ると枠は描かれている。DOM には recaptcha/enterprise/anchor の iframe がある。\n\n見立て（未確認）：screencast（Page.startScreencast）が、別のプロセスで描かれる別サイトの iframe（out-of-process iframe）を合成していない。chrome-headless-shell の screencast の制約の可能性。\n\n確かめて直す：\n1. 再現：試験用のページに別オリジンの iframe を置き、screencast の1枚と captureScreenshot を比べる（E2E の browser-view に足す）。\n2. 直し方の候補：(a) 通常の Chromium の新しい headless（--headless=new）に替える——起動とメモリは重い（実測で 760MiB 対 400MiB）、(b) サイトの分離を切る（site-per-process を無効）——安全が下がるので避けたい、(c) screencast をやめて captureScreenshot を間引いて流す。測って選び、v4-modules.md §4.1 の実測と決めたことを直す。\n3. 人の画面で reCAPTCHA の枠が映り、押せることを確かめる。\n\n## 2. ブラウザの名乗りと言語（決定・2026-10-10、ユーザー）\n\nGoogle が「HeadlessChrome」の名乗りでロボットと判定した（実測：User-Agent が `HeadlessChrome/151.0.7922.34`・navigator.webdriver が true・languages が en-US だけ）。\n\n- **名乗り（User-Agent）を普通の Chrome に揃える**：使っているブラウザと同じ版の `Chrome/<版>` にし、`HeadlessChrome` を消す（版はブラウザから読み、決め打ちしない）。Client Hints（Sec-CH-UA 等）が出るなら同じく揃える。\n- **言語を日本語にする**：Accept-Language と navigator.languages を `ja-JP, ja`（と en を後ろに）。ロケールとタイムゾーンは Asia/Tokyo（決め打ちせず、設定で変えられるならそれでよい）。\n- **それ以上の偽装はしない**（ユーザー決定）：navigator.webdriver・プラグイン・WebGL・指紋の類は変えない。ボット判定をすり抜ける細工はしない。仕様にそう書く。\n- **AI の道具の説明**：browserOpen（と必要なら他の道具）の説明に「Web の検索には WebSearch を使う。このブラウザで検索エンジンを使わない（ロボット判定と規約のため）。このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの」と書く。\n- v4-modules.md §4.1 に名乗りと言語の決めたことを書く。\n\n確かめ：単体または E2E で、ページから見た navigator.userAgent に HeadlessChrome が無く Chrome/<版> があり、navigator.languages の先頭が ja-JP、要求の Accept-Language が ja で始まること。\n\n**確かめは browser の単体・型検査・browser.spec.ts・browser-view.spec.ts だけ。全部の E2E は流さない**（ユーザー指示）。",
       "doneWhen": "別オリジンの iframe を含むページで、人の画面の絵に iframe の中身が映り、押した入力が iframe に届くことを E2E で確かめた。ページから見た User-Agent に HeadlessChrome が無く、言語が ja-JP で始まる。browserOpen の説明に検索は WebSearch を使う旨がある。仕様 §4.1 を直した。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/browser-view-oopif-missing）",
       "refs": [
         "browser-module (#239)",
         "docs/specs/v4-modules.md §4.1"
       ],
       "threads": [],
       "createdAt": "2026-10-10T10:59:53.372Z",
-      "updatedAt": "2026-10-10T11:01:22.639Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-10T12:52:45.728Z",
+      "closedAt": "2026-10-10T12:52:45.728Z",
       "extra": {}
     },
     {
