@@ -3,7 +3,7 @@
 // 止めても起こし直してもログイン状態は残る（launchPersistentContext）。
 
 import { rmSync } from "node:fs";
-import type { BrowserContext, Page } from "playwright-core";
+import type { BrowserContext, CDPSession, Page } from "playwright-core";
 import { BrowserError } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import type { ConsoleLevel, NetworkLog } from "./network-log.js";
@@ -38,6 +38,9 @@ export class BrowserSession {
   private idleTimer: NodeJS.Timeout | undefined;
   /** 止めた理由（最後に止まったとき）。状態を見る口が返す */
   lastStop: { at: string; reason: string } | undefined;
+  /** 人の画面が開いている数。開いている間は使われていなくても止めない（v4-modules.md §4.1「起こす・止める」） */
+  private holds = 0;
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: SessionDeps) {}
 
@@ -49,9 +52,46 @@ export class BrowserSession {
   touch(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
-      void this.stop(`AI の呼び出しが ${Math.round(this.deps.idleMs() / 60000)} 分無かったので止めました`);
+      // 画面が開いている間は止めない（人が見ている）——閉じたときに数え直す（release）
+      if (this.holds > 0) return;
+      void this.stop(`画面が閉じていて AI の呼び出しが ${Math.round(this.deps.idleMs() / 60000)} 分無かったので止めました`);
     }, this.deps.idleMs());
     this.idleTimer.unref();
+  }
+
+  /** 人の画面が開いた。返す関数で閉じたことを知らせる（2回呼んでも1回分） */
+  hold(): () => void {
+    this.holds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.holds -= 1;
+      // 最後の画面が閉じたら、そこから数え直す（起きていなければ数えない）
+      if (this.holds === 0 && this.context) this.touch();
+    };
+  }
+
+  /** タブ・選んでいるタブ・動いているかが変わったら呼ぶ（人の画面に知らせる）。返す関数で外す */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.error(`[browser] 変わったことを知らせられませんでした: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /** そのタブの CDP の口を新しく開く（screencast・人の入力。閉じるのは使う側） */
+  async newCdp(page: Page): Promise<CDPSession> {
+    if (!this.context) throw new BrowserError("ブラウザが動いていません");
+    return this.context.newCDPSession(page);
   }
 
   /** 起きていなければ起こす。同時に呼ばれても1回だけ */
@@ -78,6 +118,9 @@ export class BrowserSession {
       this.register(page).catch((err: Error) => console.error(`[browser] タブを繋げませんでした: ${err.message}`));
     });
     for (const page of context.pages()) await this.register(page);
+    // 起こしたのが人の画面なら AI の呼び出しは無い——ここから数える（画面が開いている間は止めない）
+    this.touch();
+    this.emit();
     return context;
   }
 
@@ -88,6 +131,7 @@ export class BrowserSession {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.deps.log.saveNow();
+    this.emit();
   }
 
   async stop(reason: string): Promise<void> {
@@ -121,7 +165,13 @@ export class BrowserSession {
     page.on("close", () => {
       this.pages.delete(id);
       if (this.currentTab === id) this.currentTab = [...this.pages.keys()].at(-1);
+      this.emit();
     });
+    // URL とタイトルが変わったら人の画面のタブの並びと URL 欄に出す
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) this.emit();
+    });
+    page.on("load", () => this.emit());
     const log = this.deps.log;
     page.on("console", (msg) => {
       const loc = msg.location();
@@ -142,6 +192,7 @@ export class BrowserSession {
     attachRecorder(log, () => id, cdp as unknown as CdpLike);
     // 本文はブラウザの中の入れ物にあるうちに取る——入れ物を大きめにして、取る前に捨てられにくくする
     await cdp.send("Network.enable", { maxTotalBufferSize: 100 * 1024 * 1024, maxResourceBufferSize: 10 * 1024 * 1024 });
+    this.emit();
     return id;
   }
 
@@ -173,6 +224,7 @@ export class BrowserSession {
     const page = await context.newPage();
     const id = await this.register(page);
     this.currentTab = id;
+    this.emit();
     return { id, page };
   }
 
@@ -184,7 +236,9 @@ export class BrowserSession {
 
   select(tab: string): void {
     this.page(tab);
+    if (this.currentTab === tab) return;
     this.currentTab = tab;
+    this.emit();
   }
 
   async close(tab: string): Promise<void> {

@@ -143,6 +143,8 @@ export class NetworkLog {
   private saveTimer: NodeJS.Timeout | undefined;
   /** 書き出しの失敗（規則2——黙って捨てず、次の読み出しで理由を見せる） */
   lastSaveError: string | undefined;
+  /** 記録が増えた・変わった・消えた（人の画面の通信とコンソールの欄に知らせる。間引くのは受け手） */
+  onChange: (() => void) | undefined;
 
   constructor(
     private readonly dir: string | undefined,
@@ -235,6 +237,7 @@ export class NetworkLog {
     this.bodies.clear();
     this.consoleEntries = [];
     this.bodyBytes = 0;
+    this.onChange?.();
     if (this.dir) {
       rmSync(join(this.dir, "bodies"), { recursive: true, force: true });
       this.saveNow();
@@ -346,6 +349,7 @@ export class NetworkLog {
   }
 
   private scheduleSave(): void {
+    this.onChange?.();
     if (!this.dir || this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = undefined;

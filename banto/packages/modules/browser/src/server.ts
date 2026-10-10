@@ -1,18 +1,29 @@
 #!/usr/bin/env node
 // docs/specs/v4-modules.md §4.1 Browser——人と AI が同じブラウザを触り、通信を調べる。
 // Project ごと・Project のコンテナの中で動く。ブラウザは Playwright 同梱の chromium-headless-shell を CDP で使う。
-// 人の画面（ui://banto-browser/view・screencast・流れの口）はまだ無い（#242）。
+// 人の画面は `ui://banto-browser/view`（view-app.ts）で、絵と入力は流れ「browser」（view-stream.ts、アーキ仕様 §5.8）。
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { CANVAS_META_KEY, MODULE_META_KEY, STREAMS_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import { join } from "node:path";
 import type { BrowserContext } from "playwright-core";
 import { NetworkLog } from "./network-log.js";
 import { BrowserSession, DEFAULT_VIEWPORT } from "./session.js";
 import { StateFile } from "./state.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
+import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
+import { BrowserView } from "./view-stream.js";
+
+const UI_APP_MIME = "text/html;profile=mcp-app";
+/** 人の画面が開く流れの名前 */
+export const BROWSER_STREAM = "browser";
 
 /** この Module の申告。目録（core の BUNDLED_CATALOG）の宣言と同じ */
 export const BROWSER_MODULE_META = {
@@ -35,8 +46,30 @@ export function createBrowserServer(ctx: ToolContext) {
         mimeType: "application/json",
         _meta: { [VISIBILITY_META_KEY]: "admin", [MODULE_META_KEY]: BROWSER_MODULE_META },
       },
+      {
+        // **入口**（launcher）——Command Palette の「Module の入口」から開く。browserOpen のカードからも開く
+        uri: BROWSER_VIEW_URI,
+        name: "ブラウザ",
+        description: "この Project のコンテナの中のブラウザを映して触る。AI と同じブラウザで、通信とコンソールも見られる",
+        mimeType: UI_APP_MIME,
+        _meta: {
+          [VISIBILITY_META_KEY]: "admin",
+          [CANVAS_META_KEY]: "launcher",
+          [STREAMS_META_KEY]: [BROWSER_STREAM],
+          ui: { prefersBorder: false },
+        },
+      },
     ],
   }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    if (uri === BROWSER_VIEW_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: browserViewHtml() }] };
+    if (uri === "browser://module") {
+      return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(BROWSER_MODULE_META) }] };
+    }
+    throw new Error(`知らない資源です: ${uri}`);
+  });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
@@ -49,7 +82,7 @@ export function createBrowserServer(ctx: ToolContext) {
             void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress: 0, message } });
           }
         : undefined;
-    return callTool(ctx, request.params.name, request.params.arguments, onProgress);
+    return callTool(ctx, request.params.name, request.params.arguments, onProgress, request.params._meta as Record<string, unknown> | undefined);
   });
 
   return server;
@@ -109,7 +142,17 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     process.exit(1);
   }
   const ctx = await createBrowserContextFromDataDir(dataDir);
+  // 人の画面の流れ（アーキ仕様 §5.8）
+  const view = new BrowserView({ session: ctx.session, state: ctx.state, log: ctx.log });
+  ctx.view = view;
+  const { listenStreams } = await import("@banto/stream-server");
+  const streams = await listenStreams(
+    { [BROWSER_STREAM]: view.handler() },
+    { dataDir, onError: (err) => console.error("[browser]", err.message) },
+  );
   const shutdown = async () => {
+    await view.close();
+    await streams.close();
     await ctx.session.stop("Module を止めました");
     ctx.log.saveNow();
     process.exit(0);

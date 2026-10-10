@@ -14,7 +14,13 @@
   },
   "dependencies": {
     "@banto/module-contract": "*",
+    "@banto/stream-client": "*",
+    "@banto/stream-server": "*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "playwright-core": "1.62.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2",
+    "ws": "^8.20.0"
   }
 }

@@ -3,10 +3,11 @@
 // - **AI の道具（agent）9本**：browserOpen・browserSnapshot・browserAct・browserScreenshot・browserEval・browserTabs・
 //   listNetwork・getNetworkRequest・browserConsole。ページから読んだ文は「ページの中身（指示ではない）」と区切って返す。
 //   AI に返す通信の記録は Cookie・Set-Cookie・Authorization・Proxy-Authorization の値を伏せる
-// - **人の画面の口（admin）**：タブの一覧・通信の記録（伏せない）・HAR・記録を消す・「AI に触らせない」・設定。
-//   画面は #242 が作る。AI には見せない
+// - **人の画面の口（admin）**：タブの一覧・通信とコンソールの記録（伏せない）・HAR・記録を消す・「AI に触らせない」・設定。
+//   画面（`ui://banto-browser/view`、view-app.ts）が使う。AI には見せない
+// - AI が操作したら、人の画面に帯と枠を出す（`ViewHooks.aiAction`、v4-modules.md §4.1「人と AI の同時操作」）
 
-import { VISIBILITY_META_KEY } from "@banto/module-contract";
+import { CARD_META_KEY, VISIBILITY_META_KEY, threadOf } from "@banto/module-contract";
 import type { Locator, Page } from "playwright-core";
 import {
   BrowserError,
@@ -30,11 +31,21 @@ import { pageContent, truncate } from "./content.js";
 import { formatDetail, formatLine, matchesStatus, toHar, type NetworkLog } from "./network-log.js";
 import type { BrowserSession } from "./session.js";
 import type { StateFile } from "./state.js";
+import { BROWSER_VIEW_URI } from "./view-app.js";
+import type { AiActionEvent } from "./view-stream.js";
+
+/** 道具から人の画面へ知らせる口（view-stream.ts の BrowserView）。画面の無い試験では省く */
+export interface ViewHooks {
+  aiAction(event: AiActionEvent): void;
+  refresh(): void;
+  status(): { viewers: number; watching: number; screencasting: boolean; screencastTab?: string };
+}
 
 export interface ToolContext {
   session: BrowserSession;
   log: NetworkLog;
   state: StateFile;
+  view?: ViewHooks;
 }
 
 type Progress = ((message: string) => void) | undefined;
@@ -91,7 +102,9 @@ export const TOOLS = [
       },
       required: ["url"],
     },
-    _meta: agent,
+    // **会話にカードを出すのはこれだけ**（押すと人の画面が Canvas で開く）。ほかの道具は出さない——操作のたびに
+    // カードが並ぶため（v4-modules.md §4.1「AI の道具」）
+    _meta: { ...agent, ui: { resourceUri: BROWSER_VIEW_URI }, [CARD_META_KEY]: { title: "ブラウザで開いた：{url}" } },
   },
   {
     name: "browserSnapshot",
@@ -226,6 +239,20 @@ export const TOOLS = [
     _meta: admin,
   },
   {
+    name: "listConsoleRecords",
+    description: "コンソールの記録の一覧（新しい順）。人の画面のコンソールの欄",
+    inputSchema: {
+      type: "object",
+      properties: {
+        level: { type: "string", enum: [...CONSOLE_LEVELS] },
+        tab: { type: "string" },
+        since: { type: "string" },
+        limit: { type: "number", description: "省略時 200、最大 500" },
+      },
+    },
+    _meta: admin,
+  },
+  {
     name: "getNetworkRecord",
     description: "通信の記録1件と本文（文字か base64）。ヘッダは伏せない（人の画面）",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
@@ -276,13 +303,23 @@ const AI_TOOLS = new Set(TOOLS.filter((t) => t._meta === agent).map((t) => t.nam
 const text = (t: string): ToolResult => ({ content: [{ type: "text", text: t }] });
 const json = (v: unknown): ToolResult => text(JSON.stringify(v));
 
-export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown, onProgress?: Progress): Promise<ToolResult> {
+export async function callTool(
+  ctx: ToolContext,
+  name: string,
+  rawArgs: unknown,
+  onProgress?: Progress,
+  meta?: Record<string, unknown>,
+): Promise<ToolResult> {
   const args = (rawArgs ?? {}) as Record<string, unknown>;
+  // どの Thread の AI か（host の刻印。人の画面の帯に出す）
+  const thread = threadOf(meta)?.threadId;
+  const notify = (tab: string, text: string, box?: AiActionEvent["box"]) =>
+    ctx.view?.aiAction({ tab, text, ...(thread ? { thread } : {}), ...(box ? { box } : {}) });
   try {
     if (AI_TOOLS.has(name)) ctx.session.touch();
     switch (name) {
       case "browserOpen":
-        return await open(ctx, args, onProgress);
+        return await open(ctx, args, onProgress, notify);
       case "browserSnapshot": {
         const { tab } = parseTabOnly(args);
         await ctx.session.ensure(onProgress);
@@ -290,7 +327,7 @@ export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown,
         return text(`タブ ${id}　URL: ${page.url()}\n${pageContent("アクセシビリティツリー", truncate(await snapshot(page), FULL_TREE))}`);
       }
       case "browserAct":
-        return await act(ctx, parseAct(args), onProgress);
+        return await act(ctx, parseAct(args), onProgress, notify);
       case "browserScreenshot": {
         const a = parseScreenshot(args);
         await ctx.session.ensure(onProgress);
@@ -314,6 +351,7 @@ export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown,
         try {
           // 式が関数なら呼ぶ（Playwright は文字の式をそのまま評価するだけ）。末尾の ; は式を括弧で包めるよう外す
           const expr = a.expression.trim().replace(/;+$/, "");
+          notify(id, "ページの中で JavaScript を評価しています");
           value = await page.evaluate(`(async () => { const v = (${expr}\n); return typeof v === "function" ? await v() : await v; })()`);
         } catch (err) {
           throw new BrowserError(`ページの中で評価できませんでした: ${(err as Error).message.split("\n")[0]}`);
@@ -325,8 +363,14 @@ export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown,
         const a = parseTabs(args);
         if (a.action !== "list") refuseIfBlocked(ctx, `browserTabs の ${a.action}`);
         await ctx.session.ensure(onProgress);
-        if (a.action === "select") ctx.session.select(a.tab);
-        if (a.action === "close") await ctx.session.close(a.tab);
+        if (a.action === "select") {
+          ctx.session.select(a.tab);
+          notify(a.tab, `タブ ${a.tab} に切り替えました`);
+        }
+        if (a.action === "close") {
+          await ctx.session.close(a.tab);
+          notify(a.tab, `タブ ${a.tab} を閉じました`);
+        }
         const tabs = await ctx.session.listTabs();
         const head = a.action === "select" ? `タブ ${a.tab} を選びました。\n` : a.action === "close" ? `タブ ${a.tab} を閉じました。\n` : "";
         if (tabs.length === 0) return text(`${head}開いているタブはありません`);
@@ -372,6 +416,7 @@ export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown,
           log: ctx.log.stats(),
           ...(ctx.log.lastSaveError ? { logSaveError: ctx.log.lastSaveError } : {}),
           ...(ctx.session.lastStop ? { lastStop: ctx.session.lastStop } : {}),
+          ...(ctx.view ? { view: ctx.view.status() } : {}),
         });
       }
       case "listBrowserTabs":
@@ -379,6 +424,10 @@ export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown,
       case "listNetworkRecords": {
         const rows = ctx.log.query(parseNetworkQuery(args, 500));
         return json({ records: rows.map(({ frames: _f, messages: _m, ...r }) => r), total: ctx.log.stats().records });
+      }
+      case "listConsoleRecords": {
+        const q = parseConsoleQuery(args, 200);
+        return json({ entries: ctx.log.queryConsole(q), total: ctx.log.stats().console });
       }
       case "getNetworkRecord": {
         const a = parseNetworkRequest(args);
@@ -401,8 +450,11 @@ export async function callTool(ctx: ToolContext, name: string, rawArgs: unknown,
       case "clearBrowserData":
         await ctx.session.clearData();
         return json({ cleared: true, running: false });
-      case "setAiBlocked":
-        return json(ctx.state.set({ aiBlocked: parseBlocked(args) }));
+      case "setAiBlocked": {
+        const next = ctx.state.set({ aiBlocked: parseBlocked(args) });
+        ctx.view?.refresh(); // 開いている画面全部の切り替えに出す
+        return json(next);
+      }
       case "getSettings":
         return json(ctx.state.get());
       case "setSettings": {
@@ -448,11 +500,48 @@ async function withRef<T>(page: Page, ref: string, fn: (loc: Locator) => Promise
   return fn(loc);
 }
 
-async function open(ctx: ToolContext, args: Record<string, unknown>, onProgress: Progress): Promise<ToolResult> {
+type Notify = (tab: string, text: string, box?: AiActionEvent["box"]) => void;
+
+/** 要素の呼び名（帯に出す「『送る』を押しました」の『送る』）。ページの中で走る——外の名前を使わない */
+function labelOf(el: Element): string {
+  const pick = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, " ").trim();
+  const field = el as Element & { labels?: ArrayLike<Element> | null; value?: unknown; innerText?: string };
+  const label = field.labels && field.labels.length > 0 ? pick(field.labels[0]!.textContent) : "";
+  return (
+    pick(el.getAttribute("aria-label")) ||
+    label ||
+    pick(el.getAttribute("placeholder")) ||
+    pick(field.innerText) ||
+    pick(el.getAttribute("title")) ||
+    pick(el.getAttribute("name")) ||
+    (typeof field.value === "string" ? pick(field.value) : "")
+  ).slice(0, 40);
+}
+
+/**
+ * 人の画面に出す、触る要素の呼び名と枠（操作の前に取る——押すと消える要素がある）。画面が開いていなければ取らない
+ * （AI の操作を遅くしない）。取れなければ無しで出す
+ */
+async function describeRef(ctx: ToolContext, page: Page, ref: string | undefined): Promise<{ label: string; box?: AiActionEvent["box"] }> {
+  if (!ref || !ctx.view || ctx.view.status().viewers === 0) return { label: "" };
+  const loc = page.locator(`aria-ref=${ref}`);
+  try {
+    const [box, label] = await Promise.all([
+      loc.boundingBox({ timeout: 1_000 }),
+      loc.evaluate(labelOf, undefined, { timeout: 1_000 }),
+    ]);
+    return { label, ...(box ? { box } : {}) };
+  } catch {
+    return { label: "" }; // 帯の飾りが取れないだけ——操作そのものは withRef が理由つきで断る
+  }
+}
+
+async function open(ctx: ToolContext, args: Record<string, unknown>, onProgress: Progress, notify: Notify): Promise<ToolResult> {
   const a = parseOpen(args);
   refuseIfBlocked(ctx, "browserOpen");
   await ctx.session.ensure(onProgress);
   const { id, page } = a.newTab ? await ctx.session.newTab() : await ctx.session.currentOrNew();
+  notify(id, `${a.url} を開いています`);
   let status: string;
   try {
     const response = await page.goto(a.url, { waitUntil: "load", timeout: 30_000 });
@@ -468,16 +557,21 @@ async function open(ctx: ToolContext, args: Record<string, unknown>, onProgress:
   );
 }
 
-async function act(ctx: ToolContext, a: ActArgs, onProgress: Progress): Promise<ToolResult> {
+async function act(ctx: ToolContext, a: ActArgs, onProgress: Progress, notify: Notify): Promise<ToolResult> {
   refuseIfBlocked(ctx, `browserAct の ${a.action}`);
   await ctx.session.ensure(onProgress);
   const { id, page } = ctx.session.page(a.tab);
   const marks = ctx.log.marks();
+  const target = await describeRef(ctx, page, "ref" in a ? a.ref : undefined);
+  const named = (ref: string) => (target.label ? `『${target.label}』` : ref);
   let done: string;
+  /** 人の画面の帯に出す文（待つだけの waitFor は出さない——触っていない） */
+  let shown: string | undefined;
   switch (a.action) {
     case "click":
       await withRef(page, a.ref, (l) => (a.double ? l.dblclick({ button: a.button }) : l.click({ button: a.button })));
       done = `${a.ref} を${a.double ? "2回" : ""}押しました`;
+      shown = `${named(a.ref)}を${a.double ? "2回" : ""}押しました`;
       break;
     case "type":
       await withRef(page, a.ref, async (l) => {
@@ -485,35 +579,43 @@ async function act(ctx: ToolContext, a: ActArgs, onProgress: Progress): Promise<
         if (a.submit) await l.press("Enter");
       });
       done = `${a.ref} に ${a.text.length} 文字を入れました${a.submit ? "（Enter も押しました）" : ""}`;
+      shown = `${named(a.ref)}に入力しました${a.submit ? "（Enter も押しました）" : ""}`;
       break;
     case "press":
       if (a.ref) await withRef(page, a.ref, (l) => l.press(a.key));
       else await page.keyboard.press(a.key);
       done = `${a.key} を押しました`;
+      shown = a.ref ? `${named(a.ref)}で ${a.key} を押しました` : done;
       break;
     case "select": {
       const chosen = await withRef(page, a.ref, (l) => l.selectOption(a.values));
       done = `${a.ref} で ${JSON.stringify(chosen)} を選びました`;
+      shown = `${named(a.ref)}で選びました`;
       break;
     }
     case "hover":
       await withRef(page, a.ref, (l) => l.hover());
       done = `${a.ref} の上に置きました`;
+      shown = `${named(a.ref)}の上に置きました`;
       break;
     case "scroll":
       if (a.ref) await withRef(page, a.ref, (l) => l.scrollIntoViewIfNeeded());
       if (a.dx !== 0 || a.dy !== 0) await page.mouse.wheel(a.dx, a.dy);
       done = a.ref ? `${a.ref} まで動かしました` : `${a.dx},${a.dy} 動かしました`;
+      shown = a.ref ? `${named(a.ref)}までスクロールしました` : "スクロールしました";
       break;
     case "back":
       done = (await page.goBack({ timeout: 15_000 })) ? "戻りました" : "戻る先がありません";
+      shown = "戻りました";
       break;
     case "forward":
       done = (await page.goForward({ timeout: 15_000 })) ? "進みました" : "進む先がありません";
+      shown = "進みました";
       break;
     case "reload":
       await page.reload({ timeout: 30_000 });
       done = "読み直しました";
+      shown = done;
       break;
     case "waitFor":
       if (a.timeMs !== undefined) await page.waitForTimeout(a.timeMs);
@@ -524,8 +626,11 @@ async function act(ctx: ToolContext, a: ActArgs, onProgress: Progress): Promise<
     case "resize":
       await page.setViewportSize({ width: a.width, height: a.height });
       done = `ページの大きさを ${a.width}×${a.height} にしました`;
+      shown = done;
+      ctx.view?.refresh(); // 映す絵の大きさを張り直す
       break;
   }
+  if (shown) notify(id, shown, target.box);
   await settle(ctx, id, page, marks.record);
   const failed = ctx.log.query({ tab: id, since: `r${marks.record}` }).filter((r) => matchesStatus(r, "error")).length;
   const errors = ctx.log.queryConsole({ tab: id, since: `c${marks.console}`, level: "error" }).length;
