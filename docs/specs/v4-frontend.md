@@ -2363,3 +2363,21 @@ Project だけ。出るのは作業をしたターン・長い報告のあと（
 - **サイドバー**：混んでいる Project の名前の右にメーターの印（触れると理由）。いま開いている Project にも出す。この機械
   全体が混んでいるときは Project の一覧の上に帯「この機械が混んでいます」（押すと「資源」）
 - 色：帯は灰色。混んでいることは文字と札の注意の色（warn）で出す——面を塗ってよいのは turn だけ（E9）
+
+### 6.37 アプリとして入れる（PWA）（追加・2026-10-10、ユーザー報告「Windows では PWA にできたが Android ではできない」）
+
+画面には Web App Manifest が無かった。Windows の Chrome・Edge は manifest が無くても「アプリとしてインストール」を出すが、
+Android の Chrome は manifest が無いと入れられない（稼働中で `/manifest.webmanifest` が 404、Service Worker も無しを確認）。
+
+- **manifest**（`apps/frontend/app/manifest.ts`、Next が `/manifest.webmanifest` で返し `<link rel="manifest">` を出す）：
+  名前と短い名前は「banto」、`id`・`start_url`・`scope` は `/`、`display: standalone`、`lang: ja`、地の色は画面のライトの地
+  （`--banto-bg`）、アイコンは 192・512（any）と 512（maskable）
+- **アイコン**：banto のアクセントの青の板に白い小文字の b（線で組む）。形は `apps/frontend/scripts/pwa-icons.mjs` の
+  SVG だけが持ち、sharp で `public/icons/` の PNG・`public/icons/apple-icon.png`（iOS、端まで青）・`public/icons/icon.svg`（タブの favicon）を書き出し、`metadata.icons` から指す
+  を書き出してリポジトリに入れる。maskable は字を安全域（真ん中の直径80%）に収める。Next の初期の `favicon.ico` は消した
+- **上の帯の色**：`viewport.themeColor` をライト・ダークの地の色に揃える。iOS 向けに `appleWebApp`（名前 banto）
+- **Service Worker は置かない**：Android の Chrome は 108 からメニューの「アプリをインストール」に Service Worker を求めない。
+  置くと古い画面を抱え込み、更新したら画面も新しくする仕組み（§6.34、`/banto-build`）とぶつかる。自動で出る
+  インストールの案内（`beforeinstallprompt`）は fetch を扱う Service Worker が要るので出ない——メニューから入れる。
+  オフラインで開ける・通知を受けるなど Service Worker が要る機能を足すときに、キャッシュの扱いと一緒に決める
+- manifest とアイコンはログインしていなくても読める（画面のサーバはログインを見ない。ログインは host の API だけ）

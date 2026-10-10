@@ -101,6 +101,26 @@ for (const file of files) {
   }
 }
 
+// **CSS の外で値で書くしかない色の写し**（追加・2026-10-10、v4-frontend.md §6.37）。manifest と themeColor は CSS の変数を使えないので
+// lib/pwa-colors.ts に値を置く——globals.css と食い違ったら落とす（出どころは globals.css の1箇所のまま）
+{
+  const css = readFileSync("app/globals.css", "utf8");
+  const pwa = readFileSync("lib/pwa-colors.ts", "utf8");
+  const cssVar = (block, name) => {
+    const body = css.match(new RegExp(`${block}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+    return body.match(new RegExp(`${name}:\\s*([^;]+);`))?.[1]?.trim().toLowerCase();
+  };
+  const pwaVal = (key) => pwa.match(new RegExp(`${key}:\\s*"([^"]+)"`))?.[1]?.toLowerCase();
+  for (const [key, block] of [["lightBackground", ":root"], ["darkBackground", "\\.dark"]]) {
+    const want = cssVar(block, "--banto-bg");
+    const got = pwaVal(key);
+    if (!want || got !== want) {
+      console.log(`✖ lib/pwa-colors.ts  ${key} が globals.css の --banto-bg（${block}）と食い違う: ${got} ≠ ${want}`);
+      errorCount++;
+    }
+  }
+}
+
 console.log("");
 console.log(`check-tokens: ${errorCount} error(s), ${warnCount} warning(s) across ${files.length} file(s)`);
 

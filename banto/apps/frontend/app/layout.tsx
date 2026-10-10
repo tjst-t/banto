@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { RealProjectsBootstrap } from "@/components/banto/real-projects-bootstrap";
+import { PWA_COLORS } from "@/lib/pwa-colors";
 import "./globals.css";
 
 const inter = Inter({
@@ -26,7 +27,14 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "banto",
-  description: "banto v4 mock",
+  description: "banto",
+  // タブと iOS のアイコン（§6.37）。どれも scripts/pwa-icons.mjs が public/icons/ に書き出し、ここから指す
+  icons: {
+    icon: [{ url: "/icons/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icons/apple-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  // ホーム画面に置いたときの名前（iOS は manifest の名前を読まないことがある、§6.37）
+  appleWebApp: { capable: true, title: "banto", statusBarStyle: "default" },
 };
 
 /**
@@ -45,6 +53,11 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   interactiveWidget: "resizes-content",
+  // アプリとして開いたときの上の帯の色（§6.37）。画面の地の色（--banto-bg）に揃える
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: PWA_COLORS.lightBackground },
+    { media: "(prefers-color-scheme: dark)", color: PWA_COLORS.darkBackground },
+  ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
