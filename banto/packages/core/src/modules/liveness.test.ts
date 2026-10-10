@@ -94,8 +94,12 @@ class AnsweringModule implements Pingable {
     if (block) this.blocks -= 1;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Request timed out")), options?.timeout ?? 0);
-      setTimeout(() => setImmediate(() => { clearTimeout(timeout); resolve({}); }), 2);
-      if (block) setTimeout(() => blockLoop(this.blockMs), 0);
+      const answer = () => setImmediate(() => { clearTimeout(timeout); resolve({}); });
+      // 止めるときは、返事を止まりの**あと**に届ける（本物の返事は止まっている間に溜まった入力）。止める前に返事の
+      // タイマーを仕掛けると、loop が 2ms 以上遅れたとき（機械が混んでいる）返事が止まりの前に期限を迎え、時間切れより
+      // 先に回って再現が崩れた（2026-10-10、100 回中 17 回）
+      if (block) setTimeout(() => { blockLoop(this.blockMs); setTimeout(answer, 0); }, 0);
+      else setTimeout(answer, 2);
     });
   }
 }
