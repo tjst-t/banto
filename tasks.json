@@ -5932,6 +5932,27 @@
       "extra": {}
     },
     {
+      "id": "browser-headful",
+      "number": 259,
+      "kind": "task",
+      "title": "Browser：headless をやめ、仮想の画面で普通の Chromium を画面ありで起こす（人が使うブラウザと同じ振る舞いにする）",
+      "status": "ready",
+      "parent": "browser-module",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "## なぜ（決定・2026-10-10、ユーザー）\n#257（e109cb2a、release 済み）で名乗りを Chrome に揃え言語を日本語にしたが、稼働中で Google 検索はまだ reCAPTCHA の画像選びを求められる。ユーザー：「普通に人が使っている Chromium に AI も触れるだけ。Chrome の Claude Plugin と同じ。完全に人が使っているのと同じように動作するようにして」。\n\n今は Playwright の launch で chrome-headless-shell を起こしているので、navigator.webdriver が true、headless の印、プラグイン0、GPU 無し等、「自動操作のブラウザ」の印が残る。\n\n## やること\n- **headless をやめる。** コンテナの中に仮想の画面（Xvfb など。要るパッケージは今の install-deps と同じく Module が入れる）を立て、**普通の Chromium（Playwright 同梱の chromium か、Chrome for Testing でない普通のもの——測って選ぶ）を画面ありで**起こす。\n- **自動操作の起動の印を付けない**：Playwright の launch／launchPersistentContext が付ける既定の引数（--enable-automation・--headless・--disable-* の類）を使わず、Module が自分で Chromium を `--remote-debugging-pipe` か `--remote-debugging-port`（127.0.0.1、コンテナの中だけ）で起こし、connectOverCDP で繋ぐ。プロファイル（user-data-dir）は今と同じ置き場で Project ごとに残す。\n- **偽の値を差し込まない**：#257 で入れた User-Agent の上書き・Client Hints の書き換えは、本物の値が人のブラウザと同じになるなら外す。navigator.webdriver・プラグイン・WebGL 等を JS で上書きする細工は入れない——本物を動かすことで揃える。言語（ja-JP）とタイムゾーン（Asia/Tokyo）は起動の引数・環境（--lang、LANG、TZ）で本物として設定する。\n- screencast・入力・通信の記録・9本の道具・人の画面はそのまま動くこと（画面ありでも CDP の Page.startScreencast と Input は使える。間引かない・描き終えの印で絞る、は #257 のまま）。\n- **CAPTCHA は人が解く**：道具（browserAct 等）の説明に「CAPTCHA（ロボット確認）は人に頼み、AI は解かない」と書く。Web の検索は WebSearch を使う説明は残す。\n- 実測して v4-modules.md §4.1 の「実測」「名乗りと言語」を書き直す：起動の時間・メモリ（Xvfb 込み）・CPU・screencast の枚数。headless-shell を選んだ理由（軽い）を改める理由も書く。\n\n## 確かめ（全部の E2E は流さない、ユーザー指示）\n- browser の単体・型検査・browser.spec.ts・browser-view.spec.ts。\n- ページから見て navigator.webdriver が false、User-Agent に Headless が無い、navigator.plugins が0でない、言語 ja-JP を、上書きの細工なしで確かめる（単体か E2E）。\n- 可能なら（外に出られるなら）https://www.google.com で検索して、確認のページにならないかを報告に書く（ならなくても失敗にしない——IP の評判にもよるため）。",
+      "doneWhen": "Chromium が仮想の画面で画面ありで起き、自動操作の起動の印も JS の上書きも無いまま、ページから見て webdriver false・Headless の無い User-Agent・プラグインあり・ja-JP になっていることを試験で確かめた。screencast・入力・9本の道具・人の画面が今までどおり動き（browser.spec.ts・browser-view.spec.ts が通る）、§4.1 の実測と決めたことを直した。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-10T14:36:01.220Z",
+      "updatedAt": "2026-10-10T14:36:01.220Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "remote-runtime",
       "number": 244,
       "kind": "story",
