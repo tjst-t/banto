@@ -6233,6 +6233,30 @@
       "updatedAt": "2026-10-09T23:58:26.955Z",
       "closedAt": "2026-10-09T23:58:26.955Z",
       "extra": {}
+    },
+    {
+      "id": "browser-view-oopif-missing",
+      "number": 257,
+      "kind": "bug",
+      "title": "Browser の人の画面に、別のサイトの iframe（reCAPTCHA 等）が映らない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "2026-10-10 稼働中の banto（release 84a8e943）でユーザーが Google 検索をしたら「unusual traffic」のページ（google.com/sorry）になった。そのページの reCAPTCHA の「I'm not a robot」の枠が、人の画面（screencast）では空白で、押せない。同じタブを browserScreenshot（Page.captureScreenshot）で撮ると枠は描かれている。DOM には recaptcha/enterprise/anchor の iframe がある。\n\n見立て（未確認）：screencast（Page.startScreencast）が、別のプロセスで描かれる別サイトの iframe（out-of-process iframe）を合成していない。chrome-headless-shell の screencast の制約の可能性。\n\n確かめて直す：\n1. 再現：試験用のページに別オリジンの iframe を置き、screencast の1枚と captureScreenshot を比べる（E2E の browser-view に足す）。\n2. 直し方の候補：(a) 通常の Chromium の新しい headless（--headless=new）に替える——起動とメモリは重い（実測で 760MiB 対 400MiB）、(b) サイトの分離を切る（site-per-process を無効）——安全が下がるので避けたい、(c) screencast をやめて captureScreenshot を間引いて流す。測って選び、v4-modules.md §4.1 の実測と決めたことを直す。\n3. 人の画面で reCAPTCHA の枠が映り、押せることを確かめる。",
+      "doneWhen": "別オリジンの iframe を含むページで、人の画面の絵に iframe の中身が映り、押した入力が iframe に届くことを E2E で確かめた。",
+      "resolution": null,
+      "refs": [
+        "browser-module (#239)",
+        "docs/specs/v4-modules.md §4.1"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-10T10:59:53.372Z",
+      "updatedAt": "2026-10-10T10:59:53.372Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
