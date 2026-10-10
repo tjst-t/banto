@@ -6026,7 +6026,7 @@
       "number": 247,
       "kind": "task",
       "title": "実行場所の登録と、Project を作るときに選ぶ画面",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [
         "runtime-seam",
@@ -6041,7 +6041,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-10T15:07:16.484Z",
+      "updatedAt": "2026-10-10T15:07:20.762Z",
       "closedAt": null,
       "extra": {}
     },
