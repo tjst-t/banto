@@ -5793,7 +5793,7 @@
       "number": 238,
       "kind": "task",
       "title": "Terminal の Module（tmux・人の画面・携帯のキーの帯）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "terminal-module",
       "dependsOn": [
         "stream-relay"
@@ -5803,12 +5803,12 @@
       "labels": [],
       "body": "**走り直し（2026-10-10、ユーザーの指示）**：前の実行で途中まで作った変更が、worktree `.worktrees/factory-terminal-module-impl`（ブランチ `factory/terminal-module-impl`）のコミット 7d358340（wip）にある。中身は packages/modules/terminal・e2e/specs/terminal.spec.ts・docs/notes/2026-10-08-terminal-module.md（tmux の制御モードで足りた等の測りの記録）・base-image.ts・declaration.ts・v4-modules.md。**最初から作り直さず、ここから続けて仕上げる。** wip のコミットは仕上げのときにまとめ直してよい。\n- **フル E2E は流さない**（ユーザー）。流すのは terminal.spec.ts と、変えた所に近い spec（Module の宣言・目録・Canvas の流れの口 stream-relay.spec.ts）だけ。関係の無い spec の失敗は直さない。\n- このブランチは古い main（0b25aa98）から分かれている。main はそのあと E2E の土台（同じ機械の E2E は /tmp/banto-e2e.lock で一度に1回・2並列・spec の替わり目の片づけ）と、仕事の組（@banto/module-contract の inWorkScope・banto-work.slice）が入った。**まず最新の main に rebase してから続ける。** Terminal のシェルを仕事の組に入れるか（inWorkScope）は、v4-security.md §1「資源の逼迫を見せる・共倒れさせない」を読んで決め、決めたことを docs/notes に残す。\n\n---\n\nv4-modules.md §4.6 のとおりに作る。目録から入れる任意の Module（Project ごと・コンテナの中・ubuntu）。シェルはコンテナの中の tmux（`tmux -L banto-terminal`）のセッションとして起こし、流れ1本を tmux の client 1つとして繋ぐ（まず制御モード `tmux -C` を試し、合わなければ pty）。tmux をベースのイメージ（BASE_PACKAGES）に足す。環境は Shell と揃える（専用のホーム・Project の根・Claude のログインの中継）。画面は launcher「ターミナル」：セッションの切り替え（足す・名前を変える・閉じる）と xterm.js の端末、流れの名前 terminal・params { session, cols, rows }、繋いだら今の中身を先に送る。画面のキーボードが出る端末ではキーの帯。道具（listSessions・createSession・renameSession・closeSession）は admin で人の画面からの刻印だけ受ける。AI 向けの tool は出さない。",
       "doneWhen": "人が launcher からターミナルを開いて打て、画面を閉じて開き直す・banto を起こし直すと同じセッションに戻ることを E2E で確かめた。2つの画面で同じセッションを開ける。携帯の幅でキーの帯が出る。AI の tool 一覧に Terminal の道具が出ない。稼働中の banto に反映して実機で打てた。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/terminal-module-impl）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T08:20:57.282Z",
-      "updatedAt": "2026-10-10T00:11:37.301Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-10T02:07:59.801Z",
+      "closedAt": "2026-10-10T02:07:59.801Z",
       "extra": {}
     },
     {
