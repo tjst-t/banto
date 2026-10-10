@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 // docs/specs/v4-architecture.md §2.3（Runner）・§2.4.1（判断待ち）・
 // §6.0「承認ゲートの一時停止は電話を切らずに待つモデルで実装する」の実装。
 //
@@ -12,6 +14,43 @@
 
 import { getSessionMessages, query, type SDKMessage, type PermissionResult, type Options, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { ImageMediaType } from "../images/store.js";
+
+/**
+ * **SDK に claude の実行ファイルの場所を渡す**（2026-10-10、Fork「資源の逼迫」、`docs/specs/v4-architecture.md` §5.4-0）。
+ * 渡さないと SDK は会話を始めるたびに musl か glibc かを `process.report.getReport()` で調べる。これは**同期**で、本体の
+ * 開いている接続ごとに名前の逆引きをするので、接続の多い banto 本体では 5〜6 秒止まっていた（host の CPU の記録で確かめた。
+ * ターンの始まりの 9.9 秒の止まりもこれ）。起動のときに1回だけ、SDK と同じ並び（Linux は glibc 版→musl 版）で探して覚える。
+ * 見つからなければ渡さない（今までどおり SDK が探す）
+ */
+let claudeExecutable: string | null | undefined;
+export function claudeExecutablePath(): string | undefined {
+  if (claudeExecutable !== undefined) return claudeExecutable ?? undefined;
+  claudeExecutable = null;
+  try {
+    const req = createRequire(createRequire(import.meta.url).resolve("@anthropic-ai/claude-agent-sdk"));
+    const base = "@anthropic-ai/claude-agent-sdk";
+    const ext = process.platform === "win32" ? ".exe" : "";
+    const candidates =
+      process.platform === "linux"
+        ? [`${base}-linux-${process.arch}`, `${base}-linux-${process.arch}-musl`]
+        : [`${base}-${process.platform}-${process.arch}`];
+    for (const c of candidates) {
+      try {
+        const path = req.resolve(`${c}/claude${ext}`);
+        if (existsSync(path)) {
+          claudeExecutable = path;
+          break;
+        }
+      } catch {
+        // 次を試す
+      }
+    }
+  } catch {
+    // SDK に任せる
+  }
+  return claudeExecutable ?? undefined;
+}
+
 
 export interface PendingToolApproval {
   /** SDKが渡してくる**本物の** tool_use id（`options.toolUseID`）。
@@ -225,6 +264,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       forkSession: opts.forkSession,
       ...(opts.resumeSessionId && opts.resumeSessionAt ? { resumeSessionAt: opts.resumeSessionAt } : {}),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      ...(claudeExecutablePath() ? { pathToClaudeCodeExecutable: claudeExecutablePath() } : {}),
       mcpServers: opts.mcpServers,
       // **毎ターン組み立て直したものをそのまま使わせる**（`snapshot: false`、2026-09-24）。
       // SDK 0.3.267 から、独自の system prompt は既定で「最初の要求で記録し、以後の要求と
@@ -466,7 +506,13 @@ export async function listModels(): Promise<ModelInfo[]> {
   const abortController = new AbortController();
   const q = query({
     prompt: nothing(),
-    options: { settingSources: [], strictMcpConfig: true, tools: [], abortController },
+    options: {
+      settingSources: [],
+      strictMcpConfig: true,
+      tools: [],
+      abortController,
+      ...(claudeExecutablePath() ? { pathToClaudeCodeExecutable: claudeExecutablePath() } : {}),
+    },
   });
   try {
     return await q.supportedModels();

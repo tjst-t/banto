@@ -4277,6 +4277,12 @@ Command Palette の入口も AI の道具も消えていた（2026-09-29：1通 
   スレッドで取るので本体が同期の処理で止まっていても取れる）を 15 秒取り、その間に本体が 2 秒以上止まったときだけ
   `<データ置き場>/profiles/<時刻>-turn-<Thread の頭8文字>.cpuprofile` に残す（10 件まで、ログに場所を出す）。止まらなければ捨てる。
   記録は Chrome の DevTools（Performance）か `speedscope` で開ける
+- **原因（2026-10-10、CPU の記録で確かめた）**：止まっていたのは Agent SDK の中の `process.report.getReport()`（同期）。SDK は
+  会話を始めるたび（`query()`。ターン・モデルの一覧）に、claude の実行ファイルの musl 版か glibc 版かを決めるためにこれを呼ぶ。
+  Node の診断の報告は開いている接続ごとに名前を逆引きするので、Module・コンテナと多くの接続を持つ banto 本体では 5〜6 秒
+  （記録4件とも同じ、モデルの一覧でも 1.2 秒）止まっていた。直し：起動のときに実行ファイルの場所を1回だけ探して
+  `pathToClaudeCodeExecutable` で渡す（`runner/adapter.ts` の `claudeExecutablePath`、SDK と同じ並び）、あわせて
+  `process.report.excludeNetwork = true`（banto は報告のネットワークの欄を使わない）
 - **`~/banto-host.log` の行には時刻を付ける**（決定・2026-10-09）：host の `console.log`・`warn`・
   `error` の頭に ISO 8601 の時刻（ミリ秒まで、UTC）を付ける。systemd は標準出力をファイルに足すだけで
   時刻を付けないので、以前は何がいつ起きたか（どの更新・どの E2E と重なったか）が分からなかった

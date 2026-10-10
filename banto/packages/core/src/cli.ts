@@ -162,6 +162,9 @@ function needsLogin(err: unknown): boolean {
 async function main(): Promise<void> {
   // `~/banto-host.log` の行に時刻を付ける（決定・2026-10-09、v4-architecture.md §5.4-0）
   timestampConsole();
+  // **診断の報告で接続の名前を逆引きしない**（2026-10-10）——SDK などが `process.report.getReport()` を呼ぶと、開いている接続
+  // ごとに名前の逆引きをして本体が数秒止まっていた（host の CPU の記録）。banto はネットワークの欄を使わない
+  if (process.report) (process.report as { excludeNetwork?: boolean }).excludeNetwork = true;
   const bootstrap = loadOrCreateBootstrapConfig();
   console.log(`[host] dataDir=${bootstrap.dataDir} port=${bootstrap.port}`);
 

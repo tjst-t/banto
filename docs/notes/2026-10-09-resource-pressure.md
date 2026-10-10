@@ -82,3 +82,12 @@ ping の時間切れの直後には「Received a response for an unknown message
   service（待たない形）は systemd が自分で起こすので入れ子でも組に入る
 - E2E `work-slice.spec.ts`：上限 1 GiB で天井 768 MiB が書かれ、待たない形は `banto-work-jobs.slice` で oom_score_adj 500、
   食い尽くすと仕事の組の天井で止められ（oom_kill）、Shell は答え続ける（4 回続けて通過）
+
+## 本体の止まりの原因（2026-10-10、CPU の記録4件）
+
+- 4件とも、止まりの区間はほぼ全部 `getReport`（node:internal/process/report）←`DNe`←`BK`（SDK の sdk.mjs）←`QC`（query）
+  ←`runTurn`／`listModels`。ターンで 5.2〜6.3 秒、モデルの一覧で 1.2 秒
+- SDK の `BK` は `pathToClaudeCodeExecutable` が無いとき、musl を好むかを `DNe()`＝`process.report.getReport().header.glibcVersionRuntime`
+  で決める。Node の報告はネットワークの handle ごとに逆引きするので、接続の多い本体では遅い（このコンテナで接続 300 本でも
+  16ms で、host の 5 秒は逆引きが DNS の時間切れを待った分と読む——host では未測定）
+- 直し：起動時に1回だけ場所を探して渡す・`excludeNetwork`。check:agent-sdk（本物の SDK）は通過
