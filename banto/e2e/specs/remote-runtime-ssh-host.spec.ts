@@ -69,9 +69,9 @@ test("試験の鍵で SSH で入れる相手が立ち、本番の前提の形を
       expect(silent.stdout, "ログインシェルが何か出している（MCP の標準入出力が壊れる）").toBe("");
 
       // 道具：土台の一覧（sudo は「ある」が使えない——下）。node も
-      const tools = ["git", "curl", "ssh", "unzip", "xz", "node", "npm"];
+      const tools = ["git", "curl", "ssh", "unzip", "xz", "tmux", "node", "npm"];
       expect(BASE_PACKAGES, "土台の道具の一覧が変わった——ここで見る道具も見直す").toEqual([
-        "git", "curl", "ca-certificates", "openssh-client", "unzip", "xz-utils", "sudo",
+        "git", "curl", "ca-certificates", "openssh-client", "unzip", "xz-utils", "sudo", "tmux",
       ]);
       const which = await host.ssh(tools.map((t) => `command -v ${t} >/dev/null && echo ${t}`).join("; "));
       expect(which.stdout.trim().split("\n")).toEqual(tools);
