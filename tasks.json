@@ -5889,7 +5889,7 @@
       "number": 242,
       "kind": "task",
       "title": "Browser Module の人の画面（screencast・入力・通信とコンソールの欄）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [
         "stream-relay",
@@ -5904,7 +5904,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:12:04.953Z",
-      "updatedAt": "2026-10-10T03:01:23.918Z",
+      "updatedAt": "2026-10-10T03:01:26.476Z",
       "closedAt": null,
       "extra": {}
     },
