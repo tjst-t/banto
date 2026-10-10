@@ -6026,7 +6026,7 @@
       "number": 247,
       "kind": "task",
       "title": "実行場所の登録と、Project を作るときに選ぶ画面",
-      "status": "in-progress",
+      "status": "done",
       "parent": "remote-runtime",
       "dependsOn": [
         "runtime-seam",
@@ -6037,12 +6037,12 @@
       "labels": [],
       "body": "v4-security.md §1「登録と選び方」。**画面はモック（abb6ef82）の形で決定（2026-10-10、ユーザー「UIはばっちり」）**——mock/components/banto/settings/runtimes-panel.tsx・mock/lib/mock/runtimes.ts・mock/components/banto/project/new-project-dialog.tsx の RuntimeStep・mock/components/banto/settings/project-settings-content.tsx の RuntimeReadOnly・path-picker.tsx の FolderSource を見本にする。\n- banto 全体の設定に「実行場所」の節：この機械のコンテナ（既定・外せない）＋別のサーバの一覧（名前・ssh の宛先・使っている Project・注意の件数・host 鍵が変わった・前提の確かめの結果。押すと開く。確かめ直す・外す——使っている Project があれば外せない）。登録の順は「名前・ホスト・ユーザー・ポート・SSH 鍵（Vault の ssh-identity の alias）・向こうの置き場を書く→繋いで確かめる→host 鍵の指紋を出して人が確かめる（同じなので覚える／違うのでやめる）→前提の確かめの結果→登録する（✕があれば登録できない）」。known_hosts は banto の置き場、StrictHostKeyChecking=yes、人の ~/.ssh は触らない。鍵が変わったら繋がず、覚えていた鍵といま返ってきた鍵を並べ「新しい鍵を覚え直す」を出す。注意書き（サーバ丸ごと AI のもの・LAN から直に届く・ほかのアカウントにも中継の口が見える・1つのサーバに Project は1つ）は登録の前に読める位置に\n- 新しい Project の画面の一番上に「どこで動かすか」（既定はこの機械のコンテナ・「別のサーバを登録する」の入口）。選べないものは理由つきで薄く出す（runtimeUnavailableReason：ほかの Project が使っている→host 鍵が違う→まだ確かめていない→前提が足りない）。別のサーバでは向こうのフォルダの一覧を SSH で引き（名前だけ）、Module が名乗る始め方（clone 等）は出さない。Project の記録に runtime（host-container か remote:<id>）を持ち、あとからは変えられない。同じパスでも実行場所が違えば別のフォルダとして扱う\n- Project の設定の「セキュリティ境界」に実行場所を読むだけで出す\n- このタスクでは SSH での本当の起動（#248）はまだ無い。前提の確かめは #248 と共通の部品にし、ここでは「繋いで host 鍵を引く・前提を確かめる・フォルダの一覧を引く」までを作る",
       "doneWhen": "画面から実行場所を登録でき、host 鍵の指紋を確かめて覚え、鍵が変わったら繋がずに理由を出すことを E2E で確かめた。新しい Project の画面で実行場所を選び、向こうのフォルダを根に Project を作れる。同じ実行場所に2つ目の Project は作れない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/remote-runtime-registry）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-10T15:07:20.762Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-10T16:36:23.948Z",
+      "closedAt": "2026-10-10T16:36:23.948Z",
       "extra": {}
     },
     {
