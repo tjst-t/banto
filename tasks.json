@@ -6326,6 +6326,33 @@
       "updatedAt": "2026-10-11T05:17:32.182Z",
       "closedAt": "2026-10-11T05:17:32.182Z",
       "extra": {}
+    },
+    {
+      "id": "runtime-move",
+      "number": 261,
+      "kind": "story",
+      "title": "Project を別の実行場所へ移す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "container",
+        "runtime"
+      ],
+      "body": "## なぜ\n既存の Project を、この機械のコンテナと別のサーバのあいだ（別のサーバどうしも）で移したい（2026-10-11、ユーザー）。これまで実行場所は作るときだけ選べた。\n\n## 形（ユーザー了承済み）\n- 人の画面から「写して切り替える」。元のフォルダ・Module の置き場・元のコンテナは残し、消すのは人\n- 動いているもの（ターン・裏の仕事・Service・Terminal・Factory）があれば断る。入れた道具・Docker のイメージは移らない\n- Service の登録は止めた状態で写す\n- Claude の会話の記録は作業ディレクトリが変わるとき（この機械のコンテナが関わるとき）だけ写す。写した記録から再開できるかを最初に測り、だめなら作業ディレクトリを揃える案に戻す\n- 切り替えたら各 Thread に「root が変わった」を知らせる\n\n仕様は v4-security.md §1「Project を別の実行場所へ移す」。Fable のレビューを受けてからタスクに分ける。",
+      "doneWhen": "この機械のコンテナの Project を別のサーバへ、別のサーバの Project をこの機械のコンテナへ移せ、移したあと同じ会話の続きでターンが通り、Shell が新しい根で動くことを E2E で確かめた。動いているものがあれば断る。元は残っている",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §1「Project を別の実行場所へ移す」",
+        "docs/notes/2026-10-08-remote-runtime.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-11T10:28:26.631Z",
+      "updatedAt": "2026-10-11T10:28:26.631Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
