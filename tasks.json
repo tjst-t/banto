@@ -6403,7 +6403,7 @@
       "number": 264,
       "kind": "task",
       "title": "移す画面：Project の設定「一般」の「別の実行場所へ移す…」",
-      "status": "in-progress",
+      "status": "done",
       "parent": "runtime-move",
       "dependsOn": [
         "runtime-move-core"
@@ -6413,12 +6413,12 @@
       "labels": [],
       "body": "**画面はモック（f7251863・0d22d225）の形で決定（2026-10-11、ユーザー「この形でよい」）**——mock/components/banto/settings/move-runtime-dialog.tsx と mock/components/banto/project/path-picker.tsx の allowNewFolder を見本にする。本物は Project の設定「一般」の実行場所の欄（project-runtime-section.tsx）に「別の実行場所へ移す…」を置く（モックはセキュリティ境界に置いている）。#263（170fb612）の HTTP の口（見積もり・移す・進み具合）を使う。\n\nv4-security.md §1 の流れ 1・3・8。\n- 段：移す先を選ぶ（選べないものは理由つき・ほかの Project が使っている VM は選べない）・移す先のフォルダを選ぶ（その実行場所のフォルダ選び。「新しいフォルダ」で名前を決めてその中へ入れる——実際に作るのは移すを押したとき banto が作る。名前に / や .. は断り、同じ名前があれば断る。この「新しいフォルダ」は移す先を選ぶときだけ）→ 押す前の画面（写すもの：大きさ・会話の記録の件数／移らないもの・作り直しが要るもの／閉じ込めの注意（この機械→別のサーバ）／動いているもの——あれば並べて「移す」を押せない）→ 写している（進み具合、閉じられない）→ 終わり（root と元の場所を出す）\n- フル E2E は流さない（このあと人がまとめて流す）。E2E は関係する spec を1並列で",
       "doneWhen": "モックを人が了承し、画面から移せることを E2E で確かめた",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/runtime-move-ui）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-11T10:39:29.164Z",
-      "updatedAt": "2026-10-11T13:37:30.618Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-11T14:13:52.468Z",
+      "closedAt": "2026-10-11T14:13:52.468Z",
       "extra": {}
     }
   ],
