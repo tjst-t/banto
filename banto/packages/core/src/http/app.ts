@@ -17,12 +17,10 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   MemoryLimitExceededError,
-  normalizeProjectRoot,
   InvalidProjectRootError,
   NotFoundError,
   RemoteProjectError,
   currentSkillSet,
-  isRemoteProject,
   type ProjectThreadStore,
 } from "../project-thread/store.js";
 import {
@@ -1307,26 +1305,13 @@ export function createApp(deps: AppDeps) {
     const modules = modulesOrStopped;
     const thread = deps.projectThread.getThread(threadId);
     const project = thread && deps.projectThread.getProject(thread.projectId);
-    // root は作成時に正規化される（store.ts）が、その正規化より前に作られた
-    // 既存イベントは生文字列（例："~/"）のまま残りうる——ここでも防御的に
-    // 正規化する（真実は一箇所だが、コードの前後関係でデータが逸脱しうる
-    // ことが実際にあった、2026-09-05）。失敗したら error のイベントとして返す
+    // Runner の作業ディレクトリ（store.ts の `runnerCwd`）。この機械の Project は根で、作成時の正規化より前に作られた
+    // 既存イベントは生文字列（例："~/"）のまま残りうる——ここでも防御的に正規化する（2026-09-05）。別のサーバの
+    // Project は host の側の Project ごとの空のフォルダ（根は向こうのパスで、この機械には無い）。失敗したら error のイベントとして返す
     let cwd: string | undefined;
-    // **別のサーバの Project の会話は、まだ始められない**（Backlog `remote-runtime-host-side`）——Module は向こうで
-    // 動くが、会話の本体（Runner）の作業ディレクトリはまだ host の側に用意していない。根は向こうのパスで、この機械の
-    // realpath に通すと「無い」と言う。嘘の理由を出さず、何が無いのかを言う
-    if (project && isRemoteProject(project)) {
-      yield {
-        type: "error",
-        message:
-          `この Project は別のサーバ（${remoteNameOf(project.runtime)}）で動かす設定です。` +
-          "別のサーバの Project では、会話（Runner）をまだ始められません（Module は向こうで動きます）",
-      };
-      return;
-    }
     if (project) {
       try {
-        cwd = normalizeProjectRoot(project.root);
+        cwd = deps.projectThread.runnerCwd(project);
       } catch (err) {
         yield { type: "error", message: err instanceof Error ? err.message : String(err) };
         return;

@@ -94,6 +94,11 @@ export interface FakePlan {
    */
   sayRuntime?: boolean;
   /**
+   * **Runner の作業ディレクトリを、そのまま発言にする**（追加・2026-10-11）。別のサーバの Project の会話が、host の
+   * Project ごとの空のフォルダで走るか（向こうのパスで走ろうとしないか）を見る（`remote-runtime-host-side.spec.ts`）
+   */
+  sayCwd?: boolean;
+  /**
    * **ターンの終わりのまとめを呼び忘れたふりをする**（追加・2026-10-06、アーキ仕様 §2.2）。終わろうとしたとき banto の
    * Stop hook（`onStop`）が差し戻したら、これを引数に `banto-thread` の `report_turn` を本物の口で呼んでから終える
    * ——本物の CLI が差し戻しの理由をモデルに見せ、同じターンの中で続けさせるのと同じ（偽の API で実測）
@@ -431,6 +436,8 @@ export async function* runTurn(opts: {
   onStop?(input: { stopHookActive: boolean }): string | undefined;
   /** tool が終わるたび（本物の SDK の PostToolUse）。true ならそこでターンを終える（AI をもう一度呼ばない） */
   onToolUsed?(input: { toolName: string }): boolean;
+  /** Runner の作業ディレクトリ（本物の SDK の `options.cwd`） */
+  cwd?: string;
   /** 人がこの Thread で選んだモデルと effort（選んでいなければ来ない）。 */
   model?: string;
   effort?: string;
@@ -511,6 +518,10 @@ export async function* runTurn(opts: {
     // **どのモデル・effort で走ったか**を返す——画面で選んだものが届いたかを見る
     const text = `model=${opts.model ?? "(既定)"} effort=${opts.effort ?? "(既定)"}`;
     yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
+  }
+
+  if (plan.sayCwd) {
+    yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: `cwd=${opts.cwd ?? "(無し)"}` }]) };
   }
 
   if (plan.sayContext) {

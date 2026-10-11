@@ -191,3 +191,24 @@ Vault・Publish・Backlog の「窓口1本＋実装が複数」の形も考え�
 - **30 秒のプローブで先に確かめたこと**（入れ子のコンテナの中で ssh を自分に繋いで）：`-O forward`／`-O cancel` は `-R`・`-L` の
   両方で UNIX ソケットに効く。`-O cancel` のあとも窓口のファイルは両側に残り、消さずに張り直すと
   「remote port forwarding failed for listen path」で断られる——張る前に消すのは要る
+
+## host が Project のフォルダに触っていたものを合わせたとき（2026-10-11、Backlog `remote-runtime-host-side`）
+
+- **#247・#248 で済んでいたもの（重ねて作らず、確かめただけ）**：別のサーバの根を読み直しで realpath に通さない（`getProject`）・
+  作るときに向こうで正規化した文字列を持つ・`listProjects` の `runtime`・Repositories の突き合わせから外す（`hostFolderProjects`）・
+  ブランチを送る口の `handled: false`・`applyLimits` を host の Project だけに（`runtime/router.ts`）
+- **Runner の作業ディレクトリを store の1つの関数（`runnerCwd`）にした**。ターンの始まり（`http/app.ts`）と続き
+  （`delivery/turn-continuation.ts`）がそれぞれ根を正規化していた形のまま、両方に「別のサーバなら」を書く案はやめた——
+  2箇所が食い違うと、続きが CLI の記録を別の置き場で探して「記録が無い」になる（規則3）。置き場の名前は Project の id で
+  決まるので、起こし直しても同じ
+- **システムプロンプトの実行場所の行は、別のサーバの Project にだけ足す**。全 Project に「実行場所：この機械のコンテナ」を
+  足す案は、全 Project のプロンプト（キャッシュの前方一致）を変えるだけで、AI に新しく伝えることが無い
+- **Project の設定の「Module」の広すぎる根の警告が、別のサーバの Project でも host で判断していた**のを向こうで判断するように
+  した（「一般」と新しい Project の画面は #247 で向こうになっていた）
+- **Backlog の push と `sshIdentity`（仕様と実態の食い違い。規則8で記録し、人に上げる）**：仕様の表は「Backlog の push は
+  向こうの git の設定と、Vault の SSH 鍵（`sshIdentity`）で送る」と書くが、Backlog は `sshIdentity` を持たない（Shell の
+  `runCommand` の引数）。Repositories が `handled: false` を返したあと Backlog が走らせるのは、向こうの Project の根での
+  素の `git push`——資格情報は**向こうのユーザーの git・ssh の設定**（`~/.ssh` の鍵・資格情報の取り出し役）次第。
+  E2E は origin を向こうの bare リポジトリ（ファイルのパス）にして、資格情報の要らない形で「向こうから push する」ことだけを
+  確かめた。origin が GitHub の ssh のときに Vault の鍵で送らせるには、Backlog に ssh-agent の窓口を渡す形（宣言に
+  `sshIdentity` 相当を足す等。ソケットの転送そのものは Backlog `remote-runtime-sockets` で入った）を決める必要がある——このタスクでは作らない

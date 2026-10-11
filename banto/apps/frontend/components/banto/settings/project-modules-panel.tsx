@@ -32,6 +32,7 @@ import {
 } from "@/components/banto/settings/wide-root-warning";
 import {
   listRealProjectModules,
+  remoteRuntimeName,
   setRealProjectModules,
   type RealProjectModule,
 } from "@/lib/backend/client";
@@ -39,8 +40,9 @@ import { PLACEMENT_LABEL } from "./module-placement";
 
 export function ProjectModulesPanel({ projectId }: { projectId: string }) {
   // **この Project の根が広いなら、ここでも言う**（決定・2026-09-11、ユーザー）
-  // ——閉じ込める Module（shell・filesystem）を使う場所だから
-  const rootScope = useRootScope(getProject(projectId).basePath);
+  // ——閉じ込める Module（shell・filesystem）を使う場所だから。別のサーバの根は向こうで判断する
+  const project = getProject(projectId);
+  const rootScope = useRootScope(project.basePath, remoteRuntimeName(project.runtime));
   const [modules, setModules] = useState<RealProjectModule[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   // **手元の下書き**——保存するまで、繋ぎ変えはここにだけある

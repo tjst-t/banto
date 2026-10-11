@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { EventLog } from "../event-store/log.js";
@@ -280,6 +280,27 @@ test("project root is expanded/validated, not passed through raw (regression: '~
     // 実在するディレクトリはそのまま通る（realpath化されるだけ）
     const project = await store.createProject("demo", dir);
     assert.equal(project.root, dir);
+  });
+});
+
+test("Runner の作業ディレクトリ：この機械の Project は根、別のサーバの Project は host の Project ごとの空のフォルダ（読み直しても同じ）", async () => {
+  await withStore(async (store, dir, log) => {
+    const local = await store.createProject("local", dir);
+    assert.equal(store.runnerCwd(local), dir);
+
+    // 向こうのパスはこの機械に無い——realpath に通さず、記録のまま持つ
+    const remote = await store.createProject("remote", "/home/dev/does-not-exist-here", { runtime: "remote:lab" });
+    assert.equal(store.getProject(remote.id)!.root, "/home/dev/does-not-exist-here");
+    const cwd = store.runnerCwd(remote);
+    assert.equal(cwd, join(dir, "runner-cwd", remote.id));
+    assert.ok((await stat(cwd)).isDirectory(), "空のフォルダを作っていない");
+    assert.deepEqual(await readdir(cwd), []);
+
+    // 起こし直した store（続きが CLI の記録を引く）からも同じフォルダ
+    await store.save();
+    const reloaded = new ProjectThreadStore(dir, log);
+    await reloaded.load();
+    assert.equal(reloaded.runnerCwd(reloaded.getProject(remote.id)!), cwd);
   });
 });
 

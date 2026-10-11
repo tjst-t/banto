@@ -77,8 +77,8 @@ export const CONNECTED_FEATURES = {
   // **資源**（決定・2026-10-09、v4-frontend.md §6.36）。host の `/api/admin/resources` と `/api/events` の混んでいる印
   resources: true,
   // **実行場所——別のサーバの登録**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。host の `/api/runtimes` に
-  // 繋がっていて、SSH で host 鍵を引く・前提を確かめる・向こうのフォルダを引く・向こうで Module を起こすまでができる。
-  // **会話（Runner）はまだ始められない**（Backlog `remote-runtime-host-side`）——作った Project の会話は、理由を出して断る
+  // 繋がっていて、SSH で host 鍵を引く・前提を確かめる・向こうのフォルダを引く・向こうで Module を起こす・会話ができる
+  // （会話の本体（Runner）は host の Project ごとの空のフォルダで動く）
   remoteRuntimes: true,
 } as const;
 

@@ -78,8 +78,11 @@ export const BANTO_SYSTEM_PROMPT_CORE = `あなたは Banto の中で、人の�
 export interface SystemPromptInput {
   /** 層2：banto 全体で覚えていること（§2.2 Global Memory）。未実装のうちは空。 */
   globalMemory?: readonly string[];
-  /** 層3：この Project の文脈。 */
-  project: { name: string; root: string };
+  /**
+   * 層3：この Project の文脈。`remoteRuntime`：別のサーバで動く Project なら、その実行場所の名前
+   * （root は向こうのパス。v4-security.md §1「Project の記録に実行場所を持つ」）
+   */
+  project: { name: string; root: string; remoteRuntime?: string };
   /** 層3：Thread 作成時に確定した Memory（§2.2）。走行中は動かない。 */
   memory: readonly EstablishedMemory[];
   /** 層3：人が書く、この Project 固有の指示。 */
@@ -116,7 +119,10 @@ export function buildSystemPrompt(input: SystemPromptInput): string[] {
 
   blocks.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
 
-  blocks.push(`# いまの Project\n\n- 名前：${input.project.name}\n- root：${input.project.root}`);
+  const runtimeLine = input.project.remoteRuntime
+    ? `\n- 実行場所：別のサーバ「${input.project.remoteRuntime}」（root はそのサーバのパス。Module はそのサーバで動く）`
+    : "";
+  blocks.push(`# いまの Project\n\n- 名前：${input.project.name}\n- root：${input.project.root}${runtimeLine}`);
 
   if (input.model) {
     blocks.push(`# あなたを動かしているモデル\n\nあなたは ${input.model.name} で動いている。モデル ID は ${input.model.id}。`);

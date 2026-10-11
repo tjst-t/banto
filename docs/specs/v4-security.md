@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-10（§1「Project の実行場所——別のサーバ」の「向こうに置くもの」「前提の確かめ」「向こうとの道」を実装し、その形を書いた）
+> 最終更新：2026-10-11（§1「Project の実行場所——別のサーバ」の「Project の記録に実行場所を持つ」を実装し、別のサーバの Project で会話できるようにした）
 
 ## 1. セキュリティ境界
 
@@ -347,14 +347,18 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 値を返す口を鍵の名前ごとに聞く・banto 全体の口を出せない、などの扱い（§3）がそのまま効く。
 
 **Project の記録に実行場所を持つ**（`runtime`：`host-container` か `remote:<名前>`）。host の中で Project の根を
-使うところは、これを見て分ける：
+使うところは、これを見て分ける（済み・2026-10-11、Backlog `remote-runtime-host-side`）：
 
 - **根の正規化**（`project-thread/store.ts` の `normalizeProjectRoot`）は今は host の `realpathSync` で、作るときだけでなく
   読み直し・ターンの始まり（`http/app.ts`）・届いたものの続き（`delivery/turn-continuation.ts`）でも呼ばれる。別のサーバの
   Project は**作るときに向こうで正規化した文字列をそのまま持ち**、host では正規化しない
 - **Runner の作業ディレクトリ**（上の2つのファイル。CLI の記録の置き場の鍵でもある）は、host の側に Project ごとの
-  空のフォルダを作って使う（データの置き場の中、Project の id で決まる）。起こし直しをまたぐ続きも同じ関数で引く。
-  システムプロンプトの root には向こうのパスと実行場所の名前を出す
+  空のフォルダを作って使う（`<データの置き場>/runner-cwd/<Project の id>`、0700。何も置かない）。ターンの始まりも
+  起こし直しをまたぐ続きも `ProjectThreadStore.runnerCwd` の1つで引く（この機械の Project では正規化した根を返す）。
+  システムプロンプトの「いまの Project」には root（向こうのパス）の下に「実行場所：別のサーバ「<名前>」（root はその
+  サーバのパス。Module はそのサーバで動く）」を足す（この機械の Project には足さない——全 Project のプロンプトを変えない）
+- **広すぎる根の判定**は、別のサーバの Project では向こうで見る（`/api/runtimes/<名前>/root-scope`）——新しい Project の
+  画面・Project の設定の「一般」・「Module」の3箇所とも
 - **Project の一覧を Module に渡す口**（`listProjects`、Repositories が使う）は各要素に `runtime` を添える（下の表）
 - **コンテナの上限の一括反映**（設定を保存したとき全 Project に `applyLimits`）は、実行場所が host のものだけにする
 
@@ -406,8 +410,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   （「セキュリティ境界」の節は本物ではまだモックのまま隠れているので）。別のサーバの Project では Root パスは読むだけ
   （下）・「コンテナ」の節は出さない
 - **別のサーバの Project の Module は向こうで起こす**（下の「向こうとの道」。2026-10-10、Backlog `remote-runtime-ssh`）。
-  会話のターンはまだ理由を出して断る（Runner の作業ディレクトリを host の空のフォルダにする作業——Backlog
-  `remote-runtime-host-side`）。**根を変えることも断る**（向こうで正規化し直す口がまだ無い）。Repositories は `listProjects` の
+  会話の本体（Runner）は host の Project ごとの空のフォルダで走る（上の「Project の記録に実行場所を持つ」。2026-10-11、
+  Backlog `remote-runtime-host-side`）。**根を変えることは断る**（向こうで正規化し直す口がまだ無い）。Repositories は `listProjects` の
   `runtime` がこの機械以外のものを突き合わせから外し、ブランチを送る口は `handled: false` で返す
 
 #### 向こうに置くもの
@@ -577,7 +581,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 | 会話の本体（Runner）の作業ディレクトリ・根の正規化 | 上の「Project の記録に実行場所を持つ」 |
 | フォルダ選び・広すぎる根の判定 | SSH で向こうを見る（上の「登録と選び方」） |
 | Repositories（clone・削除・Import・ブランチを送る口） | **最初は向こうのフォルダを扱わない**。clone は AI が Shell で行う。`listProjects` の `runtime` が host 以外のものは、フォルダとの突き合わせ（一覧・削除・Import・ブランチを送る口）から外す——向こうの `/home/dev/x` と host の同じ文字列のフォルダを同じものと見なさないため |
-| Backlog の push（Repositories のブランチを送る口） | 引き受けない（`handled: false`）——向こうの git の設定と、Vault の SSH 鍵（`sshIdentity`）で送る |
+| Backlog の push（Repositories のブランチを送る口） | 引き受けない（`handled: false`）——向こうの git の設定と、Vault の SSH 鍵（`sshIdentity`）で送る。**いまは向こうの git の設定のままだけ**（済み・2026-10-11）。Vault の SSH 鍵で送る形はまだ無い——Backlog は `sshIdentity` を持たない（食い違いの記録は `docs/notes/2026-10-08-remote-runtime.md`「host が Project のフォルダに触っていたものを合わせたとき」） |
 
 #### 閉じ込め
 
@@ -634,6 +638,9 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
   - Module の起動の試験は `e2e/specs/remote-runtime-ssh.spec.ts`（tmux を外した相手で：Shell・FileSystem・Service・待たない形・
     Subagent の Claude の中継・`/relay`・Terminal の断り・トンネルの先の `/api/*`・向こうの `ps`・向こうの sshd を止めて host の
     接続を落としたときの起き直しとコードの送り直し・ログインシェルが出力する相手での断り）
+  - 会話と host の側の試験は `e2e/specs/remote-runtime-host-side.spec.ts`（自前の host（`own-host.ts`）に相手を登録する。
+    host にも同じパスのリポジトリを置いた根で：Runner の作業ディレクトリ・システムプロンプト・Backlog が向こうから origin へ
+    送る・Repositories の一覧で突き合わせない・ターンの途中で banto が落ちて起き直すと続く）
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
 ## 2. コンテナの中の細部（2026-09-25 に Landlock から移した）

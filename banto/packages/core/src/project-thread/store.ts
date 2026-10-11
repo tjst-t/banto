@@ -1,6 +1,6 @@
 import type { BackgroundWork } from "../delivery/reply-handles.js";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { EventLog } from "../event-store/log.js";
@@ -126,6 +126,19 @@ export class ProjectThreadStore {
     } catch {
       return project;
     }
+  }
+
+  /**
+   * **会話の本体（Runner）の作業ディレクトリ**（v4-security.md §1「Project の記録に実行場所を持つ」）。CLI の記録の置き場の
+   * 鍵でもあるので、ターンの始まり（`http/app.ts`）と起こし直しをまたぐ続き（`delivery/turn-continuation.ts`）はこれだけで引く。
+   * この機械の Project は根（正規化したもの。直せなければ `InvalidProjectRootError`）。別のサーバの Project の根は
+   * この機械に無い——データの置き場の中に Project の id で決まる空のフォルダを作って使う（同じ id なら起こし直しても同じ）
+   */
+  runnerCwd(project: Pick<ProjectState, "id" | "root" | "runtime">): string {
+    if (!isRemoteProject(project)) return normalizeProjectRoot(project.root);
+    const dir = join(this.dataDir, "runner-cwd", project.id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return dir;
   }
 
   listThreadsForProject(projectId: ProjectId): ThreadState[] {

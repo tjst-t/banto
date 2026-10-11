@@ -9,6 +9,7 @@ import type { MessageImage, UiToolCallEntry } from "../project-thread/types.js";
 import type { ImageMediaType } from "../images/store.js";
 import { findRewindBeforePrompt, runTurn } from "../runner/adapter.js";
 import { buildSystemPrompt } from "../runner/system-prompt.js";
+import { remoteNameOf } from "../runtime/remote-runtimes.js";
 import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
@@ -565,7 +566,7 @@ async function* runThreadTurnInner(
       // 確定より後に増えた分は先頭を変えずにターンへ添える（Cで実装）。
       systemPrompt: buildSystemPrompt({
         globalMemory: global_.established.filter((m) => !m.invalidated).map((m) => m.text),
-        project: { name: project.name, root: project.root },
+        project: { name: project.name, root: project.root, remoteRuntime: remoteNameOf(project.runtime) },
         memory: memory.established,
         ...(input.modelIdentity ? { model: input.modelIdentity } : {}),
         ...(turnSummary ? { turnSummary: true } : {}),

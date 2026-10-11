@@ -20,6 +20,14 @@ test("the skeleton comes first and the dynamic boundary separates it from the Pr
   assert.ok(blocks.slice(boundary + 1).some((b) => b.includes("/tmp/demo")));
 });
 
+test("別のサーバの Project では、root が向こうのパスであることと実行場所の名前を出す", () => {
+  const remote = buildSystemPrompt({ project: { name: "lab", root: "/home/dev/lab", remoteRuntime: "pve" }, memory: [] });
+  const block = remote.find((b) => b.startsWith("# いまの Project"))!;
+  assert.match(block, /- root：\/home\/dev\/lab\n- 実行場所：別のサーバ「pve」（root はそのサーバのパス/);
+  const local = buildSystemPrompt({ project, memory: [] }).find((b) => b.startsWith("# いまの Project"))!;
+  assert.ok(!local.includes("実行場所"), "この機械の Project に実行場所の行を足した（全 Project のプロンプトが変わる）");
+});
+
 test("Global Memory sits before the boundary so the cache prefix is shared across Projects", () => {
   const blocks = buildSystemPrompt({
     project,

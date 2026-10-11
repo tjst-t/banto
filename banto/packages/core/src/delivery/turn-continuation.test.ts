@@ -245,6 +245,41 @@ test("tool の途中で切れたら、起き直した host が人の手を借り
   });
 });
 
+test("別のサーバの Project：切れたターンの会話の記録は、host の Project ごとのフォルダ（ターンの始まりと同じ cwd）で引く", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-turn-continuation-remote-"));
+  try {
+    const first = await boot(dir);
+    // 根は向こうのパス（この機械には無い）
+    const project = await first.store.createProject("remote", "/home/dev/not-on-this-machine", { runtime: "remote:lab" });
+    const threadId = (await first.store.createBaseThread(project.id)).id;
+    await completeTurn(first, threadId, "前の話", [init(""), say("前の返事", "u1")]);
+    const sessionId = first.store.getThread(threadId)!.resumePoint!;
+    await cutTurn(first, threadId, "テストを回して", [init(""), say("回します", "u2"), callTool("t1", "mcp__shell__runCommand", "u3")]);
+
+    const runner = scriptedRunner([init(""), say("続けます", "u4")]);
+    const host = await boot(dir, runner);
+    const expectedDir = join(dir, "runner-cwd", project.id);
+    const askedDirs: Array<string | undefined> = [];
+    const chain = [human("前の話", "c1"), say("前の返事", "c2"), human("…\n\nテストを回して", "c3"), say("回します", "c4"), callTool("t1", "mcp__shell__runCommand", "c5")];
+    const sessions: SessionReader = {
+      exists: async (id, d) => (askedDirs.push(d), id === sessionId && d === expectedDir),
+      messages: async (id, d) => (askedDirs.push(d), id === sessionId && d === expectedDir ? (chain as SessionMessage[]) : []),
+    };
+    const results = await resumeInterruptedTurns({ ...host, projectThread: host.store, sessions });
+    assert.deepEqual(results.map((r) => r.action), ["continued"]);
+    assert.ok(askedDirs.length > 0 && askedDirs.every((d) => d === expectedDir), `引いた置き場：${JSON.stringify(askedDirs)}`);
+    assert.equal(host.store.runnerCwd(host.store.getProject(project.id)!), expectedDir, "ターンの始まりと違う cwd");
+    host.listen();
+    await settled(host, threadId);
+    const [call] = runner.calls;
+    assert.equal(call?.resumeSessionId, sessionId);
+    assert.match(call!.prompt, /切れたとき実行中だった呼び出し：mcp__shell__runCommand/, "記録を読めていない");
+    assert.equal(host.store.getThread(threadId)!.lastTurn?.outcome, "completed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("続きは、ほかの届いたものより先に積まれ、速度の上限に数えない（連鎖の上限は効く）", async () => {
   await withDir(async ({ dir, first, threadId }) => {
     await cutTurn(first, threadId, "やって", [init(""), say("途中", "u1")]);

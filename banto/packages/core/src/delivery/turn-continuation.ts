@@ -15,7 +15,7 @@
 
 import { getSessionInfo, getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { InterruptedTurn } from "../project-thread/interrupted-turns.js";
-import { normalizeProjectRoot, type ProjectThreadStore } from "../project-thread/store.js";
+import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { PendingDelivery, ThreadState, TurnContinuation } from "../project-thread/types.js";
 import type { InboxStore } from "../inbox/store.js";
 import { noteInterruptedTurn } from "../http/turn-runner.js";
@@ -415,12 +415,12 @@ export async function planContinuation(deps: TurnContinuationDeps, turn: Interru
   return { text: lines.join("\n\n"), ...(session ? { session } : {}) };
 }
 
-/** Runner の cwd（Project の root、`http/app.ts` と同じ正規化）。CLI の記録の置き場を引くのに使う。決まらなければ無し */
+/** Runner の cwd（`http/app.ts` と同じ `runnerCwd`）。CLI の記録の置き場を引くのに使う。決まらなければ無し */
 function runnerCwdOf(projectThread: ProjectThreadStore, thread: ThreadState): string | undefined {
   const project = projectThread.getProject(thread.projectId);
   if (!project) return undefined;
   try {
-    return normalizeProjectRoot(project.root);
+    return projectThread.runnerCwd(project);
   } catch {
     return undefined; // 置き場を全部から探す（`sdkSessionReader`）
   }
