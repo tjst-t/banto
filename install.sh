@@ -1111,9 +1111,19 @@ EOF
 OOMScoreAdjust=-800
 EOF
   done
+  # **メモリが尽きる手前で止める番人**（2026-10-11、docs/runbooks/host-resource-protection.md）。swap の無い機械では
+  # カーネルの OOM が来る前に数分固まる（実機で banto 本体が 293 秒止まり、強制再起動になった）。空きが 10% を切ったら
+  # oom_score の一番高いもの——banto が止められやすくした AI の仕事（+500）——を止める
+  apt_install earlyoom
+  put_root_file /etc/default/earlyoom 644 <<'EOF'
+# banto の install.sh が置いた（docs/runbooks/host-resource-protection.md）
+EARLYOOM_ARGS="-m 10,5 -s 100 -r 3600 -p --avoid '(^|/)(init|systemd|systemd-journal|sshd|incusd|dnsmasq|caddy|dbus-daemon)$'"
+EOF
+  sudo systemctl enable --quiet earlyoom.service
+  sudo systemctl restart earlyoom.service
   sudo systemctl daemon-reload
   sudo systemctl enable --quiet banto-host.service banto-frontend.service
-  ok "banto-host.service・banto-frontend.service（ユーザー $USER_NAME）・system.slice の守り"
+  ok "banto-host.service・banto-frontend.service（ユーザー $USER_NAME）・system.slice の守り・earlyoom"
 }
 
 # ---------------------------------------------------------------------------

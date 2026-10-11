@@ -88,3 +88,32 @@ echo "system.slice 全体 $(( $(cat /sys/fs/cgroup/system.slice/memory.current) 
 
 `system.slice` 全体が 4GiB に近い・越えるなら、banto 全体の設定「コンテナ」で「この機械に残すメモリ」を上げ、
 上の `MemoryLow` も合わせる。
+
+
+## メモリが尽きる手前で止める（earlyoom、2026-10-11）
+
+**なぜ**：Project ごとのコンテナの上限は「この機械の全メモリ − 4GiB」で、Project を足し合わせた上限は無い（Incus の区画では
+掛けられない、上を参照）。複数の Project が同時に重い仕事をすると、どれも自分の上限に届かないまま機械のメモリが尽きる。
+**swap の無い機械では、カーネルの OOM が動く前にキャッシュの捨て直しで数分固まる**——2026-10-11 02:32、Banto開発 の
+`npm ci` と別の Project の esbuild が重なり、banto 本体が 293 秒止まって強制再起動になった。カーネルの記録では、最後に
+止められたのは段2a で止められやすくした AI の仕事（+500）で、止める順番は狙いどおりだった——遅すぎただけ。
+
+earlyoom は空きメモリを見張り、**空きが 10% を切ったら oom_score の一番高いプロセスに SIGTERM、5% で SIGKILL** を送る。
+banto は AI の仕事（Shell のコマンド・サブエージェント・Factory のテスト）を +500、Service を +200、banto 本体を −800 に
+しているので、止まるのは AI の仕事から。host の基幹（init・systemd・sshd・incusd・dnsmasq・caddy・dbus）は名前で避ける。
+banto が固まっていても効く（別のプロセス）。
+
+host で一度：
+
+```sh
+sudo apt-get install -y earlyoom
+sudo tee /etc/default/earlyoom >/dev/null <<'EOF'
+EARLYOOM_ARGS="-m 10,5 -s 100 -r 3600 -p --avoid '(^|/)(init|systemd|systemd-journal|sshd|incusd|dnsmasq|caddy|dbus-daemon)$'"
+EOF
+sudo systemctl enable earlyoom
+sudo systemctl restart earlyoom
+journalctl -u earlyoom -n 5 --no-pager    # 「sending SIGTERM when mem <= 10.00%」と出れば効いている
+```
+
+`-s 100` は swap の条件を常に満たすため（swap の無い機械でもメモリだけで判断する。swap がある機械ではこの値を下げる）。
+止めた記録は `journalctl -u earlyoom` に「sending SIGTERM to process … "名前"」で残る。新しく入れる機械は install.sh が入れる。
