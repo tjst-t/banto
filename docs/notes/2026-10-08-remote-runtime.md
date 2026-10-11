@@ -219,3 +219,11 @@ Vault・Publish・Backlog の「窓口1本＋実装が複数」の形も考え�
 続きが切れる件は、作業ディレクトリを全 Project で揃える案もあったが、ユーザー「Claude の会話記録もコピーするのではだめか」で
 記録を写す形に。Runner の作業ディレクトリは別のサーバだと `runner-cwd/<id>` なので、写すのはこの機械のコンテナが関わるときだけ。
 写した記録から再開できるかは作るときに最初に測る。仕様は v4-security.md §1「Project を別の実行場所へ移す」。
+
+Fable のレビュー（2026-10-11）で直したこと：高——Shell・Terminal のホームは写さない（置き場から除く）／Service は core が登録を
+書かず一般の印 `.banto-moved.json` を置き Service Module が全件止める・元の unit は disable／移す先に置き場が残っていれば
+`.before-<日時>` に退かせる／入口は「一般」の実行場所の欄／`runtime_move_started` で受付を止め届いたものは留め、途中で落ちたら
+起き直しで片づける。中——動いているものの数え方（host・繋がっている Module・Service と tmux は実行場所で直接）、`git worktree
+repair`、会話の記録は全 Thread の全 resumePoint の分だけ（丸ごと写さない）、移す先を押さえる、根は先に作って正規化し重なりを断る、
+Claude の合言葉を替える。低——イベント名を snake_case、戻るとき元のコンテナが再利用される、ソケットの除外、Terminal の控え、
+Repositories の一覧。
