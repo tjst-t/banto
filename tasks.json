@@ -6123,7 +6123,7 @@
       "number": 251,
       "kind": "task",
       "title": "Publish を別のサーバに対応させる",
-      "status": "in-progress",
+      "status": "done",
       "parent": "remote-runtime",
       "dependsOn": [
         "remote-runtime-ssh"
@@ -6133,12 +6133,12 @@
       "labels": [],
       "body": "**フル E2E は流さない**（2026-10-11、ユーザー。#248〜#251 が全部入ってから1回だけ流す）。単体テストで確かめる。#248（696dc31b）で入った core/src/runtime の上に作る。\n\nprojectAddress が別のサーバなら登録した宛先の LAN のアドレスを返し、Caddy からそこのポートへ繋ぐ。届かなければ「届かない」で断る。承認画面に「向こうのサービスは LAN から直に届く」を出す。",
       "doneWhen": "別のサーバの Service を Publish で開け、届かないときは理由つきで断ることを単体テストで確かめた（Caddy が E2E に無いため）",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/remote-runtime-publish）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-11T02:37:12.632Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-11T03:06:36.914Z",
+      "closedAt": "2026-10-11T03:06:36.914Z",
       "extra": {}
     },
     {
