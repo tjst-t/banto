@@ -54,6 +54,8 @@ import {
 /** Unix ソケットのパスの上限（`sun_path`）。ssh は ControlPath に一時の名前（17 字）を足して作る */
 const SOCKET_PATH_LIMIT = 107;
 const CONTROL_PATH_SUFFIX = 17;
+/** host の側の鍵の窓口が消えたか（Vault が閉じたか）を見る間隔 */
+const AGENT_WATCH_INTERVAL_MS = 1_000;
 
 export interface RemoteSshRuntimeOptions {
   dataDir: string;
@@ -90,6 +92,24 @@ interface Connection {
   codeDir: string;
   checks: RuntimeCheck[];
   exited: Promise<void>;
+  /** 張っているソケットの転送（鍵は host の側のパス）。接続が閉じれば一緒に消える */
+  forwards: Map<string, SocketForward>;
+}
+
+/**
+ * 多重化した接続に張った UNIX ソケットの転送1本。**転送の端は両側とも短いパス**（データの置き場の `s`）——sshd は向こうの
+ * パスへ直に bind・connect するので、Unix ソケットの上限（107 バイト）に収まらないと張れない。Module の置き場
+ * （`<置き場>/modules/<接続名>/s`）は Project の id を含んで上限を越える（既定の置き場の根で約 115 バイト）
+ */
+interface SocketForward {
+  /** `-L`（host で待ち受けて向こうへ——流れの口）か `-R`（向こうで待ち受けて host へ——鍵の窓口） */
+  dir: "L" | "R";
+  /** host の側のパス */
+  hostPath: string;
+  /** 向こうの側のパス */
+  remotePath: string;
+  /** `-L` の先を短いパスにするための symlink の先（connect は symlink を辿る）。向こうの Module の待ち受けの本当のパス */
+  remoteTarget?: string;
 }
 
 /** 起動役に最初の1行を渡してから MCP を流す口。閉じたあとに向こうの単位を止める */
@@ -136,6 +156,9 @@ export class RemoteSshRuntime {
   private readonly hashes = new FileHashCache();
   private readonly log: (line: string) => void;
   private readonly launcherPath: string;
+  private readonly forwarding = new SingleFlight<void>();
+  /** 鍵の窓口の転送を外す見張り（窓口のファイルが host から消えたら外す） */
+  private agentWatch?: ReturnType<typeof setInterval>;
 
   constructor(private readonly opts: RemoteSshRuntimeOptions) {
     this.log = opts.log ?? ((line) => console.log(line));
@@ -274,6 +297,7 @@ export class RemoteSshRuntime {
         codeDir: "",
         checks,
         exited,
+        forwards: new Map(),
       };
       void exited.then(() => {
         conn.alive = false;
@@ -408,6 +432,129 @@ export class RemoteSshRuntime {
     return r.stdout;
   }
 
+  // ── ソケットの転送（v4-security.md §1「ソケットの転送」）──────────────────
+
+  /**
+   * **流れの口**：host の短いパスで待ち受け、向こうの `<置き場>/modules/<接続名>/s/stream.sock` へ転送する（`-L`）。
+   * 返すのは host の側のパス（host はここへ流れごとに繋ぐ）。向こうの待ち受けは繋ぐたびに引かれるので、Module が
+   * 起こし直されても張り直さなくてよい
+   */
+  async streamSocketPath(projectId: string, connName: string, remoteSocketRel: string): Promise<string> {
+    const conn = this.liveConnection(projectId, "流れの口を繋げ");
+    const name = `st-${createHash("sha256").update(connName).digest("hex").slice(0, 10)}`;
+    const hostPath = this.shortSocketPath(name);
+    // 向こうの待ち受けは Module の置き場（長い）。短い symlink を置いて、sshd にはそちらへ繋がせる
+    await this.addForward(conn, { dir: "L", hostPath, remotePath: `${conn.base}/s/${name}`, remoteTarget: `${conn.base}/modules/${connName}/${remoteSocketRel}` });
+    return hostPath;
+  }
+
+  /**
+   * **鍵の窓口**：Vault が host の側（Module の置き場の `s`）に立てた ssh-agent を、向こうの置き場の `s` へ転送する（`-R`。
+   * 名前は host のパスから決める——同じ窓口は同じ名前）。返すのは向こうの側のパス（Module に渡す `socketPath`）。
+   * host の窓口が消えたら（Vault が閉じた）転送も外す
+   */
+  private async forwardAgentSocket(conn: Connection, hostPath: string): Promise<string> {
+    if (!conn.alive) throw new Error(`別のサーバ「${conn.runtimeName}」に鍵の窓口を見せられません——SSH の接続が閉じています`);
+    const remotePath = `${conn.base}/s/a-${createHash("sha256").update(hostPath).digest("hex").slice(0, 12)}`;
+    await this.addForward(conn, { dir: "R", hostPath, remotePath });
+    this.watchAgentSockets();
+    return remotePath;
+  }
+
+  private liveConnection(projectId: string, what: string): Connection {
+    const name = this.opts.remoteNameOf(projectId);
+    const conn = name ? this.connections.get(name) : undefined;
+    if (!name || !conn?.alive) throw new Error(`別のサーバ「${name ?? projectId}」で${what}ません——SSH の接続がありません（Module が起きていません）`);
+    return conn;
+  }
+
+  /** host の側の短い窓口のパス（データの置き場の `s`。Unix ソケットの上限を越えるなら断る） */
+  private shortSocketPath(fileName: string): string {
+    const dir = join(this.opts.dataDir, "s");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, fileName);
+    if (Buffer.byteLength(path) > SOCKET_PATH_LIMIT) {
+      throw new Error(`ソケットの転送の窓口のパスが長すぎて作れません（${path}。Unix ソケットは ${SOCKET_PATH_LIMIT} バイトまで）——banto のデータの置き場を短いパスにしてください`);
+    }
+    return path;
+  }
+
+  /** 転送を張る（同じものが張ってあれば何もしない。同時の要求は1回にまとめる） */
+  private async addForward(conn: Connection, f: SocketForward): Promise<void> {
+    if (Buffer.byteLength(f.remotePath) > SOCKET_PATH_LIMIT) {
+      throw new Error(
+        `別のサーバ「${conn.runtimeName}」の窓口のパスが長すぎて転送できません（${f.remotePath}。Unix ソケットは ${SOCKET_PATH_LIMIT} バイトまで）——実行場所の置き場の根を短いパスにしてください`,
+      );
+    }
+    const key = `${f.dir}:${f.hostPath}`;
+    if (conn.forwards.has(key)) return;
+    await this.forwarding.run(`${conn.runtimeName}\0${key}`, async () => {
+      if (conn.forwards.has(key)) return;
+      // 待ち受ける側に同じパスのファイルが残っていれば先に消す（外した転送の窓口のファイルは残る——sshd の
+      // `StreamLocalBindUnlink` は root の設定なので頼らない）。`-L` の先は向こうの短い symlink
+      const remoteDir = `"$(dirname ${shq(f.remotePath)})"`;
+      if (f.dir === "L") rmSync(f.hostPath, { force: true });
+      await this.mustRun(
+        conn,
+        "ソケットの転送の置き場を用意でき",
+        `mkdir -p -- ${remoteDir} && chmod 700 ${remoteDir} && ` +
+          (f.remoteTarget ? `ln -sfn -- ${shq(f.remoteTarget)} ${shq(f.remotePath)}\n` : `rm -f -- ${shq(f.remotePath)}\n`),
+      );
+      const r = await this.control(conn, "forward", f);
+      if (r.code !== 0) throw new SshCommandError(`別のサーバ「${conn.runtimeName}」へのソケットの転送を張れませんでした`, r);
+      conn.forwards.set(key, f);
+    });
+  }
+
+  /** 転送を外す（向こうに残った窓口のファイルも消す） */
+  private async cancelForward(conn: Connection, key: string): Promise<void> {
+    const f = conn.forwards.get(key);
+    if (!f) return;
+    conn.forwards.delete(key);
+    if (!conn.alive) return;
+    const r = await this.control(conn, "cancel", f);
+    if (r.code !== 0 && conn.alive) this.log(`[host] 別のサーバ「${conn.runtimeName}」のソケットの転送を外せませんでした: ${r.stderr.trim().slice(-300)}`);
+    if (f.dir === "R") await this.run(conn, `rm -f -- ${shq(f.remotePath)}\n`, { timeoutMs: 30_000 });
+    else rmSync(f.hostPath, { force: true });
+  }
+
+  /** 多重化した接続の親に、転送を張る・外すよう頼む（`-O forward`／`-O cancel`） */
+  private control(conn: Connection, op: "forward" | "cancel", f: SocketForward): Promise<SshResult> {
+    const spec = f.dir === "L" ? `${f.hostPath}:${f.remotePath}` : `${f.remotePath}:${f.hostPath}`;
+    return new Promise((resolve) => {
+      const child = spawn("ssh", [...this.muxArgs(conn), "-O", op, `-${f.dir}`, spec, "--", conn.runtime.host], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: sshEnv(),
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (c: Buffer) => (stdout += String(c)));
+      child.stderr.on("data", (c: Buffer) => (stderr += String(c)));
+      child.on("error", (err) => (stderr += err.message));
+      child.on("close", (code) => resolve({ code: code ?? 255, stdout, stderr }));
+    });
+  }
+
+  /** **Vault が窓口を閉じたら転送も外す**——host の側の窓口のファイルが消えたことで知る（Vault に閉じたと知らせる口は無い） */
+  private watchAgentSockets(): void {
+    if (this.agentWatch) return;
+    this.agentWatch = setInterval(() => {
+      let remaining = 0;
+      for (const conn of this.connections.values()) {
+        for (const [key, f] of conn.forwards) {
+          if (f.dir !== "R") continue;
+          if (existsSync(f.hostPath)) remaining++;
+          else void this.cancelForward(conn, key).catch((err: unknown) => this.log(`[host] 鍵の窓口の転送を外せませんでした: ${String(err)}`));
+        }
+      }
+      if (remaining === 0) {
+        clearInterval(this.agentWatch);
+        this.agentWatch = undefined;
+      }
+    }, AGENT_WATCH_INTERVAL_MS);
+    this.agentWatch.unref();
+  }
+
   /** 向こうの、この banto の置き場（置き場の根の下に、データの置き場ごとに分ける——`owner` と同じ） */
   private async resolveBase(conn: Connection): Promise<string> {
     const owner = createHash("sha256").update(this.opts.dataDir).digest("hex").slice(0, 12);
@@ -538,8 +685,12 @@ export class RemoteSshRuntime {
         await self.mustRun(conn, "Module の置き場を作れ", `mkdir -p ${shq(pathInside(moduleDataDir))} && chmod 700 ${shq(pathInside(moduleDataDir))}`);
         if (existsSync(packageDir) && statSync(packageDir).isDirectory()) await self.syncPackageDir(conn, packageDir, pathInside(packageDir));
       },
-      // 鍵の窓口（ssh-agent）を向こうに見せるのはソケットの転送（Backlog `remote-runtime-sockets`）。それまでは host の側の置き場
+      // 鍵の窓口（ssh-agent）は Vault が host の側の置き場に立て、中継が向こうの置き場の `s` へ転送する（`socketPathInside`）
       socketDirFor: (moduleDataDir) => ensureSocketDir(moduleDataDir),
+      socketPathInside(hostPath) {
+        if (!hostPath.startsWith(`${dataDir}/`)) throw new Error(`鍵の窓口 ${hostPath} は banto のデータの置き場の外です——別のサーバへ転送しません`);
+        return self.forwardAgentSocket(conn, hostPath);
+      },
       async prepareShellHome(moduleDataDir, files) {
         const home = `${pathInside(moduleDataDir)}/home`;
         const resync = (f: readonly string[]) => self.sendShellHome(conn, moduleDataDir, home, f);

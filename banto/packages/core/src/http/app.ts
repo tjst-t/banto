@@ -269,8 +269,8 @@ export interface AppDeps {
    */
   streams?: {
     relay: StreamRelay;
-    /** その Module（プロセスの名前）の待ち受けの host の側のパス */
-    socketPathOf(connName: string): string;
+    /** その Module（プロセスの名前）の待ち受けの host の側のパス（別のサーバの Module なら、転送を張ってからその窓口） */
+    socketPathOf(connName: string): string | Promise<string>;
   };
   /**
    * **いま繋がっているか・繋げなかった理由**（追補・2026-09-11、ユーザー報告）。
@@ -956,7 +956,12 @@ async function issueUiStream(
   if (!streamNamesOf(declared._meta).includes(b.name)) {
     return { status: 403, body: { error: `この画面は流れ「${b.name}」を名乗っていません` } };
   }
-  const socketPath = streams.socketPathOf(found.connName);
+  let socketPath: string;
+  try {
+    socketPath = await streams.socketPathOf(found.connName);
+  } catch (err) {
+    return { status: 502, body: { error: `流れの口に繋げませんでした：${err instanceof Error ? err.message : String(err)}` } };
+  }
   try {
     const grant = streams.relay.issue({
       server: b.server,

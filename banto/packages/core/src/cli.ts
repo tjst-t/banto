@@ -1256,6 +1256,8 @@ async function main(): Promise<void> {
       ...(prepared ? { inContainer: true } : {}),
       // **鍵の窓口を立てる場所**（追加・2026-09-27）。host の Vault がここに立てた ssh-agent に、中の Module が届く
       ...(prepared ? { socketDir: prepared.socketDirFor(moduleDataDir) } : {}),
+      // 別のサーバでは、Vault が立てた窓口を向こうへ転送してから返す
+      ...(prepared?.socketPathInside ? { socketPathInside: prepared.socketPathInside.bind(prepared) } : {}),
     });
     // **差し込み語は実行場所の側のパスで組み立てる**（`docs/specs/v4-security.md` §1「実行場所は core の中の差し替え口」）
     // ——Module の宣言・Module のコードは実行場所を知らない
@@ -2014,10 +2016,15 @@ async function main(): Promise<void> {
     resolveModuleClientsForProject,
     resolveInstanceModuleClients,
     sandboxPublicUrl: bootstrap.sandboxPublicUrl,
-    // 待ち受けは Module の置き場（host とコンテナで同じパス）の中——host は host の側のパスへ直接繋ぐ
+    // 待ち受けは Module の置き場（host とコンテナで同じパス）の中——host は host の側のパスへ直接繋ぐ。
+    // 別のサーバの Module には、多重化した接続にソケットの転送を張り、その host の側の窓口へ繋ぐ
     streams: {
       relay: streamRelay,
-      socketPathOf: (connName) => join(bootstrap.dataDir, "modules", connName, STREAM_SOCKET_RELATIVE_PATH),
+      socketPathOf: async (connName) => {
+        const projectId = registry.getModule(connName)?.projectId;
+        if (projectId && remoteSsh.handles(projectId)) return remoteSsh.streamSocketPath(projectId, connName, STREAM_SOCKET_RELATIVE_PATH);
+        return join(bootstrap.dataDir, "modules", connName, STREAM_SOCKET_RELATIVE_PATH);
+      },
     },
     // **引く registry を差し替えられるようにしておく**（追加・2026-09-21）。
     // 既定は公式。自前の registry を立てている人と、**本物を叩かない E2E**

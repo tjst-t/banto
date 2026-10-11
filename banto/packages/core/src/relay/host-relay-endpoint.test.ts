@@ -15,7 +15,7 @@ import { markBundled, parseModuleMeta } from "@banto/module-contract";
  * 印が無い＝外から繋いだ扱いになり、`valueFree` は効かない（それが仕様）。
  */
 const bundledMeta = (raw: unknown, source: string) => markBundled(parseModuleMeta(raw, source), source);
-import { HostRelayEndpoint, RelayRegistry, type HostRelayServerOptions } from "./host-relay-endpoint.js";
+import { HostRelayEndpoint, RelayRegistry, rewriteSocketPaths, type HostRelayServerOptions } from "./host-relay-endpoint.js";
 import { ModuleCallTracker, RESTARTING_REFUSAL } from "./module-calls.js";
 
 async function fakeVaultClient(): Promise<Client> {
@@ -1793,4 +1793,27 @@ test("入れ子の中継では、宛先に刻む呼び元はすぐ手前の Modu
     await vault.close();
     await directory.close();
   }
+});
+
+// **別のサーバの呼び元には、窓口を向こうのパスにして返す**（追加・2026-10-11、v4-security.md §1「ソケットの転送」）
+test("rewriteSocketPaths: socketDir の直下の窓口だけを書き換え、ほかの応答には触らない", async () => {
+  const asked: string[] = [];
+  const inside = async (p: string) => {
+    asked.push(p);
+    return p.replace("/host/data", "/remote/base");
+  };
+  const dir = "/host/data/modules/shell-p1/s";
+  const ok = await rewriteSocketPaths({ content: [{ type: "text", text: JSON.stringify({ socketPath: `${dir}/a-x1`, other: 1 }) }] }, `${dir}/`, inside);
+  assert.deepEqual(JSON.parse((ok.content[0] as { text: string }).text), { socketPath: "/remote/base/modules/shell-p1/s/a-x1", other: 1 });
+
+  // socketDir の外・入れ子・失敗の応答・JSON でない text には触らない（転送も張らない）
+  for (const result of [
+    { content: [{ type: "text", text: JSON.stringify({ socketPath: "/tmp/banto-ssh-agent.sock" }) }] },
+    { content: [{ type: "text", text: JSON.stringify({ socketPath: `${dir}/x/a-1` }) }] },
+    { content: [{ type: "text", text: JSON.stringify({ socketPath: `${dir}/a-x1` }) }], isError: true },
+    { content: [{ type: "text", text: "plain" }] },
+  ]) {
+    assert.deepEqual(await rewriteSocketPaths(result, dir, inside), result);
+  }
+  assert.deepEqual(asked, [`${dir}/a-x1`]);
 });

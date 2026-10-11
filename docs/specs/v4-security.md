@@ -499,11 +499,20 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 
 **ソケットの転送**（OpenSSH の UNIX ソケットの転送。張るのも外すのも、多重化した接続に `-O forward`／`-O cancel`）：
 
-- **流れの口**（アーキ §5.8）：host から向こうの `<置き場>/s/stream.sock` へ。host は流れごとに転送の先へ繋ぐ
+- **転送の端は両側とも短いパスに置く**——host はデータの置き場の `s`、向こうは向こうの置き場（`<置き場の根>/<ハッシュ 12 字>`）の
+  `s`（0700）。sshd は向こうのパスへ直に bind・connect するので、Unix ソケットの上限（107 バイト）に収まらないと張れない。
+  Module の置き場（`<置き場>/modules/<接続名>/s`）は Project の id を含み、既定の置き場の根で約 115 バイトになる
+- **流れの口**（アーキ §5.8）：host の `s/st-<接続名のハッシュ 10 字>` で待ち受け（`-L`）、向こうの `s/st-<同じ名前>` へ。
+  向こうのそれは Module の待ち受け（`<置き場>/modules/<接続名>/s/stream.sock`）への symlink（connect は symlink を辿る）。
+  流れの札を出すときに張り（Module ごとに1本、接続が続く間は張ったまま）、host は流れごとに host の側の窓口へ繋ぐ
 - **Vault の ssh-agent**：Vault は鍵の窓口を host の側（呼び出し元の Module の置き場に当たる host のフォルダの `s`）に
-  立て、そのパスを返す。**呼び元が別のサーバのとき、host の中継が応答を書き換える**——向こうの `<置き場>/s` の同じ名前へ
-  転送を張り、応答の `socketPath` を向こうのパスにして Module に返す。Vault が窓口を閉じたら転送も外す。転送を張る前に
-  向こうの同じパスのファイルを消す（sshd の `StreamLocalBindUnlink` に頼らない——root の設定なので）
+  立て、そのパスを返す。**呼び元が別のサーバのとき、host の中継が応答を書き換える**——応答の text が `{"socketPath": …}` で、
+  そのパスが呼び元の `socketDir` の直下なら、向こうの `s/a-<host のパスのハッシュ 12 字>` へ転送を張り（`-R`）、`socketPath` を
+  向こうのパスにして Module に返す（同じ窓口は同じ転送を使い回す）。**Vault が窓口を閉じたら転送も外す**——Vault に閉じたと
+  知らせる口は無いので、host の側の窓口のファイルが消えたこと（1 秒ごとに見る）で知り、`-O cancel` して向こうのファイルも消す
+- 転送を張る前に、待ち受ける側の同じパスのファイルを消す（sshd の `StreamLocalBindUnlink` に頼らない——root の設定なので。
+  `-O cancel` しても窓口のファイルは残り、そのまま張り直すと「remote port forwarding failed」で断られる——2026-10-11 実測）
+- 接続が切れれば転送も一緒に消える。繋ぎ直したあと、次に頼まれたときに張り直す
 
 **実装の形**（済み・2026-10-10、Backlog `remote-runtime-ssh`）：
 
@@ -558,8 +567,6 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 
 - **Vault の鍵の窓口を、接続を張ったあとに閉じる**——Vault に窓口を閉じる口（`startSshAgent` の対）がまだ無い。いまは Vault の
   使い回し（Vault が終わるときに落ちる）のまま。多重化した接続は張ったあと鍵を使わないので、閉じても困らない
-- ソケットの転送（Vault の ssh-agent・流れの口）は Backlog `remote-runtime-sockets`。それまで、別のサーバの Module の
-  `sshIdentity` と流れの口は使えない
 - 送るコードは 1GB ある（初めての接続・版が変わったときに送る）。Subagent のエージェント（OpenCode は3つの写し）を
   要るときだけ送る形は作っていない
 

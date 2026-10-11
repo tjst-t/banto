@@ -167,3 +167,27 @@ Vault・Publish・Backlog の「窓口1本＋実装が複数」の形も考え�
   共有しないエージェント）——Claude の中継を通ることを見るなら `fake-host`
 - **登録の spec（`remote-runtime-registry.spec.ts`）の「向こうに置き場ができた」は `incus exec` で見る**。その spec は途中で
   向こうの host 鍵を変えるので、試験の側の known_hosts で `ssh` すると「REMOTE HOST IDENTIFICATION HAS CHANGED」で何も返らない
+
+## ソケットの転送を作ったときに決めたこと・却下した案（2026-10-11、Backlog `remote-runtime-sockets`）
+
+仕様の形（v4-security.md §1「ソケットの転送」）にした理由と、選ばなかった形：
+
+- **向こうの端を「Module の置き場の `s` の同じ名前」から「向こうの置き場の `s`」に変えた**（仕様の書きぶりから変えた。規則8で
+  記録し、仕様も直した）：`<置き場の根>/<ハッシュ>/modules/shell-<Project の id>/s/a-xxxxxx` は既定の置き場の根で約 115 バイト
+  あり、sshd が bind できない（Unix ソケットは 107 バイトまで）。host の Module は `viaDirectoryFd`（フォルダの番号越し）で
+  長いパスでも待ち受けられるが、sshd にはその逃げ道が無い。向こうのユーザーは全部の Module で同じなので、Module ごとの
+  フォルダに分けても閉じ込めの意味は無い——向こうの置き場（0700）の下で十分
+- **流れの口の先は symlink にした**：向こうの Module は長いパス（Module の置き場）で待ち受ける。connect は symlink を辿り、
+  上限が掛かるのは渡したパスだけなので、向こうの置き場の `s` に短い symlink を置いて sshd にはそちらへ繋がせる。Module の
+  待ち受けの場所を変える案（`STREAM_SOCKET_RELATIVE_PATH` を別のサーバだけ変える）は、Module に実行場所を知らせることになる
+- **流れの口の転送は札を出すときに張る**（Module を起こしたときに全部張る案はやめた）：流れを名乗らない Module にまで転送を
+  張ることになる。`-L` は繋ぐたびに向こうの待ち受けを引くので、Module が起こし直されても張り直さなくてよい
+- **Vault が窓口を閉じたことは、host の側の窓口のファイルが消えたことで知る**（1 秒ごと）。Vault は窓口を落とすとき
+  （値の置き換え・終わるとき）ファイルも消す。Vault に「閉じた」と知らせる口を足す案は、vault-kit の口・2つの金庫の実装・
+  中継の可視性に触る（前の段で窓口を閉じる口を足さなかったのと同じ理由）
+- **応答の書き換えは「呼び元の `socketDir` の直下を指す `socketPath`」だけ**：tool の名前（`startSshAgent`）で見る案は、
+  Vault の実装が増えるたびに host が名前を覚えることになる。`socketDir` は host が刻んだもの（呼び元の申告ではない）なので、
+  その直下のパスを返すのは窓口を立てた宛先だけ
+- **30 秒のプローブで先に確かめたこと**（入れ子のコンテナの中で ssh を自分に繋いで）：`-O forward`／`-O cancel` は `-R`・`-L` の
+  両方で UNIX ソケットに効く。`-O cancel` のあとも窓口のファイルは両側に残り、消さずに張り直すと
+  「remote port forwarding failed for listen path」で断られる——張る前に消すのは要る

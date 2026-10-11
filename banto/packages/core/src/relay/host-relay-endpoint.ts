@@ -57,6 +57,11 @@ export interface CallerIdentity {
    * `dev.banto/socketDir` として刻む——Vault が鍵の窓口をここに立てる（`SOCKET_DIR_META_KEY`）
    */
   socketDir?: string;
+  /**
+   * **窓口を中から届くパスにする**（追加・2026-10-11、v4-security.md §1「ソケットの転送」）。別のサーバの呼び元にだけある
+   * ——宛先（Vault）が `socketDir` に立てた窓口のパスを返したら、中継が向こうへの転送を張って応答を書き換える
+   */
+  socketPathInside?: (hostPath: string) => Promise<string>;
 }
 
 export interface RelayAuditRecord {
@@ -1013,6 +1018,10 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
           clearInterval(humanWait);
           extra.signal.removeEventListener("abort", onOuterAbort);
         }
+        // **別のサーバの呼び元には、窓口を向こうのパスにして返す**（v4-security.md §1「ソケットの転送」）
+        if (identity.socketDir && identity.socketPathInside) {
+          result = await rewriteSocketPaths(result, identity.socketDir, identity.socketPathInside);
+        }
         await audit(true, decision.reason, true);
         // **「あとで届ける」と約束したら、札を返事待ちにし、呼んだ Module に返事の印を見せる**（札そのものは見せない）
         if (reply && result._meta?.[PENDING_REPLY_META_KEY] === true) {
@@ -1039,6 +1048,36 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
   });
 
   return server;
+}
+
+/**
+ * 応答の中の窓口のパス（`{"socketPath": …}` の text）が呼び元の `socketDir` の直下なら、`inside` で中から届くパスにする
+ * （転送を張るのも `inside`）。`socketDir` の外のパス・ほかの形の応答には触らない
+ */
+export async function rewriteSocketPaths<T extends { content: unknown[]; isError?: unknown }>(
+  result: T,
+  socketDir: string,
+  inside: (hostPath: string) => Promise<string>,
+): Promise<T> {
+  if (result.isError === true || !Array.isArray(result.content)) return result;
+  const dir = socketDir.replace(/\/+$/, "");
+  const content = await Promise.all(
+    result.content.map(async (item) => {
+      const c = item as { type?: unknown; text?: unknown };
+      if (c.type !== "text" || typeof c.text !== "string") return item;
+      let body: unknown;
+      try {
+        body = JSON.parse(c.text);
+      } catch {
+        return item;
+      }
+      if (typeof body !== "object" || body === null || Array.isArray(body)) return item;
+      const socketPath = (body as { socketPath?: unknown }).socketPath;
+      if (typeof socketPath !== "string" || !socketPath.startsWith(`${dir}/`) || socketPath.slice(dir.length + 1).includes("/")) return item;
+      return { ...c, text: JSON.stringify({ ...body, socketPath: await inside(socketPath) }) };
+    }),
+  );
+  return { ...result, content };
 }
 
 /**

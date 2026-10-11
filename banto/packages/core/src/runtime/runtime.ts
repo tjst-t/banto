@@ -52,6 +52,11 @@ export interface PreparedPlace {
    */
   socketDirFor(moduleDataDir: string): string;
   /**
+   * Vault が `socketDirFor` に立てた窓口（host の側のパス）を、中の Module から届くパスにする。同じパスで見える箱
+   * （コンテナ）には無い。別のサーバ：向こうの置き場の `s` へソケットの転送を張り、向こうのパスを返す（窓口が消えたら外す）
+   */
+  socketPathInside?(hostPath: string): Promise<string>;
+  /**
    * Shell 専用のホームを用意し、人が選んだ設定を写す。`resync` は一覧が変わったときに写し直す口。
    * `home` は実行場所の側のパス
    */
