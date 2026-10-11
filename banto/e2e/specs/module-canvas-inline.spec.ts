@@ -188,10 +188,13 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   // 時点で、会話の側は入口のカードに畳む——会話に埋めたままだと、記録から
   // 組み直すたびにその画面がまた「大きく出して」と言い、勝手に開く
   await expect(canvasFrames).toHaveCount(1, { timeout: 30_000 });
+  // 携帯の幅では Canvas が前面の1枚で、会話はその下に隠して残す（下の「会話は消えない」と同じ）——カードも
+  // 「見えている」ではなく「残っている」で見る。以前は toBeVisible で、Canvas が前に出る前の一瞬に当たったときだけ
+  // 通っていた（2026-10-11、3回に2回落ちた）。見えることは閉じたあと（下の fullscreen の spec）で確かめる
   await expect(
     page.locator('[data-testid="canvas-reopen-card"][data-module="filesystem"]'),
     "会話に入口のカードが残っていない",
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeAttached({ timeout: 15_000 });
   await expect(
     canvasFrames.last().contentFrame().frameLocator("iframe").getByText(marker),
     "Canvas に中身が出ていない",
