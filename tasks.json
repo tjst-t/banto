@@ -6403,7 +6403,7 @@
       "number": 264,
       "kind": "task",
       "title": "移す画面：Project の設定「一般」の「別の実行場所へ移す…」",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "runtime-move",
       "dependsOn": [
         "runtime-move-core"
@@ -6417,7 +6417,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-11T10:39:29.164Z",
-      "updatedAt": "2026-10-11T13:37:28.105Z",
+      "updatedAt": "2026-10-11T13:37:30.618Z",
       "closedAt": null,
       "extra": {}
     }
