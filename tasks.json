@@ -6420,6 +6420,27 @@
       "updatedAt": "2026-10-11T14:13:52.468Z",
       "closedAt": "2026-10-11T14:13:52.468Z",
       "extra": {}
+    },
+    {
+      "id": "runtime-move-previous-locations",
+      "number": 265,
+      "kind": "task",
+      "title": "移したあとの「元の場所」を Project の設定「一般」に出し続ける",
+      "status": "ready",
+      "parent": "runtime-move",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "#264 のレビューの指摘（2026-10-11）。仕様 v4-security.md §1 の流れ 8「元のフォルダ・Module の置き場・元のコンテナは残し、場所を設定の画面に出す。消すのは人」が、今は移し終わりの画面に一度出すだけ。read model には previousLocations（packages/core/src/project-thread/types.ts）があるので、Project の設定「一般」の実行場所の欄（project-runtime-section.tsx）に「前に動いていた場所」として並べる（実行場所・根・日時）。消す操作は作らない（人が消す）。消したら一覧から外す口があってもよい。",
+      "doneWhen": "移したあと設定「一般」を開き直しても、元の実行場所と根が出ていることを E2E で確かめた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-11T14:14:06.470Z",
+      "updatedAt": "2026-10-11T14:14:06.470Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
