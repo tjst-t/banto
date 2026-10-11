@@ -6307,7 +6307,7 @@
       "number": 260,
       "kind": "bug",
       "title": "Browser の人の画面で、携帯の大きさで打った文字がページに届かないことがある（browser-view.spec.ts:150、4回に1回）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6323,7 +6323,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-11T03:06:42.899Z",
-      "updatedAt": "2026-10-11T03:06:42.899Z",
+      "updatedAt": "2026-10-11T03:06:45.308Z",
       "closedAt": null,
       "extra": {}
     }
