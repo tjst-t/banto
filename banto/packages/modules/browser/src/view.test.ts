@@ -391,6 +391,29 @@ test("1 MiB（ここでは小さくした上限）を越えた絵は送らず、
   }
 });
 
+test("指で入力欄を押してすぐ打った文字も届く：入力は投げた順にページへ渡る（読み込んだばかりのページで初めての指でも）", { skip: skipReason }, async () => {
+  // 入力を前の応答を待たずに流すと、タッチの後の insertText が追い越して入力欄に焦点が来る前に入り、消えた
+  // （実測・2026-10-11、Backlog #260：この形で20回中20回）
+  const page = (await ctx.session.currentOrNew()).page;
+  await page.goto(`${base}/`);
+  const phone = new FakeSocket();
+  view.handler()(phone as unknown as WebSocket, stamp({ width: 390, height: 640, dpr: 3, visible: true }));
+  try {
+    for (let i = 0; i < 3; i++) {
+      await page.reload();
+      await until("映っている", () => view.status().screencasting);
+      const name = (await page.locator("#name").boundingBox())!;
+      const point = { x: name.x + name.width / 2, y: name.y + name.height / 2, id: 1 };
+      phone.post({ type: "touch", event: "start", points: [point] });
+      phone.post({ type: "touch", event: "end", points: [] });
+      phone.post({ type: "insertText", text: "けいたい" });
+      assert.equal(await waitValue(() => page.inputValue("#name"), "けいたい"), "けいたい", `${i + 1} 回目`);
+    }
+  } finally {
+    phone.close(1000);
+  }
+});
+
 test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる。切ると全部戻る", { skip: skipReason }, async () => {
   // タブが1つも無い（携帯で開いた最初の姿）
   for (const t of await ctx.session.listTabs()) await ctx.session.close(t.id);

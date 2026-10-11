@@ -308,6 +308,8 @@ export class BrowserView implements ViewHooks {
   private seq = 0;
   /** screencast の張り直しは1つずつ */
   private chain: Promise<void> = Promise.resolve();
+  /** 人の入力は1つずつ（input） */
+  private inputChain: Promise<void> = Promise.resolve();
   /** 「画面に合わせる」を入れている画面（ページの大きさは1つなので、合わせるのは1つの画面だけ） */
   private fitOwner: Viewer | undefined;
   /** 「画面に合わせる」で大きさを変えたタブ（切ったら全部を既定に戻す） */
@@ -520,15 +522,26 @@ export class BrowserView implements ViewHooks {
     }
   }
 
-  /** 人の入力を、いま映しているタブへそのまま渡す（映していなければ、人は何も見ていない——捨てる） */
+  /**
+   * 人の入力を、いま映しているタブへそのまま渡す（映していなければ、人は何も見ていない——捨てる）。**1つずつ、前の応答を
+   * 待ってから次を渡す**——CDP の Input.* は投げた順に処理されるとは限らない。タッチ（ブラウザのプロセスの入力の経路を通る）の
+   * 後に続けて投げた insertText（描画のプロセスへ直に行く）が追い越し、入力欄に焦点が来る前に文字が入って消えた
+   * （実測・2026-10-11、Backlog #260：読み込んだばかりのページで初めての指のすぐ後の insertText が、待たずに流すと20回中20回消え、
+   * 待つと40回中0回）。1つが返らなくても後ろを止めないよう、張り直しと同じ上限を付ける
+   */
   private input(method: string, params: Record<string, unknown>, v: Viewer): void {
     const cast = this.cast;
     if (!cast) return;
-    // Playwright の CDPSession は名前ごとに型が付く——ここでは名前を文字で渡す
-    (cast.cdp as unknown as { send(m: string, p: unknown): Promise<unknown> }).send(method, params).catch((err: Error) => {
-      if (this.cast !== cast) return; // 張り直した・閉じた——古い口の失敗は人に見せない
-      this.sendText(v, { type: "error", message: `入力を渡せませんでした：${err.message.split("\n")[0]}` });
-    });
+    this.inputChain = this.inputChain.then(() =>
+      // Playwright の CDPSession は名前ごとに型が付く——ここでは名前を文字で渡す
+      bounded(method, (cast.cdp as unknown as { send(m: string, p: unknown): Promise<unknown> }).send(method, params)).then(
+        () => undefined,
+        (err: Error) => {
+          if (this.cast !== cast) return; // 張り直した・閉じた——古い口の失敗は人に見せない
+          this.sendText(v, { type: "error", message: `入力を渡せませんでした：${err.message.split("\n")[0]}` });
+        },
+      ),
+    );
   }
 
   /** 人の操作（タブ・URL・戻る等）。失敗は理由をその画面に返す */
