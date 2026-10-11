@@ -3,7 +3,7 @@
 // これがPhase 0/1の完了条件を実測する対象そのもの。
 
 import { mkdirSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -48,6 +48,8 @@ import { RemoteRuntimeStore } from "./runtime/remote-store.js";
 import { RemoteRuntimes, remoteNameOf, runtimeIdOf } from "./runtime/remote-runtimes.js";
 import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
 import { RuntimeRouter } from "./runtime/router.js";
+import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
+import { collectActivity } from "./http/activity.js";
 import { createRelayListener } from "./relay/relay-listener.js";
 import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace } from "./runtime/runtime.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
@@ -259,7 +261,12 @@ async function main(): Promise<void> {
     store: remoteRuntimeStore,
     startSshAgent: (identity, socketDir) => sshIdentityThroughVault(identity, "startSshAgent", socketDir),
     publicKeyOf: (identity) => sshIdentityThroughVault(identity, "getPublicKey"),
-    projectsUsing: (rt) => projectThread.listProjects().filter((p) => p.runtime === rt).map((p) => ({ id: p.id, name: p.name })),
+    // 移している途中の Project は、移す先としても数える（その間に別の Project を作らせない——v4-security.md §1「Project を別の実行場所へ移す」）
+    projectsUsing: (rt) =>
+      projectThread
+        .listProjects()
+        .filter((p) => p.runtime === rt || p.move?.to.runtime === rt)
+        .map((p) => ({ id: p.id, name: p.name })),
   });
   /**
    * **実行場所の2つ目——別のサーバ**（決定・2026-10-08、Backlog `remote-runtime-ssh`）。Project の記録の `runtime` が
@@ -304,6 +311,8 @@ async function main(): Promise<void> {
   const appEvents = new AppEventBus();
   /** 起き直したときの札の判定と切れたターン（下で作る。判定の終わっていない Thread は留める） */
   let recovery: RestartRecovery | undefined;
+  /** 別の実行場所へ移す（下で作る。移している途中の Project の Module は、Service を止めておく間だけ起こす） */
+  let projectMover: ProjectMover | undefined;
   const deliveries = new ThreadDeliveries({
     projectThread,
     turns: threadTurns,
@@ -762,6 +771,13 @@ async function main(): Promise<void> {
         : declaration.name;
     // 繋がっているなら、それが答え（試し直しの間の記録より先に見る）
     if (connectedModules.has(connName)) return connName;
+    // **別の実行場所へ移している間は起こさない**（写している元の置き場に書かせない）。Service を止めておく間だけは起こす
+    if (declaration.meta.scope === "project" && forProject && projectThread.getProject(forProject.id)?.move) {
+      if (!projectMover?.allowsModuleStart(forProject.id)) {
+        console.log(`[host] ${connName} は起こしません（Project を別の実行場所へ移しています）`);
+        return undefined;
+      }
+    }
     const fingerprint = declarationFingerprint(declaration);
     if (connectBackoff.blocked(connName, fingerprint) !== undefined) return undefined;
 
@@ -959,6 +975,13 @@ async function main(): Promise<void> {
     tool: "getPublicKey" | "startSshAgent",
     socketDir?: string,
   ): Promise<string> {
+    // **窓口は繋がっている Vault だけを探す**——起き直したばかりで Vault がまだ繋がっていないと、在る鍵が「どの Vault にも
+    // ありません」に化ける（移している途中で落ちた Project の片づけが、起き直した 12ms 後に踏んだ。E2E runtime-move、2026-10-11）
+    await Promise.all(
+      loadModuleDeclarations(runtimeConfig, "")
+        .filter((d) => d.meta.scope === "instance" && d.meta.satisfies.includes("vault"))
+        .map((d) => connectDeclaredModule(d)),
+    );
     const directory = await ensureVaultDirectory();
     if (!directory) throw new Error("Vault の窓口が繋がっていません");
     const caller = { instance: true as const };
@@ -1922,6 +1945,66 @@ async function main(): Promise<void> {
     url: streamUrlOf(loginOrigins(bootstrap).apiBaseUrl),
     allowedOrigin: bootstrap.sandboxPublicUrl,
   });
+  /**
+   * **Project を別の実行場所へ移す**（決定・2026-10-11、`docs/specs/v4-security.md` §1「Project を別の実行場所へ移す」）
+   */
+  projectMover = new ProjectMover({
+    dataDir: bootstrap.dataDir,
+    monorepoRoot,
+    // Runner（Claude の CLI）と同じ置き場
+    claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+    projectThread,
+    remoteRuntimes,
+    hostContainers: hostRuntime,
+    hostActivity: (projectId) => {
+      const a = collectActivity({ projectThread, inbox, threadTurns, moduleCalls, moduleReplies, resumesAfterRestart });
+      const mine = <T extends { projectId?: string }>(items: T[]) => items.filter((i) => i.projectId === projectId);
+      const where = (t: { threadTitle?: string }) => t.threadTitle ?? "会話";
+      return [
+        ...mine(a.turns).map((t): RunningItem => ({ kind: "turn", label: `ターンが走っています（${where(t)}）` })),
+        ...mine(a.awaitingReplies).map((r): RunningItem => ({ kind: "reply", label: `裏の仕事の返事を待っています（${r.module}・${where(r)}）` })),
+        ...mine(a.moduleReplies).map((r): RunningItem => ({ kind: "moduleReply", label: `${r.caller} が ${r.module} の返事を待っています` })),
+        ...mine(a.moduleCalls).map((c): RunningItem => ({ kind: "call", label: `Module の呼び出しが走っています（${c.connName}）` })),
+      ];
+    },
+    async disableServices(projectId) {
+      const project = projectThread.getProject(projectId);
+      if (!project) return [];
+      const disabled: string[] = [];
+      const services = loadModuleDeclarations(runtimeConfig, projectId).filter(
+        (d) => d.meta.scope === "project" && (d.meta.satisfies as string[]).includes("service"),
+      );
+      for (const declaration of services) {
+        const connName = await connectDeclaredModule(declaration, project);
+        const client = connName ? connectedModules.get(connName) : undefined;
+        if (!client) throw new Error(`${declaration.name} に繋げないので、元の場所の Service を止めておけません`);
+        const r = await client.callTool({
+          name: "disableAllServices",
+          arguments: {},
+          _meta: { [CALLER_META_KEY]: { admin: true, forProject: projectId } },
+        });
+        const text = (r.content as Array<{ text?: string }> | undefined)?.[0]?.text ?? "";
+        if (r.isError) throw new Error(`${declaration.name} が元の場所の Service を止めておけませんでした：${text}`);
+        disabled.push(...((JSON.parse(text) as { disabled?: string[] }).disabled ?? []));
+      }
+      return disabled;
+    },
+    releaseModules: async (projectId) => {
+      await releaseProjectModules(projectId, { stopContainer: true });
+    },
+    revokeClaudeLogin: (projectId) => claudeLogin.revoke(projectId),
+    deliver: async (threadId, title, text) => {
+      await deliveries.deliver({ threadId, from: "banto", title, text, hop: 1, notify: false }, { wake: false });
+    },
+    kick: (threadId) => deliveries.kick(threadId),
+    notify: async (n) => {
+      await inbox.raiseNotice(n);
+    },
+    // E2E だけ：写す途中で banto を落とすために、写す速さを抑える
+    ...(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC
+      ? { throttleBytesPerSec: Number(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC) }
+      : {}),
+  });
   const app = createApp({
     warmModelCatalog: true,
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
@@ -1969,6 +2052,7 @@ async function main(): Promise<void> {
     // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
     remoteRuntimes,
+    runtimeMove: projectMover,
     listSshIdentities: sshIdentitiesThroughVault,
     // 別のサーバの Project にはこの機械のコンテナは無い（あれば前の名残——聞かない）
     projectContainerStatus: async (projectId: string) => {
@@ -2145,6 +2229,9 @@ async function main(): Promise<void> {
     // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
     // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
     deliveries.resumeAll();
+    // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
+    // 別のサーバへは Vault の鍵で繋ぐ）
+    void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));
     // **続けられると名乗った Module に、続けるかを聞く**（§2.5「2.」）。待ち受けてから——Module は中継で資格情報を
     // 受け取り、札で届ける。答えが出た Thread から切れたターンを片づけ、留めを解く
     void recovery!.afterListen().then(({ answers, turns }) => {

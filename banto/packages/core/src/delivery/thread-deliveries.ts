@@ -154,6 +154,8 @@ export class ThreadDeliveries {
     if (thread.status === "closed") return "この Thread は閉じられています";
     const project = this.deps.projectThread.getProject(thread.projectId);
     if (project?.status === "closed") return "この Project は閉じられています";
+    // 移し終えたら（切り替えた・やめた）、移す側が起こす（`runtime/project-move.ts`）
+    if (project?.move) return "この Project はいま別の実行場所へ移しています";
     const held = this.deps.hold?.(threadId);
     if (held !== undefined) return held;
     const hop = Math.max(...pending.map((d) => d.hop));

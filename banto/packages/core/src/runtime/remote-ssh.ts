@@ -50,6 +50,11 @@ import {
   type SshResult,
 } from "./ssh.js";
 
+/** 向こうの置き場の根の下の、この banto の置き場の名前（データの置き場ごとに分ける） */
+export function remoteOwnerDirName(dataDir: string): string {
+  return createHash("sha256").update(dataDir).digest("hex").slice(0, 12);
+}
+
 /** Unix ソケットのパスの上限（`sun_path`）。ssh は ControlPath に一時の名前（17 字）を足して作る */
 const SOCKET_PATH_LIMIT = 107;
 const CONTROL_PATH_SUFFIX = 17;
@@ -555,7 +560,7 @@ export class RemoteSshRuntime {
 
   /** 向こうの、この banto の置き場（置き場の根の下に、データの置き場ごとに分ける——`owner` と同じ） */
   private async resolveBase(conn: Connection): Promise<string> {
-    const owner = createHash("sha256").update(this.opts.dataDir).digest("hex").slice(0, 12);
+    const owner = remoteOwnerDirName(this.opts.dataDir);
     const out = await this.mustRun(
       conn,
       "置き場を作れ",

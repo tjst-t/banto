@@ -184,6 +184,15 @@ export class HostContainerRuntime implements Runtime {
     });
   }
 
+  /** Project のコンテナを止める（用意したことを覚えていなくても——起こし直しのあとでも）。無い・止まっているなら何もしない */
+  async stopProjectContainer(projectId: string): Promise<void> {
+    this.ready.delete(projectId);
+    const name = containerNameFor(projectId);
+    await this.containers.stop(name).catch((err: unknown) => {
+      throw new RuntimeStopError(name, err instanceof Error ? err.message : String(err));
+    });
+  }
+
   // **この banto が作ったものだけ**。確かに届かない（止まっている・無い・他人のもの）は値で返し、
   // 分からない（Incus が答えない）は投げる
   async address(projectId: string): Promise<PlaceAddress> {
@@ -205,6 +214,27 @@ export class HostContainerRuntime implements Runtime {
     const name = containerNameFor(projectId);
     const st = await this.containers.state(name);
     return st ? { name, status: st.status } : undefined;
+  }
+
+  /**
+   * **動いているコンテナの中で、その人のユーザーとして台本を流す**（Project を別の実行場所へ移す前に、Service の unit と
+   * Terminal の tmux を数える——v4-security.md §1「動いているものの数え方」）。コンテナが無い・止まっているなら undefined
+   * （中では何も動いていない）
+   */
+  async runInside(projectId: string, script: string): Promise<{ code: number; stdout: string; stderr: string } | undefined> {
+    const name = containerNameFor(projectId);
+    const st = await this.containers.state(name);
+    if (!st || st.status !== "Running") return undefined;
+    const { uid, gid } = userInfo();
+    return runIncus(
+      [
+        "exec", name, "--user", String(uid), "--group", String(gid),
+        "--env", `XDG_RUNTIME_DIR=/run/user/${uid}`,
+        "--env", `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus`,
+        "--", "/bin/sh", "-c", script,
+      ],
+      { timeoutMs: 60_000 },
+    );
   }
 
   async applyLimits(placeId: string): Promise<void> {

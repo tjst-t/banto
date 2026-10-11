@@ -33,11 +33,12 @@ async function connect(prepare: () => Promise<void>) {
   return { client, cleanup: async () => { await client.close(); await rm(base, { recursive: true, force: true }); } };
 }
 
-test("道具は6本で、すべて AI に見せる。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
+test("道具は7本。6本は AI に見せ、移す前に止めておく1本は人の管理操作だけ。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
   const { client, cleanup } = await connect(async () => {});
   try {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
+      "disableAllServices",
       "listServices",
       "readServiceLogs",
       "removeService",
@@ -45,7 +46,10 @@ test("道具は6本で、すべて AI に見せる。使い方（alias 名で渡
       "startService",
       "stopService",
     ]);
-    for (const t of tools) assert.equal((t._meta as Record<string, unknown>)["dev.banto/visibility"], "agent", t.name);
+    for (const t of tools) {
+      const visibility = t.name === "disableAllServices" ? "admin" : "agent";
+      assert.equal((t._meta as Record<string, unknown>)["dev.banto/visibility"], visibility, t.name);
+    }
     const start = tools.find((t) => t.name === "startService")!;
     assert.match(start.description ?? "", /runCommand/);
     assert.match(JSON.stringify(start.inputSchema), /alias 名/);

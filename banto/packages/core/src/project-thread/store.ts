@@ -8,6 +8,8 @@ import { SnapshotProjection } from "../event-store/snapshot.js";
 import { projectThreadFold } from "./fold.js";
 import { splitMemory, type MemorySplit } from "./memory-split.js";
 import type {
+  ProjectLocation,
+  RuntimeMoveCreated,
   MemoryEntry,
   ProjectId,
   ProjectState,
@@ -35,6 +37,8 @@ export const MEMORY_ENTRY_MAX_CHARS = 20_000;
 export class MemoryLimitExceededError extends Error {}
 /** 別のサーバの Project には、まだできないこと（根を変える等） */
 export class RemoteProjectError extends Error {}
+/** 別の実行場所へ移している途中・移している途中ではない */
+export class RuntimeMoveConflictError extends Error {}
 
 /** 別のサーバの Project か（根は向こうのパスで、この機械では正規化しない） */
 export function isRemoteProject(project: Pick<ProjectState, "runtime">): boolean {
@@ -190,11 +194,45 @@ export class ProjectThreadStore {
     if (isRemoteProject(project)) {
       throw new RemoteProjectError("別のサーバで動く Project の根は、まだ変えられません");
     }
+    if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
     // 作るときと同じ検め方を通す（規則3——2通りの正規化を持たない）
     const resolved = normalizeProjectRoot(root);
     const event = await this.log.append("project.root_changed", { id, root: resolved });
     this.projection.applyOne(event);
     return this.getProject(id)!;
+  }
+
+  /**
+   * **別の実行場所へ移し始めた**（v4-security.md §1「Project を別の実行場所へ移す」の 4）。これが積まれている間、その
+   * Project のターンは断り、届いたものは留める。中身の確かめ（動いているもの・移す先）は呼び手（`runtime/project-move.ts`）
+   */
+  async startRuntimeMove(
+    id: ProjectId,
+    move: { from: ProjectLocation; to: ProjectLocation; created: RuntimeMoveCreated },
+  ): Promise<ProjectState> {
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
+    const event = await this.log.append("project.runtime_move_started", { id, ...move });
+    this.projection.applyOne(event);
+    return this.getProject(id)!;
+  }
+
+  /** **切り替える**（同じ 5）。この機械へ戻るときも `to.runtime` は `host-container` を明示する */
+  async finishRuntimeMove(id: ProjectId, move: { from: ProjectLocation; to: ProjectLocation }): Promise<ProjectState> {
+    const project = this.getProject(id);
+    if (!project?.move) throw new RuntimeMoveConflictError(`project ${id} は移している途中ではありません`);
+    const event = await this.log.append("project.runtime_moved", { id, from: move.from, to: move.to });
+    this.projection.applyOne(event);
+    return this.getProject(id)!;
+  }
+
+  /** **切り替えずに終える**（同じ 6） */
+  async failRuntimeMove(id: ProjectId, reason: string): Promise<void> {
+    const project = this.getProject(id);
+    if (!project?.move) throw new RuntimeMoveConflictError(`project ${id} は移している途中ではありません`);
+    const event = await this.log.append("project.runtime_move_failed", { id, reason });
+    this.projection.applyOne(event);
   }
 
   async renameThread(id: ThreadId, title: string): Promise<ThreadState> {
@@ -247,13 +285,17 @@ export class ProjectThreadStore {
   }
 
   async closeProject(id: ProjectId): Promise<void> {
-    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
     const event = await this.log.append("project.closed", { id });
     this.projection.applyOne(event);
   }
 
   async reopenProject(id: ProjectId): Promise<void> {
-    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
     const event = await this.log.append("project.reopened", { id });
     this.projection.applyOne(event);
   }

@@ -51,8 +51,8 @@ export interface OwnHost {
  * **片づけが投げても元の失敗を隠さない**——`fn` が失敗していれば片づけの失敗はログに出すだけ、`fn` が通っていれば
  * 片づけの失敗で落とす（残したものは片づけ役・次の回が拾うが、黙らない）
  */
-export async function withOwnHost<T>(fn: (host: OwnHost) => Promise<T>): Promise<T> {
-  const host = await startOwnHost();
+export async function withOwnHost<T>(fn: (host: OwnHost) => Promise<T>, opts: OwnHostOptions = {}): Promise<T> {
+  const host = await startOwnHost(opts);
   let failed = false;
   try {
     return await fn(host);
@@ -79,7 +79,12 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-export async function startOwnHost(): Promise<OwnHost> {
+export interface OwnHostOptions {
+  /** host に足して渡す環境（試験だけの差し替え。例：`BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC`） */
+  env?: Record<string, string>;
+}
+
+export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> {
   // **置き場の道は短く、人のホームの下に**（実測・2026-10-05）：Incus は Module の置き場のマウントを、道をつないだ
   // 1つのファイル名で持つ（255 字まで）——E2E の TMPDIR（回の置き場の下の tmp）では長すぎて「file name too long」。
   // 一方、人の Incus の project はホーム（passwd のもの。環境変数の HOME ではない）の下しかマウントさせない
@@ -135,6 +140,7 @@ export async function startOwnHost(): Promise<OwnHost> {
         BANTO_SUBAGENT_FAKE_IMPORT_FILE: SUBAGENT_IMPORT_FILE,
         // Infisical も E2E の core と同じ偽物に（`start-core.ts` が立てて置き場に書いたもの。追加・2026-10-08）
         ...infisicalFixtureEnv(),
+        ...opts.env,
       },
       // 自分のプロセスグループで（グループごと止めるため・Playwright に届く信号の巻き添えにならないため）
       detached: true,

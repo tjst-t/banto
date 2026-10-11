@@ -20,6 +20,7 @@ import {
   InvalidProjectRootError,
   NotFoundError,
   RemoteProjectError,
+  RuntimeMoveConflictError,
   currentSkillSet,
   type ProjectThreadStore,
 } from "../project-thread/store.js";
@@ -49,6 +50,8 @@ import {
 } from "../skills/index.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { AuthHttpError, type AuthService } from "../auth/service.js";
+import type { ProjectMover } from "../runtime/project-move.js";
+import { SshCommandError } from "../runtime/ssh.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import {
   runThreadTurn,
@@ -252,6 +255,8 @@ export interface AppDeps {
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** **登録した別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。無ければ実行場所はこの機械だけ */
   remoteRuntimes?: RemoteRuntimes;
+  /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
+  runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status">;
   /** 実行場所の登録で選べる SSH 鍵（Vault の ssh-identity の alias の名前） */
   listSshIdentities?(): Promise<string[]>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
@@ -1249,6 +1254,13 @@ export function createApp(deps: AppDeps) {
     await closeThreadAndTell(threadId, { by: "ai", reason });
   }
 
+  /** その Thread の Project を別の実行場所へ移している途中なら、断る理由 */
+  function movingReason(threadId: string): string | undefined {
+    const thread = deps.projectThread.getThread(threadId);
+    const project = thread && deps.projectThread.getProject(thread.projectId);
+    return project?.move ? "この Project はいま別の実行場所へ移しています。移し終えてから送ってください" : undefined;
+  }
+
   /**
    * **ターンを1本開く**——人が送ったものも、届いたもので host が始めるものも、ここを通る（切り出し・2026-09-25、
    * アーキ仕様 §4.2）。**鍵（`threadTurns`）は呼ぶ側が先に取る**。失敗は `error` のイベントで返す（呼ぶ側が
@@ -1297,6 +1309,12 @@ export function createApp(deps: AppDeps) {
         : {}),
     });
 
+    // 並んで待っている間に移し始めたら、走らせない（届いたものは留まり、移し終えたら起こす）
+    const moving = movingReason(threadId);
+    if (moving) {
+      yield { type: "error", message: moving };
+      return;
+    }
     const modulesOrStopped = await unlessStopped(deps.resolveModulesForThread(threadId));
     if (modulesOrStopped === STOPPED) {
       yield withdrawnNow();
@@ -2016,6 +2034,38 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。
+      // **人の画面だけ**（AI の道具は作らない）。押す前の見積もり・移す・進み具合
+      const moveMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/runtime-move(\/estimate)?$/);
+      if (moveMatch && deps.runtimeMove) {
+        const [, projectId, sub] = moveMatch as unknown as [string, string, string | undefined];
+        try {
+          // ログインの仕組みが無い構成（Bearer だけの試験）は、人と機械を分けられない——そのまま通す
+          if (deps.auth) deps.auth.requireHuman(principal, { stepUp: false });
+          if (sub === "/estimate" && req.method === "GET") {
+            const runtime = url.searchParams.get("runtime");
+            const root = url.searchParams.get("root");
+            if (!runtime || !root) return json(res, 400, { error: "runtime と root が要ります" });
+            return json(res, 200, await deps.runtimeMove.estimate(projectId, { runtime, root }));
+          }
+          if (!sub && req.method === "GET") return json(res, 200, deps.runtimeMove.status(projectId));
+          if (!sub && req.method === "POST") {
+            const body = (await readJsonBody(req)) as { runtime?: unknown; root?: unknown };
+            if (typeof body.runtime !== "string" || typeof body.root !== "string" || !body.root.trim()) {
+              return json(res, 400, { error: "runtime と root を文字列で渡してください" });
+            }
+            return json(res, 202, await deps.runtimeMove.start(projectId, { runtime: body.runtime, root: body.root }));
+          }
+          return json(res, 404, { error: "not found" });
+        } catch (err) {
+          if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
+          if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
+          if (err instanceof SshCommandError) return json(res, 502, { error: err.message });
+          throw err;
+        }
+      }
+
       // 名前を変える（決定・2026-09-11、ユーザー要望）。作るときに付けた名前を
       // 後から直せなかった
       const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
@@ -2045,6 +2095,7 @@ export function createApp(deps: AppDeps) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
           if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
           if (err instanceof RemoteProjectError) return json(res, 400, { error: err.message });
+          if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
           throw err;
         }
         return;
@@ -2295,6 +2346,9 @@ export function createApp(deps: AppDeps) {
           throw err;
         }
         const threadId = turnMatch[1]!;
+        // **別の実行場所へ移している間は、ターンを始めない**（v4-security.md §1「Project を別の実行場所へ移す」の 4）
+        const moving = movingReason(threadId);
+        if (moving) return json(res, 409, { error: moving, code: "project-moving" });
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
@@ -2546,6 +2600,7 @@ export function createApp(deps: AppDeps) {
           json(res, 200, { ok: true, released });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
           throw err;
         }
         return;
@@ -2558,6 +2613,7 @@ export function createApp(deps: AppDeps) {
           json(res, 200, { ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
           throw err;
         }
         return;

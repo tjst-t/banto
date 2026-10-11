@@ -1072,3 +1072,39 @@ test("Fork は親の最後のターンを引き継がない（親の切れたタ
     );
   });
 });
+
+test("別の実行場所へ移す：started の間は move が立ち（閉じる・根を変えるは断る）、moved で根と実行場所が替わって前の場所が残り、failed なら元のまま", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("demo", dir);
+    const from = { runtime: "host-container", root: project.root };
+    const to = { runtime: "remote:box", root: "/srv/work" };
+    const created = { rootCreated: true, moduleDirs: ["/srv/banto/x/modules/shell-1"], movedAside: [] };
+    const started = await store.startRuntimeMove(project.id, { from, to, created });
+    assert.deepEqual(started.move?.to, to);
+    assert.deepEqual(started.move?.created, created);
+    await assert.rejects(store.startRuntimeMove(project.id, { from, to, created }), /移しています/);
+    await assert.rejects(store.closeProject(project.id), /移しています/);
+    await assert.rejects(store.setProjectRoot(project.id, dir), /移しています/);
+
+    const moved = await store.finishRuntimeMove(project.id, { from, to });
+    assert.equal(moved.move, undefined);
+    assert.equal(moved.runtime, "remote:box");
+    assert.equal(moved.root, "/srv/work");
+    assert.deepEqual(moved.previousLocations?.map((l) => [l.runtime, l.root]), [["host-container", project.root]]);
+    // この機械へ戻す（runtime を明示する）。失敗した2回目は何も変えない
+    await store.startRuntimeMove(project.id, { from: to, to: { runtime: "host-container", root: dir }, created });
+    await store.failRuntimeMove(project.id, "写せませんでした");
+    assert.equal(store.getProject(project.id)?.runtime, "remote:box");
+    assert.equal(store.getProject(project.id)?.move, undefined);
+    await assert.rejects(store.failRuntimeMove(project.id, "二度目"), /途中ではありません/);
+    await store.startRuntimeMove(project.id, { from: to, to: { runtime: "host-container", root: dir }, created });
+    const back = await store.finishRuntimeMove(project.id, { from: to, to: { runtime: "host-container", root: dir } });
+    assert.equal(back.runtime, "host-container");
+    assert.equal(back.previousLocations?.length, 2);
+
+    // 読み直しても同じ（Event Store から畳み直す）
+    const again = new ProjectThreadStore(dir, log);
+    await again.load();
+    assert.deepEqual(again.getProject(project.id)?.previousLocations, back.previousLocations);
+  });
+});

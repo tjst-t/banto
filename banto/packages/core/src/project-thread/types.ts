@@ -231,9 +231,18 @@ export interface ProjectState {
   root: string;
   /**
    * **実行場所**（決定・2026-10-08、v4-security.md §1「Project の記録に実行場所を持つ」）。`remote:<名前>` なら登録した
-   * 別のサーバ。無ければこの機械のコンテナ（`host-container`）。作るときに決め、あとから変えない
+   * 別のサーバ。無ければこの機械のコンテナ（`host-container`）。作るときに決め、変えるのは「別の実行場所へ移す」だけ
+   * （v4-security.md §1「Project を別の実行場所へ移す」）
    */
   runtime?: string;
+  /**
+   * **いま別の実行場所へ移している**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。
+   * `project.runtime_move_started` で立ち、`runtime_moved`・`runtime_move_failed` で消える。立っている間はターンを断り、
+   * 届いたものは留める
+   */
+  move?: RuntimeMoveInProgress;
+  /** **前にいた場所**（移したもの。古い順）。元は消さずに残すので、設定の画面に出して人が消す */
+  previousLocations?: ProjectLocation[];
   status: "active" | "closed";
   /** Memoryの持ち主はProject（§1.1・§2.2、決定・2026-09-05）。Threadは写しを
    *  持たず、「どこまでをsystem promptに入れるか」の境界（memoryBaselineSeq）
@@ -245,6 +254,37 @@ export interface ProjectState {
    */
   acceptMessagesFrom?: ProjectId[];
   createdAt: string;
+}
+
+/** Project のいる場所：実行場所（`host-container`・`remote:<名前>`）と根（その実行場所の側のパス） */
+export interface ProjectLocation {
+  runtime: string;
+  root: string;
+  /** 移した時刻（`previousLocations` だけ） */
+  movedAt?: string;
+}
+
+/**
+ * **移している途中の記録**（`project.runtime_move_started` の中身）。途中で banto が落ちたら、起き直したときにここを見て
+ * 移す先の banto が作ったものだけを消す
+ */
+export interface RuntimeMoveInProgress {
+  from: ProjectLocation;
+  to: ProjectLocation;
+  /** 移す先に banto が作ったもの・退かせたもの（片づけに使う） */
+  created: RuntimeMoveCreated;
+  startedAt: string;
+}
+
+export interface RuntimeMoveCreated {
+  /** 根のフォルダを banto が作った（無ければ、もとからあった空のフォルダ——片づけでは中身だけ消す） */
+  rootCreated: boolean;
+  /** 写す Module の置き場（移す先の側のパス。写す前から有ったものも——中身は banto が写したもの） */
+  moduleDirs: string[];
+  /** そのうち、写す前から `s` だけがあった置き場（片づけでは `s` を残す） */
+  mergedModuleDirs?: string[];
+  /** 移す先に残っていて、写す前に退かせた置き場（`from`→`to`。失敗したら戻す） */
+  movedAside: Array<{ from: string; to: string }>;
 }
 
 export type ThreadKind = "base" | "fork";

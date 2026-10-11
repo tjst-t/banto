@@ -145,6 +145,8 @@ export class ServiceManager {
    * - 登録に無い `banto-*.service`（この Module が作った印のあるもの）は片付ける
    */
   private async reconcile(): Promise<void> {
+    // 移した先で起きたら、登録を全件「止めておきたい」にしてから合わせる（下で自動起動からも外れる）
+    await this.deps.store.applyMovedMarker();
     await mkdir(this.deps.paths.unitDir, { recursive: true });
     await mkdir(this.deps.paths.stateDir, { recursive: true, mode: 0o700 });
     const records = await this.deps.store.all();
@@ -325,6 +327,28 @@ export class ServiceManager {
       // 落ちていたもの（failed）は stop しても failed のまま残る——止めたなら「落ちた」と見せない
       await this.deps.systemctl.run(["reset-failed", unitName(name)]);
       return this.status(name, rec);
+    });
+  }
+
+  /**
+   * **全件を「止めておきたい」にして自動起動から外す**（Project を別の実行場所へ移す前に host が呼ぶ——v4-security.md §1
+   * 「Service を止めたまま写す」）。止まっていても enable のままだと、元の場所の起こし直しで起きる。動いているものは止める
+   * （host は動いているときは移さないので、ふつうは無い）。変えたものの名前を返す
+   */
+  disableAll(): Promise<{ disabled: string[] }> {
+    return this.serialize(async () => {
+      await this.reconcile();
+      const records = await this.deps.store.all();
+      const disabled: string[] = [];
+      for (const [name, rec] of Object.entries(records)) {
+        const enabled = (await this.deps.systemctl.run(["is-enabled", unitName(name)])).stdout.trim() === "enabled";
+        if (rec.desired === "running" || enabled) disabled.push(name);
+        if (rec.desired !== "stopped") await this.deps.store.put(name, { ...rec, desired: "stopped" });
+        if (enabled) await this.sc(["disable", unitName(name)], `${name} を自動起動から外し`);
+        await this.deps.systemctl.run(["stop", unitName(name)]);
+        await this.deps.systemctl.run(["reset-failed", unitName(name)]);
+      }
+      return { disabled };
     });
   }
 

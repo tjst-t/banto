@@ -138,6 +138,15 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
         },
         _meta: agent,
       },
+      {
+        // **人の管理操作だけ**（AI には見せない）。host が Project を別の実行場所へ移す前に呼ぶ
+        name: "disableAllServices",
+        description:
+          "登録した全サービスを「止めておきたい」にし、自動起動から外す（動いていれば止める）。Project を別の実行場所へ移す前に banto が呼ぶ。" +
+          "返り値の disabled は、動かす設定から止める設定に変えたものの名前",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
     ],
   }));
 
@@ -170,6 +179,8 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
           return text({ services: await manager.list() });
         case "readServiceLogs":
           return text(await manager.logs(args.name, args.tail));
+        case "disableAllServices":
+          return text(await manager.disableAll());
         default:
           throw new Error(`unknown tool: ${request.params.name}`);
       }

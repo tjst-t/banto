@@ -2,6 +2,8 @@ import type { BackgroundWork } from "../delivery/reply-handles.js";
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
 import type {
+  ProjectLocation,
+  RuntimeMoveCreated,
   MessageEntry,
   MessageImage,
   TurnSummaryRecord,
@@ -36,6 +38,11 @@ export type ProjectThreadEvent =
   // 後ろに、作られた順で並ぶ（載せ忘れで消えない）
   | { type: "project.order.set"; payload: { ids: string[] } }
   | { type: "project.reopened"; payload: { id: string } }
+  // **別の実行場所へ移す**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。started で受付を止め、
+  // moved で切り替え（この機械へ戻るときも runtime を明示する）、failed で切り替えずに戻す
+  | { type: "project.runtime_move_started"; payload: { id: string; from: ProjectLocation; to: ProjectLocation; created: RuntimeMoveCreated } }
+  | { type: "project.runtime_moved"; payload: { id: string; from: ProjectLocation; to: ProjectLocation } }
+  | { type: "project.runtime_move_failed"; payload: { id: string; reason: string } }
   | {
       type: "thread.created";
       payload: {
@@ -339,6 +346,36 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "thread.order.set": {
         next.threadOrder = new Map(next.threadOrder);
         next.threadOrder.set(event.payload.projectId, [...event.payload.ids]);
+        return next;
+      }
+      case "project.runtime_move_started": {
+        const p = next.projects.get(event.payload.id);
+        if (p) {
+          const { from, to, created } = event.payload;
+          next.projects.set(p.id, { ...p, move: { from, to, created, startedAt: raw.ts } });
+        }
+        return next;
+      }
+      case "project.runtime_moved": {
+        const p = next.projects.get(event.payload.id);
+        if (p) {
+          const { move: _move, ...rest } = p;
+          const { from, to } = event.payload;
+          next.projects.set(p.id, {
+            ...rest,
+            root: to.root,
+            runtime: to.runtime,
+            previousLocations: [...(p.previousLocations ?? []), { runtime: from.runtime, root: from.root, movedAt: raw.ts }],
+          });
+        }
+        return next;
+      }
+      case "project.runtime_move_failed": {
+        const p = next.projects.get(event.payload.id);
+        if (p) {
+          const { move: _move, ...rest } = p;
+          next.projects.set(p.id, rest);
+        }
         return next;
       }
       case "project.reopened": {

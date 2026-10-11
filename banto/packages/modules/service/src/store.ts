@@ -1,9 +1,12 @@
 // 登録（マスター）の置き場。Module のデータ置き場（host のディスク、Project ごと）の `services.json`。
 // **秘密の値は置かない**——envSecrets は alias 名だけ（docs/specs/v4-modules.md §4.2）。
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ServiceRecord } from "./spec.js";
+
+/** 移した印の名前（core の `runtime/project-move.ts` と同じ） */
+export const MOVED_MARKER = ".banto-moved.json";
 
 interface StoreFile {
   version: 1;
@@ -12,7 +15,7 @@ interface StoreFile {
 
 export class ServiceStore {
   private readonly path: string;
-  constructor(dataDir: string) {
+  constructor(private readonly dataDir: string) {
     this.path = join(dataDir, "services.json");
   }
 
@@ -43,6 +46,26 @@ export class ServiceStore {
     const services = await this.all();
     delete services[name];
     await this.write(services);
+  }
+
+  /**
+   * **Project を別の実行場所へ移した印**（`.banto-moved.json`、v4-security.md §1「Service を止めたまま写す」）。core が
+   * 写した置き場の直下に置く。あれば、登録を全件「止めておきたい」にしてから印を消す（移した先で勝手に起こさない）。
+   * 印を消すのは書き換えのあと——途中で落ちても、次に起きたときにもう一度やる。印があって何かを変えたなら true
+   */
+  async applyMovedMarker(): Promise<boolean> {
+    const marker = join(this.dataDir, MOVED_MARKER);
+    try {
+      await stat(marker);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw err;
+    }
+    const services = await this.all();
+    for (const rec of Object.values(services)) rec.desired = "stopped";
+    await this.write(services);
+    await rm(marker, { force: true });
+    return true;
   }
 
   /** 書きかけで落ちても壊れた登録が残らないよう、別名に書いてから置き換える */

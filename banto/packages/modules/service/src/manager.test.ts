@@ -433,3 +433,45 @@ test("消すとき、systemd の中の落ちた印も消す（not-found/failed �
     await cleanup();
   }
 });
+
+test("移す前に止めておく：全件を「止めておきたい」にして自動起動から外し、変えたものの名前を返す", async () => {
+  const { base, sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    await manager.start({ name: "worker", command: "y" });
+    await manager.stop("worker");
+    sc.active.set("banto-web.service", "failed");
+    const r = await manager.disableAll();
+    assert.deepEqual(r.disabled, ["web"], "止めてあったものは変えたうちに数えない");
+    assert.ok(!sc.enabled.has("banto-web.service") && !sc.enabled.has("banto-worker.service"));
+    const saved = JSON.parse(await readFile(join(base, "data/service/services.json"), "utf8")) as {
+      services: Record<string, { desired: string }>;
+    };
+    assert.deepEqual(Object.values(saved.services).map((s) => s.desired), ["stopped", "stopped"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("移した印（.banto-moved.json）があれば、起きたときに全件を止めたままにして印を消す——unit が無くても起こさない", async () => {
+  const { base, sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    // 移した先：写しの unit はまだ無く、登録は「動かしておきたい」のまま写ってきた
+    await unlink(join(base, "units/banto-web.service"));
+    sc.enabled.clear();
+    sc.active.clear();
+    sc.calls = [];
+    await writeFile(join(base, "data/service/.banto-moved.json"), JSON.stringify({ from: {}, to: {} }));
+    const [s] = await manager.list();
+    assert.equal(s!.desired, "stopped");
+    assert.equal(s!.state, "stopped");
+    assert.ok(!sc.did("start", "banto-web.service"), "移した先で勝手に起こした");
+    assert.ok(!sc.enabled.has("banto-web.service"), "移した先で自動起動に入れた");
+    await assert.rejects(stat(join(base, "data/service/.banto-moved.json")), "印が残っている");
+    // 印が消えたあとは、人が起こせば今までどおり動く
+    assert.equal((await manager.start({ name: "web" })).state, "running");
+  } finally {
+    await cleanup();
+  }
+});

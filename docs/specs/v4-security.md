@@ -643,7 +643,7 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
     送る・Repositories の一覧で突き合わせない・ターンの途中で banto が落ちて起き直すと続く）
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
-#### Project を別の実行場所へ移す（決定・2026-10-11、ユーザー。未実装。Fable のレビュー（2026-10-11）を受けて改めた）
+#### Project を別の実行場所へ移す（決定・2026-10-11、ユーザー。Fable のレビュー（2026-10-11）を受けて改めた。本体は実装・2026-10-11、Backlog `runtime-move-core`。画面は `runtime-move-ui`）
 
 **「実行場所はあとから変えない」を改め、人が画面から Project を別の実行場所へ移せるようにする。** この機械のコンテナ→
 別のサーバ・別のサーバ→この機械のコンテナ・別のサーバどうしを同じ流れで扱う。**写して切り替える**——元は消さない。
@@ -721,6 +721,32 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
 
 **作らないもの**：写さずに git で移す形（未コミットの変更・git の外のファイルが落ちる）・動いているものを止めて回る形・元を
 自動で消す形・AI が移す形。
+
+**実装の形**（2026-10-11、`packages/core/src/runtime/project-move.ts`）：
+
+- **口**（人のセッションだけ。機械の合言葉は 403）：`GET /api/projects/:id/runtime-move/estimate?runtime=&root=`（押す前の見積もり：
+  写す件数と大きさ・移らないもの・作り直しが要るかもしれないもの（浅いところの venv・node_modules）・動いているもの・
+  会話の記録を写すか・閉じ込めの注意・押せない理由）／`POST /api/projects/:id/runtime-move`（`{runtime, root}`。started を
+  積んだところで 202、写すのは裏で）／`GET /api/projects/:id/runtime-move`（記録の `move` と進み具合。進み具合はその走行の
+  メモリにだけある——起き直したあとは記録の `move` だけ）
+- **記録**：`project.runtime_move_started`（`from`・`to`・`created`＝banto が作った根か・写す Module の置き場・`s` だけが
+  あった置き場・退かせた置き場）・`project.runtime_moved`（`from`・`to`）・`project.runtime_move_failed`（`reason`）。Project の
+  read model に `move`（移している途中）と `previousLocations`（前にいた場所。画面に出して人が消す）。移している間は、ターンの
+  開始（409・`code: "project-moving"`）・Project を閉じる／開く・根を変える（409）を断り、届いたものは `ThreadDeliveries` が
+  留める。その Project の Module は起こさない（Service を止めておく間の Service の Module だけ例外）
+- **移す先の根**：この機械のコンテナへは**ホームの下の絶対パス**だけ（Incus の制限つき区画がホームの下しかマウントさせない）
+- **Service を止めておく**のは Service の Module の人の管理操作 `disableAllServices`（全件を「止めておきたい」にして自動起動から
+  外す。AI には見せない）。元の登録も「止めておきたい」になる。Service の Module に繋げない・systemd が使えないときは移さない
+- **写したものの確かめ**：ファイルとリンクの件数・ファイルの大きさの和を、両側で同じ除き方（`./s`・Shell と Terminal の
+  `./home`・`*.sock`・移した印）で数えて比べる。`git worktree repair` には、根の中にある worktree を新しい根のパスで名指して渡す
+- **作業ディレクトリが変わる**とき、会話の記録は `<CLI の置き場>/projects/<作業ディレクトリの英数字以外を - にしたもの>/` の
+  中で写す（200 字を超える作業ディレクトリは CLI が名前を縮めるので写さず、知らせに書く）
+- **E2E**：`e2e/specs/runtime-move.spec.ts`（自前の host と入れ子の SSH の相手。写す途中で落とすために、写す速さを抑える
+  試験だけの環境変数 `BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC`）
+- **仕様と違うところ（人に上げる・規則8）**：「Module だけが知っているもの（Factory の件・Shell の待たないコマンド）は繋がっている
+  Module に tool で聞く」は作っていない。どちらも会話への返事待ちの札を持つので host の札で数え、Shell の待たないコマンドは
+  実行場所の systemd の単位（`banto-shell-*`）でも引く。札を持たない仕事を抱える Module が出たら tool で聞く口を足す。
+  setuid の印が落ちるかは測っていない（`tar -xpf` を移す先のユーザーで流す。root でないので setuid・持ち主は保たれない見込み）
 
 ## 2. コンテナの中の細部（2026-09-25 に Landlock から移した）
 

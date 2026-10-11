@@ -60,7 +60,10 @@ export interface RemoteRuntimeDeps {
   startSshAgent(identity: string, socketDir: string): Promise<string>;
   /** その SSH 鍵の公開鍵（`ssh-ed25519 AAAA…`） */
   publicKeyOf(identity: string): Promise<string>;
-  /** その実行場所を使っている Project（閉じたものも数える——閉じても向こうの置き場は残り、再開できる） */
+  /**
+   * その実行場所を使っている Project（閉じたものも数える——閉じても向こうの置き場は残り、再開できる）。移している途中の
+   * Project は、移す先としても数える
+   */
   projectsUsing(runtime: string): Array<{ id: string; name: string }>;
 }
 
@@ -250,8 +253,7 @@ export class RemoteRuntimes {
    * 作成は1本ずつ通し、正規化のあとでもう一度確かめる（同時に2つ押されても2つ目は断る）
    */
   async createProjectOn<T>(name: string, root: string, create: (resolvedRoot: string, runtime: string) => Promise<T>): Promise<T> {
-    const previous = this.creating.get(name) ?? Promise.resolve();
-    const run = previous.catch(() => undefined).then(async () => {
+    return this.exclusive(name, async () => {
       const r = this.deps.store.get(name);
       if (!r) throw new RemoteRuntimeError(400, `実行場所「${name}」はありません`);
       const before = this.unavailableReason(r);
@@ -262,6 +264,15 @@ export class RemoteRuntimes {
       if (reason) throw new RemoteRuntimeError(409, `実行場所「${name}」は選べません：${reason}`);
       return create(resolved, runtimeIdOf(name));
     });
+  }
+
+  /**
+   * **その実行場所を押さえて `fn` を通す**（1本ずつ）。Project の作成と、別の実行場所へ移す（移す先として。
+   * v4-security.md §1「Project を別の実行場所へ移す」の 4）が同じ鍵で並ぶ——1つの実行場所に Project は1つ
+   */
+  async exclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.creating.get(name) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(fn);
     this.creating.set(name, run);
     try {
       return await run;
