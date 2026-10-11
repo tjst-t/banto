@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
 import { openApp } from "../helpers.js";
+import { coreSocketDir, moduleSocketDir } from "../../packages/core/dist/runtime/socket-dir.js";
 import { withSshHost, type SshHost } from "../ssh-host.js";
 
 test.describe.configure({ mode: "serial" });
@@ -141,7 +142,9 @@ test("別のサーバの Project で、Vault の鍵の窓口と流れの口が�
       expect(first.stdout, "その鍵で SSH に入れない").toContain("窓口で入れた");
       // 向こうの窓口は向こうのユーザーだけのソケット。host の側には Vault が立てた窓口がある（鍵を持つのは host の ssh-agent）
       expect(await remoteKind(host, sock)).toBe(`${host.user} 600 socket`);
-      const hostSocketDir = join(DATA_DIR, "modules", `shell-${projectId}`, "s");
+      // host の側の窓口は core の短い置き場の下の、Module ごとのフォルダ（runtime/socket-dir.ts。置き場が深い E2E では
+      // /run/user/<uid>/banto-<ハッシュ> に逃げる）
+      const hostSocketDir = moduleSocketDir(coreSocketDir(DATA_DIR), join(DATA_DIR, "modules", `shell-${projectId}`));
       const hostAgents = readdirAgents(hostSocketDir);
       expect(hostAgents.length, `host の側に Vault の窓口が無い（${hostSocketDir}）`).toBe(1);
       expect(createHash("sha256").update(join(hostSocketDir, hostAgents[0]!)).digest("hex").slice(0, 12)).toBe(sock.slice(-12));

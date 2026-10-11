@@ -50,3 +50,10 @@ export function coreSocketDir(dataDir: string, deps: SocketDirDeps = defaultDeps
   }
   return dir;
 }
+
+/** core の短い置き場の下の、Module ごとのフォルダ（0700。名前は Module の置き場から決まる——同じ Module は同じ場所） */
+export function moduleSocketDir(base: string, moduleDataDir: string): string {
+  const dir = join(base, `m-${createHash("sha256").update(moduleDataDir).digest("hex").slice(0, 8)}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}

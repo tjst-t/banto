@@ -13,7 +13,7 @@
 //
 // **向こうで sudo しない**。root が要る準備は人が行う。
 
-import { coreSocketDir } from "./socket-dir.js";
+import { coreSocketDir, moduleSocketDir } from "./socket-dir.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -23,7 +23,6 @@ import { basename, join } from "node:path";
 import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { syncShellHome } from "../modules/shell-home.js";
 import { SingleFlight } from "../modules/single-flight.js";
-import { ensureSocketDir } from "./host-container.js";
 import {
   REMOTE_LAUNCHER_REL,
   REMOTE_NODE_REL,
@@ -470,8 +469,7 @@ export class RemoteSshRuntime {
 
   /** host の側の短い窓口のパス（データの置き場の `s`。Unix ソケットの上限を越えるなら断る） */
   private shortSocketPath(fileName: string): string {
-    const dir = join(this.opts.dataDir, "s");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const dir = coreSocketDir(this.opts.dataDir);
     const path = join(dir, fileName);
     if (Buffer.byteLength(path) > SOCKET_PATH_LIMIT) {
       throw new Error(`ソケットの転送の窓口のパスが長すぎて作れません（${path}。Unix ソケットは ${SOCKET_PATH_LIMIT} バイトまで）——banto のデータの置き場を短いパスにしてください`);
@@ -685,10 +683,15 @@ export class RemoteSshRuntime {
         await self.mustRun(conn, "Module の置き場を作れ", `mkdir -p ${shq(pathInside(moduleDataDir))} && chmod 700 ${shq(pathInside(moduleDataDir))}`);
         if (existsSync(packageDir) && statSync(packageDir).isDirectory()) await self.syncPackageDir(conn, packageDir, pathInside(packageDir));
       },
-      // 鍵の窓口（ssh-agent）は Vault が host の側の置き場に立て、中継が向こうの置き場の `s` へ転送する（`socketPathInside`）
-      socketDirFor: (moduleDataDir) => ensureSocketDir(moduleDataDir),
+      // 鍵の窓口（ssh-agent）は Vault が host の側に立て、中継が向こうの置き場の `s` へ転送する（`socketPathInside`）。
+      // host の側の窓口は向こうに見せるものではない（転送の元）ので、Module の置き場ではなく core の短い置き場の下に
+      // Module ごとのフォルダで立てる——置き場が深いと Unix ソケットの 107 バイトを越えた（E2E、2026-10-11）
+      socketDirFor: (moduleDataDir) => moduleSocketDir(coreSocketDir(dataDir), moduleDataDir),
       socketPathInside(hostPath) {
-        if (!hostPath.startsWith(`${dataDir}/`)) throw new Error(`鍵の窓口 ${hostPath} は banto のデータの置き場の外です——別のサーバへ転送しません`);
+        const own = coreSocketDir(dataDir);
+        if (!hostPath.startsWith(`${dataDir}/`) && !hostPath.startsWith(`${own}/`)) {
+          throw new Error(`鍵の窓口 ${hostPath} は banto の置き場の外です——別のサーバへ転送しません`);
+        }
         return self.forwardAgentSocket(conn, hostPath);
       },
       async prepareShellHome(moduleDataDir, files) {
