@@ -6123,7 +6123,7 @@
       "number": 251,
       "kind": "task",
       "title": "Publish を別のサーバに対応させる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [
         "remote-runtime-ssh"
@@ -6137,7 +6137,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-08T09:37:11.139Z",
-      "updatedAt": "2026-10-11T02:37:06.826Z",
+      "updatedAt": "2026-10-11T02:37:12.632Z",
       "closedAt": null,
       "extra": {}
     },
