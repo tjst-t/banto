@@ -2,6 +2,7 @@
 // 最後の user の中身に応じて台本どおりに返す。
 //   "SLEEP_TOOL"  → Bash の tool_use（sleep 120）
 //   "MCP_TOOL"    → mcp__slow__slow_task の tool_use
+//   "AGENT_TOOL"  → Agent の tool_use（サブエージェントを1回）
 //   "LONG_TEXT"   → 長い文をゆっくり流す（1語/100ms、約60秒）
 //   最後が tool_result → 「tool done」
 //   それ以外      → 短い文（受け取った最後の user の要約を返す）
@@ -31,6 +32,9 @@ function plan(body) {
   // M1 で足した：すぐ終わる tool（完了するターンに tool を含めるため）
   if (prompt.includes("QUICK_TOOL"))
     return { kind: "tool", name: "Bash", input: { command: "echo quick-ok", description: "echo" } };
+  // runtime-move で足した：サブエージェント（Agent）を1回起こす（<会話 id>/ に記録が出る）
+  if (prompt.includes("AGENT_TOOL"))
+    return { kind: "tool", name: "Agent", input: { description: "sub", prompt: "sub-task: say hi", subagent_type: "general-purpose" } };
   if (prompt.includes("MCP_TOOL")) return { kind: "tool", name: "mcp__slow__slow_task", input: { seconds: 120 } };
   if (prompt.includes("LONG_TEXT")) return { kind: "slowtext", words: 600, delayMs: 100 };
   return { kind: "text", text: `ack(${(body.messages ?? []).length} messages): ${prompt.slice(0, 60)}` };
