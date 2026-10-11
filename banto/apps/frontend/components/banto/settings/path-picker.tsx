@@ -9,8 +9,11 @@
 // 中身（フォルダの一覧）は host が答える（`/api/fs/directories`）
 // ——画面はファイルの場所を推測しない（規則3）。別のサーバのフォルダは host が SSH で引いて答える
 // （`/api/runtimes/<名前>/directories`、v4-security.md §1「登録と選び方」）——引き方を `source` で差し替える
+//
+// **「新しいフォルダ」は、別の実行場所へ移す先を選ぶときだけ**（決定・2026-10-11、モック 0d22d225）。ここでは名前を
+// 決めてその中へ入るだけで、作らない——実際に作るのは「移す」を押したときに banto が作る
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, CornerLeftUp, Folder, FolderOpen } from "lucide-react";
+import { ChevronRight, CornerLeftUp, Folder, FolderOpen, FolderPlus } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -39,12 +42,18 @@ export function PathPicker({
   onChange,
   placeholder,
   source = HOST_SOURCE,
+  pickerDescription = "いま開いている場所を、この Project の Root にします。",
+  allowNewFolder = false,
 }: {
   id: string;
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
   source?: FolderSource;
+  /** 「フォルダを選ぶ」の説明文（何のために選ぶか） */
+  pickerDescription?: string;
+  /** 「新しいフォルダ」を出す。作るのは選んだあと（移すときに banto が作る）——ここでは名前を決めるだけ */
+  allowNewFolder?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -70,6 +79,8 @@ export function PathPicker({
         onOpenChange={setOpen}
         source={source}
         startAt={value}
+        description={pickerDescription}
+        allowNewFolder={allowNewFolder}
         onPick={(path) => {
           onChange(path);
           setOpen(false);
@@ -84,17 +95,24 @@ function PickerDialog({
   onOpenChange,
   source,
   startAt,
+  description,
+  allowNewFolder,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   source: FolderSource;
   startAt: string;
+  description: string;
+  allowNewFolder: boolean;
   onPick: (path: string) => void;
 }) {
   const [at, setAt] = useState<string | undefined>(undefined);
   const [listing, setListing] = useState<RealDirectoryListing | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** まだ無い（これから作る）フォルダ。そこに居る間は host に聞かない（その中は空） */
+  const [pending, setPending] = useState<Array<{ path: string; parent: string }>>([]);
+  const [naming, setNaming] = useState<string | null>(null);
 
   const list = source.list;
   const load = useCallback((path: string | undefined) => {
@@ -114,6 +132,8 @@ function PickerDialog({
   if (open && openedAt === null) {
     setOpenedAt(startAt.trim() || "");
     setAt(startAt.trim() || undefined);
+    setPending([]);
+    setNaming(null);
   }
   if (!open && openedAt !== null) setOpenedAt(null);
   useEffect(() => {
@@ -123,7 +143,40 @@ function PickerDialog({
 
   function go(path: string | undefined) {
     setAt(path);
-    load(path);
+    setNaming(null);
+    if (path === undefined || !pending.some((p) => p.path === path)) load(path);
+  }
+
+  // いま見ている場所：作る予定のフォルダの中なら手元で組み立てる。host の一覧には、ここに作る予定のものを足す
+  const pendingHere = pending.find((p) => p.path === at);
+  const childrenOf = (path: string) =>
+    pending.filter((p) => p.parent === path).map((p) => ({ name: p.path.slice(p.parent.replace(/\/$/, "").length + 1), path: p.path }));
+  const shown: RealDirectoryListing | null = pendingHere
+    ? { path: pendingHere.path, parent: pendingHere.parent, entries: childrenOf(pendingHere.path) }
+    : listing
+      ? {
+          ...listing,
+          entries: [...listing.entries, ...childrenOf(listing.path).filter((c) => !listing.entries.some((e) => e.name === c.name))],
+        }
+      : null;
+  const shownError = pendingHere ? null : error;
+  const isPending = (path: string) => pending.some((p) => p.path === path);
+
+  const trimmedName = naming?.trim() ?? "";
+  const nameError =
+    naming === null || trimmedName === ""
+      ? undefined
+      : /[/\\]/.test(trimmedName) || trimmedName === "." || trimmedName === ".."
+        ? "名前に / や .. は使えません"
+        : shown?.entries.some((e) => e.name === trimmedName)
+          ? "同じ名前のフォルダがあります"
+          : undefined;
+  function addFolder() {
+    if (!shown || !trimmedName || nameError) return;
+    const path = `${shown.path.replace(/\/$/, "")}/${trimmedName}`;
+    setPending((list) => [...list, { path, parent: shown.path }]);
+    setNaming(null);
+    setAt(path);
   }
 
   return (
@@ -132,9 +185,7 @@ function PickerDialog({
         <DialogHeader>
           <DialogTitle>{source.where ? `${source.where} のフォルダを選ぶ` : "フォルダを選ぶ"}</DialogTitle>
           <DialogDescription>
-            {source.where
-              ? `${source.where} のフォルダです。いま開いている場所を、この Project の Root にします。`
-              : "いま開いている場所を、この Project の Root にします。"}
+            {source.where ? `${source.where} のフォルダです。${description}` : description}
           </DialogDescription>
         </DialogHeader>
 
@@ -144,8 +195,8 @@ function PickerDialog({
             variant="ghost"
             size="sm"
             className="h-7 shrink-0 gap-1 px-2 text-xs"
-            disabled={!listing?.parent}
-            onClick={() => go(listing?.parent)}
+            disabled={!shown?.parent}
+            onClick={() => go(shown?.parent)}
           >
             <CornerLeftUp className="size-3.5" /> 上へ
           </Button>
@@ -153,24 +204,80 @@ function PickerDialog({
             data-testid="path-picker-current"
             className="min-w-0 flex-1 truncate rounded-md bg-surface-2 px-2 py-1 font-mono text-xs text-ink-2"
           >
-            {listing?.path ?? at ?? "…"}
+            {shown?.path ?? at ?? "…"}
+            {pendingHere ? <span className="ml-1.5 font-sans text-ink-3">（新しく作る）</span> : null}
           </p>
+          {allowNewFolder ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2 text-xs"
+              disabled={!shown}
+              onClick={() => setNaming("")}
+              data-testid="path-picker-new-folder"
+            >
+              <FolderPlus className="size-3.5" /> 新しいフォルダ
+            </Button>
+          ) : null}
         </div>
+        {naming !== null && shown ? (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5">
+              <Input
+                autoFocus
+                value={naming}
+                placeholder="フォルダの名前"
+                onChange={(e) => setNaming(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addFolder();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setNaming(null);
+                  }
+                }}
+                className="h-8 text-xs"
+                aria-label="新しいフォルダの名前"
+                data-testid="path-picker-new-folder-name"
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 shrink-0 text-xs"
+                disabled={!trimmedName || !!nameError}
+                onClick={addFolder}
+                data-testid="path-picker-new-folder-create"
+              >
+                作る
+              </Button>
+              <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 text-xs" onClick={() => setNaming(null)}>
+                やめる
+              </Button>
+            </div>
+            <p className={nameError ? "text-xs text-stop" : "text-xs text-ink-3"} data-testid="path-picker-new-folder-note">
+              {nameError ?? `${shown.path} の中に作ります。実際に作るのは、移すのを押したときです。`}
+            </p>
+          </div>
+        ) : null}
 
-        {error ? (
+        {shownError ? (
           <p className="rounded-md bg-turn-soft px-2.5 py-2 text-xs text-foreground">
-            このフォルダを開けません：{error}
+            このフォルダを開けません：{shownError}
           </p>
         ) : null}
 
         <div className="max-h-72 min-h-32 overflow-auto rounded-md border border-border">
-          {(listing?.entries.length ?? 0) === 0 ? (
+          {(shown?.entries.length ?? 0) === 0 ? (
             <p className="p-4 text-center text-xs text-ink-3">
-              {error ? "" : "この中にフォルダはありません"}
+              {shownError ? "" : "この中にフォルダはありません"}
             </p>
           ) : (
             <ul className="flex flex-col">
-              {listing!.entries.map((entry) => (
+              {shown!.entries.map((entry) => (
                 <li key={entry.path}>
                   <button
                     type="button"
@@ -180,6 +287,7 @@ function PickerDialog({
                   >
                     <Folder className="size-3.5 shrink-0 text-ink-3" />
                     <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                    {isPending(entry.path) ? <span className="text-ink-3">新しく作る</span> : null}
                     <ChevronRight className="size-3.5 shrink-0 text-ink-3" />
                   </button>
                 </li>
@@ -194,8 +302,8 @@ function PickerDialog({
           </Button>
           <Button
             type="button"
-            disabled={!listing?.path}
-            onClick={() => listing?.path && onPick(listing.path)}
+            disabled={!shown?.path}
+            onClick={() => shown?.path && onPick(shown.path)}
           >
             ここにする
           </Button>

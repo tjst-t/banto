@@ -119,7 +119,7 @@ export interface RealProject {
   name: string;
   root: string;
   status: "active" | "closed";
-  /** 実行場所（`remote:<名前>` なら別のサーバ。無ければこの機械のコンテナ）。作ったあとは変わらない */
+  /** 実行場所（`remote:<名前>` なら別のサーバ。無ければこの機械のコンテナ）。変わるのは別の実行場所へ移したときだけ */
   runtime?: string;
   /** 承認なしでメッセージを受け取ってよい Project の id（追加・2026-10-01、アーキ仕様 §4.2）。無ければ空 */
   acceptMessagesFrom?: string[];
@@ -634,6 +634,58 @@ export async function listRealRuntimeDirectories(name: string, path?: string): P
 
 export async function fetchRealRuntimeRootScope(name: string, path: string): Promise<RealRootScope> {
   return request<RealRootScope>(`/api/runtimes/${encodeURIComponent(name)}/root-scope?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * **Project を別の実行場所へ移す**（決定・2026-10-11、`docs/specs/v4-security.md` §1「Project を別の実行場所へ移す」、
+ * Backlog `runtime-move-ui`）。押す前の見積もり・移す・進み具合。押せるかどうかの判断は host が持つ（`blockers`）
+ */
+export interface RealMoveEstimate {
+  from: { runtime: string; root: string; label: string };
+  to: { runtime: string; label: string; root: string };
+  size: { bytes: number; files: number };
+  notMoved: string[];
+  rebuild: string[];
+  running: Array<{ kind: string; label: string }>;
+  copiesClaudeRecords: boolean;
+  claudeRecords: number;
+  confinementNote?: string;
+  /** 押せない理由（無ければ押せる） */
+  blockers: string[];
+}
+
+export interface RealMoveProgress {
+  phase: "preparing" | "stopping" | "copying" | "verifying" | "finishing" | "done" | "failed";
+  copiedBytes: number;
+  totalBytes: number;
+  current?: string;
+  startedAt: string;
+  endedAt?: string;
+  reason?: string;
+}
+
+export interface RealMoveStatus {
+  /** 移している途中の記録（立っている間は移している） */
+  move?: { to: { runtime: string; root: string } };
+  /** 進み具合（host が起き直したあとは無い） */
+  progress?: RealMoveProgress;
+}
+
+export async function estimateRealRuntimeMove(projectId: string, target: { runtime: string; root: string }): Promise<RealMoveEstimate> {
+  const query = `runtime=${encodeURIComponent(target.runtime)}&root=${encodeURIComponent(target.root)}`;
+  return request<RealMoveEstimate>(`/api/projects/${encodeURIComponent(projectId)}/runtime-move/estimate?${query}`);
+}
+
+/** 移し始める。返るのは移している途中の Project（移す先の根は正規化したもの） */
+export async function startRealRuntimeMove(
+  projectId: string,
+  target: { runtime: string; root: string },
+): Promise<RealProject & { move?: { to: { runtime: string; root: string } } }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/runtime-move`, { method: "POST", body: JSON.stringify(target) });
+}
+
+export async function fetchRealRuntimeMoveStatus(projectId: string): Promise<RealMoveStatus> {
+  return request<RealMoveStatus>(`/api/projects/${encodeURIComponent(projectId)}/runtime-move`);
 }
 
 /** `remote:<名前>` から名前を引く（この機械のコンテナなら undefined） */

@@ -85,6 +85,25 @@ export async function updateRealProject(
 }
 
 /**
+ * **host から根と実行場所を読み直す**（別の実行場所へ移したあと。Backlog `runtime-move-ui`）。手元で移す先を
+ * 書き込まない——移したかどうか・正規化した根は host が知っている（規則3）。返すのは読み直した Project
+ */
+export async function refreshRealProjectLocation(id: string): Promise<MockProject | undefined> {
+  const real = (await listRealProjects()).find((p) => p.id === id);
+  if (!real) throw new Error("host にこの Project がありません");
+  projects = projects.map((p) => {
+    if (p.id !== id) return p;
+    const next: MockProject = { ...p, basePath: real.root };
+    // この機械のコンテナへ戻したら、印を消す（無いのがこの機械のコンテナ）
+    if (real.runtime) next.runtime = real.runtime;
+    else delete next.runtime;
+    return next;
+  });
+  notifyMockStoreChange();
+  return projects.find((p) => p.id === id);
+}
+
+/**
  * **並べ替える**（決定・2026-09-11、ユーザー要望）。受け取るのは画面に出ている
  * （畳んでいない）Project の並び。host へ送るのは**一覧全体の並び**
  * ——1件ずつ番号を振ると、途中で失敗したときに順番が飛ぶ。

@@ -53,10 +53,12 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   const rootScope = useRootScope(root, remoteName);
 
   // **別の Project に切り替わったら、その Project の値から始める。**
-  // 打っている途中の値を捨てないよう、見ている Project が変わったときだけ。
-  const [shownProjectId, setShownProjectId] = useState(project.id);
-  if (shownProjectId !== project.id) {
-    setShownProjectId(project.id);
+  // 打っている途中の値を捨てないよう、見ている Project が変わったときだけ。別の実行場所へ移して根が
+  // 変わったときも（古い根を打ちかけの値として残すと、保存で元の場所へ戻そうとしてしまう）
+  const shownKey = `${project.id}\n${project.runtime ?? ""}\n${project.basePath}`;
+  const [shownProjectId, setShownProjectId] = useState(shownKey);
+  if (shownProjectId !== shownKey) {
+    setShownProjectId(shownKey);
     setName(project.name);
     setRoot(project.basePath);
   }
@@ -108,7 +110,7 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
           />
         </div>
 
-        {CONNECTED_FEATURES.remoteRuntimes ? <ProjectRuntimeSection runtime={project.runtime} /> : null}
+        {CONNECTED_FEATURES.remoteRuntimes ? <ProjectRuntimeSection projectId={project.id} runtime={project.runtime} /> : null}
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="project-root">Root パス{remoteName ? `（${remoteName} の上）` : ""}</Label>

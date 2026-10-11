@@ -231,12 +231,13 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       expect(created.runtime).toBe(`remote:${name}`);
       expect(created.root).toBe(`/home/${host.user}/work/alpha`);
 
-      // 設定に読むだけで出る（根は変えられない・この機械のコンテナの節は出ない）
+      // 設定に出る（ここでは書き換えない——変えるのは「別の実行場所へ移す…」から。根は変えられない・この機械のコンテナの節は出ない）
       await page.goto(`/settings?project=${projectId}&section=project-general`);
       const runtimeBox = page.getByTestId("project-runtime");
       await expect(runtimeBox).toHaveAttribute("data-runtime", `remote:${name}`, { timeout: 30_000 });
       await expect(runtimeBox.getByTestId("project-runtime-where")).toHaveText(`${name} ${target} で動いています`);
-      await expect(runtimeBox).toContainText("実行場所はあとから変えられません");
+      await expect(runtimeBox).toContainText(`下の根は ${name} の上のフォルダです。`);
+      await expect(runtimeBox.getByTestId("project-runtime-move")).toBeVisible();
       await expect(page.getByTestId("project-root-readonly")).toHaveText(`/home/${host.user}/work/alpha`);
       await expect(page.getByTestId("project-container-section")).toHaveCount(0);
 

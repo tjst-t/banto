@@ -58,6 +58,8 @@ export interface MoveEstimate {
   running: RunningItem[];
   /** Claude の会話の記録を写すか（作業ディレクトリが変わるとき） */
   copiesClaudeRecords: boolean;
+  /** 写す Claude の会話の記録の件数（写さないなら 0） */
+  claudeRecords: number;
   /** この機械のコンテナから別のサーバへ移すときの注意（§「閉じ込め」） */
   confinementNote?: string;
   /** 押せない理由（無ければ押せる） */
@@ -319,6 +321,7 @@ export class ProjectMover {
       rebuild,
       running,
       copiesClaudeRecords: this.runnerCwdChanges(from.runtime, target.runtime),
+      claudeRecords: this.claudeRecordCount(project, from, target.runtime),
       ...(!isRemoteProject({ runtime: from.runtime }) && remoteNameOf(target.runtime)
         ? {
             confinementNote:
@@ -801,6 +804,15 @@ export class ProjectMover {
    * **全 Thread の全 resume-point の `<id>.jsonl` と `<id>/` を新しい作業ディレクトリのフォルダへ写す**（元は残す。
    * フォルダ丸ごとは写さない——この機械の Project の根は人のフォルダなので、人自身の会話まで写る）
    */
+  /** 写すことになる Claude の会話の記録の件数（見積もり。写さないなら 0） */
+  private claudeRecordCount(project: ProjectState, from: ProjectLocation, toRuntime: string): number {
+    if (!this.runnerCwdChanges(from.runtime, toRuntime)) return 0;
+    const oldName = claudeProjectDirName(this.deps.projectThread.runnerCwd({ id: project.id, root: from.root, runtime: from.runtime }));
+    if (!oldName) return 0;
+    const src = join(this.deps.claudeConfigDir, "projects", oldName);
+    return sessionIdsOf(this.deps.projectThread.listThreadsForProject(project.id)).filter((id) => existsSync(join(src, `${id}.jsonl`))).length;
+  }
+
   private copyClaudeRecords(project: ProjectState, from: ProjectLocation, to: ProjectLocation): { copied: number; note?: string } {
     if (!this.runnerCwdChanges(from.runtime, to.runtime)) return { copied: 0 };
     const oldCwd = this.deps.projectThread.runnerCwd({ id: project.id, root: from.root, runtime: from.runtime });
