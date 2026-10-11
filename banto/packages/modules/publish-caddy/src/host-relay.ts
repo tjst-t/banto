@@ -55,10 +55,10 @@ export class HostRelay {
       throw err;
     }
     if (isError) throw new Error(text || "アドレスを引けませんでした");
-    const found = JSON.parse(text) as { address?: unknown; unavailable?: unknown };
+    const found = JSON.parse(text) as { address?: unknown; unavailable?: unknown; exposedOnLan?: unknown };
     if (typeof found.unavailable === "string" && found.unavailable !== "") return { unavailable: found.unavailable };
     if (typeof found.address !== "string" || found.address === "") throw new Error("host がアドレスを返しませんでした");
-    return { address: found.address };
+    return { address: found.address, ...(found.exposedOnLan === true ? { exposedOnLan: true as const } : {}) };
   }
 }
 

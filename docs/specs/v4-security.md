@@ -597,6 +597,20 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 LAN のアドレス**（名前なら host で引いたもの）を受け取り、Caddy からそこのポートへ繋ぐ。同じ LAN にあることが前提
 （届かなければ「届かない」として断る）。
 
+実装の形（2026-10-11、Backlog `remote-runtime-publish`）：
+
+- `runtime/remote-address.ts`：宛先が IPv4 ならそのまま、名前なら host で IPv4 に引く（Caddy の行き先はコンテナと同じく
+  IPv4 に揃える）。**SSH は繋がない**——向こうのサービスには LAN から直に届くので。確かに届かない（登録が無い・名前が無い
+  `ENOTFOUND`・宛先が IPv6）は `{unavailable}` で、名前引きの一時の失敗は投げる（コンテナと同じ2通り）
+- 返すアドレスに **`exposedOnLan: true`** を付ける（コンテナには付かない）。中継の `relayProjectAddress` がそのまま渡す
+- publish-caddy：公開する前に、そのアドレスとポートに host から TCP で届くかを確かめ（コンテナと同じ）、届かなければ
+  「同じ LAN にあるか・0.0.0.0 で待ち受けているか・向こうのファイアウォールが通しているか」を添えて断る。
+  見積もり（`planPublish`）は `exposedOnLan` を添える——アドレスを引けないことでは見積もりを断らない
+- 承認画面（publish-directory）：見積もりに `exposedOnLan` があれば「この Project は別のサーバで動いています。向こうの
+  サービスは LAN から直に届きます——ここで選ぶ認証は、この URL から入るときにだけ掛かります」を出す
+- 試験は単体だけ（Caddy が E2E に無い）：`core/src/runtime/remote-address.test.ts`・publish-caddy・publish-directory の
+  `server.test.ts`
+
 #### 試験
 
 - E2E：**SSH で入れる相手を入れ子のコンテナで立てる**（試験用の sshd を入れた土台）。入れ子では `loginctl enable-linger`

@@ -35,10 +35,11 @@ import {
   tarList,
   type BundleEntry,
 } from "./remote-code.js";
+import { remoteAddress, type LookupIPv4 } from "./remote-address.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
 import type { RemoteRuntimes } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
-import type { PreparedPlace, RuntimePlace, RuntimeProcess } from "./runtime.js";
+import type { PlaceAddress, PreparedPlace, RuntimePlace, RuntimeProcess } from "./runtime.js";
 import {
   SshCommandError,
   probePrerequisites,
@@ -69,6 +70,8 @@ export interface RemoteSshRuntimeOptions {
   notify(n: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
   /** ログ（既定は console） */
   log?: (line: string) => void;
+  /** 宛先の名前を IPv4 に引く（既定は host の名前引き。試験だけが差し替える） */
+  lookupIPv4?: LookupIPv4;
 }
 
 /** 張っている接続1本 */
@@ -153,6 +156,16 @@ export class RemoteSshRuntime {
     if (!name) throw new Error(`${place.id} は別のサーバの Project ではありません`);
     const conn = await this.ensureConnection(name, place);
     return this.preparedFrom(conn);
+  }
+
+  /**
+   * 外から向こうのサービスに届くアドレス（Publish）：登録した宛先の LAN のアドレス。繋がない——向こうのサービスには
+   * SSH を通さず LAN から直に届くので、届くかは公開の実装がそのポートで確かめる
+   */
+  address(projectId: string): Promise<PlaceAddress> {
+    const name = this.opts.remoteNameOf(projectId);
+    if (!name) throw new Error(`${projectId} は別のサーバの Project ではありません`);
+    return remoteAddress(name, this.opts.runtimes.get(name)?.host, this.opts.lookupIPv4);
   }
 
   /** 接続が切れていれば、次に要るときに繋ぎ直す（繋がっていれば何もしない——Module が1つ落ちただけで全部を張り直さない） */

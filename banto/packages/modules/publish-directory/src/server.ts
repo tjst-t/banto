@@ -331,10 +331,11 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     if (!req) throw new PublishDirectoryError("その公開の頼みはありません（24時間を過ぎたか、id が違います）");
     if (req.state !== "pending") return { request: view(req) };
     const method = await r.callJson<MethodInfo>(req.implementation, "describePublishMethod", {});
-    let plan: { url: string; reach: Reach } | undefined;
+    // `exposedOnLan`：Project が別のサーバで動き、向こうのサービスが LAN から直に届く（承認画面にそう出す）
+    let plan: { url: string; reach: Reach; exposedOnLan?: true } | undefined;
     let planProblem: string | undefined;
     try {
-      plan = await r.callJson<{ url: string; reach: Reach }>(req.implementation, "planPublish", {
+      plan = await r.callJson<{ url: string; reach: Reach; exposedOnLan?: true }>(req.implementation, "planPublish", {
         projectId: req.projectId,
         service: req.service,
         port: req.port,

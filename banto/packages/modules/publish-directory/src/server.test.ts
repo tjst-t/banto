@@ -22,6 +22,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { CaddyPublisher, HttpCaddyAdmin, PublishStore, createPublishCaddyServer } from "@banto/module-publish-caddy";
 import { FakeCaddy, caddyfileLikeConfig } from "@banto/module-publish-caddy/dist/fake-caddy.js";
+import { APPROVAL_APP_HTML } from "./approval-app.js";
 import { createPublishDirectoryServer } from "./server.js";
 import { RequestStore, WithdrawalLog } from "./requests.js";
 import type { RelayLike } from "./relay-client.js";
@@ -89,6 +90,8 @@ interface Ctx {
   /** 会話に届けた時点で、その頼みが記録の上でどうなっていたか（届けた順） */
   statesAtDelivery: string[];
   dirs: { directory: string; caddy: string };
+  /** Project が別のサーバで動いている（host がアドレスに「LAN に直に出ている」を付ける） */
+  remote: { on: boolean };
 }
 
 async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
@@ -98,10 +101,11 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
   const adminUrl = await caddy.start();
   const store = new PublishStore(caddyDir);
   await store.setSettings({ adminUrl, baseDomain: "banto.example.net", reach: "internet" });
+  const remote = { on: false };
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
-    resolveAddress: async () => ({ address: "10.61.162.23" }),
+    resolveAddress: async () => (remote.on ? { address: "192.168.10.50", exposedOnLan: true } : { address: "10.61.162.23" }),
     probe: async () => true,
     owner: caddyDir,
   });
@@ -202,6 +206,7 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
         };
       },
       dirs: { directory: directoryDir, caddy: caddyDir },
+      remote,
     });
   } finally {
     await client.close();
@@ -706,5 +711,20 @@ test("入口の画面のワンクリック公開：人が押せば承認の頼�
     assert.equal(ov.published[0].auth, "banto", "設定は出し方の既定（banto のログイン、2026-10-03）");
     assert.deepEqual(ov.pending, [], "承認の頼みは作らない");
     assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)));
+  });
+});
+
+test("別のサーバの Project の承認画面には「向こうのサービスは LAN から直に届く」を出す（この機械のコンテナには出さない）", async () => {
+  await withDirectory(async ({ asAi, asHuman, remote }) => {
+    const id = requestIdOf((await asAi("publishService", { service: "web" })).text);
+    const local = JSON.parse((await asHuman("get_publish_request", { requestId: id })).text);
+    assert.equal(local.plan.exposedOnLan, undefined);
+
+    remote.on = true;
+    const view = JSON.parse((await asHuman("get_publish_request", { requestId: id })).text);
+    assert.equal(view.plan.exposedOnLan, true);
+    // 画面はこの印で注意を出す
+    assert.match(APPROVAL_APP_HTML, /id="lan-warn" hidden>[^<]*LAN から直に届きます/);
+    assert.match(APPROVAL_APP_HTML, /show\("lan-warn", Boolean\(plan && plan\.exposedOnLan\)\)/);
   });
 });

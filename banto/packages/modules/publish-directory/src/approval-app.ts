@@ -120,6 +120,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     </div>
     <ul class="legend" id="legend" aria-hidden="true"></ul>
     <p class="wide-warn" id="wide-warn" hidden>URL を知っていれば、この機械の外の誰からでも届きます。前に認証を置くかを確かめてから公開してください。</p>
+    <p class="wide-warn" id="lan-warn" hidden>この Project は別のサーバで動いています。向こうのサービスは LAN から直に届きます——ここで選ぶ認証は、この URL から入るときにだけ掛かります。</p>
   </section>
 
   <div id="request" hidden>
@@ -368,6 +369,8 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     $("reach").textContent = r.planProblem ? "URL を決められません：" + r.planProblem : (REACH_SENTENCE[reach] || reachLabel);
     $("detail").textContent = req.service + " の " + req.port + " 番を、" + (r.method ? r.method.title : req.implementation) + "で。";
     show("wide-warn", reach === "internet");
+    // 別のサーバ（v4-security.md §1）：向こうで 0.0.0.0 に待ち受けたものは、この公開の認証を通らずに LAN から届く
+    show("lan-warn", Boolean(plan && plan.exposedOnLan));
     $("facts").textContent = "Project " + req.projectId + "・" + new Date(req.createdAt).toLocaleString("ja-JP") + " に頼まれました";
     show("facts", true);
     show("door-box", true);
@@ -395,6 +398,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
       ? "自動で許可しました（承認をすべて自動で許可する がオン）——既定の設定で公開しています。"
       : "") + "名前を押すと別のタブで開きます。";
     show("wide-warn", false);
+    show("lan-warn", false);
     show("door-box", true);
   }
   function finishDeclined(service, port) {
@@ -405,6 +409,7 @@ export const APPROVAL_APP_HTML = `<!doctype html>
     $("reach").textContent = "公開しませんでした。外からは届きません。";
     $("detail").textContent = service ? service + " の " + port + " 番は、コンテナの中だけで動いています。" : "";
     show("wide-warn", false);
+    show("lan-warn", false);
     show("door-box", true);
   }
 

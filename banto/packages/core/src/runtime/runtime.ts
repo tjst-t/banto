@@ -71,8 +71,12 @@ export interface PreparedPlace {
   readonly moduleEnv?: Readonly<Record<string, string>>;
 }
 
-/** 外から中のサービスに届くアドレス（Publish）。確かに届かないなら理由 */
-export type PlaceAddress = { address: string } | { unavailable: string };
+/**
+ * 外から中のサービスに届くアドレス（Publish）。確かに届かないなら理由。
+ * `exposedOnLan`：そのアドレスは LAN に直に出ている（別のサーバ）——`0.0.0.0` で待ち受けたものは Publish の認証を通らずに
+ * LAN から届く。コンテナ（ブリッジの奥）には付かない
+ */
+export type PlaceAddress = { address: string; exposedOnLan?: true } | { unavailable: string };
 
 /** 止めるのに失敗した（箱が動いたまま残った） */
 export class RuntimeStopError extends Error {

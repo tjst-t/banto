@@ -48,8 +48,20 @@ export interface PublisherDeps {
   now?: () => Date;
 }
 
-/** アドレスを引いた結果。投げたら「確かめられない」 */
-export type AddressLookup = { address: string } | { unavailable: string };
+/**
+ * アドレスを引いた結果。投げたら「確かめられない」。
+ * `exposedOnLan`：Project が別のサーバで動き、そのアドレスは LAN に直に出ている（`docs/specs/v4-security.md` §1
+ * 「Project の実行場所——別のサーバ」）——向こうで `0.0.0.0` に待ち受けたものは、この公開の認証を通らずに LAN から届く
+ */
+export type AddressLookup = { address: string; exposedOnLan?: true } | { unavailable: string };
+
+/** 承認の前の見積もり。`exposedOnLan` は承認画面で「向こうのサービスは LAN から直に届く」と出すため */
+export interface PublishPlan {
+  url: string;
+  hostname: string;
+  reach: Reach;
+  exposedOnLan?: true;
+}
 
 export type RouteState =
   /** 行き先に届いている */
@@ -117,13 +129,19 @@ export class CaddyPublisher {
     };
   }
 
-  /** 承認の前の見積もり：どの URL になり、どこまで届くか。**何も変えない** */
-  async plan(rawTarget: Record<string, unknown>, rawConfig: unknown): Promise<{ url: string; hostname: string; reach: Reach }> {
+  /**
+   * 承認の前の見積もり：どの URL になり、どこまで届くか。**何も変えない**。
+   * 行き先が LAN に直に出ている（別のサーバ）なら添える。アドレスを引けない・届かないことは、ここでは断らない
+   * （見積もりは URL を見せるためのもの。届かなければ公開するときに理由つきで断る）
+   */
+  async plan(rawTarget: Record<string, unknown>, rawConfig: unknown): Promise<PublishPlan> {
     const t = assertTarget(rawTarget);
     const s = await this.readySettings();
     const config = parseConfig(rawConfig, { forPlan: true });
     const hostname = hostnameFor(config.subdomain ?? defaultSubdomain(t), s.baseDomain);
-    return { url: urlOf(hostname), hostname, reach: s.reach };
+    const found = await this.deps.resolveAddress(t.projectId).catch(() => undefined);
+    const exposedOnLan = found !== undefined && "address" in found && found.exposedOnLan === true;
+    return { url: urlOf(hostname), hostname, reach: s.reach, ...(exposedOnLan ? { exposedOnLan: true as const } : {}) };
   }
 
   async publish(rawTarget: Record<string, unknown>, rawConfig: unknown): Promise<{ url: string; hostname: string; reach: Reach }> {
@@ -151,8 +169,12 @@ export class CaddyPublisher {
       const address = found.address;
       if (!(await this.deps.probe(address, t.port))) {
         throw new PublishError(
-          `host から ${address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
-            "——127.0.0.1（localhost）だけで待っているとコンテナの外から届きません（Vite なら --host）",
+          found.exposedOnLan
+            ? `host から別のサーバの ${address}:${t.port} に届きません。別のサーバが host と同じ LAN にあり、サービスが 0.0.0.0` +
+                "（すべてのアドレス）で待ち受けていて、向こうのファイアウォールがそのポートを通しているか確かめてください" +
+                "——127.0.0.1（localhost）だけで待っていると向こうの外から届きません（Vite なら --host）"
+            : `host から ${address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
+                "——127.0.0.1（localhost）だけで待っているとコンテナの外から届きません（Vite なら --host）",
         );
       }
 

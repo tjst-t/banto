@@ -86,3 +86,18 @@ test("繋いだ後に host がセッションを失っても、次の呼び出�
     await host.close();
   }
 });
+
+test("別のサーバの Project のアドレスには「LAN に直に出ている」の印が付いてくる。それ以外の値は印にしない", async () => {
+  const host = await fakeHost((projectId) =>
+    projectId === "remote"
+      ? { address: "192.168.10.50", exposedOnLan: true }
+      : { address: "10.61.162.23", exposedOnLan: "yes" },
+  );
+  const relay = new HostRelay(host.url, "token");
+  try {
+    assert.deepEqual(await relay.projectAddress("remote"), { address: "192.168.10.50", exposedOnLan: true });
+    assert.deepEqual(await relay.projectAddress("local"), { address: "10.61.162.23" });
+  } finally {
+    await host.close();
+  }
+});

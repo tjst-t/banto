@@ -31,6 +31,8 @@ interface Ctx {
   flaky: Set<string>;
   /** host から TCP で届く「アドレス:ポート」 */
   listening: Set<string>;
+  /** 別のサーバで動く Project（アドレスが LAN に直に出ている） */
+  onLan: Set<string>;
   publisher: CaddyPublisher;
   call(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
@@ -44,6 +46,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
   const addresses = new Map<string, string>([[P1, "10.61.162.23"], [P2, "10.61.162.40"]]);
   const listening = new Set<string>(["10.61.162.23:3000", "10.61.162.40:3000"]);
   const flaky = new Set<string>();
+  const onLan = new Set<string>();
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
@@ -51,7 +54,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
       if (flaky.has(projectId)) throw new Error(`コンテナ banto-${projectId.slice(0, 8)} の状態を読めませんでした：時間切れ`);
       const a = addresses.get(projectId);
       if (!a) return { unavailable: `コンテナ banto-${projectId.slice(0, 8)} は動いていません（Stopped）` };
-      return { address: a };
+      return onLan.has(projectId) ? { address: a, exposedOnLan: true } : { address: a };
     },
     probe: async (address, port) => listening.has(`${address}:${port}`),
     owner: dir,
@@ -67,7 +70,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
     return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
   };
   try {
-    await fn({ client, caddy, dir, addresses, flaky, listening, publisher, call });
+    await fn({ client, caddy, dir, addresses, flaky, listening, onLan, publisher, call });
   } finally {
     await client.close();
     await caddy.stop();
@@ -423,5 +426,52 @@ test("設定の口は人の操作からだけ", async () => {
   await withCaddy(async ({ call }) => {
     assert.ok((await call("getCaddySettings", {}, forProject(P1))).isError);
     assert.ok((await call("setCaddySettings", { baseDomain: "evil.example" }, forProject(P1))).isError);
+  });
+});
+
+test("別のサーバの Project：登録した宛先の LAN のアドレスへ繋ぎ、見積もりに「LAN に直に出ている」を添える。届かなければ理由つきで断る", async () => {
+  await withCaddy(async ({ call, caddy, addresses, listening, onLan }) => {
+    // P2 は別のサーバ（host が登録した宛先の LAN のアドレスを返す）
+    onLan.add(P2);
+    addresses.set(P2, "192.168.10.50");
+    listening.clear();
+
+    const plan = JSON.parse((await call("planPublish", { projectId: P2, service: "web", port: 3000 })).text);
+    assert.deepEqual(plan, {
+      url: "https://web-9f8e7d6c.banto.example.net",
+      hostname: "web-9f8e7d6c.banto.example.net",
+      reach: "internet",
+      exposedOnLan: true,
+    });
+    // この機械のコンテナには付かない
+    const local = JSON.parse((await call("planPublish", { projectId: P1, service: "web", port: 3000 })).text);
+    assert.equal(local.exposedOnLan, undefined);
+
+    // 向こうのポートに届かない——理由つきで断り、Caddy に触らない
+    const refused = await call("publishRoute", publishArgs({ projectId: P2 }));
+    assert.ok(refused.isError);
+    assert.match(refused.text, /別のサーバの 192\.168\.10\.50:3000 に届きません/);
+    assert.match(refused.text, /同じ LAN/);
+    assert.deepEqual(caddy.writes(), [], "届かないのに Caddy を書き換えた");
+
+    // 届けば、Caddy から向こうの LAN のアドレスのそのポートへ繋ぐ
+    listening.add("192.168.10.50:3000");
+    const ok = await call("publishRoute", publishArgs({ projectId: P2 }));
+    assert.equal(ok.isError, false, ok.text);
+    assert.equal(dialOf(routeFor(caddy, "web-9f8e7d6c.banto.example.net")), "192.168.10.50:3000");
+  });
+});
+
+test("別のサーバの宛先が確かに引けない（登録が無い・名前が無い）なら、その理由で断る", async () => {
+  await withCaddy(async ({ call, caddy, addresses }) => {
+    // host の `remoteAddress` が返す理由が、そのまま人に届く
+    addresses.delete(P2);
+    const r = await call("publishRoute", publishArgs({ projectId: P2 }));
+    assert.ok(r.isError);
+    assert.match(r.text, /公開先に届きません：/);
+    // 見積もりは断らない（URL を見せる）が、LAN の印は付けない
+    const plan = JSON.parse((await call("planPublish", { projectId: P2, service: "web", port: 3000 })).text);
+    assert.equal(plan.exposedOnLan, undefined);
+    assert.deepEqual(caddy.writes(), []);
   });
 });
