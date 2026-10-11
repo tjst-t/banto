@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { BrowserError, parseAct, parseConsoleQuery, parseNetworkQuery, parseNetworkRequest, parseOpen, parseScreenshot, parseSettings, parseTabs } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import { pageContent } from "./content.js";
-import { chromeArgs, chromeEnv, killStale, localeEnv } from "./chrome.js";
+import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv } from "./chrome.js";
 import { acceptLanguages, parseBrowserVersion } from "./identity.js";
 import { launchWithInstall, type Installer } from "./install.js";
 import { DEFAULT_LIMITS, NetworkLog, formatDetail, formatLine, toHar, type NetworkRecord } from "./network-log.js";
@@ -331,9 +331,11 @@ test("状態：「AI に触らせない」と設定は置き場に残り、壊�
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-state-"));
   try {
     const path = join(dir, "state.json");
-    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo" });
-    new StateFile(path).set({ aiBlocked: true, idleMinutes: 5, locale: "en-US", timezone: "UTC" });
-    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 5, aiBlocked: true, locale: "en-US", timezone: "UTC" });
+    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo", viewScale: 1 });
+    new StateFile(path).set({ aiBlocked: true, idleMinutes: 5, locale: "en-US", timezone: "UTC", viewScale: 2 });
+    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 5, aiBlocked: true, locale: "en-US", timezone: "UTC", viewScale: 2 });
+    writeFileSync(path, JSON.stringify({ viewScale: 3 }));
+    assert.throws(() => new StateFile(path), /viewScale が 1〜2 の数ではありません/);
     writeFileSync(path, JSON.stringify({ aiBlocked: "yes" }));
     assert.throws(() => new StateFile(path), /aiBlocked が true \/ false ではありません/);
     writeFileSync(path, JSON.stringify({ timezone: "Mars/Olympus" }));
@@ -346,7 +348,7 @@ test("状態：「AI に触らせない」と設定は置き場に残り、壊�
 // ---- 起こし方・名乗りと言語 ------------------------------------------------------------------------
 
 test("起こし方：自動操作の起動の印（--enable-automation・--headless）も名乗りの上書きも付けず、言語は起動の引数と環境で本物に設定する", () => {
-  const args = chromeArgs({ profileDir: "/p", languages: acceptLanguages("ja-JP"), viewport: { width: 1280, height: 800 } });
+  const args = chromeArgs({ profileDir: "/p", languages: acceptLanguages("ja-JP"), viewport: { width: 1280, height: 800 }, scale: 1 });
   for (const mark of ["--enable-automation", "--headless", "--user-agent", "--disable-background-networking", "--disable-component-update"]) {
     assert.ok(!args.some((a) => a.startsWith(mark)), `${mark} が付いている：${args.join(" ")}`);
   }
@@ -354,6 +356,11 @@ test("起こし方：自動操作の起動の印（--enable-automation・--headl
   assert.ok(args.includes("--accept-lang=ja-JP,ja,en-US,en"));
   assert.ok(args.includes("--remote-debugging-port=0"));
   assert.ok(args.includes("--disable-blink-features=AutomationControlled"));
+  // 1倍では倍率の引数を付けない（人の Chrome と同じ形）。人の画面の倍率で描くときだけ付ける
+  assert.ok(!args.some((a) => a.startsWith("--force-device-scale-factor")));
+  assert.ok(chromeArgs({ profileDir: "/p", languages: ["ja-JP"], viewport: { width: 1280, height: 800 }, scale: 2 }).includes("--force-device-scale-factor=2"));
+  // 描く倍率：1〜2 に収め（3 は重いだけ——chrome.ts）、0.25 刻みに丸める
+  assert.deepEqual([0.5, 1, 1.25, 1.6, 2, 2.625, 3].map(browserScale), [1, 1, 1.25, 1.5, 2, 2, 2]);
   assert.deepEqual(localeEnv("ja-JP"), { LANG: "ja_JP.UTF-8", LANGUAGE: "ja_JP:ja" });
   assert.deepEqual(localeEnv("fr"), { LANG: "fr.UTF-8", LANGUAGE: "fr" });
   const env = chromeEnv({ LC_ALL: "C", PATH: "/bin", HOME: "/h" }, ":7", "ja-JP", "Asia/Tokyo");

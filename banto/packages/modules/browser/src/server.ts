@@ -124,12 +124,13 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
         async () => {
           // 入っていなければ Playwright と同じ文言で投げ、launchWithInstall が入れる（chrome.ts）
           const executable = opts.executable ?? browserExecutablePath();
-          const { locale, timezone } = state.get();
+          // 描く倍率は最後に映した人の画面の倍率（人の画面が開けばその前に覚え直す——view-stream.ts）
+          const { locale, timezone, viewScale: scale } = state.get();
           const chrome = await startChrome(
-            { executable, profileDir, displayPidFile: paths.displayPid, languages: acceptLanguages(locale), locale, timezone, viewport: DEFAULT_VIEWPORT },
+            { executable, profileDir, displayPidFile: paths.displayPid, languages: acceptLanguages(locale), locale, timezone, viewport: DEFAULT_VIEWPORT, scale },
             (endpoint) => chromium.connectOverCDP(endpoint),
           );
-          return { ...chrome, version: readBrowserVersion(executable) };
+          return { ...chrome, version: readBrowserVersion(executable), scale };
         },
         installer,
         onProgress,

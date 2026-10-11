@@ -19,6 +19,12 @@ import {
   MAX_FRAME_PIXELS,
   decodeFrame,
   frameScale,
+  framePixels,
+  initialQuality,
+  jpegSize as readJpegSize,
+  sameAspect,
+  MAX_HIDPI_FRAME_PIXELS,
+  maxFramePixels,
   encodeFrame,
   normalizeUrl,
   parseViewMessage,
@@ -107,6 +113,38 @@ test("screencast の大きさ：一番大きい画面（デバイスピクセル
   );
 });
 
+test("高精細の画面：倍率で描いたブラウザでは、絵の上限はページ×倍率。画素数の上限は倍率の2乗で上がり、2560×1600 で頭を押さえる", () => {
+  const viewport = { width: 1280, height: 800 };
+  // 倍率2で描いて、倍率2の画面（1440×900）で見る：ページの2倍の絵（2560×1600＝4.1 メガ画素）
+  assert.deepEqual(screencastLimits([{ width: 1440, height: 900, devicePixelRatio: 2 }], viewport, 2), { maxWidth: 2560, maxHeight: 1600 });
+  assert.equal(maxFramePixels(1), MAX_FRAME_PIXELS);
+  assert.equal(maxFramePixels(1.25), MAX_FRAME_PIXELS * 1.5625);
+  assert.equal(maxFramePixels(2), MAX_HIDPI_FRAME_PIXELS);
+  assert.equal(maxFramePixels(3), MAX_HIDPI_FRAME_PIXELS);
+  // 大きなページ（1920×1080）を倍率2で描いても 2560×1600 の画素数を越えない（1 MiB に収まらない）
+  const large = { width: 1920, height: 1080 };
+  const big = screencastLimits([{ ...large, devicePixelRatio: 2 }], large, 2);
+  assert.ok(framePixels(big, large, 2) <= MAX_HIDPI_FRAME_PIXELS, JSON.stringify(big));
+  // 携帯（390×844・3倍）に合わせたページを倍率2で描く：ページの2倍の絵（3倍の画面には引き伸ばして映す）
+  const phone = { width: 390, height: 844 };
+  assert.deepEqual(screencastLimits([{ ...phone, devicePixelRatio: 3 }], phone, 2), { maxWidth: 780, maxHeight: 1688 });
+  // 倍率1の画面が倍率2のブラウザを見ると、その画面の大きさまで縮める
+  const one = screencastLimits([{ width: 1280, height: 800, devicePixelRatio: 1 }], viewport, 2);
+  assert.deepEqual(one, { maxWidth: 1280, maxHeight: 832 });
+  assert.equal(frameScale(one, viewport, 2), 0.5);
+  assert.equal(framePixels(one, viewport, 2), 1280 * 800);
+  // 画質：1倍の上限までは70、越えたら60
+  assert.equal(initialQuality(1280 * 800), 70);
+  assert.equal(initialQuality(2560 * 1600), 60);
+});
+
+test("比の違う絵（起こした直後の窓の素の大きさ）を見分ける：丸めの分は同じ比", () => {
+  assert.equal(sameAspect({ width: 2560, height: 1488 }, { width: 1280, height: 800 }), false);
+  assert.equal(sameAspect({ width: 2560, height: 1600 }, { width: 1280, height: 800 }), true);
+  assert.equal(sameAspect({ width: 1685, height: 948 }, { width: 2560, height: 1440 }), true);
+  assert.equal(sameAspect({ width: 1170, height: 2532 }, { width: 390, height: 844 }), true);
+});
+
 test("絵の画素数の上限：大きなページ（AI の resize で 7680×4320 まで）でも、絵は MAX_FRAME_PIXELS に収まるよう縮める", () => {
   for (const viewport of [
     { width: 1920, height: 1080 },
@@ -163,6 +201,16 @@ class FakeSocket extends EventEmitter {
   /** 画面から送る */
   post(message: Record<string, unknown>): void {
     this.emit("message", Buffer.from(JSON.stringify(message)), false);
+  }
+  /** 描き終えた画面のふり：絵を受けたらすぐ印を返す（いま印を待っている絵にも返す） */
+  autoAck(): void {
+    const send = this.send.bind(this);
+    this.send = (data: Buffer | string) => {
+      send(data);
+      if (typeof data !== "string") setImmediate(() => this.post({ type: "ack", seq: decodeFrame(data).header.seq }));
+    };
+    const pending = this.lastFrame();
+    if (pending) this.post({ type: "ack", seq: pending.seq });
   }
   lastFrame(): FrameHeader | undefined {
     const f = this.frames.at(-1);
@@ -312,16 +360,10 @@ test("流れ：開くとブラウザを起こして映し、印が返るまで�
   assert.equal(status.running, true);
 });
 
-/** JPEG の大きさ（SOF の印から読む） */
 function jpegSize(b: Buffer): { width: number; height: number } {
-  let i = 2;
-  while (i + 9 < b.length) {
-    if (b[i] !== 0xff) throw new Error("JPEG の印が読めません");
-    const marker = b[i + 1]!;
-    if (marker >= 0xc0 && marker <= 0xc3) return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
-    i += 2 + b.readUInt16BE(i + 2);
-  }
-  throw new Error("JPEG の大きさが見つかりません");
+  const size = readJpegSize(b);
+  if (!size) throw new Error("JPEG の大きさが読めません");
+  return size;
 }
 
 /** 文字の多いページ（絵が大きくなる） */
@@ -420,13 +462,15 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
   await until("タブが無い", () => ctx.session.current === undefined);
   const phone = new FakeSocket();
   view.handler()(phone as unknown as WebSocket, stamp({ width: 390, height: 640, dpr: 3, visible: true }));
+  // 描き終えた画面のふり：タブができた直後の絵（合わせる前の既定の大きさ）の後にも、合わせた大きさの絵が届く
+  phone.autoAck();
   try {
     phone.post({ type: "fit", on: true });
     await until("切り替えが入った", () => lastText(phone, (t) => t.type === "state")?.fit === true);
     phone.post({ type: "navigate", url: base.replace("http://", "") + "/" });
     const opened = await until("URL 欄で開いたタブ", () => lastText(phone, (t) => t.type === "state" && typeof t.current === "string" && (t.viewport as { width: number } | null)?.width === 390));
     const first = opened.current as string;
-    assert.deepEqual(ctx.session.page(first).page.viewportSize(), { width: 390, height: 640 });
+    assert.deepEqual(ctx.session.viewport(ctx.session.page(first).page), { width: 390, height: 640 });
     await until("絵もその大きさ", () => phone.lastFrame()?.width === 390);
     // ＋で新しいタブ
     phone.post({ type: "tab", action: "new" });
@@ -434,7 +478,7 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
     const second = added.current as string;
     // 切ると、合わせたタブは全部既定に戻る
     phone.post({ type: "fit", on: false });
-    await until("戻る", () => ctx.session.page(first).page.viewportSize()?.width === 1280 && ctx.session.page(second).page.viewportSize()?.width === 1280);
+    await until("戻る", () => ctx.session.viewport(ctx.session.page(first).page).width === 1280 && ctx.session.viewport(ctx.session.page(second).page).width === 1280);
     await ctx.session.close(second);
   } finally {
     phone.close(1000);
@@ -483,3 +527,91 @@ async function waitChange(read: () => Promise<number>, before: number, timeoutMs
     await new Promise((r) => setTimeout(r, 25));
   }
 }
+
+test("倍率2の画面で開くと、ブラウザを倍率2で起こし、届く絵は画面の物理ピクセルの大きさ（ページ×2）で 1 MiB を越えない。ページからも倍率2に見え、AI の絵は CSS の大きさのまま", { skip: skipReason }, async () => {
+  // 別の置き場で起こす（上の試験のブラウザは倍率1で起きている——倍率は起こすときにしか決まらない）
+  const dir = mkdtempSync(join(tmpdir(), "banto-browser-hidpi-test-"));
+  const hi = await createBrowserContextFromDataDir(dir, browserOpts);
+  const hiView = new BrowserView({ session: hi.session, state: hi.state, log: hi.log, logLine: () => undefined });
+  hi.view = hiView;
+  const pc = new FakeSocket();
+  try {
+    hiView.handler()(pc as unknown as WebSocket, stamp({ width: 1440, height: 900, dpr: 2, visible: true }));
+    await until("ブラウザが起きた", () => hi.session.running);
+    assert.equal(hi.session.scale, 2, "人の画面の倍率で起こしていない");
+    assert.equal(hi.state.get().viewScale, 2, "次に起こすときの倍率を覚えていない");
+    pc.post({ type: "navigate", url: base.replace("http://", "") + "/" });
+    const page = await until("開いたタブ", () => (hi.session.current !== undefined && hi.session.page().page.url() === `${base}/` ? hi.session.page().page : undefined));
+    await page.waitForLoadState("load");
+    assert.equal(await page.evaluate(() => window.devicePixelRatio), 2, "ページから見える倍率が本物（2）でない");
+    assert.deepEqual(await page.evaluate(() => [window.innerWidth, window.innerHeight, screen.width, screen.height]), [1280, 800, 1920, 1080]);
+
+    // 届く絵は、ページ×2 の大きさ・頭は CSS の大きさ・1 MiB 以下
+    const check = (data: Buffer, what: string) => {
+      const { header, jpeg } = decodeFrame(data);
+      assert.deepEqual([header.width, header.height], [1280, 800], `${what}：頭はページの大きさ（CSS ピクセル）`);
+      assert.deepEqual(jpegSize(jpeg), { width: 2560, height: 1600 }, `${what}：絵が物理ピクセルの大きさでない`);
+      assert.ok(data.length <= 1024 * 1024, `${what}：${data.length} バイト`);
+    };
+    // 描き終えた画面のふり（起こした直後の絵は数えない——下で開いたページの絵から見る）
+    pc.autoAck();
+    // 文字の多いページ（画質70・2560×1600 では 1 MiB を越える——実測 1060 KiB）を動かし続けて screencast の絵を見る
+    const from = pc.frames.length;
+    await page.setContent(DENSE_PAGE);
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate((n) => document.body.prepend(`動いた${n}`), i);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await until("文字の多いページの絵", () => pc.frames.length >= from + 3);
+    pc.frames.slice(from).forEach((f, i) => check(f, `文字の多いページの絵 ${i + 1}`));
+    // 静かなページの最初の1枚（screencast が来ないので撮ったもの——clip の scale）も同じ大きさ：＋で開いた空のタブ
+    pc.post({ type: "tab", action: "new" });
+    const blank = await until("新しいタブの絵", () => pc.frames.find((f) => decodeFrame(f).header.tab === "t2"));
+    check(blank, "撮った1枚");
+    assert.equal(pc.texts.filter((t) => t.type === "error").length, 0, JSON.stringify(pc.texts.filter((t) => t.type === "error")));
+
+    // AI の絵（browserScreenshot）は CSS の大きさのまま——倍率の2乗の絵を AI に読ませない
+    const shot = await callTool(hi, "browserScreenshot", {});
+    const png = Buffer.from((shot.content[1] as { data: string }).data, "base64");
+    assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [1280, 800]);
+    // ページの大きさを変えても（AI の resize）倍率は本物のまま
+    await callTool(hi, "browserAct", { action: "resize", width: 1000, height: 700 });
+    assert.equal(await page.evaluate(() => window.devicePixelRatio), 2);
+    const status = JSON.parse(((await callTool(hi, "getBrowserStatus", {})).content[0] as { text: string }).text) as { scale?: number };
+    assert.equal(status.scale, 2);
+  } finally {
+    pc.close(1000);
+    await hiView.close();
+    await hi.session.stop("試験の終わり");
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("1 MiB を越えた絵は捨てて、画質を下げて張り直す（ここでは小さくした上限）", { skip: skipReason }, async () => {
+  const page = (await ctx.session.currentOrNew()).page;
+  await page.setContent(DENSE_PAGE);
+  // 画質70の絵の大きさを測り、その 0.8 倍を上限にする（画質60で約0.84倍・50で約0.73倍——実測・2026-10-11）
+  const probe = new FakeSocket();
+  view.handler()(probe as unknown as WebSocket, stamp({ width: 1280, height: 800, dpr: 1, visible: true }));
+  // 開く前の絵を避ける：1枚目に印を返し、ページを動かしてから来た絵を測る
+  probe.post({ type: "ack", seq: decodeFrame(await until("1枚目", () => probe.frames[0])).header.seq });
+  await page.evaluate(() => document.body.prepend("測る"));
+  const q70 = (await until("画質70の絵", () => probe.frames[1])).length;
+  probe.close(1000);
+  const limit = Math.round(q70 * 0.8);
+  const lines: string[] = [];
+  const small = new BrowserView({ session: ctx.session, state: ctx.state, log: ctx.log, logLine: (l) => lines.push(l), maxMessageBytes: limit });
+  const pc = new FakeSocket();
+  small.handler()(pc as unknown as WebSocket, stamp({ width: 1280, height: 800, dpr: 1, visible: true }));
+  try {
+    const first = await until("下げた画質の絵", () => pc.frames[0], 15_000).catch((err: Error) => {
+      throw new Error(`${err.message}（画質70で ${q70}・上限 ${limit}・倍率 ${ctx.session.scale}）\n${lines.join("\n")}\n${JSON.stringify(pc.texts.filter((t) => t.type === "error"))}`);
+    });
+    assert.ok(first.length <= limit, `${first.length} バイト`);
+    assert.ok(lines.some((l) => /画質 (60|50|40)/.test(l)), `画質70で ${q70}・上限 ${limit}・届いた ${first.length}\n${lines.join("\n")}`);
+    assert.equal(pc.texts.filter((t) => t.type === "error").length, 0, "下げれば収まるのに映せないと言った");
+  } finally {
+    pc.close(1000);
+    await small.close();
+  }
+});

@@ -20,8 +20,18 @@ import { join } from "node:path";
 import type { Browser, BrowserContext } from "playwright-core";
 import { inWorkScope } from "@banto/module-contract";
 
-/** 仮想の画面の大きさ（よくある画面の大きさ） */
+/** 仮想の画面の大きさ（よくある画面の大きさ。CSS ピクセル——倍率を掛けた大きさで立てる） */
 export const SCREEN = { width: 1920, height: 1080 };
+/**
+ * 描く倍率（人の画面の devicePixelRatio から。v4-modules.md §4.1「高精細の画面」）。**2 まで**——3 で描いても 1280×800 の
+ * ページの絵は 1 MiB に収める上限（2560×1600）で 2 と同じ大きさになり、枚数が減って入力の遅れが延びるだけ（実測・2026-10-11：
+ * 動くページで毎秒約22枚→約11枚・押してから次の絵まで約160ms→約230ms・メモリ約90MiB増し）。1 未満（縮めて見ている）は 1。
+ * 0.25 刻みに丸める（端末の 2.625 等の半端は描くのに意味が無く、張り直しの元になる）
+ */
+export const MAX_BROWSER_SCALE = 2;
+export function browserScale(dpr: number): number {
+  return Math.min(MAX_BROWSER_SCALE, Math.max(1, Math.round(dpr * 4) / 4));
+}
 /** 起こしてから CDP の口が開くまで待つ上限 */
 const START_TIMEOUT_MS = 30_000;
 /** 止めるとき、自分で閉じるのを待つ上限（越えたら殺す） */
@@ -38,6 +48,11 @@ export interface ChromeOptions {
   timezone: string;
   /** 窓の中身（ページ）の大きさ。タブごとの大きさ合わせ（session.ts）とそろえる */
   viewport: { width: number; height: number };
+  /**
+   * 描く倍率（browserScale で丸めたもの）。**起こすときに決まり、止めるまで変わらない**——`--force-device-scale-factor`。
+   * `Emulation.setDeviceMetricsOverride` の deviceScaleFactor では screencast の絵が大きくならない（実測・2026-10-11）
+   */
+  scale: number;
 }
 
 export interface RunningChrome {
@@ -48,7 +63,7 @@ export interface RunningChrome {
 }
 
 /** ブラウザに渡す引数（自動操作の起動の印になるものは入れない——上の説明） */
-export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "viewport">): string[] {
+export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "viewport" | "scale">): string[] {
   return [
     `--user-data-dir=${o.profileDir}`,
     "--remote-debugging-port=0",
@@ -63,6 +78,9 @@ export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "
     // 窓の枠（タブの帯・アドレスバー）は Google Chrome 155 で 87px（実測・2026-10-10）。ページの大きさはタブごとに合わせる
     // （session.ts）ので、ここがずれても絵と入力の座標は狂わない——窓の形を人の窓に近づけるだけ
     `--window-size=${o.viewport.width},${o.viewport.height + 87}`,
+    // 人の端末の倍率で描く（高精細の画面の人の画面がにじまない）。窓の大きさは CSS ピクセルのまま。1 は付けない（人の
+    // Chrome と同じ形）。ページから見える devicePixelRatio もこの値になる（session.ts の setViewport）
+    ...(o.scale !== 1 ? [`--force-device-scale-factor=${o.scale}`] : []),
     "about:blank",
   ];
 }
@@ -152,10 +170,13 @@ export function killStale(profileDir: string, displayPidFile: string): string[] 
 }
 
 /** Xvfb を立てる。空いている番号は Xvfb に選ばせる（`-displayfd`） */
-async function startDisplay(pidFile: string): Promise<{ display: string; process: ChildProcess }> {
+async function startDisplay(pidFile: string, scale: number): Promise<{ display: string; process: ChildProcess }> {
   let xvfb: ChildProcess;
+  // 倍率を掛けて立てる——ページから見える screen（CSS ピクセル）が倍率に関わらず 1920×1080 になる（掛けないと 2 倍で
+  // 960×540 になり、窓より小さな画面という人の機械に無い形になる）
+  const size = `${Math.round(SCREEN.width * scale)}x${Math.round(SCREEN.height * scale)}x24`;
   try {
-    xvfb = spawn("Xvfb", ["-displayfd", "3", "-screen", "0", `${SCREEN.width}x${SCREEN.height}x24`, "-nolisten", "tcp"], {
+    xvfb = spawn("Xvfb", ["-displayfd", "3", "-screen", "0", size, "-nolisten", "tcp"], {
       stdio: ["ignore", "ignore", "pipe", "pipe"],
     });
   } catch (err) {
@@ -213,7 +234,7 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
   if (stale.length > 0) console.error(`[browser] 前の Module が残したものを止めました: ${stale.join("・")}`);
   mkdirSync(o.profileDir, { recursive: true });
   rmSync(join(o.profileDir, "DevToolsActivePort"), { force: true });
-  const xvfb = await startDisplay(o.displayPidFile);
+  const xvfb = await startDisplay(o.displayPidFile, o.scale);
   let chrome: ChildProcess | undefined;
   live.add(xvfb.process);
   /** 止める。graceMs はブラウザが自分で終わるのを待つ時間（越えたら SIGTERM、さらに越えたら SIGKILL） */

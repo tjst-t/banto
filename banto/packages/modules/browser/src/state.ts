@@ -1,8 +1,10 @@
-// **Module の置き場に残す状態**：設定（使われなければ止めるまでの時間・ブラウザの言語と時刻の地域）と「AI に触らせない」。
+// **Module の置き場に残す状態**：設定（使われなければ止めるまでの時間・ブラウザの言語と時刻の地域）と「AI に触らせない」と、
+// 人の画面の倍率（次にブラウザを起こすときの描く倍率）。
 // プロファイルと同じく、止めても起こし直しても残る（v4-modules.md §4.1「人と AI の同時操作」）。
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { MAX_BROWSER_SCALE } from "./chrome.js";
 
 export interface BrowserState {
   /** AI の呼び出しが無いままこれだけたったら止める（分。30 は仮——v4-modules.md §4.1） */
@@ -13,9 +15,15 @@ export interface BrowserState {
   locale: string;
   /** ブラウザの時刻の地域（IANA）。次に起こしたときから効く */
   timezone: string;
+  /**
+   * 最後に映した人の画面の倍率（そのとき開いていた画面のうち一番大きい devicePixelRatio を browserScale で丸めたもの）。
+   * **ブラウザを起こすときの描く倍率**——起こした後は変えられない（chrome.ts）ので、AI が先に起こしても人の端末の倍率で
+   * 描くよう覚えておく（v4-modules.md §4.1「高精細の画面」）
+   */
+  viewScale: number;
 }
 
-export const DEFAULT_STATE: BrowserState = { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo" };
+export const DEFAULT_STATE: BrowserState = { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo", viewScale: 1 };
 
 /** 言語として読めるか。読めなければ理由を返す */
 export function checkLocale(v: unknown): string | undefined {
@@ -64,6 +72,12 @@ export class StateFile {
         const why = checkTimezone(raw.timezone);
         if (why) throw new Error(`${path}: ${why}`);
         this.state.timezone = raw.timezone;
+      }
+      if (raw.viewScale !== undefined) {
+        if (typeof raw.viewScale !== "number" || !(raw.viewScale >= 1 && raw.viewScale <= MAX_BROWSER_SCALE)) {
+          throw new Error(`${path}: viewScale が 1〜${MAX_BROWSER_SCALE} の数ではありません`);
+        }
+        this.state.viewScale = raw.viewScale;
       }
     }
   }

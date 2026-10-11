@@ -21,6 +21,8 @@ export interface LaunchedBrowser {
   context: BrowserContext;
   /** ブラウザの版（ブラウザに聞いたもの） */
   version: string;
+  /** 描く倍率（起こしたときに決まり、止めるまで変わらない——chrome.ts） */
+  scale: number;
   /** ブラウザを閉じる（プロセスと仮想の画面も止める） */
   close: () => Promise<void>;
 }
@@ -42,6 +44,10 @@ export class BrowserSession {
   private readonly pages = new Map<string, Page>();
   /** 登録が終わる（CDP の Network を有効にし終える）まで待てるように、約束で持つ */
   private readonly ids = new WeakMap<Page, Promise<string>>();
+  /** タブごとに開いたままの CDP の口（通信の記録と、ページの倍率を本物にする上書き——setViewport） */
+  private readonly cdps = new WeakMap<Page, CDPSession>();
+  /** タブのページの大きさ（setViewport。Playwright の viewportSize は使わない——setViewport の説明） */
+  private readonly viewports = new WeakMap<Page, { width: number; height: number }>();
   private currentTab: string | undefined;
   private nextTab = 1;
   private idleTimer: NodeJS.Timeout | undefined;
@@ -61,6 +67,31 @@ export class BrowserSession {
   get running(): boolean {
     return this.context !== undefined;
   }
+
+  /** 動いているブラウザの描く倍率（動いていなければ undefined） */
+  get scale(): number | undefined {
+    return this.context ? this.launched?.scale : undefined;
+  }
+
+  /**
+   * タブのページの大きさ（CSS ピクセル）を変える。**ページの大きさの上書きはこの口の1つだけ**（`Emulation.setDeviceMetricsOverride`
+   * を、タブごとに開いたままの CDP の口から）。deviceScaleFactor は 0（上書きしない）——起こした倍率（chrome.ts）がそのまま
+   * ページの devicePixelRatio になる（偽の値を差し込まない——§4.1「起こし方」）。screen も上書きしない（仮想の画面の大きさ）。
+   * **Playwright の setViewportSize は使わない**：deviceScaleFactor を 1 に上書きし、こちらの上書きと2つが競う——どちらが効くかが
+   * 定まらず、倍率2で起こしたページから devicePixelRatio が 1 に見えることがあった（実測・2026-10-11：試験で約30回中2回）
+   */
+  async setViewport(page: Page, size: { width: number; height: number }): Promise<void> {
+    const cdp = this.cdps.get(page);
+    if (!cdp) throw new BrowserError("タブの CDP の口がありません（繋ぐ前か、閉じた後）");
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: 0, mobile: false });
+    this.viewports.set(page, { width: size.width, height: size.height });
+  }
+
+  /** タブのページの大きさ（CSS ピクセル。setViewport で決めたもの——登録の前なら既定） */
+  viewport(page: Page): { width: number; height: number } {
+    return { ...(this.viewports.get(page) ?? DEFAULT_VIEWPORT) };
+  }
+
 
   /** AI の呼び出しがあった——止めるまでの時計を巻き戻す */
   touch(): void {
@@ -219,11 +250,12 @@ export class BrowserSession {
       log.addConsole({ tab: id, level: "error", kind: "exception", text: err.message, ...(err.stack ? { stack: err.stack } : {}), at: Date.now() });
     });
     const cdp = await this.context!.newCDPSession(page);
+    this.cdps.set(page, cdp);
     // Playwright の CDPSession は知らせの名前ごとに型が付く——ここでは名前を文字で受ける形に合わせる
     attachRecorder(log, () => id, cdp as unknown as CdpLike);
     // ページの大きさを既定にそろえる（人の画面の絵と入力の座標はこの大きさで計る）。**窓の自然な大きさには頼らない**——
     // Google Chrome は起こした直後だけ窓の枠が 56px 厚く、少したつと消える（実測・2026-10-10）。ポップアップの窓は大きさがまちまち
-    await page.setViewportSize(DEFAULT_VIEWPORT);
+    await this.setViewport(page, DEFAULT_VIEWPORT);
     // 本文はブラウザの中の入れ物にあるうちに取る——入れ物を大きめにして、取る前に捨てられにくくする
     await cdp.send("Network.enable", { maxTotalBufferSize: 100 * 1024 * 1024, maxResourceBufferSize: 10 * 1024 * 1024 });
     this.emit();

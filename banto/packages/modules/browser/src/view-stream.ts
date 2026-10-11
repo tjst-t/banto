@@ -21,6 +21,7 @@ import type { StreamHandler, StreamStamp, WebSocket } from "@banto/stream-server
 import { STREAM_MAX_MESSAGE_BYTES } from "@banto/module-contract";
 import type { CDPSession, Page } from "playwright-core";
 import { DEFAULT_VIEWPORT, type BrowserSession, type TabInfo } from "./session.js";
+import { browserScale } from "./chrome.js";
 import type { StateFile } from "./state.js";
 import type { NetworkLog } from "./network-log.js";
 import type { ViewHooks } from "./tools.js";
@@ -32,6 +33,13 @@ import type { ViewHooks } from "./tools.js";
  */
 export const SCREENCAST_QUALITY = 70;
 export const SCREENCAST_EVERY_NTH_FRAME = 1;
+/**
+ * 絵が 1 MiB を越えたら画質をこれずつ下げて張り直し（SCREENCAST_MIN_QUALITY まで）、それでも越えたら画素数の上限を
+ * SHRINK ずつ縮める（MAX_FRAME_PIXELS まで）。それでも越えた絵は送らずに理由を出す（v4-modules.md §4.1「高精細の画面」）
+ */
+export const SCREENCAST_QUALITY_STEP = 10;
+export const SCREENCAST_MIN_QUALITY = 40;
+const SHRINK = 0.75;
 /** 静かなページは screencast を張っても絵が来ない（実測・2026-10-10）——これだけ待って来なければ1枚撮って送る */
 const FIRST_FRAME_WAIT_MS = 150;
 /** 記録が変わった合図を間引く */
@@ -73,6 +81,28 @@ export function decodeFrame(data: Buffer): { header: FrameHeader; jpeg: Buffer }
   return { header: JSON.parse(data.subarray(4, 4 + len).toString("utf8")) as FrameHeader, jpeg: data.subarray(4 + len) };
 }
 
+/** JPEG の大きさ（SOF の印から読む）。読めなければ undefined */
+export function jpegSize(b: Buffer): { width: number; height: number } | undefined {
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) return undefined;
+    const marker = b[i + 1]!;
+    if (marker >= 0xc0 && marker <= 0xc3) return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return undefined;
+}
+
+/**
+ * 絵がページと同じ比か（丸めの分は許す）。**倍率で起こすと、起こして数秒の間に1枚だけ窓の素の大きさ（ページ 1280×744 の
+ * 2倍）の絵が来ることがある**（実測・2026-10-11：倍率2で10回中1〜2回。1倍では10回中0回。こちらのページの大きさの上書きを
+ * 外しても起きる——起こした直後に Google Chrome の窓の枠が細くなるときのもの）。頭はページの大きさを言うので、そのまま
+ * 送ると人の画面で絵が縦に伸び、入力の座標もずれる
+ */
+export function sameAspect(jpeg: { width: number; height: number }, page: { width: number; height: number }): boolean {
+  return Math.abs(jpeg.width / jpeg.height / (page.width / page.height) - 1) <= 0.02;
+}
+
 export interface ViewerSize {
   /** 絵を出す場所の大きさ（CSS ピクセル） */
   width: number;
@@ -90,37 +120,65 @@ export function parseViewerSize(width: unknown, height: unknown, dpr: unknown): 
 }
 
 /**
- * **絵1枚の画素数の上限**（1.6 メガ画素＝1600×1000）。流れの1通は 1 MiB まで（アーキ仕様 §5.8）で、越えると host が
+ * **1倍の絵1枚の画素数の上限**（1.6 メガ画素＝1600×1000）。流れの1通は 1 MiB まで（アーキ仕様 §5.8）で、越えると host が
  * 1009 で閉じ、画面は繋ぎ直すたびに同じ大きさの絵でまた切れる。実測（2026-10-10、JPEG 画質70）：文字の多いページで
- * 約 0.33 KiB／千画素、乱れた絵（雑音）で約 0.45 KiB／千画素——上限で雑音でも約 725 KiB に収まる。それでも越えた絵は送らない（deliver）
+ * 約 0.33 KiB／千画素、乱れた絵（雑音）で約 0.45 KiB／千画素——上限で雑音でも約 725 KiB に収まる。縮めて張り直す下限でもある
  */
 export const MAX_FRAME_PIXELS = 1_600_000;
+/**
+ * **倍率を上げても越えない画素数**（2560×1600——1280×800 のページの2倍）。1倍の上限を倍率の2乗で上げると2倍で 6.4 メガ画素に
+ * なり、1 MiB に収まらない：実測（2026-10-11、文字の多いページ）で 2560×1600 は画質70で 1060 KiB・60で 903 KiB、
+ * 3840×2160 は画質40でも 1425 KiB。ここまでなら画質60で収まる
+ */
+export const MAX_HIDPI_FRAME_PIXELS = 2560 * 1600;
+
+/** 倍率で描いているときの画素数の上限（1倍の上限×倍率の2乗。MAX_HIDPI_FRAME_PIXELS で頭を押さえる） */
+export function maxFramePixels(scale: number): number {
+  return Math.max(MAX_FRAME_PIXELS, Math.min(MAX_FRAME_PIXELS * scale * scale, MAX_HIDPI_FRAME_PIXELS));
+}
+
+/** 最初に張るときの画質：1倍の上限までは70、越える大きさ（倍率で描いた絵）は60（1 MiB に収まる見込み——上の実測） */
+export function initialQuality(pixels: number): number {
+  return pixels <= MAX_FRAME_PIXELS ? SCREENCAST_QUALITY : SCREENCAST_QUALITY - SCREENCAST_QUALITY_STEP;
+}
 
 /**
- * **screencast の大きさの上限**：映している画面のうち一番大きいもの（デバイスピクセル）に合わせ、ページの大きさ
- * （CSS ピクセル——絵はそれより大きくならない、§4.1「実測」）で頭を押さえる。小さな揺れで張り直さないよう 64 で丸める。
- * そのうえで、絵（ページを縦横同じ比で縮めたもの）が MAX_FRAME_PIXELS を越えないよう縮める
+ * **screencast の大きさの上限**：映している画面のうち一番大きいもの（デバイスピクセル）に合わせ、ページをブラウザの描く倍率で
+ * 描いた大きさ（絵はそれより大きくならない）で頭を押さえる。小さな揺れで張り直さないよう 64 で丸める。
+ * そのうえで、絵（ページを縦横同じ比で縮めたもの）が maxPixels を越えないよう縮める
  */
-export function screencastLimits(viewers: ViewerSize[], viewport: { width: number; height: number }): { maxWidth: number; maxHeight: number } {
+export function screencastLimits(
+  viewers: ViewerSize[],
+  viewport: { width: number; height: number },
+  scale = 1,
+  maxPixels = maxFramePixels(scale),
+): { maxWidth: number; maxHeight: number } {
   const up = (n: number) => Math.ceil(n / 64) * 64;
+  const full = { width: viewport.width * scale, height: viewport.height * scale };
   let w = 0;
   let h = 0;
   for (const v of viewers) {
     w = Math.max(w, v.width * v.devicePixelRatio);
     h = Math.max(h, v.height * v.devicePixelRatio);
   }
-  const maxWidth = Math.min(viewport.width, up(w || viewport.width));
-  const maxHeight = Math.min(viewport.height, up(h || viewport.height));
+  const maxWidth = Math.min(full.width, up(w || full.width));
+  const maxHeight = Math.min(full.height, up(h || full.height));
   // 絵はページの比のまま、両方の上限に収まるまで縮む
-  const scale = Math.min(maxWidth / viewport.width, maxHeight / viewport.height);
-  const cap = Math.sqrt(MAX_FRAME_PIXELS / (viewport.width * viewport.height));
-  if (scale <= cap) return { maxWidth, maxHeight };
-  return { maxWidth: Math.floor(viewport.width * cap), maxHeight: Math.floor(viewport.height * cap) };
+  const k = Math.min(maxWidth / full.width, maxHeight / full.height);
+  const cap = Math.sqrt(maxPixels / (full.width * full.height));
+  if (k <= cap) return { maxWidth, maxHeight };
+  return { maxWidth: Math.floor(full.width * cap), maxHeight: Math.floor(full.height * cap) };
 }
 
-/** 上限のうちに収まる縮め方（最初の1枚を撮るときの倍率。screencast の絵と同じ大きさになる） */
-export function frameScale(limits: { maxWidth: number; maxHeight: number }, viewport: { width: number; height: number }): number {
-  return Math.min(1, limits.maxWidth / viewport.width, limits.maxHeight / viewport.height);
+/** 描いた絵（ページ×倍率）を上限のうちに収める縮め方（1以下） */
+export function frameScale(limits: { maxWidth: number; maxHeight: number }, viewport: { width: number; height: number }, scale = 1): number {
+  return Math.min(1, limits.maxWidth / (viewport.width * scale), limits.maxHeight / (viewport.height * scale));
+}
+
+/** 上限のうちに来る絵の画素数（ページの比のまま縮む） */
+export function framePixels(limits: { maxWidth: number; maxHeight: number }, viewport: { width: number; height: number }, scale = 1): number {
+  const k = frameScale(limits, viewport, scale);
+  return Math.round(viewport.width * scale * k) * Math.round(viewport.height * scale * k);
 }
 
 // ---- 画面→Module のメッセージ ----------------------------------------------------------------------
@@ -286,7 +344,13 @@ interface Cast {
   page: Page;
   cdp: CDPSession;
   key: string;
+  /** 張ったときの画質と画素数の上限（越えたら下げて張り直す——squeeze） */
+  quality: number;
+  /** 張ったときの上限で来る絵の画素数 */
+  pixels: number;
   gotFrame: boolean;
+  /** 比の違う絵を捨てた（記録は1度だけ） */
+  misshapen?: boolean;
   /** 上限を越えた絵を捨てている間（理由を言うのは越え始めた1度だけ） */
   oversized?: boolean;
 }
@@ -312,6 +376,11 @@ export class BrowserView implements ViewHooks {
   private inputChain: Promise<void> = Promise.resolve();
   /** 「画面に合わせる」を入れている画面（ページの大きさは1つなので、合わせるのは1つの画面だけ） */
   private fitOwner: Viewer | undefined;
+  /**
+   * 1 MiB を越えて下げた画質・画素数の上限。同じタブ・ページの大きさ・映す画面の大きさ（base）の間は下げたまま
+   * （上げ直すとまた越える）。どれかが変わったら最初から
+   */
+  private squeeze: { base: string; quality?: number; maxPixels?: number } | undefined;
   /** 「画面に合わせる」で大きさを変えたタブ（切ったら全部を既定に戻す） */
   private readonly fitted = new Set<Page>();
   private starting = false;
@@ -376,6 +445,7 @@ export class BrowserView implements ViewHooks {
       release: this.deps.session.hold(),
     };
     this.viewers.add(viewer);
+    this.rememberScale();
     this.logLine(`人の画面が開きました（いま ${this.viewers.size} 本${stamp.threadId ? "・会話の中" : ""}）`);
     ws.on("message", (data, isBinary) => {
       if (isBinary) {
@@ -402,6 +472,22 @@ export class BrowserView implements ViewHooks {
     });
     this.scheduleState();
     void this.start();
+  }
+
+  /**
+   * 開いている画面のうち一番大きい倍率を、次にブラウザを起こすときの描く倍率として覚える（state の viewScale）。
+   * **動いているブラウザの倍率は変えない**——起こすときにしか決められず（chrome.ts）、起こし直すと開いているページが消える。
+   * 低い倍率で動いている間に高い画面が開いたら、次に起こすまで今の倍率の絵を引き伸ばして映す
+   */
+  private rememberScale(): void {
+    let dpr = 0;
+    for (const v of this.viewers) dpr = Math.max(dpr, v.size.devicePixelRatio);
+    if (dpr === 0) return;
+    const scale = browserScale(dpr);
+    if (this.deps.state.get().viewScale === scale) return;
+    this.deps.state.set({ viewScale: scale });
+    const running = this.deps.session.scale;
+    if (running !== undefined && running < scale) this.logLine(`人の画面の倍率は ${scale} ですが、ブラウザは ${running} 倍で描いています（次に起こしたときから ${scale} 倍）`);
   }
 
   /** 人が画面を開いた・起こしてと頼んだ：ブラウザを起こし（入れるのが要れば入れる）、映す */
@@ -435,6 +521,7 @@ export class BrowserView implements ViewHooks {
         return;
       case "size":
         v.size = m.size;
+        this.rememberScale();
         if (this.fitOwner === v) void this.applyFit();
         this.reconcile();
         return;
@@ -569,10 +656,10 @@ export class BrowserView implements ViewHooks {
     try {
       const { page } = s.page();
       const want = this.fitSize(owner);
-      const now = page.viewportSize();
-      if (now && now.width === want.width && now.height === want.height) return;
+      const now = s.viewport(page);
+      if (now.width === want.width && now.height === want.height) return;
       this.fitted.add(page);
-      await page.setViewportSize(want);
+      await s.setViewport(page, want);
     } catch (err) {
       this.logLine(`ページの大きさを画面に合わせられませんでした: ${(err as Error).message}`);
       return;
@@ -586,7 +673,7 @@ export class BrowserView implements ViewHooks {
     this.fitted.clear();
     for (const page of pages) {
       if (page.isClosed()) continue;
-      await page.setViewportSize(DEFAULT_VIEWPORT).catch((err: Error) => this.logLine(`ページの大きさを戻せませんでした: ${err.message}`));
+      await this.deps.session.setViewport(page, DEFAULT_VIEWPORT).catch((err: Error) => this.logLine(`ページの大きさを戻せませんでした: ${err.message}`));
     }
     this.refresh();
   }
@@ -611,19 +698,23 @@ export class BrowserView implements ViewHooks {
       await this.stopCast();
       return;
     }
-    const viewport = target.page.viewportSize() ?? DEFAULT_VIEWPORT;
-    const limits = screencastLimits(
-      watchers.map((v) => v.size),
-      viewport,
-    );
-    const key = `${target.id} ${viewport.width}x${viewport.height} ${limits.maxWidth}x${limits.maxHeight}`;
+    const viewport = s.viewport(target.page);
+    const scale = s.scale ?? 1;
+    const sizes = watchers.map((v) => v.size);
+    const base = `${target.id} ${viewport.width}x${viewport.height} @${scale} ${sizes.map((v) => `${v.width}x${v.height}@${v.devicePixelRatio}`).join(",")}`;
+    if (this.squeeze?.base !== base) this.squeeze = { base };
+    const maxPixels = this.squeeze.maxPixels ?? maxFramePixels(scale);
+    const limits = screencastLimits(sizes, viewport, scale, maxPixels);
+    const pixels = framePixels(limits, viewport, scale);
+    const quality = this.squeeze.quality ?? initialQuality(pixels);
+    const key = `${target.id} ${viewport.width}x${viewport.height} @${scale} ${limits.maxWidth}x${limits.maxHeight} q${quality}`;
     if (this.cast && this.cast.key === key && this.cast.page === target.page) return;
     await this.stopCast();
     const cdp = await bounded("CDP の口を開く", s.newCdp(target.page));
-    const cast: Cast = { tab: target.id, page: target.page, cdp, key, gotFrame: false };
+    const cast: Cast = { tab: target.id, page: target.page, cdp, key, quality, pixels, gotFrame: false };
     this.cast = cast;
     try {
-      await this.startCast(cast, limits, viewport);
+      await this.startCast(cast, limits, viewport, scale);
     } catch (err) {
       // 張りかけの screencast を残さない——残すと「同じ形で張ってある」と見て、次の張り直しで直らない
       if (this.cast === cast) await this.stopCast();
@@ -631,14 +722,19 @@ export class BrowserView implements ViewHooks {
     }
   }
 
-  private async startCast(cast: Cast, limits: { maxWidth: number; maxHeight: number }, viewport: { width: number; height: number }): Promise<void> {
+  private async startCast(
+    cast: Cast,
+    limits: { maxWidth: number; maxHeight: number },
+    viewport: { width: number; height: number },
+    scale: number,
+  ): Promise<void> {
     const cdp = cast.cdp;
     cdp.on("Page.screencastFrame", (f) => this.onFrame(cast, f, viewport));
     await bounded(
       "Page.startScreencast",
       cdp.send("Page.startScreencast", {
         format: "jpeg",
-        quality: SCREENCAST_QUALITY,
+        quality: cast.quality,
         everyNthFrame: SCREENCAST_EVERY_NTH_FRAME,
         ...limits,
       }),
@@ -653,13 +749,14 @@ export class BrowserView implements ViewHooks {
       "Page.captureScreenshot",
       cdp.send("Page.captureScreenshot", {
         format: "jpeg",
-        quality: SCREENCAST_QUALITY,
+        quality: cast.quality,
         clip: {
           x: metrics.cssVisualViewport.pageX,
           y: metrics.cssVisualViewport.pageY,
           width: viewport.width,
           height: viewport.height,
-          scale: frameScale(limits, viewport),
+          // clip の scale はページを描いた倍率に掛かる（倍率2で 1 なら CSS の2倍の絵）——screencast の絵と同じ大きさにする
+          scale: frameScale(limits, viewport, scale),
         },
       }),
     );
@@ -672,17 +769,26 @@ export class BrowserView implements ViewHooks {
     // CDP には受け取ったとすぐ返す。画面ごとの流量は画面の印で絞る（CDP では間引かない——最後の1枚を捨てないため）
     cast.cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => undefined); // 閉じた口——次の張り直しで直る
     if (this.cast !== cast) return;
-    cast.gotFrame = true;
+    // ページの大きさが変わった（AI の resize・人の「画面に合わせる」）——張り直すと新しい大きさの絵になる
+    const now = this.deps.session.viewport(cast.page);
+    if (now.width !== viewport.width || now.height !== viewport.height) this.refresh();
     // 頭の大きさは張ったときのページの大きさ（張ったままの screencast はその大きさの絵を出す）。絵に付いてくる
     // `metadata.deviceWidth`・`deviceHeight` は使わない——縮めて流すとき、縮めた絵の大きさを返すことがある
     // （実測・2026-10-10：2560×1440 を 1685×948 に縮めて、20回中2回。人の入力の座標がずれる）
     const { width, height } = viewport;
+    const jpeg = Buffer.from(f.data, "base64");
+    // 比の違う絵は送らない（sameAspect）。窓の大きさが落ち着けば、正しい絵が続けて来る
+    const size = jpegSize(jpeg);
+    if (!size || !sameAspect(size, viewport)) {
+      if (!cast.misshapen) this.logLine(`ページ（${width}×${height}）と比の違う絵（${size ? `${size.width}×${size.height}` : "大きさが読めない"}）を捨てました`);
+      cast.misshapen = true;
+      return;
+    }
+    cast.gotFrame = true;
     const seq = ++this.seq;
-    this.deliver(cast, { seq, tab: cast.tab, data: encodeFrame({ seq, tab: cast.tab, width, height }, Buffer.from(f.data, "base64")) }, viewport);
-    // ページの大きさが変わった（AI の resize・人の「画面に合わせる」）——張り直すと新しい大きさの絵になる
-    const now = cast.page.viewportSize();
-    if (now && (now.width !== viewport.width || now.height !== viewport.height)) this.refresh();
+    this.deliver(cast, { seq, tab: cast.tab, data: encodeFrame({ seq, tab: cast.tab, width, height }, jpeg) }, viewport);
   }
+
 
   private deliver(cast: Cast, frame: Frame, page: { width: number; height: number }): void {
     // **1 MiB を越える絵は送らない**——送ると host が流れを 1009 で閉じ、画面は繋ぎ直すたびに同じ絵でまた切れる（理由が人に
@@ -691,6 +797,13 @@ export class BrowserView implements ViewHooks {
       if (!cast.oversized) {
         cast.oversized = true;
         const kib = Math.round(frame.data.length / 1024);
+        // まず画質を下げ、次に画素数の上限を縮めて張り直す（この絵は捨てる——張り直した絵か、撮った1枚が次に来る）
+        if (this.squeezeDown(cast)) {
+          const sq = this.squeeze!;
+          this.logLine(`絵が ${kib} KiB で流れの1通の上限を越えたので、画質 ${sq.quality}${sq.maxPixels ? `・${Math.round(sq.maxPixels / 1000)} 千画素まで` : ""}で張り直します`);
+          this.reconcile();
+          return;
+        }
         this.logLine(`絵が ${kib} KiB で流れの1通の上限を越えたので送りませんでした（ページ ${page.width}×${page.height}）`);
         this.broadcast({
           type: "error",
@@ -706,6 +819,23 @@ export class BrowserView implements ViewHooks {
       if (v.waiting !== undefined) v.pending = frame;
       else this.sendFrame(v, frame);
     }
+  }
+
+  /** 越えた絵を張ったときの画質・上限から1段下げる。もう下げられなければ false */
+  private squeezeDown(cast: Cast): boolean {
+    const sq = this.squeeze;
+    if (!sq || this.cast !== cast) return false;
+    if (cast.quality > SCREENCAST_MIN_QUALITY) {
+      sq.quality = Math.max(SCREENCAST_MIN_QUALITY, cast.quality - SCREENCAST_QUALITY_STEP);
+      return true;
+    }
+    // 縮めるのは来ている絵の画素数から（上限より小さな絵——画面が小さい——で上限だけ縮めても、絵は変わらない）
+    if (cast.pixels > MAX_FRAME_PIXELS) {
+      sq.quality = cast.quality;
+      sq.maxPixels = Math.max(MAX_FRAME_PIXELS, Math.floor(cast.pixels * SHRINK));
+      return true;
+    }
+    return false;
   }
 
   /** 開いた・前に戻った画面に、いま映しているタブの最後の1枚を出す（静かなページは次の絵が来ない） */
@@ -753,7 +883,7 @@ export class BrowserView implements ViewHooks {
     if (s.running) {
       tabs = await s.listTabs();
       const current = tabs.find((t) => t.current);
-      if (current) viewport = s.page(current.id).page.viewportSize() ?? undefined;
+      if (current) viewport = s.viewport(s.page(current.id).page);
     }
     const st = this.deps.state.get();
     // 画面ごとに「自分が合わせているか」だけ違う

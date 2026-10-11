@@ -341,9 +341,11 @@ export async function callTool(
         const a = parseScreenshot(args);
         await ctx.session.ensure(onProgress);
         const { id, page } = ctx.session.page(a.tab);
+        // CSS ピクセルの大きさで撮る——ブラウザを人の画面の倍率（2・3）で描いていても、AI に渡す絵は今までと同じ大きさ
+        // （倍率の2乗の大きさの絵は、AI の読む量を増やすだけ。v4-modules.md §4.1「高精細の画面」）
         const png = a.ref
-          ? await withRef(page, a.ref, (l) => l.screenshot({ timeout: 10_000 }))
-          : await page.screenshot({ fullPage: a.fullPage, timeout: 15_000 });
+          ? await withRef(page, a.ref, (l) => l.screenshot({ timeout: 10_000, scale: "css" }))
+          : await page.screenshot({ fullPage: a.fullPage, timeout: 15_000, scale: "css" });
         return {
           content: [
             { type: "text", text: `タブ ${id}　URL: ${page.url()}${a.ref ? `　要素 ${a.ref}` : a.fullPage ? "　ページ全体" : ""}` },
@@ -422,6 +424,7 @@ export async function callTool(
           tabs: ctx.session.running ? await ctx.session.listTabs() : [],
           aiBlocked: st.aiBlocked,
           idleMinutes: st.idleMinutes,
+          ...(ctx.session.scale !== undefined ? { scale: ctx.session.scale } : {}),
           log: ctx.log.stats(),
           ...(ctx.log.lastSaveError ? { logSaveError: ctx.log.lastSaveError } : {}),
           ...(ctx.session.lastStop ? { lastStop: ctx.session.lastStop } : {}),
@@ -642,7 +645,7 @@ async function act(ctx: ToolContext, a: ActArgs, onProgress: Progress, notify: N
       done = "待ちました";
       break;
     case "resize":
-      await page.setViewportSize({ width: a.width, height: a.height });
+      await ctx.session.setViewport(page, { width: a.width, height: a.height });
       done = `ページの大きさを ${a.width}×${a.height} にしました`;
       shown = done;
       ctx.view?.refresh(); // 映す絵の大きさを張り直す

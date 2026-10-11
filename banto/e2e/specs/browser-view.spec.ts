@@ -18,6 +18,9 @@
 //      （Backlog #257・#259——名乗りの上書きも JS の上書きもせず、画面ありの普通のブラウザの本物の値で）
 //  12. 別オリジンの iframe：人の画面の絵に iframe の中身（静かになる直前の描画も）が映り、絵の上で押すと iframe に届く——
 //      絵の画素の色で確かめる（Backlog #257——google.com/sorry の reCAPTCHA の枠が映らなかった）
+//  13. 高精細の画面（devicePixelRatio 2）：開くと倍率を覚え、起こし直したブラウザは倍率2で描く——host を通って届く絵が
+//      絵を出す場所の物理ピクセルの大きさ（CSS の大きさ×2、ページの2倍まで）で、流れが切れない（1通 1 MiB を越えない）。
+//      ページからも倍率2に見える（Backlog #266）
 import { test, expect, loginContext, type FrameLocator, type Page } from "../test-base.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -411,6 +414,66 @@ test("人の画面：カードから開いて映し、人の入力がページ�
   await expect.poll(colorOnScreen, { timeout: 20_000, message: "2回目の押下の後の絵が来ない" }).toBe("blue");
   // 押した数は iframe の中から試験用のページのサーバに届いている
   expect(await ai(page, "browserEval", { expression: "fetch('/api/frame-clicks').then((r) => r.text()).then((t) => 'CLICKS ' + t)" })).toMatch(/CLICKS \{\W*clicks\W*:2\}/);
+
+  // ---- 13. 高精細の画面 ------------------------------------------------------------------------------
+  const hidpi = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+  try {
+    await loginContext(hidpi);
+    const h = await hidpi.newPage();
+    h.on("pageerror", (err) => pageErrors.push(`hidpi: ${err.message}`));
+    await openApp(h);
+    await h.goto(page.url());
+    let hf = canvasFrame(h);
+    await expectShowing(hf, (await f.getByTestId("browser-screen").getAttribute("data-tab"))!);
+    // 開いた画面の倍率を、次に起こすときの倍率として覚える。動いているブラウザは1倍のまま
+    await expect.poll(async () => (await uiCall(page, "getSettings")).viewScale, { timeout: 20_000, message: "倍率2の画面を開いたのに倍率を覚えない" }).toBe(2);
+    expect((await uiCall(page, "getBrowserStatus")).scale).toBe(1);
+    // 起こし直す（「ブラウザの記録を消す」）——倍率2で起きる
+    await hf.getByRole("button", { name: "ブラウザの記録を消す" }).click();
+    await hf.getByRole("button", { name: "もう一度押すと消します" }).click();
+    await expect.poll(async () => {
+      const st = await uiCall(page, "getBrowserStatus");
+      return { running: st.running, scale: st.scale };
+    }, { timeout: 60_000, message: "倍率2で起き直さない" }).toEqual({ running: true, scale: 2 });
+    const urlBar2 = hf.getByRole("textbox", { name: "URL" });
+    await urlBar2.fill(`${BASE}/`);
+    await urlBar2.press("Enter");
+    await expect(hf.locator(".tab[aria-selected=true]")).toContainText("Browser 試験のページ", { timeout: 30_000 });
+    hf = canvasFrame(h);
+    const screen2 = hf.getByTestId("browser-screen");
+    await expect(screen2).toHaveAttribute("data-page-width", "1280");
+    await expect(screen2).toHaveAttribute("data-page-height", "800");
+    // 絵（canvas はそのままの画素で描く）が、絵を出している場所の物理ピクセル（CSS の大きさ×2）以上——引き伸ばさない。
+    // 1倍のページ（1280×800）より大きい（倍率2で描いている）・ページと同じ比。上限はページ×2（2560×1600）
+    const shown = () =>
+      screen2.evaluate((c: HTMLCanvasElement) => {
+        const r = c.getBoundingClientRect();
+        return { width: c.width, height: c.height, physical: Math.round(r.width * devicePixelRatio), dpr: devicePixelRatio };
+      });
+    await expect
+      .poll(async () => {
+        const v = await shown();
+        return v.width >= Math.min(2560, v.physical) - 1 && v.width > 1280 && v.width <= 2560 && Math.abs(v.width / v.height - 1.6) < 0.01;
+      }, { timeout: 30_000, message: "倍率2の画面に届く絵が、絵を出す場所の物理ピクセルの大きさでない" })
+      .toBe(true);
+    const got = await shown();
+    expect(got.dpr).toBe(2);
+    test.info().annotations.push({ type: "hidpi", description: `絵 ${got.width}×${got.height}・絵を出す場所 ${got.physical} 物理ピクセル` });
+    expect(await ai(page, "browserEval", { expression: "'DPR ' + devicePixelRatio + ' ' + innerWidth + 'x' + innerHeight + ' screen ' + screen.width + 'x' + screen.height" })).toContain(
+      "DPR 2 1280x800 screen 1920x1080",
+    );
+    // 人の入力は今までどおり CSS ピクセルで届く：押して打つ
+    const r2 = await rects(page);
+    await pressOnScreen(hf, ...center(r2.name), "click");
+    await h.keyboard.type("hidpi");
+    await pressOnScreen(hf, ...center(r2.send), "click");
+    await expect.poll(() => lastEchoBody(page), { timeout: 20_000, message: "倍率2の画面からの入力がページに届かない" }).toBe('{"name":"hidpi"}');
+    // 流れは切れていない（1 MiB を越えた1通があれば host が 1009 で閉じる）
+    await expect(hf.getByTestId("browser-state")).toHaveAttribute("data-state", "open");
+    await expect(f.getByTestId("browser-state")).toHaveAttribute("data-state", "open");
+  } finally {
+    await hidpi.close();
+  }
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });
