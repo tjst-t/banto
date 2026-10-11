@@ -6462,6 +6462,29 @@
       "updatedAt": "2026-10-11T14:14:06.470Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "repositories-e2e-1176-method",
+      "number": 267,
+      "kind": "bug",
+      "title": "E2E repositories.spec.ts:1176 が必ず落ちる——アカウントを足す画面で「ブラウザでログイン」が選ばれていない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e"
+      ],
+      "body": "2026-10-11、release 前のフル E2E で落ち、1並列で4回流して4回とも落ちた。今の release（d598c23b）でも 80c18f42 でも同じ。\n\n`expect(inner.getByTestId(\"gh-method-browser\")).toBeChecked()` が unchecked（1204行目）。Repositories の設定画面で「アカウントを登録」を押した直後の既定の登録方法が「ブラウザでログイン」でなくなっている（GitHub App の client ID が無い・PAT が既定になった、などが考えられる——未確認）。同じ spec の 492行目も同じ形の確かめがある。\n\n調べること：いつから落ちているか（git bisect、Repositories と画面の変更）、既定の選び方が仕様（PAT とブラウザログインの両方を選べる形）と合っているか。製品が正しく試験が古いなら試験を、製品の退行なら製品を直す。",
+      "doneWhen": "repositories.spec.ts:1176 が1並列で3回続けて通る。原因をコミットの文に書いた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-11T15:23:05.916Z",
+      "updatedAt": "2026-10-11T15:23:05.916Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
