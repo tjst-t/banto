@@ -5957,7 +5957,7 @@
       "number": 266,
       "kind": "task",
       "title": "Browser の人の画面を人の画面の倍率で描かせる（高精細の画面でにじまない）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -5969,7 +5969,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-11T14:23:33.469Z",
-      "updatedAt": "2026-10-11T14:23:33.469Z",
+      "updatedAt": "2026-10-11T14:23:36.853Z",
       "closedAt": null,
       "extra": {}
     },
