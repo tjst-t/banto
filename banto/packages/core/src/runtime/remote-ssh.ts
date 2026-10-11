@@ -13,6 +13,7 @@
 //
 // **向こうで sudo しない**。root が要る準備は人が行う。
 
+import { coreSocketDir } from "./socket-dir.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -289,8 +290,7 @@ export class RemoteSshRuntime {
 
   /** ControlPath（短く——Unix ソケットの上限に ssh の一時の名前を足して収まること） */
   private controlPathFor(name: string): string {
-    const dir = join(this.opts.dataDir, "s");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const dir = coreSocketDir(this.opts.dataDir);
     const path = join(dir, `cm-${createHash("sha256").update(name).digest("hex").slice(0, 10)}`);
     if (Buffer.byteLength(path) + CONTROL_PATH_SUFFIX > SOCKET_PATH_LIMIT) {
       throw new Error(

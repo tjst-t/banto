@@ -12,6 +12,7 @@
 // known_hosts と公開鍵のファイルは、繋ぐたびに記録から書き出す（真実は記録だけ。規則3）。置き場は banto のデータの置き場の
 // 中で、人の `~/.ssh` には触らない。鍵は Vault に ssh-agent を立ててもらう（core が自分のために頼む——人が登録した鍵だけ）。
 
+import { coreSocketDir } from "./socket-dir.js";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -349,9 +350,8 @@ export class RemoteRuntimes {
       let agentSocket: string;
       try {
         publicKey = (await this.deps.publicKeyOf(target.identity)).trim();
-        // 窓口はデータの置き場の短いパスに（Unix ソケットは 107 バイトまで）
-        const socketDir = join(this.deps.dataDir, "s");
-        mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+        // 窓口はデータの置き場の短いパスに（Unix ソケットは 107 バイトまで。収まらなければ短い場所——socket-dir.ts）
+        const socketDir = coreSocketDir(this.deps.dataDir);
         agentSocket = await this.deps.startSshAgent(target.identity, socketDir);
       } catch (err) {
         throw new RemoteRuntimeError(
