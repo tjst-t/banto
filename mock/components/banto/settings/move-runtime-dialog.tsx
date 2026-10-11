@@ -163,7 +163,8 @@ export function MoveRuntimeDialog({
                   value={toPath}
                   onChange={setToPath}
                   source={to ? { ...remoteFolderSource(to.id), where: to.name } : undefined}
-                  pickerDescription="まだ無いフォルダなら、banto が作ります。"
+                  pickerDescription="まだ無いか空のフォルダを選ぶか、新しいフォルダを作ってください。"
+                  allowNewFolder
                 />
                 <p className="text-xs text-ink-3">
                   元の根（{project.basePath}）・banto の置き場・ほかの Project の根と重なるフォルダは選べません。
