@@ -6301,6 +6301,31 @@
       "updatedAt": "2026-10-10T11:44:37.313Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "browser-mobile-input-flaky",
+      "number": 260,
+      "kind": "bug",
+      "title": "Browser の人の画面で、携帯の大きさで打った文字がページに届かないことがある（browser-view.spec.ts:150、4回に1回）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [],
+      "body": "#259（headless をやめ、仮想の画面で Google Chrome を画面ありで起こす、main bb189bc2・e6eeb59f）のあと、browser-view.spec.ts:150「人の画面：…携帯でも触れる」が携帯の段で落ちる：\n- 「携帯の入力がページに届かない」——Expected `{\"name\":\"けいたい\"}`、Received `{\"name\":\"\"}`（20秒待っても空）。\n- #259 の実装役の記録（e6eeb59f）：4回中1回、Module の口に直接入力を渡すと8回中0回 → 画面側（隠した入力欄 → insertText の流れ、タッチで欄に焦点を当てる順番など）か、画面ありの Chrome での焦点の扱いのどこかと見られる。\n- 2026-10-11 02:37 の流し直しでも落ちた（機械は再起動直後で混んでいた、負荷 12 前後・4コア）。\n\nやること：\n1. 落ちる形を確実に再現する（混んでいる機械を模す・同じ試験を10回など）。原因を突き止めて直す（待ちを足して緑にしない——CLAUDE.md 規則6）。\n2. 画面ありの Chrome でタッチ → 入力欄に焦点 → insertText の順番が保証されているか、流れの中で入力が焦点より先に届いていないかを確かめる。\n\n確かめ（全部の E2E は流さない、ユーザー指示）：browser の単体・型検査・browser.spec.ts・browser-view.spec.ts。browser-view.spec.ts を10回続けて流して10回とも通る。\n\nこの件の直しを main に入れたら、Browser を release に上げる（main の Browser のコミットは 3cee8852 の上の bb189bc2・e6eeb59f。その上に実行場所の Fork の d11c7632 以降が乗っているが、それらは release に入れない——release に上げるのはこちらで行うので、Factory は main への取り込みまででよい）。",
+      "doneWhen": "browser-view.spec.ts を10回続けて流して10回とも通り、携帯の大きさで打った文字が毎回ページに届く。原因と直し方を記録した。browser の単体・型検査・browser.spec.ts も通る。",
+      "resolution": null,
+      "refs": [
+        "browser-module (#239)",
+        "#259",
+        "docs/specs/v4-modules.md §4.1"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-11T03:06:42.899Z",
+      "updatedAt": "2026-10-11T03:06:42.899Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
