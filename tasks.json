@@ -6359,7 +6359,7 @@
       "number": 262,
       "kind": "task",
       "title": "測る：写した Claude の会話の記録から、別の作業ディレクトリで再開・取り消し・Fork ができるか",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "runtime-move",
       "dependsOn": [],
       "milestone": null,
@@ -6371,7 +6371,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-11T10:39:29.164Z",
-      "updatedAt": "2026-10-11T10:39:29.164Z",
+      "updatedAt": "2026-10-11T12:10:26.718Z",
       "closedAt": null,
       "extra": {}
     },
