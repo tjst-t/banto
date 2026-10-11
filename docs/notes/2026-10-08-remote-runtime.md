@@ -115,3 +115,55 @@ Vault・Publish・Backlog の「窓口1本＋実装が複数」の形も考え�
   「鍵の窓口のパスが長すぎて作れません（Unix ソケットは 107 バイトまで）」で先に落ちる。コードの欠陥ではない——
   `sudo -n -E -u ubuntu env HOME=/home/ubuntu PLAYWRIGHT_BROWSERS_PATH=<元の HOME>/.cache/ms-playwright npx playwright test …`
   で回す
+
+## Module の起動を作ったときに決めたこと・却下した案（2026-10-10、Backlog `remote-runtime-ssh`）
+
+仕様の形（v4-security.md §1「実装の形（Module の起動）」）にした理由と、選ばなかった形：
+
+- **実行場所は振り分け役（`runtime/router.ts`）で足した**。`Runtime` の口を Project ごとに選ぶ形（cli が2つの実行場所を持って
+  呼び分ける）は、cli の中の `runtime.` の呼び出し全部に分岐が要る。振り分け役なら cli の呼び出しはそのままで、別のサーバで
+  作らないもの（上限・資源の見張り・Publish の宛先）を1か所に書ける
+- **env を最初の1行で渡すのに、StdioClientTransport を継いで `send` に1行を渡した**。`send` は JSON-RPC の形を見ずに
+  `JSON.stringify＋改行` を書くので、起動役への1行がそのまま書ける。自前の Transport を書く案・子プロセスの stdin（private）に
+  直に書く案は、SDK と同じものを二重に持つか、SDK の中身に頼ることになる
+- **起動役を2段にした**（仕様の `systemd-run --user --scope` から変えた。規則8で記録し、仕様も直した）：入れ子の試験の相手で
+  `--scope` は「Job failed」、`--pipe`・`--wait` は「Access denied」で断られた（30 秒のプローブで測った）。ふつうの
+  `systemd-run --user` だけが通る——Shell の待たない形と同じ。SSH のセッションの cgroup（logind の session-N.scope か、
+  入れ子では sshd の下）のプロセスを、ユーザーの systemd（user@<uid>.service の下）が自分の単位に移せない・AddRef の呼び元を
+  確かめられない、が理由と見ている（本番の Ubuntu で `--scope` が通るかは確かめていない——通っても、通らない相手がある以上
+  同じ形にする）。2段目（単位の中）との受け渡しは Unix ソケット（`/run/user/<uid>/banto/`、0700）。env をファイルに書いて
+  単位に読ませる案（Shell の待たない形の形）は、仕様の「ファイルにも載らない」に反するのでやめた。名前付きパイプ（FIFO）
+  2本の案は、外側が開く前に内側が書くと詰まる・向こうに残る、の扱いがソケットより面倒
+- **ソケットは半分だけ閉じられる形に**（`allowHalfOpen`）：host が標準入力を閉じると外側がソケットの書く側を閉じるが、
+  既定のままだと内側の書く側まで閉じ、Module の最後の出力が落ちた（単体試験で見つけた）
+- **起動役は1バイトずつ読む**。node の stream で読むと、最初の1行の後ろの MCP のやり取り（initialize）まで読んでしまい、
+  `stdio: inherit` で渡した Module に届かない。読み過ぎた分を中継する形は、起動役がずっと間に挟まる
+- **版の鍵の計算を coreutils で再現できる形にした**（`sha256sum` の出力を並べたもののハッシュ）。向こうで node のスクリプトで
+  照合する案は、照合する側のコードも向こうで書き換えられる。tar のハッシュを比べる案は、展開したあとの書き換えを見られない
+- **node と起動役は版の中に入れた**（`bin/node`・`banto-launcher.mjs`）。別に置いて版の鍵から外すと、そこだけ照合されない
+- **送るのは Module のパッケージから辿れる依存だけ**。node_modules を丸ごと（1.5GB、Next.js・Playwright・TypeScript を含む）
+  送る案はやめた。辿った結果は約 1GB——大半は Subagent のエージェントの実行ファイル（OpenCode の写し3つ・Claude の
+  エージェント）。要るときだけ送る形は、Module の宣言に「何を使うか」が無いので作っていない
+- **Terminal の tmux は、core が起こす前に断る案をやめ、Module に `BANTO_NO_SUDO=1` を渡して Module が開いたときに断る形にした**。
+  core が起こす前に断ると入口（ランチャー）ごと消え、人は「Terminal を開く」ことができずに受信箱のお知らせだけを見る
+  （完了条件の「Terminal を開くと理由と入れ方つきで断る」にならない）。Terminal は元から別のサーバ向けの断りの文を持っていたが、
+  先に `sudo -n apt-get install` を試していた——sudo できないユーザーの `sudo -n` も向こうの記録に残る（仕様の「向こうで sudo
+  しない」に反する）。印は「sudo しない箱」の意味だけで、実行場所の種類は Module に渡さない
+- **Service の linger**：ユーザーの systemd のバスがあれば linger を入れようとしない形にした（Shell の待たない形と同じ順）。
+  以前は linger が無ければ必ず `sudo -n loginctl enable-linger` を試し、失敗したら Service ごと使えなかった——入れ子の試験の
+  相手（バスはあるが linger は無い）でも、linger を入れていない本番のサーバでも
+- **鍵の窓口を閉じていない**（仕様と違う。規則8で記録）：Vault に窓口を閉じる口が無い。足すと vault-kit の口・2つの金庫の
+  実装・中継の可視性に触るので、この段では作らなかった。多重化した接続は張ったあと鍵を使わないので、閉じないことで
+  使える鍵が増えるわけではない（Vault の使い回しのまま、Vault が終わるときに落ちる）
+
+### 試験の作り（E2E `remote-runtime-ssh.spec.ts`）
+
+- **「SSH が黙って切れる」は、向こうの sshd のセッションを SIGSTOP してから host の親の ssh を SIGKILL で落として作る**。
+  host だけを落とすと、向こうの sshd が FIN を受けて Module に標準入力の終わりが届き、前の Module が自分で終わる——起動役の
+  「残っていれば止める」を通らない。sshd を止めておけば、前の Module は生き続け、繋ぎ直したときの起動役が止める
+- Terminal は目録から入れる（banto 全体の宣言に入る）ので、試験の終わりに外す
+- **サブエージェントは `fake-host`（本体のログインを使う形）で呼ぶ**。最初に書いた `fake` は既定の鍵を Vault に聞く
+  （`lookupAlias`）ので、人への承認が出て誰も答えず 180 秒で切れた。`ANTHROPIC_BASE_URL` も渡らない（本体のログインを
+  共有しないエージェント）——Claude の中継を通ることを見るなら `fake-host`
+- **登録の spec（`remote-runtime-registry.spec.ts`）の「向こうに置き場ができた」は `incus exec` で見る**。その spec は途中で
+  向こうの host 鍵を変えるので、試験の側の known_hosts で `ssh` すると「REMOTE HOST IDENTIFICATION HAS CHANGED」で何も返らない

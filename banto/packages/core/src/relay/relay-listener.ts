@@ -4,6 +4,7 @@
 // `/agent-relay` まで向こうの機械の 127.0.0.1 に出る。そこで host は 127.0.0.1 の専用のポートに、host 中継 `/relay` と
 // Claude のログインの中継だけを受ける待ち受けを立て、トンネルはそこへ繋ぐ（実行場所ごとに1つ）。
 // **送り元は全部 127.0.0.1 に見える**ので、Claude の中継は送り元を縛らず、この待ち受けが受ける Project だけを通す。
+// host 中継も同じ——**その実行場所の Project の Module の合言葉だけ**を受ける（banto 全体の Module・別の Project の合言葉は断る）。
 
 import { createServer, type Server } from "node:http";
 import { CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
@@ -24,7 +25,12 @@ export function createRelayListener(deps: RelayListenerDeps): Server {
       const path = new URL(req.url ?? "/", "http://localhost").pathname;
       if (path === "/relay") {
         const body = req.method === "POST" ? await deps.readJsonBody(req) : undefined;
-        await deps.relayEndpoint.handleRequest(req, res, body);
+        await deps.relayEndpoint.handleRequest(
+          req,
+          res,
+          body,
+          (identity) => identity.projectId !== undefined && deps.acceptsProject(identity.projectId),
+        );
         return;
       }
       if (deps.claudeLogin && path.startsWith(`${CLAUDE_LOGIN_PATH}/`)) {

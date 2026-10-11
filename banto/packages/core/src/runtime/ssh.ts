@@ -1,5 +1,5 @@
 // **実行場所「別のサーバ」へ SSH で繋ぐ部品**（決定・2026-10-08、`docs/specs/v4-security.md` §1「Project の実行場所——
-// 別のサーバ」）。登録の画面（Backlog `remote-runtime-registry`）と、あとで足す本当の起動（`remote-runtime-launch`）が
+// 別のサーバ」）。登録の画面（Backlog `remote-runtime-registry`）と、Module の起動（`remote-ssh.ts`、Backlog `remote-runtime-ssh`）が
 // 同じものを使う——host 鍵を引く・前提を確かめる・向こうのフォルダを引く・根を正規化する。
 //
 // **`ssh` の設定は banto が固定し、人の設定を読まない**：
@@ -127,7 +127,7 @@ function run(file: string, args: string[], opts: { input?: string; timeoutMs: nu
 }
 
 /** ssh・ssh-keyscan に渡す環境。人の agent（`SSH_AUTH_SOCK`）を引き継がない——使うのは Vault の窓口だけ */
-function sshEnv(): NodeJS.ProcessEnv {
+export function sshEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const k of ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"]) if (process.env[k] !== undefined) env[k] = process.env[k];
   return env;

@@ -28,11 +28,11 @@ test("用意した箱：パスは host と同じ・中から届く住所はブ�
   assert.equal(p.pathInside("/data/modules/x"), "/data/modules/x");
   assert.equal(p.bantoOrigin, "http://10.0.0.1:4000");
   assert.equal(p.nodePath, CONTAINER_NODE_PATH);
-  const cmd = p.processCommand({ command: process.execPath, args: ["m.js"], cwd: "/w", env: { A: "1" } });
+  const cmd = p.processCommand({ name: "shell-p1", command: process.execPath, args: ["m.js"], cwd: "/w", env: { A: "1" } });
   assert.equal(cmd.command, "incus");
   assert.ok(cmd.args.includes(CONTAINER_NODE_PATH));
   assert.ok(cmd.args.includes("A=1"));
-  assert.ok(p.processCommand({ command: "/bin/true", args: [], cwd: "/w", env: {} }).args.includes("/bin/true"));
+  assert.ok(p.processCommand({ name: "shell-p1", command: "/bin/true", args: [], cwd: "/w", env: {} }).args.includes("/bin/true"));
 });
 
 test("見張る相手は用意できた箱だけ。banto 全体用の箱には Project の id を付けない", async () => {

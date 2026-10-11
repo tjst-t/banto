@@ -269,10 +269,17 @@ test("専用の待ち受け：中継だけを受け、送り元の代わりに�
     },
   });
   const relayCalls: string[] = [];
+  let accepted: Array<boolean | undefined> = [];
   const dedicated = createRelayListener({
     relayEndpoint: {
-      handleRequest: async (_req, res, body) => {
+      handleRequest: async (_req, res, body, accepts) => {
         relayCalls.push(JSON.stringify(body));
+        const meta = {} as never; // 絞り込みは projectId しか見ない
+        accepted = [
+          accepts?.({ moduleName: "shell", projectId: "p1", meta }),
+          accepts?.({ moduleName: "shell", projectId: "p2", meta }),
+          accepts?.({ moduleName: "vault-local", meta }),
+        ];
         res.writeHead(200).end("relay");
       },
     },
@@ -296,6 +303,8 @@ test("専用の待ち受け：中継だけを受け、送り元の代わりに�
     const relayed = await fetch(`${url}/relay`, { method: "POST", body: '{"a":1}' });
     assert.equal(await relayed.text(), "relay");
     assert.deepEqual(relayCalls, ['{"a":1}']);
+    // host 中継も、その実行場所の Project の Module の合言葉だけ（別の Project・banto 全体の Module は断る）
+    assert.deepEqual(accepted, [true, false, false]);
     // ほかの口は無い
     assert.equal((await fetch(`${url}/api/projects`)).status, 404);
     assert.equal((await fetch(`${url}/agent-relay/shell`)).status, 404);

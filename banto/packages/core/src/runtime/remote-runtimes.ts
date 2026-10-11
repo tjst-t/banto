@@ -269,6 +269,20 @@ export class RemoteRuntimes {
     }
   }
 
+  /**
+   * **本当の起動のために繋ぐ**（`remote-ssh.ts`）。known_hosts・公開鍵を書き出し、Vault に鍵の窓口を立ててもらってから
+   * `fn` を呼ぶ。無い・鍵が違う、は繋ぐ前に断る。ssh そのものが鍵の違いで落ちたら（`SshCommandError`）、いまの鍵を記録して断る
+   */
+  async withConnection<T>(name: string, fn: (r: RemoteRuntime, files: SshFiles) => Promise<T>): Promise<T> {
+    const r = this.mustGetUsable(name);
+    return this.connect(r, (files) => fn(r, files));
+  }
+
+  /** 繋いだときに確かめた前提を記録する（設定の一覧に出す） */
+  async recordChecks(name: string, checks: RuntimeCheck[]): Promise<void> {
+    if (this.deps.store.get(name)) await this.deps.store.recordChecks(name, checks);
+  }
+
   private view(r: RemoteRuntime): RemoteRuntimeView {
     const reason = this.unavailableReason(r);
     return {

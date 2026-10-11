@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UnauthorizedError, auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { BantoOAuthProvider, oauthAliasFor } from "./oauth/provider.js";
@@ -38,14 +39,17 @@ import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
-import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled } from "./http/app.js";
+import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
 import { HostContainerRuntime } from "./runtime/host-container.js";
 import { RemoteRuntimeStore } from "./runtime/remote-store.js";
-import { RemoteRuntimes, remoteNameOf } from "./runtime/remote-runtimes.js";
-import { RuntimeStopError, type PreparedPlace, type RuntimePlace } from "./runtime/runtime.js";
+import { RemoteRuntimes, remoteNameOf, runtimeIdOf } from "./runtime/remote-runtimes.js";
+import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
+import { RuntimeRouter } from "./runtime/router.js";
+import { createRelayListener } from "./relay/relay-listener.js";
+import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace } from "./runtime/runtime.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import { StreamRelay, streamUrlOf } from "./http/streams.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
@@ -119,13 +123,22 @@ async function connectStdioModule(
   /** Project ごとの Module のときだけ渡る。**渡さないと banto の起動場所を見る**。 */
   cwd: string | undefined,
   env: NodeJS.ProcessEnv,
+  /** 実行場所が自分の口を渡したとき（別のサーバ：env を最初の1行で渡す）はそれを使う */
+  makeTransport?: () => Transport,
 ): Promise<Client> {
-  const transport = new StdioClientTransport({ command, args, cwd, env: env as Record<string, string> });
+  const transport = makeTransport ? makeTransport() : new StdioClientTransport({ command, args, cwd, env: env as Record<string, string> });
   // elicitation を宣言しないと、Module側の server.elicitInput() が
   // 「Client does not support form elicitation」で即エラーになる
   // （agent-proxy.ts のelicitation転送の前提）。
   const client = new Client({ name: "banto-host", version: "0.1.0" }, { capabilities: { elicitation: {} } });
-  await client.connect(transport);
+  try {
+    await client.connect(transport);
+  } catch (err) {
+    // 起こせなかった理由（向こうの起動役・ssh の言葉）が標準エラーにあれば添える——「Connection closed」だけにしない
+    const tail = (transport as { lastStderr?: () => string }).lastStderr?.();
+    if (tail) throw new Error(`${err instanceof Error ? err.message : String(err)}：${tail.split("\n").slice(-3).join(" ")}`);
+    throw err;
+  }
   return client;
 }
 
@@ -191,7 +204,7 @@ async function main(): Promise<void> {
   // 今は この host のコンテナだけ。**閉じ込めはコンテナ**（決定・2026-09-25）——前提が欠けていれば、
   // コンテナで起こす Module（Project の Module・外から足した banto 全体の Module）は起こさず、受信箱で言う
   // （黙って閉じ込め無しで起こさない、規則2）。banto 本体で動く同梱の Module はそのまま立つ
-  const runtime = await HostContainerRuntime.create({
+  const hostRuntime = await HostContainerRuntime.create({
     dataDir: bootstrap.dataDir,
     port: bootstrap.port,
     bantoDir: monorepoRoot,
@@ -200,7 +213,7 @@ async function main(): Promise<void> {
     // **どこから写すか**は既定で人のホーム。E2E だけが差し替える（本物のホームを試験に使わない）
     ...(process.env.BANTO_SHELL_HOME_SOURCE ? { shellHomeSource: process.env.BANTO_SHELL_HOME_SOURCE } : {}),
   });
-  console.log(`[host] ${runtime.describePrerequisites()}`);
+  console.log(`[host] ${hostRuntime.describePrerequisites()}`);
   const globalMemory = new GlobalMemoryStore(bootstrap.dataDir, eventLog);
   await globalMemory.load();
   const inbox = new InboxStore(bootstrap.dataDir, eventLog);
@@ -214,7 +227,7 @@ async function main(): Promise<void> {
    * 環境に住所とその Project の合言葉を入れ、コンテナの中の `claude -p`・Agent SDK・サブエージェント・Service が
    * 本体のログインで推論を呼べる。本物のトークンは中に入れない
    */
-  const claudeLogin = new ClaudeLoginRelay({
+  const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
     // 試験は本物のログインを読まない（E2E が置いた偽物を指す）。ふだんは本体（Runner）と同じ置き場
     credentialsPath: process.env.BANTO_CLAUDE_RELAY_CREDENTIALS ?? hostClaudeCredentialsPath(),
     ...(process.env.BANTO_CLAUDE_RELAY_UPSTREAM ? { upstream: process.env.BANTO_CLAUDE_RELAY_UPSTREAM } : {}),
@@ -237,6 +250,42 @@ async function main(): Promise<void> {
         .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
     },
   });
+  /**
+   * **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）。鍵は Vault から使わせてもらう
+   * （下の `sshIdentityThroughVault`——関数なので、呼ばれるのは Vault が繋がってから）
+   */
+  const remoteRuntimes = new RemoteRuntimes({
+    dataDir: bootstrap.dataDir,
+    store: remoteRuntimeStore,
+    startSshAgent: (identity, socketDir) => sshIdentityThroughVault(identity, "startSshAgent", socketDir),
+    publicKeyOf: (identity) => sshIdentityThroughVault(identity, "getPublicKey"),
+    projectsUsing: (rt) => projectThread.listProjects().filter((p) => p.runtime === rt).map((p) => ({ id: p.id, name: p.name })),
+  });
+  /**
+   * **実行場所の2つ目——別のサーバ**（決定・2026-10-08、Backlog `remote-runtime-ssh`）。Project の記録の `runtime` が
+   * `remote:<名前>` の Project は、SSH の接続1本の上で Module を起こす。中から banto へは逆向きのトンネルで、host の
+   * 127.0.0.1 の**中継だけを受ける専用の待ち受け**（実行場所ごとに1つ。その実行場所の Project の合言葉だけを受ける）に届く
+   */
+  const remoteSsh: RemoteSshRuntime = new RemoteSshRuntime({
+    dataDir: bootstrap.dataDir,
+    monorepoRoot,
+    runtimes: remoteRuntimes,
+    remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
+    createRelayListener: (runtimeName) =>
+      createRelayListener({
+        relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },
+        claudeLogin,
+        acceptsProject: (projectId) => projectThread.getProject(projectId)?.runtime === runtimeIdOf(runtimeName),
+        readJsonBody: (req) => readJsonBody(req),
+      }),
+    ...(process.env.BANTO_SHELL_HOME_SOURCE ? { shellHomeSource: process.env.BANTO_SHELL_HOME_SOURCE } : {}),
+    notify: async (n) => {
+      await inbox.raiseNotice(n);
+    },
+  });
+  // 止まるとき、張っている SSH の接続を残さない（親が居なくなっても ssh は自分では終わらない）
+  process.on("exit", () => remoteSsh.killAll());
+  const runtime: Runtime = new RuntimeRouter(hostRuntime, remoteSsh);
   // Module 間中継の許可と記録（アーキ仕様 §2.5）。**許可は Event Store に残す**
   // ——プロセスメモリに置くと、host を再起動するたびに人が承認し直すことになる
   const relayGrants = new RelayGrantStore(bootstrap.dataDir, eventLog);
@@ -713,22 +762,6 @@ async function main(): Promise<void> {
         : declaration.name;
     // 繋がっているなら、それが答え（試し直しの間の記録より先に見る）
     if (connectedModules.has(connName)) return connName;
-    // **別のサーバの Project の Module は、まだ起こせない**（Backlog `remote-runtime-launch`）。この機械のコンテナで
-    // 起こすと、向こうのパスを根にした別物になる——黙ってそうしない（規則2）。お知らせは Project ごとに1件
-    const remoteProject = declaration.meta.scope === "project" && forProject ? projectThread.getProject(forProject.id) : undefined;
-    if (remoteProject && isRemoteProject(remoteProject)) {
-      void inbox
-        .raiseNotice({
-          projectId: remoteProject.id,
-          dedupeKey: `remote-runtime-not-yet:${remoteProject.id}`,
-          title: `${remoteProject.name} の Module はまだ起こせません`,
-          detail:
-            `この Project は別のサーバ（${remoteNameOf(remoteProject.runtime)}）で動かす設定です。` +
-            "別のサーバで Module を起こす仕組みはまだありません（実行場所の登録と Project の作成までができています）",
-        })
-        .catch((noticeErr: unknown) => console.warn("[host] お知らせを出せませんでした:", noticeErr));
-      return undefined;
-    }
     const fingerprint = declarationFingerprint(declaration);
     if (connectBackoff.blocked(connName, fingerprint) !== undefined) return undefined;
 
@@ -989,14 +1022,6 @@ async function main(): Promise<void> {
       endDirectoryCall();
     }
   }
-
-  const remoteRuntimes = new RemoteRuntimes({
-    dataDir: bootstrap.dataDir,
-    store: remoteRuntimeStore,
-    startSshAgent: (identity, socketDir) => sshIdentityThroughVault(identity, "startSshAgent", socketDir),
-    publicKeyOf: (identity) => sshIdentityThroughVault(identity, "getPublicKey"),
-    projectsUsing: (rt) => projectThread.listProjects().filter((p) => p.runtime === rt).map((p) => ({ id: p.id, name: p.name })),
-  });
 
   /** 窓口で在りかを引いてから、その金庫に値を聞く（relay と同じ2段）。 */
   async function resolveSecretThroughVault(
@@ -1298,6 +1323,7 @@ async function main(): Promise<void> {
         containerEnvPassthrough.flatMap((name) => (process.env[name] !== undefined ? [[name, process.env[name]!]] : [])),
       );
       const spawned = prepared.processCommand({
+        name: connName,
         command: launch.command,
         args: launch.args,
         cwd: context.projectRoot ?? context.moduleDataDir,
@@ -1306,6 +1332,8 @@ async function main(): Promise<void> {
           HOME: context.moduleDataDir,
           // 箱の中で動いていることを Module に知らせる（Shell の説明の言い方が変わる）
           BANTO_IN_CONTAINER: "1",
+          // 箱ごとに足すもの（別のサーバ：sudo しない印）
+          ...prepared.moduleEnv,
           // **Claude のログイン**（決定・2026-09-27）：中継の住所とその Project の合言葉・契約の種類。Shell の子・
           // サブエージェント・Service はこれをそのまま使う。Project 設定で切られていれば入れない
           ...(where === "project-container" && project ? await claudeLogin.envFor(project.id, prepared.bantoOrigin) : undefined),
@@ -1319,7 +1347,7 @@ async function main(): Promise<void> {
       });
       // 起こす役（`incus` など）自身は host で動く——host の環境（Incus の設定の置き場など）はこちらに渡す
       const connecting = performance.now();
-      const client = await connectStdioModule(spawned.command, spawned.args, undefined, process.env);
+      const client = await connectStdioModule(spawned.command, spawned.args, undefined, process.env, spawned.transport);
       mark("起動と接続", connecting);
       return finishModuleConnection(declaration, connName, project, client, token, forProject, { started, phases }, place?.id);
     }

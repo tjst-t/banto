@@ -370,3 +370,29 @@ test("tmux が無く入れられないときは、理由と入れ方を添えて
     rmSync(empty, { recursive: true, force: true });
   }
 });
+
+// **sudo しない箱**（別のサーバ——core が BANTO_NO_SUDO=1 を渡す）では sudo を起こさずに、理由と入れ方を添えて断る
+test("BANTO_NO_SUDO=1 なら tmux を sudo で入れようとせずに断る", async () => {
+  const { Tmux, TerminalError } = await import("./tmux.js");
+  const { writeFileSync, chmodSync, existsSync } = await import("node:fs");
+  const dir = mkdtempSync(join("/tmp", "term-nosudo-flag-"));
+  const before = process.env.BANTO_NO_SUDO;
+  try {
+    // 起こされたら印を残す sudo
+    writeFileSync(join(dir, "sudo"), `#!/bin/sh\ntouch ${join(dir, "sudo-was-called")}\nexit 1\n`);
+    chmodSync(join(dir, "sudo"), 0o755);
+    process.env.BANTO_NO_SUDO = "1";
+    const tmux = new Tmux({ env: { PATH: dir }, socket: `t-nosudo-flag-${process.pid}` });
+    await assert.rejects(tmux.ensureInstalled(() => {}), (err: Error) => {
+      assert.ok(err instanceof TerminalError);
+      assert.match(err.message, /この実行場所には tmux がありません。Terminal は tmux を使います/);
+      assert.ok(err.message.includes("sudo apt install tmux"), err.message);
+      return true;
+    });
+    assert.equal(existsSync(join(dir, "sudo-was-called")), false, "sudo を起こした");
+  } finally {
+    if (before === undefined) delete process.env.BANTO_NO_SUDO;
+    else process.env.BANTO_NO_SUDO = before;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

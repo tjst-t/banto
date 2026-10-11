@@ -60,17 +60,24 @@ export class RealSystemctl implements Systemctl {
 
   /**
    * **ユーザーの systemd を、ログインしていなくても立てておく**（linger）。これが無いとコンテナの起動で
-   * サービスが起きない。コンテナの中は sudo がパスワード無しで使える（v4-security.md §2）
+   * サービスが起きない。コンテナの中は sudo がパスワード無しで使える（v4-security.md §2）。
+   * **ユーザーの systemd がもう立っていれば（バスがあれば）linger は入れない**（2026-10-10）——別のサーバでは banto は
+   * sudo しない（v4-security.md §1「前提の確かめ」。linger が無いことは core が受信箱で注意する）。Shell の待たない形と同じ順
    */
   async ensureUserManager(): Promise<void> {
     const user = userInfo().username;
+    const bus = `/run/user/${this.uid}/bus`;
+    const busUp = await access(bus).then(
+      () => true,
+      () => false,
+    );
+    if (busUp) return;
     const linger = await exec("loginctl", ["show-user", String(this.uid), "-p", "Linger", "--value"]);
     if (linger.stdout.trim() !== "yes") {
       const r = await exec("sudo", ["-n", "loginctl", "enable-linger", user]);
       if (r.code !== 0) throw new Error(`ユーザーの systemd を常駐させられませんでした（loginctl enable-linger）: ${r.stderr.trim()}`);
     }
     // 立ち上がるまで待つ（有効にした直後はバスがまだ無い）
-    const bus = `/run/user/${this.uid}/bus`;
     for (let i = 0; i < 50; i++) {
       try {
         await access(bus);

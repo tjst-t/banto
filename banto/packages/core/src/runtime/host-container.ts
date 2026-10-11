@@ -55,7 +55,7 @@ interface ReadyContainer {
 }
 
 /** Module の置き場の中の、鍵の窓口用のフォルダ（0700）。Unix ソケットのパスは短くないと作れないので名前は短く */
-function ensureSocketDir(moduleDataDir: string): string {
+export function ensureSocketDir(moduleDataDir: string): string {
   const dir = join(moduleDataDir, "s");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;

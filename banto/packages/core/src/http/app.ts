@@ -540,7 +540,7 @@ function oauthPage(res: ServerResponse, status: number, message: string): void {
 /** 本文が上限を超えた（HTTP では 413 にする）。 */
 class BodyTooLargeError extends Error {}
 
-async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
+export async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
@@ -1307,14 +1307,15 @@ export function createApp(deps: AppDeps) {
     // 正規化する（真実は一箇所だが、コードの前後関係でデータが逸脱しうる
     // ことが実際にあった、2026-09-05）。失敗したら error のイベントとして返す
     let cwd: string | undefined;
-    // **別のサーバの Project の会話は、まだ始められない**（Backlog `remote-runtime-launch`）——根は向こうのパスで、
-    // この機械の realpath に通すと「無い」と言う。嘘の理由を出さず、何が無いのかを言う
+    // **別のサーバの Project の会話は、まだ始められない**（Backlog `remote-runtime-host-side`）——Module は向こうで
+    // 動くが、会話の本体（Runner）の作業ディレクトリはまだ host の側に用意していない。根は向こうのパスで、この機械の
+    // realpath に通すと「無い」と言う。嘘の理由を出さず、何が無いのかを言う
     if (project && isRemoteProject(project)) {
       yield {
         type: "error",
         message:
           `この Project は別のサーバ（${remoteNameOf(project.runtime)}）で動かす設定です。` +
-          "別のサーバで会話と Module を動かす仕組みはまだありません",
+          "別のサーバの Project では、会話（Runner）をまだ始められません（Module は向こうで動きます）",
       };
       return;
     }

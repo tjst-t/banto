@@ -106,6 +106,14 @@ export class Tmux {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw new TerminalError(`tmux を確かめられません: ${(err as Error).message}`);
     }
+    // **sudo しない箱**（別のサーバ——banto は向こうで sudo しない。v4-security.md §1「前提の確かめ」）では入れようとせず、
+    // 理由と入れ方を添えて断る
+    if (process.env.BANTO_NO_SUDO === "1") {
+      throw new TerminalError(
+        "この実行場所には tmux がありません。Terminal は tmux を使います（banto はこの実行場所で sudo しないので、自動では入れません）。" +
+          "向こうで `sudo apt install tmux` を打ってから開き直してください",
+      );
+    }
     log("このコンテナに tmux が無いので入れます（tmux をベースのイメージに足す前に作ったコンテナ）");
     try {
       await run(

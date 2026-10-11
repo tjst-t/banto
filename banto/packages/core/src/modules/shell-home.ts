@@ -88,7 +88,11 @@ export function shellHomeFiles(config: Pick<RuntimeConfigStore, "layerValue"> | 
 export async function syncShellHome(
   shellHome: string,
   files: readonly string[],
-  opts: { sourceHome?: string } = {},
+  /**
+   * `targetHome`：Shell が実際に見るホームのパス（既定は `shellHome`）。別のサーバでは host の置き場で整えてから送るので、
+   * git の設定の向け直し先は向こうのパスにする
+   */
+  opts: { sourceHome?: string; targetHome?: string } = {},
 ): Promise<ShellHomeSync> {
   const source = opts.sourceHome ?? homedir();
   await mkdir(shellHome, { recursive: true, mode: 0o700 });
@@ -121,7 +125,7 @@ export async function syncShellHome(
   for (const rel of [".gitconfig", ".config/git/config"]) {
     const file = join(shellHome, rel);
     if (!(await exists(file))) continue;
-    const r = sanitizeGitConfig(file, source, shellHome);
+    const r = sanitizeGitConfig(file, source, opts.targetHome ?? shellHome);
     removedGitKeys.push(...r.removed);
     rewrittenGitKeys.push(...r.rewritten);
   }

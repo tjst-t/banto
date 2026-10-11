@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-10（§1「Project の実行場所——別のサーバ」の「登録と選び方」を実装し、その形を書いた）
+> 最終更新：2026-10-10（§1「Project の実行場所——別のサーバ」の「向こうに置くもの」「前提の確かめ」「向こうとの道」を実装し、その形を書いた）
 
 ## 1. セキュリティ境界
 
@@ -299,7 +299,7 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
   AI の下書きをそこに出す。**作らないもの**：host で任意のコマンドを打てる tool に承認を付ける形（人は
   読み切れず承認が素通りになる）・一時的に AI に host の権限を渡す非常口
 
-### Project の実行場所——別のサーバ（決定・2026-10-08、ユーザー。「登録と選び方」まで実装・2026-10-10）
+### Project の実行場所——別のサーバ（決定・2026-10-08、ユーザー。「登録と選び方」と Module の起動まで実装・2026-10-10）
 
 **Project を、banto の host のコンテナではなく、SSH で入る別のサーバで動かせるようにする。** 経緯は
 `docs/notes/2026-10-08-remote-runtime.md`（Fable のレビュー（2026-10-08）を受けて改めた）。
@@ -377,7 +377,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 **実装の形**（済み・2026-10-10、Backlog `remote-runtime-registry`。画面はモック abb6ef82 の形で決定・2026-10-10、ユーザー）：
 
 - **部品**：SSH で繋ぐ共通の部品は `core/src/runtime/ssh.ts`（host 鍵を引く・前提を確かめる・向こうのフォルダを引く・根を
-  向こうで正規化する・向こうの置き場を含むか。本当の起動 `remote-runtime-launch` も同じものを使う）。記録は Event Store の
+  向こうで正規化する・向こうの置き場を含むか。本当の起動 `remote-ssh.ts` も同じものを使う）。記録は Event Store の
   イベント（`core/src/runtime/remote-store.ts`、`runtime.remote_*`）、判断は `core/src/runtime/remote-runtimes.ts`、口は
   `/api/runtimes`（一覧・Vault の SSH 鍵・`scan`・`check`・登録・`<名前>/recheck`・`<名前>/accept-host-key`・外す・
   `<名前>/directories`・`<名前>/root-scope`）
@@ -390,7 +390,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   `StrictHostKeyChecking=yes`・`UpdateHostKeys=no`。人の `~/.ssh` は読まない・書かない
 - **鍵**：Vault に ssh-agent を立ててもらい（窓口は `<データの置き場>/s`）、公開鍵（`getPublicKey`）をファイルにして
   `-i` に渡す＋`IdentitiesOnly=yes`——agent の中のその鍵だけを出し、人の `~/.ssh/id_*` は試さない。ssh の環境に人の
-  `SSH_AUTH_SOCK` を引き継がない。**窓口を閉じるのは本当の起動の段で**（いまは Vault の使い回しのまま）
+  `SSH_AUTH_SOCK` を引き継がない。**窓口はまだ閉じない**（Vault に窓口を閉じる口が無い——下の「まだできていないこと」）
 - **鍵が変わったとき**：ssh が鍵の違いで断ったら、いまの鍵を `ssh-keyscan` で引いて記録する（`hostKeyMismatch`）。記録が
   あるあいだは繋がない（確かめ直す・フォルダを引く・Project を作る、の前に断る）。人が「新しい鍵を覚え直す」を押すと、
   **画面が見せた指紋が記録した新しい鍵と同じときだけ**覚え直し、その鍵で確かめ直す
@@ -405,10 +405,10 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   ときは出さない——頼んだ Module はこの機械のフォルダを用意している）・Project の設定の「一般」の Root パスの上に読むだけ
   （「セキュリティ境界」の節は本物ではまだモックのまま隠れているので）。別のサーバの Project では Root パスは読むだけ
   （下）・「コンテナ」の節は出さない
-- **本当の起動（`remote-runtime-launch`）ができるまで**：別のサーバの Project の Module は起こさない（この機械のコンテナで
-  向こうのパスを根にした別物を起こさない）——受信箱に Project ごとに1件「まだ起こせません」。会話のターンは理由を出して
-  断る。**根を変えることも断る**（向こうで正規化し直す口がまだ無い）。Repositories は `listProjects` の `runtime` が
-  この機械以外のものを突き合わせから外し、ブランチを送る口は `handled: false` で返す
+- **別のサーバの Project の Module は向こうで起こす**（下の「向こうとの道」。2026-10-10、Backlog `remote-runtime-ssh`）。
+  会話のターンはまだ理由を出して断る（Runner の作業ディレクトリを host の空のフォルダにする作業——Backlog
+  `remote-runtime-host-side`）。**根を変えることも断る**（向こうで正規化し直す口がまだ無い）。Repositories は `listProjects` の
+  `runtime` がこの機械以外のものを突き合わせから外し、ブランチを送る口は `handled: false` で返す
 
 #### 向こうに置くもの
 
@@ -484,14 +484,15 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 - 向こうでは起動役（banto のコードの中の小さな node のスクリプト）を起こし、**env は標準入力の最初の1行（JSON）で
   渡す**。起動役はそれを読んでから Module を `exec` し、残りの標準入出力を MCP に使う——env はコマンド行（向こうの
   `ps` で読める）にもファイルにも載らない
-- 起動役は Module を**向こうのユーザーの systemd の単位で包む**（`systemd-run --user --scope --unit=banto-mod-<接続名>`）。
+- 起動役は Module を**向こうのユーザーの systemd の単位で包む**（`systemd-run --user --unit=banto-mod-<接続名>`。`--scope` は
+  SSH のセッションの cgroup からユーザーの systemd へ移せず断られた——2026-10-10 実測。形は下の「実装の形」）。
   起こす前に同じ名前の単位が残っていれば止める。sshd から起こした非対話のセッションには `XDG_RUNTIME_DIR`・
   `DBUS_SESSION_BUS_ADDRESS` が無いことがあるので、起動役が `/run/user/<uid>` から自分で組み立てる（Service の
   `RealSystemctl`・Shell の待たない形と同じ。2026-10-07 に「Failed to connect to bus」を実測）
 - **なぜ要るか**：`incus exec` は host の側で切れば中も死ぬが、`ssh <宛先> <コマンド>` は回線が落ちても、向こうの sshd が
   切断に気づくまで（sshd の既定では TCP の keepalive の約2時間）Module が標準入力の終わりを受け取らずに生き続ける。
   そのまま繋ぎ直すと、同じ置き場の FileSystem・Backlog・Factory・Subagent（走っている claude ごと）が2本になる
-- host が Module を落とす（`moduleLost`・畳む）ときは、標準入出力を閉じたうえで `systemctl --user stop banto-mod-<接続名>`
+- host が Module を落とす（`moduleLost`・畳む）ときは、標準入出力を閉じたうえで `systemctl --user stop banto-mod-<接続名>.service`
   を流す。接続が切れていたら、繋ぎ直したときに上の「残っていれば止める」が拾う
 - 接続が切れたら、その Project の Module は落ちたものとして扱い、次に要るときに繋ぎ直す（今の「繋げなかった」の
   扱い・間を空けて試し直す、と同じ）
@@ -503,6 +504,64 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   立て、そのパスを返す。**呼び元が別のサーバのとき、host の中継が応答を書き換える**——向こうの `<置き場>/s` の同じ名前へ
   転送を張り、応答の `socketPath` を向こうのパスにして Module に返す。Vault が窓口を閉じたら転送も外す。転送を張る前に
   向こうの同じパスのファイルを消す（sshd の `StreamLocalBindUnlink` に頼らない——root の設定なので）
+
+**実装の形**（済み・2026-10-10、Backlog `remote-runtime-ssh`）：
+
+- **部品**：`core/src/runtime/remote-ssh.ts`（接続・前提・コードの照合・用意できた箱）、`remote-code.ts`（送るものの一覧と版の鍵）、
+  `remote-launcher.ts`（起動役）、`router.ts`（Project の記録の `runtime` で、この機械のコンテナと別のサーバに振り分ける——
+  `Runtime` の口はそのまま）
+- **繋ぐ順**（Module を起こす最初の1回。同じ実行場所への同時の要求は1本にまとめる）：前提を確かめる（登録と同じ
+  `probePrerequisites`。✕ があれば `別のサーバ「<名前>」で Module を起こせません——前提が足りません：<項目>：<説明>（直し方：…）`
+  で断り、結果は登録の記録にも書く）→ `ssh -M -N -o ControlPath=<データの置き場>/s/cm-<名前のハッシュ> -o ExitOnForwardFailure=yes
+  -R 0:127.0.0.1:<専用の待ち受け>`（ssh が出す「Allocated port N」を Module の住所 `http://127.0.0.1:N` にする）→ 向こうの
+  置き場 `<置き場の根>/<データの置き場のハッシュ 12 字>` を作る → コードを照合する。「中で Docker を使う」Project で docker が
+  ✕ なら断る。linger・tmux が無いことは受信箱に Project ごとに1件ずつ注意（`別のサーバ「<名前>」：<項目>`）
+- **多重化した接続の上のセッション**は `-o ControlMaster=no -o IdentityAgent=none -o IdentityFile=none`——親が居なければ鍵を
+  持たずに落ちる（黙って別の接続を張らない）。ControlPath が Unix ソケットの上限（ssh の一時の名前の 17 字を足して 107 バイト）
+  を超えるなら、理由を言って断る
+- **送るもの**：`packages/modules/*` から node の解決の順で辿れる依存（ワークスペースのパッケージは `package.json`・`dist`・
+  `scripts`、外の依存はフォルダごと、`node_modules/@banto/*` の symlink はそのまま）＋ `bin/node`（host の node）＋
+  `banto-launcher.mjs`。いまの一覧で約 14,000 ファイル・1GB（大半は Subagent のエージェントの実行ファイル）。**版の鍵**は
+  `{ find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum; find . -type l -printf '%p\t%l\n' | LC_ALL=C sort; } | sha256sum`
+  ——向こうは coreutils で同じものを計算して照合する（約 3 秒）。host はファイルごとのハッシュを大きさ・更新時刻・inode で覚える
+  （banto を起こして最初の1回だけ全部を読む）。`\`・改行・タブを含む名前は照合の形が崩れるので送らずに止める
+- **向こうのコードの置き場**：`<置き場>/code/<版の鍵 16 字>-<連番>`。`current`（いまの版の名前）・`previous`（前の版）。照合して
+  違えば `.incoming-<乱数>` に tar で展開し、送った中身を向こうで照合してから連番の名前に移して `current` を差し替える。
+  `current` と前の `current` のほかは消す
+- **Module の差し込み語**：banto のコード → いまの版の置き場、データの置き場 → 向こうの置き場（`modules/<接続名>`・
+  `module-packages/<名前>`）、Project の根は向こうのパスのまま。node は `<版>/bin/node`
+- **起動役は2段**：host は `ssh … exec <node> <起動役> banto-mod-<接続名>`、標準入力の最初の1行に `{command, args, cwd, env}`。
+  **外側**（SSH のセッションの中）は1行を1バイトずつ読み（MCP のやり取りを読み過ぎない）、`systemctl --user stop <単位>.service`
+  で前のものを止めてから `systemd-run --user --quiet --collect --unit=<単位> -- <node> <起動役> --inner /run/user/<uid>/banto/<単位>.sock`
+  で**内側**を起こす。内側（単位の中）がそのソケット（0700 のフォルダ）で待ち受け、外側が2本繋ぐ——1本目に最初の1行を書いて
+  から標準入出力、2本目に標準エラー。内側は1行を受け取って Module を起こし、Module が終われば単位も終わる。
+  **`--scope`・`--pipe`・`--wait` は使えなかった**（入れ子の試験の相手で「Job failed」「Access denied」——SSH のセッションの
+  cgroup の中のプロセスをユーザーの systemd に移す・呼び元を確かめる、が通らない。ふつうの `systemd-run --user` は通る。2026-10-10 実測）。
+  env はソケットで渡るので、コマンド行にもファイルにも載らない。PATH・USER・LOGNAME は起動役のもの、`XDG_RUNTIME_DIR`・
+  `DBUS_SESSION_BUS_ADDRESS` は `/run/user/<uid>` から組み立てる。host が Module を落とすときは、標準入出力を閉じたあと
+  多重化した接続で `systemctl --user stop <単位>.service`
+- **Module に渡す印**：`BANTO_IN_CONTAINER=1`（今までどおり）に加えて **`BANTO_NO_SUDO=1`**——banto は向こうで sudo しないので、
+  Module も sudo で道具を入れようとしない。Terminal は tmux が無ければ `この実行場所には tmux がありません。Terminal は tmux を
+  使います（…自動では入れません）。向こうで \`sudo apt install tmux\` を打ってから開き直してください` で断る（開いた画面に出る）。
+  Service はユーザーの systemd のバスがあれば linger を入れようとしない（Shell の待たない形と同じ順）
+- **Shell のホーム**：host の置き場（`remote-runtimes/<名前>/shell-home/<接続名>`）で整え（資格情報を外す規則は同じ。git の設定の
+  向け直し先は向こうのホーム）、向こうで前に送ったもの（`.banto-shell-home.json` の一覧）を消してから tar で展開する
+- **専用の待ち受け**（`relay/relay-listener.ts`）：実行場所ごとに1つ、繋ぎ直しても同じポート。host 中継 `/relay` は
+  **その実行場所の Project の Module の合言葉だけ**を受け（banto 全体の Module・別の Project の合言葉は 401。続きの要求
+  （`mcp-session-id`）も始めた呼び元で確かめ直す）、Claude の中継はその実行場所の Project だけを通す。ほかの口は 404
+- **切れたとき**：親の ssh が終わると、その上のセッション（Module の標準入出力）も閉じ、Module は落ちたものとして扱われる
+  （今の「起こし直し」の間を空けて試し直す）。次に起こすときに繋ぎ直し、起動役が残っていた前の Module を止める。
+  host が止まるときは親の ssh を落とす
+- **登録の画面の「使えます」は登録したときの結果**。繋ぐたびに確かめ直した結果で記録を上書きする
+
+**まだできていないこと**（この段で作らなかったもの）：
+
+- **Vault の鍵の窓口を、接続を張ったあとに閉じる**——Vault に窓口を閉じる口（`startSshAgent` の対）がまだ無い。いまは Vault の
+  使い回し（Vault が終わるときに落ちる）のまま。多重化した接続は張ったあと鍵を使わないので、閉じても困らない
+- ソケットの転送（Vault の ssh-agent・流れの口）は Backlog `remote-runtime-sockets`。それまで、別のサーバの Module の
+  `sshIdentity` と流れの口は使えない
+- 送るコードは 1GB ある（初めての接続・版が変わったときに送る）。Subagent のエージェント（OpenCode は3つの写し）を
+  要るときだけ送る形は作っていない
 
 #### host が Project のフォルダに直接触っていたもの
 
@@ -551,6 +610,9 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
     試験の Vault（vault-local）に `ssh-identity` で預ける。コンテナには Project のコンテナと同じ札（`user.banto.owner`）を
     付け、閉じたとき・片づけ役（`run-reaper.ts`）・次の回の始め（`global-setup.ts`）で消える（相手そのものの試験は
     `e2e/specs/remote-runtime-ssh-host.spec.ts`）
+  - Module の起動の試験は `e2e/specs/remote-runtime-ssh.spec.ts`（tmux を外した相手で：Shell・FileSystem・Service・待たない形・
+    Subagent の Claude の中継・`/relay`・Terminal の断り・トンネルの先の `/api/*`・向こうの `ps`・向こうの sshd を止めて host の
+    接続を落としたときの起き直しとコードの送り直し・ログインシェルが出力する相手での断り）
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
 ## 2. コンテナの中の細部（2026-09-25 に Landlock から移した）

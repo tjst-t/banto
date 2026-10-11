@@ -7,6 +7,7 @@
 // **パスは2つの側を分けて持つ**：host の側（host が書く・読む）と、実行場所の側（Module に渡す）。
 // コンテナは host と同じパスでマウントするので同じ値になるが、別のサーバでは違う
 
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ShellHomeSync } from "../modules/shell-home.js";
 
 /** どの箱に置くか（Project ごとに1つ、外から足した banto 全体の Module 用に1つ） */
@@ -21,6 +22,8 @@ export interface RuntimePlace {
 
 /** 箱の中で起こすプロセス（パスは実行場所の側） */
 export interface RuntimeProcess {
+  /** 接続名（`shell-<projectId>` 等）。別のサーバでは、包む systemd の単位の名前になる */
+  name: string;
   command: string;
   args: string[];
   cwd: string;
@@ -56,8 +59,16 @@ export interface PreparedPlace {
     moduleDataDir: string,
     files: readonly string[],
   ): Promise<{ home: string; sync: ShellHomeSync; resync(files: readonly string[]): Promise<ShellHomeSync> }>;
-  /** 中でプロセスを起こすために、host で走らせるコマンド（標準入出力を MCP に繋ぐ） */
-  processCommand(p: RuntimeProcess): { command: string; args: string[] };
+  /**
+   * 中でプロセスを起こすために、host で走らせるコマンド（標準入出力を MCP に繋ぐ）。`transport` があれば、繋ぐときは
+   * それを使う（別のサーバ：env を標準入力の最初の1行で渡し、閉じたら向こうの単位を止める）
+   */
+  processCommand(p: RuntimeProcess): { command: string; args: string[]; transport?: () => Transport };
+  /**
+   * この箱で起こす Module に足して渡す環境（別のサーバ：`BANTO_NO_SUDO=1`——banto は向こうで sudo しないので、Module も
+   * sudo で道具を入れようとせず、入れ方を添えて断る）
+   */
+  readonly moduleEnv?: Readonly<Record<string, string>>;
 }
 
 /** 外から中のサービスに届くアドレス（Publish）。確かに届かないなら理由 */

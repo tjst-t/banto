@@ -1047,33 +1047,49 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
  * 識別してから中継サーバに渡す。
  */
 export class HostRelayEndpoint {
-  private readonly sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
+  private readonly sessions = new Map<
+    string,
+    { server: Server; transport: StreamableHTTPServerTransport; identity: CallerIdentity }
+  >();
 
   constructor(private readonly opts: HostRelayServerOptions) {}
 
-  async handleRequest(req: IncomingMessage, res: ServerResponse, parsedBody?: unknown): Promise<void> {
+  /**
+   * `accepts`：その待ち受けで受けてよい呼び元か（別のサーバ用の専用の待ち受けは、その実行場所の Project の合言葉だけを
+   * 受ける——`relay-listener.ts`）。続きの要求（`mcp-session-id`）も、始めた呼び元で確かめ直す——別の口で始めた
+   * セッションを、この口から続けさせない
+   */
+  async handleRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parsedBody?: unknown,
+    accepts?: (identity: CallerIdentity) => boolean,
+  ): Promise<void> {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const unauthorized = () => res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "unauthorized" }));
 
     let entry = sessionId ? this.sessions.get(sessionId) : undefined;
+    if (entry && accepts && !accepts(entry.identity)) {
+      unauthorized();
+      return;
+    }
     if (!entry) {
       const authHeader = req.headers["authorization"];
       const token = typeof authHeader === "string" ? authHeader.replace(/^Bearer /, "") : undefined;
       const identity = token ? this.opts.registry.resolveToken(token) : undefined;
-      if (!identity) {
-        res.writeHead(401, { "content-type": "application/json" }).end(
-          JSON.stringify({ error: "unauthorized" }),
-        );
+      if (!identity || (accepts && !accepts(identity))) {
+        unauthorized();
         return;
       }
       const server = buildRelayServer(identity, this.opts);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (newSessionId) => {
-          this.sessions.set(newSessionId, { server, transport });
+          this.sessions.set(newSessionId, { server, transport, identity });
         },
       });
       await server.connect(transport);
-      entry = { server, transport };
+      entry = { server, transport, identity };
     }
 
     await entry.transport.handleRequest(req, res, parsedBody);
