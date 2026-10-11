@@ -6380,7 +6380,7 @@
       "number": 263,
       "kind": "task",
       "title": "移す本体：受付の停止・写す・切り替え・途中で落ちたときの片づけ",
-      "status": "in-progress",
+      "status": "done",
       "parent": "runtime-move",
       "dependsOn": [
         "runtime-move-probe-resume"
@@ -6390,12 +6390,12 @@
       "labels": [],
       "body": "v4-security.md §1「Project を別の実行場所へ移す」の流れ 2〜8・写し方・動いているものの数え方・Service を止めたまま写す・移す先に置き場があるとき・Claude の会話の記録（測った結果に従う）。HTTP の口（admin、押す前の見積もり：大きさ・移らないもの・動いているもの／移す／進み具合）。Event Store の project.runtime_move_started・runtime_moved・runtime_move_failed。移す間はターンを 409 で断り、届いたものは留める。Claude の合言葉を替える。各 Thread への知らせ。Service Module が .banto-moved.json を見て全件 stopped にするのもここで。E2E は関係する spec を 1並列で。フル E2E は流さない。",
       "doneWhen": "E2E（入れ子の SSH の相手）で：この機械のコンテナの Project を別のサーバへ、戻してこの機械へ移せ、移したあと同じ会話の続きでターンが通り Shell が新しい根で動く。動いている Service があれば断る。移した先で Service が勝手に起きない。元は残る。移す最中のターンは 409。写す途中で banto を起こし直すと写しかけが片づき failed が積まれる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/runtime-move-core）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-11T10:39:29.164Z",
-      "updatedAt": "2026-10-11T12:25:51.262Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-11T13:20:09.689Z",
+      "closedAt": "2026-10-11T13:20:09.689Z",
       "extra": {}
     },
     {
