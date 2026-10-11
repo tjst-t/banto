@@ -6,9 +6,8 @@
 // - **tool は予約を受けるだけ。Fork を作るのは、このターンが終わってから**。親の resume-point が記録に
 //   載るのはターンの終わり（`updateResumePoint`）なので、呼ばれた時点で作ると、このターンの会話
 //   （課題の分析・Fork を立てた理由）が Fork に入らない。途中のセッションから枝を分ける危うさも避けられる
-// - **Fork の中からは立てられない**（ユーザー決定——Fork から Fork は画面にも無い）。ただし tool は
-//   Base でも Fork でも同じものを見せる。tool の一覧はキャッシュの先頭に入るので、Base と Fork で変えると
-//   Fork が親のキャッシュを引き継げなくなる（§3）。Fork で呼ばれたら断る
+// - **Base でも Fork でも立てられる**（改訂・2026-10-11、ユーザー「AI だけ制限があると混乱する」。以前は Base からだけ）。
+//   人もサイドバーから Fork の Fork を作れる。連鎖は届けもののホップ（maxHop）と1ターン5本で止まる
 // - 承認は特別扱いしない——その Thread の承認モードに従う（ユーザー決定・案A）
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -110,9 +109,6 @@ export function validateForkRequests(
 ): string | undefined {
   const thread = store.getThread(threadId);
   if (!thread) return "この Thread が見つかりません。";
-  if (thread.kind === "fork") {
-    return "Fork Thread の中からは Fork を立てられません（Base Thread からだけ立てられます）。人に Base Thread で頼むよう伝えてください。";
-  }
   if (forks.length === 0) return "立てる Fork が1つもありません。";
   if (alreadyReserved + forks.length > MAX_FORKS_PER_CALL) {
     return `1ターンに立てられる Fork は ${MAX_FORKS_PER_CALL} つまでです（このターンで予約済み ${alreadyReserved}）。`;
@@ -268,7 +264,7 @@ export function createForkMcpServer(
           "Fork Thread を立て、名前と最初の指示を与えて並行して進める。人とやり取りしながら進める話が複数あるときに使う",
           "（人とのやり取りが要らない仕事ならサブエージェントでよい）。",
           "Fork はこのターンが終わってから立ち、ここまでの会話と Memory を引き継いで、最初の指示で自動で始まる。",
-          `Base Thread からだけ使える。1ターンに ${MAX_FORKS_PER_CALL} つまで。`,
+          `Base Thread でも Fork Thread でも使える。1ターンに ${MAX_FORKS_PER_CALL} つまで。`,
         ].join(""),
         {
           forks: z

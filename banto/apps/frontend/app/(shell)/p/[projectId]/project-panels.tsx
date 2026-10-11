@@ -36,6 +36,7 @@ import {
   getRealThread,
 } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
+import { useIncomingForkRequest, type ForkStartMode } from "@/lib/fork-request";
 import { getProject, hydrateRealProjects, prepareProjectModules, renameProject } from "@/lib/mock/projects";
 import {
   foldForkThread,
@@ -327,17 +328,22 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
    */
   /**
    * **押したらまず名前を聞く**（決定・2026-10-02、ユーザー要望。v4-frontend.md §6.32）。
-   * ヘッダの入口だけ「会話を引き継ぐ／まっさらで始める」を選ばせる（`chooseStart`）——発言の下からは
-   * その時点から分けるのが目的なので、必ず引き継ぐ。
+   * ヘッダの入口だけ「会話を引き継ぐ／まっさらで始める」を選ばせる（`choose`）——発言の下からは
+   * その時点から分けるのが目的なので、必ず引き継ぐ。**親は Base でも Fork でもよい**（2026-10-11、ユーザー）
    */
-  function requestFork(parentThreadId: string, options: { fromSeq?: number; chooseStart: boolean }) {
+  function requestFork(parentThreadId: string, options: { fromSeq?: number; start: ForkStartMode }) {
     const parent = getThread(parentThreadId);
     if (!parent?.real) {
       toast("この Thread は実 Project ではないため、Fork を作れません");
       return;
     }
-    setForkRequest({ parentThreadId, fromSeq: options.fromSeq, chooseStart: options.chooseStart });
+    setForkRequest({ parentThreadId, fromSeq: options.fromSeq, start: options.start });
   }
+
+  // **サイドバーから頼まれたダイアログ**（2026-10-11、`lib/fork-request.ts`）——同じダイアログ・同じ作り方を使う
+  useIncomingForkRequest(projectId, (request) =>
+    requestFork(request.parentThreadId, { fromSeq: request.fromSeq, start: request.start }),
+  );
 
   /** ダイアログの「作る」。失敗は投げ返す——ダイアログが開いたまま理由を出す（打ち直せる、規則2） */
   async function handleOpenFork(baseThreadId: string, options: { fromSeq?: number; title?: string; fresh?: boolean }) {
@@ -407,7 +413,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             <IconHeaderButton
               icon={ForkIcon}
               label="Fork を開く"
-              onClick={() => requestFork(project.baseThreadId, { chooseStart: true })}
+              onClick={() => requestFork(project.baseThreadId, { start: "choose" })}
             />
             {/* **左と同じものを、右上にも置かない**（改訂・2026-09-11、ユーザー指摘）
                 ——設定と履歴はサイドバーの下にある。同じ機能への入口を2つ持つと、
@@ -431,7 +437,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }
               onOpenFork={(id) => stack.open({ fork: id })}
-              onForkFrom={(seq) => requestFork(project.baseThreadId, { fromSeq: seq, chooseStart: false })}
+              onForkFrom={(seq) => requestFork(project.baseThreadId, { fromSeq: seq, start: "continue" })}
               markers={markersByThread[project.baseThreadId]}
             />
           </div>
@@ -463,6 +469,14 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               trailing={
                 <div className="flex items-center gap-1.5">
                   {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={threadId} /> : null}
+                  {/* **Fork からも Fork を作れる**（2026-10-11、ユーザー）——Base のヘッダと同じ入口 */}
+                  {!closed ? (
+                    <IconHeaderButton
+                      icon={ForkIcon}
+                      label="Fork を開く"
+                      onClick={() => requestFork(threadId, { start: "choose" })}
+                    />
+                  ) : null}
                   <ThreadActionsMenu
                     onClear={() => handleClear(threadId)}
                     onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(threadId, "compact") : undefined}
@@ -489,7 +503,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 // **Fork の会話からも Canvas を開ける**（2026-10-01、ユーザー報告）。渡していなかったので、Fork の中では
                 // 画面つき tool のカードに「開く」も「大きく開く」も出なかった。開くと Fork はそのまま細く残る
                 onOpenCanvas={(moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })}
-                onForkFrom={(seq) => requestFork(threadId, { fromSeq: seq, chooseStart: false })}
+                onForkFrom={(seq) => requestFork(threadId, { fromSeq: seq, start: "continue" })}
                 markers={markersByThread[threadId]}
               />
             </div>

@@ -2,9 +2,11 @@
 
 // **Fork を作る前に名前を聞く**（決定・2026-10-02、ユーザー要望。v4-frontend.md §6.32）。
 //
-// 入口は2つで、口は1つ（規則3）：
+// 入口はいくつかあり、口は1つ（規則3）：
 // - 会話のヘッダの「Fork を開く」——名前と**始め方**（会話を引き継ぐ／まっさらで始める）を聞く
 // - 発言の下の「ここから Fork」——名前だけ。その発言の時点から分けるのが目的なので、会話は必ず引き継ぐ
+// - サイドバーの行の「…」の「ここから Fork…」——名前だけ。その Thread のいまの続きから引き継ぐ（2026-10-11）
+// - サイドバーの「＋ 新しい Fork」——名前だけ。まっさらで始める（2026-10-11）
 //
 // 名前は空でもよい（今までどおり連番になる）。作るのは呼び出し側（host へ title・fresh を渡す）。
 import { useState, type FormEvent } from "react";
@@ -22,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { describeFailure } from "@/lib/report-failure";
 import { cn } from "@/lib/utils";
+import type { ForkStartMode } from "@/lib/fork-request";
 
 export type ForkStart = "continue" | "fresh";
 
@@ -30,8 +33,8 @@ export type ForkDialogRequest = {
   parentThreadId: string;
   /** 発言の下から分けるとき、その発言の seq（無ければ「いまの続き」から） */
   fromSeq?: number;
-  /** 始め方を選ばせるか（ヘッダの入口だけ true） */
-  chooseStart: boolean;
+  /** choose＝始め方を選ばせる（ヘッダの入口）／continue＝会話を引き継ぐ／fresh＝まっさらで始める */
+  start: ForkStartMode;
 };
 
 export function ForkDialog({
@@ -50,7 +53,7 @@ export function ForkDialog({
       <DialogContent className="sm:max-w-md" data-testid="fork-dialog">
         {/* 中身は開くたびに作り直す——前に打ちかけた名前・選んだ始め方を残さない */}
         {request ? (
-          <ForkForm chooseStart={request.chooseStart} onSubmit={onSubmit} onDone={() => onOpenChange(false)} />
+          <ForkForm mode={request.start} fromMessage={request.fromSeq !== undefined} onSubmit={onSubmit} onDone={() => onOpenChange(false)} />
         ) : null}
       </DialogContent>
     </Dialog>
@@ -62,12 +65,23 @@ const START_OPTIONS: { value: ForkStart; label: string; hint: string }[] = [
   { value: "fresh", label: "まっさらで始める", hint: "会話は引き継がず、Clear した状態から始めます（Memory は効きます）" },
 ];
 
+function describe(mode: ForkStartMode, fromMessage: boolean): string {
+  const tail = "名前は空のままなら「Fork 1」のような連番になります。";
+  if (mode === "choose") return `名前と始め方を選んでください。${tail}`;
+  if (mode === "fresh") return `会話は引き継がず、Clear した状態から始めます（Memory は効きます）。${tail}`;
+  return fromMessage
+    ? `この発言の時点から、会話を引き継いで分けます。${tail}`
+    : `この Thread のいまの続きから、会話を引き継いで分けます。${tail}`;
+}
+
 function ForkForm({
-  chooseStart,
+  mode,
+  fromMessage,
   onSubmit,
   onDone,
 }: {
-  chooseStart: boolean;
+  mode: ForkStartMode;
+  fromMessage: boolean;
   onSubmit: (input: { title: string; start: ForkStart }) => Promise<void>;
   onDone: () => void;
 }) {
@@ -80,7 +94,7 @@ function ForkForm({
     if (saving) return;
     setSaving(true);
     try {
-      await onSubmit({ title: title.trim(), start: chooseStart ? start : "continue" });
+      await onSubmit({ title: title.trim(), start: mode === "choose" ? start : mode });
       onDone();
     } catch (err) {
       toast(`Fork を作れませんでした: ${describeFailure(err)}`);
@@ -94,9 +108,7 @@ function ForkForm({
       <DialogHeader>
         <DialogTitle>Fork を作る</DialogTitle>
         <DialogDescription>
-          {chooseStart
-            ? "名前と始め方を選んでください。名前は空のままなら「Fork 1」のような連番になります。"
-            : "この発言の時点から、会話を引き継いで分けます。名前は空のままなら「Fork 1」のような連番になります。"}
+          {describe(mode, fromMessage)}
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-4 py-4">
@@ -111,7 +123,7 @@ function ForkForm({
             onChange={(e) => setTitle(e.target.value)}
           />
         </div>
-        {chooseStart ? (
+        {mode === "choose" ? (
           <div className="flex flex-col gap-2">
             <span id="fork-start-label" className="text-sm font-medium">
               始め方

@@ -40,12 +40,12 @@ import { getRealJudgments, getRealNotices, useRealInboxVersion } from "@/lib/bac
 import { getActiveProjects, reorderProjects, renameProject } from "@/lib/mock/projects";
 import {
   foldForkThread,
-  getClosedForksForProject,
   getThreadsForProject,
   renameForkThread,
   reorderForks,
 } from "@/lib/mock/threads";
 import { describeFailure } from "@/lib/report-failure";
+import { requestForkDialog, type ForkStartMode } from "@/lib/fork-request";
 import { cn } from "@/lib/utils";
 import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref, threadRowHref } from "@/lib/settings-link";
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
@@ -139,7 +139,6 @@ function ProjectTreeItem({
   expanded,
   onToggleExpanded,
   onExpand,
-  onOpenArchive,
   onNavigate,
   keepOpenOnProjectSwitch,
   onMoveUp,
@@ -152,7 +151,6 @@ function ProjectTreeItem({
   onToggleExpanded: () => void;
   /** 目次を開く（人が畳んでいても開く）。別 Project へ移って Drawer を残すとき */
   onExpand: () => void;
-  onOpenArchive: () => void;
   onNavigate?: () => void;
   /** NavPanel の同名の引数を見よ */
   keepOpenOnProjectSwitch?: boolean;
@@ -171,7 +169,18 @@ function ProjectTreeItem({
   // **いま開いていない Project で、まだ開いていない Thread があれば名前を太字に**（2026-10-03、§6.33）
   const anyUnread = useAnyThreadUnread([project.baseThreadId, ...forks.map((f) => f.id)]);
   const projectUnread = !isCurrent && anyUnread;
-  const closedForkCount = getClosedForksForProject(project.id).length;
+
+  /**
+   * **サイドバーから Fork を作る**（2026-10-11、ユーザー）。ダイアログは会話の面が持つ（`lib/fork-request.ts`）
+   * ——別の Project の行なら、その Project へ移ってから開く。設定を開いていれば閉じる
+   */
+  function startFork(parentThreadId: string, start: ForkStartMode) {
+    requestForkDialog({ projectId: project.id, parentThreadId, start });
+    if (!isCurrent || isSettingsOpen(pathname, searchParams)) {
+      router.push(threadRowHref(project.id, isCurrent ? activeForkThreadId : null));
+    }
+    onNavigate?.();
+  }
 
   // 裏の仕事が残っていれば、閉じる前に確かめる（v4-frontend.md §6「Fork を閉じるときの警告」）
   const { confirmClose, dialog: closeForkDialog } = useCloseForkConfirm();
@@ -296,18 +305,29 @@ function ProjectTreeItem({
               高さを揃える——畳んだ／開いたという人の選択は変えない */}
           {expanded && !isDragging ? (
             <SidebarMenuSub>
-              <SidebarMenuSubItem>
-                <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>
-                  <Link
-                    // 設定を開いていても、設定を閉じてその会話を出す（2026-10-05、`threadRowHref`）
-                    href={threadRowHref(project.id, null)}
-                    data-roving-item
-                    onClick={onNavigate}
-                  >
-                    <ThreadRowIcon threadId={project.baseThreadId} icon={MessageSquare} />
-                    <ThreadRowName threadId={project.baseThreadId} testId="sidebar-base-name">Base Thread</ThreadRowName>
-                  </Link>
-                </SidebarMenuSubButton>
+              <SidebarMenuSubItem className="group/fork relative">
+                <SidebarItemMenu
+                  what="Base Thread"
+                  name="Base Thread"
+                  onFork={() => startFork(project.baseThreadId, "continue")}
+                >
+                  {(more) => (
+                    <div className="relative">
+                      <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null} className="pr-8">
+                        <Link
+                          // 設定を開いていても、設定を閉じてその会話を出す（2026-10-05、`threadRowHref`）
+                          href={threadRowHref(project.id, null)}
+                          data-roving-item
+                          onClick={onNavigate}
+                        >
+                          <ThreadRowIcon threadId={project.baseThreadId} icon={MessageSquare} />
+                          <ThreadRowName threadId={project.baseThreadId} testId="sidebar-base-name">Base Thread</ThreadRowName>
+                        </Link>
+                      </SidebarMenuSubButton>
+                      {more}
+                    </div>
+                  )}
+                </SidebarItemMenu>
                 <ThreadBackgroundLine projectId={project.id} thread={{ id: project.baseThreadId, title: "Base Thread", fork: false }} />
               </SidebarMenuSubItem>
 
@@ -329,13 +349,15 @@ function ProjectTreeItem({
                             ? () => confirmClose(fork.id, fork.title, () => void closeFork(fork))
                             : undefined
                         }
+                        // **Fork からも分けられる**（2026-10-11、ユーザー）
+                        onFork={() => startFork(fork.id, "continue")}
                       >
                         {(more) => (
                         <div className="relative" {...forkDrag}>
                           <SidebarMenuSubButton
                             asChild
                             isActive={isCurrent && activeForkThreadId === fork.id}
-                            className={CONNECTED_FEATURES.threadCloseReopen ? "pr-8" : undefined}
+                            className="pr-8"
                           >
                             <Link
                               href={threadRowHref(project.id, fork.id)}
@@ -360,26 +382,21 @@ function ProjectTreeItem({
                 ))}
               </SortableList>
 
-              {/* 閉じた Fork の入口は、いま開いている Project にだけ出す——履歴
-                  （ArchiveDialog）はいま開いている Project の閉じた Fork を見せる
-                  ので、別 Project の行から開くと中身が食い違う */}
-              {SHOW_ARCHIVE && isCurrent && closedForkCount > 0 ? (
-                <SidebarMenuSubItem>
-                  <SidebarMenuSubButton asChild size="sm" className="text-ink-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onNavigate?.();
-                        onOpenArchive();
-                      }}
-                      data-roving-item
-                    >
-                      <Clock />
-                      <span>閉じた Fork（{closedForkCount}）</span>
-                    </button>
-                  </SidebarMenuSubButton>
-                </SidebarMenuSubItem>
-              ) : null}
+              {/* **まっさらな Fork を作る**（2026-10-11、ユーザー）。会話を引き継いで分けるのは各行の「…」の「ここから Fork…」。
+                  「閉じた Fork（N）」の行はやめた——左下の履歴と同じものだった */}
+              <SidebarMenuSubItem>
+                <SidebarMenuSubButton asChild size="sm" className="text-ink-3">
+                  <button
+                    type="button"
+                    data-testid="sidebar-new-fork"
+                    data-roving-item
+                    onClick={() => startFork(project.baseThreadId, "fresh")}
+                  >
+                    <Plus />
+                    <span>新しい Fork</span>
+                  </button>
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
             </SidebarMenuSub>
           ) : null}
           {closeForkDialog}
@@ -533,7 +550,6 @@ export function NavPanel({
                     }))
                   }
                   onExpand={() => setExpandedOverride((prev) => ({ ...prev, [project.id]: true }))}
-                  onOpenArchive={onOpenArchive}
                   onNavigate={onNavigate}
                   keepOpenOnProjectSwitch={keepOpenOnProjectSwitch}
                 />

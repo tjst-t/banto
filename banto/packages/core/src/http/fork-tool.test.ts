@@ -1,7 +1,7 @@
 // **AI が tool から Fork を立てる**（決定・2026-09-27、アーキ仕様 §2.2「AI が Fork を立てる」）。
 //
 // 確かめること：tool は予約だけ受け、**親のターンが終わってから**（resume-point と返事を記録したあと）Fork を
-// 作る。名前が付き、最初の指示が「届いたもの」として渡って AI が起きる。Fork の中からは断る。途中で終わった
+// 作る。名前が付き、最初の指示が「届いたもの」として渡って AI が起きる。Fork の中からも立てられる。途中で終わった
 // ターンの予約は立てずに人に知らせる。ターンが終わったらレビュー待ちが出る。
 
 import { test } from "node:test";
@@ -249,27 +249,41 @@ test("名前は作るときに一緒に記録する（名前の無い Fork が�
   }
 });
 
-test("Fork の中からは立てられない（tool は見えるが断る）", async () => {
+test("Fork の中からも立てられる（親はその Fork）", async () => {
+  let forkId = "";
   await withForkApp(
     async function* (opts) {
-      yield init("s");
-      const r = await callForkTool(opts, [{ title: "a", instruction: "b" }]);
-      assert.equal(r.isError, true);
-      assert.match(r.content[0]!.text, /Fork Thread の中からは/);
-      yield say("立てられませんでした");
-      return { sessionId: "s2", compactionCount: 0 };
+      if (opts.prompt.includes("Fork を立てて")) {
+        yield init("s");
+        const r = await callForkTool(opts, [{ title: "孫", instruction: "続きを調べる" }]);
+        assert.equal(r.isError, undefined, r.content[0]!.text);
+        yield say("立てます");
+        return { sessionId: "s2", compactionCount: 0 };
+      }
+      yield init("child");
+      yield say("了解");
+      return { sessionId: "child", compactionCount: 0 };
     },
     async (h) => {
       const project = await h.projectThread.createProject("demo", "/tmp");
       const base = await h.projectThread.createBaseThread(project.id);
       const fork = await h.projectThread.forkThread(base.id);
+      forkId = fork.id;
       const res = await fetch(`${h.base}/api/threads/${fork.id}/messages`, {
         method: "POST",
         headers: h.headers,
         body: JSON.stringify({ prompt: "Fork を立てて" }),
       });
       assert.match(await res.text(), /"type":"done"/);
-      assert.equal(h.projectThread.listThreadsForProject(project.id).length, 2);
+      await waitFor(
+        () => h.projectThread.listThreadsForProject(project.id).some((t) => t.title === "孫"),
+        "Fork の中から立てた Fork",
+      );
+      const child = h.projectThread.listThreadsForProject(project.id).find((t) => t.title === "孫")!;
+      assert.equal(child.parentThreadId, forkId);
+      // 立った Fork の最初のターンが終わるまで待つ（片づけたあとに記録へ書かせない）
+      await waitFor(() => h.projectThread.getThread(child.id)!.messages.some((m) => m.role === "assistant" && m.seq > child.createdSeq), "孫の最初のターン");
+      await waitFor(() => !h.turns.isRunning(child.id), "孫のターンの終わり");
     },
   );
 });

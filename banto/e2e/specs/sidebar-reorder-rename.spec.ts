@@ -263,7 +263,7 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
   await expect(forkMore, "Fork 行に「…」が出ていない").toHaveCount(1);
   await forkMore.click();
   const fromMore = await page.getByRole("menuitem").allTextContents();
-  expect(fromMore).toEqual(["名前を変える…", "上へ移動", "下へ移動", "Close"]);
+  expect(fromMore).toEqual(["ここから Fork…", "名前を変える…", "上へ移動", "下へ移動", "Close"]);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menuitem")).toHaveCount(0);
 
@@ -304,8 +304,11 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
     page.getByTestId("sidebar-fork-name").filter({ hasText: "Fork 1" }),
     "Close したのに一覧に残っている",
   ).toHaveCount(0, { timeout: 15_000 });
-  // 削除ではなく整理——閉じた Fork として数えられている
-  await expect(page.getByText(/閉じた Fork（\d+）/).first()).toBeVisible({ timeout: 15_000 });
+  // 削除ではなく整理——履歴（左下）に閉じた Fork として残る。「閉じた Fork（N）」の行は出さない（2026-10-11）
+  await expect(page.getByText(/閉じた Fork（\d+）/)).toHaveCount(0);
+  await page.getByRole("button", { name: "履歴", exact: true }).first().click();
+  await expect(page.getByRole("dialog").getByText("Fork 1").first()).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
 });
 
 test("面の題は Project 名だけ——そこを右クリックすると名前を変えられる", async ({ page }) => {

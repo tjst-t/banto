@@ -14,7 +14,7 @@
 // 出ている操作が、その場の入力手段で必ず効く（規則13）。
 import { Fragment, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, MoreHorizontal, Pencil } from "lucide-react";
-import { CloseIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
+import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -48,18 +48,22 @@ export function SidebarItemMenu({
   onMoveUp,
   onMoveDown,
   onClose,
+  onFork,
   moreClassName,
   children,
 }: {
   /** 何の名前か（「Project」「Fork Thread」）。ダイアログの題に出る */
   what: string;
   name: string;
-  onRename: (name: string) => Promise<void>;
+  /** 名前を変える。無ければ項目を出さない（Base Thread の行——名前は固定） */
+  onRename?: (name: string) => Promise<void>;
   /** 並びの端なら undefined——押せない項目として出す（隠さない。端に居ることが分かる） */
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   /** Close（Fork だけ）。削除ではなく整理——閉じた Fork は履歴から開き直せる */
   onClose?: () => void;
+  /** 「ここから Fork…」（Thread の行。Base でも Fork でも、2026-10-11） */
+  onFork?: () => void;
   /** 「…」ボタンの位置合わせ（既定は行の右端） */
   moreClassName?: string;
   /** 行そのもの。引数の「…」ボタンを行の中の好きな場所に置く */
@@ -68,11 +72,19 @@ export function SidebarItemMenu({
   const [renaming, setRenaming] = useState(false);
 
   const entries: MenuEntry[] = [
-    { label: "名前を変える…", icon: Pencil, onSelect: () => setRenaming(true) },
-    { label: "上へ移動", icon: ArrowUp, onSelect: onMoveUp, separatorBefore: true },
-    { label: "下へ移動", icon: ArrowDown, onSelect: onMoveDown },
+    ...(onFork ? [{ label: "ここから Fork…", icon: ForkIcon, onSelect: onFork }] : []),
+    ...(onRename ? [{ label: "名前を変える…", icon: Pencil, onSelect: () => setRenaming(true) }] : []),
+    // 並べ替えられない行（Base Thread）には出さない
+    ...(onMoveUp !== undefined || onMoveDown !== undefined || onRename
+      ? [
+          { label: "上へ移動", icon: ArrowUp, onSelect: onMoveUp, separatorBefore: true },
+          { label: "下へ移動", icon: ArrowDown, onSelect: onMoveDown },
+        ]
+      : []),
     ...(onClose ? [{ label: "Close", icon: CloseIcon, onSelect: onClose, separatorBefore: true }] : []),
   ];
+  // 先頭に区切りを引かない
+  if (entries[0]) entries[0] = { ...entries[0], separatorBefore: false };
 
   const more = (
     <DropdownMenuTrigger asChild>
@@ -118,13 +130,15 @@ export function SidebarItemMenu({
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
-      <RenameDialog
-        open={renaming}
-        onOpenChange={setRenaming}
-        what={what}
-        currentName={name}
-        onSubmit={onRename}
-      />
+      {onRename ? (
+        <RenameDialog
+          open={renaming}
+          onOpenChange={setRenaming}
+          what={what}
+          currentName={name}
+          onSubmit={onRename}
+        />
+      ) : null}
     </>
   );
 }
