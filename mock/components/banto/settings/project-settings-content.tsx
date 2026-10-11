@@ -9,7 +9,8 @@
 // （§6.2「設定面への Project の文脈」）——instance 側の同じ Module の設定と
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
 import { useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { MoveRuntimeDialog } from "@/components/banto/settings/move-runtime-dialog";
 import { Puzzle, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
@@ -307,8 +308,12 @@ export function projectConfigurableModules(projectId: string) {
  * 別のサーバ」）。別のサーバなら、根はそのサーバのパスで、この機械には無い
  */
 function RuntimeReadOnly({ projectId }: { projectId: string }) {
+  useMockStoreVersion();
   const id = runtimeIdOfProject(projectId);
   const remote = id === HOST_CONTAINER ? undefined : getRuntime(id);
+  const [moving, setMoving] = useState(false);
+  // モックの見せ方：?running=1 で「動いているものがあるので移せない」を出す
+  const showRunning = useSearchParams().get("running") === "1";
   return (
     <div className="mb-3 flex items-start gap-2.5 rounded-md border border-border bg-surface-2 px-3 py-2.5" data-testid="project-runtime">
       {remote ? (
@@ -328,10 +333,23 @@ function RuntimeReadOnly({ projectId }: { projectId: string }) {
         </p>
         <p className="text-xs text-ink-3">
           {remote
-            ? `下の根は ${remote.name} の上のフォルダです。サーバ丸ごとがこの Project の箱で、そのサーバの中ではコンテナのような閉じ込めはありません。実行場所はあとから変えられません。`
-            : "実行場所はあとから変えられません。"}
+            ? `下の根は ${remote.name} の上のフォルダです。サーバ丸ごとがこの Project の箱で、そのサーバの中ではコンテナのような閉じ込めはありません。`
+            : "Project ごとのコンテナで、資源の上限つきで閉じ込めています。"}
         </p>
       </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="ml-auto h-7 shrink-0 text-xs"
+        onClick={() => setMoving(true)}
+        data-testid="move-runtime-open"
+      >
+        別の実行場所へ移す…
+      </Button>
+      {moving ? (
+        <MoveRuntimeDialog projectId={projectId} open onOpenChange={setMoving} showRunning={showRunning} />
+      ) : null}
     </div>
   );
 }
