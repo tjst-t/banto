@@ -6380,7 +6380,7 @@
       "number": 263,
       "kind": "task",
       "title": "移す本体：受付の停止・写す・切り替え・途中で落ちたときの片づけ",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "runtime-move",
       "dependsOn": [
         "runtime-move-probe-resume"
@@ -6394,7 +6394,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-11T10:39:29.164Z",
-      "updatedAt": "2026-10-11T10:39:29.164Z",
+      "updatedAt": "2026-10-11T12:25:51.262Z",
       "closedAt": null,
       "extra": {}
     },
