@@ -45,6 +45,18 @@ export type RealAppEvent =
       background?: Array<{ threadId: string; projectId?: string; items: RealBackgroundItem[] }>;
       /** 混んでいる Project とこの機械（追加・2026-10-09、§6.36）。古い host は付けない */
       resources?: RealResourcesBusy;
+      /** 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。古い host は付けない */
+      moving?: RealRuntimeMoveView[];
+    }
+  /**
+   * 別の実行場所へ移す状況が変わった（追加・2026-10-12、Backlog #270）。`move` があれば移している途中（丸ごと置き換える）、
+   * 無ければ終わった——`failed` があれば移せなかった（受信箱の知らせと同じ文）
+   */
+  | {
+      type: "runtime_move.changed";
+      projectId: string;
+      move?: RealRuntimeMoveView;
+      failed?: { title: string; reason: string; from: RealRuntimeMoveSide };
     }
   /** 混んでいる Project とこの機械が変わった（全体を置き換える） */
   | { type: "resources.busy"; busy: RealResourcesBusy }
@@ -65,6 +77,24 @@ export type RealAppEvent =
    * 人が画面で閉じたときも。サイドバーの開いている一覧から外し、開いている画面は飛ばさず帯を出す
    */
   | { type: "thread.closed"; threadId: string; projectId?: string; by: RealThreadClosedBy; reason?: string };
+
+/** 移す元・移す先（host の `RuntimeMoveView` の from・to） */
+export interface RealRuntimeMoveSide {
+  runtime: string;
+  root: string;
+  /** 「この機械のコンテナ」「別のサーバ「名前」」 */
+  label: string;
+}
+
+/** 移している Project（host の `RuntimeMoveView` と同じ形）。進み具合は host が起き直したあとは無い */
+export interface RealRuntimeMoveView {
+  projectId: string;
+  from: RealRuntimeMoveSide;
+  to: RealRuntimeMoveSide;
+  phase?: "preparing" | "stopping" | "copying" | "verifying" | "finishing";
+  copiedBytes?: number;
+  totalBytes?: number;
+}
 
 /** 混んでいる Project とこの機械（host の `ResourcesBusy` と同じ形） */
 export interface RealResourcesBusy {

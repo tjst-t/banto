@@ -168,6 +168,11 @@ export type ThreadProps = {
   onForkFrom?: ForkFromMessage;
   /** 入力欄を出さない（banto: 閉じた Fork、開き直すまで送れない。2026-10-08） */
   composerHidden?: boolean;
+  /**
+   * 入力欄を出したまま送れなくし、その理由を入力欄の上に出す（banto: 別の実行場所へ移している間。2026-10-12、
+   * Backlog #270）——送って断られてから分かるのではなく、先に分かるように。書きかけは残る
+   */
+  composerBlockedReason?: string;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -229,6 +234,7 @@ export const Thread: FC<ThreadProps> = ({
   onForkFrom,
   onStopWhileAwaitingHuman,
   composerHidden = false,
+  composerBlockedReason,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -245,6 +251,7 @@ export const Thread: FC<ThreadProps> = ({
         composerHint={composerHint}
         transcriptMarkers={transcriptMarkers}
         composerHidden={composerHidden}
+        composerBlockedReason={composerBlockedReason}
       />
       </ForkFromMessageProvider>
       </BranchingContext.Provider>
@@ -261,7 +268,8 @@ const ThreadRoot: FC<{
   composerHint?: ReactNode;
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
   composerHidden: boolean;
-}> = ({ isEmpty, autoFocus, placeholder, composerActionSlot, composerHint, transcriptMarkers, composerHidden }) => {
+  composerBlockedReason?: string | undefined;
+}> = ({ isEmpty, autoFocus, placeholder, composerActionSlot, composerHint, transcriptMarkers, composerHidden, composerBlockedReason }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   // **作り直された面は、読んでいた場所へ戻す**（決定・2026-09-28）。覚えた場所が「一番下」以外なら、
   // ライブラリの「最初に一番下へ」を止めて RememberScrollPosition が戻す。決まるのは作られたとき1回だけ
@@ -332,7 +340,12 @@ const ThreadRoot: FC<{
             <ThreadFollowupSuggestions />
             {composerHint}
             {composerHidden ? null : (
-              <Composer autoFocus={autoFocus} placeholder={placeholder} composerActionSlot={composerActionSlot} />
+              <Composer
+                autoFocus={autoFocus}
+                placeholder={placeholder}
+                composerActionSlot={composerActionSlot}
+                blockedReason={composerBlockedReason}
+              />
             )}
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
@@ -481,7 +494,8 @@ const Composer: FC<{
   autoFocus: boolean;
   placeholder?: string | undefined;
   composerActionSlot?: ReactNode;
-}> = ({ autoFocus, placeholder, composerActionSlot }) => {
+  blockedReason?: string | undefined;
+}> = ({ autoFocus, placeholder, composerActionSlot, blockedReason }) => {
   const pasteImages = usePasteImages();
   // **画面のキーボードが出る端末では、Enter は改行**（banto、2026-10-03、ユーザー要望）。送るのは画面の送信ボタンだけ
   // ——キーボードの Enter が送信だと改行が入れられない。見分けは自動の焦点と同じ（`useTouchKeyboard`）
@@ -490,7 +504,12 @@ const Composer: FC<{
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useRestoreWithdrawn(inputRef);
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-1.5">
+      {blockedReason ? (
+        <p data-testid="composer-blocked-reason" role="status" className="px-3 text-xs text-ink-3">
+          {blockedReason}
+        </p>
+      ) : null}
       <ComposerPrimitive.AttachmentDropzone asChild>
         <div
           data-slot="aui_composer-shell"
@@ -506,19 +525,20 @@ const Composer: FC<{
             autoFocus={autoFocus}
             // キーボードの Enter の表示も合わせる（携帯では「改行」、パソコンでは「送信」）
             enterKeyHint={touchKeyboard ? "enter" : "send"}
-            submitMode={touchKeyboard ? "none" : "enter"}
+            submitMode={touchKeyboard || blockedReason ? "none" : "enter"}
+            disabled={!!blockedReason}
             aria-label="Message input"
             addAttachmentOnPaste={false}
             onPaste={pasteImages}
           />
-          <ComposerAction composerActionSlot={composerActionSlot} />
+          <ComposerAction composerActionSlot={composerActionSlot} blocked={!!blockedReason} />
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerActionSlot }) => {
+const ComposerAction: FC<{ composerActionSlot?: ReactNode; blocked: boolean }> = ({ composerActionSlot, blocked }) => {
   const stopWhileAwaiting = useContext(StopWhileAwaitingContext);
   return (
     // **狭い幅でも送信ボタンを枠の外へ押し出さない**（banto、2026-10-03、ユーザー報告：携帯でモデルと permissionMode の
@@ -579,7 +599,22 @@ const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerAction
             </Button>
           </AuiIf>
         ) : null}
-        <AuiIf condition={(s) => !s.thread.isRunning && !stopWhileAwaiting}>
+        {blocked ? (
+          // 送れない間（別の実行場所へ移している）は押せない送信ボタン——理由は入力欄の上に出ている
+          <AuiIf condition={(s) => !s.thread.isRunning && !stopWhileAwaiting}>
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="aui-composer-send size-7 rounded-full"
+              aria-label="Send message"
+              disabled
+            >
+              <ArrowUpIcon className="aui-composer-send-icon size-4" />
+            </Button>
+          </AuiIf>
+        ) : null}
+        <AuiIf condition={(s) => !blocked && !s.thread.isRunning && !stopWhileAwaiting}>
           <ComposerPrimitive.Send asChild>
             <TooltipIconButton
               tooltip="Send message"

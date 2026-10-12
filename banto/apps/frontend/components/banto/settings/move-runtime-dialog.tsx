@@ -35,6 +35,7 @@ import {
   type RealRemoteRuntime,
 } from "@/lib/backend/client";
 import { getProject, refreshRealProjectLocation } from "@/lib/mock/projects";
+import { formatMoveBytes } from "@/lib/backend/runtime-moves";
 import { describeFailure } from "@/lib/report-failure";
 
 type Step = "choose" | "review" | "copying" | "done" | "failed";
@@ -55,13 +56,6 @@ const PHASE_LABEL: Record<RealMoveProgress["phase"], string> = {
 function runtimeLabel(runtime: string): string {
   const name = remoteRuntimeName(runtime);
   return name ?? "この機械のコンテナ";
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
 export function MoveRuntimeDialog({
@@ -328,7 +322,7 @@ export function MoveRuntimeDialog({
             <Block tone="ok" title="写すもの" testId="move-copies">
               <ul className="flex flex-col gap-1">
                 <li data-testid="move-size">
-                  Project のフォルダと Module の状態：{formatBytes(estimate.size.bytes)}（{estimate.size.files.toLocaleString()}{" "}
+                  Project のフォルダと Module の状態：{formatMoveBytes(estimate.size.bytes)}（{estimate.size.files.toLocaleString()}{" "}
                   ファイル）——.git ごと、未コミットの変更も
                 </li>
                 <li data-testid="move-records">
@@ -374,7 +368,7 @@ export function MoveRuntimeDialog({
             <p className="text-sm text-foreground" data-testid="move-phase">
               {progress ? PHASE_LABEL[progress.phase] : PHASE_LABEL.preparing}…
               {progress && progress.totalBytes > 0
-                ? ` ${formatBytes(Math.min(progress.copiedBytes, progress.totalBytes))} / ${formatBytes(progress.totalBytes)}`
+                ? ` ${formatMoveBytes(Math.min(progress.copiedBytes, progress.totalBytes))} / ${formatMoveBytes(progress.totalBytes)}`
                 : ""}
             </p>
             {progress?.current ? <p className="text-xs text-ink-3">いま：{progress.current}</p> : null}

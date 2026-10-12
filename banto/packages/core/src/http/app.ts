@@ -256,7 +256,7 @@ export interface AppDeps {
   /** **登録した別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。無ければ実行場所はこの機械だけ */
   remoteRuntimes?: RemoteRuntimes;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
-  runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status">;
+  runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
   /** 実行場所の登録で選べる SSH 鍵（Vault の ssh-identity の alias の名前） */
   listSshIdentities?(): Promise<string[]>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
@@ -2425,7 +2425,11 @@ export function createApp(deps: AppDeps) {
         );
         // **混んでいる Project とこの機械も渡す**（追加・2026-10-09、§6.36）——サイドバーの印。以後は resources.busy で置き換える
         const resources = deps.resources?.busy();
-        res.write(`data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}) })}\n\n`);
+        // **移している Project も渡す**（追加・2026-10-12、Backlog #270）——以後は runtime_move.changed で置き換える
+        const moving = deps.runtimeMove?.moving();
+        res.write(
+          `data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}) })}\n\n`,
+        );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);
         await new Promise<void>((resolve) => {

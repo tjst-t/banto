@@ -2000,6 +2000,7 @@ async function main(): Promise<void> {
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
+    onChange: (change) => appEvents.publish({ type: "runtime_move.changed", ...change }),
     // E2E だけ：写す途中で banto を落とすために、写す速さを抑える
     ...(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC
       ? { throttleBytesPerSec: Number(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC) }

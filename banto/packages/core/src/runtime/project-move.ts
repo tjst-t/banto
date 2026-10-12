@@ -79,6 +79,29 @@ export interface MoveProgress {
   reason?: string;
 }
 
+/**
+ * **移している Project を画面に見せる形**（追加・2026-10-12、Backlog #270 runtime-move-visible）。会話の面の帯と
+ * サイドバーの印に使う。進み具合（`phase` 以下）は host が起き直したあとは無い
+ */
+export interface RuntimeMoveView {
+  projectId: string;
+  from: { runtime: string; root: string; label: string };
+  to: { runtime: string; root: string; label: string };
+  phase?: MoveProgress["phase"];
+  copiedBytes?: number;
+  totalBytes?: number;
+}
+
+/**
+ * **移す状況が変わった**（画面への知らせ）。`move` があれば移している途中（丸ごと置き換える）。無ければ終わった
+ * ——`failed` があれば移せなかった（受信箱の知らせと同じ文）
+ */
+export interface RuntimeMoveChange {
+  projectId: string;
+  move?: RuntimeMoveView;
+  failed?: { title: string; reason: string; from: { runtime: string; root: string; label: string } };
+}
+
 export interface ProjectMoveDeps {
   dataDir: string;
   /** banto のコードの置き場（移す先の根と重なれば断る） */
@@ -106,6 +129,8 @@ export interface ProjectMoveDeps {
   kick(threadId: string): void;
   /** 受信箱へ */
   notify(n: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
+  /** 移す状況が変わった（画面への知らせ。写している間は1秒に1回まで） */
+  onChange?: (change: RuntimeMoveChange) => void;
   log?: (line: string) => void;
   /** 写す速さの上限（バイト／秒。E2E だけが、写す途中で banto を落とすために使う） */
   throttleBytesPerSec?: number;
@@ -266,6 +291,8 @@ function hostLabel(runtime: string): string {
 
 export class ProjectMover {
   private readonly progress = new Map<string, MoveProgress>();
+  /** 画面へ最後に知らせた時刻（写している間の知らせを1秒に1回までにする） */
+  private readonly lastChange = new Map<string, number>();
   /** Module を起こしてよい間（Service を止めておくために、移している途中でも Service の Module だけは起こす） */
   private readonly modulesAllowed = new Set<string>();
   private readonly log: (line: string) => void;
@@ -285,6 +312,43 @@ export class ProjectMover {
     if (!project) throw new RuntimeMoveError(404, "Project がありません");
     const progress = this.progress.get(projectId);
     return { ...(project.move ? { move: project.move } : {}), ...(progress ? { progress } : {}) };
+  }
+
+  /** いま移している Project（画面の hello に載せる） */
+  moving(): RuntimeMoveView[] {
+    return this.deps.projectThread
+      .listProjects()
+      .filter((p) => p.move)
+      .map((p) => this.viewOf(p.id, p.move!));
+  }
+
+  private viewOf(projectId: string, move: NonNullable<ProjectState["move"]>): RuntimeMoveView {
+    const progress = this.progress.get(projectId);
+    const live = progress && progress.phase !== "done" && progress.phase !== "failed";
+    return {
+      projectId,
+      from: { ...move.from, label: hostLabel(move.from.runtime) },
+      to: { ...move.to, label: hostLabel(move.to.runtime) },
+      ...(live ? { phase: progress.phase, copiedBytes: progress.copiedBytes, totalBytes: progress.totalBytes } : {}),
+    };
+  }
+
+  /** 移している途中の様子を画面へ（記録の move が無ければ何もしない） */
+  private changed(projectId: string): void {
+    if (!this.deps.onChange) return;
+    const move = this.deps.projectThread.getProject(projectId)?.move;
+    if (!move) return;
+    this.lastChange.set(projectId, Date.now());
+    this.emit({ projectId, move: this.viewOf(projectId, move) });
+  }
+
+  private emit(change: RuntimeMoveChange): void {
+    if (!change.move) this.lastChange.delete(change.projectId);
+    try {
+      this.deps.onChange?.(change);
+    } catch (err) {
+      this.log(`[host] 移す状況を画面へ知らせられませんでした: ${String(err)}`);
+    }
   }
 
   // ── 見積もり ───────────────────────────────────────────────────────────
@@ -364,6 +428,7 @@ export class ProjectMover {
     const remote = remoteNameOf(target.runtime);
     const started = remote ? await this.deps.remoteRuntimes.exclusive(remote, begin) : await begin();
     this.progress.set(projectId, { phase: "preparing", copiedBytes: 0, totalBytes: 0, startedAt: new Date().toISOString() });
+    this.changed(projectId);
     void this.run(projectId).catch((err: unknown) => this.log(`[host] Project ${projectId} を移す途中で投げました: ${String(err)}`));
     return started;
   }
@@ -384,11 +449,13 @@ export class ProjectMover {
       await this.deps.projectThread.failRuntimeMove(project.id, reason);
       this.log(`[host] Project ${project.id} の移し替えは途中で止まっていました: ${reason}`);
       await this.afterEnd(project.id);
+      const title = `「${project.name}」を${hostLabel(move.to.runtime)}へ移せませんでした`;
+      this.emit({ projectId: project.id, failed: { title, reason, from: { ...move.from, label: hostLabel(move.from.runtime) } } });
       await this.deps
         .notify({
           projectId: project.id,
           dedupeKey: `runtime-move-failed:${project.id}:${move.startedAt}`,
-          title: `「${project.name}」を${hostLabel(move.to.runtime)}へ移せませんでした`,
+          title,
           detail: reason,
         })
         .catch((err: unknown) => this.log(`[host] 受信箱に出せませんでした: ${String(err)}`));
@@ -407,6 +474,7 @@ export class ProjectMover {
 
       // 5. 元の Service を止めておく（Module を畳む前に。止まっていても enable のままだと、元の場所の起こし直しで起きる）→ 畳む
       progress.phase = "stopping";
+      this.changed(projectId);
       this.modulesAllowed.add(projectId);
       try {
         disabled = await this.deps.disableServices(projectId);
@@ -418,6 +486,7 @@ export class ProjectMover {
 
       // 写す
       progress.phase = "copying";
+      this.changed(projectId);
       let rebuild: string[] = [];
       await this.withSide(move.from.runtime, async (src) => {
         await this.withSide(move.to.runtime, async (dst) => {
@@ -427,13 +496,17 @@ export class ProjectMover {
             expected.push({ unit, ...parseMeasure((await this.mustRun(src, "大きさを測れ", measureScript(unit.from, unit), 300_000)).stdout) });
           }
           progress.totalBytes = expected.reduce((a, e) => a + e.bytes, 0);
+          this.changed(projectId);
           rebuild = await this.rebuildCandidates(src, move.from.root);
           for (const unit of units) {
             progress.current = unit.what;
-            await this.copy(src, dst, unit, progress);
+            await this.copy(src, dst, unit, progress, () => {
+              if (Date.now() - (this.lastChange.get(projectId) ?? 0) >= 1000) this.changed(projectId);
+            });
           }
           // 件数と大きさで確かめる
           progress.phase = "verifying";
+          this.changed(projectId);
           progress.current = undefined;
           for (const e of expected) {
             const got = parseMeasure((await this.mustRun(dst, "写したものを確かめられ", measureScript(e.unit.to, e.unit), 300_000)).stdout);
@@ -454,6 +527,7 @@ export class ProjectMover {
 
       // Claude の会話の記録（作業ディレクトリが変わるときだけ。host の側）
       progress.phase = "finishing";
+      this.changed(projectId);
       const records = this.copyClaudeRecords(project, move.from, move.to);
 
       // 切り替える
@@ -461,6 +535,7 @@ export class ProjectMover {
       this.deps.revokeClaudeLogin(projectId);
       progress.phase = "done";
       progress.endedAt = new Date().toISOString();
+      this.emit({ projectId });
       this.log(
         `[host] Project ${projectId} を ${hostLabel(move.from.runtime)}（${move.from.root}）から ${hostLabel(move.to.runtime)}（${move.to.root}）へ移しました` +
           `（${progress.copiedBytes} バイト・会話の記録 ${records.copied} 件）`,
@@ -501,11 +576,13 @@ export class ProjectMover {
       // 切り替えていない記録（started）のままにしない——ここで積めなければ、起き直したときに片づける
       if (this.deps.projectThread.getProject(projectId)?.move) await this.deps.projectThread.failRuntimeMove(projectId, reason);
       await this.afterEnd(projectId);
+      const title = `「${project.name}」を${hostLabel(move.to.runtime)}へ移せませんでした`;
+      this.emit({ projectId, failed: { title, reason, from: { ...move.from, label: hostLabel(move.from.runtime) } } });
       await this.deps
         .notify({
           projectId,
           dedupeKey: `runtime-move-failed:${projectId}:${move.startedAt}`,
-          title: `「${project.name}」を${hostLabel(move.to.runtime)}へ移せませんでした`,
+          title,
           detail: reason,
         })
         .catch((e: unknown) => this.log(`[host] 受信箱に出せませんでした: ${String(e)}`));
@@ -738,11 +815,14 @@ export class ProjectMover {
   }
 
   /** 1つを tar で流して写す（流れは host のこの process を通る——量を数える） */
-  private async copy(src: Side, dst: Side, unit: CopyUnit, progress: MoveProgress): Promise<void> {
+  private async copy(src: Side, dst: Side, unit: CopyUnit, progress: MoveProgress, onBytes: () => void): Promise<void> {
     const { tar } = excludesFor(unit);
     const reader = src.spawn(`cd -- ${shq(unit.from)} && exec tar --warning=no-file-ignored ${tar} -cf - .`);
     const writer = dst.spawn(`mkdir -p -- ${shq(unit.to)} && cd -- ${shq(unit.to)} && exec tar --no-same-owner -xpf -`);
-    const counter = new CountingStream((n) => (progress.copiedBytes += n), this.deps.throttleBytesPerSec);
+    const counter = new CountingStream((n) => {
+      progress.copiedBytes += n;
+      onBytes();
+    }, this.deps.throttleBytesPerSec);
     writer.stdin!.on("error", () => undefined);
     reader.stdout!.pipe(counter).pipe(writer.stdin!);
     const [r, w] = await Promise.all([collect(reader), collect(writer)]);

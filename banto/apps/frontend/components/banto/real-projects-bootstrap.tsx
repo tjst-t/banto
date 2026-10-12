@@ -6,12 +6,13 @@
 // ProjectのURLへ来た（一覧画面を経由していない）場合でも実データを引ける
 // ようにする。何も描画しない。
 import { useEffect } from "react";
-import { hydrateRealProjects, registerNewRealForks } from "@/lib/mock/projects";
+import { hydrateRealProjects, refreshRealProjectLocation, registerNewRealForks } from "@/lib/mock/projects";
 import { getThread, markThreadClosed } from "@/lib/mock/threads";
 import { onRealAppEvent, startRealAppEvents } from "@/lib/backend/app-events";
 import { wireRunningThreads } from "@/lib/backend/running-threads";
 import { wireBackgroundWork } from "@/lib/backend/background-work";
 import { wireResourcesBusy } from "@/lib/backend/resources-busy";
+import { wireRuntimeMoves } from "@/lib/backend/runtime-moves";
 import { reportFailure } from "@/lib/report-failure";
 
 export function RealProjectsBootstrap() {
@@ -27,6 +28,8 @@ export function RealProjectsBootstrap() {
     wireBackgroundWork();
     // 混んでいる Project とこの機械（§6.36）。同じ理由で読み始める前に
     wireResourcesBusy();
+    // 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。同じ理由で読み始める前に
+    wireRuntimeMoves();
     // host からの知らせ（host が始めたターン・受信箱の変化）を読み始める（決定・2026-09-25）
     startRealAppEvents();
     // **AI が立てた Fork を一覧に出す**（決定・2026-09-27）——host が作った Fork は、その最初のターンが
@@ -34,6 +37,14 @@ export function RealProjectsBootstrap() {
     return onRealAppEvent((event) => {
       // **Fork が閉じた**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）——AI が閉じた・別の画面で
       // 閉じた。サイドバーの開いている一覧から外れ、その Fork を開いている画面は帯を出す（Base へは飛ばさない）
+      // **移し終えたら、その Project の根と実行場所を読み直す**（追加・2026-10-12、Backlog #270）——移す画面を閉じて
+      // いても、サイドバーの行の title（根）や設定の欄が古い場所のままにならないように
+      if (event.type === "runtime_move.changed" && !event.move && !event.failed) {
+        refreshRealProjectLocation(event.projectId).catch((err: unknown) => {
+          reportFailure("移した Project の新しい場所を読み直せませんでした", err);
+        });
+        return;
+      }
       if (event.type === "thread.closed") {
         if (getThread(event.threadId)?.kind === "fork") {
           markThreadClosed(event.threadId, { by: event.by, ...(event.reason ? { reason: event.reason } : {}) });

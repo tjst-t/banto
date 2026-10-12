@@ -29,6 +29,8 @@ import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu
 import { ForkDialog, type ForkDialogRequest } from "@/components/banto/thread/fork-dialog";
 import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
 import { ForkClosedBanner } from "@/components/banto/thread/fork-closed-banner";
+import { RUNTIME_MOVE_COMPOSER_REASON, RuntimeMoveBanner } from "@/components/banto/thread/runtime-move-banner";
+import { useProjectMoving } from "@/lib/backend/runtime-moves";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import {
   clearRealThread,
@@ -194,6 +196,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // モバイルの Canvas はすでにヘッダ以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
+  // 別の実行場所へ移している間は入力欄を止める（追加・2026-10-12、Backlog #270）。帯は `RuntimeMoveBanner`
+  const moving = useProjectMoving(projectId);
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
   // 名前を聞いている Fork（null なら聞いていない）——v4-frontend.md §6.32
   const [forkRequest, setForkRequest] = useState<ForkDialogRequest | null>(null);
@@ -427,9 +431,12 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(project.baseThreadId, "compact") : undefined}
             />
           </PanelHeader>
+          {/* 別の実行場所へ移している間・移せなかったとき（追加・2026-10-12、Backlog #270） */}
+          <RuntimeMoveBanner projectId={project.id} />
           <div className="min-h-0 flex-1">
             <ThreadPanel
               threadId={project.baseThreadId}
+              composerBlockedReason={moving ? RUNTIME_MOVE_COMPOSER_REASON : undefined}
               onOpenCanvas={
                 // **実 Module の面はいつでも開ける**（決定・2026-09-07）。
                 // `CONNECTED_FEATURES.mockCanvasSurfaces` はモックの固定データの面を出すかの旗で、
@@ -496,10 +503,12 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             {closed && thread ? (
               <ForkClosedBanner thread={thread} onReopen={() => void handleReopenFork(threadId)} />
             ) : null}
+            <RuntimeMoveBanner projectId={project.id} />
             <div className="min-h-0 flex-1">
               <ThreadPanel
                 threadId={threadId}
                 closed={closed}
+                composerBlockedReason={moving ? RUNTIME_MOVE_COMPOSER_REASON : undefined}
                 // **Fork の会話からも Canvas を開ける**（2026-10-01、ユーザー報告）。渡していなかったので、Fork の中では
                 // 画面つき tool のカードに「開く」も「大きく開く」も出なかった。開くと Fork はそのまま細く残る
                 onOpenCanvas={(moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })}

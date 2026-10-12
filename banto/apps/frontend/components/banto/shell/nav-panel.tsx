@@ -60,6 +60,7 @@ import { LoaderCircle } from "lucide-react";
 import { useProjectRunning } from "@/lib/backend/running-threads";
 import { useHostBusy, useProjectBusy } from "@/lib/backend/resources-busy";
 import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
+import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
 import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
@@ -271,6 +272,8 @@ function ProjectTreeItem({
                   </span>
                   {/* 混んでいる印（§6.36）。いま開いている Project にも出す */}
                   {busyReason !== undefined ? <BusyProjectMark projectName={project.name} reason={busyReason} /> : null}
+                  {/* 別の実行場所へ移している印（追加・2026-10-12、Backlog #270） */}
+                  <MovingProjectMark projectId={project.id} projectName={project.name} />
                 </Link>
               </SidebarMenuButton>
               {more}

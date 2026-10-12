@@ -5,6 +5,7 @@
 // 流すのは「何が起きたか」の知らせだけで、中身は画面が既存の口で取りに行く（繋ぎ直す・記録を読む・受信箱）。
 
 import type { AwaitingReply, ThreadClosedBy } from "../project-thread/types.js";
+import type { RuntimeMoveChange } from "../runtime/project-move.js";
 
 /**
  * **バックグラウンドで動いているもの1件**（追加・2026-10-03、v4-frontend.md §6.33）。返事待ちの札（`AwaitingReply`）から
@@ -49,7 +50,10 @@ export type AppEvent =
   // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
   | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string }
   // 混んでいる Project とこの機械（追加・2026-10-09、v4-frontend.md §6.36）。**変わったときだけ**、全体を送る（画面は置き換える）
-  | { type: "resources.busy"; busy: ResourcesBusy };
+  | { type: "resources.busy"; busy: ResourcesBusy }
+  // Project を別の実行場所へ移す状況（追加・2026-10-12、Backlog #270）。移している途中は `move` を丸ごと（写している間は
+  // 1秒に1回まで）、終われば `move` 無し、移せなければ `failed`。会話の面の帯・入力欄・サイドバーの印に使う
+  | ({ type: "runtime_move.changed" } & RuntimeMoveChange);
 
 /** 混んでいる Project とこの機械（サイドバーの印） */
 export interface ResourcesBusy {
