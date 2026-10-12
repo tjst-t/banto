@@ -6731,6 +6731,30 @@
       "updatedAt": "2026-10-12T07:18:21.992Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "browser-video",
+      "number": 279,
+      "kind": "story",
+      "title": "Browser の人の画面を動画（H.264＋WebCodecs）で流し、動画も滑らかに映す",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "決定 2026-10-12（ユーザー、案X）。CDP の JPEG の screencast をやめ、Xvfb を GStreamer で H.264 に圧縮して流れの口で流し、人の画面は WebCodecs で描く。描けない環境は JPEG に落とす。Fable の実現性の確かめ（サブエージェント d80bc5ec、2026-10-12）：倍率2・30fps で 4〜5 Mbit/s・CPU 1コア弱、穴は (1) ページの大きさの上書きと画面の取り込みが両立しない (2) キーフレームが 1MiB に当たる→要求時だけ・分割 (3) 静止でも取り込みが CPU を食う→変化の検知 (4) TCP で詰まった絵を捨てられない→未着で止めキーフレームで再開。段：1 測って決める→2 映像だけ（パソコン）→3 流量と携帯→4 音。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md §4.1",
+        "docs/specs/v4-architecture.md §5.8"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-12T07:53:48.686Z",
+      "updatedAt": "2026-10-12T07:53:48.686Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
