@@ -68,6 +68,10 @@ import { ProjectCodeTransferLine } from "./code-transfer";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
+/** 一番下の行のボタン（履歴・設定）。テーマ（ThemeToggle の labeled）と同じ形・同じ幅に揃える */
+const FOOTER_BUTTON =
+  "flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-ink-2 outline-hidden hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring";
+
 /**
  * 受信箱のバッジの件数。**判断待ちだけ**を数える——溜めてよくない
  * （止まっている）方が急ぎだから（§2.4）。レビュー待ちは溜めてよいので含めない。
@@ -472,7 +476,8 @@ export function NavPanel({
 
   return (
     <>
-      <SidebarHeader className="gap-1">
+      {/* 検索の下に薄い線（2026-10-12、ユーザー要望。§6.39）——上の入口と Project 一覧を分ける */}
+      <SidebarHeader className="gap-1 border-b border-sidebar-border">
         <div className="flex h-8 items-center justify-between gap-1 pl-2">
           <span className="truncate text-sm font-semibold text-foreground">{title ?? "banto"}</span>
           {headerAction}
@@ -517,7 +522,8 @@ export function NavPanel({
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent>
+      {/* **Project 一覧だけがスクロールする**（§6.39）。上の入口と下の行は動かない。細いスクロールバーは globals.css の .sidebar-scroll */}
+      <SidebarContent className="sidebar-scroll [scrollbar-gutter:stable]">
         {/* この機械全体が混んでいる（§6.36）。押すと設定の「資源」 */}
         {hostBusy !== undefined ? (
           <HostBusyBand
@@ -566,41 +572,37 @@ export function NavPanel({
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="gap-1">
-        <SidebarMenu>
+      {/* **履歴・設定・テーマは一番下の1行に横に並べる**（2026-10-12、ユーザー要望。§6.39）——以前は3段で
+          Project 一覧の高さを削っていた。上に薄い線を引いて Project 一覧と分ける。
+          設定は常設の入口（決定・2026-09-01）——Command Palette を知らないと設定に辿り着けない状態を避ける */}
+      <SidebarFooter className="border-t border-sidebar-border p-1.5">
+        <div className="flex items-center gap-1" data-testid="sidebar-footer-row">
           {SHOW_ARCHIVE ? (
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                onClick={() => {
-                  onNavigate?.();
-                  onOpenArchive();
-                }}
-              >
-                <Clock />
-                <span className="truncate">履歴</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            <button
+              type="button"
+              className={FOOTER_BUTTON}
+              onClick={() => {
+                onNavigate?.();
+                onOpenArchive();
+              }}
+            >
+              <Clock className="size-4 shrink-0" />
+              <span className="truncate">履歴</span>
+            </button>
           ) : null}
-          {/* 常設の入口（決定・2026-09-01）——Command Palette を知らないと
-              設定に辿り着けない状態を避ける。instance 設定は Project の
-              外側にあるので、Project 一覧とは分けてここに置く */}
           {SHOW_INSTANCE_SETTINGS ? (
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isSettingsOpen(pathname, searchParams)}>
-                <Link
-                  href={settingsOpenHref(pathname, searchParams, { project: activeProjectId })}
-                  onClick={onNavigate}
-                >
-                  <Settings />
-                  <span className="truncate">設定</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            <Link
+              href={settingsOpenHref(pathname, searchParams, { project: activeProjectId })}
+              onClick={onNavigate}
+              aria-current={isSettingsOpen(pathname, searchParams) ? "page" : undefined}
+              data-active={isSettingsOpen(pathname, searchParams) ? "" : undefined}
+              className={cn(FOOTER_BUTTON, "data-[active]:bg-accent-soft data-[active]:text-accent-ink")}
+            >
+              <Settings className="size-4 shrink-0" />
+              <span className="truncate">設定</span>
+            </Link>
           ) : null}
-        </SidebarMenu>
-        <div className="flex items-center justify-between pl-2">
-          <span className="text-xs text-ink-3">テーマ</span>
-          <ThemeToggle />
+          <ThemeToggle labeled className="min-w-0 flex-1" />
         </div>
       </SidebarFooter>
     </>

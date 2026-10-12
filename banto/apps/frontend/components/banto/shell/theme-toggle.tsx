@@ -11,10 +11,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 const ICONS = { light: Sun, dark: Moon, system: Monitor } as const;
 
-export function ThemeToggle() {
+/**
+ * `labeled`：広いサイドバーの一番下の行（履歴・設定と並ぶ）。アイコンの横に「テーマ」を出す（§6.39）。
+ * 読み上げ名はどちらも「明暗を切り替え」のまま
+ */
+export function ThemeToggle({ labeled = false, className }: { labeled?: boolean; className?: string } = {}) {
   const { theme, setTheme } = useTheme();
   // ハイドレーション不一致を避ける（サーバは theme を知らない）。
   // next-themes の標準パターン——マウント直後の1回だけ発火し、cascading render は起きない
@@ -34,16 +39,21 @@ export function ThemeToggle() {
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex size-8 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
+              className={cn(
+                "flex items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground",
+                labeled ? "h-8 gap-1.5 px-2 text-xs text-ink-2" : "size-8",
+                className,
+              )}
               aria-label="明暗を切り替え"
             >
-              <Icon className="size-4" />
+              <Icon className="size-4 shrink-0" />
+              {labeled ? <span className="truncate">テーマ</span> : null}
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent side="right">明暗切替</TooltipContent>
+        <TooltipContent side={labeled ? "top" : "right"}>明暗切替</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent side="right" align="end">
+      <DropdownMenuContent side={labeled ? "top" : "right"} align="end">
         <DropdownMenuItem onClick={() => setTheme("light")}>
           <Sun className="size-4" /> ライト
         </DropdownMenuItem>

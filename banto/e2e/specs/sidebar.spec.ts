@@ -39,6 +39,22 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   await expect(sidebar.getByRole("link", { name: "Base Thread" })).toBeVisible();
   await expectSidebarWidth(sidebar, 256);
 
+  // ---- 一番下の1行（§6.39）：履歴・設定・テーマが横に並ぶ。上に線、検索の下にも線 ----
+  const footerRow = sidebar.getByTestId("sidebar-footer-row");
+  const tops = await Promise.all(
+    [
+      footerRow.getByRole("button", { name: "履歴", exact: true }),
+      footerRow.getByRole("link", { name: "設定", exact: true }),
+      footerRow.getByRole("button", { name: "明暗を切り替え" }),
+    ].map(async (l) => Math.round((await l.boundingBox())?.y ?? -1)),
+  );
+  expect(new Set(tops).size, `履歴・設定・テーマが1行に並んでいない（y=${tops.join(",")}）`).toBe(1);
+  const lines = await sidebar.evaluate((el) => ({
+    header: getComputedStyle(el.querySelector('[data-slot="sidebar-header"]')!).borderBottomWidth,
+    footer: getComputedStyle(el.querySelector('[data-slot="sidebar-footer"]')!).borderTopWidth,
+  }));
+  expect(lines).toEqual({ header: "1px", footer: "1px" });
+
   // ---- Fork を作ると、目次に並ぶ ------------------------------------------
   await page.getByRole("button", { name: "Fork を開く" }).click();
   await confirmForkDialog(page);

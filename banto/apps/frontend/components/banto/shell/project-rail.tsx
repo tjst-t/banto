@@ -131,7 +131,7 @@ function CollapsedRail({
 
   return (
     <>
-      <SidebarHeader className="items-center gap-2 px-0 py-3">
+      <SidebarHeader className="items-center gap-2 border-b border-sidebar-border px-0 py-3">
         <RailIconButton icon={PanelLeft} label="サイドバーを開く（⌘B / Ctrl-B）" onClick={toggleSidebar} />
         {CONNECTED_FEATURES.inbox ? (
           <RailIconButton icon={Bell} label="受信箱" onClick={onOpenInbox}>
@@ -154,7 +154,7 @@ function CollapsedRail({
           （実測・2026-09-09、E2E で 25 Project のとき設定のクリックが
           Project アイコンに横取りされた）——縦だけスクロールさせ、バッジの
           ぶんの余白（pt-1）を上に取ることで両方を満たす */}
-      <SidebarContent className="!overflow-x-hidden !overflow-y-auto items-center gap-1 px-0 pt-1">
+      <SidebarContent className="sidebar-scroll !overflow-x-hidden !overflow-y-auto items-center gap-1 px-0 pt-1">
         <SidebarMenu className="items-center gap-1 px-0">
           <SortableList ids={projects.map((p) => p.id)} onReorder={reorderTo}>
           {projects.map((project, index) => {
@@ -259,7 +259,7 @@ function CollapsedRail({
         <RailIconButton icon={Plus} label="新しい Project" onClick={onNewProject} />
       </SidebarContent>
 
-      <SidebarFooter className="items-center gap-2 py-3">
+      <SidebarFooter className="items-center gap-2 border-t border-sidebar-border py-3">
         {SHOW_ARCHIVE ? <RailIconButton icon={Clock} label="履歴" onClick={onOpenArchive} /> : null}
         {/* 常設の入口（§10 item17、決定・2026-09-01）——Command Palette を知らないと
             設定に辿り着けない状態を避ける。instance 設定（階層1）は Project の
