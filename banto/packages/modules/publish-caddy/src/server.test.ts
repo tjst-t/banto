@@ -370,6 +370,8 @@ test("banto のログイン（既定）：banto に問い合わせ、2xx のと�
     assert.equal(handle[0]!.handler, "reverse_proxy");
     assert.deepEqual(handle[0]!.rewrite, { method: "GET", uri: "/api/auth/publish-check" });
     assert.deepEqual(handle[0]!.handle_response, [{ match: { status_code: [2] }, routes: [] }]);
+    // WebSocket の要求でも、問い合わせはアップグレードにしない（してしまうと banto が 404 を返し、公開先の WebSocket が開けなかった）
+    assert.deepEqual((handle[0]!.headers as { request: { delete?: string[] } }).request.delete, ["Upgrade", "Connection"]);
     // 3. 通行証の Cookie を外し、サービスが返す同じ名前の Set-Cookie を落とす
     assert.equal(handle[1]!.handler, "headers");
     assert.match(JSON.stringify(handle[1]), /__Host-banto-pass/);

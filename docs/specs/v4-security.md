@@ -1179,6 +1179,8 @@ oauth2-proxy と同じ形。**banto のセッションの Cookie は公開先へ
 1. publish-caddy のルートを subroute にし、先頭で `/.banto-auth/*` を host に回す。それ以外は、host の確かめ口
    （`GET /api/auth/publish-check`）へ `reverse_proxy` の `rewrite`＋`handle_response`（Caddyfile の `forward_auth` を
    JSON に落とした形）で問い、2xx なら次へ。元のメソッドと URI は `X-Forwarded-Method`・`X-Forwarded-Uri` で渡す。
+   **問い合わせからは `Upgrade`・`Connection` を外す**（2026-10-12、実機で発覚）——付けたままだと公開先の WebSocket の要求で
+   問い合わせもアップグレードになり、banto 本体の upgrade の受け口が断って 404 になり、公開したサービスの WebSocket が全部開けなかった
    host の口は publish-caddy が中継の住所から知る（publish-caddy も Caddy も host にいる。例 `127.0.0.1:4737`）
 2. 確かめ口は、**その公開先の名前にだけ効く通行証**の Cookie（`__Host-banto-pass`、その公開先のホストだけに置く）を見る。
    公開先の名前は Caddy の付ける `X-Forwarded-Host`。**Caddy を通らずに 4737 へ直に来た要求がこれを偽っても得るものは

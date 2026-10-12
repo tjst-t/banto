@@ -195,6 +195,11 @@ export function buildRoute(
       headers: {
         request: {
           set: { "X-Forwarded-Method": ["{http.request.method}"], "X-Forwarded-Uri": ["{http.request.uri}"] },
+          // **WebSocket の要求でも、問い合わせはふつうの GET にする**（2026-10-12、実機で発覚）。Upgrade・Connection を
+          // 付けたまま問うと reverse_proxy は banto へもアップグレードを頼み、banto 本体の upgrade の受け口
+          // （/api/streams 等だけを受ける）が断って 404——公開したサービスの WebSocket が全部開けなかった。
+          // Caddy は prepareRequest で Upgrade を付け直してから header の操作を当てるので、ここで消せば効く
+          delete: ["Upgrade", "Connection"],
         },
       },
       handle_response: [{ match: { status_code: [2] }, routes: [] }],
