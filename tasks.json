@@ -6595,6 +6595,29 @@
       "updatedAt": "2026-10-12T05:47:35.737Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "project-overrides-real",
+      "number": 273,
+      "kind": "story",
+      "title": "Project ごとの設定の上書きを、本当に要るものだけ host に繋ぐ（仕様から）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "未決"
+      ],
+      "body": "2026-10-12、ユーザー「本当に要る上書きは別に仕様を考える」。#272 で新しい Project の Advanced の欄をモックのまま隠したので、その続き。Project の設定の「既定値の上書き」もモックのまま隠れている（CONNECTED_FEATURES.settings）。\n\n決めること：どの上書きを本当に持つか。今 host に実在するものと食い違わない形にする——モデル・effort は会話ごとの選択、permissionMode の既定、Vault の置き場は Vault の管理画面の紐付け、Claude のログインは1つ、Memory の上限、コンテナの資源の上限（Project の設定「コンテナ」にもうある）、AI への指示（「一般」にもうある）。重なるものは作らず既存の場所へ寄せる。新しい Project の画面で選べるようにするか、作ったあと設定で変える形で足りるか。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-12T05:48:07.744Z",
+      "updatedAt": "2026-10-12T05:48:07.744Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
