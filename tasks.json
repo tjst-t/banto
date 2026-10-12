@@ -6782,7 +6782,7 @@
       "number": 281,
       "kind": "task",
       "title": "段2：映像だけを H.264 で流す（パソコンの Chrome と Safari）、描けなければ JPEG に落とす",
-      "status": "ready",
+      "status": "backlog",
       "parent": "browser-video",
       "dependsOn": [
         "browser-video-measure"
@@ -6796,7 +6796,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-12T07:54:00.848Z",
+      "updatedAt": "2026-10-12T07:54:11.412Z",
       "closedAt": null,
       "extra": {}
     },
