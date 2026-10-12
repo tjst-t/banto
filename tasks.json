@@ -6618,6 +6618,31 @@
       "updatedAt": "2026-10-12T05:48:07.744Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "resource-pressure-rest",
+      "number": 274,
+      "kind": "story",
+      "title": "資源の逼迫の残り（機械全体の見張り・Module の組・交通整理）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "container",
+        "資源",
+        "未決"
+      ],
+      "body": "Fork「資源の逼迫」（2026-10-08〜12）の残り。段0（原因）・段1（見える化）・段2a（仕事の組と天井）・本体の止まりの直し（SDK の getReport）・host の earlyoom は済んでいる。経緯は docs/notes/2026-10-09-resource-pressure.md、仕様は v4-security.md §1「資源の逼迫を見せる・共倒れさせない」。\n\n**Banto開発を外の VM に移してから、要るかを決める**（2026-10-12、ユーザー）。移せばこの機械のメモリ不足はかなり和らぐ。下のタスクはそれまで積んだだけ。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-12T07:17:48.140Z",
+      "updatedAt": "2026-10-12T07:17:48.140Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
