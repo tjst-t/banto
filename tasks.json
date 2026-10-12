@@ -6234,7 +6234,7 @@
       "number": 278,
       "kind": "task",
       "title": "banto を更新したら、別のサーバへ新しい版のコードを先に送っておく",
-      "status": "in-progress",
+      "status": "done",
       "parent": "remote-runtime",
       "dependsOn": [
         "remote-code-transfer-visible"
@@ -6244,12 +6244,12 @@
       "labels": [],
       "body": "2026-10-12 の実機：banto を更新して起こし直したあと、qemu-bmc（banto-dev-vm）と Kaggle（kaggle-dev-vm）の Module が繋がらず、ユーザーは「Subagent が死んだまま戻らない」と受け取った。実際は、版が変わったので次に使うとき新しい版のコード（約 850MB）を送り直す必要があり、送り終わるまで（数分）Module が起きなかった。用意を頼むと両方とも全部繋がった（banto-dev-vm には 07:18 に新しい版 5dc822f4 が届いていた）。\n\nやること：banto が起きたとき（と実行場所を登録したとき）、登録済みの別のサーバのうち、使っている Project があるものへ、裏で新しい版のコードを先に送っておく（一度に1台ずつ、失敗しても止めない）。送っている間は #269（513edc9c で入った、送る量を減らし進み具合を見せる仕組み）の表示に乗せる。\n\n**フル E2E は流さない**（関係する spec を1並列で）。",
       "doneWhen": "banto を新しい版で起こし直したあと、別のサーバの Project を開く前にコードが送り終わっていて、開いたときに Module がすぐ繋がることを E2E で確かめた",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/remote-code-presend-after-update）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:18:54.825Z",
-      "updatedAt": "2026-10-12T09:10:36.771Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-12T09:43:29.540Z",
+      "closedAt": "2026-10-12T09:43:29.540Z",
       "extra": {}
     },
     {
