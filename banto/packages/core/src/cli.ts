@@ -2037,10 +2037,8 @@ async function main(): Promise<void> {
     resources: { snapshot: () => resourceWatch.snapshot(), busy: () => resourceWatch.busySummary() },
     // 別のサーバへコードを送っている途中のもの（hello）と、登録したあと先に送っておく口（Backlog #269）
     codeTransfers: () => remoteSsh.codeTransfers().map((t) => ({ ...t, projectIds: projectsOnRuntime(t.runtime) })),
-    warmUpRemoteRuntime: (name) =>
-      void remoteSsh
-        .warmUp(name)
-        .catch((err: unknown) => console.warn(`[host] 別のサーバ「${name}」へ先にコードを送れませんでした（最初に使うときに送り直します）:`, err)),
+    // 起きたときの先送り（Backlog #278）と同じ順番に並べる——一度に1台ずつ
+    warmUpRemoteRuntime: (name) => void remoteSsh.queueWarmUp(name),
     closeRemoteRuntime: (name) => remoteSsh.closeRuntime(name),
     relayEndpoint,
     claudeLogin,
@@ -2249,6 +2247,12 @@ async function main(): Promise<void> {
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));
+    // **使っている Project がある別のサーバへ、いまの版のコードを裏で先に送っておく**（追加・2026-10-12、Backlog #278）
+    // ——banto を更新して起こし直すと版が変わり、次に Project を開いたとき送り終わるまで Module が起きない。一度に1台ずつ、
+    // 失敗しても次へ（`queueWarmUp`）。待ち受けてから——鍵は Vault から借りる
+    for (const r of remoteRuntimes.list()) {
+      if (projectsOnRuntime(r.name).length > 0) void remoteSsh.queueWarmUp(r.name);
+    }
     // **続けられると名乗った Module に、続けるかを聞く**（§2.5「2.」）。待ち受けてから——Module は中継で資格情報を
     // 受け取り、札で届ける。答えが出た Thread から切れたターンを片づけ、留めを解く
     void recovery!.afterListen().then(({ answers, turns }) => {

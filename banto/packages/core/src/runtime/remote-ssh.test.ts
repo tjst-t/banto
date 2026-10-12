@@ -275,3 +275,72 @@ test("繋いでいる途中（前提の確かめ・親の接続を待つ間）�
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+// **裏で先に送る順番**（追加・2026-10-12、Backlog #278）：banto が起きたときに、使っている Project がある実行場所へ順に送る。
+// 一度に1台ずつ（前のが終わるまで次を始めない）・1台が失敗しても次へ進む・順番が来るまでに外された実行場所には繋がない
+test("先に送る順番：一度に1台ずつ、失敗しても次へ進み、外された実行場所は飛ばす", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "banto-remote-ssh-data-"));
+  const registered = new Set(["a", "b", "c"]);
+  const started: string[] = [];
+  const gates = new Map<string, { open: (ok: boolean) => void; result: { conn: Record<string, unknown>; master: ChildProcess } }>();
+  const runtimes = {
+    get: (name: string) => (registered.has(name) ? { name } : undefined),
+    withConnection: async (name: string) => {
+      started.push(name);
+      let open!: (ok: boolean) => void;
+      const opened = new Promise<boolean>((resolve) => (open = resolve));
+      const result = fakeConnection(`${name}.example`);
+      gates.set(name, { open, result });
+      if (!(await opened)) {
+        result.master.kill("SIGKILL");
+        throw new Error(`${name} に繋げませんでした`);
+      }
+      return result.conn;
+    },
+  };
+  const logs: string[] = [];
+  const rt = new RemoteSshRuntime({
+    dataDir,
+    monorepoRoot: dataDir,
+    runtimes: runtimes as never,
+    remoteNameOf: () => undefined,
+    createRelayListener: () => createServer(),
+    notify: async () => undefined,
+    log: (line) => logs.push(line),
+  });
+  const connections = (rt as unknown as { connections: Map<string, Record<string, unknown>> }).connections;
+  const waitFor = async (cond: () => boolean, what: string) => {
+    const t0 = performance.now();
+    while (!cond()) {
+      assert.ok(performance.now() - t0 < 3_000, what);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+  try {
+    const a = rt.queueWarmUp("a");
+    const b = rt.queueWarmUp("b");
+    const c = rt.queueWarmUp("c");
+    await waitFor(() => started.length === 1, "1台目が始まらない");
+    // 1台目が終わるまで、2台目は始めない
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(started, ["a"]);
+    // 1台目が失敗しても、待っている側は失敗を受けず、2台目へ進む
+    gates.get("a")!.open(false);
+    await a;
+    assert.ok(logs.some((l) => l.includes("「a」へ先にコードを送れませんでした") && l.includes("a に繋げませんでした")), "失敗の理由がログに無い");
+    await waitFor(() => started.length === 2, "1台目が失敗したあと、2台目が始まらない");
+    assert.deepEqual(started, ["a", "b"]);
+    // 2台目の途中で3台目の登録が外されたら、3台目には繋がない
+    registered.delete("c");
+    gates.get("b")!.open(true);
+    await b;
+    await c;
+    assert.deepEqual(started, ["a", "b"]);
+    assert.equal((connections.get("b")?.runtime as { host: string }).host, "b.example");
+    assert.equal(connections.get("c"), undefined);
+  } finally {
+    for (const g of gates.values()) g.result.master.kill("SIGKILL");
+    await rt.closeAll();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

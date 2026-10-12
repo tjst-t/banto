@@ -237,6 +237,8 @@ export class RemoteSshRuntime {
   private readonly settingUp = new Map<string, Connection>();
   /** いまコードを送っている実行場所（送り終えたら消す） */
   private readonly transfers = new Map<string, CodeTransfer>();
+  /** 先に送る順番（一度に1台ずつ。`queueWarmUp`） */
+  private warmUpQueue: Promise<void> = Promise.resolve();
   /** 鍵の窓口の転送を外す見張り（窓口のファイルが host から消えたら外す） */
   private agentWatch?: ReturnType<typeof setInterval>;
 
@@ -266,6 +268,29 @@ export class RemoteSshRuntime {
   async warmUp(runtimeName: string): Promise<void> {
     if (this.connections.get(runtimeName)?.alive) return;
     await this.connecting.run(this.flightKey(runtimeName), () => this.connect(runtimeName));
+  }
+
+  /**
+   * **裏で先に送る（一度に1台ずつ）**（追加・2026-10-12、Backlog #278）——banto が起きたとき（使っている Project がある
+   * 実行場所の分）と、実行場所を登録したときに呼ぶ。版が変わると次に使うときにコード（約 850MB）を送り直すことになり、
+   * 送り終わるまで Module が起きない（2026-10-12 の実機で「Subagent が死んだまま」に見えた）。並べて送ると線を取り合って
+   * どれも遅くなるので、前のが終わってから次を始める。**失敗しても次へ進む**（理由はログと、送り始めていれば画面の
+   * 「送れませんでした」に残る。最初に使うときに送り直す）。終わったら（成否に依らず）返る
+   */
+  queueWarmUp(runtimeName: string): Promise<void> {
+    const next = this.warmUpQueue.then(async () => {
+      // 順番が来るまでに外された実行場所には繋がない
+      if (!this.opts.runtimes.get(runtimeName)) return;
+      try {
+        await this.warmUp(runtimeName);
+      } catch (err) {
+        this.log(
+          `[host] 別のサーバ「${runtimeName}」へ先にコードを送れませんでした（最初に使うときに送り直します）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    });
+    this.warmUpQueue = next;
+    return next;
   }
 
   async prepare(place: RuntimePlace): Promise<PreparedPlace> {
