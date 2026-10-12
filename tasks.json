@@ -6234,7 +6234,7 @@
       "number": 278,
       "kind": "task",
       "title": "banto を更新したら、別のサーバへ新しい版のコードを先に送っておく",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [
         "remote-code-transfer-visible"
@@ -6248,7 +6248,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:18:54.825Z",
-      "updatedAt": "2026-10-12T09:10:32.907Z",
+      "updatedAt": "2026-10-12T09:10:36.771Z",
       "closedAt": null,
       "extra": {}
     },
