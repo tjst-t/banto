@@ -6649,7 +6649,7 @@
       "number": 275,
       "kind": "task",
       "title": "案2：banto が機械全体の空きを見て知らせ、重い仕事を始めるのを控える",
-      "status": "ready",
+      "status": "backlog",
       "parent": "resource-pressure-rest",
       "dependsOn": [],
       "milestone": null,
@@ -6661,7 +6661,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:18:04.877Z",
-      "updatedAt": "2026-10-12T07:18:04.877Z",
+      "updatedAt": "2026-10-12T07:18:12.747Z",
       "closedAt": null,
       "extra": {}
     },
