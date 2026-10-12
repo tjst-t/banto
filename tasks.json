@@ -6188,6 +6188,27 @@
       "extra": {}
     },
     {
+      "id": "runtime-release-closed",
+      "number": 268,
+      "kind": "task",
+      "title": "閉じた Project が実行場所を占め続けないようにする（閉じたあとに実行場所を空ける・回収する）",
+      "status": "backlog",
+      "parent": "remote-runtime",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-12、ユーザー「直したほうがいい。閉じた後に回収する方法は必要」。\n\n今は「1つの実行場所に Project は1つ」の数え方（core/src/cli.ts の projectsUsing）が閉じた Project も数えるので、別のサーバの Project を閉じると、その VM は二度と新しい Project に使えない（この機械のコンテナへ移して戻してから閉じる、という回り道しか無い）。\n\n決めること（仕様 v4-security.md §1「Project の実行場所——別のサーバ」に書いてから作る）：\n- 閉じた Project を数えないか、数えるが「空ける」操作で外すか。閉じた Project を再開するとき、その実行場所が別の Project に使われていたらどうするか（断る・移す先を選ばせる）\n- 空けるときに向こうに残るもの（Project のフォルダ・Module の置き場・Service の unit・tmux・コードの置き場）を消すか残すか。残すなら場所を出す、消すなら人が確かめて押す（Repositories の削除と同じく、未 push のものを確かめる）\n- Service の unit が enable のまま残ると、向こうの起こし直しで勝手に起きる——閉じる・空けるときに disable する",
+      "doneWhen": "別のサーバの Project を閉じたあと、その実行場所に別の Project を作る・移すことができる（仕様に書いた形で）。閉じた Project を再開するときの扱いも決まっていて E2E で確かめた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-12T01:37:07.209Z",
+      "updatedAt": "2026-10-12T01:37:07.209Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "factory-factory-module",
       "number": 253,
       "kind": "bug",
