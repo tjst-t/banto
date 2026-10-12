@@ -23,6 +23,8 @@ export interface LaunchedBrowser {
   version: string;
   /** 描く倍率（起こしたときに決まり、止めるまで変わらない——chrome.ts） */
   scale: number;
+  /** 起こせたが、足りないものがある（日本語の字体が入れられなかった等——fonts.ts）。状態を見る口が返す */
+  notice?: string;
   /** ブラウザを閉じる（プロセスと仮想の画面も止める） */
   close: () => Promise<void>;
 }
@@ -66,6 +68,11 @@ export class BrowserSession {
 
   get running(): boolean {
     return this.context !== undefined;
+  }
+
+  /** 動いているブラウザの注意（起こしたときに足りなかったもの。動いていなければ undefined） */
+  get notice(): string | undefined {
+    return this.context ? this.launched?.notice : undefined;
   }
 
   /** 動いているブラウザの描く倍率（動いていなければ undefined） */

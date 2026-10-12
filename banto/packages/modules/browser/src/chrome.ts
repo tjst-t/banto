@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext } from "playwright-core";
 import { inWorkScope } from "@banto/module-contract";
+import { writeFontconfig } from "./fonts.js";
 
 /** 仮想の画面の大きさ（よくある画面の大きさ。CSS ピクセル——倍率を掛けた大きさで立てる） */
 export const SCREEN = { width: 1920, height: 1080 };
@@ -46,6 +47,8 @@ export interface ChromeOptions {
   languages: string[];
   locale: string;
   timezone: string;
+  /** ブラウザにだけ効かせる fontconfig の設定の置き場（起こすたびに locale から書く——fonts.ts） */
+  fontconfigFile: string;
   /** 窓の中身（ページ）の大きさ。タブごとの大きさ合わせ（session.ts）とそろえる */
   viewport: { width: number; height: number };
   /**
@@ -94,15 +97,16 @@ export function localeEnv(locale: string): { LANG: string; LANGUAGE: string } {
 
 /**
  * ブラウザの環境。**TMPDIR は短い所へ**——画面ありのブラウザは TMPDIR の下に UNIX ソケット（SingletonSocket）を作り、
- * パスが 108 バイトを越えると起きずに落ちる（実測・2026-10-10：banto が Module に渡す TMPDIR で落ちた）
+ * パスが 108 バイトを越えると起きずに落ちる（実測・2026-10-10：banto が Module に渡す TMPDIR で落ちた）。
+ * 字体の選び方は `FONTCONFIG_FILE`（fonts.ts——日本語を日本の字形で）
  */
-export function chromeEnv(base: NodeJS.ProcessEnv, display: string, locale: string, timezone: string): Record<string, string> {
+export function chromeEnv(base: NodeJS.ProcessEnv, display: string, locale: string, timezone: string, fontconfigFile: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined) env[k] = v;
   delete env.LC_ALL;
   delete env.LC_MESSAGES;
   const tmp = tmpdir();
-  return { ...env, ...localeEnv(locale), DISPLAY: display, TZ: timezone, TMPDIR: tmp.length > 60 ? "/tmp" : tmp };
+  return { ...env, ...localeEnv(locale), DISPLAY: display, TZ: timezone, TMPDIR: tmp.length > 60 ? "/tmp" : tmp, FONTCONFIG_FILE: fontconfigFile };
 }
 
 /** 子が終わるのを待つ（もう終わっていればすぐ） */
@@ -234,6 +238,7 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
   if (stale.length > 0) console.error(`[browser] 前の Module が残したものを止めました: ${stale.join("・")}`);
   mkdirSync(o.profileDir, { recursive: true });
   rmSync(join(o.profileDir, "DevToolsActivePort"), { force: true });
+  writeFontconfig(o.fontconfigFile, o.locale);
   const xvfb = await startDisplay(o.displayPidFile, o.scale);
   let chrome: ChildProcess | undefined;
   live.add(xvfb.process);
@@ -250,7 +255,7 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
   };
   try {
     // 入れられるなら仕事の組（banto-work-jobs.slice）で起こす——メモリが尽きても組の中だけで止まる（work-scope の説明）
-    const launch = inWorkScope(o.executable, chromeArgs(o), { kind: "browser", env: chromeEnv(process.env, xvfb.display, o.locale, o.timezone) });
+    const launch = inWorkScope(o.executable, chromeArgs(o), { kind: "browser", env: chromeEnv(process.env, xvfb.display, o.locale, o.timezone, o.fontconfigFile) });
     chrome = spawn(launch.command, launch.args, { env: launch.env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     const take = (c: Buffer) => (output = (output + c.toString()).slice(-8000));

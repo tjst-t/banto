@@ -5,11 +5,13 @@
 //
 // 入っていなければ最初に起こすときに入れる。仮想の画面（Xvfb）・字体・ブラウザが頼るライブラリがコンテナに無ければ、それも
 // 入れる（Playwright の install-deps——コンテナの中は sudo できる、v4-security.md §1）。入れられなければ理由つきで断る。
+// 日本語の字体（Noto CJK）は起こすたびに確かめ、無ければここで入れる（fonts.ts——入れられなくても断らない）。
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { BrowserError } from "./args.js";
+import { CJK_FONT_PACKAGE } from "./fonts.js";
 
 /** Playwright の呼び名（`chrome` は Google Chrome の安定版） */
 export const BROWSER_NAME = process.arch === "x64" ? "chrome" : "chromium";
@@ -51,15 +53,26 @@ export const INSTALL_HEARTBEAT_MS = 10_000;
 
 /** 走らせて、終わりまで待つ。出力は末尾だけ持つ（失敗の理由に使う）。走っている間は what を進捗で言い続ける */
 function run(args: string[], env: NodeJS.ProcessEnv, what: string, onProgress?: (message: string) => void): Promise<{ code: number | null; tail: string }> {
+  return runCommand(process.execPath, [playwrightCli(), ...args], `playwright ${args.join(" ")}`, env, what, onProgress);
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  shown: string,
+  env: NodeJS.ProcessEnv,
+  what: string,
+  onProgress?: (message: string) => void,
+): Promise<{ code: number | null; tail: string }> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     let last = "";
     onProgress?.(what);
-    console.error(`[browser] ${what}（playwright ${args.join(" ")}）`);
+    console.error(`[browser] ${what}（${shown}）`);
     const heartbeat = setInterval(() => {
       onProgress?.(`${what}（${Math.round((Date.now() - started) / 1000)} 秒${last ? `：${last.slice(0, 200)}` : ""}）`);
     }, INSTALL_HEARTBEAT_MS);
-    const child = spawn(process.execPath, [playwrightCli(), ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let tail = "";
     const take = (chunk: Buffer) => {
       const text = chunk.toString();
@@ -85,6 +98,8 @@ function run(args: string[], env: NodeJS.ProcessEnv, what: string, onProgress?: 
 export interface Installer {
   installBrowser(onProgress?: (message: string) => void): Promise<void>;
   installDeps(onProgress?: (message: string) => void): Promise<void>;
+  /** 日本語の字体（fonts-noto-cjk）を入れる（fonts.ts の ensureCjkFont が、無いときだけ呼ぶ） */
+  installFonts(onProgress?: (message: string) => void): Promise<void>;
 }
 
 export function playwrightInstaller(browsersPath: string): Installer {
@@ -101,6 +116,17 @@ export function playwrightInstaller(browsersPath: string): Installer {
           `ブラウザが頼るライブラリを入れられませんでした（終了コード ${r.code}。コンテナから外へ出られるか・sudo できるかを確かめてください）: ${r.tail.trim().slice(-1500)}`,
         );
       }
+    },
+    async installFonts(onProgress) {
+      // fontconfig も足す——無いと入ったかを fc-list で確かめられない（wqy-zenhei が頼るので install-deps の後ならある）
+      const script = `apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ${CJK_FONT_PACKAGE} fontconfig`;
+      let r: { code: number | null; tail: string };
+      try {
+        r = await runCommand("sudo", ["-n", "sh", "-c", script], `sudo apt-get install ${CJK_FONT_PACKAGE}`, env, "日本語の字体（Noto CJK）をコンテナに入れています（apt-get）", onProgress);
+      } catch (err) {
+        throw new BrowserError((err as NodeJS.ErrnoException).code === "ENOENT" ? "sudo がありません" : (err as Error).message);
+      }
+      if (r.code !== 0) throw new BrowserError(`終了コード ${r.code}: ${r.tail.trim().slice(-500)}`);
     },
   };
 }

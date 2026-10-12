@@ -2045,8 +2045,23 @@ Module の一覧には**2種類が混ざる**：
   「止める」）。パッケージは `packages/modules/browser`
 - **入れる**：最初に起こすとき、ブラウザが無ければ `playwright-core` の `install chrome`（x86_64。Google の apt から
   `google-chrome-stable` を入れる——中は sudo できる、`v4-security.md` §1）か `install chromium`（arm64、置き場に）で入れる。
-  仮想の画面（Xvfb）が無ければ `install-deps chromium` で入れる——Xvfb・字体（日本語を含む）・ブラウザが頼るライブラリを
+  仮想の画面（Xvfb）が無ければ `install-deps chromium` で入れる——Xvfb・字体・ブラウザが頼るライブラリを
   まとめて入れる（土台イメージには無い）。入れられなければ理由つきで断る。入れる間は進捗を送る
+- **字体——日本語は日本の字形で描く**（決定・2026-10-12、Backlog #271。経緯は `docs/notes/2026-10-12-browser-ja-font.md`）：
+  - **入れる字体は Noto CJK**（`fonts-noto-cjk`——Sans・Serif・Sans Mono の CJK の JP・KR・SC・TC・HK）。理由：`install-deps chromium`
+    が入れる `fonts-wqy-zenhei`（中国の字形）の fontconfig の設定が強く、日本語のページが WenQuanYi Zen Hei で描かれる（一緒に入る
+    IPA ゴシックは負ける）。Noto CJK は1つの包みで言語ごとの字形を持ち、Ubuntu の日本語の既定と同じ。起こすたびに fontconfig に
+    `Noto Sans CJK JP` があるかを聞き（`fc-list`）、無ければ `sudo apt-get install fonts-noto-cjk fontconfig` で入れる
+  - **字体を選ぶ規則は、Module が起こすブラウザにだけ効かせる**（`FONTCONFIG_FILE` に Module の置き場の `fontconfig/fonts.conf`）。
+    中身はシステムの設定（`/etc/fonts/fonts.conf`）を読み込んだ後に、(1) 言語の印（`lang`）が ja・ko・zh-cn・zh-sg・zh-tw・zh-hk・zh-mo の
+    文字の sans-serif・serif・monospace に、その言語の Noto CJK（JP・KR・SC・SC・TC・HK・HK）を強く前に置く、(2) 言語の指定の無い文字の
+    sans-serif・serif・monospace に、設定の `locale` の字形の Noto CJK を強く好ませる。`/etc/fonts` は書かない——sudo が要らず、
+    別のサーバでも同じに効き、コンテナのほかのプログラムの字体を変えない。英字も Noto CJK の英字になる（日本語の OS の既定と同じ扱い）
+  - **言語の設定（`locale`）に合わせる**のは (2) だけ：ja→JP・ko→KR・zh は地域か文字で SC・TC・HK・**CJK でない言語は JP**
+    （どれかに決めないと中国の字形に落ちる）。設定は起こすたびに書き直す（`locale` と同じく次に起こしたときから効く）
+  - **入れられなくてもブラウザは断らない**（字形が違うだけでページは開ける）。sudo しない箱（別のサーバ——`BANTO_NO_SUDO=1`、
+    `v4-security.md` §1）では入れようとせず、入れられなかったときも、理由と入れ方（向こうで `sudo apt install fonts-noto-cjk`）を
+    起こす間の進捗・Module のログ・`getBrowserStatus` の `notice` に出す
 - **仕事の組に入れる**（決定・2026-10-10、Backlog #241）：ブラウザ（とその子）は Shell のコマンド・
   サブエージェントと同じ**仕事**として `banto-work-jobs.slice` の scope（`banto-browser-<乱数>.scope`、oom_score_adj +500・
   memory.oom.group=1）で起こす（`v4-security.md` §1 の段2a）。メモリを食うのはブラウザで、尽きたら組の中だけで止まり、

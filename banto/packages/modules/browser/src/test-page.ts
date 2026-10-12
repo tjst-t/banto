@@ -118,6 +118,20 @@ export function createTestPageServer(): Server {
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>2ページ目</title></head><body><h1>2ページ目</h1></body></html>`);
         return;
+      case "/fonts":
+        // 字体の試験（fonts.ts）：言語ごとの字形と、言語の指定の無い文字（html に lang が無い）。monospace と system-ui は
+        // Module の fontconfig の設定が無いと WenQuanYi Zen Hei で描かれる（実測・2026-10-12、まっさらのコンテナ）
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(
+          `<!doctype html><html><head><meta charset="utf-8"><title>字体</title></head><body>` +
+            `<p id="ja" lang="ja" style="font-family: sans-serif">日本語の文字：直角と骨</p>` +
+            `<p id="ja-serif" lang="ja" style="font-family: serif">日本語の文字：直角と骨</p>` +
+            `<p id="ja-mono" lang="ja" style="font-family: monospace">日本語の文字：直角と骨</p>` +
+            `<p id="ko" lang="ko" style="font-family: sans-serif">한국어 直角</p>` +
+            `<p id="system" style="font-family: system-ui, sans-serif">言語の指定の無い文字：直角と骨</p>` +
+            `<p id="plain">言語の指定の無い文字：直角と骨</p></body></html>`,
+        );
+        return;
       case "/api/ok":
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true, cookie: req.headers.cookie ? "あり" : "なし" }));

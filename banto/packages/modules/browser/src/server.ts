@@ -97,6 +97,8 @@ export function browserPaths(dataDir: string) {
     state: join(dataDir, "state.json"),
     /** 立てた仮想の画面（Xvfb）の pid（Module が消えた後に残ったものを、次に起こすときに止める——chrome.ts） */
     displayPid: join(dataDir, "xvfb.pid"),
+    /** ブラウザにだけ効かせる fontconfig の設定（起こすたびに書く——fonts.ts） */
+    fontconfig: join(dataDir, "fontconfig", "fonts.conf"),
   };
 }
 
@@ -112,6 +114,7 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
   const { browserExecutablePath, launchWithInstall, playwrightInstaller } = await import("./install.js");
   const { acceptLanguages, readBrowserVersion } = await import("./identity.js");
   const { startChrome } = await import("./chrome.js");
+  const { ensureCjkFont } = await import("./fonts.js");
   const installer = playwrightInstaller(browsersPath);
   const log = new NetworkLog(paths.network);
   const state = new StateFile(paths.state);
@@ -126,11 +129,27 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
           const executable = opts.executable ?? browserExecutablePath();
           // 描く倍率は最後に映した人の画面の倍率（人の画面が開けばその前に覚え直す——view-stream.ts）
           const { locale, timezone, viewScale: scale } = state.get();
+          // 日本語の字体が無ければ入れる（入れられなくても起こす——理由は状態とログに出す。fonts.ts）
+          const fontNotice = await ensureCjkFont((p) => installer.installFonts(p), onProgress);
+          if (fontNotice) {
+            console.error(`[browser] ${fontNotice}`);
+            onProgress?.(fontNotice);
+          }
           const chrome = await startChrome(
-            { executable, profileDir, displayPidFile: paths.displayPid, languages: acceptLanguages(locale), locale, timezone, viewport: DEFAULT_VIEWPORT, scale },
+            {
+              executable,
+              profileDir,
+              displayPidFile: paths.displayPid,
+              languages: acceptLanguages(locale),
+              locale,
+              timezone,
+              fontconfigFile: paths.fontconfig,
+              viewport: DEFAULT_VIEWPORT,
+              scale,
+            },
             (endpoint) => chromium.connectOverCDP(endpoint),
           );
-          return { ...chrome, version: readBrowserVersion(executable), scale };
+          return { ...chrome, version: readBrowserVersion(executable), scale, ...(fontNotice ? { notice: fontNotice } : {}) };
         },
         installer,
         onProgress,

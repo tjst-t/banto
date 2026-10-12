@@ -425,6 +425,7 @@ export async function callTool(
           aiBlocked: st.aiBlocked,
           idleMinutes: st.idleMinutes,
           ...(ctx.session.scale !== undefined ? { scale: ctx.session.scale } : {}),
+          ...(ctx.session.notice ? { notice: ctx.session.notice } : {}),
           log: ctx.log.stats(),
           ...(ctx.log.lastSaveError ? { logSaveError: ctx.log.lastSaveError } : {}),
           ...(ctx.session.lastStop ? { lastStop: ctx.session.lastStop } : {}),

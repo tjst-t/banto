@@ -10,6 +10,7 @@ import { pageContent } from "./content.js";
 import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv } from "./chrome.js";
 import { acceptLanguages, parseBrowserVersion } from "./identity.js";
 import { launchWithInstall, type Installer } from "./install.js";
+import { defaultRegion, ensureCjkFont, fontconfigXml } from "./fonts.js";
 import { DEFAULT_LIMITS, NetworkLog, formatDetail, formatLine, toHar, type NetworkRecord } from "./network-log.js";
 import { redactHeaders } from "./redact.js";
 import { StateFile } from "./state.js";
@@ -313,6 +314,9 @@ test("入れる：無ければブラウザを入れ、ライブラリが足り�
     async installDeps() {
       done.push("deps");
     },
+    async installFonts() {
+      done.push("fonts");
+    },
   };
   const failures = [new Error("Executable doesn't exist at /opt/google/chrome/chrome"), new Error("Host system is missing dependencies to run browsers（Xvfb がありません）")];
   const launched = await launchWithInstall(async () => {
@@ -363,10 +367,53 @@ test("起こし方：自動操作の起動の印（--enable-automation・--headl
   assert.deepEqual([0.5, 1, 1.25, 1.6, 2, 2.625, 3].map(browserScale), [1, 1, 1.25, 1.5, 2, 2, 2]);
   assert.deepEqual(localeEnv("ja-JP"), { LANG: "ja_JP.UTF-8", LANGUAGE: "ja_JP:ja" });
   assert.deepEqual(localeEnv("fr"), { LANG: "fr.UTF-8", LANGUAGE: "fr" });
-  const env = chromeEnv({ LC_ALL: "C", PATH: "/bin", HOME: "/h" }, ":7", "ja-JP", "Asia/Tokyo");
+  const env = chromeEnv({ LC_ALL: "C", PATH: "/bin", HOME: "/h" }, ":7", "ja-JP", "Asia/Tokyo", "/d/fontconfig/fonts.conf");
   assert.equal(env.LC_ALL, undefined, "LC_ALL が残ると LANG が効かない");
-  assert.deepEqual([env.DISPLAY, env.TZ, env.LANG, env.PATH], [":7", "Asia/Tokyo", "ja_JP.UTF-8", "/bin"]);
+  assert.deepEqual([env.DISPLAY, env.TZ, env.LANG, env.PATH, env.FONTCONFIG_FILE], [":7", "Asia/Tokyo", "ja_JP.UTF-8", "/bin", "/d/fontconfig/fonts.conf"]);
   assert.ok(env.TMPDIR!.length <= 60, `TMPDIR が長い（ソケットのパスが 108 バイトを越える）：${env.TMPDIR}`);
+});
+
+test("字体：言語ごとに Noto CJK の字形を先に選び、言語の指定の無い文字は locale の字形。システムの設定は読み込む", () => {
+  assert.deepEqual(
+    ["ja-JP", "ja", "ko-KR", "zh-CN", "zh-TW", "zh-Hant", "zh-HK", "en-US", "fr"].map(defaultRegion),
+    ["JP", "JP", "KR", "SC", "TC", "TC", "HK", "JP", "JP"],
+  );
+  const xml = fontconfigXml("ja-JP");
+  assert.match(xml, /<include>\/etc\/fonts\/fonts\.conf<\/include>/);
+  // システムの設定（wqy-zenhei の規則を含む）より後に置く——先に置くと後の規則に負ける
+  assert.ok(xml.indexOf("<include>") < xml.indexOf("<match"));
+  assert.match(xml, /<string>ja<\/string><\/test>\s*<test name="family"><string>sans-serif<\/string><\/test>\s*<edit name="family" mode="prepend" binding="strong"><string>Noto Sans CJK JP<\/string>/);
+  assert.match(xml, /<string>ko<\/string><\/test>\s*<test name="family"><string>serif<\/string><\/test>\s*<edit[^>]*><string>Noto Serif CJK KR<\/string>/);
+  assert.match(xml, /<alias binding="strong"><family>monospace<\/family><prefer><family>Noto Sans Mono CJK JP<\/family>/);
+  assert.match(fontconfigXml("zh-TW"), /<alias binding="strong"><family>sans-serif<\/family><prefer><family>Noto Sans CJK TC<\/family>/);
+});
+
+test("字体：sudo しない箱では入れずに理由と入れ方を返す（ブラウザは断らない）。入れられなければ理由を返す", async () => {
+  const before = { path: process.env.PATH, noSudo: process.env.BANTO_NO_SUDO };
+  // fc-list が見つからない＝入っていないと見る
+  const dir = mkdtempSync(join(tmpdir(), "banto-browser-fonts-"));
+  process.env.PATH = dir;
+  let installs = 0;
+  try {
+    process.env.BANTO_NO_SUDO = "1";
+    const remote = await ensureCjkFont(async () => {
+      installs++;
+    });
+    assert.equal(installs, 0, "sudo しない箱で入れようとした");
+    assert.match(remote ?? "", /sudo しないので、自動では入れません.*`sudo apt install fonts-noto-cjk`/);
+    delete process.env.BANTO_NO_SUDO;
+    const failed = await ensureCjkFont(async () => {
+      installs++;
+      throw new Error("終了コード 100");
+    });
+    assert.equal(installs, 1);
+    assert.match(failed ?? "", /入れられませんでした（終了コード 100）.*fonts-noto-cjk/);
+  } finally {
+    process.env.PATH = before.path;
+    if (before.noSudo === undefined) delete process.env.BANTO_NO_SUDO;
+    else process.env.BANTO_NO_SUDO = before.noSudo;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("起こし方：前の Module が残した Xvfb は止め、同じ名前でも別のプロセスは止めない", async () => {

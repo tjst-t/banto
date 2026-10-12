@@ -231,6 +231,62 @@ test("9本の道具が試験用のページで動き、失敗した通信が絞�
   assert.match((await call("browserEval", { expression: "document.cookie" })).text, /""/);
 });
 
+/** ページの要素を描いた字体（CDP の CSS.getPlatformFontsForNode——ページの中から見えない、実際に描いた字体） */
+async function platformFonts(url: string, ids: string[]): Promise<Record<string, string[]>> {
+  const port = Number(readFileSync(join(dataDir, "profile", "DevToolsActivePort"), "utf8").split("\n")[0]);
+  const targets = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as { type: string; url: string; webSocketDebuggerUrl: string }[];
+  const target = targets.find((t) => t.type === "page" && t.url === url);
+  assert.ok(target, `${url} のタブが無い`);
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = reject;
+  });
+  let next = 1;
+  const waiting = new Map<number, (m: { result?: unknown; error?: { message: string } }) => void>();
+  ws.onmessage = (e) => {
+    const m = JSON.parse(String(e.data)) as { id?: number; result?: unknown; error?: { message: string } };
+    if (m.id) waiting.get(m.id)?.(m);
+  };
+  const send = <T>(method: string, params: Record<string, unknown> = {}) =>
+    new Promise<T>((resolve, reject) => {
+      const id = next++;
+      waiting.set(id, (m) => (m.error ? reject(new Error(`${method}: ${m.error.message}`)) : resolve(m.result as T)));
+      ws.send(JSON.stringify({ id, method, params }));
+    });
+  try {
+    await send("DOM.enable");
+    await send("CSS.enable");
+    const { root } = await send<{ root: { nodeId: number } }>("DOM.getDocument");
+    const out: Record<string, string[]> = {};
+    for (const id of ids) {
+      const { nodeId } = await send<{ nodeId: number }>("DOM.querySelector", { nodeId: root.nodeId, selector: `#${id}` });
+      const { fonts } = await send<{ fonts: { familyName: string; glyphCount: number }[] }>("CSS.getPlatformFontsForNode", { nodeId });
+      out[id] = fonts.sort((a, b) => b.glyphCount - a.glyphCount).map((f) => f.familyName);
+    }
+    return out;
+  } finally {
+    ws.close();
+  }
+}
+
+test("字体：日本語は日本の字形（Noto Sans CJK JP）で描き、韓国語は KR・言語の指定の無い文字（system-ui も）は locale（ja-JP）の字形", { skip }, async () => {
+  const url = `${base}/fonts`;
+  const opened = await call("browserOpen", { url, newTab: true });
+  assert.equal(opened.isError, undefined, opened.text);
+  const fonts = await platformFonts(url, ["ja", "ja-serif", "ja-mono", "ko", "plain", "system"]);
+  // 一番多くの字を描いた字体（英数字の無い文は1つだけになる）
+  assert.equal(fonts.ja![0], "Noto Sans CJK JP", JSON.stringify(fonts));
+  assert.equal(fonts["ja-serif"]![0], "Noto Serif CJK JP", JSON.stringify(fonts));
+  assert.equal(fonts["ja-mono"]![0], "Noto Sans Mono CJK JP", JSON.stringify(fonts));
+  assert.equal(fonts.ko![0], "Noto Sans CJK KR", JSON.stringify(fonts));
+  assert.equal(fonts.plain![0], "Noto Sans CJK JP", JSON.stringify(fonts));
+  assert.equal(fonts.system![0], "Noto Sans CJK JP", JSON.stringify(fonts));
+  for (const f of Object.values(fonts).flat()) assert.doesNotMatch(f, /WenQuanYi/, JSON.stringify(fonts));
+  assert.equal(ctx.session.notice, undefined, "字体は入っている");
+  await call("browserTabs", { action: "close" });
+});
+
 test("人のブラウザと同じ：画面ありで、自動操作の起動の印も JS の上書きも無いまま、webdriver は false・Headless を名乗らない・プラグインあり・言語は ja-JP から・時刻は Asia/Tokyo", { skip }, async () => {
   const version = ctx.session.browserVersion;
   assert.match(version ?? "", /^\d+\.\d+\.\d+\.\d+$/);
