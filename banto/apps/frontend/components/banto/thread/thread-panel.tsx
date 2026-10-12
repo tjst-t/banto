@@ -43,6 +43,7 @@ import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
 import { keepComposerDraft } from "@/lib/composer-drafts";
 import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
+import { ProjectCodeTransferLine } from "@/components/banto/shell/code-transfer";
 
 export interface ThreadMarker {
   id: string;
@@ -351,7 +352,13 @@ function ThreadRuntime({
     });
   }, [runtime, threadId]);
 
-  const hint: ReactNode = <ThreadMarkers markers={markers} />;
+  const hint: ReactNode = (
+    <>
+      {/* 別のサーバへコードを送っている間は、AI が tool を呼べずに止まって見える——そのわけを出す（Backlog #269） */}
+      <ProjectCodeTransferLine projectId={projectId} testId="thread-code-transfer" className="mb-2" />
+      <ThreadMarkers markers={markers} />
+    </>
+  );
   // **判断待ちのカードが出ている間も止められる**（追加・2026-10-05）——run が host の流れを読み続けている間だけ。
   // 押すと停止ボタンと同じ `cancelRun`（人の停止として host のターンを止める、§6.31）
   const awaitingHuman = useRealRunAwaitingHuman(threadId);

@@ -219,6 +219,23 @@ test("GET /api/events は繋いだ時点で走っている Thread を hello に�
   );
 });
 
+test("GET /api/events は別のサーバへコードを送っている途中のものを hello に載せる（Backlog #269）", async () => {
+  const transfer = { runtime: "vm", projectIds: ["p1"], sentBytes: 120e6, totalBytes: 809e6, startedAt: "2026-10-12T00:00:00.000Z" };
+  await withApp(
+    async (base, token) => {
+      const controller = new AbortController();
+      const res = await fetch(`${base}/api/events`, { headers: { authorization: `Bearer ${token}` }, signal: controller.signal });
+      const reader = res.body!.getReader();
+      let text = "";
+      while (!text.includes("\n\n")) text += new TextDecoder().decode((await reader.read()).value);
+      controller.abort();
+      const hello = JSON.parse(text.slice(text.indexOf("data: ") + 6, text.indexOf("\n\n")));
+      assert.deepEqual(hello.codeTransfers, [transfer]);
+    },
+    { appEvents: new AppEventBus(), codeTransfers: () => [transfer] },
+  );
+});
+
 test("404 for unknown thread", async () => {
   await withApp(async (base, token) => {
     const res = await fetch(`${base}/api/threads/does-not-exist`, {

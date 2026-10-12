@@ -10,6 +10,7 @@
 //   （`unavailableReason`）。新しい Project の画面と同じ言い方
 // - 足すときは「繋いで確かめる」→ host 鍵の指紋を人が確かめる → 前提の確かめ → 登録、の順。指紋を見ずに覚えない
 // - 注意（サーバ丸ごと AI のもの・LAN から直に届く・他のアカウントにも中継の口が見える）は足す前に読める位置に置く
+import { RuntimeCodeTransferLine } from "@/components/banto/shell/code-transfer";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   CircleAlert,
@@ -230,6 +231,8 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
             )}
             {state.text}
           </p>
+          {/* 登録したあと先に送っている間・Project が初めて使うとき（Backlog #269） */}
+          <RuntimeCodeTransferLine runtime={r.name} testId="runtime-code-transfer" className="mt-1" />
         </div>
       </button>
 

@@ -257,6 +257,15 @@ export interface AppDeps {
   remoteRuntimes?: RemoteRuntimes;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
+  /**
+   * **別のサーバへコードを送っている途中のもの**（追加・2026-10-12、Backlog #269）。繋いだ画面に hello で渡す
+   * （以後は `code.transfer` で置き換える）
+   */
+  codeTransfers?(): Array<{ runtime: string; projectIds: string[] } & import("./app-events.js").CodeTransferView>;
+  /** 実行場所を登録したあと、先に繋いでコードを送っておく（待たない。失敗は最初に使うときに出直す） */
+  warmUpRemoteRuntime?(name: string): void;
+  /** 実行場所を外したあと、先に送るために張った接続を閉じる */
+  closeRemoteRuntime?(name: string): Promise<void>;
   /** 実行場所の登録で選べる SSH 鍵（Vault の ssh-identity の alias の名前） */
   listSshIdentities?(): Promise<string[]>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
@@ -1607,13 +1616,17 @@ export function createApp(deps: AppDeps) {
           }
           if (rest === "" && req.method === "POST") {
             const body = (await readJsonBody(req)) as { runtime?: unknown; hostKey?: unknown };
-            return json(res, 201, await runtimes.register(parseRuntimeInput(body.runtime), parseHostKey(body.hostKey)));
+            const registered = await runtimes.register(parseRuntimeInput(body.runtime), parseHostKey(body.hostKey));
+            // 前提を確かめて登録できたら、最初のターンを待たせないよう先にコードを送っておく（Backlog #269）
+            deps.warmUpRemoteRuntime?.(registered.name);
+            return json(res, 201, registered);
           }
           const one = rest.match(/^\/([a-z0-9-]+)(\/[a-z-]+)?$/);
           if (one) {
             const [, name, action] = one as unknown as [string, string, string | undefined];
             if (!action && req.method === "DELETE") {
               await runtimes.remove(name);
+              await deps.closeRemoteRuntime?.(name);
               return json(res, 200, { ok: true });
             }
             if (action === "/recheck" && req.method === "POST") return json(res, 200, await runtimes.recheck(name));
@@ -2427,8 +2440,10 @@ export function createApp(deps: AppDeps) {
         const resources = deps.resources?.busy();
         // **移している Project も渡す**（追加・2026-10-12、Backlog #270）——以後は runtime_move.changed で置き換える
         const moving = deps.runtimeMove?.moving();
+        // **別のサーバへコードを送っている途中のもの**（追加・2026-10-12、Backlog #269）——以後は code.transfer で置き換える
+        const codeTransfers = deps.codeTransfers?.();
         res.write(
-          `data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}) })}\n\n`,
+          `data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}) })}\n\n`,
         );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);

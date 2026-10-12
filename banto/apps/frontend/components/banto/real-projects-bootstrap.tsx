@@ -13,6 +13,7 @@ import { wireRunningThreads } from "@/lib/backend/running-threads";
 import { wireBackgroundWork } from "@/lib/backend/background-work";
 import { wireResourcesBusy } from "@/lib/backend/resources-busy";
 import { wireRuntimeMoves } from "@/lib/backend/runtime-moves";
+import { wireCodeTransfers } from "@/lib/backend/code-transfers";
 import { reportFailure } from "@/lib/report-failure";
 
 export function RealProjectsBootstrap() {
@@ -30,6 +31,8 @@ export function RealProjectsBootstrap() {
     wireResourcesBusy();
     // 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。同じ理由で読み始める前に
     wireRuntimeMoves();
+    // 別のサーバへコードを送っている途中のもの（Backlog #269）。同じ理由で読み始める前に
+    wireCodeTransfers();
     // host からの知らせ（host が始めたターン・受信箱の変化）を読み始める（決定・2026-09-25）
     startRealAppEvents();
     // **AI が立てた Fork を一覧に出す**（決定・2026-09-27）——host が作った Fork は、その最初のターンが

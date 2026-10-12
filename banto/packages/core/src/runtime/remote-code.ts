@@ -3,6 +3,8 @@
 // 送るのは Module を起こすのに要る分だけ：Module のパッケージ（`packages/modules/*`）と、そこから辿れる依存。
 // ワークスペースのパッケージは `package.json`・`dist`・`scripts`（Backlog が `../scripts` を読む）、外から入れた依存は
 // フォルダごと（入れ子の `node_modules` は依存として辿ったときに足す）。`node_modules/@banto/*` の symlink はそのまま送る。
+// **動かすときに読まないものは送らない**（追加・2026-10-12、Backlog #269）：型定義（`.d.ts`）・ソースマップ（`.map`）と、
+// ワークスペースの `dist` の中の試験（`*.test.js`）。外から入れた依存の試験らしい名前は、動くときに読むものと見分けられないので送る。
 // node（host と同じ版の実行ファイル）は `bin/node`、起動役は `banto-launcher.mjs` に置く。
 //
 // **版の鍵は送る中身のハッシュ**（commit ではない——開発中は作業ツリーが汚れていて commit と中身がずれる）。向こうでも
@@ -30,6 +32,10 @@ export const REMOTE_LAUNCHER_REL = "banto-launcher.mjs";
 const SKIP_IN_DEPENDENCY = new Set(["node_modules", ".git"]);
 /** ワークスペースのパッケージから送るもの */
 const WORKSPACE_PARTS = ["package.json", "dist", "scripts"];
+/** 動かすときに読まないファイル（型定義・ソースマップ） */
+const NOT_RUNTIME = /(\.d\.[cm]?ts|\.map)$/;
+/** ワークスペースの `dist` の中の試験（`tsc` が試験も書き出す） */
+const WORKSPACE_TEST = /\.test\.[cm]?js$/;
 
 /** sha256sum が逃がし字（`\`）を付ける名前・tar の一覧を壊す名前は、送らずに止める（照合の形がずれる） */
 function assertPlainName(rel: string): void {
@@ -54,14 +60,14 @@ export function collectCodeBundle(monorepoRoot: string, extras: { nodePath: stri
     if (rel.startsWith("..") || rel === "") throw new Error(`banto のコードの外を指しています：${abs}`);
     return rel.split(sep).join("/");
   };
-  const addTree = (dir: string, skip: ReadonlySet<string>) => {
+  const addTree = (dir: string, skip: ReadonlySet<string>, skipFile: RegExp) => {
     for (const name of readdirSync(dir)) {
       if (skip.has(name)) continue;
       const abs = join(dir, name);
       const st = lstatSync(abs);
       if (st.isSymbolicLink()) add({ kind: "link", rel: relOf(abs), target: readlinkSync(abs) });
-      else if (st.isDirectory()) addTree(abs, new Set());
-      else if (st.isFile()) add({ kind: "file", rel: relOf(abs), abs });
+      else if (st.isDirectory()) addTree(abs, new Set(), skipFile);
+      else if (st.isFile() && !skipFile.test(name)) add({ kind: "file", rel: relOf(abs), abs });
     }
   };
 
@@ -85,12 +91,12 @@ export function collectCodeBundle(monorepoRoot: string, extras: { nodePath: stri
     };
     const inNodeModules = relOf(real).split("/").includes("node_modules");
     if (inNodeModules) {
-      addTree(real, SKIP_IN_DEPENDENCY);
+      addTree(real, SKIP_IN_DEPENDENCY, NOT_RUNTIME);
     } else {
       for (const part of WORKSPACE_PARTS) {
         const abs = join(real, part);
         if (!existsSync(abs)) continue;
-        if (statSync(abs).isDirectory()) addTree(abs, new Set());
+        if (statSync(abs).isDirectory()) addTree(abs, new Set(), new RegExp(`${NOT_RUNTIME.source}|${WORKSPACE_TEST.source}`));
         else add({ kind: "file", rel: relOf(abs), abs });
       }
     }
@@ -175,10 +181,39 @@ export function remoteDigestCommand(dirExpr: string): string {
 
 /** tar に渡す一覧（NUL 区切り。node と起動役は別に送るので外す） */
 export function tarList(entries: readonly BundleEntry[]): string {
-  return entries
-    .filter((e) => e.rel !== REMOTE_NODE_REL && e.rel !== REMOTE_LAUNCHER_REL)
+  return tarEntries(entries)
     .map((e) => `${e.rel}\0`)
     .join("");
+}
+
+function tarEntries(entries: readonly BundleEntry[]): BundleEntry[] {
+  return entries.filter((e) => e.rel !== REMOTE_NODE_REL && e.rel !== REMOTE_LAUNCHER_REL);
+}
+
+/**
+ * **tar に流れる大きさの見積もり**（送っている間の進み具合の分母）。GNU tar の形：1件ごとに見出し 512 バイト（長い名前・
+ * 長い symlink の先は、もう1つの見出しと名前の分）、中身は 512 バイトに切り上げ、終わりに 1024 バイト。同じ中身への
+ * ハードリンク（inode が同じ）は2件目から中身を持たない。どの tar でも同じになるとは限らないので、見積もりとして使う
+ */
+export function estimateTarBytes(entries: readonly BundleEntry[]): number {
+  const block = (n: number) => Math.ceil(n / 512) * 512;
+  const seen = new Set<string>();
+  let total = 1024;
+  for (const e of tarEntries(entries)) {
+    total += 512;
+    if (Buffer.byteLength(e.rel) > 100) total += 512 + block(Buffer.byteLength(e.rel) + 1);
+    if (e.kind === "link") {
+      if (Buffer.byteLength(e.target) > 100) total += 512 + block(Buffer.byteLength(e.target) + 1);
+      continue;
+    }
+    const st = statSync(e.abs);
+    const key = `${st.dev}:${st.ino}`;
+    if (st.nlink > 1 && seen.has(key)) continue;
+    seen.add(key);
+    total += block(st.size);
+  }
+  // 書き出しは 10240 バイト（20 ブロック）の単位で切り上がる
+  return Math.ceil(total / 10240) * 10240;
 }
 
 /** フォルダの中身を一覧にする（registry から取ってきた配布物を送るとき。symlink はそのまま） */

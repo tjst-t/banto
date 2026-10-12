@@ -5,7 +5,8 @@
 // **逆向きのトンネル1本**（向こうの 127.0.0.1 → host の中継だけを受ける専用の待ち受け）を載せる。繋ぐときに：
 //   1. 前提を確かめる（`probePrerequisites`。足りなければ名指しして直し方つきで断る。linger・tmux が無いのは注意だけ）
 //   2. 接続を張る（`-M -N -R 0:127.0.0.1:<待ち受け>`。向こうの側のポートは sshd に選ばせる）
-//   3. banto のコードを照合し、違えば新しい置き場に展開して切り替える（`remote-code.ts`。前の版を1つ残す）
+//   3. banto のコードを照合し、違えば新しい置き場に展開して切り替える（`remote-code.ts`。前の版を1つ残す）。
+//      送るときは縮めて流し（向こうに zstd があれば zstd、無ければ gzip）、送った量を画面へ知らせる（`onCodeTransfer`）
 //
 // Module は起動役（`remote-launcher.ts`）を通して、向こうのユーザーの systemd の単位で包んで起こす。落とすときは標準入出力を
 // 閉じたうえで `systemctl --user stop`。接続が切れたら、その上の Module は落ちたものとして扱われ（多重化したセッションが
@@ -17,6 +18,8 @@ import { coreSocketDir, moduleSocketDir } from "./socket-dir.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { PassThrough, Transform, type Readable } from "node:stream";
+import zlib from "node:zlib";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { basename, join } from "node:path";
@@ -30,6 +33,7 @@ import {
   bundleDigest,
   collectCodeBundle,
   collectTreeEntries,
+  estimateTarBytes,
   remoteDigestCommand,
   tarList,
   type BundleEntry,
@@ -74,11 +78,64 @@ export interface RemoteSshRuntimeOptions {
   shellHomeSource?: string;
   /** 注意（linger・tmux が無い）を受信箱へ。同じものが開いている間は増やさない（`dedupeKey`） */
   notify(n: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
+  /**
+   * **コードを送っている間の進み具合**（追加・2026-10-12、Backlog #269）。送り始め・進むたび（間引いて）に呼び、
+   * 終わったら（失敗でも）`undefined` で呼ぶ。大きさは縮める前のバイト数
+   */
+  onCodeTransfer?: (runtimeName: string, progress: CodeTransfer | undefined) => void;
   /** ログ（既定は console） */
   log?: (line: string) => void;
   /** 宛先の名前を IPv4 に引く（既定は host の名前引き。試験だけが差し替える） */
   lookupIPv4?: LookupIPv4;
 }
+
+/** コードを送っている途中の1件（縮める前のバイト数） */
+export interface CodeTransfer {
+  sentBytes: number;
+  totalBytes: number;
+  startedAt: string;
+}
+
+/** 進み具合を知らせる間隔（これより細かくは知らせない） */
+const TRANSFER_REPORT_INTERVAL_MS = 500;
+/**
+ * **送っている途中で、これだけ1バイトも進まなければ止める**。全体の時間では切らない——遅い回線では大きなコードを
+ * 送り終えるのに何分もかかる（2026-10-12 の実機で約4分）。止まったことだけを見る
+ */
+const TRANSFER_STALL_MS = 120_000;
+
+/** 送っている間の進み具合の1件分 */
+interface TransferTracker {
+  add(bytes: number): void;
+  /** 最後に進んでから何ミリ秒か */
+  stalledFor(): number;
+  sentBytes(): number;
+  end(): void;
+}
+
+interface RunOptions {
+  stdin?: NodeJS.ReadableStream;
+  timeoutMs?: number;
+  /** 流し込むもの：最後に進んでから何ミリ秒か。渡すと `timeoutMs` ではなく、進まなくなったら止める */
+  stalledFor?: () => number;
+}
+
+/** MB（小数1桁） */
+function mb(bytes: number): string {
+  return (bytes / 1e6).toFixed(1);
+}
+
+/**
+ * node の zstd（node 23.8・22.15 から）。入れている `@types/node` がまだ持たないので、使う分だけ形を書く。
+ * 無い node では gzip にする
+ */
+const zstd = zlib as unknown as {
+  createZstdCompress?: (opts: { params: Record<number, number> }) => Transform;
+  constants: { ZSTD_c_compressionLevel?: number };
+};
+
+/** 縮め方（向こうに展開するコマンドがあるものを選ぶ） */
+type Codec = "zstd" | "gzip" | "none";
 
 /** 張っている接続1本 */
 interface Connection {
@@ -98,6 +155,8 @@ interface Connection {
   exited: Promise<void>;
   /** 張っているソケットの転送（鍵は host の側のパス）。接続が閉じれば一緒に消える */
   forwards: Map<string, SocketForward>;
+  /** 注意（linger・tmux が無い）を出した Project（接続を張ったときに居なかった Project にも、使い始めたときに出す） */
+  cautioned: Set<string>;
 }
 
 /**
@@ -161,6 +220,8 @@ export class RemoteSshRuntime {
   private readonly log: (line: string) => void;
   private readonly launcherPath: string;
   private readonly forwarding = new SingleFlight<void>();
+  /** いまコードを送っている実行場所（送り終えたら消す） */
+  private readonly transfers = new Map<string, CodeTransfer>();
   /** 鍵の窓口の転送を外す見張り（窓口のファイルが host から消えたら外す） */
   private agentWatch?: ReturnType<typeof setInterval>;
 
@@ -176,6 +237,20 @@ export class RemoteSshRuntime {
   /** その Project が別のサーバで動くか */
   handles(placeId: string): boolean {
     return this.opts.remoteNameOf(placeId) !== undefined;
+  }
+
+  /** いまコードを送っている実行場所（繋いだ画面に、その時点の分を渡す） */
+  codeTransfers(): Array<{ runtime: string } & CodeTransfer> {
+    return [...this.transfers].map(([runtime, t]) => ({ runtime, ...t }));
+  }
+
+  /**
+   * **先に繋いでコードを送っておく**（追加・2026-10-12、Backlog #269）——実行場所を登録したとき（前提を確かめたあと）に
+   * 呼ぶ。最初のターンが送り終わるのを待たずに済む。張った接続はそのまま残し、Project が使い始めたら同じものを使う
+   */
+  async warmUp(runtimeName: string): Promise<void> {
+    if (this.connections.get(runtimeName)?.alive) return;
+    await this.connecting.run(runtimeName, () => this.connect(runtimeName));
   }
 
   async prepare(place: RuntimePlace): Promise<PreparedPlace> {
@@ -214,6 +289,17 @@ export class RemoteSshRuntime {
     }
   }
 
+  /** 実行場所を外したとき：先に送るために張った接続が残っていれば閉じる（送っている途中なら、そこで止まる） */
+  async closeRuntime(runtimeName: string): Promise<void> {
+    const conn = this.connections.get(runtimeName);
+    if (!conn) return;
+    this.connections.delete(runtimeName);
+    if (conn.alive) {
+      conn.master.kill("SIGTERM");
+      await conn.exited;
+    }
+  }
+
   /** 終わるとき：張っている接続を全部閉じる */
   async closeAll(): Promise<void> {
     await Promise.all([...this.connections.values()].map(async (c) => {
@@ -234,12 +320,9 @@ export class RemoteSshRuntime {
 
   private async ensureConnection(name: string, place: RuntimePlace): Promise<Connection> {
     const existing = this.connections.get(name);
-    if (existing?.alive) {
-      this.refuseUnusable(existing, place);
-      return existing;
-    }
-    const conn = await this.connecting.run(name, () => this.connect(name, place));
+    const conn = existing?.alive ? existing : await this.connecting.run(name, () => this.connect(name));
     this.refuseUnusable(conn, place);
+    this.raiseCautions(conn, place);
     return conn;
   }
 
@@ -254,7 +337,7 @@ export class RemoteSshRuntime {
     }
   }
 
-  private async connect(name: string, place: RuntimePlace): Promise<Connection> {
+  private async connect(name: string): Promise<Connection> {
     const listener = await this.listenerFor(name);
     const started = performance.now();
     const conn = await this.opts.runtimes.withConnection(name, async (r, files) => {
@@ -302,6 +385,7 @@ export class RemoteSshRuntime {
         checks,
         exited,
         forwards: new Map(),
+        cautioned: new Set(),
       };
       void exited.then(() => {
         conn.alive = false;
@@ -322,7 +406,6 @@ export class RemoteSshRuntime {
     });
     // **鍵の窓口は閉じない**（未実装・2026-10-10）：Vault に窓口を閉じる口がまだ無い。多重化した接続は張ったあと鍵を使わない
     this.connections.set(name, conn);
-    this.raiseCautions(conn, place);
     this.log(
       `[host] 別のサーバ「${name}」に繋ぎました（${Math.round(performance.now() - started)}ms・向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・コード ${basename(conn.codeDir)}）`,
     );
@@ -358,6 +441,8 @@ export class RemoteSshRuntime {
 
   /** linger・tmux が無いことは断らず、受信箱に注意を出す */
   private raiseCautions(conn: Connection, place: RuntimePlace): void {
+    if (conn.cautioned.has(place.id)) return;
+    conn.cautioned.add(place.id);
     for (const id of ["linger", "tmux"]) {
       const c = conn.checks.find((x) => x.id === id);
       if (!c || c.status !== "warn") continue;
@@ -400,7 +485,7 @@ export class RemoteSshRuntime {
   }
 
   /** 向こうで台本を流す（台本は標準入力で。`input` を渡すなら、台本のあとではなく標準入力そのものとして渡す） */
-  private run(conn: Connection, script: string, opts: { stdin?: NodeJS.ReadableStream; timeoutMs?: number } = {}): Promise<SshResult> {
+  private run(conn: Connection, script: string, opts: RunOptions = {}): Promise<SshResult> {
     if (!conn.alive) return Promise.resolve({ code: 255, stdout: "", stderr: "SSH の接続が閉じています" });
     const remote = opts.stdin ? `sh -c ${shq(script)}` : "sh -s";
     return new Promise((resolve) => {
@@ -412,22 +497,36 @@ export class RemoteSshRuntime {
       let stderr = "";
       child.stdout.on("data", (c: Buffer) => (stdout += String(c)));
       child.stderr.on("data", (c: Buffer) => (stderr += String(c)));
-      const timer = setTimeout(() => {
-        stderr += `\n（${Math.round((opts.timeoutMs ?? 60_000) / 1000)} 秒で終わらなかったので止めました）`;
-        child.kill("SIGKILL");
-      }, opts.timeoutMs ?? 60_000);
+      const { stalledFor } = opts;
+      // 流し込むもの（`stalledFor` あり）は全体の時間では切らず、進まなくなったら止める
+      const timer = stalledFor
+        ? setInterval(() => {
+            if (stalledFor() < TRANSFER_STALL_MS) return;
+            stderr += `\n（${Math.round(TRANSFER_STALL_MS / 1000)} 秒のあいだ1バイトも送れなかったので止めました）`;
+            child.kill("SIGKILL");
+          }, 1_000)
+        : setTimeout(() => {
+            stderr += `\n（${Math.round((opts.timeoutMs ?? 60_000) / 1000)} 秒で終わらなかったので止めました）`;
+            child.kill("SIGKILL");
+          }, opts.timeoutMs ?? 60_000);
       child.on("error", (err) => (stderr += err.message));
       child.on("close", (code) => {
         clearTimeout(timer);
+        clearInterval(timer);
         resolve({ code: code ?? 255, stdout, stderr });
       });
       child.stdin.on("error", () => undefined);
+      // 流し込むものが途中で壊れたら（読めない・縮められない）、半端なものを向こうに渡さず止める
+      opts.stdin?.on("error", (err: Error) => {
+        stderr += `\n（送るものを読めませんでした：${err.message}）`;
+        child.kill("SIGKILL");
+      });
       if (opts.stdin) opts.stdin.pipe(child.stdin);
       else child.stdin.end(script);
     });
   }
 
-  private async mustRun(conn: Connection, what: string, script: string, opts: { stdin?: NodeJS.ReadableStream; timeoutMs?: number } = {}): Promise<string> {
+  private async mustRun(conn: Connection, what: string, script: string, opts: RunOptions = {}): Promise<string> {
     const r = await this.run(conn, script, opts);
     if (r.code !== 0 && !conn.alive) {
       throw new Error(`別のサーバ「${conn.runtimeName}」で${what}ませんでした——SSH の接続が途中で閉じました`);
@@ -590,6 +689,9 @@ export class RemoteSshRuntime {
         `printf 'cur=%s\\n' "$cur"`,
         `if [ -n "$cur" ] && [ -d "$c/$cur" ]; then printf 'digest=%s\\n' "$(${remoteDigestCommand(`"$c/$cur"`)})"; fi`,
         `for d in "$c"/*/; do [ -d "$d" ] && printf 'dir=%s\\n' "$(basename "$d")"; done`,
+        // 送るときの縮め方を選ぶため、向こうで展開できるものを聞いておく
+        "command -v zstd >/dev/null 2>&1 && echo zstd=1",
+        "command -v gzip >/dev/null 2>&1 && echo gzip=1",
         "exit 0",
         "",
       ].join("\n"),
@@ -605,15 +707,59 @@ export class RemoteSshRuntime {
     const next = `${prefix}-${n}`;
     const staging = `.incoming-${randomBytes(4).toString("hex")}`;
     const sending = performance.now();
-    await this.sendTree(conn, entries, `${code}/${staging}`);
+    // 縮め方：向こうに展開するコマンドがあるもの（zstd は host の node が持っていれば）
+    const codec: Codec =
+      /^zstd=1$/m.test(state) && zstd.createZstdCompress && zstd.constants.ZSTD_c_compressionLevel !== undefined ? "zstd" : /^gzip=1$/m.test(state) ? "gzip" : "none";
+    const transfer = this.startTransfer(
+      conn.runtimeName,
+      estimateTarBytes(entries) + statSync(process.execPath).size + statSync(this.launcherPath).size,
+    );
+    // **確かめて切り替え終えるまで「送っています」のままにする**——消えたら使える、という意味にする（送り終えてから
+    // 向こうで確かめる間に消すと、人には終わったように見えて Module はまだ起きない）
+    try {
+      return await this.sendAndSwitch(conn, { entries, digest, code, cur, next, staging, codec, transfer, why, sending });
+    } finally {
+      transfer.end();
+    }
+  }
+
+  /** 新しい置き場へ送り、向こうで確かめてから切り替える（`syncCode` の後半） */
+  private async sendAndSwitch(
+    conn: Connection,
+    p: {
+      entries: readonly BundleEntry[];
+      digest: string;
+      code: string;
+      cur: string;
+      next: string;
+      staging: string;
+      codec: Codec;
+      transfer: TransferTracker;
+      why: string;
+      sending: number;
+    },
+  ): Promise<string> {
+    const { entries, digest, code, cur, next, staging, codec, transfer, why, sending } = p;
     const nodeTo = `${code}/${staging}/${REMOTE_NODE_REL}`;
-    await this.mustRun(conn, "node を送れ", `mkdir -p "$(dirname ${shq(nodeTo)})" && cat > ${shq(nodeTo)} && chmod 755 ${shq(nodeTo)}`, {
-      stdin: createReadStream(process.execPath),
-      timeoutMs: 300_000,
-    });
-    await this.mustRun(conn, "起動役を送れ", `cat > ${shq(`${code}/${staging}/${REMOTE_LAUNCHER_REL}`)}`, {
-      stdin: createReadStream(this.launcherPath),
-    });
+    let wireBytes = 0;
+    wireBytes += await this.sendTree(conn, entries, `${code}/${staging}`, codec, transfer);
+    wireBytes += await this.sendStream(
+      conn,
+      "node を送れ",
+      createReadStream(process.execPath),
+      `mkdir -p "$(dirname ${shq(nodeTo)})" && cat > ${shq(nodeTo)} && chmod 755 ${shq(nodeTo)}`,
+      codec,
+      transfer,
+    );
+    wireBytes += await this.sendStream(
+      conn,
+      "起動役を送れ",
+      createReadStream(this.launcherPath),
+      `cat > ${shq(`${code}/${staging}/${REMOTE_LAUNCHER_REL}`)}`,
+      codec,
+      transfer,
+    );
+    const rawBytes = transfer.sentBytes();
     const sent = await this.mustRun(conn, "送ったコードを確かめられ", `printf '%s\\n' "$(${remoteDigestCommand(shq(`${code}/${staging}`))})"\n`, {
       timeoutMs: 180_000,
     });
@@ -639,13 +785,14 @@ export class RemoteSshRuntime {
       ].join("\n"),
     );
     this.log(
-      `[host] 別のサーバ「${conn.runtimeName}」にコードを送りました（${why}・版 ${next}・${entries.length} 件・${Math.round(performance.now() - sending)}ms）`,
+      `[host] 別のサーバ「${conn.runtimeName}」にコードを送りました（${why}・版 ${next}・${entries.length} 件・` +
+        `${mb(rawBytes)}MB を ${codec === "none" ? "縮めずに" : `${codec} で ${mb(wireBytes)}MB に縮めて`}・${Math.round(performance.now() - sending)}ms）`,
     );
     return `${code}/${next}`;
   }
 
-  /** 一覧のファイルと symlink を tar で流して、向こうのフォルダに展開する */
-  private async sendTree(conn: Connection, entries: readonly BundleEntry[], remoteDir: string): Promise<void> {
+  /** 一覧のファイルと symlink を tar で流して、向こうのフォルダに展開する。返すのは線に流したバイト数 */
+  private async sendTree(conn: Connection, entries: readonly BundleEntry[], remoteDir: string, codec: Codec, transfer: TransferTracker): Promise<number> {
     const tar = spawn("tar", ["-C", this.opts.monorepoRoot, "--null", "--no-recursion", "-cf", "-", "-T", "-"], {
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -653,10 +800,80 @@ export class RemoteSshRuntime {
     tar.stderr.on("data", (c: Buffer) => (tarErr += String(c)));
     tar.stdin.end(tarList(entries));
     const tarDone = new Promise<number>((resolve) => tar.on("close", (code) => resolve(code ?? 1)));
-    const r = await this.run(conn, `mkdir -p ${shq(remoteDir)} && tar -C ${shq(remoteDir)} -xf -`, { stdin: tar.stdout, timeoutMs: 600_000 });
+    const sent = this.sendStream(conn, "コードを送れ", tar.stdout, `mkdir -p ${shq(remoteDir)} && tar -C ${shq(remoteDir)} -xf -`, codec, transfer);
+    // tar が先に失敗したなら、その理由で止める（向こうの「途中で切れた」より先に読む）
     const tarCode = await tarDone;
-    if (tarCode !== 0) throw new Error(`送るコードを tar にまとめられませんでした：${tarErr.trim().slice(-500)}`);
-    if (r.code !== 0) throw new SshCommandError(`別のサーバ「${conn.runtimeName}」にコードを送れませんでした`, r);
+    if (tarCode !== 0) {
+      await sent.catch(() => undefined);
+      throw new Error(`送るコードを tar にまとめられませんでした：${tarErr.trim().slice(-500)}`);
+    }
+    return sent;
+  }
+
+  /**
+   * **縮めて流し、向こうで展開して `sink`（sh の式。展開したものを標準入力で読む）に渡す**。数えるのは縮める前のバイト数
+   * （`transfer`）。全体の時間では切らず、進まなくなったら止める（`TRANSFER_STALL_MS`）。返すのは線に流したバイト数
+   */
+  private async sendStream(conn: Connection, what: string, source: Readable, sink: string, codec: Codec, transfer: TransferTracker): Promise<number> {
+    let wire = 0;
+    const counted = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        transfer.add(chunk.length);
+        cb(null, chunk);
+      },
+    });
+    // 速さを優先した段（host の 1 コアで回線より十分速い。実測は Backlog #269 のコミットの文）
+    const compressor =
+      codec === "zstd"
+        ? zstd.createZstdCompress!({ params: { [zstd.constants.ZSTD_c_compressionLevel!]: 3 } })
+        : codec === "gzip"
+          ? zlib.createGzip({ level: 1 })
+          : new PassThrough();
+    const onWire = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        wire += chunk.length;
+        cb(null, chunk);
+      },
+    });
+    // 途中のどれかが壊れたら、流れの終わり（ssh の標準入力）に伝える——`run` がそれを見て ssh を止める
+    for (const [from, to] of [
+      [source, counted],
+      [counted, compressor],
+      [compressor, onWire],
+    ] as const) {
+      from.on("error", (err: Error) => to.destroy(err));
+    }
+    source.pipe(counted).pipe(compressor).pipe(onWire);
+    const unpack = codec === "zstd" ? "zstd -dcq | " : codec === "gzip" ? "gzip -dc | " : "";
+    await this.mustRun(conn, what, `${unpack}{ ${sink}; }`, { stdin: onWire, stalledFor: transfer.stalledFor });
+    return wire;
+  }
+
+  /** 送っている間の進み具合を覚え、間引いて知らせる */
+  private startTransfer(runtimeName: string, totalBytes: number): TransferTracker {
+    const t: CodeTransfer = { sentBytes: 0, totalBytes, startedAt: new Date().toISOString() };
+    this.transfers.set(runtimeName, t);
+    let reportedAt = 0;
+    let movedAt = performance.now();
+    const report = () => {
+      reportedAt = performance.now();
+      this.opts.onCodeTransfer?.(runtimeName, { ...t });
+    };
+    report();
+    return {
+      add: (n) => {
+        // 見積もりを越えて数えない（分母は tar の形からの見積もり）
+        t.sentBytes = Math.min(t.totalBytes, t.sentBytes + n);
+        movedAt = performance.now();
+        if (movedAt - reportedAt >= TRANSFER_REPORT_INTERVAL_MS) report();
+      },
+      stalledFor: () => performance.now() - movedAt,
+      sentBytes: () => t.sentBytes,
+      end: () => {
+        if (this.transfers.get(runtimeName) === t) this.transfers.delete(runtimeName);
+        this.opts.onCodeTransfer?.(runtimeName, undefined);
+      },
+    };
   }
 
   // ── 用意できた箱 ────────────────────────────────────────────────────────

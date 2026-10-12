@@ -53,7 +53,17 @@ export type AppEvent =
   | { type: "resources.busy"; busy: ResourcesBusy }
   // Project を別の実行場所へ移す状況（追加・2026-10-12、Backlog #270）。移している途中は `move` を丸ごと（写している間は
   // 1秒に1回まで）、終われば `move` 無し、移せなければ `failed`。会話の面の帯・入力欄・サイドバーの印に使う
-  | ({ type: "runtime_move.changed" } & RuntimeMoveChange);
+  | ({ type: "runtime_move.changed" } & RuntimeMoveChange)
+  // 別のサーバへ banto のコードを送っている（追加・2026-10-12、Backlog #269）。送り始め・進むたび（間引いて）・終わったとき
+  // （`transfer` 無し）。**その実行場所の分を丸ごと**送る（画面は置き換える）
+  | { type: "code.transfer"; runtime: string; projectIds: string[]; transfer?: CodeTransferView };
+
+/** 別のサーバへコードを送っている途中の1件（大きさは縮める前のバイト数） */
+export interface CodeTransferView {
+  sentBytes: number;
+  totalBytes: number;
+  startedAt: string;
+}
 
 /** 混んでいる Project とこの機械（サイドバーの印） */
 export interface ResourcesBusy {

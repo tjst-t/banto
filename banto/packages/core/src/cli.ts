@@ -289,7 +289,16 @@ async function main(): Promise<void> {
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
+    // 送っている間を画面に出す（Backlog #269）——サイドバーとその Project の会話
+    onCodeTransfer: (runtimeName, transfer) =>
+      appEvents.publish({ type: "code.transfer", runtime: runtimeName, projectIds: projectsOnRuntime(runtimeName), ...(transfer ? { transfer } : {}) }),
   });
+  /** その実行場所で動く Project（記録の `runtime` がそこのもの） */
+  const projectsOnRuntime = (runtimeName: string): string[] =>
+    projectThread
+      .listProjects()
+      .filter((p) => p.runtime === runtimeIdOf(runtimeName))
+      .map((p) => p.id);
   // 止まるとき、張っている SSH の接続を残さない（親が居なくなっても ssh は自分では終わらない）
   process.on("exit", () => remoteSsh.killAll());
   const runtime: Runtime = new RuntimeRouter(hostRuntime, remoteSsh);
@@ -2026,6 +2035,13 @@ async function main(): Promise<void> {
     hostHealth: () => collectHostHealth(hostStall),
     // 資源（GET /api/admin/resources・hello の混んでいる印）
     resources: { snapshot: () => resourceWatch.snapshot(), busy: () => resourceWatch.busySummary() },
+    // 別のサーバへコードを送っている途中のもの（hello）と、登録したあと先に送っておく口（Backlog #269）
+    codeTransfers: () => remoteSsh.codeTransfers().map((t) => ({ ...t, projectIds: projectsOnRuntime(t.runtime) })),
+    warmUpRemoteRuntime: (name) =>
+      void remoteSsh
+        .warmUp(name)
+        .catch((err: unknown) => console.warn(`[host] 別のサーバ「${name}」へ先にコードを送れませんでした（最初に使うときに送り直します）:`, err)),
+    closeRemoteRuntime: (name) => remoteSsh.closeRuntime(name),
     relayEndpoint,
     claudeLogin,
     agentRelayEndpoint,

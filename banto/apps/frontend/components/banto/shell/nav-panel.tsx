@@ -64,6 +64,7 @@ import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark"
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
 import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
+import { ProjectCodeTransferLine } from "./code-transfer";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
@@ -300,6 +301,8 @@ function ProjectTreeItem({
             </div>
             )}
           </SidebarItemMenu>
+          {/* 別のサーバへコードを送っている間（Backlog #269）。畳んでいても見えるよう、目次の外に出す */}
+          <ProjectCodeTransferLine projectId={project.id} testId="sidebar-code-transfer" className="py-0.5 pr-1 pl-8" />
 
           {/* **運んでいる間は、目次を畳む**（実測・2026-09-11、ユーザー報告）。
               子を開いた Project は他の行よりずっと背が高く、そのまま運ぶと

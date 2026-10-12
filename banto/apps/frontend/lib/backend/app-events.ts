@@ -47,6 +47,18 @@ export type RealAppEvent =
       resources?: RealResourcesBusy;
       /** 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。古い host は付けない */
       moving?: RealRuntimeMoveView[];
+      /** 別のサーバへコードを送っている途中のもの（追加・2026-10-12、Backlog #269）。古い host は付けない */
+      codeTransfers?: RealCodeTransfer[];
+    }
+  /**
+   * 別のサーバへコードを送っている（追加・2026-10-12、Backlog #269）。送り始め・進むたび・終わったとき（`transfer` 無し）。
+   * その実行場所の分を丸ごと
+   */
+  | {
+      type: "code.transfer";
+      runtime: string;
+      projectIds: string[];
+      transfer?: { sentBytes: number; totalBytes: number; startedAt: string };
     }
   /**
    * 別の実行場所へ移す状況が変わった（追加・2026-10-12、Backlog #270）。`move` があれば移している途中（丸ごと置き換える）、
@@ -94,6 +106,17 @@ export interface RealRuntimeMoveView {
   phase?: "preparing" | "stopping" | "copying" | "verifying" | "finishing";
   copiedBytes?: number;
   totalBytes?: number;
+}
+
+/** 別のサーバへコードを送っている途中の1件（大きさは縮める前のバイト数） */
+export interface RealCodeTransfer {
+  /** 別のサーバの名前 */
+  runtime: string;
+  /** その実行場所で動く Project */
+  projectIds: string[];
+  sentBytes: number;
+  totalBytes: number;
+  startedAt: string;
 }
 
 /** 混んでいる Project とこの機械（host の `ResourcesBusy` と同じ形） */

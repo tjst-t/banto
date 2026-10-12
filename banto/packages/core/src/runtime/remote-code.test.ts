@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
   bundleDigest,
   collectCodeBundle,
   collectTreeEntries,
+  estimateTarBytes,
   remoteDigestCommand,
   tarList,
 } from "./remote-code.js";
@@ -41,6 +42,12 @@ function workspace(): string {
   w("node_modules/big/package.json", JSON.stringify({ name: "big" }));
   mkdirSync(join(root, "node_modules", "@x"), { recursive: true });
   symlinkSync("../../packages/contract", join(root, "node_modules", "@x", "contract"));
+  // 動かすときに読まないもの（型定義・ソースマップ・ワークスペースの試験）は送らない
+  w("packages/modules/a/dist/server.d.ts", "送らない\n");
+  w("packages/modules/a/dist/server.js.map", "送らない\n");
+  w("packages/modules/a/dist/server.test.js", "送らない\n");
+  w("node_modules/dep/index.d.mts", "送らない\n");
+  w("node_modules/dep/index.js.map", "送らない\n");
   w("bin-node", "node\n");
   w("launcher.mjs", "launcher\n");
   return root;
@@ -71,6 +78,22 @@ test("送るのは Module とそこから辿れる依存だけ（ワークスペ
     ]);
     // tar の一覧には node と起動役を入れない（別に送る）
     assert.ok(!tarList(entries).includes(REMOTE_NODE_REL));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("tar に流れる大きさの見積もりは、実際の tar と同じ（長い名前・ハードリンクを含めて）", () => {
+  const root = workspace();
+  try {
+    const deep = `node_modules/dep/${"long-directory-name/".repeat(6)}file-with-a-long-name.js`;
+    mkdirSync(join(root, deep, ".."), { recursive: true });
+    writeFileSync(join(root, deep), "x".repeat(70_000));
+    // 同じ中身へのハードリンク（optional の別の版に入っている同じ実行ファイル、など）は2件目から中身を持たない
+    linkSync(join(root, deep), join(root, "node_modules/dep/same.js"));
+    const entries = collectCodeBundle(root, { nodePath: join(root, "bin-node"), launcherPath: join(root, "launcher.mjs") });
+    const actual = execFileSync("sh", ["-c", `tar -C ${root} --null --no-recursion -cf - -T - | wc -c`], { input: tarList(entries), encoding: "utf8" });
+    assert.equal(estimateTarBytes(entries), Number(actual.trim()));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
