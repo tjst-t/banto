@@ -228,6 +228,8 @@ export class RemoteSshRuntime {
   private readonly log: (line: string) => void;
   private readonly launcherPath: string;
   private readonly forwarding = new SingleFlight<void>();
+  /** 実行場所の登録を外した回数（名前ごと）。繋いでいる途中で外されたかを見る（`connect`） */
+  private readonly removals = new Map<string, number>();
   /** 用意している途中（コードを照合・送っている）の接続 */
   private readonly settingUp = new Map<string, Connection>();
   /** いまコードを送っている実行場所（送り終えたら消す） */
@@ -260,7 +262,7 @@ export class RemoteSshRuntime {
    */
   async warmUp(runtimeName: string): Promise<void> {
     if (this.connections.get(runtimeName)?.alive) return;
-    await this.connecting.run(runtimeName, () => this.connect(runtimeName));
+    await this.connecting.run(this.flightKey(runtimeName), () => this.connect(runtimeName));
   }
 
   async prepare(place: RuntimePlace): Promise<PreparedPlace> {
@@ -301,6 +303,8 @@ export class RemoteSshRuntime {
 
   /** 実行場所を外したとき：先に送るために張った接続が残っていれば閉じる（用意している途中・送っている途中でも止める） */
   async closeRuntime(runtimeName: string): Promise<void> {
+    // 繋いでいる途中の接続（まだどこにも掴めない段のものも）に「外された」と分かるようにする
+    this.removals.set(runtimeName, (this.removals.get(runtimeName) ?? 0) + 1);
     // 外した実行場所の「送っています／送れませんでした」は画面に残さない
     this.clearTransfer(runtimeName);
     // 用意している途中（先に送っている最中など）なら、その接続を閉じて止める——送っている ssh が切れ、送り込みは
@@ -340,7 +344,7 @@ export class RemoteSshRuntime {
 
   private async ensureConnection(name: string, place: RuntimePlace): Promise<Connection> {
     const existing = this.connections.get(name);
-    const conn = existing?.alive ? existing : await this.connecting.run(name, () => this.connect(name));
+    const conn = existing?.alive ? existing : await this.connecting.run(this.flightKey(name), () => this.connect(name));
     this.refuseUnusable(conn, place);
     this.raiseCautions(conn, place);
     return conn;
@@ -357,7 +361,20 @@ export class RemoteSshRuntime {
     }
   }
 
+  /**
+   * 繋ぐのを1本にまとめる鍵。**登録を外した回数を含める**——外したあとに同じ名前で登録し直したら、外す前に始まった
+   * 繋ぎ（前の host 向け）に相乗りしない
+   */
+  private flightKey(name: string): string {
+    return `${name}\0${this.removals.get(name) ?? 0}`;
+  }
+
   private async connect(name: string): Promise<Connection> {
+    // **繋いでいる途中で登録を外されたか**を見る印（修正・2026-10-12、レビュー）。外す側（`closeRuntime`）は、まだ前提を
+    // 確かめている・親の接続を待っている段の接続を掴めない（`settingUp` に入る前）。そのまま完走させると、外した実行場所
+    // （や、同じ名前で登録し直した別の host）に古い接続が残り、そこで Module が起きる。始めたときの回数と比べて断る
+    const generation = this.removals.get(name) ?? 0;
+    const removed = () => (this.removals.get(name) ?? 0) !== generation;
     const listener = await this.listenerFor(name);
     const started = performance.now();
     const conn = await this.opts.runtimes.withConnection(name, async (r, files) => {
@@ -415,7 +432,11 @@ export class RemoteSshRuntime {
       });
       // 用意している途中の接続も、登録を外したら閉じられるようにしておく（`closeRuntime`）
       this.settingUp.set(name, conn);
+      // ここまで（前提の確かめ・親の接続を待つ間）に外されていたら、コードを送らずにやめる
+      const removedBeforeSync = removed();
+      if (removedBeforeSync) conn.removed = true;
       try {
+        if (removedBeforeSync) throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
         // 3. 向こうの置き場を決め、コードを照合する
         conn.base = await this.resolveBase(conn);
         conn.codeDir = await this.syncCode(conn);
@@ -423,12 +444,21 @@ export class RemoteSshRuntime {
       } catch (err) {
         master.kill("SIGTERM");
         await exited;
-        throw conn.removed ? new Error(`実行場所「${name}」が外されたので、コードを送るのをやめました`) : err;
+        // 送っている途中で外された（`closeRuntime` が親を閉じた）なら、ssh の「途中で閉じました」ではなく外されたことを理由にする
+        throw conn.removed && !removedBeforeSync ? new Error(`実行場所「${name}」が外されたので、コードを送るのをやめました`) : err;
       } finally {
         if (this.settingUp.get(name) === conn) this.settingUp.delete(name);
       }
       return conn;
     });
+    // 最後にもう一度：返ってくるまでの間に外されていたら、張った接続を残さない
+    if (removed()) {
+      if (conn.alive) {
+        conn.master.kill("SIGTERM");
+        await conn.exited;
+      }
+      throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
+    }
     // **鍵の窓口は閉じない**（未実装・2026-10-10）：Vault に窓口を閉じる口がまだ無い。多重化した接続は張ったあと鍵を使わない
     this.connections.set(name, conn);
     this.log(

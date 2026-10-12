@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RemoteSshRuntime, type CodeTransfer } from "./remote-ssh.js";
@@ -175,4 +176,88 @@ test("用意している途中で登録を外したら（closeRuntime）、送�
     assert.equal(events.at(-1), undefined);
     assert.deepEqual(rt.codeTransfers(), []);
   });
+});
+
+// **繋いでいる途中で登録を外したら、その接続を残さない**（修正・2026-10-12、レビュー）。外す側（`closeRuntime`）は、
+// 前提を確かめている・親の接続を待っている段の接続をまだ掴めない。そこで外されても、繋ぎ終えたときに気づいて閉じ、
+// 失敗として返す。同じ名前で登録し直したら、外す前に始まった繋ぎ（前の host 向け）に相乗りせず、新しく繋ぐ。
+// `withConnection` は偽物：門（`gate`）が開くまで待ち（前提の確かめ・親の接続を待つ間）、繋ぎ終えた接続を返す
+function fakeConnection(host: string): { conn: Record<string, unknown>; master: ChildProcess } {
+  const master = spawn("sleep", ["60"], { stdio: "ignore" });
+  const exited = new Promise<void>((resolve) => master.once("close", () => resolve()));
+  const conn: Record<string, unknown> = {
+    runtimeName: "vm",
+    runtime: { host, port: 22, user: "u" },
+    master,
+    alive: true,
+    exited,
+    remotePort: 1,
+    base: "/remote/base",
+    codeDir: "/remote/base/code/v-1",
+    checks: [],
+    forwards: new Map(),
+    cautioned: new Set(),
+  };
+  void exited.then(() => (conn.alive = false));
+  return { conn, master };
+}
+
+test("繋いでいる途中（前提の確かめ・親の接続を待つ間）に登録を外したら、繋ぎ終えても残さずに失敗する。登録し直したら新しく繋ぐ", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "banto-remote-ssh-data-"));
+  const gates: Array<{ open: () => void; result: { conn: Record<string, unknown>; master: ChildProcess } }> = [];
+  const runtimes = {
+    withConnection: async () => {
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => (open = resolve));
+      const result = fakeConnection(gates.length === 0 ? "old.example" : "new.example");
+      gates.push({ open, result });
+      await opened;
+      return result.conn;
+    },
+  };
+  const rt = new RemoteSshRuntime({
+    dataDir,
+    monorepoRoot: dataDir,
+    runtimes: runtimes as never,
+    remoteNameOf: () => undefined,
+    createRelayListener: () => createServer(),
+    notify: async () => undefined,
+    log: () => undefined,
+  });
+  const connections = (rt as unknown as { connections: Map<string, Record<string, unknown>> }).connections;
+  try {
+    /** 繋ぎが n 本始まるまで待つ（始まらなければ落とす——外す前の繋ぎに相乗りすると2本目が始まらない） */
+    const waitGates = async (n: number) => {
+      const started = performance.now();
+      while (gates.length < n) {
+        assert.ok(performance.now() - started < 3_000, `繋ぎが ${n} 本目を始めない（外す前の繋ぎに相乗りしている）`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const first = rt.warmUp("vm");
+    // 先の繋ぎが失敗しても、試験が見るまで受けられないままにしない
+    first.catch(() => undefined);
+    await waitGates(1);
+    // 前提を確かめている間に外す（このときはまだどこにも掴める接続が無い）
+    await rt.closeRuntime("vm");
+    // 同じ名前で別の host を登録し直して、先に送る——外す前の繋ぎに相乗りせず、新しく繋ぐ
+    const second = rt.warmUp("vm");
+    await waitGates(2);
+
+    gates[0]!.open();
+    await assert.rejects(first, /実行場所「vm」が外されたので、繋ぐのをやめました/);
+    assert.equal(gates[0]!.result.conn.alive, false, "外した実行場所への接続が閉じていない");
+    assert.equal(connections.get("vm"), undefined, "外した実行場所への接続が残っている");
+
+    gates[1]!.open();
+    await second;
+    assert.equal((connections.get("vm")?.runtime as { host: string }).host, "new.example", "登録し直した host に繋がっていない");
+    // 繋がっていれば、もう一度頼んでも新しく繋がない
+    await rt.warmUp("vm");
+    assert.equal(gates.length, 2);
+  } finally {
+    for (const g of gates) g.result.master.kill("SIGKILL");
+    await rt.closeAll();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
