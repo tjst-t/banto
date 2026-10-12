@@ -6578,7 +6578,7 @@
       "number": 272,
       "kind": "bug",
       "title": "新しい Project の「Advanced——Configuration の上書き」がモックのまま出ていて、選んでも保存されない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6592,7 +6592,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T05:45:31.896Z",
-      "updatedAt": "2026-10-12T05:47:31.335Z",
+      "updatedAt": "2026-10-12T05:47:35.737Z",
       "closedAt": null,
       "extra": {}
     }
