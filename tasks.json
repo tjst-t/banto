@@ -6213,7 +6213,7 @@
       "number": 269,
       "kind": "task",
       "title": "別のサーバへ初めて繋ぐときのコードの送り込みを速く・見えるようにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [],
       "milestone": null,
@@ -6225,7 +6225,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T02:46:57.683Z",
-      "updatedAt": "2026-10-12T02:46:57.683Z",
+      "updatedAt": "2026-10-12T04:43:48.640Z",
       "closedAt": null,
       "extra": {}
     },
