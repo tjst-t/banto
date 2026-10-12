@@ -6691,7 +6691,7 @@
       "number": 277,
       "kind": "task",
       "title": "段3：逼迫中は重い仕事を順番待ちにし、Factory の同時件数を下げ、AI に知らせる",
-      "status": "ready",
+      "status": "backlog",
       "parent": "resource-pressure-rest",
       "dependsOn": [
         "host-pressure-watch"
@@ -6705,7 +6705,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:18:04.877Z",
-      "updatedAt": "2026-10-12T07:18:04.877Z",
+      "updatedAt": "2026-10-12T07:18:21.992Z",
       "closedAt": null,
       "extra": {}
     }
