@@ -6572,6 +6572,29 @@
       "updatedAt": "2026-10-12T05:27:38.249Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "new-project-advanced-mock",
+      "number": 272,
+      "kind": "bug",
+      "title": "新しい Project の「Advanced——Configuration の上書き」がモックのまま出ていて、選んでも保存されない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "frontend"
+      ],
+      "body": "2026-10-12、ユーザーが見つけた（スクリーンショット：「使う資格情報：Claude Pro（個人）（62% 使用）」「使う Vault 接続：Vault（組み込みローカル）」）。\n\n本物の画面の apps/frontend/components/banto/project/new-project-dialog.tsx の Advanced の欄（既定モデル・effort・Memory 上限・使う資格情報・使う Vault 接続）が、選択肢を lib/mock/settings の見本（mockCredentials・mockRuntimeDefaults・getRoles）から出している。選んだ値は lib/mock/projects.ts の createRealProject で setProjectOverrides（画面の中のモックの置き場）に入るだけで、host には送られない（POST /api/projects は name・root・runtime だけ）。Project の設定の「既定値の上書き」は CONNECTED_FEATURES.settings=false で隠れているのに、新しい Project の画面だけ旗が掛かっていない。\n\n直し方（決める）：\n- まず、実データに繋がっていない欄は出さない（規則13）——Advanced を CONNECTED_FEATURES.settings で隠す\n- 本当に要る上書きを host に繋ぐのは別タスク：今 host に実在するもの（モデル・effort は会話ごとの選択、permissionMode の既定、Vault の置き場は Vault の管理画面の紐付け、資格情報は Claude のログイン1つ）と食い違わない形を仕様で決めてから",
+      "doneWhen": "本物の新しい Project の画面に見本の選択肢が出ない（または host に繋がった本物の選択肢だけが出て、選んだ値が保存される）ことを E2E で確かめた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-12T05:45:31.896Z",
+      "updatedAt": "2026-10-12T05:45:31.896Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
