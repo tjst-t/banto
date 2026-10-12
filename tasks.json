@@ -6670,7 +6670,7 @@
       "number": 276,
       "kind": "task",
       "title": "段2b：Module を名前つきの組（banto-modules.slice の scope）で起こす",
-      "status": "ready",
+      "status": "backlog",
       "parent": "resource-pressure-rest",
       "dependsOn": [],
       "milestone": null,
@@ -6682,7 +6682,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:18:04.877Z",
-      "updatedAt": "2026-10-12T07:18:04.877Z",
+      "updatedAt": "2026-10-12T07:18:17.401Z",
       "closedAt": null,
       "extra": {}
     },
