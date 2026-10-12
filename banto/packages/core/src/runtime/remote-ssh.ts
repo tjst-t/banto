@@ -140,6 +140,9 @@ const zstd = zlib as unknown as {
   constants: { ZSTD_c_compressionLevel?: number };
 };
 
+/** 多重化した ssh が 255 で終わったとき、親の接続も閉じるかを見る間（接続が切れたのか、を見分けるため） */
+const MASTER_CLOSE_GRACE_MS = 2_000;
+
 /** 縮め方（向こうに展開するコマンドがあるものを選ぶ） */
 type Codec = "zstd" | "gzip" | "none";
 
@@ -584,6 +587,12 @@ export class RemoteSshRuntime {
 
   private async mustRun(conn: Connection, what: string, script: string, opts: RunOptions = {}): Promise<string> {
     const r = await this.run(conn, script, opts);
+    // **接続が切れたのか、向こうのコマンドが失敗したのかを見分ける**（修正・2026-10-12）。接続が切れると、その上の ssh
+    // （終了コード 255）と親の接続のどちらが先に終わったと見えるかは決まらない。255 で親がまだ生きて見えるなら、親が
+    // 閉じるかを少しだけ見てから理由を決める（先に 255 を見ると「ssh の終了コード 255」だけになり、何が起きたか分からない）
+    if (r.code === 255 && conn.alive) {
+      await Promise.race([conn.exited, new Promise((resolve) => setTimeout(resolve, MASTER_CLOSE_GRACE_MS).unref())]);
+    }
     if (r.code !== 0 && !conn.alive) {
       throw new Error(`別のサーバ「${conn.runtimeName}」で${what}ませんでした——SSH の接続が途中で閉じました`);
     }

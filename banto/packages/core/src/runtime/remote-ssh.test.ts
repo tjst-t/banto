@@ -161,6 +161,20 @@ test("tar の段で接続が切れたら、理由つきで失敗し、tar も止
   });
 });
 
+test("接続が切れて、親の接続より先にその上の ssh が 255 で終わったと見えても、理由は「接続が途中で閉じました」", async () => {
+  await withFixture("drop", async ({ rt, conn, master, events }) => {
+    // 偽の ssh は送り始めて 1 秒で 255 で終わる。親が閉じるのはその少しあと（どちらが先に見えるかは決まらない——E2E で
+    // 両方起きた）。送り始め（画面への最初の知らせ）から数える——その前の照合・ハッシュにかかる時間はまちまち
+    const sending = syncCode(rt, conn);
+    const started = performance.now();
+    while (events.length === 0 && performance.now() - started < 10_000) await new Promise((r) => setTimeout(r, 5));
+    setTimeout(() => master.kill("SIGKILL"), 1_400).unref();
+    const { err } = await settle(sending, 15_000);
+    assert.ok(err, "接続が切れたのに成功した");
+    assert.match(err.message, /SSH の接続が途中で閉じました/);
+  });
+});
+
 test("用意している途中で登録を外したら（closeRuntime）、送り込みが止まって失敗し、画面の行は消える", async () => {
   await withFixture("followMaster", async ({ rt, conn, events }) => {
     (rt as unknown as { settingUp: Map<string, unknown> }).settingUp.set("vm", conn);
