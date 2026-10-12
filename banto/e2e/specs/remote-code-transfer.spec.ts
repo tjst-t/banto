@@ -7,7 +7,10 @@
 //   1. 実行場所を登録したら、Project を作る前から送り始める（先に送っておく）——設定の実行場所の行に進み具合
 //   2. 送っている間、サイドバーのその Project の行と、その Project の会話に「<名前> にコードを送っています（○MB / ○MB）」。
 //      数字は進む（送った量が増え、分母は変わらない）
-//   3. 送り終えたら3箇所とも消え、向こうにコードの版が1つでき、Module が起きる
+//   3. 途中で接続が切れたら、会話とサイドバーの同じ行が「送れませんでした（○MB / ○MB で止まりました）」と理由に変わり、
+//      次に Module を起こそうとしたときに送り直す（修正・2026-10-12、レビュー——前は止めた瞬間に core が落ちるか、
+//      最初のターンが永久に待った）
+//   4. 送り終えたら3箇所とも消え、向こうにコードの版が1つでき、Module が起きる
 import { test, expect, type Locator } from "../test-base.js";
 import { createHash, randomBytes } from "node:crypto";
 import { runIncus } from "@banto/container";
@@ -33,7 +36,7 @@ async function api<T>(path: string, init: { method?: string; body?: unknown } = 
 
 /** 「<名前> にコードを送っています（120MB / 809MB）」を読む。形が違えば落とす */
 async function progressOf(line: Locator, runtime: string): Promise<{ sent: number; total: number }> {
-  const text = (await line.textContent()) ?? "";
+  const text = (await line.getByTestId("code-transfer-text").textContent()) ?? "";
   const m = new RegExp(`^${runtime} にコードを送っています（(\\d+)MB / (\\d+)MB）$`).exec(text.trim());
   expect(m, `進み具合の文が違う：${JSON.stringify(text)}`).not.toBeNull();
   return { sent: Number(m![1]), total: Number(m![2]) };
@@ -94,7 +97,32 @@ test("初めて繋ぐ別のサーバへコードを送っている間、設定�
         .toBeGreaterThan(inThread.sent);
       expect((await progressOf(threadLine, name)).total).toBe(first.total);
 
-      // ---- 3. 送り終えたら消え、Module が起きる -------------------------------------------------------
+      // ---- 3. 途中で接続が切れたら「送れませんでした」と理由が残り、次に起こすときに送り直す ---------------------
+      // 向こうの sshd のこのユーザーの接続を落とす（線が切れたのと同じ——host の ssh には「closed by remote host」）
+      await host.rootExec(`pkill -f 'sshd: ${host.user}'`);
+      await expect(threadLine, "接続が切れたのに、会話の行が「送れませんでした」にならない").toHaveAttribute("data-state", "failed", {
+        timeout: 30_000,
+      });
+      const failedText = (await threadLine.getByTestId("code-transfer-text").textContent()) ?? "";
+      const stopped = new RegExp(`^${name} にコードを送れませんでした（(\\d+)MB / (\\d+)MB で止まりました）$`).exec(failedText.trim());
+      expect(stopped, `送れなかったときの文が違う：${JSON.stringify(failedText)}`).not.toBeNull();
+      expect(Number(stopped![2])).toBe(first.total);
+      expect(Number(stopped![1])).toBeGreaterThan(0);
+      await expect(threadLine.getByTestId("code-transfer-reason")).toContainText("SSH の接続が途中で閉じました");
+      await expect(sidebarRow).toHaveAttribute("data-state", "failed");
+      // 次に Module を起こそうとすると（ターンが Module を要るときと同じ口）、送り直す——行は進み具合に戻る。
+      // 失敗のあとは少しのあいだ起こし直さない（間を置く）ので、戻るまで何度か頼む（頼むのは待たない——送り終えるまで返らない）
+      await expect
+        .poll(
+          async () => {
+            void api(`/api/projects/${projectId}/modules/prepare`, { method: "POST" });
+            return threadLine.getAttribute("data-state");
+          },
+          { timeout: 120_000, intervals: [2_000], message: "送れなかったあと、送り直さない" },
+        )
+        .toBe("sending");
+
+      // ---- 4. 送り終えたら消え、Module が起きる -------------------------------------------------------
       // 消えるのは、向こうで確かめて切り替え終えたとき（失敗でも消えるので、消えたあと版ができていることまで見る）
       await expect(threadLine, "送り終えたのに会話の進み具合が消えない").toBeHidden({ timeout: 600_000 });
       await expect(sidebarRow, "送り終えたのにサイドバーの進み具合が消えない").toBeHidden();

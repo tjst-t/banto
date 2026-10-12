@@ -58,7 +58,7 @@ export type RealAppEvent =
       type: "code.transfer";
       runtime: string;
       projectIds: string[];
-      transfer?: { sentBytes: number; totalBytes: number; startedAt: string };
+      transfer?: { sentBytes: number; totalBytes: number; startedAt: string; failed?: string };
     }
   /**
    * 別の実行場所へ移す状況が変わった（追加・2026-10-12、Backlog #270）。`move` があれば移している途中（丸ごと置き換える）、
@@ -117,6 +117,8 @@ export interface RealCodeTransfer {
   sentBytes: number;
   totalBytes: number;
   startedAt: string;
+  /** 送れなかった理由（止まった・接続が切れた）。次に送り始めるまで残る */
+  failed?: string;
 }
 
 /** 混んでいる Project とこの機械（host の `ResourcesBusy` と同じ形） */

@@ -80,13 +80,16 @@ export interface RemoteSshRuntimeOptions {
   notify(n: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
   /**
    * **コードを送っている間の進み具合**（追加・2026-10-12、Backlog #269）。送り始め・進むたび（間引いて）に呼び、
-   * 終わったら（失敗でも）`undefined` で呼ぶ。大きさは縮める前のバイト数
+   * 使えるようになったら `undefined` で呼ぶ。送れなかったら `failed` に理由を入れて呼ぶ（次に送り始めるか、版が合って
+   * いると分かるまで残る）。大きさは縮める前のバイト数
    */
   onCodeTransfer?: (runtimeName: string, progress: CodeTransfer | undefined) => void;
   /** ログ（既定は console） */
   log?: (line: string) => void;
   /** 宛先の名前を IPv4 に引く（既定は host の名前引き。試験だけが差し替える） */
   lookupIPv4?: LookupIPv4;
+  /** 送っている途中で、これだけ進まなければ止める（既定は `TRANSFER_STALL_MS`。試験だけが縮める） */
+  transferStallMs?: number;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -94,6 +97,8 @@ export interface CodeTransfer {
   sentBytes: number;
   totalBytes: number;
   startedAt: string;
+  /** 送れなかった理由（止まった・接続が切れた）。次に送り始めるまで残す */
+  failed?: string;
 }
 
 /** 進み具合を知らせる間隔（これより細かくは知らせない） */
@@ -110,7 +115,8 @@ interface TransferTracker {
   /** 最後に進んでから何ミリ秒か */
   stalledFor(): number;
   sentBytes(): number;
-  end(): void;
+  /** 終わった。`err` があれば送れなかった（理由を残す）、無ければ使える（消す） */
+  end(err?: unknown): void;
 }
 
 interface RunOptions {
@@ -157,6 +163,8 @@ interface Connection {
   forwards: Map<string, SocketForward>;
   /** 注意（linger・tmux が無い）を出した Project（接続を張ったときに居なかった Project にも、使い始めたときに出す） */
   cautioned: Set<string>;
+  /** 用意している途中で実行場所の登録が外された */
+  removed?: boolean;
 }
 
 /**
@@ -220,6 +228,8 @@ export class RemoteSshRuntime {
   private readonly log: (line: string) => void;
   private readonly launcherPath: string;
   private readonly forwarding = new SingleFlight<void>();
+  /** 用意している途中（コードを照合・送っている）の接続 */
+  private readonly settingUp = new Map<string, Connection>();
   /** いまコードを送っている実行場所（送り終えたら消す） */
   private readonly transfers = new Map<string, CodeTransfer>();
   /** 鍵の窓口の転送を外す見張り（窓口のファイルが host から消えたら外す） */
@@ -289,8 +299,18 @@ export class RemoteSshRuntime {
     }
   }
 
-  /** 実行場所を外したとき：先に送るために張った接続が残っていれば閉じる（送っている途中なら、そこで止まる） */
+  /** 実行場所を外したとき：先に送るために張った接続が残っていれば閉じる（用意している途中・送っている途中でも止める） */
   async closeRuntime(runtimeName: string): Promise<void> {
+    // 外した実行場所の「送っています／送れませんでした」は画面に残さない
+    this.clearTransfer(runtimeName);
+    // 用意している途中（先に送っている最中など）なら、その接続を閉じて止める——送っている ssh が切れ、送り込みは
+    // 「外されたのでやめました」で終わる
+    const pending = this.settingUp.get(runtimeName);
+    if (pending?.alive) {
+      pending.removed = true;
+      pending.master.kill("SIGTERM");
+      await pending.exited;
+    }
     const conn = this.connections.get(runtimeName);
     if (!conn) return;
     this.connections.delete(runtimeName);
@@ -393,14 +413,19 @@ export class RemoteSshRuntime {
         const why = stderrTail().split("\n").filter((l) => l.trim() && !/^Allocated port/.test(l)).slice(-3).join(" ");
         this.log(`[host] 別のサーバ「${name}」との SSH の接続が閉じました（終了コード ${master.exitCode ?? master.signalCode}${why ? `：${why}` : ""}）`);
       });
+      // 用意している途中の接続も、登録を外したら閉じられるようにしておく（`closeRuntime`）
+      this.settingUp.set(name, conn);
       try {
         // 3. 向こうの置き場を決め、コードを照合する
         conn.base = await this.resolveBase(conn);
         conn.codeDir = await this.syncCode(conn);
+        if (conn.removed) throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
       } catch (err) {
         master.kill("SIGTERM");
         await exited;
-        throw err;
+        throw conn.removed ? new Error(`実行場所「${name}」が外されたので、コードを送るのをやめました`) : err;
+      } finally {
+        if (this.settingUp.get(name) === conn) this.settingUp.delete(name);
       }
       return conn;
     });
@@ -501,8 +526,9 @@ export class RemoteSshRuntime {
       // 流し込むもの（`stalledFor` あり）は全体の時間では切らず、進まなくなったら止める
       const timer = stalledFor
         ? setInterval(() => {
-            if (stalledFor() < TRANSFER_STALL_MS) return;
-            stderr += `\n（${Math.round(TRANSFER_STALL_MS / 1000)} 秒のあいだ1バイトも送れなかったので止めました）`;
+            const limit = this.opts.transferStallMs ?? TRANSFER_STALL_MS;
+            if (stalledFor() < limit) return;
+            stderr += `\n（${Math.round(limit / 1000)} 秒のあいだ1バイトも送れなかったので止めました）`;
             child.kill("SIGKILL");
           }, 1_000)
         : setTimeout(() => {
@@ -699,7 +725,11 @@ export class RemoteSshRuntime {
     );
     const cur = /^cur=(.*)$/m.exec(state)?.[1] ?? "";
     const remoteDigest = /^digest=(.*)$/m.exec(state)?.[1];
-    if (cur.startsWith(`${prefix}-`) && remoteDigest === digest) return `${code}/${cur}`;
+    if (cur.startsWith(`${prefix}-`) && remoteDigest === digest) {
+      // 前に送れなかった印が残っていれば消す（向こうの版はもう合っている）
+      this.clearTransfer(conn.runtimeName);
+      return `${code}/${cur}`;
+    }
 
     const why = !cur ? "初めて" : !cur.startsWith(`${prefix}-`) ? "版が変わった" : "向こうで書き換えられていた";
     const dirs = [...state.matchAll(/^dir=(.*)$/gm)].map((m) => m[1]!);
@@ -716,10 +746,14 @@ export class RemoteSshRuntime {
     );
     // **確かめて切り替え終えるまで「送っています」のままにする**——消えたら使える、という意味にする（送り終えてから
     // 向こうで確かめる間に消すと、人には終わったように見えて Module はまだ起きない）
+    // 送れなかったら、その理由を同じ行に残す（次に送り始めるまで）——黙って消すと、人には終わったように見える
     try {
-      return await this.sendAndSwitch(conn, { entries, digest, code, cur, next, staging, codec, transfer, why, sending });
-    } finally {
+      const dir = await this.sendAndSwitch(conn, { entries, digest, code, cur, next, staging, codec, transfer, why, sending });
       transfer.end();
+      return dir;
+    } catch (err) {
+      transfer.end(err);
+      throw err;
     }
   }
 
@@ -798,16 +832,29 @@ export class RemoteSshRuntime {
     });
     let tarErr = "";
     tar.stderr.on("data", (c: Buffer) => (tarErr += String(c)));
+    tar.stdin.on("error", () => undefined);
     tar.stdin.end(tarList(entries));
     const tarDone = new Promise<number>((resolve) => tar.on("close", (code) => resolve(code ?? 1)));
-    const sent = this.sendStream(conn, "コードを送れ", tar.stdout, `mkdir -p ${shq(remoteDir)} && tar -C ${shq(remoteDir)} -xf -`, codec, transfer);
-    // tar が先に失敗したなら、その理由で止める（向こうの「途中で切れた」より先に読む）
-    const tarCode = await tarDone;
-    if (tarCode !== 0) {
-      await sent.catch(() => undefined);
-      throw new Error(`送るコードを tar にまとめられませんでした：${tarErr.trim().slice(-500)}`);
+    // **送る側（ssh）の結果は、すぐに受けておく**（修正・2026-10-12、レビュー）——止めた（進まない・登録を外した・接続が
+    // 切れた）とき ssh が先に失敗する。tar は書き出し先が止まって塞がったまま終わらないので、tar を待ってから ssh の結果を
+    // 見る順だと、ssh の失敗が誰にも受けられずに core ごと落ち（unhandledRejection）、tar を待つ側は永久に返らなかった
+    const sending = this.sendStream(conn, "コードを送れ", tar.stdout, `mkdir -p ${shq(remoteDir)} && tar -C ${shq(remoteDir)} -xf -`, codec, transfer).then(
+      (wire) => ({ ok: true as const, wire }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
+    const first = await Promise.race([sending, tarDone.then((code) => ({ tarCode: code }))]);
+    if ("ok" in first && !first.ok) {
+      // ssh が先に失敗した：tar を止めて（塞がっているので自分では終わらない）、終わったのを見てから ssh の理由で止まる
+      tar.kill("SIGKILL");
+      await tarDone;
+      throw first.err;
     }
-    return sent;
+    const tarCode = await tarDone;
+    const sent = await sending;
+    // tar が失敗したなら、その理由で止める（向こうの「途中で切れた」より先に読む）
+    if (tarCode !== 0) throw new Error(`送るコードを tar にまとめられませんでした：${tarErr.trim().slice(-500)}`);
+    if (!sent.ok) throw sent.err;
+    return sent.wire;
   }
 
   /**
@@ -845,7 +892,14 @@ export class RemoteSshRuntime {
     }
     source.pipe(counted).pipe(compressor).pipe(onWire);
     const unpack = codec === "zstd" ? "zstd -dcq | " : codec === "gzip" ? "gzip -dc | " : "";
-    await this.mustRun(conn, what, `${unpack}{ ${sink}; }`, { stdin: onWire, stalledFor: transfer.stalledFor });
+    try {
+      await this.mustRun(conn, what, `${unpack}{ ${sink}; }`, { stdin: onWire, stalledFor: transfer.stalledFor });
+    } catch (err) {
+      // 止まった（ssh が終わった）なら、流れの上流も閉じる——閉じないと、書き出し先を失った流れが止まったまま残り、
+      // 元（tar の出力・node のファイル）を握り続ける
+      for (const stream of [onWire, compressor, counted, source]) stream.destroy();
+      throw err;
+    }
     return wire;
   }
 
@@ -869,11 +923,22 @@ export class RemoteSshRuntime {
       },
       stalledFor: () => performance.now() - movedAt,
       sentBytes: () => t.sentBytes,
-      end: () => {
-        if (this.transfers.get(runtimeName) === t) this.transfers.delete(runtimeName);
-        this.opts.onCodeTransfer?.(runtimeName, undefined);
+      end: (err) => {
+        if (this.transfers.get(runtimeName) !== t) return;
+        if (err === undefined) {
+          this.clearTransfer(runtimeName);
+          return;
+        }
+        t.failed = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+        report();
       },
     };
+  }
+
+  /** 送っている途中・送れなかった印を消して、画面に知らせる */
+  private clearTransfer(runtimeName: string): void {
+    if (!this.transfers.delete(runtimeName)) return;
+    this.opts.onCodeTransfer?.(runtimeName, undefined);
   }
 
   // ── 用意できた箱 ────────────────────────────────────────────────────────

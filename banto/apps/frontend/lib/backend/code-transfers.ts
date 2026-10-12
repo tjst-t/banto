@@ -6,6 +6,7 @@
 //
 // 真実は host（`RemoteSshRuntime` が送りながら数える）にあり、画面は出来事の流れで写しを持つだけ（規則3）：
 //   hello（繋いだ・繋ぎ直した）→ 丸ごと置き換える／code.transfer → その実行場所の分を置き換える（`transfer` 無しで消す）
+// 送れなかったときは `failed` が付いて残る（次に送り始めるまで）——黙って消えると、人には終わったように見える
 
 import { useSyncExternalStore } from "react";
 import { onRealAppEvent, startRealAppEvents, type RealCodeTransfer } from "./app-events";
@@ -57,8 +58,10 @@ export function useRuntimeCodeTransfer(runtime: string): RealCodeTransfer | unde
   );
 }
 
-/** 「banto-dev-vm にコードを送っています（120MB / 809MB）」 */
+/** 「banto-dev-vm にコードを送っています（120MB / 809MB）」／送れなかったら「…を送れませんでした（120MB / 809MB で止まりました）」 */
 export function codeTransferText(t: RealCodeTransfer): string {
   const mb = (n: number) => `${Math.round(n / 1e6)}MB`;
-  return `${t.runtime} にコードを送っています（${mb(t.sentBytes)} / ${mb(t.totalBytes)}）`;
+  return t.failed !== undefined
+    ? `${t.runtime} にコードを送れませんでした（${mb(t.sentBytes)} / ${mb(t.totalBytes)} で止まりました）`
+    : `${t.runtime} にコードを送っています（${mb(t.sentBytes)} / ${mb(t.totalBytes)}）`;
 }
