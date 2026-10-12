@@ -6554,7 +6554,7 @@
       "number": 271,
       "kind": "bug",
       "title": "Browser の日本語が中国の字形（WenQuanYi Zen Hei）で描かれる——Noto CJK JP を入れて日本語で先に選ぶ",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6562,15 +6562,15 @@
       "labels": [],
       "body": "2026-10-12 稼働中（release 3c261bef）で、日本語のページが中華フォントで描かれるとユーザー報告。原因（この Project のコンテナで確かめた）：Playwright の install-deps chromium が入れる fonts-wqy-zenhei の fontconfig（25-/64-wqy-zenhei.conf）が強く、`fc-match \"sans-serif:lang=ja\"` が WenQuanYi Zen Hei を返していた（IPA ゴシックも入っているが負ける）。\n\nこの Project のコンテナでは手で直した（2026-10-12）：`apt-get install fonts-noto-cjk` だけでは変わらず、/etc/fonts/conf.d/60-banto-ja.conf（lang=ja の sans-serif・serif・monospace に Noto Sans/Serif/Sans Mono CJK JP を strong で前置き、ほかに sans-serif 等の alias で Noto CJK JP を prefer）を置いて `fc-match` が Noto CJK JP を返すようになった。英字も Noto Sans CJK JP になる（日本の OS の既定と同じ扱い）。\n\nやること：\n- Module がブラウザを入れる段（install.ts、install-deps と同じところ）で fonts-noto-cjk を入れ、上と同じ fontconfig の設定を置く（コンテナを作り直しても、別のサーバでも同じになるように。別のサーバでは sudo しない決まりなので、入らなければ理由と入れ方を添えて注意する——ブラウザは断らない）。fontconfig を書く場所は、システム（/etc/fonts/conf.d）か、Module が起こすブラウザにだけ効く FONTCONFIG_FILE／XDG_CONFIG_HOME の下か、測って選ぶ（後者なら sudo が要らない）。\n- 言語の設定（今は ja-JP 固定、設定の locale で変えられる）に合わせるかも決める。\n- §4.1 に入れる字体と理由を書く。\n\n確かめ（全部の E2E は流さない）：browser の単体・型検査・browser.spec.ts・browser-view.spec.ts。ページから lang=ja の文字が Noto Sans CJK JP で描かれていること（CDP の CSS.getPlatformFontsForNode 等）を試験で見る。",
       "doneWhen": "ブラウザを入れ直した（まっさらの）コンテナで、lang=ja のページの文字が Noto Sans CJK JP で描かれることを CDP の CSS.getPlatformFontsForNode で確かめた。browser の単体・型検査・browser.spec.ts・browser-view.spec.ts が通る。§4.1 を直した。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/browser-ja-font）",
       "refs": [
         "browser-module (#239)",
         "docs/specs/v4-modules.md §4.1"
       ],
       "threads": [],
       "createdAt": "2026-10-12T04:46:17.832Z",
-      "updatedAt": "2026-10-12T05:27:38.249Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-12T06:20:34.822Z",
+      "closedAt": "2026-10-12T06:20:34.822Z",
       "extra": {}
     },
     {
