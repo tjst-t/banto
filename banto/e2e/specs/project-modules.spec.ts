@@ -278,6 +278,10 @@ test("新しい Project：最初は空。選ぶと home から始まる", async 
     "名前に例が出ている",
   ).toBeNull();
   await expect(dialog.getByLabel("Root パス"), "Root に初期値が入っている").toHaveValue("");
+  // **Advanced（Configuration の上書き）は出さない**（Backlog #272・2026-10-12）——選択肢はモックの見本で、選んでも host に
+  // 送られない。下の段（Project 名・Root）が出ているのを上で確かめてから、無いことを見る
+  await expect(dialog.getByText("Advanced——Configuration の上書き"), "モックの Advanced が出ている").toHaveCount(0);
+  await expect(dialog.getByText("使う資格情報")).toHaveCount(0);
 
   // **選ぶと home から始まる**（何も入っていないので、host の既定）
   await dialog.getByRole("button", { name: "選ぶ" }).click();

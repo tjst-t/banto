@@ -376,7 +376,10 @@ export function NewProjectDialog({
               </div>
             ) : null}
 
-            {showProjectStep && !existing ? (<button
+            {/* **Advanced は `settings` の旗で隠す**（Backlog #272・2026-10-12、ユーザー決定）——選択肢は lib/mock/settings の見本で、
+                選んだ値は host に送られない（POST /api/projects は name・root・runtime だけ）。Project の設定の「既定値の上書き」と
+                同じ旗。繋いだら旗を true に戻すだけで出る（規則13） */}
+            {CONNECTED_FEATURES.settings && showProjectStep && !existing ? (<button
               type="button"
               onClick={() => setShowAdvanced((v) => !v)}
               className="flex items-center gap-1 text-xs text-ink-3 hover:text-foreground"
@@ -384,7 +387,7 @@ export function NewProjectDialog({
               <ChevronRight className={cn("size-3.5 transition-transform", showAdvanced && "rotate-90")} />
               Advanced——Configuration の上書き
             </button>) : null}
-            {showAdvanced && showProjectStep && !existing ? (
+            {CONNECTED_FEATURES.settings && showAdvanced && showProjectStep && !existing ? (
               <div className="rounded-md border border-border px-3">
                 <CascadeRow
                   id="new-project-model"
