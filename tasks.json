@@ -6805,7 +6805,7 @@
       "number": 282,
       "kind": "task",
       "title": "段3：回線の詰まりと携帯——未着で止めキーフレームで再開・一番遅い画面にビットレート・静止で圧縮を止める",
-      "status": "ready",
+      "status": "backlog",
       "parent": "browser-video",
       "dependsOn": [
         "browser-video-pc"
@@ -6819,7 +6819,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-12T07:54:00.848Z",
+      "updatedAt": "2026-10-12T07:54:06.086Z",
       "closedAt": null,
       "extra": {}
     },
