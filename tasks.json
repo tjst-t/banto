@@ -6510,7 +6510,7 @@
       "number": 270,
       "kind": "task",
       "title": "移している最中の Project を開いたら、移していると分かるようにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "runtime-move",
       "dependsOn": [],
       "milestone": null,
@@ -6522,7 +6522,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T04:27:46.901Z",
-      "updatedAt": "2026-10-12T04:27:46.901Z",
+      "updatedAt": "2026-10-12T04:43:48.000Z",
       "closedAt": null,
       "extra": {}
     },
