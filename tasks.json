@@ -6761,7 +6761,7 @@
       "number": 280,
       "kind": "task",
       "title": "段1：動画で流す前に測って決める（ページの大きさの扱い・GStreamer のキーフレームの要求・iPhone と Android での復号の遅れ）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-video",
       "dependsOn": [],
       "milestone": null,
@@ -6771,9 +6771,14 @@
       "doneWhen": "(a)(b)(c) を測った数字と、それで決めた形（ページの大きさの決め方・キーフレームと分割・端末ごとの復号の設定）を §4.1 に書き、残りの段の Backlog の本文を直した。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "753d12f9-4cee-42e0-9b4d-43c66a5603b7"
+        }
+      ],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-12T07:54:00.848Z",
+      "updatedAt": "2026-10-12T07:54:13.885Z",
       "closedAt": null,
       "extra": {}
     },
