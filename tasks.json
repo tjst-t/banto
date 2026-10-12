@@ -6506,6 +6506,27 @@
       "extra": {}
     },
     {
+      "id": "runtime-move-visible",
+      "number": 270,
+      "kind": "task",
+      "title": "移している最中の Project を開いたら、移していると分かるようにする",
+      "status": "ready",
+      "parent": "runtime-move",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-12、ユーザー要望。今は移している間（project.runtime_move_started〜moved／failed）にその Project の会話を開いても何も出ず、送ると 409 で断られるだけ。移す画面（設定）を閉じてしまうと、進み具合を見る場所も無い。\n\nやること：\n- その Project の会話の面（Base・Fork とも）の上に帯：「この Project を ○○ から △△ へ移しています（○GB / ○GB）。終わるまで会話は止まっています。届いたものは終わってから届きます」。進み具合は移す本体（#263）の口から\n- 入力欄は送れない状態にし、理由を出す（送って 409 を受けてから断るのではなく、先に分かるように）\n- サイドバーのその Project の行に「移しています」の印（AI が動いている印・混んでいる印と並ぶ形）\n- 失敗したら帯を「移せませんでした：理由。元の ○○ のまま動いています」に替える（受信箱の知らせと同じ文）。終わったら帯は消え、各 Thread への知らせ（今どおり）が残る\n- 携帯でも同じ\n- 先に hello／イベントで画面に「移している」状態を渡す口が要るか確かめる（今は read model の move があるはず）",
+      "doneWhen": "移している最中にその Project の会話を開くと帯と進み具合が出て入力欄が止まり、サイドバーに印が出ること、失敗したら理由が出ることを E2E で確かめた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-12T04:27:46.901Z",
+      "updatedAt": "2026-10-12T04:27:46.901Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "repositories-e2e-1176-method",
       "number": 267,
       "kind": "bug",
