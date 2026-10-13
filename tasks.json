@@ -6850,6 +6850,30 @@
       "updatedAt": "2026-10-13T07:09:42.653Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "subagent-acp-epipe",
+      "number": 284,
+      "kind": "bug",
+      "title": "Factory の実装役（Claude Code のサブエージェント）が、ACP の書き込みの EPIPE で途中で落ちる（3回目）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "subagent",
+        "factory"
+      ],
+      "body": "同じ形で3回落ちた：2026-10-10 15:53（#259、実装をコミットした後）、2026-10-13 07:33（#281、実装の途中・未コミット 約1000行）。ほかに 10-08 の2回は Subagent の Module ごと止まった（形は違う）。stderr の末尾は毎回同じ：\n\n```\n[session/create] sessionId=… phase=register …\nnode:events:487  throw er; // Unhandled 'error' event\nError: write EPIPE\n    at Socket._write …\n    at file:///…/banto-release/versions/<版>/banto/node_modules/@agentclientprotocol/claude-agent-acp/dist/utils.js:46:28\n```\n\nつまり claude-agent-acp（0.81.1）が、相手（ACP の読み手か、子の claude の CLI か）の閉じた口へ書いて、未処理の 'error' で落ちている。session/create のログの直後なので、新しいセッション（実装役の中でさらにセッションを作る？ /compact や Task？）を作るときに起きている可能性。\n\nFactory はこれを「段が失敗しました」で止め、人が answerFactory の retry で頼み直す（未コミットの変更は人が wip でコミットして守った）。\n\n調べて直す：\n1. 何が閉じた口に書いているか（ACP の stdout の相手＝Subagent Module か、子の CLI の stdin か）を、落ちたときの Subagent Module の記録・acp-run のログで突き止める。\n2. 直せるなら直す（Subagent 側で相手が閉じた理由を直す／claude-agent-acp の版を上げる・パッチ）。直せないなら、Subagent が EPIPE で落ちたエージェントを同じ会話で session/load して続ける（起こし直しをまたいで続ける仕組みの流用）。\n3. Factory 側：実装役が落ちたら、作業ツリーの未コミットの変更を wip でコミットしてから止まる（人が手で守らなくて済むように）。\n\n確かめ：再現の形を作って、落ちても続きから戻れることを試験で見る。",
+      "doneWhen": "EPIPE で落ちる原因を突き止めて直したか、落ちても同じ会話で続く・未コミットの変更が守られることを試験で確かめた。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-13T07:33:38.431Z",
+      "updatedAt": "2026-10-13T07:33:38.431Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
