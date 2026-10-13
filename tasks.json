@@ -6841,13 +6841,13 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "",
+      "body": "§4.1「動画で流す」の段4。コンテナに音の空のシンク（PulseAudio か PipeWire）を足し、Chrome の音をそこへ。GStreamer で Opus に圧縮し、同じ流れに映像と時刻印つきで載せる。人の画面は AudioDecoder＋WebAudio で鳴らす（Safari は 26 から。それ未満は音無しか WASM の libopus——決める）。音を鳴らすには人の操作が要る（自動再生の決まり）ので、画面に「音を出す」を置く。",
       "doneWhen": "",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-12T07:54:08.802Z",
+      "updatedAt": "2026-10-13T07:09:42.653Z",
       "closedAt": null,
       "extra": {}
     }
