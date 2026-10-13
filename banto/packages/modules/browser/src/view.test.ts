@@ -119,6 +119,11 @@ test("高精細の画面：倍率で描いたブラウザでは、絵の上限�
   const viewport = { width: 1280, height: 800 };
   // 倍率2で描いて、倍率2の画面（1440×900）で見る：ページの2倍の絵（2560×1600＝4.1 メガ画素）
   assert.deepEqual(screencastLimits([{ width: 1440, height: 900, devicePixelRatio: 2 }], viewport, 2), { maxWidth: 2560, maxHeight: 1600 });
+  // 倍率が 0.25 刻みの端数（1.25 等）でも、上限は整数（Page.startScreencast は端数を断る——実機で「Invalid parameters」）
+  for (const sc of [1.25, 1.5, 1.75]) {
+    const l = screencastLimits([{ width: 833, height: 605, devicePixelRatio: sc }], { width: 833, height: 605 }, sc);
+    assert.ok(Number.isInteger(l.maxWidth) && Number.isInteger(l.maxHeight), `倍率 ${sc} で ${JSON.stringify(l)}`);
+  }
   assert.equal(maxFramePixels(1), MAX_FRAME_PIXELS);
   assert.equal(maxFramePixels(1.25), MAX_FRAME_PIXELS * 1.5625);
   assert.equal(maxFramePixels(2), MAX_HIDPI_FRAME_PIXELS);
