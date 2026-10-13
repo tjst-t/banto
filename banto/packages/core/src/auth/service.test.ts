@@ -380,6 +380,60 @@ test("パスキーがあれば、端末を追加・締め出し・パスキー�
   });
 });
 
+test("ログイン前の口を叩き続けても、入っている人の本人確認・登録の札は押し出されない（Backlog #285）", async () => {
+  await withAuth(async (ctx) => {
+    const cookie = await loginWithLink(ctx);
+    const authenticator = new SoftAuthenticator();
+    const regOptions = (await (await ctx.ui("/api/auth/passkey/register/options", { method: "POST", cookie })).json()) as {
+      challenge: string;
+      rp: { id: string };
+    };
+    await ctx.ui("/api/auth/passkey/register/verify", { method: "POST", cookie, body: { response: authenticator.register(regOptions, UI) } });
+    ctx.clock.now += 5 * 60 * 1000 + 1; // 登録直後の本人確認済みの間を過ぎる
+
+    // 入っている人が本人確認の札を取る
+    const stepOptions = (await (await ctx.ui("/api/auth/stepup/options", { method: "POST", cookie })).json()) as {
+      challenge: string;
+      rpId: string;
+    };
+    // その後、誰かがログイン前の口を上限（50）を越えるまで叩く（速さの上限 1分30回に合わせて1分ずつ進める）
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i < 30; i++) {
+        assert.equal((await ctx.ui("/api/auth/passkey/login/options", { method: "POST" })).status, 200);
+      }
+      ctx.clock.now += 61 * 1000;
+    }
+    const step = await ctx.ui("/api/auth/stepup/verify", {
+      method: "POST",
+      cookie,
+      body: { response: authenticator.assert(stepOptions, UI) },
+    });
+    assert.equal(step.status, 200, await step.clone().text());
+
+    // セッションの札はセッションごとに5つまで。溢れたらそのセッションの古いものだけ捨て、ほかのセッションの札は残る
+    const other = await loginWithLink(ctx);
+    const otherKey = new SoftAuthenticator();
+    const otherReg = (await (await ctx.ui("/api/auth/passkey/register/options", { method: "POST", cookie: other })).json()) as {
+      challenge: string;
+      rp: { id: string };
+    };
+    const mine: Array<{ challenge: string; rpId: string }> = [];
+    for (let i = 0; i < 6; i++) {
+      mine.push((await (await ctx.ui("/api/auth/stepup/options", { method: "POST", cookie })).json()) as { challenge: string; rpId: string });
+    }
+    const evicted = await ctx.ui("/api/auth/stepup/verify", { method: "POST", cookie, body: { response: authenticator.assert(mine[0]!, UI) } });
+    assert.equal(evicted.status, 401, "同じセッションで上限を越えたら、一番古い札は捨てられる");
+    const latest = await ctx.ui("/api/auth/stepup/verify", { method: "POST", cookie, body: { response: authenticator.assert(mine[5]!, UI) } });
+    assert.equal(latest.status, 200, await latest.clone().text());
+    const otherDone = await ctx.ui("/api/auth/passkey/register/verify", {
+      method: "POST",
+      cookie: other,
+      body: { response: otherKey.register(otherReg, UI) },
+    });
+    assert.equal(otherDone.status, 200, "ほかのセッションの札は押し出されない");
+  });
+});
+
 test("リンクで入った直後の10分は、パスキーがほかにあっても、この端末のパスキーを登録できる（足したばかりの端末にはパスキーが無い）", async () => {
   await withAuth(async (ctx) => {
     const first = await loginWithLink(ctx);

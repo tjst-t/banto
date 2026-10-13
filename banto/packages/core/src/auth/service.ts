@@ -46,6 +46,8 @@ const FRESH_LOGIN_MS = 10 * 60 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 /** 認証の要らない口は、コンテナからも叩ける（host は 0.0.0.0 で待ち受ける）。溜められる数に上限を置く */
 const MAX_PENDING_CHALLENGES = 50;
+/** 入っている人の札（登録・本人確認）は、1つのセッションでこれだけ溜められる（画面を何度か開き直しても足りる数） */
+const MAX_CHALLENGES_PER_SESSION = 5;
 const MAX_PENDING_DEVICE_CODES = 20;
 /** 認証の要らない口の速さの上限（1分あたり） */
 const UNAUTH_PER_MINUTE = 30;
@@ -106,7 +108,13 @@ export class AuthService {
   readonly uiOrigin: string;
   private readonly rpID: string | undefined;
   private readonly now: () => number;
-  private readonly challenges = new Map<string, PendingChallenge>();
+  /**
+   * **challenge の置き場は2つに分ける**（直し・2026-10-13、Backlog #285）。ログイン前の口（login）の札と、セッションに
+   * 結びつく札（register・stepup）を1つの置き場に溜めていたため、認証の要らない login の口を叩き続けるだけで、入っている
+   * 人の登録・本人確認の札が古い順に押し出されていた（コンテナの AI からも叩ける）
+   */
+  private readonly loginChallenges = new Map<string, PendingChallenge>();
+  private readonly sessionChallenges = new Map<string, PendingChallenge>();
   private readonly deviceCodes = new Map<string, { codeId: string; expiresAt: number }>();
   private readonly stepUps = new Map<string, number>();
   /** 締め出したときに切る、開いている流れ（`/api/events` 等） */
@@ -585,20 +593,30 @@ export class AuthService {
 
   private rememberChallenge(challenge: string, pending: Omit<PendingChallenge, "expiresAt">): void {
     const now = this.now();
-    for (const [c, p] of this.challenges) if (p.expiresAt <= now) this.challenges.delete(c);
-    if (this.challenges.size >= MAX_PENDING_CHALLENGES) {
-      // 古いものから捨てる（Map は入れた順）
-      const oldest = this.challenges.keys().next().value;
-      if (oldest !== undefined) this.challenges.delete(oldest);
+    const sessionId = pending.sessionId;
+    const store = sessionId === undefined ? this.loginChallenges : this.sessionChallenges;
+    for (const [c, p] of store) if (p.expiresAt <= now) store.delete(c);
+    if (sessionId === undefined) {
+      if (store.size >= MAX_PENDING_CHALLENGES) {
+        // 古いものから捨てる（Map は入れた順）
+        const oldest = store.keys().next().value;
+        if (oldest !== undefined) store.delete(oldest);
+      }
+    } else {
+      // セッションの札は**そのセッションの中だけ**で数え、溢れたらそのセッションの古いものを捨てる——ほかの人の札は押し出さない。
+      // セッションはログインしないと作れないので、置き場全体の大きさもセッションの数で抑えられる
+      const mine = [...store].filter(([, p]) => p.sessionId === sessionId);
+      for (const [c] of mine.slice(0, Math.max(0, mine.length - MAX_CHALLENGES_PER_SESSION + 1))) store.delete(c);
     }
-    this.challenges.set(challenge, { ...pending, expiresAt: now + CHALLENGE_TTL_MS });
+    store.set(challenge, { ...pending, expiresAt: now + CHALLENGE_TTL_MS });
   }
 
   /** challenge を1回だけ使う。種類と（あれば）セッションが合っているときだけ通す */
   private takeChallenge(challenge: string, kind: PendingChallenge["kind"], sessionId?: string): boolean {
-    const pending = this.challenges.get(challenge);
+    const store = sessionId === undefined ? this.loginChallenges : this.sessionChallenges;
+    const pending = store.get(challenge);
     if (!pending) return false;
-    this.challenges.delete(challenge);
+    store.delete(challenge);
     return pending.kind === kind && pending.sessionId === sessionId && pending.expiresAt > this.now();
   }
 
