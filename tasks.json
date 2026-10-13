@@ -6192,7 +6192,7 @@
       "number": 268,
       "kind": "task",
       "title": "閉じた Project が実行場所を占め続けないようにする（閉じたあとに実行場所を空ける・回収する）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "remote-runtime",
       "dependsOn": [],
       "milestone": null,
@@ -6204,7 +6204,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T01:37:07.209Z",
-      "updatedAt": "2026-10-13T11:01:43.272Z",
+      "updatedAt": "2026-10-13T11:01:46.267Z",
       "closedAt": null,
       "extra": {}
     },
