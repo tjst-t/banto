@@ -53,6 +53,8 @@ export const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 export const MIN_WINDOW_WIDTH = 500;
 /** 窓の大きさを変えたあと、ページの innerWidth・innerHeight が新しい値になるまで待つ上限（実測は 40〜110ms） */
 const SETTLE_TIMEOUT_MS = 2_000;
+/** 起こしたブラウザの最初のタブが出るまで待つ上限 */
+const FIRST_PAGE_TIMEOUT_MS = 10_000;
 /** 落ち着いたとみなすまで、同じ大きさが続く時間（途中で通る大きさは 40〜130ms——settle） */
 const SETTLE_STABLE_MS = 150;
 
@@ -84,6 +86,12 @@ export class BrowserSession {
    */
   beforeResize: (() => Promise<void>) | undefined;
   private currentTab: string | undefined;
+  /**
+   * 起こし終えたブラウザ（最初のタブの窓を合わせ終えるまでは undefined——running・ensure はこれを見る）。context は繋いだ
+   * 時点で置く（最初のタブの登録が使う）が、窓を合わせ終える前に AI が開く・撮る・人の画面が映すと、ページの大きさが
+   * 1280×712（枠つきの normal）や 1920×1080（大きさを指定する前の全画面）になる
+   */
+  private ready: BrowserContext | undefined;
   private frontTab: string | undefined;
   private nextTab = 1;
   private idleTimer: NodeJS.Timeout | undefined;
@@ -101,7 +109,7 @@ export class BrowserSession {
   }
 
   get running(): boolean {
-    return this.context !== undefined;
+    return this.ready !== undefined;
   }
 
   /** 動いているブラウザの注意（起こしたときに足りなかったもの。動いていなければ undefined） */
@@ -329,7 +337,7 @@ export class BrowserSession {
 
   /** 起きていなければ起こす。同時に呼ばれても1回だけ */
   async ensure(onProgress?: (message: string) => void): Promise<BrowserContext> {
-    if (this.context) return this.context;
+    if (this.ready) return this.ready;
     this.starting ??= this.start(onProgress).finally(() => {
       this.starting = undefined;
     });
@@ -354,15 +362,37 @@ export class BrowserSession {
       // 開いてすぐ閉じたページは CDP を繋ぐ前に消える——そのタブは記録しないだけ（理由は Module のログに残す）
       this.register(page).catch((err: Error) => console.error(`[browser] タブを繋げませんでした: ${err.message}`));
     });
-    for (const page of context.pages()) await this.register(page);
+    // **最初のタブの登録（窓を3手で合わせて落ち着くまで——register）を待ってから起きたことにする**。繋いだ直後は pages() が
+    // 空のことがあり、最初のタブは "page" の知らせから登録される——その登録も同じ約束（ids）を待つ
+    const first = context.pages()[0] ?? (await this.firstPage(context));
+    for (const page of first ? [first, ...context.pages()] : context.pages()) await this.register(page);
+    if (this.context !== context) throw new BrowserError("起こしている間にブラウザが終わりました");
+    this.ready = context;
     // 起こしたのが人の画面なら AI の呼び出しは無い——ここから数える（画面が開いている間は止めない）
     this.touch();
     this.emit();
     return context;
   }
 
+  /** 起こしたブラウザの最初のタブ（about:blank）が出るのを待つ。出なければ理由を残して undefined（タブの無いまま起きる） */
+  private firstPage(context: BrowserContext): Promise<Page | undefined> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        context.off("page", onPage);
+        console.error(`[browser] 起こしたブラウザの最初のタブが ${FIRST_PAGE_TIMEOUT_MS}ms 出ませんでした（タブの無いまま起きます）`);
+        resolve(undefined);
+      }, FIRST_PAGE_TIMEOUT_MS);
+      const onPage = (page: Page) => {
+        clearTimeout(timer);
+        resolve(page);
+      };
+      context.once("page", onPage);
+    });
+  }
+
   private forget(): void {
     this.context = undefined;
+    this.ready = undefined;
     this.pages.clear();
     this.placed.clear();
     this.browserCdp = undefined;
