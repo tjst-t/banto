@@ -6950,6 +6950,29 @@
       "updatedAt": "2026-10-13T12:27:46.731Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "move-back-stale-claude-record",
+      "number": 288,
+      "kind": "bug",
+      "title": "元と同じ作業ディレクトリへ戻すと、Claude の会話の記録が古いまま残り、移した先で話した分を忘れる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "2026-10-13、ユーザーの問いから見つかった（実害はまだ出ていない）。core/src/runtime/project-move.ts の copyClaudeRecords は `cpSync(..., { force: false })` で、写す先に同じ名前の記録があれば上書きしない（「前に移したときの写しに続きが足されている」前提）。ところが「この機械→別のサーバ→この機械」と同じ根へ戻すと、写す先（projects/<元の根の名前>/）には **移す前の古い記録** が残っている（元は残すため）。会話の id は移したあとも同じまま続くので、古いほうが残り、戻ったあとの会話は向こうで話した分を忘れる。\n\n直し方：写す元が新しい（大きい・更新が新しい）なら上書きする。上書きする前の古いものは `<id>.jsonl.before-<日時>` に退かせる（消さない）。付属のフォルダ `<id>/` も同じ。前に居た場所へ差分で戻す件（Backlog の move-back-rsync）と一緒に作ってよい。",
+      "doneWhen": "この機械→別のサーバ→この機械（同じ根）と移したあと、向こうで話した内容を AI が覚えていることを E2E で確かめた（偽の API で、戻ったあとのターンの要求に向こうでの発言が含まれる）",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-13T22:32:26.372Z",
+      "updatedAt": "2026-10-13T22:32:26.372Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
