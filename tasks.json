@@ -6787,7 +6787,7 @@
       "number": 281,
       "kind": "task",
       "title": "段2：映像だけを H.264 で流す（パソコンの Chrome と Safari）、描けなければ JPEG に落とす",
-      "status": "in-progress",
+      "status": "done",
       "parent": "browser-video",
       "dependsOn": [
         "browser-video-measure"
@@ -6797,12 +6797,12 @@
       "labels": [],
       "body": "v4-modules.md §4.1「動画で流す——H.264 と WebCodecs」（段1 の測定、main 2dea044b）の形で、映像だけを H.264 で流す。測りの道具と試しの実装は tmp-video-probe/（server.mjs・stream.py・index.html・README.md）にあり、借りてよい。\n\n作るもの：\n- ページの大きさを Emulation.setDeviceMetricsOverride から、キオスク形の窓（Browser.setWindowBounds の normal→大きさ→fullscreen の3手）に替える。Xvfb は「いちばん大きい窓×倍率」。変えている間は流さず、innerWidth が新しくなってからキーフレームを出す。\n- **幅 500 CSS px 未満（携帯の「画面に合わせる」）とポップアップ・window.open の別窓の扱いを決めて作る**（§4.1 の穴①②。候補は仕様に書いてある。測ってから選び、仕様を直す）。\n- GStreamer（ximagesrc show-pointer=false → videoconvert → x264enc tune=zerolatency speed-preset=ultrafast、品質固定 CRF23＋上限 6M＋vbv 1000ms、key-int-max 大 → h264parse Annex B・AU）。キーフレームは force-key-unit で要求時だけ（新しい画面・ページの大きさの変更・デコーダの誤り）。XDamage で 300ms 静止なら PAUSED。GStreamer と python3-gi 等は Module がブラウザを入れる段で入れる（sudo しない箱では理由つきで JPEG に落とす）。\n- 流れの口（アーキ §5.8）で `[頭][AU]` を送り、1 MiB を越える AU は分割。同じブラウザを複数の画面が映すときは、新しい画面にはキーフレームを要求して渡す。\n- 人の画面は WebCodecs の VideoDecoder（optimizeForLatency、既定のハードウェア）で canvas に描く。VideoDecoder が無い・isConfigSupported が偽・初期化に失敗したら今の JPEG の経路に落とす（JPEG の経路は残す）。入力の座標はページの CSS ピクセルで今どおり。\n- AI の browserScreenshot は今どおり CDP で CSS ピクセル。\n\n確かめ（全部の E2E は流さない）：browser の単体・型検査・browser.spec.ts・browser-view.spec.ts と、動画の E2E（Playwright の Chromium は H.264 を描ける——段1 で確認）で、動画で描けること・JPEG に落ちること・静止で流れが止まること・ページの大きさを変えたあと絵とページが一致すること。重さ（CPU・帯域・枚数）を §4.1 の実測に足す。",
       "doneWhen": "人の画面が H.264 で描かれ（描けない環境では JPEG）、静止で流れが止まり、ページの大きさを変えたあと絵とページが画素単位で合い、幅500未満とポップアップの扱いが仕様に書いてあり試験で確かめた。browser の単体・型検査・browser.spec.ts・browser-view.spec.ts・動画の E2E が通る。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/browser-video-pc）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-13T07:10:31.506Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-13T10:02:54.945Z",
+      "closedAt": "2026-10-13T10:02:54.945Z",
       "extra": {}
     },
     {
