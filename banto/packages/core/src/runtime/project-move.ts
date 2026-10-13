@@ -23,6 +23,7 @@
 // コマンド）は、どちらも返事待ちの札を持つので札で数える——Module に tool で聞く口は作っていない（2026-10-11。札を持たない
 // 仕事を抱える Module が出たら足す）
 
+import { spawnSync } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   cpSync,
@@ -813,6 +814,11 @@ export class ProjectMover {
   /** rsync が無い側（前に居た場所へ戻すときは両側に要る）。理由と入れ方 */
   private async rsyncMissing(sides: Side[]): Promise<string[]> {
     const out: string[] = [];
+    // rsync は banto 本体（この機械）でも走る——別のサーバどうしは host の一時の置き場を経由し、この機械の側は host のフォルダを
+    // 直接読み書きする。host に無いと、Service を止めたあとの写す途中で ENOENT で落ちるので先に断る（#289 のレビュー）
+    if (!hostHasRsync()) {
+      out.push("この機械（banto 本体）に rsync がありません。前に居た場所へ戻すときは差分で写すので要ります（入れ方：sudo apt install rsync）");
+    }
     for (const side of sides) {
       const r = await side.run(`command -v rsync >/dev/null 2>&1 && echo rsync=1 || echo rsync=0\n`);
       if (r.code !== 0) throw new SshCommandError(`${side.label}で rsync があるかを確かめられませんでした`, r);
@@ -1343,4 +1349,10 @@ function realOrSelf(path: string): string {
   } catch {
     return path;
   }
+}
+
+/** banto 本体（この機械）に rsync があるか。試験で差し替えられるよう、環境変数 BANTO_RSYNC_BIN があればそれを見る */
+function hostHasRsync(): boolean {
+  const r = spawnSync(process.env["BANTO_RSYNC_BIN"] ?? "rsync", ["--version"], { stdio: "ignore", timeout: 10_000 });
+  return !r.error && r.status === 0;
 }
