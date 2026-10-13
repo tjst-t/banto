@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Bell, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { ArrowLeft, Bell, CalendarClock, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
@@ -12,6 +12,8 @@ import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
+import { ScheduleBand } from "@/components/banto/thread/schedule-band";
+import { scheduleOfThread } from "@/lib/mock/schedules";
 import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeThread, getThread } from "@/lib/mock/threads";
@@ -196,13 +198,15 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       )}
       renderFork={(threadId) => {
         const thread = getThread(threadId);
+        // 予定の専用の Fork（決定・2026-10-13）——印を替え、上に予定の1行を出す
+        const schedule = scheduleOfThread(threadId);
         return (
           <div className="flex h-full min-h-0 flex-col">
             <ClosablePanelHeader
               icon={ArrowLeft}
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
-              titleIcon={GitFork}
+              titleIcon={schedule ? CalendarClock : GitFork}
               title={thread?.title ?? threadId}
               trailing={
                 <div className="flex items-center gap-1.5">
@@ -222,6 +226,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 </div>
               }
             />
+            {schedule ? <ScheduleBand schedule={schedule} /> : null}
             <div className="min-h-0 flex-1">
               <ThreadPanel threadId={threadId} markers={markersByThread[threadId]} />
             </div>

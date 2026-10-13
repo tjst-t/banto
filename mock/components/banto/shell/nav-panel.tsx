@@ -15,6 +15,7 @@ import {
   Bell,
   ChevronRight,
   Clock,
+  CalendarClock,
   GitFork,
   GitMerge,
   LoaderCircle,
@@ -46,6 +47,7 @@ import { getInboxItems } from "@/lib/mock/inbox";
 import { feedBadgeCount } from "@/lib/mock/inbox-feed";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { closeThread, getClosedForksForProject, getThreadsForProject } from "@/lib/mock/threads";
+import { scheduleOfThread } from "@/lib/mock/schedules";
 import { cn } from "@/lib/utils";
 import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
@@ -204,7 +206,8 @@ function ProjectTreeItem({
                   title={fork.title}
                   onClick={onNavigate}
                 >
-                  <ThreadRowIcon icon={GitFork} threadId={fork.id} />
+                  {/* 予定の専用の Fork は暦の印（決定・2026-10-13）。動いたあと未読なら名前が太字になるのは他の Fork と同じ */}
+                  <ThreadRowIcon icon={scheduleOfThread(fork.id) ? CalendarClock : GitFork} threadId={fork.id} />
                   <span>{fork.title}</span>
                 </Link>
               </SidebarMenuSubButton>

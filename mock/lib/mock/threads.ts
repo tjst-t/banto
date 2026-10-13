@@ -165,6 +165,28 @@ const bantoBaseScript: MockThread["script"] = {
       ],
     },
     {
+      // AI が予定を作る（決定・2026-10-13、`lib/mock/schedules.ts`）。作る前に会話のカードで人が許す
+      match: /予定|毎週|毎朝|定期/,
+      steps: [
+        { t: "delay", ms: 300 },
+        { t: "text", text: "毎週金曜 18:00 に動く予定を作ります。毎回まっさらな会話で、その週に閉じたものだけを見ます。" },
+        {
+          t: "approval",
+          name: "banto_thread_create_schedule",
+          args: {
+            name: "今週閉じた Backlog",
+            instruction: "今週（月曜 0:00 から今まで）に done・dropped になった Backlog の項目を、ストーリーごとにまとめて。やめたものは理由も添えて。",
+            repeat: { kind: "weekly", day: 5, time: "18:00" },
+            timeZone: "Asia/Tokyo",
+            mode: "fresh",
+          },
+          result: { scheduleId: "sch.weekly-backlog", threadTitle: "今週閉じた Backlog", nextRun: "10/16（金）18:00" },
+        },
+        { t: "delay", ms: 300 },
+        { t: "text", text: "作りました。最初は 10/16（金）18:00 に、Fork「今週閉じた Backlog」で動きます。" },
+      ],
+    },
+    {
       match: "*",
       steps: [
         { t: "delay", ms: 400 },
@@ -306,6 +328,58 @@ let mockThreads: MockThread[] = [
     parentThreadId: "banto-base",
     script: {
       seed: [{ t: "text", text: "この Fork では仕様書の古い節を整理しました。" }],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  },
+  // 予定の専用の Fork（決定・2026-10-13、`lib/mock/schedules.ts`）。予定ごとに1本、名前は予定の名前。
+  // 毎回まっさらの予定は、起こす前に Clear するので、画面では最新の回が横線の下に来る
+  {
+    id: "sch-morning",
+    projectId: "banto",
+    kind: "fork",
+    title: "毎朝のまとめ",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [
+        {
+          t: "text",
+          text:
+            "昨日から今朝までのまとめです。\n\n**main に入ったもの（5件）**\n- サイドバーを3段に分けた（fe2dc00e）\n- Project の名前を押すと最後に開いていた Thread を開く（af18cc79）\n- ほか3件は試験と文書の直し\n\n**Backlog**\n- 閉じた：移している最中の帯（270 番）\n- 新しく積まれた：Browser の音（283 番）\n\n**気になる点**\n- フル E2E で connect-gate:169 が3回続けて流し直しで通っています。たまたまではなさそうです。",
+        },
+      ],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答——予定の Fork にも人はそのまま話しかけられます）" }] }],
+    },
+    status: "open",
+  },
+  {
+    id: "sch-deps",
+    projectId: "banto",
+    kind: "fork",
+    title: "依存の更新を確かめる",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [
+        {
+          t: "text",
+          text: "前回の結果（notes/deps-watch.md）を読みました。いまの更新を調べるため `npm outdated --json` を流したいので、Shell の確認を出しています。",
+        },
+      ],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  },
+  {
+    id: "sch-health",
+    projectId: "banto",
+    kind: "fork",
+    title: "公開中のサービスの見張り",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [
+        { t: "text", text: "11:00 の回で落ちていた mock-preview は 12:00 に戻っています。いますべて返事があります。" },
+        { t: "text", text: "14:00：すべて返事があります。変わりありません。" },
+      ],
       replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
     },
     status: "open",
