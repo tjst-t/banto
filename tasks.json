@@ -6880,7 +6880,7 @@
       "number": 285,
       "kind": "bug",
       "title": "ログイン前の口を叩かれると、ログイン済みの人の本人確認の札まで押し出される",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6891,7 +6891,7 @@
       ],
       "body": "## 何が起きるか\nパスキーの challenge（札）を、ログイン前の「パスキーで入る」（login）と、ログイン済みの人の「パスキーの登録」（register）・「その場の本人確認」（stepup）で1つの Map（`auth/service.ts` の `challenges`、上限 50、溢れたら古い順に捨てる）に溜めている。\nそのため、認証の要らない `POST /api/auth/passkey/login/options` を叩き続けると（全体の上限 1分30回でも2分弱で 50 件）、ログイン済みの人が取った register・stepup の札が押し出され、端末の追加・パスキーの登録と削除・端末の締め出しの前の確認が通らなくなる。\n\n## 誰が叩けるか\nhost は 0.0.0.0:4737 で待つので、Project のコンテナの AI からも叩ける。外に出せばインターネットからも。\n\n## 見つけた経緯\nFork「Cloudflare Tunnel で外から使う検討」で Fable のレビューが指摘（2026-10-13）。docs/notes/2026-10-13-external-access.md。\n\n## 直し方\nログイン前の札（login）と、セッションに結びつく札（register・stepup）を別の置き場に分ける。セッションの札はセッションごとに上限を置き、溢れたらそのセッションの古いものだけ捨てる。ログイン前の口からはセッションの札に触れない。\nあわせて v4-security.md の「WebSocket は core にも画面にも無い（2026-10-03 確認）」は /api/streams が入った今は古いので直す。",
       "doneWhen": "単体テスト：login の札を上限を越えて溜めても、先に取った stepup と register の札で確認が通る。セッションごとの上限を越えたら、そのセッションの古い札だけが捨てられる。connect-gate.spec.ts が通る。",
-      "resolution": null,
+      "resolution": "76586815 で main に push。challenge の置き場を login とセッションの札で分け、セッションの札はセッションごとに5まで。単体テスト（直す前は落ちることも確認）と connect-gate.spec.ts 6件が通過。release への push は、ほかの小さな直しとまとめてフル E2E を流してから。",
       "refs": [
         "banto/packages/core/src/auth/service.ts",
         "docs/specs/v4-security.md"
@@ -6903,8 +6903,8 @@
         }
       ],
       "createdAt": "2026-10-13T09:57:33.793Z",
-      "updatedAt": "2026-10-13T09:57:33.793Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-13T10:04:49.797Z",
+      "closedAt": "2026-10-13T10:04:49.797Z",
       "extra": {}
     }
   ],
