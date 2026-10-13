@@ -6571,6 +6571,27 @@
       "extra": {}
     },
     {
+      "id": "move-back-rsync",
+      "number": 289,
+      "kind": "task",
+      "title": "前に居た場所へ戻すときは、空でなくても受け付けて差分で写す（rsync）",
+      "status": "backlog",
+      "parent": "runtime-move",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-13、ユーザー要望（qemu-bmc を元のフォルダへ戻そうとして「空でない」と断られた）。案（ユーザー未決）：移す先がその Project 自身の previousLocations（同じ実行場所・同じ根）と一致するときだけ空でなくても受け付け、rsync --delete で今の場所と同じ中身にそろえる（2回目以降は差分だけで速い）。元を移したあとに触っていた（移した時刻より新しいファイル）なら、押す前の画面に「上書きされるファイル」として並べて承知のうえで押させる。Module の置き場も同じ。rsync は両側に要る（前提の確かめに足す）。Claude の会話の記録は bug move-back-stale-claude-record の直しと合わせる。仕様（v4-security.md §1「Project を別の実行場所へ移す」）に書いてから作る。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-13T22:32:29.609Z",
+      "updatedAt": "2026-10-13T22:32:29.609Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "repositories-e2e-1176-method",
       "number": 267,
       "kind": "bug",
