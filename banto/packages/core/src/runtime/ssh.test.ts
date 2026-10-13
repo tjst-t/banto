@@ -101,6 +101,7 @@ function probe(over: Record<string, string> = {}, before = "") {
     "tool.tar": "1",
     "tool.tmux": "1",
     "tool.docker": "1",
+    "tool.rsync": "1",
     uid: "1500",
     user: "banto-remote",
     home: "/home/banto-remote",
@@ -124,6 +125,7 @@ test("前提：全部そろえば ok だけ", () => {
     "silent-login": "ok",
     tools: "ok",
     tmux: "ok",
+    rsync: "ok",
     "user-systemd": "ok",
     linger: "ok",
     "data-root": "ok",
@@ -133,9 +135,9 @@ test("前提：全部そろえば ok だけ", () => {
   assert.ok(checks.every((c) => !c.detail && !c.fix));
 });
 
-test("前提：banto が動くのに要るものは ✕、特定の Module だけのもの（tmux・docker）と linger は注意", () => {
+test("前提：banto が動くのに要るものは ✕、特定の Module だけのもの（tmux・docker）・前に居た場所へ戻すときだけの rsync と linger は注意", () => {
   const checks = evaluateProbe(
-    probe({ "tool.tmux": "0", "tool.curl": "0", linger: "0", docker: "0", bus: "0" }),
+    probe({ "tool.tmux": "0", "tool.curl": "0", "tool.rsync": "0", linger: "0", docker: "0", bus: "0" }),
     { tcp: true, streamLocal: true },
     HOST,
   );
@@ -145,6 +147,8 @@ test("前提：banto が動くのに要るものは ✕、特定の Module だ�
   assert.equal(s.tmux, "warn");
   assert.equal(s.linger, "warn");
   assert.equal(s.docker, "warn");
+  assert.equal(s.rsync, "warn");
+  assert.equal(checks.find((c) => c.id === "rsync")!.fix, "sudo apt install rsync");
   const tools = checks.find((c) => c.id === "tools")!;
   assert.match(tools.detail!, /curl/);
   assert.equal(tools.fix, "sudo apt install curl");

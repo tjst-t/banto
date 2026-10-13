@@ -463,7 +463,7 @@ step_base_packages() {
   step "基本の道具を入れる"
   # age・openssh-client・sops は同梱の vault-local（秘密の置き場）が host で使う（age-keygen・ssh-keygen・ssh-agent・sops）。
   # polkitd は画面からの更新（scripts/setup-update.sh が polkit の規則で banto の unit の再起動をユーザーに許す）のため
-  apt_install ca-certificates curl git gnupg xz-utils nftables iproute2 age openssh-client polkitd
+  apt_install ca-certificates curl git gnupg xz-utils nftables iproute2 age openssh-client polkitd rsync
   if [[ "$(/usr/local/bin/sops --version 2>/dev/null | awk 'NR == 1 { print $2 }')" != "$SOPS_VERSION" ]]; then
     local tmp sha_var="SOPS_SHA256_$CADDY_ARCH"
     tmp=$(mktemp)

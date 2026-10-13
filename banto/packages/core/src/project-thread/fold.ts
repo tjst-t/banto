@@ -365,7 +365,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             ...rest,
             root: to.root,
             runtime: to.runtime,
-            previousLocations: [...(p.previousLocations ?? []), { runtime: from.runtime, root: from.root, movedAt: raw.ts }],
+            // 前に居た場所へ戻したら、その場所は外す（v4-security.md §1「前に居た場所へ戻す」）
+            previousLocations: [
+              ...(p.previousLocations ?? []).filter((l) => l.runtime !== to.runtime || l.root !== to.root),
+              { runtime: from.runtime, root: from.root, movedAt: raw.ts },
+            ],
           });
         }
         return next;

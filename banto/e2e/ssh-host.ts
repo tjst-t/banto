@@ -4,7 +4,7 @@
 // 実行場所「別のサーバ」の試験の相手を、入れ子のコンテナで立てる。本番の相手（人が組んだ Ubuntu）に寄せる：
 //   - **専用のユーザー**（`banto-remote`、uid 1500。host の uid と違う番号にして、同じパスで見えている前提を持ち込まない）
 //   - **sudo できない**——banto は向こうで sudo しない（仕様「前提の確かめ」）。土台のイメージの「誰でも sudo」は外す
-//   - **道具**は土台のイメージ（`BASE_PACKAGES`・node）のまま＋sshd
+//   - **道具**は土台のイメージ（`BASE_PACKAGES`・node）のまま＋sshd・rsync（前に居た場所へ戻すときに差分で写す）
 //   - **linger は無い**——入れ子では `loginctl enable-linger` が root でも断られる（2026-10-07 実測）。代わりに root が
 //     起動時に `user@1500.service` を起こしておく。`/run/user/1500/bus` はあるが linger は無い、という形になる
 //     （前提の確かめは本番と同じ規則で通り、linger の注意が出る）
@@ -36,7 +36,7 @@ export const SSH_HOST_UID = 1500;
  * 順序が輪になり、systemd が ssh.socket を落とす（2026-10-08 実測：起こし直したら 22 番が誰も待ち受けていなかった）
  */
 const RECIPE = `set -e
-apt-get install -y -q --no-install-recommends openssh-server
+apt-get install -y -q --no-install-recommends openssh-server rsync
 apt-get clean
 useradd -m -s /bin/bash -u ${SSH_HOST_UID} ${SSH_HOST_USER}
 install -d -m 700 -o ${SSH_HOST_USER} -g ${SSH_HOST_USER} /home/${SSH_HOST_USER}/.ssh

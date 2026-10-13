@@ -6,7 +6,8 @@
 // 段：①移す先と移す先のフォルダを選ぶ → ②押す前に読む（host の見積もり：写す大きさ・会話の記録の件数・移らないもの・
 // 作り直しが要るもの・閉じ込めの注意・動いているもの）→ ③写している（進み具合。閉じない）→ 終わり（root と元の場所）。
 // 押せるかどうかは host が言う（`blockers`）——画面は判断しない。動いているものがあれば押せない（banto は止めて回らない）。
-// 元は消さない
+// 元は消さない。前に居た場所へ戻すときは差分で写し、そこから移したあとに変わったファイルがあれば一覧を出して承知させる
+// （決定・2026-10-13、v4-security.md §1「前に居た場所へ戻す——差分で写す」）
 import { useEffect, useState } from "react";
 import { ArrowRight, CircleAlert, CircleCheck, CircleX, Server, ShieldCheck } from "lucide-react";
 import {
@@ -88,6 +89,8 @@ export function MoveRuntimeDialog({
   /** 移す前の場所（終わりの画面に出す。移したあとの Project はもう新しい場所を指す） */
   const [moved, setMoved] = useState<{ from: { runtime: string; root: string }; to: { runtime: string; root: string } } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  /** 前に居た場所へ戻すとき、上書きされるファイルを承知した */
+  const [overwriteOk, setOverwriteOk] = useState(false);
 
   // 開くたびに初めから（前に開いたときの選択や結果を持ち越さない）
   const [wasOpen, setWasOpen] = useState(false);
@@ -102,6 +105,7 @@ export function MoveRuntimeDialog({
     setPollError(null);
     setMoved(null);
     setFailure(null);
+    setOverwriteOk(false);
   }
   if (!open && wasOpen) setWasOpen(false);
 
@@ -174,6 +178,7 @@ export function MoveRuntimeDialog({
     setError(null);
     try {
       setEstimate(await estimateRealRuntimeMove(projectId, { runtime: toRuntime, root: toRoot.trim() }));
+      setOverwriteOk(false);
       setStep("review");
     } catch (err) {
       setError(`見積もれませんでした：${describeFailure(err)}`);
@@ -186,7 +191,11 @@ export function MoveRuntimeDialog({
     setBusy(true);
     setError(null);
     try {
-      const started = await startRealRuntimeMove(projectId, { runtime: toRuntime, root: toRoot.trim() });
+      const started = await startRealRuntimeMove(projectId, {
+        runtime: toRuntime,
+        root: toRoot.trim(),
+        ...(needsOverwriteAck ? { acknowledgeOverwrite: overwriteOk } : {}),
+      });
       const to = started.move?.to ?? { runtime: toRuntime, root: toRoot.trim() };
       setMoved({ from: { runtime: fromRuntime, root: project.basePath }, to });
       setProgress(null);
@@ -199,6 +208,8 @@ export function MoveRuntimeDialog({
   }
 
   const blocked = (estimate?.blockers.length ?? 0) > 0;
+  const overwritten = estimate?.returning?.overwritten;
+  const needsOverwriteAck = (overwritten?.count ?? 0) > 0;
 
   return (
     <Dialog
@@ -285,7 +296,7 @@ export function MoveRuntimeDialog({
                   value={toRoot}
                   onChange={setToRoot}
                   source={folderSource}
-                  pickerDescription="まだ無いか空のフォルダを選ぶか、新しいフォルダを作ってください。"
+                  pickerDescription="まだ無いか空のフォルダを選ぶか、新しいフォルダを作ってください（この Project が前に居た場所なら、空でなくても戻せます）。"
                   allowNewFolder
                 />
                 <p className="text-xs text-ink-3">
@@ -337,6 +348,15 @@ export function MoveRuntimeDialog({
                   Project のフォルダと Module の状態：{formatMoveBytes(estimate.size.bytes)}（{estimate.size.files.toLocaleString()}{" "}
                   ファイル）——.git ごと、未コミットの変更も
                 </li>
+                {estimate.returning ? (
+                  <li data-testid="move-diff">
+                    前に居た場所へ戻します。
+                    {estimate.returning.diff
+                      ? `差分で写す：${estimate.returning.diff.files.toLocaleString()} 件・${formatMoveBytes(estimate.returning.diff.bytes)}` +
+                        (estimate.returning.diff.deleted > 0 ? `（消すもの ${estimate.returning.diff.deleted.toLocaleString()} 件）` : "")
+                      : "変わったところだけ写します"}
+                  </li>
+                ) : null}
                 <li data-testid="move-records">
                   {estimate.copiesClaudeRecords
                     ? `会話の記録 ${estimate.claudeRecords} 件——続きから話せます`
@@ -358,6 +378,34 @@ export function MoveRuntimeDialog({
                 ) : null}
               </ul>
             </Block>
+
+            {overwritten && needsOverwriteAck ? (
+              <Block tone="stop" title={`上書きされる・消えるファイル：${overwritten.count.toLocaleString()} 件`} testId="move-overwritten">
+                <p className="mb-1.5">
+                  前にここから移したあとに、移す先で変わった・足されたファイルです。移すと今の場所の中身で上書きされるか、消えます。
+                </p>
+                <ul className="flex flex-col gap-0.5 font-mono">
+                  {overwritten.head.map((f) => (
+                    <li key={f} className="break-all" data-testid="move-overwritten-file">
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+                {overwritten.count > overwritten.head.length ? (
+                  <p className="mt-1">ほか {(overwritten.count - overwritten.head.length).toLocaleString()} 件</p>
+                ) : null}
+                <label className="mt-2 flex items-start gap-2 text-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={overwriteOk}
+                    onChange={(e) => setOverwriteOk(e.target.checked)}
+                    data-testid="move-overwrite-ack"
+                  />
+                  <span>上書きされる・消えることを承知して移す</span>
+                </label>
+              </Block>
+            ) : null}
 
             {estimate.confinementNote ? (
               <Block tone="warn" title={`${runtimeLabel(estimate.to.runtime)} では閉じ込めがありません`} testId="move-confinement">
@@ -455,7 +503,7 @@ export function MoveRuntimeDialog({
               >
                 戻る
               </Button>
-              <Button disabled={blocked || busy} onClick={() => void start()} data-testid="move-start">
+              <Button disabled={blocked || busy || (needsOverwriteAck && !overwriteOk)} onClick={() => void start()} data-testid="move-start">
                 {runtimeLabel(toRuntime)} へ移す
               </Button>
             </>

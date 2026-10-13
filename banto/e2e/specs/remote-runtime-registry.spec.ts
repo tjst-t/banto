@@ -55,6 +55,8 @@ const EXPECTED_CHECKS = {
   "silent-login": "ok",
   tools: "ok",
   tmux: "ok",
+  // 試験の相手には rsync を入れてある（前に居た場所へ戻すときに差分で写す）
+  rsync: "ok",
   "user-systemd": "ok",
   // 入れ子のコンテナでは linger が断られる（試験の相手の形）。Docker は入れていない
   linger: "warn",

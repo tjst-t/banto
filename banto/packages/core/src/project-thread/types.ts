@@ -285,6 +285,11 @@ export interface RuntimeMoveCreated {
   mergedModuleDirs?: string[];
   /** 移す先に残っていて、写す前に退かせた置き場（`from`→`to`。失敗したら戻す） */
   movedAside: Array<{ from: string; to: string }>;
+  /**
+   * **前に居た場所へ戻す——差分で写す**（追加・2026-10-13、v4-security.md §1「前に居た場所へ戻す」）。根と、もとから有った
+   * Module の置き場は rsync で今の場所とそろえる——片づけではそれらに触らない（`moduleDirs` は新しく作った置き場だけ）
+   */
+  syncedPrevious?: boolean;
 }
 
 export type ThreadKind = "base" | "fork";

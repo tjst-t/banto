@@ -2068,11 +2068,20 @@ export function createApp(deps: AppDeps) {
           }
           if (!sub && req.method === "GET") return json(res, 200, deps.runtimeMove.status(projectId));
           if (!sub && req.method === "POST") {
-            const body = (await readJsonBody(req)) as { runtime?: unknown; root?: unknown };
+            const body = (await readJsonBody(req)) as { runtime?: unknown; root?: unknown; acknowledgeOverwrite?: unknown };
             if (typeof body.runtime !== "string" || typeof body.root !== "string" || !body.root.trim()) {
               return json(res, 400, { error: "runtime と root を文字列で渡してください" });
             }
-            return json(res, 202, await deps.runtimeMove.start(projectId, { runtime: body.runtime, root: body.root }));
+            // 前に居た場所へ戻すとき、移したあとに変わったファイルを上書きしてよいと人が承知した（無ければ、あれば 409）
+            return json(
+              res,
+              202,
+              await deps.runtimeMove.start(projectId, {
+                runtime: body.runtime,
+                root: body.root,
+                acknowledgeOverwrite: body.acknowledgeOverwrite === true,
+              }),
+            );
           }
           return json(res, 404, { error: "not found" });
         } catch (err) {

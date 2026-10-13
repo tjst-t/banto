@@ -13,13 +13,30 @@
 // **写し方**：tar を流す。この機械の側は host のフォルダを直接読む・書く、別のサーバの側は SSH の上で。別のサーバどうしは
 // host を経由する（向こうどうしを繋がない）。流れは必ず host のこの process を通る——写した量を数える（進み具合）。
 //
+// **前に居た場所へ戻す**（追加・2026-10-13、v4-security.md §1「前に居た場所へ戻す——差分で写す」）：移す先がその Project の
+// `previousLocations` の1つなら、空でなくても受け付け、rsync で今の場所と同じ中身にそろえる（`-a --delete`）。rsync は host の
+// この process が起こし、別のサーバの側へは `-e` に同じ SSH の引数を渡す（tar を流すときと同じ道——ControlMaster は使って
+// いない。このファイルの SSH はどれも1回ずつ繋ぐ）。別のサーバどうしは host の一時の置き場を経由して2回
+//
 // **動いているものの数え方**：host が知っているもの（ターン・返事待ちの札・Module の呼び出し）は host が数え、Service の unit・
 // 待たないコマンドの unit・Terminal の tmux は実行場所で直接引く。Module だけが知っているもの（Factory の件・Shell の待たない
 // コマンド）は、どちらも返事待ちの札を持つので札で数える——Module に tool で聞く口は作っていない（2026-10-11。札を持たない
 // 仕事を抱える Module が出たら足す）
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { Transform, type TransformCallback } from "node:stream";
@@ -36,6 +53,15 @@ export class RuntimeMoveError extends RemoteRuntimeError {}
 export interface MoveTarget {
   runtime: string;
   root: string;
+  /** 前に居た場所へ戻すとき、移したあとに変わったファイルを上書きしてよいと人が承知した（見積もりの `returning.overwritten`） */
+  acknowledgeOverwrite?: boolean;
+}
+
+/** 前に居た場所へ戻すとき、上書きされる・消えるファイル（そこから移したあとに変わった・足されたもの） */
+export interface OverwrittenFiles {
+  count: number;
+  /** 頭の 20 件（移す先の側のパス） */
+  head: string[];
 }
 
 /** 動いているもの1件（あれば移さない） */
@@ -62,6 +88,15 @@ export interface MoveEstimate {
   claudeRecords: number;
   /** この機械のコンテナから別のサーバへ移すときの注意（§「閉じ込め」） */
   confinementNote?: string;
+  /** **前に居た場所へ戻す**（差分で写す）。無ければふつうに写す */
+  returning?: {
+    /** 前にそこから移した時刻 */
+    movedAt?: string;
+    /** 差分（rsync の `--dry-run`）。別のサーバどうし・rsync が無いときは測らない */
+    diff?: { files: number; bytes: number; deleted: number };
+    /** 上書きされる・消えるファイル。1件でもあれば、承知（`acknowledgeOverwrite`）が要る */
+    overwritten: OverwrittenFiles;
+  };
   /** 押せない理由（無ければ押せる） */
   blockers: string[];
 }
@@ -146,6 +181,8 @@ interface Side {
   run(script: string, timeoutMs?: number): Promise<SshResult>;
   /** 流すためのプロセス（標準入出力をつなぐ） */
   spawn(script: string): ChildProcess;
+  /** 別のサーバなら、rsync の `-e` に渡す SSH の命令と宛先。この機械なら無い */
+  rsyncRemote?: { shell: string; host: string };
 }
 
 const NOT_MOVED = [
@@ -234,6 +271,88 @@ function excludesFor(unit: Pick<CopyUnit, "module">): { tar: string; find: strin
     tar: `--anchored ${anchored.map((p) => `--exclude=${shq(p)}`).join(" ")} --no-anchored --exclude='*.sock' --exclude=${shq(MARKER)}`,
     find: `\\( ${anchored.map((p) => `-path ${shq(p)}`).join(" -o ")} -o -name '*.sock' -o -name ${shq(MARKER)} \\) -prune -o`,
   };
+}
+
+/** rsync に同じ除き方を渡す（除いたものは移す先でも消さない——`--delete` は除いたものに触らない） */
+function rsyncExcludes(unit: Pick<CopyUnit, "module">): string[] {
+  if (!unit.module) return [];
+  return ["--exclude=/s", ...(unit.module.excludeHome ? ["--exclude=/home"] : []), "--exclude=*.sock", `--exclude=${MARKER}`];
+}
+
+/** rsync の `-e` の1語（rsync は空白で区切り、引用符でくくった空白は保つ。バックスラッシュは効かない） */
+export function rsyncShellWord(word: string): string {
+  if (/^[A-Za-z0-9_./=,:@+%-]+$/.test(word)) return word;
+  if (!word.includes("'")) return `'${word}'`;
+  if (!word.includes('"')) return `"${word}"`;
+  throw new Error(`rsync に渡せない文字を含む SSH の引数です：${word}`);
+}
+
+/** rsync の `--stats` を読む（数は桁区切りつきで出る） */
+export function parseRsyncStats(stdout: string): { files: number; bytes: number; deleted: number } {
+  const num = (re: RegExp): number => {
+    const m = re.exec(stdout);
+    if (!m) throw new Error(`rsync の数を読めませんでした：${stdout.trim().slice(-300)}`);
+    return Number(m[1]!.replace(/[^\d]/g, ""));
+  };
+  return {
+    files: num(/^Number of regular files transferred: ([\d,.]+)/m),
+    bytes: num(/^Total transferred file size: ([\d,.]+)/m),
+    deleted: /^Number of deleted files: ([\d,.]+)/m.test(stdout) ? num(/^Number of deleted files: ([\d,.]+)/m) : 0,
+  };
+}
+
+/** そのフォルダで、`since`（秒）より後に変わったファイルとリンク（件数と頭の 20 件。パスはフォルダからの相対） */
+function newerScript(dir: string, unit: Pick<CopyUnit, "module">, since: number): string {
+  const { find } = excludesFor(unit);
+  return (
+    `cd -- ${shq(dir)} 2>/dev/null || { echo n=0; exit 0; }\n` +
+    `find . ${find} \\( -type f -o -type l \\) -newermt @${since} -printf '%P\\n' | awk 'NR<=20 {print "f=" $0} END {print "n=" NR+0}'\n`
+  );
+}
+
+/** 退かせる名前に付ける日時（`.before-<日時>`） */
+function stampNow(): string {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+}
+
+/** 2つのファイル・フォルダの中身が同じか（リンクはリンク先の文字列で比べる） */
+function sameTree(a: string, b: string): boolean {
+  const sa = lstatSync(a);
+  const sb = lstatSync(b);
+  if (sa.isSymbolicLink() || sb.isSymbolicLink()) return sa.isSymbolicLink() && sb.isSymbolicLink() && readlinkSync(a) === readlinkSync(b);
+  if (sa.isDirectory() || sb.isDirectory()) {
+    if (!sa.isDirectory() || !sb.isDirectory()) return false;
+    const na = readdirSync(a).sort();
+    const nb = readdirSync(b).sort();
+    return na.length === nb.length && na.every((n, i) => n === nb[i] && sameTree(join(a, n), join(b, n)));
+  }
+  return sa.size === sb.size && readFileSync(a).equals(readFileSync(b));
+}
+
+/**
+ * **Claude の会話の記録を写す**（`<id>.jsonl` と付属のフォルダ `<id>/`）。写す先に同じ名前があり中身が違えば、写す先の古いものを
+ * `<id>.jsonl.before-<日時>`（フォルダは `<id>.before-<日時>`）に退かせてから写す。同じなら何もしない（決定・2026-10-13、
+ * v4-security.md §1「前に居た場所へ戻す」——以前は写す先にあれば上書きせず、同じ根へ戻すと移す前の古い記録が勝った）
+ */
+export function copyClaudeRecordFiles(src: string, dst: string, ids: readonly string[], stamp = stampNow()): { copied: number; setAside: number } {
+  let copied = 0;
+  let setAside = 0;
+  for (const id of ids) {
+    for (const [name, aside] of [[`${id}.jsonl`, `${id}.jsonl.before-${stamp}`], [id, `${id}.before-${stamp}`]] as const) {
+      const from = join(src, name);
+      if (!existsSync(from)) continue;
+      const to = join(dst, name);
+      mkdirSync(dst, { recursive: true, mode: 0o700 });
+      if (existsSync(to) || isLink(to)) {
+        if (sameTree(from, to)) continue;
+        renameSync(to, join(dst, aside));
+        setAside++;
+      }
+      cpSync(from, to, { recursive: true, verbatimSymlinks: true });
+      if (name.endsWith(".jsonl")) copied++;
+    }
+  }
+  return { copied, setAside };
 }
 
 /** そのフォルダの、写すものの件数と大きさ（ファイルとリンクの件数・ファイルの大きさの和）。無ければ 0 */
@@ -367,15 +486,29 @@ export class ProjectMover {
     let size = { bytes: 0, files: 0 };
     let rebuild: string[] = [];
     await this.withSide(from.runtime, async (side) => {
-      for (const unit of await this.copyUnits(project, side, undefined)) {
+      for (const unit of await this.copyUnits(project, side, undefined, "")) {
         const m = parseMeasure((await this.mustRun(side, "大きさを測れ", measureScript(unit.from, unit), 300_000)).stdout);
         size = { bytes: size.bytes + m.bytes, files: size.files + m.files };
       }
       rebuild = await this.rebuildCandidates(side, from.root);
     });
+    let returning: MoveEstimate["returning"];
     if (!targetProblem) {
-      const rootProblem = await this.withSide(target.runtime, (side) => this.targetRootProblem(side, target.root));
-      if (rootProblem) blockers.push(rootProblem);
+      const checked = await this.withSide(target.runtime, (side) => this.checkTargetRoot(project, side, target.root));
+      if (checked.problem) blockers.push(checked.problem);
+      if (checked.back) {
+        const back = checked.back;
+        returning = await this.withSide(from.runtime, (src) =>
+          this.withSide(back.runtime, async (dst) => {
+            const missing = await this.rsyncMissing([src, dst]);
+            blockers.push(...missing);
+            const units = await this.copyUnits(project, src, dst, back.root);
+            const overwritten = await this.overwrittenFiles(dst, units, back.movedAt);
+            const diff = missing.length === 0 && (!src.rsyncRemote || !dst.rsyncRemote) ? await this.dryRun(src, dst, units) : undefined;
+            return { ...(back.movedAt ? { movedAt: back.movedAt } : {}), ...(diff ? { diff } : {}), overwritten };
+          }),
+        );
+      }
     }
     return {
       from: { ...from, label: hostLabel(from.runtime) },
@@ -393,6 +526,7 @@ export class ProjectMover {
               "ものは AI も読めます",
           }
         : {}),
+      ...(returning ? { returning } : {}),
       blockers,
     };
   }
@@ -495,19 +629,25 @@ export class ProjectMover {
       let rebuild: string[] = [];
       await this.withSide(move.from.runtime, async (src) => {
         await this.withSide(move.to.runtime, async (dst) => {
-          const units = await this.copyUnits(project, src, dst);
+          const units = await this.copyUnits(project, src, dst, move.to.root);
           const expected: Array<{ unit: CopyUnit; files: number; bytes: number }> = [];
           for (const unit of units) {
             expected.push({ unit, ...parseMeasure((await this.mustRun(src, "大きさを測れ", measureScript(unit.from, unit), 300_000)).stdout) });
           }
-          progress.totalBytes = expected.reduce((a, e) => a + e.bytes, 0);
+          // 前に居た場所へ戻すときは差分だけ送る——量は rsync の `--dry-run` で（別のサーバどうしは host を経由して全部送る）
+          const sync = move.created.syncedPrevious === true;
+          const direct = !src.rsyncRemote || !dst.rsyncRemote;
+          progress.totalBytes = sync && direct ? (await this.dryRun(src, dst, units)).bytes : expected.reduce((a, e) => a + e.bytes, 0);
+          if (sync && !direct) progress.totalBytes *= 2;
           this.changed(projectId);
           rebuild = await this.rebuildCandidates(src, move.from.root);
           for (const unit of units) {
             progress.current = unit.what;
-            await this.copy(src, dst, unit, progress, () => {
+            const onBytes = () => {
               if (Date.now() - (this.lastChange.get(projectId) ?? 0) >= 1000) this.changed(projectId);
-            });
+            };
+            if (sync) await this.sync(src, dst, unit, progress, onBytes);
+            else await this.copy(src, dst, unit, progress, onBytes);
           }
           // 件数と大きさで確かめる
           progress.phase = "verifying";
@@ -543,7 +683,7 @@ export class ProjectMover {
       this.emit({ projectId });
       this.log(
         `[host] Project ${projectId} を ${hostLabel(move.from.runtime)}（${move.from.root}）から ${hostLabel(move.to.runtime)}（${move.to.root}）へ移しました` +
-          `（${progress.copiedBytes} バイト・会話の記録 ${records.copied} 件）`,
+          `（${progress.copiedBytes} バイト・会話の記録 ${records.copied} 件、うち写す先の古いものを退かせた ${records.setAside} 件）`,
       );
 
       // 7. 各 Thread に知らせる（ターンは起こさない——次のターンの頭に積む）。起こすのは、移している間に留めていたものが
@@ -573,7 +713,8 @@ export class ProjectMover {
           `残っているかもしれないもの：${this.createdPaths(move.to, move.created).join("・")}`;
       }
       const servicesNote = disabled.length > 0 ? `Service（${disabled.join("・")}）は止めたままです。` : "";
-      const reason = `${why}。切り替えていません（元の場所のまま）。${cleanup}。${servicesNote}`;
+      const syncNote = move.created.syncedPrevious ? `前に居た場所 ${move.to.root} は途中までそろえた形のままです。` : "";
+      const reason = `${why}。切り替えていません（元の場所のまま）。${cleanup}。${syncNote}${servicesNote}`;
       progress.phase = "failed";
       progress.reason = reason;
       progress.endedAt = new Date().toISOString();
@@ -632,20 +773,74 @@ export class ProjectMover {
     return r.unavailableReason ? `実行場所「${name}」は選べません：${r.unavailableReason}` : undefined;
   }
 
-  /** 移す先の根がまだ無いか空か（作らずに確かめる。見積もりで使う） */
-  private async targetRootProblem(side: Side, root: string): Promise<string | undefined> {
+  /**
+   * **移す先の根を作らずに確かめる**（見積もりで使う）：まだ無いか空か、前に居た場所か。前に居た場所なら `back`
+   * （記録の場所）。正規化したあとの重なりもここで見る
+   */
+  private async checkTargetRoot(project: ProjectState, side: Side, root: string): Promise<{ problem?: string; back?: ProjectLocation }> {
     if (!side.runtime.startsWith("remote:")) {
-      const problem = this.hostRootShapeProblem(root);
-      if (problem) return problem;
+      const problem = this.hostRootShapeProblem(root.trim());
+      if (problem) return { problem };
     }
     const r = await side.run(
-      `p=${remotePathExpr(root.trim())}\n` +
-        `if [ -e "$p" ] || [ -L "$p" ]; then [ -d "$p" ] || { echo 'フォルダではありません'; exit 0; }; ` +
-        `[ -z "$(ls -A -- "$p")" ] || { echo '空ではありません'; exit 0; }; fi\nexit 0\n`,
+      [
+        `p=${remotePathExpr(root.trim())}`,
+        `if [ -e "$p" ] || [ -L "$p" ]; then`,
+        `  [ -d "$p" ] || { echo state=notdir; exit 0; }`,
+        `  if [ -z "$(ls -A -- "$p")" ]; then echo state=empty; else echo state=nonempty; fi`,
+        `  printf 'root=%s\\n' "$(cd -P -- "$p" && pwd -P)"`,
+        `else echo state=missing; fi`,
+        "",
+      ].join("\n"),
     );
     if (r.code !== 0) throw new SshCommandError(`${side.label}の移す先を確かめられませんでした`, r);
-    const said = r.stdout.trim().split("\n").pop();
-    return said ? `移す先のフォルダ ${root} は${said}（まだ無いか空のフォルダを選んでください）` : undefined;
+    const state = /^state=(\w+)$/m.exec(r.stdout)?.[1];
+    if (state === "notdir") return { problem: `移す先 ${root} はフォルダではありません` };
+    const resolved = /^root=(\/.*)$/m.exec(r.stdout)?.[1];
+    if (!resolved) return {};
+    const back = this.previousLocationAt(project, side.runtime, resolved);
+    if (state === "nonempty" && !back) return { problem: notEmptyProblem(root) };
+    const overlap = this.overlapProblem(project, side, resolved);
+    if (overlap) return { problem: overlap };
+    return back ? { back } : {};
+  }
+
+  /** その Project が前に居た場所のうち、実行場所と正規化した根が一致するもの */
+  private previousLocationAt(project: ProjectState, runtime: string, resolvedRoot: string): ProjectLocation | undefined {
+    return (project.previousLocations ?? []).find((l) => l.runtime === runtime && l.root === resolvedRoot);
+  }
+
+  /** rsync が無い側（前に居た場所へ戻すときは両側に要る）。理由と入れ方 */
+  private async rsyncMissing(sides: Side[]): Promise<string[]> {
+    const out: string[] = [];
+    for (const side of sides) {
+      const r = await side.run(`command -v rsync >/dev/null 2>&1 && echo rsync=1 || echo rsync=0\n`);
+      if (r.code !== 0) throw new SshCommandError(`${side.label}で rsync があるかを確かめられませんでした`, r);
+      if (/^rsync=0$/m.test(r.stdout)) {
+        out.push(
+          `${side.label}に rsync がありません。前に居た場所へ戻すときは差分で写すので、両側に要ります（入れ方：sudo apt install rsync）`,
+        );
+      }
+    }
+    return out;
+  }
+
+  /**
+   * **上書きされる・消えるファイル**：移す先のうち、前にそこから移した時刻より後に変わった・足されたファイル（除くもの——
+   * Module の置き場の `s`・ホーム・ソケット——は数えない）。時刻が分からなければ全部を数える
+   */
+  private async overwrittenFiles(dst: Side, units: CopyUnit[], movedAt: string | undefined): Promise<OverwrittenFiles> {
+    const since = movedAt ? Math.floor(Date.parse(movedAt) / 1000) : 0;
+    let count = 0;
+    const head: string[] = [];
+    for (const unit of units) {
+      const r = await this.mustRun(dst, "移したあとに変わったファイルを探せ", newerScript(unit.to, unit, since), 300_000);
+      count += Number(/^n=(\d+)$/m.exec(r.stdout)?.[1] ?? "0");
+      for (const line of r.stdout.split("\n")) {
+        if (line.startsWith("f=") && head.length < 20) head.push(`${unit.to}/${line.slice(2)}`);
+      }
+    }
+    return { count, head };
   }
 
   private hostRootShapeProblem(root: string): string | undefined {
@@ -657,9 +852,10 @@ export class ProjectMover {
   }
 
   /**
-   * **移す先を用意する**（仕様の流れ 2）。根：まだ無いか空のフォルダだけ。banto が作り（作ったことを記録する）→ 正規化 →
-   * 元の根・banto のデータの置き場・ほかの Project の根・banto のコードの置き場と重なれば断る。Module の置き場：残って
-   * いれば `.before-<日時>` に退かせる（`s` しか無ければ空と見なす）
+   * **移す先を用意する**（仕様の流れ 2）。根：まだ無いか空のフォルダ、または前に居た場所だけ。banto が作り（作ったことを
+   * 記録する）→ 正規化 → 元の根・banto のデータの置き場・ほかの Project の根・banto のコードの置き場と重なれば断る。
+   * Module の置き場：残っていれば `.before-<日時>` に退かせる（`s` しか無ければ空と見なす）。**前に居た場所へ戻すとき**は
+   * 退かせない（差分でそろえる）——rsync が両側に要り、移したあとに変わったファイルがあれば人の承知が要る
    */
   private async prepareTarget(
     project: ProjectState,
@@ -671,13 +867,14 @@ export class ProjectMover {
     return this.withSide(target.runtime, async (side) => {
       let resolved: string;
       let rootCreated: boolean;
+      let nonEmpty = false;
       if (!side.runtime.startsWith("remote:")) {
         const problem = this.hostRootShapeProblem(target.root.trim());
         if (problem) throw new RuntimeMoveError(400, problem);
         const root = target.root.trim();
         if (existsSync(root) || isLink(root)) {
           if (!lstatSync(root).isDirectory()) throw new RuntimeMoveError(409, `移す先 ${root} はフォルダではありません`);
-          if (readdirSync(root).length > 0) throw new RuntimeMoveError(409, `移す先のフォルダ ${root} は空ではありません`);
+          nonEmpty = readdirSync(root).length > 0;
           rootCreated = false;
         } else {
           mkdirSync(root, { recursive: true, mode: 0o755 });
@@ -691,7 +888,7 @@ export class ProjectMover {
             `case "$p" in /*) ;; *) echo '根は絶対パスか ~ で始めてください' >&2; exit 3 ;; esac`,
             `if [ -e "$p" ] || [ -L "$p" ]; then`,
             `  [ -d "$p" ] || { printf '移す先 %s はフォルダではありません\\n' "$p" >&2; exit 3; }`,
-            `  [ -z "$(ls -A -- "$p")" ] || { printf '移す先のフォルダ %s は空ではありません\\n' "$p" >&2; exit 3; }`,
+            `  [ -z "$(ls -A -- "$p")" ] || echo nonempty=1`,
             `  created=0`,
             `else`,
             `  mkdir -p -- "$p" || { printf '移す先 %s を作れませんでした\\n' "$p" >&2; exit 3; }`,
@@ -705,32 +902,56 @@ export class ProjectMover {
         if (r.code === 3) throw new RuntimeMoveError(409, r.stderr.trim().split("\n").pop() ?? "移す先を用意できませんでした");
         if (r.code !== 0) throw new SshCommandError(`${side.label}に移す先を用意できませんでした`, r);
         rootCreated = /^created=1$/m.test(r.stdout);
+        nonEmpty = /^nonempty=1$/m.test(r.stdout);
         const root = /^root=(\/.*)$/m.exec(r.stdout)?.[1];
         if (!root) throw new Error(`${side.label}の移す先の場所を読めませんでした`);
         resolved = root;
       }
       const to: ProjectLocation = { runtime: target.runtime, root: resolved };
-      const createdRoot: RuntimeMoveCreated = { rootCreated, moduleDirs: [], movedAside: [] };
+      // 前に居た場所（正規化した根で比べる）。空でも、前に居た場所なら差分でそろえる（Module の置き場が残っている）
+      const back = rootCreated ? undefined : this.previousLocationAt(project, target.runtime, resolved);
+      if (nonEmpty && !back) throw new RuntimeMoveError(409, notEmptyProblem(target.root.trim()));
+      const createdRoot: RuntimeMoveCreated = { rootCreated, moduleDirs: [], movedAside: [], ...(back ? { syncedPrevious: true } : {}) };
       try {
         const overlap = this.overlapProblem(project, side, resolved);
         if (overlap) throw new RuntimeMoveError(409, overlap);
-        // Module の置き場：残っていれば退かせる
-        const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+        if (back) {
+          const missing = await this.withSide(from.runtime, (src) => this.rsyncMissing([src, side]));
+          if (missing.length > 0) throw new RuntimeMoveError(409, missing.join("／"));
+          const units = [
+            { what: "Project のフォルダ", from: "", to: resolved },
+            ...names.map((n) => ({ what: n, from: "", to: `${side.modulesDir}/${n}`, module: { excludeHome: /^(shell|terminal)-/.test(n) } })),
+          ];
+          const overwritten = await this.overwrittenFiles(side, units, back.movedAt);
+          if (overwritten.count > 0 && target.acknowledgeOverwrite !== true) {
+            throw new RuntimeMoveError(
+              409,
+              `前に居た場所 ${resolved} は、そこから移したあとに変わったファイルが ${overwritten.count} 件あります。移すと上書きされるか消えます` +
+                `（承知するなら acknowledgeOverwrite: true）：${overwritten.head.slice(0, 5).join("・")}${overwritten.count > 5 ? " ほか" : ""}`,
+              { code: "overwrite-not-acknowledged", overwritten },
+            );
+          }
+        }
+        // Module の置き場：残っていれば退かせる（前に居た場所へ戻すときは、残っているものへ差分でそろえる）
+        const stamp = stampNow();
         const script = [
           `m=${shq(side.modulesDir)}`,
           `mkdir -p -- "$m" && chmod 700 "$m" || exit 3`,
-          ...names.map(
-            (n) =>
-              `d="$m"/${shq(n)}; if [ -d "$d" ]; then if [ -z "$(ls -A -- "$d" | grep -vx s)" ]; then echo ${shq(`${n}=merge`)}; ` +
-              `else mv -- "$d" "$d".${shq(`before-${stamp}`)} && echo ${shq(`${n}=aside`)} || exit 3; fi; else echo ${shq(`${n}=new`)}; fi`,
+          ...names.map((n) =>
+            back
+              ? `d="$m"/${shq(n)}; if [ -d "$d" ]; then echo ${shq(`${n}=keep`)}; else echo ${shq(`${n}=new`)}; fi`
+              : `d="$m"/${shq(n)}; if [ -d "$d" ]; then if [ -z "$(ls -A -- "$d" | grep -vx s)" ]; then echo ${shq(`${n}=merge`)}; ` +
+                `else mv -- "$d" "$d".${shq(`before-${stamp}`)} && echo ${shq(`${n}=aside`)} || exit 3; fi; else echo ${shq(`${n}=new`)}; fi`,
           ),
           "",
         ].join("\n");
         const r = await side.run(script);
         if (r.code !== 0) throw new SshCommandError(`${side.label}の Module の置き場を用意できませんでした`, r);
         for (const n of names) {
-          const how = new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=(merge|aside|new)$`, "m").exec(r.stdout)?.[1];
+          const how = new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=(merge|aside|new|keep)$`, "m").exec(r.stdout)?.[1];
           const path = `${side.modulesDir}/${n}`;
+          // もとから有って差分でそろえる置き場は、banto が作ったものではない（片づけで触らない）
+          if (how === "keep") continue;
           if (how === "aside") createdRoot.movedAside.push({ from: path, to: `${path}.before-${stamp}` });
           createdRoot.moduleDirs.push(path);
           if (how === "merge") createdRoot.mergedModuleDirs = [...(createdRoot.mergedModuleDirs ?? []), path];
@@ -746,7 +967,14 @@ export class ProjectMover {
   /** 移す先の根が、その側の banto の置き場・ほかの Project の根・banto のコードと重なるか */
   private overlapProblem(project: ProjectState, side: Side, root: string): string | undefined {
     const against: Array<{ path: string; what: string }> = [{ path: side.dataBase, what: "banto のデータの置き場" }];
-    if (!side.runtime.startsWith("remote:")) {
+    if (side.runtime.startsWith("remote:")) {
+      // 同じ別のサーバの、ほかの Project の根（閉じた Project も——前に居た場所へ戻すときに、ほかの Project の根を上書きしない）
+      for (const p of this.deps.projectThread.listProjects()) {
+        if (p.id === project.id) continue;
+        if (p.runtime === side.runtime) against.push({ path: p.root, what: `Project「${p.name}」の根` });
+        if (p.move?.to.runtime === side.runtime) against.push({ path: p.move.to.root, what: `Project「${p.name}」の移す先` });
+      }
+    } else {
       against.push({ path: realOrSelf(this.deps.dataDir), what: "banto のデータの置き場" });
       against.push({ path: realOrSelf(this.deps.monorepoRoot), what: "banto のコードの置き場" });
       for (const p of this.deps.projectThread.listProjects()) {
@@ -762,10 +990,14 @@ export class ProjectMover {
 
   /** 移す先の banto が作ったもの（片づけで消すもの・人に見せるもの） */
   private createdPaths(to: ProjectLocation, created: RuntimeMoveCreated): string[] {
+    if (created.syncedPrevious) return created.moduleDirs;
     return [created.rootCreated ? to.root : `${to.root} の中身`, ...created.moduleDirs];
   }
 
-  /** **移す先の banto が作ったものだけを消す**。退かせた置き場は戻す。元には触らない */
+  /**
+   * **移す先の banto が作ったものだけを消す**。退かせた置き場は戻す。元には触らない。前に居た場所へ戻すとき（差分でそろえる）は、
+   * 根ともとから有った Module の置き場には触らない——途中までそろえた形のまま残る（どちらも元の写しで、元はそのまま）
+   */
   private async cleanupTarget(to: ProjectLocation, created: RuntimeMoveCreated): Promise<void> {
     const safe = (p: string) => {
       if (!p.startsWith("/") || p === "/" || p.split("/").includes("..")) throw new Error(`消す場所 ${p} がおかしいので消しません`);
@@ -773,9 +1005,11 @@ export class ProjectMover {
     };
     const merged = new Set(created.mergedModuleDirs ?? []);
     const script = [
-      created.rootCreated
-        ? `rm -rf -- ${safe(to.root)} || exit 3`
-        : `[ -d ${safe(to.root)} ] && { find ${safe(to.root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || exit 3; }`,
+      created.syncedPrevious
+        ? ":"
+        : created.rootCreated
+          ? `rm -rf -- ${safe(to.root)} || exit 3`
+          : `[ -d ${safe(to.root)} ] && { find ${safe(to.root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || exit 3; }`,
       // `s` しか無かった置き場（写す前から有った）は `s` を残す
       ...created.moduleDirs.map((d) =>
         merged.has(d)
@@ -795,9 +1029,8 @@ export class ProjectMover {
   // ── 写す ─────────────────────────────────────────────────────────────────
 
   /** 写すもの：根と、その Project の Module の置き場（`<接続名>` が `-<Project の id>` で終わるもの） */
-  private async copyUnits(project: ProjectState, src: Side, dst: Side | undefined): Promise<CopyUnit[]> {
-    const move = project.move;
-    const units: CopyUnit[] = [{ what: "Project のフォルダ", from: project.root, to: move?.to.root ?? "" }];
+  private async copyUnits(project: ProjectState, src: Side, dst: Side | undefined, toRoot: string): Promise<CopyUnit[]> {
+    const units: CopyUnit[] = [{ what: "Project のフォルダ", from: project.root, to: toRoot }];
     for (const n of await this.moduleDirNames(project.id, src)) {
       units.push({
         what: `Module の置き場（${n}）`,
@@ -833,6 +1066,77 @@ export class ProjectMover {
     const [r, w] = await Promise.all([collect(reader), collect(writer)]);
     if (r.code !== 0) throw new Error(`${unit.what}を${src.label}で読み出せませんでした（tar の終了コード ${r.code}）：${r.stderr.trim().slice(-500)}`);
     if (w.code !== 0) throw new Error(`${unit.what}を${dst.label}に書けませんでした（tar の終了コード ${w.code}）：${w.stderr.trim().slice(-500)}`);
+  }
+
+  /** rsync の共通の引数（今の場所と同じ中身にそろえる。持ち主は移す先のユーザー・リンクはリンクのまま・ソケットは写さない） */
+  private rsyncBaseArgs(unit: CopyUnit): string[] {
+    return ["-a", "--delete", "--no-owner", "--no-group", "--no-devices", "--no-specials", "--protect-args", ...rsyncExcludes(unit)];
+  }
+
+  /** rsync を host で起こす（片側が別のサーバなら、その側の SSH を `-e` で）。両側とも別のサーバなのは呼ぶ側が分ける */
+  private spawnRsync(src: Side, from: string, dst: Side, to: string, args: string[]): ChildProcess {
+    const remote = src.rsyncRemote ?? dst.rsyncRemote;
+    if (src.rsyncRemote && dst.rsyncRemote) throw new Error("別のサーバどうしを rsync で直接繋がない（host を経由する）");
+    const at = (side: Side, path: string) => {
+      const r = side.rsyncRemote;
+      return r ? `${r.host.includes(":") ? `[${r.host}]` : r.host}:${path}/` : `${path}/`;
+    };
+    return spawn("rsync", [...args, ...(remote ? ["-e", remote.shell] : []), "--", at(src, from), at(dst, to)], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: sshEnv(),
+    });
+  }
+
+  /** 差分の件数と大きさ（`--dry-run`。何も変えない） */
+  private async dryRun(src: Side, dst: Side, units: CopyUnit[]): Promise<{ files: number; bytes: number; deleted: number }> {
+    const sum = { files: 0, bytes: 0, deleted: 0 };
+    for (const unit of units) {
+      const r = await collect(this.spawnRsync(src, unit.from, dst, unit.to, [...this.rsyncBaseArgs(unit), "--dry-run", "--stats"]));
+      if (r.code !== 0) throw new Error(`${unit.what}の差分を測れませんでした（rsync の終了コード ${r.code}）：${r.stderr.trim().slice(-500)}`);
+      const got = parseRsyncStats(r.stdout);
+      sum.files += got.files;
+      sum.bytes += got.bytes;
+      sum.deleted += got.deleted;
+    }
+    return sum;
+  }
+
+  /**
+   * **前に居た場所へ差分で写す**（rsync `-a --delete`）。別のサーバどうしは host の一時の置き場を経由して2回（終わったら消す）。
+   * 送ったファイルの大きさを進み具合に足す
+   */
+  private async sync(src: Side, dst: Side, unit: CopyUnit, progress: MoveProgress, onBytes: () => void): Promise<void> {
+    const args = [
+      ...this.rsyncBaseArgs(unit),
+      "--out-format=%i %l",
+      ...(this.deps.throttleBytesPerSec ? [`--bwlimit=${Math.max(1, Math.floor(this.deps.throttleBytesPerSec / 1024))}`] : []),
+    ];
+    const once = async (a: Side, from: string, b: Side, to: string) => {
+      const child = this.spawnRsync(a, from, b, to, args);
+      let rest = "";
+      child.stdout!.on("data", (c: Buffer) => {
+        const lines = (rest + String(c)).split("\n");
+        rest = lines.pop() ?? "";
+        for (const line of lines) {
+          const m = /^[<>]f\S* (\d+)$/.exec(line.trim());
+          if (!m) continue;
+          progress.copiedBytes += Number(m[1]);
+          onBytes();
+        }
+      });
+      const r = await collect(child);
+      if (r.code !== 0) throw new Error(`${unit.what}を差分で写せませんでした（rsync の終了コード ${r.code}）：${r.stderr.trim().slice(-500)}`);
+    };
+    if (!src.rsyncRemote || !dst.rsyncRemote) return once(src, unit.from, dst, unit.to);
+    const tmpBase = join(this.deps.dataDir, "tmp");
+    mkdirSync(tmpBase, { recursive: true, mode: 0o700 });
+    const tmp = mkdtempSync(join(tmpBase, "runtime-move-"));
+    try {
+      await once(src, unit.from, this.hostSide(), tmp);
+      await once(this.hostSide(), tmp, dst, unit.to);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   }
 
   /**
@@ -885,10 +1189,6 @@ export class ProjectMover {
     return !isRemoteProject({ runtime: from }) || !isRemoteProject({ runtime: to });
   }
 
-  /**
-   * **全 Thread の全 resume-point の `<id>.jsonl` と `<id>/` を新しい作業ディレクトリのフォルダへ写す**（元は残す。
-   * フォルダ丸ごとは写さない——この機械の Project の根は人のフォルダなので、人自身の会話まで写る）
-   */
   /** 写すことになる Claude の会話の記録の件数（見積もり。写さないなら 0） */
   private claudeRecordCount(project: ProjectState, from: ProjectLocation, toRuntime: string): number {
     if (!this.runnerCwdChanges(from.runtime, toRuntime)) return 0;
@@ -898,29 +1198,33 @@ export class ProjectMover {
     return sessionIdsOf(this.deps.projectThread.listThreadsForProject(project.id)).filter((id) => existsSync(join(src, `${id}.jsonl`))).length;
   }
 
-  private copyClaudeRecords(project: ProjectState, from: ProjectLocation, to: ProjectLocation): { copied: number; note?: string } {
-    if (!this.runnerCwdChanges(from.runtime, to.runtime)) return { copied: 0 };
+  /**
+   * **全 Thread の全 resume-point の `<id>.jsonl` と `<id>/` を新しい作業ディレクトリのフォルダへ写す**（元は残す。
+   * フォルダ丸ごとは写さない——この機械の Project の根は人のフォルダなので、人自身の会話まで写る）。写す先に違う中身が
+   * あれば退かせてから写す（`copyClaudeRecordFiles`）
+   */
+  private copyClaudeRecords(
+    project: ProjectState,
+    from: ProjectLocation,
+    to: ProjectLocation,
+  ): { copied: number; setAside: number; note?: string } {
+    if (!this.runnerCwdChanges(from.runtime, to.runtime)) return { copied: 0, setAside: 0 };
     const oldCwd = this.deps.projectThread.runnerCwd({ id: project.id, root: from.root, runtime: from.runtime });
     const newCwd = this.deps.projectThread.runnerCwd({ id: project.id, root: to.root, runtime: to.runtime });
     const oldName = claudeProjectDirName(oldCwd);
     const newName = claudeProjectDirName(newCwd);
     if (!oldName || !newName) {
-      return { copied: 0, note: "（作業ディレクトリのパスが長いので、Claude の会話の記録は写していません。続かなければ Clear してください）" };
+      return {
+        copied: 0,
+        setAside: 0,
+        note: "（作業ディレクトリのパスが長いので、Claude の会話の記録は写していません。続かなければ Clear してください）",
+      };
     }
-    const src = join(this.deps.claudeConfigDir, "projects", oldName);
-    const dst = join(this.deps.claudeConfigDir, "projects", newName);
-    let copied = 0;
-    for (const id of sessionIdsOf(this.deps.projectThread.listThreadsForProject(project.id))) {
-      for (const name of [`${id}.jsonl`, id]) {
-        const from = join(src, name);
-        if (!existsSync(from)) continue;
-        mkdirSync(dst, { recursive: true, mode: 0o700 });
-        // 写した先にもうあれば、そのまま（前に移したときの写しに、その後の続きが足されている）
-        cpSync(from, join(dst, name), { recursive: true, force: false, errorOnExist: false });
-        if (name.endsWith(".jsonl")) copied++;
-      }
-    }
-    return { copied };
+    return copyClaudeRecordFiles(
+      join(this.deps.claudeConfigDir, "projects", oldName),
+      join(this.deps.claudeConfigDir, "projects", newName),
+      sessionIdsOf(this.deps.projectThread.listThreadsForProject(project.id)),
+    );
   }
 
   // ── 動いているもの ─────────────────────────────────────────────────────
@@ -995,6 +1299,7 @@ export class ProjectMover {
         modulesDir: `${base}/modules`,
         run,
         spawn: (script) => spawn("ssh", [...args, "--", r.host, `sh -c ${shq(script)}`], { stdio: ["pipe", "pipe", "pipe"], env: sshEnv() }),
+        rsyncRemote: { shell: ["ssh", ...args].map(rsyncShellWord).join(" "), host: r.host },
       });
     });
   }
@@ -1018,6 +1323,10 @@ export class ProjectMover {
       spawn: (script) => spawn("sh", ["-c", script], { stdio: ["pipe", "pipe", "pipe"] }),
     };
   }
+}
+
+function notEmptyProblem(root: string): string {
+  return `移す先のフォルダ ${root} は空ではありません（まだ無いか空のフォルダか、この Project が前に居た場所を選んでください）`;
 }
 
 function isLink(path: string): boolean {

@@ -800,8 +800,10 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
 
 - **口**（人のセッションだけ。機械の合言葉は 403）：`GET /api/projects/:id/runtime-move/estimate?runtime=&root=`（押す前の見積もり：
   写す件数と大きさ・移らないもの・作り直しが要るかもしれないもの（浅いところの venv・node_modules）・動いているもの・
-  会話の記録を写すか・閉じ込めの注意・押せない理由）／`POST /api/projects/:id/runtime-move`（`{runtime, root}`。started を
-  積んだところで 202、写すのは裏で）／`GET /api/projects/:id/runtime-move`（記録の `move` と進み具合。進み具合はその走行の
+  会話の記録を写すか・閉じ込めの注意・押せない理由。前に居た場所へ戻すときは `returning`——差分の件数と大きさ・
+  上書きされる・消えるファイルの件数と頭の 20 件）／`POST /api/projects/:id/runtime-move`（`{runtime, root, acknowledgeOverwrite?}`。
+  上書きされるファイルがあるのに承知が無ければ 409・`code: "overwrite-not-acknowledged"`。started を積んだところで 202、
+  写すのは裏で）／`GET /api/projects/:id/runtime-move`（記録の `move` と進み具合。進み具合はその走行の
   メモリにだけある——起き直したあとは記録の `move` だけ）
 - **記録**：`project.runtime_move_started`（`from`・`to`・`created`＝banto が作った根か・写す Module の置き場・`s` だけが
   あった置き場・退かせた置き場）・`project.runtime_moved`（`from`・`to`）・`project.runtime_move_failed`（`reason`）。Project の
@@ -815,7 +817,12 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
   `./home`・`*.sock`・移した印）で数えて比べる。`git worktree repair` には、根の中にある worktree を新しい根のパスで名指して渡す
 - **作業ディレクトリが変わる**とき、会話の記録は `<CLI の置き場>/projects/<作業ディレクトリの英数字以外を - にしたもの>/` の
   中で写す（200 字を超える作業ディレクトリは CLI が名前を縮めるので写さず、知らせに書く）
-- **E2E**：`e2e/specs/runtime-move.spec.ts`（自前の host と入れ子の SSH の相手。写す途中で落とすために、写す速さを抑える
+- **前に居た場所へ戻す**（2026-10-13）：started の `created.syncedPrevious` が立つ。片づけでは根ともとから有った Module の
+  置き場に触らない（途中までそろえた形のまま残り、理由に書く）。rsync は host のこの process が起こし、別のサーバの側へは
+  `-e` に tar を流すときと同じ SSH の引数を渡す（1回ずつ繋ぐ。ControlMaster の `-S` は使っていない）。「移したあとに変わった
+  ファイル」は移す先で `find -newermt @<movedAt>`（除くものは数えない）。前提の確かめの rsync は注意（`warn`）
+- **E2E**：`e2e/specs/runtime-move.spec.ts`・`e2e/specs/runtime-move-back.spec.ts`（前に居た場所へ戻す。本物の CLI を偽の
+  Anthropic API に当て、戻ったあとのターンの要求に向こうでの発言が含まれるかを見る）（自前の host と入れ子の SSH の相手。写す途中で落とすために、写す速さを抑える
   試験だけの環境変数 `BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC`）
 - **仕様と違うところ（人に上げる・規則8）**：「Module だけが知っているもの（Factory の件・Shell の待たないコマンド）は繋がっている
   Module に tool で聞く」は作っていない。どちらも会話への返事待ちの札を持つので host の札で数え、Shell の待たないコマンドは

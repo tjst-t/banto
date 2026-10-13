@@ -660,6 +660,14 @@ export interface RealMoveEstimate {
   copiesClaudeRecords: boolean;
   claudeRecords: number;
   confinementNote?: string;
+  /** 前に居た場所へ戻す（差分で写す）。無ければふつうに写す */
+  returning?: {
+    movedAt?: string;
+    /** 差分（別のサーバどうし・rsync が無いときは無い） */
+    diff?: { files: number; bytes: number; deleted: number };
+    /** 上書きされる・消えるファイル（そこから移したあとに変わったもの）。1件でもあれば承知が要る */
+    overwritten: { count: number; head: string[] };
+  };
   /** 押せない理由（無ければ押せる） */
   blockers: string[];
 }
@@ -689,7 +697,7 @@ export async function estimateRealRuntimeMove(projectId: string, target: { runti
 /** 移し始める。返るのは移している途中の Project（移す先の根は正規化したもの） */
 export async function startRealRuntimeMove(
   projectId: string,
-  target: { runtime: string; root: string },
+  target: { runtime: string; root: string; acknowledgeOverwrite?: boolean },
 ): Promise<RealProject & { move?: { to: { runtime: string; root: string } } }> {
   return request(`/api/projects/${encodeURIComponent(projectId)}/runtime-move`, { method: "POST", body: JSON.stringify(target) });
 }

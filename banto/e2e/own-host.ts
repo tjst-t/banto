@@ -82,6 +82,11 @@ async function freePort(): Promise<number> {
 export interface OwnHostOptions {
   /** host に足して渡す環境（試験だけの差し替え。例：`BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC`） */
   env?: Record<string, string>;
+  /**
+   * host に渡さない環境の名前（`env` より先に外す）。本物の Claude の CLI を起こす試験が、試験を流している側の
+   * `CLAUDECODE`・`ANTHROPIC_BASE_URL` などを CLI に持ち込まないため
+   */
+  unsetEnv?: string[];
 }
 
 export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> {
@@ -124,9 +129,11 @@ export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> 
 
   const start = async (): Promise<void> => {
     if (child && child.exitCode === null && child.signalCode === null) throw new Error("host はもう動いています");
+    const inherited = { ...process.env };
+    for (const name of opts.unsetEnv ?? []) delete inherited[name];
     child = spawn(process.execPath, [CLI], {
       env: {
-        ...process.env,
+        ...inherited,
         BANTO_CONFIG_PATH: configPath,
         BANTO_FAKE_RUNNER: join(HERE, "fake-runner.ts"),
         // claude CLI に人の `~/.claude` を触らせない（E2E の core と同じ）

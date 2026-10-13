@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claudeProjectDirName, parseRunning, pathsOverlap, sessionIdsOf } from "./project-move.js";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  claudeProjectDirName,
+  copyClaudeRecordFiles,
+  parseRsyncStats,
+  parseRunning,
+  pathsOverlap,
+  rsyncShellWord,
+  sessionIdsOf,
+} from "./project-move.js";
 
 test("動いているもの：Service の unit・待たないコマンド・Terminal の tmux を読む。Module を包む単位（banto-mod-*）は数えない", () => {
   const items = parseRunning(
@@ -36,4 +47,56 @@ test("写す会話：全 Thread の resume-point の履歴・いまの resume-po
     { resumePoints: [{ sessionId: "../etc" }, { sessionId: ".." }] },
   ]);
   assert.deepEqual(ids.sort(), ["s1", "s2", "s3", "s4"]);
+});
+
+test("Claude の会話の記録を写す：無ければ写す・同じなら何もしない・違えば写す先の古いものを .before-<日時> に退かせてから写す", () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-move-records-"));
+  try {
+    const src = join(dir, "src");
+    const dst = join(dir, "dst");
+    mkdirSync(join(src, "s1", "subagents"), { recursive: true });
+    writeFileSync(join(src, "s1.jsonl"), "移す前\n向こうで話した\n");
+    writeFileSync(join(src, "s1", "subagents", "a.jsonl"), "{}\n");
+    writeFileSync(join(src, "s2.jsonl"), "同じ\n");
+    // 写す先：s1 は移す前の古い記録（同じ根へ戻したときに残っていたもの）、s2 は同じ中身
+    mkdirSync(join(dst, "s1"), { recursive: true });
+    writeFileSync(join(dst, "s1.jsonl"), "移す前\n");
+    writeFileSync(join(dst, "s2.jsonl"), "同じ\n");
+
+    const got = copyClaudeRecordFiles(src, dst, ["s1", "s2", "s3"], "20261013T000000");
+    assert.deepEqual(got, { copied: 1, setAside: 2 });
+    assert.equal(readFileSync(join(dst, "s1.jsonl"), "utf8"), "移す前\n向こうで話した\n");
+    assert.equal(readFileSync(join(dst, "s1.jsonl.before-20261013T000000"), "utf8"), "移す前\n");
+    assert.equal(readFileSync(join(dst, "s1", "subagents", "a.jsonl"), "utf8"), "{}\n");
+    assert.deepEqual(readdirSync(join(dst, "s1.before-20261013T000000")), []);
+    assert.equal(readFileSync(join(dst, "s2.jsonl"), "utf8"), "同じ\n");
+    assert.deepEqual(readdirSync(dst).sort(), ["s1", "s1.before-20261013T000000", "s1.jsonl", "s1.jsonl.before-20261013T000000", "s2.jsonl"]);
+
+    // もう一度：全部同じなので何もしない
+    assert.deepEqual(copyClaudeRecordFiles(src, dst, ["s1", "s2"], "20261013T000001"), { copied: 0, setAside: 0 });
+    assert.equal(readdirSync(dst).length, 5);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rsync の --stats を読む（桁区切りつき）。読めなければ投げる", () => {
+  const out = [
+    "Number of files: 1,234 (reg: 1,200, dir: 34)",
+    "Number of created files: 3",
+    "Number of deleted files: 2",
+    "Number of regular files transferred: 1,005",
+    "Total file size: 9,876,543 bytes",
+    "Total transferred file size: 12,345 bytes",
+  ].join("\n");
+  assert.deepEqual(parseRsyncStats(out), { files: 1005, bytes: 12345, deleted: 2 });
+  assert.throws(() => parseRsyncStats("rsync: connection unexpectedly closed"), /読めませんでした/);
+});
+
+test("rsync の -e の1語：そのまま渡せるものはそのまま、空白などは引用符でくくる", () => {
+  assert.equal(rsyncShellWord("-o"), "-o");
+  assert.equal(rsyncShellWord("UserKnownHostsFile=/a/b"), "UserKnownHostsFile=/a/b");
+  assert.equal(rsyncShellWord("/a b/c"), "'/a b/c'");
+  assert.equal(rsyncShellWord("it's"), '"it\'s"');
+  assert.throws(() => rsyncShellWord(`a'b"c`));
 });

@@ -1100,7 +1100,8 @@ test("別の実行場所へ移す：started の間は move が立ち（閉じる
     await store.startRuntimeMove(project.id, { from: to, to: { runtime: "host-container", root: dir }, created });
     const back = await store.finishRuntimeMove(project.id, { from: to, to: { runtime: "host-container", root: dir } });
     assert.equal(back.runtime, "host-container");
-    assert.equal(back.previousLocations?.length, 2);
+    // 前に居た場所（host-container の dir）へ戻した——その場所は外れ、離れた場所が足される
+    assert.deepEqual(back.previousLocations?.map((l) => [l.runtime, l.root]), [["remote:box", "/srv/work"]]);
 
     // 読み直しても同じ（Event Store から畳み直す）
     const again = new ProjectThreadStore(dir, log);

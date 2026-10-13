@@ -237,7 +237,7 @@ function probeScript(dataRoot: string): string {
     `printf '%s\\n' ${PROBE_MARKER}`,
     `printf 'arch=%s\\n' "$(uname -m)"`,
     `if v=$(getconf GNU_LIBC_VERSION 2>/dev/null); then printf 'libc=%s\\n' "$v"; elif ldd --version 2>&1 | grep -qi musl; then printf 'libc=musl\\n'; else printf 'libc=unknown\\n'; fi`,
-    `for t in ${[...REQUIRED_TOOLS, "tmux", "docker"].join(" ")}; do if command -v "$t" >/dev/null 2>&1; then printf 'tool.%s=1\\n' "$t"; else printf 'tool.%s=0\\n' "$t"; fi; done`,
+    `for t in ${[...REQUIRED_TOOLS, "tmux", "docker", "rsync"].join(" ")}; do if command -v "$t" >/dev/null 2>&1; then printf 'tool.%s=1\\n' "$t"; else printf 'tool.%s=0\\n' "$t"; fi; done`,
     `uid=$(id -u); user=$(id -un)`,
     `printf 'uid=%s\\nuser=%s\\nhome=%s\\n' "$uid" "$user" "$HOME"`,
     `if [ -S "/run/user/$uid/bus" ]; then printf 'bus=1\\n'; else printf 'bus=0\\n'; fi`,
@@ -334,6 +334,19 @@ export function evaluateProbe(
     label: "tmux（Terminal が使う）",
     status: tmux ? "ok" : "warn",
     ...(tmux ? {} : { detail: "tmux がありません。Terminal は使えません（ほかの Module は動きます）。", fix: "sudo apt install tmux" }),
+  });
+
+  const rsync = v.get("tool.rsync") === "1";
+  checks.push({
+    id: "rsync",
+    label: "rsync（前に居た場所へ戻すときに差分で写す）",
+    status: rsync ? "ok" : "warn",
+    ...(rsync
+      ? {}
+      : {
+          detail: "rsync がありません。Project をこのサーバの前に居た場所へ戻すときは差分で写すので、断ります（ほかは動きます）。",
+          fix: "sudo apt install rsync",
+        }),
   });
 
   const bus = v.get("bus") === "1";
