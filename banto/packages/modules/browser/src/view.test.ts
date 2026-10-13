@@ -4,14 +4,14 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StreamStamp, WebSocket } from "@banto/stream-server";
 import { CORNER, FRAME_BOX, FRAME_COLORS, createTestPageServer } from "./test-page.js";
 import { spawn, spawnSync } from "node:child_process";
-import type { VideoHeader } from "./video.js";
+import { VideoPipeline, type VideoHeader } from "./video.js";
 import { createBrowserContextFromDataDir } from "./server.js";
 import { browserOpts, installed, skipReason } from "./test-browser.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
@@ -896,5 +896,81 @@ test("動画：GStreamer が無い（入れられない）ブラウザでは、H
     await nvView.close();
     await nv.session.stop("試験の終わり");
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** この試験のプロセスが起こした動画の子プロセス（python3 -u -c …）の pid */
+function videoChildren(): number[] {
+  const out: number[] = [];
+  for (const pid of readdirSync("/proc").filter((p) => /^\d+$/.test(p))) {
+    try {
+      const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const ppid = Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ")[1]);
+      if (ppid === process.pid && cmd.startsWith("python3\0-u\0-c")) out.push(Number(pid));
+    } catch {
+      // 読む間に終わったプロセス
+    }
+  }
+  return out;
+}
+
+test("動画：子プロセスが落ちたら JPEG に替え、ブラウザを起こし直したら（仮想の画面が同じ名前でも）動画に戻る", { skip: videoSkip }, async () => {
+  const page = (await ctx.session.currentOrNew()).page;
+  await page.goto(`${base}/corners`);
+  const pc = new FakeSocket();
+  pc.autoAck();
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+  try {
+    await until("動画の1通", () => pc.frames.some((f) => videoUnit(f).header.codec === "h264"), 15_000);
+    const display = ctx.session.display!.name;
+    const children = videoChildren();
+    assert.equal(children.length, 1, `動画の子プロセス：${children.join(",")}`);
+    process.kill(children[0]!, "SIGKILL");
+    // 落ちた——JPEG に替え、理由を様子で伝える
+    await until("理由", () => pc.texts.find((t) => t.type === "state" && typeof t.videoUnavailable === "string" && /動画で流せなくなりました/.test(t.videoUnavailable)), 10_000);
+    const jpegFrom = pc.frames.length;
+    await page.evaluate(() => document.body.append("JPEG"));
+    await until("JPEG の絵", () => pc.frames.slice(jpegFrom).some((f) => (decodeFrame(f).header as unknown as VideoHeader).codec === undefined), 10_000);
+    assert.equal(view.status().video, undefined);
+    // ブラウザを起こし直す（人の画面の「ブラウザの記録を消す」・止めて起こす と同じ）——仮想の画面は同じ名前で立つ
+    await ctx.session.stop("試験：起こし直す");
+    pc.post({ type: "start" });
+    await until("起き直した", () => ctx.session.running, 60_000);
+    // 仮想の画面はふつう同じ名前で立つ（空いている一番小さい番号）——前は名前で失敗を覚えていたので、ここで JPEG のままだった。
+    // ほかの試験の Xvfb が番号を持っていると別の名前になるが、どちらでも動画に戻ること
+    const again = ctx.session.display!.name;
+    pc.post({ type: "navigate", url: base.replace("http://", "") + "/corners" });
+    const videoFrom = pc.frames.length;
+    await until("動画に戻る", () => pc.frames.slice(videoFrom).some((f) => videoUnit(f).header.codec === "h264"), 30_000);
+    assert.equal(lastText(pc, (t) => t.type === "state")?.videoUnavailable, undefined, `起こし直したのに動画で映せない理由が残っている（仮想の画面 ${display}→${again}）`);
+  } finally {
+    pc.close(1000);
+  }
+});
+
+test("動画：流れを止めない子プロセスの知らせ（知らない指示・止める指示の失敗）は失敗として扱わない", { skip: videoSkip }, async () => {
+  await ctx.session.ensure();
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const states: string[] = [];
+  const p = new VideoPipeline(ctx.session.display!.name, {
+    onUnit: () => undefined,
+    onState: (s) => states.push(s),
+    onError: (m) => errors.push(m),
+    onWarning: (m) => warnings.push(m),
+  });
+  try {
+    // 試験だけが知らない指示を送る（send は外から呼ばない口）
+    p["send"]({ cmd: "bogus" });
+    await until("知らない指示の知らせ", () => warnings.find((w) => w.includes("知らない指示です: bogus")), 10_000);
+    p.start({ w: 640, h: 400, ew: 640, eh: 400 });
+    await until("流れた", () => p.units > 0, 10_000);
+    assert.equal(errors.length, 0, errors.join(" / "));
+    assert.equal(p.alive, true);
+    // 流し始められない（範囲の無い start）は止まった失敗
+    p["send"]({ cmd: "start" });
+    await until("流し始められない失敗", () => errors.find((e) => e.startsWith("流し始められません")), 10_000);
+  } finally {
+    p.close();
   }
 });

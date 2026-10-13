@@ -422,8 +422,11 @@ export class BrowserView implements ViewHooks {
    */
   private control: { page: Page; cdp: CDPSession } | undefined;
   private video: VideoCast | undefined;
-  /** 動画が失敗した理由（同じ仮想の画面の間は動画を使わない。ブラウザを起こし直したら試し直す） */
-  private videoFailure: { display: string; reason: string } | undefined;
+  /**
+   * 動画が失敗した理由（ブラウザが動いている間は動画を使わない）。**ブラウザが止まったら消す**——起こし直したら試し直す。
+   * 仮想の画面の名前では比べない：Xvfb は空いている一番小さい番号を選ぶので、起こし直しても同じ名前（:99 等）になる
+   */
+  private videoFailure: string | undefined;
   private last: Frame | undefined;
   private seq = 0;
   /** screencast の張り直しは1つずつ */
@@ -446,7 +449,10 @@ export class BrowserView implements ViewHooks {
 
   constructor(private readonly deps: BrowserViewDeps) {
     this.logLine = deps.logLine ?? ((line) => process.stderr.write(`[browser] ${line}\n`));
-    deps.session.subscribe(() => this.refresh());
+    deps.session.subscribe(() => {
+      if (!deps.session.running) this.videoFailure = undefined;
+      this.refresh();
+    });
     deps.session.beforeResize = () => this.pauseVideo();
     deps.log.onChange = () => this.logChanged();
   }
@@ -996,7 +1002,7 @@ export class BrowserView implements ViewHooks {
     const d = this.deps.session.display;
     if (!d) return undefined;
     if (!d.video.available) return d.video.reason;
-    if (this.videoFailure?.display === d.name) return this.videoFailure.reason;
+    if (this.videoFailure !== undefined) return this.videoFailure;
     const scale = this.deps.session.scale ?? 1;
     if (!videoRegion(this.deps.session.viewport(), scale, d.screen)) {
       return `ページ（${this.deps.session.viewport().width}×${this.deps.session.viewport().height}）が仮想の画面（${Math.round(d.screen.width / scale)}×${Math.round(d.screen.height / scale)}）より大きいので、動画で映せません。JPEG で映しています`;
@@ -1007,7 +1013,7 @@ export class BrowserView implements ViewHooks {
   /** いま動画で流せるなら、取り込む範囲 */
   private videoRegionNow(viewport: { width: number; height: number }, scale: number): VideoRegion | undefined {
     const d = this.deps.session.display;
-    if (!d || !d.video.available || this.videoFailure?.display === d.name) return undefined;
+    if (!d || !d.video.available || this.videoFailure !== undefined) return undefined;
     return videoRegion(viewport, scale, d.screen);
   }
 
@@ -1034,7 +1040,8 @@ export class BrowserView implements ViewHooks {
             cast.onStopped = undefined;
           }
         },
-        onError: (message) => this.onVideoError(cast, d.name, message),
+        onError: (message) => this.onVideoError(cast, message),
+        onWarning: (message) => this.logLine(`動画の子プロセスの知らせ（流れは止めない）: ${message}`),
       });
       this.video = cast;
       this.logLine(`動画で流し始めます（仮想の画面 ${d.name}）`);
@@ -1070,14 +1077,14 @@ export class BrowserView implements ViewHooks {
     }
   }
 
-  private onVideoError(cast: VideoCast, display: string, message: string): void {
+  private onVideoError(cast: VideoCast, message: string): void {
+    // 止めた後の古い子の知らせ（作り直した後・閉じた後）は今の流れの失敗ではない
+    if (this.video !== cast) return;
     this.logLine(`動画で流せなくなりました（JPEG に替えます）: ${message}`);
-    this.videoFailure = { display, reason: `動画で流せなくなりました（${message.split("\n")[0]}）。JPEG で映しています` };
-    if (this.video === cast) {
-      this.video = undefined;
-      cast.pipeline.close();
-      cast.onStopped?.();
-    }
+    this.videoFailure = `動画で流せなくなりました（${message.split("\n")[0]}）。JPEG で映しています`;
+    this.video = undefined;
+    cast.pipeline.close();
+    cast.onStopped?.();
     this.scheduleState();
     this.reconcile();
   }

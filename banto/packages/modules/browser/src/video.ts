@@ -2,7 +2,9 @@
 //
 // 仮想の画面（Xvfb）を GStreamer で取り込んで H.264 に圧縮する。GStreamer は python3 の gi から動かす子プロセス1本
 // （VIDEO_SCRIPT）——指示は標準入力の JSON 1行ずつ、出力は標準出力に `[長さ（4バイト、big endian）][種類（1バイト）][中身]`。
-// 種類は 0＝アクセスユニット（P）・1＝アクセスユニット（キーフレーム）・2＝知らせ（JSON：ready・state・error）。
+// 種類は 0＝アクセスユニット（P）・1＝アクセスユニット（キーフレーム）・2＝知らせ（JSON：ready・state・error・warning）。
+// error は流れが止まった失敗（JPEG に替える）、warning は流れを止めない失敗（止める・キーフレームの指示が効かなかった等。
+// ログに残すだけ）。
 //
 // - **キーフレームは要求したときだけ**（`key-int-max` を大きく、`force-key-unit` で出す）。始めたときは新しい圧縮器なので
 //   最初の1枚がキーフレーム
@@ -220,6 +222,7 @@ def on_stdin(fd, cond):
         teardown()
         loop.quit()
         return False
+    c = None
     try:
         c = json.loads(line)
         if c["cmd"] == "start":
@@ -229,9 +232,13 @@ def on_stdin(fd, cond):
         elif c["cmd"] == "key":
             force_key()
         else:
-            event({"error": "知らない指示です: " + c["cmd"]})
+            event({"warning": "知らない指示です: " + c["cmd"]})
     except Exception as err:
-        event({"error": "指示を実行できません: %s" % err})
+        # 流し始められなかった（start）なら流れは無い——止まった失敗。止める・キーフレームの失敗は流れを止めない
+        if isinstance(c, dict) and c.get("cmd") == "start":
+            event({"error": "流し始められません: %s" % err})
+        else:
+            event({"warning": "指示を実行できません: %s" % err})
     return True
 
 GLib.io_add_watch(x11.XConnectionNumber(dpy), GLib.IO_IN, on_x)
@@ -397,6 +404,8 @@ export interface VideoPipelineEvents {
   onState: (state: VideoState) => void;
   /** 失敗（圧縮が止まった・子が終わった）。理由つき */
   onError: (message: string) => void;
+  /** 流れを止めない失敗（ログに残すだけ） */
+  onWarning: (message: string) => void;
 }
 
 /** GStreamer の子プロセス1本。start で取り込む範囲を決めて流し、stop で止め（大きさを変える間）、close で終わらせる */
@@ -438,7 +447,7 @@ export class VideoPipeline {
       const kind = this.buf[4]!;
       const body = this.buf.subarray(5, 5 + len);
       this.buf = this.buf.subarray(5 + len);
-      if (kind === 2) this.onEvent(JSON.parse(body.toString("utf8")) as { ready?: boolean; state?: VideoState; error?: string });
+      if (kind === 2) this.onEvent(JSON.parse(body.toString("utf8")) as { ready?: boolean; state?: VideoState; error?: string; warning?: string });
       else {
         this.units += 1;
         this.bytes += body.length;
@@ -449,11 +458,12 @@ export class VideoPipeline {
     }
   }
 
-  private onEvent(e: { ready?: boolean; state?: VideoState; error?: string }): void {
+  private onEvent(e: { ready?: boolean; state?: VideoState; error?: string; warning?: string }): void {
     if (e.state) {
       this.state = e.state;
       this.events.onState(e.state);
     }
+    if (e.warning) this.events.onWarning(e.warning);
     if (e.error) this.events.onError(e.error);
   }
 
