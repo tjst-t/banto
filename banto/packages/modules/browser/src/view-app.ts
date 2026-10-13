@@ -3,9 +3,11 @@
 // 上に戻る/進む/読み直し・URL 欄・タブの並び・「AI に触らせない」・「画面に合わせる」・「ブラウザの記録を消す」、
 // 真ん中にページの絵、下に通信とコンソールの欄（DevTools の Network と Console に倣う）。絵と入力は共通の流れの口
 // （アーキ仕様 §5.8、`@banto/stream-client` を埋め込む）に乗る。流れの名前は `browser`、params は
-// `{ width, height, dpr, visible }`（絵を出す場所の CSS ピクセルと devicePixelRatio）。中身の約束は view-stream.ts。
+// `{ width, height, dpr, visible, codec }`（絵を出す場所の CSS ピクセルと devicePixelRatio、描ける形）。中身の約束は view-stream.ts。
 //
-// - 絵は描き終えたら受け取りの印（`ack`）を返す——Module はそれまで次を送らない
+// - **絵は H.264 の動画を WebCodecs の VideoDecoder で描く**（v4-modules.md §4.1「動画で流す」）。`VideoDecoder` が無い・
+//   `isConfigSupported` が偽・初期化に失敗した画面は JPEG で描く（`codec: "jpeg"` を伝える）。復号に失敗したらキーフレームを頼む
+// - JPEG の絵は描き終えたら受け取りの印（`ack`）を返す——Module はそれまで次を送らない
 // - ページの大きさは1つで、絵を出す場所に合わせて縮めて映す。「画面に合わせる」でページの大きさをこの画面に合わせる
 // - 文字は隠した入力欄で受ける（日本語の変換・携帯の画面のキーボードのため）。変換を終えた文字は insertText で送る
 // - 携帯（指）はタッチをタッチ入力のまま送る
@@ -210,32 +212,163 @@ const SCRIPT = String.raw`
   const ime = $("ime");
 
   // ---- 絵 ----
+  /** 描いた1枚を出す（JPEG の絵・動画の1枚どちらも）。頭はその絵が映すページの大きさ */
+  function drawn(head, image, width, height, codec) {
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    g.drawImage(image, 0, 0);
+    frame = head;
+    frames += 1;
+    canvas.dataset.seq = String(head.seq);
+    canvas.dataset.tab = head.tab;
+    canvas.dataset.pageWidth = String(head.width);
+    canvas.dataset.pageHeight = String(head.height);
+    canvas.dataset.frames = String(frames);
+    canvas.dataset.codec = codec;
+    layout();
+    renderEmpty();
+    renderCodec();
+  }
+
   async function onFrame(buf) {
     const dv = new DataView(buf);
     const len = dv.getUint32(0);
     let head;
     try { head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, len))); }
     catch (e) { showError("絵の頭が読めませんでした"); return; }
+    if (head.codec === "h264") { onVideo(head, new Uint8Array(buf, 4 + len)); return; }
     try {
       const bmp = await createImageBitmap(new Blob([new Uint8Array(buf, 4 + len)], { type: "image/jpeg" }));
-      if (canvas.width !== bmp.width || canvas.height !== bmp.height) { canvas.width = bmp.width; canvas.height = bmp.height; }
-      g.drawImage(bmp, 0, 0);
+      drawn(head, bmp, bmp.width, bmp.height, "jpeg");
       bmp.close();
-      frame = head;
-      frames += 1;
-      canvas.dataset.seq = String(head.seq);
-      canvas.dataset.tab = head.tab;
-      canvas.dataset.pageWidth = String(head.width);
-      canvas.dataset.pageHeight = String(head.height);
-      canvas.dataset.frames = String(frames);
-      layout();
-      renderEmpty();
     } catch (e) {
       showError("絵を描けませんでした：" + e.message);
     } finally {
       // 描き終えた（描けなかった）——次の絵を頼む。返さないと Module は次を送らない
       if (stream) stream.send(JSON.stringify({ type: "ack", seq: head.seq }));
     }
+  }
+
+  // ---- 動画（H.264 を WebCodecs で） ----
+  /** 描けるかを確かめる形（constrained baseline・level 5.1——Module の圧縮器が出す形。2560×1600 まで） */
+  const H264_PROBE = "avc1.42E033";
+  /** H.264 で描くか（始める前に確かめ、初期化に失敗したら JPEG に落とす） */
+  let videoOk = false;
+  /** 描けない理由（JPEG で描いているとき、下の帯に出す） */
+  let videoReason = "";
+  let decoder = null;
+  let decoderCodec = "";
+  /** いまの復号器が1枚でも出したか（出す前の失敗は初期化の失敗——JPEG に落とす） */
+  let decodedAny = false;
+  /** 復号に回した1枚の頭（timestamp に seq を入れて引く） */
+  const decodingHeads = new Map();
+  /** 1 MiB を越えて分けて届いたアクセスユニットの集まり */
+  let partial = null;
+
+  async function probeVideo() {
+    if (typeof VideoDecoder === "undefined" || typeof EncodedVideoChunk === "undefined") return "この画面には VideoDecoder がありません";
+    try {
+      const r = await VideoDecoder.isConfigSupported({ codec: H264_PROBE, optimizeForLatency: true });
+      return r && r.supported ? "" : "この画面は H.264 を描けません";
+    } catch (e) {
+      return "H.264 を描けるか確かめられませんでした：" + e.message;
+    }
+  }
+
+  /** H.264 をやめて JPEG にする（Module にも伝える） */
+  function videoFallback(reason) {
+    videoOk = false;
+    videoReason = reason;
+    closeDecoder();
+    sendMsg({ type: "codec", codec: "jpeg" });
+    renderCodec();
+  }
+
+  function closeDecoder() {
+    if (decoder && decoder.state !== "closed") { try { decoder.close(); } catch (e) { /* 閉じたいだけ */ } }
+    decoder = null;
+    decoderCodec = "";
+    decodingHeads.clear();
+    partial = null;
+  }
+
+  /** Annex B のアクセスユニットから SPS を探し、codec の名前（avc1.PPCCLL）を返す */
+  function codecOf(au) {
+    for (let i = 0; i + 6 < au.length; i++) {
+      if (au[i] !== 0 || au[i + 1] !== 0 || au[i + 2] !== 1) continue;
+      if ((au[i + 3] & 0x1f) === 7) {
+        const hex = (b) => b.toString(16).padStart(2, "0").toUpperCase();
+        return "avc1." + hex(au[i + 4]) + hex(au[i + 5]) + hex(au[i + 6]);
+      }
+    }
+    return "";
+  }
+
+  function newDecoder(codec) {
+    const d = new VideoDecoder({
+      output(vf) {
+        const head = decodingHeads.get(vf.timestamp);
+        decodingHeads.delete(vf.timestamp);
+        decodedAny = true;
+        if (d === decoder && head) drawn(head, vf, vf.displayWidth, vf.displayHeight, "h264");
+        vf.close();
+      },
+      error(e) {
+        if (d !== decoder) return;
+        // 1枚も描けないまま失敗した——初期化の失敗（この画面では描けない）。描けていたなら、キーフレームから描き直す
+        if (!decodedAny) { videoFallback("H.264 を描けませんでした（" + e.message + "）"); return; }
+        closeDecoder();
+        sendMsg({ type: "keyframe" });
+      },
+    });
+    d.configure({ codec, optimizeForLatency: true });
+    decodedAny = false;
+    decoder = d;
+    decoderCodec = codec;
+  }
+
+  function onVideo(head, data) {
+    if (!videoOk) return;
+    if (head.parts) {
+      // 分けて届いた：同じ番号の続きを集め、そろったらつなぐ（途中が欠けたら捨ててキーフレームを頼む）
+      if (head.part === 0) partial = { seq: head.seq, chunks: [] };
+      if (!partial || partial.seq !== head.seq || partial.chunks.length !== head.part) { closeDecoder(); sendMsg({ type: "keyframe" }); return; }
+      partial.chunks.push(data.slice());
+      if (partial.chunks.length < head.parts) return;
+      const total = partial.chunks.reduce((n, c) => n + c.length, 0);
+      const whole = new Uint8Array(total);
+      let at = 0;
+      for (const c of partial.chunks) { whole.set(c, at); at += c.length; }
+      partial = null;
+      data = whole;
+    }
+    if (head.key) {
+      const codec = codecOf(data);
+      if (!codec) { showError("動画のキーフレームに SPS がありません"); return; }
+      if (!decoder || decoder.state === "closed" || codec !== decoderCodec) {
+        closeDecoder();
+        try { newDecoder(codec); }
+        catch (e) { videoFallback("H.264（" + codec + "）の復号器を作れませんでした（" + e.message + "）"); return; }
+      }
+    } else if (!decoder || decoder.state !== "configured") {
+      return; // キーフレームを待っている
+    }
+    decodingHeads.set(head.seq, head);
+    try {
+      decoder.decode(new EncodedVideoChunk({ type: head.key ? "key" : "delta", timestamp: head.seq, data }));
+    } catch (e) {
+      closeDecoder();
+      sendMsg({ type: "keyframe" });
+    }
+  }
+
+  /** 下の帯：いま何で描いているか（動画・JPEG とその理由） */
+  function renderCodec() {
+    const el = $("codec");
+    const drawing = canvas.dataset.codec;
+    const reason = videoReason || (view.videoUnavailable || "");
+    el.dataset.codec = drawing || "";
+    el.textContent = !drawing ? "" : drawing === "h264" ? "動画（H.264）" : "JPEG";
+    el.title = drawing === "jpeg" && reason ? reason : "";
   }
 
   /** 絵を出す場所に合わせて縮めて置く（縦横の比は保つ） */
@@ -645,6 +778,7 @@ const SCRIPT = String.raw`
       if (view.fitByOther) wantFit = false;
       else if (wantFit && !view.fit) sendMsg({ type: "fit", on: true });
       render();
+      renderCodec();
     } else if (msg.type === "progress") {
       progress = msg.message;
       renderEmpty();
@@ -665,7 +799,7 @@ const SCRIPT = String.raw`
     const size = stageSize();
     stream = openStream({ request }, {
       name: STREAM,
-      params: { width: size.width, height: size.height, dpr: size.dpr, visible: document.visibilityState === "visible" },
+      params: { width: size.width, height: size.height, dpr: size.dpr, visible: document.visibilityState === "visible", codec: videoOk ? "h264" : "jpeg" },
       onMessage(data) {
         if (typeof data === "string") {
           let msg;
@@ -680,6 +814,9 @@ const SCRIPT = String.raw`
         // 繋ぎ直したときは、いまの大きさ・見えているかを伝え直す（札の params は最初のまま）
         if (state === "open") {
           frame = null;
+          // 繋ぎ直した流れはキーフレームから。描ける形も伝え直す（札の params は最初のまま——途中で JPEG に落ちていることがある）
+          closeDecoder();
+          sendMsg({ type: "codec", codec: videoOk ? "h264" : "jpeg" });
           sendMsg(Object.assign({ type: "size" }, stageSize()));
           sendMsg({ type: "visible", visible: document.visibilityState === "visible" });
           if (wantFit) sendMsg({ type: "fit", on: true });
@@ -701,6 +838,8 @@ const SCRIPT = String.raw`
       $("app").textContent = "画面を始められませんでした：" + e.message;
       return;
     }
+    videoReason = await probeVideo();
+    videoOk = !videoReason;
     render();
     openView();
   })();
@@ -769,6 +908,7 @@ export function browserViewHtml(): string {
     <button class="btn" id="show-network" type="button" aria-pressed="false">通信<span class="count" id="count-network">0</span></button>
     <button class="btn" id="show-console" type="button" aria-pressed="false">コンソール<span class="count" id="count-console">0</span></button>
     <span style="flex:1"></span>
+    <span class="dim" id="codec" data-testid="codec"></span>
     <button class="btn" id="keyboard" type="button" hidden>キーボード</button>
   </div>
 </div>

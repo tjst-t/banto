@@ -315,9 +315,10 @@ test("人のブラウザと同じ：画面ありで、自動操作の起動の�
   assert.deepEqual(nav.langs, ["ja-JP", "ja", "en-US", "en"]);
   assert.equal(nav.tz, "Asia/Tokyo");
   assert.ok(!nav.brands.some((b) => /Headless/.test(b)), nav.brands.join(","));
-  // 窓がある（headless の窓は枠が無く、外と中の大きさが同じ）。中身は既定の大きさ
+  // 中身は既定の大きさ。**窓はキオスク形の全画面**（人の画面を動画で流すため——v4-modules.md §4.1「動画で流す」(a)）なので、
+  // 外と中は同じ大きさ（全画面にした人のブラウザと同じ。headless の印の outerWidth 0 ではない）
   assert.deepEqual(nav.inner, [1280, 800]);
-  assert.ok(nav.outer[1]! > nav.inner[1]!, `窓の枠が無い：外 ${nav.outer.join("×")}・中 ${nav.inner.join("×")}`);
+  assert.deepEqual(nav.outer, nav.inner, `キオスク形の全画面になっていない：外 ${nav.outer.join("×")}・中 ${nav.inner.join("×")}`);
 
   // 起こしたブラウザの引数に、自動操作の起動の印が無い（プロセスを見る）
   const port = Number(readFileSync(join(dataDir, "profile", "DevToolsActivePort"), "utf8").split("\n")[0]);

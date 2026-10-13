@@ -53,6 +53,8 @@ export const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 export const MIN_WINDOW_WIDTH = 500;
 /** 窓の大きさを変えたあと、ページの innerWidth・innerHeight が新しい値になるまで待つ上限（実測は 40〜110ms） */
 const SETTLE_TIMEOUT_MS = 2_000;
+/** 落ち着いたとみなすまで、同じ大きさが続く時間（途中で通る大きさは 40〜130ms——settle） */
+const SETTLE_STABLE_MS = 150;
 
 export class BrowserSession {
   private context: BrowserContext | undefined;
@@ -82,6 +84,7 @@ export class BrowserSession {
    */
   beforeResize: (() => Promise<void>) | undefined;
   private currentTab: string | undefined;
+  private frontTab: string | undefined;
   private nextTab = 1;
   private idleTimer: NodeJS.Timeout | undefined;
   /** 止めた理由（最後に止まったとき）。状態を見る口が返す */
@@ -130,23 +133,34 @@ export class BrowserSession {
    */
   async setViewport(size: { width: number; height: number }): Promise<void> {
     if (!this.context) throw new BrowserError("ブラウザが動いていません");
-    const run = this.windowChain.then(async () => {
-      this.resizing = true;
-      this.emit();
-      try {
-        await this.beforeResize?.();
+    const run = this.windowChain.then(() =>
+      this.whileResizing(async () => {
         this.size = { width: size.width, height: size.height };
         for (const page of this.pages.values()) await this.fitWindow(page);
         for (const page of this.pages.values()) await this.applyOverride(page);
         await this.frontCurrent();
-        await this.settle();
-      } finally {
-        this.resizing = false;
-        this.emit();
-      }
-    });
+        const current = this.currentTab !== undefined ? this.pages.get(this.currentTab) : undefined;
+        if (current) await this.settle(current);
+      }),
+    );
     this.windowChain = run.catch(() => undefined);
     await run;
+  }
+
+  /**
+   * 窓の大きさを変える間（3手の途中はタブの帯や画面いっぱいの窓が一瞬映る——v4-modules.md §4.1「動画で流す」(a)）。
+   * 人の画面に動画の取り込みを止めてもらい（beforeResize）、終えたら流し直してもらう（resizing を下ろして知らせる）
+   */
+  private async whileResizing(work: () => Promise<void>): Promise<void> {
+    this.resizing = true;
+    this.emit();
+    try {
+      await this.beforeResize?.();
+      await work();
+    } finally {
+      this.resizing = false;
+      this.emit();
+    }
   }
 
   /** ページの大きさ（CSS ピクセル。ブラウザに1つ——setViewport） */
@@ -161,15 +175,28 @@ export class BrowserSession {
     return this.browserCdp;
   }
 
-  /** そのタブの窓を、いまのページの大きさ（窓の下限まで）の全画面にする。合わせ終えた窓は飛ばす */
-  private async fitWindow(page: Page): Promise<void> {
+  /** そのタブの窓と、いまのページの大きさに合わせた印（`1280x800`）。閉じたタブは undefined */
+  private async windowOf(page: Page): Promise<{ windowId: number; key: string; width: number } | undefined> {
     const targetId = this.targetIds.get(page);
-    if (!targetId || page.isClosed()) return;
+    if (!targetId || page.isClosed()) return undefined;
     const cdp = await this.cdpForBrowser();
     const { windowId } = (await cdp.send("Browser.getWindowForTarget", { targetId })) as { windowId: number };
     const width = Math.max(MIN_WINDOW_WIDTH, this.size.width);
-    const key = `${width}x${this.size.height}`;
-    if (this.placed.get(windowId) === key) return;
+    return { windowId, key: `${width}x${this.size.height}`, width };
+  }
+
+  /** そのタブの窓がまだ合わせていない（新しい窓——起こした最初のタブ・ポップアップ）か */
+  private async unplaced(page: Page): Promise<boolean> {
+    const w = await this.windowOf(page);
+    return w !== undefined && this.placed.get(w.windowId) !== w.key;
+  }
+
+  /** そのタブの窓を、いまのページの大きさ（窓の下限まで）の全画面にする。合わせ終えた窓は飛ばす */
+  private async fitWindow(page: Page): Promise<void> {
+    const w = await this.windowOf(page);
+    if (!w || this.placed.get(w.windowId) === w.key) return;
+    const { windowId, key, width } = w;
+    const cdp = await this.cdpForBrowser();
     await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
     await cdp.send("Browser.setWindowBounds", { windowId, bounds: { left: 0, top: 0, width, height: this.size.height } });
     await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "fullscreen" } });
@@ -193,27 +220,45 @@ export class BrowserSession {
   private async frontCurrent(): Promise<void> {
     const id = this.currentTab;
     const page = id !== undefined ? this.pages.get(id) : undefined;
-    if (page && !page.isClosed()) await page.bringToFront();
+    if (!page || page.isClosed()) return;
+    await page.bringToFront();
+    if (this.frontTab !== id) {
+      this.frontTab = id;
+      this.emit();
+    }
   }
 
-  /** いま選んでいるタブの innerWidth・innerHeight が、いまのページの大きさになるまで待つ。来なければ理由を残して進む */
-  private async settle(): Promise<void> {
-    const id = this.currentTab;
-    const page = id !== undefined ? this.pages.get(id) : undefined;
-    const cdp = page ? this.cdps.get(page) : undefined;
-    if (!page || !cdp) return;
+  /**
+   * 前に出し終えたタブ（仮想の画面に映っているタブ）。**選んだ直後はまだ前のタブが映っている**——動画の絵の頭はこちらで書く
+   * （選んだタブの名前で前のタブの絵を送らない）。選んでいるタブ（current）とは前に出し終えるまでの間だけ違う
+   */
+  get front(): string | undefined {
+    return this.context ? this.frontTab : undefined;
+  }
+
+  /**
+   * タブの innerWidth・innerHeight が、いまのページの大きさに**落ち着く**まで待つ。来なければ理由を残して進む。
+   * 1度合っただけでは返さない——3手の途中（normal で大きさを指定した直後）に一度合い、全画面に戻る間に画面いっぱいの
+   * 大きさを通ってから戻ることがある（実測・2026-10-13：5回中3回、1920×1080・500×552・1280×712 を 40〜130ms 通った）
+   */
+  private async settle(page: Page): Promise<void> {
     const want = `${this.size.width}x${this.size.height}`;
     const deadline = Date.now() + SETTLE_TIMEOUT_MS;
     let last = "";
+    let since: number | undefined;
     while (Date.now() < deadline && !page.isClosed()) {
-      const r = (await Promise.race([
-        cdp.send("Runtime.evaluate", { expression: "innerWidth + 'x' + innerHeight", returnByValue: true }),
-        new Promise<undefined>((resolve) => setTimeout(resolve, 500)),
-      ]).catch(() => undefined)) as { result?: { value?: string } } | undefined;
-      last = r?.result?.value ?? "（読めない）";
-      if (last === want) return;
+      // Playwright の evaluate で読む（できたばかりのタブ・読み込み中のタブでも、読める文脈ができるまで待つ。CDP の
+      // Runtime.evaluate を直に送ると、できたばかりのタブで 2 秒返らなかった——実測・2026-10-13）
+      last = await Promise.race([
+        page.evaluate(() => `${window.innerWidth}x${window.innerHeight}`),
+        new Promise<string>((resolve) => setTimeout(() => resolve("（500ms 返らない）"), 500)),
+      ]).catch((err: Error) => `（読めない：${err.message.split("\n")[0]}）`);
+      if (last !== want) since = undefined;
+      else if (since === undefined) since = Date.now();
+      else if (Date.now() - since >= SETTLE_STABLE_MS) return;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    if (page.isClosed()) return; // 待つ間にタブが閉じた——合わせる相手がもう無い
     console.error(`[browser] ページの大きさが ${want} になりませんでした（${last}）`);
   }
 
@@ -323,6 +368,7 @@ export class BrowserSession {
     this.browserCdp = undefined;
     this.size = { ...DEFAULT_VIEWPORT };
     this.currentTab = undefined;
+    this.frontTab = undefined;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.deps.log.saveNow();
@@ -360,6 +406,7 @@ export class BrowserSession {
     this.currentTab ??= id;
     page.on("close", () => {
       this.pages.delete(id);
+      if (this.frontTab === id) this.frontTab = undefined;
       if (this.currentTab === id) {
         this.currentTab = [...this.pages.keys()].at(-1);
         // ブラウザが前に出すタブと、こちらが選び直したタブは違うことがある——選んだほうを前に出す
@@ -397,9 +444,21 @@ export class BrowserSession {
     // する。そのうえで、いま選んでいるタブを前に出し直す（新しいタブ・窓はブラウザが前に出す。人の画面が映すのは選んでいるタブ
     // ——v4-modules.md §4.1「動画で流す」の穴②）
     await this.onWindows("新しいタブの窓を合わせられませんでした", async () => {
-      await this.fitWindow(page);
-      await this.applyOverride(page);
-      if (this.currentTab !== id) await this.frontCurrent();
+      const fit = async () => {
+        await this.fitWindow(page);
+        await this.applyOverride(page);
+        // 選んでいるタブが無かった（最初のタブ）ならブラウザが前に出している。ほかは選んでいるタブを前に出し直す
+        if (this.currentTab !== id) await this.frontCurrent();
+        else this.frontTab = id;
+      };
+      // 新しい窓（起こした最初のタブ・ポップアップ）は3手で合わせる——その間は動画を流さず、落ち着いてから流し直す。
+      // 同じ窓の新しいタブ（_blank・＋）は窓がもう合っているので、そのまま
+      if (await this.unplaced(page)) {
+        await this.whileResizing(async () => {
+          await fit();
+          await this.settle(page);
+        });
+      } else await fit();
     });
     // 本文はブラウザの中の入れ物にあるうちに取る——入れ物を大きめにして、取る前に捨てられにくくする
     await cdp.send("Network.enable", { maxTotalBufferSize: 100 * 1024 * 1024, maxResourceBufferSize: 10 * 1024 * 1024 });
@@ -436,6 +495,8 @@ export class BrowserSession {
     const id = await this.register(page);
     this.currentTab = id;
     this.emit();
+    // 登録の間はそれまで選んでいたタブを前に出し直している——開いたタブを前に出す（人の画面が映すのは選んでいるタブ）
+    await this.onWindows("開いたタブを前に出せませんでした", () => this.frontCurrent());
     return { id, page };
   }
 

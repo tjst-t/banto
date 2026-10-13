@@ -189,7 +189,7 @@ def force_key():
     resume()
     appsink.send_event(GstVideo.video_event_new_upstream_force_key_unit(Gst.CLOCK_TIME_NONE, True, 0))
 
-def on_x(fd, cond):
+def drain():
     e = XEvent()
     changed = False
     while x11.XPending(dpy):
@@ -200,9 +200,15 @@ def on_x(fd, cond):
         xd.XDamageSubtract(dpy, damage, 0, 0)
         x11.XFlush(dpy)
         resume()
+
+def on_x(fd, cond):
+    drain()
     return True
 
 def tick():
+    # Xlib はほかの呼び出し（XFlush 等）の間に知らせを自分の列へ読み込むことがあり、そうなると fd は読めるようにならない
+    # ——列に残った変化の知らせを見落として、止まったまま流れ直さなかった（実測・2026-10-13：試験で5回中2回。ここでも読むようにして6回中0回）
+    drain()
     if pipeline is not None and state == "playing" and not key_pending and (time.monotonic() - last_damage) * 1000 >= IDLE_MS:
         pipeline.set_state(Gst.State.PAUSED)
         set_state("paused")

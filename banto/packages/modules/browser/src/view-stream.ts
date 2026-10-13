@@ -416,6 +416,11 @@ export interface BrowserViewDeps {
 export class BrowserView implements ViewHooks {
   private readonly viewers = new Set<Viewer>();
   private cast: Cast | undefined;
+  /**
+   * 人の入力を渡す CDP の口（いま映しているタブに1本）。screencast の口とは別に持つ——動画で映している間は screencast を
+   * 張らないので、screencast の口に入力を載せると動画の画面からの入力が届かない
+   */
+  private control: { page: Page; cdp: CDPSession } | undefined;
   private video: VideoCast | undefined;
   /** 動画が失敗した理由（同じ仮想の画面の間は動画を使わない。ブラウザを起こし直したら試し直す） */
   private videoFailure: { display: string; reason: string } | undefined;
@@ -490,6 +495,7 @@ export class BrowserView implements ViewHooks {
     for (const v of this.viewers) v.ws.close(1001, "Module が止まります");
     await this.chain;
     await this.stopCast();
+    await this.dropControl();
     this.closeVideo();
   }
 
@@ -702,14 +708,14 @@ export class BrowserView implements ViewHooks {
    * 待つと40回中0回）。1つが返らなくても後ろを止めないよう、張り直しと同じ上限を付ける
    */
   private input(method: string, params: Record<string, unknown>, v: Viewer): void {
-    const cast = this.cast;
-    if (!cast) return;
+    const control = this.control;
+    if (!control) return;
     this.inputChain = this.inputChain.then(() =>
       // Playwright の CDPSession は名前ごとに型が付く——ここでは名前を文字で渡す
-      bounded(method, (cast.cdp as unknown as { send(m: string, p: unknown): Promise<unknown> }).send(method, params)).then(
+      bounded(method, (control.cdp as unknown as { send(m: string, p: unknown): Promise<unknown> }).send(method, params)).then(
         () => undefined,
         (err: Error) => {
-          if (this.cast !== cast) return; // 張り直した・閉じた——古い口の失敗は人に見せない
+          if (this.control !== control) return; // タブが替わった・閉じた——古い口の失敗は人に見せない
           this.sendText(v, { type: "error", message: `入力を渡せませんでした：${err.message.split("\n")[0]}` });
         },
       ),
@@ -780,7 +786,12 @@ export class BrowserView implements ViewHooks {
     if (!target || target.page.isClosed()) {
       this.closeVideo();
       await this.stopCast();
+      await this.dropControl();
       return;
+    }
+    if (this.control?.page !== target.page) {
+      await this.dropControl();
+      this.control = { page: target.page, cdp: await bounded("CDP の口を開く", s.newCdp(target.page)) };
     }
     const viewport = s.viewport();
     const scale = s.scale ?? 1;
@@ -968,6 +979,16 @@ export class BrowserView implements ViewHooks {
     await bounded("CDP の口を閉じる", cast.cdp.detach()).catch(timedOut);
   }
 
+  private async dropControl(): Promise<void> {
+    const control = this.control;
+    if (!control) return;
+    this.control = undefined;
+    // タブが閉じた後なら口はもう無い（投げる）——閉じたいのは同じ。返らないときだけ記録する（stopCast と同じ）
+    await bounded("CDP の口を閉じる", control.cdp.detach()).catch((err: Error) => {
+      if (err.message.includes("返りませんでした")) this.logLine(err.message);
+    });
+  }
+
   // ---- 動画 ----
 
   /** 動画で流せない理由（H.264 を描ける画面に出す）。流せる・ブラウザが動いていなければ undefined */
@@ -1033,7 +1054,8 @@ export class BrowserView implements ViewHooks {
 
   private onVideoUnit(cast: VideoCast, au: Buffer, key: boolean): void {
     if (this.video !== cast || cast.key === undefined) return;
-    const tab = this.deps.session.current;
+    // 映っているタブ（前に出し終えたタブ。選んだ直後はまだ前のタブの絵）
+    const tab = this.deps.session.front ?? this.deps.session.current;
     if (tab === undefined) return;
     const seq = ++this.seq;
     let messages: Buffer[] | undefined;

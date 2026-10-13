@@ -1974,15 +1974,18 @@ Module の一覧には**2種類が混ざる**：
 #### 人の画面——絵を流し、入力を送り返す
 
 - **流れの中の約束**（Browser と自分の画面の間のもの。口は中身を知らない）：画面1つにつき流れ1本
-  （名前 `browser`）。Module→画面は**2進のメッセージで絵**（JPEG、頭に番号・大きさ・タブ）、画面→Module は
+  （名前 `browser`）。Module→画面は**2進のメッセージで絵**（**H.264 の動画**、描けない画面には JPEG——下の「動画で流す」。
+  頭に番号・大きさ・タブ）、画面→Module は
   **文字の JSON で入力と制御**（マウス・キー・タッチ・タブの切り替え・画面の大きさの変更・**絵の受け取りの印**）。
   **絵の流量は画面からの受け取りの印で Module が絞る**——画面が描き終えたと返すまで次の絵を送らず、その間の
   新しい絵は最新の1枚だけ残して捨てる。口の背圧（アーキ仕様 §5.8）には頼らない（4MiB 溜まるまで待つと、携帯の遅い回線で
   数秒遅れた絵を見ることになる）。1枚が 1MiB を越えないよう、screencast の大きさと画質を Module が抑える
   （`maxWidth`・`maxHeight`・`quality`）。同じブラウザを複数の画面（パソコンと携帯）が同時に映してよく、流れごとに
   別の相手として扱う。最初の画面の大きさ（CSS ピクセルと `devicePixelRatio`）は `params` で渡す
-- **CDP の screencast**（`Page.startScreencast`）で、いま選んでいるタブの絵を流す。人の操作は
-  `Input.dispatchMouseEvent`・`dispatchKeyEvent`・`dispatchTouchEvent`・`insertText` で返す
+- **絵は仮想の画面を GStreamer で H.264 に圧縮して流す**（下の「動画で流す」）。描けない画面・GStreamer が無いときは
+  **CDP の screencast**（`Page.startScreencast`）で、いま選んでいるタブの絵を JPEG で流す。人の操作は
+  `Input.dispatchMouseEvent`・`dispatchKeyEvent`・`dispatchTouchEvent`・`insertText` で返す（JPEG の受け取りの印での絞りは
+  JPEG の絵だけ。動画の流量は段3）
 - **絵と入力はアーキ仕様 §5.8「画面と Module の間の流れ（stream relay）」で運ぶ**（Terminal と共有、
   決定・2026-10-08）。MCP の要求と応答には載せない。口の中身はその節を見る（ここには写さない）
 - 画面の作り：タブの並び・URL 欄・戻る/進む/読み直し・絵・**通信**と**コンソール**の欄（DevTools の
@@ -2104,15 +2107,19 @@ Module の一覧には**2種類が混ざる**：
 パッケージは同じ `packages/modules/browser`（`view-stream.ts`＝流れ、`view-app.ts`＝画面）。経緯と測ったことは
 `docs/notes/2026-10-10-browser-view.md`。
 
-- **流れの中の約束**（流れの名前 `browser`、`params` は `{ width, height, dpr, visible }`——絵を出す場所の CSS ピクセル・
-  `devicePixelRatio`・見えているか）：
+- **流れの中の約束**（流れの名前 `browser`、`params` は `{ width, height, dpr, visible, codec }`——絵を出す場所の CSS ピクセル・
+  `devicePixelRatio`・見えているか・描ける形（`h264`／`jpeg`、無ければ `jpeg`。改訂・2026-10-13、Backlog #281））：
   - Module→画面（2進）：絵1枚＝`[頭の長さ（4バイト、big endian）][頭（JSON）][JPEG]`。頭は `{ seq, tab, width, height }`
-    ——番号・タブ・その絵が映しているページの大きさ（CSS ピクセル）。人の入力の座標はこの大きさで返す
+    ——番号・タブ・その絵が映しているページの大きさ（CSS ピクセル）。人の入力の座標はこの大きさで返す。
+    **動画のときは中身が H.264 のアクセスユニット（Annex B）で、頭に `codec: "h264"`・`key`（キーフレームか）**、1 MiB を
+    越えて分けたときは `part`（0 から）・`parts`（下の「動画で流す」）
   - Module→画面（文字の JSON、`type` で分ける）：`state`（動いているか・起こしている途中か・タブの並び・選んでいるタブ・
     ページの大きさ・「AI に触らせない」・自分が／ほかの画面が「画面に合わせる」を入れているか・記録の件数・最後に止めた理由）・
     `progress`（ブラウザを入れている間）・`ai`（AI が触った：帯の文・タブ・Thread・要素の枠）・`error`（人の操作が失敗した理由）・
-    `log`（通信とコンソールの記録が変わった——欄を取り直す合図。件数つき）
-  - 画面→Module（文字の JSON）：`ack {seq}`・`size {width,height,dpr}`・`visible {visible}`・`mouse {event: down|up|move|wheel, x, y,
+    `log`（通信とコンソールの記録が変わった——欄を取り直す合図。件数つき）。H.264 を描ける画面に JPEG で映しているときは
+    `state` に `videoUnavailable`（理由）
+  - 画面→Module（文字の JSON）：`ack {seq}`（JPEG の絵だけ）・`keyframe`（復号に失敗した——キーフレームから送り直して）・
+    `codec {codec: h264|jpeg}`（描ける形が変わった——初期化に失敗して JPEG に落ちた・繋ぎ直した）・`size {width,height,dpr}`・`visible {visible}`・`mouse {event: down|up|move|wheel, x, y,
     button, buttons, clickCount, modifiers, deltaX, deltaY}`・`key {event: down|up, key, code, keyCode, text?, modifiers}`・
     `touch {event: start|move|end|cancel, points: [{x,y,id}]}`・`insertText {text}`・`tab {action: select|close|new, tab?}`・
     `navigate {url}`（scheme が無ければ `http://` を足す）・`history {action: back|forward|reload}`・`fit {on}`・`start`。
@@ -2177,7 +2184,8 @@ Module の一覧には**2種類が混ざる**：
   帯は4秒、枠は1.5秒。**どの Thread かは id の頭8字と「その会話を開く」**（`dev.banto/open-surface` の thread）——host の刻印
   （`dev.banto/thread`）は id だけで Thread の名前を持たない
 - **人の画面の口（admin）に足したもの**：`listConsoleRecords`（コンソールの欄）。`getBrowserStatus` は人の画面の様子
-  `view: { viewers, watching, screencasting, screencastTab? }` も返す
+  `view: { viewers, watching, screencasting, screencastTab?, video? }` も返す（`screencasting` は JPEG か動画のどちらかを
+  流しているか。`video` は動画の子プロセスが動いている間だけ `{ state: playing|paused|stopped, units, keys, bytes, viewers }`）
 - **会話のカード**：`browserOpen` に `ui.resourceUri`＝`ui://banto-browser/view` と `dev.banto/card`（`ブラウザで開いた：{url}`）
 - **HAR で保存**は絞り込みに関わらず記録の全部を `exportHar` で取り、`ui/download-file` の文字（`browser-<日時>.har`）で渡す
 
@@ -2190,12 +2198,15 @@ screencast の絵はブラウザが描いた画素のまま来る。1倍で描�
 - **起こすときの `--force-device-scale-factor`**（1 のときは付けない）。`Emulation.setDeviceMetricsOverride` の
   `deviceScaleFactor` では screencast の絵は大きくならない（実測・2026-10-11：2 にしても 1280×800、ページから見える
   `devicePixelRatio` だけが 2 になる——偽の値になる）。起こした倍率は止めるまで変わらない
-- **ページから見える `devicePixelRatio` は起こした倍率そのもの**：ページの大きさの上書き（`Emulation.setDeviceMetricsOverride`、
-  タブごとに開いたままの CDP の口から）は `deviceScaleFactor` 0（上書きしない）・screen も上書きしない。**ページの大きさを
-  変えるのはこの口だけ**——Playwright の `setViewportSize` は `deviceScaleFactor` を 1 に上書きし、2つの上書きが競って
-  倍率2で起こしたページから 1 に見えることがあった（試験で約30回中2回）ので使わない。ページの大きさは Module が覚える
+- **ページから見える `devicePixelRatio` は起こした倍率そのもの**：ページの大きさは窓で決め（改訂・2026-10-13、Backlog #281
+  ——下の「動画で流す」(a)）、幅 500 未満だけ併せる上書き（`Emulation.setDeviceMetricsOverride`、タブごとに開いたままの
+  CDP の口から）は `deviceScaleFactor` 0（上書きしない）・screen も上書きしない。Playwright の `setViewportSize` は
+  `deviceScaleFactor` を 1 に上書きし、倍率2で起こしたページから 1 に見えることがあった（試験で約30回中2回）ので使わない。
+  ページの大きさは Module が覚える（ブラウザに1つ——全部のタブ・窓）
 - **仮想の画面（Xvfb）は 1920×1080×倍率で立てる**——ページから見える screen が倍率に関わらず 1920×1080（CSS ピクセル）。
-  掛けないと倍率2で 960×540 になり、窓より小さな画面という人の機械に無い形になる。窓は今までどおり CSS ピクセルで 1280×887
+  掛けないと倍率2で 960×540 になり、窓より小さな画面という人の機械に無い形になる。窓はキオスク形の全画面で、ページの大きさ
+  （既定 1280×800、CSS ピクセル）。**動画で映せる一番大きな窓もこの 1920×1080**（Xvfb は「いちばん大きい窓×倍率」）——
+  それより大きなページ（AI の resize で 2560×1440 等）は JPEG で映す
 - **倍率の決め方**：開いている人の画面のうち一番大きい `devicePixelRatio` を、0.25 刻みに丸めて 1〜**2** に収め（3 の端末も 2）、
   Module の置き場（state の `viewScale`）に覚える。**ブラウザを起こすときはこの値で描く**——AI が先に起こしても、最後に映した
   人の端末の倍率になる。画面が開いた・大きさが変わったときに覚え直す
@@ -2205,7 +2216,7 @@ screencast の絵はブラウザが描いた画素のまま来る。1倍で描�
   入力の遅れが延び、メモリが増えるだけ。3 で得をするのは携帯の大きさに「画面に合わせる」をしたときだけ（1170×2532）
 - **AI の絵（`browserScreenshot`）は CSS ピクセルの大きさで撮る**（Playwright の `scale: "css"`）——倍率の2乗の絵を AI に
   読ませない。今までと同じ大きさ
-- 人の画面（`view-app`）は変えない：絵はそのままの画素で canvas に描き、CSS で画面の大きさに収める（今までどおり）
+- 人の画面（`view-app`）：絵はそのままの画素で canvas に描き、CSS で画面の大きさに収める（JPEG の絵も動画の1枚も同じ）
 
 ##### 実測（2026-10-11、Backlog #266）
 
@@ -2266,16 +2277,16 @@ true・headless の印・窓が無い・Playwright の既定の引数（`--enabl
   `connectOverCDP` で繋ぐ。プロファイルは `--user-data-dir` で今までと同じ置き場、Project ごとに残る
 - **起動の引数はこれだけ**：`--user-data-dir`・`--remote-debugging-port=0`・`--disable-blink-features=AutomationControlled`・
   `--no-sandbox`（今までと同じ。境界はコンテナ——`v4-security.md` §1）・`--no-first-run`・`--no-default-browser-check`
-  （初めて起こしたときの案内のタブと「既定のブラウザにする」の帯を出さない）・`--accept-lang`・`--window-position`・
-  `--window-size`。`--enable-automation`・`--headless`・`--user-agent`・Playwright の `--disable-*` の類は付けない
+  （初めて起こしたときの案内のタブと「既定のブラウザにする」の帯を出さない）・`--accept-lang`・`--kiosk`（追加・2026-10-13、
+  Backlog #281——下の「動画で流す」(a)）・`--window-position`・`--window-size`。`--enable-automation`・`--headless`・`--user-agent`・Playwright の `--disable-*` の類は付けない
 - **`--disable-blink-features=AutomationControlled` を足す理由**：Chrome は CDP の口を開いて起こすと、**それだけで**
   `navigator.webdriver` を true にする（実測・2026-10-10、Google Chrome 155：口なしで false・`--remote-debugging-port` でも
   `--remote-debugging-pipe` でも true）。人が使う Chrome は口を開いていないので false——その状態に揃える。ページの JS を
   上書きする細工ではなく、ブラウザの機能の切り替え
-- **ページの大きさ**はタブごとに既定（1280×800）にそろえる（`Emulation.setDeviceMetricsOverride`——改訂・2026-10-11、
-  Backlog #266：Playwright の `setViewportSize` から替えた。理由は上の「高精細の画面」）。**窓の自然な大きさには頼らない**：Google Chrome は起こした直後だけ窓の枠が 56px 厚く、少したつと消える（実測・
-  2026-10-10——中身が 800 から 856 に変わり、人の画面の絵と入力の座標がずれた）。ポップアップの窓は大きさがまちまち。
-  窓は `--window-size` で 1280×887（枠の 87px は Google Chrome 155 の実測）にして、窓の形を人の窓に近づける
+- **ページの大きさ**はブラウザに1つ（既定 1280×800）で、**キオスク形の全画面の窓の大きさで決める**（改訂・2026-10-13、
+  Backlog #281——下の「動画で流す」(a)・段2。前は `Emulation.setDeviceMetricsOverride` でタブごとに上書きしていたが、画面を
+  取り込むとページと絵が食い違う）。タブの帯・アドレスバーが無いので、窓の枠の厚さ（起こした直後だけ 56px 厚い——実測・
+  2026-10-10）にも左右されない。ポップアップの窓も同じ大きさの全画面に合わせる
 - **TMPDIR は短い所に**：画面ありのブラウザは TMPDIR の下に UNIX ソケット（`SingletonSocket`）を作り、パスが 108 バイトを
   越えると起きずに落ちる（実測・2026-10-10、banto が Module に渡す長い TMPDIR で落ちた）。TMPDIR が 60 文字を越えるときは
   ブラウザには `/tmp` を渡す
@@ -2294,8 +2305,10 @@ true・headless の印・窓が無い・Playwright の既定の引数（`--enabl
   どちらも人の画面の口 `setSettings` で変えられ、次にブラウザを起こしたときから効く
 - **ページの JS を上書きする細工はしない**（決定・2026-10-10、ユーザー）：`navigator.webdriver`・プラグイン・WebGL・指紋の類を
   JS で上書きしない——本物を動かすことで揃える。実測（2026-10-10、Google Chrome 155）：`navigator.webdriver` false・プラグイン
-  5・`mimeTypes` 2・窓あり（外 1280×887／中 1280×800）。WebGL は無い（仮想の画面に GPU が無く、Chrome は既定でソフトウェアの
-  WebGL を使わない——`--enable-unsafe-swiftshader` で出せるが、名前の通り安全でないので入れない）
+  5・`mimeTypes` 2・窓あり（外 1280×887／中 1280×800——2026-10-13 からはキオスク形で外も 1280×800、この項の終わり）。WebGL は無い（仮想の画面に GPU が無く、Chrome は既定でソフトウェアの
+  WebGL を使わない——`--enable-unsafe-swiftshader` で出せるが、名前の通り安全でないので入れない）。**窓はキオスク形の全画面
+  なので、外と中は同じ大きさ**（改訂・2026-10-13、Backlog #281：外 1280×800／中 1280×800。全画面にした人のブラウザと同じ形で、
+  headless の印の外 0×0 ではない。前の「外 1280×887」は窓の枠つき）
 - **CAPTCHA（ロボット確認）は人が解く**：`browserOpen`・`browserAct` の説明に「CAPTCHA が出たら AI は解かない。操作を止めて、
   人の画面で人に解いてもらうよう頼む」と書く
 - **AI には検索エンジンを使わせない**：`browserOpen` の説明に「Web の検索には WebSearch を使う。このブラウザで検索エンジンを
@@ -2349,7 +2362,7 @@ CPU は4コアのうち。screencast は 1280×800・JPEG 画質70・`everyNthFr
   起こすときの倍率で描かせて直した。上の「高精細の画面」）。`everyNthFrame` を上げると CPU は下がるが、静かになる直前の最後の絵が来ない（上の
   「人の画面で決めたこと」）ので間引かない
 
-#### 動画で流す——H.264 と WebCodecs（決定・2026-10-12、ユーザー（案X）。段1 の測定・2026-10-12〜13、Backlog #280。未実装）
+#### 動画で流す——H.264 と WebCodecs（決定・2026-10-12、ユーザー（案X）。段1 の測定・2026-10-12〜13、Backlog #280。段2（映像・パソコン）の実装・2026-10-13、Backlog #281）
 
 **人の画面の絵を、JPEG の screencast から H.264 の動画に替える。** いまの形（1枚ずつの JPEG、前の絵との差分を使わない）は
 倍率2で毎秒 95〜175 Mbit/s を流し、同じ機械の中でしか成り立たない（携帯の回線では毎秒2〜3枚・押してから 0.4 秒を越える）。
@@ -2374,10 +2387,19 @@ JPEG の経路は消さずに残す。
   なってから、キーフレームを出して流し直す
 - **Xvfb は「いちばん大きい窓 × 倍率」で立てる**（それより大きい窓は絵が Xvfb の端で切れる）
 - 新しいタブ（`Target.createTarget`・`_blank`）とタブの切り替えは同じ窓に入り、大きさを保つ。キオスク形でも CDP でタブを作れる
-- **穴（段2 で決める）**：①**窓の幅は 500 CSS px より狭くできない**（Chrome の窓の最小幅。携帯の「画面に合わせる」の縦長
-  390 は 500 になる）——候補は「最小 500 で描いて縮めて映す」か「狭いときだけ今の上書きを併用する」。②**ポップアップと
-  `window.open` の新しい窓は、URL 帯つきの別の窓として上に重なり、主のページを隠す**（大きさの指定は無視される）——候補は
-  「新しい窓をタブとして前に出し、fullscreen と大きさを合わせる」か「取り込みを窓ごとにする」。どちらも確かめていない
+- **①窓の幅は 500 CSS px より狭くできない**（Chrome の窓の最小幅。携帯の「画面に合わせる」の縦長 390 は 500 になる）——
+  **狭いときだけ今の上書き（`Emulation.setDeviceMetricsOverride`）を併せる**（決定・2026-10-13、Backlog #281）。窓は 500 の
+  全画面にし、上書きしたページは窓の左上 (0,0) から描かれるので、取り込みはページの大きさ（390×640 なら倍率2で 780×1280）
+  だけを切る。ページの `innerWidth` も画面の大きさ（390）になる。もう一つの候補「最小 500 で描いて縮めて映す」はページの
+  幅が画面と違い（携帯の幅で見たい人の目的に合わない）、入力の座標も縮めて返すことになるので取らない。高さの下限は 100 以下
+  （実測）で、resize の下限と同じなので上書きは要らない。確かめ：390×640 で絵の角の印がページと画素単位で合う（倍率1・2、
+  単体試験と E2E）
+- **②ポップアップと `window.open` の新しい窓は、URL 帯つきの別の窓として上に重なり、主のページを隠す**（大きさの指定は
+  無視される）——**新しい窓もタブとして並べ、できたときに同じ3手で全画面・同じ大きさに合わせ、いま選んでいるタブを前に
+  出し直す**（決定・2026-10-13、Backlog #281）。人の画面にはタブの並びに出て、選ぶと前に出してその絵になる。もう一つの候補
+  「取り込みを窓ごとにする」は、窓の位置を追いかけて取り込みの範囲を変え続けることになり、全画面の1窓の形（範囲は (0,0)
+  からページの大きさだけ）を崩すので取らない。`_blank` と ＋ のタブは同じ窓に入る（窓はもう合っている）。確かめ：ポップアップ
+  を開いても選んでいるタブの絵（角の印）のまま、選ぶと全面がポップアップの色になる（単体試験と E2E）
 
 **(b) GStreamer の圧縮**（この機械：QEMU の仮想 CPU・AVX 無し・3 コア、別の E2E と共有）：
 - **キーフレームは周期で出さず、要求したときだけ出す**（`key-int-max` を大きく、`force-key-unit` のイベントで出す）。要求から
@@ -2407,11 +2429,60 @@ JPEG の経路は消さずに残す。
 - 止まっていたあとの最初の数枚は遅い（中央 95.4ms・最大 189.2ms、キーフレーム 25〜35KiB）——復号器が温まるまでの分と見る
 - 1280×800 とキーフレームの要求の描き直しは、この回では数字が取れていない（解像度を切り替えたあと静止で流れが止まっていた）
 
+##### 段2 で作って決めたこと（実装・2026-10-13、Backlog #281）
+
+パッケージは同じ `packages/modules/browser`（`video.ts`＝圧縮の子プロセス、`view-stream.ts`＝流れ、`view-app.ts`＝画面、
+`session.ts`＝窓）。経緯は `docs/notes/2026-10-12-browser-video.md`。
+
+- **圧縮は子プロセス1本**（python3 の gi で GStreamer、ctypes で XDamage）。指示は標準入力の JSON 1行（`start`・`stop`・`key`）、
+  出力は標準出力に `[長さ][種類][中身]`（アクセスユニット・キーフレーム・知らせ）。動画で見ている画面の全部で1本を分ける。
+  形は上の (b) のまま（`pass=qual quantizer=23`・`vbv-maxrate=6000:vbv-bufsize=6000`・`key-int-max` 大・constrained baseline・
+  `h264parse config-interval=-1` で SPS/PPS をキーフレームごとに付ける・30 枚/秒・止まるキュー1）。2560×1600 を越える取り込み
+  （1920×1080 を倍率2）は縦横同じ比で縮めて圧縮する（頭はページの CSS ピクセルのまま）。x264 は偶数の大きさしか受けないので、
+  奇数の大きさのページは右端・下端の1画素を落として取り込む
+- **GStreamer はブラウザを入れる段で入れる**（`python3-gi`・`gir1.2-gstreamer-1.0`・`gir1.2-gst-plugins-base-1.0`・
+  `gstreamer1.0-plugins-{base,good,bad,ugly}`・`gstreamer1.0-x`・`libxdamage1`、sudo の apt）。**入れられなくてもブラウザは断らない**
+  ——人の画面は JPEG で映し、理由を Module のログと画面の様子（`videoUnavailable`）に出す（字体と同じ形）。sudo しない箱
+  （`BANTO_NO_SUDO=1`）では入れようとせず、入れ方を理由に書く。E2E のまっさらのコンテナで 139 秒（2026-10-13）
+- **静止の検知は XDamage**（根の窓、`XDamageReportNonEmpty`）。**Xlib の列に残った知らせも 50ms ごとに読む**——Xlib はほかの
+  呼び出しの間に知らせを自分の列へ読み込むことがあり、fd だけ見ていると変化を見落として止まったまま流れ直さなかった
+  （実測・2026-10-13：試験で5回中2回。読むようにして6回中0回）
+- **キーフレームを頼む場面**：新しく繋いだ画面・裏から前に戻った画面・復号に失敗した画面（`keyframe`）・JPEG から動画に替えた画面。
+  キーフレームが来るまで、その画面には P フレームを送らない。ページの大きさを変えたとき・新しい窓を合わせたときは圧縮器を
+  作り直す（最初の1枚がキーフレーム）
+- **窓を変えている間は流さない**：ページの大きさを変える（AI の resize・「画面に合わせる」）・**新しい窓を合わせる**（起こした
+  最初のタブ・ポップアップ）間は、取り込みを止め（止まったと子が言うまで待つ、上限 1 秒）、変え終えて**ページの大きさが
+  150ms 続けて新しい値になってから**流し直す。1度合っただけでは足りない：3手の途中で一度合い、全画面に戻る間に画面いっぱい
+  等の大きさを 40〜130ms 通ってから戻ることがある（実測・2026-10-13：5回中3回、1920×1080・500×552・1280×712）
+- **絵の頭のタブは「前に出し終えたタブ」**：選んだ直後はまだ前のタブが映っている。前に出し終えてから、そのタブの名前で頭を書く
+  （選んだタブの名前で前のタブの絵を送らない）。＋で開いたタブも前に出す（登録の間は選んでいたタブを前に出し直すので）
+- **人の入力は screencast とは別の CDP の口で渡す**（いま映しているタブに1本）——動画で映している間は screencast を張らない
+- **画面（`view-app`）**：始める前に `VideoDecoder.isConfigSupported({ codec: "avc1.42E033", optimizeForLatency: true })` で確かめ、
+  `params` の `codec` で伝える。キーフレームの SPS から codec の名前（`avc1.PPCCLL`）を読んで `configure`（`description` を
+  渡さない——Annex B のまま）。ハードウェアの指定はしない（既定）。**1枚も描けないまま復号器が失敗したら初期化の失敗として
+  JPEG に落とし**（`codec: jpeg` を送る）、描けていたならキーフレームを頼む。分けて届いたアクセスユニットはつないでから
+  復号し、欠けたら捨ててキーフレームを頼む。動画の1枚には `ack` を返さない。下の帯に「動画（H.264）」か「JPEG」を出し、
+  JPEG のときは理由を title に出す。繋ぎ直したら復号器を作り直し、`codec` を送り直す（`params` は最初のまま）
+- **AI の `browserScreenshot` は今どおり** CDP で CSS ピクセルの大きさ（動画とは別）
+- **ページが仮想の画面（1920×1080 CSS ピクセル）より大きいときは JPEG で映す**（理由を `videoUnavailable` に）
+- **重さ**（実測・2026-10-13。この機械：QEMU の仮想 CPU・AVX 無し・3 コア、**別の作業ツリーの E2E と同時**。動画の画面1つ・
+  1280×800 のページ・文字の多いページを毎フレーム 6px ずつスクロールし続ける 10 秒と、触らない 5 秒。CPU は 1 コアを 100%）：
+
+  | | 枚数 | 帯域 | CPU（圧縮の子・Xvfb・Chrome） | キーフレーム |
+  |---|---|---|---|---|
+  | 倍率1・スクロール | 毎秒 30 | 1.83 Mbit/s | 27%・8%・55% | 75 KiB（1280×800） |
+  | 倍率1・静止 | 毎秒 2（ほぼ空の P） | 0.00 Mbit/s | 2%・0%・19% | |
+  | 倍率2・スクロール | 毎秒 30 | 1.93 Mbit/s | 93%・28%・96% | 34 KiB（2560×1600） |
+  | 倍率2・静止 | 毎秒 2 | 0.11 Mbit/s | 5%・1%・19% | |
+
+  JPEG（倍率2で 95〜175 Mbit/s——上）に比べて帯域は約 50 分の 1。静止中に毎秒2枚来るのは、Chrome が静かなページでも描き直す
+  分を XDamage が拾って一瞬流れ直すもの（追っていない）。測りの台本はコミットしていない（使い捨て）
+
 ##### 段の分け方（Backlog ストーリー #279）
 
 1. ~~測って決める~~（#280、この節）
-2. 映像だけ（パソコンの Chrome と Safari）：上の形で作る。描けなければ JPEG。窓で大きさを決める形に替え、幅 500 未満と
-   ポップアップの扱いを決める（#281）
+2. ~~映像だけ（パソコンの Chrome と Safari）：上の形で作る。描けなければ JPEG。窓で大きさを決める形に替え、幅 500 未満と
+   ポップアップの扱いを決める~~（#281、上の「段2 で作って決めたこと」。Safari は実機で確かめていない）
 3. 流量と携帯：画面ごとに未着の枚数を数え、閾値を越えたらその画面への送りを止めてキーフレームから送り直す（P フレームは単独で
    捨てられないため）。いちばん遅い画面に速さを合わせる。受け手の `decodeQueueSize` に上限（#282）
 4. 音：コンテナに音の空のシンク（PulseAudio か PipeWire）を足し、Opus を同じ流れに載せて `AudioDecoder`／WebAudio で鳴らす。
@@ -2419,6 +2490,9 @@ JPEG の経路は消さずに残す。
 
 #### まだ決めていない・確かめていない
 
+- **キオスク形で窓の外と中が同じ大きさになった**（2026-10-13、Backlog #281）——#259 の「窓あり（枠つき）」と食い違う。全画面に
+  した人のブラウザと同じ形なので受け入れたが、人の確かめを待つ（`docs/notes/2026-10-12-browser-video.md`）
+- 動画の画面を Safari（パソコン）で確かめていない（段2 は Playwright の Chromium と、段1 の Android の Chrome まで）
 - 低い倍率で動いている間に高い画面が開いたとき、人がブラウザを起こし直せるようにするか（いまは使われずに止まるまで今の倍率。
   起こし直すと開いているページが消える）
 - 2倍で映している間の重さ（枚数が約半分・入力の遅れ約160ms）を、人が倍率を選べるようにして軽くするか（使ってみて決める）

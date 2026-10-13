@@ -9,7 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StreamStamp, WebSocket } from "@banto/stream-server";
-import { FRAME_BOX, FRAME_COLORS, createTestPageServer } from "./test-page.js";
+import { CORNER, FRAME_BOX, FRAME_COLORS, createTestPageServer } from "./test-page.js";
+import { spawn, spawnSync } from "node:child_process";
+import type { VideoHeader } from "./video.js";
 import { createBrowserContextFromDataDir } from "./server.js";
 import { browserOpts, installed, skipReason } from "./test-browser.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
@@ -472,7 +474,9 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
     const first = opened.current as string;
     assert.deepEqual(ctx.session.viewport(), { width: 390, height: 640 });
     // 窓より狭い（幅 500 未満）——窓は 500 で、ページの大きさの上書きを併せる。ページから見える大きさは画面の大きさ
-    assert.deepEqual(await ctx.session.page(first).page.evaluate(() => [innerWidth, innerHeight]), [390, 640]);
+    // （様子はタブができた時点で届く——開き終えるのを待ってから見る）
+    await ctx.session.page(first).page.waitForURL(`${base}/`);
+    assert.equal(await waitValue(() => ctx.session.page(first).page.evaluate(() => `${innerWidth}x${innerHeight}`), "390x640"), "390x640");
     await until("絵もその大きさ", () => phone.lastFrame()?.width === 390);
     // ＋で新しいタブ
     phone.post({ type: "tab", action: "new" });
@@ -482,7 +486,8 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
     phone.post({ type: "fit", on: false });
     await until("戻る", () => ctx.session.viewport().width === 1280);
     // 上書きも外れ、どちらのタブも窓の大きさ（ページの大きさはブラウザに1つ）
-    assert.deepEqual(await ctx.session.page(second).page.evaluate(() => [innerWidth, innerHeight]), [1280, 800]);
+    // （session.viewport() は変え始めに新しい値になる——ページが変わり終えるまで待つ）
+    assert.equal(await waitValue(() => ctx.session.page(second).page.evaluate(() => `${innerWidth}x${innerHeight}`), "1280x800"), "1280x800");
     ctx.session.select(first);
     assert.deepEqual(await waitValue(() => ctx.session.page(first).page.evaluate(() => `${innerWidth}x${innerHeight}`), "1280x800"), "1280x800");
     await ctx.session.close(second);
@@ -619,5 +624,277 @@ test("1 MiB を越えた絵は捨てて、画質を下げて張り直す（こ�
   } finally {
     pc.close(1000);
     await small.close();
+  }
+});
+
+// ---- 動画（v4-modules.md §4.1「動画で流す」） -------------------------------------------------------
+
+/** H.264 を復号して絵を見る道具（ffmpeg）。無ければ動画の試験は飛ばす */
+const ffmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+const videoSkip = skipReason || (ffmpeg ? false : "ffmpeg が無い（動画の絵を復号して確かめられない）");
+
+/** 受けた1通（動画）の頭と中身 */
+function videoUnit(data: Buffer): { header: VideoHeader; au: Buffer } {
+  const { header, jpeg } = decodeFrame(data);
+  return { header: header as unknown as VideoHeader, au: jpeg };
+}
+
+/**
+ * キーフレームから並べたアクセスユニットを復号し、最後の1枚（RGB）を返す。大きさはページ（CSS ピクセル）×いまの倍率
+ * （絵はページを倍率で描いた大きさ——前の試験の画面の倍率でブラウザが起き直していることがある）
+ */
+function decodeLast(aus: Buffer[], cssWidth: number, cssHeight: number, scale = ctx.session.scale ?? 1): Promise<Buffer> {
+  const width = cssWidth * scale;
+  const height = cssHeight * scale;
+  return new Promise((resolve, reject) => {
+    const child = spawn("ffmpeg", ["-loglevel", "error", "-f", "h264", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    let err = "";
+    child.stdout.on("data", (c: Buffer) => out.push(c));
+    child.stderr.on("data", (c: Buffer) => (err += c.toString()));
+    child.on("close", (code) => {
+      const all = Buffer.concat(out);
+      const size = width * height * 3;
+      if (code !== 0 || all.length < size || all.length % size !== 0) reject(new Error(`ffmpeg ${code}：${all.length} バイト（1枚 ${size}）${err}`));
+      else resolve(all.subarray(all.length - size));
+    });
+    child.stdin.end(Buffer.concat(aus));
+  });
+}
+
+/** 復号した絵の1画素を色の名前で（圧縮でにじむので、いちばん強い成分で分ける） */
+function colorAt(rgb: Buffer, width: number, x: number, y: number): string {
+  const i = (y * width + x) * 3;
+  const [r, g, b] = [rgb[i]!, rgb[i + 1]!, rgb[i + 2]!];
+  const hi = (v: number) => v > 160;
+  const lo = (v: number) => v < 120;
+  if (hi(r) && hi(g) && lo(b)) return "yellow";
+  if (hi(r) && lo(g) && lo(b)) return "red";
+  if (lo(r) && hi(g) && lo(b)) return "green";
+  if (lo(r) && lo(g) && hi(b)) return "blue";
+  return `rgb(${r},${g},${b})`;
+}
+
+/**
+ * 絵が `/corners` のページ（width×height の CSS ピクセルを倍率 scale で描いたもの）と画素単位で合うか：左上の赤い四角は
+ * (0,0)〜(15,15)、右下の緑は (w-16,h-16)〜(w-1,h-1)（CSS ピクセル）、その外は青。タブの帯・窓の枠が映っていれば左上が
+ * 赤にならず、絵がずれていれば境目が合わない
+ */
+function assertCorners(rgb: Buffer, cssWidth: number, cssHeight: number, what: string, scale = ctx.session.scale ?? 1): void {
+  const width = cssWidth * scale;
+  const height = cssHeight * scale;
+  const CORNER_PX = CORNER * scale;
+  const at = (x: number, y: number) => colorAt(rgb, width, x, y);
+  const got = {
+    topLeft: at(1, 1),
+    // 境目の両側の1画素ずつ
+    topLeftInner: at(CORNER_PX - 1, CORNER_PX - 1),
+    topLeftOutside: at(CORNER_PX, CORNER_PX),
+    bottomRight: at(width - 2, height - 2),
+    bottomRightInner: at(width - CORNER_PX, height - CORNER_PX),
+    bottomRightOutside: at(width - CORNER_PX - 1, height - CORNER_PX - 1),
+    middle: at(width >> 1, height >> 1),
+  };
+  assert.deepEqual(got, {
+    topLeft: "red",
+    topLeftInner: "red",
+    topLeftOutside: "blue",
+    bottomRight: "green",
+    bottomRightInner: "green",
+    bottomRightOutside: "blue",
+    middle: "blue",
+  }, what);
+}
+
+/**
+ * 届いた動画が止まって、最後の絵が pred を満たすまで待つ（Chrome は描き直しを2度に分けることがあり、間で 300ms 止まる
+ * ——1度止まったところで見ると前の絵のことがある）
+ */
+async function untilPicture(s: FakeSocket, cssWidth: number, cssHeight: number, what: string, pred: (rgb: Buffer) => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    await until("止まる", () => view.status().video?.state === "paused", 10_000);
+    const tail = sinceLastKey(s, cssWidth);
+    if (tail && pred(await decodeLast(tail.aus, cssWidth, cssHeight))) return;
+    if (Date.now() > deadline) throw new Error(`待ちきれませんでした：${what}`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+/** その画面に届いた動画の1通を、いちばん新しいキーフレームから最後まで（その大きさのものだけ） */
+function sinceLastKey(s: FakeSocket, width: number): { aus: Buffer[]; header: VideoHeader } | undefined {
+  const units = s.frames.map(videoUnit);
+  let k = -1;
+  for (let i = units.length - 1; i >= 0; i--) {
+    if (units[i]!.header.key && units[i]!.header.width === width) {
+      k = i;
+      break;
+    }
+  }
+  if (k < 0) return undefined;
+  const tail = units.slice(k);
+  return { aus: tail.map((u) => u.au), header: tail[0]!.header };
+}
+
+test("動画：H.264 を描ける画面には動画で流す——最初はキーフレーム、静かなページで流れが止まり、大きさを変えた後（幅 500 未満も）の絵はページと画素単位で合う。後から開いた画面もキーフレームから", { skip: videoSkip }, async () => {
+  await callTool(ctx, "browserAct", { action: "resize", width: 1280, height: 800 });
+  const page = (await ctx.session.currentOrNew()).page;
+  await page.goto(`${base}/corners`);
+  const pc = new FakeSocket();
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+  const other = new FakeSocket();
+  try {
+    const first = videoUnit(await until("最初の1通", () => pc.frames[0], 15_000));
+    assert.equal(first.header.codec, "h264", "H.264 を描ける画面に動画で流していない");
+    assert.equal(first.header.key, true, "最初の1通がキーフレームでない");
+    assert.deepEqual([first.header.width, first.header.height], [1280, 800]);
+    assert.ok(pc.frames.every((f) => f.length <= 1024 * 1024));
+
+    // **静かなページでは流れが止まる**（300ms 変化が無ければ PAUSED）
+    await until("流れが止まる", () => view.status().video?.state === "paused", 10_000);
+    const stillUnits = pc.frames.length;
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(pc.frames.length, stillUnits, "止まっているのに送り続けた");
+    let rgb = await decodeLast(sinceLastKey(pc, 1280)!.aus, 1280, 800);
+    assertCorners(rgb, 1280, 800, "1280×800 の絵");
+
+    // ページが変わると流れ直す
+    await page.evaluate(() => document.body.append("動いた"));
+    await until("変化で流れ直す", () => pc.frames.length > stillUnits, 5_000);
+
+    // **大きさを変える**（窓の3手）：変えた後の最初の1通はキーフレームで頭は新しい大きさ。絵はページと画素単位で合う
+    for (const [w, h] of [
+      [1024, 768],
+      [390, 640], // 窓の下限（500）より狭い——窓は 500 で、ページの大きさの上書きを併せる
+      [1280, 800],
+    ] as const) {
+      const from = pc.frames.length;
+      await callTool(ctx, "browserAct", { action: "resize", width: w, height: h });
+      assert.deepEqual(await page.evaluate(() => [innerWidth, innerHeight]), [w, h], "resize が返ったのにページの大きさが変わっていない");
+      const fresh = videoUnit(await until(`${w}×${h} の1通`, () => pc.frames.slice(from).find((f) => videoUnit(f).header.width === w), 10_000));
+      assert.equal(fresh.header.key, true, `${w}×${h}：大きさを変えた後の最初の1通がキーフレームでない`);
+      // 変えた後に来た1通は全部新しい大きさ（変えている間の絵を流していない）
+      const after = pc.frames.slice(from).map((f) => videoUnit(f).header);
+      const firstNew = after.findIndex((x) => x.width === w);
+      assert.ok(after.slice(firstNew).every((x) => x.width === w && x.height === h), JSON.stringify(after.map((x) => `${x.width}x${x.height}${x.key ? "K" : ""}`)));
+      await until(`${w}×${h} で止まる`, () => view.status().video?.state === "paused", 10_000);
+      rgb = await decodeLast(sinceLastKey(pc, w)!.aus, w, h);
+      assertCorners(rgb, w, h, `${w}×${h} の絵`);
+    }
+
+    // **後から開いた画面にはキーフレームから**（止まっていても流し直す）
+    view.handler()(other as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+    const otherFirst = videoUnit(await until("後から開いた画面の1通", () => other.frames[0], 10_000));
+    assert.equal(otherFirst.header.key, true, "後から開いた画面の最初の1通がキーフレームでない");
+    await until("止まる", () => view.status().video?.state === "paused", 10_000);
+    assertCorners(await decodeLast(sinceLastKey(other, 1280)!.aus, 1280, 800), 1280, 800, "後から開いた画面の絵");
+    assert.deepEqual(view.status().video?.viewers, 2);
+
+    // 人の入力は動画の画面からもページに届く（screencast を張っていなくても）
+    await page.evaluate(() => {
+      (window as unknown as { clicked: number[] }).clicked = [];
+      addEventListener("click", (e) => (window as unknown as { clicked: number[] }).clicked.push(e.clientX, e.clientY));
+    });
+    for (const event of ["down", "up"]) pc.post({ type: "mouse", event, x: 640, y: 400, button: "left", buttons: event === "down" ? 1 : 0, clickCount: 1 });
+    assert.equal(await waitValue(() => page.evaluate(() => (window as unknown as { clicked: number[] }).clicked.join(",")), "640,400"), "640,400");
+
+    // **復号に失敗した画面にはキーフレームから送り直す**
+    const before = other.frames.length;
+    other.post({ type: "keyframe" });
+    const again = videoUnit(await until("頼んだキーフレーム", () => other.frames[before], 10_000));
+    assert.equal(again.header.key, true);
+
+    // **描けなくなった画面は JPEG に落とす**（codec）。もう1つの画面は動画のまま
+    other.post({ type: "codec", codec: "jpeg" });
+    const jpegFrom = other.frames.length;
+    await page.evaluate(() => document.body.append("JPEG"));
+    const jpeg = await until("JPEG の絵", () => other.frames.slice(jpegFrom).find((f) => (decodeFrame(f).header as unknown as VideoHeader).codec === undefined), 10_000);
+    assert.ok(readJpegSize(decodeFrame(jpeg).jpeg), "JPEG ではない");
+    await until("動画の画面は1つ", () => view.status().video?.viewers === 1);
+    assert.equal(view.status().screencasting, true);
+  } finally {
+    pc.close(1000);
+    other.close(1000);
+  }
+  await until("閉じたら動画を止める", () => view.status().video === undefined && !view.status().screencasting, 10_000);
+});
+
+test("動画：ポップアップ（window.open の別の窓）と _blank は新しいタブになり、窓は同じ大きさの全画面に合わせ、いま選んでいるタブの絵を映し続ける。選ぶとその絵になる", { skip: videoSkip }, async () => {
+  await callTool(ctx, "browserAct", { action: "resize", width: 1024, height: 768 });
+  for (const t of await ctx.session.listTabs()) if (t.id !== ctx.session.current) await ctx.session.close(t.id);
+  const page = (await ctx.session.currentOrNew()).page;
+  const main = ctx.session.current!;
+  await page.goto(`${base}/corners`);
+  const pc = new FakeSocket();
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+  try {
+    await until("最初の1通", () => pc.frames[0], 15_000);
+    for (const how of ["#popup", "#blank"]) {
+      const tabs = (await ctx.session.listTabs()).length;
+      await page.click(how);
+      assert.equal(await waitValue(async () => (await ctx.session.listTabs()).length, tabs + 1), tabs + 1, `${how} のタブができない`);
+      const opened = (await ctx.session.listTabs()).at(-1)!;
+      const popup = ctx.session.page(opened.id).page;
+      await popup.waitForLoadState("load");
+      // ブラウザは新しい窓・タブを前に出すが、人が見ているのは選んでいるタブ（main）のまま
+      assert.equal(ctx.session.current, main, `${how}：選んでいるタブが替わった`);
+      assert.equal(await waitValue(() => popup.evaluate(() => `${innerWidth}x${innerHeight}`), "1024x768"), "1024x768", `${how}：新しい窓の大きさが合っていない`);
+      const from = pc.frames.length;
+      await page.evaluate(() => document.body.append("."));
+      await until("流れ直す", () => pc.frames.length > from, 5_000);
+      await until("止まる", () => view.status().video?.state === "paused", 10_000);
+      // 映っているのは選んでいるタブ（青いページの角の印）——ポップアップの黄色や URL 帯ではない
+      pc.post({ type: "keyframe" });
+      const keyFrom = pc.frames.length;
+      await until("キーフレーム", () => pc.frames.slice(keyFrom).some((f) => videoUnit(f).header.key), 10_000);
+      await until("止まる", () => view.status().video?.state === "paused", 10_000);
+      assertCorners(await decodeLast(sinceLastKey(pc, 1024)!.aus, 1024, 768), 1024, 768, `${how} を開いた後の選んでいるタブの絵`);
+      // 選ぶとその絵になる（全面が黄）
+      ctx.session.select(opened.id);
+      await until("ポップアップの絵", () => pc.frames.slice(keyFrom).some((f) => videoUnit(f).header.tab === opened.id), 10_000);
+      const k = ctx.session.scale ?? 1;
+      await untilPicture(pc, 1024, 768, `${how}：選んだポップアップの絵（全面が黄）`, (rgb) =>
+        [colorAt(rgb, 1024 * k, 1, 1), colorAt(rgb, 1024 * k, 1024 * k - 2, 768 * k - 2), colorAt(rgb, 1024 * k, 512 * k, 384 * k)].every((c) => c === "yellow"),
+      );
+      await ctx.session.close(opened.id);
+      ctx.session.select(main);
+      await until("元のタブ", () => ctx.session.current === main);
+    }
+    // ＋（newTab）で開いたタブは前に出て、その絵（空のページ——白）になる
+    const added = await ctx.session.newTab();
+    const addFrom = pc.frames.length;
+    await until("新しいタブの絵", () => pc.frames.slice(addFrom).some((f) => videoUnit(f).header.tab === added.id), 10_000);
+    const white = (rgb: Buffer, x: number, y: number) => {
+      const i = (y * 1024 * (ctx.session.scale ?? 1) + x) * 3;
+      return rgb[i]! > 200 && rgb[i + 1]! > 200 && rgb[i + 2]! > 200;
+    };
+    await untilPicture(pc, 1024, 768, "＋で開いたタブが前に出る（空のページ——白）", (rgb) => white(rgb, 2, 2) && white(rgb, 500, 300));
+    await ctx.session.close(added.id);
+  } finally {
+    pc.close(1000);
+  }
+});
+
+test("動画：GStreamer が無い（入れられない）ブラウザでは、H.264 を描ける画面にも JPEG で映し、理由を様子で伝える", { skip: skipReason }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-browser-novideo-test-"));
+  const reason = "動画で映すための GStreamer がありません（試験）。JPEG で映します";
+  const nv = await createBrowserContextFromDataDir(dir, { ...browserOpts, video: { available: false, reason } });
+  const nvView = new BrowserView({ session: nv.session, state: nv.state, log: nv.log, logLine: () => undefined });
+  nv.view = nvView;
+  const pc = new FakeSocket();
+  try {
+    nvView.handler()(pc as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+    await until("ブラウザが起きた", () => nv.session.running, 60_000);
+    pc.post({ type: "navigate", url: base.replace("http://", "") + "/corners" });
+    const f = await until("絵", () => pc.frames[0], 15_000);
+    assert.equal((decodeFrame(f).header as unknown as VideoHeader).codec, undefined, "動画で流した");
+    assert.ok(readJpegSize(decodeFrame(f).jpeg));
+    await until("理由", () => pc.texts.find((t) => t.type === "state" && t.videoUnavailable === reason));
+    assert.equal(nvView.status().video, undefined);
+  } finally {
+    pc.close(1000);
+    await nvView.close();
+    await nv.session.stop("試験の終わり");
+    rmSync(dir, { recursive: true, force: true });
   }
 });

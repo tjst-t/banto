@@ -10,6 +10,9 @@
 // `/frame` は**別オリジンの iframe**（127.0.0.1 で開けば localhost、逆も同じ——別のサイトなので別のプロセスで描かれる）を
 // 置いたページ。iframe の中は全面が1色で、読み終えて少し待ってから1度だけ色を変え（静かなページの最後の描画）、押すたびに
 // 次の色へ変えて押された数をサーバに知らせる（`/api/frame-clicks` で読める）。
+// `/corners` は**絵とページが画素単位で合うか**を見るページ（人の画面の動画——v4-modules.md §4.1「動画で流す」）。全面が青で、
+// 左上と右下の角に CORNER px の赤と緑の四角（ページの大きさが変わっても角に付く）。押すと window.open のポップアップ
+// （大きさを指定した別の窓）と `_blank` の新しいタブを開ける。`/popup` はポップアップの中身（全面が黄）。
 
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -54,6 +57,18 @@ function wsTextFrame(text: string): Buffer {
   if (payload.length >= 126) throw new Error("試験のフレームは短いものだけ");
   return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
 }
+
+/** `/corners` の角の四角の大きさ（CSS ピクセル）と色 */
+export const CORNER = 16;
+export const CORNER_COLORS = { page: "#0000ff", topLeft: "#ff0000", bottomRight: "#00ff00", popup: "#ffff00" } as const;
+
+const CORNERS = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>角の印</title></head>
+<body style="margin:0;background:${CORNER_COLORS.page};overflow:hidden">
+<div style="position:fixed;left:0;top:0;width:${CORNER}px;height:${CORNER}px;background:${CORNER_COLORS.topLeft}"></div>
+<div style="position:fixed;right:0;bottom:0;width:${CORNER}px;height:${CORNER}px;background:${CORNER_COLORS.bottomRight}"></div>
+<button id="popup" style="position:absolute;left:100px;top:100px" onclick="window.open('/popup','pop','width=300,height=200')">ポップアップ</button>
+<a id="blank" style="position:absolute;left:100px;top:160px;color:#fff" href="/popup" target="_blank">新しいタブ</a>
+</body></html>`;
 
 /** `/frame` の iframe の位置と大きさ（ページの CSS ピクセル）と、色の移り変わり（読み終えて少し後に [1]、押すたびに次へ） */
 export const FRAME_BOX = { x: 100, y: 100, width: 400, height: 300 };
@@ -113,6 +128,14 @@ export function createTestPageServer(): Server {
         res.setHeader("set-cookie", `${TEST_COOKIE}; Path=/; Max-Age=86400; SameSite=Lax`);
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(PAGE);
+        return;
+      case "/corners":
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(CORNERS);
+        return;
+      case "/popup":
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>ポップアップ</title></head><body style="margin:0;background:${CORNER_COLORS.popup}"></body></html>`);
         return;
       case "/second":
         res.setHeader("content-type", "text/html; charset=utf-8");
