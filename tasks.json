@@ -6856,7 +6856,7 @@
       "number": 284,
       "kind": "bug",
       "title": "Factory の実装役（Claude Code のサブエージェント）が、ACP の書き込みの EPIPE で途中で落ちる（3回目）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -6871,7 +6871,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-13T07:33:38.431Z",
-      "updatedAt": "2026-10-13T07:33:38.431Z",
+      "updatedAt": "2026-10-13T07:34:49.755Z",
       "closedAt": null,
       "extra": {}
     }
