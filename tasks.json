@@ -6927,6 +6927,29 @@
       "updatedAt": "2026-10-13T10:04:49.797Z",
       "closedAt": "2026-10-13T10:04:49.797Z",
       "extra": {}
+    },
+    {
+      "id": "move-closed-service-blip",
+      "number": 287,
+      "kind": "bug",
+      "title": "閉じた別のサーバの Project を移すと、元のサーバで Service が数秒だけ起きて止まる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "#268 のレビューの指摘（2026-10-13、取り込みは止めなかった）。core/src/runtime/project-move.ts の run() の step 5（`if (!this.sourceTakenBy(project))`）で、閉じた Project を元の実行場所が空いたまま移すとき、元で Service の Module を起こして disableAllServices を呼ぶ。閉じたときに unit を消してあるので、Module が起きた reconcile が unit を作り直して desired=running のものを一瞬起こし、直後に止める。ポートを使う・起動時に副作用のある Service だと困る。閉じた別のサーバの Project（status=closed かつ remote）は閉じたときに suspendAllServices で止めてあるので、sourceTakenBy に限らずこの段を飛ばしてよい（移す先は移した印で止めたままになる）。E2E は先を取られた側しか見ていない。",
+      "doneWhen": "閉じた別のサーバの Project を（元の実行場所が空いたまま）移しても、元のサーバで Service が起きないことを E2E で確かめた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-13T12:27:46.731Z",
+      "updatedAt": "2026-10-13T12:27:46.731Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
