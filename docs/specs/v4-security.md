@@ -377,6 +377,18 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   孤児と見なして止めて消す・Service の `ports` が Project どうしでぶつかる——コンテナでは `~/.config/systemd/user` と
   ネットワークが Project ごとに別だったので起きなかった。2つ目を選ぼうとしたら理由を出して断る。複数置きたいときは
   向こうのコンテナの段（あとで足す）を使う
+- **閉じた Project は数えない——閉じたら実行場所は空く**（決定・2026-10-13、ユーザー、案A。Backlog `runtime-release-closed`）。
+  以前は閉じた Project も数えたので、別のサーバの Project を閉じるとその VM に二度と新しい Project を置けなかった。
+  - 閉じるとき（Module を畳むのに加えて）、その実行場所の **Service の unit の自動起動を切る**（`systemctl --user disable`、
+    Service Module の tool で。止まっていても enable のままだと向こうの起こし直しで勝手に起き、次に来た Project の Service と
+    ぶつかる）。Service の登録（Module の置き場の `services.json`）はそのまま——再開して Service Module が起きれば今どおり
+    登録から unit を作り直す
+  - **フォルダと Module の置き場は消さずに残す**。Module の置き場は Project ごとの名前なので、次に来た Project とはぶつからない。
+    向こうに残ったものを消す操作は作らない（2026-10-13、ユーザー「今は作らない」）。消すのは人
+  - **閉じた Project を再開するとき**、その実行場所が別の Project に使われていたら再開を断り（409、理由つき）、画面は
+    「別の実行場所へ移す」（下）を開いて選び直してもらう。空いていれば今どおり再開する。再開と作成・移すは同じ単一化の
+    鍵で押さえる（同時に同じ実行場所を取り合わない）
+  - この機械のコンテナの Project には関係しない（数に決まりが無い）
 
 **実装の形**（済み・2026-10-10、Backlog `remote-runtime-registry`。画面はモック abb6ef82 の形で決定・2026-10-10、ユーザー）：
 
