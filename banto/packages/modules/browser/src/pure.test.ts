@@ -9,6 +9,8 @@ import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import { pageContent } from "./content.js";
 import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv } from "./chrome.js";
 import { acceptLanguages, parseBrowserVersion } from "./identity.js";
+import { MAX_VIDEO_PIXELS, encodeVideoMessages, ensureVideo, h264CodecString, videoRegion } from "./video.js";
+import { decodeFrame } from "./view-stream.js";
 import { launchWithInstall, type Installer } from "./install.js";
 import { defaultRegion, ensureCjkFont, fontconfigXml } from "./fonts.js";
 import { DEFAULT_LIMITS, NetworkLog, formatDetail, formatLine, toHar, type NetworkRecord } from "./network-log.js";
@@ -317,6 +319,9 @@ test("入れる：無ければブラウザを入れ、ライブラリが足り�
     async installFonts() {
       done.push("fonts");
     },
+    async installVideo() {
+      done.push("video");
+    },
   };
   const failures = [new Error("Executable doesn't exist at /opt/google/chrome/chrome"), new Error("Host system is missing dependencies to run browsers（Xvfb がありません）")];
   const launched = await launchWithInstall(async () => {
@@ -414,6 +419,74 @@ test("字体：sudo しない箱では入れずに理由と入れ方を返す（
     else process.env.BANTO_NO_SUDO = before.noSudo;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("動画：GStreamer が無ければ入れる。sudo しない箱では入れずに理由（JPEG で映す）。入れられない・入れても足りないときも理由", async () => {
+  const before = process.env.BANTO_NO_SUDO;
+  let installs = 0;
+  const install = async () => {
+    installs++;
+  };
+  try {
+    assert.deepEqual(await ensureVideo(install, undefined, async () => undefined), { available: true });
+    assert.equal(installs, 0, "あるのに入れた");
+    process.env.BANTO_NO_SUDO = "1";
+    const remote = await ensureVideo(install, undefined, async () => "GStreamer の要素がありません: x264enc");
+    assert.equal(installs, 0, "sudo しない箱で入れようとした");
+    assert.equal(remote.available, false);
+    assert.match(remote.reason ?? "", /x264enc.*sudo しないので自動では入れません。JPEG で映します。.*gstreamer1\.0-plugins-ugly/);
+    delete process.env.BANTO_NO_SUDO;
+    // 入れたら使える
+    let present = false;
+    const ok = await ensureVideo(async () => {
+      installs++;
+      present = true;
+    }, undefined, async () => (present ? undefined : "無い"));
+    assert.deepEqual(ok, { available: true });
+    assert.equal(installs, 1);
+    const failed = await ensureVideo(async () => {
+      throw new Error("終了コード 100");
+    }, undefined, async () => "無い");
+    assert.match(failed.reason ?? "", /入れられませんでした（終了コード 100）。JPEG で映します/);
+    const still = await ensureVideo(install, undefined, async () => "まだ無い");
+    assert.match(still.reason ?? "", /入れましたが、まだ動画で映せません（まだ無い）/);
+  } finally {
+    if (before === undefined) delete process.env.BANTO_NO_SUDO;
+    else process.env.BANTO_NO_SUDO = before;
+  }
+});
+
+test("動画：取り込む範囲はページ×倍率（偶数に落とす）。2560×1600 を越えたら同じ比で縮めて圧縮し、仮想の画面より大きいページは取り込まない", () => {
+  const screen2 = { width: 3840, height: 2160 };
+  assert.deepEqual(videoRegion({ width: 1280, height: 800 }, 2, screen2), { w: 2560, h: 1600, ew: 2560, eh: 1600 });
+  assert.deepEqual(videoRegion({ width: 1280, height: 800 }, 1, { width: 1920, height: 1080 }), { w: 1280, h: 800, ew: 1280, eh: 800 });
+  // 幅 500 未満（上書き）も左上から取り込む。奇数は1画素落とす
+  assert.deepEqual(videoRegion({ width: 390, height: 844 }, 2, screen2), { w: 780, h: 1688, ew: 780, eh: 1688 });
+  assert.deepEqual(videoRegion({ width: 391, height: 641 }, 1, { width: 1920, height: 1080 }), { w: 390, h: 640, ew: 390, eh: 640 });
+  // 1920×1080 を倍率2：3840×2160 を取り込み、2560×1600 の画素数まで縮める
+  const big = videoRegion({ width: 1920, height: 1080 }, 2, screen2)!;
+  assert.deepEqual([big.w, big.h], [3840, 2160]);
+  assert.ok(big.ew * big.eh <= MAX_VIDEO_PIXELS && big.ew % 2 === 0 && big.eh % 2 === 0, JSON.stringify(big));
+  assert.ok(Math.abs(big.ew / big.eh - 16 / 9) < 0.01);
+  // 仮想の画面より大きい（AI の resize 2560×1440 を倍率1）——JPEG で映す
+  assert.equal(videoRegion({ width: 2560, height: 1440 }, 1, { width: 1920, height: 1080 }), undefined);
+});
+
+test("動画：1 MiB を越えるアクセスユニットは分けて送り、頭の part・parts でつなぎ直せる。SPS から codec の名前を読む", () => {
+  const au = Buffer.concat([Buffer.from([0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x33, 9, 9]), Buffer.alloc(5000, 7)]);
+  assert.equal(h264CodecString(au), "avc1.42C033");
+  assert.equal(h264CodecString(Buffer.from([0, 0, 0, 1, 0x41, 1, 2, 3])), undefined);
+  const header = { seq: 4, tab: "t1", width: 1280, height: 800, codec: "h264" as const, key: true };
+  const one = encodeVideoMessages(header, au, 1024 * 1024);
+  assert.equal(one.length, 1);
+  assert.deepEqual(decodeFrame(one[0]!).header, header);
+  const parts = encodeVideoMessages(header, au, 1200);
+  assert.ok(parts.length > 1);
+  const heads = parts.map((m) => decodeFrame(m).header as unknown as { part: number; parts: number; seq: number; key: boolean });
+  assert.ok(parts.every((m) => m.length <= 1200), parts.map((m) => m.length).join(","));
+  assert.deepEqual(heads.map((h) => h.part), [...parts.keys()]);
+  assert.ok(heads.every((h) => h.parts === parts.length && h.seq === 4 && h.key));
+  assert.deepEqual(Buffer.concat(parts.map((m) => decodeFrame(m).jpeg)), au);
 });
 
 test("起こし方：前の Module が残した Xvfb は止め、同じ名前でも別のプロセスは止めない", async () => {

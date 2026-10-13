@@ -32,13 +32,13 @@ import { formatDetail, formatLine, matchesStatus, toHar, type NetworkLog } from 
 import type { BrowserSession } from "./session.js";
 import type { StateFile } from "./state.js";
 import { BROWSER_VIEW_URI } from "./view-app.js";
-import type { AiActionEvent } from "./view-stream.js";
+import type { AiActionEvent, ViewStatus } from "./view-stream.js";
 
 /** 道具から人の画面へ知らせる口（view-stream.ts の BrowserView）。画面の無い試験では省く */
 export interface ViewHooks {
   aiAction(event: AiActionEvent): void;
   refresh(): void;
-  status(): { viewers: number; watching: number; screencasting: boolean; screencastTab?: string };
+  status(): ViewStatus;
 }
 
 export interface ToolContext {
@@ -125,7 +125,7 @@ export const TOOLS = [
     description:
       "ページを操作する。action：click（ref）・type（ref・text、submit で Enter も押す。中身を置き換える）・press（key——Enter・Tab・Control+A 等、ref で先に要素へ）・" +
       "select（ref・values）・hover（ref）・scroll（ref まで、または dx・dy ピクセル）・back・forward・reload・" +
-      "waitFor（text が出るまで・textGone が消えるまで・timeMs 待つ）・resize（width・height、CSS ピクセル）。" +
+      "waitFor（text が出るまで・textGone が消えるまで・timeMs 待つ）・resize（width・height、CSS ピクセル。全部のタブに効く）。" +
       `返すのは操作後のツリー（短く）と、その間に失敗した通信・出たエラーの数。${CAPTCHA_NOTE}${PAGE_NOTE}。${BLOCK_NOTE}`,
     inputSchema: {
       type: "object",
@@ -646,8 +646,9 @@ async function act(ctx: ToolContext, a: ActArgs, onProgress: Progress, notify: N
       done = "待ちました";
       break;
     case "resize":
-      await ctx.session.setViewport(page, { width: a.width, height: a.height });
-      done = `ページの大きさを ${a.width}×${a.height} にしました`;
+      // ページの大きさはブラウザに1つ（窓で決める——session.ts の setViewport）。どのタブでも全部のタブに効く
+      await ctx.session.setViewport({ width: a.width, height: a.height });
+      done = `ページの大きさを ${a.width}×${a.height} にしました（全部のタブ）`;
       shown = done;
       ctx.view?.refresh(); // 映す絵の大きさを張り直す
       break;

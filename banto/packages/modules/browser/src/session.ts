@@ -7,6 +7,7 @@ import type { BrowserContext, CDPSession, Page } from "playwright-core";
 import { BrowserError } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import type { ConsoleLevel, NetworkLog } from "./network-log.js";
+import type { VideoSupport } from "./video.js";
 
 export interface SessionDeps {
   profileDir: string;
@@ -25,6 +26,11 @@ export interface LaunchedBrowser {
   scale: number;
   /** 起こせたが、足りないものがある（日本語の字体が入れられなかった等——fonts.ts）。状態を見る口が返す */
   notice?: string;
+  /** 仮想の画面の名前と大きさ（デバイスピクセル）。動画の取り込みが使う（chrome.ts・video.ts） */
+  display?: string;
+  screen?: { width: number; height: number };
+  /** 人の画面を動画で流せるか（GStreamer があるか——video.ts の ensureVideo） */
+  video?: VideoSupport;
   /** ブラウザを閉じる（プロセスと仮想の画面も止める） */
   close: () => Promise<void>;
 }
@@ -38,6 +44,15 @@ export interface TabInfo {
 
 /** 起こしたときのページの大きさ（screencast の既定と同じ。AI は browserAct の resize で変える） */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
+/**
+ * **窓の幅の下限**（Google Chrome の窓の最小幅。実測・2026-10-13：400 を指定しても innerWidth は 500）。これより狭いページは
+ * 窓を 500 にして、ページの大きさの上書き（`Emulation.setDeviceMetricsOverride`）を併せる——上書きしたページは窓の左上
+ * (0,0) から描かれ（390×844 を倍率2で 780×1688、画素単位で一致——実測）、動画はページの大きさだけを取り込む
+ * （v4-modules.md §4.1「動画で流す」の穴①）。高さの下限は 100 以下（実測）で、resize の下限と同じなので上書きは要らない
+ */
+export const MIN_WINDOW_WIDTH = 500;
+/** 窓の大きさを変えたあと、ページの innerWidth・innerHeight が新しい値になるまで待つ上限（実測は 40〜110ms） */
+const SETTLE_TIMEOUT_MS = 2_000;
 
 export class BrowserSession {
   private context: BrowserContext | undefined;
@@ -46,10 +61,26 @@ export class BrowserSession {
   private readonly pages = new Map<string, Page>();
   /** 登録が終わる（CDP の Network を有効にし終える）まで待てるように、約束で持つ */
   private readonly ids = new WeakMap<Page, Promise<string>>();
-  /** タブごとに開いたままの CDP の口（通信の記録と、ページの倍率を本物にする上書き——setViewport） */
+  /** タブごとに開いたままの CDP の口（通信の記録と、窓より狭いページの大きさの上書き——setViewport） */
   private readonly cdps = new WeakMap<Page, CDPSession>();
-  /** タブのページの大きさ（setViewport。Playwright の viewportSize は使わない——setViewport の説明） */
-  private readonly viewports = new WeakMap<Page, { width: number; height: number }>();
+  /** タブの CDP の target の id（そのタブの窓を引く——Browser.getWindowForTarget） */
+  private readonly targetIds = new WeakMap<Page, string>();
+  /** ページの大きさを上書きしているタブ（窓より狭いページ） */
+  private readonly overridden = new WeakSet<Page>();
+  /** **ページの大きさ（CSS ピクセル）。ブラウザに1つ**——窓で決めるので、タブごとには持たない（setViewport） */
+  private size = { ...DEFAULT_VIEWPORT };
+  /** 窓ごとに、合わせ終えた大きさ（`1280x800`）。ポップアップの窓も、できたときに合わせる */
+  private readonly placed = new Map<number, string>();
+  /** ブラウザ全体の CDP の口（窓の大きさ） */
+  private browserCdp: Promise<CDPSession> | undefined;
+  /** 窓の大きさを変える操作は1つずつ */
+  private windowChain: Promise<void> = Promise.resolve();
+  /** 大きさを変えている間（人の画面は動画を流さない——view-stream.ts） */
+  resizing = false;
+  /**
+   * 大きさを変える前に呼ぶ（人の画面が動画の取り込みを止め終えるまで待つ——変えている間の絵を流さないため。view-stream.ts が置く）
+   */
+  beforeResize: (() => Promise<void>) | undefined;
   private currentTab: string | undefined;
   private nextTab = 1;
   private idleTimer: NodeJS.Timeout | undefined;
@@ -75,30 +106,123 @@ export class BrowserSession {
     return this.context ? this.launched?.notice : undefined;
   }
 
+  /** 動いているブラウザの仮想の画面（名前・デバイスピクセルの大きさ）と、動画で流せるか（動いていなければ undefined） */
+  get display(): { name: string; screen: { width: number; height: number }; video: VideoSupport } | undefined {
+    const l = this.launched;
+    if (!this.context || !l?.display || !l.screen) return undefined;
+    return { name: l.display, screen: l.screen, video: l.video ?? { available: false, reason: "動画で流せるかを確かめていません" } };
+  }
+
   /** 動いているブラウザの描く倍率（動いていなければ undefined） */
   get scale(): number | undefined {
     return this.context ? this.launched?.scale : undefined;
   }
 
   /**
-   * タブのページの大きさ（CSS ピクセル）を変える。**ページの大きさの上書きはこの口の1つだけ**（`Emulation.setDeviceMetricsOverride`
-   * を、タブごとに開いたままの CDP の口から）。deviceScaleFactor は 0（上書きしない）——起こした倍率（chrome.ts）がそのまま
-   * ページの devicePixelRatio になる（偽の値を差し込まない——§4.1「起こし方」）。screen も上書きしない（仮想の画面の大きさ）。
-   * **Playwright の setViewportSize は使わない**：deviceScaleFactor を 1 に上書きし、こちらの上書きと2つが競う——どちらが効くかが
-   * 定まらず、倍率2で起こしたページから devicePixelRatio が 1 に見えることがあった（実測・2026-10-11：試験で約30回中2回）
+   * **ページの大きさ（CSS ピクセル）を変える**——ブラウザに1つ（全部のタブ・窓）。**窓で決める**（v4-modules.md §4.1「動画で流す」(a)）：
+   * 窓をキオスク形の全画面にしたまま大きさを変えるには、`Browser.setWindowBounds` で「normal にする → 大きさを指定 →
+   * fullscreen に戻す」の3手が要る（fullscreen のまま大きさだけは変えられない）。これでページの innerWidth×倍率と、Xvfb の
+   * (0,0) から取り込んだ絵が画素単位で一致する。**`Emulation.setDeviceMetricsOverride` だけで変えない**——窓の中に模擬した
+   * viewport を描くので、画面を取り込むとページと絵が食い違う。窓より狭いページ（幅 500 未満）だけ上書きを併せる（MIN_WINDOW_WIDTH）。
+   * 上書きの deviceScaleFactor は 0（上書きしない）——起こした倍率（chrome.ts）がそのままページの devicePixelRatio になる。
+   * **Playwright の setViewportSize は使わない**（deviceScaleFactor を 1 に上書きし、倍率2のページから 1 に見えることがあった——
+   * 実測・2026-10-11）。変え終えたら、いま選んでいるタブの innerWidth・innerHeight が新しい値になるまで待ってから返す
    */
-  async setViewport(page: Page, size: { width: number; height: number }): Promise<void> {
+  async setViewport(size: { width: number; height: number }): Promise<void> {
+    if (!this.context) throw new BrowserError("ブラウザが動いていません");
+    const run = this.windowChain.then(async () => {
+      this.resizing = true;
+      this.emit();
+      try {
+        await this.beforeResize?.();
+        this.size = { width: size.width, height: size.height };
+        for (const page of this.pages.values()) await this.fitWindow(page);
+        for (const page of this.pages.values()) await this.applyOverride(page);
+        await this.frontCurrent();
+        await this.settle();
+      } finally {
+        this.resizing = false;
+        this.emit();
+      }
+    });
+    this.windowChain = run.catch(() => undefined);
+    await run;
+  }
+
+  /** ページの大きさ（CSS ピクセル。ブラウザに1つ——setViewport） */
+  viewport(): { width: number; height: number } {
+    return { ...this.size };
+  }
+
+  private cdpForBrowser(): Promise<CDPSession> {
+    const browser = this.context?.browser();
+    if (!browser) return Promise.reject(new BrowserError("ブラウザに繋がっていません"));
+    this.browserCdp ??= browser.newBrowserCDPSession();
+    return this.browserCdp;
+  }
+
+  /** そのタブの窓を、いまのページの大きさ（窓の下限まで）の全画面にする。合わせ終えた窓は飛ばす */
+  private async fitWindow(page: Page): Promise<void> {
+    const targetId = this.targetIds.get(page);
+    if (!targetId || page.isClosed()) return;
+    const cdp = await this.cdpForBrowser();
+    const { windowId } = (await cdp.send("Browser.getWindowForTarget", { targetId })) as { windowId: number };
+    const width = Math.max(MIN_WINDOW_WIDTH, this.size.width);
+    const key = `${width}x${this.size.height}`;
+    if (this.placed.get(windowId) === key) return;
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { left: 0, top: 0, width, height: this.size.height } });
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "fullscreen" } });
+    this.placed.set(windowId, key);
+  }
+
+  /** 窓より狭いページだけ大きさを上書きする（そうでなければ外す） */
+  private async applyOverride(page: Page): Promise<void> {
     const cdp = this.cdps.get(page);
-    if (!cdp) throw new BrowserError("タブの CDP の口がありません（繋ぐ前か、閉じた後）");
-    await cdp.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: 0, mobile: false });
-    this.viewports.set(page, { width: size.width, height: size.height });
+    if (!cdp || page.isClosed()) return;
+    if (this.size.width < MIN_WINDOW_WIDTH) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: this.size.width, height: this.size.height, deviceScaleFactor: 0, mobile: false });
+      this.overridden.add(page);
+    } else if (this.overridden.has(page)) {
+      await cdp.send("Emulation.clearDeviceMetricsOverride");
+      this.overridden.delete(page);
+    }
   }
 
-  /** タブのページの大きさ（CSS ピクセル。setViewport で決めたもの——登録の前なら既定） */
-  viewport(page: Page): { width: number; height: number } {
-    return { ...(this.viewports.get(page) ?? DEFAULT_VIEWPORT) };
+  /** いま選んでいるタブを前に出す（画面に映るのは前にある窓のタブ——動画はそれを取り込む） */
+  private async frontCurrent(): Promise<void> {
+    const id = this.currentTab;
+    const page = id !== undefined ? this.pages.get(id) : undefined;
+    if (page && !page.isClosed()) await page.bringToFront();
   }
 
+  /** いま選んでいるタブの innerWidth・innerHeight が、いまのページの大きさになるまで待つ。来なければ理由を残して進む */
+  private async settle(): Promise<void> {
+    const id = this.currentTab;
+    const page = id !== undefined ? this.pages.get(id) : undefined;
+    const cdp = page ? this.cdps.get(page) : undefined;
+    if (!page || !cdp) return;
+    const want = `${this.size.width}x${this.size.height}`;
+    const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+    let last = "";
+    while (Date.now() < deadline && !page.isClosed()) {
+      const r = (await Promise.race([
+        cdp.send("Runtime.evaluate", { expression: "innerWidth + 'x' + innerHeight", returnByValue: true }),
+        new Promise<undefined>((resolve) => setTimeout(resolve, 500)),
+      ]).catch(() => undefined)) as { result?: { value?: string } } | undefined;
+      last = r?.result?.value ?? "（読めない）";
+      if (last === want) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    console.error(`[browser] ページの大きさが ${want} になりませんでした（${last}）`);
+  }
+
+  /** 窓の操作を順に流す（大きさの変更と、新しいタブの窓合わせが混ざらないように）。失敗は理由を残す */
+  private onWindows(what: string, work: () => Promise<void>): Promise<void> {
+    const run = this.windowChain.then(work).catch((err: Error) => console.error(`[browser] ${what}: ${err.message}`));
+    this.windowChain = run;
+    return run;
+  }
 
   /** AI の呼び出しがあった——止めるまでの時計を巻き戻す */
   touch(): void {
@@ -195,6 +319,9 @@ export class BrowserSession {
   private forget(): void {
     this.context = undefined;
     this.pages.clear();
+    this.placed.clear();
+    this.browserCdp = undefined;
+    this.size = { ...DEFAULT_VIEWPORT };
     this.currentTab = undefined;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
@@ -233,7 +360,11 @@ export class BrowserSession {
     this.currentTab ??= id;
     page.on("close", () => {
       this.pages.delete(id);
-      if (this.currentTab === id) this.currentTab = [...this.pages.keys()].at(-1);
+      if (this.currentTab === id) {
+        this.currentTab = [...this.pages.keys()].at(-1);
+        // ブラウザが前に出すタブと、こちらが選び直したタブは違うことがある——選んだほうを前に出す
+        void this.onWindows("選んでいるタブを前に出せませんでした", () => this.frontCurrent());
+      }
       this.emit();
     });
     // URL とタイトルが変わったら人の画面のタブの並びと URL 欄に出す
@@ -258,11 +389,18 @@ export class BrowserSession {
     });
     const cdp = await this.context!.newCDPSession(page);
     this.cdps.set(page, cdp);
+    this.targetIds.set(page, ((await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }).targetInfo.targetId);
     // Playwright の CDPSession は知らせの名前ごとに型が付く——ここでは名前を文字で受ける形に合わせる
     attachRecorder(log, () => id, cdp as unknown as CdpLike);
-    // ページの大きさを既定にそろえる（人の画面の絵と入力の座標はこの大きさで計る）。**窓の自然な大きさには頼らない**——
-    // Google Chrome は起こした直後だけ窓の枠が 56px 厚く、少したつと消える（実測・2026-10-10）。ポップアップの窓は大きさがまちまち
-    await this.setViewport(page, DEFAULT_VIEWPORT);
+    // ページの大きさをいまの大きさにそろえる（人の画面の絵と入力の座標はこの大きさで計る）。**ポップアップと window.open は
+    // 別の窓になり、大きさの指定は無視されて URL 帯つきで上に重なる**（実測・2026-10-13）——その窓も同じ3手で全画面・同じ大きさに
+    // する。そのうえで、いま選んでいるタブを前に出し直す（新しいタブ・窓はブラウザが前に出す。人の画面が映すのは選んでいるタブ
+    // ——v4-modules.md §4.1「動画で流す」の穴②）
+    await this.onWindows("新しいタブの窓を合わせられませんでした", async () => {
+      await this.fitWindow(page);
+      await this.applyOverride(page);
+      if (this.currentTab !== id) await this.frontCurrent();
+    });
     // 本文はブラウザの中の入れ物にあるうちに取る——入れ物を大きめにして、取る前に捨てられにくくする
     await cdp.send("Network.enable", { maxTotalBufferSize: 100 * 1024 * 1024, maxResourceBufferSize: 10 * 1024 * 1024 });
     this.emit();
@@ -311,6 +449,7 @@ export class BrowserSession {
     this.page(tab);
     if (this.currentTab === tab) return;
     this.currentTab = tab;
+    void this.onWindows("選んだタブを前に出せませんでした", () => this.frontCurrent());
     this.emit();
   }
 

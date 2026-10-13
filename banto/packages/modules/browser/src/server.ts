@@ -20,6 +20,7 @@ import { StateFile } from "./state.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
 import { BrowserView } from "./view-stream.js";
+import type { VideoSupport } from "./video.js";
 
 const UI_APP_MIME = "text/html;profile=mcp-app";
 /** 人の画面が開く流れの名前 */
@@ -106,7 +107,10 @@ export function browserPaths(dataDir: string) {
  * 置き場から Module の中身を組み立てる。**playwright-core はここで初めて読み込む**——ブラウザの置き場
  * （`PLAYWRIGHT_BROWSERS_PATH`）は読み込むときに決まるので、先に環境へ置く
  */
-export async function createBrowserContextFromDataDir(dataDir: string, opts: { browsersPath?: string; executable?: string } = {}): Promise<ToolContext> {
+export async function createBrowserContextFromDataDir(
+  dataDir: string,
+  opts: { browsersPath?: string; executable?: string; /** 動画で流せるかを決め打つ（試験が JPEG に落ちる形を見るとき） */ video?: VideoSupport } = {},
+): Promise<ToolContext> {
   const paths = browserPaths(dataDir);
   const browsersPath = opts.browsersPath ?? paths.browsers;
   process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
@@ -115,6 +119,7 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
   const { acceptLanguages, readBrowserVersion } = await import("./identity.js");
   const { startChrome } = await import("./chrome.js");
   const { ensureCjkFont } = await import("./fonts.js");
+  const { ensureVideo } = await import("./video.js");
   const installer = playwrightInstaller(browsersPath);
   const log = new NetworkLog(paths.network);
   const state = new StateFile(paths.state);
@@ -135,6 +140,9 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
             console.error(`[browser] ${fontNotice}`);
             onProgress?.(fontNotice);
           }
+          // 人の画面を動画で流す GStreamer が無ければ入れる（入れられなくても起こす——人の画面は JPEG で映す。video.ts）
+          const video = opts.video ?? (await ensureVideo((p) => installer.installVideo(p), onProgress));
+          if (video.reason) console.error(`[browser] ${video.reason}`);
           const chrome = await startChrome(
             {
               executable,
@@ -149,7 +157,7 @@ export async function createBrowserContextFromDataDir(dataDir: string, opts: { b
             },
             (endpoint) => chromium.connectOverCDP(endpoint),
           );
-          return { ...chrome, version: readBrowserVersion(executable), scale, ...(fontNotice ? { notice: fontNotice } : {}) };
+          return { ...chrome, version: readBrowserVersion(executable), scale, video, ...(fontNotice ? { notice: fontNotice } : {}) };
         },
         installer,
         onProgress,

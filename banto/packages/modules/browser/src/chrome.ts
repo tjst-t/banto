@@ -21,7 +21,10 @@ import type { Browser, BrowserContext } from "playwright-core";
 import { inWorkScope } from "@banto/module-contract";
 import { writeFontconfig } from "./fonts.js";
 
-/** 仮想の画面の大きさ（よくある画面の大きさ。CSS ピクセル——倍率を掛けた大きさで立てる） */
+/**
+ * 仮想の画面の大きさ（よくある画面の大きさ。CSS ピクセル——倍率を掛けた大きさで立てる）。**動画で映せる一番大きな窓**でもある
+ * （v4-modules.md §4.1「動画で流す」(a)：Xvfb は「いちばん大きい窓×倍率」。これより大きなページは JPEG で映す）
+ */
 export const SCREEN = { width: 1920, height: 1080 };
 /**
  * 描く倍率（人の画面の devicePixelRatio から。v4-modules.md §4.1「高精細の画面」）。**2 まで**——3 で描いても 1280×800 の
@@ -61,6 +64,10 @@ export interface ChromeOptions {
 export interface RunningChrome {
   browser: Browser;
   context: BrowserContext;
+  /** 仮想の画面の名前（`:99`。動画の取り込みが使う——video.ts） */
+  display: string;
+  /** 仮想の画面の大きさ（デバイスピクセル）。これより大きなページは取り込めない */
+  screen: { width: number; height: number };
   /** 閉じる（ブラウザに閉じてもらい、閉じなければ殺す。Xvfb も止める） */
   close(): Promise<void>;
 }
@@ -77,10 +84,12 @@ export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "
     "--no-first-run",
     "--no-default-browser-check",
     `--accept-lang=${o.languages.join(",")}`,
+    // **キオスク形**（タブの帯・アドレスバーの無い全画面の窓）——人の画面は Xvfb の (0,0) からページの大きさだけを取り込んで
+    // 動画にする（video.ts）ので、窓の中身がページそのものでないといけない。ページの大きさは窓で決める（session.ts の
+    // setViewport——v4-modules.md §4.1「動画で流す」(a)）。窓が Xvfb の左上に来るよう位置も決める
+    "--kiosk",
     "--window-position=0,0",
-    // 窓の枠（タブの帯・アドレスバー）は Google Chrome 155 で 87px（実測・2026-10-10）。ページの大きさはタブごとに合わせる
-    // （session.ts）ので、ここがずれても絵と入力の座標は狂わない——窓の形を人の窓に近づけるだけ
-    `--window-size=${o.viewport.width},${o.viewport.height + 87}`,
+    `--window-size=${o.viewport.width},${o.viewport.height}`,
     // 人の端末の倍率で描く（高精細の画面の人の画面がにじまない）。窓の大きさは CSS ピクセルのまま。1 は付けない（人の
     // Chrome と同じ形）。ページから見える devicePixelRatio もこの値になる（session.ts の setViewport）
     ...(o.scale !== 1 ? [`--force-device-scale-factor=${o.scale}`] : []),
@@ -174,11 +183,17 @@ export function killStale(profileDir: string, displayPidFile: string): string[] 
 }
 
 /** Xvfb を立てる。空いている番号は Xvfb に選ばせる（`-displayfd`） */
+/** 仮想の画面の大きさ（デバイスピクセル） */
+export function screenPixels(scale: number): { width: number; height: number } {
+  return { width: Math.round(SCREEN.width * scale), height: Math.round(SCREEN.height * scale) };
+}
+
 async function startDisplay(pidFile: string, scale: number): Promise<{ display: string; process: ChildProcess }> {
   let xvfb: ChildProcess;
   // 倍率を掛けて立てる——ページから見える screen（CSS ピクセル）が倍率に関わらず 1920×1080 になる（掛けないと 2 倍で
   // 960×540 になり、窓より小さな画面という人の機械に無い形になる）
-  const size = `${Math.round(SCREEN.width * scale)}x${Math.round(SCREEN.height * scale)}x24`;
+  const px = screenPixels(scale);
+  const size = `${px.width}x${px.height}x24`;
   try {
     xvfb = spawn("Xvfb", ["-displayfd", "3", "-screen", "0", size, "-nolisten", "tcp"], {
       stdio: ["ignore", "ignore", "pipe", "pipe"],
@@ -276,6 +291,8 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
     return {
       browser,
       context,
+      display: xvfb.display,
+      screen: screenPixels(o.scale),
       async close() {
         // 閉じてもらう（プロファイルを書き終えてから終わる）。返事を待たずに終わるので、終わるのを待つ
         await browser

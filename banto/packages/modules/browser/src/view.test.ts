@@ -456,7 +456,7 @@ test("指で入力欄を押してすぐ打った文字も届く：入力は投�
   }
 });
 
-test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる。切ると全部戻る", { skip: skipReason }, async () => {
+test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる（幅 500 未満は上書きを併せる）。切ると全部戻る", { skip: skipReason }, async () => {
   // タブが1つも無い（携帯で開いた最初の姿）
   for (const t of await ctx.session.listTabs()) await ctx.session.close(t.id);
   await until("タブが無い", () => ctx.session.current === undefined);
@@ -470,7 +470,9 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
     phone.post({ type: "navigate", url: base.replace("http://", "") + "/" });
     const opened = await until("URL 欄で開いたタブ", () => lastText(phone, (t) => t.type === "state" && typeof t.current === "string" && (t.viewport as { width: number } | null)?.width === 390));
     const first = opened.current as string;
-    assert.deepEqual(ctx.session.viewport(ctx.session.page(first).page), { width: 390, height: 640 });
+    assert.deepEqual(ctx.session.viewport(), { width: 390, height: 640 });
+    // 窓より狭い（幅 500 未満）——窓は 500 で、ページの大きさの上書きを併せる。ページから見える大きさは画面の大きさ
+    assert.deepEqual(await ctx.session.page(first).page.evaluate(() => [innerWidth, innerHeight]), [390, 640]);
     await until("絵もその大きさ", () => phone.lastFrame()?.width === 390);
     // ＋で新しいタブ
     phone.post({ type: "tab", action: "new" });
@@ -478,7 +480,11 @@ test("「画面に合わせる」を入れてからタブを開く（URL 欄・�
     const second = added.current as string;
     // 切ると、合わせたタブは全部既定に戻る
     phone.post({ type: "fit", on: false });
-    await until("戻る", () => ctx.session.viewport(ctx.session.page(first).page).width === 1280 && ctx.session.viewport(ctx.session.page(second).page).width === 1280);
+    await until("戻る", () => ctx.session.viewport().width === 1280);
+    // 上書きも外れ、どちらのタブも窓の大きさ（ページの大きさはブラウザに1つ）
+    assert.deepEqual(await ctx.session.page(second).page.evaluate(() => [innerWidth, innerHeight]), [1280, 800]);
+    ctx.session.select(first);
+    assert.deepEqual(await waitValue(() => ctx.session.page(first).page.evaluate(() => `${innerWidth}x${innerHeight}`), "1280x800"), "1280x800");
     await ctx.session.close(second);
   } finally {
     phone.close(1000);

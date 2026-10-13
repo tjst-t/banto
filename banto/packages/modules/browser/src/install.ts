@@ -6,12 +6,14 @@
 // 入っていなければ最初に起こすときに入れる。仮想の画面（Xvfb）・字体・ブラウザが頼るライブラリがコンテナに無ければ、それも
 // 入れる（Playwright の install-deps——コンテナの中は sudo できる、v4-security.md §1）。入れられなければ理由つきで断る。
 // 日本語の字体（Noto CJK）は起こすたびに確かめ、無ければここで入れる（fonts.ts——入れられなくても断らない）。
+// 人の画面を動画で流す GStreamer と python3-gi も同じ形（video.ts——入れられなければ人の画面は JPEG で映す）。
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { BrowserError } from "./args.js";
 import { CJK_FONT_PACKAGE } from "./fonts.js";
+import { VIDEO_PACKAGES } from "./video.js";
 
 /** Playwright の呼び名（`chrome` は Google Chrome の安定版） */
 export const BROWSER_NAME = process.arch === "x64" ? "chrome" : "chromium";
@@ -100,6 +102,20 @@ export interface Installer {
   installDeps(onProgress?: (message: string) => void): Promise<void>;
   /** 日本語の字体（fonts-noto-cjk）を入れる（fonts.ts の ensureCjkFont が、無いときだけ呼ぶ） */
   installFonts(onProgress?: (message: string) => void): Promise<void>;
+  /** 動画で流す GStreamer と python3-gi を入れる（video.ts の ensureVideo が、無いときだけ呼ぶ） */
+  installVideo(onProgress?: (message: string) => void): Promise<void>;
+}
+
+/** sudo で apt-get install する。失敗は理由つきで投げる */
+async function aptInstall(packages: string[], env: NodeJS.ProcessEnv, what: string, onProgress?: (message: string) => void): Promise<void> {
+  const script = `apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ${packages.join(" ")}`;
+  let r: { code: number | null; tail: string };
+  try {
+    r = await runCommand("sudo", ["-n", "sh", "-c", script], `sudo apt-get install ${packages.join(" ")}`, env, what, onProgress);
+  } catch (err) {
+    throw new BrowserError((err as NodeJS.ErrnoException).code === "ENOENT" ? "sudo がありません" : (err as Error).message);
+  }
+  if (r.code !== 0) throw new BrowserError(`終了コード ${r.code}: ${r.tail.trim().slice(-500)}`);
 }
 
 export function playwrightInstaller(browsersPath: string): Installer {
@@ -119,14 +135,10 @@ export function playwrightInstaller(browsersPath: string): Installer {
     },
     async installFonts(onProgress) {
       // fontconfig も足す——無いと入ったかを fc-list で確かめられない（wqy-zenhei が頼るので install-deps の後ならある）
-      const script = `apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ${CJK_FONT_PACKAGE} fontconfig`;
-      let r: { code: number | null; tail: string };
-      try {
-        r = await runCommand("sudo", ["-n", "sh", "-c", script], `sudo apt-get install ${CJK_FONT_PACKAGE}`, env, "日本語の字体（Noto CJK）をコンテナに入れています（apt-get）", onProgress);
-      } catch (err) {
-        throw new BrowserError((err as NodeJS.ErrnoException).code === "ENOENT" ? "sudo がありません" : (err as Error).message);
-      }
-      if (r.code !== 0) throw new BrowserError(`終了コード ${r.code}: ${r.tail.trim().slice(-500)}`);
+      await aptInstall([CJK_FONT_PACKAGE, "fontconfig"], env, "日本語の字体（Noto CJK）をコンテナに入れています（apt-get）", onProgress);
+    },
+    async installVideo(onProgress) {
+      await aptInstall(VIDEO_PACKAGES, env, "人の画面を動画で流す GStreamer をコンテナに入れています（apt-get）", onProgress);
     },
   };
 }

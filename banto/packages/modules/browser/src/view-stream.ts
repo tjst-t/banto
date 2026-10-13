@@ -2,14 +2,21 @@
 //
 // 画面1つにつき流れ1本。流れごとに別の相手（パソコンと携帯で同時に映してよい）。中身の約束：
 //
-// - Module→画面（2進）：絵1枚＝`[頭の長さ（4バイト、big endian）][頭（JSON）][JPEG]`。頭は
+// - Module→画面（2進）：絵1枚＝`[頭の長さ（4バイト、big endian）][頭（JSON）][中身]`。頭は
 //   `{ seq, tab, width, height }`——番号・タブ・その絵が映しているページの大きさ（CSS ピクセル）。人の入力の座標は
-//   この大きさで返してもらう
+//   この大きさで返してもらう。中身は JPEG か、**動画のときは H.264 のアクセスユニット**（Annex B）——頭に
+//   `codec: "h264"`・`key`（キーフレームか）、1 MiB を越えて分けたときは `part`・`parts`（v4-modules.md §4.1「動画で流す」）
 // - Module→画面（文字の JSON）：`state`（動いているか・タブ・選んでいるタブ・ページの大きさ・「AI に触らせない」）・
 //   `progress`（ブラウザを入れている間）・`ai`（AI が触った——帯と枠）・`error`（人の操作が失敗した理由）・
 //   `log`（通信とコンソールの記録が変わった。欄を取り直す合図）
 // - 画面→Module（文字の JSON）：`ack`（描き終えた絵の番号）・`size`・`visible`・`mouse`・`key`・`touch`・`insertText`・
-//   `tab`・`navigate`・`history`・`fit`・`start`（parseViewMessage）
+//   `tab`・`navigate`・`history`・`fit`・`start`・`keyframe`（復号に失敗した——キーフレームから送り直して）・
+//   `codec`（H.264 を描けなくなった——JPEG に替えて）（parseViewMessage）
+//
+// **動画で流す**：params の `codec` が `"h264"` の画面（WebCodecs の VideoDecoder で描ける画面）には、仮想の画面を GStreamer で
+// 圧縮した H.264 を流す（video.ts）。子プロセスは1本で、動画の画面の全部で分ける。新しく繋いだ・前に戻った画面には
+// キーフレームを要求し、それが来るまでその画面には送らない。動画の流れは受け取りの印で絞らない（P フレームは単独で捨てられない
+// ——詰まったときの扱いは段3）。描けない画面・GStreamer が無い・ページが仮想の画面より大きいときは JPEG（screencast）で映す
 //
 // **絵の流量は受け取りの印で絞る**：画面ごとに、送った絵の印が返るまで次を送らず、その間の新しい絵は最新の1枚だけ
 // 残す。**誰も映していない（流れが0本・どの画面も裏に回った）間は screencast を止める**。CDP の screencast は
@@ -21,6 +28,7 @@ import type { StreamHandler, StreamStamp, WebSocket } from "@banto/stream-server
 import { STREAM_MAX_MESSAGE_BYTES } from "@banto/module-contract";
 import type { CDPSession, Page } from "playwright-core";
 import { DEFAULT_VIEWPORT, type BrowserSession, type TabInfo } from "./session.js";
+import { VideoPipeline, encodeVideoMessages, videoRegion, type VideoRegion, type VideoState } from "./video.js";
 import { browserScale } from "./chrome.js";
 import type { StateFile } from "./state.js";
 import type { NetworkLog } from "./network-log.js";
@@ -42,6 +50,8 @@ export const SCREENCAST_MIN_QUALITY = 40;
 const SHRINK = 0.75;
 /** 静かなページは screencast を張っても絵が来ない（実測・2026-10-10）——これだけ待って来なければ1枚撮って送る */
 const FIRST_FRAME_WAIT_MS = 150;
+/** 大きさを変える前に、動画の取り込みが止まるのを待つ上限 */
+const VIDEO_STOP_WAIT_MS = 1_000;
 /** 記録が変わった合図を間引く */
 const LOG_NOTICE_MS = 300;
 /**
@@ -102,6 +112,9 @@ export function jpegSize(b: Buffer): { width: number; height: number } | undefin
 export function sameAspect(jpeg: { width: number; height: number }, page: { width: number; height: number }): boolean {
   return Math.abs(jpeg.width / jpeg.height / (page.width / page.height) - 1) <= 0.02;
 }
+
+/** 画面が描ける絵の形（params の `codec`。無ければ JPEG） */
+export type ViewCodec = "h264" | "jpeg";
 
 export interface ViewerSize {
   /** 絵を出す場所の大きさ（CSS ピクセル） */
@@ -209,7 +222,9 @@ export type ViewMessage =
   | { type: "navigate"; url: string }
   | { type: "history"; action: "back" | "forward" | "reload" }
   | { type: "fit"; on: boolean }
-  | { type: "start" };
+  | { type: "start" }
+  | { type: "keyframe" }
+  | { type: "codec"; codec: ViewCodec };
 
 const num = (v: unknown, fallback?: number): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -295,6 +310,10 @@ export function parseViewMessage(raw: string): ViewMessage | { error: string } {
       return typeof m.on === "boolean" ? { type: "fit", on: m.on } : { error: "fit の on は true / false です" };
     case "start":
       return { type: "start" };
+    case "keyframe":
+      return { type: "keyframe" };
+    case "codec":
+      return m.codec === "h264" || m.codec === "jpeg" ? { type: "codec", codec: m.codec } : { error: "codec は h264・jpeg です" };
     default:
       return { error: "知らないメッセージです" };
   }
@@ -332,6 +351,12 @@ interface Viewer {
   stamp: StreamStamp;
   size: ViewerSize;
   visible: boolean;
+  /** 画面が描ける形（H.264 を描けると言った画面だけ "h264"） */
+  codec: ViewCodec;
+  /** いま送っている形（reconcile が決める。H.264 を描ける画面でも、流せないときは JPEG） */
+  mode: ViewCodec;
+  /** 動画：キーフレームが来るまで送らない（新しく繋いだ・前に戻った・復号に失敗した） */
+  needKey: boolean;
   /** 送って、まだ受け取りの印が返っていない絵の番号 */
   waiting: number | undefined;
   /** 印を待つ間に来た、最新の1枚 */
@@ -355,6 +380,29 @@ interface Cast {
   oversized?: boolean;
 }
 
+/** 動画の子プロセスと、流している範囲 */
+interface VideoCast {
+  pipeline: VideoPipeline;
+  /** 流している範囲の印（範囲が変わったら作り直す）。undefined は止めている（大きさを変えている間） */
+  key: string | undefined;
+  /** 流している絵が映すページの大きさ（CSS ピクセル）——頭に書く */
+  viewport: { width: number; height: number };
+  state: VideoState;
+  /** 止まったら呼ぶ（大きさを変える前に待つ——beforeResize） */
+  onStopped?: () => void;
+}
+
+/** 状態を見る口（getBrowserStatus の view）が返すもの */
+export interface ViewStatus {
+  viewers: number;
+  watching: number;
+  /** 絵を流しているか（JPEG の screencast か動画のどちらか） */
+  screencasting: boolean;
+  screencastTab?: string;
+  /** 動画の子プロセスが動いている間だけ：状態・出したアクセスユニットの数・キーフレームの数・合計の大きさ・動画で見ている画面の数 */
+  video?: { state: VideoState; units: number; keys: number; bytes: number; viewers: number };
+}
+
 export interface BrowserViewDeps {
   session: BrowserSession;
   state: StateFile;
@@ -368,6 +416,9 @@ export interface BrowserViewDeps {
 export class BrowserView implements ViewHooks {
   private readonly viewers = new Set<Viewer>();
   private cast: Cast | undefined;
+  private video: VideoCast | undefined;
+  /** 動画が失敗した理由（同じ仮想の画面の間は動画を使わない。ブラウザを起こし直したら試し直す） */
+  private videoFailure: { display: string; reason: string } | undefined;
   private last: Frame | undefined;
   private seq = 0;
   /** screencast の張り直しは1つずつ */
@@ -381,8 +432,8 @@ export class BrowserView implements ViewHooks {
    * （上げ直すとまた越える）。どれかが変わったら最初から
    */
   private squeeze: { base: string; quality?: number; maxPixels?: number } | undefined;
-  /** 「画面に合わせる」で大きさを変えたタブ（切ったら全部を既定に戻す） */
-  private readonly fitted = new Set<Page>();
+  /** 「画面に合わせる」で大きさを変えた（切ったら既定に戻す） */
+  private fitted = false;
   private starting = false;
   private stateTimer: NodeJS.Timeout | undefined;
   private logTimer: NodeJS.Timeout | undefined;
@@ -391,6 +442,7 @@ export class BrowserView implements ViewHooks {
   constructor(private readonly deps: BrowserViewDeps) {
     this.logLine = deps.logLine ?? ((line) => process.stderr.write(`[browser] ${line}\n`));
     deps.session.subscribe(() => this.refresh());
+    deps.session.beforeResize = () => this.pauseVideo();
     deps.log.onChange = () => this.logChanged();
   }
 
@@ -400,12 +452,26 @@ export class BrowserView implements ViewHooks {
   }
 
   /** 状態を見る口（getBrowserStatus）が返す */
-  status(): { viewers: number; watching: number; screencasting: boolean; screencastTab?: string } {
+  status(): ViewStatus {
+    const video = this.video;
+    const videoOn = video !== undefined && video.key !== undefined;
+    const tab = this.cast?.tab ?? (videoOn ? this.deps.session.current : undefined);
     return {
       viewers: this.viewers.size,
       watching: [...this.viewers].filter((v) => v.visible).length,
-      screencasting: this.cast !== undefined,
-      ...(this.cast ? { screencastTab: this.cast.tab } : {}),
+      screencasting: this.cast !== undefined || videoOn,
+      ...(tab !== undefined ? { screencastTab: tab } : {}),
+      ...(video
+        ? {
+            video: {
+              state: video.state,
+              units: video.pipeline.units,
+              keys: video.pipeline.keys,
+              bytes: video.pipeline.bytes,
+              viewers: [...this.viewers].filter((v) => v.visible && v.mode === "h264").length,
+            },
+          }
+        : {}),
     };
   }
 
@@ -424,6 +490,7 @@ export class BrowserView implements ViewHooks {
     for (const v of this.viewers) v.ws.close(1001, "Module が止まります");
     await this.chain;
     await this.stopCast();
+    this.closeVideo();
   }
 
   // ---- 繋ぐ・閉じる ----
@@ -435,18 +502,22 @@ export class BrowserView implements ViewHooks {
       ws.close(1008, "画面の大きさ（width・height・dpr）が範囲の外です");
       return;
     }
+    const codec: ViewCodec = p.codec === "h264" ? "h264" : "jpeg";
     const viewer: Viewer = {
       ws,
       stamp,
       size,
       visible: p.visible !== false,
+      codec,
+      mode: "jpeg",
+      needKey: true,
       waiting: undefined,
       pending: undefined,
       release: this.deps.session.hold(),
     };
     this.viewers.add(viewer);
     this.rememberScale();
-    this.logLine(`人の画面が開きました（いま ${this.viewers.size} 本${stamp.threadId ? "・会話の中" : ""}）`);
+    this.logLine(`人の画面が開きました（いま ${this.viewers.size} 本${stamp.threadId ? "・会話の中" : ""}・${codec === "h264" ? "H.264 を描ける" : "JPEG"}）`);
     ws.on("message", (data, isBinary) => {
       if (isBinary) {
         ws.close(1003, "2進は受けません（文字の JSON で送ってください）");
@@ -529,8 +600,22 @@ export class BrowserView implements ViewHooks {
         if (v.visible === m.visible) return;
         v.visible = m.visible;
         if (!m.visible) v.pending = undefined;
+        // 裏に回っている間の P フレームは送っていない——前に戻ったらキーフレームから
+        else v.needKey = true;
         this.reconcile();
-        if (m.visible) this.offerLast(v);
+        if (m.visible && v.mode === "jpeg") this.offerLast(v);
+        return;
+      case "keyframe":
+        // 復号に失敗した：キーフレームから送り直す
+        v.needKey = true;
+        if (v.mode === "h264") this.video?.pipeline.keyframe();
+        return;
+      case "codec":
+        if (v.codec === m.codec) return;
+        v.codec = m.codec;
+        this.logLine(`人の画面が ${m.codec === "jpeg" ? "H.264 を描けなくなったので JPEG に替えました" : "H.264 で描けると言いました"}`);
+        v.needKey = true;
+        this.reconcile();
         return;
       case "mouse":
         this.input("Input.dispatchMouseEvent", {
@@ -654,12 +739,11 @@ export class BrowserView implements ViewHooks {
     const s = this.deps.session;
     if (!owner || !s.running || s.current === undefined) return;
     try {
-      const { page } = s.page();
       const want = this.fitSize(owner);
-      const now = s.viewport(page);
+      const now = s.viewport();
       if (now.width === want.width && now.height === want.height) return;
-      this.fitted.add(page);
-      await s.setViewport(page, want);
+      this.fitted = true;
+      await s.setViewport(want);
     } catch (err) {
       this.logLine(`ページの大きさを画面に合わせられませんでした: ${(err as Error).message}`);
       return;
@@ -667,13 +751,12 @@ export class BrowserView implements ViewHooks {
     this.refresh();
   }
 
-  /** 「画面に合わせる」を切った・持っていた画面が閉じた：合わせたタブを全部、既定の大きさに戻す */
+  /** 「画面に合わせる」を切った・持っていた画面が閉じた：ページの大きさを既定に戻す */
   private async unfit(): Promise<void> {
-    const pages = [...this.fitted];
-    this.fitted.clear();
-    for (const page of pages) {
-      if (page.isClosed()) continue;
-      await this.deps.session.setViewport(page, DEFAULT_VIEWPORT).catch((err: Error) => this.logLine(`ページの大きさを戻せませんでした: ${err.message}`));
+    if (!this.fitted) return;
+    this.fitted = false;
+    if (this.deps.session.running) {
+      await this.deps.session.setViewport(DEFAULT_VIEWPORT).catch((err: Error) => this.logLine(`ページの大きさを戻せませんでした: ${err.message}`));
     }
     this.refresh();
   }
@@ -691,15 +774,36 @@ export class BrowserView implements ViewHooks {
   }
 
   private async reconcileNow(): Promise<void> {
-    const watchers = [...this.viewers].filter((v) => v.visible);
+    const visible = [...this.viewers].filter((v) => v.visible);
     const s = this.deps.session;
-    const target = watchers.length > 0 && s.running && s.current !== undefined ? s.page() : undefined;
+    const target = visible.length > 0 && s.running && s.current !== undefined ? s.page() : undefined;
     if (!target || target.page.isClosed()) {
+      this.closeVideo();
       await this.stopCast();
       return;
     }
-    const viewport = s.viewport(target.page);
+    const viewport = s.viewport();
     const scale = s.scale ?? 1;
+    // 動画で流せるなら、H.264 を描ける画面には動画で。流せないとき（GStreamer が無い・失敗した・ページが仮想の画面より大きい）は JPEG
+    const region = this.videoRegionNow(viewport, scale);
+    for (const v of visible) {
+      const mode: ViewCodec = region && v.codec === "h264" ? "h264" : "jpeg";
+      if (v.mode !== mode) {
+        v.mode = mode;
+        v.needKey = true;
+        v.waiting = undefined;
+        v.pending = undefined;
+        if (mode === "jpeg") this.offerLast(v);
+      }
+    }
+    const videoWatchers = visible.filter((v) => v.mode === "h264");
+    if (videoWatchers.length > 0 && region) this.runVideo(region, viewport, videoWatchers);
+    else this.closeVideo();
+    const watchers = visible.filter((v) => v.mode === "jpeg");
+    if (watchers.length === 0) {
+      await this.stopCast();
+      return;
+    }
     const sizes = watchers.map((v) => v.size);
     const base = `${target.id} ${viewport.width}x${viewport.height} @${scale} ${sizes.map((v) => `${v.width}x${v.height}@${v.devicePixelRatio}`).join(",")}`;
     if (this.squeeze?.base !== base) this.squeeze = { base };
@@ -770,7 +874,7 @@ export class BrowserView implements ViewHooks {
     cast.cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => undefined); // 閉じた口——次の張り直しで直る
     if (this.cast !== cast) return;
     // ページの大きさが変わった（AI の resize・人の「画面に合わせる」）——張り直すと新しい大きさの絵になる
-    const now = this.deps.session.viewport(cast.page);
+    const now = this.deps.session.viewport();
     if (now.width !== viewport.width || now.height !== viewport.height) this.refresh();
     // 頭の大きさは張ったときのページの大きさ（張ったままの screencast はその大きさの絵を出す）。絵に付いてくる
     // `metadata.deviceWidth`・`deviceHeight` は使わない——縮めて流すとき、縮めた絵の大きさを返すことがある
@@ -815,7 +919,7 @@ export class BrowserView implements ViewHooks {
     cast.oversized = false;
     this.last = frame;
     for (const v of this.viewers) {
-      if (!v.visible) continue;
+      if (!v.visible || v.mode !== "jpeg") continue;
       if (v.waiting !== undefined) v.pending = frame;
       else this.sendFrame(v, frame);
     }
@@ -864,6 +968,127 @@ export class BrowserView implements ViewHooks {
     await bounded("CDP の口を閉じる", cast.cdp.detach()).catch(timedOut);
   }
 
+  // ---- 動画 ----
+
+  /** 動画で流せない理由（H.264 を描ける画面に出す）。流せる・ブラウザが動いていなければ undefined */
+  private videoNote(): string | undefined {
+    const d = this.deps.session.display;
+    if (!d) return undefined;
+    if (!d.video.available) return d.video.reason;
+    if (this.videoFailure?.display === d.name) return this.videoFailure.reason;
+    const scale = this.deps.session.scale ?? 1;
+    if (!videoRegion(this.deps.session.viewport(), scale, d.screen)) {
+      return `ページ（${this.deps.session.viewport().width}×${this.deps.session.viewport().height}）が仮想の画面（${Math.round(d.screen.width / scale)}×${Math.round(d.screen.height / scale)}）より大きいので、動画で映せません。JPEG で映しています`;
+    }
+    return undefined;
+  }
+
+  /** いま動画で流せるなら、取り込む範囲 */
+  private videoRegionNow(viewport: { width: number; height: number }, scale: number): VideoRegion | undefined {
+    const d = this.deps.session.display;
+    if (!d || !d.video.available || this.videoFailure?.display === d.name) return undefined;
+    return videoRegion(viewport, scale, d.screen);
+  }
+
+  /** 動画を流す：子プロセスが無ければ起こし、範囲が変わったら作り直す。キーフレームを待っている画面があれば頼む */
+  private runVideo(region: VideoRegion, viewport: { width: number; height: number }, watchers: Viewer[]): void {
+    const s = this.deps.session;
+    const d = s.display!;
+    // 大きさを変えている間は流さない（変え終えたら次の reconcile で流し直す）
+    if (s.resizing) {
+      if (this.video && this.video.key !== undefined) {
+        this.video.key = undefined;
+        this.video.pipeline.stop();
+      }
+      return;
+    }
+    if (!this.video) {
+      const cast: VideoCast = { pipeline: undefined as unknown as VideoPipeline, key: undefined, viewport, state: "stopped" };
+      cast.pipeline = new VideoPipeline(d.name, {
+        onUnit: (au, key) => this.onVideoUnit(cast, au, key),
+        onState: (state) => {
+          cast.state = state;
+          if (state === "stopped") {
+            cast.onStopped?.();
+            cast.onStopped = undefined;
+          }
+        },
+        onError: (message) => this.onVideoError(cast, d.name, message),
+      });
+      this.video = cast;
+      this.logLine(`動画で流し始めます（仮想の画面 ${d.name}）`);
+    }
+    const video = this.video;
+    const key = `${region.w}x${region.h}>${region.ew}x${region.eh} ${viewport.width}x${viewport.height}`;
+    if (video.key !== key) {
+      video.key = key;
+      video.viewport = { ...viewport };
+      for (const v of watchers) v.needKey = true;
+      // 作り直した圧縮器の最初の1枚はキーフレーム
+      video.pipeline.start(region);
+      return;
+    }
+    if (watchers.some((v) => v.needKey)) video.pipeline.keyframe();
+  }
+
+  private onVideoUnit(cast: VideoCast, au: Buffer, key: boolean): void {
+    if (this.video !== cast || cast.key === undefined) return;
+    const tab = this.deps.session.current;
+    if (tab === undefined) return;
+    const seq = ++this.seq;
+    let messages: Buffer[] | undefined;
+    for (const v of this.viewers) {
+      if (!v.visible || v.mode !== "h264" || v.ws.readyState !== v.ws.OPEN) continue;
+      if (v.needKey) {
+        if (!key) continue;
+        v.needKey = false;
+      }
+      messages ??= encodeVideoMessages({ seq, tab, ...cast.viewport, codec: "h264", key }, au, this.deps.maxMessageBytes ?? STREAM_MAX_MESSAGE_BYTES);
+      for (const m of messages) v.ws.send(m, { binary: true });
+    }
+  }
+
+  private onVideoError(cast: VideoCast, display: string, message: string): void {
+    this.logLine(`動画で流せなくなりました（JPEG に替えます）: ${message}`);
+    this.videoFailure = { display, reason: `動画で流せなくなりました（${message.split("\n")[0]}）。JPEG で映しています` };
+    if (this.video === cast) {
+      this.video = undefined;
+      cast.pipeline.close();
+      cast.onStopped?.();
+    }
+    this.scheduleState();
+    this.reconcile();
+  }
+
+  /**
+   * 大きさを変える前（session の beforeResize）：取り込みを止め、止まったと子プロセスが言うまで待つ——それまでに出た絵は
+   * 変える前の絵なので送ってよい。待ちきれなければ（子が詰まっている）理由を残して進む
+   */
+  private async pauseVideo(): Promise<void> {
+    const video = this.video;
+    if (!video || video.key === undefined) return;
+    video.key = undefined;
+    if (video.state === "stopped") return;
+    const stopped = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), VIDEO_STOP_WAIT_MS);
+      video.onStopped = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      video.pipeline.stop();
+    });
+    if (!stopped) this.logLine(`動画の取り込みが ${VIDEO_STOP_WAIT_MS}ms で止まりませんでした（大きさを変えます）`);
+  }
+
+  private closeVideo(): void {
+    const video = this.video;
+    if (!video) return;
+    this.video = undefined;
+    video.pipeline.close();
+    video.onStopped?.();
+    this.logLine("動画を止めました（動画で見ている画面がありません）");
+  }
+
   // ---- 文字のメッセージ ----
 
   private scheduleState(): void {
@@ -882,9 +1107,9 @@ export class BrowserView implements ViewHooks {
     let viewport: { width: number; height: number } | undefined;
     if (s.running) {
       tabs = await s.listTabs();
-      const current = tabs.find((t) => t.current);
-      if (current) viewport = s.viewport(s.page(current.id).page);
+      if (tabs.some((t) => t.current)) viewport = s.viewport();
     }
+    const videoNote = this.videoNote();
     const st = this.deps.state.get();
     // 画面ごとに「自分が合わせているか」だけ違う
     for (const v of this.viewers) {
@@ -900,6 +1125,8 @@ export class BrowserView implements ViewHooks {
         fitByOther: this.fitOwner !== undefined && this.fitOwner !== v,
         log: this.deps.log.stats(),
         ...(s.lastStop ? { lastStop: s.lastStop } : {}),
+        // H.264 を描ける画面に、動画で映せない理由（JPEG で映している）
+        ...(v.codec === "h264" && videoNote ? { videoUnavailable: videoNote } : {}),
       });
     }
   }
