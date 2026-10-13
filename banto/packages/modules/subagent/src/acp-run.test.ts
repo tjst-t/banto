@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runSubagent, SubagentError, type RunDeps } from "./acp-run.js";
+import { LoginExpiredError, runSubagent, SubagentError, type RunDeps } from "./acp-run.js";
 
 const fakeAgent = join(dirname(fileURLToPath(import.meta.url)), "testing", "fake-agent.js");
 
@@ -143,6 +143,31 @@ test("続きから走らせる：前の会話を覚えていて、履歴の再�
     assert.equal(second.sessionId, first.sessionId);
     assert.match(second.text, /前に頼まれたこと：りんごを数えて/);
     assert.doesNotMatch(second.text, /受け取った：りんご/);
+  } finally {
+    cleanup();
+  }
+});
+
+// Backlog #284：claude-agent-acp はログインが切れると頼みを断り、そのあと閉じた口に書いて EPIPE で落ちる。落ちたことが
+// 断った理由を上書きしない——ログイン切れとして、続けるための会話の id を添えて返る。同じ会話は session/load で続けられる
+test("ログインが切れて断られたら、落ちたことではなくログイン切れとして返り、同じ会話で続けられる", async () => {
+  const { deps, cleanup } = setup();
+  try {
+    let sessionId = "";
+    await assert.rejects(
+      runSubagent({ prompt: "[login-expired-once] 作業して" }, { ...deps, askPermission: neverAsked }),
+      (err: unknown) => {
+        assert.ok(err instanceof LoginExpiredError, `ログイン切れではない：${String(err)}`);
+        assert.match(err.message, /OAuth access token has expired/);
+        assert.doesNotMatch(err.message, /エージェントが終了しました/);
+        sessionId = err.sessionId;
+        return true;
+      },
+    );
+    assert.ok(sessionId.length > 0);
+    const next = await runSubagent({ prompt: "続けて", sessionId }, { ...deps, askPermission: neverAsked });
+    assert.equal(next.sessionId, sessionId);
+    assert.match(next.text, /受け取った：続けて/);
   } finally {
     cleanup();
   }

@@ -28,7 +28,7 @@ interface Fake {
  * 偽の Subagent：実装役は頼みの中の `<commit 名前>` のファイルをその worktree に書いてコミットする（続きの頼みでは
  * `fix` の名前で）。レビュー役は `verdicts` を順に返す
  */
-function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void } = {}) {
+function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void; /** n 回目の実装役の失敗（返せばその文で失敗を届ける） */ implementFails?: (n: number) => string | undefined } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-"));
   const project = join(root, "project");
   const data = join(root, "data");
@@ -65,7 +65,8 @@ function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?:
       } else {
         fake.implements++;
         (opts.implement ?? defaultImplement)(prompt, cwd, fake.implements);
-        deliverLater(replyId, { text: "やりました", sessionId: args.sessionId ?? `s${seq}` });
+        const failure = opts.implementFails?.(fake.implements);
+        deliverLater(replyId, failure ? { error: failure } : { text: "やりました", sessionId: args.sessionId ?? `s${seq}` });
       }
       return { text: JSON.stringify({ runId: `run${seq}` }), isError: false, meta: { "dev.banto/replyId": replyId } };
     },
@@ -154,6 +155,56 @@ test("テストが上限を越えて落ちたら止まって知らせ、「続�
     await until(() => s.fake.finished.length === 1, "答えたのに終わらない");
     assert.equal(run.items[0]!.status, "done");
     assert.ok(existsSync(join(s.project, "ok.txt")));
+  } finally {
+    s.cleanup();
+  }
+});
+
+// Backlog #284：実装役が途中で落ちたら（エージェントの EPIPE 等）、未コミットの変更を wip コミットにしてから止まる
+test("実装役が途中で落ちたら、作業ツリーの未コミットの変更（新しいファイルも）を wip コミットにしてから止まる", async () => {
+  const s = setup({
+    implement: (prompt, cwd, n) => {
+      if (n > 1) return defaultImplement(prompt, cwd, n);
+      // 1回目：書きかけのまま落ちる（追跡中のファイルの変更と、新しいファイル）
+      writeFileSync(join(cwd, "README"), "書きかけ\n");
+      writeFileSync(join(cwd, "half.txt"), "半分\n");
+    },
+    implementFails: (n) => (n === 1 ? "エージェントが終了しました（code=1 signal=null）。stderr: Error: write EPIPE" : undefined),
+  });
+  try {
+    // Factory のコミットは、その機械の git の名前で（試験の機械には無いことがあるので、この repo に置く）
+    git(s.project, "config", "user.name", "t");
+    git(s.project, "config", "user.email", "t@t");
+    const run = s.factory.start({ tasks: [task("w")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    const wt = join(s.project, ".worktrees", "factory-w");
+    const head = git(wt, "rev-parse", "--short", "HEAD");
+    assert.match(s.fake.stopped[0]!, /段が失敗しました：サブエージェントの仕事が失敗しました：エージェントが終了しました/);
+    assert.match(s.fake.stopped[0]!, new RegExp(`作業ツリーの未コミットの変更は wip コミット ${head} に残しました`));
+    assert.match(git(wt, "log", "-1", "--format=%s"), /^wip: 実装役が途中で止まった時点の未コミットの変更/);
+    assert.deepEqual(git(wt, "show", "--name-only", "--format=", "HEAD").split("\n").sort(), ["README", "half.txt"]);
+    assert.equal(git(wt, "status", "--porcelain"), "", "作業ツリーに変更が残っている");
+    assert.equal(git(wt, "show", "HEAD:half.txt"), "半分");
+    // 頼み直すと、wip コミットの上で続く
+    s.factory.answer(run.id, "w", { action: "retry" });
+    await until(() => s.fake.finished.length === 1, "頼み直したのに終わらない");
+    assert.equal(run.items[0]!.status, "done");
+    assert.ok(existsSync(join(s.project, "half.txt")), "wip コミットの変更が main に入っていない");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("実装役が落ちても、未コミットの変更が無ければ wip コミットを作らない", async () => {
+  const s = setup({
+    implement: (prompt, cwd, n) => (n > 1 ? defaultImplement(prompt, cwd, n) : undefined),
+    implementFails: (n) => (n === 1 ? "落ちた" : undefined),
+  });
+  try {
+    s.factory.start({ tasks: [task("x")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    assert.doesNotMatch(s.fake.stopped[0]!, /wip/);
+    assert.equal(git(join(s.project, ".worktrees", "factory-x"), "rev-list", "--count", "main..HEAD"), "0");
   } finally {
     s.cleanup();
   }

@@ -9,7 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { DELIVERS_LATER_META_KEY, PENDING_REPLY_META_KEY, REPLY_TO_META_KEY, THREAD_META_KEY } from "@banto/module-contract";
 import { listAgents } from "./agents.js";
-import { createSubagentServer } from "./server.js";
+import { createSubagentServer, LOGIN_RESUME_PROMPT } from "./server.js";
 import { fakeVault } from "./testing/harness.js";
 
 type Delivered = { replyTo: string; title: string; text: string; final?: boolean };
@@ -27,6 +27,7 @@ async function withBackground(fn: (ctx: { client: Client; delivered: Delivered[]
     relayClient: fakeVault().relay,
     agents: listAgents({ BANTO_SUBAGENT_FAKE_AGENT: "1" }),
     claudeLoginEnv: {},
+    loginRetryDelaysMs: [50, 50],
     deliver: async (input) => {
       delivered.push(input);
       return { deliveryId: `d${delivered.length}`, wake: "now" };
@@ -218,5 +219,41 @@ test("cancelSubagent：頼んだ Thread の記録が無い仕事・無い仕事�
     // 人の画面からは今までどおり止められる（片づけ）
     await client.callTool({ name: "cancelRun", arguments: { id: runId } });
     await waitDelivered(1);
+  });
+});
+
+// Backlog #284：ログインが切れて断られ（エージェントはそのあと EPIPE で落ちる）ても、待って同じ会話を session/load して続け、
+// 終わりを1回だけ届ける。待っても戻らなければ、続けるための会話の id を添えて失敗を届ける
+test("待たない形：ログインが切れて断られたら、待って同じ会話で続け、終わりを1回届ける", async () => {
+  await withBackground(async ({ client, delivered, waitDelivered }) => {
+    const r = await callWith(client, { agent: "fake", prompt: "[login-expired-once] 長い実装", runInBackground: true }, "reply_login");
+    assert.equal(r.isError, undefined);
+    await waitDelivered(1);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(delivered.length, 1, "2回届いた");
+    const d = delivered[0]!;
+    assert.equal(d.title, "Fake Agent（試験用） の仕事が終わりました");
+    const result = JSON.parse(d.text) as { stopReason: string; text: string; sessionId: string; notes: string[]; error?: string };
+    assert.equal(result.error, undefined);
+    assert.equal(result.stopReason, "end_turn");
+    assert.match(result.text, new RegExp(`受け取った：${LOGIN_RESUME_PROMPT.slice(0, 20).replace(/[()（）]/g, ".")}`));
+    assert.ok(result.notes.some((n) => /ログインが切れて途中で断られたので.*同じ会話で続けました（1 回目）/.test(n)), result.notes.join(" / "));
+    // 同じ会話：続けた頼みから、最初の頼みが見える
+    const again = await callWith(client, { agent: "fake", prompt: "前に何を頼んだ？", sessionId: result.sessionId });
+    assert.match(again.content[0]!.text, /\[login-expired-once\] 長い実装/);
+  });
+});
+
+test("待たない形：待ってもログインが戻らなければ、会話の id を添えて失敗を届ける", async () => {
+  await withBackground(async ({ client, delivered, waitDelivered }) => {
+    await callWith(client, { agent: "fake", prompt: "[login-expired-always] 長い実装", runInBackground: true }, "reply_login2");
+    await waitDelivered(1);
+    const d = delivered[0]!;
+    assert.equal(d.title, "Fake Agent（試験用） の仕事が失敗しました");
+    const body = JSON.parse(d.text) as { error: string };
+    assert.match(body.error, /OAuth access token has expired/);
+    assert.match(body.error, /2 回待って続けても、ログインが戻りませんでした/);
+    assert.match(body.error, /sessionId [0-9a-f-]{36} を渡して頼み直す/);
+    assert.doesNotMatch(body.error, /エージェントが終了しました/);
   });
 });

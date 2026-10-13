@@ -7,6 +7,7 @@
 
 import { realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -33,12 +34,14 @@ import {
 } from "@banto/module-contract";
 import {
   describeAgent,
+  LoginExpiredError,
   runSubagent,
   SessionLoadError,
   SubagentError,
   type AgentLaunch,
   type PermissionQuestion,
   type RunDeps,
+  type RunInput,
   type RunResult,
 } from "./acp-run.js";
 import { defaultAliasName, listAgents, usesStoredKeys, type AgentDefinition } from "./agents.js";
@@ -67,7 +70,21 @@ export interface SubagentServerDeps {
    * host の中継の `relayDeliverToThread`。無ければ待たない形は断る
    */
   deliver?: (input: { replyTo: string; title: string; text: string; final?: boolean }) => Promise<unknown>;
+  /**
+   * ログインが切れて断られたとき、同じ会話で続けるまでの待ち（回ごと。尽きたら失敗として返す）。既定は
+   * `LOGIN_RETRY_DELAYS_MS`。試験で縮める
+   */
+  loginRetryDelaysMs?: number[];
 }
+
+/**
+ * **ログインが切れたら、待って同じ会話で続ける**（追加・2026-10-13、Backlog #284）。本体のログインは本体の CLI が使われたときに
+ * 更新される（中継は毎回読み直す——`core/src/claude-login/relay.ts`）。待っても更新されなければ、会話の id を添えて失敗を返す
+ */
+const LOGIN_RETRY_DELAYS_MS = [30_000, 120_000, 300_000];
+export const LOGIN_RESUME_PROMPT =
+  "（banto から）ログインが切れて、あなたの作業は途中で止まっていました。時間をおいたので、止まったところから続けてください。" +
+  "止まる直前の tool の結果は失われているかもしれません——必要なら確かめ直してください。";
 
 
 // host が Module に渡した変数（`BANTO_*`）と、人の環境の秘密はエージェントに渡さない。
@@ -799,9 +816,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     report: (message: string) => void,
     opts: { alreadyInstructed?: boolean } = {},
   ): Promise<RunResult & { structured?: unknown }> {
-    if (!compiled) return runSubagent(input, runDeps);
+    if (!compiled) return runContinuing(input, runDeps);
     const options = { ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}) };
-    let result = await runSubagent(
+    let result = await runContinuing(
       { ...input, prompt: opts.alreadyInstructed ? input.prompt : input.prompt + schemaInstruction(compiled.schema) },
       runDeps,
     );
@@ -819,8 +836,43 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       }
       notes.push(`返答が決まった形に合わなかったので直させました（${attempt + 1} 回目）：${problem}`);
       report(`返答を決まった形に直させています（${attempt + 1} 回目）`);
-      result = await runSubagent({ prompt: fixPrompt(problem, compiled.schema), sessionId: result.sessionId, ...options }, runDeps);
+      result = await runContinuing({ prompt: fixPrompt(problem, compiled.schema), sessionId: result.sessionId, ...options }, runDeps);
       toolCalls.push(...result.toolCalls);
+    }
+  }
+
+  /**
+   * **1回走らせ、ログインが切れて断られたら待って同じ会話で続ける**（追加・2026-10-13、Backlog #284）。断られた時点までの会話は
+   * エージェントの記録に残っている（実測：401 の前の tool の結果まで）ので、`session/load` して続きを頼む。待ちが尽きたら、
+   * 会話の id を添えて失敗を返す——頼み直す側がその id で続けられる
+   */
+  async function runContinuing(input: RunInput, runDeps: RunDeps): Promise<RunResult> {
+    const delays = deps.loginRetryDelaysMs ?? LOGIN_RETRY_DELAYS_MS;
+    const options = { ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}) };
+    const notes: string[] = [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await runSubagent(input, runDeps);
+        return notes.length === 0 ? result : { ...result, notes: [...notes, ...result.notes] };
+      } catch (err) {
+        if (!(err instanceof LoginExpiredError)) throw err;
+        const delay = delays[attempt];
+        if (delay === undefined) {
+          throw new SubagentError(
+            `${err.message}\n${attempt} 回待って続けても、ログインが戻りませんでした。banto 本体の Claude ログインを更新してから、` +
+              `sessionId ${err.sessionId} を渡して頼み直すと、同じ会話の続きから始まります`,
+          );
+        }
+        notes.push(`ログインが切れて途中で断られたので、${Math.round(delay / 1000)} 秒待って同じ会話で続けました（${attempt + 1} 回目）`);
+        runDeps.onProgress?.(`ログインが切れました。${Math.round(delay / 1000)} 秒待って同じ会話で続けます（${attempt + 1} 回目）`);
+        try {
+          await sleep(delay, undefined, runDeps.signal ? { signal: runDeps.signal } : {});
+        } catch {
+          // 待っている間に止められた
+          throw err;
+        }
+        input = { prompt: LOGIN_RESUME_PROMPT, sessionId: err.sessionId, ...options };
+      }
     }
   }
 

@@ -137,6 +137,29 @@ export class SessionLoadError extends SubagentError {
   override name = "SessionLoadError";
 }
 
+/**
+ * **ログインが切れて、頼みが断られた**（追加・2026-10-13、Backlog #284）。会話の id を持つ——同じ会話を `session/load` して
+ * 続けられる（`server.ts`）。claude-agent-acp は上流の 401 で `session/prompt` を `errorKind: authentication_failed`（ACP の
+ * `authRequired` のこともある）で断る（実測：本物の claude-agent-acp を 401 を返す偽の上流に向けた）
+ */
+export class LoginExpiredError extends SubagentError {
+  override name = "LoginExpiredError";
+  constructor(
+    message: string,
+    readonly sessionId: string,
+  ) {
+    super(message);
+  }
+}
+
+function isLoginExpired(err: unknown): boolean {
+  if (!(err instanceof RequestError)) return false;
+  if (err.code === RequestError.authRequired().code) return true;
+  const data = err.data as { errorKind?: unknown } | undefined;
+  // `oauth_org_not_allowed` は入れない——待っても直らない
+  return typeof data === "object" && data !== null && data.errorKind === "authentication_failed";
+}
+
 function selectValues(option: SessionConfigOption): string[] {
   if (option.type !== "select") return [];
   return option.options.flatMap((o) => ("options" in o ? o.options.map((x) => x.value) : [o.value]));
@@ -225,6 +248,12 @@ function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
     exited,
     toError: async (err) => {
       if (err instanceof SubagentError) return err;
+      // **エージェントが理由を添えて断った**なら、それを伝える——終了を待たない（訂正・2026-10-13、Backlog #284）。
+      // 断られると接続を閉じる（こちらの読み口も閉じる）ので、claude-agent-acp はそのあと書いた1行で EPIPE を投げて落ちる。
+      // 終了を待つと、その「終了しました（EPIPE）」が本当の理由（ログイン切れ）を上書きしていた
+      if (err instanceof RequestError) {
+        return new SubagentError(`${describeError(err)}${stderr.trim() ? `\nstderr: ${stderr.trim().slice(-1500)}` : ""}`);
+      }
       if (!exitError) await Promise.race([exited.catch(() => undefined), new Promise((r) => setTimeout(r, EXIT_WAIT_MS))]);
       if (exitError) return exitError;
       return new SubagentError(`${describeError(err)}${stderr.trim() ? `\nstderr: ${stderr.trim().slice(-1500)}` : ""}`);
@@ -403,10 +432,18 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
         if (deps.signal?.aborted) onAbort();
         else deps.signal?.addEventListener("abort", onAbort, { once: true });
         try {
-          const res = await ctx.request(methods.agent.session.prompt, {
-            sessionId,
-            prompt: [{ type: "text", text: input.prompt }],
-          });
+          let res;
+          try {
+            res = await ctx.request(methods.agent.session.prompt, {
+              sessionId,
+              prompt: [{ type: "text", text: input.prompt }],
+            });
+          } catch (err) {
+            if (isLoginExpired(err)) {
+              throw new LoginExpiredError(`ログインが切れて、会話 ${sessionId} の途中で断られました: ${describeError(err)}`, sessionId);
+            }
+            throw err;
+          }
           const model = findOption(options, "model");
           return {
             agent,

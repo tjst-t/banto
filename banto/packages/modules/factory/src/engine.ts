@@ -714,52 +714,16 @@ class ItemPass implements ProcedureContext {
   ): Promise<AgentResult> {
     const choice: AgentChoice = role === "implementer" ? this.settings.implementer : this.settings.reviewer;
     const result = await this.step<AgentResult>(`agent:${role}`, async (prev, n) => {
-      let replyId = prev?.launched?.replyId;
-      if (!replyId) {
-        const r = await this.call("subagent", "runSubagent", {
-          agent: choice.agent,
-          ...(choice.model ? { model: choice.model } : {}),
-          ...(choice.effort ? { effort: choice.effort } : {}),
-          prompt: input.prompt,
-          cwd: this.worktree,
-          runInBackground: true,
-          ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-          ...(input.schema ? { schema: input.schema } : {}),
-        });
-        const id = r.meta?.["dev.banto/replyId"];
-        if (typeof id !== "string") throw new Error("Subagent が返事の印を返しませんでした（返事を受ける口が無い？）");
-        replyId = id;
-        let subagentRunId: string | undefined;
-        try {
-          subagentRunId = (JSON.parse(r.text) as { runId?: string }).runId;
-        } catch {
-          // 走らせた仕事の id が読めなくても続ける（止めるときに使えないだけ）
-        }
-        this.live.journal.launched(n, replyId, subagentRunId);
-        this.live.item.subagentRunId = subagentRunId;
-        this.factory.saveRun(this.live.run);
-      } else {
-        this.live.item.subagentRunId = prev?.launched?.subagentRunId;
-      }
-      // 最初のサブエージェントに頼めた——AI の呼び出し（runFactory）はここまで待つ（承認をその会話で出すため）
-      this.live.settled.resolve();
-      const reply = await this.replies.wait(replyId, this.signal);
-      delete this.live.item.subagentRunId;
-      if (reply.lost) throw new Error(`${reply.title}：${reply.text}`);
-      let body: { text?: string; sessionId?: string; structured?: unknown; error?: string; stopReason?: string; runId?: string };
       try {
-        body = JSON.parse(reply.text) as typeof body;
-      } catch {
-        throw new Error(`サブエージェントの返事が読めません：${reply.text.slice(0, 300)}`);
+        return await this.runAgent(choice, input, prev, n);
+      } catch (err) {
+        // **実装役が落ちたら、作業ツリーの未コミットの変更を wip コミットにしてから止まる**（追加・2026-10-13、Backlog #284）
+        // ——人が手で守らなくて済むように。止められた・食い違いはそのまま
+        if (role !== "implementer" || this.signal.aborted || err instanceof Answered || err instanceof Cancelled || err instanceof Diverged) {
+          throw err;
+        }
+        throw new Error(`${err instanceof Error ? err.message : String(err)}${await this.saveWip()}`);
       }
-      if (body.error) throw new Error(`サブエージェントの仕事が失敗しました：${body.error}`);
-      if (body.stopReason === "cancelled") throw new Error("サブエージェントの仕事が止められました");
-      return {
-        text: body.text ?? "",
-        sessionId: body.sessionId ?? "",
-        ...(body.structured !== undefined ? { structured: body.structured } : {}),
-        ...(body.runId ? { subagentRunId: body.runId } : {}),
-      };
     });
     if (role === "implementer") this.implementerSession = result.sessionId;
     if (role === "reviewer" && result.structured && typeof result.structured === "object") {
@@ -768,6 +732,80 @@ class ItemPass implements ProcedureContext {
       this.factory.saveRun(this.live.run);
     }
     return result;
+  }
+
+  /**
+   * 作業ツリーに未コミットの変更があれば、全部（.gitignore の外の新しいファイルも）wip コミットにする。止まった理由に足す文を返す
+   * ——コミットできなければ、変更が作業ツリーに残っていることを伝える（黙らない）
+   */
+  private async saveWip(): Promise<string> {
+    const status = await this.git(["status", "--porcelain"]);
+    if (status.code !== 0) return `（作業ツリーの様子を見られませんでした：${tail(status.out, 300)}）`;
+    if (status.out.trim() === "") return "";
+    const added = await this.git(["add", "-A"]);
+    const committed =
+      added.code === 0
+        ? await this.git(["commit", "-q", "--no-verify", "-m", `wip: 実装役が途中で止まった時点の未コミットの変更（Factory が残した。${this.task.title}）`])
+        : added;
+    if (committed.code !== 0) {
+      return `（未コミットの変更を wip コミットにできませんでした——変更は作業ツリー ${this.worktree} に残っています：${tail(committed.out, 300)}）`;
+    }
+    const head = (await this.git(["rev-parse", "--short", "HEAD"])).out.trim();
+    return `（作業ツリーの未コミットの変更は wip コミット ${head} に残しました）`;
+  }
+
+  private async runAgent(
+    choice: AgentChoice,
+    input: { prompt: string; sessionId?: string; schema?: Record<string, unknown> },
+    prev: StepRecord | undefined,
+    n: number,
+  ): Promise<AgentResult> {
+    let replyId = prev?.launched?.replyId;
+    if (!replyId) {
+      const r = await this.call("subagent", "runSubagent", {
+        agent: choice.agent,
+        ...(choice.model ? { model: choice.model } : {}),
+        ...(choice.effort ? { effort: choice.effort } : {}),
+        prompt: input.prompt,
+        cwd: this.worktree,
+        runInBackground: true,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.schema ? { schema: input.schema } : {}),
+      });
+      const id = r.meta?.["dev.banto/replyId"];
+      if (typeof id !== "string") throw new Error("Subagent が返事の印を返しませんでした（返事を受ける口が無い？）");
+      replyId = id;
+      let subagentRunId: string | undefined;
+      try {
+        subagentRunId = (JSON.parse(r.text) as { runId?: string }).runId;
+      } catch {
+        // 走らせた仕事の id が読めなくても続ける（止めるときに使えないだけ）
+      }
+      this.live.journal.launched(n, replyId, subagentRunId);
+      this.live.item.subagentRunId = subagentRunId;
+      this.factory.saveRun(this.live.run);
+    } else {
+      this.live.item.subagentRunId = prev?.launched?.subagentRunId;
+    }
+    // 最初のサブエージェントに頼めた——AI の呼び出し（runFactory）はここまで待つ（承認をその会話で出すため）
+    this.live.settled.resolve();
+    const reply = await this.replies.wait(replyId, this.signal);
+    delete this.live.item.subagentRunId;
+    if (reply.lost) throw new Error(`${reply.title}：${reply.text}`);
+    let body: { text?: string; sessionId?: string; structured?: unknown; error?: string; stopReason?: string; runId?: string };
+    try {
+      body = JSON.parse(reply.text) as typeof body;
+    } catch {
+      throw new Error(`サブエージェントの返事が読めません：${reply.text.slice(0, 300)}`);
+    }
+    if (body.error) throw new Error(`サブエージェントの仕事が失敗しました：${body.error}`);
+    if (body.stopReason === "cancelled") throw new Error("サブエージェントの仕事が止められました");
+    return {
+      text: body.text ?? "",
+      sessionId: body.sessionId ?? "",
+      ...(body.structured !== undefined ? { structured: body.structured } : {}),
+      ...(body.runId ? { subagentRunId: body.runId } : {}),
+    };
   }
 
   async test(): Promise<TestResult> {

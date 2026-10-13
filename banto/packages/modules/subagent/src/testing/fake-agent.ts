@@ -25,6 +25,10 @@
 //   [then-commit PATH]  この頼みのあと、同じ会話の次の頼みで PATH を書いて git commit する
 //   [review-b64 B]  「レビュー役」の頼みに B（base64）を解いた文を返す。印が無ければ {"verdict":"pass","items":[]}
 //   [bad-then-json-b64 B]  この頼みには JSON でない文を返し、同じ会話の次の頼みから B を解いた文を返す（直させる試験用）
+//   [login-expired-once]  最初の頼みを、本物の claude-agent-acp が上流の 401 で断るのと同じ形（Internal error・
+//                 errorKind authentication_failed）で断り、そのあとも書き続ける（相手が閉じた口に書いて EPIPE で落ちる——本物と
+//                 同じ）。同じ会話の次の頼み（session/load して続けたとき）は、ふつうに答える
+//   [login-expired-always]  何度頼まれても上と同じ形で断る
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
 // 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。頼まれた文は
@@ -37,7 +41,15 @@ import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
-import { agent, methods, ndJsonStream, PROTOCOL_VERSION, type AgentContext, type SessionConfigOption } from "@agentclientprotocol/sdk";
+import {
+  agent,
+  methods,
+  ndJsonStream,
+  PROTOCOL_VERSION,
+  RequestError,
+  type AgentContext,
+  type SessionConfigOption,
+} from "@agentclientprotocol/sdk";
 
 interface Stored {
   cwd: string;
@@ -121,6 +133,28 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
   const reviewer = text.includes("レビュー役");
   try {
     if (!reviewer && text.includes("[crash]")) process.exit(3);
+    const firstUser = previous[0]?.user ?? text;
+    if (firstUser.includes("[login-expired-always]") || (previous.length === 0 && text.includes("[login-expired-once]"))) {
+      // 本物（claude-agent-acp）は断ったあとも書き（セッションの失敗の知らせ・作り直し）、閉じた口への書き込みの EPIPE を
+      // 受けずに落ちる（utils.js の nodeToWebWritable は 'error' を聞かない）。ここは Writable.toWeb が 'error' を聞いて
+      // しまうので、書いた結果で同じく落ちる
+      const update = { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "（まだ書いている）" } };
+      const line = `${JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } })}\n`;
+      const keepWriting = setInterval(
+        () =>
+          process.stdout.write(line, (err) => {
+            if (!err) return;
+            console.error(err);
+            process.exit(1);
+          }),
+        5,
+      );
+      setTimeout(() => clearInterval(keepWriting), 3000).unref();
+      throw RequestError.internalError(
+        { errorKind: "authentication_failed" },
+        "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.",
+      );
+    }
     const child = reviewer ? null : /\[child (\d+)\]/.exec(text);
     if (child) {
       spawn(process.execPath, ["-e", `setTimeout(() => {}, ${Number(child[1]) * 1000})`, "fake-agent-child", sessionId], {
