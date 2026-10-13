@@ -6,6 +6,7 @@
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { useParams, usePathname, useSearchParams } from "next/navigation";
 import { isSettingsOpen } from "@/lib/settings-link";
+import { rememberLastThread } from "@/lib/last-thread";
 import { SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { SettingsContent } from "@/app/(shell)/settings/settings-content";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -51,6 +52,13 @@ function AppShellInner({ children }: { children: ReactNode }) {
   // 受信箱は Project 単位の MCP 接続の外側にある入れ物（§2.4.1）——
   // どの Project を見ていても、同じ overlay 状態（searchParams）で開ける
   const stack = usePanelStack(projectId ?? "");
+
+  // **Project ごとに最後に開いた Thread を覚える**（2026-10-13、§6.40）——ほかの Project からその Project の名前を
+  // 押したとき、ここで覚えた Thread を開く（nav-panel.tsx・project-rail.tsx）
+  const forkThreadId = stack.forkThreadId;
+  useEffect(() => {
+    if (projectId) rememberLastThread(projectId, forkThreadId);
+  }, [projectId, forkThreadId]);
   // サイドバーの幅・畳んだかどうかは React の外（sidebar-preference.ts）に持つ
   // ——読み込み直しでは外枠も作り直されるので、ここに state で持つと
   // **既定で1回描いてから直す**ことになり、幅が一瞬跳ねる（ユーザー報告）

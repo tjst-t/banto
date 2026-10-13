@@ -2442,3 +2442,17 @@ Project を別の実行場所へ移している間（`project.runtime_move_start
 - **携帯の Drawer** は同じ部品（`NavPanel`）なので同じ形。**畳んだレール**（58px）は幅が無いので一番下はこれまでどおり縦に
   アイコンだけを積み、同じ2本の線とスクロールバーだけ揃える
 
+
+### 6.40 Project の名前を押すと、その Project で最後に開いていた Thread を開く（決定・2026-10-13、ユーザー要望）
+
+ユーザー：「各 Project で最後に開いた Thread を覚えておいて、ほかの Project から移る場合、サイドバーの Project のタイトルを
+クリックしたときに、その最後に開いた Thread を自動で開くように」。以前は Project の名前を押すといつも Base Thread だった。
+
+- **覚える**：外枠（`app-shell.tsx`）が、いま開いている Project と Thread（Base なら Fork 無し）を `lib/last-thread.ts` に
+  覚える。置き場は localStorage（この端末・このブラウザだけ。host には残さない——端末ごとに見ている場所は違ってよい）
+- **使う**：サイドバーの Project の名前・畳んだレールの頭文字を、**ほかの Project から**押したとき（`projectNavHref` の
+  `lastForkId`）。覚えていた Fork が閉じられていれば Base Thread。設定を開いたまま押したときも、下の画面はその Thread
+- **いま見ている Project の名前**を押したときは今までどおり Base Thread へ戻る（設定を開いていれば設定を閉じる）
+- Thread の行・Command Palette・受信箱から移るときは、選んだ Thread そのものへ（覚えたものは使わない）
+- 携帯の Drawer は同じ部品なので同じ。Fork のある Project を選ぶと Drawer は目次を開いて残る（2026-10-02）まま、下の画面は
+  覚えていた Thread になる

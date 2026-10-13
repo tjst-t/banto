@@ -44,6 +44,7 @@ import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
+import { lastForkOf, useLastThreads } from "@/lib/last-thread";
 import { isSettingsOpen, projectNavHref, settingsOpenHref, threadRowHref } from "@/lib/settings-link";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
@@ -109,6 +110,7 @@ function CollapsedRail({
   const { toggleSidebar } = useSidebar();
   const judgmentCount = useJudgmentCount();
   const projects = getActiveProjects();
+  const lastThreads = useLastThreads();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
@@ -197,6 +199,7 @@ function CollapsedRail({
                               pathname,
                               searchParams,
                               "project-danger",
+                              active ? null : lastForkOf(lastThreads, project.id, forks.map((f) => f.id)),
                             )}
                           >
                             <ProjectInitial project={project} active={active} />

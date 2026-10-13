@@ -78,8 +78,13 @@ export function projectNavHref(
   params: ReadableParams,
   /** 設定の中で、その Project の層が始まる節（繋がっているものが Project ごとに違う） */
   fallbackSection: string,
+  /**
+   * ほかの Project から移るとき、その Project で最後に開いていた Fork（まだ開いているもの、§6.40）。
+   * null なら Base Thread。いま見ている Project の名前を押したときは渡さない（Base Thread へ戻る）
+   */
+  lastForkId: string | null = null,
 ): string {
-  if (!isSettingsOpen(pathname, params)) return `/p/${projectId}`;
+  if (!isSettingsOpen(pathname, params)) return threadRowHref(projectId, lastForkId);
   // いま設定で見ている Project を押した＝「会話に戻る」
   if (params.get("project") === projectId) {
     // その Project の画面の上に開いていたなら、設定を閉じるだけ（下の画面をそのまま見せる）
@@ -90,7 +95,7 @@ export function projectNavHref(
   // ならその節を保ち（見比べられる）、そうでなければ先頭の節へ。
   // **下の画面もその Project の会話にする**（改訂・2026-09-30）。前の Project の画面の印（開いていた Fork・
   // Canvas など）は連れていかない——別の Project のものだから
-  return threadNavHref(projectId, null, pathname, params, fallbackSection);
+  return threadNavHref(projectId, lastForkId, pathname, params, fallbackSection);
 }
 
 /**

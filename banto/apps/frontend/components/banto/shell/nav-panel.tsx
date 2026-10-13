@@ -47,6 +47,7 @@ import {
 import { describeFailure } from "@/lib/report-failure";
 import { requestForkDialog, type ForkStartMode } from "@/lib/fork-request";
 import { cn } from "@/lib/utils";
+import { lastForkOf, useLastThreads } from "@/lib/last-thread";
 import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref, threadRowHref } from "@/lib/settings-link";
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
@@ -175,6 +176,9 @@ function ProjectTreeItem({
   // **いま開いていない Project で、まだ開いていない Thread があれば名前を太字に**（2026-10-03、§6.33）
   const anyUnread = useAnyThreadUnread([project.baseThreadId, ...forks.map((f) => f.id)]);
   const projectUnread = !isCurrent && anyUnread;
+  // **ほかの Project から移るときは、その Project で最後に開いていた Thread へ**（2026-10-13、§6.40）
+  const lastThreads = useLastThreads();
+  const lastForkId = isCurrent ? null : lastForkOf(lastThreads, project.id, forks.map((f) => f.id));
 
   /**
    * **サイドバーから Fork を作る**（2026-10-11、ユーザー）。ダイアログは会話の面が持つ（`lib/fork-request.ts`）
@@ -247,6 +251,7 @@ function ProjectTreeItem({
                     pathname,
                     searchParams,
                     settingsEntrySection,
+                    lastForkId,
                   )}
                   data-roving-item
                   title={project.basePath}
