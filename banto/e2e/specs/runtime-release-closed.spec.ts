@@ -143,7 +143,16 @@ test("別のサーバの Project を閉じると Service の自動起動が切�
         const threadId = (await api<{ id: string }>(own, `/api/projects/${projectId}/threads`, { method: "POST" })).body.id;
         const ctx = { projectId, threadId };
         const project = async (id = projectId) => (await api<HostProject[]>(own, "/api/projects")).body.find((p) => p.id === id)!;
-        const runtime = async () => (await api<HostRuntime[]>(own, "/api/runtimes")).body.find((r) => r.name === name)!;
+        const runtime = async () => (await api<{ runtimes: HostRuntime[] }>(own, "/api/runtimes")).body.runtimes.find((r) => r.name === name)!;
+        /** 向こうで Module が繋がるまで（初回は向こうへコードを送る） */
+        const waitServiceModule = () =>
+          expect
+            .poll(
+              async () =>
+                (await api<{ connected?: string[] }>(own, `/api/projects/${projectId}/modules/prepare`, { method: "POST" })).body.connected ?? [],
+              { timeout: 600_000, message: "向こうで Service の Module が繋がらない" },
+            )
+            .toEqual(expect.arrayContaining(["service"]));
         const listServices = async () => {
           const r = await callTool(own, `service-${projectId}`, "listServices", {}, ctx);
           expect(r.isError, r.text).toBe(false);
@@ -160,7 +169,8 @@ test("別のサーバの Project を閉じると Service の自動起動が切�
           return (JSON.parse(r.stdout) as { services: Record<string, { desired: string }> }).services[service]?.desired;
         };
 
-        // 向こうで Service を動かす（初回は向こうへコードを送る）
+        // 向こうで Service を動かす
+        await waitServiceModule();
         const started = await callTool(own, `service-${projectId}`, "startService", { name: service, command: "while true; do sleep 1; done" }, ctx);
         expect(started.isError, started.text).toBe(false);
         await expect.poll(listServices, { timeout: 60_000 }).toEqual([`${service}:running:running`]);
@@ -186,6 +196,7 @@ test("別のサーバの Project を閉じると Service の自動起動が切�
         const reopened = await api(own, `/api/projects/${projectId}/reopen`, { method: "POST" });
         expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
         expect((await project()).status).toBe("active");
+        await waitServiceModule();
         await expect.poll(listServices, { timeout: 120_000 }).toEqual([`${service}:running:running`]);
         expect((await systemctl(`is-enabled ${unit}`)).stdout.trim(), "再開したのに自動起動に戻らない").toBe("enabled");
         await closeFirst();
@@ -197,6 +208,8 @@ test("別のサーバの Project を閉じると Service の自動起動が切�
           body: { name: secondName, root: secondRoot, runtime: `remote:${name}` },
         });
         expect(second.status, JSON.stringify(second.body)).toBe(201);
+        // 画面から作ったときと同じく Base Thread を作っておく（画面はそこを開く）
+        expect((await api(own, `/api/projects/${second.body.id}/threads`, { method: "POST" })).status).toBeLessThan(300);
         expect((await runtime()).usedBy.map((p) => p.name)).toEqual([secondName]);
 
         // ---- 4. 元を再開すると断られる（API） ---------------------------------------------------------------
