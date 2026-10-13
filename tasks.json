@@ -6253,6 +6253,27 @@
       "extra": {}
     },
     {
+      "id": "close-unreachable-remote",
+      "number": 286,
+      "kind": "task",
+      "title": "繋がらなくなった別のサーバの Project を閉じる・実行場所を外す方法",
+      "status": "backlog",
+      "parent": "remote-runtime",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "#268 のレビューの指摘（2026-10-13）。閉じるときに向こうの Service を止める（suspendProjectServices）ので、向こうに繋がらないと閉じる操作が 502 で断られる。サーバを捨てた・壊れた Project は、閉じることも実行場所を外すこともできないまま残る。\n\n形を決める（仕様に書いてから）：繋がらないとき、人が確かめて「向こうは片づけずに閉じる」（Service が向こうに残る可能性を出して押させる）を選べるようにする、など。実行場所の登録を外す操作との関係も見る。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-13T12:27:38.895Z",
+      "updatedAt": "2026-10-13T12:27:38.895Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "factory-factory-module",
       "number": 253,
       "kind": "bug",
