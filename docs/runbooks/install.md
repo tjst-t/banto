@@ -33,6 +33,12 @@ API トークンも聞かれる（Enter だけなら飛ばす。一度 `--no-clo
 | Publish（公開） | 使える（基のドメイン＝`<名前>` を書いておく） | 使えない |
 
 トークンは Cloudflare の画面で作る：**Zone → Zone → Read** と **Zone → DNS → Edit**、対象はその名前を含むゾーン。
+次のリンクを開くと、この2つの権限を選んだ状態（名前 banto-install）で作成画面が開く。対象のゾーン（Zone Resources）はリンクでは決めていないので、画面でその名前を含むゾーンだけを選び、「Continue to summary」→「Create Token」で作る（値は一度しか出ない）。
+
+<https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&name=banto-install>
+
+（リンクの形は Cloudflare の [API トークンの雛形の URL](https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/) に従う。）
+
 渡し方は3つ（どれもコマンド行や画面に値を残さない順に）：
 
 ```sh
