@@ -352,6 +352,30 @@ export class ServiceManager {
     });
   }
 
+  /**
+   * **Project を閉じるときに、全件を止めて自動起動から外す**（host が呼ぶ——v4-security.md §1「閉じた Project は数えない」）。
+   * 閉じた Project の実行場所は空き、別の Project が来る。止まっていても enable のままだと向こうの起こし直しで起き、次に来た
+   * Project の Service とぶつかる。**登録（動かしておきたいか）は変えない**——写しの unit も消しておき、再開して Module が
+   * 起きたときに登録から作り直して、動かしておきたいものを起こす（`reconcile` の「unit が無かったもの」）。止めたものの名前を返す
+   */
+  suspendAll(): Promise<{ suspended: string[] }> {
+    return this.serialize(async () => {
+      const records = await this.deps.store.all();
+      const suspended: string[] = [];
+      for (const name of Object.keys(records)) {
+        const unit = unitName(name);
+        const enabled = (await this.deps.systemctl.run(["is-enabled", unit])).stdout.trim() === "enabled";
+        const active = parseShow((await this.deps.systemctl.run(["show", unit, "-p", "ActiveState"])).stdout)["ActiveState"];
+        if (enabled || (active !== undefined && active !== "inactive" && active !== "failed")) suspended.push(name);
+        await this.sc(["disable", "--now", unit], `${name} を止めて自動起動から外し`);
+        await this.deps.systemctl.run(["reset-failed", unit]);
+        await rm(unitPath(this.deps.paths, name), { force: true });
+      }
+      if (Object.keys(records).length > 0) await this.sc(["daemon-reload"], "systemd に定義を読み直させ");
+      return { suspended };
+    });
+  }
+
   restart(nameInput: unknown, onProgress?: (n: string) => void): Promise<ServiceStatus> {
     return this.serialize(async () => {
       const name = assertName(nameInput);

@@ -32,7 +32,12 @@ async function withStores(fn: (s: { dir: string; log: EventLog; store: RemoteRun
       publicKeyOf: async () => {
         throw new Error("この試験では繋がない");
       },
-      projectsUsing: (rt) => projects.listProjects().filter((p) => p.runtime === rt).map((p) => ({ id: p.id, name: p.name })),
+      // cli.ts と同じ数え方（閉じたものは外すときだけ数える。移している途中は移す先としても）
+      projectsUsing: (rt, opts) =>
+        projects
+          .listProjects()
+          .filter((p) => (p.runtime === rt && (p.status !== "closed" || opts?.includeClosed)) || p.move?.to.runtime === rt)
+          .map((p) => ({ id: p.id, name: p.name })),
     });
     await fn({ dir, log, store, projects, runtimes });
   } finally {
@@ -103,6 +108,35 @@ test("使っている Project があれば外せない（閉じていても）�
     await store.register({ ...INPUT, name: "spare" }, KEY, OK);
     await runtimes.remove("spare");
     assert.equal(store.get("spare"), undefined);
+  });
+});
+
+test("閉じた Project は数えない：閉じたら別の Project を作れる。再開は、ほかの Project が使い始めていたら理由つきで断る", async () => {
+  await withStores(async ({ store, projects, runtimes }) => {
+    await store.register(INPUT, KEY, OK);
+    const pve = await projects.createProject("pve", "/home/banto/pve", { runtime: "remote:lab" });
+    await projects.closeProject(pve.id);
+    assert.equal(runtimes.get("lab")!.unavailableReason, undefined, "閉じたのに空かない");
+    assert.deepEqual(runtimes.get("lab")!.usedBy, []);
+    // 空いていれば今どおり再開できる
+    await runtimes.reopenProjectOn("lab", pve.id, () => projects.reopenProject(pve.id));
+    assert.equal(projects.getProject(pve.id)!.status, "active");
+    // 閉じている間に別の Project が使い始めた
+    await projects.closeProject(pve.id);
+    const other = await projects.createProject("other", "/home/banto/other", { runtime: "remote:lab" });
+    await assert.rejects(
+      runtimes.reopenProjectOn("lab", pve.id, () => projects.reopenProject(pve.id)),
+      (err: unknown) =>
+        err instanceof RemoteRuntimeError &&
+        err.status === 409 &&
+        err.extra?.code === "runtime-taken" &&
+        /Project「other」が使い始めました/.test(err.message),
+    );
+    assert.equal(projects.getProject(pve.id)!.status, "closed", "断ったのに開いた");
+    // 相手が閉じれば再開できる
+    await projects.closeProject(other.id);
+    await runtimes.reopenProjectOn("lab", pve.id, () => projects.reopenProject(pve.id));
+    assert.equal(projects.getProject(pve.id)!.status, "active");
   });
 });
 

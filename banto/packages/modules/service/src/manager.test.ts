@@ -475,3 +475,29 @@ test("移した印（.banto-moved.json）があれば、起きたときに全件
     await cleanup();
   }
 });
+
+test("閉じるときに止めておく：全件を止めて自動起動から外し unit を消す。登録は変えず、次に起きたとき動かしておきたいものだけ起こす", async () => {
+  const { base, sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    await manager.start({ name: "worker", command: "y" });
+    await manager.stop("worker");
+    const r = await manager.suspendAll();
+    assert.deepEqual(r.suspended, ["web"], "止めてあったものは止めたうちに数えない");
+    assert.ok(!sc.enabled.has("banto-web.service"), "自動起動に残っている");
+    assert.equal(sc.active.get("banto-web.service"), "inactive", "動いたまま");
+    await assert.rejects(stat(join(base, "units/banto-web.service")), "unit が残っている");
+    const saved = JSON.parse(await readFile(join(base, "data/service/services.json"), "utf8")) as {
+      services: Record<string, { desired: string }>;
+    };
+    assert.deepEqual(Object.values(saved.services).map((s) => s.desired), ["running", "stopped"], "登録を変えた");
+    // 再開して Module が起きた：登録から unit を作り直し、動かしておきたいものだけ起こす
+    sc.calls = [];
+    const after = await manager.list();
+    assert.deepEqual(after.map((s) => [s.name, s.state]), [["web", "running"], ["worker", "stopped"]]);
+    assert.ok(sc.enabled.has("banto-web.service") && !sc.enabled.has("banto-worker.service"));
+    assert.ok(!sc.did("start", "banto-worker.service"), "止めてあったものを起こした");
+  } finally {
+    await cleanup();
+  }
+});

@@ -475,11 +475,16 @@ export class ProjectMover {
       // 5. 元の Service を止めておく（Module を畳む前に。止まっていても enable のままだと、元の場所の起こし直しで起きる）→ 畳む
       progress.phase = "stopping";
       this.changed(projectId);
-      this.modulesAllowed.add(projectId);
-      try {
-        disabled = await this.deps.disableServices(projectId);
-      } finally {
-        this.modulesAllowed.delete(projectId);
+      // 閉じている間に元の実行場所を別の Project が使い始めていたら、そこで Module を起こさない——この Project の Service の
+      // Module が起きると、相手の Service の unit を自分の孤児と見なして止めて消す。この Project の Service は閉じたときに
+      // 止めて自動起動から外してある（v4-security.md §1「閉じた Project は数えない」）
+      if (!this.sourceTakenBy(project)) {
+        this.modulesAllowed.add(projectId);
+        try {
+          disabled = await this.deps.disableServices(projectId);
+        } finally {
+          this.modulesAllowed.delete(projectId);
+        }
       }
       await this.deps.releaseModules(projectId);
       if (!isRemoteProject({ runtime: move.from.runtime })) await this.deps.hostContainers.stopProjectContainer(projectId);
@@ -923,12 +928,25 @@ export class ProjectMover {
   private async running(project: ProjectState): Promise<RunningItem[]> {
     const items = [...this.deps.hostActivity(project.id)];
     const from = project.runtime ?? HOST_CONTAINER_RUNTIME;
+    // 元の実行場所を別の Project が使っている（閉じている間に来た）なら、そこで動いているものはその Project のもの——
+    // この Project の Service は閉じたときに止めてある。向こうでは引かない
+    if (this.sourceTakenBy(project)) return items;
     let r: SshResult | undefined;
     if (!isRemoteProject(project)) r = await this.deps.hostContainers.runInside(project.id, RUNNING_SCRIPT);
     else r = await this.withSide(from, (side) => side.run(RUNNING_SCRIPT));
     if (r && r.code !== 0) throw new SshCommandError(`${hostLabel(from)}で動いているものを確かめられませんでした`, r);
     if (r) items.push(...parseRunning(r.stdout));
     return items;
+  }
+
+  /**
+   * **閉じた Project の元の実行場所を、別の Project が使っているか**（閉じたら実行場所は空く——v4-security.md §1「閉じた
+   * Project は数えない」）。使っていればその Project を返す。この機械のコンテナは Project ごとなので関係しない
+   */
+  private sourceTakenBy(project: ProjectState): { id: string; name: string } | undefined {
+    const name = remoteNameOf(project.runtime);
+    if (!name || project.status !== "closed") return undefined;
+    return this.deps.remoteRuntimes.get(name)?.usedBy.find((p) => p.id !== project.id);
   }
 
   // ── 片側 ─────────────────────────────────────────────────────────────────

@@ -62,10 +62,16 @@ export function MoveRuntimeDialog({
   projectId,
   open,
   onOpenChange,
+  reason,
+  onMoved,
 }: {
   projectId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** なぜ開いたか（閉じた Project の再開を、実行場所が使われていて断られた——その理由） */
+  reason?: string;
+  /** 移し終わったあとの次の一手（閉じた Project なら「再開する」）。渡せば終わりの画面に出す */
+  onMoved?: () => Promise<void>;
 }) {
   const project = getProject(projectId);
   const fromRuntime = project.runtime ?? HOST_CONTAINER_RUNTIME;
@@ -209,6 +215,12 @@ export function MoveRuntimeDialog({
             Project「{project.name}」のフォルダと Module の状態を写して、動かす場所を切り替えます。元は消しません。
           </DialogDescription>
         </DialogHeader>
+
+        {step === "choose" && reason ? (
+          <Block tone="stop" title="再開できませんでした" testId="move-reason">
+            <p>{reason}</p>
+          </Block>
+        ) : null}
 
         {step === "choose" ? (
           <div className="flex flex-col gap-4">
@@ -445,6 +457,22 @@ export function MoveRuntimeDialog({
               </Button>
               <Button disabled={blocked || busy} onClick={() => void start()} data-testid="move-start">
                 {runtimeLabel(toRuntime)} へ移す
+              </Button>
+            </>
+          ) : step === "done" && onMoved ? (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="move-close">
+                閉じる
+              </Button>
+              <Button
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  void onMoved().finally(() => setBusy(false));
+                }}
+                data-testid="move-reopen"
+              >
+                再開する
               </Button>
             </>
           ) : step === "done" || step === "failed" ? (

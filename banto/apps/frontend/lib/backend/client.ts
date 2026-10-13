@@ -509,8 +509,18 @@ export async function closeRealProject(projectId: string): Promise<void> {
   await request(`/api/projects/${projectId}/close`, { method: "POST" });
 }
 
+/**
+ * **閉じている間に、その実行場所を別の Project が使い始めていた**（決定・2026-10-13、`docs/specs/v4-security.md` §1
+ * 「閉じた Project は数えない」）。再開は断られる——画面は「別の実行場所へ移す」を開いて選び直してもらう
+ */
+export class RuntimeTakenError extends Error {}
+
 export async function reopenRealProject(projectId: string): Promise<void> {
-  await request(`/api/projects/${projectId}/reopen`, { method: "POST" });
+  const res = await hostFetch(`/api/projects/${projectId}/reopen`, { method: "POST", headers: { "content-type": "application/json" } });
+  if (res.ok) return;
+  const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+  if (res.status === 409 && body.code === "runtime-taken") throw new RuntimeTakenError(body.error ?? "実行場所を別の Project が使っています");
+  throw new Error(body.error || `banto host /api/projects/${projectId}/reopen が ${res.status} を返しました`);
 }
 
 /**

@@ -147,6 +147,15 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
         inputSchema: { type: "object", properties: {} },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
+      {
+        // **人の管理操作だけ**（AI には見せない）。host が別のサーバの Project を閉じるときに呼ぶ
+        name: "suspendAllServices",
+        description:
+          "登録した全サービスを止めて自動起動から外し、unit を消す。登録（動かしておきたいか）は変えない——次に Module が起きたとき" +
+          "登録から unit を作り直し、動かしておきたいものは起こす。Project を閉じるときに banto が呼ぶ。返り値の suspended は止めた・自動起動から外したものの名前",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
     ],
   }));
 
@@ -181,6 +190,8 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
           return text(await manager.logs(args.name, args.tail));
         case "disableAllServices":
           return text(await manager.disableAll());
+        case "suspendAllServices":
+          return text(await manager.suspendAll());
         default:
           throw new Error(`unknown tool: ${request.params.name}`);
       }

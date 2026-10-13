@@ -261,11 +261,12 @@ async function main(): Promise<void> {
     store: remoteRuntimeStore,
     startSshAgent: (identity, socketDir) => sshIdentityThroughVault(identity, "startSshAgent", socketDir),
     publicKeyOf: (identity) => sshIdentityThroughVault(identity, "getPublicKey"),
-    // 移している途中の Project は、移す先としても数える（その間に別の Project を作らせない——v4-security.md §1「Project を別の実行場所へ移す」）
-    projectsUsing: (rt) =>
+    // 閉じた Project は数えない（閉じたら空く——v4-security.md §1「閉じた Project は数えない」。外すときだけ数える）。
+    // 移している途中の Project は、閉じていても移す先として数える（その間に別の Project を作らせない——§1「Project を別の実行場所へ移す」）
+    projectsUsing: (rt, opts) =>
       projectThread
         .listProjects()
-        .filter((p) => p.runtime === rt || p.move?.to.runtime === rt)
+        .filter((p) => (p.runtime === rt && (p.status !== "closed" || opts?.includeClosed)) || p.move?.to.runtime === rt)
         .map((p) => ({ id: p.id, name: p.name })),
   });
   /**
@@ -1955,6 +1956,33 @@ async function main(): Promise<void> {
     allowedOrigin: bootstrap.sandboxPublicUrl,
   });
   /**
+   * **その Project の Service の Module（`satisfies: service`）に人の管理操作を頼む**——移す前に止めておく（`disableAllServices`）・
+   * 閉じるときに止めて自動起動から外す（`suspendAllServices`）。繋げない・断られたら投げる（止めたことにしない）。
+   * 返り値の `field` に入った名前を集めて返す
+   */
+  async function callServiceAdminTool(projectId: string, tool: string, field: string, what: string): Promise<string[]> {
+    const project = projectThread.getProject(projectId);
+    if (!project) return [];
+    const names: string[] = [];
+    const services = loadModuleDeclarations(runtimeConfig, projectId).filter(
+      (d) => d.meta.scope === "project" && (d.meta.satisfies as string[]).includes("service"),
+    );
+    for (const declaration of services) {
+      const connName = await connectDeclaredModule(declaration, project);
+      const client = connName ? connectedModules.get(connName) : undefined;
+      if (!client) throw new Error(`${declaration.name} に繋げないので、${what}ません`);
+      const r = await client.callTool({
+        name: tool,
+        arguments: {},
+        _meta: { [CALLER_META_KEY]: { admin: true, forProject: projectId } },
+      });
+      const text = (r.content as Array<{ text?: string }> | undefined)?.[0]?.text ?? "";
+      if (r.isError) throw new Error(`${declaration.name} が${what}ませんでした：${text}`);
+      names.push(...(((JSON.parse(text) as Record<string, unknown>)[field] as string[] | undefined) ?? []));
+    }
+    return names;
+  }
+  /**
    * **Project を別の実行場所へ移す**（決定・2026-10-11、`docs/specs/v4-security.md` §1「Project を別の実行場所へ移す」）
    */
   projectMover = new ProjectMover({
@@ -1976,28 +2004,7 @@ async function main(): Promise<void> {
         ...mine(a.moduleCalls).map((c): RunningItem => ({ kind: "call", label: `Module の呼び出しが走っています（${c.connName}）` })),
       ];
     },
-    async disableServices(projectId) {
-      const project = projectThread.getProject(projectId);
-      if (!project) return [];
-      const disabled: string[] = [];
-      const services = loadModuleDeclarations(runtimeConfig, projectId).filter(
-        (d) => d.meta.scope === "project" && (d.meta.satisfies as string[]).includes("service"),
-      );
-      for (const declaration of services) {
-        const connName = await connectDeclaredModule(declaration, project);
-        const client = connName ? connectedModules.get(connName) : undefined;
-        if (!client) throw new Error(`${declaration.name} に繋げないので、元の場所の Service を止めておけません`);
-        const r = await client.callTool({
-          name: "disableAllServices",
-          arguments: {},
-          _meta: { [CALLER_META_KEY]: { admin: true, forProject: projectId } },
-        });
-        const text = (r.content as Array<{ text?: string }> | undefined)?.[0]?.text ?? "";
-        if (r.isError) throw new Error(`${declaration.name} が元の場所の Service を止めておけませんでした：${text}`);
-        disabled.push(...((JSON.parse(text) as { disabled?: string[] }).disabled ?? []));
-      }
-      return disabled;
-    },
+    disableServices: (projectId) => callServiceAdminTool(projectId, "disableAllServices", "disabled", "元の場所の Service を止めておけ"),
     releaseModules: async (projectId) => {
       await releaseProjectModules(projectId, { stopContainer: true });
     },
@@ -2063,6 +2070,9 @@ async function main(): Promise<void> {
       ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
     }),
     releaseProjectModules,
+    // 別のサーバの Project を閉じる前に（v4-security.md §1「閉じた Project は数えない」）
+    suspendProjectServices: (projectId) =>
+      callServiceAdminTool(projectId, "suspendAllServices", "suspended", "閉じる前に別のサーバの Service を止めて自動起動から外せ"),
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),

@@ -26,6 +26,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { getClosedProjects, reopenProject } from "@/lib/mock/projects";
+import { RuntimeTakenError } from "@/lib/backend/client";
+import { MoveRuntimeDialog } from "@/components/banto/settings/move-runtime-dialog";
 import { getAllThreadsForProject, getClosedForksForProject, getThreadOverview, reopenThread } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
@@ -149,6 +151,8 @@ export function ArchiveDialog({
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<ArchiveTab>("forks");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  /** 再開を断られた（実行場所を別の Project が使っている）Project——「別の実行場所へ移す」を開く */
+  const [moveFor, setMoveFor] = useState<{ projectId: string; reason: string } | null>(null);
   const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
   const q = query.trim().toLowerCase();
@@ -201,13 +205,27 @@ export function ArchiveDialog({
     try {
       await reopenProject(id);
       setQuery("");
+      setMoveFor(null);
       router.push(`/p/${id}`);
     } catch (err) {
+      // 閉じている間に、その実行場所を別の Project が使い始めていた——理由を添えて「別の実行場所へ移す」を開く
+      // （決定・2026-10-13、`docs/specs/v4-security.md` §1「閉じた Project は数えない」）
+      if (err instanceof RuntimeTakenError) return setMoveFor({ projectId: id, reason: err.message });
       toast(`Project の再オープンに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   return (
+    <>
+    {moveFor ? (
+      <MoveRuntimeDialog
+        projectId={moveFor.projectId}
+        open
+        onOpenChange={(next) => !next && setMoveFor(null)}
+        reason={moveFor.reason}
+        onMoved={() => handleReopenProject(moveFor.projectId)}
+      />
+    ) : null}
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[80vh] flex-col gap-0 p-0 sm:max-w-lg">
         <DialogHeader className="border-b border-border px-4 py-3">
@@ -312,5 +330,6 @@ export function ArchiveDialog({
         </div>
       </DialogContent>
     </Dialog>
+    </>
   );
 }

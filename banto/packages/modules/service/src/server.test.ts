@@ -33,7 +33,7 @@ async function connect(prepare: () => Promise<void>) {
   return { client, cleanup: async () => { await client.close(); await rm(base, { recursive: true, force: true }); } };
 }
 
-test("道具は7本。6本は AI に見せ、移す前に止めておく1本は人の管理操作だけ。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
+test("道具は8本。6本は AI に見せ、移す前・閉じるときに止めておく2本は人の管理操作だけ。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
   const { client, cleanup } = await connect(async () => {});
   try {
     const { tools } = await client.listTools();
@@ -45,9 +45,10 @@ test("道具は7本。6本は AI に見せ、移す前に止めておく1本は�
       "restartService",
       "startService",
       "stopService",
+      "suspendAllServices",
     ]);
     for (const t of tools) {
-      const visibility = t.name === "disableAllServices" ? "admin" : "agent";
+      const visibility = t.name === "disableAllServices" || t.name === "suspendAllServices" ? "admin" : "agent";
       assert.equal((t._meta as Record<string, unknown>)["dev.banto/visibility"], visibility, t.name);
     }
     const start = tools.find((t) => t.name === "startService")!;

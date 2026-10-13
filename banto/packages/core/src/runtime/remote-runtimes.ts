@@ -61,10 +61,11 @@ export interface RemoteRuntimeDeps {
   /** その SSH 鍵の公開鍵（`ssh-ed25519 AAAA…`） */
   publicKeyOf(identity: string): Promise<string>;
   /**
-   * その実行場所を使っている Project（閉じたものも数える——閉じても向こうの置き場は残り、再開できる）。移している途中の
-   * Project は、移す先としても数える
+   * その実行場所を使っている Project。**閉じたものは数えない**——閉じたら実行場所は空く（v4-security.md §1「閉じた Project は
+   * 数えない」）。`includeClosed` なら閉じたものも（外すときだけ——閉じた Project も再開・移すのに登録が要る）。移している
+   * 途中の Project は、移す先としても数える
    */
-  projectsUsing(runtime: string): Array<{ id: string; name: string }>;
+  projectsUsing(runtime: string, opts?: { includeClosed?: boolean }): Array<{ id: string; name: string }>;
 }
 
 /** 一覧に出す1件（記録＋導いた値） */
@@ -222,11 +223,11 @@ export class RemoteRuntimes {
     return this.recheck(name);
   }
 
-  /** 外す。使っている Project があれば外せない（閉じた Project も——再開できるので） */
+  /** 外す。使っている Project があれば外せない（閉じた Project も——再開・移すのに登録が要る） */
   async remove(name: string): Promise<void> {
     if (!this.deps.store.get(name)) throw new RemoteRuntimeError(404, `実行場所「${name}」はありません`);
-    const used = this.deps.projectsUsing(runtimeIdOf(name))[0];
-    if (used) throw new RemoteRuntimeError(409, `Project「${used.name}」が使っているあいだは外せません`);
+    const used = this.deps.projectsUsing(runtimeIdOf(name), { includeClosed: true })[0];
+    if (used) throw new RemoteRuntimeError(409, `Project「${used.name}」が使っているあいだは外せません（閉じた Project も含む）`);
     await this.deps.store.remove(name);
   }
 
@@ -267,7 +268,27 @@ export class RemoteRuntimes {
   }
 
   /**
-   * **その実行場所を押さえて `fn` を通す**（1本ずつ）。Project の作成と、別の実行場所へ移す（移す先として。
+   * **閉じた Project を再開する**（v4-security.md §1「閉じた Project は数えない」）。閉じている間にその実行場所を別の Project が
+   * 使い始めていたら、理由を添えて断る（409・`code: "runtime-taken"`——画面は「別の実行場所へ移す」を開く）。作成・移すと同じ
+   * 鍵で押さえる（同時に同じ実行場所を取り合わない）
+   */
+  async reopenProjectOn(name: string, projectId: string, reopen: () => Promise<void>): Promise<void> {
+    return this.exclusive(name, async () => {
+      const used = this.deps.projectsUsing(runtimeIdOf(name)).find((p) => p.id !== projectId);
+      if (used) {
+        throw new RemoteRuntimeError(
+          409,
+          `実行場所「${name}」は、閉じている間に Project「${used.name}」が使い始めました（1つの実行場所に Project は1つ）。` +
+            "別の実行場所へ移してから再開してください",
+          { code: "runtime-taken", runtime: runtimeIdOf(name), usedBy: used },
+        );
+      }
+      await reopen();
+    });
+  }
+
+  /**
+   * **その実行場所を押さえて `fn` を通す**（1本ずつ）。Project の作成・閉じた Project の再開と、別の実行場所へ移す（移す先として。
    * v4-security.md §1「Project を別の実行場所へ移す」の 4）が同じ鍵で並ぶ——1つの実行場所に Project は1つ
    */
   async exclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {

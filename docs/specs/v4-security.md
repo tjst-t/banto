@@ -389,6 +389,19 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
     「別の実行場所へ移す」（下）を開いて選び直してもらう。空いていれば今どおり再開する。再開と作成・移すは同じ単一化の
     鍵で押さえる（同時に同じ実行場所を取り合わない）
   - この機械のコンテナの Project には関係しない（数に決まりが無い）
+  - **実装の形**（2026-10-13、Backlog `runtime-release-closed`）：
+    - 数え方は `cli.ts` の `projectsUsing` の1箇所（閉じたものは `includeClosed` のときだけ。移している途中は閉じていても移す先として数える）
+    - 閉じる口（`POST /api/projects/:id/close`）は、別のサーバの Project なら記録を閉じる**前に** Service の Module の人の管理操作
+      `suspendAllServices` を呼ぶ——全件を `disable --now` で**止めて**自動起動から外し、写しの unit を消す（登録は変えない）。止めるのは、
+      動いたままだと次に来た Project の Service と `ports` がぶつかるため。unit を消しておくので、再開して Module が起きたとき
+      「unit が無かった・動かしておきたい」として作り直して起こす（§4.2 の `reconcile`）。**止められなければ閉じない**（502、理由つき——
+      空いたことにしない）
+    - 再開は `RemoteRuntimes.reopenProjectOn`（作成・移すと同じ `exclusive` の鍵）。断るときは 409・`code: "runtime-taken"`。画面は
+      履歴の「再度開く」で受けて「別の実行場所へ移す」を理由つきで開き、移し終わりに「再開する」を出す
+    - 閉じている間に元の実行場所を別の Project が使い始めていたら、その Project を移すときは**元の実行場所で Module を起こさない・
+      動いているものを引かない**——この Project の Service の Module が起きると相手の unit を孤児と見なして消し、`systemctl --user
+      list-units 'banto-*'` は相手のものを数えてしまう。この Project の Service は閉じたときに止めてある
+    - E2E：`e2e/specs/runtime-release-closed.spec.ts`
 
 **実装の形**（済み・2026-10-10、Backlog `remote-runtime-registry`。画面はモック abb6ef82 の形で決定・2026-10-10、ユーザー）：
 
@@ -415,7 +428,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   UNIX ソケット）を**1本ずつ別の接続で**実際に頼んで確かめる（最初の断りで ssh が終わるので、まとめると片方が分からない）。
   `MaxSessions` は root でないと `sshd -T` で読めないので設定のファイル（`sshd_config.d` が先・最初の値）を読み、10 未満なら
   注意。linger（`/var/lib/systemd/linger/<ユーザー>`）・tmux・Docker が無いのは注意
-- **選べない理由**（host が決め、画面はそのまま出す）：ほかの Project が使っている（閉じた Project も数える）→ host 鍵が
+- **選べない理由**（host が決め、画面はそのまま出す）：ほかの Project が使っている（閉じた Project は数えない——上。実行場所を
+  外すときだけ閉じた Project も数える：再開・移すのに登録が要る）→ host 鍵が
   違う → 前提が足りない。同じ実行場所への Project の作成は1本ずつ通し、向こうで根を正規化したあとでもう一度確かめる
 - **画面**：設定（banto 全体）の「実行場所」・新しい Project の画面の一番上の「どこで動かすか」（Module に頼まれて開いた
   ときは出さない——頼んだ Module はこの機械のフォルダを用意している）・Project の設定の「一般」の Root パスの上に読むだけ

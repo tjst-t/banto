@@ -241,6 +241,11 @@ export interface AppDeps {
    *  プロセス・合言葉・セッション）を落とす（決定・2026-09-10）。 */
   releaseProjectModules?(projectId: string, opts?: { stopContainer?: boolean }): Promise<string[]>;
   /**
+   * **別のサーバの Project を閉じる前に、その実行場所の Service を止めて自動起動から外す**（Service Module の管理操作
+   * `suspendAllServices`。登録はそのまま）。止めたものの名前を返す。無ければ止めない（試験の最小構成）
+   */
+  suspendProjectServices?(projectId: string): Promise<string[]>;
+  /**
    * **自動で続けるのをやめたターンを、人が「続ける」と言った**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。受信箱の
    * お知らせ（`NoticeItem.resume`）の id で呼ぶ。渡されなければ口は断る
    */
@@ -2611,6 +2616,21 @@ export function createApp(deps: AppDeps) {
       const projectCloseMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/close$/);
       if (projectCloseMatch && req.method === "POST") {
         try {
+          const closing = deps.projectThread.getProject(projectCloseMatch[1]!);
+          if (!closing) throw new NotFoundError(`project ${projectCloseMatch[1]!} not found`);
+          if (closing.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
+          // **別のサーバの Project は、その実行場所の Service を止めて自動起動から外してから閉じる**（決定・2026-10-13、
+          // v4-security.md §1「閉じた Project は数えない」）。閉じたら実行場所は空き、別の Project が来る——enable のままだと
+          // 向こうの起こし直しで起きてぶつかる。止められなければ閉じない（空いたことにしない）
+          if (remoteNameOf(closing.runtime) && deps.suspendProjectServices) {
+            try {
+              await deps.suspendProjectServices(closing.id);
+            } catch (err) {
+              return json(res, 502, {
+                error: `別のサーバの Service を止められなかったので、閉じていません：${err instanceof Error ? err.message : String(err)}`,
+              });
+            }
+          }
           await deps.projectThread.closeProject(projectCloseMatch[1]!);
           // **畳んだら、その Project のために立てたものも落とす**（決定・2026-09-10）
           // ——記録だけ閉じてプロセスが残ると、鍵を持ったものまで生き残る
@@ -2632,6 +2652,8 @@ export function createApp(deps: AppDeps) {
           json(res, 200, { ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          // 実行場所を別の Project が使い始めていた（`code: "runtime-taken"`——画面は「別の実行場所へ移す」を開く）
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
           if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
           throw err;
         }

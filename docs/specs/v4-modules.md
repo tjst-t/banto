@@ -2546,6 +2546,10 @@ docker compose で、**pm2 の形に乗る**——`start` が初回は登録も�
 | `listServices` | — | 名前・コマンド・ポート・状態（動いている／止めた／落ちた）・起動時刻・終了コード |
 | `readServiceLogs` | `name`・`tail` | 標準出力と標準エラーを時刻つきで |
 
+**人の管理操作**（`admin` 可視性。AI には見せない——banto が呼ぶ）：`disableAllServices`（Project を別の実行場所へ移す前に、
+全件を「止めておきたい」にして自動起動から外す）・`suspendAllServices`（別のサーバの Project を閉じるときに、**登録は変えずに**
+全件を止めて自動起動から外し、unit の写しを消す——再開して起きたら作り直す。v4-security.md §1「閉じた Project は数えない」）。
+
 **作らないもの**：`send_input`（動いているプロセスへの入力——人と AI が同じ端末を使う要求の側、
 §5 の10）・`stop_all`（一括で止める用途が無く害が大きい）・`grep_logs`（ログをコンテナの中に置けば
 Shell の `grep` で足りる）。
