@@ -167,7 +167,9 @@ export function screencastLimits(
   maxPixels = maxFramePixels(scale),
 ): { maxWidth: number; maxHeight: number } {
   const up = (n: number) => Math.ceil(n / 64) * 64;
-  const full = { width: viewport.width * scale, height: viewport.height * scale };
+  // 倍率は 0.25 刻み（1.25・1.5・1.75 もある）なので、ページ×倍率は端数になりうる。Page.startScreencast の maxWidth・maxHeight は
+  // 整数しか受けず、端数だと「Invalid parameters」で画面が映らなかった（実機・2026-10-13、倍率 1.25 の画面で 833×605 のページ）
+  const full = { width: Math.floor(viewport.width * scale), height: Math.floor(viewport.height * scale) };
   let w = 0;
   let h = 0;
   for (const v of viewers) {
