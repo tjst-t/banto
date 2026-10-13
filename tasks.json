@@ -6575,7 +6575,7 @@
       "number": 289,
       "kind": "task",
       "title": "前に居た場所へ戻すときは、空でなくても受け付けて差分で写す（rsync）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "runtime-move",
       "dependsOn": [],
       "milestone": null,
@@ -6587,7 +6587,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-13T22:32:29.609Z",
-      "updatedAt": "2026-10-13T22:36:17.607Z",
+      "updatedAt": "2026-10-13T22:36:22.229Z",
       "closedAt": null,
       "extra": {}
     },
