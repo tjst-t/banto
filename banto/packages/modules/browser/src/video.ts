@@ -49,7 +49,7 @@ const ELEMENTS = ["ximagesrc", "videoconvert", "videoscale", "x264enc", "h264par
 
 /** 動かす python（gi で GStreamer、ctypes で XDamage）。引数は画面の名前（`:99`）と静止とみなす ms */
 export const VIDEO_SCRIPT = String.raw`
-import sys, json, struct, threading, ctypes, ctypes.util, time
+import sys, os, json, struct, threading, ctypes, ctypes.util, time
 import gi
 gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
@@ -216,12 +216,27 @@ def tick():
         set_state("paused")
     return True
 
+# 標準入力は fd を os.read で読み、改行で分けて、切れ端は自分で持つ。**sys.stdin.readline() を合図1回に1行だけ読む形に
+# しない**——Node が続けて書いた2行が1回の読みでまとめて Python のバッファに入ると、2行目は fd が読める状態にならず、
+# 次の指示が来るまで処理されなかった（レビューの実測・2026-10-13：key の直後の stop が 0.77 秒後、次の start が届いてから。
+# python3 -u は stdin には効かない）。Xlib の列を読む drain と同じ種類の穴
+stdin_rest = b""
+
 def on_stdin(fd, cond):
-    line = sys.stdin.readline()
-    if not line:
+    global stdin_rest
+    chunk = os.read(fd, 65536)
+    if not chunk:
         teardown()
         loop.quit()
         return False
+    stdin_rest += chunk
+    while b"\n" in stdin_rest:
+        line, stdin_rest = stdin_rest.split(b"\n", 1)
+        if line.strip():
+            handle(line)
+    return True
+
+def handle(line):
     c = None
     try:
         c = json.loads(line)
@@ -239,7 +254,6 @@ def on_stdin(fd, cond):
             event({"error": "流し始められません: %s" % err})
         else:
             event({"warning": "指示を実行できません: %s" % err})
-    return True
 
 GLib.io_add_watch(x11.XConnectionNumber(dpy), GLib.IO_IN, on_x)
 GLib.io_add_watch(sys.stdin.fileno(), GLib.IO_IN | GLib.IO_HUP, on_stdin)

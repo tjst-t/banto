@@ -974,3 +974,47 @@ test("動画：流れを止めない子プロセスの知らせ（知らない�
     p.close();
   }
 });
+
+test("動画：続けて書いた2行の指示（key→stop・stop→start・start→key）は、次の指示を待たずに両方とも処理する", { skip: videoSkip }, async () => {
+  await ctx.session.ensure();
+  const states: string[] = [];
+  const errors: string[] = [];
+  const p = new VideoPipeline(ctx.session.display!.name, {
+    onUnit: () => undefined,
+    onState: (s) => states.push(s),
+    onError: (m) => errors.push(m),
+    onWarning: () => undefined,
+  }, 60_000); // 静止で止まらないよう長く——ここで見るのは指示の読み方
+  const region = { w: 640, h: 400, ew: 640, eh: 400 };
+  /** 同じ時に2行書く（子の1回の読みに2行が入る） */
+  const twoLines = (a: Record<string, unknown>, b: Record<string, unknown>) => {
+    p["send"](a);
+    p["send"](b);
+  };
+  const startCmd = { cmd: "start", ...region, fps: 30, crf: 23, maxKbps: 6000, vbvMs: 1000 };
+  try {
+    p.start(region);
+    await until("流れた", () => p.units > 0, 10_000);
+    // key→stop：stop がすぐ効く（前は次の指示が来るまで stop が読まれなかった）
+    const n1 = states.length;
+    twoLines({ cmd: "key" }, { cmd: "stop" });
+    await until("key の後の stop", () => states.slice(n1).includes("stopped"), 2_000);
+    // stop→start：start がすぐ効いて流れ直す
+    const n2 = states.length;
+    const units2 = p.units;
+    twoLines({ cmd: "stop" }, startCmd);
+    await until("stop の後の start", () => states.slice(n2).includes("playing") && p.units > units2, 2_000);
+    // start→key：作り直した直後のキーフレームの要求は x264 が最初の IDR にまとめるので、枚数では見えない。**指示は書いた順に
+    // 処理する**ので、続けて1行だけ書いた stop がすぐ効けば、その前の key も読み終えている（前の読み方では1行ずつ遅れたまま
+    // ——stop を書いた合図で key を読み、stop はバッファに残った）
+    const units3 = p.units;
+    twoLines(startCmd, { cmd: "key" });
+    await until("start が効いた", () => p.units > units3, 2_000);
+    const n3 = states.length;
+    p.stop();
+    await until("start→key の後に書いた stop", () => states.slice(n3).includes("stopped"), 2_000);
+    assert.equal(errors.length, 0, errors.join(" / "));
+  } finally {
+    p.close();
+  }
+});
