@@ -43,6 +43,9 @@ ZABBLY_FPR=4EFC590696CB15B87C73A3AD82CC8797C838DCFD
 CADDY_MIN_VERSION=2.5.0
 # Cloudflare のレコードに付ける印（これが付いていて、このホストの IP を向くものだけを、名前を替えたときに消す）
 CF_RECORD_MARK="banto install.sh"
+# Cloudflare のトークン作成画面を、要る権限（Zone:Read・DNS:Edit）を選んだ状態で開くリンク（対象のゾーンは画面で選ぶ）。
+# **写し**：usage の文と docs/runbooks/install.md（片方を変えたら全部）
+CF_TOKEN_URL='https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&name=banto-install'
 
 DEFAULT_REPO=https://github.com/tjst-t/banto
 # 取ってくるのは release だけ。**写し**：update.mjs の FETCH_REFSPEC・setup-update.sh の FETCH_REFSPEC・
@@ -81,6 +84,11 @@ step() {
   printf '\n\033[1m==> [%d/%d] %s\033[0m\n' "$STEP_NO" "$STEP_TOTAL" "$1"
 }
 say() { printf '    %s\n' "$*"; }
+# Cloudflare のトークンの作り方（トークンが無いとき・聞くときに出す）
+cf_token_hint() {
+  say "Cloudflare のトークンは次のリンクで作れる（Zone:Read と DNS:Edit を選んだ状態で開く。対象のゾーンは画面で選ぶ）："
+  say "  $CF_TOKEN_URL"
+}
 ok() { printf '    \033[32m✔\033[0m %s\n' "$*"; }
 warn() { printf '    \033[33m!\033[0m %s\n' "$*" >&2; }
 
@@ -106,7 +114,9 @@ banto を入れる（Ubuntu 24.04・26.04。sudo できる普通のユーザー�
   --domain <名前>            画面の名前（例 banto.example.com）。初回は必須。sandbox.<名前>・*.<名前> も使う
   --cloudflare-token <値>    Cloudflare の API トークン（Zone:Read と DNS:Edit）。渡すと DNS のレコードを作り、
                              Let's Encrypt の証明書を取る。"-" なら端末から見えない形で聞く。
-                             環境変数 CLOUDFLARE_API_TOKEN でも渡せる。無ければ Caddy の内部の CA で HTTPS にする
+                             環境変数 CLOUDFLARE_API_TOKEN でも渡せる。無ければ Caddy の内部の CA で HTTPS にする。
+                             作る（権限を選んだ状態で開く。対象のゾーンは画面で選ぶ）：
+                             https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&name=banto-install
   --no-cloudflare            Cloudflare をやめて内部の CA に戻す（保存したトークンを消す。DNS のレコードは残す）
   --ip <IPv4>                DNS のレコードの向け先（既定：既定経路のインターフェースの IPv4）
   --repo <URL|パス>          取ってくるリポジトリ（既定 https://github.com/tjst-t/banto。file://・パス・bundle も可）。
@@ -398,6 +408,7 @@ step_resolve_settings() {
   elif [[ $ARG_TOKEN_SET == 1 ]]; then
     if [[ $ARG_TOKEN == - ]]; then
       have_tty || die "--cloudflare-token - ですが、聞くための端末がありません" "環境変数 CLOUDFLARE_API_TOKEN で渡してください"
+      cf_token_hint >/dev/tty
       printf '    Cloudflare の API トークン（表示されません）：' >/dev/tty
       IFS= read -rs TOKEN </dev/tty
       printf '\n' >/dev/tty
@@ -410,6 +421,7 @@ step_resolve_settings() {
   elif sudo test -f "$CF_ENV" && sudo grep -q '^CLOUDFLARE_API_TOKEN=.' "$CF_ENV"; then
     TOKEN_SOURCE=saved # 中身はここでは読まない（要るときに読む）
   elif [[ $TLS_REMEMBER != internal ]] && have_tty; then
+    cf_token_hint >/dev/tty
     printf '    Cloudflare の API トークン（Enter だけなら Caddy の内部の CA で HTTPS にする。表示されません）：' >/dev/tty
     IFS= read -rs TOKEN </dev/tty || TOKEN=""
     printf '\n' >/dev/tty
@@ -417,7 +429,7 @@ step_resolve_settings() {
   fi
   ARG_TOKEN="" env_token=""
   if [[ $TOKEN_SOURCE == new ]]; then
-    [[ $TOKEN =~ ^[A-Za-z0-9_-]{20,200}$ ]] || die "Cloudflare のトークンの形が違います（英数字と _- で 20 文字以上）" "Cloudflare の画面で作った API トークンを渡してください"
+    [[ $TOKEN =~ ^[A-Za-z0-9_-]{20,200}$ ]] || die "Cloudflare のトークンの形が違います（英数字と _- で 20 文字以上）" "Cloudflare の画面で作った API トークンを渡してください（作る：$CF_TOKEN_URL）"
     TLS_REMEMBER=""
   fi
   if [[ -n $TOKEN_SOURCE ]]; then TLS_MODE=cloudflare; else TLS_MODE=internal; fi
@@ -438,6 +450,7 @@ step_resolve_settings() {
     say "HTTPS：Caddy の内部の CA に戻す（--no-cloudflare。保存したトークンを消す）"
   else
     say "HTTPS：Caddy の内部の CA（Cloudflare のトークンが無いため。後から --cloudflare-token で打ち直せば Let's Encrypt に替わる）"
+    cf_token_hint
   fi
   ok "覚えた：$INSTALL_CONF"
 }
@@ -586,7 +599,7 @@ JS
       "中身を見て、要らなければ別の場所へ動かしてから打ち直してください（ls -la $REL）" ;;
   esac
   if [[ $TLS_MODE == internal ]]; then
-    say "Publish は使えません（公開先 *.$DOMAIN の DNS と証明書が要る——Cloudflare のトークンを渡して打ち直すと使える）"
+    say "Publish は使えません（公開先 *.$DOMAIN の DNS と証明書が要る——Cloudflare のトークンを渡して打ち直すと使える。作り方は上の「HTTPS」のリンク）"
   fi
 }
 
