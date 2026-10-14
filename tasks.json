@@ -7000,7 +7000,7 @@
       "number": 290,
       "kind": "bug",
       "title": "移す先の「ほかの Project の根と重なる」の判定に閉じた Project まで入り、qemu-bmc を元のフォルダへ戻せない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7014,7 +7014,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-14T00:24:32.834Z",
-      "updatedAt": "2026-10-14T00:24:32.834Z",
+      "updatedAt": "2026-10-14T00:24:43.962Z",
       "closedAt": null,
       "extra": {}
     },
