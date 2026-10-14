@@ -4,6 +4,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { inflateSync } from "node:zlib";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createTestPageServer, TEST_COOKIE, TEST_TITLE, TEST_TOKEN } from "./test-page.js";
@@ -328,3 +329,134 @@ test("人のブラウザと同じ：画面ありで、自動操作の起動の�
   const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
   for (const mark of ["--enable-automation", "--headless", "--user-agent"]) assert.ok(!cmd.some((a) => a.startsWith(mark)), `${mark} が付いている`);
 });
+
+test("タブは会話ごと：2つの会話がそれぞれ裏の自分のタブで同時に作業し、タブを省くと自分の最後のタブに効き、ほかの会話のタブへの操作は断られ、人の画面の表示は替わらない", { skip }, async () => {
+  const A = "thread-aaaaaaaa-1111";
+  const B = "thread-bbbbbbbb-2222";
+  const as = async (thread: string, name: string, args: Record<string, unknown> = {}) => {
+    const r = await callTool(ctx, name, args, undefined, { "dev.banto/thread": { projectId: "p1", threadId: thread } });
+    return { ...r, text: r.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n") };
+  };
+  // 人のタブ（会話の印の無い呼び出し＝今どおり）を人の画面に映しておく
+  const human = await call("browserOpen", { url: `${base}/second`, newTab: true });
+  const humanTab = /タブ (t\d+) で開きました/.exec(human.text)![1]!;
+  assert.equal(ctx.session.current, humanTab);
+  const humanFront = ctx.session.front;
+
+  // **2つの会話が同時に開く**——それぞれ自分のタブ（裏）。人の画面の表示は替わらない
+  const [oa, ob] = await Promise.all([as(A, "browserOpen", { url: `${base}/` }), as(B, "browserOpen", { url: `${base}/corners` })]);
+  assert.equal(oa.isError, undefined, oa.text);
+  assert.equal(ob.isError, undefined, ob.text);
+  const tabA = /タブ (t\d+) で開きました/.exec(oa.text)![1]!;
+  const tabB = /タブ (t\d+) で開きました/.exec(ob.text)![1]!;
+  assert.notEqual(tabA, tabB);
+  assert.ok(tabA !== humanTab && tabB !== humanTab);
+  assert.equal(ctx.session.ownerOf(tabA), A);
+  assert.equal(ctx.session.ownerOf(tabB), B);
+  assert.equal(ctx.session.ownerOf(humanTab), undefined);
+  assert.equal(ctx.session.current, humanTab, "AI が開いたら人の画面の選んでいるタブが替わった");
+  assert.equal(ctx.session.front, humanFront, "AI が開いたら人の画面に映るタブが替わった");
+
+  // **タブを省くと自分の最後のタブ**：A は打って押す、B は読む——同時に。裏のタブでも押す・打つが効く（Playwright が
+  // 繋いだタブはどれも focus emulation で見えている扱い——v4-modules.md §4.1「タブは会話ごと」の測ったこと）
+  const treeA = (await as(A, "browserSnapshot")).text;
+  assert.match(treeA, new RegExp(`^タブ ${tabA}　`));
+  const [typed, readB] = await Promise.all([
+    as(A, "browserAct", { action: "type", ref: refOf(treeA, "textbox", "名前"), text: "かいわA" }),
+    as(B, "browserSnapshot"),
+  ]);
+  assert.equal(typed.isError, undefined, typed.text);
+  assert.match(typed.text, new RegExp(`（タブ ${tabA}）`));
+  assert.match(readB.text, new RegExp(`^タブ ${tabB}　URL: ${base}/corners`));
+  const clicked = await as(A, "browserAct", { action: "click", ref: refOf(treeA, "button", "送る") });
+  assert.equal(clicked.isError, undefined, clicked.text);
+  assert.match(clicked.text, /送った:かいわA/);
+  // 裏のタブでもタイマーと描画が動く
+  const frame = await as(A, "browserEval", { expression: "new Promise(r => requestAnimationFrame(() => r(document.visibilityState)))" });
+  assert.match(frame.text, /^"visible"$/m, frame.text);
+  assert.equal(ctx.session.current, humanTab);
+
+  // **ほかの会話のタブへの操作は断る**（理由と持ち主）。読む道具は通す
+  for (const [name, args] of [
+    ["browserAct", { action: "reload", tab: tabA }],
+    ["browserEval", { expression: "1", tab: tabA }],
+    ["browserTabs", { action: "select", tab: tabA }],
+    ["browserTabs", { action: "close", tab: tabA }],
+  ] as const) {
+    const r = await as(B, name, args);
+    assert.equal(r.isError, true, `${name} ${JSON.stringify(args)} が断られない: ${r.text}`);
+    assert.match(r.text, new RegExp(`タブ ${tabA} はほかの会話（Thread ${A.slice(0, 8)}）のタブなので`));
+  }
+  const peek = await as(B, "browserSnapshot", { tab: tabA });
+  assert.equal(peek.isError, undefined, peek.text);
+  assert.match(peek.text, /送った:かいわA/);
+  const shotA = await as(B, "browserScreenshot", { tab: tabA });
+  assert.equal(shotA.isError, undefined, shotA.text);
+  // 読んでも B のいまのタブは替わらない
+  assert.equal(ctx.session.threadTab(B), tabB);
+
+  // **人のタブ（持ち主なし）は操作できる**。select は B のいまのタブを替えるだけで、人の画面は替えない
+  const sel = await as(B, "browserTabs", { action: "select", tab: humanTab });
+  assert.equal(sel.isError, undefined, sel.text);
+  assert.match(sel.text, /人の画面の表示は替えていません/);
+  assert.equal(ctx.session.threadTab(B), humanTab);
+  const back = await as(B, "browserTabs", { action: "select", tab: tabB });
+  assert.equal(back.isError, undefined, back.text);
+
+  // **一覧**：全部のタブと持ち主。* はこの会話のいまのタブ
+  const list = (await as(B, "browserTabs", { action: "list" })).text;
+  assert.match(list, new RegExp(`^\\* ${tabB} \\[この会話\\]`, "m"));
+  assert.match(list, new RegExp(`^  ${tabA} \\[会話 ${A.slice(0, 8)}\\]`, "m"));
+  assert.match(list, new RegExp(`^  ${humanTab} \\[人\\]（人の画面）`, "m"));
+
+  // **ページから開いたタブ・ポップアップは開いた元の持ち主**。開いても B のいまのタブ・人の画面は替わらない
+  const treeB = (await as(B, "browserSnapshot")).text;
+  const before = new Set((await ctx.session.listTabs()).map((t) => t.id));
+  await as(B, "browserAct", { action: "click", ref: refOf(treeB, "button", "ポップアップ") });
+  await as(B, "browserAct", { action: "click", ref: refOf(treeB, "link", "新しいタブ") });
+  await until(async () => (await ctx.session.listTabs()).filter((t) => !before.has(t.id)).length === 2, "ポップアップと _blank のタブ");
+  for (const t of (await ctx.session.listTabs()).filter((t) => !before.has(t.id))) assert.equal(t.owner, B, `${t.id}（${t.url}）の持ち主`);
+  assert.equal(ctx.session.threadTab(B), tabB);
+  assert.equal(ctx.session.current, humanTab);
+
+  // **裏のタブの写しは、いまの絵**：_blank は開いた元（tabB）と同じ窓に入り tabB は窓の裏に回る——裏のタブは Chrome が描かず、
+  // 写しが返らないか古い絵になる（実測）。色を替えるたびに撮って、その色が写る
+  for (const color of ["rgb(255, 0, 0)", "rgb(0, 255, 0)", "rgb(0, 0, 255)"]) {
+    await as(B, "browserEval", { expression: `document.body.replaceChildren(), document.body.style.background = "${color}"` });
+    const shot = await as(B, "browserScreenshot");
+    assert.equal(shot.isError, undefined, shot.text);
+    const image = shot.content.find((c) => c.type === "image") as { data: string };
+    assert.equal(firstPixel(image.data), color.replace(/^rgb\(|\)$/g, "").replaceAll(" ", ""), `${color} にした tabB の写し`);
+  }
+  // A のタブ（窓を分けて表にある）も
+  await as(A, "browserEval", { expression: `document.body.replaceChildren(), document.body.style.background = "rgb(255, 0, 255)"` });
+  assert.equal(firstPixel(((await as(A, "browserScreenshot")).content.find((c) => c.type === "image") as { data: string }).data), "255,0,255");
+  assert.equal(ctx.session.current, humanTab);
+  assert.equal(ctx.session.front, humanFront, "写すために表に出したあと、人の画面のタブが前に戻っていない");
+
+  // **newTab で開くとそのタブが会話のいまのタブ**になり、省いた操作はそちらに効く
+  const second = await as(A, "browserOpen", { url: `${base}/second`, newTab: true });
+  const tabA2 = /タブ (t\d+) で開きました/.exec(second.text)![1]!;
+  assert.match((await as(A, "browserSnapshot")).text, new RegExp(`^タブ ${tabA2}　`));
+  // 閉じると、その会話のほかの自分のタブに戻る
+  assert.equal((await as(A, "browserTabs", { action: "close", tab: tabA2 })).isError, undefined);
+  assert.match((await as(A, "browserSnapshot")).text, new RegExp(`^タブ ${tabA}　`));
+
+  // **会話の印の無い呼び出しは今どおり**：どのタブも触れる（人の画面の選んでいるタブが既定）
+  assert.equal((await call("browserEval", { expression: "1", tab: tabA })).isError, undefined);
+  assert.equal(ctx.session.current, humanTab);
+  assert.equal(ctx.session.front, humanFront);
+});
+
+/** PNG の左上の画素（R,G,B）。Chrome の写しは RGB か RGBA で、最初の行の filter は左上に効かない */
+function firstPixel(base64: string): string {
+  const png = Buffer.from(base64, "base64");
+  const idat: Buffer[] = [];
+  for (let o = 8; o < png.length; ) {
+    const len = png.readUInt32BE(o);
+    if (png.toString("ascii", o + 4, o + 8) === "IDAT") idat.push(png.subarray(o + 8, o + 8 + len));
+    o += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  return `${raw[1]},${raw[2]},${raw[3]}`;
+}

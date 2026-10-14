@@ -185,7 +185,7 @@ test("AI が9本の道具で試験用のページを調べ、失敗した通信�
 
   // ---- browserScreenshot・browserTabs ---------------------------------------------------------------
   expect(await ai(page, "browserScreenshot")).toContain(`タブ t1　URL: ${BASE}/`);
-  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(new RegExp(`\\* t1 ${BASE}/ Browser 試験のページ`));
+  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(new RegExp(`\\* t1 \\[この会話\\]（人の画面） ${BASE}/ Browser 試験のページ`));
 
   // ---- 「AI に触らせない」：操作の道具は断り、読む道具は断らない ---------------------------------------
   expect(JSON.parse(await uiCall(page, "setAiBlocked", { blocked: true }))).toMatchObject({ aiBlocked: true });

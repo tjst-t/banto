@@ -73,6 +73,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .tab[aria-selected="true"] { background: var(--bg-3); border-color: var(--line); }
 .tab-name { height: 100%; padding: 0 8px; border: 0; background: transparent; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px; }
 .tab-id { color: var(--ink-3); font-family: var(--mono); font-size: var(--t-xs); margin-right: 4px; }
+.tab-owner { height: 20px; margin-right: 2px; padding: 0 5px; border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--ink-3); cursor: pointer; font-family: var(--mono); font-size: var(--t-xs); flex: none; }
+.tab-owner:hover { color: var(--accent); border-color: var(--accent); }
 .tab-act { height: 100%; width: 24px; border: 0; background: transparent; color: var(--ink-3); cursor: pointer; border-radius: var(--r-sm); flex: none; }
 .tab-act:hover { color: var(--ink); background: var(--bg-2); }
 
@@ -517,6 +519,8 @@ const SCRIPT = String.raw`
   let bannerTimer = 0;
   let aiCount = 0;
   function onAi(ev) {
+    // **いま見ているタブの操作だけ出す**——タブは会話ごとで、ほかのタブの AI は裏で作業している（v4-modules.md §4.1「タブは会話ごと」）
+    if (ev.tab !== view.current) return;
     aiCount += 1;
     const b = $("ai-banner");
     b.replaceChildren(
@@ -555,6 +559,8 @@ const SCRIPT = String.raw`
         h("span", { class: "tab-id", text: t.id }),
         document.createTextNode(t.title || t.url || "（空のタブ）"),
       ]),
+      // どの会話のタブか（Thread の頭8字、押すとその会話を開く——AI の帯と同じ）。人のタブ（持ち主なし）には出さない
+      t.owner ? h("button", { class: "tab-owner", type: "button", text: t.owner.slice(0, 8), title: "Thread " + t.owner + " のタブ——押すとその会話を開く", "aria-label": t.id + " は Thread " + t.owner.slice(0, 8) + " のタブ（その会話を開く）", "data-owner": t.owner, onclick: () => openThread(t.owner) }) : null,
       h("button", { class: "tab-act", text: "×", title: "タブを閉じる", "aria-label": t.id + " を閉じる", onclick: () => sendMsg({ type: "tab", action: "close", tab: t.id }) }),
     ])), h("button", { class: "tab-act", text: "＋", title: "新しいタブ", "aria-label": "新しいタブ", onclick: () => sendMsg({ type: "tab", action: "new" }) }));
     const cur = view.tabs.find((t) => t.id === view.current);

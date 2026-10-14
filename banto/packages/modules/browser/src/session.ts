@@ -39,7 +39,10 @@ export interface TabInfo {
   id: string;
   url: string;
   title: string;
+  /** 人の画面が映しているタブ（Project の「いま選んでいるタブ」） */
   current: boolean;
+  /** 持ち主の会話（Thread の id）。人のタブ（持ち主なし）は無い */
+  owner?: string;
 }
 
 /** 起こしたときのページの大きさ（screencast の既定と同じ。AI は browserAct の resize で変える） */
@@ -79,13 +82,29 @@ export class BrowserSession {
   private browserCdp: Promise<CDPSession> | undefined;
   /** 窓の大きさを変える操作は1つずつ */
   private windowChain: Promise<void> = Promise.resolve();
-  /** 大きさを変えている間（人の画面は動画を流さない——view-stream.ts） */
-  resizing = false;
+  /** 大きさを変えている・窓を足している間の深さ（入れ子になる——会話のタブの窓を足す間に、その窓を合わせる） */
+  private resizeDepth = 0;
+  /** 窓ごとに、表に出ているタブ（窓の中で選ばれているタブ。裏のタブは写しが撮れない——captureReady） */
+  private readonly activeInWindow = new Map<number, string>();
   /**
    * 大きさを変える前に呼ぶ（人の画面が動画の取り込みを止め終えるまで待つ——変えている間の絵を流さないため。view-stream.ts が置く）
    */
   beforeResize: (() => Promise<void>) | undefined;
+  /** **人の画面の**「いま選んでいるタブ」（会話の印の無い呼び出しもこれに効く）。会話ごとのいまのタブは threadTabs */
   private currentTab: string | undefined;
+  /**
+   * **タブの持ち主の会話**（Thread の id。v4-modules.md §4.1「タブは会話ごと」）。人が開いたタブは入れない（持ち主なし）。
+   * ブラウザを起こし直すとタブは残らない（about:blank の1枚から起きる）ので、持ち主も止めるときに捨てる
+   */
+  private readonly owners = new Map<string, string>();
+  /** 会話ごとの「いまのタブ」（タブを省いた操作が効く——その会話が最後に使った自分のタブか、select で選んだタブ） */
+  private readonly threadTabs = new Map<string, string>();
+  /** CDP の target の id → タブの id（ポップアップの開いた元を引く・会話が開いたタブを待つ） */
+  private readonly tabByTarget = new Map<string, string>();
+  /** 会話が開いている途中のタブ（target の id → 持ち主）。登録の前に持ち主を決めておく */
+  private readonly pendingOwners = new Map<string, string>();
+  /** 起こしている会話（起こした最初のタブの持ち主。人の画面・会話の印の無い呼び出しが起こしたなら無い） */
+  private starter: string | undefined;
   /**
    * 起こし終えたブラウザ（最初のタブの窓を合わせ終えるまでは undefined——running・ensure はこれを見る）。context は繋いだ
    * 時点で置く（最初のタブの登録が使う）が、窓を合わせ終える前に AI が開く・撮る・人の画面が映すと、ページの大きさが
@@ -155,18 +174,24 @@ export class BrowserSession {
     await run;
   }
 
+  /** 大きさを変えている・窓を足している間（人の画面は動画を流さない——view-stream.ts） */
+  get resizing(): boolean {
+    return this.resizeDepth > 0;
+  }
+
   /**
-   * 窓の大きさを変える間（3手の途中はタブの帯や画面いっぱいの窓が一瞬映る——v4-modules.md §4.1「動画で流す」(a)）。
-   * 人の画面に動画の取り込みを止めてもらい（beforeResize）、終えたら流し直してもらう（resizing を下ろして知らせる）
+   * 窓の大きさを変える・窓を足す間（3手の途中はタブの帯や画面いっぱいの窓が一瞬映る・足した窓は一度前に出る——v4-modules.md
+   * §4.1「動画で流す」(a)・「タブは会話ごと」）。人の画面に動画の取り込みを止めてもらい（beforeResize）、終えたら流し直して
+   * もらう（resizing を下ろして知らせる）。入れ子でもよい——一番外が終えるまで下ろさない
    */
-  private async whileResizing(work: () => Promise<void>): Promise<void> {
-    this.resizing = true;
+  private async whileResizing<T>(work: () => Promise<T>): Promise<T> {
+    this.resizeDepth += 1;
     this.emit();
     try {
       await this.beforeResize?.();
-      await work();
+      return await work();
     } finally {
-      this.resizing = false;
+      this.resizeDepth -= 1;
       this.emit();
     }
   }
@@ -230,10 +255,44 @@ export class BrowserSession {
     const page = id !== undefined ? this.pages.get(id) : undefined;
     if (!page || page.isClosed()) return;
     await page.bringToFront();
+    await this.markActive(id!, page);
     if (this.frontTab !== id) {
       this.frontTab = id;
       this.emit();
     }
+  }
+
+  /** そのタブが、窓の中で表に出ているタブになった */
+  private async markActive(id: string, page: Page): Promise<void> {
+    const w = await this.windowOf(page).catch(() => undefined);
+    if (w) this.activeInWindow.set(w.windowId, id);
+  }
+
+  /**
+   * **写しを撮れるようにする**（browserScreenshot の前）。窓の中で裏にあるタブは Chrome が描かない——写しは1回目が返らず
+   * （時間切れ）、2回目からは裏に回った時点の古い絵が返る（実測・2026-10-14）。会話のタブは窓を分けているので表に出ているが、
+   * ページから開いた新しいタブ（_blank）は開いた元と同じ窓に入り、どちらか一方だけが表に出る。裏なら、人の画面の動画を
+   * 止めている間にそのタブを表に出してから、人の画面のタブを前に出し直す。**人の画面が映しているタブと同じ窓の裏**なら、
+   * 表に出すと人の画面が替わるので、理由を返して断る
+   */
+  async captureReady(id: string): Promise<void> {
+    const { page } = this.page(id);
+    const w = await this.windowOf(page);
+    if (!w || this.activeInWindow.get(w.windowId) === id) return;
+    const current = this.currentTab !== undefined ? this.pages.get(this.currentTab) : undefined;
+    if (current && this.currentTab !== id && (await this.windowOf(current))?.windowId === w.windowId) {
+      throw new BrowserError(
+        `タブ ${id} は人の画面が映しているタブ（${this.currentTab}）と同じ窓の裏にあるので、写しを撮れません（表に出すと人の画面が替わります）。` +
+          "中身は browserSnapshot で読めます",
+      );
+    }
+    await this.onWindows("写すタブを表に出せませんでした", () =>
+      this.whileResizing(async () => {
+        await page.bringToFront();
+        await this.markActive(id, page);
+        await this.frontCurrent();
+      }),
+    );
   }
 
   /**
@@ -335,11 +394,16 @@ export class BrowserSession {
     }
   }
 
-  /** 起きていなければ起こす。同時に呼ばれても1回だけ */
-  async ensure(onProgress?: (message: string) => void): Promise<BrowserContext> {
+  /**
+   * 起きていなければ起こす。同時に呼ばれても1回だけ。`thread` は起こした会話——**起こした最初のタブ（about:blank）はその
+   * 会話のもの**（会話が起こしたブラウザの空のタブを人のタブとして残し、会話は裏に新しいタブを開く、にしない）
+   */
+  async ensure(onProgress?: (message: string) => void, thread?: string): Promise<BrowserContext> {
     if (this.ready) return this.ready;
+    if (!this.starting) this.starter = thread;
     this.starting ??= this.start(onProgress).finally(() => {
       this.starting = undefined;
+      this.starter = undefined;
     });
     return this.starting;
   }
@@ -395,10 +459,15 @@ export class BrowserSession {
     this.ready = undefined;
     this.pages.clear();
     this.placed.clear();
+    this.activeInWindow.clear();
     this.browserCdp = undefined;
     this.size = { ...DEFAULT_VIEWPORT };
     this.currentTab = undefined;
     this.frontTab = undefined;
+    this.owners.clear();
+    this.threadTabs.clear();
+    this.tabByTarget.clear();
+    this.pendingOwners.clear();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.deps.log.saveNow();
@@ -436,6 +505,16 @@ export class BrowserSession {
     this.currentTab ??= id;
     page.on("close", () => {
       this.pages.delete(id);
+      this.owners.delete(id);
+      // 窓の中で表に出ていたなら、Chrome が隣のタブを表に出す——どれかは分からないので、写す前に表に出し直す（captureReady）
+      for (const [windowId, tab] of this.activeInWindow) if (tab === id) this.activeInWindow.delete(windowId);
+      // その会話のいまのタブだったら、その会話のほかの自分のタブ（一番新しく開いたもの）に。無ければ次に開く
+      for (const [thread, tab] of this.threadTabs) {
+        if (tab !== id) continue;
+        const rest = [...this.pages.keys()].filter((t) => this.owners.get(t) === thread).at(-1);
+        if (rest !== undefined) this.threadTabs.set(thread, rest);
+        else this.threadTabs.delete(thread);
+      }
       if (this.frontTab === id) this.frontTab = undefined;
       if (this.currentTab === id) {
         this.currentTab = [...this.pages.keys()].at(-1);
@@ -466,7 +545,21 @@ export class BrowserSession {
     });
     const cdp = await this.context!.newCDPSession(page);
     this.cdps.set(page, cdp);
-    this.targetIds.set(page, ((await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }).targetInfo.targetId);
+    const { targetInfo } = (await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string; openerId?: string } };
+    this.targetIds.set(page, targetInfo.targetId);
+    this.tabByTarget.set(targetInfo.targetId, id);
+    // 持ち主：会話が開いたタブ（newTab）・起こした会話の最初のタブ・**ページから開いた新しいタブとポップアップは開いた元の
+    // タブの持ち主**（noopener の _blank でも target の openerId は残る）。どれでもなければ人のタブ
+    const opener = targetInfo.openerId !== undefined ? this.tabByTarget.get(targetInfo.openerId) : undefined;
+    const owner =
+      this.pendingOwners.get(targetInfo.targetId) ??
+      (opener !== undefined ? this.owners.get(opener) : undefined) ??
+      (this.ready === undefined && this.starter !== undefined && this.pages.size === 1 ? this.starter : undefined);
+    this.pendingOwners.delete(targetInfo.targetId);
+    if (owner !== undefined && !page.isClosed()) {
+      this.owners.set(id, owner);
+      if (!this.threadTabs.has(owner)) this.threadTabs.set(owner, id);
+    }
     // Playwright の CDPSession は知らせの名前ごとに型が付く——ここでは名前を文字で受ける形に合わせる
     attachRecorder(log, () => id, cdp as unknown as CdpLike);
     // ページの大きさをいまの大きさにそろえる（人の画面の絵と入力の座標はこの大きさで計る）。**ポップアップと window.open は
@@ -474,6 +567,8 @@ export class BrowserSession {
     // する。そのうえで、いま選んでいるタブを前に出し直す（新しいタブ・窓はブラウザが前に出す。人の画面が映すのは選んでいるタブ
     // ——v4-modules.md §4.1「動画で流す」の穴②）
     await this.onWindows("新しいタブの窓を合わせられませんでした", async () => {
+      // できたタブは、その窓の中で表に出ている（新しい窓・ページから開いた _blank）
+      await this.markActive(id, page);
       const fit = async () => {
         await this.fitWindow(page);
         await this.applyOverride(page);
@@ -501,43 +596,136 @@ export class BrowserSession {
   async listTabs(): Promise<TabInfo[]> {
     const out: TabInfo[] = [];
     for (const [id, page] of this.pages) {
-      out.push({ id, url: page.url(), title: await page.title().catch(() => ""), current: id === this.currentTab });
+      const owner = this.owners.get(id);
+      out.push({ id, url: page.url(), title: await page.title().catch(() => ""), current: id === this.currentTab, ...(owner ? { owner } : {}) });
     }
     return out;
   }
 
+  /** 人の画面の「いま選んでいるタブ」 */
   get current(): string | undefined {
     return this.currentTab;
   }
 
-  /** タブを引く。省略ならいま選んでいるタブ */
-  page(tab?: string): { id: string; page: Page } {
-    const id = tab ?? this.currentTab;
-    if (id === undefined) throw new BrowserError("開いているタブがありません（browserOpen でページを開いてください）");
+  /** その会話の「いまのタブ」（閉じていれば無い） */
+  threadTab(thread: string): string | undefined {
+    const id = this.threadTabs.get(thread);
+    return id !== undefined && this.pages.has(id) ? id : undefined;
+  }
+
+  /** タブの持ち主の会話（人のタブは undefined） */
+  ownerOf(tab: string): string | undefined {
+    return this.owners.get(tab);
+  }
+
+  /**
+   * タブを引く。省略なら、会話の呼び出しは**その会話のいまのタブ**、会話の印の無い呼び出し（と人の画面）は人の画面の
+   * いま選んでいるタブ
+   */
+  page(tab?: string, thread?: string): { id: string; page: Page } {
+    const id = tab ?? (thread !== undefined ? this.threadTab(thread) : this.currentTab);
+    if (id === undefined) {
+      throw new BrowserError(
+        thread !== undefined
+          ? "この会話のタブはまだありません（browserOpen でページを開いてください。ほかのタブは browserTabs の list で見られ、tab で指せます）"
+          : "開いているタブがありません（browserOpen でページを開いてください）",
+      );
+    }
     const page = this.pages.get(id);
     if (!page) throw new BrowserError(`タブ ${id} はありません（browserTabs の list で開いているタブを見られます）`);
     return { id, page };
   }
 
-  async newTab(): Promise<{ id: string; page: Page }> {
-    const context = await this.ensure();
-    const page = await context.newPage();
-    const id = await this.register(page);
-    this.currentTab = id;
-    this.emit();
-    // 登録の間はそれまで選んでいたタブを前に出し直している——開いたタブを前に出す（人の画面が映すのは選んでいるタブ）
-    await this.onWindows("開いたタブを前に出せませんでした", () => this.frontCurrent());
-    return { id, page };
+  /**
+   * **ほかの会話のタブへの操作を断る**（理由と持ち主を返す）。人のタブ（持ち主なし）・自分のタブ・会話の印の無い呼び出しは
+   * 通す。通したら、自分のタブをその会話の「いまのタブ」にする（タブを省いた次の操作が効く）
+   */
+  claim(tab: string, thread: string | undefined, what: string): void {
+    if (thread === undefined) return;
+    const owner = this.owners.get(tab);
+    if (owner === undefined) return;
+    if (owner !== thread) {
+      throw new BrowserError(
+        `タブ ${tab} はほかの会話（Thread ${owner.slice(0, 8)}）のタブなので、${what} はできません（タブは会話ごと）。` +
+          "読む道具（browserSnapshot・browserScreenshot・listNetwork・getNetworkRequest・browserConsole）は使えます。" +
+          "自分で開くなら browserOpen（tab を省くとこの会話のタブ）、自分のタブは browserTabs の list で見られます",
+      );
+    }
+    this.threadTabs.set(thread, tab);
   }
 
-  /** いま選んでいるタブ。1つも無ければ開く */
-  async currentOrNew(): Promise<{ id: string; page: Page }> {
+  /** 読んだ——自分のタブなら、その会話の「いまのタブ」にする（ほかのタブは読んでも替えない） */
+  used(tab: string, thread: string | undefined): void {
+    if (thread !== undefined && this.owners.get(tab) === thread) this.threadTabs.set(thread, tab);
+  }
+
+  /**
+   * 新しいタブを開く。**会話が開くタブは、その会話のもの**で、**裏に開く**——人の画面の表示を替えない（自分の窓に開き、
+   * 人の画面のタブを前に出し直す）。会話の印の無い呼び出しと人の画面は、開いたタブを選んで前に出す（今どおり）
+   */
+  async newTab(thread?: string): Promise<{ id: string; page: Page }> {
+    const context = await this.ensure(undefined, thread);
+    // **タブごとに窓を分ける**：同じ窓の裏のタブは Chrome が描かず、写しが撮れない（captureReady）。窓は足したときに一度
+    // 前に出る（background でも——実測・2026-10-14）ので、足して合わせ終えるまで人の画面の動画を止めておく
+    const opened = await this.whileResizing(async () => {
+      const cdp = await this.cdpForBrowser();
+      const { targetId } = (await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: thread !== undefined })) as {
+        targetId: string;
+      };
+      if (thread !== undefined) {
+        const early = this.tabByTarget.get(targetId);
+        if (early !== undefined) this.owners.set(early, thread); // 先に登録された（持ち主を決める前）——ここで付ける
+        else this.pendingOwners.set(targetId, thread);
+      }
+      const tab = await this.tabOf(context, targetId);
+      if (thread !== undefined) {
+        this.owners.set(tab.id, thread);
+        this.threadTabs.set(thread, tab.id);
+      } else this.currentTab = tab.id;
+      // 登録の間はそれまで選んでいたタブを前に出し直している——会話の印の無い呼び出し・人の画面は、開いたタブを前に出す
+      // （人の画面が映すのは選んでいるタブ）。会話のタブなら人の画面のタブがそのまま前に残る
+      await this.onWindows("開いたタブを前に出せませんでした", () => this.frontCurrent());
+      return tab;
+    });
+    this.emit();
+    return opened;
+  }
+
+  /** CDP で開いた target のタブが登録し終わるのを待つ */
+  private async tabOf(context: BrowserContext, targetId: string): Promise<{ id: string; page: Page }> {
+    const deadline = Date.now() + FIRST_PAGE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      for (const page of context.pages()) {
+        const registering = this.ids.get(page);
+        if (registering && this.targetIds.get(page) === targetId) return { id: await registering, page };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    this.pendingOwners.delete(targetId);
+    throw new BrowserError(`開いたタブが ${FIRST_PAGE_TIMEOUT_MS / 1000} 秒で使えるようになりませんでした`);
+  }
+
+  /** いま選んでいるタブ（会話の呼び出しはその会話のいまのタブ）。無ければ開く */
+  async currentOrNew(thread?: string): Promise<{ id: string; page: Page }> {
+    if (thread !== undefined) {
+      const id = this.threadTab(thread);
+      return id !== undefined ? this.page(id) : this.newTab(thread);
+    }
     if (this.currentTab !== undefined && this.pages.has(this.currentTab)) return this.page();
     return this.newTab();
   }
 
-  select(tab: string): void {
+  /**
+   * タブを選ぶ。**会話の呼び出しは、その会話の「いまのタブ」を替えるだけで、人の画面の表示は替えない**（ほかの会話のタブは
+   * 断る——claim）。会話の印の無い呼び出しと人の画面は、人の画面のいま選んでいるタブを替える
+   */
+  select(tab: string, thread?: string): void {
     this.page(tab);
+    if (thread !== undefined) {
+      this.claim(tab, thread, `browserTabs の select`);
+      this.threadTabs.set(thread, tab);
+      return;
+    }
     if (this.currentTab === tab) return;
     this.currentTab = tab;
     void this.onWindows("選んだタブを前に出せませんでした", () => this.frontCurrent());
@@ -548,8 +736,9 @@ export class BrowserSession {
    * タブを閉じる。**最後のタブなら止める**——画面ありのブラウザは、人のブラウザと同じく最後のタブ（窓）を閉じると自分で
    * 終わる（headless は残った）。終わるのを待たずにこちらから止める（終わりかけのブラウザに次の呼び出しが当たらないように）
    */
-  async close(tab: string): Promise<void> {
+  async close(tab: string, thread?: string): Promise<void> {
     const { page } = this.page(tab);
+    this.claim(tab, thread, "browserTabs の close");
     if (this.pages.size === 1) {
       await this.stop("最後のタブを閉じたので止めました");
       return;

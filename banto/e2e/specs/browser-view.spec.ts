@@ -9,7 +9,8 @@
 //   4. AI の browserAct の click が、どの Thread の AI か・『送る』を押した、の帯と枠つきで映る。絵が新しくなる
 //   5. HAR で保存：ダウンロードした HAR に送った要求がある（人の画面なので Authorization は伏せない）
 //   6. 「AI に触らせない」を画面で入れると browserAct が断る。切ると戻る
-//   7. 画面の操作を一度ずつ：URL 欄で開く・戻る/進む/読み直し・タブの ＋/切り替え/×（AI の「いま選んでいるタブ」も変わる）。
+//   7. 画面の操作を一度ずつ：URL 欄で開く・戻る/進む/読み直し・タブの ＋/切り替え/×（AI の「いまのタブ」は会話ごとで、
+//      人の切り替えでは変わらない——v4-modules.md §4.1「タブは会話ごと」）。
 //      どれも成功したときにだけ現れるもの（タブの並びの題・URL 欄・絵の data-tab・通信の件数）で待つ
 //   8. 画面を閉じると screencast が止まる（getBrowserStatus の view）。入口からも開ける
 //   9. 携帯：「画面に合わせる」でページが携帯の幅になり、指で押してキーボードの欄から打てる。閉じるとページの大きさが戻る
@@ -96,9 +97,10 @@ function refOf(tree: string, role: string, name: string): string {
   return m[1]!;
 }
 
-/** ページの中の要素の位置（CSS ピクセル）を AI に読ませる */
-async function rects(page: Page): Promise<{ name: number[]; send: number[] }> {
+/** ページの中の要素の位置（CSS ピクセル）を AI に読ませる。tab を省くと AI のいまのタブ（タブは会話ごと） */
+async function rects(page: Page, tab?: string): Promise<{ name: number[]; send: number[] }> {
   const reply = await ai(page, "browserEval", {
+    ...(tab ? { tab } : {}),
     expression: "'RECT ' + ['#name', '#send'].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [r.x, r.y, r.width, r.height].join(','); }).join(';')",
   });
   const m = /RECT ([-\d.,;]+)/.exec(reply);
@@ -300,14 +302,20 @@ test("人の画面：カードから開いて映し、人の入力がページ�
   await urlBar.press("Enter");
   await expect(tab2).toContainText("2ページ目");
   await expect(tab1).toContainText("Browser 試験のページ");
-  // 画面で選んだタブは AI の「いま選んでいるタブ」でもある
-  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(/\* t2 \S+\/second 2ページ目/);
+  // 画面で選んだタブは人のもの（持ち主なし）で、人の画面に映っている。AI の「いまのタブ」は会話ごと——人が切り替えても
+  // この会話のタブ（t1）のまま
+  const listed = await ai(page, "browserTabs", { action: "list" });
+  expect(listed).toMatch(/^  t2 \[人\]（人の画面） \S+\/second 2ページ目$/m);
+  expect(listed).toMatch(/^\* t1 \[この会話\] \S+\/ Browser 試験のページ$/m);
+  // 人のタブには持ち主の印が無く、AI が開いた t1 には会話の頭8字（押すとその会話を開く）
+  await expect(tab2.locator(".tab-owner")).toHaveCount(0);
+  await expect(tab1.locator(".tab-owner")).toHaveText(threadId.slice(0, 8));
   // 切り替え
   await tab1.locator(".tab-name").click();
   await expect(tab1, "タブを押しても切り替わらない").toHaveAttribute("aria-selected", "true");
   await expect(f.getByTestId("browser-screen")).toHaveAttribute("data-tab", "t1");
   await expect(urlBar).toHaveValue(`${BASE}/`);
-  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(/\* t1 \S+\/ Browser 試験のページ/);
+  expect(await ai(page, "browserTabs", { action: "list" })).toMatch(/^\* t1 \[この会話\]（人の画面） \S+\/ Browser 試験のページ$/m);
   // ×：t2 を閉じる
   await f.getByRole("button", { name: "t2 を閉じる" }).click();
   await expect(f.locator(".tab[data-tab]"), "× でタブが閉じない").toHaveCount(1);
@@ -440,6 +448,8 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     await urlBar2.press("Enter");
     await expect(hf.locator(".tab[aria-selected=true]")).toContainText("Browser 試験のページ", { timeout: 30_000 });
     hf = canvasFrame(h);
+    // 人の画面が起こし直したブラウザのタブは人のもの——AI はそのタブを tab で指して読む（省くと会話のタブ。まだ無い）
+    const humanTab = (await hf.locator(".tab[aria-selected=true]").getAttribute("data-tab"))!;
     const screen2 = hf.getByTestId("browser-screen");
     await expect(screen2).toHaveAttribute("data-page-width", "1280");
     await expect(screen2).toHaveAttribute("data-page-height", "800");
@@ -459,11 +469,11 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     const got = await shown();
     expect(got.dpr).toBe(2);
     test.info().annotations.push({ type: "hidpi", description: `絵 ${got.width}×${got.height}・絵を出す場所 ${got.physical} 物理ピクセル` });
-    expect(await ai(page, "browserEval", { expression: "'DPR ' + devicePixelRatio + ' ' + innerWidth + 'x' + innerHeight + ' screen ' + screen.width + 'x' + screen.height" })).toContain(
+    expect(await ai(page, "browserEval", { tab: humanTab, expression: "'DPR ' + devicePixelRatio + ' ' + innerWidth + 'x' + innerHeight + ' screen ' + screen.width + 'x' + screen.height" })).toContain(
       "DPR 2 1280x800 screen 1920x1080",
     );
     // 人の入力は今までどおり CSS ピクセルで届く：押して打つ
-    const r2 = await rects(page);
+    const r2 = await rects(page, humanTab);
     await pressOnScreen(hf, ...center(r2.name), "click");
     await h.keyboard.type("hidpi");
     await pressOnScreen(hf, ...center(r2.send), "click");

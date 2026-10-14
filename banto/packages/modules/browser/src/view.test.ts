@@ -310,11 +310,12 @@ test("流れ：開くとブラウザを起こして映し、印が返るまで�
   pc.post({ type: "touch", event: "end", points: [] });
   assert.equal(await waitValue(() => page.textContent("#out"), "送った:ばんとx"), "送った:ばんとx");
 
-  // **AI の操作は帯で知らせる**：どの Thread の AI か・押した要素の名前と枠
+  // **AI の操作は帯で知らせる**：どの Thread の AI か・押した要素の名前と枠。人の画面が開いたタブ（人のタブ）を tab で指して
+  // 触る——会話の AI がタブを省くと、その会話のタブに効く（タブは会話ごと）
   const tree = (await callTool(ctx, "browserSnapshot", {})).content[0] as { text: string };
   const ref = /button "送る"[^\n]*\[ref=(e\d+)\]/.exec(tree.text)?.[1];
   assert.ok(ref, tree.text);
-  const acted = await callTool(ctx, "browserAct", { action: "click", ref }, undefined, {
+  const acted = await callTool(ctx, "browserAct", { action: "click", ref, tab: "t1" }, undefined, {
     "dev.banto/thread": { projectId: "p1", threadId: "th-123" },
   });
   assert.notEqual(acted.isError, true, JSON.stringify(acted.content));
