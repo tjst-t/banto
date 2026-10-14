@@ -7191,7 +7191,7 @@
       "number": 298,
       "kind": "task",
       "title": "別のサーバへ送るコードを、コード・依存・node の3つの塗りに分け、変わった塗りだけ送る",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7201,14 +7201,14 @@
       ],
       "body": "決定・2026-10-14、ユーザー（案A）。仕様は docs/specs/v4-security.md §1「向こうに置くもの」の「依存と node は変わったときだけ送る」。\n\n経緯：banto を更新するたびに、別のサーバ（banto-dev-vm）へ約 790MB を送り直していた。VM の前の版（413dd3b1b5b00ec6-1）と最新の版（c6e52f9697d3ef29-1）を diff -rq で比べると、node_modules（668MB）と bin/node（118MB）は同じで、違うのは packages（3.6MB）だけだった。版の鍵が、送るもの全体のハッシュだったため。\n\n作る場所の手がかり：\n- packages/core/src/runtime/remote-code.ts（collectCodeBundle・bundleDigest・tarList・estimateTarBytes・remoteDigestCommand）\n- packages/core/src/runtime/remote-ssh.ts の送り込み（798 行目あたりの collectCodeBundle の呼び出しから、current・previous の切り替えまで）\n- 先に送る仕組み（#278、remote-runtimes.ts）と、進み具合の表示（#269）はそのまま使う\n- 向こうでの依存の解決：版のフォルダの node_modules/@banto/* は ../../packages/... への相対の symlink。外の依存を共有の置き場から参照する形（パッケージごとの symlink・ハードリンクで写す等）は、node の解決（入れ子の node_modules、realpath）が今と同じになるものを選ぶ\n- typescript：packages/container/package.json の dependencies にある。Module が動くときに読まないなら devDependencies へ移す（frontend・core の組み立てが通ることを確かめる）",
       "doneWhen": "(1) コードだけを変えて送り直すと、送る量がコードの塗りだけ（数MB）になる（単体テストで送る一覧と分母を確かめる）。(2) 依存か node を変えたら、その塗りだけを送る。(3) 向こうにある塗りが書き換えられていれば照合で見つけて送り直す。(4) いまの版と前の版が参照しない塗りを消す。(5) typescript が送るものから外れる。(6) 関係する E2E（remote-code-transfer・remote-code-presend・remote-runtime-ssh・remote-runtime-sockets）が通る。フル E2E は流さない。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/node-3）",
       "refs": [
         "docs/specs/v4-security.md §1「向こうに置くもの」の「依存と node は変わったときだけ送る」（1c4f96c5）"
       ],
       "threads": [],
       "createdAt": "2026-10-14T15:07:52.814Z",
-      "updatedAt": "2026-10-14T15:08:00.522Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-14T15:22:35.563Z",
+      "closedAt": "2026-10-14T15:22:35.563Z",
       "extra": {}
     }
   ],
