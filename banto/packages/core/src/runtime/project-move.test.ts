@@ -1,4 +1,6 @@
 import { test } from "node:test";
+import { spawn } from "node:child_process";
+import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +9,7 @@ import {
   claudeProjectDirName,
   copyClaudeRecordFiles,
   parseRsyncStats,
+  pipeCopy,
   parseRunning,
   pathContains,
   pathsOverlap,
@@ -108,4 +111,19 @@ test("rsync の -e の1語：そのまま渡せるものはそのまま、空白
   assert.equal(rsyncShellWord("/a b/c"), "'/a b/c'");
   assert.equal(rsyncShellWord("it's"), '"it\'s"');
   assert.throws(() => rsyncShellWord(`a'b"c`));
+});
+
+test("写す流れは溜めない：600MB を流しても banto 本体のメモリに溜まらず、文字列の上限で落ちない（2026-10-14 の実機の不具合）", async () => {
+  const before = process.memoryUsage().rss;
+  let peak = before;
+  const watch = setInterval(() => (peak = Math.max(peak, process.memoryUsage().rss)), 50);
+  const reader = spawn("sh", ["-c", "head -c 600000000 /dev/zero"], { stdio: ["ignore", "pipe", "pipe"] });
+  const writer = spawn("sh", ["-c", "wc -c"], { stdio: ["pipe", "pipe", "pipe"] });
+  const [r, w] = await pipeCopy(reader, writer, new PassThrough());
+  clearInterval(watch);
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, "", "読む子の出力は溜めない");
+  assert.equal(w.stdout.trim(), "600000000");
+  // 流れの分（数十MB）を越えて膨らまない。以前は 600MB 全部が文字列に溜まり、上限で RangeError になった
+  assert.ok(peak - before < 200 * 1024 * 1024, `メモリが ${Math.round((peak - before) / 1024 / 1024)}MB 増えた`);
 });

@@ -400,15 +400,32 @@ class CountingStream extends Transform {
   }
 }
 
-function collect(child: ChildProcess): Promise<SshResult> {
+/**
+ * 子の終わりを待ち、標準出力・標準エラー・終了コードを返す。
+ *
+ * **標準出力を別の所へ流している子には `{ stdout: false }` を渡す**（2026-10-14、実機で banto 本体が落ちた）。ここで
+ * stdout に 'data' を付けると、流している中身（Project のフォルダ丸ごとの tar）が全部文字列に溜まり、しかも流れが
+ * 止まらない（背圧が効かない）。16GB の Project を移したとき banto 本体が 4.4GB まで膨らみ、文字列の上限で例外になって落ちた
+ */
+function collect(child: ChildProcess, opts: { stdout?: boolean } = {}): Promise<SshResult> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (c: Buffer) => (stdout += String(c)));
+    if (opts.stdout !== false) child.stdout?.on("data", (c: Buffer) => (stdout += String(c)));
     child.stderr?.on("data", (c: Buffer) => (stderr = (stderr + String(c)).slice(-4000)));
     child.on("error", (err) => (stderr += err.message));
     child.on("close", (code) => resolve({ code: code ?? 255, stdout, stderr }));
   });
+}
+
+/**
+ * 読む子の標準出力を、数える流れを通して書く子の標準入力へ流し、両方の終わりを待つ。**読む子の stdout は流すだけで
+ * 溜めない**（背圧が効く）。書く子の stdout は小さい（tar -x は出さない）ので集めてよい
+ */
+export async function pipeCopy(reader: ChildProcess, writer: ChildProcess, through: Transform): Promise<[SshResult, SshResult]> {
+  writer.stdin!.on("error", () => undefined);
+  reader.stdout!.pipe(through).pipe(writer.stdin!);
+  return Promise.all([collect(reader, { stdout: false }), collect(writer)]);
 }
 
 function hostLabel(runtime: string): string {
@@ -1079,9 +1096,7 @@ export class ProjectMover {
       progress.copiedBytes += n;
       onBytes();
     }, this.deps.throttleBytesPerSec);
-    writer.stdin!.on("error", () => undefined);
-    reader.stdout!.pipe(counter).pipe(writer.stdin!);
-    const [r, w] = await Promise.all([collect(reader), collect(writer)]);
+    const [r, w] = await pipeCopy(reader, writer, counter);
     if (r.code !== 0) throw new Error(`${unit.what}を${src.label}で読み出せませんでした（tar の終了コード ${r.code}）：${r.stderr.trim().slice(-500)}`);
     if (w.code !== 0) throw new Error(`${unit.what}を${dst.label}に書けませんでした（tar の終了コード ${w.code}）：${w.stderr.trim().slice(-500)}`);
   }
@@ -1142,7 +1157,7 @@ export class ProjectMover {
           onBytes();
         }
       });
-      const r = await collect(child);
+      const r = await collect(child, { stdout: false });
       if (r.code !== 0) throw new Error(`${unit.what}を差分で写せませんでした（rsync の終了コード ${r.code}）：${r.stderr.trim().slice(-500)}`);
     };
     if (!src.rsyncRemote || !dst.rsyncRemote) return once(src, unit.from, dst, unit.to);
