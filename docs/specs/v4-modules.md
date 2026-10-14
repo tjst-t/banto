@@ -2876,6 +2876,21 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
   無い・GitHub の外）・中継が断った（承認されなかった等）なら、**リポジトリ自身の git の設定のまま** `git push`（force しない）。
   Repositories が引き受けて断ったもの（送り先を変える設定がある等）は自分では試し直さない。送るのは書く列の外で、送る操作
   どうしは別の列で1本ずつ（送るのはその時点の ref——先に並んだ書き込みの分もまとめて送られる）
+- **Vault の SSH 鍵で送る**（決定・2026-10-14、ユーザー（案A）。Backlog #296）——別のサーバの Project（v4-security.md §1）は
+  Repositories が引き受けず、向こうの git には鍵が無いので `Permission denied (publickey)` で送れなかった（2026-10-14 実機）。
+  - **設定**：Backlog の設定（Project ごと、設定 Canvas）に「送るときに使う SSH 鍵」を足す。選べるのは Vault の alias のうち kind が
+    `ssh-identity` のもの（その Project から引けるもの）。既定は「使わない」（今までどおり）。設定の写しには alias 名だけを置き、鍵は置かない
+  - **送り方**：Repositories が無い・引き受けないとき（「自分の git で試す」道）、鍵が設定されていれば、Vault に中継で
+    `startSshAgent` を頼み（Shell の `sshIdentity` と同じ口。別のサーバではソケットを転送したものが届く）、返ったソケットを
+    `SSH_AUTH_SOCK` に入れて `git push`・`git fetch` する。取ってくる（fetch）も同じ鍵で。秘密鍵は Vault の外に出ない
+  - **https の origin には効かない**——鍵を設定していて origin が https なら、送れなかった理由に「origin を ssh の URL
+    （`git@github.com:<owner>/<name>.git`）にすると、設定した鍵で送れます」を添える
+  - **接続先の host 鍵**：向こうの `~/.ssh/known_hosts` と git の設定のまま（人のリポジトリの自分の git。Repositories の
+    GitHub 向けの守りは持ち込まない）。知らない host で断られたら、その理由をそのまま出す
+  - **承認**：Vault への中継は既存のゲートのまま（AI のターンの中なら初回にカード、以後は Project で覚えた許可。「承認をすべて
+    自動で許可する」がオンなら通る）。許されなければ鍵無しで試し、失敗の理由に断られたことを添える
+  - Module の依存に Vault の窓口（役割）を任意で足す。Repositories を Project の根で引き受ける形（案B）・向こうに
+    鍵を置く形（案C）は採らない
 - **まだ送っていないこと**を、画面の上（`backlog-sync`）と `listItems` の返り値（文の末尾と `sync`）で知らせる：手元の
   ブランチが `refs/remotes/origin/<b>`（最後に取ってきた・送った時点）より先にあるコミットの数（ref から導く）と、最後に
   送ったときの失敗の理由（覚えているのはこれだけ。送れたら消える）。書いた tool は送れなかったことを返り値で言う
