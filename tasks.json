@@ -5974,6 +5974,27 @@
       "extra": {}
     },
     {
+      "id": "browser-tabs-per-thread",
+      "number": 297,
+      "kind": "task",
+      "title": "Browser のタブを会話ごとに——持ち主・会話ごとのいまのタブ・ほかの会話のタブへの操作は断る",
+      "status": "ready",
+      "parent": "browser-module",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 docs/specs/v4-modules.md §4.1「タブは会話ごと」（main 9f59d80e）のとおりに作る。決定 2026-10-14（ユーザー、案A）：人が見ているタブの裏で、AI がそれぞれ自分のタブで作業できるようにする。\n\n1. **最初に測る**：人が別のタブを見ている間に、裏のタブで AI の道具（browserAct の click・type、browserSnapshot、browserScreenshot、browserEval、動画やタイマーのあるページ）が普通に効くか。効かなければ起動の設定（--disable-background-timer-throttling・--disable-renderer-backgrounding・--disable-backgrounding-occluded-windows 等）か、AI のタブを別の窓に分けるかで対処する。結果を §4.1 に書く。\n2. タブに持ち主の会話（host が刻む Thread の印）を付けて覚える（起こし直しても残す）。ページから開いた新しいタブ・ポップアップは開いた元の持ち主。人が開いたタブは持ち主なし。\n3. 会話ごとの「いまのタブ」：タブを省いた操作と newTab 無しの browserOpen はその会話が最後に使った自分のタブ、無ければ新しく開く。browserTabs の select は人の画面の表示を替えない。\n4. ほかの会話のタブへの操作の道具（browserOpen・browserAct・browserEval・browserTabs の select/close）は理由と持ち主を返して断る。読む道具は通す。人のタブ（持ち主なし）への操作は通す。会話の印の無い呼び出しは今どおり。\n5. 人の画面：タブの並びに持ち主（Thread の頭8字、押すとその会話を開く）。AI の帯はいま見ているタブの操作だけ。browserTabs の list に持ち主と自分の印。\n6. 道具の説明を直す（タブは会話ごと、省けば自分の最後のタブ）。\n\n確かめ（**全部の E2E は流さない**、ユーザー指示）：browser の単体・型検査・browser.spec.ts・browser-view.spec.ts・browser-video.spec.ts と、2つの会話（偽 Runner の2つの Thread）がそれぞれ自分のタブで作業し、互いのタブへの操作が断られ、人の画面の表示が替わらないことを見る E2E（新しく作る）。",
+      "doneWhen": "2つの会話の AI がそれぞれ自分のタブで同時に作業でき、タブを省いた操作は自分の最後のタブに効き、ほかの会話のタブへの操作は断られ、人の画面の表示は AI の操作で替わらないことを E2E で確かめた。裏のタブで AI の操作が効くことを測って §4.1 に書いた。browser の単体・型検査・browser の E2E 3本が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-14T14:56:16.281Z",
+      "updatedAt": "2026-10-14T14:56:16.281Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "remote-runtime",
       "number": 244,
       "kind": "story",
