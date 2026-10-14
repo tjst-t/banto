@@ -7113,6 +7113,30 @@
       "updatedAt": "2026-10-14T02:36:26.031Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-on-remote-vm-bg-killed",
+      "number": 295,
+      "kind": "bug",
+      "title": "banto-dev-vm で E2E を流すと、裏で動かすプロセス（サブエージェント・待たないコマンド）が始まってすぐ SIGTERM で止まる（5件が必ず落ちる）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "runtime"
+      ],
+      "body": "2026-10-14、Banto開発を banto-dev-vm（16コア・62GB、Ubuntu 24.04、Incus 6.0.6、Project は別のサーバの実行場所）へ移したあと、VM でフル E2E を流した（4並列 約21分、267中 259 通過）。次の5件は1並列でも必ず落ちる：\n- shell-background:56（待たないコマンドが「外から止められました」）\n- subagent-card:45（仕事が「失敗」）\n- subagent-from-module:102（70秒の仕事が9.6秒で終わった）\n- subagent-resume-restart:78（host が落ちたらエージェントも消えた）\n- update-wait-restartable:204（runCommand が timedOut）\nログ：「エージェントが終了しました（code=null signal=SIGTERM）」。earlyoom は VM では動いていない。メモリは十分空いている。前の環境（host のコンテナの中で E2E）ではこの5件は通っていた。\n\n見立て（未確認）：E2E の Project のコンテナ（VM の Incus の中、入れ子1段）で、仕事の組（banto-work.slice、systemd-run --user --scope）や Shell の待たない形（systemd-run --user）の単位が、何かに止められている。前の環境は「Project のコンテナの中のコンテナ」（入れ子2段、ユーザーの systemd が組を作れず inWorkScope は使わずに起こしていた——5分で試し直す）、今は入れ子1段で組が作れるので経路が違う。片づけ役（run-reaper・spec の替わり目の片づけ）が組ごと止めていないか、E2E の土台（global-setup・incus-access の sudo の起こし直し）でユーザーの systemd・linger がどうなっているかを見る。\n\nまず1件（shell-background:56）を単独で流し、コンテナの中の journalctl --user と systemctl --user list-units を取って、誰が止めたかを特定する。製品の不具合（入れ子1段の Project のコンテナで裏の仕事が止められる＝本物の banto の別のサーバの Incus の段でも起きうる）か、試験の土台か切り分ける。",
+      "doneWhen": "5件が banto-dev-vm で1並列でも4並列でも通り、原因をコミットの文に書いた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-14T09:44:03.987Z",
+      "updatedAt": "2026-10-14T09:44:03.987Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
