@@ -7137,6 +7137,30 @@
       "updatedAt": "2026-10-14T11:34:55.724Z",
       "closedAt": "2026-10-14T11:34:55.724Z",
       "extra": {}
+    },
+    {
+      "id": "project-backlog-push-repositories",
+      "number": 296,
+      "kind": "bug",
+      "title": "別のサーバの Project で、Backlog の自動の push が鍵が無くて失敗する（Repositories が引き受けない）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime",
+        "backlog"
+      ],
+      "body": "2026-10-14、Banto開発を banto-dev-vm へ移したあと、Backlog の updateItem の自動の push が `git@github.com: Permission denied (publickey)` で失敗した。添えられた理由は「Repositories は引き受けませんでした（この Project は別のサーバで動いています）」。仕様（v4-security.md §1、2026-10-08 の決定 (4)）では、別のサーバでの Backlog の push は「向こうの git の設定と Vault の SSH 鍵」で行うことになっている。しかし実際には、Vault の鍵を渡す道が無い。いまは Shell の sshIdentity（github-token）を使って、人や AI が手で `git push origin backlog` している。\n\n直し方の案：Backlog が push するとき、Vault の ssh-agent（転送したソケット）を使えるようにする。鍵の alias は Backlog の設定で選ばせる。",
+      "doneWhen": "別のサーバの Project で Backlog の項目を更新すると、手で push しなくても GitHub の backlog ブランチに載る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-14T11:35:12.438Z",
+      "updatedAt": "2026-10-14T11:35:12.438Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
