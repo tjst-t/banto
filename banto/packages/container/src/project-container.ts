@@ -447,8 +447,12 @@ export class ProjectContainers {
       'while [ $# -ge 2 ]; do f="/etc/systemd/user/$1"; if [ "$(cat "$f" 2>/dev/null)" != "$(printf %s "$2")" ]; then printf %s "$2" > "$f"; changed=1; fi; shift 2; done',
       `user=$(getent passwd ${uid} | cut -d: -f1)`,
       // ユーザーの systemd を起こしておく（無ければ仕事の組に入れられず、そのまま起こすことになる）。linger は入れ子の
-      // コンテナでは効かないことがあるので、user@ を直に起こすのも試す（Shell の待たない形と同じ）
-      `if [ -n "$user" ]; then loginctl enable-linger "$user" >/dev/null 2>&1 || true; systemctl start user@${uid}.service >/dev/null 2>&1 || true; fi`,
+      // コンテナでは効かないことがあるので、user@ を直に起こすのも試す（Shell の待たない形と同じ）。
+      // **linger の印はファイルで直に置く**（2026-10-14、Backlog #295）：コンテナを起こした直後はまだ logind が立って
+      // おらず `loginctl enable-linger` が黙って失敗していた。印が無いと、下の `-M user@` 等が開いたログインが閉じて
+      // 10 秒後（UserStopDelaySec）に user@ ごと止められ、Shell の待たない形・サブエージェントが SIGTERM で切れた。
+      // logind は止めるかを決めるたびにこのファイルを読むので、ファイルだけで効く
+      `if [ -n "$user" ]; then mkdir -p /var/lib/systemd/linger && touch "/var/lib/systemd/linger/$user"; loginctl enable-linger "$user" >/dev/null 2>&1 || true; systemctl start user@${uid}.service >/dev/null 2>&1 || true; fi`,
       'if [ "$changed" = 1 ] && [ -n "$user" ]; then systemctl --user -M "$user@" daemon-reload >/dev/null 2>&1 || true; fi',
       "echo $changed",
     ].join("\n");
