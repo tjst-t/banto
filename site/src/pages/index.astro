@@ -1,0 +1,849 @@
+---
+// ランディングページ（Starlight の外）。色は banto の画面と同じ藍（#3b5bdb）を軸にし、
+// 朱（#ce4620）は「あなたの番」にだけ使う——banto の画面の決まりと同じ。
+// 一番上には banto のサイドバーを HTML で写し、ページを開いて少し経つと Fork が1本「あなたの答えを待っています」に変わる
+// （動きはこの1回だけ。prefers-reduced-motion なら最初から変わったあとの姿）。
+import '../styles/fonts.css';
+import mark from '../assets/mark.svg?url';
+
+const installCmd = 'curl -fsSL https://banto.tjst-t.dev/install.sh | bash -s -- --domain banto.example.com';
+const title = 'banto — AI の仕事をいくつ並べても、覚えておかなくていい';
+const description =
+	'banto は、AI と進める仕事を Project と会話に分けて並べ、いま何が動いていて何があなたの答えを待っているかを1画面に出す作業場です。あなたのマシンで動きます。';
+---
+
+<!doctype html>
+<html lang="ja">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content="https://banto.tjst-t.dev/" />
+		<meta name="theme-color" content="#f5f6f8" />
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+	</head>
+	<body>
+		<header class="top">
+			<a class="brand" href="/">
+				<img src={mark} alt="" width="26" height="26" />
+				<span>banto</span>
+			</a>
+			<nav aria-label="サイト">
+				<a href="/docs/">マニュアル</a>
+				<a href="/docs/install/">入れ方</a>
+				<a href="https://github.com/tjst-t/banto">GitHub</a>
+			</nav>
+		</header>
+
+		<main>
+			<section class="hero">
+				<div class="hero-text">
+					<h1><span class="nb">AI の仕事を</span><span class="nb">いくつ並べても、</span><br /><span class="nb">覚えておかなくていい。</span></h1>
+					<p class="lead">
+						banto は、AI と進める仕事を Project と会話に分けて並べ、いま何が動いていて、何があなたの答えを待っているかを1画面に出す作業場です。あなたのマシンで動きます。
+					</p>
+					<div class="actions">
+						<a class="btn primary" href="/docs/install/">入れ方を見る</a>
+						<a class="btn" href="/docs/">マニュアルを読む</a>
+					</div>
+				</div>
+
+				<figure class="replica" aria-label="banto の画面の例：サイドバーと会話">
+					<div class="window" data-stage="before">
+						<aside class="side">
+							<div class="side-row inbox">
+								<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
+								<span>受信箱</span>
+								<span class="count"><span class="n-before">1</span><span class="n-after">2</span></span>
+							</div>
+
+							<p class="side-label">Project</p>
+
+							<div class="project open">
+								<div class="side-row proj">
+									<span class="initial">B</span><span>Banto開発</span>
+								</div>
+								<div class="threads">
+									<div class="side-row thread">
+										<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+										<span>Banto開発</span>
+									</div>
+									<div class="side-row thread">
+										<span class="ring" aria-hidden="true"></span>
+										<span class="t">
+											<span>サイドバーの直し</span>
+											<span class="sub">バックグラウンドで 2 件</span>
+										</span>
+									</div>
+									<div class="side-row thread waiting selected">
+										<span class="icon-swap" aria-hidden="true">
+											<span class="ring"></span>
+											<svg class="hand" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"></path><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"></path><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"></path><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"></path></svg>
+										</span>
+										<span class="t">
+											<span>公開マニュアルを作る</span>
+											<span class="sub turn">あなたの答えを待っています</span>
+										</span>
+									</div>
+									<div class="side-row thread unread">
+										<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+										<span>定期実行の検討</span>
+									</div>
+								</div>
+							</div>
+
+							<div class="side-row proj">
+								<span class="initial spin"><span class="ring"></span></span><span>qemu-bmc</span>
+							</div>
+							<div class="side-row proj unread">
+								<span class="initial">K</span><span>Kaggle</span>
+							</div>
+							<div class="side-row proj">
+								<span class="initial">家</span><span>家計簿</span>
+							</div>
+						</aside>
+
+						<div class="talk" aria-hidden="true">
+							<p class="talk-head">公開マニュアルを作る</p>
+							<div class="msg me">ちゃんとしたマニュアルとランディングページを作りたい。置き場はどこがいいと思う？</div>
+							<div class="msg ai">
+								名前は tjst-t.dev のサブドメインにして、置き場は転送が書ける Cloudflare Pages をおすすめします。
+							</div>
+							<div class="card">
+								<p class="card-q">置き場はどちらにしますか</p>
+								<div class="card-opts">
+									<span class="opt">GitHub Pages</span>
+									<span class="opt filled">Cloudflare Pages</span>
+								</div>
+							</div>
+						</div>
+					</div>
+					<figcaption>
+						<ul class="legend">
+							<li><span class="ring still" aria-hidden="true"></span>AI が動いている</li>
+							<li><span class="legend-hand" aria-hidden="true"></span>あなたの答えを待っている</li>
+							<li><b>太字</b>まだ読んでいない返事</li>
+						</ul>
+					</figcaption>
+				</figure>
+			</section>
+
+			<section class="row">
+				<h2>並べ方</h2>
+				<div class="body">
+					<p class="big">会話を枝分かれさせて、別の試みを並べる。</p>
+					<p>
+						1つの Project の中で、会話を Fork で枝分かれさせます。Fork は「同じ話の続き」ではなく、同じ文脈から出た別の試みです。同じ依頼から3つの実装を試して比べる、本筋とは別の調べものを並行して進める——どれも、どの会話から分かれたかが形として残るので、どこにいたかを思い出さなくて済みます。
+					</p>
+					<p>
+						決まったことは Project の Memory に残り、会話が長くなって畳まれても、Fork しても AI に渡り続けます。
+					</p>
+				</div>
+			</section>
+
+			<section class="row">
+				<h2>道具</h2>
+				<div class="body">
+					<p class="big">面倒な道具は、最初から入っている。</p>
+					<p>
+						コマンドを流す、ファイルを触る、秘密を預かる、開発サーバを動かして公開する、ブラウザを操作する。これらは Module として最初から入っていて、AI も人も同じものを使います。AI が開いた画面を人が続きから触れ、人が見ている画面について AI に相談できます。
+					</p>
+					<dl class="modules">
+						<div><dt>Shell・FileSystem・Terminal</dt><dd>コマンドとファイル。長いコマンドは待たずに流し、終わったら知らせる</dd></div>
+						<div><dt>Browser</dt><dd>AI が操作するブラウザを、人も同じ画面で見て触れる</dd></div>
+						<div><dt>Vault</dt><dd>トークンや鍵を預かり、AI には名前だけを渡す</dd></div>
+						<div><dt>Service・Publish</dt><dd>動き続けるものを起こしておき、ログインを前に付けて公開する</dd></div>
+						<div><dt>Repositories・Backlog</dt><dd>リポジトリの一覧と、ストーリー・タスク・バグの一覧</dd></div>
+						<div><dt>Subagent・Factory</dt><dd>別の AI に頼む。タスクを流して実装から取り込みまで任せる</dd></div>
+					</dl>
+					<p><a href="/docs/guide/modules/">Module の一覧を見る</a></p>
+				</div>
+			</section>
+
+			<section class="row">
+				<h2>任せ方</h2>
+				<div class="body">
+					<p class="big">毎回同じ形の仕事は、Factory に流す。</p>
+					<ol class="flow">
+						<li>worktree を作る</li>
+						<li>実装する</li>
+						<li>テストを通す</li>
+						<li>別の AI がレビューする</li>
+						<li>main に取り込む</li>
+					</ol>
+					<p>
+						Backlog のタスクを流すと、この流れを1件ずつ自動で進めます。テストが通らない、レビューで何度も差し戻される、取り込みでぶつかる——止まったときだけ、頼んだ会話に知らせが届きます。
+					</p>
+				</div>
+			</section>
+
+			<section class="row">
+				<h2>置き場所</h2>
+				<div class="body">
+					<p class="big">あなたのマシンで動き、Project ごとに閉じ込める。</p>
+					<ul class="plain">
+						<li>Project ごとにコンテナを作り、AI のコマンドやファイル操作はその中で行います。メモリと CPU の上限も Project ごとに付きます。</li>
+						<li>秘密は Vault に預け、AI には名前だけを渡します。値は AI の文脈に出ません。</li>
+						<li>ログインはパスキーです。携帯などの端末は、入っている端末から QR コードで足します。</li>
+						<li>AI の操作のうち確かめたいものは、会話の中のカードで承認します。</li>
+					</ul>
+				</div>
+			</section>
+
+			<section class="row install" id="install">
+				<h2>入れる</h2>
+				<div class="body">
+					<p class="big">Ubuntu のマシンに、1行で。</p>
+					<ol class="steps">
+						<li>
+							<p>Ubuntu 24.04 か 26.04 のマシンと、画面の名前（例 <code>banto.example.com</code>）を用意します。</p>
+						</li>
+						<li>
+							<p>sudo できるユーザーで打ちます。</p>
+							<div class="cmd">
+								<code id="install-cmd">{installCmd}</code>
+								<button type="button" data-copy="install-cmd">写す</button>
+							</div>
+						</li>
+						<li>
+							<p>最後に出るリンクで入り、パスキーを登録します。</p>
+						</li>
+					</ol>
+					<p>
+						会話には Claude のアカウントを使います。Cloudflare の API トークンがあれば、DNS と証明書も自動で用意します。詳しくは<a href="/docs/install/">入れ方</a>を見てください。
+					</p>
+				</div>
+			</section>
+		</main>
+
+		<footer class="foot">
+			<a class="brand" href="/">
+				<img src={mark} alt="" width="20" height="20" />
+				<span>banto</span>
+			</a>
+			<nav aria-label="フッター">
+				<a href="/docs/">マニュアル</a>
+				<a href="https://github.com/tjst-t/banto">GitHub</a>
+			</nav>
+		</footer>
+
+		<script>
+			// 写すボタン
+			for (const btn of document.querySelectorAll<HTMLButtonElement>('button[data-copy]')) {
+				btn.addEventListener('click', async () => {
+					const el = document.getElementById(btn.dataset.copy ?? '');
+					if (!el) return;
+					try {
+						await navigator.clipboard.writeText(el.textContent ?? '');
+						btn.textContent = '写しました';
+					} catch {
+						btn.textContent = '写せませんでした';
+					}
+					setTimeout(() => (btn.textContent = '写す'), 1800);
+				});
+			}
+			// ページを開いて少し経ったら、Fork が1本「あなたの答えを待っています」に変わる（この1回だけ）
+			const win = document.querySelector<HTMLElement>('.window');
+			if (win) {
+				const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+				if (reduce) win.dataset.stage = 'after';
+				else setTimeout(() => (win.dataset.stage = 'after'), 1600);
+			}
+		</script>
+
+		<style is:global>
+			:root {
+				--paper: #f5f6f8;
+				--surface: #ffffff;
+				--surface-2: #edeff3;
+				--ink: #14171c;
+				--ink-2: #545b66;
+				--ink-3: #8b93a0;
+				--line: rgba(17, 22, 31, 0.1);
+				--ai: #3b5bdb;
+				--ai-soft: #e9eefc;
+				--ai-ink: #2a44ac;
+				--turn: #ce4620;
+				--turn-soft: #fcede7;
+				--font: 'IBM Plex Sans JP', ui-sans-serif, system-ui, sans-serif;
+				--mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+				--gutter: clamp(20px, 5vw, 64px);
+			}
+			* {
+				box-sizing: border-box;
+			}
+			html {
+				background: var(--paper);
+				color: var(--ink);
+				font-family: var(--font);
+				font-size: 16px;
+				line-height: 1.85;
+				-webkit-text-size-adjust: 100%;
+			}
+			body {
+				margin: 0;
+			}
+			a {
+				color: var(--ai-ink);
+				text-underline-offset: 3px;
+			}
+			:focus-visible {
+				outline: 2px solid var(--ai);
+				outline-offset: 3px;
+				border-radius: 4px;
+			}
+			/* 日本語を言葉の切れ目で折り返す（対応するブラウザだけ。それ以外は今までどおり） */
+			h1,
+			h2,
+			p,
+			li,
+			dd {
+				word-break: auto-phrase;
+			}
+			.nb {
+				display: inline-block;
+			}
+			code {
+				font-family: var(--mono);
+				font-size: 0.92em;
+			}
+		</style>
+
+		<style>
+			.top,
+			.foot {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 18px var(--gutter);
+				max-width: 1240px;
+				margin: 0 auto;
+			}
+			.brand {
+				display: inline-flex;
+				align-items: center;
+				gap: 10px;
+				color: var(--ink);
+				text-decoration: none;
+				font-weight: 700;
+				font-size: 18px;
+				letter-spacing: 0.01em;
+			}
+			nav {
+				display: flex;
+				gap: clamp(14px, 3vw, 28px);
+				font-size: 14px;
+			}
+			nav a {
+				color: var(--ink-2);
+				text-decoration: none;
+			}
+			nav a:hover {
+				color: var(--ink);
+			}
+
+			main {
+				max-width: 1240px;
+				margin: 0 auto;
+				padding: 0 var(--gutter);
+			}
+
+			/* 一番上 */
+			.hero {
+				display: grid;
+				grid-template-columns: minmax(0, 6fr) minmax(0, 7fr);
+				gap: clamp(32px, 5vw, 72px);
+				align-items: center;
+				padding: clamp(40px, 8vw, 104px) 0 clamp(56px, 8vw, 112px);
+			}
+			h1 {
+				font-size: clamp(30px, 3.9vw, 50px);
+				line-height: 1.28;
+				font-weight: 700;
+				letter-spacing: -0.01em;
+				font-feature-settings: 'palt';
+				margin: 0 0 24px;
+			}
+			.lead {
+				font-size: clamp(16px, 1.4vw, 18px);
+				color: var(--ink-2);
+				max-width: 34em;
+				margin: 0 0 32px;
+			}
+			.actions {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 12px;
+			}
+			.btn {
+				display: inline-flex;
+				align-items: center;
+				height: 44px;
+				padding: 0 20px;
+				border-radius: 10px;
+				font-weight: 500;
+				font-size: 15px;
+				text-decoration: none;
+				color: var(--ink);
+				background: var(--surface);
+				box-shadow: inset 0 0 0 1px var(--line);
+			}
+			.btn:hover {
+				background: var(--surface-2);
+			}
+			.btn.primary {
+				background: var(--ai);
+				color: #fff;
+				box-shadow: none;
+			}
+			.btn.primary:hover {
+				background: var(--ai-ink);
+			}
+
+			/* banto の画面の写し */
+			.replica {
+				margin: 0;
+			}
+			.window {
+				display: grid;
+				grid-template-columns: 236px minmax(0, 1fr);
+				background: var(--surface);
+				border-radius: 14px;
+				box-shadow:
+					0 24px 64px rgba(17, 22, 31, 0.12),
+					0 2px 6px rgba(17, 22, 31, 0.06),
+					inset 0 0 0 1px var(--line);
+				overflow: hidden;
+				font-size: 13px;
+				line-height: 1.5;
+				min-height: 380px;
+			}
+			.side {
+				background: var(--paper);
+				border-right: 1px solid var(--line);
+				padding: 12px 8px;
+			}
+			.side-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 5px 8px;
+				border-radius: 6px;
+				color: var(--ink-2);
+				min-height: 30px;
+			}
+			.side-row svg {
+				width: 15px;
+				height: 15px;
+				flex: none;
+				fill: none;
+				stroke: currentColor;
+				stroke-width: 2;
+				stroke-linecap: round;
+				stroke-linejoin: round;
+			}
+			.side-row.inbox {
+				color: var(--ink);
+				font-weight: 500;
+			}
+			.count {
+				margin-left: auto;
+				min-width: 20px;
+				height: 18px;
+				padding: 0 6px;
+				border-radius: 9px;
+				background: var(--turn);
+				color: #fff;
+				font-size: 11px;
+				font-weight: 700;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.side-label {
+				margin: 14px 8px 4px;
+				font-size: 11px;
+				color: var(--ink-3);
+			}
+			.proj {
+				color: var(--ink);
+			}
+			.initial {
+				width: 20px;
+				height: 20px;
+				border-radius: 6px;
+				background: var(--surface-2);
+				color: var(--ink-2);
+				font-size: 11px;
+				font-weight: 700;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				flex: none;
+			}
+			.initial.spin {
+				background: transparent;
+			}
+			.threads {
+				margin-left: 18px;
+				padding-left: 6px;
+				border-left: 1px solid var(--line);
+				margin-bottom: 4px;
+			}
+			.thread .t {
+				display: flex;
+				flex-direction: column;
+				min-width: 0;
+			}
+			.sub {
+				font-size: 11px;
+				color: var(--ink-3);
+			}
+			.sub.turn {
+				color: var(--turn);
+			}
+			.unread {
+				color: var(--ink);
+				font-weight: 700;
+			}
+			.selected {
+				background: var(--surface);
+				box-shadow: inset 0 0 0 1px var(--line);
+			}
+
+			.ring {
+				width: 14px;
+				height: 14px;
+				flex: none;
+				border-radius: 50%;
+				border: 2px solid var(--ai-soft);
+				border-top-color: var(--ai);
+				animation: spin 0.9s linear infinite;
+				display: inline-block;
+			}
+			.ring.still {
+				animation: none;
+			}
+			@keyframes spin {
+				to {
+					transform: rotate(360deg);
+				}
+			}
+
+			/* 「待っている」へ変わる1本 */
+			.icon-swap {
+				width: 15px;
+				height: 15px;
+				position: relative;
+				flex: none;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.icon-swap .hand {
+				position: absolute;
+				inset: 0;
+				color: var(--turn);
+				opacity: 0;
+			}
+			.waiting .sub.turn {
+				max-height: 0;
+				opacity: 0;
+				overflow: hidden;
+			}
+			.n-after {
+				display: none;
+			}
+			.window[data-stage='after'] .icon-swap .ring {
+				display: none;
+			}
+			.window[data-stage='after'] .icon-swap .hand {
+				opacity: 1;
+			}
+			.window[data-stage='after'] .waiting .sub.turn {
+				max-height: 20px;
+				opacity: 1;
+				transition:
+					max-height 0.35s ease,
+					opacity 0.35s ease 0.1s;
+			}
+			.window[data-stage='after'] .n-before {
+				display: none;
+			}
+			.window[data-stage='after'] .n-after {
+				display: inline;
+			}
+
+			/* 会話 */
+			.talk {
+				padding: 16px 22px 22px;
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+			}
+			.talk-head {
+				margin: 0 0 4px;
+				font-weight: 700;
+				font-size: 13px;
+				color: var(--ink);
+				padding-bottom: 10px;
+				border-bottom: 1px solid var(--line);
+			}
+			.msg {
+				max-width: 92%;
+				font-size: 13px;
+				line-height: 1.7;
+			}
+			.msg.me {
+				align-self: flex-end;
+				background: var(--surface-2);
+				padding: 8px 12px;
+				border-radius: 12px;
+			}
+			.msg.ai {
+				color: var(--ink);
+			}
+			.card {
+				border-radius: 10px;
+				box-shadow: inset 0 0 0 1px var(--line);
+				border-left: 3px solid var(--turn);
+				padding: 12px 14px;
+				opacity: 0;
+				transform: translateY(6px);
+			}
+			.window[data-stage='after'] .card {
+				opacity: 1;
+				transform: none;
+				transition:
+					opacity 0.4s ease 0.15s,
+					transform 0.4s ease 0.15s;
+			}
+			.card-q {
+				margin: 0 0 10px;
+				font-weight: 500;
+			}
+			.card-opts {
+				display: flex;
+				justify-content: flex-end;
+				gap: 8px;
+				flex-wrap: wrap;
+			}
+			.opt {
+				padding: 4px 12px;
+				border-radius: 8px;
+				box-shadow: inset 0 0 0 1px var(--line);
+				font-size: 12px;
+			}
+			.opt.filled {
+				background: var(--ai);
+				color: #fff;
+				box-shadow: none;
+			}
+
+			.legend {
+				list-style: none;
+				padding: 0;
+				margin: 16px 0 0;
+				display: flex;
+				flex-wrap: wrap;
+				gap: 8px 24px;
+				font-size: 13px;
+				color: var(--ink-2);
+			}
+			.legend li {
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.legend b {
+				color: var(--ink);
+			}
+			.legend-hand {
+				width: 10px;
+				height: 10px;
+				border-radius: 50%;
+				background: var(--turn);
+			}
+
+			/* 本文の段：左に見出し、右に中身 */
+			.row {
+				display: grid;
+				grid-template-columns: minmax(0, 3fr) minmax(0, 9fr);
+				gap: clamp(16px, 4vw, 64px);
+				padding: clamp(40px, 6vw, 72px) 0;
+				border-top: 1px solid var(--line);
+			}
+			.row h2 {
+				margin: 0;
+				font-size: 15px;
+				font-weight: 500;
+				color: var(--ink-3);
+				line-height: 2.1;
+			}
+			.body {
+				max-width: 44em;
+			}
+			.body p {
+				margin: 0 0 16px;
+				color: var(--ink-2);
+				font-size: 16px;
+			}
+			.body p.big {
+				font-size: clamp(22px, 2.4vw, 28px);
+				line-height: 1.5;
+				font-weight: 700;
+				color: var(--ink);
+				font-feature-settings: 'palt';
+				margin-bottom: 20px;
+			}
+
+			.modules {
+				margin: 24px 0;
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				gap: 18px 32px;
+			}
+			.modules dt {
+				font-weight: 700;
+				font-size: 14px;
+				color: var(--ink);
+			}
+			.modules dd {
+				margin: 2px 0 0;
+				font-size: 14px;
+				line-height: 1.7;
+				color: var(--ink-2);
+			}
+
+			.flow {
+				list-style: none;
+				counter-reset: step;
+				padding: 0;
+				margin: 8px 0 24px;
+				display: flex;
+				flex-wrap: wrap;
+				gap: 8px;
+			}
+			.flow li {
+				counter-increment: step;
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+				padding: 6px 14px 6px 8px;
+				background: var(--surface);
+				border-radius: 999px;
+				box-shadow: inset 0 0 0 1px var(--line);
+				font-size: 14px;
+			}
+			.flow li::before {
+				content: counter(step);
+				width: 22px;
+				height: 22px;
+				border-radius: 50%;
+				background: var(--ai-soft);
+				color: var(--ai-ink);
+				font-size: 12px;
+				font-weight: 700;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+			}
+
+			.plain {
+				margin: 0;
+				padding-left: 1.2em;
+				color: var(--ink-2);
+			}
+			.plain li {
+				margin-bottom: 10px;
+			}
+
+			.steps {
+				margin: 8px 0 24px;
+				padding-left: 1.4em;
+			}
+			.steps li {
+				padding-left: 4px;
+				margin-bottom: 14px;
+			}
+			.steps li::marker {
+				font-weight: 700;
+				color: var(--ai-ink);
+			}
+			.steps p {
+				margin: 0 0 8px;
+			}
+			.cmd {
+				display: flex;
+				align-items: stretch;
+				background: var(--ink);
+				border-radius: 10px;
+				overflow: hidden;
+			}
+			.cmd code {
+				flex: 1;
+				color: #e8ebf0;
+				padding: 14px 16px;
+				font-size: 13px;
+				line-height: 1.6;
+				overflow-x: auto;
+				white-space: nowrap;
+			}
+			.cmd button {
+				flex: none;
+				border: 0;
+				border-left: 1px solid rgba(255, 255, 255, 0.12);
+				background: transparent;
+				color: #e8ebf0;
+				font: inherit;
+				font-size: 13px;
+				padding: 0 18px;
+				cursor: pointer;
+			}
+			.cmd button:hover {
+				background: rgba(255, 255, 255, 0.08);
+			}
+
+			.foot {
+				border-top: 1px solid var(--line);
+				margin-top: 24px;
+				padding-top: 28px;
+				padding-bottom: 40px;
+			}
+
+			@media (max-width: 960px) {
+				.hero {
+					grid-template-columns: minmax(0, 1fr);
+				}
+			}
+			@media (max-width: 720px) {
+				.window {
+					grid-template-columns: minmax(0, 1fr);
+					min-height: 0;
+				}
+				.talk {
+					display: none;
+				}
+				.row {
+					grid-template-columns: minmax(0, 1fr);
+				}
+				.modules {
+					grid-template-columns: minmax(0, 1fr);
+				}
+			}
+			@media (prefers-reduced-motion: reduce) {
+				.ring {
+					animation: none;
+				}
+				.window *,
+				.window {
+					transition: none !important;
+				}
+			}
+		</style>
+	</body>
+</html>

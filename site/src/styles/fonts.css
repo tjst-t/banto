@@ -1,0 +1,6 @@
+/* 書体は IBM Plex Sans JP 1つ（太さで役を分ける）。コードは IBM Plex Mono。どちらもサイトに同梱して配る */
+@import '@fontsource/ibm-plex-sans-jp/400.css';
+@import '@fontsource/ibm-plex-sans-jp/500.css';
+@import '@fontsource/ibm-plex-sans-jp/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
