@@ -18,6 +18,7 @@
 //              → tool_result を流す → 終わる
 // ```
 
+import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -30,7 +31,13 @@ export interface FakePlan {
   /** tool を呼ぶ前に言うこと。 */
   say?: string;
   /** 呼ぶ tool（順に、1つずつ承認を取りながら）。 */
-  tools?: Array<{ server: string; name: string; args?: Record<string, unknown> }>;
+  tools?: Array<{
+    server: string;
+    name: string;
+    args?: Record<string, unknown>;
+    /** この tool を呼ぶ前に言うこと（追加・2026-10-14）。前の tool の結果を読んで続ける、という形の会話を作る */
+    say?: string;
+  }>;
   /**
    * 読む resource。**読んだ中身をそのまま発言に載せる**——AI が読んで報告した、
    * という形をそのまま再現する。値が混ざっていれば spec がそれを捕まえる
@@ -143,12 +150,12 @@ export async function listModels() {
 /**
  * プロンプトから指示を読む。
  *
- * **印が無ければ既定の振る舞い**（プロンプトをそのまま読み上げる形で1行返す）
- * ——「この言葉を返して」と頼むだけの spec は、書き換えずに動く。
+ * **印が無ければ、対応表（`BANTO_FAKE_SCRIPT`）を引き、そこにも無ければ既定の振る舞い**（プロンプトをそのまま
+ * 読み上げる形で1行返す）——「この言葉を返して」と頼むだけの spec は、書き換えずに動く。
  */
 export function parsePlan(prompt: string): FakePlan {
   const at = prompt.lastIndexOf(MARKER);
-  if (at === -1) return { say: defaultReply(prompt) };
+  if (at === -1) return scriptedPlan(prompt) ?? { say: defaultReply(prompt) };
   // 指示は印のあとの1行（`fakeTurn` は改行の無い JSON を書く）。後ろに文が続くことがある——起こし直しで切れた
   // ターンの発言を、banto が続きの文の中に入れ直したとき（追加・2026-10-05）
   const json = prompt.slice(at + MARKER.length).split("\n")[0]!.trim();
@@ -159,6 +166,48 @@ export function parsePlan(prompt: string): FakePlan {
     // 落とせば spec の書き間違いがその場で分かる
     throw new Error(`fake-runner への指示が読めません: ${json.slice(0, 200)} / ${String(err)}`);
   }
+}
+
+/** 対応表のファイルを指す環境変数。無ければ対応表は引かない（今までどおり） */
+export const FAKE_SCRIPT_ENV = "BANTO_FAKE_SCRIPT";
+
+/** 対応表の1行：人の発言（の一部）→ 指示 */
+export interface FakeScriptEntry {
+  prompt: string;
+  plan: FakePlan;
+}
+
+/**
+ * **人の発言の文面から指示を引く**（追加・2026-10-14、公開サイトのスクリーンショット——`site-shots/`）。
+ *
+ * 印は人の発言の中に書くので、会話の画面に JSON が出る。見せるための画面では、発言は普通の文のままにして、
+ * 指示は `BANTO_FAKE_SCRIPT` の JSON（`FakeScriptEntry[]`）から引く。ファイルはターンのたびに読む。
+ *
+ * プロンプトには banto が文脈を前に足すことがあり、届いたもの（コマンドの終わり・Fork の最初の指示）は banto が
+ * 包んだ文になるので、**含まれているか**で引く。いくつも当たれば、プロンプトの後ろのほうに出てくるもの
+ * （＝いまの発言）、同じ位置なら長いほう。ファイルが読めない・形が違うときは落とす（規則2）
+ */
+function scriptedPlan(prompt: string): FakePlan | undefined {
+  const file = process.env[FAKE_SCRIPT_ENV];
+  if (!file) return undefined;
+  let entries: FakeScriptEntry[];
+  try {
+    entries = JSON.parse(readFileSync(file, "utf8")) as FakeScriptEntry[];
+  } catch (err) {
+    throw new Error(`fake-runner の対応表（${FAKE_SCRIPT_ENV}=${file}）が読めません: ${String(err)}`);
+  }
+  if (!Array.isArray(entries) || entries.some((e) => typeof e?.prompt !== "string" || e.prompt === "" || typeof e.plan !== "object")) {
+    throw new Error(`fake-runner の対応表（${file}）は { prompt, plan } の配列で書いてください`);
+  }
+  let best: { at: number; entry: FakeScriptEntry } | undefined;
+  for (const entry of entries) {
+    const at = prompt.lastIndexOf(entry.prompt);
+    if (at === -1) continue;
+    const end = at + entry.prompt.length;
+    const bestEnd = best ? best.at + best.entry.prompt.length : -1;
+    if (!best || end > bestEnd || (end === bestEnd && entry.prompt.length > best.entry.prompt.length)) best = { at, entry };
+  }
+  return best?.entry.plan;
 }
 
 /**
@@ -553,6 +602,10 @@ export async function* runTurn(opts: {
     // SDK は MCP の tool を `mcp__<server>__<tool>` の名前で扱う
     const qualified = `mcp__${call.server}__${call.name}`;
     const args = call.args ?? {};
+    if (call.say) {
+      lastText = call.say;
+      yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: call.say }]) };
+    }
     yield {
       type: "message",
       message: assistantMessage(sessionId, [{ type: "tool_use", id: toolUseId, name: qualified, input: args }]),

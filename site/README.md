@@ -19,6 +19,28 @@ npm ci
 npm run build && npx astro preview --host 0.0.0.0 --port 4321
 ```
 
+## スクリーンショットを撮り直す
+
+`src/assets/screens/*.png` は本物の banto の画面から撮ったもの。E2E の仕組み（`banto/e2e`）で banto を立て、
+偽の AI で場面を作って撮る（場面の中身は `banto/e2e/site-shots/scene.ts`）。banto を build してから：
+
+```sh
+cd banto && npm run build
+cd e2e && npx playwright test -c site-shots/playwright.config.ts
+```
+
+全部の PNG を上書きする。一部だけなら `BANTO_SITE_SHOTS_ONLY=hero,inbox`（場面はいつも全部作る）。
+E2E と同じく Incus が要り、同じ機械の E2E とは1回ずつ（ほかの E2E が走っていれば待つ）。
+
+| ファイル | 写っているもの |
+|---|---|
+| `hero.png` | パソコンの全画面。Project 4つ・Fork 4本・判断待ちのカード |
+| `approval.png` | 会話の中の承認カード（切り抜き） |
+| `inbox.png` | 受信箱 |
+| `fork.png` | Fork の会話（決済の方式を比べている案A） |
+| `module.png` | Module の画面（Backlog の Canvas） |
+| `mobile.png`・`mobile-drawer.png` | 携帯の幅の会話と Drawer |
+
 ## Cloudflare Pages の設定（人が Cloudflare の画面で一度だけ）
 
 - リポジトリ：`tjst-t/banto`、本番のブランチ：`release`
