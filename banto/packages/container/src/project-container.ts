@@ -401,6 +401,14 @@ export class ProjectContainers {
     }
     const project = st.devices["project"];
     if (spec.root && (!project || project["source"] !== spec.root || project["path"] !== spec.root)) {
+      // **根を替えるときは、止めてから外す**（バグ #292、2026-10-14）。動いているコンテナで根の device を外すと、その中に
+      // 重ねたマウント（根が home なら banto のコード・Module の置き場）も一緒に外れる。Incus の設定には device が
+      // 残るので付け直されず、中の Module が全部起きられなかった。止めて起こせば Incus が全部を付け直す。呼ぶ側は根を
+      // 変えたら Module を畳んでいる（失うものは無い）
+      if (project && st.status === "Running") {
+        await this.stop(name);
+        st = { ...st, status: "Stopped" };
+      }
       if (project) await this.incus(["config", "device", "remove", name, "project"], "古い Project の根を外すの");
       toAdd["project"] = { type: "disk", source: spec.root, path: spec.root };
     }

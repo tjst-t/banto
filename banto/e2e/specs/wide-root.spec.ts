@@ -12,6 +12,9 @@
 // 根を home にすると、home がまるごとコンテナに見える——警告が言うのはそのこと。
 import { test, expect } from "../test-base.js";
 import { homedir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { openApp } from "../helpers.js";
 
@@ -19,6 +22,8 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
 
 const PROJECT_NAME = "E2E Wide Root Project";
+/** banto のコードの置き場（monorepo の根、e2e の1つ上）を中に含むフォルダ */
+const OUTER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("home を根にしても Module は動く。ただし画面が警告する", async ({ page }) => {
   const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
@@ -73,4 +78,59 @@ test("home を根にしても Module は動く。ただし画面が警告する"
   // 狭い根に打ち直したら消える（いつでも出ているわけではない）
   await page.getByLabel("Root パス").fill("/tmp/banto-e2e-narrow-root");
   await expect(page.getByTestId("wide-root-warning")).toHaveCount(0, { timeout: 15_000 });
+});
+
+// **根を変えたら、コンテナを起こし直してから使う**（バグ #292、2026-10-14 に HOME Project で起きた）。
+//
+// 根が home だと、banto のコードの置き場（~/.local/share/banto-release）のマウントは根のマウントの中に重なる。
+// 以前は動いているコンテナで根の device を外して付け直していた——親を外すと中のマウントも一緒に外れ、Incus の設定には
+// device が残るので付け直されず、コンテナの中の Module が全部「Connection closed」で起きられなかった。
+// 試験では home の代わりに **banto のコードの置き場を中に含む根**（このリポジトリの1つ上）を使う——同じ重なり方になる
+// （E2E を Shell から流すと HOME が Shell の置き場になり、home はコードを含まない）
+test("home を根にした Project の根をその下へ変えても、Shell と FileSystem がすぐ使える", async ({ page }) => {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const project = await (
+    await page.request.post(`${CORE_BASE_URL}/api/projects`, {
+      headers,
+      data: { name: "E2E Wide Root Change", root: OUTER_ROOT },
+    })
+  ).json();
+  await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers });
+
+  const before = await (
+    await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/modules/prepare`, { headers })
+  ).json();
+  expect(before.connected, "home を根にしたら shell が立たない").toContain("shell");
+
+  // 古い根の下の新しい根（試験のあと消す）
+  const narrow = mkdtempSync(join(OUTER_ROOT, ".banto-e2e-root-change-"));
+  try {
+    writeFileSync(join(narrow, "marker.txt"), "root-changed\n");
+    const patched = await page.request.patch(`${CORE_BASE_URL}/api/projects/${project.id}`, {
+      headers,
+      data: { root: narrow },
+    });
+    expect(patched.status()).toBe(200);
+
+    const after = await (
+      await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/modules/prepare`, { headers })
+    ).json();
+    expect(after.connected, `根を変えたら shell が立たない：${JSON.stringify(after)}`).toContain("shell");
+    expect(after.connected, `根を変えたら filesystem が立たない：${JSON.stringify(after)}`).toContain("filesystem");
+
+    const call = async (server: string, tool: string, args: Record<string, unknown>) => {
+      const res = await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/ui-tool-call`, {
+        headers,
+        data: { server, tool, arguments: args },
+      });
+      expect(res.status(), `${server}.${tool} が失敗した：${await res.text()}`).toBe(200);
+      return JSON.stringify(await res.json());
+    };
+    // 新しい根で動いている（中から新しい根が見え、そこで打てる）
+    expect(await call("filesystem", "listDirectory", { path: narrow })).toContain("marker.txt");
+    expect(await call("shell", "runCommand", { command: "pwd; cat marker.txt" })).toContain("root-changed");
+  } finally {
+    await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/close`, { headers }).catch(() => undefined);
+    rmSync(narrow, { recursive: true, force: true });
+  }
 });

@@ -211,6 +211,7 @@ function fakeIncus(initial?: { devices: Record<string, Record<string, string>> }
     if (args[0] === "query") return state ? { code: 0, stdout: JSON.stringify(state), stderr: "" } : { code: 1, stdout: "", stderr: "not found" };
     if (args[0] === "init") state = { status: "Stopped", config: { "security.nesting": "false" }, devices: {} };
     if (args[0] === "start" && state) state.status = "Running";
+    if (args[0] === "stop" && state) state.status = "Stopped";
     if (args[0] === "config" && args[1] === "set") {
       for (const kv of args.slice(3)) {
         const i = kv.indexOf("=");
@@ -296,6 +297,34 @@ test("banto のコードの置き場が移ったら、コンテナのマウン�
   await new ProjectContainers(fake.run).ensure(SPEC);
   assert.deepEqual(fake.devices()["banto"], { source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" });
   assert.ok(fake.calls.some((a) => a.join(" ") === "config device remove banto-p1 banto"), "古い置き場を外していない");
+});
+
+test("根が替わったら、動いているコンテナを止めてから根を外し、起こし直す（中に重ねたマウントが一緒に外れるのを避ける・#292）", async () => {
+  const fake = fakeIncus({
+    devices: {
+      banto: { type: "disk", source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" },
+      project: { type: "disk", source: "/home/u", path: "/home/u" },
+    },
+  });
+  await new ProjectContainers(fake.run).ensure(SPEC);
+  const ops = fake.calls.map((a) => a.join(" "));
+  const stop = ops.findIndex((o) => o.startsWith("stop banto-p1"));
+  const remove = ops.indexOf("config device remove banto-p1 project");
+  const start = ops.indexOf("start banto-p1");
+  assert.ok(stop >= 0, "止めていない");
+  assert.ok(remove > stop, "止める前に根を外した");
+  assert.ok(start > remove, "根を付け替えたあとに起こしていない");
+  assert.deepEqual(fake.devices()["project"], { source: "/home/u/proj", path: "/home/u/proj" });
+
+  // 根が同じなら止めない
+  const same = fakeIncus({
+    devices: {
+      banto: { type: "disk", source: "/home/u/ghq/banto", path: "/home/u/ghq/banto", readonly: "true" },
+      project: { type: "disk", source: "/home/u/proj", path: "/home/u/proj" },
+    },
+  });
+  await new ProjectContainers(same.run).ensure(SPEC);
+  assert.ok(!same.calls.some((a) => a[0] === "stop" || a[0] === "start"), "根が同じなのに起こし直した");
 });
 
 test("置き場が同じなら付け直さない。作るときも同じ1か所で付ける", async () => {
