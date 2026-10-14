@@ -8,6 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parsePressure, parseMeminfo, type Pressure } from "./host-health.js";
 import type { Stall } from "./host-stall.js";
+import { remoteResourcesOf, type RemoteProbe, type RemoteResources } from "./remote-resources.js";
 
 // ---------------------------------------------------------------------------------------------------------------
 // 読み方（試験では差し替える）
@@ -321,7 +322,7 @@ export interface Waiting {
   io: number;
 }
 
-function waitingOf(p: { cpu?: Pressure; memory?: Pressure; io?: Pressure }): Waiting {
+export function waitingOf(p: { cpu?: Pressure; memory?: Pressure; io?: Pressure }): Waiting {
   return { cpu: p.cpu?.some?.avg10 ?? 0, memory: p.memory?.some?.avg10 ?? 0, io: p.io?.some?.avg10 ?? 0 };
 }
 
@@ -336,7 +337,7 @@ export const BUSY = {
   hostMemAvailableBytes: 1024 ** 3,
 };
 
-function busyReason(
+export function busyReason(
   pressure: { cpu?: Pressure; memory?: Pressure },
   used?: { used: number; limit?: number },
   memAvailable?: number,
@@ -389,6 +390,8 @@ export interface ResourcesSnapshot {
   measuredAt: string;
   host: HostResources;
   projects: ProjectResources[];
+  /** 別のサーバ（追加・2026-10-14、`remote-resources.ts`）。登録が無ければ空 */
+  remotes: RemoteResources[];
 }
 
 export interface ResourceTarget {
@@ -409,6 +412,11 @@ export interface ResourceWatchOptions {
   selfBytes: () => number;
   stalls: () => readonly Stall[];
   now?: () => number;
+  /**
+   * 別のサーバを読む（追加・2026-10-14）。繋いでいる実行場所だけを読み、`projects` はその実行場所で動く閉じていない Project。
+   * 無ければ別のサーバは出さない（試験の最小構成）
+   */
+  remotes?: () => Promise<Array<RemoteProbe & { projects: Array<{ projectId: string; name: string }> }>>;
 }
 
 interface Prev {
@@ -426,6 +434,8 @@ export class ResourceWatch {
   private readonly cgroupRoot: string;
   private readonly procRoot: string;
   private readonly now: () => number;
+  /** 別のサーバの前の回の CPU（実行場所の名前ごと） */
+  private readonly remoteCpu = new Map<string, { busy: number; total: number }>();
 
   constructor(private readonly opts: ResourceWatchOptions) {
     this.fs = opts.fs ?? realFs;
@@ -442,8 +452,15 @@ export class ResourceWatch {
   busySummary(): { projects: Array<{ projectId: string; reason?: string }>; host?: { reason?: string } } {
     const s = this.latest;
     if (!s) return { projects: [] };
+    // 別のサーバが混んでいれば、そこで動く Project にも印（機械まるごとがその Project のもの）
+    const remote = s.remotes.flatMap((r) =>
+      r.busy ? r.projects.map((p) => ({ projectId: p.projectId, ...(r.busyReason ? { reason: `別のサーバ「${r.runtime}」：${r.busyReason}` } : {}) })) : [],
+    );
     return {
-      projects: s.projects.filter((p) => p.busy).map((p) => ({ projectId: p.projectId, ...(p.busyReason ? { reason: p.busyReason } : {}) })),
+      projects: [
+        ...s.projects.filter((p) => p.busy).map((p) => ({ projectId: p.projectId, ...(p.busyReason ? { reason: p.busyReason } : {}) })),
+        ...remote,
+      ],
       ...(s.host.busy ? { host: { ...(s.host.busyReason ? { reason: s.host.busyReason } : {}) } } : {}),
     };
   }
@@ -539,6 +556,13 @@ export class ResourceWatch {
       if (used > known) memory.push({ id: "other", label: "OS・カーネル（どの組にも入らない分）", bytes: used - known });
     }
     const hostReason = busyReason(hostPressure, undefined, meminfo.available);
+    // 別のサーバ。読めなくても手元の分は出す
+    const remotes: RemoteResources[] = [];
+    for (const probe of (await this.opts.remotes?.().catch(() => [])) ?? []) {
+      const { resources, cpu } = remoteResourcesOf(probe, probe.projects, this.remoteCpu.get(probe.runtime));
+      if (cpu) this.remoteCpu.set(probe.runtime, cpu);
+      remotes.push(resources);
+    }
     const stallHorizon = now - 10 * 60_000;
     this.latest = {
       measuredAt: new Date(now).toISOString(),
@@ -556,6 +580,7 @@ export class ResourceWatch {
           .map((s) => ({ at: new Date(s.endedAt - s.ms).toISOString(), seconds: Math.round(s.ms / 100) / 10 })),
       },
       projects: projects.sort((a, b) => Number(b.busy) - Number(a.busy) || b.usedBytes - a.usedBytes),
+      remotes: remotes.sort((a, b) => Number(b.busy) - Number(a.busy) || a.runtime.localeCompare(b.runtime)),
     };
     return this.latest;
   }

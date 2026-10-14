@@ -16,6 +16,7 @@ import { describeFailure } from "@/lib/report-failure";
 import {
   fetchRealResources,
   type RealProjectResources,
+  type RealRemoteResources,
   type RealResourceGroup,
   type RealResourcesSnapshot,
   type RealResourceWaiting,
@@ -123,9 +124,113 @@ export function ResourcesPanel() {
               </ul>
             )}
           </section>
+          {(snap.remotes ?? []).length > 0 ? (
+            <section aria-labelledby="resources-remotes">
+              <h2 id="resources-remotes" className="mb-2 text-sm font-semibold text-foreground">
+                別のサーバ
+              </h2>
+              <ul className="flex flex-col gap-3">
+                {(snap.remotes ?? []).map((r) => (
+                  <RemoteSection key={r.runtime} r={r} />
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * **別のサーバ**（追加・2026-10-14、v4-frontend.md §6.36）。機械まるごとがその Project の AI のものなので、機械の全体と
+ * banto が向こうで起こしたものの内訳を出す。上限は無い（向こうの持ち主の責任）——見るだけ。繋いでいなければ理由だけ
+ */
+function RemoteSection({ r }: { r: RealRemoteResources }) {
+  const [open, setOpen] = useState(r.busy);
+  const total = r.totalBytes ?? 0;
+  const banto = r.bantoBytes ?? 0;
+  const other = r.otherBytes ?? 0;
+  const pct = (n: number) => (total > 0 ? Math.min(100, (n / total) * 100) : 0);
+  const projects = r.projects.map((p) => p.name).join("・");
+
+  return (
+    <li data-testid="resources-remote" data-runtime={r.runtime} className="rounded-lg border border-border bg-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-foreground">{r.runtime}</p>
+          <p className="truncate text-xs text-ink-3">
+            {r.address}
+            {projects ? `・${projects}` : "・使っている Project はありません"}
+          </p>
+        </div>
+        {r.unavailable ? null : <BusyChip busy={r.busy} {...(r.busyReason ? { reason: r.busyReason } : {})} />}
+      </div>
+
+      {r.unavailable ? (
+        <p data-testid="resources-remote-unavailable" className="mt-2 text-xs text-ink-3">
+          {r.unavailable}
+        </p>
+      ) : (
+        <>
+          {r.busy && r.busyReason ? <p className="mt-1 text-xs text-warn">{r.busyReason}</p> : null}
+          <div className="mt-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-xs">
+              <span className="text-ink-2">メモリ</span>
+              <span className="tabular-nums text-ink-3">
+                {bytes(banto + other)} を使用
+                {r.availableBytes !== undefined ? `・空き ${bytes(r.availableBytes)}` : ""}
+                {r.totalBytes !== undefined ? `（全体 ${bytes(r.totalBytes)}）` : ""}
+              </span>
+            </div>
+            <div className="mt-1.5 flex h-4 gap-0.5 overflow-hidden rounded-full bg-surface-3">
+              <div className="h-full bg-chart-1" style={{ width: `${pct(banto)}%` }} />
+              <div className="h-full bg-ink-3/40" style={{ width: `${pct(other)}%` }} />
+            </div>
+            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+              <li className="flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-chart-1" />
+                <span className="text-ink-2">banto が起こしたもの</span>
+                <span className="tabular-nums text-ink-3">{bytes(banto)}</span>
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-ink-3/40" />
+                <span className="text-ink-2">それ以外（OS・ほかのもの）</span>
+                <span className="tabular-nums text-ink-3">{bytes(other)}</span>
+              </li>
+            </ul>
+          </div>
+          <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-border pt-3 text-xs">
+            <span className="text-ink-3">
+              CPU <span className="tabular-nums text-ink-2">{r.cpuUsed !== undefined ? r.cpuUsed.toFixed(1) : "—"}</span>
+              {r.cores !== undefined ? ` ／ ${r.cores} コア` : ""}
+            </span>
+            {r.waiting ? <WaitingLine waiting={r.waiting} /> : null}
+          </div>
+          {r.groups.length > 0 ? (
+            <div className="mt-3 border-t border-border pt-3">
+              <button
+                type="button"
+                onClick={() => setOpen(!open)}
+                aria-expanded={open}
+                className="flex items-center gap-1.5 text-xs font-medium text-ink-2 hover:text-foreground"
+              >
+                <ChevronRight className={cn("size-3.5 text-ink-3 transition-transform", open && "rotate-90")} />
+                banto が起こしたものの内訳
+              </button>
+              {open ? (
+                <div data-testid="resources-remote-detail" className="mt-3 flex flex-col gap-3">
+                  {r.groups.map((g) => (
+                    <ConsumerGroupBlock key={g.id} g={g} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <p className="mt-3 text-xs text-ink-3">別のサーバには banto は上限を付けません（向こうの機械の持ち主が決めます）。</p>
+        </>
+      )}
+    </li>
   );
 }
 

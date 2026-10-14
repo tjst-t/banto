@@ -667,6 +667,15 @@ async function main(): Promise<void> {
   // 直接読む（incus exec を通さない）。10 秒ごと。混んでいる Project が変わったら画面に知らせる
   const resourceWatch = new ResourceWatch({
     incusProject: () => runtime.resourceScope(),
+    // 別のサーバ（2026-10-14）。繋いでいる実行場所だけ読み、その実行場所で動く閉じていない Project を添える
+    remotes: async () => {
+      const probes = await remoteSsh.readResources();
+      const open = projectThread.listProjects().filter((p) => p.status !== "closed");
+      return probes.map((probe) => ({
+        ...probe,
+        projects: open.filter((p) => remoteNameOf(p.runtime) === probe.runtime).map((p) => ({ projectId: p.id, name: p.name })),
+      }));
+    },
     cores: availableParallelism(),
     selfBytes: () => process.memoryUsage().rss,
     stalls: () => hostStall.recent(100),

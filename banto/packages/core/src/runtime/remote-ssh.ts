@@ -53,6 +53,7 @@ import {
   type RuntimeCheck,
   type SshResult,
 } from "./ssh.js";
+import { REMOTE_RESOURCE_PROBE, type RemoteProbe, type RemoteProbeRaw } from "../remote-resources.js";
 
 /** 向こうの置き場の根の下の、この banto の置き場の名前（データの置き場ごとに分ける） */
 export function remoteOwnerDirName(dataDir: string): string {
@@ -241,6 +242,8 @@ export class RemoteSshRuntime {
   private warmUpQueue: Promise<void> = Promise.resolve();
   /** 鍵の窓口の転送を外す見張り（窓口のファイルが host から消えたら外す） */
   private agentWatch?: ReturnType<typeof setInterval>;
+  /** 資源を読んでいる途中の実行場所（重ねない） */
+  private readonly resourceReads = new Set<string>();
 
   constructor(private readonly opts: RemoteSshRuntimeOptions) {
     this.log = opts.log ?? ((line) => console.log(line));
@@ -291,6 +294,33 @@ export class RemoteSshRuntime {
     });
     this.warmUpQueue = next;
     return next;
+  }
+
+  /**
+   * **別のサーバの資源を読む**（追加・2026-10-14、`remote-resources.ts`）。登録してある実行場所ごとに、張ってある接続の上で
+   * 向こうの node に読み取りを走らせる。**読むためだけには繋がない**——繋いでいなければ「繋いでいません」。同じ実行場所の
+   * 読み取りは重ねない（前のが終わっていなければ、その回は前の結果を返さず「読んでいる途中」にする）
+   */
+  async readResources(): Promise<RemoteProbe[]> {
+    return Promise.all(
+      this.opts.runtimes.list().map(async (r): Promise<RemoteProbe> => {
+        const address = `${r.user}@${r.host}`;
+        const conn = this.connections.get(r.name);
+        if (!conn?.alive) return { runtime: r.name, address, unavailable: "繋いでいません（この実行場所の Project を使うと繋ぎます）" };
+        if (this.resourceReads.has(r.name)) return { runtime: r.name, address, unavailable: "読んでいる途中です" };
+        this.resourceReads.add(r.name);
+        try {
+          const script = `exec ${shq(`${conn.codeDir}/bin/node`)} - <<'BANTO_PROBE_EOF'\n${REMOTE_RESOURCE_PROBE}\nBANTO_PROBE_EOF\n`;
+          const out = await this.run(conn, script, { timeoutMs: 8_000 });
+          if (out.code !== 0) return { runtime: r.name, address, unavailable: `読めませんでした：${out.stderr.trim().slice(0, 200) || `終了コード ${out.code}`}` };
+          return { runtime: r.name, address, raw: JSON.parse(out.stdout) as RemoteProbeRaw };
+        } catch (err) {
+          return { runtime: r.name, address, unavailable: `読めませんでした：${err instanceof Error ? err.message : String(err)}` };
+        } finally {
+          this.resourceReads.delete(r.name);
+        }
+      }),
+    );
   }
 
   async prepare(place: RuntimePlace): Promise<PreparedPlace> {

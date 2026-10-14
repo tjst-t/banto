@@ -925,6 +925,26 @@ export interface RealResourcesSnapshot {
     stalls: Array<{ at: string; seconds: number }>;
   };
   projects: RealProjectResources[];
+  /** 別のサーバ（追加・2026-10-14）。古い host は付けない */
+  remotes?: RealRemoteResources[];
+}
+
+/** 別のサーバの資源（host の `remote-resources.ts` の `RemoteResources` と同じ形） */
+export interface RealRemoteResources {
+  runtime: string;
+  address: string;
+  projects: Array<{ projectId: string; name: string }>;
+  unavailable?: string;
+  busy: boolean;
+  busyReason?: string;
+  totalBytes?: number;
+  availableBytes?: number;
+  cores?: number;
+  cpuUsed?: number;
+  waiting?: RealResourceWaiting;
+  bantoBytes?: number;
+  otherBytes?: number;
+  groups: RealResourceGroup[];
 }
 
 export async function fetchRealResources(): Promise<RealResourcesSnapshot | null> {

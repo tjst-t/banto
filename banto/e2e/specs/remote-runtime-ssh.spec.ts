@@ -173,6 +173,31 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
       await expect
         .poll(async () => (await host.ssh(`cat ${root}/ticker.out 2>/dev/null || true`)).stdout.trim(), { timeout: 60_000 })
         .toMatch(/^\d+$/);
+
+      // ---- 資源の画面に別のサーバが出る（追加・2026-10-14）：機械の全体と、banto が向こうで起こしたものの内訳 -------------
+      type Remote = { runtime: string; projects: Array<{ projectId: string }>; totalBytes?: number; bantoBytes?: number; unavailable?: string; groups: Array<{ id: string; items: Array<{ name: string }> }> };
+      await expect
+        .poll(
+          async () => {
+            const r = (await api<{ remotes?: Remote[] } | null>("/api/admin/resources")).body?.remotes?.find((x) => x.runtime === name);
+            if (!r) return "出ていない";
+            if (r.unavailable) return r.unavailable;
+            const names = (id: string) => r.groups.find((g) => g.id === id)?.items.map((i) => i.name) ?? [];
+            return {
+              project: r.projects.some((p) => p.projectId === projectId),
+              measured: (r.totalBytes ?? 0) > 0 && (r.bantoBytes ?? 0) > 0,
+              shell: names("modules").includes("shell"),
+              ticker: names("services").includes("ticker"),
+            };
+          },
+          { timeout: 60_000, message: "資源に別のサーバが出ない" },
+        )
+        .toEqual({ project: true, measured: true, shell: true, ticker: true });
+      await openApp(page);
+      await page.goto("/settings?section=resources");
+      const remoteCard = page.locator(`[data-testid="resources-remote"][data-runtime="${name}"]`);
+      await expect(remoteCard, "資源の画面に別のサーバが出ない").toBeVisible({ timeout: 30_000 });
+      await expect(remoteCard).toContainText("banto が起こしたもの");
       const units = await host.ssh(
         `XDG_RUNTIME_DIR=/run/user/${host.uid} systemctl --user list-units --no-legend --plain 'banto-*' | awk '{print $1, $3}'`,
       );
