@@ -354,7 +354,7 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
             [join(base, "same"), sameName, join(base, "same")],
             [join(base, "up"), insideName, join(base, "up", "inner")],
           ] as const) {
-            const message = `移す先 ${at} が Project「${closedName}」の根（${closedRoot}）と重なります`;
+            const message = `移す先 ${at} がProject「${closedName}」の根（${closedRoot}）と重なります`;
             const e = await estimate("host-container", at);
             expect(e.status, JSON.stringify(e.body)).toBe(200);
             expect(e.body.blockers).toEqual([message]);
