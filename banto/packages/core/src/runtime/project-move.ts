@@ -230,6 +230,11 @@ export function pathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
 
+/** `outer` が `inner` を含む（同じも含む） */
+export function pathContains(outer: string, inner: string): boolean {
+  return outer === "/" || outer === inner || inner.startsWith(`${outer}/`);
+}
+
 /** CLI の記録の置き場のフォルダ名（作業ディレクトリの英数字以外を `-` に）。200 字を超えると CLI は名前を縮めるので扱わない */
 export function claudeProjectDirName(cwd: string): string | undefined {
   const name = cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -972,12 +977,14 @@ export class ProjectMover {
 
   /** 移す先の根が、その側の banto の置き場・ほかの Project の根・banto のコードと重なるか */
   private overlapProblem(project: ProjectState, side: Side, root: string): string | undefined {
-    const against: Array<{ path: string; what: string }> = [{ path: side.dataBase, what: "banto のデータの置き場" }];
+    // `onlyContaining`：**閉じた Project の根は、移す先がそれと同じか、それを含むときだけ断る**（決定・2026-10-14、ユーザー——
+    // 閉じた Project の根の中へ移すのは通す。根そのもの・その上へは rsync --delete や写しで閉じた Project のフォルダを壊すので断る）
+    const against: Array<{ path: string; what: string; onlyContaining?: boolean }> = [{ path: side.dataBase, what: "banto のデータの置き場" }];
     if (side.runtime.startsWith("remote:")) {
-      // 同じ別のサーバの、ほかの Project の根（閉じた Project も——前に居た場所へ戻すときに、ほかの Project の根を上書きしない）
+      // 同じ別のサーバの、ほかの Project の根（閉じた Project は、その根を含むときだけ——前に居た場所へ戻すときに、ほかの Project の根を上書きしない）
       for (const p of this.deps.projectThread.listProjects()) {
         if (p.id === project.id) continue;
-        if (p.runtime === side.runtime) against.push({ path: p.root, what: `Project「${p.name}」の根` });
+        if (p.runtime === side.runtime) against.push({ path: p.root, what: `Project「${p.name}」の根`, onlyContaining: p.status === "closed" });
         if (p.move?.to.runtime === side.runtime) against.push({ path: p.move.to.root, what: `Project「${p.name}」の移す先` });
       }
     } else {
@@ -985,12 +992,12 @@ export class ProjectMover {
       against.push({ path: realOrSelf(this.deps.monorepoRoot), what: "banto のコードの置き場" });
       for (const p of this.deps.projectThread.listProjects()) {
         if (p.id === project.id) continue;
-        if (!isRemoteProject(p)) against.push({ path: p.root, what: `Project「${p.name}」の根` });
+        if (!isRemoteProject(p)) against.push({ path: p.root, what: `Project「${p.name}」の根`, onlyContaining: p.status === "closed" });
         if (p.move && !isRemoteProject({ runtime: p.move.to.runtime })) against.push({ path: p.move.to.root, what: `Project「${p.name}」の移す先` });
       }
       if (!isRemoteProject(project)) against.push({ path: project.root, what: "元の根" });
     }
-    const hit = against.find((a) => pathsOverlap(root, a.path));
+    const hit = against.find((a) => (a.onlyContaining ? pathContains(root, a.path) : pathsOverlap(root, a.path)));
     return hit ? `移す先 ${root} が${hit.what}（${hit.path}）と重なります` : undefined;
   }
 

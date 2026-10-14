@@ -8,6 +8,7 @@ import {
   copyClaudeRecordFiles,
   parseRsyncStats,
   parseRunning,
+  pathContains,
   pathsOverlap,
   rsyncShellWord,
   sessionIdsOf,
@@ -33,6 +34,14 @@ test("重なり：含む・含まれる・同じは重なる。名前の頭が�
   assert.ok(pathsOverlap("/a", "/a/b"));
   assert.ok(!pathsOverlap("/a/bc", "/a/b"));
   assert.ok(pathsOverlap("/", "/x"));
+});
+
+test("含む：同じと、その下は含む。上・名前の頭が同じだけ（/a/bc と /a/b）は含まない。/ は全部を含む", () => {
+  assert.ok(pathContains("/a/b", "/a/b"));
+  assert.ok(pathContains("/a", "/a/b/c"));
+  assert.ok(!pathContains("/a/b/c", "/a/b"));
+  assert.ok(!pathContains("/a/b", "/a/bc"));
+  assert.ok(pathContains("/", "/x"));
 });
 
 test("Claude の会話の記録の置き場の名前：英数字以外を - に。200 字を超えたら扱わない（CLI が縮める）", () => {

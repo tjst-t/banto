@@ -13,6 +13,8 @@
 //   3. 空でなく前に居た場所でもないフォルダは、見積もりでも押しても断られる
 //   4. もう一度向こうへ移した（向こうも前に居た場所——差分で）あと、R を触ってから R へ戻そうとすると、見積もりの画面に
 //      「上書きされる・消えるファイル」と承知のチェックが出て、承知なしでは押せない（HTTP も 409）。承知して押すと上書きされる
+//   5. 閉じた Project の根の中へは移せる（#290——根が R の上にある閉じた Project があっても R へ戻せる）。閉じた Project の根
+//      そのもの・それを含むフォルダへは断られる（写しで閉じた Project のフォルダを壊さない）
 import { test, expect, type Page } from "../test-base.js";
 import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -227,7 +229,10 @@ const OUTER_CLAUDE_ENV = Object.keys(process.env).filter((k) => /^(CLAUDECODE|CL
 test("前に居た場所へ戻すと差分で写り、向こうで話した内容を覚えていて、触った元は承知しないと上書きされない", async ({ page }) => {
   const name = `mb-${randomBytes(3).toString("hex")}`;
   const alias = `e2e-mb-${Date.now()}`;
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-move-back-")));
+  // R は、閉じた Project の根（base）の中に置く（5）
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-move-back-")));
+  const root = join(base, "proj");
+  mkdirSync(root);
   const other = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-move-other-")));
   writeFileSync(join(other, "someone.txt"), "ほかの人のもの\n");
   writeFileSync(join(root, "hello.txt"), "元の機械で書いた\n");
@@ -330,6 +335,35 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
           expect(refused.body.error).toContain("空ではありません");
           expect((await project()).move, "断ったのに移し始めた").toBeUndefined();
           expect(readdirSync(other), "断ったフォルダに触った").toEqual(["someone.txt"]);
+
+          // ---- 5. 閉じた Project：根が R の上（base）・根そのもの（base/same）・根を含むフォルダ（base/up の下が根） --------
+          const closedProject = async (label: string, at: string) => {
+            mkdirSync(at, { recursive: true });
+            const c = await api<HostProject>(own, "/api/projects", { method: "POST", body: { name: `E2E 閉じた ${label} ${name}`, root: at } });
+            expect(c.status, JSON.stringify(c.body)).toBe(201);
+            const closed = await api(own, `/api/projects/${c.body.id}/close`, { method: "POST" });
+            expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+            return `E2E 閉じた ${label} ${name}`;
+          };
+          await closedProject("上", base);
+          const sameName = await closedProject("同じ", join(base, "same"));
+          const insideName = await closedProject("中", join(base, "up", "inner"));
+          // 根のフォルダを消しておく（base/up を空にして、「空ではありません」より先に重なりで断られるのを見る）
+          rmSync(join(base, "up", "inner"), { recursive: true });
+          for (const [at, closedName, closedRoot] of [
+            [join(base, "same"), sameName, join(base, "same")],
+            [join(base, "up"), insideName, join(base, "up", "inner")],
+          ] as const) {
+            const message = `移す先 ${at} が Project「${closedName}」の根（${closedRoot}）と重なります`;
+            const e = await estimate("host-container", at);
+            expect(e.status, JSON.stringify(e.body)).toBe(200);
+            expect(e.body.blockers).toEqual([message]);
+            const r = await human<{ error: string }>(page, own, "POST", `/api/projects/${projectId}/runtime-move`, { runtime: "host-container", root: at });
+            expect(r.status, JSON.stringify(r.body)).toBe(409);
+            expect(r.body.error).toContain(message);
+            expect((await project()).move, "断ったのに移し始めた").toBeUndefined();
+          }
+          // 閉じた Project「上」の根（base）の中の R へは戻せる——下の 1 の見積もりの blockers が空で、押すと戻る
 
           // ---- 1. 別のサーバ → この機械の同じ根（前に居た場所——差分で） ----------------------------------------
           const back = await estimate("host-container", root);
@@ -459,7 +493,7 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
     });
   } finally {
     await fakeApi.close();
-    rmSync(root, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
     rmSync(other, { recursive: true, force: true });
     rmSync(securestorage, { recursive: true, force: true });
   }
