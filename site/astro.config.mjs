@@ -10,7 +10,7 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'banto',
-			description: 'AI エージェントとの並行作業を、全体像を見失わずに進めるためのワークスペース。',
+			description: '複数の AI エージェントに並行して作業を任せても、進捗と確認待ちをひと目で把握できるセルフホスト型のワークスペース。',
 			logo: { src: './src/assets/mark.svg', alt: '' },
 			defaultLocale: 'root',
 			locales: {
@@ -25,6 +25,7 @@ export default defineConfig({
 					label: 'はじめに',
 					items: [
 						{ label: 'banto とは', slug: 'docs' },
+						{ label: 'クイックスタート', slug: 'docs/quickstart' },
 						{ label: '基本概念', slug: 'docs/concepts' },
 					],
 				},
@@ -41,11 +42,38 @@ export default defineConfig({
 				{
 					label: '使い方',
 					items: [
+						{ label: 'プロジェクト', slug: 'docs/guide/projects' },
 						{ label: '会話と Fork', slug: 'docs/guide/threads' },
 						{ label: '受信箱と承認', slug: 'docs/guide/inbox' },
-						{ label: 'モジュール一覧', slug: 'docs/guide/modules' },
+						{ label: 'スマートフォンで使う', slug: 'docs/guide/mobile' },
+						{ label: 'ログインと端末の管理', slug: 'docs/guide/login' },
 					],
 				},
+				{
+					label: 'モジュール',
+					items: [
+						{ label: '概要', slug: 'docs/modules' },
+						{ label: 'Shell', slug: 'docs/modules/shell' },
+						{ label: 'FileSystem', slug: 'docs/modules/filesystem' },
+						{ label: 'Terminal', slug: 'docs/modules/terminal' },
+						{ label: 'Browser', slug: 'docs/modules/browser' },
+						{ label: 'Subagent', slug: 'docs/modules/subagent' },
+						{ label: 'Service と Publish', slug: 'docs/modules/service' },
+						{ label: 'Vault', slug: 'docs/modules/vault' },
+						{ label: 'Repositories', slug: 'docs/modules/repositories' },
+						{ label: 'Backlog', slug: 'docs/modules/backlog' },
+						{ label: 'Factory', slug: 'docs/modules/factory' },
+					],
+				},
+				{
+					label: '運用',
+					items: [
+						{ label: 'リソースの管理', slug: 'docs/admin/resources' },
+						{ label: '別のサーバーで実行する', slug: 'docs/admin/remote' },
+						{ label: 'セキュリティ', slug: 'docs/admin/security' },
+					],
+				},
+				{ label: 'よくある質問', slug: 'docs/faq' },
 			],
 		}),
 	],

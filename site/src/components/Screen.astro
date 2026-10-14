@@ -1,0 +1,82 @@
+---
+// 本物の banto の画面写真（src/assets/screens/<name>.png、撮り方は site/README.md）。
+// 写真がまだ無いときは、同じ大きさの「準備中」の枠を出す（組み立てを落とさない）。
+import { Picture } from 'astro:assets';
+import type { ImageMetadata } from 'astro';
+
+interface Props {
+	name: string;
+	alt: string;
+	/** 表示幅の目安（srcset の sizes） */
+	sizes?: string;
+	/** 窓の枠を付けるか（切り抜きの部品は付けない） */
+	frame?: boolean;
+	ratio?: string;
+	eager?: boolean;
+}
+const { name, alt, sizes = '(min-width: 1200px) 1100px, 100vw', frame = true, ratio = '16 / 10', eager = false } = Astro.props;
+const shots = import.meta.glob<{ default: ImageMetadata }>('../assets/screens/*.png', { eager: true });
+const shot = shots[`../assets/screens/${name}.png`]?.default;
+---
+
+<div class:list={['screen', { frame }]}>
+	{
+		frame && (
+			<div class="bar" aria-hidden="true">
+				<span />
+				<span />
+				<span />
+			</div>
+		)
+	}
+	{
+		shot ? (
+			<Picture src={shot} alt={alt} widths={[720, 1100, 1600, 2200]} sizes={sizes} formats={['avif', 'webp']} loading={eager ? 'eager' : 'lazy'} />
+		) : (
+			<div class="placeholder" style={`aspect-ratio:${ratio}`} role="img" aria-label={alt}>
+				<span>スクリーンショット準備中：{alt}</span>
+			</div>
+		)
+	}
+</div>
+
+<style>
+	.screen {
+		position: relative;
+		border-radius: 12px;
+		overflow: hidden;
+		background: #fff;
+		box-shadow:
+			0 30px 80px -20px rgba(17, 22, 31, 0.28),
+			0 0 0 1px rgba(17, 22, 31, 0.08);
+	}
+	.bar {
+		display: flex;
+		gap: 7px;
+		align-items: center;
+		height: 30px;
+		padding: 0 14px;
+		background: #edeff3;
+		border-bottom: 1px solid rgba(17, 22, 31, 0.08);
+	}
+	.bar span {
+		width: 11px;
+		height: 11px;
+		border-radius: 50%;
+		background: #d3d7de;
+	}
+	.screen :global(img) {
+		display: block;
+		width: 100%;
+		height: auto;
+	}
+	.placeholder {
+		display: grid;
+		place-items: center;
+		background: repeating-linear-gradient(135deg, #f5f6f8 0 12px, #eef0f3 12px 24px);
+		color: #8b93a0;
+		font-size: 14px;
+		padding: 24px;
+		text-align: center;
+	}
+</style>
