@@ -7156,11 +7156,12 @@
       "doneWhen": "(1) Backlog の設定 Canvas で Vault の ssh-identity の alias を選んで保存できる（既定は使わない）。(2) 鍵を設定すると、Repositories が引き受けないとき Vault の startSshAgent のソケットを SSH_AUTH_SOCK にして git push・fetch する（単体テストで、渡した環境と呼んだ中継を確かめる）。(3) origin が https で鍵が設定されているときの失敗の理由に ssh の URL にする案内が付く。(4) 関係する E2E（Backlog の spec と、別のサーバの Project で ssh で送る1件——E2E 用の SSH の相手と偽の git の送り先で）が通る。フル E2E は流さない。",
       "resolution": "Factory が取り込みました（factory/project-backlog-push-repositories）",
       "refs": [
-        "docs/specs/v4-modules.md §4.4「Vault の SSH 鍵で送る」"
+        "docs/specs/v4-modules.md §4.4「Vault の SSH 鍵で送る」",
+        "ea0aa15b"
       ],
       "threads": [],
       "createdAt": "2026-10-14T11:35:12.438Z",
-      "updatedAt": "2026-10-14T12:48:34.165Z",
+      "updatedAt": "2026-10-14T13:25:25.923Z",
       "closedAt": "2026-10-14T12:48:34.165Z",
       "extra": {}
     }
