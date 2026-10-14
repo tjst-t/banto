@@ -7143,7 +7143,7 @@
       "number": 296,
       "kind": "bug",
       "title": "別のサーバの Project で、Backlog の自動の push が鍵が無くて失敗する（Repositories が引き受けない）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7160,7 +7160,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-14T11:35:12.438Z",
-      "updatedAt": "2026-10-14T12:32:12.518Z",
+      "updatedAt": "2026-10-14T12:32:16.699Z",
       "closedAt": null,
       "extra": {}
     }
