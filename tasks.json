@@ -7191,7 +7191,7 @@
       "number": 298,
       "kind": "task",
       "title": "別のサーバへ送るコードを、コード・依存・node の3つの塗りに分け、変わった塗りだけ送る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7207,7 +7207,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-14T15:07:52.814Z",
-      "updatedAt": "2026-10-14T15:07:52.814Z",
+      "updatedAt": "2026-10-14T15:08:00.522Z",
       "closedAt": null,
       "extra": {}
     }
