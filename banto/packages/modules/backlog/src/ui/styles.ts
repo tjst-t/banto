@@ -311,6 +311,8 @@ body[data-surface="config"] #app { padding: 12px; height: auto; }
 .config .field { display: flex; gap: 8px; flex-wrap: wrap; }
 .config input { flex: 1; min-width: 12rem; height: 32px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg); font: var(--t-md) var(--mono); outline: none; }
 .config input:focus { border-color: var(--accent); }
+.config select { flex: 1; min-width: 12rem; height: 32px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg); font: var(--t-md) var(--mono); color: inherit; outline: none; }
+.config select:focus { border-color: var(--accent); }
 .config .note { margin: 0; font-size: var(--t-sm); color: var(--ink-3); }
 .config .note.error { color: var(--danger); }
 

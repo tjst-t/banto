@@ -3,16 +3,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { RelayingRemote, hostRelayCall, type RelayCall } from "./remote.js";
+import { RelayingRemote, hostRelayCall, httpsOriginHint, listSshIdentities, type RelayCall } from "./remote.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, encoding: "utf8" }).trim();
@@ -134,4 +134,141 @@ test("hostRelayCall：1本が断られても、同じ接続で待っている別
     http.closeAllConnections();
     http.close();
   }
+});
+
+// ---- Vault の SSH 鍵で送る（§4.4、Backlog #296）--------------------------------------------------------------------------
+// 送り先は ssh の URL の形にし、`core.sshCommand` を偽の ssh にする——渡された `SSH_AUTH_SOCK` を書き留め、無ければ
+// 本物の ssh と同じく `Permission denied (publickey)` で断る。あれば手元の bare へ git-receive-pack / upload-pack を流す
+
+/** ssh の origin（偽の ssh 越しに手元の bare）を持つリポジトリと、偽の ssh が書き留めた SSH_AUTH_SOCK を読む口 */
+function sshRepo() {
+  const { root, bare } = repo();
+  const record = join(mkdtempSync(join(tmpdir(), "backlog-remote-ssh-")), "sock");
+  const fakeSsh = join(dirname(record), "fake-ssh");
+  writeFileSync(
+    fakeSsh,
+    `#!/bin/sh\nprintf '%s' "$SSH_AUTH_SOCK" > ${JSON.stringify(record)}\n` +
+      `[ -n "$SSH_AUTH_SOCK" ] || { echo "git@example.test: Permission denied (publickey)." >&2; exit 255; }\n` +
+      `for a; do last=$a; done\nexec sh -c "$last"\n`,
+    { mode: 0o755 },
+  );
+  git(root, "config", "core.sshCommand", fakeSsh);
+  git(root, "remote", "set-url", "origin", `git@example.test:${bare}`);
+  const seen = () => (existsSync(record) ? readFileSync(record, "utf8") : undefined);
+  return { root, bare, seen };
+}
+
+/** Repositories は引き受けず、Vault の窓口と金庫が答える中継（`refuseVault` で金庫の中継を断る） */
+function vaultRelay(opts: { refuseVault?: boolean } = {}) {
+  const calls: Array<{ name: string; args: Record<string, unknown>; callId?: string }> = [];
+  const relay: RelayCall = async (name, args, callId) => {
+    calls.push({ name, args, ...(callId ? { callId } : {}) });
+    if (name === "relayListTargets") {
+      return {
+        text: JSON.stringify([
+          { name: "repositories", roles: ["repositories"] },
+          { name: "vault-directory", roles: ["vault-directory"] },
+          { name: "vault-local", roles: ["vault"] },
+        ]),
+        isError: false,
+      };
+    }
+    if (args.targetModule === "repositories") return { text: JSON.stringify({ handled: false, reason: "根はこの機械のフォルダではありません" }), isError: false };
+    if (args.name === "lookupAlias") return { text: JSON.stringify({ implementation: "vault-local", name: "deploy-key", group: "proj-g" }), isError: false };
+    if (args.name === "startSshAgent") {
+      if (opts.refuseVault) throw new Error("backlog から vault-local の startSshAgent への中継は許可されていません：人が断りました");
+      return { text: JSON.stringify({ socketPath: "/run/fake/a-0123456789ab" }), isError: false };
+    }
+    throw new Error(`知らない中継：${name} ${JSON.stringify(args)}`);
+  };
+  return { relay, calls };
+}
+
+test("鍵を設定すると、Repositories が引き受けないとき Vault の ssh-agent の窓口を SSH_AUTH_SOCK にして送る・取ってくる", async () => {
+  delete process.env.SSH_AUTH_SOCK;
+  const { root, bare, seen } = sshRepo();
+  const { relay, calls } = vaultRelay();
+  const remote = new RelayingRemote(root, relay, () => "deploy-key");
+  assert.deepEqual(await remote.push("backlog", "call-9"), { ok: true, via: "git" });
+  assert.equal(seen(), "/run/fake/a-0123456789ab", "git に Vault の窓口が渡っていない");
+  assert.equal(git(bare, "rev-parse", "refs/heads/backlog"), git(root, "rev-parse", "refs/heads/backlog"));
+  // 呼んだ中継：Repositories に頼み → 窓口で在りか → その金庫の startSshAgent（三つ組のまま）。印はどれにも添える
+  const relayed = calls.filter((c) => c.name === "relayCallTool").map((c) => [c.args.targetModule, c.args.name, c.args.arguments]);
+  assert.deepEqual(relayed, [
+    ["repositories", "push_branch", { branch: "backlog" }],
+    ["vault-directory", "lookupAlias", { name: "deploy-key" }],
+    ["vault-local", "startSshAgent", { identity: "deploy-key", group: "proj-g" }],
+  ]);
+  assert.ok(calls.every((c) => c.callId === "call-9"));
+
+  // 取ってくるも同じ鍵で
+  git(root, "update-ref", "-d", "refs/remotes/origin/backlog");
+  assert.deepEqual(await remote.fetch("backlog"), { ok: true, via: "git" });
+  assert.equal(seen(), "/run/fake/a-0123456789ab");
+  assert.equal(git(root, "rev-parse", "refs/remotes/origin/backlog"), git(bare, "rev-parse", "refs/heads/backlog"));
+});
+
+test("鍵を設定していなければ Vault を呼ばず、今までどおり鍵無しで送る（送れなければ git の理由のまま）", async () => {
+  delete process.env.SSH_AUTH_SOCK;
+  const { root, seen } = sshRepo();
+  const { relay, calls } = vaultRelay();
+  const r = await new RelayingRemote(root, relay).push("backlog");
+  assert.equal(r.ok, false);
+  assert.match((r as { message: string }).message, /Permission denied \(publickey\)/);
+  assert.equal(seen(), "");
+  assert.ok(!calls.some((c) => c.args.targetModule === "vault-directory" || c.args.targetModule === "vault-local"), "鍵を選んでいないのに Vault を呼んだ");
+});
+
+test("Vault が断ったら鍵無しで試し、失敗の理由に借りられなかったことを添える", async () => {
+  delete process.env.SSH_AUTH_SOCK;
+  const { root, seen } = sshRepo();
+  const { relay } = vaultRelay({ refuseVault: true });
+  const r = await new RelayingRemote(root, relay, () => "deploy-key").push("backlog");
+  assert.equal(r.ok, false);
+  const message = (r as { message: string }).message;
+  assert.match(message, /Permission denied \(publickey\)/);
+  assert.match(message, /（SSH 鍵 deploy-key を借りられませんでした（.*人が断りました）/);
+  assert.match(message, /（Repositories は引き受けませんでした（根はこの機械のフォルダではありません））/);
+  assert.equal(seen(), "");
+  // 中継が無い banto でも、選んだ鍵を使えなかったことを言う
+  const none = await new RelayingRemote(root, undefined, () => "deploy-key").push("backlog");
+  assert.match((none as { message: string }).message, /SSH 鍵 deploy-key を借りられませんでした（Vault への中継が渡されていません）/);
+});
+
+test("origin が https なら鍵は借りず、送れなかった理由に ssh の URL にする案内を添える", async () => {
+  const { root } = repo();
+  // 繋がらない https（すぐに断られる）
+  git(root, "remote", "set-url", "origin", "https://127.0.0.1:1/owner/name.git");
+  const { relay, calls } = vaultRelay();
+  const r = await new RelayingRemote(root, relay, () => "deploy-key").push("backlog");
+  assert.equal(r.ok, false);
+  assert.match(
+    (r as { message: string }).message,
+    /（origin が https なので SSH 鍵 deploy-key は使っていません——origin を ssh の URL（git@127\.0\.0\.1:owner\/name\.git）にすると、設定した鍵で送れます）/,
+  );
+  assert.ok(!calls.some((c) => c.args.name === "startSshAgent"), "https なのに鍵を借りた");
+  assert.equal(
+    httpsOriginHint("https://github.com/acme/widgets", "k"),
+    "origin が https なので SSH 鍵 k は使っていません——origin を ssh の URL（git@github.com:acme/widgets.git）にすると、設定した鍵で送れます",
+  );
+  assert.equal(httpsOriginHint("git@github.com:acme/widgets.git", "k"), undefined);
+  assert.equal(httpsOriginHint("/srv/git/widgets.git", "k"), undefined);
+});
+
+test("設定で選べる鍵は、Vault の目録（この Project から引けるもの）のうち ssh-identity だけ", async () => {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const relay: RelayCall = async (name, args) => {
+    calls.push({ name, args });
+    if (name === "relayListTargets") return { text: JSON.stringify([{ name: "vault-directory", roles: ["vault-directory"] }]), isError: false };
+    const aliases = [
+      { name: "deploy-key", kind: "ssh-identity" },
+      { name: "npm-token", kind: "secret" },
+      { name: "vault-infisical:other-key", kind: "ssh-identity" },
+    ];
+    return { text: JSON.stringify({ contents: [{ uri: "vault://aliases", text: JSON.stringify({ aliases, warning: "読めていない Vault が 1 件あります" }) }] }), isError: false };
+  };
+  assert.deepEqual(await listSshIdentities(relay), { names: ["deploy-key", "vault-infisical:other-key"], warning: "読めていない Vault が 1 件あります" });
+  assert.deepEqual(calls[1], { name: "relayReadResource", args: { targetModule: "vault-directory", uri: "vault://aliases" } });
+  const noVault: RelayCall = async () => ({ text: "[]", isError: false });
+  await assert.rejects(listSshIdentities(noVault), /Vault の窓口を呼べません/);
 });

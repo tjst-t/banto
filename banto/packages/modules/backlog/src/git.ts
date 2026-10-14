@@ -20,7 +20,7 @@ export type GitResult = { ok: true; stdout: string } | { ok: false; code: number
 /** 待つ長さ（ms）。読み書きは手元だけ、送る・取ってくるは相手次第。**試験で縮める穴** */
 export const GIT_TIMEOUTS = { local: 15_000, network: 60_000 };
 
-function gitEnv(): NodeJS.ProcessEnv {
+function gitEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))),
     // 失敗の文言で状態を見分けるので、言語をそろえる
@@ -32,16 +32,18 @@ function gitEnv(): NodeJS.ProcessEnv {
     GIT_AUTHOR_EMAIL: AUTHOR.email,
     GIT_COMMITTER_NAME: AUTHOR.name,
     GIT_COMMITTER_EMAIL: AUTHOR.email,
+    // 送る・取ってくるときに渡す ssh-agent の窓口（`SSH_AUTH_SOCK`）。`GIT_*` は渡させない（上で落としたものを戻さない）
+    ...Object.fromEntries(Object.entries(extra).filter(([k]) => !k.startsWith("GIT_"))),
   };
 }
 
 /** git を走らせる。**失敗も値で返す**——どの失敗が「そういう状態」かは呼ぶ側が決める */
-export function runGit(root: string, args: string[], opts: { input?: string; timeoutMs?: number } = {}): Promise<GitResult> {
+export function runGit(root: string, args: string[], opts: { input?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<GitResult> {
   return new Promise((resolve) => {
     const child = execFile(
       "git",
       ["-C", root, ...args],
-      { env: gitEnv(), timeout: opts.timeoutMs ?? GIT_TIMEOUTS.local, maxBuffer: 64 * 1024 * 1024 },
+      { env: gitEnv(opts.env), timeout: opts.timeoutMs ?? GIT_TIMEOUTS.local, maxBuffer: 64 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (!err) return resolve({ ok: true, stdout: String(stdout) });
         if ((err as { killed?: boolean }).killed) {

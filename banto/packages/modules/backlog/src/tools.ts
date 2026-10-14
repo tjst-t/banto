@@ -41,7 +41,7 @@ import {
   type SplitTaskInput,
 } from "./model.js";
 import { conversionCommand, conversionHint, type BacklogStore, type MutateResult, type Snapshot, type SyncState } from "./store.js";
-import { readSettings, writeSettings } from "./settings.js";
+import { checkSshIdentity, readSettings, writeSettings } from "./settings.js";
 
 export interface ToolResult {
   [key: string]: unknown;
@@ -145,11 +145,12 @@ export const TOOLS = [
   adminTool("boardUpdateItem", "画面から欄を変える（結果は一覧ごと）", UPDATE_SCHEMA),
   adminTool("boardSplitStory", "画面からタスクに分ける（結果は一覧ごと）", SPLIT_SCHEMA),
   adminTool("boardMoveItem", "画面から並べ替える（結果は一覧ごと）", MOVE_SCHEMA),
-  adminTool("getSettings", "この Module のいまの設定（一覧を置くブランチ）", { properties: {} }),
-  adminTool("setSettings", "一覧を置くブランチを変える（中は tasks.json 1つ）", {
-    properties: { branch: { type: "string" } },
+  adminTool("getSettings", "この Module のいまの設定（一覧を置くブランチ・送るときに使う SSH 鍵）", { properties: {} }),
+  adminTool("setSettings", "一覧を置くブランチ（中は tasks.json 1つ）と送るときに使う SSH 鍵を変える。sshIdentity は空で使わない・省けばそのまま", {
+    properties: { branch: { type: "string" }, sshIdentity: { type: "string" } },
     required: ["branch"],
   }),
+  adminTool("listSshIdentities", "送るときに選べる SSH 鍵（Vault の ssh-identity の alias。この Project から引けるもの）", { properties: {} }),
 ];
 
 // ---- 引数を読む（型が違えば理由を言って断る）------------------------------------------------
@@ -444,6 +445,8 @@ export interface ToolContext {
   store: BacklogStore;
   root: string;
   now?: () => string;
+  /** 設定で選べる SSH 鍵の一覧（Vault の目録から）。無ければ選べない */
+  sshIdentities?: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
 }
 
 const where = (w: "before" | "after") => (w === "before" ? "前" : "後ろ");
@@ -583,11 +586,35 @@ export async function callTool(
       }
       case "getSettings": {
         const s = readSettings();
-        return ok(JSON.stringify(s), { ...s });
+        return ok(JSON.stringify(s), { branch: s.branch, sshIdentity: s.sshIdentity ?? null });
       }
       case "setSettings": {
-        const saved = writeSettings({ branch: requiredStr(args, "branch") });
-        return ok(JSON.stringify(saved), { ...saved });
+        const current = readSettings();
+        const asked = str(args, "sshIdentity");
+        const sshIdentity = asked === undefined ? current.sshIdentity : checkSshIdentity(asked);
+        // 選び直したものは、Vault の目録（この Project から引けるもの）に在ることを確かめる——無い名前を保存して、
+        // 送るときに初めて失敗させない。そのままのもの（Vault が一時読めない等）は確かめ直さない
+        if (sshIdentity && sshIdentity !== current.sshIdentity) {
+          if (!ctx.sshIdentities) return fail("この Backlog は Vault を呼べないので、SSH 鍵を選べません");
+          let names: string[];
+          try {
+            ({ names } = await ctx.sshIdentities(callId));
+          } catch (err) {
+            return fail(`Vault の SSH 鍵の一覧を読めません：${(err as Error).message}`);
+          }
+          if (!names.includes(sshIdentity)) return fail(`${sshIdentity} は、この Project から使える Vault の SSH 鍵（ssh-identity）にありません`);
+        }
+        const saved = writeSettings({ branch: requiredStr(args, "branch"), sshIdentity: sshIdentity ?? "" });
+        return ok(JSON.stringify(saved), { branch: saved.branch, sshIdentity: saved.sshIdentity ?? null });
+      }
+      case "listSshIdentities": {
+        if (!ctx.sshIdentities) return fail("この Backlog は Vault を呼べないので、SSH 鍵を選べません");
+        try {
+          const listed = await ctx.sshIdentities(callId);
+          return ok(JSON.stringify(listed), { ...listed });
+        } catch (err) {
+          return fail(`Vault の SSH 鍵の一覧を読めません：${(err as Error).message}`);
+        }
       }
       default:
         return fail(`知らない tool です：${name}`);

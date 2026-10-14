@@ -458,7 +458,8 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     // **仕事の一覧**（v4-modules.md §4.4、2026-10-03）。Project の根のリポジトリの**一覧のブランチ**（既定 `backlog`、
     // 中は tasks.json 1つ）を git の低レベルのコマンドで読み書きする（改訂・2026-10-04——作業ツリーの tasks.json から）。
     // 必須ではないので既定ではなく目録に置く（人が「Module を追加」から入れる）。git を走らせるので exec。
-    // 送る・取ってくるは Repositories に中継で頼む（資格情報はそちら）。設定（ブランチ名）は `BANTO_MODULE_DATA_DIR`
+    // 送る・取ってくるは Repositories に中継で頼む（資格情報はそちら）。設定（ブランチ名・SSH 鍵）は `BANTO_MODULE_DATA_DIR`。
+    // Repositories が引き受けない（別のサーバの Project 等）とき、設定した SSH 鍵を Vault から借りて自分の git で送る（窓口と金庫）
     id: "backlog",
     name: "Backlog",
     description: "今後やること・バグを、ストーリー・タスク・バグと依存で持つ（リポジトリの backlog ブランチ）。AI が一覧を引き、タスクに分ける",
@@ -474,7 +475,11 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     },
     meta: {
       satisfies: ["backlog"],
-      dependsOn: [{ role: "repositories", required: false }],
+      dependsOn: [
+        { role: "repositories", required: false },
+        { role: "vault-directory", required: false },
+        { role: "vault", required: false },
+      ],
       isolation: "subprocess",
       scope: "project",
       confinement: { kind: "landlock", root: "project", profile: "exec" },

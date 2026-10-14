@@ -24,13 +24,18 @@ function onBranch(root: string, branch = "backlog"): { items: Array<{ id: string
   return JSON.parse(git(root, "show", `${branch}:tasks.json`)) as { items: Array<{ id: string }> };
 }
 
-async function connect(opts: { origin?: string } = {}) {
+async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ names: string[]; warning?: string }> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "backlog-server-"));
   git(root, "init", "-q");
   git(root, "commit", "-q", "--allow-empty", "-m", "code");
   if (opts.origin) git(root, "remote", "add", "origin", opts.origin);
   process.env.BANTO_MODULE_DATA_DIR = mkdtempSync(join(tmpdir(), "backlog-data-"));
-  const server = createBacklogServer({ projectRoot: root, now: () => "2026-10-03T00:00:00.000Z", remote: new RelayingRemote(root, undefined) });
+  const server = createBacklogServer({
+    projectRoot: root,
+    now: () => "2026-10-03T00:00:00.000Z",
+    remote: new RelayingRemote(root, undefined),
+    ...(opts.sshIdentities ? { sshIdentities: opts.sshIdentities } : {}),
+  });
   const [s, c] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(s), client.connect(c)]);
@@ -50,7 +55,7 @@ test("AI に見せるのは6本だけ。消す tool は無い。人の画面の�
   const agent = tools.filter((t) => (t._meta as Record<string, unknown>)[VISIBILITY_META_KEY] === "agent").map((t) => t.name);
   assert.deepEqual(agent, ["listItems", "getItem", "createItem", "updateItem", "splitStory", "moveItem"]);
   assert.ok(!tools.some((t) => /delete|remove/i.test(t.name)));
-  for (const n of ["getBoard", "boardCreateItem", "boardUpdateItem", "boardSplitStory", "boardMoveItem", "getSettings", "setSettings"]) {
+  for (const n of ["getBoard", "boardCreateItem", "boardUpdateItem", "boardSplitStory", "boardMoveItem", "getSettings", "setSettings", "listSshIdentities"]) {
     assert.equal(vis(n), "admin", n);
   }
 });
@@ -192,9 +197,9 @@ test("getBoard：版が同じなら unchanged だけ。設定でブランチを�
   for (const bad of ["-f", "a:b", "+main", "a..b", "x.lock", "a b", ""]) {
     assert.equal((await call("setSettings", { branch: bad })).isError, true, bad);
   }
-  assert.deepEqual((await call("getSettings")).structuredContent, { branch: "backlog" });
+  assert.deepEqual((await call("getSettings")).structuredContent, { branch: "backlog", sshIdentity: null });
   const saved = await call("setSettings", { branch: "refs/heads/planning" });
-  assert.deepEqual(saved.structuredContent, { branch: "planning" });
+  assert.deepEqual(saved.structuredContent, { branch: "planning", sshIdentity: null });
   assert.equal((await call("getBoard")).structuredContent!.state, "missing");
   await call("createItem", { kind: "task", title: "There" });
   assert.equal(onBranch(root, "planning").items[0]!.id, "there");
@@ -237,13 +242,43 @@ test("ブランチが無く作業ツリーに docs/tasks.json があれば、移
   assert.match(r.content[0]!.text, /git のリポジトリではありません/);
 });
 
+test("設定の SSH 鍵：既定は使わない。Vault の目録の ssh-identity から選んで保存でき、無い名前は断る。空で外す", async () => {
+  let vaultReadable = true;
+  const { call } = await connect({
+    sshIdentities: async () => {
+      if (!vaultReadable) throw new Error("Vault の窓口が答えません");
+      return { names: ["deploy-key"] };
+    },
+  });
+  assert.deepEqual((await call("listSshIdentities")).structuredContent, { names: ["deploy-key"] });
+  const unknown = await call("setSettings", { branch: "backlog", sshIdentity: "nope" });
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.content[0]!.text, /nope は、この Project から使える Vault の SSH 鍵（ssh-identity）にありません/);
+  assert.deepEqual((await call("setSettings", { branch: "backlog", sshIdentity: "deploy-key" })).structuredContent, { branch: "backlog", sshIdentity: "deploy-key" });
+  assert.deepEqual((await call("getSettings")).structuredContent, { branch: "backlog", sshIdentity: "deploy-key" });
+  // 省けばそのまま。Vault が読めなくても、選び直していないものは確かめ直さない（ブランチだけ変えられる）
+  vaultReadable = false;
+  assert.deepEqual((await call("setSettings", { branch: "planning" })).structuredContent, { branch: "planning", sshIdentity: "deploy-key" });
+  assert.match((await call("listSshIdentities")).content[0]!.text, /Vault の SSH 鍵の一覧を読めません：Vault の窓口が答えません/);
+  assert.equal((await call("setSettings", { branch: "planning", sshIdentity: "other" })).isError, true);
+  // 空で外す
+  assert.deepEqual((await call("setSettings", { branch: "backlog", sshIdentity: "" })).structuredContent, { branch: "backlog", sshIdentity: null });
+  // Vault を呼べない Backlog では選べない
+  const plain = await connect();
+  assert.match((await plain.call("setSettings", { branch: "backlog", sshIdentity: "deploy-key" })).content[0]!.text, /Vault を呼べないので/);
+});
+
 test("申告：Repositories に頼む（無くても動く）・git を走らせる（exec）・Project ごと", async () => {
   const { client } = await connect();
   const { resources } = await client.listResources();
   const meta = (resources.find((r) => r.uri === "backlog://module")!._meta as Record<string, unknown>)[MODULE_META_KEY];
   assert.deepEqual(meta, {
     satisfies: ["backlog"],
-    dependsOn: [{ role: "repositories", required: false }],
+    dependsOn: [
+      { role: "repositories", required: false },
+      { role: "vault-directory", required: false },
+      { role: "vault", required: false },
+    ],
     isolation: "subprocess",
     scope: "project",
     confinement: { kind: "landlock", root: "project", profile: "exec" },

@@ -18,7 +18,12 @@ import { readSettings } from "./settings.js";
 import { TOOLS, callTool } from "./tools.js";
 import { BOARD_APP_URI, CONFIG_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
 
-export function createBacklogServer(deps: { projectRoot: string; now?: () => string; remote?: BranchRemote }) {
+export function createBacklogServer(deps: {
+  projectRoot: string;
+  now?: () => string;
+  remote?: BranchRemote;
+  sshIdentities?: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
+}) {
   const server = new Server(
     { name: "banto-module-backlog", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -28,7 +33,12 @@ export function createBacklogServer(deps: { projectRoot: string; now?: () => str
     branch: () => readSettings().branch,
     ...(deps.remote ? { remote: deps.remote } : {}),
   });
-  const ctx = { store, root: deps.projectRoot, ...(deps.now ? { now: deps.now } : {}) };
+  const ctx = {
+    store,
+    root: deps.projectRoot,
+    ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.sshIdentities ? { sshIdentities: deps.sshIdentities } : {}),
+  };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
@@ -47,7 +57,7 @@ export function createBacklogServer(deps: { projectRoot: string; now?: () => str
         _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
       },
       {
-        // 設定 Canvas——一覧を置くブランチ
+        // 設定 Canvas——一覧を置くブランチ・送るときに使う SSH 鍵
         uri: CONFIG_APP_URI,
         name: "Backlog",
         mimeType: UI_APP_MIME,
@@ -62,8 +72,13 @@ export function createBacklogServer(deps: { projectRoot: string; now?: () => str
           [MODULE_META_KEY]: {
             satisfies: ["backlog"],
             // 一覧のブランチを origin へ送る・取ってくるのを頼む（資格情報は Repositories が持つ）。無くても動く
-            // ——そのときはリポジトリ自身の git の設定で試す
-            dependsOn: [{ role: "repositories", required: false }],
+            // ——そのときはリポジトリ自身の git の設定で試す。自分の git で送るとき、設定した SSH 鍵を Vault から借りる
+            // （窓口で在りかを引き、金庫に ssh-agent を立ててもらう）。鍵を選ばなければ要らない
+            dependsOn: [
+              { role: "repositories", required: false },
+              { role: "vault-directory", required: false },
+              { role: "vault", required: false },
+            ],
             isolation: "subprocess",
             scope: "project",
             // git を走らせる（作業ツリーには触らない——低レベルのコマンドで ref と object だけ）
@@ -92,9 +107,13 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   }
   const hostUrl = process.env.BANTO_HOST_MCP_URL;
   const hostToken = process.env.BANTO_HOST_MCP_TOKEN;
-  const { RelayingRemote, hostRelayCall } = await import("./remote.js");
-  // 中継が渡されていなければ Repositories には頼まない（リポジトリの git の設定だけで送る）
+  const { RelayingRemote, hostRelayCall, listSshIdentities } = await import("./remote.js");
+  // 中継が渡されていなければ Repositories にも Vault にも頼まない（リポジトリの git の設定だけで送る）
   const relay = hostUrl && hostToken ? hostRelayCall(hostUrl, hostToken) : undefined;
-  const server = createBacklogServer({ projectRoot, remote: new RelayingRemote(projectRoot, relay) });
+  const server = createBacklogServer({
+    projectRoot,
+    remote: new RelayingRemote(projectRoot, relay, () => readSettings().sshIdentity),
+    ...(relay ? { sshIdentities: (callId?: string) => listSshIdentities(relay, callId) } : {}),
+  });
   await server.connect(new StdioServerTransport());
 }
