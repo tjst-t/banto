@@ -14,10 +14,16 @@
 //     find . -type l -printf '%p\t%l\n' | LC_ALL=C sort; } | sha256sum
 //
 // host は同じ文字列を組み立てて SHA-256 を取る（ファイルごとのハッシュは、大きさ・更新時刻・inode が同じなら覚えたものを使う）。
+//
+// **3つの塗りに分けて、無い塗りだけを送る**（決定・2026-10-14、Backlog #298）：(1) コード（ワークスペースのパッケージ・根の
+// `package.json`・起動役・symlink）、(2) 依存（`node_modules` の下のファイル）、(3) node。塗りごとに同じ形で鍵を取り、向こうの
+// `code/layers/<塗り>-<鍵16>-<連番>` に置く。版のフォルダは3つの塗りを**ハードリンクで写して**組む（`cp -al`）——パスも
+// realpath も今と同じなので、node の依存の解決（入れ子の `node_modules`・`@banto/*` の相対の symlink）が変わらない。
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, createReadStream } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
+import { shq } from "./ssh.js";
 
 /** 送るものの1件。`rel` は送る先の根からの相対パス（`./` は付けない） */
 export type BundleEntry =
@@ -36,6 +42,13 @@ const WORKSPACE_PARTS = ["package.json", "dist", "scripts"];
 const NOT_RUNTIME = /(\.d\.[cm]?ts|\.map)$/;
 /** ワークスペースの `dist` の中の試験（`tsc` が試験も書き出す） */
 const WORKSPACE_TEST = /\.test\.[cm]?js$/;
+
+/**
+ * 外から入れた依存が `dependencies` に挙げていても、動くときに読まないもの（辿らない）。`@infisical/sdk` が `typescript`
+ * （約 20MB）を挙げているが、`lib` のどこからも読んでいない（2026-10-14 に確かめた）。ワークスペースのパッケージの
+ * `dependencies` に書いてあれば辿る（動くときに要るなら書いた側の意図を信じる）
+ */
+const NOT_RUNTIME_DEPENDENCY = new Set(["typescript"]);
 
 /** sha256sum が逃がし字（`\`）を付ける名前・tar の一覧を壊す名前は、送らずに止める（照合の形がずれる） */
 function assertPlainName(rel: string): void {
@@ -106,6 +119,7 @@ export function collectCodeBundle(monorepoRoot: string, extras: { nodePath: stri
       ...Object.keys(manifest.peerDependencies ?? {}),
     ]);
     for (const name of names) {
+      if (inNodeModules && NOT_RUNTIME_DEPENDENCY.has(name)) continue;
       const found = resolveFrom(real, name);
       if (!found) {
         if (manifest.dependencies?.[name] !== undefined) {
@@ -129,6 +143,104 @@ export function collectCodeBundle(monorepoRoot: string, extras: { nodePath: stri
   add({ kind: "file", rel: REMOTE_NODE_REL, abs: extras.nodePath });
   add({ kind: "file", rel: REMOTE_LAUNCHER_REL, abs: extras.launcherPath });
   return [...entries.values()];
+}
+
+/** 塗り（向こうに別々に置き、変わったものだけを送る単位）。並びは送る順（大きいものから） */
+export const LAYER_KINDS = ["deps", "node", "code"] as const;
+export type LayerKind = (typeof LAYER_KINDS)[number];
+
+/** その1件がどの塗りに入るか（依存は `node_modules` の下のファイル。symlink はコードに入れる——`@banto/*` を含む） */
+export function layerOf(e: BundleEntry): LayerKind {
+  if (e.rel === REMOTE_NODE_REL) return "node";
+  if (e.kind === "file" && e.rel.split("/").includes("node_modules")) return "deps";
+  return "code";
+}
+
+/** 送るものを塗りに分ける（塗りの中のパスは版のフォルダと同じ——向こうの塗りのフォルダで同じ鍵になる） */
+export function splitLayers(entries: readonly BundleEntry[]): Record<LayerKind, BundleEntry[]> {
+  const out: Record<LayerKind, BundleEntry[]> = { deps: [], node: [], code: [] };
+  for (const e of entries) out[layerOf(e)].push(e);
+  return out;
+}
+
+/** 向こうの塗りのフォルダの名前の頭（`<塗り>-<鍵16>-`。後ろに連番） */
+export function layerPrefix(kind: LayerKind, digest: string): string {
+  return `${kind}-${digest.slice(0, 16)}-`;
+}
+
+/**
+ * **どの塗りを使い、どれを送るか**。`remote` は向こうにある塗りのフォルダ（名前→いまの中身の鍵）。鍵が合うものがあれば
+ * それを使い、無ければ（無い・書き換えられていた）新しい連番の名前で送る
+ */
+export function planLayers(
+  layers: ReadonlyArray<{ kind: LayerKind; digest: string }>,
+  remote: ReadonlyMap<string, string>,
+): Array<{ kind: LayerKind; name: string; send: boolean }> {
+  return layers.map(({ kind, digest }) => {
+    const prefix = layerPrefix(kind, digest);
+    const same = [...remote.keys()].filter((name) => name.startsWith(prefix)).sort();
+    const ok = same.find((name) => remote.get(name) === digest);
+    if (ok) return { kind, name: ok, send: false };
+    const n = Math.max(0, ...same.map((name) => Number(name.slice(prefix.length)) || 0)) + 1;
+    return { kind, name: `${prefix}${n}`, send: true };
+  });
+}
+
+/** 1つの塗りを送るときに流れる大きさの見積もり（tar で送る分と、そのまま流す node・起動役） */
+export function layerBytes(entries: readonly BundleEntry[]): number {
+  const loose = entries.filter((e) => e.rel === REMOTE_NODE_REL || e.rel === REMOTE_LAUNCHER_REL);
+  const looseBytes = loose.reduce((sum, e) => sum + (e.kind === "file" ? statSync(e.abs).size : 0), 0);
+  return (tarEntries(entries).length > 0 ? estimateTarBytes(entries) : 0) + looseBytes;
+}
+
+/**
+ * 向こうで、塗りをハードリンクで写して版のフォルダ `staging` を組み、その中身の鍵を出す sh（`set -e`）。
+ * `code`・`staging` は sh の式ではなく、そのまま引用して使うパス
+ */
+export function remoteAssembleScript(p: { code: string; staging: string; layers: readonly string[] }): string {
+  return [
+    "set -e",
+    `c=${shq(p.code)}`,
+    `s=${shq(`${p.code}/${p.staging}`)}`,
+    `mkdir -p "$s"`,
+    ...p.layers.map((name) => `cp -al -- "$c/layers"/${shq(name)}/. "$s"/`),
+    `printf 'digest=%s\n' "$(${remoteDigestCommand('"$s"')})"`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * 向こうで、組んだ版に切り替え、いまの版（`cur`→前の版）と新しい版のほかを消す sh。塗りは、その2つの版が
+ * 参照していない（`<版>.layers` に無い）ものを消す
+ */
+export function remoteSwitchScript(p: { code: string; staging: string; next: string; cur: string; layers: readonly string[] }): string {
+  const { next, cur } = p;
+  return [
+    "set -e",
+    `c=${shq(p.code)}`,
+    `mv "$c"/${shq(p.staging)} "$c"/${shq(next)}`,
+    `printf '%s\n' ${p.layers.map(shq).join(" ")} > "$c"/${shq(`${next}.layers`)}`,
+    `printf '%s\n' ${shq(cur)} > "$c/previous"`,
+    `printf '%s\n' ${shq(next)} > "$c/current.tmp" && mv "$c/current.tmp" "$c/current"`,
+    `for d in "$c"/* "$c"/.incoming-*; do`,
+    `  [ -d "$d" ] || continue`,
+    `  n=$(basename "$d")`,
+    `  [ "$n" = layers ] || [ "$n" = ${shq(next)} ] || [ "$n" = ${shq(cur)} ] || rm -rf -- "$d"`,
+    "done",
+    `for f in "$c"/*.layers; do`,
+    `  [ -f "$f" ] || continue`,
+    `  n=$(basename "$f" .layers)`,
+    `  [ "$n" = ${shq(next)} ] || [ "$n" = ${shq(cur)} ] || rm -f -- "$f"`,
+    "done",
+    // 前の版が塗りを参照しない（塗りに分ける前の版）なら、新しい版の分だけを残す
+    `keep=$(cat "$c"/${shq(`${next}.layers`)} ${cur ? `"$c"/${shq(`${cur}.layers`)} ` : ""}2>/dev/null || true)`,
+    `for d in "$c/layers"/* "$c/layers"/.incoming-*; do`,
+    `  [ -d "$d" ] || continue`,
+    `  n=$(basename "$d")`,
+    `  printf '%s\n' "$keep" | grep -qxF -- "$n" || rm -rf -- "$d"`,
+    "done",
+    "",
+  ].join("\n");
 }
 
 /** ファイルごとのハッシュの覚え（大きさ・更新時刻・inode が同じなら同じ中身とみなす） */

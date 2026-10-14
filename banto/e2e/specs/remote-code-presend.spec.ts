@@ -88,7 +88,11 @@ test("新しい版で起こし直したら、Project を開く前に別のサー
 
       // ---- banto を止め、向こうを「前の版のまま」にして、新しい版で起こし直す -----------------------------------
       await host.stop("SIGTERM");
-      const swapped = await sshHost.ssh(`cp -a ${code}/${newVersion} ${code}/${OLD_VERSION} && rm -rf ${code}/${newVersion} && echo ${OLD_VERSION} > ${code}/current`);
+      // 塗り（`code/layers`）も消す——残っていれば、無い塗りだけを送る決まり（Backlog #298）で何も送らずに組み直すだけになる。
+      // ここで見たいのは送っている間の表示なので、依存と node も変わった更新（すべての塗りを送る）の形にする
+      const swapped = await sshHost.ssh(
+        `cp -a ${code}/${newVersion} ${code}/${OLD_VERSION} && rm -rf ${code}/${newVersion} ${code}/${newVersion}.layers ${code}/layers && echo ${OLD_VERSION} > ${code}/current`,
+      );
       expect(swapped.code, swapped.stderr).toBe(0);
       // 実機（banto-dev-vm）と同じくらいの線にする：相手へ流れ込む向きを 40Mbit（毎秒約5MB）——送っている間を画面で見られる長さ
       const limited = await runIncus(["config", "device", "override", sshHost.name, "eth0", "limits.ingress=40Mbit"]);
