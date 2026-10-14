@@ -7023,7 +7023,7 @@
       "number": 291,
       "kind": "bug",
       "title": "「別の実行場所へ移す」の移す先のドロップダウンが画面の左上に出る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7037,7 +7037,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-14T00:24:39.877Z",
-      "updatedAt": "2026-10-14T00:24:39.877Z",
+      "updatedAt": "2026-10-14T00:24:44.532Z",
       "closedAt": null,
       "extra": {}
     }
