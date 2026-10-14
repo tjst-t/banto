@@ -7143,7 +7143,7 @@
       "number": 296,
       "kind": "bug",
       "title": "別のサーバの Project で、Backlog の自動の push が鍵が無くて失敗する（Repositories が引き受けない）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7154,14 +7154,14 @@
       ],
       "body": "仕様は docs/specs/v4-modules.md §4.4「Vault の SSH 鍵で送る」（f6801b0d）。案A（2026-10-14、ユーザー決定）。\n\n経緯：2026-10-14、Banto開発を banto-dev-vm へ移したあと、Backlog の updateItem の自動の push が `git@github.com: Permission denied (publickey)` で失敗した。Repositories は別のサーバの Project を引き受けない（「根はこの機械のフォルダではありません」）。いまは人や AI が Shell の sshIdentity で手で `git push origin backlog` している。\n\n作る場所の手がかり：\n- packages/modules/backlog/src/remote.ts（RelayingRemote の「自分の git で試す」道 ownPush・ownFetch に SSH_AUTH_SOCK を渡す）\n- packages/modules/backlog/src/settings.ts（設定に sshIdentity の alias を足す）と設定 Canvas（ui/）\n- Vault の口は Shell と同じ：packages/modules/shell/src/host-relay-client.ts の lookupAlias・startSshAgent（中継の relayCallTool で vault-directory を引き、実装の startSshAgent を呼ぶ）\n- 依存の宣言：packages/core/src/modules/declaration.ts の backlog の meta.dependsOn に Vault の窓口の役割を required: false で足す（Shell の宣言にならう）\n- 設定 Canvas に出す alias の一覧は、Vault の窓口の一覧から kind ssh-identity のものだけ",
       "doneWhen": "(1) Backlog の設定 Canvas で Vault の ssh-identity の alias を選んで保存できる（既定は使わない）。(2) 鍵を設定すると、Repositories が引き受けないとき Vault の startSshAgent のソケットを SSH_AUTH_SOCK にして git push・fetch する（単体テストで、渡した環境と呼んだ中継を確かめる）。(3) origin が https で鍵が設定されているときの失敗の理由に ssh の URL にする案内が付く。(4) 関係する E2E（Backlog の spec と、別のサーバの Project で ssh で送る1件——E2E 用の SSH の相手と偽の git の送り先で）が通る。フル E2E は流さない。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-backlog-push-repositories）",
       "refs": [
         "docs/specs/v4-modules.md §4.4「Vault の SSH 鍵で送る」"
       ],
       "threads": [],
       "createdAt": "2026-10-14T11:35:12.438Z",
-      "updatedAt": "2026-10-14T12:32:16.699Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-14T12:48:34.165Z",
+      "closedAt": "2026-10-14T12:48:34.165Z",
       "extra": {}
     }
   ],
