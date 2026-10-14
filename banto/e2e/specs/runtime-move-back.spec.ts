@@ -460,9 +460,12 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
           await review.getByTestId("move-overwrite-ack").check();
           await expect(dialog.getByTestId("move-start")).toBeEnabled();
           await dialog.getByTestId("move-start").click();
-          const done = dialog.getByTestId("move-done");
+          // 押したら小窓は閉じ、終わりの結果は設定の欄に出る（Backlog #293）
+          await expect(dialog).toHaveCount(0);
+          const done = page.getByTestId("project-runtime-moved");
           await expect(done).toBeVisible({ timeout: 900_000 });
-          await expect(done.getByTestId("move-done-root")).toHaveText(root);
+          await expect(done.getByTestId("project-runtime-moved-root")).toHaveText(root);
+          await expect(done.getByTestId("project-runtime-moved-previous")).toHaveText(remoteRoot);
 
           // 承知したので上書きされた（向こうと同じ中身）
           expect((await project()).runtime ?? "host-container").toBe("host-container");

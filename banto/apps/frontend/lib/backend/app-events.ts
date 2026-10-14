@@ -69,6 +69,8 @@ export type RealAppEvent =
       projectId: string;
       move?: RealRuntimeMoveView;
       failed?: { title: string; reason: string; from: RealRuntimeMoveSide };
+      /** 移し終えた（追加・2026-10-14、Backlog #293）。古い host は付けない */
+      done?: { from: RealRuntimeMoveSide; to: RealRuntimeMoveSide };
     }
   /** 混んでいる Project とこの機械が変わった（全体を置き換える） */
   | { type: "resources.busy"; busy: RealResourcesBusy }

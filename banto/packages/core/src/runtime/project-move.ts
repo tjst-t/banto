@@ -130,12 +130,14 @@ export interface RuntimeMoveView {
 
 /**
  * **移す状況が変わった**（画面への知らせ）。`move` があれば移している途中（丸ごと置き換える）。無ければ終わった
- * ——`failed` があれば移せなかった（受信箱の知らせと同じ文）
+ * ——`failed` があれば移せなかった（受信箱の知らせと同じ文）。`done` があれば移し終えた（どこからどこへ。画面が
+ * 「移しました：root は…、元は…に残っています」を出す。追加・2026-10-14、Backlog #293）
  */
 export interface RuntimeMoveChange {
   projectId: string;
   move?: RuntimeMoveView;
   failed?: { title: string; reason: string; from: { runtime: string; root: string; label: string } };
+  done?: { from: { runtime: string; root: string; label: string }; to: { runtime: string; root: string; label: string } };
 }
 
 export interface ProjectMoveDeps {
@@ -686,7 +688,10 @@ export class ProjectMover {
       this.deps.revokeClaudeLogin(projectId);
       progress.phase = "done";
       progress.endedAt = new Date().toISOString();
-      this.emit({ projectId });
+      this.emit({
+        projectId,
+        done: { from: { ...move.from, label: hostLabel(move.from.runtime) }, to: { ...move.to, label: hostLabel(move.to.runtime) } },
+      });
       this.log(
         `[host] Project ${projectId} を ${hostLabel(move.from.runtime)}（${move.from.root}）から ${hostLabel(move.to.runtime)}（${move.to.root}）へ移しました` +
           `（${progress.copiedBytes} バイト・会話の記録 ${records.copied} 件、うち写す先の古いものを退かせた ${records.setAside} 件）`,

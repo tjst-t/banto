@@ -733,7 +733,8 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
      仕組みで留めておき、終わってから積む
    - 移す先の実行場所は、作成と同じ単一化で押さえる（`projectsUsing` が started も数える）——その間に別の Project を作れない
    - その Project の会話の面（Base・Fork とも）に「移しています」の帯と進み具合を出し、入力欄を先に止めて理由を出す。
-     サイドバーのその Project の行に印。移せなければ帯を理由（受信箱と同じ文）に替える（`v4-frontend.md` §6.38）
+     サイドバーのその Project の行に印。移せなければ帯を理由（受信箱と同じ文）に替える（`v4-frontend.md` §6.38）。
+     移す小窓は押したら閉じ、画面を止めない——ほかの Project の会話・設定は普通に触れる（同 §6.38）
 5. その Project の Module を畳む → フォルダと Module の置き場を写す（下）→ 件数と大きさで確かめる → `git worktree repair`
    → Claude の会話の記録を写す（要るとき）→ **`project.runtime_moved`（前と後の実行場所・根。この機械へ戻るときは
    `runtime: "host-container"` を明示）を積んで切り替える** → Claude のログインの合言葉を替える（`claudeLogin.revoke`——元に

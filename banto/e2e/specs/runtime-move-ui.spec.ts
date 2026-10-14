@@ -7,8 +7,10 @@
 //   2. 移す先のフォルダ：向こうのフォルダを選べ、「新しいフォルダ」で名前を決めてその中へ入れる。/ や .. の名前・同じ名前は断る。
 //      選んだだけでは作らない
 //   3. 押す前の画面：経路・写す大きさ・会話の記録の件数・移らないもの・閉じ込めの注意。動いている Service があれば並べて押せない
-//   4. 止めれば押せ、写している間は閉じられない。終わりに新しい root と元の場所が出る。host の記録・向こうのファイル・設定の
-//      実行場所の欄と根が新しい場所になる。もう一度開くと、移す先に「この機械のコンテナ」が出る
+//   4. 止めれば押せ、押したら小窓は閉じる（画面を止めない。Backlog #293）。設定の欄に段と写した量／全体が出て、移している
+//      間もほかの Project の会話へ移って発言できる。移している Project の会話の面には帯。終わると帯と設定の欄に新しい root と
+//      元の場所が出る。host の記録・向こうのファイル・設定の実行場所の欄と根が新しい場所になる。もう一度開くと、移す先に
+//      「この機械のコンテナ」が出る
 import { test, expect, type Page } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -114,6 +116,14 @@ function git(cwd: string, args: string[]): string {
   }).trim();
 }
 
+/** 「（1.2 MB / 8.0 MB）」から写した量と全体を読む（単位をそろえて比べる） */
+function parseSize(text: string): { copied: number; total: number } | undefined {
+  const m = text.match(/^（([\d.]+) (B|KB|MB|GB) \/ ([\d.]+) (B|KB|MB|GB)）$/);
+  if (!m) return undefined;
+  const unit = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as const;
+  return { copied: Number(m[1]) * unit[m[2] as keyof typeof unit], total: Number(m[3]) * unit[m[4] as keyof typeof unit] };
+}
+
 const encode = (cwd: string) => cwd.replace(/[^a-zA-Z0-9]/g, "-");
 
 test("Project の設定「一般」から別の実行場所へ移せる——選べない移す先は理由つき、新しいフォルダを選べ、動いているものがあれば押せず、終わりに root と元の場所が出る", async ({ page }) => {
@@ -122,6 +132,8 @@ test("Project の設定「一般」から別の実行場所へ移せる——選
   const alias = `e2e-mvu-${Date.now()}`;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-move-ui-")));
   writeFileSync(join(root, "hello.txt"), "画面から移す\n");
+  // 写している間を画面で見る・その間にほかの Project で話すために、写すのに時間が掛かる大きさ（縮まない中身）。速さは下で抑える
+  writeFileSync(join(root, "big.bin"), randomBytes(4 * 1024 * 1024));
   git(root, ["init", "-q"]);
   git(root, ["add", "-A"]);
   git(root, ["commit", "-q", "-m", "最初"]);
@@ -159,6 +171,11 @@ test("Project の設定「一般」から別の実行場所へ移せる——選
         expect(created.status, JSON.stringify(created.body)).toBe(201);
         const projectId = created.body.id;
         const threadId = (await api<{ id: string }>(own, `/api/projects/${projectId}/threads`, { method: "POST" })).body.id;
+        // 移している間に話す、もう1つの Project
+        const chatRoot = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-move-ui-chat-")));
+        const chat = await api<HostProject>(own, "/api/projects", { method: "POST", body: { name: `E2E 移す間に話す ${name}`, root: chatRoot } });
+        expect(chat.status, JSON.stringify(chat.body)).toBe(201);
+        expect((await api(own, `/api/projects/${chat.body.id}/threads`, { method: "POST" })).status).toBeLessThan(300);
         const ctx = { projectId, threadId };
         const project = async () => (await api<HostProject[]>(own, "/api/projects")).body.find((p) => p.id === projectId)!;
 
@@ -272,19 +289,68 @@ test("Project の設定「一般」から別の実行場所へ移せる——選
         await expect(review.getByTestId("move-blockers")).toHaveCount(0);
         await expect(dialog.getByTestId("move-start")).toBeEnabled();
 
-        // ---- 4. 移す：写している間は閉じない → 終わり ---------------------------------------------------------
+        // ---- 4. 移す：押したら小窓は閉じる。進み具合は設定の欄と帯、その間もほかの Project で話せる → 終わり -------------
         await dialog.getByTestId("move-start").click();
-        await expect(dialog.getByTestId("move-copying")).toBeVisible();
-        await expect(dialog.getByRole("button", { name: "Close" })).toHaveCount(0);
-        await page.keyboard.press("Escape");
-        await expect(dialog.getByTestId("move-copying"), "写している間に閉じた").toBeVisible();
-        const done = dialog.getByTestId("move-done");
-        await expect(done).toBeVisible({ timeout: 900_000 });
-        await expect(done).toContainText(`${name} へ移しました。`);
-        await expect(done.getByTestId("move-done-root")).toHaveText(newRoot);
-        await expect(done.getByTestId("move-done-previous")).toHaveText(
-          `各会話に「移した」ことを知らせました。元は この機械のコンテナ の ${root} に残っています。要らなくなったら消してください。`,
+        await expect(dialog, "押しても小窓が閉じない").toHaveCount(0);
+        const movingBox = page.getByTestId("project-runtime-moving");
+        await expect(movingBox).toBeVisible();
+        await expect(movingBox).toContainText(`この機械のコンテナ から 別のサーバ「${name}」（${newRoot}）へ移しています`);
+        await expect(runtimeBox.getByTestId("project-runtime-move"), "移している間に「移す」を押せる").toBeDisabled();
+        // 段と、写した量／全体（進む）
+        await expect(movingBox.getByTestId("project-runtime-moving-phase")).toContainText("写しています…", { timeout: 120_000 });
+        const sizeOf = async () => parseSize(await movingBox.getByTestId("project-runtime-moving-size").innerText());
+        let firstSize: { copied: number; total: number } | undefined;
+        await expect
+          .poll(async () => {
+            firstSize = await sizeOf();
+            return firstSize ? firstSize.copied > 0 && firstSize.total >= 4 * 1024 * 1024 : "まだ出ていない";
+          }, { timeout: 120_000 })
+          .toBe(true);
+        await expect.poll(async () => ((await sizeOf())?.copied ?? 0) > firstSize!.copied, { timeout: 60_000, message: "写した量が進まない" }).toBe(true);
+
+        // 画面は止まっていない：サイドバーから、移している Project の会話へ（設定が閉じる）→ 帯と印
+        const projectLink = (id: string) => page.locator(`[data-slot="sidebar"] a[href^="/p/${id}"]`).first();
+        await projectLink(projectId).click();
+        await expect(page).toHaveURL(new RegExp(`/p/${projectId}`));
+        const banner = page.getByTestId("runtime-move-banner").first();
+        await expect(banner).toHaveAttribute("data-state", "moving");
+        await expect(banner.getByTestId("runtime-move-banner-route")).toHaveText(
+          `この Project を この機械のコンテナ から 別のサーバ「${name}」 へ移しています`,
         );
+        await expect(banner.getByTestId("runtime-move-banner-phase")).toHaveText(/^——(写しています|写したものを確かめています|切り替えています)$/);
+        await expect(page.getByTestId("sidebar-project-moving")).toHaveCount(1);
+
+        // ほかの Project の会話へ移って発言できる（移している最中に）
+        await projectLink(chat.body.id).click();
+        await expect(page).toHaveURL(new RegExp(`/p/${chat.body.id}`));
+        const composer = page.getByPlaceholder(/に送る/);
+        await expect(composer).toBeEditable({ timeout: 30_000 });
+        await composer.fill(`移している間に話す。${fakeTurn({ say: "移している間も話せます。" })}`);
+        await composer.press("Enter");
+        await expect(page.locator('[data-role="assistant"]').last()).toContainText("移している間も話せます。", { timeout: 60_000 });
+        expect((await project()).move, "発言し終える前に移し終えた（移している最中に話せたかを見られていない）").toBeTruthy();
+
+        // 移している Project の会話へ戻り、終わりを待つ：帯に新しい root と元の場所
+        await projectLink(projectId).click();
+        const doneBanner = page.locator('[data-testid="runtime-move-banner"][data-state="done"]').first();
+        await expect(doneBanner).toBeVisible({ timeout: 900_000 });
+        await expect(doneBanner).toHaveText(
+          `別のサーバ「${name}」 へ移しました。root は ${newRoot} です。元は この機械のコンテナ の ${root} に残っています。要らなくなったら消してください。`,
+        );
+        await expect(doneBanner.getByTestId("runtime-move-banner-root")).toHaveText(newRoot);
+        await expect(doneBanner.getByTestId("runtime-move-banner-previous")).toHaveText(root);
+        await expect(page.getByTestId("sidebar-project-moving")).toHaveCount(0);
+        await expect(page.getByPlaceholder(/に送る/).first()).toBeEditable();
+
+        // 設定「一般」の実行場所の欄にも同じ結果（読み込み直さずに開く）
+        await page.locator('[data-slot="sidebar"]').getByRole("link", { name: "設定", exact: true }).click();
+        await page.getByRole("button", { name: "一般", exact: true }).click();
+        const movedBox = page.getByTestId("project-runtime-moved");
+        await expect(movedBox).toBeVisible();
+        await expect(movedBox.getByTestId("project-runtime-moved-root")).toHaveText(newRoot);
+        await expect(movedBox.getByTestId("project-runtime-moved-previous")).toHaveText(root);
+        await expect(page.getByTestId("project-runtime-moving")).toHaveCount(0);
+        await expect(runtimeBox.getByTestId("project-runtime-move")).toBeEnabled();
 
         // 本当にそうなったか：host の記録・向こうのファイル・元は残る
         const moved = await project();
@@ -296,8 +362,6 @@ test("Project の設定「一般」から別の実行場所へ移せる——選
         expect(readFileSync(join(root, "hello.txt"), "utf8"), "元が消えた").toBe("画面から移す\n");
 
         // 設定の欄が新しい場所になる（読み直さずに）
-        await dialog.getByTestId("move-close").click();
-        await expect(dialog).toHaveCount(0);
         await expect(runtimeBox).toHaveAttribute("data-runtime", `remote:${name}`);
         await expect(runtimeBox.getByTestId("project-runtime-where")).toContainText(`${name} ${sshHost.user}@${sshHost.address}`);
         await expect(page.getByTestId("project-root-readonly")).toHaveText(newRoot);
@@ -317,7 +381,10 @@ test("Project の設定「一般」から別の実行場所へ移せる——選
         await expect(page.locator('[data-slot="select-content"]')).toHaveCount(0);
         await page.keyboard.press("Escape");
         await expect(dialog).toHaveCount(0);
-      });
+        rmSync(chatRoot, { recursive: true, force: true });
+      },
+      // 写している間を画面で見るために、写す速さを抑える（.git の中の写しと合わせて 8 MiB ほど・1分ほど）
+      { env: { BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC: String(128 * 1024) } });
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

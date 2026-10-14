@@ -4,7 +4,12 @@
 // の流れ 1・3・8、Backlog `runtime-move-ui`）。画面はモックの `MoveRuntimeDialog`（f7251863・0d22d225）の形で決定。
 //
 // 段：①移す先と移す先のフォルダを選ぶ → ②押す前に読む（host の見積もり：写す大きさ・会話の記録の件数・移らないもの・
-// 作り直しが要るもの・閉じ込めの注意・動いているもの）→ ③写している（進み具合。閉じない）→ 終わり（root と元の場所）。
+// 作り直しが要るもの・閉じ込めの注意・動いているもの）→ 押して受け付けられたら閉じる。
+// **写している段は小窓に持たない**（変更・2026-10-14、ユーザー要望。Backlog #293）——写すのは数分〜1時間で、小窓のままだと
+// 下の画面ごと触れなくなる（ほかの Project の会話も）。進み具合と終わりの結果（root と元の場所）・移せなかった理由は、
+// その Project の会話の面の帯・サイドバーの印・設定「一般」の実行場所の欄が出す（`runtime-moves.ts`）。
+// ただし閉じた Project を再開しようとして開いたとき（`onMoved` を渡す——履歴の小窓から）は、帯も設定の欄も無く、
+// 終わったら「再開する」を押させたいので、今までどおり小窓の中で ③写している（閉じない）→ 終わり、まで見せる。
 // 押せるかどうかは host が言う（`blockers`）——画面は判断しない。動いているものがあれば押せない（banto は止めて回らない）。
 // 元は消さない。前に居た場所へ戻すときは差分で写し、そこから移したあとに変わったファイルがあれば一覧を出して承知させる
 // （決定・2026-10-13、v4-security.md §1「前に居た場所へ戻す——差分で写す」）
@@ -196,6 +201,8 @@ export function MoveRuntimeDialog({
         root: toRoot.trim(),
         ...(needsOverwriteAck ? { acknowledgeOverwrite: overwriteOk } : {}),
       });
+      // 進み具合と結果は帯・設定の欄が出す。閉じた Project を再開するための移し替えだけは、終わりまでここで見せる
+      if (!onMoved) return onOpenChange(false);
       const to = started.move?.to ?? { runtime: toRuntime, root: toRoot.trim() };
       setMoved({ from: { runtime: fromRuntime, root: project.basePath }, to });
       setProgress(null);
@@ -420,7 +427,8 @@ export function MoveRuntimeDialog({
 
             <p className="text-xs text-ink-3">
               元のフォルダと Module の状態は残します（{runtimeLabel(estimate.from.runtime)} の {estimate.from.root}）。要らなくなったら
-              消してください。移している間、この Project の会話は止まります。
+              消してください。移している間、この Project の会話は止まります（ほかの Project は使えます）。
+              {onMoved ? "" : "押すとこの画面は閉じ、進み具合は会話の帯と設定の欄に出ます。"}
             </p>
           </div>
         ) : null}

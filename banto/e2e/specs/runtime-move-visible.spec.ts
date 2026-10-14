@@ -8,7 +8,9 @@
 //   2. 携帯の幅でも、帯・止まった入力欄・ナビの中の印が出る
 //   3. 移せなかったら、帯が「移せませんでした：理由。元の ○○ のまま動いています」に替わる（理由は受信箱の知らせと同じ文）。
 //      入力欄は戻り、印は消える
-//   4. 移し終えたら帯も印も消え、入力欄が戻る。各 Thread には「移した」の知らせが届いている
+//   4. 移し終えたら印が消え、入力欄が戻り、帯が「移しました：root は…。元は…に残っています」に替わる（人が閉じるまで残る。
+//      携帯の幅でも。Backlog #293——移す小窓は押したら閉じるので、終わりの結果はここに出す）。各 Thread には「移した」の
+//      知らせが届いている
 import { test, expect, type Page } from "../test-base.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -169,6 +171,9 @@ test("移している Project の会話の面に帯と進み具合が出て入�
               `この Project を この機械のコンテナ から 別のサーバ「${name}」 へ移しています`,
             );
             await expect(b).toContainText("終わるまで会話は止まっています。届いたものは終わってから届きます");
+            await expect(b.getByTestId("runtime-move-banner-phase")).toHaveText(
+              /^——(用意しています|Service を止めて、Module を畳んでいます|写しています|写したものを確かめています|切り替えています)$/,
+            );
             await expect(input[surface]()).toBeDisabled();
             await expect(send[surface]()).toBeDisabled();
             await expect(reason[surface]()).toHaveText("別の実行場所へ移している間は送れません。終わると送れるようになります");
@@ -240,8 +245,13 @@ test("移している Project の会話の面に帯と進み具合が出て入�
           await page.setViewportSize({ width: 1280, height: 860 });
           await page.goto(base);
 
-          // 移し終える：帯も印も消え、入力欄が戻る
-          await expect(banner).toHaveCount(0, { timeout: 900_000 });
+          // 移し終える：帯が「移しました」に替わり、印は消え、入力欄が戻る
+          const done = page.locator('[data-testid="runtime-move-banner"][data-state="done"]');
+          await expect(done).toBeVisible({ timeout: 900_000 });
+          await expect(done).toHaveText(
+            `別のサーバ「${name}」 へ移しました。root は ${remoteRoot} です。元は この機械のコンテナ の ${root} に残っています。要らなくなったら消してください。`,
+          );
+          await expect(page.locator('[data-testid="runtime-move-banner"][data-state="moving"]')).toHaveCount(0);
           const moved = await project();
           expect(moved.move).toBeUndefined();
           expect(moved.runtime).toBe(`remote:${name}`);
@@ -249,6 +259,13 @@ test("移している Project の会話の面に帯と進み具合が出て入�
           await expect(input).toBeEditable();
           await expect(reason).toHaveCount(0);
           await expect(mark).toHaveCount(0);
+          // 携帯の幅でも同じ帯が出て、閉じられる（閉じたら出ない）
+          await page.setViewportSize({ width: 412, height: 860 });
+          await expect(done).toBeVisible();
+          await expect(done.getByTestId("runtime-move-banner-root")).toHaveText(remoteRoot);
+          await done.getByRole("button", { name: "この知らせを閉じる" }).click();
+          await expect(banner).toHaveCount(0);
+          await page.setViewportSize({ width: 1280, height: 860 });
           // 各 Thread には「移した」の知らせが届いている（次のターンの頭に積まれる）
           for (const id of [baseThreadId, forkId]) {
             const t = (await api<{ deliveries?: Array<{ from: string; title: string; text: string }> }>(own, `/api/threads/${id}`)).body;
