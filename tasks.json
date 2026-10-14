@@ -6592,6 +6592,27 @@
       "extra": {}
     },
     {
+      "id": "move-progress-nonblocking",
+      "number": 293,
+      "kind": "task",
+      "title": "移すを押したら小窓を閉じ、画面を止めずに進み具合を見せる",
+      "status": "ready",
+      "parent": "runtime-move",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-14、ユーザー要望（qemu-bmc を戻したとき）：「移す」を押すと「写しています…」の小窓が出たまま閉じられず、画面全体が操作できなくなった（Dialog は下の画面を inert にする）。移すのは数分〜1時間かかるので、そのあいだ他の Project の会話も触れない。\n\nやること（apps/frontend/components/banto/settings/move-runtime-dialog.tsx ほか）：\n- 「移す」を押して受け付けられたら（POST が通ったら）小窓を閉じる。写している段は小窓に持たない\n- 進み具合は、すでにある「移している最中」の表示（#270：その Project の会話の面の帯・サイドバーの印）と、Project の設定「一般」の実行場所の欄に出す（写した量・合計・段）。ほかの Project の会話・設定は普通に触れる\n- 終わったら、設定の欄と帯に「移しました：root ○○、元は ○○ に残っています」を出す（今の終わりの段の文）。失敗したら理由（今どおり受信箱にも）\n- 押す前の段（選ぶ・押す前に読む）は今どおり小窓\n- 携帯でも同じ\n\nE2E は関係する spec（runtime-move-ui・runtime-move-visible、1並列）。移している間にほかの Project の会話へ移って発言できることを確かめる。フル E2E は流さない。",
+      "doneWhen": "移すを押すと小窓が閉じ、移している間もほかの Project の会話で発言でき、設定の欄と帯に進み具合と終わりの結果が出ることを E2E で確かめた",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-14T01:46:32.142Z",
+      "updatedAt": "2026-10-14T01:46:32.142Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "repositories-e2e-1176-method",
       "number": 267,
       "kind": "bug",
