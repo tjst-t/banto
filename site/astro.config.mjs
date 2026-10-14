@@ -10,7 +10,7 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'banto',
-			description: 'AI と進める仕事をいくつ並べても、いま何が動いていて何があなたを待っているかを1画面に出す作業場。',
+			description: 'AI エージェントとの並行作業を、全体像を見失わずに進めるためのワークスペース。',
 			logo: { src: './src/assets/mark.svg', alt: '' },
 			defaultLocale: 'root',
 			locales: {
@@ -25,25 +25,25 @@ export default defineConfig({
 					label: 'はじめに',
 					items: [
 						{ label: 'banto とは', slug: 'docs' },
-						{ label: '考え方', slug: 'docs/concepts' },
+						{ label: '基本概念', slug: 'docs/concepts' },
 					],
 				},
 				{
-					label: '入れる',
+					label: 'インストール',
 					items: [
-						{ label: '入れる', slug: 'docs/install' },
-						{ label: 'HTTPS の2つの形', slug: 'docs/install/https' },
-						{ label: '更新する・打ち直す', slug: 'docs/install/update' },
-						{ label: '困ったとき', slug: 'docs/install/troubleshooting' },
+						{ label: 'インストール', slug: 'docs/install' },
+						{ label: 'HTTPS の設定', slug: 'docs/install/https' },
+						{ label: 'アップデート', slug: 'docs/install/update' },
+						{ label: 'トラブルシューティング', slug: 'docs/install/troubleshooting' },
 						{ label: 'アンインストール', slug: 'docs/install/uninstall' },
 					],
 				},
 				{
-					label: '使う',
+					label: '使い方',
 					items: [
 						{ label: '会話と Fork', slug: 'docs/guide/threads' },
 						{ label: '受信箱と承認', slug: 'docs/guide/inbox' },
-						{ label: 'Module', slug: 'docs/guide/modules' },
+						{ label: 'モジュール一覧', slug: 'docs/guide/modules' },
 					],
 				},
 			],

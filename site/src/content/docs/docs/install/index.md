@@ -1,56 +1,60 @@
 ---
-title: 入れる
-description: 新しいマシンに banto を入れる。1行のコマンドで済みます。
+title: インストール
+description: banto を新しいサーバーにインストールする手順。
 ---
 
-## 用意するもの
+## 必要なもの
 
-- **Ubuntu 24.04 か 26.04 のマシン**（amd64・arm64）。仮想マシンでもかまいません。
-- **sudo できる普通のユーザー。** そのユーザーが banto を動かします（root では断ります）。
-- **画面の名前**（例 `banto.example.com`）。`sandbox.<名前>` と `*.<名前>` も使います。
-- **Claude のアカウント。** 会話に Claude Code のログインを使います。
-- あれば **Cloudflare の API トークン**。名前のゾーンが Cloudflare にあれば、DNS のレコードと Let's Encrypt の証明書を自動で用意します。無くても入れられます（[HTTPS の2つの形](/docs/install/https/)）。
+- **Ubuntu 24.04 または 26.04 のサーバー**（amd64 / arm64）。仮想マシンでも構いません。
+- **sudo 権限のある一般ユーザー**。このユーザーで banto が動作します（root ユーザーでは実行できません）。
+- **banto に割り当てるドメイン名**（例：`banto.example.com`）。`sandbox.<ドメイン名>` と `*.<ドメイン名>` も使用します。
+- **Claude のアカウント**。AI との会話に Claude Code を使用します。
+- **Cloudflare の API トークン**（任意）。ドメインを Cloudflare で管理している場合、DNS レコードの作成と Let's Encrypt の証明書の取得を自動で行います。トークンがなくてもインストールできます（[HTTPS の設定](/docs/install/https/) を参照）。
 
-### Cloudflare のトークンを作る
+### Cloudflare の API トークンを作成する
 
-次のリンクを開くと、要る2つの権限（**Zone → Zone → Read** と **Zone → DNS → Edit**）を選んだ状態でトークンの作成画面が開きます。
+次のリンクを開くと、必要な2つの権限（**Zone → Zone → Read** と **Zone → DNS → Edit**）が選択された状態で、トークンの作成画面が表示されます。
 
-[Cloudflare でトークンを作る](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&name=banto-install)
+[Cloudflare で API トークンを作成する](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&name=banto-install)
 
-対象のゾーン（Zone Resources）は画面で、名前を含むゾーンだけを選んでください。「Continue to summary」→「Create Token」で作ると値が一度だけ表示されます。
+「Zone Resources」で、使用するドメインを含むゾーンを選択してください。「Continue to summary」→「Create Token」の順に進むと、トークンが表示されます。トークンはこの画面でしか表示されないため、控えておいてください。
 
-## コマンドを打つ
+## インストールする
+
+次のコマンドを実行します。
 
 ```sh
 curl -fsSL https://banto.tjst-t.dev/install.sh | bash -s -- --domain banto.example.com
 ```
 
-端末から打てば、途中で Cloudflare のトークンを聞かれます（表示されません。Enter だけなら飛ばして、Caddy の内部の CA で HTTPS にします）。トークンを先に渡すこともできます：
+ターミナルから実行した場合は、途中で Cloudflare の API トークンの入力を求められます（入力内容は表示されません）。何も入力せずに Enter キーを押すと、Caddy の内部 CA で HTTPS を設定します。
+
+トークンは、あらかじめ指定することもできます。
 
 ```sh
-# 端末から見えない形で聞かせる
+# 入力を求めるプロンプトを表示する
 curl -fsSL https://banto.tjst-t.dev/install.sh | bash -s -- --domain banto.example.com --cloudflare-token -
 
-# 環境変数で渡す（シェルの履歴に残らないよう read で入れる）
+# 環境変数で指定する（シェルの履歴に残らないよう read で読み込む）
 read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN
 curl -fsSL https://banto.tjst-t.dev/install.sh | bash -s -- --domain banto.example.com
 ```
 
-途中で sudo のパスワードを聞かれます。初めて入れるときは、最初の版を組み立てたあとにもう一度聞かれます（取ってきたコードの組み立てには root を使わせないため、その間は sudo の記憶を消しています）。
+インストール中に sudo のパスワードを求められます。初回のインストールでは、banto のビルド後にもう一度求められます（ダウンロードしたコードのビルド中は root 権限を使わせないよう、sudo の認証情報をいったん破棄しているためです）。
 
-終わると次が出ます：
+インストールが完了すると、次の情報が表示されます。
 
-- **開く URL**：`https://<名前>/`
-- **ログインのリンク**（10分だけ・1回だけ使える）
-- HTTPS の状態と、次にやること
+- **アクセス先の URL**：`https://<ドメイン名>/`
+- **ログイン用のリンク**（有効期限は10分、1回のみ使用可能）
+- HTTPS の設定状況と、次に行う作業
 
-## 入って、パスキーを登録する
+## ログインしてパスキーを登録する
 
-出たログインのリンクを開くと banto に入れます。入ったら **設定 → ログイン でパスキーを登録**してください。以後はパスキーで入ります。
+表示されたログイン用のリンクを開くと、banto にログインできます。ログインしたら、**「設定」→「ログイン」でパスキーを登録**してください。以降はパスキーでログインします。
 
-別の端末（携帯など）を足すときは、入っている端末の **設定 → ログイン → 端末を追加** で QR コードとリンクを出し、足したい端末で開きます。
+スマートフォンなど別の端末を追加するには、ログイン済みの端末で **「設定」→「ログイン」→「端末を追加」** を選び、表示された QR コードまたはリンクを追加したい端末で開きます。
 
-リンクが切れたら、banto を動かすユーザーで出し直せます：
+ログイン用のリンクの有効期限が切れた場合は、banto を動かしているユーザーで次のコマンドを実行すると再発行できます。
 
 ```sh
 cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs
@@ -58,7 +62,7 @@ cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs
 
 ## Claude にログインする
 
-入れるときに端末があれば、その場で Claude のログインが流れます。後からなら、banto を動かすユーザーで：
+インストールをターミナルから実行した場合は、その場で Claude へのログインが始まります。あとからログインする場合は、banto を動かしているユーザーで次のコマンドを実行します。
 
 ```sh
 ~/.local/bin/claude auth login
@@ -66,13 +70,13 @@ cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs
 
 ## オプション
 
-| 引数 | 意味 |
+| オプション | 説明 |
 |---|---|
-| `--domain <名前>` | 画面の名前。初回は必須 |
-| `--cloudflare-token <値>` / `-` | Cloudflare の API トークン。`-` なら端末から見えない形で聞く。環境変数 `CLOUDFLARE_API_TOKEN` でも渡せる |
-| `--no-cloudflare` | Cloudflare をやめて Caddy の内部の CA に戻す |
-| `--ip <IPv4>` | DNS のレコードの向け先（既定はこのマシンの既定経路の IPv4） |
-| `--pool-size <N>GiB` | コンテナの置き場の大きさ（既定は空きの半分・最大 50GiB） |
-| `--no-claude-login` | Claude のログインをその場で流さない（打つコマンドを出すだけ） |
+| `--domain <ドメイン名>` | banto に割り当てるドメイン名。初回のインストールでは必須 |
+| `--cloudflare-token <トークン>` / `-` | Cloudflare の API トークン。`-` を指定するとプロンプトで入力を求める。環境変数 `CLOUDFLARE_API_TOKEN` でも指定可能 |
+| `--no-cloudflare` | Cloudflare の利用をやめ、Caddy の内部 CA に切り替える |
+| `--ip <IPv4 アドレス>` | DNS レコードに設定する IP アドレス（既定値はデフォルトルートのインターフェースの IPv4 アドレス） |
+| `--pool-size <N>GiB` | コンテナ用ストレージプールのサイズ（既定値は空き容量の半分、最大 50GiB） |
+| `--no-claude-login` | Claude へのログインを実行せず、必要なコマンドの表示だけを行う |
 
-決めた値は覚えておくので、打ち直すときは変えたいものだけ渡せば足ります（[更新する・打ち直す](/docs/install/update/)）。
+指定した値はサーバーに保存されます。再実行するときは、変更したいオプションだけを指定してください（[アップデート](/docs/install/update/) を参照）。

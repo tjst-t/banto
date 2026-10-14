@@ -1,20 +1,20 @@
 ---
-title: 困ったとき
-description: 入れる・動かすときに出るものと、見るところ。
+title: トラブルシューティング
+description: インストール時や運用中に問題が起きたときの確認箇所。
 ---
 
-| 出たもの | 見るところ |
+| 症状 | 確認すること |
 |---|---|
-| 「段「…」で止まりました」 | その下の「直し方」。直して同じコマンドを打ち直す（済んだ段は飛ばします） |
-| banto が起きない | `tail -50 ~/banto-host.log`・`systemctl status banto-host` |
-| https が通らない | `journalctl -u caddy -n 50`（証明書の取得・設定の誤り） |
-| 更新できなかった・前の版に戻った | 画面の 設定 → 更新 の「ログを開く」、または `~/.local/share/banto/update/` の下のログ |
-| Project の Module が繋がらない | `cd ~/.local/share/banto-release/current/banto && node packages/container/dist/doctor.js` |
-| ログインのリンクが切れた | `cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs` |
-| 「HTTPS で開いてください」と出る | http で開いています。`https://<名前>/` で開き直してください |
+| インストーラーが「段「…」で止まりました」と表示して終了する | 続けて表示される「直し方」に従って対処し、同じコマンドを再実行してください（完了済みの手順はスキップされます） |
+| banto が起動しない | `tail -50 ~/banto-host.log` と `systemctl status banto-host` の出力 |
+| HTTPS で接続できない | `journalctl -u caddy -n 50` の出力（証明書の取得エラーや設定の誤り） |
+| アップデートに失敗した、または以前のバージョンに戻った | 「設定」→「更新」の「ログを開く」、または `~/.local/share/banto/update/` のログ |
+| プロジェクトのモジュールに接続できない | `cd ~/.local/share/banto-release/current/banto && node packages/container/dist/doctor.js` の出力 |
+| ログイン用のリンクの有効期限が切れた | `cd ~/.local/share/banto-release/current/banto && node scripts/login-link.mjs` で再発行 |
+| 「HTTPS で開いてください」と表示される | http でアクセスしています。`https://<ドメイン名>/` でアクセスし直してください |
 
-## マシンのメモリが足りなくなる
+## サーバーのメモリが不足する
 
-Project のコンテナには、メモリ・CPU・プロセス数の上限が付いています（既定はマシンの資源から計算します）。上限に当たると受信箱に知らせが届きます。**設定 → 資源** で、マシン全体と Project ごとに何がどれだけ使っているかを見られます。
+各プロジェクトのコンテナには、メモリ・CPU・プロセス数の上限が設定されています（既定値はサーバーのリソースから自動で計算されます）。上限に達すると、受信箱に通知が届きます。**「設定」→「資源」** で、サーバー全体とプロジェクトごとのリソース使用状況を確認できます。
 
-上限は **設定 → コンテナ**（banto 全体）と、Project の設定の「コンテナ」（その Project だけ下げる）で変えられます。
+上限は **「設定」→「コンテナ」**（banto 全体）と、各プロジェクトの設定の「コンテナ」（そのプロジェクトだけ上限を下げる）で変更できます。

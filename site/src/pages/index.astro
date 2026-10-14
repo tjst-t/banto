@@ -7,9 +7,9 @@ import '../styles/fonts.css';
 import mark from '../assets/mark.svg?url';
 
 const installCmd = 'curl -fsSL https://banto.tjst-t.dev/install.sh | bash -s -- --domain banto.example.com';
-const title = 'banto — AI の仕事をいくつ並べても、覚えておかなくていい';
+const title = 'banto — AI エージェントとの並行作業のためのワークスペース';
 const description =
-	'banto は、AI と進める仕事を Project と会話に分けて並べ、いま何が動いていて何があなたの答えを待っているかを1画面に出す作業場です。あなたのマシンで動きます。';
+	'banto は、AI エージェントとの作業をプロジェクトと会話ごとに整理し、進行中の作業とあなたの判断を待っている作業をひと目で把握できるワークスペースです。ご自身のサーバーにインストールして利用します。';
 ---
 
 <!doctype html>
@@ -33,8 +33,8 @@ const description =
 				<span>banto</span>
 			</a>
 			<nav aria-label="サイト">
-				<a href="/docs/">マニュアル</a>
-				<a href="/docs/install/">入れ方</a>
+				<a href="/docs/">ドキュメント</a>
+				<a href="/docs/install/">インストール</a>
 				<a href="https://github.com/tjst-t/banto">GitHub</a>
 			</nav>
 		</header>
@@ -42,13 +42,13 @@ const description =
 		<main>
 			<section class="hero">
 				<div class="hero-text">
-					<h1><span class="nb">AI の仕事を</span><span class="nb">いくつ並べても、</span><br /><span class="nb">覚えておかなくていい。</span></h1>
+					<h1><span class="nb">AI に任せる作業が</span><span class="nb">増えても、</span><br /><span class="nb">全体像を見失わない。</span></h1>
 					<p class="lead">
-						banto は、AI と進める仕事を Project と会話に分けて並べ、いま何が動いていて、何があなたの答えを待っているかを1画面に出す作業場です。あなたのマシンで動きます。
+						banto は、AI エージェントとの作業をプロジェクトと会話ごとに整理し、いま何が進行中で、どれがあなたの判断を待っているかをひと目で把握できるワークスペースです。ご自身のサーバーにインストールして利用します。
 					</p>
 					<div class="actions">
-						<a class="btn primary" href="/docs/install/">入れ方を見る</a>
-						<a class="btn" href="/docs/">マニュアルを読む</a>
+						<a class="btn primary" href="/docs/install/">インストール手順</a>
+						<a class="btn" href="/docs/">ドキュメントを読む</a>
 					</div>
 				</div>
 
@@ -75,7 +75,7 @@ const description =
 									<div class="side-row thread">
 										<span class="ring" aria-hidden="true"></span>
 										<span class="t">
-											<span>サイドバーの直し</span>
+											<span>サイドバーの改善</span>
 											<span class="sub">バックグラウンドで 2 件</span>
 										</span>
 									</div>
@@ -85,7 +85,7 @@ const description =
 											<svg class="hand" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"></path><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"></path><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"></path><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"></path></svg>
 										</span>
 										<span class="t">
-											<span>公開マニュアルを作る</span>
+											<span>ドキュメントサイトの作成</span>
 											<span class="sub turn">あなたの答えを待っています</span>
 										</span>
 									</div>
@@ -108,13 +108,13 @@ const description =
 						</aside>
 
 						<div class="talk" aria-hidden="true">
-							<p class="talk-head">公開マニュアルを作る</p>
-							<div class="msg me">ちゃんとしたマニュアルとランディングページを作りたい。置き場はどこがいいと思う？</div>
+							<p class="talk-head">ドキュメントサイトの作成</p>
+							<div class="msg me">マニュアルとランディングページを作りたい。ホスティングはどこがいいと思う？</div>
 							<div class="msg ai">
-								名前は tjst-t.dev のサブドメインにして、置き場は転送が書ける Cloudflare Pages をおすすめします。
+								リダイレクトを設定できる Cloudflare Pages をおすすめします。ドメインは <span class="nb">tjst-t.dev</span> のサブドメインを使いましょう。
 							</div>
 							<div class="card">
-								<p class="card-q">置き場はどちらにしますか</p>
+								<p class="card-q">ホスティング先を選んでください</p>
 								<div class="card-opts">
 									<span class="opt">GitHub Pages</span>
 									<span class="opt filled">Cloudflare Pages</span>
@@ -124,97 +124,97 @@ const description =
 					</div>
 					<figcaption>
 						<ul class="legend">
-							<li><span class="ring still" aria-hidden="true"></span>AI が動いている</li>
-							<li><span class="legend-hand" aria-hidden="true"></span>あなたの答えを待っている</li>
-							<li><b>太字</b>まだ読んでいない返事</li>
+							<li><span class="ring still" aria-hidden="true"></span>AI が作業中</li>
+							<li><span class="legend-hand" aria-hidden="true"></span>あなたの判断待ち</li>
+							<li><b>太字</b>未読の返信あり</li>
 						</ul>
 					</figcaption>
 				</figure>
 			</section>
 
 			<section class="row">
-				<h2>並べ方</h2>
+				<h2>並行作業</h2>
 				<div class="body">
-					<p class="big">会話を枝分かれさせて、別の試みを並べる。</p>
+					<p class="big">会話を分岐させて、複数のアプローチを同時に試せます。</p>
 					<p>
-						1つの Project の中で、会話を Fork で枝分かれさせます。Fork は「同じ話の続き」ではなく、同じ文脈から出た別の試みです。同じ依頼から3つの実装を試して比べる、本筋とは別の調べものを並行して進める——どれも、どの会話から分かれたかが形として残るので、どこにいたかを思い出さなくて済みます。
+						プロジェクト内の会話は、Fork で分岐できます。同じ依頼に対して複数の実装を並行して試したり、本題とは別の調査を切り出したりしても、どの会話から分岐したかが構造として残るため、作業の経緯を見失いません。
 					</p>
 					<p>
-						決まったことは Project の Memory に残り、会話が長くなって畳まれても、Fork しても AI に渡り続けます。
+						プロジェクトで決まった事項は Memory に記録され、会話が長くなって要約されたあとも、Fork した先でも AI に引き継がれます。
 					</p>
 				</div>
 			</section>
 
 			<section class="row">
-				<h2>道具</h2>
+				<h2>組み込みツール</h2>
 				<div class="body">
-					<p class="big">面倒な道具は、最初から入っている。</p>
+					<p class="big">開発に必要なツールは、最初からそろっています。</p>
 					<p>
-						コマンドを流す、ファイルを触る、秘密を預かる、開発サーバを動かして公開する、ブラウザを操作する。これらは Module として最初から入っていて、AI も人も同じものを使います。AI が開いた画面を人が続きから触れ、人が見ている画面について AI に相談できます。
+						コマンドの実行、ファイル操作、シークレットの管理、開発サーバーの起動と公開、ブラウザ操作。これらはモジュールとして組み込まれており、AI と人が同じものを操作します。AI が開いた画面を人がそのまま引き継いだり、人が見ている画面について AI に相談したりできます。
 					</p>
 					<dl class="modules">
-						<div><dt>Shell・FileSystem・Terminal</dt><dd>コマンドとファイル。長いコマンドは待たずに流し、終わったら知らせる</dd></div>
-						<div><dt>Browser</dt><dd>AI が操作するブラウザを、人も同じ画面で見て触れる</dd></div>
-						<div><dt>Vault</dt><dd>トークンや鍵を預かり、AI には名前だけを渡す</dd></div>
-						<div><dt>Service・Publish</dt><dd>動き続けるものを起こしておき、ログインを前に付けて公開する</dd></div>
-						<div><dt>Repositories・Backlog</dt><dd>リポジトリの一覧と、ストーリー・タスク・バグの一覧</dd></div>
-						<div><dt>Subagent・Factory</dt><dd>別の AI に頼む。タスクを流して実装から取り込みまで任せる</dd></div>
+						<div><dt>Shell・FileSystem・Terminal</dt><dd>コマンドの実行とファイル操作。時間のかかるコマンドはバックグラウンドで実行し、終了時に通知します</dd></div>
+						<div><dt>Browser</dt><dd>AI が操作しているブラウザを、人も同じ画面で確認・操作できます</dd></div>
+						<div><dt>Vault</dt><dd>API トークンや SSH 鍵を保管します。AI には参照名だけを渡し、値は渡しません</dd></div>
+						<div><dt>Service・Publish</dt><dd>開発サーバーなどを常駐させ、認証付きで公開します</dd></div>
+						<div><dt>Repositories・Backlog</dt><dd>リポジトリの管理と、ストーリー・タスク・バグのバックログ管理</dd></div>
+						<div><dt>Subagent・Factory</dt><dd>別の AI エージェントへの作業依頼と、タスクの実装からマージまでの自動化</dd></div>
 					</dl>
-					<p><a href="/docs/guide/modules/">Module の一覧を見る</a></p>
+					<p><a href="/docs/guide/modules/">モジュール一覧を見る</a></p>
 				</div>
 			</section>
 
 			<section class="row">
-				<h2>任せ方</h2>
+				<h2>自動化</h2>
 				<div class="body">
-					<p class="big">毎回同じ形の仕事は、Factory に流す。</p>
+					<p class="big">定型の開発フローは、Factory に任せられます。</p>
 					<ol class="flow">
-						<li>worktree を作る</li>
-						<li>実装する</li>
-						<li>テストを通す</li>
-						<li>別の AI がレビューする</li>
-						<li>main に取り込む</li>
+						<li>worktree の作成</li>
+						<li>実装</li>
+						<li>テスト</li>
+						<li>AI によるレビュー</li>
+						<li>main へのマージ</li>
 					</ol>
 					<p>
-						Backlog のタスクを流すと、この流れを1件ずつ自動で進めます。テストが通らない、レビューで何度も差し戻される、取り込みでぶつかる——止まったときだけ、頼んだ会話に知らせが届きます。
+						Backlog のタスクを Factory に渡すと、この流れを1件ずつ自動で進めます。テストが通らない、レビューで差し戻しが続く、マージでコンフリクトが起きた、といった場合にだけ通知が届きます。
 					</p>
 				</div>
 			</section>
 
 			<section class="row">
-				<h2>置き場所</h2>
+				<h2>セキュリティ</h2>
 				<div class="body">
-					<p class="big">あなたのマシンで動き、Project ごとに閉じ込める。</p>
+					<p class="big">自分のサーバーで動作し、プロジェクトごとに隔離されます。</p>
 					<ul class="plain">
-						<li>Project ごとにコンテナを作り、AI のコマンドやファイル操作はその中で行います。メモリと CPU の上限も Project ごとに付きます。</li>
-						<li>秘密は Vault に預け、AI には名前だけを渡します。値は AI の文脈に出ません。</li>
-						<li>ログインはパスキーです。携帯などの端末は、入っている端末から QR コードで足します。</li>
-						<li>AI の操作のうち確かめたいものは、会話の中のカードで承認します。</li>
+						<li>プロジェクトごとにコンテナを作成し、AI によるコマンド実行やファイル操作はその中で行われます。メモリと CPU の上限もプロジェクト単位で設定されます。</li>
+						<li>シークレットは Vault で管理し、AI には参照名だけを渡します。値が AI のコンテキストに含まれることはありません。</li>
+						<li>ログインにはパスキーを使用します。スマートフォンなどの端末は、ログイン済みの端末に表示される QR コードから追加できます。</li>
+						<li>AI の操作のうち確認が必要なものは、会話内に表示される承認カードで許可します。</li>
 					</ul>
 				</div>
 			</section>
 
 			<section class="row install" id="install">
-				<h2>入れる</h2>
+				<h2>インストール</h2>
 				<div class="body">
-					<p class="big">Ubuntu のマシンに、1行で。</p>
+					<p class="big">Ubuntu サーバーに、コマンド1つでインストールできます。</p>
 					<ol class="steps">
 						<li>
-							<p>Ubuntu 24.04 か 26.04 のマシンと、画面の名前（例 <code>banto.example.com</code>）を用意します。</p>
+							<p>Ubuntu 24.04 または 26.04 のサーバーと、banto に割り当てるドメイン名（例：<code>banto.example.com</code>）を用意します。</p>
 						</li>
 						<li>
-							<p>sudo できるユーザーで打ちます。</p>
+							<p>sudo 権限のあるユーザーで、次のコマンドを実行します。</p>
 							<div class="cmd">
 								<code id="install-cmd">{installCmd}</code>
-								<button type="button" data-copy="install-cmd">写す</button>
+								<button type="button" data-copy="install-cmd">コピー</button>
 							</div>
 						</li>
 						<li>
-							<p>最後に出るリンクで入り、パスキーを登録します。</p>
+							<p>完了時に表示されるリンクからログインし、パスキーを登録します。</p>
 						</li>
 					</ol>
 					<p>
-						会話には Claude のアカウントを使います。Cloudflare の API トークンがあれば、DNS と証明書も自動で用意します。詳しくは<a href="/docs/install/">入れ方</a>を見てください。
+						AI との会話には Claude のアカウントが必要です。Cloudflare の API トークンを指定すると、DNS レコードと証明書も自動で設定されます。詳しくは<a href="/docs/install/">インストール手順</a>を参照してください。
 					</p>
 				</div>
 			</section>
@@ -226,24 +226,24 @@ const description =
 				<span>banto</span>
 			</a>
 			<nav aria-label="フッター">
-				<a href="/docs/">マニュアル</a>
+				<a href="/docs/">ドキュメント</a>
 				<a href="https://github.com/tjst-t/banto">GitHub</a>
 			</nav>
 		</footer>
 
 		<script>
-			// 写すボタン
+			// コピーボタン
 			for (const btn of document.querySelectorAll<HTMLButtonElement>('button[data-copy]')) {
 				btn.addEventListener('click', async () => {
 					const el = document.getElementById(btn.dataset.copy ?? '');
 					if (!el) return;
 					try {
 						await navigator.clipboard.writeText(el.textContent ?? '');
-						btn.textContent = '写しました';
+						btn.textContent = 'コピーしました';
 					} catch {
-						btn.textContent = '写せませんでした';
+						btn.textContent = 'コピーできませんでした';
 					}
-					setTimeout(() => (btn.textContent = '写す'), 1800);
+					setTimeout(() => (btn.textContent = 'コピー'), 1800);
 				});
 			}
 			// ページを開いて少し経ったら、Fork が1本「あなたの答えを待っています」に変わる（この1回だけ）

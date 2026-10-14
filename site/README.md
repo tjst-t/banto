@@ -1,6 +1,6 @@
 # banto の公開サイト（banto.tjst-t.dev）
 
-ランディングページと利用者向けのマニュアル。Astro Starlight で組み、Cloudflare Pages で配る。
+ランディングページと利用者向けのドキュメント。Astro Starlight で組み、Cloudflare Pages で配る。
 
 | 場所 | 中身 |
 |---|---|
