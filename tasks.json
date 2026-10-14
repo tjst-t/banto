@@ -7067,7 +7067,7 @@
       "number": 292,
       "kind": "bug",
       "title": "Project の root を変えるとコンテナの Module が全部起きなくなる",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7077,7 +7077,7 @@
       ],
       "body": "## 起きたこと（2026-10-14、HOME Project）\nProject の設定で root を `/home/ubuntu` から `/home/ubuntu/banto/home` に変えたら、コンテナ側の Module（shell・filesystem・subagent・service・backlog・factory・terminal・browser）が全部「MCP error -32000: Connection closed」で起きなくなった。banto 本体の側の Module は動いていた。banto を起こし直したらコンテナも起き直し、全部戻った。\n\n## 原因（推定）\nPATCH /api/projects/:id の root 変更は Module を畳むだけで、コンテナは止めない。次に Module を起こすとき `ProjectContainers.ensure` が、動いているコンテナの `project` の disk device を外して付け直す。古い root がホーム全体だと、banto のコード（`~/.local/share/banto-release/…`）と Module の置き場（`~/.local/share/banto/modules/*`）のマウントはその中に重なっているので、親を外すと一緒に外れる。Incus の設定には device が残っているので `ensureDisk` は「付いている」と見て付け直さない→中にコードが無く、Module がすぐ落ちる。\n\n## 直し方\nroot（project の device）を変えるときは、コンテナを起こし直してから使う（Module はもう畳んであるので失うものは無い）。",
       "doneWhen": "root がホーム全体の Project で root をその下へ変えたあと、Shell と FileSystem がすぐ使える（E2E で確かめる）",
-      "resolution": null,
+      "resolution": "6eb6aaec（main に push 済み、release はまだ）。ProjectContainers.ensure が根の device を替えるとき、動いているコンテナを止めてから外して起こし直す。E2E wide-root.spec.ts「…その下へ変えても、Shell と FileSystem がすぐ使える」は直す前に「Cannot find module …/server.js」で落ち、直したあと通った。関係する spec（project-container・project-modules・runtime-move）11 件も通過。",
       "refs": [],
       "threads": [
         {
@@ -7086,8 +7086,8 @@
         }
       ],
       "createdAt": "2026-10-14T01:35:59.807Z",
-      "updatedAt": "2026-10-14T01:35:59.807Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-14T01:46:43.022Z",
+      "closedAt": "2026-10-14T01:46:43.022Z",
       "extra": {}
     }
   ],
