@@ -248,7 +248,9 @@ export function MoveRuntimeDialog({
                 <SelectTrigger id="move-to" className="h-9 w-full" data-testid="move-to-select">
                   <SelectValue placeholder="選んでください" />
                 </SelectTrigger>
-                <SelectContent>
+                {/* 引き金の下に出す。既定（item-aligned）は選んでいる項目を引き金に重ねる置き方で、移す先が1つも無いと
+                    合わせる先が無く、一覧が画面の左上に出た（Backlog #291） */}
+                <SelectContent position="popper" align="start">
                   {fromRuntime !== HOST_CONTAINER_RUNTIME ? (
                     <SelectItem value={HOST_CONTAINER_RUNTIME} data-testid="move-to-option" data-runtime={HOST_CONTAINER_RUNTIME}>
                       <span className="flex items-center gap-2">

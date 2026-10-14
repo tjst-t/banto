@@ -313,6 +313,8 @@ test("Project の設定「一般」から別の実行場所へ移せる——選
         await expect(option("host-container")).toBeVisible();
         await expect(option(`remote:${name}`)).toHaveCount(0);
         await page.keyboard.press("Escape");
+        // 一覧が閉じ切ってから（閉じる動きの間は、2つ目の Escape を閉じかけの一覧が受ける）
+        await expect(page.locator('[data-slot="select-content"]')).toHaveCount(0);
         await page.keyboard.press("Escape");
         await expect(dialog).toHaveCount(0);
       });

@@ -554,7 +554,8 @@ function RuntimeStep({
         <SelectTrigger id="new-project-runtime" className="h-9 w-full" data-testid="new-project-runtime-select">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        {/* 引き金の下に出す（「別の実行場所へ移す」の移す先と同じ。Backlog #291） */}
+        <SelectContent position="popper" align="start">
           <SelectItem value={HOST_CONTAINER_RUNTIME}>
             <span className="flex items-center gap-2">
               <ShieldCheck className="size-3.5 shrink-0 text-ink-3" />

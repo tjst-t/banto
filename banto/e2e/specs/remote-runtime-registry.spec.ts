@@ -177,6 +177,8 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await expect(option).toHaveAttribute("aria-disabled", "true");
       await expect(option.getByTestId("new-project-runtime-reason")).toHaveText("host 鍵が前と違うので繋ぎません");
       await page.keyboard.press("Escape");
+      // 一覧が閉じ切ってから（閉じる動きの間は、2つ目の Escape を閉じかけの一覧が受ける）
+      await expect(page.locator('[data-slot="select-content"]')).toHaveCount(0);
       await page.keyboard.press("Escape");
       await expect(page.getByRole("dialog", { name: "新しい Project" })).toHaveCount(0);
 
@@ -261,6 +263,8 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
         `Project「${projectName}」が使っています（1つの実行場所に Project は1つ）`,
       );
       await page.keyboard.press("Escape");
+      // 一覧が閉じ切ってから（閉じる動きの間は、2つ目の Escape を閉じかけの一覧が受ける）
+      await expect(page.locator('[data-slot="select-content"]')).toHaveCount(0);
       await page.keyboard.press("Escape");
       const second = await page.request.post(`${CORE_BASE_URL}/api/projects`, {
         headers,
