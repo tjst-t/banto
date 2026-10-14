@@ -5978,7 +5978,7 @@
       "number": 297,
       "kind": "task",
       "title": "Browser のタブを会話ごとに——持ち主・会話ごとのいまのタブ・ほかの会話のタブへの操作は断る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -5990,7 +5990,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-14T14:56:16.281Z",
-      "updatedAt": "2026-10-14T14:56:16.281Z",
+      "updatedAt": "2026-10-14T14:56:25.025Z",
       "closedAt": null,
       "extra": {}
     },
