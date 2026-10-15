@@ -7450,7 +7450,7 @@
       "number": 308,
       "kind": "task",
       "title": "AI 向けの readDocument（ページごとの文字・ページの絵）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "office-review",
       "dependsOn": [
         "office-converter"
@@ -7460,12 +7460,12 @@
       "labels": [],
       "body": "PDF・Office のページごとの文字（表はシートごとの CSV 相当）を返し、asImage でページの絵を返す。変換役と置き場は画面と同じ。readFile の形は変えない。",
       "doneWhen": "AI が docx・pptx・xlsx・PDF の指したページの文字と絵を読める。単体テストで確かめる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/office-read-document）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T16:01:55.820Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T16:16:17.431Z",
+      "closedAt": "2026-10-15T16:16:17.431Z",
       "extra": {}
     },
     {
