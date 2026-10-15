@@ -7446,6 +7446,27 @@
       "updatedAt": "2026-10-15T09:13:02.555Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "tools-container",
+      "number": 309,
+      "kind": "task",
+      "title": "同梱の道具用のコンテナ：同梱の Module が名乗れば第三者と同居しない専用のコンテナで動く",
+      "status": "ready",
+      "parent": "office-review",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "modulePlacement に4つ目の置き場を足す。同梱の banto 全体の Module だけが宣言で名乗れる（外から来たものは今どおり banto 全体用のコンテナ）。コンテナは1台、資源の上限は banto 全体用のコンテナと同じ決め方、コンテナの中で sudo（apt）できる。中継の承認：宛先の tool が dev.banto/statelessTransform を名乗り、宛先も呼び元も同梱なら聞かない。仕様 v4-modules.md §2.2「変換役の置き場」・v4-security.md §2 にも追記する。",
+      "doneWhen": "試しの同梱 Module が道具用のコンテナで起き、Project の Module（別のサーバの Project も）から中継で承認なしに呼べる。外から足した Module は名乗っても道具用のコンテナに入らない（単体テスト）。E2E で起動を確かめる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-15T09:40:31.811Z",
+      "updatedAt": "2026-10-15T09:40:31.811Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
