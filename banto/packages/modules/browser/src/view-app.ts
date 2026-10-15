@@ -445,8 +445,13 @@ const SCRIPT = String.raw`
     if (adecoder && adecoder.state !== "closed") { try { adecoder.close(); } catch (e) { /* 閉じたいだけ */ } }
     adecoder = null;
   }
-  // 前に音を出していた：画面に触れた最初の操作で鳴らし始める（その操作が「人の操作」になる）
-  function onGesture() { if (soundWanted && !soundOn) startSound(); }
+  // 前に音を出していた：画面に触れた最初の操作で鳴らし始める（その操作が「人の操作」になる）。**「音を出す」のボタンの上の
+  // 操作は除く**——ボタンは自分の click で startSound する。ここでも鳴らし始めると、resume() が数 ms で解決して soundOn になった
+  // あとに同じ押下の click（pointerdown から 80〜150ms 後）が届き、「音を消す」として止めて覚えまで消していた（レビューの指摘）
+  function onGesture(e) {
+    if (e.target instanceof Element && e.target.closest("#sound")) return;
+    if (soundWanted && !soundOn) startSound();
+  }
   document.addEventListener("pointerdown", onGesture, true);
   document.addEventListener("keydown", onGesture, true);
 

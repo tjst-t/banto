@@ -365,6 +365,27 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
   await expect(sound).toHaveText("音を出す");
   await expect.poll(async () => ((await uiCall(page, "getBrowserStatus")).view as { audio?: unknown }).audio, { message: "音を消しても音を流している" }).toBeUndefined();
   expect(await f.locator("body").evaluate(() => window.localStorage.getItem("banto-browser-sound"))).toBe("0");
+  // 前に音を出していた状態で開き直し、覚えた後の最初の操作としていちばん自然な「ボタンを押す」で鳴り始め、鳴り続ける
+  // （前は同じ押下の pointerdown で鳴らし始め、続く click で止めて覚えも消していた）
+  await f.locator("body").evaluate(() => window.localStorage.setItem("banto-browser-sound", "1"));
+  await page.getByRole("button", { name: "Canvas を閉じる" }).click();
+  await expect.poll(async () => ((await uiCall(page, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
+  await page.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/tone` }).getByRole("button", { name: "開く" }).click();
+  const g = canvasFrame(page);
+  const again = g.getByTestId("sound");
+  await expect(again, "覚えているのに待ちの表示にならない").toHaveAttribute("data-sound", "waiting", { timeout: 60_000 });
+  await expect(again).toHaveText("音を出す");
+  await again.click();
+  await expect(again, "覚えた後にボタンを押しても鳴り始めない").toHaveAttribute("data-sound", "on", { timeout: 10_000 });
+  // 押下の click で止まっていない（少し待っても鳴ったまま・覚えも残る・Module も流している）
+  await new Promise((r) => setTimeout(r, 1500));
+  await expect(again).toHaveAttribute("data-sound", "on");
+  await expect(again).toHaveText("音を消す");
+  expect(await g.locator("body").evaluate(() => window.localStorage.getItem("banto-browser-sound"))).toBe("1");
+  await expect.poll(async () => Number(await again.getAttribute("data-played")), { message: "開き直した画面で鳴らしていない" }).toBeGreaterThan(20);
+  expect(((await uiCall(page, "getBrowserStatus")).view as { audio?: { viewers: number } }).audio?.viewers).toBe(1);
+  await again.click();
+  await expect(again).toHaveAttribute("data-sound", "off");
   await ai(page, "browserAct", { action: "click", ref: refOf(await ai(page, "browserSnapshot"), "button", "音を止める") });
 
   // 閉じると動画も止まる
