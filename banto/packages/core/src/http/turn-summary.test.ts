@@ -77,6 +77,38 @@ test("形が合っていれば通り、合わなければ直し方の分かる�
   );
 });
 
+test("artifacts・選択肢・次に頼めることの url は http/https だけ通す（受信箱で押せるリンクにする）", () => {
+  const withUrls: TurnSummary = {
+    ...good,
+    outcome: { ...good.outcome, artifacts: [{ label: "案A のモック", detail: "mock-ui", url: "https://mock.example.net/p/a" }] },
+    decisions: [
+      {
+        question: "どちらにしますか？",
+        options: [
+          { label: "案A", reply: "案A で進めて。", url: "https://mock.example.net/p/a" },
+          { label: "案B", reply: "案B で進めて。", url: "http://localhost:3000/p/b" },
+        ],
+      },
+    ],
+  };
+  assert.equal(validateTurnSummary(withUrls), undefined);
+
+  const jsArtifact = validateTurnSummary({
+    ...good,
+    outcome: { ...good.outcome, artifacts: [{ label: "x", detail: "y", url: "javascript:alert(1)" }] },
+  });
+  assert.match(jsArtifact ?? "", /outcome\.artifacts\[0\]\.url は http:\/\/ か https:\/\//);
+
+  const relative = validateTurnSummary({
+    ...good,
+    decisions: [{ question: "?", options: [{ label: "A", reply: "A で", url: "/p/banto" }, { label: "B", reply: "B で" }] }],
+  });
+  assert.match(relative ?? "", /decisions\[0\]\.options\[0\]\.url/);
+
+  const next = validateTurnSummary({ ...good, decisions: [], nextSuggestions: [{ label: "見る", reply: "見て", url: "file:///etc/passwd" }] });
+  assert.match(next ?? "", /nextSuggestions\[0\]\.url/);
+});
+
 test("催促は、作業をした・3分以上かかったターンで、まとめが無いときだけ一度だけ（stop_hook_active なら終える）", () => {
   const t0 = 1_000_000;
   const short: TurnSummaryState = { startedAt: t0 };

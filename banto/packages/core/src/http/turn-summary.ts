@@ -39,6 +39,10 @@ const option = z.object({
     .string()
     .describe("押すと人の入力欄に入る文。そのまま送れば通じる具体的な文にする（「A で」ではなく「案A で。○○して」）"),
   recommended: z.boolean().optional().describe("あなたのおすすめ。1つの問いに1つまで"),
+  url: z
+    .string()
+    .optional()
+    .describe("選択肢の中身（モック・公開した画面）を選ぶ前に見られる場所（http/https の URL）。無ければ省く"),
 });
 
 /** tool の引数の形（SDK の tool() に渡す） */
@@ -55,7 +59,16 @@ export const reportTurnShape = {
       points: z.array(z.string()).describe(`分かったこと・変えたこと（${TURN_SUMMARY_LIMITS.points}つまで、無ければ空）`),
       notVerified: z.array(z.string()).optional().describe("確かめていないこと・残っていること。確かめたように書かない"),
       artifacts: z
-        .array(z.object({ label: z.string().describe("種類（例「コミット」「URL」）"), detail: z.string() }))
+        .array(
+          z.object({
+            label: z.string().describe("種類（例「コミット」「URL」）"),
+            detail: z.string(),
+            url: z
+              .string()
+              .optional()
+              .describe("開いて見られる場所（モック・公開した画面など、http/https の URL）。人は受信箱から押して開く"),
+          }),
+        )
         .optional()
         .describe("できたもの（コミット・ファイル・URL など）"),
     })
@@ -89,6 +102,17 @@ export interface TurnSummaryEntry {
 
 const blank = (s: string | undefined) => s === undefined || s.trim() === "";
 
+/** 任意の url は http/https だけ（画面が押せるリンクにする——`javascript:` 等を開かせない） */
+function badUrl(url: string | undefined): boolean {
+  if (url === undefined) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol !== "http:" && u.protocol !== "https:";
+  } catch {
+    return true;
+  }
+}
+
 /** 中身を確かめる。断る理由を文で返す（AI が読んで直せるように）。通れば `undefined` */
 export function validateTurnSummary(input: TurnSummary): string | undefined {
   const problems: string[] = [];
@@ -98,6 +122,9 @@ export function validateTurnSummary(input: TurnSummary): string | undefined {
     problems.push(`outcome.points は ${TURN_SUMMARY_LIMITS.points} つまでです（${input.outcome.points.length} つあります）。大事なものに絞ってください。`);
   }
   if (input.outcome.points.some((p) => blank(p))) problems.push("outcome.points に空のものがあります。");
+  (input.outcome.artifacts ?? []).forEach((a, i) => {
+    if (badUrl(a.url)) problems.push(`outcome.artifacts[${i}].url は http:// か https:// で始まる URL にしてください（${a.url}）。`);
+  });
   if (input.decisions.length > TURN_SUMMARY_LIMITS.decisions) {
     problems.push(`decisions は ${TURN_SUMMARY_LIMITS.decisions} つまでです。`);
   }
@@ -109,10 +136,16 @@ export function validateTurnSummary(input: TurnSummary): string | undefined {
     }
     if (d.options.filter((o) => o.recommended === true).length > 1) problems.push(`${at} のおすすめ（recommended）は1つまでです。`);
     if (d.options.some((o) => blank(o.label) || blank(o.reply))) problems.push(`${at}.options に label か reply が空のものがあります。`);
+    d.options.forEach((o, j) => {
+      if (badUrl(o.url)) problems.push(`${at}.options[${j}].url は http:// か https:// で始まる URL にしてください（${o.url}）。`);
+    });
   });
   const next = input.nextSuggestions ?? [];
   if (next.length > TURN_SUMMARY_LIMITS.nextSuggestions) problems.push(`nextSuggestions は ${TURN_SUMMARY_LIMITS.nextSuggestions} 個までです。`);
   if (next.some((o) => blank(o.label) || blank(o.reply))) problems.push("nextSuggestions に label か reply が空のものがあります。");
+  next.forEach((o, j) => {
+    if (badUrl(o.url)) problems.push(`nextSuggestions[${j}].url は http:// か https:// で始まる URL にしてください（${o.url}）。`);
+  });
   if (problems.length === 0) return undefined;
   return `まとめを受け付けられませんでした。直してもう一度 report_turn を呼んでください：\n${problems.map((p) => `- ${p}`).join("\n")}`;
 }
@@ -145,7 +178,8 @@ export function noteToolUsed(state: TurnSummaryState, toolName: string): void {
 export const REPORT_TURN_DESCRIPTION = [
   "このターンのまとめを人に渡す。作業をした（tool を使った）ターンや長い報告のとき、人に返す最後に1回呼ぶ。短い受け答えには呼ばない。",
   "人は作業を見ておらず、前の話を覚えていないこともある——頼まれたこと・結果・人が決めること（返答の候補つき）を、",
-  "それだけ読めば分かるように書く。画面はこれを会話のそのターンの一番下に出す。",
+  "それだけ読めば分かるように書く。画面はこれを会話のそのターンの一番下と受信箱に出す。",
+  "モックや公開した画面のように開いて見られるものは、artifacts と選択肢の url に入れる——選択肢の中身（モック・公開した画面）を選ぶ前に見られる場所になる。",
   "人への返事の本文を書き終えてから、最後に呼ぶ（これは本文の代わりではない——本文を書かずに呼ぶと、人には返事が届かない）。",
   "呼ぶとそこでターンが終わる。",
 ].join("");
