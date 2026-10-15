@@ -7380,7 +7380,7 @@
       "number": 305,
       "kind": "task",
       "title": "pptx・doc・ppt・odt・odp と docx の「元に近い見た目」を変換役の PDF で描く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "office-review",
       "dependsOn": [
         "office-pdf-viewer",
@@ -7391,12 +7391,12 @@
       "labels": [],
       "body": "",
       "doneWhen": "pptx が document 画面でスライドとして読める。docx の「元に近い見た目で見る」が PDF に切り替わる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/office-pptx-pdf）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T15:39:09.728Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T15:53:31.776Z",
+      "closedAt": "2026-10-15T15:53:31.776Z",
       "extra": {}
     },
     {
