@@ -16,7 +16,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AutomationInputError, AutomationNotFoundError, type AutomationStore } from "../automation/store.js";
-import type { Automation, AutomationRunCause } from "../automation/fold.js";
+import type { AutomationRunner } from "../automation/runner.js";
 import { previousRunUnfinished } from "../automation/busy.js";
 import {
   MemoryLimitExceededError,
@@ -185,10 +185,10 @@ export interface AppDeps {
   /** **自動化の台帳**（決定・2026-10-15、アーキ仕様 §4.3）。無ければ `/api/projects/:id/automations` は 404 */
   automations?: AutomationStore;
   /**
-   * **自動化を1回動かす**（アーキ仕様 §4.3「判断は届ける口の手前に置く」、届けるのは Backlog `automation-deliver`）。
-   * 前の回が終わっているかは呼ぶ前に確かめてある。返すのはその回の `runId`。無ければ「今すぐ動かす」は 501
+   * **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」「専用の Fork」）。作ったとき・再開したときに
+   * 専用の Fork を立て、「今すぐ動かす」で1回届け、人が専用の Fork を閉じたら一時停止する。無ければ「今すぐ動かす」は 501
    */
-  runAutomation?(automation: Automation, cause: AutomationRunCause): Promise<{ runId: string }>;
+  automationRunner?: Pick<AutomationRunner, "prepare" | "run" | "threadClosed">;
   /** host から画面への出来事の流れ（`GET /api/events`、決定・2026-09-25） */
   appEvents?: AppEventBus;
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
@@ -1277,6 +1277,10 @@ export function createApp(deps: AppDeps) {
    */
   async function closeThreadAndTell(threadId: string, by: { by: ThreadClosedBy; reason?: string }): Promise<void> {
     await deps.projectThread.closeThread(threadId, by);
+    // 自動化の専用の Fork なら、その自動化を一時停止して知らせる（§4.3）。閉じるのは断らない
+    await deps.automationRunner
+      ?.threadClosed(threadId)
+      .catch((err: unknown) => console.warn(`[host] ${threadId} を閉じたときに自動化を一時停止できませんでした:`, err));
     const thread = deps.projectThread.getThread(threadId);
     deps.appEvents?.publish({
       type: "thread.closed",
@@ -3302,7 +3306,8 @@ export function createApp(deps: AppDeps) {
               const problem = checkTarget(body.target);
               if (problem) return json(res, 400, { error: problem });
               const created = await store.create({ projectId, createdBy: { kind: "human" }, fields: body });
-              return json(res, 201, created);
+              // 届け先が専用の Fork なら、作るときに立てる（§4.3「専用の Fork」）
+              return json(res, 201, (await deps.automationRunner?.prepare(created)) ?? created);
             }
             return json(res, 405, { error: "method not allowed" });
           }
@@ -3319,8 +3324,9 @@ export function createApp(deps: AppDeps) {
               },
             );
             if (busy) return json(res, 409, { error: busy });
-            if (!deps.runAutomation) return json(res, 501, { error: "自動化を届ける口がまだありません" });
-            return json(res, 202, await deps.runAutomation(automation, "manual"));
+            if (!deps.automationRunner) return json(res, 501, { error: "自動化を届ける口がまだありません" });
+            // 届けなかった（閉じている・移している等）ときも 202——その回は `skipped` と理由つきで台帳に残る
+            return json(res, 202, await deps.automationRunner.run(automation, "manual"));
           }
           if (req.method === "GET") return json(res, 200, automation);
           if (req.method === "PATCH") {
@@ -3337,6 +3343,9 @@ export function createApp(deps: AppDeps) {
             else if (paused === undefined) return json(res, 400, { error: "直す欄がありません" });
             if (paused === true) next = await store.pause(automationId, "人が一時停止しました");
             if (paused === false) next = await store.resume(automationId);
+            // 動いている自動化の専用の Fork が無い・閉じていたら立てる（届け先を変えた・閉じた Fork のまま再開した）。
+            // 一時停止のままなら立てない——開き直しても自動では再開しない（§4.3）
+            if (!next.paused && deps.automationRunner) next = await deps.automationRunner.prepare(next);
             return json(res, 200, next);
           }
           if (req.method === "DELETE") {

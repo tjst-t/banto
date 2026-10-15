@@ -121,6 +121,11 @@ export interface MessageOrigin {
    * 送り方」）。受け取った AI はここへ送り返す——返事は送り元の Thread に戻る。Module が届けたものには無い
    */
   sender?: MessageSender;
+  /**
+   * **自動化の1回分として届けたもの**（追加・2026-10-15、アーキ仕様 §4.3「1回分の結果」）。その回のターンが終わったら、
+   * 結末を `automation.fired` に書く
+   */
+  automation?: { id: string; runId: string };
 }
 
 /** メッセージの送り元（Project と Thread。名前は送った時点のもの） */
@@ -145,8 +150,11 @@ export interface PendingDelivery extends MessageOrigin {
   continues?: TurnContinuation;
 }
 
-/** 届いたもののうち、中の指示に従ってよい書き手（`PendingDelivery.kind`） */
-export type DeliveryAuthor = "banto" | "fork";
+/**
+ * 届いたもののうち、中の指示に従ってよい書き手（`PendingDelivery.kind`）。`automation`＝自動化の指示（人が作った、
+ * または人が確かめた——アーキ仕様 §4.3。追加・2026-10-15）
+ */
+export type DeliveryAuthor = "banto" | "fork" | "automation";
 
 /**
  * **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が

@@ -18,11 +18,27 @@ export class ThreadTurns {
   private readonly running = new Map<string, { hop: number; startedAt: number }>();
   private readonly waiting = new Map<string, Array<{ hop: number; grant: (release: () => void) => void }>>();
   private readonly listeners = new Set<(change: TurnChange) => void>();
+  /** ターンではない短い仕事のために押さえている Thread（`tryHold`） */
+  private readonly held = new Set<string>();
 
   /** 鍵を取る。**取れなければ `undefined`**（走っているか、人が並んでいる）。返り値を呼ぶと鍵を返す */
   tryAcquire(threadId: string, hop: number): (() => void) | undefined {
-    if (this.running.has(threadId) || (this.waiting.get(threadId)?.length ?? 0) > 0) return undefined;
+    if (!this.free(threadId)) return undefined;
     return this.start(threadId, hop);
+  }
+
+  /**
+   * **ターンではない短い仕事のために鍵を一瞬押さえる**（追加・2026-10-15、アーキ仕様 §4.3「毎回まっさら」——自動化が
+   * Clear してから届ける間）。取れなければ `undefined`。ターンではないので `started`・`ended` を出さず、`isRunning` も
+   * 変えない（受信箱のレビュー待ち・画面の「走り始めた」に数えない）。押さえている間に来た人は並び、返すと鍵がそのまま渡る
+   */
+  tryHold(threadId: string): (() => void) | undefined {
+    if (!this.free(threadId)) return undefined;
+    this.held.add(threadId);
+    return () => {
+      if (!this.held.delete(threadId)) return;
+      this.grantNext(threadId);
+    };
   }
 
   /**
@@ -92,12 +108,20 @@ export class ThreadTurns {
       released = true;
       this.running.delete(threadId);
       this.emit({ type: "ended", threadId, hop });
-      // 並んでいる人がいれば、鍵をそのまま渡す（届いたもので起こすほうに横取りさせない）
-      const queue = this.waiting.get(threadId);
-      const next = queue?.shift();
-      if (queue && queue.length === 0) this.waiting.delete(threadId);
-      if (next) next.grant(this.start(threadId, next.hop));
+      this.grantNext(threadId);
     };
+  }
+
+  private free(threadId: string): boolean {
+    return !this.running.has(threadId) && !this.held.has(threadId) && (this.waiting.get(threadId)?.length ?? 0) === 0;
+  }
+
+  /** 並んでいる人がいれば、鍵をそのまま渡す（届いたもので起こすほうに横取りさせない） */
+  private grantNext(threadId: string): void {
+    const queue = this.waiting.get(threadId);
+    const next = queue?.shift();
+    if (queue && queue.length === 0) this.waiting.delete(threadId);
+    if (next) next.grant(this.start(threadId, next.hop));
   }
 
   private emit(change: TurnChange): void {

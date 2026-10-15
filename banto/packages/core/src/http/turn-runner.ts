@@ -440,6 +440,8 @@ async function* runThreadTurnInner(
       deliveryId: d.deliveryId,
       // 別の Thread からのメッセージは送り元も残す——画面が「どこから来たか」を出す（§4.2）
       ...(d.sender ? { sender: d.sender } : {}),
+      // 自動化の1回分は、その回の結末を書くのに要る（§4.3）
+      ...(d.automation ? { automation: d.automation } : {}),
     });
   }
   // 続きを引き継いだ——「自動で続けるのをやめました」のお知らせは片づける（もう人の判断を待っていない）。片づけられなく

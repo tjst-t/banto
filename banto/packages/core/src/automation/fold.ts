@@ -10,6 +10,12 @@ import type { Fold } from "../event-store/snapshot.js";
 /** 直近の回は1件の自動化につき、これだけ fold に持つ。古いものは events.jsonl にだけ残る */
 export const AUTOMATION_RUNS_KEPT = 50;
 
+/**
+ * **専用の Fork はこの回数届けたら乗り換える**（アーキ仕様 §4.3「乗り換え」。仮置きの値・2026-10-15——困ったら変える）。
+ * 毎回まっさらでも Clear のたびに会話の記録・印・手放したセッションが1本の Fork に積もる。1時間ごとなら2日で1本
+ */
+export const AUTOMATION_FORK_RUNS = 48;
+
 /** 時刻の繰り返し。`time` は "H:MM"（24時間）、`day` は 0＝日曜 */
 export type AutomationRepeat =
   | { kind: "daily"; time: string }
@@ -46,6 +52,8 @@ export interface AutomationRun {
   reason?: string;
   /** 届けた Thread */
   threadId?: string;
+  /** この回で専用の Fork を乗り換えたなら、閉じた前の Fork（境目の記録） */
+  rotatedFrom?: string;
 }
 
 /** Webhook で受けて、まだ届けていないもの（`automation.received`） */
@@ -78,6 +86,11 @@ export interface Automation extends AutomationFields {
   runs: AutomationRun[];
   /** 受けて、まだ届けていないもの（古い順） */
   received: AutomationReceived[];
+  /**
+   * いまの専用の Fork に届けた回数（乗り換えの数え、`AUTOMATION_FORK_RUNS`）。`runs` は 50 件で切れるので、そこから
+   * 数え直さずに fold が数える。専用の Fork が変わると 0 から
+   */
+  threadRuns?: number;
 }
 
 export interface AutomationReadModel {
@@ -126,10 +139,13 @@ export const automationFold: Fold<AutomationReadModel> = {
         });
         break;
       }
-      case "automation.updated":
+      case "automation.updated": {
         if (!current) return state;
-        automations.set(current.id, { ...current, ...event.payload.changes, updatedAt: raw.ts });
+        const next = { ...current, ...event.payload.changes, updatedAt: raw.ts };
+        if (next.target.threadId !== current.target.threadId) next.threadRuns = 0;
+        automations.set(current.id, next);
         break;
+      }
       case "automation.paused": {
         if (!current) return state;
         const { pausedReason: _drop, ...rest } = current;
@@ -167,7 +183,20 @@ export const automationFold: Fold<AutomationReadModel> = {
             : [run, ...current.runs].slice(0, AUTOMATION_RUNS_KEPT);
         const consumed = new Set(receivedIds ?? []);
         const received = consumed.size > 0 ? current.received.filter((r) => !consumed.has(r.receivedId)) : current.received;
-        automations.set(current.id, { ...current, runs, received });
+        // いまの専用の Fork に届けた回を数える（同じ回の後の記録・飛ばした回・断った回は数えない）
+        const deliveredHere =
+          at < 0 &&
+          run.result !== "skipped" &&
+          run.result !== "rejected" &&
+          current.target.kind === "dedicated" &&
+          run.threadId !== undefined &&
+          run.threadId === current.target.threadId;
+        automations.set(current.id, {
+          ...current,
+          runs,
+          received,
+          ...(deliveredHere ? { threadRuns: (current.threadRuns ?? 0) + 1 } : {}),
+        });
         break;
       }
       default:

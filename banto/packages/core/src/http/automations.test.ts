@@ -48,9 +48,13 @@ async function withApp(
       automations,
       ...(opts.withRunner
         ? {
-            runAutomation: async (a: { id: string }, cause: string) => {
-              ran.push(`${a.id}:${cause}`);
-              return { runId: "r1" };
+            automationRunner: {
+              prepare: async <T>(a: T) => a,
+              run: async (a: { id: string }, cause: string) => {
+                ran.push(`${a.id}:${cause}`);
+                return { runId: "r1", result: "running" as const };
+              },
+              threadClosed: async () => {},
             },
           }
         : {}),
@@ -140,7 +144,7 @@ test("今すぐ動かす：前の回が終わっていなければ断り、届�
       release();
       const started = await call(run, "POST");
       assert.equal(started.status, 202);
-      assert.deepEqual(started.body, { runId: "r1" });
+      assert.deepEqual(started.body, { runId: "r1", result: "running" });
       assert.deepEqual(ran, [`${created.body.id}:manual`]);
     },
     { withRunner: true },

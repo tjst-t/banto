@@ -89,6 +89,17 @@ export class AutomationStore {
     await this.append("automation.removed", { id });
   }
 
+  /**
+   * **専用の Fork を入れる**（立てた・乗り換えた・閉じていたので立て直した）。人・AI の入力（`update`）からは入れられない
+   * ——host が立てたものだけ
+   */
+  async setDedicatedThread(id: string, threadId: string): Promise<Automation> {
+    const current = this.mustGet(id);
+    if (current.target.kind !== "dedicated") throw new Error(`自動化 ${id} の届け先は専用の Fork ではありません`);
+    await this.append("automation.updated", { id, changes: { target: { ...current.target, threadId } } });
+    return this.mustGet(id);
+  }
+
   /** 1回分の結果を残す。同じ `runId` を後でもう一度書くと置き換わる（running → done 等） */
   async recordRun(id: string, run: AutomationRun, receivedIds?: string[]): Promise<void> {
     this.mustGet(id);

@@ -28,6 +28,7 @@ import {
 } from "./skills/index.js";
 import { RuntimeConfigStore } from "./config/runtime.js";
 import { AutomationStore } from "./automation/store.js";
+import { AutomationRunner } from "./automation/runner.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -344,6 +345,17 @@ async function main(): Promise<void> {
     // 起こし直しのたびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間は起こさない（§2.5「上限」）
     // 起こし直したあと、続けられると名乗った Module に続けるかを聞いている間も起こさない（§2.5「2.」）
     hold: (threadId) => recovery?.holdReason(threadId) ?? resumeHoldReason({ projectThread, inbox }, threadId),
+  });
+  // **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」）。`deliver` の手前で飛ばす・Clear してから届ける
+  const automationRunner = new AutomationRunner({
+    projectThread,
+    automations,
+    turns: threadTurns,
+    deliveries,
+    listJudgmentsForThread: (threadId) => inbox.listJudgmentsForThread(threadId),
+    notify: async (n) => {
+      await inbox.raiseNotice(n);
+    },
   });
   // 受信箱のレビュー待ちに添える tool の数（CLI の会話の記録から数える。追加・2026-10-15、`inbox/review-turn.ts`）
   const reviewToolCounter = new ReviewToolCounter((sessionId, dir) => sdkSessionReader.messages(sessionId, dir), NON_WORK_TOOLS);
@@ -2189,6 +2201,7 @@ async function main(): Promise<void> {
     pendingApprovals,
     runtimeConfig,
     automations,
+    automationRunner,
     turnEvents,
     threadTurns,
     deliveries,

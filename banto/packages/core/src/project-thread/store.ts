@@ -625,6 +625,8 @@ export class ProjectThreadStore {
     continues?: TurnContinuation;
     /** 中の指示に従ってよい書き手（追加・2026-10-15）。無ければ外から来たもの */
     kind?: DeliveryAuthor;
+    /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
+    automation?: { id: string; runId: string };
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("delivery.received", input);
