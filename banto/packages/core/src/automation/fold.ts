@@ -24,8 +24,27 @@ export type AutomationRepeat =
   | { kind: "interval"; hours: number }
   | { kind: "cron"; expr: string };
 
-/** きっかけの出どころ。段1の Webhook は Backlog `automation-webhook` で足す */
-export type AutomationSource = { kind: "time"; repeat: AutomationRepeat; timeZone: string };
+/** Webhook の署名の確かめ方。`header` の値を、Vault の `alias` の値を鍵にした HMAC-SHA256 で確かめる */
+export interface AutomationSignature {
+  header: string;
+  alias: string;
+}
+
+/**
+ * きっかけの出どころ。`webhook`（アーキ仕様 §4.3「Webhook」）の受け口の印は欄に入れない——台帳には印のハッシュだけを
+ * `Automation.webhookTokenHash` に持つ（人・AI が直す欄ではない）
+ */
+export type AutomationSource =
+  | { kind: "time"; repeat: AutomationRepeat; timeZone: string }
+  | {
+      kind: "webhook";
+      /** 無ければ確かめない（URL を知っていれば誰でも動かせる） */
+      signature?: AutomationSignature;
+      /** 続けて届いたものをまとめる待ち時間（秒）。0 は1件ずつ */
+      batchSeconds: number;
+      /** この Project のコンテナから来た要求を受ける（既定は断る——コンテナはどの Project のものでも core に届く） */
+      allowProjectContainer: boolean;
+    };
 
 /**
  * 届け先。`dedicated`＝自動化専用の Fork（`threadId` は Fork を立てたあとに入る——立てるのは Backlog
@@ -58,13 +77,18 @@ export interface AutomationRun {
   scheduledFor?: string;
   /** 同時に動いている自動化が多くてずらした理由（ずらした回だけ） */
   delayed?: string;
+  /** Webhook で受けたもののうち、この回にまとめて届けた件数 */
+  received?: number;
 }
 
 /** Webhook で受けて、まだ届けていないもの（`automation.received`） */
 export interface AutomationReceived {
   receivedId: string;
   at: string;
+  /** AI に渡す本文（先頭 `WEBHOOK_BODY_MAX_BYTES` まで） */
   body: string;
+  /** 本文を切ったなら、もとのバイト数 */
+  truncatedFrom?: number;
 }
 
 /** 人と AI が作り・直せる欄 */
@@ -100,6 +124,8 @@ export interface Automation extends AutomationFields {
    * 時計で動いた（飛ばした）回の予定の時刻のうち一番後
    */
   clockFrom: string;
+  /** Webhook の受け口の印の SHA-256（hex）。印そのものは作ったときに1回だけ人に見せ、どこにも残さない */
+  webhookTokenHash?: string;
 }
 
 export interface AutomationReadModel {
@@ -109,7 +135,7 @@ export interface AutomationReadModel {
 export type AutomationEvent =
   | {
       type: "automation.created";
-      payload: AutomationFields & { id: string; projectId: string; createdBy: AutomationCreatedBy };
+      payload: AutomationFields & { id: string; projectId: string; createdBy: AutomationCreatedBy; webhookTokenHash?: string };
     }
   | { type: "automation.updated"; payload: { id: string; changes: Partial<AutomationFields> } }
   | { type: "automation.paused"; payload: { id: string; reason?: string } }
@@ -134,12 +160,13 @@ export const automationFold: Fold<AutomationReadModel> = {
 
     switch (event.type) {
       case "automation.created": {
-        const { id, projectId, createdBy, ...fields } = event.payload;
+        const { id, projectId, createdBy, webhookTokenHash, ...fields } = event.payload;
         automations.set(id, {
           ...fields,
           id,
           projectId,
           createdBy,
+          ...(webhookTokenHash ? { webhookTokenHash } : {}),
           createdAt: raw.ts,
           updatedAt: raw.ts,
           paused: false,

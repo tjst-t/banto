@@ -30,6 +30,7 @@ import { RuntimeConfigStore } from "./config/runtime.js";
 import { AutomationStore } from "./automation/store.js";
 import { AutomationRunner } from "./automation/runner.js";
 import { AutomationClock } from "./automation/clock.js";
+import { AutomationWebhooks } from "./automation/webhook.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -371,6 +372,28 @@ async function main(): Promise<void> {
     runner: automationRunner,
     // 間隔は E2E だけ縮める（BANTO_AUTOMATION_CLOCK_INTERVAL_MS）
     ...(Number(process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS) > 0 ? { intervalMs: Number(process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS) } : {}),
+  });
+  // **Webhook のきっかけ**（アーキ仕様 §4.3「Webhook」）。受け口は `/hooks/<印>`。溜まったものを届け始めるのは時計と同じく
+  // 待ち受けて `resumeAll` したあと（起き直したら残っている受けたものからまとめ直す）
+  const automationWebhooks = new AutomationWebhooks({
+    dataDir: bootstrap.dataDir,
+    automations,
+    runner: automationRunner,
+    onTurnEnded: (listener) =>
+      threadTurns.onChange((change) => {
+        if (change.type === "ended") listener(change.threadId);
+      }),
+    // **送り元がどの Project のコンテナか**——覚えずに毎回、実行場所に聞く（Claude のログインの中継と同じ）。この機械の
+    // 中からの要求（127.0.0.1）はコンテナではない。別のサーバの Project のコンテナは core の口には来ない（専用の待ち受け）
+    containerProjectOf: async (remote) => {
+      if (remote === "127.0.0.1" || remote === "::1") return undefined;
+      const projects = projectThread.listProjects();
+      const matches = await Promise.all(projects.map((p) => runtime.sourceMatches(p.id, remote)));
+      return projects.find((_, i) => matches[i])?.id;
+    },
+    // その Project のための呼び出しとして引く——Project のグループと共通の既定にある alias が使える
+    resolveSecret: (alias, projectId) => resolveSecretThroughVault(alias, { project: projectId }),
+    projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
   });
   // 受信箱のレビュー待ちに添える tool の数（CLI の会話の記録から数える。追加・2026-10-15、`inbox/review-turn.ts`）
   const reviewToolCounter = new ReviewToolCounter((sessionId, dir) => sdkSessionReader.messages(sessionId, dir), NON_WORK_TOOLS);
@@ -1124,6 +1147,33 @@ async function main(): Promise<void> {
     }
   }
 
+  /**
+   * **その Project から使える秘密の alias の名前**（自動化の Webhook の署名の鍵の選び先、v4-frontend.md §6.42）。共通の
+   * グループのものと、その Project に紐付いたもの。値は通らない
+   */
+  async function secretAliasesFor(projectId: string): Promise<string[]> {
+    const directory = await ensureVaultDirectory();
+    if (!directory) throw new Error("Vault の窓口が繋がっていません");
+    const endDirectoryCall = moduleCalls.begin("vault-directory", undefined, "host", undefined, true);
+    try {
+      const listed = await directory.callTool({ name: "listAliases", arguments: {}, _meta: { [CALLER_META_KEY]: { instance: true } } });
+      const text = (listed.content as { text: string }[])[0]?.text ?? "";
+      if (listed.isError) throw new Error(text || "Vault の alias の一覧を読めませんでした");
+      const body = JSON.parse(text) as { aliases?: Array<{ name?: unknown; kind?: unknown; scope?: unknown; projects?: unknown }> };
+      const names = (body.aliases ?? [])
+        .filter(
+          (a) =>
+            a.kind === "secret" &&
+            typeof a.name === "string" &&
+            (a.scope === "shared" || (a.scope === "project" && Array.isArray(a.projects) && a.projects.includes(projectId))),
+        )
+        .map((a) => a.name as string);
+      return [...new Set(names)].sort();
+    } finally {
+      endDirectoryCall();
+    }
+  }
+
   /** 窓口で在りかを引いてから、その金庫に値を聞く（relay と同じ2段）。 */
   async function resolveSecretThroughVault(
     alias: string,
@@ -1146,26 +1196,25 @@ async function main(): Promise<void> {
     );
     let found: { implementation?: string; name?: string; group?: string };
     try {
-      found = JSON.parse(
-        ((
-          await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: meta })
-        ).content as { text: string }[])[0]!.text,
-      ) as { implementation?: string; name?: string; group?: string };
+      const looked = await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: meta });
+      const lookedText = (looked.content as { text: string }[])[0]?.text ?? "";
+      // 窓口が断った理由（「どの Vault にもありません」等）をそのまま返す——JSON として読むと理由が構文の誤りに化ける
+      // （追加・2026-10-15、自動化の Webhook の署名の鍵で人の画面に出るようになった）
+      if (looked.isError) throw new Error(lookedText || `"${alias}" の在りかを引けませんでした`);
+      found = JSON.parse(lookedText) as { implementation?: string; name?: string; group?: string };
     } finally {
       endDirectoryCall();
     }
     if (!found.implementation || !found.name) throw new Error(`"${alias}" の在りかが分かりません`);
     const backend = connectedModules.get(found.implementation);
     if (!backend) throw new Error(`${found.implementation} が繋がっていません`);
-    const text = (
-      (
-        await backend.callTool({
-          name: "resolveAlias",
-          arguments: { name: found.name, group: found.group },
-          _meta: meta,
-        })
-      ).content as { text: string }[]
-    )[0]?.text;
+    const resolved = await backend.callTool({
+      name: "resolveAlias",
+      arguments: { name: found.name, group: found.group },
+      _meta: meta,
+    });
+    const text = (resolved.content as { text: string }[])[0]?.text;
+    if (resolved.isError) throw new Error(text || `"${alias}" の値を受け取れませんでした`);
     if (typeof text !== "string") throw new Error(`"${alias}" の値を受け取れませんでした`);
     return text;
   }
@@ -2229,6 +2278,9 @@ async function main(): Promise<void> {
     runtimeConfig,
     automations,
     automationRunner,
+    automationWebhooks,
+    listSecretAliases: (projectId) => secretAliasesFor(projectId),
+    ...(bootstrap.publicUrl ? { webhookBaseUrl: bootstrap.publicUrl } : {}),
     turnEvents,
     threadTurns,
     deliveries,
@@ -2429,6 +2481,7 @@ async function main(): Promise<void> {
       streamRelay.closeAll();
       liveness.stop();
       automationClock.stop();
+      automationWebhooks.stop();
       hostStall.stop();
       stallProfiler?.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
@@ -2469,6 +2522,8 @@ async function main(): Promise<void> {
     // **時刻の自動化を刻み始める**（§4.3「時計」）。最初の刻みで止まっていた間の時刻を取り戻す——待ち受けて、届いたものを
     // 再開したあと（届けたもので起こすターンも Runner が中継の口に繋ぐ）
     automationClock.start();
+    // 受けて、まだ届けていない Webhook をまとめ直す（§4.3「まとめる」）
+    automationWebhooks.start();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));

@@ -15,7 +15,15 @@ import { OVERRIDE_KEYS, POLICY_KEYS, parseOverrideBody, parsePolicyBody, type Co
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { AutomationInputError, AutomationNotFoundError, type AutomationStore } from "../automation/store.js";
+import {
+  AutomationInputError,
+  AutomationNotFoundError,
+  newAutomationId,
+  parseAutomationChanges,
+  parseAutomationFields,
+  type AutomationStore,
+} from "../automation/store.js";
+import { issueWebhookToken, type AutomationWebhooks } from "../automation/webhook.js";
 import type { AutomationRunner } from "../automation/runner.js";
 import { previousRunUnfinished } from "../automation/busy.js";
 import { AutomationTools } from "../automation/tools.js";
@@ -193,6 +201,15 @@ export interface AppDeps {
    * 専用の Fork を立て、「今すぐ動かす」で1回届け、人が専用の Fork を閉じたら一時停止する。無ければ「今すぐ動かす」は 501
    */
   automationRunner?: Pick<AutomationRunner, "prepare" | "run" | "threadClosed">;
+  /**
+   * **自動化の Webhook の受け口**（アーキ仕様 §4.3「Webhook」）。`/hooks/<印>` を認証の前で受け、作る・直すときに署名の鍵を
+   * Vault から引いて置く。無ければ `/hooks/` は 404、Webhook の自動化は作れない（501）
+   */
+  automationWebhooks?: Pick<AutomationWebhooks, "handle" | "storeSecret" | "forgetSecret">;
+  /** その Project から使える秘密の alias の名前（Webhook の署名の鍵の選び先）。無ければ `/secret-aliases` は 501 */
+  listSecretAliases?(projectId: string): Promise<string[]>;
+  /** 人に見せる Webhook の URL の頭（`https://<banto の名前>`）。無ければ要求の Host から組む */
+  webhookBaseUrl?: string;
   /** host から画面への出来事の流れ（`GET /api/events`、決定・2026-09-25） */
   appEvents?: AppEventBus;
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
@@ -1561,6 +1578,15 @@ export function createApp(deps: AppDeps) {
        *
        * 返すのは結果の1行だけ。**code もトークンも出さない**。
        */
+      // **自動化の Webhook**（アーキ仕様 §4.3「Webhook」）。送り手は banto の合言葉を持たない——鍵は道の中の推測できない
+      // 印（と、自動化ごとの署名）。人のログイン・機械の合言葉の確かめより前に分ける（`/relay`・OAuth の戻り先と同じ並び）
+      const hookMatch = url.pathname.match(/^\/hooks\/([^/]*)$/);
+      if (hookMatch || url.pathname === "/hooks") {
+        if (!deps.automationWebhooks) return json(res, 404, { error: "not found" });
+        await deps.automationWebhooks.handle(req, res, hookMatch ? decodeURIComponent(hookMatch[1]!) : "");
+        return;
+      }
+
       if (url.pathname === "/api/oauth/callback" && req.method === "GET") {
         const state = url.searchParams.get("state") ?? "";
         const code = url.searchParams.get("code") ?? "";
@@ -3306,6 +3332,19 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **その Project から使える秘密の alias**（名前だけ）——自動化の Webhook の署名の鍵を選ぶ欄（v4-frontend.md §6.42）
+      const secretAliasesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/secret-aliases$/);
+      if (secretAliasesMatch && req.method === "GET") {
+        const projectId = secretAliasesMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.listSecretAliases) return json(res, 501, { error: "この banto は Vault の alias を読めません" });
+        try {
+          return json(res, 200, { aliases: await deps.listSecretAliases(projectId) });
+        } catch (err) {
+          return json(res, 503, { error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+
       // **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。台帳は Event Store（`automation/store.ts`）、
       // 入力の確かめは台帳の側（AI の tool と同じ決まり）。届け先の Thread がこの Project の開いているものかはここで見る
       const automationsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/automations(?:\/([^/]+)(\/run)?)?$/);
@@ -3316,9 +3355,18 @@ export function createApp(deps: AppDeps) {
         const store = deps.automations;
         if (!store || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
         // 画面に出す「次は」を添える（保存しない、規則3）
+        // 受け口の印のハッシュは画面に出さない（印は作ったときに1回だけ `webhookUrl` で返す）
         const view = (a: Automation) => {
+          const { webhookTokenHash: _hash, ...shown } = a;
           const next = nextFireOf(a, new Date());
-          return next ? { ...a, nextFireAt: next.toISOString() } : a;
+          return next ? { ...shown, nextFireAt: next.toISOString() } : shown;
+        };
+        // 人に見せる受け口の URL の頭。設定の公開 URL が無ければ、画面が繋いできた名前から組む
+        const webhookBase = (r: IncomingMessage): string => {
+          if (deps.webhookBaseUrl) return deps.webhookBaseUrl.replace(/\/$/, "");
+          const host = String(r.headers["x-forwarded-host"] ?? r.headers.host ?? "localhost").split(",")[0]!.trim();
+          const proto = String(r.headers["x-forwarded-proto"] ?? "http").split(",")[0]!.trim();
+          return `${proto}://${host}`;
         };
         const checkTarget = (target: unknown): string | undefined => {
           if (typeof target !== "object" || target === null) return undefined;
@@ -3336,6 +3384,29 @@ export function createApp(deps: AppDeps) {
               const body = (await readJsonBody(req)) as { target?: unknown };
               const problem = checkTarget(body.target);
               if (problem) return json(res, 400, { error: problem });
+              const fields = parseAutomationFields(body);
+              if (fields.source.kind === "webhook") {
+                // **Webhook**：署名の鍵を Vault から1回引いて置いてから作り、受け口の URL は**この応答でだけ**返す
+                // （台帳には印のハッシュだけ。見失ったら作り直す——アーキ仕様 §4.3）
+                const hooks = deps.automationWebhooks;
+                if (!hooks) return json(res, 501, { error: "この banto は Webhook を受けられません" });
+                const id = newAutomationId();
+                try {
+                  await hooks.storeSecret(id, projectId, fields.source.signature);
+                } catch (err) {
+                  return json(res, 400, { error: `署名の鍵を Vault から引けませんでした：${err instanceof Error ? err.message : String(err)}` });
+                }
+                const { token, hash } = issueWebhookToken();
+                let created: Automation;
+                try {
+                  created = await store.create({ projectId, createdBy: { kind: "human" }, fields: body, id, webhookTokenHash: hash });
+                } catch (err) {
+                  hooks.forgetSecret(id);
+                  throw err;
+                }
+                const prepared = (await deps.automationRunner?.prepare(created)) ?? created;
+                return json(res, 201, { ...view(prepared), webhookUrl: `${webhookBase(req)}/hooks/${token}` });
+              }
               const created = await store.create({ projectId, createdBy: { kind: "human" }, fields: body });
               // 届け先が専用の Fork なら、作るときに立てる（§4.3「専用の Fork」）
               return json(res, 201, view((await deps.automationRunner?.prepare(created)) ?? created));
@@ -3370,7 +3441,23 @@ export function createApp(deps: AppDeps) {
               return json(res, 400, { error: "paused は true か false で渡してください" });
             }
             let next = automation;
-            if (Object.keys(changes).length > 0) next = await store.update(automationId, changes);
+            if (Object.keys(changes).length > 0) {
+              // Webhook の署名の確かめ方を変えたら、鍵を引き直して置いてから直す（引けなければ直さない）
+              const parsed = parseAutomationChanges(changes, automation);
+              if (parsed.source?.kind === "webhook" && automation.source.kind === "webhook") {
+                const before = automation.source.signature;
+                const after = parsed.source.signature;
+                if (before?.alias !== after?.alias || before?.header !== after?.header) {
+                  if (!deps.automationWebhooks) return json(res, 501, { error: "この banto は Webhook を受けられません" });
+                  try {
+                    await deps.automationWebhooks.storeSecret(automationId, projectId, after);
+                  } catch (err) {
+                    return json(res, 400, { error: `署名の鍵を Vault から引けませんでした：${err instanceof Error ? err.message : String(err)}` });
+                  }
+                }
+              }
+              next = await store.update(automationId, changes);
+            }
             else if (paused === undefined) return json(res, 400, { error: "直す欄がありません" });
             if (paused === true) next = await store.pause(automationId, "人が一時停止しました");
             if (paused === false) next = await store.resume(automationId);
@@ -3381,6 +3468,7 @@ export function createApp(deps: AppDeps) {
           }
           if (req.method === "DELETE") {
             await store.remove(automationId);
+            deps.automationWebhooks?.forgetSecret(automationId);
             return json(res, 200, { ok: true });
           }
           return json(res, 405, { error: "method not allowed" });

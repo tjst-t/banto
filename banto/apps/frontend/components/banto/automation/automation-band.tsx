@@ -8,7 +8,7 @@ import { UrlLink as Link } from "@/components/banto/url-link";
 import { Hand, List, Play, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { automationsCanvasHref, describeSource, formatWhen, runAutomationNow } from "@/lib/backend/automations";
+import { automationTimeZone, automationsCanvasHref, describeSource, formatWhen, runAutomationNow } from "@/lib/backend/automations";
 import type { RealAutomation } from "@/lib/backend/client";
 import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
 
@@ -50,7 +50,7 @@ export function AutomationBand({ automation: a, threadId }: { automation: RealAu
           <span className="min-w-0" data-testid="automation-band-text">
             {waiting ? <span className="text-foreground">前の回が、あなたの答えを待っています。</span> : null}
             自動化「{a.name}」で動く会話です（{describeSource(a)}・{how}）。
-            {a.paused ? "いまは一時停止中です。" : a.nextFireAt ? `次は ${formatWhen(a.nextFireAt, a.source.timeZone)}。` : null}
+            {a.paused ? "いまは一時停止中です。" : a.nextFireAt ? `次は ${formatWhen(a.nextFireAt, automationTimeZone(a))}。` : null}
           </span>
         </p>
         <div className="flex items-center gap-1.5">

@@ -19,7 +19,7 @@ import {
   runRealAutomation,
   updateRealAutomation,
   type RealAutomation,
-  type RealAutomationFields,
+  type RealAutomationInput,
   type RealAutomationRepeat,
   type RealAutomationRun,
   type RealAutomationTarget,
@@ -136,17 +136,21 @@ function replace(projectId: string, next: RealAutomation): void {
   notify();
 }
 
-export async function createAutomation(projectId: string, fields: RealAutomationFields): Promise<RealAutomation> {
-  const created = await createRealAutomation(projectId, fields);
+/** 作る。Webhook なら受け口の URL（`webhookUrl`）を返す——写しには入れない（この応答でだけ見せる） */
+export async function createAutomation(
+  projectId: string,
+  fields: RealAutomationInput,
+): Promise<RealAutomation & { webhookUrl?: string }> {
+  const { webhookUrl, ...created } = await createRealAutomation(projectId, fields);
   replace(projectId, created);
   await refreshAutomations(projectId);
-  return created;
+  return { ...created, ...(webhookUrl ? { webhookUrl } : {}) };
 }
 
 export async function updateAutomation(
   projectId: string,
   id: string,
-  changes: Partial<RealAutomationFields> & { paused?: boolean },
+  changes: Partial<RealAutomationInput> & { paused?: boolean },
 ): Promise<void> {
   replace(projectId, await updateRealAutomation(projectId, id, changes));
   // 届け先を変えた・再開したら host が専用の Fork を立てることがある——一覧へ足すのは取り直しに任せる
@@ -197,9 +201,15 @@ export function timeZoneName(timeZone: string): string {
   }
 }
 
-/** 「平日 9:00（日本標準時）」 */
+/** 「平日 9:00（日本標準時）」「Webhook を受けたとき」 */
 export function describeSource(a: Pick<RealAutomation, "source">): string {
+  if (a.source.kind === "webhook") return "Webhook を受けたとき";
   return `${describeRepeat(a.source.repeat)}（${timeZoneName(a.source.timeZone)}）`;
+}
+
+/** 時刻を出すときのタイムゾーン。時刻の自動化はその自動化のもの、Webhook はブラウザのもの */
+export function automationTimeZone(a: Pick<RealAutomation, "source">): string {
+  return a.source.kind === "time" ? a.source.timeZone : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
 
 /** 届け先の短い呼び名（一覧の1行・帯） */

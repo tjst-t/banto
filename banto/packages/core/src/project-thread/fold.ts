@@ -19,6 +19,7 @@ import type {
   TurnCause,
   TurnContinuation,
   DeliveryAuthor,
+  ExternalContent,
   TurnOutcome,
   TurnRecord,
 } from "./types.js";
@@ -126,6 +127,8 @@ export type ProjectThreadEvent =
         kind?: DeliveryAuthor;
         /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
         automation?: { id: string; runId: string };
+        /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
+        external?: ExternalContent[];
       };
     }
   | {

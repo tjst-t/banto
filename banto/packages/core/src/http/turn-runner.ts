@@ -446,6 +446,8 @@ async function* runThreadTurnInner(
       ...(d.sender ? { sender: d.sender } : {}),
       // 自動化の1回分は、その回の結末を書くのに要る（§4.3）
       ...(d.automation ? { automation: d.automation } : {}),
+      // 外から来たもの（Webhook の本文）——画面は指示と分けて出す（§4.3）
+      ...(d.external && d.external.length > 0 ? { external: d.external } : {}),
     });
   }
   // 続きを引き継いだ——「自動で続けるのをやめました」のお知らせは片づける（もう人の判断を待っていない）。片づけられなく

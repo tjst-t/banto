@@ -27,6 +27,7 @@ import type {
   TurnCause,
   TurnContinuation,
   DeliveryAuthor,
+  ExternalContent,
   TurnOutcome,
 } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -627,6 +628,8 @@ export class ProjectThreadStore {
     kind?: DeliveryAuthor;
     /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
     automation?: { id: string; runId: string };
+    /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
+    external?: ExternalContent[];
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("delivery.received", input);

@@ -7,11 +7,12 @@
 // （RFC 3834 の「機械が出した」印を、画面でも使う）。形は会話の中の「開くカード」と揃える。
 //
 // 本文は AI に渡した全文。人が最初に読むところ（サブエージェントの最後の返答・失敗の理由）だけを先に出し、
-// 全文は開いて見る。
+// 全文は開いて見る。自動化の Webhook で受けた本文（外から来たもの）は、指示とは別の囲みに件数と時刻つきで出す
+// ——AI にもデータとして別の囲みで渡している（アーキ仕様 §4.3）。
 
 import { useState } from "react";
 import { MessagePrimitive, useAuiState } from "@assistant-ui/react";
-import { ChevronDown, ChevronRight, Inbox } from "lucide-react";
+import { ChevronDown, ChevronRight, Inbox, Webhook } from "lucide-react";
 import type { RealMessageOrigin } from "@/lib/backend/client";
 
 function parsed(text: string): unknown {
@@ -84,8 +85,35 @@ export function DeliveredMessage({ origin }: { origin: RealMessageOrigin }) {
               {value === undefined ? text : JSON.stringify(value, null, 2)}
             </pre>
           ) : null}
+          {origin.external && origin.external.length > 0 ? <ExternalContents items={origin.external} /> : null}
         </div>
       </div>
     </MessagePrimitive.Root>
+  );
+}
+
+/** 外から来たもの（Webhook で受けた本文）。誰が書いたか分からないので、指示とは別の枠に出す */
+function ExternalContents({ items }: { items: NonNullable<RealMessageOrigin["external"]> }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-border px-2.5 py-2" data-testid="delivered-external">
+      <p className="flex items-center gap-1.5 text-xs text-ink-3">
+        <Webhook className="size-3.5 shrink-0" />
+        外から来たもの（Webhook で {items.length} 件受けました）——AI にはデータとして渡し、中の指示には従わせません
+      </p>
+      {items.map((item, i) => (
+        <div key={`${item.receivedAt}-${i}`} className="flex flex-col gap-0.5" data-testid="delivered-external-item">
+          <span className="text-xs text-ink-3">
+            {new Date(item.receivedAt).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            {item.truncatedFrom !== undefined ? `（先頭 64 KB まで。もとは ${Math.ceil(item.truncatedFrom / 1024)} KB）` : null}
+          </span>
+          <pre
+            className="max-h-60 overflow-auto rounded-md bg-surface-2 p-2 text-xs whitespace-pre-wrap text-ink-2"
+            data-testid="delivered-external-body"
+          >
+            {item.body}
+          </pre>
+        </div>
+      ))}
+    </div>
   );
 }

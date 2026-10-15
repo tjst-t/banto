@@ -192,6 +192,11 @@ export interface RealMessageOrigin {
   deliveryId: string;
   /** 別の Thread の AI が送ったものの送り元（追加・2026-10-01、アーキ仕様 §4.2）。Module が届けたものには無い */
   sender?: { projectId: string; projectName: string; threadId: string; threadLabel: string };
+  /**
+   * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。自動化の指示の下に添えた、Webhook で受けた本文。
+   * AI には別の囲みでデータとして渡している——画面も指示と分けて出す
+   */
+  external?: { source: "webhook"; receivedAt: string; body: string; truncatedFrom?: number }[];
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -1914,8 +1919,24 @@ export type RealAutomationRepeat =
   | { kind: "interval"; hours: number }
   | { kind: "cron"; expr: string };
 
-/** きっかけの出どころ。Webhook は Backlog `automation-webhook` で足す */
-export type RealAutomationSource = { kind: "time"; repeat: RealAutomationRepeat; timeZone: string };
+/**
+ * きっかけの出どころ。`webhook` の受け口の URL は作った応答（`webhookUrl`）でだけ返る——写しには無い（アーキ仕様 §4.3）
+ */
+export type RealAutomationSource =
+  | { kind: "time"; repeat: RealAutomationRepeat; timeZone: string }
+  | {
+      kind: "webhook";
+      /** 無ければ署名を確かめない */
+      signature?: { header: string; alias: string };
+      /** 続けて届いたものをまとめる待ち時間（秒）。0 は1件ずつ */
+      batchSeconds: number;
+      allowProjectContainer: boolean;
+    };
+
+/** 作るときに渡す Webhook の出どころ。署名を確かめないなら `signature: false`（既定はオンなので明示する） */
+export type RealAutomationSourceInput =
+  | Extract<RealAutomationSource, { kind: "time" }>
+  | (Omit<Extract<RealAutomationSource, { kind: "webhook" }>, "signature"> & { signature: { header: string; alias: string } | false });
 
 /** 届け先。`dedicated` の `threadId` は host が専用の Fork を立てたあとに入る */
 export type RealAutomationTarget =
@@ -1936,6 +1957,8 @@ export interface RealAutomationRun {
   /** 時計で動いた回の予定の時刻 */
   scheduledFor?: string;
   delayed?: string;
+  /** Webhook で受けたもののうち、この回にまとめて届けた件数 */
+  received?: number;
 }
 
 /** 人が作り・直せる欄 */
@@ -1959,15 +1982,23 @@ export interface RealAutomation extends RealAutomationFields {
   runs: RealAutomationRun[];
   /** 次に時計で動く時刻（host が毎回計算して添える。一時停止中は無い） */
   nextFireAt?: string;
+  /** Webhook で受けて、まだ届けていないもの（古い順） */
+  received?: { receivedId: string; at: string }[];
 }
+
+/** 作る・直すときに渡す欄（Webhook の署名を切るときは `false`） */
+export type RealAutomationInput = Omit<RealAutomationFields, "source"> & { source: RealAutomationSourceInput };
 
 export async function listRealAutomations(projectId: string): Promise<RealAutomation[]> {
   const body = await request<{ automations: RealAutomation[] }>(`/api/projects/${encodeURIComponent(projectId)}/automations`);
   return body.automations;
 }
 
-export async function createRealAutomation(projectId: string, fields: RealAutomationFields): Promise<RealAutomation> {
-  return request<RealAutomation>(`/api/projects/${encodeURIComponent(projectId)}/automations`, {
+/**
+ * 作る。Webhook なら受け口の URL（`webhookUrl`）が**この応答でだけ**返る——印は host に残らない（見失ったら作り直す）
+ */
+export async function createRealAutomation(projectId: string, fields: RealAutomationInput): Promise<RealAutomation & { webhookUrl?: string }> {
+  return request<RealAutomation & { webhookUrl?: string }>(`/api/projects/${encodeURIComponent(projectId)}/automations`, {
     method: "POST",
     body: JSON.stringify(fields),
   });
@@ -1977,7 +2008,7 @@ export async function createRealAutomation(projectId: string, fields: RealAutoma
 export async function updateRealAutomation(
   projectId: string,
   id: string,
-  changes: Partial<RealAutomationFields> & { paused?: boolean },
+  changes: Partial<RealAutomationInput> & { paused?: boolean },
 ): Promise<RealAutomation> {
   return request<RealAutomation>(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -1997,4 +2028,10 @@ export async function runRealAutomation(
   id: string,
 ): Promise<{ runId: string; result: "running" | "skipped"; reason?: string; threadId?: string }> {
   return request(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
+}
+
+/** その Project から使える秘密の alias の名前（Webhook の署名の鍵の選び先）。値は通らない */
+export async function listRealSecretAliases(projectId: string): Promise<string[]> {
+  const body = await request<{ aliases: string[] }>(`/api/projects/${encodeURIComponent(projectId)}/secret-aliases`);
+  return body.aliases;
 }

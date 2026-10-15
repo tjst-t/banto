@@ -577,9 +577,12 @@ export async function* runTurn(opts: {
     // **送られてきた文脈をそのまま返す**——「届いたか」を試験が直接見られる。
     // Global Memory などの差分は **prompt の頭**に積まれる（`turn-runner.ts` が
     // `${turnContext}\n\n${prompt}` を渡す）ので、system prompt だけでは足りない。
-    // **指示の印から後ろは落とす**——偽物への指図が会話に出ても意味が無い
-    const at = opts.prompt.indexOf(MARKER);
-    const visiblePrompt = at === -1 ? opts.prompt : opts.prompt.slice(0, at);
+    // **指示の印の行は落とす**——偽物への指図が会話に出ても意味が無い。印の行より後ろは残す（自動化の指示の下に
+    // 添えた外から来たもの〈Webhook の本文〉は、届けものの中で指示の印より後ろに来る——2026-10-15、automation-webhook）
+    const visiblePrompt = opts.prompt
+      .split("\n")
+      .filter((line) => !line.startsWith(MARKER))
+      .join("\n");
     const text = [...(opts.systemPrompt ?? []), ...(instructions ? [instructions] : []), visiblePrompt].join("\n");
     yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text }]) };
   }

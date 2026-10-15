@@ -161,7 +161,7 @@ test("cron の式は読めて15分以上なら受ける。時計の数え始め�
       createdBy: { kind: "human" },
       fields: { ...morning, source: { kind: "time", repeat: { kind: "cron", expr: " 30  9 * * 1-5 " }, timeZone: "Asia/Tokyo" } },
     });
-    assert.deepEqual(a.source.repeat, { kind: "cron", expr: "30 9 * * 1-5" });
+    assert.deepEqual(a.source.kind === "time" && a.source.repeat, { kind: "cron", expr: "30 9 * * 1-5" });
     assert.equal(a.clockFrom, a.createdAt);
     // 時計で動いた回の予定の時刻まで進む。前の時刻・予定の無い回（今すぐ動かす）では戻らない
     await store.recordRun(a.id, { runId: "r1", at: "2099-01-01T00:00:10.000Z", cause: "clock", result: "running", scheduledFor: "2099-01-01T00:00:00.000Z" });

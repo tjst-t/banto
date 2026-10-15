@@ -126,6 +126,20 @@ export interface MessageOrigin {
    * 結末を `automation.fired` に書く
    */
   automation?: { id: string; runId: string };
+  /**
+   * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。自動化の指示の下に添える、Webhook で受けた本文。
+   * 指示（人が決めたもの）とは分けて持ち、AI には別の囲みでデータとして渡す——中の指示には従わせない
+   */
+  external?: ExternalContent[];
+}
+
+/** 外から来た本文1件（Webhook で受けたもの） */
+export interface ExternalContent {
+  source: "webhook";
+  receivedAt: string;
+  body: string;
+  /** 本文を切ったなら、もとのバイト数 */
+  truncatedFrom?: number;
 }
 
 /** メッセージの送り元（Project と Thread。名前は送った時点のもの） */

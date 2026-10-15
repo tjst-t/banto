@@ -14,11 +14,15 @@ import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
 import { AutomationStore } from "../automation/store.js";
+import { AutomationWebhooks } from "../automation/webhook.js";
 import { createApp } from "./app.js";
+
+/** いま開いている試験の口（認証の要らない `/hooks/` を叩くのに使う） */
+let lastBase = "";
 
 async function withApp(
   fn: (call: (path: string, method?: string, body?: unknown) => Promise<{ status: number; body: any }>, deps: { projectThread: ProjectThreadStore; threadTurns: ThreadTurns; automations: AutomationStore; ran: string[] }) => Promise<void>, // any: 試験で応答の形を自由に読む
-  opts: { withRunner?: boolean } = {},
+  opts: { withRunner?: boolean; withWebhooks?: boolean } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "banto-automations-http-"));
   try {
@@ -35,6 +39,20 @@ async function withApp(
     const threadTurns = new ThreadTurns();
     const token = "test-token";
     const ran: string[] = [];
+    const webhooks = opts.withWebhooks
+      ? new AutomationWebhooks({
+          dataDir: dir,
+          automations,
+          runner: { run: async () => ({ runId: "r1", result: "running" as const }) },
+          onTurnEnded: () => {},
+          containerProjectOf: async () => undefined,
+          resolveSecret: async (alias) => {
+            if (alias !== "hook-secret") throw new Error(`alias "${alias}" はどの Vault にもありません`);
+            return "k";
+          },
+          projectClosed: () => false,
+        })
+      : undefined;
     const server = createApp({
       projectThread,
       globalMemory,
@@ -58,11 +76,13 @@ async function withApp(
             },
           }
         : {}),
+      ...(webhooks ? { automationWebhooks: webhooks, webhookBaseUrl: "https://banto.example" } : {}),
       dataDir: dir,
       configDir: dir,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    lastBase = base;
     const call = async (path: string, method = "GET", body?: unknown) => {
       const res = await fetch(`${base}${path}`, {
         method,
@@ -158,4 +178,53 @@ test("今すぐ動かす：前の回が終わっていなければ断り、届�
     const created = await call(`/api/projects/${p.id}/automations`, "POST", morning);
     assert.equal((await call(`/api/projects/${p.id}/automations/${created.body.id}/run`, "POST")).status, 501);
   });
+});
+
+test("Webhook：作った応答でだけ受け口の URL を返し、印のハッシュは一覧にも出さない。/hooks/ は合言葉なしで届き、知らない印は 404", async () => {
+  await withApp(
+    async (call, { projectThread }) => {
+      const project = await projectThread.createProject("p", tmpdir());
+      const fields = {
+        name: "CI",
+        instruction: "落ちたジョブを調べて",
+        source: { kind: "webhook", signature: { alias: "hook-secret" } },
+        target: { kind: "dedicated", mode: "fresh" },
+      };
+      const missing = await call(`/api/projects/${project.id}/automations`, "POST", {
+        ...fields,
+        source: { kind: "webhook", signature: { alias: "nope" } },
+      });
+      assert.equal(missing.status, 400);
+      assert.match(missing.body.error, /署名の鍵を Vault から引けませんでした/);
+      assert.equal((await call(`/api/projects/${project.id}/automations`)).body.automations.length, 0, "引けなかったのに作った");
+
+      const created = await call(`/api/projects/${project.id}/automations`, "POST", fields);
+      assert.equal(created.status, 201);
+      const url = created.body.webhookUrl as string;
+      assert.match(url, /^https:\/\/banto\.example\/hooks\/[A-Za-z0-9_-]{32,}$/);
+      assert.equal(created.body.webhookTokenHash, undefined);
+      assert.deepEqual(created.body.source, {
+        kind: "webhook",
+        signature: { header: "X-Hub-Signature-256", alias: "hook-secret" },
+        batchSeconds: 30,
+        allowProjectContainer: false,
+      });
+      const listed = await call(`/api/projects/${project.id}/automations`);
+      const shown = JSON.stringify(listed.body);
+      assert.ok(!shown.includes(url.split("/hooks/")[1]!), "一覧に印が出ている");
+      assert.ok(!shown.includes("webhookTokenHash"), "一覧に印のハッシュが出ている");
+      // 認証の前で分かれる：合言葉なしで、署名の無い要求は 401、知らない印は 404
+      const token = url.split("/hooks/")[1]!;
+      const unsigned = await fetch(`${lastBase}/hooks/${token}`, { method: "POST", body: "{}" });
+      assert.equal(unsigned.status, 401);
+      assert.equal((await fetch(`${lastBase}/hooks/nope`, { method: "POST", body: "{}" })).status, 404);
+      assert.equal((await fetch(`${lastBase}/hooks/`, { method: "POST", body: "{}" })).status, 404);
+      // きっかけの種類は変えられない
+      const kind = await call(`/api/projects/${project.id}/automations/${created.body.id}`, "PATCH", {
+        source: { kind: "time", repeat: { kind: "daily", time: "9:00" }, timeZone: "UTC" },
+      });
+      assert.equal(kind.status, 400);
+    },
+    { withRunner: true, withWebhooks: true },
+  );
 });

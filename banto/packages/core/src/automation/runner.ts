@@ -16,7 +16,13 @@ import type { ThreadState } from "../project-thread/types.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import type { JudgmentItem } from "../inbox/types.js";
-import { AUTOMATION_FORK_RUNS, type Automation, type AutomationRunCause, type AutomationRunResult } from "./fold.js";
+import {
+  AUTOMATION_FORK_RUNS,
+  type Automation,
+  type AutomationReceived,
+  type AutomationRunCause,
+  type AutomationRunResult,
+} from "./fold.js";
 import type { AutomationStore } from "./store.js";
 import { previousRunUnfinished } from "./busy.js";
 
@@ -53,6 +59,8 @@ export interface AutomationRunStarted {
   result: Extract<AutomationRunResult, "running" | "skipped">;
   reason?: string;
   threadId?: string;
+  /** 前の回が終わっていないので届けなかった（`received` を渡した回だけ。記録は書いていない——溜めたまま） */
+  deferred?: boolean;
 }
 
 /** 自動化の届けものの送り手（`MessageOrigin.from`）。core が使う名前（アーキ仕様 §5.2） */
@@ -88,18 +96,30 @@ export class AutomationRunner {
     return this.deps.automations.setDedicatedThread(automation.id, thread.id);
   }
 
-  /** 1回動かす。届けなかったときも `skipped` と理由を台帳に残して返す */
-  async run(automation: Automation, cause: AutomationRunCause, extras: AutomationRunExtras = {}): Promise<AutomationRunStarted> {
+  /**
+   * 1回動かす。届けなかったときも `skipped` と理由を台帳に残して返す。
+   *
+   * `received`＝**Webhook で受けて溜めていたもの**（アーキ仕様 §4.3「Webhook」）。指示の下に外から来たものとして添え、
+   * 届けたら溜めていたものから外す。前の回が終わっていなければ届けず、記録もしない（`deferred`——溜めたまま、空いたら
+   * まとめて届ける）
+   */
+  async run(
+    automation: Automation,
+    cause: AutomationRunCause,
+    extras: AutomationRunExtras = {},
+    received: readonly AutomationReceived[] = [],
+  ): Promise<AutomationRunStarted> {
     if (this.starting.has(automation.id)) {
       const runId = randomUUID();
       const reason = "前の回を届けているところです";
+      if (received.length > 0) return { runId, result: "skipped", reason, deferred: true };
       const at = (this.deps.now?.() ?? new Date()).toISOString();
       await this.deps.automations.recordRun(automation.id, { runId, at, cause, result: "skipped", reason, ...extras });
       return { runId, result: "skipped", reason };
     }
     this.starting.add(automation.id);
     try {
-      return await this.start(automation, cause, extras);
+      return await this.start(automation, cause, extras, received);
     } finally {
       this.starting.delete(automation.id);
     }
@@ -123,19 +143,23 @@ export class AutomationRunner {
     return n;
   }
 
-  private async start(automation: Automation, cause: AutomationRunCause, extras: AutomationRunExtras): Promise<AutomationRunStarted> {
+  private async start(
+    automation: Automation,
+    cause: AutomationRunCause,
+    extras: AutomationRunExtras,
+    received: readonly AutomationReceived[],
+  ): Promise<AutomationRunStarted> {
     const runId = randomUUID();
     const at = (this.deps.now?.() ?? new Date()).toISOString();
+    const receivedIds = received.map((r) => r.receivedId);
+    const counted = received.length > 0 ? { received: received.length } : {};
+    // 届けられない（閉じている・届け先が無い）回は、受けたものも一緒に片づける——溜めたままにすると空かない宛先へ届け直し続ける
     const skip = async (reason: string, threadId?: string): Promise<AutomationRunStarted> => {
-      await this.deps.automations.recordRun(automation.id, {
-        runId,
-        at,
-        cause,
-        result: "skipped",
-        reason,
-        ...(threadId ? { threadId } : {}),
-        ...extras,
-      });
+      await this.deps.automations.recordRun(
+        automation.id,
+        { runId, at, cause, result: "skipped", reason, ...(threadId ? { threadId } : {}), ...extras, ...counted },
+        receivedIds,
+      );
       return { runId, result: "skipped", reason, ...(threadId ? { threadId } : {}) };
     };
 
@@ -157,7 +181,11 @@ export class AutomationRunner {
       isRunning: (id) => this.deps.turns.isRunning(id),
       listJudgmentsForThread: (id) => this.deps.listJudgmentsForThread(id),
     });
-    if (busy) return skip(busy, thread.id);
+    if (busy) {
+      // Webhook：受けたものは溜めたまま、空いたら一度にまとめて届ける（記録は届けたときに1件）
+      if (received.length > 0) return { runId, result: "skipped", reason: busy, threadId: thread.id, deferred: true };
+      return skip(busy, thread.id);
+    }
 
     let threadId = thread.id;
     let rotatedFrom: string | undefined;
@@ -175,7 +203,11 @@ export class AutomationRunner {
     } else if (current.target.kind === "dedicated" && current.target.mode === "fresh") {
       // **毎回まっさら**：鍵を一瞬押さえて Clear する。鍵は届ける前に返す（届けたものはふつうに起こされる）
       const release = this.deps.turns.tryHold(threadId);
-      if (!release) return skip("前の回のターンがまだ走っています", threadId);
+      if (!release) {
+        const reason = "前の回のターンがまだ走っています";
+        if (received.length > 0) return { runId, result: "skipped", reason, threadId, deferred: true };
+        return skip(reason, threadId);
+      }
       try {
         await this.deps.projectThread.clearThread(threadId);
       } finally {
@@ -183,16 +215,13 @@ export class AutomationRunner {
       }
     }
 
-    // 届ける前に「走っている」を書く——ターンの終わりを聞く側が、この回を見つけられるように
-    await this.deps.automations.recordRun(current.id, {
-      runId,
-      at,
-      cause,
-      result: "running",
-      threadId,
-      ...(rotatedFrom ? { rotatedFrom } : {}),
-      ...extras,
-    });
+    // 届ける前に「走っている」を書く——ターンの終わりを聞く側が、この回を見つけられるように。受けたものはここで
+    // 溜めていたものから外す（届けものとして Thread の記録に移る）
+    await this.deps.automations.recordRun(
+      current.id,
+      { runId, at, cause, result: "running", threadId, ...(rotatedFrom ? { rotatedFrom } : {}), ...extras, ...counted },
+      receivedIds,
+    );
     try {
       const delivered = await this.deps.deliveries.deliver({
         threadId,
@@ -202,17 +231,27 @@ export class AutomationRunner {
         hop: 0,
         kind: "automation",
         automation: { id: current.id, runId },
+        ...(received.length > 0
+          ? {
+              external: received.map((r) => ({
+                source: "webhook" as const,
+                receivedAt: r.at,
+                body: r.body,
+                ...(r.truncatedFrom !== undefined ? { truncatedFrom: r.truncatedFrom } : {}),
+              })),
+            }
+          : {}),
       });
       if (delivered.wake === "held") {
         // 届けたものは溜まったまま残る（留めが解けたら起こされる・人が次に送ったターンの頭に積まれる）——その回は
         // 理由を添えて `running` のままにし、ターンの終わりで結末を書く。留めが解けないまま閉じられたら `threadClosed` が飛ばす
         const reason = `${HELD_PREFIX}${delivered.reason}`;
-        await this.record(current.id, runId, at, cause, threadId, "running", reason, { rotatedFrom, ...extras });
+        await this.record(current.id, runId, at, cause, threadId, "running", reason, { rotatedFrom, ...extras, ...counted });
         return { runId, result: "running", reason, threadId };
       }
     } catch (err) {
       const reason = `届けられませんでした：${err instanceof Error ? err.message : String(err)}`;
-      await this.record(current.id, runId, at, cause, threadId, "failed", reason, { rotatedFrom, ...extras });
+      await this.record(current.id, runId, at, cause, threadId, "failed", reason, { rotatedFrom, ...extras, ...counted });
       throw err;
     }
     return { runId, result: "running", threadId };
@@ -254,6 +293,7 @@ export class AutomationRunner {
           rotatedFrom: run.rotatedFrom,
           scheduledFor: run.scheduledFor,
           delayed: run.delayed,
+          received: run.received,
         });
       }
     }
@@ -274,6 +314,7 @@ export class AutomationRunner {
           rotatedFrom: run.rotatedFrom,
           scheduledFor: run.scheduledFor,
           delayed: run.delayed,
+          received: run.received,
         });
       }
     }
@@ -302,7 +343,7 @@ export class AutomationRunner {
     threadId: string,
     result: AutomationRunResult,
     reason: string | undefined,
-    extras: AutomationRunExtras & { rotatedFrom?: string | undefined },
+    extras: AutomationRunExtras & { rotatedFrom?: string | undefined; received?: number | undefined },
   ): Promise<void> {
     await this.deps.automations.recordRun(id, {
       runId,
@@ -314,6 +355,7 @@ export class AutomationRunner {
       ...(extras.rotatedFrom ? { rotatedFrom: extras.rotatedFrom } : {}),
       ...(extras.scheduledFor ? { scheduledFor: extras.scheduledFor } : {}),
       ...(extras.delayed ? { delayed: extras.delayed } : {}),
+      ...(extras.received ? { received: extras.received } : {}),
     });
   }
 

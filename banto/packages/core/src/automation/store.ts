@@ -10,8 +10,10 @@ import {
   type AutomationCreatedBy,
   type AutomationFields,
   type AutomationReadModel,
+  type AutomationReceived,
   type AutomationRepeat,
   type AutomationRun,
+  type AutomationSignature,
   type AutomationSource,
   type AutomationTarget,
 } from "./fold.js";
@@ -26,6 +28,14 @@ const INSTRUCTION_MAX = 20_000;
 /** 「N 時間ごと」の上限（1週間）。間隔の最短15分は時間の単位では下回れない */
 const INTERVAL_HOURS_MAX = 168;
 const TIME_PATTERN = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+/** Webhook のまとめる待ち時間の上限（5分）。0 は1件ずつ */
+const WEBHOOK_BATCH_SECONDS_MAX = 300;
+/** 既定の待ち時間（アーキ仕様 §4.3「まとめる」） */
+export const WEBHOOK_BATCH_SECONDS_DEFAULT = 30;
+/** 署名の入るヘッダの既定（GitHub・Gitea と同じ名前） */
+export const WEBHOOK_SIGNATURE_HEADER_DEFAULT = "X-Hub-Signature-256";
+const HEADER_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+const ALIAS_MAX = 200;
 
 export class AutomationStore {
   private readonly projection: SnapshotProjection<AutomationReadModel>;
@@ -65,14 +75,35 @@ export class AutomationStore {
     return () => this.listeners.delete(listener);
   }
 
+  /** Webhook の受け口の印のハッシュから引く（`webhook.ts`） */
+  findByWebhookTokenHash(hash: string): Automation | undefined {
+    for (const a of this.projection.current.automations.values()) if (a.webhookTokenHash === hash) return a;
+    return undefined;
+  }
+
+  /**
+   * 作る。Webhook の自動化は受け口の印のハッシュ（`webhookTokenHash`）が要る——印を出すのは HTTP の口（作ったときに
+   * 1回だけ人に見せる）なので、それを通らない作り方（AI の tool）は断る。`id` は渡せば使う（署名の鍵を先に置くため）
+   */
   async create(input: {
     projectId: string;
     createdBy: AutomationCreatedBy;
     fields: unknown;
+    id?: string;
+    webhookTokenHash?: string;
   }): Promise<Automation> {
     const fields = parseAutomationFields(input.fields);
-    const id = `auto-${randomUUID()}`;
-    await this.append("automation.created", { id, projectId: input.projectId, createdBy: input.createdBy, ...fields });
+    if (fields.source.kind === "webhook" && !input.webhookTokenHash) {
+      throw new AutomationInputError("Webhook の自動化は自動化の画面から作ってください（受け口の URL はそこで1回だけ見せます）");
+    }
+    const id = input.id ?? newAutomationId();
+    await this.append("automation.created", {
+      id,
+      projectId: input.projectId,
+      createdBy: input.createdBy,
+      ...fields,
+      ...(fields.source.kind === "webhook" ? { webhookTokenHash: input.webhookTokenHash } : {}),
+    });
     return this.mustGet(id);
   }
 
@@ -120,6 +151,12 @@ export class AutomationStore {
     await this.append("automation.fired", { id, ...run, ...(receivedIds?.length ? { receivedIds } : {}) });
   }
 
+  /** Webhook で受けたものを残す（届けるまで溜める。届けた回の `automation.fired` の `receivedIds` で外れる） */
+  async recordReceived(id: string, received: AutomationReceived): Promise<void> {
+    this.mustGet(id);
+    await this.append("automation.received", { id, ...received });
+  }
+
   private mustGet(id: string): Automation {
     const a = this.get(id);
     if (!a) throw new AutomationNotFoundError(`自動化が見つかりません: ${id}`);
@@ -134,6 +171,11 @@ export class AutomationStore {
     if (!projectId) return;
     for (const listener of this.listeners) listener({ projectId, id: payload.id });
   }
+}
+
+/** 自動化の id（作る前に要るとき——Webhook の署名の鍵を先に置く） */
+export function newAutomationId(): string {
+  return `auto-${randomUUID()}`;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -199,9 +241,41 @@ function parseTimeZone(v: unknown): string {
   return v;
 }
 
+function parseSignature(v: unknown): AutomationSignature | undefined {
+  // 既定はオン——確かめないなら false と明示する（書き忘れで誰でも動かせる口にしない）
+  if (v === false || v === null) return undefined;
+  if (!isRecord(v)) {
+    throw new AutomationInputError("source.signature（署名の確かめ方）が要ります。確かめないなら false を渡してください");
+  }
+  const header = v.header === undefined ? WEBHOOK_SIGNATURE_HEADER_DEFAULT : v.header;
+  if (typeof header !== "string" || !HEADER_PATTERN.test(header)) {
+    throw new AutomationInputError("signature.header はヘッダの名前（英数字とハイフン、64文字まで）で渡してください");
+  }
+  if (typeof v.alias !== "string" || v.alias.trim() === "" || v.alias.length > ALIAS_MAX) {
+    throw new AutomationInputError("signature.alias（署名の鍵の Vault の alias）が要ります");
+  }
+  return { header, alias: v.alias.trim() };
+}
+
 function parseSource(v: unknown): AutomationSource {
   if (!isRecord(v)) throw new AutomationInputError("source（きっかけ）が要ります");
-  if (v.kind !== "time") throw new AutomationInputError("source.kind は今は time だけです");
+  if (v.kind === "webhook") {
+    const batch = v.batchSeconds === undefined ? WEBHOOK_BATCH_SECONDS_DEFAULT : v.batchSeconds;
+    if (typeof batch !== "number" || !Number.isInteger(batch) || batch < 0 || batch > WEBHOOK_BATCH_SECONDS_MAX) {
+      throw new AutomationInputError(`batchSeconds は 0〜${WEBHOOK_BATCH_SECONDS_MAX} の整数（秒）で渡してください`);
+    }
+    if (v.allowProjectContainer !== undefined && typeof v.allowProjectContainer !== "boolean") {
+      throw new AutomationInputError("allowProjectContainer は true か false で渡してください");
+    }
+    const signature = parseSignature(v.signature);
+    return {
+      kind: "webhook",
+      ...(signature ? { signature } : {}),
+      batchSeconds: batch,
+      allowProjectContainer: v.allowProjectContainer === true,
+    };
+  }
+  if (v.kind !== "time") throw new AutomationInputError("source.kind は time（決まった時刻）か webhook です");
   const timeZone = parseTimeZone(v.timeZone);
   return { kind: "time", repeat: parseRepeat(v.repeat, timeZone), timeZone };
 }
@@ -247,7 +321,13 @@ export function parseAutomationChanges(raw: unknown, current: Automation): Parti
   const changes: Partial<AutomationFields> = {};
   if (raw.name !== undefined) changes.name = parseName(raw.name);
   if (raw.instruction !== undefined) changes.instruction = parseInstruction(raw.instruction);
-  if (raw.source !== undefined) changes.source = parseSource(raw.source);
+  if (raw.source !== undefined) {
+    changes.source = parseSource(raw.source);
+    // Webhook の受け口の印は作ったときにしか出さない——種類を変えると、印の無い Webhook・印の残った時刻ができる
+    if (changes.source.kind !== current.source.kind) {
+      throw new AutomationInputError("きっかけの種類（決まった時刻／Webhook）は変えられません。作り直してください");
+    }
+  }
   if (raw.target !== undefined) changes.target = parseTarget(raw.target, current.target);
   if (raw.reviewOnDone !== undefined) changes.reviewOnDone = parseReviewOnDone(raw.reviewOnDone);
   if (Object.keys(changes).length === 0) {

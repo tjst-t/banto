@@ -92,7 +92,7 @@ export class AutomationClock {
     const now = this.now();
     const catchUp = !this.caughtUp;
     this.caughtUp = true;
-    const due: Array<{ automation: Automation; slot: Date; delayed?: string }> = [];
+    const due: Array<{ automation: Automation; timeZone: string; slot: Date; delayed?: string }> = [];
 
     for (const a of this.deps.automations.listAll()) {
       if (a.source.kind !== "time") continue;
@@ -128,20 +128,20 @@ export class AutomationClock {
             `${when}の時刻です（${found.capped ? `${missed} 回以上` : `${missed} 回`}、${formatIn(found.earliest, a.source.timeZone)} から）。一番最近の1回だけ動かしました`,
           );
         }
-        due.push({ automation: a, slot: found.latest });
+        due.push({ automation: a, timeZone: a.source.timeZone, slot: found.latest });
       } else if (pending && pending.until <= now.getTime()) {
-        due.push({ automation: a, slot: pending.slot, delayed: pending.reason });
+        due.push({ automation: a, timeZone: a.source.timeZone, slot: pending.slot, delayed: pending.reason });
       }
     }
 
     due.sort((x, y) => x.slot.getTime() - y.slot.getTime());
     const max = this.deps.maxConcurrent ?? AUTOMATION_MAX_CONCURRENT;
     let free = max - this.deps.runner.activeRuns();
-    for (const { automation: a, slot, delayed } of due) {
+    for (const { automation: a, timeZone, slot, delayed } of due) {
       if (free <= 0) {
         const reason =
           delayed ??
-          `同時に動いている自動化が上限（${max} 本）に達していたので、${formatIn(slot, a.source.timeZone)} の回をずらしました`;
+          `同時に動いている自動化が上限（${max} 本）に達していたので、${formatIn(slot, timeZone)} の回をずらしました`;
         this.deferred.set(a.id, { slot, until: now.getTime() + (this.deps.deferMs ?? AUTOMATION_DEFER_MS), reason });
         if (!delayed) this.log(`[host] 自動化「${a.name}」：${reason}`);
         continue;
