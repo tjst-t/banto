@@ -7572,7 +7572,7 @@
       "number": 314,
       "kind": "task",
       "title": "自動化の台帳と HTTP の口（会話と別の fold・snapshot）、Module 名 banto の予約",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [],
       "milestone": null,
@@ -7584,7 +7584,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
+      "updatedAt": "2026-10-15T11:04:46.041Z",
       "closedAt": null,
       "extra": {}
     },
