@@ -1,53 +1,62 @@
 // 受信箱の見直し（決定・2026-10-15、ユーザー）のモック用データ。
 //
-// 受信箱は「人の番になったもの」だけ：
-//   1. 判断待ち（AI が止まっている）
-//   2. 会話が人に返ってきたもの——ターンが終わり、その Thread に裏の仕事（返信用の札の awaiting）も
-//      まだ渡していない届いたものも残っていない。まとめ（report_turn）があればその中身、決めること
-//      （decisions）があるものは上に寄せる。途中で切れた・失敗したターンも出す
+// 受信箱は「人の番になったもの」だけ、かつ**受信箱の中で読んで答えて先へ進められる**（改訂・同日）：
+//   1. 判断待ち（AI が止まっている）——その場で答える
+//   2. 会話が人に返ってきたもの——ターンが終わり、その Thread に裏の仕事も、まだ渡していない届いたものも
+//      残っていない。AI の最後の返事とまとめ（report_turn）をその場で読み、返信を打てる。決めることが
+//      あるものは上に寄せ、選択肢を押すと返信の欄に入る
 //   3. 人が直す必要のある仕組みの異常
-// 出さないもの：届くたびの「届きました。AI が続きをやります」、裏の仕事が残っている途中のターン、
-// 知らせるだけのお知らせ（移し終えた・上限に当たった 等）。
 import { notifyMockStoreChange } from "./store-events";
 
 interface FeedBase {
   id: string;
   projectId: string;
-  /** 無い＝banto 全体のもの（Project に属さない仕組みの異常） */
+  /** 無い＝banto 全体のもの */
   threadId?: string;
   threadKind?: "base" | "fork";
-  /** 何分前か（モックなので文字で持つ） */
   age: string;
-  /** 並べるための分（小さいほど新しい） */
   ageMin: number;
 }
 
 export interface FeedJudgment extends FeedBase {
   kind: "judgment";
-  /** 誰が聞いているか（「Shell の確認」等） */
   from: string;
   message: string;
+  /** 何を承認するのか（tool の引数など）を人に見せる */
+  detail?: { label: string; value: string }[];
+  choices: string[];
+}
+
+export interface FeedDecision {
+  question: string;
+  context?: string;
+  options: { label: string; reply: string; recommended?: boolean }[];
 }
 
 export interface FeedReturned extends FeedBase {
   kind: "returned";
-  /** まとめがあればその中身、無ければ最後の返事の頭 */
+  /** 人が頼んだこと（まとめの request、無ければ人の最後の発言の頭） */
+  request: string;
+  /** AI の最後の返事（本文） */
+  reply: string;
   summary?: {
     status: "done" | "partial" | "failed";
     headline: string;
-    /** 決めることの問い（あれば上に寄せる） */
-    decisions: { question: string; options: string[] }[];
+    points: string[];
+    notVerified: string[];
+    artifacts?: { label: string; detail: string }[];
+    decisions: FeedDecision[];
+    nextSuggestions?: { label: string; reply: string }[];
   };
-  lastReply?: string;
-  /** 途中で切れた・失敗した */
   interrupted?: string;
+  /** そのターンで AI がしたこと（tool の数など）——開かずに規模が分かるように */
+  activity?: string;
 }
 
 export interface FeedFix extends FeedBase {
   kind: "fix";
   title: string;
   detail: string;
-  /** 押したときの行き先の言葉（「設定を開く」等） */
   actionLabel: string;
   href: string;
 }
@@ -62,7 +71,13 @@ let items: FeedItem[] = [
     threadId: "banto-base",
     threadKind: "base",
     from: "Shell の確認",
-    message: "`git push origin main:release` を実行してよいですか？",
+    message: "このコマンドを実行してよいですか？",
+    detail: [
+      { label: "コマンド", value: "git push origin main:release" },
+      { label: "場所", value: "/home/ubuntu/banto" },
+      { label: "鍵", value: "Vault の github-deploy-key（sshIdentity）" },
+    ],
+    choices: ["許可する", "拒否する"],
     age: "2分前",
     ageMin: 2,
   },
@@ -73,7 +88,13 @@ let items: FeedItem[] = [
     threadId: "home-base",
     threadKind: "base",
     from: "Module 間中継の承認",
-    message: "Backlog が Vault の「github-token」を使います。許可しますか？",
+    message: "Backlog が Vault の秘密を使おうとしています。",
+    detail: [
+      { label: "呼び元", value: "Backlog（push_branch）" },
+      { label: "宛先", value: "vault-local の resolveAlias" },
+      { label: "alias", value: "github-token" },
+    ],
+    choices: ["許可する", "今回だけ許可する", "拒否する"],
     age: "14分前",
     ageMin: 14,
   },
@@ -83,13 +104,27 @@ let items: FeedItem[] = [
     projectId: "banto",
     threadId: "ui",
     threadKind: "fork",
+    request: "アシスタントの発言の見せ方を見直し、案をいくつか作って比べられるようにする",
+    reply:
+      "アシスタントの発言の見せ方を2案作りました。\n\n- **案A 文字なしアイコン**：発言の左に小さな丸だけを置き、名前は出しません。行の頭が揃うので長い会話でも目が流れやすいです。\n- **案B 罫線だけ**：アイコンも名前も無く、左に細い線を引くだけ。いちばん静かですが、人の発言との区別が色だけになります。\n\nどちらもモックの /p/banto?fork=ui で切り替えて見られます。",
     summary: {
       status: "done",
       headline: "アシスタントの発言の見せ方を2案作りました。どちらで進めるか決めてください。",
+      points: ["案A：文字なしアイコン（行の頭が揃う）", "案B：罫線だけ（静かだが人の発言との区別が色だけ）"],
+      notVerified: ["携帯の幅では見ていない"],
+      artifacts: [{ label: "コミット", detail: "a1b2c3d4（fork/ui-avatar）" }],
       decisions: [
-        { question: "アシスタントの発言はどちらの見せ方にしますか？", options: ["文字なしアイコン", "罫線だけ"] },
+        {
+          question: "アシスタントの発言はどちらの見せ方にしますか？",
+          context: "案B は暗いテーマで線が見えにくくなります。",
+          options: [
+            { label: "案A", reply: "案A（文字なしアイコン）で進めて。携帯の幅でも確かめて。", recommended: true },
+            { label: "案B", reply: "案B（罫線だけ）で進めて。暗いテーマの線の色も調整して。" },
+          ],
+        },
       ],
     },
+    activity: "ファイル 6 件を変更・コマンド 4 回",
     age: "5分前",
     ageMin: 5,
   },
@@ -99,14 +134,32 @@ let items: FeedItem[] = [
     projectId: "banto",
     threadId: "vault-variant",
     threadKind: "fork",
+    request: "Infisical の環境を Project ごとに選べるようにする（Vault の「版」）",
+    reply:
+      "Infisical の環境の一覧を読むところまで動きました。単体テストは 42 件すべて通っています。\n\n本物の Infisical では、環境の一覧の API（GET /api/v1/projects/{id}）をまだ叩いていません。偽物のサーバでだけ確かめています。",
     summary: {
       status: "partial",
-      headline: "Infisical の環境の一覧を読むところまで動きました。本物の Infisical では未確認です。",
+      headline: "環境の一覧を読むところまで動きました。本物の Infisical では未確認です。",
+      points: ["版を名乗った実装だけ、紐付けの画面に版の選択が出る", "単体テスト 42 件通過"],
+      notVerified: ["本物の Infisical の環境の一覧 API", "E2E は流していない"],
       decisions: [
-        { question: "本物の Infisical で確かめてから main に入れますか？", options: ["確かめてから", "このまま入れる"] },
-        { question: "空の秘密は一覧に出しますか？", options: ["出す", "出さない"] },
+        {
+          question: "本物の Infisical で確かめてから main に入れますか？",
+          options: [
+            { label: "確かめてから", reply: "開発用の Infisical で環境の一覧を確かめてから main に入れて。", recommended: true },
+            { label: "このまま入れる", reply: "このまま main に入れて。本物での確かめは Backlog に積んでおいて。" },
+          ],
+        },
+        {
+          question: "値が空の秘密は一覧に出しますか？",
+          options: [
+            { label: "出す", reply: "値が空の秘密も一覧に「空」と出して。", recommended: true },
+            { label: "出さない", reply: "値が空の秘密は一覧に出さないで。" },
+          ],
+        },
       ],
     },
+    activity: "ファイル 11 件を変更・コマンド 9 回",
     age: "31分前",
     ageMin: 31,
   },
@@ -116,11 +169,22 @@ let items: FeedItem[] = [
     projectId: "banto",
     threadId: "login",
     threadKind: "fork",
+    request: "パスキーでログインできるようにして release まで出す",
+    reply:
+      "パスキーでのログインを実装し、main と release に push しました（8baed238）。フル E2E は 242 件すべて通りました。\n\nhost での反映（`node scripts/login-link.mjs` で最初のリンクを出す）はまだです。手順は docs/runbooks/release.md の C にあります。",
     summary: {
       status: "done",
       headline: "パスキーでのログインを実装し、main と release に push しました。host での反映はまだです。",
+      points: ["フル E2E 242 件通過", "最初の1回は host で login-link を打って入る"],
+      notVerified: ["携帯の実機でのパスキー登録"],
+      artifacts: [{ label: "コミット", detail: "8baed238（main・release）" }],
       decisions: [],
+      nextSuggestions: [
+        { label: "反映の手順を出して", reply: "host で反映する手順を、打つコマンドだけ順に出して。" },
+        { label: "Fork を閉じて", reply: "この Fork はもう終わりなので閉じて。" },
+      ],
     },
+    activity: "ファイル 23 件を変更・コマンド 31 回",
     age: "8分前",
     ageMin: 8,
   },
@@ -130,8 +194,9 @@ let items: FeedItem[] = [
     projectId: "hermes",
     threadId: "hermes-embedding",
     threadKind: "fork",
+    request: "埋め込みの再計算にかかる時間を件数ごとに測る",
+    reply: "1万件の再計算は 4 分 12 秒でした。10 万件を流しているところで…",
     interrupted: "banto を起こし直したため、途中で切れました",
-    lastReply: "1万件の再計算は 4 分 12 秒でした。10 万件を流しているところで…",
     age: "22分前",
     ageMin: 22,
   },
@@ -141,30 +206,20 @@ let items: FeedItem[] = [
     projectId: "home",
     threadId: "home-base",
     threadKind: "base",
-    lastReply: "Caddy の証明書更新スクリプトを直しました。次の更新は 10月28日です。",
+    request: "Caddy の証明書の更新が失敗している理由を調べて直す",
+    reply:
+      "Caddy の証明書更新スクリプトを直しました。Cloudflare のトークンの権限に Zone:Read が足りず、DNS-01 の確認が失敗していました。トークンを入れ替えて手で更新を流し、成功を確かめています。次の更新は 10月28日です。",
+    activity: "コマンド 7 回",
     age: "1時間前",
     ageMin: 60,
-  },
-  {
-    kind: "returned",
-    id: "r-docs",
-    projectId: "banto",
-    threadId: "docs-tidy",
-    threadKind: "fork",
-    summary: {
-      status: "failed",
-      headline: "仕様書の節番号を振り直そうとしましたが、別の Fork の変更とぶつかって止めました。",
-      decisions: [],
-    },
-    age: "2時間前",
-    ageMin: 120,
   },
   {
     kind: "fix",
     id: "f-claude",
     projectId: "",
     title: "banto 本体の Claude ログインが期限切れです",
-    detail: "この機械で `claude auth login` を実行してください。",
+    detail:
+      "Project のコンテナからの Claude の呼び出しが、本体のログインで断られました（401）。この機械で `claude auth login` を実行してください。",
     actionLabel: "手順を見る",
     href: "/settings",
     age: "40分前",
@@ -187,16 +242,10 @@ export function getFeedItems(): readonly FeedItem[] {
   return items;
 }
 
-/** 見た（会話を開いた）ので一覧から外す */
 export function dismissFeedItem(id: string): void {
   const next = items.filter((i) => i.id !== id);
   if (next.length === items.length) return;
   items = next;
-  notifyMockStoreChange();
-}
-
-export function dismissAllReturned(): void {
-  items = items.filter((i) => i.kind !== "returned" || (i.summary?.decisions.length ?? 0) > 0);
   notifyMockStoreChange();
 }
 
@@ -208,12 +257,11 @@ export function sectionOf(item: FeedItem): FeedSection {
   return (item.summary?.decisions.length ?? 0) > 0 ? "decide" : "returned";
 }
 
-export function feedHref(item: FeedItem): string {
+export function threadHref(item: FeedItem): string {
   if (item.kind === "fix") return item.href;
   return item.threadKind === "fork" ? `/p/${item.projectId}?fork=${item.threadId}` : `/p/${item.projectId}`;
 }
 
-/** バッジに数えるもの——人が答えないと進まないもの（判断待ちと決めること） */
 export function feedBadgeCount(): number {
   return items.filter((i) => sectionOf(i) === "judgment" || sectionOf(i) === "decide").length;
 }
