@@ -7406,7 +7406,7 @@
       "number": 307,
       "kind": "task",
       "title": "ページ・文・範囲・セルを指してコメントを付け、ui/message で会話の入力欄へ返す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "office-review",
       "dependsOn": [
         "office-pdf-viewer"
@@ -7420,7 +7420,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T09:56:14.798Z",
+      "updatedAt": "2026-10-15T11:32:46.864Z",
       "closedAt": null,
       "extra": {}
     },
