@@ -15,3 +15,9 @@ test("judgmentAnswerText：host が自動で許可したものは、そうと分
   assert.equal(judgmentAnswerText(AUTO_APPROVED_ANSWER), AUTO_APPROVED_ANSWER_TEXT);
   assert.match(judgmentAnswerText(AUTO_APPROVED_ANSWER), /自動で許可/);
 });
+
+test("judgmentAnswerText：選択肢があれば、許したときは先頭の言葉（自動化の確認の「作る」等、追加・2026-10-15）", () => {
+  assert.equal(judgmentAnswerText({ behavior: "allow" }, ["作る", "作らない"]), "作る");
+  assert.equal(judgmentAnswerText({ behavior: "deny", message: "作らない" }, ["作る", "作らない"]), "作らない");
+  assert.equal(judgmentAnswerText({ behavior: "allow", remember: true }, ["許可する", MESSAGE_ALLOW_REMEMBER, "拒否する"]), MESSAGE_ALLOW_REMEMBER);
+});

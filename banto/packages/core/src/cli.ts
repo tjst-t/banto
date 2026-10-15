@@ -413,7 +413,7 @@ async function main(): Promise<void> {
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
   inbox.onJudgmentAnswered((item, answer) =>
-    appEvents.publish({ type: "judgment.answered", threadId: item.threadId, judgmentId: item.id, answer: judgmentAnswerText(answer) }),
+    appEvents.publish({ type: "judgment.answered", threadId: item.threadId, judgmentId: item.id, answer: judgmentAnswerText(answer, item.choices) }),
   );
   /**
    * **バックグラウンドの仕事が増えた・減ったら、画面に知らせる**（追加・2026-10-03、v4-frontend.md §6.33）。

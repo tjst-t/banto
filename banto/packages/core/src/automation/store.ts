@@ -231,7 +231,7 @@ export function parseAutomationFields(raw: unknown): AutomationFields {
   };
 }
 
-function parseAutomationChanges(raw: unknown, current: Automation): Partial<AutomationFields> {
+export function parseAutomationChanges(raw: unknown, current: Automation): Partial<AutomationFields> {
   if (!isRecord(raw)) throw new AutomationInputError("直す中身はオブジェクトで渡してください");
   const changes: Partial<AutomationFields> = {};
   if (raw.name !== undefined) changes.name = parseName(raw.name);

@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { AutomationInputError, AutomationNotFoundError, type AutomationStore } from "../automation/store.js";
 import type { AutomationRunner } from "../automation/runner.js";
 import { previousRunUnfinished } from "../automation/busy.js";
+import { AutomationTools } from "../automation/tools.js";
 import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
@@ -1123,7 +1124,7 @@ function judgmentCardsOf(inbox: InboxStore, ids: readonly string[]) {
         ...(item.serverName ? { serverName: item.serverName } : {}),
         ...(item.toolInput !== undefined ? { toolInput: item.toolInput } : {}),
         liveness: item.liveness,
-        ...(item.liveness === "answered" ? { answer: judgmentAnswerText(item.answer) } : {}),
+        ...(item.liveness === "answered" ? { answer: judgmentAnswerText(item.answer, item.choices) } : {}),
       },
     ];
   });
@@ -1229,6 +1230,28 @@ export function createApp(deps: AppDeps) {
       deps.turnEvents?.publish(threadId, { type: "answered", judgmentId: answered.id, answer: answered.answer }),
     autoApproveAll,
   });
+
+  // **AI が自動化を作る・直す口**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは
+  // 承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで聞く——`autoApproveAll` を渡さない
+  const automationTools = deps.automations
+    ? new AutomationTools({
+        projectThread: deps.projectThread,
+        automations: deps.automations,
+        ...(deps.automationRunner ? { runner: deps.automationRunner } : {}),
+        inbox: deps.inbox,
+        pendingApprovals: deps.pendingApprovals,
+        publishJudgment: (threadId, judgment) =>
+          deps.turnEvents?.publish(threadId, {
+            type: "judgment",
+            judgmentId: judgment.id,
+            kind: "approval",
+            serverName: judgment.serverName,
+            toolInput: judgment.toolInput,
+            message: judgment.message,
+            choices: judgment.choices,
+          }),
+      })
+    : undefined;
 
   /**
    * **AI が予約した Fork を立てる**（決定・2026-09-27、アーキ仕様 §2.2「AI が Fork を立てる」）。親のターンが
@@ -1434,7 +1457,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -3541,7 +3564,7 @@ export function createApp(deps: AppDeps) {
         deps.turnEvents?.publish(item.threadId, {
           type: "answered",
           judgmentId: id,
-          answer: judgmentAnswerText(body.answer),
+          answer: judgmentAnswerText(body.answer, item.choices),
         });
         json(res, 200, { ok: true });
         return;

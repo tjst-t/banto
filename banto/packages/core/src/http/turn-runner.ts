@@ -17,6 +17,7 @@ import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
 import { createMemoryMcpServer } from "./memory-tool.js";
 import {
+  AUTOMATION_TOOL_NAMES,
   CLOSE_FORK_TOOL_NAME,
   closeForkDroppedNote,
   createForkMcpServer,
@@ -32,6 +33,7 @@ import {
   type TurnSummaryState,
 } from "./turn-summary.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import type { AutomationTools } from "../automation/tools.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -298,6 +300,8 @@ async function* runThreadTurnInner(
     settleClose?(threadId: string, reason: string, outcome: { ok: boolean }): Promise<void>;
     /** **Thread 間・Project 間のメッセージ**（決定・2026-10-01、§4.2）。渡されなければ tool は断る */
     messaging?: ThreadMessaging;
+    /** **AI が自動化を作る・直す口**（決定・2026-10-15、§4.3「人と AI の作り方」）。渡されなければ tool は断る */
+    automationTools?: AutomationTools;
     /**
      * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。承認のたびに
      * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
@@ -482,6 +486,7 @@ async function* runThreadTurnInner(
       ? { state: turnSummary, record: (entry) => deps.projectThread.recordTurnSummary(input.threadId, entry) }
       : undefined,
     forks.closing,
+    deps.automationTools,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -584,8 +589,10 @@ async function* runThreadTurnInner(
       }),
       // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）。自分の Fork を閉じるのも聞かない
       // （開き直せば元に戻る、§2.2「AI が自分の Fork を閉じる」）
+      // 自動化の tool も通す——作る・変える・再開するは tool の中で、承認モードに依らず必ず人に聞く（2回聞かない。§4.3）
       allowedTools: [
         `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
+        ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
         ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
       ],
       // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない

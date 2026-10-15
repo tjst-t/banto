@@ -13,7 +13,7 @@ import { InboxStore } from "../inbox/store.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { buildSystemPrompt } from "../runner/system-prompt.js";
 import type { runTurn } from "../runner/adapter.js";
-import { createForkMcpServer } from "./fork-tool.js";
+import { AUTOMATION_TOOL_NAMES, createForkMcpServer } from "./fork-tool.js";
 import { runThreadTurn } from "./turn-runner.js";
 import {
   REPORT_TURN_MISSING_REASON,
@@ -233,7 +233,11 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     assert.equal(typeof first!.onStop, "function");
     assert.deepEqual(
       first!.allowedTools,
-      ["mcp__banto-thread__close_fork", "mcp__banto-thread__report_turn"],
+      [
+        "mcp__banto-thread__close_fork",
+        ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
+        "mcp__banto-thread__report_turn",
+      ],
       "毎ターン承認を求めない",
     );
     assert.equal(first!.onStop!({ stopHookActive: false }), undefined, "tool を使っていない短いターンでは催促しない");
@@ -247,6 +251,9 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     assert.equal(second!.onStop, undefined);
     assert.equal(second!.onToolUsed, undefined);
     // 自分の Fork を閉じるのはまとめのオンオフに依らず聞かない（§2.2「AI が自分の Fork を閉じる」）
-    assert.deepEqual(second!.allowedTools, ["mcp__banto-thread__close_fork"]);
+    assert.deepEqual(second!.allowedTools, [
+      "mcp__banto-thread__close_fork",
+      ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
+    ]);
   });
 });

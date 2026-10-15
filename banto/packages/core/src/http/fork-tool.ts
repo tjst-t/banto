@@ -13,6 +13,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import type { AutomationTools } from "../automation/tools.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
@@ -48,6 +49,49 @@ export const FORK_TOOL_NAME = "start_forks";
 export const LIST_THREADS_TOOL_NAME = "list_threads";
 export const SEND_MESSAGE_TOOL_NAME = "send_message";
 export const CLOSE_FORK_TOOL_NAME = "close_fork";
+/** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは必ず人に聞く */
+export const CREATE_AUTOMATION_TOOL_NAME = "create_automation";
+export const UPDATE_AUTOMATION_TOOL_NAME = "update_automation";
+export const LIST_AUTOMATIONS_TOOL_NAME = "list_automations";
+export const PAUSE_AUTOMATION_TOOL_NAME = "pause_automation";
+export const RESUME_AUTOMATION_TOOL_NAME = "resume_automation";
+/**
+ * 自動化の tool は Runner の承認（canUseTool）を通さない——作る・変える・再開するは tool の中で必ず人に聞くので、
+ * 承認モードで2回聞かない。一覧・一時停止は聞かない（§4.3）
+ */
+export const AUTOMATION_TOOL_NAMES = [
+  CREATE_AUTOMATION_TOOL_NAME,
+  UPDATE_AUTOMATION_TOOL_NAME,
+  LIST_AUTOMATIONS_TOOL_NAME,
+  PAUSE_AUTOMATION_TOOL_NAME,
+  RESUME_AUTOMATION_TOOL_NAME,
+] as const;
+
+const automationTimeShape = z
+  .string()
+  .describe("H:MM（24時間、例 9:00）");
+const automationSourceShape = z
+  .object({
+    kind: z.literal("time"),
+    timeZone: z.string().describe("IANA のタイムゾーン（例 Asia/Tokyo）"),
+    repeat: z.union([
+      z.object({ kind: z.literal("daily"), time: automationTimeShape }),
+      z.object({ kind: z.literal("weekdays"), time: automationTimeShape }),
+      z.object({ kind: z.literal("weekly"), day: z.number().int().describe("0＝日曜〜6＝土曜"), time: automationTimeShape }),
+      z.object({ kind: z.literal("interval"), hours: z.number().int().describe("1〜168 時間ごと") }),
+      z.object({ kind: z.literal("cron"), expr: z.string().describe("5つの欄（分 時 日 月 曜日）。間隔は最短15分") }),
+    ]),
+  })
+  .describe("きっかけ。いまは決まった時刻（time）だけ");
+const automationTargetShape = z
+  .union([
+    z.object({
+      kind: z.literal("dedicated"),
+      mode: z.enum(["fresh", "continue"]).describe("fresh＝毎回まっさら（既定）、continue＝前の回を引き継ぐ"),
+    }),
+    z.object({ kind: z.literal("thread"), threadId: z.string().describe("この Project のいまある Thread の id") }),
+  ])
+  .describe("どの会話で動かすか。省くと専用の Fork で毎回まっさら");
 
 /**
  * **AI が自分の Fork を閉じる予約**（決定・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。tool は理由を
@@ -168,8 +212,16 @@ export function createForkMcpServer(
   turnSummary?: TurnSummaryTool,
   /** このターンの「閉じる」の予約の入れ物——ターンの終わりに turn-runner が見て閉じる */
   closing: CloseForkReservation = {},
+  /** **自動化**（§4.3）。渡されなければ（試験の構成）、tool は見せたまま断る——構成で tool の一覧を変えない（§3） */
+  automations?: AutomationTools,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
+  const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
+  const automationReply = (r: { ok: boolean; text: string }) => ({
+    content: [{ type: "text" as const, text: r.text }],
+    ...(r.ok ? {} : { isError: true }),
+  });
+  const signalOf = (extra: unknown) => (extra as { signal?: AbortSignal } | undefined)?.signal;
   return createSdkMcpServer({
     name: FORK_SERVER_NAME,
     // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）
@@ -257,6 +309,60 @@ export function createForkMcpServer(
             ],
           };
         },
+      ),
+      tool(
+        LIST_AUTOMATIONS_TOOL_NAME,
+        "この Project の自動化（決まった時刻に、決まった指示でこの Project の AI を動かす仕組み）の一覧。id・名前・きっかけ・届け先・一時停止か・直近の回の結果。",
+        {},
+        async () => (automations ? automationReply(automations.list(threadId)) : noAutomations),
+      ),
+      tool(
+        CREATE_AUTOMATION_TOOL_NAME,
+        [
+          "自動化を作る：決まった時刻に、決まった指示（instruction）でこの Project の AI を動かす。",
+          "人が見ていない時間に繰り返し動くので、**作る前に必ず会話のカードで人に聞く**（承認モードに依らない）。人が断ったら作らない。",
+          "既定では自動化の名前の専用の Fork が立ち、毎回まっさらな会話で指示が届く。",
+          "指示は、その時刻に何も知らない AI が読んでも分かるように、要ることを全部書く。",
+        ].join(""),
+        {
+          name: z.string().describe("名前（一覧と専用の Fork の名前になる短いもの）"),
+          instruction: z.string().describe("毎回届ける指示"),
+          source: automationSourceShape,
+          target: automationTargetShape.optional(),
+          reviewOnDone: z
+            .boolean()
+            .optional()
+            .describe("完了した回を受信箱に出すか（既定 true）。判断待ち・決めること・失敗した回はいつも出す"),
+        },
+        async (args, extra) =>
+          automations ? automationReply(await automations.create(threadId, args, signalOf(extra))) : noAutomations,
+      ),
+      tool(
+        UPDATE_AUTOMATION_TOOL_NAME,
+        "この Project の自動化を変える。渡した欄だけ変わる。**変える前に必ず会話のカードで人に聞く**。人が断ったら変えない。",
+        {
+          id: z.string().describe("自動化の id（list_automations で分かる）"),
+          name: z.string().optional(),
+          instruction: z.string().optional(),
+          source: automationSourceShape.optional(),
+          target: automationTargetShape.optional(),
+          reviewOnDone: z.boolean().optional(),
+        },
+        async ({ id, ...changes }, extra) =>
+          automations ? automationReply(await automations.update(threadId, id, changes, signalOf(extra))) : noAutomations,
+      ),
+      tool(
+        PAUSE_AUTOMATION_TOOL_NAME,
+        "この Project の自動化を一時停止する（台帳と専用の Fork は残る）。人には聞かない。",
+        { id: z.string().describe("自動化の id（list_automations で分かる）") },
+        async ({ id }) => (automations ? automationReply(await automations.pause(threadId, id)) : noAutomations),
+      ),
+      tool(
+        RESUME_AUTOMATION_TOOL_NAME,
+        "一時停止している自動化を再開する。**再開する前に必ず会話のカードで人に聞く**。人が断ったら一時停止のまま。",
+        { id: z.string().describe("自動化の id（list_automations で分かる）") },
+        async ({ id }, extra) =>
+          automations ? automationReply(await automations.resume(threadId, id, signalOf(extra))) : noAutomations,
       ),
       tool(
         FORK_TOOL_NAME,

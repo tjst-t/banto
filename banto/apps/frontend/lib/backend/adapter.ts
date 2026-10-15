@@ -47,6 +47,12 @@ import { HUMAN_TOOL_NAME } from "../mock/adapter";
 /** Project をまたぐメッセージの承認で「以後聞かない」を選ぶ答え（host の `MESSAGE_ALLOW_REMEMBER` と同じ言葉） */
 export const MESSAGE_ALLOW_REMEMBER = "許可し、以後この Project からは聞かない";
 
+/**
+ * **許可にあたる答え**。「許可する」のほかに、AI が自動化を作る・変える・再開するときの確認（アーキ仕様 §4.3、
+ * v4-frontend.md §6.42「AI が作るときのカード」）の「作る」「変える」「再開する」（host の `AUTOMATION_*_CHOICES` と同じ言葉）
+ */
+const ALLOW_ANSWERS = new Set(["許可する", "作る", "変える", "再開する"]);
+
 /** 判断待ちのカード1枚ぶんのpart。走行中（PartsAccumulator）とリロード後の
  *  復元（restoredJudgmentMessages）で同じものを使う——見た目も答え方も同じ1種類
  *  にする（規則3）。 */
@@ -1115,7 +1121,7 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
 export async function answerRealJudgment(judgmentId: string, answer: string): Promise<void> {
   // 「許可し、以後この Project からは聞かない」（Project をまたぐメッセージの承認、§4.2）は、許可に「覚える」を添える
   const permissionResult =
-    answer === "許可する"
+    ALLOW_ANSWERS.has(answer)
       ? { behavior: "allow" as const }
       : answer === MESSAGE_ALLOW_REMEMBER
         ? { behavior: "allow" as const, remember: true }
