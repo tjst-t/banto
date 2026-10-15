@@ -7683,7 +7683,7 @@
       "number": 318,
       "kind": "task",
       "title": "自動化の画面——core の画面を Canvas に出す枝・一覧とフォーム・入口4つ・専用の Fork の帯",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "automation-ledger",
@@ -7694,12 +7694,12 @@
       "labels": [],
       "body": "仕様 v4-frontend.md §6.42・§6.2 の例外。見本はモック（mock/components/banto/canvas/triggers-view.tsx・settings/triggers-panel.tsx・thread/trigger-band.tsx）。\n- renderCanvas（project-panels.tsx）と /canvas-window に core の画面の枝（canvas=banto:triggers、モックの落ち先より前、別タブは project 必須）\n- 一覧・その場のフォーム（時刻。Webhook の欄は automation-webhook で）・動き方の欄\n- 入口：サイドバーの目次「自動化（n）」・専用の Fork の帯「一覧」・Command Palette。AI のカードの「一覧を開く」は automation-ai-tools\n- 専用の Fork の印（稲妻）と帯。閉じる確認に「自動化を一時停止します」\n- **#315 のレビューの持ち越し**：乗り換えで古い専用の Fork を `projectThread.closeThread` で直接閉じているため `thread.closed` が画面に流れず、開いている画面では再読み込みまでサイドバーに残る（runner.ts start() の乗り換え分岐。実装者のノート docs/notes/2026-10-15-automation-deliver.md にも記録）。画面に知らせる",
       "doneWhen": "E2E で：画面から時刻の自動化を作り、一覧に出て、今すぐ動かすで専用の Fork にターンが走り、直近の回に出る。入口の3つから会話を閉じずに開ける。別タブでも開ける",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/automation-canvas）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T13:58:04.097Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T16:22:07.682Z",
+      "closedAt": "2026-10-15T16:22:07.682Z",
       "extra": {}
     },
     {
