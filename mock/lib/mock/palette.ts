@@ -166,12 +166,12 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   // core の画面「自動で動かす」（決定・2026-10-15）——Module の入口ではないので「操作」に置く。「cron」「予定」でも引ける
   if (currentProjectId) {
     const n = getTriggers(currentProjectId).length;
-    const words = ["自動で動かす", "きっかけ", "予定", "cron", "webhook", "トリガー"];
+    const words = ["自動化", "自動で動かす", "きっかけ", "予定", "cron", "webhook", "トリガー"];
     if (q === "" || words.some((w) => w.toLowerCase().includes(q) || q.includes(w.toLowerCase()))) {
       opItems.unshift({
         id: "operation:open-triggers",
-        title: "自動で動かす",
-        subtitle: n > 0 ? `この Project のきっかけ（${n} 件）` : "時刻や Webhook で AI を動かす",
+        title: "自動化",
+        subtitle: n > 0 ? `この Project の自動化（${n} 件）` : "時刻や Webhook で AI を動かす",
         icon: Zap,
         href: triggersCanvasHref(currentProjectId),
         kind: "operation",

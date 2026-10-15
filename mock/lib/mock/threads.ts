@@ -169,7 +169,7 @@ const bantoBaseScript: MockThread["script"] = {
       match: /予定|毎週|毎朝|定期/,
       steps: [
         { t: "delay", ms: 300 },
-        { t: "text", text: "毎週金曜 18:00 に動くきっかけを作ります。毎回まっさらな会話で、その週に閉じたものだけを見ます。" },
+        { t: "text", text: "毎週金曜 18:00 に動く自動化を作ります。毎回まっさらな会話で、その週に閉じたものだけを見ます。" },
         {
           t: "approval",
           name: "banto_thread_create_trigger",

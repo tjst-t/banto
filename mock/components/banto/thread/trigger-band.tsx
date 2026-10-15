@@ -52,7 +52,7 @@ export function TriggerBand({ trigger: t }: { trigger: MockTrigger }) {
                 {last.at} の回が、あなたの答えを待っています。
               </span>
             ) : null}
-            自動で動く会話です（{describeSource(t.source)}・{how}）。
+            自動化で動く会話です（{describeSource(t.source)}・{how}）。
             {t.paused
               ? "いまは一時停止中です。"
               : t.source.kind === "time"

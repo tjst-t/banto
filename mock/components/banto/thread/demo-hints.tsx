@@ -15,7 +15,7 @@ const DEMO_PROMPTS: readonly { label: string; prompt: string }[] = [
   { label: "ファイルプレビュー（fullscreen 表示）", prompt: "READMEを見せて" },
   { label: "ファイル編集の差分（inline 表示）", prompt: "ファイルを編集して" },
   { label: "Shell の runCommand（alias 注入・入れ子の承認）", prompt: "npm publishして" },
-  { label: "AI がきっかけを作る（確認）", prompt: "毎週金曜の夕方に、今週閉じた Backlog をまとめるようにして" },
+  { label: "AI が自動化を作る（確認）", prompt: "毎週金曜の夕方に、今週閉じた Backlog をまとめるようにして" },
 ];
 
 export function DemoHints() {

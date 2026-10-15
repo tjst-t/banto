@@ -40,7 +40,7 @@ export const TriggerProposalCard: ToolCallMessagePartComponent = (props) => {
     <div className="my-1.5 flex flex-col gap-2.5 rounded-lg border border-warn/30 bg-warn-soft/50 p-3" data-testid="trigger-proposal">
       <p className="flex items-center gap-1.5 text-xs font-semibold text-warn">
         <Zap className="size-3.5" />
-        自動で動かしてよいですか
+        この自動化を作ってよいですか
       </p>
 
       <div className="flex flex-col gap-0.5">
@@ -59,7 +59,7 @@ export const TriggerProposalCard: ToolCallMessagePartComponent = (props) => {
           <li>専用の Fork「{args.name}」を立て、そこで AI が動きます。</li>
         ) : null}
         <li>確認が要る操作に当たったら、あなたの答えを待って止まります。</li>
-        <li>あとで「自動で動かす」の一覧から止めたり消したりできます。</li>
+        <li>あとで「自動化」の一覧から止めたり消したりできます。</li>
       </ul>
 
       {isPending ? (

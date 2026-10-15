@@ -239,7 +239,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             icon={X}
             onClose={() => stack.close("canvas")}
             closeLabel="Canvas を閉じる"
-            title={`${moduleId}:${viewId}` === TRIGGERS_CANVAS ? "自動で動かす" : `Canvas — ${moduleId}:${viewId}`}
+            title={`${moduleId}:${viewId}` === TRIGGERS_CANVAS ? "自動化" : `Canvas — ${moduleId}:${viewId}`}
             trailing={
               <div className="flex items-center gap-1.5">
                 {stack.canvasFullscreen ? (

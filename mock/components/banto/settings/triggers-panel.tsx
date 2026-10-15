@@ -79,7 +79,7 @@ export function TriggersPanel({ projectId }: { projectId: string }) {
   return (
     <div className="flex flex-col gap-4" data-testid="triggers">
       <p className="text-sm text-ink-2">
-        決まった時刻になったとき、Webhook を受けたときなどに、この Project の AI を動かします。きっかけごとに専用の Fork があり、そこへ指示を届けます。動いた回の会話はその
+        決まった時刻になったとき、Webhook を受けたときなどに、この Project の AI を動かします。自動化ごとに専用の Fork があり、そこへ指示を届けます。動いた回の会話はその
         Fork に残ります。
       </p>
 
@@ -116,7 +116,7 @@ export function TriggersPanel({ projectId }: { projectId: string }) {
           data-testid="trigger-add"
         >
           <Plus className="size-3.5" />
-          きっかけを足す
+          自動化を足す
         </Button>
       )}
 
@@ -132,7 +132,7 @@ function HowItRuns() {
       <p className="mb-1.5 font-medium text-foreground">動き方</p>
       <ul className="flex list-disc flex-col gap-1 pl-4">
         <li>
-          前の回がまだ動いている・あなたの答えを待っているとき、時刻のきっかけはその回を飛ばします。Webhook は溜めておき、空いたら一度にまとめて届けます。
+          前の回がまだ動いている・あなたの答えを待っているとき、時刻で動く自動化はその回を飛ばします。Webhook は溜めておき、空いたら一度にまとめて届けます。
         </li>
         <li>banto が止まっていた間の時刻は、起き直したときに一番最近の1回だけ動かし、古いものは捨てます。止まっている間の Webhook は受けられません。</li>
         <li>
@@ -234,7 +234,7 @@ function TriggerRow({ trigger: t, onEdit }: { trigger: MockTrigger; onEdit: () =
 
           {confirmRemove ? (
             <div className="flex flex-col gap-2 rounded-md bg-stop-soft px-3 py-2.5 text-xs">
-              <p className="text-foreground">きっかけ「{t.name}」を消します。</p>
+              <p className="text-foreground">自動化「{t.name}」を消します。</p>
               <p className="text-ink-2">
                 {t.source.kind === "webhook" ? "Webhook の URL はすぐ使えなくなります。" : null}
                 専用の Fork とその会話は残ります。要らなければ Fork を閉じてください。
@@ -515,7 +515,7 @@ function TriggerForm({ projectId, trigger, onDone }: { projectId: string; trigge
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4" data-testid="trigger-form">
-      <p className="text-sm font-medium text-foreground">{trigger ? `「${trigger.name}」を直す` : "きっかけを足す"}</p>
+      <p className="text-sm font-medium text-foreground">{trigger ? `「${trigger.name}」を直す` : "自動化を足す"}</p>
 
       <div className="flex flex-col gap-1.5">
         <Label id="trg-source-label">何が起きたら</Label>
@@ -600,7 +600,7 @@ function TriggerForm({ projectId, trigger, onDone }: { projectId: string; trigge
               {hook ? (
                 <code className="font-mono break-all">{hook.url}</code>
               ) : (
-                "足したときに、このきっかけだけの URL を発行します。URL は推測できない印を含み、知っていれば POST で動かせます。"
+                "足したときに、この自動化だけの URL を発行します。URL は推測できない印を含み、知っていれば POST で動かせます。"
               )}
             </p>
             <p className="text-xs text-ink-3">LAN と Tailscale の中からだけ届きます。GitHub など外のサービスからは届きません。</p>
@@ -744,7 +744,7 @@ function TriggerForm({ projectId, trigger, onDone }: { projectId: string; trigge
       {targetKind === "dedicated" && mode === "continue" && sourceKind === "time" && kind === "interval" ? (
         <p className="flex items-start gap-1.5 text-xs text-warn">
           <CircleAlert className="mt-px size-3.5 shrink-0" />
-          時間ごとのきっかけで引き継ぐと、1日で会話が長くなります。比べたいだけなら、まっさらにしてファイルに残させるほうが軽く済みます。
+          時間ごとの自動化で引き継ぐと、1日で会話が長くなります。比べたいだけなら、まっさらにしてファイルに残させるほうが軽く済みます。
         </p>
       ) : null}
 

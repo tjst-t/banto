@@ -250,7 +250,7 @@ function ProjectTreeItem({
                   data-testid={`sidebar-triggers-${project.id}`}
                 >
                   <Zap />
-                  <span>自動で動かす（{triggerCount}）</span>
+                  <span>自動化（{triggerCount}）</span>
                 </Link>
               </SidebarMenuSubButton>
             </SidebarMenuSubItem>
