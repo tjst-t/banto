@@ -7313,7 +7313,7 @@
       "number": 303,
       "kind": "task",
       "title": "docx を docx-preview で描く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "office-review",
       "dependsOn": [
         "office-pdf-viewer"
@@ -7327,7 +7327,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T09:13:02.555Z",
+      "updatedAt": "2026-10-15T11:32:44.169Z",
       "closedAt": null,
       "extra": {}
     },
