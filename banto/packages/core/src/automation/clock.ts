@@ -149,7 +149,8 @@ export class AutomationClock {
       this.deferred.delete(a.id);
       try {
         const started = await this.deps.runner.run(a, "clock", { scheduledFor: slot.toISOString(), ...(delayed ? { delayed } : {}) });
-        if (started.result === "running") free--;
+        // 留めている回（理由つき）は、走るまで数えない（`activeRuns`）
+        if (started.result === "running" && !started.reason) free--;
       } catch (err) {
         this.log(`[host] 自動化「${a.name}」を時計で動かせませんでした: ${err instanceof Error ? err.message : String(err)}`);
       }

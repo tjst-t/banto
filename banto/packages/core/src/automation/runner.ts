@@ -41,7 +41,10 @@ export interface AutomationRunExtras {
 
 export interface AutomationRunStarted {
   runId: string;
-  /** `running`＝届けた（ターンの結末はあとで同じ `runId` に書く）。`skipped`＝届けなかった */
+  /**
+   * `running`＝届けた（ターンの結末はあとで同じ `runId` に書く。`reason` があれば、届けたが AI を起こさずに留めている）。
+   * `skipped`＝届けなかった
+   */
   result: Extract<AutomationRunResult, "running" | "skipped">;
   reason?: string;
   threadId?: string;
@@ -49,6 +52,9 @@ export interface AutomationRunStarted {
 
 /** 自動化の届けものの送り手（`MessageOrigin.from`）。core が使う名前（アーキ仕様 §5.2） */
 const FROM = "banto";
+
+/** 届けたが AI を起こさずに留めている回の、`running` に添える理由の頭 */
+const HELD_PREFIX = "届けましたが、AI をまだ起こしていません——";
 
 export class AutomationRunner {
   /** 届けている途中の自動化（Clear してから届けるまでの間に、同じ自動化のもう1回が割り込まないように） */
@@ -101,9 +107,11 @@ export class AutomationRunner {
       for (const a of this.deps.automations.list(p.id)) {
         for (const run of a.runs) {
           if (run.result !== "running" || !run.threadId) continue;
-          // 結末を書けずに残った running（落ちた等）は数えない——走っているか、届けものが積まれる前のものだけ
+          // 結末を書けずに残った running（落ちた等）は数えない——走っているか、届けものが積まれる前のものだけ。
+          // 留めている回（理由つき）は、留めが解けてターンが走るまで数えない
           const thread = this.deps.projectThread.getThread(run.threadId);
-          if (this.deps.turns.isRunning(run.threadId) || thread?.deliveries?.some((d) => d.automation?.runId === run.runId)) n++;
+          const queued = !run.reason && thread?.deliveries?.some((d) => d.automation?.runId === run.runId);
+          if (this.deps.turns.isRunning(run.threadId) || queued) n++;
         }
       }
     }
@@ -188,9 +196,11 @@ export class AutomationRunner {
         automation: { id: current.id, runId },
       });
       if (delivered.wake === "held") {
-        // 届けたものは溜まったまま残る（人が次に送ったターンの頭に積まれる）——その回は結末を待たない
-        await this.record(current.id, runId, at, cause, threadId, "skipped", `AI を起こせませんでした——${delivered.reason}`, { rotatedFrom, ...extras });
-        return { runId, result: "skipped", reason: delivered.reason, threadId };
+        // 届けたものは溜まったまま残る（留めが解けたら起こされる・人が次に送ったターンの頭に積まれる）——その回は
+        // 理由を添えて `running` のままにし、ターンの終わりで結末を書く。留めが解けないまま閉じられたら `threadClosed` が飛ばす
+        const reason = `${HELD_PREFIX}${delivered.reason}`;
+        await this.record(current.id, runId, at, cause, threadId, "running", reason, { rotatedFrom, ...extras });
+        return { runId, result: "running", reason, threadId };
       }
     } catch (err) {
       const reason = `届けられませんでした：${err instanceof Error ? err.message : String(err)}`;
@@ -207,6 +217,7 @@ export class AutomationRunner {
   async threadClosed(threadId: string): Promise<void> {
     const thread = this.deps.projectThread.getThread(threadId);
     if (!thread) return;
+    await this.settleHeldRuns(thread);
     for (const a of this.deps.automations.list(thread.projectId)) {
       if (a.target.kind !== "dedicated" || a.target.threadId !== threadId || a.paused) continue;
       await this.deps.automations.pause(a.id, "専用の Fork が閉じられました");
@@ -232,6 +243,26 @@ export class AutomationRunner {
         if (run.result !== "running" || run.threadId !== threadId || pending.has(run.runId)) continue;
         const { result, reason } = this.outcomeOf(thread);
         await this.record(a.id, run.runId, run.at, run.cause, threadId, result, reason, {
+          rotatedFrom: run.rotatedFrom,
+          scheduledFor: run.scheduledFor,
+          delayed: run.delayed,
+        });
+      }
+    }
+  }
+
+  /**
+   * **留めが解けないまま届け先が閉じられた**：届けものがまだ会話に積まれていない回を、留めた理由を添えて `skipped` に
+   * する（AI は動いていない）
+   */
+  private async settleHeldRuns(thread: ThreadState): Promise<void> {
+    const pending = new Set((thread.deliveries ?? []).flatMap((d) => (d.automation ? [d.automation.runId] : [])));
+    for (const a of this.deps.automations.list(thread.projectId)) {
+      for (const run of a.runs) {
+        if (run.result !== "running" || run.threadId !== thread.id || !pending.has(run.runId)) continue;
+        const held = run.reason?.startsWith(HELD_PREFIX) ? run.reason.slice(HELD_PREFIX.length) : run.reason;
+        const reason = `AI を起こさないうちに届け先が閉じられました${held ? `（留めていた理由：${held}）` : ""}`;
+        await this.record(a.id, run.runId, run.at, run.cause, thread.id, "skipped", reason, {
           rotatedFrom: run.rotatedFrom,
           scheduledFor: run.scheduledFor,
           delayed: run.delayed,

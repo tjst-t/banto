@@ -27,6 +27,8 @@ interface Ctx {
   /** 受信箱に出したお知らせ（自動化の層・届ける口の両方） */
   notices: Array<{ dedupeKey: string; title: string }>;
   judgments: Map<string, JudgmentItem[]>;
+  /** 届ける口が起こさずに留める理由（起こし直しの回復中など）。`undefined` なら留めない */
+  hold: { reason: string | undefined };
   /** 次に起こすターンの終わり方。`hang` は鍵を持ったまま止まる（走っている間を作る） */
   next: { outcome: TurnOutcome | "hang" };
   /** 止まっているターンを終わらせる */
@@ -48,7 +50,8 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const turns = new ThreadTurns();
     const notices: Ctx["notices"] = [];
     const notify = async (n: { dedupeKey: string; title: string }) => void notices.push({ dedupeKey: n.dedupeKey, title: n.title });
-    const deliveries = new ThreadDeliveries({ projectThread: store, turns, notify });
+    const hold: Ctx["hold"] = { reason: undefined };
+    const deliveries = new ThreadDeliveries({ projectThread: store, turns, notify, hold: () => hold.reason });
     const judgments = new Map<string, JudgmentItem[]>();
     const woke: string[] = [];
     const next: Ctx["next"] = { outcome: "completed" };
@@ -95,6 +98,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       woke,
       notices,
       judgments,
+      hold,
       next,
       finishHung: async (outcome = "completed") => {
         // 止まる位置（届いたものを積み終えたところ）に来るまで待つ
@@ -406,5 +410,56 @@ test("届け先が既存の Thread なら Fork を立てず、Clear せずに届
     assert.deepEqual(base.markers, []);
     assert.equal(ctx.store.listThreadsForProject(ctx.projectId).length, 1, "Fork を立てた");
     assert.equal(ctx.automations.get(a.id)!.runs[0]!.result, "done");
+  });
+});
+
+test("留めで届いた回は running のまま理由を残し、留めが解けてターンが終わったら結末を書く", async () => {
+  await setup(async (ctx) => {
+    const a = await createDedicated(ctx, "continue");
+    const forkId = a.target.threadId!;
+    ctx.hold.reason = "起こし直しの回復中です";
+    const r = await ctx.runner.run(a, "clock");
+    assert.equal(r.result, "running");
+    assert.match(r.reason!, /回復中/);
+    assert.deepEqual(ctx.woke, [], "留めているのに起こした");
+    let run = ctx.automations.get(a.id)!.runs.find((x) => x.runId === r.runId)!;
+    assert.equal(run.result, "running", "留めた回を running のままにしていない");
+    assert.match(run.reason!, /回復中/);
+    assert.equal(ctx.runner.activeRuns(), 0, "留めている回を同時本数に数えた");
+
+    // 留めが解けて起こされる
+    ctx.hold.reason = undefined;
+    ctx.deliveries.resumeAll();
+    run = await finished(ctx, a.id, r.runId);
+    assert.equal(run.result, "done");
+    assert.equal(run.reason, undefined, "留めた理由が結末に残った");
+    assert.deepEqual(ctx.woke, [forkId]);
+
+    // ターンが失敗したら failed
+    ctx.hold.reason = "続けるか聞いています";
+    const second = await ctx.runner.run(ctx.automations.get(a.id)!, "clock");
+    assert.equal(second.result, "running");
+    ctx.hold.reason = undefined;
+    ctx.next.outcome = "failed";
+    ctx.deliveries.resumeAll();
+    assert.equal((await finished(ctx, a.id, second.runId)).result, "failed");
+    assert.deepEqual(ctx.notices, []);
+  });
+});
+
+test("留めが解けないまま届け先が閉じられたら、留めた理由を添えて skipped にする", async () => {
+  await setup(async (ctx) => {
+    const a = await createDedicated(ctx);
+    const forkId = a.target.threadId!;
+    ctx.hold.reason = "起こし直しの回復中です";
+    const r = await ctx.runner.run(a, "clock");
+    assert.equal(r.result, "running");
+    await ctx.store.closeThread(forkId, { by: "human" });
+    await ctx.runner.threadClosed(forkId);
+    const run = ctx.automations.get(a.id)!.runs.find((x) => x.runId === r.runId)!;
+    assert.equal(run.result, "skipped");
+    assert.match(run.reason!, /閉じられ/);
+    assert.match(run.reason!, /回復中/, "留めた理由が残っていない");
+    assert.deepEqual(ctx.woke, []);
   });
 });
