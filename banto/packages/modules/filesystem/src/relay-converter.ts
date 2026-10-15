@@ -102,6 +102,12 @@ export class RelayConverter implements Converter {
     if (typeof r.data !== "string") throw new Error("変換役の返事に中身がありません");
     return { data: Buffer.from(r.data, "base64"), converter: parseDescriptor(r.converter), ms: typeof r.ms === "number" ? r.ms : 0 };
   }
+
+  async renderPage(pdf: Buffer, page: number) {
+    const r = JSON.parse(await this.callDocuments("renderPage", { data: pdf.toString("base64"), page })) as { data?: unknown; mimeType?: unknown };
+    if (typeof r.data !== "string") throw new Error("変換役の返事に絵がありません");
+    return { data: Buffer.from(r.data, "base64"), mimeType: typeof r.mimeType === "string" ? r.mimeType : "image/png" };
+  }
 }
 
 function parseDescriptor(v: unknown): ConverterDescriptor {

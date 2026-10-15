@@ -23,6 +23,7 @@ import { readSettings, writeSettings } from "./settings.js";
 import { getComments, saveComments } from "./comments.js";
 import { ConvertedStore, DOCUMENT_CONVERTED_EXTENSIONS, DocumentConversions, defaultTarget, extensionOf, type ConvertTarget } from "./converted.js";
 import { RelayConverter } from "./relay-converter.js";
+import { parsePages, readDocument } from "./read-document.js";
 
 function tool(name: string, description: string, inputSchema: unknown) {
   return { name, description, inputSchema, _meta: { [VISIBILITY_META_KEY]: "agent" } };
@@ -51,7 +52,26 @@ export function createFileSystemServer(deps: {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      tool("readFile", "読み取り", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
+      tool("readFile", "読み取り（PDF・Office の文書の中身は readDocument で読む）", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
+      // **PDF・Office をページごとの文字・ページの絵で読む**（v4-modules.md §2.2「PDF・Office…」の「AI の側」）。readFile では
+      // base64 が返るだけで読めない（readFile の形は変えない）。変換は人の画面と同じ変換役・同じ置き場
+      tool(
+        "readDocument",
+        "PDF・Office の文書（docx・pptx・xlsx・doc・ppt・xls・odt・odp・ods など）をページごとの文字で読む（表はシートごとの CSV）。" +
+          "asImage: true ならページの絵を返す。1回 20 ページ・200,000 字・絵は合計 10MB まで",
+        {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            pages: {
+              type: "string",
+              description: '読むページ（1 から）。"3"・"2-5"・"1,4,6-8" の形。表ではシートの番号。省略すると 1 ページ目から 20 ページまで',
+            },
+            asImage: { type: "boolean", description: "true ならページの絵（図・レイアウトを見るとき。表は PDF にしたときのページ）" },
+          },
+          required: ["path"],
+        },
+      ),
       tool("writeFile", "新規作成／全体上書き", { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] }),
       // **結果は差分として画面にも出る**（v4-modules.md §2.2「editFile の結果は
       // 行単位差分で inline カードに埋め込む」）。返すのは unified diff で、
@@ -256,6 +276,11 @@ export function createFileSystemServer(deps: {
       case "readFile": {
         const block = await ops.readFileOp(root, String(args.path));
         return { content: [block] };
+      }
+      case "readDocument": {
+        const file = ops.fileInRoot(root, String(args.path));
+        const blocks = await readDocument(file.abs, file.rel, { pages: parsePages(args.pages), asImage: args.asImage === true }, deps.conversions);
+        return { content: blocks };
       }
       case "writeFile":
         await ops.writeFileOp(root, String(args.path), String(args.content));

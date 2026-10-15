@@ -35,6 +35,9 @@ function fakeConverter(opts: { descriptor?: typeof D1; preparing?: boolean } = {
       if (opts.preparing) throw new ConverterPreparingError(INSTALLING_MESSAGE);
       return { data: Buffer.concat([Buffer.from(`${target}:`), data]), converter: opts.descriptor ?? D1, ms: 5 };
     },
+    async renderPage() {
+      throw new Error("この試験では絵にしない");
+    },
   };
   return { converter, calls, describes: () => describes };
 }

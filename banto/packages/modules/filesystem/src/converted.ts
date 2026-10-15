@@ -39,6 +39,8 @@ export interface ConverterDescriptor {
 export interface Converter {
   describe(): Promise<ConverterDescriptor>;
   convert(target: ConvertTarget, extension: string, data: Buffer): Promise<{ data: Buffer; converter: ConverterDescriptor; ms: number }>;
+  /** PDF の1ページを絵（PNG）にする（`readDocument` の asImage） */
+  renderPage(pdf: Buffer, page: number): Promise<{ data: Buffer; mimeType: string }>;
 }
 
 /**
@@ -227,6 +229,15 @@ export class DocumentConversions {
       if (err instanceof ConverterPreparingError) return { status: "preparing", message: err.message };
       throw err;
     }
+  }
+
+  /**
+   * PDF の1ページの絵（AI 向けの `readDocument`）。変換役に渡せるのは 7MB まで。変換役を用意している途中なら
+   * `ConverterPreparingError` のまま投げる（呼び元が AI 向けの文に言い換える）
+   */
+  async renderPage(pdf: Buffer, page: number): Promise<{ data: Buffer; mimeType: string }> {
+    if (pdf.length > CONVERT_MAX_BYTES) throw new Error(TOO_LARGE_MESSAGE);
+    return this.need().renderPage(pdf, page);
   }
 
   /** 変換したもののパス（置き場の中）。まだ変換していなければ理由つきで投げる——ここでは変換しない */
