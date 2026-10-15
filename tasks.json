@@ -7335,22 +7335,22 @@
       "id": "office-converter",
       "number": 304,
       "kind": "task",
-      "title": "変換役（LibreOffice）を置き、PDF への変換と xlsx の計算し直しの口を作る",
-      "status": "backlog",
+      "title": "変換役 documents（LibreOffice）：初回に自動で入れ、PDF への変換と xlsx の計算し直しを返す",
+      "status": "ready",
       "parent": "office-review",
-      "dependsOn": [],
+      "dependsOn": [
+        "tools-container"
+      ],
       "milestone": null,
       "priority": "normal",
-      "labels": [
-        "未決"
-      ],
-      "body": "置き場は未決（案A banto 全体用のコンテナに1つ／案B Project のコンテナごと）——決まってから着手。sha256＋変換役の版で変換結果を FileSystem の置き場に残す（合計 1GiB、古いものから消す）、1件ずつ・60秒で打ち切り・100MB まで。使えないときは理由と入れ方を返す。",
+      "labels": [],
+      "body": "同梱の banto 全体の Module documents（仮名、道具用のコンテナで動く、tool の可視性 module、statelessTransform を名乗る）。初めての頼みで自分のコンテナに apt で入れる（writer・calc・impress の nogui・poppler・日本語フォント、約600MB）、入れている間は「変換役を入れています」を返す。1件ごとに使い捨ての作業フォルダとプロファイル、終わったら消す。1件ずつ・60秒で打ち切り・100MB まで。FileSystem 側は sha256＋変換役の版で結果を Project ごとの置き場に残す（合計 1GiB、古いものから消す）。仕様 v4-modules.md §2.2「変換役の置き場」。",
       "doneWhen": "docx・pptx・xlsx を PDF に変換し、xlsx の式の値が入った写しを作れる。同じ中身は変換し直さない。変換役が無い環境で理由が出る",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T09:13:11.008Z",
+      "updatedAt": "2026-10-15T09:40:38.080Z",
       "closedAt": null,
       "extra": {}
     },
