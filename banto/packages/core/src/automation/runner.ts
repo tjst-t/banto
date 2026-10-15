@@ -28,6 +28,11 @@ export interface AutomationRunnerDeps {
   listJudgmentsForThread(threadId: string): JudgmentItem[];
   /** 人への知らせ（受信箱の「お知らせ」） */
   notify(input: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
+  /**
+   * **乗り換えで古い専用の Fork を閉じた**（追加・2026-10-15、Backlog #318）。開いている画面に `thread.closed` を流す
+   * ——流さないと、開いている画面では再読み込みまでサイドバーの開いた一覧に残る
+   */
+  announceClosed?(input: { threadId: string; projectId: string; reason: string }): void;
   now?: () => Date;
 }
 
@@ -161,7 +166,10 @@ export class AutomationRunner {
       // まっさらなので Clear は要らない。前の回を引き継ぐなら、古い Fork の会話を引き継いで立てる
       const next = await this.newFork(current, current.target.mode === "continue" ? thread : undefined);
       await this.deps.automations.setDedicatedThread(current.id, next.id);
-      await this.deps.projectThread.closeThread(thread.id);
+      // 人・AI が閉じる口（`closeThreadAndTell`）は通らない——通ると「専用の Fork が閉じられた」で一時停止してしまう
+      const reason = `自動化「${current.name}」が新しい Fork に乗り換えました`;
+      await this.deps.projectThread.closeThread(thread.id, { by: "automation", reason });
+      this.deps.announceClosed?.({ threadId: thread.id, projectId: thread.projectId, reason });
       rotatedFrom = thread.id;
       threadId = next.id;
     } else if (current.target.kind === "dedicated" && current.target.mode === "fresh") {

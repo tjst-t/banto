@@ -295,7 +295,9 @@ export function ArchiveDialog({
                   note={
                     thread.closedBy === "ai"
                       ? `AI が閉じました${thread.closedReason ? `：${thread.closedReason}` : ""}`
-                      : undefined
+                      : thread.closedBy === "automation"
+                        ? (thread.closedReason ?? "自動化が新しい Fork に乗り換えました")
+                        : undefined
                   }
                   expanded={expandedId === thread.id}
                   onToggle={() => toggle(thread.id)}

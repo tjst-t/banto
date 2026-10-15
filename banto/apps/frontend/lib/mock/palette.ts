@@ -7,12 +7,15 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { getActiveProjects, getProject } from "./projects";
 import { getThread, getThreadsForProject } from "./threads";
 import { getRealJudgments } from "../backend/real-inbox";
 import { getRealLaunchers } from "../backend/real-launchers";
+import type { RealAutomation } from "../backend/client";
+import { automationsCanvasHref } from "../backend/automations";
 import { getLaunchersForProject } from "./settings";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "../feature-flags";
 
@@ -60,7 +63,18 @@ export function getOperations(): typeof OPERATIONS {
   return OPERATIONS;
 }
 
-export function buildPaletteGroups(currentProjectId: string | null, query: string): PaletteGroup[] {
+/** 「自動化」で引ける言葉（§6.42——「cron」「予定」「webhook」「きっかけ」でも引ける） */
+const AUTOMATION_WORDS = ["自動化", "自動", "きっかけ", "予定", "定期", "cron", "webhook", "schedule", "automation"];
+
+/**
+ * `automations` はいまの Project の自動化の写し（`lib/backend/automations.ts`）。まだ取れていなければ undefined
+ * ——件数を添えないだけで、入口は出す（無い Project でも、ここから作れる）
+ */
+export function buildPaletteGroups(
+  currentProjectId: string | null,
+  query: string,
+  automations?: readonly RealAutomation[],
+): PaletteGroup[] {
   const q = query.trim().toLowerCase();
   const groups: PaletteGroup[] = [];
 
@@ -198,6 +212,18 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
     kind: "operation" as const,
     actionId: o.id,
   }));
+  // **core の画面「自動化」**（v4-frontend.md §6.42）——Module の入口ではないので「操作」に置く。開くと会話の隣（Canvas）
+  if (currentProjectId && (q === "" || AUTOMATION_WORDS.some((w) => w.toLowerCase().includes(q) || q.includes(w.toLowerCase())))) {
+    const n = automations?.length;
+    opItems.unshift({
+      id: "operation:open-automations",
+      title: "自動化",
+      subtitle: n ? `この Project の自動化（${n} 件）` : "決まった時刻に AI を動かす",
+      icon: Zap,
+      href: automationsCanvasHref(currentProjectId),
+      kind: "operation",
+    });
+  }
   if (opItems.length > 0) groups.push({ kind: "operation", label: "操作", items: opItems });
 
   return groups;

@@ -358,7 +358,12 @@ async function main(): Promise<void> {
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
+    // 乗り換えで閉じた古い Fork を、開いている画面のサイドバーから外す（Backlog #318）
+    announceClosed: ({ threadId, projectId, reason }) =>
+      appEvents.publish({ type: "thread.closed", threadId, projectId, by: "automation", reason }),
   });
+  // **自動化の画面**（v4-frontend.md §6.42）は台帳が変わったら取り直す——どの Project のものかだけ流す
+  automations.onChange(({ projectId }) => appEvents.publish({ type: "automations.changed", projectId }));
   // **時刻のきっかけ**（アーキ仕様 §4.3「時計」）。1分ごとの刻み1本。刻み始めるのは待ち受けて `resumeAll` したあと
   const automationClock = new AutomationClock({
     automations,

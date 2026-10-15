@@ -34,3 +34,8 @@
   知らせ（`turn.started`）で一覧に入る（AI が立てた Fork と同じ）。乗り換えで閉じた古い Fork は `thread.closed` を
   流していない（`ThreadClosedBy` が ai／human しか持たない）ので、開いている画面では再読み込みまで開いた一覧に残る。
   どちらも `automation-canvas`（専用の Fork の帯）で扱う
+
+## 追記（2026-10-15、Backlog #318 `automation-canvas`）
+
+- 上の「残したこと」の2つ（作った直後の専用の Fork が一覧に無い・乗り換えで閉じた古い Fork が `thread.closed` を流さない）は
+  `automation-canvas` で扱った。中身は `docs/notes/2026-10-15-automation-canvas.md`

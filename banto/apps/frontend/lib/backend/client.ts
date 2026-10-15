@@ -414,7 +414,8 @@ export async function prepareRealProjectModules(projectId: string): Promise<stri
  * `getRealThread` で取る。
  */
 /** Thread を閉じたのは AI（`close_fork`）か人（画面）か（host の `ThreadClosedBy`、追加・2026-10-08） */
-export type RealThreadClosedBy = "ai" | "human";
+/** 閉じたのは AI か人か、自動化が専用の Fork を乗り換えたか（追加・2026-10-15、Backlog #318） */
+export type RealThreadClosedBy = "ai" | "human" | "automation";
 
 export interface RealThreadSummary {
   id: string;
@@ -1900,4 +1901,99 @@ export function fetchRealImageUrl(id: string): Promise<string> {
     imageObjectUrls.set(id, url);
   }
   return url;
+}
+
+// ---- 自動化（v4-frontend.md §6.42、アーキ仕様 §4.3）。台帳は host（`automation/store.ts`）、画面は写しを持つだけ ----
+
+/** 時刻の繰り返し。`time` は "H:MM"（24時間）、`day` は 0＝日曜 */
+export type RealAutomationRepeat =
+  | { kind: "daily"; time: string }
+  | { kind: "weekdays"; time: string }
+  | { kind: "weekly"; day: number; time: string }
+  | { kind: "interval"; hours: number }
+  | { kind: "cron"; expr: string };
+
+/** きっかけの出どころ。Webhook は Backlog `automation-webhook` で足す */
+export type RealAutomationSource = { kind: "time"; repeat: RealAutomationRepeat; timeZone: string };
+
+/** 届け先。`dedicated` の `threadId` は host が専用の Fork を立てたあとに入る */
+export type RealAutomationTarget =
+  | { kind: "dedicated"; mode: "fresh" | "continue"; threadId?: string }
+  | { kind: "thread"; threadId: string };
+
+export type RealAutomationRunResult = "running" | "done" | "failed" | "waiting" | "skipped" | "rejected";
+
+export interface RealAutomationRun {
+  runId: string;
+  /** 実際に動いた時刻（ISO） */
+  at: string;
+  cause: "clock" | "manual" | "webhook";
+  result: RealAutomationRunResult;
+  reason?: string;
+  threadId?: string;
+  rotatedFrom?: string;
+  /** 時計で動いた回の予定の時刻 */
+  scheduledFor?: string;
+  delayed?: string;
+}
+
+/** 人が作り・直せる欄 */
+export interface RealAutomationFields {
+  name: string;
+  instruction: string;
+  source: RealAutomationSource;
+  target: RealAutomationTarget;
+  reviewOnDone: boolean;
+}
+
+export interface RealAutomation extends RealAutomationFields {
+  id: string;
+  projectId: string;
+  createdBy: { kind: "human" } | { kind: "ai"; threadId: string };
+  createdAt: string;
+  updatedAt: string;
+  paused: boolean;
+  pausedReason?: string;
+  /** 新しい順（最大 50 件） */
+  runs: RealAutomationRun[];
+  /** 次に時計で動く時刻（host が毎回計算して添える。一時停止中は無い） */
+  nextFireAt?: string;
+}
+
+export async function listRealAutomations(projectId: string): Promise<RealAutomation[]> {
+  const body = await request<{ automations: RealAutomation[] }>(`/api/projects/${encodeURIComponent(projectId)}/automations`);
+  return body.automations;
+}
+
+export async function createRealAutomation(projectId: string, fields: RealAutomationFields): Promise<RealAutomation> {
+  return request<RealAutomation>(`/api/projects/${encodeURIComponent(projectId)}/automations`, {
+    method: "POST",
+    body: JSON.stringify(fields),
+  });
+}
+
+/** 欄を直す・一時停止（`paused: true`）・再開（`paused: false`） */
+export async function updateRealAutomation(
+  projectId: string,
+  id: string,
+  changes: Partial<RealAutomationFields> & { paused?: boolean },
+): Promise<RealAutomation> {
+  return request<RealAutomation>(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+export async function removeRealAutomation(projectId: string, id: string): Promise<void> {
+  await request<{ ok: true }>(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+/** 今すぐ動かす。届けなかった（閉じている等）ときも `skipped` と理由が返る。前の回が終わっていなければ投げる（409） */
+export async function runRealAutomation(
+  projectId: string,
+  id: string,
+): Promise<{ runId: string; result: "running" | "skipped"; reason?: string; threadId?: string }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
 }

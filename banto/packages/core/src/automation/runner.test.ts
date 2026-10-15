@@ -33,6 +33,8 @@ interface Ctx {
   next: { outcome: TurnOutcome | "hang" };
   /** 止まっているターンを終わらせる */
   finishHung(outcome?: TurnOutcome): Promise<void>;
+  /** 乗り換えで閉じたと画面に知らせたもの */
+  announced: Array<{ threadId: string; projectId: string; reason: string }>;
 }
 
 /** turn-runner の代わり：鍵を取り、届いたものを会話に積み、ターンの終わりを書いてから鍵を返す */
@@ -54,6 +56,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const deliveries = new ThreadDeliveries({ projectThread: store, turns, notify, hold: () => hold.reason });
     const judgments = new Map<string, JudgmentItem[]>();
     const woke: string[] = [];
+    const announced: Ctx["announced"] = [];
     const next: Ctx["next"] = { outcome: "completed" };
     let hung: ((outcome: TurnOutcome) => Promise<void>) | undefined;
     deliveries.setTurnRunner(async (threadId, hop) => {
@@ -86,8 +89,10 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       deliveries,
       listJudgmentsForThread: (id) => judgments.get(id) ?? [],
       notify,
+      announceClosed: (input) => void announced.push(input),
     });
     await fn({
+      announced,
       store,
       automations,
       turns,
@@ -357,6 +362,9 @@ test(`${AUTOMATION_FORK_RUNS} 回届けたら新しい Fork に乗り換え、�
     assert.equal(after.target.threadId, r.threadId);
     assert.equal(after.threadRuns, 1, "乗り換えたら 0 から数え直す");
     assert.equal(ctx.store.getThread(oldId)!.status, "closed");
+    assert.equal(ctx.store.getThread(oldId)!.closedBy, "automation");
+    // 開いている画面のサイドバーから外れるように、閉じたことを流す（Backlog #318）
+    assert.deepEqual(ctx.announced.map((x) => x.threadId), [oldId]);
     assert.equal(after.paused, false, "乗り換えで閉じたのを人が閉じたと読んだ");
     const run = after.runs.find((x) => x.runId === r.runId)!;
     assert.equal(run.rotatedFrom, oldId, "境目が記録に無い");

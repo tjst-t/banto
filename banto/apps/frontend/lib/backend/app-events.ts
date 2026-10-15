@@ -90,7 +90,12 @@ export type RealAppEvent =
    * Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
    * 人が画面で閉じたときも。サイドバーの開いている一覧から外し、開いている画面は飛ばさず帯を出す
    */
-  | { type: "thread.closed"; threadId: string; projectId?: string; by: RealThreadClosedBy; reason?: string };
+  | { type: "thread.closed"; threadId: string; projectId?: string; by: RealThreadClosedBy; reason?: string }
+  /**
+   * その Project の自動化の台帳が変わった（追加・2026-10-15、v4-frontend.md §6.42）。中身は流れてこない——写しを持っている
+   * 画面が取り直す（`automations.ts`）
+   */
+  | { type: "automations.changed"; projectId: string };
 
 /** 移す元・移す先（host の `RuntimeMoveView` の from・to） */
 export interface RealRuntimeMoveSide {

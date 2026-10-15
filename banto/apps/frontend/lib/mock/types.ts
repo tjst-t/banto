@@ -68,7 +68,7 @@ export interface MockThread {
    * **誰が閉じたか・理由**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。閉じている間だけ持つ
    * ——開き直したら外す（host と同じ）。履歴の行の「AI が閉じました：（理由）」と、開いている画面の帯に出す
    */
-  closedBy?: "ai" | "human";
+  closedBy?: "ai" | "human" | "automation";
   closedReason?: string;
   /** 実bantoホストのThread（決定・2026-09-03）。scriptは使わない（空のプレースホルダ）。 */
   real?: boolean;

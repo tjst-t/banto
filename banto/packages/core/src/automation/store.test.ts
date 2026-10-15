@@ -193,3 +193,16 @@ test("前の回が終わっていない：走っている・届けもの・返�
   assert.match(previousRunUnfinished(thread, judgment("live"))!, /判断/);
   assert.equal(previousRunUnfinished(thread, judgment("answered")), undefined);
 });
+
+test("台帳が変わるたびに、どの Project のどの自動化かを知らせる（消したときも）", async () => {
+  await withDir(async (dir) => {
+    const { store } = await open(dir);
+    const seen: Array<{ projectId: string; id: string }> = [];
+    store.onChange((c) => seen.push(c));
+    const a = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: morning });
+    await store.pause(a.id);
+    await store.recordRun(a.id, { runId: "r1", at: new Date().toISOString(), cause: "manual", result: "skipped", reason: "x" });
+    await store.remove(a.id);
+    assert.deepEqual(seen, Array(4).fill({ projectId: "p1", id: a.id }));
+  });
+});

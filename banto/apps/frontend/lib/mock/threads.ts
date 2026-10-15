@@ -214,7 +214,7 @@ export async function closeThread(id: string): Promise<void> {
  * host から「閉じた」（`thread.closed`）が届いたとき——AI が閉じた・別の画面で閉じた——も、ここを通る。
  * 開いている一覧（サイドバー）は `status` から出しているので、ここで外れる
  */
-export function markThreadClosed(id: string, by: { by: "ai" | "human"; reason?: string }): void {
+export function markThreadClosed(id: string, by: { by: NonNullable<MockThread["closedBy"]>; reason?: string }): void {
   if (!getThread(id)) return;
   mockThreads = mockThreads.map((t) =>
     t.id === id

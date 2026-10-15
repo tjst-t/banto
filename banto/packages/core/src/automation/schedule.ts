@@ -9,7 +9,7 @@
 // - 間隔は最短15分（cron の式は先の回を並べて確かめる）
 
 import { Cron } from "croner";
-import type { AutomationRepeat } from "./fold.js";
+import type { Automation, AutomationRepeat } from "./fold.js";
 
 /** 間隔の最短（アーキ仕様 §4.3「形」） */
 export const AUTOMATION_MIN_INTERVAL_MS = 15 * 60_000;
@@ -51,6 +51,16 @@ export function nextFireAt(repeat: AutomationRepeat, timeZone: string, after: Da
     case "cron":
       return new Cron(repeat.expr, { timezone: timeZone, paused: true }).nextRun(after) ?? undefined;
   }
+}
+
+/**
+ * **画面に出す「次は」**（v4-frontend.md §6.42）。保存しない（規則3）——時計と同じく数え始め（`clockFrom`）と今の遅いほうから
+ * 毎回計算する。一時停止中・時刻でないきっかけは無い。同時本数でずらしている回は数えない（ずらしは時計の手元にしか無い）
+ */
+export function nextFireOf(a: Automation, now: Date): Date | undefined {
+  if (a.paused || a.source.kind !== "time") return undefined;
+  const from = Math.max(now.getTime(), Date.parse(a.clockFrom));
+  return nextFireAt(a.source.repeat, a.source.timeZone, new Date(from));
 }
 
 /**

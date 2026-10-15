@@ -102,7 +102,11 @@ test("作る・一覧・直す・一時停止・再開・消す", async () => {
     assert.equal(edited.status, 200);
     assert.equal(edited.body.reviewOnDone, false);
     assert.equal(edited.body.instruction, "まとめて");
-    assert.equal((await call(one, "PATCH", { paused: true })).body.paused, true);
+    // 「次は」は計算して添える（保存しない）。一時停止中は無い
+    assert.ok(Date.parse(edited.body.nextFireAt) > Date.now(), "次の時刻が添えられていない");
+    const paused = await call(one, "PATCH", { paused: true });
+    assert.equal(paused.body.paused, true);
+    assert.equal(paused.body.nextFireAt, undefined);
     assert.equal((await call(one, "PATCH", { paused: false })).body.paused, false);
     assert.equal((await call(one, "PATCH", {})).status, 400);
 

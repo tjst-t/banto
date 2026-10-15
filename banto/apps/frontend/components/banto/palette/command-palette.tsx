@@ -19,6 +19,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { buildPaletteGroups, type PaletteItem } from "@/lib/mock/palette";
+import { useAutomations } from "@/lib/backend/automations";
 import type { UsePanelStackResult } from "@/components/banto/shell/use-panel-stack";
 import { refreshRealLaunchers, useRealLaunchersVersion } from "@/lib/backend/real-launchers";
 
@@ -54,11 +55,13 @@ export function CommandPalette({
     if (open && projectId) void refreshRealLaunchers(projectId);
   }, [open, projectId]);
 
+  // 自動化の件数（§6.42）。写しが無ければ取りに行く——開いていない間は取らない
+  const automations = useAutomations(open ? projectId : null);
   const groups = useMemo(
-    () => buildPaletteGroups(projectId, query),
+    () => buildPaletteGroups(projectId, query, automations),
     // launchersVersion は「取り直した」の合図——中身は palette.ts が読む（規則3）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, query, launchersVersion],
+    [projectId, query, launchersVersion, automations],
   );
 
   // usePanelStack.open() は呼ぶたびに「そのレンダーの searchParams」から

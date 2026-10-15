@@ -19,6 +19,8 @@ import { AutomationInputError, AutomationNotFoundError, type AutomationStore } f
 import type { AutomationRunner } from "../automation/runner.js";
 import { previousRunUnfinished } from "../automation/busy.js";
 import { AutomationTools } from "../automation/tools.js";
+import { nextFireOf } from "../automation/schedule.js";
+import type { Automation } from "../automation/fold.js";
 import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
@@ -3313,6 +3315,11 @@ export function createApp(deps: AppDeps) {
         const isRun = automationsMatch[3] !== undefined;
         const store = deps.automations;
         if (!store || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        // 画面に出す「次は」を添える（保存しない、規則3）
+        const view = (a: Automation) => {
+          const next = nextFireOf(a, new Date());
+          return next ? { ...a, nextFireAt: next.toISOString() } : a;
+        };
         const checkTarget = (target: unknown): string | undefined => {
           if (typeof target !== "object" || target === null) return undefined;
           const t = target as { kind?: unknown; threadId?: unknown };
@@ -3324,14 +3331,14 @@ export function createApp(deps: AppDeps) {
         };
         try {
           if (!automationId) {
-            if (req.method === "GET") return json(res, 200, { automations: store.list(projectId) });
+            if (req.method === "GET") return json(res, 200, { automations: store.list(projectId).map(view) });
             if (req.method === "POST") {
               const body = (await readJsonBody(req)) as { target?: unknown };
               const problem = checkTarget(body.target);
               if (problem) return json(res, 400, { error: problem });
               const created = await store.create({ projectId, createdBy: { kind: "human" }, fields: body });
               // 届け先が専用の Fork なら、作るときに立てる（§4.3「専用の Fork」）
-              return json(res, 201, (await deps.automationRunner?.prepare(created)) ?? created);
+              return json(res, 201, view((await deps.automationRunner?.prepare(created)) ?? created));
             }
             return json(res, 405, { error: "method not allowed" });
           }
@@ -3352,7 +3359,7 @@ export function createApp(deps: AppDeps) {
             // 届けなかった（閉じている・移している等）ときも 202——その回は `skipped` と理由つきで台帳に残る
             return json(res, 202, await deps.automationRunner.run(automation, "manual"));
           }
-          if (req.method === "GET") return json(res, 200, automation);
+          if (req.method === "GET") return json(res, 200, view(automation));
           if (req.method === "PATCH") {
             const body = (await readJsonBody(req)) as { paused?: unknown; target?: unknown };
             const problem = checkTarget(body.target);
@@ -3370,7 +3377,7 @@ export function createApp(deps: AppDeps) {
             // 動いている自動化の専用の Fork が無い・閉じていたら立てる（届け先を変えた・閉じた Fork のまま再開した）。
             // 一時停止のままなら立てない——開き直しても自動では再開しない（§4.3）
             if (!next.paused && deps.automationRunner) next = await deps.automationRunner.prepare(next);
-            return json(res, 200, next);
+            return json(res, 200, view(next));
           }
           if (req.method === "DELETE") {
             await store.remove(automationId);

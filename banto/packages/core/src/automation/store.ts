@@ -29,6 +29,7 @@ const TIME_PATTERN = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 export class AutomationStore {
   private readonly projection: SnapshotProjection<AutomationReadModel>;
+  private readonly listeners = new Set<(change: { projectId: string; id: string }) => void>();
 
   constructor(dataDir: string, private readonly log: EventLog) {
     // 版 2：`clockFrom`（時計の数え始め）を足した
@@ -56,6 +57,12 @@ export class AutomationStore {
 
   get(id: string): Automation | undefined {
     return this.projection.current.automations.get(id);
+  }
+
+  /** **台帳が変わった**（作った・直した・止めた・消した・回を書いた）。開いている画面に知らせるのに使う */
+  onChange(listener: (change: { projectId: string; id: string }) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   async create(input: {
@@ -119,9 +126,13 @@ export class AutomationStore {
     return a;
   }
 
-  private async append(type: string, payload: unknown): Promise<void> {
+  private async append(type: string, payload: { id: string; projectId?: string; [key: string]: unknown }): Promise<void> {
+    // 消したあとは台帳から引けないので、Project は書く前に控える
+    const projectId = payload.projectId ?? this.get(payload.id)?.projectId;
     const event = await this.log.append(type, payload);
     this.projection.applyOne(event);
+    if (!projectId) return;
+    for (const listener of this.listeners) listener({ projectId, id: payload.id });
   }
 }
 

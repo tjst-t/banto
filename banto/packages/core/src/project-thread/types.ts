@@ -325,8 +325,11 @@ export interface RuntimeMoveCreated {
 export type ThreadKind = "base" | "fork";
 
 /** Claude Agent SDKの`permissionMode`（v4-frontend.md §6.4の6値）。 */
-/** Thread を閉じたのは AI（`close_fork`）か人（画面）か */
-export type ThreadClosedBy = "ai" | "human";
+/**
+ * Thread を閉じたのは AI（`close_fork`）か人（画面）か、自動化が専用の Fork を乗り換えたか（追加・2026-10-15、
+ * アーキ仕様 §4.3「乗り換え」）
+ */
+export type ThreadClosedBy = "ai" | "human" | "automation";
 
 export type ThreadPermissionMode =
   | "default"
@@ -398,7 +401,7 @@ export interface ThreadState {
    * ——開き直したら外す。これより前に閉じた記録は持たない
    */
   closedBy?: ThreadClosedBy;
-  /** AI が閉じたときの理由（`close_fork` の `reason`） */
+  /** AI が閉じたときの理由（`close_fork` の `reason`）・自動化が乗り換えたこと */
   closedReason?: string;
   /** system promptに入れるMemoryの上限seq（決定・2026-09-05）。Thread作成時と
    *  「畳んだ」時点で確定し、走行中は動かない——§3「走行中の枝の先頭は変えない」。

@@ -17,6 +17,7 @@ import {
   Plus,
   Search,
   Settings,
+  Zap,
 } from "lucide-react";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import {
@@ -64,6 +65,7 @@ import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resou
 import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
+import { AUTOMATIONS_CANVAS, automationsCanvasHref, useAutomations } from "@/lib/backend/automations";
 import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
 import { ProjectCodeTransferLine } from "./code-transfer";
 
@@ -178,6 +180,9 @@ function ProjectTreeItem({
   // **ほかの Project から移るときは、その Project で最後に開いていた Thread へ**（2026-10-13、§6.40）
   const lastThreads = useLastThreads();
   const lastForkId = isCurrent ? null : lastForkOf(lastThreads, project.id, forks.map((f) => f.id));
+  // **自動化**（v4-frontend.md §6.42）。目次を開いている Project の分だけ取る——専用の Fork の印と「自動化（n）」の行に使う
+  const automations = useAutomations(expanded ? project.id : null);
+  const dedicatedForks = new Set((automations ?? []).flatMap((a) => (a.target.kind === "dedicated" && a.target.threadId ? [a.target.threadId] : [])));
 
   /**
    * **サイドバーから Fork を作る**（2026-10-11、ユーザー）。ダイアログは会話の面が持つ（`lib/fork-request.ts`）
@@ -379,7 +384,8 @@ function ProjectTreeItem({
                               title={fork.title}
                               onClick={onNavigate}
                             >
-                              <ThreadRowIcon threadId={fork.id} icon={ForkIcon} />
+                              {/* 自動化の専用の Fork は稲妻（§6.42）。動いたあと未読なら太字になるのは他の Fork と同じ */}
+                              <ThreadRowIcon threadId={fork.id} icon={dedicatedForks.has(fork.id) ? Zap : ForkIcon} />
                               <ThreadRowName threadId={fork.id} testId="sidebar-fork-name">{fork.title}</ThreadRowName>
                             </Link>
                           </SidebarMenuSubButton>
@@ -395,6 +401,29 @@ function ProjectTreeItem({
                   </SortableRow>
                 ))}
               </SortableList>
+
+              {/* **自動化の一覧**（v4-frontend.md §6.42）。自動化がある Project だけ1行出す——無ければ目次を増やさない
+                  （作る口は Command Palette と AI への頼み）。いま開いている Fork は閉じずに、隣へ Canvas として開く */}
+              {automations && automations.length > 0 ? (
+                <SidebarMenuSubItem>
+                  <SidebarMenuSubButton
+                    asChild
+                    size="sm"
+                    className="text-ink-2"
+                    isActive={isCurrent && searchParams.get("canvas") === AUTOMATIONS_CANVAS}
+                  >
+                    <Link
+                      href={automationsCanvasHref(project.id, isCurrent ? activeForkThreadId : null)}
+                      data-roving-item
+                      onClick={onNavigate}
+                      data-testid="sidebar-automations"
+                    >
+                      <Zap />
+                      <span>自動化（{automations.length}）</span>
+                    </Link>
+                  </SidebarMenuSubButton>
+                </SidebarMenuSubItem>
+              ) : null}
 
               {/* **まっさらな Fork を作る**（2026-10-11、ユーザー）。会話を引き継いで分けるのは各行の「…」の「ここから Fork…」。
                   「閉じた Fork（N）」の行はやめた——左下の履歴と同じものだった */}

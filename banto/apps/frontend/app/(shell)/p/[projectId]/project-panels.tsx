@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Bell, Clock, ExternalLink, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { ArrowLeft, Bell, Clock, ExternalLink, Maximize2, Minimize2, Settings, X, Zap } from "lucide-react";
 import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   RenameOnRightClick,
@@ -13,6 +13,9 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useMounted } from "@/hooks/use-mounted";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
+import { AutomationsView } from "@/components/banto/automation/automations-view";
+import { AutomationBand } from "@/components/banto/automation/automation-band";
+import { AUTOMATIONS_CANVAS, useAutomations } from "@/lib/backend/automations";
 import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
 import { seedThreadModel } from "@/lib/backend/thread-model";
 import {
@@ -198,6 +201,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   const isMobile = useIsMobile();
   // 別の実行場所へ移している間は入力欄を止める（追加・2026-10-12、Backlog #270）。帯は `RuntimeMoveBanner`
   const moving = useProjectMoving(projectId);
+  // 自動化の専用の Fork は印を稲妻にし、会話の上に帯を出す（v4-frontend.md §6.42）
+  const automations = useAutomations(projectId);
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
   // 名前を聞いている Fork（null なら聞いていない）——v4-frontend.md §6.32
   const [forkRequest, setForkRequest] = useState<ForkDialogRequest | null>(null);
@@ -453,6 +458,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       renderFork={(threadId) => {
         const thread = getThread(threadId);
         const closed = thread?.status === "closed";
+        const automation = automations?.find((a) => a.target.kind === "dedicated" && a.target.threadId === threadId);
         return (
           <div className="flex h-full min-h-0 flex-col">
             <ClosablePanelHeader
@@ -462,7 +468,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               icon={ArrowLeft}
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
-              titleIcon={ForkIcon}
+              titleIcon={automation ? Zap : ForkIcon}
               title={thread?.title ?? threadId}
               onRename={
                 thread
@@ -503,6 +509,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             {closed && thread ? (
               <ForkClosedBanner thread={thread} onReopen={() => void handleReopenFork(threadId)} />
             ) : null}
+            {automation && !closed ? <AutomationBand automation={automation} threadId={threadId} /> : null}
             <RuntimeMoveBanner projectId={project.id} />
             <div className="min-h-0 flex-1">
               <ThreadPanel
@@ -525,6 +532,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         // ——`ui://` を指しているかで見分ける（決定・2026-09-07、§6.2）
         const realView = stack.canvas?.toolCallId ? getRealInlineView(stack.canvas.toolCallId) : undefined;
         const launcherUri = !realView && viewId.startsWith("ui://") ? viewId : undefined;
+        // **core の画面**（v4-frontend.md §6.42、§6.2 の例外）——Module の画面ではないので iframe を通さず、ここが直に描く。
+        // モックの落ち先（CanvasContent）より前で見る
+        const coreView = `${moduleId}:${viewId}` === AUTOMATIONS_CANVAS ? "automations" : undefined;
         // 画面が預けた「見ている場所」——URL に持つので、リロードでも別タブでも残る
         const viewState = parseViewState(searchParams.get(VIEW_STATE_PARAM));
         return (
@@ -535,7 +545,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             icon={X}
             onClose={() => stack.close("canvas")}
             closeLabel="Canvas を閉じる"
-            title={realView || launcherUri ? `Canvas — ${moduleId}` : `Canvas — ${moduleId}:${viewId}`}
+            title={coreView ? "自動化" : realView || launcherUri ? `Canvas — ${moduleId}` : `Canvas — ${moduleId}:${viewId}`}
             trailing={
               <div className="flex items-center gap-1.5">
                 {/* **どの開き方でも別タブに出せる**（改訂・2026-09-07、ユーザー要望）。
@@ -554,7 +564,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             }
           />
           <div className="min-h-0 flex-1">
-            {launcherUri ? (
+            {coreView ? (
+              <AutomationsView projectId={projectId} />
+            ) : launcherUri ? (
               // 人が入口から開いた面——tool の結果は無い。Canvas が自分で
               // 必要なものを取りに行く（§6.2「launcher も同じ形」）
               <ModuleCanvas

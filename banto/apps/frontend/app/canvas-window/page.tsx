@@ -16,6 +16,8 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
+import { AutomationsView } from "@/components/banto/automation/automations-view";
+import { AUTOMATIONS_CANVAS } from "@/lib/backend/automations";
 import { parseCanvasParam } from "@/components/banto/shell/use-panel-stack";
 import { fetchRealUiToolCall, type RealUiToolCall } from "@/lib/backend/client";
 import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
@@ -74,6 +76,24 @@ function CanvasWindowInner() {
             onViewStateChange={writeViewStateToUrl}
           />
         </div>
+      </CanvasWindowFrame>
+    );
+  }
+
+  // **core の画面**（v4-frontend.md §6.42）——どの Project のものかが要る。無ければ描かない（推測した Project を出さない）
+  if (`${canvas.moduleId}:${canvas.viewId}` === AUTOMATIONS_CANVAS) {
+    if (!projectId) {
+      return (
+        <CanvasWindowFrame title="自動化">
+          <div className="p-3 text-xs text-stop" data-testid="canvas-window-error">
+            どの Project の自動化かが指定されていません
+          </div>
+        </CanvasWindowFrame>
+      );
+    }
+    return (
+      <CanvasWindowFrame title="自動化" projectId={projectId}>
+        <AutomationsView projectId={projectId} />
       </CanvasWindowFrame>
     );
   }

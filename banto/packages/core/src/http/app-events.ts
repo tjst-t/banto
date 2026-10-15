@@ -49,6 +49,9 @@ export type AppEvent =
   // Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
   // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
   | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string }
+  // その Project の自動化の台帳が変わった（追加・2026-10-15、v4-frontend.md §6.42）。作った・直した・止めた・消した・
+  // 回を書いた。中身は流さない——開いている画面が `GET /api/projects/:id/automations` で取り直す
+  | { type: "automations.changed"; projectId: string }
   // 混んでいる Project とこの機械（追加・2026-10-09、v4-frontend.md §6.36）。**変わったときだけ**、全体を送る（画面は置き換える）
   | { type: "resources.busy"; busy: ResourcesBusy }
   // Project を別の実行場所へ移す状況（追加・2026-10-12、Backlog #270）。移している途中は `move` を丸ごと（写している間は
