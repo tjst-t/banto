@@ -9,9 +9,9 @@ import mark from '../assets/mark.svg?url';
 import Screen from '../components/Screen.astro';
 
 const installCmd = 'curl -fsSL https://banto.tjst-t.dev/install.sh | bash -s -- --domain banto.example.com';
-const title = 'banto — AI エージェントとの並行開発のためのワークスペース';
+const title = 'banto — AI と開発する環境を、まるごとひとつに。';
 const description =
-	'banto は、複数の AI エージェントに並行して作業を任せても、進捗と確認待ちをひと目で把握できるセルフホスト型のワークスペースです。';
+	'banto は、AI エージェントとの開発に必要なものをひとつにまとめたセルフホスト型のワークスペースです。作業をいくつ並行させても、進行中のものと判断待ちのものがひと目でわかります。';
 
 const faqs = [
 	{
@@ -74,31 +74,10 @@ const faqs = [
 		<main>
 			<section class="hero wrap">
 				<p class="kicker">AI エージェントとの開発のためのセルフホスト型ワークスペース</p>
-				<!-- 見出しの案（検討中）。?v=b などで切り替えて見比べる。決まったら他の案と切り替えの仕組みを消す -->
-				<div class="variant" data-v="a">
-					<h1><span class="nb">AI と開発する環境を、</span><span class="nb">まるごとひとつに。</span></h1>
-					<p class="lead">
-						会話の管理から、コマンドの実行、ブラウザでの確認、シークレットの管理、サーバーの公開、タスクの自動実装まで。banto は、AI エージェントとの開発に必要なものをひとつにまとめたワークスペースです。作業をいくつ並行させても、進行中のものと判断待ちのものがひと目でわかります。
-					</p>
-				</div>
-				<div class="variant" data-v="b" hidden>
-					<h1><span class="nb">依頼から公開まで、</span><span class="nb">AI との開発をひとつの場所で。</span></h1>
-					<p class="lead">
-						banto は、AI エージェントへの依頼、実行環境、ツール、進捗の管理をひとつにまとめたセルフホスト型のワークスペースです。開発サーバーの起動も、ブラウザでの確認も、main へのマージも、banto の中で任せられます。
-					</p>
-				</div>
-				<div class="variant" data-v="c" hidden>
-					<h1><span class="nb">AI に任せる開発の、</span><span class="nb">司令塔と道具箱。</span></h1>
-					<p class="lead">
-						並行する作業の状況をひと目で把握できる画面と、AI がそのまま使える開発ツール一式。banto は、AI エージェントとの開発に必要なものをひとつにまとめたセルフホスト型のワークスペースです。
-					</p>
-				</div>
-				<div class="variant" data-v="d" hidden>
-					<h1><span class="nb">「どこまで進んだっけ」を、</span><span class="nb">ゼロに。</span></h1>
-					<p class="lead">
-						banto は、AI エージェントに任せた作業をプロジェクトと会話ごとに整理し、開発に必要なツールもひとつにまとめたワークスペースです。進行中の作業も、あなたの判断を待っている作業も、ひとつの画面でわかります。
-					</p>
-				</div>
+				<h1><span class="nb">AI と開発する環境を、</span><span class="nb">まるごとひとつに。</span></h1>
+				<p class="lead">
+					会話の管理から、コマンドの実行、ブラウザでの確認、シークレットの管理、サーバーの公開、タスクの自動実装まで。banto は、AI エージェントとの開発に必要なものをひとつにまとめたワークスペースです。作業をいくつ並行させても、進行中のものと判断待ちのものがひと目でわかります。
+				</p>
 				<div class="actions">
 					<a class="btn primary" href="/docs/install/">インストール手順を見る</a>
 					<button type="button" class="cmd-chip" data-copy={installCmd} aria-label="インストールコマンドをコピー">
@@ -377,13 +356,6 @@ const faqs = [
 		</footer>
 
 		<script>
-			// 見出しの案を ?v= で切り替える（検討用）
-			{
-				const v = new URLSearchParams(location.search).get('v');
-				if (v && document.querySelector(`.variant[data-v="${v}"]`)) {
-					for (const el of document.querySelectorAll<HTMLElement>('.variant')) el.hidden = el.dataset.v !== v;
-				}
-			}
 			async function copy(btn: HTMLElement, text: string, labelEl: HTMLElement) {
 				const original = labelEl.textContent;
 				try {
