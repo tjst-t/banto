@@ -73,10 +73,10 @@ const faqs = [
 
 		<main>
 			<section class="hero wrap">
-				<p class="kicker">セルフホスト型の AI 開発ワークスペース</p>
-				<h1><span class="nb">AI エージェントを、</span><span class="nb">何本でも並行して。</span></h1>
+				<p class="kicker">AI エージェントとの並行開発のためのセルフホスト型ワークスペース</p>
+				<h1><span class="nb">「どこまで進んだっけ」を、</span><span class="nb">ゼロに。</span></h1>
 				<p class="lead">
-					進捗の確認や、承認・判断の依頼は banto がひとつの画面にまとめます。あなたは、判断が必要なところにだけ集中できます。
+					banto は、AI エージェントに任せた作業をプロジェクトと会話ごとに整理するワークスペースです。進行中の作業も、あなたの判断を待っている作業も、ひとつの画面でわかります。
 				</p>
 				<div class="actions">
 					<a class="btn primary" href="/docs/install/">インストール手順を見る</a>
@@ -238,6 +238,38 @@ const faqs = [
 						<p>仮想化支援が必要な作業などのために、SSH で接続した別のサーバーをプロジェクトの実行環境にすることもできます。</p>
 					</div>
 				</div>
+			</section>
+
+			<section class="fit wrap" id="fit">
+				<div class="fit-head">
+					<h2>banto が向いている場合・向いていない場合</h2>
+					<p>
+						banto は Claude Code の代わりではなく、Claude Code を中で動かし、複数の作業をまとめて管理するためのツールです。作業のしかたによっては、ほかのツールのほうが合うこともあります。
+					</p>
+				</div>
+				<div class="fit-grid">
+					<div class="fit-col good">
+						<h3>向いている場合</h3>
+						<ul>
+							<li><b>複数の作業やプロジェクトを同時に AI に任せたい</b><span>ターミナルやウィンドウを行き来して、確認待ちを取りこぼしている</span></li>
+							<li><b>自分のサーバーで動かしたい</b><span>コードや開発環境を自宅や社内のサーバーに置きたい</span></li>
+							<li><b>パソコンから離れても作業を進めたい</b><span>外出先のスマートフォンから承認したり、次の指示を出したりしたい</span></li>
+							<li><b>AI に安心して権限を渡したい</b><span>プロジェクトごとに隔離し、トークンの値は AI に見せずに渡したい</span></li>
+							<li><b>開発の周辺までまとめて任せたい</b><span>開発サーバーの起動、ブラウザでの確認、タスクの実装からマージまで</span></li>
+						</ul>
+					</div>
+					<div class="fit-col bad">
+						<h3>ほかのツールが合う場合</h3>
+						<ul>
+							<li><b>1つの作業を、エディターでコードを見ながら進めたい</b><span>Cursor などのエディター型や、エディターの拡張機能が向いています</span></li>
+							<li><b>サーバーを用意せず、すぐに試したい</b><span>Claude Code や Codex を手元のパソコンやクラウドで使うほうが手軽です</span></li>
+							<li><b>チームで使いたい</b><span>banto は現在、1人で使うことを前提にしています</span></li>
+							<li><b>会話に Claude 以外のモデルを使いたい</b><span>会話は Claude だけに対応しています（サブエージェントには OpenCode を使えます）</span></li>
+							<li><b>Mac や Windows の上で直接作業させたい</b><span>Xcode を使う開発など。banto の AI は Linux のコンテナの中で作業します</span></li>
+						</ul>
+					</div>
+				</div>
+				<a class="more" href="/docs/compare/">ほかのツールとの比較を見る</a>
 			</section>
 
 			<section class="install wrap" id="install">
@@ -755,6 +787,72 @@ const faqs = [
 				font-size: 15px;
 			}
 
+			/* 向き不向き */
+			.fit {
+				padding-top: clamp(56px, 8vw, 104px);
+				padding-bottom: clamp(56px, 8vw, 104px);
+				border-top: 1px solid var(--line);
+			}
+			.fit-head {
+				max-width: 46em;
+				margin-bottom: 32px;
+			}
+			.fit h2 {
+				font-size: clamp(24px, 2.6vw, 32px);
+				line-height: 1.4;
+				margin: 0 0 16px;
+			}
+			.fit-head p {
+				margin: 0;
+				color: var(--ink-2);
+			}
+			.fit-grid {
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				gap: 20px;
+				margin-bottom: 28px;
+			}
+			.fit-col {
+				background: var(--surface);
+				border-radius: 12px;
+				box-shadow: inset 0 0 0 1px var(--line);
+				padding: 24px 26px 10px;
+			}
+			.fit-col.good {
+				box-shadow:
+					inset 0 3px 0 var(--ai),
+					inset 0 0 0 1px var(--line);
+			}
+			.fit-col.bad {
+				box-shadow:
+					inset 0 3px 0 var(--ink-3),
+					inset 0 0 0 1px var(--line);
+			}
+			.fit h3 {
+				font-size: 17px;
+				margin: 0 0 14px;
+			}
+			.fit ul {
+				list-style: none;
+				margin: 0;
+				padding: 0;
+			}
+			.fit li {
+				display: flex;
+				flex-direction: column;
+				padding: 12px 0;
+				border-top: 1px solid var(--line);
+			}
+			.fit li b {
+				font-size: 15px;
+				font-weight: 500;
+			}
+			.fit li span {
+				font-size: 14px;
+				line-height: 1.7;
+				color: var(--ink-2);
+			}
+
 			/* インストール */
 			.install {
 				padding-top: clamp(56px, 8vw, 104px);
@@ -923,7 +1021,8 @@ const faqs = [
 			@media (max-width: 960px) {
 				.why,
 				.feature,
-				.faq {
+				.faq,
+				.fit-grid {
 					grid-template-columns: minmax(0, 1fr);
 				}
 				.feature.reverse .feature-text {

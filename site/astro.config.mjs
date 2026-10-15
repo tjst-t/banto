@@ -27,6 +27,7 @@ export default defineConfig({
 						{ label: 'banto とは', slug: 'docs' },
 						{ label: 'クイックスタート', slug: 'docs/quickstart' },
 						{ label: '基本概念', slug: 'docs/concepts' },
+						{ label: 'ほかのツールとの比較', slug: 'docs/compare' },
 					],
 				},
 				{
