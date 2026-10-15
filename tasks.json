@@ -7802,6 +7802,30 @@
       "extra": {}
     },
     {
+      "id": "automation-judgment-source-type",
+      "number": 327,
+      "kind": "task",
+      "title": "画面の受信箱の判断待ちの型（RealInboxJudgment.source）に \"automation\" を足す",
+      "status": "ready",
+      "parent": "automation",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "automation",
+        "frontend"
+      ],
+      "body": "#319 のレビュー（2026-10-15、Factory 実行 82e714e6）の指摘。取り込みは通した。\n\n- host は自動化の確認の判断待ちで `source: \"automation\"` を返すようになった（core の `JudgmentSource` に追加済み）が、画面の `banto/apps/frontend/lib/backend/client.ts:295` の `RealInboxJudgment.source` の型は知らない\n- いまは source で分岐するのが elicitation だけなので動くが、型と実際の値が食い違っている",
+      "doneWhen": "RealInboxJudgment.source に \"automation\" があり、フロントの tsc が通る。受信箱で自動化の確認のカードが出る（既存の E2E で確かめる）",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-15T15:02:25.248Z",
+      "updatedAt": "2026-10-15T15:02:25.248Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "browser-network-cookie-header-race",
       "number": 322,
       "kind": "bug",
