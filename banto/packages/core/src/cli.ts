@@ -29,6 +29,7 @@ import {
 import { RuntimeConfigStore } from "./config/runtime.js";
 import { AutomationStore } from "./automation/store.js";
 import { AutomationRunner } from "./automation/runner.js";
+import { AutomationClock } from "./automation/clock.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -356,6 +357,14 @@ async function main(): Promise<void> {
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
+  });
+  // **時刻のきっかけ**（アーキ仕様 §4.3「時計」）。1分ごとの刻み1本。刻み始めるのは待ち受けて `resumeAll` したあと
+  const automationClock = new AutomationClock({
+    automations,
+    projectThread,
+    runner: automationRunner,
+    // 間隔は E2E だけ縮める（BANTO_AUTOMATION_CLOCK_INTERVAL_MS）
+    ...(Number(process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS) > 0 ? { intervalMs: Number(process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS) } : {}),
   });
   // 受信箱のレビュー待ちに添える tool の数（CLI の会話の記録から数える。追加・2026-10-15、`inbox/review-turn.ts`）
   const reviewToolCounter = new ReviewToolCounter((sessionId, dir) => sdkSessionReader.messages(sessionId, dir), NON_WORK_TOOLS);
@@ -2401,6 +2410,7 @@ async function main(): Promise<void> {
       // 開いている流れは 1012（起こし直し中）で閉じる——画面は札を取り直して繋ぎ直す（§5.8）
       streamRelay.closeAll();
       liveness.stop();
+      automationClock.stop();
       hostStall.stop();
       stallProfiler?.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
@@ -2438,6 +2448,9 @@ async function main(): Promise<void> {
     // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
     // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
     deliveries.resumeAll();
+    // **時刻の自動化を刻み始める**（§4.3「時計」）。最初の刻みで止まっていた間の時刻を取り戻す——待ち受けて、届いたものを
+    // 再開したあと（届けたもので起こすターンも Runner が中継の口に繋ぐ）
+    automationClock.start();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));

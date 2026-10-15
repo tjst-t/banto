@@ -132,6 +132,9 @@ test("入力が決まりに合わなければ断る（台帳に残さない）",
       { ...morning, source: { kind: "time", repeat: { kind: "weekly", day: 7, time: "9:00" }, timeZone: "Asia/Tokyo" } },
       { ...morning, source: { kind: "time", repeat: { kind: "interval", hours: 0 }, timeZone: "Asia/Tokyo" } },
       { ...morning, source: { kind: "time", repeat: { kind: "daily", time: "9:00" }, timeZone: "Mars/Olympus" } },
+      { ...morning, source: { kind: "time", repeat: { kind: "cron", expr: "*/5 * * * *" }, timeZone: "Asia/Tokyo" } },
+      { ...morning, source: { kind: "time", repeat: { kind: "cron", expr: "0 9 * *" }, timeZone: "Asia/Tokyo" } },
+      { ...morning, source: { kind: "time", repeat: { kind: "cron" }, timeZone: "Asia/Tokyo" } },
       { ...morning, source: { kind: "webhook" } },
       { ...morning, target: { kind: "thread" } },
       { ...morning, reviewOnDone: "yes" },
@@ -147,6 +150,34 @@ test("入力が決まりに合わなければ断る（台帳に残さない）",
     let count = 0;
     for await (const _e of log.readFrom(0)) count++;
     assert.equal(count, 2, "作った1件と直した1件だけ");
+  });
+});
+
+test("cron の式は読めて15分以上なら受ける。時計の数え始めは作った・きっかけを変えた・再開した・時計で動いた回の予定の一番後", async () => {
+  await withDir(async (dir) => {
+    const { store } = await open(dir);
+    const a = await store.create({
+      projectId: "p1",
+      createdBy: { kind: "human" },
+      fields: { ...morning, source: { kind: "time", repeat: { kind: "cron", expr: " 30  9 * * 1-5 " }, timeZone: "Asia/Tokyo" } },
+    });
+    assert.deepEqual(a.source.repeat, { kind: "cron", expr: "30 9 * * 1-5" });
+    assert.equal(a.clockFrom, a.createdAt);
+    // 時計で動いた回の予定の時刻まで進む。前の時刻・予定の無い回（今すぐ動かす）では戻らない
+    await store.recordRun(a.id, { runId: "r1", at: "2099-01-01T00:00:10.000Z", cause: "clock", result: "running", scheduledFor: "2099-01-01T00:00:00.000Z" });
+    assert.equal(store.get(a.id)!.clockFrom, "2099-01-01T00:00:00.000Z");
+    await store.recordRun(a.id, { runId: "r2", at: "2099-01-02T00:00:00.000Z", cause: "manual", result: "running" });
+    await store.recordRun(a.id, { runId: "r3", at: "2099-01-02T00:00:00.000Z", cause: "clock", result: "skipped", scheduledFor: "2098-12-31T00:00:00.000Z" });
+    assert.equal(store.get(a.id)!.clockFrom, "2099-01-01T00:00:00.000Z");
+    // 名前を変えても数え始めは変わらない。きっかけを変える・再開すると、その時刻から
+    await store.update(a.id, { name: "別の名前" });
+    assert.equal(store.get(a.id)!.clockFrom, "2099-01-01T00:00:00.000Z");
+    const changed = await store.update(a.id, { source: morning.source });
+    assert.equal(changed.clockFrom, changed.updatedAt);
+    await store.pause(a.id);
+    const resumed = await store.resume(a.id);
+    assert.ok(resumed.clockFrom >= changed.updatedAt);
+    assert.notEqual(resumed.clockFrom, "2099-01-01T00:00:00.000Z");
   });
 });
 

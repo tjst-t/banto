@@ -54,6 +54,10 @@ export interface AutomationRun {
   threadId?: string;
   /** この回で専用の Fork を乗り換えたなら、閉じた前の Fork（境目の記録） */
   rotatedFrom?: string;
+  /** 時計で動いた回の、予定の時刻（`at` は実際に動いた時刻。ずらした・止まっていた間を取り戻した回は違う） */
+  scheduledFor?: string;
+  /** 同時に動いている自動化が多くてずらした理由（ずらした回だけ） */
+  delayed?: string;
 }
 
 /** Webhook で受けて、まだ届けていないもの（`automation.received`） */
@@ -91,6 +95,11 @@ export interface Automation extends AutomationFields {
    * 数え直さずに fold が数える。専用の Fork が変わると 0 から
    */
   threadRuns?: number;
+  /**
+   * **時計はこの時刻より後の回から数える**（止まっていた間の取り戻しの起点）。作った・きっかけを変えた・再開した時刻と、
+   * 時計で動いた（飛ばした）回の予定の時刻のうち一番後
+   */
+  clockFrom: string;
 }
 
 export interface AutomationReadModel {
@@ -134,6 +143,7 @@ export const automationFold: Fold<AutomationReadModel> = {
           createdAt: raw.ts,
           updatedAt: raw.ts,
           paused: false,
+          clockFrom: raw.ts,
           runs: [],
           received: [],
         });
@@ -142,6 +152,7 @@ export const automationFold: Fold<AutomationReadModel> = {
       case "automation.updated": {
         if (!current) return state;
         const next = { ...current, ...event.payload.changes, updatedAt: raw.ts };
+        if (event.payload.changes.source) next.clockFrom = raw.ts;
         if (next.target.threadId !== current.target.threadId) next.threadRuns = 0;
         automations.set(current.id, next);
         break;
@@ -159,7 +170,7 @@ export const automationFold: Fold<AutomationReadModel> = {
       case "automation.resumed": {
         if (!current) return state;
         const { pausedReason: _drop, ...rest } = current;
-        automations.set(current.id, { ...rest, paused: false });
+        automations.set(current.id, { ...rest, paused: false, clockFrom: raw.ts });
         break;
       }
       case "automation.removed":
@@ -191,10 +202,12 @@ export const automationFold: Fold<AutomationReadModel> = {
           current.target.kind === "dedicated" &&
           run.threadId !== undefined &&
           run.threadId === current.target.threadId;
+        const clockFrom = run.scheduledFor && run.scheduledFor > current.clockFrom ? run.scheduledFor : current.clockFrom;
         automations.set(current.id, {
           ...current,
           runs,
           received,
+          clockFrom,
           ...(deliveredHere ? { threadRuns: (current.threadRuns ?? 0) + 1 } : {}),
         });
         break;

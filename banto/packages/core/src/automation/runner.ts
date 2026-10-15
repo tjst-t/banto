@@ -31,6 +31,14 @@ export interface AutomationRunnerDeps {
   now?: () => Date;
 }
 
+/** 時計で動かす回の添え書き（`automation.fired` に残す） */
+export interface AutomationRunExtras {
+  /** 予定の時刻 */
+  scheduledFor?: string;
+  /** ずらした理由 */
+  delayed?: string;
+}
+
 export interface AutomationRunStarted {
   runId: string;
   /** `running`＝届けた（ターンの結末はあとで同じ `runId` に書く）。`skipped`＝届けなかった */
@@ -70,23 +78,39 @@ export class AutomationRunner {
   }
 
   /** 1回動かす。届けなかったときも `skipped` と理由を台帳に残して返す */
-  async run(automation: Automation, cause: AutomationRunCause): Promise<AutomationRunStarted> {
+  async run(automation: Automation, cause: AutomationRunCause, extras: AutomationRunExtras = {}): Promise<AutomationRunStarted> {
     if (this.starting.has(automation.id)) {
       const runId = randomUUID();
       const reason = "前の回を届けているところです";
       const at = (this.deps.now?.() ?? new Date()).toISOString();
-      await this.deps.automations.recordRun(automation.id, { runId, at, cause, result: "skipped", reason });
+      await this.deps.automations.recordRun(automation.id, { runId, at, cause, result: "skipped", reason, ...extras });
       return { runId, result: "skipped", reason };
     }
     this.starting.add(automation.id);
     try {
-      return await this.start(automation, cause);
+      return await this.start(automation, cause, extras);
     } finally {
       this.starting.delete(automation.id);
     }
   }
 
-  private async start(automation: Automation, cause: AutomationRunCause): Promise<AutomationRunStarted> {
+  /** 自動化で起こしたターンのうち、いま走っている（届けて、まだ結末が出ていない）回の数。同時本数の上限に使う */
+  activeRuns(): number {
+    let n = 0;
+    for (const p of this.deps.projectThread.listProjects()) {
+      for (const a of this.deps.automations.list(p.id)) {
+        for (const run of a.runs) {
+          if (run.result !== "running" || !run.threadId) continue;
+          // 結末を書けずに残った running（落ちた等）は数えない——走っているか、届けものが積まれる前のものだけ
+          const thread = this.deps.projectThread.getThread(run.threadId);
+          if (this.deps.turns.isRunning(run.threadId) || thread?.deliveries?.some((d) => d.automation?.runId === run.runId)) n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  private async start(automation: Automation, cause: AutomationRunCause, extras: AutomationRunExtras): Promise<AutomationRunStarted> {
     const runId = randomUUID();
     const at = (this.deps.now?.() ?? new Date()).toISOString();
     const skip = async (reason: string, threadId?: string): Promise<AutomationRunStarted> => {
@@ -97,6 +121,7 @@ export class AutomationRunner {
         result: "skipped",
         reason,
         ...(threadId ? { threadId } : {}),
+        ...extras,
       });
       return { runId, result: "skipped", reason, ...(threadId ? { threadId } : {}) };
     };
@@ -150,6 +175,7 @@ export class AutomationRunner {
       result: "running",
       threadId,
       ...(rotatedFrom ? { rotatedFrom } : {}),
+      ...extras,
     });
     try {
       const delivered = await this.deps.deliveries.deliver({
@@ -163,12 +189,12 @@ export class AutomationRunner {
       });
       if (delivered.wake === "held") {
         // 届けたものは溜まったまま残る（人が次に送ったターンの頭に積まれる）——その回は結末を待たない
-        await this.record(current.id, runId, at, cause, threadId, "skipped", `AI を起こせませんでした——${delivered.reason}`, rotatedFrom);
+        await this.record(current.id, runId, at, cause, threadId, "skipped", `AI を起こせませんでした——${delivered.reason}`, { rotatedFrom, ...extras });
         return { runId, result: "skipped", reason: delivered.reason, threadId };
       }
     } catch (err) {
       const reason = `届けられませんでした：${err instanceof Error ? err.message : String(err)}`;
-      await this.record(current.id, runId, at, cause, threadId, "failed", reason, rotatedFrom);
+      await this.record(current.id, runId, at, cause, threadId, "failed", reason, { rotatedFrom, ...extras });
       throw err;
     }
     return { runId, result: "running", threadId };
@@ -205,7 +231,11 @@ export class AutomationRunner {
       for (const run of a.runs) {
         if (run.result !== "running" || run.threadId !== threadId || pending.has(run.runId)) continue;
         const { result, reason } = this.outcomeOf(thread);
-        await this.record(a.id, run.runId, run.at, run.cause, threadId, result, reason, run.rotatedFrom);
+        await this.record(a.id, run.runId, run.at, run.cause, threadId, result, reason, {
+          rotatedFrom: run.rotatedFrom,
+          scheduledFor: run.scheduledFor,
+          delayed: run.delayed,
+        });
       }
     }
   }
@@ -233,7 +263,7 @@ export class AutomationRunner {
     threadId: string,
     result: AutomationRunResult,
     reason: string | undefined,
-    rotatedFrom: string | undefined,
+    extras: AutomationRunExtras & { rotatedFrom?: string | undefined },
   ): Promise<void> {
     await this.deps.automations.recordRun(id, {
       runId,
@@ -242,7 +272,9 @@ export class AutomationRunner {
       result,
       threadId,
       ...(reason ? { reason } : {}),
-      ...(rotatedFrom ? { rotatedFrom } : {}),
+      ...(extras.rotatedFrom ? { rotatedFrom: extras.rotatedFrom } : {}),
+      ...(extras.scheduledFor ? { scheduledFor: extras.scheduledFor } : {}),
+      ...(extras.delayed ? { delayed: extras.delayed } : {}),
     });
   }
 

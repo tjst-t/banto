@@ -15,6 +15,7 @@ import {
   type AutomationSource,
   type AutomationTarget,
 } from "./fold.js";
+import { cronExpressionProblem } from "./schedule.js";
 
 /** 入力が決まりに合わない（画面・AI に理由をそのまま返す） */
 export class AutomationInputError extends Error {}
@@ -30,7 +31,8 @@ export class AutomationStore {
   private readonly projection: SnapshotProjection<AutomationReadModel>;
 
   constructor(dataDir: string, private readonly log: EventLog) {
-    this.projection = new SnapshotProjection(dataDir, "automations", log, automationFold);
+    // 版 2：`clockFrom`（時計の数え始め）を足した
+    this.projection = new SnapshotProjection(dataDir, "automations", log, automationFold, 2);
   }
 
   async load(): Promise<void> {
@@ -45,6 +47,11 @@ export class AutomationStore {
     return Array.from(this.projection.current.automations.values())
       .filter((a) => a.projectId === projectId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** 全 Project の自動化（時計が見る） */
+  listAll(): Automation[] {
+    return Array.from(this.projection.current.automations.values());
   }
 
   get(id: string): Automation | undefined {
@@ -142,7 +149,7 @@ function parseTime(v: unknown): string {
   return v;
 }
 
-function parseRepeat(v: unknown): AutomationRepeat {
+function parseRepeat(v: unknown, timeZone: string): AutomationRepeat {
   if (!isRecord(v)) throw new AutomationInputError("source.repeat が要ります");
   switch (v.kind) {
     case "daily":
@@ -158,11 +165,16 @@ function parseRepeat(v: unknown): AutomationRepeat {
         throw new AutomationInputError(`interval の hours は 1〜${INTERVAL_HOURS_MAX} の整数で渡してください`);
       }
       return { kind: "interval", hours: v.hours };
-    case "cron":
-      // 式を読む部品は時計（Backlog `automation-clock`）と一緒に入る。読めない式を台帳に残さない（規則2）
-      throw new AutomationInputError("cron の式はまだ使えません（毎日・平日・毎週・N 時間ごとを使ってください）");
+    case "cron": {
+      // 読めない式・15分より短い間隔を台帳に残さない（規則2）
+      if (typeof v.expr !== "string") throw new AutomationInputError("cron の expr（式）が要ります（例 0 9 * * 1-5）");
+      const expr = v.expr.trim().split(/\s+/).join(" ");
+      const problem = cronExpressionProblem(expr, timeZone);
+      if (problem) throw new AutomationInputError(problem);
+      return { kind: "cron", expr };
+    }
     default:
-      throw new AutomationInputError("source.repeat.kind は daily・weekdays・weekly・interval のどれかです");
+      throw new AutomationInputError("source.repeat.kind は daily・weekdays・weekly・interval・cron のどれかです");
   }
 }
 
@@ -179,7 +191,8 @@ function parseTimeZone(v: unknown): string {
 function parseSource(v: unknown): AutomationSource {
   if (!isRecord(v)) throw new AutomationInputError("source（きっかけ）が要ります");
   if (v.kind !== "time") throw new AutomationInputError("source.kind は今は time だけです");
-  return { kind: "time", repeat: parseRepeat(v.repeat), timeZone: parseTimeZone(v.timeZone) };
+  const timeZone = parseTimeZone(v.timeZone);
+  return { kind: "time", repeat: parseRepeat(v.repeat, timeZone), timeZone };
 }
 
 /**
