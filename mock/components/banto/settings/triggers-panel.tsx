@@ -208,6 +208,12 @@ function TriggerRow({ trigger: t, onEdit }: { trigger: MockTrigger; onEdit: () =
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
             <dt className="text-ink-3">届け先</dt>
             <dd className="text-ink-2">{targetSentence(t.target)}</dd>
+            <dt className="text-ink-3">受信箱</dt>
+            <dd className="text-ink-2">
+              {t.reviewOnDone
+                ? "終わった回を出します。"
+                : "終わった回は出しません。あなたの答えを待つ回・決めることがある回・失敗した回だけ出します。"}
+            </dd>
             <dt className="text-ink-3">作った人</dt>
             <dd className="text-ink-2">
               {t.createdBy.kind === "human" ? "あなた" : `AI（${t.createdBy.threadTitle} で頼まれ、あなたが許可しました）`}
@@ -503,12 +509,13 @@ function TriggerForm({ projectId, trigger, onDone }: { projectId: string; trigge
     targetKind === "dedicated"
       ? { kind: "dedicated", threadId: target0?.kind === "dedicated" ? target0.threadId : "", mode }
       : { kind: "thread", threadId, threadTitle: chosenThread?.kind === "base" ? "Base Thread" : (chosenThread?.title ?? "") };
+  const [reviewOnDone, setReviewOnDone] = useState(trigger?.reviewOnDone ?? true);
   const filled = name.trim() && instruction.trim();
 
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!filled) return;
-    const input: TriggerInput = { name: name.trim(), instruction: instruction.trim(), source, target };
+    const input: TriggerInput = { name: name.trim(), instruction: instruction.trim(), source, target, reviewOnDone };
     saveTrigger(projectId, input, trigger?.id);
     onDone();
   }
@@ -747,6 +754,16 @@ function TriggerForm({ projectId, trigger, onDone }: { projectId: string; trigge
           時間ごとの自動化で引き継ぐと、1日で会話が長くなります。比べたいだけなら、まっさらにしてファイルに残させるほうが軽く済みます。
         </p>
       ) : null}
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2">
+          <Switch id="trg-review" checked={reviewOnDone} onCheckedChange={setReviewOnDone} />
+          <Label htmlFor="trg-review">終わったら受信箱に出す</Label>
+        </div>
+        <p className="pl-11 text-xs text-ink-3">
+          切っても、あなたの答えを待つ回・決めることがある回・失敗した回は受信箱に出します。
+        </p>
+      </div>
 
       <div className="flex gap-2">
         <Button type="submit" size="sm" className="h-8 text-xs" disabled={!filled}>

@@ -56,6 +56,8 @@ export interface MockTrigger {
   instruction: string;
   source: TriggerSource;
   target: TriggerTarget;
+  /** 終わった回を受信箱に出すか（既定 true）。判断待ち・決めること・失敗した回は、これに依らずいつも出す */
+  reviewOnDone: boolean;
   paused: boolean;
   createdBy: { kind: "human" } | { kind: "ai"; threadTitle: string };
   /** 時刻なら次の時刻、Webhook なら最後に受けた時刻 */
@@ -118,6 +120,7 @@ let triggers: MockTrigger[] = [
       "昨日から今朝までに main に入ったコミットと、Backlog で閉じたもの・新しく積まれたものをまとめて。気になる点があれば最後に挙げて。",
     source: { kind: "time", repeat: { kind: "weekdays", time: "9:00" }, timeZone: "Asia/Tokyo" },
     target: { kind: "dedicated", threadId: "sch-morning", mode: "fresh" },
+    reviewOnDone: true,
     paused: false,
     createdBy: { kind: "human" },
     nextRun: "明日 9:00",
@@ -141,6 +144,7 @@ let triggers: MockTrigger[] = [
       "npm outdated を見て、前回から新しく出た更新だけを挙げて。前回の結果は notes/deps-watch.md にあるので読んで比べ、最後に今回の結果を書き足して。",
     source: { kind: "time", repeat: { kind: "weekly", day: 1, time: "10:00" }, timeZone: "Asia/Tokyo" },
     target: { kind: "dedicated", threadId: "sch-deps", mode: "fresh" },
+    reviewOnDone: true,
     paused: false,
     createdBy: { kind: "ai", threadTitle: "Base Thread" },
     nextRun: "10/19（月）10:00",
@@ -163,6 +167,7 @@ let triggers: MockTrigger[] = [
       batchSeconds: 30,
     },
     target: { kind: "dedicated", threadId: "sch-ci", mode: "fresh" },
+    reviewOnDone: true,
     paused: false,
     createdBy: { kind: "human" },
     nextRun: "最後に受けたのは 今日 3:12",
@@ -181,6 +186,7 @@ let triggers: MockTrigger[] = [
       "Publish しているサービスに順に繋いで、返事が無いもの・エラーを返すものだけ知らせて。前の回で落ちていたものが戻ったかも見て。",
     source: { kind: "time", repeat: { kind: "interval", hours: 1 }, timeZone: "Asia/Tokyo" },
     target: { kind: "dedicated", threadId: "sch-health", mode: "continue" },
+    reviewOnDone: false,
     paused: true,
     createdBy: { kind: "human" },
     nextRun: "一時停止中",
@@ -244,6 +250,7 @@ export interface TriggerInput {
   instruction: string;
   source: TriggerSource;
   target: TriggerTarget;
+  reviewOnDone: boolean;
 }
 
 export function saveTrigger(projectId: string, input: TriggerInput, id?: string): void {
