@@ -7313,7 +7313,7 @@
       "number": 303,
       "kind": "task",
       "title": "docx を docx-preview で描く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "office-review",
       "dependsOn": [
         "office-pdf-viewer"
@@ -7323,12 +7323,12 @@
       "labels": [],
       "body": "document 画面で docx を docx-preview で描く。描けなかったときと「元に近い見た目で見る」を押したときは変換役の PDF に切り替える（変換役のタスクが入るまではボタンを出さない）。",
       "doneWhen": "見出し・表・箇条書きのある日本語の docx が Canvas で描ける。E2E で本文の文字が読める",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/office-docx-preview）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T11:32:44.169Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T12:59:15.894Z",
+      "closedAt": "2026-10-15T12:59:15.894Z",
       "extra": {}
     },
     {
