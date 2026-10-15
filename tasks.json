@@ -7900,6 +7900,29 @@
       "updatedAt": "2026-10-15T15:20:14.597Z",
       "closedAt": "2026-10-15T15:20:14.597Z",
       "extra": {}
+    },
+    {
+      "id": "memory-hygiene",
+      "number": 328,
+      "kind": "story",
+      "title": "Memory を棚卸しできるようにする",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "memory"
+      ],
+      "body": "## なぜ\nBanto開発の Memory は約220件まで増えた。改めた古い決まり、訂正だけの項目、「実装した・push した」という経過が混ざっていて、毎ターン全部が AI の文脈に入る（packages/core/src/runner/system-prompt.ts）。AI の道具は remember_decision（足す）だけで、取り消しは人の口（POST /api/projects/:id/memory/:seq/invalidate）だけ。しかも取り消したものも「~~…~~（取り消し済み）」として渡り続ける。\n\n## 経緯\n2026-10-15、ユーザーが「定期的に棚卸しが要るのでは」と聞いた。Fork「Memory の棚卸し」が一度手で棚卸しの案を出し、仕組みはこのストーリーに積んだ。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-15T23:21:52.025Z",
+      "updatedAt": "2026-10-15T23:21:52.025Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
