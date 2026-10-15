@@ -288,3 +288,16 @@ clone は元の場所のまま。
 
 **戻すとき**：`$REL.setup-backup/units/` の定義を `sudo systemctl edit --full` で戻し、`sudo systemctl daemon-reload`・
 restart。版のフォルダは `versions/` に残っているので、元のパスに戻すなら `setup-update.sh` が出した移し先を見る
+
+---
+
+## E. 組み立て済みの版（GitHub Actions、追加・2026-10-15。未実装）
+
+`release` に push すると、GitHub Actions（`.github/workflows/prebuilt.yml`）がその commit を組み立てて単体テストを流し、
+通れば Release `build-<commit の頭12>` に置く（数分）。画面の「更新」はそれを取ってきて重ねるだけで済む。
+
+- **push してすぐ更新してよい**——組み立て中なら、組み上がるのを待つ（最長 20 分。画面に「GitHub で組み立て中です」）
+- **単体テストが落ちたとき**は組み立て済みが置かれず、画面に「GitHub でのテストが落ちています」。更新はでき、そのときは
+  host で組み立てる（今までどおり）。落ちたわけは GitHub の Actions の画面か `gh run list --workflow prebuilt.yml`
+- 組み立て済みを使ったかは、更新のログ（画面の「ログを開く」）と `state.json` の `prebuilt`
+- 古い Release は workflow が新しい 10 個だけ残して消す（手で消してもよい——無ければその場で組み立てるだけ）

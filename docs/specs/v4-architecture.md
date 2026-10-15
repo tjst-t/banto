@@ -1699,7 +1699,7 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
 | 場所 | 中身 |
 |---|---|
 | `repo.git` | GitHub の `release` を取ってくる bare のリポジトリ（取り込み元は GitHub だけ） |
-| `versions/<commit の頭12文字>/` | 版ごとの作業ツリー（`repo.git` の worktree、detached）。中で `npm ci --include=dev`・`npm run build` 済み |
+| `versions/<commit の頭12文字>/` | 版ごとの作業ツリー（`repo.git` の worktree、detached）。組み立て済みのもの（下の「組み立て済みのものを使う」）を重ねたか、中で `npm ci --include=dev`・`npm run build` 済み |
 | `current` → `versions/…` | 動かす版。systemd の unit はこの symlink を通したパスを指す |
 | `previous` → `versions/…` | 1つ前の版（戻す先）。これより古い版は、更新が成功したら消す |
 
@@ -1742,7 +1742,8 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
    `repo.git` に GitHub の `release` を fetch し（上限あり。やめる印も見る）、頼まれた commit が `release` から
    辿れること・今の版がその祖先であること（早送りだけ）を確かめる。違えば断る
 2. **組み立てる**：`versions/<commit>` を作り（その前に `git worktree prune`、今の版の大きさ以上の空きがあるかを
-   確かめ、無ければ組み立てる前に断る）、`npm ci --include=dev`・`npm run build`。**ここで落ちたら作りかけの
+   確かめ、無ければ組み立てる前に断る）、**その commit の組み立て済みのものがあれば取ってきて重ね、無ければ**
+   `npm ci --include=dev`・`npm run build`（下の「組み立て済みのものを使う」）。**ここで落ちたら作りかけの
    フォルダを消し、今の版のまま終わる**
 3. **待つ**（待つ形のとき）：`GET /api/admin/activity` が `restartable`（待つものが無い、前の節）になるまで数秒おきに見て、
    残っているものを `state.json` の `waiting` に書く——`{ blocking（待つもの。activity のまま）, continuing（起き直したあと
@@ -1789,6 +1790,66 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
 
 **準備が済んでいないとき**（開発用のリポジトリから動かしている・unit が無い・polkit の規則が効いていない）は、
 画面はボタンを出さずに理由と手順書（`docs/runbooks/release.md` D）を出す。画面の作りは `docs/specs/v4-frontend.md` §6.34。
+
+##### 組み立て済みのものを使う（決定・2026-10-15、ユーザー。未実装）
+
+更新のたびに host で `npm ci`・`npm run build` を流すのをやめ、**GitHub Actions が組み立てたものを取ってきて重ねる**。
+組み立ては数分かかり、メモリを 2GB 余り使う（2026-10-15 に 16 コアの VM で測った：`npm ci` 35 秒（キャッシュあり）・build 63 秒・
+最大 2.1GB）。その間、動いている banto と AI の仕事が重くなっていた。組み立て済みのものは zstd で約 425MB で、展開は 6 秒（同じ VM）。
+**無い・使えないときは今どおりその場で組み立てる**——組み立て済みのものは速くするための近道で、無くても更新はできる。
+
+**作る側（`.github/workflows/prebuilt.yml`）**：
+
+- **`release` に push されたら**、GitHub の `ubuntu-24.04`（x64）で、その commit を取り出し、`install.sh` と同じ版の
+  Node.js（`NODE_VERSION`。workflow は install.sh から読む）で `npm ci --include=dev`・`npm run build`・単体テスト（全部品の
+  `npm test`。E2E は流さない。GitHub のランナーに無いもの（Incus 等）が要る試験を外すなら、外す一覧を workflow に理由つきで書く）
+- **通ったら**、生成物だけを `banto-<commit 40文字>-linux-x64.tar.zst` にまとめ、`.sha256` と一緒に **その commit 専用の
+  Release** に置く。タグは `build-<commit の頭12文字>`（その commit を指す）、prerelease、題は「組み立て済み <id>」。
+  新しい 10 個だけ残し、古いものは Release とタグを消す。`release` ブランチ自体には何も書き足さない
+- **生成物に入れるのは決めた場所だけ**：`banto/node_modules/`・`banto/packages/**/dist/`・`banto/apps/frontend/.next/`（`cache/`
+  を除く）・`banto/apps/frontend/next-env.d.ts`。どれも git が管理しないもの（`.gitignore` で除いているもの）で、組み立てた
+  あと `git status --porcelain` に管理しているファイルの変更が出たら止める（組み立てがソースを書き換えた）。
+  依存は今と同じく dev も含めて全部入れる——本番用だけに絞っても 1.6GB が 1.5GB になるだけで（大きいのは Claude Code・
+  opencode・next など動かすのに要るもの）、振る舞いの差を作る価値が無い（2026-10-15 に測った）
+- **印のファイル** `banto/.banto-prebuilt.json`（これも生成物に入れる。`.gitignore` に足す）：`{ commit（40文字）, platform: "linux-x64", node（版）,
+  builtAt, run（Actions の実行の URL）}`
+- **単体テストが落ちたら置かない**。その commit には組み立て済みが無いまま
+- **x64 だけ**。組み立て済みのネイティブ部品（sharp・@napi-rs/canvas・next の swc・tailwind の oxide・lightningcss・unrs-resolver）は
+  どれも npm の linux-x64-gnu 用の既製品で、GitHub の ubuntu で組んだものが host（Ubuntu 24.04・26.04）でもコンテナの中でも
+  動く。arm64 は要るときに足す（`uname -m` が x86_64 でなければ取りに行かない）
+- **使う外の action は GitHub 公式のもの（`actions/checkout` 等）だけで、commit の id で固定する**。Release を作るのは Actions に
+  付く `GITHUB_TOKEN`（`contents: write`）と、ランナーにある `gh`。秘密は足さない
+
+**使う側（`update.mjs` の段2）**：
+
+1. **取りに行くかを決める**：`repo.git` の `origin` が `github.com/<owner>/<repo>` で、この機械が x86_64 のときだけ。
+   ほか（GitHub 以外・別の CPU・`--build` で差し替えた試験）はその場で組み立てる
+2. **取ってくる**：`https://github.com/<owner>/<repo>/releases/download/build-<頭12>/banto-<commit>-linux-x64.tar.zst` と `.sha256`。
+   公開のリポジトリなので鍵は要らない（非公開のリポジトリは今は対象にしない——取れなければその場で組み立てる）。
+   取ってくる間も「やめる」印を見る。置き場は `versions/` の隣の作業用のファイル（終わったら消す）
+3. **まだ無いとき**：GitHub の API（`GET /repos/<owner>/<repo>/actions/runs?head_sha=<commit>`、鍵なし）でその commit の
+   組み立て（`prebuilt.yml`）が**走っている・並んでいる間だけ待つ**（30 秒おき、上限 20 分。`state.json` の `note` に
+   「GitHub で組み立て中です（n 分）」）。走っていない・落ちた・上限を越えた・API に聞けないときは、その場で組み立てる
+   （理由をログと `note` に書く）
+4. **確かめてから重ねる**：sha256 が合うこと・tar の中身が上の「決めた場所」だけで（絶対パス・`..`・リンクの外向き・
+   決めた場所以外を指す symlink や hard link は無い）・印のファイルの `commit` が組み立てる commit と同じこと・`platform` が
+   `linux-x64` であること。どれかが違えば使わずにその場で組み立てる（重ねかけたものは消してから）。展開は git の worktree
+   （`versions/<commit>`）の上に行い、管理しているファイルは上書きしない（決めた場所は git が管理しないので重ならない）
+5. 重ねたら、`state.json` に `prebuilt: { run }`（どの組み立てを使ったか）を残す。その先の段（待つ・起こし直す・確かめる・戻す）は
+   今のまま——組み立て済みの版でも、起きなければ前の版に戻す
+
+**信頼の線**：今までは「GitHub の `release` にあるコード」を host で組み立てていた。これからは「そのコードを GitHub Actions が
+組み立てたもの」も信じる。`release` に push できる者は今でも host で動くコードを決められるので、関門（人がコミットの一覧を見て
+押す、`docs/specs/v4-security.md` §2「画面からの更新」）は変わらない。増えるのは「Actions の中で生成物がすり替わる」道で、
+これは同じリポジトリの Actions（同じ権限）と、固定した公式の action に限る。`.sha256` は同じ Release に置くので**壊れた・途中で
+切れたものを見分けるだけで、すり替えは防がない**。組み立て元の証明（artifact attestation）の確かめは今回は入れない（決定・2026-10-15）。
+
+**画面**（`GET /api/admin/update`、`docs/specs/v4-frontend.md` §6.34）：最新の `release` の commit について、組み立て済みが
+「あります／GitHub で組み立て中です／GitHub でのテストが落ちています／ありません」（Release と上の API で見る。`check` のとき）を
+返す。**テストが落ちていても更新は断らない**——画面に注意を出し、押せばその場で組み立てる（決定・2026-10-15、ユーザー）。
+
+**別のサーバへ送るもの**（`docs/specs/v4-security.md` §1「向こうに置くもの」）は版のフォルダの中身から作り、パッケージごとの
+ハッシュで比べるので、組み立て済みを重ねた版でもその場で組んだ版でも同じに扱う。
 
 **試験だけの差し替え**：本物の systemd を使えない E2E は、bootstrap config の `testOnlySelfUpdate: { systemctl, codeDir }`
 で偽の systemctl と「動いているコードの場所」を指す。**本番の config には書かない**。環境変数では受けない——host の
