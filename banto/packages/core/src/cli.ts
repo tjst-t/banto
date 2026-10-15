@@ -1813,6 +1813,15 @@ async function main(): Promise<void> {
     });
   }
 
+  /** 道具用のコンテナで動く banto 全体の Module（使うとき——中継で呼ばれたとき・名指されたとき——だけ起こす） */
+  function startsOnDemand(declaration: ParsedModuleDeclaration): boolean {
+    return declaration.meta.scope === "instance" && modulePlacement(declaration.meta, declaration.launch) === "tools-container";
+  }
+  /** 起こさずに、いま繋がっていればその名前（banto 全体の Module はプロセスの名前＝宣言の名前） */
+  function connectedNameIfAny(declaration: ParsedModuleDeclaration): string | undefined {
+    return connectedModules.has(declaration.name) ? declaration.name : undefined;
+  }
+
   async function resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]> {
     const thread = projectThread.getThread(threadId);
     if (!thread) return [];
@@ -1825,7 +1834,9 @@ async function main(): Promise<void> {
     // ——`dependsOn` は中継の宛先を決めるためのもので、起動の前後関係ではない
     const endpoints: Array<ModuleEndpoint | undefined> = await Promise.all(
       loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
-        const connName = await connectDeclaredModule(declaration, project);
+        // **道具用のコンテナの Module は、使うとき（中継で呼ばれたとき）に起こす**——会話を始めるたびに起こすと、初めての
+        // banto で LibreOffice 等を入れる数分のあいだ会話が始まらない（2026-10-15、E2E で発覚）。繋がっていれば使う
+        const connName = startsOnDemand(declaration) ? connectedNameIfAny(declaration) : await connectDeclaredModule(declaration, project);
         // **繋がらなかったものは黙って落とす**のではなく、繋がったものだけで進める
         // ——落ちた事実は connectBackoff と受信箱のお知らせに残っている
         if (!connName) return undefined;
@@ -1878,7 +1889,8 @@ async function main(): Promise<void> {
     // ここも同時に起こす（上の resolveModulesForThread と同じ理由）
     const spawned = await Promise.all(
       loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
-        const connName = await connectDeclaredModule(declaration, project);
+        // 道具用のコンテナの Module は使うときに起こす（上の resolveModulesForThread と同じ。入口の一覧が数分出なかった）
+        const connName = startsOnDemand(declaration) ? connectedNameIfAny(declaration) : await connectDeclaredModule(declaration, project);
         // 名前は宣言のもの——画面から見える名前が Project ごとにぶれない。
         // scope も返す——**設定をどちらの画面に出すかは Module の scope が決める**
         // （instance に1本の Module の設定を Project ごとに出すのはおかしい、
