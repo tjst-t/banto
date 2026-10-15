@@ -2,6 +2,7 @@
 
 import {
   type PropsWithChildren,
+  useMemo,
   useState,
   type FC,
   isValidElement,
@@ -12,6 +13,7 @@ import {
   FileText,
   Loader2Icon,
   AlertCircleIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import {
   AttachmentPrimitive,
@@ -39,6 +41,7 @@ import {
 } from "@/components/ui/avatar";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useAttachmentSrc } from "@/hooks/use-attachment-src";
+import { CANVAS_QUOTE_TYPE, quoteFromAttachment, quoteSourceLabel, type CanvasQuote } from "@/lib/canvas-quotes";
 import { cn } from "@/lib/utils";
 
 type AttachmentPreviewProps = {
@@ -108,10 +111,83 @@ const AttachmentThumb: FC = () => {
   );
 };
 
+/**
+ * **Module の画面から渡された塊**（banto、追加・2026-10-15、`lib/canvas-quotes.ts`）。画像の枠ではなく、出所と中身の頭を
+ * 出す。押すと全文、入力欄では × で外せる。**第三者の Module からのものは強く出す**
+ */
+const CanvasQuoteTile: FC<{ quote: CanvasQuote; isComposer: boolean }> = ({ quote, isComposer }) => {
+  const label = quoteSourceLabel(quote);
+  return (
+    <AttachmentPrimitive.Root className="aui-attachment-root relative">
+      <Dialog>
+        <DialogTrigger asChild>
+          <button
+            type="button"
+            data-testid="canvas-quote"
+            data-third-party={quote.thirdParty ? "true" : "false"}
+            title="押すと全文を見られます"
+            className={cn(
+              "bg-muted hover:bg-muted/70 flex w-72 max-w-full cursor-pointer flex-col items-start gap-0.5 rounded-[calc(var(--composer-radius,1.5rem)-var(--composer-padding,8px))] border px-3 py-2 pe-7 text-start",
+              quote.thirdParty ? "border-stop/60" : "border-border/60",
+            )}
+          >
+            <span
+              data-testid="canvas-quote-source"
+              className={cn("flex items-center gap-1 text-xs", quote.thirdParty ? "text-stop font-semibold" : "text-muted-foreground")}
+            >
+              {quote.thirdParty ? <TriangleAlertIcon className="size-3.5 shrink-0" aria-hidden /> : null}
+              {label}
+            </span>
+            <span data-testid="canvas-quote-head" className="line-clamp-2 text-xs whitespace-pre-wrap text-foreground">
+              {quote.text}
+            </span>
+          </button>
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogTitle className="text-sm">{label}</DialogTitle>
+          <p className="text-muted-foreground text-xs">
+            人が書いた文ではなく、画面がまとめたものです。送ると、AI には出所つきの引用として渡ります。
+          </p>
+          <pre data-testid="canvas-quote-full" className="bg-muted max-h-[60vh] overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">
+            {quote.text}
+          </pre>
+        </DialogContent>
+      </Dialog>
+      {isComposer && (
+        <AttachmentPrimitive.Remove asChild>
+          <TooltipIconButton
+            tooltip="外す"
+            data-testid="canvas-quote-remove"
+            className="absolute end-1 top-1 size-5 rounded-full bg-black/50! text-white hover:bg-black/70! hover:text-white!"
+            side="top"
+          >
+            <XIcon className="size-3 stroke-[2.5]" />
+          </TooltipIconButton>
+        </AttachmentPrimitive.Remove>
+      )}
+    </AttachmentPrimitive.Root>
+  );
+};
+
 const AttachmentUI: FC = () => {
   const aui = useAui();
   const isComposer = aui.attachment.source !== "message";
+  // 画面からの塊は別の形で出す（id・type・文は変わらないので、そこから組み直す）
+  const quoteId = useAuiState((s) => (s.attachment.type === CANVAS_QUOTE_TYPE ? s.attachment.id : undefined));
+  const quoteText = useAuiState((s) =>
+    s.attachment.type === CANVAS_QUOTE_TYPE
+      ? (s.attachment.content ?? []).map((p) => (p.type === "text" ? p.text : "")).join("\n")
+      : undefined,
+  );
+  const quote = useMemo(
+    () => (quoteId !== undefined ? quoteFromAttachment({ id: quoteId, type: CANVAS_QUOTE_TYPE, content: [{ type: "text", text: quoteText ?? "" }] }) : undefined),
+    [quoteId, quoteText],
+  );
+  if (quote) return <CanvasQuoteTile quote={quote} isComposer={isComposer} />;
+  return <AttachmentUIForFile isComposer={isComposer} />;
+};
 
+const AttachmentUIForFile: FC<{ isComposer: boolean }> = ({ isComposer }) => {
   const isImage = useAuiState((s) => s.attachment.type === "image");
   const typeLabel = useAuiState((s) => {
     const type = s.attachment.type;

@@ -243,6 +243,39 @@ body[data-mode="fullscreen"] .pdf-scroller { height: auto; flex: 1; min-height: 
 .pdf-page .pdf-canvas { position: absolute; inset: 0; display: block; }
 .pdf-page > .state { position: absolute; inset: 0; }
 .pdf-view > .note { margin: 0; padding: 6px 12px; border-top: 1px solid var(--line); }
+/* コメント（comments.ts）。大きく開いたときは右、会話の中と狭い画面では下 */
+.pdf-body { display: flex; flex-direction: column; min-height: 0; }
+body[data-mode="fullscreen"] .pdf-body { flex: 1; flex-direction: row; }
+.pdf-body > .pdf-scroller { flex: 1; min-width: 0; }
+.comments { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bg); font-size: var(--t-sm); }
+body[data-mode="fullscreen"] .comments { width: 320px; flex-shrink: 0; border-top: 0; border-left: 1px solid var(--line); overflow: auto; }
+@media (max-width: 640px) {
+  body[data-mode="fullscreen"] .pdf-body { flex-direction: column; }
+  body[data-mode="fullscreen"] .comments { width: auto; max-height: 45vh; border-left: 0; border-top: 1px solid var(--line); }
+}
+.comments-head, .comments-foot, .comment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.comments-head .spacer-fill, .comments-foot .spacer-fill { flex: 1; }
+.comments-title { font-weight: 500; color: var(--ink); }
+.comments .note { margin: 0; }
+.comments .btn.active { background: var(--bg-3); border-color: var(--accent); color: var(--accent); }
+.comment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.comment-list:empty { display: none; }
+.comment-item, .comment-draft { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); }
+.comment-anchor { font-size: var(--t-xs); color: var(--ink-3); text-align: left; overflow-wrap: anywhere; }
+.comment-anchor.link { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--t-xs); color: var(--accent); }
+.comment-anchor.link:hover { text-decoration: underline; }
+.comment-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.comment-changed { font-size: var(--t-xs); color: var(--danger); }
+.comment-input { width: 100%; box-sizing: border-box; resize: vertical; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); color: var(--ink); font: inherit; padding: 6px 8px; }
+.comment-input:focus { outline: none; border-color: var(--accent); }
+.comment-actions { justify-content: flex-end; }
+.btn .count:not(:empty) { margin-left: 2px; padding: 0 6px; border-radius: 999px; background: var(--bg-3); font-size: var(--t-xs); }
+/* 範囲を囲んでいる間は、文字の層を押せなくする（文字を選ぶ代わりに囲む） */
+.pdf-scroller.drawing .pdf-page { cursor: crosshair; }
+.pdf-scroller.drawing .textLayer { pointer-events: none; }
+.comment-region { position: absolute; z-index: 2; pointer-events: none; border: 2px solid rgb(255 120 0 / 0.9); background: rgb(255 196 0 / 0.15); border-radius: 2px; }
+.comment-region.drawing-box { border-style: dashed; }
+.textLayer .comment-focus { margin: -1px; padding: 1px; background-color: rgb(255 120 0 / 0.45); border-radius: 4px; }
 /* 文字の層（pdf.js の pdf_viewer.css の .textLayer を写したもの。文字は透明で、選べる・探せる） */
 .textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1;
   letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 0;

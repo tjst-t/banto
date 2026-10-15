@@ -20,6 +20,7 @@ import { BROWSER_APP_URI, DOCUMENT_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_
 import { isPdfAssetKind, readPdfAsset } from "./pdf-assets.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
+import { getComments, saveComments } from "./comments.js";
 
 function tool(name: string, description: string, inputSchema: unknown) {
   return { name, description, inputSchema, _meta: { [VISIBILITY_META_KEY]: "agent" } };
@@ -169,6 +170,24 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
+      // **PDF・Office の画面で付けたコメント**（v4-modules.md §2.2「PDF・Office…」の「コメント」）。Project ごとの置き場に、
+      // ファイルの根からの相対パスを鍵に残す。各コメントは付けたときのファイルのハッシュを持つ（host が付ける）
+      {
+        name: "getComments",
+        description: "そのファイルに付けたコメントと、いまのファイルのハッシュ",
+        inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
+        name: "saveComments",
+        description: "そのファイルのコメントを、渡した一覧で置き換える（空なら消す）",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" }, comments: { type: "array", items: { type: "object" } } },
+          required: ["path", "comments"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
       {
         name: "getRoot",
         description: "この Module が見ている Project の根（画面の見出しに出す）",
@@ -237,6 +256,16 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         if (!isPdfAssetKind(args.kind)) throw new Error(`kind は cmap か standardFont です: ${String(args.kind)}`);
         const data = await readPdfAsset(args.kind, String(args.name));
         return { content: [{ type: "text", text: JSON.stringify({ data: data.toString("base64") }) }] };
+      }
+      case "getComments": {
+        const file = ops.fileInRoot(root, String(args.path));
+        const got = await getComments(file.rel, file.abs);
+        return { content: [{ type: "text", text: JSON.stringify({ path: file.rel, ...got }) }] };
+      }
+      case "saveComments": {
+        const file = ops.fileInRoot(root, String(args.path));
+        const saved = await saveComments(file.rel, file.abs, args.comments);
+        return { content: [{ type: "text", text: JSON.stringify({ path: file.rel, ...saved }) }] };
       }
       case "getRoot": {
         const real = realpathSync(root);

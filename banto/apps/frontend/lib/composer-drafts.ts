@@ -13,8 +13,12 @@
 // **添えた画像も残す**（決定・2026-10-08、ユーザー要望「別ページに遷移しても添付ファイルが残らない」）。
 // 画像は1枚 10MB まであり localStorage には入らないので、IndexedDB に File（Blob）のまま置く。
 // 戻すときは入力欄に添えるのと同じ道（`addAttachment(File)`）を通す。
+//
+// **Module の画面から渡された塊も残す**（追加・2026-10-15、v4-frontend.md §6.2「画面から会話の入力欄へ文を渡す」）。
+// 文だけなので localStorage に置く（`lib/canvas-quotes.ts`）。会話の面が開いていないときに渡されたものも、そこに入っている
 
 import type { ThreadComposerRuntime } from "@assistant-ui/react";
+import { quoteFromAttachment, quoteToAttachment, readDraftQuotes, writeDraftQuotes, type CanvasQuote } from "@/lib/canvas-quotes";
 
 const KEY_PREFIX = "banto.composerDraft.";
 
@@ -119,6 +123,29 @@ export function keepComposerDraft(threadId: string, composer: ThreadComposerRunt
   // （戻している途中の半端な並びで、残しておいた全体を上書きしないため）
   let disposed = false;
   let restoring = composer.getState().attachments.length === 0;
+
+  // 画面から渡された塊：入力欄にまだ1つも無ければ、残しておいたものを戻す（塊は文だけなので、その場で戻る）
+  const quotesNow = (): CanvasQuote[] =>
+    composer.getState().attachments.flatMap((a) => {
+      const quote = quoteFromAttachment(a);
+      return quote ? [quote] : [];
+    });
+  if (quotesNow().length === 0) {
+    for (const quote of readDraftQuotes(threadId)) {
+      composer.addAttachment(quoteToAttachment(quote)).catch((err: unknown) => {
+        console.warn("[banto] 書きかけの塊を入力欄へ戻せませんでした:", err);
+      });
+    }
+  }
+  let lastQuotes = JSON.stringify(quotesNow());
+  const saveQuotes = () => {
+    const quotes = quotesNow();
+    const key = JSON.stringify(quotes);
+    if (key === lastQuotes) return;
+    lastQuotes = key;
+    writeDraftQuotes(threadId, quotes);
+  };
+
   let lastAttachments = attachmentKey(composer.getState().attachments);
   const saveAttachments = () => {
     const attachments = composer.getState().attachments;
@@ -160,6 +187,7 @@ export function keepComposerDraft(threadId: string, composer: ThreadComposerRunt
       write(threadId, text);
     }
     if (!restoring) saveAttachments();
+    saveQuotes();
   });
   return () => {
     disposed = true;

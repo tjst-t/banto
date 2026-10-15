@@ -25,6 +25,7 @@ import {
   requestRealUiStream,
   fetchRealUiConfig,
   fetchRealUiResource,
+  listRealInstanceModules,
   listRealLaunchers,
   listRealUiSettings,
   type RealCanvasOwner,
@@ -47,6 +48,8 @@ import { OPEN_PROJECT_METHOD, decideOpenProject, parseOpenProjectParams } from "
 import { OPEN_SURFACE_METHOD, decideOpenSurface, parseOpenSurfaceParams, runOpenSurface } from "@/lib/backend/canvas-open-surface";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
 import { STREAM_OPEN_METHOD, newFrameId, parseStreamOpenParams } from "@/lib/backend/canvas-stream";
+import { decideCanvasMessage } from "@/lib/backend/canvas-message";
+import { placeCanvasQuote } from "@/lib/canvas-quotes";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -254,7 +257,15 @@ function SandboxFrame({
     // **ダウンロードは受ける**（`downloadFile`、追加・2026-09-23）——画面はサンドボックスの
     // 中にいて自分では保存させられないので、仕様が host に頼む口（`ui/download-file`）を
     // 用意している。受けると名乗った host にだけ、画面はダウンロードの口を出す
-    const bridge = new AppBridge(null, { name: "banto", version: "0.1.0" }, { downloadFile: {}, openLinks: {} }, { hostContext });
+    // **会話の中の画面にだけ「`ui/message` を受ける」と名乗る**（追加・2026-10-15、§6.2「画面から会話の入力欄へ文を渡す」）
+    // ——会話の外の画面には返す先が無い。名乗らない host では、画面は「AI に返す」の代わりに「コピー」を出す
+    const inConversation = owner.kind === "thread";
+    const bridge = new AppBridge(
+      null,
+      { name: "banto", version: "0.1.0" },
+      { downloadFile: {}, openLinks: {}, ...(inConversation ? { message: { text: {} } } : {}) },
+      { hostContext },
+    );
 
     // **明暗が変わったら、色と一緒に渡し直す**（§6.27）——値は明暗ごとに違うので、渡し直さないと
     // 開いたままの画面が古い色に残る。明暗は next-themes が `<html>` の class で切り替える
@@ -300,6 +311,35 @@ function SandboxFrame({
         if (!ok) return { isError: true };
       }
       for (const file of files) saveDownload(file);
+      return {};
+    };
+
+    // **画面から会話の入力欄へ文を渡す**（MCP Apps `ui/message`、追加・2026-10-15、`lib/backend/canvas-message.ts`）。
+    // 会話へ直接は送らない——**その画面を開いた会話の入力欄の上に「添付」の塊として置くだけ**で、送るのは人。
+    // 会話の中の画面から・人が押した直後だけ受ける（押した直後かは、何かを待つより先に見る）。1枚の画面から1つ
+    bridge.onmessage = async ({ role, content }) => {
+      const current = latest.current;
+      const decision = decideCanvasMessage({
+        fromConversation: current.owner.kind === "thread",
+        activated: navigator.userActivation?.isActive === true,
+        role,
+        content,
+      });
+      if ("error" in decision || current.owner.kind !== "thread") {
+        console.warn(`[banto] ${current.server} の画面からの ui/message を断りました:`, "error" in decision ? decision.error : "");
+        return { isError: true };
+      }
+      // 第三者かは入力欄で強く出すためだけ（送ったとき host が自分の宣言で決め直す）。分からなければ第三者として出す
+      const thirdParty = await listRealInstanceModules()
+        .then((modules) => modules.find((m) => m.name === current.server)?.origin !== "bundled")
+        .catch(() => true);
+      await placeCanvasQuote(current.owner.id, {
+        module: current.server,
+        thirdParty,
+        // 同じ画面（同じ Module の同じ資源・同じ呼び出しの引数）からのものは1つにする——会話の中のカードと大きく開いた面は同じ画面
+        slot: `${current.server} ${current.resourceUri} ${JSON.stringify(current.toolArgs ?? {})}`,
+        text: decision.text,
+      });
       return {};
     };
 

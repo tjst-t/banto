@@ -10,6 +10,7 @@ import { useEffect, type RefObject } from "react";
 import { useAui } from "@assistant-ui/react";
 import { useThreadId } from "@/components/banto/thread/thread-id-context";
 import { onTurnWithdrawn } from "@/lib/backend/adapter";
+import { quoteToAttachment } from "@/lib/canvas-quotes";
 
 export function useRestoreWithdrawn(inputRef: RefObject<HTMLTextAreaElement | null>): void {
   const threadId = useThreadId();
@@ -30,6 +31,12 @@ export function useRestoreWithdrawn(inputRef: RefObject<HTMLTextAreaElement | nu
           // 戻せなかった画像は、添えられなかった理由として入力欄の中に出る（`composer.attachmentAddError`）。
           // 取ってこられなかったものはここで書き残す（黙らない）
           .catch((err: unknown) => console.warn("[banto] 取り消した発言の画像を入力欄へ戻せませんでした:", err));
+      }
+      // Module の画面から添えた塊も戻す（`lib/canvas-quotes.ts`）
+      for (const quote of withdrawn.quotes) {
+        aui.composer
+          .addAttachment(quoteToAttachment(quote))
+          .catch((err: unknown) => console.warn("[banto] 取り消した発言の塊を入力欄へ戻せませんでした:", err));
       }
       // すぐ直せるように、入力欄の末尾にカーソルを置く（停止ボタンは消えるので、焦点が宙に浮く）
       requestAnimationFrame(() => {

@@ -207,10 +207,10 @@ const KIND_NOTE: Record<DeliveryKind, string> = {
  * **囲みの中に埋める文を、囲みの外に出られない形にする**（追加・2026-10-15、Backlog #312）。`<` と `&` を実体参照に
  * ——本文に `</banto-delivery>` や「（ここから人の発言）」を書いても、囲みは閉じない。属性に入れる値は `"` も
  */
-function escapeText(s: string): string {
+export function escapeText(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
-function escapeAttr(s: string): string {
+export function escapeAttr(s: string): string {
   return escapeText(s).replace(/"/g, "&quot;");
 }
 

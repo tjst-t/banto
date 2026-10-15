@@ -46,7 +46,10 @@ async function main(): Promise<void> {
   const displayMode = ctx.displayMode === "fullscreen" ? "fullscreen" : "inline";
   document.body.dataset.mode = displayMode;
 
-  view = new PdfDocumentView(root, { displayMode });
+  // **「AI に返す」は、host が `ui/message` を受けると名乗ったときだけ**（banto は会話の中で開いた画面にだけ名乗る）。
+  // 受けない host（会話の外）では、コメントは「コピー」で持ち出す
+  const canReturnComments = init.hostCapabilities?.message?.text !== undefined;
+  view = new PdfDocumentView(root, { displayMode, canReturnComments });
   for (const fn of early.splice(0)) fn(view);
   notify("ui/notifications/initialized");
 }

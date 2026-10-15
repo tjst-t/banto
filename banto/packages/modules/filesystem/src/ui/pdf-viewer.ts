@@ -8,7 +8,10 @@
 //     見えなくなったら `renderTask.cancel()` で止め、絵も捨てる（100 ページを全部描くとメモリが持たない）
 //   - CMap・標準フォントは pdf.js が fetch したがるが、Canvas の CSP は fetch を塞いでいる（緩めない）ので
 //     `readPdfAsset` で受ける
+//   - **コメント**（`comments.ts`、Backlog #307）：ページ・選んだ文・ドラッグした範囲を指して付ける。一覧は右（狭いとき・
+//     会話の中では下）。押すとそのページへ飛び、文には印、範囲には枠を出す
 
+import { CommentsPanel, type CommentAnchor, type CommentRect, type CommentTarget } from "./comments.js";
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";
 import {
@@ -115,6 +118,14 @@ export class PdfDocumentView {
   private searching = false;
   private searchToken = 0;
 
+  // --- コメント ---
+  private readonly comments: CommentsPanel;
+  private commentsOpen = false;
+  /** 一覧から飛んだ先（そのページを描いたときに、文には印・範囲には枠を出す） */
+  private focused?: CommentAnchor;
+  /** 範囲を囲んでいる途中なら、囲み終えたときに呼ぶ */
+  private drawing?: (anchor: Extract<CommentAnchor, { kind: "region" }>) => void;
+
   // --- 固定の要素（描き直しで作り直さない——作り直すとスクロールと入力が飛ぶ）---
   private readonly scroller: HTMLDivElement;
   private readonly pagesEl: HTMLDivElement;
@@ -126,12 +137,39 @@ export class PdfDocumentView {
   private readonly noteEl: HTMLParagraphElement;
   private readonly pathEl: HTMLSpanElement;
   private readonly fullscreenBtn: HTMLButtonElement;
+  private readonly commentsBtn: HTMLButtonElement;
+  private readonly commentsCount: HTMLSpanElement;
 
   constructor(
     private readonly root: HTMLElement,
-    options: { displayMode: DisplayMode },
+    options: {
+      displayMode: DisplayMode;
+      /** host が `ui/message` を受けるか（会話の中で開いた画面）。受けなければコメントは「コピー」で持ち出す */
+      canReturnComments: boolean;
+    },
   ) {
     this.displayMode = options.displayMode;
+    const target: CommentTarget = {
+      selectedText: () => this.selectedText(),
+      currentPage: () => (this.state.kind === "ready" ? this.currentPage : undefined),
+      startRegion: (done) => this.startRegion(done),
+      jumpTo: (anchor) => this.jumpTo(anchor),
+    };
+    this.commentsCount = h("span", { class: "count", data: { testid: "comments-toggle-count" } });
+    this.comments = new CommentsPanel(target, { canReturn: options.canReturnComments, onChange: () => this.onCommentsChange() });
+    this.commentsBtn = h(
+      "button",
+      {
+        class: "btn",
+        title: "コメントの一覧を開く・閉じる",
+        attrs: { type: "button", "aria-pressed": "false" },
+        data: { testid: "comments-toggle" },
+        on: { click: () => this.toggleComments() },
+      },
+      icon("MessageSquare"),
+      "コメント",
+      this.commentsCount,
+    );
     this.pathEl = h("span", { class: "badge truncate", text: "（PDF）", data: { testid: "open-path" } });
     this.pageLabel = h("span", { class: "pdf-page-label", data: { testid: "pdf-page-label" } });
     this.zoomLabel = h("span", { class: "pdf-zoom-label", data: { testid: "pdf-zoom" } });
@@ -177,14 +215,21 @@ export class PdfDocumentView {
       iconButton("縮小", "ZoomOut", () => this.changeZoom(-1)),
       this.zoomLabel,
       iconButton("拡大", "ZoomIn", () => this.changeZoom(1)),
+      this.commentsBtn,
       this.fullscreenBtn,
     );
     this.status = h("div", { class: "state" });
     this.pagesEl = h("div", { class: "pdf-pages" });
     this.scroller = h("div", { class: "pdf-scroller", data: { testid: "pdf-scroller" } }, this.status, this.pagesEl);
     this.scroller.addEventListener("scroll", () => this.updateCurrentPage(), { passive: true });
+    this.pagesEl.addEventListener("pointerdown", (e) => this.onRegionPointerDown(e));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this.comments.cancelRegion();
+    });
     this.noteEl = h("p", { class: "note" });
-    replaceChildren(this.root, h("div", { class: "pdf-view", data: { testid: "pdf-view" } }, toolbar, this.scroller, this.noteEl));
+    this.comments.el.hidden = true;
+    const body = h("div", { class: "pdf-body" }, this.scroller, this.comments.el);
+    replaceChildren(this.root, h("div", { class: "pdf-view", data: { testid: "pdf-view" } }, toolbar, body, this.noteEl));
     new ResizeObserver(() => this.onResize()).observe(this.scroller);
     this.render();
   }
@@ -235,6 +280,7 @@ export class PdfDocumentView {
     this.pathEl.textContent = path;
     this.state = { kind: "loading", path };
     this.render();
+    void this.comments.load(path);
     try {
       const lib = pdfjs();
       const common = {
@@ -445,6 +491,7 @@ export class PdfDocumentView {
       if (stale()) return;
       slot.el.classList.add("rendered");
       this.paintMatches(slot);
+      void this.paintFocus(slot);
     } catch (err) {
       if (isRenderingCancelled(err) || stale()) return;
       slot.renderedScale = undefined;
@@ -583,6 +630,125 @@ export class PdfDocumentView {
   }
 
   // ======================================================================
+  // コメント（`comments.ts`）
+  // ======================================================================
+
+  private toggleComments(): void {
+    this.commentsOpen = !this.commentsOpen;
+    this.comments.el.hidden = !this.commentsOpen;
+    this.commentsBtn.setAttribute("aria-pressed", String(this.commentsOpen));
+    if (this.commentsOpen) void this.comments.reload();
+    else this.comments.cancelRegion();
+    this.onCommentsChange();
+  }
+
+  private onCommentsChange(): void {
+    this.commentsCount.textContent = this.comments.count > 0 ? String(this.comments.count) : "";
+    if (this.displayMode === "inline") reportSize();
+  }
+
+  /** 人がいまページの中で選んでいる文と、そのページ。ページの外（ツールバー等）の選択は数えない */
+  private selectedText(): Extract<CommentAnchor, { kind: "text" }> | undefined {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return undefined;
+    const range = selection.getRangeAt(0);
+    const start = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+    const pageEl = start?.closest<HTMLElement>(".pdf-page");
+    if (!pageEl || !this.pagesEl.contains(pageEl)) return undefined;
+    const quote = selection.toString().replace(/\s+/g, " ").trim();
+    if (!quote) return undefined;
+    return { kind: "text", quote: quote.slice(0, 2000), page: Number(pageEl.dataset.page) };
+  }
+
+  /** ドラッグで範囲を囲ませる。返り値で取りやめる */
+  private startRegion(done: (anchor: Extract<CommentAnchor, { kind: "region" }>) => void): () => void {
+    this.drawing = done;
+    this.scroller.classList.add("drawing");
+    return () => {
+      if (this.drawing !== done) return;
+      this.drawing = undefined;
+      this.scroller.classList.remove("drawing");
+    };
+  }
+
+  private onRegionPointerDown(e: PointerEvent): void {
+    const done = this.drawing;
+    if (!done || e.button !== 0) return;
+    const pageEl = (e.target as Element | null)?.closest<HTMLElement>(".pdf-page");
+    if (!pageEl) return;
+    e.preventDefault();
+    const box = pageEl.getBoundingClientRect();
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    const at = (ev: PointerEvent) => ({ x: clamp((ev.clientX - box.left) / box.width), y: clamp((ev.clientY - box.top) / box.height) });
+    const from = at(e);
+    const frame = h("div", { class: "comment-region drawing-box" });
+    pageEl.appendChild(frame);
+    let rect: CommentRect = { x: from.x, y: from.y, w: 0, h: 0 };
+    const place = (r: CommentRect) => {
+      frame.style.left = `${r.x * 100}%`;
+      frame.style.top = `${r.y * 100}%`;
+      frame.style.width = `${r.w * 100}%`;
+      frame.style.height = `${r.h * 100}%`;
+    };
+    const move = (ev: PointerEvent) => {
+      const to = at(ev);
+      rect = { x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), w: Math.abs(to.x - from.x), h: Math.abs(to.y - from.y) };
+      place(rect);
+    };
+    const up = (ev: PointerEvent) => {
+      move(ev);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      frame.remove();
+      // 押しただけ（ほとんど動かしていない）は囲んだことにしない——もう一度ドラッグできる
+      if (rect.w < 0.01 || rect.h < 0.01 || this.drawing !== done) return;
+      this.drawing = undefined;
+      this.scroller.classList.remove("drawing");
+      const round = (v: number) => Math.round(v * 10000) / 10000;
+      done({ kind: "region", page: Number(pageEl.dataset.page), rect: { x: round(rect.x), y: round(rect.y), w: round(rect.w), h: round(rect.h) } });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** コメントの場所へ飛ぶ。そのページを描いたら、文には印・範囲には枠を出す */
+  private jumpTo(anchor: CommentAnchor): void {
+    if (anchor.kind === "cell" || this.state.kind !== "ready") return;
+    const page = anchor.page;
+    const slot = page !== undefined ? this.pages[page - 1] : undefined;
+    if (!slot) return;
+    const previous = this.focused;
+    this.focused = anchor;
+    const prevSlot = previous && previous.kind !== "cell" && previous.page !== undefined ? this.pages[previous.page - 1] : undefined;
+    if (prevSlot && prevSlot !== slot) void this.paintFocus(prevSlot);
+    this.scroller.scrollTop = slot.el.offsetTop - 8;
+    void this.paintFocus(slot);
+  }
+
+  private async paintFocus(slot: PageSlot | undefined): Promise<void> {
+    if (!slot) return;
+    slot.el.querySelectorAll(".comment-region.focus").forEach((el) => el.remove());
+    slot.textLayer?.textDivs.forEach((div) => div.classList.remove("comment-focus"));
+    const anchor = this.focused;
+    if (!anchor || anchor.kind === "cell" || anchor.page !== slot.index) return;
+    if (anchor.kind === "region") {
+      const frame = h("div", { class: "comment-region focus", data: { testid: "comment-region-focus" } });
+      frame.style.left = `${anchor.rect.x * 100}%`;
+      frame.style.top = `${anchor.rect.y * 100}%`;
+      frame.style.width = `${anchor.rect.w * 100}%`;
+      frame.style.height = `${anchor.rect.h * 100}%`;
+      slot.el.appendChild(frame);
+    } else if (anchor.kind === "text" && slot.textLayer) {
+      const divs = slot.textLayer.textDivs;
+      const content = await this.text(slot.index);
+      if (this.focused !== anchor) return;
+      for (const item of findLoosely(content, anchor.quote)) divs[item]?.classList.add("comment-focus");
+      const first = slot.el.querySelector<HTMLElement>(".textLayer .comment-focus");
+      if (first) this.scrollToCenter(first);
+    }
+  }
+
+  // ======================================================================
   // 大きく開く・描く
   // ======================================================================
 
@@ -656,6 +822,29 @@ export function findInPage(page: number, content: PdfTextContent, needle: string
     at = joined.indexOf(needle, end);
   }
   return out;
+}
+
+/**
+ * コメントの引用が、そのページの文字の層のどの要素に掛かるか。選んだ文は要素の境目に空白や改行が入るので、
+ * **空白を無視して**探す（最初に当たったところ）
+ */
+export function findLoosely(content: PdfTextContent, quote: string): number[] {
+  const needle = quote.replace(/\s+/g, "").toLowerCase();
+  if (!needle) return [];
+  let joined = "";
+  const owner: number[] = [];
+  let index = 0;
+  for (const item of content.items) {
+    if (typeof item.str !== "string") continue;
+    for (const ch of item.str.replace(/\s+/g, "").toLowerCase()) {
+      joined += ch;
+      for (let k = 0; k < ch.length; k++) owner.push(index);
+    }
+    index++;
+  }
+  const at = joined.indexOf(needle);
+  if (at < 0) return [];
+  return [...new Set(owner.slice(at, at + needle.length))];
 }
 
 function formatSize(bytes: number): string {

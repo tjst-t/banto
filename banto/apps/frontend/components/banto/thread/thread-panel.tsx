@@ -42,6 +42,7 @@ import type { MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
 import { keepComposerDraft } from "@/lib/composer-drafts";
+import { registerQuoteComposer } from "@/lib/canvas-quotes";
 import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
 import { ProjectCodeTransferLine } from "@/components/banto/shell/code-transfer";
 
@@ -316,6 +317,8 @@ function ThreadRuntime({
   // 作り直さなくなったが、別のページへ行く・Fork と Canvas を両方開く等で面ごと消えることはある。
   // 入力欄の中身は外に写しておき、作られたら戻す。描く前に戻す（空の入力欄を一瞬見せない）
   useLayoutEffect(() => keepComposerDraft(threadId, runtime.thread.composer), [runtime, threadId]);
+  // **Module の画面から渡された塊の入れ先**（`lib/canvas-quotes.ts`）。閉じている会話の分は書きかけに入る
+  useEffect(() => registerQuoteComposer(threadId, runtime.thread.composer), [runtime, threadId]);
 
   // **記録から組み直したら、同じランタイムに流し込む**（決定・2026-09-28）。作ったときの版（最初の
   // `initialMessages` がそれ）から版が進んだら、そのときの写しで会話を入れ替える。描く前に入れ替える

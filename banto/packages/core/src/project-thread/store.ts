@@ -20,6 +20,7 @@ import type {
   ThreadState,
   UiToolCallEntry,
   MessageImage,
+  MessageQuote,
   TurnSummaryRecord,
   MessageOrigin,
   MessageSender,
@@ -571,6 +572,8 @@ export class ProjectThreadStore {
     origin?: MessageOrigin,
     /** 人が添えた画像（追加・2026-09-26）。**中身は先に画像の置き場へ置いておく**——ここは名前だけを残す */
     images?: MessageImage[],
+    /** Module の画面から人が添えたもの（追加・2026-10-15）。人の文とは分けて残す */
+    quotes?: MessageQuote[],
   ): Promise<number> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     const event = await this.log.append("message.appended", {
@@ -580,6 +583,7 @@ export class ProjectThreadStore {
       ...(uiToolCalls && uiToolCalls.length > 0 ? { uiToolCalls } : {}),
       ...(origin ? { origin } : {}),
       ...(images && images.length > 0 ? { images } : {}),
+      ...(quotes && quotes.length > 0 ? { quotes } : {}),
     });
     this.projection.applyOne(event);
     return event.seq;

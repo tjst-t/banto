@@ -6,6 +6,7 @@ import type {
   RuntimeMoveCreated,
   MessageEntry,
   MessageImage,
+  MessageQuote,
   TurnSummaryRecord,
   MessageOrigin,
   MessageSender,
@@ -98,6 +99,8 @@ export type ProjectThreadEvent =
         origin?: MessageOrigin;
         /** 人が添えた画像の名前（追加・2026-09-26）。中身は画像の置き場 */
         images?: MessageImage[];
+        /** Module の画面から人が添えたもの（追加・2026-10-15） */
+        quotes?: MessageQuote[];
         /** そのターンで出た中継の承認の id（追加・2026-10-05）。中身は受信箱 */
         judgmentIds?: string[];
         /** ターンの終わりのまとめ（追加・2026-10-06）。同じターンの後ろのもので置き換える */
@@ -614,6 +617,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             text: event.payload.text,
             ...(event.payload.origin ? { origin: event.payload.origin } : {}),
             ...(event.payload.images && event.payload.images.length > 0 ? { images: event.payload.images } : {}),
+            ...(event.payload.quotes && event.payload.quotes.length > 0 ? { quotes: event.payload.quotes } : {}),
             ...(event.payload.judgmentIds && event.payload.judgmentIds.length > 0 ? { judgmentIds: event.payload.judgmentIds } : {}),
             ...(event.payload.turnSummary ? { turnSummary: event.payload.turnSummary } : {}),
             uiToolCalls,

@@ -5,6 +5,7 @@
 // banto が足すのは「送れるものを絞る」ことだけ。data URL の base64 は `adapter.ts` が host へ渡す。
 
 import { SimpleImageAttachmentAdapter } from "@assistant-ui/react";
+import { CANVAS_QUOTE_CONTENT_TYPE } from "@/lib/canvas-quotes";
 
 /**
  * 送れる形式と大きさ。**正は host**（`packages/core/src/images/store.ts`）——ここは
@@ -15,9 +16,12 @@ export const IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export class ImageAttachmentAdapter extends SimpleImageAttachmentAdapter {
-  override accept = IMAGE_ACCEPT;
+  // **Module の画面から渡された塊**（`lib/canvas-quotes.ts`）も受ける——assistant-ui は塊（ファイルでない添付）にも
+  // この `accept` を当てる。ファイルとしては受けない（下の `add`）
+  override accept = `${IMAGE_ACCEPT},${CANVAS_QUOTE_CONTENT_TYPE}`;
 
   override async add(state: { file: File }) {
+    if (state.file.type === CANVAS_QUOTE_CONTENT_TYPE) throw new Error("添えられるのは画像（PNG・JPEG・GIF・WebP）だけです");
     if (state.file.size > MAX_IMAGE_BYTES) {
       throw new Error(
         `画像が大きすぎます（${(state.file.size / 1024 / 1024).toFixed(1)}MB、1枚 ${MAX_IMAGE_BYTES / 1024 / 1024}MB まで）`,

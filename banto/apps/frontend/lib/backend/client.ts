@@ -138,6 +138,8 @@ export interface RealThreadMessage {
   origin?: RealMessageOrigin;
   /** 人が添えた画像（決定・2026-09-26）。中身は `GET /api/images/:id` で取る */
   images?: RealMessageImage[];
+  /** Module の画面から人が添えたもの（追加・2026-10-15）。人の文（`text`）とは分かれている */
+  quotes?: RealMessageQuote[];
   /**
    * そのターンで出た中継の承認のカード（追加・2026-10-05）。host が記録の id に受信箱の中身を添えて返す——会話を記録から
    * 組み直しても（止めた・開き直した）カードが残る
@@ -168,6 +170,18 @@ export interface RealMessageImage {
 export interface OutgoingImage {
   data: string;
   name?: string;
+}
+
+/**
+ * **Module の画面から人が添えた塊**（追加・2026-10-15、v4-frontend.md §6.2「画面から会話の入力欄へ文を渡す」）。送るときは
+ * 出所の Module と文だけ——第三者かは host が自分の宣言で決める。記録から返るときは host が決めた値が付く
+ */
+export interface OutgoingQuote {
+  module: string;
+  text: string;
+}
+export interface RealMessageQuote extends OutgoingQuote {
+  thirdParty: boolean;
 }
 
 /** 届いたものの印——送り手・題・何回中継されたか */
@@ -1344,6 +1358,8 @@ export function streamRealTurn(
   images: readonly OutgoingImage[] = [],
   /** このターンの名前（§6.31）。止めるときに同じ名前を渡す */
   turnId?: string,
+  /** Module の画面から人が添えたもの（追加・2026-10-15） */
+  quotes: readonly OutgoingQuote[] = [],
 ): AsyncGenerator<RealTurnEvent> {
   return queuedStream<RealTurnEvent>(async (push, signal) => {
     let res: Response;
@@ -1355,6 +1371,7 @@ export function streamRealTurn(
           prompt,
           permissionMode,
           ...(images.length > 0 ? { images } : {}),
+          ...(quotes.length > 0 ? { quotes } : {}),
           ...(turnId ? { turnId } : {}),
         }),
         signal,

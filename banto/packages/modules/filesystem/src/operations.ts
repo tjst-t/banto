@@ -257,3 +257,12 @@ export async function readFileRangeOp(
     await handle.close();
   }
 }
+
+/**
+ * **根の中のファイルを指す**（コメントの置き場の鍵、`comments.ts`）。実体のパスと、根からの相対（鍵）を返す
+ * ——同じファイルを相対・絶対のどちらで指しても同じ鍵になる
+ */
+export function fileInRoot(root: string, path: string): { abs: string; rel: string } {
+  const p = absPath(root, path);
+  return { abs: p, rel: relFromRoot(root, p) };
+}

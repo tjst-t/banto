@@ -360,3 +360,84 @@ test("まだ無いパスにも書ける（新規作成は根の中なら通る�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// **コメントは Project ごとの置き場に残す**（v4-modules.md §2.2「PDF・Office…」の「コメント」、Backlog #307）。
+// 鍵は根からの相対パス、ハッシュ・時刻・id は host が付ける（画面が持ってきた値を信じない）、ファイルが変わったら
+// 前に付けたものの `fileHash` がいまの `hash` と違う
+test("getComments／saveComments はコメントを置き場に残し、ハッシュを host が付け、ファイルが変わると分かる", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "banto-fs-comments-"));
+  const before = process.env.BANTO_MODULE_DATA_DIR;
+  process.env.BANTO_MODULE_DATA_DIR = dataDir;
+  try {
+    await withClient(async (client, root) => {
+      await mkdir(join(root, "docs"));
+      await writeFile(join(root, "docs/plan.pdf"), "%PDF-1.4 one");
+      const call = async (name: string, args: Record<string, unknown>) => {
+        const r = await client.callTool({ name, arguments: args });
+        if (r.isError) throw new Error((r.content as { text: string }[])[0]?.text);
+        return JSON.parse((r.content as { text: string }[])[0]!.text) as {
+          path: string;
+          hash: string;
+          comments: Array<{ id: string; body: string; fileHash: string; anchor: unknown; createdAt: string; updatedAt?: string }>;
+        };
+      };
+      const empty = await call("getComments", { path: "docs/plan.pdf" });
+      assert.deepEqual(empty.comments, []);
+      assert.match(empty.hash, /^[0-9a-f]{64}$/);
+
+      const saved = await call("saveComments", {
+        path: join(root, "docs/plan.pdf"),
+        comments: [
+          { anchor: { kind: "text", page: 3, quote: "受信箱の見直しについて" }, body: "ここは結論を先に", fileHash: "画面が書いた嘘" },
+          { anchor: { kind: "region", page: 5, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.25 } }, body: "凡例が読めない" },
+          { anchor: { kind: "cell", sheet: "シート1", range: "D4", value: "1,200" }, body: "単価が古い" },
+        ],
+      });
+      // 絶対パスで指しても鍵は根からの相対
+      assert.equal(saved.path, "docs/plan.pdf");
+      assert.equal(saved.comments.length, 3);
+      for (const c of saved.comments) assert.equal(c.fileHash, empty.hash, "ハッシュを画面の値のまま残した");
+      const stored = JSON.parse(await readFile(join(dataDir, "comments.json"), "utf8")) as { files: Record<string, unknown[]> };
+      assert.deepEqual(Object.keys(stored.files), ["docs/plan.pdf"]);
+
+      // 直す：同じ id は付けた時刻とハッシュを保つ。ファイルが変わったあとも、前のハッシュのまま
+      await writeFile(join(root, "docs/plan.pdf"), "%PDF-1.4 two");
+      const first = saved.comments[0]!;
+      const edited = await call("saveComments", {
+        path: "docs/plan.pdf",
+        comments: [{ ...first, body: "結論を先に書く", fileHash: "x", createdAt: "1999-01-01T00:00:00Z" }, saved.comments[1]],
+      });
+      assert.notEqual(edited.hash, empty.hash);
+      assert.equal(edited.comments[0]!.id, first.id);
+      assert.equal(edited.comments[0]!.body, "結論を先に書く");
+      assert.equal(edited.comments[0]!.fileHash, empty.hash);
+      assert.equal(edited.comments[0]!.createdAt, first.createdAt);
+      assert.ok(edited.comments[0]!.updatedAt);
+      assert.equal(edited.comments[1]!.updatedAt, undefined);
+      const reread = await call("getComments", { path: "docs/plan.pdf" });
+      assert.deepEqual(reread.comments, edited.comments);
+
+      // 形の崩れたもの・根の外は断る
+      await assert.rejects(
+        client.callTool({ name: "saveComments", arguments: { path: "docs/plan.pdf", comments: [{ anchor: { kind: "page", page: 0 }, body: "x" }] } }),
+        /page は 1 以上の整数です/,
+      );
+      await assert.rejects(client.callTool({ name: "getComments", arguments: { path: "/etc/passwd" } }), /根の外/);
+
+      // 空にすると消える
+      const cleared = await call("saveComments", { path: "docs/plan.pdf", comments: [] });
+      assert.deepEqual(cleared.comments, []);
+      const after = JSON.parse(await readFile(join(dataDir, "comments.json"), "utf8")) as { files: Record<string, unknown[]> };
+      assert.deepEqual(after.files, {});
+
+      const { tools } = await client.listTools();
+      for (const name of ["getComments", "saveComments"]) {
+        assert.equal((tools.find((t) => t.name === name)?._meta as Record<string, unknown>)?.["dev.banto/visibility"], "admin");
+      }
+    });
+  } finally {
+    if (before === undefined) delete process.env.BANTO_MODULE_DATA_DIR;
+    else process.env.BANTO_MODULE_DATA_DIR = before;
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

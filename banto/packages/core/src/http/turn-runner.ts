@@ -5,7 +5,8 @@
 
 import { randomUUID } from "node:crypto";
 import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
-import type { MessageImage, UiToolCallEntry } from "../project-thread/types.js";
+import type { MessageImage, MessageQuote, UiToolCallEntry } from "../project-thread/types.js";
+import { composeQuotedPrompt } from "./canvas-quotes.js";
 import type { ImageMediaType } from "../images/store.js";
 import { uiResourceUriForCall, type UiByExtensionMeta } from "@banto/module-contract";
 import { findRewindBeforePrompt, runTurn } from "../runner/adapter.js";
@@ -117,6 +118,8 @@ export interface RunThreadTurnInput {
   prompt: string;
   /** 人が添えた画像（決定・2026-09-26）。文と同じ発言に属する */
   images?: TurnImage[];
+  /** Module の画面から人が添えたもの（追加・2026-10-15、`canvas-quotes.ts`）。文と同じ発言に属するが、人の文とは分ける */
+  quotes?: MessageQuote[];
   modules: ModuleEndpoint[];
   cwd?: string;
   permissionMode?: Options["permissionMode"];
@@ -378,8 +381,9 @@ async function* runThreadTurnInner(
   // ではない。上限で起こさなかったものも、人が次に送ったこのターンの頭に積まれる（黙って捨てない）
   const delivered = [...(deps.projectThread.getThread(input.threadId)?.deliveries ?? [])];
   const images = input.images ?? [];
-  // 画像だけの発言もある（文を書かずにスクリーンショットだけ貼る）
-  const hasHumanMessage = input.prompt !== "" || images.length > 0;
+  const quotes = input.quotes ?? [];
+  // 画像だけの発言もある（文を書かずにスクリーンショットだけ貼る）。画面から添えたものだけの発言も
+  const hasHumanMessage = input.prompt !== "" || images.length > 0 || quotes.length > 0;
   if (delivered.length === 0 && !hasHumanMessage) {
     yield { type: "error", message: "このターンに渡すもの（人の発言・届いたもの）がありません" };
     return;
@@ -454,9 +458,10 @@ async function* runThreadTurnInner(
       undefined,
       undefined,
       imageNames,
+      quotes,
     );
   }
-  const prompt = composeTurnPrompt(delivered, input.prompt, images.length);
+  const prompt = composeTurnPrompt(delivered, composeQuotedPrompt(quotes, input.prompt), images.length);
 
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };

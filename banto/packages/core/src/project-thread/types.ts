@@ -74,6 +74,19 @@ export interface MessageEntry {
   origin?: MessageOrigin;
   /** 人が添えた画像（決定・2026-09-26）。中身は画像の置き場にあり、ここは名前だけ（`images/store.ts`） */
   images?: MessageImage[];
+  /**
+   * **Module の画面から人が添えたもの**（追加・2026-10-15、v4-frontend.md §6.2「画面から会話の入力欄へ文を渡す」）。
+   * 人の文（`text`）とは分けて持つ——AI には出所つきの引用として渡す（`http/canvas-quotes.ts`）
+   */
+  quotes?: MessageQuote[];
+}
+
+/** 画面から人が添えた塊1つ。出所の Module と、第三者か（host が宣言から決めた値） */
+export interface MessageQuote {
+  /** Module の宣言上の名前 */
+  module: string;
+  thirdParty: boolean;
+  text: string;
 }
 
 /** 記録に残すまとめ。中身（summary）の形は `http/turn-summary.ts` の `TurnSummary` */

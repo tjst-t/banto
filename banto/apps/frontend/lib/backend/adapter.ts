@@ -13,6 +13,7 @@ import { TURN_SUMMARY_TOOL_NAME } from "@/lib/turn-summary";
 import { useSyncExternalStore } from "react";
 import { randomId } from "@/lib/random-id";
 import { uiResourceUriForCall } from "@/lib/ui-by-extension";
+import { quoteFromAttachment, quoteToAttachment, type CanvasQuote } from "@/lib/canvas-quotes";
 import type {
   ChatModelAdapter,
   ThreadAssistantMessagePart,
@@ -30,6 +31,7 @@ import {
   REAL_IMAGE_SRC_PREFIX,
   type OutgoingImage,
   type RealMessageImage,
+  type RealMessageQuote,
   type RealToolCard,
   type RealUiTool,
   type RealThread,
@@ -190,6 +192,8 @@ interface LiveTurn extends LiveTurnState {
   turnId?: string;
   /** この画面が送った発言に添えた画像（取り消したら入力欄へ戻す——§6.31） */
   localImages?: WithdrawnImage[];
+  /** この画面が送った発言に添えた、画面からの塊（取り消したら入力欄へ戻す） */
+  localQuotes?: CanvasQuote[];
   /** あとから乗った流れの、ターンの始まりの seq（host の `attached`）。記録と流し直しの境界——自分で送った流れには無い */
   startedSeq?: number;
 }
@@ -211,6 +215,8 @@ export interface WithdrawnImage {
 export interface WithdrawnTurn {
   text: string;
   images: WithdrawnImage[];
+  /** Module の画面から添えた塊（この画面が送ったものだけ。ほかの画面が送ったものは戻せない） */
+  quotes: CanvasQuote[];
 }
 
 const withdrawnListeners = new Set<(threadId: string, withdrawn: WithdrawnTurn) => void>();
@@ -295,6 +301,7 @@ function stopOnHost(threadId: string, turn: LiveTurn): void {
           text: outcome.withdrawn.text,
           // この画面が送った画像は手元にある——取りに行かない
           images: turn.localImages ?? hostWithdrawnImages(outcome.withdrawn.images),
+          quotes: turn.localQuotes ?? [],
         });
       }
     } catch (err) {
@@ -395,6 +402,25 @@ function lastUserImages(messages: readonly ThreadMessage[]): OutgoingImage[] {
     }
   }
   return images;
+}
+
+/**
+ * **最後の人の発言に添えた、Module の画面からの塊**（追加・2026-10-15、`lib/canvas-quotes.ts`）。入力欄の添付のまま
+ * 発言に残っている。host には出所の Module と文だけを渡す（第三者かは host が決め直す）
+ */
+function lastUserQuotes(messages: readonly ThreadMessage[]): CanvasQuote[] {
+  const last = [...messages].reverse().find((m) => m.role === "user");
+  if (!last || last.role !== "user") return [];
+  return (last.attachments ?? []).flatMap((attachment) => {
+    const quote = quoteFromAttachment(attachment);
+    return quote ? [quote] : [];
+  });
+}
+
+/** 記録の塊を、送ったときと同じ添付の形にする */
+function restoredQuoteAttachment(seq: number, quote: RealMessageQuote, index: number) {
+  const created = quoteToAttachment({ ...quote, slot: `${seq}:${index}` });
+  return { ...created, id: created.id!, type: created.type!, status: { type: "complete" as const } };
 }
 
 function restoredImageAttachment(image: RealMessageImage) {
@@ -660,8 +686,13 @@ export function realMessagesToInitial(
       role: m.role,
       content,
       // 人が添えた画像（決定・2026-09-26）——送ったときと同じ添付の形で出す
-      ...(m.role === "user" && m.images && m.images.length > 0
-        ? { attachments: m.images.map(restoredImageAttachment) }
+      ...(m.role === "user" && ((m.images?.length ?? 0) > 0 || (m.quotes?.length ?? 0) > 0)
+        ? {
+            attachments: [
+              ...(m.images ?? []).map(restoredImageAttachment),
+              ...(m.quotes ?? []).map((q, i) => restoredQuoteAttachment(m.seq, q, i)),
+            ],
+          }
         : {}),
       ...(m.origin ? { metadata: { custom: { origin: m.origin } } } : {}),
     };
@@ -761,6 +792,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // 新規送信——現在進行中のライブなSSE接続が無ければ、実際にターンを開始する。
         const prompt = lastUserText(messages);
         const images = lastUserImages(messages);
+        const quotes = lastUserQuotes(messages);
         const permissionMode = getThreadPermissionMode(thread.id, thread.projectId);
         // **聞き終わってからターンを始める。ただし待ち切らない**（訂正・2026-09-22）。
         //
@@ -781,7 +813,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           // **送り出す前に止めた**（§6.31）——host には何も届いていない。そのまま入力欄へ戻し、記録から組み直す
           // （会話に入ったこの発言は、記録に無いので消える）
           if ((await aborted).stopButton) {
-            reportWithdrawn(thread.id, { text: prompt, images: localWithdrawnImages(messages) });
+            reportWithdrawn(thread.id, { text: prompt, images: localWithdrawnImages(messages), quotes: lastUserQuotes(messages) });
             reportStreamOutcome(thread.id, "disconnected");
           }
           return;
@@ -810,6 +842,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
             },
             images,
             turnId,
+            quotes.map((q) => ({ module: q.module, text: q.text })),
           ),
           acc: new PartsAccumulator(),
           prompt,
@@ -817,6 +850,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           consuming: false,
           turnId,
           localImages: localWithdrawnImages(messages),
+          localQuotes: quotes,
         };
         self.turn = live;
         liveTurns.set(thread.id, live);

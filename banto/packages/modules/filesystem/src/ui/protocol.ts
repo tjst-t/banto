@@ -35,7 +35,7 @@ export interface HostContext {
 
 export interface InitializeResult {
   hostContext?: HostContext;
-  hostCapabilities?: { downloadFile?: object };
+  hostCapabilities?: { downloadFile?: object; message?: { text?: object } };
 }
 
 interface JsonRpcMessage {

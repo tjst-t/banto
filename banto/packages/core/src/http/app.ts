@@ -34,7 +34,8 @@ import {
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { InboxItem } from "../inbox/types.js";
-import type { ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
+import type { MessageQuote, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
+import { CanvasQuoteRejectedError, parseCanvasQuotes } from "./canvas-quotes.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
 import { DEFAULT_MODEL_VALUE, ModelCatalog, modelIdentityOf, type ModelIdentity } from "../runner/models.js";
@@ -1134,7 +1135,10 @@ function toThreadDetail(thread: ThreadState, inbox: InboxStore) {
  *  （画面が全文を持たずに済む。AI 要約はしない、§2.2 と同じ姿勢）。 */
 function toThreadSummary(thread: ThreadState) {
   // 画像だけの発言は、文が無い——何も無いように見せない（決定・2026-09-26）
-  const texts = thread.messages.map((m) => (m.text === "" && m.images ? `（画像 ${m.images.length} 枚）` : m.text));
+  // 画面から添えたものだけの発言も同じ（追加・2026-10-15）
+  const texts = thread.messages.map((m) =>
+    m.text !== "" ? m.text : m.images ? `（画像 ${m.images.length} 枚）` : m.quotes ? `（画面から添えたもの ${m.quotes.length} 件）` : m.text,
+  );
   const cut = (t: string | undefined) => (t === undefined ? null : t.length > 200 ? `${t.slice(0, 200)}…` : t);
   // **一覧に要るものだけを、名前で挙げる**（改訂・2026-09-07、実測）。
   // 「中身以外ぜんぶ」だと、走行の内部事情（resume-point・捨てたセッション・
@@ -1313,8 +1317,10 @@ export function createApp(deps: AppDeps) {
     images: TurnImage[] = [],
     /** 人が止める口（§6.31）。止めたら `stopped` で終わり、その結果をここへ書く */
     stop?: TurnStopHandle,
+    /** Module の画面から人が添えたもの（追加・2026-10-15、`canvas-quotes.ts`） */
+    quotes: MessageQuote[] = [],
   ): AsyncGenerator<TurnStreamEvent> {
-    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal)) {
+    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes)) {
       if (event.type === "stopped") stop?.markStopped(event.withdrawn);
       yield event;
     }
@@ -1326,6 +1332,7 @@ export function createApp(deps: AppDeps) {
     permissionMode: RunThreadTurnInput["permissionMode"] | undefined,
     images: TurnImage[],
     stop: AbortSignal | undefined,
+    quotes: MessageQuote[],
   ): AsyncGenerator<TurnStreamEvent> {
     // **下ごしらえの途中で止められたら、待たずに終える**（§6.31、実測）——Module を起こす・モデルの一覧を CLI に聞く等は
     // 数秒かかることがあり、その間に押した停止が入力欄に戻るまで待たされていた。まだ何も記録していないので、そのまま取り消す。
@@ -1415,6 +1422,7 @@ export function createApp(deps: AppDeps) {
       uiTools,
       prompt,
       ...(images.length > 0 ? { images } : {}),
+      ...(quotes.length > 0 ? { quotes } : {}),
       permissionMode: resolvePermissionMode(
         permissionMode,
         deps.projectThread.getThread(threadId),
@@ -2409,15 +2417,24 @@ export function createApp(deps: AppDeps) {
           permissionMode?: RunThreadTurnInput["permissionMode"];
           /** 画面が付けたこのターンの名前（§6.31）。順番待ちのうちに止めるとき、取り違えないため */
           turnId?: unknown;
+          /** Module の画面から人が添えたもの（追加・2026-10-15、`canvas-quotes.ts`）。`{module, text}` の並び */
+          quotes?: unknown;
         };
         let images: TurnImage[];
+        let quotes: MessageQuote[];
         try {
           body = (await readJsonBody(req, TURN_BODY_MAX_BYTES)) as typeof body;
+          // **第三者かどうかは host の宣言で決める**——画面が名乗った値は受けない（知らない Module は第三者として出す）
+          const bundled = new Set(
+            deps.runtimeConfig ? listInstanceModules(deps.runtimeConfig).filter((m) => m.origin === "bundled").map((m) => m.name) : [],
+          );
+          quotes = parseCanvasQuotes(body.quotes, (module) => bundled.has(module));
           // **添えた画像は、ターンを始める前に置く**（決定・2026-09-26）。記録に残るのは名前だけ
           images = await storeTurnImages(imageStore, body.images);
         } catch (err) {
           if (err instanceof BodyTooLargeError) return json(res, 413, { error: err.message });
           if (err instanceof ImageRejectedError) return json(res, 400, { error: err.message });
+          if (err instanceof CanvasQuoteRejectedError) return json(res, 400, { error: err.message });
           throw err;
         }
         const threadId = turnMatch[1]!;
@@ -2449,7 +2466,7 @@ export function createApp(deps: AppDeps) {
           } else {
             stop.markRunning();
             try {
-              for await (const event of openTurn(threadId, body.prompt, body.permissionMode, images, stop)) {
+              for await (const event of openTurn(threadId, body.prompt, body.permissionMode, images, stop, quotes)) {
                 res.write(`data: ${JSON.stringify(event)}\n\n`);
               }
             } finally {
