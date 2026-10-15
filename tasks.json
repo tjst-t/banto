@@ -7404,7 +7404,7 @@
       "number": 306,
       "kind": "task",
       "title": "xlsx を計算し直した値の表で描く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "office-review",
       "dependsOn": [
         "office-converter"
@@ -7414,12 +7414,12 @@
       "labels": [],
       "body": "シートのタブ・結合したセル・列の幅・数の書式。値は変換役で計算し直した写しから読む。大きなシートは見えている範囲だけ。表を読むライブラリ（SheetJS は npm のものが古いので cdn 版か exceljs）は実装で選ぶ。",
       "doneWhen": "openpyxl で作った式入りの xlsx で、式の値が表に出る。3シートを切り替えられる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/office-xlsx-table）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T15:51:49.375Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T16:23:54.135Z",
+      "closedAt": "2026-10-15T16:23:54.135Z",
       "extra": {}
     },
     {
