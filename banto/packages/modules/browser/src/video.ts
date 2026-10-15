@@ -3,6 +3,8 @@
 // 仮想の画面（Xvfb）を GStreamer で取り込んで H.264 に圧縮する。GStreamer は python3 の gi から動かす子プロセス1本
 // （VIDEO_SCRIPT）——指示は標準入力の JSON 1行ずつ、出力は標準出力に `[長さ（4バイト、big endian）][種類（1バイト）][中身]`。
 // 種類は 0＝アクセスユニット（P）・1＝アクセスユニット（キーフレーム）・2＝知らせ（JSON：ready・state・error・warning）。
+// アクセスユニットの頭には取り込んだ時刻（µs、8バイト）——**音の子（audio.ts）と同じ時計**（CLOCK_MONOTONIC）で、人の画面が
+// 音と映像の時刻を合わせる。
 // error は流れが止まった失敗（JPEG に替える）、warning は流れを止めない失敗（止める・キーフレームの指示が効かなかった等。
 // ログに残すだけ）。
 //
@@ -123,6 +125,10 @@ def set_state(s):
         state = s
         event({"state": s})
 
+# 音の子と同じ時計（CLOCK_MONOTONIC）。取り込んだ時刻＝base time＋pts（止めて流し直しても時計の時刻のまま）
+clock = Gst.SystemClock.obtain()
+clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+
 def on_sample(sink):
     global key_pending
     sample = sink.emit("pull-sample")
@@ -132,7 +138,12 @@ def on_sample(sink):
         key = not buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
         if key:
             key_pending = False
-        emit(1 if key else 0, bytes(info.data))
+        # この1枚を出したパイプライン（作り直しの最中は global の pipeline が替わっている）。pts は segment の中の時刻——x264enc は
+        # segment を 1000 時間ずらして出す（実測・2026-10-15：pts をそのまま足すと音より 3600000 秒先）ので、running time に直す
+        owner = sink.get_parent()
+        running = sample.get_segment().to_running_time(Gst.Format.TIME, buf.pts) if buf.pts != Gst.CLOCK_TIME_NONE else None
+        t = owner.get_base_time() + running if owner is not None and running is not None and running >= 0 else clock.get_time()
+        emit(1 if key else 0, struct.pack(">Q", t // 1000) + bytes(info.data))
         buf.unmap(info)
     return Gst.FlowReturn.OK
 
@@ -152,6 +163,7 @@ def build(c):
         + "! appsink name=sink emit-signals=true sync=false max-buffers=4 drop=false"
     )
     pipeline = Gst.parse_launch(desc)
+    pipeline.use_clock(clock)
     appsink = pipeline.get_by_name("sink")
     appsink.connect("new-sample", on_sample)
     bus = pipeline.get_bus()
@@ -367,6 +379,8 @@ export interface VideoHeader {
   height: number;
   codec: "h264";
   key: boolean;
+  /** 取り込んだ時刻（µs、Module の機械の CLOCK_MONOTONIC——音の頭の ts と同じ時計。人の画面が音を合わせる） */
+  ts: number;
   /** 1 MiB を越えて分けたとき：何番目か（0 から）と、全部でいくつか */
   part?: number;
   parts?: number;
@@ -413,8 +427,8 @@ export function h264CodecString(au: Buffer): string | undefined {
 export type VideoState = "stopped" | "playing" | "paused";
 
 export interface VideoPipelineEvents {
-  /** アクセスユニットが1つ出た */
-  onUnit: (au: Buffer, key: boolean) => void;
+  /** アクセスユニットが1つ出た（ts は取り込んだ時刻 µs） */
+  onUnit: (au: Buffer, key: boolean, ts: number) => void;
   onState: (state: VideoState) => void;
   /** 失敗（圧縮が止まった・子が終わった）。理由つき */
   onError: (message: string) => void;
@@ -463,11 +477,13 @@ export class VideoPipeline {
       this.buf = this.buf.subarray(5 + len);
       if (kind === 2) this.onEvent(JSON.parse(body.toString("utf8")) as { ready?: boolean; state?: VideoState; error?: string; warning?: string });
       else {
+        const ts = Number(body.readBigUInt64BE(0));
+        const au = body.subarray(8);
         this.units += 1;
-        this.bytes += body.length;
+        this.bytes += au.length;
         if (kind === 1) this.keys += 1;
         // 次の読みで中身が上書きされないよう写す
-        this.events.onUnit(Buffer.from(body), kind === 1);
+        this.events.onUnit(Buffer.from(au), kind === 1, ts);
       }
     }
   }

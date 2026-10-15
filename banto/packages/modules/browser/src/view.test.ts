@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StreamStamp, WebSocket } from "@banto/stream-server";
-import { CORNER, FRAME_BOX, FRAME_COLORS, createTestPageServer } from "./test-page.js";
+import { CORNER, FRAME_BOX, FRAME_COLORS, TONE_HZ, createTestPageServer } from "./test-page.js";
 import { spawn, spawnSync } from "node:child_process";
 import { VideoPipeline, type VideoHeader } from "./video.js";
+import type { AudioHeader } from "./audio.js";
 import { createBrowserContextFromDataDir } from "./server.js";
 import { browserOpts, installed, skipReason } from "./test-browser.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
@@ -81,6 +82,8 @@ test("画面からの1通：入力と制御を読み、形の違うものは理�
   assert.deepEqual(parseViewMessage('{"type":"navigate","url":"localhost:3000/a"}'), { type: "navigate", url: "http://localhost:3000/a" });
   assert.deepEqual(parseViewMessage('{"type":"tab","action":"select","tab":"t2"}'), { type: "tab", action: "select", tab: "t2" });
   assert.deepEqual(parseViewMessage('{"type":"fit","on":true}'), { type: "fit", on: true });
+  assert.deepEqual(parseViewMessage('{"type":"audio","on":true}'), { type: "audio", on: true });
+  assert.match((parseViewMessage('{"type":"audio","on":"yes"}') as { error: string }).error, /audio の on/);
 
   assert.match((parseViewMessage("not json") as { error: string }).error, /JSON/);
   assert.match((parseViewMessage('{"type":"ack"}') as { error: string }).error, /seq/);
@@ -1022,5 +1025,160 @@ test("動画：続けて書いた2行の指示（key→stop・stop→start・sta
     assert.equal(errors.length, 0, errors.join(" / "));
   } finally {
     p.close();
+  }
+});
+
+// ---- 音（v4-modules.md §4.1「動画で流す」の段4） -------------------------------------------------
+
+/** Opus を復号して音の高さを見る道具（python3 の gi の opusdec）。PulseAudio と合わせて無ければ音の試験は飛ばす */
+const OPUS_DECODE = String.raw`
+import sys, struct, gi
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
+Gst.init(None)
+p = Gst.parse_launch('appsrc name=src format=time caps="audio/x-opus,channel-mapping-family=(int)0,channels=(int)2,rate=(int)48000" ! opusdec ! audioconvert ! audio/x-raw,format=S16LE,channels=1,rate=48000 ! appsink name=sink sync=false')
+src = p.get_by_name("src")
+sink = p.get_by_name("sink")
+p.set_state(Gst.State.PLAYING)
+data = sys.stdin.buffer.read()
+i = 0
+t = 0
+while i < len(data):
+    n = struct.unpack(">I", data[i:i + 4])[0]
+    i += 4
+    b = Gst.Buffer.new_wrapped(data[i:i + n])
+    b.pts = t
+    b.duration = 20 * Gst.MSECOND
+    t += 20 * Gst.MSECOND
+    i += n
+    src.emit("push-buffer", b)
+src.emit("end-of-stream")
+while True:
+    s = sink.emit("pull-sample")
+    if s is None:
+        break
+    b = s.get_buffer()
+    sys.stdout.buffer.write(b.extract_dup(0, b.get_size()))
+p.set_state(Gst.State.NULL)
+`;
+const opusdec = spawnSync("python3", ["-c", 'import gi; gi.require_version("Gst","1.0"); from gi.repository import Gst; Gst.init(None); assert Gst.ElementFactory.find("opusdec")'], { stdio: "ignore" }).status === 0;
+const pulse = spawnSync("pulseaudio", ["--version"], { stdio: "ignore" }).status === 0;
+const audioSkip = skipReason || (!pulse ? "pulseaudio が無い" : !opusdec ? "GStreamer の opusdec が無い（音を復号して確かめられない）" : false);
+
+/** 受けた1通（音）の頭と中身 */
+function audioPacket(data: Buffer): { header: AudioHeader; packet: Buffer } | undefined {
+  const { header, jpeg } = decodeFrame(data);
+  return (header as unknown as { codec?: string }).codec === "opus" ? { header: header as unknown as AudioHeader, packet: jpeg } : undefined;
+}
+
+/** Opus の包みを復号し、1ch の音（S16LE、48kHz）の高さ（Hz、負から正へ0を跨ぐ数）と大きさ（RMS）を返す */
+function toneOf(packets: Buffer[]): { hz: number; rms: number; samples: number } {
+  const input = Buffer.concat(
+    packets.map((p) => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(p.length);
+      return Buffer.concat([len, p]);
+    }),
+  );
+  const r = spawnSync("python3", ["-c", OPUS_DECODE], { input, maxBuffer: 1 << 26 });
+  if (r.status !== 0) throw new Error(`opusdec が終了コード ${r.status} で終わりました: ${r.stderr.toString().slice(-500)}`);
+  const pcm = r.stdout;
+  const n = pcm.length / 2;
+  let up = 0;
+  let sq = 0;
+  // 最初の 100ms は鳴り始め（Opus の前置き・音を足し始めた途中）なので数えない
+  const from = Math.min(n, 4800);
+  for (let i = from + 1; i < n; i++) {
+    const a = pcm.readInt16LE((i - 1) * 2);
+    const b = pcm.readInt16LE(i * 2);
+    if (a < 0 && b >= 0) up++;
+    sq += b * b;
+  }
+  const len = Math.max(1, n - from - 1);
+  return { hz: up / (len / 48000), rms: Math.sqrt(sq / len), samples: n };
+}
+
+test("音：「音を出す」を押した画面にだけ、鳴っている間だけ Opus を流す——音の高さが合い、時刻は映像と同じ時計。見えなくなったら止める", { skip: audioSkip }, async () => {
+  await ctx.session.ensure();
+  assert.equal(ctx.session.display?.audio.available, true, `音を流せない：${JSON.stringify(ctx.session.display?.audio)}`);
+  const page = (await ctx.session.currentOrNew()).page;
+  await page.goto(`${base}/tone`);
+  const loud = new FakeSocket();
+  const quiet = new FakeSocket();
+  loud.autoAck();
+  quiet.autoAck();
+  view.handler()(loud as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+  view.handler()(quiet as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+  const packets = (s: FakeSocket) => s.frames.map(audioPacket).filter((p) => p !== undefined);
+  try {
+    // 押す前は流さない（子も起こさない）——ページが鳴っていても
+    await page.click("#play");
+    await new Promise((r) => setTimeout(r, 800));
+    assert.equal(view.status().audio, undefined, "音を出した画面が無いのに音の子が動いている");
+    assert.equal(packets(loud).length, 0);
+    // 1つの画面が音を出す
+    loud.post({ type: "audio", on: true });
+    await until("音の1通", () => packets(loud).length >= 60, 15_000);
+    assert.equal(view.status().audio?.sounding, true);
+    assert.equal(view.status().audio?.viewers, 1);
+    assert.equal(packets(quiet).length, 0, "音を出していない画面に流した");
+    const got = packets(loud);
+    // 1包みは 20ms（鳴り始めの1包みだけは Opus の前置き（312 サンプル＝6.5ms）を引いた 13.5ms）
+    assert.ok(got.slice(1).every((p) => p.header.dur === 20_000), `1包みが 20ms でない：${[...new Set(got.map((p) => p.header.dur))].join(",")}`);
+    const tone = toneOf(got.map((p) => p.packet));
+    assert.ok(Math.abs(tone.hz - TONE_HZ) / TONE_HZ < 0.02, `音の高さ ${tone.hz.toFixed(1)} Hz（${TONE_HZ} Hz のはず）`);
+    assert.ok(tone.rms > 1000, `音が小さい（RMS ${tone.rms.toFixed(0)}）`);
+    // 時刻は映像と同じ時計（同じ機械の CLOCK_MONOTONIC）——近い時に取り込んだものは数秒の内
+    const videoTs = loud.frames.map((f) => decodeFrame(f).header as unknown as { codec?: string; ts?: number }).filter((h) => h.codec === "h264").map((h) => h.ts!);
+    assert.ok(videoTs.length > 0, "動画の1通が無い");
+    const gap = Math.abs(got.at(-1)!.header.ts - videoTs.at(-1)!) / 1e6;
+    assert.ok(gap < 10, `音と映像の時刻が ${gap.toFixed(1)} 秒離れている（同じ時計でない）`);
+    // 止めると、0 だけの音が続いたところで送らなくなる
+    await page.click("#stop");
+    await until("やんだ", () => view.status().audio?.sounding === false, 5_000);
+    const after = packets(loud).length;
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(packets(loud).length, after, "鳴っていないのに送った");
+    // 鳴らし直すと、また流れる
+    await page.click("#play");
+    await until("また鳴った", () => packets(loud).length > after + 10, 10_000);
+    // 見えなくなった（裏に回った）——誰も聞いていない音は流さない（子を止める）
+    loud.post({ type: "visible", visible: false });
+    await until("音の子が止まる", () => view.status().audio === undefined, 5_000);
+    loud.post({ type: "visible", visible: true });
+    await until("前に戻ると流れる", () => view.status().audio?.viewers === 1, 5_000);
+    // 音を止めた
+    loud.post({ type: "audio", on: false });
+    await until("音を止めたら子も止まる", () => view.status().audio === undefined, 5_000);
+  } finally {
+    await page.click("#stop").catch(() => undefined);
+    loud.close(1000);
+    quiet.close(1000);
+  }
+});
+
+test("音：PulseAudio が無い（入れられない）ブラウザでは音無し——理由を様子で伝え、音を出すと言っても流さない。映像は今どおり", { skip: skipReason }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-browser-noaudio-test-"));
+  const reason = "音を流すための PulseAudio がありません（試験）。音無しで映します";
+  const na = await createBrowserContextFromDataDir(dir, { ...browserOpts, audio: { available: false, reason } });
+  const naView = new BrowserView({ session: na.session, state: na.state, log: na.log, logLine: () => undefined });
+  na.view = naView;
+  const pc = new FakeSocket();
+  pc.autoAck();
+  try {
+    naView.handler()(pc as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264", audio: true }));
+    await until("ブラウザが起きた", () => na.session.running, 60_000);
+    pc.post({ type: "navigate", url: base.replace("http://", "") + "/corners" });
+    await until("絵", () => pc.frames[0], 15_000);
+    await until("理由", () => pc.texts.find((t) => t.type === "state" && t.audioUnavailable === reason));
+    assert.equal(naView.status().audio, undefined);
+    assert.ok(pc.frames.every((f) => audioPacket(f) === undefined));
+    // 映像は今どおり（GStreamer がある機械なら動画、無ければ JPEG——どちらでも絵は来ている）
+    assert.equal(lastText(pc, (t) => t.type === "state")?.running, true);
+  } finally {
+    pc.close(1000);
+    await naView.close();
+    await na.session.stop("試験の終わり");
+    rmSync(dir, { recursive: true, force: true });
   }
 });

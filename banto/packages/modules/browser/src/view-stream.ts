@@ -5,13 +5,15 @@
 // - Module→画面（2進）：絵1枚＝`[頭の長さ（4バイト、big endian）][頭（JSON）][中身]`。頭は
 //   `{ seq, tab, width, height }`——番号・タブ・その絵が映しているページの大きさ（CSS ピクセル）。人の入力の座標は
 //   この大きさで返してもらう。中身は JPEG か、**動画のときは H.264 のアクセスユニット**（Annex B）——頭に
-//   `codec: "h264"`・`key`（キーフレームか）、1 MiB を越えて分けたときは `part`・`parts`（v4-modules.md §4.1「動画で流す」）
+//   `codec: "h264"`・`key`（キーフレームか）・`ts`（取り込んだ時刻 µs）、1 MiB を越えて分けたときは `part`・`parts`
+//   （v4-modules.md §4.1「動画で流す」）。**音は Opus の1包み**——頭は `{ seq, codec: "opus", ts, dur }`（取り込んだ時刻と長さ、
+//   µs。ts は映像と同じ時計）
 // - Module→画面（文字の JSON）：`state`（動いているか・タブ・選んでいるタブ・ページの大きさ・「AI に触らせない」）・
 //   `progress`（ブラウザを入れている間）・`ai`（AI が触った——帯と枠）・`error`（人の操作が失敗した理由）・
 //   `log`（通信とコンソールの記録が変わった。欄を取り直す合図）
 // - 画面→Module（文字の JSON）：`ack`（描き終えた絵の番号）・`size`・`visible`・`mouse`・`key`・`touch`・`insertText`・
 //   `tab`・`navigate`・`history`・`fit`・`start`・`keyframe`（復号に失敗した——キーフレームから送り直して）・
-//   `codec`（H.264 を描けなくなった——JPEG に替えて）（parseViewMessage）
+//   `codec`（H.264 を描けなくなった——JPEG に替えて）・`audio`（音を出す・止める）（parseViewMessage）
 //
 // **動画で流す**：params の `codec` が `"h264"` の画面（WebCodecs の VideoDecoder で描ける画面）には、仮想の画面を GStreamer で
 // 圧縮した H.264 を流す（video.ts）。子プロセスは1本で、動画の画面の全部で分ける。新しく繋いだ・前に戻った画面には
@@ -22,6 +24,11 @@
 // 残す。**誰も映していない（流れが0本・どの画面も裏に回った）間は screencast を止める**。CDP の screencast は
 // いま選んでいるタブに1本だけ張り、全部の画面で分ける。
 //
+// **音**：「音を出す」を押した画面（params の `audio`・`audio` の知らせ）が見えている間だけ、ブラウザの音（PulseAudio の空の
+// シンク）を Opus で流す（audio.ts）。子プロセスは1本で、音を出している画面の全部で分ける。どの画面も音を出していない・
+// 見えていない間は子を止める（誰も聞いていない音は流さない）。音を流せない（PulseAudio が無い・立たない・子が落ちた）ときは
+// 理由を `audioUnavailable` で伝え、映像は今どおり
+//
 // 映した絵・打った中身はどこにも残さない（Module のログに書くのは開いた・閉じた・失敗の理由だけ）。
 
 import type { StreamHandler, StreamStamp, WebSocket } from "@banto/stream-server";
@@ -29,6 +36,7 @@ import { STREAM_MAX_MESSAGE_BYTES } from "@banto/module-contract";
 import type { CDPSession, Page } from "playwright-core";
 import { DEFAULT_VIEWPORT, type BrowserSession, type TabInfo } from "./session.js";
 import { VideoPipeline, encodeVideoMessages, videoRegion, type VideoRegion, type VideoState } from "./video.js";
+import { AudioPipeline, encodeAudioMessage } from "./audio.js";
 import { browserScale } from "./chrome.js";
 import type { StateFile } from "./state.js";
 import type { NetworkLog } from "./network-log.js";
@@ -226,7 +234,8 @@ export type ViewMessage =
   | { type: "fit"; on: boolean }
   | { type: "start" }
   | { type: "keyframe" }
-  | { type: "codec"; codec: ViewCodec };
+  | { type: "codec"; codec: ViewCodec }
+  | { type: "audio"; on: boolean };
 
 const num = (v: unknown, fallback?: number): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -316,6 +325,8 @@ export function parseViewMessage(raw: string): ViewMessage | { error: string } {
       return { type: "keyframe" };
     case "codec":
       return m.codec === "h264" || m.codec === "jpeg" ? { type: "codec", codec: m.codec } : { error: "codec は h264・jpeg です" };
+    case "audio":
+      return typeof m.on === "boolean" ? { type: "audio", on: m.on } : { error: "audio の on は true / false です" };
     default:
       return { error: "知らないメッセージです" };
   }
@@ -359,6 +370,8 @@ interface Viewer {
   mode: ViewCodec;
   /** 動画：キーフレームが来るまで送らない（新しく繋いだ・前に戻った・復号に失敗した） */
   needKey: boolean;
+  /** 音を出している（人が「音を出す」を押した画面だけ。押すまでは流さない——自動再生の決まり） */
+  audio: boolean;
   /** 送って、まだ受け取りの印が返っていない絵の番号 */
   waiting: number | undefined;
   /** 印を待つ間に来た、最新の1枚 */
@@ -394,6 +407,11 @@ interface VideoCast {
   onStopped?: () => void;
 }
 
+/** 音の子プロセス */
+interface AudioCast {
+  pipeline: AudioPipeline;
+}
+
 /** 状態を見る口（getBrowserStatus の view）が返すもの */
 export interface ViewStatus {
   viewers: number;
@@ -403,6 +421,8 @@ export interface ViewStatus {
   screencastTab?: string;
   /** 動画の子プロセスが動いている間だけ：状態・出したアクセスユニットの数・キーフレームの数・合計の大きさ・動画で見ている画面の数 */
   video?: { state: VideoState; units: number; keys: number; bytes: number; viewers: number };
+  /** 音の子プロセスが動いている間だけ：鳴っているか・出した包みの数・合計の大きさ・音を出している画面の数 */
+  audio?: { sounding: boolean; packets: number; bytes: number; viewers: number };
 }
 
 export interface BrowserViewDeps {
@@ -429,6 +449,10 @@ export class BrowserView implements ViewHooks {
    * 仮想の画面の名前では比べない：Xvfb は空いている一番小さい番号を選ぶので、起こし直しても同じ名前（:99 等）になる
    */
   private videoFailure: string | undefined;
+  private audio: AudioCast | undefined;
+  /** 音が失敗した理由（動画と同じく、ブラウザが止まったら消して試し直す） */
+  private audioFailure: string | undefined;
+  private audioSeq = 0;
   private last: Frame | undefined;
   private seq = 0;
   /** screencast の張り直しは1つずつ */
@@ -452,7 +476,10 @@ export class BrowserView implements ViewHooks {
   constructor(private readonly deps: BrowserViewDeps) {
     this.logLine = deps.logLine ?? ((line) => process.stderr.write(`[browser] ${line}\n`));
     deps.session.subscribe(() => {
-      if (!deps.session.running) this.videoFailure = undefined;
+      if (!deps.session.running) {
+        this.videoFailure = undefined;
+        this.audioFailure = undefined;
+      }
       this.refresh();
     });
     deps.session.beforeResize = () => this.pauseVideo();
@@ -467,6 +494,7 @@ export class BrowserView implements ViewHooks {
   /** 状態を見る口（getBrowserStatus）が返す */
   status(): ViewStatus {
     const video = this.video;
+    const audio = this.audio;
     const videoOn = video !== undefined && video.key !== undefined;
     const tab = this.cast?.tab ?? (videoOn ? this.deps.session.current : undefined);
     return {
@@ -482,6 +510,16 @@ export class BrowserView implements ViewHooks {
               keys: video.pipeline.keys,
               bytes: video.pipeline.bytes,
               viewers: [...this.viewers].filter((v) => v.visible && v.mode === "h264").length,
+            },
+          }
+        : {}),
+      ...(audio
+        ? {
+            audio: {
+              sounding: audio.pipeline.sounding,
+              packets: audio.pipeline.packets,
+              bytes: audio.pipeline.bytes,
+              viewers: this.audioListeners().length,
             },
           }
         : {}),
@@ -505,6 +543,7 @@ export class BrowserView implements ViewHooks {
     await this.stopCast();
     await this.dropControl();
     this.closeVideo();
+    this.closeAudio();
   }
 
   // ---- 繋ぐ・閉じる ----
@@ -525,6 +564,7 @@ export class BrowserView implements ViewHooks {
       codec,
       mode: "jpeg",
       needKey: true,
+      audio: p.audio === true,
       waiting: undefined,
       pending: undefined,
       release: this.deps.session.hold(),
@@ -705,6 +745,12 @@ export class BrowserView implements ViewHooks {
       case "start":
         void this.start();
         return;
+      case "audio":
+        if (v.audio === m.on) return;
+        v.audio = m.on;
+        this.logLine(`人の画面が音を${m.on ? "出しました" : "止めました"}`);
+        this.reconcile();
+        return;
     }
   }
 
@@ -790,6 +836,8 @@ export class BrowserView implements ViewHooks {
   private async reconcileNow(): Promise<void> {
     const visible = [...this.viewers].filter((v) => v.visible);
     const s = this.deps.session;
+    // 音はタブに関わらず（裏のタブの音も、人のブラウザと同じく鳴る）。音を出している画面が見えている間だけ流す
+    this.reconcileAudio();
     const target = visible.length > 0 && s.running && s.current !== undefined ? s.page() : undefined;
     if (!target || target.page.isClosed()) {
       this.closeVideo();
@@ -1034,7 +1082,7 @@ export class BrowserView implements ViewHooks {
     if (!this.video) {
       const cast: VideoCast = { pipeline: undefined as unknown as VideoPipeline, key: undefined, viewport, state: "stopped" };
       cast.pipeline = new VideoPipeline(d.name, {
-        onUnit: (au, key) => this.onVideoUnit(cast, au, key),
+        onUnit: (au, key, ts) => this.onVideoUnit(cast, au, key, ts),
         onState: (state) => {
           cast.state = state;
           if (state === "stopped") {
@@ -1061,7 +1109,7 @@ export class BrowserView implements ViewHooks {
     if (watchers.some((v) => v.needKey)) video.pipeline.keyframe();
   }
 
-  private onVideoUnit(cast: VideoCast, au: Buffer, key: boolean): void {
+  private onVideoUnit(cast: VideoCast, au: Buffer, key: boolean, ts: number): void {
     if (this.video !== cast || cast.key === undefined) return;
     // 映っているタブ（前に出し終えたタブ。選んだ直後はまだ前のタブの絵）
     const tab = this.deps.session.front ?? this.deps.session.current;
@@ -1074,7 +1122,7 @@ export class BrowserView implements ViewHooks {
         if (!key) continue;
         v.needKey = false;
       }
-      messages ??= encodeVideoMessages({ seq, tab, ...cast.viewport, codec: "h264", key }, au, this.deps.maxMessageBytes ?? STREAM_MAX_MESSAGE_BYTES);
+      messages ??= encodeVideoMessages({ seq, tab, ...cast.viewport, codec: "h264", key, ts }, au, this.deps.maxMessageBytes ?? STREAM_MAX_MESSAGE_BYTES);
       for (const m of messages) v.ws.send(m, { binary: true });
     }
   }
@@ -1120,6 +1168,67 @@ export class BrowserView implements ViewHooks {
     this.logLine("動画を止めました（動画で見ている画面がありません）");
   }
 
+  // ---- 音 ----
+
+  /** 音を出していて、見えている画面 */
+  private audioListeners(): Viewer[] {
+    return [...this.viewers].filter((v) => v.visible && v.audio);
+  }
+
+  /** 音を流せない理由（ブラウザが動いていて、流せないとき）。流せる・動いていなければ undefined */
+  private audioNote(): string | undefined {
+    const d = this.deps.session.display;
+    if (!d) return undefined;
+    if (!d.audio.available) return d.audio.reason;
+    return this.audioFailure;
+  }
+
+  /** 音を出している画面が見えていれば子を起こし、居なければ止める */
+  private reconcileAudio(): void {
+    const d = this.deps.session.display;
+    const route = d && this.deps.session.running && d.audio.available && this.audioFailure === undefined ? d.audio : undefined;
+    if (!route || this.audioListeners().length === 0) {
+      this.closeAudio();
+      return;
+    }
+    if (this.audio) return;
+    const cast: AudioCast = { pipeline: undefined as unknown as AudioPipeline };
+    cast.pipeline = new AudioPipeline(route.server, {
+      onPacket: (packet, ts, dur) => this.onAudioPacket(cast, packet, ts, dur),
+      onSound: (sounding) => this.logLine(sounding ? "ブラウザの音が鳴り始めました" : "ブラウザの音がやみました"),
+      onError: (message) => this.onAudioError(cast, message),
+    });
+    this.audio = cast;
+    this.logLine("音を流し始めます");
+  }
+
+  private onAudioPacket(cast: AudioCast, packet: Buffer, ts: number, dur: number): void {
+    if (this.audio !== cast) return;
+    let message: Buffer | undefined;
+    for (const v of this.audioListeners()) {
+      if (v.ws.readyState !== v.ws.OPEN) continue;
+      message ??= encodeAudioMessage({ seq: ++this.audioSeq, codec: "opus", ts, dur }, packet);
+      v.ws.send(message, { binary: true });
+    }
+  }
+
+  private onAudioError(cast: AudioCast, message: string): void {
+    if (this.audio !== cast) return;
+    this.logLine(`音を流せなくなりました（音無しにします）: ${message}`);
+    this.audioFailure = `音を流せなくなりました（${message.split("\n")[0]}）。音無しで映しています`;
+    this.audio = undefined;
+    cast.pipeline.close();
+    this.scheduleState();
+  }
+
+  private closeAudio(): void {
+    const audio = this.audio;
+    if (!audio) return;
+    this.audio = undefined;
+    audio.pipeline.close();
+    this.logLine("音を止めました（音を出して見ている画面がありません）");
+  }
+
   // ---- 文字のメッセージ ----
 
   private scheduleState(): void {
@@ -1141,6 +1250,7 @@ export class BrowserView implements ViewHooks {
       if (tabs.some((t) => t.current)) viewport = s.viewport();
     }
     const videoNote = this.videoNote();
+    const audioNote = this.audioNote();
     const st = this.deps.state.get();
     // 画面ごとに「自分が合わせているか」だけ違う
     for (const v of this.viewers) {
@@ -1158,6 +1268,8 @@ export class BrowserView implements ViewHooks {
         ...(s.lastStop ? { lastStop: s.lastStop } : {}),
         // H.264 を描ける画面に、動画で映せない理由（JPEG で映している）
         ...(v.codec === "h264" && videoNote ? { videoUnavailable: videoNote } : {}),
+        // 音を流せない理由（画面は「音を出す」の代わりに「音無し」と出す）
+        ...(audioNote ? { audioUnavailable: audioNote } : {}),
       });
     }
   }

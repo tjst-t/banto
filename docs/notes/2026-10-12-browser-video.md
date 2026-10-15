@@ -46,3 +46,33 @@
   Python のバッファに残り、次の指示まで処理されなかった（Xlib の列と同じ種類の穴を stdin 側に残していた）。`os.read` で読んで
   自分で行に分ける形にした。試験は「続けて2行（key→stop・stop→start・start→key）」。start→key は x264 が作り直した直後の
   要求を最初の IDR にまとめるので枚数では見えず、続けて書いた stop がすぐ効くこと（書いた順に処理する）で確かめた。
+
+## 段4（音、Backlog #283、2026-10-15）
+
+- **PulseAudio か PipeWire か**：まっさらのコンテナ（banto-base、Ubuntu 24.04）で測った。
+  - PulseAudio：`pulseaudio -n` で口（`module-native-protocol-unix`）と空のシンク（`module-null-sink`）だけを足して1プロセス。
+    待っている間 RSS 8.4 MiB・CPU 0%、正弦波を鳴らしている間 RSS 9.0 MiB・CPU 1.2%（`--no-install-recommends` で pulseaudio と
+    pulseaudio-utils）
+  - PipeWire：pipewire（RSS 8.7 MiB）＋ pipewire-pulse（11 MiB、Chrome は PulseAudio の口で話すので要る）＋ wireplumber（空の
+    シンクを作るのに要る）。wireplumber は D-Bus のセッションが無いと立たず（`Cannot autolaunch D-Bus without X11 $DISPLAY`）、
+    そのままでは `pactl load-module module-null-sink` が `Not supported`。dbus-daemon を足して4プロセスになる
+  - → **PulseAudio**（1プロセスで足り、D-Bus が要らない）
+- **音の取り込みの子は映像の子と分けた**：映像の子は大きさを変える間・静止で止まり（PAUSED）、失敗したら JPEG に替わる。音は
+  そのどれとも関わりなく流したい。同じ子に入れると、片方の作り直し・失敗がもう片方を巻き込む。別の子の重さは python と
+  GStreamer の読み込みの分（RSS 数十 MiB）で、音を出している画面がある間だけ。
+- **時刻**：最初、映像の頭の ts が音より 3600000 秒（1000 時間）先だった。x264enc（GstVideoEncoder）が segment を 1000 時間
+  ずらして出すので、pts をそのまま base time に足すとずれる。segment で running time に直してから足す（音も同じ形にした）。
+  単体の試験で「音と映像の ts が 10 秒の内」を見る。
+- **静止で映像を止める仕組みと音**：**音が鳴っていても、画面が変わらなければ映像は止める**（決めたこと）。「鳴っている間は
+  止めない」も考えたが、止めないと 2560×1600 で取り込みと色の変換だけで CPU 73%＋Xvfb 8%（段1 の実測）を、変わらない絵の
+  ために使う（音楽を流すだけのページ・通知の音）。合わせる相手の絵が変わらないので、ずれは見えない。画面が変われば XDamage で
+  流れ直し、指示から変化を載せた1枚まで 24〜66ms（段1）——許しの 125ms の内。人の画面は止まっている間、映像の描いた遅れの
+  最後の値で音を合わせ続ける。代わりに**音の側にも静止の扱いを足した**：シンクのモニタは誰も鳴らしていなくても 0 の音を出し
+  続けるので、0 だけの音が 300ms 続いたら送らない（毎秒 50 通の空の包みを流さない）。
+- **ずれの許し方**：ITU-R BT.1359 の「気づく」境目（音が 45ms 先・125ms 後）。EBU R37（+40/−60ms）も考えたが、こちらは放送の
+  最終の許しで、遅い回線の上の WebSocket で毎回守るのは無理がある（揺れを吸う分を取ると 60ms はすぐ使い切る）。
+- **自動再生の決まり**：Chrome は人の操作の無い枠の AudioContext を止めたまま作る。枠の中で人が押した操作はその枠の操作として
+  数える（親の `allow="autoplay"` は要らない）ので、「音を出す」を画面の中に置いた。押したことは localStorage に覚え、次に
+  開いたときは画面に触れた最初の操作（pointerdown・keydown）で鳴らし始める——覚えていても、人の操作無しには鳴らせない。
+- 単体の試験は Opus を python3 の gi の opusdec で復号し、880Hz の正弦波の高さを負から正へ 0 を跨ぐ数で見る（5回中0回落ち）。
+  動画の単体の試験は ffmpeg が無い機械では飛ぶ（この機械に入っていなかったので、今回入れて全部走らせた）。

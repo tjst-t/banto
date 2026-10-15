@@ -13,6 +13,9 @@
 // `/corners` は**絵とページが画素単位で合うか**を見るページ（人の画面の動画——v4-modules.md §4.1「動画で流す」）。全面が青で、
 // 左上と右下の角に CORNER px の赤と緑の四角（ページの大きさが変わっても角に付く）。押すと window.open のポップアップ
 // （大きさを指定した別の窓）と `_blank` の新しいタブを開ける。`/popup` はポップアップの中身（全面が黄）。
+// `/tone` は**音の出るページ**（人の画面の音——v4-modules.md §4.1「動画で流す」の段4）。「音を鳴らす」を押すと TONE_HZ の
+// 正弦波を鳴らし続け、「音を止める」で止める（押すのは人の操作——ページの自動再生の決まり）。絵は変えない（静かなページの
+// まま音だけが鳴る）。
 
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -68,6 +71,31 @@ const CORNERS = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><tit
 <div style="position:fixed;right:0;bottom:0;width:${CORNER}px;height:${CORNER}px;background:${CORNER_COLORS.bottomRight}"></div>
 <button id="popup" style="position:absolute;left:100px;top:100px" onclick="window.open('/popup','pop','width=300,height=200')">ポップアップ</button>
 <a id="blank" style="position:absolute;left:100px;top:160px;color:#fff" href="/popup" target="_blank">新しいタブ</a>
+</body></html>`;
+
+/** `/tone` が鳴らす音の高さ（Hz）と大きさ */
+export const TONE_HZ = 880;
+export const TONE_GAIN = 0.3;
+
+const TONE = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>音の出るページ</title></head>
+<body style="margin:0;background:#fff">
+<button id="play" style="position:absolute;left:100px;top:100px">音を鳴らす</button>
+<button id="stop" style="position:absolute;left:100px;top:160px">音を止める</button>
+<script>
+let ctx = null, osc = null;
+document.getElementById('play').addEventListener('click', () => {
+  ctx = ctx || new AudioContext();
+  ctx.resume();
+  if (osc) return;
+  osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.frequency.value = ${TONE_HZ};
+  gain.gain.value = ${TONE_GAIN};
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+});
+document.getElementById('stop').addEventListener('click', () => { if (osc) { osc.stop(); osc = null; } });
+</script>
 </body></html>`;
 
 /** `/frame` の iframe の位置と大きさ（ページの CSS ピクセル）と、色の移り変わり（読み終えて少し後に [1]、押すたびに次へ） */
@@ -132,6 +160,10 @@ export function createTestPageServer(): Server {
       case "/corners":
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(CORNERS);
+        return;
+      case "/tone":
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(TONE);
         return;
       case "/popup":
         res.setHeader("content-type", "text/html; charset=utf-8");

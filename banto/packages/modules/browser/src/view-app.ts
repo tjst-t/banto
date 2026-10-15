@@ -3,10 +3,15 @@
 // 上に戻る/進む/読み直し・URL 欄・タブの並び・「AI に触らせない」・「画面に合わせる」・「ブラウザの記録を消す」、
 // 真ん中にページの絵、下に通信とコンソールの欄（DevTools の Network と Console に倣う）。絵と入力は共通の流れの口
 // （アーキ仕様 §5.8、`@banto/stream-client` を埋め込む）に乗る。流れの名前は `browser`、params は
-// `{ width, height, dpr, visible, codec }`（絵を出す場所の CSS ピクセルと devicePixelRatio、描ける形）。中身の約束は view-stream.ts。
+// `{ width, height, dpr, visible, codec, audio }`（絵を出す場所の CSS ピクセルと devicePixelRatio、描ける形、音を出しているか）。
+// 中身の約束は view-stream.ts。
 //
 // - **絵は H.264 の動画を WebCodecs の VideoDecoder で描く**（v4-modules.md §4.1「動画で流す」）。`VideoDecoder` が無い・
 //   `isConfigSupported` が偽・初期化に失敗した画面は JPEG で描く（`codec: "jpeg"` を伝える）。復号に失敗したらキーフレームを頼む
+// - **音は Opus を WebCodecs の AudioDecoder で復号し、WebAudio で鳴らす**（v4-modules.md §4.1「動画で流す」の段4）。
+//   自動再生の決まり（人の操作が無いと AudioContext が動かない）があるので、下の帯の「音を出す」を押すまで鳴らさず、Module にも
+//   流してもらわない（`audio` の知らせ）。押したら覚え（localStorage）、次に開いたときは画面に触れた最初の操作で鳴らし始める。
+//   映像の時刻に合わせて鳴らす（audio-sync.ts）。AudioDecoder が無い画面・Module が音を流せないときは「音無し」と理由を出す
 // - JPEG の絵は描き終えたら受け取りの印（`ack`）を返す——Module はそれまで次を送らない
 // - ページの大きさは1つで、絵を出す場所に合わせて縮めて映す。「画面に合わせる」でページの大きさをこの画面に合わせる
 // - 文字は隠した入力欄で受ける（日本語の変換・携帯の画面のキーボードのため）。変換を終えた文字は insertText で送る
@@ -16,6 +21,16 @@
 // 色と段は banto が MCP Apps の標準の名前で渡す（v4-frontend.md §6.27）。
 
 import { STREAM_CLIENT_SCRIPT } from "@banto/stream-client";
+import { AUDIO_LAG_MS, AUDIO_LEAD_MS, AUDIO_MIN_DELAY_MS, AUDIO_RESYNC_MS, newAudioSync, syncArrived, syncDrawn, syncPlan } from "./audio-sync.js";
+
+/** 画面の script に埋め込む、音を映像に合わせる関数（audio-sync.ts をそのまま） */
+const AUDIO_SYNC_SCRIPT = [
+  `const AUDIO_LEAD_MS = ${AUDIO_LEAD_MS}, AUDIO_LAG_MS = ${AUDIO_LAG_MS}, AUDIO_MIN_DELAY_MS = ${AUDIO_MIN_DELAY_MS}, AUDIO_RESYNC_MS = ${AUDIO_RESYNC_MS};`,
+  newAudioSync.toString(),
+  syncArrived.toString(),
+  syncDrawn.toString(),
+  syncPlan.toString(),
+].join("\n");
 
 export const BROWSER_VIEW_URI = "ui://banto-browser/view";
 
@@ -237,7 +252,12 @@ const SCRIPT = String.raw`
     let head;
     try { head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, len))); }
     catch (e) { showError("絵の頭が読めませんでした"); return; }
-    if (head.codec === "h264") { onVideo(head, new Uint8Array(buf, 4 + len)); return; }
+    if (head.codec === "opus") { onAudio(head, new Uint8Array(buf, 4 + len)); return; }
+    if (head.codec === "h264") {
+      if (head.ts !== undefined) syncArrived(sync, performance.now(), head.ts / 1000);
+      onVideo(head, new Uint8Array(buf, 4 + len));
+      return;
+    }
     try {
       const bmp = await createImageBitmap(new Blob([new Uint8Array(buf, 4 + len)], { type: "image/jpeg" }));
       drawn(head, bmp, bmp.width, bmp.height, "jpeg");
@@ -311,7 +331,10 @@ const SCRIPT = String.raw`
         const head = decodingHeads.get(vf.timestamp);
         decodingHeads.delete(vf.timestamp);
         decodedAny = true;
-        if (d === decoder && head) drawn(head, vf, vf.displayWidth, vf.displayHeight, "h264");
+        if (d === decoder && head) {
+          drawn(head, vf, vf.displayWidth, vf.displayHeight, "h264");
+          if (head.ts !== undefined) syncDrawn(sync, performance.now(), head.ts / 1000);
+        }
         vf.close();
       },
       error(e) {
@@ -362,6 +385,135 @@ const SCRIPT = String.raw`
       sendMsg({ type: "keyframe" });
     }
   }
+
+  // ---- 音（Opus を WebCodecs の AudioDecoder で、WebAudio で鳴らす） ----
+  /*AUDIO_SYNC*/
+  const AUDIO_CONFIG = { codec: "opus", sampleRate: 48000, numberOfChannels: 2 };
+  const SOUND_KEY = "banto-browser-sound";
+  /** この画面で鳴らせない理由（AudioDecoder が無い等）。鳴らせるなら "" */
+  let audioReason = "";
+  /** 人が「音を出す」を押した（覚えている）。鳴らしているかは soundOn */
+  let soundWanted = false;
+  let soundOn = false;
+  let actx = null;
+  let adecoder = null;
+  let played = 0;
+  let dropped = 0;
+  const sync = newAudioSync();
+
+  async function probeAudio() {
+    if (typeof AudioDecoder === "undefined" || typeof EncodedAudioChunk === "undefined" || typeof AudioContext === "undefined") return "この画面には AudioDecoder がありません";
+    try {
+      const r = await AudioDecoder.isConfigSupported(AUDIO_CONFIG);
+      return r && r.supported ? "" : "この画面は Opus を鳴らせません";
+    } catch (e) {
+      return "音を鳴らせるか確かめられませんでした：" + e.message;
+    }
+  }
+  function rememberSound(on) { try { window.localStorage.setItem(SOUND_KEY, on ? "1" : "0"); } catch {} }
+  function recalledSound() { try { return window.localStorage.getItem(SOUND_KEY) === "1"; } catch { return false; } }
+
+  /** 鳴らし始める。**人の操作の中で呼ぶ**——AudioContext は人の操作の中でしか動き出さない（自動再生の決まり） */
+  function startSound() {
+    if (audioReason || view.audioUnavailable) return;
+    soundWanted = true;
+    rememberSound(true);
+    if (!actx) actx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
+    actx.resume().then(() => {
+      if (actx.state === "running" && soundWanted && !soundOn) {
+        soundOn = true;
+        Object.assign(sync, newAudioSync());
+        sendMsg({ type: "audio", on: true });
+      }
+      renderSound();
+    }, (e) => { showError("音を出せませんでした：" + e.message); renderSound(); });
+  }
+  function stopSound() {
+    soundWanted = false;
+    rememberSound(false);
+    silence();
+    renderSound();
+  }
+  /** 鳴らすのをやめる（覚えはそのまま——音を流せなくなった・人が止めた） */
+  function silence() {
+    if (soundOn) sendMsg({ type: "audio", on: false });
+    soundOn = false;
+    closeAudioDecoder();
+    if (actx && actx.state === "running") actx.suspend();
+  }
+  function closeAudioDecoder() {
+    if (adecoder && adecoder.state !== "closed") { try { adecoder.close(); } catch (e) { /* 閉じたいだけ */ } }
+    adecoder = null;
+  }
+  // 前に音を出していた：画面に触れた最初の操作で鳴らし始める（その操作が「人の操作」になる）
+  function onGesture() { if (soundWanted && !soundOn) startSound(); }
+  document.addEventListener("pointerdown", onGesture, true);
+  document.addEventListener("keydown", onGesture, true);
+
+  function newAudioDecoder() {
+    const d = new AudioDecoder({
+      output(ad) {
+        if (d === adecoder) play(ad);
+        ad.close();
+      },
+      error(e) {
+        if (d !== adecoder) return;
+        // 次の1包みで作り直す（Opus の包みは単独で復号できる）
+        adecoder = null;
+        showError("音を復号できませんでした：" + e.message);
+      },
+    });
+    d.configure(AUDIO_CONFIG);
+    adecoder = d;
+  }
+
+  function onAudio(head, data) {
+    syncArrived(sync, performance.now(), head.ts / 1000);
+    if (!soundOn || !actx) return;
+    if (!adecoder || adecoder.state === "closed") {
+      try { newAudioDecoder(); }
+      catch (e) { audioReason = "音の復号器を作れませんでした（" + e.message + "）"; silence(); renderSound(); return; }
+    }
+    try {
+      adecoder.decode(new EncodedAudioChunk({ type: "key", timestamp: head.ts, duration: head.dur, data }));
+    } catch (e) {
+      closeAudioDecoder();
+    }
+  }
+
+  /** 復号した音を、映像の時刻に合わせて鳴らす（audio-sync.ts の syncPlan） */
+  function play(ad) {
+    const nowMs = actx.currentTime * 1000;
+    const offset = nowMs - performance.now();
+    const out = (actx.outputLatency || actx.baseLatency || 0) * 1000;
+    const at = syncPlan(sync, ad.timestamp / 1000, ad.duration / 1000, nowMs, offset, out);
+    const el = $("sound");
+    if (at === undefined) { dropped += 1; el.dataset.dropped = String(dropped); return; }
+    const buf = actx.createBuffer(ad.numberOfChannels, ad.numberOfFrames, ad.sampleRate);
+    for (let c = 0; c < ad.numberOfChannels; c++) ad.copyTo(buf.getChannelData(c), { planeIndex: c, format: "f32-planar" });
+    const src = actx.createBufferSource();
+    src.buffer = buf;
+    src.connect(actx.destination);
+    src.start(at / 1000);
+    played += 1;
+    el.dataset.played = String(played);
+  }
+
+  /** 下の帯：「音を出す」「音を消す」か、鳴らせないなら「音無し」と理由 */
+  function renderSound() {
+    const btn = $("sound");
+    const note = $("sound-note");
+    const reason = audioReason || view.audioUnavailable || "";
+    if (reason && soundOn) silence();
+    btn.hidden = Boolean(reason);
+    note.hidden = !reason;
+    note.title = reason;
+    btn.dataset.sound = reason ? "none" : soundOn ? "on" : soundWanted ? "waiting" : "off";
+    btn.textContent = soundOn ? "音を消す" : "音を出す";
+    btn.setAttribute("aria-pressed", soundOn ? "true" : "false");
+    btn.title = soundOn ? "ブラウザの音を止める" : soundWanted ? "前に音を出していました。押すか、画面に触れると鳴ります" : "ブラウザの音をこの画面で鳴らす";
+  }
+  $("sound").addEventListener("click", () => { if (soundOn) stopSound(); else startSound(); });
 
   /** 下の帯：いま何で描いているか（動画・JPEG とその理由） */
   function renderCodec() {
@@ -785,6 +937,7 @@ const SCRIPT = String.raw`
       else if (wantFit && !view.fit) sendMsg({ type: "fit", on: true });
       render();
       renderCodec();
+      renderSound();
     } else if (msg.type === "progress") {
       progress = msg.message;
       renderEmpty();
@@ -805,7 +958,7 @@ const SCRIPT = String.raw`
     const size = stageSize();
     stream = openStream({ request }, {
       name: STREAM,
-      params: { width: size.width, height: size.height, dpr: size.dpr, visible: document.visibilityState === "visible", codec: videoOk ? "h264" : "jpeg" },
+      params: { width: size.width, height: size.height, dpr: size.dpr, visible: document.visibilityState === "visible", codec: videoOk ? "h264" : "jpeg", audio: soundOn },
       onMessage(data) {
         if (typeof data === "string") {
           let msg;
@@ -823,6 +976,10 @@ const SCRIPT = String.raw`
           // 繋ぎ直した流れはキーフレームから。描ける形も伝え直す（札の params は最初のまま——途中で JPEG に落ちていることがある）
           closeDecoder();
           sendMsg({ type: "codec", codec: videoOk ? "h264" : "jpeg" });
+          // 音も伝え直す（時計の基準は取り直す——繋ぎ直した先の道のりは違う）
+          closeAudioDecoder();
+          Object.assign(sync, newAudioSync());
+          sendMsg({ type: "audio", on: soundOn });
           sendMsg(Object.assign({ type: "size" }, stageSize()));
           sendMsg({ type: "visible", visible: document.visibilityState === "visible" });
           if (wantFit) sendMsg({ type: "fit", on: true });
@@ -846,7 +1003,10 @@ const SCRIPT = String.raw`
     }
     videoReason = await probeVideo();
     videoOk = !videoReason;
+    audioReason = await probeAudio();
+    soundWanted = !audioReason && recalledSound();
     render();
+    renderSound();
     openView();
   })();
 })();
@@ -854,7 +1014,7 @@ const SCRIPT = String.raw`
 
 export function browserViewHtml(): string {
   // 関数で渡す——中身の `$` を置き換えの記号として読ませない
-  const script = SCRIPT.replace("/*STREAM_CLIENT*/", () => STREAM_CLIENT_SCRIPT);
+  const script = SCRIPT.replace("/*STREAM_CLIENT*/", () => STREAM_CLIENT_SCRIPT).replace("/*AUDIO_SYNC*/", () => AUDIO_SYNC_SCRIPT);
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -914,6 +1074,8 @@ export function browserViewHtml(): string {
     <button class="btn" id="show-network" type="button" aria-pressed="false">通信<span class="count" id="count-network">0</span></button>
     <button class="btn" id="show-console" type="button" aria-pressed="false">コンソール<span class="count" id="count-console">0</span></button>
     <span style="flex:1"></span>
+    <button class="btn" id="sound" type="button" data-testid="sound" aria-pressed="false" hidden>音を出す</button>
+    <span class="dim" id="sound-note" data-testid="sound-note" hidden>音無し</span>
     <span class="dim" id="codec" data-testid="codec"></span>
     <button class="btn" id="keyboard" type="button" hidden>キーボード</button>
   </div>

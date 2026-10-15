@@ -8,7 +8,11 @@
 //   2. 静かなページでは流れが止まる（getBrowserStatus の view.video の state が paused、アクセスユニットの数が増えない）
 //   3. AI がページの大きさを変える（1024×768・幅 500 未満の 390×640）と、絵の大きさと頭が新しい大きさになり、角の印が合う
 //   4. ポップアップ（window.open）を開いても、選んでいるタブの絵のまま。タブの並びに出て、選ぶとポップアップの絵（黄）になる
-//   5. VideoDecoder の無い画面は JPEG で描く（下の帯「JPEG」と理由）。角の印は合い、動画の画面と同時に映せる
+//   5. VideoDecoder の無い画面は JPEG で描く（下の帯「JPEG」と理由）。角の印は合い、動画の画面と同時に映せる。AudioDecoder の
+//      無い画面は「音無し」と理由を出し、「音を出す」を出さない
+//   6. 音（段4、Backlog #283）：音の出るページ（`/tone`——880Hz の正弦波）を AI が鳴らしても、「音を出す」を押すまでは画面に
+//      音を流さない。押すと AudioDecoder が復号した音の高さが 880Hz に合い、WebAudio で鳴らしている。押したことを覚え、
+//      「音を消す」で止まる
 import { test, expect, loginContext, type FrameLocator, type Page } from "../test-base.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -85,6 +89,54 @@ async function ai(page: Page, name: string, args: Record<string, unknown> = {}):
     reply = answer.map((m) => m.text).join("\n");
   }).toPass({ timeout: 420_000, intervals: [1000] });
   return reply!;
+}
+
+/** `/tone` が鳴らす音の高さ（test-page.ts の TONE_HZ） */
+const TONE_HZ = 880;
+
+/**
+ * 画面の AudioDecoder が出した音を覗く（試験だけ。全部の枠に入る）——復号した音の左の通り道を、最後の 0.5 秒ぶん持つ。
+ * 画面の作りは変えない（出した音はそのまま画面に渡す）
+ */
+function audioSpy(): void {
+  type Data = { numberOfFrames: number; copyTo(dest: Float32Array, o: { planeIndex: number; format: string }): void };
+  type Init = { output(d: Data): void; error(e: Error): void };
+  const w = window as unknown as { AudioDecoder?: new (init: Init) => unknown; __audioSpy?: { frames: number; samples: number[] } };
+  const Orig = w.AudioDecoder;
+  if (!Orig) return;
+  const spy = { frames: 0, samples: [] as number[] };
+  w.__audioSpy = spy;
+  w.AudioDecoder = class extends (Orig as new (init: Init) => object) {
+    constructor(init: Init) {
+      super({
+        output(d: Data) {
+          const left = new Float32Array(d.numberOfFrames);
+          d.copyTo(left, { planeIndex: 0, format: "f32-planar" });
+          spy.frames += 1;
+          spy.samples.push(...left);
+          if (spy.samples.length > 24_000) spy.samples.splice(0, spy.samples.length - 24_000);
+          init.output(d);
+        },
+        error: (e: Error) => init.error(e),
+      });
+    }
+  } as unknown as new (init: Init) => unknown;
+}
+
+/** 覗いた音：復号した数と、最後の 0.5 秒の高さ（Hz、負から正へ0を跨ぐ数）と大きさ（RMS） */
+async function heard(f: FrameLocator): Promise<{ frames: number; hz: number; rms: number }> {
+  return f.locator("body").evaluate(() => {
+    const spy = (window as unknown as { __audioSpy?: { frames: number; samples: number[] } }).__audioSpy;
+    if (!spy) return { frames: -1, hz: 0, rms: 0 };
+    const x = spy.samples;
+    let up = 0;
+    let sq = 0;
+    for (let i = 1; i < x.length; i++) {
+      if (x[i - 1]! < 0 && x[i]! >= 0) up++;
+      sq += x[i]! * x[i]!;
+    }
+    return { frames: spy.frames, hz: x.length > 1 ? up / ((x.length - 1) / 48_000) : 0, rms: x.length > 1 ? Math.sqrt(sq / (x.length - 1)) : 0 };
+  });
 }
 
 const canvasFrame = (page: Page) => page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
@@ -166,6 +218,8 @@ test.afterAll(() => {
 test("人の画面を動画で描く：角の印がページと合い、静かなページで流れが止まり、大きさを変えても（幅 500 未満も）合い、ポップアップでも選んでいるタブを映し、描けない画面は JPEG に落ちる", async ({ page, browser }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
+  // 画面の枠が読み込まれる前に、復号した音を覗く道具を入れる（6.）
+  await page.context().addInitScript(audioSpy);
   await openApp(page);
   const PROJECT_NAME = projectName();
   await createProject(page, PROJECT_NAME, mkdtempSync(join(tmpdir(), "banto-e2e-browser-video-")));
@@ -245,6 +299,8 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
     await nodecoder.addInitScript(() => {
       // Firefox for Android 等と同じ（WebCodecs が無い）
       delete (window as unknown as { VideoDecoder?: unknown }).VideoDecoder;
+      // Safari 26 未満と同じ（AudioDecoder が無い）
+      delete (window as unknown as { AudioDecoder?: unknown }).AudioDecoder;
     });
     await loginContext(nodecoder);
     const j = await nodecoder.newPage();
@@ -258,6 +314,11 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
     await expect(jf.getByTestId("codec")).toHaveText("JPEG");
     await expect(jf.getByTestId("codec")).toHaveAttribute("title", "この画面には VideoDecoder がありません");
     await expectCorners(jf, 1280, 800, "JPEG の画面", 3);
+    // 音無し：「音を出す」は出さず、理由を出す
+    await expect(jf.getByTestId("sound-note"), "AudioDecoder の無い画面に「音無し」が出ない").toBeVisible();
+    await expect(jf.getByTestId("sound-note")).toHaveText("音無し");
+    await expect(jf.getByTestId("sound-note")).toHaveAttribute("title", "この画面には AudioDecoder がありません");
+    await expect(jf.getByTestId("sound")).toBeHidden();
     // 動画の画面と同時に映している：動画の画面は1つのまま、JPEG の screencast も張っている
     const st = (await uiCall(page, "getBrowserStatus")).view as { viewers: number; screencasting: boolean; video?: VideoStatus };
     expect(st.viewers).toBe(2);
@@ -267,6 +328,44 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
   } finally {
     await nodecoder.close();
   }
+
+  // ---- 6. 音 -------------------------------------------------------------------------------------------
+  const sound = f.getByTestId("sound");
+  await expect(sound, "「音を出す」が出ない（Module が音を流せないか、画面が AudioDecoder を持たない）").toBeVisible();
+  await expect(f.getByTestId("sound-note")).toBeHidden();
+  await expect(sound).toHaveText("音を出す");
+  await expect(sound).toHaveAttribute("data-sound", "off");
+  expect(await ai(page, "browserOpen", { url: `${BASE}/tone` })).toContain("で開きました");
+  await ai(page, "browserAct", { action: "click", ref: refOf(await ai(page, "browserSnapshot"), "button", "音を鳴らす") });
+  // ページは鳴っているが、押すまでは画面に流さない（Module は音の子も起こさない）
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(((await uiCall(page, "getBrowserStatus")).view as { audio?: unknown }).audio, "「音を出す」を押す前に音を流している").toBeUndefined();
+  expect((await heard(f)).frames, "「音を出す」を押す前に音を復号した").toBe(0);
+  await sound.click();
+  await expect(sound, "押しても鳴り始めない").toHaveAttribute("data-sound", "on", { timeout: 10_000 });
+  await expect(sound).toHaveText("音を消す");
+  await expect(sound).toHaveAttribute("aria-pressed", "true");
+  // 届いた音の高さが合う（0.5 秒ぶんがたまってから）
+  await expect
+    .poll(async () => {
+      const h = await heard(f);
+      return h.frames > 40 && h.rms > 0.05 && Math.abs(h.hz - TONE_HZ) / TONE_HZ < 0.02 ? "ok" : JSON.stringify(h);
+    }, { timeout: 30_000, message: `復号した音が ${TONE_HZ}Hz にならない` })
+    .toBe("ok");
+  // WebAudio で鳴らしている（映像に合わせて時刻を決めた包みの数）
+  await expect.poll(async () => Number(await sound.getAttribute("data-played")), { message: "WebAudio で鳴らしていない" }).toBeGreaterThan(20);
+  const audioStatus = ((await uiCall(page, "getBrowserStatus")).view as { audio?: { sounding: boolean; viewers: number } }).audio;
+  expect(audioStatus?.sounding).toBe(true);
+  expect(audioStatus?.viewers).toBe(1);
+  // 押したことを覚える（次に開いたら、画面に触れた最初の操作で鳴らし始める）
+  expect(await f.locator("body").evaluate(() => window.localStorage.getItem("banto-browser-sound"))).toBe("1");
+  // 音を消す——流れも止まる
+  await sound.click();
+  await expect(sound).toHaveAttribute("data-sound", "off");
+  await expect(sound).toHaveText("音を出す");
+  await expect.poll(async () => ((await uiCall(page, "getBrowserStatus")).view as { audio?: unknown }).audio, { message: "音を消しても音を流している" }).toBeUndefined();
+  expect(await f.locator("body").evaluate(() => window.localStorage.getItem("banto-browser-sound"))).toBe("0");
+  await ai(page, "browserAct", { action: "click", ref: refOf(await ai(page, "browserSnapshot"), "button", "音を止める") });
 
   // 閉じると動画も止まる
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();

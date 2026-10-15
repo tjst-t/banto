@@ -9,6 +9,9 @@ import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import type { ConsoleLevel, NetworkLog } from "./network-log.js";
 import type { VideoSupport } from "./video.js";
 
+/** ブラウザの音を人の画面へ流せるか。流せるなら PulseAudio の口（chrome.ts・audio.ts） */
+export type AudioRoute = { available: true; server: string } | { available: false; reason: string };
+
 export interface SessionDeps {
   profileDir: string;
   log: NetworkLog;
@@ -31,6 +34,8 @@ export interface LaunchedBrowser {
   screen?: { width: number; height: number };
   /** 人の画面を動画で流せるか（GStreamer があるか——video.ts の ensureVideo） */
   video?: VideoSupport;
+  /** 人の画面に音を流せるか（PulseAudio があり、立ったか——audio.ts の ensureAudio・chrome.ts） */
+  audio?: AudioRoute;
   /** ブラウザを閉じる（プロセスと仮想の画面も止める） */
   close: () => Promise<void>;
 }
@@ -136,11 +141,16 @@ export class BrowserSession {
     return this.context ? this.launched?.notice : undefined;
   }
 
-  /** 動いているブラウザの仮想の画面（名前・デバイスピクセルの大きさ）と、動画で流せるか（動いていなければ undefined） */
-  get display(): { name: string; screen: { width: number; height: number }; video: VideoSupport } | undefined {
+  /** 動いているブラウザの仮想の画面（名前・デバイスピクセルの大きさ）と、動画・音を流せるか（動いていなければ undefined） */
+  get display(): { name: string; screen: { width: number; height: number }; video: VideoSupport; audio: AudioRoute } | undefined {
     const l = this.launched;
     if (!this.context || !l?.display || !l.screen) return undefined;
-    return { name: l.display, screen: l.screen, video: l.video ?? { available: false, reason: "動画で流せるかを確かめていません" } };
+    return {
+      name: l.display,
+      screen: l.screen,
+      video: l.video ?? { available: false, reason: "動画で流せるかを確かめていません" },
+      audio: l.audio ?? { available: false, reason: "音を流せるかを確かめていません" },
+    };
   }
 
   /** 動いているブラウザの描く倍率（動いていなければ undefined） */

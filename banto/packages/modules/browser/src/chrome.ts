@@ -10,15 +10,20 @@
 //   navigator.webdriver を true にする（実測・2026-10-10、Chrome 155：口なし false・`--remote-debugging-port` でも
 //   `--remote-debugging-pipe` でも true）。人が使う Chrome は口を開いていないので false——その状態に揃える起動の引数
 //
-// Module が止まらずに消えたとき（SIGKILL）、ブラウザと Xvfb は残る（パイプで繋いでいないので道連れにならない）。次に起こす
-// ときに、同じプロファイルを掴んだままのブラウザと、前に立てた Xvfb を止めてから起こす（`killStale`）。
+// - **音は PulseAudio の空のシンクへ**（v4-modules.md §4.1「動画で流す」の段4、Backlog #283）：音を流せる箱では、Xvfb と並べて
+//   PulseAudio を1つ立て（`module-null-sink`、口は短い置き場の UNIX ソケット）、ブラウザに `PULSE_SERVER` で教える。人の画面へ
+//   流すのは audio.ts。**立たなくてもブラウザは断らない**——音無しで起こす（理由を返す）
+//
+// Module が止まらずに消えたとき（SIGKILL）、ブラウザと Xvfb・PulseAudio は残る（パイプで繋いでいないので道連れにならない）。
+// 次に起こすときに、同じプロファイルを掴んだままのブラウザと、前に立てた Xvfb・PulseAudio を止めてから起こす（`killStale`）。
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext } from "playwright-core";
 import { inWorkScope } from "@banto/module-contract";
+import { AUDIO_CHANNELS, AUDIO_RATE, AUDIO_SINK } from "./audio.js";
 import { writeFontconfig } from "./fonts.js";
 
 /**
@@ -46,6 +51,10 @@ export interface ChromeOptions {
   profileDir: string;
   /** Xvfb の pid を残す置き場（Module が消えた後に残った Xvfb を、次に止める） */
   displayPidFile: string;
+  /** PulseAudio の pid を残す置き場（Xvfb と同じ） */
+  audioPidFile: string;
+  /** 音を流せる箱か（PulseAudio と GStreamer がある——audio.ts の ensureAudio）。偽なら PulseAudio を立てない */
+  audio: boolean;
   /** 言語の並び（先頭が一番好む言語。identity.ts） */
   languages: string[];
   locale: string;
@@ -68,6 +77,8 @@ export interface RunningChrome {
   display: string;
   /** 仮想の画面の大きさ（デバイスピクセル）。これより大きなページは取り込めない */
   screen: { width: number; height: number };
+  /** ブラウザの音の行き先（PulseAudio の口 `unix:/…/native`）。立てなかった・立たなかったなら理由（音無し） */
+  audio: { server: string } | { reason: string };
   /** 閉じる（ブラウザに閉じてもらい、閉じなければ殺す。Xvfb も止める） */
   close(): Promise<void>;
 }
@@ -109,13 +120,35 @@ export function localeEnv(locale: string): { LANG: string; LANGUAGE: string } {
  * パスが 108 バイトを越えると起きずに落ちる（実測・2026-10-10：banto が Module に渡す TMPDIR で落ちた）。
  * 字体の選び方は `FONTCONFIG_FILE`（fonts.ts——日本語を日本の字形で）
  */
-export function chromeEnv(base: NodeJS.ProcessEnv, display: string, locale: string, timezone: string, fontconfigFile: string): Record<string, string> {
+export function chromeEnv(
+  base: NodeJS.ProcessEnv,
+  display: string,
+  locale: string,
+  timezone: string,
+  fontconfigFile: string,
+  pulseServer?: string,
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined) env[k] = v;
   delete env.LC_ALL;
   delete env.LC_MESSAGES;
+  // 音の行き先は Module が立てた PulseAudio だけ（無ければ外の PULSE_SERVER も渡さない——人の機械のスピーカーに鳴らさない）
+  delete env.PULSE_SERVER;
+  return {
+    ...env,
+    ...localeEnv(locale),
+    DISPLAY: display,
+    TZ: timezone,
+    TMPDIR: shortTmp(),
+    FONTCONFIG_FILE: fontconfigFile,
+    ...(pulseServer ? { PULSE_SERVER: pulseServer } : {}),
+  };
+}
+
+/** UNIX ソケットを置ける短い置き場（パスは 108 バイトまで——下の説明） */
+function shortTmp(): string {
   const tmp = tmpdir();
-  return { ...env, ...localeEnv(locale), DISPLAY: display, TZ: timezone, TMPDIR: tmp.length > 60 ? "/tmp" : tmp, FONTCONFIG_FILE: fontconfigFile };
+  return tmp.length > 60 ? "/tmp" : tmp;
 }
 
 /** 子が終わるのを待つ（もう終わっていればすぐ） */
@@ -160,7 +193,7 @@ function cmdline(pid: number): string {
  * 前の Module が残したものを止める：同じプロファイルを掴んだままのブラウザ（`SingletonLock` は `<host>-<pid>` を指す）と、
  * 前に立てた Xvfb。残したまま起こすと、新しいブラウザは前のブラウザに URL を渡して自分は終わってしまう
  */
-export function killStale(profileDir: string, displayPidFile: string): string[] {
+export function killStale(profileDir: string, displayPidFile: string, audioPidFile?: string): string[] {
   const killed: string[] = [];
   try {
     const pid = Number(/-(\d+)$/.exec(readlinkSync(join(profileDir, "SingletonLock")))?.[1]);
@@ -178,6 +211,15 @@ export function killStale(profileDir: string, displayPidFile: string): string[] 
       killed.push(`Xvfb（pid ${pid}）`);
     }
     rmSync(displayPidFile, { force: true });
+  }
+  if (audioPidFile && existsSync(audioPidFile)) {
+    const [pid, dir] = readFileSync(audioPidFile, "utf8").trim().split("\n");
+    if (Number(pid) > 0 && alive(Number(pid)) && /pulseaudio/.test(cmdline(Number(pid)))) {
+      process.kill(Number(pid), "SIGKILL");
+      killed.push(`PulseAudio（pid ${pid}）`);
+    }
+    if (dir && dir.includes("banto-pulse-")) rmSync(dir, { recursive: true, force: true });
+    rmSync(audioPidFile, { force: true });
   }
   return killed;
 }
@@ -228,6 +270,75 @@ async function startDisplay(pidFile: string, scale: number): Promise<{ display: 
   return { display, process: xvfb };
 }
 
+/** PulseAudio の口ができるまで待つ上限 */
+const AUDIO_START_TIMEOUT_MS = 5_000;
+
+/** PulseAudio の引数：設定ファイルを読まず（`-n`）、口と空のシンクだけを足す。誰も使わなくても終わらない */
+export function pulseArgs(socket: string): string[] {
+  return [
+    "-n",
+    "--daemonize=no",
+    "--exit-idle-time=-1",
+    "--use-pid-file=no",
+    "--system=no",
+    "--disallow-exit=yes",
+    "--realtime=no",
+    "--high-priority=no",
+    "--log-target=stderr",
+    "--log-level=error",
+    "-L",
+    `module-native-protocol-unix socket=${socket} auth-anonymous=1`,
+    "-L",
+    `module-null-sink sink_name=${AUDIO_SINK} rate=${AUDIO_RATE} channels=${AUDIO_CHANNELS}`,
+  ];
+}
+
+/**
+ * ブラウザの音の行き先（PulseAudio の空のシンク）を立てる。口（UNIX ソケット）は短い置き場に作る（108 バイトまで——
+ * chromeEnv の TMPDIR と同じ）。**立たなければ理由を返す**——ブラウザは音無しで起こす（断らない）
+ */
+async function startAudio(pidFile: string): Promise<{ server: string; process: ChildProcess; dir: string } | { reason: string }> {
+  let dir: string;
+  try {
+    dir = mkdtempSync(join(shortTmp(), "banto-pulse-"));
+  } catch (err) {
+    return { reason: `PulseAudio の置き場を作れません（${(err as Error).message}）。音無しで映します` };
+  }
+  const socket = join(dir, "native");
+  let stderr = "";
+  const pa = spawn("pulseaudio", pulseArgs(socket), {
+    // 置き場は自分の分だけ（人の機械の PulseAudio の置き場・設定を読まない）
+    env: { ...process.env, PULSE_RUNTIME_PATH: dir, PULSE_STATE_PATH: dir, XDG_RUNTIME_DIR: dir },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  pa.stderr!.on("data", (c: Buffer) => (stderr = (stderr + c.toString()).slice(-2000)));
+  const failed = await new Promise<string | undefined>((done) => {
+    const deadline = Date.now() + AUDIO_START_TIMEOUT_MS;
+    let settled = false;
+    const resolve = (v: string | undefined) => {
+      settled = true;
+      done(v);
+    };
+    pa.once("error", (err) => resolve(`PulseAudio を起こせません: ${err.message}`));
+    const poll = () => {
+      if (settled) return;
+      if (pa.exitCode !== null || pa.signalCode !== null) return resolve(`PulseAudio が立ち上がる前に終わりました（${pa.exitCode ?? pa.signalCode}）: ${stderr.trim().slice(-500)}`);
+      if (existsSync(socket)) return resolve(undefined);
+      if (Date.now() > deadline) return resolve(`PulseAudio の口が ${AUDIO_START_TIMEOUT_MS / 1000} 秒でできませんでした: ${stderr.trim().slice(-500)}`);
+      setTimeout(poll, 25);
+    };
+    poll();
+  });
+  if (failed) {
+    pa.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+    return { reason: `${failed}。音無しで映します` };
+  }
+  mkdirSync(join(pidFile, ".."), { recursive: true });
+  writeFileSync(pidFile, `${pa.pid}\n${dir}`);
+  return { server: `unix:${socket}`, process: pa, dir };
+}
+
 /** ブラウザが CDP の口を開くまで待つ（プロファイルの `DevToolsActivePort` に番号を書く）。先に終わったら理由つきで投げる */
 async function waitForPort(chrome: ChildProcess, profileDir: string, output: () => string): Promise<number> {
   const file = join(profileDir, "DevToolsActivePort");
@@ -249,7 +360,7 @@ async function waitForPort(chrome: ChildProcess, profileDir: string, output: () 
 /** 仮想の画面を立て、ブラウザを起こして繋ぐ。失敗したら起こしたものは全部止めてから投げる */
 export async function startChrome(o: ChromeOptions, connect: (endpoint: string) => Promise<Browser>): Promise<RunningChrome> {
   if (!existsSync(o.executable)) throw new Error(`Executable doesn't exist at ${o.executable}`);
-  const stale = killStale(o.profileDir, o.displayPidFile);
+  const stale = killStale(o.profileDir, o.displayPidFile, o.audioPidFile);
   if (stale.length > 0) console.error(`[browser] 前の Module が残したものを止めました: ${stale.join("・")}`);
   mkdirSync(o.profileDir, { recursive: true });
   rmSync(join(o.profileDir, "DevToolsActivePort"), { force: true });
@@ -257,6 +368,17 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
   const xvfb = await startDisplay(o.displayPidFile, o.scale);
   let chrome: ChildProcess | undefined;
   live.add(xvfb.process);
+  const audio = o.audio ? await startAudio(o.audioPidFile) : undefined;
+  const pulse = audio && "server" in audio ? audio : undefined;
+  if (pulse) live.add(pulse.process);
+  if (audio && "reason" in audio) console.error(`[browser] ${audio.reason}`);
+  const stopAudio = () => {
+    if (!pulse) return;
+    pulse.process.kill("SIGTERM");
+    live.delete(pulse.process);
+    rmSync(pulse.dir, { recursive: true, force: true });
+    rmSync(o.audioPidFile, { force: true });
+  };
   /** 止める。graceMs はブラウザが自分で終わるのを待つ時間（越えたら SIGTERM、さらに越えたら SIGKILL） */
   const stopAll = async (graceMs: number) => {
     if (chrome && !(await exited(chrome, graceMs))) {
@@ -267,10 +389,11 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
     live.delete(xvfb.process);
     if (chrome) live.delete(chrome);
     rmSync(o.displayPidFile, { force: true });
+    stopAudio();
   };
   try {
     // 入れられるなら仕事の組（banto-work-jobs.slice）で起こす——メモリが尽きても組の中だけで止まる（work-scope の説明）
-    const launch = inWorkScope(o.executable, chromeArgs(o), { kind: "browser", env: chromeEnv(process.env, xvfb.display, o.locale, o.timezone, o.fontconfigFile) });
+    const launch = inWorkScope(o.executable, chromeArgs(o), { kind: "browser", env: chromeEnv(process.env, xvfb.display, o.locale, o.timezone, o.fontconfigFile, pulse?.server) });
     chrome = spawn(launch.command, launch.args, { env: launch.env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     const take = (c: Buffer) => (output = (output + c.toString()).slice(-8000));
@@ -282,6 +405,7 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
     spawned.once("exit", (code, signal) => {
       xvfb.process.kill("SIGTERM");
       rmSync(o.displayPidFile, { force: true });
+      stopAudio();
       console.error(`[browser] ブラウザが終わりました（${code ?? signal}）`);
     });
     const port = await waitForPort(spawned, o.profileDir, () => output);
@@ -293,6 +417,7 @@ export async function startChrome(o: ChromeOptions, connect: (endpoint: string) 
       context,
       display: xvfb.display,
       screen: screenPixels(o.scale),
+      audio: pulse ? { server: pulse.server } : { reason: audio && "reason" in audio ? audio.reason : "音を流せません" },
       async close() {
         // 閉じてもらう（プロファイルを書き終えてから終わる）。返事を待たずに終わるので、終わるのを待つ
         await browser

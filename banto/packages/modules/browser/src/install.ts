@@ -6,7 +6,8 @@
 // 入っていなければ最初に起こすときに入れる。仮想の画面（Xvfb）・字体・ブラウザが頼るライブラリがコンテナに無ければ、それも
 // 入れる（Playwright の install-deps——コンテナの中は sudo できる、v4-security.md §1）。入れられなければ理由つきで断る。
 // 日本語の字体（Noto CJK）は起こすたびに確かめ、無ければここで入れる（fonts.ts——入れられなくても断らない）。
-// 人の画面を動画で流す GStreamer と python3-gi も同じ形（video.ts——入れられなければ人の画面は JPEG で映す）。
+// 人の画面を動画で流す GStreamer と python3-gi も同じ形（video.ts——入れられなければ人の画面は JPEG で映す）。音の行き先の
+// PulseAudio も同じ（audio.ts——入れられなければ音無しで映す）。
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -14,6 +15,7 @@ import { dirname, join } from "node:path";
 import { BrowserError } from "./args.js";
 import { CJK_FONT_PACKAGE } from "./fonts.js";
 import { VIDEO_PACKAGES } from "./video.js";
+import { AUDIO_PACKAGES } from "./audio.js";
 
 /** Playwright の呼び名（`chrome` は Google Chrome の安定版） */
 export const BROWSER_NAME = process.arch === "x64" ? "chrome" : "chromium";
@@ -104,6 +106,8 @@ export interface Installer {
   installFonts(onProgress?: (message: string) => void): Promise<void>;
   /** 動画で流す GStreamer と python3-gi を入れる（video.ts の ensureVideo が、無いときだけ呼ぶ） */
   installVideo(onProgress?: (message: string) => void): Promise<void>;
+  /** 音の行き先の PulseAudio を入れる（audio.ts の ensureAudio が、無いときだけ呼ぶ） */
+  installAudio(onProgress?: (message: string) => void): Promise<void>;
 }
 
 /** sudo で apt-get install する。失敗は理由つきで投げる */
@@ -139,6 +143,9 @@ export function playwrightInstaller(browsersPath: string): Installer {
     },
     async installVideo(onProgress) {
       await aptInstall(VIDEO_PACKAGES, env, "人の画面を動画で流す GStreamer をコンテナに入れています（apt-get）", onProgress);
+    },
+    async installAudio(onProgress) {
+      await aptInstall(AUDIO_PACKAGES, env, "人の画面に音を流す PulseAudio をコンテナに入れています（apt-get）", onProgress);
     },
   };
 }

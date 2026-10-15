@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { BrowserError, parseAct, parseConsoleQuery, parseNetworkQuery, parseNetworkRequest, parseOpen, parseScreenshot, parseSettings, parseTabs } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import { pageContent } from "./content.js";
-import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv } from "./chrome.js";
+import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv, pulseArgs } from "./chrome.js";
+import { AUDIO_PACKAGES, encodeAudioMessage, ensureAudio } from "./audio.js";
+import { AUDIO_LAG_MS, AUDIO_LEAD_MS, AUDIO_MIN_DELAY_MS, AUDIO_RESYNC_MS, newAudioSync, syncArrived, syncDrawn, syncPlan } from "./audio-sync.js";
 import { acceptLanguages, parseBrowserVersion } from "./identity.js";
 import { MAX_VIDEO_PIXELS, encodeVideoMessages, ensureVideo, h264CodecString, videoRegion } from "./video.js";
 import { decodeFrame } from "./view-stream.js";
@@ -322,6 +324,9 @@ test("入れる：無ければブラウザを入れ、ライブラリが足り�
     async installVideo() {
       done.push("video");
     },
+    async installAudio() {
+      done.push("audio");
+    },
   };
   const failures = [new Error("Executable doesn't exist at /opt/google/chrome/chrome"), new Error("Host system is missing dependencies to run browsers（Xvfb がありません）")];
   const launched = await launchWithInstall(async () => {
@@ -376,6 +381,101 @@ test("起こし方：自動操作の起動の印（--enable-automation・--headl
   assert.equal(env.LC_ALL, undefined, "LC_ALL が残ると LANG が効かない");
   assert.deepEqual([env.DISPLAY, env.TZ, env.LANG, env.PATH, env.FONTCONFIG_FILE], [":7", "Asia/Tokyo", "ja_JP.UTF-8", "/bin", "/d/fontconfig/fonts.conf"]);
   assert.ok(env.TMPDIR!.length <= 60, `TMPDIR が長い（ソケットのパスが 108 バイトを越える）：${env.TMPDIR}`);
+  // 音の行き先は Module が立てた PulseAudio だけ——外の PULSE_SERVER（人の機械のスピーカー）は渡さない
+  assert.equal(env.PULSE_SERVER, undefined);
+  assert.equal(chromeEnv({ PULSE_SERVER: "unix:/run/user/1000/pulse/native" }, ":7", "ja-JP", "UTC", "/f").PULSE_SERVER, undefined);
+  assert.equal(chromeEnv({}, ":7", "ja-JP", "UTC", "/f", "unix:/tmp/banto-pulse-x/native").PULSE_SERVER, "unix:/tmp/banto-pulse-x/native");
+});
+
+test("音：PulseAudio は設定を読まず（-n）、口と空のシンク（48kHz・2ch）だけを足し、誰も使わなくても終わらない", () => {
+  const args = pulseArgs("/tmp/banto-pulse-a/native");
+  assert.equal(args[0], "-n");
+  assert.ok(args.includes("--exit-idle-time=-1"));
+  assert.ok(args.includes("module-native-protocol-unix socket=/tmp/banto-pulse-a/native auth-anonymous=1"));
+  assert.ok(args.includes("module-null-sink sink_name=banto rate=48000 channels=2"));
+  assert.deepEqual(AUDIO_PACKAGES, ["pulseaudio"]);
+});
+
+test("音：sudo しない箱では入れずに理由と入れ方を返す（ブラウザは断らない）。入れられなければ理由を返す", async () => {
+  const before = process.env.BANTO_NO_SUDO;
+  let installs = 0;
+  const install = async () => {
+    installs++;
+  };
+  try {
+    delete process.env.BANTO_NO_SUDO;
+    assert.deepEqual(await ensureAudio(install, undefined, async () => undefined), { available: true });
+    assert.equal(installs, 0, "あるのに入れた");
+    process.env.BANTO_NO_SUDO = "1";
+    const remote = await ensureAudio(install, undefined, async () => "pulseaudio がありません");
+    assert.equal(installs, 0, "sudo しない箱で入れようとした");
+    assert.equal(remote.available, false);
+    assert.match(remote.reason ?? "", /pulseaudio がありません.*sudo しないので自動では入れません。音無しで映します。.*apt install --no-install-recommends pulseaudio/);
+    delete process.env.BANTO_NO_SUDO;
+    let present = false;
+    const ok = await ensureAudio(async () => {
+      installs++;
+      present = true;
+    }, undefined, async () => (present ? undefined : "無い"));
+    assert.deepEqual(ok, { available: true });
+    assert.equal(installs, 1);
+    const failed = await ensureAudio(async () => {
+      throw new Error("終了コード 100");
+    }, undefined, async () => "無い");
+    assert.match(failed.reason ?? "", /入れられませんでした（終了コード 100）。音無しで映します/);
+    const still = await ensureAudio(install, undefined, async () => "まだ無い");
+    assert.match(still.reason ?? "", /入れましたが、まだ音を流せません（まだ無い）/);
+  } finally {
+    if (before === undefined) delete process.env.BANTO_NO_SUDO;
+    else process.env.BANTO_NO_SUDO = before;
+  }
+});
+
+test("音：Opus の1包みは映像と同じ形の1通（頭に取り込んだ時刻と長さ）", () => {
+  const packet = Buffer.from([0xfc, 1, 2, 3]);
+  const header = { seq: 9, codec: "opus" as const, ts: 1_234_567_890, dur: 20_000 };
+  const m = decodeFrame(encodeAudioMessage(header, packet));
+  assert.deepEqual(m.header, header);
+  assert.deepEqual([...m.jpeg], [...packet]);
+});
+
+test("音を映像に合わせる：映像の描いた遅れか最低の遅れの大きいほうに鳴らし、続けて鳴らす。45ms 先・125ms 後を越えたら合わせ直す", () => {
+  assert.equal(AUDIO_LEAD_MS, 45);
+  assert.equal(AUDIO_LAG_MS, 125);
+  const s = newAudioSync();
+  // 基準が無いうちは鳴らさない
+  assert.equal(syncPlan(s, 0, 20, 0, 0, 0), undefined);
+  // 画面の時計は Module の時計より 1000ms 先（原点の違い）。最速で 10ms で届く → base 1010
+  syncArrived(s, 1010, 0);
+  syncArrived(s, 1050, 20);
+  assert.equal(s.base, 1010);
+  // 映像がまだ無い：最低の遅れ（80ms）。音の時計は画面の時計 + 500
+  const first = syncPlan(s, 0, 20, 1500, 500, 0);
+  assert.equal(first, 0 + 1010 + AUDIO_MIN_DELAY_MS + 500);
+  // 続きはすき間なく続けて鳴らす
+  assert.equal(syncPlan(s, 20, 20, 1500, 500, 0), first! + 20);
+  // 映像の描いた遅れが 200ms：滑らかにして寄っていく
+  for (let i = 0; i < 60; i++) syncDrawn(s, 1010 + 1000 + 200, 1000);
+  assert.ok(Math.abs(s.videoLag! - 200) < 1, String(s.videoLag));
+  // 目標は 200ms 後ろへ——続けて鳴らすと 120ms ほど先になる（45ms を越える）ので目標まで待つ
+  const want = 40 + 1010 + s.videoLag! + 500;
+  const at = syncPlan(s, 40, 20, 1500, 500, 0)!;
+  assert.ok(Math.abs(at - want) < 0.001, `${at} ≠ ${want}`);
+  // 鳴らしてから耳に届くまでの分（outputLatency）は前倒しする
+  const s2 = newAudioSync();
+  syncArrived(s2, 1010, 0);
+  assert.equal(syncPlan(s2, 0, 20, 0, 0, 30), 1010 + AUDIO_MIN_DELAY_MS - 30);
+  // 遅れすぎ（今がもう目標を 125ms 過ぎている）——捨てる。捨て続けたら基準を取り直す
+  const s3 = newAudioSync();
+  syncArrived(s3, 1010, 0);
+  const late = 1010 + AUDIO_MIN_DELAY_MS + AUDIO_LAG_MS + 50;
+  let dropped = 0;
+  for (let t = 0; s3.base !== undefined; t += 20) {
+    assert.equal(syncPlan(s3, t, 20, late + t, 0, 0), undefined);
+    dropped += 20;
+  }
+  assert.equal(dropped, AUDIO_RESYNC_MS);
+  assert.equal(s3.next, undefined);
 });
 
 test("字体：言語ごとに Noto CJK の字形を先に選び、言語の指定の無い文字は locale の字形。システムの設定は読み込む", () => {
@@ -476,7 +576,7 @@ test("動画：1 MiB を越えるアクセスユニットは分けて送り、�
   const au = Buffer.concat([Buffer.from([0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x33, 9, 9]), Buffer.alloc(5000, 7)]);
   assert.equal(h264CodecString(au), "avc1.42C033");
   assert.equal(h264CodecString(Buffer.from([0, 0, 0, 1, 0x41, 1, 2, 3])), undefined);
-  const header = { seq: 4, tab: "t1", width: 1280, height: 800, codec: "h264" as const, key: true };
+  const header = { seq: 4, tab: "t1", width: 1280, height: 800, codec: "h264" as const, key: true, ts: 123_456_789 };
   const one = encodeVideoMessages(header, au, 1024 * 1024);
   assert.equal(one.length, 1);
   assert.deepEqual(decodeFrame(one[0]!).header, header);
@@ -489,7 +589,7 @@ test("動画：1 MiB を越えるアクセスユニットは分けて送り、�
   assert.deepEqual(Buffer.concat(parts.map((m) => decodeFrame(m).jpeg)), au);
 });
 
-test("起こし方：前の Module が残した Xvfb は止め、同じ名前でも別のプロセスは止めない", async () => {
+test("起こし方：前の Module が残した Xvfb・PulseAudio は止め、同じ名前でも別のプロセスは止めない", async () => {
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-stale-"));
   const other = spawn("sleep", ["30"], { stdio: "ignore" });
   try {
@@ -499,6 +599,12 @@ test("起こし方：前の Module が残した Xvfb は止め、同じ名前で
     assert.deepEqual(killStale(join(dir, "profile"), pidFile), []);
     assert.equal(other.exitCode, null);
     assert.equal(other.signalCode, null);
+    // PulseAudio の置き場も同じ：pid の先が pulseaudio でなければ止めない。置き場の記録は消す
+    const audioPidFile = join(dir, "pulseaudio.pid");
+    writeFileSync(audioPidFile, `${other.pid}\n${join(dir, "banto-pulse-x")}`);
+    assert.deepEqual(killStale(join(dir, "profile"), pidFile, audioPidFile), []);
+    assert.equal(other.signalCode, null);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".pid")), []);
   } finally {
     other.kill();
     rmSync(dir, { recursive: true, force: true });

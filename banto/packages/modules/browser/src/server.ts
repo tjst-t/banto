@@ -15,12 +15,13 @@ import {
 import { CANVAS_META_KEY, MODULE_META_KEY, STREAMS_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import { join } from "node:path";
 import { NetworkLog } from "./network-log.js";
-import { BrowserSession, DEFAULT_VIEWPORT } from "./session.js";
+import { BrowserSession, DEFAULT_VIEWPORT, type AudioRoute } from "./session.js";
 import { StateFile } from "./state.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
 import { BrowserView } from "./view-stream.js";
 import type { VideoSupport } from "./video.js";
+import type { AudioSupport } from "./audio.js";
 
 const UI_APP_MIME = "text/html;profile=mcp-app";
 /** 人の画面が開く流れの名前 */
@@ -98,6 +99,8 @@ export function browserPaths(dataDir: string) {
     state: join(dataDir, "state.json"),
     /** 立てた仮想の画面（Xvfb）の pid（Module が消えた後に残ったものを、次に起こすときに止める——chrome.ts） */
     displayPid: join(dataDir, "xvfb.pid"),
+    /** 立てた PulseAudio の pid と置き場（Xvfb と同じく、Module が消えた後に残ったものを次に止める） */
+    audioPid: join(dataDir, "pulseaudio.pid"),
     /** ブラウザにだけ効かせる fontconfig の設定（起こすたびに書く——fonts.ts） */
     fontconfig: join(dataDir, "fontconfig", "fonts.conf"),
   };
@@ -109,7 +112,14 @@ export function browserPaths(dataDir: string) {
  */
 export async function createBrowserContextFromDataDir(
   dataDir: string,
-  opts: { browsersPath?: string; executable?: string; /** 動画で流せるかを決め打つ（試験が JPEG に落ちる形を見るとき） */ video?: VideoSupport } = {},
+  opts: {
+    browsersPath?: string;
+    executable?: string;
+    /** 動画で流せるかを決め打つ（試験が JPEG に落ちる形を見るとき） */
+    video?: VideoSupport;
+    /** 音を流せるかを決め打つ（試験が音無しの形を見るとき） */
+    audio?: AudioSupport;
+  } = {},
 ): Promise<ToolContext> {
   const paths = browserPaths(dataDir);
   const browsersPath = opts.browsersPath ?? paths.browsers;
@@ -120,6 +130,7 @@ export async function createBrowserContextFromDataDir(
   const { startChrome } = await import("./chrome.js");
   const { ensureCjkFont } = await import("./fonts.js");
   const { ensureVideo } = await import("./video.js");
+  const { ensureAudio } = await import("./audio.js");
   const installer = playwrightInstaller(browsersPath);
   const log = new NetworkLog(paths.network);
   const state = new StateFile(paths.state);
@@ -143,11 +154,21 @@ export async function createBrowserContextFromDataDir(
           // 人の画面を動画で流す GStreamer が無ければ入れる（入れられなくても起こす——人の画面は JPEG で映す。video.ts）
           const video = opts.video ?? (await ensureVideo((p) => installer.installVideo(p), onProgress));
           if (video.reason) console.error(`[browser] ${video.reason}`);
+          // 音の行き先（PulseAudio）が無ければ入れる（入れられなくても起こす——人の画面は音無しで映す。audio.ts）。取り込みは
+          // GStreamer なので、映像の GStreamer が無ければ音も無し
+          const audio: AudioSupport =
+            opts.audio ??
+            (video.available
+              ? await ensureAudio((p) => installer.installAudio(p), onProgress)
+              : { available: false, reason: `GStreamer が無いので音も流せません（${video.reason ?? ""}）。音無しで映します` });
+          if (audio.reason) console.error(`[browser] ${audio.reason}`);
           const chrome = await startChrome(
             {
               executable,
               profileDir,
               displayPidFile: paths.displayPid,
+              audioPidFile: paths.audioPid,
+              audio: audio.available,
               languages: acceptLanguages(locale),
               locale,
               timezone,
@@ -157,7 +178,12 @@ export async function createBrowserContextFromDataDir(
             },
             (endpoint) => chromium.connectOverCDP(endpoint),
           );
-          return { ...chrome, version: readBrowserVersion(executable), scale, video, ...(fontNotice ? { notice: fontNotice } : {}) };
+          const route: AudioRoute = !audio.available
+            ? { available: false, reason: audio.reason ?? "音を流せません" }
+            : "server" in chrome.audio
+              ? { available: true, server: chrome.audio.server }
+              : { available: false, reason: chrome.audio.reason };
+          return { ...chrome, version: readBrowserVersion(executable), scale, video, audio: route, ...(fontNotice ? { notice: fontNotice } : {}) };
         },
         installer,
         onProgress,
