@@ -47,13 +47,14 @@
 
 ### 閉じ込めは Project ごとのシステムコンテナで行う（決定・2026-09-25、ユーザー）
 
-**仕切りは2つだけにする**：
+**仕切りは2つだけにする**（追記・2026-10-15：3つ目の箱「同梱の道具用のコンテナ」を足す——下の表の最後の行。未実装）：
 
 | 箱 | 中身 | 決め方 |
 |---|---|---|
 | **banto 本体（ホスト）** | core・会話の本体（Runner）・Claude のログイン・Vault・設定・banto 全体の同梱 Module | **AI に渡してはいけないものだけ** |
 | **Project のコンテナ** | Project のファイル・Project の Module（Shell・FileSystem・Subagent・外から足したもの）・AI のコマンド・サブエージェント・入れた道具 | **それ以外の Project のもの全部** |
 | **banto 全体用のコンテナ（1台）** | 外から足した banto 全体の Module（第三者のコード） | **banto 本体で動くのは banto 自身のコードだけ**（決定・2026-09-25、ユーザー） |
+| **同梱の道具用のコンテナ（1台）**（決定・2026-10-15、ユーザー。未実装） | 外から来た文書を開くような、banto 自身のコードだが banto 本体の権限で走らせたくない仕事（最初は Office の変換役 `documents`、`v4-modules.md` §2.2） | **第三者の Module と同居させない**（同居すると Project から渡した中身を読まれる）。**中で sudo できない**、要るパッケージは core が root で入れる |
 
 **Landlock はやめた**（2026-09-25 に移し終えた）。
 理由（実測、`docs/notes/2026-09-25-dev-environment.md`・`poc/09-project-container/`）：
@@ -869,6 +870,7 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
 |---|---|
 | Project の Module（`scope: "project"`——Shell・FileSystem・Subagent・外から足したもの） | **その Project のコンテナ** |
 | 外から足した banto 全体の Module | **banto 全体用のコンテナ（1台）** |
+| 同梱の banto 全体の Module のうち、宣言で道具用のコンテナを名乗るもの（決定・2026-10-15、未実装。最初は `documents`） | **同梱の道具用のコンテナ（1台）**。同梱でないものが名乗ったら宣言の読み込みで断る |
 | 同梱の banto 全体の Module（Vault・窓口・設定の画面・Skill など） | **banto 本体** |
 | URL に繋ぐ形 | こちらにプロセスが無い（§3「Module が machine の外へデータを出す」） |
 
