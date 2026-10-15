@@ -7593,7 +7593,7 @@
       "number": 315,
       "kind": "task",
       "title": "自動化の届け方——専用の Fork・前の回の判定・Clear してから届ける・結果の記録・乗り換え・閉じたら一時停止",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "automation-ledger"
@@ -7603,12 +7603,12 @@
       "labels": [],
       "body": "仕様 §4.3「判断は届ける口の手前に置く」「専用の Fork」。deliver（thread-deliveries.ts）は変えない。\n- 届け先 (a) は作るときに Fork を立てる。前の回が終わっていない＝走っている・deliveries・awaitingReplies・生きた判断待ち\n- 毎回まっさら：ThreadTurns の鍵を一瞬取り、clearThread してから deliver（turn-runner に Clear を持ち込まない）\n- DeliverInput に kind: automation。wakesPerHour と held のお知らせの対象から外す。閉じている・移しているなら deliver せず skipped\n- MessageOrigin に automation: { id, runId }。ターンの終わりで automation.fired（done/failed/waiting）\n- N 回ごとに Fork を乗り換える。人が専用の Fork を閉じたら一時停止＋1件知らせる、開き直しても自動で再開しない。Project を閉じたら止める",
       "doneWhen": "単体テストと E2E（偽の Runner）で：空いていれば Clear して届き「今すぐ動かす」で専用の Fork にターンが走る。走っている・返事待ちがあるときは skipped。人がその Fork に送った発言は Clear されない。閉じた Fork に届けても受信箱にお知らせが積もらない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/automation-deliver）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T11:20:28.307Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T12:46:44.537Z",
+      "closedAt": "2026-10-15T12:46:44.537Z",
       "extra": {}
     },
     {
