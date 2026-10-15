@@ -7593,7 +7593,7 @@
       "number": 315,
       "kind": "task",
       "title": "自動化の届け方——専用の Fork・前の回の判定・Clear してから届ける・結果の記録・乗り換え・閉じたら一時停止",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [
         "automation-ledger"
@@ -7607,7 +7607,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
+      "updatedAt": "2026-10-15T11:20:28.307Z",
       "closedAt": null,
       "extra": {}
     },
