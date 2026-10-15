@@ -7616,7 +7616,7 @@
       "number": 316,
       "kind": "task",
       "title": "時刻のきっかけ（cron）——1分の刻み・暦の計算・cron の式・止まっていた間の取り戻し・同時本数",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [
         "automation-deliver"
@@ -7630,7 +7630,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
+      "updatedAt": "2026-10-15T12:47:03.878Z",
       "closedAt": null,
       "extra": {}
     },
