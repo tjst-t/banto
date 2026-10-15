@@ -2550,7 +2550,7 @@ Project を別の実行場所へ移している間（`project.runtime_move_start
 - **バッジ**：判断待ちと「決めることがある」の件数（返ってきただけの会話は数えない）
 - 返事の本文の URL は押せる（別タブ、§6.25）
 
-### 6.42 自動化の画面——core の画面を Canvas に出す（決定・2026-10-15、ユーザー。未実装）
+### 6.42 自動化の画面——core の画面を Canvas に出す（決定・2026-10-15、ユーザー。実装・2026-10-15、Backlog #318。細部は `docs/notes/2026-10-15-automation-canvas.md`）
 
 仕組みはアーキ仕様 §4.3。見本はモック `fork/schedule`（`mock/components/banto/canvas/triggers-view.tsx`・
 `mock/components/banto/settings/triggers-panel.tsx`・`mock/components/banto/thread/trigger-band.tsx`・`trigger-proposal-card.tsx`）。

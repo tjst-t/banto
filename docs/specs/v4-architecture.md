@@ -2954,7 +2954,11 @@ canceled）、認証を持つ。
   `ThreadState.receivedFrom`（送り元の Thread → 最後に届いた時刻）で見る。会話を引き継がない Fork は `thread.created` の
   `fresh`。届いたものの送り元は `MessageOrigin.sender`、AI には `<banto-delivery>` の属性と返し方の一文で渡す
 
-### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。未実装、Backlog のストーリー `automation`）
+### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313）
+
+段1（台帳・届け方・時刻・受信箱・画面・AI の tool・Webhook）は実装済み。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
+Webhook の印を欄に入れない・きっかけの種類は作ったあと変えない 等）は `docs/notes/2026-10-15-automation-{deliver,clock,inbox,canvas,ai-tools,webhook}.md`。
+段2（Module の出来事）・段3（外の出来事）・本物のモデルでの確かめ（#321）は未着手。
 
 「何かが起きたら、決まった指示でこの Project の AI を動かす」仕組みを core に1つ持つ。名前は**自動化**（機能も1件ずつも。
 「きっかけ」は何が起きたらの部分の呼び名）。cron（時刻）はきっかけの1つで、最初に作るのはそれ（ユーザー）。経緯と Fable の
