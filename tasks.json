@@ -5999,7 +5999,7 @@
       "number": 326,
       "kind": "task",
       "title": "Browser：新しいタブを検索エンジンで開き、URL 欄で検索できるようにする（既定 DuckDuckGo、設定で選べる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -6011,7 +6011,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T14:41:39.500Z",
-      "updatedAt": "2026-10-15T14:41:39.500Z",
+      "updatedAt": "2026-10-15T15:18:36.120Z",
       "closedAt": null,
       "extra": {}
     },
