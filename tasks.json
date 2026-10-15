@@ -7404,7 +7404,7 @@
       "number": 306,
       "kind": "task",
       "title": "xlsx を計算し直した値の表で描く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "office-review",
       "dependsOn": [
         "office-converter"
@@ -7418,7 +7418,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T09:13:02.555Z",
+      "updatedAt": "2026-10-15T15:51:49.375Z",
       "closedAt": null,
       "extra": {}
     },
