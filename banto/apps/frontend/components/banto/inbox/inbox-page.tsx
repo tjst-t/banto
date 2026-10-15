@@ -12,9 +12,10 @@
 // - 返ってきた会話（レビュー待ち）：host が添えたそのターンの中身（`turn`）を読み、決めることの選択肢を押すと返信の欄に
 //   入る。送ると会話の入力欄と同じ口でその Thread にターンを始め、そのレビュー待ちは「見た」にする
 // - 直してほしいこと（お知らせ）：「見た」と、押せるものは「続ける」
-// 会話を開く口はカードの右上に残す（詳しく見たいとき）。
+// 行き先の口はカードの右上に出す（詳しく見たいとき）——どのカードにも（改訂・2026-10-15、ユーザー）。Thread が分かれば
+// その会話、Project だけ分かればその Project の Base Thread、banto 全体のお知らせは直す場所の設定（`destinationOf`）。
 //
-// キー操作（パソコン）：j / k で次・前のカード、r で返信の欄へ、e で「見た」、o で会話を開く、Esc で閉じる。
+// キー操作（パソコン）：j / k で次・前のカード、r で返信の欄へ、e で「見た」、o で行き先を開く、Esc で閉じる。
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { TextMessagePartProvider } from "@assistant-ui/react";
@@ -103,11 +104,32 @@ function age(createdAt: string, now: number): string {
   return `${Math.round(hour / 24)}日前`;
 }
 
-/** その Thread の会話への道。Thread がまだ手元に無い（読み込み前）なら無い——行き先を偽らない（規則13） */
-function threadHref(threadId: string): string | null {
-  const thread = getThread(threadId);
-  if (!thread) return null;
-  return thread.kind === "fork" ? `/p/${thread.projectId}?fork=${thread.id}` : `/p/${thread.projectId}`;
+type Destination = { href: string; label: string; target: "thread" | "project" | "settings" };
+
+/**
+ * **カードから移る先**（改訂・2026-10-15、ユーザー「全部のカードから関係する会話へ」、v4-frontend.md §6.41）。
+ * 1. Thread が分かればその会話（Fork は `?fork=`。閉じた Fork も同じ道——開くと「閉じました」の帯つきで出る）。
+ *    画面が Thread を手元に持っていなければ、host が添えた Project と種類から組む
+ * 2. Project だけ分かれば、その Project（Base Thread）
+ * 3. banto 全体のお知らせは、直す場所の設定。直す場所が banto の中に無いもの（本体の Claude ログインの期限切れ——
+ *    直すのは banto を動かしている端末）は口を出さない——行き先を偽らない（規則13）
+ */
+function destinationOf(card: Card): Destination | null {
+  const item = card.item;
+  const threadId = item.kind === "notice" ? (item.threadId ?? item.resume?.threadId) : item.threadId;
+  const thread = threadId ? getThread(threadId) : undefined;
+  const projectId = thread?.projectId ?? item.projectId;
+  const threadKind = thread?.kind ?? item.threadKind;
+  if (threadId && projectId && threadKind) {
+    const href = threadKind === "fork" ? `/p/${projectId}?fork=${threadId}` : `/p/${projectId}`;
+    return { href, label: "会話を開く", target: "thread" };
+  }
+  if (projectId) return { href: `/p/${projectId}`, label: "Project を開く", target: "project" };
+  if (item.kind === "notice" && (item.dedupeKey.startsWith("module-connect:") || item.dedupeKey.startsWith("module:"))) {
+    // banto 全体の Module を繋げなかった・Module が出した知らせ——Module の一覧（繋がっているかと理由が出る）
+    return { href: "/settings?section=roles", label: "Module の設定を開く", target: "settings" };
+  }
+  return null;
 }
 
 function errorText(err: unknown): string {
@@ -211,7 +233,7 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
         e.preventDefault();
         void markSeen(card).catch(() => void refreshRealInbox());
       } else if (e.key === "o" && card) {
-        cardRefs.current.get(card.id)?.querySelector<HTMLAnchorElement>("a[data-open-thread]")?.click();
+        cardRefs.current.get(card.id)?.querySelector<HTMLAnchorElement>("a[data-open-target]")?.click();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -244,7 +266,7 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
           <Kbd>k</Kbd>移る
           <Kbd>r</Kbd>返信
           <Kbd>e</Kbd>見た
-          <Kbd>o</Kbd>会話を開く
+          <Kbd>o</Kbd>開く
         </span>
         <RealInboxAcknowledgeAll />
         <button
@@ -341,18 +363,18 @@ function Kbd({ children }: { children: ReactNode }) {
 // ── カードの頭：どこの会話か・印・何分前・会話を開く ─────────────────────────
 
 function CardHead({ card, now }: { card: Card; now: number }) {
-  const threadId = card.kind === "fix" ? undefined : card.item.threadId;
+  const threadId = card.kind === "fix" ? (card.item.threadId ?? card.item.resume?.threadId) : card.item.threadId;
   const thread = threadId ? getThread(threadId) : undefined;
-  const projectId = card.kind === "fix" ? card.item.projectId : thread?.projectId;
+  const projectId = thread?.projectId ?? card.item.projectId;
   const project = projectId ? getProject(projectId) : undefined;
   const threadName = thread ? (thread.kind === "base" ? "Base Thread" : (thread.title ?? "Fork Thread")) : null;
-  const href = threadId ? threadHref(threadId) : null;
+  const destination = destinationOf(card);
   return (
     <div className="flex items-center gap-2.5 px-4 pt-3 pb-2">
       <Mark card={card} />
       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-ink-2">
         <span data-testid="inbox-card-project" className="shrink-0 font-medium text-foreground">
-          {project ? project.name : card.kind === "fix" ? "banto 全体" : "（読み込み中の Project）"}
+          {project ? project.name : card.kind === "fix" && !projectId ? "banto 全体" : "（読み込み中の Project）"}
         </span>
         {threadName ? (
           <>
@@ -367,20 +389,21 @@ function CardHead({ card, now }: { card: Card; now: number }) {
         ) : null}
       </div>
       <span className="shrink-0 text-xs tabular-nums text-ink-3">{age(card.createdAt, now)}</span>
-      {href ? (
-        // 押すとその会話へ移る（受信箱は URL の `?overlay=inbox` が持っているので、移れば閉じる）。開いた会話が
-        // レビュー待ちを「見た」にする（`markThreadViewing`）——ここでも先に「見た」にしておく
+      {destination ? (
+        // 押すとその先へ移る（受信箱は URL の `?overlay=inbox` が持っているので、移れば閉じる）。開いた会話が
+        // レビュー待ちを「見た」にする（`markThreadViewing`）——ここでも先に「見た」にしておく。お知らせは「見た」に
+        // しない——直すまで残す
         <Link
-          href={href}
-          data-open-thread
-          data-testid="inbox-open-thread"
+          href={destination.href}
+          data-open-target={destination.target}
+          data-testid={`inbox-open-${destination.target}`}
           onClick={() => {
             if (card.kind === "returned") void acknowledgeRealNotice(card.id).catch(() => undefined);
           }}
           className="-mr-1.5 flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-ink-3 hover:bg-accent hover:text-foreground"
-          aria-label="会話を開く"
+          aria-label={destination.label}
         >
-          <span className="hidden sm:inline">会話を開く</span>
+          <span className="hidden sm:inline">{destination.label}</span>
           <ArrowUpRight className="size-3.5" />
         </Link>
       ) : null}

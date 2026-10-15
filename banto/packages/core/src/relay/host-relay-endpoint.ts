@@ -324,7 +324,7 @@ export interface HostRelayServerOptions {
    * **受信箱に知らせる**（追加・2026-10-02、`docs/specs/v4-modules.md` §2.4 Repositories——GitHub のログインの更新に
    * 失敗したとき）。出せる相手は `mayRaiseNotice` が決める。渡さなければこの口は断る
    */
-  raiseNotice?(caller: CallerIdentity, input: { key: string; title: string; detail: string }): Promise<void>;
+  raiseNotice?(caller: CallerIdentity, input: { key: string; title: string; detail: string; threadId?: string }): Promise<void>;
 }
 
 /** 知らせの大きさの上限（受信箱の1行に出すもの。長すぎるものは断る——黙って切らない） */
@@ -627,7 +627,16 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         if (v.length > NOTICE_LIMITS[name]) throw new Error(`${name} が長すぎます（${NOTICE_LIMITS[name]} 字まで）`);
         return v;
       };
-      await opts.raiseNotice(identity, { key: field("key"), title: field("title"), detail: field("detail") });
+      // **どの会話で起きたか**（追加・2026-10-15、アーキ仕様 §2.4）——呼び出しの印（`callId`）が付いていて、その呼び出しが
+      // 1つの会話のものなら添える。印が無ければ添えない：接続で走っている別の呼び出しの会話を、関係なく拾ってしまう
+      const where = callId ? opts.moduleCalls?.threadFor(identity.connName ?? identity.moduleName, callId) : undefined;
+      const threadId = where?.kind === "thread" && "threadId" in where && typeof where.threadId === "string" ? where.threadId : undefined;
+      await opts.raiseNotice(identity, {
+        key: field("key"),
+        title: field("title"),
+        detail: field("detail"),
+        ...(threadId ? { threadId } : {}),
+      });
       return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
     }
 

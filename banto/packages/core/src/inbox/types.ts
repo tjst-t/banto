@@ -68,6 +68,12 @@ export interface NoticeItem {
   id: InboxItemId;
   /** どの Project の話か。**無い＝banto 全体**（instance に1本の Module 等）。 */
   projectId?: string;
+  /**
+   * **どの会話で起きたか**（追加・2026-10-15、アーキ仕様 §2.4）。受信箱のカードから、その会話へ移る口に使う。
+   * 分かるときだけ（届いたが起こさなかった宛先・Fork を立てなかった親・続けるターン・Module の呼び出し元の会話）。
+   * **重ならない鍵には入れない**——同じことは会話が違っても1件
+   */
+  threadId?: string;
   /** 同じことを何度も積まないための鍵（例：`module-connect:filesystem`）。 */
   dedupeKey: string;
   title: string;

@@ -1898,7 +1898,12 @@ async function main(): Promise<void> {
     // **受信箱に知らせる**（§2.4 Repositories——ログインの更新に失敗したとき）。出せる相手は中継が絞る
     // （`mayRaiseNotice`）。鍵は Module ごとに分ける——別の Module の知らせを潰さない
     raiseNotice: async (caller, input) => {
-      await inbox.raiseNotice({ dedupeKey: `module:${caller.moduleName}:${input.key}`, title: input.title, detail: input.detail });
+      await inbox.raiseNotice({
+        dedupeKey: `module:${caller.moduleName}:${input.key}`,
+        title: input.title,
+        detail: input.detail,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      });
     },
     gate: createRelayApprovalGate({
       grants: relayGrants,

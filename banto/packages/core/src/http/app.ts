@@ -33,7 +33,8 @@ import {
 } from "../runtime/remote-runtimes.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
-import type { ThreadClosedBy, ThreadState } from "../project-thread/types.js";
+import type { InboxItem } from "../inbox/types.js";
+import type { ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
 import { DEFAULT_MODEL_VALUE, ModelCatalog, modelIdentityOf, type ModelIdentity } from "../runner/models.js";
@@ -1206,6 +1207,7 @@ export function createApp(deps: AppDeps) {
     if (!outcome.ok) {
       await deps.inbox.raiseNotice({
         projectId: parent.projectId,
+        threadId: parentThreadId,
         dedupeKey: `forks-dropped:${parentThreadId}:${randomUUID()}`,
         title: "Fork を立てませんでした",
         detail: `${parentLabel}のターンが途中で終わったため、AI が予約した Fork ${names}は立てていません。要るなら、もう一度頼んでください`,
@@ -3297,9 +3299,18 @@ export function createApp(deps: AppDeps) {
       if (url.pathname === "/api/inbox" && req.method === "GET") {
         // **レビュー待ちにそのターンの中身を添える**（改訂・2026-10-15、アーキ仕様 §2.4「受信箱の中で読んで答える」）。
         // 読むたびに Thread の記録から組む——受信箱の記録（Event Store）の形は変えない
+        // **行き先を添える**（追加・2026-10-15、アーキ仕様 §2.4）——画面がその Thread を手元に持っていなくても（読み込み前・
+        // 閉じた Fork）カードから会話へ移れるよう、host が分かる範囲で Project と Thread の種類を返す。お知らせの会話は
+        // `threadId`、無ければ「続ける」のターンの Thread
+        const withPlace = (item: InboxItem): InboxItem & { projectId?: string; threadKind?: ThreadKind } => {
+          const threadId = item.kind === "notice" ? (item.threadId ?? item.resume?.threadId) : item.threadId;
+          const thread = threadId ? deps.projectThread.getThread(threadId) : undefined;
+          if (!thread) return item;
+          return { ...item, threadId: thread.id, projectId: thread.projectId, threadKind: thread.kind };
+        };
         const items = await Promise.all(
           deps.inbox.listOpen().map(async (item) => {
-            if (item.kind !== "review") return item;
+            if (item.kind !== "review") return withPlace(item);
             const thread = deps.projectThread.getThread(item.threadId);
             if (!thread) return item;
             const toolCalls = await deps.reviewToolCalls?.(thread);
@@ -3307,7 +3318,7 @@ export function createApp(deps: AppDeps) {
               running: deps.threadTurns?.isRunning(thread.id) ?? false,
               ...(toolCalls !== undefined ? { toolCalls } : {}),
             });
-            return { ...item, turn };
+            return { ...withPlace(item), turn };
           }),
         );
         json(res, 200, items);

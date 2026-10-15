@@ -1067,6 +1067,44 @@ test("受信箱に知らせを出せるのは、banto 本体で動く同梱の b
   }
 });
 
+test("受信箱の知らせには、呼び出しの印が指す会話を添える——印が無ければ、走っている別の呼び出しの会話を拾わない", async () => {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const raised: Array<{ key: string; threadId?: string }> = [];
+  const { url, close } = await startTestServer(registry, {
+    moduleCalls,
+    raiseNotice: async (_caller, input) => {
+      raised.push({ key: input.key, ...(input.threadId ? { threadId: input.threadId } : {}) });
+    },
+  });
+  const raw = { satisfies: ["repositories"], dependsOn: [], isolation: "subprocess", scope: "instance" };
+  const token = registry.issueToken({ moduleName: "repositories", meta: bundledMeta(raw, "repositories") });
+  const notice = async (key: string, callId?: string) => {
+    const c = await relayClient(url, token);
+    try {
+      await c.callTool({
+        name: "relayRaiseNotice",
+        arguments: { key, title: "題", detail: "中身" },
+        ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}),
+      });
+    } finally {
+      await c.close();
+    }
+  };
+  try {
+    const turn = moduleCalls.beginCall("repositories", "t1", "turn", "pA");
+    const canvas = moduleCalls.beginCall("repositories", undefined, "canvas", undefined);
+    await notice("in-turn", turn.id);
+    await notice("in-canvas", canvas.id);
+    await notice("no-mark");
+    turn.end();
+    canvas.end();
+    assert.deepEqual(raised, [{ key: "in-turn", threadId: "t1" }, { key: "in-canvas" }, { key: "no-mark" }]);
+  } finally {
+    close();
+  }
+});
+
 /** 呼ばれた口と、host が刻んだ `_meta`、その時点で台帳が宛先の呼び出しをどう見ていたかを残す偽の Module */
 async function recordingClient(
   tools: Array<{ name: string; visibility: string }>,

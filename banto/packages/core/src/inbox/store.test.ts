@@ -143,6 +143,30 @@ test("お知らせは banto 全体のものも持てる（instance の Module）
   });
 });
 
+test("お知らせはどの会話で起きたか（threadId）を持てる——読み直しても残り、重ならない鍵には入らない", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-inbox-test-"));
+  try {
+    const log = new EventLog(dir);
+    await log.init();
+    const store = new InboxStore(dir, log);
+    await store.load();
+    const first = await store.raiseNotice({ projectId: "p1", threadId: "t1", dedupeKey: "forks-dropped:t1", title: "題", detail: "中身" });
+    assert.equal(first.kind === "notice" ? first.threadId : "x", "t1");
+    // 同じ鍵なら会話が違っても1件（鍵は今までどおり Project と dedupeKey）
+    const second = await store.raiseNotice({ projectId: "p1", threadId: "t2", dedupeKey: "forks-dropped:t1", title: "題", detail: "中身" });
+    assert.equal(second.id, first.id);
+    const withoutThread = await store.raiseNotice({ projectId: "p1", dedupeKey: "container-stop:p1", title: "題", detail: "中身" });
+    assert.equal("threadId" in withoutThread, false, "分からないときは持たない");
+
+    const reloaded = new InboxStore(dir, log);
+    await reloaded.load();
+    const again = reloaded.get(first.id);
+    assert.equal(again?.kind === "notice" ? again.threadId : "x", "t1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("同じお知らせがほぼ同時に来ても1件（確かめてから書くまでの間に割り込まれない）", async () => {
   await withStore(async (store) => {
     const input = { projectId: "p1", dedupeKey: "module-connect:filesystem-p1", title: "filesystem を繋げませんでした", detail: "x" };

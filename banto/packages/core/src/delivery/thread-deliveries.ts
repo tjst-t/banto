@@ -56,7 +56,7 @@ export interface ThreadDeliveriesDeps {
   projectThread: ProjectThreadStore;
   turns: ThreadTurns;
   /** 人への知らせ（受信箱の「お知らせ」） */
-  notify(input: { projectId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
+  notify(input: { projectId: string; threadId: string; dedupeKey: string; title: string; detail: string }): Promise<void>;
   /**
    * **ほかの理由で起こさずに留める**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。留めるならその理由。起こし直しの
    * たびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間、届いたものでも起こさない
@@ -105,6 +105,7 @@ export class ThreadDeliveries {
     await this.deps
       .notify({
         projectId: thread.projectId,
+        threadId: thread.id,
         dedupeKey: `delivery:${deliveryId}`,
         title: input.title,
         detail: `${where}に届きました。自動では AI を起こしませんでした——${decision.reason}。次にこの Thread で送ると AI に渡ります`,

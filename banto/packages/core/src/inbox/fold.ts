@@ -29,6 +29,7 @@ export type InboxEvent =
       payload: {
         id: string;
         projectId?: string;
+        threadId?: string;
         dedupeKey: string;
         title: string;
         detail: string;
@@ -104,6 +105,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           kind: "notice",
           id: event.payload.id,
           projectId: event.payload.projectId,
+          ...(event.payload.threadId ? { threadId: event.payload.threadId } : {}),
           dedupeKey: event.payload.dedupeKey,
           title: event.payload.title,
           detail: event.payload.detail,

@@ -148,6 +148,7 @@ async function raiseGaveUp(deps: TurnContinuationDeps, threadId: string, turnId:
   const where = `${project?.name ?? "Project"} の ${thread.title ?? (thread.kind === "base" ? "Base Thread" : "Fork Thread")}`;
   return deps.inbox.raiseNotice({
     projectId: thread.projectId,
+    threadId,
     dedupeKey: `turn-resume:${threadId}:${turnId}`,
     title: RESUME_GAVE_UP_TITLE,
     detail: `${where}——起こし直しで続けて ${cuts} 回切れました。続けるなら「続ける」を押すか、この会話で次を送ってください`,

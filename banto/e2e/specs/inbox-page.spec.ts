@@ -12,12 +12,15 @@
 //   5. 選択肢を押すと返信の欄に入り、Enter で送る——その Thread を開いていなくても送れて、カードは「送りました」を出して
 //      外れ、host でそのターンが最後まで走る（画面は流れを読まない）。終わると、まとめの無いレビュー待ちとして戻ってくる
 //   6. キー操作：j／k で移る、e で見た、o で会話を開く（受信箱が閉じ、その Fork が開く）。Escape で閉じる
+//   7. お知らせ（「直してほしいこと」）からも移れる（追加・2026-10-15、ユーザー「全部のカードから関係する会話へ」）：会話の分かる
+//      お知らせ（Fork を立てなかった——閉じた Fork でも）は「会話を開く」でその Fork へ（閉じた帯つき）、Project だけ分かる
+//      お知らせ（Module を繋げなかった）は「Project を開く」でその Project へ。o キーも同じ先。移ってもお知らせは残る
 import { test, expect, type Page } from "../test-base.js";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
+import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";
+import { expectProjectOpen, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -33,7 +36,17 @@ type HostThread = {
   messages: Array<{ role: string; text: string; origin?: unknown }>;
   lastTurn?: { outcome?: string };
 };
-type InboxItem = { id: string; kind: string; threadId?: string; liveness?: string; acknowledged?: boolean; turn?: Record<string, unknown> };
+type InboxItem = {
+  id: string;
+  kind: string;
+  threadId?: string;
+  projectId?: string;
+  threadKind?: string;
+  title?: string;
+  liveness?: string;
+  acknowledged?: boolean;
+  turn?: Record<string, unknown>;
+};
 
 async function api<T>(page: Page, path: string, init?: { method?: string; data?: unknown }): Promise<T> {
   const res = await page.request.fetch(`${CORE_BASE_URL}${path}`, { method: init?.method ?? "GET", headers, data: init?.data });
@@ -247,6 +260,104 @@ test("全面の受信箱で、判断待ちに答え・まとめと返事を読�
   await page.keyboard.press("Escape");
   await expect(inbox).toBeHidden();
   await expect(page).not.toHaveURL(/overlay=inbox/);
+
+  expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
+});
+
+test("お知らせのカードからも移れる——会話の分かるものはその会話（閉じた Fork も）、Project だけ分かるものはその Project", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  const stamp = Date.now();
+
+  // 会話の分かるお知らせ：Fork の中で start_forks を呼んで失敗したターン→「Fork を立てませんでした」（その Fork が出どころ）。
+  // 出たあとでその Fork を閉じる——閉じた Fork へも同じ道で行ける
+  const projectA = await api<{ id: string }>(page, "/api/projects", {
+    method: "POST",
+    data: { name: `E2E Inbox Jump A ${stamp}`, root: mkdtempSync(join(tmpdir(), "banto-e2e-inbox-jump-a-")) },
+  });
+  const baseA = await api<{ id: string }>(page, `/api/projects/${projectA.id}/threads`, { method: "POST" });
+  const fork = await api<{ id: string }>(page, `/api/threads/${baseA.id}/fork`, { method: "POST", data: { title: "分けて進める" } });
+  await page.request.post(`${CORE_BASE_URL}/api/threads/${fork.id}/messages`, {
+    headers,
+    data: {
+      prompt:
+        "2つに分けて" +
+        fakeTurn({
+          tools: [{ server: "banto-thread", name: "start_forks", args: { forks: [{ title: "片方", instruction: "やる" }] } }],
+          fail: "API が途中で落ちた",
+        }),
+    },
+    timeout: 120_000,
+  });
+  await expect
+    .poll(async () => (await inboxItems(page)).find((i) => i.kind === "notice" && i.projectId === projectA.id && i.title === "Fork を立てませんでした")?.threadId, {
+      timeout: 60_000,
+      message: "Fork を立てなかったお知らせが出ない",
+    })
+    .toBe(fork.id);
+  await api(page, `/api/threads/${fork.id}/close`, { method: "POST" });
+  const forkNotice = (await inboxItems(page)).find((i) => i.kind === "notice" && i.threadId === fork.id)!;
+  expect(forkNotice, "host が行き先を添えていない").toMatchObject({ projectId: projectA.id, threadKind: "fork" });
+
+  // Project だけ分かるお知らせ：その Project の filesystem だけ起動できない（置き場をファイルで塞ぐ）→「filesystem を繋げませんでした」
+  const nameB = `E2E Inbox Jump B ${stamp}`;
+  const projectB = await api<{ id: string }>(page, "/api/projects", {
+    method: "POST",
+    data: { name: nameB, root: mkdtempSync(join(tmpdir(), "banto-e2e-inbox-jump-b-")) },
+  });
+  await api(page, `/api/projects/${projectB.id}/threads`, { method: "POST" });
+  mkdirSync(join(DATA_DIR, "modules"), { recursive: true });
+  writeFileSync(join(DATA_DIR, "modules", `filesystem-${projectB.id}`), "ディレクトリではない\n");
+  await page.request.post(`${CORE_BASE_URL}/api/projects/${projectB.id}/modules/prepare`, { headers });
+  await expect
+    .poll(async () => (await inboxItems(page)).filter((i) => i.kind === "notice" && i.projectId === projectB.id).map((i) => i.title), {
+      timeout: 60_000,
+      message: "Module を繋げなかったお知らせが出ない",
+    })
+    .toContain("filesystem を繋げませんでした");
+  const moduleNotice = (await inboxItems(page)).find((i) => i.kind === "notice" && i.projectId === projectB.id)!;
+  expect(moduleNotice.threadId, "Project だけのお知らせに会話が付いた").toBeUndefined();
+
+  // ---- 画面：会話の分かるお知らせ→「会話を開く」で閉じた Fork へ --------------------------------------------------
+  await openApp(page);
+  const inboxButton = page.getByRole("button", { name: /^受信箱/ }).first();
+  const inbox = page.getByRole("dialog", { name: "受信箱" });
+  await inboxButton.click();
+  const fixSection = inbox.getByTestId("inbox-section-fix");
+  const forkCard = fixSection.locator(`[data-id="${forkNotice.id}"]`);
+  await expect(forkCard.getByTestId("inbox-notice-title")).toHaveText("Fork を立てませんでした", { timeout: 15_000 });
+  await expect(forkCard.getByTestId("inbox-card-project")).toHaveText(`E2E Inbox Jump A ${stamp}`);
+  await expect(forkCard.getByTestId("inbox-card-thread")).toHaveText("分けて進める");
+  const toThread = forkCard.getByTestId("inbox-open-thread");
+  await expect(toThread).toHaveAttribute("aria-label", "会話を開く");
+  await expect(toThread).toHaveAttribute("href", `/p/${projectA.id}?fork=${fork.id}`);
+  await toThread.click();
+  await expect(inbox).toBeHidden({ timeout: 15_000 });
+  await expect(page).toHaveURL(new RegExp(`/p/${projectA.id}\\?fork=${fork.id}`));
+  const forkLayer = page.locator('[data-layer="fork"]');
+  await expect(forkLayer.getByTestId("fork-closed-banner")).toContainText("この Fork は閉じました", { timeout: 15_000 });
+  // 移っても「見た」にしない——直すまで残す
+  expect((await inboxItems(page)).some((i) => i.id === forkNotice.id), "移っただけでお知らせが消えた").toBe(true);
+
+  // ---- 画面：Project だけのお知らせ→ o キーで「Project を開く」と同じ先へ ---------------------------------------------
+  await inboxButton.click();
+  await expect(inbox).toBeVisible();
+  const moduleCard = fixSection.locator(`[data-id="${moduleNotice.id}"]`);
+  await expect(moduleCard.getByTestId("inbox-notice-title")).toHaveText("filesystem を繋げませんでした", { timeout: 15_000 });
+  await expect(moduleCard.getByTestId("inbox-card-project")).toHaveText(nameB);
+  await expect(moduleCard.getByTestId("inbox-card-thread")).toHaveCount(0);
+  await expect(moduleCard.getByTestId("inbox-open-thread")).toHaveCount(0);
+  const toProject = moduleCard.getByTestId("inbox-open-project");
+  await expect(toProject).toHaveAttribute("aria-label", "Project を開く");
+  await expect(toProject).toHaveAttribute("href", `/p/${projectB.id}`);
+  await moduleCard.click();
+  await expect(moduleCard).toHaveAttribute("data-focused", "true");
+  await page.keyboard.press("o");
+  await expect(inbox).toBeHidden({ timeout: 15_000 });
+  await expect(page).toHaveURL(new RegExp(`/p/${projectB.id}`));
+  expect(new URL(page.url()).searchParams.get("fork"), "Project だけのお知らせで Fork を開いた").toBeNull();
+  await expectProjectOpen(page, nameB);
+  expect((await inboxItems(page)).some((i) => i.id === moduleNotice.id), "移っただけでお知らせが消えた").toBe(true);
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
 });

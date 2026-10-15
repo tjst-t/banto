@@ -293,6 +293,12 @@ export interface RealInboxJudgment {
   choices?: string[];
   liveness: "live" | "answered" | "timed_out";
   createdAt: string;
+  /**
+   * **行き先**（追加・2026-10-15、アーキ仕様 §2.4）。host がその Thread を知っていれば添える——画面が Thread を手元に
+   * 持っていなくても（読み込み前・閉じた Fork）カードから会話へ移れるように
+   */
+  projectId?: string;
+  threadKind?: "base" | "fork";
 }
 
 /** レビュー待ち——**ターンが終わった**（決定・2026-09-27）。見れば消える */
@@ -303,6 +309,12 @@ export interface RealInboxReview {
   summary: string;
   acknowledged: boolean;
   createdAt: string;
+  /**
+   * **行き先**（追加・2026-10-15、アーキ仕様 §2.4）。host がその Thread を知っていれば添える——画面が Thread を手元に
+   * 持っていなくても（読み込み前・閉じた Fork）カードから会話へ移れるように
+   */
+  projectId?: string;
+  threadKind?: "base" | "fork";
   /** そのターンの中身（追加・2026-10-15、アーキ仕様 §2.4「受信箱の中で読んで答える」）。Thread が無ければ無い */
   turn?: RealReviewTurn;
 }
@@ -332,6 +344,12 @@ export interface RealInboxNotice {
   id: string;
   /** 無い＝banto 全体（instance に1本の Module） */
   projectId?: string;
+  /**
+   * **どの会話で起きたか**（追加・2026-10-15、アーキ仕様 §2.4）。分かるときだけ。「続ける」のお知らせは host が
+   * `resume` の Thread を入れて返す。`threadKind` はその Thread の種類（host が知っていれば）
+   */
+  threadId?: string;
+  threadKind?: "base" | "fork";
   dedupeKey: string;
   title: string;
   detail: string;

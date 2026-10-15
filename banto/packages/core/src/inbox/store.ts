@@ -150,6 +150,8 @@ export class InboxStore {
    */
   async raiseNotice(input: {
     projectId?: string;
+    /** どの会話で起きたか（`NoticeItem.threadId`）。重ならない鍵には入れない */
+    threadId?: string;
     dedupeKey: string;
     title: string;
     detail: string;

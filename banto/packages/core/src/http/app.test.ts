@@ -2294,6 +2294,42 @@ test("GET /api/admin/host-health は合言葉があるときだけ本体の止�
   );
 });
 
+test("GET /api/inbox は各項目に Project と Thread の種類を添える——画面が Thread を持っていなくても会話へ移れる", async () => {
+  await withApp(async (base, token, dir, { inbox, projectThread }) => {
+    const headers = { authorization: `Bearer ${token}` };
+    const project = await projectThread.createProject("demo", dir);
+    const baseThread = await projectThread.createBaseThread(project.id);
+    const fork = await projectThread.forkThread(baseThread.id, { title: "調べもの" });
+    const judgment = await inbox.raiseJudgment({ threadId: fork.id, source: "text", message: "承認" });
+    const review = await inbox.raiseReview({ threadId: baseThread.id, summary: "終わりました" });
+    const inThread = await inbox.raiseNotice({ projectId: project.id, threadId: fork.id, dedupeKey: "a", title: "会話の", detail: "x" });
+    const resumable = await inbox.raiseNotice({
+      projectId: project.id,
+      dedupeKey: "b",
+      title: "続ける",
+      detail: "x",
+      resume: { threadId: baseThread.id, turnId: "turn-1" },
+    });
+    const projectOnly = await inbox.raiseNotice({ projectId: project.id, dedupeKey: "c", title: "Project の", detail: "x" });
+    const instance = await inbox.raiseNotice({ dedupeKey: "d", title: "全体の", detail: "x" });
+    const unknownThread = await inbox.raiseJudgment({ threadId: "", source: "message", message: "起き直し" });
+
+    const items = (await (await fetch(`${base}/api/inbox`, { headers })).json()) as Array<Record<string, unknown>>;
+    const placeOf = (id: string) => {
+      const i = items.find((x) => x.id === id);
+      return { threadId: i?.threadId, projectId: i?.projectId, threadKind: i?.threadKind };
+    };
+    assert.deepEqual(placeOf(judgment.id), { threadId: fork.id, projectId: project.id, threadKind: "fork" });
+    assert.deepEqual(placeOf(review.id), { threadId: baseThread.id, projectId: project.id, threadKind: "base" });
+    assert.deepEqual(placeOf(inThread.id), { threadId: fork.id, projectId: project.id, threadKind: "fork" });
+    // 「続ける」のお知らせは、続けるターンの Thread
+    assert.deepEqual(placeOf(resumable.id), { threadId: baseThread.id, projectId: project.id, threadKind: "base" });
+    assert.deepEqual(placeOf(projectOnly.id), { threadId: undefined, projectId: project.id, threadKind: undefined });
+    assert.deepEqual(placeOf(instance.id), { threadId: undefined, projectId: undefined, threadKind: undefined });
+    assert.deepEqual(placeOf(unknownThread.id), { threadId: "", projectId: undefined, threadKind: undefined });
+  });
+});
+
 test("GET /api/inbox はレビュー待ちにそのターンの中身を添える（読むたびに Thread の記録から。お知らせはそのまま）", async () => {
   await withApp(
     async (base, token, dir, { inbox, projectThread }) => {

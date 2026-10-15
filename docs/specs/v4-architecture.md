@@ -871,6 +871,12 @@ SDK の動的セクション（cwd・git status 等）は一切付かない（`e
 返信は会話の入力欄と同じ口（その Thread にターンを始める）で送る。受信箱は送ったら「見た」にする。判断待ちは今の答える口
 （`POST /api/inbox/:id/answer`）。
 
+**どの項目からも、関係する会話へ移れる**（同日追加、ユーザー「全部のカードから関係する会話へジャンプしたい」）。お知らせは任意の
+`threadId`（どの会話で起きたか）を持つ——届いたが起こさなかった宛先・Fork を立てなかった親・「続ける」のターン・Module の
+`relayRaiseNotice`（呼び出しの印 `dev.banto/callId` が1つの会話の呼び出しを指すときだけ）。重ならない鍵には入れない。
+`GET /api/inbox` は、host が Thread を知っていれば各項目に `projectId` と `threadKind`（base／fork）を添える（返すときに引く。
+お知らせの会話は `threadId`、無ければ `resume.threadId`）。
+
 **`report_turn` の URL**（同日追加）：`outcome.artifacts[].url` と `decisions[].options[].url`（どちらも任意、`http(s)` だけ）。
 その選択肢の中身（モック・公開した画面）を、選ぶ前に開いて見比べられるように。画面は押せるリンクにする（§6.41）。
 

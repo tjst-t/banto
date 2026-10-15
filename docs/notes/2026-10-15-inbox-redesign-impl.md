@@ -43,3 +43,23 @@ v4-frontend.md §6.41。見本はモック（`mock/components/banto/inbox/inbox-
 - 返事の本文は会話の Markdown の部品（`MarkdownText`）を `TextMessagePartProvider` で包んで使う（リンクは別タブ）
 - 字の大きさはモックの任意値（`text-[13px]` 等）を banto の段（xs 11・sm 12・md 13・lg 15）に置き換えた
   （`check-tokens.mjs` が任意値を落とす）
+
+## 全部のカードから行き先へ（同日追記、ユーザー「全部のイベントから関連する会話にジャンプしたい」）
+
+- それまで：お知らせのカードには口が無く（`NoticeItem` は `projectId` だけ）、判断待ち・返ってきた会話も画面の手元に Thread が
+  無い（読み込み前）と口が出なかった
+- host：`NoticeItem.threadId`（任意）を足した。**重ならない鍵には入れない**——同じことは会話が違っても1件のまま
+  （例：Module を繋げないは、どの会話で気づいたかが本質ではない）。`GET /api/inbox` は返すときに `projectId`・`threadKind` を
+  添える（Event Store の形は変えない）
+- **Module の `relayRaiseNotice` は、呼び出しの印（`dev.banto/callId`）が付いていて1つの会話を指すときだけ**会話を添える。
+  印が無いときに接続で走っている呼び出しから引く（`threadFor` の印なしの選び方）と、裏で起きた失敗に、たまたま同じ Module を
+  呼んでいた別の会話を付けてしまう——付けないほうを選んだ。依頼文は「host が刻む Thread の印 dev.banto/thread」と書いて
+  いたが、そういう印は無く、host が刻むのは `dev.banto/callId`（台帳がその呼び出しの Thread を知っている）だった
+- 付けなかったもの：Module を繋げない（Project ごと・banto 全体）・コンテナを止められない・別の実行場所の注意／移せない
+  （Project だけ）・本体の Claude ログイン切れ（banto 全体）
+- 画面の行き先：Thread → その会話／Project だけ → その Project／banto 全体の Module のもの → 設定の Module 一覧
+  （`/settings?section=roles`。繋がっているかと理由が出る）。**本体の Claude ログイン切れには口を出さない**——依頼は「設定へ」
+  だったが、banto の設定に本体の Claude ログインを直す面は無い（直すのは banto を動かしている端末で `claude` を起こすこと。
+  Project 設定の「Claude のログイン」は Project ごとの中継のオン／オフと直近の 401 を見せるだけ）。行き先の無い口は出さない（規則13）
+- 閉じた Fork：一覧の読み込み（`hydrateRealProjects`）が閉じた Fork も登録しているので、`?fork=` でそのまま開き、「閉じました」の
+  帯が出る。別の道は作らなかった
