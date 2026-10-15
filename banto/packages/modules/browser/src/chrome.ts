@@ -294,6 +294,20 @@ export function pulseArgs(socket: string): string[] {
 }
 
 /**
+ * PulseAudio の環境。置き場は自分の分だけ（人の機械の PulseAudio の置き場・設定を読まない）。**D-Bus の住所と DISPLAY は
+ * 渡さない**——pulseaudio は `-n` でも session bus に繋がると D-Bus の名前 `org.PulseAudio1` を取りに行き、取れないと終了
+ * コード 1 で終わる（実測・2026-10-15：同じ機械・同じユーザーで2本目が「D-Bus name org.PulseAudio1 already taken」）。同じ
+ * ユーザーで Browser Module が2つ動く・人の机の PulseAudio がすでに名前を持っていると、後から起きたほうが音無しになる。
+ * DISPLAY は D-Bus の自動起動（X11 から bus を探す）に使われるので一緒に外す
+ */
+export function pulseEnv(base: NodeJS.ProcessEnv, dir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, PULSE_RUNTIME_PATH: dir, PULSE_STATE_PATH: dir, XDG_RUNTIME_DIR: dir };
+  delete env.DBUS_SESSION_BUS_ADDRESS;
+  delete env.DISPLAY;
+  return env;
+}
+
+/**
  * ブラウザの音の行き先（PulseAudio の空のシンク）を立てる。口（UNIX ソケット）は短い置き場に作る（108 バイトまで——
  * chromeEnv の TMPDIR と同じ）。**立たなければ理由を返す**——ブラウザは音無しで起こす（断らない）
  */
@@ -307,8 +321,7 @@ async function startAudio(pidFile: string): Promise<{ server: string; process: C
   const socket = join(dir, "native");
   let stderr = "";
   const pa = spawn("pulseaudio", pulseArgs(socket), {
-    // 置き場は自分の分だけ（人の機械の PulseAudio の置き場・設定を読まない）
-    env: { ...process.env, PULSE_RUNTIME_PATH: dir, PULSE_STATE_PATH: dir, XDG_RUNTIME_DIR: dir },
+    env: pulseEnv(process.env, dir),
     stdio: ["ignore", "ignore", "pipe"],
   });
   pa.stderr!.on("data", (c: Buffer) => (stderr = (stderr + c.toString()).slice(-2000)));

@@ -2679,11 +2679,13 @@ JPEG の経路は消さずに残す。
 パッケージは同じ `packages/modules/browser`（`audio.ts`＝音の行き先と取り込みの子、`audio-sync.ts`＝人の画面で映像に合わせる、
 `chrome.ts`＝PulseAudio を立てる）。経緯と測ったものは `docs/notes/2026-10-12-browser-video.md`「段4」。
 
-- **音の行き先は PulseAudio の空のシンク**（PipeWire より軽い——1プロセス・RSS 約 9 MiB・D-Bus が要らない。PipeWire は
+- **音の行き先は PulseAudio の空のシンク**（PipeWire より軽い——1プロセス・RSS 約 9 MiB・D-Bus を使わずに立てられる。PipeWire は
   pipewire・pipewire-pulse・wireplumber・D-Bus の4つ。測ったのはノート）。Xvfb と並べて Module が1つ立てる：設定を読まず
   （`pulseaudio -n`）、口（`module-native-protocol-unix`、短い置き場の UNIX ソケット・`auth-anonymous=1`）と空のシンク
   （`module-null-sink sink_name=banto`、48kHz・2ch）だけを足す。ブラウザには `PULSE_SERVER` で教える（外から来た
-  `PULSE_SERVER` は渡さない——人の機械のスピーカーに鳴らさない）。止める・残ったものを次に止める（pid の置き場）は Xvfb と同じ
+  `PULSE_SERVER` は渡さない——人の機械のスピーカーに鳴らさない）。**PulseAudio には D-Bus の住所（`DBUS_SESSION_BUS_ADDRESS`）と
+  `DISPLAY` を渡さない**——session bus に繋がると `-n` でも名前 `org.PulseAudio1` を取りに行き、同じユーザーの2本目（ほかの
+  Browser Module・人の机の PulseAudio）が取れずに終わる。止める・残ったものを次に止める（pid の置き場）は Xvfb と同じ
 - **PulseAudio はブラウザを入れる段で入れる**（`pulseaudio`、`--no-install-recommends`、sudo の apt）。取り込みは GStreamer の
   `pulsesrc`（plugins-good）と `opusenc`（plugins-base）で、映像の包みに入っている——**GStreamer が無ければ音も無し**。
   **入れられない・立たなくてもブラウザは断らない**——音無しで映し、理由を Module のログと画面の様子（`audioUnavailable`）に

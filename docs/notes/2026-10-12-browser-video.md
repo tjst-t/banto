@@ -76,3 +76,11 @@
   開いたときは画面に触れた最初の操作（pointerdown・keydown）で鳴らし始める——覚えていても、人の操作無しには鳴らせない。
 - 単体の試験は Opus を python3 の gi の opusdec で復号し、880Hz の正弦波の高さを負から正へ 0 を跨ぐ数で見る（5回中0回落ち）。
   動画の単体の試験は ffmpeg が無い機械では飛ぶ（この機械に入っていなかったので、今回入れて全部走らせた）。
+- **訂正（レビュー、2026-10-15）——「D-Bus が要らない」は bus が見えている環境では成り立っていなかった**。pulseaudio は `-n`
+  でも、環境に `DBUS_SESSION_BUS_ADDRESS` があると session bus に繋いで D-Bus の名前 `org.PulseAudio1` を取りに行き、取れないと
+  終了コード 1 で終わる（`E: [pulseaudio] main.c: D-Bus name org.PulseAudio1 already taken.`）。同じ機械・同じユーザーで
+  Browser Module が2つ動く（別のサーバに複数の Project）か、人の机の PulseAudio がすでに名前を持っていると、後から起きたほうが
+  常に音無しになっていた（view.test の「倍率2の画面で開くと…」の2つ目のブラウザで出ていた。その試験は音を見ないので通っていた）。
+  コンテナの測りでは bus が無かったので見えなかった。PulseAudio を立てる環境から `DBUS_SESSION_BUS_ADDRESS` と `DISPLAY`（D-Bus
+  の自動起動に使う）を外して直した（`pulseEnv`）。この機械（bus あり）で Module の起こし方のまま2本同時に立つことを確かめ、
+  view.test の全部を走らせて「already taken」が0回

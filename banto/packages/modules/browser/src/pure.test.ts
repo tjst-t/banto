@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { BrowserError, parseAct, parseConsoleQuery, parseNetworkQuery, parseNetworkRequest, parseOpen, parseScreenshot, parseSettings, parseTabs } from "./args.js";
 import { attachRecorder, type CdpLike } from "./cdp-recorder.js";
 import { pageContent } from "./content.js";
-import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv, pulseArgs } from "./chrome.js";
+import { browserScale, chromeArgs, chromeEnv, killStale, localeEnv, pulseArgs, pulseEnv } from "./chrome.js";
 import { AUDIO_PACKAGES, encodeAudioMessage, ensureAudio } from "./audio.js";
 import { AUDIO_LAG_MS, AUDIO_LEAD_MS, AUDIO_MIN_DELAY_MS, AUDIO_RESYNC_MS, newAudioSync, syncArrived, syncDrawn, syncPlan } from "./audio-sync.js";
 import { acceptLanguages, parseBrowserVersion } from "./identity.js";
@@ -394,6 +394,13 @@ test("音：PulseAudio は設定を読まず（-n）、口と空のシンク（4
   assert.ok(args.includes("module-native-protocol-unix socket=/tmp/banto-pulse-a/native auth-anonymous=1"));
   assert.ok(args.includes("module-null-sink sink_name=banto rate=48000 channels=2"));
   assert.deepEqual(AUDIO_PACKAGES, ["pulseaudio"]);
+});
+
+test("音：PulseAudio を立てる環境に D-Bus の住所と DISPLAY を渡さない（2本目が org.PulseAudio1 を取れずに終わるため）。置き場は自分の分", () => {
+  const env = pulseEnv({ DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus", DISPLAY: ":0", PATH: "/bin", HOME: "/h" }, "/tmp/banto-pulse-a");
+  assert.equal(env.DBUS_SESSION_BUS_ADDRESS, undefined);
+  assert.equal(env.DISPLAY, undefined);
+  assert.deepEqual([env.PULSE_RUNTIME_PATH, env.PULSE_STATE_PATH, env.XDG_RUNTIME_DIR, env.PATH, env.HOME], ["/tmp/banto-pulse-a", "/tmp/banto-pulse-a", "/tmp/banto-pulse-a", "/bin", "/h"]);
 });
 
 test("音：sudo しない箱では入れずに理由と入れ方を返す（ブラウザは断らない）。入れられなければ理由を返す", async () => {
