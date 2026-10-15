@@ -325,6 +325,14 @@ export interface HostRelayServerOptions {
   /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
   approvalProgressIntervalMs?: number;
   /**
+   * **使うときに起こす宛先**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」——入れるのは初めて使うとき）。宛先が
+   * 繋がっていなければ、権限を確かめる前にこれを呼ぶ。起こせる宛先（同梱の道具用のコンテナの Module）でなければ何もせず返し、
+   * 下の確かめがいつもどおり断る。起こしている途中なら理由つきで投げる（`TOOLS_PREPARING_MARKER` 付き）。渡さなければ起こさない
+   */
+  connectOnDemand?(caller: CallerIdentity, targetModule: string): Promise<void>;
+  /** 使うときに起こせる宛先のうち、その呼び元が呼べるもの（`relayListTargets` に載せる。役割は呼び元の依存と重なるものだけ） */
+  onDemandTargets?(caller: CallerIdentity): Array<{ name: string; roles: string[] }>;
+  /**
    * **host からその Project のコンテナに届くアドレス**（追加・2026-09-27、`docs/specs/v4-modules.md` §4.3 Publish）。
    * コンテナのアドレスは DHCP で変わりうるので、公開の実装は覚えずに引き直す。渡さなければこの口は断る。
    *
@@ -590,7 +598,12 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const onBehalfOf = onBehalfOfProject(identity, opts, callId);
 
     if (request.params.name === "relayListTargets") {
-      const targets = opts.registry.allowedTargets(identity, onBehalfOf);
+      const listed = opts.registry.allowedTargets(identity, onBehalfOf);
+      // **使うときに起こす宛先も載せる**（まだ繋がっていなくても、呼べば起きる——`connectOnDemand`）
+      const targets = [
+        ...listed,
+        ...(opts.onDemandTargets?.(identity) ?? []).filter((t) => !listed.some((l) => l.name === t.name)),
+      ];
       // **どの Project として一覧を作ったか**も添える——Project の Module が出ないとき、「その Project に無い」と
       // 「どの Project のための呼び出しか決められない」を呼び出し元が取り違えないため（規則2）
       const project = identity.projectId ?? onBehalfOf;
@@ -676,16 +689,16 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const targetModule = String(args.targetModule ?? "");
     const kind: RelayAuditRecord["kind"] = request.params.name === "relayReadResource" ? "resource" : "tool";
     const name = String(args.name ?? args.uri ?? "");
-    // **宛先は先に引く**——承認の鍵に「いま何のコードが動いているか」を入れるため
-    const target = opts.registry.getModule(targetModule);
+    // **宛先は先に引く**——承認の鍵に「いま何のコードが動いているか」を入れるため（使うときに起こす宛先は、起こした後に下で引き直す）
+    const targetBefore = opts.registry.getModule(targetModule);
     const call = {
       projectId: identity.projectId,
       callerModule: identity.moduleName,
       targetModule,
       kind,
       name,
-      // **外から繋いだ Module への承認は、そのコードに縛る**（上記 codeId）
-      ...(target?.meta.origin !== "bundled" && target?.codeId ? { targetCodeId: target.codeId } : {}),
+      // **外から繋いだ Module への承認は、そのコードに縛る**（上記 codeId）。使うときに起こすのは同梱だけなので、起こす前に引いた値でよい
+      ...(targetBefore?.meta.origin !== "bundled" && targetBefore?.codeId ? { targetCodeId: targetBefore.codeId } : {}),
     };
 
     // **何を指していたか**は、宛先の tool を読むまで分からない（下で埋まる）
@@ -707,6 +720,18 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       await audit(false, "起こし直したときの問いは banto 本体だけが呼べる");
       throw new Error(`${name} は banto 本体だけが呼べます（中継からは呼べません）`);
     }
+
+    if (!opts.registry.getModule(targetModule) && opts.connectOnDemand) {
+      try {
+        await opts.connectOnDemand(identity, targetModule);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await audit(false, reason);
+        throw err;
+      }
+    }
+    // 起こしたなら引き直す（繋がっていなければ undefined のまま——下で断る）
+    const target = opts.registry.getModule(targetModule);
 
     const notAllowed = opts.registry.whyNotAllowed(identity, targetModule, onBehalfOf);
     if (notAllowed) {

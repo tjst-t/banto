@@ -970,7 +970,8 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     },
     meta: {
       satisfies: ["filesystem"],
-      dependsOn: [],
+      // PDF・Office の変換は変換役に頼む（v4-modules.md §2.2「変換役」）。無くても PDF・docx-preview・テキストは読める
+      dependsOn: [{ role: "documents", required: false }],
       isolation: "subprocess",
       scope: "project",
       confinement: { kind: "landlock", root: "project" },
@@ -1053,6 +1054,34 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
       isolation: "subprocess",
       scope: "instance",
       confinement: { kind: "landlock", root: "none", profile: "files-only" },
+    },
+  },
+  {
+    // **変換役**（決定・2026-10-15、ユーザー、v4-modules.md §2.2「変換役」）。LibreOffice で PDF への変換・xlsx の計算し直し、
+    // poppler でページの画像。banto 全体で1つ、**同梱の道具用のコンテナ**で動き（第三者の Module と同居しない・中で sudo
+    // できない）、要るパッケージは core が初めて使うときに入れる（約600MB・数分）。1件ごとに bubblewrap で囲んで nobody に
+    // 落とすので、囲いを起こす root で動く（`runAsRoot`）。AI には見せない（tool の可視性 module）——AI は FileSystem を通す
+    name: "documents",
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/documents/dist/server.js"],
+    },
+    meta: {
+      satisfies: ["documents"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      toolsContainer: {
+        aptPackages: [
+          "libreoffice-writer-nogui",
+          "libreoffice-calc-nogui",
+          "libreoffice-impress-nogui",
+          "poppler-utils",
+          "fonts-noto-cjk",
+          "bubblewrap",
+        ],
+        runAsRoot: true,
+      },
     },
   },
   {

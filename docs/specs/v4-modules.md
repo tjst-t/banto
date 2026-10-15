@@ -1261,10 +1261,13 @@ host に預け、リロードしても別タブに出しても、そのまま開
 
 #### PDF・Office のファイルを読んでコメントを返す（決定・2026-10-15、ユーザー。Backlog のストーリー #301 office-review）
 
-> **実装の状況（2026-10-15、#302・#307・#303）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
+> **実装の状況（2026-10-15、#302・#307・#303・#304）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
 > PDF のコメント（ページ・選んだ文・範囲。置き場・一覧・「AI に返す」）、docx の docx-preview での表示まで。表のセルを指すコメントは
-> 置き場と返す文の形だけ（表の画面 #306 が無いので、画面からはまだ付けられない）。docx のコメント（選んだ文と見出し）・変換役・
-> `readDocument`・pptx・xlsx は未実装。変換役が入るまで、docx の「元に近い見た目で見る」は出さず、描けなかったら理由を出して止まる。
+> 置き場と返す文の形だけ（表の画面 #306 が無いので、画面からはまだ付けられない）。**変換役 `documents`（#304）と FileSystem の
+> 画面向けの `convertDocument`・`readFileRange` の `converted` は実装済み**（下の「変換役」）——ただし画面はまだ使っていない
+> （pptx・xlsx の画面・docx の「元に近い見た目で見る」・ページの画像への切り替えのボタンは未実装、規則13）。docx のコメント
+> （選んだ文と見出し）・`readDocument` は未実装。変換役を画面が使うまで、docx の「元に近い見た目で見る」は出さず、描けなかったら
+> 理由を出して止まる。
 
 **目的**：AI が作った・手元にある PDF・Word（docx）・PowerPoint（pptx）・Excel（xlsx）を、**元の見た目で読み**、
 **ページ・選んだ文・範囲・セルを指してコメントを付け、まとめて AI に返す**。**編集はしない**（ユーザー）。
@@ -1372,6 +1375,11 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   - **入れるのは core**：同梱の Module は宣言（`meta`）で「道具用のコンテナで動く」と、要る apt のパッケージを名乗る。core が
     コンテナを用意するとき（＝その Module を初めて起こすとき）に root で `incus exec` して入れる（`base-image.ts` と同じ形）。
     同梱でない Module が名乗ったら断る（fail closed、宣言の読み込みで落とす）
+- **起こすのも初めて使うとき**（実装・2026-10-15）：道具用のコンテナの Module は、banto を起こしたとき・画面の一覧を出すときには
+  起こさない。中継で初めて呼ばれたとき（宛先が繋がっていなければ host が起こす。呼び元の依存にある宛先だけ）か、画面から名指して
+  呼ばれたときに起こす。まだ起きていなくても `relayListTargets` には載る。中継は 20 秒まで待ち、入れ始めたらすぐ
+  `[dev.banto/toolsPreparing]`（`TOOLS_PREPARING_MARKER`）を頭に付けた理由で断る（起こすのは続ける）。FileSystem はそれを
+  「変換役を入れています（初回だけ、数分）」に言い換え、画面向けの口では失敗ではなく `{status:"preparing", message}` で返す
 - **入れるのは初めて使うとき、自動で**（決定・2026-10-15、ユーザー）：最初の変換の頼みで `documents` を起こすと、core が道具用の
   コンテナを作り LibreOffice の writer・calc・impress の nogui と poppler・日本語フォント（約600MB・数分）を入れる。入れる前に
   置き場の空き（2GiB 以上）を確かめる。1つの道具用のコンテナを入れるのは同時に1本（core が鍵を持つ）。入れている間の頼みには
@@ -1380,14 +1388,20 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   「変換役が使えない」
 - **LibreOffice の閉じ込め**（Fable の実測：headless の変換でも文書の中の `http://` の画像を取りに行き、`file:///` の画像は
   コンテナの中のファイルを PDF に埋め込んだ）：
-  - 1件ごとに **bubblewrap**（`bwrap`）で囲む。**囲いを起こすのは道具用のコンテナの中の root**（`documents` の変換を起こす部分を
-    root で動かす。コンテナの root は host では一般ユーザーで、Project のコンテナと同じ線）、中の LibreOffice は **nobody
-    （uid・gid 65534）に落とす**（`bwrap --unshare-all --uid 65534 --gid 65534`）。一般ユーザーの `bwrap` は Ubuntu 24.04 の既定
-    （`kernel.apparmor_restrict_unprivileged_userns=1`）で止まる（Fable の実測。root から起こすと囲いができ、細工した文書を 0.8 秒で
-    PDF にし、外への通信は 0 件）。囲いの中は：ネットワーク無し（`--unshare-all`）、根は読み取り専用
-    （`/usr`・`/etc` のフォントの設定だけ見せる）、書けるのは使い捨ての作業フォルダだけ、ホーム・Module の置き場・中継の合言葉は
-    見せない、親が死ねば死ぬ（`--die-with-parent`）。Incus の中で `bwrap` が動くかは実装の最初に測る。**囲めなければ変換しない**
-    （囲まずに走らせることはしない）
+  - 1件ごとに **bubblewrap**（`bwrap`）で囲む。**囲いを起こすのは道具用のコンテナの中の root**（`documents` 全体を中の root で
+    起こす——宣言の `meta.toolsContainer.runAsRoot: true`、受けるのは道具用の箱だけ。コンテナの root は host では一般ユーザーで、
+    Project のコンテナと同じ線）、中の LibreOffice は **nobody（uid・gid 65534）に落とす**。一般ユーザーの `bwrap` は Ubuntu 24.04 の既定
+    （`kernel.apparmor_restrict_unprivileged_userns=1`）で止まる（Fable の実測。Incus の中でも同じ）。
+    **落とし方（実装・2026-10-15、Incus の中で測って決め直した）**：user namespace は作らず（`--unshare-net --unshare-ipc
+    --unshare-pid --unshare-uts --unshare-cgroup-try`）、囲いの中で **`setpriv --reuid=65534 --regid=65534 --clear-groups
+    --inh-caps=-all --bounding-set=-all --no-new-privs`** で落とす。初めに書いていた `bwrap --unshare-all --uid 65534 --gid 65534` は
+    Incus の中では `/proc` を付けられず、付けずに走らせても中のプロセスは外から見て root のまま（作った user namespace の 65534 が
+    外の 0 に対応する）だった（`docs/notes/2026-10-15-office-converter.md`）。囲いの中は：ネットワーク無し、根は読み取り専用
+    （`/usr`、`/etc` はフォントの設定と LibreOffice の設定 `/etc/libreoffice` だけ）、書けるのは使い捨ての作業フォルダだけ（コンテナの
+    `/tmp` の下、1件ごとに消す）、ホーム・Module の置き場・中継の合言葉（環境変数、`--clearenv`）は見せない、親が死ねば死ぬ
+    （`--die-with-parent`）。**囲めなければ変換しない**（最初の変換の前に囲いの中で `id` を走らせて確かめる。root で動いていない・
+    囲いが起きないなら理由を返す）。実測：囲いの外の LibreOffice は試験の文書の `http://` の画像を2回取りに行き、`file:///` の画像を
+    埋め込んだ。囲いの中では 0 回・0 個。docx・pptx・xlsx の変換は1件約1〜1.3秒、打ち切ると囲いの中のプロセスも全部止まる
   - LibreOffice のプロファイル（作業フォルダの中、1件ごとに捨てる）でマクロを無効（`MacroSecurityLevel` 最高・
     `DisableMacrosExecution`）、外のリンクを更新しない、に固定する
   - 人や Module の側では中で sudo できない（変換を起こす部分は初めから root で起きるので sudo は要らない）。変換は nobody・読み取り専用の根で走るので、乗っ取られても LibreOffice や `documents` を書き換えて次の Project の文書を
@@ -1399,6 +1413,17 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   （今は無い、`app.ts` の `readJsonBody`。stdio と同じ 10MB）
 - `documents` は1件ごとに使い捨ての作業フォルダで変換し、終わったらすぐ消す（Project の文書を残さない）。変換結果を残すのは
   頼んだ側（FileSystem の Project ごとの置き場）だけ
+- **口の形**（実装・2026-10-15）：
+  - `documents`（どれも可視性 `module`・`dev.banto/statelessTransform`）：`describe()` → `{version, fonts}`（LibreOffice・poppler の版と
+    作法の版、フォントのファイルの一覧の sha256）、`convertToPdf({data, extension})`・`recalculate({data, extension})`（表 → 式の値が
+    入った xlsx）・`renderPage({data, page, dpi?})`（PDF の1ページ → PNG）→ `{data, mimeType, bytes, ms, waitedMs, converter}`。
+    待っている間・変換している間は 10 秒ごとに途中経過を送る（中継と呼び元が上限を数え直す）。記録は
+    `[documents] <種類> <拡張子> <入力>B → <出力>B 変換 <ms>ms 待ち <ms>ms（<Project>）`（中身・ファイル名は書かない）
+  - FileSystem（画面向け、`admin`）：`convertDocument({path, to?})`（`to` は `pdf`／`spreadsheet`、既定は表なら `spreadsheet`）→
+    `{path, status:"converted", target, mimeType, bytes, cached, ms?}` か `{path, status:"preparing", message}`。変換したものは
+    `readFileRange({path, offset, length, converted: true, to?})` で読む（まだ変換していなければ理由を返す——ここでは変換しない）。
+    置き場は `BANTO_MODULE_DATA_DIR/converted/<鍵>.pdf|xlsx`、変換役の版と印は同じ所の `converter.json` に覚える（起こし直した後、
+    読むだけのために変換役を起こさない。変換の返事に違う印が来たら覚え直す）
 - **順番と公平**：変換は同時に1件。待ちは **Project ごとに3件まで**（超えたら「変換が混んでいます」で断る）、Project の間は
   順番に回す（1つの Project の連投で他を止めない）。打ち切りは**変換だけで 60 秒**（中身を運ぶ時間は中継の途中経過で数え、
   別に数える）。変換にかかった時間を記録する

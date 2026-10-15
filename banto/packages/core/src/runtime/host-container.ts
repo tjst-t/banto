@@ -115,7 +115,7 @@ export class HostContainerRuntime implements Runtime {
   async prepare(place: RuntimePlace): Promise<PreparedPlace> {
     const c = await this.ensureContainer(place);
     if (place.tools) await this.ensureTools(c.name, place.tools.aptPackages);
-    return this.preparedFrom(c);
+    return this.preparedFrom(c, place.id === this.toolsPlaceId);
   }
 
   toolsInstallStatus(): ToolsInstallStatus {
@@ -224,7 +224,7 @@ export class HostContainerRuntime implements Runtime {
     });
   }
 
-  private preparedFrom(c: ReadyContainer): PreparedPlace {
+  private preparedFrom(c: ReadyContainer, toolsPlace: boolean): PreparedPlace {
     const containers = this.containers;
     const shellHomeSource = this.opts.shellHomeSource;
     return {
@@ -252,7 +252,9 @@ export class HostContainerRuntime implements Runtime {
         return { home, sync: await resync(files), resync };
       },
       processCommand(p: RuntimeProcess) {
-        const { uid, gid } = userInfo();
+        // **root で起こすのは道具用の箱だけ**（`RuntimeProcess.asRoot`）。中で sudo できない箱の、同梱の Module だけが名乗れる
+        if (p.asRoot && !toolsPlace) throw new Error(`${p.name} を root で起こせるのは道具用のコンテナだけです（${c.name}）`);
+        const { uid, gid } = p.asRoot ? { uid: 0, gid: 0 } : userInfo();
         // 宣言が host の node を名指ししていても、中の決まった場所のものを使う
         const command = p.command === process.execPath ? CONTAINER_NODE_PATH : p.command;
         return execInContainer(c.name, { cwd: p.cwd, uid, gid, env: p.env }, command, p.args);

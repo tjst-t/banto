@@ -1996,3 +1996,53 @@ test("道具用のコンテナの Module は「banto 本体で動く」線に入
     close();
   }
 });
+
+// **使うときに起こす宛先**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」——入れるのは初めて使うとき）。変換役は起動のときには
+// 起こさず、中継で初めて呼ばれたときに host が起こす。見るのは：
+//   1. 繋がっていない宛先なら、権限を確かめる前に起こしてもらい、起きたらそのまま通す
+//   2. 起こしている途中（入れている）なら、その理由で断り、記録に残す
+//   3. まだ起きていない宛先も、呼べる相手の一覧に載る（役割は呼び元の依存と重なるものだけ）
+test("繋がっていない宛先は、中継で呼ばれたときに起こしてもらい、起きたら通す。起こしている途中なら理由で断る", async () => {
+  const registry = new RelayRegistry();
+  const server = new McpServer({ name: "fake-documents", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "convert", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "module", "dev.banto/statelessTransform": true } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "converted" }] }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const documents = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), documents.connect(c)]);
+  const targetMeta = bundledMeta({ satisfies: ["documents"], dependsOn: [], isolation: "subprocess", toolsContainer: { aptPackages: ["jq"] } }, "documents");
+  let installing = true;
+  const asked: string[] = [];
+  const { url, audits, close } = await startTestServer(registry, {
+    moduleCalls: { originFor: () => "turn", threadFor: () => ({ kind: "none" }), projectFor: () => undefined, begin: () => () => undefined },
+    async connectOnDemand(caller, target) {
+      asked.push(`${caller.moduleName}→${target}`);
+      if (target !== "documents") return;
+      if (installing) throw new Error("[dev.banto/toolsPreparing] documents に要る道具を入れています（初回だけ、数分）。あとでもう一度呼んでください");
+      registry.registerModule({ name: "documents", client: documents, meta: targetMeta, toolsContainer: true });
+    },
+    onDemandTargets: () => [{ name: "documents", roles: ["documents"] }],
+  });
+  const rawCaller = { satisfies: ["filesystem"], dependsOn: [{ role: "documents", required: false }], isolation: "subprocess", scope: "project" };
+  const token = registry.issueToken({ moduleName: "filesystem", connName: "filesystem-p1", projectId: "p1", inContainer: true, meta: bundledMeta(rawCaller, "filesystem") });
+  const client = await relayClient(url, token);
+  try {
+    // まだ起きていなくても一覧に載る
+    assert.deepEqual(JSON.parse(textOf(await client.callTool({ name: "relayListTargets", arguments: {} }))), [{ name: "documents", roles: ["documents"] }]);
+    await assert.rejects(() => client.callTool(callDocuments("convert")), /\[dev\.banto\/toolsPreparing\] documents に要る道具を入れています/);
+    const refused = (audits as Array<{ name: string; allowed: boolean; reason?: string }>).find((a) => a.name === "convert");
+    assert.equal(refused?.allowed, false);
+    assert.match(refused?.reason ?? "", /入れています/);
+    installing = false;
+    assert.equal(textOf(await client.callTool(callDocuments("convert"))), "converted");
+    // 起きた後は起こしに行かない
+    assert.equal(textOf(await client.callTool(callDocuments("convert"))), "converted");
+    assert.deepEqual(asked, ["filesystem→documents", "filesystem→documents"]);
+  } finally {
+    await client.close();
+    close();
+    await documents.close();
+  }
+});

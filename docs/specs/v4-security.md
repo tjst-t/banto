@@ -897,6 +897,12 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
   起こし直しでは apt を走らせず理由を返す**——人が設定（banto 全体の「Module」）の行の「道具を入れ直す」を押すとやり直す。
   覚えているのは banto の走行の間だけ（banto を起こし直すと、次に使うときに1回やり直す）。入れている間は一覧の状態が
   「Installing」になり、画面は終わるまで読み直す。Incus の無い host では、前提が欠けているとして起こさない
+- **中の root で起こす**（追加・2026-10-15、Backlog #304）：宣言の `meta.toolsContainer.runAsRoot: true` を名乗った Module は、中の
+  root（uid・gid 0）で起こす（変換役 `documents` が1件ごとの囲い（bubblewrap）を起こすため、`v4-modules.md` §2.2「変換役」）。
+  受けるのは道具用の箱だけ——ほかの箱で頼まれたら起こさずに投げる（Project のコンテナの root は AI の手の届く Module に渡さない）。
+  `true` 以外の値は宣言の読み込みで断る
+- **起こすのは使うとき**（追加・2026-10-15）：道具用の箱の Module は banto を起こしたとき・画面の一覧を出すときには起こさず、
+  中継で初めて呼ばれたとき・画面から名指されたときに起こす（`v4-modules.md` §2.2「変換役」の「起こすのも初めて使うとき」）
 - **中継**：身元は「道具用のコンテナ」と刻む（`CallerIdentity.toolsContainer`）。コンテナの中なので `inContainer` も立ち、
   `mayRaiseNotice` 等の「banto 本体で動く」線には入らない。承認の線は `dev.banto/statelessTransform`（§3 の中継の承認、
   `v4-modules.md` §2.2「変換役」）——宛先が同梱で道具用のコンテナで動き（host が台帳に刻んだ置き場）、tool が名乗り、呼び元が

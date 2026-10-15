@@ -107,6 +107,13 @@ export function isCallerOwned(x: { _meta?: Record<string, unknown> }): boolean {
  */
 export const STATELESS_TRANSFORM_META_KEY = `${VENDOR_PREFIX}/statelessTransform`;
 
+/**
+ * **道具用のコンテナの Module を用意している途中**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」——入れるのは初めて使う
+ * とき、入れている間の頼みには「入れています」を返す）。中継が「宛先を起こしている・要るパッケージを入れている」で断るとき、
+ * 理由の文の頭に付ける。呼び元はこれを見て「あとでもう一度」と人に返し、壊れているとは扱わない
+ */
+export const TOOLS_PREPARING_MARKER = "[dev.banto/toolsPreparing]";
+
 /** その tool が「受けた中身を残さず変換して返すだけ」と名乗っているか。**`true` 以外は名乗っていない** */
 export function isStatelessTransform(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[STATELESS_TRANSFORM_META_KEY] === true;
@@ -614,6 +621,12 @@ export interface BantoModuleMeta {
 export interface ToolsContainerRequest {
   /** 中に入れる apt のパッケージ（Debian のパッケージ名） */
   aptPackages: string[];
+  /**
+   * **中の root で起こす**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」）。変換役 `documents` は1件ごとに bubblewrap で
+   * 囲み、中を nobody に落とす——囲いを起こせるのはコンテナの中の root だけ（一般ユーザーの bwrap は Ubuntu 24.04 の既定で
+   * 止まる）。コンテナの root は host では一般ユーザー（Project のコンテナと同じ線）。名乗らなければ host と同じ uid で起こす
+   */
+  runAsRoot?: true;
 }
 
 /** Debian のパッケージ名（Policy 5.6.1）。apt に渡すので、ここで形を確かめる——`-` で始まるものは引数に化ける */
@@ -701,12 +714,19 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
   if (obj.toolsContainer !== undefined) {
     const t = obj.toolsContainer as Record<string, unknown> | null;
     const pkgs = t?.aptPackages ?? [];
-    if (typeof t !== "object" || t === null || !Array.isArray(pkgs) || !pkgs.every((p) => typeof p === "string" && APT_PACKAGE_NAME.test(p))) {
+    if (
+      typeof t !== "object" ||
+      t === null ||
+      !Array.isArray(pkgs) ||
+      !pkgs.every((p) => typeof p === "string" && APT_PACKAGE_NAME.test(p)) ||
+      // 書き間違いを「名乗らない」と同じに扱わない（上の resumesAfterRestart と同じ）
+      (t.runAsRoot !== undefined && t.runAsRoot !== true)
+    ) {
       throw new ModuleMetaError(
-        `${source}: toolsContainer は { aptPackages: パッケージ名の配列 }（${JSON.stringify(obj.toolsContainer)} が来ました）`,
+        `${source}: toolsContainer は { aptPackages: パッケージ名の配列, runAsRoot?: true }（${JSON.stringify(obj.toolsContainer)} が来ました）`,
       );
     }
-    toolsContainer = { aptPackages: [...(pkgs as string[])] };
+    toolsContainer = { aptPackages: [...(pkgs as string[])], ...(t.runAsRoot === true ? { runAsRoot: true as const } : {}) };
   }
 
   // **`bundled` は host だけが付けられる**（上記 ModuleOrigin）。

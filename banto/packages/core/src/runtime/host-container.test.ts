@@ -149,6 +149,21 @@ test("道具用の箱：中で sudo できなくし、名乗ったパッケー�
   assert.deepEqual(rt.resourceTargets(), [{ containerName: `banto-${rt.toolsPlaceId}` }]);
 });
 
+// **変換役は中の root で起こす**（追加・2026-10-15、`meta.toolsContainer.runAsRoot`）——囲い（bubblewrap）を起こせるのは root だけ。
+// 受けるのは道具用の箱だけ（Project の箱の root は AI の手の届く Module に渡さない）
+test("root で起こすのは道具用の箱だけ。ほかの箱で頼まれたら起こさずに投げる", async () => {
+  const rt = toolsRuntime(fakeToolsIncus({ installed: new Set(["jq"]), free: 50 * 1024 ** 3 }));
+  const tools = await rt.prepare({ id: rt.toolsPlaceId, nesting: false, tools: { aptPackages: ["jq"] } });
+  const proc = { name: "documents", command: "/bin/true", args: [], cwd: "/data/modules/documents", env: {} };
+  const asRoot = tools.processCommand({ ...proc, asRoot: true }).args;
+  assert.deepEqual(asRoot.slice(asRoot.indexOf("--user"), asRoot.indexOf("--user") + 4), ["--user", "0", "--group", "0"]);
+  // 名乗らなければ host と同じ uid
+  const plain = tools.processCommand(proc).args;
+  assert.notEqual(plain[plain.indexOf("--user") + 1], "0");
+  const project = await rt.prepare({ id: "p1", root: "/w", nesting: false });
+  assert.throws(() => project.processCommand({ ...proc, asRoot: true }), /root で起こせるのは道具用のコンテナだけです/);
+});
+
 test("道具用の箱：sudo を外してもできてしまうなら、Module を起こさない（fail closed）", async () => {
   const incus = fakeToolsIncus({ installed: new Set(), free: 50 * 1024 ** 3, sudoStays: true });
   const rt = toolsRuntime(incus);

@@ -239,11 +239,26 @@ export async function readFileRangeOp(
 ): Promise<{ offset: number; length: number; size: number; data: string }> {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error(`offset は 0 以上の整数で指定します: ${offset}`);
   if (!Number.isSafeInteger(length) || length < 0) throw new Error(`length は 0 以上の整数で指定します: ${length}`);
+  return readRangeAt(absPath(root, path), path, offset, length);
+}
+
+/**
+ * **確かめ済みの実体のパスから範囲を読む**（根の確かめは呼ぶ側。変換したものの置き場の写しを読むとき——写しは
+ * パスで指させず、元のファイルの根の確かめを通った後に FileSystem が引く、`converted.ts`）
+ */
+export async function readRangeAt(
+  abs: string,
+  shownPath: string,
+  offset: number,
+  length: number,
+): Promise<{ offset: number; length: number; size: number; data: string }> {
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error(`offset は 0 以上の整数で指定します: ${offset}`);
+  if (!Number.isSafeInteger(length) || length < 0) throw new Error(`length は 0 以上の整数で指定します: ${length}`);
   if (length > READ_RANGE_MAX_BYTES) throw new Error(`1回に読めるのは ${READ_RANGE_MAX_BYTES} バイトまでです（頼まれたのは ${length}）`);
-  const handle = await open(absPath(root, path), "r");
+  const handle = await open(abs, "r");
   try {
     const s = await handle.stat();
-    if (!s.isFile()) throw new Error(`ファイルではありません: ${path}`);
+    if (!s.isFile()) throw new Error(`ファイルではありません: ${shownPath}`);
     const n = Math.max(0, Math.min(length, s.size - offset));
     const buf = Buffer.alloc(n);
     let read = 0;

@@ -1127,6 +1127,8 @@ export class RemoteSshRuntime {
       // sudo で入れずに入れ方を添えて断る）
       moduleEnv: { BANTO_NO_SUDO: "1" },
       processCommand(p: RuntimeProcess) {
+        // 道具用の箱はいつもこの host のコンテナ（v4-security.md §2）——向こうで root の Module は起こさない
+        if (p.asRoot) throw new Error(`${p.name} を別のサーバで root として起こすことはできません`);
         // 宣言が host の node を名指ししていても、向こうに送った node を使う
         const command = p.command === process.execPath ? nodePath : p.command;
         const unit = moduleUnitName(p.name);

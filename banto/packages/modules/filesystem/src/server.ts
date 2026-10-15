@@ -14,19 +14,36 @@ import {
 import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY, UI_BY_EXTENSION_META_KEY } from "@banto/module-contract";
 import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
-import { basename, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import * as ops from "./operations.js";
 import { BROWSER_APP_URI, DOCUMENT_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
 import { isPdfAssetKind, readPdfAsset } from "./pdf-assets.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
 import { getComments, saveComments } from "./comments.js";
+import { ConvertedStore, DocumentConversions, defaultTarget, extensionOf, type ConvertTarget } from "./converted.js";
+import { RelayConverter } from "./relay-converter.js";
 
 function tool(name: string, description: string, inputSchema: unknown) {
   return { name, description, inputSchema, _meta: { [VISIBILITY_META_KEY]: "agent" } };
 }
 
-export function createFileSystemServer(deps: { projectRoot: string }) {
+/** 変換の形（無ければ拡張子から決まる既定） */
+function convertTargetArg(v: unknown, absPath: string): ConvertTarget {
+  if (v === undefined) return defaultTarget(extensionOf(absPath));
+  if (v !== "pdf" && v !== "spreadsheet") throw new Error(`to は pdf か spreadsheet です: ${String(v)}`);
+  return v;
+}
+
+export function createFileSystemServer(deps: {
+  projectRoot: string;
+  /** 変換役に頼んで置き場に残す（中継と Module の置き場が渡されたときだけ） */
+  conversions?: DocumentConversions;
+}) {
+  const needConversions = () => {
+    if (!deps.conversions) throw new Error("変換役に繋がっていません（banto の中継・Module の置き場が渡されていません）");
+    return deps.conversions;
+  };
   const server = new Server(
     { name: "banto-module-filesystem", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -154,8 +171,26 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
             path: { type: "string" },
             offset: { type: "integer", minimum: 0 },
             length: { type: "integer", minimum: 0, maximum: ops.READ_RANGE_MAX_BYTES },
+            // **変換したものを読む**（写しはパスで指させない——元のファイルのパスで、FileSystem が置き場の写しを引く）
+            converted: { type: "boolean", description: "true なら、そのファイルを変換したもの（convertDocument の後で）" },
+            to: { type: "string", enum: ["pdf", "spreadsheet"], description: "converted のとき、どの形か（既定：表は spreadsheet、それ以外は pdf）" },
           },
           required: ["path", "offset", "length"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      // **Office の文書を変換役で変換して置き場に残す**（v4-modules.md §2.2「変換役」）。同じ中身なら変換し直さない。
+      // 変換役を入れている途中なら `{status:"preparing", message}`——画面はそれを出して待ち、あとで頼み直す
+      {
+        name: "convertDocument",
+        description: "Office の文書を PDF に、表を計算し直した xlsx に変換して置き場に残す（7MB まで）。中身は readFileRange の converted で読む",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            to: { type: "string", enum: ["pdf", "spreadsheet"], description: "既定：表は spreadsheet、それ以外は pdf" },
+          },
+          required: ["path"],
         },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
@@ -249,8 +284,19 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         };
       }
       case "readFileRange": {
+        if (args.converted === true) {
+          const file = ops.fileInRoot(root, String(args.path));
+          const copy = await needConversions().convertedPath(file.abs, convertTargetArg(args.to, file.abs));
+          const range = await ops.readRangeAt(copy, file.rel, Number(args.offset), Number(args.length));
+          return { content: [{ type: "text", text: JSON.stringify(range) }] };
+        }
         const range = await ops.readFileRangeOp(root, String(args.path), Number(args.offset), Number(args.length));
         return { content: [{ type: "text", text: JSON.stringify(range) }] };
+      }
+      case "convertDocument": {
+        const file = ops.fileInRoot(root, String(args.path));
+        const outcome = await needConversions().convert(file.abs, convertTargetArg(args.to, file.abs));
+        return { content: [{ type: "text", text: JSON.stringify({ path: file.rel, ...outcome }) }] };
       }
       case "readPdfAsset": {
         if (!isPdfAssetKind(args.kind)) throw new Error(`kind は cmap か standardFont です: ${String(args.kind)}`);
@@ -371,7 +417,7 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
           [VISIBILITY_META_KEY]: "admin",
           [MODULE_META_KEY]: {
             satisfies: ["filesystem"],
-            dependsOn: [],
+            dependsOn: [{ role: "documents", required: false }],
             isolation: "subprocess",
             scope: "project",
             confinement: { kind: "landlock", root: "project" },
@@ -425,6 +471,17 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     console.error("BANTO_PROJECT_ROOT が必要です");
     process.exit(1);
   }
-  const server = createFileSystemServer({ projectRoot });
+  // 変換役は中継の向こう（banto 全体の道具用のコンテナ）。変換したものは Project ごとの Module の置き場に残す
+  const relayUrl = process.env.BANTO_HOST_MCP_URL;
+  const relayToken = process.env.BANTO_HOST_MCP_TOKEN;
+  const dataDir = process.env.BANTO_MODULE_DATA_DIR;
+  const conversions =
+    dataDir !== undefined
+      ? new DocumentConversions(
+          new ConvertedStore(join(dataDir, "converted")),
+          relayUrl && relayToken ? new RelayConverter(relayUrl, relayToken) : undefined,
+        )
+      : undefined;
+  const server = createFileSystemServer({ projectRoot, ...(conversions ? { conversions } : {}) });
   await server.connect(new StdioServerTransport());
 }

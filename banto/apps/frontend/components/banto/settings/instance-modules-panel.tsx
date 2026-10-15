@@ -122,6 +122,14 @@ function stateOf(m: RealInstanceModule): { label: string; hint: string; tone: "o
       tone: "off",
     };
   }
+  if (m.placement === "tools-container") {
+    // 道具用のコンテナの Module は使うときに立つ（初めて使うときは要るものを入れる、v4-modules.md §2.2「変換役」）
+    return {
+      label: "On demand",
+      hint: "使われたときに立ち上がります（初めてのときは要るものを入れるので数分）",
+      tone: "off",
+    };
+  }
   return { label: "Not running", hint: "動かす設定ですが、まだ立っていません", tone: "off" };
 }
 

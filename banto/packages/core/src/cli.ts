@@ -85,7 +85,8 @@ import { ResourceWatch } from "./resources.js";
 import { ThreadTurns } from "./delivery/thread-turns.js";
 import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ModuleReplies } from "./delivery/module-replies.js";
-import { receivesReplies, type ModuleReplyArguments } from "@banto/module-contract";
+import { receivesReplies, TOOLS_PREPARING_MARKER, type ModuleReplyArguments } from "@banto/module-contract";
+import type { CallerIdentity } from "./relay/host-relay-endpoint.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
@@ -104,6 +105,10 @@ import {
 } from "@banto/module-contract";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+/** 道具用のコンテナの Module を使うときに起こすとき、呼び元を待たせる上限（入れ始めたらすぐ返す）。起き終わっていれば待たずに通る */
+const ON_DEMAND_START_WAIT_MS = 20_000;
+const ON_DEMAND_POLL_MS = 250;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const monorepoRoot = join(__dirname, "..", "..", "..");
 
 /** その Module が名乗っている tool・resource（可視性の検査に渡す形）。 */
@@ -1389,6 +1394,8 @@ async function main(): Promise<void> {
         command: launch.command,
         args: launch.args,
         cwd: context.projectRoot ?? context.moduleDataDir,
+        // 変換役は中の root で囲いを起こす（`meta.toolsContainer.runAsRoot`、道具用の箱だけが受ける）
+        ...(where === "tools-container" && declaration.meta.toolsContainer?.runAsRoot ? { asRoot: true as const } : {}),
         env: {
           ...passthrough,
           HOME: context.moduleDataDir,
@@ -1691,6 +1698,57 @@ async function main(): Promise<void> {
   /** 「入れ直す」を押されて、起こし直している Module */
   const toolsRetrying = new Set<string>();
 
+  /** 使うときに起こしている途中の、道具用のコンテナの Module（名前 → 起こしている約束） */
+  const onDemandStarts = new Map<string, Promise<string | undefined>>();
+  /**
+   * **道具用のコンテナの Module を、中継で初めて呼ばれたときに起こす**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」）。
+   * 初回はコンテナを作って LibreOffice 等を入れる（数分）ので、呼び元を待たせ続けない——少し待って繋がらなければ
+   * 「入れています／起こしています」（`TOOLS_PREPARING_MARKER`）で断り、起こすのは続ける。呼び元はあとで呼び直す。
+   * 呼び元の依存に無い宛先・道具用のコンテナの Module でない宛先は起こさない（中継の確かめがいつもどおり断る）
+   */
+  function onDemandDeclarations(caller: CallerIdentity): ParsedModuleDeclaration[] {
+    return loadModuleDeclarations(runtimeConfig, "").filter(
+      (d) =>
+        d.meta.scope === "instance" &&
+        modulePlacement(d.meta, d.launch) === "tools-container" &&
+        caller.meta.dependsOn.some((dep) => d.meta.satisfies.includes(dep.role)),
+    );
+  }
+  function onDemandTargets(caller: CallerIdentity): Array<{ name: string; roles: string[] }> {
+    const roles = new Set(caller.meta.dependsOn.map((d) => d.role));
+    return onDemandDeclarations(caller).map((d) => ({ name: d.name, roles: d.meta.satisfies.filter((r) => roles.has(r)) }));
+  }
+  async function connectToolsModuleOnDemand(caller: CallerIdentity, targetModule: string): Promise<void> {
+    const declaration = onDemandDeclarations(caller).find((d) => d.name === targetModule);
+    if (!declaration) return;
+    let starting = onDemandStarts.get(targetModule);
+    if (!starting) {
+      starting = connectDeclaredModule(declaration).finally(() => onDemandStarts.delete(targetModule));
+      onDemandStarts.set(targetModule, starting);
+    }
+    let settled: { connName: string | undefined; error?: string } | undefined;
+    void starting.then(
+      (connName) => (settled = { connName }),
+      (err: unknown) => (settled = { connName: undefined, error: err instanceof Error ? err.message : String(err) }),
+    );
+    const deadline = Date.now() + ON_DEMAND_START_WAIT_MS;
+    while (!settled && Date.now() < deadline) {
+      // 入れ始めたら待たない（数分かかる）
+      if (toolsInstallOf(declaration, runtime.toolsInstallStatus())?.state === "installing") break;
+      await sleep(ON_DEMAND_POLL_MS);
+    }
+    if (settled?.connName) return;
+    if (settled) {
+      const reason = settled.error ?? connectBackoff.failure(targetModule)?.reason ?? "理由は host のログにあります";
+      throw new Error(`${targetModule} を起こせませんでした：${reason}`);
+    }
+    const installing = toolsInstallOf(declaration, runtime.toolsInstallStatus())?.state === "installing";
+    throw new Error(
+      `${TOOLS_PREPARING_MARKER} ${installing ? `${targetModule} に要る道具を入れています（初回だけ、数分）` : `${targetModule} を起こしています`}。` +
+        "あとでもう一度呼んでください",
+    );
+  }
+
   /**
    * **道具を入れ直す**（追加・2026-10-15）。入れられなかったことを忘れ、繋ぎ直しの待ちも消して、その Module を起こし直す
    * （入れ終わるのは待たない——数分かかる。画面は「入れています」を出す）
@@ -1849,13 +1907,21 @@ async function main(): Promise<void> {
    * 立つもの（Shell・FileSystem）は Project の設定に出す——置き場の判断を
    * 別に持たず、既にある scope から導く（規則3）。
    */
-  async function resolveInstanceModuleClients() {
+  async function resolveInstanceModuleClients(opts: { start?: string } = {}) {
     // instance 既定の宣言を読む（Project 上書きは Project 側の話）
     const spawned = await Promise.all(
       loadModuleDeclarations(runtimeConfig, "")
         .filter((declaration) => declaration.meta.scope === "instance")
         .map(async (declaration) => {
-          const connName = await connectDeclaredModule(declaration);
+          // **道具用のコンテナの Module は、使うときに起こす**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」）。起動のとき・
+          // 画面の一覧を出すたびに起こすと、初めての banto で数分の apt が走る。名指されたとき（`start`）・中継で呼ばれたとき
+          // （`connectOnDemand`）だけ起こし、それまでは繋がっていれば返す
+          const onDemand = modulePlacement(declaration.meta, declaration.launch) === "tools-container" && opts.start !== declaration.name;
+          const connName = onDemand
+            ? connectedModules.has(declaration.name)
+              ? declaration.name
+              : undefined
+            : await connectDeclaredModule(declaration);
           return {
             name: declaration.name,
             // プロセスの名前も返す——画面からの呼び出しの出所を台帳に置くのに要る
@@ -1875,6 +1941,8 @@ async function main(): Promise<void> {
   const relayEndpoint = new HostRelayEndpoint({
     registry,
     autoApproveFor: autoApproveAll,
+    connectOnDemand: connectToolsModuleOnDemand,
+    onDemandTargets,
     // **札で、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2）
     deliverToThread: async (caller, input) => {
       // 起こし直しのあと覚え直した札は、最後の届けにしか使えない（`final` を渡して確かめる）

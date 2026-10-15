@@ -239,7 +239,10 @@ export interface AppDeps {
   >;
   /** banto 全体（instance）で1本の Module（決定・2026-09-07、ユーザー指摘）。
    *  その設定は Project ごとではなく、全体の設定画面に出す。 */
-  resolveInstanceModuleClients?(): Promise<
+  //
+  // **同梱の道具用のコンテナの Module は、名指されたときだけ起こす**（追加・2026-10-15、`v4-modules.md` §2.2「変換役」——入れる
+  // のは初めて使うとき）。画面の一覧を出すたびに数分の apt を走らせない。`start` に名前を渡すと、それも起こす
+  resolveInstanceModuleClients?(opts?: { start?: string }): Promise<
     Array<{ name: string; client: ModuleClientLike; connName?: string }>
   >;
   /** Project を畳んだときに、その Project のために立てたもの（Module の
@@ -2983,7 +2986,7 @@ export function createApp(deps: AppDeps) {
         if (typeof body.server !== "string" || typeof body.tool !== "string") {
           return json(res, 400, { error: "server と tool が要ります" });
         }
-        const modules = (await deps.resolveInstanceModuleClients?.()) ?? [];
+        const modules = (await deps.resolveInstanceModuleClients?.({ start: body.server })) ?? [];
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
         const refusal = await checkUiCallable(found.client, body.tool);

@@ -48,6 +48,11 @@ export interface RuntimeProcess {
   cwd: string;
   /** 渡す環境変数はこれだけ（host の環境は引き継がない） */
   env: Record<string, string>;
+  /**
+   * **中の root で起こす**（追加・2026-10-15、宣言の `meta.toolsContainer.runAsRoot`）。**道具用の箱でだけ**受ける——ほかの
+   * 箱で頼まれたら起こさずに投げる（Project のコンテナの root は AI の手の届く Module に渡さない）
+   */
+  asRoot?: true;
 }
 
 /** 用意できた箱 */

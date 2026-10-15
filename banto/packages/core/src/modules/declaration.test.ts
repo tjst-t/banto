@@ -75,12 +75,21 @@ function stdio(launch: ModuleLaunch): StdioLaunch {
 // ——Skill を取り込む先で、誰もが使う。
 // **手元のリポジトリの台帳も既定に入る**（追加・2026-10-01、v4-modules.md §2.4）——Project の根を用意する側なので、
 // Project より先に、どの banto にも居る
-test("同梱の既定は8本（vault-local/vault-directory/shell/filesystem/subagent/subagent-settings/skills/repositories）で、そのまま読める", () => {
+// **変換役も既定に入る**（追加・2026-10-15、v4-modules.md §2.2「変換役」）——FileSystem が Office の文書を変換に使う。
+// 道具用のコンテナで、中の root で動く。起こすのは使うとき（cli.ts の `connectToolsModuleOnDemand`）
+test("同梱の既定は9本（vault-local/vault-directory/shell/filesystem/subagent/subagent-settings/skills/repositories/documents）で、そのまま読める", () => {
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "repositories", "shell", "skills", "subagent", "subagent-settings", "vault-directory", "vault-local"],
+    ["documents", "filesystem", "repositories", "shell", "skills", "subagent", "subagent-settings", "vault-directory", "vault-local"],
   );
+  const documents = parsed.find((d) => d.name === "documents")!;
+  assert.equal(documents.meta.origin, "bundled");
+  assert.equal(modulePlacement(documents.meta, documents.launch), "tools-container");
+  assert.equal(documents.meta.toolsContainer?.runAsRoot, true);
+  assert.ok(documents.meta.toolsContainer?.aptPackages.includes("bubblewrap"));
+  // FileSystem は変換役に依存する（無くても動く）——中継の許可はここから出る
+  assert.deepEqual(parsed.find((d) => d.name === "filesystem")?.meta.dependsOn, [{ role: "documents", required: false }]);
   // Repositories は banto 全体に1本・banto 本体で動く（同梱の banto 全体の Module）
   const repositories = parsed.find((d) => d.name === "repositories")!;
   assert.equal(repositories.meta.scope, "instance");
@@ -726,6 +735,11 @@ test("道具用のコンテナは banto 全体の Module だけ・パッケー�
   assert.throws(
     () => parseModuleDeclaration({ name: "p", launch, meta: { satisfies: ["x"], isolation: "subprocess", scope: "project", toolsContainer: { aptPackages: [] } } }, "t"),
     /scope:"instance"/,
+  );
+  // 中の root で起こすのは true だけ（書き間違いを「名乗らない」と同じに扱わない）
+  assert.throws(
+    () => parseModuleDeclaration({ name: "p", launch, meta: { satisfies: ["x"], isolation: "subprocess", toolsContainer: { aptPackages: [], runAsRoot: "yes" } } }, "t"),
+    /toolsContainer は/,
   );
   for (const bad of [["-o=APT::Get::Assume-Yes"], ["jq; rm -rf /"], "jq", [1]]) {
     assert.throws(
