@@ -7686,7 +7686,7 @@
       "number": 319,
       "kind": "task",
       "title": "AI が自動化を作る tool（banto-thread）と、必ず人に聞く確認のカード",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [
         "automation-ledger",
@@ -7701,7 +7701,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
+      "updatedAt": "2026-10-15T13:58:07.091Z",
       "closedAt": null,
       "extra": {}
     },
