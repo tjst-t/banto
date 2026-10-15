@@ -53,6 +53,8 @@ export interface NetworkRecord {
   encodedBytes?: number;
   requestHeaders: Record<string, string>;
   responseHeaders?: Record<string, string>;
+  /** ブラウザが来ると知らせた実のヘッダ（CDP の ExtraInfo——Cookie・Set-Cookie を含む）のうち、まだ届いていないもの */
+  rawHeadersPending?: ("request" | "response")[];
   timing?: Record<string, number>;
   requestBody?: BodyInfo;
   responseBody?: BodyInfo;
@@ -484,8 +486,10 @@ export function formatDetail(
   lines.push(`始まり: ${new Date(r.startedAt).toISOString()}　かかった時間: ${r.durationMs !== undefined ? `${Math.round(r.durationMs)}ms` : "-"}　転送: ${formatBytes(r.encodedBytes)}`);
   if (r.mimeType) lines.push(`MIME: ${r.mimeType}`);
   if (want("headers")) {
-    lines.push("要求のヘッダ:", ...headers(r.requestHeaders));
-    if (r.responseHeaders) lines.push("応答のヘッダ:", ...headers(r.responseHeaders));
+    const pending = (which: "request" | "response") =>
+      r.rawHeadersPending?.includes(which) ? ["  （ブラウザが実際に送り受けしたヘッダがまだ届いていません——Cookie などがここに無いことがあります）"] : [];
+    lines.push("要求のヘッダ:", ...headers(r.requestHeaders), ...pending("request"));
+    if (r.responseHeaders) lines.push("応答のヘッダ:", ...headers(r.responseHeaders), ...pending("response"));
     if (r.timing) lines.push(`タイミング（ms）: ${JSON.stringify(r.timing)}`);
   }
   const body = (which: "req" | "res", info: BodyInfo | undefined, title: string) => {

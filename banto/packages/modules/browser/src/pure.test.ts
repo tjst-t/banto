@@ -279,6 +279,45 @@ test("CDP：実のヘッダ（ExtraInfo）が先に来ても後に来ても合�
   assert.match(formatDetail(log, nobody!, { part: "response", maxBytes: 100, redact: true }), /応答の本文: （取れませんでした：No resource/);
 });
 
+test("CDP：実のヘッダ（ExtraInfo）が loadingFinished より後に来ても足す。来ると分かっていて未着のあいだは、詳細にそう添える", async () => {
+  // 混んだ機械の実の Chrome で見た順（2026-10-15）：要求 → 応答 → 終わり → 要求の ExtraInfo → 応答の ExtraInfo
+  const log = new NetworkLog(undefined);
+  const cdp = new FakeCdp();
+  attachRecorder(log, () => "t1", cdp, { skipBodies: true });
+  cdp.emit("Network.requestWillBeSent", { requestId: "9", type: "Fetch", timestamp: 1, request: { url: "http://x/api/ok", method: "GET", headers: { Authorization: "Bearer t" } } });
+  cdp.emit("Network.responseReceived", { requestId: "9", timestamp: 1.1, hasExtraInfo: true, response: { status: 200, headers: { "content-type": "application/json" } } });
+  cdp.emit("Network.loadingFinished", { requestId: "9", timestamp: 1.2, encodedDataLength: 10 });
+  const r = log.query({})[0]!;
+  assert.equal(r.done, true);
+  assert.deepEqual(r.rawHeadersPending, ["request", "response"]);
+  const before = formatDetail(log, r, { part: "headers", maxBytes: 100, redact: true });
+  assert.doesNotMatch(before, /cookie:/i);
+  assert.match(before, /要求のヘッダ:\n  Authorization: （伏せた・8 文字）\n  （ブラウザが実際に送り受けしたヘッダがまだ届いていません/);
+
+  cdp.emit("Network.requestWillBeSentExtraInfo", { requestId: "9", headers: { Authorization: "Bearer t", Cookie: "sid=1" } });
+  assert.deepEqual(r.rawHeadersPending, ["response"]);
+  cdp.emit("Network.responseReceivedExtraInfo", { requestId: "9", headers: { "Set-Cookie": "sid=2" } });
+  assert.equal(r.rawHeadersPending, undefined);
+  const after = formatDetail(log, r, { part: "headers", maxBytes: 100, redact: true });
+  assert.match(after, /Cookie: （伏せた・5 文字）/);
+  assert.match(after, /Set-Cookie: （伏せた・5 文字）/);
+  assert.doesNotMatch(after, /まだ届いていません/);
+
+  // 失敗して応答の無い要求でも、後から来た ExtraInfo は足す（来るかは分からないので、添え書きはしない）
+  cdp.emit("Network.requestWillBeSent", { requestId: "10", type: "Fetch", timestamp: 2, request: { url: "http://x/gone", method: "GET", headers: {} } });
+  cdp.emit("Network.loadingFailed", { requestId: "10", timestamp: 2.1, errorText: "net::ERR_FAILED" });
+  cdp.emit("Network.requestWillBeSentExtraInfo", { requestId: "10", headers: { Cookie: "sid=1" } });
+  const gone = log.query({ urlContains: "/gone" })[0]!;
+  assert.deepEqual(gone.requestHeaders, { Cookie: "sid=1" });
+  assert.equal(gone.rawHeadersPending, undefined);
+
+  // ExtraInfo が来ないと知らせた応答（hasExtraInfo: false）には添えない
+  cdp.emit("Network.requestWillBeSent", { requestId: "11", type: "Fetch", timestamp: 3, request: { url: "http://x/cached", method: "GET", headers: {} } });
+  cdp.emit("Network.responseReceived", { requestId: "11", timestamp: 3.1, hasExtraInfo: false, response: { status: 200, headers: {} } });
+  cdp.emit("Network.loadingFinished", { requestId: "11", timestamp: 3.2, encodedDataLength: 0 });
+  assert.equal(log.query({ urlContains: "/cached" })[0]!.rawHeadersPending, undefined);
+});
+
 test("CDP：WebSocket の開閉とフレーム、EventSource のメッセージ", async () => {
   const log = new NetworkLog(undefined);
   const cdp = new FakeCdp();

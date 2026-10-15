@@ -2,7 +2,9 @@
 // CDP が復号済みの要求と応答を返すので、TLS を割る代理も証明書も要らない。
 //
 // 実のヘッダ（Cookie・Set-Cookie を含む）は `…ExtraInfo` の知らせで別に来る。来る順は決まっていない
-// （本体より先に来ることもある）ので、どちらが先でも合わせる。
+// （本体より先に来ることもある）ので、どちらが先でも合わせる。**loadingFinished より後に来ることもある**
+// （実測・2026-10-15：混んだ機械で 1000 件に 1〜3 件）——終わった要求にも後から足す。応答の `hasExtraInfo` で
+// 来ると分かっていてまだ来ていないあいだは、記録に `rawHeadersPending` を持つ（getNetworkRequest がそう添える）。
 
 import type { NetworkLog } from "./network-log.js";
 
@@ -34,6 +36,24 @@ interface Live {
   startTs: number;
 }
 
+/** requestId のいまの1件と、その ExtraInfo を受けたか。終わった要求にも ExtraInfo が後から来るので、live と別に持つ */
+interface Pairing {
+  recordId: string;
+  request: boolean;
+  response: boolean;
+  /** 応答の hasExtraInfo（応答がまだなら undefined） */
+  expected?: boolean;
+}
+
+/** 対にならないまま持っておく数の上限（ExtraInfo が来ない要求もある——キャッシュ・失敗した要求等） */
+const MAX_UNPAIRED = 1000;
+
+function capped<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > MAX_UNPAIRED) map.delete(map.keys().next().value!);
+}
+
 export interface RecorderOptions {
   /** 本文を取りにいかない（試験で CDP を偽物にするとき） */
   skipBodies?: boolean;
@@ -41,6 +61,7 @@ export interface RecorderOptions {
 
 export function attachRecorder(log: NetworkLog, tab: () => string, cdp: CdpLike, opts: RecorderOptions = {}): void {
   const live = new Map<string, Live>();
+  const pairings = new Map<string, Pairing>();
   const extraRequestHeaders = new Map<string, Record<string, string>>();
   const extraResponseHeaders = new Map<string, Record<string, string>>();
   /** CDP の単調な時計 → 壁の時計（ms）。最初の要求の wallTime から決める */
@@ -63,6 +84,7 @@ export function attachRecorder(log: NetworkLog, tab: () => string, cdp: CdpLike,
       requestHeaders: extra ?? request.headers,
     });
     live.set(requestId, { recordId: record.id, startTs: ts });
+    capped(pairings, requestId, { recordId: record.id, request: extra !== undefined, response: false });
     if (request.postData !== undefined) {
       log.setBody(record.id, "req", Buffer.from(request.postData), false);
     } else if (request.hasPostData && !opts.skipBodies) {
@@ -74,9 +96,20 @@ export function attachRecorder(log: NetworkLog, tab: () => string, cdp: CdpLike,
     return record.id;
   };
 
+  /** 来ると分かっている ExtraInfo のうち、まだ来ていないものを記録に写す。揃ったら対を外す */
+  const settle = (requestId: string) => {
+    const pr = pairings.get(requestId);
+    if (!pr || pr.expected === undefined) return;
+    const pending = pr.expected ? (["request", "response"] as const).filter((k) => !pr[k]) : [];
+    log.update(pr.recordId, { rawHeadersPending: pending.length > 0 ? [...pending] : undefined });
+    if (pending.length === 0) pairings.delete(requestId);
+  };
+
   const applyResponse = (recordId: string, requestId: string, response: CdpResponse) => {
     const extra = extraResponseHeaders.get(requestId);
     extraResponseHeaders.delete(requestId);
+    const pr = pairings.get(requestId);
+    if (extra && pr?.recordId === recordId) pr.response = true;
     log.update(recordId, {
       status: response.status,
       ...(response.statusText ? { statusText: response.statusText } : {}),
@@ -102,24 +135,38 @@ export function attachRecorder(log: NetworkLog, tab: () => string, cdp: CdpLike,
   cdp.on("Network.requestWillBeSentExtraInfo", (p) => {
     const requestId = p.requestId as string;
     const headers = p.headers as Record<string, string>;
-    const l = live.get(requestId);
-    if (l) log.update(l.recordId, { requestHeaders: headers });
-    else extraRequestHeaders.set(requestId, headers);
+    // いまの1件がもう受けていれば、これは次の1件（転送の先）のもの——取っておく
+    const pr = pairings.get(requestId);
+    if (pr && !pr.request) {
+      pr.request = true;
+      log.update(pr.recordId, { requestHeaders: headers });
+      settle(requestId);
+    } else capped(extraRequestHeaders, requestId, headers);
   });
 
   cdp.on("Network.responseReceived", (p) => {
-    const l = live.get(p.requestId as string);
-    if (l) applyResponse(l.recordId, p.requestId as string, p.response as CdpResponse);
+    const requestId = p.requestId as string;
+    const l = live.get(requestId);
+    if (!l) return;
+    applyResponse(l.recordId, requestId, p.response as CdpResponse);
+    const pr = pairings.get(requestId);
+    if (pr?.recordId === l.recordId && typeof p.hasExtraInfo === "boolean") {
+      pr.expected = p.hasExtraInfo;
+      settle(requestId);
+    }
   });
 
   cdp.on("Network.responseReceivedExtraInfo", (p) => {
     const requestId = p.requestId as string;
     const headers = p.headers as Record<string, string>;
-    const l = live.get(requestId);
     // 本体の応答が先に来ていれば上書き、まだなら取っておく
-    const record = l ? log.get(l.recordId) : undefined;
-    if (l && record?.status !== undefined) log.update(l.recordId, { responseHeaders: headers });
-    else extraResponseHeaders.set(requestId, headers);
+    const pr = pairings.get(requestId);
+    const record = pr ? log.get(pr.recordId) : undefined;
+    if (pr && !pr.response && record?.status !== undefined) {
+      pr.response = true;
+      log.update(pr.recordId, { responseHeaders: headers });
+      settle(requestId);
+    } else capped(extraResponseHeaders, requestId, headers);
   });
 
   cdp.on("Network.loadingFinished", (p) => {
@@ -169,6 +216,7 @@ export function attachRecorder(log: NetworkLog, tab: () => string, cdp: CdpLike,
       requestHeaders: {},
     }).id;
     live.set(requestId, { recordId: id, startTs: NaN });
+    capped(pairings, requestId, { recordId: id, request: false, response: false });
   });
   cdp.on("Network.webSocketWillSendHandshakeRequest", (p) => {
     const l = live.get(p.requestId as string);
