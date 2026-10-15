@@ -7829,6 +7829,32 @@
       "updatedAt": "2026-10-15T14:32:21.683Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "item-2",
+      "number": 325,
+      "kind": "task",
+      "title": "別のサーバへ送る依存をパッケージごとの塗りにし、向こうに無いパッケージだけ送る",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "決定・2026-10-15、ユーザー。#298 で作った3つの塗り（code・deps・node）のうち、deps をパッケージごとに分ける。\n\n経緯：2026-10-15 14:29 の更新で、PDF・Office のレビューの依存（pdfjs-dist・docx-preview・@napi-rs・jszip とその依存、計14個・約53MB）が増えた。deps の鍵が変わり、VM へ 702MB を全部送り直した。VM の layers/deps-5c46… と deps-94f8… を diff -rq で比べると、違いは増えた14個だけで、残りは同じだった。\n\n作る場所：packages/core/src/runtime/remote-code.ts（塗りの分け方・鍵）・remote-ssh.ts（向こうに何があるかの問い合わせ・照合・送る・組む・片づけ）。版の .layers の記録の形も変わる（今の deps の塗りのある VM から移るとき、最初の1回は全部送り直してよい）。照合は1回の向こうのコマンドでまとめて行う（数百個のパッケージで SSH の往復を増やさない）。",
+      "doneWhen": "(1) 依存を1つ足した版へ送り直すと、送るのはそのパッケージ（とコードの塗り）だけ（単体テストで送る一覧と分母を確かめる）。(2) 向こうにあるパッケージの書き換えを照合で見つけて、そのパッケージだけ送り直す。(3) いまの版と前の版が参照しないパッケージを消す。(4) 照合と問い合わせが、パッケージの数によらず SSH の往復が一定回数で済む。(5) 関係する E2E（remote-code-transfer・remote-code-presend・remote-runtime-ssh・remote-runtime-sockets）が通る。フル E2E は流さない。",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §1「向こうに置くもの」の「依存はパッケージごとの塗りにする」",
+        "#298（aeb098c2）"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-15T14:41:31.094Z",
+      "updatedAt": "2026-10-15T14:41:31.094Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
