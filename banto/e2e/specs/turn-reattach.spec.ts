@@ -297,6 +297,46 @@ test("この画面の外で始まったターンも、本文にそのまま流�
   }
 });
 
+test("他所で始まった短いターンが、乗っている途中で終わっても、返事が本文に出る（リロードしなくても最新になる）", async ({ page }) => {
+  // **ユーザー報告・2026-10-15**「ターンは終わっているのに最新の返事が出ず、リロードしないと出ない」。画面は走っている
+  // ターンに乗るとき、記録からそのターンの返事を外して組み直し、流し直しで描く。記録を取りに行っている間にターンが
+  // 終わると、描き始める印ごと消え、返事を外した記録だけが入って止まっていた。その隙間を、記録の取得を遅らせて作る
+  const name = "E2E Reattach Short Turn";
+  await openApp(page);
+  await createProject(page, name, mkdtempSync(join(tmpdir(), "banto-e2e-reattach-short-")));
+  const threadId = await baseThreadId(page, name);
+  await expect(page.getByPlaceholder(/に送る/)).toBeVisible();
+
+  // 会話の記録（`GET /api/threads/<id>`、流れの `/stream` は除く）を、ターンが終わるまで返さない
+  let delayed = 0;
+  await page.route(
+    (url) => url.pathname === `/api/threads/${threadId}`,
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      delayed += 1;
+      await expect.poll(() => turnIsRunning(threadId), { timeout: 30_000 }).toBe(false);
+      await route.continue();
+    },
+  );
+
+  const reply = "短い返事の頭。" + Array.from({ length: 10 }, (_, i) => `<${i + 1}>`).join(" ") + " 短い返事のおしまい。";
+  const res = await fetch(`${CORE_BASE_URL}/api/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: { ...HEADERS, "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "別の画面から送った短い発言。" + fakeTurn({ say: reply, streamMs: 3_000 }) }),
+  });
+  expect(res.ok).toBe(true);
+  // 応答（流れ）は最後まで読む——ターンが終わるまで
+  await res.text();
+  await expect.poll(() => turnIsRunning(threadId), { timeout: 30_000 }).toBe(false);
+  await expect.poll(() => delayed, { message: "画面が記録を取りに来ていない（試験の前提が崩れた）" }).toBeGreaterThan(0);
+
+  await expect(page.locator('[data-role="user"]').filter({ hasText: "別の画面から送った短い発言" })).toBeVisible({ timeout: 30_000 });
+  await expect(assistantMessages(page), "AI の返事が出ていない／二重に出ている").toHaveCount(1, { timeout: 30_000 });
+  await expect(assistantMessages(page).last(), "返事が最後まで出ていない").toContainText("短い返事のおしまい。", { timeout: 30_000 });
+  await page.unroute((url) => url.pathname === `/api/threads/${threadId}`);
+});
+
 test("判断待ちに答えたあとに開き直しても、その判断は答えたものとして出る", async ({ page }) => {
   const name = "E2E Reattach Answered";
   await openApp(page);

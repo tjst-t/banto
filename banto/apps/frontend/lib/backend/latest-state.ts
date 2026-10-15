@@ -51,10 +51,63 @@ const readToEnd = new Set<string>();
  */
 const shownThrough = new Map<string, { build: number; record: RealThread }>();
 
-function shownLength(threadId: string): number {
+/**
+ * **見せている記録の印**。件数だけではなく最後の発言の中身も見る（改訂・2026-10-15、ユーザー報告「終わったのに最新が
+ * 出ない」）——host は同じターンの AI の発言を書き終えるごとに1件にまとめて足すので、ターンの途中で組み直した
+ * 会話は、終わったあとも件数が同じまま中身だけ伸びる。件数だけで比べると「もう最新」と見て取りこぼしていた
+ */
+interface SignedMessage {
+  seq: number;
+  role: string;
+  text: string;
+  uiToolCalls?: readonly unknown[];
+  judgments?: readonly unknown[];
+  turnSummary?: unknown;
+}
+
+export function recordSignature(messages: readonly SignedMessage[] | undefined): string {
+  if (!messages || messages.length === 0) return "0";
+  const last = messages[messages.length - 1]!;
+  return [
+    messages.length,
+    last.seq,
+    last.role,
+    last.text.length,
+    last.uiToolCalls?.length ?? 0,
+    last.judgments?.length ?? 0,
+    last.turnSummary ? 1 : 0,
+  ].join(":");
+}
+
+/**
+ * **会話のランタイムがどの記録から組み立てられたか**（直し・2026-10-15、ユーザー報告「終わったのに最新が出ず、リロードで
+ * 直る」、`e2e/specs/thread-latest-on-return.spec.ts`）。版（`restoredSyncVersion`）ごとに、組み立てたときの写しの印。
+ *
+ * 以前は「いまの写し」を見せているものとみなしていた。だが写しは組み直しを通らずに書き換わることがある——Project を
+ * 開くと開いている会話の記録を取り直して写しだけ書き換える（`refreshRealProjectThreads`）。それがこちらの取得より先に
+ * 返ると、ランタイムは古い写しから作られたままなのに「写し＝記録＝もう最新」と見て組み直さず、別の Project から
+ * 戻った会話が留守の間のやり取りを欠いたまま止まっていた。同じ版で印の違う面が2つあれば、必ず組み直す印にする
+ */
+const builtFrom = new Map<string, { build: number; signature: string }>();
+const CONFLICTING = "conflicting";
+
+/** 会話のランタイムが、その版をこの写しから組み立てた（作ったとき・記録を流し込んだとき） */
+export function noteRuntimeBuilt(threadId: string, build: number, signature: string): void {
+  const known = builtFrom.get(threadId);
+  if (known && known.build === build && known.signature !== signature) {
+    builtFrom.set(threadId, { build, signature: CONFLICTING });
+    return;
+  }
+  builtFrom.set(threadId, { build, signature });
+}
+
+function shownSignature(threadId: string): string {
+  const build = restoredSyncVersion(threadId);
   const shown = shownThrough.get(threadId);
-  if (shown && shown.build === restoredSyncVersion(threadId)) return shown.record.messages.length;
-  return getThread(threadId)?.realMessages?.length ?? 0;
+  if (shown && shown.build === build) return recordSignature(shown.record.messages);
+  const built = builtFrom.get(threadId);
+  if (built && built.build === build) return built.signature;
+  return recordSignature(getThread(threadId)?.realMessages);
 }
 
 /**
@@ -152,7 +205,7 @@ async function showLatestOnce(threadId: string): Promise<void> {
   } else if (readThrough) {
     // 最後まで読んだ会話は描き直さない（流れた吹き出しがそのまま最新——描き直すと tool のカードが消える）
     shownThrough.set(threadId, { build: restoredSyncVersion(threadId), record });
-  } else if (record.messages.length !== shownLength(threadId)) {
+  } else if (recordSignature(record.messages) !== shownSignature(threadId)) {
     applyThreadRecord(threadId, record);
   }
 }

@@ -32,7 +32,7 @@ import {
   subscribeFollow,
   takeFollowToStart,
 } from "@/lib/backend/adapter";
-import { registerOpenThread } from "@/lib/backend/latest-state";
+import { noteRuntimeBuilt, recordSignature, registerOpenThread } from "@/lib/backend/latest-state";
 import { ImageAttachmentAdapter } from "@/lib/backend/image-attachment";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { getProject } from "@/lib/mock/projects";
@@ -247,6 +247,7 @@ export function ThreadPanel({
       // **会話が送っている・流している間は組み直さない**（`registerRuntimeBusy`）のは前と同じ
       key={thread.id}
       build={restoredSyncVersion(thread.id)}
+      builtSignature={recordSignature(thread.realMessages)}
       adapter={adapter}
       initialMessages={initialMessages}
       placeholder={placeholder}
@@ -278,6 +279,7 @@ function ThreadRuntime({
   onForkFrom,
   imageAttachments,
   build,
+  builtSignature,
   closed,
   composerBlockedReason,
 }: {
@@ -294,6 +296,8 @@ function ThreadRuntime({
   imageAttachments: boolean;
   /** この会話を記録から組み立てた版（`restoredSyncVersion`）。進んだら記録を流し込み直す。乗った流れを描き始めてよいかの照合にも使う */
   build: number;
+  /** いまの写し（`initialMessages` の元）の印。ランタイムがどの記録から組み立てられたかを「最新を出す」側に知らせる（`noteRuntimeBuilt`） */
+  builtSignature: string;
   closed: boolean;
   composerBlockedReason: string | undefined;
 }) {
@@ -318,9 +322,16 @@ function ThreadRuntime({
   // （古い会話を一瞬見せない）。走っている run が残っていれば先に止める——前は作り直しで捨てていたもの
   // （呼ぶ側は走っている間は組み直さないので、ふつうは何も走っていない）
   const importedBuild = useRef(build);
+  // **どの写しから組み立てたかを知らせる**（直し・2026-10-15）——写しは組み直しを通らずに書き換わることがあるので、「最新を出す」側は
+  // 写しではなくこれと記録を比べる（`latest-state.ts` の `builtFrom`）。作ったときの写しは最初の描画のもの
+  const initialSignature = useRef(builtSignature);
+  useLayoutEffect(() => {
+    noteRuntimeBuilt(threadId, importedBuild.current, initialSignature.current);
+  }, [runtime, threadId]);
   useLayoutEffect(() => {
     if (importedBuild.current === build) return;
     importedBuild.current = build;
+    noteRuntimeBuilt(threadId, build, builtSignature);
     // 人の停止ではない——host のターンは止めない（§6.31）
     cancelRunQuietly(threadId, () => runtime.thread.cancelRun());
     runtime.thread.import(ExportedMessageRepository.fromArray(initialMessages));

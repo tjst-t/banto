@@ -984,9 +984,14 @@ export async function followRunningTurn(threadId: string): Promise<false | Follo
     sawContent();
     if (event.type !== "done" && event.type !== "stopped") return;
     if (event.type === "done") appendRealUsage(threadId, event.contextUsage, event.compactionCount);
+    // **まだ描き始めていないうちに終わった**（直し・2026-10-15、ユーザー報告「終わったのに最新が出ず、リロードで直る」）——
+    // 乗ったあと記録を取りに行っている間に短いターンが終わると、ここで走行を降ろすので誰も描き始めず、返事を外した
+    // 記録（`withoutReplayedReply`）だけが入っていた。「最後まで読んだ」と答えると組み直されず、そのまま残る。
+    // 描いていない流れは「切れた」として答え、終わったあとの記録から組み直してもらう
+    const drawn = self.turn !== null && !self.turn.awaitingStart;
     if (self.turn && liveTurns.get(threadId) === self.turn) liveTurns.delete(threadId);
     // 止めたターンは記録が変わっている——組み直す（§6.31）
-    reportStreamOutcome(threadId, event.type === "done" ? "done" : "disconnected");
+    reportStreamOutcome(threadId, event.type === "done" && drawn ? "done" : "disconnected");
   });
   const head = await stream.events.next();
   const first = head.done ? undefined : head.value;
