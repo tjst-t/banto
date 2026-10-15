@@ -7639,7 +7639,7 @@
       "number": 317,
       "kind": "task",
       "title": "自動化の回の受信箱——出す／出さない、決めること・失敗はいつも、後の回で置き換えない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [
         "automation-deliver"
@@ -7653,7 +7653,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
+      "updatedAt": "2026-10-15T13:58:01.465Z",
       "closedAt": null,
       "extra": {}
     },
