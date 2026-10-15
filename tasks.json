@@ -7992,21 +7992,23 @@
       "number": 332,
       "kind": "task",
       "title": "Memory が増えすぎたら棚卸しを勧める",
-      "status": "ready",
+      "status": "backlog",
       "parent": "memory-hygiene",
       "dependsOn": [
         "memory-ai-retract"
       ],
       "milestone": null,
       "priority": "normal",
-      "labels": [],
+      "labels": [
+        "未決"
+      ],
       "body": "件数か大きさ（文字数・トークンの見積もり）が線を超えたら、受信箱に「棚卸しをしませんか」を出す。押すと、棚卸しを頼む Fork を立てる形を想定している。線の値と「人が直す必要のあるお知らせ」に当たるか（受信箱の見直しの決まり）は未決。自動化（定期実行）で毎月棚卸しを動かす形も候補。",
       "doneWhen": "線を超えた Project で受信箱に1件だけ出て、棚卸しをしたら消えることを確かめる。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T23:22:52.824Z",
-      "updatedAt": "2026-10-15T23:22:52.824Z",
+      "updatedAt": "2026-10-15T23:23:02.901Z",
       "closedAt": null,
       "extra": {}
     }
