@@ -7406,7 +7406,7 @@
       "number": 307,
       "kind": "task",
       "title": "ページ・文・範囲・セルを指してコメントを付け、ui/message で会話の入力欄へ返す",
-      "status": "in-progress",
+      "status": "done",
       "parent": "office-review",
       "dependsOn": [
         "office-pdf-viewer"
@@ -7416,12 +7416,12 @@
       "labels": [],
       "body": "コメントの一覧（直す・消す・押すと飛ぶ）。コメントは FileSystem の画面向け getComments／saveComments（admin）で Project ごとの置き場に残す（鍵はパス、各コメントは付けたときのハッシュを持ち、変わったら印）。「AI に返す」は MCP Apps の ui/message：banto の画面（module-canvas.tsx の AppBridge.onmessage）が会話の中の画面からだけ、人の操作の直後だけ受け、その会話の入力欄の上に「添付」の塊（出所つき、第三者は強く、見られる・外せる、1枚の画面から1つ）として置く。送るのは人。AI には出所つきの引用として渡す。書きかけの保存にも含める。会話の外では「コピー」。仕様 v4-modules.md §2.2・v4-frontend.md「画面から会話の入力欄へ文を渡す」。",
       "doneWhen": "PDF の選んだ文・範囲、表のセルにコメントを付け「AI に返す」で、その会話の入力欄の上に塊が出る（自動では送られない、画面が勝手に呼んでも入らない）。送ると AI に出所つきで届く。読み込み直してもコメントが残る。E2E で確かめる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/office-comments）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T11:32:46.864Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T12:32:05.446Z",
+      "closedAt": "2026-10-15T12:32:05.446Z",
       "extra": {}
     },
     {
