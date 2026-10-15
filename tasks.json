@@ -6917,7 +6917,7 @@
       "number": 283,
       "kind": "task",
       "title": "段4：音——コンテナに音のシンクを足し、Opus を同じ流れに載せて人の画面で鳴らす",
-      "status": "in-progress",
+      "status": "done",
       "parent": "browser-video",
       "dependsOn": [
         "browser-video-pc"
@@ -6927,12 +6927,12 @@
       "labels": [],
       "body": "§4.1「動画で流す」の段4（音）。段2（#281）で人の画面は H.264 の動画で流れている（main・release 済み）。\n\n作るもの：\n- コンテナ（と別のサーバ）に音の空のシンク（PulseAudio か PipeWire のどちらか——測って軽いほう）を足し、Module が起こす Chrome の音をそこへ出す。入れる段は Chrome・GStreamer と同じく Module がブラウザを入れるところ。別のサーバでは sudo しないので、入らなければ理由と入れ方を添えて「音無し」で続ける（ブラウザは断らない）。\n- GStreamer（今の映像の流れの子と同じ子か別の子か決める）でシンクのモニタを Opus に圧縮し、映像と同じ流れ（アーキ §5.8）に時刻印つきで載せる。\n- 人の画面は AudioDecoder＋WebAudio で鳴らす。映像の時刻と合わせる（ずれの許し方を決める）。音を鳴らし始めるには人の操作が要る（自動再生の決まり）ので、画面に「音を出す」を置く（押すまで鳴らさない、押したら覚える）。AudioDecoder が無い（Safari 26 未満など）ときは音無しで、画面にそう出す。\n- 静止のとき映像の流れを止める仕組み（XDamage）と、音が鳴っている間の扱いを合わせる（音が鳴っている間は止めない等）。\n- 画面を見ている人がいない間は音も流さない。\n\n確かめ（**全部の E2E は流さない**、ユーザー指示）：browser の単体・型検査・browser.spec.ts・browser-view.spec.ts・browser-video.spec.ts・browser-tabs.spec.ts と、音の出るページ（試験用のページで決まった周波数の音を鳴らす）で人の画面に音が届くことを見る試験（単体で Opus を復号して周波数を確かめる、E2E で AudioDecoder が音を出す等）。重さ（CPU・帯域）を §4.1 の実測に足す。",
       "doneWhen": "音の出るページを開くと、人の画面で「音を出す」を押したあと音が届くことを試験で確かめた（周波数が合う）。音のシンクが無い・AudioDecoder が無いときは音無しで映像は今どおり。browser の単体・型検査・browser の E2E 4本が通る。重さを §4.1 に書いた。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/browser-video-audio）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-15T09:00:51.682Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T10:13:51.006Z",
+      "closedAt": "2026-10-15T10:13:51.006Z",
       "extra": {}
     },
     {
