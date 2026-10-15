@@ -2,10 +2,14 @@
 //
 // 流し方は `playwright.config.ts`（この隣）の頭。場面（`scene.ts`）は API で組み、画面は撮るときに開く：
 //   1. Project を4つ作り、Project の根に小さなリポジトリを置く（家計簿アプリ・社内ポータル・qemu-bmc・ブログ）
-//   2. 家計簿アプリに Fork を4本立て、それぞれの会話を進める——作業中（tool の返事待ち）・未読・判断待ち・読んだもの
+//   2. 家計簿アプリに Fork を4本立て、それぞれの会話を進める——作業中（tool の返事待ち）・未読（まとめ無し）・
+//      決めることがある（ターンの終わりのまとめ）・読んだもの。Base は push で人の判断を待つ
 //   3. ほかの Project も進める——社内ポータルは判断待ち（回る）、qemu-bmc は待たずに流した結合テストが終わって AI が
-//      返した（未読・お知らせ）、ブログはビルドが終わった（お知らせ。会話は読んだ）
-//   4. 撮る：hero・approval・inbox・fork・module（Backlog）・mobile（会話と Drawer）
+//      返した（まとめで決めることを聞く）、ブログはビルドが終わって AI が返した（まとめ・次に頼めること）
+//   4. 撮る：hero・approval・inbox（全面・1枚のカード・携帯）・fork・module（Backlog）・mobile（会話と Drawer）
+//
+// ターンの終わりのまとめ（report_turn）は Project の設定でオンにする（4つともオン）。まとめを呼ばずに作業を終えたターンは
+// Stop hook に1度差し戻され、偽の AI はそのまま終える（まとめの無い「返ってきた会話」になる）
 //
 // 撮るのは**待っているものが出そろってから**（規則14——成功したときにだけ出るものを待つ）。読み込み中の表示を
 // 写さないように、撮る直前に、その画面が出すはずの中身を名指しで待つ。
@@ -55,6 +59,9 @@ function send(threadId: string, prompt: string): void {
     .then((res) => res.body?.pipeTo(new WritableStream()))
     .catch(() => undefined);
 }
+
+/** レビュー待ちに host が添えるターンの中身（`GET /api/inbox` の `turn`）のうち、ここで見るところ */
+type ReviewItem = InboxItem & { turn?: { summary?: { decisions?: unknown[]; nextSuggestions?: unknown[] } } };
 
 async function inbox(): Promise<InboxItem[]> {
   return api<InboxItem[]>("/api/inbox");
@@ -203,6 +210,7 @@ test("場面を作る", async ({ page }) => {
   }
   await api("/api/projects/order", "PUT", { ids: Object.values(projects) });
   await Promise.all(Object.values(projects).map((id) => waitModules(id, ["shell", "filesystem"])));
+  for (const id of Object.values(projects)) await api(`/api/projects/${id}/turn-summary`, "PUT", { enabled: true });
   // Base Thread は画面が Project を開いたときに作る口（POST）——ここでは画面を開かないので自分で作る
   const baseOf = async (projectId: string) =>
     (await api<Array<{ id: string; kind: string }>>(`/api/projects/${projectId}/threads`)).find((t) => t.kind === "base")?.id ??
@@ -227,12 +235,14 @@ test("場面を作る", async ({ page }) => {
   send(forks[scene.FORK_LOGIN]!, scene.LOGIN_BACKGROUND.prompt);
   send(forks[scene.FORK_CSV]!, scene.CSV_FIX.prompt);
   send(forks[scene.FORK_PAY_A]!, scene.PAY_A.prompt);
+  send(forks[scene.FORK_PAY_B]!, scene.PAY_B.prompt);
   // qemu-bmc・ブログ：待たずに流したコマンドが終わると届き、AI が起きてもう一度返す（返事が2つ）
   send(ids.qemu, scene.QEMU_INTEGRATION.prompt);
   send(ids.blog, scene.BLOG_PROOFREAD.prompt);
   await waitTurnEnded(page, forks[scene.FORK_LOGIN]!, 1, 180_000);
   await waitTurnEnded(page, forks[scene.FORK_CSV]!, 1, 180_000);
   await waitTurnEnded(page, forks[scene.FORK_PAY_A]!, 1, 180_000);
+  await waitTurnEnded(page, forks[scene.FORK_PAY_B]!, 1, 180_000);
   send(forks[scene.FORK_PAY_A]!, scene.PAY_A_CANCEL.prompt);
   await waitTurnEnded(page, forks[scene.FORK_PAY_A]!, 2, 180_000);
   await waitTurnEnded(page, ids.qemu, 2, 180_000);
@@ -245,20 +255,35 @@ test("場面を作る", async ({ page }) => {
   const runTests = await waitJudgment(ids.base);
   await api(`/api/inbox/${runTests.id}/answer`, "POST", { answer: { behavior: "allow" } });
   await waitJudgment(ids.base, runTests.id);
-  await defaultMode(forks[scene.FORK_PAY_B]!);
-  send(forks[scene.FORK_PAY_B]!, scene.PAY_B.prompt);
   await defaultMode(ids.portal);
   send(ids.portal, scene.PORTAL_DEPLOY.prompt);
-  await waitJudgment(forks[scene.FORK_PAY_B]!);
   await waitJudgment(ids.portal);
 
   // ログイン画面の改修：いま作業中（tool の返事を待っている）
   send(forks[scene.FORK_LOGIN]!, scene.LOGIN_WORKING.prompt);
 
-  // 読んだことにする会話（未読の太字は CSV 取り込みの不具合と qemu-bmc だけに残す）
+  // 読んだことにする会話（案A。受信箱の「返ってきた会話」は CSV 取り込みの不具合とブログ）
   await markRead(forks[scene.FORK_PAY_A]!);
-  await markRead(ids.blog);
 
+  // 受信箱に出るはずのもの：判断待ち2（家計簿の push・社内ポータルのデプロイ）、決めることがある2（案B・qemu-bmc）、
+  // 返ってきた会話2（CSV 取り込みの不具合はまとめ無し・ブログはまとめあり）
+  const reviewsNow = async () =>
+    Object.fromEntries(
+      ((await inbox()) as ReviewItem[])
+        .filter((i) => i.kind === "review" && i.threadId !== undefined)
+        .map((i) => [i.threadId!, { decisions: i.turn?.summary?.decisions?.length ?? 0, next: i.turn?.summary?.nextSuggestions?.length ?? 0 }]),
+    );
+  await expect
+    .poll(async () => {
+      const r = await reviewsNow();
+      return [r[forks[scene.FORK_PAY_B]!], r[ids.qemu], r[ids.blog], r[forks[scene.FORK_CSV]!]];
+    }, { timeout: 30_000, message: "受信箱のレビュー待ち（案B・qemu-bmc・ブログ・CSV）がそろわない" })
+    .toEqual([
+      { decisions: 1, next: 0 },
+      { decisions: 1, next: 0 },
+      { decisions: 0, next: 2 },
+      { decisions: 0, next: 0 },
+    ]);
   const items = await inbox();
   console.log(
     `[site-shots] 受信箱：判断待ち ${items.filter((i) => i.kind === "judgment" && i.liveness === "live").length}・` +
@@ -294,17 +319,60 @@ test("hero と approval", async ({ page }) => {
   }
 });
 
-test("inbox", async ({ page }) => {
-  test.skip(!wants("inbox"));
-  await prepare(page);
-  await page.goto(`/p/${ids.kakeibo}`);
-  await expect(page.getByText("があなたの判断を待っています")).toBeVisible({ timeout: 60_000 });
-  await scrollToEnd(page);
-  await page.getByRole("button", { name: "受信箱" }).first().click();
+/**
+ * 受信箱を開いて、出るはずのカードが出そろうまで待つ（判断待ち2・決めることがある2・返ってきた会話2）。
+ * 開いている会話（Base）のレビュー待ちは出ないが、Base にあるのは判断待ちだけ
+ */
+async function openInbox(page: Page): Promise<ReturnType<Page["getByRole"]>> {
+  await page.goto(`/p/${ids.kakeibo}?overlay=inbox`);
   const dialog = page.getByRole("dialog", { name: "受信箱" });
-  await expect(dialog.getByTestId("inbox-review").first()).toBeVisible({ timeout: 30_000 });
+  await expect(dialog.getByTestId("inbox-section-judgment").getByTestId("inbox-judgment")).toHaveCount(2, { timeout: 60_000 });
+  await expect(dialog.getByTestId("inbox-section-decide").getByTestId("inbox-review")).toHaveCount(2, { timeout: 30_000 });
+  await expect(dialog.getByTestId("inbox-section-returned").getByTestId("inbox-review")).toHaveCount(2, { timeout: 30_000 });
+  // カードの頭の Project・Thread の名前（画面の一覧が読めてから出る）
+  await expect
+    .poll(async () => (await dialog.getByTestId("inbox-card-project").allTextContents()).sort(), { timeout: 30_000 })
+    .toEqual([scene.BLOG, scene.KAKEIBO, scene.KAKEIBO, scene.KAKEIBO, scene.PORTAL, scene.QEMU].sort());
+  return dialog;
+}
+
+test("inbox", async ({ page }) => {
+  test.skip(!wants("inbox") && !wants("inbox-card"));
+  await prepare(page);
+  const dialog = await openInbox(page);
+  // 4つの段をすべて1枚に入れる——受信箱の中身の高さまで画面を縦に伸ばす（下の余白 pb-24 のぶんは詰める）
+  const overflow = await dialog.evaluate((el) => {
+    const scroller = el.querySelector<HTMLElement>(".overflow-auto")!;
+    return scroller.scrollHeight - scroller.clientHeight;
+  });
+  await page.setViewportSize({ width: 1440, height: 900 + Math.max(0, overflow - 72) });
   await page.waitForTimeout(1_000);
-  await save(page, "inbox");
+  if (wants("inbox")) await save(page, "inbox");
+  if (wants("inbox-card")) {
+    // 決めることのあるまとめのカード（案B）。おすすめの選択肢を押して、返信の欄に入ったところ
+    const card = dialog
+      .getByTestId("inbox-section-decide")
+      .getByTestId("inbox-review")
+      .filter({ has: page.getByTestId("inbox-card-thread").getByText(scene.FORK_PAY_B, { exact: true }) });
+    await card.getByTestId("inbox-turn-option").filter({ hasText: "PAY.JP で組む" }).click();
+    await expect(card.getByTestId("inbox-reply-input")).toHaveValue(/^PAY\.JP で組んでください。/);
+    await page.mouse.move(0, 0);
+    await card.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(500);
+    await save(card, "inbox-card");
+  }
+});
+
+test("mobile-inbox", async ({ browser }) => {
+  test.skip(!wants("mobile-inbox"));
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, colorScheme: "light", isMobile: true, hasTouch: true });
+  await loginContext(context);
+  const page = await context.newPage();
+  await prepare(page);
+  await openInbox(page);
+  await page.waitForTimeout(1_000);
+  await save(page, "mobile-inbox");
+  await context.close();
 });
 
 test("fork", async ({ page }) => {

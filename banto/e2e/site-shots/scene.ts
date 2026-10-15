@@ -304,12 +304,75 @@ export const PAY_A_CANCEL: Turn = {
   },
 };
 
+/**
+ * 案B：試作を作って、ターンの終わりのまとめ（report_turn）で「どちらで組むか」を人に聞く——受信箱の「決めることがあります」
+ */
 export const PAY_B: Turn = {
   prompt: "決済を PAY.JP で組む場合の手順と手数料をまとめて、試作を作ってください。",
   plan: {
-    say: "PAY.JP の Node.js 向けの SDK を入れて、試作を作ります。",
-    tools: [{ server: "shell", name: "runCommand", args: { command: "npm install payjp" } }],
-    then: "SDK を入れました。",
+    say: "PAY.JP で組む場合を調べて、試作を作ります。",
+    tools: [
+      {
+        server: "filesystem",
+        name: "writeFile",
+        args: {
+          path: "src/payment/payjp-checkout.js",
+          content: `// 試作：PAY.JP の定期課金でプレミアムプランを申し込む
+import Payjp from "payjp";
+
+const payjp = Payjp(process.env.PAYJP_SECRET_KEY);
+
+/** カードの入力欄（payjp.js）で作ったトークンから顧客を作り、月額のプランに申し込む */
+export async function subscribePremium(userId, cardToken) {
+  const customer = await payjp.customers.create({ card: cardToken, metadata: { userId } });
+  return payjp.subscriptions.create({ customer: customer.id, plan: process.env.PAYJP_PREMIUM_PLAN_ID });
+}
+`,
+        },
+      },
+      {
+        server: "banto-thread",
+        name: "report_turn",
+        say: [
+          "PAY.JP で組む場合をまとめました。",
+          "",
+          "| 項目 | PAY.JP |",
+          "|---|---|",
+          "| 手数料 | Visa・Mastercard 3.0%、JCB・American Express 3.3% |",
+          "| 初期費用・月額 | なし |",
+          "| 決済画面 | カードの入力欄を家計簿アプリの画面に埋め込める（payjp.js） |",
+          "| 定期課金 | PAY.JP の定期課金でそのまま組める |",
+          "",
+          "試作は `src/payment/payjp-checkout.js` に置きました。案A（Stripe）と比べると、手数料が安く、決済画面を家計簿アプリのデザインに揃えられます。",
+          "一方で、解約したときの扱いは案A ほど細かく決められません。",
+        ].join("\n"),
+        args: {
+          request: "プレミアムプランの決済を PAY.JP で組む場合の手順と手数料を調べ、試作を作る（案A の Stripe と比べるため）",
+          outcome: {
+            status: "done",
+            headline: "PAY.JP の試作を作りました。手数料は Stripe より安く、決済画面を家計簿アプリに揃えられます。",
+            points: [
+              "手数料は Visa・Mastercard で 3.0%（Stripe は 3.6%）",
+              "カードの入力欄を家計簿アプリの画面に埋め込める",
+              "月の途中の解約は、期間の終わりまで使える形にできる（Stripe と同じ）",
+            ],
+            notVerified: ["本番の審査にかかる日数", "試作は鍵を入れて動かしていない"],
+            artifacts: [{ label: "試作", detail: "src/payment/payjp-checkout.js" }],
+          },
+          decisions: [
+            {
+              question: "プレミアムプランの決済は、どちらで組みますか？",
+              context: "Stripe は決済画面が Stripe 側のページに移ります。PAY.JP は画面を揃えられ、手数料も安くなります。",
+              options: [
+                { label: "PAY.JP で組む", reply: "PAY.JP で組んでください。申し込みと決済の画面を作るところまで進めてください。", recommended: true },
+                { label: "Stripe で組む", reply: "Stripe で組んでください。申し込みと決済の画面を作るところまで進めてください。" },
+                { label: "審査の日数を調べてから", reply: "決める前に、両方の本番の審査にかかる日数を調べてください。" },
+              ],
+            },
+          ],
+        },
+      },
+    ],
   },
 };
 
@@ -454,12 +517,45 @@ export const QEMU_INTEGRATION: Turn = {
   },
 };
 
-/** 結合テストが終わって届いたとき（banto が「コマンドが終わりました：結合テスト」を届ける） */
+/**
+ * 結合テストが終わって届いたとき（banto が「コマンドが終わりました：結合テスト」を届ける）。原因と直し方の案を、まとめの
+ * 「決めること」で人に聞く
+ */
 const QEMU_DELIVERED: FakePlan = {
-  say:
-    "結合テストは 8 件すべて通りました。\n\n" +
-    "電源オフ（ACPI）は QMP の `system_powerdown` を送るだけなので、ACPI に応えないゲストではいつまでも止まりません。" +
-    "30 秒待っても止まらなければ `quit` で止めるようにしたいと思います。この方針で進めてよいか確認してください。",
+  tools: [
+    {
+      server: "banto-thread",
+      name: "report_turn",
+      say:
+        "結合テストは 8 件すべて通りました。\n\n" +
+        "電源オフ（ACPI）は QMP の `system_powerdown` を送るだけなので、ACPI に応えないゲストではいつまでも止まりません。" +
+        "UEFI の画面で止まっているときや、OS が起動しきる前に送ったときがこれに当たります。",
+      args: {
+        request: "IPMI で電源オフを送っても QEMU がすぐ止まらないことがある原因を、結合テストを流しながら調べる",
+        outcome: {
+          status: "done",
+          headline: "原因が分かりました。ゲストが ACPI に応えないと、電源オフを送っても止まりません。",
+          points: [
+            "結合テストは 8 件すべて通った",
+            "電源オフ（ACPI）は QMP の system_powerdown を送るだけで、ゲストが応えるまで待ち続ける",
+            "UEFI の画面や起動の途中では、ゲストが応えない",
+          ],
+          notVerified: ["Windows のゲストでの動き"],
+        },
+        decisions: [
+          {
+            question: "ゲストが電源オフに応えないとき、どうしますか？",
+            context: "本物のサーバの BMC も、ACPI の電源オフに応えなければ待ち続けます。強制的に止めるとゲストのディスクが壊れることがあります。",
+            options: [
+              { label: "30 秒待って強制的に止める", reply: "30 秒待っても止まらなければ、QMP の quit で強制的に止めるようにしてください。", recommended: true },
+              { label: "待つ時間を設定で変えられるようにする", reply: "待つ時間を設定で変えられるようにして、既定は 30 秒にしてください。" },
+              { label: "いまのままにする", reply: "本物の BMC と同じなので、いまのままにしてください。" },
+            ],
+          },
+        ],
+      },
+    },
+  ],
 };
 
 // ---- ブログ ------------------------------------------------------------------------------------------
@@ -501,7 +597,33 @@ export const BLOG_PROOFREAD: Turn = {
   },
 };
 
-const BLOG_DELIVERED: FakePlan = { say: "サイトのビルドが通りました（記事 42 件）。" };
+/** ビルドが終わって届いたとき。決めることは無いので、まとめは「次に頼めること」を添える */
+const BLOG_DELIVERED: FakePlan = {
+  tools: [
+    {
+      server: "banto-thread",
+      name: "report_turn",
+      say: "サイトのビルドが通りました（記事 42 件）。",
+      args: {
+        request: "下書き「Incus で開発環境を分ける」の誤字や分かりにくいところを見つけ、サイトのビルドを流す",
+        outcome: {
+          status: "done",
+          headline: "直したほうがよいところは2か所でした。サイトのビルドも通っています。",
+          points: [
+            "「systemd がそのまま動く」は、Docker でも動かす方法があるので言い方を変えたほうが正確",
+            "ホストのフォルダをコンテナに見せる手順（incus config device add）が抜けている",
+          ],
+          notVerified: ["下書きの中のコマンドは実際に流していない"],
+        },
+        decisions: [],
+        nextSuggestions: [
+          { label: "2か所とも直して", reply: "指摘の2か所を下書きに反映してください。" },
+          { label: "コマンドも流して確かめて", reply: "下書きの中のコマンドを実際に流して、書いてあるとおりに動くか確かめてください。" },
+        ],
+      },
+    },
+  ],
+};
 
 // ---- 偽の AI への対応表 -------------------------------------------------------------------------------
 

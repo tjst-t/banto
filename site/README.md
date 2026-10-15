@@ -36,7 +36,9 @@ E2E と同じく Incus が要り、同じ機械の E2E とは1回ずつ（ほか
 |---|---|
 | `hero.png` | パソコンの全画面。Project 4つ・Fork 4本・判断待ちのカード |
 | `approval.png` | 会話の中の承認カード（切り抜き） |
-| `inbox.png` | 受信箱 |
+| `inbox.png` | 受信箱の全面（縦長）。判断待ち2・決めることがある2（ターンの終わりのまとめ）・返ってきた会話2（まとめあり・なし） |
+| `inbox-card.png` | 受信箱の1枚のカード（切り抜き）。決済の案B のまとめで、選択肢を押して返信の欄に入ったところ |
+| `mobile-inbox.png` | 携帯の幅で開いた受信箱 |
 | `fork.png` | Fork の会話（決済の方式を比べている案A） |
 | `module.png` | Module の画面（Backlog の Canvas） |
 | `mobile.png`・`mobile-drawer.png` | 携帯の幅の会話と Drawer |
