@@ -291,8 +291,9 @@ export interface RealInboxJudgment {
   kind: "judgment";
   id: string;
   threadId: string;
-  /** `relay`＝Module 間中継の初回承認（host 自身が発生源、§「Module 間中継の承認」）。 */
-  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message";
+  /** `relay`＝Module 間中継の初回承認（host 自身が発生源、§「Module 間中継の承認」）。
+   *  `automation`＝自動化の確認（届ける前に人に聞く）。 */
+  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation";
   message: string;
   /** Elicitationのform/urlモード（§2.4「自前で作らない」）。 */
   mode?: "form" | "url";
