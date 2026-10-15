@@ -41,7 +41,7 @@ const RANGE_CHUNK = 512 * 1024;
 const ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 /** 画面のファイルのバイトを読む（範囲が 4MiB を超えるときは分けて頼む） */
-async function readRange(path: string, begin: number, end: number): Promise<Uint8Array> {
+export async function readRange(path: string, begin: number, end: number): Promise<Uint8Array> {
   const out = new Uint8Array(end - begin);
   let at = begin;
   while (at < end) {
@@ -847,7 +847,7 @@ export function findLoosely(content: PdfTextContent, quote: string): number[] {
   return [...new Set(owner.slice(at, at + needle.length))];
 }
 
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;

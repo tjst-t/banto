@@ -29,8 +29,9 @@ export const EDIT_DIFF_APP_URI = "ui://banto-filesystem/edit-diff";
 export const FILE_APP_URI = "ui://banto-filesystem/file";
 
 /**
- * showFile の画面のうち PDF（追加・2026-10-15、v4-modules.md §2.2「PDF・Office…」）。pdf.js（約 1.7MB）を同梱するので
- * テキストの画面（`file`）とは分ける——どちらを出すかは host が引数の拡張子で選ぶ（`dev.banto/ui-by-extension`）。
+ * showFile の画面のうち PDF・Word（追加・2026-10-15、v4-modules.md §2.2「PDF・Office…」）。pdf.js（約 1.7MB）と
+ * docx-preview・JSZip（約 0.2MB）を同梱するのでテキストの画面（`file`）とは分ける——どちらを出すかは host が引数の拡張子で選ぶ
+ * （`dev.banto/ui-by-extension`）。PDF と Word のどちらで描くかは、画面が同じ拡張子で選ぶ（`ui/document-app.ts`）。
  */
 export const DOCUMENT_APP_URI = "ui://banto-filesystem/document";
 
@@ -69,7 +70,18 @@ function documentScripts(): string {
   const worker = loadScript(new URL("pdf.worker.min.mjs", pdfjs));
   const lib = loadScript(new URL("pdf.min.mjs", pdfjs));
   const app = loadScript(new URL("./ui/document.bundle.js", import.meta.url));
-  return [worker, lib, app].map((js) => `<script type="module">\n${js}\n</script>`).join("\n");
+  return [...docxScripts(), ...[worker, lib, app].map((js) => `<script type="module">\n${js}\n</script>`)].join("\n");
+}
+
+/**
+ * **Word の描き手**（docx-preview 0.4 と、それが使う JSZip 3）。どちらも UMD の min を普通の script で置く——
+ * JSZip が `globalThis.JSZip` に置かれ、docx-preview はそれを見て `globalThis.docx` に置く。普通の script は
+ * module の script より先に走るので、画面（module）が動くときには揃っている
+ */
+function docxScripts(): string[] {
+  const jszip = loadScript(new URL(import.meta.resolve("jszip/dist/jszip.min.js")));
+  const docx = loadScript(new URL("./docx-preview.min.js", import.meta.resolve("docx-preview")));
+  return [jszip, docx].map((js) => `<script>\n${js}\n</script>`);
 }
 
 export function appHtml(surface: AppSurface): string {

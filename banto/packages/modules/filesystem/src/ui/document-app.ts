@@ -1,32 +1,79 @@
-// FileSystem Module の **PDF の画面**の入口（`ui://banto-filesystem/document`、v4-modules.md §2.2「PDF・Office…」）。
+// FileSystem Module の **PDF・Word の画面**の入口（`ui://banto-filesystem/document`、v4-modules.md §2.2「PDF・Office…」）。
 //
-// テキストの画面（`app.ts`）とは束を分ける——こちらは pdf.js を読み込んだ HTML に入る（`ui-app.ts`）。
+// テキストの画面（`app.ts`）とは束を分ける——こちらは pdf.js・docx-preview を読み込んだ HTML に入る（`ui-app.ts`）。
 // banto を知らない。MCP Apps の約束（`protocol.ts`）だけで親と話す。
+// どちらで描くかは見せるファイルの拡張子で決める（host がこの画面を選んだのと同じ物差し）。パスは tool の引数で
+// 先に届くが、届かないこともある（記録から開き直したとき等）ので、そのときは結果のパスで決める。
 
+import { DocxDocumentView } from "./docx-viewer.js";
 import { PdfDocumentView } from "./pdf-viewer.js";
-import { onNotification, notify, request, errorMessage, type CallToolResult, type HostContext, type InitializeResult } from "./protocol.js";
+import { onNotification, notify, request, errorMessage, textOf, type CallToolResult, type HostContext, type InitializeResult } from "./protocol.js";
 import { applyHostStyles, applyTheme, installStyles } from "./styles.js";
+
+type DocumentView = PdfDocumentView | DocxDocumentView;
+
+/**
+ * パスの拡張子で描き方を選ぶ。docx 以外は PDF の画面（拡張子で選ばれてここに来るのは pdf と docx だけ。パスが無いときも
+ * PDF の画面が誤りを出す）。コメントはまだ PDF だけ
+ */
+function viewFor(path: string, root: HTMLElement, displayMode: "inline" | "fullscreen", canReturnComments: boolean): DocumentView {
+  return /\.docx$/i.test(path) ? new DocxDocumentView(root, { displayMode }) : new PdfDocumentView(root, { displayMode, canReturnComments });
+}
+
+/** showFile の結果に入っているパス（読めなければ空） */
+function resultPath(result: CallToolResult): string {
+  try {
+    const path = (JSON.parse(textOf(result)) as { path?: unknown }).path;
+    return typeof path === "string" ? path : "";
+  } catch {
+    return "";
+  }
+}
 
 async function main(): Promise<void> {
   installStyles();
   const root = document.getElementById("app") ?? document.body;
 
-  // 通知は initialize の返事より先に届きうるので、面ができるまで溜めておく
-  let view: PdfDocumentView | undefined;
-  const early: Array<(v: PdfDocumentView) => void> = [];
-  const deliver = (fn: (v: PdfDocumentView) => void) => (view ? fn(view) : early.push(fn));
+  // 通知は initialize の返事より先に届きうる。面は initialize が済み、見せるファイルのパスが分かってから作るので、それまで溜めておく
+  let displayMode: "inline" | "fullscreen" | undefined;
+  let canReturnComments: boolean | undefined;
+  let path: string | undefined;
+  let view: DocumentView | undefined;
+  const early: Array<(v: DocumentView) => void> = [];
+  const deliver = (fn: (v: DocumentView) => void) => (view ? fn(view) : early.push(fn));
+  const choose = () => {
+    if (view || !displayMode || canReturnComments === undefined || path === undefined) return;
+    view = viewFor(path, root, displayMode, canReturnComments);
+    for (const fn of early.splice(0)) fn(view);
+  };
 
   onNotification("ui/notifications/tool-input", (params) => {
     const args = ((params as { arguments?: Record<string, unknown> }).arguments ?? {}) as Record<string, unknown>;
     deliver((v) => v.setToolInput(args));
+    if (typeof args.path === "string" && args.path) path ??= args.path;
+    choose();
   });
-  onNotification("ui/notifications/tool-result", (params) => deliver((v) => v.setToolResult(params as CallToolResult)));
-  onNotification("ui/notifications/tool-cancelled", () => deliver((v) => v.setCancelled()));
+  onNotification("ui/notifications/tool-result", (params) => {
+    const result = params as CallToolResult;
+    deliver((v) => v.setToolResult(result));
+    // 引数が届かなかったときは結果のパスで選ぶ
+    path ??= resultPath(result);
+    choose();
+  });
+  onNotification("ui/notifications/tool-cancelled", () => {
+    deliver((v) => v.setCancelled());
+    path ??= "";
+    choose();
+  });
   onNotification("ui/notifications/host-context-changed", (params) => {
     const ctx = params as HostContext;
     applyTheme(ctx.theme);
     applyHostStyles(ctx.styles?.variables);
     if (ctx.displayMode) view?.setDisplayMode(ctx.displayMode);
+    if (!view && displayMode && (ctx.displayMode === "inline" || ctx.displayMode === "fullscreen")) {
+      displayMode = ctx.displayMode;
+      document.body.dataset.mode = displayMode;
+    }
   });
 
   let init: InitializeResult;
@@ -43,14 +90,13 @@ async function main(): Promise<void> {
   const ctx = init.hostContext ?? {};
   applyTheme(ctx.theme);
   applyHostStyles(ctx.styles?.variables);
-  const displayMode = ctx.displayMode === "fullscreen" ? "fullscreen" : "inline";
+  displayMode = ctx.displayMode === "fullscreen" ? "fullscreen" : "inline";
   document.body.dataset.mode = displayMode;
-
   // **「AI に返す」は、host が `ui/message` を受けると名乗ったときだけ**（banto は会話の中で開いた画面にだけ名乗る）。
   // 受けない host（会話の外）では、コメントは「コピー」で持ち出す
-  const canReturnComments = init.hostCapabilities?.message?.text !== undefined;
-  view = new PdfDocumentView(root, { displayMode, canReturnComments });
-  for (const fn of early.splice(0)) fn(view);
+  canReturnComments = init.hostCapabilities?.message?.text !== undefined;
+  root.textContent = "ファイルを待っています…";
+  choose();
   notify("ui/notifications/initialized");
 }
 

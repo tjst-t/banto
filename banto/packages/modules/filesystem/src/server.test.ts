@@ -133,13 +133,13 @@ test("showFile はフォルダ・無いファイル・根の外を断る", async
 
 // ---- PDF の画面（v4-modules.md §2.2「PDF・Office…」、2026-10-15）-------------------------
 
-test("showFile は PDF なら document の画面を選ばせる。document の HTML は pdf.js と worker を同じ画面に入れる", async () => {
+test("showFile は PDF・docx なら document の画面を選ばせる。document の HTML は pdf.js と worker、docx-preview と JSZip を同じ画面に入れる", async () => {
   await withClient(async (client) => {
     const { tools } = await client.listTools();
     const show = tools.find((t) => t.name === "showFile");
     assert.deepEqual((show?._meta as Record<string, unknown>)?.["dev.banto/ui-by-extension"], {
       arg: "path",
-      byExtension: { pdf: "ui://banto-filesystem/document" },
+      byExtension: { pdf: "ui://banto-filesystem/document", docx: "ui://banto-filesystem/document" },
     });
     const { resources } = await client.listResources();
     const doc = resources.find((r) => r.uri === "ui://banto-filesystem/document");
@@ -152,11 +152,16 @@ test("showFile は PDF なら document の画面を選ばせる。document の H
     const lib = html.text.indexOf("globalThis.pdfjsLib=");
     const app = html.text.indexOf("banto-filesystem-document");
     assert.ok(worker > 0 && lib > worker && app > lib, `script の順が違う（worker ${worker}・本体 ${lib}・画面 ${app}）`);
+    // JSZip → docx-preview は普通の script で、module の script（画面）より先に走る
+    const jszip = html.text.indexOf(".JSZip=");
+    const docx = html.text.indexOf("docx-preview <https");
+    assert.ok(jszip > 0 && docx > jszip && docx < worker, `Word の描き手の script の順が違う（JSZip ${jszip}・docx-preview ${docx}）`);
     // 中で script が閉じない
-    assert.equal(html.text.match(/<\/script>/g)?.length, 3);
-    // テキストの画面は pdf.js を背負わない
+    assert.equal(html.text.match(/<\/script>/g)?.length, 5);
+    // テキストの画面は pdf.js・docx-preview を背負わない
     const file = (await client.readResource({ uri: "ui://banto-filesystem/file" })).contents[0] as { text: string };
     assert.doesNotMatch(file.text, /pdfjsLib/);
+    assert.doesNotMatch(file.text, /JSZip/);
     assert.ok(file.text.length < 500_000, `テキストの画面が重い（${file.text.length}）`);
   });
 });

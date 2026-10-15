@@ -1261,9 +1261,10 @@ host に預け、リロードしても別タブに出しても、そのまま開
 
 #### PDF・Office のファイルを読んでコメントを返す（決定・2026-10-15、ユーザー。Backlog のストーリー #301 office-review）
 
-> **実装の状況（2026-10-15、#302・#307）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
-> PDF のコメント（ページ・選んだ文・範囲。置き場・一覧・「AI に返す」）まで。表のセルを指すコメントは置き場と返す文の形
-> だけ（表の画面 #306 が無いので、画面からはまだ付けられない）。docx の見出し・変換役・`readDocument`・Office は未実装。
+> **実装の状況（2026-10-15、#302・#307・#303）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
+> PDF のコメント（ページ・選んだ文・範囲。置き場・一覧・「AI に返す」）、docx の docx-preview での表示まで。表のセルを指すコメントは
+> 置き場と返す文の形だけ（表の画面 #306 が無いので、画面からはまだ付けられない）。docx のコメント（選んだ文と見出し）・変換役・
+> `readDocument`・pptx・xlsx は未実装。変換役が入るまで、docx の「元に近い見た目で見る」は出さず、描けなかったら理由を出して止まる。
 
 **目的**：AI が作った・手元にある PDF・Word（docx）・PowerPoint（pptx）・Excel（xlsx）を、**元の見た目で読み**、
 **ページ・選んだ文・範囲・セルを指してコメントを付け、まとめて AI に返す**。**編集はしない**（ユーザー）。
@@ -1289,8 +1290,13 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
 
 - 画面の束は大きくなる（pdf.js の min で約 1.7MB）。**PDF・Office の画面は別の `ui://banto-filesystem/document` に分け**、
   テキストの画面（`ui://banto-filesystem/file`）の重さは変えない。`showFile` が拡張子で画面を選ぶ——tool の
-  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: … } }`）で名乗り、host が呼び出しの引数で選ぶ
-  （v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える tool」）
+  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: …, docx: … } }`）で名乗り、host が呼び出しの引数で選ぶ
+  （v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える tool」）。PDF と docx は同じ `document` の画面で、
+  どちらで描くかは画面が同じ拡張子で選ぶ
+- docx-preview（0.4.1）と JSZip（3.10.1）は UMD の min を普通の `<script>` で pdf.js より前に置く（`globalThis.JSZip`→
+  `globalThis.docx`）。中身は `readFileRange` で全部読む（zip なので範囲では描けない）。画像・埋め込みフォントは data: の URL
+  （`useBase64URL`。blob: は `font-src` に無い）、altChunk（iframe で描かれる）は描かない。狭いカードではページの幅に合わせて
+  縮める（広げない）
 - pdf.js（pdfjs-dist 6.4.299、`build/` の min）の worker と本体は、画面の束とは別の `<script type="module">` で
   worker → 本体 → 画面の順に HTML に置く。eval・WASM・fetch は使わない（`isEvalSupported: false`・`useWasm: false`）。
   日本語の CMap・標準フォントは pdf.js が fetch したがるので、画面向けの **`readPdfAsset({kind, name})`**（`admin`、

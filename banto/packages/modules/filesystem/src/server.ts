@@ -108,9 +108,9 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         _meta: {
           [VISIBILITY_META_KEY]: "agent",
           ui: { resourceUri: FILE_APP_URI },
-          // **PDF は別の画面で描く**（v4-modules.md §2.2「PDF・Office…」）——pdf.js を同梱して重いので、
+          // **PDF・Word は別の画面で描く**（v4-modules.md §2.2「PDF・Office…」）——pdf.js・docx-preview を同梱して重いので、
           // テキストの画面の重さを変えない。どちらを出すかは host が引数のパスの拡張子で選ぶ
-          [UI_BY_EXTENSION_META_KEY]: { arg: "path", byExtension: { pdf: DOCUMENT_APP_URI } },
+          [UI_BY_EXTENSION_META_KEY]: { arg: "path", byExtension: { pdf: DOCUMENT_APP_URI, docx: DOCUMENT_APP_URI } },
         },
       },
       tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] }),
@@ -342,9 +342,9 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         _meta: { [VISIBILITY_META_KEY]: "admin", ui: { prefersBorder: false } },
       },
       {
-        // showFile の画面のうち PDF（pdf.js を Worker 無しで同梱。v4-modules.md §2.2「PDF・Office…」）
+        // showFile の画面のうち PDF・Word（pdf.js を Worker 無しで、docx-preview と同梱。v4-modules.md §2.2「PDF・Office…」）
         uri: DOCUMENT_APP_URI,
-        name: "PDF を見せる",
+        name: "PDF・Word を見せる",
         mimeType: UI_APP_MIME,
         _meta: { [VISIBILITY_META_KEY]: "admin", ui: { prefersBorder: false } },
       },

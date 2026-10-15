@@ -15,7 +15,9 @@
   "dependencies": {
     "@banto/module-contract": "*",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "docx-preview": "0.4.1",
     "fflate": "^0.8.3",
+    "jszip": "3.10.1",
     "pdfjs-dist": "6.4.299"
   }
 }
