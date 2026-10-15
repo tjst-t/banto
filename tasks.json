@@ -7639,7 +7639,7 @@
       "number": 317,
       "kind": "task",
       "title": "自動化の回の受信箱——出す／出さない、決めること・失敗はいつも、後の回で置き換えない",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "automation-deliver"
@@ -7649,12 +7649,12 @@
       "labels": [],
       "body": "仕様 §4.3「受信箱」。\n- reviewOnDone が false なら完了した回のレビュー待ちを出さない。判断待ち・決めること（decisions）・失敗・途中で切れた回はいつも出す\n- 自動化の Fork では、前の未確認が「決めることがある」か失敗なら、後の回が何も無く終わっても置き換えない（inbox/store.ts の raiseReview は今、前の未確認を「見た」にして置き換える）\n- カードに「この会話には、まだ見ていない回が n 回あります」",
       "doneWhen": "単体テストで：出さない自動化の完了した回は出ず、decisions のある回・失敗した回は出る。decisions のある未確認のカードが、後の何も無い回で消えない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/automation-inbox）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T13:58:01.465Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T14:27:30.165Z",
+      "closedAt": "2026-10-15T14:27:30.165Z",
       "extra": {}
     },
     {
