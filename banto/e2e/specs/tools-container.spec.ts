@@ -74,14 +74,19 @@ test("試しの同梱 Module が道具用のコンテナで起き、名乗った
     await expect(tr.locator("td").nth(2)).toHaveText("Global");
     await expect(tr.locator("td").nth(3)).toHaveText("道具用のコンテナ");
     await expect(page.getByTestId(`module-state-${MODULE}`)).toHaveText("Running");
-    // 入れられなかったときだけの操作は出ていない
-    await page.getByTestId(`module-menu-${MODULE}`).click();
-    await expect(page.getByTestId(`module-tools-retry-${MODULE}`)).toHaveCount(0);
-    await page.keyboard.press("Escape");
-    // 画面の「Module を追加」の目録にも出ない
+    // 画面の「Module を追加」の目録にも出ない。閉じるのはダイアログの「キャンセル」——Escape は設定の画面そのもの
+    // （overlay）まで閉じてしまう
     await page.getByRole("button", { name: "Module を追加" }).click();
-    await expect(page.getByRole("dialog")).toBeVisible();
-    await expect(page.getByRole("dialog")).not.toContainText("道具用のコンテナの確かめ");
+    // 設定の面も role="dialog"（app-shell.tsx）なので、名前で引く
+    const dialog = page.getByRole("dialog", { name: "Module を追加" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).not.toContainText("道具用のコンテナの確かめ");
+    await dialog.getByRole("button", { name: "キャンセル" }).click();
+    await expect(dialog).toBeHidden();
+    // 入れられなかったときだけの操作は出ていない（最後に見る——開いたメニューは閉じずに終える）
+    await page.getByTestId(`module-menu-${MODULE}`).click();
+    await expect(page.getByRole("menu"), "行の「…」メニューが開かない").toBeVisible();
+    await expect(page.getByTestId(`module-tools-retry-${MODULE}`)).toHaveCount(0);
   } finally {
     await api(`/api/modules/${MODULE}`, { method: "DELETE" });
   }
