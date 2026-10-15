@@ -7469,6 +7469,29 @@
       "extra": {}
     },
     {
+      "id": "relay-blob-transfer",
+      "number": 311,
+      "kind": "task",
+      "title": "大きな中身を中継の外で運ぶ一時置き場（1回限りの札つきの PUT/GET）",
+      "status": "backlog",
+      "parent": "office-review",
+      "dependsOn": [
+        "office-converter"
+      ],
+      "milestone": null,
+      "priority": "low",
+      "labels": [],
+      "body": "Module の stdio は1通 10MB まで（MCP SDK 1.30.0）なので、変換役の入出力は最初 7MB までにした。それを超える文書のために、host にディスクへ流す一時置き場を作り、中継には札だけ流す。別のサーバの Project も逆向きのトンネル越しに使える。要るようになってから。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-15T09:56:20.361Z",
+      "updatedAt": "2026-10-15T09:56:20.361Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "command-palette-module-e2e-click-detache",
       "number": 310,
       "kind": "bug",
