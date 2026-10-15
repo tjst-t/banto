@@ -7662,7 +7662,7 @@
       "number": 318,
       "kind": "task",
       "title": "自動化の画面——core の画面を Canvas に出す枝・一覧とフォーム・入口4つ・専用の Fork の帯",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [
         "automation-ledger",
@@ -7677,7 +7677,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T12:47:14.768Z",
+      "updatedAt": "2026-10-15T13:58:04.097Z",
       "closedAt": null,
       "extra": {}
     },
