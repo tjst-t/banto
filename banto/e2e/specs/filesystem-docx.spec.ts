@@ -108,9 +108,16 @@ test("AI が見せた日本語の docx（見出し・表・箇条書き）を会
   await expect(card.getByRole("button", { name: /元に近い見た目/ })).toHaveCount(0);
   await expectDocument(card);
   await expect(card.getByTestId("docx-error-state")).toHaveCount(0);
-  // ページの幅は会話の中のカードに収まる（横にはみ出さない）
-  const overflow = await card.getByTestId("docx-scroller").evaluate((s) => s.scrollWidth - s.clientWidth);
-  expect(overflow, "Word のページがカードから横にはみ出している").toBeLessThanOrEqual(1);
+  // ページの幅は会話の中のカードに収まる（横にはみ出さない）。左端も見る——ページは中央寄せなので、縮め足りないと
+  // 左にもはみ出し、そちらは scrollWidth に載らない（負の位置はスクロールで届かない）
+  const fit = await card.getByTestId("docx-scroller").evaluate((s) => {
+    const page = s.querySelector("section.docx")!.getBoundingClientRect();
+    const box = s.getBoundingClientRect();
+    return { overflow: s.scrollWidth - s.clientWidth, left: page.left - box.left, right: box.left + s.clientWidth - page.right };
+  });
+  expect(fit.overflow, "Word のページがカードから横にはみ出している").toBeLessThanOrEqual(1);
+  expect(fit.left, "Word のページの左端が切れている").toBeGreaterThanOrEqual(0);
+  expect(fit.right, "Word のページの右端が切れている").toBeGreaterThanOrEqual(0);
   // 本文の文字を選べる
   const selected = await card.locator("section.docx article > p").nth(1).evaluate((p) => {
     const range = document.createRange();

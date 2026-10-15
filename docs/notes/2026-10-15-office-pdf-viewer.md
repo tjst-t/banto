@@ -56,3 +56,7 @@ pdf.js は日本語の CMap（`cmaps/*.bcmap`）と標準フォントを URL か
   `transform: scale` は元の大きさで場所を取るのでスクロールの長さが合わない
 - 依存は docx-preview 0.4.1 と、その peer の JSZip 3.10.1（規則10：docx を HTML にする既存資産は無く、fflate では zip は開けても
   WordprocessingML を描けない）。JSZip が引く readable-stream・pako 等は Node 向けの `lib/` 用で、画面は自己完結の `dist/jszip.min.js` だけを使う
+- **訂正（2026-10-15、レビュー）**：幅合わせの「元の幅」を `.docx-wrapper` の `scrollWidth` で測っていた。wrapper は flex の
+  中央寄せなので、ページがカードより広いと左右両側にはみ出し、`scrollWidth` には右側しか載らない——縮め足りず、左端が切れて
+  横にもはみ出した（レビューの実測：カード 420px で 65px）。一番広い `section.docx` の幅＋wrapper の左右の余白で測るように直した。
+  本物の `appHtml("document")` を偽の host に入れたプローブで、カード 360〜1000px のどれでもはみ出し 0・左右の余白が対称なのを確かめた

@@ -171,14 +171,19 @@ export class DocxDocumentView {
 
   /**
    * **ページの幅を画面に合わせる**（狭いときだけ縮める。広げはしない）。docx-preview はページを紙の幅（pt）で描くので、
-   * 会話の中のカードでは横にはみ出す。`zoom` は描いた後の大きさで場所を取るので、スクロールの長さも合う
+   * 会話の中のカードでは横にはみ出す。`zoom` は描いた後の大きさで場所を取るので、スクロールの長さも合う。
+   * 元の幅は**一番広いページ＋wrapper の左右の余白**で測る——`.docx-wrapper` は flex の中央寄せで、ページが広いと
+   * 左右両側にはみ出す。`scrollWidth` には右側しか載らず、縮め足りずに左端が切れる（負の位置はスクロールで届かない）
    */
   private fitWidth(): void {
     const wrapper = this.bodyEl.querySelector<HTMLElement>(`.${DOCX_CLASS}-wrapper`);
     if (!wrapper) return;
+    const pages = [...wrapper.querySelectorAll<HTMLElement>(`section.${DOCX_CLASS}`)];
+    if (pages.length === 0) return;
     wrapper.style.zoom = "";
+    const style = getComputedStyle(wrapper);
+    const natural = Math.max(...pages.map((p) => p.offsetWidth)) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
     const available = this.scroller.clientWidth;
-    const natural = wrapper.scrollWidth;
     if (available > 0 && natural > available) wrapper.style.zoom = String(available / natural);
   }
 
