@@ -7241,7 +7241,7 @@
       "number": 300,
       "kind": "task",
       "title": "受信箱の見直し——あなたの番だけ・受信箱の中で読んで答える・report_turn に URL",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7251,7 +7251,7 @@
       ],
       "body": "仕様：v4-architecture.md §2.4「受信箱は『あなたの番になったもの』だけ」・v4-frontend.md §6.41（f4b5d7a2、fork/inbox-redesign）。見本はモック mock/components/banto/inbox/inbox-page.tsx（d630606b）。作業ツリー .worktrees/inbox-redesign。",
       "doneWhen": "裏の仕事が残っている途中のターンと届くたびの知らせが受信箱に出ない。受信箱が全面のカードで、まとめ・返事を読み、選択肢で返信を作って送れ、判断待ちに答えられる。report_turn の artifacts と options に url。関係する単体テストと E2E が通る。",
-      "resolution": null,
+      "resolution": "cddaddb1 で main と release に push。フル E2E 270 件中 267 通過、落ちた3件（browser:100・turn-resume-restart:174・update-wait-restartable:72）は流し直して通過。host での反映は人。",
       "refs": [],
       "threads": [
         {
@@ -7260,8 +7260,8 @@
         }
       ],
       "createdAt": "2026-10-15T05:21:16.801Z",
-      "updatedAt": "2026-10-15T05:21:16.801Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T06:50:22.738Z",
+      "closedAt": "2026-10-15T06:50:22.738Z",
       "extra": {}
     }
   ],
