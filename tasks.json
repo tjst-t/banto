@@ -7755,6 +7755,31 @@
       "updatedAt": "2026-10-15T10:53:26.358Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "browser-network-cookie-header-race",
+      "number": 322,
+      "kind": "bug",
+      "title": "Browser の getNetworkRequest で、要求の Cookie ヘッダが出ないことがある（CDP の ExtraInfo が後から届く）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "browser",
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-15 の Browser の E2E 4本（2並列）で browser.spec.ts:100 が落ちた：getNetworkRequest の要求のヘッダに Authorization（伏せた・29 文字）はあるが、Cookie の行が無く、/cookie: （伏せた・\\d+ 文字）/ に合わなかった。単独で流し直すと通る。\n\n見立て（未確認）：Cookie は CDP の Network.requestWillBeSent には載らず Network.requestWillBeSentExtraInfo で後から届く。混んだ機械では、AI が getNetworkRequest を呼んだ時点で ExtraInfo がまだ来ておらず、記録に Cookie が無い。秘密が漏れるのではなく欠けるだけだが、通信を調べる道具として「送った Cookie が見えない」のは困る。\n\n直し方の候補：ExtraInfo を待ってから記録を確定する（要求の記録に「ExtraInfo 待ち」の印を持ち、getNetworkRequest は少し待つ）／ExtraInfo が来たら後から足し、まだのときは「（ヘッダの一部はまだ届いていません）」と添える。待ちを足して緑にするだけにはしない。",
+      "doneWhen": "原因を確かめ、ExtraInfo が遅れて届く形を単体で再現して直した。browser.spec.ts を混んだ機械で5回流して落ちない。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-15T11:22:22.146Z",
+      "updatedAt": "2026-10-15T11:22:22.146Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
