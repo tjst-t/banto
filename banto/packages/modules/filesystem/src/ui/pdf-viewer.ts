@@ -454,10 +454,11 @@ export class PdfDocumentView {
 
   private updateCurrentPage(): void {
     if (this.pages.length === 0) return;
-    const top = this.scroller.scrollTop + this.scroller.clientHeight / 3;
+    // 見えている真ん中の線が掛かっているページ（探した文字は真ん中に出すので、その文字のページになる）
+    const middle = this.scroller.scrollTop + this.scroller.clientHeight / 2;
     let current = 1;
     for (const slot of this.pages) {
-      if (slot.el.offsetTop <= top) current = slot.index;
+      if (slot.el.offsetTop <= middle) current = slot.index;
       else break;
     }
     if (current !== this.currentPage || !this.pageLabel.textContent) {

@@ -234,7 +234,8 @@ body[data-mode="fullscreen"] .pdf-view { height: 100vh; border: 0; border-radius
 .pdf-zoom-label { min-width: 3.2em; text-align: center; }
 .pdf-search { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; height: 28px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 .pdf-search-input { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: var(--t-sm); width: 11em; }
-.pdf-scroller { height: 520px; overflow: auto; background: var(--bg-3); }
+/* position: relative——ページの offsetTop をこの中の位置にする（スクロールの位置と比べる） */
+.pdf-scroller { position: relative; height: 520px; overflow: auto; background: var(--bg-3); }
 body[data-mode="fullscreen"] .pdf-scroller { height: auto; flex: 1; min-height: 0; }
 .pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; min-width: max-content; }
 .pdf-page { position: relative; flex-shrink: 0; background: white; box-shadow: var(--sh-1), 0 0 0 1px var(--line);
