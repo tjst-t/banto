@@ -400,7 +400,8 @@ export function replyToOf(meta: Record<string, unknown> | undefined): string | u
  *
  * 値は `{ title, description }`。どちらも文で、`{引数名}` をその呼び出しの引数（文字列・数・真偽）で置き換える
  * （例：`"{agent} に頼んだ仕事"`）。`{a|b}` は代わりの指定——左から順に、使える最初の引数（空白だけの文字列は使えない）
- * （例：Shell の `"{label|command}"`——呼び名が無ければコマンド。追加・2026-10-08）。**MCP Apps の仕様には無い、banto が足した拡張。**
+ * （例：Shell の `"{label|command}"`——呼び名が無ければコマンド。追加・2026-10-08）。最後の `"文"` はどれも無いときの文
+ * （例：Browser の `{url|"検索のページ"}`。追加・2026-10-15）。**MCP Apps の仕様には無い、banto が足した拡張。**
  */
 export const CARD_META_KEY = `${VENDOR_PREFIX}/card`;
 
@@ -480,6 +481,7 @@ export function uiResourceUriOf(tool: unknown): string | undefined {
  *
  * `{a|b|…}` は**代わりの指定**（追加・2026-10-08）：左から順に見て、使える最初の引数で置き換える。使えるのは数・真偽と、
  * **空白だけではない**文字列——付けなかった・空で渡した呼び名を飛ばして次へ進むため。どれも使えなければそのまま残す。
+ * 最後に `"文"` を置くと、どれも使えないときその文で埋める（`{url|"検索のページ"}`——任意の引数を省いた呼び出し。追加・2026-10-15）。
  *
  * host がバックグラウンドの仕事の題を作るのに使う（追加・2026-10-03）。**画面（apps/frontend）にも同じものがある**
  * （`apps/frontend/lib/card-text.ts` の `fillCardText`）——画面は workspace のパッケージに依存していないため。変えるなら両方
@@ -487,15 +489,15 @@ export function uiResourceUriOf(tool: unknown): string | undefined {
 export function fillCardText(template: string | undefined, args?: Record<string, unknown>): string | undefined {
   if (!template) return undefined;
   const filled = template
-    .replace(/\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)\}/g, (whole, names: string) => {
+    .replace(/\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)(?:\|"([^"{}]*)")?\}/g, (whole, names: string, fallback: string | undefined) => {
       const choices = names.split("|");
       for (const name of choices) {
         const v = args?.[name];
         if (typeof v === "number" || typeof v === "boolean") return String(v);
         // 名前が1つなら空の文字列もそのまま埋める（前からの振る舞い）。代わりがあるときは空白だけの文字列を飛ばす
-        if (typeof v === "string" && (choices.length === 1 || v.trim() !== "")) return v;
+        if (typeof v === "string" && ((choices.length === 1 && fallback === undefined) || v.trim() !== "")) return v;
       }
-      return whole;
+      return fallback ?? whole;
     })
     .replace(/\s+/g, " ")
     .trim();

@@ -5,20 +5,20 @@
 /**
  * カードの文の `{引数名}` を、その呼び出しの引数で置き換える。**1行に収める**（改行は空白に）、長ければ畳む。
  * 引数に無い名前はそのまま残す（黙って消すと、Module の書き間違いに気づけない）。`{a|b}` は代わりの指定で、
- * 左から順に使える最初の引数（空白だけの文字列は飛ばす）。**`@banto/module-contract` の `fillCardText` の写し**——変えるなら両方
+ * 左から順に使える最初の引数（空白だけの文字列は飛ばす）。最後の `"文"` はどれも使えないときの文（`{url|"検索のページ"}`）。**`@banto/module-contract` の `fillCardText` の写し**——変えるなら両方
  */
 export function fillCardText(template: string | undefined, args?: Record<string, unknown>): string | undefined {
   if (!template) return undefined;
   const filled = template
-    .replace(/\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)\}/g, (whole, names: string) => {
+    .replace(/\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)(?:\|"([^"{}]*)")?\}/g, (whole, names: string, fallback: string | undefined) => {
       const choices = names.split("|");
       for (const name of choices) {
         const v = args?.[name];
         if (typeof v === "number" || typeof v === "boolean") return String(v);
         // 名前が1つなら空の文字列もそのまま埋める（前からの振る舞い）。代わりがあるときは空白だけの文字列を飛ばす
-        if (typeof v === "string" && (choices.length === 1 || v.trim() !== "")) return v;
+        if (typeof v === "string" && ((choices.length === 1 && fallback === undefined) || v.trim() !== "")) return v;
       }
-      return whole;
+      return fallback ?? whole;
     })
     .replace(/\s+/g, " ")
     .trim();

@@ -303,6 +303,11 @@ test("fillCardText：{a|b} は左から順に使える最初の引数。空白�
   assert.equal(fillCardText("{label|count}", { count: 0 }), "0");
   assert.equal(fillCardText("{a|b|c} の仕事", { c: "三つ目" }), "三つ目 の仕事");
   assert.equal(fillCardText("{label|command}", {}), "{label|command}");
+  // 最後の "文" は、どれも使えないときの文
+  assert.equal(fillCardText('ブラウザで開いた：{url|"検索のページ"}', {}), "ブラウザで開いた：検索のページ");
+  assert.equal(fillCardText('ブラウザで開いた：{url|"検索のページ"}', { url: " " }), "ブラウザで開いた：検索のページ");
+  assert.equal(fillCardText('ブラウザで開いた：{url|"検索のページ"}', { url: "http://localhost:3000/" }), "ブラウザで開いた：http://localhost:3000/");
+  assert.equal(fillCardText('{label|command|"仕事"}', { command: "ls" }), "ls");
   assert.equal(fillCardText("{label|command}", { label: "一行目\n二行目" }), "一行目 二行目");
   // 名前が1つのときは前のまま（空の文字列も埋める）
   assert.equal(fillCardText("[{x}]", { x: "" }), "[]");

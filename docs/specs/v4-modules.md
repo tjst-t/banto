@@ -2308,7 +2308,8 @@ Module の一覧には**2種類が混ざる**：
   `<<ページの中身ここまで:1a2b3c4d>>`）——ページが同じ印を書いて区切りの外へ出たふりをできないように
 - **人の画面の口**（`admin`、#242 が使う）：`getBrowserStatus`・`listBrowserTabs`・`listNetworkRecords`・`getNetworkRecord`
   （ヘッダを伏せない）・`exportHar`（HAR 1.2）・`clearNetworkLog`・`clearBrowserData`（「ブラウザの記録を消す」）・
-  `setAiBlocked`（「AI に触らせない」）・`getSettings`・`setSettings`（`idleMinutes`・`locale`・`timezone`——下の「名乗りと言語」）
+  `setAiBlocked`（「AI に触らせない」）・`getSettings`・`setSettings`（`idleMinutes`・`locale`・`timezone`——下の「名乗りと言語」。
+  `searchEngine`・`searchTemplate`——下の「新しいタブと URL 欄の検索」）
 - **戻る・進む**は移ったところ（commit）まで待ち、戻る先・進む先があるかは履歴（`Page.getNavigationHistory`）で見る——
   人のブラウザと同じく**戻る・進むのキャッシュ（bfcache）が効いていて**、キャッシュから戻すと `load` が来ず応答も無い
   （実測・2026-10-10。Playwright の launch は `--disable-back-forward-cache` でこれを切っていた）
@@ -2335,7 +2336,7 @@ Module の一覧には**2種類が混ざる**：
     `codec {codec: h264|jpeg}`（描ける形が変わった——初期化に失敗して JPEG に落ちた・繋ぎ直した）・`size {width,height,dpr}`・`visible {visible}`・`mouse {event: down|up|move|wheel, x, y,
     button, buttons, clickCount, modifiers, deltaX, deltaY}`・`key {event: down|up, key, code, keyCode, text?, modifiers}`・
     `touch {event: start|move|end|cancel, points: [{x,y,id}]}`・`insertText {text}`・`tab {action: select|close|new, tab?}`・
-    `navigate {url}`（scheme が無ければ `http://` を足す）・`history {action: back|forward|reload}`・`fit {on}`・`start`。
+    `navigate {url}`（URL らしければ scheme が無いとき `http://` を足し、らしくなければ検索する——下の「新しいタブと URL 欄の検索」）・`history {action: back|forward|reload}`・`fit {on}`・`start`。
     読めないものは理由つきで流れを閉じる（1008）
 - **screencast はいま選んでいるタブに1本だけ張り、映している画面の全部で分ける**（画面ごとに張らない——CPU が画面の数だけ
   かかる）。CDP には受け取ったらすぐ印を返し、画面ごとの流量は画面の `ack` で絞る（送った絵の印が返るまで次を送らず、
@@ -2526,6 +2527,45 @@ true・headless の印・窓が無い・Playwright の既定の引数（`--enabl
   人の画面で人に解いてもらうよう頼む」と書く
 - **AI には検索エンジンを使わせない**：`browserOpen` の説明に「Web の検索には WebSearch を使う。このブラウザで検索エンジンを
   開かない（ロボット判定と規約のため）。このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの」と書く
+  （人の新しいタブの検索のページは人のためのもの——下の「新しいタブと URL 欄の検索」）
+
+#### 新しいタブと URL 欄の検索（決定・2026-10-15、ユーザー。実装・2026-10-15、Backlog #326）
+
+人が使う入口として、新しいタブで検索エンジンを開き、URL 欄で検索できるようにする。
+
+- **新しいタブは検索エンジンのトップで開く**：人の画面の＋（`tab {action: new}`）と、AI の `browserOpen` が **url を省いた**とき
+  （url を省くと `newTab` に関わらず新しいタブ）。＋は読み込みを待たない（`Target.createTarget` にトップの URL を渡す——届かなければ
+  人のブラウザと同じくそのタブに失敗のページが出る）。ブラウザを起こしたときの最初のタブ・ページから開いたタブは今どおり
+- **URL 欄**：打ったものが URL らしくなければ検索エンジンで調べる URL にして開く（言葉は `encodeURIComponent` で `%s` に入れる）。
+  **URL らしくない**：空白を含む・scheme が無くホストとして読めない（ドットの無い1語・最後の区切りが英字の TLD でない——`3.14`・
+  `東京.天気`・番号でない `:` の後ろ等）。**URL らしい**：scheme つき（`http://`・`about:`・`data:`・`blob:`・`file:`）・`localhost`・
+  IPv4・`[IPv6]`・英字の TLD（か `xn--`）で終わるホスト（`example.com`）・番号つきの1語（`web:8080`——コンテナの中のサービス）。
+  URL らしいものは今どおり scheme が無ければ `http://` を足す。見分けは `search.ts` の `looksLikeUrl`（画面ではなく Module——
+  設定の検索エンジンを知っているのは Module）
+- **検索エンジンは設定で選ぶ**：DuckDuckGo（既定）・Startpage・Brave Search・**任意の URL の型**（`%s` を言葉に替える。http・https で、
+  `%s` が要る）。任意の型のトップは言葉を空にした URL。置き場は `state.json` の `searchEngine`・`searchTemplate`（任意以外を選んでも
+  型は残す）。人の画面の口 `setSettings` で変え、すぐ効く。**設定の画面**は Project の設定の「ブラウザ」（`ui://banto-browser/config`、
+  `dev.banto/canvas: "config"`）——選ぶ欄と、任意のときだけ型の欄。型を書かずに任意を選ぶと理由を返して保存しない
+- **AI への説明は今のまま**（「Web の検索は WebSearch を使い、このブラウザで検索エンジンを開かない」）。url を省くと検索のページが
+  新しいタブで開くこと・それは人に検索してもらうときのためで AI 自身はそこで検索しないことを足した。会話のカードの題は
+  `ブラウザで開いた：{url|"検索のページ"}`（カードの文の「どれも無いときの文」——v4-frontend.md §6.2）
+- **試験で外に出ない**：単体と E2E は任意の型で試験用のページ（`test-page.ts` の `/search`）を指す
+
+##### 実測：確かめのページが出るか（2026-10-15）
+
+この banto の接続元の VM（KVM、出口 118.3.228.228）から、Module の起こし方そのまま（Xvfb＋Google Chrome 155、`browserOpen`）で
+3つのトップを開き、日本語の言葉3つ（「東京 天気」「TypeScript 型 推論」「ラーメン 作り方」）を検索の URL で開いて、4秒後（Startpage は
+25秒後も）にページの文を読んだ。
+
+| 検索エンジン | トップ | 3回の検索 | 確かめのページ |
+|---|---|---|---|
+| **DuckDuckGo**（既定） | 200 | 3回とも結果（日本語の結果・広告） | **出ない**（3回中0回） |
+| Startpage | 200 | 4秒後は3回とも「リクエストを確認しています... 計算中... 難易度: 6」。25秒待っても3回中2回は同じで、1回だけ結果 | **出る**（計算の確かめ——CAPTCHA の画像選びではないが、結果まで待たされる） |
+| Brave Search | 200 | 3回とも結果（日本語の結果・AI の答え） | **出ない**（3回中0回） |
+
+- 出ない2つのうち、第一候補の DuckDuckGo を既定にした
+- **Project のコンテナからは測っていない**（この VM から incus に繋がらなかった）。Project のコンテナの通信は同じ機械の出口を通るので
+  同じ結果と見ているが、確かめてはいない。別のサーバ（ほかの出口）でも測っていない
 
 #### 第2段：サービスどうしの通信（未実装・形だけ）
 
@@ -2774,6 +2814,8 @@ JPEG の経路は消さずに残す。
 
 #### まだ決めていない・確かめていない
 
+- ブラウザを起こしたときの最初のタブ（about:blank）も検索のトップにするか（Backlog #326 は＋と url を省いた browserOpen だけ）
+- 検索エンジンの確かめのページの実測は、この VM の出口から1度（各3回）だけ。Project のコンテナ・別のサーバ・日を変えては測っていない
 - **キオスク形で窓の外と中が同じ大きさになった**（2026-10-13、Backlog #281）——#259 の「窓あり（枠つき）」と食い違う。全画面に
   した人のブラウザと同じ形なので受け入れたが、人の確かめを待つ（`docs/notes/2026-10-12-browser-video.md`）
 - 動画の画面を Safari（パソコン）で確かめていない（段2 は Playwright の Chromium と、段1 の Android の Chrome まで）

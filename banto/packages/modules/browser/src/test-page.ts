@@ -173,6 +173,18 @@ export function createTestPageServer(): Server {
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>2ページ目</title></head><body><h1>2ページ目</h1></body></html>`);
         return;
+      case "/search": {
+        // 試験用の検索エンジン（設定の任意の URL の型でここを指す——試験で外に出ない。search.ts）。言葉が空ならトップ
+        const q = url.searchParams.get("q") ?? "";
+        const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(
+          q === ""
+            ? `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>試験の検索</title></head><body><h1>検索のトップ</h1></body></html>`
+            : `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>検索：${esc(q)}</title></head><body><h1 id="q">${esc(q)}</h1></body></html>`,
+        );
+        return;
+      }
       case "/fonts":
         // 字体の試験（fonts.ts）：言語ごとの字形と、言語の指定の無い文字（html に lang が無い）。monospace と system-ui は
         // Module の fontconfig の設定が無いと WenQuanYi Zen Hei で描かれる（実測・2026-10-12、まっさらのコンテナ）

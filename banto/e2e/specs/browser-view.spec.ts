@@ -295,10 +295,13 @@ test("人の画面：カードから開いて映し、人の入力がページ�
   await expect.poll(() => documents("/second"), { message: "読み直すで要求が出ない" }).toBe(before + 1);
   await f.getByRole("button", { name: "戻る" }).click();
   await expect(tab1).toContainText("Browser 試験のページ");
-  // ＋：新しいタブ t2 が選ばれ、絵も t2 になる。URL 欄で開くとそのタブに開く
+  // ＋：新しいタブ t2 が選ばれ、絵も t2 になる。URL 欄で開くとそのタブに開く。＋は検索エンジンのトップで開く——試験で外に
+  // 出ないよう試験用の検索エンジン（test-page の /search）を指す（中身は browser-search.spec.ts で見る）
+  await uiCall(page, "setSettings", { searchEngine: "custom", searchTemplate: `${BASE}/search?q=%s` });
   await f.getByRole("button", { name: "新しいタブ" }).click();
   const tab2 = f.locator('.tab[data-tab="t2"]');
   await expect(tab2, "＋でタブができない").toHaveAttribute("aria-selected", "true");
+  await expect(tab2, "＋のタブが検索のトップで開かない").toContainText("試験の検索");
   await expect(tab1).toHaveAttribute("aria-selected", "false");
   await expect(f.getByTestId("browser-screen")).toHaveAttribute("data-tab", "t2");
   await urlBar.fill(`${BASE}/second`);

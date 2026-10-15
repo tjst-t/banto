@@ -1,6 +1,7 @@
 // **道具の引数を確かめる**。頼み方の誤りは理由ごと AI に返す（黙って既定に倒さない、規則2）。
 
 import { checkLocale, checkTimezone } from "./state.js";
+import { checkSearchEngine, checkSearchTemplate, type SearchEngineId } from "./search.js";
 import { STATUS_FILTER_PATTERN, parseSince, type ConsoleLevel, type ConsoleQuery, type DetailPart, type NetworkQuery } from "./network-log.js";
 
 /** 頼み方の誤り・断り。理由を AI（または人の画面）に返す */
@@ -75,12 +76,15 @@ function since(args: Args, prefix: "r" | "c"): string | undefined {
 // ---- 道具ごと ----------------------------------------------------------------------------------
 
 export interface OpenArgs {
-  url: string;
+  /** 無ければ新しいタブで検索エンジンのトップ（人が検索するためのページ——v4-modules.md §4.1「新しいタブと URL 欄の検索」） */
+  url?: string;
   newTab: boolean;
 }
 
 export function parseOpen(args: Args): OpenArgs {
-  const url = str(args, "url", true);
+  const url = str(args, "url");
+  if (url === undefined) return { newTab: true };
+  if (url === "") throw new BrowserError("url が空です（検索エンジンのトップを新しいタブで開くなら url を省きます）");
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -257,8 +261,14 @@ export function parseBlocked(args: Args): boolean {
   return v;
 }
 
-export function parseSettings(args: Args): { idleMinutes?: number; locale?: string; timezone?: string } {
-  const out: { idleMinutes?: number; locale?: string; timezone?: string } = {};
+export function parseSettings(args: Args): {
+  idleMinutes?: number;
+  locale?: string;
+  timezone?: string;
+  searchEngine?: SearchEngineId;
+  searchTemplate?: string;
+} {
+  const out: ReturnType<typeof parseSettings> = {};
   const idleMinutes = int(args, "idleMinutes", 1, 24 * 60);
   if (idleMinutes !== undefined) out.idleMinutes = idleMinutes;
   const locale = str(args, "locale");
@@ -272,6 +282,18 @@ export function parseSettings(args: Args): { idleMinutes?: number; locale?: stri
     const why = checkTimezone(timezone);
     if (why) throw new BrowserError(why);
     out.timezone = timezone;
+  }
+  const searchEngine = str(args, "searchEngine");
+  if (searchEngine !== undefined) {
+    const why = checkSearchEngine(searchEngine);
+    if (why) throw new BrowserError(why);
+    out.searchEngine = searchEngine as SearchEngineId;
+  }
+  const searchTemplate = str(args, "searchTemplate");
+  if (searchTemplate !== undefined) {
+    const why = checkSearchTemplate(searchTemplate);
+    if (why) throw new BrowserError(why);
+    out.searchTemplate = searchTemplate;
   }
   return out;
 }

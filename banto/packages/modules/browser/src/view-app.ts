@@ -1033,7 +1033,7 @@ export function browserViewHtml(): string {
     <button class="btn" id="back" type="button" title="戻る" aria-label="戻る">←</button>
     <button class="btn" id="forward" type="button" title="進む" aria-label="進む">→</button>
     <button class="btn" id="reload" type="button" title="読み直す" aria-label="読み直す">⟳</button>
-    <form class="url" id="url-form"><input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" aria-label="URL" placeholder="URL（例 localhost:3000）" /></form>
+    <form class="url" id="url-form"><input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" aria-label="URL" placeholder="URL か検索する言葉（例 localhost:3000）" /></form>
     <span class="state" id="state" data-state="connecting" data-testid="browser-state">繋いでいます…</span>
   </div>
   <div class="bar">

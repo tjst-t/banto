@@ -27,6 +27,7 @@ import {
   parseTabs,
   type ActArgs,
 } from "./args.js";
+import { SEARCH_ENGINES, SEARCH_ENGINE_IDS, checkSearchSettings, searchHome } from "./search.js";
 import { pageContent, truncate } from "./content.js";
 import { formatDetail, formatLine, matchesStatus, toHar, type NetworkLog } from "./network-log.js";
 import type { BrowserSession, TabInfo } from "./session.js";
@@ -100,20 +101,21 @@ export const TOOLS = [
       "**この Project のコンテナの中のブラウザでページを開く。** コンテナの中のサービスに localhost で届く（Publish していない開発サーバも開ける）。" +
       "**このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの。Web の検索には WebSearch を使い、このブラウザで検索エンジン" +
       "（Google 等）を開かない**——ロボットと判定されて止められ、検索エンジンの規約にも反するため。" +
+      "url を省くと新しいタブで検索エンジンのトップを開く（人が検索するためのページ。人の画面の＋の新しいタブと同じ）——人に検索して" +
+      "もらうときだけ使い、AI 自身はそこで検索しない。" +
       CAPTCHA_NOTE +
       "ログイン状態（Cookie 等）は Project ごとに残る。返すのはタブ・状態コード・最終の URL・タイトル・アクセシビリティツリー（短く、[ref=…] 付き）。" +
       `ページを読むのは browserSnapshot、操作は browserAct、通信は listNetwork。${TABS_NOTE}。${PAGE_NOTE}。${BLOCK_NOTE}`,
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "開く URL（例 http://localhost:3000/）" },
+        url: { type: "string", description: "開く URL（例 http://localhost:3000/）。省くと新しいタブで検索エンジンのトップ（人のためのページ）" },
         newTab: { type: "boolean", description: "新しいタブで開く（この会話のタブになる）。省略時はこの会話が最後に使った自分のタブ（無ければ開く）" },
       },
-      required: ["url"],
     },
     // **会話にカードを出すのはこれだけ**（押すと人の画面が Canvas で開く）。ほかの道具は出さない——操作のたびに
     // カードが並ぶため（v4-modules.md §4.1「AI の道具」）
-    _meta: { ...agent, ui: { resourceUri: BROWSER_VIEW_URI }, [CARD_META_KEY]: { title: "ブラウザで開いた：{url}" } },
+    _meta: { ...agent, ui: { resourceUri: BROWSER_VIEW_URI }, [CARD_META_KEY]: { title: 'ブラウザで開いた：{url|"検索のページ"}' } },
   },
   {
     name: "browserSnapshot",
@@ -298,7 +300,9 @@ export const TOOLS = [
   },
   {
     name: "getSettings",
-    description: "この Module の設定（使われなければ止めるまでの分・ブラウザの言語と時刻の地域）",
+    description:
+      "この Module の設定（使われなければ止めるまでの分・ブラウザの言語と時刻の地域・人の新しいタブと URL 欄が使う検索エンジン）と、" +
+      "選べる検索エンジン（searchEngines）",
     inputSchema: { type: "object", properties: {} },
     _meta: admin,
   },
@@ -307,8 +311,19 @@ export const TOOLS = [
     description:
       "設定を変える。idleMinutes：AI の呼び出しが無いままこれだけたったらブラウザを止める（分、1〜1440）。" +
       "locale：ブラウザの言語（ja-JP の形。Accept-Language と navigator.languages は locale・その言語・en-US・en の順）。" +
-      "timezone：時刻の地域（Asia/Tokyo の形）。locale と timezone は次にブラウザを起こしたときから効く",
-    inputSchema: { type: "object", properties: { idleMinutes: { type: "number" }, locale: { type: "string" }, timezone: { type: "string" } } },
+      "timezone：時刻の地域（Asia/Tokyo の形）。locale と timezone は次にブラウザを起こしたときから効く。" +
+      "searchEngine：人の新しいタブと URL 欄の検索に使う検索エンジン（duckduckgo・startpage・brave・custom）。" +
+      "searchTemplate：custom の URL の型（%s を言葉に替える。例 https://example.com/search?q=%s）。どちらもすぐ効く",
+    inputSchema: {
+      type: "object",
+      properties: {
+        idleMinutes: { type: "number" },
+        locale: { type: "string" },
+        timezone: { type: "string" },
+        searchEngine: { type: "string", enum: [...SEARCH_ENGINE_IDS] },
+        searchTemplate: { type: "string" },
+      },
+    },
     _meta: admin,
   },
 ];
@@ -484,9 +499,12 @@ export async function callTool(
         return json(next);
       }
       case "getSettings":
-        return json(ctx.state.get());
+        return json({ ...ctx.state.get(), searchEngines: SEARCH_ENGINES });
       case "setSettings": {
-        const next = ctx.state.set(parseSettings(args));
+        const patch = parseSettings(args);
+        const why = checkSearchSettings({ ...ctx.state.get(), ...patch });
+        if (why) throw new BrowserError(why);
+        const next = ctx.state.set(patch);
         if (ctx.session.running) ctx.session.touch(); // 新しい時間で数え直す
         return json(next);
       }
@@ -589,10 +607,12 @@ async function open(ctx: ToolContext, args: Record<string, unknown>, onProgress:
   // 会話の呼び出しは、その会話のいまのタブ（無ければ裏に開く）。人の画面の表示は替えない（session.ts の newTab）
   const { id, page } = a.newTab ? await ctx.session.newTab(thread) : await ctx.session.currentOrNew(thread);
   ctx.session.claim(id, thread, "browserOpen");
-  notify(id, `${a.url} を開いています`);
+  // url を省くと検索エンジンのトップ（人の画面の＋と同じ——v4-modules.md §4.1「新しいタブと URL 欄の検索」）
+  const url = a.url ?? searchHome(ctx.state.get());
+  notify(id, `${url} を開いています`);
   let status: string;
   try {
-    const response = await page.goto(a.url, { waitUntil: "load", timeout: 30_000 });
+    const response = await page.goto(url, { waitUntil: "load", timeout: 30_000 });
     status = response ? String(response.status()) : "（なし——data: の URL や、同じ文書の中の移動）";
   } catch (err) {
     // 届かない・時間切れ：理由を返す。どこまで来ていたかは listNetwork で見られる

@@ -671,15 +671,16 @@ export class BrowserSession {
 
   /**
    * 新しいタブを開く。**会話が開くタブは、その会話のもの**で、**裏に開く**——人の画面の表示を替えない（自分の窓に開き、
-   * 人の画面のタブを前に出し直す）。会話の印の無い呼び出しと人の画面は、開いたタブを選んで前に出す（今どおり）
+   * 人の画面のタブを前に出し直す）。会話の印の無い呼び出しと人の画面は、開いたタブを選んで前に出す（今どおり）。
+   * `url` を渡すとそのページで開く（読み込みは待たない——人の画面の＋の検索エンジンのトップ）。無ければ about:blank
    */
-  async newTab(thread?: string): Promise<{ id: string; page: Page }> {
+  async newTab(thread?: string, url = "about:blank"): Promise<{ id: string; page: Page }> {
     const context = await this.ensure(undefined, thread);
     // **タブごとに窓を分ける**：同じ窓の裏のタブは Chrome が描かず、写しが撮れない（captureReady）。窓は足したときに一度
     // 前に出る（background でも——実測・2026-10-14）ので、足して合わせ終えるまで人の画面の動画を止めておく
     const opened = await this.whileResizing(async () => {
       const cdp = await this.cdpForBrowser();
-      const { targetId } = (await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: thread !== undefined })) as {
+      const { targetId } = (await cdp.send("Target.createTarget", { url, newWindow: true, background: thread !== undefined })) as {
         targetId: string;
       };
       if (thread !== undefined) {

@@ -29,7 +29,6 @@ import {
   MAX_HIDPI_FRAME_PIXELS,
   maxFramePixels,
   encodeFrame,
-  normalizeUrl,
   parseViewMessage,
   screencastLimits,
   type FrameHeader,
@@ -79,7 +78,7 @@ test("画面からの1通：入力と制御を読み、形の違うものは理�
     modifiers: 0,
   });
   assert.deepEqual(parseViewMessage('{"type":"insertText","text":"ばんと"}'), { type: "insertText", text: "ばんと" });
-  assert.deepEqual(parseViewMessage('{"type":"navigate","url":"localhost:3000/a"}'), { type: "navigate", url: "http://localhost:3000/a" });
+  assert.deepEqual(parseViewMessage('{"type":"navigate","url":" localhost:3000/a "}'), { type: "navigate", url: "localhost:3000/a" });
   assert.deepEqual(parseViewMessage('{"type":"tab","action":"select","tab":"t2"}'), { type: "tab", action: "select", tab: "t2" });
   assert.deepEqual(parseViewMessage('{"type":"fit","on":true}'), { type: "fit", on: true });
   assert.deepEqual(parseViewMessage('{"type":"audio","on":true}'), { type: "audio", on: true });
@@ -93,11 +92,6 @@ test("画面からの1通：入力と制御を読み、形の違うものは理�
   assert.match((parseViewMessage('{"type":"eval"}') as { error: string }).error, /知らない/);
 });
 
-test("URL 欄：scheme が無ければ http:// を足し、あるものはそのまま", () => {
-  assert.equal(normalizeUrl(" localhost:3000 "), "http://localhost:3000");
-  assert.equal(normalizeUrl("https://example.com/x"), "https://example.com/x");
-  assert.equal(normalizeUrl("about:blank"), "about:blank");
-});
 
 test("screencast の大きさ：一番大きい画面（デバイスピクセル）に合わせ、ページの大きさで頭を押さえる", () => {
   const viewport = { width: 1280, height: 800 };
@@ -251,6 +245,8 @@ before(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   ctx = await createBrowserContextFromDataDir(dataDir, browserOpts);
+  // 新しいタブ（＋）と URL 欄の検索は試験用の検索エンジン（test-page の /search）に向ける——試験で外に出ない
+  ctx.state.set({ searchEngine: "custom", searchTemplate: `${base}/search?q=%s` });
   view = new BrowserView({ session: ctx.session, state: ctx.state, log: ctx.log, logLine: () => undefined });
   ctx.view = view;
 });
@@ -467,6 +463,40 @@ test("指で入力欄を押してすぐ打った文字も届く：入力は投�
   }
 });
 
+test("新しいタブ（＋）は設定の検索エンジンのトップで開き、URL 欄の言葉は検索の URL に、URL らしいものはそのまま開く", { skip: skipReason }, async () => {
+  const pc = new FakeSocket();
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 1000, height: 700, dpr: 1, visible: true }));
+  pc.autoAck();
+  try {
+    await until("ブラウザが起きた", () => ctx.session.running);
+    const before = new Set((await ctx.session.listTabs()).map((t) => t.id));
+    pc.post({ type: "tab", action: "new" });
+    // 選ばれ（人の画面が映す）、検索のトップを開いている
+    const state = await until("＋のタブが選ばれ、検索のトップを開く", () =>
+      lastText(pc, (t) => t.type === "state" && !before.has(t.current as string) &&
+        (t.tabs as Array<{ id: string; url: string }>).some((x) => x.id === t.current && x.url === `${base}/search?q=`)),
+    );
+    const added = state.current as string;
+    const { page } = ctx.session.page(added);
+    await page.waitForLoadState("load");
+    assert.equal(await page.title(), "試験の検索");
+    // 言葉（空白を含む）→ 検索の URL
+    pc.post({ type: "navigate", url: " 東京 天気 " });
+    await page.waitForURL(`${base}/search?q=%E6%9D%B1%E4%BA%AC%20%E5%A4%A9%E6%B0%97`);
+    assert.equal(await waitValue(() => page.title(), "検索：東京 天気"), "検索：東京 天気");
+    // ドットの無い1語も言葉
+    pc.post({ type: "navigate", url: "typescript" });
+    await page.waitForURL(`${base}/search?q=typescript`);
+    // URL らしいもの（scheme の無い 127.0.0.1:番号）は今どおり http:// を足して開く
+    pc.post({ type: "navigate", url: base.replace("http://", "") + "/second" });
+    await page.waitForURL(`${base}/second`);
+    assert.equal(await waitValue(() => page.title(), "2ページ目"), "2ページ目");
+    await ctx.session.close(added);
+  } finally {
+    pc.close(1000);
+  }
+});
+
 test("「画面に合わせる」を入れてからタブを開く（URL 欄・＋）と、できたタブがその画面の大きさになる（幅 500 未満は上書きを併せる）。切ると全部戻る", { skip: skipReason }, async () => {
   // タブが1つも無い（携帯で開いた最初の姿）
   for (const t of await ctx.session.listTabs()) await ctx.session.close(t.id);
@@ -552,6 +582,7 @@ test("倍率2の画面で開くと、ブラウザを倍率2で起こし、届く
   // 別の置き場で起こす（上の試験のブラウザは倍率1で起きている——倍率は起こすときにしか決まらない）
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-hidpi-test-"));
   const hi = await createBrowserContextFromDataDir(dir, browserOpts);
+  hi.state.set({ searchEngine: "custom", searchTemplate: `${base}/search?q=%s` });
   const hiView = new BrowserView({ session: hi.session, state: hi.state, log: hi.log, logLine: () => undefined });
   hi.view = hiView;
   const pc = new FakeSocket();

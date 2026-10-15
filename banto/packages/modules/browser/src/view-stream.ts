@@ -38,6 +38,7 @@ import { DEFAULT_VIEWPORT, type BrowserSession, type TabInfo } from "./session.j
 import { VideoPipeline, encodeVideoMessages, videoRegion, type VideoRegion, type VideoState } from "./video.js";
 import { AudioPipeline, encodeAudioMessage } from "./audio.js";
 import { browserScale } from "./chrome.js";
+import { searchHome, urlBarTarget } from "./search.js";
 import type { StateFile } from "./state.js";
 import type { NetworkLog } from "./network-log.js";
 import type { ViewHooks } from "./tools.js";
@@ -312,7 +313,8 @@ export function parseViewMessage(raw: string): ViewMessage | { error: string } {
       if ((m.action === "select" || m.action === "close") && typeof m.tab === "string") return { type: "tab", action: m.action, tab: m.tab };
       return { error: "tab の action・tab が読めません" };
     case "navigate":
-      return typeof m.url === "string" && m.url.trim() !== "" ? { type: "navigate", url: normalizeUrl(m.url) } : { error: "navigate に url がありません" };
+      // URL か検索する言葉かは、開くときに設定の検索エンジンで決める（search.ts の urlBarTarget）
+      return typeof m.url === "string" && m.url.trim() !== "" ? { type: "navigate", url: m.url.trim() } : { error: "navigate に url がありません" };
     case "history":
       return m.action === "back" || m.action === "forward" || m.action === "reload"
         ? { type: "history", action: m.action }
@@ -330,13 +332,6 @@ export function parseViewMessage(raw: string): ViewMessage | { error: string } {
     default:
       return { error: "知らないメッセージです" };
   }
-}
-
-/** URL 欄に打ったもの：scheme が無ければ http:// を足す（localhost:3000 を打つのが一番多い） */
-export function normalizeUrl(input: string): string {
-  const url = input.trim();
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^(about|data|blob):/i.test(url)) return url;
-  return `http://${url}`;
 }
 
 // ---- AI が触ったこと ---------------------------------------------------------------------------------
@@ -709,8 +704,10 @@ export class BrowserView implements ViewHooks {
         void this.act(v, async () => {
           const s = this.deps.session;
           if (m.action === "new") {
+            // 人の新しいタブは検索エンジンのトップで開く（v4-modules.md §4.1「新しいタブと URL 欄の検索」）。読み込みは待たない
+            // ——人のブラウザと同じく、届かなければそのタブにブラウザの失敗のページが出る
             await s.ensure();
-            await s.newTab();
+            await s.newTab(undefined, searchHome(this.deps.state.get()));
           } else if (m.action === "select") s.select(m.tab);
           else await s.close(m.tab);
         });
@@ -719,7 +716,8 @@ export class BrowserView implements ViewHooks {
         void this.act(v, async () => {
           await this.deps.session.ensure();
           const { page } = await this.deps.session.currentOrNew();
-          await page.goto(m.url, { timeout: 30_000 });
+          // URL らしくなければ検索エンジンで調べる（search.ts）
+          await page.goto(urlBarTarget(m.url, this.deps.state.get()), { timeout: 30_000 });
         });
         return;
       case "history":

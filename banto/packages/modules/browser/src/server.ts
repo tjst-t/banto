@@ -19,6 +19,7 @@ import { BrowserSession, DEFAULT_VIEWPORT, type AudioRoute } from "./session.js"
 import { StateFile } from "./state.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
+import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { BrowserView } from "./view-stream.js";
 import type { VideoSupport } from "./video.js";
 import type { AudioSupport } from "./audio.js";
@@ -61,12 +62,20 @@ export function createBrowserServer(ctx: ToolContext) {
           ui: { prefersBorder: false },
         },
       },
+      {
+        // 設定 Canvas——人の新しいタブと URL 欄が使う検索エンジン（v4-modules.md §4.1「新しいタブと URL 欄の検索」）
+        uri: CONFIG_APP_URI,
+        name: "ブラウザ",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config", ui: { prefersBorder: false } },
+      },
     ],
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const uri = request.params.uri;
     if (uri === BROWSER_VIEW_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: browserViewHtml() }] };
+    if (uri === CONFIG_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: CONFIG_APP_HTML }] };
     if (uri === "browser://module") {
       return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(BROWSER_MODULE_META) }] };
     }

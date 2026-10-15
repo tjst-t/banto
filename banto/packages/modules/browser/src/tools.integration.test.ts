@@ -271,6 +271,30 @@ async function platformFonts(url: string, ids: string[]): Promise<Record<string,
   }
 }
 
+test("browserOpen の url を省くと、新しいタブで設定の検索エンジンのトップを開く。設定は getSettings・setSettings で選べ、custom は型が要る", { skip }, async () => {
+  const settings = JSON.parse((await call("getSettings")).text) as { searchEngine: string; searchEngines: Record<string, { home: string }> };
+  assert.equal(settings.searchEngine, "duckduckgo", "既定は DuckDuckGo");
+  assert.equal(settings.searchEngines.duckduckgo!.home, "https://duckduckgo.com/");
+  const refused = await call("setSettings", { searchEngine: "custom" });
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /任意の URL の型（searchTemplate）を書いてから custom を選びます/);
+  // 試験で外に出ないよう、試験用の検索エンジン（test-page の /search）を指す
+  const set = await call("setSettings", { searchEngine: "custom", searchTemplate: `${base}/search?q=%s` });
+  assert.equal(set.isError, undefined, set.text);
+  try {
+    const before = await call("browserTabs", { action: "list" });
+    const opened = await call("browserOpen", {});
+    assert.equal(opened.isError, undefined, opened.text);
+    const tab = /タブ (t\d+) で開きました/.exec(opened.text)?.[1];
+    assert.ok(tab && !new RegExp(`\\b${tab}\\b`).test(before.text), `新しいタブで開いていない：${opened.text}`);
+    assert.match(opened.text, new RegExp(`最終の URL: ${base.replace(/[.]/g, "\\.")}/search\\?q=\n`));
+    assert.match(opened.text, /タイトル: 試験の検索/);
+    await call("browserTabs", { action: "close", tab });
+  } finally {
+    await call("setSettings", { searchEngine: "duckduckgo" });
+  }
+});
+
 test("字体：日本語は日本の字形（Noto Sans CJK JP）で描き、韓国語は KR・言語の指定の無い文字（system-ui も）は locale（ja-JP）の字形", { skip }, async () => {
   const url = `${base}/fonts`;
   const opened = await call("browserOpen", { url, newTab: true });

@@ -18,12 +18,15 @@ import { defaultRegion, ensureCjkFont, fontconfigXml } from "./fonts.js";
 import { DEFAULT_LIMITS, NetworkLog, formatDetail, formatLine, toHar, type NetworkRecord } from "./network-log.js";
 import { redactHeaders } from "./redact.js";
 import { StateFile } from "./state.js";
+import { SEARCH_ENGINES, checkSearchSettings, checkSearchTemplate, looksLikeUrl, searchHome, searchUrl, urlBarTarget } from "./search.js";
 import { spawn } from "node:child_process";
 
 // ---- 引数 --------------------------------------------------------------------------------------
 
 test("引数：誤りは理由つきで断り、既定に倒さない", () => {
-  assert.throws(() => parseOpen({}), (e: Error) => e instanceof BrowserError && /url が要ります/.test(e.message));
+  // url を省くと新しいタブで検索エンジンのトップ（tools.ts の open）
+  assert.deepEqual(parseOpen({}), { newTab: true });
+  assert.throws(() => parseOpen({ url: "" }), (e: Error) => e instanceof BrowserError && /url が空です/.test(e.message));
   assert.throws(() => parseOpen({ url: "localhost:3000" }), /http・https・about・data・file/);
   assert.throws(() => parseOpen({ url: "not a url" }), /URL として読めません/);
   assert.deepEqual(parseOpen({ url: "http://localhost:3000/" }), { url: "http://localhost:3000/", newTab: false });
@@ -384,9 +387,16 @@ test("状態：「AI に触らせない」と設定は置き場に残り、壊�
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-state-"));
   try {
     const path = join(dir, "state.json");
-    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo", viewScale: 1 });
-    new StateFile(path).set({ aiBlocked: true, idleMinutes: 5, locale: "en-US", timezone: "UTC", viewScale: 2 });
-    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 5, aiBlocked: true, locale: "en-US", timezone: "UTC", viewScale: 2 });
+    const search = { searchEngine: "duckduckgo", searchTemplate: "" };
+    assert.deepEqual(new StateFile(path).get(), { idleMinutes: 30, aiBlocked: false, locale: "ja-JP", timezone: "Asia/Tokyo", viewScale: 1, ...search });
+    new StateFile(path).set({ aiBlocked: true, idleMinutes: 5, locale: "en-US", timezone: "UTC", viewScale: 2, searchEngine: "custom", searchTemplate: "https://s.example/?q=%s" });
+    assert.deepEqual(new StateFile(path).get(), {
+      idleMinutes: 5, aiBlocked: true, locale: "en-US", timezone: "UTC", viewScale: 2, searchEngine: "custom", searchTemplate: "https://s.example/?q=%s",
+    });
+    writeFileSync(path, JSON.stringify({ searchEngine: "google" }));
+    assert.throws(() => new StateFile(path), /searchEngine は duckduckgo・startpage・brave・custom のどれか/);
+    writeFileSync(path, JSON.stringify({ searchEngine: "custom" }));
+    assert.throws(() => new StateFile(path), /任意の URL の型（searchTemplate）を書いてから/);
     writeFileSync(path, JSON.stringify({ viewScale: 3 }));
     assert.throws(() => new StateFile(path), /viewScale が 1〜2 の数ではありません/);
     writeFileSync(path, JSON.stringify({ aiBlocked: "yes" }));
@@ -670,4 +680,60 @@ test("設定：locale と timezone は読めるものだけ受け、読めない
   assert.throws(() => parseSettings({ locale: "ja_JP" }), BrowserError);
   assert.throws(() => parseSettings({ locale: "ja-jp" }), /ja-JP の形で書きます/);
   assert.throws(() => parseSettings({ timezone: "Tokyo" }), /時刻の地域として読めません/);
+});
+
+// ---- 新しいタブと URL 欄の検索（search.ts） ------------------------------------------------------------
+
+test("URL 欄：URL らしいものは開き、らしくない言葉は検索する", () => {
+  for (const url of [
+    "example.com", "example.com/a?b=1#c", "www.example.co.jp", "localhost", "localhost:3000", "localhost:3000/a", "LOCALHOST:8080",
+    "127.0.0.1", "127.0.0.1:5173/x", "[::1]:3000", "web:8080", "http://x", "https://example.com/x", "about:blank",
+    "data:text/html,a", "file:///tmp/a.html", "xn--wgv71a.jp", "日本語.jp", "node.js",
+  ]) {
+    assert.equal(looksLikeUrl(url), true, url);
+  }
+  for (const words of [
+    "東京 天気", "typescript", "TypeScript 型 推論", "how to http", "3.14", "999.1.1.1", "東京.天気", "foo:bar", "a..b", "-a.com",
+    "http://a b", "   ", "検索",
+  ]) {
+    assert.equal(looksLikeUrl(words), false, words);
+  }
+});
+
+test("URL 欄：URL らしければ scheme が無いとき http:// を足し、言葉は設定の検索エンジンの URL にする", () => {
+  const ddg = { searchEngine: "duckduckgo", searchTemplate: "" } as const;
+  assert.equal(urlBarTarget(" localhost:3000 ", ddg), "http://localhost:3000");
+  assert.equal(urlBarTarget("https://example.com/x", ddg), "https://example.com/x");
+  assert.equal(urlBarTarget("about:blank", ddg), "about:blank");
+  assert.equal(urlBarTarget("example.com", ddg), "http://example.com");
+  assert.equal(urlBarTarget(" 東京 天気 ", ddg), "https://duckduckgo.com/?q=%E6%9D%B1%E4%BA%AC%20%E5%A4%A9%E6%B0%97");
+  assert.equal(urlBarTarget("a&b=c#d", ddg), "https://duckduckgo.com/?q=a%26b%3Dc%23d");
+  assert.equal(urlBarTarget("typescript", { searchEngine: "startpage", searchTemplate: "" }), "https://www.startpage.com/do/search?q=typescript");
+  assert.equal(urlBarTarget("typescript", { searchEngine: "brave", searchTemplate: "" }), "https://search.brave.com/search?q=typescript");
+  // 任意の型：%s を全部替える。ほかのエンジンを選んでいる間は型を使わない
+  const custom = { searchEngine: "custom", searchTemplate: "http://127.0.0.1:9/s?q=%s&again=%s" } as const;
+  assert.equal(searchUrl(custom, "a b"), "http://127.0.0.1:9/s?q=a%20b&again=a%20b");
+  assert.equal(searchUrl({ ...custom, searchEngine: "brave" }, "a"), "https://search.brave.com/search?q=a");
+});
+
+test("新しいタブのトップ：決まったエンジンはそのトップ、任意の型は言葉を空にした URL", () => {
+  assert.equal(searchHome({ searchEngine: "duckduckgo", searchTemplate: "" }), "https://duckduckgo.com/");
+  assert.equal(searchHome({ searchEngine: "startpage", searchTemplate: "" }), SEARCH_ENGINES.startpage.home);
+  assert.equal(searchHome({ searchEngine: "brave", searchTemplate: "x" }), "https://search.brave.com/");
+  assert.equal(searchHome({ searchEngine: "custom", searchTemplate: "http://127.0.0.1:9/search?q=%s" }), "http://127.0.0.1:9/search?q=");
+});
+
+test("設定：検索エンジンは選べるものだけ、任意の型は %s を持つ http(s) の URL だけ受ける", () => {
+  assert.deepEqual(parseSettings({ searchEngine: "brave" }), { searchEngine: "brave" });
+  assert.deepEqual(parseSettings({ searchEngine: "custom", searchTemplate: "https://s.example/?q=%s" }), {
+    searchEngine: "custom",
+    searchTemplate: "https://s.example/?q=%s",
+  });
+  assert.throws(() => parseSettings({ searchEngine: "google" }), /searchEngine は duckduckgo・startpage・brave・custom のどれか/);
+  assert.throws(() => parseSettings({ searchTemplate: "https://s.example/" }), /%s が要ります/);
+  assert.throws(() => parseSettings({ searchTemplate: "javascript:%s" }), /http か https/);
+  assert.throws(() => parseSettings({ searchTemplate: "s.example/?q=%s" }), /URL として読めません/);
+  assert.equal(checkSearchTemplate(""), undefined);
+  assert.match(checkSearchSettings({ searchEngine: "custom", searchTemplate: "" })!, /書いてから custom/);
+  assert.equal(checkSearchSettings({ searchEngine: "duckduckgo", searchTemplate: "" }), undefined);
 });
