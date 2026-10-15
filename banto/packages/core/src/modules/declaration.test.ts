@@ -905,3 +905,21 @@ test("目録と違うコードの宣言は、目録で書き換えない（第�
     assert.deepEqual(got.meta.dependsOn, []);
   });
 });
+
+test("Module の名前に banto と banto- で始まるものは使えない——core が使う（アーキ仕様 §5.2）", async () => {
+  const meta = { satisfies: [], dependsOn: [], isolation: "subprocess", scope: "instance" } as const;
+  const launch = { command: "node", args: ["x.js"] };
+  await withConfig(async (config) => {
+    for (const name of ["banto", "banto-triggers", "Banto"]) {
+      await assert.rejects(addModuleDeclaration(config, { name, launch, meta } as never), /banto 本体が使います/);
+    }
+    const current = loadModuleDeclarations(config, "");
+    await assert.rejects(
+      setModuleDeclarations(config, [...current, { name: "banto", launch, meta }] as never),
+      /banto 本体が使います/,
+    );
+    // banto で始まっても、banto- でなければ使える
+    await addModuleDeclaration(config, { name: "bantox", launch, meta } as never);
+    assert.ok(loadModuleDeclarations(config, "").some((d) => d.name === "bantox"));
+  });
+});

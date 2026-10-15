@@ -15,6 +15,9 @@ import { OVERRIDE_KEYS, POLICY_KEYS, parseOverrideBody, parsePolicyBody, type Co
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { AutomationInputError, AutomationNotFoundError, type AutomationStore } from "../automation/store.js";
+import type { Automation, AutomationRunCause } from "../automation/fold.js";
+import { previousRunUnfinished } from "../automation/busy.js";
 import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
@@ -179,6 +182,13 @@ export interface AppDeps {
   threadTurns?: ThreadTurns;
   /** Thread に届ける口（決定・2026-09-25）。届いたもので起こすターンは、ここで開いて渡す */
   deliveries?: ThreadDeliveries;
+  /** **自動化の台帳**（決定・2026-10-15、アーキ仕様 §4.3）。無ければ `/api/projects/:id/automations` は 404 */
+  automations?: AutomationStore;
+  /**
+   * **自動化を1回動かす**（アーキ仕様 §4.3「判断は届ける口の手前に置く」、届けるのは Backlog `automation-deliver`）。
+   * 前の回が終わっているかは呼ぶ前に確かめてある。返すのはその回の `runId`。無ければ「今すぐ動かす」は 501
+   */
+  runAutomation?(automation: Automation, cause: AutomationRunCause): Promise<{ runId: string }>;
   /** host から画面への出来事の流れ（`GET /api/events`、決定・2026-09-25） */
   appEvents?: AppEventBus;
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
@@ -3264,6 +3274,81 @@ export function createApp(deps: AppDeps) {
         }
         json(res, 200, { text: projectInstruction(projectId) ?? "" });
         return;
+      }
+
+      // **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。台帳は Event Store（`automation/store.ts`）、
+      // 入力の確かめは台帳の側（AI の tool と同じ決まり）。届け先の Thread がこの Project の開いているものかはここで見る
+      const automationsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/automations(?:\/([^/]+)(\/run)?)?$/);
+      if (automationsMatch) {
+        const projectId = automationsMatch[1]!;
+        const automationId = automationsMatch[2];
+        const isRun = automationsMatch[3] !== undefined;
+        const store = deps.automations;
+        if (!store || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        const checkTarget = (target: unknown): string | undefined => {
+          if (typeof target !== "object" || target === null) return undefined;
+          const t = target as { kind?: unknown; threadId?: unknown };
+          if (t.kind !== "thread" || typeof t.threadId !== "string") return undefined;
+          const thread = deps.projectThread.getThread(t.threadId);
+          if (!thread || thread.projectId !== projectId) return "届け先の Thread がこの Project にありません";
+          if (thread.status !== "active") return "届け先の Thread は閉じています";
+          return undefined;
+        };
+        try {
+          if (!automationId) {
+            if (req.method === "GET") return json(res, 200, { automations: store.list(projectId) });
+            if (req.method === "POST") {
+              const body = (await readJsonBody(req)) as { target?: unknown };
+              const problem = checkTarget(body.target);
+              if (problem) return json(res, 400, { error: problem });
+              const created = await store.create({ projectId, createdBy: { kind: "human" }, fields: body });
+              return json(res, 201, created);
+            }
+            return json(res, 405, { error: "method not allowed" });
+          }
+          const automation = store.get(automationId);
+          if (!automation || automation.projectId !== projectId) return json(res, 404, { error: "not found" });
+          if (isRun) {
+            if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+            // 時刻は1回分、Webhook は中身の無い1回。**前の回が終わっていなければ断る**
+            const busy = previousRunUnfinished(
+              automation.target.threadId ? deps.projectThread.getThread(automation.target.threadId) : undefined,
+              {
+                isRunning: (id) => deps.threadTurns?.isRunning(id) ?? false,
+                listJudgmentsForThread: (id) => deps.inbox.listJudgmentsForThread(id),
+              },
+            );
+            if (busy) return json(res, 409, { error: busy });
+            if (!deps.runAutomation) return json(res, 501, { error: "自動化を届ける口がまだありません" });
+            return json(res, 202, await deps.runAutomation(automation, "manual"));
+          }
+          if (req.method === "GET") return json(res, 200, automation);
+          if (req.method === "PATCH") {
+            const body = (await readJsonBody(req)) as { paused?: unknown; target?: unknown };
+            const problem = checkTarget(body.target);
+            if (problem) return json(res, 400, { error: problem });
+            // 一時停止・再開は欄の直しと別の出来事にする（誰がいつ止めたかを残す）
+            const { paused, ...changes } = body;
+            if (paused !== undefined && typeof paused !== "boolean") {
+              return json(res, 400, { error: "paused は true か false で渡してください" });
+            }
+            let next = automation;
+            if (Object.keys(changes).length > 0) next = await store.update(automationId, changes);
+            else if (paused === undefined) return json(res, 400, { error: "直す欄がありません" });
+            if (paused === true) next = await store.pause(automationId, "人が一時停止しました");
+            if (paused === false) next = await store.resume(automationId);
+            return json(res, 200, next);
+          }
+          if (req.method === "DELETE") {
+            await store.remove(automationId);
+            return json(res, 200, { ok: true });
+          }
+          return json(res, 405, { error: "method not allowed" });
+        } catch (err) {
+          if (err instanceof AutomationInputError) return json(res, 400, { error: err.message });
+          if (err instanceof AutomationNotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
       }
 
       // **この Project に Claude のログインを使わせる**（決定・2026-09-27、ユーザー。`docs/specs/v4-security.md` §2）。

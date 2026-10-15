@@ -1221,11 +1221,24 @@ function assertSingletonRoles(declarations: ParsedModuleDeclaration[], source: s
  * ほしい一覧」で、既定と同じところは書かない——**書くと、既定を改良しても
  * ここが古いまま残る**（規則3）。
  */
+/**
+ * **`banto` は core が使う**（追加・2026-10-15、アーキ仕様 §5.2）。`banto` と `banto-` で始まる識別子は Module に
+ * 採番しない——core の画面を Canvas に出す印（`canvas=banto:<画面>`）・判断待ちの `serverName: "banto"`・続きの届けものの
+ * `from: "banto"` とぶつからないように。登録の口（足す・まとめて置く）で断る
+ */
+export function assertModuleNameNotReserved(name: string): void {
+  const lower = name.trim().toLowerCase();
+  if (lower === "banto" || lower.startsWith("banto-")) {
+    throw new ModuleDeclarationError(`Module の名前に「${name}」は使えません（banto と banto- で始まる名前は banto 本体が使います）`);
+  }
+}
+
 export async function setModuleDeclarations(
   config: RuntimeConfigStore,
   declarations: ModuleDeclaration[],
   projectId?: string,
 ): Promise<void> {
+  for (const d of declarations) assertModuleNameNotReserved(d.name);
   // 入れる前に検める——壊れた宣言を Event Store に残さない（規則2）。
   // **parse を通した形で比べる**——渡ってくるのは `loadModuleDeclarations` の
   // 結果（host が `origin` を立てた形）なので、生のまま比べると
@@ -1468,6 +1481,7 @@ export async function addModuleDeclaration(
   declaration: ModuleDeclaration,
 ): Promise<void> {
   const parsed = parseModuleDeclaration(declaration, "addModuleDeclaration");
+  assertModuleNameNotReserved(parsed.name);
   if (listInstanceModules(config).some((m) => m.name === parsed.name)) {
     throw new ModuleDeclarationError(`その名前はもう使われています: ${parsed.name}`);
   }

@@ -27,6 +27,7 @@ import {
   type SessionSkillSet,
 } from "./skills/index.js";
 import { RuntimeConfigStore } from "./config/runtime.js";
+import { AutomationStore } from "./automation/store.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -206,6 +207,9 @@ async function main(): Promise<void> {
   await projectThread.load();
   const runtimeConfig = new RuntimeConfigStore(bootstrap.dataDir, eventLog);
   await runtimeConfig.load();
+  // **自動化の台帳**（決定・2026-10-15、アーキ仕様 §4.3）。project-thread とは別の fold と snapshot
+  const automations = new AutomationStore(bootstrap.dataDir, eventLog);
+  await automations.load();
   // **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）
   const remoteRuntimeStore = new RemoteRuntimeStore(bootstrap.dataDir, eventLog);
   await remoteRuntimeStore.load();
@@ -2184,6 +2188,7 @@ async function main(): Promise<void> {
     inbox,
     pendingApprovals,
     runtimeConfig,
+    automations,
     turnEvents,
     threadTurns,
     deliveries,
@@ -2318,6 +2323,7 @@ async function main(): Promise<void> {
       globalMemory.save(),
       inbox.save(),
       runtimeConfig.save(),
+      automations.save(),
       remoteRuntimeStore.save(),
       relayGrants.save(),
       authStore.save(),
