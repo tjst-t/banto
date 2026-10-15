@@ -13,13 +13,15 @@ interface Props {
 	frame?: boolean;
 	ratio?: string;
 	eager?: boolean;
+	/** 縦に長い写真を ratio の高さで上から切る（下をうすく消す） */
+	crop?: boolean;
 }
-const { name, alt, sizes = '(min-width: 1200px) 1100px, 100vw', frame = true, ratio = '16 / 10', eager = false } = Astro.props;
+const { name, alt, sizes = '(min-width: 1200px) 1100px, 100vw', frame = true, ratio = '16 / 10', eager = false, crop = false } = Astro.props;
 const shots = import.meta.glob<{ default: ImageMetadata }>('../assets/screens/*.png', { eager: true });
 const shot = shots[`../assets/screens/${name}.png`]?.default;
 ---
 
-<div class:list={['screen', { frame }]}>
+<div class:list={['screen', { frame, crop }]} style={crop ? `--crop-ratio:${ratio}` : undefined}>
 	{
 		frame && (
 			<div class="bar" aria-hidden="true">
@@ -69,6 +71,24 @@ const shot = shots[`../assets/screens/${name}.png`]?.default;
 		display: block;
 		width: 100%;
 		height: auto;
+	}
+	.crop :global(picture) {
+		display: block;
+		position: relative;
+		aspect-ratio: var(--crop-ratio);
+		overflow: hidden;
+	}
+	.crop :global(picture)::after {
+		content: '';
+		position: absolute;
+		inset: auto 0 0 0;
+		height: 18%;
+		background: linear-gradient(rgba(255, 255, 255, 0), #fff);
+	}
+	.crop :global(img) {
+		height: 100%;
+		object-fit: cover;
+		object-position: top;
 	}
 	.placeholder {
 		display: grid;

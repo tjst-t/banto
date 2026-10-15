@@ -34,3 +34,12 @@
 .sl-markdown-content table {
 	font-size: 0.92em;
 }
+/* 本文の画面写真：縦長の携帯の写真は幅を絞る */
+.sl-markdown-content img[src*='mobile'] {
+	max-width: 320px;
+	border-radius: 20px;
+}
+.sl-markdown-content img {
+	border-radius: 10px;
+	box-shadow: 0 0 0 1px rgba(17, 22, 31, 0.1);
+}
