@@ -7450,7 +7450,7 @@
       "number": 308,
       "kind": "task",
       "title": "AI 向けの readDocument（ページごとの文字・ページの絵）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "office-review",
       "dependsOn": [
         "office-converter"
@@ -7464,7 +7464,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:13:02.555Z",
-      "updatedAt": "2026-10-15T09:13:02.555Z",
+      "updatedAt": "2026-10-15T16:01:55.820Z",
       "closedAt": null,
       "extra": {}
     },
