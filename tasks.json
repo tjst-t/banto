@@ -7806,7 +7806,7 @@
       "number": 327,
       "kind": "task",
       "title": "画面の受信箱の判断待ちの型（RealInboxJudgment.source）に \"automation\" を足す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [],
       "milestone": null,
@@ -7821,7 +7821,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T15:02:25.248Z",
-      "updatedAt": "2026-10-15T15:02:25.248Z",
+      "updatedAt": "2026-10-15T16:22:24.715Z",
       "closedAt": null,
       "extra": {}
     },
