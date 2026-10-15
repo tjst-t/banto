@@ -168,9 +168,10 @@ test("資源の上限——既定で付き、banto 全体と Project ごとに�
   }
 });
 
-// **上限に当たったら受信箱で知らせる**（決定・2026-10-05）：Project のメモリを絞り、中で上限を越えて使うと、
-// カーネルが止めたことがその Project のお知らせとして出る
-test("メモリの上限に当たってプロセスが止められたら、受信箱にその Project のお知らせが出る", async ({ page }) => {
+// **上限に当たったら、設定の「資源」に出る。受信箱には出さない**（決定・2026-10-05。受信箱に出すのはやめた——改訂・2026-10-15、
+// アーキ仕様 §2.4「受信箱は『あなたの番になったもの』だけ」。host のログには残る）：Project のメモリを絞り、中で上限を越えて
+// 使うと、カーネルが止めたことがその Project の資源の記録（hits）に出る
+test("メモリの上限に当たってプロセスが止められたら、その Project の資源に出て、受信箱には出ない", async ({ page }) => {
   const project = (await (
     await page.request.post(`${CORE_BASE_URL}/api/projects`, {
       headers,
@@ -194,14 +195,23 @@ test("メモリの上限に当たってプロセスが止められたら、受�
   );
   expect(hog.status, `上限を越えたのに止められていない：${hog.stderr}`).not.toBe(0);
 
-  type Notice = { kind: string; projectId?: string; title?: string; detail?: string; acknowledged?: boolean };
+  type Snapshot = { projects?: Array<{ projectId: string; hits?: Array<{ what: string }> }> };
   await expect
     .poll(
       async () => {
-        const all = (await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Notice[];
-        return all.find((i) => i.kind === "notice" && i.projectId === project.id && i.title?.includes("メモリの上限"))?.detail ?? null;
+        const snap = (await (await page.request.get(`${CORE_BASE_URL}/api/admin/resources`, { headers })).json()) as Snapshot;
+        return snap.projects?.find((p) => p.projectId === project.id)?.hits?.map((h) => h.what).join("／") ?? "";
       },
-      { timeout: 30_000, message: "受信箱にメモリの上限のお知らせが出ない" },
+      { timeout: 30_000, message: "資源の記録にメモリの上限が出ない" },
     )
-    .toMatch(/プロセスがカーネルに止められました.*いまの上限：メモリ 0\.5 GiB/);
+    .toMatch(/メモリの上限に当たり、プロセスが \d+ 個止められました/);
+
+  // 見張り（2秒ごと）が1周以上まわってから、受信箱に何も出ていないことを見る
+  await page.waitForTimeout(5_000);
+  type Notice = { kind: string; projectId?: string; title?: string };
+  const all = (await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Notice[];
+  expect(
+    all.filter((i) => i.kind === "notice" && i.projectId === project.id && (i.title ?? "").includes("上限")),
+    "上限に当たったことが受信箱に出ている",
+  ).toEqual([]);
 });

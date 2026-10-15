@@ -88,11 +88,14 @@ test("AI が Fork を2つ立てる→名前つきで出て、最初の指示で�
   const inbox = page.getByRole("dialog", { name: "受信箱" });
   const reviews = inbox.locator('[data-testid="inbox-review"]');
   await expect(reviews, "ターンが終わった Fork が受信箱に出ない").toHaveCount(2, { timeout: 30_000 });
-  await expect(reviews.filter({ hasText: "認証の修正" })).toBeVisible();
-  await expect(reviews.filter({ hasText: "画面の修正" })).toBeVisible();
+  // カードの頭の Thread の名前で見分ける（カードの本文の「あなたの発言」は、Fork が引き継いだ親の人の発言——両方の題を含む）
+  const reviewOf = (title: string) =>
+    reviews.filter({ has: page.getByTestId("inbox-card-thread").getByText(title, { exact: true }) });
+  await expect(reviewOf("認証の修正")).toBeVisible();
+  await expect(reviewOf("画面の修正")).toBeVisible();
 
-  // 受信箱から開くと、その Fork が開き、その分は消える
-  await reviews.filter({ hasText: "認証の修正" }).click();
+  // 受信箱のカードの「会話を開く」から開くと、その Fork が開き、その分は消える
+  await reviewOf("認証の修正").getByTestId("inbox-open-thread").click();
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({ timeout: 15_000 });
   await expect
     .poll(

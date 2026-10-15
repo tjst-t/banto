@@ -100,14 +100,20 @@ test("待たずに頼んだ仕事は、終わると開いたままの会話に�
   // 順番：人の発言 → 1ターン目の返事 → 届いたもの → 2ターン目の返事
   expect(messages.map((m) => (m.origin ? "delivered" : m.role))).toEqual(["user", "assistant", "delivered", "assistant"]);
 
-  // ---- 4. 受信箱に知らせ ---------------------------------------------------------------------------
+  // ---- 4. 受信箱には出ない（改訂・2026-10-15、アーキ仕様 §2.4「受信箱は『あなたの番になったもの』だけ」）----------------
+  // 届くたびのお知らせは、自動で起こさなかった（held）ときだけ。起こしたものは、AI がまとめ終えたターンでレビュー待ちに
+  // なる——この会話は開いて見ているので、それも出ない
   await page.getByRole("button", { name: "受信箱" }).click();
-  const notice = page.getByTestId("inbox-notice").filter({ hasText: TITLE });
-  await expect(notice, "終わったことが受信箱に出ない").toBeVisible({ timeout: 30_000 });
-  await expect(notice).toContainText("AI が続きをやります");
-  // 閉じたことを確かめてから先へ（開いたままだと会話の側が隠れて押せない）
   const inboxDialog = page.getByRole("dialog", { name: "受信箱" });
-  await inboxDialog.getByRole("button", { name: "Close" }).click();
+  await expect(inboxDialog.getByTestId("inbox-remaining")).toBeVisible();
+  await expect(page.getByTestId("inbox-notice").filter({ hasText: TITLE }), "届いたことが受信箱に出ている").toHaveCount(0);
+  const open = (await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{
+    kind: string;
+    dedupeKey?: string;
+  }>;
+  expect(open.filter((i) => i.kind === "notice" && (i.dedupeKey ?? "").startsWith("delivery:")), "届いたことのお知らせがある").toEqual([]);
+  // 閉じたことを確かめてから先へ（開いたままだと会話の側が隠れて押せない）
+  await inboxDialog.getByTestId("inbox-close").click();
   await expect(inboxDialog).toBeHidden();
 
   // ---- 5. リロードしても札のまま。中身を開ける ------------------------------------------------------------

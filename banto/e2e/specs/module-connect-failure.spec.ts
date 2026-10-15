@@ -106,7 +106,7 @@ test("Module が繋がらなくても、会話は進み、受信箱に1件だけ
   await expect(notice, "受信箱にお知らせが出ていない").toHaveCount(1, { timeout: 15_000 });
   await expect(notice).toContainText(/繋げませんでした/);
 
-  await notice.getByRole("button", { name: "確認した" }).click();
+  await notice.getByRole("button", { name: "見た" }).click();
   await expect(notice, "確認しても消えない").toHaveCount(0, { timeout: 15_000 });
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);

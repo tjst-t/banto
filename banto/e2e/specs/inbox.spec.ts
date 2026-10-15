@@ -66,13 +66,16 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
   // 引くと後ろのカードを掴む（実測・2026-09-05）
   await page.getByRole("button", { name: "受信箱" }).click();
   const inbox = page.getByRole("dialog", { name: "受信箱" });
-  const row = inbox.getByText("tool呼び出しの承認: mcp__filesystem__listDirectory");
-  await expect(row).toBeVisible({ timeout: 15_000 });
-  await expect(inbox.getByText(PROJECT_NAME)).toBeVisible();
-  await expect(inbox.getByText("Base Thread")).toBeVisible();
+  // 全面の受信箱（§6.41、2026-10-15）：判断待ちは1件ずつのカード。どこの会話か・何を承認するか（tool の引数）まで見る
+  const card = inbox.getByTestId("inbox-judgment").filter({ hasText: "tool呼び出しの承認: mcp__filesystem__listDirectory" });
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  await expect(card.getByTestId("inbox-card-project")).toHaveText(PROJECT_NAME);
+  await expect(card.getByTestId("inbox-card-thread")).toHaveText("Base Thread");
+  await expect(card.getByText("path", { exact: true })).toBeVisible();
+  await expect(inbox.getByTestId("inbox-section-judgment").getByTestId("inbox-section-count")).toHaveText("1");
 
-  // 行から Thread へ飛ぶ（アプリ本来の導線。これでシートも閉じる）
-  await row.click();
+  // カードの「会話を開く」から Thread へ飛ぶ（アプリ本来の導線。URL が変わるので受信箱も閉じる）
+  await card.getByTestId("inbox-open-thread").click();
   await expect(inbox).toBeHidden({ timeout: 15_000 });
 
   // 答えるとその判断待ちは決着する（§2.4.1「解決済みは状態として持たない」）。
