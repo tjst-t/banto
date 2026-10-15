@@ -28,7 +28,15 @@ async function prepareModules(page: Page, projectId: string): Promise<void> {
     .toEqual(expect.arrayContaining(["shell"]));
 }
 
-type Snapshot = { projects: Array<{ projectId: string; usedBytes: number; limitBytes?: number; busy: boolean }> };
+type Snapshot = {
+  projects: Array<{
+    projectId: string;
+    usedBytes: number;
+    limitBytes?: number;
+    busy: boolean;
+    groups?: Array<{ id: string; items: Array<{ name: string }> }>;
+  }>;
+};
 
 async function projectResources(page: Page, projectId: string) {
   const snap = (await (await page.request.get(`${CORE_BASE_URL}/api/admin/resources`, { headers })).json()) as Snapshot | null;
@@ -44,6 +52,15 @@ test("設定の「資源」に Project のコンテナと内訳が出て、メ�
   ).json()) as { id: string };
   await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers });
   await prepareModules(page, project.id);
+  // **host が Module を数えたのを待ってから画面を開く**（直し・2026-10-15）——host は数秒ごと（E2E は2秒）に測り、画面は
+  // 10秒ごとに取り直す。Module が繋がった直後に開くと、繋がる前の測りを受け取り、次の取り直しまで内訳に Module が出ない
+  // （別のサーバの VM で流すと毎回落ちていた）
+  await expect
+    .poll(async () => (await projectResources(page, project.id))?.groups?.find((g) => g.id === "modules")?.items.map((i) => i.name) ?? [], {
+      timeout: 30_000,
+      message: "host の測りに Module（shell）が出ない",
+    })
+    .toContain("shell");
 
   // ---- 1. 画面に出る ----
   await openApp(page);

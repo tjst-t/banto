@@ -3,7 +3,9 @@
 // 2本目が出てきたところなので、3本目で実際の差分を見てから切り出す
 // （`module-kit-extract`、docs/tasks.json）。ここでその判断を先取りしない。
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { CALL_ID_META_KEY } from "@banto/module-contract";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export interface RelayTarget {
@@ -19,6 +21,17 @@ export interface RelayTarget {
 export interface RelayLike {
   listTargets(): Promise<RelayTarget[]>;
   callTool(targetModule: string, name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+/**
+ * **いま処理している呼び出しの印**（`dev.banto/callId`、追加・2026-10-15）。host はこれで「どの呼び出しの中の中継か」を決める
+ * ——無いとこの窓口でいま走っている呼び出しを全部見て、混ざっていれば人の操作とは見なさない。受けた呼び出しごとに
+ * `withRelayCallId` で包むと、その中の中継に必ず添える（引数で持ち回らない——呼ぶ箇所が多い）
+ */
+const currentCallId = new AsyncLocalStorage<string | undefined>();
+
+export function withRelayCallId<T>(callId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  return currentCallId.run(callId, fn);
 }
 
 export class HostRelayClient implements RelayLike {
@@ -44,7 +57,8 @@ export class HostRelayClient implements RelayLike {
     const client = await this.ensureConnected();
     // 中継の初回は host が人に承認を聞く——待っている間、既定の60秒で切れないよう
     // 進捗で上限を延ばす（Shell と同じ手当て）
-    const result = await client.callTool({ name, arguments: args }, undefined, {
+    const callId = currentCallId.getStore();
+    const result = await client.callTool({ name, arguments: args, ...(callId ? { _meta: { [CALL_ID_META_KEY]: callId } } : {}) }, undefined, {
       resetTimeoutOnProgress: true,
       onprogress: () => undefined,
     });

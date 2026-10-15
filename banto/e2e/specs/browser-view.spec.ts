@@ -32,7 +32,7 @@ import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
 import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
-test.setTimeout(900_000);
+test.setTimeout(1_500_000);
 
 /** 繰り返し（`--repeat-each`）で前の回の Project を引かないように、回ごとに名前を変える（名前で id を引くため） */
 const projectName = () => `E2E Browser View ${test.info().repeatEachIndex + 1}`;
@@ -76,6 +76,9 @@ async function ai(page: Page, name: string, args: Record<string, unknown> = {}):
   // 初回はブラウザを入れる（取ってくる・apt）ので長い
   await composer.fill(`${marker}ブラウザで確かめて。` + fakeTurn({ giveUpToolAfterMs: 300_000, tools: [{ server: "browser", name, args }] }));
   await composer.press("Enter");
+  // **初回はブラウザを入れるのに数分かかる**（改訂・2026-10-15）——字体・GStreamer・音・Chrome・Xvfb を apt と取ってくるので、
+  // 別のサーバの VM で2本並べて流すと 420 秒を超えた（1本だけでも約4分20秒、GStreamer だけで 145 秒）。待つのは返事が
+  // 来るまでで、早く来ればすぐ進む
   let reply: string | undefined;
   await expect(async () => {
     const allow = page.getByRole("button", { name: "許可する" });
@@ -87,7 +90,7 @@ async function ai(page: Page, name: string, args: Record<string, unknown> = {}):
     expect(answer.length, "返事がまだ無い").toBeGreaterThan(0);
     expect(t.lastTurn?.outcome, "ターンがまだ終わっていない").toBe("completed");
     reply = answer.map((m) => m.text).join("\n");
-  }).toPass({ timeout: 420_000, intervals: [1000] });
+  }).toPass({ timeout: 900_000, intervals: [1000] });
   return reply!;
 }
 

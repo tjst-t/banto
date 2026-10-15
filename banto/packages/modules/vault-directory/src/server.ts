@@ -28,6 +28,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { withRelayCallId } from "./relay-client.js";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -40,6 +41,7 @@ import {
   VISIBILITY_META_KEY,
   MODULE_META_KEY,
   CANVAS_META_KEY,
+  callIdOf,
 } from "@banto/module-contract";
 import { MANAGE_APP_HTML, MANAGE_APP_URI, UI_APP_MIME } from "./manage-app.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
@@ -610,7 +612,11 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // **受けた呼び出しの印を、中継に添える**（直し・2026-10-15）——添えないと host はこの窓口でいま走っている呼び出しを全部見て
+  // 出所を決める。別の Project の鍵の窓口（startSshAgent）などが同時に走っていると、人が管理画面で押した削除も「人の
+  // 操作」と見なされず断られていた（E2E remote-runtime-sockets、publish-directory・repositories は添えている）
+  server.setRequestHandler(CallToolRequestSchema, (request) =>
+    withRelayCallId(callIdOf(request.params._meta as Record<string, unknown> | undefined), async () => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     /** host が刻んだ「誰のための呼び出しか」。**Module の自己申告ではない**。 */
     const callMeta = request.params._meta as Record<string, unknown> | undefined;
@@ -1267,7 +1273,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       default:
         throw new Error(`unknown tool: ${request.params.name}`);
     }
-  });
+    }),
+  );
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
