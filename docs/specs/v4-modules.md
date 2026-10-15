@@ -1287,10 +1287,11 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   テキストの画面（`ui://banto-filesystem/file`）の重さは変えない。`showFile` が拡張子で画面を選ぶ
 - **PDF の中身はバイトの範囲で受ける**：pdf.js は末尾の xref から読むのでページでは切り出せない。FileSystem に画面向けの
   `readFileRange({path, offset, length})`（`admin`、1回 4MiB まで、base64）を足し、pdf.js の `PDFDataRangeTransport` に
-  つなぐ。これで大きな PDF も中継・stdio の上限（下）に当たらない。変換役が作った PDF も同じ口で、FileSystem の置き場の
-  写しを読む
+  つなぐ。これで大きな PDF も中継・stdio の上限（下）に当たらない。変換役が作った PDF も同じ口で読むが、**写しはパスで
+  指させない**——引数は元のファイルのパス＋`converted: true` で、FileSystem が自分の置き場の写しを引く（根の確かめを緩めない・
+  置き場を晒さない）
 - 見えなくなったページの描画は `renderTask.cancel()` で止める。1ページの描画が3秒を超えたら、そのページは変換役が
-  描いた画像（pdftoppm）に切り替えられるボタンを出す（地図・CAD の書き出しのような重いベクタ）
+  描いた画像（pdftoppm）に切り替えられるボタンを出す（地図・CAD の書き出しのような重いベクタ。変換役に渡せる 7MB 以下の PDF だけ）
 - 変換したものは **中身のハッシュ（sha256）・変換役の版・フォント一式の印** を鍵に、FileSystem の **Project ごとの置き場**に残す
   （同じ中身なら変換し直さない。**Project ごとに合計 1GiB**、超えたら古いものから消す）。日本語フォントを足したら印が変わり、
   作り直す
@@ -1323,7 +1324,8 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   AI が確かめられるよう、**`readDocument({path, pages?, asImage?})`** を足す：PDF・Office の**ページごとの文字**（表は
   シートごとの CSV 相当）を返し、`asImage: true` なら指したページの絵（`image`）を返す。**上限**：1回 20 ページまで、
   文字は 200,000 字まで（超えたら切って、続きのページを示す）、画像は合計 10MB まで（`images/store.ts` と揃える）。
-  変換は人の画面と同じ変換役・同じ置き場を使う。変換役を入れている途中なら「変換役を入れています（初回だけ、数分）。
+  変換は人の画面と同じ変換役・同じ置き場を使う。**PDF の文字は FileSystem 自身が pdf.js（Node）で取り出す**（7MB を超える PDF も読める）。
+  ページの絵と Office の文字は変換役を通すので 7MB まで。変換役を入れている途中なら「変換役を入れています（初回だけ、数分）。
   あとでもう一度呼んでください」と返す。`readFile` の形は変えない
 
 ##### 変換役（LibreOffice）——banto 全体で1つ（決定・2026-10-15、ユーザー、案A）
@@ -1349,19 +1351,23 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   「変換役が使えない」
 - **LibreOffice の閉じ込め**（Fable の実測：headless の変換でも文書の中の `http://` の画像を取りに行き、`file:///` の画像は
   コンテナの中のファイルを PDF に埋め込んだ）：
-  - 1件ごとに **bubblewrap**（`bwrap`、特権なしで動く）で囲む：ネットワーク無し（`--unshare-all`）、根は読み取り専用
+  - 1件ごとに **bubblewrap**（`bwrap`）で囲む。**囲いを起こすのは道具用のコンテナの中の root**（`documents` の変換を起こす部分を
+    root で動かす。コンテナの root は host では一般ユーザーで、Project のコンテナと同じ線）、中の LibreOffice は **nobody
+    （uid・gid 65534）に落とす**（`bwrap --unshare-all --uid 65534 --gid 65534`）。一般ユーザーの `bwrap` は Ubuntu 24.04 の既定
+    （`kernel.apparmor_restrict_unprivileged_userns=1`）で止まる（Fable の実測。root から起こすと囲いができ、細工した文書を 0.8 秒で
+    PDF にし、外への通信は 0 件）。囲いの中は：ネットワーク無し（`--unshare-all`）、根は読み取り専用
     （`/usr`・`/etc` のフォントの設定だけ見せる）、書けるのは使い捨ての作業フォルダだけ、ホーム・Module の置き場・中継の合言葉は
     見せない、親が死ねば死ぬ（`--die-with-parent`）。Incus の中で `bwrap` が動くかは実装の最初に測る。**囲めなければ変換しない**
     （囲まずに走らせることはしない）
   - LibreOffice のプロファイル（作業フォルダの中、1件ごとに捨てる）でマクロを無効（`MacroSecurityLevel` 最高・
     `DisableMacrosExecution`）、外のリンクを更新しない、に固定する
-  - 中で sudo できず、変換は読み取り専用の根で走るので、乗っ取られても LibreOffice や `documents` を書き換えて次の Project の文書を
+  - 人や Module の側では中で sudo できない（変換を起こす部分は初めから root で起きるので sudo は要らない）。変換は nobody・読み取り専用の根で走るので、乗っ取られても LibreOffice や `documents` を書き換えて次の Project の文書を
     読むことはできない
 - **中身の渡し方**：FileSystem が中継でファイルの中身（base64）を渡し、PDF（・計算し直した xlsx・ページの画像）を受け取る。
   **Module の stdio は1通 10MB までなので（MCP SDK 1.30.0 の ReadBuffer）、最初の版は入力・出力とも 7MB まで**（base64 で
   10MB に収まる）。超えたら「大きすぎて変換できません（7MB まで）」と出す。大きなものは、host に1回限りの札つきの一時置き場
   （ディスクへ流す PUT/GET、中継には札だけ流す）を作ってから広げる（Backlog に別のタスク）。`/relay` の本文にも上限を付ける
-  （今は無い、`app.ts` の `readJsonBody`）
+  （今は無い、`app.ts` の `readJsonBody`。stdio と同じ 10MB）
 - `documents` は1件ごとに使い捨ての作業フォルダで変換し、終わったらすぐ消す（Project の文書を残さない）。変換結果を残すのは
   頼んだ側（FileSystem の Project ごとの置き場）だけ
 - **順番と公平**：変換は同時に1件。待ちは **Project ごとに3件まで**（超えたら「変換が混んでいます」で断る）、Project の間は
