@@ -90,3 +90,46 @@ export function makeSlidesPptx(titles: string[]): Buffer {
   titles.forEach((t, i) => (files[`ppt/slides/slide${i + 1}.xml`] = slide(t)));
   return zip(files);
 }
+
+/**
+ * **openpyxl 3.1.5 が書くのと同じ形の xlsx**（追加・2026-10-15、Backlog #306）。式のセルは `<f>` だけで値（`<v />`）は空、
+ * 文字は inlineStr、`calcPr fullCalcOnLoad`。openpyxl で作ったものの XML をそのまま写した（理由・要るところだけ）：
+ *   - 売上：B2*C2・B3*C3・SUM(D2:D3)（`#,##0`）、A6:D6 の結合、A 列の幅 20
+ *   - 集計：別のシートを指す式（`売上!D4`）
+ *   - メモ：文字だけ
+ */
+export function makeOpenpyxlXlsx(): Buffer {
+  const S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  const str = (ref: string, t: string) => `<c r="${ref}" t="inlineStr"><is><t>${esc(t)}</t></is></c>`;
+  const num = (ref: string, v: number) => `<c r="${ref}" t="n"><v>${v}</v></c>`;
+  const fx = (ref: string, f: string, style = "") => `<c r="${ref}"${style}><f>${esc(f)}</f><v /></c>`;
+  const sheet = (rows: string, extra = { cols: "", merges: "" }) =>
+    `<worksheet xmlns="${S}"><sheetFormatPr baseColWidth="8" defaultRowHeight="15" />${extra.cols}<sheetData>${rows}</sheetData>${extra.merges}</worksheet>`;
+  const names = ["売上", "集計", "メモ"];
+  return zip({
+    "[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" /><Default Extension="xml" ContentType="application/xml" /><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml" />${names
+      .map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" />`)
+      .join("")}<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml" /></Types>`,
+    "_rels/.rels": `<Relationships xmlns="${PKG_RELS}"><Relationship Type="${RELS}/officeDocument" Target="xl/workbook.xml" Id="rId1" /></Relationships>`,
+    "xl/_rels/workbook.xml.rels": `<Relationships xmlns="${PKG_RELS}">${names
+      .map((_, i) => `<Relationship Type="${RELS}/worksheet" Target="/xl/worksheets/sheet${i + 1}.xml" Id="rId${i + 1}" />`)
+      .join("")}<Relationship Type="${RELS}/styles" Target="styles.xml" Id="rId4" /></Relationships>`,
+    "xl/workbook.xml": `<workbook xmlns:r="${RELS}" xmlns="${S}"><workbookPr /><sheets>${names
+      .map((n, i) => `<sheet name="${n}" sheetId="${i + 1}" state="visible" r:id="rId${i + 1}" />`)
+      .join("")}</sheets><calcPr calcId="124519" fullCalcOnLoad="1" /></workbook>`,
+    // 書式は2つ：既定と `#,##0`（組み込みの 3 番）
+    "xl/styles.xml": `<styleSheet xmlns="${S}"><numFmts count="0" /><fonts count="1"><font><name val="Calibri" /><family val="2" /><sz val="11" /></font></fonts><fills count="2"><fill><patternFill /></fill><fill><patternFill patternType="gray125" /></fill></fills><borders count="1"><border><left /><right /><top /><bottom /><diagonal /></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" /></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" /><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" /></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0" hidden="0" /></cellStyles></styleSheet>`,
+    "xl/worksheets/sheet1.xml": sheet(
+      [
+        `<row r="1">${str("A1", "品目")}${str("B1", "数量")}${str("C1", "単価")}${str("D1", "金額")}</row>`,
+        `<row r="2">${str("A2", "りんご")}${num("B2", 12)}${num("C2", 100)}${fx("D2", "B2*C2")}</row>`,
+        `<row r="3">${str("A3", "みかん")}${num("B3", 30)}${num("C3", 45.5)}${fx("D3", "B3*C3")}</row>`,
+        `<row r="4">${str("A4", "合計")}${fx("D4", "SUM(D2:D3)", ' s="1"')}</row>`,
+        `<row r="6">${str("A6", "結合したセル")}</row>`,
+      ].join(""),
+      { cols: `<cols><col width="20" customWidth="1" min="1" max="1" /></cols>`, merges: `<mergeCells count="1"><mergeCell ref="A6:D6" /></mergeCells>` },
+    ),
+    "xl/worksheets/sheet2.xml": sheet(`<row r="1">${str("A1", "売上の合計")}${fx("B1", "売上!D4", ' s="1"')}</row>`),
+    "xl/worksheets/sheet3.xml": sheet(`<row r="1">${str("A1", "三枚目のシート")}</row>`),
+  });
+}

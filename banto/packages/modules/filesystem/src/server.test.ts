@@ -133,13 +133,13 @@ test("showFile はフォルダ・無いファイル・根の外を断る", async
 
 // ---- PDF の画面（v4-modules.md §2.2「PDF・Office…」、2026-10-15）-------------------------
 
-test("showFile は PDF・docx・pptx・doc・ppt・odt・odp なら document の画面を選ばせる（xlsx は選ばない）。document の HTML は pdf.js と worker、docx-preview と JSZip を同じ画面に入れる", async () => {
+test("showFile は PDF・docx・pptx・doc・ppt・odt・odp・表（xlsx・xlsm・xls・ods）なら document の画面を選ばせる。document の HTML は pdf.js と worker、docx-preview と JSZip、SheetJS を同じ画面に入れる", async () => {
   await withClient(async (client) => {
     const { tools } = await client.listTools();
     const show = tools.find((t) => t.name === "showFile");
     assert.deepEqual((show?._meta as Record<string, unknown>)?.["dev.banto/ui-by-extension"], {
       arg: "path",
-      byExtension: Object.fromEntries(["pdf", "docx", "doc", "odt", "pptx", "ppt", "odp"].map((e) => [e, "ui://banto-filesystem/document"])),
+      byExtension: Object.fromEntries(["pdf", "docx", "doc", "odt", "pptx", "ppt", "odp", "xlsx", "xlsm", "xls", "ods"].map((e) => [e, "ui://banto-filesystem/document"])),
     });
     const { resources } = await client.listResources();
     const doc = resources.find((r) => r.uri === "ui://banto-filesystem/document");
@@ -156,12 +156,16 @@ test("showFile は PDF・docx・pptx・doc・ppt・odt・odp なら document の
     const jszip = html.text.indexOf(".JSZip=");
     const docx = html.text.indexOf("docx-preview <https");
     assert.ok(jszip > 0 && docx > jszip && docx < worker, `Word の描き手の script の順が違う（JSZip ${jszip}・docx-preview ${docx}）`);
+    // SheetJS（表）も普通の script で、画面より先に走る
+    const sheetjs = html.text.indexOf("function make_xlsx_lib(");
+    assert.ok(sheetjs > docx && sheetjs < worker, `表の読み手の script の順が違う（SheetJS ${sheetjs}）`);
     // 中で script が閉じない
-    assert.equal(html.text.match(/<\/script>/g)?.length, 5);
+    assert.equal(html.text.match(/<\/script>/g)?.length, 6);
     // テキストの画面は pdf.js・docx-preview を背負わない
     const file = (await client.readResource({ uri: "ui://banto-filesystem/file" })).contents[0] as { text: string };
     assert.doesNotMatch(file.text, /pdfjsLib/);
     assert.doesNotMatch(file.text, /JSZip/);
+    assert.doesNotMatch(file.text, /make_xlsx_lib/);
     assert.ok(file.text.length < 500_000, `テキストの画面が重い（${file.text.length}）`);
   });
 });

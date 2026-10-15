@@ -48,6 +48,8 @@ export interface CommentTarget {
   selectedText?(): Extract<CommentAnchor, { kind: "text" }> | undefined;
   /** いま見ているページ */
   currentPage?(): number | undefined;
+  /** 表で選んでいるセル・範囲（`シート名!B4:D6` とそこの値）。選んでいなければ undefined */
+  selectedCell?(): Extract<CommentAnchor, { kind: "cell" }> | undefined;
   /** ドラッグで範囲を囲ませる。囲み終えたら `done`。返り値で取りやめる */
   startRegion?(done: (anchor: Extract<CommentAnchor, { kind: "region" }>) => void): () => void;
   /** そのコメントの場所へ飛ぶ */
@@ -242,6 +244,15 @@ export class CommentsPanel {
     this.beginDraft(anchor);
   }
 
+  private fromCell(): void {
+    const anchor = this.target.selectedCell?.();
+    if (!anchor) {
+      toast("先にセルを選んでください", { description: "表のセルを押すか、ドラッグして範囲を選んでから押します", error: true });
+      return;
+    }
+    this.beginDraft(anchor);
+  }
+
   private forPage(): void {
     const page = this.target.currentPage?.();
     if (page === undefined) return;
@@ -368,6 +379,13 @@ export class CommentsPanel {
             "選んだ文",
           )
         : null,
+      t.selectedCell
+        ? h(
+            "button",
+            { class: "btn", title: "表で選んだセル・範囲にコメントを付ける", attrs: { type: "button" }, data: { testid: "comment-for-cell" }, on: { click: () => this.fromCell() } },
+            "選んだセル",
+          )
+        : null,
       t.currentPage ? h("button", { class: "btn", attrs: { type: "button" }, data: { testid: "comment-for-page" }, on: { click: () => this.forPage() } }, "このページ") : null,
       t.startRegion
         ? h(
@@ -444,7 +462,7 @@ export class CommentsPanel {
       this.comments.length === 0 && !this.draft
         ? h("p", {
             class: "note",
-            text: !this.loaded && !this.error ? "コメントを読んでいます…" : "まだコメントはありません。文字を選ぶ・範囲を囲む・ページを指して付けます",
+            text: !this.loaded && !this.error ? "コメントを読んでいます…" : t.selectedCell ? "まだコメントはありません。セルを選んで付けます" : "まだコメントはありません。文字を選ぶ・範囲を囲む・ページを指して付けます",
           })
         : null;
 

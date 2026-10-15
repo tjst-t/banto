@@ -294,6 +294,40 @@ body[data-mode="fullscreen"] .comments { width: 320px; flex-shrink: 0; border-to
 .textLayer ::selection { background: color-mix(in srgb, AccentColor, transparent 50%); color: transparent; }
 .textLayer br::selection { background: transparent; }
 
+/* ---- 表（sheet-viewer.ts）。描くのは見えている範囲のセルだけ——セルは位置を指定して置き、列見出しと行番号は sticky で残す ---- */
+/* 会話の中のカードは、小さな表なら表の高さまで（520px を上限に） */
+body:not([data-mode="fullscreen"]) .sheet-scroller { height: auto; max-height: 520px; }
+.sheet-scroller { background: var(--bg); }
+.sheet-grid { position: relative; font-size: 13px; line-height: 1.2; color: var(--ink); }
+.sheet-col-head { position: sticky; top: 0; z-index: 2; height: 22px; width: 100%; }
+.sheet-corner { position: sticky; left: 0; z-index: 3; width: 44px; height: 22px; background: var(--bg-2);
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.sheet-col-cells { position: absolute; top: 0; left: 44px; height: 22px; }
+.sheet-grid-body { position: relative; }
+.sheet-row-head { position: sticky; left: 0; z-index: 1; width: 44px; height: 100%; }
+.sheet-cells { position: absolute; top: 0; left: 44px; user-select: none; cursor: cell; }
+.sheet-head-cell { position: absolute; display: flex; align-items: center; justify-content: center; overflow: hidden;
+  background: var(--bg-2); color: var(--ink-3); font-size: var(--t-xs); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.sheet-cell { position: absolute; padding: 0 4px; overflow: hidden; white-space: nowrap; text-overflow: clip;
+  display: flex; align-items: flex-end; padding-bottom: 2px; background: var(--bg);
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.sheet-cell.number { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.sheet-cell.boolean, .sheet-cell.error { justify-content: center; }
+.sheet-cell.error { color: var(--danger); }
+.sheet-cell.merged { align-items: center; justify-content: center; white-space: normal; text-align: center; }
+.sheet-selection { position: absolute; z-index: 1; pointer-events: none; border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.sheet-address { min-width: 3.5em; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-2); }
+.sheet-address:empty, .sheet-value:empty { display: none; }
+.sheet-value { max-width: 40ch; font-size: var(--t-xs); color: var(--ink-2); }
+.sheet-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 8px; border-top: 1px solid var(--line); }
+.sheet-tabs { display: flex; gap: 2px; overflow-x: auto; min-width: 0; flex: 1; }
+.sheet-tab { border: 1px solid transparent; background: transparent; padding: 2px 12px; border-radius: var(--r-sm); font-size: var(--t-sm);
+  color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.sheet-tab[aria-selected="true"] { background: var(--bg-2); border-color: var(--line); color: var(--ink); font-weight: 500; }
+.sheet-recalc-note { font-size: var(--t-xs); color: var(--ink-3); }
+
 /* ---- 差分（editFile）---- */
 .diff-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); min-width: 0; }
 .diff-stat { font-size: var(--t-xs); color: var(--ink-3); flex-shrink: 0; }

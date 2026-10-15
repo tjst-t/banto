@@ -1,6 +1,6 @@
-// FileSystem Module の **PDF・Office の文書の画面**の入口（`ui://banto-filesystem/document`、v4-modules.md §2.2「PDF・Office…」）。
+// FileSystem Module の **PDF・Office の文書と表の画面**の入口（`ui://banto-filesystem/document`、v4-modules.md §2.2「PDF・Office…」）。
 //
-// テキストの画面（`app.ts`）とは束を分ける——こちらは pdf.js・docx-preview を読み込んだ HTML に入る（`ui-app.ts`）。
+// テキストの画面（`app.ts`）とは束を分ける——こちらは pdf.js・docx-preview・SheetJS を読み込んだ HTML に入る（`ui-app.ts`）。
 // banto を知らない。MCP Apps の約束（`protocol.ts`）だけで親と話す。
 // どちらで描くかは見せるファイルの拡張子で決める（host がこの画面を選んだのと同じ物差し）。パスは tool の引数で
 // 先に届くが、届かないこともある（記録から開き直したとき等）ので、そのときは結果のパスで決める。
@@ -9,20 +9,23 @@
 // - docx：Word の面（docx-preview）。「元に近い見た目で見る」・描けなかったときは、変換役で PDF にした PDF の面に切り替える
 //   （「Word の描き方で見る」で戻る）。面は作ったら捨てずに隠す——戻ったときに読み直さない
 // - pptx・doc・ppt・odt・odp：変換役で PDF にした PDF の面（Backlog #305）
+// - xlsx・xlsm・xls・ods：変換役で計算し直した値の表の面（SheetJS、Backlog #306）
 
 import { DocxDocumentView } from "./docx-viewer.js";
 import { h } from "./dom.js";
 import { icon } from "./icons.js";
 import { PdfDocumentView } from "./pdf-viewer.js";
+import { SheetDocumentView } from "./sheet-viewer.js";
 import { onNotification, notify, request, errorMessage, reportSize, textOf, type CallToolResult, type DisplayMode, type HostContext, type InitializeResult } from "./protocol.js";
 import { applyHostStyles, applyTheme, installStyles } from "./styles.js";
 
-type DocumentView = PdfDocumentView | DocxDocumentView;
+type DocumentView = PdfDocumentView | DocxDocumentView | SheetDocumentView;
 
 /** 拡張子で描き方を選ぶ。パスが無い・知らない拡張子のときも PDF の面（そちらが誤りを出す） */
-function kindOf(path: string): "pdf" | "docx" | "converted" {
+function kindOf(path: string): "pdf" | "docx" | "converted" | "sheet" {
   const ext = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
   if (ext === "docx") return "docx";
+  if (["xlsx", "xlsm", "xls", "ods"].includes(ext)) return "sheet";
   return ["pptx", "doc", "ppt", "odt", "odp"].includes(ext) ? "converted" : "pdf";
 }
 
@@ -35,6 +38,7 @@ class DocumentScreen {
   private readonly docxHost?: HTMLElement;
   private pdf?: PdfDocumentView;
   private pdfHost?: HTMLElement;
+  private readonly sheet?: SheetDocumentView;
   /** 後から作る面に渡す（引数は path だけ——displayMode を渡し直すと、また大きく開くことを頼んでしまう） */
   private path = "";
   private result?: CallToolResult;
@@ -52,13 +56,15 @@ class DocumentScreen {
       this.docxHost = h("div");
       root.append(this.docxHost);
       this.docx = new DocxDocumentView(this.docxHost, { displayMode, onConvert: (reason) => this.showConverted(reason) });
+    } else if (kind === "sheet") {
+      this.sheet = new SheetDocumentView(root, { displayMode, canReturnComments });
     } else {
       this.makePdf(kind === "converted", []);
     }
   }
 
   private views(): DocumentView[] {
-    return [this.docx, this.pdf].filter((v): v is DocumentView => v !== undefined);
+    return [this.docx, this.pdf, this.sheet].filter((v): v is DocumentView => v !== undefined);
   }
 
   private makePdf(converted: boolean, actions: HTMLElement[]): PdfDocumentView {

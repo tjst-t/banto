@@ -18,6 +18,7 @@
     "docx-preview": "0.4.1",
     "fflate": "^0.8.3",
     "jszip": "3.10.1",
-    "pdfjs-dist": "6.4.299"
+    "pdfjs-dist": "6.4.299",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

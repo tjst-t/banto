@@ -44,18 +44,19 @@ const RANGE_CHUNK = 512 * 1024;
 const ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 /** 変換役を入れている途中のとき、頼み直すまでの間 */
-const PREPARING_RETRY_MS = 5_000;
+export const PREPARING_RETRY_MS = 5_000;
 
 /**
- * 画面のファイルのバイトを読む（範囲が 4MiB を超えるときは分けて頼む）。`converted` なら、そのファイルを PDF に変換した写し
- * （写しはパスで指さない——元のパスで FileSystem が置き場から引く）
+ * 画面のファイルのバイトを読む（範囲が 4MiB を超えるときは分けて頼む）。`converted` なら、そのファイルを変換した写し
+ * ——`"pdf"` は PDF にしたもの、`"spreadsheet"` は表を計算し直したもの（写しはパスで指さない——元のパスで FileSystem が
+ * 置き場から引く）
  */
-export async function readRange(path: string, begin: number, end: number, converted = false): Promise<Uint8Array> {
+export async function readRange(path: string, begin: number, end: number, converted?: "pdf" | "spreadsheet"): Promise<Uint8Array> {
   const out = new Uint8Array(end - begin);
   let at = begin;
   while (at < end) {
     const length = Math.min(RANGE_MAX, end - at);
-    const result = JSON.parse(textOf(await callTool("readFileRange", { path, offset: at, length, ...(converted ? { converted: true, to: "pdf" } : {}) }))) as {
+    const result = JSON.parse(textOf(await callTool("readFileRange", { path, offset: at, length, ...(converted ? { converted: true, to: converted } : {}) }))) as {
       length?: unknown;
       data?: unknown;
     };
@@ -327,7 +328,7 @@ export class PdfDocumentView {
     this.state = this.converted ? { kind: "converting" } : { kind: "loading", path };
     this.render();
     void this.comments.load(path);
-    const converted = this.converted;
+    const converted = this.converted ? "pdf" : undefined;
     try {
       if (converted) {
         // 変換したものの大きさで読む（元のファイルの大きさではない）

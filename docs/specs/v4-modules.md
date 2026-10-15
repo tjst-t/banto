@@ -1197,7 +1197,7 @@ Phase 2.5）。そのときの第一候補は「描画の部品をライブラ�
 | SVG | `<img>` で描く（スクリプトは走らない）＋ソース | テキストとして |
 | 画像（png/jpg/gif/webp） | `<img>`、縦横・大きさ | — |
 | CSV / TSV | 表 | **表のままセルを編集**（引用符・改行つきのセルを壊さず、改行コードも元に合わせて書き戻す） |
-| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く）。**PDF・docx・pptx・doc・ppt・odt・odp は showFile で見せると下の「PDF・Office のファイルを読んでコメントを返す」の画面で描く**（実装・2026-10-15。ファイルブラウザの中ではまだ名前と大きさ）。xlsx は未実装 | — |
+| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く）。**PDF・docx・pptx・doc・ppt・odt・odp・表（xlsx・xlsm・xls・ods）は showFile で見せると下の「PDF・Office のファイルを読んでコメントを返す」の画面で描く**（実装・2026-10-15。ファイルブラウザの中ではまだ名前と大きさ） | — |
 | その他のテキスト | ソース | テキストとして |
 
 > **改訂・2026-10-15**：下の「PDF・Office のファイルを読んでコメントを返す」で pdf.js を Worker 無しで同梱して描く（CSP は
@@ -1261,12 +1261,12 @@ host に預け、リロードしても別タブに出しても、そのまま開
 
 #### PDF・Office のファイルを読んでコメントを返す（決定・2026-10-15、ユーザー。Backlog のストーリー #301 office-review）
 
-> **実装の状況（2026-10-15、#302・#307・#303・#304・#305・#308）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
+> **実装の状況（2026-10-15、#302・#307・#303・#304・#305・#306・#308）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
 > PDF のコメント（ページ・選んだ文・範囲。置き場・一覧・「AI に返す」）、docx の docx-preview での表示、**変換役 `documents`（#304）と
 > FileSystem の画面向けの `convertDocument`・`readFileRange` の `converted`**（下の「変換役」）、**pptx・doc・ppt・odt・odp を変換役で
-> PDF にして同じ画面で描くこと・docx の「元に近い見た目で見る」（#305）**、**AI 向けの `readDocument`（#308）**まで。表のセルを指すコメントは置き場と返す文の形だけ
-> （表の画面 #306 が無いので、画面からはまだ付けられない）。xlsx の画面・ページの画像への切り替えのボタン・docx のコメント
-> （選んだ文と見出し）は未実装。
+> PDF にして同じ画面で描くこと・docx の「元に近い見た目で見る」（#305）**、**表（xlsx・xlsm・xls・ods）を変換役で計算し直した値で描く
+> 画面とセル・範囲へのコメント（#306、下の「表の画面」）**、**AI 向けの `readDocument`（#308）**まで。ページの画像への切り替えの
+> ボタン・docx のコメント（選んだ文と見出し）は未実装。
 
 **目的**：AI が作った・手元にある PDF・Word（docx）・PowerPoint（pptx）・Excel（xlsx）を、**元の見た目で読み**、
 **ページ・選んだ文・範囲・セルを指してコメントを付け、まとめて AI に返す**。**編集はしない**（ユーザー）。
@@ -1295,13 +1295,26 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
   ページを指す）。docx の2つの面は作ったら捨てずに隠す——行き来で読み直さない
 - 画面の束は大きくなる（pdf.js の min で約 1.7MB）。**PDF・Office の画面は別の `ui://banto-filesystem/document` に分け**、
   テキストの画面（`ui://banto-filesystem/file`）の重さは変えない。`showFile` が拡張子で画面を選ぶ——tool の
-  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: …, docx: …, pptx: …, doc: …, ppt: …, odt: …, odp: … } }`）で
-  名乗り、host が呼び出しの引数で選ぶ（v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える tool」）。どれも同じ `document` の
-  画面で、どう描くかは画面が同じ拡張子で選ぶ
+  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: …, docx: …, pptx: …, doc: …, ppt: …, odt: …, odp: …, xlsx: …,
+  xlsm: …, xls: …, ods: … } }`）で名乗り、host が呼び出しの引数で選ぶ（v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える
+  tool」）。どれも同じ `document` の画面で、どう描くかは画面が同じ拡張子で選ぶ
 - docx-preview（0.4.1）と JSZip（3.10.1）は UMD の min を普通の `<script>` で pdf.js より前に置く（`globalThis.JSZip`→
   `globalThis.docx`）。中身は `readFileRange` で全部読む（zip なので範囲では描けない）。画像・埋め込みフォントは data: の URL
   （`useBase64URL`。blob: は `font-src` に無い）、altChunk（iframe で描かれる）は描かない。狭いカードではページの幅に合わせて
   縮める（広げない）
+- **表の画面**（実装・2026-10-15、#306）：開くと `convertDocument`（表の既定は計算し直し）を頼み、`{status:"preparing"}` なら
+  その文を出して 5 秒ごとに頼み直す。計算し直した写しを `readFileRange` の `converted`（`to: "spreadsheet"`）で全部読み、
+  **SheetJS**（cdn.sheetjs.com の 0.20.3 の `xlsx.mini.min.js`。npm の `xlsx` は 0.18.5 で止まっている）で読む。UMD を普通の
+  `<script>` で置く（`globalThis.XLSX`）。写しは変換役が書き出し直した xlsx なので、xls・ods を読む部分の無い mini で足りる
+  - 値は SheetJS が数の書式で書いた文字（`#,##0`・`0.0%`・日付）。数は右寄せ、真偽とエラーは中央。隠したシートはタブに出さない
+  - 列の幅はファイルの字数から ECMA-376 の式で px に（指定が無ければ 64px）、行の高さは pt から（無ければ 20px）。大きさは
+    **中身と結合の届くところまで**（`!ref` は書式だけの空の行まで含むことがあるので使わない）
+  - **描くのは見えている行・列（前後に 200px 余分）のセルだけ**。セルは位置を指定して置き、列見出しと行番号は sticky で残す。
+    結合したセルは左上が全体を描く
+  - セルを押す・ドラッグ・Shift＋押すで範囲を選ぶ（結合に掛かれば結合ごと広げる）。ツールバーに番地と値（式があれば式も）。
+    コメントの「選んだセル」は `{kind:"cell", sheet, range, value}`——`value` は1つのセル（結合1つ）ならその値、範囲なら中身の
+    あるセルの値を「、」でつないだもの（100 セル・2,000 字を超えたら付けない）。一覧から押すとそのシートのそのセルへ飛ぶ
+  - 下にシートのタブと「LibreOffice で計算し直した値です（Excel と違うことがあります）」
 - pdf.js（pdfjs-dist 6.4.299、`build/` の min）の worker と本体は、画面の束とは別の `<script type="module">` で
   worker → 本体 → 画面の順に HTML に置く。eval・WASM・fetch は使わない（`isEvalSupported: false`・`useWasm: false`）。
   日本語の CMap・標準フォントは pdf.js が fetch したがるので、画面向けの **`readPdfAsset({kind, name})`**（`admin`、

@@ -29,9 +29,10 @@ export const EDIT_DIFF_APP_URI = "ui://banto-filesystem/edit-diff";
 export const FILE_APP_URI = "ui://banto-filesystem/file";
 
 /**
- * showFile の画面のうち PDF・Word（追加・2026-10-15、v4-modules.md §2.2「PDF・Office…」）。pdf.js（約 1.7MB）と
- * docx-preview・JSZip（約 0.2MB）を同梱するのでテキストの画面（`file`）とは分ける——どちらを出すかは host が引数の拡張子で選ぶ
- * （`dev.banto/ui-by-extension`）。PDF と Word のどちらで描くかは、画面が同じ拡張子で選ぶ（`ui/document-app.ts`）。
+ * showFile の画面のうち PDF・Word・表（追加・2026-10-15、v4-modules.md §2.2「PDF・Office…」）。pdf.js（約 1.7MB）と
+ * docx-preview・JSZip（約 0.2MB）・SheetJS（約 0.3MB）を同梱するのでテキストの画面（`file`）とは分ける——どちらを出すかは
+ * host が引数の拡張子で選ぶ（`dev.banto/ui-by-extension`）。PDF・Word・表のどれで描くかは、画面が同じ拡張子で選ぶ
+ * （`ui/document-app.ts`）。
  */
 export const DOCUMENT_APP_URI = "ui://banto-filesystem/document";
 
@@ -70,7 +71,7 @@ function documentScripts(): string {
   const worker = loadScript(new URL("pdf.worker.min.mjs", pdfjs));
   const lib = loadScript(new URL("pdf.min.mjs", pdfjs));
   const app = loadScript(new URL("./ui/document.bundle.js", import.meta.url));
-  return [...docxScripts(), ...[worker, lib, app].map((js) => `<script type="module">\n${js}\n</script>`)].join("\n");
+  return [...docxScripts(), xlsxScript(), ...[worker, lib, app].map((js) => `<script type="module">\n${js}\n</script>`)].join("\n");
 }
 
 /**
@@ -82,6 +83,15 @@ function docxScripts(): string[] {
   const jszip = loadScript(new URL(import.meta.resolve("jszip/dist/jszip.min.js")));
   const docx = loadScript(new URL("./docx-preview.min.js", import.meta.resolve("docx-preview")));
   return [jszip, docx].map((js) => `<script>\n${js}\n</script>`);
+}
+
+/**
+ * **表の読み手**（SheetJS 0.20.3 の mini——xlsx を読み、数の書式で値を書く。npm の `xlsx` は 0.18.5 で止まっていて古いので、
+ * cdn.sheetjs.com の tgz を入れている）。普通の script で置くと `globalThis.XLSX` に置かれる。読むのは変換役が書き出し直した
+ * xlsx だけなので、xls・ods を読む部分の無い mini で足りる
+ */
+function xlsxScript(): string {
+  return `<script>\n${loadScript(new URL(import.meta.resolve("xlsx/dist/xlsx.mini.min.js")))}\n</script>`;
 }
 
 export function appHtml(surface: AppSurface): string {

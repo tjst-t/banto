@@ -5,8 +5,8 @@
 // ツールバーの数・飛んだ先の印、入力欄の塊の出所と中身の頭と全文、送った発言の塊、AI に届いた本文、記録。
 // 自動では送られない（発言が増えない）・画面が勝手に呼んでも入らない・読み込み直してもコメントも書きかけの塊も残る。
 //
-// 表のセル：表の画面（xlsx、Backlog #306）がまだ無いので、画面からは付けられない。ここでは置き場の口（saveComments）で
-// セルを指すコメントを1つ足し、一覧と AI に返す文に `シート!範囲（値）` で出ることを見る
+// 表のセル：ここ（PDF の画面）では置き場の口（saveComments）でセルを指すコメントを1つ足し、一覧と AI に返す文に
+// `シート!範囲（値）` で出ることを見る。表の画面から付けるのは filesystem-xlsx.spec.ts（Backlog #306）
 import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
