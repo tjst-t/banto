@@ -19,14 +19,14 @@ import { ApprovalToolCard } from "@/components/banto/thread/approval-tool-card";
 import { ElicitationFormView } from "@/components/banto/inbox/elicitation-form";
 import { InlineModuleView } from "@/components/banto/thread/inline-module-view";
 import { RelayApprovalCard } from "@/components/banto/thread/relay-approval-card";
-import { ScheduleProposalCard } from "@/components/banto/thread/schedule-proposal-card";
+import { TriggerProposalCard } from "@/components/banto/thread/trigger-proposal-card";
 import { ShellCommandCard } from "@/components/banto/thread/shell-command-card";
 import { TurnSummaryView } from "@/components/banto/thread/turn-summary-card";
 import { TURN_SUMMARY_TOOL_NAME, type TurnSummaryArgs } from "@/lib/mock/turn-summary";
 import {
   HUMAN_TOOL_NAME,
   MODULE_RELAY_TOOL_NAME,
-  SCHEDULE_CREATE_TOOL_NAME,
+  TRIGGER_CREATE_TOOL_NAME,
   SHELL_RUN_COMMAND_TOOL_NAME,
   getInlineView,
   isApprovalGated,
@@ -53,9 +53,9 @@ export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
   if (props.toolName === MODULE_RELAY_TOOL_NAME) {
     return <RelayApprovalCard {...props} />;
   }
-  // AI が予定を作る確認（決定・2026-10-13）——引数の JSON ではなく、いつ・何を・どう起こすかを文で出す
-  if (props.toolName === SCHEDULE_CREATE_TOOL_NAME) {
-    return <ScheduleProposalCard {...props} />;
+  // AI がきっかけを作る確認（決定・2026-10-15）——引数の JSON ではなく、いつ・何を・どう起こすかを文で出す
+  if (props.toolName === TRIGGER_CREATE_TOOL_NAME) {
+    return <TriggerProposalCard {...props} />;
   }
   // 専用カードを持たない tool が承認ゲートに掛かったときの一般表示
   if (isApprovalGated(props.toolCallId)) {

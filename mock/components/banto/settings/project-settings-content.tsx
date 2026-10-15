@@ -11,8 +11,8 @@
 import { useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MoveRuntimeDialog } from "@/components/banto/settings/move-runtime-dialog";
-import { CalendarClock, Puzzle, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, TriangleAlert } from "lucide-react";
-import { SchedulesPanel } from "@/components/banto/settings/schedules-panel";
+import { Zap, Puzzle, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, TriangleAlert } from "lucide-react";
+import { TriggersPanel } from "@/components/banto/settings/triggers-panel";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,7 +56,7 @@ import type { MockProjectOverrides } from "@/lib/mock/types";
 
 export const PROJECT_CATEGORIES: readonly SettingsNavItem[] = [
   { section: "project-modules", label: "この Project の Module", icon: Puzzle },
-  { section: "project-schedules", label: "予定", icon: CalendarClock },
+  { section: "project-triggers", label: "自動で動かす", icon: Zap },
   { section: "project-overrides", label: "既定値の上書き", icon: SlidersHorizontal },
   { section: "project-security", label: "セキュリティ境界", icon: ShieldAlert },
   { section: "project-danger", label: "危険な操作", icon: TriangleAlert },
@@ -110,8 +110,8 @@ export function ProjectSettingsContent({
       return <ProjectModulesPanel projectId={projectId} />;
     }
 
-    if (section === "project-schedules") {
-      return <SchedulesPanel projectId={projectId} />;
+    if (section === "project-triggers") {
+      return <TriggersPanel projectId={projectId} />;
     }
     if (section === "project-overrides") {
       return (

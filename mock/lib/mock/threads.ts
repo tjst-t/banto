@@ -165,22 +165,21 @@ const bantoBaseScript: MockThread["script"] = {
       ],
     },
     {
-      // AI が予定を作る（決定・2026-10-13、`lib/mock/schedules.ts`）。作る前に会話のカードで人が許す
+      // AI がきっかけを作る（決定・2026-10-15、`lib/mock/triggers.ts`）。作る前に会話のカードで人が許す
       match: /予定|毎週|毎朝|定期/,
       steps: [
         { t: "delay", ms: 300 },
-        { t: "text", text: "毎週金曜 18:00 に動く予定を作ります。毎回まっさらな会話で、その週に閉じたものだけを見ます。" },
+        { t: "text", text: "毎週金曜 18:00 に動くきっかけを作ります。毎回まっさらな会話で、その週に閉じたものだけを見ます。" },
         {
           t: "approval",
-          name: "banto_thread_create_schedule",
+          name: "banto_thread_create_trigger",
           args: {
             name: "今週閉じた Backlog",
             instruction: "今週（月曜 0:00 から今まで）に done・dropped になった Backlog の項目を、ストーリーごとにまとめて。やめたものは理由も添えて。",
-            repeat: { kind: "weekly", day: 5, time: "18:00" },
-            timeZone: "Asia/Tokyo",
-            mode: "fresh",
+            source: { kind: "time", repeat: { kind: "weekly", day: 5, time: "18:00" }, timeZone: "Asia/Tokyo" },
+            target: { kind: "dedicated", mode: "fresh" },
           },
-          result: { scheduleId: "sch.weekly-backlog", threadTitle: "今週閉じた Backlog", nextRun: "10/16（金）18:00" },
+          result: { triggerId: "trg.weekly-backlog", threadTitle: "今週閉じた Backlog", nextRun: "10/16（金）18:00" },
         },
         { t: "delay", ms: 300 },
         { t: "text", text: "作りました。最初は 10/16（金）18:00 に、Fork「今週閉じた Backlog」で動きます。" },
@@ -332,8 +331,8 @@ let mockThreads: MockThread[] = [
     },
     status: "open",
   },
-  // 予定の専用の Fork（決定・2026-10-13、`lib/mock/schedules.ts`）。予定ごとに1本、名前は予定の名前。
-  // 毎回まっさらの予定は、起こす前に Clear するので、画面では最新の回が横線の下に来る
+  // きっかけの専用の Fork（決定・2026-10-15、`lib/mock/triggers.ts`）。きっかけごとに1本、名前はきっかけの名前。
+  // 毎回まっさらのきっかけは、起こす前に Clear するので、画面では最新の回が横線の下に来る
   {
     id: "sch-morning",
     projectId: "banto",
@@ -363,6 +362,24 @@ let mockThreads: MockThread[] = [
         {
           t: "text",
           text: "前回の結果（notes/deps-watch.md）を読みました。いまの更新を調べるため `npm outdated --json` を流したいので、Shell の確認を出しています。",
+        },
+      ],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  },
+  {
+    id: "sch-ci",
+    projectId: "banto",
+    kind: "fork",
+    title: "夜間ビルドの失敗を調べる",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [
+        {
+          t: "text",
+          text:
+            "落ちたのは `e2e-nightly` の `remote-runtime-ssh` だけです。ログでは、SSH で入る相手のコンテナが起きる前に繋ぎに行き、60 秒で諦めています。\n\n**見当**：昨夜はほかのビルドと重なり、入れ子のコンテナの起動が遅れた。コードの変更が原因ではなさそうです。\n\n**直し方の案**：繋ぎに行く前に、相手の sshd が待ち受けているかを確かめる。直すかどうかは返事をください。",
         },
       ],
       replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],

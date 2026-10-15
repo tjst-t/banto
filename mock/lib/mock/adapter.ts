@@ -37,13 +37,13 @@ export const SHELL_RUN_COMMAND_TOOL_NAME = "banto_shell_run_command";
 // tool 呼び出しの器に載せているだけ
 export const MODULE_RELAY_TOOL_NAME = "banto_module_relay";
 
-/** AI が予定を作る（決定・2026-10-13）。作る前に会話のカードで人が許す——承認ゲートと同じ器 */
-export const SCHEDULE_CREATE_TOOL_NAME = "banto_thread_create_schedule";
+/** AI がきっかけを作る（決定・2026-10-15）。作る前に会話のカードで人が許す——承認ゲートと同じ器 */
+export const TRIGGER_CREATE_TOOL_NAME = "banto_thread_create_trigger";
 
 export const APPROVAL_TOOL_NAMES: readonly string[] = [
   SHELL_RUN_COMMAND_TOOL_NAME,
   MODULE_RELAY_TOOL_NAME,
-  SCHEDULE_CREATE_TOOL_NAME,
+  TRIGGER_CREATE_TOOL_NAME,
 ];
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

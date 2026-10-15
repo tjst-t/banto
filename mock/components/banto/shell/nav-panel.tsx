@@ -15,7 +15,6 @@ import {
   Bell,
   ChevronRight,
   Clock,
-  CalendarClock,
   GitFork,
   GitMerge,
   LoaderCircle,
@@ -23,6 +22,7 @@ import {
   Plus,
   Search,
   Settings,
+  Zap,
 } from "lucide-react";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import {
@@ -47,7 +47,7 @@ import { getInboxItems } from "@/lib/mock/inbox";
 import { feedBadgeCount } from "@/lib/mock/inbox-feed";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { closeThread, getClosedForksForProject, getThreadsForProject } from "@/lib/mock/threads";
-import { scheduleOfThread } from "@/lib/mock/schedules";
+import { triggerOfThread } from "@/lib/mock/triggers";
 import { cn } from "@/lib/utils";
 import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
@@ -206,8 +206,8 @@ function ProjectTreeItem({
                   title={fork.title}
                   onClick={onNavigate}
                 >
-                  {/* 予定の専用の Fork は暦の印（決定・2026-10-13）。動いたあと未読なら名前が太字になるのは他の Fork と同じ */}
-                  <ThreadRowIcon icon={scheduleOfThread(fork.id) ? CalendarClock : GitFork} threadId={fork.id} />
+                  {/* きっかけの専用の Fork は「自動」の印（決定・2026-10-15）。動いたあと未読なら名前が太字になるのは他の Fork と同じ */}
+                  <ThreadRowIcon icon={triggerOfThread(fork.id) ? Zap : GitFork} threadId={fork.id} />
                   <span>{fork.title}</span>
                 </Link>
               </SidebarMenuSubButton>
