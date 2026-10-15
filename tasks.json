@@ -7686,7 +7686,7 @@
       "number": 319,
       "kind": "task",
       "title": "AI が自動化を作る tool（banto-thread）と、必ず人に聞く確認のカード",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "automation-ledger",
@@ -7697,12 +7697,12 @@
       "labels": [],
       "body": "仕様 §4.3「人と AI の作り方」・frontend §6.42「AI が作るときのカード」。\n- create_automation・update_automation・list_automations・pause_automation・resume_automation\n- 作る・変える・再開するは、承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで必ず聞く。一覧・一時停止は聞かない\n- Webhook の URL（印）は AI に返さない",
       "doneWhen": "E2E（偽の Runner）で：AI が create_automation を呼ぶとカードが出て、許すとでき、断るとできない。「すべて自動で許可」がオンでもカードが出る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/automation-ai-tools）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T13:58:07.091Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T14:39:36.088Z",
+      "closedAt": "2026-10-15T14:39:36.088Z",
       "extra": {}
     },
     {
