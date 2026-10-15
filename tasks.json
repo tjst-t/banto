@@ -7761,7 +7761,7 @@
       "number": 322,
       "kind": "bug",
       "title": "Browser の getNetworkRequest で、要求の Cookie ヘッダが出ないことがある（CDP の ExtraInfo が後から届く）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7777,7 +7777,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T11:22:22.146Z",
-      "updatedAt": "2026-10-15T11:52:50.416Z",
+      "updatedAt": "2026-10-15T12:30:18.138Z",
       "closedAt": null,
       "extra": {}
     }
