@@ -2293,3 +2293,32 @@ test("GET /api/admin/host-health は合言葉があるときだけ本体の止�
     { hostHealth: () => report },
   );
 });
+
+test("GET /api/inbox はレビュー待ちにそのターンの中身を添える（読むたびに Thread の記録から。お知らせはそのまま）", async () => {
+  await withApp(
+    async (base, token, dir, { inbox, projectThread }) => {
+      const headers = { authorization: `Bearer ${token}` };
+      const project = await projectThread.createProject("demo", dir);
+      const thread = await projectThread.createBaseThread(project.id);
+      const turnId = await projectThread.startTurn(thread.id, { cause: "human", attempt: 0 });
+      await projectThread.appendMessage(thread.id, "user", "検索の遅さを調べて");
+      await projectThread.appendMessage(thread.id, "assistant", "絞り込みに索引がありませんでした。");
+      await projectThread.endTurn(thread.id, turnId, "completed");
+      await inbox.raiseReview({ threadId: thread.id, summary: "絞り込みに索引がありませんでした。" });
+      await inbox.raiseNotice({ projectId: project.id, dedupeKey: "k", title: "題", detail: "中身" });
+
+      const items = (await (await fetch(`${base}/api/inbox`, { headers })).json()) as Array<Record<string, unknown>>;
+      const review = items.find((i) => i.kind === "review");
+      assert.deepEqual(review?.turn, {
+        request: "検索の遅さを調べて",
+        reply: "絞り込みに索引がありませんでした。",
+        outcome: "completed",
+        toolCalls: 4,
+      });
+      const notice = items.find((i) => i.kind === "notice");
+      assert.equal(notice?.turn, undefined);
+      assert.equal(notice?.title, "題");
+    },
+    { reviewToolCalls: async () => 4 },
+  );
+});

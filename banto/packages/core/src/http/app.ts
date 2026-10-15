@@ -68,6 +68,7 @@ import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import { reopenProject, reopenThread } from "../delivery/reopen.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
+import { reviewTurnOf } from "../inbox/review-turn.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
@@ -250,6 +251,11 @@ export interface AppDeps {
    * お知らせ（`NoticeItem.resume`）の id で呼ぶ。渡されなければ口は断る
    */
   continueStoppedTurn?(noticeId: string): Promise<{ ok: true } | { ok: false; status: 404 | 409; error: string }>;
+  /**
+   * **レビュー待ちのターンで AI が呼んだ tool の数**（追加・2026-10-15、アーキ仕様 §2.4「受信箱の中で読んで答える」）。
+   * CLI の会話の記録から数える（`inbox/review-turn.ts` の `ReviewToolCounter`）。無い・数えられなければ添えない
+   */
+  reviewToolCalls?(thread: ThreadState): Promise<number | undefined>;
   /**
    * **起こし直したあとの札の判定が終わるまで待つ**（追加・2026-10-05、アーキ仕様 §2.5「2. Module の仕事を続ける」）。
    * 続けられると名乗った Module に続けるかを聞いている Thread では、人が送ったターンも答えのあとに始める——先に始めると、
@@ -1223,8 +1229,6 @@ export function createApp(deps: AppDeps) {
         title: `Fork「${fork.title}」の最初の指示`,
         text: composeForkInstruction(fork, forks, parentLabel),
         hop,
-        // 受信箱には出さない——立てたことは親の会話に Fork として出て、終わればレビュー待ちが出る
-        notify: false,
       });
     }
   }
@@ -3291,7 +3295,22 @@ export function createApp(deps: AppDeps) {
       }
 
       if (url.pathname === "/api/inbox" && req.method === "GET") {
-        json(res, 200, deps.inbox.listOpen());
+        // **レビュー待ちにそのターンの中身を添える**（改訂・2026-10-15、アーキ仕様 §2.4「受信箱の中で読んで答える」）。
+        // 読むたびに Thread の記録から組む——受信箱の記録（Event Store）の形は変えない
+        const items = await Promise.all(
+          deps.inbox.listOpen().map(async (item) => {
+            if (item.kind !== "review") return item;
+            const thread = deps.projectThread.getThread(item.threadId);
+            if (!thread) return item;
+            const toolCalls = await deps.reviewToolCalls?.(thread);
+            const turn = reviewTurnOf(thread, {
+              running: deps.threadTurns?.isRunning(thread.id) ?? false,
+              ...(toolCalls !== undefined ? { toolCalls } : {}),
+            });
+            return { ...item, turn };
+          }),
+        );
+        json(res, 200, items);
         return;
       }
       // お知らせを「見た」ことにする（決定・2026-09-07）。答えるものではないので

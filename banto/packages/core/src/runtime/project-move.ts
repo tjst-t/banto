@@ -723,14 +723,8 @@ export class ProjectMover {
         await this.deps.deliver(t.id, "Project を別の実行場所へ移しました", text);
       }
       for (const id of held) this.deps.kick(id);
-      await this.deps
-        .notify({
-          projectId,
-          dedupeKey: `runtime-moved:${projectId}:${move.startedAt}`,
-          title: `「${project.name}」を${hostLabel(move.to.runtime)}へ移しました`,
-          detail: `root は ${move.to.root} です。元の場所（${hostLabel(move.from.runtime)}の ${move.from.root}）と Module の置き場は残してあります——要らなければ消してください`,
-        })
-        .catch((err: unknown) => this.log(`[host] 受信箱に出せませんでした: ${String(err)}`));
+      // 受信箱には出さない（改訂・2026-10-15、アーキ仕様 §2.4「受信箱は『あなたの番になったもの』だけ」）——人が何かしないと
+      // 先へ進まないものではない。移し終えたことは各 Thread に届けもので行き、設定の Project の面にも出る
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       let cleanup = "移す先の banto が作ったものは消しました";

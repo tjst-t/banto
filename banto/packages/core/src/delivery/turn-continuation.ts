@@ -177,7 +177,6 @@ async function redeliverContinuation(
       title: queued.title,
       text: queued.text,
       hop: queued.hop,
-      notify: false,
       continues: { ...queued.continues, attempt },
       replaces: queued.deliveryId,
     },
@@ -255,9 +254,8 @@ async function deliverContinuation(
       from: RESUME_SENDER,
       title: RESUME_TITLE,
       text: plan.text,
-      // 切れたターンと同じホップ（人のターンを続けるだけ）。受信箱には出さない——会話は続いている
+      // 切れたターンと同じホップ（人のターンを続けるだけ）
       hop: turn.hop,
-      notify: false,
       continues,
     },
     { wake: opts.wake },

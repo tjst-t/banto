@@ -51,7 +51,7 @@ async function setup(fn: (ctx: {
 
 const input = (threadId: string, hop = 1) => ({ threadId, from: "subagent", title: "仕事が終わりました", text: "結果", hop });
 
-test("届いたら残して、空いていればすぐ起こす——人への知らせも1件", async () => {
+test("届いたら残して、空いていればすぐ起こす——起こしたものは人に知らせない（held のときだけ、2026-10-15）", async () => {
   await setup(async ({ store, deliveries, threadId, runs, notices }) => {
     const r = await deliveries.deliver(input(threadId, 1));
     assert.equal(r.wake, "now");
@@ -59,17 +59,17 @@ test("届いたら残して、空いていればすぐ起こす——人への�
     const pending = store.getThread(threadId)!.deliveries!;
     assert.equal(pending.length, 1, "起こす前に残していない");
     assert.equal(pending[0]!.from, "subagent");
-    assert.equal(notices.length, 1);
-    assert.match(notices[0]!.detail, /AI が続きをやります/);
+    assert.deepEqual(notices, [], "起こしたものをお知らせに積んでいる");
   });
 });
 
 test("走っている間に届いたら、終わってから起こす（人のターンとぶつけない）", async () => {
-  await setup(async ({ turns, deliveries, threadId, runs }) => {
+  await setup(async ({ turns, deliveries, threadId, runs, notices }) => {
     const release = turns.tryAcquire(threadId, 0)!;
     const r = await deliveries.deliver(input(threadId));
     assert.equal(r.wake, "later");
     assert.deepEqual(runs, [], "走っている Thread を起こした");
+    assert.deepEqual(notices, [], "あとで起こすものをお知らせに積んでいる");
     release();
     await new Promise((res) => setImmediate(res));
     assert.equal(runs.length, 1, "終わったのに起こさない");

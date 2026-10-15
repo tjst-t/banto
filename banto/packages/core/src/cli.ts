@@ -87,7 +87,9 @@ import { ReplyHandles } from "./delivery/reply-handles.js";
 import { ModuleReplies } from "./delivery/module-replies.js";
 import { receivesReplies, type ModuleReplyArguments } from "@banto/module-contract";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
-import { continueStoppedTurn, resumeHoldReason } from "./delivery/turn-continuation.js";
+import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
+import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
+import { NON_WORK_TOOLS } from "./http/turn-summary.js";
 import { RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
@@ -333,6 +335,8 @@ async function main(): Promise<void> {
     // 起こし直したあと、続けられると名乗った Module に続けるかを聞いている間も起こさない（§2.5「2.」）
     hold: (threadId) => recovery?.holdReason(threadId) ?? resumeHoldReason({ projectThread, inbox }, threadId),
   });
+  // 受信箱のレビュー待ちに添える tool の数（CLI の会話の記録から数える。追加・2026-10-15、`inbox/review-turn.ts`）
+  const reviewToolCounter = new ReviewToolCounter((sessionId, dir) => sdkSessionReader.messages(sessionId, dir), NON_WORK_TOOLS);
   // ターンの始まりに本体が止まったら、何をしていたかを残す（`stall-profiler.ts`、下で用意する）
   let stallProfiler: StallProfiler | undefined;
   threadTurns.onChange((change) => {
@@ -353,8 +357,13 @@ async function main(): Promise<void> {
         .acknowledgeReviewsFor(change.threadId)
         .catch((err: unknown) => console.warn("[host] レビュー待ちを「見た」にできませんでした:", err));
     } else if (change.type === "ended") {
+      // **その Thread に裏の仕事も、まだ渡していない届いたものも残っていなければ出す**（改訂・2026-10-15、アーキ仕様 §2.4
+      // 「受信箱は『あなたの番になったもの』だけ」）。残っていれば、結果が届いて AI がまとめ終えた最後のターンで出る。
+      // 途中で切れた・失敗したターンは残りがあっても出す（`reviewDueAfterTurn`）
+      const thread = projectThread.getThread(change.threadId);
+      if (!reviewDueAfterTurn(thread)) return;
       void inbox
-        .raiseReview({ threadId: change.threadId, summary: turnEndSummary(projectThread.getThread(change.threadId)) })
+        .raiseReview({ threadId: change.threadId, summary: turnEndSummary(thread) })
         .catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
     }
   });
@@ -2019,7 +2028,7 @@ async function main(): Promise<void> {
     },
     revokeClaudeLogin: (projectId) => claudeLogin.revoke(projectId),
     deliver: async (threadId, title, text) => {
-      await deliveries.deliver({ threadId, from: "banto", title, text, hop: 1, notify: false }, { wake: false });
+      await deliveries.deliver({ threadId, from: "banto", title, text, hop: 1 }, { wake: false });
     },
     kick: (threadId) => deliveries.kick(threadId),
     notify: async (n) => {
@@ -2083,6 +2092,16 @@ async function main(): Promise<void> {
     suspendProjectServices: (projectId) =>
       callServiceAdminTool(projectId, "suspendAllServices", "suspended", "閉じる前に別のサーバの Service を止めて自動起動から外せ"),
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
+    reviewToolCalls: (thread) => {
+      const project = projectThread.getProject(thread.projectId);
+      let dir: string | undefined;
+      try {
+        dir = project ? projectThread.runnerCwd(project) : undefined;
+      } catch {
+        dir = undefined; // 置き場を全部から探す（`sdkSessionReader`）
+      }
+      return reviewToolCounter.count(thread, dir);
+    },
     // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
     remoteRuntimes,
@@ -2168,12 +2187,12 @@ async function main(): Promise<void> {
       authStore.save(),
     ]);
   };
-  // **コンテナが資源の上限に当たったら受信箱で知らせる**（決定・2026-10-05、`container-pressure.ts`）。1分ごとに、
-  // 用意できているコンテナの数え（memory.events の oom_kill・pids.events の max）を見る
+  // **コンテナが資源の上限に当たったらログに残す**（決定・2026-10-05、`container-pressure.ts`。受信箱には出さない——改訂・
+  // 2026-10-15）。1分ごとに、用意できているコンテナの数え（memory.events の oom_kill・pids.events の max）を見る
   const pressureWatch = new ContainerPressureWatch({
     // 数えは host から cgroup のファイルを直接読む（2026-10-09、incus exec を通さない）
     read: (name) => resourceWatch.readEvents(name),
-    notify: (n) => inbox.raiseNotice(n),
+    report: async (n) => console.warn(`[host] ${n.title}：${n.detail}`),
     describeLimits: (projectId) => {
       const n = limitNumbersFor(runtimeConfig, hostResources(), projectId);
       return `メモリ ${Math.round((n.memoryMiB / 1024) * 10) / 10} GiB・CPU ${n.cpus} コア分・プロセス ${n.processes}`;

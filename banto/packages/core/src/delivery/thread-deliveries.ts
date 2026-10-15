@@ -8,7 +8,8 @@
 //   （`turn-runner.ts`）。起こさなかったもの（下の上限）は溜めたまま、人が次に送ったターンの頭に積まれる
 // - **ループ防止**（RFC 3834 の3点）：送り手の印（`MessageOrigin`）・ホップ数・速度。上限を超えたら起こさず、
 //   人に知らせる
-// - **人への知らせ**：届くたびに受信箱の「お知らせ」に1件
+// - **人への知らせ**：自動で起こさなかった（held）ときだけ受信箱の「お知らせ」に1件（改訂・2026-10-15、アーキ仕様 §2.4
+//   「受信箱は『あなたの番になったもの』だけ」）。起こしたものは知らせない——AI がまとめ終えたターンでレビュー待ちが出る
 
 import { randomUUID } from "node:crypto";
 import type { ProjectThreadStore } from "../project-thread/store.js";
@@ -44,11 +45,6 @@ export interface DeliverInput {
    * ——続きの `attempt` を変えるため（人が「続ける」を押した・続きを積む前にまた切れた）。`continues` と一緒に使う
    */
   replaces?: string;
-  /**
-   * 受信箱に「届きました」を出すか（既定は出す）。AI が立てた Fork の最初の指示は出さない——立てたことは
-   * 親の会話に Fork として出て、終わればレビュー待ちが出る（§2.2「AI が Fork を立てる」）
-   */
-  notify?: boolean;
 }
 
 export type WakeDecision =
@@ -96,13 +92,14 @@ export class ThreadDeliveries {
   async deliver(input: DeliverInput, opts: { wake?: boolean } = {}): Promise<{ deliveryId: string } & WakeDecision> {
     const thread = this.deps.projectThread.getThread(input.threadId);
     if (!thread) throw new Error(`宛先の Thread ${input.threadId} がありません`);
-    const { notify = true, replaces, ...record } = input;
+    const { replaces, ...record } = input;
     if (replaces !== undefined && !record.continues) throw new Error("出し直せるのは切れたターンの続きだけです");
     const deliveryId = replaces ?? randomUUID();
     await this.deps.projectThread.recordDelivery({ ...record, deliveryId });
     if (opts.wake === false) return { deliveryId, wake: "later" };
     const decision = this.kick(input.threadId);
-    if (!notify && decision.wake !== "held") return { deliveryId, ...decision };
+    // 起こした・あとで起こすものは知らせない（改訂・2026-10-15）——人が何かしないと先へ進まないのは留めたときだけ
+    if (decision.wake !== "held") return { deliveryId, ...decision };
     const project = this.deps.projectThread.getProject(thread.projectId);
     const where = `${project?.name ?? "Project"} の ${thread.title ?? (thread.kind === "base" ? "Base Thread" : "Fork Thread")}`;
     await this.deps
@@ -110,10 +107,7 @@ export class ThreadDeliveries {
         projectId: thread.projectId,
         dedupeKey: `delivery:${deliveryId}`,
         title: input.title,
-        detail:
-          decision.wake === "held"
-            ? `${where}に届きました。自動では AI を起こしませんでした——${decision.reason}。次にこの Thread で送ると AI に渡ります`
-            : `${where}に届きました。AI が続きをやります`,
+        detail: `${where}に届きました。自動では AI を起こしませんでした——${decision.reason}。次にこの Thread で送ると AI に渡ります`,
       })
       .catch((err: unknown) => console.warn("[host] 届いたことを受信箱に出せませんでした:", err));
     return { deliveryId, ...decision };

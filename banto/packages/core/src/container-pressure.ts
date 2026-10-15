@@ -1,10 +1,12 @@
-// **コンテナが資源の上限に当たったら、受信箱で知らせる**（決定・2026-10-05、ユーザー要望。`docs/specs/v4-security.md` §1）。
+// **コンテナが資源の上限に当たったら、ログに残す**（決定・2026-10-05、ユーザー要望。`docs/specs/v4-security.md` §1。
+// 受信箱には出さなくした——改訂・2026-10-15、アーキ仕様 §2.4「受信箱は『あなたの番になったもの』だけ」。設定の「資源」と
+// サイドバーの印で見える）。
 //
 // 上限（メモリ・プロセス数）に当たると、カーネルがプロセスを止めたり fork を断ったりする。中で動いていた試験や
 // ビルドは「理由の分からない形で落ちる」だけで、人も AI も上限のせいだと気づけない（規則2——黙らない）。
 //
-// 用意できたコンテナを1分ごとに見て、前に見たときより数えが増えていれば、その Project のお知らせを1件出す
-// （同じものが開いている間は増やさない——受信箱の dedupeKey）。最初に見た値は基準にするだけで知らせない
+// 用意できたコンテナを1分ごとに見て、前に見たときより数えが増えていれば、その Project の分を1件書く。
+// 最初に見た値は基準にするだけで書かない
 // （banto を起こし直すたびに昔の分を言い直さない）。コンテナを起こし直すと数えは 0 に戻るので、前より小さければ
 // その値を新しく増えた分として扱う
 export interface PressureCounts {
@@ -25,7 +27,8 @@ export class ContainerPressureWatch {
   constructor(
     private readonly opts: {
       read(containerName: string): Promise<PressureCounts | undefined>;
-      notify(n: PressureNotice): Promise<unknown>;
+      /** 増えた分を書く（host はログへ） */
+      report(n: PressureNotice): Promise<unknown>;
       /** その Project の今の上限（人に見せる1行。例「メモリ 11 GiB・CPU 3 コア分・プロセス 8192」） */
       describeLimits(projectId: string): string;
     },
@@ -53,7 +56,7 @@ export class ContainerPressureWatch {
         ? "上げるなら banto 全体の設定「コンテナ」で、この機械に残す分を減らすか、Project の設定「コンテナ」の値を見直してください。"
         : "";
       if (oom > 0) {
-        await this.opts.notify({
+        await this.opts.report({
           ...(t.projectId ? { projectId: t.projectId } : {}),
           dedupeKey: `container-oom:${t.containerName}`,
           title: "メモリの上限に当たり、プロセスが止められました",
@@ -61,7 +64,7 @@ export class ContainerPressureWatch {
         });
       }
       if (pids > 0) {
-        await this.opts.notify({
+        await this.opts.report({
           ...(t.projectId ? { projectId: t.projectId } : {}),
           dedupeKey: `container-pids:${t.containerName}`,
           title: "プロセス数の上限に当たりました",

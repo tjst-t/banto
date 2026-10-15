@@ -497,7 +497,7 @@ test("「続ける」の出し直しが、人が送ったターンが続きを�
     assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0);
     // 遅れて出し直しが届く（同じ届いたものを置き換える形）
     await host.deliveries.deliver(
-      { threadId, from: queued!.from, title: queued!.title, text: queued!.text, hop: queued!.hop, notify: false, continues: { ...queued!.continues!, attempt: 0 }, replaces: queued!.deliveryId },
+      { threadId, from: queued!.from, title: queued!.title, text: queued!.text, hop: queued!.hop, continues: { ...queued!.continues!, attempt: 0 }, replaces: queued!.deliveryId },
       { wake: false },
     );
     assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0, "引き継がれた続きがまた待ち行列に入った");
@@ -912,7 +912,6 @@ test("続きでも連鎖の上限（ホップ）は効く", async () => {
       title: "続き",
       text: "続き",
       hop: DELIVERY_LIMITS.maxHop + 1,
-      notify: false,
       continues: { turnId, attempt: 1, fromSeq: 1 },
     });
     assert.equal(r.wake, "held");
@@ -988,7 +987,6 @@ test("続きで起こしたことは、あとの届いたものの速度の上�
       title: "続き",
       text: "続き",
       hop: 1,
-      notify: false,
       continues: { turnId, attempt: 1, fromSeq: 1 },
     });
     assert.equal(r.wake, "now");

@@ -7,7 +7,7 @@ function setup() {
   const notices: PressureNotice[] = [];
   const watch = new ContainerPressureWatch({
     read: async (name) => counts.get(name),
-    notify: async (n) => notices.push(n),
+    report: async (n) => notices.push(n),
     describeLimits: () => "メモリ 11 GiB・CPU 3 コア分・プロセス 8192",
   });
   return { counts, notices, watch };
