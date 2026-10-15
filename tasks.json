@@ -7731,7 +7731,7 @@
       "number": 320,
       "kind": "task",
       "title": "Webhook のきっかけ——受け口・署名・コンテナからの要求を断る・まとめる・外から来たものの囲み",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "banto-delivery",
@@ -7743,12 +7743,12 @@
       "labels": [],
       "body": "仕様 §4.3「Webhook」。**#312 を直してから**（ユーザー）。\n- /hooks/<印> を認証の前で分岐。台帳には印のハッシュ、URL は作ったときに1回だけ見せる\n- Project のコンテナからの要求は既定で断る。印が無い・合わないは 404、署名不一致は 401（rejected を記録）\n- HMAC-SHA256 を生のバイト列に timingSafeEqual、鍵は作るときに Vault から引いて dataDir に 0600\n- 64KB、自動化ごとと口全体の速さの上限・溜める件数の上限（429）\n- automation.received に残してから待つ時間でまとめて deliver、起き直したらまとめ直す\n- 画面の Webhook の欄（モックどおり、ただし URL は1回だけ）",
       "doneWhen": "E2E で：署名つきの POST で専用の Fork が動き、本文は外から来たものの囲みで届く。署名不一致は 401、知らない印は 404、コンテナからは断られる。30秒の間に来た2件が1回にまとまる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/automation-webhook）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T16:22:22.233Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T17:00:16.212Z",
+      "closedAt": "2026-10-15T17:00:16.212Z",
       "extra": {}
     },
     {
