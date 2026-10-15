@@ -7616,7 +7616,7 @@
       "number": 316,
       "kind": "task",
       "title": "時刻のきっかけ（cron）——1分の刻み・暦の計算・cron の式・止まっていた間の取り戻し・同時本数",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "automation-deliver"
@@ -7626,12 +7626,12 @@
       "labels": [],
       "body": "仕様 §4.3「時計」。最初に欲しいもの（ユーザー）。\n- 1分ごとの刻み1本で nextFireAt を見る（自動化ごとの長い setTimeout を積まない）\n- 毎日・平日・毎週は Intl でタイムゾーンつき（夏時間）、N 時間ごとは壁時計の格子、最短15分。cron の式は依存を1つ足す（選んだ理由を書く）\n- 起きたら一番最近の1回だけ動かし残りは skipped（resumeAll と待ち受けのあと）\n- 自動化で起こすターンの同時本数の上限、超えた分はずらして理由を残す",
       "doneWhen": "単体テスト（時計を差し替えて）で：平日 9:00（東京）・夏時間のあるタイムゾーン・N 時間ごと・cron の式の次の時刻が合う。止まっていた間の分は最新の1回だけ動き、前の回が終わっていなければ飛ばす。E2E で時刻の自動化が専用の Fork を動かす",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/automation-clock）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T12:47:03.878Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-15T13:16:42.344Z",
+      "closedAt": "2026-10-15T13:16:42.344Z",
       "extra": {}
     },
     {
