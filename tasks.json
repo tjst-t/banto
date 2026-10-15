@@ -7856,7 +7856,7 @@
       "number": 325,
       "kind": "task",
       "title": "別のサーバへ送る依存をパッケージごとの塗りにし、向こうに無いパッケージだけ送る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7873,7 +7873,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-15T14:41:31.094Z",
-      "updatedAt": "2026-10-15T14:41:31.094Z",
+      "updatedAt": "2026-10-15T14:41:45.763Z",
       "closedAt": null,
       "extra": {}
     }
