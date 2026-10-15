@@ -1249,6 +1249,7 @@ export function createApp(deps: AppDeps) {
         title: `Fork「${fork.title}」の最初の指示`,
         text: composeForkInstruction(fork, forks, parentLabel),
         hop,
+        kind: "fork",
       });
     }
   }

@@ -122,9 +122,18 @@ export interface MessageSender {
 export interface PendingDelivery extends MessageOrigin {
   text: string;
   receivedAt: string;
+  /**
+   * **書き手が分かっていて、中の指示に従ってよいもの**（追加・2026-10-15、アーキ仕様 §4.2「届いたものの包み方」）。
+   * `banto`＝host 自身が書いた知らせ、`fork`＝親の Thread の AI が立てた Fork への最初の指示。無ければ AI に渡すとき
+   * 外から来たもの（Module の返事・別の Thread からのメッセージ）としてデータ扱いにする
+   */
+  kind?: DeliveryAuthor;
   /** 起こし直しで切れたターンの続き（`TurnContinuation`）。このときは待ち行列の先頭に並ぶ */
   continues?: TurnContinuation;
 }
+
+/** 届いたもののうち、中の指示に従ってよい書き手（`PendingDelivery.kind`） */
+export type DeliveryAuthor = "banto" | "fork";
 
 /**
  * **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が

@@ -25,6 +25,7 @@ import type {
   MessageSender,
   TurnCause,
   TurnContinuation,
+  DeliveryAuthor,
   TurnOutcome,
 } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -618,6 +619,8 @@ export class ProjectThreadStore {
     sender?: MessageSender;
     /** 起こし直しで切れたターンの続き（追加・2026-10-05）。ほかの届いたものより先に積まれる */
     continues?: TurnContinuation;
+    /** 中の指示に従ってよい書き手（追加・2026-10-15）。無ければ外から来たもの */
+    kind?: DeliveryAuthor;
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("delivery.received", input);

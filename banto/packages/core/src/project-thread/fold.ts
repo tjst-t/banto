@@ -17,6 +17,7 @@ import type {
   ThreadState,
   TurnCause,
   TurnContinuation,
+  DeliveryAuthor,
   TurnOutcome,
   TurnRecord,
 } from "./types.js";
@@ -118,6 +119,8 @@ export type ProjectThreadEvent =
         sender?: MessageSender;
         /** 起こし直しで切れたターンの続き（追加・2026-10-05） */
         continues?: TurnContinuation;
+        /** 中の指示に従ってよい書き手（追加・2026-10-15）。無ければ外から来たもの */
+        kind?: DeliveryAuthor;
       };
     }
   | {

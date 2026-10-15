@@ -401,6 +401,7 @@ async function main(): Promise<void> {
         title: `${reply.moduleName} の仕事は途中で終わりました`,
         text: `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。結果が要るなら、頼み直してください。`,
         hop: reply.hop,
+        kind: "banto",
       });
     } catch (err) {
       console.warn(`[host] ${reply.threadId} に「途中で終わりました」を届けられませんでした:`, err);
@@ -2082,7 +2083,7 @@ async function main(): Promise<void> {
     },
     revokeClaudeLogin: (projectId) => claudeLogin.revoke(projectId),
     deliver: async (threadId, title, text) => {
-      await deliveries.deliver({ threadId, from: "banto", title, text, hop: 1 }, { wake: false });
+      await deliveries.deliver({ threadId, from: "banto", title, text, hop: 1, kind: "banto" }, { wake: false });
     },
     kick: (threadId) => deliveries.kick(threadId),
     notify: async (n) => {
