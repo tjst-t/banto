@@ -926,6 +926,11 @@ const faqs = [
 				counter-increment: step;
 				position: relative;
 				padding-left: 48px;
+				/* grid の子は中身（折り返さないコマンド）の幅より細くなれず、携帯でページごと横にはみ出していた */
+				min-width: 0;
+			}
+			.steps p code {
+				overflow-wrap: anywhere;
 			}
 			.steps li::before {
 				content: counter(step);
@@ -962,6 +967,7 @@ const faqs = [
 			}
 			.cmd code {
 				flex: 1;
+				min-width: 0;
 				color: #e8ebf0;
 				padding: 14px 16px;
 				font-size: 13px;
