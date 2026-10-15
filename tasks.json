@@ -7731,7 +7731,7 @@
       "number": 320,
       "kind": "task",
       "title": "Webhook のきっかけ——受け口・署名・コンテナからの要求を断る・まとめる・外から来たものの囲み",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [
         "banto-delivery",
@@ -7747,7 +7747,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
+      "updatedAt": "2026-10-15T16:22:22.233Z",
       "closedAt": null,
       "extra": {}
     },
