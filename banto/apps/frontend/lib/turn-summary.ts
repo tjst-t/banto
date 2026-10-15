@@ -14,6 +14,15 @@ export interface TurnSummaryOption {
   label: string;
   reply: string;
   recommended?: boolean;
+  /** その選択肢の中身（モック・公開した画面）を選ぶ前に見られる場所（追加・2026-10-15。host が http/https だけ通す） */
+  url?: string;
+}
+
+/** できたもの。`url` があれば開いて見られる（追加・2026-10-15） */
+export interface TurnSummaryArtifact {
+  label: string;
+  detail: string;
+  url?: string;
 }
 
 export interface TurnSummaryDecision {
@@ -29,7 +38,7 @@ export interface TurnSummary {
     headline: string;
     points: readonly string[];
     notVerified?: readonly string[];
-    artifacts?: readonly { label: string; detail: string }[];
+    artifacts?: readonly TurnSummaryArtifact[];
   };
   decisions: readonly TurnSummaryDecision[];
   nextSuggestions?: readonly TurnSummaryOption[];
@@ -39,6 +48,20 @@ export interface TurnSummary {
 export interface RealTurnSummary {
   summary: TurnSummary;
   at: string;
+}
+
+/**
+ * **押せるリンクにしてよい URL か**（追加・2026-10-15）。host も http/https だけ通すが、走っている間は AI が書いた引数が
+ * そのまま届く——`javascript:` 等を `href` に入れない
+ */
+export function safeLinkUrl(url: unknown): string | undefined {
+  if (typeof url !== "string") return undefined;
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 引数として届いたものが描ける形か（AI が書きかけ・壊れた引数でも画面を落とさない） */

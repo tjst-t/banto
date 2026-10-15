@@ -10,11 +10,14 @@
 // 開いている間だけ `[data-state="open"]` を付ける。**設定の面**（会話の上に重ねる、2026-09-28）も
 // 同じ印を付けている（`data-banto-settings`）——設定の上で押した Escape は、下の Fork や Canvas を閉じない。
 // 設定の面自身が「ほかに何か開いているか」を聞くときは、自分を数えない（`exceptSettings`）。
+// **受信箱**（会話の上に全面で重ねる、2026-10-15、§6.41）も同じ印を付けている（`data-banto-inbox`）。受信箱が自分のキー操作
+// （j/k/r/e/o・Escape）を聞くときは、自分を数えない（`exceptInbox`）。
 const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
-export function isOverlayOpen(options: { exceptSettings?: boolean } = {}): boolean {
+export function isOverlayOpen(options: { exceptSettings?: boolean; exceptInbox?: boolean } = {}): boolean {
   for (const el of document.querySelectorAll(OPEN_DIALOG)) {
     if (options.exceptSettings && el.hasAttribute("data-banto-settings")) continue;
+    if (options.exceptInbox && el.hasAttribute("data-banto-inbox")) continue;
     return true;
   }
   return false;

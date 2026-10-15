@@ -303,6 +303,26 @@ export interface RealInboxReview {
   summary: string;
   acknowledged: boolean;
   createdAt: string;
+  /** そのターンの中身（追加・2026-10-15、アーキ仕様 §2.4「受信箱の中で読んで答える」）。Thread が無ければ無い */
+  turn?: RealReviewTurn;
+}
+
+/**
+ * **レビュー待ちのターンの中身**（追加・2026-10-15）。host が読むたびに Thread の記録から組む
+ * （`packages/core/src/inbox/review-turn.ts`）
+ */
+export interface RealReviewTurn {
+  /** まとめの `request`。無ければ人の最後の発言の頭 */
+  request?: string;
+  /** AI の最後の発言の本文（そのターンのもの、8000字まで） */
+  reply?: string;
+  replyTruncated?: true;
+  /** そのターンのまとめ（`report_turn` の中身そのまま。描く前に `asTurnSummary` で確かめる） */
+  summary?: unknown;
+  /** ターンの結末。`interrupted`＝終わりを書く前に切れた（起こし直し等）。走っている間は無い */
+  outcome?: "completed" | "stopped" | "failed" | "interrupted";
+  /** そのターンで AI が呼んだ tool の数 */
+  toolCalls?: number;
 }
 
 /** お知らせ（決定・2026-09-07）——許可/拒否を求めないが、人に伝えたいこと。
@@ -1086,6 +1106,26 @@ export async function acknowledgeRealNotice(id: string): Promise<void> {
 /** 自動で続けるのをやめたターンを続けてもらう（お知らせの「続ける」）。続けられなければ理由を投げる */
 export async function resumeRealNoticeTurn(id: string): Promise<void> {
   await request(`/api/inbox/${id}/resume`, { method: "POST" });
+}
+
+/**
+ * **受信箱から返信を送る**（追加・2026-10-15、v4-frontend.md §6.41）。会話の入力欄と同じ口（`POST /api/threads/:id/messages`）で
+ * その Thread にターンを始める。**流れは読まない**——host は受け付けた時点で最後まで走らせる（画面が切れても止まらない。
+ * `streamRealTurn` の「ターンは host で続いている」と同じ）。開いている会話には `turn.started` で最新が出る
+ * （`latest-state.ts`）。断られたら理由を投げる（別の実行場所へ移している等）
+ */
+export async function sendRealThreadMessage(threadId: string, prompt: string): Promise<void> {
+  const res = await hostFetch(`/api/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  if (!res.ok || !res.body) {
+    const reason = ((await res.json().catch(() => null)) as { error?: string } | null)?.error;
+    throw new Error(reason ?? `送れませんでした（${res.status}）`);
+  }
+  // 受け付けた（流れが始まった）ところで読むのをやめる
+  await res.body.cancel().catch(() => undefined);
 }
 
 export async function answerRealInboxItem(id: string, answer: unknown): Promise<void> {

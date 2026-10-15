@@ -12,6 +12,8 @@
 //    もう一度押すと外す。まとめの後ろに人の返事があれば押せなくする
 //  - tool の折りたたみの中には出さない（human-tool-card.tsx が隠す）。発言の中のどこで呼ばれても一番下に置く。
 //    1つの発言に何度呼ばれても最後の1つだけ
+//  - `url` のあるできたもの・選択肢は押せるリンクにする（追加・2026-10-15、§6.41）——選択肢は隣の「見る ↗」で、選ぶ前に
+//    中身（モック・公開した画面）を開いて見比べられる。別タブで開く
 import { useRef, useState } from "react";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
@@ -22,6 +24,7 @@ import {
   CircleX,
   ClipboardList,
   CornerDownLeft,
+  ExternalLink,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -29,6 +32,7 @@ import {
   OUTCOME_LABEL,
   TURN_SUMMARY_TOOL_NAME,
   asTurnSummary,
+  safeLinkUrl,
   type TurnOutcomeStatus,
   type TurnSummary,
   type TurnSummaryOption,
@@ -111,6 +115,25 @@ function OptionButton({
       {option.label}
       {option.recommended && !selected ? <span className="text-xs text-turn/80">おすすめ</span> : null}
     </button>
+  );
+}
+
+/** 選択肢の中身を開いて見る（`url` がある選択肢だけ）。選ぶボタンとは別——押しても入力欄には入れない */
+function OptionLink({ option }: { option: TurnSummaryOption }) {
+  const url = safeLinkUrl(option.url);
+  if (!url) return null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-testid="turn-summary-option-link"
+      aria-label={`${option.label} を開いて見る`}
+      className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-ink-2 hover:bg-surface-2 hover:text-foreground"
+    >
+      見る
+      <ExternalLink className="size-3" />
+    </a>
   );
 }
 
@@ -219,7 +242,22 @@ export function TurnSummaryView({
               {summary.outcome.artifacts.map((a, i) => (
                 <div key={i} className="contents">
                   <dt className="text-ink-3">{a.label}</dt>
-                  <dd className="min-w-0 break-all text-ink-2">{a.detail}</dd>
+                  <dd className="min-w-0 break-all text-ink-2">
+                    {safeLinkUrl(a.url) ? (
+                      <a
+                        href={safeLinkUrl(a.url)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-testid="turn-summary-artifact-link"
+                        className="inline-flex items-center gap-1 text-primary underline underline-offset-2 hover:text-primary/80"
+                      >
+                        {a.detail}
+                        <ExternalLink className="size-3 shrink-0" />
+                      </a>
+                    ) : (
+                      a.detail
+                    )}
+                  </dd>
                 </div>
               ))}
             </dl>
@@ -238,13 +276,15 @@ export function TurnSummaryView({
                   {d.context ? <p className="text-xs leading-relaxed text-ink-2">{d.context}</p> : null}
                   <div className="flex flex-wrap gap-1.5">
                     {d.options.map((o, oi) => (
-                      <OptionButton
-                        key={oi}
-                        option={o}
-                        selected={picked[di] === oi}
-                        disabled={answered}
-                        onPick={(el) => pickDecision(di, oi, el)}
-                      />
+                      <span key={oi} className="inline-flex items-center gap-1">
+                        <OptionButton
+                          option={o}
+                          selected={picked[di] === oi}
+                          disabled={answered}
+                          onPick={(el) => pickDecision(di, oi, el)}
+                        />
+                        <OptionLink option={o} />
+                      </span>
                     ))}
                   </div>
                 </li>

@@ -11,7 +11,7 @@ import { SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { SettingsContent } from "@/app/(shell)/settings/settings-content";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
-import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
+import { InboxPage } from "@/components/banto/inbox/inbox-page";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { usePanelStack } from "./use-panel-stack";
@@ -73,6 +73,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const settingsOpen = SHOW_INSTANCE_SETTINGS && isSettingsOpen(pathname, searchParams);
+  const inboxOpen = CONNECTED_FEATURES.inbox && stack.overlay === "inbox";
 
   // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。**開いているときにもう一度押すと閉じる**
   // （決定・2026-09-30、ユーザー要望）。ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
@@ -123,9 +124,20 @@ function AppShellInner({ children }: { children: ReactNode }) {
       {/* `isolate`：設定の面（z-30）の重なり順をこの枠の中だけに閉じる——閉じないと、サイドバーの境界（線を
           またいで右へ 4px はみ出している）の右半分にかぶさり、設定を開いたままだと幅をつかめなかった（E2E・2026-09-30） */}
       <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-h-0 flex-1 flex-col" inert={settingsOpen} aria-hidden={settingsOpen || undefined}>
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          inert={settingsOpen || inboxOpen}
+          aria-hidden={settingsOpen || inboxOpen || undefined}
+        >
           {children}
         </div>
+        {inboxOpen ? (
+          // **受信箱は会話と同じ前面の1枚**（決定・2026-10-15、v4-frontend.md §6.41）。下の会話は捨てずに隠すだけ（inert）
+          // ——閉じれば読んでいた位置のまま戻る。設定の面（z-30）より下
+          <div className="absolute inset-0 z-20 flex flex-col">
+            <InboxPage onClose={() => stack.close("overlay")} />
+          </div>
+        ) : null}
         {settingsOpen ? (
           // 設定の面。Escape を聞く側（panel-stack.tsx）が「上に何か開いている」と分かるよう、
           // Dialog と同じ印を付ける（`lib/overlay-open.ts`）
@@ -140,12 +152,6 @@ function AppShellInner({ children }: { children: ReactNode }) {
           </div>
         ) : null}
       </div>
-      {CONNECTED_FEATURES.inbox ? (
-        <InboxOverlay
-          open={stack.overlay === "inbox"}
-          onOpenChange={(open) => (open ? stack.open({ overlay: "inbox" }) : stack.close("overlay"))}
-        />
-      ) : null}
       {/* Module の画面から頼まれた「新しい Project」（Repositories の「Project も作る」等）——どの面からでも開く */}
       <RequestedNewProjectDialog />
       {/* Module の画面から頼まれた「Project を閉じる」（Repositories の「このマシンから削除」）——どの面からでも開く */}

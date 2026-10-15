@@ -36,7 +36,7 @@ import {
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
 import { getInboxItems } from "@/lib/mock/inbox";
-import { getRealJudgments, getRealNotices, useRealInboxVersion } from "@/lib/backend/real-inbox";
+import { getRealInboxBadgeCount, useRealInboxVersion } from "@/lib/backend/real-inbox";
 import { getActiveProjects, reorderProjects, renameProject } from "@/lib/mock/projects";
 import {
   foldForkThread,
@@ -74,17 +74,16 @@ const FOOTER_BUTTON =
   "flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-ink-2 outline-hidden hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring";
 
 /**
- * 受信箱のバッジの件数。**判断待ちだけ**を数える——溜めてよくない
- * （止まっている）方が急ぎだから（§2.4）。レビュー待ちは溜めてよいので含めない。
- * **お知らせも数える**（決定・2026-09-07）——Module が繋がっていないことに
- * 気づける場所はここ1つなので、印が出ないと気づけない
+ * 受信箱のバッジの件数。**人が答えないと先へ進まないもの**——判断待ちと「決めることがある」返ってきた会話
+ * （改訂・2026-10-15、v4-frontend.md §6.41）。返ってきただけの会話・お知らせは数えない
+ * （それまではお知らせも数えていた——決定・2026-09-07）
  */
 export function useJudgmentCount(): number {
   useRealInboxVersion();
   // 実hostに繋がっていれば実データの件数。繋がっていない間は
   // mock（いまは常に空）——数える対象を2箇所に書かない（規則3）
   return CONNECTED_FEATURES.inbox
-    ? getRealJudgments().length + getRealNotices().length
+    ? getRealInboxBadgeCount()
     : getInboxItems().filter((item) => item.kind === "judgment").length;
 }
 

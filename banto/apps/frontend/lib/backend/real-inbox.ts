@@ -29,6 +29,7 @@ import {
   type RealInboxNotice,
   type RealInboxReview,
 } from "./client";
+import { asTurnSummary, type TurnSummary } from "@/lib/turn-summary";
 
 let items: readonly RealInboxJudgment[] = [];
 let notices: readonly RealInboxNotice[] = [];
@@ -58,6 +59,19 @@ export function getRealNotices(): readonly RealInboxNotice[] {
 /** 出ているレビュー待ち（ターンが終わった Thread、決定・2026-09-27）。開いて見ている Thread のものは除く */
 export function getRealReviews(): readonly RealInboxReview[] {
   return reviews;
+}
+
+/** レビュー待ちのターンのまとめ（描ける形のときだけ）。決めることがあるかは、これで見る */
+export function reviewSummaryOf(review: RealInboxReview): TurnSummary | undefined {
+  return review.turn?.summary === undefined ? undefined : asTurnSummary(review.turn.summary);
+}
+
+/**
+ * **受信箱のバッジの件数**（改訂・2026-10-15、v4-frontend.md §6.41）：判断待ちと「決めることがある」返ってきた会話——
+ * 人が答えないと先へ進まないもの。返ってきただけの会話・お知らせは数えない
+ */
+export function getRealInboxBadgeCount(): number {
+  return items.length + reviews.filter((r) => (reviewSummaryOf(r)?.decisions.length ?? 0) > 0).length;
 }
 
 function isVisible(): boolean {
@@ -125,8 +139,10 @@ export async function refreshRealInbox(): Promise<void> {
     const noticesChanged =
       nextNotices.length !== notices.length ||
       nextNotices.some((n, i) => n.id !== notices[i]!.id);
+    // レビュー待ちは中身（turn）も見る——同じ1件のまま、その Thread で次のターンが走って中身が替わることがある
     const reviewsChanged =
-      nextReviews.length !== reviews.length || nextReviews.some((r, i) => r.id !== reviews[i]!.id);
+      nextReviews.length !== reviews.length ||
+      nextReviews.some((r, i) => r.id !== reviews[i]!.id || JSON.stringify(r.turn) !== JSON.stringify(reviews[i]!.turn));
     if (sameIds(items, next) && !noticesChanged && !reviewsChanged) return;
     items = next;
     notices = nextNotices;
