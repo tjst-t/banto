@@ -19,6 +19,9 @@ import {
   THREAD_META_KEY,
   fillCardText,
   uiResourceUriOf,
+  uiByExtensionOf,
+  uiResourceUriForCall,
+  UI_BY_EXTENSION_META_KEY,
   waitingOnOf,
   callerModuleOf,
   isCallerOwned,
@@ -255,6 +258,23 @@ test("toolCardOf：題と説明の文だけを読み、形が違えば名乗っ�
   assert.equal(toolCardOf({ _meta: { [CARD_META_KEY]: true } }), undefined);
   assert.equal(toolCardOf({ _meta: { [CARD_META_KEY]: ["x"] } }), undefined);
   assert.equal(toolCardOf({}), undefined);
+});
+
+// **引数のファイルの拡張子で画面を選び替える**（追加・2026-10-15）——showFile が PDF なら重い画面、それ以外は軽い画面
+test("uiResourceUriForCall：引数のパスの拡張子に当たればその画面、当たらなければ tool の画面", () => {
+  const meta = uiByExtensionOf({
+    _meta: { [UI_BY_EXTENSION_META_KEY]: { arg: "path", byExtension: { PDF: "ui://fs/document", txt: "https://evil", x: 1 } } },
+  });
+  // 拡張子は小文字にそろえ、ui:// でないものは捨てる
+  assert.deepEqual(meta, { arg: "path", byExtension: { pdf: "ui://fs/document" } });
+  assert.equal(uiResourceUriForCall("ui://fs/file", meta, { path: "docs/Plan.PDF" }), "ui://fs/document");
+  assert.equal(uiResourceUriForCall("ui://fs/file", meta, { path: "/abs/dir.pdf/a.txt" }), "ui://fs/file");
+  assert.equal(uiResourceUriForCall("ui://fs/file", meta, { path: ".pdf" }), "ui://fs/file", "点で始まる名前は拡張子ではない");
+  assert.equal(uiResourceUriForCall("ui://fs/file", meta, { path: 3 }), "ui://fs/file");
+  assert.equal(uiResourceUriForCall("ui://fs/file", meta, undefined), "ui://fs/file");
+  assert.equal(uiResourceUriForCall("ui://fs/file", undefined, { path: "a.pdf" }), "ui://fs/file");
+  assert.equal(uiByExtensionOf({ _meta: { [UI_BY_EXTENSION_META_KEY]: { byExtension: {} } } }), undefined);
+  assert.equal(uiByExtensionOf({}), undefined);
 });
 
 test("threadOf：Project と Thread が揃った刻印だけを読む（片方・空・形違いは刻印ではない）", () => {

@@ -16,7 +16,7 @@
 // 繰り返して行き詰まる——守りたいのは「根の外へ出さない」であって「書き方」では
 // ないので、根の中を指す絶対パスは受ける。
 
-import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { zipSync } from "fflate";
@@ -221,4 +221,39 @@ export async function zipFilesOp(root: string, paths: readonly string[]): Promis
     entries[relFromRoot(root, p)] = new Uint8Array(await fsReadFile(p));
   }
   return { name: `${basename(realpathSync(root))}-files.zip`, data: Buffer.from(zipSync(entries)) };
+}
+
+/** `readFileRange` の1回の上限（v4-modules.md §2.2「PDF・Office…」——1回 4MiB まで）。base64 にしても stdio の1通 10MB に収まる */
+export const READ_RANGE_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * **ファイルのバイトの範囲を読む**（`readFileRange`、画面向け・`admin`、追加・2026-10-15）。PDF の画面（pdf.js）は末尾の
+ * xref から読むのでページでは切り出せず、要る範囲だけをこれで受ける——大きな PDF も1通の上限に当たらない。
+ * 末尾を越えた分は切って返す（`length` は実際に読めた長さ）。上限を越える頼みは断る（黙って縮めない、規則2）
+ */
+export async function readFileRangeOp(
+  root: string,
+  path: string,
+  offset: number,
+  length: number,
+): Promise<{ offset: number; length: number; size: number; data: string }> {
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error(`offset は 0 以上の整数で指定します: ${offset}`);
+  if (!Number.isSafeInteger(length) || length < 0) throw new Error(`length は 0 以上の整数で指定します: ${length}`);
+  if (length > READ_RANGE_MAX_BYTES) throw new Error(`1回に読めるのは ${READ_RANGE_MAX_BYTES} バイトまでです（頼まれたのは ${length}）`);
+  const handle = await open(absPath(root, path), "r");
+  try {
+    const s = await handle.stat();
+    if (!s.isFile()) throw new Error(`ファイルではありません: ${path}`);
+    const n = Math.max(0, Math.min(length, s.size - offset));
+    const buf = Buffer.alloc(n);
+    let read = 0;
+    while (read < n) {
+      const { bytesRead } = await handle.read(buf, read, n - read, offset + read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    return { offset, length: read, size: s.size, data: buf.subarray(0, read).toString("base64") };
+  } finally {
+    await handle.close();
+  }
 }

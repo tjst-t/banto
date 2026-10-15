@@ -13,6 +13,7 @@
 
 const STORAGE_KEY = "banto.backend";
 import type { RealTurnSummary } from "@/lib/turn-summary";
+import type { UiByExtension } from "@/lib/ui-by-extension";
 
 export const CLIENT_HEADER = "x-banto-client";
 /** 画面からの要求に必ず付けるもの */
@@ -1388,6 +1389,8 @@ export interface RealUiTool {
   server: string;
   tool: string;
   resourceUri: string;
+  /** 引数のファイルの拡張子で画面を選び替える（`dev.banto/ui-by-extension`、追加・2026-10-15）。選ぶのは `ui-by-extension.ts` */
+  byExtension?: UiByExtension;
   /** 会話にはカードだけを置く、と Module が名乗った tool（`dev.banto/card`、決定・2026-10-01） */
   card?: RealToolCard;
 }

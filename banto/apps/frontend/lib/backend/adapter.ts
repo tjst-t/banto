@@ -12,6 +12,7 @@
 import { TURN_SUMMARY_TOOL_NAME } from "@/lib/turn-summary";
 import { useSyncExternalStore } from "react";
 import { randomId } from "@/lib/random-id";
+import { uiResourceUriForCall } from "@/lib/ui-by-extension";
 import type {
   ChatModelAdapter,
   ThreadAssistantMessagePart,
@@ -578,7 +579,7 @@ function rememberInlineView(threadId: string, toolCallId: string, toolName: stri
     threadId,
     toolCallId,
     server: found.server,
-    resourceUri: found.resourceUri,
+    resourceUri: uiResourceUriForCall(found.resourceUri, found.byExtension, input),
     ...(found.card ? { card: found.card } : {}),
     toolName,
     toolArgs:

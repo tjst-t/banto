@@ -420,6 +420,53 @@ export function toolCardOf(x: { _meta?: Record<string, unknown> }): ToolCardMeta
   };
 }
 
+/**
+ * **引数のファイルの拡張子で、tool の画面を選び替える**（追加・2026-10-15、v4-modules.md §2.2「PDF・Office…」）。
+ *
+ * MCP Apps の tool の画面（`_meta.ui.resourceUri`）は tool に1つで、呼び出しごとに選ぶ口が無い。FileSystem の `showFile` は
+ * テキストの画面（軽い）と PDF の画面（pdf.js を同梱して重い）を分けたいので、**引数のパスの拡張子**で選び替えを名乗る：
+ * `{ arg: "path", byExtension: { pdf: "ui://…/document" } }`。拡張子は小文字・点無し。載っていない拡張子は
+ * `_meta.ui.resourceUri` のまま。**選べるのは `ui://` の資源だけ**。**MCP Apps の仕様には無い、banto が足した拡張。**
+ * host は呼び出しの引数が見えた時点（結果より前）で選ぶ——会話の記録にもその URI が残る
+ */
+export const UI_BY_EXTENSION_META_KEY = `${VENDOR_PREFIX}/ui-by-extension`;
+
+export interface UiByExtensionMeta {
+  arg: string;
+  byExtension: Record<string, string>;
+}
+
+/** tool が名乗る拡張子ごとの画面。名乗っていない・形が違えば `undefined` */
+export function uiByExtensionOf(tool: unknown): UiByExtensionMeta | undefined {
+  const raw = (tool as { _meta?: Record<string, unknown> })._meta?.[UI_BY_EXTENSION_META_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const { arg, byExtension } = raw as Record<string, unknown>;
+  if (typeof arg !== "string" || arg === "" || !byExtension || typeof byExtension !== "object" || Array.isArray(byExtension)) return undefined;
+  const map: Record<string, string> = {};
+  for (const [ext, uri] of Object.entries(byExtension as Record<string, unknown>)) {
+    if (typeof uri === "string" && uri.startsWith("ui://")) map[ext.toLowerCase()] = uri;
+  }
+  return { arg, byExtension: map };
+}
+
+/**
+ * その呼び出しで出す画面。`byExtension` が引数のパスの拡張子に当たればそれ、当たらなければ `resourceUri`。
+ * **画面（apps/frontend）にも同じものがある**（`apps/frontend/lib/ui-by-extension.ts`）——変えるなら両方
+ */
+export function uiResourceUriForCall(
+  resourceUri: string,
+  byExtension: UiByExtensionMeta | undefined,
+  args: unknown,
+): string {
+  if (!byExtension || !args || typeof args !== "object") return resourceUri;
+  const value = (args as Record<string, unknown>)[byExtension.arg];
+  if (typeof value !== "string") return resourceUri;
+  const name = value.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return resourceUri;
+  return byExtension.byExtension[name.slice(dot + 1).toLowerCase()] ?? resourceUri;
+}
+
 /** tool が名乗る画面（MCP Apps の `_meta.ui.resourceUri`）。無ければ `undefined` */
 export function uiResourceUriOf(tool: unknown): string | undefined {
   const meta = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta;

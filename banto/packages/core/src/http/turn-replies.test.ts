@@ -27,11 +27,11 @@ import type { runTurn, RunnerTurnOptions } from "../runner/adapter.js";
 
 const init = (sessionId: string) => ({ type: "system", subtype: "init", session_id: sessionId, mcp_servers: [] });
 const say = (text: string, uuid: string) => ({ type: "assistant", uuid, message: { content: [{ type: "text", text }] } });
-const callTool = (id: string, name: string, uuid: string, text?: string) => ({
+const callTool = (id: string, name: string, uuid: string, text?: string, input: Record<string, unknown> = { path: "a.md" }) => ({
   type: "assistant",
   uuid,
   message: {
-    content: [...(text ? [{ type: "text", text }] : []), { type: "tool_use", id, name, input: { path: "a.md" } }],
+    content: [...(text ? [{ type: "text", text }] : []), { type: "tool_use", id, name, input }],
   },
 });
 const toolResult = (id: string, content: string, uuid: string) => ({
@@ -194,6 +194,36 @@ test("画面つきの tool の呼び出しは、結果が揃ってから書く�
       ["", 1],
       ["開きました", 0],
     ]);
+  });
+});
+
+// **引数のファイルの拡張子で画面を選び替える**（追加・2026-10-15）——記録に残すのは、その呼び出しで選んだ画面
+test("拡張子で画面を選び替える tool は、呼び出しの引数のパスで選んだ画面を記録に残す", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const uiTools: UiToolBinding[] = [
+      {
+        toolName: "mcp__viewer__open",
+        server: "viewer",
+        resourceUri: "ui://viewer/open",
+        byExtension: { arg: "path", byExtension: { pdf: "ui://viewer/document" } },
+      },
+    ];
+    const runner = pausingRunner([
+      init("session-1"),
+      callTool("t1", "mcp__viewer__open", "u1", undefined, { path: "docs/plan.pdf" }),
+      toolResult("t1", "開いた", "u2"),
+      callTool("t2", "mcp__viewer__open", "u3"),
+      toolResult("t2", "開いた", "u4"),
+    ]);
+    await collect(runThreadTurn({ ...deps, runTurn: runner.fake }, { threadId, prompt: "開いて", modules: [], uiTools }));
+    const calls = store.getThread(threadId)!.messages.flatMap((m) => m.uiToolCalls ?? []);
+    assert.deepEqual(
+      calls.map((c) => [c.toolCallId, c.resourceUri]),
+      [
+        ["t1", "ui://viewer/document"],
+        ["t2", "ui://viewer/open"],
+      ],
+    );
   });
 });
 

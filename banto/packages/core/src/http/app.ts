@@ -118,12 +118,14 @@ import {
   CALL_ID_META_KEY,
   CALLER_META_KEY,
   toolCardOf,
+  uiByExtensionOf,
   uiResourceUriOf,
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
   STREAM_PARAMS_MAX_BYTES,
   streamNamesOf,
   type ToolCardMeta,
+  type UiByExtensionMeta,
 } from "@banto/module-contract";
 
 /**
@@ -704,7 +706,7 @@ function isPermissionResult(value: unknown): value is Parameters<PendingApproval
 async function listUiToolsForThread(
   deps: AppDeps,
   threadId: string,
-): Promise<Array<{ server: string; tool: string; resourceUri: string; card?: ToolCardMeta }>> {
+): Promise<Array<{ server: string; tool: string; resourceUri: string; byExtension?: UiByExtensionMeta; card?: ToolCardMeta }>> {
   const modules = (await deps.resolveModuleClientsForThread?.(threadId)) ?? [];
   // **1本ずつ順番に、上限も無しに聞かない**（訂正・2026-09-22、フル E2E で発覚）。
   //
@@ -726,7 +728,15 @@ async function listUiToolsForThread(
           .map((x) => {
             // 会話にはカードだけを置く、と名乗った tool（決定・2026-10-01）
             const card = toolCardOf(x.tool as { _meta?: Record<string, unknown> });
-            return { server: x.name, tool: x.tool.name, resourceUri: x.resourceUri!, ...(card ? { card } : {}) };
+            // 引数のファイルの拡張子で画面を選び替える、と名乗った tool（追加・2026-10-15）
+            const byExtension = uiByExtensionOf(x.tool);
+            return {
+              server: x.name,
+              tool: x.tool.name,
+              resourceUri: x.resourceUri!,
+              ...(byExtension ? { byExtension } : {}),
+              ...(card ? { card } : {}),
+            };
           });
       } catch (err) {
         console.warn(
@@ -1376,6 +1386,7 @@ export function createApp(deps: AppDeps) {
         toolName: `mcp__${t.server}__${t.tool}`,
         server: t.server,
         resourceUri: t.resourceUri,
+        ...(t.byExtension ? { byExtension: t.byExtension } : {}),
         ...(t.card ? { card: t.card } : {}),
       }));
     } catch (err) {

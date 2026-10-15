@@ -33,6 +33,8 @@ import {
   fillCardText,
   stripBantoMeta,
   toolCardOf,
+  uiByExtensionOf,
+  uiResourceUriForCall,
   uiResourceUriOf,
   visibilityOf,
   waitingOnOf,
@@ -56,7 +58,8 @@ function backgroundWorkOf(
 ): BackgroundWork {
   const card = toolCardOf(tool);
   const toolUseId = requestMeta?.[RUNNER_TOOL_USE_ID_META_KEY];
-  const resourceUri = uiResourceUriOf(tool);
+  const declared = uiResourceUriOf(tool);
+  const resourceUri = declared ? uiResourceUriForCall(declared, uiByExtensionOf(tool), args) : undefined;
   const title = fillCardText(card?.title, args);
   const description = fillCardText(card?.description, args);
   return {

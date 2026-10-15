@@ -1197,7 +1197,7 @@ Phase 2.5）。そのときの第一候補は「描画の部品をライブラ�
 | SVG | `<img>` で描く（スクリプトは走らない）＋ソース | テキストとして |
 | 画像（png/jpg/gif/webp） | `<img>`、縦横・大きさ | — |
 | CSV / TSV | 表 | **表のままセルを編集**（引用符・改行つきのセルを壊さず、改行コードも元に合わせて書き戻す） |
-| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く）。**PDF・Office は下の「PDF・Office のファイルを読んでコメントを返す」で描く（未実装）** | — |
+| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く）。**PDF は showFile で見せると下の「PDF・Office のファイルを読んでコメントを返す」の画面で描く**（実装・2026-10-15。ファイルブラウザの中ではまだ名前と大きさ）。Office は未実装 | — |
 | その他のテキスト | ソース | テキストとして |
 
 > **改訂・2026-10-15**：下の「PDF・Office のファイルを読んでコメントを返す」で pdf.js を Worker 無しで同梱して描く（CSP は
@@ -1259,7 +1259,10 @@ host に預け、リロードしても別タブに出しても、そのまま開
 ——Canvas の CSP は外の script を読ませない。組み立ては tsc と小さなスクリプト
 （`scripts/bundle-ui.mjs`）だけで、依存を足していない（規則10）。
 
-#### PDF・Office のファイルを読んでコメントを返す（決定・2026-10-15、ユーザー。未実装、Backlog のストーリー #301 office-review）
+#### PDF・Office のファイルを読んでコメントを返す（決定・2026-10-15、ユーザー。Backlog のストーリー #301 office-review）
+
+> **実装の状況（2026-10-15、#302）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset` まで。
+> コメント・変換役・`readDocument`・Office は未実装。
 
 **目的**：AI が作った・手元にある PDF・Word（docx）・PowerPoint（pptx）・Excel（xlsx）を、**元の見た目で読み**、
 **ページ・選んだ文・範囲・セルを指してコメントを付け、まとめて AI に返す**。**編集はしない**（ユーザー）。
@@ -1283,8 +1286,17 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
 | xlsx（xlsm・xls・ods も） | **表**：シートのタブ・結合したセル・列の幅・数の書式。値は**変換役で計算し直した写し**から読む——AI が Python 等で作った xlsx には式の結果が入っていない（実測：openpyxl で作った `=B2*C2` の値は空。LibreOffice で書き出し直すと入った）。画面に「LibreOffice で計算した値」と出す（Excel と違うことがある） | 要る（計算し直し） |
 | doc・ppt・odt・odp | 変換役で PDF にして PDF と同じ画面 | 要る |
 
-- 画面の束は大きくなる（pdf.js で約 2.5MB）。**PDF・Office の画面は別の `ui://banto-filesystem/document` に分け**、
-  テキストの画面（`ui://banto-filesystem/file`）の重さは変えない。`showFile` が拡張子で画面を選ぶ
+- 画面の束は大きくなる（pdf.js の min で約 1.7MB）。**PDF・Office の画面は別の `ui://banto-filesystem/document` に分け**、
+  テキストの画面（`ui://banto-filesystem/file`）の重さは変えない。`showFile` が拡張子で画面を選ぶ——tool の
+  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: … } }`）で名乗り、host が呼び出しの引数で選ぶ
+  （v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える tool」）
+- pdf.js（pdfjs-dist 6.4.299、`build/` の min）の worker と本体は、画面の束とは別の `<script type="module">` で
+  worker → 本体 → 画面の順に HTML に置く。eval・WASM・fetch は使わない（`isEvalSupported: false`・`useWasm: false`）。
+  日本語の CMap・標準フォントは pdf.js が fetch したがるので、画面向けの **`readPdfAsset({kind, name})`**（`admin`、
+  `kind` は `cmap`／`standardFont`、名前はファイル名1つだけ）で pdfjs-dist に入っているものを渡す
+- 4MiB 以下の PDF は1回で全部読む。それより大きいものは `PDFDataRangeTransport`（512KiB ずつ、先読み無し）で要る範囲だけ
+- 画面：ページ数・いまのページ・拡大縮小・探す（全ページの文字から。当たった数と、何件目か。当たった文字に印、
+  前後へ移る）・会話の中では「大きく表示」
 - **PDF の中身はバイトの範囲で受ける**：pdf.js は末尾の xref から読むのでページでは切り出せない。FileSystem に画面向けの
   `readFileRange({path, offset, length})`（`admin`、1回 4MiB まで、base64）を足し、pdf.js の `PDFDataRangeTransport` に
   つなぐ。これで大きな PDF も中継・stdio の上限（下）に当たらない。変換役が作った PDF も同じ口で読むが、**写しはパスで

@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
 import type { MessageImage, UiToolCallEntry } from "../project-thread/types.js";
 import type { ImageMediaType } from "../images/store.js";
+import { uiResourceUriForCall, type UiByExtensionMeta } from "@banto/module-contract";
 import { findRewindBeforePrompt, runTurn } from "../runner/adapter.js";
 import { buildSystemPrompt } from "../runner/system-prompt.js";
 import { remoteNameOf } from "../runtime/remote-runtimes.js";
@@ -98,6 +99,8 @@ export interface UiToolBinding {
   toolName: string;
   server: string;
   resourceUri: string;
+  /** 引数のファイルの拡張子で画面を選び替える（`dev.banto/ui-by-extension`、追加・2026-10-15） */
+  byExtension?: UiByExtensionMeta;
   /** 会話にはカードだけを置く、と名乗った tool（`dev.banto/card`、決定・2026-10-01） */
   card?: UiToolCallEntry["card"];
 }
@@ -1055,7 +1058,7 @@ class ReplyRecorder {
           toolCallId: id,
           toolName: name,
           server: binding.server,
-          resourceUri: binding.resourceUri,
+          resourceUri: uiResourceUriForCall(binding.resourceUri, binding.byExtension, block.input),
           ...(binding.card ? { card: binding.card } : {}),
           args: block.input,
         });

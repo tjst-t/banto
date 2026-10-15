@@ -11,12 +11,13 @@ import {
   ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
+import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY, UI_BY_EXTENSION_META_KEY } from "@banto/module-contract";
 import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { basename, sep } from "node:path";
 import * as ops from "./operations.js";
-import { BROWSER_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
+import { BROWSER_APP_URI, DOCUMENT_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
+import { isPdfAssetKind, readPdfAsset } from "./pdf-assets.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
 
@@ -103,7 +104,13 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
             required: ["path"],
           },
         ),
-        _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: FILE_APP_URI } },
+        _meta: {
+          [VISIBILITY_META_KEY]: "agent",
+          ui: { resourceUri: FILE_APP_URI },
+          // **PDF は別の画面で描く**（v4-modules.md §2.2「PDF・Office…」）——pdf.js を同梱して重いので、
+          // テキストの画面の重さを変えない。どちらを出すかは host が引数のパスの拡張子で選ぶ
+          [UI_BY_EXTENSION_META_KEY]: { arg: "path", byExtension: { pdf: DOCUMENT_APP_URI } },
+        },
       },
       tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] }),
       tool("createDirectory", "mkdir -p 相当", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
@@ -132,6 +139,33 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
           type: "object",
           properties: { paths: { type: "array", items: { type: "string" } } },
           required: ["paths"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      // **PDF の画面が中身をバイトの範囲で受ける口**（v4-modules.md §2.2「PDF・Office…」）。pdf.js は末尾の xref から
+      // 読むのでページでは切り出せない。1回 4MiB まで（base64 で stdio の1通 10MB に収まる）
+      {
+        name: "readFileRange",
+        description: "ファイルのバイトの範囲（中身は base64、1回 4MiB まで）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            offset: { type: "integer", minimum: 0 },
+            length: { type: "integer", minimum: 0, maximum: ops.READ_RANGE_MAX_BYTES },
+          },
+          required: ["path", "offset", "length"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      // pdf.js が fetch で読む同梱の資料（日本語の CMap・標準フォント）。画面は CSP で fetch できないので、ここから渡す
+      {
+        name: "readPdfAsset",
+        description: "pdf.js の同梱の資料（CMap・標準フォント、中身は base64）",
+        inputSchema: {
+          type: "object",
+          properties: { kind: { type: "string", enum: ["cmap", "standardFont"] }, name: { type: "string" } },
+          required: ["kind", "name"],
         },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
@@ -194,6 +228,15 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
             },
           ],
         };
+      }
+      case "readFileRange": {
+        const range = await ops.readFileRangeOp(root, String(args.path), Number(args.offset), Number(args.length));
+        return { content: [{ type: "text", text: JSON.stringify(range) }] };
+      }
+      case "readPdfAsset": {
+        if (!isPdfAssetKind(args.kind)) throw new Error(`kind は cmap か standardFont です: ${String(args.kind)}`);
+        const data = await readPdfAsset(args.kind, String(args.name));
+        return { content: [{ type: "text", text: JSON.stringify({ data: data.toString("base64") }) }] };
       }
       case "getRoot": {
         const real = realpathSync(root);
@@ -270,6 +313,13 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
         _meta: { [VISIBILITY_META_KEY]: "admin", ui: { prefersBorder: false } },
       },
       {
+        // showFile の画面のうち PDF（pdf.js を Worker 無しで同梱。v4-modules.md §2.2「PDF・Office…」）
+        uri: DOCUMENT_APP_URI,
+        name: "PDF を見せる",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", ui: { prefersBorder: false } },
+      },
+      {
         // editFile の結果（差分）を描く画面
         uri: EDIT_DIFF_APP_URI,
         name: "ファイルの差分",
@@ -321,6 +371,9 @@ export function createFileSystemServer(deps: { projectRoot: string }) {
     }
     if (request.params.uri === FILE_APP_URI) {
       return { contents: [{ uri: FILE_APP_URI, mimeType: UI_APP_MIME, text: appHtml("file") }] };
+    }
+    if (request.params.uri === DOCUMENT_APP_URI) {
+      return { contents: [{ uri: DOCUMENT_APP_URI, mimeType: UI_APP_MIME, text: appHtml("document") }] };
     }
     if (request.params.uri === EDIT_DIFF_APP_URI) {
       return { contents: [{ uri: EDIT_DIFF_APP_URI, mimeType: UI_APP_MIME, text: appHtml("edit-diff") }] };

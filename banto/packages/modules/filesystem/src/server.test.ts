@@ -131,6 +131,79 @@ test("showFile はフォルダ・無いファイル・根の外を断る", async
   });
 });
 
+// ---- PDF の画面（v4-modules.md §2.2「PDF・Office…」、2026-10-15）-------------------------
+
+test("showFile は PDF なら document の画面を選ばせる。document の HTML は pdf.js と worker を同じ画面に入れる", async () => {
+  await withClient(async (client) => {
+    const { tools } = await client.listTools();
+    const show = tools.find((t) => t.name === "showFile");
+    assert.deepEqual((show?._meta as Record<string, unknown>)?.["dev.banto/ui-by-extension"], {
+      arg: "path",
+      byExtension: { pdf: "ui://banto-filesystem/document" },
+    });
+    const { resources } = await client.listResources();
+    const doc = resources.find((r) => r.uri === "ui://banto-filesystem/document");
+    assert.equal((doc?._meta as Record<string, unknown>)?.["dev.banto/visibility"], "admin");
+
+    const html = (await client.readResource({ uri: "ui://banto-filesystem/document" })).contents[0] as { text: string };
+    assert.match(html.text, /data-surface="document"/);
+    // worker → 本体 → 画面の順（本体は worker が globalThis.pdfjsWorker に置かれているのを見て Worker を作らない）
+    const worker = html.text.indexOf("globalThis.pdfjsWorker=");
+    const lib = html.text.indexOf("globalThis.pdfjsLib=");
+    const app = html.text.indexOf("banto-filesystem-document");
+    assert.ok(worker > 0 && lib > worker && app > lib, `script の順が違う（worker ${worker}・本体 ${lib}・画面 ${app}）`);
+    // 中で script が閉じない
+    assert.equal(html.text.match(/<\/script>/g)?.length, 3);
+    // テキストの画面は pdf.js を背負わない
+    const file = (await client.readResource({ uri: "ui://banto-filesystem/file" })).contents[0] as { text: string };
+    assert.doesNotMatch(file.text, /pdfjsLib/);
+    assert.ok(file.text.length < 500_000, `テキストの画面が重い（${file.text.length}）`);
+  });
+});
+
+test("readFileRange はバイトの範囲を base64 で返し、末尾で切り、4MiB を超える頼みと根の外を断る", async () => {
+  await withClient(async (client, root) => {
+    const bytes = Buffer.from(Array.from({ length: 300 }, (_, i) => i % 256));
+    await writeFile(join(root, "a.pdf"), bytes);
+    const read = async (args: Record<string, unknown>) => {
+      const r = await client.callTool({ name: "readFileRange", arguments: { path: "a.pdf", ...args } });
+      return JSON.parse((r.content as { text: string }[])[0]!.text) as { offset: number; length: number; size: number; data: string };
+    };
+    const mid = await read({ offset: 10, length: 20 });
+    assert.deepEqual({ ...mid, data: undefined }, { offset: 10, length: 20, size: 300, data: undefined });
+    assert.deepEqual(Buffer.from(mid.data, "base64"), bytes.subarray(10, 30));
+    const tail = await read({ offset: 290, length: 100 });
+    assert.equal(tail.length, 10);
+    assert.deepEqual(Buffer.from(tail.data, "base64"), bytes.subarray(290));
+    assert.equal((await read({ offset: 1000, length: 10 })).length, 0);
+
+    const refused = async (args: Record<string, unknown>) => {
+      const r = await client.callTool({ name: "readFileRange", arguments: args }).catch((e: unknown) => e);
+      return r instanceof Error ? r.message : JSON.stringify(r);
+    };
+    assert.match(await refused({ path: "a.pdf", offset: 0, length: 4 * 1024 * 1024 + 1 }), /4194304 バイトまで/);
+    assert.match(await refused({ path: "a.pdf", offset: -1, length: 1 }), /offset/);
+    assert.match(await refused({ path: "../a.pdf", offset: 0, length: 1 }), /Project の根の外/);
+
+    const { tools } = await client.listTools();
+    assert.equal((tools.find((t) => t.name === "readFileRange")?._meta as Record<string, unknown>)?.["dev.banto/visibility"], "admin");
+  });
+});
+
+test("readPdfAsset は pdf.js の日本語の CMap を渡し、フォルダの外は指させない", async () => {
+  await withClient(async (client) => {
+    const r = await client.callTool({ name: "readPdfAsset", arguments: { kind: "cmap", name: "UniJIS-UCS2-H.bcmap" } });
+    const data = Buffer.from((JSON.parse((r.content as { text: string }[])[0]!.text) as { data: string }).data, "base64");
+    assert.ok(data.length > 1000, `CMap が短い（${data.length}）`);
+    const refused = async (args: Record<string, unknown>) => {
+      const res = await client.callTool({ name: "readPdfAsset", arguments: args }).catch((e: unknown) => e);
+      return res instanceof Error ? res.message : JSON.stringify(res);
+    };
+    assert.match(await refused({ kind: "cmap", name: "../package.json" }), /名前として使えません/);
+    assert.match(await refused({ kind: "other", name: "x" }), /cmap か standardFont/);
+  });
+});
+
 // ---- 人の操作だけの口（ファイルブラウザが使う、admin）--------------------------
 
 test("uploadFile はバイト列をそのまま置く（画像も壊れない）", async () => {

@@ -224,6 +224,39 @@ table.sheet .cell input:focus { box-shadow: inset 0 0 0 1px var(--accent); }
 .file-card-body { height: 440px; display: flex; flex-direction: column; }
 .file-card .note { padding: 0 12px 10px; }
 
+/* ---- PDF（showFile の document 画面）---- */
+.pdf-view [hidden] { display: none !important; }
+.pdf-view { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--bg); }
+body[data-mode="fullscreen"] .pdf-view { height: 100vh; border: 0; border-radius: 0; }
+.pdf-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); min-width: 0; }
+.pdf-toolbar .spacer-fill { flex: 1; }
+.pdf-page-label, .pdf-zoom-label, .pdf-search-count { font-size: var(--t-xs); color: var(--ink-3); white-space: nowrap; }
+.pdf-zoom-label { min-width: 3.2em; text-align: center; }
+.pdf-search { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; height: 28px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.pdf-search-input { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: var(--t-sm); width: 11em; }
+.pdf-scroller { height: 520px; overflow: auto; background: var(--bg-3); }
+body[data-mode="fullscreen"] .pdf-scroller { height: auto; flex: 1; min-height: 0; }
+.pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; min-width: max-content; }
+.pdf-page { position: relative; flex-shrink: 0; background: white; box-shadow: var(--sh-1), 0 0 0 1px var(--line);
+  --total-scale-factor: calc(var(--scale-factor, 1) * var(--user-unit, 1)); --scale-round-x: 1px; --scale-round-y: 1px; }
+.pdf-page .pdf-canvas { position: absolute; inset: 0; display: block; }
+.pdf-page > .state { position: absolute; inset: 0; }
+.pdf-view > .note { margin: 0; padding: 6px 12px; border-top: 1px solid var(--line); }
+/* 文字の層（pdf.js の pdf_viewer.css の .textLayer を写したもの。文字は透明で、選べる・探せる） */
+.textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1;
+  letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 0;
+  --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; user-select: text; }
+.textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.textLayer .markedContent { display: contents; }
+.textLayer span[role="img"] { user-select: none; cursor: default; }
+.textLayer .highlight { margin: -1px; padding: 1px; background-color: rgb(255 196 0 / 0.4); border-radius: 4px; }
+.textLayer .highlight.selected { background-color: rgb(255 120 0 / 0.55); }
+.textLayer ::selection { background: color-mix(in srgb, AccentColor, transparent 50%); color: transparent; }
+.textLayer br::selection { background: transparent; }
+
 /* ---- 差分（editFile）---- */
 .diff-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); min-width: 0; }
 .diff-stat { font-size: var(--t-xs); color: var(--ink-3); flex-shrink: 0; }

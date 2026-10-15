@@ -248,6 +248,21 @@ Module が自分の設定 Canvas を持てること（§6.2）。
 - 記録（`uiToolCalls`）にも印を写すので、リロードしてもカードのまま出る
 - MCP Apps の仕様には無い、banto が足した拡張（`dev.banto/canvas` と同じ扱い）
 
+#### 引数のファイルの拡張子で画面を選び替える tool（決定・2026-10-15、Backlog #302）
+
+MCP Apps の tool の画面（`_meta.ui.resourceUri`）は tool に1つで、**呼び出しごとに選ぶ口が無い**。FileSystem の
+`showFile` は、テキストの画面（軽い）と PDF の画面（pdf.js を同梱して重い、v4-modules.md §2.2「PDF・Office…」）を
+分けたい。そこで **Module が tool の `_meta["dev.banto/ui-by-extension"]` で名乗る**：
+
+- 値は `{ arg, byExtension }`——`arg` は見る引数の名前（パス）、`byExtension` は拡張子（小文字・点無し）→ `ui://` の資源。
+  `ui://` でない値は捨てる。載っていない拡張子・引数が無い・文字列でないときは `_meta.ui.resourceUri` のまま
+- **host は呼び出しの引数が見えた時点（結果より前）で選び**、記録（`uiToolCalls` の `resourceUri`）にもその URI を残す
+  ——リロード・大きく開く・バックグラウンドの一覧の行は、どれも記録の URI を開く。選ぶのは `module-contract` の
+  `uiResourceUriForCall`（host）と、その写しの `apps/frontend/lib/ui-by-extension.ts`（画面）
+- 選べる先は、その tool を持つ Module 自身の画面だけ（server は tool の持ち主のまま）
+- MCP Apps の仕様には無い、banto が足した拡張（`dev.banto/card` と同じ扱い）
+- 経緯と採らなかった案は `docs/notes/2026-10-15-office-pdf-viewer.md`
+
 > Fork の位置は、分岐イベント自身の seq（`ThreadState.createdSeq`）で表す
 > ——Clear の横線と同じ物差しで、別の索引を持たない（規則3）。
 
