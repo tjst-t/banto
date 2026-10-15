@@ -6,7 +6,7 @@
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
-import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
+import { InboxPage } from "@/components/banto/inbox/inbox-page";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { RepoDemoParams } from "@/components/banto/project/repo-demo-params";
 import { usePanelStack } from "./use-panel-stack";
@@ -93,11 +93,17 @@ function AppShellInner({
       />
       {/* モバイルは専用の上部バーを持たない（決定・2026-09-09）——ナビは各パネルの
           ヘッダ左端の ≡（MobileNavDrawer）に寄せ、常時2段だったヘッダを1段にした */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
-      <InboxOverlay
-        open={stack.overlay === "inbox"}
-        onOpenChange={(open) => (open ? stack.open({ overlay: "inbox" }) : stack.close("overlay"))}
-      />
+      {/* 受信箱は会話と同じく前面の1枚（決定・2026-10-15）。下の画面は捨てずに隠すだけ */}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className={stack.overlay === "inbox" ? "invisible flex min-h-0 flex-1 flex-col overflow-hidden" : "flex min-h-0 flex-1 flex-col overflow-hidden"} inert={stack.overlay === "inbox"}>
+          {children}
+        </div>
+        {stack.overlay === "inbox" ? (
+          <div className="absolute inset-0 z-10">
+            <InboxPage projectId={projectId} onClose={() => stack.close("overlay")} />
+          </div>
+        ) : null}
+      </div>
       <CommandPalette
         projectId={projectId}
         stack={stack}

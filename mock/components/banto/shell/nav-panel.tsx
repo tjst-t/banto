@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getInboxItems } from "@/lib/mock/inbox";
+import { feedBadgeCount } from "@/lib/mock/inbox-feed";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { closeThread, getClosedForksForProject, getThreadsForProject } from "@/lib/mock/threads";
 import { cn } from "@/lib/utils";
@@ -57,7 +58,9 @@ import { collectPending, PendingProjectBadge, PendingSubline, ThreadRowIcon } fr
 /** 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
  *  急ぎだから（§2.4）。レビュー待ちは溜めてよいので件数に含めない */
 export function getJudgmentCount(): number {
-  return getInboxItems().filter((item) => item.kind === "judgment").length;
+  // 受信箱の見直し（2026-10-15）：判断待ちと「決めることのある返ってきた会話」——人が答えないと進まないもの
+  void getInboxItems;
+  return feedBadgeCount();
 }
 
 /**
