@@ -6917,7 +6917,7 @@
       "number": 283,
       "kind": "task",
       "title": "段4：音——コンテナに音のシンクを足し、Opus を同じ流れに載せて人の画面で鳴らす",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-video",
       "dependsOn": [
         "browser-video-pc"
@@ -6931,7 +6931,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-12T07:54:00.848Z",
-      "updatedAt": "2026-10-15T09:00:45.332Z",
+      "updatedAt": "2026-10-15T09:00:51.682Z",
       "closedAt": null,
       "extra": {}
     },
