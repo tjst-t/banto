@@ -559,10 +559,39 @@ export class Factory {
         }
       }
     } catch (err) {
-      // ここに来るのは想定外の失敗（記録が書けない等）。止まったことにして残す
+      // ここに来るのは想定外の失敗（記録が書けない・起き直した直後で backlog の Module がまだ繋がっていない等）。
+      // **止まって答えを待つ**（修正・2026-10-15）——以前は止まった印だけを残して終わり、answerFactory は「止まっていません」、
+      // cancelFactory は何も止めず、runFactory は「もう流れています」で断って、その件をどうにもできなかった
+      release();
+      const reason = `Factory の中の失敗：${err instanceof Error ? err.message : String(err)}`;
       item.status = "stopped";
-      item.stopped = { reason: `Factory の中の失敗：${err instanceof Error ? err.message : String(err)}`, stage: item.stage, since: now() };
+      item.stopped = { reason, stage: item.stage, since: now() };
       this.save(run);
+      const answered = new Promise<Answer>((resolve) => (live.pendingAnswer = resolve));
+      live.settled.resolve();
+      const stop = item.stopped;
+      void this.stopped(live).then((ok) => {
+        if (!ok || item.stopped !== stop) return;
+        stop.notified = true;
+        this.save(run);
+      });
+      const answer = await answered;
+      if (answer.action === "drop" || live.cancelReason) {
+        await this.dropItem(live, live.cancelReason ?? (answer.action === "drop" ? answer.reason : undefined) ?? "人がやめると答えました");
+        return;
+      }
+      // 記録から流し直す（終わった段は記録の結果を使う）。失敗を記録した段から後ろは消してやり直す——残すと流し直しで
+      // 同じ失敗がそのまま返る。段の名前を指したやり直しならその段から
+      const steps = live.journal.all();
+      const marker =
+        answer.action === "retry" && answer.stage ? [...steps].reverse().find((s) => s.key === `stage:${answer.stage}`) : undefined;
+      const failed = steps.find((s) => s.end && !s.end.ok);
+      const cut = marker ? marker.n + 1 : failed?.n;
+      if (cut !== undefined) live.journal.truncateFrom(cut);
+      delete item.stopped;
+      item.status = "running";
+      this.save(run);
+      return this.runItem(live);
     } finally {
       release();
     }

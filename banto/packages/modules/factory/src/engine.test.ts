@@ -28,7 +28,7 @@ interface Fake {
  * 偽の Subagent：実装役は頼みの中の `<commit 名前>` のファイルをその worktree に書いてコミットする（続きの頼みでは
  * `fix` の名前で）。レビュー役は `verdicts` を順に返す
  */
-function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void; /** n 回目の実装役の失敗（返せばその文で失敗を届ける） */ implementFails?: (n: number) => string | undefined } = {}) {
+function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void; /** n 回目の実装役の失敗（返せばその文で失敗を届ける） */ implementFails?: (n: number) => string | undefined; /** 最初の n 回の backlog への中継を投げて失敗させる（起き直した直後で Module が無い） */ backlogThrows?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-"));
   const project = join(root, "project");
   const data = join(root, "data");
@@ -39,6 +39,7 @@ function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?:
   git(project, "commit", "-q", "-m", "init");
   const fake: Fake = { implements: 0, reviews: 0, backlog: [], stopped: [], finished: [], long: [] };
   const verdicts = [...(opts.verdicts ?? [])];
+  let backlogThrows = opts.backlogThrows ?? 0;
   let seq = 0;
   let factory!: Factory;
   void 0;
@@ -51,6 +52,10 @@ function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?:
   const ports: FactoryPorts = {
     call: async (role, tool, args) => {
       if (role === "backlog") {
+        if (backlogThrows > 0) {
+          backlogThrows--;
+          throw new Error("この Project に backlog の Module がありません（Factory は backlog を使います）");
+        }
         fake.backlog.push({ id: String(args.id), status: String(args.status) });
         return { text: "ok", isError: false };
       }
@@ -301,6 +306,37 @@ test("レビューで直すことがあれば実装役へ戻し、上限を越�
     s.factory.answer(run.id, "f", { action: "accept" });
     await until(() => s.fake.finished.length === 1, "取り込まない");
     assert.equal(run.items[0]!.status, "done");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("想定外の失敗（backlog の Module が無い等）で止まった件は、知らせて答えを待ち、「やり直す」で入る", async () => {
+  const s = setup({ backlogThrows: 1 });
+  try {
+    const run = s.factory.start({ tasks: [task("x", "<commit x.txt>")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まって知らせない");
+    assert.match(s.fake.stopped[0]!, /Factory の中の失敗：.*backlog の Module がありません/);
+    assert.equal(run.items[0]!.status, "stopped");
+    await until(() => answerWhenAsked(s.factory, run.id, "x", { action: "retry" }), "答えを受け付けない");
+    await until(() => s.fake.finished.length === 1, `答えたのに終わらない（${JSON.stringify(run.items[0])}・${JSON.stringify(s.fake.stopped)}）`);
+    assert.equal(run.items[0]!.status, "done");
+    assert.ok(existsSync(join(s.project, "x.txt")));
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("想定外の失敗で止まった件も、止めるとやめて Backlog を ready に戻す", async () => {
+  const s = setup({ backlogThrows: 1 });
+  try {
+    const run = s.factory.start({ tasks: [task("y", "<commit y.txt>")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まって知らせない");
+    const stopped = await s.factory.cancel(run.id, "y", "試験で止めた");
+    assert.deepEqual(stopped, ["y"]);
+    await until(() => s.fake.finished.length === 1, "止めたのに終わらない");
+    assert.equal(run.items[0]!.status, "dropped");
+    assert.equal(s.fake.backlog.at(-1)?.status, "ready");
   } finally {
     s.cleanup();
   }
