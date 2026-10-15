@@ -13,7 +13,7 @@ import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import { TriggerBand } from "@/components/banto/thread/trigger-band";
-import { triggerOfThread } from "@/lib/mock/triggers";
+import { TRIGGERS_CANVAS, triggerOfThread } from "@/lib/mock/triggers";
 import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeThread, getThread } from "@/lib/mock/threads";
@@ -239,7 +239,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             icon={X}
             onClose={() => stack.close("canvas")}
             closeLabel="Canvas を閉じる"
-            title={`Canvas — ${moduleId}:${viewId}`}
+            title={`${moduleId}:${viewId}` === TRIGGERS_CANVAS ? "自動で動かす" : `Canvas — ${moduleId}:${viewId}`}
             trailing={
               <div className="flex items-center gap-1.5">
                 {stack.canvasFullscreen ? (

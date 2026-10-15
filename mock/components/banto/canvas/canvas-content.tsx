@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { BacklogView } from "./backlog-view";
 import { FactoryView } from "./factory-view";
+import { TriggersView } from "./triggers-view";
 import { FileExplorerView } from "./file-explorer-view";
 import { RepoListView } from "./repo-list-view";
 import { RepoPublishView } from "./repo-publish-view";
@@ -144,6 +145,9 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
       return <RepoListView />;
     case "banto.repositories:publish":
       return <RepoPublishView />;
+    // core 自身の画面（決定・2026-10-15）。Module の MCP App ではなく、画面のコードが直に描く
+    case "banto:triggers":
+      return <TriggersView />;
     case "banto.backlog:items":
       return <BacklogView />;
     case "banto.factory:runs":

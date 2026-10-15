@@ -7,12 +7,14 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { getActiveProjects, getProject } from "./projects";
 import { getThreadsForProject } from "./threads";
 import { getInboxItemHref, getInboxItems } from "./inbox";
 import { getLaunchersForProject } from "./settings";
+import { getTriggers, triggersCanvasHref } from "./triggers";
 
 // Command Palette（§6.3）。「自分の索引を持たない」——出るものは全部、
 // すでにあるところ（Project/Thread・受信箱・Module集合）から導出する。
@@ -161,6 +163,21 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
     kind: "operation" as const,
     actionId: o.id,
   }));
+  // core の画面「自動で動かす」（決定・2026-10-15）——Module の入口ではないので「操作」に置く。「cron」「予定」でも引ける
+  if (currentProjectId) {
+    const n = getTriggers(currentProjectId).length;
+    const words = ["自動で動かす", "きっかけ", "予定", "cron", "webhook", "トリガー"];
+    if (q === "" || words.some((w) => w.toLowerCase().includes(q) || q.includes(w.toLowerCase()))) {
+      opItems.unshift({
+        id: "operation:open-triggers",
+        title: "自動で動かす",
+        subtitle: n > 0 ? `この Project のきっかけ（${n} 件）` : "時刻や Webhook で AI を動かす",
+        icon: Zap,
+        href: triggersCanvasHref(currentProjectId),
+        kind: "operation",
+      });
+    }
+  }
   if (opItems.length > 0) groups.push({ kind: "operation", label: "操作", items: opItems });
 
   return groups;

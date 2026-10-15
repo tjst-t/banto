@@ -194,6 +194,17 @@ let triggers: MockTrigger[] = [
   },
 ];
 
+/** 「自動で動かす」の Canvas の印（core の画面。Module の印と区別するため名前に点を含めない） */
+export const TRIGGERS_CANVAS = "banto:triggers";
+
+/** 「自動で動かす」の Canvas を開く URL。会話（Fork）を開いたままなら並べて出す */
+export function triggersCanvasHref(projectId: string, forkId?: string | null): string {
+  const q = new URLSearchParams();
+  if (forkId) q.set("fork", forkId);
+  q.set("canvas", TRIGGERS_CANVAS);
+  return `/p/${projectId}?${q.toString()}`;
+}
+
 export function getTriggers(projectId: string): readonly MockTrigger[] {
   return triggers.filter((t) => t.projectId === projectId);
 }

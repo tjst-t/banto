@@ -47,7 +47,7 @@ import { getInboxItems } from "@/lib/mock/inbox";
 import { feedBadgeCount } from "@/lib/mock/inbox-feed";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { closeThread, getClosedForksForProject, getThreadsForProject } from "@/lib/mock/threads";
-import { triggerOfThread } from "@/lib/mock/triggers";
+import { TRIGGERS_CANVAS, getTriggers, triggerOfThread, triggersCanvasHref } from "@/lib/mock/triggers";
 import { cn } from "@/lib/utils";
 import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
@@ -138,6 +138,7 @@ function ProjectTreeItem({
   const threads = getThreadsForProject(project.id);
   const forks = threads.filter((t): t is MockThread => t.kind === "fork");
   const closedForkCount = getClosedForksForProject(project.id).length;
+  const triggerCount = getTriggers(project.id).length;
   const threadTitle = (t: MockThread) => (t.kind === "base" ? "Base Thread" : t.title);
   // バックグラウンド：いま開いていない Project は頭文字の右下にまとめて出す（開いている Project は下の Thread の行で見える）
   const projectPending = isCurrent ? [] : collectPending(threads.map((t) => ({ id: t.id, title: threadTitle(t) })));
@@ -231,6 +232,29 @@ function ProjectTreeItem({
             </SidebarMenuSubItem>
             );
           })}
+
+          {/* 「自動で動かす」の一覧（決定・2026-10-15）。きっかけがある Project だけ1行出す——無ければ目次を増やさない
+              （作る口は AI への頼みと Command Palette）。いま開いている Fork は閉じずに、隣へ Canvas として開く */}
+          {triggerCount > 0 ? (
+            <SidebarMenuSubItem>
+              <SidebarMenuSubButton
+                asChild
+                size="sm"
+                className="text-ink-2"
+                isActive={isCurrent && searchParams.get("canvas") === TRIGGERS_CANVAS}
+              >
+                <Link
+                  href={triggersCanvasHref(project.id, isCurrent ? activeForkThreadId : null)}
+                  data-roving-item
+                  onClick={onNavigate}
+                  data-testid={`sidebar-triggers-${project.id}`}
+                >
+                  <Zap />
+                  <span>自動で動かす（{triggerCount}）</span>
+                </Link>
+              </SidebarMenuSubButton>
+            </SidebarMenuSubItem>
+          ) : null}
 
           {/* 閉じた Fork の入口は、いま開いている Project にだけ出す——履歴
               （ArchiveDialog）はいま開いている Project の閉じた Fork を見せる

@@ -5,11 +5,13 @@
 //
 // 汎用の承認カード（引数の JSON）ではなく、人が決めるのに要るものを文で出す：何が起きたら・何を・どう起こすか・
 // 承認の要る操作に当たったらどうなるか。機構は承認ゲートと同じ（result が付くまで作られていない）
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
 import { Ban, Check, Zap } from "lucide-react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { Button } from "@/components/ui/button";
 import { getApprovalResult } from "@/lib/mock/adapter";
-import { describeSource, type TriggerSource } from "@/lib/mock/triggers";
+import { describeSource, triggersCanvasHref, type TriggerSource } from "@/lib/mock/triggers";
 
 interface CreateTriggerArgs {
   name: string;
@@ -20,6 +22,10 @@ interface CreateTriggerArgs {
 
 export const TriggerProposalCard: ToolCallMessagePartComponent = (props) => {
   const args = props.args as unknown as CreateTriggerArgs;
+  const params = useParams<{ projectId?: string }>();
+  const searchParams = useSearchParams();
+  // いま開いている会話（Fork）はそのまま、隣に一覧を開く
+  const listHref = triggersCanvasHref(params.projectId ?? "banto", searchParams.get("fork"));
   const isPending = props.result === undefined;
   const isDeclined =
     !isPending && typeof props.result === "object" && props.result !== null && "error" in props.result;
@@ -53,7 +59,7 @@ export const TriggerProposalCard: ToolCallMessagePartComponent = (props) => {
           <li>専用の Fork「{args.name}」を立て、そこで AI が動きます。</li>
         ) : null}
         <li>確認が要る操作に当たったら、あなたの答えを待って止まります。</li>
-        <li>あとで Project の設定の「自動で動かす」から止めたり消したりできます。</li>
+        <li>あとで「自動で動かす」の一覧から止めたり消したりできます。</li>
       </ul>
 
       {isPending ? (
@@ -76,6 +82,9 @@ export const TriggerProposalCard: ToolCallMessagePartComponent = (props) => {
             <>
               <Check className="size-3.5 text-ok" />
               作りました
+              <Link href={listHref} className="ml-1 text-primary underline-offset-2 hover:underline" data-testid="trigger-open-list">
+                一覧を開く
+              </Link>
             </>
           )}
         </p>

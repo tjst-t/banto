@@ -1,6 +1,6 @@
 "use client";
 
-// Project の設定「自動で動かす」（決定・2026-10-15、ユーザー。`lib/mock/triggers.ts`）。
+// 「自動で動かす」の中身（決定・2026-10-15、ユーザー。`lib/mock/triggers.ts`）。Canvas に出す（`canvas/triggers-view.tsx`）。
 //
 // - 1行に1つのきっかけ：名前・何が起きたら（時刻／Webhook）・届け先と起こし方・次の時刻（Webhook は最後に受けた時刻）、
 //   その下に直近の回の印（古い→新しい）と前の回の結果
@@ -57,6 +57,7 @@ import {
   setTriggerPaused,
   timeZoneLabel,
   triggerThreadId,
+  triggersCanvasHref,
   type MockTrigger,
   type TimeRepeat,
   type TriggerInput,
@@ -251,7 +252,8 @@ function TriggerRow({ trigger: t, onEdit }: { trigger: MockTrigger; onEdit: () =
             <div className="flex flex-wrap items-center gap-2">
               {threadId ? (
                 <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs">
-                  <Link href={t.target.kind === "dedicated" ? `/p/${t.projectId}?fork=${threadId}` : `/p/${t.projectId}`}>
+                  {/* 会話は Canvas の隣に開く——一覧を閉じずに、その回の会話を読める */}
+                  <Link href={triggersCanvasHref(t.projectId, t.target.kind === "dedicated" ? threadId : null)}>
                     <MessageSquare className="size-3.5" />
                     会話を開く
                   </Link>
