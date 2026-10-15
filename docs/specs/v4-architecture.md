@@ -388,8 +388,8 @@ Fork を何本も並べて進めると、各 Thread の最後を見ても「何�
   始めるときに1回引く——走っているターンには効かず、次のターンから効く
 - **オンのときだけ渡すもの**（オフなら3つとも渡さない）：
   1. `banto-thread` の tool `report_turn`（`http/turn-summary.ts`）。引数：`request`（頼まれたことを具体的に。「それでお願い」なら
-     前の話から補う）・`outcome`（`status` は done／partial／failed、`headline` 1文、`points` 3つまで、`notVerified`、`artifacts`）・
-     `decisions`（4つまで。`question`・`context`・`options` 2〜4個、各 `label`・`reply`・`recommended` は1つまで）・
+     前の話から補う）・`outcome`（`status` は done／partial／failed、`headline` 1文、`points` 3つまで、`notVerified`、`artifacts`——各 `label`・`detail`・任意の `url`）・
+     `decisions`（4つまで。`question`・`context`・`options` 2〜4個、各 `label`・`reply`・`recommended` は1つまで・任意の `url`）・
      `nextSuggestions`（4個まで）。**形に合わなければ断り、どこが違うかを文で返す**（AI が直して呼び直す）。受け付けたら
      host が時刻を付けて記録に残す（`message.appended` の `turnSummary`。fold が同じターンの AI の発言にまとめ、後から来た
      ものに置き換える＝**2回呼ばれたら最後の1回**）
@@ -839,6 +839,40 @@ SDK の動的セクション（cwd・git status 等）は一切付かない（`e
   動いている URL ——**全部 Module が持つ**。**core は待ちの一覧だけを持ち、
   開いたら Module の Canvas が出る**。**差分ビューアを core に作らない**
   （Repo Module の Canvas になる）
+
+#### 受信箱は「あなたの番になったもの」だけ（改訂・2026-10-15、ユーザー「受信箱が使い物にならない」）
+
+それまでの受信箱は、サブエージェント1回で2件積まれていた——「Thread に届ける」で届くたびのお知らせ（「届きました。AI が
+続きをやります」）と、届いたもので起きた**途中の**ターンのレビュー待ち。並行で走らせるほど、人が見なくてよいもので埋まった。
+受信箱に入れるのは、**人が何かしないと先へ進まないもの・人に返ってきたもの**だけにする。
+
+1. **判断待ち**——今のまま。一番上
+2. **返ってきた会話**（レビュー待ち）——ターンが終わったとき、**その Thread に裏の仕事（返信用の札の awaiting）も、まだ渡して
+   いない届いたもの（`deliveries`）も残っていない**ときだけ出す。残っていれば出さない（結果が届いて AI がまとめ終えた最後の
+   ターンで出る＝「サブエージェントが終わった」は自然に消える）。途中で切れた・失敗したターンは残りがあっても出す（人が見ないと
+   進まない）。**全部出す**（まとめの有無を問わない）。まとめ（`report_turn`）に `decisions` があるものは「決めることがある」と
+   して判断待ちの次に寄せる。1つの Thread に未確認は1件まで・人がその Thread で送れば「見た」・開いている画面では出さない、は
+   今のまま
+3. **人が直す必要のある仕組みの異常**（お知らせ）——残すのは：本体の Claude ログイン切れ・Module を繋げない・起こし直しで止めた
+   「続ける」・自動では起こさなかった届けもの（held）・コンテナを止められない・別の実行場所へ移せない・AI が予約した Fork を
+   立てなかった・別のサーバの前提の注意（linger・tmux）・GitHub のログインの更新／保存の失敗・Module が `relayRaiseNotice` で
+   出すもの。**出さなくする**：届くたびのお知らせ（held 以外）・移し終えた（各 Thread に届けものが行く）・メモリ／プロセス数の
+   上限に当たった（設定の「資源」とサイドバーの印で見える。ログには残す）
+
+**受信箱の中で読んで答える**（同日改訂、ユーザー「受信箱を見るだけで開発を進められるように」）。`GET /api/inbox` は、
+レビュー待ちに**そのターンの中身**を添えて返す（読むたびに Thread の記録から組む。Event Store の形は変えない）：
+
+- `turn.request`——まとめの `request`。無ければ人の最後の発言の頭（400字まで）
+- `turn.reply`——AI の最後の発言の本文（8000字まで、超えたら切って `replyTruncated`）
+- `turn.summary`——そのターンのまとめ（`report_turn` の中身そのまま）。無ければ無い
+- `turn.outcome`——ターンの結末（`completed`／`interrupted`／`failed` 等、`lastTurn.outcome`）
+- `turn.toolCalls`——そのターンで AI が呼んだ tool の数（規模が分かるように）
+
+返信は会話の入力欄と同じ口（その Thread にターンを始める）で送る。受信箱は送ったら「見た」にする。判断待ちは今の答える口
+（`POST /api/inbox/:id/answer`）。
+
+**`report_turn` の URL**（同日追加）：`outcome.artifacts[].url` と `decisions[].options[].url`（どちらも任意、`http(s)` だけ）。
+その選択肢の中身（モック・公開した画面）を、選ぶ前に開いて見比べられるように。画面は押せるリンクにする（§6.41）。
 
 ### 2.4.1 判断待ち
 
