@@ -702,6 +702,13 @@ function ReturnedBody({
           </p>
         ) : null}
 
+        {/* 自動化の回：後の回で置き換えなかったカードに、この会話でまだ見ていない回の数を添える（アーキ仕様 §4.3「受信箱」） */}
+        {(item.unseenRuns ?? 0) > 1 ? (
+          <p data-testid="inbox-unseen-runs" className="mt-2.5 text-xs text-ink-2">
+            この会話には、まだ見ていない回が {item.unseenRuns} 回あります
+          </p>
+        ) : null}
+
         {/* AI の最後の返事。まとめがあるときは畳んでおき、無いときは本文そのものが主役 */}
         {!s ? (
           <p className="mt-2.5 flex items-center gap-2 text-xs text-ink-3">

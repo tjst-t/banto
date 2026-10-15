@@ -1,6 +1,6 @@
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
-import type { InboxReadModel, JudgmentItem, JudgmentSource } from "./types.js";
+import type { InboxReadModel, JudgmentItem, JudgmentSource, ReviewAutomation } from "./types.js";
 
 export type InboxEvent =
   | {
@@ -22,7 +22,10 @@ export type InboxEvent =
     }
   | { type: "inbox.judgment_answered"; payload: { id: string; answer: unknown } }
   | { type: "inbox.judgment_timed_out"; payload: { id: string } }
-  | { type: "inbox.review_raised"; payload: { id: string; threadId: string; summary: string } }
+  | {
+      type: "inbox.review_raised";
+      payload: { id: string; threadId: string; summary: string; automation?: Omit<ReviewAutomation, "raisedSeq"> };
+    }
   | { type: "inbox.review_acknowledged"; payload: { id: string } }
   | {
       type: "inbox.notice_raised";
@@ -88,6 +91,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           id: event.payload.id,
           threadId: event.payload.threadId,
           summary: event.payload.summary,
+          ...(event.payload.automation ? { automation: { ...event.payload.automation, raisedSeq: raw.seq } } : {}),
           acknowledged: false,
           createdAt: raw.ts,
         });

@@ -332,6 +332,11 @@ export interface RealInboxReview {
   threadKind?: "base" | "fork";
   /** そのターンの中身（追加・2026-10-15、アーキ仕様 §2.4「受信箱の中で読んで答える」）。Thread が無ければ無い */
   turn?: RealReviewTurn;
+  /**
+   * 自動化の回のカードだけ（追加・2026-10-15、アーキ仕様 §4.3「受信箱」）。この会話で、このカード以降に終わってまだ
+   * 見ていない回の数（このカードの回を含む）
+   */
+  unseenRuns?: number;
 }
 
 /**

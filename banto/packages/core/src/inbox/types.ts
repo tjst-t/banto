@@ -47,8 +47,33 @@ export interface ReviewItem {
   id: InboxItemId;
   threadId: string;
   summary: string;
+  /** 自動化の回のターンの終わり（追加・2026-10-15、アーキ仕様 §4.3「受信箱」）。無ければふつうのターンの終わり */
+  automation?: ReviewAutomation;
   acknowledged: boolean;
   createdAt: string;
+}
+
+/**
+ * **人が見ないといけない回**（アーキ仕様 §4.3「受信箱」）。`decisions`＝まとめに決めることがある、`waiting`＝判断待ちで
+ * 止まった、`failed`＝失敗した・止めた・途中で切れた。自動化の「受信箱に出すか」に依らず出し、後の回で置き換えない
+ */
+export type ReviewAttention = "decisions" | "waiting" | "failed";
+
+/** 自動化の回のレビュー待ちが、どの回のどのターンのものか */
+export interface ReviewAutomation {
+  id: string;
+  runId: string;
+  attention?: ReviewAttention;
+  /**
+   * そのターンの始まりの seq と結末。後の回が同じ Thread で走っても（毎回まっさらでも発言は記録に残る）、置き換えずに
+   * 残したカードがそのターンの中身を出せるように。結末はそのターンのもの（あとで変わらない）
+   */
+  startedSeq: number;
+  outcome?: "completed" | "stopped" | "failed" | "interrupted";
+  /** この Thread の、まだ見ていない回の数え始め（最初の未確認の回が動いた時刻。置き換えたカードから引き継ぐ） */
+  since: string;
+  /** レビュー待ちを出した出来事の seq（fold が付ける）。そのターンの発言はこれより前 */
+  raisedSeq: number;
 }
 
 /**

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
-import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewItem } from "./types.js";
+import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewAutomation, ReviewItem } from "./types.js";
 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
@@ -137,6 +137,33 @@ export class InboxStore {
    */
   async raiseReview(input: { threadId: string; summary: string }): Promise<ReviewItem> {
     await this.acknowledgeReviewsFor(input.threadId);
+    return this.appendReview(input);
+  }
+
+  /**
+   * **自動化の回のレビュー待ちを出す**（アーキ仕様 §4.3「受信箱」）。前の未確認が人の見ないといけない回（決めること・
+   * 判断待ち・失敗）なら、人が見る前に後の回で消さない——後の回が何も無く終わったなら出さず `undefined`（残したカードが
+   * 「まだ見ていない回」を数える）。後の回も見ないといけない回なら並べて出す。それ以外は `raiseReview` と同じく置き換える
+   */
+  async raiseAutomationReview(input: {
+    threadId: string;
+    summary: string;
+    automation: Omit<ReviewAutomation, "raisedSeq">;
+  }): Promise<ReviewItem | undefined> {
+    const open = this.listOpen().filter((i): i is ReviewItem => i.kind === "review" && i.threadId === input.threadId);
+    if (!input.automation.attention && open.some((r) => r.automation?.attention)) return undefined;
+    const replaced = open.filter((r) => !r.automation?.attention);
+    // まだ見ていない回の数え始めは、置き換えるカードのうち一番古いものから引き継ぐ
+    const since = [input.automation.since, ...replaced.flatMap((r) => (r.automation ? [r.automation.since] : []))].sort()[0]!;
+    for (const r of replaced) await this.acknowledgeReview(r.id);
+    return this.appendReview({ ...input, automation: { ...input.automation, since } });
+  }
+
+  private async appendReview(input: {
+    threadId: string;
+    summary: string;
+    automation?: Omit<ReviewAutomation, "raisedSeq">;
+  }): Promise<ReviewItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.review_raised", { id, ...input });
     this.apply(event);

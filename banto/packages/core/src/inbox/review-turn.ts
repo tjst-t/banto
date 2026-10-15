@@ -63,18 +63,28 @@ function head(text: string, max: number): { text: string; truncated: boolean } {
  */
 export function reviewTurnOf(
   thread: Pick<ThreadState, "lastTurn" | "messages">,
-  opts: { running: boolean; toolCalls?: number },
+  opts: {
+    running: boolean;
+    toolCalls?: number;
+    /**
+     * **最後のターンではない、前のターン**の中身を組む（追加・2026-10-15、アーキ仕様 §4.3「受信箱」——後の回で置き換え
+     * なかった自動化の回のカード）。`startedSeq` より後ろ・`beforeSeq` より前の発言から組み、結末は渡したもの
+     */
+    earlier?: { startedSeq: number; beforeSeq: number; outcome?: ReviewTurnOutcome };
+  },
 ): ReviewTurn {
-  const startedSeq = thread.lastTurn?.startedSeq;
-  const reply = [...thread.messages]
+  const earlier = opts.earlier;
+  const startedSeq = earlier ? earlier.startedSeq : thread.lastTurn?.startedSeq;
+  const messages = earlier ? thread.messages.filter((m) => m.seq < earlier.beforeSeq) : thread.messages;
+  const reply = [...messages]
     .reverse()
     .find((m) => m.role === "assistant" && (startedSeq === undefined || m.seq > startedSeq));
   const summary = reply?.turnSummary?.summary;
   const summaryRequest = typeof summary?.request === "string" && summary.request.trim() !== "" ? summary.request : undefined;
-  const human = [...thread.messages].reverse().find((m) => m.role === "user" && !m.origin && m.text.trim() !== "");
+  const human = [...messages].reverse().find((m) => m.role === "user" && !m.origin && m.text.trim() !== "");
   const request = summaryRequest ?? (human ? head(human.text.trim(), REVIEW_REQUEST_MAX_CHARS).text : undefined);
   const body = reply && reply.text.trim() !== "" ? head(reply.text, REVIEW_REPLY_MAX_CHARS) : undefined;
-  const outcome = outcomeOf(thread, opts.running);
+  const outcome = earlier ? earlier.outcome : outcomeOf(thread, opts.running);
   return {
     ...(request !== undefined ? { request } : {}),
     ...(body ? { reply: body.text, ...(body.truncated ? { replyTruncated: true as const } : {}) } : {}),

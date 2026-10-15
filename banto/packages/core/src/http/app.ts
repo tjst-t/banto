@@ -74,6 +74,7 @@ import { reopenProject, reopenThread } from "../delivery/reopen.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { reviewTurnOf } from "../inbox/review-turn.js";
+import { unseenRunsOf } from "../inbox/automation-review.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
@@ -3469,12 +3470,21 @@ export function createApp(deps: AppDeps) {
             if (item.kind !== "review") return withPlace(item);
             const thread = deps.projectThread.getThread(item.threadId);
             if (!thread) return item;
-            const toolCalls = await deps.reviewToolCalls?.(thread);
+            // 後の回で置き換えなかった自動化の回のカードは、そのターンの中身を出す（アーキ仕様 §4.3「受信箱」）。tool の数は
+            // 最後のターンの分しか数えられないので添えない
+            const a = item.automation;
+            const earlier =
+              a && a.startedSeq !== thread.lastTurn?.startedSeq
+                ? { startedSeq: a.startedSeq, beforeSeq: a.raisedSeq, ...(a.outcome ? { outcome: a.outcome } : {}) }
+                : undefined;
+            const toolCalls = earlier ? undefined : await deps.reviewToolCalls?.(thread);
             const turn = reviewTurnOf(thread, {
               running: deps.threadTurns?.isRunning(thread.id) ?? false,
               ...(toolCalls !== undefined ? { toolCalls } : {}),
+              ...(earlier ? { earlier } : {}),
             });
-            return { ...withPlace(item), turn };
+            const unseenRuns = a ? unseenRunsOf(item, deps.automations?.get(a.id)) : undefined;
+            return { ...withPlace(item), turn, ...(unseenRuns !== undefined ? { unseenRuns } : {}) };
           }),
         );
         json(res, 200, items);

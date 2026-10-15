@@ -93,6 +93,7 @@ import type { CallerIdentity } from "./relay/host-relay-endpoint.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
+import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS } from "./http/turn-summary.js";
 import { RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
@@ -383,7 +384,8 @@ async function main(): Promise<void> {
     // ——並行で走らせた Thread（AI が立てた Fork など）が終わったことに、見に行かなくても気づけるように。
     // 人がその Thread で送ったら、その Thread のものは「見た」にする（人がそこにいる）。
     // 開いて見ている画面は、自分で「見た」にする（real-inbox.ts）
-    if (change.type === "started" && change.hop === 0) {
+    // 自動化の届けもので起きたターンもホップ 0 だが、人はそこにいない——前の回のカードを消さない（アーキ仕様 §4.3「受信箱」）
+    if (change.type === "started" && acknowledgesReviewsOnStart(projectThread.getThread(change.threadId), change.hop)) {
       void inbox
         .acknowledgeReviewsFor(change.threadId)
         .catch((err: unknown) => console.warn("[host] レビュー待ちを「見た」にできませんでした:", err));
@@ -393,9 +395,20 @@ async function main(): Promise<void> {
       // 途中で切れた・失敗したターンは残りがあっても出す（`reviewDueAfterTurn`）
       const thread = projectThread.getThread(change.threadId);
       if (!reviewDueAfterTurn(thread)) return;
-      void inbox
-        .raiseReview({ threadId: change.threadId, summary: turnEndSummary(thread) })
-        .catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
+      // **自動化の回**（アーキ仕様 §4.3「受信箱」）：「出さない」を選んだ自動化の何も無く完了した回は出さない。決めること・
+      // 判断待ち・失敗の回は、後の何も無い回で置き換えない
+      const plan = thread
+        ? planAutomationReview(thread, {
+            automation: (id) => automations.get(id),
+            hasLiveJudgment: inbox.listJudgmentsForThread(change.threadId).some((j) => j.liveness === "live"),
+          })
+        : ({ kind: "plain" } as const);
+      if (plan.kind === "skip") return;
+      const summary = turnEndSummary(thread);
+      void (plan.kind === "automation"
+        ? inbox.raiseAutomationReview({ threadId: change.threadId, summary, automation: plan.automation })
+        : inbox.raiseReview({ threadId: change.threadId, summary })
+      ).catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
     }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
