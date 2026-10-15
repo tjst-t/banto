@@ -139,6 +139,17 @@ async function heard(f: FrameLocator): Promise<{ frames: number; hz: number; rms
   });
 }
 
+/**
+ * 人の画面からページを押す（ページの CSS ピクセルで）——人の操作（流れの mouse）としてページに届く。`/tone` の
+ * 「音を鳴らす」(100,100)・「音を止める」(100,160) の左上から少し内側を押す
+ */
+async function clickPage(f: FrameLocator, x: number, y: number): Promise<void> {
+  const screen = f.getByTestId("browser-screen");
+  const box = (await screen.boundingBox())!;
+  const k = box.width / Number(await screen.getAttribute("data-page-width"));
+  await screen.click({ position: { x: x * k, y: y * k } });
+}
+
 const canvasFrame = (page: Page) => page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
 
 /**
@@ -336,7 +347,10 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
   await expect(sound).toHaveText("音を出す");
   await expect(sound).toHaveAttribute("data-sound", "off");
   expect(await ai(page, "browserOpen", { url: `${BASE}/tone` })).toContain("で開きました");
-  await ai(page, "browserAct", { action: "click", ref: refOf(await ai(page, "browserSnapshot"), "button", "音を鳴らす") });
+  // 人の画面から「音を鳴らす」を押す（ページの自動再生の決まり——人の操作で鳴らす）。画面に触れた操作でも、まだ「音を出す」を
+  // 押していないので画面は鳴らさない
+  await expect(f.getByTestId("browser-screen")).toHaveAttribute("data-tab", "t1");
+  await clickPage(f, 110, 110);
   // ページは鳴っているが、押すまでは画面に流さない（Module は音の子も起こさない）
   await new Promise((r) => setTimeout(r, 1500));
   expect(((await uiCall(page, "getBrowserStatus")).view as { audio?: unknown }).audio, "「音を出す」を押す前に音を流している").toBeUndefined();
@@ -386,7 +400,7 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
   expect(((await uiCall(page, "getBrowserStatus")).view as { audio?: { viewers: number } }).audio?.viewers).toBe(1);
   await again.click();
   await expect(again).toHaveAttribute("data-sound", "off");
-  await ai(page, "browserAct", { action: "click", ref: refOf(await ai(page, "browserSnapshot"), "button", "音を止める") });
+  await clickPage(g, 110, 170);
 
   // 閉じると動画も止まる
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
