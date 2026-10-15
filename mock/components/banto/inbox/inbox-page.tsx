@@ -21,6 +21,7 @@ import {
   CircleDashed,
   CircleX,
   CornerDownLeft,
+  ExternalLink,
   GitFork,
   Hand,
   Loader2,
@@ -395,7 +396,8 @@ function ReturnedBody({
     <div>
       <div className="px-4 pb-3">
         <p className="text-xs text-ink-3">
-          頼んだこと：<span className="text-ink-2">{item.request}</span>
+          {s ? "頼んだこと：" : "あなたの発言："}
+          <span className="text-ink-2">{item.request}</span>
         </p>
 
         {s ? (
@@ -404,13 +406,34 @@ function ReturnedBody({
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className={cn("font-medium", STATUS[s.status].cls)}>{STATUS[s.status].label}</span>
               {item.activity ? <span className="text-ink-3">{item.activity}</span> : null}
-              {s.artifacts?.map((a) => (
-                <span key={a.detail} className="flex items-center gap-1 text-ink-2">
-                  <Package className="size-3 text-ink-3" />
-                  {a.label} <span className="font-mono text-[11px]">{a.detail}</span>
-                </span>
-              ))}
+              {s.artifacts
+                ?.filter((a) => !a.href)
+                .map((a) => (
+                  <span key={a.detail} className="flex items-center gap-1 text-ink-2">
+                    <Package className="size-3 text-ink-3" />
+                    {a.label} <span className="font-mono text-[11px]">{a.detail}</span>
+                  </span>
+                ))}
             </div>
+            {/* 開いて見られるもの（モック・公開した URL）は、押せる形で頭に出す */}
+            {s.artifacts?.some((a) => a.href) ? (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {s.artifacts
+                  .filter((a) => a.href)
+                  .map((a) => (
+                    <a
+                      key={a.href}
+                      href={a.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-xs text-foreground hover:border-accent-foreground/30 hover:bg-accent"
+                    >
+                      <ExternalLink className="size-3.5 text-ink-3" />
+                      {a.label}
+                    </a>
+                  ))}
+              </div>
+            ) : null}
             {s.points.length > 0 || s.notVerified.length > 0 ? (
               <ul className="mt-2.5 space-y-1 text-[13px]">
                 {s.points.map((p) => (
@@ -439,7 +462,14 @@ function ReturnedBody({
         ) : null}
 
         {/* AI の最後の返事。まとめがあるときは畳んでおき、無いときは本文そのものが主役 */}
-        <div className={cn("mt-3", s ? "border-t border-border pt-3" : "")}>
+        {!s && !item.interrupted ? (
+          <p className="mt-2.5 flex items-center gap-2 text-[11px] text-ink-3">
+            <span>AI の最後の返事</span>
+            {item.activity ? <span>・{item.activity}</span> : null}
+            <span className="rounded bg-surface-2 px-1.5 py-0.5">まとめなし</span>
+          </p>
+        ) : null}
+        <div className={cn(s ? "mt-3 border-t border-border pt-3" : "mt-1.5")}>
           {s ? (
             <button
               type="button"
@@ -477,22 +507,42 @@ function ReturnedBody({
                   {d.options.map((o) => {
                     const on = chosen[i] === o.reply;
                     return (
-                      <button
-                        key={o.label}
-                        type="button"
-                        onClick={() => choose(i, o.reply)}
-                        title={o.reply}
-                        className={cn(
-                          "flex h-7 items-center gap-1 rounded-full border px-3 text-xs",
-                          on
-                            ? "border-turn bg-turn text-[var(--banto-on-color)]"
-                            : "border-border bg-card text-foreground hover:border-turn/60",
-                        )}
-                      >
-                        {on ? <Check className="size-3" /> : null}
-                        {o.label}
-                        {o.recommended && !on ? <span className="text-[10px] text-turn">おすすめ</span> : null}
-                      </button>
+                      <span key={o.label} className="flex items-stretch">
+                        <button
+                          type="button"
+                          onClick={() => choose(i, o.reply)}
+                          title={o.reply}
+                          className={cn(
+                            "flex h-7 items-center gap-1 border px-3 text-xs",
+                            o.href ? "rounded-l-full" : "rounded-full",
+                            on
+                              ? "border-turn bg-turn text-[var(--banto-on-color)]"
+                              : "border-border bg-card text-foreground hover:border-turn/60",
+                          )}
+                        >
+                          {on ? <Check className="size-3" /> : null}
+                          {o.label}
+                          {o.recommended && !on ? <span className="text-[10px] text-turn">おすすめ</span> : null}
+                        </button>
+                        {/* その選択肢の中身（モック等）を開いて見る——選ぶ前に見比べられるように */}
+                        {o.href ? (
+                          <a
+                            href={o.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label={`${o.label} を開いて見る`}
+                            className={cn(
+                              "flex h-7 items-center gap-1 rounded-r-full border border-l-0 px-2.5 text-[11px]",
+                              on
+                                ? "border-turn bg-turn/85 text-[var(--banto-on-color)]"
+                                : "border-border bg-card text-ink-2 hover:bg-accent hover:text-foreground",
+                            )}
+                          >
+                            見る
+                            <ExternalLink className="size-3" />
+                          </a>
+                        ) : null}
+                      </span>
                     );
                   })}
                 </div>
@@ -628,7 +678,7 @@ function Markdownish({ text }: { text: string }) {
 }
 
 function Inline({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|https?:\/\/[^\s）、。]+)/g);
   return (
     <>
       {parts.map((p, i) =>
@@ -636,6 +686,16 @@ function Inline({ text }: { text: string }) {
           <strong key={i} className="font-semibold">
             {p.slice(2, -2)}
           </strong>
+        ) : /^https?:\/\//.test(p) ? (
+          <a
+            key={i}
+            href={p}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all text-[var(--banto-accent)] underline decoration-[var(--banto-accent)]/40 underline-offset-2 hover:decoration-[var(--banto-accent)]"
+          >
+            {p}
+          </a>
         ) : p.startsWith("`") ? (
           <code key={i} className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.85em]">
             {p.slice(1, -1)}

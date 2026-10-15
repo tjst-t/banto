@@ -30,12 +30,13 @@ export interface FeedJudgment extends FeedBase {
 export interface FeedDecision {
   question: string;
   context?: string;
-  options: { label: string; reply: string; recommended?: boolean }[];
+  /** href＝その選択肢の中身を見られる場所（モック等）。押す前に見比べられるように */
+  options: { label: string; reply: string; recommended?: boolean; href?: string }[];
 }
 
 export interface FeedReturned extends FeedBase {
   kind: "returned";
-  /** 人が頼んだこと（まとめの request、無ければ人の最後の発言の頭） */
+  /** 人が頼んだこと（まとめの request）。まとめが無いときは人の最後の発言の頭 */
   request: string;
   /** AI の最後の返事（本文） */
   reply: string;
@@ -44,7 +45,7 @@ export interface FeedReturned extends FeedBase {
     headline: string;
     points: string[];
     notVerified: string[];
-    artifacts?: { label: string; detail: string }[];
+    artifacts?: { label: string; detail: string; href?: string }[];
     decisions: FeedDecision[];
     nextSuggestions?: { label: string; reply: string }[];
   };
@@ -106,20 +107,24 @@ let items: FeedItem[] = [
     threadKind: "fork",
     request: "アシスタントの発言の見せ方を見直し、案をいくつか作って比べられるようにする",
     reply:
-      "アシスタントの発言の見せ方を2案作りました。\n\n- **案A 文字なしアイコン**：発言の左に小さな丸だけを置き、名前は出しません。行の頭が揃うので長い会話でも目が流れやすいです。\n- **案B 罫線だけ**：アイコンも名前も無く、左に細い線を引くだけ。いちばん静かですが、人の発言との区別が色だけになります。\n\nどちらもモックの /p/banto?fork=ui で切り替えて見られます。",
+      "アシスタントの発言の見せ方を2案作りました。\n\n- **案A 文字なしアイコン**：発言の左に小さな丸だけを置き、名前は出しません。行の頭が揃うので長い会話でも目が流れやすいです。\n- **案B 罫線だけ**：アイコンも名前も無く、左に細い線を引くだけ。いちばん静かですが、人の発言との区別が色だけになります。\n\nどちらもモック https://mock-inbox-2ced47c4.banto.tjstkm.net/p/banto?fork=ui で切り替えて見られます。",
     summary: {
       status: "done",
       headline: "アシスタントの発言の見せ方を2案作りました。どちらで進めるか決めてください。",
       points: ["案A：文字なしアイコン（行の頭が揃う）", "案B：罫線だけ（静かだが人の発言との区別が色だけ）"],
       notVerified: ["携帯の幅では見ていない"],
-      artifacts: [{ label: "コミット", detail: "a1b2c3d4（fork/ui-avatar）" }],
+      artifacts: [
+        { label: "案A のモック", detail: "mock-ui-2ced47c4", href: "https://mock-inbox-2ced47c4.banto.tjstkm.net/p/banto?fork=ui&avatar=a" },
+        { label: "案B のモック", detail: "mock-ui-2ced47c4", href: "https://mock-inbox-2ced47c4.banto.tjstkm.net/p/banto?fork=ui&avatar=b" },
+        { label: "コミット", detail: "a1b2c3d4（fork/ui-avatar）" },
+      ],
       decisions: [
         {
           question: "アシスタントの発言はどちらの見せ方にしますか？",
           context: "案B は暗いテーマで線が見えにくくなります。",
           options: [
-            { label: "案A", reply: "案A（文字なしアイコン）で進めて。携帯の幅でも確かめて。", recommended: true },
-            { label: "案B", reply: "案B（罫線だけ）で進めて。暗いテーマの線の色も調整して。" },
+            { label: "案A", reply: "案A（文字なしアイコン）で進めて。携帯の幅でも確かめて。", recommended: true, href: "https://mock-inbox-2ced47c4.banto.tjstkm.net/p/banto?fork=ui&avatar=a" },
+            { label: "案B", reply: "案B（罫線だけ）で進めて。暗いテーマの線の色も調整して。", href: "https://mock-inbox-2ced47c4.banto.tjstkm.net/p/banto?fork=ui&avatar=b" },
           ],
         },
       ],
@@ -212,6 +217,19 @@ let items: FeedItem[] = [
     activity: "コマンド 7 回",
     age: "1時間前",
     ageMin: 60,
+  },
+  {
+    kind: "returned",
+    id: "r-hermes",
+    projectId: "hermes",
+    threadId: "hermes-base",
+    threadKind: "base",
+    request: "検索の遅さの原因を調べて。直すのはまだいい",
+    reply:
+      "検索が遅い原因は、埋め込みの近傍探索ではなく、その前の絞り込み（タグでの WHERE）でした。\n\n- タグの列に索引が無く、1回の検索で 38 万行を全部読んでいます（EXPLAIN で確認）\n- 近傍探索そのものは 12ms で、全体 1.9 秒のほとんどは絞り込みです\n- 索引を足せば 50ms 前後になる見込みです（手元の写しで測った値）\n\n直すのはまだと言われたので、何も変えていません。索引を足すなら `CREATE INDEX memories_tags_idx ON memories USING gin (tags);` の1行です。",
+    activity: "コマンド 12 回",
+    age: "45分前",
+    ageMin: 45,
   },
   {
     kind: "fix",
