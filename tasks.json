@@ -7520,7 +7520,7 @@
       "number": 312,
       "kind": "bug",
       "title": "届いたもの（banto-delivery）の本文をそのまま囲みに埋めていて、中身が人の発言を装える",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7535,7 +7535,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:14:08.503Z",
-      "updatedAt": "2026-10-15T10:14:08.503Z",
+      "updatedAt": "2026-10-15T11:04:43.574Z",
       "closedAt": null,
       "extra": {}
     },
