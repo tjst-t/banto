@@ -7235,6 +7235,34 @@
       "updatedAt": "2026-10-15T00:58:12.345Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "report-turn-url",
+      "number": 300,
+      "kind": "task",
+      "title": "受信箱の見直し——あなたの番だけ・受信箱の中で読んで答える・report_turn に URL",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "inbox"
+      ],
+      "body": "仕様：v4-architecture.md §2.4「受信箱は『あなたの番になったもの』だけ」・v4-frontend.md §6.41（f4b5d7a2、fork/inbox-redesign）。見本はモック mock/components/banto/inbox/inbox-page.tsx（d630606b）。作業ツリー .worktrees/inbox-redesign。",
+      "doneWhen": "裏の仕事が残っている途中のターンと届くたびの知らせが受信箱に出ない。受信箱が全面のカードで、まとめ・返事を読み、選択肢で返信を作って送れ、判断待ちに答えられる。report_turn の artifacts と options に url。関係する単体テストと E2E が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "d3845578-09db-4233-9c01-d775c205c5bc"
+        }
+      ],
+      "createdAt": "2026-10-15T05:21:16.801Z",
+      "updatedAt": "2026-10-15T05:21:16.801Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
