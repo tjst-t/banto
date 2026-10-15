@@ -19,6 +19,11 @@
 // `package.json`・起動役・symlink）、(2) 依存（`node_modules` の下のファイル）、(3) node。塗りごとに同じ形で鍵を取り、向こうの
 // `code/layers/<塗り>-<鍵16>-<連番>` に置く。版のフォルダは3つの塗りを**ハードリンクで写して**組む（`cp -al`）——パスも
 // realpath も今と同じなので、node の依存の解決（入れ子の `node_modules`・`@banto/*` の相対の symlink）が変わらない。
+//
+// **依存はパッケージごとの塗りにする**（決定・2026-10-15、Backlog #325）：(2) を `node_modules` の下のパッケージごと
+// （`@scope/name` はその単位、入れ子の `node_modules` は入れ子の場所ごと）に分け、`pkg-<鍵16>-<連番>` に置く。鍵は
+// パッケージのフォルダからの相対で取り、版の `<版>.layers` に「塗りの名前<TAB>版の中の場所」を1行ずつ書く。向こうに無い
+// パッケージだけを1本の tar で送り、向こうで分ける。照合・分ける・片づけは、パッケージの数によらず1回の往復で済ませる。
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, createReadStream } from "node:fs";
@@ -145,21 +150,69 @@ export function collectCodeBundle(monorepoRoot: string, extras: { nodePath: stri
   return [...entries.values()];
 }
 
-/** 塗り（向こうに別々に置き、変わったものだけを送る単位）。並びは送る順（大きいものから） */
-export const LAYER_KINDS = ["deps", "node", "code"] as const;
-export type LayerKind = (typeof LAYER_KINDS)[number];
+/**
+ * 塗りの種類：コード・node と、依存のパッケージ（`pkg`——パッケージごとに1つ）。依存をパッケージごとに分けたのは
+ * 決定・2026-10-15（Backlog #325——依存が 14 個増えただけで、依存の塗り全体の約 700MB を送り直していた）
+ */
+export type LayerKind = "code" | "node" | "pkg";
 
-/** その1件がどの塗りに入るか（依存は `node_modules` の下のファイル。symlink はコードに入れる——`@banto/*` を含む） */
-export function layerOf(e: BundleEntry): LayerKind {
-  if (e.rel === REMOTE_NODE_REL) return "node";
-  if (e.kind === "file" && e.rel.split("/").includes("node_modules")) return "deps";
-  return "code";
+/**
+ * 1つの塗り。`path` は版のフォルダの中で塗りを置く場所（コードと node は根の `.`、パッケージはそのフォルダ）。
+ * `entries` の `rel` は版の根からのまま（tar はワークスペースの根から読む）。鍵は `path` からの相対で取る——
+ * 同じ中身のパッケージは、置き場所が違っても同じ塗りを使う
+ */
+export interface Layer {
+  kind: LayerKind;
+  path: string;
+  entries: BundleEntry[];
+  digest: string;
 }
 
-/** 送るものを塗りに分ける（塗りの中のパスは版のフォルダと同じ——向こうの塗りのフォルダで同じ鍵になる） */
-export function splitLayers(entries: readonly BundleEntry[]): Record<LayerKind, BundleEntry[]> {
-  const out: Record<LayerKind, BundleEntry[]> = { deps: [], node: [], code: [] };
-  for (const e of entries) out[layerOf(e)].push(e);
+/**
+ * `node_modules` の下のファイルが入るパッケージのフォルダ（いちばん奥の `node_modules/<名前>`、`@scope/<名前>` はその単位）。
+ * 入れ子の `node_modules` は、入れ子の場所ごとに別のパッケージ
+ */
+export function packageDirOf(rel: string): string {
+  const parts = rel.split("/");
+  const i = parts.lastIndexOf("node_modules");
+  const width = parts[i + 1]?.startsWith("@") ? 2 : 1;
+  // パッケージのフォルダの下にファイルが無い形（`node_modules/x.js`・`node_modules/@s/x.js`）は依存として辿らないので来ない
+  if (i < 0 || parts.length <= i + 1 + width) throw new Error(`依存のパッケージのフォルダを決められません：${rel}`);
+  return parts.slice(0, i + 1 + width).join("/");
+}
+
+/** その1件がどの塗りに入るか（依存は `node_modules` の下のファイル。symlink はコードに入れる——`@banto/*` を含む） */
+export function layerOf(e: BundleEntry): { kind: LayerKind; path: string } {
+  if (e.rel === REMOTE_NODE_REL) return { kind: "node", path: "." };
+  if (e.kind === "file" && e.rel.split("/").includes("node_modules")) return { kind: "pkg", path: packageDirOf(e.rel) };
+  return { kind: "code", path: "." };
+}
+
+/** 送るものを塗りに分ける。並びは node・パッケージ（パスの順）・コード */
+export function splitLayers(entries: readonly BundleEntry[]): Array<{ kind: LayerKind; path: string; entries: BundleEntry[] }> {
+  const node: BundleEntry[] = [];
+  const code: BundleEntry[] = [];
+  const pkgs = new Map<string, BundleEntry[]>();
+  for (const e of entries) {
+    const { kind, path } = layerOf(e);
+    if (kind === "node") node.push(e);
+    else if (kind === "code") code.push(e);
+    else pkgs.set(path, [...(pkgs.get(path) ?? []), e]);
+  }
+  return [
+    { kind: "node" as const, path: ".", entries: node },
+    ...[...pkgs.keys()].sort(byteOrder).map((path) => ({ kind: "pkg" as const, path, entries: pkgs.get(path)! })),
+    { kind: "code" as const, path: ".", entries: code },
+  ];
+}
+
+/** 塗りに分けて、それぞれの鍵を取る（パッケージは自分のフォルダからの相対で——向こうの塗りのフォルダと同じ形） */
+export async function computeLayers(entries: readonly BundleEntry[], cache: FileHashCache): Promise<Layer[]> {
+  const out: Layer[] = [];
+  for (const l of splitLayers(entries)) {
+    const rooted = l.path === "." ? l.entries : l.entries.map((e) => ({ ...e, rel: e.rel.slice(l.path.length + 1) }));
+    out.push({ ...l, digest: await bundleDigest(rooted, cache) });
+  }
   return out;
 }
 
@@ -170,19 +223,24 @@ export function layerPrefix(kind: LayerKind, digest: string): string {
 
 /**
  * **どの塗りを使い、どれを送るか**。`remote` は向こうにある塗りのフォルダ（名前→いまの中身の鍵）。鍵が合うものがあれば
- * それを使い、無ければ（無い・書き換えられていた）新しい連番の名前で送る
+ * それを使い、無ければ（無い・書き換えられていた）新しい連番の名前で送る。同じ鍵の塗り（同じ中身のパッケージが2箇所に
+ * ある）は1つの名前を使い、送るのは最初の1つだけ
  */
 export function planLayers(
   layers: ReadonlyArray<{ kind: LayerKind; digest: string }>,
   remote: ReadonlyMap<string, string>,
 ): Array<{ kind: LayerKind; name: string; send: boolean }> {
+  const planned = new Map<string, string>();
   return layers.map(({ kind, digest }) => {
     const prefix = layerPrefix(kind, digest);
+    const already = planned.get(prefix);
+    if (already) return { kind, name: already, send: false };
     const same = [...remote.keys()].filter((name) => name.startsWith(prefix)).sort();
     const ok = same.find((name) => remote.get(name) === digest);
-    if (ok) return { kind, name: ok, send: false };
     const n = Math.max(0, ...same.map((name) => Number(name.slice(prefix.length)) || 0)) + 1;
-    return { kind, name: `${prefix}${n}`, send: true };
+    const name = ok ?? `${prefix}${n}`;
+    planned.set(prefix, name);
+    return { kind, name, send: !ok };
   });
 }
 
@@ -193,33 +251,78 @@ export function layerBytes(entries: readonly BundleEntry[]): number {
   return (tarEntries(entries).length > 0 ? estimateTarBytes(entries) : 0) + looseBytes;
 }
 
+/** 送る塗りの合計の見積もり（進み具合の分母）：パッケージは1本の tar にまとめ、コードと node はそれぞれ送る */
+export function sendBytes(layers: ReadonlyArray<{ kind: LayerKind; entries: readonly BundleEntry[] }>): number {
+  const pkgs = layers.filter((l) => l.kind === "pkg").flatMap((l) => l.entries);
+  const whole = layers.filter((l) => l.kind !== "pkg").reduce((sum, l) => sum + layerBytes(l.entries), 0);
+  return whole + (pkgs.length > 0 ? estimateTarBytes(pkgs) : 0);
+}
+
+/**
+ * 向こうで、1本の tar で `incoming`（塗りの置き場の中のフォルダ名）に展開したパッケージを、パッケージごとの塗りに
+ * 分ける sh。奥のパッケージから順に動かす（外のパッケージのフォルダに入れ子のパッケージが残らない——残るのは空の
+ * フォルダだけで、鍵はファイルと symlink だけを見る）。それぞれ鍵を確かめ、合えば名前を付け、合わなければ
+ * `bad=<名前>\t<向こうの鍵>` を出す。往復はパッケージの数によらず1回
+ */
+export function remoteSplitPackagesScript(p: {
+  layersDir: string;
+  incoming: string;
+  packages: ReadonlyArray<{ path: string; name: string; digest: string }>;
+}): string {
+  const deepestFirst = [...p.packages].sort((a, b) => b.path.split("/").length - a.path.split("/").length || byteOrder(a.path, b.path));
+  return [
+    "set -e",
+    `L=${shq(p.layersDir)}`,
+    `i="$L"/${shq(p.incoming)}`,
+    `mkdir -p "$i/.split"`,
+    // 1つ動かして確かめる：$1＝展開した中のパス、$2＝塗りの名前、$3＝鍵
+    "one() {",
+    `  mv -T -- "$i/$1" "$i/.split/$2"`,
+    `  got=$(${remoteDigestCommand('"$i/.split/$2"')})`,
+    `  if [ "$got" = "$3" ]; then mv -T -- "$i/.split/$2" "$L/$2"; else printf 'bad=%s\\t%s\\n' "$2" "$got"; fi`,
+    "}",
+    ...deepestFirst.map((pkg) => `one ${shq(pkg.path)} ${shq(pkg.name)} ${shq(pkg.digest)}`),
+    `rm -rf -- "$i"`,
+    "",
+  ].join("\n");
+}
+
 /**
  * 向こうで、塗りをハードリンクで写して版のフォルダ `staging` を組み、その中身の鍵を出す sh（`set -e`）。
- * `code`・`staging` は sh の式ではなく、そのまま引用して使うパス
+ * `code`・`staging` は sh の式ではなく、そのまま引用して使うパス。塗りは `path`（版の中の場所）へ写す
  */
-export function remoteAssembleScript(p: { code: string; staging: string; layers: readonly string[] }): string {
+export function remoteAssembleScript(p: { code: string; staging: string; layers: ReadonlyArray<{ name: string; path: string }> }): string {
   return [
     "set -e",
     `c=${shq(p.code)}`,
     `s=${shq(`${p.code}/${p.staging}`)}`,
     `mkdir -p "$s"`,
-    ...p.layers.map((name) => `cp -al -- "$c/layers"/${shq(name)}/. "$s"/`),
+    ...p.layers.map(({ name, path }) =>
+      path === "." ? `cp -al -- "$c/layers"/${shq(name)}/. "$s"/` : `mkdir -p "$s"/${shq(path)} && cp -al -- "$c/layers"/${shq(name)}/. "$s"/${shq(path)}/`,
+    ),
     `printf 'digest=%s\n' "$(${remoteDigestCommand('"$s"')})"`,
     "",
   ].join("\n");
 }
 
 /**
- * 向こうで、組んだ版に切り替え、いまの版（`cur`→前の版）と新しい版のほかを消す sh。塗りは、その2つの版が
- * 参照していない（`<版>.layers` に無い）ものを消す
+ * 向こうで、組んだ版に切り替え、いまの版（`cur`→前の版）と新しい版のほかを消す sh。版が使う塗りは `<版>.layers` に
+ * 1行1つ（`<塗りの名前>\t<版の中の場所>`。パッケージごとに分ける前の版は名前だけ）。塗りは、その2つの版が参照して
+ * いないものを消す（数百個でも1回の grep で選ぶ）
  */
-export function remoteSwitchScript(p: { code: string; staging: string; next: string; cur: string; layers: readonly string[] }): string {
+export function remoteSwitchScript(p: {
+  code: string;
+  staging: string;
+  next: string;
+  cur: string;
+  layers: ReadonlyArray<{ name: string; path: string }>;
+}): string {
   const { next, cur } = p;
   return [
     "set -e",
     `c=${shq(p.code)}`,
     `mv "$c"/${shq(p.staging)} "$c"/${shq(next)}`,
-    `printf '%s\n' ${p.layers.map(shq).join(" ")} > "$c"/${shq(`${next}.layers`)}`,
+    `printf '%s\\t%s\\n' ${p.layers.map((l) => `${shq(l.name)} ${shq(l.path)}`).join(" ")} > "$c"/${shq(`${next}.layers`)}`,
     `printf '%s\n' ${shq(cur)} > "$c/previous"`,
     `printf '%s\n' ${shq(next)} > "$c/current.tmp" && mv "$c/current.tmp" "$c/current"`,
     `for d in "$c"/* "$c"/.incoming-*; do`,
@@ -233,12 +336,9 @@ export function remoteSwitchScript(p: { code: string; staging: string; next: str
     `  [ "$n" = ${shq(next)} ] || [ "$n" = ${shq(cur)} ] || rm -f -- "$f"`,
     "done",
     // 前の版が塗りを参照しない（塗りに分ける前の版）なら、新しい版の分だけを残す
-    `keep=$(cat "$c"/${shq(`${next}.layers`)} ${cur ? `"$c"/${shq(`${cur}.layers`)} ` : ""}2>/dev/null || true)`,
-    `for d in "$c/layers"/* "$c/layers"/.incoming-*; do`,
-    `  [ -d "$d" ] || continue`,
-    `  n=$(basename "$d")`,
-    `  printf '%s\n' "$keep" | grep -qxF -- "$n" || rm -rf -- "$d"`,
-    "done",
+    `cat "$c"/${shq(`${next}.layers`)} ${cur ? `"$c"/${shq(`${cur}.layers`)} ` : ""}2>/dev/null | cut -f1 > "$c/.keep" || true`,
+    `ls -A "$c/layers" | grep -vxF -f "$c/.keep" | while IFS= read -r n; do rm -rf -- "$c/layers/$n"; done`,
+    `rm -f -- "$c/.keep"`,
     "",
   ].join("\n");
 }

@@ -30,20 +30,20 @@ import {
   REMOTE_LAUNCHER_REL,
   REMOTE_NODE_REL,
   FileHashCache,
-  LAYER_KINDS,
   bundleDigest,
   collectCodeBundle,
   collectTreeEntries,
-  layerBytes,
+  computeLayers,
   layerPrefix,
   planLayers,
   remoteAssembleScript,
   remoteDigestCommand,
+  remoteSplitPackagesScript,
   remoteSwitchScript,
-  splitLayers,
+  sendBytes,
   tarList,
   type BundleEntry,
-  type LayerKind,
+  type Layer,
 } from "./remote-code.js";
 import { remoteAddress, type LookupIPv4 } from "./remote-address.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
@@ -800,14 +800,14 @@ export class RemoteSshRuntime {
   /**
    * **banto のコードを照合し、違えば送る**（接続を張ったときに1回）。いまの版の置き場に上書きせず、新しい置き場
    * （版の鍵＋連番）に組んでから切り替える——同じ版で走っている Module の足元を差し替えない。前の版を1つ残す。
-   * 送るのは向こうに無い（か、書き換えられていた）塗りだけ（Backlog #298——ふだんの更新ではコードの数MB）
+   * 送るのは向こうに無い（か、書き換えられていた）塗りだけ（Backlog #298——ふだんの更新ではコードの数MB）。依存は
+   * パッケージごとの塗りで、向こうに無いパッケージだけを1本の tar で送る（Backlog #325）。向こうとの往復は
+   * パッケージの数によらない（問い合わせ・照合・分ける・組む・切り替えが、それぞれ1回）
    */
   private async syncCode(conn: Connection): Promise<string> {
     const entries = collectCodeBundle(this.opts.monorepoRoot, { nodePath: process.execPath, launcherPath: this.launcherPath });
     const digest = await bundleDigest(entries, this.hashes);
-    const split = splitLayers(entries);
-    const layers: Array<{ kind: LayerKind; entries: BundleEntry[]; digest: string }> = [];
-    for (const kind of LAYER_KINDS) layers.push({ kind, entries: split[kind], digest: await bundleDigest(split[kind], this.hashes) });
+    const layers = await computeLayers(entries, this.hashes);
     const prefix = digest.slice(0, 16);
     const code = `${conn.base}/code`;
     const state = await this.mustRun(
@@ -847,7 +847,7 @@ export class RemoteSshRuntime {
       [
         `L=${shq(`${code}/layers`)}`,
         `mkdir -p "$L"`,
-        `for d in ${layers.map((l) => `"$L"/${shq(layerPrefix(l.kind, l.digest))}*`).join(" ")}; do`,
+        `for d in ${[...new Set(layers.map((l) => layerPrefix(l.kind, l.digest)))].map((prefix) => `"$L"/${shq(prefix)}*`).join(" ")}; do`,
         `  [ -d "$d" ] || continue`,
         `  printf 'layer=%s\\t%s\\n' "$(basename "$d")" "$(${remoteDigestCommand('"$d"')})"`,
         "done",
@@ -857,28 +857,32 @@ export class RemoteSshRuntime {
       { timeoutMs: 300_000 },
     );
     const remoteLayers = new Map([...have.matchAll(/^layer=([^\t\n]+)\t(.*)$/gm)].map((m) => [m[1]!, m[2]!] as const));
-    const plan = planLayers(layers, remoteLayers);
-    const toSend = plan.flatMap((p) => (p.send ? [{ ...p, ...layers.find((l) => l.kind === p.kind)! }] : []));
+    const plan = planLayers(layers, remoteLayers).map((p, i) => ({ ...p, ...layers[i]! }));
+    const toSend = plan.filter((p) => p.send);
+    const sendPkgs = toSend.filter((l) => l.kind === "pkg");
+    const sendWhole = toSend.filter((l) => l.kind !== "pkg");
     const sending = performance.now();
     // 縮め方：向こうに展開するコマンドがあるもの（zstd は host の node が持っていれば）
     const codec: Codec =
       /^zstd=1$/m.test(state) && zstd.createZstdCompress && zstd.constants.ZSTD_c_compressionLevel !== undefined ? "zstd" : /^gzip=1$/m.test(state) ? "gzip" : "none";
     // 分母は送る塗りの合計（コードだけなら数MB）。送る塗りが無ければ（向こうで組み直すだけ）出さない
-    const transfer = toSend.length > 0 ? this.startTransfer(conn.runtimeName, toSend.reduce((sum, l) => sum + layerBytes(l.entries), 0)) : undefined;
+    const transfer = toSend.length > 0 ? this.startTransfer(conn.runtimeName, sendBytes(toSend)) : undefined;
     // **確かめて切り替え終えるまで「送っています」のままにする**——消えたら使える、という意味にする（送り終えてから
     // 向こうで確かめる間に消すと、人には終わったように見えて Module はまだ起きない）
     // 送れなかったら、その理由を同じ行に残す（次に送り始めるまで）——黙って消すと、人には終わったように見える
     try {
       let wireBytes = 0;
-      for (const layer of toSend) wireBytes += await this.sendLayer(conn, `${code}/layers`, layer, codec, transfer!);
+      if (sendPkgs.length > 0) wireBytes += await this.sendPackages(conn, `${code}/layers`, sendPkgs, codec, transfer!);
+      for (const layer of sendWhole) wireBytes += await this.sendLayer(conn, `${code}/layers`, layer, codec, transfer!);
       const rawBytes = transfer?.sentBytes() ?? 0;
-      const dir = await this.assembleAndSwitch(conn, { digest, code, cur, next, layers: plan.map((p) => p.name) });
+      const dir = await this.assembleAndSwitch(conn, { digest, code, cur, next, layers: plan.map((p) => ({ name: p.name, path: p.path })) });
       if (transfer) transfer.end();
       else this.clearTransfer(conn.runtimeName);
       const what =
         toSend.length === 0
           ? "送った塗りは無く組み直しだけ"
-          : `送った塗り ${toSend.map((l) => l.kind).join("・")}・${toSend.reduce((sum, l) => sum + l.entries.length, 0)} 件・` +
+          : `送った塗り ${[...sendWhole.map((l) => l.kind), ...(sendPkgs.length > 0 ? [`パッケージ ${sendPkgs.length} 個`] : [])].join("・")}・` +
+            `${toSend.reduce((sum, l) => sum + l.entries.length, 0)} 件・` +
             `${mb(rawBytes)}MB を ${codec === "none" ? "縮めずに" : `${codec} で ${mb(wireBytes)}MB に縮めて`}`;
       this.log(`[host] 別のサーバ「${conn.runtimeName}」にコードを送りました（${why}・版 ${next}・${what}・${Math.round(performance.now() - sending)}ms）`);
       return dir;
@@ -888,11 +892,27 @@ export class RemoteSshRuntime {
     }
   }
 
-  /** 1つの塗りを向こうの塗りの置き場に送り、確かめてから名前を付ける。返すのは線に流したバイト数 */
+  /**
+   * 向こうに無いパッケージを1本の tar で送り、向こうでパッケージごとの塗りに分けて、確かめてから名前を付ける
+   * （往復は送るのと分けるのとで2回——パッケージの数によらない）。返すのは線に流したバイト数
+   */
+  private async sendPackages(conn: Connection, layersDir: string, pkgs: ReadonlyArray<Layer & { name: string }>, codec: Codec, transfer: TransferTracker): Promise<number> {
+    const incoming = `.incoming-${randomBytes(4).toString("hex")}`;
+    const wire = await this.sendTree(conn, pkgs.flatMap((l) => l.entries), `${layersDir}/${incoming}`, codec, transfer);
+    const out = await this.mustRun(conn, "送った依存を確かめられ", remoteSplitPackagesScript({ layersDir, incoming, packages: pkgs }), { timeoutMs: 300_000 });
+    const bad = [...out.matchAll(/^bad=([^\t\n]+)\t(.*)$/gm)].map((m) => {
+      const pkg = pkgs.find((l) => l.name === m[1]);
+      return `${pkg?.path ?? m[1]}（送った版 ${pkg?.digest.slice(0, 12) ?? "?"}・向こう ${m[2]!.slice(0, 12)}）`;
+    });
+    if (bad.length > 0) throw new Error(`別のサーバ「${conn.runtimeName}」に送った依存が、向こうで違う中身になりました：${bad.join("、")}`);
+    return wire;
+  }
+
+  /** 1つの塗り（コード・node）を向こうの塗りの置き場に送り、確かめてから名前を付ける。返すのは線に流したバイト数 */
   private async sendLayer(
     conn: Connection,
     layersDir: string,
-    layer: { kind: LayerKind; name: string; entries: readonly BundleEntry[]; digest: string },
+    layer: Layer & { name: string },
     codec: Codec,
     transfer: TransferTracker,
   ): Promise<number> {
@@ -927,7 +947,10 @@ export class RemoteSshRuntime {
   }
 
   /** 塗りから新しい版の置き場を組み、向こうで確かめてから切り替える（`syncCode` の後半） */
-  private async assembleAndSwitch(conn: Connection, p: { digest: string; code: string; cur: string; next: string; layers: readonly string[] }): Promise<string> {
+  private async assembleAndSwitch(
+    conn: Connection,
+    p: { digest: string; code: string; cur: string; next: string; layers: ReadonlyArray<{ name: string; path: string }> },
+  ): Promise<string> {
     const staging = `.incoming-${randomBytes(4).toString("hex")}`;
     const out = await this.mustRun(conn, "コードの版を組め", remoteAssembleScript({ code: p.code, staging, layers: p.layers }), { timeoutMs: 300_000 });
     const got = /^digest=(.*)$/m.exec(out)?.[1] ?? "";

@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -343,4 +343,101 @@ test("先に送る順番：一度に1台ずつ、失敗しても次へ進み、�
     await rt.closeAll();
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+// **依存はパッケージごとに照合して、向こうに無いものだけを送る**（Backlog #325）。偽の ssh は台本をこの機械でそのまま
+// 流す（向こうの置き場は一時フォルダ）。見るもの：送ったパッケージの数・向こうの往復の数がパッケージの数によらないこと・
+// 向こうで書き換えられたパッケージだけを送り直すこと
+test("依存はパッケージごとに照合し、向こうに無い・書き換えられたパッケージだけを送る。往復の数はパッケージの数によらない", async () => {
+  const run = async (packages: number) => {
+    const root = mkdtempSync(join(tmpdir(), "banto-remote-pkgs-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "banto-remote-pkgs-data-"));
+    const binDir = mkdtempSync(join(tmpdir(), "banto-remote-pkgs-bin-"));
+    const base = mkdtempSync(join(tmpdir(), "banto-remote-pkgs-base-"));
+    const w = (rel: string, body: string) => {
+      mkdirSync(join(root, rel, ".."), { recursive: true });
+      writeFileSync(join(root, rel), body);
+    };
+    const deps = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}`, "1"]));
+    const addPackage = (i: number) => {
+      w(`node_modules/p${i}/package.json`, JSON.stringify({ name: `p${i}` }));
+      w(`node_modules/p${i}/index.js`, `p${i}\n`);
+    };
+    w("package.json", JSON.stringify({ name: "ws" }));
+    w("packages/modules/a/package.json", JSON.stringify({ name: "a", dependencies: deps(packages) }));
+    w("packages/modules/a/dist/server.js", "a\n");
+    for (let i = 0; i < packages; i++) addPackage(i);
+    // 呼ばれるたびに1行残し、最後の引数（`sh -s` か `sh -c <台本>`）をこの機械で流す
+    writeFileSync(join(binDir, "ssh"), `#!/bin/sh\nfor a; do last=$a; done\necho x >> "${binDir}/calls"\nexec sh -c "$last"\n`);
+    chmodSync(join(binDir, "ssh"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${savedPath}`;
+    const master = spawn("sleep", ["60"], { stdio: "ignore" });
+    const logs: string[] = [];
+    const rt = new RemoteSshRuntime({
+      dataDir,
+      monorepoRoot: root,
+      runtimes: {} as never,
+      remoteNameOf: () => undefined,
+      createRelayListener: () => {
+        throw new Error("使わない");
+      },
+      notify: async () => undefined,
+      log: (line) => logs.push(line),
+    });
+    const conn = {
+      runtimeName: "vm",
+      runtime: { host: "example.invalid", port: 22, user: "u" },
+      controlPath: join(dataDir, "cm"),
+      knownHostsFile: "/dev/null",
+      master,
+      alive: true,
+      remotePort: 0,
+      base,
+      codeDir: "",
+      checks: [],
+      exited: new Promise<void>(() => undefined),
+      forwards: new Map(),
+      cautioned: new Set(),
+    };
+    const calls = () => (existsSync(join(binDir, "calls")) ? readFileSync(join(binDir, "calls"), "utf8").split("\n").length - 1 : 0);
+    /** 1回送って、その往復の数と、送ったと記録された文を返す */
+    const sync = async () => {
+      const before = calls();
+      const seen = logs.length;
+      const dir = await syncCode(rt, conn);
+      return { trips: calls() - before, log: logs.slice(seen).join("\n"), dir };
+    };
+    try {
+      const first = await sync();
+      assert.match(first.log, new RegExp(`送った塗り node・code・パッケージ ${packages} 個・`));
+      // 依存を1つ足す：送るのはそのパッケージとコードだけ
+      w("packages/modules/a/package.json", JSON.stringify({ name: "a", dependencies: deps(packages + 1) }));
+      addPackage(packages);
+      const added = await sync();
+      assert.match(added.log, /版が変わった・版 [0-9a-f]{16}-1・送った塗り code・パッケージ 1 個・6 件・/);
+      assert.equal(readFileSync(join(added.dir, `node_modules/p${packages}/index.js`), "utf8"), `p${packages}\n`);
+      // 向こうで1つのパッケージを書き換える：そのパッケージだけを送り直す（版の置き場のファイルは塗りのハードリンク）
+      writeFileSync(join(added.dir, "node_modules/p0/index.js"), "書き換えた\n");
+      const repaired = await sync();
+      assert.match(repaired.log, /向こうで書き換えられていた・版 [0-9a-f]{16}-2・送った塗り パッケージ 1 個・2 件・/);
+      assert.equal(readFileSync(join(repaired.dir, "node_modules/p0/index.js"), "utf8"), "p0\n");
+      // 変わらなければ照合だけで済む
+      const same = await sync();
+      assert.equal(same.log, "");
+      assert.equal(same.dir, repaired.dir);
+      return { first: first.trips, added: added.trips, repaired: repaired.trips, same: same.trips };
+    } finally {
+      process.env.PATH = savedPath;
+      master.kill("SIGKILL");
+      rmSync(root, { recursive: true, force: true });
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(base, { recursive: true, force: true });
+    }
+  };
+  const few = await run(2);
+  const many = await run(60);
+  assert.deepEqual(many, few, "往復の数がパッケージの数で変わった");
+  assert.equal(few.same, 1);
 });

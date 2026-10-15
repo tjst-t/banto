@@ -6,22 +6,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   FileHashCache,
-  LAYER_KINDS,
   REMOTE_LAUNCHER_REL,
   REMOTE_NODE_REL,
   bundleDigest,
   collectCodeBundle,
   collectTreeEntries,
+  computeLayers,
   estimateTarBytes,
   layerBytes,
+  packageDirOf,
   planLayers,
   remoteAssembleScript,
   remoteDigestCommand,
+  remoteSplitPackagesScript,
   remoteSwitchScript,
+  sendBytes,
   splitLayers,
   tarList,
   type BundleEntry,
-  type LayerKind,
+  type Layer,
 } from "./remote-code.js";
 
 /** 小さなワークスペース：Module 2つ・ワークスペースの依存・外の依存（入れ子の node_modules・optional・入っていない optional） */
@@ -162,31 +165,45 @@ test("照合の形を崩す名前（\\・改行・タブ）は送らずに止め
 
 const extras = (root: string) => ({ nodePath: join(root, "bin-node"), launcherPath: join(root, "launcher.mjs") });
 
-async function layersOf(root: string, cache: FileHashCache) {
-  const split = splitLayers(collectCodeBundle(root, extras(root)));
-  const out: Array<{ kind: LayerKind; entries: BundleEntry[]; digest: string }> = [];
-  for (const kind of LAYER_KINDS) out.push({ kind, entries: split[kind], digest: await bundleDigest(split[kind], cache) });
-  return out;
-}
+const layersOf = (root: string, cache: FileHashCache) => computeLayers(collectCodeBundle(root, extras(root)), cache);
 
 /** 向こうに、いまの塗りがそのまま置いてある形（名前→鍵） */
-function remoteHaving(layers: ReadonlyArray<{ kind: LayerKind; digest: string }>): Map<string, string> {
+function remoteHaving(layers: readonly Layer[]): Map<string, string> {
   return new Map(planLayers(layers, new Map()).map((p, i) => [p.name, layers[i]!.digest]));
 }
 
-test("3つの塗りに分ける：依存は node_modules の下のファイル、node は bin/node、ほか（symlink・起動役を含む）はコード", () => {
+/** 送る塗りの一覧（`<種類>:<場所>`）と、それに沿った計画 */
+function sending(layers: readonly Layer[], remote: ReadonlyMap<string, string>) {
+  const plan = planLayers(layers, remote).map((p, i) => ({ ...p, ...layers[i]! }));
+  const send = plan.filter((p) => p.send);
+  return { plan, send, what: send.map((l) => `${l.kind}:${l.path}`) };
+}
+
+test("塗りに分ける：node・依存はパッケージごと（入れ子の node_modules は入れ子の場所ごと）・ほか（symlink・起動役を含む）はコード", () => {
   const root = workspace();
   try {
     const split = splitLayers(collectCodeBundle(root, extras(root)));
-    assert.deepEqual(split.node.map((e) => e.rel), [REMOTE_NODE_REL]);
-    assert.ok(split.deps.every((e) => e.kind === "file" && e.rel.startsWith("node_modules/")));
-    assert.ok(split.deps.some((e) => e.rel === "node_modules/dep/node_modules/inner/i.js"));
-    assert.ok(split.code.some((e) => e.rel === "node_modules/@x/contract" && e.kind === "link"));
-    assert.ok(split.code.some((e) => e.rel === REMOTE_LAUNCHER_REL));
-    assert.ok(split.code.every((e) => !e.rel.startsWith("node_modules/") || e.kind === "link"));
+    assert.deepEqual(
+      split.map((l) => `${l.kind}:${l.path}`),
+      ["node:.", "pkg:node_modules/dep", "pkg:node_modules/dep/node_modules/inner", "pkg:node_modules/opt", "code:."],
+    );
+    const by = (path: string) => split.find((l) => l.path === path)!.entries.map((e) => e.rel).sort();
+    assert.deepEqual(by("node_modules/dep"), ["node_modules/dep/index.js", "node_modules/dep/package.json"]);
+    assert.deepEqual(by("node_modules/dep/node_modules/inner"), ["node_modules/dep/node_modules/inner/i.js", "node_modules/dep/node_modules/inner/package.json"]);
+    const code = split.at(-1)!.entries;
+    assert.ok(code.some((e) => e.rel === "node_modules/@x/contract" && e.kind === "link"));
+    assert.ok(code.some((e) => e.rel === REMOTE_LAUNCHER_REL));
+    assert.ok(code.every((e) => !e.rel.startsWith("node_modules/") || e.kind === "link"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("パッケージのフォルダ：@scope/名前 はその単位、いちばん奥の node_modules で決める", () => {
+  assert.equal(packageDirOf("node_modules/@napi-rs/canvas/js/index.js"), "node_modules/@napi-rs/canvas");
+  assert.equal(packageDirOf("node_modules/a/node_modules/@s/b/x.js"), "node_modules/a/node_modules/@s/b");
+  assert.equal(packageDirOf("node_modules/a/lib/x.js"), "node_modules/a");
+  assert.throws(() => packageDirOf("node_modules/x.js"), /パッケージのフォルダを決められません/);
 });
 
 test("外の依存が dependencies に挙げていても typescript は送らない", () => {
@@ -209,78 +226,179 @@ test("コードだけを変えたら、送るのはコードの塗りだけ（�
     const before = await layersOf(root, cache);
     const remote = remoteHaving(before);
     // 変えなければ何も送らない
-    assert.deepEqual(planLayers(before, remote).filter((p) => p.send), []);
+    assert.deepEqual(sending(before, remote).what, []);
     writeFileSync(join(root, "packages/modules/a/dist/server.js"), "a2\n");
     const after = await layersOf(root, cache);
-    const plan = planLayers(after, remote);
-    assert.deepEqual(plan.filter((p) => p.send).map((p) => p.kind), ["code"]);
-    const code = after.find((l) => l.kind === "code")!;
-    const bytes = layerBytes(code.entries);
-    assert.equal(bytes, estimateTarBytes(code.entries) + statSync(join(root, "launcher.mjs")).size);
-    assert.ok(bytes < 100_000, `分母 ${bytes}`);
-    assert.ok(code.entries.every((e) => !(e.kind === "file" && e.rel.includes("node_modules/"))));
+    const { plan, send, what } = sending(after, remote);
+    assert.deepEqual(what, ["code:."]);
+    const code = after.at(-1)!;
+    assert.equal(sendBytes(send), estimateTarBytes(code.entries) + statSync(join(root, "launcher.mjs")).size);
+    assert.ok(sendBytes(send) < 100_000, `分母 ${sendBytes(send)}`);
     // 使う塗りの名前：依存と node は向こうにあるもの、コードは新しい鍵の1番
     assert.deepEqual(
       plan.map((p) => p.name),
-      [`deps-${after[0]!.digest.slice(0, 16)}-1`, `node-${after[1]!.digest.slice(0, 16)}-1`, `code-${after[2]!.digest.slice(0, 16)}-1`],
+      after.map((l) => `${l.kind}-${l.digest.slice(0, 16)}-1`),
+    );
+    assert.deepEqual(
+      plan.filter((p) => p.kind !== "code").map((p) => p.name),
+      [...remote.keys()].filter((n) => !n.startsWith("code-")),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("依存か node を変えたら、その塗りだけを送る", async () => {
+test("依存を1つ足した版へ送り直すと、送るのはそのパッケージとコードの塗りだけ（分母もその分だけ）", async () => {
+  const root = workspace();
+  try {
+    writeFileSync(join(root, "node_modules/dep/index.js"), "d".repeat(2_000_000));
+    writeFileSync(join(root, "bin-node"), "n".repeat(3_000_000));
+    const cache = new FileHashCache();
+    const remote = remoteHaving(await layersOf(root, cache));
+    // Module a が依存 added（とその依存 @s/sub）を足した
+    writeFileSync(join(root, "packages/modules/a/package.json"), JSON.stringify({ name: "@x/a", dependencies: { "@x/contract": "*", dep: "1", added: "1" } }));
+    mkdirSync(join(root, "node_modules/added"), { recursive: true });
+    writeFileSync(join(root, "node_modules/added/package.json"), JSON.stringify({ name: "added", dependencies: { "@s/sub": "1" } }));
+    writeFileSync(join(root, "node_modules/added/index.js"), "x".repeat(40_000));
+    mkdirSync(join(root, "node_modules/@s/sub"), { recursive: true });
+    writeFileSync(join(root, "node_modules/@s/sub/package.json"), JSON.stringify({ name: "@s/sub" }));
+    const after = await layersOf(root, cache);
+    const { send, what } = sending(after, remote);
+    assert.deepEqual(what.sort(), ["code:.", "pkg:node_modules/@s/sub", "pkg:node_modules/added"]);
+    const pkgEntries = send.filter((l) => l.kind === "pkg").flatMap((l) => l.entries);
+    assert.deepEqual(pkgEntries.map((e) => e.rel).sort(), ["node_modules/@s/sub/package.json", "node_modules/added/index.js", "node_modules/added/package.json"]);
+    // 分母：足したパッケージを1本の tar にした分と、コードの塗りの分だけ（2MB の dep・3MB の node を含まない）
+    const code = send.find((l) => l.kind === "code")!;
+    assert.equal(sendBytes(send), estimateTarBytes(pkgEntries) + layerBytes(code.entries));
+    assert.ok(sendBytes(send) < 200_000, `分母 ${sendBytes(send)}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("依存のパッケージか node を変えたら、その塗りだけを送る", async () => {
   const root = workspace();
   try {
     const cache = new FileHashCache();
     const remote = remoteHaving(await layersOf(root, cache));
     writeFileSync(join(root, "node_modules/dep/node_modules/inner/i.js"), "inner2\n");
     const deps = await layersOf(root, cache);
-    assert.deepEqual(planLayers(deps, remote).filter((p) => p.send).map((p) => p.kind), ["deps"]);
-    assert.equal(layerBytes(deps[0]!.entries), estimateTarBytes(deps[0]!.entries));
+    assert.deepEqual(sending(deps, remote).what, ["pkg:node_modules/dep/node_modules/inner"]);
     for (const [name, digest] of remoteHaving(deps)) remote.set(name, digest);
     writeFileSync(join(root, "bin-node"), "node2\n");
     const node = await layersOf(root, cache);
-    assert.deepEqual(planLayers(node, remote).filter((p) => p.send).map((p) => p.kind), ["node"]);
-    assert.equal(layerBytes(node[1]!.entries), "node2\n".length);
+    const { send, what } = sending(node, remote);
+    assert.deepEqual(what, ["node:."]);
+    assert.equal(sendBytes(send), "node2\n".length);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("向こうの塗りが書き換えられていたら、新しい連番で送り直す", async () => {
+test("向こうのパッケージが書き換えられていたら、そのパッケージだけを新しい連番で送り直す", async () => {
   const root = workspace();
   try {
     const layers = await layersOf(root, new FileHashCache());
     const remote = remoteHaving(layers);
-    const depsName = [...remote.keys()].find((n) => n.startsWith("deps-"))!;
-    remote.set(depsName, "0".repeat(64));
-    const plan = planLayers(layers, remote);
+    const inner = layers.find((l) => l.path === "node_modules/dep/node_modules/inner")!;
+    const innerName = `pkg-${inner.digest.slice(0, 16)}-1`;
+    remote.set(innerName, "0".repeat(64));
+    const { send } = sending(layers, remote);
     assert.deepEqual(
-      plan.filter((p) => p.send).map((p) => p.name),
-      [depsName.replace(/-1$/, "-2")],
+      send.map((p) => `${p.path}=${p.name}`),
+      [`node_modules/dep/node_modules/inner=${innerName.replace(/-1$/, "-2")}`],
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-/** 塗りを送ったのと同じ形で向こうの置き場（`code/layers/<名前>`）に置く */
-function placeLayers(root: string, code: string, layers: ReadonlyArray<{ entries: BundleEntry[] }>, names: readonly string[]) {
-  layers.forEach((l, i) => {
-    const dir = join(code, "layers", names[i]!);
+test("同じ中身のパッケージが2箇所にあれば、塗りは1つで、送るのも1回", async () => {
+  const root = workspace();
+  try {
+    // inner と同じ中身を、別の場所にも置く（hoist されずに2つの版で入っている形）
+    writeFileSync(join(root, "packages/modules/b/package.json"), JSON.stringify({ name: "@x/b", dependencies: { dep: "1", inner: "1" } }));
+    mkdirSync(join(root, "node_modules/inner"), { recursive: true });
+    writeFileSync(join(root, "node_modules/inner/package.json"), JSON.stringify({ name: "inner" }));
+    writeFileSync(join(root, "node_modules/inner/i.js"), "inner\n");
+    const layers = await layersOf(root, new FileHashCache());
+    const { plan, send } = sending(layers, new Map());
+    const inners = plan.filter((p) => p.path.endsWith("/inner"));
+    assert.equal(inners.length, 2);
+    assert.equal(inners[0]!.name, inners[1]!.name);
+    assert.equal(send.filter((p) => p.name === inners[0]!.name).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * 塗りを送ったのと同じ形で向こうの置き場（`code/layers/<名前>`）に置く。パッケージは1本の tar で `.incoming-*` に展開して
+ * `remoteSplitPackagesScript` で分け、コードと node は塗りのフォルダにそのまま置く。返すのは分けたときの出力
+ */
+function placeLayers(root: string, code: string, layers: ReadonlyArray<Layer & { name: string }>): string {
+  const sh = (script: string, input?: string) => execFileSync("sh", ["-c", script], { encoding: "utf8", ...(input !== undefined ? { input } : {}) });
+  const L = join(code, "layers");
+  mkdirSync(L, { recursive: true });
+  const pkgs = layers.filter((l) => l.kind === "pkg");
+  let out = "";
+  if (pkgs.length > 0) {
+    const incoming = ".incoming-pkgs";
+    mkdirSync(join(L, incoming));
+    sh(`tar -C ${root} --null --no-recursion -cf - -T - | tar -C ${join(L, incoming)} -xf -`, tarList(pkgs.flatMap((l) => l.entries)));
+    out = sh(remoteSplitPackagesScript({ layersDir: L, incoming, packages: pkgs }));
+  }
+  for (const l of layers.filter((l) => l.kind !== "pkg")) {
+    const dir = join(L, l.name);
     mkdirSync(dir, { recursive: true });
     const tarred = l.entries.filter((e) => e.rel !== REMOTE_NODE_REL && e.rel !== REMOTE_LAUNCHER_REL);
-    if (tarred.length > 0) execFileSync("sh", ["-c", `tar -C ${root} --null --no-recursion -cf - -T - | tar -C ${dir} -xf -`], { input: tarList(tarred) });
+    if (tarred.length > 0) sh(`tar -C ${root} --null --no-recursion -cf - -T - | tar -C ${dir} -xf -`, tarList(tarred));
     for (const e of l.entries) {
       if (e.rel !== REMOTE_NODE_REL && e.rel !== REMOTE_LAUNCHER_REL) continue;
       mkdirSync(join(dir, e.rel, ".."), { recursive: true });
       writeFileSync(join(dir, e.rel), readFileSync((e as Extract<BundleEntry, { kind: "file" }>).abs));
     }
-  });
+  }
+  return out;
 }
 
-test("塗りをハードリンクで写して組んだ版は、まとめて送ったのと同じ鍵・同じパスになり、使っていない塗りは消える", async () => {
+test("向こうでパッケージを1本の tar から分けると、塗りごとの鍵は host と同じ。書き換わって届いたものは名前を付けずに知らせる", async () => {
+  const root = workspace();
+  const out = mkdtempSync(join(tmpdir(), "banto-remote-split-"));
+  try {
+    const layers = await layersOf(root, new FileHashCache());
+    const plan = planLayers(layers, new Map()).map((p, i) => ({ ...p, ...layers[i]! }));
+    const pkgs = plan.filter((p) => p.kind === "pkg");
+    assert.equal(placeLayers(root, out, pkgs), "");
+    for (const p of pkgs) {
+      const got = execFileSync("sh", ["-c", `printf '%s\\n' "$(${remoteDigestCommand(`'${join(out, "layers", p.name)}'`)})"`], { encoding: "utf8" }).trim();
+      assert.equal(got, p.digest, p.path);
+    }
+    // 入れ子のパッケージは外のパッケージの塗りに入らない
+    const dep = pkgs.find((p) => p.path === "node_modules/dep")!;
+    assert.ok(!existsSync(join(out, "layers", dep.name, "node_modules/inner/i.js")));
+    assert.deepEqual(readdirSync(join(out, "layers")).sort(), pkgs.map((p) => p.name).sort());
+
+    // 届いた中身が違えば、その塗りは名前を付けずに bad= で知らせる（ほかは名前を付ける）
+    const again = mkdtempSync(join(tmpdir(), "banto-remote-split-"));
+    try {
+      const wrong = pkgs.map((p) => (p.path === "node_modules/opt" ? { ...p, digest: "0".repeat(64) } : p));
+      const reported = placeLayers(root, again, wrong);
+      const optName = pkgs.find((p) => p.path === "node_modules/opt")!.name;
+      assert.match(reported, new RegExp(`^bad=${optName}\\t[0-9a-f]{64}$`, "m"));
+      assert.ok(!existsSync(join(again, "layers", optName)));
+      assert.ok(existsSync(join(again, "layers", dep.name)));
+      assert.ok(!readdirSync(join(again, "layers")).some((n) => n.startsWith(".incoming")));
+    } finally {
+      rmSync(again, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("塗りをハードリンクで写して組んだ版は、まとめて送ったのと同じ鍵・同じパスになり、いまの版と前の版が参照しない塗りは消える", async () => {
   const root = workspace();
   const out = mkdtempSync(join(tmpdir(), "banto-remote-layers-"));
   const code = join(out, "code");
@@ -289,44 +407,79 @@ test("塗りをハードリンクで写して組んだ版は、まとめて送�
     const sh = (script: string) => execFileSync("sh", ["-c", script], { encoding: "utf8" });
     const all = collectCodeBundle(root, extras(root));
     const v1Layers = await layersOf(root, cache);
-    const v1Names = planLayers(v1Layers, new Map()).map((p) => p.name);
-    placeLayers(root, code, v1Layers, v1Names);
+    const v1 = planLayers(v1Layers, new Map()).map((p, i) => ({ ...p, ...v1Layers[i]! }));
+    placeLayers(root, code, v1);
     // 塗りの置き場の鍵は、host の塗りの鍵と同じ（向こうでの照合）
-    v1Names.forEach((name, i) => {
-      assert.equal(sh(`printf '%s\\n' "$(${remoteDigestCommand(`'${join(code, "layers", name)}'`)})"`).trim(), v1Layers[i]!.digest);
-    });
-    // 塗りに分ける前の版（.layers が無い）がいまの版
+    for (const l of v1) assert.equal(sh(`printf '%s\\n' "$(${remoteDigestCommand(`'${join(code, "layers", l.name)}'`)})"`).trim(), l.digest);
+    // パッケージごとに分ける前の版（`.layers` は名前だけで、依存の塗りは1つ）がいまの版
     mkdirSync(join(code, "old-1"));
+    mkdirSync(join(code, "layers", "deps-0000000000000000-1"));
+    writeFileSync(join(code, "old-1.layers"), "deps-0000000000000000-1\n");
     writeFileSync(join(code, "current"), "old-1\n");
-    const assemble = sh(remoteAssembleScript({ code, staging: ".incoming-a", layers: v1Names }));
+    const v1Refs = v1.map((l) => ({ name: l.name, path: l.path }));
+    const assemble = sh(remoteAssembleScript({ code, staging: ".incoming-a", layers: v1Refs }));
     assert.equal(/^digest=(.*)$/m.exec(assemble)?.[1], await bundleDigest(all, cache));
     // パスは版のフォルダの中のまま（@x/contract の相対の symlink も、入れ子の node_modules もそのまま解ける）
     const staged = join(code, ".incoming-a");
     assert.equal(readFileSync(join(staged, "node_modules/@x/contract/dist/index.js"), "utf8"), "c\n");
-    assert.equal(statSync(join(staged, "node_modules/dep/index.js")).ino, statSync(join(code, "layers", v1Names[0]!, "node_modules/dep/index.js")).ino);
-    sh(remoteSwitchScript({ code, staging: ".incoming-a", next: "v1-1", cur: "old-1", layers: v1Names }));
+    assert.equal(readFileSync(join(staged, "node_modules/dep/node_modules/inner/i.js"), "utf8"), "inner\n");
+    const depName = v1.find((l) => l.path === "node_modules/dep")!.name;
+    assert.equal(statSync(join(staged, "node_modules/dep/index.js")).ino, statSync(join(code, "layers", depName, "index.js")).ino);
+    sh(remoteSwitchScript({ code, staging: ".incoming-a", next: "v1-1", cur: "old-1", layers: v1Refs }));
     assert.equal(readFileSync(join(code, "current"), "utf8"), "v1-1\n");
     assert.equal(readFileSync(join(code, "previous"), "utf8"), "old-1\n");
-    assert.deepEqual(readFileSync(join(code, "v1-1.layers"), "utf8").trim().split("\n"), v1Names);
+    assert.deepEqual(
+      readFileSync(join(code, "v1-1.layers"), "utf8").trim().split("\n"),
+      v1.map((l) => `${l.name}\t${l.path}`),
+    );
+    // 前の版がまだ参照している、分ける前の依存の塗りは残る
+    assert.ok(existsSync(join(code, "layers", "deps-0000000000000000-1")));
 
-    // コードだけ変えた版 v2、さらに v3：v1 だけが使っていたコードの塗りは消え、依存と node の塗りは残る
-    const next = async (version: string, cur: string, body: string) => {
-      writeFileSync(join(root, "packages/modules/a/dist/server.js"), body);
+    // v2：コードと inner を変えた版、v3：さらにコードを変え、opt を外した版
+    const next = async (version: string, cur: string, change: () => void, remote: Map<string, string>) => {
+      change();
       const layers = await layersOf(root, cache);
-      const names = planLayers(layers, remoteHaving(v1Layers)).map((p) => p.name);
-      placeLayers(root, code, [layers[2]!], [names[2]!]);
-      sh(remoteAssembleScript({ code, staging: ".incoming-b", layers: names }));
-      sh(remoteSwitchScript({ code, staging: ".incoming-b", next: version, cur, layers: names }));
-      return names;
+      const plan = planLayers(layers, remote).map((p, i) => ({ ...p, ...layers[i]! }));
+      placeLayers(root, code, plan.filter((p) => p.send));
+      const refs = plan.map((l) => ({ name: l.name, path: l.path }));
+      const assembled = sh(remoteAssembleScript({ code, staging: ".incoming-b", layers: refs }));
+      assert.equal(/^digest=(.*)$/m.exec(assembled)?.[1], await bundleDigest(collectCodeBundle(root, extras(root)), cache));
+      sh(remoteSwitchScript({ code, staging: ".incoming-b", next: version, cur, layers: refs }));
+      for (const l of plan) remote.set(l.name, l.digest);
+      return plan.map((l) => l.name);
     };
-    const v2Names = await next("v2-1", "v1-1", "a2\n");
-    assert.deepEqual(readdirSync(join(code, "layers")).sort(), [...new Set([...v1Names, ...v2Names])].sort());
-    const v3Names = await next("v3-1", "v2-1", "a3\n");
+    const remote = new Map(v1.map((l) => [l.name, l.digest]));
+    const v2Names = await next(
+      "v2-1",
+      "v1-1",
+      () => {
+        writeFileSync(join(root, "packages/modules/a/dist/server.js"), "a2\n");
+        writeFileSync(join(root, "node_modules/dep/node_modules/inner/i.js"), "inner2\n");
+      },
+      remote,
+    );
+    // 分ける前の依存の塗りは、どちらの版も参照しなくなったので消える
+    assert.deepEqual(readdirSync(join(code, "layers")).sort(), [...new Set([...v1.map((l) => l.name), ...v2Names])].sort());
+    const v3Names = await next(
+      "v3-1",
+      "v2-1",
+      () => {
+        writeFileSync(join(root, "packages/modules/a/dist/server.js"), "a3\n");
+        writeFileSync(join(root, "packages/modules/b/package.json"), JSON.stringify({ name: "@x/b", dependencies: { dep: "1" } }));
+      },
+      remote,
+    );
     assert.deepEqual(readdirSync(join(code, "layers")).sort(), [...new Set([...v2Names, ...v3Names])].sort());
-    assert.ok(!existsSync(join(code, "layers", v1Names[2]!)));
+    // v1 だけが使っていたコードと inner の塗りは消え、v2 が使う opt の塗りは残る
+    const v1Inner = v1.find((l) => l.path === "node_modules/dep/node_modules/inner")!.name;
+    assert.ok(!existsSync(join(code, "layers", v1Inner)));
+    assert.ok(!existsSync(join(code, "layers", v1.at(-1)!.name)));
+    assert.ok(existsSync(join(code, "layers", v1.find((l) => l.path === "node_modules/opt")!.name)));
     assert.ok(!existsSync(join(code, "v1-1")) && !existsSync(join(code, "v1-1.layers")) && !existsSync(join(code, "old-1")));
     assert.ok(existsSync(join(code, "v2-1", "packages/modules/a/dist/server.js")));
-    assert.equal(readFileSync(join(code, "v3-1", "packages/modules/a/dist/server.js"), "utf8"), "a3\n");
+    assert.ok(!existsSync(join(code, "v3-1", "node_modules/opt")));
+    assert.equal(readFileSync(join(code, "v3-1", "node_modules/dep/node_modules/inner/i.js"), "utf8"), "inner2\n");
+    assert.ok(!existsSync(join(code, ".keep")));
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(out, { recursive: true, force: true });
