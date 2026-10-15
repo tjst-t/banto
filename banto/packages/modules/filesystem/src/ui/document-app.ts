@@ -1,23 +1,127 @@
-// FileSystem Module の **PDF・Word の画面**の入口（`ui://banto-filesystem/document`、v4-modules.md §2.2「PDF・Office…」）。
+// FileSystem Module の **PDF・Office の文書の画面**の入口（`ui://banto-filesystem/document`、v4-modules.md §2.2「PDF・Office…」）。
 //
 // テキストの画面（`app.ts`）とは束を分ける——こちらは pdf.js・docx-preview を読み込んだ HTML に入る（`ui-app.ts`）。
 // banto を知らない。MCP Apps の約束（`protocol.ts`）だけで親と話す。
 // どちらで描くかは見せるファイルの拡張子で決める（host がこの画面を選んだのと同じ物差し）。パスは tool の引数で
 // 先に届くが、届かないこともある（記録から開き直したとき等）ので、そのときは結果のパスで決める。
+//
+// - pdf：PDF の面（pdf.js）
+// - docx：Word の面（docx-preview）。「元に近い見た目で見る」・描けなかったときは、変換役で PDF にした PDF の面に切り替える
+//   （「Word の描き方で見る」で戻る）。面は作ったら捨てずに隠す——戻ったときに読み直さない
+// - pptx・doc・ppt・odt・odp：変換役で PDF にした PDF の面（Backlog #305）
 
 import { DocxDocumentView } from "./docx-viewer.js";
+import { h } from "./dom.js";
+import { icon } from "./icons.js";
 import { PdfDocumentView } from "./pdf-viewer.js";
-import { onNotification, notify, request, errorMessage, textOf, type CallToolResult, type HostContext, type InitializeResult } from "./protocol.js";
+import { onNotification, notify, request, errorMessage, reportSize, textOf, type CallToolResult, type DisplayMode, type HostContext, type InitializeResult } from "./protocol.js";
 import { applyHostStyles, applyTheme, installStyles } from "./styles.js";
 
 type DocumentView = PdfDocumentView | DocxDocumentView;
 
+/** 拡張子で描き方を選ぶ。パスが無い・知らない拡張子のときも PDF の面（そちらが誤りを出す） */
+function kindOf(path: string): "pdf" | "docx" | "converted" {
+  const ext = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
+  if (ext === "docx") return "docx";
+  return ["pptx", "doc", "ppt", "odt", "odp"].includes(ext) ? "converted" : "pdf";
+}
+
 /**
- * パスの拡張子で描き方を選ぶ。docx 以外は PDF の画面（拡張子で選ばれてここに来るのは pdf と docx だけ。パスが無いときも
- * PDF の画面が誤りを出す）。コメントはまだ PDF だけ
+ * 1つのファイルを見せる面たち。docx は Word の面と PDF にした面の2つを持ちうるので、それぞれ自分の枠に描かせ、
+ * 見ていない方は隠す。届いた通知はどの面にも渡す
  */
-function viewFor(path: string, root: HTMLElement, displayMode: "inline" | "fullscreen", canReturnComments: boolean): DocumentView {
-  return /\.docx$/i.test(path) ? new DocxDocumentView(root, { displayMode }) : new PdfDocumentView(root, { displayMode, canReturnComments });
+class DocumentScreen {
+  private readonly docx?: DocxDocumentView;
+  private readonly docxHost?: HTMLElement;
+  private pdf?: PdfDocumentView;
+  private pdfHost?: HTMLElement;
+  /** 後から作る面に渡す（引数は path だけ——displayMode を渡し直すと、また大きく開くことを頼んでしまう） */
+  private path = "";
+  private result?: CallToolResult;
+  private cancelled = false;
+
+  constructor(
+    private readonly root: HTMLElement,
+    private displayMode: DisplayMode,
+    private readonly canReturnComments: boolean,
+    path: string,
+  ) {
+    root.replaceChildren();
+    const kind = kindOf(path);
+    if (kind === "docx") {
+      this.docxHost = h("div");
+      root.append(this.docxHost);
+      this.docx = new DocxDocumentView(this.docxHost, { displayMode, onConvert: (reason) => this.showConverted(reason) });
+    } else {
+      this.makePdf(kind === "converted", []);
+    }
+  }
+
+  private views(): DocumentView[] {
+    return [this.docx, this.pdf].filter((v): v is DocumentView => v !== undefined);
+  }
+
+  private makePdf(converted: boolean, actions: HTMLElement[]): PdfDocumentView {
+    this.pdfHost = h("div");
+    this.root.append(this.pdfHost);
+    this.pdf = new PdfDocumentView(this.pdfHost, { displayMode: this.displayMode, canReturnComments: this.canReturnComments, converted, actions });
+    return this.pdf;
+  }
+
+  /** docx を変換役で PDF にした面に切り替える（初めてなら作り、届いているものを渡す） */
+  private showConverted(reason?: string): void {
+    if (!this.docxHost) return;
+    let pdf = this.pdf;
+    if (!pdf) {
+      const back = h(
+        "button",
+        {
+          class: "btn",
+          title: "ブラウザで Word の書式を描く（docx-preview）",
+          attrs: { type: "button" },
+          data: { testid: "docx-as-html" },
+          on: { click: () => this.showDocx() },
+        },
+        icon("FileText"),
+        "Word の描き方で見る",
+      );
+      pdf = this.makePdf(true, [back]);
+      if (this.path) pdf.setToolInput({ path: this.path });
+      if (this.result) pdf.setToolResult(this.result);
+      else if (this.cancelled) pdf.setCancelled();
+    }
+    if (reason) pdf.showNote(`ブラウザでは描けなかったので、LibreOffice で PDF にしました（${reason}）`);
+    this.docxHost.hidden = true;
+    this.pdfHost!.hidden = false;
+    if (this.displayMode === "inline") reportSize();
+  }
+
+  private showDocx(): void {
+    if (!this.docxHost || !this.pdfHost) return;
+    this.pdfHost.hidden = true;
+    this.docxHost.hidden = false;
+    if (this.displayMode === "inline") reportSize();
+  }
+
+  setToolInput(args: Record<string, unknown>): void {
+    if (typeof args.path === "string") this.path ||= args.path;
+    for (const v of this.views()) v.setToolInput(args);
+  }
+
+  setToolResult(result: CallToolResult): void {
+    this.result = result;
+    for (const v of this.views()) v.setToolResult(result);
+  }
+
+  setCancelled(): void {
+    this.cancelled = true;
+    for (const v of this.views()) v.setCancelled();
+  }
+
+  setDisplayMode(mode: DisplayMode): void {
+    this.displayMode = mode;
+    for (const v of this.views()) v.setDisplayMode(mode);
+  }
 }
 
 /** showFile の結果に入っているパス（読めなければ空） */
@@ -38,12 +142,12 @@ async function main(): Promise<void> {
   let displayMode: "inline" | "fullscreen" | undefined;
   let canReturnComments: boolean | undefined;
   let path: string | undefined;
-  let view: DocumentView | undefined;
-  const early: Array<(v: DocumentView) => void> = [];
-  const deliver = (fn: (v: DocumentView) => void) => (view ? fn(view) : early.push(fn));
+  let view: DocumentScreen | undefined;
+  const early: Array<(v: DocumentScreen) => void> = [];
+  const deliver = (fn: (v: DocumentScreen) => void) => (view ? fn(view) : early.push(fn));
   const choose = () => {
     if (view || !displayMode || canReturnComments === undefined || path === undefined) return;
-    view = viewFor(path, root, displayMode, canReturnComments);
+    view = new DocumentScreen(root, displayMode, canReturnComments, path);
     for (const fn of early.splice(0)) fn(view);
   };
 

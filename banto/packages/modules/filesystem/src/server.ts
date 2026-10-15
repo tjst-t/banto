@@ -21,7 +21,7 @@ import { isPdfAssetKind, readPdfAsset } from "./pdf-assets.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
 import { getComments, saveComments } from "./comments.js";
-import { ConvertedStore, DocumentConversions, defaultTarget, extensionOf, type ConvertTarget } from "./converted.js";
+import { ConvertedStore, DOCUMENT_CONVERTED_EXTENSIONS, DocumentConversions, defaultTarget, extensionOf, type ConvertTarget } from "./converted.js";
 import { RelayConverter } from "./relay-converter.js";
 
 function tool(name: string, description: string, inputSchema: unknown) {
@@ -125,9 +125,10 @@ export function createFileSystemServer(deps: {
         _meta: {
           [VISIBILITY_META_KEY]: "agent",
           ui: { resourceUri: FILE_APP_URI },
-          // **PDF・Word は別の画面で描く**（v4-modules.md §2.2「PDF・Office…」）——pdf.js・docx-preview を同梱して重いので、
-          // テキストの画面の重さを変えない。どちらを出すかは host が引数のパスの拡張子で選ぶ
-          [UI_BY_EXTENSION_META_KEY]: { arg: "path", byExtension: { pdf: DOCUMENT_APP_URI, docx: DOCUMENT_APP_URI } },
+          // **PDF・Office の文書は別の画面で描く**（v4-modules.md §2.2「PDF・Office…」）——pdf.js・docx-preview を同梱して
+          // 重いので、テキストの画面の重さを変えない。どちらを出すかは host が引数のパスの拡張子で選ぶ。pptx・doc・ppt・odt・odp は
+          // 画面が変換役で PDF にして描く（#305）
+          [UI_BY_EXTENSION_META_KEY]: { arg: "path", byExtension: Object.fromEntries(["pdf", ...DOCUMENT_CONVERTED_EXTENSIONS].map((e) => [e, DOCUMENT_APP_URI])) },
         },
       },
       tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] }),

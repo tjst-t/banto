@@ -2,7 +2,8 @@
 //
 // AI の showFile が docx を指すと、host は PDF と同じ画面（`ui://banto-filesystem/document`）を選び、画面は docx-preview で描く。
 // 規則14——「開けた」で終わらせず、画面が出している中身を一つずつ見る：見出しのパス・見出し（の大きさ）・本文・箇条書き
-// （の印）・表の各セル・大きく開いた画面の中身。描けない docx は理由を出す（変換役が入るまで、PDF への切り替えのボタンは出さない）
+// （の印）・表の各セル・大きく開いた画面の中身。描けない docx は理由を出す（docx ではないものは変換役にも渡さない）。
+// 「元に近い見た目で見る」で PDF に切り替えるのは `filesystem-office-pdf.spec.ts`
 import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,8 +105,8 @@ test("AI が見せた日本語の docx（見出し・表・箇条書き）を会
   await expect(card.getByTestId("pdf-view")).toHaveCount(0);
   await expect(card.getByTestId("open-path")).toHaveText("docs/plan.docx");
   await expect(card.getByRole("button", { name: "大きく表示" })).toBeVisible();
-  // 変換役はまだ無い——「元に近い見た目で見る」は出さない（規則13）
-  await expect(card.getByRole("button", { name: /元に近い見た目/ })).toHaveCount(0);
+  // 変換役で PDF にする口（押したときの中身は filesystem-office-pdf.spec.ts）
+  await expect(card.getByRole("button", { name: "元に近い見た目で見る" })).toBeVisible();
   await expectDocument(card);
   await expect(card.getByTestId("docx-error-state")).toHaveCount(0);
   // ページの幅は会話の中のカードに収まる（横にはみ出さない）。左端も見る——ページは中央寄せなので、縮め足りないと
@@ -145,6 +146,8 @@ test("AI が見せた日本語の docx（見出し・表・箇条書き）を会
   await expect(cards.getByTestId("open-path")).toHaveText("docs/broken.docx", { timeout: 120_000 });
   await expect(cards.getByTestId("docx-error")).toHaveText("Word 文書を描けませんでした：docx として読めませんでした（壊れているか、docx ではありません）", { timeout: 60_000 });
   await expect(cards.locator("section.docx")).toHaveCount(0);
+  // zip ですらないものは変換役に渡さない（LibreOffice は中身で形を当て、別の物として PDF にしてしまう）
+  await expect(cards.getByTestId("pdf-view")).toHaveCount(0);
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

@@ -1197,7 +1197,7 @@ Phase 2.5）。そのときの第一候補は「描画の部品をライブラ�
 | SVG | `<img>` で描く（スクリプトは走らない）＋ソース | テキストとして |
 | 画像（png/jpg/gif/webp） | `<img>`、縦横・大きさ | — |
 | CSV / TSV | 表 | **表のままセルを編集**（引用符・改行つきのセルを壊さず、改行コードも元に合わせて書き戻す） |
-| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く）。**PDF は showFile で見せると下の「PDF・Office のファイルを読んでコメントを返す」の画面で描く**（実装・2026-10-15。ファイルブラウザの中ではまだ名前と大きさ）。Office は未実装 | — |
+| PDF・その他のバイナリ | 名前と大きさ（ダウンロードして開く）。**PDF・docx・pptx・doc・ppt・odt・odp は showFile で見せると下の「PDF・Office のファイルを読んでコメントを返す」の画面で描く**（実装・2026-10-15。ファイルブラウザの中ではまだ名前と大きさ）。xlsx は未実装 | — |
 | その他のテキスト | ソース | テキストとして |
 
 > **改訂・2026-10-15**：下の「PDF・Office のファイルを読んでコメントを返す」で pdf.js を Worker 無しで同梱して描く（CSP は
@@ -1261,13 +1261,12 @@ host に預け、リロードしても別タブに出しても、そのまま開
 
 #### PDF・Office のファイルを読んでコメントを返す（決定・2026-10-15、ユーザー。Backlog のストーリー #301 office-review）
 
-> **実装の状況（2026-10-15、#302・#307・#303・#304）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
-> PDF のコメント（ページ・選んだ文・範囲。置き場・一覧・「AI に返す」）、docx の docx-preview での表示まで。表のセルを指すコメントは
-> 置き場と返す文の形だけ（表の画面 #306 が無いので、画面からはまだ付けられない）。**変換役 `documents`（#304）と FileSystem の
-> 画面向けの `convertDocument`・`readFileRange` の `converted` は実装済み**（下の「変換役」）——ただし画面はまだ使っていない
-> （pptx・xlsx の画面・docx の「元に近い見た目で見る」・ページの画像への切り替えのボタンは未実装、規則13）。docx のコメント
-> （選んだ文と見出し）・`readDocument` は未実装。変換役を画面が使うまで、docx の「元に近い見た目で見る」は出さず、描けなかったら
-> 理由を出して止まる。
+> **実装の状況（2026-10-15、#302・#307・#303・#304・#305）**：PDF の画面（`ui://banto-filesystem/document`）・`readFileRange`・`readPdfAsset`、
+> PDF のコメント（ページ・選んだ文・範囲。置き場・一覧・「AI に返す」）、docx の docx-preview での表示、**変換役 `documents`（#304）と
+> FileSystem の画面向けの `convertDocument`・`readFileRange` の `converted`**（下の「変換役」）、**pptx・doc・ppt・odt・odp を変換役で
+> PDF にして同じ画面で描くこと・docx の「元に近い見た目で見る」（#305）**まで。表のセルを指すコメントは置き場と返す文の形だけ
+> （表の画面 #306 が無いので、画面からはまだ付けられない）。xlsx の画面・ページの画像への切り替えのボタン・docx のコメント
+> （選んだ文と見出し）・`readDocument` は未実装。
 
 **目的**：AI が作った・手元にある PDF・Word（docx）・PowerPoint（pptx）・Excel（xlsx）を、**元の見た目で読み**、
 **ページ・選んだ文・範囲・セルを指してコメントを付け、まとめて AI に返す**。**編集はしない**（ユーザー）。
@@ -1286,16 +1285,19 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
 | 種類 | 描き方 | 変換（下の「変換役」） |
 |---|---|---|
 | PDF | **pdf.js**（Worker 無し）。ページごとに canvas＋文字の層（選べる・探せる）。見えているページとその前後だけ描く | 要らない |
-| pptx | 変換役で PDF にし、PDF と同じ画面 | 要る |
-| docx | まず **docx-preview**（ブラウザだけで描く）。人が「元に近い見た目で見る」を押す、または描けなかったら、変換役で PDF にして PDF と同じ画面 | 押したときだけ |
+| pptx | 変換役で PDF にし、PDF と同じ画面。何枚目かは「スライド」で数える | 要る |
+| docx | まず **docx-preview**（ブラウザだけで描く）。人が「元に近い見た目で見る」を押す、または描けなかったら、変換役で PDF にして PDF と同じ画面（「Word の描き方で見る」で戻る。描けなかったときは理由を下に添える）。zip として読めないもの（docx ではない）は変換役に渡さず理由を出す——LibreOffice は中身で形を当て、別の物として PDF にしてしまう | 押したときだけ |
 | xlsx（xlsm・xls・ods も） | **表**：シートのタブ・結合したセル・列の幅・数の書式。値は**変換役で計算し直した写し**から読む——AI が Python 等で作った xlsx には式の結果が入っていない（実測：openpyxl で作った `=B2*C2` の値は空。LibreOffice で書き出し直すと入った）。画面に「LibreOffice で計算した値」と出す（Excel と違うことがある） | 要る（計算し直し） |
 | doc・ppt・odt・odp | 変換役で PDF にして PDF と同じ画面 | 要る |
 
+- PDF にして描くときは、画面が `convertDocument({path, to: "pdf"})` を呼び、写しを `readFileRange` の `converted` で読む。変換役を
+  入れている途中（`status: "preparing"`）はその文を出し、5秒おいて頼み直す。コメントの鍵は元のファイルのパス（PDF にしたものの
+  ページを指す）。docx の2つの面は作ったら捨てずに隠す——行き来で読み直さない
 - 画面の束は大きくなる（pdf.js の min で約 1.7MB）。**PDF・Office の画面は別の `ui://banto-filesystem/document` に分け**、
   テキストの画面（`ui://banto-filesystem/file`）の重さは変えない。`showFile` が拡張子で画面を選ぶ——tool の
-  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: …, docx: … } }`）で名乗り、host が呼び出しの引数で選ぶ
-  （v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える tool」）。PDF と docx は同じ `document` の画面で、
-  どちらで描くかは画面が同じ拡張子で選ぶ
+  `_meta["dev.banto/ui-by-extension"]`（`{ arg: "path", byExtension: { pdf: …, docx: …, pptx: …, doc: …, ppt: …, odt: …, odp: … } }`）で
+  名乗り、host が呼び出しの引数で選ぶ（v4-frontend.md §6.2「引数のファイルの拡張子で画面を選び替える tool」）。どれも同じ `document` の
+  画面で、どう描くかは画面が同じ拡張子で選ぶ
 - docx-preview（0.4.1）と JSZip（3.10.1）は UMD の min を普通の `<script>` で pdf.js より前に置く（`globalThis.JSZip`→
   `globalThis.docx`）。中身は `readFileRange` で全部読む（zip なので範囲では描けない）。画像・埋め込みフォントは data: の URL
   （`useBase64URL`。blob: は `font-src` に無い）、altChunk（iframe で描かれる）は描かない。狭いカードではページの幅に合わせて

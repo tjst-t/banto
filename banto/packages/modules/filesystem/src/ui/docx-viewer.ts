@@ -10,7 +10,8 @@
 //   - 別の文書を埋め込んだもの（altChunk）は iframe で描かれるので描かない（`frame-src` は塞いでいる）
 //
 // **描けなかったときと「元に近い見た目で見る」は、変換役（LibreOffice）で PDF にして PDF の画面に切り替える**
-// ——変換役はまだ無い（別のタスク）。それまでボタンは出さず、描けなかったら理由を出して止まる（規則13・規則2）
+// （Backlog #305）。切り替えは画面の入口（`document-app.ts`）がする——ここはボタンを出し、頼むだけ。
+// zip として読めないもの（docx ではない）は切り替えない：LibreOffice は中身で形を当てて、別の物として PDF にしてしまう
 
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";
@@ -59,6 +60,7 @@ export class DocxDocumentView {
   private generation = 0;
   private note = "";
   private noteError = false;
+  private readonly onConvert: (reason?: string) => void;
 
   private readonly pathEl: HTMLSpanElement;
   private readonly fullscreenBtn: HTMLButtonElement;
@@ -70,9 +72,14 @@ export class DocxDocumentView {
 
   constructor(
     private readonly root: HTMLElement,
-    options: { displayMode: DisplayMode },
+    options: {
+      displayMode: DisplayMode;
+      /** 変換役で PDF にした画面に切り替える（`reason` は docx-preview で描けなかった理由。人が押したときは無し） */
+      onConvert: (reason?: string) => void;
+    },
   ) {
     this.displayMode = options.displayMode;
+    this.onConvert = options.onConvert;
     this.pathEl = h("span", { class: "badge truncate", text: "（Word）", data: { testid: "open-path" } });
     this.fullscreenBtn = h(
       "button",
@@ -80,7 +87,19 @@ export class DocxDocumentView {
       icon("Maximize2"),
       "大きく表示",
     );
-    const toolbar = h("div", { class: "pdf-toolbar" }, icon("FileText", "icon muted"), this.pathEl, h("span", { class: "spacer-fill" }), this.fullscreenBtn);
+    const convertBtn = h(
+      "button",
+      {
+        class: "btn",
+        title: "LibreOffice で PDF にして見る（ブラウザでは崩れる書式も、元に近く出る）",
+        attrs: { type: "button" },
+        data: { testid: "docx-as-pdf" },
+        on: { click: () => this.onConvert() },
+      },
+      icon("FileText"),
+      "元に近い見た目で見る",
+    );
+    const toolbar = h("div", { class: "pdf-toolbar" }, icon("FileText", "icon muted"), this.pathEl, h("span", { class: "spacer-fill" }), convertBtn, this.fullscreenBtn);
     this.status = h("div", { class: "state" });
     // docx-preview は文書の <style> を styleContainer に、本文を bodyContainer に書く。どちらも開き直すたびに空にする
     this.styleEl = h("div", { class: "docx-styles" });
@@ -163,9 +182,11 @@ export class DocxDocumentView {
       this.styleEl.replaceChildren();
       this.bodyEl.replaceChildren();
       const message = errorMessage(err);
-      // JSZip の「zip の終わりが見つからない」は、人には「docx ではない」と言う
-      this.state = { kind: "error", message: /end of central directory/i.test(message) ? "docx として読めませんでした（壊れているか、docx ではありません）" : message };
+      // JSZip の「zip の終わりが見つからない」は、人には「docx ではない」と言う。変換役にも渡さない
+      const notZip = /end of central directory/i.test(message);
+      this.state = { kind: "error", message: notZip ? "docx として読めませんでした（壊れているか、docx ではありません）" : message };
       this.render();
+      if (!notZip) this.onConvert(message);
     }
   }
 

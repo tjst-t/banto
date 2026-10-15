@@ -27,6 +27,8 @@ export type ConvertTarget = "pdf" | "spreadsheet";
 
 export const SPREADSHEET_EXTENSIONS = ["xlsx", "xlsm", "xls", "ods"] as const;
 export const CONVERTIBLE_EXTENSIONS = ["docx", "doc", "odt", "pptx", "ppt", "odp", ...SPREADSHEET_EXTENSIONS] as const;
+/** document の画面で描く Office の文書（docx は docx-preview でも、それ以外は変換役で PDF にして）。表は別の画面（#306） */
+export const DOCUMENT_CONVERTED_EXTENSIONS = ["docx", "doc", "odt", "pptx", "ppt", "odp"] as const;
 
 export interface ConverterDescriptor {
   version: string;

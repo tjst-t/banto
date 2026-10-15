@@ -133,13 +133,13 @@ test("showFile はフォルダ・無いファイル・根の外を断る", async
 
 // ---- PDF の画面（v4-modules.md §2.2「PDF・Office…」、2026-10-15）-------------------------
 
-test("showFile は PDF・docx なら document の画面を選ばせる。document の HTML は pdf.js と worker、docx-preview と JSZip を同じ画面に入れる", async () => {
+test("showFile は PDF・docx・pptx・doc・ppt・odt・odp なら document の画面を選ばせる（xlsx は選ばない）。document の HTML は pdf.js と worker、docx-preview と JSZip を同じ画面に入れる", async () => {
   await withClient(async (client) => {
     const { tools } = await client.listTools();
     const show = tools.find((t) => t.name === "showFile");
     assert.deepEqual((show?._meta as Record<string, unknown>)?.["dev.banto/ui-by-extension"], {
       arg: "path",
-      byExtension: { pdf: "ui://banto-filesystem/document", docx: "ui://banto-filesystem/document" },
+      byExtension: Object.fromEntries(["pdf", "docx", "doc", "odt", "pptx", "ppt", "odp"].map((e) => [e, "ui://banto-filesystem/document"])),
     });
     const { resources } = await client.listResources();
     const doc = resources.find((r) => r.uri === "ui://banto-filesystem/document");

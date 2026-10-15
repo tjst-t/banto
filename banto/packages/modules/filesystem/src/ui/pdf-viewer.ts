@@ -10,6 +10,9 @@
 //     `readPdfAsset` で受ける
 //   - **コメント**（`comments.ts`、Backlog #307）：ページ・選んだ文・ドラッグした範囲を指して付ける。一覧は右（狭いとき・
 //     会話の中では下）。押すとそのページへ飛び、文には印、範囲には枠を出す
+//   - **Office の文書（pptx・doc・ppt・odt・odp、docx の「元に近い見た目」）も同じ画面で描く**（Backlog #305）：
+//     `convertDocument` で変換役（LibreOffice）に PDF にしてもらい、写しを `readFileRange` の `converted` で読む。
+//     変換役を入れている途中（初回だけ、数分）は、そう出して待ち、頼み直す。コメントの鍵は元のファイルのパス
 
 import { CommentsPanel, type CommentAnchor, type CommentRect, type CommentTarget } from "./comments.js";
 import { h, replaceChildren } from "./dom.js";
@@ -40,13 +43,19 @@ const RANGE_MAX = 4 * 1024 * 1024;
 const RANGE_CHUNK = 512 * 1024;
 const ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
-/** 画面のファイルのバイトを読む（範囲が 4MiB を超えるときは分けて頼む） */
-export async function readRange(path: string, begin: number, end: number): Promise<Uint8Array> {
+/** 変換役を入れている途中のとき、頼み直すまでの間 */
+const PREPARING_RETRY_MS = 5_000;
+
+/**
+ * 画面のファイルのバイトを読む（範囲が 4MiB を超えるときは分けて頼む）。`converted` なら、そのファイルを PDF に変換した写し
+ * （写しはパスで指さない——元のパスで FileSystem が置き場から引く）
+ */
+export async function readRange(path: string, begin: number, end: number, converted = false): Promise<Uint8Array> {
   const out = new Uint8Array(end - begin);
   let at = begin;
   while (at < end) {
     const length = Math.min(RANGE_MAX, end - at);
-    const result = JSON.parse(textOf(await callTool("readFileRange", { path, offset: at, length }))) as {
+    const result = JSON.parse(textOf(await callTool("readFileRange", { path, offset: at, length, ...(converted ? { converted: true, to: "pdf" } : {}) }))) as {
       length?: unknown;
       data?: unknown;
     };
@@ -87,12 +96,35 @@ interface Match {
   items: number[];
 }
 
-type LoadState = { kind: "waiting" } | { kind: "loading"; path: string } | { kind: "error"; message: string } | { kind: "ready" };
+type LoadState =
+  | { kind: "waiting" }
+  | { kind: "converting"; message?: string }
+  | { kind: "loading"; path: string }
+  | { kind: "error"; message: string }
+  | { kind: "ready" };
+
+/** 拡張子ごとの呼び名（ツールバーの見出しと、ページの数え方） */
+const KIND_LABELS: Record<string, { name: string; unit: string }> = {
+  pdf: { name: "PDF", unit: "ページ" },
+  docx: { name: "Word", unit: "ページ" },
+  doc: { name: "Word", unit: "ページ" },
+  odt: { name: "文書", unit: "ページ" },
+  pptx: { name: "PowerPoint", unit: "スライド" },
+  ppt: { name: "PowerPoint", unit: "スライド" },
+  odp: { name: "プレゼンテーション", unit: "スライド" },
+};
+
+function kindLabel(path: string): { name: string; unit: string } {
+  return KIND_LABELS[/\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? ""] ?? { name: "文書", unit: "ページ" };
+}
 
 export class PdfDocumentView {
   private displayMode: DisplayMode;
+  private readonly converted: boolean;
   private path = "";
   private size = 0;
+  /** ページの数え方（pptx はスライド） */
+  private unit = "ページ";
   private state: LoadState = { kind: "waiting" };
   private doc?: PdfDocument;
   private loadingTask?: { destroy(): Promise<void> };
@@ -146,9 +178,14 @@ export class PdfDocumentView {
       displayMode: DisplayMode;
       /** host が `ui/message` を受けるか（会話の中で開いた画面）。受けなければコメントは「コピー」で持ち出す */
       canReturnComments: boolean;
+      /** Office の文書を変換役で PDF にして描く（pptx 等・docx の「元に近い見た目」） */
+      converted?: boolean;
+      /** ツールバーの「大きく表示」の前に置くボタン（docx の「Word の描き方で見る」） */
+      actions?: HTMLElement[];
     },
   ) {
     this.displayMode = options.displayMode;
+    this.converted = options.converted ?? false;
     const target: CommentTarget = {
       selectedText: () => this.selectedText(),
       currentPage: () => (this.state.kind === "ready" ? this.currentPage : undefined),
@@ -175,7 +212,7 @@ export class PdfDocumentView {
     this.zoomLabel = h("span", { class: "pdf-zoom-label", data: { testid: "pdf-zoom" } });
     this.searchInput = h("input", {
       class: "pdf-search-input",
-      attrs: { type: "search", placeholder: "PDF の中を探す", "aria-label": "PDF の中を探す" },
+      attrs: { type: "search", placeholder: "中を探す", "aria-label": "文書の中を探す" },
       data: { testid: "pdf-search" },
       on: {
         keydown: (e) => {
@@ -216,6 +253,7 @@ export class PdfDocumentView {
       this.zoomLabel,
       iconButton("拡大", "ZoomIn", () => this.changeZoom(1)),
       this.commentsBtn,
+      ...(options.actions ?? []),
       this.fullscreenBtn,
     );
     this.status = h("div", { class: "state" });
@@ -262,6 +300,13 @@ export class PdfDocumentView {
     this.render();
   }
 
+  /** 画面の下に添える一言（docx を描けずに PDF にしたとき、その理由） */
+  showNote(text: string): void {
+    this.note = text;
+    this.noteError = false;
+    this.render();
+  }
+
   setDisplayMode(mode: DisplayMode): void {
     if (mode === this.displayMode) return;
     this.displayMode = mode;
@@ -277,11 +322,22 @@ export class PdfDocumentView {
     await this.close();
     this.path = path;
     this.size = size;
+    this.unit = kindLabel(path).unit;
     this.pathEl.textContent = path;
-    this.state = { kind: "loading", path };
+    this.state = this.converted ? { kind: "converting" } : { kind: "loading", path };
     this.render();
     void this.comments.load(path);
+    const converted = this.converted;
     try {
+      if (converted) {
+        // 変換したものの大きさで読む（元のファイルの大きさではない）
+        const bytes = await this.convert(path);
+        if (bytes === undefined) return;
+        size = bytes;
+        this.size = bytes;
+        this.state = { kind: "loading", path };
+        this.render();
+      }
       const lib = pdfjs();
       const common = {
         // Canvas の CSP は eval・WASM・fetch を塞いでいる（緩めない）——どれも使わない形にする
@@ -293,12 +349,12 @@ export class PdfDocumentView {
       };
       let task;
       if (size <= RANGE_MAX) {
-        task = lib.getDocument({ ...common, data: await readRange(path, 0, size) });
+        task = lib.getDocument({ ...common, data: await readRange(path, 0, size, converted) });
       } else {
         // 大きなファイルは要る範囲だけ運ぶ。先読み（autoFetch）はしない——見ないページのために 50MB を運ばない
         const transport = new lib.PDFDataRangeTransport(size, null);
         transport.requestDataRange = (begin: number, end: number) => {
-          readRange(path, begin, end).then(
+          readRange(path, begin, end, converted).then(
             (chunk) => transport.onDataRange(begin, chunk),
             (err: unknown) => {
               this.note = `PDF の中身を読めませんでした：${errorMessage(err)}`;
@@ -333,6 +389,25 @@ export class PdfDocumentView {
             : errorMessage(err);
       this.state = { kind: "error", message };
       this.render();
+    }
+  }
+
+  /**
+   * **変換役に PDF にしてもらう**（同じ中身なら置き場のものが返る）。変換役を入れている途中なら、そう出して
+   * 間をおいて頼み直す。変換したものの大きさを返す（その間に別のファイルを開いたら undefined）
+   */
+  private async convert(path: string): Promise<number | undefined> {
+    for (;;) {
+      const result = await callTool("convertDocument", { path, to: "pdf" });
+      if (this.path !== path) return undefined;
+      if (result.isError) throw new Error(textOf(result) || "変換できませんでした");
+      const outcome = JSON.parse(textOf(result)) as { status?: unknown; message?: unknown; bytes?: unknown };
+      if (outcome.status === "converted" && typeof outcome.bytes === "number") return outcome.bytes;
+      if (outcome.status !== "preparing") throw new Error(`変換役の返事が読めません：${textOf(result)}`);
+      this.state = { kind: "converting", message: typeof outcome.message === "string" ? outcome.message : undefined };
+      this.render();
+      await new Promise((r) => setTimeout(r, PREPARING_RETRY_MS));
+      if (this.path !== path) return undefined;
     }
   }
 
@@ -398,7 +473,7 @@ export class PdfDocumentView {
     this.fitScale = this.computeFitScale();
     this.observer = new IntersectionObserver((entries) => this.onIntersect(entries), { root: this.scroller });
     for (let i = 1; i <= count; i++) {
-      const el = h("div", { class: "pdf-page", attrs: { "aria-label": `${i} ページ` }, data: { page: String(i), testid: "pdf-page" } });
+      const el = h("div", { class: "pdf-page", attrs: { "aria-label": `${i} ${this.unit}` }, data: { page: String(i), testid: "pdf-page" } });
       const slot: PageSlot = { index: i, el, generation: 0 };
       this.pages.push(slot);
       this.sizeSlot(slot);
@@ -495,7 +570,7 @@ export class PdfDocumentView {
     } catch (err) {
       if (isRenderingCancelled(err) || stale()) return;
       slot.renderedScale = undefined;
-      slot.el.replaceChildren(h("div", { class: "state error" }, icon("TriangleAlert"), `${slot.index} ページを描けませんでした：${errorMessage(err)}`));
+      slot.el.replaceChildren(h("div", { class: "state error" }, icon("TriangleAlert"), `${slot.index} ${this.unit}を描けませんでした：${errorMessage(err)}`));
     }
   }
 
@@ -510,7 +585,7 @@ export class PdfDocumentView {
     }
     if (current !== this.currentPage || !this.pageLabel.textContent) {
       this.currentPage = current;
-      this.pageLabel.textContent = `${current} / ${this.pages.length} ページ`;
+      this.pageLabel.textContent = `${current} / ${this.pages.length} ${this.unit}`;
     }
   }
 
@@ -777,8 +852,20 @@ export class PdfDocumentView {
     this.status.hidden = state.kind === "ready";
     this.status.className = state.kind === "error" ? "state error" : "state";
     if (state.kind === "waiting") replaceChildren(this.status, icon("Loader2", "icon spin"), "ファイルを待っています…");
-    else if (state.kind === "loading") replaceChildren(this.status, icon("Loader2", "icon spin"), `${formatSize(this.size)} の PDF を開いています…`);
-    else if (state.kind === "error") replaceChildren(this.status, icon("TriangleAlert"), h("span", { text: `PDF を開けませんでした：${state.message}`, data: { testid: "pdf-error" } }));
+    else if (state.kind === "converting")
+      replaceChildren(
+        this.status,
+        icon("Loader2", "icon spin"),
+        h("span", { text: state.message ?? "LibreOffice で PDF にしています…", data: { testid: "pdf-converting" } }),
+      );
+    else if (state.kind === "loading")
+      replaceChildren(this.status, icon("Loader2", "icon spin"), `${formatSize(this.size)} の ${this.converted ? "PDF（変換したもの）" : "PDF"} を開いています…`);
+    else if (state.kind === "error")
+      replaceChildren(
+        this.status,
+        icon("TriangleAlert"),
+        h("span", { text: `${kindLabel(this.path).name} を開けませんでした：${state.message}`, data: { testid: "pdf-error" } }),
+      );
     this.status.dataset.testid = state.kind === "error" ? "pdf-error-state" : "pdf-status";
     this.zoomLabel.textContent = state.kind === "ready" ? `${Math.round(this.scale * 100)}%` : "";
     if (state.kind === "ready") this.updateCurrentPage();
