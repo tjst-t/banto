@@ -643,7 +643,10 @@ export class PdfDocumentView {
   }
 
   private onCommentsChange(): void {
-    this.commentsCount.textContent = this.comments.count > 0 ? String(this.comments.count) : "";
+    // コメントの一覧は作る途中（constructor の最初の描画）でもこれを呼ぶ——そのときはまだ this.comments が無い。
+    // 落ちると PDF の画面ごと描けなくなっていた（E2E filesystem-pdf・filesystem-comments）
+    const count = (this.comments as CommentsPanel | undefined)?.count ?? 0;
+    this.commentsCount.textContent = count > 0 ? String(count) : "";
     if (this.displayMode === "inline") reportSize();
   }
 

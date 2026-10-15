@@ -246,7 +246,10 @@ body[data-mode="fullscreen"] .pdf-scroller { height: auto; flex: 1; min-height: 
 /* コメント（comments.ts）。大きく開いたときは右、会話の中と狭い画面では下 */
 .pdf-body { display: flex; flex-direction: column; min-height: 0; }
 body[data-mode="fullscreen"] .pdf-body { flex: 1; flex-direction: row; }
-.pdf-body > .pdf-scroller { flex: 1; min-width: 0; }
+.pdf-body > .pdf-scroller { min-width: 0; }
+/* 残りを全部使うのは大きく開いたときだけ。会話の中のカード（高さの決まらない縦並び）で flex: 1 にすると、height: 520px より
+   flex-basis が勝って中身の高さまで伸び、スクロールしない（いまのページを真ん中と数えていた） */
+body[data-mode="fullscreen"] .pdf-body > .pdf-scroller { flex: 1; }
 .comments { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bg); font-size: var(--t-sm); }
 body[data-mode="fullscreen"] .comments { width: 320px; flex-shrink: 0; border-top: 0; border-left: 1px solid var(--line); overflow: auto; }
 @media (max-width: 640px) {

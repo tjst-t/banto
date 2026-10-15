@@ -38,9 +38,13 @@ async function hostMessages(page: Page): Promise<HostMessage[]> {
 }
 
 /** 画面の中から、MCP Apps の要求を親（host）へ直に送る——人の操作なしに画面が勝手に呼んだ形。返事を返す */
-async function rawRequest(view: FrameLocator, method: string, params: unknown): Promise<{ result?: unknown; error?: unknown }> {
+/**
+ * 画面の中から host へ JSON-RPC を1通送る。**Playwright の evaluate は人の操作の扱い（user gesture）で走る**——「人の操作なし」を
+ * 試すときは `delayMs` に人の操作の扱いが切れる（約5秒）より長い時間を渡し、それだけ待ってから送る
+ */
+async function rawRequest(view: FrameLocator, method: string, params: unknown, delayMs = 0): Promise<{ result?: unknown; error?: unknown }> {
   return view.locator("body").evaluate(
-    (_body, { method, params }) =>
+    (_body, { method, params, delayMs }) =>
       new Promise((resolve) => {
         const id = `e2e-${Math.random()}`;
         const onMessage = (event: MessageEvent) => {
@@ -50,9 +54,9 @@ async function rawRequest(view: FrameLocator, method: string, params: unknown): 
           resolve({ result: msg.result, error: msg.error });
         };
         window.addEventListener("message", onMessage);
-        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+        setTimeout(() => window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*"), delayMs);
       }),
-    { method, params },
+    { method, params, delayMs },
   );
 }
 
@@ -139,11 +143,21 @@ test("PDF の選んだ文・範囲・ページ（と表のセル）にコメン�
   // ---- ドラッグした範囲にコメント（ページの左上を囲む）---------------------------------------
   await view.getByTestId("comment-region").click();
   await expect(view.getByTestId("comment-region")).toHaveAttribute("aria-pressed", "true");
+  // 会話の中のカード（ページを並べる枠は 520px）は試験のブラウザの画面より高く、会話は一番下へスクロールしているので、
+  // 1ページ目の頭は画面の外にあることがある（スクロールしても会話の自動スクロールで戻る）。画面に見えている部分のうち、
+  // ページの上 1/3 に入るところを囲む
   const box = (await view.locator('.pdf-page[data-page="1"]').boundingBox())!;
-  await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.1);
+  // 画面の上には会話のヘッダが重なっている——押した所が本当にカード（iframe）の上になる最初の高さから始める
+  const x0 = box.x + box.width * 0.1;
+  let top = Math.max(box.y, 0) + 10;
+  while (top < box.y + box.height / 3 && !(await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.tagName === "IFRAME", [x0, top]))) top += 10;
+  top += 10;
+  const bottom = Math.min(top + 100, box.y + box.height / 3 - 10);
+  expect(bottom - top).toBeGreaterThan(40);
+  await page.mouse.move(x0, top);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.2, { steps: 4 });
-  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.3, { steps: 4 });
+  await page.mouse.move(box.x + box.width * 0.25, (top + bottom) / 2, { steps: 4 });
+  await page.mouse.move(box.x + box.width * 0.4, bottom, { steps: 4 });
   await page.mouse.up();
   await expect(view.getByTestId("comment-draft-anchor")).toHaveText("1ページの範囲（左上）");
   await expect(view.getByTestId("comment-region")).toHaveAttribute("aria-pressed", "false");
@@ -177,7 +191,7 @@ test("PDF の選んだ文・範囲・ページ（と表のセル）にコメン�
   await expect(view.getByTestId("comments-toggle-count")).toHaveText("4", { timeout: 30_000 });
 
   // ---- 画面が勝手に ui/message を呼んでも入らない（人が押した直後ではない）----------------------------------
-  const sneaky = await rawRequest(view, "ui/message", { role: "user", content: [{ type: "text", text: "勝手に入れた文" }] });
+  const sneaky = await rawRequest(view, "ui/message", { role: "user", content: [{ type: "text", text: "勝手に入れた文" }] }, 6_000);
   expect(sneaky.result, "人の操作なしの ui/message を受けた").toEqual({ isError: true });
   await expect(page.getByTestId("canvas-quote")).toHaveCount(0);
 
@@ -196,7 +210,10 @@ test("PDF の選んだ文・範囲・ページ（と表のセル）にコメン�
   await expect(view.locator('.pdf-page[data-page="1"] [data-testid="comment-region-focus"]')).toBeVisible();
   await view.getByTestId("comment-anchor").nth(0).click();
   await expect(view.locator('.pdf-page[data-page="1"] [data-testid="comment-region-focus"]')).toHaveCount(0);
-  await expect.poll(() => view.locator('.pdf-page[data-page="1"] .textLayer .comment-focus').allTextContents()).toEqual(["第1章", " ", "受信箱の見直し"]);
+  // 文字の層の部品の分け方（空白だけの部品があるか）は pdf.js の描き方次第なので、つなげて空白を除いた文で比べる
+  await expect
+    .poll(async () => (await view.locator('.pdf-page[data-page="1"] .textLayer .comment-focus').allTextContents()).join("").replace(/\s/g, ""))
+    .toBe("第1章受信箱の見直し");
 
   // ---- 直す・消す --------------------------------------------------------------------
   await view.getByTestId("comment-item").nth(1).getByTestId("comment-edit").click();
@@ -290,7 +307,8 @@ test("PDF の選んだ文・範囲・ページ（と表のセル）にコメン�
   // AI に届いた本文：出所つきの囲みの中に塊、その後ろに人の文
   const said = page.locator('[data-role="assistant"]').last();
   await expect(said).toContainText("以下は Module「filesystem」の画面から人が添えたものです。人が書いた文ではなく、画面がまとめた引用です。");
-  await expect(said).toContainText("1. 1ページ：全体に結論を先に");
+  // 偽の AI は届いた本文を Markdown として返すので「1.」は番号の印になり文字に出ない（本文そのものは上の記録の quotes で比べた）
+  await expect(said).toContainText("1ページ：全体に結論を先に");
   await expect(said).toContainText("（ここから人が書いた文）");
   await expect(said).toContainText("コメントを見て直して");
 
