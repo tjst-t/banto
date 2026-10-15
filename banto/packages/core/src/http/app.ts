@@ -39,7 +39,7 @@ import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "..
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
 import { DEFAULT_MODEL_VALUE, ModelCatalog, modelIdentityOf, type ModelIdentity } from "../runner/models.js";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
+import { RELAY_BODY_MAX_BYTES, type HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { SessionSkillSet, SkillRef } from "../skills/types.js";
 import { DEFAULT_SHELL_HOME_FILES, shellHomeEntryProblem, type ShellHomeSync } from "../modules/shell-home.js";
 import {
@@ -303,9 +303,14 @@ export interface AppDeps {
    * **ここで起こさない**（見ただけで副作用を作らない）。
    */
   /** banto 全体の Module が立っているか（追加・2026-09-15）。 */
-  instanceModuleStatus?(): Array<{ name: string; connected: boolean; error?: string }>;
+  instanceModuleStatus?(): Array<{ name: string; connected: boolean; error?: string; toolsInstall?: ToolsInstallView }>;
   /** その Module のプロセスを落とす（止めた・消したとき）。 */
   releaseModule?(name: string): Promise<void>;
+  /**
+   * **道具用のコンテナにパッケージを入れ直す**（追加・2026-10-15、v4-modules.md §2.2「失敗したら毎回 apt をやり直さない」）。
+   * 入れられなかったことを忘れ、その Module を起こし直す（入れ終わるのは待たない）。道具用のコンテナで動く Module でなければ投げる
+   */
+  retryToolsInstall?(name: string): Promise<void>;
   /** **ログインを始める**（URL に繋ぐ Module で OAuth が要るとき）。 */
   startOAuth?(moduleName: string): Promise<{ url: string }>;
   /** 相手から戻ってきた。印（state）で引き当てて、鍵を金庫へ置く。 */
@@ -562,7 +567,10 @@ function oauthPage(res: ServerResponse, status: number, message: string): void {
 }
 
 /** 本文が上限を超えた（HTTP では 413 にする）。 */
-class BodyTooLargeError extends Error {}
+export class BodyTooLargeError extends Error {}
+
+/** 道具用のコンテナで動く Module の、パッケージを入れているか・入れられなかったか（設定の画面に出す） */
+export type ToolsInstallView = { state: "installing" } | { state: "failed"; reason: string };
 
 export async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -1453,8 +1461,16 @@ export function createApp(deps: AppDeps) {
 
       // Module→hostの中継は別の合言葉（Moduleプロセスごとのbearer token）で
       // 認証する——フロントエンド用の認証とは別の経路（決定・2026-09-03）。
+      // **本文には上限がある**（追加・2026-10-15、v4-modules.md §2.2「変換役」）。Module の stdio が1通 10MB までなので
+      // 同じ上限——変換役へ文書の中身を運ぶようになり、上限の無い口のままにしない
       if (url.pathname === "/relay") {
-        const body = req.method === "POST" ? await readJsonBody(req) : undefined;
+        let body: unknown;
+        try {
+          body = req.method === "POST" ? await readJsonBody(req, RELAY_BODY_MAX_BYTES) : undefined;
+        } catch (err) {
+          if (err instanceof BodyTooLargeError) return json(res, 413, { error: `${err.message}——中継で送れるのは 10MB までです` });
+          throw err;
+        }
         await deps.relayEndpoint.handleRequest(req, res, body);
         return;
       }
@@ -1678,6 +1694,7 @@ export function createApp(deps: AppDeps) {
             // 使うと言っていても立つとは限らない——立っているか、理由は何か
             connected: status.get(m.name)?.connected ?? false,
             ...(status.get(m.name)?.error ? { error: status.get(m.name)!.error } : {}),
+            ...(status.get(m.name)?.toolsInstall ? { toolsInstall: status.get(m.name)!.toolsInstall } : {}),
           })),
         );
         return;
@@ -1753,7 +1770,7 @@ export function createApp(deps: AppDeps) {
         json(
           res,
           200,
-          BUNDLED_CATALOG.map((e) => ({
+          BUNDLED_CATALOG.filter((e) => !e.hidden).map((e) => ({
             id: e.id,
             name: e.name,
             description: e.description,
@@ -1948,6 +1965,19 @@ export function createApp(deps: AppDeps) {
           // **理由をそのまま出す**（規則2）——押した人が次に何をすればよいか分かる
           return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
         }
+        return;
+      }
+
+      // **道具を入れ直す**（追加・2026-10-15）。入れられなかったら毎回はやり直さない——人がここで押す
+      const toolsRetryMatch = url.pathname.match(/^\/api\/modules\/([^/]+)\/tools\/retry$/);
+      if (toolsRetryMatch && req.method === "POST") {
+        if (!deps.retryToolsInstall) return json(res, 503, { error: "tools container is not available" });
+        try {
+          await deps.retryToolsInstall(decodeURIComponent(toolsRetryMatch[1]!));
+        } catch (err) {
+          return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        json(res, 200, { ok: true });
         return;
       }
 

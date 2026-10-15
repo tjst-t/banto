@@ -31,7 +31,7 @@ import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
 import { PendingApprovalRegistry } from "./inbox/pending-approvals.js";
-import { RelayRegistry, HostRelayEndpoint } from "./relay/host-relay-endpoint.js";
+import { RelayRegistry, HostRelayEndpoint, RELAY_BODY_MAX_BYTES } from "./relay/host-relay-endpoint.js";
 import { AgentRelayEndpoint } from "./relay/agent-relay-endpoint.js";
 import { RelayGrantStore } from "./relay/grants.js";
 import { ModuleCallTracker, STOP_DRAIN_LIMIT_MS } from "./relay/module-calls.js";
@@ -39,7 +39,7 @@ import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
-import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody } from "./http/app.js";
+import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
@@ -51,7 +51,7 @@ import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
 import { collectActivity } from "./http/activity.js";
 import { createRelayListener } from "./relay/relay-listener.js";
-import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace } from "./runtime/runtime.js";
+import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace, type ToolsInstallStatus } from "./runtime/runtime.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import { StreamRelay, streamUrlOf } from "./http/streams.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
@@ -286,7 +286,8 @@ async function main(): Promise<void> {
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },
         claudeLogin,
         acceptsProject: (projectId) => projectThread.getProject(projectId)?.runtime === runtimeIdOf(runtimeName),
-        readJsonBody: (req) => readJsonBody(req),
+        // 本文の上限は core の口と同じ（`RELAY_BODY_MAX_BYTES`）
+        readJsonBody: (req) => readJsonBody(req, RELAY_BODY_MAX_BYTES),
       }),
     ...(process.env.BANTO_SHELL_HOME_SOURCE ? { shellHomeSource: process.env.BANTO_SHELL_HOME_SOURCE } : {}),
     notify: async (n) => {
@@ -1275,6 +1276,8 @@ async function main(): Promise<void> {
     // **どこで起こすか**（決定・2026-09-25、`docs/specs/v4-security.md` §1）：
     //   Project の Module → その Project のコンテナ
     //   外から足した banto 全体の Module → banto 全体用のコンテナ（banto 本体で動くのは banto 自身のコードだけ）
+    //   同梱の banto 全体の Module のうち道具用のコンテナを名乗るもの → 同梱の道具用のコンテナ（追加・2026-10-15。中で sudo
+    //     できず、名乗った apt のパッケージを入れてから起こす）
     //   同梱の banto 全体の Module → banto 本体
     // 中からは host の 127.0.0.1 に届かないので、中継の住所はブリッジの host 側にする（host は 0.0.0.0 で待ち受けている）
     const where = modulePlacement(declaration.meta, declaration.launch);
@@ -1283,7 +1286,9 @@ async function main(): Promise<void> {
         ? { id: project.id, root: project.root, nesting: projectNesting(project.id) }
         : where === "instance-container"
           ? { id: runtime.instancePlaceId, nesting: false }
-          : undefined;
+          : where === "tools-container"
+            ? { id: runtime.toolsPlaceId, nesting: false, tools: { aptPackages: declaration.meta.toolsContainer?.aptPackages ?? [] } }
+            : undefined;
     // **繋がるまでにどこで時間を使ったかを、繋がった行に添える**（追加・2026-09-26）——新しい Project を
     // 開くのが遅いとき、手元でプローブを書かずに `~/banto-host.log` で内訳が分かるように（規則4）
     const started = performance.now();
@@ -1305,6 +1310,9 @@ async function main(): Promise<void> {
       meta: declaration.meta,
       // 中では AI がこの合言葉も読める——値を返す口への承認を、何を指していたかごとに分ける
       ...(prepared ? { inContainer: true } : {}),
+      // **身元は「道具用のコンテナ」と刻む**（追加・2026-10-15）。コンテナの中なので「banto 本体で動く」線（`mayRaiseNotice` 等）
+      // には入らない
+      ...(where === "tools-container" ? { toolsContainer: true } : {}),
       // **鍵の窓口を立てる場所**（追加・2026-09-27）。host の Vault がここに立てた ssh-agent に、中の Module が届く
       ...(prepared ? { socketDir: prepared.socketDirFor(moduleDataDir) } : {}),
       // 別のサーバでは、Vault が立てた窓口を向こうへ転送してから返す
@@ -1519,6 +1527,8 @@ async function main(): Promise<void> {
       codeId: declarationFingerprint(declaration),
       // 中継で呼べるのは同じ Project の中だけ（決定・2026-09-26）——Project ごとの Module はその Project を持つ
       ...(project ? { projectId: project.id } : {}),
+      // 宛先が同梱の道具用のコンテナで動くか（中継の承認の線、`statelessTransform`）。置き場は host が導いたもの
+      ...(modulePlacement(declaration.meta, declaration.launch) === "tools-container" ? { toolsContainer: true as const } : {}),
     };
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
@@ -1645,10 +1655,14 @@ async function main(): Promise<void> {
    * 「見ただけで副作用」を作らない）。分かるのは、いま持っている事実だけ。
    */
   /** banto 全体の Module が立っているか（追加・2026-09-15、instance 層の画面用）。 */
-  function instanceModuleStatus(): Array<{ name: string; connected: boolean; error?: string }> {
+  function instanceModuleStatus(): Array<{ name: string; connected: boolean; error?: string; toolsInstall?: ToolsInstallView }> {
+    const tools = runtime.toolsInstallStatus();
+    const declarations = loadModuleDeclarations(runtimeConfig, "");
     return listInstanceModules(runtimeConfig).map((m) => {
       const failure = connectBackoff.failure(m.name);
+      const toolsInstall = m.placement === "tools-container" ? toolsInstallOf(declarations.find((d) => d.name === m.name), tools) : undefined;
       return {
+        ...(toolsInstall ? { toolsInstall } : {}),
         name: m.name,
         // Project ごとに立つものは、この名前では繋がらない——どこかの Project で
         // 立っていれば「立っている」と言う（画面は内訳を別に出す）
@@ -1659,6 +1673,41 @@ async function main(): Promise<void> {
         ...(failure ? { error: failure.reason } : {}),
       };
     });
+  }
+
+  /** 道具用のコンテナで動く Module の、名乗ったパッケージを入れているか・入れられなかったか */
+  function toolsInstallOf(declaration: ParsedModuleDeclaration | undefined, tools: ToolsInstallStatus): ToolsInstallView | undefined {
+    if (!declaration) return undefined;
+    // 「入れ直す」を押してから起き終わるまで（コンテナの用意を含む）は「入れています」
+    if (toolsRetrying.has(declaration.name)) return { state: "installing" };
+    const want = new Set(declaration.meta.toolsContainer?.aptPackages ?? []);
+    if (want.size === 0) return undefined;
+    const failed = tools.failures.find((f) => f.packages.some((p) => want.has(p)));
+    if (failed) return { state: "failed", reason: failed.reason };
+    if (tools.installing?.some((p) => want.has(p))) return { state: "installing" };
+    return undefined;
+  }
+  /** 「入れ直す」を押されて、起こし直している Module */
+  const toolsRetrying = new Set<string>();
+
+  /**
+   * **道具を入れ直す**（追加・2026-10-15）。入れられなかったことを忘れ、繋ぎ直しの待ちも消して、その Module を起こし直す
+   * （入れ終わるのは待たない——数分かかる。画面は「入れています」を出す）
+   */
+  async function retryToolsInstall(name: string): Promise<void> {
+    const declaration = loadModuleDeclarations(runtimeConfig, "").find((d) => d.name === name);
+    if (!declaration) throw new Error(`知らない Module です（有効になっていません）: ${name}`);
+    if (modulePlacement(declaration.meta, declaration.launch) !== "tools-container") {
+      throw new Error(`${name} は道具用のコンテナで動く Module ではありません`);
+    }
+    runtime.retryToolsInstall();
+    connectBackoff.clear(name);
+    toolsRetrying.add(name);
+    void connectDeclaredModule(declaration)
+      .catch((err: unknown) => {
+        console.warn(`[host] ${name} を起こし直せませんでした:`, err);
+      })
+      .finally(() => toolsRetrying.delete(name));
   }
 
   /** その Module のプロセスを落とす（止めた・消したとき）。名前で始まる接続を全部。 */
@@ -2124,7 +2173,7 @@ async function main(): Promise<void> {
         // **上限はこの機械のコンテナだけ**（別のサーバの資源は向こうの持ち主の責任——v4-security.md §1）
         const ids = (projectId !== undefined
           ? [projectId]
-          : [...projectThread.listProjects().map((p) => p.id), runtime.instancePlaceId]
+          : [...projectThread.listProjects().map((p) => p.id), runtime.instancePlaceId, runtime.toolsPlaceId]
         ).filter((id) => {
           const project = projectThread.getProject(id);
           return !project || !isRemoteProject(project);
@@ -2149,6 +2198,7 @@ async function main(): Promise<void> {
     moduleStatusForProject,
     instanceModuleStatus,
     releaseModule,
+    retryToolsInstall,
     startOAuth,
     finishOAuth,
     dataDir: bootstrap.dataDir,
@@ -2216,6 +2266,7 @@ async function main(): Promise<void> {
     const targets = [
       ...projectThread.listProjects().map((p) => ({ containerName: runtime.placeName(p.id), projectId: p.id, name: p.name })),
       { containerName: runtime.placeName(runtime.instancePlaceId), name: "banto 全体用のコンテナ" },
+      { containerName: runtime.placeName(runtime.toolsPlaceId), name: "同梱の道具用のコンテナ" },
     ];
     void resourceWatch
       .tick(targets)

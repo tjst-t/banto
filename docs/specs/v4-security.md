@@ -47,14 +47,14 @@
 
 ### 閉じ込めは Project ごとのシステムコンテナで行う（決定・2026-09-25、ユーザー）
 
-**仕切りは2つだけにする**（追記・2026-10-15：3つ目の箱「同梱の道具用のコンテナ」を足す——下の表の最後の行。未実装）：
+**仕切りは2つだけにする**（追記・2026-10-15：3つ目の箱「同梱の道具用のコンテナ」を足す——下の表の最後の行。2026-10-15 実装、Backlog #309）：
 
 | 箱 | 中身 | 決め方 |
 |---|---|---|
 | **banto 本体（ホスト）** | core・会話の本体（Runner）・Claude のログイン・Vault・設定・banto 全体の同梱 Module | **AI に渡してはいけないものだけ** |
 | **Project のコンテナ** | Project のファイル・Project の Module（Shell・FileSystem・Subagent・外から足したもの）・AI のコマンド・サブエージェント・入れた道具 | **それ以外の Project のもの全部** |
 | **banto 全体用のコンテナ（1台）** | 外から足した banto 全体の Module（第三者のコード） | **banto 本体で動くのは banto 自身のコードだけ**（決定・2026-09-25、ユーザー） |
-| **同梱の道具用のコンテナ（1台）**（決定・2026-10-15、ユーザー。未実装） | 外から来た文書を開くような、banto 自身のコードだが banto 本体の権限で走らせたくない仕事（最初は Office の変換役 `documents`、`v4-modules.md` §2.2） | **第三者の Module と同居させない**（同居すると Project から渡した中身を読まれる）。**中で sudo できない**、要るパッケージは core が root で入れる |
+| **同梱の道具用のコンテナ（1台）**（決定・2026-10-15、ユーザー。実装・2026-10-15） | 外から来た文書を開くような、banto 自身のコードだが banto 本体の権限で走らせたくない仕事（最初は Office の変換役 `documents`、`v4-modules.md` §2.2） | **第三者の Module と同居させない**（同居すると Project から渡した中身を読まれる）。**中で sudo できない**、要るパッケージは core が root で入れる |
 
 **Landlock はやめた**（2026-09-25 に移し終えた）。
 理由（実測、`docs/notes/2026-09-25-dev-environment.md`・`poc/09-project-container/`）：
@@ -870,9 +870,34 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
 |---|---|
 | Project の Module（`scope: "project"`——Shell・FileSystem・Subagent・外から足したもの） | **その Project のコンテナ** |
 | 外から足した banto 全体の Module | **banto 全体用のコンテナ（1台）** |
-| 同梱の banto 全体の Module のうち、宣言で道具用のコンテナを名乗るもの（決定・2026-10-15、未実装。最初は `documents`） | **同梱の道具用のコンテナ（1台）**。同梱でないものが名乗ったら宣言の読み込みで断る |
+| 同梱の banto 全体の Module のうち、宣言で道具用のコンテナを名乗るもの（決定・2026-10-15、実装・2026-10-15。最初は `documents`） | **同梱の道具用のコンテナ（1台）**。同梱でないものが名乗ったら宣言の読み込みで断る（下の「同梱の道具用のコンテナの作り」） |
 | 同梱の banto 全体の Module（Vault・窓口・設定の画面・Skill など） | **banto 本体** |
 | URL に繋ぐ形 | こちらにプロセスが無い（§3「Module が machine の外へデータを出す」） |
+
+**同梱の道具用のコンテナの作り**（実装・2026-10-15、Backlog #309）：
+
+- **名乗り方**：宣言の `meta.toolsContainer: { aptPackages: [...] }`。`scope: "instance"`・`isolation: "subprocess"` の Module だけ。
+  パッケージ名は Debian の形（`^[a-z0-9][a-z0-9+.-]+$`）だけ受ける（`-` で始まる名前が apt の引数に化けないように）。**同梱でない
+  Module が名乗ったら、宣言の読み込み（保存の口も同じ）で断る**（`assertPlacementAllowed`。黙って banto 全体用のコンテナへ回さない）
+- **箱**：id は `tools-<データの置き場から決まる印>`（banto ごとに1台）。作り方・マウント・資源の上限は banto 全体用のコンテナと
+  同じ（上限は banto 全体の決め方の天井。Project ごとの上書きは無い）。**いつもこの host のコンテナ**——別のサーバの Project の
+  Module からも、逆向きのトンネル越しの中継で届く
+- **中で sudo できない**：用意するたびに、`/etc/sudoers.d/` のパスワード無しを許すファイルを消し（土台の `banto` に加えて、元の
+  イメージの `90-incus` も `ubuntu`（uid 1000）にパスワード無しの sudo を許していた——実測）、そのユーザーを sudo の組から外し、
+  **そのユーザーで `sudo -n true` が通らないことを確かめる**。通ってしまえば Module を起こさない（fail closed）。`sudo` の
+  パッケージそのものは外せない（`dpkg --purge sudo` は依存で断られた、実測）
+- **パッケージを入れる**：その Module を起こすとき、入っていないもの（`dpkg-query`）があれば、空き（`df /`、2GiB 以上）を確かめて
+  root で `apt-get install --no-install-recommends` する。入れるのは同時に1本（core の中の1つの待ち）。**入れられなかった組は覚え、
+  起こし直しでは apt を走らせず理由を返す**——人が設定（banto 全体の「Module」）の行の「道具を入れ直す」を押すとやり直す。
+  覚えているのは banto の走行の間だけ（banto を起こし直すと、次に使うときに1回やり直す）。入れている間は一覧の状態が
+  「Installing」になり、画面は終わるまで読み直す。Incus の無い host では、前提が欠けているとして起こさない
+- **中継**：身元は「道具用のコンテナ」と刻む（`CallerIdentity.toolsContainer`）。コンテナの中なので `inContainer` も立ち、
+  `mayRaiseNotice` 等の「banto 本体で動く」線には入らない。承認の線は `dev.banto/statelessTransform`（§3 の中継の承認、
+  `v4-modules.md` §2.2「変換役」）——宛先が同梱で道具用のコンテナで動き（host が台帳に刻んだ置き場）、tool が名乗り、呼び元が
+  同梱（コンテナの中でもよい）なら聞かない
+- **`/relay` の本文は 10MB まで**（core の口も、別のサーバ用の待ち受けも）。超えたら 413
+- **試しの同梱 Module** `tools-probe`（目録の `hidden`——画面の目録には出ない）が E2E（`e2e/specs/tools-container.spec.ts`）で
+  起動・パッケージ・sudo を確かめる
 
 **置き場所は宣言の `scope` と `origin` から host が導く**（`modulePlacement`）。宣言の `confinement` は置き場所を
 決めない——Landlock の時の項目で、いまは読むだけの印（名前の付け直しは Backlog）。**外から足した

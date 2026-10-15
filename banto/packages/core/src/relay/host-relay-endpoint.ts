@@ -32,6 +32,7 @@ import {
   SOCKET_DIR_META_KEY,
   isValueFree,
   isCallerOwned,
+  isStatelessTransform,
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
   type BantoModuleMeta,
@@ -39,6 +40,12 @@ import {
 } from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
 import { RESTARTING_REFUSAL } from "./module-calls.js";
+
+/**
+ * **中継の本文の上限**（追加・2026-10-15、`docs/specs/v4-modules.md` §2.2「変換役」）。Module の stdio は1通 10MB まで
+ * （MCP SDK 1.30.0 の ReadBuffer）なので、中継も同じにする——それより大きいものは宛先に届けられない
+ */
+export const RELAY_BODY_MAX_BYTES = 10 * 1024 * 1024;
 
 export interface CallerIdentity {
   /** 宣言の名前（`shell`）。**承認の粒度はこちら**——Project は別に持つ。 */
@@ -52,6 +59,12 @@ export interface CallerIdentity {
    * ——値を返す口への承認を、何を指していたかごとに分ける（`RelayCallDescriptor.scope`）
    */
   inContainer?: boolean;
+  /**
+   * **同梱の道具用のコンテナの中で動いているか**（追加・2026-10-15、`docs/specs/v4-modules.md` §2.2「変換役」）。身元を
+   * 「道具用のコンテナ」と刻む。中に AI はいないが、コンテナの中なので `inContainer` も立つ——`mayRaiseNotice` 等の
+   * 「banto 本体で動く」線には入れない
+   */
+  toolsContainer?: boolean;
   /**
    * **コンテナの中からも見える、host 側の窓口用フォルダ**（追加・2026-09-27）。呼び出しに
    * `dev.banto/socketDir` として刻む——Vault が鍵の窓口をここに立てる（`SOCKET_DIR_META_KEY`）
@@ -106,6 +119,11 @@ export interface RegisteredModule {
    * 中継で呼べるのは同じ Project の中だけ（`whyNotAllowed`）
    */
   projectId?: string;
+  /**
+   * **同梱の道具用のコンテナで動いている**（追加・2026-10-15）。置き場は host が宣言から導いたもの（Module の申告ではない）。
+   * `dev.banto/statelessTransform` の口を人に聞かずに通すのは、これが立っている宛先だけ
+   */
+  toolsContainer?: true;
 }
 
 /**
@@ -409,6 +427,7 @@ async function targetTool(
       visibility: Visibility;
       valueFree: boolean;
       callerOwned: boolean;
+      statelessTransform: boolean;
       auditArgs: string[];
       deliversLater: boolean;
       receivesReplies: boolean;
@@ -423,6 +442,7 @@ async function targetTool(
     visibility: visibilityOf(x),
     valueFree: isValueFree(x),
     callerOwned: isCallerOwned(x),
+    statelessTransform: isStatelessTransform(x),
     auditArgs: auditArgsOf(x),
     deliversLater: deliversLater(x),
     receivesReplies: receivesReplies(x),
@@ -821,6 +841,21 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       // banto 全体の Module だけ（`mayRaiseNotice` 等と同じ線）——Project の Module はいまコンテナの中でしか動かないが、
       // コンテナ無しの起動形態ができても、その Project の AI の手の届く Module が承認なしで書けないように
       identity.projectId === undefined;
+    /**
+     * **受けた中身を残さず変換して返すだけの口**（追加・2026-10-15、`dev.banto/statelessTransform`、`docs/specs/v4-modules.md`
+     * §2.2「変換役」の承認）。FileSystem（Project のコンテナの中・別のサーバの Project ではそのサーバ）が Office の文書を
+     * 変換役に渡すたびに人を待たせない。
+     *
+     * - **宛先は同梱で、同梱の道具用のコンテナで動くものだけ**——閉じ込め（1件ごとの囲い・中で sudo できない・第三者と
+     *   同居しない）が前提。名乗りを信じるのは同梱の宛先だけ（`valueFree` と同じ線）。置き場は host が刻んだもの
+     * - **呼び元は同梱なら、コンテナの中でもよい**（`callerOwned` と違う）——Project の AI が FileSystem の合言葉で
+     *   なりすましても、得るのは「自分が既に持つバイト列を変換させる」ことだけ
+     */
+    const statelessTransformCall =
+      targetInfo?.statelessTransform === true &&
+      target.meta.origin === "bundled" &&
+      target.toolsContainer === true &&
+      identity.meta?.origin === "bundled";
 
     // **起こし直しのために止めている間は、新しい中継を断る**（追加・2026-10-05、アーキ仕様 §2.5「いま動いているもの」）。
     // ただし**実行中の呼び出しの中の中継は通す**——止める前に待つのはその呼び出しが終わるまでで、中継を断ると待っている
@@ -838,6 +873,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       !ownHousekeeping &&
       !valueFreeCall &&
       !callerOwnedCall &&
+      !statelessTransformCall &&
       progressToken !== undefined
         ? setInterval(() => {
             void extra.sendNotification({
@@ -858,6 +894,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       ? Promise.resolve({ allowed: true, reason: "値を返さない口" })
       : callerOwnedCall
       ? Promise.resolve({ allowed: true, reason: "呼び元の Module が持ち主のものだけを書き換える口" })
+      : statelessTransformCall
+      ? Promise.resolve({ allowed: true, reason: "同梱の道具用のコンテナの、受けた中身を残さず変換して返すだけの口" })
       : opts.gate
         ? opts.gate
             .requestApproval({

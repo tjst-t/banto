@@ -10,14 +10,33 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ShellHomeSync } from "../modules/shell-home.js";
 
-/** どの箱に置くか（Project ごとに1つ、外から足した banto 全体の Module 用に1つ） */
+/** どの箱に置くか（Project ごとに1つ、外から足した banto 全体の Module 用に1つ、同梱の道具用に1つ） */
 export interface RuntimePlace {
-  /** Project の id、または banto 全体用の箱の id（`Runtime.instancePlaceId`） */
+  /** Project の id、または banto 全体用の箱の id（`Runtime.instancePlaceId`）・道具用の箱の id（`Runtime.toolsPlaceId`） */
   id: string;
-  /** Project の根（host の側のパス。banto 全体用の箱には無い） */
+  /** Project の根（host の側のパス。banto 全体用・道具用の箱には無い） */
   root?: string;
   /** 中で Docker を使うか（Project ごとの設定） */
   nesting: boolean;
+  /**
+   * **同梱の道具用の箱**（追加・2026-10-15、`docs/specs/v4-security.md` §1）。中で sudo できなくし、起こす Module が名乗った
+   * apt のパッケージを入れてから返す。`id` は `Runtime.toolsPlaceId`
+   */
+  tools?: { aptPackages: readonly string[] };
+}
+
+/**
+ * **道具用の箱に名乗ったパッケージを入れられなかった**（追加・2026-10-15）。覚えておき、人が設定の「入れ直す」を押すまで
+ * やり直さない（`v4-modules.md` §2.2「失敗したら毎回 apt をやり直さない」）
+ */
+export class ToolsInstallError extends Error {}
+
+/** 道具用の箱にパッケージを入れているところ・入れられなかったもの（設定の画面に出す） */
+export interface ToolsInstallStatus {
+  /** いま入れている（同時に1本） */
+  installing?: readonly string[];
+  /** 入れられなかったもの（名乗ったパッケージの組ごと）。「入れ直す」を押すまでやり直さない */
+  failures: ReadonlyArray<{ packages: readonly string[]; reason: string; at: string }>;
 }
 
 /** 箱の中で起こすプロセス（パスは実行場所の側） */
@@ -96,6 +115,12 @@ export class RuntimeStopError extends Error {
 export interface Runtime {
   /** banto 全体用の箱の id */
   readonly instancePlaceId: string;
+  /** 同梱の道具用の箱の id（いつもこの host のコンテナ。別のサーバの Project からも中継で届く） */
+  readonly toolsPlaceId: string;
+  /** 道具用の箱にパッケージを入れている・入れられなかったもの */
+  toolsInstallStatus(): ToolsInstallStatus;
+  /** 入れられなかったことを忘れる（人が「入れ直す」を押した）。次に起こすときに入れ直す */
+  retryToolsInstall(): void;
   /** 前提がそろっているか（起動のログに出す1行） */
   describePrerequisites(): string;
   /** 用意する（無ければ作る・起こす・前提を確かめる）。同時に来ても1回にまとめる */

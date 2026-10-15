@@ -1335,7 +1335,7 @@ Worker・WASM・iframe は塞いだまま。編集器（Collabora・OnlyOffice�
 - **変換役は同梱の banto 全体の Module（仮名 `documents`）**。PDF への変換・xlsx の計算し直し・ページの画像の tool を持つ
   （可視性 `module`——AI には見せない。AI は FileSystem の `readDocument` を通して使う。外から足した Module も中継で呼べるが、
   そのときは今までどおり人に聞く）
-- **動かす場所は「同梱の道具用のコンテナ」（新設、1台。ユーザー了承・2026-10-15）**——v4-security.md §1 の3つ目の箱。
+- **動かす場所は「同梱の道具用のコンテナ」（新設、1台。ユーザー了承・2026-10-15。箱そのものは実装済み・2026-10-15、v4-security.md §2「同梱の道具用のコンテナの作り」）**——v4-security.md §1 の3つ目の箱。
   今の banto 全体用のコンテナは外から足した Module（第三者のコード）が同じユーザーで同居しており、そこで変換すると各 Project の
   文書をそれらが読めるため。同梱の Module は今は banto 本体で動く（`modulePlacement`）が、外から来た文書を開く LibreOffice を
   banto 本体の権限で走らせない

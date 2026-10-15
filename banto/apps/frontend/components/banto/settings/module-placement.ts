@@ -5,6 +5,8 @@ import type { ModulePlacement } from "@/lib/backend/client";
 export const PLACEMENT_LABEL: Record<Exclude<ModulePlacement, "remote">, string> = {
   "project-container": "Project のコンテナ",
   "instance-container": "全体のコンテナ",
+  // 同梱の Module のうち、外から来た文書を開くような仕事（第三者と同居しない・中で sudo できない、追加・2026-10-15）
+  "tools-container": "道具用のコンテナ",
   // 同梱の banto 全体の Module だけがここ（banto 自身のコード）
   host: "banto 本体",
 };

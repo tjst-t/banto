@@ -1,0 +1,17 @@
+{
+  "name": "@banto/module-tools-probe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "banto-module-tools-probe": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@banto/module-contract": "*",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

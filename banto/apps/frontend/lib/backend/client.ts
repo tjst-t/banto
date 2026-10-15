@@ -770,7 +770,7 @@ export interface RealProjectModule {
 }
 
 /** Module がどこで動くか（host の `modulePlacement` と同じ語） */
-export type ModulePlacement = "project-container" | "instance-container" | "host" | "remote";
+export type ModulePlacement = "project-container" | "instance-container" | "tools-container" | "host" | "remote";
 
 export async function listRealProjectModules(projectId: string): Promise<RealProjectModule[]> {
   return request<RealProjectModule[]>(`/api/projects/${projectId}/modules`);
@@ -1599,6 +1599,11 @@ export interface RealInstanceModule {
   connected: boolean;
   /** 立たなかった理由 */
   error?: string;
+  /**
+   * 道具用のコンテナで動く Module だけ：名乗ったパッケージを入れているところか、入れられなかったか（追加・2026-10-15）。
+   * 入れられなかったら毎回はやり直さない——人が「道具を入れ直す」を押す
+   */
+  toolsInstall?: { state: "installing" } | { state: "failed"; reason: string };
 }
 
 export async function listRealInstanceModules(): Promise<RealInstanceModule[]> {
@@ -1802,6 +1807,11 @@ export async function startRealModuleOAuth(name: string): Promise<{ url: string 
   return request<{ url: string }>(`/api/modules/${encodeURIComponent(name)}/oauth/start`, {
     method: "POST",
   });
+}
+
+/** 道具用のコンテナにパッケージを入れ直す（入れられなかったとき）。入れ終わるのは待たない */
+export async function retryRealModuleTools(name: string): Promise<void> {
+  await request(`/api/modules/${encodeURIComponent(name)}/tools/retry`, { method: "POST" });
 }
 
 export async function removeRealInstanceModule(name: string): Promise<void> {

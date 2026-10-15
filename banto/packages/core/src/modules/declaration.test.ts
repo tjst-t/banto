@@ -688,6 +688,54 @@ test("どこで動くか：Project → その Project のコンテナ、外か�
   assert.equal(modulePlacement(metaFor({}), { type: "http", url: "https://e.com/mcp" }), "remote");
 });
 
+// **同梱の道具用のコンテナ**（追加・2026-10-15、v4-security.md §1 の4つ目の箱）。名乗れるのは同梱の banto 全体の Module だけ
+test("どこで動くか：道具用のコンテナを名乗る同梱の全体の Module → 同梱の道具用のコンテナ", () => {
+  const stdio = { command: "x", args: [] };
+  const tools = { toolsContainer: { aptPackages: ["jq"] } };
+  assert.equal(modulePlacement(metaFor({ origin: "bundled", ...tools }), stdio), "tools-container");
+  // 目録の試しの Module は同梱と認められ、道具用のコンテナで動く
+  const entry = BUNDLED_CATALOG.find((e) => e.id === "tools-probe")!;
+  const probe = parseModuleDeclaration({ name: "tools-probe", launch: entry.launch, meta: entry.meta }, "catalog");
+  assert.equal(probe.meta.origin, "bundled");
+  assert.deepEqual(probe.meta.toolsContainer, { aptPackages: ["jq"] });
+  assert.equal(modulePlacement(probe.meta, probe.launch), "tools-container");
+});
+
+test("外から足した Module が道具用のコンテナを名乗ったら、宣言の読み込みで断る（fail closed）", async () => {
+  const evil = {
+    name: "evil",
+    launch: { command: "/bin/sh", args: ["-c", "true"] },
+    meta: { satisfies: ["converter"], dependsOn: [], isolation: "subprocess", toolsContainer: { aptPackages: ["jq"] } },
+  };
+  assert.throws(() => parseModuleDeclaration(evil, "test"), /同梱の道具用のコンテナ（toolsContainer）は banto 同梱の Module だけが名乗れます/);
+  // 同梱のコードを書き換えた（引数を変えた）ものも外から足したものと同じ
+  const entry = BUNDLED_CATALOG.find((e) => e.id === "tools-probe")!;
+  const tampered = { name: "probe2", launch: { ...(entry.launch as StdioLaunch), args: ["/tmp/other.js"] }, meta: entry.meta };
+  assert.throws(() => parseModuleDeclaration(tampered, "test"), /banto 同梱の Module だけが名乗れます/);
+  // 保存の口でも断る（壊れた宣言を Event Store に残さない）
+  await withConfig(async (config) => {
+    await assert.rejects(addModuleDeclaration(config, evil as never), /banto 同梱の Module だけが名乗れます/);
+  });
+  // 名乗らなければ、banto 全体用のコンテナで動く
+  const plain = parseModuleDeclaration({ ...evil, meta: { ...evil.meta, toolsContainer: undefined } }, "test");
+  assert.equal(modulePlacement(plain.meta, plain.launch), "instance-container");
+});
+
+test("道具用のコンテナは banto 全体の Module だけ・パッケージ名は apt の形だけ", () => {
+  const launch = { command: "x", args: [] };
+  assert.throws(
+    () => parseModuleDeclaration({ name: "p", launch, meta: { satisfies: ["x"], isolation: "subprocess", scope: "project", toolsContainer: { aptPackages: [] } } }, "t"),
+    /scope:"instance"/,
+  );
+  for (const bad of [["-o=APT::Get::Assume-Yes"], ["jq; rm -rf /"], "jq", [1]]) {
+    assert.throws(
+      () => parseModuleDeclaration({ name: "p", launch, meta: { satisfies: ["x"], isolation: "subprocess", toolsContainer: { aptPackages: bad } } }, "t"),
+      /toolsContainer は/,
+      `${JSON.stringify(bad)} を受けた`,
+    );
+  }
+});
+
 // **URL に繋ぐ形**（追加・2026-09-17、ユーザー指示）。
 // 見たいのは「受け取れる」ではなく、**受け取ってはいけないものを断ること**。
 test("URL に繋ぐ形は、金庫の語だけを headers に差し込める", () => {

@@ -1,6 +1,6 @@
 // **実行場所の1つ目——この host のコンテナ**（決定・2026-09-25、`docs/specs/v4-security.md` §1）。
 //
-// Project ごとに1台、外から足した banto 全体の Module 用に1台。Project の根・banto のコード（読み取り専用）・
+// Project ごとに1台、外から足した banto 全体の Module 用に1台、同梱の道具用に1台（追加・2026-10-15）。Project の根・banto のコード（読み取り専用）・
 // Module の置き場・取ってきた配布物（読み取り専用）を **host と同じパスで**マウントするので、host の側のパスと
 // 実行場所の側のパスは同じ。Incus を呼ぶのはこのファイル（と `@banto/container`）だけ
 
@@ -14,11 +14,18 @@ import {
   ProjectContainers,
   checkContainerPrereqs,
   containerNameFor,
+  dropSudo,
   ensureBaseImage,
   execInContainer,
+  freeBytes,
   hostPrereqDeps,
+  installPackages,
   instanceContainerId,
+  missingPackages,
   runIncus,
+  toolsContainerId,
+  TOOLS_MIN_FREE_BYTES,
+  type RunIncus,
   type ContainerLimits,
   type PrereqResult,
 } from "@banto/container";
@@ -26,6 +33,8 @@ import { syncShellHome } from "../modules/shell-home.js";
 import { SingleFlight } from "../modules/single-flight.js";
 import {
   RuntimeStopError,
+  ToolsInstallError,
+  type ToolsInstallStatus,
   type PlaceAddress,
   type PreparedPlace,
   type Runtime,
@@ -66,8 +75,15 @@ const diskDeviceName = (dir: string) => `m-${createHash("sha256").update(dir).di
 
 export class HostContainerRuntime implements Runtime {
   readonly instancePlaceId: string;
+  readonly toolsPlaceId: string;
   private readonly ready = new Map<string, ReadyContainer>();
   private readonly spawns = new SingleFlight<ReadyContainer>();
+  /** 道具用の箱に入っていると確かめたパッケージ（この走行の間だけ覚える——起き直したら dpkg に聞き直す） */
+  private readonly toolsInstalled = new Set<string>();
+  /** 入れられなかったパッケージの組（並べた名前を空白で繋いだもの → 理由）。人が「入れ直す」を押すまでやり直さない */
+  private readonly toolsFailures = new Map<string, { packages: string[]; reason: string; at: string }>();
+  /** いま入れているもの。**同時に1本**（apt は1つの箱で並べて走らせられない） */
+  private toolsBusy: { packages: string[]; done: Promise<void> } | undefined;
 
   /** `create` を使う。直接は試験だけ（Incus を偽物にする） */
   constructor(
@@ -77,8 +93,11 @@ export class HostContainerRuntime implements Runtime {
     private readonly containers: ProjectContainers = new ProjectContainers(runIncus),
     /** banto の機能が頼る道具（git・ssh・curl・node）を入れた土台——無ければ一度だけ作る */
     private readonly baseImage: () => Promise<string> = () => ensureBaseImage(runIncus),
+    /** 道具用の箱の中で sudo を外す・パッケージを入れるときに使う（試験では偽物） */
+    private readonly incus: RunIncus = runIncus,
   ) {
     this.instancePlaceId = instanceContainerId(opts.dataDir);
+    this.toolsPlaceId = toolsContainerId(opts.dataDir);
   }
 
   static async create(opts: HostContainerRuntimeOptions): Promise<HostContainerRuntime> {
@@ -94,7 +113,74 @@ export class HostContainerRuntime implements Runtime {
   }
 
   async prepare(place: RuntimePlace): Promise<PreparedPlace> {
-    return this.preparedFrom(await this.ensureContainer(place));
+    const c = await this.ensureContainer(place);
+    if (place.tools) await this.ensureTools(c.name, place.tools.aptPackages);
+    return this.preparedFrom(c);
+  }
+
+  toolsInstallStatus(): ToolsInstallStatus {
+    return {
+      ...(this.toolsBusy ? { installing: this.toolsBusy.packages } : {}),
+      failures: [...this.toolsFailures.values()],
+    };
+  }
+
+  retryToolsInstall(): void {
+    this.toolsFailures.clear();
+  }
+
+  /**
+   * **名乗ったパッケージを入れる**（`v4-modules.md` §2.2「変換役」）。入っていれば何もしない。入れるのは同時に1本——別の組が
+   * 入れている間は、それが終わるのを待ってから自分の組を見る。**入れられなかった組は覚えて、人が「入れ直す」を押すまで
+   * やり直さない**（起こし直すたびに数分の apt を走らせない）
+   */
+  private async ensureTools(name: string, aptPackages: readonly string[]): Promise<void> {
+    const packages = [...new Set(aptPackages)].sort();
+    const key = packages.join(" ");
+    for (;;) {
+      if (packages.every((p) => this.toolsInstalled.has(p))) return;
+      const failed = this.toolsFailures.get(key);
+      if (failed) {
+        throw new ToolsInstallError(
+          `道具用のコンテナに ${packages.join("・")} を入れられませんでした（${failed.reason}）。` +
+            "設定（banto 全体の「Module」）の「道具を入れ直す」でやり直せます",
+        );
+      }
+      if (this.toolsBusy) {
+        await this.toolsBusy.done.catch(() => undefined);
+        continue;
+      }
+      const done = this.installTools(name, packages, key).finally(() => {
+        this.toolsBusy = undefined;
+      });
+      this.toolsBusy = { packages, done };
+      await done.catch(() => undefined);
+    }
+  }
+
+  private async installTools(name: string, packages: string[], key: string): Promise<void> {
+    try {
+      const missing = await missingPackages(this.incus, name, packages);
+      if (missing.length > 0) {
+        const free = await freeBytes(this.incus, name);
+        if (free < TOOLS_MIN_FREE_BYTES) {
+          const gib = (n: number) => Math.round((n / 1024 ** 3) * 10) / 10;
+          throw new Error(`置き場の空きが ${gib(free)} GiB しかありません（${gib(TOOLS_MIN_FREE_BYTES)} GiB 要ります）`);
+        }
+        const started = performance.now();
+        console.log(`[host] 道具用のコンテナ ${name} に ${missing.join("・")} を入れます`);
+        await installPackages(this.incus, name, missing);
+        const still = await missingPackages(this.incus, name, missing);
+        if (still.length > 0) throw new Error(`入れたはずの ${still.join("・")} が入っていません`);
+        console.log(`[host] 道具用のコンテナ ${name} に ${missing.join("・")} を入れた（${Math.round(performance.now() - started)}ms）`);
+      }
+      for (const p of packages) this.toolsInstalled.add(p);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[host] 道具用のコンテナ ${name} に ${packages.join("・")} を入れられませんでした: ${reason}`);
+      this.toolsFailures.set(key, { packages, reason, at: new Date().toISOString() });
+      throw err;
+    }
   }
 
   private async ensureContainer(place: RuntimePlace): Promise<ReadyContainer> {
@@ -121,9 +207,12 @@ export class HostContainerRuntime implements Runtime {
         uid,
         gid,
         owner: this.opts.dataDir,
-        // 資源の上限（決定・2026-10-02）
+        // 資源の上限（決定・2026-10-02）。道具用の箱も banto 全体用の箱と同じ決め方（Project ごとの上書きは無い）
         limits: this.opts.limitsFor(place.id),
       });
+      // **道具用の箱の中では sudo できない**（決定・2026-10-15、v4-security.md §1）。用意するたびに通し、できないことを
+      // 確かめる——できてしまえば Module を起こさない
+      if (place.tools) await dropSudo(this.incus, name, uid, gid);
       const r: ReadyContainer = {
         name,
         hostAddress: await this.containers.hostAddress(name),
@@ -173,11 +262,14 @@ export class HostContainerRuntime implements Runtime {
 
   forget(placeId: string): void {
     this.ready.delete(placeId);
+    // 箱を確かめ直すなら、中のパッケージも確かめ直す（作り直された箱には入っていない）
+    if (placeId === this.toolsPlaceId) this.toolsInstalled.clear();
   }
 
   async release(placeId: string, opts: { stop: boolean }): Promise<void> {
     const ready = this.ready.get(placeId);
     this.ready.delete(placeId);
+    if (placeId === this.toolsPlaceId) this.toolsInstalled.clear();
     if (!opts.stop || !ready) return;
     await this.containers.stop(ready.name).catch((err: unknown) => {
       throw new RuntimeStopError(ready.name, err instanceof Error ? err.message : String(err));
@@ -245,7 +337,7 @@ export class HostContainerRuntime implements Runtime {
   resourceTargets(): { containerName: string; projectId?: string }[] {
     return [...this.ready].map(([id, r]) => ({
       containerName: r.name,
-      ...(id === this.instancePlaceId ? {} : { projectId: id }),
+      ...(id === this.instancePlaceId || id === this.toolsPlaceId ? {} : { projectId: id }),
     }));
   }
 

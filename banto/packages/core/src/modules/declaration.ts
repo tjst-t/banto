@@ -16,6 +16,7 @@
 // instance 既定＋Project 上書きの仕組みが既にある。新しい置き場を発明しない（規則12）。
 
 import {
+  assertPlacementAllowed,
   assertRolesAllowed,
   markBundled,
   parseModuleMeta,
@@ -64,17 +65,21 @@ export function isRemoteLaunch(launch: ModuleLaunch): launch is RemoteLaunch {
  *
  * - Project の Module → その Project のコンテナ
  * - 外から足した banto 全体の Module → banto 全体用のコンテナ
+ * - 同梱の banto 全体の Module のうち、宣言で道具用のコンテナを名乗るもの（`meta.toolsContainer`）→ 同梱の道具用のコンテナ
+ *   （追加・2026-10-15。外から来た文書を開くような仕事を、banto 本体の権限でも第三者との同居でもなく動かす）
  * - 同梱の banto 全体の Module → banto 本体（banto 本体で動くのは banto 自身のコードだけ）
  * - URL に繋ぐ形 → こちらにプロセスが無い
  *
  * 起こす処理と画面の両方がここから引く（規則3——宣言の `confinement` からは導かない）。
  */
-export type ModulePlacement = "project-container" | "instance-container" | "host" | "remote";
+export type ModulePlacement = "project-container" | "instance-container" | "tools-container" | "host" | "remote";
 
 export function modulePlacement(meta: BantoModuleMeta, launch: ModuleLaunch): ModulePlacement {
   if (isRemoteLaunch(launch)) return "remote";
   if (meta.scope === "project") return "project-container";
-  return meta.origin === "bundled" ? "host" : "instance-container";
+  if (meta.origin !== "bundled") return "instance-container";
+  // 同梱でないものの名乗りは読み込みで断っている（`assertPlacementAllowed`）——ここへは来ない
+  return meta.toolsContainer ? "tools-container" : "host";
 }
 
 export interface ModuleDeclaration {
@@ -372,6 +377,8 @@ export interface BundledCatalogEntry {
   suggestedName: string;
   launch: ModuleLaunch;
   meta: unknown;
+  /** 画面の目録に出さない（試験のための同梱 Module。入れる口・同梱の判定はほかと同じ） */
+  hidden?: true;
 }
 
 export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
@@ -614,6 +621,27 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       handlesSecrets: true,
     },
   },
+  {
+    // **同梱の道具用のコンテナを確かめる Module**（追加・2026-10-15、Backlog #309）。道具用のコンテナで起き、中で sudo
+    // できないこと・名乗ったパッケージが入ったことを返す。E2E が起動を確かめるためのもので、人には役に立たないので
+    // 画面の目録には出さない（`hidden`）
+    id: "tools-probe",
+    name: "道具用のコンテナの確かめ",
+    description: "同梱の道具用のコンテナで起き、中で sudo できないこと・名乗ったパッケージが入ったことを返す（試験用）",
+    suggestedName: "tools-probe",
+    hidden: true,
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/packages/modules/tools-probe/dist/server.js"],
+    },
+    meta: {
+      satisfies: ["tools-probe"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "instance",
+      toolsContainer: { aptPackages: ["jq"] },
+    },
+  },
 ];
 
 /**
@@ -657,8 +685,9 @@ function withOrigin(
       );
     });
   if (!sameCode) {
-    // 第三者のコード——骨格の役割は名乗れない
+    // 第三者のコード——骨格の役割も、同梱の道具用のコンテナも名乗れない
     assertRolesAllowed(meta, `${source}(${name})`);
+    assertPlacementAllowed(meta, `${source}(${name})`);
     return meta;
   }
   return markBundled(meta, `${source}(${name})`);

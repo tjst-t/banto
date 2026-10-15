@@ -96,6 +96,23 @@ export function isCallerOwned(x: { _meta?: Record<string, unknown> }): boolean {
 }
 
 /**
+ * **その tool は、受けた中身を残さず変換して返すだけ**ことの申告（追加・2026-10-15、`docs/specs/v4-modules.md` §2.2
+ * 「変換役」の承認）。値は `true` だけ。
+ *
+ * host はこれを名乗る口への中継を、**宛先が同梱で同梱の道具用のコンテナで動き、呼び元も同梱**（コンテナの中でもよい）の
+ * ときに限り、人に聞かずに通す。根拠：呼び元の合言葉でなりすましても、得るのは「自分が既に持つバイト列を変換させる」
+ * ことだけ。**名乗りを信じるのは同梱の宛先だけ**（`valueFree` と同じ線）。
+ *
+ * **無指定は「名乗っていない」**（fail closed）。
+ */
+export const STATELESS_TRANSFORM_META_KEY = `${VENDOR_PREFIX}/statelessTransform`;
+
+/** その tool が「受けた中身を残さず変換して返すだけ」と名乗っているか。**`true` 以外は名乗っていない** */
+export function isStatelessTransform(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[STATELESS_TRANSFORM_META_KEY] === true;
+}
+
+/**
  * **その呼び出しが、どの Project のためのものか**（決定・2026-09-13）。
  *
  * host が中継するときに刻む——**Module に自己申告させない**（申告なら詐称できる）。
@@ -534,7 +551,24 @@ export interface BantoModuleMeta {
    * 起動の形には関わらない（`SPAWN_SHAPE_FIELDS` ではない）。既定 false
    */
   resumesAfterRestart: boolean;
+  /**
+   * **同梱の道具用のコンテナで動く**（追加・2026-10-15、`docs/specs/v4-security.md` §1 の4つ目の箱、`v4-modules.md` §2.2
+   * 「変換役」）。外から来た文書を開くような、banto 自身のコードだが banto 本体の権限で走らせたくない仕事のための置き場。
+   * `aptPackages` は中に要る apt のパッケージで、core がコンテナを用意するときに root で入れる（中では sudo できない）。
+   *
+   * **名乗れるのは同梱の banto 全体の Module だけ**（`assertPlacementAllowed`）。第三者が名乗れると、Project から渡した
+   * 中身を受ける箱に同居できてしまう。無ければ名乗っていない
+   */
+  toolsContainer?: ToolsContainerRequest;
 }
+
+export interface ToolsContainerRequest {
+  /** 中に入れる apt のパッケージ（Debian のパッケージ名） */
+  aptPackages: string[];
+}
+
+/** Debian のパッケージ名（Policy 5.6.1）。apt に渡すので、ここで形を確かめる——`-` で始まるものは引数に化ける */
+const APT_PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]+$/;
 
 export class ModuleMetaError extends Error {}
 
@@ -614,6 +648,18 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
     );
   }
 
+  let toolsContainer: ToolsContainerRequest | undefined;
+  if (obj.toolsContainer !== undefined) {
+    const t = obj.toolsContainer as Record<string, unknown> | null;
+    const pkgs = t?.aptPackages ?? [];
+    if (typeof t !== "object" || t === null || !Array.isArray(pkgs) || !pkgs.every((p) => typeof p === "string" && APT_PACKAGE_NAME.test(p))) {
+      throw new ModuleMetaError(
+        `${source}: toolsContainer は { aptPackages: パッケージ名の配列 }（${JSON.stringify(obj.toolsContainer)} が来ました）`,
+      );
+    }
+    toolsContainer = { aptPackages: [...(pkgs as string[])] };
+  }
+
   // **`bundled` は host だけが付けられる**（上記 ModuleOrigin）。
   // **書いてあっても読まない**——parse の出口は必ず `external` で、
   // 印を立てられるのは host の `markBundled()` だけ。捨てるのであって
@@ -628,6 +674,7 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
     scope,
     confinement,
     resumesAfterRestart: obj.resumesAfterRestart === true,
+    ...(toolsContainer ? { toolsContainer } : {}),
   };
 
   assertConsistent(meta, source);
@@ -655,6 +702,12 @@ function assertConsistent(meta: BantoModuleMeta, source: string): void {
   if (meta.confinement?.root === "project" && meta.scope !== "project") {
     throw new ModuleMetaError(
       `${source}: confinement の根が "project" なら scope:"project" が必要です`,
+    );
+  }
+  // 道具用のコンテナは banto 全体に1台。Project ごとの Module はその Project のコンテナで動く
+  if (meta.toolsContainer && (meta.scope !== "instance" || meta.isolation !== "subprocess")) {
+    throw new ModuleMetaError(
+      `${source}: toolsContainer を名乗れるのは scope:"instance"・isolation:"subprocess" の Module だけです`,
     );
   }
 }
@@ -696,6 +749,19 @@ export function assertRolesAllowed(meta: BantoModuleMeta, source: string): void 
         "（外から繋ぐ Module は、別の名前の役割を名乗ってください）",
     );
   }
+}
+
+/**
+ * **同梱の道具用のコンテナは、同梱だけが名乗れる**（追加・2026-10-15、`docs/specs/v4-security.md` §2「どの Module がどこで
+ * 動くか」）。`assertRolesAllowed` と同じく origin が決まったあとに呼ぶ。**fail closed**——外から足した Module が名乗ったら、
+ * 黙って banto 全体用のコンテナへ回さず、宣言の読み込みで断る（Project から渡した中身を受ける箱に第三者を入れない）
+ */
+export function assertPlacementAllowed(meta: BantoModuleMeta, source: string): void {
+  if (meta.origin === "bundled" || !meta.toolsContainer) return;
+  throw new ModuleMetaError(
+    `${source}: 同梱の道具用のコンテナ（toolsContainer）は banto 同梱の Module だけが名乗れます` +
+      "（外から足した Module は banto 全体用のコンテナで動きます。toolsContainer を外してください）",
+  );
 }
 
 export const SPAWN_SHAPE_FIELDS = ["scope", "isolation", "handlesSecrets", "confinement"] as const;
@@ -759,6 +825,7 @@ export function classifyMetaDifference(
   if (JSON.stringify(declared.satisfies) !== JSON.stringify(selfReported.satisfies)) other.push("satisfies");
   if (JSON.stringify(declared.dependsOn) !== JSON.stringify(selfReported.dependsOn)) other.push("dependsOn");
   if (declared.resumesAfterRestart !== selfReported.resumesAfterRestart) other.push("resumesAfterRestart");
+  if (JSON.stringify(declared.toolsContainer) !== JSON.stringify(selfReported.toolsContainer)) other.push("toolsContainer");
 
   return { stricter, looser, other };
 }

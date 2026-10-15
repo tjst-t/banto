@@ -50,6 +50,7 @@ import {
   removeRealInstanceModule,
   setRealInstanceModuleEnabled,
   startRealModuleOAuth,
+  retryRealModuleTools,
   type RealInstanceModule,
 } from "@/lib/backend/client";
 import { AddInstanceModuleDialog } from "./add-instance-module-dialog";
@@ -108,6 +109,9 @@ function stateOf(m: RealInstanceModule): { label: string; hint: string; tone: "o
   if (needsLogin(m)) {
     return { label: "Auth required", hint: "相手へのログインが要ります", tone: "warn" };
   }
+  if (m.toolsInstall?.state === "installing") {
+    return { label: "Installing", hint: "道具用のコンテナに要るものを入れています（初回だけ、数分）", tone: "off" };
+  }
   if (m.error) return { label: "Failed", hint: "繋がりませんでした", tone: "warn" };
   if (m.connected) return { label: "Running", hint: "立っていて、いま呼べます", tone: "ok" };
   if (m.scope === "project") {
@@ -150,6 +154,14 @@ export function InstanceModulesPanel() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // **道具を入れている間は、終わるまで読み直す**（追加・2026-10-15）——数分かかり、終わった知らせは来ない
+  const installing = (modules ?? []).some((m) => m.toolsInstall?.state === "installing");
+  useEffect(() => {
+    if (!installing) return;
+    const timer = setInterval(() => void reload(), 3000);
+    return () => clearInterval(timer);
+  }, [installing, reload]);
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
@@ -420,6 +432,15 @@ export function InstanceModulesPanel() {
                               }
                             >
                               <KeyRound className="size-3.5" /> ログイン
+                            </DropdownMenuItem>
+                          ) : null}
+                          {/* **道具を入れられなかったときだけ**（追加・2026-10-15）——毎回はやり直さないので、人が押す */}
+                          {m.toolsInstall?.state === "failed" ? (
+                            <DropdownMenuItem
+                              data-testid={`module-tools-retry-${m.name}`}
+                              onSelect={() => void run(() => retryRealModuleTools(m.name))}
+                            >
+                              <RotateCcw className="size-3.5" /> 道具を入れ直す
                             </DropdownMenuItem>
                           ) : null}
                           {/* **既定には消すものが無い**（無効にはできる） */}

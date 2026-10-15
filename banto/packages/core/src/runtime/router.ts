@@ -6,16 +6,27 @@
 // 責任）。
 
 import type { RemoteSshRuntime } from "./remote-ssh.js";
-import type { PlaceAddress, PreparedPlace, Runtime, RuntimePlace } from "./runtime.js";
+import type { PlaceAddress, PreparedPlace, Runtime, RuntimePlace, ToolsInstallStatus } from "./runtime.js";
 
 export class RuntimeRouter implements Runtime {
   readonly instancePlaceId: string;
+  readonly toolsPlaceId: string;
 
   constructor(
     private readonly host: Runtime,
     private readonly remote: RemoteSshRuntime,
   ) {
     this.instancePlaceId = host.instancePlaceId;
+    // 道具用の箱はいつもこの host（別のサーバの Project の Module も、逆向きのトンネル越しの中継で届く）
+    this.toolsPlaceId = host.toolsPlaceId;
+  }
+
+  toolsInstallStatus(): ToolsInstallStatus {
+    return this.host.toolsInstallStatus();
+  }
+
+  retryToolsInstall(): void {
+    this.host.retryToolsInstall();
   }
 
   describePrerequisites(): string {

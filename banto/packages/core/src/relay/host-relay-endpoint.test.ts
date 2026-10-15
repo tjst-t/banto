@@ -1855,3 +1855,144 @@ test("rewriteSocketPaths: socketDir の直下の窓口だけを書き換え、�
   }
   assert.deepEqual(asked, [`${dir}/a-x1`]);
 });
+
+// **同梱の道具用のコンテナの、受けた中身を残さず変換して返すだけの口**（追加・2026-10-15、`dev.banto/statelessTransform`、
+// `docs/specs/v4-modules.md` §2.2「変換役」の承認）。FileSystem（Project のコンテナの中・別のサーバの Project ではそのサーバ）
+// から変換役への中継は人を待たせない。見るのは：
+//   1. 宛先が同梱・道具用のコンテナ・印を名乗る口、呼び元が同梱なら、コンテナの中（別のサーバの Project も）でも聞かない
+//   2. 呼び元が外から入れた Module なら聞く
+//   3. 宛先が道具用のコンテナで動いていない・外から入れたもの・印の無い口なら聞く
+//   4. 道具用のコンテナの Module の身元は「banto 本体で動く」線に入らない（受信箱に知らせを出せない）
+async function statelessWorld(opts: { targetPlace?: "tools" | "host"; targetExternal?: boolean } = {}) {
+  const seen: string[] = [];
+  const server = new McpServer({ name: "fake-documents", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      { name: "convert", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "module", "dev.banto/statelessTransform": true } },
+      { name: "keep", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "module" } },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push(req.params.name);
+    return { content: [{ type: "text", text: "converted" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const documents = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), documents.connect(c)]);
+
+  const registry = new RelayRegistry();
+  const targetMeta = { satisfies: ["documents"], dependsOn: [], isolation: "subprocess", toolsContainer: { aptPackages: ["jq"] } };
+  registry.registerModule({
+    name: "documents",
+    client: documents,
+    meta: opts.targetExternal ? parseModuleMeta(targetMeta, "documents") : bundledMeta(targetMeta, "documents"),
+    ...(opts.targetExternal ? { codeId: "code-v1" } : {}),
+    ...((opts.targetPlace ?? "tools") === "tools" ? { toolsContainer: true as const } : {}),
+  });
+  const rawCaller = { satisfies: ["filesystem"], dependsOn: [{ role: "documents", required: true }], isolation: "subprocess", scope: "project" };
+  const tokens = {
+    // Project のコンテナの中の FileSystem
+    projectContainer: registry.issueToken({ moduleName: "filesystem", connName: "filesystem-p1", projectId: "p1", inContainer: true, meta: bundledMeta(rawCaller, "filesystem") }),
+    // 別のサーバの Project の FileSystem（逆向きのトンネル越し。身元の形は同じ）
+    remoteProject: registry.issueToken({ moduleName: "filesystem", connName: "filesystem-p2", projectId: "p2", inContainer: true, meta: bundledMeta(rawCaller, "filesystem") }),
+    external: registry.issueToken({ moduleName: "third-party", connName: "third-party-p1", projectId: "p1", inContainer: true, meta: parseModuleMeta(rawCaller, "third-party") }),
+  };
+  const asked: string[] = [];
+  const { url, audits, close } = await startTestServer(registry, {
+    moduleCalls: { originFor: () => "turn", threadFor: () => ({ kind: "none" }), projectFor: () => undefined, begin: () => () => undefined },
+    gate: {
+      async requestApproval(req) {
+        asked.push(`${req.callerModule}:${req.name}`);
+        return { allowed: false, reason: "この試験では人が答えない" };
+      },
+    },
+  });
+  const clients: Client[] = [];
+  const connect = async (token: string) => {
+    const client = await relayClient(url, token);
+    clients.push(client);
+    return client;
+  };
+  return {
+    seen,
+    asked,
+    audits,
+    tokens,
+    connect,
+    close: async () => {
+      await Promise.all(clients.map((x) => x.close().catch(() => undefined)));
+      close();
+      await documents.close();
+    },
+  };
+}
+
+const callDocuments = (name: string) => ({ name: "relayCallTool", arguments: { targetModule: "documents", name, arguments: { data: "UEsDBA==" } } });
+
+test("同梱の道具用のコンテナの変換するだけの口は、同梱の呼び元ならコンテナの中（別のサーバの Project も）からでも聞かずに通る", async () => {
+  const w = await statelessWorld();
+  try {
+    for (const token of [w.tokens.projectContainer, w.tokens.remoteProject]) {
+      const client = await w.connect(token);
+      assert.equal(textOf(await client.callTool(callDocuments("convert"))), "converted");
+    }
+    assert.deepEqual(w.asked, [], "変換するだけの口で人を止めている");
+    const audit = (w.audits as Array<{ name: string; allowed: boolean; reason?: string }>).find((a) => a.name === "convert");
+    assert.equal(audit?.reason, "同梱の道具用のコンテナの、受けた中身を残さず変換して返すだけの口");
+    // 印の無い口は今までどおり聞く
+    const client = await w.connect(w.tokens.projectContainer);
+    await assert.rejects(() => client.callTool(callDocuments("keep")), /許可されていません/);
+    assert.deepEqual(w.asked, ["filesystem:keep"]);
+    assert.deepEqual(w.seen, ["convert", "convert"]);
+  } finally {
+    await w.close();
+  }
+});
+
+test("呼び元が外から入れた Module なら、変換するだけの口でも聞く", async () => {
+  const w = await statelessWorld();
+  try {
+    const client = await w.connect(w.tokens.external);
+    await assert.rejects(() => client.callTool(callDocuments("convert")), /許可されていません/);
+    assert.deepEqual(w.asked, ["third-party:convert"]);
+    assert.deepEqual(w.seen, []);
+  } finally {
+    await w.close();
+  }
+});
+
+test("宛先が道具用のコンテナで動いていない・外から入れたものなら、変換するだけの口を名乗っても聞く", async () => {
+  for (const opts of [{ targetPlace: "host" as const }, { targetExternal: true }]) {
+    const w = await statelessWorld(opts);
+    try {
+      const client = await w.connect(w.tokens.projectContainer);
+      await assert.rejects(() => client.callTool(callDocuments("convert")), /許可されていません/);
+      assert.deepEqual(w.asked, ["filesystem:convert"], `閉じ込めの前提が無い宛先で承認を飛ばした（${JSON.stringify(opts)}）`);
+    } finally {
+      await w.close();
+    }
+  }
+});
+
+test("道具用のコンテナの Module は「banto 本体で動く」線に入らない——受信箱に知らせを出せない", async () => {
+  const registry = new RelayRegistry();
+  const raised: string[] = [];
+  const { url, close } = await startTestServer(registry, { raiseNotice: async (caller) => void raised.push(caller.moduleName) });
+  const token = registry.issueToken({
+    moduleName: "documents",
+    inContainer: true,
+    toolsContainer: true,
+    meta: bundledMeta({ satisfies: ["documents"], dependsOn: [], isolation: "subprocess", toolsContainer: { aptPackages: [] } }, "documents"),
+  });
+  const c = await relayClient(url, token);
+  try {
+    await assert.rejects(
+      () => c.callTool({ name: "relayRaiseNotice", arguments: { key: "k", title: "t", detail: "d" } }),
+      /banto 本体で動く/,
+    );
+    assert.deepEqual(raised, []);
+  } finally {
+    await c.close();
+    close();
+  }
+});

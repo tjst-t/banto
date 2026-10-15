@@ -8,6 +8,7 @@
 
 import { createServer, type Server } from "node:http";
 import { CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
+import { BodyTooLargeError } from "../http/app.js";
 import type { HostRelayEndpoint } from "./host-relay-endpoint.js";
 
 export interface RelayListenerDeps {
@@ -15,6 +16,7 @@ export interface RelayListenerDeps {
   claudeLogin?: Pick<ClaudeLoginRelay, "handle">;
   /** この待ち受けで受ける Project（その実行場所の Project）。聞くたびに引く */
   acceptsProject(projectId: string): boolean;
+  /** 本文を読む（上限を超えたら `BodyTooLargeError`——core の口と同じ上限） */
   readJsonBody(req: import("node:http").IncomingMessage): Promise<unknown>;
 }
 
@@ -40,7 +42,9 @@ export function createRelayListener(deps: RelayListenerDeps): Server {
       // ほかの口（`/api/*`・人のログイン・`/agent-relay`）はこの待ち受けには無い
       res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: "この待ち受けは中継だけを受けます" }));
     })().catch((err: unknown) => {
-      if (!res.headersSent) {
+      if (!res.headersSent && err instanceof BodyTooLargeError) {
+        res.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ error: `${err.message}——中継で送れるのは 10MB までです` }));
+      } else if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
       } else res.destroy();
     });

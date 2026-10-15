@@ -37,4 +37,5 @@ export {
   type ProjectContainerSpec,
   type ContainerTimeouts,
 } from "./project-container.js";
+export { toolsContainerId, dropSudo, missingPackages, freeBytes, installPackages, TOOLS_MIN_FREE_BYTES } from "./tools-container.js";
 export { ensureBaseImage, baseImageAlias, BASE_PACKAGES, UPSTREAM_IMAGE } from "./base-image.js";

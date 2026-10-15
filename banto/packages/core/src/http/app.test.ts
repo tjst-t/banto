@@ -2358,3 +2358,15 @@ test("GET /api/inbox はレビュー待ちにそのターンの中身を添え�
     { reviewToolCalls: async () => 4 },
   );
 });
+
+test("/relay の本文は 10MB まで——超えたら 413 で断り、宛先へは渡さない（v4-modules.md §2.2「変換役」）", async () => {
+  await withApp(async (base) => {
+    const big = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { data: "a".repeat(10 * 1024 * 1024) } });
+    const res = await fetch(`${base}/relay`, { method: "POST", headers: { authorization: "Bearer x", "content-type": "application/json" }, body: big });
+    assert.equal(res.status, 413);
+    assert.match(((await res.json()) as { error: string }).error, /10MB まで/);
+    // 上限より小さいものは今までどおり中継の口に届く（合言葉が違うので 401）
+    const small = await fetch(`${base}/relay`, { method: "POST", headers: { authorization: "Bearer x", "content-type": "application/json" }, body: "{}" });
+    assert.equal(small.status, 401);
+  });
+});

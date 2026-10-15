@@ -242,9 +242,14 @@ export function containerNameFor(projectId: string): string {
  * 分ける：E2E や検証用の banto が、人の banto のコンテナを使わない
  */
 export function instanceContainerId(owner: string): string {
+  return `instance-${ownerHash(owner)}`;
+}
+
+/** どの banto のものか（データの置き場）から決まる短い印。banto 全体用・道具用のコンテナの id に使う */
+export function ownerHash(owner: string): string {
   let h = 0;
   for (const ch of owner) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
-  return `instance-${h.toString(16).padStart(8, "0")}`;
+  return h.toString(16).padStart(8, "0");
 }
 
 interface DiskRequest {
