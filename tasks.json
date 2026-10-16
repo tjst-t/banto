@@ -8051,7 +8051,7 @@
       "number": 334,
       "kind": "task",
       "title": "GitHub Actions の workflow prebuilt.yml（組み立て・単体テスト・Release に置く・片づけ）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "prebuilt-update",
       "dependsOn": [],
       "milestone": null,
@@ -8061,9 +8061,14 @@
       "doneWhen": "本物の GitHub で workflow が通り、build-<頭12> の Release に tar.zst と .sha256 が置かれ、同じ commit でもう一度走らせても壊れない",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "346c3141-ceec-4274-b519-965ffa43d687"
+        }
+      ],
       "createdAt": "2026-10-16T00:13:52.933Z",
-      "updatedAt": "2026-10-16T00:13:52.933Z",
+      "updatedAt": "2026-10-16T00:50:36.190Z",
       "closedAt": null,
       "extra": {}
     },
