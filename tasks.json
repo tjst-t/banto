@@ -8380,7 +8380,7 @@
       "number": 347,
       "kind": "task",
       "title": "最初の出来事——service.crashed（起動役が出口の箱へ）・factory.item-stopped・factory.run-finished・backlog.item-changed",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline"
@@ -8394,7 +8394,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T12:37:42.338Z",
+      "updatedAt": "2026-10-16T15:22:13.001Z",
       "closedAt": null,
       "extra": {}
     },
