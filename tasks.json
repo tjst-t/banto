@@ -7517,7 +7517,7 @@
       "number": 340,
       "kind": "task",
       "title": "PDF・Office の画面を作り直す：ツールバー1段・コメントモード・選んだ横の「コメント」・ドラッグで範囲・ページの上の行・余白に指した高さで並べる",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "office-review",
       "dependsOn": [],
       "milestone": null,
@@ -7529,7 +7529,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T10:15:53.531Z",
-      "updatedAt": "2026-10-16T10:16:01.681Z",
+      "updatedAt": "2026-10-16T10:16:48.592Z",
       "closedAt": null,
       "extra": {}
     },
