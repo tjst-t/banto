@@ -8592,7 +8592,7 @@
       "number": 356,
       "kind": "task",
       "title": "しばらく開いていない Project（数え方・聞く・自動で眠らせる）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-org",
       "dependsOn": [
         "project-sleep-core",
@@ -8607,7 +8607,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T14:11:43.263Z",
+      "updatedAt": "2026-10-16T22:44:04.207Z",
       "closedAt": null,
       "extra": {}
     },
