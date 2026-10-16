@@ -87,7 +87,8 @@ jobs:
         if: steps.existing.outputs.state != 'done'
         working-directory: banto
         run: |
-          set -uo pipefail
+          # GitHub は run を bash -eo pipefail で動かす——落ちた後も注記を出すため -e を外す
+          set +e -uo pipefail
           # 落ちたら、落ちた試験とエラーを注記（::error::）にも出す——ログは鍵が無いと読めないが、注記は公開の API と
           # 実行の画面の上で読める
           status=0
