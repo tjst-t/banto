@@ -8380,7 +8380,7 @@
       "number": 347,
       "kind": "task",
       "title": "最初の出来事——service.crashed（起動役が出口の箱へ）・factory.item-stopped・factory.run-finished・backlog.item-changed",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline"
@@ -8390,12 +8390,12 @@
       "labels": [],
       "body": "仕様 §4.3「最初に出す出来事」。Service は unit の起動役（log-wrapper.ts）が落ちたときに出口の箱へ書き、Module が繋がったら出す。Factory と Backlog は始まりの呼び出しの印を仕事の記録に残し causedBy に添える。Factory は今どおり札で頼んだ会話にも知らせる。service.gave-up は出さない",
       "doneWhen": "E2E で：Service をわざと落とすと service.crashed で自動化が動き、Module が止まっていた間に落ちた分も繋がったときに届く。Backlog を AI が変えた出来事にはそのターンのホップ＋1が付く",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/events-first-emitters）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T15:22:13.001Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T16:35:53.307Z",
+      "closedAt": "2026-10-16T16:35:53.307Z",
       "extra": {}
     },
     {
