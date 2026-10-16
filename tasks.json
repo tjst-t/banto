@@ -7929,7 +7929,7 @@
       "number": 329,
       "kind": "task",
       "title": "取り消した Memory を AI に渡さない",
-      "status": "in-progress",
+      "status": "done",
       "parent": "memory-hygiene",
       "dependsOn": [],
       "milestone": null,
@@ -7937,7 +7937,7 @@
       "labels": [],
       "body": "system-prompt.ts は取り消したものも「~~…~~（取り消し済み）」で渡している。コードには「消すと、なぜその判断をしないかが読めなくなる」という理由が書いてある。この決まりを改めるので、仕様も直す。理由を残したいときは「改める」の置き換え（新しい項目の文に前の決まりを書く）で持たせる。Event Store には残し、人の画面では今どおり取り消し済みも見える。Global Memory も同じ扱いにする。取り消した直後の1ターンはキャッシュを作り直す。",
       "doneWhen": "取り消した項目が次のターンの土台の指示に入らないことを単体テストで確かめる。人の Memory の画面には取り消し済みも出る。仕様の「取り消したものも渡す」を改める。",
-      "resolution": null,
+      "resolution": "fa2f1c7e（main と release）。土台の指示から取り消した行を外し、残る行に [#番号]。単体テストと E2E memory.spec で確かめた。",
       "refs": [],
       "threads": [
         {
@@ -7946,8 +7946,8 @@
         }
       ],
       "createdAt": "2026-10-15T23:22:52.824Z",
-      "updatedAt": "2026-10-16T00:04:40.118Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T01:11:16.244Z",
+      "closedAt": "2026-10-16T01:11:16.244Z",
       "extra": {}
     },
     {
