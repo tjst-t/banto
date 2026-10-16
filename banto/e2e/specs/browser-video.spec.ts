@@ -23,7 +23,10 @@ import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
 import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
-test.setTimeout(900_000);
+// **初回はブラウザを入れるのに数分かかる**（改訂・2026-10-17）——字体・GStreamer・音・Chrome・Xvfb を apt と取ってくるので、
+// 別のサーバの VM で2本並べると 420 秒を超えた（browser.spec・browser-view.spec と同じく cb6d7919 の続き）。待つのは返事・タブが
+// 来るまでで、早く来ればすぐ進む
+test.setTimeout(1_500_000);
 
 const projectName = () => `E2E Browser Video ${test.info().repeatEachIndex + 1}`;
 const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
@@ -89,7 +92,7 @@ async function ai(page: Page, name: string, args: Record<string, unknown> = {}):
     expect(answer.length, "返事がまだ無い").toBeGreaterThan(0);
     expect(t.lastTurn?.outcome, "ターンがまだ終わっていない").toBe("completed");
     reply = answer.map((m) => m.text).join("\n");
-  }).toPass({ timeout: 420_000, intervals: [1000] });
+  }).toPass({ timeout: 900_000, intervals: [1000] });
   return reply!;
 }
 
