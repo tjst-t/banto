@@ -8,6 +8,7 @@ import { ProjectThreadStore } from "../project-thread/store.js";
 import type { PendingDelivery } from "../project-thread/types.js";
 import { InboxStore } from "../inbox/store.js";
 import type { ReviewItem } from "../inbox/types.js";
+import { reviewTurnOf } from "../inbox/review-turn.js";
 import type { DeliverInput } from "../delivery/thread-deliveries.js";
 import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
 import { AutomationInputError, AutomationStore } from "./store.js";
@@ -252,6 +253,15 @@ test("全部の問いに答えが揃ったら、元の会話に1回だけ届け�
       { question: 1, choice: 1, label: "案A", reason: "おすすめに異論が無い" },
       { question: 2, choice: 2, label: "消す", reason: "要らない" },
     ]);
+    // 決めたターンの記録の位置——元の会話が次のターンへ進んでも、カードはこのターンの中身を出す
+    const judgedThread = h.projectThread.getThread(h.baseId)!;
+    assert.deepEqual(card.judge?.turn, {
+      startedSeq: judgedThread.lastTurn!.startedSeq,
+      beforeSeq: judgedThread.messages.at(-1)!.seq + 1,
+      outcome: "completed",
+    });
+    const shown = reviewTurnOf(judgedThread, { running: false, earlier: card.judge!.turn! });
+    assert.equal((shown.summary as { decisions?: unknown[] } | undefined)?.decisions?.length, 2);
     assert.equal(h.decisions.watching(h.baseId), undefined);
 
     // もう片づいている——二度届けない

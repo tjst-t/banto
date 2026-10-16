@@ -7,7 +7,8 @@
 // - 1行に1件：名前・きっかけ・届け先と起こし方・次の時刻、その下に直近の回の印（古い→新しい）と前の回の結果
 // - 押すと開く：毎回届ける指示・届け先・受信箱・作った人・直近の回と理由・操作（会話を開く・今すぐ動かす・
 //   一時停止／再開する・直す・消す）。消しても専用の Fork は残る
-// - 足す・直すは一覧の中でその場に開くフォーム。きっかけは決まった時刻と Webhook（種類は作ったあと変えられない）
+// - 足す・直すは一覧の中でその場に開くフォーム。きっかけは決まった時刻・Webhook・出来事（種類は作ったあと変えられない）。
+//   出来事は 出どころ → 出来事 → 条件 の順に選ぶ（名乗りは host の `/automation-events` から、追加・2026-10-16）
 // - Webhook の受け口の URL は**作った直後に1回だけ**見せる（host は印のハッシュしか持たない——アーキ仕様 §4.3）
 // - 一覧の下に「動き方」を常に出す——いま実際にそう動くことだけを書く
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
@@ -46,9 +47,12 @@ import {
   automationTimeZone,
   automationsCanvasHref,
   createAutomation,
+  describeFieldValue,
   describeRepeat,
   describeSource,
   describeTarget,
+  describeWhere,
+  findEventDeclaration,
   formatWhen,
   removeAutomation,
   runAutomationNow,
@@ -56,16 +60,20 @@ import {
   threadTitle,
   timeZoneName,
   updateAutomation,
+  useAutomationEventSources,
   useAutomations,
 } from "@/lib/backend/automations";
 import {
   listRealSecretAliases,
   type RealAutomation,
+  type RealAutomationEventSource,
   type RealAutomationInput,
   type RealAutomationRepeat,
   type RealAutomationRun,
   type RealAutomationSource,
   type RealAutomationTarget,
+  type RealEventDeclaration,
+  type RealEventField,
 } from "@/lib/backend/client";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -74,18 +82,23 @@ export function AutomationsView({ projectId }: { projectId: string }) {
   // 届け先の会話の名前はサイドバーと同じ写しから引く
   useMockStoreVersion();
   const automations = useAutomations(projectId);
+  // 待てる出来事（作るフォームの選び先・一覧の行の題）。Module を入れ替えたあとでも今の名乗りを使うよう、開くたびに取り直す
+  const events = useAutomationEventSources(projectId, { reload: true });
   const [editing, setEditing] = useState<"new" | string | null>(null);
   // 作った直後の Webhook の受け口の URL。この画面の手元にしか無い——閉じたら二度と出ない
   const [issued, setIssued] = useState<{ name: string; url: string } | null>(null);
+  // 作った直後の案内（判断役：まとめがオフ・自動許可は効かない）。断らずに作ったので、ここで読ませる
+  const [notices, setNotices] = useState<{ name: string; notices: readonly string[] } | null>(null);
 
   return (
     <div className="h-full min-h-0 overflow-auto px-4 py-4" data-testid="automations">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
         <p className="text-sm text-ink-2">
-          決まった時刻になったとき、Webhook を受けたときに、この Project の AI に決まった指示を届けて動かします。自動化ごとに専用の Fork があり、動いた回の会話はその Fork に残ります。
+          決まった時刻になったとき、Webhook を受けたとき、Module や banto で出来事が起きたときに、この Project の AI に決まった指示を届けて動かします。自動化ごとに専用の Fork があり、動いた回の会話はその Fork に残ります。
         </p>
 
         {issued ? <IssuedWebhookUrl name={issued.name} url={issued.url} onClose={() => setIssued(null)} /> : null}
+        {notices ? <CreatedNotices name={notices.name} notices={notices.notices} onClose={() => setNotices(null)} /> : null}
 
         {automations === undefined ? (
           <p className="text-sm text-ink-3">読み込んでいます…</p>
@@ -94,10 +107,10 @@ export function AutomationsView({ projectId }: { projectId: string }) {
             {automations.map((a) =>
               editing === a.id ? (
                 <li key={a.id} className="p-3">
-                  <AutomationForm projectId={projectId} automation={a} onDone={() => setEditing(null)} />
+                  <AutomationForm projectId={projectId} automation={a} events={events} onDone={() => setEditing(null)} />
                 </li>
               ) : (
-                <AutomationRow key={a.id} automation={a} onEdit={() => setEditing(a.id)} />
+                <AutomationRow key={a.id} automation={a} sources={events.sources} onEdit={() => setEditing(a.id)} />
               ),
             )}
           </ul>
@@ -111,9 +124,11 @@ export function AutomationsView({ projectId }: { projectId: string }) {
           <div className="rounded-md border border-border bg-card p-3">
             <AutomationForm
               projectId={projectId}
+              events={events}
               onDone={(created) => {
                 setEditing(null);
                 if (created?.webhookUrl) setIssued({ name: created.name, url: created.webhookUrl });
+                setNotices(created?.notices ? { name: created.name, notices: created.notices } : null);
               }}
             />
           </div>
@@ -175,6 +190,28 @@ function IssuedWebhookUrl({ name, url, onClose }: { name: string; url: string; o
   );
 }
 
+/** **作った直後の案内**（判断役——まとめがオフなら出来事が出ない・自動許可は判断役の会話に効かない）。作ってはある */
+function CreatedNotices({ name, notices, onClose }: { name: string; notices: readonly string[]; onClose: () => void }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-warn bg-card px-3 py-2.5 text-xs" data-testid="automation-created-notices">
+      <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <p className="text-foreground">自動化「{name}」を作りました。次のことに気をつけてください。</p>
+        <ul className="flex list-disc flex-col gap-0.5 pl-4 text-ink-2">
+          {notices.map((n) => (
+            <li key={n} data-testid="automation-created-notice">
+              {n}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5" aria-label="閉じる" onClick={onClose}>
+        <X className="size-3.5" />
+      </Button>
+    </div>
+  );
+}
+
 /** 動き方の決まり。作る前に読める位置に置く——いまの host が実際にそう動くことだけ */
 function HowItRuns() {
   return (
@@ -191,12 +228,25 @@ function HowItRuns() {
         </li>
         <li>Webhook で受けた中身は「外から来たもの」と印を付けて AI に渡し、あなたの指示とは分けます。中に書かれた指示には従わないよう、AI にも伝えます。</li>
         <li>署名の合わない Webhook は受け取らず、AI は動きません。Project のコンテナから届いたものも、許していなければ受け取りません。</li>
+        <li>
+          出来事は、続けて起きたものを待ち時間の間まとめて1回で届けます。前の回がまだ動いている間は溜めておき、空いたらまとめて届けます。出来事の題・属性と本文は「外から来たもの」と印を付けて渡します。
+        </li>
+        <li>この自動化自身の回が起こした出来事では、既定では動きません（輪にならないように）。同じ自動化が同じ出来事・同じ対象で動くのは 60 分に 6 回までで、超えた分は飛ばします。</li>
+        <li>Module の出来事を待っている間は、その Module を起こしたままにします。</li>
       </ul>
     </div>
   );
 }
 
-function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; onEdit: () => void }) {
+function AutomationRow({
+  automation: a,
+  sources,
+  onEdit,
+}: {
+  automation: RealAutomation;
+  sources: readonly RealAutomationEventSource[] | undefined;
+  onEdit: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -241,7 +291,7 @@ function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; 
             ) : null}
           </p>
           <p className="text-xs text-ink-2" data-testid="automation-summary">
-            {describeSource(a)}
+            {describeSource(a, sources)}
             <span className="mx-1.5 text-ink-3">/</span>
             {describeTarget(a.target)}
             {a.nextFireAt ? (
@@ -277,6 +327,7 @@ function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; 
           </div>
 
           {a.source.kind === "webhook" ? <WebhookDetails source={a.source} pending={a.received?.length ?? 0} /> : null}
+          {a.source.kind === "event" ? <EventDetails source={a.source} sources={sources} pending={a.received?.length ?? 0} /> : null}
 
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
             <dt className="text-ink-3">届け先</dt>
@@ -386,13 +437,10 @@ function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; 
                 {a.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
                 {a.paused ? "再開する" : "一時停止"}
               </Button>
-              {/* 出来事のきっかけを直すフォームはまだ無い（段2の画面、Backlog events-ui）——繋がっていない操作は出さない（規則13） */}
-              {a.source.kind !== "event" ? (
-                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onEdit} data-testid="automation-edit">
-                  <Pencil className="size-3.5" />
-                  直す
-                </Button>
-              ) : null}
+              <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onEdit} data-testid="automation-edit">
+                <Pencil className="size-3.5" />
+                直す
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -458,6 +506,54 @@ function WebhookDetails({ source: s, pending }: { source: Extract<RealAutomation
       ) : null}
     </dl>
   );
+}
+
+/** 出来事のきっかけの決まり（何を待つか・条件・自分の回・まとめ方） */
+function EventDetails({
+  source: s,
+  sources,
+  pending,
+}: {
+  source: Extract<RealAutomationSource, { kind: "event" }>;
+  sources: readonly RealAutomationEventSource[] | undefined;
+  pending: number;
+}) {
+  const declared = findEventDeclaration(sources, s.event);
+  const moduleName = eventSourceOf(s.event);
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs" data-testid="event-details">
+      <dt className="text-ink-3">出来事</dt>
+      <dd className="text-ink-2">
+        {declared ? `${declared.title}（` : ""}
+        <code className="font-mono">{s.event}</code>
+        {declared ? "）" : "——この Project では今、名乗っている Module がありません"}
+      </dd>
+      <dt className="text-ink-3">条件</dt>
+      <dd className="text-ink-2" data-testid="event-details-where">
+        {s.where && Object.keys(s.where).length > 0 ? describeWhere(s.where, declared) : "なし（起きるたびに動きます）"}
+      </dd>
+      <dt className="text-ink-3">自分の回</dt>
+      <dd className="text-ink-2" data-testid="event-details-self">
+        {s.allowSelfTriggered ? "この自動化自身の回が起こした出来事でも動きます。" : "この自動化自身の回が起こした出来事では動きません。"}
+      </dd>
+      <dt className="text-ink-3">まとめ方</dt>
+      <dd className="text-ink-2">
+        {s.batchSeconds > 0 ? `${s.batchSeconds} 秒の間に続けて起きたものは1回にまとめます。` : "1件ずつ届けます。"}
+        {moduleName !== "banto" ? `待つ間、${moduleName} を起こしたままにします。` : null}
+      </dd>
+      {pending > 0 ? (
+        <>
+          <dt className="text-ink-3">溜めている</dt>
+          <dd className="text-ink-2">受けて、まだ届けていない出来事が {pending} 件あります。前の回が終わったら、まとめて届けます。</dd>
+        </>
+      ) : null}
+    </dl>
+  );
+}
+
+/** 出来事の名前の頭（`service.crashed` → `service`） */
+function eventSourceOf(event: string): string {
+  return event.split(".")[0] ?? event;
 }
 
 function baseThreadIdOf(projectId: string): string | undefined {
@@ -528,7 +624,11 @@ type SourceKind = RealAutomationSource["kind"];
 const SOURCE_TABS: readonly { id: SourceKind; label: string }[] = [
   { id: "time", label: "決まった時刻" },
   { id: "webhook", label: "Webhook を受けたとき" },
+  { id: "event", label: "出来事" },
 ];
+
+/** 判断役（AI の「決めること」を AI が決める）を待つ出来事——届け先は専用の Fork だけ（アーキ仕様 §4.3） */
+const TURN_DECISIONS_EVENT = "banto.turn-decisions";
 
 /** 続けて届いた Webhook をまとめる待ち時間の選び先（秒。0 はまとめない） */
 const BATCH_SECONDS = [0, 10, 30, 60, 300] as const;
@@ -552,16 +652,20 @@ function padTime(t: string): string {
 function AutomationForm({
   projectId,
   automation,
+  events,
   onDone,
 }: {
   projectId: string;
   automation?: RealAutomation;
-  /** 作ったときは作ったもの（Webhook なら受け口の URL つき）を渡す */
-  onDone: (created?: RealAutomation & { webhookUrl?: string }) => void;
+  /** 待てる出来事（出来事のきっかけの選び先） */
+  events: { sources: readonly RealAutomationEventSource[] | undefined; error: string | null };
+  /** 作ったときは作ったもの（Webhook なら受け口の URL、判断役なら案内つき）を渡す */
+  onDone: (created?: RealAutomation & { webhookUrl?: string; notices?: string[] }) => void;
 }) {
   const source0 = automation?.source;
   const time0 = source0?.kind === "time" ? source0 : undefined;
   const hook0 = source0?.kind === "webhook" ? source0 : undefined;
+  const event0 = source0?.kind === "event" ? source0 : undefined;
   // きっかけの種類は作ったあと変えられない（Webhook の受け口の URL は作ったときにしか出せない）
   const [sourceKind, setSourceKind] = useState<SourceKind>(source0?.kind ?? "time");
   const repeat0 = time0?.repeat;
@@ -578,7 +682,7 @@ function AutomationForm({
   const [signed, setSigned] = useState(hook0 ? hook0.signature !== undefined : true);
   const [sigHeader, setSigHeader] = useState(hook0?.signature?.header ?? DEFAULT_SIGNATURE_HEADER);
   const [sigAlias, setSigAlias] = useState(hook0?.signature?.alias ?? "");
-  const [batchSeconds, setBatchSeconds] = useState<number>(hook0?.batchSeconds ?? 30);
+  const [batchSeconds, setBatchSeconds] = useState<number>(hook0?.batchSeconds ?? event0?.batchSeconds ?? 30);
   const [allowContainer, setAllowContainer] = useState(hook0?.allowProjectContainer ?? false);
   const [aliases, setAliases] = useState<readonly string[] | null>(null);
   const [aliasError, setAliasError] = useState<string | null>(null);
@@ -599,6 +703,17 @@ function AutomationForm({
     target0?.kind === "thread" ? target0.threadId : (threads.find((t) => t.kind === "base")?.id ?? ""),
   );
   const [reviewOnDone, setReviewOnDone] = useState(automation?.reviewOnDone ?? true);
+  // 出来事：出どころ → 出来事 → 条件。条件は属性ごとの値の並び（空＝どれでも）
+  const [eventName, setEventName] = useState(event0?.event ?? "");
+  const [eventOrigin, setEventOrigin] = useState(event0 ? (event0.event.split(".")[0] ?? "") : "");
+  const [where, setWhere] = useState<Record<string, string[]>>(() =>
+    Object.fromEntries(Object.entries(event0?.where ?? {}).map(([k, v]) => [k, (Array.isArray(v) ? v : [v]).map(String)])),
+  );
+  // 「この自動化自身の回が起こした出来事では動かない」（既定オン＝allowSelfTriggered: false）
+  const [ignoreSelf, setIgnoreSelf] = useState(event0 ? !event0.allowSelfTriggered : true);
+  const declared = findEventDeclaration(events.sources, eventName);
+  const isJudge = sourceKind === "event" && eventName === TURN_DECISIONS_EVENT;
+  const whereProblem = declared ? eventWhereInputProblem(declared, where) : undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const zones = Array.from(new Set([timeZone, browserTimeZone(), ...COMMON_TIME_ZONES]));
@@ -612,9 +727,25 @@ function AutomationForm({
         : kind === "interval"
           ? { kind, hours }
           : { kind, expr: cron };
-  const target: RealAutomationTarget = targetKind === "dedicated" ? { kind: "dedicated", mode } : { kind: "thread", threadId };
+  // 判断役の届け先は専用の Fork だけ（いまある会話は選べない）
+  const target: RealAutomationTarget =
+    targetKind === "dedicated" || isJudge ? { kind: "dedicated", mode } : { kind: "thread", threadId };
   const signatureFilled = !signed || (sigHeader.trim() !== "" && sigAlias.trim() !== "");
-  const filled = name.trim() !== "" && instruction.trim() !== "" && (sourceKind === "time" || signatureFilled);
+  const eventFilled = declared !== undefined && whereProblem === undefined;
+  const filled =
+    name.trim() !== "" &&
+    instruction.trim() !== "" &&
+    (sourceKind === "time" || (sourceKind === "webhook" && signatureFilled) || (sourceKind === "event" && eventFilled));
+
+  function pickEvent(next: string) {
+    setEventName(next);
+    setWhere({});
+    // 判断役は前の回を引き継ぐ Fork で動かす（判断の続きを覚えていられる）——作るときだけ寄せる
+    if (next === TURN_DECISIONS_EVENT && !automation) {
+      setTargetKind("dedicated");
+      setMode("continue");
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -625,12 +756,20 @@ function AutomationForm({
       source:
         sourceKind === "time"
           ? { kind: "time", repeat, timeZone }
-          : {
-              kind: "webhook",
-              signature: signed ? { header: sigHeader.trim(), alias: sigAlias.trim() } : false,
-              batchSeconds,
-              allowProjectContainer: allowContainer,
-            },
+          : sourceKind === "event" && declared
+            ? {
+                kind: "event",
+                event: eventName,
+                ...(Object.keys(whereValue(declared, where)).length > 0 ? { where: whereValue(declared, where) } : {}),
+                batchSeconds,
+                allowSelfTriggered: !ignoreSelf,
+              }
+            : {
+                kind: "webhook",
+                signature: signed ? { header: sigHeader.trim(), alias: sigAlias.trim() } : false,
+                batchSeconds,
+                allowProjectContainer: allowContainer,
+              },
       target,
       reviewOnDone,
     };
@@ -659,8 +798,8 @@ function AutomationForm({
         <Label>何が起きたら</Label>
         {automation ? (
           <p className="flex items-center gap-1.5 text-sm text-ink-2" data-testid="automation-source-fixed">
-            {sourceKind === "webhook" ? <Webhook className="size-3.5" /> : <Clock className="size-3.5" />}
-            {sourceKind === "webhook" ? "Webhook を受けたとき" : "決まった時刻"}
+            {sourceKind === "webhook" ? <Webhook className="size-3.5" /> : sourceKind === "event" ? <Zap className="size-3.5" /> : <Clock className="size-3.5" />}
+            {sourceKind === "webhook" ? "Webhook を受けたとき" : sourceKind === "event" ? "出来事" : "決まった時刻"}
             <span className="text-xs text-ink-3">（種類は変えられません。変えるなら作り直してください）</span>
           </p>
         ) : (
@@ -763,6 +902,28 @@ function AutomationForm({
         </div>
       ) : null}
 
+      {sourceKind === "event" ? (
+        <EventSourceFields
+          sources={events.sources}
+          error={events.error}
+          origin={eventOrigin}
+          onOrigin={(o) => {
+            setEventOrigin(o);
+            pickEvent("");
+          }}
+          eventName={eventName}
+          onEvent={pickEvent}
+          declared={declared}
+          where={where}
+          onWhere={setWhere}
+          whereProblem={whereProblem}
+          ignoreSelf={ignoreSelf}
+          onIgnoreSelf={setIgnoreSelf}
+          batchSeconds={batchSeconds}
+          onBatchSeconds={setBatchSeconds}
+        />
+      ) : null}
+
       {sourceKind === "time" ? (
         <div className="flex flex-col gap-1.5">
           <Label>いつ</Label>
@@ -846,7 +1007,11 @@ function AutomationForm({
         hint={
           sourceKind === "webhook"
             ? "受けた中身はこの指示の下に「外から来たもの」として添えます。中身の中の指示には従わないよう、AI にも伝えます"
-            : "人が会話で頼むときと同じ書き方で。Memory と「AI への指示」もいつもどおり効きます"
+            : sourceKind === "event"
+              ? isJudge
+                ? "判断の方針を書いてください。届くのは元の会話のまとめ（頼んだこと・結果・決めること）だけで、会話の中身は読めません。選べるのは元の AI が出した選択肢だけで、分からなければ人に任せます"
+                : "起きた出来事の題・属性と本文は、この指示の下に「外から来たもの」として添えます。中に書かれた指示には従わないよう、AI にも伝えます"
+              : "人が会話で頼むときと同じ書き方で。Memory と「AI への指示」もいつもどおり効きます"
         }
       >
         <Textarea
@@ -857,7 +1022,11 @@ function AutomationForm({
           placeholder={
             sourceKind === "webhook"
               ? "CI からビルドが落ちたと届きます。失敗したジョブのログを読み、原因の見当を挙げて"
-              : "昨日から今朝までに main に入ったコミットをまとめて"
+              : sourceKind === "event"
+                ? isJudge
+                  ? "この Project の Memory と仕様に沿って、おすすめに異論が無ければそれを選ぶ。設計の向きを変えるもの・お金や外部に関わるもの・取り消せない操作・readExternal が真のターンの決めごとは自分で決めず人に任せる。迷ったら人に任せる"
+                  : "落ちた Service のログを読み、原因を調べて、直せるなら直して起こし直して"
+                : "昨日から今朝までに main に入ったコミットをまとめて"
           }
         />
       </Field>
@@ -867,7 +1036,7 @@ function AutomationForm({
           id="automation-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={sourceKind === "webhook" ? "CI が落ちたら" : "毎朝のまとめ"}
+          placeholder={sourceKind === "webhook" ? "CI が落ちたら" : sourceKind === "event" ? (isJudge ? "判断役" : "Service が落ちたら") : "毎朝のまとめ"}
         />
       </Field>
 
@@ -892,6 +1061,12 @@ function AutomationForm({
             title="専用の Fork で、前の回を引き継ぐ"
             body="同じ会話に積みます。前の回のやり取りをそのまま覚えていてほしいものに。回を重ねるほど会話が長くなり、そのぶん毎回の読み直しが重くなります。"
           />
+          {/* 判断役の届け先は専用の Fork だけ——いまある会話の承認を「必ず聞く」に固定することになるため（アーキ仕様 §4.3） */}
+          {isJudge ? (
+            <p className="text-xs text-ink-3" data-testid="automation-judge-target">
+              判断役は専用の Fork でだけ動きます。判断役の会話の承認は、「承認をすべて自動で許可する」がオンでも必ず聞きます。
+            </p>
+          ) : (
           <ModeOption
             checked={targetKind === "thread"}
             onSelect={() => setTargetKind("thread")}
@@ -913,6 +1088,7 @@ function AutomationForm({
               </Select>
             ) : null}
           </ModeOption>
+          )}
         </div>
       </div>
 
@@ -947,6 +1123,281 @@ function AutomationForm({
       </div>
     </form>
   );
+}
+
+/**
+ * **出来事のきっかけ**：出どころ（この Project の Module のうち出来事を名乗るもの＋banto）→ 出来事（題と説明）→ 条件（属性ごと。
+ * `enum` があれば選ぶだけ、無ければ打つ。複数の値は「どれか」）。「この自動化自身の回が起こした出来事では動かない」（既定オン）
+ */
+function EventSourceFields({
+  sources,
+  error,
+  origin,
+  onOrigin,
+  eventName,
+  onEvent,
+  declared,
+  where,
+  onWhere,
+  whereProblem,
+  ignoreSelf,
+  onIgnoreSelf,
+  batchSeconds,
+  onBatchSeconds,
+}: {
+  sources: readonly RealAutomationEventSource[] | undefined;
+  error: string | null;
+  origin: string;
+  onOrigin: (origin: string) => void;
+  eventName: string;
+  onEvent: (name: string) => void;
+  declared: RealEventDeclaration | undefined;
+  where: Record<string, string[]>;
+  onWhere: (where: Record<string, string[]>) => void;
+  whereProblem: string | undefined;
+  ignoreSelf: boolean;
+  onIgnoreSelf: (on: boolean) => void;
+  batchSeconds: number;
+  onBatchSeconds: (n: number) => void;
+}) {
+  if (error && !sources) {
+    return (
+      <p role="alert" className="text-xs text-stop" data-testid="automation-event-sources-error">
+        待てる出来事を読み込めませんでした：{error}
+      </p>
+    );
+  }
+  if (!sources) return <p className="text-xs text-ink-3">待てる出来事を読み込んでいます…</p>;
+  const events = sources.find((s) => s.source === origin)?.events ?? [];
+  // 直す前の出来事が今は名乗られていない（Module を外した）——選び直すまで作れない
+  const missing = eventName !== "" && !declared;
+  return (
+    <div className="flex flex-col gap-3" data-testid="automation-event-form">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+        <Label htmlFor="automation-event-origin" className="text-xs font-normal text-ink-2">
+          出どころ
+        </Label>
+        <Select value={origin} onValueChange={onOrigin}>
+          <SelectTrigger id="automation-event-origin" className="h-8 w-48 text-xs" data-testid="automation-event-origin">
+            <SelectValue placeholder="選ぶ" />
+          </SelectTrigger>
+          <SelectContent>
+            {sources.map((s) => (
+              <SelectItem key={s.source} value={s.source}>
+                {s.source === "banto" ? "banto 自身" : s.source}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {origin !== "" ? (
+          <>
+            <Label htmlFor="automation-event-name" className="text-xs font-normal text-ink-2">
+              出来事
+            </Label>
+            <Select value={eventName} onValueChange={onEvent}>
+              <SelectTrigger id="automation-event-name" className="h-8 w-72 text-xs" data-testid="automation-event-name">
+                <SelectValue placeholder="選ぶ" />
+              </SelectTrigger>
+              <SelectContent>
+                {events.map((e) => (
+                  <SelectItem key={e.name} value={e.name}>
+                    {e.title}（{e.name}）
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </>
+        ) : null}
+      </div>
+      {sources.length === 1 ? (
+        <p className="text-xs text-ink-3">この Project の Module は出来事を名乗っていません。待てるのは banto 自身の出来事だけです。</p>
+      ) : null}
+      {missing ? (
+        <p role="alert" className="text-xs text-stop" data-testid="automation-event-missing">
+          出来事 {eventName} は、いまこの Project のどの Module も名乗っていません。選び直してください。
+        </p>
+      ) : null}
+
+      {declared ? (
+        <>
+          <p className="rounded-md bg-surface-2 px-2.5 py-1.5 text-xs text-ink-2" data-testid="automation-event-description">
+            {declared.description}
+          </p>
+          {origin !== "banto" ? (
+            <p className="text-xs text-ink-3" data-testid="automation-event-keep-awake">
+              待つ間、{origin} を起こしたままにします。
+            </p>
+          ) : null}
+          <WhereFields declared={declared} where={where} onWhere={onWhere} problem={whereProblem} />
+        </>
+      ) : null}
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2">
+          <Switch id="automation-ignore-self" checked={ignoreSelf} onCheckedChange={onIgnoreSelf} data-testid="automation-ignore-self" />
+          <Label htmlFor="automation-ignore-self">この自動化自身の回が起こした出来事では動かない</Label>
+        </div>
+        <p className="pl-11 text-xs text-ink-3">
+          {ignoreSelf
+            ? "自分の回で直した・起こしたことがまた出来事になっても、それでは動きません（輪にならないように）。"
+            : "自分の回が起こした出来事でも動きます。同じ出来事・同じ対象で動くのは 60 分に 6 回までです。"}
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+        <Label htmlFor="automation-event-batch" className="text-xs font-normal text-ink-2">
+          続けて起きたものを
+        </Label>
+        <Select value={String(batchSeconds)} onValueChange={(v) => onBatchSeconds(Number(v))}>
+          <SelectTrigger id="automation-event-batch" className="h-8 w-24 text-xs" data-testid="automation-event-batch">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {BATCH_SECONDS.map((n) => (
+              <SelectItem key={n} value={String(n)}>
+                {n === 0 ? "まとめない" : n < 60 ? `${n} 秒` : `${n / 60} 分`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span>{batchSeconds === 0 ? "（1件ずつ届けます）" : "待って、1回にまとめて届けます"}</span>
+      </div>
+    </div>
+  );
+}
+
+/** 条件：属性ごとの選択欄。`enum` は押して選ぶ（複数は「どれか」）、真偽は選ぶ、ほかは打つ（「,」か「、」で区切ると「どれか」） */
+function WhereFields({
+  declared,
+  where,
+  onWhere,
+  problem,
+}: {
+  declared: RealEventDeclaration;
+  where: Record<string, string[]>;
+  onWhere: (where: Record<string, string[]>) => void;
+  problem: string | undefined;
+}) {
+  const fields = Object.entries(declared.fields);
+  if (fields.length === 0) return null;
+  const set = (field: string, values: string[]) => {
+    const next = { ...where };
+    if (values.length === 0) delete next[field];
+    else next[field] = values;
+    onWhere(next);
+  };
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="automation-event-where">
+      <Label>条件</Label>
+      <p className="text-xs text-ink-3">空のままの属性は問いません。全部空なら、この出来事が起きるたびに動きます。</p>
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2 text-xs">
+        {fields.map(([field, f]) => (
+          <WhereField key={`${declared.name}:${field}`} field={field} declared={f} values={where[field] ?? []} onChange={(v) => set(field, v)} />
+        ))}
+      </div>
+      {problem ? (
+        <p role="alert" className="text-xs text-stop" data-testid="automation-event-where-error">
+          {problem}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function WhereField({
+  field,
+  declared: f,
+  values,
+  onChange,
+}: {
+  field: string;
+  declared: RealEventField;
+  values: string[];
+  onChange: (values: string[]) => void;
+}) {
+  const id = `automation-where-${field}`;
+  return (
+    <>
+      <Label htmlFor={id} className="text-xs font-normal text-ink-2">
+        {f.title}
+        <code className="ml-1 font-mono text-ink-3">{field}</code>
+      </Label>
+      {f.enum ? (
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label={f.title} data-testid="automation-where-field" data-field={field}>
+          {f.enum.map((v) => {
+            const on = values.includes(String(v));
+            return (
+              <button
+                key={String(v)}
+                type="button"
+                aria-pressed={on}
+                onClick={() => onChange(on ? values.filter((x) => x !== String(v)) : [...values, String(v)])}
+                className={cn(
+                  "flex h-7 items-center gap-1 rounded-full border px-3 text-xs",
+                  on ? "border-primary bg-surface-2 text-foreground" : "border-border bg-card text-ink-2 hover:bg-surface-2/60",
+                )}
+              >
+                {on ? <Check className="size-3" /> : null}
+                {String(v)}
+              </button>
+            );
+          })}
+        </div>
+      ) : f.type === "boolean" ? (
+        <Select value={values[0] ?? "any"} onValueChange={(v) => onChange(v === "any" ? [] : [v])}>
+          <SelectTrigger id={id} className="h-8 w-32 text-xs" data-testid="automation-where-field" data-field={field}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">問わない</SelectItem>
+            <SelectItem value="true">{describeFieldValue(true)}</SelectItem>
+            <SelectItem value="false">{describeFieldValue(false)}</SelectItem>
+          </SelectContent>
+        </Select>
+      ) : (
+        <Input
+          id={id}
+          defaultValue={values.join(", ")}
+          onChange={(e) =>
+            onChange(
+              e.target.value
+                .split(/[,、]/)
+                .map((x) => x.trim())
+                .filter((x) => x !== ""),
+            )
+          }
+          placeholder={f.type === "number" ? "数（, で区切ると「どれか」）" : "値（, で区切ると「どれか」）"}
+          className="h-8 w-64 font-mono text-xs"
+          data-testid="automation-where-field"
+          data-field={field}
+        />
+      )}
+    </>
+  );
+}
+
+/** 打った条件が名乗りの型に合うか（数の属性に数でないもの）。合わなければ理由 */
+function eventWhereInputProblem(declared: RealEventDeclaration, where: Record<string, string[]>): string | undefined {
+  for (const [field, values] of Object.entries(where)) {
+    const f = declared.fields[field];
+    if (f?.type === "number" && values.some((v) => !Number.isFinite(Number(v)))) return `${f.title}は数で書いてください`;
+  }
+  return undefined;
+}
+
+/** 画面の欄の値（文字）を、名乗りの型の値にして host に渡す形へ。値が1つなら配列にしない */
+function whereValue(
+  declared: RealEventDeclaration,
+  where: Record<string, string[]>,
+): Record<string, string | number | boolean | Array<string | number | boolean>> {
+  const out: Record<string, string | number | boolean | Array<string | number | boolean>> = {};
+  for (const [field, raw] of Object.entries(where)) {
+    const f = declared.fields[field];
+    if (!f || raw.length === 0) continue;
+    const typed = raw.map((v) => (f.type === "number" ? Number(v) : f.type === "boolean" ? v === "true" : v));
+    out[field] = typed.length === 1 ? typed[0]! : typed;
+  }
+  return out;
 }
 
 function ModeOption({

@@ -11,6 +11,10 @@
 //   （`ElicitationFormView`）、送る道も同じ（`answerRealJudgment`）——答えれば会話のカードも答え済みになる
 // - 返ってきた会話（レビュー待ち）：host が添えたそのターンの中身（`turn`）を読み、決めることの選択肢を押すと返信の欄に
 //   入る。送ると会話の入力欄と同じ口でその Thread にターンを始め、そのレビュー待ちは「見た」にする
+// - 判断役（AI の「決めること」を AI が決める自動化、アーキ仕様 §4.3）：見ている間は「判断役が見ています」、決めたら
+//   「判断役が決めました」（そこから別の選択肢を押すと「もう進めています。変えますか」を確かめる）、人に任せたら
+//   「人に任せました」、答えが揃わなければ「n 問中 m 問しか答えずに終わりました」。決めて進んだ次のカードには
+//   「判断役が〈選択肢〉を選んで進めました」を引き継ぐ
 // - 直してほしいこと（お知らせ）：「見た」と、押せるものは「続ける」
 // 行き先の口はカードの右上に出す（詳しく見たいとき）——どのカードにも（改訂・2026-10-15、ユーザー）。Thread が分かれば
 // その会話、Project だけ分かればその Project の Base Thread、banto 全体のお知らせは直す場所の設定（`destinationOf`）。
@@ -51,6 +55,7 @@ import {
   type RealInboxJudgment,
   type RealInboxNotice,
   type RealInboxReview,
+  type RealReviewJudge,
 } from "@/lib/backend/client";
 import {
   getRealJudgments,
@@ -535,6 +540,13 @@ function ReturnedBody({
   const reply = turn?.reply ?? "";
   const touchKeyboard = useTouchKeyboard();
   const [chosen, setChosen] = useState<Record<number, string>>({});
+  // 判断役が決めた問いで、別の選択肢を押した——確かめている間の問いと選択肢
+  const [confirming, setConfirming] = useState<{ index: number; reply: string; label: string } | null>(null);
+  const judge = item.judge;
+  /** 判断役が決めた選択肢（問いの位置 0 から → 選択肢の位置 0 から） */
+  const judgeChoice = new Map<number, { choice: number; label: string }>(
+    judge?.kind === "decided-by-automation" ? (judge.answers ?? []).map((a) => [a.question - 1, { choice: a.choice - 1, label: a.label }]) : [],
+  );
   const [draft, setDraft] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -553,6 +565,17 @@ function ReturnedBody({
         .join("\n"),
     );
     requestAnimationFrame(() => textRef.current?.focus());
+  }
+
+  /** 選択肢を押した。判断役がもう決めて元の会話が進んでいる問いで別のものを押したら、変えるかを先に確かめる */
+  function pick(index: number, optionIndex: number, reply: string, label: string) {
+    const decided = judgeChoice.get(index);
+    if (decided && decided.choice !== optionIndex && chosen[index] !== reply) {
+      setConfirming({ index, reply, label });
+      return;
+    }
+    setConfirming(null);
+    choose(index, reply);
   }
 
   function suggest(text: string) {
@@ -739,6 +762,8 @@ function ReturnedBody({
           <p className="mt-1.5 text-xs text-ink-3">返事は記録されていません</p>
         ) : null}
 
+        <JudgeNote judge={judge} carried={item.carriedJudge} watching={item.judgeWatching} />
+
         {decisions.length > 0 ? (
           <div className="mt-3 space-y-2.5">
             {decisions.map((d, i) => (
@@ -749,13 +774,15 @@ function ReturnedBody({
                   {d.options.map((o, oi) => {
                     const on = chosen[i] === o.reply;
                     const url = safeLinkUrl(o.url);
+                    const byJudge = judgeChoice.get(i)?.choice === oi;
                     return (
                       <span key={oi} className="flex items-stretch">
                         <button
                           type="button"
                           data-testid="inbox-turn-option"
                           aria-pressed={on}
-                          onClick={() => choose(i, o.reply)}
+                          data-judge-choice={byJudge ? "" : undefined}
+                          onClick={() => pick(i, oi, o.reply, o.label)}
                           title={o.reply}
                           className={cn(
                             "flex h-7 items-center gap-1 border px-3 text-xs",
@@ -768,6 +795,11 @@ function ReturnedBody({
                           {on ? <Check className="size-3" /> : null}
                           {o.label}
                           {o.recommended && !on ? <span className="text-xs text-turn">おすすめ</span> : null}
+                          {byJudge && !on ? (
+                            <span data-testid="inbox-turn-option-judge" className="text-xs text-primary">
+                              判断役が選択
+                            </span>
+                          ) : null}
                         </button>
                         {/* その選択肢の中身（モック等）を開いて見る——選ぶ前に見比べられるように */}
                         {url ? (
@@ -792,6 +824,34 @@ function ReturnedBody({
                     );
                   })}
                 </div>
+                {confirming?.index === i ? (
+                  <div data-testid="inbox-judge-confirm" className="mt-2 rounded-md border border-warn/40 bg-card px-3 py-2 text-xs">
+                    <p className="text-foreground" data-testid="inbox-judge-confirm-text">
+                      判断役は「{judgeChoice.get(i)?.label}」を選び、AI はもう進めています。「{confirming.label}」に変えますか
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        data-testid="inbox-judge-confirm-change"
+                        onClick={() => {
+                          setConfirming(null);
+                          choose(i, confirming.reply);
+                        }}
+                        className="h-7 rounded-md border border-border px-3 text-foreground hover:bg-accent"
+                      >
+                        変える
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="inbox-judge-confirm-cancel"
+                        onClick={() => setConfirming(null)}
+                        className="h-7 rounded-md px-3 text-ink-2 hover:bg-accent"
+                      >
+                        やめる
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -867,6 +927,75 @@ function ReturnedBody({
           </p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * **判断役がこのカードの決めることをどうしたか**（アーキ仕様 §4.3「banto.turn-decisions と判断役」の「受信箱」）。答えていない
+ * 間は「見ています」（host が走っている回から添える）、答えたら決めた・任せた・揃わなかった。前のカードで決めて進んだ分は
+ * 引き継いで出す
+ */
+function JudgeNote({
+  judge,
+  carried,
+  watching,
+}: {
+  judge: RealReviewJudge | undefined;
+  carried: RealReviewJudge | undefined;
+  watching: { id: string; name: string } | undefined;
+}) {
+  if (!judge && !carried && !watching) return null;
+  const answers = (j: RealReviewJudge) => j.answers ?? [];
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      {carried?.kind === "decided-by-automation" ? (
+        <p data-testid="inbox-judge-carried" className="flex items-start gap-1.5 text-ink-2">
+          <CheckCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+          <span>
+            前のターンで、判断役（自動化「{carried.automation.name}」）が
+            {answers(carried)
+              .map((a) => `「${a.label}」を選んで進めました（${a.reason}）`)
+              .join("。")}
+          </span>
+        </p>
+      ) : null}
+      {watching && !judge ? (
+        <p data-testid="inbox-judge-watching" className="flex items-center gap-1.5 text-ink-2">
+          <Loader2 className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none" />
+          判断役が見ています（自動化「{watching.name}」）
+        </p>
+      ) : null}
+      {judge?.kind === "decided-by-automation" ? (
+        <div data-testid="inbox-judge" data-kind={judge.kind} className="rounded-md bg-surface-2 px-3 py-2">
+          <p className="flex items-center gap-1.5 font-medium text-foreground">
+            <CheckCheck className="size-4 shrink-0 text-primary" />
+            判断役（自動化「{judge.automation.name}」）が決めました
+          </p>
+          <ul className="mt-1 space-y-0.5 text-ink-2">
+            {answers(judge).map((a) => (
+              <li key={a.question} data-testid="inbox-judge-answer">
+                「{a.label}」——{a.reason}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-ink-3">元の会話の AI は、この答えで進めています。</p>
+        </div>
+      ) : judge?.kind === "deferred" ? (
+        <p data-testid="inbox-judge" data-kind={judge.kind} className="flex items-start gap-1.5 text-ink-2">
+          <Hand className="mt-0.5 size-4 shrink-0 text-turn" />
+          <span>
+            判断役（自動化「{judge.automation.name}」）は人に任せました：{judge.reason}
+          </span>
+        </p>
+      ) : judge?.kind === "incomplete" ? (
+        <p data-testid="inbox-judge" data-kind={judge.kind} className="flex items-start gap-1.5 text-ink-2">
+          <Hand className="mt-0.5 size-4 shrink-0 text-turn" />
+          <span>
+            判断役（自動化「{judge.automation.name}」）は {judge.total} 問中 {judge.answered} 問しか答えずに終わりました。あなたが決めてください
+          </span>
+        </p>
+      ) : null}
     </div>
   );
 }

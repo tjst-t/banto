@@ -19,7 +19,7 @@ import {
   type AutomationTarget,
 } from "./fold.js";
 import { cronExpressionProblem } from "./schedule.js";
-import { bantoEventDeclaration, isJudgeAutomation, TURN_DECISIONS_EVENT } from "./turn-decisions.js";
+import { BANTO_EVENTS, bantoEventDeclaration, isJudgeAutomation, TURN_DECISIONS_EVENT } from "./turn-decisions.js";
 
 /** 入力が決まりに合わない（画面・AI に理由をそのまま返す） */
 export class AutomationInputError extends Error {}
@@ -47,6 +47,17 @@ export const EVENT_BATCH_SECONDS_DEFAULT = WEBHOOK_BATCH_SECONDS_DEFAULT;
  */
 export interface AutomationEventCatalog {
   find(projectId: string, name: string): EventDeclaration | undefined;
+  /**
+   * その Project で出来事を名乗っている Module ごとの名乗り（作るフォームの「出どころ→出来事」と、AI が名乗っていない名前を
+   * 渡したときに返す一覧、追加・2026-10-16）。名乗りの読めない Module は入れない
+   */
+  list(projectId: string): AutomationEventSource[];
+}
+
+/** 出どころ1つ（Module の名前か `banto`）と、それが名乗る出来事 */
+export interface AutomationEventSource {
+  source: string;
+  events: EventDeclaration[];
 }
 
 export class AutomationStore {
@@ -69,6 +80,23 @@ export class AutomationStore {
   /** 出来事のきっかけを作る・直すときに照らす名乗りの口（無ければ出来事のきっかけは作れない） */
   setEventCatalog(catalog: AutomationEventCatalog): void {
     this.eventCatalog = catalog;
+  }
+
+  /**
+   * **その Project で待てる出来事**（出どころごと。banto 自身が先頭）。口が無い構成では banto 自身の出来事だけ
+   */
+  eventSources(projectId: string): AutomationEventSource[] {
+    return [{ source: "banto", events: [...BANTO_EVENTS] }, ...(this.eventCatalog?.list(projectId) ?? [])];
+  }
+
+  /**
+   * **作る前の確かめ**（出来事が名乗られているか・条件が名乗りに合うか・判断役の届け先）。AI の tool は人に聞く前にこれを通す
+   * ——人が許したあとで「入力が違う」と断らないように。`create`・`update` も同じものを通る。直すときは、きっかけを変えた
+   * ときだけ名乗りと照らす（`sourceChanged`——名前だけ直すのを、あとで Module を外したことで断らない）
+   */
+  checkFields(projectId: string, fields: Pick<AutomationFields, "source" | "target">, sourceChanged = true): void {
+    if (sourceChanged && fields.source.kind === "event") this.checkEventSource(projectId, fields.source);
+    checkJudgeTarget(fields);
   }
 
   /** その Project の自動化（作った順） */
@@ -111,8 +139,7 @@ export class AutomationStore {
     webhookTokenHash?: string;
   }): Promise<Automation> {
     const fields = parseAutomationFields(input.fields);
-    if (fields.source.kind === "event") this.checkEventSource(input.projectId, fields.source);
-    checkJudgeTarget(fields);
+    this.checkFields(input.projectId, fields);
     if (fields.source.kind === "webhook" && !input.webhookTokenHash) {
       throw new AutomationInputError("Webhook の自動化は自動化の画面から作ってください（受け口の URL はそこで1回だけ見せます）");
     }
@@ -131,8 +158,7 @@ export class AutomationStore {
   async update(id: string, changes: unknown): Promise<Automation> {
     const current = this.mustGet(id);
     const parsed = parseAutomationChanges(changes, current);
-    if (parsed.source?.kind === "event") this.checkEventSource(current.projectId, parsed.source);
-    checkJudgeTarget({ source: parsed.source ?? current.source, target: parsed.target ?? current.target });
+    this.checkFields(current.projectId, { source: parsed.source ?? current.source, target: parsed.target ?? current.target }, parsed.source !== undefined);
     await this.append("automation.updated", { id, changes: parsed });
     return this.mustGet(id);
   }
@@ -186,7 +212,11 @@ export class AutomationStore {
     if (!core && !this.eventCatalog) throw new AutomationInputError("この banto は出来事のきっかけを受けられません");
     const declared = core ?? this.eventCatalog?.find(projectId, source.event);
     if (!declared) {
-      throw new AutomationInputError(`この Project には出来事 ${source.event} を名乗っている Module がありません`);
+      // 待てるものを並べて返す——AI はここで名前を知る（名乗りは Project ごとに違う）
+      const known = this.eventSources(projectId).flatMap((s) => s.events.map((e) => `${e.name}（${e.title}）`));
+      throw new AutomationInputError(
+        `この Project には出来事 ${source.event} を名乗っている Module がありません。待てる出来事：${known.join("、")}`,
+      );
     }
     const problem = eventWhereProblem(declared, source.where);
     if (problem) throw new AutomationInputError(problem);

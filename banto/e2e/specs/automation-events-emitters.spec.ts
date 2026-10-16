@@ -191,12 +191,12 @@ test("Backlog を AI が変えた出来事にはそのターンのホップ＋1�
     await openPaletteEntry(page, /^自動化/);
     await expect(page.getByTestId("automations")).toBeVisible({ timeout: 30_000 });
     const row = page.getByTestId("automation-row").filter({ hasText: CRASH });
-    await expect(row.getByTestId("automation-summary")).toContainText("出来事 service.crashed が起きたとき");
+    await expect(row.getByTestId("automation-summary")).toContainText("Service が落ちたとき（サービスの名前が「crasher」・「late」のどれか）");
     await row.getByRole("button", { name: CRASH }).click();
     await expect(row.getByTestId("automation-run").first()).toHaveAttribute("data-result", "done");
     await expect(row.getByTestId("automation-run").first().getByTestId("automation-run-received")).toHaveText("（出来事 1 件）");
     const readyRow = page.getByTestId("automation-row").filter({ hasText: READY });
-    await expect(readyRow.getByTestId("automation-summary")).toContainText("出来事 backlog.item-changed が起きたとき");
+    await expect(readyRow.getByTestId("automation-summary")).toContainText("Backlog の項目ができた・状態が変わったとき（新しい状態が「ready」）");
 
     await page.goto(`/p/${projectId}?fork=${(await byName(CRASH)).target.threadId}&bantoHost=${host.url}`);
     const card = page.locator('[data-testid="delivered-message"]').filter({ hasText: `自動化「${CRASH}」` });

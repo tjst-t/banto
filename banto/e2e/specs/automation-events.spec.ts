@@ -207,13 +207,13 @@ test("名乗った出来事で条件に合う自動化が専用の Fork で動�
     await openPaletteEntry(page, /^自動化/);
     await expect(page.getByTestId("automations")).toBeVisible({ timeout: 30_000 });
     const row = page.getByTestId("automation-row").filter({ hasText: HIGH });
-    await expect(row.getByTestId("automation-summary")).toContainText(`出来事 ${EVENT} が起きたとき`);
+    await expect(row.getByTestId("automation-summary")).toContainText("試験の出来事とき（強さが「high」）");
     await row.getByRole("button", { name: HIGH }).click();
     const runRow = row.getByTestId("automation-run").first();
     await expect(runRow).toHaveAttribute("data-result", "done");
     await expect(runRow.getByTestId("automation-run-received")).toHaveText("（出来事 1 件）");
-    // 出来事のきっかけを直すフォームはまだ無い——直すボタンは出さない
-    await expect(row.getByTestId("automation-edit")).toHaveCount(0);
+    // 出来事のきっかけも直せる（段2の画面、#349——フォームは automation-events-ui.spec.ts）
+    await expect(row.getByTestId("automation-edit")).toBeVisible();
     const burstRow = page.getByTestId("automation-row").filter({ hasText: BURST });
     await burstRow.getByRole("button", { name: BURST }).click();
     await expect(burstRow.locator('[data-testid="automation-run"][data-result="skipped"]')).toContainText("60 分に 6 回動いた");

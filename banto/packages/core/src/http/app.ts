@@ -1294,6 +1294,8 @@ export function createApp(deps: AppDeps) {
         automations: deps.automations,
         ...(deps.automationRunner ? { runner: deps.automationRunner } : {}),
         ...askInThreadDeps,
+        judgeNotices: (projectId) =>
+          judgeNotices(projectId, { turnSummaryEnabled, autoApproveAll: (id) => isAutoApproveAll(deps.runtimeConfig, id) }),
       })
     : undefined;
 
@@ -3499,6 +3501,15 @@ export function createApp(deps: AppDeps) {
         }
       }
 
+      // **その Project で待てる出来事**（追加・2026-10-16、アーキ仕様 §4.3「段2」、画面の作るフォームの「出どころ→出来事→条件」）。
+      // 出どころごと（banto 自身が先頭）。名乗りは core が中身を知らないまま見せる
+      const automationEventsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/automation-events$/);
+      if (automationEventsMatch && req.method === "GET") {
+        const projectId = automationEventsMatch[1]!;
+        if (!deps.automations || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        return json(res, 200, { sources: deps.automations.eventSources(projectId) });
+      }
+
       // **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。台帳は Event Store（`automation/store.ts`）、
       // 入力の確かめは台帳の側（AI の tool と同じ決まり）。届け先の Thread がこの Project の開いているものかはここで見る
       const automationsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/automations(?:\/([^/]+)(\/run)?)?$/);
@@ -3749,11 +3760,15 @@ export function createApp(deps: AppDeps) {
             if (!thread) return item;
             // 後の回で置き換えなかった自動化の回のカードは、そのターンの中身を出す（アーキ仕様 §4.3「受信箱」）。tool の数は
             // 最後のターンの分しか数えられないので添えない
+            // 判断役が決めたカードも、答えで元の会話が次のターンへ進んだあと、決めたターンの中身を出す（人が別の選択肢に変えられるように）
             const a = item.automation;
+            const judged = item.judge?.kind === "decided-by-automation" ? item.judge.turn : undefined;
             const earlier =
-              a && a.startedSeq !== thread.lastTurn?.startedSeq
-                ? { startedSeq: a.startedSeq, beforeSeq: a.raisedSeq, ...(a.outcome ? { outcome: a.outcome } : {}) }
-                : undefined;
+              judged && judged.startedSeq !== thread.lastTurn?.startedSeq
+                ? judged
+                : a && a.startedSeq !== thread.lastTurn?.startedSeq
+                  ? { startedSeq: a.startedSeq, beforeSeq: a.raisedSeq, ...(a.outcome ? { outcome: a.outcome } : {}) }
+                  : undefined;
             const toolCalls = earlier ? undefined : await deps.reviewToolCalls?.(thread);
             const turn = reviewTurnOf(thread, {
               running: deps.threadTurns?.isRunning(thread.id) ?? false,

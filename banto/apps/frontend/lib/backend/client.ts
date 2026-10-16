@@ -369,6 +369,30 @@ export interface RealInboxReview {
    * 見ていない回の数（このカードの回を含む）
    */
   unseenRuns?: number;
+  /**
+   * **判断役がこのターンの決めることをどうしたか**（追加・2026-10-16、アーキ仕様 §4.3「banto.turn-decisions と判断役」）。
+   * 無ければ判断役は答えていない
+   */
+  judge?: RealReviewJudge;
+  /** 前のカードから引き継いだ判断役の決め（「判断役が〈選択肢〉を選んで進めました」） */
+  carriedJudge?: RealReviewJudge;
+  /** 判断役の回が動いている間（まだ答えていない）。host が走っている回から添える（記録には無い） */
+  judgeWatching?: { id: string; name: string };
+}
+
+/**
+ * 判断役の答え（host の `ReviewJudge` のまま）。`decided-by-automation`＝全部の問いに選択肢で答えて元の会話に届けた・
+ * `deferred`＝人に任せた・`incomplete`＝揃わないまま判断役のターンが終わった（どちらも何も届けていない）
+ */
+export interface RealReviewJudge {
+  kind: "decided-by-automation" | "deferred" | "incomplete";
+  automation: { id: string; name: string };
+  /** 問い・選択肢の番号は 1 から */
+  answers?: Array<{ question: number; choice: number; label: string; reason: string }>;
+  reason?: string;
+  answered?: number;
+  total?: number;
+  at: string;
 }
 
 /**
@@ -2008,7 +2032,36 @@ export type RealAutomationSource =
 /** 作るときに渡す Webhook の出どころ。署名を確かめないなら `signature: false`（既定はオンなので明示する） */
 export type RealAutomationSourceInput =
   | Extract<RealAutomationSource, { kind: "time" }>
+  | Extract<RealAutomationSource, { kind: "event" }>
   | (Omit<Extract<RealAutomationSource, { kind: "webhook" }>, "signature"> & { signature: { header: string; alias: string } | false });
+
+/** 出来事の属性の名乗り（`@banto/module-contract` の `EventFieldDeclaration` のまま） */
+export interface RealEventField {
+  type: "string" | "number" | "boolean";
+  title: string;
+  enum?: Array<string | number | boolean>;
+}
+
+/** 出来事1つの名乗り（`EventDeclaration` のまま。core は中身を知らずに見せる） */
+export interface RealEventDeclaration {
+  name: string;
+  title: string;
+  description: string;
+  fields: Record<string, RealEventField>;
+  subject?: string;
+}
+
+/** 出どころ（Module の名前か `banto`）ごとの名乗り */
+export interface RealAutomationEventSource {
+  source: string;
+  events: RealEventDeclaration[];
+}
+
+/** その Project で待てる出来事（banto 自身が先頭） */
+export async function listRealAutomationEvents(projectId: string): Promise<RealAutomationEventSource[]> {
+  const body = await request<{ sources: RealAutomationEventSource[] }>(`/api/projects/${encodeURIComponent(projectId)}/automation-events`);
+  return body.sources;
+}
 
 /** 届け先。`dedicated` の `threadId` は host が専用の Fork を立てたあとに入る */
 export type RealAutomationTarget =
@@ -2067,10 +2120,14 @@ export async function listRealAutomations(projectId: string): Promise<RealAutoma
 }
 
 /**
- * 作る。Webhook なら受け口の URL（`webhookUrl`）が**この応答でだけ**返る——印は host に残らない（見失ったら作り直す）
+ * 作る。Webhook なら受け口の URL（`webhookUrl`）が**この応答でだけ**返る——印は host に残らない（見失ったら作り直す）。
+ * 判断役（`banto.turn-decisions` を待つ）なら案内（`notices`：まとめがオフ・自動許可は効かない）が添わることがある
  */
-export async function createRealAutomation(projectId: string, fields: RealAutomationInput): Promise<RealAutomation & { webhookUrl?: string }> {
-  return request<RealAutomation & { webhookUrl?: string }>(`/api/projects/${encodeURIComponent(projectId)}/automations`, {
+export async function createRealAutomation(
+  projectId: string,
+  fields: RealAutomationInput,
+): Promise<RealAutomation & { webhookUrl?: string; notices?: string[] }> {
+  return request<RealAutomation & { webhookUrl?: string; notices?: string[] }>(`/api/projects/${encodeURIComponent(projectId)}/automations`, {
     method: "POST",
     body: JSON.stringify(fields),
   });

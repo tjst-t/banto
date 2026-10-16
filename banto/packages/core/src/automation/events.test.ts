@@ -53,7 +53,10 @@ async function harness(dir: string): Promise<Harness> {
   await log.init();
   const store = new AutomationStore(dir, log);
   await store.load();
-  store.setEventCatalog({ find: (projectId, name) => (projectId === P ? DECLARED.find((d) => d.name === name) : undefined) });
+  store.setEventCatalog({
+    find: (projectId, name) => (projectId === P ? DECLARED.find((d) => d.name === name) : undefined),
+    list: (projectId) => (projectId === P ? [{ source: MODULE, events: DECLARED }] : []),
+  });
   const ledger = new EventLedger(dir, log);
   await ledger.load();
   const calls: Harness["calls"] = [];
@@ -114,6 +117,24 @@ test("作るとき：名乗っていない出来事・条件の属性が名乗�
     // 種類は変えられない
     await assert.rejects(h.store.update(a.id, { source: { kind: "time", repeat: { kind: "daily", time: "9:00" }, timeZone: "UTC" } }), /変えられません/);
     await assert.rejects(h.store.update(a.id, { source: { kind: "event", event: "service.crashed", where: { nope: 1 } } }), /nope/);
+  });
+});
+
+test("待てる出来事の一覧：banto 自身が先頭、Module の名乗りが続く。名乗っていない名前で断るときは待てる出来事を並べる", async () => {
+  await withHarness(async (h) => {
+    const sources = h.store.eventSources(P);
+    assert.deepEqual(
+      sources.map((s) => [s.source, s.events.map((e) => e.name)]),
+      [
+        ["banto", ["banto.turn-decisions"]],
+        [MODULE, ["service.crashed"]],
+      ],
+    );
+    assert.deepEqual(h.store.eventSources("other").map((s) => s.source), ["banto"]);
+    await assert.rejects(
+      h.store.create({ projectId: P, createdBy: { kind: "human" }, fields: eventFields({ event: "service.gone" }) }),
+      /待てる出来事：banto\.turn-decisions（決めることのあるターンが終わった）、service\.crashed（Service が落ちた）/,
+    );
   });
 });
 

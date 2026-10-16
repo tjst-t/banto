@@ -137,6 +137,28 @@ test("作る・一覧・直す・一時停止・再開・消す", async () => {
   });
 });
 
+test("待てる出来事の一覧：出どころごと、banto 自身が先頭。知らない Project は 404", async () => {
+  await withApp(async (call, { projectThread, automations }) => {
+    const p = await projectThread.createProject("p", tmpdir());
+    const crashed = { name: "service.crashed", title: "Service が落ちた", description: "落ちた", fields: { service: { type: "string" as const, title: "名前" } } };
+    automations.setEventCatalog({
+      find: (projectId, name) => (projectId === p.id && name === crashed.name ? crashed : undefined),
+      list: (projectId) => (projectId === p.id ? [{ source: "service", events: [crashed] }] : []),
+    });
+    const listed = await call(`/api/projects/${p.id}/automation-events`);
+    assert.equal(listed.status, 200);
+    assert.deepEqual(
+      listed.body.sources.map((s: { source: string; events: Array<{ name: string }> }) => [s.source, s.events.map((e) => e.name)]),
+      [
+        ["banto", ["banto.turn-decisions"]],
+        ["service", ["service.crashed"]],
+      ],
+    );
+    assert.equal(listed.body.sources[1].events[0].fields.service.title, "名前");
+    assert.equal((await call(`/api/projects/nope/automation-events`)).status, 404);
+  });
+});
+
 test("届け先の Thread はこの Project の開いているものだけ", async () => {
   await withApp(async (call, { projectThread }) => {
     const p = await projectThread.createProject("p", tmpdir());
