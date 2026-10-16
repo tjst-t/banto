@@ -64,6 +64,7 @@
 //   --github-api <URL>       BANTO_UPDATE_GITHUB_API     組み立ての回を聞く口（runs の口を丸ごと）。試験用。上と両方渡す
 //   --prebuilt-wait <秒>     BANTO_UPDATE_PREBUILT_WAIT  GitHub で組み立て中を待つ上限。既定 1200
 //   --prebuilt-timeout <秒>  BANTO_UPDATE_PREBUILT_TIMEOUT 組み立て済みを取ってくる上限。既定 1800
+//   BANTO_UPDATE_PREBUILT_POLL_MS（試験だけ）  組み立て中を見る間隔・API に聞く間隔・登録の遅れを待つ間を、まとめてこのミリ秒に
 //   組み立て済みを使う段の作りは scripts/prebuilt.mjs（アーキ仕様 §2.5「組み立て済みのものを使う」）
 // 設定は BANTO_CONFIG_PATH か ~/.config/banto/config.json から読む（合言葉・port・dataDir・releaseDir）。
 
@@ -498,7 +499,10 @@ async function tryPrebuilt(to, newDir) {
   try {
     mod = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "prebuilt.mjs")).href);
   } catch (err) {
-    const reason = `組み立て済みを使う部品（prebuilt.mjs）を読めません：${errorText(err)}`;
+    // 無いとき（古い install.sh が update.mjs だけを写した等）だけ、その場で組み立てる。壊れている（文法の誤り等）なら止める
+    // ——黙って組み立てに落とすと、壊れた部品が気づかれないまま残る
+    if (err?.code !== "ERR_MODULE_NOT_FOUND") fail(`組み立て済みを使う部品（prebuilt.mjs）が壊れています：${errorText(err)}`);
+    const reason = `組み立て済みを使う部品（prebuilt.mjs）がありません：${errorText(err)}`;
     log(`${reason}。その場で組み立てます`);
     setPrebuilt({ status: "skipped", reason });
     return false;
@@ -817,11 +821,16 @@ async function run() {
   if (dryRun) {
     const commits = from ? gitRepoOk(["log", "--format=%h %s", `${from}..${to}`, "--"]) : "（初めて入れる）";
     console.log(`\n今の版：${from ?? "（無し）"}\n新しい版：${to}\n入るコミット：\n${commits}\n`);
-    console.log(
-      noPrebuilt
-        ? "組み立て済み：使いません（--no-prebuilt）"
-        : `組み立て済み：${prebuiltBase ?? `GitHub（${originUrl() ?? "origin が分かりません"}）`} の build-${to.slice(0, 12)} があれば使います（無ければ下のとおり組み立てる）`,
-    );
+    let preview = "使いません（--no-prebuilt）";
+    if (!noPrebuilt) {
+      try {
+        const mod = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "prebuilt.mjs")).href);
+        preview = await mod.previewPrebuilt({ commit: to, originUrl: prebuiltBase ? undefined : originUrl(), prebuiltBase });
+      } catch (err) {
+        preview = `分かりません（prebuilt.mjs を読めません：${errorText(err)}）`;
+      }
+    }
+    console.log(`組み立て済み：${preview}`);
     console.log(`組み立てる：${newDir}（${buildOverride ?? "npm ci --include=dev && npm run build"}）`);
     if (!first) {
       console.log(mode === "wait" ? "待つ：動いているものが無くなるまで" : "待たない");

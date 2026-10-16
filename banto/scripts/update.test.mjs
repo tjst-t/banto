@@ -899,18 +899,42 @@ function makePrebuilt(dir, commitSha, { marker = {}, tweak } = {}) {
     }),
   );
   tweak?.(join(src, "banto"));
+  // 読めないフォルダ（mode 000）は tar -c が中を読めないので、権限を戻して中身を取り、tar の中でだけ 000 にする
+  // （GNU tar の --mode は全体に効くので、そのフォルダだけを別の tar にしてつなぐ）
+  const locked = join(src, "banto", "node_modules", "locked");
+  if (existsSync(locked)) {
+    chmodSync(locked, 0o755);
+    const t1 = execFileSync("tar", ["-C", src, "--exclude=banto/node_modules/locked", "-cf", "-", "banto"], { maxBuffer: 1 << 26 });
+    const t2 = execFileSync("tar", ["-C", src, "--mode=a-rwx", "--no-recursion", "-cf", "-", "banto/node_modules/locked"], { maxBuffer: 1 << 26 });
+    const t3 = execFileSync("tar", ["-C", src, "-cf", "-", "banto/node_modules/locked/x"], { maxBuffer: 1 << 26 });
+    rmSync(src, { recursive: true, force: true });
+    const strip = (t) => t.subarray(0, endOfArchive(t));
+    return zstdCompressSync(Buffer.concat([strip(t1), strip(t2), strip(t3), Buffer.alloc(1024)]));
+  }
   const tar = execFileSync("tar", ["-C", src, "-cf", "-", "banto"], { maxBuffer: 1 << 26 });
   rmSync(src, { recursive: true, force: true });
   return zstdCompressSync(tar);
 }
 
+/** tar の中身の終わり（最初の 0 だけのヘッダの位置） */
+function endOfArchive(t) {
+  for (let off = 0; off + 512 <= t.length; ) {
+    const header = t.subarray(off, off + 512);
+    if (header.every((x) => x === 0)) return off;
+    const size = parseInt(header.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim() || "0", 8);
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return t.length;
+}
+
 /** GitHub 役。`gh.assets` に置いたものを配り、`gh.runs` を回の一覧として返す。`gh.slow` なら少しずつ返す */
 async function withGithub(fn) {
-  const gh = { assets: new Map(), runs: [], heads: 0, apiCalls: 0, slow: false };
+  const gh = { assets: new Map(), runs: [], heads: 0, apiCalls: 0, slow: false, apiStatus: 0 };
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
     if (url.pathname === "/runs") {
       gh.apiCalls++;
+      if (gh.apiStatus) return res.writeHead(gh.apiStatus, { "x-ratelimit-remaining": "0" }).end();
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ workflow_runs: gh.runs }));
     }
@@ -935,12 +959,12 @@ async function withGithub(fn) {
   const base = `http://127.0.0.1:${server.address().port}`;
   gh.env = { BANTO_UPDATE_PREBUILT_BASE: `${base}/dl`, BANTO_UPDATE_GITHUB_API: `${base}/runs`, BANTO_UPDATE_PREBUILT_POLL_MS: "200" };
   /** その commit の組み立て済みを置く（`sum` で .sha256 の中身を差し替えられる） */
-  gh.publish = (commitSha, bytes, { sum } = {}) => {
+  gh.publish = (commitSha, bytes, { sum, sumLine } = {}) => {
     const name = `banto-${commitSha}-linux-x64.tar.zst`;
     const dir = `/dl/build-${commitSha.slice(0, 12)}`;
     gh.assets.set(`${dir}/${name}`, bytes);
     const hex = sum ?? createHash("sha256").update(bytes).digest("hex");
-    gh.assets.set(`${dir}/${name}.sha256`, Buffer.from(`${hex}  ${name}\n`));
+    gh.assets.set(`${dir}/${name}.sha256`, Buffer.from(sumLine?.(hex, name) ?? `${hex}  ${name}\n`));
   };
   try {
     await fn(gh);
@@ -995,6 +1019,38 @@ for (const [name, setup, reason] of [
   ],
   ["印の commit が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { marker: { commit: "f".repeat(40) } })), /印の commit/],
   ["印の platform が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { marker: { platform: "linux-arm64" } })), /platform/],
+  [
+    "FIFO（ファイル・フォルダ・リンク以外）がある",
+    (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => execFileSync("mkfifo", [join(d, "node_modules", "pipe")]) })),
+    /デバイス等/,
+  ],
+  [
+    "packages/modules/dist（決めた場所ではない）がある",
+    (gh, b, dir) =>
+      gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => (mkdirSync(join(d, "packages", "modules", "dist"), { recursive: true }), writeFileSync(join(d, "packages", "modules", "dist", "x.js"), "")) })),
+    /決めた場所の外/,
+  ],
+  [
+    "移す単位の根（.next）が symlink",
+    (gh, b, dir) =>
+      gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => (mkdirSync(join(d, "apps", "frontend"), { recursive: true }), symlinkSync("../../node_modules", join(d, "apps", "frontend", ".next"))) })),
+    /根がフォルダではありません/,
+  ],
+  [
+    "読めないフォルダ（mode 000）がある——思わぬ失敗も、その場で組み立てる道に落とす",
+    (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => (mkdirSync(join(d, "node_modules", "locked", "x"), { recursive: true }), chmodSync(join(d, "node_modules", "locked"), 0o000)) })),
+    /思わぬ失敗|EACCES/,
+  ],
+  [
+    "版のフォルダに無い場所（packages/nope）に dist がある——先に移したものを巻き戻す",
+    (gh, b, dir) =>
+      gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => (mkdirSync(join(d, "packages", "nope", "dist"), { recursive: true }), writeFileSync(join(d, "packages", "nope", "dist", "x.js"), "")) })),
+    /packages\/nope がありません/,
+  ],
+  ["印の node の major が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { marker: { node: "1.0.0" } })), /major が違います/],
+  ["印の run の形が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { marker: { run: "https://evil.example/x" } })), /run の形/],
+  [".sha256 のファイル名が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b), { sumLine: (hex) => `${hex}  other.tar.zst\n` }), /\.sha256 の書式/],
+  [".sha256 の書式が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b), { sumLine: (hex) => `sha256:${hex}\n` }), /\.sha256 の書式/],
 ]) {
   test(`組み立て済み：${name}なら使わず、その場で組み立てる（重ねかけたものも作業フォルダも残さない）`, T, async () => {
     await withRelease(async (ctx) => {
@@ -1156,4 +1212,129 @@ test("組み立て済み：取り込み元が GitHub でなければ取りに行
     assert.equal((await ctx.start(["--now"]).done).code, 0);
     assert.match(ctx.state().prebuilt?.reason ?? "", /GitHub ではありません/);
   });
+});
+
+test("組み立て済み：巻き戻し——重ねる途中で落ちたら、先に移した node_modules も版のフォルダに残さない", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.publish(
+        b,
+        makePrebuilt(ctx.dir, b, {
+          tweak: (d) => (mkdirSync(join(d, "packages", "nope", "dist"), { recursive: true }), writeFileSync(join(d, "packages", "nope", "dist", "x.js"), "")),
+        }),
+      );
+      assert.equal((await ctx.start(["--now"], { ...gh.env, BANTO_UPDATE_BUILD: "ls node_modules > ls.txt 2>&1; echo built > built.txt" }).done).code, 0);
+      const banto = join(ctx.rel, "current", "banto");
+      assert.match(readFileSync(join(banto, "ls.txt"), "utf8"), /No such file/, "巻き戻していない（組み立ての前に node_modules があった）");
+      assert.equal(existsSync(join(banto, "packages")), false);
+    });
+  });
+});
+
+test("組み立て済み：API が回数制限（403）で、まだ組み立て中と分かっていなければ待たずにその場で組み立てる", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      ctx.commit("二つ目");
+      gh.apiStatus = 403;
+      assert.equal((await ctx.start(["--now"], gh.env).done).code, 0);
+      assert.match(ctx.state().prebuilt?.reason ?? "", /回数制限（403/);
+      assert.equal(existsSync(join(ctx.rel, "current", "banto", "built.txt")), true);
+    });
+  });
+});
+
+test("組み立て済み：組み立て中と分かったあと API が回数制限になっても、ファイルが出来るまで待って使う", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.runs = [{ run_number: 1, status: "in_progress", conclusion: null }];
+      const run = ctx.start(["--now"], gh.env);
+      await ctx.waitForState((s) => s.prebuilt?.status === "waiting", "待ちません");
+      gh.apiStatus = 403;
+      const calls = gh.apiCalls;
+      await ctx.waitForState(() => gh.apiCalls > calls, "API に聞き直しません", 5_000);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(ctx.state().phase, "build", "回数制限で待つのをやめた");
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      assert.equal((await run.done).code, 0);
+      assert.equal(ctx.state().prebuilt?.status, "used");
+    });
+  });
+});
+
+test("組み立て済み：取ってくるのが上限で終わらなければ、その場で組み立てる（作業フォルダを残さない）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.publish(b, Buffer.concat([makePrebuilt(ctx.dir, b), Buffer.alloc(64 * 200)]));
+      gh.slow = true;
+      assert.equal((await ctx.start(["--now"], { ...gh.env, BANTO_UPDATE_PREBUILT_TIMEOUT: "1" }).done).code, 0);
+      assert.match(ctx.state().prebuilt?.reason ?? "", /秒で終わりませんでした/);
+      assert.equal(existsSync(join(ctx.rel, "current", "banto", "built.txt")), true);
+      assert.deepEqual(noWorkDirs(ctx), []);
+    });
+  });
+});
+
+test("組み立て済み：prebuilt.mjs が無ければその場で組み立て、壊れていれば止める（黙って組み立てに落とさない）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const copy = join(ctx.dir, "scripts-copy");
+      mkdirSync(copy);
+      writeFileSync(join(copy, "update.mjs"), readFileSync(SCRIPT));
+      const runCopy = (env) =>
+        new Promise((resolve) => {
+          const child = spawn(process.execPath, [join(copy, "update.mjs"), "--now"], {
+            env: {
+              ...process.env,
+              BANTO_CONFIG_PATH: ctx.configPath,
+              BANTO_UPDATE_SYSTEMCTL: join(ctx.fake, "systemctl"),
+              BANTO_UPDATE_INCUS: join(ctx.fake, "incus"),
+              BANTO_UPDATE_UI_URL: ctx.uiUrl,
+              BANTO_UPDATE_BUILD: "echo built > built.txt",
+              BANTO_UPDATE_VERIFY_TIMEOUT: "2",
+              BANTO_UPDATE_INTERVAL: "0.1",
+              BANTO_UPDATE_MARK_INTERVAL: "0.05",
+              ...env,
+            },
+            stdio: "ignore",
+          });
+          child.on("exit", (code) => resolve(code));
+        });
+      ctx.commit("二つ目");
+      assert.equal(await runCopy(gh.env), 0);
+      assert.match(ctx.state().prebuilt?.reason ?? "", /prebuilt\.mjs）がありません/);
+      writeFileSync(join(copy, "prebuilt.mjs"), "export const = ;\n");
+      ctx.commit("三つ目");
+      assert.equal(await runCopy(gh.env), 1);
+      assert.equal(ctx.state().phase, "failed");
+      assert.match(ctx.state().error ?? "", /prebuilt\.mjs）が壊れています/);
+    });
+  });
+});
+
+test("組み立て済み：印の確かめ（node の major・AVX2）と origin の読み方（scripts/prebuilt.mjs を直に）", async () => {
+  const m = await import(join(dirname(SCRIPT), "prebuilt.mjs"));
+  const commit = "a".repeat(40);
+  const mk = { commit, platform: "linux-x64", node: "24.1.0", cpu: { avx2: true }, run: "https://github.com/o/r/actions/runs/5" };
+  assert.doesNotThrow(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0", avx2: true }));
+  assert.throws(() => m.checkMarker(mk, commit, { nodeVersion: "22.1.0", avx2: true }), /major が違います/);
+  assert.throws(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0", avx2: false }), /AVX2/);
+  assert.doesNotThrow(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0", avx2: undefined }), "読めないときは使う");
+  assert.doesNotThrow(() => m.checkMarker({ ...mk, cpu: { avx2: false } }, commit, { nodeVersion: "24.0.0", avx2: false }));
+  for (const [url, want] of [
+    ["git@github.com:o/r.git", "o/r"],
+    ["git@github.com:o/r", "o/r"],
+    ["ssh://git@github.com/o/r.git", "o/r"],
+    ["ssh://git@github.com:22/o/r", "o/r"],
+    ["https://github.com/o/r.git", "o/r"],
+    ["https://github.com/o/r/", "o/r"],
+    ["https://gitlab.com/o/r.git", undefined],
+    ["git@gitlab.com:o/r.git", undefined],
+    ["/srv/git/banto", undefined],
+    [undefined, undefined],
+  ]) {
+    assert.equal(m.githubRepoOf(url), want, String(url));
+  }
 });

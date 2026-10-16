@@ -11,7 +11,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { posix } from "node:path";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -27,7 +27,8 @@ export const WORK_PREFIX = ".prebuilt-";
 
 /** 決めた場所（仕様の「生成物に入れるのは決めた場所だけ」）。`banto/` からの相対 */
 const FIXED = ["node_modules", "apps/frontend/.next", "apps/frontend/next-env.d.ts", ".banto-prebuilt.json"];
-const DIST = [/^packages\/[^/]+\/dist$/, /^packages\/modules\/[^/]+\/dist$/];
+// `packages/modules/dist` は決めた場所ではない（`modules` は Module を並べるフォルダ）
+const DIST = [/^packages\/(?!modules\/)[^/]+\/dist$/, /^packages\/modules\/[^/]+\/dist$/];
 /** 決めた場所の根（移す単位）か */
 function isRoot(rel) {
   return FIXED.includes(rel) || DIST.some((re) => re.test(rel));
@@ -109,6 +110,17 @@ const skip = (reason) => {
 export async function usePrebuilt(o) {
   const work = join(o.versionsDir, `${WORK_PREFIX}${o.id}`);
   const markMs = o.markIntervalMs ?? 2000;
+  // 呼ぶ側の例外（やめる印・SIGTERM・空きが足りない）には印を付けて、そのまま上へ返す。それ以外の例外（展開した木が読めない
+  // EACCES・ELOOP 等）は「使わない」に包み、その場で組み立てる道に落とす（仕様「どれかが違えばその場で組み立てる」）
+  const passThrough = (fn) => (...args) => {
+    try {
+      return fn(...args);
+    } catch (err) {
+      if (err && typeof err === "object") err[CALLER] = true;
+      throw err;
+    }
+  };
+  o = { ...o, checkStop: passThrough(o.checkStop), checkSpace: passThrough(o.checkSpace) };
   /** 待つ間もやめる印を見る（細かく区切って眠る） */
   const nap = async (ms) => {
     const until = Date.now() + ms;
@@ -140,7 +152,7 @@ export async function usePrebuilt(o) {
     for (const name of readdirSync(o.versionsDir)) {
       if (name.startsWith(WORK_PREFIX)) {
         o.log(`前の回の作業フォルダを消します：${name}`);
-        rmSync(join(o.versionsDir, name), { recursive: true, force: true });
+        removeAll(join(o.versionsDir, name), o.log);
       }
     }
 
@@ -259,14 +271,55 @@ export async function usePrebuilt(o) {
     o.log(`組み立て済みの版を重ねました（${marker.run}）`);
     return { used: true, run: marker.run };
   } catch (err) {
-    if (err instanceof Skip) {
-      o.setPrebuilt({ status: "skipped", reason: err.message });
-      o.note(undefined);
-      return { used: false, reason: err.message };
-    }
-    throw err; // やめる印・SIGTERM（呼ぶ側の Stop）・思わぬ失敗は呼ぶ側へ
+    if (err?.[CALLER]) throw err; // やめる印・SIGTERM・空きが足りない（呼ぶ側の Stop）
+    const reason = err instanceof Skip ? err.message : `組み立て済みを使う途中で思わぬ失敗：${errorText(err)}`;
+    o.setPrebuilt({ status: "skipped", reason });
+    o.note(undefined);
+    return { used: false, reason };
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    removeAll(work, o.log);
+  }
+}
+
+const CALLER = Symbol("呼ぶ側の例外");
+
+/**
+ * 作業フォルダを消す。tar は書き込めない・読めないフォルダ（mode 000 等）も作れるので、消す前に自分の権限を足す。
+ * 消せなくても投げない（元の例外を隠さない）——ログに書き、次の回の初めにまた試す
+ */
+function removeAll(dir, log) {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return;
+  } catch {
+    // 権限を足してからもう一度
+  }
+  const grant = (p) => {
+    let st;
+    try {
+      st = lstatSync(p);
+    } catch {
+      return;
+    }
+    if (!st.isDirectory()) return;
+    try {
+      chmodSync(p, 0o700);
+    } catch {
+      // 持ち主でない等——消すのは下で試す
+    }
+    let names = [];
+    try {
+      names = readdirSync(p);
+    } catch {
+      return;
+    }
+    for (const name of names) grant(join(p, name));
+  };
+  grant(dir);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    log(`作業フォルダ ${dir} を消せませんでした（次の回の初めにまた試します）：${errorText(err)}`);
   }
 }
 
@@ -387,7 +440,11 @@ async function extract(file, out, { checkStop, markMs }) {
   } catch (err) {
     if (stopErr) throw stopErr;
     if (err instanceof Skip) throw err;
-    skip(`展開に失敗しました：${errorText(err)}`);
+    // tar が先に落ちると、流し込む側が EPIPE で先に投げる——tar の終わりと理由を（少しだけ）待って文言に入れる
+    tar.kill("SIGTERM");
+    const r = await Promise.race([exited, sleep(5000).then(() => undefined)]);
+    const why = stderr.trim().slice(0, 400);
+    skip(`展開に失敗しました：${errorText(err)}${r?.code !== undefined ? `（tar の終了コード ${r.code}）` : ""}${why ? `：${why}` : ""}`);
   } finally {
     clearInterval(timer);
   }
@@ -407,6 +464,11 @@ export function inspectTree(out) {
     const abs = join(out, "banto", rel);
     const st = lstatSync(abs);
     if (rel !== "" && !underRoot(rel) && !(st.isDirectory() && isAncestorOfRoot(rel))) skip(`決めた場所の外のものがあります：banto/${rel}`);
+    if (isRoot(rel)) {
+      // 移す単位（根）は本物でなければ断る——node_modules・.next・dist が git の管理する場所を指す形は要らない
+      const wantDir = !rel.endsWith(".json") && !rel.endsWith(".d.ts");
+      if (wantDir ? !st.isDirectory() : !st.isFile()) skip(`決めた場所の根が${wantDir ? "フォルダ" : "ファイル"}ではありません：banto/${rel}`);
+    }
     if (st.isSymbolicLink()) {
       const target = readlinkSync(abs);
       if (posix.isAbsolute(target)) skip(`絶対パスを指すリンクがあります：banto/${rel} → ${target}`);
@@ -450,6 +512,7 @@ export function checkMarker(marker, commit, { nodeVersion = process.versions.nod
   }
   const major = (v) => String(v ?? "").split(".")[0];
   if (major(marker.node) !== major(nodeVersion)) skip(`組み立てた Node.js（${marker.node}）とこの機械の Node.js（${nodeVersion}）の major が違います`);
+  // この機械の /proc/cpuinfo が読めない（undefined）ときは使う——読めないことを理由に毎回組み立てない
   if (marker.cpu?.avx2 === true && avx2 === false) skip("組み立てた機械は AVX2 を持ち、この機械は持ちません（opencode の部品が動かない）");
 }
 
@@ -457,21 +520,34 @@ export function checkMarker(marker, commit, { nodeVersion = process.versions.nod
 function rootsIn(out) {
   const roots = [];
   const base = join(out, "banto");
-  for (const rel of FIXED) if (existsSync(join(base, rel)) || isLink(join(base, rel))) roots.push(rel);
+  for (const rel of FIXED) if (existsSync(join(base, rel))) roots.push(rel);
   for (const group of ["packages", "packages/modules"]) {
     const dir = join(base, group);
     if (!existsSync(dir)) continue;
     for (const name of readdirSync(dir)) {
+      if (group === "packages" && name === "modules") continue;
       const rel = `${group}/${name}/dist`;
       if (DIST.some((re) => re.test(rel)) && existsSync(join(base, rel))) roots.push(rel);
     }
   }
   return roots;
 }
-function isLink(p) {
-  try {
-    return lstatSync(p).isSymbolicLink();
-  } catch {
-    return false;
+
+/**
+ * `--dry-run` 用：その commit の組み立て済みがあるかを HEAD で1回だけ見る（API までは聞かない）。返すのは人に見せる1行
+ */
+export async function previewPrebuilt({ commit, originUrl, prebuiltBase }) {
+  if (process.arch !== "x64") return `使いません（この機械は ${process.arch}）`;
+  if (typeof zlib.createZstdDecompress !== "function") return `使いません（この node ${process.version} は zstd を伸ばせない）`;
+  let base = prebuiltBase?.replace(/\/$/, "");
+  if (!base) {
+    const repo = githubRepoOf(originUrl);
+    if (!repo) return `使いません（取り込み元が GitHub ではありません：${originUrl ?? "origin がありません"}）`;
+    base = `https://github.com/${repo}/releases/download`;
   }
+  const url = `${base}/${tagOf(commit)}/${assetOf(commit)}`;
+  const size = await headSize(url);
+  return size !== undefined
+    ? `あります（${mb(size)} MB、${url}）——取ってきて重ねます`
+    : `まだありません（${url}）——GitHub で組み立て中なら待ち、無ければその場で組み立てます`;
 }
