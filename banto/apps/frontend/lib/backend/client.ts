@@ -102,13 +102,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // 「繋ぎ方が書かれていません」のほうで、口の名前と状態番号ではない（規則2）。
     // 理由が無いときだけ、何が起きたかを言うために口と番号を出す
     let reason = "";
+    let code: unknown;
     try {
-      const body = JSON.parse(text) as { error?: unknown };
+      const body = JSON.parse(text) as { error?: unknown; code?: unknown };
       if (typeof body.error === "string" && body.error.trim() !== "") reason = body.error;
+      code = body.code;
     } catch {
       // JSON でないなら、本文をそのまま手がかりにする
       reason = text.trim();
     }
+    // 眠っている Project の設定・入口・Module の画面（v4-frontend.md §6.43）——画面は「起こす」を出す
+    if (res.status === 409 && code === "asleep") throw new ProjectAsleepError(reason || "この Project は眠っています");
     throw new Error(reason || `banto host ${path} が ${res.status} を返しました`);
   }
   if (res.status === 204) return undefined as T;
@@ -126,7 +130,53 @@ export interface RealProject {
   acceptMessagesFrom?: string[];
   /** 入っているグループ（追加・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。無ければグループなし */
   groupId?: string;
+  /** 眠っている（追加・2026-10-16、アーキ仕様 §2.2「スリープ」）。いつから・誰が（人・しばらく開いていないので自動で） */
+  sleep?: RealProjectSleep;
   createdAt: string;
+}
+
+export interface RealProjectSleep {
+  since: string;
+  by: "human" | "auto";
+}
+
+/**
+ * **眠っている Project の設定・入口・Module の画面を開いた**（host の 409 `asleep`、アーキ仕様 §2.2「それ以外の道では
+ * 起こさない」）。画面は「眠っています。起こすと見られます」と「起こす」を出す（`components/banto/project/asleep-notice.tsx`）
+ */
+export class ProjectAsleepError extends Error {}
+
+/** 眠らせると止まるもの（Service・待たないコマンド・Terminal のセッション）と、眠らせられない理由 */
+export interface RealSleepPreview {
+  stops: Array<{ kind: string; label: string }>;
+  blockers: string[];
+}
+
+export async function getRealSleepPreview(projectId: string): Promise<RealSleepPreview> {
+  return request<RealSleepPreview>(`/api/projects/${projectId}/sleep-preview`);
+}
+
+/** 眠らせるのを断られた（AI が動いている・裏の仕事が残っている・移している等）。`reasons` は1つずつの理由 */
+export class ProjectSleepRefusedError extends Error {
+  constructor(
+    message: string,
+    readonly reasons: string[],
+  ) {
+    super(message);
+  }
+}
+
+/** **眠らせる**（`POST /api/projects/:id/sleep`）。断られたら `ProjectSleepRefusedError` */
+export async function sleepRealProject(projectId: string): Promise<void> {
+  const res = await hostFetch(`/api/projects/${projectId}/sleep`, { method: "POST", headers: { "content-type": "application/json" } });
+  if (res.ok) return;
+  const body = (await res.json().catch(() => ({}))) as { error?: string; reasons?: unknown };
+  const message = body.error || `banto host /api/projects/${projectId}/sleep が ${res.status} を返しました`;
+  if (res.status === 409) {
+    const reasons = Array.isArray(body.reasons) ? body.reasons.filter((r): r is string => typeof r === "string") : [];
+    throw new ProjectSleepRefusedError(message, reasons.length > 0 ? reasons : [message]);
+  }
+  throw new Error(message);
 }
 
 /** グループの色（host の `PROJECT_GROUP_COLORS` と同じ5つ。記録には名前で持つ） */
@@ -1026,6 +1076,8 @@ export interface RealProjectResources {
   processLimit?: number;
   groups: RealResourceGroup[];
   hits: Array<{ at: string; what: string }>;
+  /** 眠っているのにコンテナが動いている（自動化のため一部起きている、§6.43）。今どおり測る */
+  asleep?: true;
 }
 export interface RealResourcesSnapshot {
   measuredAt: string;
@@ -1042,6 +1094,8 @@ export interface RealResourcesSnapshot {
   projects: RealProjectResources[];
   /** 別のサーバ（追加・2026-10-14）。古い host は付けない */
   remotes?: RealRemoteResources[];
+  /** 眠っている Project（追加・2026-10-16、§6.43）。コンテナが止まっているので量は無い——「スリープ中」と1行で出す */
+  sleeping?: Array<{ projectId: string; name: string }>;
 }
 
 /** 別のサーバの資源（host の `remote-resources.ts` の `RemoteResources` と同じ形） */

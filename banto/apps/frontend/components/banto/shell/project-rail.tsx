@@ -16,7 +16,7 @@
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import { Fragment, useState } from "react";
 import { UrlLink as Link } from "@/components/banto/url-link";
-import { Bell, Clock, PanelLeft, Plus, Search, Settings } from "lucide-react";
+import { Bell, Clock, Moon, PanelLeft, Plus, Search, Settings } from "lucide-react";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -37,9 +37,9 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { getActiveProjects, renameProject, reorderProjects } from "@/lib/mock/projects";
+import { getAwakeProjects, getSleepingProjects, renameProject, reorderProjects, wakeProject } from "@/lib/mock/projects";
 import { GROUP_DOT_CLASS, projectSections, useProjectGroups } from "@/lib/backend/project-groups";
 import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
@@ -112,10 +112,20 @@ function CollapsedRail({
   const judgmentCount = useJudgmentCount();
   // **グループごとに、その色の短い横線で区切る**（2026-10-16、§6.43）。グループ自体は畳まない——アイコンだけの列で畳むと
   // Project が見えなくなる。空のグループは線も出さない
-  const sections = projectSections(getActiveProjects(), useProjectGroups()).filter((s) => s.projects.length > 0);
+  const groups = useProjectGroups();
+  const sections = projectSections(getAwakeProjects(), groups).filter((s) => s.projects.length > 0);
+  const sleeping = getSleepingProjects();
   const lastThreads = useLastThreads();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const router = useRouter();
+
+  /** 眠っている Project を起こして開く（`project-list.tsx` と同じ——`modules/prepare` を投げて、最後の Thread へ） */
+  function openSleeping(projectId: string) {
+    void wakeProject(projectId).catch((err: unknown) => toast(`起こせませんでした: ${describeFailure(err)}`));
+    const forks = getThreadsForProject(projectId).filter((t) => t.kind === "fork");
+    router.push(projectNavHref(projectId, pathname, searchParams, "project-general", lastForkOf(lastThreads, projectId, forks.map((f) => f.id))));
+  }
 
   /**
    * 並べ替え。**同じ塊（グループ・グループの外）の中だけ**——入れ先を変えるのは名前が読める幅（`project-list.tsx`）。
@@ -284,6 +294,50 @@ function CollapsedRail({
           </Fragment>
           ))}
         </SidebarMenu>
+        {/* **スリープ中は月のボタン1つにまとめる**（§6.43）。右下に数、押すと一覧——押せば起こして開く */}
+        {sleeping.length > 0 ? (
+          <Popover>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="rail-sleeping"
+                    aria-label={`スリープ中（${sleeping.length}）`}
+                    className="relative flex size-8 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
+                  >
+                    <Moon className="size-4" />
+                    <span className="absolute right-0 bottom-0 text-[10px] leading-none font-semibold tabular-nums">{sleeping.length}</span>
+                  </button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="right">スリープ中（{sleeping.length}）</TooltipContent>
+            </Tooltip>
+            <PopoverContent side="right" align="end" className="w-60 p-1.5">
+              <p className="px-2 py-1 text-xs font-medium text-ink-3">スリープ中——押すと起こして開きます</p>
+              <div className="flex flex-col">
+                {sleeping.map((p) => {
+                  const group = groups.find((g) => g.id === p.groupId);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      data-testid="rail-sleeping-project"
+                      onClick={() => openSleeping(p.id)}
+                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-ink-3 hover:bg-accent hover:text-foreground"
+                    >
+                      <span className="flex size-5 shrink-0 items-center justify-center rounded-md border border-border text-xs font-semibold">
+                        {p.initial}
+                      </span>
+                      <span className="min-w-0 truncate">{p.name}</span>
+                      {group ? <span className={cn("size-1.5 shrink-0 rounded-full opacity-60", GROUP_DOT_CLASS[group.color])} /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
+        ) : null}
         <RailIconButton icon={Plus} label="新しい Project" onClick={onNewProject} />
       </SidebarContent>
 

@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { ChevronRight, CircleAlert, Gauge, PauseCircle } from "lucide-react";
+import { ChevronRight, CircleAlert, Gauge, Moon, PauseCircle } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { describeFailure } from "@/lib/report-failure";
 import {
@@ -112,7 +112,7 @@ export function ResourcesPanel() {
               </h2>
               <p className="text-xs text-ink-3">{clock(snap.measuredAt, true)} に測りました・10 秒ごとに更新</p>
             </div>
-            {snap.projects.length === 0 ? (
+            {snap.projects.length === 0 && (snap.sleeping ?? []).length === 0 ? (
               <p className="rounded-lg border border-border bg-surface px-4 py-3 text-sm text-ink-3">
                 動いている Project のコンテナはありません。Project を開くとコンテナが起き、ここに出ます。
               </p>
@@ -120,6 +120,19 @@ export function ResourcesPanel() {
               <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-surface">
                 {snap.projects.map((p) => (
                   <ProjectRow key={p.projectId} p={p} open={openSet.has(p.projectId)} onToggle={() => toggle(p.projectId)} />
+                ))}
+                {/* 眠っている Project（§6.43）。コンテナが止まっているので量は無い——1行で */}
+                {(snap.sleeping ?? []).map((p) => (
+                  <li
+                    key={p.projectId}
+                    data-testid="resources-sleeping"
+                    data-project-id={p.projectId}
+                    className="flex items-center gap-2 px-4 py-3 text-sm text-ink-3"
+                  >
+                    <Moon className="size-3.5 shrink-0" aria-hidden />
+                    <span className="truncate font-medium">{p.name}</span>
+                    <span className="text-xs">スリープ中</span>
+                  </li>
                 ))}
               </ul>
             )}
@@ -370,6 +383,11 @@ function ProjectRow({ p, open, onToggle }: { p: RealProjectResources; open: bool
         <span className="flex min-w-0 items-center gap-2 sm:w-44">
           <ChevronRight className={cn("size-3.5 shrink-0 text-ink-3 transition-transform", open && "rotate-90")} />
           <span className="truncate text-sm font-medium text-foreground">{p.name}</span>
+          {p.asleep ? (
+            <span data-testid="resources-project-asleep" className="shrink-0 text-xs text-ink-3">
+              スリープ中（自動化のため一部起きています）
+            </span>
+          ) : null}
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex h-2 overflow-hidden rounded-full bg-surface-3">

@@ -33,6 +33,7 @@ import { ForkDialog, type ForkDialogRequest } from "@/components/banto/thread/fo
 import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
 import { ForkClosedBanner } from "@/components/banto/thread/fork-closed-banner";
 import { RUNTIME_MOVE_COMPOSER_REASON, RuntimeMoveBanner } from "@/components/banto/thread/runtime-move-banner";
+import { ProjectSleepBanner } from "@/components/banto/thread/project-sleep-banner";
 import { useProjectMoving } from "@/lib/backend/runtime-moves";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import {
@@ -438,6 +439,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           </PanelHeader>
           {/* 別の実行場所へ移している間・移せなかったとき（追加・2026-10-12、Backlog #270） */}
           <RuntimeMoveBanner projectId={project.id} />
+          {/* 眠っている・起こしている（追加・2026-10-16、§6.43） */}
+          <ProjectSleepBanner projectId={project.id} />
           <div className="min-h-0 flex-1">
             <ThreadPanel
               threadId={project.baseThreadId}
@@ -511,6 +514,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             ) : null}
             {automation && !closed ? <AutomationBand automation={automation} threadId={threadId} /> : null}
             <RuntimeMoveBanner projectId={project.id} />
+            <ProjectSleepBanner projectId={project.id} />
             <div className="min-h-0 flex-1">
               <ThreadPanel
                 threadId={threadId}

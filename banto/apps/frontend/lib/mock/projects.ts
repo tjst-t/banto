@@ -17,7 +17,9 @@ import {
   assignRealProjectGroup,
   updateRealProjectSettings,
   prepareRealProjectModules,
+  sleepRealProject,
 } from "../backend/client";
+import { doneWaking, startWaking } from "../backend/project-waking";
 import { refreshRealInbox } from "../backend/real-inbox";
 
 // デモ用の初期Projectは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
@@ -31,6 +33,16 @@ export function getAllProjects(): readonly MockProject[] {
 
 export function getActiveProjects(): readonly MockProject[] {
   return projects.filter((p) => p.status === "active");
+}
+
+/** 開いていて起きている Project（サイドバーのグループ・レールに並ぶもの） */
+export function getAwakeProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "active" && !p.sleep);
+}
+
+/** 眠っている Project（開いているもの）。並びは host の並び（v4-frontend.md §6.43「スリープ中」） */
+export function getSleepingProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "active" && p.sleep);
 }
 
 export function getClosedProjects(): readonly MockProject[] {
@@ -199,6 +211,8 @@ export async function syncRealProjects(): Promise<void> {
     const next: MockProject = { ...p, name: rp.name, initial: rp.name.slice(0, 1), status: rp.status };
     if (rp.groupId) next.groupId = rp.groupId;
     else delete next.groupId;
+    if (rp.sleep) next.sleep = rp.sleep;
+    else delete next.sleep;
     return next;
   });
   // host に無いもの（ありえないが）は元の場所の順で後ろへ
@@ -229,12 +243,40 @@ const modulePreparations = new Map<string, Promise<void>>();
 export function prepareProjectModules(projectId: string): Promise<void> {
   let pending = modulePreparations.get(projectId);
   if (!pending) {
+    // **眠っていれば、これが起こす口**（v4-frontend.md §6.43、アーキ §2.2）。返るまで「起こしています」を出し、
+    // 返ったら一覧を host に合わせる（`projects.changed` でも取り直すが、印を外す前に眠りの写しを外しておく
+    // ——外す順が逆だと、一瞬「スリープ中です」に戻って見える）
+    const asleep = projects.some((p) => p.id === projectId && p.sleep);
+    if (asleep) startWaking(projectId);
     pending = prepareRealProjectModules(projectId)
-      .then(() => refreshRealInbox())
-      .finally(() => modulePreparations.delete(projectId));
+      .then(async () => {
+        if (asleep) await syncRealProjects();
+        await refreshRealInbox();
+      })
+      .finally(() => {
+        modulePreparations.delete(projectId);
+        if (asleep) doneWaking(projectId);
+      });
     modulePreparations.set(projectId, pending);
   }
   return pending;
+}
+
+/**
+ * **起こす**（v4-frontend.md §6.43「起こすだけ（開かない）」・ドラッグでグループへ・「起こす」）。`modules/prepare` を
+ * 投げるだけ——起こす専用の口は無い（アーキ §2.2）。失敗は呼んだ側へ
+ */
+export function wakeProject(projectId: string): Promise<void> {
+  return prepareProjectModules(projectId);
+}
+
+/**
+ * **眠らせる**（`POST /api/projects/:id/sleep`）。確かめ（止まるもの）は画面の側（`use-sleep-project.tsx`）。
+ * 断られたら `ProjectSleepRefusedError`（理由つき）。眠ったら一覧を host に合わせる（スリープ中へ移る）
+ */
+export async function sleepProject(projectId: string): Promise<void> {
+  await sleepRealProject(projectId);
+  await syncRealProjects();
 }
 
 /**
@@ -322,6 +364,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       real: true,
       ...(rp.runtime ? { runtime: rp.runtime } : {}),
       ...(rp.groupId ? { groupId: rp.groupId } : {}),
+      ...(rp.sleep ? { sleep: rp.sleep } : {}),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。

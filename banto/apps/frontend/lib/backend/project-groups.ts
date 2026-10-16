@@ -154,9 +154,13 @@ export async function moveProjectGroup(id: string, delta: -1 | 1): Promise<void>
 
 const COLLAPSE_KEY = "banto.sidebarGroups.v1";
 
-/** 畳んでいるグループの id。**開いているのが既定**——覚えるのは畳んだものだけ（導出できる既定値を保存しない、規則3） */
+/**
+ * 畳んでいるグループの id。**開いているのが既定**——覚えるのは畳んだものだけ（導出できる既定値を保存しない、規則3）。
+ * 「スリープ中」は逆に**畳んであるのが既定**——開いたときだけ `sleepOpen`
+ */
 interface CollapseStore {
   collapsed: string[];
+  sleepOpen?: true;
 }
 
 const collapseListeners = new Set<() => void>();
@@ -169,8 +173,12 @@ function readCollapse(): CollapseStore {
   try {
     const raw = window.localStorage.getItem(COLLAPSE_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : null;
-    const list = parsed && typeof parsed === "object" ? (parsed as { collapsed?: unknown }).collapsed : undefined;
-    collapseCache = { collapsed: Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [] };
+    const record = parsed && typeof parsed === "object" ? (parsed as { collapsed?: unknown; sleepOpen?: unknown }) : undefined;
+    const list = record?.collapsed;
+    collapseCache = {
+      collapsed: Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [],
+      ...(record?.sleepOpen === true ? { sleepOpen: true as const } : {}),
+    };
   } catch {
     collapseCache = EMPTY_COLLAPSE;
   }
@@ -193,12 +201,20 @@ export function setGroupCollapsed(id: string, collapsed: boolean): void {
   if (current.has(id) === collapsed) return;
   if (collapsed) current.add(id);
   else current.delete(id);
-  writeCollapse({ collapsed: [...current] });
+  writeCollapse({ ...readCollapse(), collapsed: [...current] });
 }
 
-/** 渡したグループを全部畳む／全部開く（「すべて畳む」「すべて開く」） */
+/** 渡したグループを全部畳む／全部開く（「すべて畳む」「すべて開く」）。すべて畳むは「スリープ中」も畳む */
 export function setGroupsCollapsed(ids: readonly string[], collapsed: boolean): void {
-  writeCollapse({ collapsed: collapsed ? [...ids] : [] });
+  if (collapsed) writeCollapse({ collapsed: [...ids] });
+  else writeCollapse({ ...readCollapse(), collapsed: [] });
+}
+
+/** 「スリープ中」を開く・畳む */
+export function setSleepOpen(open: boolean): void {
+  const current = readCollapse();
+  if ((current.sleepOpen === true) === open) return;
+  writeCollapse({ collapsed: current.collapsed, ...(open ? { sleepOpen: true as const } : {}) });
 }
 
 function subscribeCollapse(listener: () => void): () => void {
@@ -214,6 +230,11 @@ function subscribeCollapse(listener: () => void): () => void {
     collapseListeners.delete(listener);
     window.removeEventListener("storage", onStorage);
   };
+}
+
+/** 「スリープ中」を開いているか（既定は畳んである） */
+export function useSleepOpen(): boolean {
+  return useSyncExternalStore(subscribeCollapse, readCollapse, () => EMPTY_COLLAPSE).sleepOpen === true;
 }
 
 /** 畳んでいるグループの id（変われば描き直す）。サーバでは空 */

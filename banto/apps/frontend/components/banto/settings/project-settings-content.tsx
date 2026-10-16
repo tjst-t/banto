@@ -8,7 +8,7 @@
 // メニューでは足りない」）。Module 自身の設定面には `projectId` を渡す
 // （§6.2「設定面への Project の文脈」）——instance 側の同じ Module の設定と
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
-import { useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   BookMarked,
@@ -68,7 +68,12 @@ import {
   mockRuntimeDefaults,
 } from "@/lib/mock/settings";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
-import { ModuleSettingsPanel, useModuleSettingsCanvases } from "@/components/banto/settings/module-settings-panel";
+import {
+  ModuleSettingsPanel,
+  notifyModuleSetChanged,
+  useModuleSettingsCanvases,
+} from "@/components/banto/settings/module-settings-panel";
+import { AsleepNotice } from "@/components/banto/project/asleep-notice";
 import type { MockModuleImplementation, MockProjectOverrides } from "@/lib/mock/types";
 
 // project-modules/overrides/securityは実バックエンドに繋がっていない
@@ -127,6 +132,13 @@ export function ProjectSettingsContent({
   const [removeTarget, setRemoveTarget] = useState<MockModuleImplementation | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const router = useRouter();
+  const asleep = project?.sleep !== undefined;
+  const wasAsleep = useRef(asleep);
+  useEffect(() => {
+    // 起きたら Module の設定画面の一覧を取り直す（眠っている間は 409 で空だった）
+    if (wasAsleep.current && !asleep) notifyModuleSetChanged();
+    wasAsleep.current = asleep;
+  }, [asleep]);
 
   function patch(next: Partial<MockProjectOverrides>) {
     setOverrides((prev) => ({ ...prev, ...next }));
@@ -338,7 +350,15 @@ export function ProjectSettingsContent({
     );
   }
 
-  return <>{renderSection(section)}</>;
+  // **眠っている Project**（§6.43）——Module の設定・Skills などは起こさずに「眠っています」。起きたら読み直す
+  // （起こしたのがここでも、サイドバーでも）。名前・根・閉じる（一般）と Memory は Module を通らないので出さない
+  const showAsleep = asleep && section !== "project-general" && section !== "project-memory";
+  return (
+    <>
+      {showAsleep ? <AsleepNotice projectId={projectId} className="mb-4" /> : null}
+      <Fragment key={asleep ? "asleep" : "awake"}>{renderSection(section)}</Fragment>
+    </>
+  );
 }
 
 /**

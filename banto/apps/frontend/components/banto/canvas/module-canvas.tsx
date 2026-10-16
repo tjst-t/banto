@@ -25,6 +25,7 @@ import {
   requestRealUiStream,
   fetchRealUiConfig,
   fetchRealUiResource,
+  ProjectAsleepError,
   listRealInstanceModules,
   listRealLaunchers,
   listRealUiSettings,
@@ -34,6 +35,7 @@ import {
 import { getRealJudgments, refreshRealInbox } from "@/lib/backend/real-inbox";
 import { getAllProjects, getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
+import { AsleepNotice } from "@/components/banto/project/asleep-notice";
 import { prepareDownload, saveDownload, type PreparedDownload } from "@/lib/backend/canvas-download";
 import { VIEW_STATE_KEY, serializeViewState } from "@/lib/backend/canvas-view-state";
 import {
@@ -131,11 +133,15 @@ function bantoProjectContext(owner: RealCanvasOwner): { id: string; name: string
 type LoadState =
   | { phase: "loading" }
   | { phase: "error"; message: string }
+  /** 眠っている Project の画面（host の 409 `asleep`、§6.43）。「起こす」を出す */
+  | { phase: "asleep"; projectId: string }
   | { phase: "ready"; sandboxUrl: string; resource: RealUiResource };
 
 export function ModuleCanvas(props: ModuleCanvasProps) {
   const { owner, server, resourceUri } = props;
   const [state, setState] = useState<LoadState>({ phase: "loading" });
+  // 起こしたら読み直す
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -156,18 +162,32 @@ export function ModuleCanvas(props: ModuleCanvasProps) {
         }
         setState({ phase: "ready", sandboxUrl: config.sandboxUrl, resource });
       } catch (err) {
-        if (!cancelled) {
-          setState({ phase: "error", message: err instanceof Error ? err.message : String(err) });
-        }
+        if (cancelled) return;
+        const projectId = bantoProjectContext(owner)?.id;
+        if (err instanceof ProjectAsleepError && projectId) setState({ phase: "asleep", projectId });
+        else setState({ phase: "error", message: err instanceof Error ? err.message : String(err) });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [owner.kind, ownerKey(owner), server, resourceUri]);
+  }, [owner.kind, ownerKey(owner), server, resourceUri, attempt]);
 
   if (state.phase === "loading") {
     return <div className="p-3 text-xs text-ink-3">画面を読み込んでいます…</div>;
+  }
+  if (state.phase === "asleep") {
+    return (
+      <div className="p-3">
+        <AsleepNotice
+          projectId={state.projectId}
+          onWoke={() => {
+            setState({ phase: "loading" });
+            setAttempt((n) => n + 1);
+          }}
+        />
+      </div>
+    );
   }
   if (state.phase === "error") {
     return (

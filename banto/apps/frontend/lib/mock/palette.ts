@@ -78,13 +78,14 @@ export function buildPaletteGroups(
   const q = query.trim().toLowerCase();
   const groups: PaletteGroup[] = [];
 
-  // Project / Thread ——banto 全体（Project を切り替える手段なので、§6.3）
+  // Project / Thread ——banto 全体（Project を切り替える手段なので、§6.3）。眠っている Project も出し、名前の後ろに
+  // 「スリープ中」（§6.43）。選べばその画面が開き、開いた画面の `modules/prepare` が起こす
   const projectItems: PaletteItem[] = getActiveProjects()
     .filter((p) => q === "" || p.name.toLowerCase().includes(q))
     .map((p) => ({
       id: `project:${p.id}`,
       title: p.name,
-      subtitle: "Project",
+      subtitle: p.sleep ? "スリープ中 · 選ぶと起こして開きます" : "Project",
       icon: FolderGit2,
       href: `/p/${p.id}`,
       kind: "project",

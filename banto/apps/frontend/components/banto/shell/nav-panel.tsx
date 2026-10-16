@@ -56,6 +56,7 @@ import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confir
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { LoaderCircle } from "lucide-react";
 import { useProjectRunning } from "@/lib/backend/running-threads";
+import { useProjectWaking } from "@/lib/backend/project-waking";
 import { useHostBusy, useProjectBusy } from "@/lib/backend/resources-busy";
 import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
 import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark";
@@ -114,6 +115,16 @@ function ProjectRowIcon({ project, active }: { project: MockProject; active: boo
   );
 }
 
+/** 起こしている Project の行の印（v4-frontend.md §6.43）。「…」と同じ位置に出す */
+export function WakingMark() {
+  return (
+    <span data-testid="sidebar-project-waking" className="absolute top-2 right-7 flex items-center gap-1 text-xs text-ink-3">
+      <LoaderCircle className="size-3 animate-spin" aria-hidden />
+      起こしています
+    </span>
+  );
+}
+
 /** Thread の名前。AI が返したあと人がまだ開いていなければ太字（§6.33） */
 function ThreadRowName({ threadId, children, testId }: { threadId: string; children: ReactNode; testId?: string }) {
   const unread = useThreadUnread(threadId);
@@ -153,6 +164,7 @@ export function ProjectTreeItem({
   onMoveDown,
   indented = false,
   groupMenu,
+  onSleep,
 }: {
   project: MockProject;
   activeProjectId: string | null;
@@ -171,6 +183,8 @@ export function ProjectTreeItem({
   indented?: boolean;
   /** 行の「…」の「グループへ移す」 */
   groupMenu?: GroupMenu;
+  /** 行の「…」の「スリープにする」（v4-frontend.md §6.43） */
+  onSleep?: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -179,6 +193,8 @@ export function ProjectTreeItem({
   const settingsEntrySection = useProjectCategories(project.id)[0]?.section ?? "project-danger";
   const isCurrent = project.id === activeProjectId;
   const busyReason = useProjectBusy(project.id);
+  // 起こしている間（`modules/prepare` が返るまで）は「…」の場所に「起こしています」（§6.43）
+  const waking = useProjectWaking(project.id);
   const forks = getThreadsForProject(project.id).filter((t): t is MockThread => t.kind === "fork");
   // **いま開いていない Project で、まだ開いていない Thread があれば名前を太字に**（2026-10-03、§6.33）
   const anyUnread = useAnyThreadUnread([project.baseThreadId, ...forks.map((f) => f.id)]);
@@ -253,6 +269,7 @@ export function ProjectTreeItem({
             onMoveUp={onMoveUp}
             onMoveDown={onMoveDown}
             groupMenu={groupMenu}
+            onSleep={onSleep}
             // **「…」はいつも開く・畳む（chevron）の左**（2026-10-16、§6.43）——chevron が無い行（Fork の無い Project）でも
             // 同じ位置にして、右端は空けておく。見出しの「…」とも縦にそろう
             moreClassName="right-7"
@@ -312,7 +329,7 @@ export function ProjectTreeItem({
                   <MovingProjectMark projectId={project.id} projectName={project.name} />
                 </Link>
               </SidebarMenuButton>
-              {more}
+              {waking ? <WakingMark /> : more}
               {/* バックグラウンドの数（§6.33）。いま開いている Project は下の Thread の行で見えるので出さない */}
               {isCurrent ? null : (
                 <ProjectBackgroundBadge
