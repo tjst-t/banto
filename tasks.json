@@ -8021,6 +8021,30 @@
       "updatedAt": "2026-10-15T23:23:02.901Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "prebuilt-update",
+      "number": 333,
+      "kind": "story",
+      "title": "組み立て済みの banto で更新する（GitHub Actions が組み Release に置く）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "更新のたびに host で npm ci・build（数分・メモリ 2GB 余り）を流すのをやめ、release への push で GitHub Actions が組み立て・単体テストし、commit ごとの Release に置いたものを update.mjs が取ってきて重ねる。無い・使えないときは今どおりその場で組み立てる。x64 だけ。\n\n仕様：docs/specs/v4-architecture.md §2.5「組み立て済みのものを使う」・v4-security.md §2「画面からの更新」・v4-frontend.md §6.34・docs/runbooks/release.md E・install.md §3（098a6526、Fable のレビュー2回）。",
+      "doneWhen": "release に push した commit の更新が、host で npm ci・build を流さずに組み立て済みを重ねて終わり、版の印が新しくなる（稼働中の host で1回確かめる）",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.5",
+        "docs/runbooks/release.md E"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-16T00:12:55.039Z",
+      "updatedAt": "2026-10-16T00:12:55.039Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
