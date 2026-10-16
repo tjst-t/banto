@@ -38,6 +38,8 @@ let projectId = "";
 let threadId = "";
 let turns = 0;
 let testPage: ChildProcess | undefined;
+/** 最初の試験の会話の画面（次の試験が別の倍率の端末で開く） */
+let threadUrl = "";
 
 interface HostMessage {
   seq: number;
@@ -409,5 +411,91 @@ test("人の画面を動画で描く：角の印がページと合い、静か�
     watching: 0,
     screencasting: false,
   });
+  threadUrl = page.url();
+  expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
+});
+
+/** 「画面に合わせる」のページの大きさ（view-stream.ts の fitPageSize と同じ：倍率を掛けて偶数の画素になる大きさに切り下げる） */
+function fitted(stage: number, scale: number): number {
+  let step = 1;
+  while (!Number.isInteger((step * scale) / 2) && step < 8) step += 1;
+  return Math.max(200, Math.floor(stage / step) * step);
+}
+
+test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる」でページが絵を出す場所の大きさ（高さも）になり、絵がページと画素単位で合う。Canvas を閉じて開き直しても絵が来る（Backlog #359）", async ({ browser, page }) => {
+  expect(threadUrl, "前の試験が会話を開いていない").not.toBe("");
+  const pageErrors: string[] = [];
+  for (const scale of [1.5, 1.25, 1.75]) {
+    // 端数の倍率の端末。窓は奇数の大きさ（絵を出す場所も端数になる）
+    const ctx = await browser.newContext({ viewport: { width: 1501, height: 1001 }, deviceScaleFactor: scale });
+    try {
+      await loginContext(ctx);
+      const h = await ctx.newPage();
+      h.on("pageerror", (err) => pageErrors.push(`${scale}: ${err.message}`));
+      await openApp(h);
+      await h.goto(threadUrl);
+      const openCanvas = async () => {
+        await h.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/corners` }).getByRole("button", { name: "開く" }).click();
+        const f = canvasFrame(h);
+        await expect(f.getByTestId("browser-state"), "流れが開かない").toHaveAttribute("data-state", "open", { timeout: 60_000 });
+        return f;
+      };
+      let f = await openCanvas();
+      // 開いた画面の倍率で起こし直す（倍率は起こすときにしか決まらない）——「ブラウザの記録を消す」
+      await expect.poll(async () => (await uiCall(h, "getSettings")).viewScale, { timeout: 20_000, message: `倍率 ${scale} を覚えない` }).toBe(scale);
+      await f.getByRole("button", { name: "ブラウザの記録を消す" }).click();
+      await f.getByRole("button", { name: "もう一度押すと消します" }).click();
+      await expect.poll(async () => {
+        const st = await uiCall(h, "getBrowserStatus");
+        return { running: st.running, scale: st.scale };
+      }, { timeout: 60_000, message: `倍率 ${scale} で起き直さない` }).toEqual({ running: true, scale });
+      const urlBar = f.getByRole("textbox", { name: "URL" });
+      await urlBar.fill(`${BASE}/corners`);
+      await urlBar.press("Enter");
+      await expect(f.locator(".tab[aria-selected=true]")).toContainText("角", { timeout: 30_000 });
+      const humanTab = (await f.locator(".tab[aria-selected=true]").getAttribute("data-tab"))!;
+      const screen = f.getByTestId("browser-screen");
+      await expect(screen, "動画で描いていない").toHaveAttribute("data-codec", "h264", { timeout: 60_000 });
+      await f.getByTestId("fit").check();
+      /** 絵を出す場所（CSS ピクセル）から決まる、合わせたページの大きさ */
+      const want = async () => {
+        const [w, hh] = await f.locator("#stage").evaluate((e) => {
+          const r = e.getBoundingClientRect();
+          return [Math.round(r.width), Math.round(r.height)];
+        });
+        return { width: fitted(w!, scale), height: fitted(hh!, scale) };
+      };
+      /** ページが絵を出す場所の大きさになり（様子・絵の頭・絵の画素・ページの中から見た大きさ）、角の印が画素単位で合う */
+      const expectFitted = async (what: string) => {
+        await expect.poll(async () => {
+          const w = await want();
+          return [await f.getByTestId("viewport").textContent(), await screen.getAttribute("data-page-width"), await screen.getAttribute("data-page-height")].join(" ") === `ページ ${w.width}×${w.height} ${w.width} ${w.height}`
+            ? "ok"
+            : `${await f.getByTestId("viewport").textContent()}・絵の頭 ${await screen.getAttribute("data-page-width")}×${await screen.getAttribute("data-page-height")}・欲しい ${JSON.stringify(w)}`;
+        }, { timeout: 30_000, message: `${what}：ページが絵を出す場所の大きさにならない` }).toBe("ok");
+        const w = await want();
+        // 絵を出す場所に対して、合わせたページは偶数の画素の分（最大7）だけ狭い——高さも追いついている
+        const stage = await f.locator("#stage").evaluate((e) => [e.clientWidth, e.clientHeight]);
+        expect(stage[0]! - w.width, `${what}：幅`).toBeLessThan(8);
+        expect(stage[1]! - w.height, `${what}：高さ`).toBeLessThan(8);
+        // 絵の画素はページ×倍率（引き伸ばしていない）
+        await expect.poll(() => screen.evaluate((c: HTMLCanvasElement) => [c.width, c.height]), { timeout: 20_000, message: `${what}：絵の画素がページ×倍率でない` }).toEqual([w.width * scale, w.height * scale]);
+        expect(await ai(h, "browserEval", { tab: humanTab, expression: "'SIZE ' + innerWidth + 'x' + innerHeight + ' DPR ' + devicePixelRatio" }), `${what}：ページの中から見た大きさ`).toContain(`SIZE ${w.width}x${w.height} DPR ${scale}`);
+        await expectCorners(f, w.width, w.height, `${what}（倍率 ${scale}・${w.width}×${w.height}）`);
+        await expect(screen).toHaveAttribute("data-codec", "h264");
+      };
+      await expectFitted("画面に合わせた");
+      // **Canvas を閉じて開き直す**：絵が来る（「映しています…」のままにならない）。合わせたまま
+      await h.getByRole("button", { name: "Canvas を閉じる" }).click();
+      await expect.poll(async () => ((await uiCall(h, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
+      f = await openCanvas();
+      await expect(f.getByTestId("browser-screen"), "開き直した画面に絵が来ない").toBeVisible({ timeout: 20_000 });
+      await expect(f.getByTestId("fit")).toBeChecked();
+      await expectFitted("開き直した");
+      await h.getByRole("button", { name: "Canvas を閉じる" }).click();
+    } finally {
+      await ctx.close();
+    }
+  }
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

@@ -29,6 +29,7 @@ import {
   MAX_HIDPI_FRAME_PIXELS,
   maxFramePixels,
   encodeFrame,
+  fitPageSize,
   parseViewMessage,
   screencastLimits,
   type FrameHeader,
@@ -140,6 +141,22 @@ test("高精細の画面：倍率で描いたブラウザでは、絵の上限�
   // 画質：1倍の上限までは70、越えたら60
   assert.equal(initialQuality(1280 * 800), 70);
   assert.equal(initialQuality(2560 * 1600), 60);
+});
+
+test("「画面に合わせる」の大きさ：倍率を掛けて偶数の画素になる大きさに切り下げる（端数の倍率でも画素の境目に乗る——Backlog #359）", () => {
+  assert.deepEqual(fitPageSize({ width: 1151, height: 831 }, 1), { width: 1150, height: 830 });
+  assert.deepEqual(fitPageSize({ width: 1151, height: 831 }, 1.25), { width: 1144, height: 824 });
+  assert.deepEqual(fitPageSize({ width: 843, height: 641 }, 1.5), { width: 840, height: 640 });
+  assert.deepEqual(fitPageSize({ width: 1151, height: 831 }, 1.75), { width: 1144, height: 824 });
+  assert.deepEqual(fitPageSize({ width: 1151, height: 831 }, 2), { width: 1151, height: 831 });
+  // 端数の CSS ピクセル（getBoundingClientRect）は丸めてから。下限は 200
+  assert.deepEqual(fitPageSize({ width: 389.6, height: 120 }, 1.5), { width: 388, height: 200 });
+  for (const scale of [1, 1.25, 1.5, 1.75, 2]) {
+    for (const n of [200, 333, 843, 1009, 1151, 1919]) {
+      const { width } = fitPageSize({ width: n, height: n }, scale);
+      assert.ok(Number.isInteger((width * scale) / 2) && width <= n && n - width < 8, `${n} @${scale} → ${width}`);
+    }
+  }
 });
 
 test("比の違う絵（起こした直後の窓の素の大きさ）を見分ける：丸めの分は同じ比", () => {
@@ -941,6 +958,78 @@ test("動画：人の画面で静かなページのタブ（別の窓）に切�
     await ctx.session.close(other.id);
   }
 });
+
+for (const scale of [1.25, 1.5, 1.75]) {
+  test(`動画・倍率 ${scale}（端数）：「画面に合わせる」でページが画面の大きさ（高さも）になり、絵がページと画素単位で合う。閉じて開き直しても待たずに絵が来る（Backlog #359）`, { skip: videoSkip }, async () => {
+    // 倍率は起こすときにしか決まらない——別の置き場で、その倍率の画面から起こす
+    const dir = mkdtempSync(join(tmpdir(), "banto-browser-fit-test-"));
+    const fx = await createBrowserContextFromDataDir(dir, browserOpts);
+    const fxView = new BrowserView({ session: fx.session, state: fx.state, log: fx.log, logLine: () => undefined });
+    fx.view = fxView;
+    // 窓の大きさが落ち着かなかった（session の settle が待ちきれなかった）知らせ。出ている間、人の画面は動画を流せない
+    const unsettled: string[] = [];
+    const error = console.error;
+    console.error = (...a: unknown[]) => {
+      const line = a.map(String).join(" ");
+      if (line.includes("になりませんでした")) unsettled.push(line);
+      error(...a);
+    };
+    // 人の画面の絵を出す場所（CSS ピクセル。端数の倍率の端末で、奇数の大きさ）
+    const stage = { width: 1151, height: 831 };
+    const open = () => {
+      const s = new FakeSocket();
+      fxView.handler()(s as unknown as WebSocket, stamp({ ...stage, dpr: scale, visible: true, codec: "h264" }));
+      // 画面が繋がったときに送るもの（view-app.ts の onState "open"）
+      s.post({ type: "size", ...stage, dpr: scale });
+      s.post({ type: "fit", on: true });
+      return s;
+    };
+    /** 動画が止まり（静かなページ）、最後のキーフレームからの絵がページと画素単位で合う */
+    const pictureMatches = async (s: FakeSocket, width: number, height: number, what: string) => {
+      await until(`${what}：止まる`, () => fxView.status().video?.state === "paused", 10_000);
+      assertCorners(await decodeLast(sinceLastKey(s, width)!.aus, width, height, scale), width, height, what, scale);
+    };
+    let pc = open();
+    try {
+      await until("ブラウザが起きた", () => fx.session.running, 60_000);
+      assert.equal(fx.session.scale, scale);
+      pc.post({ type: "navigate", url: base.replace("http://", "") + "/corners" });
+      const page = await until("開いたタブ", () => (fx.session.current !== undefined && fx.session.page().page.url() === `${base}/corners` ? fx.session.page().page : undefined), 15_000);
+      await page.waitForLoadState("load");
+      // **ページが画面の大きさになる**：倍率を掛けて画素の整数になる大きさ（偶数の画素——x264 が受ける大きさ。画面より少しだけ狭いことがある）。高さも
+      const fitted = await until("合わせた大きさ", () => {
+        const v = fx.session.viewport();
+        return v.width !== 1280 ? v : undefined;
+      });
+      assert.ok(stage.width - 8 < fitted.width && fitted.width <= stage.width && stage.height - 8 < fitted.height && fitted.height <= stage.height, `合わせた大きさ ${fitted.width}×${fitted.height}`);
+      assert.ok(Number.isInteger((fitted.width * scale) / 2) && Number.isInteger((fitted.height * scale) / 2), `${fitted.width}×${fitted.height} は倍率 ${scale} で偶数の画素にならない`);
+      assert.deepEqual(await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), [fitted.width, fitted.height, scale], "ページの大きさが合わせた大きさでない");
+      // 様子（「ページ W×H」）と絵の頭も同じ大きさ
+      await until("様子の大きさ", () => {
+        const v = lastText(pc, (t) => t.type === "state")?.viewport as { width: number; height: number } | undefined;
+        return v?.width === fitted.width && v.height === fitted.height;
+      });
+      const key = videoUnit(await until("合わせた大きさのキーフレーム", () => pc.frames.find((f) => videoUnit(f).header.key && videoUnit(f).header.width === fitted.width), 10_000));
+      assert.equal(key.header.height, fitted.height);
+      await pictureMatches(pc, fitted.width, fitted.height, `倍率 ${scale} の ${fitted.width}×${fitted.height} の絵`);
+
+      // **閉じて開き直す**：開いたときにまた合わせ（閉じると既定の大きさに戻る）、絵が来る
+      pc.close(1000);
+      await until("閉じたら動画を止める", () => fxView.status().video === undefined, 10_000);
+      pc = open();
+      const again = videoUnit(await until("開き直した画面の絵", () => pc.frames.find((f) => videoUnit(f).header.key && videoUnit(f).header.width === fitted.width), 10_000));
+      assert.equal(again.header.height, fitted.height);
+      await pictureMatches(pc, fitted.width, fitted.height, `開き直した画面の絵`);
+      assert.deepEqual(unsettled, [], "窓の大きさが落ち着かず、その間（1回 2 秒）動画を止めていた");
+    } finally {
+      console.error = error;
+      pc.close(1000);
+      await fxView.close();
+      await fx.session.stop("試験の終わり");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("動画：GStreamer が無い（入れられない）ブラウザでは、H.264 を描ける画面にも JPEG で映し、理由を様子で伝える", { skip: skipReason }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-novideo-test-"));
