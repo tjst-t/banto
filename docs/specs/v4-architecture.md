@@ -3549,6 +3549,23 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
 - **試験用の同梱扱いの Module**：目録の隠れた1本 `e2e-events`（`e2e/fixtures/events-module`、`hidden`）。Project ごと、`e2e-events.happened`
   （属性 `item`・`level`（low｜high）・`count`、主体 `item`）を名乗る。名前は `e2e-events` で入れる（名前の頭が合わなくなるため）
 
+#### 待たれている出どころを起こしておく——実装で決めたこと（実装・2026-10-16、Backlog #346）
+
+経緯と却下した案は `docs/notes/2026-10-16-automation-events.md` の「待たれている出どころを起こしておく（#346）」。
+
+- **どれが待たれているか**は `automation/keep-awake.ts` の `awaitedModules`：その Project の一時停止していない出来事の自動化の `event` の
+  頭（`<Module の名前>.`）で引く。対象は Project ごとの宣言のうち出来事を名乗っているもの（`declaredEvents`）だけ。スリープを入れるとき、
+  止めない Module はここから引く
+- **起こす時**（core の `keepAwaitedModulesAwake`、起こすのは `connectDeclaredModule(declaration, project)`）：banto が待ち受けを始めたとき・
+  自動化の台帳が変わったとき（作る・直す・再開）・Project の一覧が変わったとき（開き直す）・画面の操作で Project の Module を畳んだあと
+  （Module の選び直し・根や入れ子の変更）・1分ごと（起こせなかったもの・きっかけの無い変化（移し終えた等）を拾う。試し直しの間は
+  `connectBackoff` が守る）。落ちたものは今どおり `scheduleRestart`
+- **起こさない**：閉じた Project・別の実行場所へ移している Project
+- **待たれなくなっても止めない**（一時停止・消した）——起こしておくのをやめるだけ。ほかの Project ごとの Module と同じく、次に畳むまで
+  起きている
+- **道具用のコンテナの Module**（使うときだけ起こすもの）は banto 全体の Module で、出来事を名乗れない（Project ごとの同梱だけ）。待たれている
+  Module はいつも Project ごとなので、起こす道は1つ（使うときだけ起こす仕組みを通らない）
+
 #### `banto.turn-decisions` と判断役——AI の「決めること」を AI に決めさせる（決定・2026-10-16、ユーザー）
 
 ユーザーの要望：「AI が依頼してくる判断を AI に判断してほしい。AI が分からなければ改めて人に出す」。

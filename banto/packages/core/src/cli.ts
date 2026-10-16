@@ -32,6 +32,7 @@ import { AutomationRunner } from "./automation/runner.js";
 import { AutomationClock } from "./automation/clock.js";
 import { AutomationWebhooks } from "./automation/webhook.js";
 import { AutomationEvents, EventLedger } from "./automation/events.js";
+import { awaitedModules } from "./automation/keep-awake.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -118,6 +119,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** 道具用のコンテナの Module を使うときに起こすとき、呼び元を待たせる上限（入れ始めたらすぐ返す）。起き終わっていれば待たずに通る */
 const ON_DEMAND_START_WAIT_MS = 20_000;
 const ON_DEMAND_POLL_MS = 250;
+/**
+ * 待たれている Module を見直す間隔（§4.3「段2」の「待たれている出どころを眠らせない」）。起こせなかったもの・きっかけが
+ * 届かない変化（移し終えた等）を拾う。試し直しの間は `connectBackoff` が守る
+ */
+const KEEP_AWAKE_INTERVAL_MS = 60_000;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const monorepoRoot = join(__dirname, "..", "..", "..");
 
@@ -2114,6 +2120,40 @@ async function main(): Promise<void> {
     });
   }
 
+  /**
+   * **待たれている出どころを眠らせない**（アーキ仕様 §4.3「段2」、Backlog #346）。その Project に、ある Module の出来事を待つ
+   * 自動化（一時停止していないもの）があれば、その Module を起こしておく。起こすのは banto を起こしたとき・Project の一覧が
+   * 変わったとき（開き直した・移し終えた）・自動化の台帳が変わったとき・Project の Module を畳んだあと（Module の選び直し・
+   * 根の変更）・1分ごと（起こせなかったものを試し直す——間を置くのは `connectBackoff` が守る）。落ちたものは今どおり
+   * `scheduleRestart` が起こし直す。閉じた Project・別の実行場所へ移している Project は起こさない。
+   * **待たれなくなっても止めない**——起こしておくのをやめるだけ（使われるまで起きているのは、ほかの Project ごとの Module と同じ）
+   */
+  function keepAwaitedModulesAwake(projectId?: string): void {
+    if (stopping) return;
+    const projects = projectId !== undefined ? [projectThread.getProject(projectId)] : projectThread.listProjects();
+    for (const project of projects) {
+      if (!project || project.status === "closed" || project.move) continue;
+      try {
+        // 出来事を名乗れるのは Project ごとの同梱の Module だけ（`declaredEvents` が外から足したものの名乗りを断る）
+        const declarations = loadModuleDeclarations(runtimeConfig, project.id).filter((d) => {
+          if (d.meta.scope !== "project") return false;
+          try {
+            return declaredEvents(d).length > 0;
+          } catch {
+            return false;
+          }
+        });
+        const awaited = awaitedModules(automations.listAll(), project.id, declarations.map((d) => d.name));
+        for (const declaration of declarations) {
+          // 繋がらなくても投げない（理由は connectDeclaredModule がログとお知らせに出す）
+          if (awaited.includes(declaration.name)) void connectDeclaredModule(declaration, project);
+        }
+      } catch (err) {
+        console.warn(`[host] Project ${project.id} の待たれている Module を起こせませんでした:`, err);
+      }
+    }
+  }
+
   /** 道具用のコンテナで動く banto 全体の Module（使うとき——中継で呼ばれたとき・名指されたとき——だけ起こす） */
   function startsOnDemand(declaration: ParsedModuleDeclaration): boolean {
     return declaration.meta.scope === "instance" && modulePlacement(declaration.meta, declaration.launch) === "tools-container";
@@ -2553,7 +2593,12 @@ async function main(): Promise<void> {
         ? { prebuilt: { base: bootstrap.testOnlySelfUpdate.prebuiltBase, api: bootstrap.testOnlySelfUpdate.githubApi } }
         : {}),
     }),
-    releaseProjectModules,
+    // 畳んだあと、待たれている Module は起こし直す（閉じた Project・外した Module は `keepAwaitedModulesAwake` が起こさない）
+    releaseProjectModules: async (projectId: string, opts?: { stopContainer?: boolean }) => {
+      const released = await releaseProjectModules(projectId, opts);
+      keepAwaitedModulesAwake(projectId);
+      return released;
+    },
     // 別のサーバの Project を閉じる前に（v4-security.md §1「閉じた Project は数えない」）
     suspendProjectServices,
     projectSleep,
@@ -2762,6 +2807,11 @@ async function main(): Promise<void> {
     automationWebhooks.start();
     // 受けて、まだ届けていない出来事も同じくまとめ直す（§4.3「段2」）
     automationEvents.start();
+    // **待たれている出どころを起こしておく**（§4.3「段2」、Backlog #346）。待ち受けてから——Module は中継の口に繋ぐ
+    keepAwaitedModulesAwake();
+    automations.onChange(({ projectId }) => keepAwaitedModulesAwake(projectId));
+    projectThread.onProjectsChanged(() => keepAwaitedModulesAwake());
+    setInterval(() => keepAwaitedModulesAwake(), KEEP_AWAKE_INTERVAL_MS).unref();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));
