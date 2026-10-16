@@ -915,6 +915,33 @@ test("動画：ポップアップ（window.open の別の窓）と _blank は新
   }
 });
 
+test("動画：人の画面で静かなページのタブ（別の窓）に切り替えると、止まっていても切り替えた先の絵がキーフレームからすぐ来る。戻しても同じ", { skip: videoSkip }, async () => {
+  await callTool(ctx, "browserAct", { action: "resize", width: 1024, height: 768 });
+  for (const t of await ctx.session.listTabs()) if (t.id !== ctx.session.current) await ctx.session.close(t.id);
+  const page = (await ctx.session.currentOrNew()).page;
+  const main = ctx.session.current!;
+  await page.goto(`${base}/corners`);
+  // 会話のタブ（別の窓・裏で開く）——全面が黄の静かなページ
+  const other = await ctx.session.newTab("thread-quiet", `${base}/popup`);
+  await other.page.waitForLoadState("load");
+  const pc = new FakeSocket();
+  view.handler()(pc as unknown as WebSocket, stamp({ width: 1400, height: 900, dpr: 1, visible: true, codec: "h264" }));
+  try {
+    await until("最初の1通", () => pc.frames[0], 15_000);
+    for (const [to, what] of [[other.id, "会話のタブ"], [main, "元のタブ"]] as const) {
+      await until("止まる", () => view.status().video?.state === "paused", 10_000);
+      const from = pc.frames.length;
+      ctx.session.select(to);
+      // 切り替えた先の絵が来る。その最初の1通はキーフレーム（人の画面は替えた先をキーフレームから描く）
+      const first = videoUnit(await until(`${what}の絵`, () => pc.frames.slice(from).find((f) => videoUnit(f).header.tab === to), 5_000));
+      assert.equal(first.header.key, true, `${what}に切り替えた最初の1通がキーフレームでない`);
+    }
+  } finally {
+    pc.close(1000);
+    await ctx.session.close(other.id);
+  }
+});
+
 test("動画：GStreamer が無い（入れられない）ブラウザでは、H.264 を描ける画面にも JPEG で映し、理由を様子で伝える", { skip: skipReason }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "banto-browser-novideo-test-"));
   const reason = "動画で映すための GStreamer がありません（試験）。JPEG で映します";

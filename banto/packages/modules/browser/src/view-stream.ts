@@ -397,6 +397,12 @@ interface VideoCast {
   key: string | undefined;
   /** 流している絵が映すページの大きさ（CSS ピクセル）——頭に書く */
   viewport: { width: number; height: number };
+  /**
+   * キーフレームから流し直した、前に出ているタブ（session.front）。替わったら（人の画面のタブの切り替え・＋）流し直して
+   * キーフレームを出す——静かなページでは前に出しても XDamage が来ないことがあり、来ても前に出し終える前の変化で、
+   * 絵の頭は前のタブのまま止まる（Backlog #342）
+   */
+  front: string | undefined;
   state: VideoState;
   /** 止まったら呼ぶ（大きさを変える前に待つ——beforeResize） */
   onStopped?: () => void;
@@ -1078,7 +1084,7 @@ export class BrowserView implements ViewHooks {
       return;
     }
     if (!this.video) {
-      const cast: VideoCast = { pipeline: undefined as unknown as VideoPipeline, key: undefined, viewport, state: "stopped" };
+      const cast: VideoCast = { pipeline: undefined as unknown as VideoPipeline, key: undefined, viewport, front: undefined, state: "stopped" };
       cast.pipeline = new VideoPipeline(d.name, {
         onUnit: (au, key, ts) => this.onVideoUnit(cast, au, key, ts),
         onState: (state) => {
@@ -1096,6 +1102,11 @@ export class BrowserView implements ViewHooks {
     }
     const video = this.video;
     const key = `${region.w}x${region.h}>${region.ew}x${region.eh} ${viewport.width}x${viewport.height}`;
+    // 前に出し終えたタブが替わった：替えた先の絵をキーフレームから送る（前のタブの P フレームの続きにしない）
+    if (video.front !== s.front) {
+      video.front = s.front;
+      for (const v of watchers) v.needKey = true;
+    }
     if (video.key !== key) {
       video.key = key;
       video.viewport = { ...viewport };
