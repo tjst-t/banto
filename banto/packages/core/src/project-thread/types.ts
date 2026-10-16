@@ -224,6 +224,23 @@ export interface AwaitingReply {
   keptAt?: string;
 }
 
+/**
+ * **届け直せる札**（追加・2026-10-16、アーキ仕様 §2.5「2.」の「別のサーバの Module は繋がるまで待つ」、Backlog #324）。
+ * 起こし直しで Module に繋がらないまま打ち切り、「途中で終わりました」を届けた札。あとでその Module が繋がったら、
+ * 打ち切った札として問い直し、仕事が終わっていれば結果をこの Thread に届けさせる——**一度だけ**（問い直すときに
+ * 返事待ちに戻すので、ここからは消える。`reply.awaiting` の fold）
+ */
+export interface RedeliverableReply {
+  replyTo: string;
+  connName: string;
+  moduleName: string;
+  /** 届いたときのホップ（札を出したターンのホップ＋1） */
+  hop: number;
+  work?: BackgroundWork;
+  /** 打ち切った時刻 */
+  lostAt: string;
+}
+
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
 export interface UiToolCallEntry {
   toolCallId: string;
@@ -474,6 +491,8 @@ export interface ThreadState {
   deliveries?: PendingDelivery[];
   /** 返事待ちの札（追加・2026-09-25）。無ければ空 */
   awaitingReplies?: AwaitingReply[];
+  /** 届け直せる札（追加・2026-10-16、Backlog #324）。無ければ空 */
+  redeliverableReplies?: RedeliverableReply[];
   /**
    * **どの Thread から、最後にいつメッセージを受け取ったか**（追加・2026-10-01、アーキ仕様 §4.2）。鍵は送り元の
    * Thread の id、値は届いた時刻。受け取ってから 24 時間以内の送り元への返事は、Project をまたいでも承認なしで届く

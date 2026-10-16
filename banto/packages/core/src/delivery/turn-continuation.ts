@@ -72,7 +72,7 @@ export interface TurnContinuationDeps {
    * （続けると答えて覚え直した札）のうち、その Thread のもの。続きの文に「<Module> の仕事は続いています（終わったら
    * 届きます）」と書く。起き直したときの札の判定（`delivery/restart-recovery.ts`）が渡す
    */
-  keptReplies?(threadId: string): Array<{ moduleName: string }>;
+  keptReplies?(threadId: string): Array<{ moduleName: string; waitingFor?: string }>;
 }
 
 export type InterruptedTurnHandling =
@@ -393,7 +393,12 @@ export async function planContinuation(deps: TurnContinuationDeps, turn: Interru
   }
   if (cutTail?.calledNames.includes(forkTool)) lines.push("このターンで頼んだ Fork は立っていません");
   for (const kept of deps.keptReplies?.(turn.threadId) ?? []) {
-    lines.push(`${kept.moduleName} の仕事は続いています（終わったら届きます）`);
+    // 別のサーバの Module に繋がるのを待っている間に、人が送って続きを引き継いだ（Backlog #324）
+    lines.push(
+      kept.waitingFor
+        ? `${kept.moduleName} の仕事は、別のサーバ「${kept.waitingFor}」に繋がるのを待っています（続けられれば終わったら届き、続けられなければ「途中で終わりました」が届きます）`
+        : `${kept.moduleName} の仕事は続いています（終わったら届きます）`,
+    );
   }
 
   const reinsert = nothingReached || turn.rewindTo !== undefined || !reached || stacked.every((m) => m.text === "");

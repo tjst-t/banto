@@ -36,6 +36,13 @@ export interface ResumeQuestionItem {
   thread?: { projectId?: string; threadId: string };
   /** 中継で頼んだ Module（返事はその Module の受け口に渡る）。`thread` とどちらか一方 */
   caller?: { module: string; projectId?: string };
+  /**
+   * **打ち切った札**（追加・2026-10-16、Backlog #324）。起こし直しで Module に繋がらないまま host が打ち切り、頼んだ Thread には
+   * もう「途中で終わりました」を届けた札。あとで繋がったとき、ほかの札と同じ問いで渡す。答え方は同じ——仕事が終わって
+   * いれば「続ける」と答えて結果を届け（host が題に「起こし直しで途切れたあとに終わっていました」を添える）、まだ動いて
+   * いれば「続ける」と答えて終わったら届ける。記録が無い・結果が無いものは「続けない」（host は何も届けない）
+   */
+  afterLost?: boolean;
 }
 
 export interface ResumeQuestion {
@@ -70,6 +77,7 @@ export function parseResumeQuestion(raw: unknown): ResumeQuestion {
         replyTo: o.replyTo,
         ...(typeof o.toolName === "string" ? { toolName: o.toolName } : {}),
         ...(typeof o.toolCallId === "string" ? { toolCallId: o.toolCallId } : {}),
+        ...(o.afterLost === true ? { afterLost: true } : {}),
         ...(thread
           ? { thread: { threadId: thread.threadId as string, ...(typeof thread.projectId === "string" ? { projectId: thread.projectId } : {}) } }
           : { caller: { module: caller!.module as string, ...(typeof caller!.projectId === "string" ? { projectId: caller!.projectId } : {}) } }),

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseModuleMeta, classifyMetaDifference } from "./meta.js";
 import { isHostResumeCall, parseResumeAnswers, parseResumeQuestion, replyToFingerprint } from "./resume.js";
-import { CALL_ID_META_KEY, CALLER_META_KEY, THREAD_META_KEY } from "./meta.js";
+import { CALL_ID_META_KEY, CALLER_META_KEY, RESULT_LOCATION_META_KEY, THREAD_META_KEY, resultLocationOf } from "./meta.js";
 
 const base = { satisfies: ["x"], isolation: "subprocess" };
 
@@ -67,4 +67,19 @@ test("問いは host だけ：呼び元の印（人の画面・中継・AI の�
   assert.equal(isHostResumeCall({ [CALLER_META_KEY]: { project: "p1" } }), false);
   assert.equal(isHostResumeCall({ [THREAD_META_KEY]: { projectId: "p1", threadId: "t1" } }), false);
   assert.equal(isHostResumeCall({ [CALL_ID_META_KEY]: "c1" }), false);
+});
+
+test("打ち切った札（afterLost）は問いに残り、true 以外は落とす。結果の場所は空でない文字列だけ読む（Backlog #324）", () => {
+  const q = parseResumeQuestion({
+    items: [
+      { replyTo: "r1", thread: { threadId: "t1" }, afterLost: true },
+      { replyTo: "r2", thread: { threadId: "t1" }, afterLost: "yes" },
+    ],
+  });
+  assert.equal(q.items[0]!.afterLost, true);
+  assert.equal("afterLost" in q.items[1]!, false);
+  assert.equal(resultLocationOf({ [RESULT_LOCATION_META_KEY]: "  /x/output.log " }), "/x/output.log");
+  assert.equal(resultLocationOf({ [RESULT_LOCATION_META_KEY]: "  " }), undefined);
+  assert.equal(resultLocationOf({ [RESULT_LOCATION_META_KEY]: 3 }), undefined);
+  assert.equal(resultLocationOf(undefined), undefined);
 });

@@ -38,8 +38,8 @@ export interface OwnHost {
   dataDir: string;
   /** host を止める（SIGKILL＝落ちた、SIGTERM＝人が止めた）。止まるまで待つ */
   stop(signal: NodeJS.Signals): Promise<void>;
-  /** 同じ置き場・同じ待ち受けで起こし直す。待ち受けを始めるまで待つ */
-  start(): Promise<void>;
+  /** 同じ置き場・同じ待ち受けで起こし直す。待ち受けを始めるまで待つ。`env` はこの回だけ足す環境 */
+  start(env?: Record<string, string>): Promise<void>;
   /** ここまでの host のログ（落ちたときの手がかり） */
   log(): string;
   /** 止めて、この host が作ったコンテナと置き場を消す。全部やってから、できなかったものをまとめて投げる */
@@ -127,7 +127,7 @@ export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> 
   let output = "";
   const apiUrl = `http://127.0.0.1:${port}`;
 
-  const start = async (): Promise<void> => {
+  const start = async (env: Record<string, string> = {}): Promise<void> => {
     if (child && child.exitCode === null && child.signalCode === null) throw new Error("host はもう動いています");
     const inherited = { ...process.env };
     for (const name of opts.unsetEnv ?? []) delete inherited[name];
@@ -148,6 +148,7 @@ export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> 
         // Infisical も E2E の core と同じ偽物に（`start-core.ts` が立てて置き場に書いたもの。追加・2026-10-08）
         ...infisicalFixtureEnv(),
         ...opts.env,
+        ...env,
       },
       // 自分のプロセスグループで（グループごと止めるため・Playwright に届く信号の巻き添えにならないため）
       detached: true,

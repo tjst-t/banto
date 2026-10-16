@@ -142,6 +142,11 @@ export type ProjectThreadEvent =
   | { type: "reply.settled"; payload: { threadId: string; replyTo: string } }
   // 起こし直しのあと Module が続けると答え、札を覚え直した（追加・2026-10-05、アーキ仕様 §2.5「2.」）
   | { type: "reply.kept"; payload: { threadId: string; replyTo: string } }
+  // 起こし直しで Module に繋がらないまま打ち切った札——繋がったら一度だけ届け直せる（追加・2026-10-16、Backlog #324）
+  | {
+      type: "reply.redeliverable";
+      payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number; work?: BackgroundWork };
+    }
   | { type: "thread.cleared"; payload: { threadId: string } }
   // **自動の要約（SDK の compact_boundary）が起きたターン**（追加・2026-10-09、アーキ仕様 §2.2）
   | { type: "thread.compacted"; payload: { threadId: string; compactionCount: number } }
@@ -668,6 +673,18 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (t) {
           const { threadId: _thread, ...rest } = event.payload;
           t.awaitingReplies = [...(t.awaitingReplies ?? []).filter((r) => r.replyTo !== rest.replyTo), { ...rest, since: raw.ts }];
+          // 届け直すために返事待ちに戻した——届け直せる印は使った（一度だけ）
+          if (t.redeliverableReplies?.some((r) => r.replyTo === rest.replyTo)) {
+            t.redeliverableReplies = t.redeliverableReplies.filter((r) => r.replyTo !== rest.replyTo);
+          }
+        }
+        return next;
+      }
+      case "reply.redeliverable": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t) {
+          const { threadId: _thread, ...rest } = event.payload;
+          t.redeliverableReplies = [...(t.redeliverableReplies ?? []).filter((r) => r.replyTo !== rest.replyTo), { ...rest, lostAt: raw.ts }];
         }
         return next;
       }

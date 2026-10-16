@@ -16,6 +16,7 @@ import {
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  RESULT_LOCATION_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
   VISIBILITY_META_KEY,
   callerModuleOf,
@@ -368,7 +369,8 @@ export function createShellServer(deps: ShellServerDeps) {
         return {
           ...text(started),
           // **あとで届けると約束した**——host は札を返事待ちにし、この Module が止まったら代わりに知らせる
-          _meta: { [PENDING_REPLY_META_KEY]: true },
+          // 結果の場所（Backlog #324）——起こし直しで Shell に繋がらないまま打ち切られても、人と AI が出力を読みに行ける
+          _meta: { [PENDING_REPLY_META_KEY]: true, [RESULT_LOCATION_META_KEY]: started.outputFile },
         };
       }
 

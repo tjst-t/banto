@@ -78,6 +78,11 @@ export class RemoteOutageWatch {
     return this.now() - o.since;
   }
 
+  /** その実行場所に SSH で繋がらないなら、最後の理由（繋がっている・分からないなら undefined。Backlog #324） */
+  unreachableReason(runtimeName: string): string | undefined {
+    return this.outages.get(runtimeName)?.reason;
+  }
+
   /** 実行場所を外した——覚えていたことを捨て、出していたら閉じる */
   forget(runtimeName: string): void {
     const o = this.outages.get(runtimeName);

@@ -38,6 +38,7 @@ import {
   uiResourceUriOf,
   visibilityOf,
   waitingOnOf,
+  resultLocationOf,
   type BantoModuleMeta,
   type WaitingOn,
 } from "@banto/module-contract";
@@ -122,7 +123,7 @@ export interface AgentProxyOptions {
   replies?: {
     issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; work?: BackgroundWork }): string;
     /** `waitingOn`：Module が「人の答えを待っている」と名乗ったら（`dev.banto/waitingOn`） */
-    markAwaiting(replyTo: string, waitingOn?: WaitingOn): Promise<void>;
+    markAwaiting(replyTo: string, waitingOn?: WaitingOn, resultLocation?: string): Promise<void>;
   };
 }
 
@@ -345,6 +346,8 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
         await opts.replies!.markAwaiting(
           replyTo,
           waitingOnOf((result as { _meta?: Record<string, unknown> })._meta),
+          // 結果の場所（Backlog #324）——起こし直しで Module に繋がらないまま打ち切ったとき、「途中で終わりました」に添える
+          resultLocationOf((result as { _meta?: Record<string, unknown> })._meta),
         );
       }
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;

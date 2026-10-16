@@ -342,6 +342,21 @@ export function waitingOnOf(meta: Record<string, unknown> | undefined): WaitingO
 }
 
 /**
+ * **結果の場所**（追加・2026-10-16、アーキ仕様 §2.5「2.」の「別のサーバの Module は繋がるまで待つ」、Backlog #324）。「あとで
+ * 届ける」（`PENDING_REPLY_META_KEY`）と一緒に tool の結果の `_meta` に文字列で載せる——Shell は出力のファイルのパス、
+ * Subagent は仕事の id、Factory は worktree。host は札の手がかりに残し、起こし直しで Module に繋がらないまま打ち切った
+ * ときの「途中で終わりました」に添える（繋がらなくても、人と AI が結果を探しに行ける）
+ */
+export const RESULT_LOCATION_META_KEY = `${VENDOR_PREFIX}/resultLocation`;
+
+/** 結果の場所を読む。空でない文字列のときだけ（長すぎるものは頭の 500 字） */
+export function resultLocationOf(meta: Record<string, unknown> | undefined): string | undefined {
+  const raw = meta?.[RESULT_LOCATION_META_KEY];
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  return raw.trim().slice(0, 500);
+}
+
+/**
  * **他の Module に頼んだ「終わったら届ける」仕事の返事を受ける tool**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。
  *
  * Module が中継（`relayCallTool`）で「終わったら届ける」 tool（`DELIVERS_LATER_META_KEY`）を呼ぶと、host は**呼んだ Module に

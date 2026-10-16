@@ -678,6 +678,23 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
+  /**
+   * **届け直せる印を残す**（追加・2026-10-16、Backlog #324）。起こし直しで Module に繋がらないまま打ち切った札。繋がったら
+   * 打ち切った札として問い直す（問い直すとき `recordAwaitingReply` で返事待ちに戻すと、印は消える）
+   */
+  async markReplyRedeliverable(input: {
+    threadId: ThreadId;
+    replyTo: string;
+    connName: string;
+    moduleName: string;
+    hop: number;
+    work?: BackgroundWork;
+  }): Promise<void> {
+    if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
+    const event = await this.log.append("reply.redeliverable", input);
+    this.projection.applyOne(event);
+  }
+
   /** 返事が済んだ（届いた・代わりに「途中で終わりました」を届けた）。 */
   async settleReply(threadId: ThreadId, replyTo: string): Promise<void> {
     const t = this.getThread(threadId);

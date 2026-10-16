@@ -22,6 +22,7 @@ import {
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  RESULT_LOCATION_META_KEY,
   VISIBILITY_META_KEY,
   replyToOf,
   replyToFingerprint,
@@ -616,8 +617,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             status: "running",
             note: "待たずに頼みました。終わったら結果がこの会話に届き、あなたが起こされます。それまで他の仕事を続けてよい",
           }),
-          // **あとで届けると約束した**——host は札を返事待ちにし、この Module が止まったら代わりに知らせる
-          _meta: { [PENDING_REPLY_META_KEY]: true },
+          // **あとで届けると約束した**——host は札を返事待ちにし、この Module が止まったら代わりに知らせる。結果の場所は
+          // 仕事の id（Backlog #324——サブエージェントの画面・getRun で引ける）
+          _meta: { [PENDING_REPLY_META_KEY]: true, [RESULT_LOCATION_META_KEY]: `サブエージェントの仕事 ${run.id}（サブエージェントの画面・getRun で見られます）` },
         };
       }
     } catch (err) {

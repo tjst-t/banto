@@ -24,6 +24,7 @@ import {
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  RESULT_LOCATION_META_KEY,
   RECEIVES_REPLIES_META_KEY,
   REPLY_TO_USES,
   RESUME_AFTER_RESTART_TOOL,
@@ -254,15 +255,31 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           () => item.longReported === true && factory.longOf(run, item).long,
         );
       },
-      runFinished: async (run) =>
-        void (await notify(
-          run,
-          `Factory の実行が終わりました（取り込み ${run.items.filter((i) => i.status === "done").length}／${run.items.length} 件）`,
-          JSON.stringify({ runId: run.id, items: run.items.map((i) => ({ task: i.task.id, ...describeItem(run, i) })) }),
-          true,
-        )),
+      runFinished: async (run) => {
+        const { title, body } = finishedReport(run);
+        await notify(run, title, body, true);
+      },
     },
   });
+
+  /** 実行が終わった知らせ（最後の知らせ） */
+  function finishedReport(run: RunRecord): { title: string; body: string } {
+    return {
+      title: `Factory の実行が終わりました（取り込み ${run.items.filter((i) => i.status === "done").length}／${run.items.length} 件）`,
+      body: JSON.stringify({ runId: run.id, items: run.items.map((i) => ({ task: i.task.id, ...describeItem(run, i) })) }),
+    };
+  }
+
+  /**
+   * **打ち切られた札に、終わっていた実行の結果を届け直す**（追加・2026-10-16、Backlog #324）。起こし直しで host が Factory に
+   * 繋がらないまま打ち切り、あとで繋がって問い直したとき、実行がもう終わっていて最後の知らせを誰にも届けていなければ届ける
+   */
+  async function redeliverFinished(run: RunRecord, replyTo: string): Promise<void> {
+    const { title, body } = finishedReport(run);
+    const r = await deps.relay("relayDeliverToThread", { replyTo, title, text: body, final: true });
+    if (r.isError) factory.noteNotifyError(run, `終わっていた結果を届け直せませんでした：${r.text.slice(0, 300)}`);
+    else finalSent.add(run.id);
+  }
 
   /** 覚え直した札を、answerFactory の呼び出しに引き継いだことを知らせて閉じる */
   async function handOver(run: RunRecord, replyTo: string): Promise<void> {
@@ -546,7 +563,8 @@ export function createFactoryServer(deps: FactoryServerDeps) {
                 ? "流しました。終わったら（止まって答えが要るときも）この会話に届きます。それまで他の仕事を続けてよい"
                 : "流しました（知らせる先が無いので、様子は listFactoryRuns で見てください）",
             }),
-            ...(replyTo ? { _meta: { [PENDING_REPLY_META_KEY]: true } } : {}),
+            // 結果の場所（Backlog #324）——起こし直しで Factory に繋がらないまま打ち切られても、worktree を見に行ける
+            ...(replyTo ? { _meta: { [PENDING_REPLY_META_KEY]: true, [RESULT_LOCATION_META_KEY]: resultLocationOf(run) } } : {}),
           };
         }
         case "listFactoryRuns":
@@ -582,7 +600,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           await factory.withCall(run.id, callId, () => factory.settled(run.id));
           return {
             ...text({ runId: run.id, item: item.task.id, answered: action, now: describeItem(run, item) }),
-            ...(adopt ? { _meta: { [PENDING_REPLY_META_KEY]: true } } : {}),
+            ...(adopt ? { _meta: { [PENDING_REPLY_META_KEY]: true, [RESULT_LOCATION_META_KEY]: resultLocationOf(run) } } : {}),
           };
         }
         case "cancelFactory": {
@@ -617,6 +635,11 @@ export function createFactoryServer(deps: FactoryServerDeps) {
             if (run && (handles.has(run.id) || finalSent.has(run.id))) {
               handleArrived(run.id);
               setImmediate(() => void handOver(run, q.replyTo));
+              return { replyTo: q.replyTo, resume: true };
+            }
+            // **打ち切られた札**（Backlog #324）：終わっていて最後の知らせを届けていない実行は、その結果を届け直す
+            if (q.afterLost && run?.finishedAt && !awaitingAsk.has(run.id)) {
+              setImmediate(() => void redeliverFinished(run, q.replyTo));
               return { replyTo: q.replyTo, resume: true };
             }
             // 終わった実行でも、最後の知らせを問いまで待たせていれば続ける（届けるのは答えを返したあと）
@@ -671,6 +694,11 @@ export function createFactoryServer(deps: FactoryServerDeps) {
   });
 
   return { server, factory };
+}
+
+/** 結果の場所：実行の id と各件の worktree（Project の根から） */
+function resultLocationOf(run: RunRecord): string {
+  return `Factory の実行 ${run.id}（worktree：${run.items.map((i) => i.worktree).join("、")}。Project の根から）`;
 }
 
 /** 回数（落ちたテスト・直すことがあったレビュー）。上限と並べて画面に出す */

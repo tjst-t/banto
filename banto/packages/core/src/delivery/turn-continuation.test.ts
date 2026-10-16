@@ -21,7 +21,7 @@ import { DELIVERY_LIMITS, ThreadDeliveries } from "./thread-deliveries.js";
 import { ReplyHandles } from "./reply-handles.js";
 import { RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import type { ModuleAwaitingReply } from "./module-replies.js";
-import { RestartRecovery, type RestartRecoveryDeps, type ResumeTarget } from "./restart-recovery.js";
+import { ModuleNotUpYetError, RestartRecovery, type RestartRecoveryDeps, type ResumeTarget } from "./restart-recovery.js";
 import type { ResumeQuestion } from "@banto/module-contract";
 import {
   continueStoppedTurn,
@@ -1136,6 +1136,11 @@ function recoveryOf(
     connect?: (target: ResumeTarget, signal: AbortSignal) => Promise<void>;
     moduleReplies?: RestartRecoveryDeps["moduleReplies"];
     resumable?: (t: { moduleName: string; projectId?: string }) => boolean;
+    /** 別のサーバで動く Module（名前 → 実行場所）。Backlog #324 */
+    remote?: Record<string, string>;
+    connectLimitMs?: number;
+    unreachableReason?: (runtime: string) => string | undefined;
+    isConnected?: (connName: string) => boolean;
   } = {},
 ) {
   const replyHandles = new ReplyHandles();
@@ -1159,13 +1164,15 @@ function recoveryOf(
       };
     },
     // cli.ts の deliverLostReply と同じ
-    deliverLost: async (reply, why) => {
+    deliverLost: async (reply, why, lostOpts) => {
       lost.push(`${reply.moduleName}:${why}`);
       await host.deliveries.deliver({
         threadId: reply.threadId,
         from: reply.moduleName,
         title: `${reply.moduleName} の仕事は途中で終わりました`,
-        text: `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。`,
+        text: lostOpts?.note
+          ? `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、いまは届きません——${why}。${lostOpts.note}。`
+          : `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。`,
         hop: reply.hop,
       });
       replyHandles.settle(reply.replyTo);
@@ -1174,6 +1181,11 @@ function recoveryOf(
     },
     publishBackground: () => undefined,
     ...(opts.askTimeoutMs !== undefined ? { askTimeoutMs: opts.askTimeoutMs } : {}),
+    ...(opts.remote ? { remoteOf: (t: ResumeTarget) => opts.remote![t.moduleName] } : {}),
+    ...(opts.connectLimitMs !== undefined ? { connectLimitMs: opts.connectLimitMs } : {}),
+    ...(opts.unreachableReason ? { unreachableReason: opts.unreachableReason } : {}),
+    ...(opts.isConnected ? { isConnected: opts.isConnected } : {}),
+    connectRetryMs: 5,
   });
   host.holdAlso((id) => recovery.holdReason(id));
   return { recovery, replyHandles, asked, lost };
@@ -1514,5 +1526,189 @@ test("banto 全体の Module：同じ接続の札でも Project は札ごとに�
       { projectId, threadId },
       { projectId: other.id, threadId: otherThread.id },
     ]);
+  });
+});
+
+// ---- 別のサーバの Module は繋がるまで待つ（追加・2026-10-16、Backlog #324）----------------------------------------------
+
+/** 別のサーバの Shell の札（結果の場所つき） */
+async function remoteAwaiting(store: ProjectThreadStore, threadId: string, replyTo: string, projectId: string) {
+  await store.recordAwaitingReply({
+    threadId,
+    replyTo,
+    connName: `${RESUMABLE}-${projectId}`,
+    moduleName: RESUMABLE,
+    hop: 1,
+    work: { toolName: "runSubagent", toolCallId: `toolu_${replyTo}`, resultLocation: `/remote/commands/${replyTo}/output.log` },
+  });
+}
+
+test("別のサーバの Module：送り込みで答えの期限より長く起きなくても、繋がってから問い、続けると答えれば続く（待つ間は「続けています」・留める）", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await remoteAwaiting(first.store, threadId, "r-remote", projectId);
+    const host = await boot(dir);
+    let up!: () => void;
+    const connected = new Promise<void>((r) => (up = r));
+    const { recovery, asked, lost } = recoveryOf(
+      host,
+      async (_t, q) => ({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })) }),
+      { askTimeoutMs: 30, connectLimitMs: 5_000, remote: { [RESUMABLE]: "vm" }, connect: () => connected },
+    );
+    await recovery.beforeListen();
+    const done = recovery.afterListen();
+    // 答えの期限（30ms）の何倍も起きない——この機械の Module なら打ち切っている
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(lost, [], "繋がる前に打ち切った");
+    assert.equal(asked.length, 0);
+    assert.match(recovery.holdReason(threadId) ?? "", /別のサーバ「vm」の Module に繋がるのを待っています/);
+    assert.ok(host.store.getThread(threadId)!.awaitingReplies![0]!.keptAt, "待つ間に「起こし直しのあと続けています」になっていない");
+    up();
+    const { answers } = await done;
+    assert.deepEqual(answers.map((a) => [a.replyTo, a.outcome]), [["r-remote", "kept"]]);
+    assert.equal(recovery.holdReason(threadId), undefined);
+  });
+});
+
+test("別のサーバの Module：まだ起きない（ModuleNotUpYetError）うちは試し直し、起きたら問う", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await remoteAwaiting(first.store, threadId, "r-remote", projectId);
+    const host = await boot(dir);
+    let tries = 0;
+    const { recovery, lost } = recoveryOf(
+      host,
+      async (_t, q) => ({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })) }),
+      {
+        connectLimitMs: 5_000,
+        remote: { [RESUMABLE]: "vm" },
+        connect: async () => {
+          if (++tries < 3) throw new ModuleNotUpYetError("subagent を起こせませんでした（コードを送っています）");
+        },
+      },
+    );
+    await recovery.beforeListen();
+    const { answers } = await recovery.afterListen();
+    assert.equal(tries, 3);
+    assert.deepEqual(lost, []);
+    assert.deepEqual(answers.map((a) => a.outcome), ["kept"]);
+  });
+});
+
+test("別のサーバの Module に上限まで繋がらなければ、理由と結果の場所つきの「途中で終わりました」と届け直せる印——繋がったら一度だけ届け直す", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await remoteAwaiting(first.store, threadId, "r-remote", projectId);
+    const host = await boot(dir);
+    let reachable = false;
+    const { recovery, replyHandles, asked, lost } = recoveryOf(
+      host,
+      async (_t, q) => {
+        // 終わっていた仕事：答えを返したあと、同じ札で届ける（Shell の answerResume と同じ）
+        setImmediate(() => {
+          const h = replyHandles.use(q.items[0]!.replyTo, { moduleName: RESUMABLE }, { final: true });
+          assert.ok(!("error" in h), "覚え直した札が使えない");
+          assert.equal(h.afterLost, true, "打ち切った札の印が無い（題に添えられない）");
+          void host.deliveries
+            .deliver({ threadId, from: RESUMABLE, title: "起こし直しで途切れたあとに終わっていました：終わりました", text: "{}", hop: h.hop + 1 })
+            .then(async () => {
+              replyHandles.settle(q.items[0]!.replyTo);
+              await host.store.settleReply(threadId, q.items[0]!.replyTo);
+            });
+        });
+        return { answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })) };
+      },
+      {
+        connectLimitMs: 60,
+        remote: { [RESUMABLE]: "vm" },
+        unreachableReason: () => "ssh: connect to host 10.0.0.9 port 22: No route to host",
+        connect: async () => {
+          if (!reachable) throw new ModuleNotUpYetError("subagent を起こせませんでした");
+        },
+      },
+    );
+    await recovery.beforeListen();
+    const { answers } = await recovery.afterListen();
+    assert.deepEqual(answers.map((a) => a.outcome), ["lost"]);
+    assert.equal(lost.length, 1);
+    assert.match(lost[0]!, /別のサーバ「vm」に 1 秒繋がりませんでした：ssh: connect to host 10\.0\.0\.9 port 22: No route to host/);
+    const lostText = host.store.getThread(threadId)!.deliveries!.at(-1)!.text;
+    assert.match(lostText, /結果の場所：\/remote\/commands\/r-remote\/output\.log（別のサーバ「vm」の中）/);
+    assert.match(lostText, /繋がったら、そのときまでに終わっていた結果をこの会話に届け直します/);
+    assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length ?? 0, 0);
+    assert.deepEqual(host.store.getThread(threadId)!.redeliverableReplies?.map((r) => r.replyTo), ["r-remote"]);
+    // 読み直しても印は残る（Event Store）
+    assert.deepEqual((await boot(dir)).store.getThread(threadId)!.redeliverableReplies?.map((r) => r.replyTo), ["r-remote"]);
+
+    // ---- 繋がった：打ち切った札として問い、終わっていた結果が届く --------------------------------------------
+    reachable = true;
+    recovery.moduleConnected(`${RESUMABLE}-${projectId}`);
+    for (let i = 0; i < 100 && host.store.getThread(threadId)!.deliveries!.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(asked.length, 1);
+    assert.deepEqual(asked[0]!.q.items, [
+      { replyTo: "r-remote", toolName: "runSubagent", toolCallId: "toolu_r-remote", afterLost: true, thread: { projectId, threadId } },
+    ]);
+    const titles = host.store.getThread(threadId)!.deliveries!.map((d) => d.title);
+    assert.deepEqual(titles, [`${RESUMABLE} の仕事は途中で終わりました`, "起こし直しで途切れたあとに終わっていました：終わりました"]);
+    for (let i = 0; i < 100 && (host.store.getThread(threadId)!.awaitingReplies?.length ?? 0) > 0; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length ?? 0, 0);
+    assert.equal(host.store.getThread(threadId)!.redeliverableReplies?.length ?? 0, 0, "届け直せる印が残っている");
+
+    // ---- もう一度繋がっても二度は問わない（一度だけ） ------------------------------------------------------
+    recovery.moduleConnected(`${RESUMABLE}-${projectId}`);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(asked.length, 1, "二度問うた");
+    // 起き直した次の host も問わない
+    const again = await boot(dir);
+    const second = recoveryOf(again, async () => ({ answers: [] }), { remote: { [RESUMABLE]: "vm" } });
+    await second.recovery.beforeListen();
+    await second.recovery.afterListen();
+    assert.equal(second.asked.length, 0);
+  });
+});
+
+test("打ち切った札：Module が続けないと答えたら何も届けず片づける。また答えなければ届け直せる印を残し直す", async () => {
+  for (const [name, ask, keepsMark] of [
+    ["続けない", async (_t: ResumeTarget, q: ResumeQuestion) => ({ answers: [{ replyTo: q.items[0]!.replyTo, resume: false, reason: "記録がありません" }] }), false],
+    ["答えない", () => new Promise<unknown>(() => {}), true],
+  ] as const) {
+    await withDir(async ({ dir, first, threadId, projectId }) => {
+      await first.store.markReplyRedeliverable({ threadId, replyTo: "r-lost", connName: `${RESUMABLE}-${projectId}`, moduleName: RESUMABLE, hop: 1 });
+      const host = await boot(dir);
+      const { recovery, replyHandles, asked } = recoveryOf(host, ask, { askTimeoutMs: 30, remote: { [RESUMABLE]: "vm" } });
+      await recovery.beforeListen();
+      assert.equal(recovery.holdReason(threadId), undefined, `${name}：打ち切った札だけで Thread を留めた`);
+      await recovery.afterListen();
+      assert.equal(asked.length, 1, name);
+      assert.equal(asked[0]!.q.items[0]!.afterLost, true, name);
+      assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0, `${name}：何か届いた`);
+      assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length ?? 0, 0, name);
+      assert.equal(replyHandles.get("r-lost"), undefined, name);
+      assert.equal((host.store.getThread(threadId)!.redeliverableReplies?.length ?? 0) > 0, keepsMark, name);
+    });
+  }
+});
+
+test("別のサーバの Module に繋がるのを待っている Thread で人が送ったら待たせない（切れたターンの続きを先に積む）。ほかの Thread は待たずに解く", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    await remoteAwaiting(first.store, threadId, "r-remote", projectId);
+    const other = await first.store.forkThread(threadId, { fresh: true });
+    await awaiting(first.store, other.id, "r-local", "local-sub", projectId);
+    const host = await boot(dir);
+    const { recovery } = recoveryOf(host, async (_t, q) => ({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })) }), {
+      remote: { [RESUMABLE]: "vm" },
+      connectLimitMs: 1_000,
+      resumable: () => true,
+      connect: (t) => (t.moduleName === RESUMABLE ? new Promise<void>(() => {}) : Promise.resolve()),
+    });
+    await recovery.beforeListen();
+    const done = recovery.afterListen();
+    // この機械の Module の札だけを待っていた Thread は、別のサーバを待たずに解ける
+    for (let i = 0; i < 100 && recovery.holdReason(other.id) !== undefined; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(recovery.holdReason(other.id), undefined, "別のサーバの Module を待って、ほかの Thread まで留めている");
+    // 人が送ったターンは待たない（届いたものではまだ起こさない）
+    await recovery.waitFor(threadId);
+    assert.match(recovery.holdReason(threadId) ?? "", /別のサーバ「vm」/);
+    assert.deepEqual(recovery.keptReplies(threadId), [{ moduleName: RESUMABLE, waitingFor: "vm" }]);
+    // 上限で打ち切れば留めを解く（置き場を消す前に終わらせる）
+    await done;
+    assert.equal(recovery.holdReason(threadId), undefined);
   });
 });

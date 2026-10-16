@@ -2362,6 +2362,35 @@ banto 本体（host）が AI のターンの途中で止まって起き直した
       （札はもう使えないので、host は打ち切った札に限り、その札の属していた Thread への届けを一度だけ受け付ける——札ごとに
       「届け直せる」印を Event Store に残す）。まだ動いていれば、その札を続けている形に戻す。終わっていない・結果が無い
       ものは何もしない。Shell・Subagent・Factory の3つがこの口を持つ
+    - **形**（実装・2026-10-16、`delivery/restart-recovery.ts`）：
+      - **期限**：別のサーバの Module（札の Project が `remote:` の実行場所）は、繋がるまでの上限 30 分
+        （`REMOTE_CONNECT_LIMIT_MS`。送り込みが2分進まなければ `remote-ssh.ts` が先に打ち切る）と、繋がってからの 120 秒に
+        分ける。起こせない間（`connect` が `ModuleNotUpYetError`——cli.ts は試し直しの間の理由を添える）は 5 秒おきに試し直す。
+        この機械の Module は前どおり1つの期限（起こす時間も入れて 120 秒）
+      - **待つ間**：札に「続けています」の時刻（`reply.kept`）を先に付ける。留める理由は「別のサーバ「<名前>」の Module に
+        繋がるのを待っています」。**答えの出た接続から**その札だけを待っていた Thread を解く（別のサーバを待って、ほかの
+        Thread を留めない）。人が送ったら、切れたターンの続きを先に積み（「<Module> の仕事は、別のサーバ「<名前>」に繋がるのを
+        待っています」）すぐ始める——人のターンが続きを引き継ぐ
+      - **打ち切りの文**：「banto を起動し直したため（別のサーバ「<名前>」に <時間>繋がりませんでした：<SSH の理由>）」・
+        「…（別のサーバ「<名前>」で <Module> が <時間>たっても起きませんでした：<理由>）」・「…（別のサーバ「<名前>」の
+        <Module> が、繋がってから 120 秒たっても続けるかに答えませんでした）」。本文の終わりに「結果の場所：<場所>（別のサーバ
+        「<名前>」の中）。<Module> に繋がったら、そのときまでに終わっていた結果をこの会話に届け直します」。Module が
+        「続けない」と答えたものは前どおり（届け直さない）
+      - **届け直せる印**：Event Store の `reply.redeliverable`（Thread の `redeliverableReplies`。札そのものを持つので画面には
+        出さない）。Module が繋がったら（`finishModuleConnection` → `moduleConnected`）、印の札を問いの1件に `afterLost: true`
+        を付けて渡す（`ResumeQuestionItem`。起き直したときの問いの最中の接続なら、同じ問いに乗せる——Subagent は1回目の問いで
+        問われなかった記録を片づけるため、問いは Module ごとに1回）。問う直前に札を覚え直して返事待ちに戻す（`reply.awaiting`
+        が印を消す——一度だけ）。答えが「続ける」なら返事待ちのまま届くのを待つ。「続けない」なら何も届けずに片づけ、
+        答えが来なければ印を残し直す
+      - **題は host が添える**（改訂・2026-10-16——上の「Module は…として届ける」から変えた）：覚え直した打ち切った札で
+        届いたものは、host が題の頭に「起こし直しで途切れたあとに終わっていました：」を付ける。Module は前どおりの題で
+        届ける（Shell・Subagent は前どおりの答え方で済む。Factory だけ、終わって誰にも知らせていない実行の最後の知らせを
+        `afterLost` の札に届け直す口を足した）
+      - **結果の場所**：Shell は出力のファイルのパス、Subagent は「サブエージェントの仕事 <id>」、Factory は実行の id と各件の
+        worktree。host は `BackgroundWork.resultLocation` に残す
+      - 試験：単体 `turn-continuation.test.ts`（繋がるのが遅い・試し直し・打ち切りと届け直し・続けない・人を待たせない）・
+        Factory の `server.test.ts`・E2E `e2e/specs/remote-resume-restart.spec.ts`（Shell。線を絞って送り込みを 120 秒より
+        長くする・sshd を止めて上限を越えさせる。上限は `BANTO_RESUME_CONNECT_LIMIT_MS` で縮める）
   - **起動の順番**：待ち受けの前に、名乗らない Module の札（と、閉じた Thread・Project の札）は「途中で終わりました」、
     名乗った Module の札は同じ印で覚え直す（問う前に——すぐ終わって届けても受けられる）。名乗った Module の札を持たない
     Thread の切れたターンはここで片づける。**待ち受けのあと**、名乗った Module を（Project の Module ならその Project で）

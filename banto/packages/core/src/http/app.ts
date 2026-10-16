@@ -1151,7 +1151,8 @@ function judgmentCardsOf(inbox: InboxStore, ids: readonly string[]) {
 }
 
 function toThreadDetail(thread: ThreadState, inbox: InboxStore) {
-  const { awaitingReplies, ...rest } = thread;
+  // 届け直せる札（Backlog #324）も札そのものを持つ——画面には出さない
+  const { awaitingReplies, redeliverableReplies: _redeliverable, ...rest } = thread;
   return {
     ...rest,
     // 中継の承認のカード：記録の id に、受信箱の中身を添える（`judgmentIds` は画面に渡さない）

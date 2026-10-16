@@ -171,6 +171,33 @@ test("起き直したあと問われないまま待ちの上限を越えたら�
   }
 });
 
+test("打ち切られた札（afterLost）で問われたら、終わっていて誰にも知らせていない実行の最後の知らせを届け直す（Backlog #324）", async () => {
+  const h = setup();
+  try {
+    const first = await h.start();
+    const { runId } = JSON.parse((await first.call("runFactory", { items: ["a"] }, runMeta)).text) as { runId: string };
+    await until(() => h.held.length === 1, "実装役に頼まない");
+    h.state.holdImplementer = false;
+    // host が繋がらないまま打ち切った：問いが来ないまま待ちの上限を越え、実行は終わったが知らせられなかった
+    const second = await h.start({ resumeAskWaitMs: 200 });
+    for (const r of h.held.splice(0)) second.factory.receiveReply({ replyId: r.replyId, from: "subagent", title: "終わりました", text: JSON.stringify(r.body), final: true, lost: false });
+    await until(() => (second.factory.get(runId)?.notifyErrors.length ?? 0) > 0, "知らせられなかったことが残らない");
+    // あとで繋がり、打ち切った札として問われた
+    const answered = await second.call(RESUME_AFTER_RESTART_TOOL, { items: [{ ...ask("rt_run").items[0]!, afterLost: true }] });
+    assert.deepEqual(JSON.parse(answered.text), { answers: [{ replyTo: "rt_run", resume: true }] });
+    await until(() => h.delivered.length === 1, "終わっていた結果を届け直さない");
+    assert.equal(h.delivered[0]!.replyTo, "rt_run");
+    assert.equal(h.delivered[0]!.final, true);
+    assert.match(h.delivered[0]!.title, /^Factory の実行が終わりました（取り込み 1／1 件）/);
+    // もう一度問われても二度は届けない（引き継いだことを知らせて閉じる口に回る）
+    await second.call(RESUME_AFTER_RESTART_TOOL, { items: [{ ...ask("rt_run2").items[0]!, afterLost: true }] });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(h.delivered.filter((d) => /^Factory の実行が終わりました/.test(d.title)).length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("止まって人を待っていた1件は、起き直して流し直しても「止まりました」を届け直さない（札は最後の知らせに残す）", async () => {
   const h = setup({ testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 } });
   try {

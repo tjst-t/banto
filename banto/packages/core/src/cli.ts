@@ -97,7 +97,7 @@ import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./deliv
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS } from "./http/turn-summary.js";
-import { RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
+import { ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import {
@@ -491,13 +491,17 @@ async function main(): Promise<void> {
   async function deliverLostReply(
     reply: { threadId: string; replyTo: string; moduleName: string; hop: number },
     why: string,
+    opts: { note?: string } = {},
   ): Promise<void> {
     try {
       await deliveries.deliver({
         threadId: reply.threadId,
         from: reply.moduleName,
         title: `${reply.moduleName} の仕事は途中で終わりました`,
-        text: `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。結果が要るなら、頼み直してください。`,
+        // 別のサーバの Module に繋がらないまま打ち切ったもの（Backlog #324）は、結果の場所と、繋がったら届け直すことを添える
+        text: opts.note
+          ? `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、いまは届きません——${why}。${opts.note}。`
+          : `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。結果が要るなら、頼み直してください。`,
         hop: reply.hop,
         kind: "banto",
       });
@@ -572,7 +576,8 @@ async function main(): Promise<void> {
       if (declaration.meta.scope === "project" && !project) throw new Error(`${moduleName} を起こす Project が分かりません`);
       const got = await connectDeclaredModule(declaration, declaration.meta.scope === "project" ? project : undefined);
       if (signal.aborted) throw signal.reason;
-      if (!got) throw new Error(`${moduleName} を起こせませんでした`);
+      // 起きなかった——別のサーバの Module なら、繋がるのを待つ上限まで試し直す（`RestartRecovery`、Backlog #324）
+      if (!got) throw new ModuleNotUpYetError(`${moduleName} を起こせませんでした${connectBackoff.failure(connName) ? `（${connectBackoff.failure(connName)!.reason}）` : ""}`);
       if (got !== connName) throw new Error(`${moduleName} の接続（${got}）が札を渡した接続（${connName}）と違います`);
       const client = connectedModules.get(got);
       if (!client) throw new Error(`${moduleName} に繋がっていません`);
@@ -591,6 +596,12 @@ async function main(): Promise<void> {
     },
     deliverLost: deliverLostReply,
     publishBackground,
+    // **別のサーバの Module は繋がってから期限を数える**（Backlog #324）
+    remoteOf: ({ projectId }) => (projectId !== undefined ? remoteNameOf(projectThread.getProject(projectId)?.runtime) : undefined),
+    unreachableReason: (runtimeName) => remoteOutage.unreachableReason(runtimeName),
+    isConnected: (connName) => connectedModules.has(connName),
+    // E2E だけが縮める（繋がらないまま上限を越えたときを見る）
+    ...(Number(process.env.BANTO_RESUME_CONNECT_LIMIT_MS) > 0 ? { connectLimitMs: Number(process.env.BANTO_RESUME_CONNECT_LIMIT_MS) } : {}),
   });
   logTurns(await recovery.beforeListen());
 
@@ -613,8 +624,8 @@ async function main(): Promise<void> {
     // **返信用の札**（決定・2026-09-25）。ホップ数は、札を出したターンのもの（人が送ったターン＝0）
     replies: {
       issue: (input) => replyHandles.issue({ ...input, hop: threadTurns.hopOf(input.threadId) ?? 0 }),
-      markAwaiting: async (replyTo, waitingOn) => {
-        const h = replyHandles.markAwaiting(replyTo, waitingOn);
+      markAwaiting: async (replyTo, waitingOn, resultLocation) => {
+        const h = replyHandles.markAwaiting(replyTo, waitingOn, resultLocation);
         if (!h) return;
         await projectThread.recordAwaitingReply({
           threadId: h.threadId,
@@ -1704,6 +1715,8 @@ async function main(): Promise<void> {
     if (token !== undefined) moduleTokens.set(connName, token);
     // **この Module 宛ての返事が残っていれば渡す**（追加・2026-10-05）——止まっている間に届いたもの・前の走行の「途中で終わりました」
     void moduleReplies.handPending(connName).catch(() => undefined);
+    // **起こし直しで打ち切った札があれば、届け直させる**（追加・2026-10-16、Backlog #324）
+    recovery?.moduleConnected(connName);
     if (project) {
       const forThisProject = projectConnections.get(project.id) ?? new Set<string>();
       forThisProject.add(connName);
@@ -2111,7 +2124,8 @@ async function main(): Promise<void> {
       const r = await deliveries.deliver({
         threadId: h.threadId,
         from: caller.moduleName,
-        title: input.title,
+        // 打ち切った札を繋がったあと覚え直したもの（Backlog #324）——頼んだ Thread にはもう「途中で終わりました」が届いている
+        title: h.afterLost ? `起こし直しで途切れたあとに終わっていました：${input.title}` : input.title,
         text: input.text,
         hop: h.hop + 1,
       });

@@ -29,6 +29,22 @@
 // 起こす・問いを送る）が走り続け、host が「途中で終わりました」を届けて札を片づけたあとに問いが届き、Module だけが
 // 続けて結果が誰にも届かない。起こす・問うの両方に打ち切りの合図を渡し、**問いを送る直前に**期限と札の状態を見る。
 
+//
+// **別のサーバの Module は繋がるまで待つ**（決定・2026-10-16、ユーザー。Backlog #324）：banto を更新すると別のサーバへ新しい
+// 版のコードを送ってから Module を起こすので、120 秒の期限に間に合わず、向こうで動き続けている仕事が「途中で終わりました」に
+// なっていた。別のサーバの Module では期限を2つに分ける——繋がるまで（`REMOTE_CONNECT_LIMIT_MS`、送り込みが止まったら
+// `remote-ssh.ts` が先に打ち切る）と、繋がってから答えるまで（120 秒）。この機械のコンテナの Module は今どおり1つの期限。
+// 繋がるのを待つ間、札は「起こし直しのあと続けています」の形で出し続け、Thread は届いたもので起こさない——ただし人が
+// その Thread で送ったら待たずにターンを始める（切れたターンの続きを先に積み、人のターンが引き継ぐ）。
+//
+// **打ち切ったら、届け直せる印を残す**：別のサーバの Module に繋がらない・答えないまま打ち切った Thread 宛ての札は、
+// 「途中で終わりました」に理由と結果の場所（札を出したときに Module が名乗った `dev.banto/resultLocation`）を添え、
+// Event Store に「届け直せる」印（`reply.redeliverable`）を残す。あとでその Module が繋がったら（`moduleConnected`）、
+// 印の札を「打ち切った札」（`afterLost`）として同じ問いで渡す。問う直前に札を覚え直して返事待ちに戻す——印はここで
+// 使い切る（一度だけ）。Module が「続ける」と答えれば、終わっていればすぐ・動いていれば終わったときに、その札で届く
+// （題に「起こし直しで途切れたあとに終わっていました」が付く——cli.ts）。続けないと答えたら何も届けずに片づける。
+// また繋がらなければ印を残し直す。
+
 import { parseResumeAnswers, type ResumeAnswer, type ResumeQuestion, type ResumeQuestionItem } from "@banto/module-contract";
 import type { InboxStore } from "../inbox/store.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
@@ -37,8 +53,18 @@ import type { ModuleAwaitingReply } from "./module-replies.js";
 import type { ThreadDeliveries } from "./thread-deliveries.js";
 import { resumeInterruptedTurns, type SessionReader, type TurnContinuationDeps } from "./turn-continuation.js";
 
-/** Module に問うのを待つ上限（起こす時間も入れて）。過ぎたら打ち切って「途中で終わりました」 */
+/** Module に問うのを待つ上限（この機械の Module は起こす時間も入れて、別のサーバの Module は繋がってから）。過ぎたら打ち切る */
 export const RESUME_ASK_TIMEOUT_MS = 120_000;
+/** 別のサーバの Module に繋がるのを待つ上限（経路が途切れている等）。送り込みが止まったときは `remote-ssh.ts` が先に打ち切る */
+export const REMOTE_CONNECT_LIMIT_MS = 30 * 60_000;
+/** 別のサーバの Module を起こせなかったとき、次に試すまでの間 */
+const REMOTE_CONNECT_RETRY_MS = 5_000;
+
+/**
+ * **まだ起きていない**（追加・2026-10-16、Backlog #324）。`connect` がこれを投げたら、別のサーバの Module では待って試し直す
+ * （繋がるのを待つ上限まで）。ほかの失敗（宣言が無い等）は待たずに打ち切る
+ */
+export class ModuleNotUpYetError extends Error {}
 
 /** 問う相手（札を渡した Module の接続） */
 export interface ResumeTarget {
@@ -61,6 +87,8 @@ type PendingReply =
       /** 届いたときのホップ（札を出したターンのホップ＋1） */
       hop: number;
       work?: BackgroundWork;
+      /** 打ち切った札（届け直せる印から）。Thread は留めない——「途中で終わりました」はもう届いている */
+      afterLost?: boolean;
     }
   | {
       kind: "module";
@@ -86,15 +114,28 @@ export interface RestartRecoveryDeps {
   /** その Module が「起こし直しても続けられる」と名乗っているか（宣言で見る——起こさずに分かる） */
   resumable(target: { moduleName: string; projectId?: string }): boolean;
   /**
-   * その Module を（Project の Module ならその Project で）起こして繋ぐ。起こせなければ投げる。`signal` が立ったら
-   * やめる（間に合わなければ、繋がったあと問いを送らない——ここが見る）
+   * その Module を（Project の Module ならその Project で）起こして繋ぐ。起こせなければ投げる（まだ起きていないだけなら
+   * `ModuleNotUpYetError`）。`signal` が立ったらやめる（間に合わなければ、繋がったあと問いを送らない——ここが見る）
    */
   connect(target: ResumeTarget, signal: AbortSignal): Promise<{ ask(question: ResumeQuestion, signal: AbortSignal): Promise<unknown> }>;
-  /** Thread 宛ての札に「途中で終わりました」を届けて札を片づける（cli.ts の `deliverLostReply`） */
-  deliverLost(reply: { threadId: string; replyTo: string; moduleName: string; hop: number }, why: string): Promise<void>;
+  /**
+   * 「途中で終わりました」を届けて札を片づける（cli.ts の `deliverLostReply`）。`note` は、打ち切った札を繋がったあと
+   * 届け直すときに添える文（結果の場所・届け直すこと）
+   */
+  deliverLost(reply: { threadId: string; replyTo: string; moduleName: string; hop: number }, why: string, opts?: { note?: string }): Promise<void>;
   /** バックグラウンドの印を描き直させる */
   publishBackground(threadId: string): void;
+  /** その Module が別のサーバで動くなら、その実行場所の名前（この機械なら undefined）。無ければみなこの機械 */
+  remoteOf?(target: ResumeTarget): string | undefined;
+  /** その実行場所に SSH で繋がらないなら、その理由（`remote-outage.ts`） */
+  unreachableReason?(runtimeName: string): string | undefined;
+  /** その接続がいま繋がっているか（打ち切ったあと、もう繋がっていればすぐ届け直す） */
+  isConnected?(connName: string): boolean;
   askTimeoutMs?: number;
+  /** 別のサーバの Module に繋がるのを待つ上限（既定 `REMOTE_CONNECT_LIMIT_MS`。E2E が縮める） */
+  connectLimitMs?: number;
+  /** 起こせなかったとき、次に試すまでの間（既定 5 秒。試験が縮める） */
+  connectRetryMs?: number;
 }
 
 type TurnResults = Awaited<ReturnType<typeof resumeInterruptedTurns>>;
@@ -105,20 +146,43 @@ export interface ReplyOutcome {
   replyTo: string;
   /** Thread 宛てならその Thread、Module 宛てなら呼び元の Module */
   to: { threadId: string } | { module: string };
-  /** kept：続けると答えた（札を覚え直した）／lost：「途中で終わりました」を届けた／settled：答えの前に済んでいた */
+  /**
+   * kept：続けると答えた（札を覚え直した）／lost：「途中で終わりました」を届けた／settled：答えの前に済んでいた。
+   * 打ち切った札（`afterLost`）は、kept：届け直す／lost：届け直さない（続けないと答えた・また繋がらなかった——`why`）
+   */
   outcome: "kept" | "lost" | "settled";
   why?: string;
+  afterLost?: boolean;
+}
+
+/** 問いの失敗。`cause` で「途中で終わりました」の理由を書き分ける */
+interface AskFailure {
+  error: string;
+  /** 別のサーバの Module で打ち切った（繋がらなかった・起きなかった・答えなかった）——届け直せる */
+  gaveUp?: boolean;
 }
 
 export class RestartRecovery {
   /** 判定を待っている札（接続ごと） */
   private readonly groups = new Map<string, PendingReply[]>();
+  /** 判定の終わった接続 */
+  private readonly finished = new Set<string>();
+  /** 問っている最中の接続（起き直したときの判定・届け直し）。同じ Module に2つの問いを並べない */
+  private readonly inFlight = new Set<string>();
+  /** 別のサーバの Module に繋がるのを待っている接続 → 実行場所 */
+  private readonly waitingRemote = new Map<string, string>();
   /** 判定が終わるまで留める Thread と、終わったら解く約束 */
   private readonly held = new Map<string, { done: Promise<void>; resolve: () => void }>();
+  /** 人が送ったので、切れたターンを先に片づけた Thread（その片づけの終わり） */
+  private readonly releasedForHuman = new Map<string, Promise<void>>();
   /** 続けると答えた Module（Thread ごと） */
   private readonly kept = new Map<string, Set<string>>();
   /** 判定の間に済んだ札とその済み方（届いた・「途中で終わりました」） */
   private readonly settled = new Map<string, "delivered" | "lost">();
+  /** 打ち切った札のうち、問う前に覚え直して返事待ちに戻したもの */
+  private readonly prepared = new Set<string>();
+  /** 切れたターンの片づけは1本ずつ（同じターンを2回見ない） */
+  private turnChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly deps: RestartRecoveryDeps) {}
 
@@ -162,6 +226,9 @@ export class RestartRecovery {
         }
       }
     }
+    // **届け直せる札**（前の走行で打ち切ったもの、Backlog #324）も同じ問いに乗せる——Module ごとに問いは1回（Subagent は
+    // 問われなかった記録を片づける）。Thread は留めない。覚え直すのは問う直前（`askOne`）
+    for (const r of this.redeliverable()) this.pend(r);
     // **Module 宛ての札**（追加・2026-10-05、上の注記）。Thread は留めない（Thread の続きとは関わらない）
     for (const a of this.deps.moduleReplies?.awaiting() ?? []) {
       // **呼び元も名乗っていなければ問わない**（改訂・2026-10-05、Fable のレビュー）：呼び元は名乗っていなければ自分の
@@ -192,71 +259,47 @@ export class RestartRecovery {
     return resumeInterruptedTurns(this.turnDeps(), (threadId) => !this.held.has(threadId));
   }
 
-  /** 2段目（待ち受けの後）。名乗った Module に問い、残りの切れたターンを片づけ、留めを解く。投げない */
+  /**
+   * 2段目（待ち受けの後）。名乗った Module に問い、**答えの出た接続から**、その札だけを待っていた Thread の切れたターンを
+   * 片づけて留めを解く（別のサーバの Module に繋がるのを待つ間、ほかの Thread を待たせない）。投げない
+   */
   async afterListen(): Promise<{ answers: ReplyOutcome[]; turns: TurnResults }> {
     const answers: ReplyOutcome[] = [];
-    let turns: TurnResults = [];
+    const turns: TurnResults = [];
     try {
       await Promise.all(
-        [...this.groups.values()].map(async (replies) => {
-          const target = targetOf(replies);
-          const got = await this.askOne(target, replies);
-          for (const r of replies) {
-            const to = r.kind === "thread" ? { threadId: r.threadId } : { module: r.toModule.moduleName };
-            // 判定の間に札が済んだ：答えの前に最後の届けが済んだか、Module が止まって「途中で終わりました」を届けた
-            if (this.deps.replyHandles.get(r.replyTo) === undefined) {
-              const how = this.settled.get(r.replyTo);
-              answers.push({
-                target,
-                replyTo: r.replyTo,
-                to,
-                outcome: "settled",
-                why:
-                  how === "delivered"
-                    ? "答えの前に最後の届けが済んだ"
-                    : how === "lost"
-                      ? "答えの前に Module が止まり、「途中で終わりました」を届けた"
-                      : "答えの前に札が済んだ（済み方は分からない）",
-              });
-              continue;
-            }
-            const answer = "error" in got ? undefined : got.answers.get(r.replyTo);
-            if (answer?.resume) {
-              if (r.kind === "thread") {
-                const modules = this.kept.get(r.threadId) ?? new Set<string>();
-                modules.add(target.moduleName);
-                this.kept.set(r.threadId, modules);
-                await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo).catch((err: unknown) =>
-                  console.warn(`[host] ${r.threadId} の札を「続けています」にできませんでした:`, err),
-                );
-                this.deps.publishBackground(r.threadId);
-              }
-              // Module 宛ての札は、返事待ち（module-replies）に残ったまま待ち続ける
-              answers.push({ target, replyTo: r.replyTo, to, outcome: "kept" });
-              continue;
-            }
-            const why =
-              "error" in got
-                ? `banto を起動し直したため（${target.moduleName} に続けるかを聞けませんでした：${got.error}）`
-                : answer
-                  ? `banto を起動し直したため（${target.moduleName} が続けられないと答えました：${(answer as Extract<ResumeAnswer, { resume: false }>).reason}）`
-                  : `banto を起動し直したため（${target.moduleName} がこの仕事について答えませんでした）`;
-            await this.lose(r, why);
-            answers.push({ target, replyTo: r.replyTo, to, outcome: "lost", why });
+        [...this.groups].map(async ([connName, replies]) => {
+          this.inFlight.add(connName);
+          try {
+            const target = targetOf(replies);
+            answers.push(...(await this.judge(target, replies, await this.askOne(target, replies))));
+          } catch (err) {
+            console.warn(`[host] 起き直したときの ${connName} の札の判定が途中で失敗しました（留めた Thread は解きます）:`, err);
+          } finally {
+            this.inFlight.delete(connName);
+            this.finished.add(connName);
+            turns.push(...(await this.releaseThreadsOf(replies)));
+            // 打ち切ったあと、もう繋がっていれば（打ち切った直後に繋がった）すぐ届け直す
+            if (this.deps.isConnected?.(connName)) void this.redeliverTo(connName);
           }
         }),
       );
-      turns = await resumeInterruptedTurns(this.turnDeps(), (threadId) => this.held.has(threadId));
     } catch (err) {
       console.warn("[host] 起き直したときの札の判定が途中で失敗しました（留めた Thread は解きます）:", err);
     } finally {
-      for (const [threadId, h] of this.held) {
-        this.held.delete(threadId);
-        h.resolve();
-        this.deps.deliveries.kick(threadId);
-      }
+      for (const threadId of [...this.held.keys()]) this.release(threadId);
     }
     return { answers, turns };
+  }
+
+  /**
+   * **Module が繋がった**（cli.ts の `finishModuleConnection` が呼ぶ。追加・2026-10-16、Backlog #324）。その接続に届け直せる札
+   * があれば、打ち切った札として問う。起き直したときの判定の最中なら何もしない——その問いに乗っているか、判定の終わりに
+   * もう一度見る
+   */
+  moduleConnected(connName: string): void {
+    if (this.inFlight.has(connName) || (this.groups.has(connName) && !this.finished.has(connName))) return;
+    void this.redeliverTo(connName);
   }
 
   /**
@@ -268,25 +311,248 @@ export class RestartRecovery {
 
   /** 判定の終わっていない Thread を届いたもので起こさない理由（`ThreadDeliveries` の `hold`） */
   holdReason(threadId: string): string | undefined {
-    return this.held.has(threadId)
-      ? "banto を起こし直したあと、この会話で頼んだ仕事を続けるかを Module に聞いています（終わったら起こします）"
-      : undefined;
+    if (!this.held.has(threadId)) return undefined;
+    const remote = this.remoteWaitsOf(threadId)[0];
+    return remote
+      ? `banto を起こし直したあと、この会話で頼んだ仕事を続けるかを聞くため、別のサーバ「${remote.runtime}」の Module に繋がるのを待っています（終わったら起こします）`
+      : "banto を起こし直したあと、この会話で頼んだ仕事を続けるかを Module に聞いています（終わったら起こします）";
   }
 
-  /** 人が送ったターンは、その Thread の判定が終わるまで待ってから始める */
+  /**
+   * 人が送ったターンは、その Thread の判定が終わるまで待ってから始める。**別のサーバの Module に繋がるのを待っているなら
+   * 待たせない**（Backlog #324——繋がるまで何分もかかりうる）：切れたターンの続きを先に積み（人のターンが引き継ぐ）、
+   * すぐ始める。札は待ち続け、届いたものでは起こさないまま
+   */
   waitFor(threadId: string): Promise<void> {
-    return this.held.get(threadId)?.done ?? Promise.resolve();
+    const h = this.held.get(threadId);
+    if (!h) return Promise.resolve();
+    if (this.remoteWaitsOf(threadId).length === 0) return h.done;
+    let released = this.releasedForHuman.get(threadId);
+    if (!released) {
+      released = this.resumeTurnsOf(new Set([threadId])).then(
+        (results) => logHumanRelease(threadId, results),
+        (err: unknown) => console.warn(`[host] ${threadId} の切れたターンを片づけられませんでした:`, err),
+      );
+      this.releasedForHuman.set(threadId, released);
+    }
+    return released;
   }
 
-  /** 続けると答えた Module（その Thread の分）。切れたターンの続きの文に「続いています」と書く */
-  keptReplies(threadId: string): Array<{ moduleName: string }> {
-    return [...(this.kept.get(threadId) ?? [])].map((moduleName) => ({ moduleName }));
+  /** 続けると答えた Module（その Thread の分）と、繋がるのを待っている別のサーバの Module。切れたターンの続きの文に書く */
+  keptReplies(threadId: string): Array<{ moduleName: string; waitingFor?: string }> {
+    return [
+      ...[...(this.kept.get(threadId) ?? [])].map((moduleName) => ({ moduleName })),
+      ...this.remoteWaitsOf(threadId).map((w) => ({ moduleName: w.moduleName, waitingFor: w.runtime })),
+    ];
   }
 
   private pend(r: PendingReply): void {
     const group = this.groups.get(r.connName) ?? [];
     group.push(r);
     this.groups.set(r.connName, group);
+  }
+
+  /** その Thread の札で、別のサーバの Module に繋がるのを待っているもの */
+  private remoteWaitsOf(threadId: string): Array<{ moduleName: string; runtime: string }> {
+    const out: Array<{ moduleName: string; runtime: string }> = [];
+    for (const [connName, runtime] of this.waitingRemote) {
+      const replies = this.groups.get(connName) ?? [];
+      const r = replies.find((x) => x.kind === "thread" && !x.afterLost && x.threadId === threadId);
+      if (r && !out.some((o) => o.moduleName === r.moduleName)) out.push({ moduleName: r.moduleName, runtime });
+    }
+    return out;
+  }
+
+  /** 届け直せる札（開いている Thread・Project の、名乗った Module のもの）。`connName` を渡せばその接続の分だけ */
+  private redeliverable(connName?: string): PendingReply[] {
+    const out: PendingReply[] = [];
+    for (const p of this.deps.projectThread.listProjects()) {
+      if (p.status === "closed") continue;
+      for (const t of this.deps.projectThread.listThreadsForProject(p.id)) {
+        if (t.status === "closed") continue;
+        for (const r of t.redeliverableReplies ?? []) {
+          if (connName !== undefined && r.connName !== connName) continue;
+          if (!this.deps.resumable({ moduleName: r.moduleName, projectId: p.id })) continue;
+          out.push({
+            kind: "thread",
+            replyTo: r.replyTo,
+            moduleName: r.moduleName,
+            connName: r.connName,
+            projectId: p.id,
+            threadId: t.id,
+            hop: r.hop,
+            ...(r.work ? { work: r.work } : {}),
+            afterLost: true,
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** 繋がったあと、その接続の届け直せる札を問う（打ち切った札として）。投げない */
+  private async redeliverTo(connName: string): Promise<void> {
+    if (this.inFlight.has(connName)) return;
+    const replies = this.redeliverable(connName);
+    if (replies.length === 0) return;
+    this.inFlight.add(connName);
+    try {
+      const target = targetOf(replies);
+      for (const a of await this.judge(target, replies, await this.askOne(target, replies))) {
+        console.log(
+          `[host] 打ち切った札を ${a.target.moduleName} に問い直した（Thread ${"threadId" in a.to ? a.to.threadId : a.to.module}）→ ` +
+            (a.outcome === "kept" ? "届け直す（終わっていれば今、動いていれば終わったら）" : a.outcome === "settled" ? "もう届いた" : `届け直さない（${a.why}）`),
+        );
+      }
+    } catch (err) {
+      console.warn(`[host] ${connName} に打ち切った札を問い直せませんでした:`, err);
+    } finally {
+      this.inFlight.delete(connName);
+    }
+  }
+
+  /** 答えを札ごとに片づける */
+  private async judge(target: ResumeTarget, replies: readonly PendingReply[], got: { answers: Map<string, ResumeAnswer> } | AskFailure): Promise<ReplyOutcome[]> {
+    const out: ReplyOutcome[] = [];
+    const remote = this.deps.remoteOf?.(target);
+    for (const r of replies) {
+      const to = r.kind === "thread" ? { threadId: r.threadId } : { module: r.toModule.moduleName };
+      if (r.kind === "thread" && r.afterLost) {
+        out.push({ target, replyTo: r.replyTo, to, afterLost: true, ...(await this.judgeAfterLost(r, got)) });
+        continue;
+      }
+      // 判定の間に札が済んだ：答えの前に最後の届けが済んだか、Module が止まって「途中で終わりました」を届けた
+      if (this.deps.replyHandles.get(r.replyTo) === undefined) {
+        const how = this.settled.get(r.replyTo);
+        out.push({
+          target,
+          replyTo: r.replyTo,
+          to,
+          outcome: "settled",
+          why:
+            how === "delivered"
+              ? "答えの前に最後の届けが済んだ"
+              : how === "lost"
+                ? "答えの前に Module が止まり、「途中で終わりました」を届けた"
+                : "答えの前に札が済んだ（済み方は分からない）",
+        });
+        continue;
+      }
+      const answer = "error" in got ? undefined : got.answers.get(r.replyTo);
+      if (answer?.resume) {
+        if (r.kind === "thread") {
+          const modules = this.kept.get(r.threadId) ?? new Set<string>();
+          modules.add(target.moduleName);
+          this.kept.set(r.threadId, modules);
+          await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo).catch((err: unknown) =>
+            console.warn(`[host] ${r.threadId} の札を「続けています」にできませんでした:`, err),
+          );
+          this.deps.publishBackground(r.threadId);
+        }
+        // Module 宛ての札は、返事待ち（module-replies）に残ったまま待ち続ける
+        out.push({ target, replyTo: r.replyTo, to, outcome: "kept" });
+        continue;
+      }
+      // **別のサーバの Module で打ち切った**（繋がらない・起きない・答えない）：理由と結果の場所を添え、届け直せる印を残す
+      const gaveUp = remote !== undefined && ("error" in got ? got.gaveUp === true : answer === undefined);
+      const why =
+        "error" in got
+          ? remote !== undefined
+            ? `banto を起動し直したため（${got.error}）`
+            : `banto を起動し直したため（${target.moduleName} に続けるかを聞けませんでした：${got.error}）`
+          : answer
+            ? `banto を起動し直したため（${target.moduleName} が続けられないと答えました：${(answer as Extract<ResumeAnswer, { resume: false }>).reason}）`
+            : `banto を起動し直したため（${target.moduleName} がこの仕事について答えませんでした）`;
+      if (gaveUp && r.kind === "thread") {
+        await this.deps.projectThread
+          .markReplyRedeliverable({
+            threadId: r.threadId,
+            replyTo: r.replyTo,
+            connName: r.connName,
+            moduleName: r.moduleName,
+            hop: r.hop,
+            ...(r.work ? { work: r.work } : {}),
+          })
+          .catch((err: unknown) => console.warn(`[host] ${r.threadId} の札に届け直せる印を残せませんでした:`, err));
+        const location = r.work?.resultLocation;
+        await this.deps.deliverLost({ threadId: r.threadId, replyTo: r.replyTo, moduleName: r.moduleName, hop: r.hop }, why, {
+          note:
+            (location ? `結果の場所：${location}（別のサーバ「${remote}」の中）。` : "") +
+            `${target.moduleName} に繋がったら、そのときまでに終わっていた結果をこの会話に届け直します`,
+        });
+      } else {
+        await this.lose(r, why);
+      }
+      out.push({ target, replyTo: r.replyTo, to, outcome: "lost", why });
+    }
+    return out;
+  }
+
+  /** 打ち切った札の答え。届け直さないなら札を黙って片づける（「途中で終わりました」はもう届いている） */
+  private async judgeAfterLost(
+    r: Extract<PendingReply, { kind: "thread" }>,
+    got: { answers: Map<string, ResumeAnswer> } | AskFailure,
+  ): Promise<Pick<ReplyOutcome, "outcome" | "why">> {
+    // 問う前に打ち切った（繋がらなかった）——印は残っている
+    if (!this.prepared.has(r.replyTo)) return { outcome: "lost", why: "error" in got ? `また打ち切りました（${got.error}）。届け直せる印は残します` : "問いに載せませんでした" };
+    this.prepared.delete(r.replyTo);
+    // 問いの間に届いた（Module がすぐ届けた）
+    if (this.deps.replyHandles.get(r.replyTo) === undefined) return { outcome: "settled", why: "答えの前に届いた" };
+    const answer = "error" in got ? undefined : got.answers.get(r.replyTo);
+    if (answer?.resume) {
+      await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo).catch(() => undefined);
+      this.deps.publishBackground(r.threadId);
+      return { outcome: "kept" };
+    }
+    this.deps.replyHandles.settle(r.replyTo);
+    await this.deps.projectThread.settleReply(r.threadId, r.replyTo).catch(() => undefined);
+    if ("error" in got) {
+      // また答えが来なかった——次に繋がったときにもう一度
+      await this.deps.projectThread
+        .markReplyRedeliverable({ threadId: r.threadId, replyTo: r.replyTo, connName: r.connName, moduleName: r.moduleName, hop: r.hop, ...(r.work ? { work: r.work } : {}) })
+        .catch((err: unknown) => console.warn(`[host] ${r.threadId} の札に届け直せる印を残し直せませんでした:`, err));
+    }
+    this.deps.publishBackground(r.threadId);
+    return {
+      outcome: "lost",
+      why: "error" in got ? `答えが来ませんでした（${got.error}）。届け直せる印は残します` : answer ? `続けないと答えました：${(answer as Extract<ResumeAnswer, { resume: false }>).reason}` : "この札について答えませんでした",
+    };
+  }
+
+  /** その接続の札を待っていた Thread のうち、ほかの接続の判定も終わったものの切れたターンを片づけ、留めを解く */
+  private async releaseThreadsOf(replies: readonly PendingReply[]): Promise<TurnResults> {
+    const ready = new Set<string>();
+    for (const r of replies) {
+      if (r.kind !== "thread" || r.afterLost || !this.held.has(r.threadId)) continue;
+      const waiting = [...this.groups].some(
+        ([conn, rs]) => !this.finished.has(conn) && rs.some((x) => x.kind === "thread" && !x.afterLost && x.threadId === r.threadId),
+      );
+      if (!waiting) ready.add(r.threadId);
+    }
+    if (ready.size === 0) return [];
+    let results: TurnResults = [];
+    try {
+      results = await this.resumeTurnsOf(ready);
+    } catch (err) {
+      console.warn("[host] 切れたターンを片づけられませんでした（留めた Thread は解きます）:", err);
+    }
+    for (const threadId of ready) this.release(threadId);
+    return results;
+  }
+
+  private release(threadId: string): void {
+    const h = this.held.get(threadId);
+    if (!h) return;
+    this.held.delete(threadId);
+    h.resolve();
+    this.deps.deliveries.kick(threadId);
+  }
+
+  /** 切れたターンを片づける（1本ずつ） */
+  private resumeTurnsOf(threadIds: ReadonlySet<string>): Promise<TurnResults> {
+    const run = this.turnChain.then(() => resumeInterruptedTurns(this.turnDeps(), (threadId) => threadIds.has(threadId)));
+    this.turnChain = run.catch(() => undefined);
+    return run;
   }
 
   private async lose(r: PendingReply, why: string): Promise<void> {
@@ -303,25 +569,121 @@ export class RestartRecovery {
     return { projectThread, inbox, deliveries, ...(sessions ? { sessions } : {}), keptReplies: (id) => this.keptReplies(id) };
   }
 
-  private async askOne(target: ResumeTarget, replies: readonly PendingReply[]): Promise<{ answers: Map<string, ResumeAnswer> } | { error: string }> {
-    const limit = this.deps.askTimeoutMs ?? RESUME_ASK_TIMEOUT_MS;
+  /** 打ち切った札を、問う直前に覚え直して返事待ちに戻す（届け直せる印はここで使い切る） */
+  private async prepareAfterLost(r: Extract<PendingReply, { kind: "thread" }>): Promise<boolean> {
+    const thread = this.deps.projectThread.getThread(r.threadId);
+    if (!thread?.redeliverableReplies?.some((x) => x.replyTo === r.replyTo)) return false;
+    this.deps.replyHandles.restore(
+      r.replyTo,
+      {
+        threadId: r.threadId,
+        projectId: r.projectId,
+        connName: r.connName,
+        moduleName: r.moduleName,
+        hop: Math.max(0, r.hop - 1),
+        ...(r.work ? { work: r.work } : {}),
+      },
+      { afterLost: true },
+    );
+    await this.deps.projectThread.recordAwaitingReply({
+      threadId: r.threadId,
+      replyTo: r.replyTo,
+      connName: r.connName,
+      moduleName: r.moduleName,
+      hop: r.hop,
+      ...(r.work ? { work: r.work } : {}),
+    });
+    this.prepared.add(r.replyTo);
+    this.deps.publishBackground(r.threadId);
+    return true;
+  }
+
+  private async askOne(target: ResumeTarget, replies: readonly PendingReply[]): Promise<{ answers: Map<string, ResumeAnswer> } | AskFailure> {
+    const askLimit = this.deps.askTimeoutMs ?? RESUME_ASK_TIMEOUT_MS;
+    const remote = this.deps.remoteOf?.(target);
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(new Error(`${Math.round(limit / 1000)} 秒待っても答えが来ませんでした`)), limit);
+    let phase: "connect" | "ask" = remote ? "connect" : "ask";
+    let lastConnectError: string | undefined;
+    const arm = (ms: number) =>
+      setTimeout(() => deadline.abort(new Error(phase === "connect" ? this.connectGiveUp(target, remote!, ms, lastConnectError) : askGiveUp(target, ms, remote))), ms);
+    let timer = arm(remote ? (this.deps.connectLimitMs ?? REMOTE_CONNECT_LIMIT_MS) : askLimit);
     try {
-      const conn = await untilAborted(this.deps.connect(target, deadline.signal), deadline.signal);
+      let conn: Awaited<ReturnType<RestartRecoveryDeps["connect"]>>;
+      if (remote) {
+        // **繋がるまで待つ**：送り込み・起動の間は答えの期限を数えない。札は「起こし直しのあと続けています」の形で出し続ける
+        this.waitingRemote.set(target.connName, remote);
+        for (const r of replies) {
+          if (r.kind !== "thread" || r.afterLost) continue;
+          await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo).catch(() => undefined);
+          this.deps.publishBackground(r.threadId);
+        }
+        try {
+          for (;;) {
+            try {
+              conn = await untilAborted(this.deps.connect(target, deadline.signal), deadline.signal);
+              break;
+            } catch (err) {
+              if (deadline.signal.aborted) throw deadline.signal.reason;
+              if (!(err instanceof ModuleNotUpYetError)) throw err;
+              lastConnectError = err.message;
+              await sleepUnlessAborted(this.deps.connectRetryMs ?? REMOTE_CONNECT_RETRY_MS, deadline.signal);
+            }
+          }
+        } finally {
+          this.waitingRemote.delete(target.connName);
+        }
+        // 繋がった——ここから答えの期限を数える
+        clearTimeout(timer);
+        phase = "ask";
+        timer = arm(askLimit);
+      } else {
+        conn = await untilAborted(this.deps.connect(target, deadline.signal), deadline.signal);
+      }
       // **問いを送る直前に**：期限が過ぎていれば送らない。札がもう済んでいる（Module が止まって「途中で終わりました」を
-      // 届けた・答えの前に届け終えた）ものは問いに載せない
+      // 届けた・答えの前に届け終えた）ものは問いに載せない。打ち切った札はここで覚え直す
       if (deadline.signal.aborted) throw deadline.signal.reason;
-      const live = replies.filter((r) => this.deps.replyHandles.get(r.replyTo) !== undefined);
+      const live: PendingReply[] = [];
+      for (const r of replies) {
+        if (r.kind === "thread" && r.afterLost) {
+          if (await this.prepareAfterLost(r)) live.push(r);
+        } else if (this.deps.replyHandles.get(r.replyTo) !== undefined) live.push(r);
+      }
       if (live.length === 0) return { answers: new Map() };
       const raw = await untilAborted(conn.ask({ items: live.map(questionItemOf) }, deadline.signal), deadline.signal);
       return { answers: parseResumeAnswers(raw, live.map((r) => r.replyTo)) };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      const error = err instanceof Error ? err.message : String(err);
+      // 別のサーバの Module：繋がらない・起きない・答えないまま打ち切った（宣言が無い等、待っても変わらないものは除く）
+      const gaveUp = remote !== undefined && (deadline.signal.aborted || err instanceof ModuleNotUpYetError);
+      return { error: remote !== undefined && !deadline.signal.aborted && phase === "ask" ? `${target.moduleName} に続けるかを聞けませんでした：${error}` : error, ...(gaveUp ? { gaveUp } : {}) };
     } finally {
       clearTimeout(timer);
     }
   }
+
+  /** 繋がるのを待つ上限を越えた理由（実行場所に繋がらない／Module が起きない） */
+  private connectGiveUp(target: ResumeTarget, runtime: string, ms: number, last: string | undefined): string {
+    const span = ms >= 120_000 ? `${Math.round(ms / 60_000)} 分` : `${Math.max(1, Math.round(ms / 1000))} 秒`;
+    const unreachable = this.deps.unreachableReason?.(runtime);
+    return unreachable !== undefined
+      ? `別のサーバ「${runtime}」に ${span}繋がりませんでした：${unreachable}`
+      : `別のサーバ「${runtime}」で ${target.moduleName} が ${span}たっても起きませんでした${last ? `：${last}` : ""}`;
+  }
+}
+
+/** 答えの期限を越えた理由。この機械の Module は前からの文のまま */
+function askGiveUp(target: ResumeTarget, ms: number, remote: string | undefined): string {
+  const seconds = Math.round(ms / 1000);
+  return remote !== undefined
+    ? `別のサーバ「${remote}」の ${target.moduleName} が、繋がってから ${seconds} 秒たっても続けるかに答えませんでした`
+    : `${seconds} 秒待っても答えが来ませんでした`;
+}
+
+function logHumanRelease(threadId: string, results: TurnResults): void {
+  if (results.length === 0) return;
+  console.log(
+    `[host] Thread ${threadId}：別のサーバの Module に繋がるのを待っている間に人が送ったので、切れたターンを先に片づけた（${results.map((r) => r.action).join("・")}）`,
+  );
 }
 
 /** 問う相手：同じ接続の札。Project は札がみな同じ Project のときだけ（banto 全体の Module は札ごとに違う） */
@@ -341,6 +703,7 @@ function questionItemOf(r: PendingReply): ResumeQuestionItem {
     replyTo: r.replyTo,
     ...(r.kind === "thread" && r.work?.toolName ? { toolName: r.work.toolName } : {}),
     ...(r.kind === "thread" && r.work?.toolCallId ? { toolCallId: r.work.toolCallId } : {}),
+    ...(r.kind === "thread" && r.afterLost ? { afterLost: true } : {}),
   };
   return r.kind === "thread"
     ? { ...base, thread: { projectId: r.projectId, threadId: r.threadId } }
@@ -364,4 +727,9 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+/** 待つ。`signal` が立ったら投げる */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return untilAborted(new Promise<void>((resolve) => setTimeout(resolve, ms)), signal);
 }

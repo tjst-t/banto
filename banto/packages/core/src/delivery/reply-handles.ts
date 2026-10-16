@@ -39,6 +39,12 @@ export interface BackgroundWork {
    * 無ければ裏で仕事が進んでいる
    */
   waitingOn?: "human";
+  /**
+   * **結果の場所**（追加・2026-10-16、Backlog #324）。Module が「あとで届ける」と言うときに名乗る（`dev.banto/resultLocation`）
+   * ——Shell は出力のファイル、Subagent は仕事の id、Factory は worktree。起こし直しで Module に繋がらないまま打ち切ったとき、
+   * 「途中で終わりました」に添える
+   */
+  resultLocation?: string;
 }
 
 /**
@@ -75,6 +81,11 @@ export interface ReplyHandle {
    * 最後でない届けに使うと札が使い切られたまま片づかずに残る——断る
    */
   finalOnly?: boolean;
+  /**
+   * **打ち切った札を、繋がったあと届け直すために覚え直した**（追加・2026-10-16、Backlog #324）。頼んだ Thread にはもう
+   * 「途中で終わりました」を届けてあるので、この札で届いたものの題に「起こし直しで途切れたあとに終わっていました」を添える
+   */
+  afterLost?: boolean;
 }
 
 export class ReplyHandles {
@@ -129,8 +140,15 @@ export class ReplyHandles {
    * 札は Event Store の返事待ち（`reply.awaiting`）に残っている。使った回数は残っていないので、**使えるのは
    * 最後の届け1回だけ**。返事待ちのまま（期限で切らない）。札を渡した Module 以外は使えない確かめはそのまま効く
    */
-  restore(id: string, input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting" | "finalOnly">): ReplyHandle {
-    const h: ReplyHandle = { ...input, expiresAt: this.now() + REPLY_LIMITS.ttlMs, usesLeft: 1, awaiting: true, finalOnly: true };
+  restore(id: string, input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting" | "finalOnly" | "afterLost">, opts: { afterLost?: boolean } = {}): ReplyHandle {
+    const h: ReplyHandle = {
+      ...input,
+      expiresAt: this.now() + REPLY_LIMITS.ttlMs,
+      usesLeft: 1,
+      awaiting: true,
+      finalOnly: true,
+      ...(opts.afterLost ? { afterLost: true } : {}),
+    };
     this.handles.set(id, h);
     return h;
   }
@@ -143,10 +161,11 @@ export class ReplyHandles {
    * 返事待ちにする（期限で切らない）。人の答えを待っていると名乗ったら、それも覚える
    * （名乗った `title` はカードの題より優先する——その呼び出しで何を待っているかは Module が一番よく知っている）
    */
-  markAwaiting(id: string, waitingOn?: { on: "human"; title?: string }): ReplyHandle | undefined {
+  markAwaiting(id: string, waitingOn?: { on: "human"; title?: string }, resultLocation?: string): ReplyHandle | undefined {
     const h = this.handles.get(id);
     if (!h) return h;
     h.awaiting = true;
+    if (resultLocation) h.work = { ...(h.work ?? { toolName: "" }), resultLocation };
     if (waitingOn) {
       h.work = {
         ...(h.work ?? { toolName: "" }),
