@@ -8279,6 +8279,30 @@
       "updatedAt": "2026-10-16T11:50:42.054Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-ssh-vault-deletealias-5-1",
+      "number": 343,
+      "kind": "bug",
+      "title": "E2E の SSH の相手の片づけで、Vault の deleteAlias が「人の管理画面からしか行えません」で断られることがある（5回に1回）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "vault"
+      ],
+      "body": "2026-10-16、#310 の確かめ（remote-runtime-ssh・sockets を2並列で5回）の3回目で、sockets の本体が通ったあとの片づけ（e2e/ssh-host.ts:150）が落ちた。Vault の alias の deleteAlias が 500「alias の削除 は人の管理画面からしか行えません（Module からの呼び出しでは変えられません）」を返した。\n\n2026-10-15 の cb6d7919 で、vault-directory が中継に呼び出しの印（dev.banto/callId）を添えるように直した件と同じ形に見える（host がこの窓口で走っている呼び出しを全部見て出所を決めるため、別の呼び出し——鍵の窓口 startSshAgent 等——が同時に走ると、人の操作まで断られる）。その直しで塞ぎきれていない道が残っている可能性がある。",
+      "doneWhen": "remote-runtime-sockets を2並列で10回流して、片づけの deleteAlias が一度も断られない。原因（どの呼び出しが印無しで走っていたか）をコミットの文に書く",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-16T12:29:43.404Z",
+      "updatedAt": "2026-10-16T12:29:43.404Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
