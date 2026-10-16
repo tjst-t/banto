@@ -8357,7 +8357,7 @@
       "number": 346,
       "kind": "task",
       "title": "待たれている Module を起こしておく（banto の起動・Project を開いたとき・スリープの例外）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline"
@@ -8367,12 +8367,12 @@
       "labels": [],
       "body": "仕様 §4.3「待たれている出どころを眠らせない」。一時停止していない event の自動化がある Module を connectDeclaredModule(declaration, project) で起こしておく（使うときだけ起こす道具用のコンテナの Module も）。スリープが入ったら、待たれている Module とそのコンテナ・接続は止めない（スリープの Fork「Project の整理（サイドバー）」に伝えた）",
       "doneWhen": "E2E で：event の自動化を作るとその Module が起き、banto を起こし直しても起きる。自動化を一時停止・消すと起こしておくのをやめる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/events-keep-awake）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T15:11:24.753Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T15:41:10.983Z",
+      "closedAt": "2026-10-16T15:41:10.983Z",
       "extra": {}
     },
     {
