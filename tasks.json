@@ -8641,7 +8641,7 @@
       "number": 358,
       "kind": "task",
       "title": "用事（自動化・届いたもの）で起きた Project を、用が済んだら眠りに戻す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-org",
       "dependsOn": [
         "project-sleep-core"
@@ -8655,7 +8655,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:30.354Z",
-      "updatedAt": "2026-10-16T14:11:31.848Z",
+      "updatedAt": "2026-10-16T22:08:30.002Z",
       "closedAt": null,
       "extra": {}
     }
