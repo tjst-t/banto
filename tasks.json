@@ -7561,7 +7561,7 @@
       "number": 310,
       "kind": "bug",
       "title": "Command Palette の Module の入口を押す瞬間に行が描き直され、E2E の click が「detached from the DOM」で落ちる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7576,7 +7576,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T09:44:11.231Z",
-      "updatedAt": "2026-10-15T11:55:47.510Z",
+      "updatedAt": "2026-10-16T11:12:16.933Z",
       "closedAt": null,
       "extra": {}
     },
