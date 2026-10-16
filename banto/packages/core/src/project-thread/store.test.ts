@@ -4,7 +4,14 @@ import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { EventLog } from "../event-store/log.js";
-import { ProjectThreadStore, MemoryLimitExceededError, InvalidProjectRootError, NotFoundError } from "./store.js";
+import {
+  ProjectThreadStore,
+  MemoryLimitExceededError,
+  InvalidProjectRootError,
+  InvalidProjectGroupError,
+  NotFoundError,
+  ProjectGroupConflictError,
+} from "./store.js";
 import { projectThreadFold } from "./fold.js";
 
 async function withStore(fn: (store: ProjectThreadStore, dir: string, log: EventLog) => Promise<void>) {
@@ -1107,5 +1114,141 @@ test("別の実行場所へ移す：started の間は move が立ち（閉じる
     const again = new ProjectThreadStore(dir, log);
     await again.load();
     assert.deepEqual(again.getProject(project.id)?.previousLocations, back.previousLocations);
+  });
+});
+
+// **Project のグループ**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）
+test("グループ：名前は前後の空白を落として 1〜40 字、同じ名前は大文字小文字を区別せず断る、色は5つの名前", async () => {
+  await withStore(async (store) => {
+    const dev = await store.createProjectGroup({ name: "  Dev  " });
+    assert.equal(dev.name, "Dev");
+    assert.equal(dev.color, "blue", "色を省けば、まだ使っていない色を順に");
+    assert.equal((await store.createProjectGroup({ name: "検証" })).color, "green");
+    assert.equal((await store.createProjectGroup({ name: "くらし", color: "blue" })).color, "blue");
+
+    await assert.rejects(() => store.createProjectGroup({ name: "dev" }), ProjectGroupConflictError);
+    await assert.rejects(() => store.createProjectGroup({ name: " DEV " }), ProjectGroupConflictError);
+    await assert.rejects(() => store.createProjectGroup({ name: "   " }), InvalidProjectGroupError);
+    await assert.rejects(() => store.createProjectGroup({ name: "あ".repeat(41) }), InvalidProjectGroupError);
+    assert.equal((await store.createProjectGroup({ name: "あ".repeat(40) })).name.length, 40);
+    await assert.rejects(() => store.createProjectGroup({ name: 3 }), InvalidProjectGroupError);
+    await assert.rejects(() => store.createProjectGroup({ name: "x", color: "red" }), InvalidProjectGroupError);
+
+    // 直すとき、自分の名前の大文字小文字を変えるのは同じ名前ではない。ほかのグループの名前は断る
+    assert.equal((await store.updateProjectGroup(dev.id, { name: "DEV", color: "pink" })).name, "DEV");
+    assert.equal(store.getProjectGroup(dev.id)!.color, "pink");
+    await assert.rejects(() => store.updateProjectGroup(dev.id, { name: "検証" }), ProjectGroupConflictError);
+    await assert.rejects(() => store.updateProjectGroup("無い", { name: "x" }), NotFoundError);
+  });
+});
+
+test("グループ：Project は 0 か 1 つに入る。無いグループは断る。order を添えると位置も1つの出来事で書く", async () => {
+  await withStore(async (store, dir, log) => {
+    const a = await store.createProject("a", dir);
+    const b = await store.createProject("b", dir);
+    const c = await store.createProject("c", dir);
+    const g = await store.createProjectGroup({ name: "開発" });
+
+    await assert.rejects(() => store.assignProjectGroup(a.id, "無いグループ"), NotFoundError);
+    await assert.rejects(() => store.assignProjectGroup("無い", g.id), NotFoundError);
+    await assert.rejects(() => store.assignProjectGroup(a.id, g.id, [a.id, "無い"]), NotFoundError);
+    assert.equal(store.getProject(a.id)!.groupId, undefined);
+
+    let lastSeq = 0;
+    for await (const e of log.readFrom(0)) lastSeq = e.seq;
+    await store.assignProjectGroup(c.id, g.id, [c.id, a.id, b.id]);
+    const written: string[] = [];
+    for await (const e of log.readFrom(lastSeq)) written.push(e.type);
+    assert.deepEqual(written, ["project.group.assigned"], "入れると位置は1つの出来事");
+    assert.equal(store.getProject(c.id)!.groupId, g.id);
+    assert.deepEqual(store.listProjects().map((p) => p.name), ["c", "a", "b"]);
+
+    await store.assignProjectGroup(c.id, null);
+    assert.equal(store.getProject(c.id)!.groupId, undefined);
+    assert.deepEqual(store.listProjects().map((p) => p.name), ["c", "a", "b"], "order が無ければ並びは変えない");
+  });
+});
+
+test("グループ：なくすと中の Project はグループの外へ出る（閉じた Project も）。閉じて開き直したら元のグループに戻る", async () => {
+  await withStore(async (store, dir, log) => {
+    const a = await store.createProject("a", dir);
+    const b = await store.createProject("b", dir);
+    const g = await store.createProjectGroup({ name: "開発" });
+    const h = await store.createProjectGroup({ name: "くらし" });
+    await store.assignProjectGroup(a.id, g.id);
+    await store.assignProjectGroup(b.id, h.id);
+
+    await store.closeProject(a.id);
+    assert.equal(store.getProject(a.id)!.groupId, g.id, "閉じても入れ先を覚えている");
+    await store.reopenProject(a.id);
+    assert.equal(store.getProject(a.id)!.groupId, g.id, "開き直したら元のグループ");
+
+    await store.closeProject(b.id);
+    await store.removeProjectGroup(h.id);
+    assert.equal(store.getProjectGroup(h.id), undefined);
+    assert.ok(store.getProject(b.id), "Project は消えない");
+    assert.equal(store.getProject(b.id)!.groupId, undefined, "閉じた Project もグループの外へ");
+    await store.reopenProject(b.id);
+    assert.equal(store.getProject(b.id)!.groupId, undefined, "元のグループが無ければグループなし");
+    await assert.rejects(() => store.removeProjectGroup(h.id), NotFoundError);
+
+    // ログから畳み直しても、スナップショットから読み戻しても同じ
+    for (const fromSnapshot of [false, true]) {
+      if (fromSnapshot) await store.save();
+      const again = new ProjectThreadStore(dir, log);
+      await again.load();
+      assert.equal(again.getProject(a.id)!.groupId, g.id);
+      assert.equal(again.getProject(b.id)!.groupId, undefined);
+      assert.deepEqual(again.listProjectGroups().map((x) => x.name), ["開発"]);
+    }
+  });
+});
+
+test("グループの並びも fail open：並びに無いグループは、あるものの後ろに作った順で並ぶ。知らない id は断る", async () => {
+  await withStore(async (store) => {
+    const x = await store.createProjectGroup({ name: "x" });
+    const y = await store.createProjectGroup({ name: "y" });
+    const z = await store.createProjectGroup({ name: "z" });
+    await store.setProjectGroupOrder([z.id, x.id]);
+    const w = await store.createProjectGroup({ name: "w" });
+    assert.deepEqual(store.listProjectGroups().map((g) => g.name), ["z", "x", "y", "w"]);
+    await assert.rejects(() => store.setProjectGroupOrder([w.id, "無い"]), NotFoundError);
+
+    // 並びに載ったグループをなくしても、残りの並びは崩れない
+    await store.removeProjectGroup(z.id);
+    assert.deepEqual(store.listProjectGroups().map((g) => g.name), ["x", "y", "w"]);
+    void y;
+  });
+});
+
+test("Project の一覧に関わる変更すべてで onProjectsChanged が鳴る（作る・名前・並び・閉じる・開き直す・グループ）", async () => {
+  await withStore(async (store, dir) => {
+    let count = 0;
+    const stop = store.onProjectsChanged(() => count++);
+    const expectOne = async (label: string, op: () => Promise<unknown>) => {
+      const before = count;
+      await op();
+      assert.equal(count - before, 1, label);
+    };
+    let p!: { id: string };
+    await expectOne("作る", async () => (p = await store.createProject("a", dir)));
+    await expectOne("名前", () => store.renameProject(p.id, "b"));
+    await expectOne("並び", () => store.setProjectOrder([p.id]));
+    await expectOne("閉じる", () => store.closeProject(p.id));
+    await expectOne("開き直す", () => store.reopenProject(p.id));
+    let g!: { id: string };
+    await expectOne("グループを作る", async () => (g = await store.createProjectGroup({ name: "g" })));
+    await expectOne("グループを直す", () => store.updateProjectGroup(g.id, { color: "pink" }));
+    await expectOne("グループの並び", () => store.setProjectGroupOrder([g.id]));
+    await expectOne("グループに入れる", () => store.assignProjectGroup(p.id, g.id));
+    await expectOne("グループをなくす", () => store.removeProjectGroup(g.id));
+    // 断ったときは鳴らない
+    await expectOne("（断る）", async () => {
+      await assert.rejects(() => store.assignProjectGroup(p.id, "無い"));
+      count++;
+    });
+    stop();
+    await store.renameProject(p.id, "c");
+    assert.equal(count, 11, "外したら鳴らない");
   });
 });

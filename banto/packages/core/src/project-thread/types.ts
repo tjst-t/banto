@@ -323,6 +323,25 @@ export interface ProjectState {
    * 承認画面で「以後聞かない」を押すと足される。人が Project の設定で外せる。無ければ空
    */
   acceptMessagesFrom?: ProjectId[];
+  /**
+   * **入っているグループ**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。0 か 1 つ。無ければ
+   * 「グループなし」。閉じても覚えていて、開き直したら元のグループに戻る。グループをなくしたら外れる
+   */
+  groupId?: ProjectGroupId;
+  createdAt: string;
+}
+
+export type ProjectGroupId = string;
+
+/** グループの色（決めた5つ）。記録には名前で持ち、値は画面の段の色 */
+export const PROJECT_GROUP_COLORS = ["blue", "green", "yellow", "orange", "pink"] as const;
+export type ProjectGroupColor = (typeof PROJECT_GROUP_COLORS)[number];
+
+/** **Project のグループ**（決定・2026-10-16、アーキ仕様 §2.2）。banto 全体に1つの並び。グループ＝名前＋色 */
+export interface ProjectGroupState {
+  id: ProjectGroupId;
+  name: string;
+  color: ProjectGroupColor;
   createdAt: string;
 }
 
@@ -565,6 +584,10 @@ export interface ProjectThreadReadModel {
   projectOrder: ProjectId[];
   /** Project ごとの Fork の並び。鍵は Project の id。 */
   threadOrder: Map<ProjectId, ThreadId[]>;
+  /** Project のグループ（決定・2026-10-16）。Map の順＝作った順（並びに無いものはこの順で後ろに並ぶ） */
+  projectGroups: Map<ProjectGroupId, ProjectGroupState>;
+  /** 人が決めたグループの並び。`projectOrder` と同じく fail open */
+  projectGroupOrder: ProjectGroupId[];
   /**
    * **画面をどの面に出したかの記録が、会話より先に届く**ことがある
    * （実測・2026-09-07）。画面が「大きく出して」と言うのはターンの**途中**、

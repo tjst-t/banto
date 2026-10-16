@@ -13,6 +13,9 @@ import type {
   MemoryEntry,
   ProjectId,
   ProjectState,
+  ProjectGroupColor,
+  ProjectGroupId,
+  ProjectGroupState,
   ThreadId,
   ThreadPermissionMode,
   ThreadClosedBy,
@@ -30,6 +33,7 @@ import type {
   ExternalContent,
   TurnOutcome,
 } from "./types.js";
+import { PROJECT_GROUP_COLORS } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
 import type { SessionSkillSet } from "../skills/types.js";
 import { sameSkillSet } from "../skills/activation.js";
@@ -49,6 +53,13 @@ export function isRemoteProject(project: Pick<ProjectState, "runtime">): boolean
 }
 export class NotFoundError extends Error {}
 export class InvalidProjectRootError extends Error {}
+/** グループの名前・色が決まりに合わない（400） */
+export class InvalidProjectGroupError extends Error {}
+/** 同じ名前のグループがもうある（409）——大文字小文字は区別しない */
+export class ProjectGroupConflictError extends Error {}
+
+/** グループの名前の長さ（前後の空白を落としたあと） */
+export const PROJECT_GROUP_NAME_MAX_CHARS = 40;
 
 /**
  * Project rootは絶対パス・実在ディレクトリのrealpathとしてイベントログに残す
@@ -71,6 +82,7 @@ export function normalizeProjectRoot(root: string): string {
 
 export class ProjectThreadStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof projectThreadFold.initial>>;
+  private readonly projectsChangedListeners = new Set<() => void>();
 
   constructor(
     private readonly dataDir: string,
@@ -93,6 +105,25 @@ export class ProjectThreadStore {
 
   async load(): Promise<void> {
     await this.projection.load();
+  }
+
+  /**
+   * **Project の一覧が変わった**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。作る・名前・並び・閉じる・
+   * 開き直す・グループ。中身は渡さない——聞き手（`GET /api/events` の `projects.changed`）は画面に取り直させる
+   */
+  onProjectsChanged(listener: () => void): () => void {
+    this.projectsChangedListeners.add(listener);
+    return () => this.projectsChangedListeners.delete(listener);
+  }
+
+  private notifyProjectsChanged(): void {
+    for (const listener of this.projectsChangedListeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.warn("[host] Project の一覧の変更の聞き手が例外を投げました:", err);
+      }
+    }
   }
 
   async save(): Promise<void> {
@@ -181,6 +212,7 @@ export class ProjectThreadStore {
     if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
     const event = await this.log.append("project.renamed", { id, name });
     this.projection.applyOne(event);
+    this.notifyProjectsChanged();
     return this.getProject(id)!;
   }
 
@@ -252,6 +284,103 @@ export class ProjectThreadStore {
     }
     const event = await this.log.append("project.order.set", { ids });
     this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+  }
+
+  /** **グループ**（決定・2026-10-16、アーキ仕様 §2.2）。人が決めた並びの順。並びに無いものは後ろに作った順（fail open） */
+  listProjectGroups(): ProjectGroupState[] {
+    return sortByExplicitOrder(
+      Array.from(this.projection.current.projectGroups.values()),
+      this.projection.current.projectGroupOrder,
+    );
+  }
+
+  getProjectGroup(id: ProjectGroupId): ProjectGroupState | undefined {
+    return this.projection.current.projectGroups.get(id);
+  }
+
+  /** `color` を省けば、まだ使っていない色を決めた順に（全部使っていれば数で回す） */
+  async createProjectGroup(input: { name: unknown; color?: unknown }): Promise<ProjectGroupState> {
+    const name = this.checkGroupName(input.name);
+    let color: ProjectGroupColor;
+    if (input.color === undefined) {
+      const used = new Set(Array.from(this.projection.current.projectGroups.values(), (g) => g.color));
+      color =
+        PROJECT_GROUP_COLORS.find((c) => !used.has(c)) ??
+        PROJECT_GROUP_COLORS[this.projection.current.projectGroups.size % PROJECT_GROUP_COLORS.length]!;
+    } else {
+      color = checkGroupColor(input.color);
+    }
+    const id = randomUUID();
+    const event = await this.log.append("project.group.created", { id, name, color });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return this.getProjectGroup(id)!;
+  }
+
+  async updateProjectGroup(id: ProjectGroupId, input: { name?: unknown; color?: unknown }): Promise<ProjectGroupState> {
+    if (!this.getProjectGroup(id)) throw new NotFoundError(`project group ${id} not found`);
+    const name = input.name === undefined ? undefined : this.checkGroupName(input.name, id);
+    const color = input.color === undefined ? undefined : checkGroupColor(input.color);
+    const event = await this.log.append("project.group.updated", {
+      id,
+      ...(name !== undefined ? { name } : {}),
+      ...(color !== undefined ? { color } : {}),
+    });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return this.getProjectGroup(id)!;
+  }
+
+  /** なくしても中の Project は消えない——「グループなし」へ出る（fold） */
+  async removeProjectGroup(id: ProjectGroupId): Promise<void> {
+    if (!this.getProjectGroup(id)) throw new NotFoundError(`project group ${id} not found`);
+    const event = await this.log.append("project.group.removed", { id });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+  }
+
+  /** グループの並び。知らない id は受け取らない（`setProjectOrder` と同じ） */
+  async setProjectGroupOrder(ids: ProjectGroupId[]): Promise<void> {
+    for (const id of ids) {
+      if (!this.getProjectGroup(id)) throw new NotFoundError(`project group ${id} not found`);
+    }
+    const event = await this.log.append("project.group.order.set", { ids });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+  }
+
+  /**
+   * **Project をグループに入れる・出す**（`groupId: null` で「グループなし」）。`order` を添えると、そこでの位置（Project 全部の
+   * 新しい並び）も同じ出来事で書く。無いグループ・知らない Project は断る
+   */
+  async assignProjectGroup(projectId: ProjectId, groupId: ProjectGroupId | null, order?: ProjectId[]): Promise<ProjectState> {
+    if (!this.getProject(projectId)) throw new NotFoundError(`project ${projectId} not found`);
+    if (groupId !== null && !this.getProjectGroup(groupId)) throw new NotFoundError(`project group ${groupId} not found`);
+    for (const id of order ?? []) {
+      if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    }
+    const event = await this.log.append("project.group.assigned", { projectId, groupId, ...(order ? { order } : {}) });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return this.getProject(projectId)!;
+  }
+
+  /** 前後の空白を落として 1〜40 字、同じ名前（大文字小文字は区別しない）は断る。`self` は直すときの自分 */
+  private checkGroupName(raw: unknown, self?: ProjectGroupId): string {
+    if (typeof raw !== "string") throw new InvalidProjectGroupError("グループの名前は文字列で渡してください");
+    const name = raw.trim();
+    if (name.length === 0) throw new InvalidProjectGroupError("グループの名前が空です");
+    if ([...name].length > PROJECT_GROUP_NAME_MAX_CHARS) {
+      throw new InvalidProjectGroupError(`グループの名前は ${PROJECT_GROUP_NAME_MAX_CHARS} 字までです`);
+    }
+    const key = name.toLocaleLowerCase();
+    for (const g of this.projection.current.projectGroups.values()) {
+      if (g.id !== self && g.name.toLocaleLowerCase() === key) {
+        throw new ProjectGroupConflictError(`「${g.name}」という名前のグループがもうあります`);
+      }
+    }
+    return name;
   }
 
   /** その Project の Fork の並び。 */
@@ -282,6 +411,7 @@ export class ProjectThreadStore {
       ...(remote ? { runtime: remote.runtime } : {}),
     });
     this.projection.applyOne(event);
+    this.notifyProjectsChanged();
     const project = this.getProject(id);
     if (!project) throw new Error("invariant: project.created did not produce a project");
     return project;
@@ -293,6 +423,7 @@ export class ProjectThreadStore {
     if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
     const event = await this.log.append("project.closed", { id });
     this.projection.applyOne(event);
+    this.notifyProjectsChanged();
   }
 
   async reopenProject(id: ProjectId): Promise<void> {
@@ -301,6 +432,7 @@ export class ProjectThreadStore {
     if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
     const event = await this.log.append("project.reopened", { id });
     this.projection.applyOne(event);
+    this.notifyProjectsChanged();
   }
 
   async createBaseThread(projectId: ProjectId): Promise<ThreadState> {
@@ -764,6 +896,11 @@ export class ProjectThreadStore {
  * **並びに無いものは後ろへ、元の順のまま**——並べ替えたことのないもの・
  * 並べ替えた後に作られたものが、一覧から消えない（fail open）。
  */
+function checkGroupColor(raw: unknown): ProjectGroupColor {
+  if (typeof raw === "string" && (PROJECT_GROUP_COLORS as readonly string[]).includes(raw)) return raw as ProjectGroupColor;
+  throw new InvalidProjectGroupError(`グループの色は ${PROJECT_GROUP_COLORS.join("・")} のどれかで渡してください`);
+}
+
 function sortByExplicitOrder<T extends { id: string }>(items: T[], order: readonly string[]): T[] {
   if (order.length === 0) return items;
   const rank = new Map(order.map((id, i) => [id, i]));

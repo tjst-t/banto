@@ -98,7 +98,7 @@ import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS } from "./http/turn-summary.js";
 import { ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
-import { AppEventBus, backgroundItemsOf } from "./http/app-events.js";
+import { AppEventBus, announceProjectsChanged, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import {
   assertAllVisibilityExplicit,
@@ -392,6 +392,8 @@ async function main(): Promise<void> {
   });
   // **自動化の画面**（v4-frontend.md §6.42）は台帳が変わったら取り直す——どの Project のものかだけ流す
   automations.onChange(({ projectId }) => appEvents.publish({ type: "automations.changed", projectId }));
+  // **サイドバーの Project の一覧**（アーキ仕様 §2.2）は一覧が変わったら取り直す——携帯とパソコンでそろえる
+  announceProjectsChanged(projectThread, appEvents);
   // **時刻のきっかけ**（アーキ仕様 §4.3「時計」）。1分ごとの刻み1本。刻み始めるのは待ち受けて `resumeAll` したあと
   const automationClock = new AutomationClock({
     automations,

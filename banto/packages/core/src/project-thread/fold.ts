@@ -12,6 +12,7 @@ import type {
   MessageSender,
   ProjectThreadReadModel,
   ProjectState,
+  ProjectGroupColor,
   ThreadPermissionMode,
   ThreadClosedBy,
   ThreadEffort,
@@ -41,6 +42,15 @@ export type ProjectThreadEvent =
   // 後ろに、作られた順で並ぶ（載せ忘れで消えない）
   | { type: "project.order.set"; payload: { ids: string[] } }
   | { type: "project.reopened"; payload: { id: string } }
+  // **グループ**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。確かめる（名前・色・無いグループ）のは store
+  | { type: "project.group.created"; payload: { id: string; name: string; color: ProjectGroupColor } }
+  | { type: "project.group.updated"; payload: { id: string; name?: string; color?: ProjectGroupColor } }
+  // なくしたら中の Project は「グループなし」へ出る（閉じた Project も）
+  | { type: "project.group.removed"; payload: { id: string } }
+  | { type: "project.group.order.set"; payload: { ids: string[] } }
+  // **入れると、そこでの位置を1つの出来事で**——`order` は Project 全部の新しい並び。分けて書くと、途中で失敗したときに
+  // 「入ったが場所が違う」が残る
+  | { type: "project.group.assigned"; payload: { projectId: string; groupId: string | null; order?: string[] } }
   // **別の実行場所へ移す**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。started で受付を止め、
   // moved で切り替え（この機械へ戻るときも runtime を明示する）、failed で切り替えずに戻す
   | { type: "project.runtime_move_started"; payload: { id: string; from: ProjectLocation; to: ProjectLocation; created: RuntimeMoveCreated } }
@@ -194,6 +204,9 @@ function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
     // ——後から足した欄は、無い状態から読み戻される。空として扱う
     projectOrder: [...(m.projectOrder ?? [])],
     threadOrder: new Map(m.threadOrder ?? []),
+    // 後から足した欄（2026-10-16）。前からある snapshot には無い
+    projectGroups: new Map(m.projectGroups ?? []),
+    projectGroupOrder: [...(m.projectGroupOrder ?? [])],
     projects: new Map(Array.from(m.projects, ([k, v]) => [k, { ...v, memory: [...v.memory] }])),
     threads: new Map(
       Array.from(m.threads, ([k, v]) => [
@@ -307,6 +320,8 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
     displayModeByToolCall: new Map(),
     projectOrder: [],
     threadOrder: new Map(),
+    projectGroups: new Map(),
+    projectGroupOrder: [],
   }),
 
   apply(state, raw: StoredEvent): ProjectThreadReadModel {
@@ -405,6 +420,48 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "project.reopened": {
         const p = next.projects.get(event.payload.id);
         if (p) next.projects.set(p.id, { ...p, status: "active" });
+        return next;
+      }
+      case "project.group.created": {
+        const { id, name, color } = event.payload;
+        next.projectGroups.set(id, { id, name, color, createdAt: raw.ts });
+        return next;
+      }
+      case "project.group.updated": {
+        const g = next.projectGroups.get(event.payload.id);
+        if (g) {
+          next.projectGroups.set(g.id, {
+            ...g,
+            ...(event.payload.name !== undefined ? { name: event.payload.name } : {}),
+            ...(event.payload.color !== undefined ? { color: event.payload.color } : {}),
+          });
+        }
+        return next;
+      }
+      case "project.group.removed": {
+        const id = event.payload.id;
+        next.projectGroups.delete(id);
+        next.projectGroupOrder = next.projectGroupOrder.filter((g) => g !== id);
+        for (const p of next.projects.values()) {
+          if (p.groupId === id) {
+            const { groupId: _drop, ...rest } = p;
+            next.projects.set(p.id, rest);
+          }
+        }
+        return next;
+      }
+      case "project.group.order.set": {
+        next.projectGroupOrder = [...event.payload.ids];
+        return next;
+      }
+      case "project.group.assigned": {
+        const { projectId, groupId, order } = event.payload;
+        const p = next.projects.get(projectId);
+        if (p) {
+          const { groupId: _drop, ...rest } = p;
+          next.projects.set(p.id, groupId === null ? rest : { ...rest, groupId });
+        }
+        if (order) next.projectOrder = [...order];
         return next;
       }
       case "thread.created": {

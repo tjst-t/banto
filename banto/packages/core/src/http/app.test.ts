@@ -13,7 +13,7 @@ import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { RuntimeConfigStore } from "../config/runtime.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
-import { AppEventBus } from "./app-events.js";
+import { AppEventBus, announceProjectsChanged } from "./app-events.js";
 import { TurnEventBus } from "./turn-events.js";
 import { ModuleCallTracker, RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import type { ActivityReport } from "./activity.js";
@@ -2369,4 +2369,112 @@ test("/relay の本文は 10MB まで——超えたら 413 で断り、宛先�
     const small = await fetch(`${base}/relay`, { method: "POST", headers: { authorization: "Bearer x", "content-type": "application/json" }, body: "{}" });
     assert.equal(small.status, 401);
   });
+});
+
+// **Project のグループ**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）
+test("/api/project-groups と PUT /api/projects/:id/group：作る・直す・並べる・入れる・なくす、断るときの状態", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const call = (method: string, path: string, body?: unknown) =>
+      fetch(`${base}${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const project = async (name: string) => (await (await call("POST", "/api/projects", { name, root: dir })).json()) as { id: string };
+    const a = await project("a");
+    const b = await project("b");
+
+    const devRes = await call("POST", "/api/project-groups", { name: " 開発 " });
+    assert.equal(devRes.status, 201);
+    const dev = (await devRes.json()) as { id: string; name: string; color: string };
+    assert.deepEqual([dev.name, dev.color], ["開発", "blue"]);
+    const life = (await (await call("POST", "/api/project-groups", { name: "くらし", color: "orange" })).json()) as { id: string };
+
+    assert.equal((await call("POST", "/api/project-groups", { name: "開発" })).status, 409);
+    assert.equal((await call("POST", "/api/project-groups", { name: "" })).status, 400);
+    assert.equal((await call("POST", "/api/project-groups", { name: "x", color: "red" })).status, 400);
+
+    const patched = await call("PATCH", `/api/project-groups/${life.id}`, { name: "暮らし", color: "pink" });
+    assert.equal(patched.status, 200);
+    const patchedBody = (await patched.json()) as { id: string; name: string; color: string };
+    assert.deepEqual([patchedBody.id, patchedBody.name, patchedBody.color], [life.id, "暮らし", "pink"]);
+    assert.equal((await call("PATCH", `/api/project-groups/${life.id}`, { name: "開発" })).status, 409);
+    assert.equal((await call("PATCH", "/api/project-groups/無い", { name: "y" })).status, 404);
+
+    assert.equal((await call("PUT", "/api/project-groups/order", { ids: [life.id, dev.id] })).status, 200);
+    assert.equal((await call("PUT", "/api/project-groups/order", { ids: ["無い"] })).status, 404);
+    assert.equal((await call("PUT", "/api/project-groups/order", { ids: "x" })).status, 400);
+    const listed = (await (await call("GET", "/api/project-groups")).json()) as Array<{ name: string }>;
+    assert.deepEqual(listed.map((g) => g.name), ["暮らし", "開発"]);
+
+    // 入れる（位置も一緒に）・無いグループ・形の違う値
+    const assigned = await call("PUT", `/api/projects/${b.id}/group`, { groupId: dev.id, order: [b.id, a.id] });
+    assert.equal(assigned.status, 200);
+    assert.equal(((await assigned.json()) as { groupId?: string }).groupId, dev.id);
+    assert.equal((await call("PUT", `/api/projects/${a.id}/group`, { groupId: "無い" })).status, 404);
+    assert.equal((await call("PUT", "/api/projects/無い/group", { groupId: null })).status, 404);
+    assert.equal((await call("PUT", `/api/projects/${a.id}/group`, {})).status, 400);
+    assert.equal((await call("PUT", `/api/projects/${a.id}/group`, { groupId: null, order: "x" })).status, 400);
+    const projects = (await (await call("GET", "/api/projects")).json()) as Array<{ id: string; groupId?: string }>;
+    assert.deepEqual(projects.map((p) => [p.id, p.groupId]), [[b.id, dev.id], [a.id, undefined]]);
+
+    // なくすと中の Project はグループの外へ
+    assert.equal((await call("DELETE", `/api/project-groups/${dev.id}`)).status, 200);
+    assert.equal((await call("DELETE", `/api/project-groups/${dev.id}`)).status, 404);
+    const after = (await (await call("GET", "/api/projects")).json()) as Array<{ id: string; groupId?: string }>;
+    assert.equal(after.find((p) => p.id === b.id)!.groupId, undefined);
+    assert.deepEqual(((await (await call("GET", "/api/project-groups")).json()) as Array<{ id: string }>).map((g) => g.id), [life.id]);
+  });
+});
+
+test("GET /api/events は Project の一覧に関わる変更すべてで projects.changed を流す（作る・名前・並び・閉じる・開き直す・グループ）", async () => {
+  const appEvents = new AppEventBus();
+  await withApp(
+    async (base, token, dir, deps) => {
+      const stop = announceProjectsChanged(deps.projectThread, appEvents);
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const call = async (method: string, path: string, body?: unknown) => {
+        const res = await fetch(`${base}${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+        assert.ok(res.ok, `${method} ${path} → ${res.status}`);
+        return res.json() as Promise<{ id: string }>;
+      };
+
+      const controller = new AbortController();
+      const res = await fetch(`${base}/api/events`, { headers: { authorization: `Bearer ${token}` }, signal: controller.signal });
+      const reader = res.body!.getReader();
+      let buffer = "";
+      const next = async (): Promise<{ type: string }> => {
+        for (;;) {
+          const end = buffer.indexOf("\n\n");
+          if (end >= 0) {
+            const chunk = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            if (chunk.startsWith("data: ")) return JSON.parse(chunk.slice(6)) as { type: string };
+            continue;
+          }
+          buffer += new TextDecoder().decode((await reader.read()).value);
+        }
+      };
+      assert.equal((await next()).type, "hello");
+      const expectChanged = async (label: string, op: () => Promise<unknown>) => {
+        await op();
+        assert.deepEqual(await next(), { type: "projects.changed" }, label);
+      };
+      try {
+        let p!: { id: string };
+        await expectChanged("作る", async () => (p = await call("POST", "/api/projects", { name: "a", root: dir })));
+        await expectChanged("名前", () => call("PATCH", `/api/projects/${p.id}`, { name: "b" }));
+        await expectChanged("並び", () => call("PUT", "/api/projects/order", { ids: [p.id] }));
+        await expectChanged("閉じる", () => call("POST", `/api/projects/${p.id}/close`));
+        await expectChanged("開き直す", () => call("POST", `/api/projects/${p.id}/reopen`));
+        let g!: { id: string };
+        await expectChanged("グループを作る", async () => (g = await call("POST", "/api/project-groups", { name: "g" })));
+        await expectChanged("グループを直す", () => call("PATCH", `/api/project-groups/${g.id}`, { color: "green" }));
+        await expectChanged("グループの並び", () => call("PUT", "/api/project-groups/order", { ids: [g.id] }));
+        await expectChanged("グループに入れる", () => call("PUT", `/api/projects/${p.id}/group`, { groupId: g.id }));
+        await expectChanged("グループをなくす", () => call("DELETE", `/api/project-groups/${g.id}`));
+      } finally {
+        controller.abort();
+        stop();
+      }
+    },
+    { appEvents },
+  );
 });

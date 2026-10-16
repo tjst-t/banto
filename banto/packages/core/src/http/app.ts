@@ -33,7 +33,9 @@ import type { Automation } from "../automation/fold.js";
 import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
+  InvalidProjectGroupError,
   NotFoundError,
+  ProjectGroupConflictError,
   RemoteProjectError,
   RuntimeMoveConflictError,
   currentSkillSet,
@@ -2169,6 +2171,64 @@ export function createApp(deps: AppDeps) {
           throw err;
         }
         return;
+      }
+
+      // **Project のグループ**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。確かめるのは store
+      // ——名前・色が合わなければ 400、同じ名前は 409、無いグループ・Project は 404
+      if (url.pathname === "/api/project-groups" || url.pathname.startsWith("/api/project-groups/")) {
+        const rest = url.pathname.slice("/api/project-groups".length);
+        try {
+          if (rest === "" && req.method === "GET") return json(res, 200, deps.projectThread.listProjectGroups());
+          if (rest === "" && req.method === "POST") {
+            const body = (await readJsonBody(req)) as { name?: unknown; color?: unknown } | undefined;
+            return json(res, 201, await deps.projectThread.createProjectGroup({ name: body?.name, color: body?.color }));
+          }
+          if (rest === "/order" && req.method === "PUT") {
+            const body = (await readJsonBody(req)) as { ids?: unknown } | undefined;
+            if (!Array.isArray(body?.ids) || body.ids.some((id) => typeof id !== "string")) {
+              return json(res, 400, { error: "ids must be an array of project group ids" });
+            }
+            await deps.projectThread.setProjectGroupOrder(body.ids as string[]);
+            return json(res, 200, { ok: true });
+          }
+          const one = rest.match(/^\/([^/]+)$/);
+          if (one && rest !== "/order" && req.method === "PATCH") {
+            const body = (await readJsonBody(req)) as { name?: unknown; color?: unknown } | undefined;
+            return json(res, 200, await deps.projectThread.updateProjectGroup(one[1]!, { name: body?.name, color: body?.color }));
+          }
+          if (one && rest !== "/order" && req.method === "DELETE") {
+            await deps.projectThread.removeProjectGroup(one[1]!);
+            return json(res, 200, { ok: true });
+          }
+          return json(res, 404, { error: "not found" });
+        } catch (err) {
+          if (err instanceof InvalidProjectGroupError) return json(res, 400, { error: err.message });
+          if (err instanceof ProjectGroupConflictError) return json(res, 409, { error: err.message });
+          if (err instanceof NotFoundError) return json(res, 404, { error: err.message });
+          throw err;
+        }
+      }
+      // **Project をグループに入れる・出す**。`order` を添えると、そこでの位置も同じ出来事で書く
+      const projectGroupMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/group$/);
+      if (projectGroupMatch && req.method === "PUT") {
+        const body = (await readJsonBody(req)) as { groupId?: unknown; order?: unknown } | undefined;
+        if (body?.groupId !== null && typeof body?.groupId !== "string") {
+          return json(res, 400, { error: "groupId はグループの id か null で渡してください" });
+        }
+        if (body.order !== undefined && (!Array.isArray(body.order) || body.order.some((id) => typeof id !== "string"))) {
+          return json(res, 400, { error: "order must be an array of project ids" });
+        }
+        try {
+          const project = await deps.projectThread.assignProjectGroup(
+            projectGroupMatch[1]!,
+            body.groupId,
+            body.order as string[] | undefined,
+          );
+          return json(res, 200, project);
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: err.message });
+          throw err;
+        }
       }
 
       // **Project を開いたら、その Project の Module を先に用意する**

@@ -52,6 +52,9 @@ export type AppEvent =
   // その Project の自動化の台帳が変わった（追加・2026-10-15、v4-frontend.md §6.42）。作った・直した・止めた・消した・
   // 回を書いた。中身は流さない——開いている画面が `GET /api/projects/:id/automations` で取り直す
   | { type: "automations.changed"; projectId: string }
+  // Project の一覧が変わった（追加・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。作る・名前・並び・閉じる・
+  // 開き直す・グループ。中身は流さない——画面が `GET /api/projects`・`GET /api/project-groups` で取り直す
+  | { type: "projects.changed" }
   // 混んでいる Project とこの機械（追加・2026-10-09、v4-frontend.md §6.36）。**変わったときだけ**、全体を送る（画面は置き換える）
   | { type: "resources.busy"; busy: ResourcesBusy }
   // Project を別の実行場所へ移す状況（追加・2026-10-12、Backlog #270）。移している途中は `move` を丸ごと（写している間は
@@ -93,4 +96,15 @@ export class AppEventBus {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
+}
+
+/**
+ * **Project の一覧が変わったら `projects.changed` を流す**（追加・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。
+ * 繋ぐのは起動のとき1回（`cli.ts`）。試験も同じ繋ぎ方を通す
+ */
+export function announceProjectsChanged(
+  store: { onProjectsChanged(listener: () => void): () => void },
+  bus: AppEventBus,
+): () => void {
+  return store.onProjectsChanged(() => bus.publish({ type: "projects.changed" }));
 }
