@@ -13,3 +13,6 @@ test-results/
 playwright-report/
 .tmp-data/
 .tmp-config/
+
+# 組み立て済みの版の印（GitHub Actions が書く。docs/specs/v4-architecture.md §2.5「組み立て済みのものを使う」）
+.banto-prebuilt.json

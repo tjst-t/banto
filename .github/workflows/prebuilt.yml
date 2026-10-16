@@ -1,0 +1,159 @@
+# 組み立て済みの banto を作って Release に置く（docs/specs/v4-architecture.md §2.5「組み立て済みのものを使う」）。
+#
+# release に push されたら、その commit を組み立て・単体テストし、通れば生成物だけを
+# banto-<commit>-linux-x64.tar.zst にまとめて Release「build-<commit の頭12>」に置く。update.mjs はそれを取ってきて重ねる
+# （無い・使えないときは host でその場で組み立てる——ここが落ちても更新はできる）。
+#
+# 守ること（仕様より）：
+#   - 外の action は GitHub 公式のものだけを commit の id で固定する。秘密は足さない（GITHUB_TOKEN だけ）
+#   - 同じ commit で2回走っても壊れない（揃っていれば何もしない・draft で作って揃ってから公開）
+#   - 片づけるのは build- で始まる Release だけ
+name: prebuilt
+
+on:
+  push:
+    branches: [release]
+  # 人が GitHub の画面から組み直すため（落ちた回の再実行は Actions の「Re-run」でもよい）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prebuilt-${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 揃っていれば何もしない
+        id: existing
+        run: |
+          set -euo pipefail
+          tag="build-${SHA:0:12}"
+          asset="banto-${SHA}-linux-x64.tar.zst"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          # draft にはまだタグが無いので、タグ名ではなく一覧から名前（tag_name）で探す
+          rel=$(gh api "repos/$REPO/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"$tag\") | {id, draft, assets: [.assets[].name]}" | head -n 1)
+          if [ -z "$rel" ]; then echo "state=none" >> "$GITHUB_OUTPUT"; exit 0; fi
+          id=$(jq -r .id <<<"$rel")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          complete=$(jq -r --arg a "$asset" '[.assets[] | select(. == $a or . == ($a + ".sha256"))] | length == 2' <<<"$rel")
+          if [ "$complete" = true ]; then
+            if [ "$(jq -r .draft <<<"$rel")" = true ]; then
+              echo "前の回がファイルを上げたあと公開の前で止まっていた——公開だけする"
+              gh api -X PATCH "repos/$REPO/releases/$id" -F draft=false > /dev/null
+            fi
+            echo "state=done" >> "$GITHUB_OUTPUT"
+          else
+            echo "前の回の作りかけ（ファイルが欠けている）——消して作り直す"
+            gh api -X DELETE "repos/$REPO/releases/$id"
+            echo "state=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Node.js の版を install.sh から読む
+        if: steps.existing.outputs.state != 'done'
+        id: node
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^NODE_VERSION=\([0-9][0-9.]*\)$/\1/p' install.sh)
+          [ -n "$v" ] || { echo "install.sh に NODE_VERSION がありません"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.existing.outputs.state != 'done'
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+          cache-dependency-path: banto/package-lock.json
+
+      - name: 組み立てる
+        if: steps.existing.outputs.state != 'done'
+        working-directory: banto
+        run: |
+          set -euo pipefail
+          npm ci --include=dev
+          npm run build
+
+      - name: 単体テスト
+        if: steps.existing.outputs.state != 'done'
+        working-directory: banto
+        run: |
+          set -euo pipefail
+          npm test
+          npm run test:scripts
+
+      - name: 組み立てがソースを書き換えていないか
+        if: steps.existing.outputs.state != 'done'
+        run: |
+          set -euo pipefail
+          # 管理しているファイルの変更だけを見る（生成物は .gitignore で除いてあるので出ない）
+          changed=$(git status --porcelain --untracked-files=no)
+          if [ -n "$changed" ]; then echo "組み立てが管理しているファイルを書き換えました："; echo "$changed"; exit 1; fi
+          untracked=$(git status --porcelain | grep '^??' || true)
+          if [ -n "$untracked" ]; then echo "組み立てが .gitignore に無いファイルを作りました（生成物の場所を確かめる）："; echo "$untracked"; exit 1; fi
+
+      - name: 生成物をまとめる
+        if: steps.existing.outputs.state != 'done'
+        id: pack
+        run: |
+          set -euo pipefail
+          avx2=false
+          grep -qw avx2 /proc/cpuinfo && avx2=true
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync("banto/.banto-prebuilt.json", JSON.stringify({
+              commit: process.env.SHA,
+              platform: "linux-x64",
+              node: process.versions.node,
+              cpu: { avx2: process.argv[1] === "true" },
+              builtAt: new Date().toISOString(),
+              run: `${process.env.GITHUB_SERVER_URL}/${process.env.REPO}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            }, null, 2) + "\n");
+          ' "$avx2"
+          # 決めた場所だけ（仕様の「生成物に入れるのは決めた場所だけ」）
+          paths=(banto/node_modules banto/apps/frontend/.next banto/apps/frontend/next-env.d.ts banto/.banto-prebuilt.json)
+          for d in banto/packages/*/dist banto/packages/modules/*/dist; do [ -d "$d" ] && paths+=("$d"); done
+          mkdir -p out
+          out="out/${{ steps.existing.outputs.asset }}"
+          tar --exclude=banto/apps/frontend/.next/cache -cf - "${paths[@]}" | zstd -T0 -10 -q -o "$out"
+          (cd out && sha256sum "${{ steps.existing.outputs.asset }}" > "${{ steps.existing.outputs.asset }}.sha256")
+          ls -l out
+
+      - name: Release に置く（draft で作って揃ってから公開）
+        if: steps.existing.outputs.state != 'done'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.existing.outputs.tag }}"
+          asset="${{ steps.existing.outputs.asset }}"
+          id=$(gh api -X POST "repos/$REPO/releases" \
+            -f tag_name="$tag" -f target_commitish="$SHA" -f name="組み立て済み ${SHA:0:12}" \
+            -f body="banto の ${SHA} を GitHub Actions で組み立てたもの（linux-x64）。update.mjs が取ってきて重ねる。docs/specs/v4-architecture.md §2.5「組み立て済みのものを使う」" \
+            -F draft=true -F prerelease=true --jq .id)
+          for f in "$asset" "$asset.sha256"; do
+            curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              --data-binary "@out/$f" "https://uploads.github.com/repos/$REPO/releases/$id/assets?name=$f" > /dev/null
+          done
+          gh api -X PATCH "repos/$REPO/releases/$id" -F draft=false > /dev/null
+          echo "置きました：$tag"
+
+      - name: 古い組み立て済みを片づける（build- の新しい10個を残す）
+        run: |
+          set -euo pipefail
+          # --jq はページごとに効くので、全部を1つにまとめてから並べる
+          gh api "repos/$REPO/releases?per_page=100" --paginate --jq '.[]' |
+          jq -rs '[.[] | select((.tag_name | startswith("build-")) and (.draft | not))] | sort_by(.created_at) | reverse | .[10:] | .[] | "\(.id) \(.tag_name)"' |
+          while read -r id tag; do
+            echo "消す：$tag"
+            # 別の回が先に消していた（404）は気にしない
+            gh api -X DELETE "repos/$REPO/releases/$id" || true
+            gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" || true
+          done
