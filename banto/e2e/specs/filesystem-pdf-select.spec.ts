@@ -102,16 +102,43 @@ test("PDF の文字をドラッグで選ぶと、余白や行間を通っても�
   expect(across).not.toContain("三行目");
   expect(across).not.toContain("第1章");
 
-  // ---- 3. 選んだものは、そのままコメントの引用になる --------------------------------------------------------------
+  // ---- 3. 会話の中のカードはコメントモードが既定でオフ：選んでも「コメント」は出ず、コピーできるだけ ------------------
+  await expect(view.getByTestId("comments-toggle")).toHaveAttribute("aria-pressed", "false");
   await drag(page, view, [
     [l2.x + 1, mid(l2)],
     [l2.x + l2.width + 30, mid(l2)],
   ]);
   expect((await selection(view)).replace(/\s/g, "")).toBe(LINES[2]!.replace(/\s/g, ""));
-  await view.getByTestId("comments-toggle").click();
-  await view.getByTestId("comment-from-selection").click();
-  await expect(view.getByTestId("comment-draft-anchor")).toHaveText(`1ページ「${LINES[2]}」`);
+  await page.waitForTimeout(300);
+  await expect(view.getByTestId("comment-chip")).toBeHidden();
+  await expect(view.getByTestId("comment-for-page")).toHaveCount(2);
+  await expect(view.getByTestId("comment-for-page").first()).toBeHidden();
+  await expect(view.getByTestId("comment-margin")).toBeHidden();
 
-  // ---- 4. 離したら「終わり」は元に戻る（次のドラッグや範囲を囲むのを邪魔しない）--------------------------------------
+  // ---- 4. コメントモードに入ると、選び終えた横に「コメント」が出て、押すと選んだ文がそのまま引用になる -------------------
+  await view.getByTestId("comments-toggle").click();
+  await expect(view.getByTestId("comments-toggle")).toHaveAttribute("aria-pressed", "true");
+  await drag(page, view, [
+    [l2.x + 1, mid(l2)],
+    [l2.x + l2.width + 30, mid(l2)],
+  ]);
+  expect((await selection(view)).replace(/\s/g, "")).toBe(LINES[2]!.replace(/\s/g, ""));
+  const chip = view.getByTestId("comment-chip");
+  await expect(chip).toBeVisible();
+  await expect(chip).toContainText("コメント");
+  // 選んだ所の右上（行の右端の近く、行より上）に出る
+  const chipBox = (await chip.boundingBox())!;
+  expect(chipBox.x, "「コメント」が選んだ行の右に出ていない").toBeGreaterThan(l2.x + l2.width * 0.5);
+  expect(chipBox.y + chipBox.height, "「コメント」が選んだ行の上に出ていない").toBeLessThanOrEqual(mid(l2) + 2);
+  await chip.click();
+  await expect(view.getByTestId("comment-draft-anchor")).toHaveText(`1ページ「${LINES[2]}」`);
+  await expect(chip).toBeHidden();
+  // 書いている対象の印（蛍光ペン）が選んだ行に出る
+  const draftMark = view.locator('.pdf-page[data-page="1"] [data-testid="comment-mark"][data-kind="text"][data-state="draft"]');
+  await expect(draftMark.first()).toBeVisible();
+  const markBox = (await draftMark.first().boundingBox())!;
+  expect(Math.abs(markBox.y - l2.y), "印が選んだ行の高さに無い").toBeLessThan(l2.height);
+
+  // ---- 5. 離したら「終わり」は元に戻る（次のドラッグや範囲を囲むのを邪魔しない）--------------------------------------
   await expect(view.locator('.pdf-page[data-page="1"] .textLayer.selecting')).toHaveCount(0);
 });

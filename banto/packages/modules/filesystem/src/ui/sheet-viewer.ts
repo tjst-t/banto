@@ -9,9 +9,11 @@
 //     普通の script で置く（`globalThis.XLSX`）。eval・Worker は使わない（Canvas の CSP は緩めない）
 //   - シートのタブ・結合したセル・列の幅・数の書式（SheetJS が書式で書いた文字）。**描くのは見えている範囲のセルだけ**
 //     ——大きなシートを全部 DOM にすると重い。列見出し・行番号はスクロールしても残す（sticky）
-//   - **コメント**（`comments.ts`）：セルを押す・ドラッグで範囲を選んで「選んだセル」。一覧から押すとそのシートのそのセルへ飛ぶ
+//   - **コメント**（`comments.ts`、#340）：コメントモードのとき、セルを押す・ドラッグで範囲を選ぶと、選んだセルのすぐ上
+//     （右端に揃える）に「<番地> にコメント」。付けたセルは塗って右上に三角。広いときは右の余白に、そのセルの高さに並ぶ。
+//     一覧から押すとそのシートのそのセルへ飛ぶ
 
-import { CommentsPanel, type CommentAnchor, type CommentTarget } from "./comments.js";
+import { CommentReview, type AnchorBox, type CommentAnchor, type CommentTarget } from "./comments.js";
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";
 import { PREPARING_RETRY_MS, formatSize, readRange } from "./pdf-viewer.js";
@@ -83,18 +85,16 @@ export class SheetDocumentView {
   private noteError = false;
 
   // --- コメント ---
-  private readonly comments: CommentsPanel;
-  private commentsOpen = false;
+  private readonly review: CommentReview;
 
   // --- 固定の要素 ---
   private readonly pathEl: HTMLSpanElement;
-  private readonly fullscreenBtn: HTMLButtonElement;
-  private readonly commentsBtn: HTMLButtonElement;
-  private readonly commentsCount: HTMLSpanElement;
   private readonly addressEl: HTMLSpanElement;
   private readonly valueEl: HTMLSpanElement;
   private readonly status: HTMLDivElement;
   private readonly scroller: HTMLDivElement;
+  /** 中身の箱：表と右の余白を並べる（コメントの位置はこの中で数える） */
+  private readonly content: HTMLDivElement;
   private readonly grid: HTMLDivElement;
   private readonly colHead: HTMLDivElement;
   private readonly colHeadCells: HTMLDivElement;
@@ -115,46 +115,10 @@ export class SheetDocumentView {
     },
   ) {
     this.displayMode = options.displayMode;
-    const target: CommentTarget = {
-      selectedCell: () => this.selectedCell(),
-      jumpTo: (anchor) => this.jumpTo(anchor),
-    };
-    this.commentsCount = h("span", { class: "count", data: { testid: "comments-toggle-count" } });
-    this.comments = new CommentsPanel(target, { canReturn: options.canReturnComments, onChange: () => this.onCommentsChange() });
-    this.commentsBtn = h(
-      "button",
-      {
-        class: "btn",
-        title: "コメントの一覧を開く・閉じる",
-        attrs: { type: "button", "aria-pressed": "false" },
-        data: { testid: "comments-toggle" },
-        on: { click: () => this.toggleComments() },
-      },
-      icon("MessageSquare"),
-      "コメント",
-      this.commentsCount,
-    );
-    this.pathEl = h("span", { class: "badge truncate", text: "（表）", data: { testid: "open-path" } });
-    this.fullscreenBtn = h(
-      "button",
-      { class: "btn", attrs: { type: "button" }, on: { click: () => void this.askFullscreen() } },
-      icon("Maximize2"),
-      "大きく表示",
-    );
+    this.pathEl = h("span", { class: "doc-name truncate", text: "（表）", data: { testid: "open-path" } });
     // 選んでいるセルの番地と、その値（式があれば式も）——Excel の名前ボックスと数式バー
     this.addressEl = h("span", { class: "sheet-address", data: { testid: "sheet-address" } });
     this.valueEl = h("span", { class: "sheet-value truncate", data: { testid: "sheet-value" } });
-    const toolbar = h(
-      "div",
-      { class: "pdf-toolbar" },
-      icon("FileSpreadsheet", "icon muted"),
-      this.pathEl,
-      this.addressEl,
-      this.valueEl,
-      h("span", { class: "spacer-fill" }),
-      this.commentsBtn,
-      this.fullscreenBtn,
-    );
 
     this.status = h("div", { class: "state" });
     this.colHeadCells = h("div", { class: "sheet-col-cells" });
@@ -164,12 +128,13 @@ export class SheetDocumentView {
     this.cells = h("div", { class: "sheet-cells", data: { testid: "sheet-cells" } });
     this.body = h("div", { class: "sheet-grid-body" }, this.rowHead, this.cells);
     this.grid = h("div", { class: "sheet-grid", data: { testid: "sheet-grid" } }, this.colHead, this.body);
-    this.scroller = h("div", { class: "pdf-scroller sheet-scroller", data: { testid: "sheet-scroller" } }, this.status, this.grid);
+    this.content = h("div", { class: "review-content sheet-content" }, this.grid);
+    this.scroller = h("div", { class: "pdf-scroller sheet-scroller", data: { testid: "sheet-scroller" } }, this.status, this.content);
     this.scroller.addEventListener("scroll", () => this.schedule(), { passive: true });
     this.cells.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     this.cells.addEventListener("pointermove", (e) => this.onPointerMove(e));
-    this.cells.addEventListener("pointerup", () => (this.dragFrom = undefined));
-    this.cells.addEventListener("pointercancel", () => (this.dragFrom = undefined));
+    this.cells.addEventListener("pointerup", () => this.endDrag());
+    this.cells.addEventListener("pointercancel", () => this.endDrag());
 
     this.tabs = h("div", { class: "sheet-tabs", attrs: { role: "tablist", "aria-label": "シート" }, data: { testid: "sheet-tabs" } });
     this.recalcNote = h("span", {
@@ -178,18 +143,44 @@ export class SheetDocumentView {
       data: { testid: "sheet-recalc-note" },
     });
     this.noteEl = h("p", { class: "note" });
-    this.comments.el.hidden = true;
-    const main = h("div", { class: "pdf-body" }, this.scroller, this.comments.el);
-    replaceChildren(
-      this.root,
-      h("div", { class: "pdf-view sheet-view", data: { testid: "sheet-view" } }, toolbar, main, h("div", { class: "sheet-foot" }, this.tabs, this.recalcNote), this.noteEl),
+    const toolbar = h("div", { class: "pdf-toolbar" });
+    // 表の枠：狭いときのコメントの一覧はここの下から出す（シートのタブを覆わない）
+    const main = h("div", { class: "sheet-main" }, this.scroller);
+    const view = h("div", { class: "pdf-view sheet-view", data: { testid: "sheet-view" } }, toolbar, main, h("div", { class: "sheet-foot" }, this.tabs, this.recalcNote), this.noteEl);
+    const target: CommentTarget = {
+      boxOf: (anchor) => this.boxOf(anchor),
+      jumpTo: (anchor) => this.jumpTo(anchor),
+      paintMarks: () => this.paintMarks(),
+    };
+    this.review = new CommentReview(target, {
+      root: view,
+      listHost: main,
+      content: this.content,
+      displayMode: this.displayMode,
+      canReturn: options.canReturnComments,
+      emptyHint: "セルを選ぶか、ドラッグで範囲を選ぶと、そこにコメントを付けられます。",
+      onLayoutChange: () => this.offerCell(),
+      onChange: () => this.displayMode === "inline" && reportSize(),
+    });
+    this.content.append(this.review.margin);
+    toolbar.append(
+      icon("FileSpreadsheet", "icon muted"),
+      this.pathEl,
+      this.addressEl,
+      this.valueEl,
+      h("span", { class: "spacer-fill" }),
+      this.review.modeButton,
+      this.review.listButton,
+      this.review.undoButton,
+      this.review.returnButton,
     );
+    replaceChildren(this.root, view);
     new ResizeObserver(() => this.schedule()).observe(this.scroller);
     this.render();
   }
 
   setToolInput(args: Record<string, unknown>): void {
-    if (typeof args.path === "string" && args.path && !this.path) this.pathEl.textContent = args.path;
+    if (typeof args.path === "string" && args.path && !this.path) this.showName(args.path);
     if (args.displayMode === "fullscreen" && this.displayMode === "inline") void this.askFullscreen();
   }
 
@@ -217,8 +208,16 @@ export class SheetDocumentView {
     if (mode === this.displayMode) return;
     this.displayMode = mode;
     document.body.dataset.mode = mode;
+    this.review.setDisplayMode(mode);
     this.render();
     this.schedule();
+  }
+
+  /** ツールバーにはファイル名だけ（パスは title） */
+  private showName(path: string): void {
+    this.pathEl.textContent = path.split("/").pop() || path;
+    this.pathEl.title = path;
+    this.pathEl.dataset.path = path;
   }
 
   // ---- 開く ---------------------------------------------------------------------
@@ -228,12 +227,12 @@ export class SheetDocumentView {
     clearTimeout(this.retryTimer);
     this.path = path;
     this.size = size;
-    this.pathEl.textContent = path;
+    this.showName(path);
     this.book = undefined;
     this.sheet = undefined;
     this.sheetNames = [];
     this.selection = undefined;
-    void this.comments.load(path);
+    void this.review.load(path);
     await this.convertAndRead(generation);
   }
 
@@ -276,6 +275,7 @@ export class SheetDocumentView {
     if (!this.book) return;
     this.sheet = sheetView(this.book, name);
     this.selection = undefined;
+    this.review.clearOffer();
     this.drawn = "";
     this.grid.style.width = `${HEAD_W + this.sheet.colX[this.sheet.cols]!}px`;
     this.grid.style.height = `${HEAD_H + this.sheet.rowY[this.sheet.rows]!}px`;
@@ -283,6 +283,8 @@ export class SheetDocumentView {
     this.scroller.scrollTo({ top: 0, left: 0 });
     this.render();
     this.draw();
+    // 余白のコメントは、このシートのものだけがセルの高さに並ぶ
+    (this.review as CommentReview | undefined)?.layout();
   }
 
   // ---- 描く（見えている範囲だけ）-----------------------------------------------
@@ -360,9 +362,72 @@ export class SheetDocumentView {
           cells.push(el);
         }
       }
-      this.cells.replaceChildren(...cells, this.selectionEl);
+      this.cells.replaceChildren(...cells, ...this.commentMarks(), this.selectionEl);
     }
     this.drawSelection();
+  }
+
+  /** 付けたコメントのセルの印（塗りと右上の三角）。コメントモードのときだけ */
+  private commentMarks(): HTMLElement[] {
+    const view = this.sheet;
+    const review = this.review as CommentReview | undefined;
+    if (!view || !review) return [];
+    const out: HTMLElement[] = [];
+    for (const m of review.marks()) {
+      if (m.anchor.kind !== "cell" || m.anchor.sheet !== view.name || m.state !== "saved") continue;
+      const range = parseRange(m.anchor.range);
+      if (!range) continue;
+      const s = { r: Math.min(range.s.r, view.rows), c: Math.min(range.s.c, view.cols) };
+      const e = { r: Math.min(range.e.r, view.rows - 1), c: Math.min(range.e.c, view.cols - 1) };
+      const x = view.colX[s.c]!;
+      const y = view.rowY[s.r]!;
+      const el = h("div", {
+        class: m.focused ? "comment-mark cell saved focused" : "comment-mark cell saved",
+        data: { testid: "comment-mark", kind: "cell", range: m.anchor.range, ...(m.id ? { commentId: m.id } : {}) },
+      });
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.width = `${Math.max(0, view.colX[e.c + 1]! - x)}px`;
+      el.style.height = `${Math.max(0, view.rowY[e.r + 1]! - y)}px`;
+      out.push(el);
+    }
+    return out;
+  }
+
+  private paintMarks(): void {
+    // 窓が同じでも描き直す（印だけ変わった）
+    this.drawn = "";
+    this.draw();
+  }
+
+  private boxOf(anchor: CommentAnchor): AnchorBox | undefined {
+    const view = this.sheet;
+    if (anchor.kind !== "cell" || !view || anchor.sheet !== view.name) return undefined;
+    const range = parseRange(anchor.range);
+    if (!range) return undefined;
+    const r0 = Math.min(range.s.r, view.rows);
+    const r1 = Math.min(range.e.r + 1, view.rows);
+    const c0 = Math.min(range.s.c, view.cols);
+    const c1 = Math.min(range.e.c + 1, view.cols);
+    // 表は中身の箱の左上にある。セルは列見出しと行番号の分ずれる
+    return { top: HEAD_H + view.rowY[r0]!, bottom: HEAD_H + view.rowY[r1]!, left: HEAD_W + view.colX[c0]!, right: HEAD_W + view.colX[c1]! };
+  }
+
+  /** 選んだセルのすぐ上（右端に揃える）に「<番地> にコメント」。上に場所が無ければ（表の頭の行）すぐ下に——選んだセルを覆わない */
+  private offerCell(): void {
+    const review = this.review as CommentReview | undefined;
+    const view = this.sheet;
+    const sel = this.selection;
+    if (!review) return;
+    if (!view || !sel || this.dragFrom) {
+      review.clearOffer();
+      return;
+    }
+    const anchor = this.selectedCell();
+    if (!anchor) return;
+    const above = HEAD_H + view.rowY[sel.s.r]! - 32;
+    const y = above >= HEAD_H + 2 ? above : HEAD_H + view.rowY[sel.e.r + 1]! + 4;
+    review.offer(anchor, { x: HEAD_W + view.colX[sel.e.c + 1]!, y, align: "right" });
   }
 
   private drawSelection(): void {
@@ -415,6 +480,22 @@ export class SheetDocumentView {
     this.dragFrom = from;
     this.cells.setPointerCapture?.(e.pointerId);
     this.select(from, at);
+    this.review.clearOffer();
+    // 印の付いたセルを押したら、そのコメントを強調する
+    const view = this.sheet!;
+    for (const m of this.review.marks()) {
+      const range = m.anchor.kind === "cell" && m.anchor.sheet === view.name ? parseRange(m.anchor.range) : undefined;
+      if (m.id && range && at.r >= range.s.r && at.r <= range.e.r && at.c >= range.s.c && at.c <= range.e.c) {
+        this.review.focusComment(m.id);
+        break;
+      }
+    }
+  }
+
+  private endDrag(): void {
+    if (!this.dragFrom) return;
+    this.dragFrom = undefined;
+    this.offerCell();
   }
 
   private onPointerMove(e: PointerEvent): void {
@@ -444,6 +525,7 @@ export class SheetDocumentView {
     if (!range) return;
     if (this.sheet?.name !== anchor.sheet) this.showSheet(anchor.sheet);
     const view = this.sheet!;
+    this.review.clearOffer();
     this.selection = expandToMerges(view, range);
     const x = view.colX[Math.min(range.s.c, view.cols)] ?? 0;
     const y = view.rowY[Math.min(range.s.r, view.rows)] ?? 0;
@@ -451,22 +533,7 @@ export class SheetDocumentView {
     this.draw();
   }
 
-  // ---- コメント・大きく表示 -------------------------------------------------------
-
-  private toggleComments(): void {
-    this.commentsOpen = !this.commentsOpen;
-    this.comments.el.hidden = !this.commentsOpen;
-    this.commentsBtn.setAttribute("aria-pressed", String(this.commentsOpen));
-    if (this.commentsOpen) void this.comments.reload();
-    this.onCommentsChange();
-  }
-
-  private onCommentsChange(): void {
-    // 一覧は作る途中（constructor の最初の描画）でもこれを呼ぶ——そのときはまだ this.comments が無い
-    const count = (this.comments as CommentsPanel | undefined)?.count ?? 0;
-    this.commentsCount.textContent = count > 0 ? String(count) : "";
-    if (this.displayMode === "inline") reportSize();
-  }
+  // ---- 大きく開く ---------------------------------------------------------------
 
   private async askFullscreen(): Promise<void> {
     try {
@@ -486,7 +553,6 @@ export class SheetDocumentView {
   private render(): void {
     const state = this.state;
     this.root.dataset.mode = this.displayMode;
-    this.fullscreenBtn.hidden = this.displayMode !== "inline";
     const ready = state.kind === "ready";
     this.status.hidden = ready;
     this.grid.hidden = !ready;

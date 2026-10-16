@@ -1,20 +1,26 @@
-// **PDF・Office の画面のコメント**（v4-modules.md §2.2「PDF・Office のファイルを読んでコメントを返す」の「コメント」、
-// Backlog #307、2026-10-15）。
+// **PDF・Office の画面のコメント**（v4-modules.md §2.2「PDF・Office のファイルを読んでコメントを返す」の「コメント」と
+// 「画面の形（改訂・2026-10-16）」、Backlog #307・#340）。
 //
-// ページ・選んだ文・ドラッグした範囲・表のセルを指してコメントを付け、画面の右（狭いとき・会話の中では下）の一覧に溜める。
-// 押すとその場所へ飛び、直す・消すができる。置き場は FileSystem（`getComments`／`saveComments`、Project ごと、鍵はパス）
-// ——会話の中のカードと大きく開いた画面は同じものを見る。
+// 描いている側（PDF・Word・表の面）とこの部品の分け方：
+//   - 描いている側：ページ・文・範囲・セルを**指させる**（選び終えたら `offer` で「コメント」を出させる）、指した所の位置
+//     （`boxOf`）、付けたものの印（`paintMarks`——`marks()` を読む）、その場所へ飛ぶ（`jumpTo`）
+//   - この部品：ツールバーの「コメント（件数）」（コメントモードの切り替え）・「一覧」・「AI に返す（件数）」、選んだ横の
+//     「コメント」、書く欄、余白の一覧（広いとき、指した所の高さに並べる）、下から出す一覧（狭いとき）、置き場との読み書き
+//
+// **コメントモード**：オフなら読むだけ——「コメント」・印・余白・ページの行の「コメント」は出さない（付けたものは消えない。
+// 「AI に返す」は押せる）。既定は大きく開いた画面ではオン、会話の中のカードではオフ。画面ごとに覚えない（開くたび既定）。
+//
+// 置き場は FileSystem（`getComments`／`saveComments`、Project ごと、鍵はパス）——会話の中のカードと大きく開いた画面は
+// 同じものを見る。
 //
 // **「AI に返す」**：コメントを1つの文にまとめ、MCP Apps の標準 `ui/message` で host に渡す。banto は**その画面を開いた
 // 会話の入力欄に「添付」の塊として置くだけ**で、送るのは人（v4-frontend.md §6.2「画面から会話の入力欄へ文を渡す」）。
 // 受ける host（`hostCapabilities.message`）でだけ出し、受けない host（会話の外で開いた画面）では「コピー」にする。
 // 渡したら一覧は空にし、前の一覧は「元に戻す」で1回だけ戻せる。
-//
-// 何を指しているかは画面の種類ごとに違うので、指す・飛ぶは描いている側（`CommentTarget`）に任せる。
 
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";
-import { callTool, errorMessage, request, textOf } from "./protocol.js";
+import { callTool, errorMessage, request, textOf, type DisplayMode } from "./protocol.js";
 import { toast } from "./toast.js";
 
 /** 範囲。ページに対する割合（0〜1）——倍率が変わっても同じ場所を指す */
@@ -42,19 +48,39 @@ export interface DocumentComment {
   updatedAt?: string;
 }
 
-/** 描いている側が引き受けること。指せないものは持たない（その口のボタンを出さない） */
+/** 中身の箱（`content`）の中での位置（px） */
+export interface AnchorBox {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+/** 描いている側が引き受けること */
 export interface CommentTarget {
-  /** 人がいまこの画面の中で選んでいる文。無ければ undefined */
-  selectedText?(): Extract<CommentAnchor, { kind: "text" }> | undefined;
-  /** いま見ているページ */
-  currentPage?(): number | undefined;
-  /** 表で選んでいるセル・範囲（`シート名!B4:D6` とそこの値）。選んでいなければ undefined */
-  selectedCell?(): Extract<CommentAnchor, { kind: "cell" }> | undefined;
-  /** ドラッグで範囲を囲ませる。囲み終えたら `done`。返り値で取りやめる */
-  startRegion?(done: (anchor: Extract<CommentAnchor, { kind: "region" }>) => void): () => void;
+  /** 指した所の、中身の箱の中での位置。いま描いていない（別のシート等）なら undefined */
+  boxOf(anchor: CommentAnchor): AnchorBox | undefined;
   /** そのコメントの場所へ飛ぶ */
   jumpTo(anchor: CommentAnchor): void;
+  /** 印を描き直す（`marks()` を読む） */
+  paintMarks(): void;
 }
+
+/** 画面に出す印1つ。`state`：付けたもの・書いている対象・囲んで「コメント」を待っているもの */
+export interface CommentMark {
+  anchor: CommentAnchor;
+  id?: string;
+  state: "saved" | "draft" | "pending";
+  focused: boolean;
+}
+
+/** 広いとき（これ以上の幅で、大きく開いた画面）だけ右に余白を取る */
+export const WIDE_MIN_PX = 820;
+/** 余白の幅 */
+export const MARGIN_PX = 292;
+/** 余白を出すとき、ページの幅から引く分（余白・ページとの隙間 24px・右の端との隙間 16px。styles.ts の .comment-margin と合わせる） */
+export const MARGIN_ROOM_PX = MARGIN_PX + 24 + 16;
+
 
 /** `ui/message` で1回に渡せる長さ（v4-frontend.md §6.2 の上限と同じ。正は host） */
 export const MESSAGE_MAX_CHARS = 20_000;
@@ -122,10 +148,22 @@ function parseSaved(result: Parameters<typeof textOf>[0]): SavedComments {
   return { path: String(parsed.path ?? ""), hash: parsed.hash, comments: parsed.comments };
 }
 
-type Draft = { anchor: CommentAnchor };
+/** 選んだ横の「コメント」の置き場所（中身の箱の中、px）。`align: "right"` なら x は右の端 */
+export interface OfferAt {
+  x: number;
+  y: number;
+  align?: "left" | "right";
+}
 
-export class CommentsPanel {
-  readonly el: HTMLElement;
+export class CommentReview {
+  // --- ツールバーに描いている側が置くもの ---
+  readonly modeButton: HTMLButtonElement;
+  readonly listButton: HTMLButtonElement;
+  readonly undoButton: HTMLButtonElement;
+  readonly returnButton: HTMLButtonElement;
+  /** 広いときの右の余白（描いている側が中身の箱の中、ページの右に置く） */
+  readonly margin: HTMLElement;
+
   private path = "";
   private comments: DocumentComment[] = [];
   private hash = "";
@@ -134,39 +172,182 @@ export class CommentsPanel {
   private busy = false;
   /** 保存するたびに進む——保存より前に頼んだ読み直しの結果で、保存したものを上書きしない */
   private version = 0;
-  private draft?: Draft;
+  private draft?: { anchor: CommentAnchor };
   private editing?: string;
+  private focusedId?: string;
   /** 「AI に返す」の前の一覧（1回だけ戻せる） */
   private undo?: DocumentComment[];
-  private stopRegion?: () => void;
+  /** 選んだ横に出している「コメント」の対象 */
+  private offered?: CommentAnchor;
+  private mode: boolean;
+  private wide = false;
+  private listOpen = false;
+  private displayMode: DisplayMode;
+
+  private readonly modeCount: HTMLSpanElement;
+  private readonly returnCount: HTMLSpanElement;
+  private readonly chip: HTMLButtonElement;
+  private readonly chipLabel: HTMLSpanElement;
+  private readonly chipKey: HTMLElement;
+  private readonly overlay: HTMLDivElement;
+  private readonly sheet: HTMLElement;
   private readonly draftInput: HTMLTextAreaElement;
+  private readonly draftCard: HTMLElement;
+  private readonly draftAnchor: HTMLElement;
+  private readonly draftAdd: HTMLButtonElement;
 
   constructor(
     private readonly target: CommentTarget,
     private readonly options: {
+      /** 画面の枠（狭いときの一覧を下から出す。`data-comment-mode` を付ける） */
+      root: HTMLElement;
+      /** 狭いときの一覧を下から出す枠（position: relative。既定は root。表はシートのタブを覆わないよう表の枠） */
+      listHost?: HTMLElement;
+      /** 中身の箱（position: relative。ページと余白を並べ、スクロールで一緒に動く）。「コメント」と狭いときの書く欄を置く */
+      content: HTMLElement;
+      displayMode: DisplayMode;
       /** host が `ui/message` を受けるか（会話の中で開いたときだけ）。受けなければ「コピー」 */
       canReturn: boolean;
-      /** 件数や中身が変わった（ツールバーの数・カードの高さを合わせる） */
+      /** 何も無いときの案内（「文を選ぶか、図をドラッグで囲むと…」） */
+      emptyHint: string;
+      /** 広い・狭い、モードが変わった（描いている側が幅を合わせ直す） */
+      onLayoutChange?: () => void;
+      /** 件数・中身が変わった（会話の中のカードの高さを合わせる） */
       onChange?: () => void;
     },
   ) {
-    this.el = h("aside", { class: "comments", attrs: { "aria-label": "コメント" }, data: { testid: "comments-panel" } });
+    this.displayMode = options.displayMode;
+    this.mode = options.displayMode === "fullscreen";
+    this.modeCount = h("span", { class: "count", data: { testid: "comments-toggle-count" } });
+    this.modeButton = h(
+      "button",
+      { class: "btn ghost", attrs: { type: "button" }, data: { testid: "comments-toggle" }, on: { click: () => this.setMode(!this.mode) } },
+      icon("MessageSquare"),
+      "コメント",
+      this.modeCount,
+    );
+    this.listButton = h(
+      "button",
+      {
+        class: "btn ghost",
+        title: "コメントの一覧を下に出す",
+        attrs: { type: "button", "aria-pressed": "false" },
+        data: { testid: "comments-list-toggle" },
+        on: { click: () => this.toggleList() },
+      },
+      icon("List"),
+      "一覧",
+    );
+    this.undoButton = h(
+      "button",
+      { class: "btn ghost", title: "返す前の一覧に戻す（1回だけ）", attrs: { type: "button" }, data: { testid: "comments-undo" }, on: { click: () => void this.restore() } },
+      icon("Undo2"),
+      "元に戻す",
+    );
+    this.returnCount = h("span", { class: "count on-primary" });
+    this.returnButton = options.canReturn
+      ? h(
+          "button",
+          {
+            class: "btn btn-primary",
+            title: "コメントをまとめて会話の入力欄に入れる（送るのはあなた）",
+            attrs: { type: "button" },
+            data: { testid: "comments-return" },
+            on: { click: () => void this.returnToAi() },
+          },
+          icon("SendHorizontal"),
+          "AI に返す",
+          this.returnCount,
+        )
+      : h(
+          "button",
+          {
+            class: "btn btn-primary",
+            title: "コメントをまとめた文をコピーする（ここは会話の外なので、AI に直接は返せません）",
+            attrs: { type: "button" },
+            data: { testid: "comments-copy" },
+            on: { click: () => void this.copy() },
+          },
+          icon("Copy"),
+          "コピー",
+          this.returnCount,
+        );
+
+    this.margin = h("aside", { class: "comment-margin", attrs: { "aria-label": "コメント" }, data: { testid: "comment-margin" } });
+    this.margin.style.width = `${MARGIN_PX}px`;
+    this.sheet = h("section", { class: "comment-sheet", attrs: { "aria-label": "コメントの一覧" }, data: { testid: "comments-panel" } });
+    this.overlay = h("div", { class: "comment-overlay" });
+    this.chipLabel = h("span", { text: "コメント" });
+    this.chipKey = h("kbd", { text: "C" });
+    this.chip = h(
+      "button",
+      {
+        class: "comment-chip",
+        attrs: { type: "button" },
+        data: { testid: "comment-chip" },
+        on: {
+          // 押しても選んだ文を手放さない
+          mousedown: (e) => e.preventDefault(),
+          pointerdown: (e) => e.stopPropagation(),
+          click: () => this.offered && this.beginDraft(this.offered),
+        },
+      },
+      icon("MessageSquarePlus"),
+      this.chipLabel,
+      this.chipKey,
+    );
+    this.chip.hidden = true;
+    this.overlay.hidden = true;
+    options.content.append(this.chip, this.overlay);
+    (options.listHost ?? options.root).append(this.sheet);
+
     this.draftInput = h("textarea", {
       class: "comment-input",
-      attrs: { rows: "3", placeholder: "コメント（Ctrl+Enter で追加）", "aria-label": "コメント" },
+      attrs: { rows: "3", placeholder: "コメントを書く", "aria-label": "コメント" },
       data: { testid: "comment-input" },
       on: {
+        input: () => this.syncDraftButton(),
         keydown: (e) => {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
             void this.addDraft();
           } else if (e.key === "Escape") {
-            this.draft = undefined;
-            this.render();
+            e.stopPropagation();
+            this.cancelDraft();
           }
         },
       },
     });
+    this.draftAnchor = h("div", { class: "comment-anchor", data: { testid: "comment-draft-anchor" } });
+    this.draftAdd = h("button", { class: "btn btn-primary btn-sm", text: "追加", attrs: { type: "button" }, data: { testid: "comment-add" }, on: { click: () => void this.addDraft() } });
+    this.draftCard = h(
+      "div",
+      { class: "comment-card comment-draft", data: { testid: "comment-draft" }, on: { pointerdown: (e) => e.stopPropagation() } },
+      this.draftAnchor,
+      this.draftInput,
+      h(
+        "div",
+        { class: "comment-actions" },
+        h("span", { class: "comment-hint", text: "Ctrl+Enter で追加" }),
+        h("span", { class: "spacer-fill" }),
+        h("button", { class: "btn ghost btn-sm", text: "やめる", attrs: { type: "button" }, data: { testid: "comment-cancel" }, on: { click: () => this.cancelDraft() } }),
+        this.draftAdd,
+      ),
+    );
+
+    // 選んだ横の「コメント」は C キーでも（書いている途中・入力欄の中では効かない。表のセルには使わない）
+    document.addEventListener("keydown", (e) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) return;
+      if (e.key === "Escape") {
+        if (this.draft) this.cancelDraft();
+        else this.clearOffer();
+      } else if (this.offered && this.offered.kind !== "cell" && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        this.beginDraft(this.offered);
+      }
+    });
+    new ResizeObserver(() => this.updateWide()).observe(options.root);
     // ほかの面（会話の中のカード・大きく開いた画面）で付けたものを、戻ってきたときに読み直す
     window.addEventListener("focus", () => void this.reload());
     this.render();
@@ -175,6 +356,71 @@ export class CommentsPanel {
   get count(): number {
     return this.comments.length;
   }
+
+  get commentMode(): boolean {
+    return this.mode;
+  }
+
+  /** 右に余白を取っているか（広い・コメントモード）——描いている側はページを余白を引いた幅に収める */
+  get marginShown(): boolean {
+    return this.wide && this.mode;
+  }
+
+  /** 画面に出す印（コメントモードを切っていれば無い） */
+  marks(): CommentMark[] {
+    if (!this.mode) return [];
+    const out: CommentMark[] = this.comments.map((c) => ({ anchor: c.anchor, id: c.id, state: "saved", focused: c.id !== undefined && c.id === this.focusedId }));
+    if (this.draft) out.push({ anchor: this.draft.anchor, state: "draft", focused: true });
+    else if (this.offered && this.offered.kind === "region") out.push({ anchor: this.offered, state: "pending", focused: true });
+    return out;
+  }
+
+  /** 印が押された——対応する余白のコメントを強調する（逆も：余白のコメントを押すと印が強調される） */
+  focusComment(id: string): void {
+    if (!this.comments.some((c) => c.id === id)) return;
+    this.focus(id);
+  }
+
+  setDisplayMode(mode: DisplayMode): void {
+    if (mode === this.displayMode) return;
+    this.displayMode = mode;
+    // 切り替えは覚えない——大きく開いたらオン、会話の中に戻ったらオフ
+    this.mode = mode === "fullscreen";
+    this.draft = undefined;
+    this.offered = undefined;
+    this.listOpen = false;
+    this.updateWide(true);
+  }
+
+  private updateWide(force = false): void {
+    const wide = this.displayMode === "fullscreen" && this.options.root.clientWidth >= WIDE_MIN_PX;
+    if (wide === this.wide && !force) {
+      this.layout();
+      return;
+    }
+    this.wide = wide;
+    if (wide) this.listOpen = false;
+    this.render();
+    this.options.onLayoutChange?.();
+  }
+
+  setMode(on: boolean): void {
+    if (on === this.mode) return;
+    this.mode = on;
+    this.draft = undefined;
+    this.offered = undefined;
+    this.listOpen = false;
+    this.render();
+    this.options.onLayoutChange?.();
+  }
+
+  private toggleList(): void {
+    this.listOpen = !this.listOpen;
+    if (this.listOpen) void this.reload();
+    this.render();
+  }
+
+  // ---- 読む・残す -----------------------------------------------------------------
 
   /** そのファイルのコメントを読む */
   async load(path: string): Promise<void> {
@@ -189,7 +435,7 @@ export class CommentsPanel {
 
   /** 置き場から読み直す（書いている途中・直している途中は読み直さない——書きかけを消さない） */
   async reload(): Promise<void> {
-    if (!this.path || this.busy || this.editing) return;
+    if (!this.path || this.busy || this.editing || this.draft) return;
     const path = this.path;
     const version = this.version;
     try {
@@ -225,69 +471,80 @@ export class CommentsPanel {
     }
   }
 
-  // ---- 付ける ----------------------------------------------------------------
+  // ---- 指す・付ける ---------------------------------------------------------------
 
-  private beginDraft(anchor: CommentAnchor): void {
-    this.stopRegion?.();
-    this.stopRegion = undefined;
+  /** 選び終えた所の横に「コメント」を出す（コメントモードのときだけ） */
+  offer(anchor: CommentAnchor, at: OfferAt): void {
+    if (!this.mode || this.draft) return;
+    this.offered = anchor;
+    this.chipLabel.textContent = anchor.kind === "cell" ? `${anchor.range} にコメント` : "コメント";
+    // 表のセルには C キーを使わない（キーの印も置かない）
+    if (anchor.kind === "cell") this.chipKey.remove();
+    else this.chip.append(this.chipKey);
+    this.chip.hidden = false;
+    const width = this.chip.offsetWidth;
+    const max = this.options.content.clientWidth - width - 4;
+    const left = at.align === "right" ? at.x - width : at.x;
+    this.chip.style.left = `${Math.max(4, Math.min(left, max))}px`;
+    this.chip.style.top = `${Math.max(4, at.y)}px`;
+    this.target.paintMarks();
+  }
+
+  /** 「コメント」を引っ込める（ページの別の所を押した・スクロールした・選ぶのをやめた） */
+  clearOffer(): void {
+    if (!this.offered) return;
+    this.offered = undefined;
+    this.chip.hidden = true;
+    this.target.paintMarks();
+  }
+
+  get offeredAnchor(): CommentAnchor | undefined {
+    return this.offered;
+  }
+
+  /** 書く欄を開く（「コメント」・C キー・ページの行の「このページにコメント」） */
+  beginDraft(anchor: CommentAnchor): void {
+    if (!this.mode) return;
+    this.offered = undefined;
     this.draft = { anchor };
+    this.draftInput.value = "";
+    this.focusedId = undefined;
     this.render();
-    this.draftInput.focus();
+    this.draftInput.focus({ preventScroll: true });
   }
 
-  private fromSelection(): void {
-    const anchor = this.target.selectedText?.();
-    if (!anchor) {
-      toast("先に文字を選んでください", { description: "ページの文字をドラッグして選んでから押します", error: true });
-      return;
-    }
-    this.beginDraft(anchor);
-  }
-
-  private fromCell(): void {
-    const anchor = this.target.selectedCell?.();
-    if (!anchor) {
-      toast("先にセルを選んでください", { description: "表のセルを押すか、ドラッグして範囲を選んでから押します", error: true });
-      return;
-    }
-    this.beginDraft(anchor);
-  }
-
-  private forPage(): void {
-    const page = this.target.currentPage?.();
-    if (page === undefined) return;
-    this.beginDraft({ kind: "page", page });
-  }
-
-  private toggleRegion(): void {
-    if (this.stopRegion) {
-      this.stopRegion();
-      this.stopRegion = undefined;
-      this.render();
-      return;
-    }
-    const start = this.target.startRegion;
-    if (!start) return;
-    this.stopRegion = start.call(this.target, (anchor) => {
-      this.stopRegion = undefined;
-      this.beginDraft(anchor);
-    });
+  private cancelDraft(): void {
+    if (!this.draft) return;
+    this.draft = undefined;
     this.render();
+  }
+
+  private syncDraftButton(): void {
+    if (this.busy || !this.draftInput.value.trim()) this.draftAdd.setAttribute("disabled", "");
+    else this.draftAdd.removeAttribute("disabled");
   }
 
   private async addDraft(): Promise<void> {
     const draft = this.draft;
     const body = this.draftInput.value.trim();
     if (!draft || !body || this.busy) return;
+    const before = new Set(this.comments.map((c) => c.id));
     if (await this.save([...this.comments, { anchor: draft.anchor, body }])) {
       this.draft = undefined;
       this.draftInput.value = "";
       this.undo = undefined;
+      this.focusedId = this.comments.find((c) => !before.has(c.id))?.id;
+      window.getSelection()?.removeAllRanges();
       this.render();
     }
   }
 
-  // ---- 直す・消す ---------------------------------------------------------------
+  // ---- 直す・消す・強調 -----------------------------------------------------------------
+
+  private focus(id: string): void {
+    this.focusedId = id;
+    this.render();
+  }
 
   private async edit(id: string, body: string): Promise<void> {
     if (!body.trim()) return;
@@ -299,6 +556,7 @@ export class CommentsPanel {
   }
 
   private async remove(id: string): Promise<void> {
+    if (this.focusedId === id) this.focusedId = undefined;
     await this.save(this.comments.filter((c) => c.id !== id));
   }
 
@@ -331,6 +589,7 @@ export class CommentsPanel {
     const before = this.comments;
     if (await this.save([])) {
       this.undo = before;
+      this.listOpen = false;
       this.render();
       toast("会話の入力欄に入れました", { description: "見直して、送信してください（まだ送っていません）" });
     }
@@ -358,165 +617,234 @@ export class CommentsPanel {
 
   // ---- 描く ---------------------------------------------------------------------
 
-  render(): void {
-    const t = this.target;
-    const head = h(
-      "div",
-      { class: "comments-head" },
-      h("span", { class: "comments-title", text: `コメント（${this.comments.length}件）`, data: { testid: "comments-count" } }),
-      h("span", { class: "spacer-fill" }),
-      t.selectedText
-        ? h(
-            "button",
-            {
-              class: "btn",
-              title: "ページの中で選んだ文にコメントを付ける",
-              attrs: { type: "button" },
-              data: { testid: "comment-from-selection" },
-              // 押しても選んだ文を手放さない
-              on: { mousedown: (e) => e.preventDefault(), click: () => this.fromSelection() },
+  private card(c: DocumentComment): HTMLElement {
+    const id = c.id ?? "";
+    const changed = Boolean(c.fileHash && this.hash && c.fileHash !== this.hash);
+    const editing = this.editing === id;
+    const editor = editing
+      ? h("textarea", { class: "comment-input", attrs: { rows: "3", "aria-label": "コメントを直す" }, data: { testid: "comment-edit-input" } })
+      : undefined;
+    if (editor) {
+      editor.value = c.body;
+      queueMicrotask(() => editor.focus({ preventScroll: true }));
+    }
+    const open = () => {
+      this.focus(id);
+      this.target.jumpTo(c.anchor);
+    };
+    const stop = (e: Event) => e.stopPropagation();
+    return h(
+      "li",
+      {
+        class: this.focusedId === id ? "comment-card comment-item focused" : "comment-card comment-item",
+        data: { testid: "comment-item", commentId: id },
+        on: { click: () => !editing && open(), pointerdown: stop },
+      },
+      h(
+        "div",
+        { class: "comment-item-head" },
+        h("span", { class: "comment-bar", attrs: { "aria-hidden": "true" } }),
+        h("button", {
+          class: "comment-anchor link truncate",
+          text: describeAnchor(c.anchor),
+          title: "この場所へ飛ぶ",
+          attrs: { type: "button" },
+          data: { testid: "comment-anchor" },
+          on: {
+            click: (e) => {
+              e.stopPropagation();
+              open();
             },
-            "選んだ文",
-          )
-        : null,
-      t.selectedCell
+          },
+        }),
+        editing
+          ? null
+          : h(
+              "span",
+              { class: "comment-tools" },
+              h(
+                "button",
+                {
+                  class: "icon-btn",
+                  title: "直す",
+                  attrs: { type: "button", "aria-label": "直す" },
+                  data: { testid: "comment-edit" },
+                  on: {
+                    click: (e) => {
+                      e.stopPropagation();
+                      this.editing = id;
+                      this.render();
+                    },
+                  },
+                },
+                icon("Pencil"),
+              ),
+              h(
+                "button",
+                {
+                  class: "icon-btn",
+                  title: "消す",
+                  attrs: { type: "button", "aria-label": "消す" },
+                  data: { testid: "comment-delete" },
+                  on: {
+                    click: (e) => {
+                      e.stopPropagation();
+                      void this.remove(id);
+                    },
+                  },
+                },
+                icon("Trash2"),
+              ),
+            ),
+      ),
+      changed ? h("div", { class: "comment-changed", text: "付けたあとでファイルが変わりました", data: { testid: "comment-changed" } }) : null,
+      editor ?? h("p", { class: "comment-body", text: c.body, data: { testid: "comment-body" } }),
+      editing && editor
         ? h(
-            "button",
-            { class: "btn", title: "表で選んだセル・範囲にコメントを付ける", attrs: { type: "button" }, data: { testid: "comment-for-cell" }, on: { click: () => this.fromCell() } },
-            "選んだセル",
-          )
-        : null,
-      t.currentPage ? h("button", { class: "btn", attrs: { type: "button" }, data: { testid: "comment-for-page" }, on: { click: () => this.forPage() } }, "このページ") : null,
-      t.startRegion
-        ? h(
-            "button",
-            {
-              class: this.stopRegion ? "btn active" : "btn",
-              title: "ページの上をドラッグして範囲を囲む（図・絵など文字の無いところ）",
-              attrs: { type: "button", "aria-pressed": this.stopRegion ? "true" : "false" },
-              data: { testid: "comment-region" },
-              on: { click: () => this.toggleRegion() },
-            },
-            icon("SquareDashed"),
-            this.stopRegion ? "囲むのをやめる" : "範囲を囲む",
+            "div",
+            { class: "comment-actions" },
+            h("span", { class: "spacer-fill" }),
+            h(
+              "button",
+              {
+                class: "btn ghost btn-sm",
+                text: "やめる",
+                attrs: { type: "button" },
+                on: {
+                  click: (e) => {
+                    stop(e);
+                    this.editing = undefined;
+                    this.render();
+                  },
+                },
+              },
+            ),
+            h(
+              "button",
+              {
+                class: "btn btn-primary btn-sm",
+                text: "保存",
+                attrs: { type: "button" },
+                data: { testid: "comment-edit-save" },
+                on: {
+                  click: (e) => {
+                    stop(e);
+                    void this.edit(id, editor.value);
+                  },
+                },
+              },
+            ),
           )
         : null,
     );
+  }
 
-    const draft = this.draft
-      ? h(
-          "div",
-          { class: "comment-draft", data: { testid: "comment-draft" } },
-          h("div", { class: "comment-anchor", text: describeAnchor(this.draft.anchor), data: { testid: "comment-draft-anchor" } }),
-          this.draftInput,
-          h(
-            "div",
-            { class: "comment-actions" },
-            h("button", { class: "btn", attrs: { type: "button" }, on: { click: () => { this.draft = undefined; this.render(); } } }, "やめる"),
-            h("button", { class: "btn btn-primary", attrs: { type: "button" }, data: { testid: "comment-add" }, on: { click: () => void this.addDraft() } }, "追加"),
-          ),
-        )
-      : this.stopRegion
-        ? h("p", { class: "note", text: "ページの上をドラッグして囲んでください（Esc でやめる）" })
-        : null;
+  private emptyNote(): HTMLElement {
+    return h("p", { class: "comment-empty", text: !this.loaded && !this.error ? "コメントを読んでいます…" : this.options.emptyHint, data: { testid: "comments-empty" } });
+  }
 
-    const list = h("ol", { class: "comment-list", data: { testid: "comment-list" } });
-    for (const c of this.comments) {
-      const id = c.id ?? "";
-      const changed = Boolean(c.fileHash && this.hash && c.fileHash !== this.hash);
-      const editing = this.editing === id;
-      const editor = editing
-        ? h("textarea", { class: "comment-input", attrs: { rows: "3", "aria-label": "コメントを直す" }, data: { testid: "comment-edit-input" } })
-        : undefined;
-      if (editor) editor.value = c.body;
-      list.appendChild(
-        h(
-          "li",
-          { class: "comment-item", data: { testid: "comment-item", commentId: id } },
-          h("button", {
-            class: "comment-anchor link",
-            text: describeAnchor(c.anchor),
-            title: "この場所へ飛ぶ",
-            attrs: { type: "button" },
-            data: { testid: "comment-anchor" },
-            on: { click: () => this.target.jumpTo(c.anchor) },
-          }),
-          changed ? h("div", { class: "comment-changed", text: "付けたあとでファイルが変わりました", data: { testid: "comment-changed" } }) : null,
-          editor ?? h("p", { class: "comment-body", text: c.body, data: { testid: "comment-body" } }),
-          h(
-            "div",
-            { class: "comment-actions" },
-            editing
-              ? h("button", { class: "btn", attrs: { type: "button" }, on: { click: () => { this.editing = undefined; this.render(); } } }, "やめる")
-              : h("button", { class: "icon-btn", title: "直す", attrs: { type: "button", "aria-label": "直す" }, data: { testid: "comment-edit" }, on: { click: () => { this.editing = id; this.render(); } } }, icon("Pencil")),
-            editing
-              ? h("button", { class: "btn btn-primary", attrs: { type: "button" }, data: { testid: "comment-edit-save" }, on: { click: () => void this.edit(id, editor?.value ?? "") } }, "保存")
-              : h("button", { class: "icon-btn", title: "消す", attrs: { type: "button", "aria-label": "消す" }, data: { testid: "comment-delete" }, on: { click: () => void this.remove(id) } }, icon("Trash2")),
-          ),
-        ),
-      );
-      if (editor) queueMicrotask(() => editor.focus());
+  render(): void {
+    const n = this.comments.length;
+    const root = this.options.root;
+    root.dataset.commentMode = this.mode ? "on" : "off";
+    root.dataset.commentWide = this.wide ? "on" : "off";
+
+    // ---- ツールバー ----
+    this.modeButton.setAttribute("aria-pressed", String(this.mode));
+    this.modeButton.title = this.mode ? "コメントモードを切る（読むだけに）" : "コメントモードに入る";
+    this.modeButton.classList.toggle("active", this.mode);
+    this.modeCount.textContent = n > 0 ? String(n) : "";
+    this.listButton.hidden = this.wide || !this.mode;
+    this.listButton.setAttribute("aria-pressed", String(this.listOpen));
+    this.listButton.classList.toggle("active", this.listOpen);
+    this.undoButton.hidden = !this.undo;
+    this.returnButton.hidden = n === 0;
+    this.returnCount.textContent = String(n);
+    if (this.busy) this.returnButton.setAttribute("disabled", "");
+    else this.returnButton.removeAttribute("disabled");
+
+    // ---- 書く欄 ----
+    if (this.draft) this.draftAnchor.textContent = describeAnchor(this.draft.anchor);
+    this.syncDraftButton();
+    if (!this.mode) this.offered = undefined;
+    this.chip.hidden = !this.offered;
+
+    const errorEl = this.error ? h("p", { class: "comment-empty error", text: this.error, data: { testid: "comments-error" } }) : null;
+
+    // ---- 広いとき：右の余白 ----
+    this.margin.hidden = !this.marginShown;
+    if (this.marginShown) {
+      const list = h("ol", { class: "comment-list", data: { testid: "comment-list" } }, ...this.comments.map((c) => this.card(c)));
+      if (this.draft) list.append(h("li", { class: "comment-slot-draft" }, this.draftCard));
+      replaceChildren(this.margin, errorEl, n === 0 && !this.draft ? this.emptyNote() : null, list);
+    } else {
+      this.margin.replaceChildren();
     }
 
-    const empty =
-      this.comments.length === 0 && !this.draft
-        ? h("p", {
-            class: "note",
-            text: !this.loaded && !this.error ? "コメントを読んでいます…" : t.selectedCell ? "まだコメントはありません。セルを選んで付けます" : "まだコメントはありません。文字を選ぶ・範囲を囲む・ページを指して付けます",
-          })
-        : null;
+    // ---- 狭いとき：書く欄は選んだ所の下に重ね、一覧は下から ----
+    const narrowDraft = !this.wide && this.mode && this.draft;
+    this.overlay.hidden = !narrowDraft;
+    if (narrowDraft) replaceChildren(this.overlay, this.draftCard);
+    else this.overlay.replaceChildren();
+    const sheetOpen = !this.wide && this.mode && this.listOpen;
+    this.sheet.hidden = !sheetOpen;
+    if (sheetOpen) {
+      replaceChildren(
+        this.sheet,
+        h(
+          "div",
+          { class: "comment-sheet-head" },
+          h("span", { class: "comments-title", text: `コメント ${n} 件`, data: { testid: "comments-count" } }),
+          h("span", { class: "spacer-fill" }),
+          h("button", { class: "icon-btn", title: "閉じる", attrs: { type: "button", "aria-label": "閉じる" }, on: { click: () => this.toggleList() } }, icon("X")),
+        ),
+        errorEl,
+        n === 0 ? this.emptyNote() : h("ol", { class: "comment-list", data: { testid: "comment-list" } }, ...this.comments.map((c) => this.card(c))),
+      );
+    } else {
+      this.sheet.replaceChildren();
+    }
 
-    const foot = h(
-      "div",
-      { class: "comments-foot" },
-      this.undo
-        ? h("button", { class: "btn", attrs: { type: "button" }, data: { testid: "comments-undo" }, on: { click: () => void this.restore() } }, icon("Undo2"), "元に戻す")
-        : null,
-      h("span", { class: "spacer-fill" }),
-      this.options.canReturn
-        ? h(
-            "button",
-            {
-              class: "btn btn-primary",
-              title: "コメントをまとめて会話の入力欄に入れる（送るのはあなた）",
-              attrs: { type: "button", ...(this.comments.length === 0 || this.busy ? { disabled: "" } : {}) },
-              data: { testid: "comments-return" },
-              on: { click: () => void this.returnToAi() },
-            },
-            icon("Send"),
-            "AI に返す",
-          )
-        : h(
-            "button",
-            {
-              class: "btn",
-              title: "コメントをまとめた文をコピーする（ここは会話の外なので、AI に直接は返せません）",
-              attrs: { type: "button", ...(this.comments.length === 0 ? { disabled: "" } : {}) },
-              data: { testid: "comments-copy" },
-              on: { click: () => void this.copy() },
-            },
-            icon("Copy"),
-            "コピー",
-          ),
-    );
-
-    replaceChildren(
-      this.el,
-      head,
-      this.error ? h("p", { class: "note error", text: this.error, data: { testid: "comments-error" } }) : null,
-      draft,
-      empty,
-      list,
-      foot,
-    );
+    this.target.paintMarks();
+    this.layout();
     this.options.onChange?.();
   }
 
-  /** 範囲を囲んでいる途中なら取りやめる（Esc） */
-  cancelRegion(): void {
-    if (!this.stopRegion) return;
-    this.stopRegion();
-    this.stopRegion = undefined;
-    this.render();
+  /**
+   * **余白のコメントを、指した所の高さに並べる**（重なれば下へずらす）。狭いときは書く欄を選んだ所のすぐ下に置く。
+   * 描いている側は、ページを描いた・倍率を変えた・幅が変わったときにも呼ぶ
+   */
+  layout(): void {
+    if (this.marginShown) {
+      const marginTop = this.margin.offsetTop;
+      const items: Array<{ el: HTMLElement; want: number; order: number }> = [];
+      const cards = [...this.margin.querySelectorAll<HTMLElement>(":scope > .comment-list > li")];
+      const anchors = [...this.comments.map((c) => c.anchor), ...(this.draft ? [this.draft.anchor] : [])];
+      cards.forEach((el, i) => {
+        const anchor = anchors[i];
+        const box = anchor ? this.target.boxOf(anchor) : undefined;
+        // 描いていない所を指すもの（別のシート等）は頭に寄せる
+        items.push({ el, want: box ? Math.max(0, box.top - marginTop - 6) : 0, order: i });
+      });
+      items.sort((a, b) => a.want - b.want || a.order - b.order);
+      let floor = 0;
+      for (const it of items) {
+        const top = Math.max(it.want, floor);
+        it.el.style.top = `${top}px`;
+        floor = top + it.el.offsetHeight + 10;
+      }
+      this.margin.style.minHeight = `${floor}px`;
+    } else {
+      this.margin.style.minHeight = "";
+    }
+    if (!this.overlay.hidden && this.draft) {
+      const content = this.options.content;
+      const box = this.target.boxOf(this.draft.anchor);
+      const width = Math.min(320, content.clientWidth - 24);
+      this.overlay.style.width = `${width}px`;
+      const left = box ? Math.max(12, Math.min(box.left, content.clientWidth - width - 12)) : 12;
+      this.overlay.style.left = `${left}px`;
+      this.overlay.style.top = `${(box ? box.bottom : 0) + 8}px`;
+    }
   }
 }

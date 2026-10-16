@@ -3,7 +3,8 @@
 // AI の showFile が docx を指すと、host は PDF と同じ画面（`ui://banto-filesystem/document`）を選び、画面は docx-preview で描く。
 // 規則14——「開けた」で終わらせず、画面が出している中身を一つずつ見る：見出しのパス・見出し（の大きさ）・本文・箇条書き
 // （の印）・表の各セル・大きく開いた画面の中身。描けない docx は理由を出す（docx ではないものは変換役にも渡さない）。
-// 「元に近い見た目で見る」で PDF に切り替えるのは `filesystem-office-pdf.spec.ts`
+// 「元に近い見た目で見る」で PDF に切り替えるのは `filesystem-office-pdf.spec.ts`。
+// コメント（#340）：大きく開くとコメントモードが既定でオン。文をドラッグで選ぶと横に「コメント」、指すのは選んだ文と上の見出し
 import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -80,7 +81,23 @@ async function expectDocument(view: FrameLocator): Promise<void> {
   expect(borderTop).toBe("solid");
 }
 
+/** その段落を、左端から右の外までマウスでドラッグして選ぶ（人と同じ操作） */
+async function dragParagraph(page: Page, view: FrameLocator, index: number): Promise<string> {
+  const p = view.locator("section.docx article > p").nth(index);
+  await view.locator("body").evaluate(() => window.getSelection()?.removeAllRanges());
+  const span = (await p.locator("span").first().boundingBox())!;
+  const right = await p.evaluate((el) => Math.max(...[...el.querySelectorAll("span")].map((s) => s.getBoundingClientRect().right)));
+  const offset = await p.locator("span").first().evaluate((el) => el.getBoundingClientRect().left);
+  await page.mouse.move(span.x + 1, span.y + span.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(span.x + (right - offset) + 20, span.y + span.height / 2, { steps: 8 });
+  await page.mouse.up();
+  return view.locator("body").evaluate(() => window.getSelection()?.toString() ?? "");
+}
+
 test("AI が見せた日本語の docx（見出し・表・箇条書き）を会話の中で読み、大きく開いても読める", async ({ page }) => {
+  // 会話の中のカードが画面に収まる高さにする——ドラッグする点が画面の外だと届かない
+  await page.setViewportSize({ width: 1280, height: 1400 });
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-fsdocx-"));
   mkdirSync(join(projectRoot, "docs"));
   writeFileSync(join(projectRoot, "docs/plan.docx"), makeJapaneseDocx(DOC));
@@ -103,8 +120,10 @@ test("AI が見せた日本語の docx（見出し・表・箇条書き）を会
   await expect(card.locator("body")).toHaveAttribute("data-surface", "document", { timeout: 60_000 });
   await expect(card.getByTestId("docx-view")).toBeVisible();
   await expect(card.getByTestId("pdf-view")).toHaveCount(0);
-  await expect(card.getByTestId("open-path")).toHaveText("docs/plan.docx");
-  await expect(card.getByRole("button", { name: "大きく表示" })).toBeVisible();
+  await expect(card.getByTestId("open-path")).toHaveText("plan.docx");
+  await expect(card.getByTestId("open-path")).toHaveAttribute("title", "docs/plan.docx");
+  await expect(card.getByRole("button", { name: "大きく表示" })).toHaveCount(0);
+  await expect(card.getByTestId("comments-toggle")).toHaveAttribute("aria-pressed", "false");
   // 変換役で PDF にする口（押したときの中身は filesystem-office-pdf.spec.ts）
   await expect(card.getByRole("button", { name: "元に近い見た目で見る" })).toBeVisible();
   await expectDocument(card);
@@ -119,31 +138,45 @@ test("AI が見せた日本語の docx（見出し・表・箇条書き）を会
   expect(fit.overflow, "Word のページがカードから横にはみ出している").toBeLessThanOrEqual(1);
   expect(fit.left, "Word のページの左端が切れている").toBeGreaterThanOrEqual(0);
   expect(fit.right, "Word のページの右端が切れている").toBeGreaterThanOrEqual(0);
-  // 本文の文字を選べる
-  const selected = await card.locator("section.docx article > p").nth(1).evaluate((p) => {
-    const range = document.createRange();
-    range.selectNodeContents(p);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    return selection.toString();
-  });
-  expect(selected).toBe(DOC.paragraphs[0]);
+  // 本文の文字をドラッグで選べる。コメントモードがオフなので「コメント」は出ない
+  expect((await dragParagraph(page, card, 1)).trim()).toBe(DOC.paragraphs[0]);
+  await page.waitForTimeout(300);
+  await expect(card.getByTestId("comment-chip")).toBeHidden();
 
   // ---- 大きく開く：同じ文書が画面いっぱいに出る ---------------------------------------
-  await card.getByRole("button", { name: "大きく表示" }).click();
+  await embed.getByRole("button", { name: "大きく開く" }).click();
   await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
   const full = await fullscreenDocx(page);
-  await expect(full.getByTestId("open-path")).toHaveText("docs/plan.docx");
-  await expect(full.getByRole("button", { name: "大きく表示" })).toBeHidden();
+  await expect(full.getByTestId("open-path")).toHaveText("plan.docx");
   await expectDocument(full);
+
+  // ---- 大きく開くとコメントモードはオン：文を選ぶと横に「コメント」、指すのは選んだ文と上の見出し ----------------------------
+  await expect(full.getByTestId("comments-toggle")).toHaveAttribute("aria-pressed", "true");
+  expect((await dragParagraph(page, full, 1)).trim()).toBe(DOC.paragraphs[0]);
+  await full.getByTestId("comment-chip").click();
+  await expect(full.getByTestId("comment-draft-anchor")).toHaveText(`見出し「${DOC.title}」の下「${DOC.paragraphs[0]}」`);
+  await full.getByTestId("comment-input").fill("理由を先に並べる");
+  await full.getByTestId("comment-add").click();
+  await expect(full.getByTestId("comments-toggle-count")).toHaveText("1");
+  await expect(full.getByTestId("comments-return")).toContainText("AI に返す");
+  // 付けた文に蛍光ペン（その段落の高さ）
+  const mark = full.locator('[data-testid="comment-mark"][data-kind="text"]').first();
+  await expect(mark).toBeVisible();
+  const para = (await full.locator("section.docx article > p").nth(1).boundingBox())!;
+  const markBox = (await mark.boundingBox())!;
+  expect(markBox.y, "蛍光ペンが選んだ段落に無い").toBeGreaterThanOrEqual(para.y - 2);
+  expect(markBox.y + markBox.height).toBeLessThanOrEqual(para.y + para.height + 2);
+  // 切ると印は消え、付けたものは残る
+  await full.getByTestId("comments-toggle").click();
+  await expect(full.getByTestId("comment-mark")).toHaveCount(0);
+  await expect(full.getByTestId("comments-toggle-count")).toHaveText("1");
 
   // ---- 描けない docx は理由を出す（白い画面のままにしない）--------------------------------
   await page.getByRole("button", { name: "閉じる" }).first().click().catch(() => undefined);
   await composer.fill("壊れた Word を見せて。" + fakeTurn({ tools: [{ server: "filesystem", name: "showFile", args: { path: "docs/broken.docx" } }] }));
   await composer.press("Enter");
   const cards = page.frameLocator('[data-testid="module-canvas-frame"] >> nth=-1').frameLocator("iframe");
-  await expect(cards.getByTestId("open-path")).toHaveText("docs/broken.docx", { timeout: 120_000 });
+  await expect(cards.getByTestId("open-path")).toHaveText("broken.docx", { timeout: 120_000 });
   await expect(cards.getByTestId("docx-error")).toHaveText("Word 文書を描けませんでした：docx として読めませんでした（壊れているか、docx ではありません）", { timeout: 60_000 });
   await expect(cards.locator("section.docx")).toHaveCount(0);
   // zip ですらないものは変換役に渡さない（LibreOffice は中身で形を当て、別の物として PDF にしてしまう）

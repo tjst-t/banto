@@ -4,8 +4,9 @@
 // AI の showFile が pptx を指すと、host は PDF と同じ画面（`ui://banto-filesystem/document`）を選び、画面は変換役（LibreOffice）に
 // PDF にしてもらって pdf.js で描く。初めてのときは変換役を入れるので数分かかり、その間は「入れています」と出る。
 // 規則14——開けたで終わらせず、画面が出している中身を一つずつ見る：パス・何枚目か（スライドで数える）・スライドの数・
-// 各スライドの文字・絵。docx は Word の面から「元に近い見た目で見る」で PDF の面へ、「Word の描き方で見る」で戻る
-import { test, expect, type FrameLocator } from "../test-base.js";
+// 各スライドの文字・絵。docx は Word の面から「元に近い見た目で見る」で PDF の面へ、「Word の描き方で見る」で戻る。
+// スライドの絵の範囲（文字の無い所のドラッグ）とスライドそのものにコメントを付け、「AI に返す」で入力欄に塊が出る（#340）
+import { test, expect, type FrameLocator, type Page } from "../test-base.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,19 @@ async function inked(view: FrameLocator, n: number): Promise<number> {
   });
 }
 
+/** 押して、途中の点を通って、離す（人のドラッグと同じく少しずつ動かす） */
+async function dragOn(page: Page, view: FrameLocator, points: Array<[number, number]>): Promise<void> {
+  await view.locator("body").evaluate(() => window.getSelection()?.removeAllRanges());
+  const [first, ...rest] = points;
+  await page.mouse.move(first![0], first![1]);
+  await page.mouse.down();
+  for (const [x, y] of rest) {
+    await page.mouse.move(x, y, { steps: 6 });
+    await page.waitForTimeout(40);
+  }
+  await page.mouse.up();
+}
+
 test("AI が見せた pptx をスライドとして読み、docx は「元に近い見た目で見る」で PDF に切り替えて戻れる", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-fsoffice-"));
   mkdirSync(join(projectRoot, "docs"));
@@ -50,6 +64,8 @@ test("AI が見せた pptx をスライドとして読み、docx は「元に近
   writeFileSync(join(projectRoot, "docs/plan.docx"), makeJapaneseDocx(DOC));
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
+  // 会話の中のカードが画面に収まる高さにする——ドラッグする点が画面の外だと届かない
+  await page.setViewportSize({ width: 1280, height: 1400 });
 
   await openApp(page);
   await createProject(page, "E2E FS Office", projectRoot);
@@ -65,7 +81,8 @@ test("AI が見せた pptx をスライドとして読み、docx は「元に近
   await expect(card.locator("body")).toHaveAttribute("data-surface", "document", { timeout: 60_000 });
   await expect(card.getByTestId("pdf-view")).toBeVisible();
   await expect(card.getByTestId("docx-view")).toHaveCount(0);
-  await expect(card.getByTestId("open-path")).toHaveText("docs/slides.pptx");
+  await expect(card.getByTestId("open-path")).toHaveText("slides.pptx");
+  await expect(card.getByTestId("open-path")).toHaveAttribute("title", "docs/slides.pptx");
   // 変換の途中で出る文は、変換している・入れている・起こしているのどれか（速ければ見えないうちに終わる）
   const converting = await card.getByTestId("pdf-converting").textContent({ timeout: 5_000 }).catch(() => null);
   if (converting !== null) expect(converting).toMatch(/^(LibreOffice で PDF にしています…|変換役を(入れています（初回だけ、数分）|起こしています)。.*)$/);
@@ -80,7 +97,41 @@ test("AI が見せた pptx をスライドとして読み、docx は「元に近
   expect(box!.width / box!.height, "スライドが横長でない（縦のページとして描いている）").toBeGreaterThan(1.2);
   expect(await pageText(card, 1)).toContain(SLIDES[0]!.replace(/\s+/g, ""));
   expect(await inked(card, 1), "1枚目の canvas に何も描かれていない").toBeGreaterThan(50);
+  // ページの上の行は「n 枚目」
+  await expect(card.locator(".pdf-page-head").first()).toContainText("1 枚目");
+
+  // ---- スライドにコメント：コメントモードに入り、絵（文字の無い所）をドラッグで囲む・スライドそのものに付ける -------------
+  await card.getByTestId("comments-toggle").click();
+  await expect(card.getByTestId("comment-for-page").first()).toHaveText("このスライドにコメント");
+  const slide = (await card.locator('.pdf-page[data-page="1"]').boundingBox())!;
+  await dragOn(page, card, [
+    [slide.x + slide.width * 0.1, slide.y + slide.height * 0.65],
+    [slide.x + slide.width * 0.25, slide.y + slide.height * 0.75],
+    [slide.x + slide.width * 0.3, slide.y + slide.height * 0.9],
+  ]);
+  await expect(card.locator('[data-testid="comment-mark"][data-kind="region"][data-state="pending"]')).toHaveCount(1);
+  await card.getByTestId("comment-chip").click();
+  await expect(card.getByTestId("comment-draft-anchor")).toHaveText("1ページの範囲（左下）");
+  await card.getByTestId("comment-input").fill("図が小さい");
+  await card.getByTestId("comment-add").click();
+  await card.getByTestId("comment-for-page").first().click();
+  await expect(card.getByTestId("comment-draft-anchor")).toHaveText("1ページ");
+  await card.getByTestId("comment-input").fill("このスライドは要らない");
+  await card.getByTestId("comment-add").click();
+  await expect(card.getByTestId("comments-toggle-count")).toHaveText("2");
+  await card.getByTestId("comments-return").click();
+  await expect(page.getByTestId("canvas-quote").getByTestId("canvas-quote-head")).toHaveText(
+    ["`docs/slides.pptx` へのコメント（2件）", "1. 1ページの範囲（左下）：図が小さい", "2. 1ページ：このスライドは要らない"].join("\n"),
+    { timeout: 15_000 },
+  );
+  await expect(card.getByTestId("comments-return")).toBeHidden();
+  // 次の頼みに混ぜないよう外す
+  await page.getByTestId("canvas-quote").hover();
+  await page.getByTestId("canvas-quote-remove").click();
+  await expect(page.getByTestId("canvas-quote")).toHaveCount(0);
+
   // 探すとそのスライドへ飛ぶ——ほかのスライドの文字も読めている
+  await card.getByTestId("pdf-search-open").click();
   const search = card.getByTestId("pdf-search");
   await search.fill("三枚目");
   await search.press("Enter");
@@ -97,14 +148,14 @@ test("AI が見せた pptx をスライドとして読み、docx は「元に近
   await composer.press("Enter");
   const word = page.frameLocator('[data-testid="module-canvas-frame"] >> nth=-1').frameLocator("iframe");
   await expect(word.getByTestId("docx-view")).toBeVisible({ timeout: 120_000 });
-  await expect(word.locator('[data-testid="docx-view"] [data-testid="open-path"]')).toHaveText("docs/plan.docx");
+  await expect(word.locator('[data-testid="docx-view"] [data-testid="open-path"]')).toHaveText("plan.docx");
   await expect(word.locator("section.docx article > p").first()).toHaveText(DOC.title, { timeout: 60_000 });
   await expect(word.getByTestId("pdf-view")).toHaveCount(0);
 
   await word.getByRole("button", { name: "元に近い見た目で見る" }).click();
   await expect(word.getByTestId("pdf-view")).toBeVisible();
   await expect(word.getByTestId("docx-view")).toBeHidden();
-  await expect(word.locator('[data-testid="pdf-view"] [data-testid="open-path"]')).toHaveText("docs/plan.docx");
+  await expect(word.locator('[data-testid="pdf-view"] [data-testid="open-path"]')).toHaveText("plan.docx");
   // 変換役はもう入っている——変換して、ページで数える
   await expect(word.getByTestId("pdf-page-label")).toHaveText("1 / 1 ページ", { timeout: 120_000 });
   await expect(word.getByTestId("pdf-page")).toHaveCount(1);

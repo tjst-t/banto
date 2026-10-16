@@ -22,6 +22,8 @@ const CSS = `
   --warn: var(--color-text-warning, darkgoldenrod);
   --danger: var(--color-text-danger, crimson);
   --danger-soft: var(--color-background-danger, color-mix(in srgb, crimson 12%, Canvas));
+  /* コメントの印（蛍光ペン）。banto の --banto-chart-4 は標準の名前に無く渡らないので、注意の色（--color-text-warning）を薄くして使う */
+  --mark: var(--color-text-warning, #eda100);
   --sans: var(--font-sans, system-ui, sans-serif);
   --mono: var(--font-mono, ui-monospace, monospace);
   --t-xs: var(--font-text-xs-size, x-small);
@@ -70,6 +72,9 @@ button { font: inherit; color: inherit; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
 .btn-primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover:not(:disabled), .btn.ghost.active { background: var(--bg-3); }
+.btn-sm { height: 24px; padding: 0 8px; font-size: var(--t-xs); }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
   width: 24px; height: 24px; border-radius: var(--r-sm); border: 0; background: transparent;
@@ -226,59 +231,102 @@ table.sheet .cell input:focus { box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* ---- PDF（showFile の document 画面）---- */
 .pdf-view [hidden] { display: none !important; }
-.pdf-view { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--bg); }
+.pdf-view { position: relative; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--bg); }
 body[data-mode="fullscreen"] .pdf-view { height: 100vh; border: 0; border-radius: 0; }
-.pdf-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); min-width: 0; }
-.pdf-toolbar .spacer-fill { flex: 1; }
+/* ツールバーは1段（v4-modules.md §2.2「画面の形」）。狭ければファイル名が縮む */
+.pdf-toolbar { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; height: 44px; padding: 0 10px; border-bottom: 1px solid var(--line); min-width: 0; flex-shrink: 0; }
+.pdf-toolbar .spacer-fill { flex: 1; min-width: 4px; }
+.pdf-toolbar > * { flex-shrink: 0; }
+.pdf-toolbar > .doc-name, .pdf-toolbar > .sheet-value { flex-shrink: 1; }
+.kind-icon { display: inline-flex; }
+.doc-name { padding: 0 4px; font: var(--t-sm)/1.6 var(--mono); color: var(--ink); }
 .pdf-page-label, .pdf-zoom-label, .pdf-search-count { font-size: var(--t-xs); color: var(--ink-3); white-space: nowrap; }
+.pdf-page-label { padding-left: 4px; font-variant-numeric: tabular-nums; }
+.pdf-zoom { display: inline-flex; align-items: center; }
 .pdf-zoom-label { min-width: 3.2em; text-align: center; }
-.pdf-search { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; height: 28px; border: 1px solid var(--line); border-radius: var(--r-sm); }
-.pdf-search-input { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: var(--t-sm); width: 11em; }
-/* position: relative——ページの offsetTop をこの中の位置にする（スクロールの位置と比べる） */
+.pdf-search { display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); }
+.pdf-search-input { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: var(--t-sm); width: 10em; }
+.btn .count:not(:empty) { margin-left: 2px; padding: 0 6px; border-radius: 999px; background: var(--bg-3); font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+.btn .count.on-primary { background: color-mix(in srgb, var(--on-accent) 22%, transparent); }
+@media (max-width: 560px) {
+  .pdf-zoom { display: none; }
+  .pdf-search-input { width: 6em; }
+}
 .pdf-scroller { position: relative; height: 520px; overflow: auto; background: var(--bg-3); }
 body[data-mode="fullscreen"] .pdf-scroller { height: auto; flex: 1; min-height: 0; }
-.pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; min-width: max-content; }
+/* 中身の箱：ページ（本文・表）の列と、広いときの右の余白。コメントの位置はこの中で数える */
+.review-content { position: relative; display: flex; align-items: flex-start; justify-content: center; gap: 24px; width: max-content; min-width: 100%; }
+.pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 16px 16px; }
+.pdf-page-wrap { display: flex; flex-direction: column; }
+/* ページの上の細い行：何枚目か、コメントモードなら「このページにコメント」 */
+.pdf-page-head { display: flex; align-items: center; justify-content: space-between; height: 26px; padding: 0 2px; font-size: var(--t-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.page-comment-btn { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font-size: var(--t-xs); cursor: pointer; }
+.page-comment-btn:hover { background: var(--bg); color: var(--ink); }
+.pdf-view[data-comment-mode="off"] .page-comment-btn { display: none; }
 .pdf-page { position: relative; flex-shrink: 0; background: white; box-shadow: var(--sh-1), 0 0 0 1px var(--line);
   --total-scale-factor: calc(var(--scale-factor, 1) * var(--user-unit, 1)); --scale-round-x: 1px; --scale-round-y: 1px; }
 .pdf-page .pdf-canvas { position: absolute; inset: 0; display: block; }
 .pdf-page > .state { position: absolute; inset: 0; }
 .pdf-view > .note { margin: 0; padding: 6px 12px; border-top: 1px solid var(--line); }
-/* コメント（comments.ts）。大きく開いたときは右、会話の中と狭い画面では下 */
-.pdf-body { display: flex; flex-direction: column; min-height: 0; }
-body[data-mode="fullscreen"] .pdf-body { flex: 1; flex-direction: row; }
-.pdf-body > .pdf-scroller { min-width: 0; }
-/* 残りを全部使うのは大きく開いたときだけ。会話の中のカード（高さの決まらない縦並び）で flex: 1 にすると、height: 520px より
-   flex-basis が勝って中身の高さまで伸び、スクロールしない（いまのページを真ん中と数えていた） */
-body[data-mode="fullscreen"] .pdf-body > .pdf-scroller { flex: 1; }
-.comments { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bg); font-size: var(--t-sm); }
-body[data-mode="fullscreen"] .comments { width: 320px; flex-shrink: 0; border-top: 0; border-left: 1px solid var(--line); overflow: auto; }
-@media (max-width: 640px) {
-  body[data-mode="fullscreen"] .pdf-body { flex-direction: column; }
-  body[data-mode="fullscreen"] .comments { width: auto; max-height: 45vh; border-left: 0; border-top: 1px solid var(--line); }
-}
-.comments-head, .comments-foot, .comment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.comments-head .spacer-fill, .comments-foot .spacer-fill { flex: 1; }
-.comments-title { font-weight: 500; color: var(--ink); }
-.comments .note { margin: 0; }
-.comments .btn.active { background: var(--bg-3); border-color: var(--accent); color: var(--accent); }
-.comment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.comment-list:empty { display: none; }
-.comment-item, .comment-draft { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); }
+/* コメントモードでは、文字の無い所はドラッグで範囲を囲む */
+.pdf-view[data-comment-mode="on"] .pdf-page.rendered, .pdf-view[data-comment-mode="on"] .textLayer, .pdf-view[data-comment-mode="on"] .textLayer .endOfContent { cursor: crosshair; }
+
+/* ---- コメント（comments.ts）---- */
+.comment-marks { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.docx-content > .comment-marks { z-index: 1; }
+.comment-mark { position: absolute; pointer-events: none; border-radius: 2px; }
+.comment-mark.text { background: color-mix(in srgb, var(--mark) 24%, transparent); mix-blend-mode: multiply; }
+.comment-mark.text.focused { background: color-mix(in srgb, var(--mark) 45%, transparent); }
+.comment-mark.text.draft { outline: 1px dashed var(--mark); }
+.comment-mark.region { border: 2px solid color-mix(in srgb, var(--mark) 70%, transparent); background: color-mix(in srgb, var(--mark) 6%, transparent); }
+.comment-mark.region.focused { border-color: var(--mark); background: color-mix(in srgb, var(--mark) 15%, transparent); }
+.comment-mark.region.pending, .comment-mark.region.draft { border-style: dashed; }
+.pdf-page > .comment-mark.drawing { z-index: 3; }
+.comment-mark.page { left: 0; top: 0; bottom: 0; width: 4px; border-radius: 0; background: color-mix(in srgb, var(--mark) 50%, transparent); }
+.comment-mark.page.focused, .comment-mark.page.draft { background: var(--mark); }
+.comment-mark.cell { z-index: 1; border-radius: 0; background: color-mix(in srgb, var(--mark) 16%, transparent); }
+.comment-mark.cell.focused { background: color-mix(in srgb, var(--mark) 32%, transparent); }
+.comment-mark.cell::after { content: ""; position: absolute; top: 0; right: 0; border-left: 7px solid transparent; border-top: 7px solid var(--mark); }
+/* 選んだすぐ横の「コメント」 */
+.comment-chip { position: absolute; z-index: 6; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px 5px 10px; border: 0; border-radius: 999px;
+  background: var(--ink); color: var(--bg); font-size: var(--t-xs); font-weight: 500; line-height: 1.4; white-space: nowrap; box-shadow: var(--sh-2); cursor: pointer; }
+.comment-chip kbd { margin-left: 2px; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--bg) 18%, transparent); font: inherit; font-size: 10px; font-weight: 400; }
+/* 狭いとき：書く欄は選んだ所のすぐ下に重ねる */
+.comment-overlay { position: absolute; z-index: 7; }
+/* 広いとき：右の余白。コメントは指した所の高さに（comments.ts の layout）。幅は comments.ts の MARGIN_PX で付ける */
+.comment-margin { position: relative; flex-shrink: 0; align-self: stretch; margin: 36px 16px 16px 0; --margin-pad: 0px; }
+.comment-margin > .comment-list > li { position: absolute; left: var(--margin-pad); right: var(--margin-pad); transition: top 150ms; }
+@media (prefers-reduced-motion: reduce) { .comment-margin > .comment-list > li { transition: none; } }
+.comment-margin > .comment-empty { position: sticky; top: 8px; margin: 0 var(--margin-pad); padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--r-md); }
+.comment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.comment-empty { margin: 0; font-size: var(--t-xs); line-height: 1.6; color: var(--ink-3); }
+.comment-empty.error { color: var(--danger); }
+.comment-card { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); font-size: var(--t-sm); cursor: pointer; }
+.comment-card:hover { box-shadow: var(--sh-1); }
+.comment-item.focused { border-color: var(--mark); box-shadow: var(--sh-2); }
+.comment-draft { border-color: var(--mark); box-shadow: var(--sh-2); cursor: default; padding: 10px; }
+.comment-item-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.comment-bar { width: 4px; height: 12px; flex-shrink: 0; border-radius: 999px; background: var(--mark); }
 .comment-anchor { font-size: var(--t-xs); color: var(--ink-3); text-align: left; overflow-wrap: anywhere; }
-.comment-anchor.link { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--t-xs); color: var(--accent); }
-.comment-anchor.link:hover { text-decoration: underline; }
-.comment-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
-.comment-changed { font-size: var(--t-xs); color: var(--danger); }
-.comment-input { width: 100%; box-sizing: border-box; resize: vertical; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); color: var(--ink); font: inherit; padding: 6px 8px; }
+.comment-anchor.link { flex: 1; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--t-xs); color: var(--ink-3); }
+.comment-anchor.link:hover { color: var(--ink); text-decoration: underline; }
+.comment-tools { display: inline-flex; gap: 2px; margin: -2px -4px -2px 0; opacity: 0; }
+.comment-card:hover .comment-tools, .comment-item.focused .comment-tools, .comment-tools:focus-within { opacity: 1; }
+.comment-body { margin: 0; padding-left: 10px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; color: var(--ink); }
+.comment-changed { padding-left: 10px; font-size: var(--t-xs); color: var(--danger); }
+.comment-input { width: 100%; box-sizing: border-box; resize: none; margin-top: 2px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); color: var(--ink); font: inherit; padding: 6px 8px; }
 .comment-input:focus { outline: none; border-color: var(--accent); }
-.comment-actions { justify-content: flex-end; }
-.btn .count:not(:empty) { margin-left: 2px; padding: 0 6px; border-radius: 999px; background: var(--bg-3); font-size: var(--t-xs); }
-/* 範囲を囲んでいる間は、文字の層を押せなくする（文字を選ぶ代わりに囲む） */
-.pdf-scroller.drawing .pdf-page { cursor: crosshair; }
-.pdf-scroller.drawing .textLayer { pointer-events: none; }
-.comment-region { position: absolute; z-index: 2; pointer-events: none; border: 2px solid rgb(255 120 0 / 0.9); background: rgb(255 196 0 / 0.15); border-radius: 2px; }
-.comment-region.drawing-box { border-style: dashed; }
-.textLayer .comment-focus { margin: -1px; padding: 1px; background-color: rgb(255 120 0 / 0.45); border-radius: 4px; }
+.comment-actions { display: flex; align-items: center; gap: 6px; }
+.comment-actions .spacer-fill { flex: 1; }
+.comment-hint { font-size: 11px; color: var(--ink-3); }
+/* 狭いとき：一覧は下から */
+.comment-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 8; max-height: 60%; overflow: auto; background: var(--bg);
+  border-top: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: var(--sh-3); }
+.comment-sheet-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.comment-sheet-head .spacer-fill { flex: 1; }
+.comments-title { font-weight: 500; color: var(--ink); }
+.comment-sheet > .comment-list { padding: 10px 12px; }
+.comment-sheet > .comment-empty { padding: 16px 12px; }
 /* 文字の層（pdf.js の pdf_viewer.css の .textLayer を写したもの。文字は透明で、選べる・探せる） */
 .textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1;
   letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 0;
@@ -298,6 +346,14 @@ body[data-mode="fullscreen"] .comments { width: 320px; flex-shrink: 0; border-to
 .textLayer.selecting .endOfContent { top: 0; }
 
 /* ---- 表（sheet-viewer.ts）。描くのは見えている範囲のセルだけ——セルは位置を指定して置き、列見出しと行番号は sticky で残す ---- */
+.sheet-main { position: relative; display: flex; flex-direction: column; min-height: 0; }
+body[data-mode="fullscreen"] .sheet-main { flex: 1; }
+/* 小さな表でも一覧が読めるだけの高さは取る（表の枠より上へはみ出してよい） */
+.sheet-main > .comment-sheet { max-height: max(60%, 240px); }
+/* 表の中身の箱：表を左に置き、余白は右の端に留める（横にスクロールしても見える） */
+.sheet-content { justify-content: flex-start; gap: 0; }
+.sheet-content > .comment-margin { position: sticky; right: 0; z-index: 4; margin: 0; box-sizing: border-box; background: var(--bg-2); border-left: 1px solid var(--line); --margin-pad: 12px; }
+.sheet-content > .comment-margin > .comment-empty { top: 30px; margin-top: 30px; }
 /* 会話の中のカードは、小さな表なら表の高さまで（520px を上限に） */
 body:not([data-mode="fullscreen"]) .sheet-scroller { height: auto; max-height: 520px; }
 .sheet-scroller { background: var(--bg); }

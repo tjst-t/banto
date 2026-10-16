@@ -12,10 +12,15 @@
 // **描けなかったときと「元に近い見た目で見る」は、変換役（LibreOffice）で PDF にして PDF の画面に切り替える**
 // （Backlog #305）。切り替えは画面の入口（`document-app.ts`）がする——ここはボタンを出し、頼むだけ。
 // zip として読めないもの（docx ではない）は切り替えない：LibreOffice は中身で形を当てて、別の物として PDF にしてしまう
+//
+// **コメント**（`comments.ts`、#340）：コメントモードのとき、文を選び終えると選んだ横に「コメント」。指すのは選んだ文と、
+// その上の一番近い見出し（v4-modules.md §2.2「コメント」——docx-preview で見ているときはページを数えない）
 
+import { CommentReview, MARGIN_ROOM_PX, type AnchorBox, type CommentAnchor, type CommentTarget } from "./comments.js";
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";
 import { formatSize, readRange } from "./pdf-viewer.js";
+import { quoteRange, rangeRects } from "./quote-range.js";
 import { errorMessage, reportSize, requestDisplayMode, textOf, type CallToolResult, type DisplayMode } from "./protocol.js";
 
 /** docx-preview（0.4）の、この画面が使うところだけの型（`docx-preview.d.ts` から写す） */
@@ -62,35 +67,36 @@ export class DocxDocumentView {
   private noteError = false;
   private readonly onConvert: (reason?: string) => void;
 
+  private readonly review: CommentReview;
   private readonly pathEl: HTMLSpanElement;
-  private readonly fullscreenBtn: HTMLButtonElement;
   private readonly status: HTMLDivElement;
   private readonly styleEl: HTMLDivElement;
   private readonly bodyEl: HTMLDivElement;
+  /** 中身の箱：本文と右の余白を並べる（コメントの位置はこの中で数える） */
+  private readonly content: HTMLDivElement;
+  /** 文の印の層（本文は縮めて描くことがあるので、印は縮めない中身の箱に置く） */
+  private readonly marksEl: HTMLDivElement;
   private readonly scroller: HTMLDivElement;
+  private offeredAt = 0;
   private readonly noteEl: HTMLParagraphElement;
 
   constructor(
     private readonly root: HTMLElement,
     options: {
       displayMode: DisplayMode;
+      /** host が `ui/message` を受けるか（会話の中で開いた画面）。受けなければコメントは「コピー」で持ち出す */
+      canReturnComments: boolean;
       /** 変換役で PDF にした画面に切り替える（`reason` は docx-preview で描けなかった理由。人が押したときは無し） */
       onConvert: (reason?: string) => void;
     },
   ) {
     this.displayMode = options.displayMode;
     this.onConvert = options.onConvert;
-    this.pathEl = h("span", { class: "badge truncate", text: "（Word）", data: { testid: "open-path" } });
-    this.fullscreenBtn = h(
-      "button",
-      { class: "btn", attrs: { type: "button" }, on: { click: () => void this.askFullscreen() } },
-      icon("Maximize2"),
-      "大きく表示",
-    );
+    this.pathEl = h("span", { class: "doc-name truncate", text: "（Word）", data: { testid: "open-path" } });
     const convertBtn = h(
       "button",
       {
-        class: "btn",
+        class: "btn ghost",
         title: "LibreOffice で PDF にして見る（ブラウザでは崩れる書式も、元に近く出る）",
         attrs: { type: "button" },
         data: { testid: "docx-as-pdf" },
@@ -99,20 +105,50 @@ export class DocxDocumentView {
       icon("FileText"),
       "元に近い見た目で見る",
     );
-    const toolbar = h("div", { class: "pdf-toolbar" }, icon("FileText", "icon muted"), this.pathEl, h("span", { class: "spacer-fill" }), convertBtn, this.fullscreenBtn);
     this.status = h("div", { class: "state" });
     // docx-preview は文書の <style> を styleContainer に、本文を bodyContainer に書く。どちらも開き直すたびに空にする
     this.styleEl = h("div", { class: "docx-styles" });
     this.bodyEl = h("div", { class: "docx-body", data: { testid: "docx-body" } });
-    this.scroller = h("div", { class: "pdf-scroller docx-scroller", data: { testid: "docx-scroller" } }, this.status, this.styleEl, this.bodyEl);
+    this.marksEl = h("div", { class: "comment-marks" });
+    this.content = h("div", { class: "review-content docx-content" }, this.bodyEl, this.marksEl);
+    this.scroller = h("div", { class: "pdf-scroller docx-scroller", data: { testid: "docx-scroller" } }, this.status, this.styleEl, this.content);
     this.noteEl = h("p", { class: "note" });
-    replaceChildren(this.root, h("div", { class: "pdf-view docx-view", data: { testid: "docx-view" } }, toolbar, this.scroller, this.noteEl));
+    const toolbar = h("div", { class: "pdf-toolbar" });
+    const view = h("div", { class: "pdf-view docx-view", data: { testid: "docx-view" } }, toolbar, this.scroller, this.noteEl);
+    const target: CommentTarget = {
+      boxOf: (anchor) => this.boxOf(anchor),
+      jumpTo: (anchor) => this.jumpTo(anchor),
+      paintMarks: () => this.paintMarks(),
+    };
+    this.review = new CommentReview(target, {
+      root: view,
+      content: this.content,
+      displayMode: this.displayMode,
+      canReturn: options.canReturnComments,
+      emptyHint: "文を選ぶと、そこにコメントを付けられます。",
+      onLayoutChange: () => this.fitWidth(),
+      onChange: () => this.displayMode === "inline" && reportSize(),
+    });
+    this.content.append(this.review.margin);
+    toolbar.append(icon("FileText", "icon muted"), this.pathEl, h("span", { class: "spacer-fill" }), convertBtn, this.review.modeButton, this.review.listButton, this.review.undoButton, this.review.returnButton);
+    this.scroller.addEventListener(
+      "scroll",
+      () => {
+        if (this.review.offeredAnchor && Math.abs(this.scroller.scrollTop - this.offeredAt) > 4) this.review.clearOffer();
+      },
+      { passive: true },
+    );
+    this.bodyEl.addEventListener("mouseup", (e) => this.onMouseUp(e));
+    document.addEventListener("selectionchange", () => {
+      if (this.review.offeredAnchor?.kind === "text" && !this.selectedText()) this.review.clearOffer();
+    });
+    replaceChildren(this.root, view);
     new ResizeObserver(() => this.fitWidth()).observe(this.scroller);
     this.render();
   }
 
   setToolInput(args: Record<string, unknown>): void {
-    if (typeof args.path === "string" && args.path && !this.path) this.pathEl.textContent = args.path;
+    if (typeof args.path === "string" && args.path && !this.path) this.showName(args.path);
     if (args.displayMode === "fullscreen" && this.displayMode === "inline") void this.askFullscreen();
   }
 
@@ -140,15 +176,24 @@ export class DocxDocumentView {
     if (mode === this.displayMode) return;
     this.displayMode = mode;
     document.body.dataset.mode = mode;
+    this.review.setDisplayMode(mode);
     this.render();
     this.fitWidth();
+  }
+
+  /** ツールバーにはファイル名だけ（パスは title） */
+  private showName(path: string): void {
+    this.pathEl.textContent = path.split("/").pop() || path;
+    this.pathEl.title = path;
+    this.pathEl.dataset.path = path;
   }
 
   private async open(path: string, size: number): Promise<void> {
     const generation = ++this.generation;
     this.path = path;
     this.size = size;
-    this.pathEl.textContent = path;
+    this.showName(path);
+    void this.review.load(path);
     this.styleEl.replaceChildren();
     this.bodyEl.replaceChildren();
     this.state = { kind: "loading" };
@@ -204,8 +249,117 @@ export class DocxDocumentView {
     wrapper.style.zoom = "";
     const style = getComputedStyle(wrapper);
     const natural = Math.max(...pages.map((p) => p.offsetWidth)) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-    const available = this.scroller.clientWidth;
+    // 広いときは右の余白（と隙間）を引いた幅に収める
+    const available = this.scroller.clientWidth - (this.review.marginShown ? MARGIN_ROOM_PX : 0);
     if (available > 0 && natural > available) wrapper.style.zoom = String(available / natural);
+    this.paintMarks();
+    this.review.layout();
+  }
+
+  // ---- コメント -------------------------------------------------------------------
+
+  /** 人がいま本文の中で選んでいる文と、その上の一番近い見出し */
+  private selectedText(): Extract<CommentAnchor, { kind: "text" }> | undefined {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return undefined;
+    const range = selection.getRangeAt(0);
+    if (!this.bodyEl.contains(range.startContainer)) return undefined;
+    const quote = selection.toString().replace(/\s+/g, " ").trim();
+    if (!quote) return undefined;
+    const heading = this.headingBefore(range.startContainer);
+    return { kind: "text", quote: quote.slice(0, 2000), ...(heading ? { heading } : {}) };
+  }
+
+  /**
+   * その位置より上の一番近い見出し。docx-preview は段落に書式の名前をクラスで付ける（`docx_heading1` 等）。
+   * 見出しの書式を英語の名前で持たない文書（日本語の Word の「見出し 1」の id は数字）では見つからない
+   */
+  private headingBefore(node: Node): string | undefined {
+    const headings = [...this.bodyEl.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6, p[class*='heading' i], p[class*='title' i]")];
+    let found: HTMLElement | undefined;
+    for (const el of headings) {
+      if (el.contains(node) || el.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) found = el;
+      else break;
+    }
+    const text = found?.textContent?.replace(/\s+/g, " ").trim();
+    return text || undefined;
+  }
+
+  private local(rect: { top: number; bottom: number; left: number; right: number }): AnchorBox {
+    const c = this.content.getBoundingClientRect();
+    return { top: rect.top - c.top, bottom: rect.bottom - c.top, left: rect.left - c.left, right: rect.right - c.left };
+  }
+
+  private textRects(anchor: CommentAnchor): AnchorBox[] {
+    if (anchor.kind !== "text" || this.state.kind !== "ready") return [];
+    const range = quoteRange(this.bodyEl, anchor.quote);
+    return range ? rangeRects(range).map((r) => this.local(r)) : [];
+  }
+
+  private boxOf(anchor: CommentAnchor): AnchorBox | undefined {
+    const rects = this.textRects(anchor);
+    if (rects.length === 0) return undefined;
+    return {
+      top: Math.min(...rects.map((r) => r.top)),
+      bottom: Math.max(...rects.map((r) => r.bottom)),
+      left: Math.min(...rects.map((r) => r.left)),
+      right: Math.max(...rects.map((r) => r.right)),
+    };
+  }
+
+  /** 文の印（蛍光ペン）。コメントモードのときだけ */
+  private paintMarks(): void {
+    const review = this.review as CommentReview | undefined;
+    const out: HTMLElement[] = [];
+    for (const m of review?.marks() ?? []) {
+      for (const r of this.textRects(m.anchor)) {
+        const el = h("div", {
+          class: `comment-mark text ${m.state}${m.focused ? " focused" : ""}`,
+          data: { testid: "comment-mark", kind: "text", state: m.state, ...(m.id ? { commentId: m.id } : {}) },
+        });
+        el.style.left = `${r.left}px`;
+        el.style.top = `${r.top}px`;
+        el.style.width = `${r.right - r.left}px`;
+        el.style.height = `${r.bottom - r.top}px`;
+        out.push(el);
+      }
+    }
+    this.marksEl.replaceChildren(...out);
+  }
+
+  /** 文を選び終えた——選んだ所の右上に「コメント」。押しただけなら、そこの印のコメントを強調する */
+  private onMouseUp(e: MouseEvent): void {
+    if (e.button !== 0 || !this.review.commentMode) return;
+    requestAnimationFrame(() => {
+      const anchor = this.selectedText();
+      if (!anchor) {
+        for (const mark of this.marksEl.querySelectorAll<HTMLElement>(".comment-mark.saved")) {
+          const r = mark.getBoundingClientRect();
+          if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom && mark.dataset.commentId) {
+            this.review.focusComment(mark.dataset.commentId);
+            return;
+          }
+        }
+        return;
+      }
+      const rects = [...window.getSelection()!.getRangeAt(0).getClientRects()].filter((r) => r.width > 1);
+      const last = rects.at(-1);
+      if (!last) return;
+      const local = this.local(last);
+      this.offeredAt = this.scroller.scrollTop;
+      this.review.offer(anchor, { x: local.right + 6, y: local.top - 34 });
+    });
+  }
+
+  /** コメントの文へ飛ぶ（見えていなければ） */
+  private jumpTo(anchor: CommentAnchor): void {
+    const box = this.boxOf(anchor);
+    if (!box) return;
+    const sc = this.scroller.getBoundingClientRect();
+    const c = this.content.getBoundingClientRect();
+    const top = box.top + c.top;
+    const bottom = box.bottom + c.top;
+    if (top < sc.top + 8 || bottom > sc.bottom - 8) this.scroller.scrollTop += top - sc.top - Math.max(36, (sc.height - (bottom - top)) / 3);
   }
 
   private async askFullscreen(): Promise<void> {
@@ -226,7 +380,6 @@ export class DocxDocumentView {
   private render(): void {
     const state = this.state;
     this.root.dataset.mode = this.displayMode;
-    this.fullscreenBtn.hidden = this.displayMode !== "inline";
     this.status.hidden = state.kind === "ready";
     this.status.className = state.kind === "error" ? "state error" : "state";
     if (state.kind === "waiting") replaceChildren(this.status, icon("Loader2", "icon spin"), "ファイルを待っています…");

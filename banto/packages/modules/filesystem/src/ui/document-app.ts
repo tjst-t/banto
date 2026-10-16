@@ -55,7 +55,7 @@ class DocumentScreen {
     if (kind === "docx") {
       this.docxHost = h("div");
       root.append(this.docxHost);
-      this.docx = new DocxDocumentView(this.docxHost, { displayMode, onConvert: (reason) => this.showConverted(reason) });
+      this.docx = new DocxDocumentView(this.docxHost, { displayMode, canReturnComments, onConvert: (reason) => this.showConverted(reason) });
     } else if (kind === "sheet") {
       this.sheet = new SheetDocumentView(root, { displayMode, canReturnComments });
     } else {
@@ -82,7 +82,7 @@ class DocumentScreen {
       const back = h(
         "button",
         {
-          class: "btn",
+          class: "btn ghost",
           title: "ブラウザで Word の書式を描く（docx-preview）",
           attrs: { type: "button" },
           data: { testid: "docx-as-html" },
