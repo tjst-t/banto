@@ -289,12 +289,13 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
   const foldBox = await rowOfProject.getByRole("button", { name: /Thread 一覧を/ }).boundingBox();
   expect(moreBox!.x, "「…」がたたむボタンの左に無い").toBeLessThan(foldBox!.x);
   await projectMore.click();
-  // 先頭は「グループへ移す」（入れ子のメニュー、2026-10-16、§6.43）
+  // 先頭は「グループへ移す」（入れ子のメニュー）、末尾は「スリープにする」（2026-10-16、§6.43）
   expect(await page.getByRole("menuitem").allTextContents()).toEqual([
     "グループへ移す",
     "名前を変える…",
     "上へ移動",
     "下へ移動",
+    "スリープにする",
   ]);
   await page.keyboard.press("Escape");
 
