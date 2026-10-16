@@ -121,6 +121,7 @@ export function ProjectTreeItem({
   onNavigate,
   rowMenu,
   itemProps,
+  indented = false,
 }: {
   project: MockProject;
   activeProjectId: string | null;
@@ -133,6 +134,8 @@ export function ProjectTreeItem({
   rowMenu?: (opts: { hasChevron: boolean }) => ReactNode;
   /** 行（li）に載せるもの——ドラッグの口 */
   itemProps?: HTMLAttributes<HTMLLIElement>;
+  /** グループの中の行（一段下げる） */
+  indented?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -161,7 +164,7 @@ export function ProjectTreeItem({
 
   return (
     <SidebarMenuItem {...itemProps} className={cn("group/project", itemProps?.className)}>
-      <SidebarMenuButton asChild isActive={isCurrent} className={rowMenu ? (forks.length > 0 ? "pr-14" : "pr-8") : undefined}>
+      <SidebarMenuButton asChild isActive={isCurrent} className={rowMenu ? "pr-14" : undefined}>
         <Link
           href={projectNavHref(project.id, pathname, {
             project: searchParams.get("project"),
@@ -176,7 +179,8 @@ export function ProjectTreeItem({
           {busyProject ? <BusyProjectMark projectName={project.name} reason={busyProject.busyReason} /> : null}
         </Link>
       </SidebarMenuButton>
-      <PendingProjectBadge groups={projectPending} scope={project.name} />
+      {/* グループの中で一段下げた行（pl-3）は、角の数も同じだけ右へ */}
+      <PendingProjectBadge groups={projectPending} scope={project.name} className={indented ? "left-9" : undefined} />
       {rowMenu?.({ hasChevron: forks.length > 0 })}
       {forks.length > 0 ? (
         <SidebarMenuAction

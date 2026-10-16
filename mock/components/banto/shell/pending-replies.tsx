@@ -104,7 +104,7 @@ export function PendingSubline({
  * いま開いていない Project の行の、頭文字の右下の数。行の Link の外に、頭文字に重ねて置く。
  * 一覧は Thread ごとに分けて出す
  */
-export function PendingProjectBadge({ groups, scope }: { groups: readonly PendingGroup[]; scope: string }) {
+export function PendingProjectBadge({ groups, scope, className }: { groups: readonly PendingGroup[]; scope: string; className?: string }) {
   // 一覧は行の右端の外に開く——数の右に開くとサイドバーの上に重なる。開くときに行の右端までの距離を測る
   const [offset, setOffset] = useState(8);
   const count = countOf(groups);
@@ -120,7 +120,7 @@ export function PendingProjectBadge({ groups, scope }: { groups: readonly Pendin
             const row = e.currentTarget.closest("li");
             if (row) setOffset(row.getBoundingClientRect().right - e.currentTarget.getBoundingClientRect().right + 8);
           }}
-          className="absolute top-4.5 left-6 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink-2 px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar hover:brightness-110"
+          className={cn("absolute top-4.5 left-6 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink-2 px-0.5 text-xs leading-none font-semibold text-on-color tabular-nums ring-2 ring-sidebar hover:brightness-110", className)}
         >
           {count}
         </button>

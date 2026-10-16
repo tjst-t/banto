@@ -134,6 +134,24 @@ function MoreButton({ label, className, hoverGroup }: { label: string; className
   );
 }
 
+/**
+ * 行の右端の「開く・畳む」。Project の行（Thread の目次）・グループ・スリープ中の見出しで同じ位置・同じ形にする
+ * ——「…」はいつもその左隣（right-7）
+ */
+function ChevronSlot({ open, label, onClick }: { open: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-expanded={open}
+      className="absolute top-1.5 right-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent"
+    >
+      <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} />
+    </button>
+  );
+}
+
 /** 名前を聞く小窓（新しいグループ・名前を変える） */
 function NameDialog({
   open,
@@ -257,7 +275,7 @@ function ProjectRowMenu({
       <MoreButton
         label={`${project.name} の操作`}
         hoverGroup="project"
-        className={cn("absolute top-1.5", hasChevron ? "right-7" : "right-1")}
+        className="absolute top-1.5 right-7"
       />
       <DropdownMenuContent side="right" align="start" className="w-56">
         <DropdownMenuSub>
@@ -327,17 +345,13 @@ function GroupHeading({
         data-roving-item
         onClick={() => toggleGroupCollapsed(group.id)}
         aria-expanded={!group.collapsed}
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left hover:bg-accent"
+        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-14 pl-2 text-left hover:bg-accent"
       >
         {/* 点は Project の頭文字と同じ 24px の枠の真ん中に置く——行の頭文字と点、名前どうしの左端をそろえる */}
         <span className="flex size-6 shrink-0 items-center justify-center" aria-hidden>
           <span className={cn("size-2 rounded-full", GROUP_DOT_CLASS[group.color])} />
         </span>
         <span className="truncate text-sm font-medium text-ink-2">{group.name}</span>
-        <ChevronRight
-          className={cn("size-3 shrink-0 text-ink-3 transition-transform", !group.collapsed && "rotate-90")}
-          aria-hidden
-        />
         {group.collapsed ? (
           <span className="ml-auto flex items-center gap-1.5">
             {running ? <LoaderCircle className="size-3.5 animate-spin text-ink-2" role="img" aria-label="AI が動いています" /> : null}
@@ -354,7 +368,7 @@ function GroupHeading({
         ) : null}
       </button>
       <DropdownMenu>
-        <MoreButton label={`グループ「${group.name}」の操作`} hoverGroup="heading" className="absolute right-1" />
+        <MoreButton label={`グループ「${group.name}」の操作`} hoverGroup="heading" className="absolute top-1.5 right-7" />
         <DropdownMenuContent side="right" align="start" className="w-52">
           <DropdownMenuItem onSelect={() => onRename(group)}>
             <Pencil />
@@ -400,6 +414,7 @@ function GroupHeading({
           <p className="px-1.5 pb-1 text-xs text-ink-3">中の Project は消えず、グループの外に出ます</p>
         </DropdownMenuContent>
       </DropdownMenu>
+      <ChevronSlot open={!group.collapsed} label={`グループ「${group.name}」を${group.collapsed ? "開く" : "畳む"}`} onClick={() => toggleGroupCollapsed(group.id)} />
     </li>
   );
 }
@@ -447,7 +462,7 @@ function SleepingRow({
         data-roving-item
         onClick={() => onOpen(project)}
         title={`押すと起こして開きます（${sleptAt(project.id)}からスリープ）`}
-        className="flex h-8 w-full items-center gap-2 rounded-md pr-8 pl-2 text-left text-sm text-ink-3 hover:bg-accent hover:text-foreground"
+        className="flex h-8 w-full items-center gap-2 rounded-md pr-14 pl-2 text-left text-sm text-ink-3 hover:bg-accent hover:text-foreground"
       >
         <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border text-xs font-semibold">
           {project.initial}
@@ -458,7 +473,7 @@ function SleepingRow({
         ) : null}
       </button>
       <DropdownMenu>
-        <MoreButton label={`${project.name} の操作`} hoverGroup="project" className="absolute top-1.5 right-1" />
+        <MoreButton label={`${project.name} の操作`} hoverGroup="project" className="absolute top-1.5 right-7" />
         <DropdownMenuContent side="right" align="start" className="w-56">
           <DropdownMenuLabel className="text-xs font-normal text-ink-3">{sleptAt(project.id)}からスリープ中</DropdownMenuLabel>
           <DropdownMenuItem onSelect={() => onOpen(project)}>
@@ -517,17 +532,16 @@ function SleepSection({
           data-roving-item
           onClick={onToggle}
           aria-expanded={open}
-          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-14 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
         >
           <span className="flex size-6 shrink-0 items-center justify-center" aria-hidden>
             <Moon className="size-3.5" />
           </span>
           <span className="truncate text-sm">スリープ中</span>
-          <ChevronRight className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} aria-hidden />
           <span className="ml-auto text-xs tabular-nums">{projects.length}</span>
         </button>
         <DropdownMenu>
-          <MoreButton label="スリープの設定" hoverGroup="heading" className="absolute right-1" />
+          <MoreButton label="スリープの設定" hoverGroup="heading" className="absolute top-1.5 right-7" />
           <DropdownMenuContent side="right" align="end" className="w-64">
             <DropdownMenuLabel className="text-xs font-normal text-ink-3">
               {IDLE_DAYS_FOR_SUGGESTION}日開いていない Project を
@@ -543,6 +557,7 @@ function SleepSection({
             </p>
           </DropdownMenuContent>
         </DropdownMenu>
+        <ChevronSlot open={open} label={`スリープ中を${open ? "畳む" : "開く"}`} onClick={onToggle} />
       </li>
       {open ? children : null}
     </>
@@ -598,7 +613,7 @@ export function ProjectList({
       },
       onDragEnd: () => setDropKey(null),
       ...dropOn(key, (id) => placeProject(id, { groupId, beforeId: project.id })),
-      className: cn(dropKey === key && "before:absolute before:inset-x-1 before:-top-px before:h-0.5 before:rounded-full before:bg-accent"),
+      className: cn(groupId && "pl-3", dropKey === key && "before:absolute before:inset-x-1 before:-top-px before:h-0.5 before:rounded-full before:bg-accent"),
     };
   }
 
@@ -640,9 +655,10 @@ export function ProjectList({
         onOpenArchive={onOpenArchive}
         onNavigate={onNavigate}
         itemProps={dragProps(project, groupId)}
+        indented={groupId !== null}
         rowMenu={({ hasChevron }) =>
           waking ? (
-            <span className={cn("absolute top-2 flex items-center gap-1 text-xs text-ink-3", hasChevron ? "right-7" : "right-2")}>
+            <span className={cn("absolute top-2 flex items-center gap-1 text-xs text-ink-3", "right-7")}>
               <LoaderCircle className="size-3 animate-spin" aria-hidden />
               起こしています
             </span>
