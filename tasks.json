@@ -8185,7 +8185,7 @@
       "number": 339,
       "kind": "task",
       "title": "別のサーバに繋がらないお知らせを実行場所ごとに1枚にし、3分続いたときだけ出し、繋がったら自動で閉じる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8202,7 +8202,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-16T09:08:24.330Z",
-      "updatedAt": "2026-10-16T09:08:24.330Z",
+      "updatedAt": "2026-10-16T09:08:32.388Z",
       "closedAt": null,
       "extra": {}
     }
