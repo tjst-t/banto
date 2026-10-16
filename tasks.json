@@ -8664,7 +8664,7 @@
       "number": 359,
       "kind": "bug",
       "title": "Browser の人の画面：「画面に合わせる」でページが画面の大きさにならない／Canvas を閉じて開き直すと「映しています…」のまま（倍率 1.5 の端末、動画）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8678,7 +8678,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T22:35:48.572Z",
-      "updatedAt": "2026-10-16T22:35:48.572Z",
+      "updatedAt": "2026-10-16T22:35:56.541Z",
       "closedAt": null,
       "extra": {}
     }
