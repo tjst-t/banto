@@ -317,7 +317,7 @@ function GroupHeading({
   return (
     <li
       className={cn(
-        "group/heading relative mt-3 flex h-7 items-center rounded-md first:mt-0",
+        "group/heading relative flex h-8 items-center rounded-md",
         dropActive && "bg-accent-soft",
       )}
       {...dropHandlers}
@@ -327,7 +327,7 @@ function GroupHeading({
         data-roving-item
         onClick={() => toggleGroupCollapsed(group.id)}
         aria-expanded={!group.collapsed}
-        className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left hover:bg-accent"
+        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left hover:bg-accent"
       >
         <span className={cn("size-2 shrink-0 rounded-full", GROUP_DOT_CLASS[group.color])} aria-hidden />
         <span className="truncate text-xs font-medium text-ink-2">{group.name}</span>
@@ -406,7 +406,7 @@ function SleepSuggestion({ projects }: { projects: readonly MockProject[] }) {
   if (projects.length === 0) return null;
   const ids = projects.map((p) => p.id);
   return (
-    <li className="mt-3 rounded-md border border-dashed border-border px-2.5 py-2">
+    <li className="my-1 rounded-md border border-dashed border-border px-2.5 py-2">
       <p className="text-xs text-ink-2">
         {IDLE_DAYS_FOR_SUGGESTION}日以上開いていない Project が {projects.length} 件あります
       </p>
@@ -506,7 +506,7 @@ function SleepSection({
   return (
     <>
       <li
-        className={cn("group/heading relative mt-3 flex h-7 items-center rounded-md", dropActive && "bg-accent-soft")}
+        className={cn("group/heading relative flex h-8 items-center rounded-md", dropActive && "bg-accent-soft")}
         {...dropHandlers}
       >
         <button
@@ -514,7 +514,7 @@ function SleepSection({
           data-roving-item
           onClick={onToggle}
           aria-expanded={open}
-          className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
         >
           <Moon className="size-3.5 shrink-0" aria-hidden />
           <span className="truncate text-xs font-medium">スリープ中</span>
