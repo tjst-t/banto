@@ -55,6 +55,8 @@ export const runtimeConfigFold: Fold<RuntimeConfigState> = {
 /** Project単位で上書きさせない項目。既定は開いている——ここに書いたものだけ塞ぐ。 */
 export const NON_OVERRIDABLE_KEYS = new Set<string>([
   // 例: "instanceId" のような、Project単位で意味を持たない項目をここに足す
+  // しばらく開いていない Project をどうするか（banto 全体の設定、アーキ仕様 §2.2）
+  "projects.autoSleep",
 ]);
 
 export class ConfigNotOverridableError extends Error {}

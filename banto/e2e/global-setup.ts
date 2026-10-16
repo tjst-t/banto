@@ -60,6 +60,8 @@ export default function globalSetup(): void {
           prebuiltBase: `${SELF_UPDATE_GITHUB_URL}/dl`,
           githubApi: `${SELF_UPDATE_GITHUB_URL}/runs`,
         },
+        // 試験だけ：しばらく開いていない Project の時計を「15日後」の時刻で回す口（sidebar-idle-sleep.spec.ts）
+        testOnlyIdleCheck: true,
       },
       null,
       2,

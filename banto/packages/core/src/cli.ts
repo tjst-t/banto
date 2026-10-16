@@ -58,6 +58,7 @@ import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
 import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
 import { errandLeftoversOf, ProjectSleep } from "./runtime/project-sleep.js";
+import { autoSleepModeOf, lastHumanMessages, ProjectActivity, ProjectIdle } from "./runtime/project-idle.js";
 import { collectActivity } from "./http/activity.js";
 import { createRelayListener } from "./relay/relay-listener.js";
 import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace, type ToolsInstallStatus } from "./runtime/runtime.js";
@@ -2650,6 +2651,26 @@ async function main(): Promise<void> {
     projectSleep!
       .releaseUnawaited(projectId, { force })
       .catch((err: unknown) => console.warn(`[host] 眠っている project ${projectId} の待たれなくなった Module を片づけられませんでした:`, err));
+  /**
+   * **しばらく開いていない Project**（決定・2026-10-16、アーキ仕様 §2.2）。人の操作の時刻は `project-activity.json`
+   * （無ければ会話の記録の人の最後の発言から埋める）、候補は1時間ごとの時計が決めて覚える
+   */
+  const projectActivity = new ProjectActivity(join(bootstrap.dataDir, "project-activity.json"));
+  await projectActivity.load(() => lastHumanMessages(eventLog.readFrom(0), (threadId) => projectThread.getThread(threadId)?.projectId));
+  const projectIdle = new ProjectIdle({
+    listProjects: () => projectThread.listProjects(),
+    getProject: (projectId) => projectThread.getProject(projectId),
+    activity: projectActivity,
+    mode: () => autoSleepModeOf(runtimeConfig),
+    hostActivity,
+    sleepInProgress: (projectId) => projectSleep!.inProgress(projectId),
+    runningInPlace: (projectId) => projectMover!.runningInPlace(projectId),
+    sleep: (projectId) => projectSleep!.sleep(projectId, "auto"),
+    onChange: () => appEvents.publish({ type: "projects.changed" }),
+  });
+  if (bootstrap.testOnlyIdleCheck) {
+    console.warn("[host] **しばらく開いていない Project の時計を、試験が好きな時刻で回せます**（試験用、config.json の testOnlyIdleCheck）");
+  }
   // ターンが終わったら、用事で起きた Project が眠りに戻れるかを見る
   threadTurns.onChange((change) => {
     if (change.type === "ended") returnToSleepIfDone(change.threadId);
@@ -2722,6 +2743,8 @@ async function main(): Promise<void> {
     // 別のサーバの Project を閉じる前に（v4-security.md §1「閉じた Project は数えない」）
     suspendProjectServices,
     projectSleep,
+    projectIdle,
+    ...(bootstrap.testOnlyIdleCheck ? { testOnlyIdleCheck: true } : {}),
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     reviewToolCalls: (thread) => {
       const project = projectThread.getProject(thread.projectId);
@@ -2942,6 +2965,8 @@ async function main(): Promise<void> {
       keepAwaitedModulesAwake();
       for (const p of projectThread.listProjects()) if (p.sleep) void tidyAsleep(p.id, false);
     }, KEEP_AWAKE_INTERVAL_MS).unref();
+    // **しばらく開いていない Project を確かめる時計**（§2.2）。起きたときに1回、そのあと1時間ごと
+    projectIdle.start();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));

@@ -50,6 +50,11 @@ export interface BootstrapConfig {
    * どこかがはっきりし、起動時に警告も出る
    */
   testOnlySelfUpdate?: { systemctl: string; codeDir: string; prebuiltBase?: string; githubApi?: string };
+  /**
+   * **試験だけ：しばらく開いていない Project の時計を、好きな時刻で名指しの Project だけ回す口**（追加・2026-10-16、E2E の
+   * `sidebar-idle-sleep.spec.ts`。`POST /api/test-only/idle-check`）。14日待てない試験が「14日たった」を作る。**本番の config には書かない**
+   */
+  testOnlyIdleCheck?: boolean;
 }
 
 /** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
@@ -136,6 +141,12 @@ function parseTestOnlySelfUpdate(value: unknown): { systemctl: string; codeDir: 
   };
 }
 
+function parseTestOnlyIdleCheck(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error("config.json の testOnlyIdleCheck は true か false です（試験だけの項目）");
+  return value;
+}
+
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   globalThis.crypto.getRandomValues(bytes);
@@ -157,6 +168,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       ...(raw.uiOrigin ? { uiOrigin: raw.uiOrigin } : {}),
       releaseDir: raw.releaseDir ?? defaultReleaseDir(),
       ...(raw.testOnlySelfUpdate !== undefined ? { testOnlySelfUpdate: parseTestOnlySelfUpdate(raw.testOnlySelfUpdate) } : {}),
+      ...(parseTestOnlyIdleCheck(raw.testOnlyIdleCheck) ? { testOnlyIdleCheck: true } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;
