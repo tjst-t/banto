@@ -8259,7 +8259,7 @@
       "number": 342,
       "kind": "bug",
       "title": "Browser の人の画面で、動画のときに別のタブへ切り替えると絵が来ず「映しています…」のまま（browser-tabs.spec.ts:110、2回続けて）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8276,7 +8276,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-16T11:30:51.604Z",
-      "updatedAt": "2026-10-16T11:30:51.604Z",
+      "updatedAt": "2026-10-16T11:50:42.054Z",
       "closedAt": null,
       "extra": {}
     }
