@@ -101,7 +101,8 @@ test("別のサーバの待たないコマンドは、送り込みが 120 秒を
       const projectId = created.body.id;
       const prepared = await api<{ connected?: string[] }>(host, `/api/projects/${projectId}/modules/prepare`, { method: "POST" });
       expect(prepared.body.connected ?? [], JSON.stringify(prepared.body)).toEqual(expect.arrayContaining(["shell"]));
-      const threadId = (await api<Array<{ id: string }>>(host, `/api/projects/${projectId}/threads`)).body[0]!.id;
+      // API で作った Project には Base の会話がまだ無い——作る（remote-backlog-ssh-push と同じ）
+      const threadId = (await api<{ id: string }>(host, `/api/projects/${projectId}/threads`, { method: "POST" })).body.id;
       const thread = async () => (await api<HostThread>(host, `/api/threads/${threadId}`)).body;
       const fromShell = async () => (await thread()).messages.filter((m) => m.origin?.from === "shell").map((m) => m.origin!.title);
 
@@ -165,6 +166,10 @@ test("別のサーバの待たないコマンドは、送り込みが 120 秒を
       const outputB = await runInBackground(COMMAND_B, LABEL_B);
       await host.stop("SIGTERM");
       // 向こうの sshd を止める（経路が途切れた）。コマンドは向こうのユーザーの systemd で動き続ける
+      // 本番の別のサーバと同じく linger を入れておく——無いと sshd を止めてログインが閉じた 10 秒後に user@ ごと止められ、
+      // 待たないコマンドも止まる（#295 と同じ形。印のファイルを直に置けば入れ子でも効く）
+      const lingered = await sshHost.rootExec(`mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/${sshHost.user}`);
+      expect(lingered.code, lingered.stderr).toBe(0);
       const sshdStopped = await sshHost.rootExec("systemctl stop ssh.service");
       expect(sshdStopped.code, sshdStopped.stderr).toBe(0);
       await host.start({ BANTO_RESUME_CONNECT_LIMIT_MS: "20000" });
