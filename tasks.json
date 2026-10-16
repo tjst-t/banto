@@ -7756,7 +7756,7 @@
       "number": 321,
       "kind": "task",
       "title": "自動化を本物のモデルで確かめる（別のデータ置き場の banto）",
-      "status": "ready",
+      "status": "done",
       "parent": "automation",
       "dependsOn": [
         "automation-clock",
@@ -7769,12 +7769,12 @@
       "labels": [],
       "body": "時刻の自動化を本物の Claude で動かし、専用の Fork・受信箱・起こし直しをまたぐ取り戻しを確かめる。Webhook が入っていれば LAN からも",
       "doneWhen": "本物のモデルで：15分ごとの自動化が動き、毎回まっさらな会話で届き、受信箱に決まりどおり出る。banto を止めて起こすと最新の1回だけ動く",
-      "resolution": null,
+      "resolution": "2026-10-16、稼働中の banto（2f88509a 以降）で確かめた。AI が create_automation で15分ごとの時刻の自動化を作ると確認のカードが出て、許すと専用の Fork が立った。画面の「自動化」の直近の回に「終わりました」が並び、専用の Fork にも本物のモデルの返事があった（ユーザーが確認）。確かめたあと一時停止した。確かめていないこと：banto を止めて起こしたときの取り戻し・Webhook を LAN から送ること。AI から直近の回が読めないので #338 を積んだ。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-15T10:53:26.358Z",
-      "updatedAt": "2026-10-15T10:53:26.358Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T08:49:33.539Z",
+      "closedAt": "2026-10-16T08:49:33.539Z",
       "extra": {}
     },
     {
