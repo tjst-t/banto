@@ -83,6 +83,20 @@ jobs:
           npm ci --include=dev
           npm run build
 
+      - name: 試験に要る道具（install.sh が host に入れるものと同じ age・sops）
+        if: steps.existing.outputs.state != 'done'
+        run: |
+          set -euo pipefail
+          # vault-local は起動時に age-keygen・sops を使う（Module の自己申告の試験が本物のプロセスを起こす）。
+          # 版と sha256 は install.sh から読む——host と同じものを使う
+          sudo apt-get install -y --no-install-recommends age > /dev/null
+          v=$(sed -n 's/^SOPS_VERSION=\([0-9][0-9.]*\)$/\1/p' install.sh)
+          sha=$(sed -n 's/^SOPS_SHA256_amd64=\([0-9a-f]\{64\}\)$/\1/p' install.sh)
+          [ -n "$v" ] && [ -n "$sha" ] || { echo "install.sh に SOPS_VERSION・SOPS_SHA256_amd64 がありません"; exit 1; }
+          curl -fsSL "https://github.com/getsops/sops/releases/download/v$v/sops-v$v.linux.amd64" -o /tmp/sops
+          echo "$sha  /tmp/sops" | sha256sum -c --quiet -
+          sudo install -m 755 /tmp/sops /usr/local/bin/sops
+
       - name: 単体テスト
         if: steps.existing.outputs.state != 'done'
         working-directory: banto
