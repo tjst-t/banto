@@ -2504,9 +2504,10 @@ function sleepHarness(turns: ThreadTurns) {
       runningInPlace: async () => [{ kind: "terminal" as const, label: "Terminal のセッション「main」が開いています" }],
     }));
   const human: string[] = [];
-  const projectSleep: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman"> = {
+  const projectSleep: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman" | "partlyAwake"> = {
     sleep: (id, by) => real!.sleep(id, by),
     preview: (id) => real!.preview(id),
+    partlyAwake: (id) => real!.partlyAwake(id),
     noteHuman: (id) => {
       human.push(id);
       real!.noteHuman(id);
@@ -2575,6 +2576,8 @@ test("POST /api/projects/:id/sleep と sleep-preview：眠らせる・止まる�
       assert.deepEqual(await preview.json(), {
         stops: [{ kind: "terminal", label: "Terminal のセッション「main」が開いています" }],
         blockers: [],
+        keeps: [],
+        servicesKept: false,
       });
 
       // ターンが走っていれば断る

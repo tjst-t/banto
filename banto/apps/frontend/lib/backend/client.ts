@@ -132,7 +132,25 @@ export interface RealProject {
   groupId?: string;
   /** 眠っている（追加・2026-10-16、アーキ仕様 §2.2「スリープ」）。いつから・誰が（人・しばらく開いていないので自動で） */
   sleep?: RealProjectSleep;
+  /** 眠っているが、出来事を待たれている Module のため一部起きている（追加・2026-10-16、アーキ仕様 §2.2）。眠っていなければ無い */
+  partlyAwake?: RealPartlyAwake[];
   createdAt: string;
+}
+
+/** 出来事を待たれているので眠らせても止めない Module と、待っている自動化（host の `AwaitedModule`） */
+export interface RealPartlyAwake {
+  module: string;
+  automations: Array<{ id: string; name: string }>;
+}
+
+/**
+ * 「自動化『〈名前〉』が〈Module〉の出来事を待っているので、〈Module〉は起きたままです」（v4-frontend.md §6.43）。
+ * Module ごとに1文
+ */
+export function partlyAwakeReasons(awake: readonly RealPartlyAwake[]): string[] {
+  return awake.map(
+    (a) => `自動化${a.automations.map((x) => `『${x.name}』`).join("・")}が${a.module}の出来事を待っているので、${a.module}は起きたままです`,
+  );
 }
 
 export interface RealProjectSleep {
@@ -146,10 +164,15 @@ export interface RealProjectSleep {
  */
 export class ProjectAsleepError extends Error {}
 
-/** 眠らせると止まるもの（Service・待たないコマンド・Terminal のセッション）と、眠らせられない理由 */
+/**
+ * 眠らせると止まるもの（Service・待たないコマンド・Terminal のセッション）と、眠らせられない理由。`keeps` は自動化のため
+ * 止めない Module、`servicesKept` はその中に Service の Module がある（Service と公開中の URL は止まらない）
+ */
 export interface RealSleepPreview {
   stops: Array<{ kind: string; label: string }>;
   blockers: string[];
+  keeps: RealPartlyAwake[];
+  servicesKept: boolean;
 }
 
 export async function getRealSleepPreview(projectId: string): Promise<RealSleepPreview> {

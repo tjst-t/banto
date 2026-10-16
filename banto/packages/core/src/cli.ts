@@ -32,7 +32,7 @@ import { AutomationRunner } from "./automation/runner.js";
 import { AutomationClock } from "./automation/clock.js";
 import { AutomationWebhooks } from "./automation/webhook.js";
 import { AutomationEvents, EventLedger } from "./automation/events.js";
-import { awaitedModules } from "./automation/keep-awake.js";
+import { awaitingAutomations, type AwaitedModule } from "./automation/keep-awake.js";
 import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
@@ -266,6 +266,21 @@ async function main(): Promise<void> {
         }
       }),
   });
+  /**
+   * **その Project で出来事を待たれている Module**（アーキ仕様 §4.3 段2・§2.2、Backlog #346・#357）。対象は Project ごとの宣言のうち
+   * 出来事を名乗っているもの。「起こしておく」とスリープの例外（止めない Module）が、この1つを引く。宣言が読めなければ投げる
+   */
+  function awaitedOf(projectId: string): AwaitedModule[] {
+    const declarations = loadModuleDeclarations(runtimeConfig, projectId).filter((d) => {
+      if (d.meta.scope !== "project") return false;
+      try {
+        return declaredEvents(d).length > 0;
+      } catch {
+        return false;
+      }
+    });
+    return awaitingAutomations(automations.listAll(), projectId, declarations.map((d) => d.name));
+  }
   // **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）
   const remoteRuntimeStore = new RemoteRuntimeStore(bootstrap.dataDir, eventLog);
   await remoteRuntimeStore.load();
@@ -294,12 +309,21 @@ async function main(): Promise<void> {
   /**
    * **banto を起こし直しても眠ったまま**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠っている Project のコンテナが
    * 動いていれば止める（Incus の自動起動や人が起こしたもの）。待ち受ける前に——起きた直後の `modules/prepare` で起こしたものを
-   * 後から止めない。順序は (1) 待たれている Module の集合を決める (2) ここ (3) §4.3 の「起こしておく」。出来事を待たれる
-   * Module はまだ無い（Backlog `project-sleep-awaited-modules`）ので (1)(3) は空。別のサーバは眠らせるときに Service の
-   * 自動起動を切ってあるので、改めて確かめない
+   * 後から止めない。順序は (1) 待たれている Module の集合を決める (2) ここ——待たれている Module のある Project のコンテナは
+   * 止めない (3) §4.3 の「起こしておく」（待ち受けてから）。別のサーバは眠らせるときに Service の自動起動を切ってあるので、
+   * 改めて確かめない
    */
   async function stopSleepingContainers(): Promise<void> {
-    const sleeping = projectThread.listProjects().filter((p) => p.status !== "closed" && p.sleep && !isRemoteProject(p));
+    const sleeping = projectThread.listProjects().filter((p) => {
+      if (p.status === "closed" || !p.sleep || isRemoteProject(p)) return false;
+      try {
+        return awaitedOf(p.id).length === 0;
+      } catch (err) {
+        // 待たれているか分からない——止めない側に倒す（止めれば夜中の出来事を落とす）。ログには残す
+        console.warn(`[host] 眠っている project ${p.id} の待たれている Module が分からないので、コンテナを止めません:`, err);
+        return false;
+      }
+    });
     await Promise.all(
       sleeping.map(async (p) => {
         try {
@@ -1090,6 +1114,8 @@ async function main(): Promise<void> {
   async function connectDeclaredModule(
     declaration: ParsedModuleDeclaration,
     forProject?: { id: string; root: string },
+    /** **出来事を待たれているので起こす**（§4.3 の「起こしておく」の道）。眠っている Project でも起こす（§2.2 の例外） */
+    opts: { awaited?: boolean } = {},
   ): Promise<string | undefined> {
     const connName =
       declaration.meta.scope === "project" && forProject
@@ -1106,8 +1132,9 @@ async function main(): Promise<void> {
     }
     // **眠っている Project の Module は起こさない**（決定・2026-10-16、アーキ仕様 §2.2「それ以外の道では起こさない」）
     // ——設定の画面・Skills の一覧・入口の一覧を開いただけでコンテナが起きる、を作らない。起こすのは `projectSleep.wake`
-    // （`modules/prepare` と `openTurn`）だけで、起きれば `sleep` が外れてここを通る
-    if (declaration.meta.scope === "project" && forProject && projectThread.getProject(forProject.id)?.sleep) {
+    // （`modules/prepare` と `openTurn`）だけで、起きれば `sleep` が外れてここを通る。例外は出来事を待たれている Module だけ
+    // （§2.2「出来事を待たれている Module は止めない」——眠ったままで、待たれた Module だけが起きる）
+    if (declaration.meta.scope === "project" && forProject && projectThread.getProject(forProject.id)?.sleep && !opts.awaited) {
       console.log(`[host] ${connName} は起こしません（Project が眠っています）`);
       return undefined;
     }
@@ -1129,7 +1156,10 @@ async function main(): Promise<void> {
         console.log(`[host] ${connName} は起動中に Project が畳まれたので、繋がったものを畳みます`);
         const now = projectThread.getProject(releaseProjectId!);
         const stillDown = now?.status === "closed" || now?.sleep !== undefined;
-        await releaseProjectModules(releaseProjectId!, { stopContainer: stillDown });
+        // この Module だけを名指しで外された（眠らせても待たれている Module は残す）なら、この Module だけ畳む——
+        // 残した Module とコンテナを巻き込まない
+        const projectWide = (projectReleases.get(releaseProjectId!) ?? 0) !== releasesAtStart;
+        await releaseProjectModules(releaseProjectId!, projectWide ? { stopContainer: stillDown } : { only: [declaration.name] });
         return undefined;
       }
       return connected;
@@ -2185,18 +2215,12 @@ async function main(): Promise<void> {
       if (!project || project.status === "closed" || project.move) continue;
       try {
         // 出来事を名乗れるのは Project ごとの同梱の Module だけ（`declaredEvents` が外から足したものの名乗りを断る）
-        const declarations = loadModuleDeclarations(runtimeConfig, project.id).filter((d) => {
-          if (d.meta.scope !== "project") return false;
-          try {
-            return declaredEvents(d).length > 0;
-          } catch {
-            return false;
+        const awaited = awaitedOf(project.id).map((a) => a.module);
+        for (const declaration of loadModuleDeclarations(runtimeConfig, project.id)) {
+          // 繋がらなくても投げない（理由は connectDeclaredModule がログとお知らせに出す）。眠っている Project でも起こす（§2.2）
+          if (declaration.meta.scope === "project" && awaited.includes(declaration.name)) {
+            void connectDeclaredModule(declaration, project, { awaited: true });
           }
-        });
-        const awaited = awaitedModules(automations.listAll(), project.id, declarations.map((d) => d.name));
-        for (const declaration of declarations) {
-          // 繋がらなくても投げない（理由は connectDeclaredModule がログとお知らせに出す）
-          if (awaited.includes(declaration.name)) void connectDeclaredModule(declaration, project);
         }
       } catch (err) {
         console.warn(`[host] Project ${project.id} の待たれている Module を起こせませんでした:`, err);
@@ -2578,11 +2602,39 @@ async function main(): Promise<void> {
       : {}),
   });
   /** **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・起こす口・止まるもの */
+  /** その Project の、いま繋がっている Project ごとの Module（宣言の名前） */
+  const connectedProjectModules = (projectId: string): string[] => {
+    const suffix = `-${projectId}`;
+    return [...(projectConnections.get(projectId) ?? [])]
+      .filter((c) => c.endsWith(suffix) && connectedModules.has(c))
+      .map((c) => c.slice(0, -suffix.length));
+  };
   projectSleep = new ProjectSleep({
     projectThread,
     hostActivity,
+    // コンテナを残すとき（待たれている Module がある）は、別のサーバでなくても Service の Module の管理操作で止める
     suspendServices: suspendProjectServices,
-    releaseModules: (projectId) => releaseProjectModules(projectId, { stopContainer: true }),
+    // 待たれている Module（`keep`）を残すなら、それ以外の Project ごとの Module だけ名指しで外し、コンテナは残す
+    releaseModules: (projectId, keep) => {
+      if (keep.length === 0) return releaseProjectModules(projectId, { stopContainer: true });
+      const declared = loadModuleDeclarations(runtimeConfig, projectId).filter((d) => d.meta.scope === "project").map((d) => d.name);
+      const only = [...new Set([...declared, ...connectedProjectModules(projectId)])].filter((m) => !keep.includes(m));
+      return releaseProjectModules(projectId, { only });
+    },
+    awaited: (projectId) => {
+      try {
+        return awaitedOf(projectId);
+      } catch (err) {
+        // 宣言が読めない——待たれているか分からないので、何も残さず今どおり止める（ログには残す）
+        console.warn(`[host] project ${projectId} の待たれている Module が分かりません:`, err);
+        return [];
+      }
+    },
+    serviceModules: (projectId) =>
+      loadModuleDeclarations(runtimeConfig, projectId)
+        .filter((d) => d.meta.scope === "project" && (d.meta.satisfies as string[]).includes("service"))
+        .map((d) => d.name),
+    connectedModules: connectedProjectModules,
     runningInPlace: (projectId) => projectMover!.runningInPlace(projectId),
     errandLeftovers: (projectId, since) =>
       errandLeftoversOf(
@@ -2593,6 +2645,11 @@ async function main(): Promise<void> {
         since,
       ),
   });
+  /** 眠っている Project で待たれなくなった Module を片づける（失敗は黙らない——次のきっかけでまた試す） */
+  const tidyAsleep = (projectId: string, force: boolean) =>
+    projectSleep!
+      .releaseUnawaited(projectId, { force })
+      .catch((err: unknown) => console.warn(`[host] 眠っている project ${projectId} の待たれなくなった Module を片づけられませんでした:`, err));
   // ターンが終わったら、用事で起きた Project が眠りに戻れるかを見る
   threadTurns.onChange((change) => {
     if (change.type === "ended") returnToSleepIfDone(change.threadId);
@@ -2872,9 +2929,19 @@ async function main(): Promise<void> {
     automationEvents.start();
     // **待たれている出どころを起こしておく**（§4.3「段2」、Backlog #346）。待ち受けてから——Module は中継の口に繋ぐ
     keepAwaitedModulesAwake();
-    automations.onChange(({ projectId }) => keepAwaitedModulesAwake(projectId));
+    automations.onChange(({ projectId }) => {
+      keepAwaitedModulesAwake(projectId);
+      // **眠っている Project で待たれなくなった Module を片づける**（§2.2）。行の自動化の印も変わるので一覧を取り直させる
+      if (projectThread.getProject(projectId)?.sleep) {
+        void tidyAsleep(projectId, true);
+        appEvents.publish({ type: "projects.changed" });
+      }
+    });
     projectThread.onProjectsChanged(() => keepAwaitedModulesAwake());
-    setInterval(() => keepAwaitedModulesAwake(), KEEP_AWAKE_INTERVAL_MS).unref();
+    setInterval(() => {
+      keepAwaitedModulesAwake();
+      for (const p of projectThread.listProjects()) if (p.sleep) void tidyAsleep(p.id, false);
+    }, KEEP_AWAKE_INTERVAL_MS).unref();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));

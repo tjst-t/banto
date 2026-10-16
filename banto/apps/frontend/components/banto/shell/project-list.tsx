@@ -35,6 +35,7 @@ import {
   Sun,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -52,6 +53,7 @@ import {
 import { SidebarGroup, SidebarGroupContent, SidebarMenu } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
+import { partlyAwakeReasons } from "@/lib/backend/client";
 import { getAwakeProjects, getSleepingProjects, placeProject, wakeProject } from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import type { MockProject } from "@/lib/mock/types";
@@ -411,6 +413,8 @@ function SleepingRow({
   const searchParams = useSearchParams();
   const router = useRouter();
   const since = project.sleep ? sleptSince(project.sleep) : "";
+  // 自動化のため一部起きている（出来事を待たれている Module があって、コンテナを止めていない——アーキ §2.2）
+  const awake = partlyAwakeReasons(project.partlyAwake ?? []);
   return (
     <DraggableRow id={project.id} dropId={`sleeping:${project.id}`} as="li" className="group/menu-item relative">
       {(drag, _isDragging, drop) => (
@@ -429,7 +433,7 @@ function SleepingRow({
               data-testid="sidebar-sleeping-project"
               data-project-id={project.id}
               onClick={() => onOpen(project)}
-              title={`押すと起こして開きます（${since}）`}
+              title={`押すと起こして開きます（${since}）${awake.length > 0 ? `\n${awake.join("\n")}` : ""}`}
               className="flex h-8 w-full items-center gap-2 rounded-md pr-14 pl-2 text-left text-sm text-ink-3 outline-hidden hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
             >
               <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border text-xs font-semibold">
@@ -444,6 +448,13 @@ function SleepingRow({
                   data-group-id={group.id}
                   className={cn("size-1.5 shrink-0 rounded-full opacity-60", GROUP_DOT_CLASS[group.color])}
                   aria-label={`グループ ${group.name}`}
+                />
+              ) : null}
+              {awake.length > 0 ? (
+                <Zap
+                  data-testid="sidebar-sleeping-partly-awake"
+                  className="size-3 shrink-0 opacity-60"
+                  aria-label={awake.join("。")}
                 />
               ) : null}
             </button>
@@ -465,6 +476,16 @@ function SleepingRow({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="right" align="start" className="w-56">
+                  {awake.map((reason) => (
+                    <DropdownMenuLabel
+                      key={reason}
+                      data-testid="sidebar-sleeping-awake-reason"
+                      className="flex gap-1.5 text-xs font-normal text-ink-2"
+                    >
+                      <Zap className="mt-0.5 size-3 shrink-0" />
+                      {reason}
+                    </DropdownMenuLabel>
+                  ))}
                   <DropdownMenuLabel className="text-xs font-normal text-ink-3">{since}</DropdownMenuLabel>
                   <DropdownMenuItem onSelect={() => onOpen(project)}>
                     <Sun />

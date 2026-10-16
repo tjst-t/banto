@@ -213,6 +213,8 @@ export async function syncRealProjects(): Promise<void> {
     else delete next.groupId;
     if (rp.sleep) next.sleep = rp.sleep;
     else delete next.sleep;
+    if (rp.partlyAwake) next.partlyAwake = rp.partlyAwake;
+    else delete next.partlyAwake;
     return next;
   });
   // host に無いもの（ありえないが）は元の場所の順で後ろへ
@@ -365,6 +367,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       ...(rp.runtime ? { runtime: rp.runtime } : {}),
       ...(rp.groupId ? { groupId: rp.groupId } : {}),
       ...(rp.sleep ? { sleep: rp.sleep } : {}),
+      ...(rp.partlyAwake ? { partlyAwake: rp.partlyAwake } : {}),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。

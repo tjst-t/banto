@@ -11,6 +11,11 @@
 // 人の操作（`noteHuman`）があれば忘れる。ターンが終わった・裏の仕事の札が閉じたとき（`returnIfDone`）に、動いているものも
 // 人を待つものも残っていなければ `by: "auto"` で眠らせる（手順と断る条件は人が眠らせるときと同じ `sleep`）。覚えるのは
 // メモリだけ——banto を起こし直したら忘れ、起きたままになる（眠らせ損ねる側に倒す。人の操作の記録 `lastHumanAt` はまだ無い）
+//
+// **出来事を待たれている Module は止めない**（決定・2026-10-16、§2.2・§4.3 段2）。眠らせるときは待たれていない Module だけ
+// 外し、待たれている Module とコンテナ（別のサーバなら接続）は残す。Service は、Service の Module が待たれていれば動かした
+// まま、待たれていなければ管理操作で止めて自動起動を切る。眠っている間に待たれなくなった Module は `releaseUnawaited` が
+// 眠らせる手順の後半を同じ印の中で通す（Service を止める→台帳から外す→待たれているものがもう無ければコンテナを止める）
 import {
   isRemoteProject,
   NotFoundError,
@@ -22,16 +27,26 @@ import {
 } from "../project-thread/index.js";
 import type { ThreadState } from "../project-thread/types.js";
 import { reviewAttentionOf } from "../inbox/automation-review.js";
+import type { AwaitedModule } from "../automation/keep-awake.js";
 import type { RunningItem } from "./project-move.js";
 
 export interface ProjectSleepDeps {
   projectThread: ProjectThreadStore;
   /** host が知っている動いているもの（別の実行場所へ移すときと同じ一覧——ターン・返事待ちの札・Module の呼び出し） */
   hostActivity(projectId: string): RunningItem[];
-  /** 別のサーバの Service を止めて自動起動から外す（向こうの起こし直しで勝手に起きないように） */
+  /** Service の Module の管理操作で Service を止めて自動起動から外す（向こうの起こし直し・残したコンテナで勝手に起きないように） */
   suspendServices(projectId: string): Promise<string[]>;
-  /** その Project の Module を台帳から外して止め、コンテナを止める。外した接続の名前 */
-  releaseModules(projectId: string): Promise<string[]>;
+  /**
+   * その Project の Module を台帳から外して止める。`keep`（宣言の名前）が空ならコンテナも止める（別のサーバなら接続を閉じる）。
+   * 空でなければ、それ以外の Module だけ外してコンテナは残す。外した接続の名前
+   */
+  releaseModules(projectId: string, keep: readonly string[]): Promise<string[]>;
+  /** **出来事を待たれている Module**（§4.3 段2の「起こしておく」と同じ引き方）。無ければ全部止める */
+  awaited?(projectId: string): AwaitedModule[];
+  /** Service の Module（`satisfies: service`）の宣言の名前 */
+  serviceModules?(projectId: string): string[];
+  /** いま繋がっている、その Project ごとの Module（宣言の名前） */
+  connectedModules?(projectId: string): string[];
   /** 実行場所で動いているもの（Service・待たないコマンド・Terminal のセッション）。コンテナが止まっていれば空 */
   runningInPlace(projectId: string): Promise<RunningItem[]>;
   /**
@@ -111,15 +126,17 @@ export class ProjectSleep {
       if (reasons.length > 0) {
         throw new ProjectSleepError(409, `動いているものがあるので眠らせられません：${reasons.join("／")}`, "busy", reasons);
       }
-      // 別のサーバは先に Service を止めて自動起動から外す。止められなければ眠らせない（止まったことにしない）。
-      // この機械のコンテナはコンテナごと止めるので、中の Service も一緒に止まる
-      if (isRemoteProject(project)) {
+      // **待たれている Module は残す**。Service を止めて自動起動から外すのは、Service の Module が待たれていないとき——
+      // 別のサーバでは必ず（向こうの起こし直しで勝手に起きないように）、この機械ではコンテナを残すとき（止まる道が要る）。
+      // コンテナごと止めるなら中の Service も一緒に止まる。止められなければ眠らせない（止まったことにしない）
+      const keep = this.keepOf(projectId);
+      if (!this.servicesKept(projectId, keep) && (isRemoteProject(project) || keep.length > 0)) {
         try {
           await this.deps.suspendServices(projectId);
         } catch (err) {
           throw new ProjectSleepError(
             502,
-            `別のサーバの Service を止められなかったので、眠らせていません：${err instanceof Error ? err.message : String(err)}`,
+            `${isRemoteProject(project) ? "別のサーバの " : ""}Service を止められなかったので、眠らせていません：${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
@@ -131,11 +148,61 @@ export class ProjectSleep {
         throw err;
       }
       this.errands.delete(projectId);
-      return { released: await this.deps.releaseModules(projectId) };
+      if (keep.length > 0) console.log(`[host] project ${projectId} を眠らせても、自動化が出来事を待っている ${keep.join(", ")} は止めません`);
+      return { released: await this.deps.releaseModules(projectId, keep) };
     } finally {
       this.marks.delete(projectId);
       done();
     }
+  }
+
+  /**
+   * **眠っている Project で待たれなくなった Module を片づける**（眠らせる手順の後半を同じ印の中で）。待っていた自動化が一時停止
+   * された・消されたとき（`force`）と、1分ごと（繋がっている待たれていない Module があるときだけ）に呼ぶ。Service の Module を
+   * 外すなら先に管理操作で Service を止めて自動起動を切る（止められなければ外さない——次のきっかけでまた試す）。待たれている
+   * Module がもう無ければコンテナを止める。起きている・閉じた・移している・眠らせている途中の Project では何もしない。外した接続の名前
+   */
+  async releaseUnawaited(projectId: string, opts: { force?: boolean } = {}): Promise<string[]> {
+    const project = this.deps.projectThread.getProject(projectId);
+    if (!project?.sleep || project.status === "closed" || project.move || this.marks.has(projectId)) return [];
+    const keep = this.keepOf(projectId);
+    const stale = (this.deps.connectedModules?.(projectId) ?? []).filter((m) => !keep.includes(m));
+    if (stale.length === 0 && !(opts.force && keep.length === 0)) return [];
+    let done!: () => void;
+    this.marks.set(projectId, new Promise<void>((resolve) => (done = resolve)));
+    try {
+      const services = this.deps.serviceModules?.(projectId) ?? [];
+      if (stale.some((m) => services.includes(m))) {
+        try {
+          await this.deps.suspendServices(projectId);
+        } catch (err) {
+          console.warn(`[host] 眠っている project ${projectId} の Service を止められなかったので、Service の Module を残します:`, err);
+          return [];
+        }
+      }
+      const released = await this.deps.releaseModules(projectId, keep);
+      if (released.length > 0) console.log(`[host] 眠っている project ${projectId} で待たれなくなった Module を止めました: ${released.join(", ")}`);
+      return released;
+    } finally {
+      this.marks.delete(projectId);
+      done();
+    }
+  }
+
+  /**
+   * **自動化のため一部起きている**（眠っていて、出来事を待たれている Module がある——その Module とコンテナは動いている）。
+   * 眠っていなければ空
+   */
+  partlyAwake(projectId: string): AwaitedModule[] {
+    return this.deps.projectThread.getProject(projectId)?.sleep ? (this.deps.awaited?.(projectId) ?? []) : [];
+  }
+
+  private keepOf(projectId: string): string[] {
+    return (this.deps.awaited?.(projectId) ?? []).map((a) => a.module);
+  }
+
+  private servicesKept(projectId: string, keep: readonly string[]): boolean {
+    return (this.deps.serviceModules?.(projectId) ?? []).some((m) => keep.includes(m));
   }
 
   /**
@@ -197,9 +264,12 @@ export class ProjectSleep {
 
   /**
    * **眠らせると止まるもの**（`GET /api/projects/:id/sleep-preview`）。人が眠らせるとき、あれば画面が並べて確かめる。
-   * `blockers` があれば眠らせられない（断る理由と同じ）
+   * `blockers` があれば眠らせられない（断る理由と同じ）。`keeps` は自動化のため止めない Module、`servicesKept` は Service の
+   * Module がその中にある（Service と公開中の URL は止まらない）
    */
-  async preview(projectId: string): Promise<{ stops: RunningItem[]; blockers: string[] }> {
+  async preview(
+    projectId: string,
+  ): Promise<{ stops: RunningItem[]; blockers: string[]; keeps: AwaitedModule[]; servicesKept: boolean }> {
     const project = this.deps.projectThread.getProject(projectId);
     if (!project) throw new ProjectSleepError(404, "Project がありません");
     const blockers = [
@@ -209,7 +279,13 @@ export class ProjectSleep {
       ...this.deps.hostActivity(projectId).map((r) => r.label),
     ];
     // 眠っている（止まっている）・閉じたものは数えない
-    const stops = project.sleep || project.status === "closed" ? [] : await this.deps.runningInPlace(projectId);
-    return { stops, blockers };
+    if (project.sleep || project.status === "closed") return { stops: [], blockers, keeps: [], servicesKept: false };
+    const keeps = this.deps.awaited?.(projectId) ?? [];
+    const servicesKept = this.servicesKept(projectId, keeps.map((k) => k.module));
+    const running = await this.deps.runningInPlace(projectId);
+    // コンテナを残すなら、止まるのは管理操作で止める Service だけ（待たないコマンド・Terminal のセッションは残る）。
+    // Service の Module も待たれていれば何も止まらない
+    const stops = keeps.length === 0 ? running : servicesKept ? [] : running.filter((r) => r.kind === "service");
+    return { stops, blockers, keeps, servicesKept };
   }
 }

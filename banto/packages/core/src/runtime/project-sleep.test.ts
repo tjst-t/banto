@@ -26,8 +26,8 @@ async function withSleep(
         calls.push(`suspend:${id}`);
         return [];
       },
-      releaseModules: async (id) => {
-        calls.push(`release:${id}:${store.getProject(id)?.sleep ? "asleep" : "awake"}`);
+      releaseModules: async (id, keep) => {
+        calls.push(`release:${id}:${store.getProject(id)?.sleep ? "asleep" : "awake"}${keep.length > 0 ? `:keep=${keep.join(",")}` : ""}`);
         return [`shell-${id}`];
       },
       runningInPlace: async () => [],
@@ -146,9 +146,11 @@ test("止まるもの：実行場所で動いているものを並べる。眠�
       assert.deepEqual(await sleep.preview(p.id), {
         stops: [{ kind: "service", label: "Service「web」が動いています" }],
         blockers: [],
+        keeps: [],
+        servicesKept: false,
       });
       await sleep.sleep(p.id, "human");
-      assert.deepEqual(await sleep.preview(p.id), { stops: [], blockers: [] });
+      assert.deepEqual(await sleep.preview(p.id), { stops: [], blockers: [], keeps: [], servicesKept: false });
     },
     { runningInPlace: async () => [{ kind: "service", label: "Service「web」が動いています" }] },
   );
@@ -233,5 +235,128 @@ test("用が済んでいない理由：届いたもの・判断待ち・起き�
       since,
     ),
     ["まだ渡していない届いたものがあります（A）", "判断待ちがあります（B）", "ターンの結末が人を待っています（C）"],
+  );
+});
+
+// ── 出来事を待たれている Module は止めない（§2.2・§4.3 段2、Backlog #357）───────────────────────────
+
+const byAutomation = (module: string) => ({ module, automations: [{ id: "a1", name: "落ちたら見る" }] });
+
+test("待たれている Module は残す：Service の Module が待たれていれば Service は止めず、それ以外だけ外す（コンテナは残す）", async () => {
+  await withSleep(
+    async ({ store, dir, calls, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      assert.deepEqual(sleep.partlyAwake(p.id), [], "起きている Project は一部起きているとは言わない");
+      await sleep.sleep(p.id, "human");
+      assert.deepEqual(calls, [`release:${p.id}:asleep:keep=service`], "Service を止めた／待たれている Module まで外した");
+      assert.deepEqual(sleep.partlyAwake(p.id), [byAutomation("service")]);
+    },
+    { awaited: () => [byAutomation("service")], serviceModules: () => ["service"] },
+  );
+});
+
+test("待たれているのが Service の Module でなければ、コンテナを残すので Service は管理操作で止めてから眠らせる", async () => {
+  await withSleep(
+    async ({ store, dir, calls, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      await sleep.sleep(p.id, "human");
+      assert.deepEqual(calls, [`suspend:${p.id}`, `release:${p.id}:asleep:keep=backlog`]);
+    },
+    { awaited: () => [byAutomation("backlog")], serviceModules: () => ["service"] },
+  );
+});
+
+test("別のサーバで Service の Module が待たれていれば、Service を止めない", async () => {
+  await withSleep(
+    async ({ store, dir, calls, sleep }) => {
+      const p = await store.createProject("far", dir, { runtime: "remote:box" });
+      await sleep.sleep(p.id, "human");
+      assert.deepEqual(calls, [`release:${p.id}:asleep:keep=service`]);
+    },
+    { awaited: () => [byAutomation("service")], serviceModules: () => ["service"] },
+  );
+});
+
+test("止まるもの：コンテナを残すなら Service だけ（Service の Module が待たれていれば何も止まらない）。止めない Module を添える", async () => {
+  let awaited = [byAutomation("backlog")];
+  const running: RunningItem[] = [
+    { kind: "service", label: "Service「web」が動いています" },
+    { kind: "terminal", label: "Terminal のセッション「main」が開いています" },
+  ];
+  await withSleep(
+    async ({ store, dir, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      assert.deepEqual(await sleep.preview(p.id), { stops: [running[0]], blockers: [], keeps: awaited, servicesKept: false });
+      awaited = [byAutomation("service")];
+      assert.deepEqual(await sleep.preview(p.id), { stops: [], blockers: [], keeps: awaited, servicesKept: true });
+    },
+    { awaited: () => awaited, serviceModules: () => ["service"], runningInPlace: async () => running },
+  );
+});
+
+test("待たれなくなったら片づける：Service の Module なら先に Service を止めて外す。もう待たれていなければコンテナごと。起きている Project では何もしない", async () => {
+  let awaited = [byAutomation("service"), byAutomation("backlog")];
+  let connected = ["service", "backlog"];
+  await withSleep(
+    async ({ store, dir, calls, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      assert.deepEqual(await sleep.releaseUnawaited(p.id, { force: true }), [], "起きている Project で片づけた");
+      await sleep.sleep(p.id, "human");
+      calls.length = 0;
+      // まだ全部待たれている——何もしない
+      assert.deepEqual(await sleep.releaseUnawaited(p.id, { force: true }), []);
+      assert.deepEqual(calls, []);
+      // Service の自動化を一時停止した
+      awaited = [byAutomation("backlog")];
+      await sleep.releaseUnawaited(p.id);
+      assert.deepEqual(calls, [`suspend:${p.id}`, `release:${p.id}:asleep:keep=backlog`]);
+      connected = ["backlog"];
+      calls.length = 0;
+      // 最後の自動化も消した——コンテナごと止める（Service の Module はもう繋がっていないので止め直さない）
+      awaited = [];
+      await sleep.releaseUnawaited(p.id, { force: true });
+      assert.deepEqual(calls, [`release:${p.id}:asleep`]);
+      connected = [];
+      calls.length = 0;
+      // 1分ごとの見回り（force なし）は、繋がっている待たれていない Module が無ければ何もしない
+      await sleep.releaseUnawaited(p.id);
+      assert.deepEqual(calls, []);
+    },
+    { awaited: () => awaited, serviceModules: () => ["service"], connectedModules: () => connected },
+  );
+});
+
+test("待たれなくなった Service の Module の Service を止められなければ、外さずに残す（次のきっかけでまた試す）。片づけの間は起こす口が待つ", async () => {
+  let fail = true;
+  const seen: string[] = [];
+  await withSleep(
+    async ({ store, dir, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      await sleep.sleep(p.id, "human");
+      seen.length = 0;
+      assert.deepEqual(await sleep.releaseUnawaited(p.id), []);
+      assert.deepEqual(seen, ["suspend"]);
+      fail = false;
+      const tidy = sleep.releaseUnawaited(p.id);
+      assert.equal(sleep.inProgress(p.id), true, "印の外で片づけた");
+      const woke = sleep.wake(p.id, "opened");
+      await tidy;
+      assert.equal(await woke, true);
+      assert.deepEqual(seen, ["suspend", "suspend", "release"], "起こす口が片づけを追い越した");
+    },
+    {
+      awaited: () => [],
+      serviceModules: () => ["service"],
+      connectedModules: () => ["service"],
+      suspendServices: async () => {
+        seen.push("suspend");
+        if (fail) throw new Error("繋がりません");
+        return [];
+      },
+      releaseModules: async () => {
+        seen.push("release");
+        return ["service-x"];
+      },
+    },
   );
 });
