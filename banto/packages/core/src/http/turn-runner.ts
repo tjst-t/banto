@@ -35,6 +35,7 @@ import {
 } from "./turn-summary.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { AutomationTools } from "../automation/tools.js";
+import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -312,7 +313,12 @@ async function* runThreadTurnInner(
      * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。承認のたびに
      * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
      */
-    autoApproveAll?(projectId: string): boolean;
+    autoApproveAll?(projectId: string, threadId?: string): boolean;
+    /**
+     * **判断役の答え**（追加・2026-10-16、§4.3「banto.turn-decisions と判断役」）。ターンを始めるとき届けものを渡し、
+     * `answer_decision` が答える先を覚えさせる。渡されなければ tool は断る
+     */
+    turnDecisions?: Pick<TurnDecisions, "beginTurn" | "answer">;
     /**
      * **その Project で「ターンの終わりのまとめ」がオンか**（追加・2026-10-06、§2.2）。ターンを始めるときに1回引く——オンなら
      * `report_turn`・システムプロンプトの節・Stop hook を渡す。渡されなければオフ
@@ -476,6 +482,8 @@ async function* runThreadTurnInner(
     );
   }
   const prompt = composeTurnPrompt(delivered, composeQuotedPrompt(quotes, input.prompt), images.length);
+  // 判断役のターンなら、届いた出来事（答える先）を覚える——答えられるのはこのターンを起こした届けものの中のものだけ
+  deps.turnDecisions?.beginTurn(input.threadId, delivered);
 
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
@@ -495,6 +503,7 @@ async function* runThreadTurnInner(
       : undefined,
     forks.closing,
     deps.automationTools,
+    deps.turnDecisions,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -604,6 +613,8 @@ async function* runThreadTurnInner(
         ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
         // Memory を取り消す・改めるも tool の中で必ず人に聞く（2回聞かない。§2.2）
         `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,
+        // 判断役の答えは聞かずに通す——判断役の会話の承認は必ず聞くが、答えること自体はその会話の仕事（§4.3「守り」）
+        `mcp__banto-thread__${ANSWER_DECISION_TOOL_NAME}`,
         ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
       ],
       // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
@@ -722,7 +733,7 @@ async function* runThreadTurnInner(
         };
         // **承認をすべて自動で許可する**（追加・2026-10-05、v4-frontend.md §6.4）。判断待ちは出して、そのまま host が
         // 答える——会話には答え済みのカードが残り、何を自動で通したかが読める。受信箱に未解決は残らない
-        if (deps.autoApproveAll?.(thread.projectId) === true) {
+        if (deps.autoApproveAll?.(thread.projectId, input.threadId) === true) {
           const judgment = await raiseAutoApprovedJudgment(deps.inbox, raise);
           event.pending.resolve({ behavior: "allow" });
           yield {

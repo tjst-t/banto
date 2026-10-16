@@ -1,6 +1,6 @@
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
-import type { InboxReadModel, JudgmentItem, JudgmentSource, ReviewAutomation } from "./types.js";
+import type { InboxReadModel, JudgmentItem, JudgmentSource, ReviewAutomation, ReviewJudge } from "./types.js";
 
 export type InboxEvent =
   | {
@@ -24,9 +24,16 @@ export type InboxEvent =
   | { type: "inbox.judgment_timed_out"; payload: { id: string } }
   | {
       type: "inbox.review_raised";
-      payload: { id: string; threadId: string; summary: string; automation?: Omit<ReviewAutomation, "raisedSeq"> };
+      payload: {
+        id: string;
+        threadId: string;
+        summary: string;
+        automation?: Omit<ReviewAutomation, "raisedSeq">;
+        carriedJudge?: ReviewJudge;
+      };
     }
   | { type: "inbox.review_acknowledged"; payload: { id: string } }
+  | { type: "inbox.review_judged"; payload: { id: string; judge: ReviewJudge } }
   | {
       type: "inbox.notice_raised";
       payload: {
@@ -92,6 +99,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           threadId: event.payload.threadId,
           summary: event.payload.summary,
           ...(event.payload.automation ? { automation: { ...event.payload.automation, raisedSeq: raw.seq } } : {}),
+          ...(event.payload.carriedJudge ? { carriedJudge: event.payload.carriedJudge } : {}),
           acknowledged: false,
           createdAt: raw.ts,
         });
@@ -102,6 +110,11 @@ export const inboxFold: Fold<InboxReadModel> = {
         if (existing && existing.kind === "review") {
           items.set(existing.id, { ...existing, acknowledged: true });
         }
+        return { items };
+      }
+      case "inbox.review_judged": {
+        const existing = items.get(event.payload.id);
+        if (existing && existing.kind === "review") items.set(existing.id, { ...existing, judge: event.payload.judge });
         return { items };
       }
       case "inbox.notice_raised": {

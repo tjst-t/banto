@@ -119,7 +119,7 @@ export interface AgentProxyOptions {
    * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。オンなら Module への
    * 呼び出しに `dev.banto/autoApprove` を刻む（呼び出しのたびに引く）。渡されなければ刻まない
    */
-  autoApproveFor?(projectId: string): boolean;
+  autoApproveFor?(projectId: string, threadId?: string): boolean;
   /**
    * **AI のターンから Module の tool を呼ぶ直前**（追加・2026-10-16、アーキ仕様 §4.3「段2」の「始まりの印を持ち越す」）。
    * 呼び出しの印（`dev.banto/callId`）と、どの Thread のターンかを渡す——host は出来事を名乗る Module への呼び出しだけを
@@ -201,7 +201,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
    * （ここで組む `_meta` は host が作り直したもので、Runner が添えた `_meta` は Module に流さない）
    */
   function autoApproveStamp(): Record<string, unknown> {
-    return opts.projectId && opts.autoApproveFor?.(opts.projectId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
+    return opts.projectId && opts.autoApproveFor?.(opts.projectId, opts.threadId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
   }
 
   /** 台帳が振った呼び出しの印（`CALL_ID_META_KEY`）。台帳が無ければ渡さない */

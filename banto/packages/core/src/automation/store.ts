@@ -19,6 +19,7 @@ import {
   type AutomationTarget,
 } from "./fold.js";
 import { cronExpressionProblem } from "./schedule.js";
+import { bantoEventDeclaration, isJudgeAutomation, TURN_DECISIONS_EVENT } from "./turn-decisions.js";
 
 /** 入力が決まりに合わない（画面・AI に理由をそのまま返す） */
 export class AutomationInputError extends Error {}
@@ -111,6 +112,7 @@ export class AutomationStore {
   }): Promise<Automation> {
     const fields = parseAutomationFields(input.fields);
     if (fields.source.kind === "event") this.checkEventSource(input.projectId, fields.source);
+    checkJudgeTarget(fields);
     if (fields.source.kind === "webhook" && !input.webhookTokenHash) {
       throw new AutomationInputError("Webhook の自動化は自動化の画面から作ってください（受け口の URL はそこで1回だけ見せます）");
     }
@@ -130,6 +132,7 @@ export class AutomationStore {
     const current = this.mustGet(id);
     const parsed = parseAutomationChanges(changes, current);
     if (parsed.source?.kind === "event") this.checkEventSource(current.projectId, parsed.source);
+    checkJudgeTarget({ source: parsed.source ?? current.source, target: parsed.target ?? current.target });
     await this.append("automation.updated", { id, changes: parsed });
     return this.mustGet(id);
   }
@@ -178,8 +181,10 @@ export class AutomationStore {
 
   /** 出来事の名前が、その Project の Module に名乗られているか・条件が名乗りの属性に合うか */
   private checkEventSource(projectId: string, source: Extract<AutomationSource, { kind: "event" }>): void {
-    if (!this.eventCatalog) throw new AutomationInputError("この banto は出来事のきっかけを受けられません");
-    const declared = this.eventCatalog.find(projectId, source.event);
+    // banto 自身の出来事（`banto.*`）は core が名乗る——Module の宣言からは引かない
+    const core = bantoEventDeclaration(source.event);
+    if (!core && !this.eventCatalog) throw new AutomationInputError("この banto は出来事のきっかけを受けられません");
+    const declared = core ?? this.eventCatalog?.find(projectId, source.event);
     if (!declared) {
       throw new AutomationInputError(`この Project には出来事 ${source.event} を名乗っている Module がありません`);
     }
@@ -204,6 +209,16 @@ export class AutomationStore {
 }
 
 /** 自動化の id（作る前に要るとき——Webhook の署名の鍵を先に置く） */
+/**
+ * **判断役の届け先は専用の Fork に限る**（アーキ仕様 §4.3「banto.turn-decisions と判断役」の「守り」）——既存の Thread（Base 等）を
+ * 届け先にすると、その会話の承認を「必ず聞く」に固定することになる
+ */
+function checkJudgeTarget(fields: Pick<AutomationFields, "source" | "target">): void {
+  if (isJudgeAutomation(fields) && fields.target.kind !== "dedicated") {
+    throw new AutomationInputError(`${TURN_DECISIONS_EVENT} を待つ自動化（判断役）の届け先は、専用の Fork だけです`);
+  }
+}
+
 export function newAutomationId(): string {
   return `auto-${randomUUID()}`;
 }

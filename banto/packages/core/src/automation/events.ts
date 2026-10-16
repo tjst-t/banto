@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  CORE_EVENT_SOURCE,
   EVENT_ID_MAX,
   EVENT_TEXT_MAX_BYTES,
   eventFieldsProblem,
@@ -254,11 +255,38 @@ export class AutomationEvents {
     }
   }
 
+  /**
+   * **banto 自身の出来事を1件出す**（出どころ `banto`、アーキ仕様 §4.3「banto 自身」）。core が書くので照合は名乗りとの
+   * 突き合わせだけ（合わなければ投げる——core の書き間違い）。起こしたターンは印を引かずに直に渡す（ホップ＋1・自分の回の判定）
+   */
+  async emitFromCore(
+    projectId: string,
+    declared: EventDeclaration,
+    event: { eventId: string; occurredAt: string; fields: Record<string, EventFieldValue>; text?: string },
+    causedBy?: Omit<EventCallOrigin, "callId" | "projectId" | "at">,
+  ): Promise<number> {
+    const problem = eventNameProblem(declared.name, CORE_EVENT_SOURCE) ?? eventFieldsProblem(declared, event.fields);
+    if (problem) throw new Error(`banto の出来事 ${declared.name} の形が名乗りに合いません：${problem}`);
+    const key = `${projectId}\0${CORE_EVENT_SOURCE}\0${event.eventId}`;
+    if (this.inFlight.has(key) || this.deps.ledger.hasSeen(projectId, CORE_EVENT_SOURCE, event.eventId)) return 0;
+    this.inFlight.add(key);
+    try {
+      const origin = causedBy ? { ...causedBy, projectId } : undefined;
+      const queued = await this.queue({ projectId, moduleName: CORE_EVENT_SOURCE }, declared, event, origin);
+      await this.deps.ledger.markSeen(projectId, CORE_EVENT_SOURCE, event.eventId);
+      return queued;
+    } finally {
+      this.inFlight.delete(key);
+    }
+  }
+
   /** 条件に合う自動化に積む。積んだ数を返す */
   private async queue(
     from: EventEmitter,
     declared: EventDeclaration,
     event: { eventId: string; occurredAt: string; fields: Record<string, EventFieldValue>; text?: string; callId?: string },
+    /** core が直に渡す起こしたターン（banto 自身の出来事）。無ければ `callId` から引く */
+    direct?: Omit<EventCallOrigin, "callId" | "at">,
   ): Promise<number> {
     const waiting = this.deps.automations
       .list(from.projectId)
@@ -266,7 +294,7 @@ export class AutomationEvents {
     if (waiting.length === 0 || this.deps.projectClosed(from.projectId)) return 0;
 
     // **始まりの印**：引けたらホップ＋1・起こした Thread・起こした自動化の回。印は申告なので、別の Project の呼び出しは引かない
-    const origin = event.callId ? this.deps.ledger.callOrigin(event.callId) : undefined;
+    const origin = direct ?? (event.callId ? this.deps.ledger.callOrigin(event.callId) : undefined);
     const causedBy = origin && origin.projectId === from.projectId ? origin : undefined;
     const hop = causedBy ? causedBy.hop + 1 : 0;
 

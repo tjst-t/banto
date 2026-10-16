@@ -30,6 +30,7 @@ import { AutomationTools } from "../automation/tools.js";
 import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import { nextFireOf } from "../automation/schedule.js";
 import type { Automation } from "../automation/fold.js";
+import { autoApproveAllFor, isJudgeAutomation, judgeAutomationOf, judgeNotices, type TurnDecisions } from "../automation/turn-decisions.js";
 import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
@@ -205,6 +206,11 @@ export interface AppDeps {
    * 専用の Fork を立て、「今すぐ動かす」で1回届け、人が専用の Fork を閉じたら一時停止する。無ければ「今すぐ動かす」は 501
    */
   automationRunner?: Pick<AutomationRunner, "prepare" | "run" | "threadClosed">;
+  /**
+   * **判断役の答え**（追加・2026-10-16、アーキ仕様 §4.3「banto.turn-decisions と判断役」）。`answer_decision` の本体と、受信箱の
+   * 「判断役が見ています」。無ければ tool は断る
+   */
+  turnDecisions?: Pick<TurnDecisions, "beginTurn" | "answer" | "watching">;
   /**
    * **自動化の Webhook の受け口**（アーキ仕様 §4.3「Webhook」）。`/hooks/<印>` を認証の前で受け、作る・直すときに署名の鍵を
    * Vault から引いて置く。無ければ `/hooks/` は 404、Webhook の自動化は作れない（501）
@@ -1234,7 +1240,12 @@ export function createApp(deps: AppDeps) {
   const turnStops = new TurnStops();
   // **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。承認のたびに引く——保存した時点で、
   // 走っているターンにも次の承認から効く
-  const autoApproveAll = (projectId: string) => isAutoApproveAll(deps.runtimeConfig, projectId);
+  // 判断役の会話には効かせない（アーキ仕様 §4.3「判断役の会話の承認は『必ず聞く』に固定」）
+  const autoApproveAll = autoApproveAllFor({
+    projectSwitch: (projectId) => isAutoApproveAll(deps.runtimeConfig, projectId),
+    automations: deps.automations,
+    projectThread: deps.projectThread,
+  });
   // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。ターンを始めるときに引く
   const turnSummaryEnabled = (projectId: string) => isTurnSummaryEnabled(deps.runtimeConfig, projectId);
   const projectInstruction = (projectId: string) => projectInstructionOf(deps.runtimeConfig, projectId);
@@ -1518,18 +1529,22 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
       prompt,
       ...(images.length > 0 ? { images } : {}),
       ...(quotes.length > 0 ? { quotes } : {}),
-      permissionMode: resolvePermissionMode(
-        permissionMode,
-        deps.projectThread.getThread(threadId),
-        deps.runtimeConfig?.resolve(DEFAULT_PERMISSION_MODE_KEY, thread?.projectId),
-      ),
+      // **判断役の会話は「必ず聞く」に固定**（アーキ仕様 §4.3「守り」）——その会話の設定・このターンの上書き・Project の既定に依らない
+      permissionMode:
+        deps.automations && judgeAutomationOf(deps.automations, deps.projectThread, threadId)
+          ? "default"
+          : resolvePermissionMode(
+              permissionMode,
+              deps.projectThread.getThread(threadId),
+              deps.runtimeConfig?.resolve(DEFAULT_PERMISSION_MODE_KEY, thread?.projectId),
+            ),
       modules,
       cwd,
       ...(stop ? { stop } : {}),
@@ -3548,7 +3563,12 @@ export function createApp(deps: AppDeps) {
               }
               const created = await store.create({ projectId, createdBy: { kind: "human" }, fields: body });
               // 届け先が専用の Fork なら、作るときに立てる（§4.3「専用の Fork」）
-              return json(res, 201, view((await deps.automationRunner?.prepare(created)) ?? created));
+              const prepared = view((await deps.automationRunner?.prepare(created)) ?? created);
+              // 判断役は断らずに案内を添える（まとめがオフなら出来事が出ない・自動許可は効かない、§4.3）
+              const notices = isJudgeAutomation(created)
+                ? judgeNotices(projectId, { turnSummaryEnabled, autoApproveAll: (id) => isAutoApproveAll(deps.runtimeConfig, id) })
+                : [];
+              return json(res, 201, notices.length > 0 ? { ...prepared, notices } : prepared);
             }
             return json(res, 405, { error: "method not allowed" });
           }
@@ -3741,7 +3761,9 @@ export function createApp(deps: AppDeps) {
               ...(earlier ? { earlier } : {}),
             });
             const unseenRuns = a ? unseenRunsOf(item, deps.automations?.get(a.id)) : undefined;
-            return { ...withPlace(item), turn, ...(unseenRuns !== undefined ? { unseenRuns } : {}) };
+            // 判断役の回が動いている間（まだ答えていない）は「判断役が見ています」——走っている回から引く（記録に残さない）
+            const judgeWatching = item.judge ? undefined : deps.turnDecisions?.watching(item.threadId);
+            return { ...withPlace(item), turn, ...(unseenRuns !== undefined ? { unseenRuns } : {}), ...(judgeWatching ? { judgeWatching } : {}) };
           }),
         );
         json(res, 200, items);

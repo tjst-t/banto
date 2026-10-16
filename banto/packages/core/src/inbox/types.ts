@@ -49,8 +49,35 @@ export interface ReviewItem {
   summary: string;
   /** 自動化の回のターンの終わり（追加・2026-10-15、アーキ仕様 §4.3「受信箱」）。無ければふつうのターンの終わり */
   automation?: ReviewAutomation;
+  /**
+   * **判断役がこのターンの決めることをどうしたか**（追加・2026-10-16、アーキ仕様 §4.3「banto.turn-decisions と判断役」の
+   * 「受信箱」）。無ければ判断役は答えていない（見ている間は記録に残さない——画面は走っている回から引く）
+   */
+  judge?: ReviewJudge;
+  /**
+   * **前のカードから引き継いだ判断役の決め**（「判断役が〈選択肢〉を選んで進めました」）。判断役の答えで進んだ次のターンの
+   * カードが前のカードを置き換えたとき、前のカードの `judge`（決めたもの）を写す——人が見る時間がターン1本分で消えないように
+   */
+  carriedJudge?: ReviewJudge;
   acknowledged: boolean;
   createdAt: string;
+}
+
+/**
+ * 判断役の答え。`decided-by-automation`＝全部の問いに選択肢で答え、元の会話に届けた。`deferred`＝人に任せた（何も届けて
+ * いない）。`incomplete`＝揃わないまま判断役のターンが終わった（何も届けていない）
+ */
+export interface ReviewJudge {
+  kind: "decided-by-automation" | "deferred" | "incomplete";
+  automation: { id: string; name: string };
+  /** 決めたもの（`decided-by-automation`）。問い・選択肢の番号は 1 から */
+  answers?: Array<{ question: number; choice: number; label: string; reason: string }>;
+  /** 人に任せた理由（`deferred`） */
+  reason?: string;
+  /** 答えた問いの数と、問いの数（`incomplete`） */
+  answered?: number;
+  total?: number;
+  at: string;
 }
 
 /**
