@@ -27,6 +27,8 @@ export interface MockProject {
   runtime?: string;
   /** 入っているグループ（追加・2026-10-16、v4-frontend.md §6.43）。無ければグループなし。写しの元は host */
   groupId?: string;
+  /** 眠っている（追加・2026-10-16、v4-frontend.md §6.43）。写しの元は host（`projects.changed` で取り直す） */
+  sleep?: { since: string; by: "human" | "auto" };
 }
 
 /** 画面つき tool の呼び出し1件（host の記録をそのまま受ける）。 */

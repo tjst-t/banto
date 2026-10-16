@@ -12,7 +12,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
-import { getActiveProjects, hydrateRealProjects } from "@/lib/mock/projects";
+import { getActiveProjects, getAwakeProjects, hydrateRealProjects } from "@/lib/mock/projects";
 import { refreshRealProjectThreads } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { describeFailure } from "@/lib/report-failure";
@@ -55,7 +55,8 @@ export function HomeContent() {
   const redirected = useRef(false);
   useEffect(() => {
     if (!hydrated || redirected.current) return;
-    const first = getActiveProjects()[0];
+    // 眠っている Project は、ほかに起きているものがあれば飛び先にしない——開くと起きる（§6.43）
+    const first = getAwakeProjects()[0] ?? getActiveProjects()[0];
     if (!first) return;
     redirected.current = true;
     // **会話の中身は、飛ぶ前から取り始める**（追加・2026-09-26、実測）。URL が変わって

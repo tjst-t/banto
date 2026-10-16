@@ -13,7 +13,7 @@
 // 掴めない場面**（キーボード、細いレール、タッチ）でも並べ替えられるようにする。
 // 出ている操作が、その場の入力手段で必ず効く（規則13）。
 import { Fragment, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, Check, FolderInput, FolderPlus, MoreHorizontal, Pencil } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, FolderInput, FolderPlus, Moon, MoreHorizontal, Pencil } from "lucide-react";
 import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   ContextMenu,
@@ -66,6 +66,7 @@ export function SidebarItemMenu({
   onMoveDown,
   onClose,
   onFork,
+  onSleep,
   groupMenu,
   moreClassName,
   children,
@@ -82,6 +83,8 @@ export function SidebarItemMenu({
   onClose?: () => void;
   /** 「ここから Fork…」（Thread の行。Base でも Fork でも、2026-10-11） */
   onFork?: () => void;
+  /** 「スリープにする」（Project の行だけ、v4-frontend.md §6.43）。無ければ項目を出さない */
+  onSleep?: () => void;
   /** 「グループへ移す」の中身。無ければ項目を出さない */
   groupMenu?: GroupMenu;
   /** 「…」ボタンの位置合わせ（既定は行の右端） */
@@ -101,6 +104,7 @@ export function SidebarItemMenu({
           { label: "下へ移動", icon: ArrowDown, onSelect: onMoveDown },
         ]
       : []),
+    ...(onSleep ? [{ label: "スリープにする", icon: Moon, onSelect: onSleep, separatorBefore: true }] : []),
     ...(onClose ? [{ label: "Close", icon: CloseIcon, onSelect: onClose, separatorBefore: true }] : []),
   ];
   // 先頭に区切りを引かない（「グループへ移す」が先頭にあるときは引く）

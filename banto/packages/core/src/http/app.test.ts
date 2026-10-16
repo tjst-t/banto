@@ -2635,6 +2635,7 @@ test("眠っている Project：設定・入口・Skills・Module の画面は�
         call("POST", `/api/projects/${project.id}/ui-stream`, {}),
         call("POST", `/api/threads/${thread.id}/ui-tool-call`, { server: "shell", tool: "x" }),
         call("POST", `/api/threads/${thread.id}/ui-stream`, {}),
+        call("GET", `/api/threads/${thread.id}/ui-resource?server=shell&uri=ui://x`),
         call("GET", `/api/skills?projectId=${project.id}`),
       ];
       for (const res of await Promise.all(asleep)) {

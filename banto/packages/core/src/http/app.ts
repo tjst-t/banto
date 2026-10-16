@@ -3069,6 +3069,7 @@ export function createApp(deps: AppDeps) {
         const serverName = url.searchParams.get("server");
         const uri = url.searchParams.get("uri");
         if (!serverName || !uri) return json(res, 400, { error: "server と uri が要ります" });
+        if (refuseIfAsleep(res, deps.projectThread.getThread(uiResourceMatch[1]!)?.projectId)) return;
         const modules = (await deps.resolveModuleClientsForThread?.(uiResourceMatch[1]!)) ?? [];
         const { status, body } = await readUiResource(modules, serverName, uri);
         json(res, status, body);
