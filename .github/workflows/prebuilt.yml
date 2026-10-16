@@ -87,9 +87,21 @@ jobs:
         if: steps.existing.outputs.state != 'done'
         working-directory: banto
         run: |
-          set -euo pipefail
-          npm test
-          npm run test:scripts
+          set -uo pipefail
+          # 落ちたら、落ちた試験とエラーを注記（::error::）にも出す——ログは鍵が無いと読めないが、注記は公開の API と
+          # 実行の画面の上で読める
+          status=0
+          for cmd in "npm test" "npm run test:scripts"; do
+            $cmd 2>&1 | tee -a ../test-output.log
+            rc=${PIPESTATUS[0]}
+            if [ "$rc" -ne 0 ]; then echo "::error title=単体テストが落ちました::$cmd が終了コード $rc で終わりました"; status=1; fi
+          done
+          if [ "$status" -ne 0 ]; then
+            grep -nE '^\s*(✖|not ok)|npm (error|ERR!) (workspace|location|command)|Error:|AssertionError' ../test-output.log |
+              grep -v '^\s*[0-9]*:\s*#' | head -n 40 |
+              while IFS= read -r line; do echo "::error title=単体テスト::${line:0:900}"; done
+          fi
+          exit "$status"
 
       - name: 組み立てがソースを書き換えていないか
         if: steps.existing.outputs.state != 'done'
