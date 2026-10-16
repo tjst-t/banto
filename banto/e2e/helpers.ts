@@ -1,7 +1,7 @@
 // specから共通で使う手順。真実は一箇所（規則3）——同じ待ちを各specに写さない。
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { CORE_BASE_URL, CORE_BROWSER_URL, AUTH_TOKEN } from "./config.js";
-import { FAKE_RUNNER_MARKER, type FakePlan } from "./fake-runner.js";
+import { FAKE_RUNNER_MARKER, FAKE_RUNNER_REPLY_MARKER, type FakePlan } from "./fake-runner.js";
 
 /**
  * アプリを開き、**行き先が決まりきるまで待つ**。
@@ -326,6 +326,14 @@ export async function waitTurnEnded(
 
 export function fakeTurn(plan: FakePlan): string {
   return `\n${FAKE_RUNNER_MARKER}${JSON.stringify(plan)}`;
+}
+
+/**
+ * **まとめの選択肢の `reply` に書く、届いた答えで始まる回の指示**（`fake-runner.ts` の `FAKE_RUNNER_REPLY_MARKER`）。前に改行を
+ * 入れない——届いた文の中で `reply` は1行に入る
+ */
+export function fakeReplyTurn(plan: FakePlan): string {
+  return `${FAKE_RUNNER_REPLY_MARKER}${JSON.stringify(plan)}`;
 }
 
 /**

@@ -8,7 +8,14 @@ import { UrlLink as Link } from "@/components/banto/url-link";
 import { Hand, List, Play, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { automationTimeZone, automationsCanvasHref, describeSource, formatWhen, runAutomationNow } from "@/lib/backend/automations";
+import {
+  automationTimeZone,
+  automationsCanvasHref,
+  describeSource,
+  formatWhen,
+  runAutomationNow,
+  useAutomationEventSources,
+} from "@/lib/backend/automations";
 import type { RealAutomation } from "@/lib/backend/client";
 import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
 
@@ -16,6 +23,8 @@ export function AutomationBand({ automation: a, threadId }: { automation: RealAu
   // 判断待ちは受信箱の写しから引く（台帳の「待っている」は回の終わりの時点のもので、答えたあとも残る）
   useRealInboxVersion();
   const waiting = getRealJudgments().some((j) => j.threadId === threadId);
+  // 出来事のきっかけは名乗りの題で言う（時刻・Webhook なら引かない）
+  const { sources } = useAutomationEventSources(a.source.kind === "event" ? a.projectId : null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const how = a.target.kind === "dedicated" && a.target.mode === "continue" ? "前の回を引き継ぐ" : "毎回まっさら";
@@ -49,7 +58,7 @@ export function AutomationBand({ automation: a, threadId }: { automation: RealAu
           )}
           <span className="min-w-0" data-testid="automation-band-text">
             {waiting ? <span className="text-foreground">前の回が、あなたの答えを待っています。</span> : null}
-            自動化「{a.name}」で動く会話です（{describeSource(a)}・{how}）。
+            自動化「{a.name}」で動く会話です（{describeSource(a, sources)}・{how}）。
             {a.paused ? "いまは一時停止中です。" : a.nextFireAt ? `次は ${formatWhen(a.nextFireAt, automationTimeZone(a))}。` : null}
           </span>
         </p>

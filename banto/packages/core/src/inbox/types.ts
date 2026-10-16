@@ -77,6 +77,12 @@ export interface ReviewJudge {
   /** 答えた問いの数と、問いの数（`incomplete`） */
   answered?: number;
   total?: number;
+  /**
+   * **決めたターンの記録の位置**（`decided-by-automation`、追加・2026-10-16、Backlog #349）。答えで元の会話は次のターンへ進むが、
+   * カードは決めたターンの中身（決めることの選択肢）を出し続ける——人がそこから別の選択肢に変えられるように。`startedSeq` より
+   * 後ろ・`beforeSeq` より前の発言がそのターン
+   */
+  turn?: { startedSeq: number; beforeSeq: number; outcome?: "completed" | "stopped" | "failed" };
   at: string;
 }
 

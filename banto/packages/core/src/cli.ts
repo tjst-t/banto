@@ -254,6 +254,17 @@ async function main(): Promise<void> {
       }
       return undefined;
     },
+    list: (projectId) =>
+      loadModuleDeclarations(runtimeConfig, projectId).flatMap((d) => {
+        if (d.meta.scope !== "project") return [];
+        // 名乗りが読めない Module は出さない（`find` と同じ——その Module の出来事は待てない）
+        try {
+          const events = declaredEvents(d);
+          return events.length > 0 ? [{ source: d.name, events }] : [];
+        } catch {
+          return [];
+        }
+      }),
   });
   // **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）
   const remoteRuntimeStore = new RemoteRuntimeStore(bootstrap.dataDir, eventLog);

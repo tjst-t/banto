@@ -23,6 +23,7 @@ import {
 import type { AutomationRunner } from "./runner.js";
 import { askInThread } from "../inbox/ask-in-thread.js";
 import { nextFireOf } from "./schedule.js";
+import { isJudgeAutomation } from "./turn-decisions.js";
 
 /** 確認のカードの選択肢。許す側の言葉は画面が「許可」に写す（`apps/frontend/lib/backend/adapter.ts`） */
 export const AUTOMATION_CREATE_CHOICES = ["作る", "作らない"] as const;
@@ -42,6 +43,11 @@ export interface AutomationToolsDeps {
   runner?: Pick<AutomationRunner, "prepare">;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
+  /**
+   * **判断役を作ったときの案内**（まとめがオフなら出来事が出ない・自動許可は判断役の会話に効かない、アーキ仕様 §4.3）。断らずに
+   * 作った返事に添える（画面の口の `notices` と同じ）。無ければ添えない
+   */
+  judgeNotices?(projectId: string): string[];
   /** 今の時刻（「次は」の計算）。無ければ `new Date()`（試験が時刻を決める） */
   now?: () => Date;
   /** 走っているターンの画面へ、判断待ちが出たことを流す（会話の中の確認のカード） */
@@ -133,6 +139,8 @@ export class AutomationTools {
       const fields = parseAutomationFields(raw);
       const targetProblem = this.targetProblem(projectId, fields.target);
       if (targetProblem) return { ok: false, text: targetProblem };
+      // 出来事が名乗られているか・条件が名乗りに合うか・判断役の届け先（断る理由は `guard` が AI に返す）
+      this.deps.automations.checkFields(projectId, fields);
       const toolInput = {
         名前: fields.name,
         いつ: describeAutomationSource(fields.source),
@@ -141,7 +149,9 @@ export class AutomationTools {
         終わったら受信箱に出す: fields.reviewOnDone ? "出す" : "出さない（判断待ち・決めること・失敗した回は出す）",
         何が起きるか: [
           ...(fields.target.kind === "dedicated" ? [`「${fields.name}」という名前の Fork が立ち、そこで動きます。`] : []),
-          "人が見ていない時間にも、決まった時刻に繰り返し動きます。",
+          fields.source.kind === "event"
+            ? "人が見ていない時間にも、その出来事が起きるたびに動きます。"
+            : "人が見ていない時間にも、決まった時刻に繰り返し動きます。",
           "確認が要る操作に当たったら、そこで止まってあなたの答えを待ちます。",
           "自動化の一覧から、いつでも一時停止・削除できます。",
         ].join(""),
@@ -150,9 +160,14 @@ export class AutomationTools {
       if (!answer.allowed) return { ok: false, text: `人が作らないと答えたので、自動化は作っていません。${answer.note}` };
       const created = await this.deps.automations.create({ projectId, createdBy: { kind: "ai", threadId }, fields: raw });
       const prepared = (await this.deps.runner?.prepare(created)) ?? created;
+      const notices = isJudgeAutomation(created) ? (this.deps.judgeNotices?.(projectId) ?? []) : [];
       return {
         ok: true,
-        text: `人が許したので、自動化「${prepared.name}」を作った（id: ${prepared.id}）。\n${JSON.stringify(automationForAi(prepared, this.now()), null, 2)}`,
+        text: [
+          `人が許したので、自動化「${prepared.name}」を作った（id: ${prepared.id}）。`,
+          ...notices.map((n) => `注意：${n}`),
+          JSON.stringify(automationForAi(prepared, this.now()), null, 2),
+        ].join("\n"),
       };
     });
   }
@@ -167,6 +182,7 @@ export class AutomationTools {
         if (targetProblem) return { ok: false, text: targetProblem };
       }
       const next = { ...current, ...changes };
+      this.deps.automations.checkFields(current.projectId, next, changes.source !== undefined);
       const rows: Record<string, string> = { 自動化: current.name };
       if (changes.name !== undefined) rows["名前"] = `${current.name} → ${changes.name}`;
       if (changes.source) rows["いつ"] = `${describeAutomationSource(current.source)} → ${describeAutomationSource(changes.source)}`;

@@ -26,6 +26,13 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 /** spec がプロンプトに埋める印。これが無ければ「ひとこと返すだけ」。 */
 export const FAKE_RUNNER_MARKER = "[[fake-runner]]";
 const MARKER = FAKE_RUNNER_MARKER;
+/**
+ * **届いた答えで始まる回の指示**（追加・2026-10-16、`automation-events-ui.spec.ts`）。まとめの選択肢の `reply` に書くと、その答えが
+ * 届いたターン（判断役の答え・人が選んだ答え）だけがこれに従う。`[[fake-runner]]` を `reply` に書くと、選択肢を引数に持つ前の
+ * ターンの指示の中でも、出来事の本文（判断役のプロンプト）の中でも最後の印になって、そちらを乗っ取ってしまう。こちらは
+ * `[[fake-runner]]` の印が無いプロンプトでだけ読む
+ */
+export const FAKE_RUNNER_REPLY_MARKER = "[[fake-runner-reply]]";
 
 export interface FakePlan {
   /** tool を呼ぶ前に言うこと。 */
@@ -155,10 +162,18 @@ export async function listModels() {
  */
 export function parsePlan(prompt: string): FakePlan {
   const at = prompt.lastIndexOf(MARKER);
-  if (at === -1) return scriptedPlan(prompt) ?? { say: defaultReply(prompt) };
+  if (at === -1) {
+    const replyAt = prompt.lastIndexOf(FAKE_RUNNER_REPLY_MARKER);
+    if (replyAt !== -1) return readPlan(prompt.slice(replyAt + FAKE_RUNNER_REPLY_MARKER.length));
+    return scriptedPlan(prompt) ?? { say: defaultReply(prompt) };
+  }
+  return readPlan(prompt.slice(at + MARKER.length));
+}
+
+function readPlan(rest: string): FakePlan {
   // 指示は印のあとの1行（`fakeTurn` は改行の無い JSON を書く）。後ろに文が続くことがある——起こし直しで切れた
   // ターンの発言を、banto が続きの文の中に入れ直したとき（追加・2026-10-05）
-  const json = prompt.slice(at + MARKER.length).split("\n")[0]!.trim();
+  const json = rest.split("\n")[0]!.trim();
   try {
     return JSON.parse(json) as FakePlan;
   } catch (err) {

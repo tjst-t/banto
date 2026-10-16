@@ -336,6 +336,15 @@ export class TurnDecisions {
     }
     const decisions = decisionsOf(summaryMessageOfLastTurn(thread)?.turnSummary?.summary);
     const decision = decisions[input.question - 1];
+    // 決めたターンの位置（届けると元の会話は次のターンへ進む——カードはこのターンの中身を出し続ける）。ここでは最後のターンが
+    // 出来事のターン（`movedOnReason` が確かめた）
+    const judgedTurn = thread.lastTurn
+      ? {
+          startedSeq: thread.lastTurn.startedSeq,
+          beforeSeq: (thread.messages.at(-1)?.seq ?? thread.lastTurn.startedSeq) + 1,
+          ...(thread.lastTurn.outcome ? { outcome: thread.lastTurn.outcome } : {}),
+        }
+      : undefined;
     if (!decision || decisions.length !== target.count) {
       target.settled = "そのターンのまとめが出来事と合いません";
       return refuse(`${target.settled}。何も届けていません。`);
@@ -390,6 +399,7 @@ export class TurnDecisions {
       kind: "decided-by-automation",
       automation: session.automation,
       answers: answers.map((a) => ({ question: a.question, choice: a.choice, label: a.label, reason: a.reason })),
+      ...(judgedTurn ? { turn: judgedTurn } : {}),
       at: this.now().toISOString(),
     });
     return { ok: true, text: "全部の問いに答えが揃ったので、元の会話に届けました。元の会話の AI がこの答えで続けます。" };

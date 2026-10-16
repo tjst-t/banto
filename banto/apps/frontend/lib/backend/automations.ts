@@ -10,19 +10,22 @@
 // 専用の Fork は host が立てる——立てた直後はまだこの画面の一覧に無い（最初のターンが始まった知らせで入る）。
 // 写しに知らない専用の Fork があれば、その Project の一覧を取り直して足す（「会話を開く」をすぐ押せるように）。
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { onRealAppEvent, startRealAppEvents } from "./app-events";
 import {
   createRealAutomation,
+  listRealAutomationEvents,
   listRealAutomations,
   removeRealAutomation,
   runRealAutomation,
   updateRealAutomation,
   type RealAutomation,
+  type RealAutomationEventSource,
   type RealAutomationInput,
   type RealAutomationRepeat,
   type RealAutomationRun,
   type RealAutomationTarget,
+  type RealEventDeclaration,
 } from "./client";
 import { registerNewRealForks } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
@@ -58,6 +61,7 @@ function wire(): void {
       if (byProject.has(event.projectId)) void refreshAutomations(event.projectId).catch(() => undefined);
     } else if (event.type === "hello") {
       for (const projectId of byProject.keys()) void refreshAutomations(projectId).catch(() => undefined);
+      for (const projectId of eventSourcesByProject.keys()) void refreshAutomationEventSources(projectId).catch(() => undefined);
     }
   });
   startRealAppEvents();
@@ -127,6 +131,65 @@ export function useAutomationOfThread(projectId: string, threadId: string | null
   return list.find((a) => a.target.kind === "dedicated" && a.target.threadId === threadId);
 }
 
+// ---- 待てる出来事（出どころごとの名乗り、アーキ仕様 §4.3「段2」）。作るフォームの選び先と、一覧の行の題に使う ----
+
+let eventSourcesByProject: ReadonlyMap<string, readonly RealAutomationEventSource[]> = new Map();
+const eventSourcesLoading = new Map<string, Promise<void>>();
+
+/**
+ * その Project で待てる出来事を取り直す。名乗りは Module の宣言から来るので、Module を入れ替えると変わる——画面が自動化の面を
+ * 開くたびに取り直す。失敗は呼んだ側に返す
+ */
+export function refreshAutomationEventSources(projectId: string): Promise<void> {
+  wire();
+  const inFlight = eventSourcesLoading.get(projectId);
+  if (inFlight) return inFlight;
+  const p = listRealAutomationEvents(projectId)
+    .then((sources) => {
+      eventSourcesByProject = new Map(eventSourcesByProject).set(projectId, sources);
+      notify();
+    })
+    .finally(() => eventSourcesLoading.delete(projectId));
+  eventSourcesLoading.set(projectId, p);
+  return p;
+}
+
+/**
+ * **その Project で待てる出来事**（banto 自身が先頭）。取れるまでは undefined。`reload` なら描かれたときに一度取り直す
+ * （作るフォーム——Module を入れ替えた後でも今の名乗りから選ぶ）。読めなければ `error`
+ */
+export function useAutomationEventSources(
+  projectId: string | null | undefined,
+  opts: { reload?: boolean } = {},
+): { sources: readonly RealAutomationEventSource[] | undefined; error: string | null } {
+  const sources = useSyncExternalStore(
+    subscribe,
+    () => (projectId ? eventSourcesByProject.get(projectId) : undefined),
+    () => undefined,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const reload = opts.reload === true;
+  useEffect(() => {
+    if (!projectId || (!reload && eventSourcesByProject.has(projectId))) return;
+    refreshAutomationEventSources(projectId)
+      .then(() => setError(null))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, [projectId, reload]);
+  return { sources, error };
+}
+
+/** 出来事の名乗りを引く（無ければ undefined——Module を外した等） */
+export function findEventDeclaration(
+  sources: readonly RealAutomationEventSource[] | undefined,
+  name: string,
+): RealEventDeclaration | undefined {
+  for (const s of sources ?? []) {
+    const found = s.events.find((e) => e.name === name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 // ---- 操作。どれも host に頼み、写しは返ってきたもので置き換える（流れてくる知らせでも取り直される） ----
 
 function replace(projectId: string, next: RealAutomation): void {
@@ -136,15 +199,17 @@ function replace(projectId: string, next: RealAutomation): void {
   notify();
 }
 
-/** 作る。Webhook なら受け口の URL（`webhookUrl`）を返す——写しには入れない（この応答でだけ見せる） */
+/**
+ * 作る。Webhook なら受け口の URL（`webhookUrl`）、判断役なら案内（`notices`）を返す——写しには入れない（この応答でだけ見せる）
+ */
 export async function createAutomation(
   projectId: string,
   fields: RealAutomationInput,
-): Promise<RealAutomation & { webhookUrl?: string }> {
-  const { webhookUrl, ...created } = await createRealAutomation(projectId, fields);
+): Promise<RealAutomation & { webhookUrl?: string; notices?: string[] }> {
+  const { webhookUrl, notices, ...created } = await createRealAutomation(projectId, fields);
   replace(projectId, created);
   await refreshAutomations(projectId);
-  return { ...created, ...(webhookUrl ? { webhookUrl } : {}) };
+  return { ...created, ...(webhookUrl ? { webhookUrl } : {}), ...(notices && notices.length > 0 ? { notices } : {}) };
 }
 
 export async function updateAutomation(
@@ -201,11 +266,37 @@ export function timeZoneName(timeZone: string): string {
   }
 }
 
-/** 「平日 9:00（日本標準時）」「Webhook を受けたとき」 */
-export function describeSource(a: Pick<RealAutomation, "source">): string {
+/**
+ * 「平日 9:00（日本標準時）」「Webhook を受けたとき」「Service が落ちたとき（サービスの名前が「web」）」。出来事は名乗りの題と
+ * 属性の題で言う——名乗りが引けない（まだ取っていない・Module を外した）ときは名前のまま
+ */
+export function describeSource(a: Pick<RealAutomation, "source">, sources?: readonly RealAutomationEventSource[]): string {
   if (a.source.kind === "webhook") return "Webhook を受けたとき";
-  if (a.source.kind === "event") return `出来事 ${a.source.event} が起きたとき`;
+  if (a.source.kind === "event") {
+    const declared = findEventDeclaration(sources, a.source.event);
+    const head = declared ? `${declared.title}とき` : `出来事 ${a.source.event} が起きたとき`;
+    const where = describeWhere(a.source.where, declared);
+    return where ? `${head}（${where}）` : head;
+  }
   return `${describeRepeat(a.source.repeat)}（${timeZoneName(a.source.timeZone)}）`;
+}
+
+/** 条件を文に（「サービスの名前が「web」、終了コードが「1」・「2」のどれか」） */
+export function describeWhere(
+  where: Extract<RealAutomation["source"], { kind: "event" }>["where"],
+  declared?: RealEventDeclaration,
+): string {
+  return Object.entries(where ?? {})
+    .map(([field, v]) => {
+      const values = (Array.isArray(v) ? v : [v]).map(describeFieldValue);
+      const title = declared?.fields[field]?.title ?? field;
+      return values.length > 1 ? `${title}が${values.join("・")}のどれか` : `${title}が${values[0] ?? ""}`;
+    })
+    .join("、");
+}
+
+export function describeFieldValue(v: string | number | boolean): string {
+  return `「${typeof v === "boolean" ? (v ? "はい" : "いいえ") : String(v)}」`;
 }
 
 /** 時刻を出すときのタイムゾーン。時刻の自動化はその自動化のもの、Webhook はブラウザのもの */

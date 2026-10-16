@@ -35,6 +35,8 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     await inbox.load();
     const automations = new AutomationStore(dir, log);
     await automations.load();
+    // この Project の Module は出来事を名乗らない（banto 自身の出来事だけ待てる）
+    automations.setEventCatalog({ find: () => undefined, list: () => [] });
     const project = await store.createProject("demo", dir);
     const base = await store.createBaseThread(project.id);
     const approvals = new PendingApprovalRegistry();
@@ -53,6 +55,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       inbox,
       pendingApprovals: approvals,
       publishJudgment: (threadId, j) => judgments.push({ threadId, id: j.id, message: j.message, choices: j.choices }),
+      judgeNotices: () => ["この Project はターンの終わりのまとめがオフなので、出来事 banto.turn-decisions が出ません"],
     });
     await fn({ store, automations, inbox, approvals, tools, projectId: project.id, baseId: base.id, judgments, prepared });
   } finally {
@@ -122,6 +125,33 @@ test("入力が決まりに合わなければ、聞く前に断る", async () =>
     const other = await ctx.tools.create(ctx.baseId, { ...FIELDS, target: { kind: "thread", threadId: "nope" } });
     assert.equal(other.ok, false);
     assert.match(other.text, /この Project にありません/);
+  });
+});
+
+test("出来事のきっかけ：名乗っていない出来事は聞く前に待てる出来事つきで断り、判断役の届け先は専用の Fork だけ。作れたら判断役には案内を添える", async () => {
+  await setup(async (ctx) => {
+    const judge = { name: "判断役", instruction: "決めることに答えて", source: { kind: "event", event: "banto.turn-decisions", where: { readExternal: false } } };
+    const unknown = await ctx.tools.create(ctx.baseId, { ...judge, source: { kind: "event", event: "service.crashed" } });
+    assert.equal(unknown.ok, false);
+    assert.match(unknown.text, /待てる出来事：banto\.turn-decisions/);
+    const onThread = await ctx.tools.create(ctx.baseId, { ...judge, target: { kind: "thread", threadId: ctx.baseId } });
+    assert.equal(onThread.ok, false);
+    assert.match(onThread.text, /専用の Fork だけ/);
+    const badWhere = await ctx.tools.create(ctx.baseId, { ...judge, source: { ...judge.source, where: { nope: 1 } } });
+    assert.equal(badWhere.ok, false);
+    assert.equal(ctx.judgments.length, 0, "直せない入力でカードを出している");
+
+    const pending = ctx.tools.create(ctx.baseId, judge);
+    const j = await nextJudgment(ctx, 1);
+    const shown = (ctx.inbox.get(j.id) as { toolInput: Record<string, string> }).toolInput;
+    assert.equal(shown["いつ"], "出来事 banto.turn-decisions が起きたとき（readExternal が false）");
+    assert.match(shown["何が起きるか"]!, /その出来事が起きるたびに動きます/);
+    ctx.approvals.resolve(j.id, { behavior: "allow" });
+    const result = await pending;
+    assert.equal(result.ok, true, result.text);
+    assert.match(result.text, /注意：この Project はターンの終わりのまとめがオフ/);
+    const [created] = ctx.automations.list(ctx.projectId);
+    assert.deepEqual(created?.source, { kind: "event", event: "banto.turn-decisions", where: { readExternal: false }, batchSeconds: 30, allowSelfTriggered: false });
   });
 });
 

@@ -71,7 +71,7 @@ export const AUTOMATION_TOOL_NAMES = [
 const automationTimeShape = z
   .string()
   .describe("H:MM（24時間、例 9:00）");
-const automationSourceShape = z
+const automationTimeSourceShape = z
   .object({
     kind: z.literal("time"),
     timeZone: z.string().describe("IANA のタイムゾーン（例 Asia/Tokyo）"),
@@ -83,7 +83,34 @@ const automationSourceShape = z
       z.object({ kind: z.literal("cron"), expr: z.string().describe("5つの欄（分 時 日 月 曜日）。間隔は最短15分") }),
     ]),
   })
-  .describe("きっかけ。いまは決まった時刻（time）だけ");
+  .describe("決まった時刻");
+const automationEventValueShape = z.union([z.string(), z.number(), z.boolean()]);
+// **出来事**（追加・2026-10-16、アーキ仕様 §4.3「段2」）。名前と属性は Module の名乗り（Project ごとに違う）。名乗っていない名前を
+// 渡すと、待てる出来事の一覧つきで断る
+const automationEventSourceShape = z
+  .object({
+    kind: z.literal("event"),
+    event: z
+      .string()
+      .describe(
+        "待つ出来事の名前（<出どころ>.<名前>、例 service.crashed・factory.item-stopped・backlog.item-changed、banto 自身の banto.turn-decisions）。名乗っていない名前なら、待てる出来事の一覧つきで断られる",
+      ),
+    where: z
+      .record(z.string(), z.union([automationEventValueShape, z.array(automationEventValueShape)]))
+      .optional()
+      .describe("条件：属性の名前ごとに、等しい値か値の配列（どれか）。省くと、その出来事が起きるたびに動く"),
+    batchSeconds: z.number().int().optional().describe("続けて起きた出来事を1回にまとめる待ち時間（0〜300 秒、既定 30）"),
+    allowSelfTriggered: z
+      .boolean()
+      .optional()
+      .describe("この自動化自身の回が起こした出来事でも動くか（既定 false＝動かない。輪にならないように）"),
+  })
+  .describe("出来事が起きたとき");
+const automationSourceShape = z
+  .union([automationTimeSourceShape, automationEventSourceShape])
+  .describe(
+    "きっかけ。決まった時刻（time）か出来事（event）。Webhook は人が自動化の画面から作る。banto.turn-decisions を待つ自動化（判断役）の届け先は専用の Fork だけ",
+  );
 const automationTargetShape = z
   .union([
     z.object({
@@ -315,14 +342,14 @@ export function createForkMcpServer(
       ),
       tool(
         LIST_AUTOMATIONS_TOOL_NAME,
-        "この Project の自動化（決まった時刻に、決まった指示でこの Project の AI を動かす仕組み）の一覧。id・名前・きっかけ・届け先・一時停止か・直近の回の結果。",
+        "この Project の自動化（決まった時刻・出来事で、決まった指示でこの Project の AI を動かす仕組み）の一覧。id・名前・きっかけ・届け先・一時停止か・直近の回の結果。",
         {},
         async () => (automations ? automationReply(automations.list(threadId)) : noAutomations),
       ),
       tool(
         CREATE_AUTOMATION_TOOL_NAME,
         [
-          "自動化を作る：決まった時刻に、決まった指示（instruction）でこの Project の AI を動かす。",
+          "自動化を作る：決まった時刻に、または Module や banto で出来事が起きたときに、決まった指示（instruction）でこの Project の AI を動かす。",
           "人が見ていない時間に繰り返し動くので、**作る前に必ず会話のカードで人に聞く**（承認モードに依らない）。人が断ったら作らない。",
           "既定では自動化の名前の専用の Fork が立ち、毎回まっさらな会話で指示が届く。",
           "指示は、その時刻に何も知らない AI が読んでも分かるように、要ることを全部書く。",
