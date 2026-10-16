@@ -11,7 +11,8 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { CANVAS_META_KEY, EventOutbox, EventPublisher, MODULE_META_KEY, VISIBILITY_META_KEY, type EmittedEvent } from "@banto/module-contract";
+import { join } from "node:path";
 import { BacklogStore } from "./store.js";
 import type { BranchRemote } from "./remote.js";
 import { readSettings } from "./settings.js";
@@ -23,6 +24,8 @@ export function createBacklogServer(deps: {
   now?: () => string;
   remote?: BranchRemote;
   sshIdentities?: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
+  /** 出来事を出す口（出口の箱に書いてから host へ）。無ければ出さない */
+  emitEvent?: (event: EmittedEvent) => void;
 }) {
   const server = new Server(
     { name: "banto-module-backlog", version: "0.1.0" },
@@ -38,6 +41,7 @@ export function createBacklogServer(deps: {
     root: deps.projectRoot,
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.sshIdentities ? { sshIdentities: deps.sshIdentities } : {}),
+    ...(deps.emitEvent ? { emitEvent: deps.emitEvent } : {}),
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -110,7 +114,20 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const { RelayingRemote, hostRelayCall, listSshIdentities } = await import("./remote.js");
   // 中継が渡されていなければ Repositories にも Vault にも頼まない（リポジトリの git の設定だけで送る）
   const relay = hostUrl && hostToken ? hostRelayCall(hostUrl, hostToken) : undefined;
+  // **出来事**（できた・状態が変わった）は出口の箱に書いてから host へ出す（アーキ仕様 §4.3、Backlog #347）。箱は Module の
+  // 置き場の下——繋がっていない間に書いたものは、次に起きて繋がったときに古い順に出す
+  const dataDir = process.env.BANTO_MODULE_DATA_DIR;
+  const events =
+    relay && dataDir
+      ? new EventPublisher({
+          outbox: new EventOutbox({ dir: join(dataDir, "outbox"), log: (m) => console.error(m) }),
+          relay: (name, args) => relay(name, args),
+          log: (m) => console.error(m),
+        })
+      : undefined;
+  events?.start();
   const server = createBacklogServer({
+    ...(events ? { emitEvent: (e: EmittedEvent) => events.publish(e) } : {}),
     projectRoot,
     remote: new RelayingRemote(projectRoot, relay, () => readSettings().sshIdentity),
     ...(relay ? { sshIdentities: (callId?: string) => listSshIdentities(relay, callId) } : {}),

@@ -4,7 +4,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { MODULE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { EventOutbox, EventPublisher, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf } from "@banto/module-contract";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { ServiceManager, type ManagerDeps } from "./manager.js";
 import { ServiceError } from "./spec.js";
 import { ServiceStore } from "./store.js";
 import { RealSystemctl } from "./systemd.js";
+import { outboxDir } from "./unit.js";
 
 /** Module の環境から、サービスの定義に写すもの（Claude のログインの中継——v4-security.md §2） */
 export const INHERITED_ENV_NAMES = [
@@ -20,6 +21,9 @@ export const INHERITED_ENV_NAMES = [
   "CLAUDE_CODE_SUBSCRIPTION_TYPE",
   "CLAUDE_CODE_RATE_LIMIT_TIER",
 ];
+
+/** 出口の箱を見回る間隔。起動役が落ちた出来事を書いてから host に届くまでの遅れ */
+const OUTBOX_POLL_MS = 3000;
 
 const NAME_DESC = "サービスの名前。英小文字・数字・ハイフン（例 \"web\"）。以降この名前で操作する";
 
@@ -162,6 +166,8 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const progressToken = extra._meta?.progressToken;
+    // この呼び出しの印（起こしたら登録に残し、落ちた出来事の causedBy に添える）
+    const callId = callIdOf(request.params._meta as Record<string, unknown> | undefined);
     const onProgress =
       progressToken !== undefined
         ? (message: string) => {
@@ -177,11 +183,11 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
       }
       switch (request.params.name) {
         case "startService":
-          return text(await manager.start(args, onProgress));
+          return text(await manager.start(args, onProgress, callId));
         case "stopService":
           return text(await manager.stop(args.name));
         case "restartService":
-          return text(await manager.restart(args.name, onProgress));
+          return text(await manager.restart(args.name, onProgress, callId));
         case "removeService":
           return text(await manager.remove(args.name));
         case "listServices":
@@ -247,6 +253,14 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     withdrawPublications: (name) => withdrawPublications(relayCall, name),
   };
   const manager = new ServiceManager(deps);
+  // **落ちた出来事を host へ出す**（アーキ仕様 §4.3、Backlog #347）。起動役が出口の箱に書いたものを、繋がったとき・見回りの
+  // たびに古い順に出す——Module が寝ていた間に落ちた分も、起きたときに届く。起動役は別のプロセスなので、こちらは箱を見回る
+  new EventPublisher({
+    outbox: new EventOutbox({ dir: outboxDir(deps.paths), log: (m) => console.error(m) }),
+    relay: relayCall,
+    intervalMs: OUTBOX_POLL_MS,
+    log: (m) => console.error(m),
+  }).start();
   const prepare = noSystemd
     ? () => Promise.reject(new Error("BANTO_SERVICE_NO_SYSTEMD=1 のため systemd を使いません"))
     : () => systemctl.ensureUserManager().then(() => manager.prepare());

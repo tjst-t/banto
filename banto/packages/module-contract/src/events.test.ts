@@ -11,7 +11,7 @@ import {
   parseEventDeclarations,
   type EmittedEvent,
 } from "./events.js";
-import { EventOutbox } from "./outbox.js";
+import { EventOutbox, EventPublisher } from "./outbox.js";
 
 const crashed = {
   name: "service.crashed",
@@ -107,4 +107,41 @@ test("出口の箱：7日を過ぎたもの・上限を超えた分は古いも�
   assert.deepEqual(box.list().map((e) => e.eventId), ["2", "3"]);
   assert.equal(readdirSync(dir).length, 2);
   assert.ok(logs.some((l) => l.includes("1 件捨てました")));
+});
+
+test("出来事を出す口：箱に書いてから relayEmitEvent で出し、繋がらなければ箱に残して次の flush で出す（Backlog #347）", async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "outbox-")), "box");
+  const logs: string[] = [];
+  const outbox = new EventOutbox({ dir, log: (m) => logs.push(m) });
+  const calls: Array<{ name: string; eventId: unknown }> = [];
+  let up = false;
+  const publisher = new EventPublisher({
+    outbox,
+    relay: async (name, args) => {
+      if (!up) throw new Error("繋がっていません");
+      calls.push({ name, eventId: args.eventId });
+      return { text: JSON.stringify({ accepted: true, queued: 0 }), isError: false };
+    },
+    log: (m) => logs.push(m),
+  });
+  publisher.publish(event("x", new Date().toISOString()));
+  // 出せなかった——箱に残る（投げない）
+  assert.deepEqual((await publisher.flush()).left, 1);
+  assert.deepEqual(outbox.list().map((e) => e.eventId), ["x"]);
+  assert.ok(logs.some((l) => l.includes("あとで出し直します")));
+
+  up = true;
+  assert.deepEqual(await publisher.flush(), { sent: 1, left: 0 });
+  assert.deepEqual(calls, [{ name: "relayEmitEvent", eventId: "x" }]);
+  assert.deepEqual(outbox.list(), []);
+
+  // host の断り（値で返す）は捨てる。エラーの結果は一時の失敗として残す
+  publisher.publish(event("y", new Date().toISOString()));
+  await publisher.flush();
+  const refusing = new EventPublisher({ outbox, relay: async () => ({ text: JSON.stringify({ refused: "名乗っていません" }), isError: false }), log: () => {} });
+  outbox.write(event("z", new Date().toISOString()));
+  assert.deepEqual(await refusing.flush(), { sent: 0, left: 0 });
+  const failing = new EventPublisher({ outbox, relay: async () => ({ text: "中継の口がありません", isError: true }), log: () => {} });
+  outbox.write(event("w", new Date().toISOString()));
+  assert.deepEqual(await failing.flush(), { sent: 0, left: 1 });
 });

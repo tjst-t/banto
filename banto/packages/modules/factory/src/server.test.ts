@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { REPLY_TO_META_KEY, RESUME_AFTER_RESTART_TOOL, THREAD_META_KEY } from "@banto/module-contract";
+import { CALL_ID_META_KEY, REPLY_TO_META_KEY, RESUME_AFTER_RESTART_TOOL, THREAD_META_KEY, type EmittedEvent } from "@banto/module-contract";
 import type { Factory, RelayResult } from "./engine.js";
 import { createFactoryServer } from "./server.js";
 import { writeSettings, type FactorySettings } from "./settings.js";
@@ -35,6 +35,8 @@ function setup(settings: Partial<FactorySettings> = {}) {
   writeSettings(data, { testCommand: "test -f done.txt", implementer: { agent: "fake" }, reviewer: { agent: "fake" }, ...settings });
   const delivered: Array<{ replyTo: string; title: string; text: string; final: boolean }> = [];
   const held: Array<{ replyId: string; body: unknown }> = [];
+  /** 出した出来事（出口の箱の手前） */
+  const emitted: EmittedEvent[] = [];
   const state = { current: undefined as Factory | undefined, holdImplementer: true, holdReviewer: false, implements: 0, seq: 0, failDeliveries: 0 };
   const hand = (replyId: string, body: unknown) =>
     setTimeout(() => state.current!.receiveReply({ replyId, from: "subagent", title: "終わりました", text: JSON.stringify(body), final: true, lost: false }), 5);
@@ -85,7 +87,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
   const open: Client[] = [];
   /** サーバを起こして繋ぐ（2本目からは「起こし直した」もの） */
   const start = async (opts: { resumeAskWaitMs?: number; minuteMs?: number } = {}) => {
-    const { server, factory } = createFactoryServer({ projectRoot: project, dataDir: data, relay, ...opts });
+    const { server, factory } = createFactoryServer({ projectRoot: project, dataDir: data, relay, emitEvent: (e) => emitted.push(e), ...opts });
     state.current = factory;
     const [s, c] = InMemoryTransport.createLinkedPair();
     await server.connect(s);
@@ -101,6 +103,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
   return {
     project,
     delivered,
+    emitted,
     held,
     state,
     start,
@@ -445,6 +448,56 @@ test("札の残りが2回より少なければ長引いた知らせは出さず�
     await s.call("cancelFactory", { runId });
     await until(() => h.delivered.length === 5, "最後の知らせが届かない");
     assert.equal(h.delivered[4]!.final, true);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+const stopAlways = { testCommand: "test -f never.txt", limits: { testRetries: 0, reviewRounds: 2, rebaseRetries: 3, noCommitRetries: 2, conflictFixes: 2 } };
+
+test("止まった・終わったで出来事を出す——始めた呼び出しの印を causedBy に、AI が頼んだものは requestedBy=ai。札で頼んだ会話にも今どおり知らせる（Backlog #347）", async () => {
+  const h = setup(stopAlways);
+  try {
+    h.state.holdImplementer = false;
+    const first = await h.start();
+    const { runId } = JSON.parse((await first.call("runFactory", { items: ["a"] }, { ...runMeta, [CALL_ID_META_KEY]: "call-run" })).text) as { runId: string };
+    await until(() => h.emitted.length === 1 && h.delivered.length === 1, "止まった出来事と知らせが出ない");
+    const stopped = h.emitted[0]!;
+    const since = first.factory.get(runId)!.items[0]!.stopped!.since;
+    assert.equal(stopped.name, "factory.item-stopped");
+    assert.equal(stopped.eventId, `${runId}/a/stopped/${since}`);
+    assert.deepEqual(stopped.fields, { item: "a", title: "題", stage: first.factory.get(runId)!.items[0]!.stopped!.stage, requestedBy: "ai", runId });
+    assert.deepEqual(stopped.causedBy, { callId: "call-run" });
+    assert.match(stopped.text!, /止まり、答えを待っています/);
+
+    await first.call("answerFactory", { runId, item: "a", action: "drop" }, { [CALL_ID_META_KEY]: "call-answer" });
+    await until(() => h.emitted.length === 2, "終わった出来事が出ない");
+    const finished = h.emitted[1]!;
+    assert.equal(finished.name, "factory.run-finished");
+    assert.equal(finished.eventId, `${runId}/finished`);
+    assert.deepEqual(finished.fields, { merged: 0, total: 1, requestedBy: "ai", runId });
+    // 印は始めた呼び出し（答えた呼び出しではない）
+    assert.deepEqual(finished.causedBy, { callId: "call-run" });
+    await until(() => h.delivered.length === 2, "最後の知らせが届かない");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("人の画面から流した（頼んだ会話が無い）ものは requestedBy=human。起き直して同じ問いに戻ったら同じ印で出し直す（host が落とす）", async () => {
+  const h = setup(stopAlways);
+  try {
+    h.state.holdImplementer = false;
+    const first = await h.start();
+    const { runId } = JSON.parse((await first.call("runFactory", { items: ["a"] }, { [CALL_ID_META_KEY]: "call-canvas" })).text) as { runId: string };
+    await until(() => h.emitted.length === 1, "止まった出来事が出ない");
+    assert.equal(h.emitted[0]!.fields.requestedBy, "human");
+
+    // 知らせる先が無いので届いた印は立たず、流し直しで同じ問いに戻ると出し直す——印は同じ
+    const second = await h.start();
+    await until(() => h.emitted.length === 2, "起き直したあと出し直さない");
+    assert.equal(h.emitted[1]!.eventId, h.emitted[0]!.eventId);
+    assert.equal(second.factory.get(runId)!.items[0]!.status, "stopped");
   } finally {
     await h.cleanup();
   }

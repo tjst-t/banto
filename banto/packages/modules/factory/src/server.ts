@@ -22,6 +22,8 @@ import {
   CARD_META_KEY,
   CALL_ID_META_KEY,
   DELIVERS_LATER_META_KEY,
+  EventOutbox,
+  EventPublisher,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
   RESULT_LOCATION_META_KEY,
@@ -31,6 +33,7 @@ import {
   VISIBILITY_META_KEY,
   callIdOf,
   isHostResumeCall,
+  type EmittedEvent,
   parseResumeQuestion,
   replyToFingerprint,
   replyToOf,
@@ -140,6 +143,11 @@ export interface FactoryServerDeps {
   resumeAskWaitMs?: number;
   /** 1分の長さ（ミリ秒）。試験が「長引いている」を短く確かめる口 */
   minuteMs?: number;
+  /**
+   * **出来事を出す**（追加・2026-10-16、アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。出口の箱に書いてから host へ
+   * 出す口（`EventPublisher.publish`）。札で頼んだ会話に知らせるのとは別に、待つ自動化のために出す。無ければ出さない
+   */
+  emitEvent?: (event: EmittedEvent) => void;
 }
 
 /**
@@ -230,6 +238,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
     events: {
       itemStopped: (run, item) => {
         const stop = item.stopped;
+        if (stop) deps.emitEvent?.(itemStoppedEvent(run, item, stop));
         return notify(
           run,
           `Factory：${item.task.title} が止まりました（${stop?.stage ?? item.stage}）`,
@@ -256,6 +265,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
         );
       },
       runFinished: async (run) => {
+        deps.emitEvent?.(runFinishedEvent(run));
         const { title, body } = finishedReport(run);
         await notify(run, title, body, true);
       },
@@ -545,7 +555,7 @@ export function createFactoryServer(deps: FactoryServerDeps) {
           }
           if (tasks.length === 0) return { ...text({ started: false, refused }), isError: true };
           const thread = threadOf(meta);
-          const run = factory.start({ tasks, settings, ...(thread ? { requestedBy: thread } : {}) });
+          const run = factory.start({ tasks, settings, ...(thread ? { requestedBy: thread } : {}), ...(callId ? { callId } : {}) });
           const replyTo = replyToOf(meta);
           if (replyTo) {
             handles.set(run.id, { replyTo, finalOnly: false, used: 0 });
@@ -696,6 +706,42 @@ export function createFactoryServer(deps: FactoryServerDeps) {
   return { server, factory };
 }
 
+/** 出来事の `requestedBy`：AI のターンから頼んだ（頼んだ会話がある）か、人の画面から流したか */
+function requestedByOf(run: RunRecord): "ai" | "human" {
+  return run.requestedBy ? "ai" : "human";
+}
+
+/**
+ * **1件が止まって答えが要る**（`factory.item-stopped`）。印は実行・件・止まった時刻から決める——流し直しで同じ問いに
+ * 戻ってきて出し直しても、host が同じ出来事として落とす
+ */
+export function itemStoppedEvent(run: RunRecord, item: RunItem, stop: NonNullable<RunItem["stopped"]>): EmittedEvent {
+  return {
+    name: "factory.item-stopped",
+    eventId: `${run.id}/${item.task.id}/stopped/${stop.since}`,
+    occurredAt: stop.since,
+    fields: { item: item.task.id, title: item.task.title, stage: stop.stage, requestedBy: requestedByOf(run), runId: run.id },
+    text: `Factory の ${item.task.id}「${item.task.title}」が ${stop.stage} で止まり、答えを待っています：${stop.reason}`,
+    ...(run.causedBy ? { causedBy: run.causedBy } : {}),
+  };
+}
+
+/** **実行が全部終わった**（`factory.run-finished`）。`merged` は取り込んだ件数、`total` は流した件数 */
+export function runFinishedEvent(run: RunRecord): EmittedEvent {
+  const merged = run.items.filter((i) => i.status === "done").length;
+  return {
+    name: "factory.run-finished",
+    eventId: `${run.id}/finished`,
+    occurredAt: run.finishedAt ?? new Date().toISOString(),
+    fields: { merged, total: run.items.length, requestedBy: requestedByOf(run), runId: run.id },
+    text: JSON.stringify({
+      runId: run.id,
+      items: run.items.map((i) => ({ item: i.task.id, title: i.task.title, status: i.status, ...(i.result ? { result: i.result } : {}) })),
+    }),
+    ...(run.causedBy ? { causedBy: run.causedBy } : {}),
+  };
+}
+
 /** 結果の場所：実行の id と各件の worktree（Project の根から） */
 function resultLocationOf(run: RunRecord): string {
   return `Factory の実行 ${run.id}（worktree：${run.items.map((i) => i.worktree).join("、")}。Project の根から）`;
@@ -769,6 +815,14 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     console.error("BANTO_PROJECT_ROOT・BANTO_MODULE_DATA_DIR・BANTO_HOST_MCP_URL・BANTO_HOST_MCP_TOKEN が必要です");
     process.exit(1);
   }
-  const { server } = createFactoryServer({ projectRoot, dataDir, relay: hostRelay(url, token) });
+  const relay = hostRelay(url, token);
+  // 出来事は出口の箱に書いてから host へ（繋がっていない間のものは、次に繋がったときに古い順に出す）
+  const events = new EventPublisher({
+    outbox: new EventOutbox({ dir: join(dataDir, "outbox"), log: (m) => console.error(m) }),
+    relay: (name, args) => relay(name, args),
+    log: (m) => console.error(m),
+  });
+  events.start();
+  const { server } = createFactoryServer({ projectRoot, dataDir, relay, emitEvent: (e) => events.publish(e) });
   await server.connect(new StdioServerTransport());
 }

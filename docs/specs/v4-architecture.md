@@ -3312,8 +3312,10 @@ canceled）、認証を持つ。
 ### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313。段2の器を実装・2026-10-16、Backlog #345）
 
 段1（台帳・届け方・時刻・受信箱・画面・AI の tool・Webhook）は実装済み。段2（出来事）は**器**（名乗り・`relayEmitEvent`・条件・
-まとめ役の共通化・重複落とし・輪の止め方・出口の箱）を実装済み（下の「段2の器で実装で決めたこと」）。段2の残り（待たれている Module を
-起こしておく・最初の出来事・`banto.turn-decisions` と判断役・作るフォーム）は未実装。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
+まとめ役の共通化・重複落とし・輪の止め方・出口の箱）と最初の出来事（`service.crashed`・`factory.item-stopped`・`factory.run-finished`・
+`backlog.item-changed`、Backlog #347）・待たれている Module を起こしておく（Backlog #346）を実装済み（下の「段2の器で実装で決めたこと」
+「最初の出来事で実装で決めたこと」「待たれている出どころを起こしておく——実装で決めたこと」）。段2の残り（`banto.turn-decisions` と判断役・
+作るフォーム）は未実装。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
 Webhook の印を欄に入れない・きっかけの種類は作ったあと変えない 等）は `docs/notes/2026-10-15-automation-{deliver,clock,inbox,canvas,ai-tools,webhook}.md`。
 段2の残り・段3（外の出来事）・本物のモデルでの確かめ（#321）は未着手。
 
@@ -3434,7 +3436,7 @@ Webhook の印を欄に入れない・きっかけの種類は作ったあと変
   一覧と一時停止は聞かない。自動化で起きたターンの中から自動化を作る呼び出しも同じく止まる
 - 承認が要る操作に当たったときは今どおり（その Thread の承認モード・Project の自動許可に従う）。自動化専用の許し方は作らない
 
-#### 段2：出来事をきっかけにする（決定・2026-10-16、ユーザー。Fable のレビュー2回を反映。器を実装・2026-10-16、Backlog #345。残りは未実装、Backlog のストーリー `automation-events`）
+#### 段2：出来事をきっかけにする（決定・2026-10-16、ユーザー。Fable のレビュー2回を反映。器を実装・2026-10-16、Backlog #345。最初の出来事を実装・2026-10-16、Backlog #347。待たれている Module を起こしておくを実装・2026-10-16、Backlog #346。残りは未実装、Backlog のストーリー `automation-events`）
 
 Module や banto 自身で起きたこと（Service が落ちた・Factory の件が止まった・決めることのあるターンが終わった 等）を
 きっかけにする。**出来事は Webhook と同じ道に乗せる**——受けたら `automation.received` に残し、待つ時間でまとめ、前の回が
@@ -3494,8 +3496,8 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
     ため）。印が無い・引けなければホップ 0
   - **その自動化自身の回のターンが起こした出来事では、その自動化を起こさない**（既定。自動化ごとに `source.allowSelfTriggered: true` で外せる）
   - **同じ自動化が同じ出来事・同じ主体で起きるのは N 分に M 回まで**（既定 60分に6回、超えたら溜めずに飛ばし理由を残す）。鍵は
-    「自動化＋出来事名＋主体」で、主体は出来事の宣言が `subject` で名乗る属性（`service.crashed` は `service`、`factory.*` は `item`、
-    `backlog.item-changed` は項目の id、`banto.turn-decisions` は `thread`）。名乗らなければ出来事名だけ。判断役が Project 全体で1時間に
+    「自動化＋出来事名＋主体」で、主体は出来事の宣言が `subject` で名乗る属性（`service.crashed` は `service`、`factory.item-stopped` は `item`、
+    `backlog.item-changed` は項目の id（属性 `item`）、`banto.turn-decisions` は `thread`。`factory.run-finished` は件を持たないので名乗らない）。名乗らなければ出来事名だけ。判断役が Project 全体で1時間に
     6ターン分しか見ない、を避けるため——印の付かない
     出来事（「落ちたら直して起こし直す→また落ちる」）の輪も止める
   - 上限は今どおり（ホップ 10）
@@ -3507,9 +3509,9 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
 - **最初に出す出来事**：
   - Service：`service.crashed`（落ちた。属性 `service`・`exitCode`・`signal`）。起こし直しの上限に当たった（`service.gave-up`）は起動役
     からは分からない（systemd に聞かないと見えない）ので最初は出さない
-  - Factory：`factory.item-stopped`（件が止まって答えが要る。`item`・`stage`・`requestedBy`＝`ai`｜`human`）・`factory.run-finished`
-    （実行が全部終わった。`merged`・`total`・`requestedBy`）——`requestedBy` で「頼んだ会話が無いものだけ」に絞れる
-  - Backlog：`backlog.item-changed`（できた・状態が変わった。`kind`・`from`・`to`・`labels`）
+  - Factory：`factory.item-stopped`（件が止まって答えが要る。`item`・`title`・`stage`・`requestedBy`＝`ai`｜`human`・`runId`）・
+    `factory.run-finished`（実行が全部終わった。`merged`・`total`・`requestedBy`・`runId`）——`requestedBy` で「頼んだ会話が無いものだけ」に絞れる
+  - Backlog：`backlog.item-changed`（できた・状態が変わった。`item`・`number`・`title`・`kind`・`from`・`to`・`labels`）
   - banto：`banto.turn-decisions`（下）
 
 #### 段2の器で実装で決めたこと（実装・2026-10-16、Backlog #345）
@@ -3565,6 +3567,30 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
   起きている
 - **道具用のコンテナの Module**（使うときだけ起こすもの）は banto 全体の Module で、出来事を名乗れない（Project ごとの同梱だけ）。待たれている
   Module はいつも Project ごとなので、起こす道は1つ（使うときだけ起こす仕組みを通らない）
+
+#### 最初の出来事で実装で決めたこと（実装・2026-10-16、Backlog #347）
+
+経緯と却下した案は `docs/notes/2026-10-16-automation-events.md` の「最初の出来事の実装（#347）」。
+
+- **名乗りは core の目録**（`modules/declaration.ts` の `BUNDLED_CATALOG` の `service`・`factory`・`backlog` の `meta.events`）。入れてある
+  宣言も、読むたびに目録の `meta` を取り直す（`refreshFromCatalog`）ので、前から入れていた Project にもそのまま効く
+- **出す口は module-contract の `EventPublisher`**：`publish` は出口の箱に書いてから host の `relayEmitEvent` へ出す（投げない）。`start` で
+  起きて1秒後と見回りのたびに箱を古い順に出す（見回りは既定 30 秒、Service は 3 秒——別のプロセスが書く箱を拾うため）。箱は Factory・
+  Backlog は Module の置き場の `outbox`、Service はコンテナの中のローカルの `~/.banto-service/.outbox`（起動役と Module が同じ所を見る。
+  頭の `.` はサービスの名前に使えない）
+- **Service**：起動役（`log-wrapper.ts`）の引数に箱の場所を足し（unit の `ExecStart` の3つめの語）、落ちた（止められていない・信号か
+  終了コード 0 以外）ときに書く。`text` は `Service「名前」が落ちました（終了コード n）` とログの末尾 50 行。始めた呼び出しの印は登録
+  （`services.json` の `causedBy`）に置き、起動役が読めるようサービスの置き場の `cause.json` に写す。印を置き換えるのは実際に起こした
+  呼び出し（`startService` で起こした・`restartService`）だけで、動いているものを「起動するだけ」の呼び出しは変えない。印の無い呼び出し
+  （人の画面）で起こしたら消す。`eventId` は起動役が付ける乱数（箱から出し直しても同じ）
+- **Factory**：始めた呼び出しの印は実行の記録（`run.json` の `causedBy`）。`answerFactory` で動き出したあとも印は始めた呼び出しのまま。
+  `requestedBy` は頼んだ Thread（host の刻印）があれば `ai`、無ければ（人の画面から流した）`human`。`eventId` は止まりは
+  `<実行>/<件>/stopped/<止まった時刻>`、終わりは `<実行>/finished`——流し直しで同じ問いに戻って出し直しても host が落とす。札で頼んだ
+  会話への知らせはそのまま（出来事はその手前で出す。知らせが届いたかに依らない）
+- **Backlog**：書き込みの土台にした文書と書いたあとの文書を比べ（`MutateResult.before`）、できた・状態が変わった項目ごとに1件。AI の口も人の
+  画面の口（`board*`）も同じ。`causedBy` はその書き込みを頼んだ呼び出しの印。`labels` は「,」でつないだ1つの文字列（属性は文字列・数・
+  真偽だけ）、できたものは `from` を持たない。`eventId` は `<コミット>/<項目>`。Factory が中継で Backlog を変えた分も出るが、中継の
+  呼び出しの印は写しに無いのでホップ 0
 
 #### `banto.turn-decisions` と判断役——AI の「決めること」を AI に決めさせる（決定・2026-10-16、ユーザー）
 

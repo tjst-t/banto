@@ -6,7 +6,7 @@
 
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { ExitRecord } from "./log-wrapper.js";
+import { CAUSE_FILE, type ExitRecord } from "./log-wrapper.js";
 import {
   assertName,
   definitionOf,
@@ -19,7 +19,7 @@ import {
 import { decideState, parseShow, STATE_LABELS, type ServiceState } from "./state.js";
 import type { ServiceStore } from "./store.js";
 import type { Systemctl } from "./systemd.js";
-import { renderEnvFile, renderUnit, serviceDir, unitHeaderFor, unitName, unitPath, type ServicePaths } from "./unit.js";
+import { outboxDir, renderEnvFile, renderUnit, serviceDir, unitHeaderFor, unitName, unitPath, type ServicePaths } from "./unit.js";
 
 export interface ManagerDeps {
   projectRoot: string;
@@ -100,6 +100,7 @@ export class ServiceManager {
       dir: serviceDir(this.deps.paths, name),
       needsEnv: Object.keys(rec.envSecrets).length > 0,
       moduleName: this.moduleName,
+      outboxDir: outboxDir(this.deps.paths),
     });
   }
 
@@ -112,10 +113,18 @@ export class ServiceManager {
     const dir = serviceDir(this.deps.paths, name);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await this.writeIfChanged(join(dir, "command.sh"), `${rec.command}\n`, 0o600);
+    await this.writeCause(name, rec);
     const path = unitPath(this.deps.paths, name);
     const existed = await exists(path);
     const changed = await this.writeIfChanged(path, this.unitContent(name, rec), 0o644);
     return { changed, recreated: !existed };
+  }
+
+  /** 起動を始めた呼び出しの印を、起動役が読める所に写す（落ちた出来事の `causedBy`）。印が無ければ消す */
+  private async writeCause(name: string, rec: ServiceRecord): Promise<void> {
+    const path = join(serviceDir(this.deps.paths, name), CAUSE_FILE);
+    if (rec.causedBy) await this.writeIfChanged(path, JSON.stringify(rec.causedBy) + "\n", 0o600);
+    else await rm(path, { force: true });
   }
 
   /** 鍵のファイル（0600、コンテナの中）。**Vault から引き直す**——起動・起こし直しのたびに最新の値にする */
@@ -253,7 +262,8 @@ export class ServiceManager {
     return this.serialize(() => this.reconcile());
   }
 
-  start(input: Record<string, unknown>, onProgress?: (n: string) => void): Promise<ServiceStatus> {
+  /** `callId` はこの呼び出しの印（host が刻んだもの）。起こしたら登録に残し、落ちた出来事に添える */
+  start(input: Record<string, unknown>, onProgress?: (n: string) => void, callId?: string): Promise<ServiceStatus> {
     return this.serialize(async () => {
       const name = assertName(input.name);
       await this.reconcile();
@@ -284,7 +294,7 @@ export class ServiceManager {
         const shared = rec.ports.filter((p) => def.ports.includes(p));
         if (shared.length > 0) throw new ServiceError(`ポート ${shared.join(", ")} は "${other}" が登録済みです`);
       }
-      const rec: ServiceRecord = existing
+      let rec: ServiceRecord = existing
         ? { ...existing, desired: "running" }
         : { ...def, desired: "running", createdAt: new Date().toISOString() };
 
@@ -299,6 +309,9 @@ export class ServiceManager {
           return this.status(name, rec);
         }
         await this.writeEnv(name, rec, onProgress);
+        // **ここで起こす**——この呼び出しが、この起動を始めた
+        rec = withCause(rec, callId);
+        await this.writeCause(name, rec);
       } catch (err) {
         // 初めての登録で鍵が引けなかったら、登録も写しも残さない
         if (!existing) await this.cleanup(name);
@@ -376,12 +389,13 @@ export class ServiceManager {
     });
   }
 
-  restart(nameInput: unknown, onProgress?: (n: string) => void): Promise<ServiceStatus> {
+  restart(nameInput: unknown, onProgress?: (n: string) => void, callId?: string): Promise<ServiceStatus> {
     return this.serialize(async () => {
       const name = assertName(nameInput);
       await this.reconcile();
-      const rec = { ...(await this.mustGet(name)), desired: "running" as const };
+      const rec = withCause({ ...(await this.mustGet(name)), desired: "running" as const }, callId);
       await this.writeEnv(name, rec, onProgress);
+      await this.writeCause(name, rec);
       await this.deps.store.put(name, rec);
       this.notes.delete(name);
       await this.deps.systemctl.run(["reset-failed", unitName(name)]);
@@ -452,6 +466,12 @@ export class ServiceManager {
     // 落ちていた unit は、ファイルを消しても systemd の中に not-found/failed で残る（実測・Fable のレビュー）
     await this.deps.systemctl.run(["reset-failed", unitName(name)]);
   }
+}
+
+/** 起動を始めた呼び出しの印を登録に置く（印が無ければ消す——人の画面から起こしたものに前の AI の印を残さない） */
+function withCause(rec: ServiceRecord, callId: string | undefined): ServiceRecord {
+  const { causedBy: _old, ...rest } = rec;
+  return callId ? { ...rest, causedBy: { callId } } : rest;
 }
 
 function splitLines(text: string): string[] {

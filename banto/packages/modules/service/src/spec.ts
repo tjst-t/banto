@@ -27,6 +27,12 @@ export interface ServiceDefinition {
 export interface ServiceRecord extends ServiceDefinition {
   desired: Desired;
   createdAt: string;
+  /**
+   * **いまの起動を始めた呼び出しの印**（host が刻んだ `dev.banto/callId`。追加・2026-10-16、アーキ仕様 §4.3「輪を止める」、
+   * Backlog #347）。起動役が落ちた出来事の `causedBy` に添える——その AI のターンのホップ＋1が付き、自分の回が起こした
+   * 出来事で自分を起こさない。印の無い呼び出し（人の画面）で起こしたら消す
+   */
+  causedBy?: { callId: string };
 }
 
 export class ServiceError extends Error {
