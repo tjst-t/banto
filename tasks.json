@@ -7936,13 +7936,13 @@
       ],
       "body": "決定・2026-10-16、ユーザー（Shell も含めて直す）。仕様は v4-architecture.md §2.5「起こし直しをまたいで続ける」2. の「別のサーバの Module は繋がるまで待つ」。\n\n経緯：2026-10-15 14:31 の起こし直しで、Factory の実行 82e714e6 の3件が「subagent に続けるかを聞けませんでした：120 秒待っても答えが来ませんでした」で止まった。2026-10-16 には、別の Fork が待たずに流した Shell のコマンド（Browser の E2E）が、更新のたびに「shell の仕事は途中で終わりました——Module が止まったため」になった（2回続けて）。Project（Banto開発）は別のサーバ banto-dev-vm。更新すると新しい版のコードを VM に送ってから Module を起こすので、120 秒に間に合わない。VM の中の仕事（systemd の単位）は動き続け、結果のファイルも残っている。10/14 にコードの送り直しが無い起こし直しで確かめたときは、Shell もサブエージェントも続いた。\n\n作る場所：packages/core/src/delivery/restart-recovery.ts（期限・問い・lose）、runtime/remote-ssh.ts・remote-runtimes.ts（繋がる途中かどうか・送り込みの進み具合）、Module の口（resumesAfterRestart の問いの隣に「打ち切った札の一覧」を受けて届け直す口）——Shell（packages/modules/shell、exit.json）・Subagent（runs.jsonl・running/）・Factory。dev.banto/resultLocation は module-contract に足す。",
       "doneWhen": "(1) 別のサーバの Project で、Shell の待たないコマンド・Subagent の仕事・Factory の実行が走っている間に、コードの送り直しを伴う起こし直しをしても続けられる（E2E の SSH の相手で、送り込みを遅らせて 120 秒を越えさせる）。(2) 繋がらないまま上限を越えたら、「途中で終わりました」に理由と結果の場所が出る。(3) そのあと繋がったら、終わっていた仕事の結果が同じ Thread に1回だけ届く（二重に届かない）。(4) この機械のコンテナでの今の振る舞いは変わらない。関係する E2E（subagent-resume-restart・factory-resume-restart・shell-background・remote-runtime-ssh）が通る。フル E2E は流さない。",
-      "resolution": "Factory が取り込みました（factory/banto-subagent-factory-120）",
+      "resolution": "f633e886・7105b27a（GitHub の main）。別のサーバの Module は繋がってから「続けるか」を聞く（繋がらないままの上限30分）、打ち切ったら理由と結果の場所（dev.banto/resultLocation）を出す、繋がったら終わっていた結果を1回だけ届け直す。E2E remote-resume-restart（Shell、送り込みを12Mbit に絞って120秒を越えさせる）と subagent・factory の起こし直し・shell-background・remote-runtime-ssh が通った。残り（レビューの注記）：Subagent・Factory は別のサーバの E2E が無く単体テストまで／打ち切る2つの記録の間で host が落ちると「途中で終わりました」がもう一度届きうる（結果は二重にならない）。",
       "refs": [
         "docs/specs/v4-architecture.md §2.5「起こし直しをまたいで続ける」2. の「別のサーバの Module は繋がるまで待つ」"
       ],
       "threads": [],
       "createdAt": "2026-10-15T14:32:21.683Z",
-      "updatedAt": "2026-10-16T11:52:20.791Z",
+      "updatedAt": "2026-10-16T12:50:39.320Z",
       "closedAt": "2026-10-16T11:52:20.791Z",
       "extra": {}
     },
