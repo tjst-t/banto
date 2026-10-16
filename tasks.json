@@ -8616,7 +8616,7 @@
       "number": 357,
       "kind": "task",
       "title": "スリープの例外：出来事を待たれている Module とコンテナは止めない・待たれなくなったら片づける",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-org",
       "dependsOn": [
         "events-keep-awake",
@@ -8628,12 +8628,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §2.2「出来事を待たれている Module は止めない」・§4.3 段2。待たれている Module の引き方は §4.3 と1つ（#346 と共有）。眠らせるときは待たれていない Module だけ止め、Service の Module が待たれていなければ管理操作で Service を止める。待たれなくなったら眠らせる手順の後半を同じ印の中で通す。行の自動化の印と理由、確かめの小窓の文言、資源の画面の「一部起きています」。",
       "doneWhen": "E2E で：Service の出来事を待つ自動化がある Project を眠らせても Service の Module とコンテナは動いたまま・自動化を一時停止するとコンテナまで止まる・待たれていない Module は止まる、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-sleep-awaited-modules）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T22:44:06.657Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T23:24:33.792Z",
+      "closedAt": "2026-10-16T23:24:33.792Z",
       "extra": {}
     },
     {
