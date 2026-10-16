@@ -8592,7 +8592,7 @@
       "number": 356,
       "kind": "task",
       "title": "しばらく開いていない Project（数え方・聞く・自動で眠らせる）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-org",
       "dependsOn": [
         "project-sleep-core",
@@ -8603,12 +8603,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §2.2「しばらく開いていない Project」・v4-frontend.md §6.43。<dataDir>/project-activity.json（lastHumanAt・dismissedAt、1分に1回まで、初めは会話の記録から埋める。用事で起きたことは数えない——眠りに戻すので lastWokeAt は持たない、4dbddb9b）、人の操作の定義（人のセッションから Project を指す要求）、1時間ごとの1本の時計で候補を決めて覚える（眠っている・閉じた・hostActivity・動いている Service・公開中を外す）、GET /api/projects の idle、POST /api/projects/sleep-suggestions/dismiss、banto 全体の設定 projects.autoSleep（ask 既定／auto／off、GET/PUT /api/settings/auto-sleep）。画面はスリープ中の見出しのすぐ上の問い（いま開いている Project は入れない）と、見出しの「…」の選択。",
       "doneWhen": "単体テストで数え方と候補の外し方、E2E で（時刻を差し替えて）14日開いていない Project が聞かれる・「今はしない」で消える・auto で眠る・off で何もしない、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-idle-sleep）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T22:44:04.207Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T23:44:38.075Z",
+      "closedAt": "2026-10-16T23:44:38.075Z",
       "extra": {}
     },
     {
