@@ -8077,7 +8077,7 @@
       "number": 335,
       "kind": "task",
       "title": "update.mjs が組み立て済みを取ってきて確かめて重ねる（待つ・やめる・片づけ・試験の差し替え）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "prebuilt-update",
       "dependsOn": [
         "prebuilt-workflow"
@@ -8087,7 +8087,7 @@
       "labels": [],
       "body": "仕様：アーキ §2.5「使う側」1〜11。origin の3つの書き方・x86_64・zlib.createZstdDecompress の有無・段2の初めに versions/.prebuilt-* を消す・HEAD で有無と大きさ・空きの2度目の確かめ・runs を状態で見て待つ（HEAD 30秒・API 2〜3分・上限20分・登録遅れは30秒後に1度）・作業フォルダに展開して木を歩いて確かめる（種類・場所・symlink・hard link の数・印の commit/platform/run/node major/avx2）→ rename で重ねる・state.json の prebuilt・cleanUpOldVersions は . で始まる名前を飛ばす・--dry-run・--prebuilt-base/--github-api/--prebuilt-wait/--prebuilt-timeout/--no-prebuilt。update.test.mjs に手元の HTTP サーバでの試験（使える・sha 違い・..・外向き symlink・commit 違い・platform 違い・待ち→出来上がる・待つ間と取る途中のやめる印・失敗しても作業フォルダが残らない）。",
       "doneWhen": "npm run test:scripts が通り、仕様に挙げた試験が全部ある。本物の Release（prebuilt-workflow で作ったもの）を使って --first で別の置き場に入れ、画面と host が起きる",
-      "resolution": null,
+      "resolution": "main に入れた（73eb78d0・87afbc4a）。scripts/prebuilt.mjs（取りに行くかの判定・HEAD で有無と大きさ・回を状態で見て待つ・取ってくる・sha256・worktree の外に Node の zlib で伸ばして展開・木を歩いて確かめる・rename で重ね失敗なら巻き戻す・作業フォルダは権限を足して必ず消す）と update.mjs への組み込み（state.json の prebuilt・空きの2度目・--no-prebuilt と試験の差し替え・--dry-run で有無・prebuilt.mjs が無ければ組み立て、壊れていれば止める）、install.sh の初回でも写す。試験：test:scripts 75件（組み立て済みの試験34件）、E2E self-update・update-wait-restartable 15件が通った。本物の Release を相手に部品を直に呼び 17.6 秒で重ねられた。Fable のコードレビュー（「1を直せば入れてよい」）を全部反映。update.mjs 全体を本物の Release で通す確かめは、release に入れた後の #337 で行う。",
       "refs": [],
       "threads": [
         {
@@ -8096,8 +8096,8 @@
         }
       ],
       "createdAt": "2026-10-16T00:13:52.933Z",
-      "updatedAt": "2026-10-16T01:29:17.754Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T01:39:43.594Z",
+      "closedAt": "2026-10-16T01:39:43.594Z",
       "extra": {}
     },
     {
