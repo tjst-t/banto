@@ -21,7 +21,10 @@ import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
 import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
-test.setTimeout(900_000);
+// **初回はブラウザを入れるのに数分かかる**（改訂・2026-10-17）——字体・GStreamer・音・Chrome・Xvfb を apt と取ってくるので、
+// 別のサーバの VM で2本並べると 420 秒を超えた（browser.spec・browser-view.spec と同じく cb6d7919 の続き）。待つのは返事・タブが
+// 来るまでで、早く来ればすぐ進む
+test.setTimeout(1_500_000);
 
 /** 繰り返し（`--repeat-each`）で前の回の Project を引かないように、回ごとに名前を変える（名前で id を引くため） */
 const projectName = () => `E2E Browser Tabs ${test.info().repeatEachIndex + 1}`;
@@ -72,7 +75,7 @@ async function ai(page: Page, threadId: string, name: string, args: Record<strin
     expect(answer.length, "返事がまだ無い").toBeGreaterThan(0);
     expect(t.lastTurn?.outcome, "ターンがまだ終わっていない").toBe("completed");
     reply = answer.map((m) => m.text).join("\n");
-  }).toPass({ timeout: 420_000, intervals: [500] });
+  }).toPass({ timeout: 900_000, intervals: [500] });
   return reply!;
 }
 
@@ -142,7 +145,7 @@ test("タブは会話ごと：2つの会話の AI がそれぞれ裏の自分の
   await expect(entry, "Browser の入口が出ない").toContainText("ブラウザ", { timeout: 60_000 });
   await entry.click();
   const f = canvasFrame(page);
-  await expect(f.locator(".tab[data-tab]"), "ブラウザが起きない").toHaveCount(1, { timeout: 420_000 });
+  await expect(f.locator(".tab[data-tab]"), "ブラウザが起きない").toHaveCount(1, { timeout: 900_000 });
   const human = (await f.locator(".tab[data-tab]").getAttribute("data-tab"))!;
   const urlBar = f.getByRole("textbox", { name: "URL" });
   await urlBar.fill(`${BASE}/second`);
