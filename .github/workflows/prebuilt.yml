@@ -112,8 +112,9 @@ jobs:
             if [ "$rc" -ne 0 ]; then echo "::error title=単体テストが落ちました::$cmd が終了コード $rc で終わりました"; status=1; fi
           done
           if [ "$status" -ne 0 ]; then
-            grep -nE '^\s*(✖|not ok)|npm (error|ERR!) (workspace|location|command)|Error:|AssertionError' ../test-output.log |
-              grep -v '^\s*[0-9]*:\s*#' | head -n 40 |
+            # 落ちた試験の名前（node:test の ✖・TAP の not ok）と、どの workspace か（npm error）だけ。ほかの試験がわざと
+            # 出す [host] のログは拾わない。エラーの中身は Actions のログで読む
+            grep -nE '^\s*(✖|not ok) |npm (error|ERR!) (workspace|location)' ../test-output.log | head -n 40 |
               while IFS= read -r line; do echo "::error title=単体テスト::${line:0:900}"; done
           fi
           exit "$status"
