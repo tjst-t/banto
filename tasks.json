@@ -8469,6 +8469,32 @@
       "updatedAt": "2026-10-16T12:37:42.338Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "project-org",
+      "number": 351,
+      "kind": "story",
+      "title": "サイドバーで Project をグループに分ける・スリープさせる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "sidebar"
+      ],
+      "body": "ユーザー要望（2026-10-16）：Project をグループ（開発／検証／くらし など）に分けて一目で見分けたい。あまり使わない Project を消さずに眠らせ、サイドバーの目立たないところに置きたい。操作はサイドバーだけで完結させる。\n\n仕様：v4-architecture.md §2.2「Project のグループとスリープ」・§4.3（段2の例外）、v4-frontend.md §6.43（Fable のレビュー2回、20bf0ec2 で main に入れた）。見た目の見本はモック fork/project-org（mock/components/banto/shell/project-list.tsx・mock/lib/mock/project-org.ts）。\n\n未決：自動化や届いたもので起きた Project を、その回が終わったら眠りに戻すか（Fable は「戻す」。#下の未決タスク）。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §2.2",
+        "docs/specs/v4-frontend.md §6.43"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-16T12:46:35.920Z",
+      "updatedAt": "2026-10-16T12:46:35.920Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
