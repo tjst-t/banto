@@ -17,6 +17,8 @@ import {
   ArrowUp,
   Check,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   FolderPlus,
   LoaderCircle,
   Moon,
@@ -58,6 +60,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeProject } from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
@@ -84,6 +87,7 @@ import {
   recolorGroup,
   removeGroup,
   renameGroup,
+  setAllGroupsCollapsed,
   setAutoSleep,
   sleepProject,
   sleepProjects,
@@ -530,7 +534,7 @@ function SleepSection({
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
             <p className="px-1.5 py-1 text-xs text-ink-3">
-              スリープ中はコンテナと Module を止めて資源を返します。会話はそのまま残り、開けば起きます
+              スリープ中はコンテナ・Module・Service を止めて資源を返します。会話はそのまま残ります。開いたとき・自動化の時刻が来たとき・メッセージなどが届いたときは自動で起きます
             </p>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -572,6 +576,12 @@ export function ProjectList({
 
   const { ungrouped, groups, sleeping } = getSidebarSections();
   const suggestions = getSleepSuggestions();
+  const allProjectIds = [...ungrouped, ...groups.flatMap((g) => g.projects)].map((p) => p.id);
+  // 全部畳んでいるか：グループが全部畳まれ、開いている Thread の目次も無い（スリープ中も閉じている）
+  const allCollapsed =
+    groups.every(({ group }) => group.collapsed) &&
+    !sleepOpen &&
+    allProjectIds.every((id) => !(expandedOverride[id] ?? id === activeProjectId));
 
   function dragProps(project: MockProject, groupId: string | null): HTMLLIElementProps {
     const key = `row:${project.id}`;
@@ -658,7 +668,7 @@ export function ProjectList({
       {/* 「Project」の見出し。ここに落とすとグループの外へ出す */}
       <div
         className={cn(
-          "group/heading flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70",
+          "group/heading flex h-8 shrink-0 items-center gap-0.5 rounded-md px-2 text-xs font-medium text-sidebar-foreground/70",
           dropKey === "ungrouped" && "bg-accent-soft",
         )}
         onDragOver={(e) => {
@@ -674,6 +684,29 @@ export function ProjectList({
         }}
       >
         <span className="flex-1">Project</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={allCollapsed ? "すべて開く" : "すべて畳む"}
+              onClick={() => {
+                if (allCollapsed) {
+                  setAllGroupsCollapsed(false);
+                  setExpandedOverride({});
+                } else {
+                  // グループ・Project の Thread の目次・スリープ中を全部畳む
+                  setAllGroupsCollapsed(true);
+                  setExpandedOverride(Object.fromEntries(allProjectIds.map((id) => [id, false])));
+                  setSleepOpen(false);
+                }
+              }}
+              className="flex size-5 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
+            >
+              {allCollapsed ? <ChevronsUpDown className="size-4" /> : <ChevronsDownUp className="size-4" />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{allCollapsed ? "すべて開く" : "すべて畳む"}</TooltipContent>
+        </Tooltip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

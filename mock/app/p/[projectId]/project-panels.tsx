@@ -34,7 +34,7 @@ function SleepBand({ projectId }: { projectId: string }) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 py-2 text-xs text-ink-2">
       <Moon className="size-3.5 shrink-0" aria-hidden />
-      <span className="flex-1">この Project はスリープ中です。会話は読めます。送ると起きます</span>
+      <span className="flex-1">この Project はスリープ中です（コンテナ・Module・Service を止めています）。会話は読めます。送ると起きます</span>
       <button type="button" onClick={() => wakeProject(projectId)} className="rounded-md px-2 py-0.5 font-medium text-foreground hover:bg-accent">
         起こす
       </button>

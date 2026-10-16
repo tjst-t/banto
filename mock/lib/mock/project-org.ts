@@ -241,6 +241,11 @@ export function toggleGroupCollapsed(groupId: string): void {
   set({ groups: state.groups.map((g) => (g.id === groupId ? { ...g, collapsed: !g.collapsed } : g)) });
 }
 
+/** 全部畳む（VS Code のファイルブラウザの「すべて折りたたむ」と同じ）／全部開く */
+export function setAllGroupsCollapsed(collapsed: boolean): void {
+  set({ groups: state.groups.map((g) => ({ ...g, collapsed })) });
+}
+
 export function moveGroup(groupId: string, dir: -1 | 1): void {
   const i = state.groups.findIndex((g) => g.id === groupId);
   const j = i + dir;
