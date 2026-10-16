@@ -8641,7 +8641,7 @@
       "number": 358,
       "kind": "task",
       "title": "用事（自動化・届いたもの）で起きた Project を、用が済んだら眠りに戻す",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-org",
       "dependsOn": [
         "project-sleep-core"
@@ -8651,12 +8651,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §2.2「眠りに戻す」（決定・2026-10-16、ユーザー「Fable の案の条件で」、4dbddb9b）。条件：(1) 起きた cause が delivery／automation で、起きてから人の操作が無い、(2) hostActivity が空で、届いたもの（留めたものを含む）も判断待ちも残っていない、(3) 満たせば by: \"auto\" で眠らせる（手順・断る条件・待たれている Module の例外は人が眠らせるときと同じ）。判定はターンが終わった合図（turns.onChange の ended）と裏の仕事の札が閉じたとき。人が開いた・送ったで起きたものは戻さない。",
       "doneWhen": "E2E で：眠っている Project が自動化の時刻で起き、回が終わると眠りに戻る・回が人を待って終わったら起きたまま・起きている間に人が開いたら戻らない・裏の仕事が残っていれば札が閉じてから戻る、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-sleep-return）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:30.354Z",
-      "updatedAt": "2026-10-16T22:08:30.002Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T22:33:03.832Z",
+      "closedAt": "2026-10-16T22:33:03.832Z",
       "extra": {}
     }
   ],
