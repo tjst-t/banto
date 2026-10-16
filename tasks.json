@@ -7921,7 +7921,7 @@
       "id": "banto-subagent-factory-120",
       "number": 324,
       "kind": "bug",
-      "title": "banto を起こし直したとき、Subagent と Factory に「続けるか」を聞けず（120 秒で答え無し）、走っていた仕事が全部途中で終わる",
+      "title": "別のサーバで banto を起こし直すと、Subagent・Factory・Shell に「続けるか」を聞けず（120 秒で答え無し）、走っていた仕事が全部途中で終わる",
       "status": "ready",
       "parent": null,
       "dependsOn": [],
@@ -7930,15 +7930,19 @@
       "labels": [
         "resume",
         "subagent",
-        "factory"
+        "factory",
+        "shell",
+        "runtime"
       ],
-      "body": "2026-10-15 14:31 に banto を起こし直したとき（Fork「定期実行（Cron）の検討」で見た）。\n\n- この Project（Banto開発）は別のサーバ banto-dev-vm で動いている\n- Factory の実行 82e714e6 の3件（#318 実装・#319 レビュー・#323 実装）が、どれも「subagent に続けるかを聞けませんでした：120 秒待っても答えが来ませんでした」で止まった\n- 頼んだ Thread への Factory の札も「factory に続けるかを聞けませんでした：120 秒待っても答えが来ませんでした」で途中で終わった\n- Subagent・Factory は「起こし直しても続けられる」と名乗っている（アーキ §2.5「起こし直しをまたいで続ける」2.）のに、続けられなかった。変更は Factory が wip コミットに残したので失われていない（answerFactory で続けて流し直した）\n\n見当（確かめていない）：別のサーバでは Module を起こすのに時間がかかる（コードの送り込み・SSH）ので、120 秒以内に Module が繋がらず、問いが時間切れになった。Factory → Subagent の入れ子の問いでは、両方が起きるまで待つ必要がある",
-      "doneWhen": "別のサーバの Project で、Subagent に頼んだ仕事と Factory の実行が走っている間に banto を起こし直しても、続けられる（E2E の SSH で入る相手か、実機で確かめる）。時間切れになったときは理由（Module が繋がらなかった等）がログと知らせに出る",
+      "body": "決定・2026-10-16、ユーザー（Shell も含めて直す）。仕様は v4-architecture.md §2.5「起こし直しをまたいで続ける」2. の「別のサーバの Module は繋がるまで待つ」。\n\n経緯：2026-10-15 14:31 の起こし直しで、Factory の実行 82e714e6 の3件が「subagent に続けるかを聞けませんでした：120 秒待っても答えが来ませんでした」で止まった。2026-10-16 には、別の Fork が待たずに流した Shell のコマンド（Browser の E2E）が、更新のたびに「shell の仕事は途中で終わりました——Module が止まったため」になった（2回続けて）。Project（Banto開発）は別のサーバ banto-dev-vm。更新すると新しい版のコードを VM に送ってから Module を起こすので、120 秒に間に合わない。VM の中の仕事（systemd の単位）は動き続け、結果のファイルも残っている。10/14 にコードの送り直しが無い起こし直しで確かめたときは、Shell もサブエージェントも続いた。\n\n作る場所：packages/core/src/delivery/restart-recovery.ts（期限・問い・lose）、runtime/remote-ssh.ts・remote-runtimes.ts（繋がる途中かどうか・送り込みの進み具合）、Module の口（resumesAfterRestart の問いの隣に「打ち切った札の一覧」を受けて届け直す口）——Shell（packages/modules/shell、exit.json）・Subagent（runs.jsonl・running/）・Factory。dev.banto/resultLocation は module-contract に足す。",
+      "doneWhen": "(1) 別のサーバの Project で、Shell の待たないコマンド・Subagent の仕事・Factory の実行が走っている間に、コードの送り直しを伴う起こし直しをしても続けられる（E2E の SSH の相手で、送り込みを遅らせて 120 秒を越えさせる）。(2) 繋がらないまま上限を越えたら、「途中で終わりました」に理由と結果の場所が出る。(3) そのあと繋がったら、終わっていた仕事の結果が同じ Thread に1回だけ届く（二重に届かない）。(4) この機械のコンテナでの今の振る舞いは変わらない。関係する E2E（subagent-resume-restart・factory-resume-restart・shell-background・remote-runtime-ssh）が通る。フル E2E は流さない。",
       "resolution": null,
-      "refs": [],
+      "refs": [
+        "docs/specs/v4-architecture.md §2.5「起こし直しをまたいで続ける」2. の「別のサーバの Module は繋がるまで待つ」"
+      ],
       "threads": [],
       "createdAt": "2026-10-15T14:32:21.683Z",
-      "updatedAt": "2026-10-15T14:32:21.683Z",
+      "updatedAt": "2026-10-16T11:18:58.749Z",
       "closedAt": null,
       "extra": {}
     },
