@@ -322,7 +322,7 @@ export interface HostRelayServerOptions {
    * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。オンなら、AI のターンから始まった
    * その Project のための中継の呼び出しに `dev.banto/autoApprove` を刻む。渡されなければ刻まない
    */
-  autoApproveFor?(projectId: string): boolean;
+  autoApproveFor?(projectId: string, threadId?: string): boolean;
   /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
   approvalProgressIntervalMs?: number;
   /**
@@ -1055,7 +1055,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // **人に聞かずに許可してよいか**（追加・2026-10-05、v4-frontend.md §6.4「承認をすべて自動で許可する」）。AI のターンから
     // 始まった、スイッチがオンの Project のための呼び出しにだけ刻む——Publish の窓口が中で実装の `publishRoute` を呼ぶとき、
     // 実装は人の刻印の代わりにこれを見る。**呼び出し元の申告は使わない**（Project と出所は host の台帳から引いている）
-    if (!humanCanvas && origin === "turn" && callerProject && opts.autoApproveFor?.(callerProject) === true) {
+    const callerThreadId = callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined;
+    if (!humanCanvas && origin === "turn" && callerProject && opts.autoApproveFor?.(callerProject, callerThreadId) === true) {
       callerMeta[AUTO_APPROVE_META_KEY] = true;
     }
 

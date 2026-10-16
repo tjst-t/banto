@@ -14,6 +14,7 @@ import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { AutomationTools } from "../automation/tools.js";
+import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
@@ -214,6 +215,8 @@ export function createForkMcpServer(
   closing: CloseForkReservation = {},
   /** **自動化**（§4.3）。渡されなければ（試験の構成）、tool は見せたまま断る——構成で tool の一覧を変えない（§3） */
   automations?: AutomationTools,
+  /** **判断役の答え**（§4.3「banto.turn-decisions と判断役」）。渡されなければ tool は見せたまま断る */
+  decisions?: Pick<TurnDecisions, "answer">,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -363,6 +366,30 @@ export function createForkMcpServer(
         { id: z.string().describe("自動化の id（list_automations で分かる）") },
         async ({ id }, extra) =>
           automations ? automationReply(await automations.resume(threadId, id, signalOf(extra))) : noAutomations,
+      ),
+      tool(
+        ANSWER_DECISION_TOOL_NAME,
+        [
+          "判断役として、別の会話の AI がターンのまとめで人に聞いた「決めること」に答える。答えられるのは、このターンに届いた出来事 banto.turn-decisions の会話（属性 thread）とターン（属性 turnId）だけ。",
+          "問いごとに1回呼ぶ。答えは、元の AI が出した選択肢の番号（choice、1 から）か、人に任せる（defer: true）のどちらか——自由な文は送れない。",
+          "全部の問いに選択肢で答えが揃ったら、まとめて1回で元の会話に届き、元の会話の AI がそれで続ける。1問でも人に任せたら全部人に回り、何も届かない。",
+          "元の会話がもう進んでいたら（人が答えた・次のターンが始まった）断られる。迷ったら人に任せる。",
+        ].join(""),
+        {
+          thread: z.string().describe("出来事の属性 thread（元の会話の id）"),
+          turnId: z.string().describe("出来事の属性 turnId"),
+          question: z.number().int().describe("問いの番号（出来事の text の decisions[].number、1 から）"),
+          choice: z.number().int().optional().describe("選ぶ選択肢の番号（options[].number、1 から）。defer と一緒には使わない"),
+          defer: z.boolean().optional().describe("true なら、自分で決めずに人に任せる"),
+          reason: z.string().describe("そう答えた理由（1〜2文）。受信箱のカードに出る"),
+        },
+        async (args) => {
+          if (!decisions) return { content: [{ type: "text" as const, text: "この banto では判断役の答えを受けられません。" }], isError: true };
+          if (args.defer === true && args.choice !== undefined) {
+            return { content: [{ type: "text" as const, text: "choice と defer は一緒に使えません。どちらか一方にしてください。" }], isError: true };
+          }
+          return automationReply(await decisions.answer(threadId, args));
+        },
       ),
       tool(
         FORK_TOOL_NAME,

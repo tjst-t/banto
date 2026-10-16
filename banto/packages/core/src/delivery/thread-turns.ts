@@ -76,6 +76,11 @@ export class ThreadTurns {
     return this.running.has(threadId);
   }
 
+  /** その Thread で順番を待っている人の発言の数（並ぶのは人が送ったターンだけ——`acquire`） */
+  queued(threadId: string): number {
+    return this.waiting.get(threadId)?.length ?? 0;
+  }
+
   /** 走っているターンのホップ数（走っていなければ `undefined`） */
   hopOf(threadId: string): number | undefined {
     return this.running.get(threadId)?.hop;

@@ -183,9 +183,10 @@ export interface PendingDelivery extends MessageOrigin {
 
 /**
  * 届いたもののうち、中の指示に従ってよい書き手（`PendingDelivery.kind`）。`automation`＝自動化の指示（人が作った、
- * または人が確かめた——アーキ仕様 §4.3。追加・2026-10-15）
+ * または人が確かめた——アーキ仕様 §4.3。追加・2026-10-15）。`decision`＝判断役が、元の AI が出した選択肢から選んだ答え
+ * （人の答えと同じに従ってよい。ただし後に人の答えがあれば人を優先——§4.3「banto.turn-decisions と判断役」、追加・2026-10-16）
  */
-export type DeliveryAuthor = "banto" | "fork" | "automation";
+export type DeliveryAuthor = "banto" | "fork" | "automation" | "decision";
 
 /**
  * **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が

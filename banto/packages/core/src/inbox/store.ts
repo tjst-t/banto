@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
-import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewAutomation, ReviewItem } from "./types.js";
+import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewAutomation, ReviewItem, ReviewJudge } from "./types.js";
 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
@@ -136,8 +136,23 @@ export class InboxStore {
    * だけを残す（同じ Thread の古い終わりを積み上げない）
    */
   async raiseReview(input: { threadId: string; summary: string }): Promise<ReviewItem> {
+    const replaced = this.openReviewsFor(input.threadId);
     await this.acknowledgeReviewsFor(input.threadId);
-    return this.appendReview(input);
+    return this.appendReview({ ...input, ...carryJudge(replaced) });
+  }
+
+  /**
+   * **判断役の答えをカードに添える**（追加・2026-10-16、アーキ仕様 §4.3「banto.turn-decisions と判断役」）。その Thread の
+   * 開いているレビュー待ちに付ける。添えた数を返す（人が先に「見た」にしていれば 0）
+   */
+  async judgeReviews(threadId: string, judge: ReviewJudge): Promise<number> {
+    const open = this.openReviewsFor(threadId);
+    for (const r of open) this.apply(await this.log.append("inbox.review_judged", { id: r.id, judge }));
+    return open.length;
+  }
+
+  private openReviewsFor(threadId: string): ReviewItem[] {
+    return this.listOpen().filter((i): i is ReviewItem => i.kind === "review" && i.threadId === threadId);
   }
 
   /**
@@ -156,13 +171,14 @@ export class InboxStore {
     // まだ見ていない回の数え始めは、置き換えるカードのうち一番古いものから引き継ぐ
     const since = [input.automation.since, ...replaced.flatMap((r) => (r.automation ? [r.automation.since] : []))].sort()[0]!;
     for (const r of replaced) await this.acknowledgeReview(r.id);
-    return this.appendReview({ ...input, automation: { ...input.automation, since } });
+    return this.appendReview({ ...input, automation: { ...input.automation, since }, ...carryJudge(replaced) });
   }
 
   private async appendReview(input: {
     threadId: string;
     summary: string;
     automation?: Omit<ReviewAutomation, "raisedSeq">;
+    carriedJudge?: ReviewJudge;
   }): Promise<ReviewItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.review_raised", { id, ...input });
@@ -249,4 +265,15 @@ export class InboxStore {
     for (const r of open) await this.acknowledgeReview(r.id);
     return open.length;
   }
+}
+
+/**
+ * **置き換えるカードから、判断役が決めたものを引き継ぐ**（アーキ仕様 §4.3「受信箱」の「次のカードに『判断役が〈選択肢〉を
+ * 選んで進めました』を引き継いで出す」）。人に任せた・揃わなかったものは引き継がない——次のターンは判断役の答えで進んでいない
+ */
+function carryJudge(replaced: readonly ReviewItem[]): { carriedJudge?: ReviewJudge } {
+  const decided = [...replaced]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .find((r) => r.judge?.kind === "decided-by-automation");
+  return decided?.judge ? { carriedJudge: decided.judge } : {};
 }

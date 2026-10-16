@@ -33,6 +33,7 @@ import { AutomationClock } from "./automation/clock.js";
 import { AutomationWebhooks } from "./automation/webhook.js";
 import { AutomationEvents, EventLedger } from "./automation/events.js";
 import { awaitedModules } from "./automation/keep-awake.js";
+import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -101,7 +102,7 @@ import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
-import { NON_WORK_TOOLS } from "./http/turn-summary.js";
+import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
 import { ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, announceProjectsChanged, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
@@ -523,6 +524,24 @@ async function main(): Promise<void> {
     declaredEvents: projectModuleEvents,
     projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
   });
+  // **banto.turn-decisions と判断役**（アーキ仕様 §4.3）。ターンが終わったら決めることを出来事に出し、判断役の答え
+  // （`answer_decision`）を溜めて元の会話へ届ける
+  const turnDecisions = new TurnDecisions({
+    projectThread,
+    automations,
+    events: automationEvents,
+    deliveries,
+    turns: threadTurns,
+    inbox,
+    turnSummaryEnabled: (projectId) => isTurnSummaryEnabled(runtimeConfig, projectId),
+  });
+  // 判断役のターンが終わったら、揃わなかったものを人に回す（出来事を出すのは、下でレビュー待ちを出したあと）
+  threadTurns.onChange((change) => {
+    if (change.type !== "ended") return;
+    void turnDecisions
+      .endTurn(change.threadId)
+      .catch((err: unknown) => console.warn(`[host] ${change.threadId} の判断役の答えを片づけられませんでした:`, err));
+  });
   // 受信箱のレビュー待ちに添える tool の数（CLI の会話の記録から数える。追加・2026-10-15、`inbox/review-turn.ts`）
   const reviewToolCounter = new ReviewToolCounter((sessionId, dir) => sdkSessionReader.messages(sessionId, dir), NON_WORK_TOOLS);
   // ターンの始まりに本体が止まったら、何をしていたかを残す（`stall-profiler.ts`、下で用意する）
@@ -564,7 +583,12 @@ async function main(): Promise<void> {
       void (plan.kind === "automation"
         ? inbox.raiseAutomationReview({ threadId: change.threadId, summary, automation: plan.automation })
         : inbox.raiseReview({ threadId: change.threadId, summary })
-      ).catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
+      )
+        .catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err))
+        // **決めることがあれば banto.turn-decisions**（アーキ仕様 §4.3）——レビュー待ちと同じ条件で、カードを出したあと
+        // （判断役の答えはそのカードに添える）。決めることのある回は「出さない」でも出るので、上の skip には当たらない
+        .then(() => turnDecisions.emitIfDecided(change.threadId, change.hop))
+        .catch((err: unknown) => console.warn(`[host] ${change.threadId} の決めることを出来事に出せませんでした:`, err));
     }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
@@ -715,7 +739,12 @@ async function main(): Promise<void> {
    * **承認をすべて自動で許可する**（決定・2026-10-05、ユーザー。v4-frontend.md §6.4）。聞くたび・刻むたびに設定を引く
    * ——保存した時点で、走っているターンにも次の承認から効く
    */
-  const autoApproveAll = (projectId: string) => isAutoApproveAll(runtimeConfig, projectId);
+  // 判断役の会話には効かせない（アーキ仕様 §4.3「判断役の会話の承認は『必ず聞く』に固定」）
+  const autoApproveAll = autoApproveAllFor({
+    projectSwitch: (projectId) => isAutoApproveAll(runtimeConfig, projectId),
+    automations,
+    projectThread,
+  });
   const agentRelayEndpoint = new AgentRelayEndpoint(bootstrap.authToken, {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
     // Module は設定を知らない——人を待つもの（Publish）のために、呼び出しに刻む
@@ -2546,6 +2575,7 @@ async function main(): Promise<void> {
     runtimeConfig,
     automations,
     automationRunner,
+    turnDecisions,
     automationWebhooks,
     listSecretAliases: (projectId) => secretAliasesFor(projectId),
     ...(bootstrap.publicUrl ? { webhookBaseUrl: bootstrap.publicUrl } : {}),

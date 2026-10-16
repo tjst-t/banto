@@ -376,6 +376,31 @@ async function readRealResource(config: McpServerConfig, uri: string): Promise<s
   }
 }
 
+/** tool の引数で、届いた出来事の属性に置き換える印（`"$eventField:turnId"`） */
+export const EVENT_FIELD_ARG = "$eventField:";
+
+/**
+ * **届いた出来事の属性を tool の引数に入れる**（追加・2026-10-16）。判断役の `answer_decision` は、届いた出来事の会話と
+ * ターン（属性 thread・turnId）を指す——ターンの id は spec が指示を書く時点では分からない。本物のモデルが囲みの属性を
+ * 読んで書き写すのと同じく、prompt の最後の `<banto-external … fields="…">` から引く。引けなければ投げる（規則2）
+ */
+function withEventFields(args: Record<string, unknown>, prompt: string): Record<string, unknown> {
+  const wanted = Object.values(args).some((v) => typeof v === "string" && v.startsWith(EVENT_FIELD_ARG));
+  if (!wanted) return args;
+  const attrs = [...prompt.matchAll(/<banto-external [^\n]*?\sfields="([^"]*)"/g)];
+  const raw = attrs.at(-1)?.[1];
+  if (raw === undefined) throw new Error("fake-runner: 届いた出来事の属性（fields）が prompt にありません");
+  const fields = JSON.parse(raw.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&amp;/g, "&")) as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(args).map(([k, v]) => {
+      if (typeof v !== "string" || !v.startsWith(EVENT_FIELD_ARG)) return [k, v];
+      const name = v.slice(EVENT_FIELD_ARG.length);
+      if (!(name in fields)) throw new Error(`fake-runner: 届いた出来事に属性 ${name} がありません`);
+      return [k, fields[name]];
+    }),
+  );
+}
+
 /** **本物の MCP へ繋いで呼ぶ。** ここが「AI だけ偽物」の要。 */
 async function callRealTool(
   config: McpServerConfig,
@@ -604,7 +629,7 @@ export async function* runTurn(opts: {
     const toolUseId = `toolu_fake_${sessionId}_${index}_${Math.abs(hash(call.name + JSON.stringify(call.args ?? {})))}`;
     // SDK は MCP の tool を `mcp__<server>__<tool>` の名前で扱う
     const qualified = `mcp__${call.server}__${call.name}`;
-    const args = call.args ?? {};
+    const args = withEventFields(call.args ?? {}, opts.prompt);
     if (call.say) {
       lastText = call.say;
       yield { type: "message", message: assistantMessage(sessionId, [{ type: "text", text: call.say }]) };

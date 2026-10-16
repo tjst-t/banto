@@ -3309,13 +3309,14 @@ canceled）、認証を持つ。
   `ThreadState.receivedFrom`（送り元の Thread → 最後に届いた時刻）で見る。会話を引き継がない Fork は `thread.created` の
   `fresh`。届いたものの送り元は `MessageOrigin.sender`、AI には `<banto-delivery>` の属性と返し方の一文で渡す
 
-### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313。段2の器を実装・2026-10-16、Backlog #345）
+### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313。段2の器を実装・2026-10-16、Backlog #345。判断役を実装・2026-10-16、Backlog #348）
 
 段1（台帳・届け方・時刻・受信箱・画面・AI の tool・Webhook）は実装済み。段2（出来事）は**器**（名乗り・`relayEmitEvent`・条件・
 まとめ役の共通化・重複落とし・輪の止め方・出口の箱）と最初の出来事（`service.crashed`・`factory.item-stopped`・`factory.run-finished`・
 `backlog.item-changed`、Backlog #347）・待たれている Module を起こしておく（Backlog #346）を実装済み（下の「段2の器で実装で決めたこと」
-「最初の出来事で実装で決めたこと」「待たれている出どころを起こしておく——実装で決めたこと」）。段2の残り（`banto.turn-decisions` と判断役・
-作るフォーム）は未実装。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
+「最初の出来事で実装で決めたこと」「待たれている出どころを起こしておく——実装で決めたこと」）。`banto.turn-decisions` と判断役も
+core の側を実装済み（下の「判断役で実装で決めたこと」。受信箱のカードの画面と、AI の `create_automation` で出来事のきっかけを作るのは
+#349）。段2の残り（作るフォーム）は未実装。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
 Webhook の印を欄に入れない・きっかけの種類は作ったあと変えない 等）は `docs/notes/2026-10-15-automation-{deliver,clock,inbox,canvas,ai-tools,webhook}.md`。
 段2の残り・段3（外の出来事）・本物のモデルでの確かめ（#321）は未着手。
 
@@ -3436,7 +3437,7 @@ Webhook の印を欄に入れない・きっかけの種類は作ったあと変
   一覧と一時停止は聞かない。自動化で起きたターンの中から自動化を作る呼び出しも同じく止まる
 - 承認が要る操作に当たったときは今どおり（その Thread の承認モード・Project の自動許可に従う）。自動化専用の許し方は作らない
 
-#### 段2：出来事をきっかけにする（決定・2026-10-16、ユーザー。Fable のレビュー2回を反映。器を実装・2026-10-16、Backlog #345。最初の出来事を実装・2026-10-16、Backlog #347。待たれている Module を起こしておくを実装・2026-10-16、Backlog #346。残りは未実装、Backlog のストーリー `automation-events`）
+#### 段2：出来事をきっかけにする（決定・2026-10-16、ユーザー。Fable のレビュー2回を反映。器を実装・2026-10-16、Backlog #345。最初の出来事を実装・2026-10-16、Backlog #347。待たれている Module を起こしておくを実装・2026-10-16、Backlog #346。判断役を実装・2026-10-16、Backlog #348。残りは未実装、Backlog のストーリー `automation-events`）
 
 Module や banto 自身で起きたこと（Service が落ちた・Factory の件が止まった・決めることのあるターンが終わった 等）を
 きっかけにする。**出来事は Webhook と同じ道に乗せる**——受けたら `automation.received` に残し、待つ時間でまとめ、前の回が
@@ -3645,6 +3646,42 @@ Memory と仕様に沿って、おすすめに異論が無ければそれを選�
 - **判断役の会話の承認は「必ず聞く」に固定**（`answer_decision` と読み取りしか要らない）。Project の「承認をすべて自動で許可する」が
   オンでも判断役の会話には効かない。自動許可の Project で判断役を作るときは、カードにその旨を出す
 - 外のページや PR の文が「決めること」の問いとおすすめに化けうる——`readExternal` を見て人に任せるのを指示の見本に入れる
+
+#### 判断役で実装で決めたこと（実装・2026-10-16、Backlog #348）
+
+経緯と却下した案は `docs/notes/2026-10-16-automation-events.md` の「判断役の実装（#348）」。
+
+- **置き場**：`automation/turn-decisions.ts`（`TurnDecisions`）。出すのも答えを溜めるのもここ。banto 自身の名乗りは `BANTO_EVENTS`
+  （今は `banto.turn-decisions` だけ、主体 `thread`）で、台帳の「作るときの照合」は Module の宣言より先にこれを引く
+- **出す**：ターンが終わってレビュー待ちを出した**あと**（判断役の答えはそのカードに添えるので、カードより先に出さない）、最後まで行った
+  （`completed`）・`reviewDueAfterTurn`・まとめに決めることがある・その Project でまとめがオン、のとき。core が直に積む口 `AutomationEvents.emitFromCore`（照合は名乗りとの突き合わせ。合わなければ core の
+  書き間違いとして投げる）。`eventId` は `<thread>:<turnId>`。属性 `hop` は**元のターンのホップ**。起こしたターン（Thread・ターン・ホップ・
+  自動化の回）は印を引かずに直に渡す——判断役の回のターンのホップは元のターン＋1、自分の回の決めることでは起こさない
+- **`text`**：`{ request, headline, decisions: [{ number, question, context?, options: [{ number, label, reply, recommended? }] }] }`。
+  **番号は 1 から**（`answer_decision` の `question`・`choice` もこの番号）
+- **答える先**：判断役のターンを始めるとき（turn-runner が届けものを積んだあと、`beginTurn`）、届けもののうち**判断役の自動化が届けた
+  （`kind: "automation"`）もの**の中の `banto.turn-decisions` を、そのターンで答えられる先としてメモリに覚える。ターンが終わったら捨てる
+  （揃わなかったものは全部人に回す）。選択肢の中身は出来事の `text` ではなく元の会話の記録（まとめ）から引く
+- **`answer_decision`** は承認を通さない（Runner の `allowedTools`）——判断役の会話の承認は必ず聞くが、答えること自体はその会話の仕事。
+  `{ thread, turnId, question, choice?, defer?, reason }`。断るときは理由の文を返す（答える先に無い・番号の外・理由が空・もう片づいた・
+  もう進んでいる）
+- **もう進んでいる**（`movedOnReason`）：閉じた・まとめの発言より後に人の発言がある（「人がもう答えました」）・`lastTurn.turnId` が違う・
+  そのターンが走っている・人の発言が並んでいる（`ThreadTurns.queued`）。断った先は片づいた扱い（判断役のターンが終わっても「揃わなかった」は
+  添えない）
+- **届けるもの**：送り手 `banto`、題「判断役（自動化〈名前〉）が選んだ答え」、書き手の種類 `decision`、ホップは元のターン＋2。本文は問いごとに
+  問い・選んだ選択肢の `label`・`reply`。**判断役の理由は届けない**（受信箱のカードにだけ出す——元の AI が従う文に判断役の文を混ぜない）。
+  `decision` の前置き：「人の答えと同じに扱い、これに沿って進める。この後に人の答えがあれば人の答えを優先する」
+- **受信箱**：レビュー待ちに `judge`（出来事 `inbox.review_judged`、その Thread の開いているカードに付ける）——`kind` は
+  `decided-by-automation`（決めたもの：問い・選択肢の番号・`label`・理由）・`deferred`（理由）・`incomplete`（`answered`／`total`）。
+  次のカードがそのカードを置き換える（`raiseReview`・`raiseAutomationReview`）とき、`decided-by-automation` を `carriedJudge` に写す
+  （その次までは写さない）。「判断役が見ています」は記録に残さず、`GET /api/inbox` が走っている判断役のターンから `judgeWatching` を添える
+- **判断役の会話**：`judgeAutomationOf`（専用の Fork をその Thread にしている判断役。一時停止していても）なら、permissionMode を `default` に
+  固定し（その会話の設定・ターンの上書き・Project の既定に依らない）、「承認をすべて自動で許可する」を効かせない（`autoApproveAllFor`。
+  Runner の確認・代理の刻印・中継の刻印・中継の承認・Project をまたぐメッセージの5か所。中継の承認で会話の候補が複数なら、どれもが許すとき
+  だけ）。会話が分からない呼び出しは Project のスイッチのまま
+- **届け先の制限**：台帳が作る・直すとき、`banto.turn-decisions` を待つ自動化の届け先が既存の Thread なら断る
+- **作るときの案内**：`POST /api/projects/:id/automations` は判断役を作ったとき `notices`（まとめがオフなら出来事が出ないこと・自動許可が
+  オンなら判断役の会話には効かないこと、`judgeNotices`）を添える。断らない
 
 #### 段2の未決
 

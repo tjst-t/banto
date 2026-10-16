@@ -71,9 +71,10 @@ export interface ThreadMessagingDeps {
   /** 走っているターンの画面へ、判断待ちに答えがついたことを流す（自動で許可したカードを答え済みにする、追加・2026-10-05） */
   publishAnswered?(threadId: string, answered: { id: string; answer: string }): void;
   /**
-   * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。送るたびに引く。渡されなければ今までどおり聞く
+   * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。送るたびに引く。渡されなければ今までどおり聞く。
+   * 送り元の Thread も渡す——判断役の会話には効かせない（§4.3）
    */
-  autoApproveAll?(projectId: string): boolean;
+  autoApproveAll?(projectId: string, threadId?: string): boolean;
   now?: () => number;
 }
 
@@ -162,7 +163,7 @@ export class ThreadMessaging {
     if (crossProject && !this.mayPassWithoutAsking(from, fromProject, targetProject, target)) {
       // **送り元の Project のスイッチで決める**（追加・2026-10-05）——頼んだのは送り元の AI で、聞かれるのも送り元の会話
       const decision =
-        this.deps.autoApproveAll?.(fromProject.id) === true
+        this.deps.autoApproveAll?.(fromProject.id, from.id) === true
           ? await this.autoApprove(from, fromProject, targetProject, target, { title, text })
           : await this.ask(from, fromProject, targetProject, target, { title, text }, signal);
       if (decision === "deny") {

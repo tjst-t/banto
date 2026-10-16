@@ -237,6 +237,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
         "mcp__banto-thread__close_fork",
         ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
         "mcp__banto-memory__revise_memory",
+        "mcp__banto-thread__answer_decision",
         "mcp__banto-thread__report_turn",
       ],
       "毎ターン承認を求めない",
@@ -251,11 +252,12 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     assert.ok(!second!.systemPrompt.includes(TURN_SUMMARY_PROMPT_SECTION));
     assert.equal(second!.onStop, undefined);
     assert.equal(second!.onToolUsed, undefined);
-    // 自分の Fork を閉じるのはまとめのオンオフに依らず聞かない（§2.2「AI が自分の Fork を閉じる」）
+    // 自分の Fork を閉じる・判断役の答えはまとめのオンオフに依らず聞かない（§2.2「AI が自分の Fork を閉じる」・§4.3）
     assert.deepEqual(second!.allowedTools, [
       "mcp__banto-thread__close_fork",
       ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
       "mcp__banto-memory__revise_memory",
+      "mcp__banto-thread__answer_decision",
     ]);
   });
 });

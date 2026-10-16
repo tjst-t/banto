@@ -59,7 +59,7 @@ export interface RelayApprovalGateDeps {
    * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05）。聞くたびに引く——保存した時点で
    * 次の承認から効く。渡されなければ今までどおり聞く
    */
-  autoApproveAll?(projectId: string): boolean;
+  autoApproveAll?(projectId: string, threadId?: string): boolean;
 }
 
 /** 聞いた呼び出しが、答えを待たずに終わったとき（AI のターンが終わった・止まった・外側が切れた）の理由。 */
@@ -252,11 +252,21 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
     return { allowed: true, reason: "人が許可しました（初回）" };
   }
 
+  /** 呼び出しの会話が決まらない（候補が複数）なら、どれもが自動で許可してよいときだけ */
+  function mayAutoApprove(projectId: string, req: RelayApprovalRequest): boolean {
+    const allowed = deps.autoApproveAll;
+    if (!allowed) return false;
+    const where = deps.moduleCalls.threadFor(req.callerConnName, req.callerCallId);
+    const threads = where.kind === "thread" ? [where.threadId] : where.kind === "ambiguous" ? where.threadIds : [undefined];
+    return threads.every((t) => allowed(projectId, t));
+  }
+
   return {
     async requestApproval(req) {
       if (deps.grants.isGranted(req)) return { allowed: true, reason: "この Project で承認済み" };
       // Project のための呼び出しだけ（banto 全体の呼び出しは、どの Project のスイッチも効かせない）
-      if (req.projectId !== undefined && deps.autoApproveAll?.(req.projectId) === true) return autoApprove(req);
+      // 呼び出しの会話も渡す——判断役の会話には効かせない（§4.3）
+      if (req.projectId !== undefined && mayAutoApprove(req.projectId, req)) return autoApprove(req);
 
       // **人の答えを待っている間は、外側の呼び出しの上限を数えない**（追加・2026-10-04）——相乗りした呼び出しも
       const release = deps.moduleCalls.holdForHuman(req.callerConnName, req.callerCallId);

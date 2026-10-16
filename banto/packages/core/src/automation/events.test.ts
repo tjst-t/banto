@@ -8,6 +8,7 @@ import { EventLog } from "../event-store/log.js";
 import type { Automation, AutomationReceived, AutomationReceivedEvent } from "./fold.js";
 import { AutomationInputError, AutomationStore } from "./store.js";
 import { AutomationEvents, EVENT_RATE, EventLedger } from "./events.js";
+import { TURN_DECISIONS_EVENT, bantoEventDeclaration } from "./turn-decisions.js";
 import { externalOf, hopOf, AUTOMATION_EXTERNAL_MAX_BYTES } from "./runner.js";
 import type { AutomationRunStarted } from "./runner.js";
 import { composeTurnPrompt } from "../delivery/thread-deliveries.js";
@@ -196,6 +197,31 @@ test("自分の回が起こした出来事ではその自動化を起こさな�
     const fromOther = h.calls.find((c) => c.id === self.id)!.received[0] as AutomationReceivedEvent;
     assert.equal(fromOther.hop, 0, "別の Project の呼び出しの印を引いた");
     assert.equal(fromOther.causedBy, undefined);
+  });
+});
+
+test("banto 自身の出来事は core が直に出す：起こしたターンの印からホップ＋1・自分の回では起こさない・同じ eventId は二度積まない", async () => {
+  await withHarness(async (h) => {
+    const judge = await h.store.create({
+      projectId: P,
+      createdBy: { kind: "human" },
+      fields: { name: "判断役", instruction: "決めて", source: { kind: "event", event: TURN_DECISIONS_EVENT, batchSeconds: 0 } },
+    });
+    const decl = bantoEventDeclaration(TURN_DECISIONS_EVENT)!;
+    const fields = { thread: "t1", turnId: "turn1", threadTitle: "Base Thread", count: 1, hop: 2, readExternal: false };
+    const event = { eventId: "t1:turn1", occurredAt: new Date().toISOString(), fields, text: "{}" };
+    assert.equal(await h.events.emitFromCore(P, decl, event, { threadId: "t1", turnId: "turn1", hop: 2 }), 1);
+    await settle();
+    const received = h.calls.find((c) => c.id === judge.id)!.received[0] as AutomationReceivedEvent;
+    assert.equal(received.name, TURN_DECISIONS_EVENT);
+    assert.equal(received.hop, 3);
+    assert.deepEqual(received.causedBy, { threadId: "t1", turnId: "turn1" });
+    assert.equal(await h.events.emitFromCore(P, decl, event, { threadId: "t1", turnId: "turn1", hop: 2 }), 0, "同じ eventId を二度積んだ");
+    // 判断役自身の回のターンが出した決めることでは、判断役を起こさない
+    const own = { ...event, eventId: "j:turn2", fields: { ...fields, thread: "j", turnId: "turn2" } };
+    assert.equal(await h.events.emitFromCore(P, decl, own, { threadId: "j", turnId: "turn2", hop: 3, automation: { id: judge.id, runId: "r" } }), 0);
+    // 名乗りに合わない形は core の書き間違い——投げる
+    await assert.rejects(h.events.emitFromCore(P, decl, { ...event, eventId: "x", fields: { ...fields, count: "1" } as never }));
   });
 });
 
