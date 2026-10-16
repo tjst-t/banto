@@ -212,6 +212,20 @@ export class InboxStore {
     this.apply(event);
   }
 
+  /**
+   * **その鍵の開いているお知らせを閉じる**（追加・2026-10-16、v4-architecture.md §2.4 の 3.）。原因が消えたら人が押さなくても
+   * 「見た」にする（別のサーバに繋がった）。書き込み中の同じ鍵があれば、書き終わってから閉じる。閉じた数を返す
+   */
+  async acknowledgeNoticesByKey(dedupeKey: string, projectId?: string): Promise<number> {
+    const inFlight = this.raisingNotices.get(`${projectId ?? ""}\u0000${dedupeKey}`);
+    if (inFlight) await inFlight.catch(() => undefined);
+    const open = this.listOpen().filter(
+      (i): i is NoticeItem => i.kind === "notice" && i.projectId === projectId && i.dedupeKey === dedupeKey,
+    );
+    for (const n of open) await this.acknowledgeNotice(n.id);
+    return open.length;
+  }
+
   async acknowledgeReview(id: string): Promise<void> {
     const event = await this.log.append("inbox.review_acknowledged", { id });
     this.apply(event);

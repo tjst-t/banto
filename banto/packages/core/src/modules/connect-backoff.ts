@@ -60,9 +60,13 @@ export class ConnectBackoff {
     return this.now() < e.retryAt ? e.reason : undefined;
   }
 
-  /** 繋げなかった。**知らせるべきなら true**（連続した失敗の最初の1回だけ）。 */
-  recordFailure(name: string, fingerprint: string, reason: string): boolean {
+  /**
+   * 繋げなかった。**知らせるべきなら true**（連続した失敗の最初の1回だけ）。`quiet` は別の場所で知らせる失敗
+   * （別のサーバに繋がらない——`remote-outage.ts`）で、知らせたことにしない（理由が変わったら、そのとき知らせる）
+   */
+  recordFailure(name: string, fingerprint: string, reason: string, opts: { quiet?: boolean } = {}): boolean {
     const e = this.next(name, fingerprint, reason);
+    if (opts.quiet) return false;
     const notify = !e.notified;
     e.notified = true;
     return notify;

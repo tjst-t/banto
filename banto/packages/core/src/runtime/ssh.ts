@@ -182,6 +182,17 @@ export function isHostKeyRefusal(r: SshResult): boolean {
   );
 }
 
+/**
+ * **ssh がそもそも向こうに繋がらなかった**（追加・2026-10-16、v4-architecture.md §2.4 の 3.）。終了コード 255 は ssh 自身の
+ * 失敗（届かない・時間切れ・認証が通らない）。鍵の違いは別に扱う（人が確かめるもので、待っても直らない）
+ */
+export function isSshUnreachable(r: SshResult): boolean {
+  return r.code === 255 && !isHostKeyRefusal(r);
+}
+
+/** 張っていた SSH の接続が途中で閉じた（向こうのコマンドの失敗ではない） */
+export class SshConnectionClosedError extends Error {}
+
 /** 向こうで台本（sh）を流す。台本は標準入力で渡す */
 export function runRemoteScript(
   t: SshTarget,

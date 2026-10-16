@@ -27,6 +27,7 @@ import {
 import {
   fingerprintOf,
   isHostKeyRefusal,
+  isSshUnreachable,
   knownHostsLine,
   listRemoteDirectories,
   probePrerequisites,
@@ -35,6 +36,7 @@ import {
   scanHostKey,
   sshFailure,
   SshCommandError,
+  SshConnectionClosedError,
   targetProblem,
   type HostKey,
   type RemoteDirectoryListing,
@@ -51,6 +53,17 @@ export class RemoteRuntimeError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * **別のサーバに SSH で繋がらない**（追加・2026-10-16、v4-architecture.md §2.4 の 3.）。Module を繋げない理由がこれなら、
+ * Module ごとではなく実行場所ごとに1枚知らせる（`modules/remote-outage.ts`）
+ */
+export class RemoteUnreachableError extends RemoteRuntimeError {}
+
+/** 別のサーバに SSH で繋がらなかったための失敗か（接続が途中で閉じたのも含む） */
+export function isRemoteUnreachable(err: unknown): boolean {
+  return err instanceof RemoteUnreachableError || err instanceof SshConnectionClosedError;
 }
 
 export interface RemoteRuntimeDeps {
@@ -347,6 +360,7 @@ export class RemoteRuntimes {
       } catch (err) {
         if (err instanceof RemoteRuntimeError) throw err;
         if (err instanceof SshCommandError) return this.refused(r, err.result, err.what);
+        if (err instanceof SshConnectionClosedError) throw new RemoteUnreachableError(400, err.message);
         throw new RemoteRuntimeError(400, err instanceof Error ? err.message : String(err));
       }
     });
@@ -362,7 +376,8 @@ export class RemoteRuntimes {
         hostKeyMismatch: true,
       });
     }
-    throw new RemoteRuntimeError(502, sshFailure(`${what}（${r.user}@${r.host}）`, result).message);
+    const message = sshFailure(`${what}（${r.user}@${r.host}）`, result).message;
+    throw isSshUnreachable(result) ? new RemoteUnreachableError(502, message) : new RemoteRuntimeError(502, message);
   }
 
   /** known_hosts・公開鍵のファイルを書き、Vault に鍵の窓口を立ててもらってから繋ぐ */

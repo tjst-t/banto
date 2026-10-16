@@ -49,7 +49,7 @@ import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
 import { HostContainerRuntime } from "./runtime/host-container.js";
 import { RemoteRuntimeStore } from "./runtime/remote-store.js";
-import { RemoteRuntimes, remoteNameOf, runtimeIdOf } from "./runtime/remote-runtimes.js";
+import { RemoteRuntimes, isRemoteUnreachable, remoteNameOf, runtimeIdOf } from "./runtime/remote-runtimes.js";
 import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
 import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
@@ -81,6 +81,7 @@ import { SHELL_HOME_FILES_KEY, shellHomeFiles, syncShellHome, type ShellHomeSync
 import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
 import { ConnectBackoff } from "./modules/connect-backoff.js";
+import { RemoteOutageWatch } from "./modules/remote-outage.js";
 import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { HostStallMeter } from "./host-stall.js";
 import { StallProfiler } from "./stall-profiler.js";
@@ -285,6 +286,28 @@ async function main(): Promise<void> {
         .map((p) => ({ id: p.id, name: p.name })),
   });
   /**
+   * **別のサーバに繋がらないお知らせは、実行場所ごとに1枚**（決定・2026-10-16、v4-architecture.md §2.4 の 3.、
+   * `modules/remote-outage.ts`）。3 分続いたら出し、繋がったら閉じる
+   */
+  const remoteOutageKey = (runtimeName: string) => `remote-unreachable:${runtimeName}`;
+  const remoteOutage = new RemoteOutageWatch({
+    raise: (n) => {
+      const names = n.projectIds.map((id) => `「${projectThread.getProject(id)?.name ?? id}」`).join("");
+      console.warn(`[host] 別のサーバ「${n.runtimeName}」に 3 分を超えて繋がりません（Module ${n.modules} 個）: ${n.reason}`);
+      void inbox
+        .raiseNotice({
+          dedupeKey: remoteOutageKey(n.runtimeName),
+          title: `${n.runtimeName} に繋げません`,
+          detail: `${n.reason}（影響している Project：${names || "なし"}・動けない Module ${n.modules} 個。繋がったら、このお知らせは閉じます）`,
+        })
+        .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
+    },
+    close: (runtimeName) =>
+      void inbox
+        .acknowledgeNoticesByKey(remoteOutageKey(runtimeName))
+        .catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err)),
+  });
+  /**
    * **実行場所の2つ目——別のサーバ**（決定・2026-10-08、Backlog `remote-runtime-ssh`）。Project の記録の `runtime` が
    * `remote:<名前>` の Project は、SSH の接続1本の上で Module を起こす。中から banto へは逆向きのトンネルで、host の
    * 127.0.0.1 の**中継だけを受ける専用の待ち受け**（実行場所ごとに1つ。その実行場所の Project の合言葉だけを受ける）に届く
@@ -305,6 +328,10 @@ async function main(): Promise<void> {
     ...(process.env.BANTO_SHELL_HOME_SOURCE ? { shellHomeSource: process.env.BANTO_SHELL_HOME_SOURCE } : {}),
     notify: async (n) => {
       await inbox.raiseNotice(n);
+    },
+    onConnected: (runtimeName) => {
+      const outMs = remoteOutage.recordConnected(runtimeName);
+      if (outMs !== undefined) console.log(`[host] 別のサーバ「${runtimeName}」に繋がりました（${Math.round(outMs / 1000)} 秒 繋がりませんでした）`);
     },
     // 送っている間を画面に出す（Backlog #269）——サイドバーとその Project の会話
     onCodeTransfer: (runtimeName, transfer) =>
@@ -903,7 +930,14 @@ async function main(): Promise<void> {
         console.log(`[host] ${connName} は起動中に Project が畳まれたのでやめました: ${reason}`);
         return undefined;
       }
-      const notify = connectBackoff.recordFailure(connName, fingerprint, reason);
+      // **別のサーバに SSH で繋がらないなら、Module ごとには知らせない**（決定・2026-10-16、§2.4 の 3.）——実行場所ごとの
+      // 見張りに渡し、3 分続いたらそちらが1枚出す。繋がっていて Module だけ起きないとき・この機械のコンテナは今どおり
+      const unreachableRuntime =
+        declaration.meta.scope === "project" && forProject && isRemoteUnreachable(err)
+          ? remoteNameOf(projectThread.getProject(forProject.id)?.runtime)
+          : undefined;
+      const notify = connectBackoff.recordFailure(connName, fingerprint, reason, { quiet: unreachableRuntime !== undefined });
+      if (unreachableRuntime) remoteOutage.recordUnreachable(unreachableRuntime, connName, forProject?.id, reason);
       const retryIn = Math.round((connectBackoff.retryAt(connName) - Date.now()) / 1000);
       console.warn(`[host] ${connName} を繋げませんでした（${retryIn} 秒たったら、また試します）: ${reason}`);
       // **人が気づける場所を1つ作る**（規則2——黙って機能を減らさない）。
@@ -2296,7 +2330,10 @@ async function main(): Promise<void> {
     codeTransfers: () => remoteSsh.codeTransfers().map((t) => ({ ...t, projectIds: projectsOnRuntime(t.runtime) })),
     // 起きたときの先送り（Backlog #278）と同じ順番に並べる——一度に1台ずつ
     warmUpRemoteRuntime: (name) => void remoteSsh.queueWarmUp(name),
-    closeRemoteRuntime: (name) => remoteSsh.closeRuntime(name),
+    closeRemoteRuntime: (name) => {
+      remoteOutage.forget(name);
+      return remoteSsh.closeRuntime(name);
+    },
     relayEndpoint,
     claudeLogin,
     agentRelayEndpoint,

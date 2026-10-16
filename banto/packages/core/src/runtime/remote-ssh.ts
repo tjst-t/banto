@@ -52,6 +52,7 @@ import type { RemoteRuntime } from "./remote-store.js";
 import type { PlaceAddress, PreparedPlace, RuntimePlace, RuntimeProcess } from "./runtime.js";
 import {
   SshCommandError,
+  SshConnectionClosedError,
   probePrerequisites,
   remotePathExpr,
   shq,
@@ -92,6 +93,8 @@ export interface RemoteSshRuntimeOptions {
    * いると分かるまで残る）。大きさは縮める前のバイト数
    */
   onCodeTransfer?: (runtimeName: string, progress: CodeTransfer | undefined) => void;
+  /** 実行場所に繋がった（張り直せた）。繋がらないお知らせを閉じるのに使う（追加・2026-10-16、`modules/remote-outage.ts`） */
+  onConnected?: (runtimeName: string) => void;
   /** ログ（既定は console） */
   log?: (line: string) => void;
   /** 宛先の名前を IPv4 に引く（既定は host の名前引き。試験だけが差し替える） */
@@ -526,6 +529,7 @@ export class RemoteSshRuntime {
     }
     // **鍵の窓口は閉じない**（未実装・2026-10-10）：Vault に窓口を閉じる口がまだ無い。多重化した接続は張ったあと鍵を使わない
     this.connections.set(name, conn);
+    this.opts.onConnected?.(name);
     this.log(
       `[host] 別のサーバ「${name}」に繋ぎました（${Math.round(performance.now() - started)}ms・向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・コード ${basename(conn.codeDir)}）`,
     );
@@ -656,7 +660,7 @@ export class RemoteSshRuntime {
       await Promise.race([conn.exited, new Promise((resolve) => setTimeout(resolve, MASTER_CLOSE_GRACE_MS).unref())]);
     }
     if (r.code !== 0 && !conn.alive) {
-      throw new Error(`別のサーバ「${conn.runtimeName}」で${what}ませんでした——SSH の接続が途中で閉じました`);
+      throw new SshConnectionClosedError(`別のサーバ「${conn.runtimeName}」で${what}ませんでした——SSH の接続が途中で閉じました`);
     }
     if (r.code !== 0) throw new SshCommandError(`別のサーバ「${conn.runtimeName}」で${what}ませんでした`, r);
     return r.stdout;
