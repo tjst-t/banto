@@ -62,36 +62,53 @@ function loadBundle(): string {
 }
 
 /**
- * **PDF の画面**：pdf.js の worker を**同じ画面の中**で動かす（fake worker）。Canvas の CSP は Worker を塞いでいる
- * （緩めない）ので、`pdf.worker.mjs` を先に読み込んで `globalThis.pdfjsWorker` に置かせ、pdf.js はそれを見つけて
- * Worker を作らずに同じ流れで動く。3本とも module の script——順に走る（pdf.js の2本は自分で globalThis に置く）
+ * **PDF・Office を描く道具の JS**（pdf.js とその worker・JSZip・docx-preview・SheetJS）。`document` の画面は HTML に最初から
+ * 入れ、ファイルブラウザ（`browser`）は PDF・Office を選んだときに `readViewerScript` で受けて inline の script で読み込む
+ * （#341、v4-modules.md §2.2「画面の形」）——最初から入れると、テキストしか見ないときもファイルブラウザの開くのが約 0.3 秒
+ * 遅くなった（測った数は docs/notes/2026-10-16-doc-review-in-browser.md）。
+ *
+ * - `pdfjs-worker`・`pdfjs`（module の script）：pdf.js の worker を**同じ画面の中**で動かす（fake worker）。Canvas の CSP は
+ *   Worker を塞いでいる（緩めない）ので、`pdf.worker.mjs` を読み込んで `globalThis.pdfjsWorker` に置かせ、pdf.js はそれを見つけて
+ *   Worker を作らずに同じ流れで動く（どちらも自分で globalThis に置く）
+ * - `jszip`・`docx-preview`（普通の script）：**Word の描き手**（docx-preview 0.4 と、それが使う JSZip 3）。UMD の min——JSZip が
+ *   `globalThis.JSZip` に置かれ、docx-preview はそれを見て `globalThis.docx` に置く。この順に読む
+ * - `xlsx`（普通の script）：**表の読み手**（SheetJS 0.20.3 の mini——xlsx を読み、数の書式で値を書く。npm の `xlsx` は 0.18.5 で
+ *   止まっていて古いので、cdn.sheetjs.com の tgz を入れている）。`globalThis.XLSX` に置かれる。読むのは変換役が書き出し直した
+ *   xlsx だけなので、xls・ods を読む部分の無い mini で足りる
+ */
+export const VIEWER_SCRIPTS = ["pdfjs-worker", "pdfjs", "jszip", "docx-preview", "xlsx"] as const;
+export type ViewerScript = (typeof VIEWER_SCRIPTS)[number];
+
+export function isViewerScript(value: unknown): value is ViewerScript {
+  return (VIEWER_SCRIPTS as readonly unknown[]).includes(value);
+}
+
+/** その道具の JS（`</script` は直してある）と、module の script で読むか */
+export function viewerScript(name: ViewerScript): { text: string; module: boolean } {
+  const pdfjs = () => new URL("./", import.meta.resolve("pdfjs-dist/build/pdf.min.mjs"));
+  switch (name) {
+    case "pdfjs-worker":
+      return { text: loadScript(new URL("pdf.worker.min.mjs", pdfjs())), module: true };
+    case "pdfjs":
+      return { text: loadScript(new URL("pdf.min.mjs", pdfjs())), module: true };
+    case "jszip":
+      return { text: loadScript(new URL(import.meta.resolve("jszip/dist/jszip.min.js"))), module: false };
+    case "docx-preview":
+      return { text: loadScript(new URL("./docx-preview.min.js", import.meta.resolve("docx-preview"))), module: false };
+    case "xlsx":
+      return { text: loadScript(new URL(import.meta.resolve("xlsx/dist/xlsx.mini.min.js"))), module: false };
+  }
+}
+
+/**
+ * `document` の画面の script：道具を全部と画面の JS。普通の script は module の script より先に走るので、画面（module）が
+ * 動くときには揃っている。module の script は順に走る
  */
 function documentScripts(): string {
-  const pdfjs = new URL("./", import.meta.resolve("pdfjs-dist/build/pdf.min.mjs"));
-  const worker = loadScript(new URL("pdf.worker.min.mjs", pdfjs));
-  const lib = loadScript(new URL("pdf.min.mjs", pdfjs));
-  const app = loadScript(new URL("./ui/document.bundle.js", import.meta.url));
-  return [...docxScripts(), xlsxScript(), ...[worker, lib, app].map((js) => `<script type="module">\n${js}\n</script>`)].join("\n");
-}
-
-/**
- * **Word の描き手**（docx-preview 0.4 と、それが使う JSZip 3）。どちらも UMD の min を普通の script で置く——
- * JSZip が `globalThis.JSZip` に置かれ、docx-preview はそれを見て `globalThis.docx` に置く。普通の script は
- * module の script より先に走るので、画面（module）が動くときには揃っている
- */
-function docxScripts(): string[] {
-  const jszip = loadScript(new URL(import.meta.resolve("jszip/dist/jszip.min.js")));
-  const docx = loadScript(new URL("./docx-preview.min.js", import.meta.resolve("docx-preview")));
-  return [jszip, docx].map((js) => `<script>\n${js}\n</script>`);
-}
-
-/**
- * **表の読み手**（SheetJS 0.20.3 の mini——xlsx を読み、数の書式で値を書く。npm の `xlsx` は 0.18.5 で止まっていて古いので、
- * cdn.sheetjs.com の tgz を入れている）。普通の script で置くと `globalThis.XLSX` に置かれる。読むのは変換役が書き出し直した
- * xlsx だけなので、xls・ods を読む部分の無い mini で足りる
- */
-function xlsxScript(): string {
-  return `<script>\n${loadScript(new URL(import.meta.resolve("xlsx/dist/xlsx.mini.min.js")))}\n</script>`;
+  const tag = ({ text, module }: { text: string; module: boolean }) => `<script${module ? ' type="module"' : ""}>\n${text}\n</script>`;
+  const libs = VIEWER_SCRIPTS.map((name) => viewerScript(name));
+  const app = { text: loadScript(new URL("./ui/document.bundle.js", import.meta.url)), module: true };
+  return [...libs.filter((l) => !l.module), ...libs.filter((l) => l.module), app].map(tag).join("\n");
 }
 
 export function appHtml(surface: AppSurface): string {

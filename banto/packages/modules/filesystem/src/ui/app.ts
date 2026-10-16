@@ -86,6 +86,8 @@ async function main(): Promise<void> {
       openedByHuman: !ctx.toolInfo,
       // 開き直したとき（リロード・別タブ）に、前に見ていた場所を返してもらう
       viewState: ctx[VIEW_STATE_KEY],
+      // PDF・Office のコメントを「AI に返す」のは、host が `ui/message` を受けると名乗ったときだけ（会話の外では「コピー」）
+      canReturnComments: init.hostCapabilities?.message?.text !== undefined,
     });
     surface = browser;
   }

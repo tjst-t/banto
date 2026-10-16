@@ -79,6 +79,9 @@ export class DocxDocumentView {
   private readonly scroller: HTMLDivElement;
   private offeredAt = 0;
   private readonly noteEl: HTMLParagraphElement;
+  /** document に付けた聞き手（destroy で外す） */
+  private readonly listeners = new AbortController();
+  private readonly resize: ResizeObserver;
 
   constructor(
     private readonly root: HTMLElement,
@@ -139,12 +142,25 @@ export class DocxDocumentView {
       { passive: true },
     );
     this.bodyEl.addEventListener("mouseup", (e) => this.onMouseUp(e));
-    document.addEventListener("selectionchange", () => {
-      if (this.review.offeredAnchor?.kind === "text" && !this.selectedText()) this.review.clearOffer();
-    });
+    document.addEventListener(
+      "selectionchange",
+      () => {
+        if (this.review.offeredAnchor?.kind === "text" && !this.selectedText()) this.review.clearOffer();
+      },
+      { signal: this.listeners.signal },
+    );
     replaceChildren(this.root, view);
-    new ResizeObserver(() => this.fitWidth()).observe(this.scroller);
+    this.resize = new ResizeObserver(() => this.fitWidth());
+    this.resize.observe(this.scroller);
     this.render();
+  }
+
+  /** 画面から外す（ファイルブラウザで別のファイルを選んだ）。聞き手を外し、読み込みの途中なら結果を捨てさせる */
+  destroy(): void {
+    this.listeners.abort();
+    this.resize.disconnect();
+    this.review.destroy();
+    this.generation += 1;
   }
 
   setToolInput(args: Record<string, unknown>): void {
@@ -165,6 +181,13 @@ export class DocxDocumentView {
       this.state = { kind: "error", message: errorMessage(err) };
       this.render();
     }
+  }
+
+  /** 画面の下に添える一言（PDF にした面へ切り替えられなかったとき、その理由） */
+  showNote(text: string, error = false): void {
+    this.note = text;
+    this.noteError = error;
+    this.render();
   }
 
   setCancelled(): void {

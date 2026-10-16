@@ -36,7 +36,6 @@ export interface PdfPage {
 export interface PdfDocument {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfPage>;
-  destroy(): Promise<void>;
 }
 
 export interface PdfLoadingTask {

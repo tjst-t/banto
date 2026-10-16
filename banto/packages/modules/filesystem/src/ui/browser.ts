@@ -29,9 +29,10 @@ import {
   type DisplayMode,
 } from "./protocol.js";
 import { toast } from "./toast.js";
+import { DocumentPane } from "./document-pane.js";
 import { FileViewer } from "./viewer.js";
 import { openUploadDialog } from "./upload-dialog.js";
-import { formatBytes, iconKindFor } from "../view/preview-kind.js";
+import { documentKindFor, formatBytes, iconKindFor } from "../view/preview-kind.js";
 
 interface Entry {
   name: string;
@@ -103,6 +104,8 @@ export interface BrowserOptions {
   openedByHuman: boolean;
   /** 前に見ていた場所（host が預かっていたもの、`dev.banto/view-state`）。無ければ undefined */
   viewState?: unknown;
+  /** host が `ui/message` を受けるか（会話の中で開いた画面）。PDF・Office のコメントを「AI に返す」か「コピー」か */
+  canReturnComments: boolean;
 }
 
 /** 大きく開いた画面が host に預ける「見ている場所」。小さく保つ（URL に載る）。 */
@@ -126,6 +129,7 @@ export class FileBrowser {
   private displayMode: DisplayMode;
   private readonly focus: "directory" | "file";
   private readonly canDownload: boolean;
+  private readonly canReturnComments: boolean;
   private readonly root: HTMLElement;
 
   // --- 大きく開いたときの状態 ---
@@ -140,7 +144,10 @@ export class FileBrowser {
   private refreshing = false;
   private rootLabel = "";
   private rootAbsolute = "";
-  private viewer: FileViewer | null = null;
+  /** 選んだファイルの中身。PDF・Office はファイルの右側で document の描き方で読む（`document-pane.ts`、#341） */
+  private viewer: FileViewer | DocumentPane | null = null;
+  /** 大きく開いた画面の枠。描き直しても作り直さない——中身の欄を外して付け直すと、PDF のスクロールが頭に戻る */
+  private shell: { browser: HTMLElement; panes: HTMLElement; content: HTMLElement } | null = null;
   private readonly sizes = new Map<string, number | "error">();
 
   // --- 会話の中（inline）の状態 ---
@@ -160,6 +167,7 @@ export class FileBrowser {
     this.displayMode = options.displayMode;
     this.focus = options.focus;
     this.canDownload = options.canDownload;
+    this.canReturnComments = options.canReturnComments;
     // 見せるファイルが主役——ツリーは畳んで開く（開けばいつでも辿れる）
     if (this.focus === "file") this.treeCollapsed = true;
     if (!options.openedByHuman) this.inlineNote = this.focus === "file" ? "ファイルを待っています…" : "一覧を待っています…";
@@ -217,6 +225,7 @@ export class FileBrowser {
     if (mode === this.displayMode) return;
     this.displayMode = mode;
     document.body.dataset.mode = mode;
+    if (this.viewer instanceof DocumentPane) this.viewer.setDisplayMode(mode);
     if (mode === "fullscreen") this.start();
     else this.render();
   }
@@ -559,17 +568,34 @@ export class FileBrowser {
       return;
     }
     this.reportPlace();
-    const content = h("main", { class: "content" });
-    this.renderContent(content);
-    replaceChildren(
-      this.root,
-      h(
+    const side = this.treeCollapsed ? this.renderRail() : this.renderTreePane();
+    if (!this.shell || !this.root.contains(this.shell.browser)) {
+      const content = h("main", { class: "content" });
+      const panes = h("div", { class: "panes" }, side, content);
+      const browser = h(
         "div",
         { class: "browser", data: { testid: "file-browser" } },
-        h("div", { class: "panes" }, this.treeCollapsed ? this.renderRail() : this.renderTreePane(), content),
+        panes,
         h("footer", { class: "hint", text: "Ctrl/Cmd+クリックで複数選択、Shift+クリックで範囲選択" }),
-      ),
-    );
+      );
+      this.shell = { browser, panes, content };
+      replaceChildren(this.root, browser);
+    } else {
+      this.shell.panes.firstElementChild!.replaceWith(side);
+    }
+    this.renderContent(this.shell.content);
+  }
+
+  /** 選んだファイルの中身を描くもの（同じファイルなら今のものを使い続ける）。前のものは外す */
+  private viewerFor(path: string | null): FileViewer | DocumentPane | null {
+    if (this.viewer && this.viewer.path === path) return this.viewer;
+    if (this.viewer instanceof DocumentPane) this.viewer.destroy();
+    this.viewer = !path
+      ? null
+      : documentKindFor(path)
+        ? new DocumentPane(path, { displayMode: this.displayMode, canReturnComments: this.canReturnComments })
+        : new FileViewer(path);
+    return this.viewer;
   }
 
   private renderRail(): HTMLElement {
@@ -774,7 +800,7 @@ export class FileBrowser {
 
   private renderContent(content: HTMLElement): void {
     const selected = this.selectedPaths();
-    if (selected.length !== 1) this.viewer = null;
+    if (selected.length !== 1) this.viewerFor(null);
     if (selected.length === 0) {
       replaceChildren(
         content,
@@ -784,11 +810,16 @@ export class FileBrowser {
     }
     if (selected.length === 1) {
       const path = selected[0]!;
-      if (!this.viewer || this.viewer.path !== path) this.viewer = new FileViewer(path);
+      const viewer = this.viewerFor(path)!;
+      // PDF・Office は document の描き方のツールバー（ファイル名・ページ・コメント）がそのまま見出しになる。描き直しで付け直さない
+      if (viewer instanceof DocumentPane) {
+        if (content.childNodes.length !== 1 || content.firstChild !== viewer.el) replaceChildren(content, viewer.el);
+        return;
+      }
       replaceChildren(
         content,
         h("div", { class: "content-head" }, h("span", { class: "badge truncate", text: path, data: { testid: "open-path" } })),
-        h("div", { class: "content-body" }, this.viewer.el),
+        h("div", { class: "content-body" }, viewer.el),
       );
       return;
     }
@@ -865,7 +896,7 @@ export class FileBrowser {
   /** showFile の会話の中のカード——そのファイルの中身と「大きく表示」。 */
   private renderInlineFile(): void {
     const path = this.openFile;
-    if (path && (!this.viewer || this.viewer.path !== path)) this.viewer = new FileViewer(path);
+    this.viewerFor(path);
     replaceChildren(
       this.root,
       h(

@@ -183,6 +183,9 @@ export class CommentReview {
   private wide = false;
   private listOpen = false;
   private displayMode: DisplayMode;
+  /** document・window に付けた聞き手（destroy で外す） */
+  private readonly listeners = new AbortController();
+  private readonly resize: ResizeObserver;
 
   private readonly modeCount: HTMLSpanElement;
   private readonly returnCount: HTMLSpanElement;
@@ -336,21 +339,32 @@ export class CommentReview {
     );
 
     // 選んだ横の「コメント」は C キーでも（書いている途中・入力欄の中では効かない。表のセルには使わない）
-    document.addEventListener("keydown", (e) => {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) return;
-      if (e.key === "Escape") {
-        if (this.draft) this.cancelDraft();
-        else this.clearOffer();
-      } else if (this.offered && this.offered.kind !== "cell" && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        this.beginDraft(this.offered);
-      }
-    });
-    new ResizeObserver(() => this.updateWide()).observe(options.root);
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) return;
+        if (e.key === "Escape") {
+          if (this.draft) this.cancelDraft();
+          else this.clearOffer();
+        } else if (this.offered && this.offered.kind !== "cell" && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c") {
+          e.preventDefault();
+          this.beginDraft(this.offered);
+        }
+      },
+      { signal: this.listeners.signal },
+    );
+    this.resize = new ResizeObserver(() => this.updateWide());
+    this.resize.observe(options.root);
     // ほかの面（会話の中のカード・大きく開いた画面）で付けたものを、戻ってきたときに読み直す
-    window.addEventListener("focus", () => void this.reload());
+    window.addEventListener("focus", () => void this.reload(), { signal: this.listeners.signal });
     this.render();
+  }
+
+  /** 画面から外す（ファイルブラウザで別のファイルを選んだ）。document・window に付けた聞き手を外す */
+  destroy(): void {
+    this.listeners.abort();
+    this.resize.disconnect();
   }
 
   get count(): number {

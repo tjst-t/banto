@@ -2,8 +2,8 @@
 //
 // 描き方は拡張子で決める（`view/preview-kind.ts` の対応表）。テキストのものは
 // 「編集」→ 書き換え →「保存」ができる（CSV は表のまま編集する）。
-// 画像は画像のまま、PDF などのバイナリは名前と大きさだけを出す
-// ——この画面の中では PDF を埋め込めない（Canvas の CSP が frame・object を塞いでいる）。
+// 画像は画像のまま、その他のバイナリは名前と大きさだけを出す。
+// PDF・Office はここではなく `document-pane.ts` が document の描き方で描く（#341。ブラウザが拡張子で選ぶ）。
 
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";

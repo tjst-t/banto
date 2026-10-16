@@ -165,6 +165,10 @@ export class PdfDocumentView {
   /** 「コメント」を出したときのスクロールの位置（動かしたら引っ込める） */
   private offeredAt = 0;
 
+  /** document に付けた聞き手（destroy で外す） */
+  private readonly listeners = new AbortController();
+  private readonly resize: ResizeObserver;
+
   // --- 固定の要素（描き直しで作り直さない——作り直すとスクロールと入力が飛ぶ）---
   private readonly scroller: HTMLDivElement;
   /** 中身の箱：ページの列と右の余白を並べる（コメントの位置はこの中で数える） */
@@ -271,13 +275,27 @@ export class PdfDocumentView {
     this.scroller.addEventListener("scroll", () => this.onScroll(), { passive: true });
     this.pagesEl.addEventListener("pointerdown", (e) => this.onPagePointerDown(e));
     this.pagesEl.addEventListener("mouseup", (e) => this.onPageMouseUp(e));
-    document.addEventListener("selectionchange", () => {
-      // 選ぶのをやめたら（ほかを押した）、選んだ文の「コメント」も引っ込める
-      if (this.review.offeredAnchor?.kind === "text" && !this.selectedText()) this.review.clearOffer();
-    });
+    document.addEventListener(
+      "selectionchange",
+      () => {
+        // 選ぶのをやめたら（ほかを押した）、選んだ文の「コメント」も引っ込める
+        if (this.review.offeredAnchor?.kind === "text" && !this.selectedText()) this.review.clearOffer();
+      },
+      { signal: this.listeners.signal },
+    );
     replaceChildren(this.root, view);
-    new ResizeObserver(() => this.onResize()).observe(this.scroller);
+    this.resize = new ResizeObserver(() => this.onResize());
+    this.resize.observe(this.scroller);
     this.render();
+  }
+
+  /** 画面から外す（ファイルブラウザで別のファイルを選んだ）。聞き手を外し、読み込んだ PDF を捨てる（変換を待つのもやめる） */
+  destroy(): void {
+    this.listeners.abort();
+    this.resize.disconnect();
+    this.review.destroy();
+    this.path = "";
+    void this.close();
   }
 
   setToolInput(args: Record<string, unknown>): void {
@@ -383,7 +401,7 @@ export class PdfDocumentView {
       this.loadingTask = task;
       const doc = await task.promise;
       if (this.path !== path) {
-        await doc.destroy();
+        await task.destroy();
         return;
       }
       this.doc = doc;
@@ -439,11 +457,11 @@ export class PdfDocumentView {
     this.matchIndex = -1;
     this.query = "";
     this.pagesEl.replaceChildren();
-    const doc = this.doc;
+    // 捨てるのは読み込みの仕事の方（pdf.js 6 の文書には destroy が無い——別のファイルを選んで初めて通り、例外になった）
     const task = this.loadingTask;
     this.doc = undefined;
     this.loadingTask = undefined;
-    await (doc ? doc.destroy() : task?.destroy());
+    await task?.destroy();
   }
 
   private page(n: number): Promise<PdfPage> {

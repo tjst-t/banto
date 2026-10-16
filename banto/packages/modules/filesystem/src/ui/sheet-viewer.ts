@@ -72,6 +72,7 @@ export class SheetDocumentView {
   /** 開く世代——前のファイルの読み込みが、後から開いたファイルの上に描かないように */
   private generation = 0;
   private retryTimer?: ReturnType<typeof setTimeout>;
+  private readonly resize: ResizeObserver;
   private book?: XlsxWorkbook;
   private sheetNames: string[] = [];
   private sheet?: SheetView;
@@ -175,8 +176,17 @@ export class SheetDocumentView {
       this.review.returnButton,
     );
     replaceChildren(this.root, view);
-    new ResizeObserver(() => this.schedule()).observe(this.scroller);
+    this.resize = new ResizeObserver(() => this.schedule());
+    this.resize.observe(this.scroller);
     this.render();
+  }
+
+  /** 画面から外す（ファイルブラウザで別のファイルを選んだ）。聞き手を外し、変換役を待つのもやめる */
+  destroy(): void {
+    this.resize.disconnect();
+    this.review.destroy();
+    this.generation += 1;
+    clearTimeout(this.retryTimer);
   }
 
   setToolInput(args: Record<string, unknown>): void {

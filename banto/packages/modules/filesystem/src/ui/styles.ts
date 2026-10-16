@@ -400,6 +400,12 @@ body:not([data-mode="fullscreen"]) .sheet-scroller { height: auto; max-height: 5
 .diff-row.remove { background: var(--danger-soft); color: var(--danger); }
 .diff-row.context { color: var(--ink-2); }
 .diff-row.hunk { color: var(--ink-3); padding-left: 8px; }
+
+/* ---- ファイルブラウザの右側の PDF・Office（document-pane.ts、#341）。中身の欄いっぱいに描く（画面全体の高さではない）---- */
+.doc-pane, .doc-pane-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.doc-pane-body > div:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+body .doc-pane .pdf-view { flex: 1; height: auto; min-height: 0; border: 0; border-radius: 0; }
+.doc-pane .pdf-scroller { flex: 1; height: auto; min-height: 0; }
 `;
 
 export function installStyles(): void {

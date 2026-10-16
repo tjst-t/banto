@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { renderMarkdown, renderInline } from "./markdown.js";
 import { parseCsv, serializeCsv } from "./csv.js";
-import { extOf, previewKindFor } from "./preview-kind.js";
+import { documentKindFor, extOf, previewKindFor } from "./preview-kind.js";
+import { DOCUMENT_CONVERTED_EXTENSIONS, SPREADSHEET_EXTENSIONS } from "../converted.js";
 import { diffLines, parseUnifiedDiff, unifiedDiff } from "../unified-diff.js";
 
 // ---- Markdown：**生の HTML は通さない**（この画面は自分の Module の書き込み・削除を呼べる）----
@@ -110,6 +111,16 @@ test("拡張子の表：大文字でも・拡張子の無い名前でも決ま�
   assert.equal(previewKindFor(".gitignore"), "source");
   assert.equal(extOf(".gitignore"), "");
   assert.equal(previewKindFor("Makefile"), "source");
+});
+
+test("PDF・Office の描き方を持つ拡張子は、host が document の画面を選ぶ拡張子（showFile の ui-by-extension）と同じ", () => {
+  const hostSide = ["pdf", ...DOCUMENT_CONVERTED_EXTENSIONS, ...SPREADSHEET_EXTENSIONS].sort();
+  const all = ["pdf", "docx", "pptx", "doc", "ppt", "odt", "odp", "xlsx", "xlsm", "xls", "ods", "txt", "md", "png", "csv", "zip"];
+  assert.deepEqual(all.filter((e) => documentKindFor(`a/b.${e}`) !== undefined).sort(), hostSide);
+  assert.equal(documentKindFor("Slides.PPTX"), "converted");
+  assert.equal(documentKindFor("plan.docx"), "docx");
+  assert.equal(documentKindFor("budget.xlsm"), "sheet");
+  assert.equal(documentKindFor("notes.txt"), undefined);
 });
 
 // ---- 差分 ----

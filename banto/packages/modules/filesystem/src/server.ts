@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 import * as ops from "./operations.js";
-import { BROWSER_APP_URI, DOCUMENT_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
+import { BROWSER_APP_URI, DOCUMENT_APP_URI, EDIT_DIFF_APP_URI, FILE_APP_URI, UI_APP_MIME, VIEWER_SCRIPTS, appHtml, isViewerScript, viewerScript } from "./ui-app.js";
 import { isPdfAssetKind, readPdfAsset } from "./pdf-assets.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { readSettings, writeSettings } from "./settings.js";
@@ -229,6 +229,18 @@ export function createFileSystemServer(deps: {
         },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
+      // **ファイルブラウザが PDF・Office を選んだときに読み込む、描く道具の JS**（#341、v4-modules.md §2.2「画面の形」）。
+      // 最初から入れるとファイルブラウザが重くなるので、要るときにここから受けて inline の script で読み込む（CSP は変えない）
+      {
+        name: "readViewerScript",
+        description: "PDF・Office を描く道具の JS（pdf.js・docx-preview・SheetJS）",
+        inputSchema: {
+          type: "object",
+          properties: { name: { type: "string", enum: [...VIEWER_SCRIPTS] } },
+          required: ["name"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
       // **PDF・Office の画面で付けたコメント**（v4-modules.md §2.2「PDF・Office…」の「コメント」）。Project ごとの置き場に、
       // ファイルの根からの相対パスを鍵に残す。各コメントは付けたときのファイルのハッシュを持つ（host が付ける）
       {
@@ -331,6 +343,11 @@ export function createFileSystemServer(deps: {
         if (!isPdfAssetKind(args.kind)) throw new Error(`kind は cmap か standardFont です: ${String(args.kind)}`);
         const data = await readPdfAsset(args.kind, String(args.name));
         return { content: [{ type: "text", text: JSON.stringify({ data: data.toString("base64") }) }] };
+      }
+      case "readViewerScript": {
+        if (!isViewerScript(args.name)) throw new Error(`name は ${VIEWER_SCRIPTS.join("・")} のどれかです: ${String(args.name)}`);
+        const script = viewerScript(args.name);
+        return { content: [{ type: "text", text: JSON.stringify(script) }] };
       }
       case "getComments": {
         const file = ops.fileInRoot(root, String(args.path));

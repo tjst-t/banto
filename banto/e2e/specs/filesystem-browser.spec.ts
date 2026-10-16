@@ -14,6 +14,8 @@ import { crc32, deflateSync } from "node:zlib";
 import { unzipSync } from "fflate";
 import { CORE_BASE_URL, SANDBOX_BASE_URL } from "../config.js";
 import { createProject, fakeTurn, openApp, waitForProjectModule, openPaletteEntry } from "../helpers.js";
+import { makeJapanesePdf } from "../pdf-fixture.js";
+import { makeOpenpyxlXlsx, makeSlidesPptx } from "../office-fixture.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -145,7 +147,7 @@ test("入口から開いたファイルブラウザで、見る・編集する�
   );
   await expect(inner.getByTestId("viewer-sheet").locator("td").nth(1)).toHaveText("130000");
 
-  // ---- 画像は画像として、PDF は名前と大きさ --------------------------------
+  // ---- 画像は画像として。PDF は右側で document の描き方で読む（壊れた PDF はそう言う。読めるものは下の別の試験）----
   await row("public").click();
   await row("public/logo.png").click();
   const img = inner.getByTestId("viewer-image").locator("img");
@@ -153,7 +155,10 @@ test("入口から開いたファイルブラウザで、見る・編集する�
   await expect.poll(() => img.evaluate((el: HTMLImageElement) => `${el.naturalWidth}x${el.naturalHeight}`)).toBe("48x32");
   await expect(inner.getByTestId("viewer-image")).toContainText("48×32・PNG");
   await row("docs/spec.pdf").click();
-  await expect(inner.getByTestId("viewer-placeholder")).toContainText("PDF・");
+  await expect(inner.getByTestId("pdf-error")).toHaveText("PDF を開けませんでした：PDF として読めませんでした（壊れているか、PDF ではありません）", {
+    timeout: 60_000,
+  });
+  await expect(inner.getByTestId("viewer-placeholder")).toHaveCount(0);
 
   // ---- 新しいファイル → ディスクにできて、そのまま開いている --------------
   // 置き先は、いま開いているファイル（spec.pdf）のフォルダ＝ docs
@@ -480,4 +485,134 @@ fetch("${CORE_BASE_URL}/healthz").then(function () { document.getElementById("ne
   expect(deleteCalls, "プレビューの中から削除が呼ばれた").toEqual([]);
   expect(existsSync(join(projectRoot, "keep.txt")), "プレビューの中から削除できてしまった").toBe(true);
   await expect(row("keep.txt")).toBeVisible();
+});
+
+// **ファイルブラウザの右側で PDF・Office をそのまま読む**（v4-modules.md §2.2「画面の形」、#341）。showFile の document の画面と
+// 同じ描き方（ツールバー・ページ・余白のコメント）が中身の欄に出て、コメントモードは既定でオン。描く道具（pdf.js・SheetJS）は
+// 選んだときに読み込む（最初は入っていない）。会話の外（入口から開いた）なので「AI に返す」ではなく「コピー」。
+// 規則14——開けたで終わらせず、出している中身（ファイル名・ページ数・文字・コメントの対象と本文・コピーした文・表の値）を見る
+test("ファイルブラウザで PDF・pptx・xlsx を選ぶと、右側でそのまま読めてコメントを付けられる", async ({ page, context }) => {
+  // 初めて変換役を使う回は、道具用のコンテナを作り LibreOffice 一式（約600MB）を入れる——数分
+  test.setTimeout(900_000);
+  // 中身の欄が余白を出せる幅（820px 以上）になるよう広く——Canvas は会話の隣に開き、左にツリーがある
+  await page.setViewportSize({ width: 2400, height: 1000 });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-fsbrowser-doc-"));
+  mkdirSync(join(projectRoot, "docs"));
+  writeFileSync(
+    join(projectRoot, "docs/plan.pdf"),
+    makeJapanesePdf([
+      ["第1章 受信箱の見直し", "本文その1：結論を先に書く。"],
+      ["第2章 理由", "本文その2：読む回数を減らす。"],
+    ]),
+  );
+  writeFileSync(join(projectRoot, "docs/slides.pptx"), makeSlidesPptx(["一枚目：受信箱の見直し", "二枚目：理由は三つ"]));
+  writeFileSync(join(projectRoot, "docs/sales.xlsx"), makeOpenpyxlXlsx());
+  writeFileSync(join(projectRoot, "docs/memo.md"), "# メモ\n\n本文です。\n");
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  await openApp(page);
+  await createProject(page, "E2E FS Browser Doc", projectRoot);
+  await waitForProjectModule(page, "E2E FS Browser Doc", "filesystem");
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  const entry = page.getByRole("option", { name: /ファイル/ });
+  await expect(entry).toContainText("この Project のファイルを見る・開く・編集する", { timeout: 30_000 });
+  await entry.click();
+  const inner = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const row = (path: string) => inner.locator(`.row[data-path="${path}"]`);
+  await row("docs").click();
+  // 描く道具は、まだ読み込んでいない
+  await expect(row("docs/plan.pdf")).toBeVisible({ timeout: 60_000 });
+  await expect(inner.locator("script[data-viewer-script]")).toHaveCount(0);
+
+  // ---- PDF：右側に document の描き方。ツールバーにファイル名（パスは title）とページ数、文字の層に本文 -------------------
+  await row("docs/plan.pdf").click();
+  const pane = inner.getByTestId("document-pane");
+  await expect(pane).toHaveAttribute("data-path", "docs/plan.pdf");
+  await expect(pane.getByTestId("pdf-view")).toBeVisible({ timeout: 60_000 });
+  await expect(pane.getByTestId("open-path")).toHaveText("plan.pdf");
+  await expect(pane.getByTestId("open-path")).toHaveAttribute("title", "docs/plan.pdf");
+  await expect(pane.getByTestId("pdf-page-label")).toHaveText("1 / 2 ページ", { timeout: 60_000 });
+  await expect(pane.getByTestId("pdf-page")).toHaveCount(2);
+  const layer = pane.locator('.pdf-page[data-page="1"].rendered .textLayer');
+  await expect(layer).toBeVisible({ timeout: 60_000 });
+  expect((await layer.locator("span").allTextContents()).join("")).toContain("第1章 受信箱の見直し");
+  await expect(inner.getByTestId("viewer-placeholder")).toHaveCount(0);
+  // 読み込んだ道具は pdf.js（worker と本体）だけ
+  await expect(inner.locator("script[data-viewer-script]")).toHaveCount(2);
+  // 中身の欄いっぱいに描く（ツリーの右、画面の高さの中に収まる）
+  const content = (await inner.locator("main.content").boundingBox())!;
+  const view = (await pane.getByTestId("pdf-view").boundingBox())!;
+  expect(Math.abs(view.x - content.x), "PDF の画面が中身の欄の左端に無い").toBeLessThan(2);
+  expect(Math.abs(view.width - content.width), "PDF の画面が中身の欄の幅いっぱいでない").toBeLessThan(2);
+  expect(Math.abs(view.height - content.height), "PDF の画面が中身の欄の高さいっぱいでない").toBeLessThan(2);
+  // 大きく開いた画面なのでコメントモードは既定でオン。広いので余白が出る。会話の外なので「AI に返す」は無い
+  await expect(pane.getByTestId("comments-toggle")).toHaveAttribute("aria-pressed", "true");
+  expect(view.width, "中身の欄が余白を出せる幅でない（試験の画面の幅を見直す）").toBeGreaterThanOrEqual(820);
+  await expect(pane.getByTestId("pdf-view")).toHaveAttribute("data-comment-wide", "on");
+  await expect(pane.getByTestId("comment-for-page").first()).toHaveText("このページにコメント");
+
+  // ---- PDF の2ページ目にコメントを付けて「コピー」——まとめた文がクリップボードに入る ------------------------------------
+  await pane.getByTestId("comment-for-page").nth(1).click();
+  await expect(pane.getByTestId("comment-draft-anchor")).toHaveText("2ページ");
+  await pane.getByTestId("comment-input").fill("この章は短く");
+  await pane.getByTestId("comment-add").click();
+  await expect(pane.getByTestId("comment-item")).toHaveCount(1);
+  await expect(pane.getByTestId("comment-item").getByTestId("comment-body")).toHaveText("この章は短く");
+  await expect(pane.getByTestId("comments-toggle-count")).toHaveText("1");
+  await expect(pane.getByTestId("comments-return")).toHaveCount(0);
+  await pane.getByTestId("comments-copy").click();
+  await expect(inner.getByTestId("toast").filter({ hasText: "コメントをコピーしました" })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("`docs/plan.pdf` へのコメント（1件）\n1. 2ページ：この章は短く");
+
+  // ---- テキストのファイルに移ると、いつものビューア（PDF の画面は外れる）--------------------------------------------------
+  await row("docs/memo.md").click();
+  await expect(inner.getByTestId("open-path")).toHaveText("docs/memo.md");
+  await expect(inner.getByTestId("viewer-markdown").locator("h1")).toHaveText("メモ");
+  await expect(inner.getByTestId("document-pane")).toHaveCount(0);
+
+  // ---- pptx：変換役で PDF にして、スライドとして読む。スライドにコメント -----------------------------------------------------
+  await row("docs/slides.pptx").click();
+  await expect(pane).toHaveAttribute("data-path", "docs/slides.pptx");
+  await expect(pane.getByTestId("open-path")).toHaveText("slides.pptx");
+  await expect(pane.getByTestId("pdf-page-label")).toHaveText("1 / 2 スライド", { timeout: 840_000 });
+  const slide = pane.locator('.pdf-page[data-page="1"].rendered .textLayer');
+  await expect(slide).toBeVisible({ timeout: 60_000 });
+  expect((await slide.locator("span").allTextContents()).join("").replace(/\s+/g, "")).toContain("一枚目：受信箱の見直し");
+  await expect(pane.getByTestId("comments-toggle")).toHaveAttribute("aria-pressed", "true");
+  await expect(pane.getByTestId("comment-for-page").first()).toHaveText("このスライドにコメント");
+  await pane.getByTestId("comment-for-page").first().click();
+  await pane.getByTestId("comment-input").fill("このスライドは要らない");
+  await pane.getByTestId("comment-add").click();
+  await expect(pane.getByTestId("comment-item").getByTestId("comment-body")).toHaveText("このスライドは要らない");
+  await expect(pane.getByTestId("comment-item").getByTestId("comment-anchor")).toHaveText("1ページ");
+
+  // ---- xlsx：計算し直した値の表。セルを選んで「<番地> にコメント」--------------------------------------------------------
+  await row("docs/sales.xlsx").click();
+  await expect(pane).toHaveAttribute("data-path", "docs/sales.xlsx");
+  await expect(pane.getByTestId("sheet-grid"), "計算し直した表が出ない").toBeVisible({ timeout: 840_000 });
+  await expect(pane.getByTestId("open-path")).toHaveText("sales.xlsx");
+  await expect(pane.locator('[data-cell="D4"]'), "SUM(D2:D3) が書式つきで出ていない").toHaveText("2,565");
+  await expect(pane.locator('[data-cell="A2"]')).toHaveText("りんご");
+  await expect(inner.locator("script[data-viewer-script]")).toHaveCount(3);
+  await pane.locator('[data-cell="A2"]').click();
+  await expect(pane.getByTestId("comment-chip")).toContainText("A2 にコメント");
+  await pane.getByTestId("comment-chip").click();
+  await expect(pane.getByTestId("comment-draft-anchor")).toHaveText("`売上!A2`（値 りんご）");
+  await pane.getByTestId("comment-input").fill("品名の表記を揃える");
+  await pane.getByTestId("comment-add").click();
+  await expect(pane.locator('[data-testid="comment-mark"][data-kind="cell"]')).toHaveAttribute("data-range", "A2");
+  await expect(pane.getByTestId("comment-item").getByTestId("comment-body")).toHaveText("品名の表記を揃える");
+
+  // ---- PDF に戻ると、付けたコメントが残っている。リロードしても同じファイルが開いている ---------------------------------------
+  await row("docs/plan.pdf").click();
+  await expect(pane.getByTestId("pdf-page-label")).toHaveText("1 / 2 ページ", { timeout: 60_000 });
+  await expect(pane.getByTestId("comment-item").getByTestId("comment-body")).toHaveText("この章は短く");
+  await page.reload();
+  await expect(pane.getByTestId("open-path")).toHaveText("plan.pdf", { timeout: 60_000 });
+  await expect(pane.getByTestId("pdf-page-label")).toHaveText("1 / 2 ページ", { timeout: 60_000 });
+  await expect(pane.getByTestId("comment-item").getByTestId("comment-body")).toHaveText("この章は短く");
+
+  expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

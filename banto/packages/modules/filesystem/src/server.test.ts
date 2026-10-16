@@ -161,12 +161,17 @@ test("showFile は PDF・docx・pptx・doc・ppt・odt・odp・表（xlsx・xlsm
     assert.ok(sheetjs > docx && sheetjs < worker, `表の読み手の script の順が違う（SheetJS ${sheetjs}）`);
     // 中で script が閉じない
     assert.equal(html.text.match(/<\/script>/g)?.length, 6);
-    // テキストの画面は pdf.js・docx-preview を背負わない
-    const file = (await client.readResource({ uri: "ui://banto-filesystem/file" })).contents[0] as { text: string };
-    assert.doesNotMatch(file.text, /pdfjsLib/);
-    assert.doesNotMatch(file.text, /JSZip/);
-    assert.doesNotMatch(file.text, /make_xlsx_lib/);
-    assert.ok(file.text.length < 500_000, `テキストの画面が重い（${file.text.length}）`);
+    // テキストの画面とファイルブラウザは pdf.js・docx-preview・SheetJS の本体を背負わない——PDF・Office を選んだときに
+    // readViewerScript で受けて読み込む（#341）。画面の JS がその名前を見るのはよい（本体が置く globalThis の名前）
+    for (const uri of ["ui://banto-filesystem/file", "ui://banto-filesystem/directory"]) {
+      const text = ((await client.readResource({ uri })).contents[0] as { text: string }).text;
+      assert.doesNotMatch(text, /globalThis\.pdfjsLib=/, uri);
+      assert.doesNotMatch(text, /globalThis\.pdfjsWorker=/, uri);
+      assert.doesNotMatch(text, /\.JSZip=/, uri);
+      assert.doesNotMatch(text, /docx-preview <https/, uri);
+      assert.doesNotMatch(text, /make_xlsx_lib/, uri);
+      assert.ok(text.length < 500_000, `${uri} が重い（${text.length}）`);
+    }
   });
 });
 
@@ -210,6 +215,27 @@ test("readPdfAsset は pdf.js の日本語の CMap を渡し、フォルダの�
     };
     assert.match(await refused({ kind: "cmap", name: "../package.json" }), /名前として使えません/);
     assert.match(await refused({ kind: "other", name: "x" }), /cmap か standardFont/);
+  });
+});
+
+test("readViewerScript はファイルブラウザが PDF・Office を描く道具の JS を渡す（AI には見せない）", async () => {
+  await withClient(async (client) => {
+    const read = async (name: string) => {
+      const r = await client.callTool({ name: "readViewerScript", arguments: { name } });
+      return JSON.parse((r.content as { text: string }[])[0]!.text) as { text: string; module: boolean };
+    };
+    const pdfjs = await read("pdfjs");
+    assert.equal(pdfjs.module, true);
+    assert.match(pdfjs.text, /globalThis\.pdfjsLib=/);
+    const xlsx = await read("xlsx");
+    assert.equal(xlsx.module, false);
+    assert.ok(xlsx.text.length > 100_000, `SheetJS が短い（${xlsx.text.length}）`);
+    // HTML の script を途中で閉じる文字列は残っていない
+    for (const name of ["pdfjs-worker", "jszip", "docx-preview"]) assert.doesNotMatch((await read(name)).text, /<\/script/i, name);
+    const refused = await client.callTool({ name: "readViewerScript", arguments: { name: "../package.json" } }).catch((e: unknown) => e);
+    assert.match(refused instanceof Error ? refused.message : JSON.stringify(refused), /のどれかです/);
+    const { tools } = await client.listTools();
+    assert.equal((tools.find((t) => t.name === "readViewerScript")?._meta as Record<string, unknown>)?.["dev.banto/visibility"], "admin");
   });
 });
 
