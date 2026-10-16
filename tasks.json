@@ -8545,7 +8545,7 @@
       "number": 354,
       "kind": "task",
       "title": "スリープの本体（眠らせる・起こす口・起こさない門・起こし直したとき）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-org",
       "dependsOn": [
         "project-groups-core"
@@ -8555,12 +8555,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §2.2「スリープ」。Project の sleep（project.slept／project.woke）。POST /api/projects/:id/sleep：印（メモリ）を立ててから hostActivity（移すときと同じ一覧）と移している途中を確かめて断る（409 busy、印が立っていれば 409）、別のサーバ・コンテナを止めないときは suspendProjectServices、Module とコンテナを止める（releaseProjectModules を Module を名指しで外せる形に分ける）。印の間は openTurn と modules/prepare を待たせる。wakeProject は冪等で、呼ぶのは modules/prepare（opened）と openTurn（human／delivery／automation）の2か所だけ。connectDeclaredModule は眠っている Project の Project ごとの Module を起こさない（出来事を待たれているものは例外——#346 と合わせる）。deliver は変えない。banto を起こし直したときの順序。GET /api/projects/:id/sleep-preview（止まるもの）。眠っている Project で設定などを開いたときは「眠っています」を返す。資源の見張りは眠っている Project を「スリープ中」に。",
       "doneWhen": "E2E で：眠らせるとコンテナと Module が止まる・ターンが走っている／裏の仕事が残っていると断る・開くと起きる・send_message と自動化の時刻で起きて届く・留めた届けものでは起きない・設定の画面を開いても起きない・banto を起こし直しても眠ったまま、が通る。眠らせる途中に送った発言が切れない試験も",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-sleep-core）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T14:26:36.137Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T15:13:09.699Z",
+      "closedAt": "2026-10-16T15:13:09.699Z",
       "extra": {}
     },
     {
