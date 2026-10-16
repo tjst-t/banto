@@ -49,7 +49,8 @@ export const MESSAGE_ALLOW_REMEMBER = "許可し、以後この Project から�
 
 /**
  * **許可にあたる答え**。「許可する」のほかに、AI が自動化を作る・変える・再開するときの確認（アーキ仕様 §4.3、
- * v4-frontend.md §6.42「AI が作るときのカード」）の「作る」「変える」「再開する」（host の `AUTOMATION_*_CHOICES` と同じ言葉）
+ * v4-frontend.md §6.42「AI が作るときのカード」）の「作る」「変える」「再開する」（host の `AUTOMATION_*_CHOICES` と同じ言葉）。
+ * Memory を取り消す・改めるときの確認（アーキ仕様 §2.2）の「変える」も同じ（host の `MEMORY_REVISE_CHOICES`）
  */
 const ALLOW_ANSWERS = new Set(["許可する", "作る", "変える", "再開する"]);
 

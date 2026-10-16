@@ -86,7 +86,11 @@ export type ProjectThreadEvent =
   // イベントは`threadId`しか持たない——書き換えず、foldでThread→Projectを
   // 解決して読む（Event Storeは追記のみ、規則3）。
   | { type: "memory.appended"; payload: { projectId?: string; threadId?: string; text: string } }
-  | { type: "memory.invalidated"; payload: { projectId?: string; threadId?: string; targetSeq: number } }
+  // reason・replacedBy は AI が `revise_memory` で頼み人が許したとき（追加・2026-10-15、§2.2）
+  | {
+      type: "memory.invalidated";
+      payload: { projectId?: string; threadId?: string; targetSeq: number; reason?: string; replacedBy?: number };
+    }
   | { type: "memory.delivered"; payload: { threadId: string; upToSeq: number } }
   | {
       type: "message.appended";
@@ -572,7 +576,12 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // 無効化の「時点」を残す——確定時点との前後で扱いが変わる（types.ts）。
           p.memory = p.memory.map((m) =>
             m.seq === event.payload.targetSeq && m.invalidatedAtSeq === undefined
-              ? { ...m, invalidatedAtSeq: raw.seq }
+              ? {
+                  ...m,
+                  invalidatedAtSeq: raw.seq,
+                  ...(event.payload.reason ? { invalidatedReason: event.payload.reason } : {}),
+                  ...(event.payload.replacedBy !== undefined ? { replacedBy: event.payload.replacedBy } : {}),
+                }
               : m,
           );
         }

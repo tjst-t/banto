@@ -914,7 +914,7 @@ test("自動の要約が起きたターンの次のターンで、途中で足�
 
     // 次のターン：system prompt に入っている
     await collect(runThreadTurn({ ...deps, runTurn: runner(0) }, { threadId, prompt: "3", modules: [] }));
-    assert.match(memorySection(2) ?? "", /- 人へは日本語で書く/, "要約のあとも system prompt に入っていない");
+    assert.match(memorySection(2) ?? "", /- \[#\d+\] 人へは日本語で書く/, "要約のあとも system prompt に入っていない");
     assert.ok(seen[2]!.systemPrompt.some((b) => b.includes("人の名前は太郎")), "Global Memory も入る");
     assert.doesNotMatch(seen[2]!.prompt, /人へは日本語で書く/, "同じ差分を添え直している");
   });

@@ -21,6 +21,7 @@ import {
   type AutomationStore,
 } from "./store.js";
 import type { AutomationRunner } from "./runner.js";
+import { askInThread } from "../inbox/ask-in-thread.js";
 
 /** 確認のカードの選択肢。許す側の言葉は画面が「許可」に写す（`apps/frontend/lib/backend/adapter.ts`） */
 export const AUTOMATION_CREATE_CHOICES = ["作る", "作らない"] as const;
@@ -232,45 +233,15 @@ export class AutomationTools {
 
   /**
    * **会話のカードで人に聞く**。承認モード・自動許可を見ない（ここに来たら必ず聞く）。止められたら待つのをやめて断る
-   * ——形は Project をまたぐメッセージの確認（`delivery/thread-messages.ts` の `ask`）と同じ
+   * ——形は共通の `inbox/ask-in-thread.ts`
    */
-  private async ask(
+  private ask(
     threadId: string,
     message: string,
     toolInput: Record<string, unknown>,
     choices: readonly string[],
     signal: AbortSignal | undefined,
   ): Promise<{ allowed: boolean; note: string }> {
-    if (signal?.aborted) return { allowed: false, note: "（ターンが止まりました）" };
-    const judgment = await this.deps.inbox.raiseJudgment({
-      threadId,
-      source: "automation",
-      message,
-      serverName: "banto",
-      toolInput,
-      choices: [...choices],
-    });
-    this.deps.publishJudgment?.(threadId, { id: judgment.id, message, serverName: "banto", toolInput, choices: [...choices] });
-
-    let folding: Promise<unknown> | undefined;
-    const answer = await new Promise<{ behavior: string; message?: unknown }>((resolve) => {
-      this.deps.pendingApprovals.register(judgment.id, (result) => resolve(result as { behavior: string }));
-      const fold = (): void => {
-        const denied = { behavior: "deny" as const, message: "ターンが止まりました" };
-        if (this.deps.pendingApprovals.resolve(judgment.id, denied)) {
-          folding = this.deps.inbox.answerJudgment(judgment.id, denied).catch((err: unknown) => {
-            console.warn(`[automation] 止めたターンの判断待ち ${judgment.id} を畳めませんでした: ${String(err)}`);
-          });
-        }
-      };
-      // 判断待ちを出している間に止められていたら、聞き手を付けてももう鳴らない——ここで畳む
-      if (signal?.aborted) fold();
-      else signal?.addEventListener("abort", fold, { once: true });
-    });
-    if (folding) await folding;
-    // 許されたあとでも、その間に止められていたら作らない
-    if (signal?.aborted) return { allowed: false, note: "（ターンが止まりました）" };
-    if (answer.behavior === "allow") return { allowed: true, note: "" };
-    return { allowed: false, note: typeof answer.message === "string" && answer.message !== "" ? `（答え：${answer.message}）` : "" };
+    return askInThread(this.deps, { threadId, source: "automation", message, toolInput, choices, signal, logTag: "automation" });
   }
 }

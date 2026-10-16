@@ -226,6 +226,9 @@ export interface RealProjectMemory {
   text: string;
   invalidated: boolean;
   originThreadId?: string;
+  /** AI が `revise_memory` で頼み人が許して取り消したときの理由と、置き換えた先の行（追加・2026-10-15、アーキ §2.2） */
+  invalidatedReason?: string;
+  replacedBy?: number;
 }
 
 /** F2/F3——ターンごとの文脈使用量。contextUsageはRunnerが返す形をそのまま
@@ -298,7 +301,7 @@ export interface RealInboxJudgment {
   threadId: string;
   /** `relay`＝Module 間中継の初回承認（host 自身が発生源、§「Module 間中継の承認」）。
    *  `automation`＝自動化の確認（届ける前に人に聞く）。 */
-  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation";
+  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation" | "memory";
   message: string;
   /** Elicitationのform/urlモード（§2.4「自前で作らない」）。 */
   mode?: "form" | "url";

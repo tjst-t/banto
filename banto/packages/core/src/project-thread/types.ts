@@ -20,6 +20,10 @@ export interface MemoryEntry {
    *  「別の枝で決まったこと」として読めるようにするための出所。人が設定画面から
    *  直接足したものはundefined。 */
   originThreadId?: ThreadId;
+  /** 取り消した理由（AI が `revise_memory` で頼み人が許したとき。追加・2026-10-15、§2.2）。人の画面から取り消したものは無い */
+  invalidatedReason?: string;
+  /** 「改める」で置き換えた先の行の seq（同上） */
+  replacedBy?: number;
 }
 
 /** あるThreadから見た、確定済みMemoryの1件（その確定時点での見え方）。 */
@@ -40,6 +44,11 @@ export interface PendingMemoryChange {
   originThreadId?: ThreadId;
   /** この変化が起きたイベントのseq。どこまで届けたかの判定に使う。 */
   changedAtSeq: number;
+  /**
+   * **AI に番号を見せるか**（追加・2026-10-15、§2.2「取り消した行は AI に渡さない」）。Project Memory の行だけ——AI は番号で
+   * `revise_memory` に取り消す行を指す。Global Memory はこの道具で変えられないので付けない
+   */
+  numbered?: boolean;
 }
 
 /** Thread再読み込み時の表示復元専用（決定・2026-09-04）。実行再開はresumePointが担う

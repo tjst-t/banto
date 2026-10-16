@@ -65,6 +65,8 @@ export const BANTO_SYSTEM_PROMPT_CORE = `あなたは Banto の中で、人の�
 
 **経過は入れない、決まったことだけ。** まだ決まっていないことを、決まったこととして残さない。
 
+前の決まりを改める・古くなった行を外すときは、足すのではなく revise_memory で置き換える・取り消す（行は Memory の [#番号] で指す）。人がカードで許したときだけ変わる。
+
 # 書き方
 
 結論から。まず「何が起きたか／何が分かったか」を1文で。理由と詳細はその後に置く。
@@ -128,11 +130,12 @@ export function buildSystemPrompt(input: SystemPromptInput): string[] {
     blocks.push(`# あなたを動かしているモデル\n\nあなたは ${input.model.name} で動いている。モデル ID は ${input.model.id}。`);
   }
 
-  // 無効化された決定も「取り消された」と分かる形で残す——消すと、なぜその
-  // 判断をしないのかが読めなくなる（Event Store は追記のみ、規則3）。
-  const memory = input.memory;
+  // **取り消した行は入れない**（改訂・2026-10-15、§2.2「取り消した行は AI に渡さない」）。以前は「~~…~~（取り消し済み）」で
+  // 残していた——理由は「改める」（`revise_memory`）で新しい行の文に書く。Event Store と人の画面には残る。
+  // **行に番号を付ける**——AI が `revise_memory` で取り消す行を指すため
+  const memory = input.memory.filter((m) => !m.invalidated);
   if (memory.length > 0) {
-    const lines = memory.map((m) => (m.invalidated ? `- ~~${m.text}~~（取り消し済み）` : `- ${m.text}`));
+    const lines = memory.map((m) => `- [#${m.seq}] ${m.text}`);
     blocks.push(`# この Project で決まったこと（Memory）\n\n${lines.join("\n")}`);
   }
 

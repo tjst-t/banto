@@ -236,6 +236,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
       [
         "mcp__banto-thread__close_fork",
         ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
+        "mcp__banto-memory__revise_memory",
         "mcp__banto-thread__report_turn",
       ],
       "毎ターン承認を求めない",
@@ -254,6 +255,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     assert.deepEqual(second!.allowedTools, [
       "mcp__banto-thread__close_fork",
       ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
+      "mcp__banto-memory__revise_memory",
     ]);
   });
 });

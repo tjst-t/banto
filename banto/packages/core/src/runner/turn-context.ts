@@ -43,7 +43,7 @@ export function buildTurnContext(input: TurnContextInput): string {
   const appended = input.pendingMemory.filter((m) => m.kind === "appended");
   if (appended.length > 0) {
     lines.push("", "この Thread が始まってから、別の枝で決まったこと（Memory に入っている）：");
-    for (const m of appended) lines.push(`- ${m.text}`);
+    for (const m of appended) lines.push(m.numbered ? `- [#${m.seq}] ${m.text}` : `- ${m.text}`);
   }
 
   const invalidated = input.pendingMemory.filter((m) => m.kind === "invalidated");

@@ -15,7 +15,8 @@ import { remoteNameOf } from "../runtime/remote-runtimes.js";
 import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
-import { createMemoryMcpServer } from "./memory-tool.js";
+import { createMemoryMcpServer, REVISE_MEMORY_TOOL_NAME } from "./memory-tool.js";
+import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import {
   AUTOMATION_TOOL_NAMES,
   CLOSE_FORK_TOOL_NAME,
@@ -303,6 +304,11 @@ async function* runThreadTurnInner(
     /** **AI が自動化を作る・直す口**（決定・2026-10-15、§4.3「人と AI の作り方」）。渡されなければ tool は断る */
     automationTools?: AutomationTools;
     /**
+     * **Memory を取り消す・改めるときに人に聞く口**（追加・2026-10-15、§2.2）。承認モードにも自動許可にも依らず会話の
+     * カードで聞く。渡されなければ `revise_memory` は断る
+     */
+    memoryAsk?: AskInThreadDeps;
+    /**
      * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。承認のたびに
      * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
      */
@@ -473,7 +479,7 @@ async function* runThreadTurnInner(
 
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
-  mcpServers["banto-memory"] = createMemoryMcpServer(deps.projectThread, thread.projectId, input.threadId);
+  mcpServers["banto-memory"] = createMemoryMcpServer(deps.projectThread, thread.projectId, input.threadId, deps.memoryAsk);
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
@@ -502,7 +508,8 @@ async function* runThreadTurnInner(
   );
   const turnContext = buildTurnContext({
     thread,
-    pendingMemory: [...memory.pending, ...global_.pending].sort((a, b) => a.changedAtSeq - b.changedAtSeq),
+    // Project Memory の行だけ番号を見せる（AI が `revise_memory` で指せるのはこちらだけ、§2.2）
+    pendingMemory: [...memory.pending.map((m) => ({ ...m, numbered: true })), ...global_.pending].sort((a, b) => a.changedAtSeq - b.changedAtSeq),
     // **生きているものだけ**（訂正・2026-10-04、ユーザー報告）。期限切れ（host の再起動で畳んだ等）は受信箱の記録には
     // 残るが、もう誰も答えを待っていない——以前は数えていて、片づいた承認がいつまでも「まだ返事が無い」に出ていた
     openJudgments: deps.inbox
@@ -595,6 +602,8 @@ async function* runThreadTurnInner(
       allowedTools: [
         `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
         ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
+        // Memory を取り消す・改めるも tool の中で必ず人に聞く（2回聞かない。§2.2）
+        `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,
         ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
       ],
       // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない

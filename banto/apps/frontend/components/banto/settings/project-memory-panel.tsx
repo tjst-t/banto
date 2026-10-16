@@ -101,7 +101,19 @@ export function ProjectMemoryPanel({ projectId }: { projectId: string }) {
               key={m.seq}
               className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1.5"
             >
-              <span className={cn("text-xs text-ink-2", m.invalidated && "text-ink-3 line-through")}>{m.text}</span>
+              {/* 番号は AI が revise_memory で行を指すのと同じもの（アーキ §2.2、2026-10-15） */}
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className={cn("text-xs text-ink-2", m.invalidated && "text-ink-3 line-through")}>
+                  <span className="mr-1.5 font-mono text-ink-3 no-underline">#{m.seq}</span>
+                  {m.text}
+                </span>
+                {m.invalidated && (m.invalidatedReason || m.replacedBy !== undefined) ? (
+                  <span className="text-xs text-ink-3">
+                    {m.replacedBy !== undefined ? `#${m.replacedBy} に改めました` : "取り消しました"}
+                    {m.invalidatedReason ? `（${m.invalidatedReason}）` : ""}
+                  </span>
+                ) : null}
+              </span>
               {!m.invalidated ? (
                 <button
                   type="button"

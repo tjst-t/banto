@@ -27,6 +27,7 @@ import { issueWebhookToken, type AutomationWebhooks } from "../automation/webhoo
 import type { AutomationRunner } from "../automation/runner.js";
 import { previousRunUnfinished } from "../automation/busy.js";
 import { AutomationTools } from "../automation/tools.js";
+import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import { nextFireOf } from "../automation/schedule.js";
 import type { Automation } from "../automation/fold.js";
 import {
@@ -1252,23 +1253,27 @@ export function createApp(deps: AppDeps) {
 
   // **AI が自動化を作る・直す口**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは
   // 承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで聞く——`autoApproveAll` を渡さない
+  // core 自身の tool が「必ず聞く」ときの口（自動化 §4.3・Memory の取り消し §2.2）。走っているターンの画面へカードを流す
+  const askInThreadDeps: AskInThreadDeps = {
+    inbox: deps.inbox,
+    pendingApprovals: deps.pendingApprovals,
+    publishJudgment: (threadId, judgment) =>
+      deps.turnEvents?.publish(threadId, {
+        type: "judgment",
+        judgmentId: judgment.id,
+        kind: "approval",
+        serverName: judgment.serverName,
+        toolInput: judgment.toolInput,
+        message: judgment.message,
+        choices: judgment.choices,
+      }),
+  };
   const automationTools = deps.automations
     ? new AutomationTools({
         projectThread: deps.projectThread,
         automations: deps.automations,
         ...(deps.automationRunner ? { runner: deps.automationRunner } : {}),
-        inbox: deps.inbox,
-        pendingApprovals: deps.pendingApprovals,
-        publishJudgment: (threadId, judgment) =>
-          deps.turnEvents?.publish(threadId, {
-            type: "judgment",
-            judgmentId: judgment.id,
-            kind: "approval",
-            serverName: judgment.serverName,
-            toolInput: judgment.toolInput,
-            message: judgment.message,
-            choices: judgment.choices,
-          }),
+        ...askInThreadDeps,
       })
     : undefined;
 
@@ -1476,7 +1481,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -2817,6 +2822,8 @@ export function createApp(deps: AppDeps) {
             text: m.text,
             invalidated: m.invalidatedAtSeq !== undefined,
             originThreadId: m.originThreadId,
+            ...(m.invalidatedReason ? { invalidatedReason: m.invalidatedReason } : {}),
+            ...(m.replacedBy !== undefined ? { replacedBy: m.replacedBy } : {}),
           })),
         );
         return;

@@ -58,13 +58,37 @@ test("nothing that changes per turn leaks into the system prompt", () => {
   assert.ok(!blocks.includes("Fork Thread（Base Thread から分岐"), "いまいるThreadが入っている");
 });
 
-test("invalidated memory stays visible as withdrawn, not silently removed", () => {
+test("取り消した行は土台の指示に入れず、残りの行には番号を付ける（§2.2、2026-10-15）", () => {
   const blocks = buildSystemPrompt({
     project,
-    memory: [{ seq: 1, text: "古い決定", invalidated: true }],
+    memory: [
+      { seq: 1, text: "古い決定", invalidated: true },
+      { seq: 4, text: "今の決定", invalidated: false },
+    ],
   }).join("\n");
-  assert.ok(blocks.includes("古い決定"));
-  assert.ok(blocks.includes("取り消し済み"));
+  assert.ok(!blocks.includes("古い決定"));
+  assert.ok(!blocks.includes("取り消し済み"));
+  assert.ok(blocks.includes("- [#4] 今の決定"));
+});
+
+test("取り消した行しか無ければ Memory の節そのものを出さない", () => {
+  const blocks = buildSystemPrompt({ project, memory: [{ seq: 1, text: "古い決定", invalidated: true }] }).join("\n");
+  assert.ok(!blocks.includes("この Project で決まったこと"));
+});
+
+test("ターンに添える Project Memory の行には番号、Global Memory には付けない", () => {
+  const text = buildTurnContext({
+    thread: { kind: "base" },
+    pendingMemory: [
+      { kind: "appended", seq: 9, text: "Project の決定", changedAtSeq: 9, numbered: true },
+      { kind: "appended", seq: 10, text: "全体の決定", changedAtSeq: 10 },
+    ],
+    openJudgments: [],
+    startedAt: new Date("2026-10-15T09:00:00Z"),
+  });
+  assert.ok(text.includes("- [#9] Project の決定"));
+  assert.ok(text.includes("- 全体の決定"));
+  assert.ok(!text.includes("[#10]"));
 });
 
 test("the turn context carries the four things that change per turn", () => {

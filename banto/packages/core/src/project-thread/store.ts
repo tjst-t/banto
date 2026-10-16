@@ -472,7 +472,7 @@ export class ProjectThreadStore {
    * `originThreadId`は「どのThreadで決まったか」の出所——走行中のThreadへ差分を
    * 届けるときに使う（§2.3）。人が設定画面から足したときは無し。
    */
-  async appendMemory(projectId: ProjectId, text: string, originThreadId?: ThreadId): Promise<void> {
+  async appendMemory(projectId: ProjectId, text: string, originThreadId?: ThreadId): Promise<number> {
     if (!this.getProject(projectId)) throw new NotFoundError(`project ${projectId} not found`);
     if (text.length > MEMORY_ENTRY_MAX_CHARS) {
       throw new MemoryLimitExceededError(
@@ -481,12 +481,29 @@ export class ProjectThreadStore {
     }
     const event = await this.log.append("memory.appended", { projectId, text, threadId: originThreadId });
     this.projection.applyOne(event);
+    return event.seq;
   }
 
-  async invalidateMemory(projectId: ProjectId, targetSeq: number): Promise<void> {
-    if (!this.getProject(projectId)) throw new NotFoundError(`project ${projectId} not found`);
-    const event = await this.log.append("memory.invalidated", { projectId, targetSeq });
+  /**
+   * 取り消す。`reason`・`replacedBy` は AI が `revise_memory` で頼み人が許したとき（追加・2026-10-15、§2.2）。
+   * もう取り消してある行には何もしない（`false` を返す。fold も2回目を無視するが、記録を積まない）
+   */
+  async invalidateMemory(
+    projectId: ProjectId,
+    targetSeq: number,
+    opts: { reason?: string; replacedBy?: number } = {},
+  ): Promise<boolean> {
+    const project = this.getProject(projectId);
+    if (!project) throw new NotFoundError(`project ${projectId} not found`);
+    if (project.memory.find((m) => m.seq === targetSeq)?.invalidatedAtSeq !== undefined) return false;
+    const event = await this.log.append("memory.invalidated", {
+      projectId,
+      targetSeq,
+      ...(opts.reason ? { reason: opts.reason } : {}),
+      ...(opts.replacedBy !== undefined ? { replacedBy: opts.replacedBy } : {}),
+    });
     this.projection.applyOne(event);
+    return true;
   }
 
   /**
