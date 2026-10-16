@@ -42,6 +42,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const prepared: string[] = [];
     const tools = new AutomationTools({
       projectThread: store,
+      now: () => NOW,
       automations,
       runner: {
         prepare: async (a: Automation) => {
@@ -58,6 +59,9 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/** 試験の今（木曜 07:46 UTC。作った時刻（実時間）より後に置く——次の時刻は作った時刻より前から数えない） */
+const NOW = new Date("2027-01-07T07:46:00Z");
 
 const FIELDS = {
   name: "毎朝のまとめ",
@@ -185,5 +189,71 @@ test("AI に返すのは選んだ欄だけ", async () => {
     assert.ok(!JSON.stringify(shown).includes("secret-token"));
     assert.equal(shown.when, "平日 9:00（Asia/Tokyo）");
     assert.equal(describeAutomationSource({ kind: "time", repeat: { kind: "weekly", day: 1, time: "8:30" }, timeZone: "UTC" }), "毎週月曜 8:30（UTC）");
+  });
+});
+
+test("一覧に直近の回（結果・飛ばした理由）と次の時刻が出る。一時停止中は次の時刻が無い", async () => {
+  await setup(async (ctx) => {
+    const a = await ctx.automations.create({
+      projectId: ctx.projectId,
+      createdBy: { kind: "ai", threadId: ctx.baseId },
+      fields: { ...FIELDS, source: { kind: "time", repeat: { kind: "cron", expr: "*/15 * * * *" }, timeZone: "UTC" } },
+    });
+    await ctx.automations.recordRun(a.id, {
+      runId: "r1",
+      at: "2027-01-07T07:30:00Z",
+      cause: "clock",
+      result: "done",
+      scheduledFor: "2027-01-07T07:30:00Z",
+    });
+    await ctx.automations.recordRun(a.id, {
+      runId: "r2",
+      at: "2027-01-07T07:45:00Z",
+      cause: "clock",
+      result: "skipped",
+      reason: "前の回がまだ動いているので飛ばしました",
+      scheduledFor: "2027-01-07T07:45:00Z",
+    });
+    for (let i = 0; i < 6; i++) {
+      await ctx.automations.recordRun(a.id, { runId: `m${i}`, at: `2027-01-07T07:4${i}:30Z`, cause: "manual", result: "done" });
+    }
+
+    const [shown] = JSON.parse(ctx.tools.list(ctx.baseId).text) as Array<Record<string, unknown>>;
+    assert.equal(shown?.nextFireAt, "2027-01-07T08:00:00.000Z");
+    const runs = shown?.recentRuns as Array<Record<string, unknown>>;
+    assert.equal(runs.length, 5, "数件に絞っていない");
+    assert.equal(runs[0]?.runId, undefined, "内部の id を返している");
+
+    // 飛ばした回の理由が読める（新しい回に押し出されない数で確かめる）
+    const few = automationForAi({ ...ctx.automations.get(a.id)!, runs: ctx.automations.get(a.id)!.runs.slice(-2) }, NOW);
+    assert.deepEqual(few.recentRuns, [
+      {
+        at: "2027-01-07T07:45:00Z",
+        cause: "clock",
+        result: "skipped",
+        reason: "前の回がまだ動いているので飛ばしました",
+        scheduledFor: "2027-01-07T07:45:00Z",
+      },
+      { at: "2027-01-07T07:30:00Z", cause: "clock", result: "done", scheduledFor: "2027-01-07T07:30:00Z" },
+    ]);
+
+    await ctx.tools.pause(ctx.baseId, a.id);
+    const [paused] = JSON.parse(ctx.tools.list(ctx.baseId).text) as Array<Record<string, unknown>>;
+    assert.equal(paused?.nextFireAt, undefined, "一時停止中に次の時刻を出している");
+    assert.equal(paused?.paused, true);
+  });
+});
+
+test("作った直後の返り値にも次の時刻と（まだ空の）直近の回が出る", async () => {
+  await setup(async (ctx) => {
+    const pending = ctx.tools.create(ctx.baseId, FIELDS);
+    const j = await nextJudgment(ctx, 1);
+    ctx.approvals.resolve(j.id, { behavior: "allow" });
+    const result = await pending;
+    assert.equal(result.ok, true);
+    const shown = JSON.parse(result.text.slice(result.text.indexOf("\n") + 1)) as Record<string, unknown>;
+    assert.deepEqual(shown.recentRuns, []);
+    // 平日 9:00 Asia/Tokyo ＝ 00:00 UTC。作った時刻（実時間）より後の最初の平日
+    assert.match(String(shown.nextFireAt), /T00:00:00\.000Z$/);
   });
 });

@@ -22,6 +22,7 @@ import {
 } from "./store.js";
 import type { AutomationRunner } from "./runner.js";
 import { askInThread } from "../inbox/ask-in-thread.js";
+import { nextFireOf } from "./schedule.js";
 
 /** 確認のカードの選択肢。許す側の言葉は画面が「許可」に写す（`apps/frontend/lib/backend/adapter.ts`） */
 export const AUTOMATION_CREATE_CHOICES = ["作る", "作らない"] as const;
@@ -41,6 +42,8 @@ export interface AutomationToolsDeps {
   runner?: Pick<AutomationRunner, "prepare">;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
+  /** 今の時刻（「次は」の計算）。無ければ `new Date()`（試験が時刻を決める） */
+  now?: () => Date;
   /** 走っているターンの画面へ、判断待ちが出たことを流す（会話の中の確認のカード） */
   publishJudgment?(
     threadId: string,
@@ -71,9 +74,16 @@ function describeRepeat(repeat: AutomationRepeat): string {
   }
 }
 
-/** AI に返す1件。**欄を選んで組む**（Webhook の印のような、AI に渡さない欄を足しても漏れない） */
-export function automationForAi(a: Automation): Record<string, unknown> {
-  const last = a.runs[0];
+/** AI に返す直近の回の数（新しい順）。台帳は 50 件持つが、AI が「動いたか・飛ばしたか」を読むには数件で足りる */
+export const AUTOMATION_RUNS_FOR_AI = 5;
+
+/**
+ * AI に返す1件。**欄を選んで組む**（Webhook の印のような、AI に渡さない欄を足しても漏れない）。
+ * 直近の回（結果・飛ばした理由）と次の時刻を添える——AI は台帳・ログ・画面に届かないことがあり、「区切りの直後に Fork が
+ * idle だった」が動いて終わったのか飛ばされたのかを、ここでしか読めない（Backlog #338）。次の時刻は保存しない（規則3）
+ */
+export function automationForAi(a: Automation, now: Date = new Date()): Record<string, unknown> {
+  const next = nextFireOf(a, now);
   return {
     id: a.id,
     name: a.name,
@@ -85,9 +95,16 @@ export function automationForAi(a: Automation): Record<string, unknown> {
     paused: a.paused,
     ...(a.pausedReason ? { pausedReason: a.pausedReason } : {}),
     createdBy: a.createdBy.kind,
-    ...(last
-      ? { lastRun: { at: last.at, cause: last.cause, result: last.result, ...(last.reason ? { reason: last.reason } : {}) } }
-      : {}),
+    // 一時停止中・時刻でないきっかけ・該当する時刻が来ない cron の式は無い
+    ...(next ? { nextFireAt: next.toISOString() } : {}),
+    recentRuns: a.runs.slice(0, AUTOMATION_RUNS_FOR_AI).map((r) => ({
+      at: r.at,
+      cause: r.cause,
+      result: r.result,
+      ...(r.reason ? { reason: r.reason } : {}),
+      ...(r.scheduledFor ? { scheduledFor: r.scheduledFor } : {}),
+      ...(r.delayed ? { delayed: r.delayed } : {}),
+    })),
   };
 }
 
@@ -97,7 +114,7 @@ export class AutomationTools {
   list(threadId: string): AutomationToolResult {
     const projectId = this.projectOf(threadId);
     if (!projectId) return { ok: false, text: "この Thread が見つかりません。" };
-    const list = this.deps.automations.list(projectId).map(automationForAi);
+    const list = this.deps.automations.list(projectId).map((a) => automationForAi(a, this.now()));
     return { ok: true, text: list.length === 0 ? "この Project に自動化はありません。" : JSON.stringify(list, null, 2) };
   }
 
@@ -129,7 +146,7 @@ export class AutomationTools {
       const prepared = (await this.deps.runner?.prepare(created)) ?? created;
       return {
         ok: true,
-        text: `人が許したので、自動化「${prepared.name}」を作った（id: ${prepared.id}）。\n${JSON.stringify(automationForAi(prepared), null, 2)}`,
+        text: `人が許したので、自動化「${prepared.name}」を作った（id: ${prepared.id}）。\n${JSON.stringify(automationForAi(prepared, this.now()), null, 2)}`,
       };
     });
   }
@@ -155,7 +172,7 @@ export class AutomationTools {
       let updated = await this.deps.automations.update(automationId, raw);
       // 届け先を専用の Fork に変えたら立てる。一時停止のままなら立てない（画面の口と同じ）
       if (!updated.paused && this.deps.runner) updated = await this.deps.runner.prepare(updated);
-      return { ok: true, text: `人が許したので、自動化「${updated.name}」を変えた。\n${JSON.stringify(automationForAi(updated), null, 2)}` };
+      return { ok: true, text: `人が許したので、自動化「${updated.name}」を変えた。\n${JSON.stringify(automationForAi(updated, this.now()), null, 2)}` };
     });
   }
 
@@ -187,6 +204,10 @@ export class AutomationTools {
       if (this.deps.runner) resumed = await this.deps.runner.prepare(resumed);
       return { ok: true, text: `人が許したので、自動化「${resumed.name}」を再開した。` };
     });
+  }
+
+  private now(): Date {
+    return this.deps.now?.() ?? new Date();
   }
 
   private projectOf(threadId: string): string | undefined {
