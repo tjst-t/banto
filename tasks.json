@@ -7955,7 +7955,7 @@
       "number": 330,
       "kind": "task",
       "title": "AI が Memory の取り消し・改めるを頼み、人がカードで承認する",
-      "status": "in-progress",
+      "status": "done",
       "parent": "memory-hygiene",
       "dependsOn": [],
       "milestone": null,
@@ -7963,7 +7963,7 @@
       "labels": [],
       "body": "banto-memory に道具を足す：(1) 取り消す（項目を指す・理由を必須）、(2) 改める（前の項目を指して新しい文で置き換える。複数をまとめて1件にもできる）。どちらも会話の中のカードで人が承認する（前の文と後の文を並べる・まとめて許す口も要る）。「承認をすべて自動で許可する」の対象にするかは仕様で決める。AI が項目を指せるよう、土台の指示の Memory の行に番号（seq）を付ける。今は番号が出ておらず、コンテナから host の API にも届かないので、AI には取り消しの対象を指す手段が無い（2026-10-15 に別のサーバの Project から試した）。仕様から。",
       "doneWhen": "AI が取り消しと改めるを頼むと会話にカードが出て、許したときだけ Memory が変わることを E2E で確かめる。断ったら変わらない。",
-      "resolution": null,
+      "resolution": "fa2f1c7e（main と release）。banto-memory の revise_memory、承認モード・自動許可に依らず会話のカードで聞く。E2E memory-revise.spec で、断れば変わらず許せば改めることを確かめた。フル E2E 289 中 288 通過、落ちた browser-video は単独で通過。",
       "refs": [],
       "threads": [
         {
@@ -7972,8 +7972,8 @@
         }
       ],
       "createdAt": "2026-10-15T23:22:52.824Z",
-      "updatedAt": "2026-10-16T00:04:45.498Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T01:11:21.606Z",
+      "closedAt": "2026-10-16T01:11:21.606Z",
       "extra": {}
     },
     {
