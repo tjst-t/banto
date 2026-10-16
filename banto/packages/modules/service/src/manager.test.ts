@@ -501,3 +501,30 @@ test("閉じるときに止めておく：全件を止めて自動起動から�
     await cleanup();
   }
 });
+
+test("起こした呼び出しの印を登録と起動役の置き場（cause.json）に残す。動いているものを起こすだけなら変えず、印の無い呼び出しで起こしたら消す。unit は出口の箱を起動役に渡す（Backlog #347）", async () => {
+  const { base, sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" }, undefined, "call-1");
+    const cause = () => readFile(join(base, "state/web/cause.json"), "utf8").then((t) => JSON.parse(t) as unknown, () => undefined);
+    const registered = async () => (JSON.parse(await readFile(join(base, "data/service/services.json"), "utf8")) as { services: Record<string, { causedBy?: unknown }> }).services.web?.causedBy;
+    assert.deepEqual(await cause(), { callId: "call-1" });
+    assert.deepEqual(await registered(), { callId: "call-1" });
+    assert.match(await readFile(join(base, "units/banto-web.service"), "utf8"), /ExecStart=.* "[^"]*\/state\/web" "[^"]*\/state\/\.outbox"/);
+
+    // 動いている——起動するだけなので、この呼び出しは起動を始めていない
+    await manager.start({ name: "web" }, undefined, "call-2");
+    assert.deepEqual(await cause(), { callId: "call-1" });
+
+    await manager.restart("web", undefined, "call-3");
+    assert.deepEqual(await cause(), { callId: "call-3" });
+
+    // 人の画面から（印が無い）起こしたら、前の AI の印は残さない
+    sc.active.set("banto-web.service", "failed");
+    await manager.start({ name: "web" });
+    assert.equal(await cause(), undefined);
+    assert.equal(await registered(), undefined);
+  } finally {
+    await cleanup();
+  }
+});

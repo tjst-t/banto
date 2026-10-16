@@ -485,6 +485,23 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       isolation: "subprocess",
       scope: "project",
       confinement: { kind: "landlock", root: "project", profile: "exec" },
+      // **出す出来事**（アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。unit の起動役が落ちたときに出口の箱へ書き、
+      // Module が繋がったら出す。起こし直しの上限に当たった（gave-up）は起動役から見えないので名乗らない
+      events: [
+        {
+          name: "service.crashed",
+          title: "Service が落ちた",
+          description:
+            "startService で起こしたサービスが落ちた（止められた・終了コード 0 で終わったは含まない）。落ちるたびに1件。" +
+            "本文はログの末尾。systemd が起こし直すので、続けて落ちれば続けて起きる",
+          fields: {
+            service: { type: "string", title: "サービスの名前" },
+            exitCode: { type: "number", title: "終了コード" },
+            signal: { type: "string", title: "終わらせた信号" },
+          },
+          subject: "service",
+        },
+      ],
     },
   },
   {
@@ -516,6 +533,25 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       isolation: "subprocess",
       scope: "project",
       confinement: { kind: "landlock", root: "project", profile: "exec" },
+      // **出す出来事**（アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。書き込みの前後を比べ、できた・状態が変わった
+      // 項目ごとに1件。ラベルは「,」でつないだ1つの文字列（属性は文字列・数・真偽だけ）
+      events: [
+        {
+          name: "backlog.item-changed",
+          title: "Backlog の項目ができた・状態が変わった",
+          description: "Backlog の項目（ストーリー・タスク・バグ）ができた、または状態が変わった。できたときは from が無い",
+          fields: {
+            item: { type: "string", title: "項目の id" },
+            number: { type: "number", title: "番号" },
+            title: { type: "string", title: "題" },
+            kind: { type: "string", title: "種類", enum: ["story", "task", "bug"] },
+            from: { type: "string", title: "前の状態", enum: ["backlog", "ready", "in-progress", "done", "dropped"] },
+            to: { type: "string", title: "新しい状態", enum: ["backlog", "ready", "in-progress", "done", "dropped"] },
+            labels: { type: "string", title: "ラベル（「,」区切り）" },
+          },
+          subject: "item",
+        },
+      ],
     },
   },
   {
@@ -547,6 +583,34 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       scope: "project",
       confinement: { kind: "landlock", root: "project", profile: "exec" },
       resumesAfterRestart: true,
+      // **出す出来事**（アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。札で頼んだ会話への知らせとは別に出す。
+      // requestedBy で「頼んだ会話が無いもの（human）」だけに絞れる。run-finished は件（item）を持たないので主体を名乗らない
+      events: [
+        {
+          name: "factory.item-stopped",
+          title: "Factory の件が止まった",
+          description: "Factory に流した1件が止まり、答え（answerFactory）を待っている。本文は止まった理由",
+          fields: {
+            item: { type: "string", title: "Backlog の項目" },
+            title: { type: "string", title: "題" },
+            stage: { type: "string", title: "止まった段" },
+            requestedBy: { type: "string", title: "頼んだもの", enum: ["ai", "human"] },
+            runId: { type: "string", title: "実行の id" },
+          },
+          subject: "item",
+        },
+        {
+          name: "factory.run-finished",
+          title: "Factory の実行が終わった",
+          description: "Factory の実行の全件が終わった（取り込んだ・やめた）。本文は各件の結果",
+          fields: {
+            merged: { type: "number", title: "取り込んだ件数" },
+            total: { type: "number", title: "流した件数" },
+            requestedBy: { type: "string", title: "頼んだもの", enum: ["ai", "human"] },
+            runId: { type: "string", title: "実行の id" },
+          },
+        },
+      ],
     },
   },
   {

@@ -3063,10 +3063,13 @@ Shell の `grep` で足りる）。
   （`log-wrapper.js`）が「どう終わったか」を `exit.json` に書き**、状態はそれで見分ける。起動役は ExecStart から
   起こされ、置き場の `command.sh` を /bin/sh で走らせ（AI のコマンドを unit に書かない）、標準出力・標準エラーを
   時刻つきで `log` に書く（10MB で `log.1` へ回す）。止められたら終了コード 0 で抜けて起こし直させない
+- **落ちたら起動役が出来事 `service.crashed` を出口の箱に書く**（追加・2026-10-16、Backlog #347。アーキ仕様 §4.3「最初の出来事で
+  実装で決めたこと」）。箱は `~/.banto-service/.outbox`（起動役の引数の3つめ）で、Module が起きたとき・3 秒ごとに host へ出す。
+  起こした呼び出しの印は登録の `causedBy` とサービスの置き場の `cause.json`
 - **落ちて上限に当たった unit は `reset-failed` しないと `start` が断られる**（実測）。startService・restartService の前に挟む
 - 置き場（コンテナの中のローカル）：unit は passwd のホームの `~/.config/systemd/user/banto-<name>.service`、
   サービスごとの置き場は `~/.banto-service/<name>/`（`~/.local` は Incus が root の持ち物で作るので、その下には書けない——実測）（`command.sh`・`env`（0600）・`log`・`exit.json`・
-  `started.json`）。**Module の `HOME` は host のディスク（Module の置き場）を指すので使わない**
+  `started.json`・`cause.json`）。**Module の `HOME` は host のディスク（Module の置き場）を指すので使わない**
 - **systemd を用意できなくても MCP の口は開き**、道具を呼ばれたら理由つきで断る（規則2）
 - 試験：単体（systemd を偽物に差し替え）と、`BANTO_TEST_SYSTEMD=1` で本物の systemd を使う結合試験
   （起こす・鍵の値が崩れずに届く・落ちて上限→起こし直し・自分で終わる・外から止める・写しを消す→作り直す・

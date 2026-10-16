@@ -16,6 +16,11 @@ export const unitHeaderFor = (moduleName: string) => `${UNIT_HEADER}（${moduleN
 export const unitName = (name: string) => `banto-${name}.service`;
 export const unitPath = (paths: ServicePaths, name: string) => join(paths.unitDir, unitName(name));
 export const serviceDir = (paths: ServicePaths, name: string) => join(paths.stateDir, name);
+/**
+ * **出口の箱**（追加・2026-10-16、アーキ仕様 §4.3、Backlog #347）。起動役が落ちた出来事を書き、Module が host へ出す。
+ * 頭の `.` はサービスの名前（`NAME_PATTERN`）に使えないので、どのサービスの置き場とも重ならない
+ */
+export const outboxDir = (paths: ServicePaths) => join(paths.stateDir, ".outbox");
 
 /** systemd の値の中の `%` は指定子になるので `%%` にする */
 function escapePercent(s: string): string {
@@ -37,6 +42,8 @@ export function renderUnit(opts: {
   needsEnv?: boolean;
   /** どの Module の1本が作ったか（同じ Project に2本つけたとき、互いの写しを片付けないため） */
   moduleName?: string;
+  /** 落ちたときに起動役が出来事を書く出口の箱（無ければ書かない） */
+  outboxDir?: string;
 }): string {
   return [
     `${UNIT_HEADER}（${opts.moduleName ?? "service"}）。手で直しても、Module が登録に合わせて作り直す`,
@@ -49,7 +56,7 @@ export function renderUnit(opts: {
     // 鍵の値はここ（0600、コンテナの中）。unit の本体には書かない。**鍵が要るものは `-` を付けない**
     // ——ファイルが無いまま秘密なしで黙って起きるより、起動に失敗して「落ちた」で見えるほうがよい
     `EnvironmentFile=${opts.needsEnv ? "" : "-"}${escapePercent(join(opts.dir, "env"))}`,
-    `ExecStart=${quoteWord(opts.nodePath)} ${quoteWord(opts.wrapperPath)} ${quoteWord(opts.dir)}`,
+    `ExecStart=${quoteWord(opts.nodePath)} ${quoteWord(opts.wrapperPath)} ${quoteWord(opts.dir)}${opts.outboxDir ? ` ${quoteWord(opts.outboxDir)}` : ""}`,
     // 起こし直すのは異常終了のときだけ。上限は systemd の既定のまま（決定・2026-09-27）
     "Restart=on-failure",
     // **仕事の組の天井の中**（決定・2026-10-08、ユーザー。`docs/specs/v4-security.md` §1 の段2a）——丸ごとは止めず

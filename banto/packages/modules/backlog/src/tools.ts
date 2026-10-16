@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { basename, sep } from "node:path";
 import { realpathSync } from "node:fs";
-import { VISIBILITY_META_KEY, callIdOf, threadOf } from "@banto/module-contract";
+import { VISIBILITY_META_KEY, callIdOf, threadOf, type EmittedEvent } from "@banto/module-contract";
 import {
   BacklogError,
   KINDS,
@@ -447,6 +447,59 @@ export interface ToolContext {
   now?: () => string;
   /** 設定で選べる SSH 鍵の一覧（Vault の目録から）。無ければ選べない */
   sshIdentities?: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
+  /**
+   * **出来事を出す**（追加・2026-10-16、アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。出口の箱に書いてから host へ
+   * 出す口（`EventPublisher.publish`）。無ければ出さない
+   */
+  emitEvent?: (event: EmittedEvent) => void;
+}
+
+/** 出来事の名前（宣言の `events` と揃える——core の目録 `modules/declaration.ts`） */
+export const ITEM_CHANGED_EVENT = "backlog.item-changed";
+
+/**
+ * **できた・状態が変わった項目の出来事**（`backlog.item-changed`）。1回の書き込みの前後を比べ、項目ごとに1件。できたものは
+ * `from` を持たない。印はコミットと項目から決める（同じ書き込みを二度出さない）。`callId` はこの書き込みを頼んだ呼び出しの印
+ * ——AI のターンからなら、host がそのターンのホップ＋1を付ける
+ */
+export function itemChangedEvents(
+  before: BacklogDocument,
+  after: BacklogDocument,
+  commit: string,
+  occurredAt: string,
+  callId?: string,
+): EmittedEvent[] {
+  const was = new Map(before.items.map((i) => [i.id, i]));
+  return after.items.flatMap((item): EmittedEvent[] => {
+    const prev = was.get(item.id);
+    if (prev && prev.status === item.status) return [];
+    return [
+      {
+        name: ITEM_CHANGED_EVENT,
+        eventId: `${commit}/${item.id}`,
+        occurredAt,
+        fields: {
+          item: item.id,
+          ...(item.number !== null ? { number: item.number } : {}),
+          title: item.title,
+          kind: item.kind,
+          ...(prev ? { from: prev.status } : {}),
+          to: item.status,
+          labels: item.labels.join(","),
+        },
+        text: prev
+          ? `${named(item)}「${item.title}」が ${prev.status} から ${item.status} になりました`
+          : `${named(item)}「${item.title}」（${item.kind}）ができました（${item.status}）`,
+        ...(callId ? { causedBy: { callId } } : {}),
+      },
+    ];
+  });
+}
+
+/** 書き込みのあと、できた・状態が変わった項目を出来事として出す */
+function announce(ctx: ToolContext, written: { before: BacklogDocument; doc: BacklogDocument; commit: string }, at: string, callId?: string): void {
+  if (!ctx.emitEvent) return;
+  for (const e of itemChangedEvents(written.before, written.doc, written.commit, at, callId)) ctx.emitEvent(e);
 }
 
 const where = (w: "before" | "after") => (w === "before" ? "前" : "後ろ");
@@ -515,6 +568,7 @@ export async function callTool(
           (r) => `backlog: createItem ${named(r)}`,
           callId,
         );
+        announce(ctx, written, now(), callId);
         const { result, doc, branch, created } = written;
         return ok(
           `${created ? `一覧のブランチ ${branch} を作り、` : ""}足しました：${line(result, doc.items)}${pushNote(written)}`,
@@ -530,11 +584,13 @@ export async function callTool(
           (r) => `backlog: updateItem ${named(r)}（${describePatch({ ...patch, ...refs })}）`,
           callId,
         );
+        announce(ctx, written, now(), callId);
         return ok(`変えました：${line(written.result, written.doc.items)}${pushNote(written)}`, { item: written.result, ...pushField(written) });
       }
       case "splitStory": {
         const split = splitFrom(args);
         const written = await ctx.store.mutate((d) => splitChange(d, split, now()), (r) => `backlog: splitStory ${r.story}（${r.created.length} 件）`, callId);
+        announce(ctx, written, now(), callId);
         const { doc } = written;
         const result = written.result.created;
         return ok(
@@ -560,23 +616,24 @@ export async function callTool(
       case "boardCreateItem": {
         const input = newItemFrom(args);
         const refs = refFieldsFrom(args);
-        await ctx.store.mutate((d) => createItem(d, { ...input, ...resolveRefFields(d.items, refs) }, now()), (r) => `backlog: createItem ${named(r)}`, callId);
+        announce(ctx, await ctx.store.mutate((d) => createItem(d, { ...input, ...resolveRefFields(d.items, refs) }, now()), (r) => `backlog: createItem ${named(r)}`, callId), now(), callId);
         return await board(ctx);
       }
       case "boardUpdateItem": {
         const target = requiredRef(args, "id");
         const patch = patchFrom(args);
         const refs = refFieldsFrom(args);
-        await ctx.store.mutate(
+        const written = await ctx.store.mutate(
           (d) => updateItem(d, idOf(d.items, target), { ...patch, ...resolveRefFields(d.items, refs) }, now()),
           (r) => `backlog: updateItem ${named(r)}（${describePatch({ ...patch, ...refs })}）`,
           callId,
         );
+        announce(ctx, written, now(), callId);
         return await board(ctx);
       }
       case "boardSplitStory": {
         const split = splitFrom(args);
-        await ctx.store.mutate((d) => splitChange(d, split, now()), (r) => `backlog: splitStory ${r.story}（${r.created.length} 件）`, callId);
+        announce(ctx, await ctx.store.mutate((d) => splitChange(d, split, now()), (r) => `backlog: splitStory ${r.story}（${r.created.length} 件）`, callId), now(), callId);
         return await board(ctx);
       }
       case "boardMoveItem": {

@@ -945,3 +945,18 @@ test("出来事の名乗り：同梱の宣言の meta.events を宣言の名前�
   // 名乗らなければ空
   assert.deepEqual(declaredEvents(parseModuleDeclaration({ name: "x", launch: { command: "node", args: [] }, meta: { satisfies: [], isolation: "subprocess" } }, "t")), []);
 });
+
+test("最初に出す出来事：目録の Service・Factory・Backlog はそれぞれ自分の名前で名乗る（アーキ仕様 §4.3、Backlog #347）", () => {
+  const events = (id: string) => {
+    const entry = BUNDLED_CATALOG.find((e) => e.id === id)!;
+    const parsed = parseModuleDeclaration({ name: id, launch: entry.launch, meta: entry.meta }, "t");
+    assert.equal(parsed.meta.origin, "bundled");
+    return declaredEvents(parsed).map((e) => [e.name, e.subject ?? null, Object.keys(e.fields)]);
+  };
+  assert.deepEqual(events("service"), [["service.crashed", "service", ["service", "exitCode", "signal"]]]);
+  assert.deepEqual(events("factory"), [
+    ["factory.item-stopped", "item", ["item", "title", "stage", "requestedBy", "runId"]],
+    ["factory.run-finished", null, ["merged", "total", "requestedBy", "runId"]],
+  ]);
+  assert.deepEqual(events("backlog"), [["backlog.item-changed", "item", ["item", "number", "title", "kind", "from", "to", "labels"]]]);
+});

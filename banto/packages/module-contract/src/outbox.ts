@@ -13,7 +13,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { EmittedEvent } from "./events.js";
+import { RELAY_EMIT_EVENT_TOOL, type EmittedEvent } from "./events.js";
 
 export const OUTBOX_LIMITS = {
   /** 箱に置いておく日数 */
@@ -168,4 +168,75 @@ export function readEmitReply(result: { content?: unknown; isError?: unknown }):
   if (r.accepted === true) return { accepted: true };
   if (typeof r.refused === "string") return { refused: r.refused };
   throw new Error(`host の答えが読めません：${text.slice(0, 200)}`);
+}
+
+/** 中継を呼んだ結果（各 Module の中継の口が返す形：本文の1つめの文と、エラーか） */
+export interface RelayTextResult {
+  text: string;
+  isError: boolean;
+}
+
+/** `relayEmitEvent` の答え（本文の文）を箱の結果に読む。`readEmitReply` の、本文を文で持つ口の形 */
+export function readEmitReplyText(result: RelayTextResult): OutboxSendResult {
+  return readEmitReply({ content: [{ type: "text", text: result.text }], isError: result.isError });
+}
+
+export interface EventPublisherOptions {
+  outbox: EventOutbox;
+  /** host の `relayEmitEvent` を呼ぶ（中継の口）。繋がらなければ投げる——箱に残して次に出す */
+  relay: (name: string, args: Record<string, unknown>) => Promise<RelayTextResult>;
+  /** 箱を見回る間隔（ミリ秒）。出せなかったもの・別のプロセスが箱に書いたものを出す。既定 30 秒 */
+  intervalMs?: number;
+  /** 起きてから最初に箱を出すまで（ミリ秒）。host が中継の口を開くのを待つ。既定 1 秒 */
+  firstFlushMs?: number;
+  log?: (message: string) => void;
+}
+
+/**
+ * **出来事を出す口**（追加・2026-10-16、アーキ仕様 §4.3「取りこぼさない——出口の箱」、Backlog #347）。`publish` は
+ * まず箱に書き、それから host へ出す（出せなければ箱に残る）。`start` で、起きたとき（繋がったとき）と見回りのたびに箱を
+ * 古い順に出す——繋がっていない間・Module が寝ている間に書かれたもの（Service の起動役が書いたもの）が、繋がったときに届く
+ */
+export class EventPublisher {
+  private timer: NodeJS.Timeout | undefined;
+
+  constructor(private readonly opts: EventPublisherOptions) {}
+
+  /** 箱に書いてから出す。投げない（書けなければログに残す——出来事のために本来の仕事を落とさない） */
+  publish(event: EmittedEvent): void {
+    try {
+      this.opts.outbox.write(event);
+    } catch (err) {
+      this.log(`[outbox] 出来事 ${event.name}（${event.eventId}）を箱に書けませんでした：${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    void this.flush();
+  }
+
+  /** 箱を古い順に出す。投げない（一時の失敗は箱に残り、次の見回りで出す） */
+  flush(): Promise<{ sent: number; left: number }> {
+    return this.opts.outbox
+      .flush(async (event) => readEmitReplyText(await this.opts.relay(RELAY_EMIT_EVENT_TOOL, event as unknown as Record<string, unknown>)))
+      .catch((err: unknown) => {
+        this.log(`[outbox] 箱を出せませんでした：${err instanceof Error ? err.message : String(err)}`);
+        return { sent: 0, left: -1 };
+      });
+  }
+
+  /** 起きたら少し置いて箱を出し、そのあと見回る（プロセスを生かし続けない） */
+  start(): void {
+    if (this.timer) return;
+    setTimeout(() => void this.flush(), this.opts.firstFlushMs ?? 1000).unref();
+    this.timer = setInterval(() => void this.flush(), this.opts.intervalMs ?? 30_000);
+    this.timer.unref();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  private log(message: string): void {
+    (this.opts.log ?? console.warn)(message);
+  }
 }

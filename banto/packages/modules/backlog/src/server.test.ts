@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { MODULE_META_KEY, THREAD_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { CALL_ID_META_KEY, MODULE_META_KEY, THREAD_META_KEY, VISIBILITY_META_KEY, type EmittedEvent } from "@banto/module-contract";
 import { createBacklogServer } from "./server.js";
 import { RelayingRemote } from "./remote.js";
 
@@ -24,7 +24,7 @@ function onBranch(root: string, branch = "backlog"): { items: Array<{ id: string
   return JSON.parse(git(root, "show", `${branch}:tasks.json`)) as { items: Array<{ id: string }> };
 }
 
-async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ names: string[]; warning?: string }> } = {}) {
+async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ names: string[]; warning?: string }>; emitted?: EmittedEvent[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "backlog-server-"));
   git(root, "init", "-q");
   git(root, "commit", "-q", "--allow-empty", "-m", "code");
@@ -35,6 +35,7 @@ async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ 
     now: () => "2026-10-03T00:00:00.000Z",
     remote: new RelayingRemote(root, undefined),
     ...(opts.sshIdentities ? { sshIdentities: opts.sshIdentities } : {}),
+    ...(opts.emitted ? { emitEvent: (e: EmittedEvent) => opts.emitted!.push(e) } : {}),
   });
   const [s, c] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
@@ -283,4 +284,39 @@ test("申告：Repositories に頼む（無くても動く）・git を走らせ
     scope: "project",
     confinement: { kind: "landlock", root: "project", profile: "exec" },
   });
+});
+
+test("できた・状態が変わった項目ごとに backlog.item-changed を出す。呼び出しの印を causedBy に、状態の変わらない書き込みでは出さない（Backlog #347）", async () => {
+  const emitted: EmittedEvent[] = [];
+  const { root, call } = await connect({ emitted });
+  await call("createItem", { kind: "story", title: "物語", labels: ["ui", "core"] }, { [CALL_ID_META_KEY]: "call-1" });
+  assert.equal(emitted.length, 1);
+  const created = emitted[0]!;
+  const head1 = git(root, "rev-parse", "backlog");
+  assert.equal(created.name, "backlog.item-changed");
+  assert.equal(created.eventId, `${head1}/${onBranch(root).items[0]!.id}`);
+  assert.deepEqual(created.fields, { item: onBranch(root).items[0]!.id, number: 1, title: "物語", kind: "story", to: "backlog", labels: "ui,core" });
+  assert.deepEqual(created.causedBy, { callId: "call-1" });
+  assert.match(created.text!, /ができました（backlog）/);
+
+  const id = onBranch(root).items[0]!.id;
+  await call("updateItem", { id, status: "ready" }, { [CALL_ID_META_KEY]: "call-2" });
+  assert.equal(emitted.length, 2);
+  assert.deepEqual(emitted[1]!.fields, { item: id, number: 1, title: "物語", kind: "story", from: "backlog", to: "ready", labels: "ui,core" });
+  assert.deepEqual(emitted[1]!.causedBy, { callId: "call-2" });
+
+  // 状態の変わらない書き込み（題だけ）では出さない
+  await call("updateItem", { id, title: "物語2" });
+  assert.equal(emitted.length, 2);
+
+  // 人の画面の口でも出す（印が無ければ causedBy は付けない）
+  await call("boardUpdateItem", { id, status: "in-progress" });
+  assert.equal(emitted.length, 3);
+  assert.equal(emitted[2]!.fields.to, "in-progress");
+  assert.equal(emitted[2]!.causedBy, undefined);
+
+  // 分けたら、できたタスクごとに1件
+  await call("splitStory", { storyId: id, tasks: [{ title: "一" }, { title: "二" }] });
+  assert.deepEqual(emitted.slice(3).map((e) => [e.fields.kind, e.fields.to, "from" in e.fields]), [["task", "ready", false], ["task", "ready", false]]);
+  assert.equal(new Set(emitted.map((e) => e.eventId)).size, emitted.length, "印が重なった");
 });

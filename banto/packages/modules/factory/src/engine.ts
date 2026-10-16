@@ -95,6 +95,11 @@ export interface RunRecord {
   items: RunItem[];
   /** 頼んだ Thread（host の刻印）。知らせの宛先の確かめに使うだけ */
   requestedBy?: { projectId: string; threadId: string };
+  /**
+   * **この実行を始めた呼び出しの印**（host が刻んだ `dev.banto/callId`。追加・2026-10-16、アーキ仕様 §4.3「輪を止める」、
+   * Backlog #347）。出来事（`factory.item-stopped`・`factory.run-finished`）の `causedBy` に添える
+   */
+  causedBy?: { callId: string };
   /** 知らせの札の指紋（札そのものは書かない）——起き直したあと host に問われたとき照らす */
   handleFingerprints: string[];
   finishedAt?: string;
@@ -389,7 +394,7 @@ export class Factory {
   }
 
   /** 流す。返すのは記録だけ——走らせるのは裏で */
-  start(input: { tasks: TaskSnapshot[]; settings: FactorySettings; requestedBy?: RunRecord["requestedBy"] }): RunRecord {
+  start(input: { tasks: TaskSnapshot[]; settings: FactorySettings; requestedBy?: RunRecord["requestedBy"]; callId?: string }): RunRecord {
     const run: RunRecord = {
       id: randomUUID(),
       createdAt: now(),
@@ -403,6 +408,7 @@ export class Factory {
         branch: `factory/${task.id}`,
       })),
       ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+      ...(input.callId ? { causedBy: { callId: input.callId } } : {}),
       handleFingerprints: [],
       notifyErrors: [],
     };

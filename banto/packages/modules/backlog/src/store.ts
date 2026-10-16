@@ -108,6 +108,8 @@ export function moveCommand(root: string, file: string, branch: string): string 
 export interface MutateResult<T> {
   result: T;
   doc: BacklogDocument;
+  /** 変える前の文書（この書き込みが土台にしたもの）。出来事（できた・状態が変わった）を前と比べて決める */
+  before: BacklogDocument;
   branch: string;
   /** ブランチをこの書き込みで作った（orphan のコミット） */
   created: boolean;
@@ -221,7 +223,7 @@ export class BacklogStore {
       const summary = message(next.result);
       const commit = await commitTasks(this.root, serializeDocument(next.doc), head, summary);
       const swapped = await swapRef(this.root, `refs/heads/${branch}`, commit, head, summary);
-      if (swapped.swapped) return { result: next.result, doc: next.doc, branch, created: head === undefined, commit };
+      if (swapped.swapped) return { result: next.result, doc: next.doc, before, branch, created: head === undefined, commit };
       // 先を越された——読み直して、同じ操作をやり直す（作ったコミットは ref から辿れないまま、git が後で片づける）
       lastWhy = swapped.why;
     }
