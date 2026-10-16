@@ -8303,6 +8303,33 @@
       "updatedAt": "2026-10-16T12:29:43.404Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "automation-events",
+      "number": 344,
+      "kind": "story",
+      "title": "自動化の段2——出来事をきっかけにする（Module の出来事・判断役）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "automation"
+      ],
+      "body": "Module や banto 自身で起きたことをきっかけに自動化を動かす（ユーザー決定・2026-10-16、Fork「定期実行（Cron）の検討」、Fable のレビュー1回を反映）。Webhook と同じ「受け取る→まとめる→届ける」道に乗せる。最初は同梱の Project ごとの Module だけ。あわせて banto.turn-decisions と判断役（AI の「決めること」を AI が決め、分からなければ人に回す）。スリープしても待たれている Module は止めない（スリープの Fork に伝えた）。",
+      "doneWhen": "Service が落ちたら自動化が専用の Fork で動き、輪にならない。決めることのあるターンが終わると判断役が答え（または人に任せ）、元の会話が判断役の答えで続く・受信箱のカードが決まりどおり替わる。本物のモデルで確かめた。",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §4.3「段2」「banto.turn-decisions と判断役」",
+        "docs/specs/v4-frontend.md §6.42",
+        "docs/notes/2026-10-16-automation-events.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-16T12:36:11.907Z",
+      "updatedAt": "2026-10-16T12:36:11.907Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
