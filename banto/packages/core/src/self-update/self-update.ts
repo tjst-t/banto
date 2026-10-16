@@ -11,6 +11,7 @@
 //   確かめた時刻は fetch が書く `FETCH_HEAD` の時刻
 // - 進み具合（`state.json`）は `update.mjs` が書いたものを読むだけ
 
+import { probePrebuilt, type PrebuiltProbe } from "./prebuilt-probe.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -86,6 +87,13 @@ export interface UpdateState {
   logFile?: string;
   /** 誰が頼んだか——人に見せる名前だけ（セッションの id は写さない） */
   requestedBy?: { label?: string };
+  /** 組み立て済みを使ったか（`scripts/prebuilt.mjs` が書く。アーキ仕様 §2.5「組み立て済みのものを使う」） */
+  prebuilt?: {
+    status: "checking" | "waiting" | "downloading" | "used" | "skipped";
+    run?: string;
+    reason?: string;
+    bytes?: { done: number; total: number };
+  };
 }
 
 /** 頼んだ人（`request.json` に書くのも、画面に返すのも名前だけ） */
@@ -115,6 +123,11 @@ export interface UpdateStatus {
         fastForward: boolean;
         /** 今の版から最新までのコミット（新しいものが先） */
         commits: CommitInfo[];
+        /**
+         * 最新の commit の組み立て済みの様子。`check` のときに GitHub に聞いてメモリに持つ——まだ聞いていない・host が
+         * 起き直した・最新が替わったなら `unknown`（`checkedAt: null`）
+         */
+        prebuilt: PrebuiltProbe;
       })
     | null;
   /** 最後の更新の進み具合（`state.json`）。無ければ null */
@@ -157,6 +170,8 @@ export interface SelfUpdateOptions {
   /** systemctl の名前（試験で差し替える） */
   systemctl?: string;
   git?: string;
+  /** 組み立て済みの様子を聞く口（試験の差し替え。本番は repo.git の origin から GitHub を引く） */
+  prebuilt?: { base?: string; api?: string; fetch?: typeof fetch; arch?: string };
 }
 
 export class SelfUpdate {
@@ -173,6 +188,8 @@ export class SelfUpdate {
   private polkit: { ok: boolean; detail: string } | undefined;
   /** 走っている確かめ。頼みはこれが終わるのを待ってから unit を起こす（確かめの stop が、起こした更新を止めない） */
   private probing: Promise<void> | null = null;
+  /** 最後に `check` で聞いた組み立て済みの様子（どの commit について聞いたか） */
+  private prebuiltProbe: { commit: string; probe: PrebuiltProbe } | undefined;
 
   constructor(private readonly opts: SelfUpdateOptions) {
     this.run = opts.run ?? runCommand;
@@ -282,6 +299,21 @@ export class SelfUpdate {
     }
     const r = await this.gitRepo(["fetch", "--no-tags", "origin", FETCH_REFSPEC], FETCH_TIMEOUT_MS);
     if (r.code !== 0) throw new SelfUpdateError(502, `release を取ってこられませんでした：${r.stderr.trim() || `終了コード ${r.code}`}`);
+    // 最新の組み立て済みの様子も聞き直す（GET のたびには聞かない——回数制限のため）
+    const head = await this.gitRepo(["rev-parse", "--verify", "-q", `${RELEASE_REF}^{commit}`]);
+    if (head.code === 0) {
+      const commit = head.stdout.trim();
+      const origin = await this.gitRepo(["remote", "get-url", "origin"]);
+      const o = this.opts.prebuilt;
+      const probe = await probePrebuilt(commit, origin.code === 0 ? origin.stdout.trim() : undefined, {
+        ...(o?.base ? { base: o.base } : {}),
+        ...(o?.api ? { api: o.api } : {}),
+        ...(o?.fetch ? { fetch: o.fetch } : {}),
+        ...(o?.arch ? { arch: o.arch } : {}),
+        now: this.now,
+      });
+      this.prebuiltProbe = { commit, probe };
+    }
     return this.status();
   }
 
@@ -436,7 +468,9 @@ export class SelfUpdate {
           return { commit: commit!, subject: subject ?? "", date: date ?? "", author: author ?? "" };
         });
     }
-    return { ...info, checkedAt: fetchedAt ? fetchedAt.mtime.toISOString() : null, fastForward, commits };
+    const prebuilt: PrebuiltProbe =
+      this.prebuiltProbe?.commit === info.commit ? this.prebuiltProbe.probe : { status: "unknown", checkedAt: null };
+    return { ...info, checkedAt: fetchedAt ? fetchedAt.mtime.toISOString() : null, fastForward, commits, prebuilt };
   }
 
   private async unitProperty(name: string): Promise<string> {

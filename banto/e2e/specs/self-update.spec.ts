@@ -18,6 +18,11 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import * as zlib from "node:zlib";
+// node の zstd（22.15 / 23.8 から）。@types/node 20 には型がまだ無い
+const zstdCompressSync = (zlib as unknown as { zstdCompressSync: (b: Buffer) => Buffer }).zstdCompressSync;
 import {
   CORE_BASE_URL,
   CORE_BROWSER_URL,
@@ -26,6 +31,8 @@ import {
   FRONTEND_LISTEN_URL,
   RELEASE_DIR,
   SELF_UPDATE_DIR,
+  SELF_UPDATE_GITHUB_PORT,
+  SELF_UPDATE_GITHUB_URL,
 } from "../config.js";
 
 test.describe.configure({ mode: "serial" });
@@ -100,6 +107,8 @@ function prepareReleaseDir(): string {
       // update.mjs の起こし直しも偽の systemctl で——渡さないと本物の systemctl restart banto-host.service を打つ
       // （host の環境から引き継いでいた頃は渡さずに済んでいた。2026-10-04 に、それを外して本物を打ったのを踏んだ）
       `        BANTO_UPDATE_SYSTEMCTL='${FAKE_SYSTEMCTL}' BANTO_UPDATE_INTERVAL=0.5 BANTO_UPDATE_MARK_INTERVAL=0.2 \\`,
+      // 組み立て済みは偽の GitHub（この spec が立てる）に聞く。core と同じ口
+      `        BANTO_UPDATE_PREBUILT_BASE='${SELF_UPDATE_GITHUB_URL}/dl' BANTO_UPDATE_GITHUB_API='${SELF_UPDATE_GITHUB_URL}/runs' BANTO_UPDATE_PREBUILT_POLL_MS=300 \\`,
       `        '${process.execPath}' '${UPDATE_SCRIPT}' --from-request`,
       '        echo inactive > "$D/active-state"',
       '      ) > "$D/update.out" 2>&1 < /dev/null &',
@@ -653,4 +662,98 @@ test("新しいコミットの面でも右上の「もう一度確かめる」�
   expect(box).not.toBeNull();
   expect(box!.x + box!.width).toBeLessThanOrEqual(390);
   expect(box!.height, "押しにくい（低い）").toBeGreaterThanOrEqual(36);
+});
+
+
+// ───────────── 組み立て済みの版（アーキ仕様 §2.5「組み立て済みのものを使う」・v4-frontend.md §6.34「組み立て済みの有無」） ─────────────
+//
+// 偽の GitHub を立て、core（「もう一度確かめる」で聞く）と本物の update.mjs（取ってきて重ねる）の両方をそこへ向ける
+// （global-setup が config に書いた testOnlySelfUpdate.prebuiltBase・githubApi と、偽の systemctl が渡す環境変数）
+
+/** 組み立て済みの tar.zst（banto/node_modules と印のファイルだけ） */
+function makePrebuilt(commit: string): Buffer {
+  const src = join(SELF_UPDATE_DIR, `pb-src-${commit.slice(0, 7)}`);
+  mkdirSync(join(src, "banto", "node_modules", "e2e-prebuilt"), { recursive: true });
+  writeFileSync(join(src, "banto", "node_modules", "e2e-prebuilt", "index.js"), "module.exports = 'prebuilt';\n");
+  writeFileSync(
+    join(src, "banto", ".banto-prebuilt.json"),
+    JSON.stringify({
+      commit,
+      platform: "linux-x64",
+      node: process.versions.node,
+      cpu: { avx2: false },
+      builtAt: new Date().toISOString(),
+      run: "https://github.com/e2e/banto/actions/runs/7",
+    }),
+  );
+  const tar = execFileSync("tar", ["-C", src, "-cf", "-", "banto"]);
+  rmSync(src, { recursive: true, force: true });
+  return zstdCompressSync(tar);
+}
+
+const fakeGithub = { assets: new Map<string, Buffer>(), runs: [] as unknown[] };
+function publish(commit: string): void {
+  const bytes = makePrebuilt(commit);
+  const name = `banto-${commit}-linux-x64.tar.zst`;
+  const dir = `/dl/build-${commit.slice(0, 12)}`;
+  fakeGithub.assets.set(`${dir}/${name}`, bytes);
+  fakeGithub.assets.set(`${dir}/${name}.sha256`, Buffer.from(`${createHash("sha256").update(bytes).digest("hex")}  ${name}\n`));
+}
+
+test("組み立て済みの有無を、確かめた結果の1行で出す（組み立て中・テストが落ちた（リンク付き）・あり）。本物の update.mjs は組み立てずに重ねる", async ({ page }) => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://x");
+    if (url.pathname === "/runs") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ workflow_runs: fakeGithub.runs }));
+    }
+    const body = fakeGithub.assets.get(url.pathname);
+    if (!body) return res.writeHead(404).end();
+    res.writeHead(200, { "content-length": body.length });
+    return res.end(req.method === "HEAD" ? undefined : body);
+  });
+  await new Promise<void>((r) => server.listen(SELF_UPDATE_GITHUB_PORT, "127.0.0.1", r));
+  try {
+    const next = commitOnRelease("組み立て済みの版");
+    await openUpdate(page);
+    const line = page.getByTestId("update-prebuilt");
+
+    // GitHub で組み立て中
+    fakeGithub.runs = [{ run_number: 1, status: "in_progress", conclusion: null, html_url: "https://github.com/e2e/banto/actions/runs/7" }];
+    await page.getByTestId("update-recheck").click();
+    await expect(page.getByTestId("update-available")).toContainText("組み立て済みの版");
+    await expect(line).toHaveAttribute("data-status", "building");
+    await expect(line).toContainText("GitHub で組み立て中です");
+    await expect(page.getByTestId("update-prebuilt-run")).toHaveAttribute("href", "https://github.com/e2e/banto/actions/runs/7");
+
+    // テストが落ちた——注意とリンク。更新のボタンは消さない
+    fakeGithub.runs = [{ run_number: 1, status: "completed", conclusion: "failure", html_url: "https://github.com/e2e/banto/actions/runs/7" }];
+    await page.getByTestId("update-recheck").click();
+    await expect(line).toHaveAttribute("data-status", "tests-failed");
+    await expect(line).toContainText("GitHub でのテストが落ちています");
+    await expect(page.getByTestId("update-wait")).toBeEnabled();
+
+    // 出来上がった
+    publish(next);
+    fakeGithub.runs = [{ run_number: 2, status: "completed", conclusion: "success" }];
+    await page.getByTestId("update-recheck").click();
+    await expect(line).toHaveAttribute("data-status", "available");
+    await expect(line).toContainText("組み立て済みの版を使います");
+
+    // 本物の update.mjs で更新する——組み立てる1行は失敗するので、通れば組み立て済みを使ったということ
+    writeFileSync(join(SELF_UPDATE_DIR, "on-start"), "run\n");
+    writeFileSync(join(SELF_UPDATE_DIR, "build-command"), "echo 'その場で組み立ててはいけない' >&2; exit 9");
+    await page.route("**/banto-build", (route) => route.fulfill({ json: { build: "e2e-prebuilt-build" } }));
+    await page.getByTestId("update-wait").click();
+    await expect(page.getByTestId("update-done")).toHaveText(`版 ${short(next)} になりました`, { timeout: 90_000 });
+    await page.unroute("**/banto-build");
+    const state = JSON.parse(readFileSync(join(UPDATE_DIR, "state.json"), "utf8")) as { prebuilt?: { status?: string; run?: string } };
+    expect(state.prebuilt?.status).toBe("used");
+    expect(state.prebuilt?.run).toBe("https://github.com/e2e/banto/actions/runs/7");
+    expect(readFileSync(join(RELEASE_DIR, "current", "banto", "node_modules", "e2e-prebuilt", "index.js"), "utf8")).toContain("prebuilt");
+    expect(readdirSync(join(RELEASE_DIR, "versions")).filter((n) => n.startsWith(".prebuilt-")), "作業フォルダが残っている").toEqual([]);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });

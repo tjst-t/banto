@@ -20,6 +20,7 @@ import {
   FAKE_SYSTEMCTL,
   RELEASE_DIR,
   SELF_UPDATE_DIR,
+  SELF_UPDATE_GITHUB_URL,
 } from "./config.ts";
 
 export default function globalSetup(): void {
@@ -52,7 +53,13 @@ export default function globalSetup(): void {
         releaseDir: RELEASE_DIR,
         // 試験だけの差し替え（本番の config には書かない項目）：偽の systemctl と、動いているコードは試験の置き場の
         // `current/banto`（版を替えると、host が見る「今の版」も替わる）
-        testOnlySelfUpdate: { systemctl: FAKE_SYSTEMCTL, codeDir: join(RELEASE_DIR, "current", "banto") },
+        // 組み立て済みの版は偽の GitHub（self-update.spec.ts が立てる）に聞く
+        testOnlySelfUpdate: {
+          systemctl: FAKE_SYSTEMCTL,
+          codeDir: join(RELEASE_DIR, "current", "banto"),
+          prebuiltBase: `${SELF_UPDATE_GITHUB_URL}/dl`,
+          githubApi: `${SELF_UPDATE_GITHUB_URL}/runs`,
+        },
       },
       null,
       2,

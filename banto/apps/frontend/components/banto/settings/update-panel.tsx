@@ -22,7 +22,9 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  ExternalLink,
   KeyRound,
+  PackageCheck,
   Loader2,
   Minus,
   RefreshCw,
@@ -55,6 +57,7 @@ import {
   type UpdateActivity,
   type UpdateCommit,
   type UpdatePhase,
+  type PrebuiltAvailability,
   type UpdateRunState,
   type UpdateStatus,
   type UpdateWaiting,
@@ -401,6 +404,7 @@ export function UpdatePanel() {
               busy={busy}
               steppingUp={steppingUp}
               note={live?.note}
+              prebuilt={live?.prebuilt}
               onStop={() => void run("cancel", async () => {
                 await cancelUpdate();
                 await refresh();
@@ -553,6 +557,8 @@ function NewVersionCard({
           {showAll ? "たたむ" : `ほか ${hidden} 件を見る`}
         </Button>
       ) : null}
+
+      <PrebuiltLine prebuilt={latest.prebuilt} />
 
       <div className="mt-4 border-t border-border pt-4">
         {steppingUp ? (
@@ -828,6 +834,7 @@ function ProgressCard({
   busy,
   steppingUp,
   note,
+  prebuilt,
   onStop,
   onSkipWait,
 }: {
@@ -839,6 +846,8 @@ function ProgressCard({
   steppingUp: boolean;
   /** いま止まっている理由（`update.mjs` が書く。例「host が答えません…答えるまで待ちます」） */
   note: string | undefined;
+  /** 組み立て済みを使っているか（`update.mjs` が書く） */
+  prebuilt: UpdateRunState["prebuilt"];
   onStop: () => void;
   onSkipWait: () => void;
 }) {
@@ -854,7 +863,10 @@ function ProgressCard({
       <CardLabel>{to ? <>版 <span className="font-mono">{short(to)}</span> に更新しています</> : "新しい版に更新しています"}</CardLabel>
       <StepList
         statuses={statusesFor(step, mode)}
-        hints={mode === "now" ? { wait: "待ちません（すぐ更新）" } : undefined}
+        hints={{
+          ...(mode === "now" ? { wait: "待ちません（すぐ更新）" } : {}),
+          ...buildHint(prebuilt),
+        }}
         renderDetail={(s) => {
           if (s !== step) return null;
           // 取ってくる・組み立てるの間もやめられる（update.mjs は取ってくる・組み立てる・待つの間に、やめる印を受ける）
@@ -1115,4 +1127,97 @@ function CutOffDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * **組み立て済みの有無**（追加・2026-10-15、v4-frontend.md §6.34「組み立て済みの有無」）。新しいコミットの一覧の下に1行。
+ * テストが落ちていても押せる（その場で組み立てる）——注意の色で出すだけ
+ */
+function PrebuiltLine({ prebuilt }: { prebuilt: PrebuiltAvailability | undefined }) {
+  if (!prebuilt || prebuilt.status === "unknown") {
+    return (
+      <p data-testid="update-prebuilt" data-status="unknown" className="mt-3 flex items-start gap-1.5 text-xs text-ink-3">
+        <PackageCheck className="mt-0.5 size-3.5 shrink-0" />
+        組み立て済みの版があれば使い、無ければこの機械で組み立てます{prebuilt?.detail ? `（${prebuilt.detail}）` : ""}
+      </p>
+    );
+  }
+  const runLink = prebuilt.run ? (
+    <a
+      href={prebuilt.run}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="ml-1 inline-flex items-center gap-0.5 underline underline-offset-2"
+      data-testid="update-prebuilt-run"
+    >
+      GitHub で見る
+      <ExternalLink className="size-3" />
+    </a>
+  ) : null;
+  if (prebuilt.status === "available") {
+    return (
+      <p data-testid="update-prebuilt" data-status="available" className="mt-3 flex items-start gap-1.5 text-xs text-ok">
+        <PackageCheck className="mt-0.5 size-3.5 shrink-0" />
+        組み立て済みの版を使います（この機械では組み立てません）
+      </p>
+    );
+  }
+  if (prebuilt.status === "building") {
+    return (
+      <p data-testid="update-prebuilt" data-status="building" className="mt-3 flex items-start gap-1.5 text-xs text-ink-2">
+        <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin" />
+        <span>
+          GitHub で組み立て中です。更新すると組み上がるのを待ちます（最長 20 分）{runLink}
+        </span>
+      </p>
+    );
+  }
+  if (prebuilt.status === "tests-failed") {
+    return (
+      <p
+        data-testid="update-prebuilt"
+        data-status="tests-failed"
+        className="mt-3 flex items-start gap-1.5 rounded-md bg-warn-soft px-2.5 py-1.5 text-xs text-warn"
+      >
+        <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          GitHub でのテストが落ちています。更新できますが、この機械で組み立てます（数分かかり、その間少し重くなります）{runLink}
+        </span>
+      </p>
+    );
+  }
+  if (prebuilt.status === "cancelled") {
+    return (
+      <p data-testid="update-prebuilt" data-status="cancelled" className="mt-3 flex items-start gap-1.5 text-xs text-ink-2">
+        <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          GitHub での組み立てが途中で止まりました。この機械で組み立てます（数分かかり、その間少し重くなります）{runLink}
+        </span>
+      </p>
+    );
+  }
+  return (
+    <p data-testid="update-prebuilt" data-status="none" className="mt-3 flex items-start gap-1.5 text-xs text-ink-2">
+      <PackageCheck className="mt-0.5 size-3.5 shrink-0" />
+      この版の組み立て済みはありません。この機械で組み立てます（数分かかり、その間少し重くなります）
+      {prebuilt.detail ? `（${prebuilt.detail}）` : ""}
+    </p>
+  );
+}
+
+/** 「組み立てる」の段の説明——組み立て済みを使う間はそう言う（`update.mjs` の `state.prebuilt`） */
+function buildHint(prebuilt: UpdateRunState["prebuilt"]): Partial<Record<StepId, string>> {
+  switch (prebuilt?.status) {
+    case "checking":
+      return { build: "組み立て済みの版を探しています" };
+    case "waiting":
+      return { build: "GitHub で組み立て中の版を待っています" };
+    case "downloading":
+    case "used":
+      return { build: "組み立て済みの版を取ってきます" };
+    case "skipped":
+      return { build: "この機械で組み立てます（数分かかります）" };
+    default:
+      return {};
+  }
 }

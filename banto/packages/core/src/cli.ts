@@ -2318,6 +2318,9 @@ async function main(): Promise<void> {
       dataDir: bootstrap.dataDir,
       codeDir: bootstrap.testOnlySelfUpdate?.codeDir ?? monorepoRoot,
       ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
+      ...(bootstrap.testOnlySelfUpdate?.prebuiltBase && bootstrap.testOnlySelfUpdate.githubApi
+        ? { prebuilt: { base: bootstrap.testOnlySelfUpdate.prebuiltBase, api: bootstrap.testOnlySelfUpdate.githubApi } }
+        : {}),
     }),
     releaseProjectModules,
     // 別のサーバの Project を閉じる前に（v4-security.md §1「閉じた Project は数えない」）

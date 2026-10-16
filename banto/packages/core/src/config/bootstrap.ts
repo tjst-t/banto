@@ -49,7 +49,7 @@ export interface BootstrapConfig {
    * host の「準備が済んでいるか・今の版」の判断まで変えてしまう。設定ファイルの明示の項目なら、置いたのが誰か・
    * どこかがはっきりし、起動時に警告も出る
    */
-  testOnlySelfUpdate?: { systemctl: string; codeDir: string };
+  testOnlySelfUpdate?: { systemctl: string; codeDir: string; prebuiltBase?: string; githubApi?: string };
 }
 
 /** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
@@ -111,12 +111,29 @@ export function assertNoOverlap(configPath: string, dataDir: string): void {
 }
 
 /** 形が違えば止まる（黙って本物の systemctl・動いているコードへ落ちない、規則2） */
-function parseTestOnlySelfUpdate(value: unknown): { systemctl: string; codeDir: string } {
-  const v = value as { systemctl?: unknown; codeDir?: unknown } | null;
-  if (typeof v?.systemctl !== "string" || !v.systemctl || typeof v.codeDir !== "string" || !v.codeDir) {
-    throw new Error("config.json の testOnlySelfUpdate は { systemctl: string, codeDir: string } です（試験だけの項目）");
+function parseTestOnlySelfUpdate(value: unknown): { systemctl: string; codeDir: string; prebuiltBase?: string; githubApi?: string } {
+  const v = value as { systemctl?: unknown; codeDir?: unknown; prebuiltBase?: unknown; githubApi?: unknown } | null;
+  const optionalString = (x: unknown) => x === undefined || (typeof x === "string" && x !== "");
+  if (
+    typeof v?.systemctl !== "string" ||
+    !v.systemctl ||
+    typeof v.codeDir !== "string" ||
+    !v.codeDir ||
+    !optionalString(v.prebuiltBase) ||
+    !optionalString(v.githubApi) ||
+    (v.prebuiltBase === undefined) !== (v.githubApi === undefined)
+  ) {
+    throw new Error(
+      "config.json の testOnlySelfUpdate は { systemctl: string, codeDir: string, prebuiltBase?: string, githubApi?: string } です" +
+        "（試験だけの項目。prebuiltBase と githubApi は両方か、どちらも無し）",
+    );
   }
-  return { systemctl: v.systemctl, codeDir: v.codeDir };
+  return {
+    systemctl: v.systemctl,
+    codeDir: v.codeDir,
+    ...(typeof v.prebuiltBase === "string" ? { prebuiltBase: v.prebuiltBase } : {}),
+    ...(typeof v.githubApi === "string" ? { githubApi: v.githubApi } : {}),
+  };
 }
 
 function randomToken(): string {

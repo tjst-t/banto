@@ -184,6 +184,13 @@ export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
 export const SELF_UPDATE_DIR = join(E2E_TMP, "self-update");
 export const RELEASE_DIR = join(SELF_UPDATE_DIR, "release");
 export const FAKE_SYSTEMCTL = join(SELF_UPDATE_DIR, "systemctl");
+/**
+ * **組み立て済みの版を配る偽の GitHub**（self-update.spec.ts が立てる。アーキ仕様 §2.5「組み立て済みのものを使う」）。core の
+ * `testOnlySelfUpdate.prebuiltBase/githubApi` と、偽の systemctl が起こす本物の update.mjs の両方がここに聞く。上の枠
+ * （4740〜4939）の外に、実行ごと・core ごとに決まった場所を取る
+ */
+export const SELF_UPDATE_GITHUB_PORT = 15100 + (Number(RUN_ID) % 8) * 8 + CORE_INDEX;
+export const SELF_UPDATE_GITHUB_URL = `http://127.0.0.1:${SELF_UPDATE_GITHUB_PORT}`;
 /** Repositories のアカウントのための偽の GitHub の行き先（core のプロセスが書き、spec が読む——`github-login-fixture.ts`） */
 export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.json");
 /** 偽の Infisical の行き先と資格情報（core のプロセスが書き、自前の host が読む——`infisical-fixture.ts`） */

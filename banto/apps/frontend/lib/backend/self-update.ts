@@ -78,6 +78,22 @@ export interface UpdateRunState {
   logFile?: string;
   /** 誰が頼んだか（名前だけ） */
   requestedBy?: { label?: string };
+  /** 組み立て済みを使ったか（`scripts/prebuilt.mjs` が書く。アーキ仕様 §2.5「組み立て済みのものを使う」） */
+  prebuilt?: {
+    status: "checking" | "waiting" | "downloading" | "used" | "skipped";
+    run?: string;
+    reason?: string;
+    bytes?: { done: number; total: number };
+  };
+}
+
+/** 最新の commit の組み立て済みの様子（host が `check` のときに GitHub に聞いてメモリに持つ） */
+export interface PrebuiltAvailability {
+  status: "available" | "building" | "tests-failed" | "cancelled" | "none" | "unknown";
+  /** Actions の実行の URL（host が `https://github.com/<o>/<r>/actions/runs/<数字>` の形だけ通す） */
+  run?: string;
+  detail?: string;
+  checkedAt: string | null;
 }
 
 export interface UpdateStatus {
@@ -92,6 +108,8 @@ export interface UpdateStatus {
         fastForward: boolean;
         /** 新しいものが先 */
         commits: UpdateCommit[];
+        /** 前の版の host は返さない */
+        prebuilt?: PrebuiltAvailability;
       })
     | null;
   state: UpdateRunState | null;
