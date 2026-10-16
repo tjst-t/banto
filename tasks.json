@@ -8426,7 +8426,7 @@
       "number": 349,
       "kind": "task",
       "title": "段2の画面——作るフォームの「出来事」・受信箱の「判断役が見ています／決めました／人に任せました」",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline",
@@ -8441,7 +8441,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T12:37:42.338Z",
+      "updatedAt": "2026-10-16T16:46:31.478Z",
       "closedAt": null,
       "extra": {}
     },
