@@ -8403,7 +8403,7 @@
       "number": 348,
       "kind": "task",
       "title": "banto.turn-decisions と判断役の answer_decision（書き手の種類 decision・人に任せる・承認は必ず聞く）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline"
@@ -8413,12 +8413,12 @@
       "labels": [],
       "body": "仕様 §4.3「banto.turn-decisions と判断役」（Fable のレビュー2回、GitHub の main 0cc6326d）。\n- reviewDueAfterTurn と同じ条件で、まとめに decisions があれば出す（属性 thread・turnId・threadTitle・count・hop・readExternal＝そのターンに積んだ届けものに外から来たものがあったか、text はまとめの JSON、subject は thread）。まとめがオフの Project では出ない——判断役を作るとき画面と tool が案内する\n- banto-thread の answer_decision：呼べるのは走っているターンを起こした届けものの thread＋turnId だけ。選択肢の番号か defer。lastTurn.turnId が違う・まとめの後に人の発言・人のターンが走っている/並んでいるなら断る。途中の答えはメモリ、揃ったら1回で届ける、一部でも人に任せたら全部人に、揃わず終わったら全部人に（カードに理由）\n- 書き手の種類 decision（従ってよい前置き、「この後に人の答えがあれば人を優先」を含む。#312 の「従わない」とは別）\n- 判断役の届け先は専用の Fork に限る。判断役の会話は「承認をすべて自動で許可する」を効かせず必ず聞く\n- 受信箱：判断役が決めたカード（decided-by-automation）と、次のターンのカードへの「判断役が選んで進めました」の引き継ぎ（画面は #349）",
       "doneWhen": "E2E（偽の Runner）で：決めることのあるターンが終わると判断役の自動化が動き、answer_decision で元の会話に選んだ reply が「判断役が選んだ答え」として届き、元の会話が続く。defer だと何も届かない。人が先に答えたら断られる。自動許可がオンでも判断役の会話の承認は聞かれる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/events-turn-decisions）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T15:39:19.510Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T16:46:14.561Z",
+      "closedAt": "2026-10-16T16:46:14.561Z",
       "extra": {}
     },
     {
