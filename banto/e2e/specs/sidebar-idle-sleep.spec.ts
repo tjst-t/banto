@@ -92,8 +92,11 @@ test("14日開いていない Project を聞く・「今はしない」で消え
   const ours: string[] = [];
   try {
     expect((await ok<{ mode: string }>("GET", "/api/settings/auto-sleep")).mode, "既定が ask ではない").toBe("ask");
+    // API で作る Project は画面を開く前に（開いた後に作ると、projects.changed の時点ではまだ Base の会話が無く、画面が一覧に足さない）
     const idleId = await makeProject(IDLE);
-    ours.push(idleId);
+    const autoId = await makeProject(AUTO);
+    const offId = await makeProject(OFF);
+    ours.push(idleId, autoId, offId);
 
     // いま開いている Project（画面から作る＝開く）
     await openApp(page);
@@ -134,8 +137,6 @@ test("14日開いていない Project を聞く・「今はしない」で消え
     await expect(awakeName(page, IDLE)).toHaveCount(0);
 
     // ---- 4. 自動でスリープにする：時計で聞かずに眠る -----------------------------------------------------------
-    const autoId = await makeProject(AUTO);
-    ours.push(autoId);
     await expect(awakeName(page, AUTO)).toBeVisible({ timeout: 30_000 });
     await chooseAutoSleep(page, "スリープにするか聞く", "自動でスリープにする");
     await expect.poll(async () => (await ok<{ mode: string }>("GET", "/api/settings/auto-sleep")).mode).toBe("auto");
@@ -150,8 +151,6 @@ test("14日開いていない Project を聞く・「今はしない」で消え
     await page.keyboard.press("Escape");
 
     // ---- 5. 何もしない：時計が回っても眠らず、聞かない --------------------------------------------------------
-    const offId = await makeProject(OFF);
-    ours.push(offId);
     await expect(awakeName(page, OFF)).toBeVisible({ timeout: 30_000 });
     await chooseAutoSleep(page, "自動でスリープにする", "何もしない");
     await expect.poll(async () => (await ok<{ mode: string }>("GET", "/api/settings/auto-sleep")).mode).toBe("off");
