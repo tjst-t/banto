@@ -7538,7 +7538,7 @@
       "number": 341,
       "kind": "task",
       "title": "ファイルブラウザの右側で PDF・Office をそのまま読む（document の描き方を使う）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "office-review",
       "dependsOn": [
         "doc-review-ui-redo"
@@ -7552,7 +7552,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T10:15:53.531Z",
-      "updatedAt": "2026-10-16T10:15:53.531Z",
+      "updatedAt": "2026-10-16T11:17:48.633Z",
       "closedAt": null,
       "extra": {}
     },
