@@ -163,7 +163,8 @@ export class BrowserSession {
    * 窓をキオスク形の全画面にしたまま大きさを変えるには、`Browser.setWindowBounds` で「normal にする → 大きさを指定 →
    * fullscreen に戻す」の3手が要る（fullscreen のまま大きさだけは変えられない）。これでページの innerWidth×倍率と、Xvfb の
    * (0,0) から取り込んだ絵が画素単位で一致する。**`Emulation.setDeviceMetricsOverride` だけで変えない**——窓の中に模擬した
-   * viewport を描くので、画面を取り込むとページと絵が食い違う。窓より狭いページ（幅 500 未満）だけ上書きを併せる（MIN_WINDOW_WIDTH）。
+   * viewport を描くので、画面を取り込むとページと絵が食い違う。窓より狭いページ（幅 500 未満）と端数の倍率だけ上書きを併せる
+   * （MIN_WINDOW_WIDTH・applyOverride）。
    * 上書きの deviceScaleFactor は 0（上書きしない）——起こした倍率（chrome.ts）がそのままページの devicePixelRatio になる。
    * **Playwright の setViewportSize は使わない**（deviceScaleFactor を 1 に上書きし、倍率2のページから 1 に見えることがあった——
    * 実測・2026-10-11）。変え終えたら、いま選んでいるタブの innerWidth・innerHeight が新しい値になるまで待ってから返す
@@ -246,11 +247,17 @@ export class BrowserSession {
     this.placed.set(windowId, key);
   }
 
-  /** 窓より狭いページだけ大きさを上書きする（そうでなければ外す） */
+  /**
+   * 窓より狭いページと、**端数の倍率**（1.25・1.5・1.75）のページは大きさを上書きする（そうでなければ外す）。端数の倍率では、
+   * 窓の大きさ（CSS ピクセル）を Chrome が画素に丸めるので、ページは指定より 1〜2 だけ大きくなる——1.5 で 843×641 は 844×642、
+   * 1.75 では画素の整数になる 1280×800 でも 1280×801（実測・2026-10-16）。窓はページ以上の大きさになるので、上書きした
+   * ページは窓の左上 (0,0) から指定どおりの大きさで描かれる。上書きしないと、settle が待ちきれず（1回 2 秒）その間動画を
+   * 流せず、取り込む範囲もページと食い違った（Backlog #359）
+   */
   private async applyOverride(page: Page): Promise<void> {
     const cdp = this.cdps.get(page);
     if (!cdp || page.isClosed()) return;
-    if (this.size.width < MIN_WINDOW_WIDTH) {
+    if (this.size.width < MIN_WINDOW_WIDTH || !Number.isInteger(this.launched?.scale ?? 1)) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: this.size.width, height: this.size.height, deviceScaleFactor: 0, mobile: false });
       this.overridden.add(page);
     } else if (this.overridden.has(page)) {

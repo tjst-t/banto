@@ -159,6 +159,19 @@ export function maxFramePixels(scale: number): number {
   return Math.max(MAX_FRAME_PIXELS, Math.min(MAX_FRAME_PIXELS * scale * scale, MAX_HIDPI_FRAME_PIXELS));
 }
 
+/**
+ * **「画面に合わせる」のページの大きさ**（CSS ピクセル）：絵を出す場所の大きさを、**ブラウザの描く倍率を掛けて偶数の画素に
+ * なる大きさ**に切り下げる（下限 200）。倍率は 0.25 刻みなので、1 は2の倍数・1.5 は4の倍数・1.25 と 1.75 は8の倍数・2 は
+ * そのまま（画面より最大7だけ狭い）。画素の端数が出ると、ページ×倍率が画素の境目に乗らず、取り込む範囲（videoRegion）と描かれた
+ * ページが食い違う。奇数だと x264 が受けないので取り込みで右端・下端の1画素を落とす（Backlog #359）
+ */
+export function fitPageSize(stage: { width: number; height: number }, scale = 1): { width: number; height: number } {
+  let step = 1;
+  while (!Number.isInteger((step * scale) / 2) && step < 8) step += 1;
+  const fit = (n: number) => Math.max(200, Math.floor(Math.round(n) / step) * step);
+  return { width: fit(stage.width), height: fit(stage.height) };
+}
+
 /** 最初に張るときの画質：1倍の上限までは70、越える大きさ（倍率で描いた絵）は60（1 MiB に収まる見込み——上の実測） */
 export function initialQuality(pixels: number): number {
   return pixels <= MAX_FRAME_PIXELS ? SCREENCAST_QUALITY : SCREENCAST_QUALITY - SCREENCAST_QUALITY_STEP;
@@ -790,10 +803,6 @@ export class BrowserView implements ViewHooks {
     this.refresh();
   }
 
-  private fitSize(v: Viewer): { width: number; height: number } {
-    return { width: Math.max(200, Math.round(v.size.width)), height: Math.max(200, Math.round(v.size.height)) };
-  }
-
   /**
    * 「画面に合わせる」を、いま選んでいるタブに効かせる。タブが無ければ何もしない——できたとき（session の変化 → refresh）に
    * もう一度呼ばれる。もう合っていれば何もしない（refresh から何度呼ばれても回り続けない）
@@ -803,7 +812,7 @@ export class BrowserView implements ViewHooks {
     const s = this.deps.session;
     if (!owner || !s.running || s.current === undefined) return;
     try {
-      const want = this.fitSize(owner);
+      const want = fitPageSize(owner.size, s.scale ?? 1);
       const now = s.viewport();
       if (now.width === want.width && now.height === want.height) return;
       this.fitted = true;
