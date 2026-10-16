@@ -192,7 +192,10 @@ test("別のサーバの Project で、Vault の鍵の窓口と流れの口が�
       await expect.poll(() => connectedModules(projectId), { timeout: 120_000 }).toEqual(expect.arrayContaining([ECHO]));
 
       await openApp(page);
-      await page.goto(`/?project=${projectId}`);
+      // **その Project の URL へ直接行く**（2026-10-16、Backlog #310）。`/?project=` は `/` が読まない——`/` は先頭の Project へ
+      // `router.replace` で飛ばす（測った：`/?project=<2つ目>` は `/p/<先頭>` に着く）。別の Project のパレットを、飛ぶ途中に開いていた
+      await page.goto(`/p/${projectId}`);
+      await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
       await page.getByRole("button", { name: "検索（Command Palette）" }).click();
       const entry = page.getByRole("option", { name: /流れのこだま/ });
       await expect(entry, "試験用の Module の入口が出ない").toBeVisible({ timeout: 120_000 });

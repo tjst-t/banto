@@ -246,7 +246,10 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
       expect(term.body.content[0]!.text).toContain("sudo apt install tmux");
       // 画面でも：入口から開くと、理由が出る
       await openApp(page);
-      await page.goto(`/?project=${projectId}`);
+      // **その Project の URL へ直接行く**（2026-10-16、Backlog #310）。`/?project=` は `/` が読まない——`/` は先頭の Project へ
+      // `router.replace` で飛ばす（測った：`/?project=<2つ目>` は `/p/<先頭>` に着く）。別の Project のパレットを、飛ぶ途中に開いていた
+      await page.goto(`/p/${projectId}`);
+      await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
       await page.getByRole("button", { name: "検索（Command Palette）" }).click();
       const entry = page.locator('[role="option"][data-value^="launcher:terminal:"]');
       await expect(entry, "Terminal の入口が出ない").toContainText("ターミナル", { timeout: 120_000 });
