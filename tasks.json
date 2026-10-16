@@ -8403,7 +8403,7 @@
       "number": 348,
       "kind": "task",
       "title": "banto.turn-decisions と判断役の answer_decision（書き手の種類 decision・人に任せる・承認は必ず聞く）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline"
@@ -8417,7 +8417,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T12:49:21.860Z",
+      "updatedAt": "2026-10-16T15:39:19.510Z",
       "closedAt": null,
       "extra": {}
     },
