@@ -8051,7 +8051,7 @@
       "number": 334,
       "kind": "task",
       "title": "GitHub Actions の workflow prebuilt.yml（組み立て・単体テスト・Release に置く・片づけ）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "prebuilt-update",
       "dependsOn": [],
       "milestone": null,
@@ -8059,7 +8059,7 @@
       "labels": [],
       "body": "仕様：アーキ §2.5「組み立て済みのものを使う」の「作る側」。install.sh の NODE_VERSION を読む・npm test と test:scripts・git status の確かめ・印のファイル（cpu.avx2 を含む、banto/.gitignore に足す）・決めた場所だけを tar.zst・.sha256 は sha256sum の書式・draft で作り --target を付け揃ってから公開・同じ commit の2回目は何もしない（draft も名前で探す）・concurrency・permissions contents: write・build-* だけ新しい10個を残す・公式の action を commit で固定。確かめ方：試しのブランチで workflow_dispatch を足すなどして本物の GitHub で2回走らせ、Release と中身を確かめる。タグの ruleset が build-* を断らないかも。",
       "doneWhen": "本物の GitHub で workflow が通り、build-<頭12> の Release に tar.zst と .sha256 が置かれ、同じ commit でもう一度走らせても壊れない",
-      "resolution": null,
+      "resolution": "main に入れた（d554e87d）。試しのブランチで本物の GitHub に流して確かめた：全段が通り約7分（組み立て1分44秒・単体テスト4分24秒）、Release build-00d2e8640f67 に 422MB の tar.zst と .sha256、中身は決めた場所だけ（57,856件・symlink 69・hard link 1）、その commit に重ねて画面 200・版の印・自己申告の試験17件が通る。同じ commit の2回目は「揃っていれば何もしない」で12秒。直したこと：試験に要る age・sops を install.sh と同じ版で入れる、落ちた試験の名前を注記に出す（ログは鍵が無いと読めない）。Deploy key で workflow のファイルを push できた。試しの Release build-00d2e8640f67 は鍵が無く消せないので残した（release から辿れない commit なので update.mjs は使わない、新しい10個で押し出される）。",
       "refs": [],
       "threads": [
         {
@@ -8068,8 +8068,8 @@
         }
       ],
       "createdAt": "2026-10-16T00:13:52.933Z",
-      "updatedAt": "2026-10-16T00:50:36.190Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T01:23:05.335Z",
+      "closedAt": "2026-10-16T01:23:05.335Z",
       "extra": {}
     },
     {
