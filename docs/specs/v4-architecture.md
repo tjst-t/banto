@@ -1808,8 +1808,10 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
 - `permissions: { contents: write }` を明示する（リポジトリの既定が読むだけでも Release を作れるように）。
   `concurrency: { group: prebuilt-${{ github.sha }} }` で同じ commit の回を直列にする
 - **同じ commit で2回走っても壊れない**：最初に Release `build-<頭12>` を見て、2つのファイル（`.tar.zst`・`.sha256`）が揃っていれば
-  何もせず終わる。欠けていれば消して作り直す。作るときは **draft で作ってファイルを上げ、揃ってから draft を外す**（ファイルの
-  無い Release が見える瞬間を作らない）
+  何もせず終わる。確かめはタグ名ではなく API で **draft も含めて名前で探す**（draft にはまだタグが無い）——揃っていて draft なら
+  公開だけする、欠けていれば消して作り直す。作るときは **draft で作ってファイルを上げ、揃ってから draft を外す**（ファイルの
+  無い Release が見える瞬間を作らない）。`gh release create` には `--target ${{ github.sha }}` を必ず付ける（無いと公開した
+  瞬間のタグが既定ブランチの先頭を指す）。`.sha256` の書式は `sha256sum` の出力（`<16進64文字>  <ファイル名>`）
 - **通ったら**、生成物だけを `banto-<commit 40文字>-linux-x64.tar.zst` にまとめ、`.sha256` と一緒にその commit 専用の Release に
   置く。タグは `build-<commit の頭12文字>`（その commit を指す）、prerelease、題は「組み立て済み <id>」。`release` ブランチ自体には
   何も書き足さない
@@ -1840,13 +1842,19 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
 
 1. **取りに行くかを決める**：`repo.git` の `origin`（`--remote` が URL ならそれ）が GitHub（`git@github.com:o/r(.git)`・
    `ssh://git@github.com/o/r(.git)`・`https://github.com/o/r(.git)` の3つの書き方）で、この機械が x86_64 のときだけ。
-   ほか（GitHub 以外・別の CPU・`--build` で組み立てを差し替えたとき）はその場で組み立てる
-2. **空きを確かめる**：要る分の目安を「今の版の大きさ＋圧縮ファイルの大きさ（HEAD の `Content-Length`）」にする
-   （展開した分は今の版の大きさの中に入る）
+   ほか（GitHub 以外・別の CPU・`--no-prebuilt`）はその場で組み立てる。`--build` は「その場で組み立てるときの組み立て方」の
+   差し替えだけで、組み立て済みを止める意味は持たない。試験の差し替え（11）が渡されたら origin の確かめは飛ばす。
+   node に `zlib.createZstdDecompress` が無ければ（install.sh を経ずに入れた host の古い node 等）、理由を `note` に書いて
+   その場で組み立てる。段2の初めに、前の回が殺されて残した `versions/.prebuilt-*` を全部消す（lock があるので走っている
+   ほかの回のものではない）
+2. **空き**：worktree を作る前の今の確かめ（今の版の大きさ）はそのまま。組み立て済みを取ってくる直前に、HEAD で知った
+   圧縮ファイルの大きさ（`Content-Length`）を足してもう一度確かめる（展開した分は今の版の大きさの中に入る）
 3. **有無を見る**：download の URL（`https://github.com/<o>/<r>/releases/download/build-<頭12>/…`）への HEAD（API の回数制限の外）。
-   公開のリポジトリなので鍵は要らない（非公開は今は対象にしない——取れなければその場で組み立てる）
+   有無と大きさを同時に取る。公開のリポジトリなので鍵は要らない（非公開は今は対象にしない——取れなければその場で組み立てる）
 4. **まだ無いとき**：GitHub の API（`GET /repos/<o>/<r>/actions/workflows/prebuilt.yml/runs?head_sha=<40文字>`、鍵なし。
-   IP あたり 1 時間 60 回を host の `check` と分け合う）で、その commit の回のうち最新（`run_number`・attempt の最大）を見る。
+   IP あたり 1 時間 60 回を host の `check` と分け合う）で、その commit の回を**状態で**見る——`concurrency` は待てる回を1つしか
+   持たず、3つ目が来ると待っていた回を `cancelled` にするので、「最新の回」1つでは決めない。どれかが待つ状態なら待つ、どれかが
+   `success` なら HEAD を見る、それ以外のときだけ最新の完了した回の結論を理由に使う。
    - `queued`・`in_progress`・`waiting`・`pending`・`requested`：**待つ**。download の URL への HEAD は 30 秒おき、API は 2〜3 分おき。
      上限 20 分。`X-RateLimit-Remaining` が尽きた・403・429 のあとは、一度「走っている」と分かっていれば HEAD だけで上限まで待つ
    - 回も Release も無い：push の直後は回の登録が遅れることがあるので、**30 秒後に一度だけ聞き直してから**決める
@@ -1857,27 +1865,32 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
    「組み立て済みの版を取ってきています（n / m MB）」。fetch には `AbortSignal` を渡し、やめる印・SIGTERM で切る
 6. **作業フォルダに展開して確かめる**：作業は1つのフォルダ `versions/.prebuilt-<id>/`（`versions/` と同じファイルシステム。
    rename を成り立たせるため）にまとめる。sha256 が合うことを確かめてから、Node 24 の `zlib.createZstdDecompress` で伸ばして
-   `tar -x --no-same-owner --no-same-permissions --no-absolute-names` に流す（外の `zstd` コマンドは使わない——新しいホストに
+   `tar -x --no-same-owner --no-same-permissions` に流す（`-P` は付けない——GNU tar は既定で先頭の `/` を外す。
+   `--no-absolute-names` という引数は無い）（外の `zstd` コマンドは使わない——新しいホストに
    入っている保証が無い）。**展開先は worktree の外**なので、tar の実装がどう振る舞っても管理しているファイルには届かない。
    展開した木を node で歩いて確かめる：
    - 種類は通常のファイル・フォルダ・symlink だけ（デバイス・FIFO・ソケットは断る）
    - パスはすべて上の「決めた場所」の下
    - **symlink は相対パスで、字面で解いた先が版の `banto/` の中に収まる**こと（行き先が在るかは問わない）。
      `node_modules/@banto/core` → `../../packages/core` のような workspace のリンクは git が管理する場所を指すが、これは正しい
-   - hard link（リンク数 2 以上）は互いに決めた場所の中だけ（実物は opencode の2本）
+   - hard link（リンク数 2 以上）は、inode ごとに木の中で数えた名前の数がリンク数に届くこと（届かなければもう1つの名前が
+     木の外にある——断る。実物は opencode の2本）
    - 印のファイルの `commit` が組み立てる commit と同じ・`platform` が `linux-x64`・`run` が `https://github.com/<o>/<r>/actions/runs/<数字>`
      の形・`node` の major が host の node と同じ（違えばその場で組み立てる。版が細かく違うだけなら使う）・`cpu.avx2` が真で
      この機械に AVX2 が無ければ使わない
    - どれかが違えば、作業フォルダを消してその場で組み立てる
 7. **重ねる**：通ったら、上の決めた場所（`banto/node_modules`・各 `dist`・`.next`・`next-env.d.ts`・印）を作業フォルダから
    worktree（`versions/<commit>`）へ `rename` で移す。決めた場所は git が管理しないので worktree の中に先客は無い（あれば断る）
-8. **片づけ**：作業フォルダは成功・失敗・やめた・SIGTERM のどれでも丸ごと消す（今の `building` と同じく、末尾の片づけで）
+8. **片づけ**：作業フォルダは成功・失敗・やめた・SIGTERM のどれでも丸ごと消す（今の `building` と同じく、末尾の片づけで）。
+   殺された回の残りは次の回の段2の初めに消す（1）。古い版を片づける処理（`cleanUpOldVersions`）は `.` で始まる名前を飛ばす
 9. **`state.json` の `prebuilt`**：段2に入った時点で書き、進むたびに替える——`{ status: "checking" | "waiting" | "downloading" |
    "used" | "skipped", run?, reason?, bytes?: { done, total } }`。画面は段の名前と `note` をこれで出し分ける（core の `UpdateState`・
    画面の型にも足す）。その先の段（待つ・起こし直す・確かめる・戻す）は今のまま——組み立て済みの版でも、起きなければ前の版に戻す
 10. **`--dry-run`** は、組み立て済みを使う見込みか（有無と理由）も出す
-11. **試験の差し替え**：`--prebuilt-base <URL>`（`BANTO_UPDATE_PREBUILT_BASE`、download の URL の頭）・`--github-api <URL>`
-    （`BANTO_UPDATE_GITHUB_API`）・`--prebuilt-wait <秒>`（待つ上限）を、ほかの差し替えと同じ形で足す。`update.test.mjs` は手元の
+11. **試験の差し替え**：`--prebuilt-base <URL>`（`BANTO_UPDATE_PREBUILT_BASE`。`releases/download` のタグの手前までを丸ごと
+    置き換える URL）・`--github-api <URL>`（`BANTO_UPDATE_GITHUB_API`。runs の口を丸ごと置き換える URL）——どちらも `<o>/<r>` を
+    要らなくする——・`--prebuilt-wait <秒>`（待つ上限）・`--no-prebuilt`（組み立て済みを使わない）を、ほかの差し替えと同じ形で
+    足す。落ちてその場で組み立てる場合も試験で本物の `npm ci` を走らせないよう、`--build` と組み合わせて使える。`update.test.mjs` は手元の
     HTTP サーバで tar を出し、少なくとも次を通す：使える・sha256 が違う・`..`／外を指す symlink・commit が違う・platform が違う・
     「走っている→出来上がる」の待ち・待つ間のやめる印・取ってくる途中のやめる印・失敗したとき作業フォルダが残らない
 
@@ -1891,7 +1904,9 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
 
 **画面**（`GET /api/admin/update`、`docs/specs/v4-frontend.md` §6.34）：最新の `release` の commit について、組み立て済みが
 `latest.prebuilt: { status: "available" | "building" | "tests-failed" | "cancelled" | "none" | "unknown", run? }`（download の
-URL への HEAD と上の API で見る。`check` のとき）を返す。**テストが落ちていても更新は断らない**——画面に注意を出し、押せばその場で組み立てる（決定・2026-10-15、ユーザー）。
+URL への HEAD と上の API で見る。`check` のとき）を返す。結果は host のメモリに `checkedAt` つきで持ち、次の `check` まで同じ
+ものを返す（`GET` のたびに GitHub に聞かない——回数制限のため）。host が起き直したら `unknown`（まだ確かめていない）に戻る。
+`latest.prebuilt` に `checkedAt` を足す。**テストが落ちていても更新は断らない**——画面に注意を出し、押せばその場で組み立てる（決定・2026-10-15、ユーザー）。
 
 **別のサーバへ送るもの**（`docs/specs/v4-security.md` §1「向こうに置くもの」）は版のフォルダの中身から作り、パッケージごとの
 ハッシュで比べるので、組み立て済みを重ねた版でもその場で組んだ版でも同じに扱う。
