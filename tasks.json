@@ -8568,7 +8568,7 @@
       "number": 355,
       "kind": "task",
       "title": "スリープの画面（スリープ中の置き場・行・確かめ・起こしています）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-org",
       "dependsOn": [
         "project-groups-ui",
@@ -8583,7 +8583,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T22:08:21.111Z",
+      "updatedAt": "2026-10-16T22:08:27.576Z",
       "closedAt": null,
       "extra": {}
     },
