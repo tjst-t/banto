@@ -8616,7 +8616,7 @@
       "number": 357,
       "kind": "task",
       "title": "スリープの例外：出来事を待たれている Module とコンテナは止めない・待たれなくなったら片づける",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-org",
       "dependsOn": [
         "events-keep-awake",
@@ -8632,7 +8632,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T12:47:18.803Z",
+      "updatedAt": "2026-10-16T22:44:06.657Z",
       "closedAt": null,
       "extra": {}
     },
