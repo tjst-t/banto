@@ -6,12 +6,12 @@
 //
 // 見るもの（規則14——「200 が返った」で終わらせず、記録・コンテナ・Module・受信箱まで）：
 //   1. 別の Project の AI が send_message で送ると、眠っている宛先が起きて（`sleep` が外れる）、届いたものでターンが走り、
-//      宛先のコンテナと Module が起きる
-//   2. 眠らせるとコンテナが止まり Module が落ちる。人が Incus でコンテナを起こしても、banto を起こし直すと止まり、眠ったまま
+//      走り終えて何も残っていなければ眠りに戻る（by auto、コンテナも止まる——§2.2「眠りに戻す」）
+//   2. 人が Incus でコンテナを起こしても、banto を起こし直すと止まり、眠ったまま
 //   3. 上限で留めた届けものでは起きない——記録には届いたまま残り、受信箱に「自動では AI を起こしませんでした」、コンテナは止まったまま
 import { test, expect } from "../test-base.js";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeTurn } from "../helpers.js";
@@ -72,6 +72,22 @@ function moduleProcessesInContainer(projectId: string): number {
     input: "",
   });
   return Number(r.stdout.trim());
+}
+
+/** 記録に積まれた、その Project の起きた理由（`project.woke` の cause） */
+function wokeCauses(host: OwnHost, projectId: string): string[] {
+  return readFileSync(join(host.dataDir, "events.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as { type: string; payload: { id?: string; cause?: string } })
+    .filter((e) => e.type === "project.woke" && e.payload.id === projectId)
+    .map((e) => e.payload.cause!);
+}
+
+/** **眠りに戻った**（by auto・コンテナが止まる） */
+async function expectReturnedToSleep(host: OwnHost, projectId: string): Promise<void> {
+  await expect.poll(async () => (await projectOf(host, projectId)).sleep?.by, { timeout: 60_000, message: "用が済んだのに眠りに戻らない" }).toBe("auto");
+  await expect.poll(() => containerState(projectId), { timeout: 60_000, message: "眠りに戻ったのにコンテナが動いている" }).toBe("STOPPED");
 }
 
 /** 動いているもの（直前のターンの終わり）が片づくまで、眠らせるのを試し直す */
@@ -138,21 +154,19 @@ test("send_message で眠っている Project が起きて届く・起こし直�
         .toBe("completed:assistant");
       expect(fork.lastTurn?.cause).toBe("delivery");
       expect(fork.messages[0]!.origin?.title).toBe("一通目");
-      expect((await projectOf(host, receiver.id)).sleep, "届いたもので起きていない").toBeUndefined();
-      // 起きれば Module はいつもどおり起きる（ターンが Module を用意した）
-      await expect.poll(() => moduleProcessesInContainer(receiver.id), { timeout: 60_000, message: "起きたのに Module が立たない" }).toBe(2);
+      // 届いたもので起きた（記録に project.woke の cause delivery）。用が済んだので眠りに戻る（人の操作も残りも無い）
+      expect(wokeCauses(host, receiver.id), "届いたもので起きていない").toEqual(["delivery"]);
+      await expectReturnedToSleep(host, receiver.id);
+      expect(moduleProcessesInContainer(receiver.id)).toBe(0);
 
-      // ---- 2. 眠らせるとコンテナと Module が止まる。人が起こしたコンテナも、banto を起こし直すと止まる ---------------
-      const slept = await sleepWhenIdle(host, receiver.id);
-      expect(slept.released).toEqual(expect.arrayContaining([`shell-${receiver.id}`, `filesystem-${receiver.id}`]));
-      expect(containerState(receiver.id), "眠らせたのにコンテナが動いている").toBe("STOPPED");
+      // ---- 2. 人が起こしたコンテナも、banto を起こし直すと止まる -------------------------------------------------
       const started = spawnSync("incus", ["start", `banto-${receiver.id}`], { encoding: "utf8", input: "" });
       expect(started.status, started.stderr).toBe(0);
       expect(containerState(receiver.id)).toBe("RUNNING");
       await host.stop("SIGTERM");
       await host.start();
       expect(containerState(receiver.id), "起こし直したのに眠っている Project のコンテナが動いている").toBe("STOPPED");
-      expect((await projectOf(host, receiver.id)).sleep?.by, "起こし直したら起きた").toBe("human");
+      expect((await projectOf(host, receiver.id)).sleep?.by, "起こし直したら起きた").toBe("auto");
       // 少し待っても勝手に起きない（届けものの再開・Module の起こし直しが起こさない）
       await new Promise((r) => setTimeout(r, 5_000));
       expect((await projectOf(host, receiver.id)).sleep).toBeTruthy();
@@ -177,9 +191,8 @@ test("send_message で眠っている Project が起きて届く・起こし直�
       await send(host, sender.baseId, toFork("二通目"));
       await expect.poll(replies, { timeout: 90_000, message: "二通目で起きて走るまで" }).toBe(2);
       await expect.poll(async () => (await get<HostThread>(host, `/api/threads/${fork.id}`)).lastTurn?.outcome, { timeout: 30_000 }).toBe("completed");
-      expect((await projectOf(host, receiver.id)).sleep).toBeUndefined();
-      await sleepWhenIdle(host, receiver.id);
-      expect(containerState(receiver.id)).toBe("STOPPED");
+      expect(wokeCauses(host, receiver.id), "二通目で起きていない").toEqual(["delivery", "delivery"]);
+      await expectReturnedToSleep(host, receiver.id);
 
       await send(host, sender.baseId, toFork("三通目"));
       await expect

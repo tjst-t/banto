@@ -6,6 +6,11 @@
 //
 // 起こす口は `wake` の1か所（呼ぶのは `modules/prepare` と `openTurn` だけ）。やることは `sleep` を外すだけで、コンテナと
 // Module は今の遅延起動で起きる。眠っている Project の Module を起こさない門は `connectDeclaredModule`（cli.ts）。
+//
+// **眠りに戻す**（決定・2026-10-16、§2.2「眠りに戻す」）：用事（`delivery`・`automation`）で起こした Project を覚えておき、
+// 人の操作（`noteHuman`）があれば忘れる。ターンが終わった・裏の仕事の札が閉じたとき（`returnIfDone`）に、動いているものも
+// 人を待つものも残っていなければ `by: "auto"` で眠らせる（手順と断る条件は人が眠らせるときと同じ `sleep`）。覚えるのは
+// メモリだけ——banto を起こし直したら忘れ、起きたままになる（眠らせ損ねる側に倒す。人の操作の記録 `lastHumanAt` はまだ無い）
 import {
   isRemoteProject,
   NotFoundError,
@@ -15,6 +20,8 @@ import {
   type ProjectThreadStore,
   type ProjectWokeCause,
 } from "../project-thread/index.js";
+import type { ThreadState } from "../project-thread/types.js";
+import { reviewAttentionOf } from "../inbox/automation-review.js";
 import type { RunningItem } from "./project-move.js";
 
 export interface ProjectSleepDeps {
@@ -27,6 +34,29 @@ export interface ProjectSleepDeps {
   releaseModules(projectId: string): Promise<string[]>;
   /** 実行場所で動いているもの（Service・待たないコマンド・Terminal のセッション）。コンテナが止まっていれば空 */
   runningInPlace(projectId: string): Promise<RunningItem[]>;
+  /**
+   * **用が済んでいない理由**（眠りに戻す前に見る。`hostActivity` のほかに）——届いたもの（留めたものを含む）・判断待ち・
+   * 起きてから（`since` 以降）のターンの結末が人を待っている。空なら済んだ。無ければ眠りに戻さない
+   */
+  errandLeftovers?(projectId: string, since: string): string[];
+}
+
+/**
+ * **用が済んでいない理由**（`errandLeftovers` の中身）。Thread ごとに、まだ渡していない届いたもの・判断待ち、起きてから
+ * 始めたターンの結末が人を待つ（失敗・止めた・判断待ち・決めること——受信箱の `reviewAttentionOf` と同じ見方）を並べる
+ */
+export function errandLeftoversOf(
+  threads: ReadonlyArray<Pick<ThreadState, "title" | "deliveries" | "lastTurn" | "messages"> & { liveJudgment: boolean }>,
+  since: string,
+): string[] {
+  const reasons: string[] = [];
+  for (const t of threads) {
+    const where = t.title ?? "会話";
+    if ((t.deliveries?.length ?? 0) > 0) reasons.push(`まだ渡していない届いたものがあります（${where}）`);
+    if (t.liveJudgment) reasons.push(`判断待ちがあります（${where}）`);
+    else if (t.lastTurn && t.lastTurn.startedAt >= since && reviewAttentionOf(t, false)) reasons.push(`ターンの結末が人を待っています（${where}）`);
+  }
+  return reasons;
 }
 
 /** 眠らせられない・眠らせている途中（状態番号つき。`code` は画面が見分ける） */
@@ -46,6 +76,8 @@ export class ProjectSleep {
   private readonly marks = new Map<string, Promise<void>>();
   /** 起こしている途中（同時に2か所から呼ばれても `project.woke` は1回） */
   private readonly waking = new Map<string, Promise<boolean>>();
+  /** 用事（`delivery`・`automation`）で起こして、まだ人の操作が無い Project（起こした時刻）。眠りに戻す候補 */
+  private readonly errands = new Map<string, string>();
 
   constructor(private readonly deps: ProjectSleepDeps) {}
 
@@ -98,6 +130,7 @@ export class ProjectSleep {
         if (err instanceof ProjectSleepConflictError || err instanceof RuntimeMoveConflictError) throw new ProjectSleepError(409, err.message);
         throw err;
       }
+      this.errands.delete(projectId);
       return { released: await this.deps.releaseModules(projectId) };
     } finally {
       this.marks.delete(projectId);
@@ -113,11 +146,53 @@ export class ProjectSleep {
     const running = this.waking.get(projectId);
     if (running) return running.then(() => false);
     if (!this.deps.projectThread.getProject(projectId)?.sleep) return false;
+    const since = new Date().toISOString();
     const woke = this.deps.projectThread.wakeProject(projectId, cause).finally(() => this.waking.delete(projectId));
     this.waking.set(projectId, woke);
     const did = await woke;
-    if (did) console.log(`[host] project ${projectId} が起きました（${cause}）`);
+    if (did) {
+      console.log(`[host] project ${projectId} が起きました（${cause}）`);
+      if (cause === "delivery" || cause === "automation") this.errands.set(projectId, since);
+      else this.errands.delete(projectId);
+    }
     return did;
+  }
+
+  /** **人の操作があった**（人のセッションから、その Project を指す要求）——用事で起きた Project でも、もう眠りに戻さない */
+  noteHuman(projectId: string): void {
+    this.errands.delete(projectId);
+  }
+
+  /** 用事で起きて、まだ眠りに戻す候補か（試験と観測用） */
+  awakeForErrand(projectId: string): boolean {
+    return this.errands.has(projectId);
+  }
+
+  /**
+   * **用が済んでいれば眠りに戻す**（`by: "auto"`）。ターンが終わった・裏の仕事の札が閉じたときに呼ぶ。眠らせたら true。
+   * 用事で起きた Project でなければ・何か残っていれば何もしない。眠らせられなかったら（動いているものがある等）候補のまま
+   * 残し、次のきっかけでまた見る
+   */
+  async returnIfDone(projectId: string): Promise<boolean> {
+    const since = this.errands.get(projectId);
+    if (since === undefined || !this.deps.errandLeftovers) return false;
+    const project = this.deps.projectThread.getProject(projectId);
+    if (!project || project.status === "closed" || project.sleep) {
+      this.errands.delete(projectId);
+      return false;
+    }
+    if (this.marks.has(projectId) || project.move || this.deps.hostActivity(projectId).length > 0) return false;
+    if (this.deps.errandLeftovers(projectId, since).length > 0) return false;
+    try {
+      await this.sleep(projectId, "auto");
+    } catch (err) {
+      // 確かめてから印を立てるまでの間に何か始まった——候補のまま次のきっかけを待つ（それ以外の失敗は黙らない）
+      if (err instanceof ProjectSleepError && err.status === 409) return false;
+      console.warn(`[host] 用が済んだ project ${projectId} を眠りに戻せませんでした:`, err);
+      return false;
+    }
+    console.log(`[host] 用事で起きた project ${projectId} を、用が済んだので眠りに戻しました`);
+    return true;
   }
 
   /**

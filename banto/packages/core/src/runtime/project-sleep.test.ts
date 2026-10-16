@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog } from "../event-store/log.js";
 import { ProjectThreadStore } from "../project-thread/store.js";
-import { ProjectSleep, ProjectSleepError, type ProjectSleepDeps } from "./project-sleep.js";
+import { errandLeftoversOf, ProjectSleep, ProjectSleepError, type ProjectSleepDeps } from "./project-sleep.js";
 import type { RunningItem } from "./project-move.js";
 
 async function withSleep(
@@ -151,5 +151,87 @@ test("止まるもの：実行場所で動いているものを並べる。眠�
       assert.deepEqual(await sleep.preview(p.id), { stops: [], blockers: [] });
     },
     { runningInPlace: async () => [{ kind: "service", label: "Service「web」が動いています" }] },
+  );
+});
+
+test("眠りに戻す：用事（delivery・automation）で起きた Project は、何も残っていなければ by auto で眠る。人が開いた・送ったで起きたものは戻さない", async () => {
+  let leftovers: string[] = [];
+  let activity: RunningItem[] = [];
+  await withSleep(
+    async ({ store, dir, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      // 起きていた Project には何もしない
+      assert.equal(await sleep.returnIfDone(p.id), false);
+      for (const cause of ["opened", "human"] as const) {
+        await sleep.sleep(p.id, "human");
+        await sleep.wake(p.id, cause);
+        assert.equal(sleep.awakeForErrand(p.id), false, cause);
+        assert.equal(await sleep.returnIfDone(p.id), false, cause);
+        assert.equal(store.getProject(p.id)?.sleep, undefined, cause);
+      }
+      for (const cause of ["delivery", "automation"] as const) {
+        await sleep.sleep(p.id, "human");
+        await sleep.wake(p.id, cause);
+        assert.equal(sleep.awakeForErrand(p.id), true, cause);
+        // 走っている・残っている間は戻さない（候補のまま）
+        activity = [{ kind: "turn", label: "ターンが走っています（会話）" }];
+        assert.equal(await sleep.returnIfDone(p.id), false);
+        activity = [];
+        leftovers = ["判断待ちがあります（会話）"];
+        assert.equal(await sleep.returnIfDone(p.id), false);
+        assert.equal(store.getProject(p.id)?.sleep, undefined);
+        assert.equal(sleep.awakeForErrand(p.id), true);
+        leftovers = [];
+        assert.equal(await sleep.returnIfDone(p.id), true, cause);
+        assert.equal(store.getProject(p.id)?.sleep?.by, "auto");
+        assert.equal(sleep.awakeForErrand(p.id), false, "眠ったのに候補に残っている");
+      }
+    },
+    { hostActivity: () => activity, errandLeftovers: () => leftovers },
+  );
+});
+
+test("眠りに戻す：起きてから人の操作があれば戻さない。人が眠らせた・閉じたら候補から外す", async () => {
+  await withSleep(
+    async ({ store, dir, sleep }) => {
+      const p = await store.createProject("demo", dir);
+      await sleep.sleep(p.id, "human");
+      await sleep.wake(p.id, "automation");
+      sleep.noteHuman(p.id);
+      assert.equal(await sleep.returnIfDone(p.id), false);
+      assert.equal(store.getProject(p.id)?.sleep, undefined);
+      // 人が眠らせて、また用事で起きたら候補に戻る。閉じたら外す
+      await sleep.sleep(p.id, "human");
+      await sleep.wake(p.id, "delivery");
+      await store.closeProject(p.id);
+      assert.equal(await sleep.returnIfDone(p.id), false);
+      assert.equal(sleep.awakeForErrand(p.id), false);
+    },
+    { errandLeftovers: () => [] },
+  );
+});
+
+test("用が済んでいない理由：届いたもの・判断待ち・起きてから始めたターンの結末が人を待つ（古いターンは見ない）", () => {
+  const turn = (startedAt: string, outcome: "completed" | "failed") => ({
+    turnId: "t",
+    startedSeq: 1,
+    startedAt,
+    cause: "delivery" as const,
+    attempt: 0,
+    outcome,
+  });
+  const since = "2026-10-16T10:00:00.000Z";
+  assert.deepEqual(errandLeftoversOf([{ title: "A", messages: [], liveJudgment: false, lastTurn: turn("2026-10-16T10:00:01.000Z", "completed") }], since), []);
+  assert.deepEqual(
+    errandLeftoversOf(
+      [
+        { title: "A", messages: [], liveJudgment: false, deliveries: [{ deliveryId: "d", from: "x", title: "t", text: "", hop: 1, receivedAt: since }] },
+        { title: "B", messages: [], liveJudgment: true },
+        { title: "C", messages: [], liveJudgment: false, lastTurn: turn("2026-10-16T10:00:01.000Z", "failed") },
+        { title: "D", messages: [], liveJudgment: false, lastTurn: turn("2026-10-01T00:00:00.000Z", "failed") },
+      ],
+      since,
+    ),
+    ["まだ渡していない届いたものがあります（A）", "判断待ちがあります（B）", "ターンの結末が人を待っています（C）"],
   );
 });
