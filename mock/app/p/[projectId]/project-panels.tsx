@@ -15,8 +15,32 @@ import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread
 import { TriggerBand } from "@/components/banto/thread/trigger-band";
 import { TRIGGERS_CANVAS, triggerOfThread } from "@/lib/mock/triggers";
 import { getProject } from "@/lib/mock/projects";
+import { isSleeping, isWaking, wakeProject } from "@/lib/mock/project-org";
+import { LoaderCircle, Moon } from "lucide-react";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeThread, getThread } from "@/lib/mock/threads";
+
+/** スリープ中・起こしている途中の帯（Project の整理のモック・2026-10-16）。URL で直に開いたときなどに出る */
+function SleepBand({ projectId }: { projectId: string }) {
+  if (isWaking(projectId)) {
+    return (
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 py-2 text-xs text-ink-2">
+        <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+        起こしています——コンテナと Module を起こしています。数秒で使えます
+      </div>
+    );
+  }
+  if (!isSleeping(projectId)) return null;
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 py-2 text-xs text-ink-2">
+      <Moon className="size-3.5 shrink-0" aria-hidden />
+      <span className="flex-1">この Project はスリープ中です。会話は読めます。送ると起きます</span>
+      <button type="button" onClick={() => wakeProject(projectId)} className="rounded-md px-2 py-0.5 font-medium text-foreground hover:bg-accent">
+        起こす
+      </button>
+    </div>
+  );
+}
 
 function PanelHeader({
   leading,
@@ -187,6 +211,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               onCompact={() => addMarker(project.baseThreadId, "compact")}
             />
           </PanelHeader>
+          <SleepBand projectId={projectId} />
           <div className="min-h-0 flex-1">
             <ThreadPanel
               threadId={project.baseThreadId}

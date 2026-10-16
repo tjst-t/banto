@@ -36,7 +36,10 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
-import { getActiveProjects } from "@/lib/mock/projects";
+import { GROUP_DOT_CLASS, getSidebarSections, wakeProject, type ProjectGroup } from "@/lib/mock/project-org";
+import type { MockProject } from "@/lib/mock/types";
+import { Moon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
@@ -73,6 +76,62 @@ function RailIconButton({
       </TooltipTrigger>
       <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/** 畳んだレールの並び（Project の整理のモック）：グループなし → グループごとに色の短い線で区切る。スリープ中は下の月のボタンにまとめる */
+function railRows(): Array<{ kind: "group"; group: ProjectGroup } | { kind: "project"; project: MockProject }> {
+  const { ungrouped, groups } = getSidebarSections();
+  return [
+    ...ungrouped.map((project) => ({ kind: "project" as const, project })),
+    ...groups.flatMap(({ group, projects }) =>
+      projects.length === 0
+        ? []
+        : [{ kind: "group" as const, group }, ...projects.map((project) => ({ kind: "project" as const, project }))],
+    ),
+  ];
+}
+
+/** 畳んだレールのスリープ中——1つのボタンにまとめ、押すと一覧 */
+function SleepingRailButton() {
+  const router = useRouter();
+  const { sleeping } = getSidebarSections();
+  if (sleeping.length === 0) return null;
+  return (
+    <Popover>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={`スリープ中の Project（${sleeping.length}）`}
+              className="relative flex size-8 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
+            >
+              <Moon className="size-4" />
+              <span className="absolute -right-0.5 -bottom-0.5 text-xs leading-none text-ink-3 tabular-nums">{sleeping.length}</span>
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="right">スリープ中（{sleeping.length}）</TooltipContent>
+      </Tooltip>
+      <PopoverContent side="right" align="end" className="w-56 p-1.5">
+        <p className="px-2 py-1 text-xs font-medium text-ink-3">スリープ中——押すと起こして開く</p>
+        {sleeping.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => {
+              wakeProject(p.id);
+              router.push(`/p/${p.id}`);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-ink-2 hover:bg-accent hover:text-foreground"
+          >
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-md border border-border text-xs">{p.initial}</span>
+            <span className="truncate">{p.name}</span>
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -119,7 +178,20 @@ function CollapsedRail({
           バッジのぶんの余白（pt-1）を上に取ることで両方を満たす */}
       <SidebarContent className="!overflow-x-hidden !overflow-y-auto items-center gap-1 px-0 pt-1">
         <SidebarMenu className="items-center gap-1 px-0">
-          {getActiveProjects().map((project) => {
+          {railRows().map((row) => {
+            if (row.kind === "group") {
+              return (
+                <li key={row.group.id} className="flex w-full justify-center py-1" aria-label={`グループ ${row.group.name}`}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className={cn("h-0.5 w-5 rounded-full", GROUP_DOT_CLASS[row.group.color])} />
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{row.group.name}</TooltipContent>
+                  </Tooltip>
+                </li>
+              );
+            }
+            const project = row.project;
             const active = project.id === activeProjectId;
             const forks = getThreadsForProject(project.id).filter((t) => t.kind === "fork");
             return (
@@ -188,6 +260,7 @@ function CollapsedRail({
             );
           })}
         </SidebarMenu>
+        <SleepingRailButton />
         <RailIconButton icon={Plus} label="新しい Project" onClick={onNewProject} />
       </SidebarContent>
 

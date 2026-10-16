@@ -8,7 +8,7 @@
 // |---|---|
 // | デスクトップ（展開時） | `Sidebar`（`project-rail.tsx`） |
 // | モバイル | 左から出る `Drawer`（`mobile-nav-drawer.tsx`） |
-import { useState, type ReactNode } from "react";
+import { useState, type HTMLAttributes, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils";
 import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { ThemeToggle } from "./theme-toggle";
+import { ProjectList } from "./project-list";
 import { isThreadRunning } from "@/lib/mock/background-work";
 import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
 import { getResourcesSnapshot, parseResourcesDemo } from "@/lib/mock/resources";
@@ -110,7 +111,7 @@ export interface NavPanelHandlers {
  * 見えている一覧**にした（決定・2026-09-09）——Fork は「いま並行して走っている
  * 作業」なので、探しに行くものではない。
  */
-function ProjectTreeItem({
+export function ProjectTreeItem({
   project,
   activeProjectId,
   activeForkThreadId,
@@ -118,6 +119,8 @@ function ProjectTreeItem({
   onToggleExpanded,
   onOpenArchive,
   onNavigate,
+  rowMenu,
+  itemProps,
 }: {
   project: MockProject;
   activeProjectId: string | null;
@@ -126,6 +129,10 @@ function ProjectTreeItem({
   onToggleExpanded: () => void;
   onOpenArchive: () => void;
   onNavigate?: () => void;
+  /** 行の「…」（Project の整理のモック・2026-10-16）。行の Link の外に置く */
+  rowMenu?: (opts: { hasChevron: boolean }) => ReactNode;
+  /** 行（li）に載せるもの——ドラッグの口 */
+  itemProps?: HTMLAttributes<HTMLLIElement>;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -153,8 +160,8 @@ function ProjectTreeItem({
   }
 
   return (
-    <SidebarMenuItem>
-      <SidebarMenuButton asChild isActive={isCurrent}>
+    <SidebarMenuItem {...itemProps} className={cn("group/project", itemProps?.className)}>
+      <SidebarMenuButton asChild isActive={isCurrent} className={rowMenu ? (forks.length > 0 ? "pr-14" : "pr-8") : undefined}>
         <Link
           href={projectNavHref(project.id, pathname, {
             project: searchParams.get("project"),
@@ -170,6 +177,7 @@ function ProjectTreeItem({
         </Link>
       </SidebarMenuButton>
       <PendingProjectBadge groups={projectPending} scope={project.name} />
+      {rowMenu?.({ hasChevron: forks.length > 0 })}
       {forks.length > 0 ? (
         <SidebarMenuAction
           onClick={onToggleExpanded}
@@ -350,6 +358,8 @@ export function NavPanel({
 
       <SidebarContent>
         {hostSnap.host.busy === "busy" ? <HostBusyBand reason={hostSnap.host.busyReason} /> : null}
+        {/* Project の整理（モック・2026-10-16）：グループ・スリープ・行の「…」・ドラッグ。旧い平らな一覧は ?org=off で見られる */}
+        {navSearchParams.get("org") === "off" ? (
         <SidebarGroup>
           <SidebarGroupLabel>Project</SidebarGroupLabel>
           <SidebarGroupAction
@@ -383,6 +393,15 @@ export function NavPanel({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        ) : (
+          <ProjectList
+            activeProjectId={activeProjectId}
+            activeForkThreadId={activeForkThreadId}
+            onOpenArchive={onOpenArchive}
+            onNewProject={onNewProject}
+            onNavigate={onNavigate}
+          />
+        )}
       </SidebarContent>
 
       <SidebarFooter className="gap-1">

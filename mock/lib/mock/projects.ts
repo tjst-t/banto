@@ -28,6 +28,71 @@ let projects: MockProject[] = [
     basePath: "~/banto/hermes",
     status: "active",
   },
+  // ── Project の整理のモック（2026-10-16）：グループ・スリープを見せるための Project ──
+  {
+    id: "qemu-bmc",
+    name: "qemu-bmc",
+    initial: "q",
+    baseThreadId: "qemu-bmc-base",
+    basePath: "~/banto/qemu-bmc",
+    status: "active",
+  },
+  {
+    id: "site",
+    name: "公開サイト",
+    initial: "公",
+    baseThreadId: "site-base",
+    basePath: "~/banto/banto-site",
+    status: "active",
+  },
+  {
+    id: "kaggle",
+    name: "Kaggle の練習",
+    initial: "K",
+    baseThreadId: "kaggle-base",
+    basePath: "~/banto/kaggle",
+    status: "active",
+  },
+  {
+    id: "kakeibo",
+    name: "家計簿の整理",
+    initial: "家",
+    baseThreadId: "kakeibo-base",
+    basePath: "~/banto/kakeibo",
+    status: "active",
+  },
+  {
+    id: "trip",
+    name: "旅行の計画",
+    initial: "旅",
+    baseThreadId: "trip-base",
+    basePath: "~/banto/trip-2026",
+    status: "active",
+  },
+  {
+    id: "papers",
+    name: "論文メモ",
+    initial: "論",
+    baseThreadId: "papers-base",
+    basePath: "~/banto/papers",
+    status: "active",
+  },
+  {
+    id: "proxmox-lab",
+    name: "Proxmox の検証",
+    initial: "P",
+    baseThreadId: "proxmox-lab-base",
+    basePath: "~/banto/proxmox-lab",
+    status: "active",
+  },
+  {
+    id: "recipe",
+    name: "レシピ集",
+    initial: "レ",
+    baseThreadId: "recipe-base",
+    basePath: "~/banto/recipe",
+    status: "active",
+  },
   {
     id: "old-migration",
     name: "旧DBの移行検証",
@@ -38,6 +103,13 @@ let projects: MockProject[] = [
     closedAt: "2026-08-15",
   },
 ];
+
+// 整理のモックで足した Project には Base Thread だけ用意する（中身はダミー）
+for (const p of projects) {
+  if (["qemu-bmc", "site", "kaggle", "kakeibo", "trip", "papers", "proxmox-lab", "recipe"].includes(p.id)) {
+    createBaseThreadForProject(p.id, p.baseThreadId, p.name);
+  }
+}
 
 export function getAllProjects(): readonly MockProject[] {
   return projects;
