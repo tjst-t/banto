@@ -8501,7 +8501,7 @@
       "number": 352,
       "kind": "task",
       "title": "グループの記録と HTTP、一覧の変更を projects.changed で流す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-org",
       "dependsOn": [],
       "milestone": null,
@@ -8513,7 +8513,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T12:47:18.803Z",
+      "updatedAt": "2026-10-16T14:11:51.218Z",
       "closedAt": null,
       "extra": {}
     },
