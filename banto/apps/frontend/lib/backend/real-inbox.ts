@@ -74,6 +74,17 @@ export function getRealInboxBadgeCount(): number {
   return items.length + reviews.filter((r) => (reviewSummaryOf(r)?.decisions.length ?? 0) > 0).length;
 }
 
+/**
+ * **渡した Thread の「あなたの番」の件数**（追加・2026-10-16、v4-frontend.md §6.43）。数え方は受信箱のバッジと同じ
+ * （上の `getRealInboxBadgeCount`）を Thread で絞ったもの。畳んだグループの見出しに残す
+ */
+export function getRealTurnCountForThreads(threadIds: ReadonlySet<string>): number {
+  return (
+    items.filter((j) => threadIds.has(j.threadId)).length +
+    reviews.filter((r) => threadIds.has(r.threadId) && (reviewSummaryOf(r)?.decisions.length ?? 0) > 0).length
+  );
+}
+
 function isVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState === "visible";
 }

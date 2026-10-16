@@ -14,6 +14,7 @@ import {
   reopenRealProject,
   renameRealProject,
   setRealProjectOrder,
+  assignRealProjectGroup,
   updateRealProjectSettings,
   prepareRealProjectModules,
 } from "../backend/client";
@@ -141,6 +142,72 @@ export async function reorderProjects(visibleOrderedIds: string[]): Promise<void
   }
 }
 
+/**
+ * **Project を置く**（追加・2026-10-16、v4-frontend.md §6.43）。ドラッグで落とした先・行の「…」の「グループへ移す」・
+ * 「上へ／下へ」がここを通る（規則3）。`beforeId` があればその Project の前（そのグループに入る）、無ければ
+ * `groupId` のグループの最後（`null` ならグループに入っていない Project の最後）。
+ *
+ * 並びは host に1つ（Project 全部、閉じたものも）——グループの中の順はその並びを絞ったもの（アーキ §2.2）。
+ * だから動かすのはいつも全体の並び。グループが変わるなら入れ先と位置を**1つの出来事**で書く（`order` を添える）。
+ * 先に画面を動かし、書けなかったら戻す（`reorderProjects` と同じ、規則2）
+ */
+export async function placeProject(
+  projectId: string,
+  target: { groupId: string | null; beforeId?: string },
+): Promise<void> {
+  const moving = projects.find((p) => p.id === projectId);
+  if (!moving || target.beforeId === projectId) return;
+  const before = projects;
+  const rest = projects.filter((p) => p.id !== projectId);
+  let at = target.beforeId ? rest.findIndex((p) => p.id === target.beforeId) : -1;
+  if (at < 0) {
+    // そのグループ（開いている Project）の最後の後ろ。まだ誰もいなければ、グループの外なら先頭・グループなら末尾
+    const last = rest.findLastIndex((p) => p.status === "active" && (p.groupId ?? null) === target.groupId);
+    at = last >= 0 ? last + 1 : target.groupId === null ? 0 : rest.length;
+  }
+  const placed: MockProject = { ...moving };
+  if (target.groupId) placed.groupId = target.groupId;
+  else delete placed.groupId;
+  const next = [...rest.slice(0, at), placed, ...rest.slice(at)];
+  const groupChanged = (moving.groupId ?? null) !== target.groupId;
+  if (!groupChanged && next.every((p, i) => p.id === before[i]!.id)) return;
+  projects = next;
+  notifyMockStoreChange();
+  const order = next.map((p) => p.id);
+  try {
+    if (groupChanged) await assignRealProjectGroup(projectId, target.groupId, order);
+    else await setRealProjectOrder(order);
+  } catch (err) {
+    projects = before;
+    notifyMockStoreChange();
+    throw err;
+  }
+}
+
+/**
+ * **host の一覧に合わせ直す**（追加・2026-10-16、`projects.changed`・繋ぎ直したとき）。並び・名前・状態・グループを
+ * host のとおりにする——別の画面（携帯）で動かしたものがこの画面にも出る。知らない Project は `hydrateRealProjects` が足す
+ */
+export async function syncRealProjects(): Promise<void> {
+  if (!getBackendConfig()) return;
+  const real = await listRealProjects();
+  const byId = new Map(real.map((rp, i) => [rp.id, { rp, i }]));
+  const updated = projects.map((p) => {
+    const hit = byId.get(p.id);
+    if (!hit) return p;
+    const { rp } = hit;
+    const next: MockProject = { ...p, name: rp.name, initial: rp.name.slice(0, 1), status: rp.status };
+    if (rp.groupId) next.groupId = rp.groupId;
+    else delete next.groupId;
+    return next;
+  });
+  // host に無いもの（ありえないが）は元の場所の順で後ろへ
+  const rank = (p: MockProject) => byId.get(p.id)?.i ?? Number.MAX_SAFE_INTEGER;
+  projects = updated.map((p, i) => ({ p, i })).sort((a, b) => rank(a.p) - rank(b.p) || a.i - b.i).map(({ p }) => p);
+  notifyMockStoreChange();
+  if (real.some((rp) => !projects.some((p) => p.id === rp.id))) await hydrateRealProjects();
+}
+
 export interface NewProjectInput {
   name: string;
   basePath: string;
@@ -186,7 +253,8 @@ export async function createRealProject(input: NewProjectInput): Promise<MockPro
     real: true,
     ...(realProject.runtime ? { runtime: realProject.runtime } : {}),
   };
-  projects = [...projects, project];
+  // 作った知らせ（projects.changed）で一覧を読み直した側が、先に足していることがある——二重にしない
+  projects = [...projects.filter((p) => p.id !== project.id), project];
   registerRealThread(
     realThread.id,
     realProject.id,
@@ -253,6 +321,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       status: rp.status,
       real: true,
       ...(rp.runtime ? { runtime: rp.runtime } : {}),
+      ...(rp.groupId ? { groupId: rp.groupId } : {}),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。

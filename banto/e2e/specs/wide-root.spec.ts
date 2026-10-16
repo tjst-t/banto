@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { openApp, clickNewProject } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
@@ -68,7 +68,7 @@ test("home を根にしても Module は動く。ただし画面が警告する"
   // ---- 3. 新しい Project を作るときにも、選ぶ前に出る ----------------------
   await page.goto("/");
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await clickNewProject(page);
   await page.getByLabel("Root パス").fill(homedir());
   await expect(
     page.getByTestId("wide-root-warning"),

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, installInfisical, openApp, openNav, openProjectSettings } from "../helpers.js";
+import { createProject, installInfisical, openApp, openNav, openProjectSettings, clickNewProject } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -268,7 +268,7 @@ test("新しい Project：最初は空。選ぶと home から始まる", async 
   // Root の初期値（`~/worktrees/`）もおかしい——**その場所を使うかは人が決める**。
   await openApp(page);
   await openNav(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await clickNewProject(page);
 
   const dialog = page.getByRole("dialog").first();
   await expect(dialog.getByLabel("Project 名"), "名前に初期値が入っている").toHaveValue("");

@@ -124,6 +124,20 @@ export interface RealProject {
   runtime?: string;
   /** 承認なしでメッセージを受け取ってよい Project の id（追加・2026-10-01、アーキ仕様 §4.2）。無ければ空 */
   acceptMessagesFrom?: string[];
+  /** 入っているグループ（追加・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。無ければグループなし */
+  groupId?: string;
+  createdAt: string;
+}
+
+/** グループの色（host の `PROJECT_GROUP_COLORS` と同じ5つ。記録には名前で持つ） */
+export const REAL_PROJECT_GROUP_COLORS = ["blue", "green", "yellow", "orange", "pink"] as const;
+export type RealProjectGroupColor = (typeof REAL_PROJECT_GROUP_COLORS)[number];
+
+/** Project のグループ（host の `ProjectGroupState` と同じ形、アーキ仕様 §2.2） */
+export interface RealProjectGroup {
+  id: string;
+  name: string;
+  color: RealProjectGroupColor;
   createdAt: string;
 }
 
@@ -1132,6 +1146,43 @@ export async function renameRealThread(threadId: string, title: string): Promise
 /** Project の並び。**順番そのものを1件で送る**（要素ごとの番号は持たない）。 */
 export async function setRealProjectOrder(ids: string[]): Promise<void> {
   await request("/api/projects/order", { method: "PUT", body: JSON.stringify({ ids }) });
+}
+
+/** **Project のグループ**（追加・2026-10-16、アーキ仕様 §2.2）。並びは host が決めた順 */
+export async function listRealProjectGroups(): Promise<RealProjectGroup[]> {
+  return request<RealProjectGroup[]>("/api/project-groups");
+}
+
+/** 色を省けば、host がまだ使っていない色を選ぶ。同じ名前（大文字小文字を区別しない）は 409 */
+export async function createRealProjectGroup(name: string, color?: RealProjectGroupColor): Promise<RealProjectGroup> {
+  return request<RealProjectGroup>("/api/project-groups", {
+    method: "POST",
+    body: JSON.stringify({ name, ...(color ? { color } : {}) }),
+  });
+}
+
+export async function updateRealProjectGroup(
+  id: string,
+  patch: { name?: string; color?: RealProjectGroupColor },
+): Promise<RealProjectGroup> {
+  return request<RealProjectGroup>(`/api/project-groups/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+/** なくしても中の Project は消えない——グループの外へ出る（host） */
+export async function removeRealProjectGroup(id: string): Promise<void> {
+  await request(`/api/project-groups/${id}`, { method: "DELETE" });
+}
+
+export async function setRealProjectGroupOrder(ids: string[]): Promise<void> {
+  await request("/api/project-groups/order", { method: "PUT", body: JSON.stringify({ ids }) });
+}
+
+/** Project をグループに入れる・出す（`null` でグループの外）。`order`（Project 全部の並び）を添えると位置も同じ1回で書く */
+export async function assignRealProjectGroup(projectId: string, groupId: string | null, order?: string[]): Promise<RealProject> {
+  return request<RealProject>(`/api/projects/${projectId}/group`, {
+    method: "PUT",
+    body: JSON.stringify({ groupId, ...(order ? { order } : {}) }),
+  });
 }
 
 /** その Project の Fork の並び。 */

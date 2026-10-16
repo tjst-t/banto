@@ -75,3 +75,15 @@ export function useProjectRunning(projectId: string): boolean {
     () => false,
   );
 }
+
+/**
+ * 渡した Project のどれかで AI が動いているか（追加・2026-10-16、v4-frontend.md §6.43）。畳んだグループの見出しに
+ * 回る輪を残すのに使う——畳んだから気づけない、を作らない
+ */
+export function useAnyProjectRunning(projectIds: readonly string[]): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => [...running.values()].some((id) => id !== undefined && projectIds.includes(id)),
+    () => false,
+  );
+}

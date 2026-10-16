@@ -95,7 +95,12 @@ export type RealAppEvent =
    * その Project の自動化の台帳が変わった（追加・2026-10-15、v4-frontend.md §6.42）。中身は流れてこない——写しを持っている
    * 画面が取り直す（`automations.ts`）
    */
-  | { type: "automations.changed"; projectId: string };
+  | { type: "automations.changed"; projectId: string }
+  /**
+   * Project の一覧が変わった（追加・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。作る・名前・並び・閉じる・
+   * 開き直す・グループ。中身は流れてこない——`project-groups.ts` が一覧とグループを取り直す
+   */
+  | { type: "projects.changed" };
 
 /** 移す元・移す先（host の `RuntimeMoveView` の from・to） */
 export interface RealRuntimeMoveSide {

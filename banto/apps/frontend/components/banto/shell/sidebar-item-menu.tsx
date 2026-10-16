@@ -13,13 +13,16 @@
 // 掴めない場面**（キーボード、細いレール、タッチ）でも並べ替えられるようにする。
 // 出ている操作が、その場の入力手段で必ず効く（規則13）。
 import { Fragment, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, MoreHorizontal, Pencil } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, FolderInput, FolderPlus, MoreHorizontal, Pencil } from "lucide-react";
 import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -27,6 +30,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SidebarMenuAction } from "@/components/ui/sidebar";
@@ -41,6 +47,17 @@ interface MenuEntry {
   separatorBefore?: boolean;
 }
 
+/** 「グループへ移す」（追加・2026-10-16、v4-frontend.md §6.43）。Project の行だけ */
+export interface GroupMenu {
+  groups: ReadonlyArray<{ id: string; name: string; dotClass: string }>;
+  /** いま入っているグループ（無ければ null） */
+  current: string | null;
+  /** null＝グループに入れない */
+  onPick: (groupId: string | null) => void;
+  /** 新しいグループを作って入れる */
+  onNew: () => void;
+}
+
 export function SidebarItemMenu({
   what,
   name,
@@ -49,6 +66,7 @@ export function SidebarItemMenu({
   onMoveDown,
   onClose,
   onFork,
+  groupMenu,
   moreClassName,
   children,
 }: {
@@ -64,6 +82,8 @@ export function SidebarItemMenu({
   onClose?: () => void;
   /** 「ここから Fork…」（Thread の行。Base でも Fork でも、2026-10-11） */
   onFork?: () => void;
+  /** 「グループへ移す」の中身。無ければ項目を出さない */
+  groupMenu?: GroupMenu;
   /** 「…」ボタンの位置合わせ（既定は行の右端） */
   moreClassName?: string;
   /** 行そのもの。引数の「…」ボタンを行の中の好きな場所に置く */
@@ -83,8 +103,34 @@ export function SidebarItemMenu({
       : []),
     ...(onClose ? [{ label: "Close", icon: CloseIcon, onSelect: onClose, separatorBefore: true }] : []),
   ];
-  // 先頭に区切りを引かない
-  if (entries[0]) entries[0] = { ...entries[0], separatorBefore: false };
+  // 先頭に区切りを引かない（「グループへ移す」が先頭にあるときは引く）
+  if (entries[0]) entries[0] = { ...entries[0], separatorBefore: groupMenu !== undefined };
+
+  // 「グループへ移す」の中の項目。右クリックと「…」で部品の名前だけが違うので、部品を受け取って組む
+  function groupItems(Item: typeof DropdownMenuItem | typeof ContextMenuItem, Separator: typeof DropdownMenuSeparator) {
+    if (!groupMenu) return null;
+    return (
+      <>
+        {groupMenu.groups.map((g) => (
+          <Item key={g.id} onSelect={() => groupMenu.onPick(g.id)}>
+            <span className={cn("size-2 shrink-0 rounded-full", g.dotClass)} />
+            <span className="flex-1 truncate">{g.name}</span>
+            {groupMenu.current === g.id ? <Check className="text-ink-3" aria-label="いま入っている" /> : null}
+          </Item>
+        ))}
+        <Item onSelect={() => groupMenu.onPick(null)}>
+          <span className="size-2 shrink-0 rounded-full border border-ink-3" />
+          <span className="flex-1">グループに入れない</span>
+          {groupMenu.current === null ? <Check className="text-ink-3" aria-label="いま入っている" /> : null}
+        </Item>
+        <Separator />
+        <Item onSelect={groupMenu.onNew}>
+          <FolderPlus />
+          新しいグループを作って入れる…
+        </Item>
+      </>
+    );
+  }
 
   const more = (
     <DropdownMenuTrigger asChild>
@@ -107,6 +153,15 @@ export function SidebarItemMenu({
         <ContextMenu>
           <ContextMenuTrigger asChild>{children(more)}</ContextMenuTrigger>
           <ContextMenuContent>
+            {groupMenu ? (
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>
+                  <FolderInput />
+                  グループへ移す
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent className="w-56">{groupItems(ContextMenuItem, ContextMenuSeparator)}</ContextMenuSubContent>
+              </ContextMenuSub>
+            ) : null}
             {entries.map((entry) => (
               <Fragment key={entry.label}>
                 {entry.separatorBefore ? <ContextMenuSeparator /> : null}
@@ -119,6 +174,15 @@ export function SidebarItemMenu({
           </ContextMenuContent>
         </ContextMenu>
         <DropdownMenuContent align="start" className="min-w-40">
+          {groupMenu ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <FolderInput />
+                グループへ移す
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-56">{groupItems(DropdownMenuItem, DropdownMenuSeparator)}</DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
           {entries.map((entry) => (
             <Fragment key={entry.label}>
               {entry.separatorBefore ? <DropdownMenuSeparator /> : null}

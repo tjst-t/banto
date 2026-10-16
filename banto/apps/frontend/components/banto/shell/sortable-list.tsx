@@ -11,15 +11,24 @@
 //
 // 並べ替えの口は**この1つ**（規則3）。Project の一覧（開いたサイドバー・
 // 畳んだレール）と Fork の一覧が、同じ振る舞いをする。
-import { useEffect, useId, useRef, type MouseEvent, type ReactNode } from "react";
+//
+// **グループのあるサイドバーは「落とす先」で考える**（追加・2026-10-16、v4-frontend.md §6.43）——行の上＝その前、
+// グループの見出し＝その最後、「Project」の見出し＝グループの外。並びを入れ替えて見せる（sortable）のではなく、
+// 落とす先に線を引く・見出しを塗る（`DropList`・`DraggableRow`・`useDropZone`）。掴み方・書くのは落とした1回だけ、
+// は上と同じ
+import { createContext, useContext, useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
   DndContext,
   MeasuringStrategy,
   MouseSensor,
   TouchSensor,
   closestCenter,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { restrictToParentElement, restrictToVerticalAxis } from "@dnd-kit/modifiers";
@@ -31,6 +40,14 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+/** 掴み方は並べ替えと同じ（下の `SortableList` のコメントを見よ） */
+function useRowSensors() {
+  return useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+  );
+}
+
 export function SortableList({
   ids,
   onReorder,
@@ -41,6 +58,7 @@ export function SortableList({
   onReorder: (orderedIds: string[]) => void;
   children: ReactNode;
 }) {
+  // （掴み方は `useRowSensors` と同じ。理由はここに書いてある）
   const sensors = useSensors(
     // **押しただけでは掴まない**——マウスは 8px 動かして初めて掴む
     // （これが無いと、Project を開こうとしただけで動く）。
@@ -143,4 +161,114 @@ export function SortableRow({
       {children({ ...listeners }, isDragging)}
     </Tag>
   );
+}
+
+/** 掴んでいる行の id（落とす先の見た目に使う）。`DropList` の外では null */
+const DragStateContext = createContext<{ activeId: string | null }>({ activeId: null });
+
+/**
+ * **指の下にある落とす先**。行と行の間（隙間）に指があれば、いちばん近いもの——落とした瞬間に先が無くて
+ * 何も起きない、を減らす
+ */
+const pointerFirst: CollisionDetection = (args) => {
+  const hits = pointerWithin(args);
+  return hits.length > 0 ? hits : closestCenter(args);
+};
+
+/**
+ * **落とす先で決める一覧**（追加・2026-10-16、v4-frontend.md §6.43）。`onDrop` は落とした1回だけ、掴んだ行の id と
+ * 落とした先の id（`DraggableRow` の `dropId`・`useDropZone` の id）で呼ばれる。先が無い・自分の上なら呼ばない
+ */
+export function DropList({
+  onDrop,
+  children,
+}: {
+  onDrop: (activeId: string, overId: string) => void;
+  children: ReactNode;
+}) {
+  const sensors = useRowSensors();
+  const id = useId();
+  const [activeId, setActiveId] = useState<string | null>(null);
+  return (
+    <DndContext
+      id={id}
+      sensors={sensors}
+      collisionDetection={pointerFirst}
+      modifiers={[restrictToVerticalAxis]}
+      // 掴んだ行は目次を畳むので高さが変わる（`SortableList` と同じ理由）
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+      onDragStart={(e) => setActiveId(String(e.active.id))}
+      onDragCancel={() => setActiveId(null)}
+      onDragEnd={(e) => {
+        setActiveId(null);
+        if (e.over) onDrop(String(e.active.id), String(e.over.id));
+      }}
+    >
+      <DragStateContext.Provider value={{ activeId }}>{children}</DragStateContext.Provider>
+    </DndContext>
+  );
+}
+
+/**
+ * `DropList` の中の1行。掴めて、自分の見出し（`children` の第3引数の ref を付けた要素）が落とす先にもなる。
+ * 落とす先は**行の見出しだけ**——下にぶら下がる目次の上に落としても、その Project の前にはしない。
+ * 指が載っていれば見出しの上に線を引く（`isOver`）
+ */
+export function DraggableRow({
+  id,
+  dropId,
+  as: Tag = "div",
+  children,
+  className,
+}: {
+  id: string;
+  /** この行を落とす先として呼ぶ id（掴む id と分ける——見出しの id と混ざらないように） */
+  dropId: string;
+  as?: "div" | "li";
+  children: (
+    handle: Record<string, unknown>,
+    isDragging: boolean,
+    drop: { setNodeRef: (el: HTMLElement | null) => void; isOver: boolean },
+  ) => ReactNode;
+  className?: string;
+}) {
+  const { listeners, setNodeRef, transform, isDragging } = useDraggable({ id });
+  const { activeId } = useContext(DragStateContext);
+  // **掴んでいる行の見出しは落とす先から外す**——見出しは動いている行の中にあり、指の下にいつもあるので、
+  // 外さないと自分の上に落としたことになり続ける
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: dropId, disabled: isDragging });
+  // 掴み終わりのクリックを行き先として扱わない（`SortableRow` と同じ）
+  const dragged = useRef(false);
+  useEffect(() => {
+    if (isDragging) dragged.current = true;
+  }, [isDragging]);
+  function onClickCapture(event: MouseEvent) {
+    if (!dragged.current) return;
+    dragged.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  return (
+    <Tag
+      ref={setNodeRef}
+      onClickCapture={onClickCapture}
+      data-sortable-id={id}
+      data-dragging={isDragging ? "" : undefined}
+      className={className}
+      style={{
+        transform: CSS.Translate.toString(transform),
+        zIndex: isDragging ? 30 : undefined,
+        opacity: isDragging ? 0.6 : undefined,
+      }}
+    >
+      {children({ ...listeners }, isDragging, { setNodeRef: setDropRef, isOver: isOver && activeId !== null })}
+    </Tag>
+  );
+}
+
+/** 行ではない落とす先（グループの見出し・「Project」の見出し）。`isOver` で塗る */
+export function useDropZone(id: string): { setNodeRef: (el: HTMLElement | null) => void; isOver: boolean } {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  const { activeId } = useContext(DragStateContext);
+  return { setNodeRef, isOver: isOver && activeId !== null };
 }

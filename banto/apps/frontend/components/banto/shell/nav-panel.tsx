@@ -5,7 +5,7 @@
 // Project 名が読めたほうがよい」。mock/ で形を決めてから本実装へ持ってきた）。
 //
 // 畳んだ状態（58px のレール）は `project-rail.tsx` が描く。ここは「名前が読める」側。
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { UrlLink as Link } from "@/components/banto/url-link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -19,14 +19,9 @@ import {
   Settings,
   Zap,
 } from "lucide-react";
-import { useRovingFocus } from "@/hooks/use-roving-focus";
 import {
   SidebarContent,
   SidebarFooter,
-  SidebarGroup,
-  SidebarGroupAction,
-  SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuAction,
@@ -38,7 +33,7 @@ import {
 } from "@/components/ui/sidebar";
 import { getInboxItems } from "@/lib/mock/inbox";
 import { getRealInboxBadgeCount, useRealInboxVersion } from "@/lib/backend/real-inbox";
-import { getActiveProjects, reorderProjects, renameProject } from "@/lib/mock/projects";
+import { renameProject } from "@/lib/mock/projects";
 import {
   foldForkThread,
   getThreadsForProject,
@@ -53,8 +48,9 @@ import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref, thread
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
-import { SidebarItemMenu } from "./sidebar-item-menu";
-import { SortableList, SortableRow } from "./sortable-list";
+import { SidebarItemMenu, type GroupMenu } from "./sidebar-item-menu";
+import { DraggableRow, SortableList, SortableRow } from "./sortable-list";
+import { ProjectList } from "./project-list";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
@@ -139,8 +135,12 @@ function ThreadRowName({ threadId, children, testId }: { threadId: string; child
  * **掴んで並べ替えられる／右クリックで名前を変えられる**（決定・2026-09-11、
  * ユーザー要望）。掴む取っ手は Project 名の行そのもの——Fork の行は自分の
  * 一覧の中で並べ替わるので、親の取っ手の外に置く（入れ子の掴み合いを作らない）。
+ *
+ * **グループの中の行は 12px 下げる**（2026-10-16、§6.43）。下げるのは行（`li`）ごと——頭文字の右下の数も、
+ * ぶら下がる目次も同じだけ右へ。右端の押し口（開く・畳む＝`right-1`、「…」＝`right-7`）の位置は変わらない。
+ * 落とす先は Project 名の行（`row:<id>`）——そこに落とすと、その Project の前に入る（`project-list.tsx`）
  */
-function ProjectTreeItem({
+export function ProjectTreeItem({
   project,
   activeProjectId,
   activeForkThreadId,
@@ -151,6 +151,8 @@ function ProjectTreeItem({
   keepOpenOnProjectSwitch,
   onMoveUp,
   onMoveDown,
+  indented = false,
+  groupMenu,
 }: {
   project: MockProject;
   activeProjectId: string | null;
@@ -165,6 +167,10 @@ function ProjectTreeItem({
   /** 並びの端なら undefined（メニューの項目が押せなくなる） */
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  /** グループの中の行 */
+  indented?: boolean;
+  /** 行の「…」の「グループへ移す」 */
+  groupMenu?: GroupMenu;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -232,8 +238,13 @@ function ProjectTreeItem({
   }
 
   return (
-    <SortableRow id={project.id} as="li" className="group/menu-item relative">
-      {(drag, isDragging) => (
+    <DraggableRow
+      id={project.id}
+      dropId={`row:${project.id}`}
+      as="li"
+      className={cn("group/menu-item relative", indented && "pl-3")}
+    >
+      {(drag, isDragging, drop) => (
         <>
           <SidebarItemMenu
             what="Project"
@@ -241,12 +252,23 @@ function ProjectTreeItem({
             onRename={(name) => renameProject(project.id, name)}
             onMoveUp={onMoveUp}
             onMoveDown={onMoveDown}
-            // 目次の開閉（chevron）がある行では、その左に置く
-            moreClassName={forks.length > 0 ? "right-7" : undefined}
+            groupMenu={groupMenu}
+            // **「…」はいつも開く・畳む（chevron）の左**（2026-10-16、§6.43）——chevron が無い行（Fork の無い Project）でも
+            // 同じ位置にして、右端は空けておく。見出しの「…」とも縦にそろう
+            moreClassName="right-7"
           >
             {(more) => (
-            <div className="relative" {...drag}>
-              <SidebarMenuButton asChild isActive={isCurrent}>
+            <div
+              ref={drop.setNodeRef}
+              data-drop-over={drop.isOver ? "" : undefined}
+              // 落とす先なら、この行の上に線を引く（ここに落とすと、この行の前に入る）
+              className={cn(
+                "relative",
+                drop.isOver && "before:absolute before:inset-x-1 before:-top-0.5 before:z-10 before:h-0.5 before:rounded-full before:bg-accent",
+              )}
+              {...drag}
+            >
+              <SidebarMenuButton asChild isActive={isCurrent} className="pr-14">
                 <Link
                   // **設定を開いているときは、その Project の設定へ切り替える**
                   // （決定・2026-09-11、§6.16）——いま見ている Project なら会話へ戻る
@@ -445,7 +467,7 @@ function ProjectTreeItem({
           {closeForkDialog}
         </>
       )}
-    </SortableRow>
+    </DraggableRow>
   );
 }
 
@@ -483,30 +505,6 @@ export function NavPanel({
   const hostBusy = useHostBusy();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { containerRef, onKeyDown } = useRovingFocus<HTMLUListElement>();
-  // 開いている Project の目次は既定で開く。人が畳んだ／開いたときだけ、その
-  // 選択を覚える（導出できる既定値を保存しない、規則3）
-  const [expandedOverride, setExpandedOverride] = useState<Record<string, boolean>>({});
-  const projects = getActiveProjects();
-
-  /** 並べ替え。渡すのは**並び全体**——1件ずつの番号は持たない（`lib/mock/projects.ts`） */
-  function reorderProjectsTo(orderedIds: string[]) {
-    void reorderProjects(orderedIds).catch((err: unknown) => {
-      toast(`並び順を保存できませんでした: ${describeFailure(err)}`);
-    });
-  }
-
-  /** メニューの「上へ／下へ」。掴めない場面でも並べ替えられるようにする */
-  function moveProject(index: number, delta: number) {
-    const ids = projects.map((p) => p.id);
-    const to = index + delta;
-    if (to < 0 || to >= ids.length) return;
-    const next = [...ids];
-    const [moved] = next.splice(index, 1);
-    next.splice(to, 0, moved!);
-    reorderProjectsTo(next);
-  }
-
   return (
     <>
       {/* 検索の下に薄い線（2026-10-12、ユーザー要望。§6.39）——上の入口と Project 一覧を分ける */}
@@ -565,44 +563,14 @@ export function NavPanel({
             {...(onNavigate ? { onNavigate } : {})}
           />
         ) : null}
-        <SidebarGroup>
-          <SidebarGroupLabel>Project</SidebarGroupLabel>
-          <SidebarGroupAction
-            onClick={() => {
-              onNavigate?.();
-              onNewProject();
-            }}
-            aria-label="新しい Project"
-          >
-            <Plus />
-          </SidebarGroupAction>
-          <SidebarGroupContent>
-            <SidebarMenu ref={containerRef} onKeyDown={onKeyDown}>
-              <SortableList ids={projects.map((p) => p.id)} onReorder={reorderProjectsTo}>
-              {projects.map((project, index) => (
-                <ProjectTreeItem
-                  key={project.id}
-                  project={project}
-                  onMoveUp={index > 0 ? () => moveProject(index, -1) : undefined}
-                  onMoveDown={index < projects.length - 1 ? () => moveProject(index, 1) : undefined}
-                  activeProjectId={activeProjectId}
-                  activeForkThreadId={activeForkThreadId}
-                  expanded={expandedOverride[project.id] ?? project.id === activeProjectId}
-                  onToggleExpanded={() =>
-                    setExpandedOverride((prev) => ({
-                      ...prev,
-                      [project.id]: !(prev[project.id] ?? project.id === activeProjectId),
-                    }))
-                  }
-                  onExpand={() => setExpandedOverride((prev) => ({ ...prev, [project.id]: true }))}
-                  onNavigate={onNavigate}
-                  keepOpenOnProjectSwitch={keepOpenOnProjectSwitch}
-                />
-              ))}
-              </SortableList>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {/* Project の一覧——グループ・すべて畳む・ドラッグ（§6.43、`project-list.tsx`） */}
+        <ProjectList
+          activeProjectId={activeProjectId}
+          activeForkThreadId={activeForkThreadId}
+          onNewProject={onNewProject}
+          onNavigate={onNavigate}
+          keepOpenOnProjectSwitch={keepOpenOnProjectSwitch}
+        />
       </SidebarContent>
 
       {/* **履歴・設定・テーマは一番下の1行に横に並べる**（2026-10-12、ユーザー要望。§6.39）——以前は3段で

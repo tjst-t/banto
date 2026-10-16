@@ -67,8 +67,20 @@ export async function openApp(
   await expect(
     isMobileViewport(page)
       ? page.getByRole("button", { name: "Project と Thread の一覧を開く" }).first()
-      : page.getByRole("button", { name: "新しい Project", exact: true }),
+      : page.getByRole("button", { name: ADD_PROJECT_OR_GROUP, exact: true }),
   ).toBeVisible();
+}
+
+/**
+ * サイドバーの「Project」の見出しの「＋」（改訂・2026-10-16、v4-frontend.md §6.43）。押すとメニュー（新しい Project…・
+ * 新しいグループ…）——以前は押せばすぐ「新しい Project」の小窓だった
+ */
+export const ADD_PROJECT_OR_GROUP = "Project・グループを足す";
+
+/** 「新しい Project」の小窓を開く（「＋」→「新しい Project…」）。ナビは開いておく（`openNav`） */
+export async function clickNewProject(page: Page): Promise<void> {
+  await page.getByRole("button", { name: ADD_PROJECT_OR_GROUP, exact: true }).click();
+  await page.getByRole("menuitem", { name: "新しい Project…" }).click();
 }
 
 /** md 未満（携帯幅）か。ナビの出方がここで変わる */
@@ -85,7 +97,7 @@ function isMobileViewport(page: Page): boolean {
  */
 export async function openNav(page: Page): Promise<void> {
   if (!isMobileViewport(page)) return;
-  const newProject = page.getByRole("button", { name: "新しい Project", exact: true });
+  const newProject = page.getByRole("button", { name: ADD_PROJECT_OR_GROUP, exact: true });
   // **開いているかは Drawer の印で見る**（改訂・2026-10-08）。以前は「新しい Project が見えるか」で見ていたので、
   // **閉じる途中の Drawer**（Project を作った直後など）を「開いている」と取り違え、中の「設定」を押しに行って
   // 動き続ける・消えるリンクを30秒待って落ちていた（project-modules:290、3回に2回。main でも同じ）。
@@ -124,7 +136,7 @@ export async function createProject(
   projectRoot: string,
 ): Promise<void> {
   await openNav(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await clickNewProject(page);
   // ダイアログが開いたことを先に見る——開かないまま fill すると、試験の上限まで黙って待つ（2026-10-06、プローブで3分止まった）
   // （携帯の幅では閉じた Drawer も role=dialog で残るので、入力欄で見る）
   const nameInput = page.getByLabel("Project 名");

@@ -12,7 +12,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
-import { openApp, openNav, createProject } from "../helpers.js";
+import { openApp, openNav, createProject, clickNewProject } from "../helpers.js";
 
 test("面をまたいでも、外枠（レール）は作り直されない", async ({ page }) => {
   await openApp(page);
@@ -54,7 +54,7 @@ test("開いている「新しい Project」は、面を移っても入力ごと
 
   // このダイアログはレール（＝外枠）の中にある。外枠が作り直されると道連れになる
   await openNav(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await clickNewProject(page);
   const name = page.getByLabel("Project 名");
   await expect(name).toBeVisible();
   await name.fill("入力の途中");

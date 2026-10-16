@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { openApp, openNav } from "../helpers.js";
+import { openApp, openNav, clickNewProject } from "../helpers.js";
 
 test.setTimeout(180_000);
 
@@ -149,7 +149,7 @@ for (const size of [
       await stubRuntimes(page);
       await openApp(page);
       await openNav(page);
-      await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+      await clickNewProject(page);
       await expect(page.getByLabel("Project 名")).toBeVisible({ timeout: 15_000 });
       const trigger = page.getByTestId("new-project-runtime-select");
       await expect(trigger).toContainText("この機械のコンテナ");

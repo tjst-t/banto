@@ -26,6 +26,7 @@ export function RenameDialog({
   what,
   currentName,
   onSubmit,
+  wording,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -35,6 +36,8 @@ export function RenameDialog({
   /** 保存を押したとき。**投げたら画面はそのまま**——失敗は toast で出し、
    *  ダイアログは開いたままにする（打ち直せるように、規則2） */
   onSubmit: (name: string) => Promise<void>;
+  /** 名前を付けて作るとき（新しいグループ、2026-10-16）の題・説明・押し口。無ければ「名前を変える」 */
+  wording?: Wording;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -42,10 +45,25 @@ export function RenameDialog({
         {/* **中身は開くたびに作り直す**——閉じている間 Radix は描かないので、
             「いまの名前から始める」を効果で書き戻さずに済む（前に打ちかけた
             文字も残らない） */}
-        <RenameForm what={what} currentName={currentName} onSubmit={onSubmit} onDone={() => onOpenChange(false)} />
+        <RenameForm
+          what={what}
+          currentName={currentName}
+          onSubmit={onSubmit}
+          onDone={() => onOpenChange(false)}
+          wording={wording}
+        />
       </DialogContent>
     </Dialog>
   );
+}
+
+interface Wording {
+  title: string;
+  description: string;
+  submit: string;
+  submitting: string;
+  /** 失敗の知らせの頭（「名前を変えられませんでした」の代わり） */
+  failed: string;
 }
 
 function RenameForm({
@@ -53,11 +71,13 @@ function RenameForm({
   currentName,
   onSubmit,
   onDone,
+  wording,
 }: {
   what: string;
   currentName: string;
   onSubmit: (name: string) => Promise<void>;
   onDone: () => void;
+  wording?: Wording;
 }) {
   const [name, setName] = useState(currentName);
   const [saving, setSaving] = useState(false);
@@ -71,7 +91,7 @@ function RenameForm({
       await onSubmit(trimmed);
       onDone();
     } catch (err) {
-      toast(`名前を変えられませんでした: ${describeFailure(err)}`);
+      toast(`${wording?.failed ?? "名前を変えられませんでした"}: ${describeFailure(err)}`);
     } finally {
       setSaving(false);
     }
@@ -80,8 +100,8 @@ function RenameForm({
   return (
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>{what} の名前を変える</DialogTitle>
-            <DialogDescription>この名前は banto が覚えます（どの端末から開いても同じ）。</DialogDescription>
+            <DialogTitle>{wording?.title ?? `${what} の名前を変える`}</DialogTitle>
+            <DialogDescription>{wording?.description ?? "この名前は banto が覚えます（どの端末から開いても同じ）。"}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 py-4">
             <Label htmlFor="rename-input">名前</Label>
@@ -98,7 +118,7 @@ function RenameForm({
               やめる
             </Button>
             <Button type="submit" disabled={!name.trim() || saving}>
-              {saving ? "保存しています…" : "保存する"}
+              {saving ? (wording?.submitting ?? "保存しています…") : (wording?.submit ?? "保存する")}
             </Button>
           </DialogFooter>
         </form>

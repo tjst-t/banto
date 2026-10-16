@@ -14,7 +14,7 @@
 // ≥md でのみ表示する——<md では isMobile 判定で描画自体をやめる
 // （Sidebar は isMobile のとき自動で Sheet オーバーレイになるが、
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { UrlLink as Link } from "@/components/banto/url-link";
 import { Bell, Clock, PanelLeft, Plus, Search, Settings } from "lucide-react";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
@@ -40,6 +40,7 @@ import { NewProjectDialog } from "@/components/banto/project/new-project-dialog"
 import { usePathname, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { getActiveProjects, renameProject, reorderProjects } from "@/lib/mock/projects";
+import { GROUP_DOT_CLASS, projectSections, useProjectGroups } from "@/lib/backend/project-groups";
 import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -109,19 +110,24 @@ function CollapsedRail({
 }) {
   const { toggleSidebar } = useSidebar();
   const judgmentCount = useJudgmentCount();
-  const projects = getActiveProjects();
+  // **グループごとに、その色の短い横線で区切る**（2026-10-16、§6.43）。グループ自体は畳まない——アイコンだけの列で畳むと
+  // Project が見えなくなる。空のグループは線も出さない
+  const sections = projectSections(getActiveProjects(), useProjectGroups()).filter((s) => s.projects.length > 0);
   const lastThreads = useLastThreads();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  /** 並べ替え。開いたサイドバー（nav-panel.tsx）と同じ口を通る（規則3） */
+  /**
+   * 並べ替え。**同じ塊（グループ・グループの外）の中だけ**——入れ先を変えるのは名前が読める幅（`project-list.tsx`）。
+   * 渡すのはその塊の並びで、ほかの Project の居場所は動かない（`reorderProjects`）
+   */
   function reorderTo(orderedIds: string[]) {
     void reorderProjects(orderedIds).catch((err: unknown) => {
       toast(`並び順を保存できませんでした: ${describeFailure(err)}`);
     });
   }
 
-  function move(index: number, delta: number) {
+  function move(projects: readonly { id: string }[], index: number, delta: number) {
     const ids = projects.map((p) => p.id);
     const to = index + delta;
     if (to < 0 || to >= ids.length) return;
@@ -158,6 +164,23 @@ function CollapsedRail({
           ぶんの余白（pt-1）を上に取ることで両方を満たす */}
       <SidebarContent className="sidebar-scroll !overflow-x-hidden !overflow-y-auto items-center gap-1 px-0 pt-1">
         <SidebarMenu className="items-center gap-1 px-0">
+          {sections.map(({ group, projects }) => (
+          <Fragment key={group?.id ?? "ungrouped"}>
+          {group ? (
+            <li
+              className="flex w-full justify-center py-1"
+              data-testid="rail-group-line"
+              data-group-id={group.id}
+              aria-label={`グループ ${group.name}`}
+            >
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className={cn("h-0.5 w-5 rounded-full", GROUP_DOT_CLASS[group.color])} />
+                </TooltipTrigger>
+                <TooltipContent side="right">{group.name}</TooltipContent>
+              </Tooltip>
+            </li>
+          ) : null}
           <SortableList ids={projects.map((p) => p.id)} onReorder={reorderTo}>
           {projects.map((project, index) => {
             const active = project.id === activeProjectId;
@@ -177,8 +200,8 @@ function CollapsedRail({
                   what="Project"
                   name={project.name}
                   onRename={(name) => renameProject(project.id, name)}
-                  onMoveUp={index > 0 ? () => move(index, -1) : undefined}
-                  onMoveDown={index < projects.length - 1 ? () => move(index, 1) : undefined}
+                  onMoveUp={index > 0 ? () => move(projects, index, -1) : undefined}
+                  onMoveDown={index < projects.length - 1 ? () => move(projects, index, 1) : undefined}
                 >
                   {/* **細いレールに「…」は置かない**（改訂・2026-09-11）——
                       幅 58px にアイコンと並べる余地が無い。ここでの操作の口は
@@ -258,6 +281,8 @@ function CollapsedRail({
             );
           })}
           </SortableList>
+          </Fragment>
+          ))}
         </SidebarMenu>
         <RailIconButton icon={Plus} label="新しい Project" onClick={onNewProject} />
       </SidebarContent>

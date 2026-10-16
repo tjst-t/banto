@@ -18,7 +18,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
-import { openApp, openNav } from "../helpers.js";
+import { openApp, openNav, clickNewProject } from "../helpers.js";
 import { withSshHost, type SshHost } from "../ssh-host.js";
 
 test.describe.configure({ mode: "serial" });
@@ -74,7 +74,7 @@ async function openRow(row: Locator, name: string): Promise<void> {
 
 async function openNewProject(page: Page): Promise<Locator> {
   await openNav(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await clickNewProject(page);
   const dialog = page.getByRole("dialog", { name: "新しい Project" });
   await expect(dialog.getByTestId("new-project-runtime"), "新しい Project の画面に「どこで動かすか」が無い").toBeVisible({ timeout: 15_000 });
   return dialog;

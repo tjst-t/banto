@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL, DATA_DIR, GITHUB_LOGIN_FIXTURE_FILE } from "../config.js";
-import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, waitForProjectModule } from "../helpers.js";
+import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, waitForProjectModule, clickNewProject } from "../helpers.js";
 import {
   E2E_GITHUB_CLIENT_ID,
   E2E_GITHUB_DEVICE_LOGIN,
@@ -916,7 +916,7 @@ test("段階4：core の新しい Project の画面に Repositories が名乗っ
   const openDialog = async () => {
     await openApp(page);
     await openNav(page);
-    await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+    await clickNewProject(page);
     const dialog = page.getByRole("dialog", { name: "新しい Project" });
     await expect(dialog).toBeVisible();
     return dialog;

@@ -25,6 +25,8 @@ export interface MockProject {
   real?: boolean;
   /** 実行場所（`remote:<名前>` なら別のサーバ。無ければこの機械のコンテナ）。作ったあとは変わらない */
   runtime?: string;
+  /** 入っているグループ（追加・2026-10-16、v4-frontend.md §6.43）。無ければグループなし。写しの元は host */
+  groupId?: string;
 }
 
 /** 画面つき tool の呼び出し1件（host の記録をそのまま受ける）。 */
