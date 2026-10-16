@@ -8522,7 +8522,7 @@
       "number": 353,
       "kind": "task",
       "title": "サイドバーのグループの画面（見出し・字下げ・すべて畳む・ドラッグ・レール）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-org",
       "dependsOn": [
         "project-groups-core"
@@ -8532,12 +8532,12 @@
       "labels": [],
       "body": "仕様 v4-frontend.md §6.43。見本はモック fork/project-org。グループなし→グループ（色の点＋名前、Project の行と同じ高さ・点は頭文字と同じ 24px の枠の真ん中・名前の左端をそろえる）、中の Project は 12px 下げる（角の数も右へ）、右端は開く・畳む（right-1）と「…」（right-7）をどの行でもそろえる。畳んでも動いている印と「あなたの番」の件数と数を見出しに残す。畳んだ状態は localStorage banto.sidebarGroups.v1。「Project」の見出しに「すべて畳む／すべて開く」と「＋」（新しい Project／新しいグループ）。見出しの「…」（名前・色・上下・中を全部スリープ・なくす）、行の「…」の「グループへ移す」。ドラッグは §6.11 の dnd-kit を広げる（行の上＝その前、見出し＝最後、「Project」＝外）。畳んだレールは色の線で区切る。携帯の Drawer も同じ。",
       "doneWhen": "E2E で：グループを作る・名前と色を変える・行の「…」とドラッグで入れる／出す・並べ替える・なくすと中が外へ出る・畳んでも印が残る・すべて畳む、が通り、リロードと別の画面（携帯の幅）でも同じ並びになる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-groups-ui）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:47:18.803Z",
-      "updatedAt": "2026-10-16T14:26:33.263Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T15:23:59.888Z",
+      "closedAt": "2026-10-16T15:23:59.888Z",
       "extra": {}
     },
     {
