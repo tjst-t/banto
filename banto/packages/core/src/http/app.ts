@@ -318,7 +318,7 @@ export interface AppDeps {
    * **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・止まるもの・起こす口（`modules/prepare` と
    * ターンを開く口だけが呼ぶ）。無ければ眠らせる口は 404 で、起こす口は何もしない（試験の最小構成）
    */
-  projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview">;
+  projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman">;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
   /**
@@ -1222,6 +1222,18 @@ function toThreadSummary(thread: ThreadState) {
   };
 }
 
+/** 要求の道（`/api/projects/:id/…`・`/api/threads/:id/…`・`/api/inbox/:id/…`）が指す Project。指していなければ無い */
+function projectOfRequestPath(pathname: string, deps: Pick<AppDeps, "projectThread" | "inbox">): string | undefined {
+  const m = pathname.match(/^\/api\/(projects|threads|inbox)\/([^/]+)/);
+  if (!m) return undefined;
+  const id = decodeURIComponent(m[2]!);
+  if (m[1] === "projects") return deps.projectThread.getProject(id)?.id;
+  if (m[1] === "threads") return deps.projectThread.getThread(id)?.projectId;
+  const item = deps.inbox.get(id);
+  if (!item) return undefined;
+  return item.kind === "notice" ? item.projectId : deps.projectThread.getThread(item.threadId)?.projectId;
+}
+
 export function createApp(deps: AppDeps) {
   // 選べるモデルの一覧（少しのあいだ覚える、`runner/models.ts`）
   const modelCatalog = new ModelCatalog(deps.listModels ?? listModelsFromCli);
@@ -1675,6 +1687,13 @@ export function createApp(deps: AppDeps) {
       if (!principal) {
         json(res, 401, { error: "unauthorized" });
         return;
+      }
+      // **人の操作**（アーキ仕様 §2.2「しばらく開いていない」の「人の操作」）——人のセッションから、その Project を指す変更の
+      // 要求（開いた＝prepare・送った・答えた・返信した・閉じた・変えた等）。用事で起きた Project は、これがあれば眠りに戻さない
+      // （§2.2「眠りに戻す」）。読むだけの要求と機械のトークンは数えない
+      if (principal.kind === "session" && req.method !== "GET" && req.method !== "HEAD" && deps.projectSleep) {
+        const projectId = projectOfRequestPath(url.pathname, deps);
+        if (projectId !== undefined) deps.projectSleep.noteHuman(projectId);
       }
 
       if (url.pathname === "/api/projects" && req.method === "GET") {

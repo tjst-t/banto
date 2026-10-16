@@ -2503,17 +2503,61 @@ function sleepHarness(turns: ThreadTurns) {
       },
       runningInPlace: async () => [{ kind: "terminal" as const, label: "Terminal のセッション「main」が開いています" }],
     }));
-  const projectSleep: Pick<ProjectSleep, "sleep" | "wake" | "preview"> = {
+  const human: string[] = [];
+  const projectSleep: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman"> = {
     sleep: (id, by) => real!.sleep(id, by),
     preview: (id) => real!.preview(id),
+    noteHuman: (id) => {
+      human.push(id);
+      real!.noteHuman(id);
+    },
     wake: async (id, cause) => {
       const did = await real!.wake(id, cause);
       if (did) woke.push(cause);
       return did;
     },
   };
-  return { bind, projectSleep, woke, released };
+  return { bind, projectSleep, woke, released, human };
 }
+
+test("人の操作（眠りに戻さない印）：人のセッションからの、Project・Thread・受信箱の項目を指す変更の要求だけを数える", async () => {
+  const turns = new ThreadTurns();
+  const h = sleepHarness(turns);
+  // 人のセッションか機械のトークンかだけを見分ける偽物（ログインの口そのものは auth/service.test.ts）
+  const auth = {
+    applyCors: () => undefined,
+    handle: async () => false,
+    authenticate: async (req: { headers: Record<string, string | string[] | undefined> }) =>
+      req.headers["x-test-human"] === "1" ? { kind: "session", session: { id: "s1", label: "人" } } : { kind: "machine" },
+    requireHuman: () => ({ id: "s1", label: "人" }),
+  } as unknown as NonNullable<Parameters<typeof createApp>[0]["auth"]>;
+  await withApp(
+    async (base, token, dir, deps) => {
+      h.bind(deps.projectThread);
+      const project = await deps.projectThread.createProject("demo", dir);
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const call = (method: string, path: string, asHuman: boolean) =>
+        fetch(`${base}${path}`, {
+          method,
+          headers: { authorization: asHuman ? "" : `Bearer ${token}`, "content-type": "application/json", ...(asHuman ? { "x-test-human": "1" } : {}) },
+          ...(method === "GET" ? {} : { body: "{}" }),
+        });
+      // 機械のトークンの変更・人の読むだけは数えない
+      await call("POST", `/api/projects/${project.id}/sleep-preview`, false);
+      await call("GET", `/api/projects/${project.id}/sleep-preview`, true);
+      await call("GET", `/api/threads/${thread.id}`, true);
+      assert.deepEqual(h.human, []);
+      // 人の変更の要求は、道が指す Project に数える（Thread は持ち主の Project、無い Project・Thread は数えない）
+      await call("POST", `/api/projects/${project.id}/sleep-preview`, true);
+      await call("POST", `/api/threads/${thread.id}/clear`, true);
+      await call("POST", `/api/threads/無い/clear`, true);
+      await call("POST", `/api/projects/無い/sleep`, true);
+      await call("POST", "/api/inbox/無い/answer", true);
+      assert.deepEqual(h.human, [project.id, project.id]);
+    },
+    { threadTurns: turns, projectSleep: h.projectSleep, auth },
+  );
+});
 
 test("POST /api/projects/:id/sleep と sleep-preview：眠らせる・止まるもの・断るとき（busy・closed・無い）", async () => {
   const turns = new ThreadTurns();

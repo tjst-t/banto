@@ -8,8 +8,10 @@
 //   2. 眠らせると Module のプロセスが落ち、コンテナが止まる。記録は active のまま sleep が立つ
 //   3. 設定・入口・Skills の口は「眠っています」（409 asleep）を返し、コンテナは止まったまま
 //   4. 画面で開くと起きる（sleep が外れ、Module が立ち、コンテナが動く）
-//   5. 自動化の時刻が来ると、眠っている Project が起きて回のターンが走る
-//   6. 眠らせている途中に送った発言は切れない——ターンは最後まで走り、終わったとき Project は起きている
+//   5. 自動化の時刻が来ると、眠っている Project が起きて回のターンが走り、回が終わると眠りに戻る（by auto、コンテナも止まる）
+//   6. 眠りに戻す（§2.2「眠りに戻す」、Backlog #358）：回が人を待って終わったら（決めることがある）起きたまま・起きている間に
+//      人が画面で開いたら戻らない・裏の仕事（待たずに頼んだサブエージェント）が残っていれば、返事が届いて読み終えてから戻る
+//   7. 眠らせている途中に送った発言は切れない——ターンは最後まで走り、終わったとき Project は起きている
 import { test, expect } from "../test-base.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -165,7 +167,40 @@ test("動いているものがあると断り、眠らせると Module とコン
   expect(pageErrors, "画面で例外が起きた").toEqual([]);
 });
 
-test("自動化の時刻が来ると、眠っている Project が起きて回のターンが走る", async ({ page }) => {
+/** 眠りに戻ったことを見る（記録の by auto・コンテナ・Module のプロセス） */
+async function expectReturnedToSleep(projectId: string): Promise<void> {
+  await expect.poll(async () => (await projectOf(projectId)).sleep?.by, { timeout: 60_000, message: "用が済んだのに眠りに戻らない" }).toBe("auto");
+  await expect.poll(() => containerState(projectId), { timeout: 60_000, message: "眠りに戻ったのにコンテナが動いている" }).toBe("STOPPED");
+  expect((await projectOf(projectId)).status).toBe("active");
+}
+
+/** すぐ（今すぐ動かす口で）動かす自動化を作る。時刻は動かないところ（いまの2時間前）に置く */
+async function createManualAutomation(projectId: string, name: string, instruction: string): Promise<{ id: string; forkId: string }> {
+  const at = new Date(Date.now() - 2 * 60 * 60_000);
+  const created = await api<{ id: string; target: { threadId?: string } }>("POST", `/api/projects/${projectId}/automations`, {
+    name,
+    instruction,
+    source: { kind: "time", repeat: { kind: "daily", time: `${at.getUTCHours()}:${String(at.getUTCMinutes()).padStart(2, "0")}` }, timeZone: "UTC" },
+  });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  return { id: created.body.id, forkId: created.body.target.threadId! };
+}
+/** 今すぐ動かして、回の結末が台帳に出るまで待つ（機械のトークンで——人の操作に数えない） */
+async function runToEnd(projectId: string, automationId: string, result: string): Promise<void> {
+  const r = await api<{ runId: string; result: string }>("POST", `/api/projects/${projectId}/automations/${automationId}/run`);
+  expect(r.status, JSON.stringify(r.body)).toBe(202);
+  await expect
+    .poll(
+      async () =>
+        (await api<{ runs: Array<{ runId: string; result: string }> }>("GET", `/api/projects/${projectId}/automations/${automationId}`)).body.runs.find(
+          (x) => x.runId === r.body.runId,
+        )?.result,
+      { timeout: 120_000, message: "回の結末が台帳に出ない" },
+    )
+    .toBe(result);
+}
+
+test("自動化の時刻が来ると、眠っている Project が起きて回のターンが走り、回が終わると眠りに戻る", async ({ page }) => {
   expect(projectId, "前の試験が Project を作っていない").not.toBe("");
   await page.goto("about:blank");
   // 次の分（UTC）に毎日動く自動化。境目の直前なら、その次の分
@@ -194,13 +229,103 @@ test("自動化の時刻が来ると、眠っている Project が起きて回�
   const fork = await waitTurnEnded(page, forkId, 1);
   expect(fork.messages.at(-1)?.text).toContain("眠っていた Project で見回りました");
   expect((await threadOf(forkId)).lastTurn?.cause).toBe("delivery");
-  await expectAwakeWithModules(projectId);
+  // 人の操作も残りも無いので、回が終わると眠りに戻る
+  await expectReturnedToSleep(projectId);
+  expect(moduleProcessesInContainer(projectId)).toBe(0);
   // 後始末：次の日まで動かないが、残さない
   expect((await api("DELETE", `/api/projects/${projectId}/automations/${created.body.id}`)).status).toBeLessThan(300);
 });
 
+test("眠りに戻す：回が人を待って終わったら起きたまま・起きている間に人が開いたら戻らない・裏の仕事が残っていれば返事を読み終えてから戻る", async ({ page }) => {
+  expect(projectId, "前の試験が Project を作っていない").not.toBe("");
+  await page.goto("about:blank");
+
+  // ---- a. 回が人を待って終わった（まとめに決めることがある）→ 起きたまま ------------------------------------------------
+  expect((await api("PUT", `/api/projects/${projectId}/turn-summary`, { enabled: true })).status).toBe(200);
+  const decide = await createManualAutomation(
+    projectId,
+    "決めることを残す見回り",
+    "見回ってください。" +
+      fakeTurn({
+        say: "古い依存が1つあります",
+        tools: [
+          {
+            server: "banto-thread",
+            name: "report_turn",
+            args: {
+              request: "見回り",
+              outcome: { status: "done", headline: "古い依存が1つあります", points: [] },
+              decisions: [{ question: "上げますか？", options: [{ label: "上げる", reply: "上げて。" }, { label: "上げない", reply: "上げないで。" }] }],
+            },
+          },
+        ],
+      }),
+  );
+  if ((await projectOf(projectId)).sleep === undefined) await sleepAndCheck(projectId);
+  await runToEnd(projectId, decide.id, "done");
+  await expect.poll(async () => (await threadOf(decide.forkId)).lastTurn?.outcome, { timeout: 30_000 }).toBe("completed");
+  // 受信箱に「決めることがある」回のカード（人を待っている）
+  await expect
+    .poll(
+      async () =>
+        (await api<Array<{ kind: string; threadId?: string; automation?: { attention?: string } }>>("GET", "/api/inbox")).body.find(
+          (i) => i.kind === "review" && i.threadId === decide.forkId,
+        )?.automation?.attention,
+      { timeout: 30_000, message: "決めることのある回のカードが出ない" },
+    )
+    .toBe("decisions");
+  await page.waitForTimeout(5_000);
+  expect((await projectOf(projectId)).sleep, "人を待って終わった回なのに眠りに戻った").toBeUndefined();
+  expect(containerState(projectId)).toBe("RUNNING");
+  expect((await api("PUT", `/api/projects/${projectId}/turn-summary`, { enabled: false })).status).toBe(200);
+  expect((await api("DELETE", `/api/projects/${projectId}/automations/${decide.id}`)).status).toBeLessThan(300);
+
+  // ---- b. 起きている間に人が画面で開いた → 回が終わっても戻らない ------------------------------------------------------
+  await sleepAndCheck(projectId);
+  const slow = await createManualAutomation(projectId, "ゆっくりの見回り", "見回ってください。" + fakeTurn({ thinkMs: 15_000, say: "ゆっくり見回りました" }));
+  const slowRun = runToEnd(projectId, slow.id, "done");
+  await expect.poll(async () => (await projectOf(projectId)).sleep, { timeout: 60_000, message: "回で起きない" }).toBeUndefined();
+  // 回が走っている間に、人が画面で開く（画面が prepare を投げる——人のセッションの要求）
+  await page.goto(`/p/${projectId}`);
+  await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+  await slowRun;
+  const slowFork = await waitTurnEnded(page, slow.forkId, 1);
+  expect(slowFork.messages.at(-1)?.text).toContain("ゆっくり見回りました");
+  await page.goto("about:blank");
+  await page.waitForTimeout(5_000);
+  expect((await projectOf(projectId)).sleep, "人が開いたのに眠りに戻った").toBeUndefined();
+  expect(containerState(projectId)).toBe("RUNNING");
+  expect((await api("DELETE", `/api/projects/${projectId}/automations/${slow.id}`)).status).toBeLessThan(300);
+
+  // ---- c. 裏の仕事が残っている → 返事が届いて AI が読み終えてから戻る -------------------------------------------------
+  await sleepAndCheck(projectId);
+  const bg = await createManualAutomation(
+    projectId,
+    "裏で頼む見回り",
+    "サブエージェントに待たずに頼んで。" +
+      fakeTurn({
+        tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "[slow 15] 「裏の仕事を終えました」と返して", runInBackground: true } }],
+        then: "裏で頼みました",
+      }),
+  );
+  await runToEnd(projectId, bg.id, "done");
+  const firstTurn = await waitTurnEnded(page, bg.forkId, 1, 120_000);
+  expect(firstTurn.messages.at(-1)?.text).toBe("裏で頼みました");
+  // 札が閉じるまでは起きたまま
+  const stillAwake = await projectOf(projectId);
+  expect(stillAwake.sleep, "裏の仕事が残っているのに眠りに戻った").toBeUndefined();
+  expect(containerState(projectId)).toBe("RUNNING");
+  // 返事が届き、AI が読み終えたら戻る
+  const secondTurn = await waitTurnEnded(page, bg.forkId, 2, 120_000);
+  expect(secondTurn.messages.at(-1)?.text).toContain("裏の仕事を終えました");
+  await expectReturnedToSleep(projectId);
+  expect((await api("DELETE", `/api/projects/${projectId}/automations/${bg.id}`)).status).toBeLessThan(300);
+});
+
 test("眠らせている途中に送った発言は切れない——ターンは最後まで走り、終わったとき Project は起きている", async ({ page }) => {
   expect(projectId, "前の試験が Project を作っていない").not.toBe("");
+  // 前の試験で眠りに戻っている——起こしておく
+  expect((await api("POST", `/api/projects/${projectId}/modules/prepare`)).status).toBe(200);
   await expectAwakeWithModules(projectId);
   const before = (await threadOf(baseId)).messages.filter((m) => m.role === "assistant").length;
   // 眠らせる（Module とコンテナを止めるので数秒かかる）のと、ほぼ同時に送る

@@ -57,7 +57,7 @@ import { RemoteRuntimes, isRemoteUnreachable, remoteNameOf, runtimeIdOf } from "
 import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
 import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
-import { ProjectSleep } from "./runtime/project-sleep.js";
+import { errandLeftoversOf, ProjectSleep } from "./runtime/project-sleep.js";
 import { collectActivity } from "./http/activity.js";
 import { createRelayListener } from "./relay/relay-listener.js";
 import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace, type ToolsInstallStatus } from "./runtime/runtime.js";
@@ -462,6 +462,14 @@ async function main(): Promise<void> {
   let recovery: RestartRecovery | undefined;
   /** 別の実行場所へ移す（下で作る。移している途中の Project の Module は、Service を止めておく間だけ起こす） */
   let projectMover: ProjectMover | undefined;
+  /** Project のスリープ（下で作る。用事で起きた Project を、ターンの終わり・札が閉じたときに眠りに戻す） */
+  let projectSleep: ProjectSleep | undefined;
+  /** **用が済んだら眠りに戻す**（アーキ仕様 §2.2「眠りに戻す」）。ほかの聞き手（受信箱・届いたものの続き）が終えてから見る */
+  function returnToSleepIfDone(threadId: string): void {
+    const projectId = projectThread.getThread(threadId)?.projectId;
+    if (projectId === undefined || !projectSleep?.awakeForErrand(projectId)) return;
+    setImmediate(() => void projectSleep?.returnIfDone(projectId));
+  }
   const deliveries = new ThreadDeliveries({
     projectThread,
     turns: threadTurns,
@@ -618,6 +626,8 @@ async function main(): Promise<void> {
       ...(thread?.projectId ? { projectId: thread.projectId } : {}),
       items: backgroundItemsOf(thread?.awaitingReplies),
     });
+    // 札が閉じたら、用事で起きた Project が眠りに戻れるかを見る
+    returnToSleepIfDone(threadId);
   }
 
   /**
@@ -2568,12 +2578,24 @@ async function main(): Promise<void> {
       : {}),
   });
   /** **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・起こす口・止まるもの */
-  const projectSleep = new ProjectSleep({
+  projectSleep = new ProjectSleep({
     projectThread,
     hostActivity,
     suspendServices: suspendProjectServices,
     releaseModules: (projectId) => releaseProjectModules(projectId, { stopContainer: true }),
     runningInPlace: (projectId) => projectMover!.runningInPlace(projectId),
+    errandLeftovers: (projectId, since) =>
+      errandLeftoversOf(
+        projectThread.listThreadsForProject(projectId).map((t) => ({
+          ...t,
+          liveJudgment: inbox.listJudgmentsForThread(t.id).some((j) => j.liveness === "live"),
+        })),
+        since,
+      ),
+  });
+  // ターンが終わったら、用事で起きた Project が眠りに戻れるかを見る
+  threadTurns.onChange((change) => {
+    if (change.type === "ended") returnToSleepIfDone(change.threadId);
   });
   const app = createApp({
     warmModelCatalog: true,
