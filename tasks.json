@@ -8105,7 +8105,7 @@
       "number": 336,
       "kind": "task",
       "title": "更新の画面と host に組み立て済みの有無と進み具合を出す（latest.prebuilt・prebuilt.status）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "prebuilt-update",
       "dependsOn": [
         "prebuilt-update-mjs"
@@ -8115,7 +8115,7 @@
       "labels": [],
       "body": "仕様：アーキ §2.5「画面」・v4-frontend.md §6.34「組み立て済みの有無」。host の check で HEAD と runs を見て latest.prebuilt（available/building/tests-failed/cancelled/none/unknown、run、checkedAt）をメモリに持ち GET で返す。core の UpdateState と画面の型に prebuilt。画面は一覧の下の1行・テストが落ちたときの注意と Actions へのリンク（run は https://github.com/<o>/<r>/actions/runs/<数字> の形だけ）・段の名前。E2E self-update.spec.ts に組み立て済みの回を足す。",
       "doneWhen": "self-update の E2E で、組み立て済みあり・組み立て中・テストが落ちたの表示と、組み立て済みを使った更新が通る",
-      "resolution": null,
+      "resolution": "main に入れた（6511ce12）。host：packages/core/src/self-update/prebuilt-probe.ts（HEAD で有無、無ければ runs を状態で見る。run の URL は GitHub の Actions の形だけ通す）を check のときに呼び、結果を SelfUpdate がメモリに持って latest.prebuilt で返す（最新が替わった・まだ聞いていないなら unknown）。UpdateState に prebuilt。testOnlySelfUpdate に prebuiltBase・githubApi（任意、両方か無し）。画面：新しいコミットの一覧の下の1行（あり・組み立て中・テストが落ちた（注意の色とリンク）・止まった・無し・分からない）と「組み立てる」の段の説明。E2E self-update.spec.ts に偽の GitHub で組み立て中→テストが落ちた→あり の表示と、本物の update.mjs が組み立てずに重ねる回を足した（更新の E2E 16件通過）。core 830・frontend 48 の単体テストが通る。",
       "refs": [],
       "threads": [
         {
@@ -8124,8 +8124,8 @@
         }
       ],
       "createdAt": "2026-10-16T00:13:52.933Z",
-      "updatedAt": "2026-10-16T01:39:49.066Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T01:48:38.031Z",
+      "closedAt": "2026-10-16T01:48:38.031Z",
       "extra": {}
     },
     {
