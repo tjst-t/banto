@@ -8185,7 +8185,7 @@
       "number": 339,
       "kind": "task",
       "title": "別のサーバに繋がらないお知らせを実行場所ごとに1枚にし、3分続いたときだけ出し、繋がったら自動で閉じる",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8196,14 +8196,14 @@
       ],
       "body": "決定・2026-10-16、ユーザー。仕様は v4-architecture.md §2.4 の3.（お知らせ）の下の項。\n\n経緯：banto を更新するたびに、受信箱に「browser を繋げませんでした」「terminal を繋げませんでした」（ubuntu@10.10.254.38… ssh: connect to host 10.10.254.38 port 22: Connection timed out）が Module ごとに何枚も並んだ。VM の記録では sshd は普通に動いていて、繋ぎ直しの要求が VM まで届いていない間があった（host→VM が Tailscale 経由らしい、送り元 100.64.0.5）。\n\n作る場所：packages/core/src/cli.ts の Module を繋げないときのお知らせ（connectBackoff.recordFailure → inbox.raiseNotice、dedupeKey module-connect:<接続名>）。別のサーバの SSH の接続の失敗（runtime/remote-ssh.ts・ssh.ts）を見分け、実行場所ごとの見張り（最初に失敗した時刻）で3分を超えたら1枚出し（dedupeKey は実行場所）、繋がったら閉じる（inbox にお知らせを閉じる口が無ければ足す）。Module ごとのお知らせは、原因が SSH の接続のときは出さない。",
       "doneWhen": "(1) 別のサーバへの SSH が繋がらないとき、3分未満で繋がればお知らせは出ない。(2) 3分を超えたら実行場所ごとに1枚だけ出て、Module ごとのものは出ない。(3) 繋がったらそのお知らせが自動で閉じる。(4) 繋がっていて Module だけ起きないとき・この機械のコンテナは今どおり。単体テストで (1)〜(4)。E2E は remote-runtime-ssh（切って繋ぎ直す試験がある）と inbox の関係する spec。フル E2E は流さない。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/1-3）",
       "refs": [
         "docs/specs/v4-architecture.md §2.4「別のサーバに繋がらないときは実行場所ごとに1枚」"
       ],
       "threads": [],
       "createdAt": "2026-10-16T09:08:24.330Z",
-      "updatedAt": "2026-10-16T09:08:32.388Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T09:24:02.485Z",
+      "closedAt": "2026-10-16T09:24:02.485Z",
       "extra": {}
     }
   ],
