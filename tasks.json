@@ -8357,7 +8357,7 @@
       "number": 346,
       "kind": "task",
       "title": "待たれている Module を起こしておく（banto の起動・Project を開いたとき・スリープの例外）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline"
@@ -8371,7 +8371,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T12:37:42.338Z",
+      "updatedAt": "2026-10-16T15:11:24.753Z",
       "closedAt": null,
       "extra": {}
     },
