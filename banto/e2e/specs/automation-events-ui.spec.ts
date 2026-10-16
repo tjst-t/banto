@@ -88,7 +88,7 @@ test("作るフォームで出どころ→出来事→条件と選んで service
     await expect(eventForm.getByTestId("automation-event-description")).toHaveText(
       "startService で起こしたサービスが落ちた（止められた・終了コード 0 で終わったは含まない）。落ちるたびに1件。本文はログの末尾。systemd が起こし直すので、続けて落ちれば続けて起きる",
     );
-    await expect(eventForm.getByTestId("automation-event-keep-awake")).toHaveText("待つ間、service を起こしたままにします。");
+    await expect(eventForm.getByTestId("automation-event-keep-awake")).toHaveText("待つ間、service を起こしたままにします。スリープしても止めません。");
 
     // ---- 条件：属性ごとの欄。数の属性に数でないものは断る ---------------------------------------------------------
     const where = eventForm.getByTestId("automation-event-where");
@@ -120,7 +120,7 @@ test("作るフォームで出どころ→出来事→条件と選んで service
     await expect(details.getByTestId("event-details-where")).toHaveText("サービスの名前が「web」・「api」のどれか");
     await expect(details.getByTestId("event-details-self")).toHaveText("この自動化自身の回が起こした出来事では動きません。");
     await expect(details).toContainText("Service が落ちた（service.crashed）");
-    await expect(details).toContainText("30 秒の間に続けて起きたものは1回にまとめます。待つ間、service を起こしたままにします。");
+    await expect(details).toContainText("30 秒の間に続けて起きたものは1回にまとめます。待つ間、service を起こしたままにします。スリープしても止めません。");
 
     // ---- 直す：種類は出来事のまま、条件と自分の回のスイッチを変えられる ------------------------------------------------------
     await row.getByTestId("automation-edit").click();

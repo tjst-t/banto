@@ -318,7 +318,7 @@ export interface AppDeps {
    * **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・止まるもの・起こす口（`modules/prepare` と
    * ターンを開く口だけが呼ぶ）。無ければ眠らせる口は 404 で、起こす口は何もしない（試験の最小構成）
    */
-  projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman">;
+  projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman" | "partlyAwake">;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
   /**
@@ -1697,7 +1697,16 @@ export function createApp(deps: AppDeps) {
       }
 
       if (url.pathname === "/api/projects" && req.method === "GET") {
-        json(res, 200, deps.projectThread.listProjects());
+        // 眠っていて、出来事を待たれている Module のため一部起きているものには、どの自動化が何を待っているかを添える
+        // （§2.2「出来事を待たれている Module は止めない」。行の自動化の印と理由、v4-frontend.md §6.43）
+        json(
+          res,
+          200,
+          deps.projectThread.listProjects().map((p) => {
+            const partlyAwake = p.sleep ? deps.projectSleep?.partlyAwake(p.id) : undefined;
+            return partlyAwake && partlyAwake.length > 0 ? { ...p, partlyAwake } : p;
+          }),
+        );
         return;
       }
 

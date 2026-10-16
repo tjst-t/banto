@@ -2,7 +2,7 @@
 // Step 2 時点では会話ビューに要る最小限だけ。受信箱・Module・Skill 等の型は
 // 次段（Step 3 以降）で ProjectId 以下に足していく。
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
-import type { RealJudgmentCard, RealMessageImage, RealMessageOrigin, RealMessageQuote } from "@/lib/backend/client";
+import type { RealJudgmentCard, RealMessageImage, RealMessageOrigin, RealMessageQuote, RealPartlyAwake } from "@/lib/backend/client";
 import type { RealTurnSummary } from "@/lib/turn-summary";
 
 export type ProjectId = string;
@@ -29,7 +29,13 @@ export interface MockProject {
   groupId?: string;
   /** 眠っている（追加・2026-10-16、v4-frontend.md §6.43）。写しの元は host（`projects.changed` で取り直す） */
   sleep?: { since: string; by: "human" | "auto" };
+  /**
+   * 眠っているが、出来事を待たれている Module のため一部起きている（追加・2026-10-16、v4-frontend.md §6.43）。
+   * どの Module を、どの自動化が待っているか。写しの元は host
+   */
+  partlyAwake?: RealPartlyAwake[];
 }
+
 
 /** 画面つき tool の呼び出し1件（host の記録をそのまま受ける）。 */
 export interface RealUiToolCall {

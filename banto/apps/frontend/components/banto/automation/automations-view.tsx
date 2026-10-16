@@ -232,7 +232,7 @@ function HowItRuns() {
           出来事は、続けて起きたものを待ち時間の間まとめて1回で届けます。前の回がまだ動いている間は溜めておき、空いたらまとめて届けます。出来事の題・属性と本文は「外から来たもの」と印を付けて渡します。
         </li>
         <li>この自動化自身の回が起こした出来事では、既定では動きません（輪にならないように）。同じ自動化が同じ出来事・同じ対象で動くのは 60 分に 6 回までで、超えた分は飛ばします。</li>
-        <li>Module の出来事を待っている間は、その Module を起こしたままにします。</li>
+        <li>Module の出来事を待っている間は、その Module を起こしたままにします。Project をスリープにしても、その Module とコンテナは止めません。</li>
       </ul>
     </div>
   );
@@ -539,7 +539,7 @@ function EventDetails({
       <dt className="text-ink-3">まとめ方</dt>
       <dd className="text-ink-2">
         {s.batchSeconds > 0 ? `${s.batchSeconds} 秒の間に続けて起きたものは1回にまとめます。` : "1件ずつ届けます。"}
-        {moduleName !== "banto" ? `待つ間、${moduleName} を起こしたままにします。` : null}
+        {moduleName !== "banto" ? `待つ間、${moduleName} を起こしたままにします。スリープしても止めません。` : null}
       </dd>
       {pending > 0 ? (
         <>
@@ -1225,7 +1225,7 @@ function EventSourceFields({
           </p>
           {origin !== "banto" ? (
             <p className="text-xs text-ink-3" data-testid="automation-event-keep-awake">
-              待つ間、{origin} を起こしたままにします。
+              待つ間、{origin} を起こしたままにします。スリープしても止めません。
             </p>
           ) : null}
           <WhereFields declared={declared} where={where} onWhere={onWhere} problem={whereProblem} />

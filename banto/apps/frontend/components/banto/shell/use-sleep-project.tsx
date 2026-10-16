@@ -9,6 +9,9 @@
 //   3. 眠らせる。確かめてから押すまでの間に断られたら（ターンが始まった等）、その理由をそのまま知らせる
 //
 // 断られた理由は Project ごとに1行ずつ（黙らない、規則2）。
+//
+// 出来事を待たれている Module（`keeps`）は止まらないので、確かめの小窓に「〈Module〉は自動化のため止めません」を足す。
+// Service の Module が待たれていれば（`servicesKept`）Service と公開中の URL は止まらないので、その文は出さない（§6.43）。
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
@@ -29,6 +32,9 @@ import { describeFailure } from "@/lib/report-failure";
 interface Stop {
   project: MockProject;
   labels: string[];
+  /** 自動化のため止めない Module の名前 */
+  keeps: string[];
+  servicesKept: boolean;
 }
 
 function refused(project: MockProject, reasons: readonly string[]) {
@@ -70,7 +76,14 @@ export function useSleepProjects(): { requestSleep: (projects: readonly MockProj
         continue;
       }
       sleep.push(c.project);
-      if (c.preview.stops.length > 0) stops.push({ project: c.project, labels: c.preview.stops.map((s) => s.label) });
+      if (c.preview.stops.length > 0) {
+        stops.push({
+          project: c.project,
+          labels: c.preview.stops.map((s) => s.label),
+          keeps: c.preview.keeps.map((k) => k.module),
+          servicesKept: c.preview.servicesKept,
+        });
+      }
     }
     if (sleep.length === 0) return;
     if (stops.length === 0) {
@@ -81,6 +94,8 @@ export function useSleepProjects(): { requestSleep: (projects: readonly MockProj
   }
 
   const many = (pending?.sleep.length ?? 0) > 1;
+  // Service が止まる Project が1つでもあれば、止まることの説明を出す
+  const servicesStop = pending?.stops.some((s) => !s.servicesKept) ?? false;
   const dialog = (
     <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
       <AlertDialogContent data-testid="sleep-confirm">
@@ -89,7 +104,7 @@ export function useSleepProjects(): { requestSleep: (projects: readonly MockProj
             {many ? `${pending?.sleep.length} 件の Project をスリープにしますか` : `「${pending?.sleep[0]?.name}」をスリープにしますか`}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            眠っている間は止まります。公開中の URL には届きません。起こすと Service はまた動きます
+            {servicesStop ? "眠っている間は止まります。公開中の URL には届きません。起こすと Service はまた動きます" : "眠っている間は止まります"}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ul className="max-h-64 space-y-1 overflow-y-auto text-sm text-ink-2" data-testid="sleep-confirm-stops">
@@ -102,6 +117,18 @@ export function useSleepProjects(): { requestSleep: (projects: readonly MockProj
             )),
           )}
         </ul>
+        {pending?.stops.some((s) => s.keeps.length > 0) ? (
+          <ul className="space-y-1 text-sm text-ink-3" data-testid="sleep-confirm-keeps">
+            {pending.stops.flatMap(({ project, keeps }) =>
+              keeps.map((module) => (
+                <li key={`${project.id}-${module}`} className="truncate">
+                  {many ? <span>{project.name}：</span> : null}
+                  {module}は自動化のため止めません
+                </li>
+              )),
+            )}
+          </ul>
+        ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel>やめる</AlertDialogCancel>
           <AlertDialogAction

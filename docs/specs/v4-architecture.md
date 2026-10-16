@@ -3612,17 +3612,38 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
 経緯と却下した案は `docs/notes/2026-10-16-automation-events.md` の「待たれている出どころを起こしておく（#346）」。
 
 - **どれが待たれているか**は `automation/keep-awake.ts` の `awaitedModules`：その Project の一時停止していない出来事の自動化の `event` の
-  頭（`<Module の名前>.`）で引く。対象は Project ごとの宣言のうち出来事を名乗っているもの（`declaredEvents`）だけ。スリープを入れるとき、
-  止めない Module はここから引く
+  頭（`<Module の名前>.`）で引く。対象は Project ごとの宣言のうち出来事を名乗っているもの（`declaredEvents`）だけ。スリープの例外
+  （止めない Module）も同じ1つ（`awaitingAutomations`、cli.ts の `awaitedOf`）から引く
 - **起こす時**（core の `keepAwaitedModulesAwake`、起こすのは `connectDeclaredModule(declaration, project)`）：banto が待ち受けを始めたとき・
   自動化の台帳が変わったとき（作る・直す・再開）・Project の一覧が変わったとき（開き直す）・画面の操作で Project の Module を畳んだあと
   （Module の選び直し・根や入れ子の変更）・1分ごと（起こせなかったもの・きっかけの無い変化（移し終えた等）を拾う。試し直しの間は
   `connectBackoff` が守る）。落ちたものは今どおり `scheduleRestart`
 - **起こさない**：閉じた Project・別の実行場所へ移している Project
 - **待たれなくなっても止めない**（一時停止・消した）——起こしておくのをやめるだけ。ほかの Project ごとの Module と同じく、次に畳むまで
-  起きている
+  起きている。**眠っている Project では片づける**（下の「スリープの例外」）
 - **道具用のコンテナの Module**（使うときだけ起こすもの）は banto 全体の Module で、出来事を名乗れない（Project ごとの同梱だけ）。待たれている
   Module はいつも Project ごとなので、起こす道は1つ（使うときだけ起こす仕組みを通らない）
+
+#### スリープの例外——実装で決めたこと（実装・2026-10-16、Backlog #357）
+
+§2.2「出来事を待たれている Module は止めない」の実装。経緯は `docs/notes/2026-10-16-project-sleep-awaited-modules.md`。
+
+- **眠らせる**（`runtime/project-sleep.ts` の `sleep`）：待たれている Module（`keep`）を先に決める。Service を管理操作で止めるのは、Service の
+  Module が `keep` に無く、かつ別のサーバか `keep` が空でない（コンテナを残す）とき。`keep` が空なら今どおり全部外してコンテナを止める。
+  空でなければ、Project ごとの宣言と繋がっている接続のうち `keep` 以外を名指しで外し（`releaseProjectModules({ only })`）、コンテナは残す
+- **起動の途中に名指しで外された Module** は、その Module だけを畳む（Project 全体の畳みと見分ける——残した Module とコンテナを巻き込まない）
+- **眠っている間に起こす**：`keepAwaitedModulesAwake` は眠っている Project でも待たれている Module を起こす（`connectDeclaredModule` の
+  `awaited`。眠っている Project の門の例外はこの1つだけ）
+- **待たれなくなったら片づける**（`releaseUnawaited`、眠らせる手順と同じ印の中で）：自動化の台帳が変わったとき（一時停止・消した。`keep` が
+  空ならコンテナも止める）と、1分ごと（繋がっている待たれていない Module があるときだけ）。外す Module に Service の Module があれば先に
+  管理操作で Service を止める——止められなければ外さず、次のきっかけでまた試す（ログに残す）
+- **止まるもの（`sleep-preview`）**：コンテナを残すなら、止まるのは管理操作で止める Service だけ（待たないコマンド・Terminal のセッションは
+  コンテナと一緒に残るので並べない）。Service の Module も待たれていれば何も止まらない。応答に `keeps`（止めない Module と待っている
+  自動化）と `servicesKept`
+- **一覧**：`GET /api/projects` の眠っている Project に `partlyAwake`（Module と待っている自動化）。導出で、記録しない（規則3）。眠っている
+  Project の自動化が変わったら `projects.changed`
+- **banto を起こし直したとき**：待たれている Module のある眠っている Project のコンテナは止めない。待たれているかが読めない（宣言が
+  読めない）ときも止めない側に倒す（夜中の出来事を落とさない）。眠らせるときに読めなければ、今どおり全部止める（ログに残す）
 
 #### 最初の出来事で実装で決めたこと（実装・2026-10-16、Backlog #347）
 
@@ -3750,7 +3771,7 @@ Memory と仕様に沿って、おすすめに異論が無ければそれを選�
   説明 → Module なら「待つ間、〈Module〉を起こしたままにします」→ 条件（属性ごと：`enum` は押して選ぶ・真偽は「問わない／はい／いいえ」・
   ほかは打つ。「,」か「、」で区切ると「どれか」。空の属性は問わない。数の属性に数でないものは送らない）→「この自動化自身の回が起こした
   出来事では動かない」（既定オン＝`allowSelfTriggered: false`）→ まとめる待ち時間（Webhook と同じ選び先、既定 30 秒）。値が1つなら配列に
-  しない。スリープはまだ main に無いので「スリープしても止めません」は付けない（入れるときに足す）
+  しない。「起こしたままにします」の後ろに「スリープしても止めません」（Backlog #357）
 - **判断役のとき**（出来事が `banto.turn-decisions`）：届け先の「いまある会話に届ける」を出さず、「判断役は専用の Fork でだけ動きます。承認は
   必ず聞きます」。作るときは「前の回を引き継ぐ」に寄せる。指示の見本は上の「判断役」の見本。作った応答の `notices` は一覧の上に出す
 - **直す**：出来事のきっかけも「直す」を出す。種類は出来事のまま、出来事・条件・自分の回・待ち時間を変えられる。台帳はきっかけを変えた
@@ -3777,7 +3798,6 @@ Memory と仕様に沿って、おすすめに異論が無ければそれを選�
 
 #### 段2の未決
 
-- スリープ（Project を使われないときに止める仕組み）は別の Fork で検討中。入るときに上の「待たれている Module は止めない」を満たす
 - banto 自身の出来事の残り（コンテナが上限に当たった・更新した・別のサーバに繋がらない 等）と、外から繋いだ Module の出来事は、
   器ができてから1つずつ開く
 
