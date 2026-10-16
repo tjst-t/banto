@@ -8336,7 +8336,7 @@
       "number": 345,
       "kind": "task",
       "title": "出来事の器——名乗り（dev.banto/events）・relayEmitEvent・条件（where）・まとめ役の共通化・重複落とし・輪の止め方",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation-events",
       "dependsOn": [],
       "milestone": null,
@@ -8348,7 +8348,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T12:49:16.088Z",
+      "updatedAt": "2026-10-16T12:49:28.511Z",
       "closedAt": null,
       "extra": {}
     },
