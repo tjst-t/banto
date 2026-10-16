@@ -7538,7 +7538,7 @@
       "number": 341,
       "kind": "task",
       "title": "ファイルブラウザの右側で PDF・Office をそのまま読む（document の描き方を使う）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "office-review",
       "dependsOn": [
         "doc-review-ui-redo"
@@ -7548,12 +7548,12 @@
       "labels": [],
       "body": "仕様 v4-modules.md §2.2「画面の形」の最初の項。launcher・listDirectory・showFile を大きく開いたファイルブラウザで PDF・docx・pptx・doc・ppt・odt・odp・xlsx・xlsm・xls・ods を選んだら、右側に document の画面（ツールバー・ページ・余白のコメント、コメントモード既定オン）をそのまま出す。今は「バイナリなのでソース表示はありません」と出ている。pdf.js 等を browser の束に最初から入れるか、要るときに Module の tool で受けて inline の script で読み込むかは重さを測って決め、ノートに残す。Canvas の CSP は変えない。会話の外なので「AI に返す」は「コピー」。",
       "doneWhen": "ファイルブラウザで pptx・PDF・xlsx を選ぶと右側でそのまま読めてコメントを付けられる。テキストのファイルの開く速さが目立って落ちない（測った数をノートに）。filesystem-browser の E2E に PDF・pptx を開く試験を足して通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/doc-review-in-browser）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T10:15:53.531Z",
-      "updatedAt": "2026-10-16T11:17:48.633Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T14:01:21.736Z",
+      "closedAt": "2026-10-16T14:01:21.736Z",
       "extra": {}
     },
     {
