@@ -14,6 +14,7 @@
 //     `convertDocument` で変換役（LibreOffice）に PDF にしてもらい、写しを `readFileRange` の `converted` で読む。
 //     変換役を入れている途中（初回だけ、数分）は、そう出して待ち、頼み直す。コメントの鍵は元のファイルのパス
 
+import { bindTextLayer } from "./text-selection.js";
 import { CommentsPanel, type CommentAnchor, type CommentRect, type CommentTarget } from "./comments.js";
 import { h, replaceChildren } from "./dom.js";
 import { icon } from "./icons.js";
@@ -565,6 +566,7 @@ export class PdfDocumentView {
       slot.textLayer = textLayer;
       await textLayer.render();
       if (stale()) return;
+      bindTextLayer(textEl);
       slot.el.classList.add("rendered");
       this.paintMatches(slot);
       void this.paintFocus(slot);

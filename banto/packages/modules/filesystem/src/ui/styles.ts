@@ -293,6 +293,9 @@ body[data-mode="fullscreen"] .comments { width: 320px; flex-shrink: 0; border-to
 .textLayer .highlight.selected { background-color: rgb(255 120 0 / 0.55); }
 .textLayer ::selection { background: color-mix(in srgb, AccentColor, transparent 50%); color: transparent; }
 .textLayer br::selection { background: transparent; }
+/* 選んでいる間だけ「終わり」を層の全面に広げ、文字の無い所で選択の端が跳ばないようにする（text-selection.ts、pdf.js の pdf_viewer.css と同じ） */
+.textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
+.textLayer.selecting .endOfContent { top: 0; }
 
 /* ---- 表（sheet-viewer.ts）。描くのは見えている範囲のセルだけ——セルは位置を指定して置き、列見出しと行番号は sticky で残す ---- */
 /* 会話の中のカードは、小さな表なら表の高さまで（520px を上限に） */
