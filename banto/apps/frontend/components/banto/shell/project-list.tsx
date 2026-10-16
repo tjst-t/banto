@@ -7,14 +7,15 @@
 //   1. グループに入っていない Project（見出し無し）
 //   2. グループ——見出し（色の点＋名前。押すと畳む。畳んでも中の「動いている」「あなたの番」と数は見出しに残す）の下に、
 //      その中の Project（12px 下げる）
-//   3. 「スリープ中（n）」——一番下に1行。既定は畳んである。開くと薄い行が並び、押すと起こして開く
+//   3. しばらく開いていない Project を眠らせるかの問い（`projects.autoSleep` が `ask` で、host の時計が候補にしたものがあるとき
+//      だけ。いま開いている Project は入れない）
+//   4. 「スリープ中（n）」——一番下に1行。既定は畳んである。開くと薄い行が並び、押すと起こして開く。「…」で
+//      `projects.autoSleep` を選ぶ
 //
 // 操作はどれもサイドバーの中だけで済む：行の「…」の「グループへ移す」「スリープにする」・見出しの「…」・ドラッグ（行の上＝
 // その前、見出し＝そのグループの最後、「Project」の見出し＝グループの外、「スリープ中」の見出しと行＝眠らせる、スリープ中の
 // 行をグループへ＝起こしてそこへ）・「Project」の見出しの「すべて畳む」と「＋」。
 // 記録は host（グループ・入れ先・並び・眠り）、畳んだかはこの端末（`lib/backend/project-groups.ts`）。
-//
-// 眠らせるかの問い（`projects.autoSleep`）はまだ繋がっていないので出さない（規則13、Backlog #356）。
 import { useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -52,9 +53,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SidebarGroup, SidebarGroupContent, SidebarMenu } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
-import { partlyAwakeReasons } from "@/lib/backend/client";
-import { getAwakeProjects, getSleepingProjects, placeProject, wakeProject } from "@/lib/mock/projects";
+import { getRealAutoSleep, partlyAwakeReasons, setRealAutoSleep, type RealAutoSleepMode } from "@/lib/backend/client";
+import {
+  dismissSleepSuggestions,
+  getAwakeProjects,
+  getSleepingProjects,
+  getSleepSuggestions,
+  placeProject,
+  wakeProject,
+} from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import type { MockProject } from "@/lib/mock/types";
 import { describeFailure } from "@/lib/report-failure";
@@ -348,6 +357,84 @@ function ProjectsHeading({
   );
 }
 
+/**
+ * **しばらく開いていない Project を眠らせるかの問い**（§6.43）。スリープ中の見出しのすぐ上に、破線の枠で静かに。
+ * 落とす先にはしない
+ */
+function SleepSuggestion({ projects, onSleep }: { projects: readonly MockProject[]; onSleep: () => void }) {
+  const [dismissing, setDismissing] = useState(false);
+  if (projects.length === 0) return null;
+  return (
+    <li data-testid="sidebar-sleep-suggestion" className="my-1 rounded-md border border-dashed border-border px-2.5 py-2">
+      <p className="text-xs text-ink-2">14日以上開いていない Project が {projects.length} 件あります</p>
+      <p data-testid="sidebar-sleep-suggestion-names" className="mt-0.5 truncate text-xs text-ink-3">
+        {projects.map((p) => `${p.name}（${p.idle?.days ?? 0}日）`).join("、")}
+      </p>
+      <div className="mt-1.5 flex gap-1">
+        <Button size="sm" variant="secondary" className="h-6 px-2 text-xs" onClick={onSleep}>
+          <Moon className="size-3" />
+          スリープにする
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-xs text-ink-3"
+          disabled={dismissing}
+          onClick={() => {
+            setDismissing(true);
+            void dismissSleepSuggestions(projects.map((p) => p.id))
+              .catch(report("「今はしない」を保存できませんでした"))
+              .finally(() => setDismissing(false));
+          }}
+        >
+          今はしない
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/** 「スリープ中」の見出しの「…」：しばらく開いていない Project をどうするか（banto 全体の設定 `projects.autoSleep`） */
+function AutoSleepMenu() {
+  // 開いたときに host から読む（写しを持たない、規則3）。読み終わるまでは選べない
+  const [mode, setMode] = useState<RealAutoSleepMode | null>(null);
+  return (
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (!open) return;
+        setMode(null);
+        void getRealAutoSleep().then(setMode, report("設定を読めませんでした"));
+      }}
+    >
+      <HeadingMore label="スリープ中の設定" />
+      <DropdownMenuContent side="right" align="end" className="w-64" data-testid="sidebar-auto-sleep-menu">
+        <DropdownMenuLabel className="text-xs font-normal text-ink-3">14日開いていない Project を</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={mode ?? ""}
+          onValueChange={(v) => {
+            const next = v as RealAutoSleepMode;
+            void setRealAutoSleep(next).then(setMode, report("設定を保存できませんでした"));
+          }}
+        >
+          <DropdownMenuRadioItem value="ask" disabled={mode === null}>
+            スリープにするか聞く
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="auto" disabled={mode === null}>
+            自動でスリープにする
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="off" disabled={mode === null}>
+            何もしない
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <p className="px-1.5 pb-1 text-xs text-ink-3">
+          スリープ中はコンテナ・Module・Service を止めて資源を返します。会話はそのまま残ります。開いたとき・自動化の時刻が来たとき・メッセージなどが届いたときは自動で起きます
+        </p>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /** 一番下の「スリープ中（n）」。押すと開く・畳む（既定は畳んである）。落とすと眠らせる */
 function SleepHeading({ count, open }: { count: number; open: boolean }) {
   const { setNodeRef: setDropRef, isOver: dropOver } = useDropZone(DROP_SLEEP);
@@ -375,7 +462,7 @@ function SleepHeading({ count, open }: { count: number; open: boolean }) {
           {count}
         </span>
       </button>
-      {/* 「14日開いていない Project を」の選び口（§6.43）は Backlog #356 で繋ぐ——それまで「…」は出さない（規則13） */}
+      <AutoSleepMenu />
       <button
         type="button"
         onClick={toggle}
@@ -573,6 +660,7 @@ export function ProjectList({
   const sleepOpen = useSleepOpen();
   const sections = projectSections(getAwakeProjects(), groups);
   const sleeping = getSleepingProjects();
+  const suggestions = getSleepSuggestions(activeProjectId);
   const allProjects = sections.flatMap((s) => s.projects);
   const { requestSleep, dialog: sleepDialog } = useSleepProjects();
   const openSleeping = useOpenSleeping(onNavigate);
@@ -715,6 +803,7 @@ export function ProjectList({
                 </SectionRows>
               ),
             )}
+            <SleepSuggestion projects={suggestions} onSleep={() => requestSleep(suggestions)} />
             {sleeping.length > 0 ? (
               <>
                 <SleepHeading count={sleeping.length} open={sleepOpen} />

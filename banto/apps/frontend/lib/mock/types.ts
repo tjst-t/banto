@@ -34,6 +34,8 @@ export interface MockProject {
    * どの Module を、どの自動化が待っているか。写しの元は host
    */
   partlyAwake?: RealPartlyAwake[];
+  /** しばらく開いていないので眠らせるか聞く（追加・2026-10-16、§6.43）。写しの元は host の時計 */
+  idle?: { days: number; suggestSleep: true };
 }
 
 

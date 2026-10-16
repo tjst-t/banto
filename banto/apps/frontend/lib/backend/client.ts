@@ -134,6 +134,11 @@ export interface RealProject {
   sleep?: RealProjectSleep;
   /** 眠っているが、出来事を待たれている Module のため一部起きている（追加・2026-10-16、アーキ仕様 §2.2）。眠っていなければ無い */
   partlyAwake?: RealPartlyAwake[];
+  /**
+   * **しばらく開いていないので、眠らせるか聞く**（追加・2026-10-16、アーキ仕様 §2.2「しばらく開いていない Project」）。
+   * `projects.autoSleep` が `ask` で、host の時計が候補に決めたものだけ。何日開いていないか
+   */
+  idle?: { days: number; suggestSleep: true };
   createdAt: string;
 }
 
@@ -200,6 +205,22 @@ export async function sleepRealProject(projectId: string): Promise<void> {
     throw new ProjectSleepRefusedError(message, reasons.length > 0 ? reasons : [message]);
   }
   throw new Error(message);
+}
+
+/** 「今はしない」（`dismissedAt` を今に。さらに 14 日たったらまた聞く、アーキ仕様 §2.2） */
+export async function dismissRealSleepSuggestions(ids: readonly string[]): Promise<void> {
+  await request<{ ok: true }>("/api/projects/sleep-suggestions/dismiss", { method: "POST", body: JSON.stringify({ ids }) });
+}
+
+/** しばらく開いていない Project をどうするか（banto 全体の設定 `projects.autoSleep`）。聞く（既定）・自動で眠らせる・何もしない */
+export type RealAutoSleepMode = "ask" | "auto" | "off";
+
+export async function getRealAutoSleep(): Promise<RealAutoSleepMode> {
+  return (await request<{ mode: RealAutoSleepMode }>("/api/settings/auto-sleep")).mode;
+}
+
+export async function setRealAutoSleep(mode: RealAutoSleepMode): Promise<RealAutoSleepMode> {
+  return (await request<{ mode: RealAutoSleepMode }>("/api/settings/auto-sleep", { method: "PUT", body: JSON.stringify({ mode }) })).mode;
 }
 
 /** グループの色（host の `PROJECT_GROUP_COLORS` と同じ5つ。記録には名前で持つ） */

@@ -18,6 +18,7 @@ import {
   updateRealProjectSettings,
   prepareRealProjectModules,
   sleepRealProject,
+  dismissRealSleepSuggestions,
 } from "../backend/client";
 import { doneWaking, startWaking } from "../backend/project-waking";
 import { refreshRealInbox } from "../backend/real-inbox";
@@ -215,6 +216,8 @@ export async function syncRealProjects(): Promise<void> {
     else delete next.sleep;
     if (rp.partlyAwake) next.partlyAwake = rp.partlyAwake;
     else delete next.partlyAwake;
+    if (rp.idle) next.idle = rp.idle;
+    else delete next.idle;
     return next;
   });
   // host に無いもの（ありえないが）は元の場所の順で後ろへ
@@ -270,6 +273,20 @@ export function prepareProjectModules(projectId: string): Promise<void> {
  */
 export function wakeProject(projectId: string): Promise<void> {
   return prepareProjectModules(projectId);
+}
+
+/**
+ * **眠らせるか聞く Project**（§6.43「眠らせるかの問い」）。host の時計が候補にした、起きている Project。いま開いている
+ * Project は入れない（host には分からないので画面が外す）
+ */
+export function getSleepSuggestions(activeProjectId: string | null): readonly MockProject[] {
+  return getAwakeProjects().filter((p) => p.idle && p.id !== activeProjectId);
+}
+
+/** 「今はしない」。終わったら一覧を host に合わせる（問いから消える） */
+export async function dismissSleepSuggestions(ids: readonly string[]): Promise<void> {
+  await dismissRealSleepSuggestions(ids);
+  await syncRealProjects();
 }
 
 /**
@@ -368,6 +385,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       ...(rp.groupId ? { groupId: rp.groupId } : {}),
       ...(rp.sleep ? { sleep: rp.sleep } : {}),
       ...(rp.partlyAwake ? { partlyAwake: rp.partlyAwake } : {}),
+      ...(rp.idle ? { idle: rp.idle } : {}),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。

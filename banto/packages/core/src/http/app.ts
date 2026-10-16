@@ -72,6 +72,7 @@ import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { AuthHttpError, type AuthService } from "../auth/service.js";
 import type { ProjectMover } from "../runtime/project-move.js";
 import { ProjectSleepError, type ProjectSleep } from "../runtime/project-sleep.js";
+import { AUTO_SLEEP_KEY, autoSleepModeOf, isAutoSleepMode, type ProjectIdle } from "../runtime/project-idle.js";
 import { SshCommandError } from "../runtime/ssh.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import {
@@ -319,6 +320,15 @@ export interface AppDeps {
    * ターンを開く口だけが呼ぶ）。無ければ眠らせる口は 404 で、起こす口は何もしない（試験の最小構成）
    */
   projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman" | "partlyAwake">;
+  /**
+   * **しばらく開いていない Project**（決定・2026-10-16、アーキ仕様 §2.2）。人の操作を数え、時計が覚えた候補を
+   * `GET /api/projects` の `idle` に添え、「今はしない」を受ける。無ければ数えず、`idle` も出さない
+   */
+  projectIdle?: Pick<ProjectIdle, "idleOf" | "noteHuman" | "dismiss" | "check">;
+  /**
+   * **試験だけ：時計を好きな時刻で1回回す**（config.json の `testOnlyIdleCheck`）。無ければ `POST /api/test-only/idle-check` は 404
+   */
+  testOnlyIdleCheck?: boolean;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
   /**
@@ -1695,19 +1705,69 @@ export function createApp(deps: AppDeps) {
         const projectId = projectOfRequestPath(url.pathname, deps);
         if (projectId !== undefined) deps.projectSleep.noteHuman(projectId);
       }
+      // 同じ「人の操作」で「開いていない」を数え直す（§2.2「しばらく開いていない」）。書けなくても要求は止めない——黙らずに残す
+      if (principal.kind === "session" && req.method !== "GET" && req.method !== "HEAD" && deps.projectIdle) {
+        const projectId = projectOfRequestPath(url.pathname, deps);
+        if (projectId !== undefined) {
+          deps.projectIdle.noteHuman(projectId).catch((err: unknown) => {
+            console.warn(`[host] project ${projectId} の人の操作を記録できませんでした:`, err);
+          });
+        }
+      }
 
       if (url.pathname === "/api/projects" && req.method === "GET") {
         // 眠っていて、出来事を待たれている Module のため一部起きているものには、どの自動化が何を待っているかを添える
         // （§2.2「出来事を待たれている Module は止めない」。行の自動化の印と理由、v4-frontend.md §6.43）
+        const idle = deps.projectIdle;
         json(
           res,
           200,
           deps.projectThread.listProjects().map((p) => {
             const partlyAwake = p.sleep ? deps.projectSleep?.partlyAwake(p.id) : undefined;
-            return partlyAwake && partlyAwake.length > 0 ? { ...p, partlyAwake } : p;
+            const mark = idle?.idleOf(p.id);
+            return { ...p, ...(partlyAwake && partlyAwake.length > 0 ? { partlyAwake } : {}), ...(mark ? { idle: mark } : {}) };
           }),
         );
         return;
+      }
+
+      // **「今はしない」**（§2.2「しばらく開いていない」の `ask`）。`dismissedAt` を今に——さらに 14 日たったらまた聞く
+      if (url.pathname === "/api/projects/sleep-suggestions/dismiss" && req.method === "POST") {
+        if (!deps.projectIdle) return json(res, 404, { error: "not found" });
+        const body = (await readJsonBody(req)) as { ids?: unknown };
+        if (!Array.isArray(body?.ids) || !body.ids.every((id): id is string => typeof id === "string")) {
+          return json(res, 400, { error: "ids は Project の id の配列で渡してください" });
+        }
+        const unknown = body.ids.filter((id) => !deps.projectThread.getProject(id));
+        if (unknown.length > 0) return json(res, 404, { error: `Project がありません: ${unknown.join(", ")}` });
+        await deps.projectIdle.dismiss(body.ids);
+        return json(res, 200, { ok: true });
+      }
+
+      // **しばらく開いていない Project をどうするか**（§2.2、banto 全体の設定 `projects.autoSleep`）。ask（既定）／auto／off。
+      // 変えたら時計を1回回す（auto にしたらすぐ眠らせる・off にしたら聞くのをやめる）
+      if (url.pathname === "/api/settings/auto-sleep" && (req.method === "GET" || req.method === "PUT")) {
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { mode?: unknown };
+          if (!isAutoSleepMode(body?.mode)) return json(res, 400, { error: "mode は ask・auto・off のどれかで渡してください" });
+          await deps.runtimeConfig.setInstanceDefault(AUTO_SLEEP_KEY, body.mode);
+          void deps.projectIdle?.check();
+        }
+        return json(res, 200, { mode: autoSleepModeOf(deps.runtimeConfig) });
+      }
+
+      // **試験だけ：時計を好きな時刻で、名指しの Project だけ1回回す**（E2E が「14日たった」を作る。ほかの Project には触らない）
+      if (url.pathname === "/api/test-only/idle-check" && req.method === "POST") {
+        if (!deps.testOnlyIdleCheck || !deps.projectIdle) return json(res, 404, { error: "not found" });
+        const body = (await readJsonBody(req)) as { now?: unknown; projectIds?: unknown };
+        const now = typeof body?.now === "string" ? new Date(body.now) : undefined;
+        if (!now || Number.isNaN(now.getTime())) return json(res, 400, { error: "now は時刻の文字列で渡してください" });
+        if (!Array.isArray(body.projectIds) || !body.projectIds.every((id): id is string => typeof id === "string")) {
+          return json(res, 400, { error: "projectIds は Project の id の配列で渡してください" });
+        }
+        await deps.projectIdle.check({ now, only: body.projectIds });
+        return json(res, 200, { ok: true });
       }
 
       // **いま動いているもの**（決定・2026-09-28、ユーザー「再起動の頃合いを計りたい」）。
