@@ -16,6 +16,7 @@ import type { ThreadState } from "../project-thread/types.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import type { JudgmentItem } from "../inbox/types.js";
+import type { ExternalContent } from "../project-thread/types.js";
 import {
   AUTOMATION_FORK_RUNS,
   type Automation,
@@ -66,6 +67,43 @@ export interface AutomationRunStarted {
 /** 自動化の届けものの送り手（`MessageOrigin.from`）。core が使う名前（アーキ仕様 §5.2） */
 const FROM = "banto";
 
+/** まとめた1本に添える外から来たものの上限（Webhook の本文の上限と同じ。アーキ仕様 §4.3「届け方」） */
+export const AUTOMATION_EXTERNAL_MAX_BYTES = 64 * 1024;
+
+/**
+ * **届けものに添える外から来たもの**。出来事は名前・題・属性を見出しに、`text` を本文に。まとめた1本の本文が上限を超えるなら、
+ * 出来事の本文を省いて見出しだけ並べ、省いた数を返す（Webhook の本文は受けたときに切ってあるので省かない）
+ */
+export function externalOf(received: readonly AutomationReceived[]): { items: ExternalContent[]; omitted: number } {
+  const total = received.reduce((n, r) => n + Buffer.byteLength(r.kind === "event" ? r.text ?? "" : r.body, "utf8"), 0);
+  const omit = total > AUTOMATION_EXTERNAL_MAX_BYTES;
+  let omitted = 0;
+  const items = received.map((r): ExternalContent => {
+    if (r.kind !== "event") {
+      return { source: "webhook", receivedAt: r.at, body: r.body, ...(r.truncatedFrom !== undefined ? { truncatedFrom: r.truncatedFrom } : {}) };
+    }
+    const dropBody = omit && (r.text ?? "") !== "";
+    if (dropBody) omitted++;
+    return {
+      source: "event",
+      receivedAt: r.at,
+      body: dropBody ? "" : r.text ?? "",
+      ...(!dropBody && r.truncatedFrom !== undefined ? { truncatedFrom: r.truncatedFrom } : {}),
+      event: { name: r.name, title: r.title, eventId: r.eventId, occurredAt: r.occurredAt, fields: r.fields },
+      ...(dropBody ? { bodyOmitted: true as const } : {}),
+    };
+  });
+  return { items, omitted };
+}
+
+/**
+ * **届けもののホップ**（アーキ仕様 §4.3「段2から一般化するところ」）。時刻・Webhook・今すぐは 0（人の発言と同じ）。出来事は
+ * 出来事ごとに持ち越した値（起こしたターンのホップ＋1）で、まとめたときは一番大きいもの——上限（10）はそのまま効く
+ */
+export function hopOf(received: readonly AutomationReceived[]): number {
+  return received.reduce((max, r) => (r.kind === "event" && r.hop > max ? r.hop : max), 0);
+}
+
 /** 届けたが AI を起こさずに留めている回の、`running` に添える理由の頭 */
 const HELD_PREFIX = "届けましたが、AI をまだ起こしていません——";
 
@@ -99,7 +137,7 @@ export class AutomationRunner {
   /**
    * 1回動かす。届けなかったときも `skipped` と理由を台帳に残して返す。
    *
-   * `received`＝**Webhook で受けて溜めていたもの**（アーキ仕様 §4.3「Webhook」）。指示の下に外から来たものとして添え、
+   * `received`＝**Webhook・出来事で受けて溜めていたもの**（アーキ仕様 §4.3「Webhook」「段2」）。指示の下に外から来たものとして添え、
    * 届けたら溜めていたものから外す。前の回が終わっていなければ届けず、記録もしない（`deferred`——溜めたまま、空いたら
    * まとめて届ける）
    */
@@ -222,25 +260,17 @@ export class AutomationRunner {
       { runId, at, cause, result: "running", threadId, ...(rotatedFrom ? { rotatedFrom } : {}), ...extras, ...counted },
       receivedIds,
     );
+    const external = externalOf(received);
     try {
       const delivered = await this.deps.deliveries.deliver({
         threadId,
         from: FROM,
         title: `自動化「${current.name}」`,
-        text: current.instruction,
-        hop: 0,
+        text: external.omitted > 0 ? `${current.instruction}\n\n（まとめた出来事が大きすぎるので、${external.omitted} 件の本文を省き、見出しだけを添えました）` : current.instruction,
+        hop: hopOf(received),
         kind: "automation",
         automation: { id: current.id, runId },
-        ...(received.length > 0
-          ? {
-              external: received.map((r) => ({
-                source: "webhook" as const,
-                receivedAt: r.at,
-                body: r.body,
-                ...(r.truncatedFrom !== undefined ? { truncatedFrom: r.truncatedFrom } : {}),
-              })),
-            }
-          : {}),
+        ...(external.items.length > 0 ? { external: external.items } : {}),
       });
       if (delivered.wake === "held") {
         // 届けたものは溜まったまま残る（留めが解けたら起こされる・人が次に送ったターンの頭に積まれる）——その回は

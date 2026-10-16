@@ -32,6 +32,7 @@ import {
   Trash2,
   Webhook,
   X,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -203,7 +204,7 @@ function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; 
   const [message, setMessage] = useState<{ tone: "info" | "error"; text: string } | null>(null);
   const last = a.runs[0];
   const tz = automationTimeZone(a);
-  const SourceIcon = a.source.kind === "webhook" ? Webhook : Clock;
+  const SourceIcon = a.source.kind === "webhook" ? Webhook : a.source.kind === "event" ? Zap : Clock;
   const threadId = a.target.threadId;
 
   async function act(fn: () => Promise<string | undefined | void>) {
@@ -311,7 +312,7 @@ function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; 
                       {r.cause === "manual" ? <span className="text-ink-3">（今すぐ動かした回）</span> : null}
                       {r.received ? (
                         <span className="text-ink-3" data-testid="automation-run-received">
-                          （Webhook {r.received} 件{r.received > 1 ? "をまとめて" : ""}）
+                          （{r.cause === "event" ? "出来事" : "Webhook"} {r.received} 件{r.received > 1 ? "をまとめて" : ""}）
                         </span>
                       ) : null}
                       {r.reason ? <span className="text-ink-3">——{r.reason}</span> : null}
@@ -385,10 +386,13 @@ function AutomationRow({ automation: a, onEdit }: { automation: RealAutomation; 
                 {a.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
                 {a.paused ? "再開する" : "一時停止"}
               </Button>
-              <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onEdit} data-testid="automation-edit">
-                <Pencil className="size-3.5" />
-                直す
-              </Button>
+              {/* 出来事のきっかけを直すフォームはまだ無い（段2の画面、Backlog events-ui）——繋がっていない操作は出さない（規則13） */}
+              {a.source.kind !== "event" ? (
+                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onEdit} data-testid="automation-edit">
+                  <Pencil className="size-3.5" />
+                  直す
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="ghost"

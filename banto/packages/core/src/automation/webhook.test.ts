@@ -12,6 +12,9 @@ import { AutomationInputError, AutomationStore } from "./store.js";
 import { AutomationWebhooks, WEBHOOK_BODY_MAX_BYTES, issueWebhookToken, signatureMatches, type AutomationWebhooksDeps } from "./webhook.js";
 import type { AutomationRunStarted } from "./runner.js";
 
+/** Webhook で受けた本文（出来事の変種はここには来ない） */
+const bodyOf = (r: AutomationReceived): string => (r.kind === "event" ? "" : r.body);
+
 const KEY = "s3cret-hook-key";
 
 const hookFields = (source: Record<string, unknown> = {}) => ({
@@ -152,7 +155,7 @@ test("署名が合えば 202 で受けて残し、合わない・無いものは
     const ok = await post(h, token, body, { "X-Hub-Signature-256": sign(body) });
     assert.equal(ok.status, 202);
     await until(() => h.calls.length === 1);
-    assert.equal(h.calls[0]!.received[0]!.body, body);
+    assert.equal(bodyOf(h.calls[0]!.received[0]!), body);
 
     const bad = await post(h, token, body, { "X-Hub-Signature-256": sign(body, "wrong") });
     assert.equal(bad.status, 401);
@@ -221,7 +224,7 @@ test("本文は全体で署名を確かめてから先頭 64KB に切り、1MB �
     const big = Buffer.alloc(WEBHOOK_BODY_MAX_BYTES + 10, "a");
     assert.equal((await post(h, token, big, { "X-Hub-Signature-256": sign(big) })).status, 202);
     const kept = h.store.get(a.id)!.received[0]!;
-    assert.equal(kept.body.length, WEBHOOK_BODY_MAX_BYTES);
+    assert.equal(bodyOf(kept).length, WEBHOOK_BODY_MAX_BYTES);
     assert.equal(kept.truncatedFrom, WEBHOOK_BODY_MAX_BYTES + 10);
     const huge = Buffer.alloc(1024 * 1024 + 1, "a");
     assert.equal((await post(h, token, huge, { "X-Hub-Signature-256": sign(huge) })).status, 413);
@@ -256,7 +259,7 @@ test("待つ時間の間に来たものは1回にまとめて届け、前の回�
     assert.equal(h.calls.length, 0, "待つ時間の前に届けた");
     await until(() => h.store.get(a.id)!.received.length === 0);
     assert.equal(h.calls.length, 1);
-    assert.deepEqual(h.calls[0]!.received.map((r) => r.body), ["first", "second"]);
+    assert.deepEqual(h.calls[0]!.received.map(bodyOf), ["first", "second"]);
     assert.equal(h.store.get(a.id)!.runs[0]!.received, 2);
 
     // 前の回が終わっていない：溜めたまま。記録も書かない
@@ -269,7 +272,7 @@ test("待つ時間の間に来たものは1回にまとめて届け、前の回�
     h.busy.delete(a.id);
     h.turnEnded("fork-1");
     await until(() => h.calls.length === 2);
-    assert.deepEqual(h.calls[1]!.received.map((r) => r.body), ["third"]);
+    assert.deepEqual(h.calls[1]!.received.map(bodyOf), ["third"]);
   });
 });
 
@@ -286,7 +289,7 @@ test("起き直したら、残っている受けたものからまとめ直す",
     const second = await harness(dir);
     try {
       await until(() => second.calls.length === 1);
-      assert.deepEqual(second.calls[0]!.received.map((r) => r.body), ["before-restart"]);
+      assert.deepEqual(second.calls[0]!.received.map(bodyOf), ["before-restart"]);
     } finally {
       await second.close();
     }

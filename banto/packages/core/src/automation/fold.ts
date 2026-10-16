@@ -4,6 +4,7 @@
 // 重くしない。`runtime-config` と同じく独立した fold と snapshot を持つ。Configuration（`config/runtime.ts`）は平らな
 // 鍵と値で、履歴を持つ構造は載らない。
 
+import type { EventFieldValue, EventWhere } from "@banto/module-contract";
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
 
@@ -44,6 +45,22 @@ export type AutomationSource =
       batchSeconds: number;
       /** この Project のコンテナから来た要求を受ける（既定は断る——コンテナはどの Project のものでも core に届く） */
       allowProjectContainer: boolean;
+    }
+  | {
+      /**
+       * **Module が名乗る出来事**（アーキ仕様 §4.3「段2」）。`event` は `<出どころ>.<名前>`、`where` は属性の「等しい／どれか」
+       * （作るときに宣言の `fields` と照らす）
+       */
+      kind: "event";
+      event: string;
+      where?: EventWhere;
+      /** 続けて届いたものをまとめる待ち時間（秒）。0 は1件ずつ */
+      batchSeconds: number;
+      /**
+       * **この自動化自身の回のターンが起こした出来事でも動く**（既定 false——自分の回が起こした出来事では起こさない）。
+       * 回数の歯止め（60分に6回）はこれに依らず効く
+       */
+      allowSelfTriggered: boolean;
     };
 
 /**
@@ -60,7 +77,7 @@ export type AutomationCreatedBy = { kind: "human" } | { kind: "ai"; threadId: st
 export type AutomationRunResult = "running" | "done" | "failed" | "waiting" | "skipped" | "rejected";
 
 /** 何で動いたか。`manual`＝今すぐ動かす */
-export type AutomationRunCause = "clock" | "manual" | "webhook";
+export type AutomationRunCause = "clock" | "manual" | "webhook" | "event";
 
 export interface AutomationRun {
   runId: string;
@@ -77,18 +94,47 @@ export interface AutomationRun {
   scheduledFor?: string;
   /** 同時に動いている自動化が多くてずらした理由（ずらした回だけ） */
   delayed?: string;
-  /** Webhook で受けたもののうち、この回にまとめて届けた件数 */
+  /** Webhook・出来事で受けたもののうち、この回にまとめて届けた件数 */
   received?: number;
 }
 
-/** Webhook で受けて、まだ届けていないもの（`automation.received`） */
-export interface AutomationReceived {
+/** Webhook・出来事で受けて、まだ届けていないもの（`automation.received`） */
+export type AutomationReceived = AutomationReceivedWebhook | AutomationReceivedEvent;
+
+/** Webhook で受けたもの（`kind` は前からある記録には無い） */
+export interface AutomationReceivedWebhook {
+  kind?: "webhook";
   receivedId: string;
   at: string;
   /** AI に渡す本文（先頭 `WEBHOOK_BODY_MAX_BYTES` まで） */
   body: string;
   /** 本文を切ったなら、もとのバイト数 */
   truncatedFrom?: number;
+}
+
+/**
+ * **Module が知らせた出来事**（アーキ仕様 §4.3「段2」）。属性・`text` は申告。ホップと起こした Thread・自動化の回は、
+ * `causedBy` の呼び出しの印から host が引いたもの（引けなければホップ 0）
+ */
+export interface AutomationReceivedEvent {
+  kind: "event";
+  receivedId: string;
+  at: string;
+  /** `<出どころ>.<名前>` */
+  name: string;
+  /** 名乗りの題（受けた時点のもの） */
+  title: string;
+  eventId: string;
+  occurredAt: string;
+  fields: Record<string, EventFieldValue>;
+  /** 本文（先頭 `EVENT_TEXT_MAX_BYTES` まで） */
+  text?: string;
+  /** 本文を切ったなら、もとのバイト数 */
+  truncatedFrom?: number;
+  /** この出来事で起こすターンのホップ（起こしたターンのホップ＋1。引けなければ 0） */
+  hop: number;
+  /** 起こした Thread とターン（引けたときだけ） */
+  causedBy?: { threadId: string; turnId?: string };
 }
 
 /** 人と AI が作り・直せる欄 */

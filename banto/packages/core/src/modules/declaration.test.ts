@@ -28,6 +28,7 @@ import {
   setProjectModuleSelection,
   addModuleDeclaration,
   BUNDLED_CATALOG,
+  declaredEvents,
 } from "./declaration.js";
 
 /** 設定だけを持つ空の置き場（この節の試験はどれも同じ形で始まる） */
@@ -922,4 +923,25 @@ test("Module の名前に banto と banto- で始まるものは使えない—�
     await addModuleDeclaration(config, { name: "bantox", launch, meta } as never);
     assert.ok(loadModuleDeclarations(config, "").some((d) => d.name === "bantox"));
   });
+});
+
+test("出来事の名乗り：同梱の宣言の meta.events を宣言の名前と照らして読む。外から足した Module・名前の合わないものは断る", () => {
+  const entry = BUNDLED_CATALOG.find((e) => e.id === "e2e-events")!;
+  const parsed = parseModuleDeclaration({ name: "e2e-events", launch: entry.launch, meta: entry.meta }, "t");
+  assert.equal(parsed.meta.origin, "bundled");
+  assert.deepEqual(
+    declaredEvents(parsed).map((e) => [e.name, e.subject, Object.keys(e.fields)]),
+    [["e2e-events.happened", "item", ["item", "level", "count"]]],
+  );
+  // 目録の1本を別の名前で入れると、名乗りの頭が合わない——読み込みは落とさず、名乗りを読むときに断る
+  const renamed = parseModuleDeclaration({ name: "other-events", launch: entry.launch, meta: entry.meta }, "t");
+  assert.throws(() => declaredEvents(renamed), /名乗った Module の名前（other-events）/);
+  // 同じ名乗りでもコードが違えば第三者——名乗れない
+  const external = parseModuleDeclaration(
+    { name: "e2e-events", launch: { command: "node", args: ["/tmp/evil.js"] }, meta: entry.meta },
+    "t",
+  );
+  assert.throws(() => declaredEvents(external), /同梱の Module だけ/);
+  // 名乗らなければ空
+  assert.deepEqual(declaredEvents(parseModuleDeclaration({ name: "x", launch: { command: "node", args: [] }, meta: { satisfies: [], isolation: "subprocess" } }, "t")), []);
 });

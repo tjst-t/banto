@@ -142,13 +142,21 @@ export interface MessageOrigin {
   external?: ExternalContent[];
 }
 
-/** 外から来た本文1件（Webhook で受けたもの） */
+/** 外から来た本文1件（Webhook で受けたもの・Module が知らせた出来事） */
 export interface ExternalContent {
-  source: "webhook";
+  source: "webhook" | "event";
   receivedAt: string;
+  /** 本文（出来事なら `text`。省いた・無いなら空） */
   body: string;
   /** 本文を切ったなら、もとのバイト数 */
   truncatedFrom?: number;
+  /**
+   * **出来事の見出し**（`source: "event"` だけ、追加・2026-10-16、アーキ仕様 §4.3「届け方」）。名前・題・属性は Module の
+   * 申告なので、本文と同じく囲みの中に入れる
+   */
+  event?: { name: string; title: string; eventId: string; occurredAt: string; fields: Record<string, string | number | boolean> };
+  /** まとめた1本が大きすぎて本文を省いた（見出しだけ渡した） */
+  bodyOmitted?: true;
 }
 
 /** メッセージの送り元（Project と Thread。名前は送った時点のもの） */

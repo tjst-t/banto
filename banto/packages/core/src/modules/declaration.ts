@@ -20,8 +20,10 @@ import {
   assertRolesAllowed,
   markBundled,
   parseModuleMeta,
+  parseEventDeclarations,
   SINGLETON_ROLES,
   type BantoModuleMeta,
+  type EventDeclaration,
 } from "@banto/module-contract";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import { applyModuleOverlay, diffFromDefaults, type ModuleOverlay } from "./overlay.js";
@@ -94,6 +96,24 @@ export interface ParsedModuleDeclaration {
   name: string;
   launch: ModuleLaunch;
   meta: BantoModuleMeta;
+  /**
+   * **名乗る出来事のまま**（宣言の `meta.events`、追加・2026-10-16、アーキ仕様 §4.3「段2」）。読むのは使うとき
+   * （`declaredEvents`）——名前の頭は宣言の名前と照らすので、目録の1本を別の名前で入れると合わなくなる。そのとき
+   * Module の読み込みまで落とさない（その Module の出来事だけ受けない）
+   */
+  events?: unknown;
+}
+
+/**
+ * **その Module が名乗る出来事**（アーキ仕様 §4.3「段2」）。名乗れるのは同梱の Module だけ（最初は同梱だけ——外から繋いだ
+ * Module は器が固まってから開く）。読めなければ投げる
+ */
+export function declaredEvents(declaration: ParsedModuleDeclaration): EventDeclaration[] {
+  if (declaration.events === undefined) return [];
+  if (declaration.meta.origin !== "bundled") {
+    throw new ModuleDeclarationError(`${declaration.name}: 出来事を名乗れるのは同梱の Module だけです`);
+  }
+  return parseEventDeclarations(declaration.events, declaration.name, `${declaration.name}: events`);
 }
 
 /**
@@ -351,7 +371,13 @@ export function parseModuleDeclaration(raw: unknown, source: string): ParsedModu
   // **同梱かどうかは、ここで決まる**（parse の中に置く・2026-09-15）。
   // 読み込みのときだけ判定すると、**保存のときは素通りする**——壊れた宣言を
   // Event Store に残さない（規則2）ためには、入口が1つでなければならない
-  return { name, launch: parsedLaunch, meta: withOrigin(name, parsedLaunch, metaWithScope, source) };
+  const events = (meta as { events?: unknown } | undefined)?.events;
+  return {
+    name,
+    launch: parsedLaunch,
+    meta: withOrigin(name, parsedLaunch, metaWithScope, source),
+    ...(events !== undefined ? { events } : {}),
+  };
 }
 
 /**
@@ -640,6 +666,44 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       isolation: "subprocess",
       scope: "instance",
       toolsContainer: { aptPackages: ["jq"] },
+    },
+  },
+  {
+    // **出来事を出す試験用の Module**（追加・2026-10-16、アーキ仕様 §4.3「段2」、Backlog #345）。Project ごとに起き、名乗った
+    // 出来事（`e2e-events.happened`）を出口の箱に書いてから host の `relayEmitEvent` へ出す。同梱の扱い（出来事を名乗れるのは
+    // 同梱だけ）で試すためのもので、人には役に立たないので画面の目録には出さない（`hidden`）。名前は `e2e-events` で入れる
+    // ——出来事の名前の頭は Module の名前と一致しなければならない
+    id: "e2e-events",
+    name: "出来事の試験",
+    description: "名乗った出来事を出口の箱から host へ出す（試験用）",
+    suggestedName: "e2e-events",
+    hidden: true,
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/e2e/fixtures/events-module/server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["e2e-events"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "project",
+      events: [
+        {
+          name: "e2e-events.happened",
+          title: "試験の出来事",
+          description: "試験が頼んだときに出す出来事",
+          fields: {
+            item: { type: "string", title: "対象" },
+            level: { type: "string", title: "強さ", enum: ["low", "high"] },
+            count: { type: "number", title: "数" },
+          },
+          subject: "item",
+        },
+      ],
     },
   },
 ];

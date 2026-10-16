@@ -204,6 +204,7 @@ export function timeZoneName(timeZone: string): string {
 /** 「平日 9:00（日本標準時）」「Webhook を受けたとき」 */
 export function describeSource(a: Pick<RealAutomation, "source">): string {
   if (a.source.kind === "webhook") return "Webhook を受けたとき";
+  if (a.source.kind === "event") return `出来事 ${a.source.event} が起きたとき`;
   return `${describeRepeat(a.source.repeat)}（${timeZoneName(a.source.timeZone)}）`;
 }
 

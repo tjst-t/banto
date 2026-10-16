@@ -20,6 +20,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Automation, AutomationSignature } from "./fold.js";
 import type { AutomationStore } from "./store.js";
 import type { AutomationRunner } from "./runner.js";
+import { AutomationBatcher } from "./batcher.js";
 
 /** 本文のうち AI に渡す上限 */
 export const WEBHOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -36,9 +37,6 @@ export const WEBHOOK_LIMITS = {
   pendingMax: 100,
 } as const;
 export type WebhookLimits = Record<keyof typeof WEBHOOK_LIMITS, number>;
-
-/** 前の回が終わっていなくて届けられなかったとき、次に見直すまで（ターンの終わりでも見直す） */
-const RETRY_MS = 30_000;
 
 /** 署名の鍵の置き場（`<dataDir>` の下、0600） */
 const SECRETS_FILE = "automation-webhook-secrets.json";
@@ -95,18 +93,24 @@ export class AutomationWebhooks {
   /** 自動化の id → 署名の鍵（Vault から引いた値） */
   private readonly secrets: Map<string, string>;
   private readonly secretsPath: string;
-  private readonly timers = new Map<string, { at: number; timer: NodeJS.Timeout }>();
-  private readonly flushing = new Set<string>();
+  /** 受けたものをまとめて届ける役（出来事と共通の部品、`batcher.ts`） */
+  private readonly batcher: AutomationBatcher;
   /** 1分ごとの数え（口全体と自動化ごと） */
   private all = { startedAt: 0, count: 0 };
   private readonly perAutomation = new Map<string, { startedAt: number; count: number }>();
   private readonly limits: WebhookLimits;
-  private started = false;
 
   constructor(private readonly deps: AutomationWebhooksDeps) {
     this.secretsPath = join(deps.dataDir, SECRETS_FILE);
     this.secrets = new Map(Object.entries(loadSecrets(this.secretsPath)));
     this.limits = { ...WEBHOOK_LIMITS, ...deps.limits };
+    this.batcher = new AutomationBatcher("webhook", {
+      automations: deps.automations,
+      runner: deps.runner,
+      onTurnEnded: deps.onTurnEnded,
+      ...(deps.now ? { now: deps.now } : {}),
+      ...(deps.log ? { log: deps.log } : {}),
+    });
   }
 
   /**
@@ -114,23 +118,11 @@ export class AutomationWebhooks {
    * （`resumeAll`）と待ち受けの開始のあとに呼ぶ
    */
   start(): void {
-    if (this.started) return;
-    this.started = true;
-    for (const a of this.deps.automations.listAll()) this.consider(a.id);
-    // 再開した・待つ時間を変えた・消した等。溜まったものがあれば数え直す
-    this.deps.automations.onChange(({ id }) => this.consider(id));
-    // 届け先が空いたかもしれない——溜まったものを届けに行く（待つ時間が過ぎていれば）
-    this.deps.onTurnEnded((threadId) => {
-      for (const a of this.deps.automations.listAll()) {
-        if (a.source.kind === "webhook" && a.received.length > 0 && a.target.threadId === threadId) this.consider(a.id);
-      }
-    });
+    this.batcher.start();
   }
 
   stop(): void {
-    this.started = false;
-    for (const { timer } of this.timers.values()) clearTimeout(timer);
-    this.timers.clear();
+    this.batcher.stop();
   }
 
   /**
@@ -235,63 +227,8 @@ export class AutomationWebhooks {
       body: kept.toString("utf8"),
       ...(body.length > kept.length ? { truncatedFrom: body.length } : {}),
     });
-    this.consider(a.id);
+    this.batcher.consider(a.id);
     return { status: 202, body: { ok: true, receivedId } };
-  }
-
-  /** 溜まったものがあれば、待つ時間が過ぎたときに届けに行く（もう過ぎていればすぐ） */
-  private consider(id: string): void {
-    if (!this.started) return;
-    const a = this.deps.automations.get(id);
-    if (!a || a.source.kind !== "webhook" || a.received.length === 0 || a.paused) {
-      this.cancel(id);
-      return;
-    }
-    const due = Date.parse(a.received[0]!.at) + a.source.batchSeconds * 1000;
-    this.schedule(id, Math.max(0, due - this.now().getTime()));
-  }
-
-  private schedule(id: string, delayMs: number): void {
-    const at = this.now().getTime() + delayMs;
-    const current = this.timers.get(id);
-    if (current && current.at <= at) return;
-    if (current) clearTimeout(current.timer);
-    const timer = setTimeout(() => {
-      this.timers.delete(id);
-      void this.flush(id).catch((err: unknown) =>
-        this.log(`[host] 自動化 ${id} の Webhook を届けられませんでした: ${err instanceof Error ? err.stack ?? err.message : String(err)}`),
-      );
-    }, delayMs);
-    timer.unref();
-    this.timers.set(id, { at, timer });
-  }
-
-  private cancel(id: string): void {
-    const current = this.timers.get(id);
-    if (!current) return;
-    clearTimeout(current.timer);
-    this.timers.delete(id);
-  }
-
-  /** 溜まった分を1回にまとめて届ける。前の回が終わっていなければ溜めたまま、あとで見直す */
-  private async flush(id: string): Promise<void> {
-    if (this.flushing.has(id)) return;
-    this.flushing.add(id);
-    try {
-      const a = this.deps.automations.get(id);
-      if (!a || a.source.kind !== "webhook" || a.received.length === 0 || a.paused) return;
-      const due = Date.parse(a.received[0]!.at) + a.source.batchSeconds * 1000;
-      if (due > this.now().getTime()) {
-        this.schedule(id, due - this.now().getTime());
-        return;
-      }
-      const started = await this.deps.runner.run(a, "webhook", {}, a.received);
-      if (started.deferred) this.schedule(id, RETRY_MS);
-    } finally {
-      this.flushing.delete(id);
-    }
-    // 届けている間に受けたものは、次の回にまとめる
-    this.consider(id);
   }
 
   private async record(a: Automation, now: Date, result: "rejected" | "skipped", reason: string): Promise<void> {

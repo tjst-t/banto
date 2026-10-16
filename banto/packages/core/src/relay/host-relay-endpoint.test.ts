@@ -2046,3 +2046,138 @@ test("繋がっていない宛先は、中継で呼ばれたときに起こし�
     await documents.close();
   }
 });
+
+test("出来事を出せるのは Project ごとの同梱の Module だけ——Project は接続から決め、断りは値で返す（出口の箱が捨てられる）", async () => {
+  const registry = new RelayRegistry();
+  const got: Array<{ module: string; projectId: string; input: Record<string, unknown> }> = [];
+  const { url, close } = await startTestServer(registry, {
+    emitEvent: async (caller, input) => {
+      got.push({ module: caller.moduleName, projectId: caller.projectId, input });
+      return input.name === "service.gone" ? { refused: "service は出来事 service.gone を名乗っていません" } : { accepted: true, queued: 1 };
+    },
+  });
+  const raw = { satisfies: ["service"], dependsOn: [], isolation: "subprocess", scope: "project" };
+  const instanceRaw = { ...raw, scope: "instance" };
+  const tokens = {
+    perProject: registry.issueToken({ moduleName: "service", meta: bundledMeta(raw, "service"), projectId: "pA", inContainer: true }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil"), projectId: "pA", inContainer: true }),
+    instance: registry.issueToken({ moduleName: "repositories", meta: bundledMeta(instanceRaw, "repositories") }),
+  };
+  const emit = async (token: string, args: Record<string, unknown>) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(textOf(await c.callTool({ name: "relayEmitEvent", arguments: args }))) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  const event = { name: "service.crashed", eventId: "e1", occurredAt: "2026-10-16T00:00:00Z", fields: { service: "web" }, projectId: "pB" };
+  try {
+    assert.deepEqual(await emit(tokens.perProject, event), { accepted: true, queued: 1 });
+    // Project は接続から決める——引数の projectId は使わない
+    assert.equal(got[0]!.projectId, "pA");
+    assert.equal(got[0]!.module, "service");
+    assert.deepEqual(await emit(tokens.perProject, { ...event, name: "service.gone" }), { refused: "service は出来事 service.gone を名乗っていません" });
+    assert.match((await emit(tokens.thirdParty, event) as { refused: string }).refused, /同梱/);
+    assert.match((await emit(tokens.instance, event) as { refused: string }).refused, /Project ごとの Module だけ/);
+    assert.equal(got.length, 2, "出せない呼び元の出来事を受ける側に渡した");
+  } finally {
+    close();
+  }
+});
+
+/** 呼ばれた口と、host が刻んだ `_meta`、その時点で台帳が宛先の呼び出しをどう見ていたかを残す偽の Module */
+async function recordingClient(
+  tools: Array<{ name: string; visibility: string }>,
+  seen: Array<{ tool: string; meta: Record<string, unknown>; origin?: string }>,
+  observe?: (meta: Record<string, unknown>) => string | undefined,
+): Promise<Client> {
+  const server = new McpServer({ name: "recording", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: tools.map((t) => ({ name: t.name, inputSchema: { type: "object" as const }, _meta: { "dev.banto/visibility": t.visibility } })),
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const meta = (request.params._meta ?? {}) as Record<string, unknown>;
+    seen.push({ tool: request.params.name, meta, ...(observe ? { origin: observe(meta) } : {}) });
+    return { content: [{ type: "text", text: "ok" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  return client;
+}
+
+/** 窓口（banto 全体）・その Project の Service・別の Project の Service・公開の実装（banto 全体）を繋いだ中継 */
+async function publishWorld(opts: { autoApprove?: Set<string> } = {}) {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const seen: Array<{ tool: string; meta: Record<string, unknown>; origin?: string }> = [];
+  const serviceMeta = bundledMeta({ satisfies: ["service"], dependsOn: [], isolation: "subprocess", scope: "project" }, "service");
+  const svc = [{ name: "listServices", visibility: "agent" }];
+  registry.registerModule({ name: "service-pA", client: await recordingClient(svc, seen), meta: serviceMeta, projectId: "pA" });
+  registry.registerModule({ name: "service-pB", client: await recordingClient(svc, seen), meta: serviceMeta, projectId: "pB" });
+  registry.registerModule({
+    name: "publish-caddy",
+    // 宛先の台帳も見ておく——宛先がさらに中継を呼ぶとき、渡された印でこの1件を名指せるか
+    client: await recordingClient([{ name: "publishRoute", visibility: "module" }, { name: "setCaddySettings", visibility: "admin" }], seen, (meta) =>
+      moduleCalls.originFor("publish-caddy", meta["dev.banto/callId"] as string | undefined),
+    ),
+    meta: bundledMeta({ satisfies: ["publish"], dependsOn: [], isolation: "subprocess" }, "publish-caddy"),
+  });
+  const windowRaw = {
+    satisfies: ["publish-directory"],
+    dependsOn: [
+      { role: "publish", required: true },
+      { role: "service", required: false },
+    ],
+    isolation: "subprocess",
+  };
+  // 人の承認を待つゲート——ここに来たら「聞いた」と分かるように残す。道を張る口は、聞いたら断る
+  const asked: string[] = [];
+  const gate = {
+    requestApproval: async (req: { name: string }) => {
+      asked.push(req.name);
+      return req.name === "publishRoute" ? { allowed: false, reason: "試験では聞いたら断る" } : { allowed: true, reason: "試験では通す" };
+    },
+  };
+  const server = await startTestServer(registry, {
+    moduleCalls,
+    gate,
+    ...(opts.autoApprove ? { autoApproveFor: (projectId: string) => opts.autoApprove!.has(projectId) } : {}),
+  });
+  const bundled = await relayClient(server.url, registry.issueToken({ moduleName: "publish-directory", meta: bundledMeta(windowRaw, "publish-directory") }));
+  const thirdParty = await relayClient(server.url, registry.issueToken({ moduleName: "evil-window", meta: parseModuleMeta(windowRaw, "evil-window") }));
+  const via = (client: Client) => ({
+    call: (target: string, tool: string, callId?: string) =>
+      client.callTool({
+        name: "relayCallTool",
+        arguments: { targetModule: target, name: tool, arguments: {} },
+        ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}),
+      }),
+    targets: async (callId?: string) => {
+      const r = await client.callTool({ name: "relayListTargets", arguments: {}, ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}) });
+      return {
+        names: (JSON.parse(textOf(r)) as { name: string }[]).map((t) => t.name),
+        onBehalfOf: (r._meta as Record<string, unknown> | undefined)?.["dev.banto/onBehalfOf"],
+      };
+    },
+  });
+  return {
+    moduleCalls,
+    seen,
+    asked,
+    window: via(bundled),
+    thirdParty: via(thirdParty),
+    last: () => seen.at(-1)!,
+    close: async () => {
+      await bundled.close();
+      await thirdParty.close();
+      server.close();
+    },
+  };
+}
+
+// **人が Project の画面から押した呼び出しの中で、banto 全体の Module がその Project の Module を呼べる**（2026-09-28、
+// Fable のレビュー）。以前は画面の呼び出しに Project を置いていなかったので、公開の入口の画面から押しても窓口は
+// Service を呼べず、画面の「まだ公開していないサーバ」が黙って空だった。**人の操作の印（admin）は保つ**——
+// Project が分かったからといって `{project}` に落とすと、publish-caddy の「人が押したときだけ」が人の承認を断る
