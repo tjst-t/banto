@@ -51,7 +51,7 @@ import {
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { InboxItem } from "../inbox/types.js";
-import type { MessageQuote, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
+import type { MessageQuote, ProjectWokeCause, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
 import { CanvasQuoteRejectedError, parseCanvasQuotes } from "./canvas-quotes.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
@@ -70,6 +70,7 @@ import {
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { AuthHttpError, type AuthService } from "../auth/service.js";
 import type { ProjectMover } from "../runtime/project-move.js";
+import { ProjectSleepError, type ProjectSleep } from "../runtime/project-sleep.js";
 import { SshCommandError } from "../runtime/ssh.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import {
@@ -307,6 +308,11 @@ export interface AppDeps {
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** **登録した別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。無ければ実行場所はこの機械だけ */
   remoteRuntimes?: RemoteRuntimes;
+  /**
+   * **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・止まるもの・起こす口（`modules/prepare` と
+   * ターンを開く口だけが呼ぶ）。無ければ眠らせる口は 404 で、起こす口は何もしない（試験の最小構成）
+   */
+  projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview">;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
   /**
@@ -1365,6 +1371,16 @@ export function createApp(deps: AppDeps) {
     await closeThreadAndTell(threadId, { by: "ai", reason });
   }
 
+  /**
+   * **眠っている Project の Module の画面を開いた**（決定・2026-10-16、アーキ仕様 §2.2「それ以外の道では起こさない」）——
+   * 起こさずに「眠っています」を返す（409・`code: "asleep"`）。画面は「起こす」を出し、押すと `modules/prepare`。返したら true
+   */
+  function refuseIfAsleep(res: ServerResponse, projectId: string | undefined): boolean {
+    if (projectId === undefined || !deps.projectThread.getProject(projectId)?.sleep) return false;
+    json(res, 409, { error: "この Project は眠っています。起こすと見られます", code: "asleep" });
+    return true;
+  }
+
   /** その Thread の Project を別の実行場所へ移している途中なら、断る理由 */
   function movingReason(threadId: string): string | undefined {
     const thread = deps.projectThread.getThread(threadId);
@@ -1387,8 +1403,10 @@ export function createApp(deps: AppDeps) {
     stop?: TurnStopHandle,
     /** Module の画面から人が添えたもの（追加・2026-10-15、`canvas-quotes.ts`） */
     quotes: MessageQuote[] = [],
+    /** 何で開くか——眠っている Project を起こす理由（`turn.started` の cause と同じ語、アーキ仕様 §2.2「起こす」） */
+    cause: ProjectWokeCause = "human",
   ): AsyncGenerator<TurnStreamEvent> {
-    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes)) {
+    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes, cause)) {
       if (event.type === "stopped") stop?.markStopped(event.withdrawn);
       yield event;
     }
@@ -1401,6 +1419,7 @@ export function createApp(deps: AppDeps) {
     images: TurnImage[],
     stop: AbortSignal | undefined,
     quotes: MessageQuote[],
+    cause: ProjectWokeCause,
   ): AsyncGenerator<TurnStreamEvent> {
     // **下ごしらえの途中で止められたら、待たずに終える**（§6.31、実測）——Module を起こす・モデルの一覧を CLI に聞く等は
     // 数秒かかることがあり、その間に押した停止が入力欄に戻るまで待たされていた。まだ何も記録していないので、そのまま取り消す。
@@ -1423,6 +1442,21 @@ export function createApp(deps: AppDeps) {
         : {}),
     });
 
+    // **眠っている Project はここで起こす**（決定・2026-10-16、アーキ仕様 §2.2「起こす」の (b)）——ターンの鍵を取った直後。
+    // 人の送信・受信箱からの返信・Project をまたぐメッセージ・Webhook・時計・「続ける」・起動時の `resumeAll` は、どれも
+    // ここを通る。眠らせている途中なら、終わるまで待ってから起こす（断らない——送ったつもりで消えるのを作らない）
+    const wakeProjectId = deps.projectThread.getThread(threadId)?.projectId;
+    if (wakeProjectId !== undefined && deps.projectSleep) {
+      try {
+        if ((await unlessStopped(deps.projectSleep.wake(wakeProjectId, cause))) === STOPPED) {
+          yield withdrawnNow();
+          return;
+        }
+      } catch (err) {
+        yield { type: "error", message: `眠っている Project を起こせませんでした：${err instanceof Error ? err.message : String(err)}` };
+        return;
+      }
+    }
     // 並んで待っている間に移し始めたら、走らせない（届いたものは留まり、移し終えたら起こす）
     const moving = movingReason(threadId);
     if (moving) {
@@ -1510,8 +1544,11 @@ export function createApp(deps: AppDeps) {
     // 届いたもので起こしたターンも、人が画面から止められる（§6.31）
     const stop = turnStops.open(threadId);
     stop.markRunning();
+    // 起こす理由：自動化の届けものだけなら automation、ほかが混ざれば delivery
+    const pending = deps.projectThread.getThread(threadId)?.deliveries ?? [];
+    const cause: ProjectWokeCause = pending.length > 0 && pending.every((d) => d.kind === "automation") ? "automation" : "delivery";
     try {
-      for await (const event of openTurn(threadId, "", undefined, [], stop)) {
+      for await (const event of openTurn(threadId, "", undefined, [], stop, [], cause)) {
         if (event.type === "error") console.warn(`[host] 届いたもので起こした ${threadId} のターンが失敗しました: ${event.message}`);
       }
     } finally {
@@ -2238,6 +2275,9 @@ export function createApp(deps: AppDeps) {
       // **きっかけを1つ足しただけ**（規則3——別の起動経路を作らない）
       const prepareMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/modules\/prepare$/);
       if (prepareMatch && req.method === "POST") {
+        // **眠っていれば起こす**（決定・2026-10-16、アーキ仕様 §2.2「起こす」の (a)）——画面が Project を開いた・「起こす」を
+        // 押した。起こす専用の口は作らない。眠らせている途中なら、終わるまで待ってから
+        if (deps.projectThread.getProject(prepareMatch[1]!)) await deps.projectSleep?.wake(prepareMatch[1]!, "opened");
         const clients = (await deps.resolveModuleClientsForProject?.(prepareMatch[1]!)) ?? [];
         json(res, 200, { connected: clients.map((c) => c.name) });
         return;
@@ -2822,6 +2862,27 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **Project を眠らせる**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。人の画面から（AI の道具は作らない）。
+      // 断るときは 409（`code`：busy＝動いているものがある・sleeping＝いま眠らせている・closed＝閉じている）。もう眠っていれば何もしない
+      const projectSleepMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/(sleep|sleep-preview)$/);
+      if (projectSleepMatch && deps.projectSleep) {
+        const [, projectId, action] = projectSleepMatch as unknown as [string, string, "sleep" | "sleep-preview"];
+        try {
+          if (action === "sleep" && req.method === "POST") {
+            const { released } = await deps.projectSleep.sleep(projectId, "human");
+            return json(res, 200, { ok: true, released });
+          }
+          // 眠らせると止まるもの（Service・待たないコマンド・Terminal のセッション）と、眠らせられない理由
+          if (action === "sleep-preview" && req.method === "GET") return json(res, 200, await deps.projectSleep.preview(projectId));
+        } catch (err) {
+          if (err instanceof ProjectSleepError) {
+            return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.reasons ? { reasons: err.reasons } : {}) });
+          }
+          if (err instanceof SshCommandError) return json(res, 502, { error: err.message });
+          throw err;
+        }
+      }
+
       const projectCloseMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/close$/);
       if (projectCloseMatch && req.method === "POST") {
         try {
@@ -2831,7 +2892,8 @@ export function createApp(deps: AppDeps) {
           // **別のサーバの Project は、その実行場所の Service を止めて自動起動から外してから閉じる**（決定・2026-10-13、
           // v4-security.md §1「閉じた Project は数えない」）。閉じたら実行場所は空き、別の Project が来る——enable のままだと
           // 向こうの起こし直しで起きてぶつかる。止められなければ閉じない（空いたことにしない）
-          if (remoteNameOf(closing.runtime) && deps.suspendProjectServices) {
+          // 眠っているなら、眠らせたときに止めて自動起動から外してある（眠っている間は Service の Module も起こさない）
+          if (remoteNameOf(closing.runtime) && !closing.sleep && deps.suspendProjectServices) {
             try {
               await deps.suspendProjectServices(closing.id);
             } catch (err) {
@@ -3009,6 +3071,7 @@ export function createApp(deps: AppDeps) {
       const threadStreamMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/ui-stream$/);
       if (threadStreamMatch && req.method === "POST") {
         const threadId = threadStreamMatch[1]!;
+        if (refuseIfAsleep(res, deps.projectThread.getThread(threadId)?.projectId)) return;
         const modules = (await deps.resolveModuleClientsForThread?.(threadId)) ?? [];
         const projectId = deps.projectThread.getThread(threadId)?.projectId;
         const out = await issueUiStream(deps, principal, modules, await readJsonBody(req), { threadId, ...(projectId ? { projectId } : {}) });
@@ -3017,6 +3080,7 @@ export function createApp(deps: AppDeps) {
       const projectStreamMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ui-stream$/);
       if (projectStreamMatch && req.method === "POST") {
         const projectId = projectStreamMatch[1]!;
+        if (refuseIfAsleep(res, projectId)) return;
         const modules = await modulesForProjectCanvas(deps, projectId);
         const out = await issueUiStream(deps, principal, modules, await readJsonBody(req), { projectId });
         return json(res, out.status, out.body);
@@ -3037,6 +3101,7 @@ export function createApp(deps: AppDeps) {
         if (typeof body.server !== "string" || typeof body.tool !== "string") {
           return json(res, 400, { error: "server と tool が要ります" });
         }
+        if (refuseIfAsleep(res, deps.projectThread.getThread(uiCallMatch[1]!)?.projectId)) return;
         const modules = (await deps.resolveModuleClientsForThread?.(uiCallMatch[1]!)) ?? [];
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
@@ -3075,6 +3140,7 @@ export function createApp(deps: AppDeps) {
 
       const projectSettingsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ui-settings$/);
       if (projectSettingsMatch && req.method === "GET") {
+        if (refuseIfAsleep(res, projectSettingsMatch[1]!)) return;
         const modules = (await deps.resolveModuleClientsForProject?.(projectSettingsMatch[1]!)) ?? [];
         // **Project ごとに立つ Module の設定だけ**（決定・2026-09-07、ユーザー指摘）
         // ——instance に1本の Module（Vault 等）の設定を Project ごとに出すのは
@@ -3090,6 +3156,7 @@ export function createApp(deps: AppDeps) {
       // ——一覧は Module 集合から導出する（別の一覧を持たない、規則3）。
       const projectLaunchersMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ui-launchers$/);
       if (projectLaunchersMatch && req.method === "GET") {
+        if (refuseIfAsleep(res, projectLaunchersMatch[1]!)) return;
         const modules = await modulesForProjectCanvas(deps, projectLaunchersMatch[1]!);
         json(res, 200, await listLauncherCanvases(modules));
         return;
@@ -3156,6 +3223,7 @@ export function createApp(deps: AppDeps) {
         const serverName = url.searchParams.get("server");
         const uri = url.searchParams.get("uri");
         if (!serverName || !uri) return json(res, 400, { error: "server と uri が要ります" });
+        if (refuseIfAsleep(res, projectUiResourceMatch[1]!)) return;
         // 入口の一覧と同じ集合（banto 全体の Module も、Project の画面から開ける）
         const modules = await modulesForProjectCanvas(deps, projectUiResourceMatch[1]!);
         const { status, body } = await readUiResource(modules, serverName, uri);
@@ -3169,6 +3237,7 @@ export function createApp(deps: AppDeps) {
         if (typeof body.server !== "string" || typeof body.tool !== "string") {
           return json(res, 400, { error: "server と tool が要ります" });
         }
+        if (refuseIfAsleep(res, projectUiCallMatch[1]!)) return;
         // 入口の一覧と同じ集合（開いた画面の中のボタンが届かない、を作らない）
         const modules = await modulesForProjectCanvas(deps, projectUiCallMatch[1]!);
         const found = modules.find((m) => m.name === body.server);
@@ -3276,6 +3345,7 @@ export function createApp(deps: AppDeps) {
       if (url.pathname === "/api/skills" && req.method === "GET") {
         const projectId = url.searchParams.get("projectId") ?? undefined;
         if (projectId && !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (refuseIfAsleep(res, projectId)) return;
         json(res, 200, await listSkillsFor(deps, projectId));
         return;
       }
@@ -3296,6 +3366,7 @@ export function createApp(deps: AppDeps) {
           return json(res, 400, { error: `enabled の値が不正です: ${JSON.stringify(body.enabled)}` });
         }
         if (projectId && !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (refuseIfAsleep(res, projectId)) return;
         // **在る Skill だけ**——一覧に無いものの鍵を作らない（幽霊を作らない）
         const { skills } = await listSkillsFor(deps, projectId);
         if (!skills.some((s) => s.module === body.module && s.name === body.name)) {

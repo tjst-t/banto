@@ -32,6 +32,8 @@ import type {
   DeliveryAuthor,
   ExternalContent,
   TurnOutcome,
+  ProjectSleptBy,
+  ProjectWokeCause,
 } from "./types.js";
 import { PROJECT_GROUP_COLORS } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -46,6 +48,8 @@ export class MemoryLimitExceededError extends Error {}
 export class RemoteProjectError extends Error {}
 /** 別の実行場所へ移している途中・移している途中ではない */
 export class RuntimeMoveConflictError extends Error {}
+/** 眠らせられない（閉じた・もう眠っている）（409） */
+export class ProjectSleepConflictError extends Error {}
 
 /** 別のサーバの Project か（根は向こうのパスで、この機械では正規化しない） */
 export function isRemoteProject(project: Pick<ProjectState, "runtime">): boolean {
@@ -248,6 +252,8 @@ export class ProjectThreadStore {
     const project = this.getProject(id);
     if (!project) throw new NotFoundError(`project ${id} not found`);
     if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
+    // 確かめてから記録するまでの間に眠らせた（移す側が先に断るが、記録の手前でもう一度）
+    if (project.sleep) throw new RuntimeMoveConflictError("この Project は眠っています。先に起こしてから移してください");
     const event = await this.log.append("project.runtime_move_started", { id, ...move });
     this.projection.applyOne(event);
     return this.getProject(id)!;
@@ -424,6 +430,33 @@ export class ProjectThreadStore {
     const event = await this.log.append("project.closed", { id });
     this.projection.applyOne(event);
     this.notifyProjectsChanged();
+  }
+
+  /**
+   * **眠らせた**と記録する（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。確かめる（忙しいか・印）のと片づけるのは
+   * 呼ぶ側（`runtime/project-sleep.ts`）。閉じた・移している途中・もう眠っているものは断る
+   */
+  async sleepProject(id: ProjectId, by: ProjectSleptBy): Promise<ProjectState> {
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.status === "closed") throw new ProjectSleepConflictError("閉じた Project は眠らせられません");
+    if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
+    if (project.sleep) throw new ProjectSleepConflictError("この Project はもう眠っています");
+    const event = await this.log.append("project.slept", { id, by });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return this.getProject(id)!;
+  }
+
+  /** **起きた**と記録する。眠っていなければ何も積まず false（冪等——同時に呼ぶ側の束ねは `runtime/project-sleep.ts`） */
+  async wakeProject(id: ProjectId, cause: ProjectWokeCause): Promise<boolean> {
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (!project.sleep) return false;
+    const event = await this.log.append("project.woke", { id, cause });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return true;
   }
 
   async reopenProject(id: ProjectId): Promise<void> {

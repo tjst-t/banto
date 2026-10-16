@@ -197,6 +197,8 @@ const NOT_MOVED = [
 
 const MARKER = ".banto-moved.json";
 
+const SLEEPING_REASON = "この Project は眠っています。先に起こしてから移してください";
+
 /** Service の unit・待たないコマンドの unit・Terminal の tmux を引く台本（実行場所で、その人として流す） */
 const RUNNING_SCRIPT = [
   `u=$(id -u)`,
@@ -504,6 +506,9 @@ export class ProjectMover {
     const targetProblem = this.targetRuntimeProblem(project, target.runtime);
     if (targetProblem) blockers.push(targetProblem);
     if (project.move) blockers.push("いま別の実行場所へ移しています");
+    // **眠っている Project は先に起こす**（移す手順が Module を起こして置き場を写すため。移す画面そのものは起こさない
+    // ——アーキ仕様 §2.2「眠っている Project でもできること」）
+    if (project.sleep) blockers.push(SLEEPING_REASON);
 
     const running = await this.running(project);
     if (running.length > 0) blockers.push("動いているものがあります（止めてから移してください）");
@@ -565,6 +570,7 @@ export class ProjectMover {
   async start(projectId: string, target: MoveTarget): Promise<ProjectState> {
     const project = this.mustGetProject(projectId);
     if (project.move) throw new RuntimeMoveError(409, "いま別の実行場所へ移しています");
+    if (project.sleep) throw new RuntimeMoveError(409, SLEEPING_REASON);
     const problem = this.targetRuntimeProblem(project, target.runtime);
     if (problem) throw new RuntimeMoveError(409, problem);
     const running = await this.running(project);
@@ -1257,17 +1263,27 @@ export class ProjectMover {
   // ── 動いているもの ─────────────────────────────────────────────────────
 
   private async running(project: ProjectState): Promise<RunningItem[]> {
-    const items = [...this.deps.hostActivity(project.id)];
+    return [...this.deps.hostActivity(project.id), ...(await this.runningInPlaceOf(project))];
+  }
+
+  /**
+   * **実行場所で動いているもの**（Service・待たないコマンド・Terminal のセッション）。Project を眠らせる前の「止まるもの」
+   * （`runtime/project-sleep.ts`）も同じ数え方を使う。この機械のコンテナが止まっていれば空（起こさない）
+   */
+  async runningInPlace(projectId: string): Promise<RunningItem[]> {
+    return this.runningInPlaceOf(this.mustGetProject(projectId));
+  }
+
+  private async runningInPlaceOf(project: ProjectState): Promise<RunningItem[]> {
     const from = project.runtime ?? HOST_CONTAINER_RUNTIME;
     // 元の実行場所を別の Project が使っている（閉じている間に来た）なら、そこで動いているものはその Project のもの——
     // この Project の Service は閉じたときに止めてある。向こうでは引かない
-    if (this.sourceTakenBy(project)) return items;
+    if (this.sourceTakenBy(project)) return [];
     let r: SshResult | undefined;
     if (!isRemoteProject(project)) r = await this.deps.hostContainers.runInside(project.id, RUNNING_SCRIPT);
     else r = await this.withSide(from, (side) => side.run(RUNNING_SCRIPT));
     if (r && r.code !== 0) throw new SshCommandError(`${hostLabel(from)}で動いているものを確かめられませんでした`, r);
-    if (r) items.push(...parseRunning(r.stdout));
-    return items;
+    return r ? parseRunning(r.stdout) : [];
   }
 
   /**

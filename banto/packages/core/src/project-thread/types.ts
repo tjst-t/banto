@@ -328,7 +328,23 @@ export interface ProjectState {
    * 「グループなし」。閉じても覚えていて、開き直したら元のグループに戻る。グループをなくしたら外れる
    */
   groupId?: ProjectGroupId;
+  /**
+   * **眠っている**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。状態（`status`）は `active` のまま——`closed` で断っている
+   * 場所（届ける・自動化・メッセージ・移す）を眠っている間も通すため。`project.slept` で立ち、`project.woke`・`project.closed` で消える
+   */
+  sleep?: ProjectSleepState;
   createdAt: string;
+}
+
+/** 誰が眠らせたか（人・しばらく開いていないので自動で） */
+export type ProjectSleptBy = "human" | "auto";
+/** 何で起きたか（開いた・人が送った・届いたもの・自動化の届けもの） */
+export type ProjectWokeCause = "opened" | "human" | "delivery" | "automation";
+export const PROJECT_WOKE_CAUSES: readonly ProjectWokeCause[] = ["opened", "human", "delivery", "automation"];
+
+export interface ProjectSleepState {
+  since: string;
+  by: ProjectSleptBy;
 }
 
 export type ProjectGroupId = string;

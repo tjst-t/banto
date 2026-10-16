@@ -373,6 +373,8 @@ export interface ProjectResources {
   processLimit?: number;
   groups: ConsumerGroup[];
   hits: Array<{ at: string; what: string }>;
+  /** 眠っているのにコンテナが動いている（待たれている Module のため一部起きている、アーキ仕様 §2.2「スリープ」）。今どおり測る */
+  asleep?: true;
 }
 
 export interface HostResources {
@@ -392,6 +394,11 @@ export interface ResourcesSnapshot {
   projects: ProjectResources[];
   /** 別のサーバ（追加・2026-10-14、`remote-resources.ts`）。登録が無ければ空 */
   remotes: RemoteResources[];
+  /**
+   * **眠っている Project**（追加・2026-10-16、アーキ仕様 §2.2「スリープ」・§6.36）。コンテナが止まっているので量は測らない
+   * ——画面は「スリープ中」と出す。コンテナが動いていて測ったもの（上の `projects` の `asleep`）は入れない
+   */
+  sleeping: Array<{ projectId: string; name: string }>;
 }
 
 export interface ResourceTarget {
@@ -417,6 +424,8 @@ export interface ResourceWatchOptions {
    * 無ければ別のサーバは出さない（試験の最小構成）
    */
   remotes?: () => Promise<Array<RemoteProbe & { projects: Array<{ projectId: string; name: string }> }>>;
+  /** 眠っている Project（閉じていないもの）。無ければ眠っているものは無い */
+  sleeping?: () => Array<{ projectId: string; name: string }>;
 }
 
 interface Prev {
@@ -475,6 +484,8 @@ export class ResourceWatch {
   async tick(targets: readonly ResourceTarget[]): Promise<ResourcesSnapshot> {
     const now = this.now();
     const incusProject = (await this.opts.incusProject().catch(() => undefined)) ?? "";
+    const sleeping = this.opts.sleeping?.() ?? [];
+    const asleep = new Set(sleeping.map((p) => p.projectId));
     const projects: ProjectResources[] = [];
     const containerMemory: HostResources["memory"] = [];
 
@@ -538,6 +549,7 @@ export class ResourceWatch {
         ...(num(this.fs.read(join(root, "pids.max"))) !== undefined ? { processLimit: num(this.fs.read(join(root, "pids.max")))! } : {}),
         groups: readConsumers(this.fs, root, this.procRoot),
         hits: this.hits.get(t.containerName) ?? [],
+        ...(asleep.has(t.projectId) ? { asleep: true as const } : {}),
       });
     }
 
@@ -581,6 +593,7 @@ export class ResourceWatch {
       },
       projects: projects.sort((a, b) => Number(b.busy) - Number(a.busy) || b.usedBytes - a.usedBytes),
       remotes: remotes.sort((a, b) => Number(b.busy) - Number(a.busy) || a.runtime.localeCompare(b.runtime)),
+      sleeping: sleeping.filter((p) => !projects.some((m) => m.projectId === p.projectId)),
     };
     return this.latest;
   }

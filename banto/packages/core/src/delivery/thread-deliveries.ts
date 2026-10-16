@@ -77,6 +77,8 @@ export interface ThreadDeliveriesDeps {
    */
   hold?(threadId: string): string | undefined;
   now?: () => number;
+  /** 1時間に起こす上限（無ければ `DELIVERY_LIMITS.wakesPerHour`。E2E だけが、留めたときを見るために縮める） */
+  wakesPerHour?: number;
 }
 
 export class ThreadDeliveries {
@@ -178,8 +180,9 @@ export class ThreadDeliveries {
     // 切れたターンの続きは速度の上限で止めない（人のターンを続けるだけ、§2.5）。自動化の届けものだけのときも
     // （時計で動くものは往復の暴走ではない、§4.3）。上の連鎖の上限は効く
     if (exemptFromRate(pending)) return undefined;
-    if (recent.length >= DELIVERY_LIMITS.wakesPerHour) {
-      return `この1時間に届いたもので ${DELIVERY_LIMITS.wakesPerHour} 回起こしました（止まらない往復を防ぐため）`;
+    const limit = this.deps.wakesPerHour ?? DELIVERY_LIMITS.wakesPerHour;
+    if (recent.length >= limit) {
+      return `この1時間に届いたもので ${limit} 回起こしました（止まらない往復を防ぐため）`;
     }
     return undefined;
   }

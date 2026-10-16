@@ -13,6 +13,8 @@ import type {
   ProjectThreadReadModel,
   ProjectState,
   ProjectGroupColor,
+  ProjectSleptBy,
+  ProjectWokeCause,
   ThreadPermissionMode,
   ThreadClosedBy,
   ThreadEffort,
@@ -51,6 +53,9 @@ export type ProjectThreadEvent =
   // **入れると、そこでの位置を1つの出来事で**——`order` は Project 全部の新しい並び。分けて書くと、途中で失敗したときに
   // 「入ったが場所が違う」が残る
   | { type: "project.group.assigned"; payload: { projectId: string; groupId: string | null; order?: string[] } }
+  // **スリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。状態は active のまま、`sleep` を立てる・外す
+  | { type: "project.slept"; payload: { id: string; by: ProjectSleptBy } }
+  | { type: "project.woke"; payload: { id: string; cause: ProjectWokeCause } }
   // **別の実行場所へ移す**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。started で受付を止め、
   // moved で切り替え（この機械へ戻るときも runtime を明示する）、failed で切り替えずに戻す
   | { type: "project.runtime_move_started"; payload: { id: string; from: ProjectLocation; to: ProjectLocation; created: RuntimeMoveCreated } }
@@ -344,7 +349,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       }
       case "project.closed": {
         const p = next.projects.get(event.payload.id);
-        if (p) next.projects.set(p.id, { ...p, status: "closed" });
+        // 閉じたら眠りは外れる（開き直すと起きている）
+        if (p) {
+          const { sleep: _sleep, ...rest } = p;
+          next.projects.set(p.id, { ...rest, status: "closed" });
+        }
         // 走っていたターンは、起き直しても続けない（人が Project ごと閉じた）
         for (const t of next.threads.values()) {
           if (t.projectId === event.payload.id) {
@@ -420,6 +429,19 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "project.reopened": {
         const p = next.projects.get(event.payload.id);
         if (p) next.projects.set(p.id, { ...p, status: "active" });
+        return next;
+      }
+      case "project.slept": {
+        const p = next.projects.get(event.payload.id);
+        if (p) next.projects.set(p.id, { ...p, sleep: { since: raw.ts, by: event.payload.by } });
+        return next;
+      }
+      case "project.woke": {
+        const p = next.projects.get(event.payload.id);
+        if (p) {
+          const { sleep: _sleep, ...rest } = p;
+          next.projects.set(p.id, rest);
+        }
         return next;
       }
       case "project.group.created": {

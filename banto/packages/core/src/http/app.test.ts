@@ -18,6 +18,8 @@ import { TurnEventBus } from "./turn-events.js";
 import { ModuleCallTracker, RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import type { ActivityReport } from "./activity.js";
 import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
+import { ProjectSleep } from "../runtime/project-sleep.js";
+import type { ProjectWokeCause } from "../project-thread/types.js";
 
 interface TestDeps {
   inbox: InboxStore;
@@ -2476,5 +2478,169 @@ test("GET /api/events は Project の一覧に関わる変更すべてで projec
       }
     },
     { appEvents },
+  );
+});
+
+// **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる口・止まるもの・起こす2か所（prepare と
+// ターンを開く口）・起こさない門（設定・入口・Skills は「眠っています」）
+function sleepHarness(turns: ThreadTurns) {
+  const woke: ProjectWokeCause[] = [];
+  const released: string[] = [];
+  let real: ProjectSleep | undefined;
+  const bind = (projectThread: ProjectThreadStore) =>
+    (real = new ProjectSleep({
+      projectThread,
+      // 移すときと同じ一覧の代わりに、走っているターンだけ
+      hostActivity: (id) =>
+        turns
+          .list()
+          .filter((t) => projectThread.getThread(t.threadId)?.projectId === id)
+          .map(() => ({ kind: "turn" as const, label: "ターンが走っています（会話）" })),
+      suspendServices: async () => [],
+      releaseModules: async (id) => {
+        released.push(id);
+        return [`shell-${id}`];
+      },
+      runningInPlace: async () => [{ kind: "terminal" as const, label: "Terminal のセッション「main」が開いています" }],
+    }));
+  const projectSleep: Pick<ProjectSleep, "sleep" | "wake" | "preview"> = {
+    sleep: (id, by) => real!.sleep(id, by),
+    preview: (id) => real!.preview(id),
+    wake: async (id, cause) => {
+      const did = await real!.wake(id, cause);
+      if (did) woke.push(cause);
+      return did;
+    },
+  };
+  return { bind, projectSleep, woke, released };
+}
+
+test("POST /api/projects/:id/sleep と sleep-preview：眠らせる・止まるもの・断るとき（busy・closed・無い）", async () => {
+  const turns = new ThreadTurns();
+  const h = sleepHarness(turns);
+  await withApp(
+    async (base, token, dir, deps) => {
+      h.bind(deps.projectThread);
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const call = (method: string, path: string) => fetch(`${base}${path}`, { method, headers });
+      const project = await deps.projectThread.createProject("demo", dir);
+      const thread = await deps.projectThread.createBaseThread(project.id);
+
+      const preview = await call("GET", `/api/projects/${project.id}/sleep-preview`);
+      assert.equal(preview.status, 200);
+      assert.deepEqual(await preview.json(), {
+        stops: [{ kind: "terminal", label: "Terminal のセッション「main」が開いています" }],
+        blockers: [],
+      });
+
+      // ターンが走っていれば断る
+      const release = turns.tryAcquire(thread.id, 0)!;
+      const busy = await call("POST", `/api/projects/${project.id}/sleep`);
+      assert.equal(busy.status, 409);
+      assert.deepEqual(await busy.json(), {
+        error: "動いているものがあるので眠らせられません：ターンが走っています（会話）",
+        code: "busy",
+        reasons: ["ターンが走っています（会話）"],
+      });
+      assert.deepEqual(((await (await call("GET", `/api/projects/${project.id}/sleep-preview`)).json()) as { blockers: string[] }).blockers, [
+        "ターンが走っています（会話）",
+      ]);
+      release();
+
+      const slept = await call("POST", `/api/projects/${project.id}/sleep`);
+      assert.equal(slept.status, 200);
+      assert.deepEqual(await slept.json(), { ok: true, released: [`shell-${project.id}`] });
+      const listed = (await (await call("GET", "/api/projects")).json()) as Array<{ id: string; status: string; sleep?: { by: string } }>;
+      assert.deepEqual(listed.map((p) => [p.status, p.sleep?.by]), [["active", "human"]]);
+      // もう眠っていれば何もしない
+      assert.deepEqual(await (await call("POST", `/api/projects/${project.id}/sleep`)).json(), { ok: true, released: [] });
+      assert.deepEqual(h.released, [project.id]);
+
+      // 閉じると眠りは外れ、閉じたものは眠らせられない
+      assert.equal((await call("POST", `/api/projects/${project.id}/close`)).status, 200);
+      assert.equal(deps.projectThread.getProject(project.id)?.sleep, undefined);
+      const closed = await call("POST", `/api/projects/${project.id}/sleep`);
+      assert.equal(closed.status, 409);
+      assert.equal(((await closed.json()) as { code: string }).code, "closed");
+      assert.equal((await call("POST", "/api/projects/無い/sleep")).status, 404);
+      assert.deepEqual(h.woke, [], "眠らせる・閉じるで起こした");
+    },
+    { threadTurns: turns, projectSleep: h.projectSleep },
+  );
+});
+
+test("眠っている Project：設定・入口・Skills・Module の画面は起こさずに「眠っています」（409 asleep）、prepare で起きる（opened）", async () => {
+  const turns = new ThreadTurns();
+  const h = sleepHarness(turns);
+  const resolved: string[] = [];
+  await withApp(
+    async (base, token, dir, deps) => {
+      h.bind(deps.projectThread);
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const call = (method: string, path: string, body?: unknown) =>
+        fetch(`${base}${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+      const project = await deps.projectThread.createProject("demo", dir);
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      await deps.projectThread.sleepProject(project.id, "human");
+
+      const asleep = [
+        call("GET", `/api/projects/${project.id}/ui-settings`),
+        call("GET", `/api/projects/${project.id}/ui-launchers`),
+        call("GET", `/api/projects/${project.id}/ui-resource?server=shell&uri=ui://x`),
+        call("POST", `/api/projects/${project.id}/ui-tool-call`, { server: "shell", tool: "x" }),
+        call("POST", `/api/projects/${project.id}/ui-stream`, {}),
+        call("POST", `/api/threads/${thread.id}/ui-tool-call`, { server: "shell", tool: "x" }),
+        call("POST", `/api/threads/${thread.id}/ui-stream`, {}),
+        call("GET", `/api/skills?projectId=${project.id}`),
+      ];
+      for (const res of await Promise.all(asleep)) {
+        assert.equal(res.status, 409, res.url);
+        assert.deepEqual(await res.json(), { error: "この Project は眠っています。起こすと見られます", code: "asleep" }, res.url);
+      }
+      assert.deepEqual(resolved, [], "眠っている Project の Module を集めに行った");
+      assert.ok(deps.projectThread.getProject(project.id)?.sleep, "画面を開いただけで起きた");
+
+      const prepared = await call("POST", `/api/projects/${project.id}/modules/prepare`);
+      assert.equal(prepared.status, 200);
+      assert.deepEqual(h.woke, ["opened"]);
+      assert.equal(deps.projectThread.getProject(project.id)?.sleep, undefined);
+      assert.deepEqual(resolved, [project.id], "起こしたあと Module を用意していない");
+      assert.equal((await call("GET", `/api/projects/${project.id}/ui-settings`)).status, 200);
+    },
+    {
+      threadTurns: turns,
+      projectSleep: h.projectSleep,
+      resolveModuleClientsForProject: async (id: string) => {
+        resolved.push(id);
+        return [];
+      },
+    },
+  );
+});
+
+test("眠っている Project の会話に人が送ると、ターンを開く口で起きて（human）走る", async () => {
+  const turns = new ThreadTurns();
+  const h = sleepHarness(turns);
+  const seen: Array<{ prompt: string }> = [];
+  await withApp(
+    async (base, token, dir, deps) => {
+      h.bind(deps.projectThread);
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("demo", dir);
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      await deps.projectThread.sleepProject(project.id, "human");
+      const res = await fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "起きて" }) });
+      assert.equal(res.status, 200);
+      await res.text();
+      assert.deepEqual(h.woke, ["human"]);
+      assert.equal(deps.projectThread.getProject(project.id)?.sleep, undefined);
+      assert.equal(seen.length, 1);
+      assert.ok(seen[0]!.prompt.endsWith("起きて"));
+      assert.deepEqual(
+        deps.projectThread.getThread(thread.id)!.messages.map((m) => [m.role, m.text]),
+        [["user", "起きて"], ["assistant", "見ました"]],
+      );
+    },
+    { threadTurns: turns, projectSleep: h.projectSleep, runTurn: recordingRunner(seen) },
   );
 });

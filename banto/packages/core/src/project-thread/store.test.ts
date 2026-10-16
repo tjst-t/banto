@@ -11,6 +11,7 @@ import {
   InvalidProjectGroupError,
   NotFoundError,
   ProjectGroupConflictError,
+  ProjectSleepConflictError,
 } from "./store.js";
 import { projectThreadFold } from "./fold.js";
 
@@ -1250,5 +1251,40 @@ test("Project の一覧に関わる変更すべてで onProjectsChanged が鳴�
     stop();
     await store.renameProject(p.id, "c");
     assert.equal(count, 11, "外したら鳴らない");
+  });
+});
+
+// **スリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）——状態は active のまま `sleep` を立てる・外す
+test("sleepProject／wakeProject：active のまま sleep が立ち、起きると外れる。閉じると外れ、読み直しても残る", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("demo", dir);
+    let changed = 0;
+    store.onProjectsChanged(() => changed++);
+
+    const slept = await store.sleepProject(project.id, "human");
+    assert.equal(slept.status, "active");
+    assert.equal(slept.sleep?.by, "human");
+    assert.ok(slept.sleep?.since);
+    await assert.rejects(() => store.sleepProject(project.id, "auto"), ProjectSleepConflictError);
+
+    // 読み直しても眠ったまま（banto を起こし直しても眠ったまま）
+    await store.save();
+    const again = new ProjectThreadStore(dir, log);
+    await again.load();
+    assert.equal(again.getProject(project.id)?.sleep?.by, "human");
+
+    assert.equal(await store.wakeProject(project.id, "opened"), true);
+    assert.equal(store.getProject(project.id)?.sleep, undefined);
+    assert.equal(await store.wakeProject(project.id, "opened"), false, "眠っていないのに起きたと積んだ");
+
+    // 閉じると外れ、開き直すと起きている。閉じたものは眠らせられない
+    await store.sleepProject(project.id, "auto");
+    await store.closeProject(project.id);
+    assert.equal(store.getProject(project.id)?.sleep, undefined);
+    await assert.rejects(() => store.sleepProject(project.id, "human"), ProjectSleepConflictError);
+    await store.reopenProject(project.id);
+    assert.equal(store.getProject(project.id)?.sleep, undefined);
+    await assert.rejects(() => store.sleepProject("無い", "human"), NotFoundError);
+    assert.equal(changed, 5, "眠った・起きたで一覧の変更を流していない");
   });
 });

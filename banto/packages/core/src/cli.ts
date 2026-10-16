@@ -53,6 +53,7 @@ import { RemoteRuntimes, isRemoteUnreachable, remoteNameOf, runtimeIdOf } from "
 import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
 import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
+import { ProjectSleep } from "./runtime/project-sleep.js";
 import { collectActivity } from "./http/activity.js";
 import { createRelayListener } from "./relay/relay-listener.js";
 import { RuntimeStopError, type PreparedPlace, type Runtime, type RuntimePlace, type ToolsInstallStatus } from "./runtime/runtime.js";
@@ -239,6 +240,35 @@ async function main(): Promise<void> {
   // 前のプロセスが抱えていた判断待ちは、もう誰も待っていない（決定・2026-09-06）
   const orphaned = await inbox.expireOrphanedJudgments();
   if (orphaned > 0) console.log(`[host] 前回の走行が抱えていた判断待ち ${orphaned} 件を期限切れにした`);
+  await stopSleepingContainers();
+  /**
+   * **banto を起こし直しても眠ったまま**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠っている Project のコンテナが
+   * 動いていれば止める（Incus の自動起動や人が起こしたもの）。待ち受ける前に——起きた直後の `modules/prepare` で起こしたものを
+   * 後から止めない。順序は (1) 待たれている Module の集合を決める (2) ここ (3) §4.3 の「起こしておく」。出来事を待たれる
+   * Module はまだ無い（Backlog `project-sleep-awaited-modules`）ので (1)(3) は空。別のサーバは眠らせるときに Service の
+   * 自動起動を切ってあるので、改めて確かめない
+   */
+  async function stopSleepingContainers(): Promise<void> {
+    const sleeping = projectThread.listProjects().filter((p) => p.status !== "closed" && p.sleep && !isRemoteProject(p));
+    await Promise.all(
+      sleeping.map(async (p) => {
+        try {
+          if ((await hostRuntime.status(p.id))?.status !== "Running") return;
+          await hostRuntime.stopProjectContainer(p.id);
+          console.log(`[host] 眠っている project ${p.id} のコンテナが動いていたので止めました`);
+        } catch (err) {
+          const reason = err instanceof RuntimeStopError ? err.reason : err instanceof Error ? err.message : String(err);
+          console.warn(`[host] 眠っている project ${p.id} のコンテナを止められませんでした: ${reason}`);
+          await inbox.raiseNotice({
+            projectId: p.id,
+            dedupeKey: `container-stop:${p.id}`,
+            title: "眠っている Project のコンテナを止められませんでした",
+            detail: reason,
+          });
+        }
+      }),
+    );
+  }
   const pendingApprovals = new PendingApprovalRegistry();
   /**
    * **Claude のログインの中継**（core に常設、決定・2026-09-27、`docs/specs/v4-security.md` §2）。Project のコンテナの
@@ -375,6 +405,8 @@ async function main(): Promise<void> {
     // 起こし直しのたびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間は起こさない（§2.5「上限」）
     // 起こし直したあと、続けられると名乗った Module に続けるかを聞いている間も起こさない（§2.5「2.」）
     hold: (threadId) => recovery?.holdReason(threadId) ?? resumeHoldReason({ projectThread, inbox }, threadId),
+    // E2E だけが縮める（眠っている Project に留めた届けものでは起きない、を見る——アーキ仕様 §2.2「起こす」）
+    ...(Number(process.env.BANTO_TEST_DELIVERY_WAKES_PER_HOUR) > 0 ? { wakesPerHour: Number(process.env.BANTO_TEST_DELIVERY_WAKES_PER_HOUR) } : {}),
   });
   // **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」）。`deliver` の手前で飛ばす・Clear してから届ける
   const automationRunner = new AutomationRunner({
@@ -751,6 +783,11 @@ async function main(): Promise<void> {
    * 作ってすぐ畳んだときに画面がその分だけ止まる）
    */
   const projectReleases = new Map<string, number>();
+  /**
+   * **名指しで畳んだ回数**（接続ごと、追加・2026-10-16、アーキ仕様 §2.2「Module を名指しで外せる形に分ける」）。名指しで
+   * 外すときは Project の数（上）を増やさない——残す Module の起動を「畳まれた」と巻き込まない
+   */
+  const connectionReleases = new Map<string, number>();
 
   /**
    * **止まった Module は起こし直す**（決定・2026-09-30、`docs/specs/v4-architecture.md` §5.4-0）。
@@ -792,13 +829,19 @@ async function main(): Promise<void> {
     // 別のサーバ（2026-10-14）。繋いでいる実行場所だけ読み、その実行場所で動く閉じていない Project を添える
     remotes: async () => {
       const probes = await remoteSsh.readResources();
-      const open = projectThread.listProjects().filter((p) => p.status !== "closed");
+      // 眠っている Project は向こうでも測らない（`sleeping` に出る）
+      const open = projectThread.listProjects().filter((p) => p.status !== "closed" && !p.sleep);
       return probes.map((probe) => ({
         ...probe,
         projects: open.filter((p) => remoteNameOf(p.runtime) === probe.runtime).map((p) => ({ projectId: p.id, name: p.name })),
       }));
     },
     cores: availableParallelism(),
+    sleeping: () =>
+      projectThread
+        .listProjects()
+        .filter((p) => p.status !== "closed" && p.sleep)
+        .map((p) => ({ projectId: p.id, name: p.name })),
     selfBytes: () => process.memoryUsage().rss,
     stalls: () => hostStall.recent(100),
   });
@@ -919,20 +962,30 @@ async function main(): Promise<void> {
         return undefined;
       }
     }
+    // **眠っている Project の Module は起こさない**（決定・2026-10-16、アーキ仕様 §2.2「それ以外の道では起こさない」）
+    // ——設定の画面・Skills の一覧・入口の一覧を開いただけでコンテナが起きる、を作らない。起こすのは `projectSleep.wake`
+    // （`modules/prepare` と `openTurn`）だけで、起きれば `sleep` が外れてここを通る
+    if (declaration.meta.scope === "project" && forProject && projectThread.getProject(forProject.id)?.sleep) {
+      console.log(`[host] ${connName} は起こしません（Project が眠っています）`);
+      return undefined;
+    }
     const fingerprint = declarationFingerprint(declaration);
     if (connectBackoff.blocked(connName, fingerprint) !== undefined) return undefined;
 
     const releaseProjectId = declaration.meta.scope === "project" ? forProject?.id : undefined;
     const releasesAtStart = releaseProjectId ? (projectReleases.get(releaseProjectId) ?? 0) : 0;
+    const connReleasesAtStart = connectionReleases.get(connName) ?? 0;
     const releasedMeanwhile = () =>
-      releaseProjectId !== undefined && (projectReleases.get(releaseProjectId) ?? 0) !== releasesAtStart;
+      releaseProjectId !== undefined &&
+      ((projectReleases.get(releaseProjectId) ?? 0) !== releasesAtStart || (connectionReleases.get(connName) ?? 0) !== connReleasesAtStart);
     try {
       const connected = await spawnDeclaredModule(declaration, forProject);
       if (releasedMeanwhile()) {
-        // 起動している間に Project が畳まれた——いま繋がったものも畳む（閉じたままならコンテナも止める）
+        // 起動している間に Project が畳まれた——いま繋がったものも畳む（閉じた・眠ったままならコンテナも止める）
         console.log(`[host] ${connName} は起動中に Project が畳まれたので、繋がったものを畳みます`);
-        const stillClosed = projectThread.getProject(releaseProjectId!)?.status === "closed";
-        await releaseProjectModules(releaseProjectId!, { stopContainer: stillClosed });
+        const now = projectThread.getProject(releaseProjectId!);
+        const stillDown = now?.status === "closed" || now?.sleep !== undefined;
+        await releaseProjectModules(releaseProjectId!, { stopContainer: stillDown });
         return undefined;
       }
       return connected;
@@ -1743,14 +1796,28 @@ async function main(): Promise<void> {
    * **instance に1本の Module（Vault 等）は落とさない**——それは Project の
    * ものではない（他の Project がまだ使っている）。
    */
-  async function releaseProjectModules(projectId: string, opts: { stopContainer?: boolean } = {}): Promise<string[]> {
-    // 起動の途中のものに「畳まれた」と分かるようにする（上の `projectReleases`、終わった側が自分で片づける）
-    projectReleases.set(projectId, (projectReleases.get(projectId) ?? 0) + 1);
-    const names = [...(projectConnections.get(projectId) ?? [])];
-    projectConnections.delete(projectId);
+  async function releaseProjectModules(
+    projectId: string,
+    opts: {
+      stopContainer?: boolean;
+      /**
+       * **外す Module を名指しする**（宣言の名前、追加・2026-10-16、アーキ仕様 §2.2「Module を名指しで外せる形に分ける」）。
+       * 無ければ全部。名指ししたときは、ほかの Module・その起こし直しの待ち・起動の途中のものを巻き込まない
+       */
+      only?: readonly string[];
+    } = {},
+  ): Promise<string[]> {
+    const picked = opts.only ? new Set(opts.only.map((name) => `${name}-${projectId}`)) : undefined;
+    // 起動の途中のものに「畳まれた」と分かるようにする（上の `projectReleases`・`connectionReleases`、終わった側が自分で片づける）
+    if (picked) for (const connName of picked) connectionReleases.set(connName, (connectionReleases.get(connName) ?? 0) + 1);
+    else projectReleases.set(projectId, (projectReleases.get(projectId) ?? 0) + 1);
+    const all = projectConnections.get(projectId) ?? new Set<string>();
+    const names = [...all].filter((c) => !picked || picked.has(c));
+    if (picked) for (const c of names) all.delete(c);
+    else projectConnections.delete(projectId);
     // 止まって起こし直しを待っているものも、もう起こさない
     for (const [connName, pending] of [...pendingRestarts]) {
-      if (pending.origin.projectId === projectId) cancelRestart(connName);
+      if (pending.origin.projectId === projectId && (!picked || picked.has(connName))) cancelRestart(connName);
     }
     // **先に全部を台帳から外し、それから落とす**（改訂・2026-10-09）。以前は1つずつ「外す→落とす」だったので、頼んだ先
     // （subagent 等）を落とした瞬間の「途中で終わりました」が、**まだ台帳に残っている同じ Project の呼んだ Module**（この
@@ -1778,6 +1845,8 @@ async function main(): Promise<void> {
       });
     }
     if (names.length > 0) console.log(`[host] project ${projectId} を畳んだ: ${names.join(", ")}`);
+    // 名指しで外して、コンテナは止めない——残した Module はそのコンテナで動き続ける（用意したことを忘れない）
+    if (picked && opts.stopContainer !== true) return names;
     // **Project を畳んだらコンテナも止める**（決定・2026-09-25）。止めるのは待ちすぎない（上限→強制停止）。
     // 止められなくても畳むこと自体は済んでいるので、畳む操作は失敗させない——ただし**黙らない**：
     // 動いたまま残ったことを受信箱で言う（規則2）
@@ -2278,6 +2347,24 @@ async function main(): Promise<void> {
     return names;
   }
   /**
+   * **host が知っている、その Project で動いているもの**（ターン・返事待ちの札・Module 宛ての返事待ち・走っている Module の
+   * 呼び出し）。別の実行場所へ移すときと眠らせるときは、これが空でなければ断る（同じ一覧——独自の列挙を作らない、規則3）
+   */
+  function hostActivity(projectId: string): RunningItem[] {
+    const a = collectActivity({ projectThread, inbox, threadTurns, moduleCalls, moduleReplies, resumesAfterRestart });
+    const mine = <T extends { projectId?: string }>(items: T[]) => items.filter((i) => i.projectId === projectId);
+    const where = (t: { threadTitle?: string }) => t.threadTitle ?? "会話";
+    return [
+      ...mine(a.turns).map((t): RunningItem => ({ kind: "turn", label: `ターンが走っています（${where(t)}）` })),
+      ...mine(a.awaitingReplies).map((r): RunningItem => ({ kind: "reply", label: `裏の仕事の返事を待っています（${r.module}・${where(r)}）` })),
+      ...mine(a.moduleReplies).map((r): RunningItem => ({ kind: "moduleReply", label: `${r.caller} が ${r.module} の返事を待っています` })),
+      ...mine(a.moduleCalls).map((c): RunningItem => ({ kind: "call", label: `Module の呼び出しが走っています（${c.connName}）` })),
+    ];
+  }
+  /** 別のサーバの Project を閉じる・眠らせる前に（v4-security.md §1「閉じた Project は数えない」） */
+  const suspendProjectServices = (projectId: string) =>
+    callServiceAdminTool(projectId, "suspendAllServices", "suspended", "閉じる前に別のサーバの Service を止めて自動起動から外せ");
+  /**
    * **Project を別の実行場所へ移す**（決定・2026-10-11、`docs/specs/v4-security.md` §1「Project を別の実行場所へ移す」）
    */
   projectMover = new ProjectMover({
@@ -2288,17 +2375,7 @@ async function main(): Promise<void> {
     projectThread,
     remoteRuntimes,
     hostContainers: hostRuntime,
-    hostActivity: (projectId) => {
-      const a = collectActivity({ projectThread, inbox, threadTurns, moduleCalls, moduleReplies, resumesAfterRestart });
-      const mine = <T extends { projectId?: string }>(items: T[]) => items.filter((i) => i.projectId === projectId);
-      const where = (t: { threadTitle?: string }) => t.threadTitle ?? "会話";
-      return [
-        ...mine(a.turns).map((t): RunningItem => ({ kind: "turn", label: `ターンが走っています（${where(t)}）` })),
-        ...mine(a.awaitingReplies).map((r): RunningItem => ({ kind: "reply", label: `裏の仕事の返事を待っています（${r.module}・${where(r)}）` })),
-        ...mine(a.moduleReplies).map((r): RunningItem => ({ kind: "moduleReply", label: `${r.caller} が ${r.module} の返事を待っています` })),
-        ...mine(a.moduleCalls).map((c): RunningItem => ({ kind: "call", label: `Module の呼び出しが走っています（${c.connName}）` })),
-      ];
-    },
+    hostActivity,
     disableServices: (projectId) => callServiceAdminTool(projectId, "disableAllServices", "disabled", "元の場所の Service を止めておけ"),
     releaseModules: async (projectId) => {
       await releaseProjectModules(projectId, { stopContainer: true });
@@ -2316,6 +2393,14 @@ async function main(): Promise<void> {
     ...(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC
       ? { throttleBytesPerSec: Number(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC) }
       : {}),
+  });
+  /** **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・起こす口・止まるもの */
+  const projectSleep = new ProjectSleep({
+    projectThread,
+    hostActivity,
+    suspendServices: suspendProjectServices,
+    releaseModules: (projectId) => releaseProjectModules(projectId, { stopContainer: true }),
+    runningInPlace: (projectId) => projectMover!.runningInPlace(projectId),
   });
   const app = createApp({
     warmModelCatalog: true,
@@ -2377,8 +2462,8 @@ async function main(): Promise<void> {
     }),
     releaseProjectModules,
     // 別のサーバの Project を閉じる前に（v4-security.md §1「閉じた Project は数えない」）
-    suspendProjectServices: (projectId) =>
-      callServiceAdminTool(projectId, "suspendAllServices", "suspended", "閉じる前に別のサーバの Service を止めて自動起動から外せ"),
+    suspendProjectServices,
+    projectSleep,
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     reviewToolCalls: (thread) => {
       const project = projectThread.getProject(thread.projectId);
