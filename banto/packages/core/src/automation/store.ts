@@ -2,6 +2,7 @@
 // ——入力の確かめをここに1つ置く（どちらの口から来ても同じ決まりで断る）。
 
 import { randomUUID } from "node:crypto";
+import { eventWhereProblem, type EventDeclaration, type EventWhere } from "@banto/module-contract";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import {
@@ -36,10 +37,21 @@ export const WEBHOOK_BATCH_SECONDS_DEFAULT = 30;
 export const WEBHOOK_SIGNATURE_HEADER_DEFAULT = "X-Hub-Signature-256";
 const HEADER_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 const ALIAS_MAX = 200;
+/** 出来事のまとめる待ち時間の既定（Webhook と同じ） */
+export const EVENT_BATCH_SECONDS_DEFAULT = WEBHOOK_BATCH_SECONDS_DEFAULT;
+
+/**
+ * **台帳から Module の宣言を引く口**（アーキ仕様 §4.3「段2」の「条件」）。その Project で、出来事の名前を名乗っている
+ * Module の名乗り。無ければ undefined（作るときに断る）
+ */
+export interface AutomationEventCatalog {
+  find(projectId: string, name: string): EventDeclaration | undefined;
+}
 
 export class AutomationStore {
   private readonly projection: SnapshotProjection<AutomationReadModel>;
   private readonly listeners = new Set<(change: { projectId: string; id: string }) => void>();
+  private eventCatalog: AutomationEventCatalog | undefined;
 
   constructor(dataDir: string, private readonly log: EventLog) {
     // 版 2：`clockFrom`（時計の数え始め）を足した
@@ -51,6 +63,11 @@ export class AutomationStore {
   }
   async save(): Promise<void> {
     await this.projection.save();
+  }
+
+  /** 出来事のきっかけを作る・直すときに照らす名乗りの口（無ければ出来事のきっかけは作れない） */
+  setEventCatalog(catalog: AutomationEventCatalog): void {
+    this.eventCatalog = catalog;
   }
 
   /** その Project の自動化（作った順） */
@@ -93,6 +110,7 @@ export class AutomationStore {
     webhookTokenHash?: string;
   }): Promise<Automation> {
     const fields = parseAutomationFields(input.fields);
+    if (fields.source.kind === "event") this.checkEventSource(input.projectId, fields.source);
     if (fields.source.kind === "webhook" && !input.webhookTokenHash) {
       throw new AutomationInputError("Webhook の自動化は自動化の画面から作ってください（受け口の URL はそこで1回だけ見せます）");
     }
@@ -111,6 +129,7 @@ export class AutomationStore {
   async update(id: string, changes: unknown): Promise<Automation> {
     const current = this.mustGet(id);
     const parsed = parseAutomationChanges(changes, current);
+    if (parsed.source?.kind === "event") this.checkEventSource(current.projectId, parsed.source);
     await this.append("automation.updated", { id, changes: parsed });
     return this.mustGet(id);
   }
@@ -155,6 +174,17 @@ export class AutomationStore {
   async recordReceived(id: string, received: AutomationReceived): Promise<void> {
     this.mustGet(id);
     await this.append("automation.received", { id, ...received });
+  }
+
+  /** 出来事の名前が、その Project の Module に名乗られているか・条件が名乗りの属性に合うか */
+  private checkEventSource(projectId: string, source: Extract<AutomationSource, { kind: "event" }>): void {
+    if (!this.eventCatalog) throw new AutomationInputError("この banto は出来事のきっかけを受けられません");
+    const declared = this.eventCatalog.find(projectId, source.event);
+    if (!declared) {
+      throw new AutomationInputError(`この Project には出来事 ${source.event} を名乗っている Module がありません`);
+    }
+    const problem = eventWhereProblem(declared, source.where);
+    if (problem) throw new AutomationInputError(problem);
   }
 
   private mustGet(id: string): Automation {
@@ -275,7 +305,31 @@ function parseSource(v: unknown): AutomationSource {
       allowProjectContainer: v.allowProjectContainer === true,
     };
   }
-  if (v.kind !== "time") throw new AutomationInputError("source.kind は time（決まった時刻）か webhook です");
+  if (v.kind === "event") {
+    // 出来事の名前と条件の中身は台帳の名乗りと照らす（`checkEventSource`）。ここでは形だけ
+    if (typeof v.event !== "string" || !/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/.test(v.event)) {
+      throw new AutomationInputError("source.event（出来事の名前、<出どころ>.<名前>）が要ります");
+    }
+    const batch = v.batchSeconds === undefined ? EVENT_BATCH_SECONDS_DEFAULT : v.batchSeconds;
+    if (typeof batch !== "number" || !Number.isInteger(batch) || batch < 0 || batch > WEBHOOK_BATCH_SECONDS_MAX) {
+      throw new AutomationInputError(`batchSeconds は 0〜${WEBHOOK_BATCH_SECONDS_MAX} の整数（秒）で渡してください`);
+    }
+    if (v.allowSelfTriggered !== undefined && typeof v.allowSelfTriggered !== "boolean") {
+      throw new AutomationInputError("allowSelfTriggered は true か false で渡してください");
+    }
+    if (v.where !== undefined && !isRecord(v.where)) {
+      throw new AutomationInputError("source.where は属性の名前ごとの値（か値の配列）で渡してください");
+    }
+    const where = v.where as EventWhere | undefined;
+    return {
+      kind: "event",
+      event: v.event,
+      ...(where && Object.keys(where).length > 0 ? { where } : {}),
+      batchSeconds: batch,
+      allowSelfTriggered: v.allowSelfTriggered === true,
+    };
+  }
+  if (v.kind !== "time") throw new AutomationInputError("source.kind は time（決まった時刻）・webhook・event（出来事）のどれかです");
   const timeZone = parseTimeZone(v.timeZone);
   return { kind: "time", repeat: parseRepeat(v.repeat, timeZone), timeZone };
 }
@@ -325,7 +379,7 @@ export function parseAutomationChanges(raw: unknown, current: Automation): Parti
     changes.source = parseSource(raw.source);
     // Webhook の受け口の印は作ったときにしか出さない——種類を変えると、印の無い Webhook・印の残った時刻ができる
     if (changes.source.kind !== current.source.kind) {
-      throw new AutomationInputError("きっかけの種類（決まった時刻／Webhook）は変えられません。作り直してください");
+      throw new AutomationInputError("きっかけの種類（決まった時刻／Webhook／出来事）は変えられません。作り直してください");
     }
   }
   if (raw.target !== undefined) changes.target = parseTarget(raw.target, current.target);

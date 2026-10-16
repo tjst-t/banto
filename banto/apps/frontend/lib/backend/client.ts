@@ -210,7 +210,16 @@ export interface RealMessageOrigin {
    * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。自動化の指示の下に添えた、Webhook で受けた本文。
    * AI には別の囲みでデータとして渡している——画面も指示と分けて出す
    */
-  external?: { source: "webhook"; receivedAt: string; body: string; truncatedFrom?: number }[];
+  external?: {
+    source: "webhook" | "event";
+    receivedAt: string;
+    body: string;
+    truncatedFrom?: number;
+    /** Module が知らせた出来事の見出し（`source: "event"` だけ）。名前・題・属性は Module の申告 */
+    event?: { name: string; title: string; eventId: string; occurredAt: string; fields: Record<string, string | number | boolean> };
+    /** まとめた1本が大きすぎて本文を省いた */
+    bodyOmitted?: true;
+  }[];
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -1985,6 +1994,15 @@ export type RealAutomationSource =
       /** 続けて届いたものをまとめる待ち時間（秒）。0 は1件ずつ */
       batchSeconds: number;
       allowProjectContainer: boolean;
+    }
+  | {
+      /** Module が名乗る出来事（アーキ仕様 §4.3「段2」）。`where` は属性の「等しい／どれか」 */
+      kind: "event";
+      event: string;
+      where?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+      batchSeconds: number;
+      /** この自動化自身の回が起こした出来事でも動く（既定 false） */
+      allowSelfTriggered: boolean;
     };
 
 /** 作るときに渡す Webhook の出どころ。署名を確かめないなら `signature: false`（既定はオンなので明示する） */
@@ -2003,7 +2021,7 @@ export interface RealAutomationRun {
   runId: string;
   /** 実際に動いた時刻（ISO） */
   at: string;
-  cause: "clock" | "manual" | "webhook";
+  cause: "clock" | "manual" | "webhook" | "event";
   result: RealAutomationRunResult;
   reason?: string;
   threadId?: string;
@@ -2011,7 +2029,7 @@ export interface RealAutomationRun {
   /** 時計で動いた回の予定の時刻 */
   scheduledFor?: string;
   delayed?: string;
-  /** Webhook で受けたもののうち、この回にまとめて届けた件数 */
+  /** Webhook・出来事で受けたもののうち、この回にまとめて届けた件数 */
   received?: number;
 }
 

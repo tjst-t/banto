@@ -31,6 +31,7 @@ import { AutomationStore } from "./automation/store.js";
 import { AutomationRunner } from "./automation/runner.js";
 import { AutomationClock } from "./automation/clock.js";
 import { AutomationWebhooks } from "./automation/webhook.js";
+import { AutomationEvents, EventLedger } from "./automation/events.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -66,6 +67,7 @@ import {
   listInstanceModules,
   fillSecrets,
   loadModuleDeclarations,
+  declaredEvents,
   secretPlaceholders,
   secretsAllowedFor,
   modulePlacement,
@@ -217,6 +219,35 @@ async function main(): Promise<void> {
   // **自動化の台帳**（決定・2026-10-15、アーキ仕様 §4.3）。project-thread とは別の fold と snapshot
   const automations = new AutomationStore(bootstrap.dataDir, eventLog);
   await automations.load();
+  // **出来事の重複落としと呼び出しの写し**（アーキ仕様 §4.3「段2」）。自動化の台帳とも会話とも別の fold と snapshot
+  const eventLedger = new EventLedger(bootstrap.dataDir, eventLog);
+  await eventLedger.load();
+  /**
+   * **その Project で、その Module が名乗る出来事**（台帳から Module の宣言を引く口、§4.3「段2」の「条件」）。出せるのは
+   * Project ごとの同梱の Module だけ（`mayEmitEvent`）なので、引くのも Project ごとの宣言だけ。読めなければ投げる
+   */
+  const projectModuleEvents = (projectId: string, moduleName: string) => {
+    const declaration = loadModuleDeclarations(runtimeConfig, projectId).find((d) => d.name === moduleName && d.meta.scope === "project");
+    return declaration ? declaredEvents(declaration) : [];
+  };
+  automations.setEventCatalog({
+    find: (projectId, name) => {
+      for (const d of loadModuleDeclarations(runtimeConfig, projectId)) {
+        if (d.meta.scope !== "project" || !name.startsWith(`${d.name}.`)) continue;
+        // 名乗りが読めない Module は飛ばす（その Module の出来事は受けない——作る口が「名乗っている Module がありません」で断る）
+        let events;
+        try {
+          events = declaredEvents(d);
+        } catch (err) {
+          console.warn(`[host] ${d.name} の出来事の名乗りが読めません:`, err instanceof Error ? err.message : err);
+          continue;
+        }
+        const found = events.find((e) => e.name === name);
+        if (found) return found;
+      }
+      return undefined;
+    },
+  });
   // **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）
   const remoteRuntimeStore = new RemoteRuntimeStore(bootstrap.dataDir, eventLog);
   await remoteRuntimeStore.load();
@@ -473,6 +504,19 @@ async function main(): Promise<void> {
     resolveSecret: (alias, projectId) => resolveSecretThroughVault(alias, { project: projectId }),
     projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
   });
+  // **出来事のきっかけ**（アーキ仕様 §4.3「段2」）。受け口は中継の `relayEmitEvent`。Webhook と同じまとめ役で届ける——届け始めるのは
+  // Webhook と同じく待ち受けて `resumeAll` したあと
+  const automationEvents = new AutomationEvents({
+    automations,
+    ledger: eventLedger,
+    runner: automationRunner,
+    onTurnEnded: (listener) =>
+      threadTurns.onChange((change) => {
+        if (change.type === "ended") listener(change.threadId);
+      }),
+    declaredEvents: projectModuleEvents,
+    projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
+  });
   // 受信箱のレビュー待ちに添える tool の数（CLI の会話の記録から数える。追加・2026-10-15、`inbox/review-turn.ts`）
   const reviewToolCounter = new ReviewToolCounter((sessionId, dir) => sdkSessionReader.messages(sessionId, dir), NON_WORK_TOOLS);
   // ターンの始まりに本体が止まったら、何をしていたかを残す（`stall-profiler.ts`、下で用意する）
@@ -672,6 +716,31 @@ async function main(): Promise<void> {
     autoApproveFor: autoApproveAll,
     moduleCalls,
     elicitations,
+    // **始まりの印を持ち越す**（§4.3「段2」の「輪を止める」）。出来事を名乗る Module への呼び出しだけ、Thread・ターン・ホップ・
+    // そのターンが自動化の回ならその回を写しに残す（AI の全 tool 呼び出しを残すと一番増える出来事になる）
+    onTurnCall: async ({ moduleName, callId, threadId, projectId }) => {
+      let named = false;
+      try {
+        named = projectModuleEvents(projectId, moduleName).length > 0;
+      } catch {
+        // 名乗りが読めない Module の出来事は受けない（`relayEmitEvent` が断る）——写しも要らない
+      }
+      if (!named) return;
+      const thread = projectThread.getThread(threadId);
+      const turn = thread?.lastTurn;
+      // そのターンで積んだ自動化の届けもの（ターンの始まりより後ろの発言）の、一番新しいもの
+      const automation = turn
+        ? thread.messages.filter((m) => m.seq > turn.startedSeq && m.origin?.automation).at(-1)?.origin?.automation
+        : undefined;
+      await eventLedger.recordCall({
+        callId,
+        projectId,
+        threadId,
+        ...(turn ? { turnId: turn.turnId } : {}),
+        hop: threadTurns.hopOf(threadId) ?? 0,
+        ...(automation ? { automation } : {}),
+      });
+    },
     // **返信用の札**（決定・2026-09-25）。ホップ数は、札を出したターンのもの（人が送ったターン＝0）
     replies: {
       issue: (input) => replyHandles.issue({ ...input, hop: threadTurns.hopOf(input.threadId) ?? 0 }),
@@ -2268,6 +2337,8 @@ async function main(): Promise<void> {
         ...(input.threadId ? { threadId: input.threadId } : {}),
       });
     },
+    // **出来事を知らせる**（§4.3「段2」）。出せる相手は中継が絞る（`mayEmitEvent`）。Project は接続から決めたもの
+    emitEvent: (caller, input) => automationEvents.receive({ projectId: caller.projectId, moduleName: caller.moduleName }, input),
     gate: createRelayApprovalGate({
       grants: relayGrants,
       inbox,
@@ -2579,6 +2650,7 @@ async function main(): Promise<void> {
       inbox.save(),
       runtimeConfig.save(),
       automations.save(),
+      eventLedger.save(),
       remoteRuntimeStore.save(),
       relayGrants.save(),
       authStore.save(),
@@ -2645,6 +2717,7 @@ async function main(): Promise<void> {
       liveness.stop();
       automationClock.stop();
       automationWebhooks.stop();
+      automationEvents.stop();
       hostStall.stop();
       stallProfiler?.stop();
       for (const connName of [...pendingRestarts.keys()]) cancelRestart(connName);
@@ -2687,6 +2760,8 @@ async function main(): Promise<void> {
     automationClock.start();
     // 受けて、まだ届けていない Webhook をまとめ直す（§4.3「まとめる」）
     automationWebhooks.start();
+    // 受けて、まだ届けていない出来事も同じくまとめ直す（§4.3「段2」）
+    automationEvents.start();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));

@@ -35,6 +35,7 @@ import {
   isStatelessTransform,
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
+  RELAY_EMIT_EVENT_TOOL,
   type BantoModuleMeta,
   type Visibility,
 } from "@banto/module-contract";
@@ -350,7 +351,28 @@ export interface HostRelayServerOptions {
    * **受信箱に知らせる**（追加・2026-10-02、`docs/specs/v4-modules.md` §2.4 Repositories——GitHub のログインの更新に
    * 失敗したとき）。出せる相手は `mayRaiseNotice` が決める。渡さなければこの口は断る
    */
-  raiseNotice?(caller: CallerIdentity, input: { key: string; title: string; detail: string; threadId?: string }): Promise<void>;
+    raiseNotice?(caller: CallerIdentity, input: { key: string; title: string; detail: string; threadId?: string }): Promise<void>;
+  /**
+   * **出来事を知らせる**（追加・2026-10-16、アーキ仕様 §4.3「段2」の「知らせる口」）。出せる相手は `mayEmitEvent` が決め、
+   * どの Project の出来事かは `caller.projectId`（host が接続から決めたもの）。宣言との照合・重複落とし・輪の止め方は
+   * 受ける側（`automation/events.ts`）。断ったら `{refused}`——出口の箱はそれを捨てる。渡さなければこの口は断る
+   */
+  emitEvent?(caller: CallerIdentity & { projectId: string }, input: Record<string, unknown>): Promise<{ accepted: true; duplicate?: true; queued: number } | { refused: string }>;
+}
+
+/**
+ * **出来事を知らせてよい呼び出し元**（追加・2026-10-16、アーキ仕様 §4.3「段2」）。**Project ごとの同梱の Module だけ**
+ * （`mayRaiseNotice` とは逆の絞り方）。呼べないなら理由、呼べるなら `undefined`。
+ *
+ * - Project ごとだけ——どの Project の出来事かを host が接続から決められるのは、identity に `projectId` を刻んだ Module だけ。
+ *   banto 全体の Module は、どの Project の出来事かを host が確かめられない（段3で外の出来事と一緒に）
+ * - 同梱だけ——最初は同梱だけ（ユーザー・2026-10-16）。外から繋いだ Module は器が固まってから同じ形で開く
+ * - コンテナの中の AI もこの口を直接呼べる（合言葉を読める）。だから属性・`text`・`causedBy` は申告として扱う
+ */
+export function mayEmitEvent(identity: CallerIdentity): string | undefined {
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが出せる";
+  if (identity.projectId === undefined || identity.toolsContainer) return "Project ごとの Module だけが出せる";
+  return undefined;
 }
 
 /** 知らせの大きさの上限（受信箱の1行に出すもの。長すぎるものは断る——黙って切らない） */
@@ -566,6 +588,29 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         },
       },
       {
+        // **出来事を知らせる**（追加・2026-10-16、§4.3「段2」）。出せる相手は `mayEmitEvent` が決める。宣言に無い出来事・
+        // 型の合わない属性は断る（`{refused}`）。待つ自動化が無くても「受け取った」と返す
+        name: RELAY_EMIT_EVENT_TOOL,
+        description:
+          "名乗った出来事を知らせる（Project ごとの同梱の Module だけ）。同じ eventId は二度受けない。答えは {accepted} か {refused}",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "<この Module の名前>.<出来事の名前>" },
+            eventId: { type: "string", description: "重複落としの印（出し直しても同じ値）" },
+            occurredAt: { type: "string", description: "起きた時刻（ISO 8601）" },
+            fields: { type: "object", description: "名乗った属性の値" },
+            text: { type: "string", description: "本文（16KB まで。超えた分は切る）" },
+            causedBy: {
+              type: "object",
+              properties: { callId: { type: "string" } },
+              description: "その仕事を始めた呼び出しの印（host が呼び出しに刻んだ dev.banto/callId）",
+            },
+          },
+          required: ["name", "eventId", "occurredAt"],
+        },
+      },
+      {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
         // **宛先が Module の札も同じ口で届ける**（追加・2026-10-05）——送り手は宛先を知らず、host が札で振り分ける
@@ -671,6 +716,18 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         ...(threadId ? { threadId } : {}),
       });
       return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+    }
+
+    // **宛先は host 自身**。出来事は「起きたこと」で値は通らないので承認は通さず、出せる相手を絞る。断りは値で返す
+    // （出口の箱が捨てられるように）——口が無いときだけ投げる（一時の失敗として箱に残る）
+    if (request.params.name === RELAY_EMIT_EVENT_TOOL) {
+      if (!opts.emitEvent) throw new Error("この banto は出来事を受ける口を持っていません");
+      const why = mayEmitEvent(identity);
+      const reply =
+        why || identity.projectId === undefined
+          ? { refused: `${identity.moduleName} は出来事を出せません（${why ?? "Project ごとの Module だけが出せる"}）` }
+          : await opts.emitEvent({ ...identity, projectId: identity.projectId }, args);
+      return { content: [{ type: "text", text: JSON.stringify(reply) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が

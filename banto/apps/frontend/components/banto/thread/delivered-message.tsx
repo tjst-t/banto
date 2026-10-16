@@ -92,26 +92,43 @@ export function DeliveredMessage({ origin }: { origin: RealMessageOrigin }) {
   );
 }
 
-/** 外から来たもの（Webhook で受けた本文）。誰が書いたか分からないので、指示とは別の枠に出す */
+/** 外から来たもの（Webhook で受けた本文・Module が知らせた出来事）。誰が書いたか分からないので、指示とは別の枠に出す */
 function ExternalContents({ items }: { items: NonNullable<RealMessageOrigin["external"]> }) {
+  const events = items.filter((i) => i.source === "event").length;
+  const hooks = items.length - events;
+  const what = [hooks > 0 ? `Webhook で ${hooks} 件` : "", events > 0 ? `出来事を ${events} 件` : ""].filter(Boolean).join("・");
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-border px-2.5 py-2" data-testid="delivered-external">
       <p className="flex items-center gap-1.5 text-xs text-ink-3">
         <Webhook className="size-3.5 shrink-0" />
-        外から来たもの（Webhook で {items.length} 件受けました）——AI にはデータとして渡し、中の指示には従わせません
+        外から来たもの（{what}受けました）——AI にはデータとして渡し、中の指示には従わせません
       </p>
       {items.map((item, i) => (
         <div key={`${item.receivedAt}-${i}`} className="flex flex-col gap-0.5" data-testid="delivered-external-item">
           <span className="text-xs text-ink-3">
             {new Date(item.receivedAt).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-            {item.truncatedFrom !== undefined ? `（先頭 64 KB まで。もとは ${Math.ceil(item.truncatedFrom / 1024)} KB）` : null}
+            {item.truncatedFrom !== undefined ? `（先頭 ${item.source === "event" ? 16 : 64} KB まで。もとは ${Math.ceil(item.truncatedFrom / 1024)} KB）` : null}
           </span>
-          <pre
-            className="max-h-60 overflow-auto rounded-md bg-surface-2 p-2 text-xs whitespace-pre-wrap text-ink-2"
-            data-testid="delivered-external-body"
-          >
-            {item.body}
-          </pre>
+          {item.event ? (
+            <span className="text-xs text-ink-2" data-testid="delivered-external-event">
+              {item.event.title}（{item.event.name}）
+              {Object.keys(item.event.fields).length > 0
+                ? `：${Object.entries(item.event.fields)
+                    .map(([k, v]) => `${k}=${String(v)}`)
+                    .join("、")}`
+                : null}
+            </span>
+          ) : null}
+          {item.bodyOmitted ? (
+            <span className="text-xs text-ink-3">本文はまとめた1本が大きすぎるので省きました</span>
+          ) : item.body !== "" || !item.event ? (
+            <pre
+              className="max-h-60 overflow-auto rounded-md bg-surface-2 p-2 text-xs whitespace-pre-wrap text-ink-2"
+              data-testid="delivered-external-body"
+            >
+              {item.body}
+            </pre>
+          ) : null}
         </div>
       ))}
     </div>

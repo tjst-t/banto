@@ -120,6 +120,12 @@ export interface AgentProxyOptions {
    * 呼び出しに `dev.banto/autoApprove` を刻む（呼び出しのたびに引く）。渡されなければ刻まない
    */
   autoApproveFor?(projectId: string): boolean;
+  /**
+   * **AI のターンから Module の tool を呼ぶ直前**（追加・2026-10-16、アーキ仕様 §4.3「段2」の「始まりの印を持ち越す」）。
+   * 呼び出しの印（`dev.banto/callId`）と、どの Thread のターンかを渡す——host は出来事を名乗る Module への呼び出しだけを
+   * 写しに残し、あとで出来事の `causedBy` から引く。投げたら呼び出しは失敗にする（写しを残せないまま輪の止め方を外さない）
+   */
+  onTurnCall?(input: { connName: string; moduleName: string; callId: string; threadId: string; projectId: string }): Promise<void>;
   replies?: {
     issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; work?: BackgroundWork }): string;
     /** `waitingOn`：Module が「人の答えを待っている」と名乗ったら（`dev.banto/waitingOn`） */
@@ -310,6 +316,15 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     if (extra.signal.aborted) onOuterAbort();
     else extra.signal.addEventListener("abort", onOuterAbort, { once: true });
     try {
+      if (opts.onTurnCall && endCall?.id && opts.threadId && opts.projectId) {
+        await opts.onTurnCall({
+          connName: conn.name,
+          moduleName: conn.declaredName ?? conn.name,
+          callId: endCall.id,
+          threadId: opts.threadId,
+          projectId: opts.projectId,
+        });
+      }
       const result = await conn.client.callTool(
         {
           name: request.params.name,

@@ -56,6 +56,12 @@ const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 /** 「平日 9:00（Asia/Tokyo）」の形。カードと一覧で同じ言い方にする */
 export function describeAutomationSource(source: AutomationSource): string {
   if (source.kind === "webhook") return "Webhook を受けたとき";
+  if (source.kind === "event") {
+    const where = Object.entries(source.where ?? {})
+      .map(([k, v]) => `${k} が ${(Array.isArray(v) ? v : [v]).map((x) => JSON.stringify(x)).join("・")}`)
+      .join("、");
+    return `出来事 ${source.event} が起きたとき${where ? `（${where}）` : ""}`;
+  }
   return `${describeRepeat(source.repeat)}（${source.timeZone}）`;
 }
 
