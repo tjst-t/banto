@@ -28,7 +28,9 @@
 //                  mode, from, to, startedAt, updatedAt,
 //                  waiting?（待っている間の残り：{ blocking（activity の待つもの）, continuing（起き直したあと続くものの数）}）,
 //                  note?（いま止まっている理由。例「host が答えません」）, result?, error?, failedPhase?, logFile,
-//                  requestedBy?（{ label } だけ。セッションの id は写さない） }
+//                  requestedBy?（{ label } だけ。セッションの id は写さない）,
+//                  prebuilt?（組み立て済みを使ったか：{ status: "checking"|"waiting"|"downloading"|"used"|"skipped", run?, reason?,
+//                             bytes?: { done, total } }。scripts/prebuilt.mjs） }
 //   <id>.log     この回のログ（子プロセスの出力もそのまま）
 // 見るもの（host が置く印。数秒おき）：cancel（取ってくる・組み立てる・待つのをやめる。作りかけは消す）・
 //   force-now（待たずに起こし直す）
@@ -57,6 +59,12 @@
 //   --need-bytes <バイト>    BANTO_UPDATE_NEED_BYTES     組み立てに要る空き。既定は今の版の大きさ（du）
 //   --interval <秒>          BANTO_UPDATE_INTERVAL       activity を見る間隔。既定 5
 //   --mark-interval <秒>     BANTO_UPDATE_MARK_INTERVAL  印・確かめを見る間隔。既定 2
+//   --no-prebuilt            BANTO_UPDATE_NO_PREBUILT=1  組み立て済み（GitHub Actions が Release に置いたもの）を使わず、その場で組み立てる
+//   --prebuilt-base <URL>    BANTO_UPDATE_PREBUILT_BASE  組み立て済みの download の口（`releases/download` のタグの手前まで）。試験用
+//   --github-api <URL>       BANTO_UPDATE_GITHUB_API     組み立ての回を聞く口（runs の口を丸ごと）。試験用。上と両方渡す
+//   --prebuilt-wait <秒>     BANTO_UPDATE_PREBUILT_WAIT  GitHub で組み立て中を待つ上限。既定 1200
+//   --prebuilt-timeout <秒>  BANTO_UPDATE_PREBUILT_TIMEOUT 組み立て済みを取ってくる上限。既定 1800
+//   組み立て済みを使う段の作りは scripts/prebuilt.mjs（アーキ仕様 §2.5「組み立て済みのものを使う」）
 // 設定は BANTO_CONFIG_PATH か ~/.config/banto/config.json から読む（合言葉・port・dataDir・releaseDir）。
 
 import { spawn, spawnSync } from "node:child_process";
@@ -78,6 +86,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const RELEASE_REF = "refs/remotes/origin/release";
 /** 写し：`setup-update.sh` の FETCH_REFSPEC・core `self-update.ts` の FETCH_REFSPEC・install.sh（作成中） */
@@ -146,6 +155,11 @@ const fetchTimeoutMs = seconds("--fetch-timeout", "BANTO_UPDATE_FETCH_TIMEOUT", 
 const needBytesOverride = option("--need-bytes", "BANTO_UPDATE_NEED_BYTES", undefined);
 const activityIntervalMs = seconds("--interval", "BANTO_UPDATE_INTERVAL", 5);
 const markIntervalMs = seconds("--mark-interval", "BANTO_UPDATE_MARK_INTERVAL", 2);
+const noPrebuilt = flag("--no-prebuilt") || process.env.BANTO_UPDATE_NO_PREBUILT === "1";
+const prebuiltBase = option("--prebuilt-base", "BANTO_UPDATE_PREBUILT_BASE", undefined);
+const githubApi = option("--github-api", "BANTO_UPDATE_GITHUB_API", undefined);
+const prebuiltWaitMs = seconds("--prebuilt-wait", "BANTO_UPDATE_PREBUILT_WAIT", 1200);
+const prebuiltTimeoutMs = seconds("--prebuilt-timeout", "BANTO_UPDATE_PREBUILT_TIMEOUT", 1800);
 /** 待つ段の上限（分）。既定は無し——人が画面でやめる・すぐに切り替える。install.sh のように人が見ていない呼び手が付ける */
 const waitTimeoutMin = option("--wait-timeout", "BANTO_UPDATE_WAIT_TIMEOUT", undefined);
 const waitTimeoutMs = waitTimeoutMin === undefined ? undefined : Number(waitTimeoutMin) * 60_000;
@@ -430,6 +444,8 @@ function removeVersion(dir) {
   gitRepo(["worktree", "prune"]);
 }
 
+/** 最初の確かめで測った「要る分の目安」（今の版の大きさ）。組み立て済みを取ってくる直前に、その大きさを足して確かめ直す */
+let diskNeed;
 /** 組み立てる前に、今の版の大きさ（du）以上の空きがあるか。無ければ組み立てる前に断る */
 function checkDiskSpace(fromDir) {
   let need;
@@ -444,11 +460,78 @@ function checkDiskSpace(fromDir) {
     log("今の版が無いので、空きは確かめません（初めて入れる）");
     return;
   }
+  diskNeed = need;
   const fs = statfsSync(versionsDir);
   const free = Number(fs.bavail) * Number(fs.bsize);
-  const gib = (n) => `${(n / 1024 ** 3).toFixed(1)}GiB`;
   log(`空き：${gib(free)}（要る分の目安＝今の版の大きさ ${gib(need)}）`);
   if (free < need) fail(`${versionsDir} の空きが足りません（空き ${gib(free)}・要る分の目安 ${gib(need)}＝今の版の大きさ）。空けてから頼み直してください`);
+}
+const gib = (n) => `${(n / 1024 ** 3).toFixed(1)}GiB`;
+/** 組み立て済みを取ってくる直前の確かめ直し（仕様「使う側」2）。今の版の大きさ＋圧縮ファイルの大きさ */
+function checkDiskSpaceWithDownload(extra) {
+  if (diskNeed === undefined) return; // 初めて入れる——今の版が無いので測っていない
+  const need = diskNeed + extra;
+  const fs = statfsSync(versionsDir);
+  const free = Number(fs.bavail) * Number(fs.bsize);
+  log(`空き：${gib(free)}（要る分の目安＝今の版の大きさ＋組み立て済みのファイル ${gib(need)}）`);
+  if (free < need) fail(`${versionsDir} の空きが足りません（空き ${gib(free)}・要る分の目安 ${gib(need)}＝今の版の大きさ＋組み立て済みのファイル）。空けてから頼み直してください`);
+}
+
+/** origin の URL（`--remote` が URL ならそれ） */
+function originUrl() {
+  if (/[:/]/.test(remote)) return remote;
+  const r = gitRepo(["remote", "get-url", remote]);
+  return r.status === 0 ? r.stdout.trim() : undefined;
+}
+
+/**
+ * **組み立て済みを使う**（仕様「使う側」）。`scripts/prebuilt.mjs` を動的に読む——無ければ（古い install.sh が update.mjs だけを
+ * 写した等）理由を残してその場で組み立てる。使えたら true
+ */
+async function tryPrebuilt(to, newDir) {
+  const setPrebuilt = (prebuilt) => setState({ prebuilt });
+  if (noPrebuilt) {
+    setPrebuilt({ status: "skipped", reason: "--no-prebuilt" });
+    return false;
+  }
+  let mod;
+  try {
+    mod = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "prebuilt.mjs")).href);
+  } catch (err) {
+    const reason = `組み立て済みを使う部品（prebuilt.mjs）を読めません：${errorText(err)}`;
+    log(`${reason}。その場で組み立てます`);
+    setPrebuilt({ status: "skipped", reason });
+    return false;
+  }
+  const r = await mod.usePrebuilt({
+    commit: to,
+    originUrl: prebuiltBase || githubApi ? undefined : originUrl(),
+    versionsDir,
+    newDir,
+    id,
+    log,
+    setPrebuilt,
+    note: (text) => setState({ note: text }),
+    checkStop: () => {
+      if (terminated) throw new Stop("cancelled", "止められました（SIGTERM）");
+      if (marker("cancel")) throw new Stop("cancelled", "やめました（組み立て済みを取ってくる途中）");
+    },
+    checkSpace: checkDiskSpaceWithDownload,
+    prebuiltBase,
+    githubApi,
+    waitMs: prebuiltWaitMs,
+    downloadTimeoutMs: prebuiltTimeoutMs,
+    markIntervalMs,
+    ...(process.env.BANTO_UPDATE_PREBUILT_POLL_MS
+      ? {
+          headIntervalMs: Number(process.env.BANTO_UPDATE_PREBUILT_POLL_MS),
+          apiIntervalMs: Number(process.env.BANTO_UPDATE_PREBUILT_POLL_MS),
+          registerDelayMs: Number(process.env.BANTO_UPDATE_PREBUILT_POLL_MS),
+        }
+      : {}),
+  });
+  if (!r.used) log(`組み立て済みは使いません：${r.reason}。その場で組み立てます`);
+  return r.used;
 }
 
 let terminated = false;
@@ -734,6 +817,11 @@ async function run() {
   if (dryRun) {
     const commits = from ? gitRepoOk(["log", "--format=%h %s", `${from}..${to}`, "--"]) : "（初めて入れる）";
     console.log(`\n今の版：${from ?? "（無し）"}\n新しい版：${to}\n入るコミット：\n${commits}\n`);
+    console.log(
+      noPrebuilt
+        ? "組み立て済み：使いません（--no-prebuilt）"
+        : `組み立て済み：${prebuiltBase ?? `GitHub（${originUrl() ?? "origin が分かりません"}）`} の build-${to.slice(0, 12)} があれば使います（無ければ下のとおり組み立てる）`,
+    );
     console.log(`組み立てる：${newDir}（${buildOverride ?? "npm ci --include=dev && npm run build"}）`);
     if (!first) {
       console.log(mode === "wait" ? "待つ：動いているものが無くなるまで" : "待たない");
@@ -767,12 +855,16 @@ async function run() {
   building = newDir;
   gitRepoOk(["worktree", "add", "--detach", newDir, to]);
   const bantoDir = join(newDir, "banto");
-  if (buildOverride) await runStep("sh", ["-c", buildOverride], bantoDir);
-  else {
-    await runStep("npm", ["ci", "--include=dev"], bantoDir);
-    await runStep("npm", ["run", "build"], bantoDir);
+  if (await tryPrebuilt(to, newDir)) {
+    log("組み立て済みの版を使います（その場では組み立てません）");
+  } else {
+    if (buildOverride) await runStep("sh", ["-c", buildOverride], bantoDir);
+    else {
+      await runStep("npm", ["ci", "--include=dev"], bantoDir);
+      await runStep("npm", ["run", "build"], bantoDir);
+    }
+    log("組み立てました");
   }
-  log("組み立てました");
 
   // ── 3. 待つ ──
   if (mode === "wait" && !first) {
@@ -897,7 +989,8 @@ async function run() {
 /** previous より古い版を消す。コンテナがまだ mount している版は残す（次の回にまた見る）。Incus に聞けなければ何も消さない */
 function cleanUpOldVersions() {
   const keep = new Set([realpathOrNull(currentLink), realpathOrNull(previousLink)]);
-  const old = readdirSync(versionsDir).filter((name) => !keep.has(realpathOrNull(join(versionsDir, name))));
+  // `.` で始まるもの（組み立て済みの作業フォルダ `.prebuilt-*`）は版ではない——次の回の段2が片づける
+  const old = readdirSync(versionsDir).filter((name) => !name.startsWith(".") && !keep.has(realpathOrNull(join(versionsDir, name))));
   if (old.length === 0) return;
   const inUse = versionsInUse();
   if (inUse.error) {

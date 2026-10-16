@@ -1296,7 +1296,9 @@ install_first_version() {
   tmpd=$(mktemp -d)
   git --git-dir "$repo" show "refs/remotes/origin/release:banto/scripts/update.mjs" >"$tmpd/update.mjs" 2>/dev/null ||
     die "release に banto/scripts/update.mjs がありません（画面からの更新が入る前の版です）" "画面からの更新が入った版を release に置いてから打ち直してください"
-  say "最初の版を組み立てる（取ってきた版の update.mjs --first。数分かかります）"
+  # 組み立て済みを使う部品（update.mjs が隣から読む）。無い版なら update.mjs がその場で組み立てる
+  git --git-dir "$repo" show "refs/remotes/origin/release:banto/scripts/prebuilt.mjs" >"$tmpd/prebuilt.mjs" 2>/dev/null || rm -f "$tmpd/prebuilt.mjs"
+  say "最初の版を入れる（取ってきた版の update.mjs --first。GitHub で組み立て済みの版があれば取ってきて重ね、無ければ組み立てる——数分かかります）"
   drop_sudo "取ってきた版の update.mjs（npm の依存と build）"
   run_detached /usr/local/bin/node "$tmpd/update.mjs" --first ||
     die "最初の版を組み立てられませんでした（上の出力。ログは $DATA_DIR/update/ にも）" "コードの側の問題なら、直った版が release に来てから打ち直してください"

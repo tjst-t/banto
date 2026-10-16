@@ -868,3 +868,292 @@ test("取ってくる途中でも cancel でやめられる", T, async () => {
     assert.equal(ctx.state().phase, "cancelled");
   });
 });
+
+// ───────────── 組み立て済みを使う（scripts/prebuilt.mjs、アーキ仕様 §2.5「組み立て済みのものを使う」） ─────────────
+//
+// GitHub 役は小さな http サーバ：`/dl/build-<頭12>/<ファイル>` に組み立て済みと .sha256 を置き、`/runs` が回の一覧を返す。
+// 組み立て済みは試験の中で作る（banto/node_modules と印のファイル。workspace のリンク `node_modules/@banto/core` も入れる）。
+// その場で組み立てに落ちたかは、偽の組み立て（built.txt）で見分ける
+
+import { zstdCompressSync } from "node:zlib";
+import { createHash } from "node:crypto";
+import { symlinkSync } from "node:fs";
+
+/** 組み立て済みの tar.zst を作る。`tweak(dir)` で中身を壊せる。返すのは中身のバイト列 */
+function makePrebuilt(dir, commitSha, { marker = {}, tweak } = {}) {
+  const src = mkdtempSync(join(dir, "pb-src-"));
+  mkdirSync(join(src, "banto", "node_modules", "foo"), { recursive: true });
+  mkdirSync(join(src, "banto", "node_modules", "@banto"), { recursive: true });
+  writeFileSync(join(src, "banto", "node_modules", "foo", "index.js"), "module.exports = 1;\n");
+  symlinkSync("../../packages/core", join(src, "banto", "node_modules", "@banto", "core"));
+  writeFileSync(
+    join(src, "banto", ".banto-prebuilt.json"),
+    JSON.stringify({
+      commit: commitSha,
+      platform: "linux-x64",
+      node: process.versions.node,
+      cpu: { avx2: false },
+      builtAt: "2026-10-16T00:00:00Z",
+      run: "https://github.com/o/r/actions/runs/1",
+      ...marker,
+    }),
+  );
+  tweak?.(join(src, "banto"));
+  const tar = execFileSync("tar", ["-C", src, "-cf", "-", "banto"], { maxBuffer: 1 << 26 });
+  rmSync(src, { recursive: true, force: true });
+  return zstdCompressSync(tar);
+}
+
+/** GitHub 役。`gh.assets` に置いたものを配り、`gh.runs` を回の一覧として返す。`gh.slow` なら少しずつ返す */
+async function withGithub(fn) {
+  const gh = { assets: new Map(), runs: [], heads: 0, apiCalls: 0, slow: false };
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://x");
+    if (url.pathname === "/runs") {
+      gh.apiCalls++;
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ workflow_runs: gh.runs }));
+    }
+    const body = gh.assets.get(url.pathname);
+    if (req.method === "HEAD") gh.heads++;
+    if (!body) return res.writeHead(404).end();
+    res.writeHead(200, { "content-length": body.length });
+    if (req.method === "HEAD") return res.end();
+    if (!gh.slow) return res.end(body);
+    let i = 0;
+    const timer = setInterval(() => {
+      if (res.destroyed) return clearInterval(timer);
+      res.write(body.subarray(i, i + 64));
+      i += 64;
+      if (i >= body.length) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 100);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  gh.env = { BANTO_UPDATE_PREBUILT_BASE: `${base}/dl`, BANTO_UPDATE_GITHUB_API: `${base}/runs`, BANTO_UPDATE_PREBUILT_POLL_MS: "200" };
+  /** その commit の組み立て済みを置く（`sum` で .sha256 の中身を差し替えられる） */
+  gh.publish = (commitSha, bytes, { sum } = {}) => {
+    const name = `banto-${commitSha}-linux-x64.tar.zst`;
+    const dir = `/dl/build-${commitSha.slice(0, 12)}`;
+    gh.assets.set(`${dir}/${name}`, bytes);
+    const hex = sum ?? createHash("sha256").update(bytes).digest("hex");
+    gh.assets.set(`${dir}/${name}.sha256`, Buffer.from(`${hex}  ${name}\n`));
+  };
+  try {
+    await fn(gh);
+  } finally {
+    server.closeAllConnections?.();
+    server.close();
+  }
+}
+
+/** 版のフォルダに作業フォルダが残っていない */
+const noWorkDirs = (ctx) => readdirSync(join(ctx.rel, "versions")).filter((n) => n.startsWith(".prebuilt-"));
+
+test("組み立て済み：あれば取ってきて重ね、その場では組み立てない（workspace のリンクも通す・作業フォルダを残さない）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      const { code, out } = await ctx.start(["--now"], { ...gh.env, BANTO_UPDATE_BUILD: "echo 組み立ててはいけない >&2; exit 9" }).done;
+      assert.equal(code, 0, out);
+      const s = ctx.state();
+      assert.equal(s.phase, "done", JSON.stringify(s));
+      assert.equal(s.prebuilt?.status, "used");
+      assert.equal(s.prebuilt?.run, "https://github.com/o/r/actions/runs/1");
+      assert.equal(ctx.current(), v(b));
+      const banto = join(ctx.rel, "current", "banto");
+      assert.equal(readFileSync(join(banto, "node_modules", "foo", "index.js"), "utf8"), "module.exports = 1;\n");
+      assert.equal(readlinkSync(join(banto, "node_modules", "@banto", "core")), "../../packages/core");
+      assert.equal(readFileSync(join(banto, "README"), "utf8"), "v2\n", "git が管理するファイルが変わった");
+      assert.equal(git(join(ctx.rel, "current"), "status", "--porcelain", "--untracked-files=no"), "", "管理しているファイルが書き換わった");
+      assert.deepEqual(noWorkDirs(ctx), []);
+      assert.match(readFileSync(s.logFile, "utf8"), /組み立て済みの版を重ねました/);
+    });
+  });
+});
+
+for (const [name, setup, reason] of [
+  ["sha256 が合わない", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b), { sum: "0".repeat(64) }), /sha256 が合いません/],
+  [
+    "banto/ の外を指すリンクがある",
+    (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => symlinkSync("../../../../etc", join(d, "node_modules", "evil")) })),
+    /banto\/ の外を指すリンク/,
+  ],
+  [
+    "絶対パスを指すリンクがある",
+    (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => symlinkSync("/etc/passwd", join(d, "node_modules", "evil")) })),
+    /絶対パスを指すリンク/,
+  ],
+  [
+    "決めた場所の外のファイルがある",
+    (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { tweak: (d) => writeFileSync(join(d, "README"), "すり替え\n") })),
+    /決めた場所の外/,
+  ],
+  ["印の commit が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { marker: { commit: "f".repeat(40) } })), /印の commit/],
+  ["印の platform が違う", (gh, b, dir) => gh.publish(b, makePrebuilt(dir, b, { marker: { platform: "linux-arm64" } })), /platform/],
+]) {
+  test(`組み立て済み：${name}なら使わず、その場で組み立てる（重ねかけたものも作業フォルダも残さない）`, T, async () => {
+    await withRelease(async (ctx) => {
+      await withGithub(async (gh) => {
+        const b = ctx.commit("二つ目");
+        setup(gh, b, ctx.dir);
+        const { code, out } = await ctx.start(["--now"], gh.env).done;
+        assert.equal(code, 0, out);
+        const s = ctx.state();
+        assert.equal(s.phase, "done", JSON.stringify(s));
+        assert.equal(s.prebuilt?.status, "skipped");
+        assert.match(s.prebuilt?.reason ?? "", reason);
+        const banto = join(ctx.rel, "current", "banto");
+        assert.equal(readFileSync(join(banto, "built.txt"), "utf8"), "built\n", "その場で組み立てていない");
+        assert.equal(existsSync(join(banto, "node_modules")), false, "使わない組み立て済みが重なっている");
+        assert.equal(readFileSync(join(banto, "README"), "utf8"), "v2\n");
+        assert.deepEqual(noWorkDirs(ctx), []);
+      });
+    });
+  });
+}
+
+test("組み立て済み：GitHub で組み立て中なら待ち、出来上がったら使う（待つ間は state に waiting）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.runs = [{ run_number: 1, run_attempt: 1, status: "in_progress", conclusion: null }];
+      const run = ctx.start(["--now"], gh.env);
+      await ctx.waitForState((s) => s.prebuilt?.status === "waiting", "組み立て中を待ちません");
+      assert.match(ctx.state().note ?? "", /GitHub で組み立て中です/);
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.equal(ctx.state().prebuilt?.status, "used");
+      assert.equal(existsSync(join(ctx.rel, "current", "banto", "built.txt")), false);
+    });
+  });
+});
+
+test("組み立て済み：回の一覧で、待っている回が cancelled になっても走っている回があれば待つ（concurrency）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.runs = [
+        { run_number: 3, run_attempt: 1, status: "completed", conclusion: "cancelled" },
+        { run_number: 2, run_attempt: 1, status: "in_progress", conclusion: null },
+      ];
+      const run = ctx.start(["--now"], gh.env);
+      await ctx.waitForState((s) => s.prebuilt?.status === "waiting", "走っている回を待ちません");
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      assert.equal((await run.done).code, 0);
+      assert.equal(ctx.state().prebuilt?.status, "used");
+    });
+  });
+});
+
+for (const [name, runs, reason] of [
+  ["GitHub でテストが落ちた", [{ run_number: 1, status: "completed", conclusion: "failure", html_url: "https://github.com/o/r/actions/runs/9" }], /テストか組み立てが落ちています/],
+  ["GitHub の回が止められた", [{ run_number: 1, status: "completed", conclusion: "cancelled" }], /途中で止まりました/],
+  ["成功した回があるのにファイルが無い（消された）", [{ run_number: 1, status: "completed", conclusion: "success" }], /消された/],
+  ["GitHub で組み立てられていない（聞き直しても回が無い）", [], /組み立てられていません/],
+]) {
+  test(`組み立て済み：${name}なら、待たずにその場で組み立てる`, T, async () => {
+    await withRelease(async (ctx) => {
+      await withGithub(async (gh) => {
+        ctx.commit("二つ目");
+        gh.runs = runs;
+        const { code, out } = await ctx.start(["--now"], gh.env).done;
+        assert.equal(code, 0, out);
+        const s = ctx.state();
+        assert.equal(s.prebuilt?.status, "skipped");
+        assert.match(s.prebuilt?.reason ?? "", reason);
+        assert.equal(readFileSync(join(ctx.rel, "current", "banto", "built.txt"), "utf8"), "built\n");
+      });
+    });
+  });
+}
+
+test("組み立て済み：待つ上限を越えたら、その場で組み立てる", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      ctx.commit("二つ目");
+      gh.runs = [{ run_number: 1, status: "queued", conclusion: null }];
+      const { code } = await ctx.start(["--now"], { ...gh.env, BANTO_UPDATE_PREBUILT_WAIT: "1" }).done;
+      assert.equal(code, 0);
+      assert.match(ctx.state().prebuilt?.reason ?? "", /待ちましたが出来ません/);
+      assert.equal(existsSync(join(ctx.rel, "current", "banto", "built.txt")), true);
+    });
+  });
+});
+
+test("組み立て済み：組み立て中を待つ間に cancel でやめられる（版も作業フォルダも残さない）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.runs = [{ run_number: 1, status: "in_progress", conclusion: null }];
+      const run = ctx.start(["--now"], gh.env);
+      await ctx.waitForState((s) => s.prebuilt?.status === "waiting", "待ちません");
+      ctx.mark("cancel");
+      const { code } = await run.done;
+      assert.equal(code, 0);
+      assert.equal(ctx.state().phase, "cancelled");
+      assert.equal(ctx.current(), v(ctx.first));
+      assert.equal(existsSync(join(ctx.rel, v(b))), false, "作りかけが残っている");
+      assert.deepEqual(noWorkDirs(ctx), []);
+      assert.deepEqual(ctx.systemctlCalls(), []);
+    });
+  });
+});
+
+test("組み立て済み：取ってくる途中でも cancel でやめられる（作業フォルダを残さない）", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      // 少しずつ返すので、取ってくるのに数秒かかる大きさにする（中身は使わない）
+      gh.publish(b, Buffer.concat([makePrebuilt(ctx.dir, b), Buffer.alloc(64 * 200)]));
+      gh.slow = true;
+      const run = ctx.start(["--now"], gh.env);
+      await ctx.waitForState((s) => s.prebuilt?.status === "downloading", "取ってきません");
+      ctx.mark("cancel");
+      const { code } = await run.done;
+      assert.equal(code, 0);
+      assert.equal(ctx.state().phase, "cancelled");
+      assert.equal(existsSync(join(ctx.rel, v(b))), false);
+      assert.deepEqual(noWorkDirs(ctx), []);
+    });
+  });
+});
+
+test("組み立て済み：前の回が殺されて残した作業フォルダは、次の回の初めに消す。古い版の片づけは触らない", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      mkdirSync(join(ctx.rel, "versions", ".prebuilt-old", "x"), { recursive: true });
+      const b = ctx.commit("二つ目");
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      assert.equal((await ctx.start(["--now"], gh.env).done).code, 0);
+      assert.deepEqual(noWorkDirs(ctx), []);
+      assert.match(readFileSync(ctx.state().logFile, "utf8"), /前の回の作業フォルダを消します：\.prebuilt-old/);
+    });
+  });
+});
+
+test("組み立て済み：--no-prebuilt なら取りに行かない", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const b = ctx.commit("二つ目");
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      assert.equal((await ctx.start(["--now", "--no-prebuilt"], gh.env).done).code, 0);
+      assert.equal(ctx.state().prebuilt?.status, "skipped");
+      assert.equal(gh.heads, 0, "取りに行った");
+      assert.equal(existsSync(join(ctx.rel, "current", "banto", "built.txt")), true);
+    });
+  });
+});
+
+test("組み立て済み：取り込み元が GitHub でなければ取りに行かない（今までの試験の形）", T, async () => {
+  await withRelease(async (ctx) => {
+    ctx.commit("二つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    assert.match(ctx.state().prebuilt?.reason ?? "", /GitHub ではありません/);
+  });
+});
