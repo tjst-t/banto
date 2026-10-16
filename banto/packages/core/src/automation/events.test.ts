@@ -214,7 +214,7 @@ test("同じ自動化・同じ出来事・同じ主体は 60分に6回まで—�
   });
 });
 
-test("届けもの：出来事は見出しに属性、本文は囲み。まとめた1本が 64KB を超えたら本文を省いて見出しだけ。ホップは一番大きいもの", () => {
+test("届けもの：出来事は見出しに属性、本文は囲み。まとめた1本は先頭から 64KB まで本文を残し、収まらなくなった出来事から見出しだけ。ホップは一番大きいもの", () => {
   const ev = (text: string, hop: number): AutomationReceivedEvent => ({
     kind: "event",
     receivedId: `r${hop}`,
@@ -238,10 +238,19 @@ test("届けもの：出来事は見出しに属性、本文は囲み。まと�
   assert.equal(hopOf([ev("", 1), ev("", 3)]), 3);
   assert.equal(hopOf([]), 0);
 
+  // 1件 16KB の本文を5件：先頭の4件（64KB）は収まるので本文を残し、5件目から見出しだけ
+  const k16 = "x".repeat(16 * 1024);
+  const five = externalOf([1, 2, 3, 4, 5].map((n) => ev(k16, n)));
+  assert.equal(five.omitted, 1);
+  assert.deepEqual(five.items.map((i) => i.body.length), [k16.length, k16.length, k16.length, k16.length, 0]);
+  assert.equal(five.items[4]!.bodyOmitted, true);
+  assert.equal(five.items[4]!.event?.eventId, "e5", "省いた出来事の見出しが残っていない");
+  assert.equal(five.items.slice(0, 4).some((i) => i.bodyOmitted), false);
+  // 一度収まらなくなったら、後ろの小さいものも省く（途中から本文が戻らない）
   const big = "x".repeat(AUTOMATION_EXTERNAL_MAX_BYTES / 2 + 1);
-  const large = externalOf([ev(big, 1), ev(big, 2)]);
-  assert.equal(large.omitted, 2);
-  assert.equal(large.items.every((i) => i.body === "" && i.bodyOmitted === true && i.event?.name === "service.crashed"), true);
+  const mixed = externalOf([ev(big, 1), ev(big, 2), ev("短い", 3), ev("", 4)]);
+  assert.deepEqual(mixed.items.map((i) => i.bodyOmitted === true), [false, true, true, false]);
+  assert.equal(mixed.omitted, 2);
 
   const prompt = composeTurnPrompt(
     [

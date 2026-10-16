@@ -71,23 +71,30 @@ const FROM = "banto";
 export const AUTOMATION_EXTERNAL_MAX_BYTES = 64 * 1024;
 
 /**
- * **届けものに添える外から来たもの**。出来事は名前・題・属性を見出しに、`text` を本文に。まとめた1本の本文が上限を超えるなら、
- * 出来事の本文を省いて見出しだけ並べ、省いた数を返す（Webhook の本文は受けたときに切ってあるので省かない）
+ * **届けものに添える外から来たもの**。出来事は名前・題・属性を見出しに、`text` を本文に。まとめた1本の本文は先頭から積み、
+ * 上限に収まらなくなった出来事から本文を省いて見出しだけ並べ、省いた数を返す（アーキ仕様 §4.3「超える分は出来事の見出しだけ」。
+ * Webhook の本文は受けたときに切ってあるので省かない）
  */
 export function externalOf(received: readonly AutomationReceived[]): { items: ExternalContent[]; omitted: number } {
-  const total = received.reduce((n, r) => n + Buffer.byteLength(r.kind === "event" ? r.text ?? "" : r.body, "utf8"), 0);
-  const omit = total > AUTOMATION_EXTERNAL_MAX_BYTES;
+  let used = 0;
+  let full = false;
   let omitted = 0;
   const items = received.map((r): ExternalContent => {
     if (r.kind !== "event") {
+      used += Buffer.byteLength(r.body, "utf8");
       return { source: "webhook", receivedAt: r.at, body: r.body, ...(r.truncatedFrom !== undefined ? { truncatedFrom: r.truncatedFrom } : {}) };
     }
-    const dropBody = omit && (r.text ?? "") !== "";
+    const text = r.text ?? "";
+    const bytes = Buffer.byteLength(text, "utf8");
+    // 一度収まらなくなったら、後ろの出来事も本文を省く（並びの途中から本文が戻ると、どこまで省いたか読み違える）
+    if (!full && used + bytes > AUTOMATION_EXTERNAL_MAX_BYTES) full = true;
+    const dropBody = full && text !== "";
     if (dropBody) omitted++;
+    else used += bytes;
     return {
       source: "event",
       receivedAt: r.at,
-      body: dropBody ? "" : r.text ?? "",
+      body: dropBody ? "" : text,
       ...(!dropBody && r.truncatedFrom !== undefined ? { truncatedFrom: r.truncatedFrom } : {}),
       event: { name: r.name, title: r.title, eventId: r.eventId, occurredAt: r.occurredAt, fields: r.fields },
       ...(dropBody ? { bodyOmitted: true as const } : {}),

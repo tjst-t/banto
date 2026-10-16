@@ -3309,11 +3309,13 @@ canceled）、認証を持つ。
   `ThreadState.receivedFrom`（送り元の Thread → 最後に届いた時刻）で見る。会話を引き継がない Fork は `thread.created` の
   `fresh`。届いたものの送り元は `MessageOrigin.sender`、AI には `<banto-delivery>` の属性と返し方の一文で渡す
 
-### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313）
+### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313。段2の器を実装・2026-10-16、Backlog #345）
 
-段1（台帳・届け方・時刻・受信箱・画面・AI の tool・Webhook）は実装済み、段2（出来事）は下の「段2」に仕様だけ。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
+段1（台帳・届け方・時刻・受信箱・画面・AI の tool・Webhook）は実装済み。段2（出来事）は**器**（名乗り・`relayEmitEvent`・条件・
+まとめ役の共通化・重複落とし・輪の止め方・出口の箱）を実装済み（下の「段2の器で実装で決めたこと」）。段2の残り（待たれている Module を
+起こしておく・最初の出来事・`banto.turn-decisions` と判断役・作るフォーム）は未実装。実装で決めた細部（時計の刻みと `clockFrom`・同時本数3本と2分ずらし・
 Webhook の印を欄に入れない・きっかけの種類は作ったあと変えない 等）は `docs/notes/2026-10-15-automation-{deliver,clock,inbox,canvas,ai-tools,webhook}.md`。
-段2（Module の出来事）・段3（外の出来事）・本物のモデルでの確かめ（#321）は未着手。
+段2の残り・段3（外の出来事）・本物のモデルでの確かめ（#321）は未着手。
 
 「何かが起きたら、決まった指示でこの Project の AI を動かす」仕組みを core に1つ持つ。名前は**自動化**（機能も1件ずつも。
 「きっかけ」は何が起きたらの部分の呼び名）。cron（時刻）はきっかけの1つで、最初に作るのはそれ（ユーザー）。経緯と Fable の
@@ -3432,7 +3434,7 @@ Webhook の印を欄に入れない・きっかけの種類は作ったあと変
   一覧と一時停止は聞かない。自動化で起きたターンの中から自動化を作る呼び出しも同じく止まる
 - 承認が要る操作に当たったときは今どおり（その Thread の承認モード・Project の自動許可に従う）。自動化専用の許し方は作らない
 
-#### 段2：出来事をきっかけにする（決定・2026-10-16、ユーザー。Fable のレビュー1回を反映。未実装、Backlog のストーリー `automation-events`）
+#### 段2：出来事をきっかけにする（決定・2026-10-16、ユーザー。Fable のレビュー2回を反映。器を実装・2026-10-16、Backlog #345。残りは未実装、Backlog のストーリー `automation-events`）
 
 Module や banto 自身で起きたこと（Service が落ちた・Factory の件が止まった・決めることのあるターンが終わった 等）を
 きっかけにする。**出来事は Webhook と同じ道に乗せる**——受けたら `automation.received` に残し、待つ時間でまとめ、前の回が
@@ -3445,13 +3447,14 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
 （Factory は今どおり札で頼んだ会話に知らせ、出来事も出す）。
 
 - **出どころ**：
-  - **同梱の Project ごとの Module**——宣言の `_meta["dev.banto/events"]` で出す出来事を名乗る。**どの Project の出来事かは host が
+  - **同梱の Project ごとの Module**——宣言（`dev.banto/module`）の `events` で出す出来事を名乗る。**どの Project の出来事かは host が
     接続から決める**（Project ごとの Module の identity には host が `projectId` を刻む。コンテナでも別のサーバでも同じ。Module の
     申告は使わない）。**最初は同梱だけ**（ユーザー・2026-10-16）——外から繋いだ Module は器が固まってから同じ形で開く。banto 全体の
     Module（Repositories 等）は、どの Project の出来事かを host が確かめられないので段2では扱わない（段3で外の出来事と一緒に）
   - **banto 自身**（出どころ名 `banto`）——core が出す。最初は1つ：`banto.turn-decisions`（下）
-- **名乗り方**（`dev.banto/events`）：出来事ごとに `name`（`<出どころ>.<名前>`、例 `service.crashed`）・`title`・`description`・
-  `fields`（属性の名前ごとに `type`（`string`／`number`／`boolean`）・`title`・任意の `enum`）。core は中身を知らず、画面と AI に
+- **名乗り方**（宣言の `dev.banto/module` の `events`）：出来事ごとに `name`（`<出どころ>.<名前>`、例 `service.crashed`）・`title`・`description`・
+  `fields`（属性の名前ごとに `type`（`string`／`number`／`boolean`）・`title`・任意の `enum`）・任意の `subject`（回数の歯止めの主体にする
+  属性。`fields` にある名前）。core は中身を知らず、画面と AI に
   そのまま見せる。宣言に無い出来事・型の合わない属性は受けない。`<出どころ>` は宣言した Module 自身の名前と一致しなければならず、
   `banto.*` は Module が名乗れない（core だけが出す）
 - **信じてよいものの境**（レビュー2回目）：コンテナの中の AI は Module の合言葉を読め、`relayEmitEvent` を直接呼べる（§1「中から来たものは
@@ -3461,12 +3464,15 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
   fields, text?, causedBy? }`。許すのは `identity.projectId` があり同梱のもの（`mayEmitEvent`、`mayRaiseNotice` とは逆の絞り方）。
   `text` は 16KB で切り、外から来たものの囲みで渡す（§4.2・#312）。`eventId` は出す側が付ける重複落としの印
   - **断らずにまとめる**：速さを超えても断らない——受けて `automation.received` に積み、同じ出来事名はまとめる（AI が Backlog を
-    50件まとめて変えたときの後半を失わない）。断るのは宣言違反と、溜める上限（`pendingMax`）を超えた異常な量だけ（ログに残す）
+    50件まとめて変えたときの後半を失わない）。断るのは宣言違反だけ。溜める上限（自動化ごとに 100 件、`EVENT_PENDING_MAX`。Webhook と
+    同じ）に達した自動化には**その出来事を積まずにログに残す**——出来事そのものは受け取ったと返す（1つの自動化が詰まっていても、同じ
+    出来事を待つほかの自動化と出口の箱を止めない）
   - **重複落としは消えない置き場に**：Project＋出どころ（Module）ごとに「見た `eventId` と時刻」を自動化の台帳とは別の fold（同じ `SnapshotProjection`）に
     持ち、7日で刈る。host を起こし直しても箱からの出し直しを二度受けない
   - **待つ自動化が無い出来事も「受け取った」と返す**（残さない）——出口の箱を空けるため
-  - **まとめた1本の大きさは 64KB まで**（Webhook と同じ）。超える分は出来事の見出し（名前・属性）だけ並べ、`text` を省いて「n 件の本文を
-    省きました」と添える
+  - **まとめた1本の大きさは 64KB まで**（Webhook と同じ）。本文は先頭（古いもの）から積み、**収まらなくなった出来事から**見出し（名前・属性）
+    だけ並べて `text` を省き、指示の下に「n 件の本文を省き、見出しだけを添えました」と添える。一度収まらなくなったら、後ろの小さいものも
+    省く（並びの途中から本文が戻ると、どこまで省いたか読み違える）
 - **条件**（`source: { kind: "event", event: "<出どころ>.<名前>", where?: { <属性>: 値 | 値[] } }`）：属性の「等しい／どれか」だけ。
   式・正規表現・大小の比べは持たない。`where` は作るときに宣言の `fields` と照らす（台帳から Module の宣言を引ける口を足す）
 - **待たれている出どころを眠らせない**：その Project に、ある Module の出来事を待つ自動化（一時停止していないもの）がある間は、core が
@@ -3486,7 +3492,7 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
     `automation { id, runId }`。引けたら出来事に**そのターンのホップ＋1**・**起こした Thread とターン**・**起こした自動化の回**を付ける
     （「自分の回が起こした」の判定は Thread ではなくこの `automation` で行う——前の回を引き継ぐ Fork・Base は複数の回や人のターンに使われる
     ため）。印が無い・引けなければホップ 0
-  - **その自動化自身の回のターンが起こした出来事では、その自動化を起こさない**（既定。自動化ごとに外せる）
+  - **その自動化自身の回のターンが起こした出来事では、その自動化を起こさない**（既定。自動化ごとに `source.allowSelfTriggered: true` で外せる）
   - **同じ自動化が同じ出来事・同じ主体で起きるのは N 分に M 回まで**（既定 60分に6回、超えたら溜めずに飛ばし理由を残す）。鍵は
     「自動化＋出来事名＋主体」で、主体は出来事の宣言が `subject` で名乗る属性（`service.crashed` は `service`、`factory.*` は `item`、
     `backlog.item-changed` は項目の id、`banto.turn-decisions` は `thread`）。名乗らなければ出来事名だけ。判断役が Project 全体で1時間に
@@ -3505,6 +3511,43 @@ Module や banto 自身で起きたこと（Service が落ちた・Factory の�
     （実行が全部終わった。`merged`・`total`・`requestedBy`）——`requestedBy` で「頼んだ会話が無いものだけ」に絞れる
   - Backlog：`backlog.item-changed`（できた・状態が変わった。`kind`・`from`・`to`・`labels`）
   - banto：`banto.turn-decisions`（下）
+
+#### 段2の器で実装で決めたこと（実装・2026-10-16、Backlog #345）
+
+経緯と却下した案は `docs/notes/2026-10-16-automation-events.md` の「器の実装（#345）」。
+
+- **型と照合は `@banto/module-contract` に1つ**（`events.ts`）：名乗りの parser `parseEventDeclarations`（名前の頭は名乗った Module の
+  宣言の名前・`banto.*` は core だけ・`subject` は `fields` にある名前・同じ名前を2回名乗らない）、属性の照合 `eventFieldsProblem`
+  （名乗っていない属性・型違い・`enum` の外・有限でない数は受けない。**無い属性はよい**）、条件の照合 `eventWhereProblem` と一致
+  `eventMatchesWhere`（条件の属性が出来事に無ければ合わない）。host が受けるときも、自動化を作るときも同じものを通す
+- **名乗りを読むのは使うとき**（core の `declaredEvents`）：宣言の読み込みでは名乗りを照らさない——目録の1本を別の名前で入れると名前の頭が
+  合わなくなるが、そのとき Module の読み込みまで落とさず、その Module の出来事だけ受けない。名乗れるのは同梱の Module だけ（外から足した
+  Module が名乗ると、読むときに断る）
+- **台帳から名乗りを引く口**：`AutomationStore.setEventCatalog({ find(projectId, name) })`。その Project の Project ごとの宣言から引く。
+  口が無い構成では出来事のきっかけを作れない。作る・直すとき `event` が名乗られていない・`where` が名乗りに合わないなら断る
+- **きっかけの形**：`source: { kind: "event", event, where?, batchSeconds, allowSelfTriggered }`。`batchSeconds` は Webhook と同じ
+  （既定 30・0〜300）。`allowSelfTriggered` の既定は false。きっかけの種類は作ったあと変えない（段1と同じ）
+- **知らせる口**（`relayEmitEvent`）：答えは本文の JSON で `{ accepted: true, queued: n }`（重複なら `duplicate: true`）か `{ refused }`。
+  **出せない呼び元（`mayEmitEvent`）も `{ refused }` で返す**（投げない）——出口の箱が捨てられるように。投げるのは口が無いときだけ
+  （一時の失敗として箱に残る）。`eventId` は 200 字まで、`occurredAt` は ISO 8601
+- **重複落とし**：fold `automation-events-seen`（出来事 `event.seen { projectId, source, eventId }`）。積んだあとに書く——積む前に落ちたら
+  箱からの出し直しで受け直せる。同時に同じ印が来たらメモリで1本にする
+- **呼び出しの写し**：fold `automation-event-calls`（出来事 `event.call_recorded { callId, projectId, threadId, turnId?, hop, automation? }`、
+  14日）。書くのは代理（`agent-proxy.ts`）が AI のターンから Module の tool を呼ぶ直前（`onTurnCall`）で、宛先がその Project で出来事を
+  名乗っているときだけ。`automation` はそのターンで積んだ届けもののうち一番新しい自動化の印。**写しの Project と出来事の Project が違えば
+  引かない**（印は申告なので、別の Project の呼び出しを指してホップや「自分の回」を操れない）。どちらの fold も刈るのは1時間に1回
+- **回数の歯止めはメモリで数える**：host を起こし直すと数え直しになる（重複落としは消えない）。超えた回は `automation.fired { cause: "event",
+  result: "skipped" }` に理由（出来事名と主体の題と値）を残す。数えるのは積んだ出来事1件ずつ
+- **Project が閉じている間の出来事**は、受け取ったと返して積まない（見た `eventId` には残す）
+- **届けもの**：`ExternalContent` に `source: "event"`・`event { name, title, eventId, occurredAt, fields }`・`bodyOmitted`。囲みは
+  `<banto-external source="event" … event="…" title="…" event-id="…" occurred-at="…" fields="<JSON>">`（属性は申告なのでエスケープ）。
+  まとめたときのホップは出来事ごとに持ち越した値のうち一番大きいもの（`hopOf`）
+- **出口の箱**（`EventOutbox`）：1件1ファイル（`<起きた時刻>-<eventId の指紋>.json`、0600、別名に書いて置き換える）。断られたもの・読めない
+  ものは捨ててログに残す。答えの読み方は `readEmitReply`（`isError`・読めない答えは一時の失敗として投げる）
+- **画面**（段2の画面の前の最小限）：一覧に「出来事 X が起きたとき」、回に「（出来事 n 件）」、届いたカードに出来事の見出し（題・名前・属性）。
+  出来事のきっかけを直すフォームはまだ無いので「直す」は出さない（規則13）
+- **試験用の同梱扱いの Module**：目録の隠れた1本 `e2e-events`（`e2e/fixtures/events-module`、`hidden`）。Project ごと、`e2e-events.happened`
+  （属性 `item`・`level`（low｜high）・`count`、主体 `item`）を名乗る。名前は `e2e-events` で入れる（名前の頭が合わなくなるため）
 
 #### `banto.turn-decisions` と判断役——AI の「決めること」を AI に決めさせる（決定・2026-10-16、ユーザー）
 
