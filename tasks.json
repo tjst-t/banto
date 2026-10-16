@@ -7922,7 +7922,7 @@
       "number": 324,
       "kind": "bug",
       "title": "別のサーバで banto を起こし直すと、Subagent・Factory・Shell に「続けるか」を聞けず（120 秒で答え無し）、走っていた仕事が全部途中で終わる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7942,7 +7942,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-15T14:32:21.683Z",
-      "updatedAt": "2026-10-16T11:18:58.749Z",
+      "updatedAt": "2026-10-16T11:19:07.245Z",
       "closedAt": null,
       "extra": {}
     },
