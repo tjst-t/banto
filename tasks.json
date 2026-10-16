@@ -7830,7 +7830,7 @@
       "number": 338,
       "kind": "task",
       "title": "AI の list_automations に、直近の回（結果・飛ばした理由）と次の時刻を出す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation",
       "dependsOn": [],
       "milestone": null,
@@ -7844,7 +7844,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T07:45:30.962Z",
-      "updatedAt": "2026-10-16T07:45:30.962Z",
+      "updatedAt": "2026-10-16T09:04:12.639Z",
       "closedAt": null,
       "extra": {}
     },
