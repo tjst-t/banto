@@ -329,8 +329,11 @@ function GroupHeading({
         aria-expanded={!group.collapsed}
         className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left hover:bg-accent"
       >
-        <span className={cn("size-2 shrink-0 rounded-full", GROUP_DOT_CLASS[group.color])} aria-hidden />
-        <span className="truncate text-xs font-medium text-ink-2">{group.name}</span>
+        {/* 点は Project の頭文字と同じ 24px の枠の真ん中に置く——行の頭文字と点、名前どうしの左端をそろえる */}
+        <span className="flex size-6 shrink-0 items-center justify-center" aria-hidden>
+          <span className={cn("size-2 rounded-full", GROUP_DOT_CLASS[group.color])} />
+        </span>
+        <span className="truncate text-sm font-medium text-ink-2">{group.name}</span>
         <ChevronRight
           className={cn("size-3 shrink-0 text-ink-3 transition-transform", !group.collapsed && "rotate-90")}
           aria-hidden
@@ -516,8 +519,10 @@ function SleepSection({
           aria-expanded={open}
           className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
         >
-          <Moon className="size-3.5 shrink-0" aria-hidden />
-          <span className="truncate text-xs font-medium">スリープ中</span>
+          <span className="flex size-6 shrink-0 items-center justify-center" aria-hidden>
+            <Moon className="size-3.5" />
+          </span>
+          <span className="truncate text-sm">スリープ中</span>
           <ChevronRight className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} aria-hidden />
           <span className="ml-auto text-xs tabular-nums">{projects.length}</span>
         </button>
@@ -748,7 +753,7 @@ export function ProjectList({
                 onRename={(g) => setNameDialog({ kind: "rename", group: g })}
               />
               {group.collapsed ? null : projects.length === 0 ? (
-                <li className="py-1 pl-6 text-xs text-ink-3">Project をここへドラッグするか、行の「…」から入れます</li>
+                <li className="py-1 pl-10 text-xs text-ink-3">Project をここへドラッグするか、行の「…」から入れます</li>
               ) : (
                 projects.map((p) => renderProject(p, group.id))
               )}
