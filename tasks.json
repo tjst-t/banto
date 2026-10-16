@@ -8426,7 +8426,7 @@
       "number": 349,
       "kind": "task",
       "title": "段2の画面——作るフォームの「出来事」・受信箱の「判断役が見ています／決めました／人に任せました」",
-      "status": "in-progress",
+      "status": "done",
       "parent": "automation-events",
       "dependsOn": [
         "events-pipeline",
@@ -8437,12 +8437,12 @@
       "labels": [],
       "body": "仕様 v4-frontend.md §6.42 の段2の項。作るフォームに出どころ→出来事→条件、「自分の回が起こした出来事では動かない」。受信箱の「決めることがある」カードの判断役の3つの形と、判断役が決めたあとに人が変えるときの確かめ。AI の create_automation も kind event を受ける",
       "doneWhen": "E2E で：画面から service.crashed の自動化を条件つきで作れ、一覧に出る。受信箱のカードが判断役の状態に合わせて替わる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/events-ui）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-16T12:37:42.338Z",
-      "updatedAt": "2026-10-16T16:46:31.478Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-16T17:33:19.578Z",
+      "closedAt": "2026-10-16T17:33:19.578Z",
       "extra": {}
     },
     {
