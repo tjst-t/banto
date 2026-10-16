@@ -120,8 +120,10 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
     "最初に聞かれるのは「在りかを聞いてよいか」のはず",
   ).toBeVisible({ timeout: 120_000 });
   // **何を承認するのかが、答える前に見えている**（§6.0）
-  await expect(firstCard.getByText(/"呼び出し元": "shell"/)).toBeVisible();
-  await expect(firstCard.getByText(/"宛先": "vault-directory"/)).toBeVisible();
+  // 「見出し→値」の行で出す（tool-input-details.tsx、2026-10-16——以前は JSON のまま）
+  const details = firstCard.getByTestId("tool-input-details");
+  await expect(details.locator("dt", { hasText: /^呼び出し元$/ }).locator("+ dd")).toHaveText("shell");
+  await expect(details.locator("dt", { hasText: /^宛先$/ }).locator("+ dd")).toHaveText("vault-directory");
   // **値は出さない**（§2.5——記録に残るのは宛名まで）。在りかを聞く段では、
   // そもそもまだ値に触れていない
   await expect(firstCard.getByText(SECRET)).toHaveCount(0);

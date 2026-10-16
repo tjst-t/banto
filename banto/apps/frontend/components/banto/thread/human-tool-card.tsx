@@ -6,6 +6,7 @@
 // ——accept/decline/cancel（ここでは addResult 経由の回答）がそのまま
 // tool の結果になり、会話が続く。タイムアウトしたらこのカードは消え、
 // 記録だけが受信箱に残る（§2.4.1、item13の決定）。
+import { ToolInputDetails } from "./tool-input-details";
 import { useState, type PropsWithChildren } from "react";
 import { useAuiState, type ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
@@ -110,9 +111,9 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
       {args.toolInput !== undefined ? (
         // **何を承認するのか**をそのまま出す（§6.0）。これが無いと
         // runCommand を中身を見ないまま許可することになる
-        <pre className="max-h-40 overflow-auto rounded-md bg-muted/60 p-2 text-xs text-ink-2">
-          {JSON.stringify(args.toolInput, null, 2)}
-        </pre>
+        // 「見出し→値」を1行ずつ、文字列は折り返して出す（tool-input-details.tsx）。長いもの（Memory の取り消し等）は
+        // カードの中でスクロールする
+        <ToolInputDetails input={args.toolInput} className="max-h-96 overflow-auto" />
       ) : null}
       {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}
       {!answerable ? (

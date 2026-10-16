@@ -16,6 +16,7 @@
 // その会話、Project だけ分かればその Project の Base Thread、banto 全体のお知らせは直す場所の設定（`destinationOf`）。
 //
 // キー操作（パソコン）：j / k で次・前のカード、r で返信の欄へ、e で「見た」、o で行き先を開く、Esc で閉じる。
+import { ToolInputDetails } from "@/components/banto/thread/tool-input-details";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { TextMessagePartProvider } from "@assistant-ui/react";
@@ -467,20 +468,9 @@ function Mark({ card }: { card: Card }) {
 
 // ── 判断待ち：何を承認するのかを見せ、その場で答える ─────────────────────────
 
-/** 承認する tool の引数を、人が読める行に（文字列はそのまま、ほかは JSON） */
-function detailRows(input: unknown): { label: string; value: string }[] {
-  if (input === undefined || input === null) return [];
-  if (typeof input !== "object" || Array.isArray(input)) return [{ label: "引数", value: JSON.stringify(input) }];
-  return Object.entries(input as Record<string, unknown>).map(([label, v]) => ({
-    label,
-    value: typeof v === "string" ? v : JSON.stringify(v),
-  }));
-}
-
 function JudgmentBody({ item, onAnswered }: { item: RealInboxJudgment; onAnswered: (choice: string) => void }) {
   /** 答えようとして断られた理由（押したのに何も起きない、を作らない——規則2） */
   const [error, setError] = useState<string | null>(null);
-  const rows = detailRows(item.toolInput);
   return (
     <div className="px-4 pb-4">
       <p className="text-sm text-foreground">
@@ -488,16 +478,8 @@ function JudgmentBody({ item, onAnswered }: { item: RealInboxJudgment; onAnswere
         {item.serverName ? "　" : null}
         <span data-testid="inbox-judgment-message">{item.message}</span>
       </p>
-      {rows.length > 0 ? (
-        <dl className="mt-2.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-surface-2 px-3 py-2.5 text-xs">
-          {rows.map((d) => (
-            <Fragment key={d.label}>
-              <dt className="text-ink-3">{d.label}</dt>
-              <dd className="min-w-0 font-mono break-all text-foreground">{d.value}</dd>
-            </Fragment>
-          ))}
-        </dl>
-      ) : null}
+      {/* 会話のカードと同じ出し方（tool-input-details.tsx） */}
+      <ToolInputDetails input={item.toolInput} className="mt-2.5 max-h-96 overflow-auto" />
       {item.source === "elicitation" ? (
         // Module からの質問（Elicitation）は、受信箱から答える口が host に無い（会話のカードも同じ）——会話を開いて答える
         <p className="mt-3 text-xs text-ink-3">この問いには会話を開いて答えてください</p>

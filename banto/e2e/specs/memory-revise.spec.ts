@@ -64,6 +64,10 @@ test("AI の revise_memory は自動で許可がオンでもカードで聞き�
   await expect(denyCard).toContainText("改めた古い決まりを畳む");
   await expect(denyCard).toContainText(`#${oldA!.seq}「置き場は ghq 形式」`);
   await expect(denyCard).toContainText("置き場は ~/banto");
+  // 取り消す行は全文を、改行で折り返して読める形で出す（2026-10-16、ユーザー「削除するメモリの内容がわからない」）
+  await expect(denyCard.getByTestId("tool-input-details")).toBeVisible();
+  await expect(denyCard).not.toContainText("\\n");
+  await expect(denyCard).toContainText(`#${oldB!.seq}「置き場は ~/banto に改める」`);
   await expect(denyCard.getByRole("button", { name: "変える", exact: true })).toBeVisible();
   await denyCard.getByRole("button", { name: "変えない", exact: true }).click();
   await expect(denyCard).toContainText("回答：変えない", { timeout: 30_000 });

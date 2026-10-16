@@ -26,12 +26,6 @@ export interface MemoryChangeRequest {
   text?: string;
 }
 
-/** 文の頭（カードに出す取り消す行） */
-function head(text: string, max = 60): string {
-  const flat = text.trim().replace(/\s+/g, " ");
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-}
-
 /**
  * **頼まれた変更を確かめる**。誤りがあれば AI が読んで直せる文を返す（人に聞く前に断る——許されたあとで断らない）
  */
@@ -71,10 +65,9 @@ export function describeMemoryRevision(
 ): Record<string, string> {
   const rows: Record<string, string> = { 理由: reason.trim() };
   changes.forEach((c, i) => {
-    const retracted = c.retract
-      .map((seq) => `#${seq}「${head(memory.find((m) => m.seq === seq)?.text ?? "")}」`)
-      .join("\n");
-    rows[`変更 ${i + 1}`] = c.text !== undefined ? `取り消す：\n${retracted}\n足す：\n${c.text.trim()}` : `取り消す：\n${retracted}`;
+    // 取り消す行は**全文**を出す（2026-10-16、ユーザー「削除するメモリの内容がわからない」——頭60字では判断できない）
+    const retracted = c.retract.map((seq) => `#${seq}「${(memory.find((m) => m.seq === seq)?.text ?? "").trim()}」`).join("\n\n");
+    rows[`変更 ${i + 1}`] = c.text !== undefined ? `取り消す：\n${retracted}\n\n足す：\n${c.text.trim()}` : `取り消す：\n${retracted}`;
   });
   return rows;
 }
