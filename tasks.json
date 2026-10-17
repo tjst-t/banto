@@ -8943,6 +8943,29 @@
       "updatedAt": "2026-10-17T01:00:38.348Z",
       "closedAt": "2026-10-17T01:00:38.348Z",
       "extra": {}
+    },
+    {
+      "id": "e2e-reorder-baseless-project",
+      "number": 371,
+      "kind": "bug",
+      "title": "E2E：automation-events-ui の後に sidebar-reorder-rename を同じ core で流すと並べ替えの試験が落ちる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e"
+      ],
+      "body": "automation-events-ui.spec.ts（#349、0b27d869）が API で Project「E2E 判断役の受信箱（見る場所）」を作り、Base の会話を持たせずに閉じる。画面は Base の無い Project を一覧に入れない（apps/frontend/lib/mock/projects.ts 374〜375 行）ので、sidebar-reorder-rename.spec.ts:42「Project を掴んで並べ替えられる——リロードしても残る」で送る並びから漏れて末尾に回り、API の一覧の末尾2つの確かめが落ちる（host に送られた並びは15件中14件）。単独なら通る。直し方の候補：試験側で Base を持たせる／片づける、または画面の一覧が Base の無い Project も並びに含める（製品側で直すなら、Base の無い Project が実際に生じうるかを先に確かめる）。2026-10-17、Fork「Project の整理（サイドバー）」のサブエージェントが見つけた。",
+      "doneWhen": "automation-events-ui と sidebar-reorder-rename を同じ回でまとめて流して両方通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T01:53:35.223Z",
+      "updatedAt": "2026-10-17T01:53:35.223Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
