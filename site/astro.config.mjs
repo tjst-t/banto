@@ -46,6 +46,7 @@ export default defineConfig({
 						{ label: 'プロジェクト', slug: 'docs/guide/projects' },
 						{ label: '会話と Fork', slug: 'docs/guide/threads' },
 						{ label: '受信箱と承認', slug: 'docs/guide/inbox' },
+						{ label: '自動化', slug: 'docs/guide/automation' },
 						{ label: 'スマートフォンで使う', slug: 'docs/guide/mobile' },
 						{ label: 'ログインと端末の管理', slug: 'docs/guide/login' },
 					],
