@@ -59,6 +59,9 @@ test("囲いはネットワーク・PID 等を分け、環境を消し、親と�
   assert.ok(args.join(" ").includes("--ro-bind /usr /usr"));
   // ホーム・Module の置き場は見せない
   assert.ok(!args.some((a) => a.startsWith("/home") || a.startsWith("/root")));
+  // 日本語の字形で描く：既定の言語は日本語、fontconfig は作業フォルダの設定（JP を先に）
+  assert.equal(args[args.indexOf("LANG") + 1], "ja_JP.UTF-8");
+  assert.equal(args[args.indexOf("FONTCONFIG_FILE") + 1], "/work/fonts.conf");
   assert.deepEqual(dropPrivilegesArgs().slice(0, 3), ["/usr/bin/setpriv", "--reuid=65534", "--regid=65534"]);
   assert.ok(dropPrivilegesArgs().includes("--bounding-set=-all") && dropPrivilegesArgs().includes("--no-new-privs"));
 });
