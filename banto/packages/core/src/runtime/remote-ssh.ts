@@ -62,6 +62,7 @@ import {
   type SshResult,
 } from "./ssh.js";
 import { REMOTE_RESOURCE_PROBE, type RemoteProbe, type RemoteProbeRaw } from "../remote-resources.js";
+import { DEFAULT_PROGRESS_TIMING, SharedProgressTasks, watchProgress, type ProgressListener } from "../agent-binaries/progress.js";
 
 /** 向こうの置き場の根の下の、この banto の置き場の名前（データの置き場ごとに分ける） */
 export function remoteOwnerDirName(dataDir: string): string {
@@ -101,6 +102,11 @@ export interface RemoteSshRuntimeOptions {
   lookupIPv4?: LookupIPv4;
   /** 送っている途中で、これだけ進まなければ止める（既定は `TRANSFER_STALL_MS`。試験だけが縮める） */
   transferStallMs?: number;
+  /**
+   * **いまの目録にあるエージェントの本体のフォルダの名前**（追加・2026-10-17、アーキ仕様 §4.1）。繋いだときに、向こうの
+   * `<置き場>/agent-binaries/` のうちこれに無いものを消す。渡さなければ片づけない
+   */
+  agentBinaryDirNames?: () => ReadonlySet<string>;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -254,6 +260,8 @@ export class RemoteSshRuntime {
   private agentWatch?: ReturnType<typeof setInterval>;
   /** 資源を読んでいる途中の実行場所（重ねない） */
   private readonly resourceReads = new Set<string>();
+  /** エージェントの本体を送っているもの（（実行場所・フォルダの名前）ごとに1本。同時の頼みは待たせる） */
+  private readonly agentBinarySends = new SharedProgressTasks<string>();
 
   constructor(private readonly opts: RemoteSshRuntimeOptions) {
     this.log = opts.log ?? ((line) => console.log(line));
@@ -508,6 +516,7 @@ export class RemoteSshRuntime {
         // 3. 向こうの置き場を決め、コードを照合する
         conn.base = await this.resolveBase(conn);
         conn.codeDir = await this.syncCode(conn);
+        await this.pruneAgentBinaries(conn);
         if (conn.removed) throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
       } catch (err) {
         master.kill("SIGTERM");
@@ -534,6 +543,127 @@ export class RemoteSshRuntime {
       `[host] 別のサーバ「${name}」に繋ぎました（${Math.round(performance.now() - started)}ms・向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・コード ${basename(conn.codeDir)}）`,
     );
     return conn;
+  }
+
+  /**
+   * **向こうの CPU が AVX2 を持つか**（追加・2026-10-17、アーキ仕様 §4.1）——繋いだときの前提の確かめで覚えたもの。分からなければ
+   * 持たないとする（baseline はどこでも動く）
+   */
+  remoteHasAvx2(projectId: string): boolean {
+    return this.liveConnection(projectId, "エージェントの本体を選べ").checks.find((c) => c.id === "cpu-avx2")?.value === "1";
+  }
+
+  /**
+   * **banto が取ってきたエージェントの本体を、向こうに見せる**（追加・2026-10-17、アーキ仕様 §4.1「別のサーバへの見せ方」）。置き場は
+   * 塗り（`code/layers/`）とは別の `<置き場>/agent-binaries/<同じ名前>/`——塗りは版の `.layers` に載らないものを片づけるので、そこに
+   * 置くと次の送り込みで消える。**使うたびに**向こうの中身を `syncPackageDir` と同じ digest で照合し（向こうの AI が書き換えうる。
+   * 1本なので軽い）、合えば送らない。送るのは（実行場所・フォルダの名前）ごとに1本だけ。返すのは向こうの実行ファイルのパス
+   */
+  async ensureAgentBinary(
+    projectId: string,
+    binary: { name: string; hostDir: string; fileName: string; title: string },
+    onProgress?: ProgressListener,
+  ): Promise<string> {
+    const conn = this.liveConnection(projectId, `${binary.title} の本体を送れ`);
+    return this.agentBinarySends.run(`${conn.runtimeName}\0${binary.name}`, (emit) => this.sendAgentBinary(conn, binary, emit), onProgress);
+  }
+
+  private async sendAgentBinary(conn: Connection, binary: { name: string; hostDir: string; fileName: string; title: string }, emit: ProgressListener): Promise<string> {
+    const remoteDir = `${conn.base}/agent-binaries/${binary.name}`;
+    const remoteFile = `${remoteDir}/${binary.fileName}`;
+    const digest = await bundleDigest(collectTreeEntries(binary.hostDir), this.hashes);
+    const now = await this.mustRun(
+      conn,
+      `${binary.title} の本体を確かめられ`,
+      [
+        `if [ -d ${shq(remoteDir)} ]; then printf 'digest=%s\\n' "$(${remoteDigestCommand(shq(remoteDir))})"; fi`,
+        "command -v zstd >/dev/null 2>&1 && echo zstd=1",
+        "command -v gzip >/dev/null 2>&1 && echo gzip=1",
+        "exit 0",
+        "",
+      ].join("\n"),
+      { timeoutMs: 120_000 },
+    );
+    if (/^digest=(.*)$/m.exec(now)?.[1] === digest) return remoteFile;
+
+    const codec: Codec =
+      /^zstd=1$/m.test(now) && zstd.createZstdCompress && zstd.constants.ZSTD_c_compressionLevel !== undefined ? "zstd" : /^gzip=1$/m.test(now) ? "gzip" : "none";
+    const hostFile = join(binary.hostDir, binary.fileName);
+    const total = statSync(hostFile).size;
+    let sent = 0;
+    let movedAt = performance.now();
+    const tracker: TransferTracker = {
+      add: (n) => {
+        sent += n;
+        movedAt = performance.now();
+      },
+      stalledFor: () => performance.now() - movedAt,
+      sentBytes: () => sent,
+      end: () => undefined,
+    };
+    // 進まないときに止めるのは送る ssh（`run` の stalledFor）——ここは知らせるだけ
+    const watcher = watchProgress({
+      timing: { ...DEFAULT_PROGRESS_TIMING, giveUpMs: Number.POSITIVE_INFINITY },
+      bytes: () => sent,
+      describe: (b) => `別のサーバ「${conn.runtimeName}」に ${binary.title} の本体を送っています（${mb(b)} / ${mb(total)}MB）`,
+      report: emit,
+      giveUp: () => undefined,
+    });
+    const staging = `${remoteDir}.incoming-${randomBytes(4).toString("hex")}`;
+    const started = performance.now();
+    try {
+      await this.sendStream(
+        conn,
+        `${binary.title} の本体を送れ`,
+        createReadStream(hostFile),
+        `mkdir -p ${shq(staging)} && cat > ${shq(`${staging}/${binary.fileName}`)} && chmod 755 ${shq(`${staging}/${binary.fileName}`)}`,
+        codec,
+        tracker,
+      );
+      const got = await this.mustRun(conn, `送った ${binary.title} の本体を確かめられ`, `printf '%s\\n' "$(${remoteDigestCommand(shq(staging))})"\n`, {
+        timeoutMs: 120_000,
+      });
+      if (got.trim() !== digest) {
+        throw new Error(
+          `別のサーバ「${conn.runtimeName}」に送った ${binary.title} の本体が、向こうで違う中身になりました（送った版 ${digest.slice(0, 12)}・向こう ${got.trim().slice(0, 12)}）`,
+        );
+      }
+      await this.mustRun(
+        conn,
+        `送った ${binary.title} の本体を置け`,
+        `mkdir -p ${shq(`${conn.base}/agent-binaries`)} && rm -rf -- ${shq(remoteDir)} && mv -- ${shq(staging)} ${shq(remoteDir)}\n`,
+      );
+      this.log(`[host] 別のサーバ「${conn.runtimeName}」に ${binary.title} の本体を送りました（${binary.name}・${mb(total)}MB・${Math.round(performance.now() - started)}ms）`);
+      return remoteFile;
+    } catch (err) {
+      await this.run(conn, `rm -rf -- ${shq(staging)}\n`, { timeoutMs: 30_000 });
+      throw err;
+    } finally {
+      watcher.stop();
+    }
+  }
+
+  /** **繋いだときに**、向こうの `<置き場>/agent-binaries/` のうち、いまの目録に無い版と送りかけのものを消す */
+  private async pruneAgentBinaries(conn: Connection): Promise<void> {
+    const keep = this.opts.agentBinaryDirNames?.();
+    if (!keep) return;
+    const out = await this.mustRun(
+      conn,
+      "エージェントの本体の古い版を片づけられ",
+      [
+        `d=${shq(`${conn.base}/agent-binaries`)}`,
+        `[ -d "$d" ] || exit 0`,
+        `for x in "$d"/* "$d"/.incoming-*; do`,
+        `  [ -e "$x" ] || continue`,
+        `  case "$(basename "$x")" in ${[...keep].map(shq).join("|") || "''"}) continue ;; esac`,
+        `  rm -rf -- "$x" && printf 'removed=%s\\n' "$(basename "$x")"`,
+        "done",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    const removed = [...out.matchAll(/^removed=(.*)$/gm)].map((m) => m[1]!).filter((n) => !n.startsWith(".incoming-"));
+    if (removed.length > 0) this.log(`[host] 別のサーバ「${conn.runtimeName}」の、いまの目録に無いエージェントの本体を消しました（${removed.join("・")}）`);
   }
 
   /** ControlPath（短く——Unix ソケットの上限に ssh の一時の名前を足して収まること） */

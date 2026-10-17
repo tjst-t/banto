@@ -358,7 +358,43 @@ export interface HostRelayServerOptions {
    * 受ける側（`automation/events.ts`）。断ったら `{refused}`——出口の箱はそれを捨てる。渡さなければこの口は断る
    */
   emitEvent?(caller: CallerIdentity & { projectId: string }, input: Record<string, unknown>): Promise<{ accepted: true; duplicate?: true; queued: number } | { refused: string }>;
+  /**
+   * **エージェントの本体を取ってきて、呼び元の場所から見えるようにする**（追加・2026-10-17、アーキ仕様 §4.1「エージェントの本体を
+   * 取ってくる」）。返すのは呼び元の場所から見えるパス。進み具合は `onProgress` に流す（中継が `notifications/progress` にする）。
+   * 呼べる相手は `mayEnsureAgentBinary` が決める。渡さなければこの口は断る
+   */
+  ensureAgentBinary?(
+    caller: CallerIdentity,
+    agent: string,
+    onProgress: (message: string) => void,
+  ): Promise<{ path: string; version: string; cpu: string; sizeBytes: number }>;
+  /** **この機械に本体が置いてあるか**（取らない）。呼べる相手は `mayReadAgentBinaryStatus` が決める。渡さなければこの口は断る */
+  agentBinaryStatus?(agent: string): { agent: string; title: string; version: string; cpu: string; present: boolean; sizeBytes?: number; approxBytes: number };
 }
+
+/**
+ * **エージェントの本体を取ってこさせてよい呼び元**（追加・2026-10-17、アーキ仕様 §4.1）。**同梱で `subagent` を名乗る Module だけ**
+ * （呼べないなら理由、呼べるなら `undefined`）。
+ *
+ * - `mayRaiseNotice` の「banto 本体で動く banto 全体の Module だけ」とは別——Subagent は Project のコンテナ・別のサーバで動く
+ * - 道具用のコンテナの Module は断る（サブエージェントを走らせない）
+ * - **コンテナの中の AI も中継の合言葉を読めるのでこの口を直接呼べる**——できるのは「目録にある本体を取ってこさせる・有無を知る」
+ *   だけで、害はそれに限られる（`docs/specs/v4-security.md` §1）。目録に無い名前は store が断る
+ */
+export function mayEnsureAgentBinary(identity: CallerIdentity): string | undefined {
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが頼める";
+  if (!identity.meta.satisfies.includes(SUBAGENT_ROLE)) return `${SUBAGENT_ROLE} 役割を名乗る Module だけが頼める`;
+  if (identity.toolsContainer) return "道具用のコンテナの Module は頼めない";
+  return undefined;
+}
+
+/** **本体の有無を知ってよい呼び元**：取ってこさせてよい相手と、同梱の設定（`subagent-settings`、banto 全体）だけ */
+export function mayReadAgentBinaryStatus(identity: CallerIdentity): string | undefined {
+  if (identity.meta.origin === "bundled" && identity.meta.satisfies.includes(SUBAGENT_SETTINGS_ROLE) && !identity.toolsContainer) return undefined;
+  return mayEnsureAgentBinary(identity);
+}
+const SUBAGENT_ROLE = "subagent";
+const SUBAGENT_SETTINGS_ROLE = "subagent-settings";
 
 /**
  * **出来事を知らせてよい呼び出し元**（追加・2026-10-16、アーキ仕様 §4.3「段2」）。**Project ごとの同梱の Module だけ**
@@ -611,6 +647,28 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         },
       },
       {
+        // **エージェントの本体を取ってくる**（追加・2026-10-17、アーキ仕様 §4.1）。呼べる相手は `mayEnsureAgentBinary` が決める。
+        // 取ってくる・送る間は進み具合を送る（進んでいれば5秒ごと、止まっていても15秒ごと）
+        name: "relayEnsureAgentBinary",
+        description:
+          "目録にあるエージェントの本体を取ってきて、呼び元の場所から見えるようにする（初めてのときは数分かかる）。答えは {path, version, cpu, sizeBytes}",
+        inputSchema: {
+          type: "object",
+          properties: { agent: { type: "string", description: "エージェントの id（opencode）" } },
+          required: ["agent"],
+        },
+      },
+      {
+        // **本体がこの機械に置いてあるか**（取らない）。呼べる相手は `mayReadAgentBinaryStatus` が決める
+        name: "relayAgentBinaryStatus",
+        description: "目録にあるエージェントの本体が、この機械に置いてあるか（取らない）",
+        inputSchema: {
+          type: "object",
+          properties: { agent: { type: "string" } },
+          required: ["agent"],
+        },
+      },
+      {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
         // **宛先が Module の札も同じ口で届ける**（追加・2026-10-05）——送り手は宛先を知らず、host が札で振り分ける
@@ -728,6 +786,29 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
           ? { refused: `${identity.moduleName} は出来事を出せません（${why ?? "Project ごとの Module だけが出せる"}）` }
           : await opts.emitEvent({ ...identity, projectId: identity.projectId }, args);
       return { content: [{ type: "text", text: JSON.stringify(reply) }] };
+    }
+
+    // **宛先は host 自身**。目録にある本体を取ってこさせるだけ（値・秘密は通らない）ので承認は通さず、呼べる相手を絞る
+    if (request.params.name === "relayEnsureAgentBinary" || request.params.name === "relayAgentBinaryStatus") {
+      const ensure = request.params.name === "relayEnsureAgentBinary";
+      const why = ensure ? mayEnsureAgentBinary(identity) : mayReadAgentBinaryStatus(identity);
+      if (why) throw new Error(`${identity.moduleName} はエージェントの本体を${ensure ? "取ってこさせられません" : "確かめられません"}（${why}）`);
+      const agent = typeof args.agent === "string" ? args.agent : "";
+      if (!agent) throw new Error("agent が要ります");
+      if (!ensure) {
+        if (!opts.agentBinaryStatus) throw new Error("この banto はエージェントの本体を確かめる口を持っていません");
+        return { content: [{ type: "text", text: JSON.stringify(opts.agentBinaryStatus(agent)) }] };
+      }
+      if (!opts.ensureAgentBinary) throw new Error("この banto はエージェントの本体を取ってくる口を持っていません");
+      const progressToken = extra._meta?.progressToken;
+      let progress = 0;
+      const placed = await opts.ensureAgentBinary(identity, agent, (message) => {
+        if (progressToken === undefined) return;
+        void extra
+          .sendNotification({ method: "notifications/progress", params: { progressToken, progress: ++progress, message } })
+          .catch(() => undefined);
+      });
+      return { content: [{ type: "text", text: JSON.stringify(placed) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が

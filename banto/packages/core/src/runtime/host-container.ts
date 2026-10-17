@@ -234,12 +234,17 @@ export class HostContainerRuntime implements Runtime {
       bantoOrigin: `http://${c.hostAddress}:${this.opts.port}`,
       // host と同じパスでマウントしている
       pathInside: (hostPath) => hostPath,
-      async prepareModuleDirs({ dataDir, packageDir }) {
+      async prepareModuleDirs({ dataDir, packageDir, agentBinariesDir }) {
         mkdirSync(dataDir, { recursive: true, mode: 0o700 });
         await Promise.all([
           containers.ensureDisk(c.name, diskDeviceName(dataDir), dataDir),
           ...(existsSync(packageDir)
             ? [containers.ensureDisk(c.name, diskDeviceName(packageDir), packageDir, { readonly: true })]
+            : []),
+          // **取ってきたエージェントの本体**：親を1つの device で（版のフォルダごとには付けない）。device は Incus の設定に
+          // 残るので、眠る・起こし直すでも付き直る
+          ...(agentBinariesDir && existsSync(agentBinariesDir)
+            ? [containers.ensureDisk(c.name, diskDeviceName(agentBinariesDir), agentBinariesDir, { readonly: true })]
             : []),
         ]);
       },

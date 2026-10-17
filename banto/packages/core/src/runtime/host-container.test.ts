@@ -1,4 +1,7 @@
 import { test } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { CONTAINER_NODE_PATH, ContainerAddressUnavailable, instanceContainerId, type ProjectContainers } from "@banto/container";
 import { HostContainerRuntime } from "./host-container.js";
@@ -33,6 +36,30 @@ test("用意した箱：パスは host と同じ・中から届く住所はブ�
   assert.ok(cmd.args.includes(CONTAINER_NODE_PATH));
   assert.ok(cmd.args.includes("A=1"));
   assert.ok(p.processCommand({ name: "shell-p1", command: "/bin/true", args: [], cwd: "/w", env: {} }).args.includes("/bin/true"));
+});
+
+test("Module の置き場を見せる：取ってきたエージェントの本体の親は、頼まれたときだけ1つの device で同じパスに読み取り専用", async () => {
+  const disks: Array<{ path: string; readonly: boolean }> = [];
+  const containers = fakeContainers({
+    ensureDisk: async (_name: string, _device: string, path: string, o?: { readonly?: boolean }) => void disks.push({ path, readonly: o?.readonly === true }),
+  });
+  const rt = new HostContainerRuntime(opts, { ok: true, problems: [] }, containers, async () => "img");
+  const p = await rt.prepare({ id: "p1", root: "/w", nesting: false });
+  const dir = mkdtempSync(join(tmpdir(), "banto-hc-"));
+  try {
+    const binaries = join(dir, "agent-binaries");
+    mkdirSync(binaries);
+    await p.prepareModuleDirs({ dataDir: join(dir, "modules", "shell-p1"), packageDir: join(dir, "none") });
+    assert.deepEqual(disks, [{ path: join(dir, "modules", "shell-p1"), readonly: false }], "頼んでいないのに見せた");
+    disks.length = 0;
+    await p.prepareModuleDirs({ dataDir: join(dir, "modules", "subagent-p1"), packageDir: join(dir, "none"), agentBinariesDir: binaries });
+    assert.deepEqual(disks, [
+      { path: join(dir, "modules", "subagent-p1"), readonly: false },
+      { path: binaries, readonly: true },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("見張る相手は用意できた箱だけ。banto 全体用の箱には Project の id を付けない", async () => {
