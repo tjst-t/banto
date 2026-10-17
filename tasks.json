@@ -9158,7 +9158,7 @@
       "number": 379,
       "kind": "bug",
       "title": "Browser：許可を求める吹き出し（通知など）が人の画面から押せず居座る——出さずに全部ブロックにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9172,7 +9172,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T12:57:41.072Z",
-      "updatedAt": "2026-10-17T12:57:41.072Z",
+      "updatedAt": "2026-10-17T12:57:57.721Z",
       "closedAt": null,
       "extra": {}
     }
