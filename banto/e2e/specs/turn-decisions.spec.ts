@@ -128,6 +128,7 @@ test("判断役が選ぶと元の会話に答えが届いて続き、人に任�
   expect(delivered.origin!.hop, "ホップは元のターン＋2").toBe(2);
   expect(delivered.text).toContain("どちらの並びにしますか（1）");
   expect(delivered.text).toContain("選んだもの：案B");
+  expect(delivered.text, "判断役の理由が届いていない").toContain("理由：案B のほうが今の画面に近い");
   expect(delivered.text).toContain(`案B で進めて。「${CONTINUED}」と返して`);
   expect(delivered.text, "選ばなかった選択肢が届いた").not.toContain("案A で進めて");
   // 元の会話が判断役の答えで続いた
