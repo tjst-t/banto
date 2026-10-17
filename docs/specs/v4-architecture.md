@@ -2011,15 +2011,14 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
   `.next/required-server-files.json`・`.js` には組み立てた場所の絶対パスが入るが、`next start` は読まない（standalone 用）——
   別のパスに置いても画面が起き、版の印（`/banto-build`）も正しいことを 2026-10-15 に確かめた
 - **印のファイル** `banto/.banto-prebuilt.json`（`banto/.gitignore` に足す）：`{ commit（40文字）, platform: "linux-x64",
-  node（版）, cpu: { avx2 }（組み立てた機械）, builtAt, run（Actions の実行の URL）}`
+  node（版）, builtAt, run（Actions の実行の URL）}`（`cpu: { avx2 }` は 2026-10-17 に外した——下の「例外は opencode」）
 - **単体テストが落ちたら置かない**。その commit には組み立て済みが無いまま
 - **x64 だけ**。組み立て済みのネイティブ部品（sharp・@napi-rs/canvas・next の swc・tailwind の oxide・lightningcss・unrs-resolver）は
   どれも npm の linux-x64-gnu 用の既製品で、GitHub の ubuntu で組んだものが host（Ubuntu 24.04・26.04）でもコンテナの中でも
-  動く。**例外は opencode**：postinstall が組み立てた機械の `/proc/cpuinfo` の AVX2 で `opencode-linux-x64` か `-baseline` を
-  選んで張る。GitHub のランナーは AVX2 があるので、AVX2 の無い host では使わない（下の「確かめる」）。arm64 は要るときに足す。
-  **改訂（2026-10-17）**：opencode は依存から外し、使うときに取ってくる（§4.1「エージェントの本体を取ってくる」）。それまでの
-  間は tar から `opencode-linux-x64-baseline` を除く（AVX2 の印のため使われない）。**外したら印の `cpu.avx2` と、それで組み立て済みを
-  使わない確かめ（`prebuilt.mjs`）も外す**——AVX2 に頼っていたのは opencode だけ
+  動く。arm64 は要るときに足す。**CPU（AVX2）は見ない**（改訂・2026-10-17）：以前は opencode の postinstall が組み立てた機械の
+  AVX2 で `opencode-linux-x64` か `-baseline` を選んで張っていたので、印に `cpu.avx2` を書き、AVX2 の無い host では使わなかった。
+  opencode は依存から外して使うときに取ってくる（§4.1「エージェントの本体を取ってくる」）ので、印の `cpu.avx2`・`prebuilt.mjs` の
+  確かめ・tar から baseline を除く `--exclude` は外した——AVX2 に頼っていたのは opencode だけ
 - **使う外の action は GitHub 公式のもの（`actions/checkout`・`actions/setup-node`）だけで、commit の id で固定する**。Release を
   作るのは `GITHUB_TOKEN` と、ランナーにある `gh`。秘密は足さない。GITHUB_TOKEN が作るタグ・Release はほかの workflow を
   起こさない（ループしない）。workflow のファイルは Deploy key（SSH）で push できる（`workflow` scope の制限は PAT・OAuth
@@ -3142,7 +3141,9 @@ OpenCode の実行ファイルは1本で約185MB（npm の `opencode-linux-x64`�
   `opencode-linux-x64` と、AVX2 の無い機械用の `opencode-linux-x64-baseline` の2つ。arm64・musl は書かない（banto が x64 の
   glibc だけなので）。版を上げるときは目録の版と integrity を書き換え、`check:agents`（opencode）を流す
 - **どちらを使うかは、動かす機械の CPU で選ぶ**：この機械のコンテナは host の `/proc/cpuinfo`、別のサーバは向こうの CPU。
-  別のサーバの前提の確かめ（`uname -m`・libc）に **AVX2 の有無**を足して覚える（覚えるだけで、無くても断らない——baseline を送る）。host は両方を持ちうる（必要になったものだけ取る）
+  別のサーバの前提の確かめ（`uname -m`・libc）に **AVX2 の有無**を足して覚える（覚えるだけで、無くても断らない——baseline を送る）。
+  前提の一覧の1項目 `cpu-avx2`（いつも ok。値は項目の `value`）として残るので、実行場所の一覧にも「CPU の AVX2（あり／なし）」が
+  出る。host は両方を持ちうる（必要になったものだけ取る）
 - **誰が・いつ**：**banto 本体（core）が、AI か人が初めて OpenCode のサブエージェントを使うときに1回だけ**取ってくる。使うとき＝
   Subagent Module（Project ごと）の `listSubagents` で agent に opencode を指したとき・`runSubagent` で opencode を頼んだとき。
   先に取っておくボタンは作らない。`listSubagents` の説明に「初めての opencode は本体（約185MB）を取ってくる」と書く。
@@ -3158,14 +3159,17 @@ OpenCode の実行ファイルは1本で約185MB（npm の `opencode-linux-x64`�
   版のフォルダは 0555）。親の `agent-binaries/` は core が起きたときに 0755 で作る（core が rename で中に置くため。中からは
   読み取り専用のマウントで書けない）。**全 Project で共有**。使い捨ての作業フォルダへ落とし、
   **tarball の sha512 を目録の integrity と比べてから**、Node で tar を読み（外の `tar` に展開させない）、**目録のパスと完全に
-  一致する通常のファイル1件だけ**を取り出す——symlink・hardlink・`..` を含む名前・大きさの上限超えは断る。rename で置く。
+  一致する通常のファイル1件だけ**を取り出す——symlink・hardlink・装置・`..` や `/` で始まる名前・同じパスの2件目・大きさの上限超えは、
+  tarball のどこにあっても断る。ほかの通常のファイル（`package/package.json`）とフォルダは取り出さずに読み飛ばす。rename で置く
+  （版のフォルダは置いてから 0555 にする——書けないフォルダは親を跨いで rename できない）。
   合わなければ置かずに消して断る。同時に頼まれたら（エージェント・版・CPU の種類）ごとに1本だけ取り、ほかは待たせる。
   いまの目録に無い版のフォルダは banto が起きたときに消す（走っているプロセスは消しても影響を受けない。起こし直しのあと続ける
   仕事は新しい版で起き直す。前の版に戻したときはまた取ってくる）
 - **この機械のコンテナへの見せ方**：親の `agent-binaries/` を **1つの device で同じパスに読み取り専用**でマウントする（版のフォルダ
   ごとには付けない）。Subagent Module を起こすとき（`prepareModuleDirs`）に付けるので、あとから取ってきた版も rename で親の
   下に置けば中から見える。device は Incus の設定に残るので、眠る・起こし直すでも付き直る
-- **別のサーバへの見せ方**：塗り（`code/layers/`）とは別の置き場 `<置き場の根>/agent-binaries/<同じ名前>/` に送る——塗りは版の
+- **別のサーバへの見せ方**：塗り（`code/layers/`）とは別の置き場 `<置き場>/agent-binaries/<同じ名前>/`（`<置き場>` は置き場の根の
+  下の banto ごとの置き場 `<置き場の根>/<データの置き場のハッシュ 12 字>`——`code/` と同じ階。v4-security.md §1「向こうに置くもの」）に送る——塗りは版の
   `.layers` に載らないものを片づけるので、そこに置くと次の送り込みで消える。送る前に向こうの中身を `syncPackageDir` と同じ
   digest で照合し、合えば送らない（向こうの AI が書き換えうるので、**使うたびに照合する**——1本なので軽い）。送るのは
   （実行場所・フォルダの名前）ごとに1本だけ（同時の頼みは待たせる）。片づけは host と同じく「いまの目録に無い版を消す」を
@@ -3184,10 +3188,12 @@ OpenCode の実行ファイルは1本で約185MB（npm の `opencode-linux-x64`�
 - **試験**：E2E は偽のエージェントを使うので本物は取らない。取ってくる口の試験には、**目録全体を JSON で差し替える変数**
   （`BANTO_AGENT_BINARY_CATALOG`。URL・integrity・中のパスを入れる）を、偽のエージェント（`BANTO_SUBAGENT_FAKE_AGENT=1`）のとき
   だけ core が読む——本番では効かない。core の環境なのでコンテナの AI からは触れない。試験では偽のエージェント `fake` を目録に
-  載せ、その `command` も口の返り値（小さな tarball の中の実行ファイル＝偽のエージェントを起こすスクリプト）から組む——
+  載せ、その `command` も口の返り値（小さな tarball の中の実行ファイル＝受けた引数をそのまま exec する sh。引数で node と偽の
+  エージェントを渡す）から組む——
   偽のエージェントのうち `fake` が本物の opencode と同じ道を通る。試験用の小さな tarball を出す偽の登録簿で、
-  取る・確かめが合わない・中身が不正（symlink・余計なファイル）・進まない・コンテナから見える・別のサーバへ送る・二度目は取らない、
-  を確かめる
+  取る・確かめが合わない・中身が不正（symlink・hardlink・`..`・同じパスの2件目）・進まない・コンテナから見える・別のサーバへ送る
+  （書き換えられていれば送り直す）・二度目は取らない、を確かめる（core の `agent-binaries/store.test.ts`、E2E の
+  `subagent-agent-binary`・`remote-runtime-ssh`）
 
 - **banto の Module（FileSystem・Shell・Vault）はまだサブエージェントに渡していない**
   （`session/new` の `mcpServers` は空）。渡すには、サブエージェント用の中継の口（URL と合言葉）を

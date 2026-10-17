@@ -509,7 +509,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   違えば断る**（推測で動かさない）
 - **Module の置き場**（Module ごと）と、registry から取ってきた配布物
 - **banto が取ってきたエージェントの本体**（追加・2026-10-17、`v4-architecture.md` §4.1「エージェントの本体を取ってくる」——
-  OpenCode）：host が取って sha512 で確かめたものを、塗りとは別の置き場（`<置き場の根>/agent-binaries/`）に送る——中身の digest で
+  OpenCode）：host が取って sha512 で確かめたものを、塗りとは別の置き場（banto ごとの置き場の `agent-binaries/`）に送る——中身の digest で
   照合し向こうにあれば送らない、使うたびに照合する、いまの目録に無い版は消す。送るのは、その実行場所で初めて使うときだけで、
   どちらの CPU 向け（AVX2 の有無）かは向こうの CPU で選ぶ（前提の確かめで AVX2 の有無を覚える。無くても断らず baseline を送る）。向こうから npm に取りに行かせない
   （上の案B を採らない理由と同じ）。host への口 `relayEnsureAgentBinary` はコンテナの中の AI も合言葉で直接呼べるが、できるのは
