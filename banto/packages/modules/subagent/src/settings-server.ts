@@ -159,6 +159,8 @@ export function createSubagentSettingsServer(deps: SubagentSettingsDeps) {
           id: a.id,
           title: a.title,
           ...(a.importFrom ? { importLabel: a.importFrom.label } : {}),
+          // **本体（この機械）**（アーキ仕様 §4.1「設定画面」）——取ってきたか、まだか。別のサーバにあるかは出さない
+          ...(a.fetchedBinary ? { binary: await binaryStatus(a.fetchedBinary.agent) } : {}),
           keys: await Promise.all(
             a.credentialEnv.map(async (envName) => ({
               env: envName,
@@ -170,6 +172,16 @@ export function createSubagentSettingsServer(deps: SubagentSettingsDeps) {
         };
       }),
     );
+  }
+
+  /** この機械に本体が置いてあるか（取らない）。確かめられなければ理由を返す——画面に出す（黙って「まだ」にしない） */
+  async function binaryStatus(agent: string): Promise<{ present: boolean; version: string; sizeBytes?: number; approxBytes: number } | { error: string }> {
+    try {
+      const st = await deps.relayClient.agentBinaryStatus(agent);
+      return { present: st.present, version: st.version, ...(st.sizeBytes !== undefined ? { sizeBytes: st.sizeBytes } : {}), approxBytes: st.approxBytes };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   return server;

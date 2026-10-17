@@ -23,6 +23,9 @@ test("取り込むと Vault に置かれ、envSecrets を書かなくても仕�
         const fake = before.agents.find((a) => a.id === "fake")!;
         assert.equal(fake.importLabel, "試験用の設定ファイル");
         assert.deepEqual(fake.keys, [{ env: "FAKE_AGENT_TOKEN", alias: "subagent.fake.FAKE_AGENT_TOKEN", set: false, importable: true }]);
+        // 本体（この機械）の様子も載る（取ってくるエージェントだけ。本体のログインを使うものには無い）
+        assert.deepEqual((fake as { binary?: unknown }).binary, { present: false, version: "0.0.0", approxBytes: 2_000 });
+        assert.equal((before.agents.find((a) => a.id === "fake-host") as { binary?: unknown }).binary, undefined);
         assert.doesNotMatch(JSON.stringify(before), new RegExp(IMPORTED));
 
         const imported = await settings("importCredential", { agent: "fake", env: "FAKE_AGENT_TOKEN" });

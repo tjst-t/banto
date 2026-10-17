@@ -1,6 +1,10 @@
 // サブエージェントの一覧——**エージェントを足すのは、ここに起こし方を1つ足すこと**
 // （アーキ仕様 §4.1「backend ごとの橋は書かない」）。どれも ACP で話すので、違うのは
 // 起こし方・専用ホームの使い方・受け取る資格情報の変数名だけ。
+//
+// **OpenCode の本体は依存に持たない**（決定・2026-10-17、アーキ仕様 §4.1「エージェントの本体を取ってくる」）。起動時には
+// パスを解かず、使うとき（`listSubagents` で指したとき・`runSubagent`）に host の口 `relayEnsureAgentBinary` を呼び、
+// 返ってきたパス（この場所から見えるもの）から起こし方を組む
 
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -11,8 +15,14 @@ const require = createRequire(import.meta.url);
 export interface AgentDefinition {
   id: string;
   title: string;
-  command: string;
+  /** 起こすコマンド。`fetchedBinary` のあるエージェントは、banto が取ってきた本体のパス（口の返り値）から組む */
+  command: (binary?: string) => string;
   args: (cwd: string) => string[];
+  /**
+   * **banto 本体が取ってくる本体**（core の目録の agent と、人に出すおおよその大きさ）。あれば、使うときに口を呼んでパスを受け取る
+   * ——初めてのときは取ってくるので数分かかる
+   */
+  fetchedBinary?: { agent: string; approxSize: string };
   /** 専用ホームの中に置き場を向ける変数（HOME・TMPDIR・XDG は共通で向ける） */
   homeEnv: (home: string) => Record<string, string>;
   /**
@@ -54,7 +64,7 @@ function claudeCode(): AgentDefinition {
   return {
     id: "claude-code",
     title: "Claude Code",
-    command: process.execPath,
+    command: () => process.execPath,
     args: () => [join(installDir, "dist", "index.js")],
     // 会話の記録（session/load で拾う）はここに残る。人の ~/.claude には書かない
     homeEnv: (home) => ({ CLAUDE_CONFIG_DIR: join(home, ".claude") }),
@@ -66,12 +76,12 @@ function claudeCode(): AgentDefinition {
 }
 
 function openCode(): AgentDefinition {
-  const installDir = packageDir("opencode-ai");
   return {
     id: "opencode",
     title: "OpenCode",
-    // postinstall が CPU に合う実行ファイルを置く（ルートの allowScripts で許している）
-    command: join(installDir, "bin", "opencode.exe"),
+    // 本体は core が取ってくる（目録 `core/src/agent-binaries/agent-binaries.ts`。CPU は動かす機械で選ぶ）
+    command: (binary) => binaryOrThrow("opencode", binary),
+    fetchedBinary: { agent: "opencode", approxSize: "約185MB" },
     args: (cwd) => ["acp", "--cwd", cwd],
     homeEnv: () => ({}),
     // OpenCode Go のサブスクも API キー（OPENCODE_API_KEY）。他はプロバイダごとの変数
@@ -99,7 +109,7 @@ function openCode(): AgentDefinition {
 function fakeAgents(env: NodeJS.ProcessEnv): AgentDefinition[] {
   const here = dirname(new URL(import.meta.url).pathname);
   const base = {
-    command: process.execPath,
+    command: () => process.execPath,
     args: () => [join(here, "testing", "fake-agent.js")],
     homeEnv: () => ({}),
     mode: "auto",
@@ -109,6 +119,11 @@ function fakeAgents(env: NodeJS.ProcessEnv): AgentDefinition[] {
       ...base,
       id: "fake",
       title: "Fake Agent（試験用）",
+      // **本物の opencode と同じ道を通る**（アーキ仕様 §4.1「試験」）：起こすのは口が返した本体（試験の登録簿が出す小さな
+      // tarball の中の、受けた引数をそのまま exec する sh）。その先で node が偽のエージェントを起こす
+      command: (binary) => binaryOrThrow("fake", binary),
+      args: () => [process.execPath, join(here, "testing", "fake-agent.js")],
+      fetchedBinary: { agent: "fake", approxSize: "数KB" },
       credentialEnv: ["FAKE_AGENT_TOKEN"],
       // 取り込み元は試験が用意する（人の OpenCode の鍵を読まない）
       ...(env.BANTO_SUBAGENT_FAKE_IMPORT_FILE
@@ -129,6 +144,12 @@ function fakeAgents(env: NodeJS.ProcessEnv): AgentDefinition[] {
       sharesHostClaudeLogin: true,
     },
   ];
+}
+
+/** 取ってくる本体のパスが渡っていなければ止まる（起動時に解かないので、渡し忘れはここで分かる。規則2） */
+function binaryOrThrow(agent: string, binary: string | undefined): string {
+  if (!binary) throw new Error(`${agent} の本体のパスがありません（banto 本体に取ってきてもらってから起こす）`);
+  return binary;
 }
 
 export function listAgents(env: NodeJS.ProcessEnv = process.env): AgentDefinition[] {
