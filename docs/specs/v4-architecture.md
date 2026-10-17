@@ -2016,7 +2016,10 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
 - **x64 だけ**。組み立て済みのネイティブ部品（sharp・@napi-rs/canvas・next の swc・tailwind の oxide・lightningcss・unrs-resolver）は
   どれも npm の linux-x64-gnu 用の既製品で、GitHub の ubuntu で組んだものが host（Ubuntu 24.04・26.04）でもコンテナの中でも
   動く。**例外は opencode**：postinstall が組み立てた機械の `/proc/cpuinfo` の AVX2 で `opencode-linux-x64` か `-baseline` を
-  選んで張る。GitHub のランナーは AVX2 があるので、AVX2 の無い host では使わない（下の「確かめる」）。arm64 は要るときに足す
+  選んで張る。GitHub のランナーは AVX2 があるので、AVX2 の無い host では使わない（下の「確かめる」）。arm64 は要るときに足す。
+  **改訂（2026-10-17）**：opencode は依存から外し、使うときに取ってくる（§4.1「エージェントの本体を取ってくる」）。それまでの
+  間は tar から `opencode-linux-x64-baseline` を除く（AVX2 の印のため使われない）。外したあとは AVX2 の印に頼る部品が無いか
+  確かめ、無ければ印の確かめを外す
 - **使う外の action は GitHub 公式のもの（`actions/checkout`・`actions/setup-node`）だけで、commit の id で固定する**。Release を
   作るのは `GITHUB_TOKEN` と、ランナーにある `gh`。秘密は足さない。GITHUB_TOKEN が作るタグ・Release はほかの workflow を
   起こさない（ループしない）。workflow のファイルは Deploy key（SSH）で push できる（`workflow` scope の制限は PAT・OAuth
@@ -3121,8 +3124,47 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
   別の API キーで走らせたいときは `ANTHROPIC_API_KEY` に渡す（渡すと中継は使わない）。
   **渡したものは、そのサブエージェントのシェルから読める**（実測。`docs/specs/v4-security.md`）
   ——**サブエージェントに読まれてよいものだけを渡す**
-- **エージェント本体は Subagent Module の依存として持つ**（`@agentclientprotocol/claude-agent-acp`・
-  `opencode-ai`。版は固定する）。Claude の選べるモデルは同梱の CLI の版で決まる
+- **エージェント本体は Subagent Module の依存として持つ**（`@agentclientprotocol/claude-agent-acp`。版は固定する）。
+  Claude の選べるモデルは同梱の CLI の版で決まる。**acp が使う Agent SDK は、本体（Runner）の SDK と同じ版に揃える**
+  （改訂・2026-10-17、ユーザー）——acp は SDK の版を決め打ちし、本体と1つ違うだけで Claude Code の実行ファイル（約234MB）が
+  `node_modules` に2本入っていた。根の `package.json` の `overrides` で acp の `@anthropic-ai/claude-agent-sdk` を本体の版に
+  する。**本体の SDK を上げるときは overrides も一緒に上げ、`check:agents`（claude-code）を流す**
+- **OpenCode の本体は banto に同梱せず、初めて使うときに banto 本体が取ってくる**（決定・2026-10-17、ユーザー。下の
+  「エージェントの本体を取ってくる」）
+
+#### エージェントの本体を取ってくる（決定・2026-10-17、ユーザー）
+
+OpenCode の実行ファイルは1本で約185MB（npm の `opencode-linux-x64`）あり、`opencode-ai` を依存に持つと組み立て済みの版・
+別のサーバへ送る依存の大きさのほとんどを占めていた。使う人は少ないので、**依存から外し、使うときに取ってくる**。
+
+- **何を取ってくるか**：banto のコード（core の目録 `agent-binaries.ts`）に、エージェントごとに **版・npm の tarball の URL・
+  integrity（sha512）・tarball の中の実行ファイルのパス**を書いて固定する。x64 は `opencode-linux-x64` と、AVX2 の無い機械用の
+  `opencode-linux-x64-baseline` の2つを書き、**host の `/proc/cpuinfo` で選ぶ**（以前の postinstall と同じ選び方。取ってくるのは
+  どちらか1本）。arm64・musl は書かない（banto が x64 の glibc だけなので）。版を上げるときは目録の版と integrity を書き換え、
+  `check:agents`（opencode）を流す
+- **誰が・いつ**：**banto 本体（core）が、AI か人が初めて OpenCode のサブエージェントを使うときに1回だけ**取ってくる。
+  使うとき＝`listSubagents` で agent に opencode を指したとき・`runSubagent` で opencode を頼んだとき（設定画面の「サブエージェント」
+  の候補を開いたときも同じ口を通る）。先に取っておくボタンは作らない。
+  Subagent Module は host への口 `relayEnsureAgentBinary({ agent })` を呼び、core が取ってきて**呼び元の場所から見えるようにし**、
+  中から見えるパスを返す。この口を呼べるのは同梱の Subagent Module（と設定の `subagent-settings`）だけ（`relayRaiseNotice` と同じ
+  名乗りの確かめ）。一覧に無い名前は断る
+- **置き場**：`<データ置き場>/agent-binaries/<agent>-<版>-<integrity の頭12>/`（中に実行ファイル1本、0755、フォルダは 0555）。
+  **全 Project で共有**。使い捨ての作業フォルダへ落とし、**tarball の sha512 を目録の integrity と比べてから**実行ファイルだけを
+  取り出し、rename で置く。合わなければ置かずに消して断る。同時に頼まれたら1本だけ取る（同じ取り込みを待たせる）。
+  いまの目録に無い版のフォルダは、banto が起きたときに消す（前の版に戻したときはまた取ってくる）
+- **見せ方**：この機械のコンテナには、その置き場を**同じパスで読み取り専用**でマウントする（Module の配布物と同じ
+  `ensureDisk(..., { readonly: true })`。動いているコンテナに後から足す）。別のサーバへは、いまの依存と同じ道で送る
+  （`docs/specs/v4-security.md` §1「向こうに置くもの」——中身のハッシュを鍵にした置き場。向こうにあれば送らない、使う前に照合する）
+- **待つ間**：取ってくる・送る間は、頼んだ tool の呼び出しに進み具合（「OpenCode を取ってきています（130 / 185MB）」「<実行場所>
+  に送っています」）を送り続ける——上限（60秒）は進み具合で数え直す。**120秒のあいだ1バイトも進まなければやめる**。
+  サブエージェントの仕事の画面（Launcher）にも、始まる前の段として同じ文を出す
+- **失敗**：取れなかった・確かめが合わなかった・送れなかったら、**理由を添えて tool の失敗で返す**（AI が人に伝える）。何も
+  残さず、次に使うときにまた試す。受信箱には出さない（頼んだ会話に返るので）
+- **設定画面**：「サブエージェント」の OpenCode の欄に「本体：取ってきました（版 1.18.32・185MB）」か「まだありません——初めて
+  使うときに約185MB を取ってきます」を出す（`relayAgentBinaryStatus`、取りには行かない）
+- **試験**：E2E は偽のエージェントを使うので本物は取らない。取ってくる口は、目録の URL を差し替える変数
+  （`BANTO_AGENT_BINARY_REGISTRY`）で試験用の小さな tarball を出す偽の登録簿に向け、取る・確かめが合わない・進まない・
+  コンテナから見える・別のサーバへ送る、を確かめる
 
 - **banto の Module（FileSystem・Shell・Vault）はまだサブエージェントに渡していない**
   （`session/new` の `mcpServers` は空）。渡すには、サブエージェント用の中継の口（URL と合言葉）を
