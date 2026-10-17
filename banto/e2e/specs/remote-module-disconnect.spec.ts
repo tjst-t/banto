@@ -65,7 +65,10 @@ async function login(page: Page, host: OwnHost): Promise<void> {
 async function cutSsh(sshHost: SshHost): Promise<void> {
   const lingered = await sshHost.rootExec(`mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/${sshHost.user}`);
   expect(lingered.code, lingered.stderr).toBe(0);
-  const stopped = await sshHost.rootExec(`systemctl stop ssh.socket ssh.service 2>/dev/null; systemctl stop ssh.service; pkill -KILL -f 'sshd.*${sshHost.user}' || true`);
+  // 型は先頭に留める（`^sshd`）——留めないと、この `sh -c` 自身の引数に同じ文字があって自分まで落とす
+  const stopped = await sshHost.rootExec(
+    `systemctl stop ssh.socket ssh.service 2>/dev/null; systemctl stop ssh.service; pkill -KILL -f '^sshd(-session)?: ${sshHost.user}' || true`,
+  );
   expect(stopped.code, stopped.stderr).toBe(0);
 }
 
