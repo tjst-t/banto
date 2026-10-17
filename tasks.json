@@ -8803,6 +8803,121 @@
       "updatedAt": "2026-10-17T00:43:16.575Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "a-proxy-device-security-uid-symlink-subu",
+      "number": 365,
+      "kind": "task",
+      "title": "案A の前に実機で測る（proxy device の security.uid・symlink のすり替え・subuid の書き換え・port_isolation・pool）",
+      "status": "ready",
+      "parent": "1-vm-project-a",
+      "dependsOn": [
+        "ssh-project-ai-vault-project-vm"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」で「実装の前に測る」としたものを banto-dev-vm で測る（終わったら区画の設定と試したコンテナを戻す）。\n\n1. proxy device に security.uid/gid を付けると、Incus の中継（forkproxy）がその uid で繋ぐか（root で繋がないか）\n2. connect=unix: の先を symlink にすり替えても、root の口（/var/lib/incus/unix.socket 等）に繋がらないか\n3. /etc/subuid・subgid を書き換えたあと Incus の起こし直しが要るか、動いているコンテナが残るか。raw.idmap の uid/gid が制限された区画で付けられるか\n4. NIC の security.port_isolation=true が制限された区画で付けられ、コンテナどうしが届かなくなるか（ゲートウェイには届くか）\n5. pool banto を作って区画から使えるか、OpenSSH の streamlocal の -R で Project ごとのソケットに張れるか\n\n結果は仕様の「実測」に書き足す。仕様と合わないものがあれば人に上げる。",
+      "doneWhen": "5つの結果が仕様の「実測」に書かれ、合わないものは仕様が直っている。VM の区画の設定は元に戻っている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "ssh-project-project",
+      "number": 366,
+      "kind": "task",
+      "title": "別のサーバの SSH の接続・待ち受け・トンネルを Project ごとにする作り直し（実行場所＋Project の層）",
+      "status": "ready",
+      "parent": "1-vm-project-a",
+      "dependsOn": [
+        "a-proxy-device-security-uid-symlink-subu"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「SSH の接続は Project ごとに1本」。machine の振る舞いは変えない（machine は1つに1つなので実際は今と同じ）作り替え。\n\n- RemoteSshRuntime（packages/core/src/runtime/remote-ssh.ts）の実行場所ごとの表（接続・待ち受け・ソケットの置き場・release()）を「実行場所＋Project」の層に。ControlPath・逆向きのトンネル・relay-listener も Project ごと\n- トンネルの VM の側を Project ごとの決まったパスの UNIX ソケットに（-R <パス>:127.0.0.1:<待ち受け>）。machine でもそうしてよいかは実装で決める\n- Project を畳む・眠らせる・閉じても、同じ実行場所のほかの Project を落とさない\n- isRemoteProject のような2択（core/src の約9ファイル・47箇所）を洗い出し、種類を足せる形に\n- 起こし直しの続き（#324）・繋がらないお知らせ（#339）の鍵を Project ごとの接続に",
+      "doneWhen": "machine の別のサーバの E2E（remote-runtime-ssh・remote-runtime-sockets・remote-runtime-host-side・remote-resume-restart・runtime-move）が今どおり通る。単体テストで「同じ実行場所の2つの Project の接続が別々で、片方を閉じてももう片方が残る」を確かめる。フル E2E は流さない",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "containers-core-sudo-n",
+      "number": 367,
+      "kind": "task",
+      "title": "containers の実行場所：登録と前提の確かめ、core が sudo -n で行う準備",
+      "status": "ready",
+      "parent": "1-vm-project-a",
+      "dependsOn": [
+        "ssh-project-project"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「実行場所の種類」「root の要る準備は core が sudo -n で済ませる」「置き場（pool）」「VM は banto 専用」。\n\n- 登録に動かし方（machine／containers）。同じ host 鍵＋ユーザーに machine と containers を並べられない\n- 前提の確かめ：Incus 6.0.6 以降・自分の区画でコンテナを作れる・sudo -n・linger（containers では断る）。Docker・tmux は要らない\n- 準備（何度流しても同じ）：restricted.devices.proxy=allow・subuid/subgid と raw.idmap（uid/gid）・pool banto・linger。sudo -n が通らなければ足りないものと打つコマンドを名指しして断る。繋ぐたびに「何もしないこと」を確かめる\n- 画面：実行場所の登録で動かし方を選ぶ。新しい Project で containers は「1つに1つ」で薄くしない",
+      "doneWhen": "banto-dev-vm を containers として登録でき、準備が終わる（もう一度流しても何も変えない）。sudo できない相手・machine と同じ宛先では名指しして断る。単体テスト（偽の RunIncus・偽の sudo）と実機",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "containers-project-module",
+      "number": 368,
+      "kind": "task",
+      "title": "containers の実行場所：Project ごとのコンテナ・置き場と見せ方・Module の起動・中から書く",
+      "status": "ready",
+      "parent": "1-vm-project-a",
+      "dependsOn": [
+        "containers-core-sudo-n"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「コンテナの作りと上限」「置き場と見せ方」「Module の起こし方」「条件 3」。\n\n- ProjectContainers を RunIncus を SSH 越しに差し替えて使う。hostAddress は VM のインターフェース、ensureNode は VM のコードの置き場の bin/node、uid は VM のユーザーのもの。土台のイメージは VM の上で作り進み具合を出す\n- コードは <置き場>/code を丸ごと読み取り専用で見せる。Project のフォルダと Module の置き場は home の下に Project ごと、そのコンテナにだけ\n- 根の重なりは断る（作る・移す・再開する）\n- Module は ssh <VM> incus exec <c> --user <uid> -- <起動役>\n- 見せたフォルダに書く・解釈するもの（Shell のホームの写し・置き場の用意・tar の展開・git worktree repair・rsync の受け手）は incus exec で中から",
+      "doneWhen": "同じ VM に2つの Project を作り、Shell・FileSystem・Service がそれぞれのコンテナで動き、片方からもう片方のフォルダに届かない（実機）。見せたフォルダの symlink を辿らないことを単体テストで",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "containers-proxy-device-banto-ssh-agent",
+      "number": 369,
+      "kind": "task",
+      "title": "containers の実行場所：proxy device の道（中から banto・ssh-agent・流れの口・公開）と、移す・眠らせる・資源の画面",
+      "status": "ready",
+      "parent": "1-vm-project-a",
+      "dependsOn": [
+        "containers-project-module"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「道」「条件 4」「他の仕組みとの関係」「畳んだとき」。\n\n- すべての proxy device に security.uid/gid。connect=unix: の先は VM だけの場所（/run/user/<U>/banto/p-<Project>/…）\n- 中から banto へ（bind=instance → Project ごとのトンネルのソケット）・ssh-agent（bind=instance）・流れの口（bind=host、向きが逆）・公開（bind=host、全コンテナのポートを避けて選ぶ、眠らせても外さない）\n- 移す（1つに1つを外す・動いているものは中で数える）・閉じたら空く・眠らせる（コンテナを止めるだけ）・資源の画面（lxc.payload.user-<uid>_<名前> を読む、上限に当たった知らせも）\n- port_isolation は測った結果に従う\n- ほかの節の書き分け（「1つに1つ」等は machine の話と明記）",
+      "doneWhen": "ストーリー #364 の完了条件を実機（banto-dev-vm）で満たす。片方のコンテナからもう片方の中継の口に届かないことを確かめる。単体テスト（偽の RunIncus）で道の張り外し",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
