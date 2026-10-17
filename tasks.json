@@ -8492,6 +8492,29 @@
       "extra": {}
     },
     {
+      "id": "judge-reason-to-thread",
+      "number": 377,
+      "kind": "task",
+      "title": "判断役の理由を、元の会話に届ける答えにも入れる",
+      "status": "ready",
+      "parent": "automation-events",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "automation"
+      ],
+      "body": "#350 を本物のモデルで確かめたとき（2026-10-17）に見つかった足りない点。\n\n- 判断役は answer_decision で理由（reason）を必ず書くが、元の会話に届ける文（`banto/packages/core/src/automation/turn-decisions.ts` の deliver の text）は「問い・選んだもの・reply」だけで、理由が入っていない。理由は受信箱のカード（judge の decided-by-automation の answers）にしか残らない\n- 元の会話の AI は、なぜその選択肢が選ばれたかを知らずに進める。会話の記録を後から読む人にも理由が見えない\n- 直し：届ける文の問いごとに「理由：〈reason〉」の1行を足す",
+      "doneWhen": "単体テストと E2E turn-decisions で：判断役が選んだ答えの届けものに、問いごとの理由が入っている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T09:28:26.323Z",
+      "updatedAt": "2026-10-17T09:28:26.323Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "project-org",
       "number": 351,
       "kind": "story",
