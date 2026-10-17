@@ -15,8 +15,9 @@
 //   - 置き場は E2E の回の置き場の下（`.cache/banto-e2e/<回>/own-*/data`）——札が `containers.ts` の `E2E_OWNER` に合い、
 //     片づけ役ごと殺されても次の回の `global-setup.ts` が「前の回が残したもの」として拾う
 
+import { agentBinaryFixture } from "./agent-binary-fixture.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,6 +26,7 @@ import { CLAUDE_CREDENTIALS_DIR, FRONTEND_BASE_URL, CLAUDE_RELAY_CREDENTIALS, SU
 import { isGroupAlive, listOwnedContainers, removeContainers } from "./containers.ts";
 import { infisicalFixtureEnv } from "./infisical-fixture.ts";
 import { startOutsideRunGroup } from "./outside-group.ts";
+import { removeTree } from "./remove-tree.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "../packages/core/dist/cli.js");
@@ -145,6 +147,8 @@ export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> 
         BANTO_CONTAINER_ENV_PASSTHROUGH: "BANTO_SUBAGENT_FAKE_AGENT",
         BANTO_CLAUDE_RELAY_CREDENTIALS: CLAUDE_RELAY_CREDENTIALS,
         BANTO_SUBAGENT_FAKE_IMPORT_FILE: SUBAGENT_IMPORT_FILE,
+        // 偽のエージェントの本体の目録（この回の core が立てた偽の登録簿を指す。追加・2026-10-17）
+        BANTO_AGENT_BINARY_CATALOG: JSON.stringify(agentBinaryFixture().catalog),
         // Infisical も E2E の core と同じ偽物に（`start-core.ts` が立てて置き場に書いたもの。追加・2026-10-08）
         ...infisicalFixtureEnv(),
         ...opts.env,
@@ -203,7 +207,7 @@ export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> 
       problems.push(`コンテナの一覧を読めません：${(err as Error).message}`);
     }
     try {
-      rmSync(dir, { recursive: true, force: true });
+      removeTree(dir);
     } catch (err) {
       problems.push(`置き場 ${dir} を消せません：${(err as Error).message}`);
     }

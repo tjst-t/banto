@@ -195,6 +195,11 @@ export const SELF_UPDATE_GITHUB_URL = `http://127.0.0.1:${SELF_UPDATE_GITHUB_POR
 export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.json");
 /** 偽の Infisical の行き先と資格情報（core のプロセスが書き、自前の host が読む——`infisical-fixture.ts`） */
 export const INFISICAL_FIXTURE_FILE = join(E2E_TMP, "infisical-fixture.json");
+/**
+ * **エージェントの本体の目録の差し替え**（追加・2026-10-17、アーキ仕様 §4.1「試験」）。`start-core.ts` が偽の登録簿を立て、
+ * 目録（JSON）をここに書く。自前の host（`own-host.ts`）も同じものを渡す
+ */
+export const AGENT_BINARY_CATALOG_FILE = join(E2E_TMP, "agent-binary-catalog.json");
 
 /**
  * **claude CLI 自身の置き場**。E2E は**人の `~/.claude` を一切書き換えない**

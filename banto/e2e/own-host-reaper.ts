@@ -10,9 +10,10 @@
 // 等）は、次の回の `global-setup.ts` が拾う（置き場が `E2E_OWNER` の形）。
 //
 // 使い方：node own-host-reaper.ts <worker の pid> <自前の host の置き場>
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isAlive, isGroupAlive, listOwnedContainers, removeContainers, sleepSync } from "./containers.ts";
+import { removeTree } from "./remove-tree.ts";
 
 const workerPid = Number(process.argv[2]);
 const dir = process.argv[3];
@@ -54,7 +55,7 @@ try {
   log(`[e2e] コンテナの一覧を読めず、片づけられませんでした：${(err as Error).message}（次の回が片づける）`);
 }
 try {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 } catch (err) {
   log(`[e2e] 置き場 ${dir} を消せませんでした：${(err as Error).message}`);
 }

@@ -20,6 +20,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
 import { openApp } from "../helpers.js";
 import { withSshHost, type SshHost } from "../ssh-host.js";
+import { FAKE_AGENT_BINARY_SCRIPT } from "../agent-binary-fixture.js";
 
 test.describe.configure({ mode: "serial" });
 // 初めての回は SSH の相手の土台を作り、向こうへ banto のコード（約 1GB）を送る
@@ -232,6 +233,32 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
       const listed = JSON.parse(agents.body.content[0]!.text) as { agents: Array<{ id: string; keysError?: string; hostLogin?: { loggedIn: boolean } }> };
       expect(listed.agents.filter((a) => a.keysError).map((a) => a.keysError), "中継（/relay）がトンネル越しに通らない").toEqual([]);
       expect(listed.agents.find((a) => a.hostLogin)?.hostLogin?.loggedIn, "Claude の中継の住所が入っていない").toBe(true);
+
+      // ---- 2b. 取ってきたエージェントの本体を向こうへ送る（追加・2026-10-17、アーキ仕様 §4.1「別のサーバへの見せ方」）-----------
+      // 偽のエージェント `fake` は本物の opencode と同じ道：host が取ってきた本体を、塗りとは別の置き場に送り、向こうのパスで起こす。
+      // 使うたびに照合し（合えば送らない）、向こうで書き換えられていれば送り直す。既定の鍵（Vault）を引くので承認は自動で通す
+      expect((await api(`/api/projects/${projectId}/auto-approve`, { method: "PUT", body: { enabled: true } })).status).toBe(200);
+      const fakeRun = await callTool(`subagent-${projectId}`, "runSubagent", { agent: "fake", prompt: "向こうの本体で起きた" }, { projectId, threadId });
+      expect(fakeRun.isError, fakeRun.text).toBe(false);
+      expect((JSON.parse(fakeRun.text) as { text: string }).text).toContain("向こうの本体で起きた");
+      const sentDirs = (await host.ssh(`ls -A ${base}/agent-binaries`)).stdout.split("\n").filter(Boolean);
+      expect(sentDirs, "向こうに本体が無い（送りかけが残っている）").toHaveLength(1);
+      expect(sentDirs[0]).toMatch(/^fake-0\.0\.1-x64(-baseline)?-[0-9a-f]{12}$/);
+      const sentFile = `${base}/agent-binaries/${sentDirs[0]}/fake`;
+      expect((await host.ssh(`cat ${sentFile}`)).stdout).toBe(FAKE_AGENT_BINARY_SCRIPT);
+      expect((await host.ssh(`stat -c %a ${sentFile}`)).stdout.trim()).toBe("755");
+      // 塗り（code/layers）には置かない
+      expect((await host.ssh(`ls ${base}/code/layers | grep -c '^fake-' || true`)).stdout.trim()).toBe("0");
+      const inode = (await host.ssh(`stat -c %i ${sentFile}`)).stdout.trim();
+      const fakeAgain = await callTool(`subagent-${projectId}`, "runSubagent", { agent: "fake", prompt: "二度目" }, { projectId, threadId });
+      expect(fakeAgain.isError, fakeAgain.text).toBe(false);
+      expect((await host.ssh(`stat -c %i ${sentFile}`)).stdout.trim(), "合っているのに送り直した").toBe(inode);
+      // 向こうの AI が書き換えたら、次に使うときに送り直す
+      await host.ssh(`chmod u+w ${sentFile} && printf 'tampered\\n' > ${sentFile}`);
+      const fixed = await callTool(`subagent-${projectId}`, "runSubagent", { agent: "fake", prompt: "直った" }, { projectId, threadId });
+      expect(fixed.isError, fixed.text).toBe(false);
+      expect((JSON.parse(fixed.text) as { text: string }).text).toContain("直った");
+      expect((await host.ssh(`cat ${sentFile}`)).stdout, "書き換えを送り直していない").toBe(FAKE_AGENT_BINARY_SCRIPT);
 
       // ---- 3. tmux・linger の注意。Terminal は開くと理由と入れ方つきで断る ----------------------------------
       await expect

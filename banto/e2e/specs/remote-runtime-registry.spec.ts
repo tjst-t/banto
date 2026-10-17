@@ -68,6 +68,8 @@ const EXPECTED_CHECKS = {
   "data-root": "ok",
   sshd: "ok",
   docker: "warn",
+  // AVX2 の有無は覚えるだけで断らない（OpenCode の本体をどちら向けにするか、追加・2026-10-17）
+  "cpu-avx2": "ok",
 };
 
 /** 一覧の1件を開く（開いていれば何もしない——押すと閉じる） */
