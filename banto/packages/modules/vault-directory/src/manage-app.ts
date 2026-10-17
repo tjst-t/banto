@@ -15,6 +15,7 @@ export const UI_APP_MIME = "text/html;profile=mcp-app";
 export const MANAGE_APP_URI = "ui://banto-vault-directory/manage";
 
 import { ALIAS_KIND_RULES_JS } from "@banto/vault-kit";
+import { RUNTIME_KEYS_GROUP } from "@banto/module-contract";
 
 export const MANAGE_APP_HTML = `<!doctype html>
 <html lang="ja">
@@ -636,6 +637,10 @@ ${ALIAS_KIND_RULES_JS}
     // （他の Project の名前は画面に渡されていないので、数だけ）
     if (a.scope === "shared") return { key: "shared", label: "Global" };
     if (a.scope === "unbound") return { key: "unbound", label: "未割当" };
+    // **実行場所の鍵の置き場**（2026-10-17、Backlog #361）——どの Project からも使えない。「未割当」と混ぜると、直そうとして紐付けたくなる
+    if (a.scope === "runtime") {
+      return { key: "runtime", label: "実行場所", title: "banto が実行場所（別のサーバ）に繋ぐときだけ使います。Project の AI からは使えません" };
+    }
     const ids = a.projects || [];
     if (project && ids.indexOf(project.id) >= 0) {
       return {
@@ -761,6 +766,10 @@ ${ALIAS_KIND_RULES_JS}
 
   /** **その置き場に入れると、どう引けるようになるか**（1箇所で決める・規則3）。 */
   function placementEffect(impl, group) {
+    // **実行場所の SSH 鍵の置き場**（2026-10-17、Backlog #361）——どの Project からも引けない。紐付けも断られる
+    if (group === ${JSON.stringify(RUNTIME_KEYS_GROUP)}) {
+      return "→ 実行場所（別のサーバ）の SSH 鍵の置き場です。banto が実行場所に繋ぐときだけ使い、どの Project の AI からも使えません";
+    }
     const p = placements && placements.project;
     const sh = placements && placements.shared;
     if (p && p.implementation === impl && p.group === group) {

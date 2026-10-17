@@ -139,6 +139,7 @@ import { StreamRefusal, type StreamRelay } from "./streams.js";
 import {
   CALL_ID_META_KEY,
   CALLER_META_KEY,
+  RUNTIME_KEYS_GROUP,
   toolCardOf,
   uiByExtensionOf,
   uiResourceUriOf,
@@ -340,7 +341,7 @@ export interface AppDeps {
   warmUpRemoteRuntime?(name: string): void;
   /** 実行場所を外したあと、先に送るために張った接続を閉じる */
   closeRemoteRuntime?(name: string): Promise<void>;
-  /** 実行場所の登録で選べる SSH 鍵（Vault の ssh-identity の alias の名前） */
+  /** 実行場所の登録で選べる SSH 鍵（Vault の実行場所の鍵の置き場 `RUNTIME_KEYS_GROUP` の ssh-identity の alias の名前） */
   listSshIdentities?(): Promise<string[]>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
   containerLimits?: {
@@ -1870,7 +1871,8 @@ export function createApp(deps: AppDeps) {
           if (rest === "" && req.method === "GET") return json(res, 200, { runtimes: runtimes.list() });
           if (rest === "/identities" && req.method === "GET") {
             if (!deps.listSshIdentities) return json(res, 501, { error: "Vault の SSH 鍵を引けません" });
-            return json(res, 200, { identities: await deps.listSshIdentities() });
+            // 置き場の名前も返す——画面が「鍵をどこに置けばよいか」を出せるように（名前は1箇所、規則3）
+            return json(res, 200, { identities: await deps.listSshIdentities(), group: RUNTIME_KEYS_GROUP });
           }
           if (rest === "/scan" && req.method === "POST") {
             const input = parseRuntimeInput(await readJsonBody(req));

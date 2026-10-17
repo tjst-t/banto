@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-11（§1「Project の実行場所——別のサーバ」の「Project の記録に実行場所を持つ」を実装し、別のサーバの Project で会話できるようにした）
+> 最終更新：2026-10-17（§1「向こうとの道」：実行場所の SSH 鍵は core だけが使える置き場に置く——Backlog #361）
 
 ## 1. セキュリティ境界
 
@@ -372,7 +372,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 #### 登録と選び方
 
 - **banto 全体の設定に「実行場所」の一覧**を持つ。1件は名前・SSH の宛先（ホスト・ユーザー・ポート）・鍵（Vault の
-  `ssh-identity` の alias）・置き場の根（既定 `~/.local/share/banto-remote`）。**初めて繋ぐときは host 鍵の指紋を
+  **実行場所の SSH 鍵の置き場**（グループ `banto-runtime`、下の「向こうとの道」）の `ssh-identity` の alias。**Project から使える
+  置き場の鍵は選べず、渡されても断る**）・置き場の根（既定 `~/.local/share/banto-remote`）。**初めて繋ぐときは host 鍵の指紋を
   画面に出し、人が確かめて覚える**（以後は覚えた鍵と違えば繋がない。known_hosts は banto の置き場に持つ）
 - **Project を作るときに実行場所を選ぶ**。既定は今どおり「この host のコンテナ」。Project の設定の欄では直接は変えず、
   変えるときは「別の実行場所へ移す」（下、2026-10-11。以前は「あとから変えない」）
@@ -547,7 +548,18 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   （切れたのを早く知る）。`ControlPath` は UNIX ソケットの 107 バイトに収まる短いパスに置く
 - 鍵は Vault から：host が Vault に鍵の窓口（ssh-agent）を立ててもらい、host の `ssh` がそれを使う。秘密鍵は host の
   ディスクにも向こうにも出ない。**core が自分のために頼む**（`resolveSecretPlaceholders` と同じく承認を聞かない——人が実行場所に
-  登録した鍵だけ）。窓口は host のデータの置き場の短いパス（`s`、107 バイト以内）に立て、SSH の接続を張ったら閉じる
+  登録した鍵だけ）。
+- **鍵の置き場は core だけが使える**（決定・2026-10-17、Backlog #361。Fable の S1）：Vault のグループ **`banto-runtime`**
+  （`RUNTIME_KEYS_GROUP`）。core は刻印 **`{host: true}`** で Vault の実装に直に頼み（窓口 vault-directory を通さない——窓口の先は
+  中継を通り、中継はこの刻印を刻まない）、Vault はこの刻印には**この置き場のものだけ**を見せて使わせる。この置き場は共通にも
+  Project にも紐付けられず、参照でも指せず、Project・banto 全体の Module・AI からは名前も見えない（v4-modules.md の
+  「グループが唯一の真実」）。**以前は共通の置き場の鍵を使っていた**——共通の置き場はどの Project からも使えるので、どの
+  Project の AI でも Vault に頼めば（Shell の `sshIdentity` 等）その鍵の ssh-agent を開かせ、別の Project の実行場所に SSH の
+  ユーザーとして入れた。登録の画面にはこの置き場の鍵だけが出て、ほかの鍵は前提の確かめで理由つきで断る。
+  **既にある登録の移し方**は `docs/runbooks/runtime-ssh-key-move.md`（鍵を Vault の管理画面で `banto-runtime` へ移す。
+  移すまでその実行場所には繋がない）。同じ鍵を Project の AI にも使わせたい（向こうで git push する等）なら、別の名前で
+  **その実行場所を使う Project の置き場**に預ける（共通の置き場に置くと、ほかの Project の AI もその実行場所に入れる——
+  直したい穴そのもの）窓口は host のデータの置き場の短いパス（`s`、107 バイト以内）に立て、SSH の接続を張ったら閉じる
   （多重化した接続は張ったあと鍵を使わない）。繋ぎ直すたびに立て直す
 - **向こうに LAN の待ち受けを開けない**。banto の側の入口（nftables の表 `inet banto`、§1「入れ方」）も今のまま閉じて
   おける——向こうから banto へは SSH の接続の中だけを通る
@@ -752,8 +764,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   「入っていれば何もしない」形（何度流しても同じ）。**`sudo -n` が通らなければ、足りないものと打つコマンドを名指しして
   断る**（登録の前提の確かめで）。ほかの時（Module を起こす・止める等）は sudo しない
 - **条件**（Fable の S1・S8・S2。満たすまで `containers` は作らない）：
-  1. **実行場所の SSH 鍵は core だけが使える**（Backlog #361）——どの Project の AI も Vault から使えるままだと、sudo できる
-     VM のユーザーとして入れ、全コンテナに届く
+  1. **実行場所の SSH 鍵は core だけが使える**（Backlog #361。**済み・2026-10-17**——上の「向こうとの道」の「鍵の置き場は
+     core だけが使える」）——どの Project の AI も Vault から使えるままだと、sudo できる VM のユーザーとして入れ、全コンテナに届く
   2. **同じ VM の同じユーザーに、`machine` と `containers` を並べて登録できない**（host 鍵＋ユーザーが同じなら断る）——`machine`
      の Project の AI は VM のユーザーそのもの
   3. **コンテナに見せたフォルダについて、書くもの・中身を解釈するもの（git・rsync の受け手・node・シェルの台本）は全部

@@ -144,8 +144,19 @@ export const CALLER_META_KEY = `${VENDOR_PREFIX}/caller`;
  * - `{instance: true}`——**banto 全体のための呼び出し**（追加・2026-09-16）。
  *   `${secret:…}` を banto 全体に1本の Module へ差し込むときに使う。
  *   **Project が決まらないので、共通の秘密だけ**（規則2——曖昧なら広げない）
+ * - `{host: true}`——**core が自分のために直接呼ぶ**（追加・2026-10-17、Backlog #361）。実行場所（別のサーバ）に繋ぐ
+ *   SSH 鍵だけに使う。**使えるのは `RUNTIME_KEYS_GROUP` の置き場だけ**で、ほかの秘密は使えない。中継は刻まない
+ *   （中継の呼び元は Module なので、この印は Module の呼び出しには決して付かない）
  */
-export type CallerStamp = { project: string } | { admin: true; forProject?: string } | { instance: true };
+export type CallerStamp = { project: string } | { admin: true; forProject?: string } | { instance: true } | { host: true };
+
+/**
+ * **実行場所の SSH 鍵の置き場**（決定・2026-10-17、Backlog #361、v4-security.md §1「向こうとの道」）。Vault のグループの
+ * 名前で、**core（`{host: true}`）だけが使える**——共通の置き場にも Project にも紐付けられず、Project・banto 全体の
+ * Module・AI からは名前も見えない。共通の置き場の鍵だと、どの Project の AI でも Vault に頼んでその鍵の ssh-agent を
+ * 開かせ、ほかの Project の実行場所に入れてしまうため
+ */
+export const RUNTIME_KEYS_GROUP = "banto-runtime";
 
 /**
  * **コンテナの中の呼び出し元にも見える、host 側のフォルダ**（追加・2026-09-27）。host だけが刻む。
@@ -271,6 +282,7 @@ export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp
     return typeof obj.forProject === "string" && obj.forProject !== "" ? { admin: true, forProject: obj.forProject } : { admin: true };
   }
   if (obj.instance === true) return { instance: true };
+  if (obj.host === true) return { host: true };
   if (typeof obj.project === "string" && obj.project !== "") return { project: obj.project };
   return undefined;
 }

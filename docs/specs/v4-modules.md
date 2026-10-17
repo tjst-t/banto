@@ -390,9 +390,15 @@ Client Secret には**使用回数の上限**を付けられるので、起動�
 |---|---|---|
 | その backend の**共通グループ** | どの Project からでも | `shared` |
 | Project に**紐付いたグループ** | 紐付いている Project（複数可） | `project`（＋`projects[]`） |
+| **実行場所の SSH 鍵の置き場**（グループ `banto-runtime`、`RUNTIME_KEYS_GROUP`。2026-10-17、Backlog #361） | **core だけ**（刻印 `{host: true}`）。どの Project・banto 全体の Module からも名前も見えない | `runtime` |
 | どちらでもない | **誰も使えない** | `unbound` |
 
 - 1つのグループに複数の Project を向けられる——**それが「共有する」という人の意思表示**
+- **`runtime` の置き場は、共通の置き場にも Project の置き場にもできない**（`setSharedGroup`・`setGroupBinding` が断る）。
+  **参照で指せない**（`linkAlias` が断り、参照ごと移す `migrateAlias` も断る。前から在る参照を辿っても、人の管理面と core の
+  ほかには渡さない）。**置けるのは人の管理面からだけ**（Module・AI の `createAlias`・`putSecret`・`generateSecret` は断る）。
+  刻印 `{host: true}` は**この置き場だけ**を使え（`listAliases` もこの置き場だけを返す）、中継は決して刻まない
+  （v4-security.md §1「向こうとの道」）
 - `unbound` は**隠さずに人の画面へ出す**（規則2）。使えないものが黙って消えると
   「登録したはずなのに無い」になる
 - **置き場は動かせない**（`updateAlias` で `scope` を付け替えられない）。以前は

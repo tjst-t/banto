@@ -810,8 +810,9 @@ export async function listRealRuntimes(): Promise<RealRemoteRuntime[]> {
   return (await request<{ runtimes: RealRemoteRuntime[] }>("/api/runtimes")).runtimes;
 }
 
-export async function listRealSshIdentities(): Promise<string[]> {
-  return (await request<{ identities: string[] }>("/api/runtimes/identities")).identities;
+/** 実行場所に使える SSH 鍵と、それを置く Vault のグループ（core だけが使える置き場。Project から使える鍵は出ない） */
+export async function listRealSshIdentities(): Promise<{ identities: string[]; group: string }> {
+  return request<{ identities: string[]; group: string }>("/api/runtimes/identities");
 }
 
 export async function scanRealRuntimeHostKey(input: RealRuntimeInput): Promise<RealHostKey> {

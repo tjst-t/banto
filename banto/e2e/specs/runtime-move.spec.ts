@@ -22,7 +22,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { FRONTEND_BASE_URL } from "../config.js";
 import { fakeTurn, openApp } from "../helpers.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
-import { withSshHost, type SshHost } from "../ssh-host.js";
+import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
 test.describe.configure({ mode: "serial" });
@@ -169,6 +169,7 @@ test("この機械のコンテナと別のサーバのあいだで Project を�
             implementation: "vault-local",
             name: alias,
             kind: "ssh-identity",
+            group: RUNTIME_KEYS_GROUP,
             value: readFileSync(sshHost.identityFile, "utf8"),
             note: "E2E の SSH の相手",
           });

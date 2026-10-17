@@ -338,3 +338,11 @@ test("callerModuleOf・isCallerOwned：{name, conn}・true のときだけ（形
   assert.equal(isCallerOwned({ _meta: { "dev.banto/callerOwned": "true" } }), false);
   assert.equal(isCallerOwned({}), false);
 });
+
+// **core が自分のために使う印**（追加・2026-10-17、Backlog #361）。ほかの印に化けない
+test("callerOf：core の印（host）を読み、Project・banto 全体の印には化けない", () => {
+  const stamp = callerOf({ [CALLER_META_KEY]: { host: true } });
+  assert.deepEqual(stamp, { host: true });
+  assert.ok(stamp && !("project" in stamp) && !("instance" in stamp) && !("admin" in stamp));
+  assert.equal(callerOf({ [CALLER_META_KEY]: { host: "yes" } }), undefined);
+});

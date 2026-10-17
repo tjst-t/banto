@@ -26,6 +26,7 @@ import {
   CALLER_OWNED_META_KEY,
   callerModuleOf,
   callerOf,
+  RUNTIME_KEYS_GROUP,
   socketDirOf,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
@@ -320,18 +321,42 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
    * `unbound` は「どのグループにも紐付いていない」＝**誰も使えない**。
    * 隠さずに人の画面へ出す（規則2——使えないものが黙って消えると、
    * 「登録したはずなのに無い」になる）。
+   *
+   * `runtime` は**実行場所の SSH 鍵の置き場**（`RUNTIME_KEYS_GROUP`、2026-10-17、Backlog #361）＝**core だけが使える**。
+   * 共通の置き場にも Project にも紐付けられない（その口で断る）ので、どの Project の AI からも使えない
    */
   function scopeOf(meta: { backendPath: string }): {
-    scope: "shared" | "project" | "unbound";
+    scope: "shared" | "project" | "unbound" | "runtime";
     group: string;
     projects: string[];
   } {
     // 行の置き場も揃える（台帳をファイルに持つ backend が版を名乗っても `g@<既定>/X` を unbound にしない）
     const group = canon(meta.backendPath.slice(0, meta.backendPath.indexOf("/")));
+    if (isRuntimeGroup(group)) return { scope: "runtime", group, projects: [] };
     if (group === sharedGroupId()) return { scope: "shared", group, projects: [] };
     const projects = projectsBoundTo(group);
     if (projects.length > 0) return { scope: "project", group, projects };
     return { scope: "unbound", group, projects: [] };
+  }
+
+  /** 実行場所の SSH 鍵の置き場か（版を付けない既定の版だけ——`banto-runtime@prod` はふつうのグループ） */
+  function isRuntimeGroup(group: string): boolean {
+    return canon(group) === canon(RUNTIME_KEYS_GROUP);
+  }
+
+  /** 実行場所の鍵の置き場を、共通にも Project にも紐付けさせない（紐付けると、その Project の AI が使えてしまう） */
+  function assertNotRuntimeGroup(group: string, action: string): void {
+    if (!isRuntimeGroup(group)) return;
+    throw new Error(
+      `グループ "${RUNTIME_KEYS_GROUP}" は実行場所の SSH 鍵の置き場で、banto だけが使います。${action}にはできません` +
+        "（紐付けると、その Project の AI がこの鍵で実行場所に入れてしまいます）",
+    );
+  }
+
+  /** 実行場所の鍵の置き場に新しく置けるのは人の管理面からだけ（Module・AI に、core が使う置き場を書かせない） */
+  function assertMayPlaceIn(group: string, rawMeta: Record<string, unknown> | undefined): void {
+    if (!isRuntimeGroup(group) || isAdmin(rawMeta)) return;
+    throw new Error(`グループ "${RUNTIME_KEYS_GROUP}" は実行場所の SSH 鍵の置き場です。置けるのは人の管理画面からだけです`);
   }
 
   /** その Project から使ってよいか。**共通グループか、紐付いたグループだけ**。 */
@@ -798,6 +823,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
   ): SecretAliasMeta {
     if (!isLink(meta)) return meta;
     const target = linkTarget(meta, all);
+    // **実行場所の鍵を参照で引き込ませない**（2026-10-17、Backlog #361）——参照を作る口・移す口でも断るが、
+    // 前から在る参照を辿っても、人の管理面と core のほかには渡さない
+    const caller = callerOf(rawMeta);
+    if (target && scopeOf(target).scope === "runtime" && !(caller && ("admin" in caller || "host" in caller))) {
+      throw new Error(`alias "${name}" は参照ですが、元は実行場所の SSH 鍵の置き場にあり、banto だけが使います（人に伝えてください）`);
+    }
     if (!target) {
       // **元の置き場と名前は人の管理面にだけ言う**（2026-10-04、レビュー）——Project（AI・Module）に
       // 言うと、見えないはずのグループの中身が分かってしまう
@@ -862,6 +893,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       );
     }
     if ("admin" in caller) return; // 人が管理画面から直接触っている
+    // **core が自分のために使うのは、実行場所の鍵の置き場だけ**（2026-10-17、Backlog #361）
+    if ("host" in caller) {
+      if (scopeOf(meta).scope === "runtime") return;
+      throw new Error(
+        `alias "${name}" は実行場所の SSH 鍵の置き場（グループ "${RUNTIME_KEYS_GROUP}"）にありません。` +
+          "Project から使える置き場の鍵は、どの Project の AI も使えるので実行場所には使いません——管理画面でこの置き場へ移してください",
+      );
+    }
     // **banto 全体のための呼び出しは、共通の秘密だけ**（追加・2026-09-16）
     // ——Project が決まらないので広げない（規則2）
     if ("instance" in caller) {
@@ -876,7 +915,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       `alias "${name}" はこの Project からは使えません` +
         (where.scope === "unbound"
           ? "（どのグループにも紐付いていません——管理画面で紐付けてください）"
-          : `（置き場 "${where.group}" はこの Project に紐付いていません）`),
+          : where.scope === "runtime"
+            ? "（実行場所の SSH 鍵の置き場です。banto だけが使います）"
+            : `（置き場 "${where.group}" はこの Project に紐付いていません）`),
     );
   }
 
@@ -1075,6 +1116,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           explicitGroup: optionalString(args.group, "group"),
           forProject: optionalString(args.forProject, "forProject"),
         });
+        assertMayPlaceIn(group, callMeta);
         const backendPath = `${group}/${name}`;
         // **既にあるものを黙って上書きしない**（追加・2026-09-13、実測で踏んだ）。
         // backend に既にある秘密も alias として数えるようになったので、
@@ -1098,6 +1140,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           explicitGroup: optionalString(args.group, "group"),
           forProject: optionalString(args.forProject, "forProject"),
         });
+        assertMayPlaceIn(group, callMeta);
         const backendPath = `${group}/${name}`;
         // **人が預けたものは、この口からは触れない**（種別で区切る）
         // 置き場は揃えて比べる（版付きのグループ `g@<既定>` と素の `g` は同じ置き場、2026-10-06）
@@ -1168,6 +1211,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           explicitGroup: optionalString(args.group, "group"),
           forProject: optionalString(args.forProject, "forProject"),
         });
+        assertMayPlaceIn(group, callMeta);
         const common = { name, note };
         await assertPlaceIsFree(`${group}/${name}`);
 
@@ -1360,9 +1404,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const visible =
           "admin" in caller
             ? stored
-            : "instance" in caller
-              ? stored.filter((m) => scopeOf(m).scope === "shared")
-              : stored.filter((m) => usableBy(m, caller.project));
+            : "host" in caller
+              ? stored.filter((m) => scopeOf(m).scope === "runtime")
+              : "instance" in caller
+                ? stored.filter((m) => scopeOf(m).scope === "shared")
+                : stored.filter((m) => usableBy(m, caller.project));
         return {
           content: [
             {
@@ -1423,6 +1469,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         // レビュー）。写したあとで指し直しに失敗すると、元が2か所に残る
         const links = isLink(meta) ? [] : (await listAll()).filter((m) => isLink(m) && canonPath(m.linkTo) === canonPath(from));
         if (links.length > 0) await registry.assertCanLinkTo(to);
+        // **実行場所の鍵の置き場へは、参照ごとは移さない**（2026-10-17、Backlog #361）——参照は Project の置き場に居て、
+        // 移したあとも元を指し続けるので、その Project の AI が実行場所の鍵を使えてしまう。参照も移すなら、ここで断る
+        if (isRuntimeGroup(toGroup) && (isLink(meta) || links.length > 0)) {
+          throw new Error(
+            isLink(meta)
+              ? `"${name}" は参照です。実行場所の SSH 鍵の置き場へは、元の鍵を移してください`
+              : `"${name}" を指す参照があります（${links.map((l) => `${groupOf(l)} / ${l.name}`).join("、")}）。` +
+                  "参照があると Project の AI がこの鍵を使えるので、先に参照を消してから移してください",
+          );
+        }
         await backend.createGroup(toGroup);
 
         if (isLink(meta)) {
@@ -1467,6 +1523,10 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         if (!origin) {
           throw new Error(group ? `alias "${name}" は ${group} にありません` : `alias "${name}" はありません`);
         }
+        // **実行場所の鍵は参照で指させない**（2026-10-17、Backlog #361）——参照を置いた先の Project の AI が使えてしまう
+        if (scopeOf(origin).scope === "runtime") {
+          throw new Error(`"${name}" は実行場所の SSH 鍵の置き場にあり、banto だけが使います。参照は作れません`);
+        }
         // **参照の参照は作らない**——辿る段数を1に固定する
         if (isLink(origin)) {
           throw new Error(
@@ -1507,6 +1567,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         if (splitVariant(group).variant !== undefined) {
           throw new Error(`共通の置き場には版を付けられません（既定の版のまま）: ${group}`);
         }
+        assertNotRuntimeGroup(group, "共通の置き場");
         await backend.createGroup(group); // 名前の検査は backend が持つ（規則3）
         await bindings.setSharedGroup(group);
         return { content: [{ type: "text", text: JSON.stringify({ shared: group }) }] };
@@ -1530,6 +1591,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           requiredString(args.group, "group"),
           optionalString(args.variant, "variant"),
         );
+        assertNotRuntimeGroup(group, "Project の置き場");
         // 名前の検査は backend が持つ（規則3——同じ検査を2箇所に書かない）。
         // 事前作成が要らない backend では no-op
         await backend.createGroup(group);
@@ -1664,9 +1726,11 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         ? []
         : "admin" in caller
           ? all
-          : "instance" in caller
-            ? all.filter((m) => scopeOf(m).scope === "shared")
-            : all.filter((m) => usableBy(m, caller.project));
+          : "host" in caller
+            ? all.filter((m) => scopeOf(m).scope === "runtime")
+            : "instance" in caller
+              ? all.filter((m) => scopeOf(m).scope === "shared")
+              : all.filter((m) => usableBy(m, caller.project));
       return {
         contents: [
           {

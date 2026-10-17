@@ -112,6 +112,7 @@ import {
   assertVisibilityValues,
   classifyMetaDifference,
   CALLER_META_KEY,
+  RUNTIME_KEYS_GROUP,
   RESUME_AFTER_RESTART_TOOL,
   SOCKET_DIR_META_KEY,
   STREAM_SOCKET_RELATIVE_PATH,
@@ -1347,52 +1348,43 @@ async function main(): Promise<void> {
   /**
    * **別のサーバに繋ぐ鍵を、Vault から使わせてもらう**（決定・2026-10-08、v4-security.md §1「向こうとの道」）。
    * core が自分のために頼む（`resolveSecretPlaceholders` と同じく承認を聞かない——人が実行場所に登録した鍵だけ）。
-   * 刻印は banto 全体（共通の秘密だけ）。値（秘密鍵）は返らない：公開鍵と、鍵を持った ssh-agent の窓口だけ
+   * **刻印は core（`{host: true}`）で、使えるのは実行場所の鍵の置き場（`RUNTIME_KEYS_GROUP`）だけ**（決定・2026-10-17、Backlog #361）
+   * ——共通の置き場の鍵だと、どの Project の AI でも Vault に頼んでその鍵で別の Project の実行場所に入れた。
+   * 窓口（vault-directory）は通さず、Vault の実装に直に聞く（窓口の先の呼び出しは中継を通り、中継は core の印を刻まない）。
+   * 値（秘密鍵）は返らない：公開鍵と、鍵を持った ssh-agent の窓口だけ
    */
   async function sshIdentityThroughVault(
     alias: string,
     tool: "getPublicKey" | "startSshAgent",
     socketDir?: string,
   ): Promise<string> {
-    // **窓口は繋がっている Vault だけを探す**——起き直したばかりで Vault がまだ繋がっていないと、在る鍵が「どの Vault にも
-    // ありません」に化ける（移している途中で落ちた Project の片づけが、起き直した 12ms 後に踏んだ。E2E runtime-move、2026-10-11）
-    await Promise.all(
-      loadModuleDeclarations(runtimeConfig, "")
-        .filter((d) => d.meta.scope === "instance" && d.meta.satisfies.includes("vault"))
-        .map((d) => connectDeclaredModule(d)),
-    );
-    const directory = await ensureVaultDirectory();
-    if (!directory) throw new Error("Vault の窓口が繋がっていません");
-    const caller = { instance: true as const };
-    const endDirectoryCall = moduleCalls.begin("vault-directory", undefined, "host", undefined, true);
-    let found: { implementation?: string; name?: string; group?: string; kind?: string };
-    try {
-      found = JSON.parse(
-        ((
-          await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: { [CALLER_META_KEY]: caller } })
-        ).content as { text: string }[])[0]!.text,
-      ) as typeof found;
-    } finally {
-      endDirectoryCall();
+    const caller = { host: true as const };
+    const found = (await runtimeKeysThroughVault()).filter((k) => k.name === alias);
+    if (found.length === 0) {
+      throw new Error(
+        `"${alias}" は Vault の実行場所の SSH 鍵の置き場（グループ "${RUNTIME_KEYS_GROUP}"）にありません。` +
+          "Project から使える置き場（共通・Project）の鍵は、どの Project の AI も使えるので実行場所には使いません——" +
+          `Vault の管理画面で "${RUNTIME_KEYS_GROUP}" へ移してください`,
+      );
     }
-    if (!found.implementation || !found.name) throw new Error(`"${alias}" の在りかが分かりません`);
-    const backend = connectedModules.get(found.implementation);
-    if (!backend) throw new Error(`${found.implementation} が繋がっていません`);
+    if (found.length > 1) {
+      throw new Error(`"${alias}" が実行場所の SSH 鍵の置き場に複数の Vault にあります（${found.map((k) => k.implementation).join("、")}）。1つにしてください`);
+    }
+    const { implementation, group } = found[0]!;
+    const backend = connectedModules.get(implementation);
+    if (!backend) throw new Error(`${implementation} が繋がっていません`);
     const result = await backend.callTool({
       name: tool,
-      arguments:
-        tool === "getPublicKey"
-          ? { name: found.name, ...(found.group ? { group: found.group } : {}) }
-          : { identity: found.name, ...(found.group ? { group: found.group } : {}) },
+      arguments: tool === "getPublicKey" ? { name: alias, group } : { identity: alias, group },
       _meta: { [CALLER_META_KEY]: caller, ...(socketDir ? { [SOCKET_DIR_META_KEY]: socketDir } : {}) },
     });
     const text = (result.content as { text?: string }[])[0]?.text ?? "";
-    if (result.isError) throw new Error(text || `${found.implementation} の ${tool} が失敗しました`);
+    if (result.isError) throw new Error(text || `${implementation} の ${tool} が失敗しました`);
     await relayGrants.recordCall(
       {
         projectId: undefined,
         callerModule: "banto",
-        targetModule: found.implementation,
+        targetModule: implementation,
         kind: "tool",
         name: tool,
         identifiers: { name: alias },
@@ -1405,24 +1397,46 @@ async function main(): Promise<void> {
     return socketPath;
   }
 
-  /** 実行場所の登録の画面で選べる SSH 鍵（banto 全体から使える ssh-identity の alias の名前） */
-  async function sshIdentitiesThroughVault(): Promise<string[]> {
-    const directory = await ensureVaultDirectory();
-    if (!directory) throw new Error("Vault の窓口が繋がっていません");
-    const endDirectoryCall = moduleCalls.begin("vault-directory", undefined, "host", undefined, true);
-    try {
-      const body = JSON.parse(
-        ((
-          await directory.callTool({ name: "listAliases", arguments: {}, _meta: { [CALLER_META_KEY]: { instance: true } } })
-        ).content as { text: string }[])[0]!.text,
-      ) as { aliases?: Array<{ name?: unknown; kind?: unknown; scope?: unknown }> };
-      const names = (body.aliases ?? [])
-        .filter((a) => a.kind === "ssh-identity" && a.scope === "shared" && typeof a.name === "string")
-        .map((a) => a.name as string);
-      return [...new Set(names)].sort();
-    } finally {
-      endDirectoryCall();
+  /**
+   * **実行場所の鍵の置き場にある ssh-identity**（どの Vault の、どのグループか）。core の印で各 Vault に直に聞く——Vault は
+   * この印にはその置き場のものだけを返す（Project・banto 全体から使える鍵は混ざらない）。**読めなかった Vault は隠さない**
+   */
+  async function runtimeKeysThroughVault(): Promise<Array<{ implementation: string; name: string; group: string }>> {
+    // **窓口は繋がっている Vault だけを探す**——起き直したばかりで Vault がまだ繋がっていないと、在る鍵が「どの Vault にも
+    // ありません」に化ける（移している途中で落ちた Project の片づけが、起き直した 12ms 後に踏んだ。E2E runtime-move、2026-10-11）
+    const vaults = (
+      await Promise.all(
+        loadModuleDeclarations(runtimeConfig, "")
+          .filter((d) => d.meta.scope === "instance" && d.meta.satisfies.includes("vault"))
+          .map((d) => connectDeclaredModule(d)),
+      )
+    ).filter((c): c is string => c !== undefined);
+    if (vaults.length === 0) throw new Error("Vault が繋がっていません");
+    const keys: Array<{ implementation: string; name: string; group: string }> = [];
+    const failures: string[] = [];
+    for (const implementation of vaults) {
+      const client = connectedModules.get(implementation);
+      if (!client) continue;
+      try {
+        const listed = await client.callTool({ name: "listAliases", arguments: {}, _meta: { [CALLER_META_KEY]: { host: true } } });
+        const text = (listed.content as { text?: string }[])[0]?.text ?? "";
+        if (listed.isError) throw new Error(text || "alias の一覧を読めませんでした");
+        for (const a of JSON.parse(text) as Array<{ name?: unknown; kind?: unknown; group?: unknown; scope?: unknown }>) {
+          // Vault が絞って返すが、ここでも置き場を確かめる（古い Vault が印を知らずに全部返しても混ぜない）
+          if (a.kind !== "ssh-identity" || a.scope !== "runtime" || typeof a.name !== "string" || typeof a.group !== "string") continue;
+          keys.push({ implementation, name: a.name, group: a.group });
+        }
+      } catch (err) {
+        failures.push(`${implementation}（${err instanceof Error ? err.message : String(err)}）`);
+      }
     }
+    if (keys.length === 0 && failures.length > 0) throw new Error(`Vault を読めませんでした：${failures.join("、")}`);
+    return keys;
+  }
+
+  /** 実行場所の登録の画面で選べる SSH 鍵（実行場所の鍵の置き場の ssh-identity の alias の名前） */
+  async function sshIdentitiesThroughVault(): Promise<string[]> {
+    return [...new Set((await runtimeKeysThroughVault()).map((k) => k.name))].sort();
   }
 
   /**
