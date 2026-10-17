@@ -97,3 +97,34 @@ function watchParent(parentPid: number): void {
     process.kill(process.pid, "SIGINT");
   }, 2_000).unref();
 }
+
+const REAPER_REEXEC_ENV = "BANTO_E2E_REAPER_INCUS_REEXEC";
+
+/**
+ * **片づけ役が Incus に繋がれるようにする**（追加・2026-10-17、Backlog #363）。片づけ役はユーザーの systemd（user@<uid>）の単位で
+ * 起こす（`outside-group.ts`）が、その systemd は**起動したときの補助グループのまま**動き続ける。ユーザーを incus グループに入れる前から
+ * 動いていた機械（banto-dev-vm：user@1000 は 2026-10-11 から、incus に入れたのはその後）では、そこから起こした片づけ役に incus が
+ * 付かず、毎回「Incus に繋がりません」で何も消せずに終わっていた（回のコンテナは次の回の始めが拾うまで残る）。
+ *
+ * 繋がらなければ、主プロセスと同じく `sudo -n -E -u <自分>` で自分を起こし直す（sudo は台帳から補助グループを読み直す）。片づけ役は
+ * 待つだけの短いスクリプトなので、同期で待って子の終了コードで終わる。単位の cgroup の中で起こすので、回の cgroup の外にいる
+ * ことは変わらない。起こし直せなければ戻る（呼んだ側が今どおり「繋がりません」をログに残す）。`log` は片づけ役のログ
+ */
+export function ensureIncusForReaper(log: (line: string) => void): void {
+  if (process.env[REAPER_REEXEC_ENV]) return;
+  const first = incusReachable();
+  if (first.ok) return;
+  const user = userInfo().username;
+  if (!listedInIncusGroup(user)) return;
+  if (spawnSync("sudo", ["-n", "true"], { input: "", timeout: 10_000 }).status !== 0) {
+    log(`[e2e] 片づけ役に incus グループが付いていない（${first.detail}）が、パスワード無しの sudo が使えないので起こし直せない`);
+    return;
+  }
+  log(`[e2e] 片づけ役に incus グループが付いていない（ユーザーの systemd が incus に入る前から動いている）——sudo -n -E -u ${user} で起こし直す`);
+  const r = spawnSync(
+    "sudo",
+    ["-n", "-E", "-u", user, "env", `PATH=${process.env.PATH ?? ""}`, `${REAPER_REEXEC_ENV}=1`, process.execPath, ...process.execArgv, ...process.argv.slice(1)],
+    { stdio: "inherit" },
+  );
+  process.exit(r.status ?? 1);
+}
