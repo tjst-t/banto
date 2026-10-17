@@ -54,7 +54,7 @@ host へ反映したら、前から登録してあった banto-dev-vm・kaggle-v
 （Shell・FileSystem・Browser・Backlog・Factory・Subagent）が全部消えた。人に見えたのは host のログの「…"banto-runtime" へ移して
 ください」だけ。手順書はあったが画面から辿れなかった。
 
-決めたこと（仕様は v4-security.md §1「向こうとの道」・v4-frontend.md §6.43）：
+決めたこと（仕様は v4-security.md §1「向こうとの道」・v4-frontend.md §6.44）：
 
 - **受信箱に実行場所ごとに1枚**、鍵がどこにあるかを言うカード。読める Vault のほかの置き場に1つだけあるときだけ「移す」
 - **「移す」は Vault の窓口の `migrateAlias` を人の画面の操作として呼ぶ**——Vault の管理画面の「移す」と同じ口なので、参照があれば
