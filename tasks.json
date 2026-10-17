@@ -8959,11 +8959,11 @@
       ],
       "body": "automation-events-ui.spec.ts（#349、0b27d869）が API で Project「E2E 判断役の受信箱（見る場所）」を作り、Base の会話を持たせずに閉じる。画面は Base の無い Project を一覧に入れない（apps/frontend/lib/mock/projects.ts 374〜375 行）ので、sidebar-reorder-rename.spec.ts:42「Project を掴んで並べ替えられる——リロードしても残る」で送る並びから漏れて末尾に回り、API の一覧の末尾2つの確かめが落ちる（host に送られた並びは15件中14件）。単独なら通る。直し方の候補：試験側で Base を持たせる／片づける、または画面の一覧が Base の無い Project も並びに含める（製品側で直すなら、Base の無い Project が実際に生じうるかを先に確かめる）。2026-10-17、Fork「Project の整理（サイドバー）」のサブエージェントが見つけた。",
       "doneWhen": "automation-events-ui と sidebar-reorder-rename を同じ回でまとめて流して両方通る",
-      "resolution": "Factory が取り込みました（factory/e2e-reorder-baseless-project）",
+      "resolution": "automation-events-ui.spec.ts が API で作る「見る場所」の Project にも Base Thread を持たせた（試験だけの4行）。2本を同じ回で流して9件通過。GitHub の main と release に入れた（2026-10-17）。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T01:53:35.223Z",
-      "updatedAt": "2026-10-17T08:17:12.718Z",
+      "updatedAt": "2026-10-17T08:21:40.034Z",
       "closedAt": "2026-10-17T08:17:12.718Z",
       "extra": {}
     },
