@@ -24,7 +24,15 @@ interface Fixture {
   enabled: Set<string>;
   dir: string;
   unauthorized: string[];
+  authorized: { count: number };
   upstreamStatus: { value: number };
+  /** これを決めると、上流はこのトークンのときだけ 200・ほかは 401（upstreamStatus より優先） */
+  upstreamAccepts: { value: string | undefined };
+  /** 上流が返す前に1回呼ぶ（本体の CLI が途中で書き換えた形を作る） */
+  beforeUpstreamReply: { fn: (() => void) | undefined };
+  /** 偽の取り直しの口が返すもの（既定は 400 invalid_grant） */
+  tokenReply: { status: number; body: unknown };
+  tokenCalls: unknown[];
   close(): Promise<void>;
 }
 
@@ -41,11 +49,30 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
   );
   const seen: Fixture["seen"] = [];
   const upstreamStatus = { value: 200 };
+  const upstreamAccepts: Fixture["upstreamAccepts"] = { value: undefined };
+  const beforeUpstreamReply: Fixture["beforeUpstreamReply"] = { fn: undefined };
   const upstream = createServer((req, res) => {
     seen.push({ url: req.url ?? "", auth: req.headers.authorization ?? "", beta: String(req.headers["anthropic-beta"] ?? "") });
-    res.writeHead(upstreamStatus.value, { "content-type": "application/json" }).end('{"ok":"upstream"}');
+    const hook = beforeUpstreamReply.fn;
+    beforeUpstreamReply.fn = undefined;
+    hook?.();
+    const status =
+      upstreamAccepts.value === undefined ? upstreamStatus.value : req.headers.authorization === `Bearer ${upstreamAccepts.value}` ? 200 : 401;
+    res.writeHead(status, { "content-type": "application/json" }).end('{"ok":"upstream"}');
   });
   const upstreamUrl = await listen(upstream);
+  const tokenReply: Fixture["tokenReply"] = { status: 400, body: { error: "invalid_grant" } };
+  const tokenCalls: unknown[] = [];
+  const tokenServer = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      tokenCalls.push(JSON.parse(raw));
+      res.writeHead(tokenReply.status, { "content-type": "application/json" }).end(JSON.stringify(tokenReply.body));
+    });
+  });
+  const tokenUrl = await listen(tokenServer);
+  const authorized = { count: 0 };
   const enabled = new Set(["p1", "p2"]);
   const unauthorized: string[] = [];
   const relay = new ClaudeLoginRelay({
@@ -55,6 +82,8 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
     enabled: (id) => enabled.has(id),
     sourceMatches: async () => true,
     onUpstreamUnauthorized: (id) => unauthorized.push(id),
+    onUpstreamAuthorized: () => authorized.count++,
+    tokenUrl: `${tokenUrl}/v1/oauth/token`,
     now: () => new Date("2026-10-08T00:00:00Z"),
     ...overrides,
   });
@@ -67,11 +96,17 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
     enabled,
     dir,
     unauthorized,
+    authorized,
     upstreamStatus,
+    upstreamAccepts,
+    beforeUpstreamReply,
+    tokenReply,
+    tokenCalls,
     close: async () => {
       front.closeAllConnections();
       upstream.closeAllConnections();
-      await Promise.all([new Promise((r) => front.close(r)), new Promise((r) => upstream.close(r))]);
+      tokenServer.closeAllConnections();
+      await Promise.all([new Promise((r) => front.close(r)), new Promise((r) => upstream.close(r)), new Promise((r) => tokenServer.close(r))]);
       rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -168,7 +203,7 @@ test("中継：上流には本物のトークン、beta 見出しはそのまま
   }
 });
 
-test("上流が 401（本体のログインが切れた）：直近の 401 を覚え、知らせる", async () => {
+test("上流が 401 で、取り直しも断られた：直近の 401 を覚え、理由つきで知らせる（試し直しは1回だけ）", async () => {
   const f = await fixture();
   try {
     const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
@@ -180,6 +215,121 @@ test("上流が 401（本体のログインが切れた）：直近の 401 を�
       lastUnauthorizedAt: "2026-10-08T00:00:00.000Z",
     });
     assert.deepEqual(f.unauthorized, ["p1"]);
+    // 取り直しを1回だけ頼み（置き場の refresh token・公開の client id）、上流へは1回だけ
+    assert.equal(f.tokenCalls.length, 1);
+    assert.deepEqual(f.tokenCalls[0], { grant_type: "refresh_token", refresh_token: "never-leaves", client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e" });
+    assert.equal(f.seen.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("上流が 401 でも、取り直して1回だけ送り直せば通る：知らせず、置き場に書き戻す", async () => {
+  const f = await fixture();
+  try {
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    f.upstreamAccepts.value = "NEW-ACCESS";
+    f.tokenReply.status = 200;
+    f.tokenReply.body = { access_token: "NEW-ACCESS", refresh_token: "NEW-REFRESH", expires_in: 3600 };
+    const r = await post(f.url, secret);
+    assert.equal(r.status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer NEW-ACCESS"]);
+    assert.deepEqual(f.unauthorized, []);
+    const saved = JSON.parse(readFileSync(join(f.dir, ".credentials.json"), "utf8")).claudeAiOauth;
+    assert.equal(saved.accessToken, "NEW-ACCESS");
+    assert.equal(saved.refreshToken, "NEW-REFRESH");
+    // ほかの欄はそのまま
+    assert.equal(saved.subscriptionType, "max");
+  } finally {
+    await f.close();
+  }
+});
+
+test("上流が 401 でも、置き場のトークンが替わっていれば（本体が取り直した）取り直さずにそれで送り直す", async () => {
+  const f = await fixture();
+  try {
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    f.upstreamAccepts.value = "CLI-REFRESHED";
+    // 1回目が上流に着いたあと、本体の CLI が書き換えた形にする
+    const path = join(f.dir, ".credentials.json");
+    f.beforeUpstreamReply.fn = () => {
+      const orig = JSON.parse(readFileSync(path, "utf8"));
+      orig.claudeAiOauth.accessToken = "CLI-REFRESHED";
+      writeFileSync(path, JSON.stringify(orig));
+    };
+    const p = post(f.url, secret);
+    assert.equal((await p).status, 200);
+    assert.equal(f.tokenCalls.length, 0);
+    assert.deepEqual(f.unauthorized, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("切れかけ（5分を切った）なら、流す前に取り直す", async () => {
+  const f = await fixture();
+  try {
+    const path = join(f.dir, ".credentials.json");
+    const creds = JSON.parse(readFileSync(path, "utf8"));
+    creds.claudeAiOauth.expiresAt = new Date("2026-10-08T00:04:00Z").getTime();
+    creds.claudeAiOauth.scopes = ["user:inference", "user:profile"];
+    writeFileSync(path, JSON.stringify(creds));
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    f.tokenReply.status = 200;
+    f.tokenReply.body = { access_token: "NEW-ACCESS", expires_in: 28800, scope: "user:inference user:profile" };
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer NEW-ACCESS"]);
+    assert.equal((f.tokenCalls[0] as { scope: string }).scope, "user:inference user:profile");
+    const saved = JSON.parse(readFileSync(path, "utf8")).claudeAiOauth;
+    // 返事に refresh token が無ければ前のものを残す
+    assert.equal(saved.refreshToken, "never-leaves");
+    assert.equal(saved.expiresAt, new Date("2026-10-08T08:00:00Z").getTime());
+  } finally {
+    await f.close();
+  }
+});
+
+test("取り直しても断られたあと、上流が通ったらカードを閉じる（通るたびには呼ばない）", async () => {
+  const f = await fixture();
+  try {
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // 起こし直す前のカードも閉じるため、最初に通ったときは一度呼ぶ
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.authorized.count, 1);
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.authorized.count, 1);
+    f.upstreamStatus.value = 401;
+    f.tokenReply.status = 200;
+    f.tokenReply.body = { access_token: "NEW-ACCESS", refresh_token: "NEW-REFRESH", expires_in: 3600 };
+    assert.equal((await post(f.url, secret)).status, 401);
+    assert.deepEqual(f.unauthorized, ["p1"]);
+    f.upstreamStatus.value = 200;
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.authorized.count, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("refresh token が無効と分かったカードは、通っても閉じず、置き場の refresh token が替わってから閉じる", async () => {
+  const f = await fixture();
+  try {
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.authorized.count, 1);
+    f.upstreamStatus.value = 401; // 既定の取り直しの口は 400 invalid_grant
+    assert.equal((await post(f.url, secret)).status, 401);
+    assert.deepEqual(f.unauthorized, ["p1"]);
+    f.upstreamStatus.value = 200;
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.authorized.count, 1);
+    // 人がログインし直した
+    const path = join(f.dir, ".credentials.json");
+    const creds = JSON.parse(readFileSync(path, "utf8"));
+    creds.claudeAiOauth.refreshToken = "RELOGGED";
+    writeFileSync(path, JSON.stringify(creds));
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.authorized.count, 2);
   } finally {
     await f.close();
   }

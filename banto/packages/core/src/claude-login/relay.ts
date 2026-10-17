@@ -24,8 +24,15 @@ import { homedir } from "node:os";
 import type { Socket } from "node:net";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
 
 const UPSTREAM = "https://api.anthropic.com";
+/**
+ * **試し直すために本文を持つ上限**（API の要求の上限 32 MB）。超えるものは持たずに流し、401 でも送り直さない
+ */
+const RETRY_BODY_LIMIT = 32 * 1024 * 1024;
+/** 同時に抱える本文の合計の上限（要求の数だけ重なるので。超えたら持たずに流す） */
+const RETRY_BODY_TOTAL_LIMIT = 64 * 1024 * 1024;
 /** core の HTTP サーバの上の口。`ANTHROPIC_BASE_URL` はここまで（CLI が `/v1/messages` を足す） */
 export const CLAUDE_LOGIN_PATH = "/claude-login";
 /**
@@ -45,7 +52,9 @@ const HOP_BY_HOP = ["host", "connection", "content-length", "authorization", "x-
  * `CLAUDE_SECURESTORAGE_CONFIG_DIR`（E2E・疎通確認が本物を指すのに使う）→ `CLAUDE_CONFIG_DIR` → `~/.claude`
  */
 export function hostClaudeCredentialsPath(env: NodeJS.ProcessEnv = process.env): string {
-  const dir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  // CLI と同じく、CLAUDE_SECURESTORAGE_CONFIG_DIR が空文字なら ~/.claude（CLI の `rw`）
+  const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  const dir = secure !== undefined ? secure || join(homedir(), ".claude") : env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
   return join(dir, ".credentials.json");
 }
 
@@ -127,9 +136,20 @@ export interface ClaudeLoginRelayDeps {
    * 黙って「違う」にしない
    */
   sourceMatches?(projectId: string, remoteAddress: string): Promise<boolean>;
-  /** 上流が 401 を返した——本体のログインが切れた（受信箱に1件出すため） */
-  onUpstreamUnauthorized?(projectId: string): void;
+  /**
+   * **本体のログインを中継では直せなかった**（受信箱に1件出すため。改訂・2026-10-16）——取り直して試し直しても上流が
+   * 401、または取り直しが断られた・書き戻せなかった。一時的な失敗（通信・5xx・鍵の取り合い）だけでは呼ばない
+   */
+  onUpstreamUnauthorized?(projectId: string, reason: string): void;
+  /** 上流が通った（2xx）——出していたカードを閉じるため。直前に直せなかったことがあるときだけ呼ぶ */
+  onUpstreamAuthorized?(): void;
   upstream?: string;
+  /** 取り直しの口（試験・E2E で差し替える。既定は本番） */
+  tokenUrl?: string;
+  /** 取り直し役（試験で差し替える。既定は credentialsPath と tokenUrl から作る） */
+  refresher?: CredentialRefresher;
+  /** 中継が取り直すか（既定はする。切れば今までどおり読むだけ） */
+  refreshEnabled?: boolean;
   now?: () => Date;
 }
 
@@ -140,10 +160,25 @@ export class ClaudeLoginRelay {
   private readonly verifiedSockets = new WeakMap<Socket, Set<string>>();
   private readonly upstream: string;
   private readonly now: () => Date;
+  private readonly refresher: CredentialRefresher;
+  /**
+   * 知らせたカードを閉じる条件（無ければ開いていない）。起こし直す前に出したカードも、最初に通ったときに閉じる
+   */
+  private openTrouble: { closeWhen: CloseWhen; refreshToken?: string } | undefined = { closeWhen: "authorized" };
+  /** いま試し直し用に抱えている本文の合計 */
+  private bufferedBytes = 0;
 
   constructor(private readonly deps: ClaudeLoginRelayDeps) {
     this.upstream = deps.upstream ?? UPSTREAM;
     this.now = deps.now ?? (() => new Date());
+    this.refresher =
+      deps.refresher ??
+      new CredentialRefresher({
+        credentialsPath: deps.credentialsPath,
+        ...(deps.tokenUrl ? { tokenUrl: deps.tokenUrl } : {}),
+        ...(deps.refreshEnabled !== undefined ? { enabled: deps.refreshEnabled } : {}),
+        now: () => this.now().getTime(),
+      });
     this.secrets = new Map(Object.entries(loadSecrets(deps.secretsPath)));
   }
 
@@ -219,32 +254,79 @@ export class ClaudeLoginRelay {
       refuse(res, 403, `banto の中継は推論（/v1/messages）だけを通します: ${req.method} ${path}`);
       return;
     }
-    let token: string;
-    try {
-      token = (await readAccessToken(this.deps.credentialsPath)).token;
-    } catch (err) {
-      refuse(res, 500, (err as Error).message);
+    // 切れかけていれば取り直す（§2「中継も、切れかけたら取り直す」）。トークンも無い＝ログインしていない——理由を返す
+    const first = await this.refresher.ensureFresh();
+    if (first.kind === "failed" && !first.accessToken) {
+      refuse(res, 500, first.reason);
       return;
     }
+    let token = first.accessToken!;
+    /** 流せても人が直すことが残った（例：取り直したのに書き戻せなかった） */
+    let trouble = troubleOf(first);
     const abort = new AbortController();
     res.on("close", () => abort.abort());
-    const upstreamRes = await fetch(`${this.upstream}${path}`, {
-      method: req.method ?? "POST",
-      headers: { ...forwardedHeaders(req), authorization: `Bearer ${token}` },
-      body: req.method === "GET" || req.method === "HEAD" ? undefined : (Readable.toWeb(req) as ReadableStream<Uint8Array>),
-      // Node の fetch で本文を流しながら送るには要る
-      duplex: "half",
-      signal: abort.signal,
-    } as RequestInit);
+    // 試し直すために本文を読み切って持つ（上限を超えたら、読んだ分と残りをつないで流す）
+    const hasBody = req.method !== "GET" && req.method !== "HEAD";
+    const room = Math.min(RETRY_BODY_LIMIT, Math.max(0, RETRY_BODY_TOTAL_LIMIT - this.bufferedBytes));
+    const body: { buffered?: Buffer; stream?: Readable } = hasBody ? await readBodyUpTo(req, room) : {};
+    const held = body.buffered?.length ?? 0;
+    this.bufferedBytes += held;
+    let upstreamRes: Response;
+    try {
+      const send = (bearer: string) =>
+        fetch(`${this.upstream}${path}`, {
+          method: req.method ?? "POST",
+          headers: { ...forwardedHeaders(req), authorization: `Bearer ${bearer}` },
+          ...(hasBody
+            ? body.buffered !== undefined
+              ? { body: body.buffered }
+              : // Node の fetch で本文を流しながら送るには duplex が要る
+                { body: Readable.toWeb(body.stream!) as ReadableStream<Uint8Array>, duplex: "half" }
+            : {}),
+          signal: abort.signal,
+        } as RequestInit);
+      upstreamRes = await send(token);
+      // 401：置き場を読み直し（替わっていなければ線を見ずに取り直して）、1回だけ送り直す
+      if (upstreamRes.status === 401 && (!hasBody || body.buffered !== undefined)) {
+        const second = await this.refresher.ensureFresh({ force: true, seenAccessToken: token });
+        if (second.accessToken && second.accessToken !== token) {
+          await upstreamRes.body?.cancel().catch(() => {});
+          token = second.accessToken;
+          upstreamRes = await send(token);
+          trouble = troubleOf(second) ?? trouble;
+          if (upstreamRes.status === 401) trouble ??= { reason: "取り直したトークンでも断られました（401）", closeWhen: "authorized" };
+        } else if (second.kind === "failed" && second.needsHuman) {
+          trouble = troubleOf(second);
+        } else if (second.kind === "failed") {
+          // 一時的（取り直しの口に届かない・鍵の取り合い）：知らせず、次の要求でまた試す
+          console.warn(`[claude-login] 401 のあと取り直せませんでした（一時的）: ${second.reason}`);
+        }
+      } else if (upstreamRes.status === 401) {
+        console.warn("[claude-login] 上流が 401 を返しました（本文が大きく、試し直しませんでした）");
+      }
+    } finally {
+      this.bufferedBytes -= held;
+    }
     const at = this.now().toISOString();
     const s = this.stats.get(projectId) ?? { requests: 0 };
     s.requests++;
     s.lastRequestAt = at;
-    if (upstreamRes.status === 401) {
-      s.lastUnauthorizedAt = at;
-      this.deps.onUpstreamUnauthorized?.(projectId);
-    }
+    if (upstreamRes.status === 401) s.lastUnauthorizedAt = at;
     this.stats.set(projectId, s);
+    if (trouble) {
+      this.openTrouble = {
+        closeWhen: trouble.closeWhen,
+        ...(trouble.closeWhen === "refresh-token-changed" ? { refreshToken: await this.refresher.currentRefreshToken() } : {}),
+      };
+      this.deps.onUpstreamUnauthorized?.(projectId, trouble.reason);
+    } else if (upstreamRes.ok && this.openTrouble) {
+      // ログインが壊れた知らせは、置き場の refresh token が替わるまで閉じない（手元の access token でたまたま通っただけ）
+      const open = this.openTrouble;
+      if (open.closeWhen === "authorized" || (await this.refresher.currentRefreshToken()) !== open.refreshToken) {
+        this.openTrouble = undefined;
+        this.deps.onUpstreamAuthorized?.();
+      }
+    }
     const headers: Record<string, string> = {};
     // fetch は圧縮を解いて渡すので、長さと符号化の見出しは付け直さない
     upstreamRes.headers.forEach((v, k) => {
@@ -283,6 +365,37 @@ function loadSecrets(path: string): Record<string, string> {
 /** IPv4 を IPv6 の形で受けた待ち受け（`::ffff:10.0.0.2`）でも、コンテナのアドレスと比べられる形に */
 function normalizeAddress(address: string): string {
   return address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+}
+
+/** 人が直すことが残った取り直しの結果ならその理由と閉じ方（一時的な失敗は数えない） */
+function troubleOf(outcome: RefreshOutcome): { reason: string; closeWhen: CloseWhen } | undefined {
+  return outcome.kind === "failed" && outcome.needsHuman ? { reason: outcome.reason, closeWhen: outcome.closeWhen ?? "authorized" } : undefined;
+}
+
+/**
+ * 本文を上限まで読み切る。収まれば `buffered`、超えたら読んだ分と残りをつないだ `stream`（試し直せない）
+ */
+async function readBodyUpTo(req: IncomingMessage, limit: number): Promise<{ buffered: Buffer; stream?: undefined } | { buffered: undefined; stream: Readable }> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  const iterator = req[Symbol.asyncIterator]() as AsyncIterator<Buffer>;
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) return { buffered: Buffer.concat(chunks) };
+    chunks.push(next.value);
+    size += next.value.length;
+    if (size > limit) {
+      const rest = async function* () {
+        yield* chunks;
+        for (;;) {
+          const more = await iterator.next();
+          if (more.done) return;
+          yield more.value;
+        }
+      };
+      return { buffered: undefined, stream: Readable.from(rest()) };
+    }
+  }
 }
 
 function refuse(res: ServerResponse, status: number, message: string): void {
