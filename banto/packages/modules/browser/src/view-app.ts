@@ -13,7 +13,8 @@
 //   流してもらわない（`audio` の知らせ）。押したら覚え（localStorage）、次に開いたときは画面に触れた最初の操作で鳴らし始める。
 //   映像の時刻に合わせて鳴らす（audio-sync.ts）。AudioDecoder が無い画面・Module が音を流せないときは「音無し」と理由を出す
 // - JPEG の絵は描き終えたら受け取りの印（`ack`）を返す——Module はそれまで次を送らない
-// - ページの大きさは1つで、絵を出す場所に合わせて縮めて映す。「画面に合わせる」でページの大きさをこの画面に合わせる
+// - ページの大きさは1つで、絵を出す場所に合わせて縮めて映す。「画面に合わせる」でページの大きさをこの画面に合わせる。
+//   入れ切りは Project ごとに覚え（localStorage）、開き直した画面は覚えていれば入れ直す——ほかの画面が合わせていれば取らない
 // - 文字は隠した入力欄で受ける（日本語の変換・携帯の画面のキーボードのため）。変換を終えた文字は insertText で送る
 // - 携帯（指）はタッチをタッチ入力のまま送る
 // - 通信とコンソールの欄・HAR・記録を消す・「AI に触らせない」は admin の道具（tools/call）
@@ -222,7 +223,12 @@ const SCRIPT = String.raw`
   let frames = 0;
   let progress = "";
   let stream = null;
+  /** この画面で「画面に合わせる」を入れているか。覚えていれば最初から入れたつもりで始め、最初の様子を見て送る（onText） */
   let wantFit = false;
+  /** 覚えておく鍵（Project ごと——Browser は Project ごと）。Project が分からなければ覚えない */
+  let fitKey = "";
+  function rememberFit(on) { if (fitKey) try { window.localStorage.setItem(fitKey, on ? "1" : "0"); } catch {} }
+  function recalledFit() { if (!fitKey) return false; try { return window.localStorage.getItem(fitKey) === "1"; } catch { return false; } }
   const canvas = $("screen");
   const g = canvas.getContext("2d");
   const stage = $("stage");
@@ -771,6 +777,7 @@ const SCRIPT = String.raw`
   });
   $("fit").addEventListener("change", (e) => {
     wantFit = e.target.checked;
+    rememberFit(wantFit);
     sendMsg({ type: "fit", on: wantFit });
   });
   let clearArmed = 0;
@@ -937,7 +944,8 @@ const SCRIPT = String.raw`
     if (msg.type === "state") {
       view = msg;
       if (!view.starting) progress = "";
-      // 繋ぎ直したあとも、この画面で入れていた「画面に合わせる」を保つ
+      // 開いた・繋ぎ直したあとも、この画面で入れていた（覚えていた）「画面に合わせる」を保つ。**ほかの画面が合わせていれば
+      // 取らない**——自分で入れ直すのは人が押したのとは違う（後から押した画面が取る決まりは、人が押したときだけ）。覚えは消さない
       if (view.fitByOther) wantFit = false;
       else if (wantFit && !view.fit) sendMsg({ type: "fit", on: true });
       render();
@@ -987,7 +995,7 @@ const SCRIPT = String.raw`
           sendMsg({ type: "audio", on: soundOn });
           sendMsg(Object.assign({ type: "size" }, stageSize()));
           sendMsg({ type: "visible", visible: document.visibilityState === "visible" });
-          if (wantFit) sendMsg({ type: "fit", on: true });
+          // 「画面に合わせる」はここでは送らない——ほかの画面が合わせているかは、繋いだ後の最初の様子で分かる（onText）
         }
       },
     });
@@ -1000,7 +1008,11 @@ const SCRIPT = String.raw`
         appInfo: { name: "banto-browser", version: "0.1.0" },
         appCapabilities: { availableDisplayModes: ["fullscreen"] },
       });
-      applyAppearance((init && init.hostContext) || {});
+      const ctx = (init && init.hostContext) || {};
+      applyAppearance(ctx);
+      const project = ctx["dev.banto/project"];
+      if (project && typeof project.id === "string") fitKey = "banto-browser-fit:" + project.id;
+      wantFit = recalledFit();
       send({ method: "ui/notifications/initialized", params: {} });
     } catch (e) {
       $("app").textContent = "画面を始められませんでした：" + e.message;

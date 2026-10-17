@@ -425,7 +425,7 @@ function fitted(stage: number, scale: number): number {
   return Math.max(200, Math.floor(stage / step) * step);
 }
 
-test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる」でページが絵を出す場所の大きさ（高さも）になり、絵がページと画素単位で合う。Canvas を閉じて開き直しても絵が来る（Backlog #359）", async ({ browser, page }) => {
+test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる」でページが絵を出す場所の大きさ（高さも）になり、絵がページと画素単位で合う。Canvas を閉じて開き直しても絵が来て、「画面に合わせる」を入れ直す（ほかの画面からは奪わない・外したら外れたまま）（Backlog #359・#360）", async ({ browser, page }) => {
   expect(threadUrl, "前の試験が会話を開いていない").not.toBe("");
   const pageErrors: string[] = [];
   for (const scale of [1.5, 1.25, 1.75]) {
@@ -500,12 +500,57 @@ test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる
       await expect.poll(async () => ((await uiCall(h, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
       f = await openCanvas();
       await expect(f.getByTestId("browser-screen"), "開き直した画面に絵が来ない").toBeVisible({ timeout: 20_000 });
-      // 「画面に合わせる」は持っている画面が閉じたら外れる（§4.1「人の画面で決めたこと」）——開き直した画面は外れた状態で始まる。
-      // 入れ直せば、開き直した画面でも合う
-      await expect(f.getByTestId("fit")).not.toBeChecked();
-      await f.getByTestId("fit").check();
+      // 「画面に合わせる」はこの端末で覚えている（§4.1「人の画面で決めたこと」、Backlog #360）——開き直した画面は自分で入れ直す
+      await expect(f.getByTestId("fit"), "開き直した画面が「画面に合わせる」を入れ直さない").toBeChecked({ timeout: 20_000 });
       await expectFitted("開き直した");
       await h.getByRole("button", { name: "Canvas を閉じる" }).click();
+      await expect.poll(async () => ((await uiCall(h, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
+      if (scale === 1.5) {
+        // **ほかの画面が合わせているときは奪わない**——入れ直すのは人が押したのとは違う。覚えは残る
+        const other = await browser.newContext({ viewport: { width: 900, height: 700 } });
+        try {
+          await loginContext(other);
+          const o = await other.newPage();
+          o.on("pageerror", (err) => pageErrors.push(`other: ${err.message}`));
+          await openApp(o);
+          await o.goto(threadUrl);
+          const card = o.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/corners` });
+          for (let i = 0; i < 10 && (await card.count()) === 0 && (await o.getByTestId("show-earlier-messages").count()) > 0; i += 1) await o.getByTestId("show-earlier-messages").click();
+          await card.getByRole("button", { name: "開く" }).click();
+          const of = canvasFrame(o);
+          await expect(of.getByTestId("browser-state")).toHaveAttribute("data-state", "open", { timeout: 60_000 });
+          await expect(of.getByTestId("fit"), "覚えていない端末で「画面に合わせる」が入っている").not.toBeChecked();
+          await of.getByTestId("fit").check();
+          await expect(of.getByTestId("viewport")).not.toContainText("1280×800", { timeout: 20_000 });
+          const otherSize = (await of.getByTestId("viewport").textContent())!;
+          f = await openCanvas();
+          await expect(f.getByTestId("viewport"), "ほかの画面が合わせていると出ない").toContainText("ほかの画面に合わせています", { timeout: 20_000 });
+          await expect(f.getByTestId("fit"), "ほかの画面が合わせているのに入れ直した").not.toBeChecked();
+          // 少し待っても奪わない
+          await new Promise((r) => setTimeout(r, 1500));
+          await expect(of.getByTestId("fit")).toBeChecked();
+          await expect(of.getByTestId("viewport")).toHaveText(otherSize);
+          expect(await f.locator("body").evaluate(() => Object.entries(window.localStorage).filter(([k]) => k.startsWith("banto-browser-fit:")).map(([, v]) => v)), "取らなかったのに覚えを消した").toEqual(["1"]);
+          await h.getByRole("button", { name: "Canvas を閉じる" }).click();
+        } finally {
+          await other.close();
+        }
+        await expect.poll(async () => ((await uiCall(h, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
+        // 開き直せば（ほかの画面はもう無い）また入れ直す。**人が外したら覚えも外し**、開き直しても外れたまま
+        f = await openCanvas();
+        await expect(f.getByTestId("fit")).toBeChecked({ timeout: 20_000 });
+        await expectFitted("ほかの画面が閉じてから開き直した");
+        await f.getByTestId("fit").uncheck();
+        await expect(f.getByTestId("viewport")).toHaveText("ページ 1280×800", { timeout: 20_000 });
+        await h.getByRole("button", { name: "Canvas を閉じる" }).click();
+        await expect.poll(async () => ((await uiCall(h, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
+        f = await openCanvas();
+        await expect(f.getByTestId("viewport")).toHaveText("ページ 1280×800", { timeout: 20_000 });
+        await new Promise((r) => setTimeout(r, 1500));
+        await expect(f.getByTestId("fit"), "外して開き直したのに入っている").not.toBeChecked();
+        await expect(f.getByTestId("viewport")).toHaveText("ページ 1280×800");
+        await h.getByRole("button", { name: "Canvas を閉じる" }).click();
+      }
     } finally {
       await ctx.close();
     }
