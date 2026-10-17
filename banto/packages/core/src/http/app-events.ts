@@ -28,10 +28,12 @@ export interface BackgroundItem {
    * 画面は「起こし直しのあと続けています」と出す
    */
   keptAt?: string;
+  /** Module との接続が切れたあと続けている（追加・2026-10-17、Backlog #362）。画面は「接続が切れたあと続けています」と出す */
+  keptAfter?: "disconnect";
 }
 
 export function backgroundItemsOf(awaiting: readonly AwaitingReply[] | undefined): BackgroundItem[] {
-  return (awaiting ?? []).map((r) => ({ module: r.moduleName, since: r.since, ...(r.work ?? {}), ...(r.keptAt ? { keptAt: r.keptAt } : {}) }));
+  return (awaiting ?? []).map((r) => ({ module: r.moduleName, since: r.since, ...(r.work ?? {}), ...(r.keptAt ? { keptAt: r.keptAt } : {}), ...(r.keptAfter ? { keptAfter: r.keptAfter } : {}) }));
 }
 
 export type AppEvent =

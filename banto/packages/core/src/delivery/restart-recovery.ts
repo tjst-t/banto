@@ -44,11 +44,20 @@
 // 使い切る（一度だけ）。Module が「続ける」と答えれば、終わっていればすぐ・動いていれば終わったときに、その札で届く
 // （題に「起こし直しで途切れたあとに終わっていました」が付く——cli.ts）。続けないと答えたら何も届けずに片づける。
 // また繋がらなければ印を残し直す。
+//
+// **banto は動いたまま、Module との接続だけが切れたとき**（決定・2026-10-17、Backlog #362。実機：host から別のサーバへの
+// 経路が2分途切れ、SSH が閉じた瞬間に Shell の待たないコマンドの札がみな「途中で終わりました」になった——コマンドは
+// 向こうで最後まで走っていた）：名乗った Module の札は、接続が閉じても「途中で終わりました」にせず、繋がり直すのを待つ
+// （`connectionLost`）。繋がり直したら（`moduleConnected`）、起こし直しのときと同じ問いを1回送る——その接続の待っている札と
+// 届け直せる札を1つの問いに乗せる。繋がらないまま上限（`REMOTE_CONNECT_LIMIT_MS`、最初に切れた時から）を越えたら、
+// 打ち切った札と同じく理由と結果の場所を添えた「途中で終わりました」と届け直せる印。人が止めた（畳んだ・外した）なら
+// 今どおりすぐ「途中で終わりました」、起こし直さないと決めたら待つのをやめて「途中で終わりました」（`abandonReconnect`）。
+// banto が止まる途中なら触らない（`stop`——Event Store に残った返事待ちを、次に起きたときの判定が拾う）。
 
 import { parseResumeAnswers, type ResumeAnswer, type ResumeQuestion, type ResumeQuestionItem } from "@banto/module-contract";
 import type { InboxStore } from "../inbox/store.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
-import type { BackgroundWork, ReplyHandles, ReplyToModule } from "./reply-handles.js";
+import type { BackgroundWork, ReplyHandle, ReplyHandles, ReplyToModule } from "./reply-handles.js";
 import type { ModuleAwaitingReply } from "./module-replies.js";
 import type { ThreadDeliveries } from "./thread-deliveries.js";
 import { resumeInterruptedTurns, type SessionReader, type TurnContinuationDeps } from "./turn-continuation.js";
@@ -57,6 +66,8 @@ import { resumeInterruptedTurns, type SessionReader, type TurnContinuationDeps }
 export const RESUME_ASK_TIMEOUT_MS = 120_000;
 /** 別のサーバの Module に繋がるのを待つ上限（経路が途切れている等）。送り込みが止まったときは `remote-ssh.ts` が先に打ち切る */
 export const REMOTE_CONNECT_LIMIT_MS = 30 * 60_000;
+/** 接続が切れて待っていた札の「途中で終わりました」の理由の頭（起こし直しのときの「banto を起動し直したため」に当たる） */
+export const DISCONNECT_WHY = "Module との接続が切れたため";
 /** 別のサーバの Module を起こせなかったとき、次に試すまでの間 */
 const REMOTE_CONNECT_RETRY_MS = 5_000;
 
@@ -89,6 +100,8 @@ type PendingReply =
       work?: BackgroundWork;
       /** 打ち切った札（届け直せる印から）。Thread は留めない——「途中で終わりました」はもう届いている */
       afterLost?: boolean;
+      /** banto は動いたまま、Module との接続が切れて待っていた札（Backlog #362）。理由の文を書き分ける */
+      cause?: "disconnect";
     }
   | {
       kind: "module";
@@ -97,6 +110,7 @@ type PendingReply =
       connName: string;
       projectId?: string;
       toModule: ReplyToModule;
+      cause?: "disconnect";
     };
 
 export interface RestartRecoveryDeps {
@@ -148,9 +162,10 @@ export interface ReplyOutcome {
   to: { threadId: string } | { module: string };
   /**
    * kept：続けると答えた（札を覚え直した）／lost：「途中で終わりました」を届けた／settled：答えの前に済んでいた。
-   * 打ち切った札（`afterLost`）は、kept：届け直す／lost：届け直さない（続けないと答えた・また繋がらなかった——`why`）
+   * 打ち切った札（`afterLost`）は、kept：届け直す／lost：届け直さない（続けないと答えた・また繋がらなかった——`why`）。
+   * waiting：問いの最中に接続が切れたので、繋がり直すのをまた待つ（Backlog #362）
    */
-  outcome: "kept" | "lost" | "settled";
+  outcome: "kept" | "lost" | "settled" | "waiting";
   why?: string;
   afterLost?: boolean;
 }
@@ -183,6 +198,12 @@ export class RestartRecovery {
   private readonly prepared = new Set<string>();
   /** 切れたターンの片づけは1本ずつ（同じターンを2回見ない） */
   private turnChain: Promise<unknown> = Promise.resolve();
+  /** banto は動いたまま接続が切れ、繋がり直すのを待っている札（接続ごと）と、上限で打ち切る時計（Backlog #362） */
+  private readonly disconnected = new Map<string, { replies: PendingReply[]; timer?: NodeJS.Timeout }>();
+  /** 札ごとに最初に接続が切れた時刻。問いの最中にまた切れても、上限は最初に切れた時から数える（切れ続けても待ち続けない） */
+  private readonly lostAt = new Map<string, number>();
+  /** banto が止まる途中（`stop`）。もう札に触らない */
+  private stopped = false;
 
   constructor(private readonly deps: RestartRecoveryDeps) {}
 
@@ -298,8 +319,123 @@ export class RestartRecovery {
    * もう一度見る
    */
   moduleConnected(connName: string): void {
-    if (this.inFlight.has(connName) || (this.groups.has(connName) && !this.finished.has(connName))) return;
+    if (this.stopped || this.inFlight.has(connName) || (this.groups.has(connName) && !this.finished.has(connName))) return;
     void this.redeliverTo(connName);
+  }
+
+  /**
+   * **Module との接続が閉じた**（cli.ts の `client.onclose` が呼ぶ。Backlog #362）。その接続に渡した返事待ちの札を分ける：
+   * 人が止めた（`onPurpose`——畳んだ・外した）でなく、`keepsAcrossDisconnect` の札は繋がり直すのを待つ（`waiting`）。
+   * 残り（`lose`）は呼ぶ側が今どおり「途中で終わりました」にする。**banto が止まる途中（`stop` のあと）なら undefined**
+   * ——札に触らない
+   */
+  connectionClosed(connName: string, opts: { onPurpose: boolean }): { lose: Array<[string, ReplyHandle]>; waiting: ReadonlySet<string> } | undefined {
+    if (this.stopped) return undefined;
+    const lose: Array<[string, ReplyHandle]> = [];
+    const waiting: Array<[string, ReplyHandle]> = [];
+    for (const [replyTo, h] of this.deps.replyHandles.awaitingFor(connName)) {
+      (!opts.onPurpose && this.keepsAcrossDisconnect(h) ? waiting : lose).push([replyTo, h]);
+    }
+    this.connectionLost(connName, waiting);
+    return { lose, waiting: new Set(waiting.map(([replyTo]) => replyTo)) };
+  }
+
+  /**
+   * **接続が切れたとき、この札を繋がり直すまで待たせるか**。札を渡した Module が続けられると名乗っていて、宛先がまだある
+   * （Thread 宛て：Thread も Project も閉じていない／Module 宛て：呼び元も名乗っている——起こし直しのときと同じ条件）
+   */
+  private keepsAcrossDisconnect(h: ReplyHandle): boolean {
+    if (h.toModule) {
+      const where = h.projectId ? { projectId: h.projectId } : {};
+      return this.deps.resumable({ moduleName: h.moduleName, ...where }) && this.deps.resumable({ moduleName: h.toModule.moduleName, ...where });
+    }
+    const thread = this.deps.projectThread.getThread(h.threadId);
+    if (!thread || thread.status === "closed" || this.deps.projectThread.getProject(thread.projectId)?.status === "closed") return false;
+    return this.deps.resumable({ moduleName: h.moduleName, projectId: thread.projectId });
+  }
+
+  /**
+   * 札を繋がり直すまで待たせる——札は返事待ちのまま（画面は「接続が切れたあと続けています」）。繋がり直したら
+   * `moduleConnected` が問う。上限を越えたら打ち切る
+   */
+  private connectionLost(connName: string, handles: ReadonlyArray<readonly [string, ReplyHandle]>): void {
+    if (handles.length === 0) return;
+    const entry = this.disconnected.get(connName) ?? { replies: [] };
+    const now = Date.now();
+    for (const [replyTo, h] of handles) {
+      if (entry.replies.some((r) => r.replyTo === replyTo)) continue;
+      if (!this.lostAt.has(replyTo)) this.lostAt.set(replyTo, now);
+      if (h.toModule) {
+        entry.replies.push({
+          kind: "module",
+          replyTo,
+          moduleName: h.moduleName,
+          connName,
+          ...(h.projectId ? { projectId: h.projectId } : {}),
+          toModule: h.toModule,
+          cause: "disconnect",
+        });
+        continue;
+      }
+      const thread = this.deps.projectThread.getThread(h.threadId);
+      if (!thread) continue;
+      entry.replies.push({
+        kind: "thread",
+        replyTo,
+        moduleName: h.moduleName,
+        connName,
+        projectId: thread.projectId,
+        threadId: h.threadId,
+        // 届いたときのホップ（札を出したターンのホップ＋1）
+        hop: h.hop + 1,
+        ...(h.work ? { work: h.work } : {}),
+        cause: "disconnect",
+      });
+      void this.deps.projectThread
+        .markReplyKept(h.threadId, replyTo, { after: "disconnect" })
+        .catch((err: unknown) => console.warn(`[host] ${h.threadId} の札を「接続が切れたあと続けています」にできませんでした:`, err))
+        .finally(() => this.deps.publishBackground(h.threadId));
+    }
+    if (entry.replies.length === 0) return;
+    // 上限は、その接続で待っている札のうち最初に切れた時から
+    const limit = this.deps.connectLimitMs ?? REMOTE_CONNECT_LIMIT_MS;
+    const first = Math.min(...entry.replies.map((r) => this.lostAt.get(r.replyTo) ?? now));
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => void this.giveUpReconnect(connName), Math.max(0, first + limit - now));
+    entry.timer.unref?.();
+    this.disconnected.set(connName, entry);
+    console.log(`[host] ${connName} との接続が切れました——続けられる札 ${entry.replies.length} 件は、繋がり直すのを待ちます（上限 ${spanOf(limit)}）`);
+  }
+
+  /**
+   * **繋がり直すのを待つのをやめる**（Backlog #362）：繋がり直す前に人が Module を畳んだ・外した、起こし直さないと決めた
+   * （宣言から外れた・Project が無い）。待っていた札に「途中で終わりました」を届ける（届け直せる印は残さない）
+   */
+  async abandonReconnect(match: (connName: string) => boolean, why: string): Promise<void> {
+    for (const [connName, entry] of [...this.disconnected]) {
+      if (!match(connName)) continue;
+      this.disconnected.delete(connName);
+      if (entry.timer) clearTimeout(entry.timer);
+      for (const r of entry.replies) {
+        this.lostAt.delete(r.replyTo);
+        if (this.deps.replyHandles.get(r.replyTo) === undefined) continue;
+        await this.lose(r, why).catch((err: unknown) => console.warn(`[host] ${connName} の札を片づけられませんでした:`, err));
+      }
+    }
+  }
+
+  /** その接続で、繋がり直すのを待っている札があるか */
+  awaitingReconnect(connName: string): boolean {
+    return this.disconnected.has(connName);
+  }
+
+  /**
+   * **banto が止まる途中**（SIGTERM）。もう札に触らない——待っている札は Event Store に返事待ちのまま残り、次に起きたときの
+   * 判定（`beforeListen`）が拾う。打ち切りの時計も止める
+   */
+  stop(): void {
+    this.stopped = true;
+    for (const entry of this.disconnected.values()) if (entry.timer) clearTimeout(entry.timer);
   }
 
   /**
@@ -383,6 +519,7 @@ export class RestartRecovery {
             hop: r.hop,
             ...(r.work ? { work: r.work } : {}),
             afterLost: true,
+            ...(r.after ? { cause: r.after } : {}),
           });
         }
       }
@@ -390,24 +527,94 @@ export class RestartRecovery {
     return out;
   }
 
-  /** 繋がったあと、その接続の届け直せる札を問う（打ち切った札として）。投げない */
+  /**
+   * 繋がったあと、その接続の札を1つの問いで問う：接続が切れて待っていた札（Backlog #362）と、届け直せる札（打ち切った札
+   * として）。投げない
+   */
   private async redeliverTo(connName: string): Promise<void> {
-    if (this.inFlight.has(connName)) return;
-    const replies = this.redeliverable(connName);
+    if (this.stopped || this.inFlight.has(connName)) return;
+    const waiting = this.disconnected.get(connName);
+    if (waiting) {
+      this.disconnected.delete(connName);
+      if (waiting.timer) clearTimeout(waiting.timer);
+    }
+    const replies = [...(waiting?.replies ?? []), ...this.redeliverable(connName)];
     if (replies.length === 0) return;
     this.inFlight.add(connName);
     try {
       const target = targetOf(replies);
       for (const a of await this.judge(target, replies, await this.askOne(target, replies))) {
+        const to = "threadId" in a.to ? `Thread ${a.to.threadId}` : `呼び元 ${a.to.module}`;
+        if (a.afterLost) {
+          console.log(
+            `[host] 打ち切った札を ${a.target.moduleName} に問い直した（${to}）→ ` +
+              (a.outcome === "kept" ? "届け直す（終わっていれば今、動いていれば終わったら）" : a.outcome === "settled" ? "もう届いた" : `届け直さない（${a.why}）`),
+          );
+          continue;
+        }
+        if (a.outcome === "kept" || a.outcome === "settled") this.lostAt.delete(a.replyTo);
         console.log(
-          `[host] 打ち切った札を ${a.target.moduleName} に問い直した（Thread ${"threadId" in a.to ? a.to.threadId : a.to.module}）→ ` +
-            (a.outcome === "kept" ? "届け直す（終わっていれば今、動いていれば終わったら）" : a.outcome === "settled" ? "もう届いた" : `届け直さない（${a.why}）`),
+          `[host] 接続が切れたあとの返事待ち（${a.target.moduleName}・${to}）→ ` +
+            (a.outcome === "kept"
+              ? "続けると答えた"
+              : a.outcome === "settled"
+                ? `問いの答えより前に済んだ（${a.why}）`
+                : a.outcome === "waiting"
+                  ? "問いの最中にまた切れた（繋がり直すのを待つ）"
+                  : `途中で終わりました（${a.why}）`),
         );
       }
     } catch (err) {
-      console.warn(`[host] ${connName} に打ち切った札を問い直せませんでした:`, err);
+      console.warn(`[host] ${connName} に続けるかを問えませんでした:`, err);
     } finally {
       this.inFlight.delete(connName);
+      for (const r of replies) if (!this.waitingReconnect(r.replyTo) && this.deps.replyHandles.get(r.replyTo) === undefined) this.lostAt.delete(r.replyTo);
+    }
+  }
+
+  /** その札が、接続が切れて繋がり直すのを待っているか */
+  private waitingReconnect(replyTo: string): boolean {
+    for (const entry of this.disconnected.values()) if (entry.replies.some((r) => r.replyTo === replyTo)) return true;
+    return false;
+  }
+
+  /** 接続が切れたまま上限を越えた：理由と結果の場所を添えた「途中で終わりました」と、届け直せる印 */
+  private async giveUpReconnect(connName: string): Promise<void> {
+    const entry = this.disconnected.get(connName);
+    if (!entry || this.stopped) return;
+    this.disconnected.delete(connName);
+    const target = targetOf(entry.replies);
+    const remote = this.deps.remoteOf?.(target);
+    const limit = this.deps.connectLimitMs ?? REMOTE_CONNECT_LIMIT_MS;
+    const reason = remote !== undefined ? this.connectGiveUp(target, remote, limit, undefined) : `${target.moduleName} に ${spanOf(limit)}繋がり直せませんでした`;
+    const why = `${DISCONNECT_WHY}（${reason}）`;
+    console.warn(`[host] ${connName} に繋がり直さないまま上限を越えました——待っていた札 ${entry.replies.length} 件を打ち切ります（${reason}）`);
+    for (const r of entry.replies) {
+      this.lostAt.delete(r.replyTo);
+      if (this.deps.replyHandles.get(r.replyTo) === undefined) continue;
+      try {
+        if (r.kind !== "thread") {
+          await this.lose(r, why);
+          continue;
+        }
+        await this.deps.projectThread.markReplyRedeliverable({
+          threadId: r.threadId,
+          replyTo: r.replyTo,
+          connName: r.connName,
+          moduleName: r.moduleName,
+          hop: r.hop,
+          ...(r.work ? { work: r.work } : {}),
+          after: "disconnect",
+        });
+        const location = r.work?.resultLocation;
+        await this.deps.deliverLost({ threadId: r.threadId, replyTo: r.replyTo, moduleName: r.moduleName, hop: r.hop }, why, {
+          note:
+            (location ? `結果の場所：${location}${remote !== undefined ? `（別のサーバ「${remote}」の中）` : ""}。` : "") +
+            `${target.moduleName} に繋がったら、そのときまでに終わっていた結果をこの会話に届け直します`,
+        });
+      } catch (err) {
+        console.warn(`[host] ${connName} の札を打ち切れませんでした:`, err);
+      }
     }
   }
 
@@ -419,6 +626,12 @@ export class RestartRecovery {
       const to = r.kind === "thread" ? { threadId: r.threadId } : { module: r.toModule.moduleName };
       if (r.kind === "thread" && r.afterLost) {
         out.push({ target, replyTo: r.replyTo, to, afterLost: true, ...(await this.judgeAfterLost(r, got)) });
+        continue;
+      }
+      // **問いの最中に接続が切れた**（Backlog #362）：札は繋がり直すのをまた待っている（cli.ts の onclose が先に渡す）——
+      // 答えが来なかったことを「途中で終わりました」にしない
+      if (this.waitingReconnect(r.replyTo)) {
+        out.push({ target, replyTo: r.replyTo, to, outcome: "waiting" });
         continue;
       }
       // 判定の間に札が済んだ：答えの前に最後の届けが済んだか、Module が止まって「途中で終わりました」を届けた
@@ -444,7 +657,7 @@ export class RestartRecovery {
           const modules = this.kept.get(r.threadId) ?? new Set<string>();
           modules.add(target.moduleName);
           this.kept.set(r.threadId, modules);
-          await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo).catch((err: unknown) =>
+          await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo, r.cause ? { after: r.cause } : {}).catch((err: unknown) =>
             console.warn(`[host] ${r.threadId} の札を「続けています」にできませんでした:`, err),
           );
           this.deps.publishBackground(r.threadId);
@@ -455,14 +668,15 @@ export class RestartRecovery {
       }
       // **別のサーバの Module で打ち切った**（繋がらない・起きない・答えない）：理由と結果の場所を添え、届け直せる印を残す
       const gaveUp = remote !== undefined && ("error" in got ? got.gaveUp === true : answer === undefined);
+      const head = r.cause === "disconnect" ? DISCONNECT_WHY : "banto を起動し直したため";
       const why =
         "error" in got
           ? remote !== undefined
-            ? `banto を起動し直したため（${got.error}）`
-            : `banto を起動し直したため（${target.moduleName} に続けるかを聞けませんでした：${got.error}）`
+            ? `${head}（${got.error}）`
+            : `${head}（${target.moduleName} に続けるかを聞けませんでした：${got.error}）`
           : answer
-            ? `banto を起動し直したため（${target.moduleName} が続けられないと答えました：${(answer as Extract<ResumeAnswer, { resume: false }>).reason}）`
-            : `banto を起動し直したため（${target.moduleName} がこの仕事について答えませんでした）`;
+            ? `${head}（${target.moduleName} が続けられないと答えました：${(answer as Extract<ResumeAnswer, { resume: false }>).reason}）`
+            : `${head}（${target.moduleName} がこの仕事について答えませんでした）`;
       if (gaveUp && r.kind === "thread") {
         await this.deps.projectThread
           .markReplyRedeliverable({
@@ -509,7 +723,15 @@ export class RestartRecovery {
     if ("error" in got) {
       // また答えが来なかった——次に繋がったときにもう一度
       await this.deps.projectThread
-        .markReplyRedeliverable({ threadId: r.threadId, replyTo: r.replyTo, connName: r.connName, moduleName: r.moduleName, hop: r.hop, ...(r.work ? { work: r.work } : {}) })
+        .markReplyRedeliverable({
+          threadId: r.threadId,
+          replyTo: r.replyTo,
+          connName: r.connName,
+          moduleName: r.moduleName,
+          hop: r.hop,
+          ...(r.work ? { work: r.work } : {}),
+          ...(r.cause ? { after: r.cause } : {}),
+        })
         .catch((err: unknown) => console.warn(`[host] ${r.threadId} の札に届け直せる印を残し直せませんでした:`, err));
     }
     this.deps.publishBackground(r.threadId);
@@ -583,7 +805,7 @@ export class RestartRecovery {
         hop: Math.max(0, r.hop - 1),
         ...(r.work ? { work: r.work } : {}),
       },
-      { afterLost: true },
+      { afterLost: true, ...(r.cause ? { lostBy: r.cause } : {}) },
     );
     await this.deps.projectThread.recordAwaitingReply({
       threadId: r.threadId,
@@ -614,7 +836,7 @@ export class RestartRecovery {
         this.waitingRemote.set(target.connName, remote);
         for (const r of replies) {
           if (r.kind !== "thread" || r.afterLost) continue;
-          await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo).catch(() => undefined);
+          await this.deps.projectThread.markReplyKept(r.threadId, r.replyTo, r.cause ? { after: r.cause } : {}).catch(() => undefined);
           this.deps.publishBackground(r.threadId);
         }
         try {
@@ -663,12 +885,17 @@ export class RestartRecovery {
 
   /** 繋がるのを待つ上限を越えた理由（実行場所に繋がらない／Module が起きない） */
   private connectGiveUp(target: ResumeTarget, runtime: string, ms: number, last: string | undefined): string {
-    const span = ms >= 120_000 ? `${Math.round(ms / 60_000)} 分` : `${Math.max(1, Math.round(ms / 1000))} 秒`;
+    const span = spanOf(ms);
     const unreachable = this.deps.unreachableReason?.(runtime);
     return unreachable !== undefined
       ? `別のサーバ「${runtime}」に ${span}繋がりませんでした：${unreachable}`
       : `別のサーバ「${runtime}」で ${target.moduleName} が ${span}たっても起きませんでした${last ? `：${last}` : ""}`;
   }
+}
+
+/** 待った長さ（「30 分」「20 秒」） */
+function spanOf(ms: number): string {
+  return ms >= 120_000 ? `${Math.round(ms / 60_000)} 分` : `${Math.max(1, Math.round(ms / 1000))} 秒`;
 }
 
 /** 答えの期限を越えた理由。この機械の Module は前からの文のまま */

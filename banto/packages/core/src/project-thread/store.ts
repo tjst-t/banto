@@ -836,10 +836,11 @@ export class ProjectThreadStore {
    * **起こし直しのあと Module が続けると答えた**（追加・2026-10-05、アーキ仕様 §2.5「2.」）。札は返事待ちのまま、
    * 続けると答えた時刻を残す（画面の「起こし直しのあと続けています」）
    */
-  async markReplyKept(threadId: ThreadId, replyTo: string): Promise<void> {
+  async markReplyKept(threadId: ThreadId, replyTo: string, opts: { after?: "disconnect" } = {}): Promise<void> {
     const t = this.getThread(threadId);
     if (!t?.awaitingReplies?.some((r) => r.replyTo === replyTo)) return;
-    const event = await this.log.append("reply.kept", { threadId, replyTo });
+    // `after`：banto は動いたまま Module との接続が切れたあと（Backlog #362）。無ければ起こし直しのあと
+    const event = await this.log.append("reply.kept", { threadId, replyTo, ...(opts.after ? { after: opts.after } : {}) });
     this.projection.applyOne(event);
   }
 
@@ -854,6 +855,8 @@ export class ProjectThreadStore {
     moduleName: string;
     hop: number;
     work?: BackgroundWork;
+    /** banto は動いたまま、接続が切れて打ち切った（Backlog #362） */
+    after?: "disconnect";
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("reply.redeliverable", input);

@@ -1164,21 +1164,7 @@ function recoveryOf(
       };
     },
     // cli.ts の deliverLostReply と同じ
-    deliverLost: async (reply, why, lostOpts) => {
-      lost.push(`${reply.moduleName}:${why}`);
-      await host.deliveries.deliver({
-        threadId: reply.threadId,
-        from: reply.moduleName,
-        title: `${reply.moduleName} の仕事は途中で終わりました`,
-        text: lostOpts?.note
-          ? `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、いまは届きません——${why}。${lostOpts.note}。`
-          : `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。`,
-        hop: reply.hop,
-      });
-      replyHandles.settle(reply.replyTo);
-      recovery.noteSettled(reply.replyTo, "lost");
-      await host.store.settleReply(reply.threadId, reply.replyTo);
-    },
+    deliverLost: (reply, why, lostOpts) => deliverLost(reply, why, lostOpts),
     publishBackground: () => undefined,
     ...(opts.askTimeoutMs !== undefined ? { askTimeoutMs: opts.askTimeoutMs } : {}),
     ...(opts.remote ? { remoteOf: (t: ResumeTarget) => opts.remote![t.moduleName] } : {}),
@@ -1187,8 +1173,23 @@ function recoveryOf(
     ...(opts.isConnected ? { isConnected: opts.isConnected } : {}),
     connectRetryMs: 5,
   });
+  const deliverLost: RestartRecoveryDeps["deliverLost"] = async (reply, why, lostOpts) => {
+    lost.push(`${reply.moduleName}:${why}`);
+    await host.deliveries.deliver({
+      threadId: reply.threadId,
+      from: reply.moduleName,
+      title: `${reply.moduleName} の仕事は途中で終わりました`,
+      text: lostOpts?.note
+        ? `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、いまは届きません——${why}。${lostOpts.note}。`
+        : `${reply.moduleName} に頼んだ「終わったら届ける」仕事の返事は、もう届きません——${why}。`,
+      hop: reply.hop,
+    });
+    replyHandles.settle(reply.replyTo);
+    recovery.noteSettled(reply.replyTo, "lost");
+    await host.store.settleReply(reply.threadId, reply.replyTo);
+  };
   host.holdAlso((id) => recovery.holdReason(id));
-  return { recovery, replyHandles, asked, lost };
+  return { recovery, replyHandles, asked, lost, deliverLost };
 }
 
 /** 前の走行で「あとで届ける」と約束した札（頼んだターンのホップ 0 → 届くときは 1） */
@@ -1710,5 +1711,277 @@ test("別のサーバの Module に繋がるのを待っている Thread で人�
     // 上限で打ち切れば留めを解く（置き場を消す前に終わらせる）
     await done;
     assert.equal(recovery.holdReason(threadId), undefined);
+  });
+});
+
+// ---- banto は動いたまま、Module との接続だけが切れたとき（追加・2026-10-17、Backlog #362）----------------------------------
+// 実機：host から別のサーバへの経路が2分途切れて SSH が閉じ、cli.ts の onclose が Shell の待たないコマンドの札をみな「途中で
+// 終わりました」にした——コマンドは向こうで最後まで走っていた。ここでは cli.ts の onclose と同じく `connectionClosed` を呼ぶ
+
+/** いま走っている host で「あとで届ける」と約束した札（Event Store の返事待ちと、札そのもの） */
+async function liveAwaiting(host: Host, replyHandles: ReplyHandles, threadId: string, replyTo: string, moduleName: string, projectId: string) {
+  const work = { toolName: "runCommand", toolCallId: `toolu_${replyTo}`, resultLocation: `/work/commands/${replyTo}/output.log` };
+  await host.store.recordAwaitingReply({ threadId, replyTo, connName: `${moduleName}-${projectId}`, moduleName, hop: 1, work });
+  replyHandles.restore(replyTo, { threadId, projectId, connName: `${moduleName}-${projectId}`, moduleName, hop: 0, work });
+}
+
+async function until(cond: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(cond(), what);
+}
+
+const resumeAll = async (_t: ResumeTarget, q: ResumeQuestion) => ({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: true })) });
+
+test("接続が切れた：名乗った Module の札は待つ（「接続が切れたあと続けています」）、名乗らない Module は今どおりすぐ「途中で終わりました」", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const host = await boot(dir);
+    const made = recoveryOf(host, resumeAll);
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    await liveAwaiting(host, made.replyHandles, threadId, "r-plain", PLAIN, projectId);
+    const sub = made.recovery.connectionClosed(`${RESUMABLE}-${projectId}`, { onPurpose: false })!;
+    assert.deepEqual(sub.lose, []);
+    assert.deepEqual([...sub.waiting], ["r-sub"]);
+    assert.equal(made.recovery.awaitingReconnect(`${RESUMABLE}-${projectId}`), true);
+    const plain = made.recovery.connectionClosed(`${PLAIN}-${projectId}`, { onPurpose: false })!;
+    assert.deepEqual(plain.lose.map(([r]) => r), ["r-plain"], "名乗らない Module の札を待たせた");
+    assert.deepEqual([...plain.waiting], []);
+    const kept = () => host.store.getThread(threadId)!.awaitingReplies!.find((r) => r.replyTo === "r-sub");
+    await until(() => kept()?.keptAfter === "disconnect", "札が「接続が切れたあと続けています」にならない");
+    assert.ok(kept()!.keptAt);
+    assert.equal(made.replyHandles.get("r-sub")?.awaiting, true, "札が返事待ちでなくなった");
+    assert.deepEqual(made.lost, []);
+    assert.equal(host.store.getThread(threadId)!.deliveries?.length ?? 0, 0, "何か届いた");
+    // 読み直しても印は残る（Event Store）
+    assert.equal((await boot(dir)).store.getThread(threadId)!.awaitingReplies!.find((r) => r.replyTo === "r-sub")?.keptAfter, "disconnect");
+    made.recovery.stop();
+  });
+});
+
+test("接続が切れた：人が止めた（畳んだ・外した）なら待たずに「途中で終わりました」。banto が止まる途中なら札に触らない", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const host = await boot(dir);
+    const made = recoveryOf(host, resumeAll);
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    const closed = made.recovery.connectionClosed(`${RESUMABLE}-${projectId}`, { onPurpose: true })!;
+    assert.deepEqual(closed.lose.map(([r]) => r), ["r-sub"], "止めたのに待たせた");
+    assert.equal(made.recovery.awaitingReconnect(`${RESUMABLE}-${projectId}`), false);
+  });
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const host = await boot(dir);
+    const made = recoveryOf(host, resumeAll, { connectLimitMs: 20 });
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    made.recovery.stop();
+    assert.equal(made.recovery.connectionClosed(`${RESUMABLE}-${projectId}`, { onPurpose: false }), undefined, "止まる途中に札を分けた");
+    await new Promise((r) => setTimeout(r, 60));
+    const left = host.store.getThread(threadId)!.awaitingReplies!;
+    assert.deepEqual(left.map((r) => [r.replyTo, r.keptAt]), [["r-sub", undefined]], "止まる途中に札に触った");
+    assert.deepEqual(made.lost, []);
+  });
+});
+
+test("繋がり直したら、その接続の待っている札（Thread 宛て・Module 宛て）と届け直せる札を1つの問いで問い、続けると答えれば待ち続ける", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const conn = `${RESUMABLE}-${projectId}`;
+    const host = await boot(dir);
+    await host.store.markReplyRedeliverable({ threadId, replyTo: "r-old", connName: conn, moduleName: RESUMABLE, hop: 1 });
+    const made = recoveryOf(host, resumeAll, { resumable: () => true, isConnected: () => true });
+    await liveAwaiting(host, made.replyHandles, threadId, "r-a", RESUMABLE, projectId);
+    await liveAwaiting(host, made.replyHandles, threadId, "r-b", RESUMABLE, projectId);
+    made.replyHandles.restore("m-1", {
+      threadId: "",
+      toModule: { connName: `factory-${projectId}`, moduleName: "factory", replyId: "rid_1" },
+      projectId,
+      connName: conn,
+      moduleName: RESUMABLE,
+      hop: 0,
+    });
+    const closed = made.recovery.connectionClosed(conn, { onPurpose: false })!;
+    assert.deepEqual([...closed.waiting].sort(), ["m-1", "r-a", "r-b"]);
+    assert.equal(made.asked.length, 0, "繋がる前に問うた");
+    made.recovery.moduleConnected(conn);
+    await until(() => made.asked.length === 1 && host.store.getThread(threadId)!.awaitingReplies!.some((r) => r.replyTo === "r-old"), "繋がり直しても問わない");
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(made.asked.length, 1, "問いが2つ以上");
+    assert.deepEqual(made.asked[0]!.target, { moduleName: RESUMABLE, connName: conn, projectId });
+    assert.deepEqual(
+      made.asked[0]!.q.items.map((i) => [i.replyTo, i.afterLost === true, i.thread ? "thread" : `caller:${i.caller?.module}`]),
+      [
+        ["r-a", false, "thread"],
+        ["r-b", false, "thread"],
+        ["m-1", false, "caller:factory"],
+        ["r-old", true, "thread"],
+      ],
+    );
+    assert.deepEqual(made.lost, []);
+    assert.deepEqual(
+      host.store.getThread(threadId)!.awaitingReplies!.map((r) => [r.replyTo, r.keptAfter]).sort(),
+      [["r-a", "disconnect"], ["r-b", "disconnect"], ["r-old", undefined]],
+    );
+    assert.equal(made.replyHandles.get("m-1")?.awaiting, true);
+    assert.equal(made.recovery.awaitingReconnect(conn), false);
+    // もう一度繋がっても、もう問わない
+    made.recovery.moduleConnected(conn);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(made.asked.length, 1);
+  });
+});
+
+test("繋がり直したあと Module が続けられないと答えたら、理由つきの「途中で終わりました」（接続が切れたため）", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const host = await boot(dir);
+    const made = recoveryOf(host, async (_t, q) => ({ answers: q.items.map((i) => ({ replyTo: i.replyTo, resume: false, reason: "記録がありません" })) }));
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    made.recovery.connectionClosed(`${RESUMABLE}-${projectId}`, { onPurpose: false });
+    made.recovery.moduleConnected(`${RESUMABLE}-${projectId}`);
+    await until(() => made.lost.length === 1, "「途中で終わりました」にならない");
+    assert.equal(made.lost[0], `${RESUMABLE}:Module との接続が切れたため（${RESUMABLE} が続けられないと答えました：記録がありません）`);
+    assert.equal(host.store.getThread(threadId)!.redeliverableReplies?.length ?? 0, 0);
+  });
+});
+
+test("接続が切れたまま上限を越えたら、理由と結果の場所つきの「途中で終わりました」と届け直せる印——繋がったら打ち切った札として問う", async () => {
+  for (const [name, remote, reason] of [
+    ["別のサーバ", { [RESUMABLE]: "vm" } as Record<string, string>, /Module との接続が切れたため（別のサーバ「vm」に 1 秒繋がりませんでした：ssh: connect to host 10\.0\.0\.9 port 22: No route to host）/],
+    ["この機械", undefined, new RegExp(`Module との接続が切れたため（${RESUMABLE} に 1 秒繋がり直せませんでした）`)],
+  ] as const) {
+    await withDir(async ({ dir, threadId, projectId }) => {
+      const conn = `${RESUMABLE}-${projectId}`;
+      const host = await boot(dir);
+      const made = recoveryOf(host, resumeAll, {
+        connectLimitMs: 40,
+        ...(remote ? { remote } : {}),
+        unreachableReason: () => "ssh: connect to host 10.0.0.9 port 22: No route to host",
+      });
+      await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+      made.recovery.connectionClosed(conn, { onPurpose: false });
+      await new Promise((r) => setTimeout(r, 20));
+      assert.deepEqual(made.lost, [], `${name}：上限の前に打ち切った`);
+      await until(() => made.lost.length === 1 && (host.store.getThread(threadId)!.awaitingReplies?.length ?? 0) === 0, `${name}：上限を越えても打ち切らない`);
+      assert.match(made.lost[0]!, reason, name);
+      const text = host.store.getThread(threadId)!.deliveries!.at(-1)!.text;
+      assert.match(text, new RegExp(`結果の場所：/work/commands/r-sub/output\\.log${remote ? "（別のサーバ「vm」の中）" : "。"}`), name);
+      assert.match(text, /繋がったら、そのときまでに終わっていた結果をこの会話に届け直します/, name);
+      assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length ?? 0, 0, name);
+      assert.deepEqual(host.store.getThread(threadId)!.redeliverableReplies?.map((r) => r.replyTo), ["r-sub"], name);
+      assert.equal(made.recovery.awaitingReconnect(conn), false, name);
+      // 繋がった：打ち切った札として1回だけ問い、続けると答えれば返事待ちに戻る（終わっていればその札で届く）
+      made.recovery.moduleConnected(conn);
+      await until(() => made.asked.length === 1 && (host.store.getThread(threadId)!.awaitingReplies?.length ?? 0) === 1, `${name}：繋がっても問い直さない`);
+      assert.equal(made.asked[0]!.q.items[0]!.afterLost, true, name);
+      assert.equal(made.replyHandles.get("r-sub")?.afterLost, true, name);
+      assert.equal(made.replyHandles.get("r-sub")?.lostBy, "disconnect", `${name}：題を「接続が途切れたあと」と言い分けられない`);
+      assert.equal(host.store.getThread(threadId)!.redeliverableReplies?.length ?? 0, 0, `${name}：届け直せる印が残った`);
+    });
+  }
+});
+
+test("問いの最中に接続が切れたら、「途中で終わりました」にせず繋がり直すのをまた待ち、次に繋がったら問い直す", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const conn = `${RESUMABLE}-${projectId}`;
+    const host = await boot(dir);
+    let connected = true;
+    let cut!: () => void;
+    let round = 0;
+    const made: ReturnType<typeof recoveryOf> = recoveryOf(
+      host,
+      (t, q) => {
+        if (++round > 1) return resumeAll(t, q);
+        // 1回目の問いの最中に切れる：cli.ts の onclose が先に札を分け、そのあと問いが「Connection closed」で落ちる
+        return new Promise((_resolve, reject) => {
+          cut = () => {
+            connected = false;
+            made.recovery.connectionClosed(conn, { onPurpose: false });
+            reject(new Error("MCP error -32000: Connection closed"));
+          };
+        });
+      },
+      { isConnected: () => connected },
+    );
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    made.recovery.connectionClosed(conn, { onPurpose: false });
+    made.recovery.moduleConnected(conn);
+    await until(() => made.asked.length === 1, "繋がり直しても問わない");
+    cut();
+    await until(() => made.recovery.awaitingReconnect(conn), "問いの最中に切れたのに待っていない");
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(made.lost, [], "問いの最中に切れたら「途中で終わりました」になった");
+    assert.equal(host.store.getThread(threadId)!.awaitingReplies?.length, 1);
+    connected = true;
+    made.recovery.moduleConnected(conn);
+    await until(() => made.asked.length === 2 && !made.recovery.awaitingReconnect(conn), "繋がり直したのに問い直さない");
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(made.lost, []);
+    assert.equal(host.store.getThread(threadId)!.awaitingReplies?.[0]?.replyTo, "r-sub");
+    made.recovery.stop();
+  });
+});
+
+test("問いの最中に接続が切れる（起こし直しのあとの問い）：その札も「途中で終わりました」にせず繋がり直すのを待つ", async () => {
+  await withDir(async ({ dir, first, threadId, projectId }) => {
+    const conn = `${RESUMABLE}-${projectId}`;
+    await awaiting(first.store, threadId, "r-sub", RESUMABLE, projectId);
+    const host = await boot(dir);
+    let connected = true;
+    const made: ReturnType<typeof recoveryOf> = recoveryOf(
+      host,
+      () => {
+        connected = false;
+        made.recovery.connectionClosed(conn, { onPurpose: false });
+        return Promise.reject(new Error("MCP error -32000: Connection closed"));
+      },
+      { isConnected: () => connected },
+    );
+    await made.recovery.beforeListen();
+    const { answers } = await made.recovery.afterListen();
+    assert.deepEqual(answers.map((a) => a.outcome), ["waiting"]);
+    assert.deepEqual(made.lost, []);
+    assert.equal(made.recovery.awaitingReconnect(conn), true);
+    assert.equal(made.recovery.holdReason(threadId), undefined, "待つ間も Thread を留めた");
+    made.recovery.stop();
+  });
+});
+
+test("繋がり直す前に起こし直さないと決めた（畳んだ・宣言から外れた）なら、待つのをやめて「途中で終わりました」（届け直さない）", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const conn = `${RESUMABLE}-${projectId}`;
+    const host = await boot(dir);
+    const made = recoveryOf(host, resumeAll);
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    await liveAwaiting(host, made.replyHandles, threadId, "r-other", "other", projectId);
+    made.recovery.connectionClosed(conn, { onPurpose: false });
+    made.recovery.connectionClosed(`other-${projectId}`, { onPurpose: false });
+    await made.recovery.abandonReconnect((c) => c === conn, "Module との接続が切れたため（subagent が有効な Module から外れたので、起こし直しません）");
+    assert.deepEqual(made.lost, [`${RESUMABLE}:Module との接続が切れたため（subagent が有効な Module から外れたので、起こし直しません）`]);
+    assert.equal(made.recovery.awaitingReconnect(conn), false);
+    assert.deepEqual(host.store.getThread(threadId)!.awaitingReplies!.map((r) => r.replyTo), ["r-other"]);
+    assert.equal(host.store.getThread(threadId)!.redeliverableReplies?.length ?? 0, 0, "起こし直さないのに届け直せる印を残した");
+    made.recovery.moduleConnected(conn);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(made.asked.length, 0, "やめたのに問うた");
+  });
+});
+
+test("繋がり直すのを待つ間に banto を起こし直したら、起き直したときの判定が拾って問う（前の走行の打ち切りの時計は動かない）", async () => {
+  await withDir(async ({ dir, threadId, projectId }) => {
+    const host = await boot(dir);
+    const made = recoveryOf(host, resumeAll, { connectLimitMs: 30 });
+    await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
+    made.recovery.connectionClosed(`${RESUMABLE}-${projectId}`, { onPurpose: false });
+    await until(() => host.store.getThread(threadId)!.awaitingReplies![0]!.keptAfter === "disconnect", "待つ印が付かない");
+    // SIGTERM：止まる途中
+    made.recovery.stop();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.deepEqual(made.lost, [], "止めたあとに打ち切りの時計が動いた");
+    const again = await boot(dir);
+    const next = recoveryOf(again, resumeAll);
+    await next.recovery.beforeListen();
+    const { answers } = await next.recovery.afterListen();
+    assert.deepEqual(answers.map((a) => [a.replyTo, a.outcome]), [["r-sub", "kept"]]);
+    assert.deepEqual(next.asked[0]!.q.items.map((i) => [i.replyTo, i.afterLost === true]), [["r-sub", false]]);
+    assert.deepEqual(next.lost, []);
+    // 起こし直しのあと続けている（接続が切れたあと、ではない）
+    const kept = again.store.getThread(threadId)!.awaitingReplies![0]!;
+    assert.ok(kept.keptAt);
+    assert.equal(kept.keptAfter, undefined);
   });
 });

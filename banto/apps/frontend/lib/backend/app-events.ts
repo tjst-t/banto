@@ -32,6 +32,8 @@ export interface RealBackgroundItem {
    * 続けています」と出す——長く届かなければ人が気づける
    */
   keptAt?: string;
+  /** Module との接続が切れたあと続けている（追加・2026-10-17、Backlog #362）。無ければ起こし直しのあと */
+  keptAfter?: "disconnect";
 }
 
 export type RealAppEvent =
