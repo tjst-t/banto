@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { FRONTEND_BASE_URL } from "../config.js";
 import { fakeTurn, openApp } from "../helpers.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
-import { withSshHost, type SshHost } from "../ssh-host.js";
+import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
 test.describe.configure({ mode: "serial" });
@@ -89,7 +89,7 @@ test("別のサーバの Module との接続が切れても、待たないコマ
           body: {
             server: "vault-directory",
             tool: "createAlias",
-            arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity", value: readFileSync(sshHost.identityFile, "utf8") },
+            arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity", group: RUNTIME_KEYS_GROUP, value: readFileSync(sshHost.identityFile, "utf8") },
           },
         });
         expect(stored.status, JSON.stringify(stored.body)).toBe(200);
