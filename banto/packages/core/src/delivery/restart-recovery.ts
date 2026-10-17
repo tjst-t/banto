@@ -249,7 +249,9 @@ export class RestartRecovery {
     }
     // **届け直せる札**（前の走行で打ち切ったもの、Backlog #324）も同じ問いに乗せる——Module ごとに問いは1回（Subagent は
     // 問われなかった記録を片づける）。Thread は留めない。覚え直すのは問う直前（`askOne`）
-    for (const r of this.redeliverable()) this.pend(r);
+    // 返事待ちとしてもう問いに載っている札（打ち切っている途中に止まった）は重ねない
+    const pending = new Set([...this.groups.values()].flat().map((r) => r.replyTo));
+    for (const r of this.redeliverable()) if (!pending.has(r.replyTo)) this.pend(r);
     // **Module 宛ての札**（追加・2026-10-05、上の注記）。Thread は留めない（Thread の続きとは関わらない）
     for (const a of this.deps.moduleReplies?.awaiting() ?? []) {
       // **呼び元も名乗っていなければ問わない**（改訂・2026-10-05、Fable のレビュー）：呼び元は名乗っていなければ自分の
@@ -590,6 +592,9 @@ export class RestartRecovery {
     const why = `${DISCONNECT_WHY}（${reason}）`;
     console.warn(`[host] ${connName} に繋がり直さないまま上限を越えました——待っていた札 ${entry.replies.length} 件を打ち切ります（${reason}）`);
     for (const r of entry.replies) {
+      // **打ち切っている途中に banto が止まり始めたら、残りの札には触らない**（§2.5「止まる途中→札に触らない」）——
+      // Event Store の返事待ちは、次に起きたときの判定が拾う
+      if (this.stopped) break;
       this.lostAt.delete(r.replyTo);
       if (this.deps.replyHandles.get(r.replyTo) === undefined) continue;
       try {
@@ -606,6 +611,9 @@ export class RestartRecovery {
           ...(r.work ? { work: r.work } : {}),
           after: "disconnect",
         });
+        // 印を書いている間に止まり始めた——「途中で終わりました」は届けない（返事待ちと印の両方が残り、次に起きたときの
+        // 判定は返事待ちとして問う。下の `beforeListen` は同じ札を届け直せる札として重ねない）
+        if (this.stopped) break;
         const location = r.work?.resultLocation;
         await this.deps.deliverLost({ threadId: r.threadId, replyTo: r.replyTo, moduleName: r.moduleName, hop: r.hop }, why, {
           note:
