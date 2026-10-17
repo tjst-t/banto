@@ -40,7 +40,7 @@ export const CONFIG_APP_HTML = `<!doctype html>
 </head>
 <body>
 <p class="lead">ブラウザの新しいタブ（＋）は検索エンジンのトップで開き、URL 欄に URL でない言葉を打つとその検索エンジンで調べます。
-  人のための入口です——AI の Web の検索は WebSearch を使います。</p>
+  AI が URL を省いてタブを開いたときも、ここで選んだ検索エンジンのトップが開きます。</p>
 <label class="field"><span>検索エンジン</span>
   <select id="engine" data-testid="browser-config-engine"></select></label>
 <label class="field" id="template-field" hidden><span>URL の型（%s を言葉に替えます。例 https://example.com/search?q=%s）</span>

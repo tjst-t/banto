@@ -194,9 +194,9 @@ test("画面の資源：流れの口を埋め込み、受け取りの印を返�
   const withCard = TOOLS.filter((t) => (t._meta as Record<string, unknown>)["dev.banto/card"] !== undefined).map((t) => t.name);
   assert.deepEqual(withCard, ["browserOpen"]);
   assert.equal((TOOLS[0]!._meta as { ui?: { resourceUri?: string } }).ui?.resourceUri, BROWSER_VIEW_URI);
-  // CAPTCHA は人が解く（AI は解かない）・Web の検索は WebSearch、と道具の説明で AI に伝える
+  // CAPTCHA は人が解く（AI は解かない）、と道具の説明で AI に伝える。検索エンジンを開くことは禁じない（改訂・2026-10-17）
   for (const name of ["browserOpen", "browserAct"]) assert.match(TOOLS.find((t) => t.name === name)!.description, /CAPTCHA（ロボット確認[^]*AI は解かない[^]*人に解いてもらう/);
-  assert.match(TOOLS.find((t) => t.name === "browserOpen")!.description, /Web の検索には WebSearch を使い/);
+  assert.doesNotMatch(TOOLS.find((t) => t.name === "browserOpen")!.description, /検索エンジン[^。]*を開かない|AI 自身はそこで検索しない/);
 });
 
 // ---- 本物のブラウザで ---------------------------------------------------------------------------

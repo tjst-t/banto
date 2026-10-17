@@ -99,17 +99,14 @@ export const TOOLS = [
     name: "browserOpen",
     description:
       "**この Project のコンテナの中のブラウザでページを開く。** コンテナの中のサービスに localhost で届く（Publish していない開発サーバも開ける）。" +
-      "**このブラウザは開発中のアプリや決まったページを開いて確かめるためのもの。Web の検索には WebSearch を使い、このブラウザで検索エンジン" +
-      "（Google 等）を開かない**——ロボットと判定されて止められ、検索エンジンの規約にも反するため。" +
-      "url を省くと新しいタブで検索エンジンのトップを開く（人が検索するためのページ。人の画面の＋の新しいタブと同じ）——人に検索して" +
-      "もらうときだけ使い、AI 自身はそこで検索しない。" +
+      "url を省くと新しいタブで設定の検索エンジンのトップを開く（人の画面の＋の新しいタブと同じ）。" +
       CAPTCHA_NOTE +
       "ログイン状態（Cookie 等）は Project ごとに残る。返すのはタブ・状態コード・最終の URL・タイトル・アクセシビリティツリー（短く、[ref=…] 付き）。" +
       `ページを読むのは browserSnapshot、操作は browserAct、通信は listNetwork。${TABS_NOTE}。${PAGE_NOTE}。${BLOCK_NOTE}`,
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "開く URL（例 http://localhost:3000/）。省くと新しいタブで検索エンジンのトップ（人のためのページ）" },
+        url: { type: "string", description: "開く URL（例 http://localhost:3000/）。省くと新しいタブで設定の検索エンジンのトップ" },
         newTab: { type: "boolean", description: "新しいタブで開く（この会話のタブになる）。省略時はこの会話が最後に使った自分のタブ（無ければ開く）" },
       },
     },
