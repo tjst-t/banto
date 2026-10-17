@@ -2236,6 +2236,7 @@ Module の一覧には**2種類が混ざる**：
 | 起こす・止める | 最初の道具の呼び出しか、人が画面を開いたときに起こす。画面が閉じていて AI の呼び出しも無いまま30分たったら止める（メモリを返す。数字は仮） |
 | ログイン状態 | **Project ごとに残す**（決定・2026-10-08、ユーザー）。プロファイル（Cookie・localStorage 等）は Module の置き場に Project ごとに置き、止めても起こし直しても残る。人の画面に**「ブラウザの記録を消す」**（プロファイルと通信の記録を消す）を置く |
 | 人の画面 | `ui://banto-browser/view`（下の「人の画面」）。launcher から開ける。AI の `browserOpen` のカードからも開く |
+| 許可を求める吹き出し | **出さずに全部ブロック**（決定・2026-10-17、ユーザー（案A）、Backlog #379）——人の画面の入力はページの中にだけ届き（CDP の `Input.dispatch*`）、吹き出し（通知・位置情報など）は Chrome 本体の UI なので押せず、キオスク形では閉じる手段も無く居座る。起動の引数 `--deny-permission-prompts`（自動操作の印ではない普通の引数）。カメラ・マイクは仮想の画面にもともと無い。実測（2026-10-17、Google Chrome 155、`test-page.ts` の `/permissions`）：引数が無いと、押して求めても答えが来ない（吹き出しが出たまま）。有ると `Notification.requestPermission()` は `denied`、`geolocation.getCurrentPosition` は `PERMISSION_DENIED` ですぐ返る。`navigator.permissions.query` は求める前は `prompt` のまま、断ったあとは `denied`。人の入力を X に入れて Chrome の UI も押せるようにする案（案B）は別の Backlog 項目 |
 
 #### 人の画面——絵を流し、入力を送り返す
 
@@ -2606,7 +2607,8 @@ true・headless の印・窓が無い・Playwright の既定の引数（`--enabl
 - **起動の引数はこれだけ**：`--user-data-dir`・`--remote-debugging-port=0`・`--disable-blink-features=AutomationControlled`・
   `--no-sandbox`（今までと同じ。境界はコンテナ——`v4-security.md` §1）・`--no-first-run`・`--no-default-browser-check`
   （初めて起こしたときの案内のタブと「既定のブラウザにする」の帯を出さない）・`--accept-lang`・`--kiosk`（追加・2026-10-13、
-  Backlog #281——下の「動画で流す」(a)）・`--window-position`・`--window-size`。`--enable-automation`・`--headless`・`--user-agent`・Playwright の `--disable-*` の類は付けない
+  Backlog #281——下の「動画で流す」(a)）・`--window-position`・`--window-size`・`--deny-permission-prompts`（追加・2026-10-17、
+  Backlog #379——上の「形」の「許可を求める吹き出し」）。`--enable-automation`・`--headless`・`--user-agent`・Playwright の `--disable-*` の類は付けない
 - **`--disable-blink-features=AutomationControlled` を足す理由**：Chrome は CDP の口を開いて起こすと、**それだけで**
   `navigator.webdriver` を true にする（実測・2026-10-10、Google Chrome 155：口なしで false・`--remote-debugging-port` でも
   `--remote-debugging-pipe` でも true）。人が使う Chrome は口を開いていないので false——その状態に揃える。ページの JS を

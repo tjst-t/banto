@@ -354,6 +354,24 @@ test("人のブラウザと同じ：画面ありで、自動操作の起動の�
   for (const mark of ["--enable-automation", "--headless", "--user-agent"]) assert.ok(!cmd.some((a) => a.startsWith(mark)), `${mark} が付いている`);
 });
 
+test("許可を求める吹き出しは出さずブロック：通知・位置情報を人の操作で求めても、すぐ denied が返り、permissions.query も断ったあとは denied", { skip }, async () => {
+  // 人の画面の入力はページの中にだけ届き、Chrome の UI（吹き出し）は押せない——出たら答えは来ないまま居座る（chrome.ts）
+  const opened = await call("browserOpen", { url: `${base}/permissions`, newTab: true });
+  assert.equal(opened.isError, undefined, opened.text);
+  const states = () => evalJson<string>("JSON.stringify(document.getElementById('states').textContent)");
+  await until(async () => /notifications:/.test(await states()), "押す前の状態");
+  assert.equal(await states(), "notifications:prompt geolocation:prompt");
+  const tree = (await call("browserSnapshot")).text;
+  for (const name of ["通知を許可", "位置情報"]) assert.equal((await call("browserAct", { action: "click", ref: refOf(tree, "button", name) })).isError, undefined);
+  await until(async () => {
+    const r = await evalJson<string[]>("JSON.stringify([document.getElementById('notify').textContent, document.getElementById('geo').textContent])");
+    return r[0] !== "まだ" && r[1] !== "まだ";
+  }, "通知・位置情報の答え（吹き出しが出ていると来ない）");
+  assert.deepEqual(await evalJson<string[]>("JSON.stringify([document.getElementById('notify').textContent, document.getElementById('geo').textContent])"), ["通知:denied", "位置:denied"]);
+  // 求める前の permissions.query は prompt のまま（引数は吹き出しを断るだけで、置いた状態は変えない）。断ったあとは denied
+  await until(async () => (await states()) === "notifications:denied geolocation:denied", "断ったあとの状態");
+});
+
 test("タブは会話ごと：2つの会話がそれぞれ裏の自分のタブで同時に作業し、タブを省くと自分の最後のタブに効き、ほかの会話のタブへの操作は断られ、人の画面の表示は替わらない", { skip }, async () => {
   const A = "thread-aaaaaaaa-1111";
   const B = "thread-bbbbbbbb-2222";

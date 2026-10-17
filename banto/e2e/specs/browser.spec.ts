@@ -84,7 +84,7 @@ async function ai(page: Page, name: string, args: Record<string, unknown> = {}):
 }
 
 function refOf(tree: string, role: string, name: string): string {
-  const m = new RegExp(`${role} "${name}"[^\\n]*\\[ref=(e\\d+)\\]`).exec(tree);
+  const m = new RegExp(`${role} "${name}"[^\\n]*\\[ref=(\\w+)\\]`).exec(tree);
   if (!m) throw new Error(`${role} "${name}" がツリーに無い:\n${tree}`);
   return m[1]!;
 }
@@ -132,6 +132,8 @@ test("AI が9本の道具で試験用のページを調べ、失敗した通信�
   expect(ps.stdout).toMatch(/^Xvfb /m);
   expect(ps.stdout).not.toContain("--headless");
   expect(ps.stdout).not.toContain("--enable-automation");
+  // 許可を求める吹き出しは出さずブロック（人の画面からは Chrome の UI を押せない——chrome.ts）
+  expect(ps.stdout).toMatch(/^\/opt\/google\/chrome\/chrome .*--deny-permission-prompts/m);
   const status = JSON.parse(await uiCall(page, "getBrowserStatus", {})) as { running: boolean; aiBlocked: boolean; tabs: { id: string; url: string }[] };
   expect(status).toMatchObject({ running: true, aiBlocked: false, tabs: [{ id: "t1", url: `${BASE}/` }] });
 
@@ -199,4 +201,16 @@ test("AI が9本の道具で試験用のページを調べ、失敗した通信�
   expect(JSON.parse(await uiCall(page, "getBrowserStatus", {}))).toMatchObject({ aiBlocked: true });
   expect(JSON.parse(await uiCall(page, "setAiBlocked", { blocked: false }))).toMatchObject({ aiBlocked: false });
   expect(await ai(page, "browserAct", { action: "reload" })).toContain("読み直しました");
+
+  // ---- 許可を求めるページ：吹き出しは出さず denied がすぐ返る（出ると答えは人が押すまで来ない——押せないので居座る）----
+  const perm = await ai(page, "browserOpen", { url: `${BASE}/permissions` });
+  expect(perm).toContain("タイトル: 許可を求めるページ");
+  const permTree = await ai(page, "browserSnapshot");
+  for (const name of ["通知を許可", "位置情報"]) expect(await ai(page, "browserAct", { action: "click", ref: refOf(permTree, "button", name) })).toContain("を押しました");
+  // 成功したときにだけ現れるもの（答えの文字）を待つ
+  expect(await ai(page, "browserAct", { action: "waitFor", text: "位置:denied" })).toContain("待ちました");
+  const answers = "JSON.stringify([document.getElementById('notify').textContent, document.getElementById('geo').textContent, document.getElementById('states').textContent])";
+  await expect.poll(async () => await ai(page, "browserEval", { expression: answers }), { timeout: 60_000 }).toContain(
+    JSON.stringify(JSON.stringify(["通知:denied", "位置:denied", "notifications:denied geolocation:denied"])),
+  );
 });
