@@ -22,6 +22,8 @@ interface Ctx {
   baseId: string;
   judgments: Array<{ threadId: string; id: string; message: string; choices: string[] }>;
   prepared: string[];
+  /** 鍵を捨てた自動化の id（消したとき） */
+  forgotten: string[];
 }
 
 async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
@@ -42,6 +44,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const approvals = new PendingApprovalRegistry();
     const judgments: Ctx["judgments"] = [];
     const prepared: string[] = [];
+    const forgotten: string[] = [];
     const tools = new AutomationTools({
       projectThread: store,
       now: () => NOW,
@@ -52,12 +55,13 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
           return a;
         },
       },
+      webhooks: { forgetSecret: (id: string) => forgotten.push(id) },
       inbox,
       pendingApprovals: approvals,
       publishJudgment: (threadId, j) => judgments.push({ threadId, id: j.id, message: j.message, choices: j.choices }),
       judgeNotices: () => ["この Project はターンの終わりのまとめがオフなので、出来事 banto.turn-decisions が出ません"],
     });
-    await fn({ store, automations, inbox, approvals, tools, projectId: project.id, baseId: base.id, judgments, prepared });
+    await fn({ store, automations, inbox, approvals, tools, projectId: project.id, baseId: base.id, judgments, prepared, forgotten });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -196,6 +200,64 @@ test("一覧と一時停止は聞かない。変える・再開するは聞く",
     ctx.approvals.resolve(u.id, { behavior: "deny", message: "変えない" });
     assert.equal((await updating).ok, false);
     assert.equal(ctx.automations.get(a.id)?.name, "毎朝のまとめ", "断ったのに変わっている");
+  });
+});
+
+test("消すときは必ずカードで聞き、許したら台帳から消して Webhook の鍵を捨てる。専用の Fork とその会話は残す", async () => {
+  await setup(async (ctx) => {
+    const a = await ctx.automations.create({ projectId: ctx.projectId, createdBy: { kind: "human" }, fields: FIELDS });
+    const fork = await ctx.store.forkThread(ctx.baseId, { title: "毎朝のまとめ", fresh: true });
+    await ctx.automations.setDedicatedThread(a.id, fork.id);
+
+    const removing = ctx.tools.remove(ctx.baseId, a.id);
+    const j = await nextJudgment(ctx, 1);
+    assert.equal(j.threadId, ctx.baseId);
+    assert.equal(j.message, "この自動化を消してよいですか");
+    assert.deepEqual(j.choices, ["消す", "消さない"]);
+    const item = ctx.inbox.get(j.id);
+    assert.equal(item?.kind === "judgment" && item.source, "automation");
+    const shown = (item as { toolInput: Record<string, string> }).toolInput;
+    assert.equal(shown["自動化"], "毎朝のまとめ");
+    assert.equal(shown["いつ"], "平日 9:00（Asia/Tokyo）");
+    assert.equal(shown["どの会話で動かすか"], "専用の Fork で、毎回まっさらから");
+    assert.match(shown["何が起きるか"]!, /専用の Fork とその会話は残ります（要らなければ Fork を閉じてください）/);
+    assert.ok(ctx.automations.get(a.id), "答える前に消している");
+
+    ctx.approvals.resolve(j.id, { behavior: "allow" });
+    const result = await removing;
+    assert.equal(result.ok, true, result.text);
+    assert.match(result.text, /専用の Fork とその会話は残っている/);
+    assert.equal(ctx.automations.get(a.id), undefined);
+    assert.deepEqual(ctx.forgotten, [a.id]);
+    assert.equal(ctx.store.getThread(fork.id)?.status, "active", "専用の Fork を閉じている");
+  });
+});
+
+test("消さないと答えたら残す", async () => {
+  await setup(async (ctx) => {
+    const a = await ctx.automations.create({ projectId: ctx.projectId, createdBy: { kind: "human" }, fields: FIELDS });
+    const removing = ctx.tools.remove(ctx.baseId, a.id);
+    const j = await nextJudgment(ctx, 1);
+    ctx.approvals.resolve(j.id, { behavior: "deny", message: "消さない" });
+    const result = await removing;
+    assert.equal(result.ok, false);
+    assert.match(result.text, /消していません/);
+    assert.ok(ctx.automations.get(a.id));
+    assert.deepEqual(ctx.forgotten, []);
+  });
+});
+
+test("ほかの Project の自動化・無い id は、聞く前に理由つきで断る", async () => {
+  await setup(async (ctx) => {
+    const other = await ctx.store.createProject("other", "/tmp");
+    const a = await ctx.automations.create({ projectId: other.id, createdBy: { kind: "human" }, fields: FIELDS });
+    for (const id of [a.id, "no-such-automation"]) {
+      const r = await ctx.tools.remove(ctx.baseId, id);
+      assert.equal(r.ok, false);
+      assert.match(r.text, /この Project に自動化 .* はありません（list_automations で id が分かります）/);
+    }
+    assert.ok(ctx.automations.get(a.id));
+    assert.equal(ctx.judgments.length, 0, "断るのに聞いている");
   });
 });
 

@@ -1316,6 +1316,7 @@ export function createApp(deps: AppDeps) {
         projectThread: deps.projectThread,
         automations: deps.automations,
         ...(deps.automationRunner ? { runner: deps.automationRunner } : {}),
+        ...(deps.automationWebhooks ? { webhooks: deps.automationWebhooks } : {}),
         ...askInThreadDeps,
         judgeNotices: (projectId) =>
           judgeNotices(projectId, { turnSummaryEnabled, autoApproveAll: (id) => isAutoApproveAll(deps.runtimeConfig, id) }),
