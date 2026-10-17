@@ -548,7 +548,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   （切れたのを早く知る）。`ControlPath` は UNIX ソケットの 107 バイトに収まる短いパスに置く
 - 鍵は Vault から：host が Vault に鍵の窓口（ssh-agent）を立ててもらい、host の `ssh` がそれを使う。秘密鍵は host の
   ディスクにも向こうにも出ない。**core が自分のために頼む**（`resolveSecretPlaceholders` と同じく承認を聞かない——人が実行場所に
-  登録した鍵だけ）。
+  登録した鍵だけ）。窓口は host のデータの置き場の短いパス（`s`、107 バイト以内）に立て、SSH の接続を張ったら閉じる
+  （多重化した接続は張ったあと鍵を使わない）。繋ぎ直すたびに立て直す
 - **鍵の置き場は core だけが使える**（決定・2026-10-17、Backlog #361。Fable の S1）：Vault のグループ **`banto-runtime`**
   （`RUNTIME_KEYS_GROUP`）。core は刻印 **`{host: true}`** で Vault の実装に直に頼み（窓口 vault-directory を通さない——窓口の先は
   中継を通り、中継はこの刻印を刻まない）、Vault はこの刻印には**この置き場のものだけ**を見せて使わせる。この置き場は共通にも
@@ -559,8 +560,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   **既にある登録の移し方**は `docs/runbooks/runtime-ssh-key-move.md`（鍵を Vault の管理画面で `banto-runtime` へ移す。
   移すまでその実行場所には繋がない）。同じ鍵を Project の AI にも使わせたい（向こうで git push する等）なら、別の名前で
   **その実行場所を使う Project の置き場**に預ける（共通の置き場に置くと、ほかの Project の AI もその実行場所に入れる——
-  直したい穴そのもの）窓口は host のデータの置き場の短いパス（`s`、107 バイト以内）に立て、SSH の接続を張ったら閉じる
-  （多重化した接続は張ったあと鍵を使わない）。繋ぎ直すたびに立て直す
+  直したい穴そのもの）
 - **向こうに LAN の待ち受けを開けない**。banto の側の入口（nftables の表 `inet banto`、§1「入れ方」）も今のまま閉じて
   おける——向こうから banto へは SSH の接続の中だけを通る
 
