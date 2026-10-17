@@ -351,6 +351,8 @@ function ProjectsHeading({
             <FolderPlus />
             新しいグループ…
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <AutoSleepSubmenu />
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -394,20 +396,30 @@ function SleepSuggestion({ projects, onSleep }: { projects: readonly MockProject
   );
 }
 
-/** 「スリープ中」の見出しの「…」：しばらく開いていない Project をどうするか（banto 全体の設定 `projects.autoSleep`） */
-function AutoSleepMenu() {
-  // 開いたときに host から読む（写しを持たない、規則3）。読み終わるまでは選べない
+/**
+ * 自動スリープ（banto 全体の設定 `projects.autoSleep`）を host から読む。開いたときに読み直す（写しを持たない、規則3）。
+ * 「スリープ中」の見出しの「…」と「Project」の見出しの「＋」の2か所で使う（2026-10-17、ユーザー「眠っている Project が無くても
+ * 変えられるように」）
+ */
+function useAutoSleepMode() {
   const [mode, setMode] = useState<RealAutoSleepMode | null>(null);
+  const reload = () => {
+    setMode(null);
+    void getRealAutoSleep().then(setMode, report("設定を読めませんでした"));
+  };
+  return { mode, setMode, reload };
+}
+
+/** 選択肢と説明（2か所で同じ中身） */
+function AutoSleepChoices({
+  mode,
+  setMode,
+}: {
+  mode: RealAutoSleepMode | null;
+  setMode: (m: RealAutoSleepMode) => void;
+}) {
   return (
-    <DropdownMenu
-      onOpenChange={(open) => {
-        if (!open) return;
-        setMode(null);
-        void getRealAutoSleep().then(setMode, report("設定を読めませんでした"));
-      }}
-    >
-      <HeadingMore label="スリープ中の設定" />
-      <DropdownMenuContent side="right" align="end" className="w-64" data-testid="sidebar-auto-sleep-menu">
+    <>
         <DropdownMenuLabel className="text-xs font-normal text-ink-3">14日開いていない Project を</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={mode ?? ""}
@@ -430,6 +442,45 @@ function AutoSleepMenu() {
         <p className="px-1.5 pb-1 text-xs text-ink-3">
           スリープ中はコンテナ・Module・Service を止めて資源を返します。会話はそのまま残ります。開いたとき・自動化の時刻が来たとき・メッセージなどが届いたときは自動で起きます
         </p>
+    </>
+  );
+}
+
+/**
+ * 「Project」の見出しの「＋」の中の「しばらく開いていない Project」——眠っている Project が無くて「スリープ中」の見出しが
+ * 出ていないときも、ここから変えられる（2026-10-17、ユーザー）
+ */
+function AutoSleepSubmenu() {
+  const { mode, setMode, reload } = useAutoSleepMode();
+  return (
+    <DropdownMenuSub
+      onOpenChange={(open) => {
+        if (open) reload();
+      }}
+    >
+      <DropdownMenuSubTrigger data-testid="sidebar-auto-sleep-submenu">
+        <Moon />
+        しばらく開いていない Project
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-64" data-testid="sidebar-auto-sleep-menu">
+        <AutoSleepChoices mode={mode} setMode={setMode} />
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
+/** 「スリープ中」の見出しの「…」：しばらく開いていない Project をどうするか */
+function AutoSleepMenu() {
+  const { mode, setMode, reload } = useAutoSleepMode();
+  return (
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) reload();
+      }}
+    >
+      <HeadingMore label="スリープ中の設定" />
+      <DropdownMenuContent side="right" align="end" className="w-64" data-testid="sidebar-auto-sleep-menu">
+        <AutoSleepChoices mode={mode} setMode={setMode} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
