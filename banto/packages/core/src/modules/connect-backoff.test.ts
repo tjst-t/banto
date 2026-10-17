@@ -65,3 +65,23 @@ test("止まってばかりなら間が伸び、しばらく動き続けたら�
   b.recordLost("m", "v1", "久しぶりに落ちた");
   assert.equal(b.retryAt("m") - c.now(), 5_000, "10 分動き続けたら最初の間に戻る");
 });
+
+test("同じ1回の試みを待っていた数だけ失敗が届いても、1回として数える（Backlog #370）", () => {
+  const c = clock();
+  const b = new ConnectBackoff({ ...OPTS, now: c.now });
+  // 1回目の試み：4か所が同じ起動を待っていて、同じ失敗が4回届く
+  const first = c.now();
+  c.advance(9_000); // SSH の接続の時間切れまで
+  const notified = [0, 1, 2, 3].map(() => b.recordFailure("shell-p1", "v1", "Connection timed out", { attemptStartedAt: first }));
+  assert.deepEqual(notified, [true, false, false, false], "知らせるのも最初の1回だけ");
+  assert.equal(b.streak("shell-p1"), 1);
+  assert.equal(b.retryAt("shell-p1") - c.now(), 5_000, "間は 5 秒のまま（以前は 40 秒まで伸びた）");
+  // 次の試みはその失敗のあとに始まるので、ふつうに数える
+  c.advance(5_000);
+  const second = c.now();
+  c.advance(9_000);
+  b.recordFailure("shell-p1", "v1", "Connection timed out", { attemptStartedAt: second });
+  b.recordFailure("shell-p1", "v1", "Connection timed out", { attemptStartedAt: second });
+  assert.equal(b.streak("shell-p1"), 2);
+  assert.equal(b.retryAt("shell-p1") - c.now(), 10_000);
+});
