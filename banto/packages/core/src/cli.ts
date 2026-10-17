@@ -1110,6 +1110,8 @@ async function main(): Promise<void> {
     const releasedMeanwhile = () =>
       releaseProjectId !== undefined &&
       ((projectReleases.get(releaseProjectId) ?? 0) !== releasesAtStart || (connectionReleases.get(connName) ?? 0) !== connReleasesAtStart);
+    // この試みを始めた時刻——同じ失敗を待っていた数だけ数えないため（ConnectBackoff.recordFailure、Backlog #370）
+    const attemptStartedAt = Date.now();
     try {
       const connected = await spawnDeclaredModule(declaration, forProject);
       if (releasedMeanwhile()) {
@@ -1134,7 +1136,10 @@ async function main(): Promise<void> {
         declaration.meta.scope === "project" && forProject && isRemoteUnreachable(err)
           ? remoteNameOf(projectThread.getProject(forProject.id)?.runtime)
           : undefined;
-      const notify = connectBackoff.recordFailure(connName, fingerprint, reason, { quiet: unreachableRuntime !== undefined });
+      const notify = connectBackoff.recordFailure(connName, fingerprint, reason, {
+        quiet: unreachableRuntime !== undefined,
+        attemptStartedAt,
+      });
       if (unreachableRuntime) remoteOutage.recordUnreachable(unreachableRuntime, connName, forProject?.id, reason);
       const retryIn = Math.round((connectBackoff.retryAt(connName) - Date.now()) / 1000);
       console.warn(`[host] ${connName} を繋げませんでした（${retryIn} 秒たったら、また試します）: ${reason}`);

@@ -36,6 +36,8 @@ interface Entry {
   connectedAt?: number;
   /** この連続した失敗について、人に知らせたか。 */
   notified: boolean;
+  /** 最後に失敗・停止を数えた時刻（同じ1回の試みの失敗を何度も数えないため） */
+  failedAt?: number;
 }
 
 export class ConnectBackoff {
@@ -64,7 +66,24 @@ export class ConnectBackoff {
    * 繋げなかった。**知らせるべきなら true**（連続した失敗の最初の1回だけ）。`quiet` は別の場所で知らせる失敗
    * （別のサーバに繋がらない——`remote-outage.ts`）で、知らせたことにしない（理由が変わったら、そのとき知らせる）
    */
-  recordFailure(name: string, fingerprint: string, reason: string, opts: { quiet?: boolean } = {}): boolean {
+  recordFailure(
+    name: string,
+    fingerprint: string,
+    reason: string,
+    opts: { quiet?: boolean; attemptStartedAt?: number } = {},
+  ): boolean {
+    // **同じ1回の試みの失敗は1回だけ数える**（Backlog #370）。別のサーバの SSH の接続1本の上で、起こし直し・prepare・
+    // ターンなどが同じ起動を待っていると、1回の失敗が待っていた数だけ届き、間が 10→20→40→80 秒と一度に伸びていた。
+    // この試みを始めたあとに、もう失敗を数えていれば（同じ失敗の知らせ）、数え直さず知らせもしない
+    const found = this.entries.get(name);
+    if (
+      opts.attemptStartedAt !== undefined &&
+      found?.fingerprint === fingerprint &&
+      found.failedAt !== undefined &&
+      found.failedAt >= opts.attemptStartedAt
+    ) {
+      return false;
+    }
     const e = this.next(name, fingerprint, reason);
     if (opts.quiet) return false;
     const notify = !e.notified;
@@ -123,6 +142,7 @@ export class ConnectBackoff {
       reason,
       retryAt: now + delay,
       notified: prev?.notified ?? false,
+      failedAt: now,
     };
     this.entries.set(name, e);
     return e;
