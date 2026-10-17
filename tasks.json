@@ -6016,6 +6016,27 @@
       "extra": {}
     },
     {
+      "id": "browser-fit-remember",
+      "number": 360,
+      "kind": "task",
+      "title": "Browser：「画面に合わせる」をその端末で覚え、Canvas を開き直したら自動で入れ直す",
+      "status": "ready",
+      "parent": "browser-module",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "決定 2026-10-17（ユーザー）：今は「画面に合わせる」を持っている画面が閉じたら外れ（§4.1「人の画面で決めたこと」）、開き直した画面は外れた状態で始まる（view-app.ts の wantFit は毎回 false）。これを、その端末（人のブラウザ）で覚えておき、開き直したら自動で入れ直す形にする。\n\n作るもの：\n- 人の画面（view-app.ts）が「画面に合わせる」の入れ切りをその端末に覚える。置き場は Canvas の iframe はサンドボックス（別オリジン）なので localStorage が使えるか確かめ、使えなければ banto の「画面の見ている場所を預かる」口（v4-frontend.md §6.2）を使う。Project ごと（Browser は Project ごと）に覚える。\n- 開いたとき（流れが繋がったとき・繋ぎ直したとき）に覚えていれば fit を送る。ほかの画面がすでに合わせている（fitByOther）ときは今どおり取らない——「後から入れた画面が取る」の決まりとの兼ね合いを決めて仕様に書く（自動で入れ直すのは人が押したのとは違うので、ほかの画面が持っていれば奪わない、を提案）。\n- 人が外したら覚えも外す。\n- 仕様 §4.1 を直す。\n\n確かめ（**全部の E2E は流さない**）：browser の単体・型検査と、browser-video.spec.ts の #359 の試験（428 行目付近）を「開き直したら自動で入っている」形に戻す、browser-view.spec.ts・browser-tabs.spec.ts。",
+      "doneWhen": "「画面に合わせる」を入れて Canvas を閉じて開き直すと、自動で入った状態で開きページが合うことを E2E で確かめた（端数の倍率でも）。外して開き直すと外れたまま。ほかの画面が合わせているときは奪わない。browser の単体・型検査・関係する E2E が通る。§4.1 を直した。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:13:44.028Z",
+      "updatedAt": "2026-10-17T00:13:44.028Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "remote-runtime",
       "number": 244,
       "kind": "story",
