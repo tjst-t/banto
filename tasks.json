@@ -9043,7 +9043,7 @@
       "number": 375,
       "kind": "task",
       "title": "実行場所の鍵が banto-runtime の外にあれば受信箱に「移す」付きのカードを出す・追加の画面から banto-runtime に鍵を作れる入口",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9057,7 +9057,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T09:14:18.019Z",
-      "updatedAt": "2026-10-17T09:14:18.019Z",
+      "updatedAt": "2026-10-17T09:14:28.038Z",
       "closedAt": null,
       "extra": {}
     }
