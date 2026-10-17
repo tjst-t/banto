@@ -127,6 +127,16 @@ function agentIdsText(agents: AgentDefinition[]): string {
   return agents.map((a) => `${a.id}（${a.title}。資格情報の変数：${a.credentialEnv.join(" / ")}）`).join("、");
 }
 
+/** 初めて使うときに本体を取ってくるエージェントの断り書き（アーキ仕様 §4.1「エージェントの本体を取ってくる」） */
+function fetchedBinaryText(agents: AgentDefinition[]): string {
+  const fetched = agents.filter((a) => a.fetchedBinary);
+  if (fetched.length === 0) return "";
+  return (
+    fetched.map((a) => `初めての ${a.id} は本体（${a.fetchedBinary!.approxSize}）を取ってくる`).join("、") +
+    "——初回だけ数分返らないことがある（待たない形でも、取り終えるまでは返らない）。"
+  );
+}
+
 export function createSubagentServer(deps: SubagentServerDeps) {
   const agents = deps.agents ?? listAgents();
   const claudeLoginEnv = deps.claudeLoginEnv ?? process.env;
@@ -186,6 +196,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         description:
           "仕事を頼めるサブエージェントの一覧。agent を指定すると、そのエージェントを起こして" +
           "選べるモデル・effort・モードの候補を聞く（候補は渡した資格情報で変わる）。" +
+          fetchedBinaryText(agents) +
           `エージェント：${agentIdsText(agents)}`,
         inputSchema: {
           type: "object",
@@ -533,11 +544,18 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           // 待たない形では、返したあとの呼び出しに進捗は送れない（一覧には残る）
           if (!background) onProgress?.(message);
         };
+        // 起こす前の段（資格情報・本体を取ってくる）はまだ返していないので、待たない形でも呼び出しに流す——人は仕事の画面
+        // （Launcher）でも、始まる前の段として同じ文を見る
+        const reportBeforeStart = (message: string) => {
+          runs.progress(run.id, message);
+          onProgress?.(message);
+        };
         // **資格情報は呼び出しの中で用意する**——Vault の中継（と初回の承認）は「どの会話のための呼び出しか」が
-        // 決まっている間しか通らない。待たない形でも、ここまでは待つ（背景に回すのはエージェントを走らせる部分だけ）
+        // 決まっている間しか通らない。待たない形でも、ここまでは待つ（背景に回すのはエージェントを走らせる部分だけ）。
+        // **本体を取ってくるのもここ**（アーキ仕様 §4.1）——待たない形でも取り終えるまでは返さず、失敗は必ず tool の失敗で返る
         let launched: Awaited<ReturnType<typeof launchFor>>;
         try {
-          launched = await launchFor(agent, args.envSecrets, report);
+          launched = await launchFor(agent, args.envSecrets, reportBeforeStart);
         } catch (err) {
           runs.finish(run.id, { error: err instanceof Error ? err.message : String(err) });
           throw err;
@@ -910,7 +928,17 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     const stored = await resolveStoredKeys(agent, new Set(Object.keys(secrets)), deps.relayClient, onProgress);
     Object.assign(env, stored.env);
 
-    const shape = prepareAgentLaunch(agent, deps.projectRoot, join(deps.moduleDataDir, "agents", agent.id, "home"));
+    // **本体を取ってきてもらう**（アーキ仕様 §4.1「エージェントの本体を取ってくる」）。起動時には解かない——使うときに host の
+    // 口を呼び、この場所から見えるパスを受け取る。初めてのときは取ってくる・送る間の進み具合が流れる
+    let binary: string | undefined;
+    if (agent.fetchedBinary) {
+      try {
+        binary = (await deps.relayClient.ensureAgentBinary(agent.fetchedBinary.agent, onProgress)).path;
+      } catch (err) {
+        throw new SubagentError(`${agent.title} の本体を用意できませんでした：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const shape = prepareAgentLaunch(agent, deps.projectRoot, join(deps.moduleDataDir, "agents", agent.id, "home"), binary);
     return { launch: { command: shape.command, args: shape.args, env: { ...env, ...shape.env } }, notes: stored.notes };
   }
 

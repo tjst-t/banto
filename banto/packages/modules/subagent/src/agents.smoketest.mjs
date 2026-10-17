@@ -1,11 +1,13 @@
 // **本物のエージェントとの疎通確認**（`npm run check:agents -w @banto/module-subagent`）。
 // core の `check:agent-sdk` と同じ扱い——実際のモデルを呼ぶ（課金される）ので自動の試験には
-// 含めない。**claude-agent-acp・opencode-ai を上げたら必ず回す**——E2E は偽のエージェントなので、
+// 含めない。**claude-agent-acp・OpenCode の目録（core の `agent-binaries.ts`）を上げたら必ず回す**——E2E は偽のエージェントなので、
 // 本物の振る舞いの変化はここでしか捕まらない。
 //
-// Module のコードそのもの（`createSubagentServer`）を MCP の口から呼ぶ。Vault の中継だけ代役：
+// Module のコードそのもの（`createSubagentServer`）を MCP の口から呼ぶ。Vault の中継と、本体を取ってくる host の口だけ代役：
 //   - Claude Code：**本番と同じく banto 本体のログイン（~/.claude）を中継で共有する**——envSecrets は渡さない
-//   - OpenCode：~/.local/share/opencode/auth.json の opencode-go の鍵をメモリに読み、OPENCODE_API_KEY に
+//   - OpenCode：~/.local/share/opencode/auth.json の opencode-go の鍵をメモリに読み、OPENCODE_API_KEY に。
+//     本体は **core の目録から取ってくる**（`relayEnsureAgentBinary` の代わりに core の `AgentBinaryStore` を直に、使い捨ての置き場へ。
+//     CPU はこの機械の /proc/cpuinfo で選ぶ——本番のこの機械のコンテナと同じ）
 // **人の ~/.claude・~/.config/opencode には書かない**——エージェントは Module の専用ホーム
 // （使い捨ての置き場）で動く。
 //
@@ -14,6 +16,7 @@
 //   2. 閉じ込めの中で仕事をし、Project の根にファイルを書ける。既定のモードが掛かる
 //   3. 人への確認が来たら断り、返り値に書く（来なければ空）
 //   4. 別プロセスで続きから頼める（前の仕事を覚えている）
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +24,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const { createSubagentServer } = await import("../dist/server.js");
+// 開発用の確かめなので core の組み立て済みを直に読む（Module のコードは core を import しない）
+const { AgentBinaryStore } = await import("../../../core/dist/agent-binaries/store.js");
+const { AGENT_BINARIES, hostHasAvx2 } = await import("../../../core/dist/agent-binaries/agent-binaries.js");
 
 const wanted = process.argv.slice(2);
 const secrets = {
@@ -41,6 +47,8 @@ const root = mkdtempSync(join(tmpdir(), "banto-check-agents-"));
 try {
   const project = join(root, "project");
   mkdirSync(project);
+  const binaries = new AgentBinaryStore({ dataDir: join(root, "data"), catalog: AGENT_BINARIES, hostAvx2: hostHasAvx2() });
+  binaries.init();
   const server = createSubagentServer({
     projectRoot: project,
     moduleDataDir: join(root, "data", "modules", "subagent-check"),
@@ -49,6 +57,11 @@ try {
       listAliases: async () => [],
       lookupAlias: async (_dir, name) => ({ implementation: "local", name }),
       resolveAlias: async (place) => secrets[place.name](),
+      ensureAgentBinary: async (agent, onProgress) => {
+        const placed = await binaries.ensure(agent, { onProgress });
+        console.log(`     本体：${placed.entry.version}・${placed.entry.cpu}・${Math.round(placed.sizeBytes / 1e6)}MB`);
+        return { path: placed.file, version: placed.entry.version, cpu: placed.entry.cpu, sizeBytes: placed.sizeBytes };
+      },
     },
     guard: { dataDir: join(root, "data"), configDir: join(root, "config") },
     pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
@@ -99,6 +112,8 @@ try {
   }
   await client.close();
 } finally {
+  // 版のフォルダは 0555
+  spawnSync("chmod", ["-R", "u+w", root]);
   rmSync(root, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

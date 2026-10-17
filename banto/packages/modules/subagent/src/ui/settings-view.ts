@@ -6,8 +6,11 @@
 // **値は画面に出さない**（入力欄は password、保存したら空にする）。
 
 interface KeyRow { env: string; alias: string; set: boolean; importable: boolean }
+/** banto が取ってくる本体（この機械）。確かめられなければ理由 */
+type BinaryState = { present: boolean; version: string; sizeBytes?: number; approxBytes: number } | { error: string };
 interface AgentCredentials {
   id: string; title: string; importLabel?: string;
+  binary?: BinaryState;
   /** 本体の Claude ログインを使う（使わせるかは Project ごとの設定——決定・2026-09-27） */
   sharesHostLogin?: true;
   keys?: KeyRow[];
@@ -143,6 +146,20 @@ function keyRow(agent: AgentCredentials, key: KeyRow): HTMLElement {
   return row;
 }
 
+/** 大きさ（MB の整数。1MB に満たなければ KB） */
+const mb = (bytes: number) => (bytes < 1e6 ? `${Math.max(1, Math.round(bytes / 1e3))}KB` : `${Math.round(bytes / 1e6)}MB`);
+
+/** 本体（この機械）：取ってきたか・まだか（アーキ仕様 §4.1「設定画面」） */
+function binaryNote(b: BinaryState): HTMLElement {
+  const text =
+    "error" in b
+      ? `本体（この機械）：確かめられませんでした——${b.error}`
+      : b.present
+        ? `本体（この機械）：取ってきました（版 ${b.version}・${mb(b.sizeBytes ?? 0)}）`
+        : `本体（この機械）：まだありません——初めて使うときに約${mb(b.approxBytes)} を取ってきます`;
+  return h("p", { class: "card-note", "data-role": "agent-binary", "data-state": "error" in b ? "error" : b.present ? "present" : "absent", text });
+}
+
 function card(agent: AgentCredentials): HTMLElement {
   if (agent.sharesHostLogin) {
     return h("section", { class: "card", "data-agent": agent.id }, [
@@ -164,6 +181,7 @@ function card(agent: AgentCredentials): HTMLElement {
       h("span", { class: "pill", "data-tone": setCount ? "ok" : "warn" }, [h("span", { class: "dot" }), setCount ? `鍵 ${setCount}件` : "鍵なし"]),
     ]),
     h("p", { class: "card-note", text: "鍵は banto 全体の Vault に置き、どの Project でも使います。サブエージェントのシェルから読めるので、渡してよいものだけを入れてください。" }),
+    agent.binary ? binaryNote(agent.binary) : null,
     h("div", { class: "keys" }, keys.map((k) => keyRow(agent, k))),
   ]);
 }

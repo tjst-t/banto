@@ -1,6 +1,6 @@
 // 試験の代役と起動の手順（単体・結合試験が共有する）。偽の ACP エージェントで、Vault の中継だけを代役にする。
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -26,13 +26,29 @@ async function connect(server: { connect: (t: InMemoryTransport) => Promise<void
   };
 }
 
-/** Vault の代役（名前 → 値）。窓口と同じ口だけを持つ */
+/**
+ * **取ってきた本体の代役**：受けた引数をそのまま exec する sh（E2E の偽の登録簿が出す tarball の中身と同じ）。偽のエージェント
+ * `fake` はこれを起こし、その先で node が偽の ACP エージェントを起こす
+ */
+export function fakeAgentBinary(): string {
+  const file = join(tmpdir(), `banto-subagent-fake-binary-${process.pid}.sh`);
+  if (!existsSync(file)) {
+    writeFileSync(file, '#!/bin/sh\nexec "$@"\n');
+    chmodSync(file, 0o755);
+  }
+  return file;
+}
+
+/** Vault の代役（名前 → 値）。窓口と同じ口だけを持つ（本体を取ってくる口も——中継の代役なので） */
 export function fakeVault(initial: Record<string, string> = {}, opts: { unreadableVault?: boolean } = {}) {
   const store = new Map(Object.entries(initial));
   const calls: string[] = [];
+  /** 本体を取ってくる口を呼んだエージェント（Vault の呼び出しとは分けて数える） */
+  const binaries: string[] = [];
   return {
     store,
     calls,
+    binaries,
     relay: {
       listAliases: async () => [...store.keys()].map((name) => ({ name, implementation: "vault-local" })),
       // 窓口と同じく、既定の鍵の名前で無いものは「どの Vault にも無い」
@@ -57,6 +73,12 @@ export function fakeVault(initial: Record<string, string> = {}, opts: { unreadab
         calls.push(`delete ${place.name}`);
         if (!store.delete(place.name)) throw new Error(`${place.name} はありません`);
       },
+      ensureAgentBinary: async (agent: string, onProgress?: (message: string) => void) => {
+        binaries.push(agent);
+        onProgress?.(`${agent} を取ってきています（0 / 1MB）`);
+        return { path: fakeAgentBinary(), version: "0.0.0", cpu: "x64", sizeBytes: 20 };
+      },
+      agentBinaryStatus: async () => ({ present: false, version: "0.0.0", approxBytes: 2_000 }),
     },
   };
 }

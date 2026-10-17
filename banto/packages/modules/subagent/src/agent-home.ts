@@ -16,13 +16,14 @@ export interface AgentLaunchShape {
   env: Record<string, string>;
 }
 
-export function prepareAgentLaunch(agent: AgentDefinition, projectRoot: string, homeDir: string): AgentLaunchShape {
+/** `binary` は banto が取ってきた本体のパス（`agent.fetchedBinary` のあるエージェントだけ。口の返り値） */
+export function prepareAgentLaunch(agent: AgentDefinition, projectRoot: string, homeDir: string, binary?: string): AgentLaunchShape {
   mkdirSync(homeDir, { recursive: true, mode: 0o700 });
   const home = realpathSync(homeDir);
   const tmp = join(home, "tmp");
   mkdirSync(tmp, { recursive: true });
   return {
-    command: agent.command,
+    command: agent.command(binary),
     args: agent.args(projectRoot),
     env: {
       HOME: home,

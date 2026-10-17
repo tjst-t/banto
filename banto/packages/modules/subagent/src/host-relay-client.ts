@@ -145,6 +145,36 @@ export class HostRelayClient {
     await this.callRelay({ targetModule: directoryModule, name: "deleteAlias", arguments: { name: place.name, group: place.group } });
   }
 
+  /**
+   * **エージェントの本体を取ってきてもらう**（追加・2026-10-17、アーキ仕様 §4.1「エージェントの本体を取ってくる」）。返るのは
+   * この場所（コンテナ・別のサーバ）から見えるパス。初めてのときは取ってくる・送るので数分かかる——host は進んでいれば5秒ごと、
+   * 止まっていても15秒ごとに進み具合を送るので、それで上限を延ばし（`resetTimeoutOnProgress`）、呼び元へも流す
+   */
+  async ensureAgentBinary(
+    agent: string,
+    onProgress?: RelayProgressListener,
+  ): Promise<{ path: string; version: string; cpu: string; sizeBytes: number }> {
+    const client = await this.ensureConnected();
+    const result = await client.callTool({ name: "relayEnsureAgentBinary", arguments: { agent } }, undefined, {
+      resetTimeoutOnProgress: true,
+      onprogress: (progress) => {
+        if (progress.message) onProgress?.(progress.message);
+      },
+    });
+    const text = (result.content as { type: string; text: string }[])[0]?.text;
+    if (result.isError) throw new Error(text ?? `${agent} の本体を取ってこられませんでした`);
+    return JSON.parse(text ?? "{}");
+  }
+
+  /** この機械に本体が置いてあるか（取らない。設定画面に出す） */
+  async agentBinaryStatus(agent: string): Promise<{ present: boolean; version: string; sizeBytes?: number; approxBytes: number }> {
+    const client = await this.ensureConnected();
+    const result = await client.callTool({ name: "relayAgentBinaryStatus", arguments: { agent } });
+    const text = (result.content as { type: string; text: string }[])[0]?.text;
+    if (result.isError) throw new Error(text ?? `${agent} の本体を確かめられませんでした`);
+    return JSON.parse(text ?? "{}");
+  }
+
   async close(): Promise<void> {
     await this.client?.close();
   }
