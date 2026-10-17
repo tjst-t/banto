@@ -421,10 +421,15 @@ async function extract(file, out, { checkStop, markMs }) {
     }
   }, markMs);
   try {
+    // tar は中身の終わりの印（0 のブロック）を読んだら、後ろの埋め草を読まずに標準入力を閉じて 0 で終わることがある
+    // ——流し込む側はそこで EPIPE・Premature close になる（2026-10-17、2コアで6回に1回）。tar が 0 で終わったなら中身は
+    // 全部書けている（sha256 は先に確かめてあり、途中で切れた中身なら tar が非零で終わる）ので、その失敗は数えない
+    let pipeErr;
     await pipeline(createReadStream(file), zlib.createZstdDecompress(), tar.stdin).catch((err) => {
-      if (!stopErr) throw err;
+      pipeErr = err;
     });
     const r = await exited;
+    if (pipeErr && !stopErr && !(r.code === 0 && isClosedEarly(pipeErr))) throw pipeErr;
     if (stopErr) throw stopErr;
     if (r.error) skip(`tar を起こせません：${r.error.message}`);
     if (r.code !== 0) skip(`展開に失敗しました（tar の終了コード ${r.code}）：${stderr.trim().slice(0, 400)}`);
@@ -439,6 +444,12 @@ async function extract(file, out, { checkStop, markMs }) {
   } finally {
     clearInterval(timer);
   }
+}
+
+/** 読む側（tar）が先に閉じたことによる失敗 */
+function isClosedEarly(err) {
+  const code = err?.code;
+  return code === "EPIPE" || code === "ERR_STREAM_PREMATURE_CLOSE" || code === "ERR_STREAM_DESTROYED";
 }
 
 /**
