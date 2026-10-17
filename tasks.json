@@ -8733,7 +8733,7 @@
       "number": 362,
       "kind": "bug",
       "title": "Module との接続が切れると、続けられる仕事（Shell の待たないコマンド等）の札をすぐ「途中で終わりました」にしてしまい、終わった結果が届かない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8750,7 +8750,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-17T00:26:41.410Z",
-      "updatedAt": "2026-10-17T01:00:47.132Z",
+      "updatedAt": "2026-10-17T01:09:17.111Z",
       "closedAt": null,
       "extra": {}
     },
