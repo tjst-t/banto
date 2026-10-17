@@ -136,6 +136,17 @@ test("参照で Project の置き場へ引き込めない——参照を作る�
   });
 });
 
+test("共通・Project の鍵を、実行場所の鍵の置き場へ参照で置けない（core に実行場所の鍵として見せない）", async () => {
+  await withKit(async (c) => {
+    await assert.rejects(() => call(c, "linkAlias", { name: "shared-key", toGroup: RUNTIME_KEYS_GROUP }, ADMIN), /参照は置けません/);
+    await assert.rejects(
+      () => call(c, "linkAlias", { name: "p1-key", group: "g1", toGroup: RUNTIME_KEYS_GROUP, toName: "p1-link" }, ADMIN),
+      /参照は置けません/,
+    );
+    assert.deepEqual(await names(c, HOST), ["rt-key"]);
+  });
+});
+
 test("Module・AI は実行場所の鍵の置き場に置けない（置けるのは人の管理画面から）", async () => {
   await withKit(async (c) => {
     await assert.rejects(
