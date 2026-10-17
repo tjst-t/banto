@@ -9066,7 +9066,7 @@
       "number": 376,
       "kind": "bug",
       "title": "Browser：起こしたブラウザの最初のタブが about:blank のまま——検索エンジンのトップで開く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9080,7 +9080,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T09:16:47.248Z",
-      "updatedAt": "2026-10-17T09:16:47.248Z",
+      "updatedAt": "2026-10-17T09:16:54.711Z",
       "closedAt": null,
       "extra": {}
     }
