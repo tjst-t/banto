@@ -8742,7 +8742,7 @@
         "remote",
         "未決"
       ],
-      "body": "2026-10-17 00:0x UTC（Banto開発、実行場所 banto-dev-vm）に実測。runInBackground で流したコマンド（npm ci・build・npm test・E2E）は systemd-run で Shell から切り離されて最後まで走りログも残ったが、途中で host→VM の SSH の接続が切れ、cli.ts の client.onclose（約1906行）が awaiting の札を全部 deliverLostReply「Module が止まったため」で即座に閉じた。Shell の Module は 00:07:27 に起き直したが、札はもう閉じていて結果は届け直されなかった（会話には「もう届きません。頼み直してください」）。\n\n切れた原因（host の banto-host.log と VM の journal で確かめた）：00:05 ごろから約2分、host から別のサーバ2台（banto-dev-vm＝10.10.254.38 と kaggle-dev-vm＝kaggle.tjstkm.net）へ同時に届かなくなった。00:05:20〜22 に全 Module が ping 2回に答えず「止まりました」、00:05:44／57 に SSH が ServerAlive で閉じ（Timeout, server not responding）、00:06:06 まで connect timed out、00:07:24 に繋がり直した。VM はメモリ・負荷とも余裕あり（OOM なし）。banto の不具合ではなく host 側の経路（Tailscale 等）の途切れ。繋がり直しが遅れたのは #364（試し直しの間が何段も倍になる）。\n\n直し方の案：resumesAfterRestart を名乗る Module（Shell・Subagent・Factory）の札は、接続が閉じても即 lost にせず、起き直したら banto の起こし直しと同じ「続けるか」の問い（v4-architecture.md §2.5「起こし直しをまたいで続ける」、#324 の繋がるまで待つ・終わっていたら届け直す）に乗せる。名乗らない Module は今どおり lost。あわせて、短い途切れの間は道具の一覧から消さずに呼び出しを繋がるまで待たせるかも検討（#339 の「短い途切れは黙って繋ぎ直す」と揃える）。",
+      "body": "2026-10-17 00:0x UTC（Banto開発、実行場所 banto-dev-vm）に実測。runInBackground で流したコマンド（npm ci・build・npm test・E2E）は systemd-run で Shell から切り離されて最後まで走りログも残ったが、途中で host→VM の SSH の接続が切れ、cli.ts の client.onclose（約1906行）が awaiting の札を全部 deliverLostReply「Module が止まったため」で即座に閉じた。Shell の Module は 00:07:27 に起き直したが、札はもう閉じていて結果は届け直されなかった（会話には「もう届きません。頼み直してください」）。\n\n切れた原因（host の banto-host.log と VM の journal で確かめた）：00:05 ごろから約2分、host から別のサーバ2台（banto-dev-vm＝10.10.254.38 と kaggle-dev-vm＝kaggle.tjstkm.net）へ同時に届かなくなった。00:05:20〜22 に全 Module が ping 2回に答えず「止まりました」、00:05:44／57 に SSH が ServerAlive で閉じ（Timeout, server not responding）、00:06:06 まで connect timed out、00:07:24 に繋がり直した。VM はメモリ・負荷とも余裕あり（OOM なし）。banto の不具合ではなく host 側の経路（Tailscale 等）の途切れ。繋がり直しが遅れたのは #370（試し直しの間が何段も倍になる）。\n\n直し方の案：resumesAfterRestart を名乗る Module（Shell・Subagent・Factory）の札は、接続が閉じても即 lost にせず、起き直したら banto の起こし直しと同じ「続けるか」の問い（v4-architecture.md §2.5「起こし直しをまたいで続ける」、#324 の繋がるまで待つ・終わっていたら届け直す）に乗せる。名乗らない Module は今どおり lost。あわせて、短い途切れの間は道具の一覧から消さずに呼び出しを繋がるまで待たせるかも検討（#339 の「短い途切れは黙って繋ぎ直す」と揃える）。",
       "doneWhen": "",
       "resolution": null,
       "refs": [
@@ -8751,7 +8751,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-17T00:26:41.410Z",
-      "updatedAt": "2026-10-17T00:45:19.684Z",
+      "updatedAt": "2026-10-17T00:45:33.213Z",
       "closedAt": null,
       "extra": {}
     },
