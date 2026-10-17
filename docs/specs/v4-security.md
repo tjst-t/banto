@@ -756,9 +756,16 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      VM のユーザーとして入れ、全コンテナに届く
   2. **同じ VM の同じユーザーに、`machine` と `containers` を並べて登録できない**（host 鍵＋ユーザーが同じなら断る）——`machine`
      の Project の AI は VM のユーザーそのもの
-  3. **コンテナに見せたフォルダへの書き込みは、`incus exec <c> --user <uid>` で中から行う。VM のユーザーが直接触るのは、
-     コンテナに見せていない場所だけ**——Shell のホームの写し・Module の置き場の用意・移すときの tar・rsync・ソケットの片づけ。
-     中の AI が symlink を仕込んでも、辿るのはコンテナの中の権限だけ。tar は標準入力で `incus exec … tar -x` に流す
+  3. **コンテナに見せたフォルダについて、書くもの・中身を解釈するもの（git・rsync の受け手・node・シェルの台本）は全部
+     `incus exec <c> --user <uid>` で中から行う。VM のユーザーが見せたフォルダに対してしてよいのは、symlink を辿らずに読むこと
+     だけ（`tar -c`・`du`・`find`）**——Shell のホームの写し・Module の置き場の用意・移すときの tar の展開・`git worktree repair`・
+     ソケットの片づけ。rsync は受け手を `--rsync-path` で `incus exec … rsync` にする。中の AI が symlink や `.git/config`
+     （`core.fsmonitor`・`core.hooksPath`）を仕込んでも、辿る・動くのはコンテナの中の権限だけ（Fable の A2）
+  4. **proxy device は root で繋がない、繋ぐ先は VM だけの場所**（Fable の A1）：すべての proxy device に
+     `security.uid=<U> security.gid=<G>` を付ける（Incus の中継（forkproxy）は既定で root として繋ぐ）。`connect=unix:` の先は
+     **コンテナに見せていない VM の場所**（`/run/user/<U>/banto/p-<Project>/…`）だけにし、名前は Module から来た文字列から組み立てない
+     ——見せたフォルダの中だと、AI がソケットを `/var/lib/incus/unix.socket`・`docker.sock` 等への symlink に差し替えられる。
+     実装の前に、`security.uid` で権限が落ちること・symlink を差し替えても繋がらないことを実機で測る
 
 **形**：
 
@@ -767,7 +774,10 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   linger（**`containers` では注意でなく断る**——VM の再起動で中の Service と道を戻すため）。Docker・tmux は VM には要らない
   （コンテナの中の話）
 - **SSH の接続は Project ごとに1本**（Fable の F1・F2・S4）：`MaxSessions`（既定 10）は 1 Project の Module 数でほぼ埋まる。
-  接続・ControlPath・逆向きのトンネル（`-R 0:…`）・host の専用の待ち受け（`relay-listener`）を Project ごとに持つ。これで
+  接続・ControlPath・逆向きのトンネル・host の専用の待ち受け（`relay-listener`）を Project ごとに持つ。**トンネルの VM の側は
+  番号ではなく Project ごとの決まったパスの UNIX ソケット**（`-R /run/user/<U>/banto/p-<Project>/t.sock:127.0.0.1:<待ち受け>`、
+  OpenSSH の streamlocal の転送。張る前に古いソケットを消す）——`-R 0:…` だと A の接続が切れている間に同じ番号が B に割り当てられ、
+  残っている A のコンテナから B の待ち受けに届く（Fable の A3）。番号の取り違いが起きず、繋ぎ直しても proxy device を変えない。これで
   「その待ち受けに来たものはその Project」が今と同じく成り立つ（§2「送り元を縛る」はそのまま読める）。`RemoteSshRuntime` の
   実行場所ごとの表（接続・待ち受け・ソケットの置き場・`release()`）を「実行場所＋Project」の層にし、Project を畳む・眠らせる・
   閉じても同じ VM のほかの Project を落とさない。`isRemoteProject` のような2択（core/src の9ファイル・47箇所）を3つ目の種類と
@@ -777,6 +787,13 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   （`user.banto.owner`）・アドレスは覚えず毎回 Incus に聞く（`containerAddress`）も同じ。直すところ：`hostAddress` は VM の
   インターフェースを読む（host のを読まない、F4）・`ensureNode` は VM のコードの置き場の `bin/node` を使う・uid は VM の
   ユーザーの uid（`userInfo()` でない）で、中のユーザーとの対応（`raw.idmap uid U 1000`）を準備で揃える（F3）
+- **置き場（pool）**（Fable の B1）：`ProjectContainers` は `--storage banto` を決め打ちしている。VM では準備の sudo で
+  `incus storage create banto <btrfs>`（この機械の install.sh と同じ選び方——`/` が btrfs ならその中、でなければ大きさを決めた
+  ファイル）を作り、区画に使わせる。**subuid・subgid を書き換えたら Incus の起こし直しが要るか、動いているコンテナが残るかを測る**
+  （B2）。`raw.idmap` は `uid U 1000` と `gid G 1000` の両方
+- **VM は banto 専用**（Fable の A5）：`containers` の VM にはほかのユーザー・サービスを置かない（中の root は U の持ち物に setuid を
+  付けられ、ほかの誰かが動かすと U＝sudo できるユーザーになる）。Project のフォルダの置き場を `nosuid` でマウントできるかは任意で測る。
+  sudo は NOPASSWD を全部に与えず、準備の台本だけを sudoers で許す形を勧める（前提の確かめで見る、任意）
 - **土台のイメージ**：VM の上で作る（イメージの配布元から取り apt を流す——VM が外へ出られる前提、最初の1回は数分かかるので
   コードの送り込みと同じく進み具合を出す）。VM ごとに1つ、同じ VM の Project で共有
 - **置き場と見せ方**（disk device は home の下だけ）：
@@ -789,17 +806,24 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   単位はコンテナの中のユーザーの systemd、`stopUnit` も中で。中では sudo できる（この機械のコンテナと同じ）
 - **道**（どれも proxy device。転送役は作らない）：
   - 中から banto へ：中継の専用の待ち受け・Claude のログインの中継を、`bind=instance` でコンテナの中の `127.0.0.1:<決めたポート>` に
-    出し、その Project の逆向きのトンネルへ。Module の住所はそれを指す
-  - UNIX ソケット（ssh-agent・流れの口）：`bind=instance` で中の短いパス（`/run/banto/…`）に出し、VM の Project ごとの
-    ソケットへ。ssh-agent は窓口ができたときに足し、閉じたら外す（今の `-R` の張り外しと同じ時）
-  - 公開：Publish のたびに VM の空いているポートを選んで `bind=host` の device を足す。取り消し・Service を消す・移す・閉じる・
-    眠らせるで外す（眠りから起きたら公開中のものを足し直す）。同じ VM の Project が同じ Service のポートで待ち受けてもぶつからない。
-    `exposedOnLan` は今の「別のサーバ」と同じく出す（proxy device は送り元を縛れない）
+    出し、`connect=unix:` でその Project のトンネルのソケット（上）へ。Module の住所はそれを指す
+  - ssh-agent（中から VM へ）：`bind=instance` で中の短いパス（`/run/banto/…`）に出し、VM だけの場所の Project ごとのソケットへ。
+    窓口ができたときに足し、閉じたら外す（今の `-R` の張り外しと同じ時）
+  - 流れの口（**向きが逆**——Module が中で待ち受け、host が繋ぐ。Fable の B3）：`bind=host listen=unix:<VM だけの場所> connect=unix:<中のパス>`。
+    `connect` は中で辿られるので、仕込まれても中の権限でしか繋がらない
+  - 公開：Publish のたびに VM のポートを選んで `bind=host` の device を足す。選ぶときは止まっているものも含め全コンテナの device に
+    書かれたポートを避ける。**取り消し・Service を消す・移す・閉じるときだけ外し、眠らせても外さない**（止まったコンテナの device は
+    待ち受けない。外すと眠っている間にほかの Project に番号を取られる、Fable の B4）。同じ VM の Project が同じ Service のポートで
+    待ち受けてもぶつからない。`exposedOnLan` は今の「別のサーバ」と同じく出す（proxy device は送り元を縛れない。準備の sudo で
+    nftables を足し banto の host からだけに絞るのは任意、後で）
 - **コンテナどうしのネットワーク**（Fable の S5）：同じブリッジのコンテナどうしは直に届く。NIC に `security.port_isolation=true` を
   付けられるか測り、付けられれば付ける。付けられなければ「縛らないもの」に書く（この機械のコンテナも同じ）
-- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：準備で区画の `restricted.devices.unix-char`（`/dev/kvm`）と特権の
-  扱いを開けるかは、Project の設定で選んだときだけ（既定は開けない）。開けた VM の Project は、ほかの Project から見て
+- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：区画の `restricted.devices.unix-char`（`/dev/kvm`）と特権の扱いを
+  開けるのは**人の画面からだけ**（admin の刻印、AI の tool からは変えられない。Fable の A4）。core が sudo を流すのは「登録のとき」と
+  「人がこれを押したとき」の2つだけ。区画はその VM の全 Project で共有する。開けた VM の Project は、ほかの Project から見て
   root 相当になりうるので、その VM に置くかを人が決める。物理サーバを組むときに測って決める（未決）
+- **畳んだとき**：接続を閉じても、コンテナと中の Service は動いたまま（この機械と同じ）。中継の口はトンネルのソケットが無いので
+  「繋がらない」で返るだけ。準備は登録のときと、繋ぐたびに「何もしないことを確かめる」（Incus の更新・人の手の変更を拾う）
 - **他の仕組みとの関係**：移す（`runtimeUnavailableReason` の「1つに1つ」は `containers` では外す・動いているものはコンテナの中で
   数える・元のコンテナは止めて残す——この機械と同じ）・閉じたら空く（`containers` は数えない）・眠らせる（コンテナを止める・
   起こすだけ、`suspendAllServices` の分かれ道は外す）・資源の画面（コンテナの cgroup `lxc.payload.user-<uid>_<名前>` を読む、
