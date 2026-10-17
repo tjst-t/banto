@@ -9229,7 +9229,7 @@
       "number": 383,
       "kind": "task",
       "title": "別のサーバに繋がらない Project は、サイドバーの頭文字の左上に「!」の印を出す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9244,7 +9244,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T23:41:27.887Z",
-      "updatedAt": "2026-10-17T23:41:27.887Z",
+      "updatedAt": "2026-10-17T23:41:36.106Z",
       "closedAt": null,
       "extra": {}
     }
