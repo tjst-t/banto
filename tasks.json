@@ -8330,7 +8330,7 @@
       "number": 344,
       "kind": "story",
       "title": "自動化の段2——出来事をきっかけにする（Module の出来事・判断役）",
-      "status": "ready",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8340,7 +8340,7 @@
       ],
       "body": "Module や banto 自身で起きたことをきっかけに自動化を動かす（ユーザー決定・2026-10-16、Fork「定期実行（Cron）の検討」、Fable のレビュー1回を反映）。Webhook と同じ「受け取る→まとめる→届ける」道に乗せる。最初は同梱の Project ごとの Module だけ。あわせて banto.turn-decisions と判断役（AI の「決めること」を AI が決め、分からなければ人に回す）。スリープしても待たれている Module は止めない（スリープの Fork に伝えた）。",
       "doneWhen": "Service が落ちたら自動化が専用の Fork で動き、輪にならない。決めることのあるターンが終わると判断役が答え（または人に任せ）、元の会話が判断役の答えで続く・受信箱のカードが決まりどおり替わる。本物のモデルで確かめた。",
-      "resolution": null,
+      "resolution": "2026-10-17、段2のタスク #345〜#350・#377 をすべて終え、release に入れた（段2本体 aca259fd、#377 c074e6b7）。本物のモデルで判断役（おすすめを選ぶ・人に任せる）と Service が落ちたときの出来事を確かめた（#350）。マニュアルに「自動化」のページを足した。このストーリーの外の残り：段3（外の出来事）、banto 自身の出来事の残り・外から繋いだ Module の出来事（器が固まってから開く）、AI から自動化を消す道具は無い。確かめていないこと：受信箱の判断役のカード（画面）を本物で、同じ Service が続けて落ちたときの回数の歯止め（E2E のみ）。",
       "refs": [
         "docs/specs/v4-architecture.md §4.3「段2」「banto.turn-decisions と判断役」",
         "docs/specs/v4-frontend.md §6.42",
@@ -8348,8 +8348,8 @@
       ],
       "threads": [],
       "createdAt": "2026-10-16T12:36:11.907Z",
-      "updatedAt": "2026-10-16T12:36:11.907Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-17T10:14:52.841Z",
+      "closedAt": "2026-10-17T10:14:52.841Z",
       "extra": {}
     },
     {
