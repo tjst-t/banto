@@ -556,7 +556,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   Project にも紐付けられず、参照でも指せず、Project・banto 全体の Module・AI からは名前も見えない（v4-modules.md の
   「グループが唯一の真実」）。**以前は共通の置き場の鍵を使っていた**——共通の置き場はどの Project からも使えるので、どの
   Project の AI でも Vault に頼めば（Shell の `sshIdentity` 等）その鍵の ssh-agent を開かせ、別の Project の実行場所に SSH の
-  ユーザーとして入れた。登録の画面にはこの置き場の鍵だけが出て、ほかの鍵は前提の確かめで理由つきで断る。
+  ユーザーとして入れた。登録の画面にはこの置き場の鍵だけが出て、ほかの鍵は前提の確かめで理由つきで断る。**読めなかった Vault は隠さない**——一覧にも
+  （そこの鍵は出ていないと）、見つからないときの理由にも（「移してください」ではなく「読めなかった Vault があります」）出す。
   **既にある登録の移し方**は `docs/runbooks/runtime-ssh-key-move.md`（鍵を Vault の管理画面で `banto-runtime` へ移す。
   移すまでその実行場所には繋がない）。同じ鍵を Project の AI にも使わせたい（向こうで git push する等）なら、別の名前で
   **その実行場所を使う Project の置き場**に預ける（共通の置き場に置くと、ほかの Project の AI もその実行場所に入れる——

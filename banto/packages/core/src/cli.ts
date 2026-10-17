@@ -1359,7 +1359,15 @@ async function main(): Promise<void> {
     socketDir?: string,
   ): Promise<string> {
     const caller = { host: true as const };
-    const found = (await runtimeKeysThroughVault()).filter((k) => k.name === alias);
+    const { keys, failures } = await runtimeKeysThroughVault();
+    const found = keys.filter((k) => k.name === alias);
+    if (found.length === 0 && failures.length > 0) {
+      // **読めなかった Vault があるなら、そちらにあるかもしれない**——「移してください」と言わない（規則2。嘘の指示で鍵を動かさせない）
+      throw new Error(
+        `"${alias}" は読めた Vault の実行場所の SSH 鍵の置き場（グループ "${RUNTIME_KEYS_GROUP}"）にはありませんでしたが、` +
+          `読めなかった Vault があります：${failures.join("、")}。その Vault が読めるようになってから確かめ直してください`,
+      );
+    }
     if (found.length === 0) {
       throw new Error(
         `"${alias}" は Vault の実行場所の SSH 鍵の置き場（グループ "${RUNTIME_KEYS_GROUP}"）にありません。` +
@@ -1401,7 +1409,11 @@ async function main(): Promise<void> {
    * **実行場所の鍵の置き場にある ssh-identity**（どの Vault の、どのグループか）。core の印で各 Vault に直に聞く——Vault は
    * この印にはその置き場のものだけを返す（Project・banto 全体から使える鍵は混ざらない）。**読めなかった Vault は隠さない**
    */
-  async function runtimeKeysThroughVault(): Promise<Array<{ implementation: string; name: string; group: string }>> {
+  async function runtimeKeysThroughVault(): Promise<{
+    keys: Array<{ implementation: string; name: string; group: string }>;
+    /** 読めなかった Vault（`<実装>（<理由>）`）。鍵が他の Vault から返っても捨てない */
+    failures: string[];
+  }> {
     // **窓口は繋がっている Vault だけを探す**——起き直したばかりで Vault がまだ繋がっていないと、在る鍵が「どの Vault にも
     // ありません」に化ける（移している途中で落ちた Project の片づけが、起き直した 12ms 後に踏んだ。E2E runtime-move、2026-10-11）
     const vaults = (
@@ -1430,13 +1442,16 @@ async function main(): Promise<void> {
         failures.push(`${implementation}（${err instanceof Error ? err.message : String(err)}）`);
       }
     }
-    if (keys.length === 0 && failures.length > 0) throw new Error(`Vault を読めませんでした：${failures.join("、")}`);
-    return keys;
+    return { keys, failures };
   }
 
-  /** 実行場所の登録の画面で選べる SSH 鍵（実行場所の鍵の置き場の ssh-identity の alias の名前） */
-  async function sshIdentitiesThroughVault(): Promise<string[]> {
-    return [...new Set((await runtimeKeysThroughVault()).map((k) => k.name))].sort();
+  /**
+   * 実行場所の登録の画面で選べる SSH 鍵（実行場所の鍵の置き場の ssh-identity の alias の名前）。**読めなかった Vault も返す**
+   * ——一覧が短い理由を画面が出せるように（規則2）
+   */
+  async function sshIdentitiesThroughVault(): Promise<{ identities: string[]; failures: string[] }> {
+    const { keys, failures } = await runtimeKeysThroughVault();
+    return { identities: [...new Set(keys.map((k) => k.name))].sort(), failures };
   }
 
   /**

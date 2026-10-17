@@ -811,8 +811,9 @@ export async function listRealRuntimes(): Promise<RealRemoteRuntime[]> {
 }
 
 /** 実行場所に使える SSH 鍵と、それを置く Vault のグループ（core だけが使える置き場。Project から使える鍵は出ない） */
-export async function listRealSshIdentities(): Promise<{ identities: string[]; group: string }> {
-  return request<{ identities: string[]; group: string }>("/api/runtimes/identities");
+/** `failures` は読めなかった Vault（`<実装>（<理由>）`）——そこにある鍵は一覧に出ていない */
+export async function listRealSshIdentities(): Promise<{ identities: string[]; group: string; failures: string[] }> {
+  return request<{ identities: string[]; group: string; failures: string[] }>("/api/runtimes/identities");
 }
 
 export async function scanRealRuntimeHostKey(input: RealRuntimeInput): Promise<RealHostKey> {
