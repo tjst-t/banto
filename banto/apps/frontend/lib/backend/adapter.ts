@@ -48,11 +48,11 @@ import { HUMAN_TOOL_NAME } from "../mock/adapter";
 export const MESSAGE_ALLOW_REMEMBER = "許可し、以後この Project からは聞かない";
 
 /**
- * **許可にあたる答え**。「許可する」のほかに、AI が自動化を作る・変える・再開するときの確認（アーキ仕様 §4.3、
- * v4-frontend.md §6.42「AI が作るときのカード」）の「作る」「変える」「再開する」（host の `AUTOMATION_*_CHOICES` と同じ言葉）。
+ * **許可にあたる答え**。「許可する」のほかに、AI が自動化を作る・変える・再開する・消すときの確認（アーキ仕様 §4.3、
+ * v4-frontend.md §6.42「AI が作るときのカード」）の「作る」「変える」「再開する」「消す」（host の `AUTOMATION_*_CHOICES` と同じ言葉）。
  * Memory を取り消す・改めるときの確認（アーキ仕様 §2.2）の「変える」も同じ（host の `MEMORY_REVISE_CHOICES`）
  */
-const ALLOW_ANSWERS = new Set(["許可する", "作る", "変える", "再開する"]);
+const ALLOW_ANSWERS = new Set(["許可する", "作る", "変える", "再開する", "消す"]);
 
 /** 判断待ちのカード1枚ぶんのpart。走行中（PartsAccumulator）とリロード後の
  *  復元（restoredJudgmentMessages）で同じものを使う——見た目も答え方も同じ1種類

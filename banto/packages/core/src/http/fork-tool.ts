@@ -50,14 +50,15 @@ export const FORK_TOOL_NAME = "start_forks";
 export const LIST_THREADS_TOOL_NAME = "list_threads";
 export const SEND_MESSAGE_TOOL_NAME = "send_message";
 export const CLOSE_FORK_TOOL_NAME = "close_fork";
-/** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは必ず人に聞く */
+/** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開する・消すは必ず人に聞く */
 export const CREATE_AUTOMATION_TOOL_NAME = "create_automation";
 export const UPDATE_AUTOMATION_TOOL_NAME = "update_automation";
 export const LIST_AUTOMATIONS_TOOL_NAME = "list_automations";
 export const PAUSE_AUTOMATION_TOOL_NAME = "pause_automation";
 export const RESUME_AUTOMATION_TOOL_NAME = "resume_automation";
+export const REMOVE_AUTOMATION_TOOL_NAME = "remove_automation";
 /**
- * 自動化の tool は Runner の承認（canUseTool）を通さない——作る・変える・再開するは tool の中で必ず人に聞くので、
+ * 自動化の tool は Runner の承認（canUseTool）を通さない——作る・変える・再開する・消すは tool の中で必ず人に聞くので、
  * 承認モードで2回聞かない。一覧・一時停止は聞かない（§4.3）
  */
 export const AUTOMATION_TOOL_NAMES = [
@@ -66,6 +67,7 @@ export const AUTOMATION_TOOL_NAMES = [
   LIST_AUTOMATIONS_TOOL_NAME,
   PAUSE_AUTOMATION_TOOL_NAME,
   RESUME_AUTOMATION_TOOL_NAME,
+  REMOVE_AUTOMATION_TOOL_NAME,
 ] as const;
 
 const automationTimeShape = z
@@ -393,6 +395,13 @@ export function createForkMcpServer(
         { id: z.string().describe("自動化の id（list_automations で分かる）") },
         async ({ id }, extra) =>
           automations ? automationReply(await automations.resume(threadId, id, signalOf(extra))) : noAutomations,
+      ),
+      tool(
+        REMOVE_AUTOMATION_TOOL_NAME,
+        "この Project の自動化を消す（台帳と直近の回の記録が消え、もう動かない。専用の Fork とその会話は残る）。**消すときも、消す前に必ず会話のカードで人に聞く**（承認モードに依らない）。人が断ったら消さない。止めるだけなら pause_automation。",
+        { id: z.string().describe("自動化の id（list_automations で分かる）") },
+        async ({ id }, extra) =>
+          automations ? automationReply(await automations.remove(threadId, id, signalOf(extra))) : noAutomations,
       ),
       tool(
         ANSWER_DECISION_TOOL_NAME,

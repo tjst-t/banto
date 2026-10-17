@@ -1,7 +1,7 @@
 // docs/specs/v4-architecture.md §4.3「人と AI の作り方」——**AI が会話の tool から自動化を作る・直す口**の中身。
 // tool の形（名前・引数・説明）は `http/fork-tool.ts`（`banto-thread`）、ここは確かめて台帳に書くところ。
 //
-// - **作る・変える・再開するは、承認モードにも Project の「承認をすべて自動で許可する」にも依らず、会話のカードで必ず
+// - **作る・変える・再開する・消すは、承認モードにも Project の「承認をすべて自動で許可する」にも依らず、会話のカードで必ず
 //   人に聞く**——自動化は人が見ていない時間に繰り返し動く「立ち続ける許し」で、1回きりの操作とは性質が違う。自動化で
 //   起きたターンの中から呼ばれても同じく聞く（v4-frontend.md §6.42「AI が作るときのカード」）
 // - 一覧と一時停止は聞かない（止める方向は危なくない）
@@ -21,6 +21,7 @@ import {
   type AutomationStore,
 } from "./store.js";
 import type { AutomationRunner } from "./runner.js";
+import type { AutomationWebhooks } from "./webhook.js";
 import { askInThread } from "../inbox/ask-in-thread.js";
 import { nextFireOf } from "./schedule.js";
 import { isJudgeAutomation } from "./turn-decisions.js";
@@ -29,6 +30,7 @@ import { isJudgeAutomation } from "./turn-decisions.js";
 export const AUTOMATION_CREATE_CHOICES = ["作る", "作らない"] as const;
 export const AUTOMATION_UPDATE_CHOICES = ["変える", "変えない"] as const;
 export const AUTOMATION_RESUME_CHOICES = ["再開する", "再開しない"] as const;
+export const AUTOMATION_REMOVE_CHOICES = ["消す", "消さない"] as const;
 
 /** tool の結果（AI が読む文）。断ったときは `ok: false` で理由 */
 export interface AutomationToolResult {
@@ -41,6 +43,8 @@ export interface AutomationToolsDeps {
   automations: AutomationStore;
   /** 専用の Fork を用意する（作った・再開した・届け先を変えた）。無ければ立てない（試験の構成） */
   runner?: Pick<AutomationRunner, "prepare">;
+  /** 消した自動化の Webhook の鍵を捨てる（画面の口の `DELETE` と同じ）。無ければ捨てない（Webhook を受けない構成） */
+  webhooks?: Pick<AutomationWebhooks, "forgetSecret">;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
   /**
@@ -225,6 +229,36 @@ export class AutomationTools {
       // 閉じた専用の Fork のまま再開したら、新しい Fork を立てる（runner.ts）
       if (this.deps.runner) resumed = await this.deps.runner.prepare(resumed);
       return { ok: true, text: `人が許したので、自動化「${resumed.name}」を再開した。` };
+    });
+  }
+
+  /**
+   * 消す。**必ず人に聞く**（取り返せない——回の記録・Webhook の URL ごと消える）。消し方は画面の口の `DELETE` と同じ：台帳から
+   * 消して Webhook の鍵を捨てる。**専用の Fork とその会話は残す**（要らなければ人が閉じる）
+   */
+  async remove(threadId: string, automationId: string, signal?: AbortSignal): Promise<AutomationToolResult> {
+    return this.guard(async () => {
+      const current = this.mine(threadId, automationId);
+      const rows = {
+        自動化: current.name,
+        いつ: describeAutomationSource(current.source),
+        どの会話で動かすか: this.describeTarget(current.target),
+        何が起きるか: [
+          "この自動化はもう動きません。直近の回の記録も消えます。",
+          ...(current.source.kind === "webhook" ? ["Webhook の URL は使えなくなります。"] : []),
+          current.target.kind === "dedicated"
+            ? "専用の Fork とその会話は残ります（要らなければ Fork を閉じてください）。"
+            : "届け先の会話はそのまま残ります。",
+        ].join(""),
+      };
+      const answer = await this.ask(threadId, "この自動化を消してよいですか", rows, AUTOMATION_REMOVE_CHOICES, signal);
+      if (!answer.allowed) return { ok: false, text: `人が消さないと答えたので、自動化は消していません。${answer.note}` };
+      await this.deps.automations.remove(automationId);
+      this.deps.webhooks?.forgetSecret(automationId);
+      return {
+        ok: true,
+        text: `人が許したので、自動化「${current.name}」を消した。${current.target.kind === "dedicated" ? "専用の Fork とその会話は残っている。" : ""}`,
+      };
     });
   }
 
