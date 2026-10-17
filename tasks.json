@@ -8778,6 +8778,31 @@
       "updatedAt": "2026-10-17T00:26:46.865Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "1-vm-project-a",
+      "number": 364,
+      "kind": "story",
+      "title": "別のサーバの中のコンテナ——1台の VM に Project を複数置く（案A）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "決定・2026-10-16〜17、ユーザー（案A・P1・core が sudo で準備）。仕様は v4-security.md §1「別のサーバの中のコンテナ——1台に Project を複数置く」（a50d5fda、Fable のレビュー2回）。\n\n別のサーバの実行場所に「動かし方」（machine／containers）を足し、containers では Project ごとに Incus のコンテナを立て、道は proxy device で張る。root の要る準備は core が sudo -n で登録のときだけ行う。\n\n順番：#361（実行場所の鍵を core だけに）→ 実機で測る → SSH の接続を Project ごとにする作り直し → コンテナと道と準備。",
+      "doneWhen": "banto-dev-vm を containers の実行場所として登録し、2つの Project を同じ VM で動かせる（Shell・Service・Publish・Claude の中継・ssh-agent・流れの口がそれぞれ通り、片方の AI がもう片方のフォルダ・中継の口に届かない）",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §1「別のサーバの中のコンテナ——1台に Project を複数置く」（a50d5fda）"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-17T00:43:16.575Z",
+      "updatedAt": "2026-10-17T00:43:16.575Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
