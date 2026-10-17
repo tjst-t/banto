@@ -141,7 +141,9 @@ test("行の「…」・ドラッグ・グループの見出しで眠らせ、�
   const fork = await api<{ id: string }>("POST", `/api/threads/${p1Base}/fork`, { title: "眠る前の Fork", fresh: true });
   expect(fork.status).toBe(201);
   await page.goto(`/p/${p1}?fork=${fork.body.id}`);
-  await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+  // Fork を開くと Base は隠れたまま DOM に残る（panel-stack.tsx）——Base と Fork の中身は一緒に読み込まれ、DOM では Base の
+  // 入力欄が先に来るので、`/に送る/` の1つ目は隠れた Base の入力欄になる。前面の Fork の入力欄を名指しで待つ
+  await expect(page.getByPlaceholder("この Fork Thread に送る")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("眠る前の Fork").first()).toBeVisible({ timeout: 30_000 });
   // P3 の画面へ移る（P1 の画面を開いたままだと、画面が開き直したときに起こす）
   await page.goto(`/p/${p3}`);
@@ -247,7 +249,8 @@ test("行の「…」・ドラッグ・グループの見出しで眠らせ、�
   await expect.poll(() => sleepOf(p1), { timeout: 60_000, message: "押しても起きない" }).toBe("awake");
   await expect.poll(() => containerState(p1), { timeout: 60_000, message: "起きたのにコンテナが起きない" }).toBe("RUNNING");
   await expect(page.getByText("眠る前の Fork").first(), "最後に開いていた Fork が開かない").toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("project-sleep-banner"), "起きたのに帯が残っている").toBeHidden({ timeout: 60_000 });
+  // 帯は Base と Fork の面にそれぞれある（Fork を開いても Base は隠れたまま残る）——起きたらどちらも消える
+  await expect(page.getByTestId("project-sleep-banner"), "起きたのに帯が残っている").toHaveCount(0, { timeout: 60_000 });
   await expectLayout(page, [P3, `# ${GROUP}`, P1, P2], "起きた Project がグループに戻らない");
   // スリープ中が空になれば見出しも消える
   await expect(sleepHeading(page).filter({ hasText: "スリープ中" })).toHaveCount((await api<HostProject[]>("GET", "/api/projects")).body.some((p) => p.sleep) ? 1 : 0);
@@ -256,12 +259,13 @@ test("行の「…」・ドラッグ・グループの見出しで眠らせ、�
   await sleepByMenu(page, P1);
   // Terminal のセッションはコンテナと一緒に止まったので、確かめずに眠る
   await expect.poll(() => sleepOf(p1), { timeout: 60_000, message: "開いている Project が眠らない" }).toBe("human");
-  const banner = page.getByTestId("project-sleep-banner");
+  // 前面の Fork の帯（隠れた Base の面にも同じ帯がある）
+  const banner = page.getByTestId("panel-overlay").getByTestId("project-sleep-banner");
   await expect(banner).toHaveAttribute("data-state", "asleep", { timeout: 30_000 });
   await expect(banner).toContainText("スリープ中です。会話は読めます。送ると起きます");
   await banner.getByRole("button", { name: "起こす" }).click();
   await expect.poll(() => sleepOf(p1), { timeout: 60_000, message: "帯の「起こす」で起きない" }).toBe("awake");
-  await expect(banner).toBeHidden({ timeout: 60_000 });
+  await expect(page.getByTestId("project-sleep-banner"), "起こしたのに帯が残っている").toHaveCount(0, { timeout: 60_000 });
 
   expect(pageErrors, "画面で例外が起きた").toEqual([]);
   // 後始末
