@@ -1841,7 +1841,12 @@ ${ALIAS_KIND_RULES_JS}
     if (group && name) {
       // 紐付いていない版付きの置き場は一覧に無いので、ここでは比べられない——置く先の空きは kit が読んで断る
       const taken = aliases.some((x) => x.implementation === impl && x.group === group && x.name === name);
-      if (taken) {
+      if (group === ${JSON.stringify(RUNTIME_KEYS_GROUP)}) {
+        // **実行場所の鍵の置き場へは参照を置けない**（kit も断る、Backlog #361）——押す前に理由を出す
+        blocked = true;
+        effect = "実行場所（別のサーバ）の SSH 鍵の置き場には参照を置けません。元の鍵を「移す」で移してください" +
+          "（参照だと、元の鍵は Project の AI からも使えるままになります）";
+      } else if (taken) {
         blocked = true;
         effect = group === linkSource.group && name === linkSource.name
           ? "元と同じ置き場です。別のグループか名前を選んでください"

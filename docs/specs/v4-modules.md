@@ -395,8 +395,9 @@ Client Secret には**使用回数の上限**を付けられるので、起動�
 
 - 1つのグループに複数の Project を向けられる——**それが「共有する」という人の意思表示**
 - **`runtime` の置き場は、共通の置き場にも Project の置き場にもできない**（`setSharedGroup`・`setGroupBinding` が断る）。
-  **参照で指せない**（`linkAlias` が断り、参照ごと移す `migrateAlias` も断る。前から在る参照を辿っても、人の管理面と core の
-  ほかには渡さない）。**置けるのは人の管理面からだけ**（Module・AI の `createAlias`・`putSecret`・`generateSecret` は断る）。
+  **参照で指せず、参照を置けもしない**（`linkAlias` は元がこの置き場のときも、置く先がこの置き場のときも断る——置いた参照は
+  core に実行場所の鍵として見え、元の値を渡すので、元は Project の AI から使えるまま。画面の参照を作る小窓もこの置き場では押せない。
+  参照ごと移す `migrateAlias` も断る。前から在る参照を辿っても、人の管理面と core のほかには渡さない）。**置けるのは人の管理面からだけ**（Module・AI の `createAlias`・`putSecret`・`generateSecret` は断る）。
   刻印 `{host: true}` は**この置き場だけ**を使え（`listAliases` もこの置き場だけを返す）、中継は決して刻まない
   （v4-security.md §1「向こうとの道」）
 - `unbound` は**隠さずに人の画面へ出す**（規則2）。使えないものが黙って消えると

@@ -34,7 +34,9 @@ Vault の管理画面（設定 →「Vault」）で、その alias の行を探�
 
 ## 3. 鍵を `banto-runtime` へ移す
 
-Vault の管理画面で、その alias の行の「移す」を押す：
+Vault の管理画面で、その alias の行の **「移す」** を押す。**「参照を作る」は使えない**——`banto-runtime` に参照を置くと、
+元の鍵が共通・Project の置き場に残り、Project の AI からも使えるままになる（穴が塞がらない）ので、参照を作る小窓では
+`banto-runtime` を選ぶと理由が出て押せず、押しても Vault が断る。値ごと置き場を変えるのは「移す」だけ：
 
 1. 移す先の Vault は、いまの Vault のまま
 2. グループ欄で `banto-runtime` を選ぶ。無ければ最後の「＋ 新しいグループを作る…」で `banto-runtime` を作る

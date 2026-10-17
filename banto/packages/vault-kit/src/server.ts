@@ -1515,6 +1515,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         assertHuman("参照を作る", callMeta);
         const name = requiredString(args.name, "name");
         const toGroup = canon(requiredString(args.toGroup, "toGroup"));
+        // **実行場所の鍵の置き場へは参照で置かない**（2026-10-17、Backlog #361。移す口が参照ごとを断るのと対）——置いた参照は
+        // core の印に実行場所の鍵として見え、元（共通・Project）の値を core に渡す。元はそのまま Project の AI からも使える
+        if (isRuntimeGroup(toGroup)) {
+          throw new Error(
+            `グループ "${RUNTIME_KEYS_GROUP}" は実行場所の SSH 鍵の置き場です。参照は置けません——元の鍵を「移す」で移してください` +
+              "（参照だと、元の鍵は Project の AI からも使えるままになります）",
+          );
+        }
         // 名前の規律は createAlias と同じ（同じ検査を通す）
         const toName = args.toName === undefined ? name : requiredString(args.toName, "toName");
         const group = optionalString(args.group, "group");
