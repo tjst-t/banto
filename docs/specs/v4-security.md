@@ -565,7 +565,9 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   ユーザーとして入れた。登録の画面にはこの置き場の鍵だけが出て、ほかの鍵は前提の確かめで理由つきで断る。**読めなかった Vault は隠さない**——一覧にも
   （そこの鍵は出ていないと）、見つからないときの理由にも（「移してください」ではなく「読めなかった Vault があります」）出す。
   **既にある登録の移し方**は `docs/runbooks/runtime-ssh-key-move.md`（鍵を Vault の管理画面で `banto-runtime` へ移す。
-  移すまでその実行場所には繋がない）。
+  移すまでその実行場所には繋がない）。同じ鍵を Project の AI にも使わせたい（向こうで git push する等）なら、別の名前で
+  **その実行場所を使う Project の置き場**に預ける（共通の置き場に置くと、ほかの Project の AI もその実行場所に入れる——
+  直したい穴そのもの）
 - **置き場の外にある鍵は、受信箱に実行場所ごとに1枚**（決定・2026-10-17、Backlog #375、`runtime/runtime-key-place.ts`）。確かめるのは
   banto が起きたとき・登録した・外したとき・繋ごうとして「置き場に無い」で断ったとき・カードが開いている間の1分ごと。core は
   各 Vault の人の管理面の一覧（`listAliases`、値は返らない口）を読み、鍵がどこにあるかを言う。**読める Vault のほかの置き場に
@@ -576,9 +578,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   通れば、その実行場所の Project で繋げなかった Module の試し直しの間を捨てて起こす）。カードが出ている実行場所は「繋がらない」
   お知らせ・Module ごとのお知らせを出さない
 - **登録の画面で `banto-runtime` に鍵を作れる**（Backlog #375）：`POST /api/runtimes/identities` が Vault の窓口の `generateSecret`
-  （`kind: ssh-identity`、置き場 `banto-runtime`）を人の画面の操作として呼び、名前と公開鍵だけを返す。秘密鍵は Vault の外に出ない同じ鍵を Project の AI にも使わせたい（向こうで git push する等）なら、別の名前で
-  **その実行場所を使う Project の置き場**に預ける（共通の置き場に置くと、ほかの Project の AI もその実行場所に入れる——
-  直したい穴そのもの）
+  （`kind: ssh-identity`、置き場 `banto-runtime`）を人の画面の操作として呼び、名前と公開鍵だけを返す。秘密鍵は Vault の外に出ない。
 - **向こうに LAN の待ち受けを開けない**。banto の側の入口（nftables の表 `inet banto`、§1「入れ方」）も今のまま閉じて
   おける——向こうから banto へは SSH の接続の中だけを通る
 
