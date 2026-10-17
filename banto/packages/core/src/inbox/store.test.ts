@@ -167,6 +167,18 @@ test("お知らせはどの会話で起きたか（threadId）を持てる——
   }
 });
 
+test("実行場所の鍵のお知らせは、どの実行場所のどの鍵か（移す元）を持つ（Backlog #375）", async () => {
+  await withStore(async (store) => {
+    const runtimeKey = { runtime: "dev", alias: "dev-key", from: { implementation: "vault-local", group: "instance" }, projectIds: ["p1"] };
+    const n = await store.raiseNotice({ dedupeKey: "runtime-key-place:dev", title: "t", detail: "d", runtimeKey });
+    const got = store.get(n.id);
+    assert.ok(got?.kind === "notice");
+    assert.deepEqual(got.runtimeKey, runtimeKey);
+    assert.equal(await store.acknowledgeNoticesByKey("runtime-key-place:dev"), 1);
+    assert.equal(store.listOpen().length, 0);
+  });
+});
+
 test("同じお知らせがほぼ同時に来ても1件（確かめてから書くまでの間に割り込まれない）", async () => {
   await withStore(async (store) => {
     const input = { projectId: "p1", dedupeKey: "module-connect:filesystem-p1", title: "filesystem を繋げませんでした", detail: "x" };

@@ -343,6 +343,15 @@ export interface AppDeps {
   closeRemoteRuntime?(name: string): Promise<void>;
   /** 実行場所の登録で選べる SSH 鍵（Vault の実行場所の鍵の置き場 `RUNTIME_KEYS_GROUP` の ssh-identity の alias の名前） */
   listSshIdentities?(): Promise<{ identities: string[]; failures: string[] }>;
+  /**
+   * **実行場所の鍵が置き場の外にあるときの受信箱のカード**（追加・2026-10-17、Backlog #375、`runtime/runtime-key-place.ts`）。
+   * 登録・外したあとに確かめ直す。「移す」は移す元を決め直してから Vault の窓口の `migrateAlias` を人の印で呼び、すぐ繋ぎ直す
+   */
+  runtimeKeys?: {
+    check(): Promise<void>;
+    movePlan(runtimeName: string): Promise<{ alias: string; implementation: string; group: string }>;
+    moved(runtimeName: string): Promise<void>;
+  };
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
   containerLimits?: {
     describe(projectId?: string): ContainerLimitsView;
@@ -446,6 +455,29 @@ function beginCanvasCall(
     },
     end: call?.end ?? (() => undefined),
   };
+}
+
+/**
+ * **Vault の窓口（vault-directory）を、人が画面で押した呼び出しとして呼ぶ**（追加・2026-10-17、Backlog #375）。banto 全体の
+ * `ui-tool-call` と同じ道（人の印・台帳に置く）——実行場所の設定と受信箱のカードから、Vault の管理画面と同じ操作を呼ぶ。
+ * 断られたら理由をそのまま人に返す
+ */
+async function callVaultDirectoryAsHuman(deps: AppDeps, tool: string, args: Record<string, unknown>): Promise<string> {
+  const modules = (await deps.resolveInstanceModuleClients?.({ start: "vault-directory" })) ?? [];
+  const found = modules.find((m) => m.name === "vault-directory");
+  if (!found) throw new RemoteRuntimeError(502, "Vault の窓口（vault-directory）が繋がっていません");
+  const call = beginCanvasCall(deps, found.connName, undefined, undefined);
+  try {
+    const result = (await found.client.callTool({ name: tool, arguments: args, _meta: call.meta }, undefined, UI_CALL_OPTIONS)) as {
+      content?: Array<{ text?: string }>;
+      isError?: boolean;
+    };
+    const text = result.content?.[0]?.text ?? "";
+    if (result.isError) throw new RemoteRuntimeError(409, text || `Vault の ${tool} が失敗しました`);
+    return text;
+  } finally {
+    call.end();
+  }
 }
 
 /**
@@ -1876,6 +1908,25 @@ export function createApp(deps: AppDeps) {
             // 読めなかった Vault（`failures`）も返す——一覧が短い理由を隠さない
             return json(res, 200, { ...(await deps.listSshIdentities()), group: RUNTIME_KEYS_GROUP });
           }
+          // **実行場所の鍵の置き場に新しい SSH 鍵を作る**（追加・2026-10-17、Backlog #375）——Vault の中で鍵を作る既存の操作
+          // （窓口の `generateSecret`）を、置き場を `RUNTIME_KEYS_GROUP` に決めて人の印で呼ぶ。返るのは名前と公開鍵だけ
+          if (rest === "/identities" && req.method === "POST") {
+            const body = (await readJsonBody(req)) as { name?: unknown };
+            const name = typeof body.name === "string" ? body.name.trim() : "";
+            if (!name) return json(res, 400, { error: "鍵の名前（name）が要ります" });
+            const made = JSON.parse(
+              await callVaultDirectoryAsHuman(deps, "generateSecret", {
+                name,
+                kind: "ssh-identity",
+                group: RUNTIME_KEYS_GROUP,
+                note: "実行場所（別のサーバ）に繋ぐ鍵",
+              }),
+            ) as { publicKey?: unknown };
+            if (typeof made.publicKey !== "string" || made.publicKey === "") {
+              return json(res, 502, { error: `鍵「${name}」は作れましたが、公開鍵が返ってきませんでした` });
+            }
+            return json(res, 201, { name, group: RUNTIME_KEYS_GROUP, publicKey: made.publicKey });
+          }
           if (rest === "/scan" && req.method === "POST") {
             const input = parseRuntimeInput(await readJsonBody(req));
             return json(res, 200, { hostKey: await runtimes.scan(input) });
@@ -1889,6 +1940,7 @@ export function createApp(deps: AppDeps) {
             const registered = await runtimes.register(parseRuntimeInput(body.runtime), parseHostKey(body.hostKey));
             // 前提を確かめて登録できたら、最初のターンを待たせないよう先にコードを送っておく（Backlog #269）
             deps.warmUpRemoteRuntime?.(registered.name);
+            void deps.runtimeKeys?.check().catch((err: unknown) => console.warn("[host] 実行場所の鍵の置き場を確かめられませんでした:", err));
             return json(res, 201, registered);
           }
           const one = rest.match(/^\/([a-z0-9-]+)(\/[a-z-]+)?$/);
@@ -1897,9 +1949,39 @@ export function createApp(deps: AppDeps) {
             if (!action && req.method === "DELETE") {
               await runtimes.remove(name);
               await deps.closeRemoteRuntime?.(name);
+              // 外した実行場所の鍵のカードを閉じる
+              void deps.runtimeKeys?.check().catch((err: unknown) => console.warn("[host] 実行場所の鍵の置き場を確かめられませんでした:", err));
               return json(res, 200, { ok: true });
             }
-            if (action === "/recheck" && req.method === "POST") return json(res, 200, await runtimes.recheck(name));
+            // **受信箱のカードの「移す」**（追加・2026-10-17、Backlog #375）。Vault の管理画面の「移す」と同じ操作（窓口の
+            // `migrateAlias`、人の印。step-up は求めない——管理画面の「移す」も求めない）。移したら確かめ直してカードを閉じ、
+            // すぐ繋ぎ直す。移せたのに繋げなかったら、移したことと繋げなかった理由を両方返す（取り消さない）
+            if (action === "/move-key" && req.method === "POST") {
+              if (!deps.runtimeKeys) return json(res, 501, { error: "この banto は実行場所の鍵を移せません" });
+              const plan = await deps.runtimeKeys.movePlan(name);
+              await callVaultDirectoryAsHuman(deps, "migrateAlias", {
+                name: plan.alias,
+                implementation: plan.implementation,
+                group: plan.group,
+                toGroup: RUNTIME_KEYS_GROUP,
+              });
+              try {
+                await deps.runtimeKeys.moved(name);
+              } catch (err) {
+                return json(res, 200, {
+                  moved: true,
+                  runtime: runtimes.get(name),
+                  reconnectError: err instanceof Error ? err.message : String(err),
+                });
+              }
+              return json(res, 200, { moved: true, runtime: runtimes.get(name) });
+            }
+            if (action === "/recheck" && req.method === "POST") {
+              const view = await runtimes.recheck(name);
+              // 繋がった——鍵は置き場にある。鍵のカードが開いていれば閉じる（人が Vault で手で直したあとの確かめ直し、Backlog #375）
+              void deps.runtimeKeys?.check().catch((err: unknown) => console.warn("[host] 実行場所の鍵の置き場を確かめられませんでした:", err));
+              return json(res, 200, view);
+            }
             if (action === "/accept-host-key" && req.method === "POST") {
               const body = (await readJsonBody(req)) as { fingerprint?: unknown };
               if (typeof body.fingerprint !== "string") return json(res, 400, { error: "確かめた指紋（fingerprint）が要ります" });

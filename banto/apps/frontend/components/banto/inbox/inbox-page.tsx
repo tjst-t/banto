@@ -50,6 +50,7 @@ import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
 import { answerRealJudgment } from "@/lib/backend/adapter";
 import {
   acknowledgeRealNotice,
+  moveRealRuntimeKey,
   resumeRealNoticeTurn,
   sendRealThreadMessage,
   type RealInboxJudgment,
@@ -1025,6 +1026,7 @@ function NoticeBody({ item, onSeen }: { item: RealInboxNotice; onSeen: () => Pro
         {item.title}
       </p>
       <p className="mt-1 text-sm text-ink-2">{item.detail}</p>
+      {item.runtimeKey ? <RuntimeKeyNotice runtimeKey={item.runtimeKey} /> : null}
       {resumeError ? (
         <p data-testid="inbox-notice-resume-error" className="mt-1 text-xs text-stop">
           続けられませんでした：{resumeError}
@@ -1074,6 +1076,82 @@ function NoticeBody({ item, onSeen }: { item: RealInboxNotice; onSeen: () => Pro
     </div>
   );
 }
+
+/**
+ * **実行場所の SSH 鍵が置き場の外にある**（追加・2026-10-17、Backlog 375 番）。移せるなら注意と「移す」（Vault の管理画面の
+ * 「移す」と同じ操作）。移すと host がカードを閉じてすぐ繋ぎ直す——閉じたことは受信箱の取り直しで見える。移せないなら
+ * 理由（本文）と入口だけ
+ */
+function RuntimeKeyNotice({ runtimeKey }: { runtimeKey: NonNullable<RealInboxNotice["runtimeKey"]> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** 移せたが繋ぎ直せなかった理由（移したことは取り消さない） */
+  const [reconnectError, setReconnectError] = useState<string | null>(null);
+  const projectId = runtimeKey.projectIds[0];
+  return (
+    <div className="mt-2 flex flex-col gap-2 text-xs" data-testid="inbox-runtime-key" data-runtime={runtimeKey.runtime}>
+      {runtimeKey.from ? (
+        <>
+          <p className="rounded-md bg-warn-soft px-3 py-2 text-ink-2" data-testid="inbox-runtime-key-caution">
+            移すと、この鍵は Project の AI から使えなくなります（今そのグループ「{runtimeKey.from.group}」の鍵として使っているもの——例えば
+            Backlog の push の鍵——も使えなくなります）。Project の AI にも使わせたいなら、移す前に同じ値を別の名前でその Project の置き場に預け直してください。
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 text-xs"
+              disabled={busy}
+              data-testid="inbox-runtime-key-move"
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                void moveRealRuntimeKey(runtimeKey.runtime)
+                  .then((r) => setReconnectError(r.reconnectError ?? null))
+                  .catch((err: unknown) => setError(errorText(err)))
+                  .finally(() => {
+                    setBusy(false);
+                    void refreshRealInbox();
+                  });
+              }}
+            >
+              {busy ? "移しています…" : `「${runtimeKey.alias}」を実行場所の鍵の置き場へ移す`}
+            </Button>
+          </div>
+        </>
+      ) : null}
+      {error ? (
+        <p className="text-stop" data-testid="inbox-runtime-key-error">
+          移せませんでした：{error}
+        </p>
+      ) : null}
+      {reconnectError ? (
+        <p className="text-stop" data-testid="inbox-runtime-key-reconnect-error">
+          移しましたが、繋ぎ直せませんでした：{reconnectError}
+        </p>
+      ) : null}
+      <p className="flex flex-wrap gap-x-3 gap-y-1 text-ink-3">
+        {projectId ? (
+          <Link
+            href={`/p/${projectId}?${new URLSearchParams({ canvas: VAULT_MANAGE_CANVAS }).toString()}`}
+            className="underline underline-offset-2 hover:text-foreground"
+            data-testid="inbox-runtime-key-vault"
+          >
+            Vault の管理画面を開く
+          </Link>
+        ) : (
+          <span data-testid="inbox-runtime-key-vault">Vault の管理画面はコマンドパレットの「Vault を管理」から開けます</span>
+        )}
+        <Link href="/settings?section=runtimes" className="underline underline-offset-2 hover:text-foreground" data-testid="inbox-runtime-key-settings">
+          実行場所の設定を開く
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+/** Vault の管理画面（vault-directory の入口の画面。`packages/modules/vault-directory/src/manage-app.ts` の `MANAGE_APP_URI`） */
+const VAULT_MANAGE_CANVAS = "vault-directory:ui://banto-vault-directory/manage";
 
 // ── 送った・答えたあと ─────────────────────────────────────────────
 

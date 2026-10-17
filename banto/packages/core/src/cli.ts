@@ -89,6 +89,7 @@ import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
 import { ConnectBackoff } from "./modules/connect-backoff.js";
 import { RemoteOutageWatch } from "./modules/remote-outage.js";
+import { RuntimeKeyPlaceWatch, type RuntimeKeyCard, type VaultSshKeyListing } from "./runtime/runtime-key-place.js";
 import { LIVENESS, LivenessMonitor } from "./modules/liveness.js";
 import { HostStallMeter } from "./host-stall.js";
 import { StallProfiler } from "./stall-profiler.js";
@@ -410,12 +411,52 @@ async function main(): Promise<void> {
         .map((p) => ({ id: p.id, name: p.name })),
   });
   /**
+   * **実行場所の SSH 鍵が置き場の外にあれば、受信箱に実行場所ごとに1枚**（決定・2026-10-17、Backlog #375、
+   * `runtime/runtime-key-place.ts`）。出ている間は、その実行場所の「繋がらない」お知らせ・Module ごとのお知らせを出さない
+   */
+  const runtimeKeyCardKey = (runtimeName: string) => `runtime-key-place:${runtimeName}`;
+  const openRuntimeKeyNotices = () =>
+    inbox.listOpen().flatMap((i) => (i.kind === "notice" && i.runtimeKey && i.dedupeKey === runtimeKeyCardKey(i.runtimeKey.runtime) ? [i] : []));
+  const runtimeKeyPlace = new RuntimeKeyPlaceWatch({
+    runtimes: () => remoteRuntimes.list().map((r) => ({ name: r.name, identity: r.identity })),
+    listKeys: () => sshKeysAcrossVaults(),
+    affected: (runtimeName) => {
+      const projects = projectThread
+        .listProjects()
+        .filter((p) => p.runtime === runtimeIdOf(runtimeName) && p.status !== "closed");
+      // 止まっている Module＝その Project の Module のうち、いま繋がっていないもの
+      const modules = projects
+        .map(
+          (p) =>
+            loadModuleDeclarations(runtimeConfig, p.id).filter(
+              (d) => d.meta.scope === "project" && !connectedModules.has(`${d.name}-${p.id}`),
+            ).length,
+        )
+        .reduce((a, b) => a + b, 0);
+      return { projects: projects.map((p) => ({ id: p.id, name: p.name })), modules };
+    },
+    openCard: (runtimeName): RuntimeKeyCard | undefined => {
+      const n = openRuntimeKeyNotices().find((i) => i.runtimeKey!.runtime === runtimeName);
+      return n ? { ...n.runtimeKey!, title: n.title, detail: n.detail } : undefined;
+    },
+    openCardRuntimes: () => openRuntimeKeyNotices().map((i) => i.runtimeKey!.runtime),
+    raise: async ({ title, detail, ...runtimeKey }) => {
+      await inbox.raiseNotice({ dedupeKey: runtimeKeyCardKey(runtimeKey.runtime), title, detail, runtimeKey });
+      // 「繋がらない」お知らせと重ねない——理由はこちらが言う
+      await inbox.acknowledgeNoticesByKey(remoteOutageKey(runtimeKey.runtime));
+    },
+    close: async (runtimeName) => void (await inbox.acknowledgeNoticesByKey(runtimeKeyCardKey(runtimeName))),
+    reconnect: (runtimeName) => reconnectRuntime(runtimeName),
+  });
+  /**
    * **別のサーバに繋がらないお知らせは、実行場所ごとに1枚**（決定・2026-10-16、v4-architecture.md §2.4 の 3.、
    * `modules/remote-outage.ts`）。3 分続いたら出し、繋がったら閉じる
    */
   const remoteOutageKey = (runtimeName: string) => `remote-unreachable:${runtimeName}`;
   const remoteOutage = new RemoteOutageWatch({
     raise: (n) => {
+      // 鍵が置き場の外にある実行場所は、そちらのカードが理由を言う（重ねない）
+      if (runtimeKeyPlace.blocks(n.runtimeName)) return;
       const names = n.projectIds.map((id) => `「${projectThread.getProject(id)?.name ?? id}」`).join("");
       console.warn(`[host] 別のサーバ「${n.runtimeName}」に 3 分を超えて繋がりません（Module ${n.modules} 個）: ${n.reason}`);
       void inbox
@@ -461,6 +502,7 @@ async function main(): Promise<void> {
       await inbox.raiseNotice(n);
     },
     onConnected: (runtimeName) => {
+      runtimeKeyPlace.connected(runtimeName);
       const outMs = remoteOutage.recordConnected(runtimeName);
       if (outMs !== undefined) console.log(`[host] 別のサーバ「${runtimeName}」に繋がりました（${Math.round(outMs / 1000)} 秒 繋がりませんでした）`);
     },
@@ -1195,8 +1237,12 @@ async function main(): Promise<void> {
         declaration.meta.scope === "project" && forProject && isRemoteUnreachable(err)
           ? remoteNameOf(projectThread.getProject(forProject.id)?.runtime)
           : undefined;
+      // **鍵が置き場の外にある実行場所**も Module ごとには知らせない（Backlog #375）——実行場所ごとのカードが理由を言う
+      const keyBlockedRuntime =
+        declaration.meta.scope === "project" && forProject ? remoteNameOf(projectThread.getProject(forProject.id)?.runtime) : undefined;
+      const keyBlocked = keyBlockedRuntime !== undefined && runtimeKeyPlace.blocks(keyBlockedRuntime);
       const notify = connectBackoff.recordFailure(connName, fingerprint, reason, {
-        quiet: unreachableRuntime !== undefined,
+        quiet: unreachableRuntime !== undefined || keyBlocked,
         attemptStartedAt,
       });
       if (unreachableRuntime) remoteOutage.recordUnreachable(unreachableRuntime, connName, forProject?.id, reason);
@@ -1378,6 +1424,8 @@ async function main(): Promise<void> {
     const caller = { host: true as const };
     const { keys, failures } = await runtimeKeysThroughVault();
     const found = keys.filter((k) => k.name === alias);
+    // **置き場に無いなら、受信箱にカードを出す**（Backlog #375）——同期で印を付けるので、この失敗で Module ごとのお知らせは出ない
+    if (found.length === 0) runtimeKeyPlace.refused(alias);
     if (found.length === 0 && failures.length > 0) {
       // **読めなかった Vault があるなら、そちらにあるかもしれない**——「移してください」と言わない（規則2。嘘の指示で鍵を動かさせない）
       throw new Error(
@@ -1460,6 +1508,56 @@ async function main(): Promise<void> {
       }
     }
     return { keys, failures };
+  }
+
+  /**
+   * **読める Vault にある ssh-identity 全部**（置き場を問わず。Backlog #375 のカードが「どこにあるか」を言うため）。人の管理面の
+   * 一覧（値は返らない口）を各 Vault に直に聞く。**読めなかった Vault は隠さない**
+   */
+  async function sshKeysAcrossVaults(): Promise<VaultSshKeyListing> {
+    const vaults = (
+      await Promise.all(
+        loadModuleDeclarations(runtimeConfig, "")
+          .filter((d) => d.meta.scope === "instance" && d.meta.satisfies.includes("vault"))
+          .map((d) => connectDeclaredModule(d)),
+      )
+    ).filter((c): c is string => c !== undefined);
+    if (vaults.length === 0) throw new Error("Vault が繋がっていません");
+    const listing: VaultSshKeyListing = { keys: [], failures: [] };
+    for (const implementation of vaults) {
+      const client = connectedModules.get(implementation);
+      if (!client) continue;
+      try {
+        const listed = await client.callTool({ name: "listAliases", arguments: {}, _meta: { [CALLER_META_KEY]: { admin: true } } });
+        const text = (listed.content as { text?: string }[])[0]?.text ?? "";
+        if (listed.isError) throw new Error(text || "alias の一覧を読めませんでした");
+        for (const a of JSON.parse(text) as Array<{ name?: unknown; kind?: unknown; group?: unknown; scope?: unknown; linkTo?: unknown }>) {
+          if (a.kind !== "ssh-identity" || typeof a.name !== "string" || typeof a.group !== "string") continue;
+          listing.keys.push({ implementation, name: a.name, group: a.group, runtime: a.scope === "runtime", link: a.linkTo !== undefined });
+        }
+      } catch (err) {
+        listing.failures.push(`${implementation}（${err instanceof Error ? err.message : String(err)}）`);
+      }
+    }
+    return listing;
+  }
+
+  /**
+   * **鍵が置き場に戻った実行場所へ、すぐ繋ぎ直す**（Backlog #375）。確かめ直し（SSH で繋いで前提を確かめる）が通ったら、
+   * その実行場所の Project で繋げなかった Module の試し直しの間を捨てて起こし直す（160 秒を待たない）。閉じた・眠っている・
+   * 移している Project は起こさない（使うときに起きる）
+   */
+  async function reconnectRuntime(runtimeName: string): Promise<void> {
+    await remoteRuntimes.recheck(runtimeName);
+    for (const project of projectThread.listProjects()) {
+      if (project.runtime !== runtimeIdOf(runtimeName) || project.status === "closed" || project.sleep || project.move) continue;
+      for (const declaration of loadModuleDeclarations(runtimeConfig, project.id)) {
+        const connName = `${declaration.name}-${project.id}`;
+        if (declaration.meta.scope !== "project" || connectedModules.has(connName) || !connectBackoff.failure(connName)) continue;
+        connectBackoff.clear(connName);
+        void connectDeclaredModule(declaration, project);
+      }
+    }
   }
 
   /**
@@ -2856,6 +2954,7 @@ async function main(): Promise<void> {
     remoteRuntimes,
     runtimeMove: projectMover,
     listSshIdentities: sshIdentitiesThroughVault,
+    runtimeKeys: runtimeKeyPlace,
     // 別のサーバの Project にはこの機械のコンテナは無い（あれば前の名残——聞かない）
     projectContainerStatus: async (projectId: string) => {
       const project = projectThread.getProject(projectId);
@@ -3060,6 +3159,8 @@ async function main(): Promise<void> {
     setInterval(() => {
       keepAwaitedModulesAwake();
       for (const p of projectThread.listProjects()) if (p.sleep) void tidyAsleep(p.id, false);
+      // 実行場所の鍵のカードが開いている間は確かめ直す（人が Vault の管理画面で手で移したら閉じる——Backlog #375）
+      runtimeKeyPlace.tick();
     }, KEEP_AWAKE_INTERVAL_MS).unref();
     // **しばらく開いていない Project を確かめる時計**（§2.2）。起きたときに1回、そのあと1時間ごと
     projectIdle.start();
@@ -3072,6 +3173,8 @@ async function main(): Promise<void> {
     for (const r of remoteRuntimes.list()) {
       if (projectsOnRuntime(r.name).length > 0) void remoteSsh.queueWarmUp(r.name);
     }
+    // **登録済みの実行場所の鍵が置き場にあるかを確かめる**（Backlog #375）。待ち受けてから——Vault を起こして読む
+    void runtimeKeyPlace.check().catch((err: unknown) => console.warn("[host] 実行場所の鍵の置き場を確かめられませんでした:", err));
     // **続けられると名乗った Module に、続けるかを聞く**（§2.5「2.」）。待ち受けてから——Module は中継で資格情報を
     // 受け取り、札で届ける。答えが出た Thread から切れたターンを片づけ、留めを解く
     void recovery!.afterListen().then(({ answers, turns }) => {

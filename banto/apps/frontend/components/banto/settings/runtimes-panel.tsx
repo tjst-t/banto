@@ -38,6 +38,7 @@ import { describeFailure } from "@/lib/report-failure";
 import {
   acceptRealRuntimeHostKey,
   checkRealRuntime,
+  createRealRuntimeIdentity,
   listRealRuntimes,
   listRealSshIdentities,
   recheckRealRuntime,
@@ -243,7 +244,7 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
             <dt className="text-ink-3">SSH 鍵</dt>
             <dd className="font-mono text-ink-2" data-testid="runtime-identity">
-              ${r.identity}（Vault）
+              {r.identity}（Vault）
             </dd>
             <dt className="text-ink-3">host 鍵</dt>
             <dd className="font-mono break-all text-ink-2" data-testid="runtime-host-key">
@@ -489,25 +490,38 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
                 : !identities || !keysGroup
                   ? "Vault の SSH 鍵を読んでいます…"
                   : identities.length === 0
-                    ? `Vault のグループ「${keysGroup}」に SSH 鍵がありません。先に Vault でそのグループに SSH 鍵を置いてください（Project から使えるグループの鍵は、どの Project の AI も使えるので選べません）`
+                    ? `Vault のグループ「${keysGroup}」に SSH 鍵がありません。下で作るか、Vault の管理画面でそのグループに SSH 鍵を置いてください（Project から使えるグループの鍵は、どの Project の AI も使えるので選べません）`
                     : `Vault のグループ「${keysGroup}」の鍵を使います（banto だけが使い、Project の AI からは使えません）。秘密鍵はこの機械のディスクにも、向こうにも置きません`) +
               // **読めなかった Vault を隠さない**（規則2）——そこにある鍵は一覧に出ていない
               (identities && unreadVaults.length > 0 ? `（読めなかった Vault があり、そこにある鍵は出ていません：${unreadVaults.join("、")}）` : "")
             }
           >
-            <Select value={identity} onValueChange={setIdentity} disabled={!identities || identities.length === 0}>
+            {/* 空の値では選び直さない——作った鍵を足したのと同じ描画で選ぶと、Select の隠れた <select> にまだその選択肢が無く、
+                "" で選び直しが来て選んだ鍵が外れる（Backlog 375 番の E2E で踏んだ） */}
+            <Select value={identity} onValueChange={(v) => v && setIdentity(v)} disabled={!identities || identities.length === 0}>
               <SelectTrigger id="rt-key" className="h-8 w-full" data-testid="runtime-identity-select">
                 <SelectValue placeholder={identities ? "SSH 鍵がありません" : "読み込み中…"} />
               </SelectTrigger>
               <SelectContent>
                 {(identities ?? []).map((k) => (
                   <SelectItem key={k} value={k}>
-                    <span className="font-mono">${k}</span>（Vault）
+                    <span className="font-mono">{k}</span>（Vault）
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </Field>
+          {identities && keysGroup ? (
+            <NewRuntimeIdentity
+              group={keysGroup}
+              hasKeys={identities.length > 0}
+              taken={identities}
+              onCreated={(made) => {
+                setIdentities((cur) => [...new Set([...(cur ?? []), made])].sort());
+                setIdentity(made);
+              }}
+            />
+          ) : null}
           <Field id="rt-root" label="向こうの置き場" hint="banto のコード・Module の状態を置きます。Project のフォルダとは別です">
             <Input id="rt-root" value={dataRoot} onChange={(e) => setDataRoot(e.target.value)} className="font-mono text-xs" />
           </Field>
@@ -614,6 +628,106 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * **実行場所の鍵の置き場に新しい SSH 鍵を作る入口**（追加・2026-10-17、Backlog 375 番）。Vault の中で鍵ペアを作り（秘密鍵は
+ * Vault の外に出ない）、公開鍵を出して「向こうの authorized_keys に足す」を案内する。作った鍵はそのまま選ばれる。
+ * 鍵が無いときは開いた状態で、あるときは「別の鍵を作る」で開く
+ */
+function NewRuntimeIdentity({
+  group,
+  hasKeys,
+  taken,
+  onCreated,
+}: {
+  group: string;
+  hasKeys: boolean;
+  taken: readonly string[];
+  onCreated: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(!hasKeys);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [made, setMade] = useState<{ name: string; publicKey: string } | null>(null);
+  const trimmed = name.trim();
+  const nameTaken = taken.includes(trimmed);
+
+  if (!open && !made) {
+    return (
+      <Button type="button" variant="outline" size="sm" className="h-7 w-fit gap-1 text-xs" onClick={() => setOpen(true)} data-testid="runtime-identity-new-open">
+        <Plus className="size-3.5" />
+        別の鍵を作る
+      </Button>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-2.5 text-xs" data-testid="runtime-identity-new">
+      {made ? (
+        <>
+          <p className="text-foreground" data-testid="runtime-identity-new-done">
+            Vault のグループ「{group}」に SSH 鍵「{made.name}」を作り、選びました。向こうのユーザーの
+            <code className="mx-1 font-mono">~/.ssh/authorized_keys</code>
+            に、この公開鍵を1行で足してください（秘密鍵は Vault の外に出ていません）。
+          </p>
+          <code
+            className="rounded-sm bg-surface-2 px-2 py-1.5 font-mono break-all whitespace-pre-wrap text-ink-2 select-all"
+            data-testid="runtime-identity-new-public-key"
+          >
+            {made.publicKey}
+          </code>
+        </>
+      ) : (
+        <>
+          <p className="text-ink-2">
+            Vault のグループ「{group}」に新しい SSH 鍵を作ります（banto だけが使い、Project の AI からは使えません）。作ったら公開鍵を出します。
+          </p>
+          <div className="flex items-center gap-2">
+            <Input
+              aria-label="新しい SSH 鍵の名前"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="h-8 font-mono text-xs"
+              placeholder="lab-pve-ssh-key"
+              data-testid="runtime-identity-new-name"
+            />
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 shrink-0 text-xs"
+              disabled={!trimmed || nameTaken || busy}
+              data-testid="runtime-identity-new-create"
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                createRealRuntimeIdentity(trimmed)
+                  .then((r) => {
+                    setMade({ name: r.name, publicKey: r.publicKey });
+                    onCreated(r.name);
+                  })
+                  .catch((err: unknown) => setError(describeFailure(err)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {busy ? "作っています…" : "作る"}
+            </Button>
+            {hasKeys ? (
+              <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" disabled={busy} onClick={() => setOpen(false)}>
+                やめる
+              </Button>
+            ) : null}
+          </div>
+          {nameTaken ? <p className="text-stop">この名前の鍵はもうあります</p> : null}
+        </>
+      )}
+      {error ? (
+        <p className="text-stop" data-testid="runtime-identity-new-error">
+          作れませんでした：{error}
+        </p>
+      ) : null}
     </div>
   );
 }

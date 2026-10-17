@@ -141,8 +141,23 @@ export interface NoticeItem {
    * 続けるのをやめたターン。押すと host がそのターンの続きを起こす（`POST /api/inbox/:id/resume`）
    */
   resume?: { threadId: string; turnId: string };
+  /**
+   * **実行場所の SSH 鍵が置き場の外にある**（追加・2026-10-17、Backlog #375、`runtime/runtime-key-place.ts`）。`from` があれば
+   * 人が「移す」を押せる（`POST /api/runtimes/:name/move-key`）。無ければ理由と入口だけ
+   */
+  runtimeKey?: NoticeRuntimeKey;
   acknowledged: boolean;
   createdAt: string;
+}
+
+/** どの実行場所のどの鍵の話か（`NoticeItem.runtimeKey`） */
+export interface NoticeRuntimeKey {
+  runtime: string;
+  alias: string;
+  /** 「移す」で移す元。無ければ「移す」は出さない */
+  from?: { implementation: string; group: string };
+  /** 影響している Project */
+  projectIds: string[];
 }
 
 export type InboxItem = JudgmentItem | ReviewItem | NoticeItem;
