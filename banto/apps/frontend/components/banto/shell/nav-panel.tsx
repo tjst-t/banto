@@ -60,6 +60,7 @@ import { useProjectWaking } from "@/lib/backend/project-waking";
 import { useHostBusy, useProjectBusy } from "@/lib/backend/resources-busy";
 import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
 import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark";
+import { UnreachableProjectMark } from "@/components/banto/shell/unreachable-project-mark";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
 import { automationsCanvasHref, useAutomations } from "@/lib/backend/automations";
@@ -338,6 +339,9 @@ export function ProjectTreeItem({
                 </Link>
               </SidebarMenuButton>
               {waking ? <WakingMark /> : more}
+              {/* 別のサーバに繋がらない印（Backlog #383）。頭文字の左上——右下の裏の仕事の数とぶつからない。
+                  いま開いている Project にも出す。行の Link の外に置く（押せるものを入れ子にしない） */}
+              <UnreachableProjectMark projectId={project.id} className="top-0 left-0.5" onNavigate={onNavigate} />
               {/* バックグラウンドの数（§6.33）。いま開いている Project は下の Thread の行で見えるので出さない */}
               {isCurrent ? null : (
                 <ProjectBackgroundBadge

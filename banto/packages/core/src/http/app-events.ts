@@ -59,6 +59,9 @@ export type AppEvent =
   | { type: "projects.changed" }
   // 混んでいる Project とこの機械（追加・2026-10-09、v4-frontend.md §6.36）。**変わったときだけ**、全体を送る（画面は置き換える）
   | { type: "resources.busy"; busy: ResourcesBusy }
+  // 3 分を超えて繋がらない別のサーバとその Project（追加・2026-10-17、Backlog #383）。**変わったときだけ**、全体を送る
+  // （画面は置き換える）。サイドバーの頭文字の「!」
+  | { type: "runtimes.unreachable"; unreachable: RuntimeUnreachableView[] }
   // Project を別の実行場所へ移す状況（追加・2026-10-12、Backlog #270）。移している途中は `move` を丸ごと（写している間は
   // 1秒に1回まで）、終われば `move` 無し、移せなければ `failed`。会話の面の帯・入力欄・サイドバーの印に使う
   | ({ type: "runtime_move.changed" } & RuntimeMoveChange)
@@ -73,6 +76,18 @@ export interface CodeTransferView {
   startedAt: string;
   /** 送れなかった理由（次に送り始めるまで残る） */
   failed?: string;
+}
+
+/** 3 分を超えて繋がらない別のサーバ1つ（判定は受信箱のお知らせと同じ——`modules/remote-outage.ts`） */
+export interface RuntimeUnreachableView {
+  /** 別のサーバの名前 */
+  runtime: string;
+  /** いちばん新しい失敗の理由 */
+  reason: string;
+  /** 最初に失敗した時刻（ISO） */
+  since: string;
+  /** その実行場所で動く Project */
+  projectIds: string[];
 }
 
 /** 混んでいる Project とこの機械（サイドバーの印） */

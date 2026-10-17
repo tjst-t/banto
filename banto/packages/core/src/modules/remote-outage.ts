@@ -25,6 +25,8 @@ export interface RemoteOutageOptions {
   raise(notice: RemoteOutageNotice): void;
   /** 出したものを閉じる */
   close(runtimeName: string): void;
+  /** 出しているものの理由が変わった（画面の印の言い方を替える。Backlog #383） */
+  changed?(runtimeName: string): void;
   /** 試験で時計を差し替えるための穴。取り消す関数を返す */
   schedule?: (fn: () => void, ms: number) => () => void;
   now?: () => number;
@@ -66,8 +68,10 @@ export class RemoteOutageWatch {
       this.outages.set(runtimeName, outage);
       o = outage;
     }
+    const reasonChanged = o.reason !== reason;
     o.reason = reason;
     o.modules.set(connName, projectId);
+    if (o.raised && reasonChanged) this.opts.changed?.(runtimeName);
   }
 
   /** 繋がった。出していたら閉じる。途切れていた長さを返す（途切れていなければ undefined） */
@@ -81,6 +85,14 @@ export class RemoteOutageWatch {
   /** その実行場所に SSH で繋がらないなら、最後の理由（繋がっている・分からないなら undefined。Backlog #324） */
   unreachableReason(runtimeName: string): string | undefined {
     return this.outages.get(runtimeName)?.reason;
+  }
+
+  /**
+   * **出している（3 分を超えて繋がらない）実行場所**（追加・2026-10-17、Backlog #383）。サイドバーの頭文字の「!」に使う
+   * ——判定はお知らせと同じ1つ（規則3）。鍵のカードがお知らせを肩代わりしていても、ここには載る
+   */
+  raised(): Array<{ runtimeName: string; reason: string; since: number }> {
+    return [...this.outages].filter(([, o]) => o.raised).map(([runtimeName, o]) => ({ runtimeName, reason: o.reason, since: o.since }));
   }
 
   /** 実行場所を外した——覚えていたことを捨て、出していたら閉じる */

@@ -337,6 +337,11 @@ export interface AppDeps {
    * （以後は `code.transfer` で置き換える）
    */
   codeTransfers?(): Array<{ runtime: string; projectIds: string[] } & import("./app-events.js").CodeTransferView>;
+  /**
+   * **3 分を超えて繋がらない別のサーバ**（追加・2026-10-17、Backlog #383）。繋いだ画面に hello で渡す
+   * （以後は `runtimes.unreachable` で置き換える）
+   */
+  unreachableRuntimes?(): import("./app-events.js").RuntimeUnreachableView[];
   /** 実行場所を登録したあと、先に繋いでコードを送っておく（待たない。失敗は最初に使うときに出直す） */
   warmUpRemoteRuntime?(name: string): void;
   /** 実行場所を外したあと、先に送るために張った接続を閉じる */
@@ -2887,8 +2892,10 @@ export function createApp(deps: AppDeps) {
         const moving = deps.runtimeMove?.moving();
         // **別のサーバへコードを送っている途中のもの**（追加・2026-10-12、Backlog #269）——以後は code.transfer で置き換える
         const codeTransfers = deps.codeTransfers?.();
+        // **3 分を超えて繋がらない別のサーバ**（追加・2026-10-17、Backlog #383）——以後は runtimes.unreachable で置き換える
+        const unreachable = deps.unreachableRuntimes?.();
         res.write(
-          `data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}) })}\n\n`,
+          `data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}) })}\n\n`,
         );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);

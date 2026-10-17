@@ -51,6 +51,8 @@ export type RealAppEvent =
       moving?: RealRuntimeMoveView[];
       /** 別のサーバへコードを送っている途中のもの（追加・2026-10-12、Backlog #269）。古い host は付けない */
       codeTransfers?: RealCodeTransfer[];
+      /** 3 分を超えて繋がらない別のサーバ（追加・2026-10-17、Backlog #383）。古い host は付けない */
+      unreachable?: RealRuntimeUnreachable[];
     }
   /**
    * 別のサーバへコードを送っている（追加・2026-10-12、Backlog #269）。送り始め・進むたび・終わったとき（`transfer` 無し）。
@@ -74,6 +76,8 @@ export type RealAppEvent =
       /** 移し終えた（追加・2026-10-14、Backlog #293）。古い host は付けない */
       done?: { from: RealRuntimeMoveSide; to: RealRuntimeMoveSide };
     }
+  /** 3 分を超えて繋がらない別のサーバが変わった（全体を置き換える。Backlog #383） */
+  | { type: "runtimes.unreachable"; unreachable: RealRuntimeUnreachable[] }
   /** 混んでいる Project とこの機械が変わった（全体を置き換える） */
   | { type: "resources.busy"; busy: RealResourcesBusy }
   /** その Thread のバックグラウンドの仕事が増えた・減った（その Thread の分を丸ごと） */
@@ -133,6 +137,18 @@ export interface RealCodeTransfer {
   startedAt: string;
   /** 送れなかった理由（止まった・接続が切れた）。次に送り始めるまで残る */
   failed?: string;
+}
+
+/** 3 分を超えて繋がらない別のサーバ1つ（host の `RuntimeUnreachableView` と同じ形） */
+export interface RealRuntimeUnreachable {
+  /** 別のサーバの名前 */
+  runtime: string;
+  /** いちばん新しい失敗の理由 */
+  reason: string;
+  /** 最初に失敗した時刻（ISO） */
+  since: string;
+  /** その実行場所で動く Project */
+  projectIds: string[];
 }
 
 /** 混んでいる Project とこの機械（host の `ResourcesBusy` と同じ形） */

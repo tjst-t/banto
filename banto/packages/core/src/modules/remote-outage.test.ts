@@ -167,3 +167,23 @@ test("(2)(4) 試し直しの間：実行場所の側に回した失敗は知ら�
   assert.equal(b.recordFailure("browser-p1", "v1", "前提が足りません"), true, "繋がって Module だけ起きない——今どおり1回知らせる");
   assert.equal(b.recordFailure("browser-p1", "v1", "前提が足りません"), false);
 });
+
+test("(Backlog #383) 出している実行場所の一覧——画面の「!」と同じ判定。理由が変われば知らせ、繋がれば外れる", () => {
+  const c = clock();
+  const changed: string[] = [];
+  const w = new RemoteOutageWatch({ raise: () => undefined, close: () => undefined, changed: (n) => changed.push(n), schedule: c.schedule, now: c.now });
+  const since = c.now();
+  w.recordUnreachable("vm", "browser-p1", "p1", "前の理由");
+  w.recordUnreachable("vm", "browser-p1", "p1", TIMEOUT);
+  assert.deepEqual(w.raised(), [], "3 分になるまでは載らない");
+  assert.deepEqual(changed, [], "出す前に理由が変わっても知らせない");
+  c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS);
+  assert.deepEqual(w.raised(), [{ runtimeName: "vm", reason: TIMEOUT, since }]);
+  w.recordUnreachable("vm", "terminal-p1", "p1", TIMEOUT);
+  assert.deepEqual(changed, [], "同じ理由なら知らせない");
+  w.recordUnreachable("vm", "terminal-p1", "p1", "SSH の接続が途中で閉じました");
+  assert.deepEqual(changed, ["vm"]);
+  assert.equal(w.raised()[0]?.reason, "SSH の接続が途中で閉じました");
+  w.recordConnected("vm");
+  assert.deepEqual(w.raised(), []);
+});
