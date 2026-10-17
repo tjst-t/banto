@@ -493,7 +493,10 @@ test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる
       await expect.poll(async () => ((await uiCall(h, "getBrowserStatus")).view as { viewers: number }).viewers, { timeout: 20_000 }).toBe(0);
       f = await openCanvas();
       await expect(f.getByTestId("browser-screen"), "開き直した画面に絵が来ない").toBeVisible({ timeout: 20_000 });
-      await expect(f.getByTestId("fit")).toBeChecked();
+      // 「画面に合わせる」は持っている画面が閉じたら外れる（§4.1「人の画面で決めたこと」）——開き直した画面は外れた状態で始まる。
+      // 入れ直せば、開き直した画面でも合う
+      await expect(f.getByTestId("fit")).not.toBeChecked();
+      await f.getByTestId("fit").check();
       await expectFitted("開き直した");
       await h.getByRole("button", { name: "Canvas を閉じる" }).click();
     } finally {
