@@ -253,6 +253,10 @@ test("受信箱の「決めることがある」カードが判断役の状態�
     body: { name: `${PROJECT_NAME}（見る場所）`, root: mkdtempSync(join(tmpdir(), "banto-e2e-events-ui-elsewhere-")) },
   });
   expect(elsewhere.status, elsewhere.text).toBe(201);
+  // 画面から作るときと同じく Base Thread を持たせる——無いと画面の一覧に入らず、同じ core で後に流れる並べ替えの試験
+  // （sidebar-reorder-rename）が送る並びからこの Project が漏れる（Backlog #371）
+  const elsewhereBase = await call(`/api/projects/${(elsewhere.body as { id: string }).id}/threads`, { method: "POST" });
+  expect(elsewhereBase.status, elsewhereBase.text).toBe(201);
   await page.goto(`/p/${(elsewhere.body as { id: string }).id}`);
   await page.getByRole("button", { name: /^受信箱/ }).first().click();
   const box = page.getByRole("dialog", { name: "受信箱" });
