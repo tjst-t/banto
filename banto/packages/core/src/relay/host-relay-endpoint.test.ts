@@ -2085,3 +2085,69 @@ test("出来事を出せるのは Project ごとの同梱の Module だけ——
     close();
   }
 });
+
+test("エージェントの本体を取ってこさせられるのは、同梱で subagent を名乗る Module だけ——進み具合は呼び元へ流れる。有無は設定も知れる", async () => {
+  const registry = new RelayRegistry();
+  const asked: Array<{ module: string; agent: string }> = [];
+  const { url, close } = await startTestServer(registry, {
+    ensureAgentBinary: async (caller, agent, onProgress) => {
+      asked.push({ module: caller.moduleName, agent });
+      onProgress("OpenCode を取ってきています（1 / 185MB）");
+      await new Promise((r) => setTimeout(r, 50));
+      return { path: `/data/agent-binaries/${agent}/opencode`, version: "1.18.32", cpu: "x64", sizeBytes: 185 };
+    },
+    agentBinaryStatus: (agent) => ({ agent, title: "OpenCode", version: "1.18.32", cpu: "x64", present: false, approxBytes: 185 }),
+  });
+  const meta = (satisfies: string[], bundled = true) => {
+    const raw = { satisfies, dependsOn: [], isolation: "subprocess", scope: "project" };
+    return bundled ? bundledMeta(raw, satisfies[0]!) : parseModuleMeta(raw, satisfies[0]!);
+  };
+  const tokens = {
+    // Project のコンテナの中で動く Subagent（banto 本体で動かなくてよい）
+    subagent: registry.issueToken({ moduleName: "subagent", meta: meta(["subagent"]), inContainer: true, projectId: "pA" }),
+    settings: registry.issueToken({ moduleName: "subagent-settings", meta: meta(["subagent-settings"]) }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: meta(["subagent"], false), inContainer: true, projectId: "pA" }),
+    shell: registry.issueToken({ moduleName: "shell", meta: meta(["shell"]), inContainer: true, projectId: "pA" }),
+    tools: registry.issueToken({ moduleName: "tools", meta: meta(["subagent"]), inContainer: true, toolsContainer: true }),
+  };
+  const call = async (token: string, name: string, args: Record<string, unknown>, progress?: string[]) => {
+    const c = await relayClient(url, token);
+    try {
+      const r = await c.callTool({ name, arguments: args }, undefined, progress ? { onprogress: (p) => void progress.push(p.message ?? "") } : {});
+      if (r.isError) throw new Error(textOf(r));
+      return JSON.parse(textOf(r)) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  try {
+    const progress: string[] = [];
+    assert.deepEqual(await call(tokens.subagent, "relayEnsureAgentBinary", { agent: "opencode" }, progress), {
+      path: "/data/agent-binaries/opencode/opencode",
+      version: "1.18.32",
+      cpu: "x64",
+      sizeBytes: 185,
+    });
+    assert.deepEqual(progress, ["OpenCode を取ってきています（1 / 185MB）"]);
+    await assert.rejects(() => call(tokens.settings, "relayEnsureAgentBinary", { agent: "opencode" }), /subagent 役割/);
+    await assert.rejects(() => call(tokens.thirdParty, "relayEnsureAgentBinary", { agent: "opencode" }), /同梱/);
+    await assert.rejects(() => call(tokens.shell, "relayEnsureAgentBinary", { agent: "opencode" }), /subagent 役割/);
+    await assert.rejects(() => call(tokens.tools, "relayEnsureAgentBinary", { agent: "opencode" }), /道具用のコンテナ/);
+    await assert.rejects(() => call(tokens.subagent, "relayEnsureAgentBinary", {}), /agent が要ります/);
+    assert.deepEqual(asked, [{ module: "subagent", agent: "opencode" }], "断るべき頼みを渡した");
+    // 有無は設定（banto 全体）も Subagent も知れる。ほかは断る
+    for (const t of [tokens.settings, tokens.subagent]) {
+      assert.deepEqual(await call(t, "relayAgentBinaryStatus", { agent: "opencode" }), {
+        agent: "opencode",
+        title: "OpenCode",
+        version: "1.18.32",
+        cpu: "x64",
+        present: false,
+        approxBytes: 185,
+      });
+    }
+    await assert.rejects(() => call(tokens.shell, "relayAgentBinaryStatus", { agent: "opencode" }), /確かめられません/);
+  } finally {
+    close();
+  }
+});

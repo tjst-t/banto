@@ -4,7 +4,7 @@
 
 import { mkdirSync } from "node:fs";
 import { availableParallelism, homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { basename, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -107,6 +107,8 @@ import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
 import { DISCONNECT_WHY, ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, announceProjectsChanged, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
+import { catalogFromEnv, hostHasAvx2 } from "./agent-binaries/agent-binaries.js";
+import { AgentBinaryStore } from "./agent-binaries/store.js";
 import {
   assertAllVisibilityExplicit,
   assertVisibilityValues,
@@ -434,8 +436,15 @@ async function main(): Promise<void> {
    * `remote:<名前>` の Project は、SSH の接続1本の上で Module を起こす。中から banto へは逆向きのトンネルで、host の
    * 127.0.0.1 の**中継だけを受ける専用の待ち受け**（実行場所ごとに1つ。その実行場所の Project の合言葉だけを受ける）に届く
    */
+  /**
+   * **エージェントの本体**（決定・2026-10-17、アーキ仕様 §4.1「エージェントの本体を取ってくる」）。OpenCode は依存に持たず、
+   * 初めて使うときに core が取ってくる。起きたときに親を 0755 で作り、いまの目録に無い版を消す
+   */
+  const agentBinaries = new AgentBinaryStore({ dataDir: bootstrap.dataDir, catalog: catalogFromEnv(), hostAvx2: hostHasAvx2() });
+  agentBinaries.init();
   const remoteSsh: RemoteSshRuntime = new RemoteSshRuntime({
     dataDir: bootstrap.dataDir,
+    agentBinaryDirNames: () => agentBinaries.catalogDirNames(),
     monorepoRoot,
     runtimes: remoteRuntimes,
     remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
@@ -1753,7 +1762,14 @@ async function main(): Promise<void> {
     // 金庫の語の解決を待ってから頼むと、並んで起きる他の Module のマウントの束に乗り遅れ、
     // 自分の分だけもう1回待つことになっていた。起こす直前に揃っていればよい
     const mounting = performance.now();
-    const mounted = prepared?.prepareModuleDirs({ dataDir: moduleDataDir, packageDir: modulePackageDir });
+    // **Subagent Module には、取ってきたエージェントの本体の親も見せる**（同梱で `subagent` を名乗るもの——中継の口
+    // `relayEnsureAgentBinary` を呼べるのと同じ相手、アーキ仕様 §4.1）
+    const seesAgentBinaries = declaration.meta.origin === "bundled" && (declaration.meta.satisfies as string[]).includes("subagent");
+    const mounted = prepared?.prepareModuleDirs({
+      dataDir: moduleDataDir,
+      packageDir: modulePackageDir,
+      ...(seesAgentBinaries ? { agentBinariesDir: agentBinaries.root } : {}),
+    });
     if (!prepared) mkdirSync(moduleDataDir, { recursive: true, mode: 0o700 });
     // 待たずに進むあいだに失敗しても、下で待つまで「誰も読まない拒否」にしない
     mounted?.catch(() => undefined);
@@ -2512,6 +2528,25 @@ async function main(): Promise<void> {
         ...(input.threadId ? { threadId: input.threadId } : {}),
       });
     },
+    // **エージェントの本体を取ってきて、呼び元の場所から見えるようにする**（アーキ仕様 §4.1）。CPU は動かす機械で選ぶ：
+    // この機械のコンテナは host の /proc/cpuinfo、別のサーバは前提の確かめで覚えた AVX2 の有無。この機械のコンテナには親を
+    // 同じパスで見せている（`prepareModuleDirs`）ので host のパスのまま返す。別のサーバには送ってから向こうのパスを返す
+    ensureAgentBinary: async (caller, agent, onProgress) => {
+      const remote = caller.projectId !== undefined && remoteSsh.handles(caller.projectId) ? caller.projectId : undefined;
+      const placed = await agentBinaries.ensure(agent, {
+        ...(remote ? { avx2: remoteSsh.remoteHasAvx2(remote) } : {}),
+        onProgress,
+      });
+      const path = remote
+        ? await remoteSsh.ensureAgentBinary(
+            remote,
+            { name: basename(placed.dir), hostDir: placed.dir, fileName: basename(placed.file), title: placed.entry.title },
+            onProgress,
+          )
+        : placed.file;
+      return { path, version: placed.entry.version, cpu: placed.entry.cpu, sizeBytes: placed.sizeBytes };
+    },
+    agentBinaryStatus: (agent) => agentBinaries.status(agent),
     // **出来事を知らせる**（§4.3「段2」）。出せる相手は中継が絞る（`mayEmitEvent`）。Project は接続から決めたもの
     emitEvent: (caller, input) => automationEvents.receive({ projectId: caller.projectId, moduleName: caller.moduleName }, input),
     gate: createRelayApprovalGate({

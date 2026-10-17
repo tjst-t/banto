@@ -111,6 +111,7 @@ function probe(over: Record<string, string> = {}, before = "") {
     writable: "1",
     docker: "1",
     maxsessions: "10",
+    avx2: "1",
     ...over,
   };
   return parseProbe(`${before}__BANTO_PROBE_BEGIN__\n${Object.entries(values).map(([k, v]) => `${k}=${v}`).join("\n")}\n`)!;
@@ -131,8 +132,17 @@ test("前提：全部そろえば ok だけ", () => {
     "data-root": "ok",
     sshd: "ok",
     docker: "ok",
+    "cpu-avx2": "ok",
   });
   assert.ok(checks.every((c) => !c.detail && !c.fix));
+});
+
+test("前提：AVX2 の有無は覚えるだけで断らない（OpenCode の本体をどちら向けにするか）", () => {
+  const avx2 = (over: Record<string, string>) => evaluateProbe(probe(over), { tcp: true, streamLocal: true }, HOST).find((c) => c.id === "cpu-avx2")!;
+  assert.deepEqual([avx2({}).status, avx2({}).value], ["ok", "1"]);
+  const none = avx2({ avx2: "0" });
+  assert.deepEqual([none.status, none.value], ["ok", "0"]);
+  assert.match(none.detail ?? "", /AVX2 の無い機械向けの本体を送ります/);
 });
 
 test("前提：banto が動くのに要るものは ✕、特定の Module だけのもの（tmux・docker）・前に居た場所へ戻すときだけの rsync と linger は注意", () => {

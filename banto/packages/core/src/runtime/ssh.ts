@@ -40,6 +40,8 @@ export interface RuntimeCheck {
   detail?: string;
   /** 直し方（向こうで人が打つコマンド） */
   fix?: string;
+  /** 覚えておく値（画面には出さない。`cpu-avx2` は `"1"`／`"0"`） */
+  value?: string;
 }
 
 /** 繋いだときに使う、host の側のファイル */
@@ -247,6 +249,8 @@ function probeScript(dataRoot: string): string {
   return [
     `printf '%s\\n' ${PROBE_MARKER}`,
     `printf 'arch=%s\\n' "$(uname -m)"`,
+    // AVX2 の有無（覚えるだけで断らない——OpenCode の本体をどちら向けにするかに使う、アーキ仕様 §4.1）
+    `if grep -qw avx2 /proc/cpuinfo 2>/dev/null; then printf 'avx2=1\\n'; else printf 'avx2=0\\n'; fi`,
     `if v=$(getconf GNU_LIBC_VERSION 2>/dev/null); then printf 'libc=%s\\n' "$v"; elif ldd --version 2>&1 | grep -qi musl; then printf 'libc=musl\\n'; else printf 'libc=unknown\\n'; fi`,
     `for t in ${[...REQUIRED_TOOLS, "tmux", "docker", "rsync"].join(" ")}; do if command -v "$t" >/dev/null 2>&1; then printf 'tool.%s=1\\n' "$t"; else printf 'tool.%s=0\\n' "$t"; fi; done`,
     `uid=$(id -u); user=$(id -un)`,
@@ -311,6 +315,17 @@ export function evaluateProbe(
     ...(sameArch
       ? {}
       : { detail: `向こうは ${arch || "不明"}・${libc === "unknown" ? "libc が不明" : libc} です。banto は同じ種類の node を送るので、違う機械では動かせません。` }),
+  });
+
+  // **覚えるだけで、無くても断らない**（追加・2026-10-17、アーキ仕様 §4.1「エージェントの本体を取ってくる」）——無ければ OpenCode は
+  // AVX2 の無い機械向けの本体（baseline）を送る
+  const avx2 = v.get("avx2") === "1";
+  checks.push({
+    id: "cpu-avx2",
+    label: `CPU の AVX2（${avx2 ? "あり" : "なし"}。OpenCode の本体をどちら向けにするかに使う）`,
+    status: "ok",
+    value: avx2 ? "1" : "0",
+    ...(avx2 ? {} : { detail: "AVX2 がありません。OpenCode は AVX2 の無い機械向けの本体を送ります（断りません）。" }),
   });
 
   const noisy = probe.before.trim();

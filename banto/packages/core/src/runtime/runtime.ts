@@ -67,9 +67,11 @@ export interface PreparedPlace {
   pathInside(hostPath: string): string;
   /**
    * Module の置き場（読み書き）と、取ってきた配布物（読み取り専用。あれば）を用意し、中に見せる。
-   * 渡すのは host の側のパス
+   * 渡すのは host の側のパス。`agentBinariesDir`（Subagent Module を起こすときだけ）は、banto が取ってきたエージェントの本体の
+   * 親フォルダ——この機械のコンテナは1つの device で同じパスに読み取り専用で見せる（あとから取ってきた版も、親の下に rename で
+   * 置けば中から見える）。別のサーバは使うときに送るので、ここでは何もしない（アーキ仕様 §4.1「エージェントの本体を取ってくる」）
    */
-  prepareModuleDirs(dirs: { dataDir: string; packageDir: string }): Promise<void>;
+  prepareModuleDirs(dirs: { dataDir: string; packageDir: string; agentBinariesDir?: string }): Promise<void>;
   /**
    * 鍵の窓口（ssh-agent）を立てる host の側のフォルダ。host の Vault がここに立てたソケットに、中の Module が
    * 届く。`moduleDataDir` は host の側のパス
