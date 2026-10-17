@@ -9175,6 +9175,30 @@
       "updatedAt": "2026-10-17T12:57:57.721Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "browser-view-test-ts-1",
+      "number": 381,
+      "kind": "bug",
+      "title": "Browser の単体試験：view.test.ts「動画：人の画面で静かなページのタブ（別の窓）に切り替えると…キーフレームからすぐ来る」が間欠的に落ちる（元のタブに戻した最初の1通がキーフレームでない）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "browser",
+        "test"
+      ],
+      "body": "## 何が起きるか\n`banto/packages/modules/browser/src/view.test.ts` の上記の試験が、`元のタブに切り替えた最初の1通がキーフレームでない`（`first.header.key` が false）で落ちることがある。\n\n## 何回中何回（2026-10-17、#379 の作業の中で、その試験だけを流して計測）\n- --deny-permission-prompts あり：38回中3回（ほかに全体の単体試験の1回でも落ちた）\n- 引数を外した写し：31回中1回\n→ 引数と関係なく落ちる（規則6：機構が壊れている合図）。\n\n## 確かめ方\n`cd banto/packages/modules/browser && npm run build && for i in $(seq 1 20); do node --test --test-name-pattern=\"静かなページのタブ（別の窓）\" dist/view.test.js | grep '^ℹ fail'; done`",
+      "doneWhen": "落ちる原因を測って直し、その試験だけを30回流して30回とも通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T14:01:22.609Z",
+      "updatedAt": "2026-10-17T14:01:22.609Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
