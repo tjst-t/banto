@@ -1964,13 +1964,15 @@ test("繋がり直す前に起こし直さないと決めた（畳んだ・宣�
 test("繋がり直すのを待つ間に banto を起こし直したら、起き直したときの判定が拾って問う（前の走行の打ち切りの時計は動かない）", async () => {
   await withDir(async ({ dir, threadId, projectId }) => {
     const host = await boot(dir);
-    const made = recoveryOf(host, resumeAll, { connectLimitMs: 30 });
+    const made = recoveryOf(host, resumeAll, { connectLimitMs: 300 });
     await liveAwaiting(host, made.replyHandles, threadId, "r-sub", RESUMABLE, projectId);
     made.recovery.connectionClosed(`${RESUMABLE}-${projectId}`, { onPurpose: false });
-    await until(() => host.store.getThread(threadId)!.awaitingReplies![0]!.keptAfter === "disconnect", "待つ印が付かない");
-    // SIGTERM：止まる途中
+    // SIGTERM：止まる途中。**切れた直後に同期で止める**——`connectionClosed` は同期で時計を仕込むので、順序が決まる
+    // （印の追記を待ってから止めると、上限の短い時計が先に切れうる）
     made.recovery.stop();
-    await new Promise((r) => setTimeout(r, 60));
+    await until(() => host.store.getThread(threadId)!.awaitingReplies![0]!.keptAfter === "disconnect", "待つ印が付かない");
+    // 上限（300ms）を十分越えて待っても、止めたあとは時計が動かない
+    await new Promise((r) => setTimeout(r, 400));
     assert.deepEqual(made.lost, [], "止めたあとに打ち切りの時計が動いた");
     const again = await boot(dir);
     const next = recoveryOf(again, resumeAll);
