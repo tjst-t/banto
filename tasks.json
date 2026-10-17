@@ -8854,7 +8854,7 @@
       "number": 365,
       "kind": "task",
       "title": "案A の前に実機で測る（proxy device の security.uid・symlink のすり替え・subuid の書き換え・port_isolation・pool）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "ssh-project-ai-vault-project-vm"
@@ -8864,7 +8864,7 @@
       "labels": [],
       "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」で「実装の前に測る」としたものを banto-dev-vm で測る（終わったら区画の設定と試したコンテナを戻す）。\n\n1. proxy device に security.uid/gid を付けると、Incus の中継（forkproxy）がその uid で繋ぐか（root で繋がないか）\n2. connect=unix: の先を symlink にすり替えても、root の口（/var/lib/incus/unix.socket 等）に繋がらないか\n3. /etc/subuid・subgid を書き換えたあと Incus の起こし直しが要るか、動いているコンテナが残るか。raw.idmap の uid/gid が制限された区画で付けられるか\n4. NIC の security.port_isolation=true が制限された区画で付けられ、コンテナどうしが届かなくなるか（ゲートウェイには届くか）\n5. pool banto を作って区画から使えるか、OpenSSH の streamlocal の -R で Project ごとのソケットに張れるか\n\n結果は仕様の「実測」に書き足す。仕様と合わないものがあれば人に上げる。",
       "doneWhen": "5つの結果が仕様の「実測」に書かれ、合わないものは仕様が直っている。VM の区画の設定は元に戻っている",
-      "resolution": null,
+      "resolution": "3181ff0e（GitHub の main、仕様の「実測」に5点を書き足した）。proxy device は既定で root として繋ぎ、symlink で Incus の管理用の口に届く（200）——security.uid=1000 で塞がる。raw.idmap は SSH ユーザーの uid だけ（他の uid は区画が断る）。port_isolation は付けられ、隔てたものどうしは届かないが隔てていないものとは届く（banto のコンテナは全部隔てる）。sshd は streamlocal 可・BindUnlink no・MaxSessions 10。測れていない：subuid を書き換えたあと Incus の起こし直しが要るか（稼働中の VM なので #367 でまっさらな VM で）。区画の設定は block に戻し、試したコンテナは消した。",
       "refs": [],
       "threads": [
         {
@@ -8873,8 +8873,8 @@
         }
       ],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-17T23:46:18.518Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-17T23:54:23.795Z",
+      "closedAt": "2026-10-17T23:54:23.795Z",
       "extra": {}
     },
     {
