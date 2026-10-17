@@ -246,6 +246,9 @@ test("全部の問いに答えが揃ったら、元の会話に1回だけ届け�
     assert.match(d.text, /案A で。一般を先頭にして/);
     assert.match(d.text, /モックは消して/);
     assert.doesNotMatch(d.text, /案B で/);
+    // 問いごとの理由が、その問いの選んだものの次に入る
+    assert.match(d.text, /選んだもの：案A\n理由：おすすめに異論が無い\n/);
+    assert.match(d.text, /選んだもの：消す\n理由：要らない\n/);
 
     const card = reviewOf(h)!;
     assert.equal(card.judge?.kind, "decided-by-automation");

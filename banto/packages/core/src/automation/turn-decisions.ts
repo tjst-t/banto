@@ -385,7 +385,8 @@ export class TurnDecisions {
         title: `判断役（自動化「${session.automation.name}」）が選んだ答え`,
         text: [
           `前のターンのまとめで人に聞いた決めることに、判断役（自動化「${session.automation.name}」）が、あなたの出した選択肢から答えました。`,
-          ...answers.map((a) => `\n問い ${a.question}：${a.text}\n選んだもの：${a.label}\n${a.reply}`),
+          // 理由も届ける——元の会話の AI と、後から記録を読む人に、なぜそれを選んだかが見えるように
+          ...answers.map((a) => `\n問い ${a.question}：${a.text}\n選んだもの：${a.label}\n理由：${a.reason}\n${a.reply}`),
         ].join("\n"),
         // 元のターン＋2（出来事で＋1、判断役の答えで＋1）。上限（10）を超えると自動では起こさない
         hop: target.hop + 2,
