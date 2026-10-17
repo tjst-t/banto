@@ -6037,6 +6037,29 @@
       "extra": {}
     },
     {
+      "id": "browser-x-chrome-ui-b",
+      "number": 380,
+      "kind": "task",
+      "title": "Browser：人のクリック・キーを仮想の画面（X）に入れ、Chrome の UI（許可・パスワード保存などの吹き出し）も押せるようにする（案B・検討）",
+      "status": "backlog",
+      "parent": "browser-module",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "browser"
+      ],
+      "body": "## なぜ\n2026-10-17。人の画面の入力は CDP の Input.dispatchMouseEvent・dispatchKeyEvent でページの中にだけ届く。そのため、Chrome 本体の UI（許可の吹き出し・「パスワードを保存しますか」・ダウンロードの帯・HTTP 認証の窓など）は人から押せない。許可の吹き出しについては、当面は案A（--deny-permission-prompts で全部ブロック）で直した。ただ、「人が普段使う Chromium に AI も触れる」形（§4.1）に近づけるには、人の入力を XTest（xdotool 等）で Xvfb に入れる形がある。\n\n## 調べること・決めること（まず仕様）\n- 入力の入れ方：XTest を Python ctypes（video.ts の XDamage と同じ）で叩くか、xdotool か。座標は窓 (0,0)・キオスク形なので画面の座標とそろう。倍率（device scale）の換算をどうするか。\n- キー：日本語の入力（IME 無し、今はどう入れているか）・修飾キー・キーの割り当て（X の keysym）。今の CDP の insertText の扱いとそろえる。\n- 遅れと順番：今の CDP より遅くならないか測る。AI の CDP の操作と同時に来たときの順番。\n- 「AI に触らせない」・タブを会話ごとに分ける仕組み（#297）との兼ね合い。人が見ているタブは窓の前面にあるか。\n- 案A のブロックを外し、許可を人が選べるようにするか。\n\n## 確かめ\n仕様を書いて、ユーザーと決めてから分ける。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T12:57:49.267Z",
+      "updatedAt": "2026-10-17T12:57:49.267Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "remote-runtime",
       "number": 244,
       "kind": "story",
