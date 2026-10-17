@@ -8924,7 +8924,7 @@
       "number": 370,
       "kind": "bug",
       "title": "別のサーバに繋げなかったとき、1回の失敗で試し直しの間が何段も倍になり（10→80秒）、繋がり直すのが遅れる",
-      "status": "backlog",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8934,15 +8934,15 @@
       ],
       "body": "2026-10-17 の host の banto-host.log：00:06:06.497 の同じ時刻に、同じ Module（shell-2ced47c4… 等、banto-dev-vm の Module 全部）について「繋げませんでした（10 秒たったら…）」「（20 秒…）」「（40 秒…）」「（80 秒…）」が並んで出ている。SSH の接続1本に載る Module の起動が、同じ1回の接続の失敗を何度も受け取り、そのたびに connectBackoff を数え上げているらしい（Module の数・起動の待ち人の数だけ倍になる）。経路は 00:07:20 ごろに戻ったが、試し直しの間が 80 秒まで延びていたので繋がり直したのは 00:07:24〜27。kaggle-dev-vm も同じ形（00:05:53）。直し：1回の接続の失敗は1回として数える（待っている起動は同じ結果を受け取るだけで数え上げない）。原因の切れそのものは host から両方の VM への経路が約2分切れたこと（#362 の調べ）。",
       "doneWhen": "",
-      "resolution": null,
+      "resolution": "bf7b0777 で直した（GitHub の main）。ConnectBackoff.recordFailure に試みを始めた時刻を渡し、その後にもう数えた失敗は数え直さず知らせもしない。単体テストを足し、E2E connect-gate・module-restart・remote-runtime-ssh・remote-resume-restart（10件）が通った。",
       "refs": [
         "banto/packages/core/src/cli.ts connectBackoff",
         "banto/packages/core/src/runtime/remote-ssh.ts"
       ],
       "threads": [],
       "createdAt": "2026-10-17T00:45:13.997Z",
-      "updatedAt": "2026-10-17T00:45:13.997Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-17T01:00:38.348Z",
+      "closedAt": "2026-10-17T01:00:38.348Z",
       "extra": {}
     }
   ],
