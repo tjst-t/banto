@@ -8966,6 +8966,30 @@
       "updatedAt": "2026-10-17T01:53:35.223Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-browser-video-428-release-40px",
+      "number": 372,
+      "kind": "bug",
+      "title": "E2E browser-video:428 が release で落ちる——端数の倍率で「画面に合わせる」とページの高さが 40px 足りない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "browser"
+      ],
+      "body": "2026-10-17、release（11b57022 の上、#42902 の前）のまま `npx playwright test specs/browser-video.spec.ts` を流すと、`browser-video.spec.ts:428`（倍率が端数の画面で「画面に合わせる」、Backlog #359・#360）が毎回落ちる。\n\n- 期待「ページ 436×488」、実際「ページ 436×448」（高さだけ 40px 足りない）。spec 丸ごと・単独どちらでも（単独だと前の試験に頼る作りで「前の試験が会話を開いていない」で落ちる）\n- 組み立て済みの版を小さくする件（Fork「組み立て済みの版を小さく」）のフル E2E で見つけ、変更なしの release でも同じく落ちることを確かめた——その件とは無関係\n- 40px は Canvas の中の何かの帯（ツールバー・案内の帯）の高さの可能性。release にほかの Fork が入れた画面の変更（グループとスリープ #351 等）との組み合わせか、試験の期待値の古さかは未調査\n\n確かめ方：`cd banto/e2e && npx playwright test specs/browser-video.spec.ts` が通る。",
+      "doneWhen": "release の上で browser-video.spec.ts の2件が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T05:21:54.107Z",
+      "updatedAt": "2026-10-17T05:21:54.107Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
