@@ -8754,6 +8754,30 @@
       "updatedAt": "2026-10-17T00:26:41.410Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-reaper-incus-permission-remote",
+      "number": 363,
+      "kind": "bug",
+      "title": "別のサーバ（banto-dev-vm）で流した E2E の片づけ役が Incus に繋がれず、回のコンテナを消せていない",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "remote"
+      ],
+      "body": "2026-10-16〜17 の run-reaper.log（Shell のホームの .cache/banto-e2e/<回>/w*/reaper.log）が毎回「Incus に繋がりません（incus グループが効いていない？）：You don't have the needed permissions」で終わっている。片づけ役は systemd-run --user の別の単位で起こすので、Shell から流した E2E の incus グループ（sudo -n -E -u で付け直したもの）が届いていないらしい。コンテナは次の回の始めが拾う決まりだが、同時に複数の Fork が E2E を流すと溜まりうる。Shell が止まった件（#module-close-loses-background）の調べで見つけた、直接の原因ではない。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T00:26:46.865Z",
+      "updatedAt": "2026-10-17T00:26:46.865Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
