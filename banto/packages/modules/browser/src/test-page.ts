@@ -240,6 +240,8 @@ export function createTestPageServer(): Server {
 if (process.argv[1] && process.argv[1].endsWith("test-page.js")) {
   const port = Number(process.argv[2] ?? 0);
   const server = createTestPageServer();
+  // 来た要求を1行ずつ出す（E2E が、ブラウザが何を読み込んだかを通信の記録の外から見る——browser-search.spec.ts）
+  server.on("request", (req: { url?: string }) => console.log(`request ${req.url}`));
   server.listen(port, "127.0.0.1", () => {
     const address = server.address();
     console.log(`listening ${typeof address === "object" && address ? address.port : port}`);

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { NetworkLog } from "./network-log.js";
 import { BrowserSession, DEFAULT_VIEWPORT, type AudioRoute } from "./session.js";
 import { StateFile } from "./state.js";
+import { searchHome } from "./search.js";
 import { TOOLS, callTool, type ToolContext } from "./tools.js";
 import { BROWSER_VIEW_URI, browserViewHtml } from "./view-app.js";
 import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
@@ -147,7 +148,7 @@ export async function createBrowserContextFromDataDir(
     profileDir: paths.profile,
     log,
     idleMs: () => state.get().idleMinutes * 60_000,
-    launch: async (profileDir, onProgress) => {
+    launch: async (profileDir, onProgress, blank) => {
       const running = await launchWithInstall(
         async () => {
           // 入っていなければ Playwright と同じ文言で投げ、launchWithInstall が入れる（chrome.ts）
@@ -184,6 +185,7 @@ export async function createBrowserContextFromDataDir(
               fontconfigFile: paths.fontconfig,
               viewport: DEFAULT_VIEWPORT,
               scale,
+              firstTab: blank ? "about:blank" : searchHome(state.get()),
             },
             (endpoint) => chromium.connectOverCDP(endpoint),
           );

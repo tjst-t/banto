@@ -116,7 +116,8 @@ export type ActArgs =
   | { action: "waitFor"; text?: string; textGone?: string; timeMs?: number; tab?: string }
   | { action: "resize"; width: number; height: number; tab?: string };
 
-const REF_PATTERN = /^[a-z]*\d+$/i;
+// 頭の `f数字` は Playwright のフレームの印——同じタブでページを2度移ると、最初のフレームでも付く（`f1e7`。実測・2026-10-17）
+const REF_PATTERN = /^(?:f\d+)?[a-z]*\d+$/i;
 
 function ref(args: Args, required: true): string;
 function ref(args: Args, required?: false): string | undefined;

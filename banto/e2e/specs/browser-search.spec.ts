@@ -10,6 +10,8 @@
 //   3. URL 欄に言葉（空白を含む・ドットの無い1語）→ 検索の URL に行き、タブの題・URL 欄・通信の記録（文書の要求）がそれになる
 //   4. URL 欄に URL らしいもの（scheme の無い 127.0.0.1:番号/道）→ 今どおり http:// を足して開く
 //   5. AI の browserOpen が url を省くと、新しいタブで検索のトップを開き、会話のカードは「ブラウザで開いた：検索のページ」
+//   6. 起こしたときの最初のタブ（Backlog #376）：人が画面を開いてブラウザが起きると、最初のタブは検索のトップ（2 の頭で見る）。
+//      AI が url 付きの browserOpen で起こすと、最初のタブはその url だけを開く（検索のトップを読み込まない——試験のページに来た要求で見る）
 import { test, expect, type Page } from "../test-base.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -147,13 +149,20 @@ test("新しいタブは設定の検索エンジンで開き、URL 欄の言葉�
   const f = canvasFrame(page);
   await expect(f.locator(".tab[data-tab]"), "ブラウザが起きない").toHaveCount(1, { timeout: 900_000 });
   const first = (await f.locator(".tab[data-tab]").getAttribute("data-tab"))!;
+  // 起きたブラウザの最初のタブは検索のトップで開く（about:blank の白いページにしない）。選ばれていて、URL 欄・絵もそのタブ
+  const firstTab = f.locator(`.tab[data-tab="${first}"]`);
+  await expect(firstTab, "最初のタブが選ばれていない").toHaveAttribute("aria-selected", "true");
+  await expect(firstTab, "起きたブラウザの最初のタブが検索のトップで開かない").toContainText("試験の検索", { timeout: 30_000 });
+  const urlBar = f.getByRole("textbox", { name: "URL" });
+  await expect(urlBar, "最初のタブの URL 欄").toHaveValue(`${BASE}/search?q=`);
+  await expect(f.getByTestId("browser-screen"), "最初のタブの絵が映らない").toHaveAttribute("data-tab", first, { timeout: 60_000 });
+  await expect.poll(() => pageOut, { timeout: 10_000, message: "最初のタブが検索のトップを読み込んでいない" }).toContain("request /search?q=\n");
   await f.getByRole("button", { name: "新しいタブ" }).click();
   await expect(f.locator(".tab[data-tab]"), "＋でタブができない").toHaveCount(2);
   const added = f.locator(`.tab[data-tab]:not([data-tab="${first}"])`);
   const tab = (await added.getAttribute("data-tab"))!;
   await expect(added, "＋のタブが選ばれない").toHaveAttribute("aria-selected", "true");
   await expect(added, "＋のタブが検索のトップで開かない").toContainText("試験の検索", { timeout: 30_000 });
-  const urlBar = f.getByRole("textbox", { name: "URL" });
   await expect(urlBar).toHaveValue(`${BASE}/search?q=`);
   await expect(urlBar).toHaveAttribute("placeholder", "URL か検索する言葉（例 localhost:3000）");
   await expect(f.getByTestId("browser-screen"), "＋のタブの絵が映らない").toHaveAttribute("data-tab", tab, { timeout: 60_000 });
@@ -193,6 +202,22 @@ test("新しいタブは設定の検索エンジンで開き、URL 欄の言葉�
   await expect(page.getByTestId("tool-entry-card").filter({ hasText: "ブラウザで開いた：検索のページ" }), "url を省いた browserOpen のカードの題").toHaveCount(1, {
     timeout: 30_000,
   });
+
+  // ---- 6. AI が url 付きの browserOpen でブラウザを起こす → 最初のタブはその url だけを開く --------------------------------
+  // 人の画面はもう閉じている（上で Project の画面へ移った）——止めても起こし直されない
+  await uiCall(page, "clearBrowserData");
+  await expect.poll(async () => (await uiCall(page, "getBrowserStatus")).running, { timeout: 30_000, message: "ブラウザが止まらない" }).toBe(false);
+  const mark = pageOut.length;
+  const woke = await ai(page, threadId, "browserOpen", { url: `${BASE}/second` });
+  expect(woke, `url 付きの browserOpen で開けない：${woke}`).toMatch(/タブ t\d+ で開きました/);
+  expect(woke).toContain(`最終の URL: ${BASE}/second\n`);
+  expect(woke).toContain("タイトル: 2ページ目");
+  // 起こした最初のタブがそのまま url へ行き（新しいタブを足さない）、検索のトップは読み込まない
+  const tabs = (await uiCall(page, "listBrowserTabs")).tabs as { id: string; url: string; owner?: string }[];
+  expect(tabs.map((t) => [t.url, t.owner])).toEqual([[`${BASE}/second`, threadId]]);
+  const requests = () => pageOut.slice(mark).split("\n").filter((l) => l.startsWith("request "));
+  await expect.poll(requests, { timeout: 10_000, message: "url の要求が試験のページに来ていない" }).toContain("request /second");
+  expect(requests(), "url 付きで起こしたのに検索のトップを読み込んだ").not.toContain("request /search?q=");
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

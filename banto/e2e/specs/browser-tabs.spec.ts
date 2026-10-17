@@ -140,6 +140,8 @@ test("タブは会話ごと：2つの会話の AI がそれぞれ裏の自分の
   await expect.poll(() => pageOut, { timeout: 30_000, message: "試験用のページが立たない" }).toContain(`listening ${PORT}`);
 
   // ---- 人の画面を入口から開く（ブラウザを起こす——最初のタブは人のもの）。人のタブで 2ページ目 を開く ------------
+  // 起こした最初のタブは検索エンジンのトップで開く——試験で外に出ないよう、試験用のページの /search に向ける（browser-search.spec.ts）
+  await uiCall(page, "setSettings", { searchEngine: "custom", searchTemplate: `${BASE}/search?q=%s` });
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
   const entry = page.locator('[role="option"][data-value^="launcher:browser:"]');
   await expect(entry, "Browser の入口が出ない").toContainText("ブラウザ", { timeout: 60_000 });

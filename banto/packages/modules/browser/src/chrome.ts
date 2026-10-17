@@ -68,6 +68,12 @@ export interface ChromeOptions {
    * `Emulation.setDeviceMetricsOverride` の deviceScaleFactor では screencast の絵が大きくならない（実測・2026-10-11）
    */
   scale: number;
+  /**
+   * 起こしたときの最初のタブで開く URL（v4-modules.md §4.1「新しいタブと URL 欄の検索」）。人の画面などが起こしたなら検索
+   * エンジンのトップ、AI がすぐ URL へ行くなら about:blank（無駄に読み込まない——session.ts の ensure）。起動の引数で開く
+   * ——起こしてから goto すると、人の画面が screencast を始める間にページが入れ替わり、映せないことがあった（実測・2026-10-17）
+   */
+  firstTab: string;
 }
 
 export interface RunningChrome {
@@ -84,7 +90,7 @@ export interface RunningChrome {
 }
 
 /** ブラウザに渡す引数（自動操作の起動の印になるものは入れない——上の説明） */
-export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "viewport" | "scale">): string[] {
+export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "viewport" | "scale" | "firstTab">): string[] {
   return [
     `--user-data-dir=${o.profileDir}`,
     "--remote-debugging-port=0",
@@ -104,7 +110,8 @@ export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "
     // 人の端末の倍率で描く（高精細の画面の人の画面がにじまない）。窓の大きさは CSS ピクセルのまま。1 は付けない（人の
     // Chrome と同じ形）。ページから見える devicePixelRatio もこの値になる（session.ts の setViewport）
     ...(o.scale !== 1 ? [`--force-device-scale-factor=${o.scale}`] : []),
-    "about:blank",
+    // 最初のタブで開くページ（http・https か about:blank だけ——`-` で始まって引数に読まれるものは来ない。search.ts）
+    o.firstTab,
   ];
 }
 

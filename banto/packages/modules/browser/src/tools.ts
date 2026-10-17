@@ -600,7 +600,8 @@ async function describeRef(ctx: ToolContext, page: Page, ref: string | undefined
 async function open(ctx: ToolContext, args: Record<string, unknown>, onProgress: Progress, notify: Notify, thread: string | undefined): Promise<ToolResult> {
   const a = parseOpen(args);
   refuseIfBlocked(ctx, "browserOpen");
-  await ctx.session.ensure(onProgress, thread);
+  // 起こしたなら、最初のタブはすぐ url へ行く（新しいタブに開くときは最初のタブが残るので検索エンジンのトップ）
+  await ctx.session.ensure(onProgress, thread, !a.newTab);
   // 会話の呼び出しは、その会話のいまのタブ（無ければ裏に開く）。人の画面の表示は替えない（session.ts の newTab）
   const { id, page } = a.newTab ? await ctx.session.newTab(thread) : await ctx.session.currentOrNew(thread);
   ctx.session.claim(id, thread, "browserOpen");
