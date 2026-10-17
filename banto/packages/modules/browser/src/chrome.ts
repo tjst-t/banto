@@ -101,6 +101,12 @@ export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "
     "--no-first-run",
     "--no-default-browser-check",
     `--accept-lang=${o.languages.join(",")}`,
+    // **許可を求める吹き出し（通知・位置情報など）は出さず、全部ブロック**（v4-modules.md §4.1「形」、決定・2026-10-17、ユーザー）
+    // ——人の画面の入力は CDP でページの中にだけ届き（view-stream.ts）、吹き出しは Chrome 本体の UI なので押せず、キオスク形では
+    // 閉じる手段も無く居座る。自動操作の印ではない普通の起動の引数。カメラ・マイクは仮想の画面にもともと無い。実測（2026-10-17、
+    // test-page.ts の /permissions、Chrome 155）：無いと押しても答えが来ない（吹き出しが居座る）。有ると requestPermission・
+    // getCurrentPosition はすぐ denied を返す（permissions.query は求める前は prompt のまま、断ったあとは denied）
+    "--deny-permission-prompts",
     // **キオスク形**（タブの帯・アドレスバーの無い全画面の窓）——人の画面は Xvfb の (0,0) からページの大きさだけを取り込んで
     // 動画にする（video.ts）ので、窓の中身がページそのものでないといけない。ページの大きさは窓で決める（session.ts の
     // setViewport——v4-modules.md §4.1「動画で流す」(a)）。窓が Xvfb の左上に来るよう位置も決める

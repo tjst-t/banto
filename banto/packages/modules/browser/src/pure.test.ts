@@ -419,6 +419,8 @@ test("起こし方：自動操作の起動の印（--enable-automation・--headl
   assert.ok(args.includes("--accept-lang=ja-JP,ja,en-US,en"));
   assert.ok(args.includes("--remote-debugging-port=0"));
   assert.ok(args.includes("--disable-blink-features=AutomationControlled"));
+  // 許可を求める吹き出しは出さずブロック（人の画面からは Chrome の UI を押せない——chrome.ts）
+  assert.ok(args.includes("--deny-permission-prompts"));
   // 最初のタブで開くページは引数の最後（v4-modules.md §4.1「新しいタブと URL 欄の検索」）
   assert.equal(args.at(-1), "https://duckduckgo.com/");
   // 1倍では倍率の引数を付けない（人の Chrome と同じ形）。人の画面の倍率で描くときだけ付ける

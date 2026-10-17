@@ -16,6 +16,10 @@
 // `/tone` は**音の出るページ**（人の画面の音——v4-modules.md §4.1「動画で流す」の段4）。「音を鳴らす」を押すと TONE_HZ の
 // 正弦波を鳴らし続け、「音を止める」で止める（押すのは人の操作——ページの自動再生の決まり）。絵は変えない（静かなページの
 // まま音だけが鳴る）。
+// `/permissions` は**許可を求めるページ**（v4-modules.md §4.1「形」——許可を求める吹き出しは出さずブロック）。「通知を許可」は
+// Notification.requestPermission()、「位置情報」は geolocation.getCurrentPosition を呼び（押すのは人の操作——吹き出しは人の
+// 操作のあとにだけ出せる）、答えを `#notify`・`#geo` に書く。吹き出しが出ると答えは人が押すまで来ない（「まだ」のまま）。
+// `#states` は navigator.permissions.query の notifications・geolocation の状態（押す前に読み、答えのあとにも読み直す）。
 
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -98,6 +102,29 @@ document.getElementById('stop').addEventListener('click', () => { if (osc) { osc
 </script>
 </body></html>`;
 
+const PERMISSIONS = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>許可を求めるページ</title></head>
+<body style="margin:0;background:#fff">
+<button id="notify-ask" style="position:absolute;left:100px;top:100px">通知を許可</button>
+<button id="geo-ask" style="position:absolute;left:100px;top:160px">位置情報</button>
+<p id="notify" style="position:absolute;left:300px;top:90px">まだ</p>
+<p id="geo" style="position:absolute;left:300px;top:150px">まだ</p>
+<p id="states" style="position:absolute;left:100px;top:220px"></p>
+<script>
+const states = () => Promise.all(['notifications', 'geolocation'].map((name) => navigator.permissions.query({ name }).then((s) => name + ':' + s.state)))
+  .then((all) => { document.getElementById('states').textContent = all.join(' '); });
+states();
+document.getElementById('notify-ask').addEventListener('click', () => {
+  Notification.requestPermission().then((r) => { document.getElementById('notify').textContent = '通知:' + r; states(); });
+});
+document.getElementById('geo-ask').addEventListener('click', () => {
+  navigator.geolocation.getCurrentPosition(
+    () => { document.getElementById('geo').textContent = '位置:granted'; states(); },
+    (e) => { document.getElementById('geo').textContent = '位置:' + (e.code === e.PERMISSION_DENIED ? 'denied' : 'error' + e.code); states(); },
+  );
+});
+</script>
+</body></html>`;
+
 /** `/frame` の iframe の位置と大きさ（ページの CSS ピクセル）と、色の移り変わり（読み終えて少し後に [1]、押すたびに次へ） */
 export const FRAME_BOX = { x: 100, y: 100, width: 400, height: 300 };
 export const FRAME_COLORS = ["#808080", "#ff0000", "#00ff00", "#0000ff", "#ff0000"] as const;
@@ -164,6 +191,10 @@ export function createTestPageServer(): Server {
       case "/tone":
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(TONE);
+        return;
+      case "/permissions":
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(PERMISSIONS);
         return;
       case "/popup":
         res.setHeader("content-type", "text/html; charset=utf-8");
