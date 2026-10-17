@@ -2018,8 +2018,8 @@ host が持っているものだけ（新しく覚えるものは無い。`http/
   動く。**例外は opencode**：postinstall が組み立てた機械の `/proc/cpuinfo` の AVX2 で `opencode-linux-x64` か `-baseline` を
   選んで張る。GitHub のランナーは AVX2 があるので、AVX2 の無い host では使わない（下の「確かめる」）。arm64 は要るときに足す。
   **改訂（2026-10-17）**：opencode は依存から外し、使うときに取ってくる（§4.1「エージェントの本体を取ってくる」）。それまでの
-  間は tar から `opencode-linux-x64-baseline` を除く（AVX2 の印のため使われない）。外したあとは AVX2 の印に頼る部品が無いか
-  確かめ、無ければ印の確かめを外す
+  間は tar から `opencode-linux-x64-baseline` を除く（AVX2 の印のため使われない）。**外したら印の `cpu.avx2` と、それで組み立て済みを
+  使わない確かめ（`prebuilt.mjs`）も外す**——AVX2 に頼っていたのは opencode だけ
 - **使う外の action は GitHub 公式のもの（`actions/checkout`・`actions/setup-node`）だけで、commit の id で固定する**。Release を
   作るのは `GITHUB_TOKEN` と、ランナーにある `gh`。秘密は足さない。GITHUB_TOKEN が作るタグ・Release はほかの workflow を
   起こさない（ループしない）。workflow のファイルは Deploy key（SSH）で push できる（`workflow` scope の制限は PAT・OAuth
@@ -3145,39 +3145,58 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 - **OpenCode の本体は banto に同梱せず、初めて使うときに banto 本体が取ってくる**（決定・2026-10-17、ユーザー。下の
   「エージェントの本体を取ってくる」）
 
-#### エージェントの本体を取ってくる（決定・2026-10-17、ユーザー）
+#### エージェントの本体を取ってくる（決定・2026-10-17、ユーザー。Fable のレビュー1回を反映）
 
 OpenCode の実行ファイルは1本で約185MB（npm の `opencode-linux-x64`）あり、`opencode-ai` を依存に持つと組み立て済みの版・
 別のサーバへ送る依存の大きさのほとんどを占めていた。使う人は少ないので、**依存から外し、使うときに取ってくる**。
 
-- **何を取ってくるか**：banto のコード（core の目録 `agent-binaries.ts`）に、エージェントごとに **版・npm の tarball の URL・
-  integrity（sha512）・tarball の中の実行ファイルのパス**を書いて固定する。x64 は `opencode-linux-x64` と、AVX2 の無い機械用の
-  `opencode-linux-x64-baseline` の2つを書き、**host の `/proc/cpuinfo` で選ぶ**（以前の postinstall と同じ選び方。取ってくるのは
-  どちらか1本）。arm64・musl は書かない（banto が x64 の glibc だけなので）。版を上げるときは目録の版と integrity を書き換え、
-  `check:agents`（opencode）を流す
-- **誰が・いつ**：**banto 本体（core）が、AI か人が初めて OpenCode のサブエージェントを使うときに1回だけ**取ってくる。
-  使うとき＝`listSubagents` で agent に opencode を指したとき・`runSubagent` で opencode を頼んだとき（設定画面の「サブエージェント」
-  の候補を開いたときも同じ口を通る）。先に取っておくボタンは作らない。
-  Subagent Module は host への口 `relayEnsureAgentBinary({ agent })` を呼び、core が取ってきて**呼び元の場所から見えるようにし**、
-  中から見えるパスを返す。この口を呼べるのは同梱の Subagent Module（と設定の `subagent-settings`）だけ（`relayRaiseNotice` と同じ
-  名乗りの確かめ）。一覧に無い名前は断る
-- **置き場**：`<データ置き場>/agent-binaries/<agent>-<版>-<integrity の頭12>/`（中に実行ファイル1本、0755、フォルダは 0555）。
-  **全 Project で共有**。使い捨ての作業フォルダへ落とし、**tarball の sha512 を目録の integrity と比べてから**実行ファイルだけを
-  取り出し、rename で置く。合わなければ置かずに消して断る。同時に頼まれたら1本だけ取る（同じ取り込みを待たせる）。
-  いまの目録に無い版のフォルダは、banto が起きたときに消す（前の版に戻したときはまた取ってくる）
-- **見せ方**：この機械のコンテナには、その置き場を**同じパスで読み取り専用**でマウントする（Module の配布物と同じ
-  `ensureDisk(..., { readonly: true })`。動いているコンテナに後から足す）。別のサーバへは、いまの依存と同じ道で送る
-  （`docs/specs/v4-security.md` §1「向こうに置くもの」——中身のハッシュを鍵にした置き場。向こうにあれば送らない、使う前に照合する）
-- **待つ間**：取ってくる・送る間は、頼んだ tool の呼び出しに進み具合（「OpenCode を取ってきています（130 / 185MB）」「<実行場所>
-  に送っています」）を送り続ける——上限（60秒）は進み具合で数え直す。**120秒のあいだ1バイトも進まなければやめる**。
-  サブエージェントの仕事の画面（Launcher）にも、始まる前の段として同じ文を出す
-- **失敗**：取れなかった・確かめが合わなかった・送れなかったら、**理由を添えて tool の失敗で返す**（AI が人に伝える）。何も
-  残さず、次に使うときにまた試す。受信箱には出さない（頼んだ会話に返るので）
-- **設定画面**：「サブエージェント」の OpenCode の欄に「本体：取ってきました（版 1.18.32・185MB）」か「まだありません——初めて
-  使うときに約185MB を取ってきます」を出す（`relayAgentBinaryStatus`、取りには行かない）
-- **試験**：E2E は偽のエージェントを使うので本物は取らない。取ってくる口は、目録の URL を差し替える変数
-  （`BANTO_AGENT_BINARY_REGISTRY`）で試験用の小さな tarball を出す偽の登録簿に向け、取る・確かめが合わない・進まない・
-  コンテナから見える・別のサーバへ送る、を確かめる
+- **何を取ってくるか**：banto のコード（core の目録 `agent-binaries.ts`）に、エージェントごと・CPU の種類ごとに **版・npm の
+  tarball の URL・integrity（sha512）・tarball の中の実行ファイルのパス・大きさの上限**を書いて固定する。x64 は
+  `opencode-linux-x64` と、AVX2 の無い機械用の `opencode-linux-x64-baseline` の2つ。arm64・musl は書かない（banto が x64 の
+  glibc だけなので）。版を上げるときは目録の版と integrity を書き換え、`check:agents`（opencode）を流す
+- **どちらを使うかは、動かす機械の CPU で選ぶ**：この機械のコンテナは host の `/proc/cpuinfo`、別のサーバは向こうの CPU。
+  別のサーバの前提の確かめ（`uname -m`・libc）に **AVX2 の有無**を足して覚える。host は両方を持ちうる（必要になったものだけ取る）
+- **誰が・いつ**：**banto 本体（core）が、AI か人が初めて OpenCode のサブエージェントを使うときに1回だけ**取ってくる。使うとき＝
+  Subagent Module（Project ごと）の `listSubagents` で agent に opencode を指したとき・`runSubagent` で opencode を頼んだとき。
+  先に取っておくボタンは作らない。`listSubagents` の説明に「初めての opencode は本体（約185MB）を取ってくる」と書く。
+  Subagent Module は起動時に本体のパスを解かない（`agents.ts` の opencode の `command` は、下の口の返り値から使うときに組む。
+  `check:agents` も同じ口の代わりに目録から取る）
+- **host への口**：`relayEnsureAgentBinary({ agent })`——core が取ってきて**呼び元の場所から見えるようにし**、中から見えるパスを
+  返す。呼べるのは **同梱（`origin: bundled`）で `satisfies` に `subagent` を含む Module だけ**（専用の確かめ `mayEnsureAgentBinary`。
+  `relayRaiseNotice` の「banto 本体で動く banto 全体の Module だけ」とは別——Subagent は Project のコンテナ・別のサーバで動く）。
+  道具用のコンテナの Module は断る。目録に無い名前も断る。**コンテナの中の AI は中継の合言葉を読めるのでこの口を直接呼べる**——
+  できるのは「目録にある本体を取ってこさせる・有無を知る」だけで、害はそれに限られる（`v4-security.md` にも書く）。
+  設定の `subagent-settings`（banto 全体）は取らない口 `relayAgentBinaryStatus` だけを呼ぶ
+- **host の置き場**：`<データ置き場>/agent-binaries/<agent>-<版>-<CPU の種類>-<integrity の頭12>/`（中に実行ファイル1本、0755、
+  フォルダは 0555）。親の `agent-binaries/` は core が起きたときに作る。**全 Project で共有**。使い捨ての作業フォルダへ落とし、
+  **tarball の sha512 を目録の integrity と比べてから**、Node で tar を読み（外の `tar` に展開させない）、**目録のパスと完全に
+  一致する通常のファイル1件だけ**を取り出す——symlink・hardlink・`..` を含む名前・大きさの上限超えは断る。rename で置く。
+  合わなければ置かずに消して断る。同時に頼まれたら（エージェント・版・CPU の種類）ごとに1本だけ取り、ほかは待たせる。
+  いまの目録に無い版のフォルダは banto が起きたときに消す（走っているプロセスは消しても影響を受けない。起こし直しのあと続ける
+  仕事は新しい版で起き直す。前の版に戻したときはまた取ってくる）
+- **この機械のコンテナへの見せ方**：親の `agent-binaries/` を **1つの device で同じパスに読み取り専用**でマウントする（版のフォルダ
+  ごとには付けない）。Subagent Module を起こすとき（`prepareModuleDirs`）に付けるので、あとから取ってきた版も rename で親の
+  下に置けば中から見える。device は Incus の設定に残るので、眠る・起こし直すでも付き直る
+- **別のサーバへの見せ方**：塗り（`code/layers/`）とは別の置き場 `<置き場の根>/agent-binaries/<同じ名前>/` に送る——塗りは版の
+  `.layers` に載らないものを片づけるので、そこに置くと次の送り込みで消える。送る前に向こうの中身を `syncPackageDir` と同じ
+  digest で照合し、合えば送らない（向こうの AI が書き換えうるので、**使うたびに照合する**——1本なので数百ms）。送るのは
+  （実行場所・フォルダの名前）ごとに1本だけ（同時の頼みは待たせる）。片づけは host と同じく「いまの目録に無い版を消す」を
+  host が繋いだときに SSH で行う
+- **待つ間**：取ってくる・送る間、core はこの口の呼び出しに MCP の進み具合（`notifications/progress`）を送る。**進んでいれば
+  5秒ごと、止まっていても15秒ごと**に送る（Module が中継の上限60秒で切られないように）。Module は `resetTimeoutOnProgress` で
+  受け、頼んだ tool の呼び出しの進み具合へ流す（`server.ts` の `onProgress`）——「OpenCode を取ってきています（130 / 185MB）」
+  「<実行場所> に送っています」「進んでいません（○秒）」。**120秒のあいだ1バイトも進まなければやめる**。サブエージェントの仕事の
+  画面（Launcher）にも、始まる前の段として同じ文を出す（仕事の記録は起こす前に作られている）
+- **失敗**：取れなかった・確かめが合わなかった・送れなかったら、**理由を添えて tool の失敗で返す**（AI が人に伝える）。
+  `runInBackground` ですでに返した仕事なら、今の失敗と同じく札で頼んだ Thread に届ける。何も残さず、次に使うときにまた試す。
+  受信箱には出さない（頼んだ会話に返るので）
+- **設定画面**：「サブエージェント」の OpenCode の欄に「本体（この機械）：取ってきました（版 1.18.32・185MB）」か「まだありません
+  ——初めて使うときに約185MB を取ってきます」を出す。別のサーバにあるかは出さない
+- **試験**：E2E は偽のエージェントを使うので本物は取らない。取ってくる口の試験には、**目録全体を JSON で差し替える変数**
+  （`BANTO_AGENT_BINARY_CATALOG`。URL・integrity・中のパスを入れる）を、偽のエージェント（`BANTO_SUBAGENT_FAKE_AGENT=1`）のとき
+  だけ core が読む——本番では効かない。core の環境なのでコンテナの AI からは触れない。試験用の小さな tarball を出す偽の登録簿で、
+  取る・確かめが合わない・中身が不正（symlink・余計なファイル）・進まない・コンテナから見える・別のサーバへ送る・二度目は取らない、
+  を確かめる
 
 - **banto の Module（FileSystem・Shell・Vault）はまだサブエージェントに渡していない**
   （`session/new` の `mcpServers` は空）。渡すには、サブエージェント用の中継の口（URL と合言葉）を
