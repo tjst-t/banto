@@ -163,8 +163,18 @@ export function SortableRow({
   );
 }
 
-/** 掴んでいる行の id（落とす先の見た目に使う）。`DropList` の外では null */
-const DragStateContext = createContext<{ activeId: string | null }>({ activeId: null });
+/**
+ * 掴んでいるものの種類（追加・2026-10-17、Backlog #374）。同じ `DropList` で Project の行（`"row"`）とグループの見出し
+ * （`"heading"`）を運ぶ。落とす先は受け取る種類を持ち、ほかの種類を運んでいる間は落とす先から外れる——行を運んでいる
+ * ときにグループの並びの先が光らない・見出しを運んでいるときに行の上へ落ちない
+ */
+export type DragKind = "row" | "heading";
+
+/** 掴んでいるものの id と種類（落とす先の見た目に使う）。`DropList` の外では null */
+const DragStateContext = createContext<{ activeId: string | null; activeKind: DragKind | null }>({
+  activeId: null,
+  activeKind: null,
+});
 
 /**
  * **指の下にある落とす先**。行と行の間（隙間）に指があれば、いちばん近いもの——落とした瞬間に先が無くて
@@ -184,11 +194,13 @@ export function DropList({
   children,
 }: {
   onDrop: (activeId: string, overId: string) => void;
-  children: ReactNode;
+  /** 関数なら掴んでいるものの id を受け取る（運んでいる間だけ畳んで見せる、のように一覧の側で使う） */
+  children: ReactNode | ((activeId: string | null) => ReactNode);
 }) {
   const sensors = useRowSensors();
   const id = useId();
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [active, setActive] = useState<{ id: string; kind: DragKind } | null>(null);
+  const activeId = active?.id ?? null;
   return (
     <DndContext
       id={id}
@@ -197,14 +209,18 @@ export function DropList({
       modifiers={[restrictToVerticalAxis]}
       // 掴んだ行は目次を畳むので高さが変わる（`SortableList` と同じ理由）
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
-      onDragStart={(e) => setActiveId(String(e.active.id))}
-      onDragCancel={() => setActiveId(null)}
+      onDragStart={(e) =>
+        setActive({ id: String(e.active.id), kind: (e.active.data.current?.kind as DragKind | undefined) ?? "row" })
+      }
+      onDragCancel={() => setActive(null)}
       onDragEnd={(e) => {
-        setActiveId(null);
+        setActive(null);
         if (e.over) onDrop(String(e.active.id), String(e.over.id));
       }}
     >
-      <DragStateContext.Provider value={{ activeId }}>{children}</DragStateContext.Provider>
+      <DragStateContext.Provider value={{ activeId, activeKind: active?.kind ?? null }}>
+        {typeof children === "function" ? children(activeId) : children}
+      </DragStateContext.Provider>
     </DndContext>
   );
 }
@@ -232,11 +248,14 @@ export function DraggableRow({
   ) => ReactNode;
   className?: string;
 }) {
-  const { listeners, setNodeRef, transform, isDragging } = useDraggable({ id });
-  const { activeId } = useContext(DragStateContext);
+  const { listeners, setNodeRef, transform, isDragging } = useDraggable({ id, data: { kind: "row" } });
+  const { activeId, activeKind } = useContext(DragStateContext);
   // **掴んでいる行の見出しは落とす先から外す**——見出しは動いている行の中にあり、指の下にいつもあるので、
-  // 外さないと自分の上に落としたことになり続ける
-  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: dropId, disabled: isDragging });
+  // 外さないと自分の上に落としたことになり続ける。グループの見出しを運んでいる間も外す（行の前へは落とさない）
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: dropId,
+    disabled: isDragging || (activeKind !== null && activeKind !== "row"),
+  });
   // 掴み終わりのクリックを行き先として扱わない（`SortableRow` と同じ）
   const dragged = useRef(false);
   useEffect(() => {
@@ -266,9 +285,53 @@ export function DraggableRow({
   );
 }
 
-/** 行ではない落とす先（グループの見出し・「Project」の見出し）。`isOver` で塗る */
-export function useDropZone(id: string): { setNodeRef: (el: HTMLElement | null) => void; isOver: boolean } {
-  const { setNodeRef, isOver } = useDroppable({ id });
-  const { activeId } = useContext(DragStateContext);
+/**
+ * `DropList` の中で掴めて、自分も落とす先になるもの（グループの見出しのように、行の形をしていないもの。行は `DraggableRow`）。
+ * `kind` の同じものだけを受け取る
+ */
+export function useDragItem({ id, kind, dropId }: { id: string; kind: DragKind; dropId: string }) {
+  const { listeners, setNodeRef, transform, isDragging } = useDraggable({ id, data: { kind } });
+  const { activeId, activeKind } = useContext(DragStateContext);
+  // 掴んでいるものは自分の上に落とさない（`DraggableRow` と同じ）。種類の違うものを運んでいる間も外す
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: dropId,
+    disabled: isDragging || (activeKind !== null && activeKind !== kind),
+  });
+  // 掴み終わりのクリックを押したこととして扱わない（`SortableRow` と同じ）
+  const dragged = useRef(false);
+  useEffect(() => {
+    if (isDragging) dragged.current = true;
+  }, [isDragging]);
+  function onClickCapture(event: MouseEvent) {
+    if (!dragged.current) return;
+    dragged.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  return {
+    handle: { ...listeners } as Record<string, unknown>,
+    setNodeRef,
+    setDropRef,
+    isDragging,
+    isOver: isOver && activeId !== null,
+    onClickCapture,
+    style: {
+      transform: CSS.Translate.toString(transform),
+      zIndex: isDragging ? 30 : undefined,
+      opacity: isDragging ? 0.6 : undefined,
+    },
+  };
+}
+
+/**
+ * 行ではない落とす先（グループの見出し・「Project」の見出し・グループの並びの最後）。`isOver` で塗る。
+ * 受け取るのは `accepts` の種類だけ（既定は Project の行）
+ */
+export function useDropZone(
+  id: string,
+  accepts: DragKind = "row",
+): { setNodeRef: (el: HTMLElement | null) => void; isOver: boolean } {
+  const { activeId, activeKind } = useContext(DragStateContext);
+  const { setNodeRef, isOver } = useDroppable({ id, disabled: activeKind !== null && activeKind !== accepts });
   return { setNodeRef, isOver: isOver && activeId !== null };
 }

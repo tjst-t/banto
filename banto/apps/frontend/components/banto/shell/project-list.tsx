@@ -75,6 +75,7 @@ import {
   PROJECT_GROUP_COLORS,
   createProjectGroup,
   moveProjectGroup,
+  placeProjectGroup,
   projectSections,
   removeProjectGroup,
   setGroupCollapsed,
@@ -92,7 +93,7 @@ import { lastForkOf, useLastThreads } from "@/lib/last-thread";
 import { projectNavHref, settingsOpenHref } from "@/lib/settings-link";
 import { ProjectTreeItem, WakingMark } from "./nav-panel";
 import { RenameDialog } from "./rename-dialog";
-import { DraggableRow, DropList, useDropZone } from "./sortable-list";
+import { DraggableRow, DropList, useDragItem, useDropZone } from "./sortable-list";
 import type { GroupMenu } from "./sidebar-item-menu";
 import { useSleepProjects } from "./use-sleep-project";
 
@@ -100,6 +101,13 @@ import { useSleepProjects } from "./use-sleep-project";
 const DROP_UNGROUPED = "ungrouped";
 const DROP_SLEEP = "sleep";
 const dropGroup = (id: string) => `group:${id}`;
+/**
+ * グループの見出しを運ぶとき（Backlog #374）。掴む id は `heading:<グループの id>`、落とす先は見出し＝`before:<グループの id>`
+ * （その前へ）と、グループの並びの最後（`DROP_GROUP_END`、見出しを運んでいる間だけ出る）
+ */
+const dragHeading = (id: string) => `heading:${id}`;
+const dropBeforeGroup = (id: string) => `before:${id}`;
+const DROP_GROUP_END = "group-end";
 
 /** 「…」の頭に出す、いつから眠っているか（自動で眠ったものは「自動でスリープ」） */
 export function sleptSince(sleep: NonNullable<MockProject["sleep"]>): string {
@@ -157,7 +165,10 @@ function HeadingMore({ label }: { label: string }) {
   );
 }
 
-/** グループの見出し。押すと畳む／開く */
+/**
+ * グループの見出し。押すと畳む／開く。掴んで（§6.11 と同じ掴み方）ほかのグループの見出しへ落とすとその前へ。
+ * Project の行を落とすとそのグループの最後へ——同じ見出しが、運んでいるものの種類で別の落とす先になる
+ */
 function GroupHeading({
   group,
   projects,
@@ -176,7 +187,9 @@ function GroupHeading({
   /** 中の Project を全部眠らせる（眠らせられなかったものは理由を1行ずつ） */
   onSleepAll: () => void;
 }) {
-  const { setNodeRef: setDropRef, isOver: dropOver } = useDropZone(dropGroup(group.id));
+  const { setNodeRef: setDropRef, isOver: rowOver } = useDropZone(dropGroup(group.id));
+  const drag = useDragItem({ id: dragHeading(group.id), kind: "heading", dropId: dropBeforeGroup(group.id) });
+  const dropOver = rowOver || drag.isOver;
   const running = useAnyProjectRunning(projects.map((p) => p.id));
   useRealInboxVersion();
   const turn = getRealTurnCountForThreads(
@@ -185,12 +198,26 @@ function GroupHeading({
   const toggle = () => setGroupCollapsed(group.id, !collapsed);
   return (
     <li
-      ref={setDropRef}
+      ref={(el) => {
+        setDropRef(el);
+        drag.setNodeRef(el);
+        drag.setDropRef(el);
+      }}
+      {...drag.handle}
+      onClickCapture={drag.onClickCapture}
       data-testid="sidebar-group"
       data-group-id={group.id}
       data-collapsed={collapsed ? "" : undefined}
+      data-dragging={drag.isDragging ? "" : undefined}
       data-drop-over={dropOver ? "" : undefined}
-      className={cn("group/heading relative flex h-8 items-center rounded-md", dropOver && "bg-accent-soft")}
+      style={drag.style}
+      className={cn(
+        "group/heading relative flex h-8 items-center rounded-md",
+        rowOver && "bg-accent-soft",
+        // グループを運んでいるときは「その前へ」——行の上と同じ線
+        drag.isOver &&
+          "before:absolute before:inset-x-1 before:-top-0.5 before:z-10 before:h-0.5 before:rounded-full before:bg-accent",
+      )}
     >
       <button
         type="button"
@@ -300,6 +327,23 @@ function GroupHeading({
         <ChevronRight className={cn("size-4 transition-transform", !collapsed && "rotate-90")} />
       </button>
     </li>
+  );
+}
+
+/** グループの並びの最後（見出しを運んでいる間だけ出る）。落とすと一番下のグループへ */
+function GroupEndZone() {
+  const { setNodeRef, isOver } = useDropZone(DROP_GROUP_END, "heading");
+  return (
+    <li
+      ref={setNodeRef}
+      data-testid="sidebar-group-end"
+      data-drop-over={isOver ? "" : undefined}
+      aria-hidden
+      className={cn(
+        "relative h-8",
+        isOver && "before:absolute before:inset-x-1 before:top-0 before:h-0.5 before:rounded-full before:bg-accent",
+      )}
+    />
   );
 }
 
@@ -744,7 +788,12 @@ export function ProjectList({
    * 落とした1回だけ書く（§6.11）。行の上＝その前、見出し＝そのグループの最後、「Project」の見出し＝グループの外、
    * 「スリープ中」の見出し・スリープ中の行＝眠らせる。眠っているものをグループ側へ落としたら、起こしてそこへ
    */
-  function onDrop(projectId: string, overId: string) {
+  function onDrop(activeId: string, overId: string) {
+    if (activeId.startsWith("heading:")) {
+      onDropGroup(activeId.slice("heading:".length), overId);
+      return;
+    }
+    const projectId = activeId;
     const asleep = sleeping.find((p) => p.id === projectId);
     if (overId === DROP_SLEEP || overId.startsWith("sleeping:")) {
       const awake = allProjects.find((p) => p.id === projectId);
@@ -764,6 +813,14 @@ export function ProjectList({
     if (!target) return;
     place(projectId, target);
     if (asleep) void wakeProject(projectId).catch(report(`「${asleep.name}」を起こせませんでした`));
+  }
+
+  /** グループの見出しを落とした（§6.11——落とした1回だけ並び全体を書く。書けなければ元に戻る） */
+  function onDropGroup(groupId: string, overId: string) {
+    const beforeId =
+      overId === DROP_GROUP_END ? null : overId.startsWith("before:") ? overId.slice("before:".length) : undefined;
+    if (beforeId === undefined) return;
+    void placeProjectGroup(groupId, beforeId).catch(report("グループを動かせませんでした"));
   }
 
   function groupMenuFor(project: MockProject, current: string | null): GroupMenu {
@@ -819,62 +876,72 @@ export function ProjectList({
   return (
     <SidebarGroup>
       <DropList onDrop={onDrop}>
-        <ProjectsHeading
-          allCollapsed={allCollapsed}
-          onToggleAll={toggleAll}
-          onNewProject={() => {
-            onNavigate?.();
-            onNewProject();
-          }}
-          onNewGroup={() => setNameDialog({ kind: "new" })}
-        />
-        <SidebarGroupContent>
-          <SidebarMenu ref={containerRef} onKeyDown={onKeyDown} data-testid="sidebar-project-list">
-            {sections.map(({ group, projects }, i) =>
-              group === null ? (
-                <SectionRows key="ungrouped">{projects.map((p) => renderProject(p, projects, null))}</SectionRows>
-              ) : (
-                <SectionRows key={group.id}>
-                  <GroupHeading
-                    group={group}
-                    projects={projects}
-                    collapsed={collapsedGroups.has(group.id)}
-                    index={i - 1}
-                    groupCount={groups.length}
-                    onRename={(g) => setNameDialog({ kind: "rename", group: g })}
-                    onSleepAll={() => requestSleep(projects)}
-                  />
-                  {collapsedGroups.has(group.id) ? null : projects.length === 0 ? (
-                    <li data-testid="sidebar-group-empty" className="py-1 pr-2 pl-11 text-xs text-ink-3">
-                      Project をここへドラッグするか、行の「…」から入れます
-                    </li>
+        {(activeId) => {
+          // 運んでいるグループは畳んだ高さで運ぶ（人の開閉の選択は変えない——§6.11 の「運んでいる間は目次を畳む」と同じ）
+          const carried = activeId?.startsWith("heading:") ? activeId.slice("heading:".length) : null;
+          const lastGroupIndex = sections.findLastIndex((s) => s.group !== null);
+          return (
+            <>
+            <ProjectsHeading
+              allCollapsed={allCollapsed}
+              onToggleAll={toggleAll}
+              onNewProject={() => {
+                onNavigate?.();
+                onNewProject();
+              }}
+              onNewGroup={() => setNameDialog({ kind: "new" })}
+            />
+            <SidebarGroupContent>
+              <SidebarMenu ref={containerRef} onKeyDown={onKeyDown} data-testid="sidebar-project-list">
+                {sections.map(({ group, projects }, i) =>
+                  group === null ? (
+                    <SectionRows key="ungrouped">{projects.map((p) => renderProject(p, projects, null))}</SectionRows>
                   ) : (
-                    projects.map((p) => renderProject(p, projects, group.id))
-                  )}
-                </SectionRows>
-              ),
-            )}
-            <SleepSuggestion projects={suggestions} onSleep={() => requestSleep(suggestions)} />
-            {sleeping.length > 0 ? (
-              <>
-                <SleepHeading count={sleeping.length} open={sleepOpen} />
-                {sleepOpen
-                  ? sleeping.map((p) => (
-                      <SleepingRow
-                        key={p.id}
-                        project={p}
-                        group={groups.find((g) => g.id === p.groupId)}
-                        groups={groups}
-                        onOpen={openSleeping}
-                        onPlace={(groupId) => place(p.id, { groupId })}
-                        onNewGroup={() => setNameDialog({ kind: "new", projectId: p.id })}
+                    <SectionRows key={group.id}>
+                      <GroupHeading
+                        group={group}
+                        projects={projects}
+                        collapsed={collapsedGroups.has(group.id)}
+                        index={i - 1}
+                        groupCount={groups.length}
+                        onRename={(g) => setNameDialog({ kind: "rename", group: g })}
+                        onSleepAll={() => requestSleep(projects)}
                       />
-                    ))
-                  : null}
-              </>
-            ) : null}
-          </SidebarMenu>
-        </SidebarGroupContent>
+                      {collapsedGroups.has(group.id) || carried === group.id ? null : projects.length === 0 ? (
+                        <li data-testid="sidebar-group-empty" className="py-1 pr-2 pl-11 text-xs text-ink-3">
+                          Project をここへドラッグするか、行の「…」から入れます
+                        </li>
+                      ) : (
+                        projects.map((p) => renderProject(p, projects, group.id))
+                      )}
+                      {carried !== null && i === lastGroupIndex ? <GroupEndZone /> : null}
+                    </SectionRows>
+                  ),
+                )}
+                <SleepSuggestion projects={suggestions} onSleep={() => requestSleep(suggestions)} />
+                {sleeping.length > 0 ? (
+                  <>
+                    <SleepHeading count={sleeping.length} open={sleepOpen} />
+                    {sleepOpen
+                      ? sleeping.map((p) => (
+                          <SleepingRow
+                            key={p.id}
+                            project={p}
+                            group={groups.find((g) => g.id === p.groupId)}
+                            groups={groups}
+                            onOpen={openSleeping}
+                            onPlace={(groupId) => place(p.id, { groupId })}
+                            onNewGroup={() => setNameDialog({ kind: "new", projectId: p.id })}
+                          />
+                        ))
+                      : null}
+                  </>
+                ) : null}
+              </SidebarMenu>
+            </SidebarGroupContent>
+            </>
+          );
+        }}
       </DropList>
       {sleepDialog}
       <RenameDialog
