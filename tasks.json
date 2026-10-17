@@ -8496,7 +8496,7 @@
       "number": 377,
       "kind": "task",
       "title": "判断役の理由を、元の会話に届ける答えにも入れる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "automation-events",
       "dependsOn": [],
       "milestone": null,
@@ -8510,7 +8510,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T09:28:26.323Z",
-      "updatedAt": "2026-10-17T09:28:26.323Z",
+      "updatedAt": "2026-10-17T09:50:51.633Z",
       "closedAt": null,
       "extra": {}
     },
